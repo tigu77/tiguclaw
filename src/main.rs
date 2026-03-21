@@ -88,7 +88,8 @@ async fn main() -> Result<()> {
         let server = tiguclaw_dashboard::DashboardServer::new(
             registry.clone(),
             config.dashboard.cors_origin.clone(),
-        );
+        )
+        .with_conv_db(data_dir.join("conversations.db"));
         info!(
             port = config.dashboard.port,
             cors_origin = %config.dashboard.cors_origin,

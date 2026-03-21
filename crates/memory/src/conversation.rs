@@ -131,6 +131,74 @@ impl ConversationStore {
         Ok(n as usize)
     }
 
+    /// List recent conversation summaries (for dashboard API).
+    ///
+    /// Returns `(chat_id, message_count, last_content, last_role, updated_at_unix)`.
+    pub fn list_conversations(&self, limit: usize) -> Result<Vec<(String, usize, String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                chat_id,
+                COUNT(*) as msg_count,
+                (SELECT content FROM conversations c2
+                 WHERE c2.chat_id = c.chat_id AND c2.role IN ('user', 'assistant')
+                 ORDER BY c2.id DESC LIMIT 1) as last_content,
+                (SELECT role FROM conversations c2
+                 WHERE c2.chat_id = c.chat_id AND c2.role IN ('user', 'assistant')
+                 ORDER BY c2.id DESC LIMIT 1) as last_role,
+                CAST(strftime('%s', MAX(created_at)) AS INTEGER) as updated_at
+             FROM conversations c
+             WHERE role IN ('user', 'assistant')
+             GROUP BY chat_id
+             ORDER BY updated_at DESC
+             LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let chat_id: String = row.get(0)?;
+            let msg_count: i64 = row.get(1)?;
+            let last_content: String = row.get(2).unwrap_or_default();
+            let last_role: String = row.get(3).unwrap_or_default();
+            let updated_at: i64 = row.get(4).unwrap_or(0);
+            Ok((chat_id, msg_count as usize, last_content, last_role, updated_at))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    /// Load message history with timestamps for dashboard display.
+    ///
+    /// Returns `(role, content, timestamp_unix)`.
+    pub fn load_history_with_ts(&self, chat_id: &str, limit: usize) -> Result<Vec<(String, String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, content, CAST(strftime('%s', created_at) AS INTEGER) as ts
+             FROM (
+                 SELECT role, content, created_at, id
+                 FROM conversations
+                 WHERE chat_id = ?1 AND role IN ('user', 'assistant')
+                 ORDER BY id DESC
+                 LIMIT ?2
+             ) sub
+             ORDER BY id ASC",
+        )?;
+
+        let rows = stmt.query_map(params![chat_id, limit as i64], |row| {
+            let role: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            let ts: i64 = row.get(2).unwrap_or(0);
+            Ok((role, content, ts))
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     // ── internal ────────────────────────────────────────────────────
 
     fn ensure_schema(&self) -> Result<()> {

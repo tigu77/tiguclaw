@@ -1,10 +1,16 @@
 //! Phase 9-1: REST API 핸들러.
 //!
-//! GET /api/agents  → 현재 에이전트 목록 (AgentStatusInfo 배열)
-//! GET /api/status  → 봇 상태 (uptime, version)
-//! GET /api/logs    → 최근 이벤트 히스토리 (최대 100개)
+//! GET /api/agents              → 현재 에이전트 목록 (AgentStatusInfo 배열)
+//! GET /api/status              → 봇 상태 (uptime, version)
+//! GET /api/logs                → 최근 이벤트 히스토리 (최대 100개)
+//! GET /api/conversations       → 최근 대화 목록 (최대 20개)
+//! GET /api/conversations/:id   → 특정 대화 상세
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
 use serde::Serialize;
 
 use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
@@ -63,4 +69,107 @@ pub async fn get_status(State(state): State<AppState>) -> Json<BotStatus> {
 pub async fn get_logs(State(state): State<AppState>) -> Json<Vec<DashboardEvent>> {
     let log = state.log.lock().unwrap();
     Json(log.iter().cloned().collect())
+}
+
+// ---------------------------------------------------------------------------
+// Conversation types
+// ---------------------------------------------------------------------------
+
+/// GET /api/conversations 응답 아이템.
+#[derive(Debug, Serialize)]
+pub struct ConversationSummary {
+    pub id: String,
+    pub agent_name: String,
+    pub message_count: usize,
+    pub last_message: String,
+    pub last_message_role: String,
+    pub updated_at: i64,
+}
+
+/// GET /api/conversations/:id 응답 내 메시지 아이템.
+#[derive(Debug, Serialize)]
+pub struct MessageItem {
+    pub role: String,
+    pub content: String,
+    pub timestamp: i64,
+}
+
+/// GET /api/conversations/:id 응답.
+#[derive(Debug, Serialize)]
+pub struct ConversationDetail {
+    pub id: String,
+    pub agent_name: String,
+    pub messages: Vec<MessageItem>,
+}
+
+// ---------------------------------------------------------------------------
+// Conversation handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/conversations — 최근 20개 대화 목록.
+pub async fn get_conversations(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ConversationSummary>>, StatusCode> {
+    let path = state
+        .conv_db_path
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let store = tiguclaw_memory::ConversationStore::open(path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let rows = store
+        .list_conversations(20)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let summaries = rows
+        .into_iter()
+        .map(|(chat_id, msg_count, last_content, last_role, updated_at)| {
+            // chat_id를 그대로 agent_name으로 사용
+            let agent_name = chat_id.clone();
+            ConversationSummary {
+                id: chat_id,
+                agent_name,
+                message_count: msg_count,
+                last_message: last_content,
+                last_message_role: last_role,
+                updated_at,
+            }
+        })
+        .collect();
+
+    Ok(Json(summaries))
+}
+
+/// GET /api/conversations/:id — 특정 chat_id의 상세 메시지 목록.
+pub async fn get_conversation_detail(
+    State(state): State<AppState>,
+    Path(chat_id): Path<String>,
+) -> Result<Json<ConversationDetail>, StatusCode> {
+    let path = state
+        .conv_db_path
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let store = tiguclaw_memory::ConversationStore::open(path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let rows = store
+        .load_history_with_ts(&chat_id, 100)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let messages = rows
+        .into_iter()
+        .map(|(role, content, timestamp)| MessageItem {
+            role,
+            content,
+            timestamp,
+        })
+        .collect();
+
+    Ok(Json(ConversationDetail {
+        agent_name: chat_id.clone(),
+        id: chat_id,
+        messages,
+    }))
 }

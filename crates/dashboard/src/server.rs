@@ -13,7 +13,7 @@ use tracing::info;
 use tiguclaw_agent::AgentRegistry;
 use tiguclaw_core::event::DashboardEvent;
 
-use crate::api::{get_agents, get_logs, get_status};
+use crate::api::{get_agents, get_conversation_detail, get_conversations, get_logs, get_status};
 use crate::ws::ws_handler;
 
 /// 로그 히스토리 최대 크기.
@@ -32,6 +32,8 @@ pub struct AppState {
     pub log: Arc<Mutex<VecDeque<DashboardEvent>>>,
     /// 서버 시작 시각.
     pub start_time: Instant,
+    /// 대화 히스토리 DB 경로 (대화 이력 API용).
+    pub conv_db_path: Option<std::path::PathBuf>,
 }
 
 /// 대시보드 서버.
@@ -45,6 +47,8 @@ pub struct DashboardServer {
     registry: Arc<TokioMutex<AgentRegistry>>,
     cors_origin: String,
     start_time: Instant,
+    /// 대화 히스토리 DB 경로 (optional).
+    conv_db_path: Option<std::path::PathBuf>,
 }
 
 impl DashboardServer {
@@ -60,7 +64,14 @@ impl DashboardServer {
             registry,
             cors_origin,
             start_time: Instant::now(),
+            conv_db_path: None,
         }
+    }
+
+    /// 대화 히스토리 DB 경로 설정 (builder 패턴).
+    pub fn with_conv_db(mut self, path: std::path::PathBuf) -> Self {
+        self.conv_db_path = Some(path);
+        self
     }
 
     /// 이벤트를 로그에 저장하고 broadcast 채널로 전송 (sync 메서드).
@@ -123,6 +134,7 @@ impl DashboardServer {
             event_tx: self.event_tx,
             log: self.log,
             start_time: self.start_time,
+            conv_db_path: self.conv_db_path,
         };
 
         let router = Router::new()
@@ -130,6 +142,8 @@ impl DashboardServer {
             .route("/api/agents", get(get_agents))
             .route("/api/status", get(get_status))
             .route("/api/logs", get(get_logs))
+            .route("/api/conversations", get(get_conversations))
+            .route("/api/conversations/:id", get(get_conversation_detail))
             .layer(cors)
             .with_state(state);
 

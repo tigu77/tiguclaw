@@ -3476,6 +3476,7 @@ dependencies = [
  "serde_json",
  "tiguclaw-agent",
  "tiguclaw-core",
+ "tiguclaw-memory",
  "tokio",
  "tower-http 0.5.2",
  "tracing",

@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 tiguclaw-core = { workspace = true }
 tiguclaw-agent = { workspace = true }
+tiguclaw-memory = { workspace = true }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -18,36 +18,54 @@
 
 ## What is tiguclaw?
 
-tiguclaw is a lightweight agent operating system written in Rust. Run a hierarchy of AI agents (L0→L3) that can spawn each other, communicate via IPC, and be monitored through a web dashboard — all controlled from Telegram.
+tiguclaw is a lightweight agent operating system written in Rust. Run a hierarchy of AI agents (L0→L3) that can spawn each other, communicate via IPC, and be monitored through a built-in web dashboard — all controlled from Telegram.
 
 Think of it as a personal AI army: one supermaster you talk to, and unlimited specialized sub-agents it commands.
 
 ## Quick Start
 
+### Prerequisites
+
+- [Rust](https://rustup.rs)
+- Telegram bot token ([@BotFather](https://t.me/BotFather))
+- Anthropic API key ([console.anthropic.com](https://console.anthropic.com))
+
+### Install
+
 ```bash
-# Prerequisites: Rust, SQLite
 git clone https://github.com/tigu77/tiguclaw
 cd tiguclaw
-cargo build --release
+bash install.sh   # builds & installs to ~/.local/bin
+```
 
-# Interactive setup (recommended)
-./target/release/tiguclaw init
+> **One-liner** (after the repo goes public):
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | bash
+> ```
 
-# Start
-./target/release/tiguclaw
+### Setup (run once)
 
-# Or install as a background service
-./target/release/tiguclaw gateway install
+```bash
+mkdir ~/.tiguclaw && cd ~/.tiguclaw
+tiguclaw init     # interactive: bot token, API key, agent name
+```
+
+### Start
+
+```bash
+tiguclaw gateway install   # registers as a background service
 ```
 
 ## Architecture
 
 ```
-L0 Supermaster (you talk to this)
-├── L1 Master agents (persistent, optional bot token)
-│   ├── L2 Mini agents (internal IPC)
-│   └── L3 Worker agents (ephemeral tasks)
-└── Dashboard (real-time web UI)
+tiguclaw (single binary)
+├── Agent loop (L0 Supermaster)
+│   ├── L1 Master agents (persistent, optional bot token)
+│   │   ├── L2 Mini agents (internal IPC)
+│   │   └── L3 Worker agents (ephemeral tasks)
+├── REST API + WebSocket (axum, port 3002)
+└── Dashboard (static files served from ~/.tiguclaw/dashboard/)
 ```
 
 ## Agent Structure
@@ -75,7 +93,10 @@ personalities/        ← swappable personality packs
 
 - **Multi-level agent hierarchy** — L0~L3 roles with spawn/kill/steer
 - **Telegram-native** — Control your agent army from your phone
-- **Real-time dashboard** — WebSocket-powered web UI (React/Next.js)
+- **Real-time dashboard** — WebSocket-powered web UI, built-in (no Node.js required)
+- **Hybrid memory search** — local embeddings (fastembed) + vector search (sqlite-vec) + BM25 + time decay
+- **Built-in dashboard** — served directly by axum at `localhost:3002`, no separate process needed
+- **Plugin-style dashboard** — swap or customize via `~/.tiguclaw/dashboard/`
 - **Agent folder structure** — `agents/{name}/AGENT.md` + `agent.toml`
 - **Shared context** — `shared/` folder injected into every agent's prompt
 - **Hidden system prompt** — role, tools, and limits auto-injected at spawn
@@ -110,14 +131,17 @@ See `config.toml.example` for the full configuration reference.
 
 ## Dashboard
 
-The dashboard is a separate Next.js project in `tiguclaw-dashboard/`.
+The dashboard is built into tiguclaw and served at `http://localhost:3002`. No Node.js required.
+
+To develop a custom dashboard:
 
 ```bash
-cd tiguclaw-dashboard
-npm install && npm run build
-NODE_ENV=production node server.js
-# Open http://localhost:3000
+cd dashboard && npm install && npm run dev
+# Then set the env var to proxy to your dev server:
+export TIGUCLAW_DEV_DASHBOARD=http://localhost:3001
 ```
+
+You can also swap the dashboard entirely by placing your own static files in `~/.tiguclaw/dashboard/`.
 
 ## Slash Commands
 
@@ -138,12 +162,13 @@ NODE_ENV=production node server.js
 ## Roadmap
 
 - [x] Multi-level agent hierarchy (L0~L3)
-- [x] Real-time web dashboard
+- [x] Real-time web dashboard (built-in, no Node.js)
+- [x] Hybrid memory search (fastembed + sqlite-vec + BM25)
 - [x] Agent folder structure + personality packs
 - [x] Shared context (`shared/`)
 - [x] Auto-spawn & approval policy
 - [x] Context management with retention
-- [ ] Agent marketplace
+- [ ] Agent marketplace (`tiguclaw market`)
 - [ ] Distributed agents across machines
 - [ ] Discord / Slack channels
 

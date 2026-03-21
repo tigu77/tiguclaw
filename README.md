@@ -7,7 +7,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/built_with-Rust-orange?style=for-the-badge&logo=rust" alt="Built with Rust"></a>
-  <img src="https://img.shields.io/badge/AI-Claude-blueviolet?style=for-the-badge" alt="Claude">
+  <img src="https://img.shields.io/badge/AI-LLM_Agnostic-blueviolet?style=for-the-badge" alt="LLM Agnostic">
 </p>
 
 > One supermaster. Unlimited sub-agents. Real-time dashboard.

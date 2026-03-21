@@ -7,16 +7,26 @@ use clap::Parser as _;
 use tokio::sync::{mpsc, Mutex};
 use tracing::info;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Parse CLI arguments.
     let cli = tiguclaw_cli::Cli::parse();
 
-    // If a CLI subcommand was given (not `run`), dispatch and exit.
+    // If a CLI subcommand was given (not `run`), dispatch synchronously and exit.
+    // This avoids starting the tokio runtime (and fastembed model loading) for CLI commands.
     let should_run = tiguclaw_cli::dispatch(&cli)?;
     if !should_run {
         return Ok(());
     }
+
+    // Run mode: start async tokio runtime.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to build tokio runtime")?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
 
     // Initialize tracing (only for bot run mode).
     tracing_subscriber::fmt::init();

@@ -711,7 +711,7 @@ fn init(yes: bool) -> Result<()> {
     };
 
     let api_key = if yes {
-        "YOUR_ANTHROPIC_API_KEY".to_string()
+        "${ANTHROPIC_API_KEY}".to_string()
     } else {
         prompt("Anthropic API key (from console.anthropic.com)")?
     };
@@ -723,18 +723,26 @@ fn init(yes: bool) -> Result<()> {
         if s.is_empty() { "MyAgent".to_string() } else { s }
     };
 
-    // 3. config.toml.example 읽어서 값 치환
+    // 3. .env 파일 생성 (실제 키는 .env에)
+    let env_path = ".env";
+    let env_content = format!(
+        "TELEGRAM_BOT_TOKEN={}\nANTHROPIC_API_KEY={}\n",
+        bot_token, api_key
+    );
+    std::fs::write(env_path, &env_content)?;
+    println!("\n✅ .env created (tokens stored here)");
+
+    // 4. config.toml.example 읽어서 값 치환 (환경변수 참조 유지)
     let example = std::fs::read_to_string("config.toml.example")
         .context("config.toml.example not found. Are you in the tiguclaw directory?")?;
 
     let config_content = example
         .replace("\"MyAgent\"", &format!("\"{}\"", agent_name))
-        .replace("${TELEGRAM_BOT_TOKEN}", &bot_token)
-        .replace("${ANTHROPIC_API_KEY}", &api_key)
         .replace("admin_chat_id = 123456789", &format!("admin_chat_id = {}", admin_chat_id));
+    // bot_token, api_key는 .env의 환경변수 참조 그대로 유지
 
     std::fs::write(CONFIG_FILE, &config_content)?;
-    println!("\n✅ config.toml created");
+    println!("✅ config.toml created");
 
     // 4. shared/USER.md 생성 (USER.md.example 기반)
     std::fs::create_dir_all("shared")?;

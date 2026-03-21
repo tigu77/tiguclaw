@@ -300,7 +300,6 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
 }
 
 fn gateway_uninstall() -> Result<()> {
-    let label = instance_label();
     let plist = plist_path();
     if plist.exists() {
         let out = std::process::Command::new("launchctl")
@@ -761,7 +760,6 @@ fn init(yes: bool) -> Result<()> {
     };
 
     // admin_chat_id is auto-registered on first /start — no prompt needed
-    let admin_chat_id: i64 = 0;
 
     let api_key = if yes {
         "${ANTHROPIC_API_KEY}".to_string()

@@ -57,6 +57,13 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Interactive setup wizard — creates config.toml and shared/USER.md
+    Init {
+        /// Skip prompts and use defaults (for CI/testing)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,6 +174,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Skills { action } => skills(action),
         Commands::Memory { action } => memory(action),
         Commands::Config { action } => config_cmd(action),
+        Commands::Init { yes } => init(*yes),
     }
 }
 
@@ -668,6 +676,107 @@ fn config_set(key: &str, value: &str) -> Result<()> {
     save_toml_doc(CONFIG_FILE, &doc)?;
     println!("✅ Set {key} = {value}");
     Ok(())
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
+fn init(yes: bool) -> Result<()> {
+    println!("🐯 tiguclaw setup wizard\n");
+
+    // 1. config.toml 이미 있으면 확인
+    if std::path::Path::new(CONFIG_FILE).exists() && !yes {
+        print!("config.toml already exists. Overwrite? [y/N] ");
+        use std::io::Write;
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if input.trim().to_lowercase() != "y" {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    // 2. 필수 정보 입력받기
+    let bot_token = if yes {
+        "YOUR_TELEGRAM_BOT_TOKEN".to_string()
+    } else {
+        prompt("Telegram bot token (from @BotFather)")?
+    };
+
+    let admin_chat_id: i64 = if yes {
+        123456789
+    } else {
+        let s = prompt("Your Telegram chat ID (send /start to @userinfobot)")?;
+        s.trim().parse().unwrap_or(0)
+    };
+
+    let api_key = if yes {
+        "YOUR_ANTHROPIC_API_KEY".to_string()
+    } else {
+        prompt("Anthropic API key (from console.anthropic.com)")?
+    };
+
+    let agent_name = if yes {
+        "MyAgent".to_string()
+    } else {
+        let s = prompt_with_default("Agent name", "MyAgent")?;
+        if s.is_empty() { "MyAgent".to_string() } else { s }
+    };
+
+    // 3. config.toml.example 읽어서 값 치환
+    let example = std::fs::read_to_string("config.toml.example")
+        .context("config.toml.example not found. Are you in the tiguclaw directory?")?;
+
+    let config_content = example
+        .replace("\"MyAgent\"", &format!("\"{}\"", agent_name))
+        .replace("${TELEGRAM_BOT_TOKEN}", &bot_token)
+        .replace("${ANTHROPIC_API_KEY}", &api_key)
+        .replace("admin_chat_id = 123456789", &format!("admin_chat_id = {}", admin_chat_id));
+
+    std::fs::write(CONFIG_FILE, &config_content)?;
+    println!("\n✅ config.toml created");
+
+    // 4. shared/USER.md 생성 (USER.md.example 기반)
+    std::fs::create_dir_all("shared")?;
+    if !std::path::Path::new("shared/USER.md").exists() {
+        if let Ok(user_example) = std::fs::read_to_string("shared/USER.md.example") {
+            let user_content = user_example.replace("Your Name", &agent_name);
+            std::fs::write("shared/USER.md", &user_content)?;
+            println!("✅ shared/USER.md created");
+        }
+    }
+
+    // 5. data/ 디렉토리 생성
+    std::fs::create_dir_all("data")?;
+    println!("✅ data/ directory ready");
+
+    // 6. 완료 안내
+    println!("\n🎉 Setup complete!");
+    println!("\nNext steps:");
+    println!("  1. Edit shared/USER.md with your info");
+    println!("  2. Run: tiguclaw");
+    println!("  3. Or install as a service: tiguclaw gateway install");
+
+    Ok(())
+}
+
+fn prompt(label: &str) -> Result<String> {
+    use std::io::Write;
+    print!("{}: ", label);
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_with_default(label: &str, default: &str) -> Result<String> {
+    use std::io::Write;
+    print!("{} [{}]: ", label, default);
+    std::io::stdout().flush()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let s = input.trim().to_string();
+    Ok(if s.is_empty() { default.to_string() } else { s })
 }
 
 // ─── TOML helpers ─────────────────────────────────────────────────────────────

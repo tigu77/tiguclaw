@@ -63,13 +63,20 @@ pub enum Commands {
         /// Skip prompts and use defaults (for CI/testing)
         #[arg(long)]
         yes: bool,
+        /// Installation directory (default: ~/.tiguclaw)
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum GatewayAction {
     /// Create LaunchAgent plist and load it
-    Install,
+    Install {
+        /// Installation directory (default: ~/.tiguclaw)
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
     /// Unload and delete LaunchAgent plist
     Uninstall,
     /// Start the service
@@ -123,22 +130,29 @@ const LABEL_BASE: &str = "com.tiguclaw.agent";
 const LOG_PATH: &str = "/tmp/tiguclaw.log";
 const CONFIG_FILE: &str = "config.toml";
 
-/// 현재 디렉토리 이름에서 라벨 suffix 추출
+/// 기본 설치 디렉토리: ~/.tiguclaw
+fn install_dir() -> PathBuf {
+    dirs_home().join(".tiguclaw")
+}
+
+/// 특정 dir의 이름에서 라벨 suffix 추출
 /// ~/.tiguclaw       → "com.tiguclaw.agent"
 /// ~/.tiguclaw-work  → "com.tiguclaw.agent.work"
 /// ~/.tiguclaw-x-y   → "com.tiguclaw.agent.x-y"
-fn instance_label() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let dir_name = cwd
+fn instance_label_for(dir: &std::path::Path) -> String {
+    let dir_name = dir
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("tiguclaw");
-    // ".tiguclaw" 또는 ".tiguclaw-{suffix}" 패턴
     if let Some(suffix) = dir_name.strip_prefix(".tiguclaw-") {
         format!("{}.{}", LABEL_BASE, suffix)
     } else {
         LABEL_BASE.to_string()
     }
+}
+
+fn instance_label() -> String {
+    instance_label_for(&install_dir())
 }
 
 fn plist_path() -> PathBuf {
@@ -192,7 +206,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Skills { action } => skills(action),
         Commands::Memory { action } => memory(action),
         Commands::Config { action } => config_cmd(action),
-        Commands::Init { yes } => init(*yes),
+        Commands::Init { yes, dir } => init(*yes, dir.clone()),
     }
 }
 
@@ -200,7 +214,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
 
 fn gateway(action: &GatewayAction) -> Result<()> {
     match action {
-        GatewayAction::Install => gateway_install(),
+        GatewayAction::Install { dir } => gateway_install(dir.clone()),
         GatewayAction::Uninstall => gateway_uninstall(),
         GatewayAction::Start => gateway_start(),
         GatewayAction::Stop => gateway_stop(),
@@ -209,11 +223,22 @@ fn gateway(action: &GatewayAction) -> Result<()> {
     }
 }
 
-fn gateway_install() -> Result<()> {
+fn gateway_install(dir: Option<PathBuf>) -> Result<()> {
+    let install_dir = dir.unwrap_or_else(install_dir);
+
+    // Install dir 생성 및 이동
+    std::fs::create_dir_all(&install_dir)
+        .context("failed to create install directory")?;
+    std::env::set_current_dir(&install_dir)
+        .context("failed to change to install directory")?;
+
     let bin = std::env::current_exe().context("failed to get current executable path")?;
     let bin_str = bin.to_string_lossy();
-    let label = instance_label();
-    let plist = plist_path();
+    let label = instance_label_for(&install_dir);
+    let plist = dirs_home()
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", label));
 
     // Create LaunchAgents directory if needed
     std::fs::create_dir_all(plist.parent().unwrap())
@@ -241,13 +266,11 @@ fn gateway_install() -> Result<()> {
     <key>RunAtLoad</key>
     <true/>
     <key>WorkingDirectory</key>
-    <string>{cwd}</string>
+    <string>{working_dir}</string>
 </dict>
 </plist>
 "#,
-        cwd = std::env::current_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
+        working_dir = install_dir.to_string_lossy()
     );
 
     std::fs::write(&plist, &content).context("failed to write plist")?;
@@ -265,21 +288,20 @@ fn gateway_install() -> Result<()> {
         anyhow::bail!("launchctl load returned non-zero");
     }
 
-    // dashboard/out/ 존재 시 ~/.tiguclaw/dashboard/ 로 배포
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let dashboard_src = cwd.join("dashboard").join("out");
+    // dashboard/out/ 존재 시 install_dir/dashboard/ 로 배포
+    let dashboard_src = install_dir.join("dashboard").join("out");
     if dashboard_src.exists() {
-        let home = dirs_home();
-        let dashboard_dst = home.join(".tiguclaw").join("dashboard");
+        let dashboard_dst = install_dir.join("dashboard");
         std::fs::create_dir_all(&dashboard_dst)
-            .context("failed to create ~/.tiguclaw/dashboard")?;
+            .context("failed to create dashboard directory")?;
         copy_dir_all(&dashboard_src, &dashboard_dst)
             .context("failed to copy dashboard files")?;
-        println!("✅ Dashboard deployed to ~/.tiguclaw/dashboard/");
+        println!("✅ Dashboard deployed to {}/dashboard/", install_dir.display());
     } else {
         println!("ℹ️  dashboard/out/ not found — skipping dashboard deploy (API-only mode)");
     }
 
+    println!("\n✅ Gateway service registered for {}", install_dir.display());
     Ok(())
 }
 
@@ -736,12 +758,23 @@ fn config_set(key: &str, value: &str) -> Result<()> {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
-fn init(yes: bool) -> Result<()> {
+fn init(yes: bool, dir: Option<PathBuf>) -> Result<()> {
+    let install_dir = dir.unwrap_or_else(install_dir);
+
     println!("🐯 tiguclaw setup wizard\n");
+    println!("📁 Install directory: {}", install_dir.display());
+
+    // config.toml.example 읽기 — chdir 전에 (binary 옆 또는 cwd에서 찾음)
+    let example = find_config_example()?;
+
+    // Install dir 생성 및 이동
+    std::fs::create_dir_all(&install_dir)
+        .context("failed to create install directory")?;
 
     // 1. config.toml 이미 있으면 확인
-    if std::path::Path::new(CONFIG_FILE).exists() && !yes {
-        print!("config.toml already exists. Overwrite? [y/N] ");
+    let config_path = install_dir.join(CONFIG_FILE);
+    if config_path.exists() && !yes {
+        print!("config.toml already exists at {}. Overwrite? [y/N] ", install_dir.display());
         use std::io::Write;
         std::io::stdout().flush()?;
         let mut input = String::new();
@@ -781,19 +814,19 @@ fn init(yes: bool) -> Result<()> {
         s.trim().parse().unwrap_or(3002)
     };
 
+    // install_dir로 이동 후 파일 생성
+    std::env::set_current_dir(&install_dir)
+        .context("failed to change to install directory")?;
+
     // 3. .env 파일 생성 (실제 키는 .env에)
-    let env_path = ".env";
     let env_content = format!(
         "TELEGRAM_BOT_TOKEN={}\nANTHROPIC_API_KEY={}\n",
         bot_token, api_key
     );
-    std::fs::write(env_path, &env_content)?;
+    std::fs::write(".env", &env_content)?;
     println!("\n✅ .env created (tokens stored here)");
 
     // 4. config.toml.example 읽어서 값 치환 (환경변수 참조 유지)
-    let example = std::fs::read_to_string("config.toml.example")
-        .context("config.toml.example not found. Are you in the tiguclaw directory?")?;
-
     let config_content = example
         .replace("\"MyAgent\"", &format!("\"{}\"", agent_name))
         .replace("port = 3002", &format!("port = {}", dashboard_port));
@@ -802,7 +835,7 @@ fn init(yes: bool) -> Result<()> {
     std::fs::write(CONFIG_FILE, &config_content)?;
     println!("✅ config.toml created");
 
-    // 4. shared/USER.md 생성 (USER.md.example 기반)
+    // 5. shared/USER.md 생성 (USER.md.example 기반)
     std::fs::create_dir_all("shared")?;
     if !std::path::Path::new("shared/USER.md").exists() {
         if let Ok(user_example) = std::fs::read_to_string("shared/USER.md.example") {
@@ -812,19 +845,41 @@ fn init(yes: bool) -> Result<()> {
         }
     }
 
-    // 5. data/ 디렉토리 생성
+    // 6. data/ 디렉토리 생성
     std::fs::create_dir_all("data")?;
     println!("✅ data/ directory ready");
 
-    // 6. 완료 안내
-    println!("\n🎉 Setup complete!");
+    // 7. 완료 안내
+    println!("\n✅ tiguclaw initialized at {}/", install_dir.display());
     println!("\nNext steps:");
-    println!("  1. Edit shared/USER.md with your info");
-    println!("  2. Run: tiguclaw");
-    println!("  3. Or install as a service: tiguclaw gateway install");
-    println!("  4. Send /start to your bot to auto-register as admin");
+    println!("  1. Edit {}/shared/USER.md with your info", install_dir.display());
+    println!("  2. tiguclaw gateway install   # Register as a background service");
+    println!("  3. Send /start to your bot to auto-register as admin");
 
     Ok(())
+}
+
+/// config.toml.example 파일 찾기
+/// 우선순위: binary 옆 → current directory
+fn find_config_example() -> Result<String> {
+    // 1. binary 옆
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let p = parent.join("config.toml.example");
+            if p.exists() {
+                return Ok(std::fs::read_to_string(p)?);
+            }
+        }
+    }
+    // 2. current directory
+    if let Ok(s) = std::fs::read_to_string("config.toml.example") {
+        return Ok(s);
+    }
+    anyhow::bail!(
+        "config.toml.example not found.\n\
+         Looked next to the binary and in the current directory.\n\
+         Make sure the config.toml.example file is alongside the tiguclaw binary."
+    )
 }
 
 fn prompt(label: &str) -> Result<String> {

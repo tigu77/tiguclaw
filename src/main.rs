@@ -236,10 +236,34 @@ async fn main() -> Result<()> {
     );
 
     // Build context store (SqliteMemory) for named context commands.
-    let context_store = Arc::new(
-        tiguclaw_memory::SqliteMemory::open(Some(&data_dir.join("memory.db")))
-            .context("open memory store for contexts")?,
-    );
+    // embeddings feature가 활성화되고 config.memory.embedding_provider = "fastembed"이면
+    // 하이브리드 검색(벡터 + FTS5 + 시간 decay)을 활성화한다.
+    let context_store = {
+        let raw = tiguclaw_memory::SqliteMemory::open(Some(&data_dir.join("memory.db")))
+            .context("open memory store for contexts")?;
+
+        #[cfg(feature = "embeddings")]
+        let raw = {
+            if config.memory.embedding_provider == "fastembed" {
+                match tiguclaw_memory::FastembedProvider::new() {
+                    Ok(provider) => {
+                        info!("embedding provider: fastembed (AllMiniLML6V2, dim=384)");
+                        raw.with_embedding(std::sync::Arc::new(provider))
+                            .context("init vector table")?
+                    }
+                    Err(e) => {
+                        tracing::warn!("fastembed init failed, falling back to FTS5 only: {e}");
+                        raw
+                    }
+                }
+            } else {
+                info!("embedding provider: none (FTS5 only)");
+                raw
+            }
+        };
+
+        Arc::new(raw)
+    };
 
     // Scan skill directories.
     let skill_dirs: Vec<std::path::PathBuf> = config

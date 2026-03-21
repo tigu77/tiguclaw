@@ -1,22 +1,61 @@
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use rusqlite::{params, Connection};
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::backend::MemoryBackend;
+use crate::embedding::EmbeddingProvider;
 use crate::types::{MemoryEntry, SearchResult};
 
-/// SQLite 기반 메모리 백엔드 (FTS5/BM25 텍스트 검색)
+// ─── sqlite-vec 확장 등록 (embeddings feature) ──────────────────────────────
+
+/// sqlite-vec 확장을 프로세스 전역으로 한 번만 등록한다.
+/// `sqlite3_auto_extension`을 사용하므로 이 호출 이후에 열리는 모든
+/// SQLite 연결에 vec0 모듈이 자동으로 로드된다.
+#[cfg(feature = "embeddings")]
+fn ensure_sqlite_vec_registered() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        unsafe {
+            // sqlite_vec::sqlite3_vec_init 은 extern "C" fn() 으로 선언됨.
+            // sqlite3_auto_extension 의 콜백 시그니처와 동일하다.
+            rusqlite::ffi::sqlite3_auto_extension(Some(
+                std::mem::transmute(sqlite_vec::sqlite3_vec_init as *const ()),
+            ));
+        }
+        debug!("sqlite-vec registered via sqlite3_auto_extension");
+    });
+}
+
+/// float32 벡터를 sqlite-vec 용 little-endian BLOB으로 직렬화
+fn serialize_f32(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+// ─── SqliteMemory ─────────────────────────────────────────────────────────
+
+/// SQLite 기반 메모리 백엔드 (FTS5/BM25 + 선택적 벡터 검색)
 pub struct SqliteMemory {
     conn: Mutex<Connection>,
+    /// 임베딩 제공자 — None이면 FTS5 only
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl SqliteMemory {
     /// 새 SqliteMemory 생성. path가 None이면 :memory: 사용.
+    /// `embeddings` feature 활성 시 sqlite-vec 확장을 전역 등록한 뒤 연결을 열어
+    /// 이후 `with_embedding()` 호출 시 vec0 가상 테이블을 사용할 수 있다.
     pub fn open(path: Option<&Path>) -> Result<Self> {
+        // sqlite-vec 확장을 Connection::open 이전에 등록해야 vec0 가상 테이블이 동작한다.
+        #[cfg(feature = "embeddings")]
+        ensure_sqlite_vec_registered();
+
         let conn = match path {
             Some(p) => Connection::open(p)
                 .with_context(|| format!("Failed to open SQLite DB at {}", p.display()))?,
@@ -29,12 +68,29 @@ impl SqliteMemory {
 
         let memory = Self {
             conn: Mutex::new(conn),
+            embedding_provider: None,
         };
 
         memory.init_tables()?;
         info!("SqliteMemory initialized (FTS5 only)");
         Ok(memory)
     }
+
+    /// 임베딩 제공자를 설정하고 vec0 가상 테이블을 초기화하는 빌더 메서드.
+    /// `open()` 후에 체인 호출: `SqliteMemory::open(...)?.with_embedding(provider)?`
+    pub fn with_embedding(mut self, provider: Arc<dyn EmbeddingProvider>) -> Result<Self> {
+        if provider.dimension() > 0 {
+            self.init_vec_table(provider.dimension())?;
+            info!(
+                dim = provider.dimension(),
+                "SqliteMemory: vector search (sqlite-vec + fastembed) enabled"
+            );
+        }
+        self.embedding_provider = Some(provider);
+        Ok(self)
+    }
+
+    // ─── 테이블 초기화 ─────────────────────────────────────────────────────
 
     fn init_tables(&self) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
@@ -69,14 +125,180 @@ impl SqliteMemory {
         Ok(())
     }
 
-    /// 만료된 컨텍스트 삭제. `retention_days` 경과한 항목 제거.
+    /// sqlite-vec vec0 가상 테이블 초기화
+    fn init_vec_table(&self, dim: usize) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memory_vss
+             USING vec0(embedding float[{dim}]);",
+        ))?;
+        debug!(dim, "memory_vss vector table ready");
+        Ok(())
+    }
+
+    // ─── 내부 검색 헬퍼 ────────────────────────────────────────────────────
+
+    /// FTS5 BM25 키워드 검색: (rowid, rank) 반환
+    fn fts_search_raw(&self, query: &str, limit: usize) -> Result<Vec<(i64, f64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT m.rowid, fts.rank
+             FROM memories_fts fts
+             JOIN memories m ON m.rowid = fts.rowid
+             WHERE memories_fts MATCH ?1
+             ORDER BY fts.rank
+             LIMIT ?2",
+        )?;
+        let results = stmt
+            .query_map(params![query, limit as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
+    /// 벡터 유사도 KNN 검색: (rowid, distance) 반환
+    fn vector_search_raw(&self, query_vec: &[f32], limit: usize) -> Result<Vec<(i64, f32)>> {
+        let blob = serialize_f32(query_vec);
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+
+        let mut stmt = conn.prepare(
+            "SELECT rowid, distance
+             FROM memory_vss
+             WHERE embedding MATCH ?1 AND k = ?2
+             ORDER BY distance",
+        )?;
+        let results = stmt
+            .query_map(params![blob, limit as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f32>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_default();
+        Ok(results)
+    }
+
+    /// rowid 목록으로 메모리 항목 + created_at_unix 일괄 조회
+    fn fetch_entries_by_rowids(
+        &self,
+        rowids: &[i64],
+        conn: &Connection,
+    ) -> Result<HashMap<i64, (SearchResult, i64)>> {
+        if rowids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let placeholders: String = (1..=rowids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT rowid, id, content, source, tags,
+                    CAST(strftime('%s', created_at) AS INTEGER) as created_unix
+             FROM memories
+             WHERE rowid IN ({placeholders})"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params_boxed: Vec<Box<dyn rusqlite::ToSql>> = rowids
+            .iter()
+            .map(|r| Box::new(*r) as Box<dyn rusqlite::ToSql>)
+            .collect();
+
+        let results = stmt
+            .query_map(rusqlite::params_from_iter(params_boxed.iter()), |row| {
+                let rowid: i64 = row.get(0)?;
+                let created_unix: i64 = row.get(5).unwrap_or(0);
+                let sr = SearchResult {
+                    id: row.get(1)?,
+                    content: row.get(2)?,
+                    source: row.get(3)?,
+                    tags: serde_json::from_str(&row.get::<_, String>(4)?)
+                        .unwrap_or_default(),
+                    score: 0.0,
+                };
+                Ok((rowid, (sr, created_unix)))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(results.into_iter().collect())
+    }
+
+    /// 시간 감쇠 함수: 30일 반감기 지수 감쇠 (0.0 ~ 1.0)
+    fn time_decay(created_at_unix: i64) -> f32 {
+        let now = Utc::now().timestamp();
+        let age_days = (now - created_at_unix).max(0) as f32 / 86400.0;
+        (-age_days / 30.0).exp()
+    }
+
+    /// 하이브리드 스코어 머지:
+    ///   score = 0.6 * vec_score + 0.3 * bm25_score + 0.1 * time_decay
+    fn merge_results(
+        &self,
+        vec_raw: Vec<(i64, f32)>,  // (rowid, distance) — 작을수록 유사
+        fts_raw: Vec<(i64, f64)>,  // (rowid, rank)     — 더 음수일수록 좋음
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if vec_raw.is_empty() && fts_raw.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // distance → similarity: 1 / (1 + distance)
+        let vec_scores: HashMap<i64, f32> = vec_raw
+            .iter()
+            .map(|(rid, dist)| (*rid, 1.0_f32 / (1.0 + dist)))
+            .collect();
+
+        // FTS rank(음수) → 정규화 BM25 score
+        let max_abs_rank = fts_raw
+            .iter()
+            .map(|(_, r)| r.abs())
+            .fold(f64::EPSILON, f64::max);
+        let bm25_scores: HashMap<i64, f32> = fts_raw
+            .iter()
+            .map(|(rid, rank)| (*rid, (rank.abs() / max_abs_rank) as f32))
+            .collect();
+
+        // 유니크 rowid 집합
+        let mut all_rowids: Vec<i64> = vec_scores
+            .keys()
+            .chain(bm25_scores.keys())
+            .copied()
+            .collect();
+        all_rowids.sort_unstable();
+        all_rowids.dedup();
+
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let entries = self.fetch_entries_by_rowids(&all_rowids, &conn)?;
+        drop(conn);
+
+        let mut scored: Vec<(f32, SearchResult)> = entries
+            .into_iter()
+            .map(|(rowid, (mut sr, created_unix))| {
+                let vs = vec_scores.get(&rowid).copied().unwrap_or(0.0);
+                let bs = bm25_scores.get(&rowid).copied().unwrap_or(0.0);
+                let td = Self::time_decay(created_unix);
+                let score = 0.6 * vs + 0.3 * bs + 0.1 * td;
+                sr.score = score as f64;
+                (score, sr)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        Ok(scored.into_iter().map(|(_, sr)| sr).collect())
+    }
+
+    // ─── 공개 유틸리티 ────────────────────────────────────────────────────
+
+    /// 만료된 컨텍스트 삭제
     pub fn purge_expired(&self, retention_days: u64) -> Result<usize> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let affected = conn.execute(
             "DELETE FROM contexts WHERE expires_at IS NOT NULL AND expires_at < datetime('now')",
             [],
         )?;
-        // Also purge by updated_at for entries without expires_at (legacy).
         let affected2 = conn.execute(
             "DELETE FROM contexts WHERE expires_at IS NULL AND updated_at < datetime('now', ?1)",
             params![format!("-{retention_days} days")],
@@ -88,8 +310,7 @@ impl SqliteMemory {
         Ok(total)
     }
 
-    /// Save context with explicit retention days for `expires_at` calculation.
-    /// Same as `save_context` but sets a custom expiry.
+    /// Save context with explicit retention days
     pub fn save_context_with_retention(
         &self,
         name: &str,
@@ -158,7 +379,7 @@ impl SqliteMemory {
         Ok(metas)
     }
 
-    /// metadata JSON 에서 file_path로 기존 mtime 조회.
+    /// metadata JSON 에서 file_path로 기존 mtime 조회
     pub fn get_mtime_for_file(&self, file_path: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
@@ -182,7 +403,7 @@ impl SqliteMemory {
         }
     }
 
-    /// file_path 기준으로 기존 메모리 항목 일괄 삭제.
+    /// file_path 기준으로 기존 메모리 항목 일괄 삭제
     pub fn delete_by_file_path(&self, file_path: &str) -> Result<usize> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
 
@@ -203,6 +424,11 @@ impl SqliteMemory {
                 "DELETE FROM memories_fts WHERE rowid = ?1",
                 params![rowid],
             );
+            // memory_vss 삭제 (있을 때만, 실패해도 무시)
+            let _ = conn.execute(
+                "DELETE FROM memory_vss WHERE rowid = ?1",
+                params![rowid],
+            );
             conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
         }
 
@@ -213,8 +439,18 @@ impl SqliteMemory {
     }
 }
 
+// ─── MemoryBackend 구현 ───────────────────────────────────────────────────
+
 impl MemoryBackend for SqliteMemory {
     fn store(&self, entry: MemoryEntry) -> Result<String> {
+        // 1. 임베딩 생성 (뮤텍스 바깥에서 — 추론 시간이 길 수 있음)
+        let embedding: Option<Vec<f32>> = if let Some(provider) = &self.embedding_provider {
+            let vecs = provider.embed(&[entry.content.clone()])?;
+            vecs.into_iter().next()
+        } else {
+            None
+        };
+
         let id = Uuid::new_v4().to_string();
         let tags_json = serde_json::to_string(&entry.tags)?;
         let metadata_json = entry
@@ -222,6 +458,7 @@ impl MemoryBackend for SqliteMemory {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
 
         conn.execute(
@@ -241,38 +478,78 @@ impl MemoryBackend for SqliteMemory {
             params![rowid, entry.content],
         )?;
 
+        // 2. 벡터 인덱스에 추가 (memory_vss가 없을 때는 자동으로 무시)
+        if let Some(v) = embedding {
+            let blob = serialize_f32(&v);
+            let _ = conn.execute(
+                "INSERT INTO memory_vss(rowid, embedding) VALUES (?1, ?2)",
+                params![rowid, blob],
+            );
+        }
+
         debug!(id = %id, source = %entry.source, "Memory stored");
         Ok(id)
     }
 
     fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        // 1. 벡터 검색 (임베딩 제공자 있을 때)
+        let vec_raw: Vec<(i64, f32)> = if let Some(provider) = &self.embedding_provider {
+            match provider.embed(&[query.to_string()]) {
+                Ok(q_vecs) => {
+                    if let Some(v) = q_vecs.into_iter().next() {
+                        self.vector_search_raw(&v, limit * 2).unwrap_or_default()
+                    } else {
+                        vec![]
+                    }
+                }
+                Err(e) => {
+                    debug!("vector search failed, falling back to FTS5: {e}");
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
 
-        let mut stmt = conn.prepare(
-            "SELECT m.id, m.content, m.source, m.tags, fts.rank
-             FROM memories_fts fts
-             JOIN memories m ON m.rowid = fts.rowid
-             WHERE memories_fts MATCH ?1
-             ORDER BY fts.rank
-             LIMIT ?2",
-        )?;
+        // 2. FTS5 BM25 키워드 검색
+        let fts_raw = self.fts_search_raw(query, limit * 2).unwrap_or_default();
 
-        let results = stmt
-            .query_map(params![query, limit as i64], |row| {
-                let rank: f64 = row.get(4)?;
-                Ok(SearchResult {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source: row.get(2)?,
-                    tags: Self::parse_tags(&row.get::<_, String>(3)?),
-                    // FTS5 rank is negative (lower = better), normalize to positive score
-                    score: -rank,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        // 결과 없음
+        if vec_raw.is_empty() && fts_raw.is_empty() {
+            return Ok(vec![]);
+        }
 
-        debug!(query = %query, count = results.len(), "FTS5 search completed");
-        Ok(results)
+        // 임베딩이 없으면 FTS 결과만 반환 (기존 동작 유지 + 성능 보존)
+        if self.embedding_provider.is_none() {
+            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+            let mut stmt = conn.prepare(
+                "SELECT m.id, m.content, m.source, m.tags, fts.rank
+                 FROM memories_fts fts
+                 JOIN memories m ON m.rowid = fts.rowid
+                 WHERE memories_fts MATCH ?1
+                 ORDER BY fts.rank
+                 LIMIT ?2",
+            )?;
+            let results = stmt
+                .query_map(params![query, limit as i64], |row| {
+                    let rank: f64 = row.get(4)?;
+                    Ok(SearchResult {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        tags: Self::parse_tags(&row.get::<_, String>(3)?),
+                        score: -rank,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            debug!(query = %query, count = results.len(), "FTS5-only search completed");
+            return Ok(results);
+        }
+
+        // 3. 하이브리드 스코어링 + 머지
+        let merged = self.merge_results(vec_raw, fts_raw, limit)?;
+        debug!(query = %query, count = merged.len(), "hybrid search completed");
+        Ok(merged)
     }
 
     fn delete(&self, id: &str) -> Result<bool> {
@@ -291,6 +568,10 @@ impl MemoryBackend for SqliteMemory {
                 "DELETE FROM memories_fts WHERE rowid = ?1",
                 params![rowid],
             )?;
+            let _ = conn.execute(
+                "DELETE FROM memory_vss WHERE rowid = ?1",
+                params![rowid],
+            );
         }
 
         let affected = conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?;
@@ -329,6 +610,8 @@ impl MemoryBackend for SqliteMemory {
         Ok(affected > 0)
     }
 }
+
+// ─── 테스트 ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -379,7 +662,7 @@ mod tests {
             .unwrap();
 
         assert!(mem.delete(&id).unwrap());
-        assert!(!mem.delete(&id).unwrap()); // 이미 삭제됨
+        assert!(!mem.delete(&id).unwrap());
     }
 
     #[test]
@@ -465,5 +748,19 @@ mod tests {
 
         let missing = mem.get_mtime_for_file("/tmp/missing.md").unwrap();
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_time_decay() {
+        let now = Utc::now().timestamp();
+        let decay = SqliteMemory::time_decay(now);
+        assert!(decay > 0.99, "fresh entry should have decay ~1.0, got {decay}");
+
+        let old = now - 30 * 86400;
+        let decay_old = SqliteMemory::time_decay(old);
+        assert!(
+            (decay_old - 0.368).abs() < 0.01,
+            "30-day old entry should have decay ~0.368, got {decay_old}"
+        );
     }
 }

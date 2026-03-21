@@ -35,7 +35,7 @@ tiguclaw-runtime = { path = "crates/runtime" }
 tiguclaw-channel-telegram = { path = "crates/channel-telegram" }
 tiguclaw-provider-anthropic = { path = "crates/provider-anthropic" }
 tiguclaw-agent = { path = "crates/agent" }
-tiguclaw-memory = { path = "crates/memory" }
+tiguclaw-memory = { path = "crates/memory", features = ["embeddings"] }
 tiguclaw-cli = { path = "crates/cli" }
 tiguclaw-hooks = { path = "crates/hooks" }
 tiguclaw-dashboard = { path = "crates/dashboard" }
@@ -51,7 +51,7 @@ tiguclaw-runtime = { workspace = true }
 tiguclaw-channel-telegram = { workspace = true }
 tiguclaw-provider-anthropic = { workspace = true }
 tiguclaw-agent = { workspace = true }
-tiguclaw-memory = { workspace = true }
+tiguclaw-memory = { workspace = true, features = ["embeddings"] }
 tiguclaw-cli = { workspace = true }
 tiguclaw-hooks = { workspace = true }
 tiguclaw-dashboard = { workspace = true }
@@ -60,3 +60,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+
+[features]
+default = ["embeddings"]
+embeddings = ["tiguclaw-memory/embeddings"]

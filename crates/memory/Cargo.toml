@@ -11,6 +11,15 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 tracing = { workspace = true }
+chrono = { workspace = true }
+
+# Optional: vector embedding support
+fastembed = { version = "4", optional = true }
+sqlite-vec = { version = "0.1", optional = true }
+
+[features]
+default = []
+embeddings = ["fastembed", "sqlite-vec"]
 
 [dev-dependencies]
 tokio = { workspace = true }

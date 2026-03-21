@@ -39,6 +39,39 @@ pub struct Config {
     /// 컨텍스트 보존 설정.
     #[serde(default)]
     pub context: ContextConfig,
+    /// 메모리/임베딩 설정.
+    #[serde(default)]
+    pub memory: MemoryConfig,
+}
+
+// ─── MemoryConfig / EmbeddingConfig ─────────────────────────────────────────
+
+/// 메모리 백엔드 + 임베딩 설정.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryConfig {
+    /// 임베딩 제공자: "fastembed" | "none" (기본값: "fastembed")
+    #[serde(default = "default_embedding_provider")]
+    pub embedding_provider: String,
+    /// 사용할 임베딩 모델 이름 (기본값: "AllMiniLML6V2")
+    #[serde(default = "default_embedding_model")]
+    pub embedding_model: String,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            embedding_provider: default_embedding_provider(),
+            embedding_model: default_embedding_model(),
+        }
+    }
+}
+
+fn default_embedding_provider() -> String {
+    "fastembed".to_string()
+}
+
+fn default_embedding_model() -> String {
+    "AllMiniLML6V2".to_string()
 }
 
 /// 채널 설정 — `[[channels]]` 배열 항목.

@@ -1,0 +1,15 @@
+[package]
+name = "tiguclaw-dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiguclaw-core = { workspace = true }
+tiguclaw-agent = { workspace = true }
+axum = { version = "0.7", features = ["ws"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tower-http = { version = "0.5", features = ["cors"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }

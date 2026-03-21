@@ -1,0 +1,25 @@
+/target
+.env
+*.swp
+*.swo
+*~
+.DS_Store
+data/
+*.db
+*.db-shm
+*.db-wal
+/tmp/
+
+# Personal files
+MEMORY.md
+USER.md
+SOUL.md
+IDENTITY.md
+TOOLS.md
+
+# Shared personal files (use *.example templates)
+shared/USER.md
+shared/MEMORY.md
+
+# Config (use config.toml.example)
+config.toml

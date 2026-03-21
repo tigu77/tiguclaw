@@ -1,0 +1,11 @@
+[package]
+name = "tiguclaw-channel-telegram"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiguclaw-core = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+teloxide = { workspace = true }

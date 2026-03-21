@@ -1,0 +1,24 @@
+[package]
+name = "tiguclaw-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiguclaw-core = { workspace = true }
+tiguclaw-memory = { workspace = true }
+tiguclaw-runtime = { workspace = true }
+tiguclaw-hooks = { workspace = true }
+tiguclaw-channel-telegram = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

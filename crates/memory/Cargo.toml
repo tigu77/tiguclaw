@@ -1,0 +1,17 @@
+[package]
+name = "tiguclaw-memory"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiguclaw-core = { workspace = true }
+rusqlite = { version = "0.34", features = ["bundled", "vtab"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

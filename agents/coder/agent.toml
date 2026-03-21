@@ -1,0 +1,12 @@
+[agent]
+name = "coder"
+description = "Software development & code modification specialist"
+level = 2  # L2 mini
+
+[capabilities]
+tools = ["shell", "read_file", "write_file", "edit_file"]
+max_spawn = 3
+daily_budget_usd = 1.0
+
+[relations]
+# spawnable_agents = []

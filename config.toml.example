@@ -1,0 +1,117 @@
+[[channels]]
+type = "telegram"
+bot_token = "${TELEGRAM_BOT_TOKEN}"
+admin_chat_id = 123456789
+primary = true
+
+[provider]
+api_key = "${ANTHROPIC_API_KEY}"
+max_tokens = 4096
+thinking = "off"    # "off" | "adaptive"
+
+[provider.tiers]
+tier1 = ["claude-sonnet-4-20250514"]                                    # 기본 (빠르고 저렴)
+tier2 = ["claude-opus-4-20250514", "claude-sonnet-4-20250514"]          # 강력 (어려울 때)
+
+[runtime]
+shell = "/bin/zsh"
+timeout_secs = 30
+max_output_bytes = 50000
+
+[agent]
+name = "MyAgent"
+spec = "agents/supermaster"           # agents/supermaster/ 폴더 기반 스펙 사용
+# system_prompt_file = "system-prompt.md"  # spec 사용 시 불필요 (폴백으로 유지)
+max_history = 50
+skill_dirs = ["skills/", "~/.openclaw/skills/"]
+workspace_dir = "."
+max_tool_result_chars = 20000
+role = "supermaster"  # L0: 이 인스턴스가 슈퍼마스터 — 전체 군단 지휘권
+templates_dir = "templates"  # Deprecated: agents_dir 사용 권장
+agents_dir = "agents"        # 에이전트 폴더 기반 스펙 디렉토리
+personalities_dir = "personalities"  # 퍼스널리티 디렉토리
+
+[heartbeat]
+interval_secs = 600
+heartbeat_file = "HEARTBEAT.md"
+quiet_start = 23
+quiet_end = 8
+
+[[cron]]
+name = "morning"
+hour = 7
+minute = 0
+command = "아침 루틴 실행해줘"
+enabled = true
+
+[[cron]]
+name = "cleanup"
+hour = 2
+minute = 0
+command = "메모리 정리해줘"
+enabled = true
+
+[hooks]
+enabled = false
+token = "${HOOKS_TOKEN}"
+port = 3001
+
+# ────────────────────────────────────────────────────────────────────────────
+# 컨텍스트 보존 설정
+# ────────────────────────────────────────────────────────────────────────────
+[context]
+retention_days = 3  # 저장된 맥락 보존 기간 (기본 3일)
+
+# ────────────────────────────────────────────────────────────────────────────
+# 모니터링 채널 — 에이전트 통신 내역 실시간 포스팅
+# enabled = true로 바꾸고 telegram_chat_id를 설정하면 활성화됩니다.
+# ────────────────────────────────────────────────────────────────────────────
+[monitor]
+enabled = false
+telegram_chat_id = ""    # 모니터링 채널 chat_id (예: "-1001234567890")
+log_agent_comms = true   # 에이전트간 통신 로깅
+log_spawns = true        # spawn/kill 이벤트 로깅
+
+# ────────────────────────────────────────────────────────────────────────────
+# 자율 spawn — 슈퍼마스터 자동 에이전트 생성
+# enabled = true로 바꾸면 자율 spawn이 활성화됩니다.
+# ────────────────────────────────────────────────────────────────────────────
+[auto_spawn]
+enabled = false                # true로 켜면 슈퍼마스터가 자율적으로 에이전트 생성
+max_auto_agents = 3            # 자율 spawn 최대 에이전트 수 (security.max_agents 이하여야 함)
+spawn_trigger = "workload"     # "workload" | "schedule" | "both"
+idle_timeout_secs = 300        # 유휴 에이전트 자동 종료 시간(초). 0이면 비활성화
+
+# ────────────────────────────────────────────────────────────────────────────
+# 보안통제 — 툴 실행 승인 정책
+# enabled = true로 바꾸면 활성화됩니다.
+# ────────────────────────────────────────────────────────────────────────────
+[security]
+enabled = false          # true로 켜면 활성화
+default_level = "auto"   # auto | notify | require
+max_agents = 10
+api_cost_limit_usd = 5.0
+require_timeout_secs = 60
+
+[security.tool_levels]
+spawn_agent = "require"
+kill_agent = "require"
+shell = "notify"
+write_file = "notify"
+edit_file = "notify"
+
+# ────────────────────────────────────────────────────────────────────────────
+# 멀티채널: 추가 채널은 [[channels]] 배열에 항목 추가로 연결
+# primary = false (또는 생략)이면 extra channel로 처리됩니다.
+# ────────────────────────────────────────────────────────────────────────────
+# [[channels]]
+# type = "telegram"
+# bot_token = "${TELEGRAM_BOT_TOKEN_2}"   # 두 번째 텔레그램 봇 토큰
+# admin_chat_id = 123456789
+# primary = false
+
+# Phase 9-1: 웹 대시보드 설정
+[dashboard]
+enabled = true
+port = 3002
+cors_origin = "*"   # 또는 특정 도메인 (예: "http://localhost:3000")

@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/runtime",
+    "crates/channel-telegram",
+    "crates/provider-anthropic",
+    "crates/agent",
+    "crates/memory",
+    "crates/cli",
+    "crates/hooks",
+    "crates/dashboard",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1"
+thiserror = "2"
+toml = "0.8"
+dotenvy = "0.15"
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+teloxide = { version = "0.13", features = ["macros"] }
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+axum = "0.7"
+
+# Internal crates
+tiguclaw-core = { path = "crates/core" }
+tiguclaw-runtime = { path = "crates/runtime" }
+tiguclaw-channel-telegram = { path = "crates/channel-telegram" }
+tiguclaw-provider-anthropic = { path = "crates/provider-anthropic" }
+tiguclaw-agent = { path = "crates/agent" }
+tiguclaw-memory = { path = "crates/memory" }
+tiguclaw-cli = { path = "crates/cli" }
+tiguclaw-hooks = { path = "crates/hooks" }
+tiguclaw-dashboard = { path = "crates/dashboard" }
+
+[package]
+name = "tiguclaw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiguclaw-core = { workspace = true }
+tiguclaw-runtime = { workspace = true }
+tiguclaw-channel-telegram = { workspace = true }
+tiguclaw-provider-anthropic = { workspace = true }
+tiguclaw-agent = { workspace = true }
+tiguclaw-memory = { workspace = true }
+tiguclaw-cli = { workspace = true }
+tiguclaw-hooks = { workspace = true }
+tiguclaw-dashboard = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }

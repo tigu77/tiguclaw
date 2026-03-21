@@ -1,0 +1,11 @@
+[agent]
+name = "supermaster"
+description = "Supreme commander — orchestrates the entire agent army"
+level = 0
+
+[capabilities]
+tools = []  # 빈 배열 = 전체 허용 (L0은 모든 툴)
+max_spawn = 0  # 0 = 무제한
+
+[relations]
+# L0은 모든 에이전트 spawn 가능

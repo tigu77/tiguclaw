@@ -1,0 +1,12 @@
+[agent]
+name = "analyst"
+description = "Data analysis & structured reasoning specialist"
+level = 2  # L2 mini
+
+[capabilities]
+tools = ["read_file", "write_file", "shell"]
+max_spawn = 2
+daily_budget_usd = 0.5
+
+[relations]
+# spawnable_agents = []

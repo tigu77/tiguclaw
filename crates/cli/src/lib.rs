@@ -66,6 +66,9 @@ pub enum Commands {
         /// Installation directory (default: ~/.tiguclaw)
         #[arg(long, value_name = "DIR")]
         dir: Option<PathBuf>,
+        /// Reinitialize even if already initialized
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -206,7 +209,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Skills { action } => skills(action),
         Commands::Memory { action } => memory(action),
         Commands::Config { action } => config_cmd(action),
-        Commands::Init { yes, dir } => init(*yes, dir.clone()),
+        Commands::Init { yes, dir, force } => init(*yes, dir.clone(), *force),
     }
 }
 
@@ -276,29 +279,43 @@ fn gateway_install(dir: Option<PathBuf>) -> Result<()> {
     std::fs::write(&plist, &content).context("failed to write plist")?;
     println!("✅ Plist written to {}", plist.display());
 
+    // unload 먼저 (이미 없으면 무시)
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload", &plist.to_string_lossy()])
+        .output();
+
+    // load
     let out = std::process::Command::new("launchctl")
         .args(["load", &plist.to_string_lossy()])
         .output()
         .context("launchctl load failed")?;
-    print_output(&out);
 
     if out.status.success() {
-        println!("✅ Gateway installed and loaded.");
+        println!("✅ Gateway installed and started.");
     } else {
-        anyhow::bail!("launchctl load returned non-zero");
+        let err = String::from_utf8_lossy(&out.stderr);
+        println!("⚠️  Plist installed but failed to start: {}", err.trim());
+        println!("   Try: launchctl load {}", plist.display());
     }
 
-    // dashboard/out/ 존재 시 install_dir/dashboard/ 로 배포
-    let dashboard_src = install_dir.join("dashboard").join("out");
-    if dashboard_src.exists() {
-        let dashboard_dst = install_dir.join("dashboard");
-        std::fs::create_dir_all(&dashboard_dst)
-            .context("failed to create dashboard directory")?;
-        copy_dir_all(&dashboard_src, &dashboard_dst)
-            .context("failed to copy dashboard files")?;
-        println!("✅ Dashboard deployed to {}/dashboard/", install_dir.display());
+    // dashboard 배포
+    let dashboard_dst = dirs_home().join(".tiguclaw").join("dashboard");
+    if dashboard_dst.exists() {
+        println!("ℹ️  Dashboard already deployed at ~/.tiguclaw/dashboard/");
     } else {
-        println!("ℹ️  dashboard/out/ not found — skipping dashboard deploy (API-only mode)");
+        // binary 옆에 dashboard/ 있으면 복사
+        let binary_dir = std::env::current_exe()?
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let dashboard_src = binary_dir.join("dashboard");
+        if dashboard_src.exists() {
+            copy_dir_all(&dashboard_src, &dashboard_dst)
+                .context("failed to copy dashboard files")?;
+            println!("✅ Dashboard deployed to ~/.tiguclaw/dashboard/");
+        } else {
+            println!("ℹ️  Dashboard not bundled — API-only mode (http://localhost:3002/api)");
+        }
     }
 
     println!("\n✅ Gateway service registered for {}", install_dir.display());
@@ -758,11 +775,19 @@ fn config_set(key: &str, value: &str) -> Result<()> {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
-fn init(yes: bool, dir: Option<PathBuf>) -> Result<()> {
+fn init(yes: bool, dir: Option<PathBuf>, force: bool) -> Result<()> {
     let install_dir = dir.unwrap_or_else(install_dir);
 
     println!("🐯 tiguclaw setup wizard\n");
     println!("📁 Install directory: {}", install_dir.display());
+
+    // 1. config.toml 이미 있으면 확인 (early exit — example 로드 전에)
+    let config_path = install_dir.join(CONFIG_FILE);
+    if config_path.exists() && !force {
+        println!("⚠️  ~/.tiguclaw already initialized.");
+        println!("   Use --force to reinitialize, or edit config.toml directly.");
+        return Ok(());
+    }
 
     // config.toml.example 읽기 — chdir 전에 (binary 옆 또는 cwd에서 찾음)
     let example = find_config_example()?;
@@ -770,20 +795,6 @@ fn init(yes: bool, dir: Option<PathBuf>) -> Result<()> {
     // Install dir 생성 및 이동
     std::fs::create_dir_all(&install_dir)
         .context("failed to create install directory")?;
-
-    // 1. config.toml 이미 있으면 확인
-    let config_path = install_dir.join(CONFIG_FILE);
-    if config_path.exists() && !yes {
-        print!("config.toml already exists at {}. Overwrite? [y/N] ", install_dir.display());
-        use std::io::Write;
-        std::io::stdout().flush()?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase() != "y" {
-            println!("Cancelled.");
-            return Ok(());
-        }
-    }
 
     // 2. 필수 정보 입력받기
     let bot_token = if yes {

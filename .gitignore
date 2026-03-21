@@ -24,3 +24,8 @@ shared/MEMORY.md
 # Config (use config.toml.example)
 config.toml
 system-prompt.md
+
+# Dashboard
+dashboard/node_modules/
+dashboard/.next/
+dashboard/out/

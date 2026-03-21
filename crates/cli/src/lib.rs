@@ -245,6 +245,38 @@ fn gateway_install() -> Result<()> {
     } else {
         anyhow::bail!("launchctl load returned non-zero");
     }
+
+    // dashboard/out/ 존재 시 ~/.tiguclaw/dashboard/ 로 배포
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let dashboard_src = cwd.join("dashboard").join("out");
+    if dashboard_src.exists() {
+        let home = dirs_home();
+        let dashboard_dst = home.join(".tiguclaw").join("dashboard");
+        std::fs::create_dir_all(&dashboard_dst)
+            .context("failed to create ~/.tiguclaw/dashboard")?;
+        copy_dir_all(&dashboard_src, &dashboard_dst)
+            .context("failed to copy dashboard files")?;
+        println!("✅ Dashboard deployed to ~/.tiguclaw/dashboard/");
+    } else {
+        println!("ℹ️  dashboard/out/ not found — skipping dashboard deploy (API-only mode)");
+    }
+
+    Ok(())
+}
+
+/// 디렉토리를 재귀적으로 복사한다.
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
     Ok(())
 }
 

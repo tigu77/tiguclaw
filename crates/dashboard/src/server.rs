@@ -1,6 +1,7 @@
 //! Phase 9-1: 대시보드 서버 — axum 라우터 조립 + 실행.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -8,6 +9,7 @@ use anyhow::Result;
 use axum::{Router, routing::get};
 use tokio::sync::{broadcast, Mutex as TokioMutex};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 
 use tiguclaw_agent::AgentRegistry;
@@ -49,6 +51,8 @@ pub struct DashboardServer {
     start_time: Instant,
     /// 대화 히스토리 DB 경로 (optional).
     conv_db_path: Option<std::path::PathBuf>,
+    /// 정적 파일 디렉토리 (optional). None이면 API만 동작.
+    dashboard_dir: Option<PathBuf>,
 }
 
 impl DashboardServer {
@@ -58,6 +62,10 @@ impl DashboardServer {
     pub fn new(registry: Arc<TokioMutex<AgentRegistry>>, cors_origin: String) -> Self {
         let (event_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let log = Arc::new(Mutex::new(VecDeque::with_capacity(MAX_LOG_SIZE)));
+        // ~/.tiguclaw/dashboard/ 가 있으면 자동으로 정적 파일 서브
+        let dashboard_dir = dirs::home_dir()
+            .map(|h| h.join(".tiguclaw").join("dashboard"))
+            .filter(|p| p.exists());
         Self {
             event_tx,
             log,
@@ -65,12 +73,19 @@ impl DashboardServer {
             cors_origin,
             start_time: Instant::now(),
             conv_db_path: None,
+            dashboard_dir,
         }
     }
 
     /// 대화 히스토리 DB 경로 설정 (builder 패턴).
     pub fn with_conv_db(mut self, path: std::path::PathBuf) -> Self {
         self.conv_db_path = Some(path);
+        self
+    }
+
+    /// 정적 파일 디렉토리 수동 설정 (builder 패턴).
+    pub fn with_dashboard_dir(mut self, path: PathBuf) -> Self {
+        self.dashboard_dir = Some(path);
         self
     }
 
@@ -137,7 +152,7 @@ impl DashboardServer {
             conv_db_path: self.conv_db_path,
         };
 
-        let router = Router::new()
+        let mut router = Router::new()
             .route("/ws", get(ws_handler))
             .route("/api/agents", get(get_agents))
             .route("/api/status", get(get_status))
@@ -146,6 +161,15 @@ impl DashboardServer {
             .route("/api/conversations/:id", get(get_conversation_detail))
             .layer(cors)
             .with_state(state);
+
+        // 정적 파일 서브: ~/.tiguclaw/dashboard/ 존재 시 SPA fallback 추가
+        if let Some(ref dir) = self.dashboard_dir {
+            info!(dir = %dir.display(), "serving static dashboard files");
+            let index = dir.join("index.html");
+            router = router.fallback_service(
+                ServeDir::new(dir).fallback(ServeFile::new(index)),
+            );
+        }
 
         let addr = format!("0.0.0.0:{port}");
         info!(addr = %addr, "dashboard server starting");

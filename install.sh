@@ -4,7 +4,12 @@
 set -e
 
 BINARY_NAME="tiguclaw"
-INSTALL_DIR="/usr/local/bin"
+# Prefer ~/.local/bin (no sudo needed); fallback to /usr/local/bin
+if [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
+    INSTALL_DIR="$HOME/.local/bin"
+else
+    INSTALL_DIR="/usr/local/bin"
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "🔨 Building tiguclaw (release)..."
@@ -19,10 +24,13 @@ if [ ! -f "$BINARY" ]; then
 fi
 
 echo "📦 Installing to $INSTALL_DIR/$BINARY_NAME..."
-if [ -w "$INSTALL_DIR" ]; then
-    cp "$BINARY" "$INSTALL_DIR/$BINARY_NAME"
-else
-    sudo cp "$BINARY" "$INSTALL_DIR/$BINARY_NAME"
+cp "$BINARY" "$INSTALL_DIR/$BINARY_NAME"
+
+# Remind user to add to PATH if needed
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+    echo ""
+    echo "💡 Add to PATH (add to ~/.zshrc or ~/.bashrc):"
+    echo "   export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
 echo "✅ Installed successfully!"

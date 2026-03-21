@@ -119,15 +119,33 @@ pub enum ConfigAction {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const LABEL: &str = "com.tiguclaw.agent";
+const LABEL_BASE: &str = "com.tiguclaw.agent";
 const LOG_PATH: &str = "/tmp/tiguclaw.log";
 const CONFIG_FILE: &str = "config.toml";
+
+/// 현재 디렉토리 이름에서 라벨 suffix 추출
+/// ~/.tiguclaw       → "com.tiguclaw.agent"
+/// ~/.tiguclaw-work  → "com.tiguclaw.agent.work"
+/// ~/.tiguclaw-x-y   → "com.tiguclaw.agent.x-y"
+fn instance_label() -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let dir_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("tiguclaw");
+    // ".tiguclaw" 또는 ".tiguclaw-{suffix}" 패턴
+    if let Some(suffix) = dir_name.strip_prefix(".tiguclaw-") {
+        format!("{}.{}", LABEL_BASE, suffix)
+    } else {
+        LABEL_BASE.to_string()
+    }
+}
 
 fn plist_path() -> PathBuf {
     dirs_home()
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{LABEL}.plist"))
+        .join(format!("{}.plist", instance_label()))
 }
 
 fn dirs_home() -> PathBuf {
@@ -194,6 +212,7 @@ fn gateway(action: &GatewayAction) -> Result<()> {
 fn gateway_install() -> Result<()> {
     let bin = std::env::current_exe().context("failed to get current executable path")?;
     let bin_str = bin.to_string_lossy();
+    let label = instance_label();
     let plist = plist_path();
 
     // Create LaunchAgents directory if needed
@@ -207,7 +226,7 @@ fn gateway_install() -> Result<()> {
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{LABEL}</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>{bin_str}</string>
@@ -281,6 +300,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
 }
 
 fn gateway_uninstall() -> Result<()> {
+    let label = instance_label();
     let plist = plist_path();
     if plist.exists() {
         let out = std::process::Command::new("launchctl")
@@ -298,7 +318,8 @@ fn gateway_uninstall() -> Result<()> {
 }
 
 fn gateway_start() -> Result<()> {
-    let target = format!("gui/{}/{}", uid(), LABEL);
+    let label = instance_label();
+    let target = format!("gui/{}/{}", uid(), label);
     let out = std::process::Command::new("launchctl")
         .args(["start", &target])
         .output()
@@ -311,7 +332,8 @@ fn gateway_start() -> Result<()> {
 }
 
 fn gateway_stop() -> Result<()> {
-    let target = format!("gui/{}/{}", uid(), LABEL);
+    let label = instance_label();
+    let target = format!("gui/{}/{}", uid(), label);
     let out = std::process::Command::new("launchctl")
         .args(["stop", &target])
         .output()
@@ -324,7 +346,8 @@ fn gateway_stop() -> Result<()> {
 }
 
 fn gateway_restart() -> Result<()> {
-    let target = format!("gui/{}/{}", uid(), LABEL);
+    let label = instance_label();
+    let target = format!("gui/{}/{}", uid(), label);
     let out = std::process::Command::new("launchctl")
         .args(["kickstart", "-k", &target])
         .output()
@@ -337,8 +360,9 @@ fn gateway_restart() -> Result<()> {
 }
 
 fn gateway_status() -> Result<()> {
+    let label = instance_label();
     let out = std::process::Command::new("launchctl")
-        .args(["list", LABEL])
+        .args(["list", &label])
         .output()
         .context("launchctl list failed")?;
 
@@ -405,11 +429,12 @@ fn logs(follow: bool) -> Result<()> {
 // ─── Status ───────────────────────────────────────────────────────────────────
 
 fn status() -> Result<()> {
+    let label = instance_label();
     println!("=== tiguclaw status ===\n");
 
     // Gateway status
     let out = std::process::Command::new("launchctl")
-        .args(["list", LABEL])
+        .args(["list", &label])
         .output();
     match out {
         Ok(o) if o.status.success() => {
@@ -755,6 +780,13 @@ fn init(yes: bool) -> Result<()> {
         if s.is_empty() { "MyAgent".to_string() } else { s }
     };
 
+    let dashboard_port: u16 = if yes {
+        3002
+    } else {
+        let s = prompt_with_default("Dashboard port", "3002")?;
+        s.trim().parse().unwrap_or(3002)
+    };
+
     // 3. .env 파일 생성 (실제 키는 .env에)
     let env_path = ".env";
     let env_content = format!(
@@ -770,7 +802,8 @@ fn init(yes: bool) -> Result<()> {
 
     let config_content = example
         .replace("\"MyAgent\"", &format!("\"{}\"", agent_name))
-        .replace("admin_chat_id = 123456789", &format!("admin_chat_id = {}", admin_chat_id));
+        .replace("admin_chat_id = 123456789", &format!("admin_chat_id = {}", admin_chat_id))
+        .replace("port = 3002", &format!("port = {}", dashboard_port));
     // bot_token, api_key는 .env의 환경변수 참조 그대로 유지
 
     std::fs::write(CONFIG_FILE, &config_content)?;

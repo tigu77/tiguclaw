@@ -1,6 +1,8 @@
 //! TelegramChannel — Channel trait implementation using teloxide long polling.
 
 use async_trait::async_trait;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 use tokio::sync::mpsc;
@@ -16,7 +18,7 @@ const MAX_MSG_LEN: usize = 4096;
 /// Telegram channel using teloxide long polling.
 pub struct TelegramChannel {
     bot: Bot,
-    admin_chat_id: i64,
+    admin_chat_id: Arc<AtomicI64>,
 }
 
 impl TelegramChannel {
@@ -25,16 +27,36 @@ impl TelegramChannel {
         let bot = Bot::new(&cfg.bot_token);
         Self {
             bot,
-            admin_chat_id: cfg.admin_chat_id,
+            admin_chat_id: Arc::new(AtomicI64::new(cfg.admin_chat_id)),
         }
     }
 
     pub fn new(bot_token: &str, admin_chat_id: i64) -> Self {
         Self {
             bot: Bot::new(bot_token),
-            admin_chat_id,
+            admin_chat_id: Arc::new(AtomicI64::new(admin_chat_id)),
         }
     }
+}
+
+/// Update admin_chat_id = 0 in config.toml with the given chat_id.
+fn update_admin_chat_id_in_config(chat_id: i64) -> Result<()> {
+    let config_path = std::env::current_dir()
+        .map_err(|e| TiguError::Config(format!("cannot get current dir: {e}")))?
+        .join("config.toml");
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| TiguError::Config(format!("cannot read config.toml: {e}")))?;
+
+    let updated = content.replace(
+        "admin_chat_id = 0",
+        &format!("admin_chat_id = {}", chat_id),
+    );
+
+    std::fs::write(&config_path, updated)
+        .map_err(|e| TiguError::Config(format!("cannot write config.toml: {e}")))?;
+
+    Ok(())
 }
 
 #[async_trait]
@@ -86,19 +108,43 @@ impl Channel for TelegramChannel {
     }
 
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<()> {
-        info!(admin_chat_id = self.admin_chat_id, "starting telegram listener");
+        let current_admin = self.admin_chat_id.load(Ordering::SeqCst);
+        info!(admin_chat_id = current_admin, "starting telegram listener");
 
-        let admin_chat_id = ChatId(self.admin_chat_id);
+        let admin_chat_id = Arc::clone(&self.admin_chat_id);
+        let bot_for_welcome = self.bot.clone();
         let tx = tx.clone();
 
         let handler = Update::filter_message().endpoint(
             move |msg: Message| {
                 let tx = tx.clone();
+                let admin_chat_id = Arc::clone(&admin_chat_id);
+                let bot_for_welcome = bot_for_welcome.clone();
                 async move {
-                    // Filter: only respond to admin.
-                    if msg.chat.id != admin_chat_id {
+                    let sender_id = msg.chat.id.0;
+                    let current_admin = admin_chat_id.load(Ordering::SeqCst);
+
+                    // Auto-register first user as admin if admin_chat_id == 0
+                    if current_admin == 0 {
+                        info!(chat_id = sender_id, "auto-registering first user as admin");
+                        admin_chat_id.store(sender_id, Ordering::SeqCst);
+
+                        if let Err(e) = update_admin_chat_id_in_config(sender_id) {
+                            warn!("failed to update config.toml: {}", e);
+                        }
+
+                        let welcome = format!(
+                            "✅ Admin registered! Your chat ID: {}\n🐯 tiguclaw is ready. What can I help you with?",
+                            sender_id
+                        );
+                        let _ = bot_for_welcome
+                            .send_message(msg.chat.id, welcome)
+                            .await;
+
+                        // Fall through to process this message normally
+                    } else if msg.chat.id != ChatId(current_admin) {
                         warn!(
-                            chat_id = msg.chat.id.0,
+                            chat_id = sender_id,
                             "ignoring message from non-admin"
                         );
                         return respond(());

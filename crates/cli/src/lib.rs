@@ -760,12 +760,8 @@ fn init(yes: bool) -> Result<()> {
         prompt("Telegram bot token (from @BotFather)")?
     };
 
-    let admin_chat_id: i64 = if yes {
-        123456789
-    } else {
-        let s = prompt("Your Telegram chat ID (send /start to @userinfobot)")?;
-        s.trim().parse().unwrap_or(0)
-    };
+    // admin_chat_id is auto-registered on first /start — no prompt needed
+    let admin_chat_id: i64 = 0;
 
     let api_key = if yes {
         "${ANTHROPIC_API_KEY}".to_string()
@@ -802,7 +798,6 @@ fn init(yes: bool) -> Result<()> {
 
     let config_content = example
         .replace("\"MyAgent\"", &format!("\"{}\"", agent_name))
-        .replace("admin_chat_id = 123456789", &format!("admin_chat_id = {}", admin_chat_id))
         .replace("port = 3002", &format!("port = {}", dashboard_port));
     // bot_token, api_key는 .env의 환경변수 참조 그대로 유지
 
@@ -829,6 +824,7 @@ fn init(yes: bool) -> Result<()> {
     println!("  1. Edit shared/USER.md with your info");
     println!("  2. Run: tiguclaw");
     println!("  3. Or install as a service: tiguclaw gateway install");
+    println!("  4. Send /start to your bot to auto-register as admin");
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 [[channels]]
 type = "telegram"
 bot_token = "${TELEGRAM_BOT_TOKEN}"
-admin_chat_id = 123456789
+admin_chat_id = 0  # 0 = auto-register on first /start
 primary = true
 
 [provider]

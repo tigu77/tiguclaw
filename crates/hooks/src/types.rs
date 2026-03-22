@@ -1,6 +1,7 @@
 //! Request/response types for the Hooks HTTP API.
 
 use serde::{Deserialize, Serialize};
+use tiguclaw_core::escalation::EscalationReport;
 use tokio::sync::oneshot;
 
 /// POST /hooks/wake payload.
@@ -73,6 +74,13 @@ impl ApiResponse {
     }
 }
 
+/// POST /hooks/steer payload — 에이전트 방향 전환 신호.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SteerPayload {
+    /// 에이전트에게 전달할 방향 전환 메시지.
+    pub message: String,
+}
+
 /// Events sent from HookServer to AgentLoop.
 #[derive(Debug)]
 pub enum HookEvent {
@@ -88,5 +96,13 @@ pub enum HookEvent {
         to: String,
         /// Caller waits on this channel for the agent's response text.
         response_tx: oneshot::Sender<String>,
+    },
+    /// Phase 9-4: 하위 에이전트로부터 에스컬레이션 수신.
+    Escalation {
+        report: EscalationReport,
+    },
+    /// Phase 9-4: 에이전트 방향 전환 신호 (steer).
+    Steer {
+        message: String,
     },
 }

@@ -90,6 +90,8 @@ pub struct AgentLoop {
     compaction_count: Arc<AtomicU64>,
     /// Optional hooks event receiver from the HTTP API server.
     hooks_rx: Option<mpsc::Receiver<HookEvent>>,
+    /// Phase 9-4: steer 메시지 수신기 (AgentRegistry 또는 대시보드 API에서 전달).
+    steer_rx: Option<mpsc::Receiver<String>>,
     /// Optional approval manager for security policy enforcement.
     approval_manager: Option<Arc<ApprovalManager>>,
     /// Phase 8-1: 자율 spawn 설정.
@@ -147,6 +149,7 @@ impl AgentLoop {
             cache_write_tokens: Arc::new(AtomicU64::new(0)),
             compaction_count: Arc::new(AtomicU64::new(0)),
             hooks_rx: None,
+            steer_rx: None,
             approval_manager: None,
             auto_spawn_config: None,
             templates_dir: std::path::PathBuf::from("templates"),
@@ -221,6 +224,13 @@ impl AgentLoop {
     /// Attach a hooks event receiver so the agent loop can process HTTP hook events.
     pub fn with_hooks_rx(mut self, rx: mpsc::Receiver<HookEvent>) -> Self {
         self.hooks_rx = Some(rx);
+        self
+    }
+
+    /// Phase 9-4: steer 메시지 수신기 연결.
+    /// 대시보드 API 또는 AgentRegistry에서 steer 신호를 보낼 수 있다.
+    pub fn with_steer_rx(mut self, rx: mpsc::Receiver<String>) -> Self {
+        self.steer_rx = Some(rx);
         self
     }
 
@@ -390,12 +400,17 @@ impl AgentLoop {
             None;
         // Messages queued while a task is running; tagged with source channel index.
         let mut pending_messages: Vec<(usize, ChannelMessage)> = Vec::new();
+        // Phase 9-4: steer 지시문 대기열 — 다음 LLM 호출 시 주입.
+        let mut steer_queue: Vec<String> = Vec::new();
 
         loop {
             // If there's no active task but pending messages exist, start one.
             if current_task.is_none() && !pending_messages.is_empty() {
                 let (ch_idx, msg) = pending_messages.remove(0);
-                current_task = self.try_spawn_handler(&msg, ch_idx, None).await?;
+                let steers = std::mem::take(&mut steer_queue);
+                current_task = self
+                    .try_spawn_handler_with_steer(&msg, ch_idx, None, steers)
+                    .await?;
             }
 
             // Build a future for the current task (if any).
@@ -487,8 +502,11 @@ impl AgentLoop {
                                 continue;
                             }
 
-                            // Spawn handler task for the message.
-                            current_task = self.try_spawn_handler(&msg, channel_idx, None).await?;
+                            // Spawn handler task for the message (with any pending steer directives).
+                            let steers = std::mem::take(&mut steer_queue);
+                            current_task = self
+                                .try_spawn_handler_with_steer(&msg, channel_idx, None, steers)
+                                .await?;
                         }
                         None => break, // All channels closed → shutdown.
                     }
@@ -573,7 +591,25 @@ impl AgentLoop {
                         std::future::pending().await
                     }
                 } => {
-                    self.handle_hook_event(event, &mut current_task, &mut pending_messages).await?;
+                    self.handle_hook_event(event, &mut current_task, &mut pending_messages, &mut steer_queue).await?;
+                }
+
+                // ── Phase 9-4: Steer 메시지 (AgentRegistry 또는 대시보드 API에서) ──
+                Some(steer_msg) = async {
+                    if let Some(ref mut rx) = self.steer_rx {
+                        rx.recv().await
+                    } else {
+                        std::future::pending().await
+                    }
+                } => {
+                    info!(message = %steer_msg, "steer directive received");
+                    steer_queue.push(steer_msg.clone());
+                    // steer 수신을 즉시 알림 (현재 작업이 없으면 큐에만 추가).
+                    if current_task.is_none() {
+                        debug!("steer queued (no active task) — will apply to next message");
+                    } else {
+                        debug!("steer queued — will apply after current task completes");
+                    }
                 }
 
                 // ── Current task completion ──
@@ -619,11 +655,23 @@ impl AgentLoop {
     /// Try to spawn a handler task for a user message.
     /// `channel_idx` identifies which registered channel the message came from;
     /// replies will be routed back to that channel.
+    /// `steer_directives` — Phase 9-4: 이 태스크에 주입할 steer 지시문 목록.
     pub(super) async fn try_spawn_handler(
         &self,
         msg: &ChannelMessage,
         channel_idx: usize,
         response_tx: Option<tokio::sync::oneshot::Sender<String>>,
+    ) -> anyhow::Result<Option<(JoinHandle<anyhow::Result<HandleResult>>, CancellationToken)>> {
+        self.try_spawn_handler_with_steer(msg, channel_idx, response_tx, vec![]).await
+    }
+
+    /// try_spawn_handler의 내부 구현 — steer 지시문을 받는다.
+    pub(super) async fn try_spawn_handler_with_steer(
+        &self,
+        msg: &ChannelMessage,
+        channel_idx: usize,
+        response_tx: Option<tokio::sync::oneshot::Sender<String>>,
+        steer_directives: Vec<String>,
     ) -> anyhow::Result<Option<(JoinHandle<anyhow::Result<HandleResult>>, CancellationToken)>> {
         let src_channel = self.channels[channel_idx].clone();
         // Send typing indicator before starting LLM call.
@@ -647,6 +695,7 @@ impl AgentLoop {
             approval_manager: self.approval_manager.clone(),
             agent_name: self.name.clone(),
             event_tx: self.event_tx.clone(),
+            steer_directives,
         });
         let chat_id = msg.sender.clone();
         let user_text = msg.content.clone();

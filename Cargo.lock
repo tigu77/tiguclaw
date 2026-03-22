@@ -3531,6 +3531,7 @@ dependencies = [
  "axum",
  "serde",
  "serde_json",
+ "tiguclaw-core",
  "tokio",
  "tracing",
 ]

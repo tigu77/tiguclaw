@@ -13,6 +13,34 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+// ---------------------------------------------------------------------------
+// Steer handler
+// ---------------------------------------------------------------------------
+
+/// POST /api/agents/:name/steer body.
+#[derive(Debug, Deserialize)]
+pub struct SteerBody {
+    pub message: String,
+}
+
+/// POST /api/agents/:name/steer — 실행 중인 에이전트에게 방향 전환 신호 전달.
+pub async fn steer_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<SteerBody>,
+) -> StatusCode {
+    if body.message.is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
+    let reg = state.registry.lock().await;
+    let sent = reg.send_steer(&name, body.message).await;
+    if sent {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
 use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
 
 use crate::server::AppState;

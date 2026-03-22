@@ -79,6 +79,17 @@ pub enum Commands {
         #[command(subcommand)]
         action: MarketAction,
     },
+
+    /// Phase 9-4: 실행 중인 에이전트에게 방향 전환 신호 전달
+    Steer {
+        /// 에이전트 이름
+        agent_name: String,
+        /// 방향 전환 메시지
+        message: String,
+        /// 대시보드 API URL (기본값: http://localhost:3002)
+        #[arg(long, default_value = "http://localhost:3002")]
+        api_url: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -242,6 +253,9 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Init { yes, dir, force } => init(*yes, dir.clone(), *force),
         Commands::Backup => backup_now(),
         Commands::Market { action } => market_cmd(action),
+        Commands::Steer { agent_name, message, api_url } => {
+            steer_cmd(agent_name, message, api_url)
+        }
     }
 }
 
@@ -1312,6 +1326,50 @@ fn market_info(id: &str) -> Result<()> {
     println!("   source:  {}", entry.source);
     println!("   installed: {}", entry.installed_at);
     println!("   desc:    {}", meta.description);
+    Ok(())
+}
+
+// ─── Steer ────────────────────────────────────────────────────────────────────
+
+/// Phase 9-4: 실행 중인 에이전트에게 steer 신호를 보낸다.
+/// 대시보드 REST API `POST /api/agents/:name/steer`를 호출한다.
+fn steer_cmd(agent_name: &str, message: &str, api_url: &str) -> Result<()> {
+    let url = format!("{}/api/agents/{}/steer", api_url.trim_end_matches('/'), agent_name);
+
+    // JSON 직렬화 — serde_json 없이 수동 구성 (cli crate에 serde_json 미포함).
+    // message 내의 따옴표와 역슬래시를 이스케이프.
+    let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let body_str = format!(r#"{{"message":"{escaped}"}}"#);
+
+    // ureq 대신 표준 std::process::Command으로 curl 사용 (외부 crate 의존성 최소화).
+    let out = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "-X", "POST",
+            "-H", "Content-Type: application/json",
+            "-d", &body_str,
+            "-w", "\n%{http_code}",
+            &url,
+        ])
+        .output()
+        .context("failed to run curl (is curl installed?)")?;
+
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = raw.trim().lines().collect();
+    let status_code = lines.last().and_then(|l| l.parse::<u16>().ok()).unwrap_or(0);
+
+    if status_code == 200 {
+        println!("✅ steer 신호 전송 완료 → '{agent_name}'");
+        println!("   메시지: {message}");
+    } else if status_code == 404 {
+        eprintln!("❌ 에이전트 '{agent_name}'를 찾을 수 없습니다.");
+        eprintln!("   `tiguclaw status`로 실행 중인 에이전트 목록을 확인하세요.");
+        std::process::exit(1);
+    } else {
+        eprintln!("❌ steer 실패 (HTTP {status_code})");
+        eprintln!("   대시보드가 실행 중인지 확인하세요: {api_url}");
+        std::process::exit(1);
+    }
     Ok(())
 }
 

@@ -334,6 +334,19 @@ pub struct AgentConfig {
     /// 이 에이전트에서 허용할 스킬(툴) 목록. 빈 배열이면 전부 허용.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Phase 9-4: 에스컬레이션 대상 에이전트 이름 (상위 에이전트).
+    #[serde(default)]
+    pub parent_agent: Option<String>,
+    /// Phase 9-4: 상위 에이전트의 hooks base URL (예: "http://localhost:3001").
+    #[serde(default)]
+    pub parent_hooks_url: Option<String>,
+    /// Phase 9-4: 상위 에이전트 hooks 인증 토큰.
+    #[serde(default)]
+    pub parent_hooks_token: Option<String>,
+    /// Phase 9-4: 위임 전용 모드 — true이면 직접 작업 없이 하위 에이전트에게 위임만 한다.
+    /// L0(Supermaster) 기본값 true.
+    #[serde(default)]
+    pub delegation_only: bool,
 }
 
 fn default_agent_name() -> String {

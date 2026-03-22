@@ -13,6 +13,7 @@ pub mod security;
 pub mod template;
 pub mod agent_spec;
 pub mod market;
+pub mod escalation;
 
 // Re-export key types for convenience.
 pub use types::*;

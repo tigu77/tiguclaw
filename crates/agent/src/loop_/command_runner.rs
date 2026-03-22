@@ -465,6 +465,7 @@ impl AgentLoop {
         event: HookEvent,
         current_task: &mut Option<(JoinHandle<anyhow::Result<HandleResult>>, CancellationToken)>,
         pending_messages: &mut Vec<(usize, ChannelMessage)>,
+        steer_queue: &mut Vec<String>,
     ) -> anyhow::Result<()> {
         use tiguclaw_hooks::types::WakeMode;
 
@@ -519,6 +520,33 @@ impl AgentLoop {
                 } else {
                     *current_task = task;
                 }
+            }
+
+            // Phase 9-4: 하위 에이전트로부터 에스컬레이션 수신.
+            HookEvent::Escalation { report } => {
+                info!(
+                    from = %report.from_agent,
+                    reason = %report.reason.kind(),
+                    "escalation hook event received"
+                );
+                let content = report.to_prompt_text();
+                let msg = ChannelMessage {
+                    id: format!("escalation-{}", report.from_agent),
+                    sender: "escalation".into(),
+                    content,
+                    timestamp: chrono::Local::now().timestamp(),
+                };
+                if current_task.is_some() {
+                    pending_messages.push((0, msg));
+                } else {
+                    *current_task = self.try_spawn_handler(&msg, 0, None).await?;
+                }
+            }
+
+            // Phase 9-4: steer 신호 (hooks API를 통해 수신된 경우).
+            HookEvent::Steer { message } => {
+                info!(message = %message, "steer hook event received");
+                steer_queue.push(message);
             }
         }
         Ok(())

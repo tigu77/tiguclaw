@@ -12,7 +12,9 @@ use axum::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
-use crate::types::{AgentPayload, ApiResponse, HookEvent, WakePayload};
+use tiguclaw_core::escalation::EscalationReport;
+
+use crate::types::{AgentPayload, ApiResponse, HookEvent, SteerPayload, WakePayload};
 
 /// Shared server state.
 #[derive(Clone)]
@@ -128,6 +130,67 @@ pub async fn agent_handler(
                 Json(ApiResponse::err(format!(
                     "agent did not respond within {timeout_secs}s"
                 ))),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /hooks/escalation — Phase 9-4.
+/// 하위 에이전트로부터 에스컬레이션 보고서 수신.
+pub async fn escalation_handler(
+    State(state): State<HookState>,
+    headers: HeaderMap,
+    Json(report): Json<EscalationReport>,
+) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&headers, &state.token) {
+        return resp.into_response();
+    }
+
+    info!(
+        from = %report.from_agent,
+        to = %report.to_agent,
+        reason = %report.reason.kind(),
+        "escalation received"
+    );
+
+    let event = HookEvent::Escalation { report };
+
+    match state.event_tx.send(event).await {
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::ok())).into_response(),
+        Err(e) => {
+            warn!(error = %e, "failed to send escalation event to agent loop");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiResponse::err("agent loop unavailable")),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /hooks/steer — Phase 9-4.
+/// 에이전트에게 방향 전환 신호 전달.
+pub async fn steer_handler(
+    State(state): State<HookState>,
+    headers: HeaderMap,
+    Json(payload): Json<SteerPayload>,
+) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&headers, &state.token) {
+        return resp.into_response();
+    }
+
+    info!(message_len = payload.message.len(), "steer hook received");
+
+    let event = HookEvent::Steer { message: payload.message };
+
+    match state.event_tx.send(event).await {
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::ok())).into_response(),
+        Err(e) => {
+            warn!(error = %e, "failed to send steer event to agent loop");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiResponse::err("agent loop unavailable")),
             )
                 .into_response()
         }

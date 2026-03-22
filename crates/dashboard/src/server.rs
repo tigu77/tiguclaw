@@ -17,7 +17,7 @@ use tiguclaw_core::event::DashboardEvent;
 
 use crate::api::{
     get_agents, get_agent_timeline, get_conversation_detail, get_conversations, get_logs,
-    get_status, get_timeline,
+    get_status, get_timeline, steer_agent,
 };
 use crate::timeline::TimelineDb;
 use crate::ws::ws_handler;
@@ -196,6 +196,7 @@ impl DashboardServer {
             .route("/api/logs", get(get_logs))
             .route("/api/timeline", get(get_timeline))
             .route("/api/agents/:name/timeline", get(get_agent_timeline))
+            .route("/api/agents/:name/steer", axum::routing::post(steer_agent))
             .route("/api/conversations", get(get_conversations))
             .route("/api/conversations/:id", get(get_conversation_detail))
             .layer(cors)

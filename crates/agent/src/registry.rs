@@ -91,6 +91,8 @@ struct AgentHandle {
     hooks_url: Option<String>,
     /// Phase 8-2: 직통 Hooks 인증 토큰.
     hooks_token: Option<String>,
+    /// Phase 9-4: steer 신호 송신기.
+    steer_tx: mpsc::Sender<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +123,8 @@ pub struct AgentRegistry {
     supermaster: Option<AgentStatusInfo>,
     /// 에이전트별 현재 실행 상태 ("idle" | "thinking" | "executing:tool명").
     status_map: HashMap<String, String>,
+    /// Phase 9-4: 에이전트별 steer 송신기 (슈퍼마스터 포함).
+    steer_txs: HashMap<String, mpsc::Sender<String>>,
 }
 
 impl AgentRegistry {
@@ -135,6 +139,7 @@ impl AgentRegistry {
             event_tx: None,
             supermaster: None,
             status_map: HashMap::new(),
+            steer_txs: HashMap::new(),
         }
     }
 
@@ -153,6 +158,7 @@ impl AgentRegistry {
             event_tx: None,
             supermaster: None,
             status_map: HashMap::new(),
+            steer_txs: HashMap::new(),
         }
     }
 
@@ -206,6 +212,26 @@ impl AgentRegistry {
         }
     }
 
+    /// Phase 9-4: 에이전트의 steer 송신기를 등록한다 (슈퍼마스터 포함).
+    pub fn register_steer_tx(&mut self, name: &str, tx: mpsc::Sender<String>) {
+        self.steer_txs.insert(name.to_string(), tx);
+    }
+
+    /// Phase 9-4: 에이전트에게 steer 지시문을 전달한다.
+    /// 반환값: true = 전송 성공, false = 에이전트 없음 또는 채널 닫힘.
+    pub async fn send_steer(&self, name: &str, message: String) -> bool {
+        if let Some(tx) = self.steer_txs.get(name) {
+            tx.send(message).await.is_ok()
+        } else {
+            // 레지스트리에 없으면 spawn된 에이전트의 steer_tx 확인.
+            if let Some(h) = self.agents.get(name) {
+                h.steer_tx.send(message).await.is_ok()
+            } else {
+                false
+            }
+        }
+    }
+
     /// Phase 8-2: 전송용 정보를 한 번의 접근으로 반환 (lock 최소화용).
     pub fn get_send_info(&self, name: &str) -> Option<AgentSendInfo> {
         self.agents.get(name).map(|h| AgentSendInfo {
@@ -247,6 +273,8 @@ impl AgentRegistry {
         let system_prompt_for_store = system_prompt.clone();
 
         let (task_tx, task_rx) = mpsc::channel::<AgentTask>(32);
+        // Phase 9-4: steer 채널 생성.
+        let (steer_tx_handle, steer_rx_spawned) = mpsc::channel::<String>(8);
         let provider = self.provider.clone();
         let tools = self.tools.clone();
         let name = req.name.clone();
@@ -279,7 +307,7 @@ impl AgentRegistry {
                 // Non-persistent: 첫 태스크 완료 후 loop 종료 + registry에서 자동 제거.
                 let (cleanup_tx, cleanup_rx) = oneshot::channel::<String>();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, false).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false).await;
                     debug!(name = %name, "non-persistent agent task ended");
                     let _ = cleanup_tx.send(name.clone());
                 });
@@ -298,7 +326,7 @@ impl AgentRegistry {
                 }
             } else {
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, true).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true).await;
                     debug!(name = %name, "spawned agent task ended");
                 });
             }
@@ -319,6 +347,7 @@ impl AgentRegistry {
                 last_active,
                 hooks_url: req.hooks_url.clone(),
                 hooks_token: req.hooks_token.clone(),
+                steer_tx: steer_tx_handle,
             },
         );
 
@@ -669,6 +698,7 @@ async fn run_telegram_agent(
 /// spawn된 에이전트의 메인 루프.
 ///
 /// `task_rx`에서 `AgentTask`를 수신하여 처리하고 `reply_tx`로 응답을 반환한다.
+/// `steer_rx`에서 steer 지시문을 수신하여 다음 태스크에 주입한다.
 /// 채널이 닫히면 루프를 종료한다.
 async fn run_spawned_agent(
     name: String,
@@ -676,15 +706,41 @@ async fn run_spawned_agent(
     tools: Vec<Arc<dyn Tool>>,
     system_prompt: String,
     mut task_rx: mpsc::Receiver<AgentTask>,
+    mut steer_rx: mpsc::Receiver<String>,
     persistent: bool,
 ) {
     info!(name = %name, persistent, "spawned agent loop started");
 
     // 대화 이력 (에이전트별로 유지).
     let mut history: Vec<ChatMessage> = Vec::new();
+    // Phase 9-4: steer 지시문 대기열.
+    let mut steer_queue: Vec<String> = Vec::new();
 
-    while let Some(task) = task_rx.recv().await {
+    loop {
+        // steer 대기열을 비동기로 드레인하지 않고 try_recv로 폴링.
+        while let Ok(steer_msg) = steer_rx.try_recv() {
+            info!(name = %name, message = %steer_msg, "spawned agent received steer directive");
+            steer_queue.push(steer_msg);
+        }
+
+        let task = match task_rx.recv().await {
+            Some(t) => t,
+            None => break, // channel closed
+        };
+
         debug!(name = %name, message = %task.message, "agent received task");
+
+        // steer 지시문이 있으면 태스크 메시지 앞에 주입.
+        let effective_message = if !steer_queue.is_empty() {
+            let steer_block = steer_queue
+                .drain(..)
+                .map(|d| format!("[STEER DIRECTIVE] {d}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{steer_block}\n\n{}", task.message)
+        } else {
+            task.message
+        };
 
         let result = run_agent_task(
             &name,
@@ -692,7 +748,7 @@ async fn run_spawned_agent(
             &tools,
             &system_prompt,
             &mut history,
-            task.message,
+            effective_message,
         )
         .await;
 

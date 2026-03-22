@@ -62,6 +62,9 @@ pub struct HandlerContext {
     pub agent_name: String,
     /// 대시보드 broadcast sender (None이면 비활성화).
     pub event_tx: Option<broadcast::Sender<DashboardEvent>>,
+    /// Phase 9-4: 이 태스크에 주입할 steer 지시문 목록.
+    /// 다음 LLM 호출 시 system 메시지로 앞에 주입된다.
+    pub steer_directives: Vec<String>,
 }
 
 /// Process a single user message through the agentic loop (LLM + tool calls).
@@ -74,6 +77,23 @@ pub async fn handle_message(
     user_text: String,
     cancel_token: CancellationToken,
 ) -> anyhow::Result<HandleResult> {
+    // Phase 9-4: steer 지시문이 있으면 user_text 앞에 주입.
+    let user_text = if !ctx.steer_directives.is_empty() {
+        let steer_block = ctx
+            .steer_directives
+            .iter()
+            .map(|d| format!("[STEER DIRECTIVE] {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        info!(
+            count = ctx.steer_directives.len(),
+            "injecting steer directives before user message"
+        );
+        format!("{steer_block}\n\n{user_text}")
+    } else {
+        user_text
+    };
+
     // Add user message to history.
     let user_msg = ChatMessage::user(&user_text);
     persist_message(&ctx, &chat_id, &user_msg);

@@ -190,6 +190,28 @@ async fn async_main() -> Result<()> {
         Box::new(list_agents_tool),
     ]);
 
+    // Phase 9-4: escalate_to_parent 툴 (parent_agent + parent_hooks_url이 설정된 경우에만).
+    if let (Some(parent_agent), Some(parent_hooks_url)) = (
+        config.agent.parent_agent.as_ref(),
+        config.agent.parent_hooks_url.as_ref(),
+    ) {
+        let parent_hooks_token = config.agent.parent_hooks_token
+            .clone()
+            .unwrap_or_default();
+        let escalate_tool = tiguclaw_agent::tools::EscalateToParentTool::new(
+            &config.agent.name,
+            parent_agent,
+            parent_hooks_url,
+            &parent_hooks_token,
+        );
+        tools.push(Box::new(escalate_tool));
+        info!(
+            parent_agent = %parent_agent,
+            parent_hooks_url = %parent_hooks_url,
+            "escalate_to_parent tool enabled"
+        );
+    }
+
     // Load system prompt — spec이 있으면 AgentSpecManager로, 없으면 system_prompt_file에서.
     let base_prompt = if let Some(spec_path) = &config.agent.spec {
         // "agents/supermaster" 형태이면 마지막 세그먼트(이름)만 추출.
@@ -252,11 +274,27 @@ async fn async_main() -> Result<()> {
         (channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
     );
 
+    // Phase 9-4: delegation_only = true인 경우 L0 가용성 정책 주입.
+    let delegation_policy_context = if config.agent.delegation_only {
+        info!("delegation_only = true — injecting L0 availability policy into system prompt");
+        Some("\n\n## L0 Availability Policy\n\
+              You are the L0 commander. NEVER perform long-running tasks directly.\n\
+              Always delegate to L1 agents via spawn_agent.\n\
+              Keep yourself available for user communication at all times.\n\
+              Report escalations from sub-agents to the user immediately."
+            .to_string())
+    } else {
+        None
+    };
+
     // Assemble system prompt via PromptBuilder.
-    let system_prompt = tiguclaw_agent::PromptBuilder::new(base_prompt)
+    let mut prompt_builder = tiguclaw_agent::PromptBuilder::new(base_prompt)
         .with_workspace(workspace_context)
-        .with_section(channel_context)
-        .build();
+        .with_section(channel_context);
+    if let Some(ref delegation_ctx) = delegation_policy_context {
+        prompt_builder = prompt_builder.with_section(delegation_ctx.clone());
+    }
+    let system_prompt = prompt_builder.build();
     info!(total_prompt_len = system_prompt.len(), "system prompt assembled");
 
     // Build conversation store for history persistence.
@@ -324,6 +362,13 @@ async fn async_main() -> Result<()> {
         drop(hooks_tx);
     }
 
+    // Phase 9-4: steer 채널 생성 — 대시보드 API / AgentRegistry에서 steer 신호를 전달.
+    let (steer_tx_main, steer_rx_main) = tokio::sync::mpsc::channel::<String>(16);
+    {
+        let mut reg = registry.lock().await;
+        reg.register_steer_tx(&config.agent.name, steer_tx_main);
+    }
+
     // Build and run primary agent (L0).
     // apply_agent_config 헬퍼로 name/iterations/compaction/tool_result_chars 일괄 적용.
     let agent = tiguclaw_agent::AgentLoop::new(
@@ -337,6 +382,7 @@ async fn async_main() -> Result<()> {
     let agent = apply_agent_config(agent, &config.agent.name, &config.agent);
     let agent = agent
         .with_role(config.agent.role.clone())
+        .with_steer_rx(steer_rx_main)
         .with_registry(registry)
         .with_context_store(context_store)
         .with_context_retention_days(config.context.retention_days)

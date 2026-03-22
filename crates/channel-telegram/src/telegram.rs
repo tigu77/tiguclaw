@@ -233,6 +233,28 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    async fn send_document(&self, chat_id: &str, file_path: &str, caption: Option<&str>) -> Result<()> {
+        let chat_id: i64 = chat_id
+            .parse()
+            .map_err(|_| TiguError::Channel(format!("invalid chat_id: {chat_id}")))?;
+
+        let path = std::path::PathBuf::from(file_path);
+        if !path.exists() {
+            return Err(TiguError::Channel(format!("file not found: {file_path}")));
+        }
+
+        let input_file = teloxide::types::InputFile::file(&path);
+        let mut req = self.bot.send_document(ChatId(chat_id), input_file);
+        if let Some(cap) = caption {
+            req = req.caption(cap);
+        }
+
+        req.await
+            .map_err(|e| TiguError::Channel(format!("send_document failed: {e}")))?;
+
+        Ok(())
+    }
+
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<()> {
         let current_admin = self.admin_chat_id.load(Ordering::SeqCst);
         info!(admin_chat_id = current_admin, "starting telegram listener");

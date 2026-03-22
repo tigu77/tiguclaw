@@ -22,4 +22,9 @@ pub trait Channel: Send + Sync {
     async fn send_typing(&self, _chat_id: &str) -> Result<()> {
         Ok(())
     }
+
+    /// Send a file/document with optional caption. No-op by default.
+    async fn send_document(&self, _chat_id: &str, _file_path: &str, _caption: Option<&str>) -> Result<()> {
+        Ok(())
+    }
 }

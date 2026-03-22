@@ -223,6 +223,13 @@ async fn async_main() -> Result<()> {
         Box::new(list_agents_tool),
     ]);
 
+    // 파일 전송 툴 (Telegram sendDocument).
+    let send_file_tool = tiguclaw_agent::tools::SendFileTool::new(
+        &primary_ch_cfg.bot_token,
+        primary_ch_cfg.admin_chat_id,
+    );
+    tools.push(Box::new(send_file_tool));
+
     // Phase 9-4: escalate_to_parent 툴 (parent_agent + parent_hooks_url이 설정된 경우에만).
     if let (Some(parent_agent), Some(parent_hooks_url)) = (
         config.agent.parent_agent.as_ref(),

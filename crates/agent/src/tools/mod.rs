@@ -8,6 +8,7 @@ pub mod read_file;
 pub mod report_to_parent;
 pub mod shell;
 pub mod spawn_agent;
+pub mod send_file;
 pub mod web_fetch;
 pub mod write_file;
 
@@ -17,6 +18,7 @@ pub use edit_file::EditFileTool;
 pub use escalate::EscalateToParentTool;
 pub use read_file::ReadFileTool;
 pub use report_to_parent::ReportToParentTool;
+pub use send_file::SendFileTool;
 pub use shell::ShellTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use web_fetch::WebFetchTool;

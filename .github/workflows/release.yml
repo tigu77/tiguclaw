@@ -8,6 +8,8 @@ on:
 jobs:
   build-macos-arm:
     runs-on: macos-14  # Apple Silicon
+    permissions:
+      contents: write  # Release 생성 + 파일 업로드 권한
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

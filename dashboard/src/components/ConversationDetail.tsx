@@ -88,10 +88,15 @@ export default function ConversationDetail({ chatId, agentName, onClose, apiBase
         body: JSON.stringify({ agent_name: agentName, message: text }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // 메시지 전송 후 잠시 기다렸다가 대화 새로고침
-      setTimeout(() => {
-        fetchConversation();
-      }, 1000);
+      // 즉시 user 메시지 UI에 추가
+      setData(prev => prev ? {
+        ...prev,
+        messages: [...prev.messages, {
+          role: "user",
+          content: text,
+          timestamp: Math.floor(Date.now() / 1000),
+        }]
+      } : prev);
     } catch (e) {
       console.error("sendMessage error:", e);
     } finally {

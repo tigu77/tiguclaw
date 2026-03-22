@@ -19,6 +19,7 @@ interface ConversationDetailProps {
   agentName: string;
   onClose: () => void;
   apiBase: string;
+  refreshTrigger?: number;
 }
 
 function formatTs(unixSecs: number): string {
@@ -32,7 +33,7 @@ function formatTs(unixSecs: number): string {
   });
 }
 
-export default function ConversationDetail({ chatId, agentName, onClose, apiBase }: ConversationDetailProps) {
+export default function ConversationDetail({ chatId, agentName, onClose, apiBase, refreshTrigger }: ConversationDetailProps) {
   const [data, setData] = useState<ConversationDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +63,12 @@ export default function ConversationDetail({ chatId, agentName, onClose, apiBase
     setError(null);
     fetchConversation();
   }, [chatId]);
+
+  // AgentIdle 이벤트 시 자동 갱신 (refreshTrigger 변경 감지)
+  useEffect(() => {
+    if (refreshTrigger === undefined || refreshTrigger === 0) return;
+    fetchConversation();
+  }, [refreshTrigger]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

@@ -147,6 +147,7 @@ export function useDashboard(wsUrl: string) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connected, setConnected] = useState(false);
+  const [agentIdleCount, setAgentIdleCount] = useState(0);
 
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
@@ -273,6 +274,7 @@ export function useDashboard(wsUrl: string) {
         if (data.type === "AgentIdle") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string };
           if (d.name) patchAgent({ name: d.name, current_status: "idle" });
+          setAgentIdleCount((c) => c + 1);
           const tl = wsToTimeline(data);
           if (tl) addTimelineEvent(tl);
           return;
@@ -320,5 +322,5 @@ export function useDashboard(wsUrl: string) {
     };
   }, [connect]);
 
-  return { agents, logs, connected, timelineEvents };
+  return { agents, logs, connected, timelineEvents, agentIdleCount };
 }

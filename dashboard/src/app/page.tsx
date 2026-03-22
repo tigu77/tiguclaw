@@ -30,7 +30,7 @@ const BOTTOM_NAV: { id: Tab; icon: string; label: string }[] = [
 ];
 
 export default function DashboardPage() {
-  const { agents, logs, connected, timelineEvents } = useDashboard(WS_URL);
+  const { agents, logs, connected, timelineEvents, agentIdleCount } = useDashboard(WS_URL);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [selectedAgentName, setSelectedAgentName] = useState<string>("");
@@ -205,6 +205,7 @@ export default function DashboardPage() {
                     agentName={selectedAgentName}
                     onClose={() => setSelectedConvId(null)}
                     apiBase={API_BASE}
+                    refreshTrigger={agentIdleCount}
                   />
                 </div>
               )}

@@ -25,9 +25,11 @@ const ROLE_LABELS: Record<string, string> = {
 
 interface AgentCardProps {
   agent: AgentInfo;
+  selected?: boolean;
+  onClick?: () => void;
 }
 
-export default function AgentCard({ agent }: AgentCardProps) {
+export default function AgentCard({ agent, selected, onClick }: AgentCardProps) {
   const icon = ROLE_ICONS[agent.role] ?? "❓";
   const label = ROLE_LABELS[agent.role] ?? agent.role;
 
@@ -37,7 +39,14 @@ export default function AgentCard({ agent }: AgentCardProps) {
   const toolName = isExecuting ? currentStatus.split(":").slice(1).join(":") : "";
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors border border-white/10">
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors border text-left ${
+        selected
+          ? "bg-white/15 border-white/30 ring-1 ring-white/20"
+          : "bg-white/5 hover:bg-white/10 border-white/10"
+      }`}
+    >
       <span className="text-xl leading-none">{icon}</span>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-mono text-white truncate">{agent.name}</div>
@@ -48,7 +57,7 @@ export default function AgentCard({ agent }: AgentCardProps) {
           </div>
         )}
       </div>
-      <div className="flex-shrink-0">
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
         <span
           className={`inline-block w-2 h-2 rounded-full ${
             agent.status === "active"
@@ -58,7 +67,10 @@ export default function AgentCard({ agent }: AgentCardProps) {
               : "bg-yellow-400"
           }`}
         />
+        {onClick && (
+          <span className="text-[10px] text-gray-600">타임라인 →</span>
+        )}
       </div>
-    </div>
+    </button>
   );
 }

@@ -1,10 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { AgentInfo, LogEntry, WsEvent } from "@/types";
+import { AgentInfo, LogEntry, TimelineEvent, WsEvent } from "@/types";
 
 const MAX_LOGS = 100;
+const MAX_TIMELINE = 500;
 const RECONNECT_DELAY_MS = 3000;
+
+let _tlCounter = 0;
+function makeTlId(): number {
+  return --_tlCounter; // 음수 임시 ID (DB 저장 전 프론트 로컬 ID)
+}
 
 function makeId(): string {
   return Math.random().toString(36).slice(2, 9);
@@ -63,7 +69,6 @@ function parseEvent(evt: WsEvent): { agentPatch?: Partial<AgentInfo> & { name: s
       };
 
     case "AgentStatus":
-      // data.agents = AgentStatusInfo[] 배열
       return {
         log: {
           id: makeId(),
@@ -74,9 +79,65 @@ function parseEvent(evt: WsEvent): { agentPatch?: Partial<AgentInfo> & { name: s
       };
 
     case "Heartbeat":
-      // 로그에 표시하지 않음 — 연결 상태는 상단 상태바에서만 표시
       return null;
 
+    default:
+      return null;
+  }
+}
+
+/** WsEvent → TimelineEvent 변환 (저장용 로컬 임시 이벤트) */
+function wsToTimeline(evt: WsEvent): TimelineEvent | null {
+  const p = (evt.data ?? evt.payload ?? {}) as Record<string, string | number | boolean>;
+  const now = Date.now();
+
+  switch (evt.type) {
+    case "AgentSpawned":
+      return {
+        id: makeTlId(),
+        event_type: "spawn",
+        agent_name: String(p.name ?? ""),
+        timestamp: now,
+      };
+    case "AgentKilled":
+      return {
+        id: makeTlId(),
+        event_type: "kill",
+        agent_name: String(p.name ?? ""),
+        timestamp: now,
+      };
+    case "AgentComm":
+      return {
+        id: makeTlId(),
+        event_type: "comm",
+        agent_name: String(p.from ?? ""),
+        from_agent: String(p.from ?? ""),
+        to_agent: String(p.to ?? ""),
+        message: String(p.message ?? ""),
+        timestamp: now,
+      };
+    case "AgentThinking":
+      return {
+        id: makeTlId(),
+        event_type: "thinking",
+        agent_name: String(p.name ?? ""),
+        timestamp: now,
+      };
+    case "AgentExecuting":
+      return {
+        id: makeTlId(),
+        event_type: "executing",
+        agent_name: String(p.name ?? ""),
+        tool: String(p.tool ?? ""),
+        timestamp: now,
+      };
+    case "AgentIdle":
+      return {
+        id: makeTlId(),
+        event_type: "idle",
+        agent_name: String(p.name ?? ""),
+        timestamp: now,
+      };
     default:
       return null;
   }
@@ -87,6 +148,7 @@ export function useDashboard(wsUrl: string) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connected, setConnected] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
+  const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,11 +170,17 @@ export function useDashboard(wsUrl: string) {
     });
   }, []);
 
+  const addTimelineEvent = useCallback((event: TimelineEvent) => {
+    setTimelineEvents((prev) => {
+      const next = [event, ...prev]; // 최신이 맨 앞
+      return next.length > MAX_TIMELINE ? next.slice(0, MAX_TIMELINE) : next;
+    });
+  }, []);
+
   const patchAgent = useCallback((patch: Partial<AgentInfo> & { name: string }) => {
     setAgents((prev) => {
       const idx = prev.findIndex((a) => a.name === patch.name);
       if (idx === -1) {
-        // 새 에이전트
         return [
           ...prev,
           {
@@ -127,13 +195,25 @@ export function useDashboard(wsUrl: string) {
       }
       const updated = [...prev];
       updated[idx] = { ...updated[idx], ...patch };
-      // 죽은 에이전트는 목록에서 제거
       if (patch.status === "dead") {
         return updated.filter((a) => a.status !== "dead");
       }
       return updated;
     });
   }, []);
+
+  // 초기 타임라인 로드
+  const loadInitialTimeline = useCallback(() => {
+    const apiBase = wsUrl.replace(/^ws/, "http").replace("/ws", "");
+    fetch(`${apiBase}/api/timeline`)
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((data: TimelineEvent[]) => {
+        if (mountedRef.current) {
+          setTimelineEvents(data); // 이미 timestamp DESC 정렬
+        }
+      })
+      .catch(() => {/* 조용히 무시 */});
+  }, [wsUrl]);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -150,6 +230,7 @@ export function useDashboard(wsUrl: string) {
       setConnected(true);
       resetHeartbeatTimer();
       addLog({ id: makeId(), time: nowTime(), type: "heartbeat", text: "✅ WebSocket 연결됨" });
+      loadInitialTimeline();
     };
 
     ws.onmessage = (event) => {
@@ -157,10 +238,8 @@ export function useDashboard(wsUrl: string) {
       try {
         const data = JSON.parse(event.data) as WsEvent;
 
-        // 모든 메시지 수신 시 heartbeat 타이머 리셋
         resetHeartbeatTimer();
 
-        // Heartbeat — 로그 없음, 타이머만 리셋
         if (data.type === "Heartbeat") return;
 
         // AgentStatus — 전체 목록 스냅샷
@@ -169,32 +248,33 @@ export function useDashboard(wsUrl: string) {
           if (Array.isArray(d.agents)) {
             setAgents(d.agents.map(a => ({ ...a, status: "active" as const })));
           }
+          return;
         }
 
-        // AgentThinking — LLM 호출 중
+        // AgentThinking
         if (data.type === "AgentThinking") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string };
-          if (d.name) {
-            patchAgent({ name: d.name, current_status: "thinking" });
-          }
+          if (d.name) patchAgent({ name: d.name, current_status: "thinking" });
+          const tl = wsToTimeline(data);
+          if (tl) addTimelineEvent(tl);
           return;
         }
 
-        // AgentExecuting — 툴 실행 중
+        // AgentExecuting
         if (data.type === "AgentExecuting") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string; tool?: string };
-          if (d.name) {
-            patchAgent({ name: d.name, current_status: `executing:${d.tool ?? ""}` });
-          }
+          if (d.name) patchAgent({ name: d.name, current_status: `executing:${d.tool ?? ""}` });
+          const tl = wsToTimeline(data);
+          if (tl) addTimelineEvent(tl);
           return;
         }
 
-        // AgentIdle — 대기 상태
+        // AgentIdle
         if (data.type === "AgentIdle") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string };
-          if (d.name) {
-            patchAgent({ name: d.name, current_status: "idle" });
-          }
+          if (d.name) patchAgent({ name: d.name, current_status: "idle" });
+          const tl = wsToTimeline(data);
+          if (tl) addTimelineEvent(tl);
           return;
         }
 
@@ -212,10 +292,15 @@ export function useDashboard(wsUrl: string) {
         }
 
         const result = parseEvent(data);
-        if (!result) return;
+        if (result) {
+          if (result.agentPatch) patchAgent(result.agentPatch);
+          addLog(result.log);
+        }
 
-        if (result.agentPatch) patchAgent(result.agentPatch);
-        addLog(result.log);
+        // 타임라인에도 추가
+        const tl = wsToTimeline(data);
+        if (tl) addTimelineEvent(tl);
+
       } catch {
         // 파싱 오류 무시
       }
@@ -231,7 +316,7 @@ export function useDashboard(wsUrl: string) {
     ws.onerror = () => {
       ws.close();
     };
-  }, [wsUrl, addLog, patchAgent]);
+  }, [wsUrl, addLog, patchAgent, addTimelineEvent, loadInitialTimeline, resetHeartbeatTimer]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -248,5 +333,5 @@ export function useDashboard(wsUrl: string) {
     };
   }, [connect]);
 
-  return { agents, logs, connected, totalCost };
+  return { agents, logs, connected, totalCost, timelineEvents };
 }

@@ -3,10 +3,12 @@
 import { useState } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
 import AgentCard from "@/components/AgentCard";
+import AgentTimelinePanel from "@/components/AgentTimelinePanel";
 import LogStream from "@/components/LogStream";
 import ConversationList from "@/components/ConversationList";
 import ConversationDetail from "@/components/ConversationDetail";
-import Sidebar from "@/components/Sidebar";
+import Sidebar, { Tab } from "@/components/Sidebar";
+import Timeline from "@/components/Timeline";
 
 // 접속한 호스트 기준으로 WS URL 동적 생성 (포트 통일 — server.js가 /ws를 3002로 proxy)
 const WS_URL =
@@ -14,18 +16,27 @@ const WS_URL =
     ? `ws://${window.location.host}/ws`
     : "ws://localhost:3000/ws";
 
-type Tab = "agents" | "conversations" | "logs";
+const API_BASE =
+  typeof window !== "undefined"
+    ? `http://${window.location.host}`
+    : "http://localhost:3000";
 
 const BOTTOM_NAV: { id: Tab; icon: string; label: string }[] = [
   { id: "agents", icon: "🤖", label: "에이전트" },
+  { id: "timeline", icon: "🕐", label: "타임라인" },
   { id: "conversations", icon: "💬", label: "대화" },
   { id: "logs", icon: "📋", label: "로그" },
 ];
 
 export default function DashboardPage() {
-  const { agents, logs, connected, totalCost } = useDashboard(WS_URL);
+  const { agents, logs, connected, totalCost, timelineEvents } = useDashboard(WS_URL);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+
+  const handleAgentClick = (name: string) => {
+    setSelectedAgent((prev) => (prev === name ? null : name));
+  };
 
   return (
     <div className="flex h-screen" style={{ background: "#0a0a0a" }}>
@@ -33,7 +44,11 @@ export default function DashboardPage() {
       <div className="hidden md:flex">
         <Sidebar
           activeTab={activeTab}
-          onTabChange={setActiveTab}
+          onTabChange={(tab) => {
+            setActiveTab(tab);
+            // 타임라인 탭 이동 시 에이전트 패널 닫기
+            if (tab !== "agents") setSelectedAgent(null);
+          }}
           connected={connected}
           agentCount={agents.length}
           totalCost={totalCost}
@@ -64,11 +79,12 @@ export default function DashboardPage() {
 
         {/* 콘텐츠 영역 */}
         <div className="flex-1 min-h-0 p-4 overflow-hidden">
+
           {/* 🤖 에이전트 */}
           {activeTab === "agents" && (
             <div className="flex h-full gap-4">
               {/* 에이전트 목록 */}
-              <div className="flex flex-col gap-2 flex-1 min-w-0 md:max-w-sm">
+              <div className="flex flex-col gap-2 flex-shrink-0 w-64">
                 <div className="flex items-center justify-between px-1">
                   <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
                     에이전트 군단
@@ -82,30 +98,53 @@ export default function DashboardPage() {
                   {agents.length === 0 ? (
                     <div className="text-gray-600 text-xs text-center py-8">에이전트 없음</div>
                   ) : (
-                    agents.map((agent) => <AgentCard key={agent.name} agent={agent} />)
+                    agents.map((agent) => (
+                      <AgentCard
+                        key={agent.name}
+                        agent={agent}
+                        selected={selectedAgent === agent.name}
+                        onClick={() => handleAgentClick(agent.name)}
+                      />
+                    ))
                   )}
                 </div>
               </div>
 
-              {/* 오른쪽: 실시간 로그 (데스크탑) */}
-              <div className="hidden md:flex flex-col flex-1 min-h-0 gap-2">
-                <div className="flex items-center justify-between px-1">
-                  <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
-                    실시간 로그
-                  </h2>
-                  <span className="text-xs text-gray-500 font-mono">{logs.length}/100</span>
+              {/* 에이전트 타임라인 패널 (클릭 시 표시) */}
+              {selectedAgent ? (
+                <div className="flex-1 min-h-0 min-w-0 rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+                  <AgentTimelinePanel
+                    agentName={selectedAgent}
+                    allTimelineEvents={timelineEvents}
+                    apiBase={API_BASE}
+                    onClose={() => setSelectedAgent(null)}
+                  />
                 </div>
-                <div className="flex-1 min-h-0 rounded-xl border border-white/10 bg-white/5 p-3 flex flex-col">
-                  <LogStream logs={logs} />
+              ) : (
+                /* 에이전트 선택 전 — 실시간 로그 표시 (데스크탑) */
+                <div className="hidden md:flex flex-col flex-1 min-h-0 gap-2">
+                  <div className="flex items-center justify-between px-1">
+                    <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
+                      실시간 로그
+                    </h2>
+                    <span className="text-xs text-gray-500 font-mono">{logs.length}/100</span>
+                  </div>
+                  <div className="flex-1 min-h-0 rounded-xl border border-white/10 bg-white/5 p-3 flex flex-col">
+                    <LogStream logs={logs} />
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
+          )}
+
+          {/* 🕐 타임라인 */}
+          {activeTab === "timeline" && (
+            <Timeline events={timelineEvents} agents={agents} />
           )}
 
           {/* 💬 대화 */}
           {activeTab === "conversations" && (
             <div className="flex h-full gap-4">
-              {/* 대화 목록 */}
               <div
                 className={`flex flex-col gap-2 ${
                   selectedConvId ? "w-72 flex-shrink-0" : "flex-1"
@@ -123,8 +162,6 @@ export default function DashboardPage() {
                   />
                 </div>
               </div>
-
-              {/* 대화 상세 패널 */}
               {selectedConvId && (
                 <div className="flex-1 min-h-0 min-w-0">
                   <ConversationDetail

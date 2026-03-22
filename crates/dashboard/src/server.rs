@@ -10,12 +10,16 @@ use axum::{Router, routing::get};
 use tokio::sync::{broadcast, Mutex as TokioMutex};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
-use tracing::info;
+use tracing::{info, warn};
 
 use tiguclaw_agent::AgentRegistry;
 use tiguclaw_core::event::DashboardEvent;
 
-use crate::api::{get_agents, get_conversation_detail, get_conversations, get_logs, get_status};
+use crate::api::{
+    get_agents, get_agent_timeline, get_conversation_detail, get_conversations, get_logs,
+    get_status, get_timeline,
+};
+use crate::timeline::TimelineDb;
 use crate::ws::ws_handler;
 
 /// 로그 히스토리 최대 크기.
@@ -36,6 +40,8 @@ pub struct AppState {
     pub start_time: Instant,
     /// 대화 히스토리 DB 경로 (대화 이력 API용).
     pub conv_db_path: Option<std::path::PathBuf>,
+    /// 타임라인 DB (이벤트 영속화).
+    pub timeline_db: Option<Arc<TimelineDb>>,
 }
 
 /// 대시보드 서버.
@@ -53,6 +59,8 @@ pub struct DashboardServer {
     conv_db_path: Option<std::path::PathBuf>,
     /// 정적 파일 디렉토리 (optional). None이면 API만 동작.
     dashboard_dir: Option<PathBuf>,
+    /// 타임라인 DB (optional).
+    timeline_db: Option<Arc<TimelineDb>>,
 }
 
 impl DashboardServer {
@@ -74,6 +82,7 @@ impl DashboardServer {
             start_time: Instant::now(),
             conv_db_path: None,
             dashboard_dir,
+            timeline_db: None,
         }
     }
 
@@ -89,8 +98,28 @@ impl DashboardServer {
         self
     }
 
+    /// 타임라인 DB 경로 설정 (builder 패턴).
+    pub fn with_timeline_db(mut self, path: std::path::PathBuf) -> Self {
+        match TimelineDb::open(&path) {
+            Ok(db) => {
+                info!(path = %path.display(), "timeline DB opened");
+                self.timeline_db = Some(Arc::new(db));
+            }
+            Err(e) => {
+                warn!(error = %e, path = %path.display(), "timeline DB open failed — timeline disabled");
+            }
+        }
+        self
+    }
+
     /// 이벤트를 로그에 저장하고 broadcast 채널로 전송 (sync 메서드).
     pub fn broadcast(&self, event: DashboardEvent) {
+        // 타임라인 DB에 저장
+        if let Some(ref db) = self.timeline_db {
+            if let Err(e) = db.insert(&event) {
+                warn!(error = %e, "timeline DB insert failed");
+            }
+        }
         {
             let mut log = self.log.lock().unwrap();
             if log.len() >= MAX_LOG_SIZE {
@@ -103,11 +132,18 @@ impl DashboardServer {
 
     /// 서버 시작. 이 메서드를 `tokio::spawn`으로 실행한다.
     pub async fn start(self, port: u16) -> Result<()> {
-        // 이벤트 → 로그 저장 백그라운드 태스크.
+        // 이벤트 → 로그 저장 + 타임라인 DB 저장 백그라운드 태스크.
         let log_clone = self.log.clone();
+        let timeline_db_clone = self.timeline_db.clone();
         let mut log_rx = self.event_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(event) = log_rx.recv().await {
+                // 타임라인 DB 저장
+                if let Some(ref db) = timeline_db_clone {
+                    if let Err(e) = db.insert(&event) {
+                        warn!(error = %e, "timeline DB background insert failed");
+                    }
+                }
                 let mut log = log_clone.lock().unwrap();
                 if log.len() >= MAX_LOG_SIZE {
                     log.pop_front();
@@ -150,6 +186,7 @@ impl DashboardServer {
             log: self.log,
             start_time: self.start_time,
             conv_db_path: self.conv_db_path,
+            timeline_db: self.timeline_db,
         };
 
         let mut router = Router::new()
@@ -157,6 +194,8 @@ impl DashboardServer {
             .route("/api/agents", get(get_agents))
             .route("/api/status", get(get_status))
             .route("/api/logs", get(get_logs))
+            .route("/api/timeline", get(get_timeline))
+            .route("/api/agents/:name/timeline", get(get_agent_timeline))
             .route("/api/conversations", get(get_conversations))
             .route("/api/conversations/:id", get(get_conversation_detail))
             .layer(cors)

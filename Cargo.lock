@@ -3511,6 +3511,7 @@ dependencies = [
  "anyhow",
  "axum",
  "dirs 5.0.1",
+ "rusqlite",
  "serde",
  "serde_json",
  "tiguclaw-agent",

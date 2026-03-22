@@ -7,15 +7,16 @@
 //! GET /api/conversations/:id   → 특정 대화 상세
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
 
 use crate::server::AppState;
+use crate::timeline::TimelineEvent;
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -69,6 +70,50 @@ pub async fn get_status(State(state): State<AppState>) -> Json<BotStatus> {
 pub async fn get_logs(State(state): State<AppState>) -> Json<Vec<DashboardEvent>> {
     let log = state.log.lock().unwrap();
     Json(log.iter().cloned().collect())
+}
+
+// ---------------------------------------------------------------------------
+// Timeline handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/timeline?agent=이름 쿼리 파라미터.
+#[derive(Debug, Deserialize)]
+pub struct TimelineQuery {
+    pub agent: Option<String>,
+}
+
+/// GET /api/timeline — 전체 타임라인 (최근 300개, ?agent=이름 필터 지원).
+pub async fn get_timeline(
+    State(state): State<AppState>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<Vec<TimelineEvent>>, StatusCode> {
+    let db = state
+        .timeline_db
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let events = db
+        .get_timeline(query.agent.as_deref(), 300)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(events))
+}
+
+/// GET /api/agents/:name/timeline — 에이전트별 타임라인 (최근 200개).
+pub async fn get_agent_timeline(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<TimelineEvent>>, StatusCode> {
+    let db = state
+        .timeline_db
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let events = db
+        .get_timeline(Some(&name), 200)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(events))
 }
 
 // ---------------------------------------------------------------------------

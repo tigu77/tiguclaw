@@ -16,6 +16,19 @@ export interface LogEntry {
   text: string;
 }
 
+/** 타임라인 이벤트 (백엔드 REST API + WS 실시간) */
+export interface TimelineEvent {
+  id: number;
+  event_type: string; // "spawn" | "kill" | "comm" | "thinking" | "executing" | "idle"
+  agent_name: string;
+  from_agent?: string;
+  to_agent?: string;
+  message?: string;
+  tool?: string;
+  /** Unix milliseconds */
+  timestamp: number;
+}
+
 // WebSocket 이벤트 타입
 export type WsEventType =
   | "AgentSpawned"

@@ -99,7 +99,8 @@ async fn async_main() -> Result<()> {
             registry.clone(),
             config.dashboard.cors_origin.clone(),
         )
-        .with_conv_db(data_dir.join("conversations.db"));
+        .with_conv_db(data_dir.join("conversations.db"))
+        .with_timeline_db(data_dir.join("timeline.db"));
         info!(
             port = config.dashboard.port,
             cors_origin = %config.dashboard.cors_origin,

@@ -73,6 +73,12 @@ pub enum Commands {
 
     /// Run a manual DB backup immediately
     Backup,
+
+    /// Manage market packages (install, list, remove, info)
+    Market {
+        #[command(subcommand)]
+        action: MarketAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -120,6 +126,27 @@ pub enum MemoryAction {
     Stats,
     /// Clear conversation history (with confirmation)
     Clear,
+}
+
+#[derive(Subcommand)]
+pub enum MarketAction {
+    /// List installed packages
+    List,
+    /// Install a package from a local agent.toml path
+    Install {
+        /// Path to agent.toml (local only in Phase 9)
+        path_or_id: String,
+    },
+    /// Remove an installed package
+    Remove {
+        /// Package id
+        id: String,
+    },
+    /// Show detailed info for an installed package
+    Info {
+        /// Package id
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +241,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Config { action } => config_cmd(action),
         Commands::Init { yes, dir, force } => init(*yes, dir.clone(), *force),
         Commands::Backup => backup_now(),
+        Commands::Market { action } => market_cmd(action),
     }
 }
 
@@ -1157,6 +1185,114 @@ fn unix_days_to_ymd_cli(days: i64) -> String {
         m += 1;
     }
     format!("{:04}-{:02}-{:02}", y, m, d + 1)
+}
+
+// ─── Market ───────────────────────────────────────────────────────────────────
+
+fn market_cmd(action: &MarketAction) -> Result<()> {
+    match action {
+        MarketAction::List => market_list(),
+        MarketAction::Install { path_or_id } => market_install(path_or_id),
+        MarketAction::Remove { id } => market_remove(id),
+        MarketAction::Info { id } => market_info(id),
+    }
+}
+
+fn make_market_manager() -> tiguclaw_core::market::MarketManager {
+    // Config에서 registry_url 읽기 (실패 시 기본값 사용)
+    let registry_url = load_toml_doc(CONFIG_FILE)
+        .ok()
+        .and_then(|doc| {
+            doc.get("market")
+                .and_then(|m| m.get("registry_url"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "https://clawhub.com/api".to_string());
+
+    tiguclaw_core::market::MarketManager::new(install_dir(), registry_url)
+}
+
+fn market_list() -> Result<()> {
+    let mgr = make_market_manager();
+    let packages = mgr.list().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if packages.is_empty() {
+        println!("📦 Installed packages (0)");
+        println!("   설치된 패키지가 없습니다. `tiguclaw market install <path>` 로 설치하세요.");
+        return Ok(());
+    }
+
+    println!("📦 Installed packages ({})", packages.len());
+    for p in &packages {
+        // 태그를 [tag1, tag2] 형식으로 출력하려면 agent.toml 읽어야 함
+        let tags_str = mgr
+            .info(&p.id)
+            .ok()
+            .map(|(meta, _)| {
+                if meta.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{}]", meta.tags.join(", "))
+                }
+            })
+            .unwrap_or_default();
+
+        println!(
+            "  {:<12} v{:<8} {:<20} installed {}",
+            p.id, p.version, tags_str, p.installed_at
+        );
+    }
+    Ok(())
+}
+
+fn market_install(path_or_id: &str) -> Result<()> {
+    let mgr = make_market_manager();
+    let path = std::path::Path::new(path_or_id);
+
+    if !path.exists() {
+        anyhow::bail!(
+            "경로를 찾을 수 없습니다: {}\n\
+             Phase 9에서는 로컬 경로만 지원합니다. 예: tiguclaw market install templates/researcher.toml",
+            path_or_id
+        );
+    }
+
+    let meta = mgr
+        .install_local(path)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("✅ 설치 완료: {} v{}", meta.id, meta.version);
+    println!("   author:  {}", meta.author);
+    println!("   license: {}", meta.license);
+    if !meta.tags.is_empty() {
+        println!("   tags:    {}", meta.tags.join(", "));
+    }
+    println!("   desc:    {}", meta.description);
+    Ok(())
+}
+
+fn market_remove(id: &str) -> Result<()> {
+    let mgr = make_market_manager();
+    mgr.remove(id).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("🗑️  {} 패키지가 제거되었습니다.", id);
+    Ok(())
+}
+
+fn market_info(id: &str) -> Result<()> {
+    let mgr = make_market_manager();
+    let (meta, entry) = mgr.info(id).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("📦 {} v{}", meta.id, meta.version);
+    println!("   author:  {}", meta.author);
+    println!("   license: {}", meta.license);
+    if !meta.tags.is_empty() {
+        println!("   tags:    {}", meta.tags.join(", "));
+    }
+    println!("   source:  {}", entry.source);
+    println!("   installed: {}", entry.installed_at);
+    println!("   desc:    {}", meta.description);
+    Ok(())
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────────────

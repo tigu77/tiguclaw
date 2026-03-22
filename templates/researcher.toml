@@ -1,3 +1,12 @@
+[package]
+id = "researcher"
+version = "1.0.0"
+author = "tigu77"
+license = "MIT"
+description = "리서치 전담 에이전트 — 웹 검색, 정보 수집, 요약"
+min_tiguclaw = "0.1.0"
+tags = ["research", "web"]
+
 [agent]
 name = "researcher"
 description = "리서치 전담 에이전트 — 웹 검색, 정보 수집, 요약"

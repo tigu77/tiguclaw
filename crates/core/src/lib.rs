@@ -12,6 +12,7 @@ pub mod tool;
 pub mod security;
 pub mod template;
 pub mod agent_spec;
+pub mod market;
 
 // Re-export key types for convenience.
 pub use types::*;
@@ -20,3 +21,4 @@ pub use config::Config;
 pub use security::{ApprovalLevel, SecurityPolicy};
 pub use template::{AgentTemplate, TemplateManager};
 pub use agent_spec::{AgentSpec, AgentSpecManager};
+pub use market::{MarketManager, PackageMeta, RegistryEntry};

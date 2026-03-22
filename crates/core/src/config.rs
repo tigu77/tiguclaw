@@ -45,6 +45,9 @@ pub struct Config {
     /// DB 자동 백업 설정.
     #[serde(default)]
     pub backup: BackupConfig,
+    /// Phase 9-3: 마켓 설정.
+    #[serde(default)]
+    pub market: MarketConfig,
 }
 
 // ─── MemoryConfig / EmbeddingConfig ─────────────────────────────────────────
@@ -499,6 +502,26 @@ impl Default for ContextConfig {
 
 fn default_retention_days() -> u64 {
     DEFAULT_CONTEXT_RETENTION_DAYS
+}
+
+/// Phase 9-3: 마켓 설정.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MarketConfig {
+    /// Phase 10 원격 레지스트리 URL (현재 미사용).
+    #[serde(default = "default_registry_url")]
+    pub registry_url: String,
+}
+
+impl Default for MarketConfig {
+    fn default() -> Self {
+        Self {
+            registry_url: default_registry_url(),
+        }
+    }
+}
+
+fn default_registry_url() -> String {
+    "https://clawhub.com/api".to_string()
 }
 
 impl Config {

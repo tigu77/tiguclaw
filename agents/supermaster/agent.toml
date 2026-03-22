@@ -1,3 +1,12 @@
+[package]
+id = "supermaster"
+version = "1.0.0"
+author = "tigu77"
+license = "MIT"
+description = "Supreme commander — orchestrates the entire agent army"
+min_tiguclaw = "0.1.0"
+tags = ["orchestration", "master"]
+
 [agent]
 name = "supermaster"
 description = "Supreme commander — orchestrates the entire agent army"

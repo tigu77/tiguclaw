@@ -122,4 +122,7 @@ pub struct ChannelMessage {
     pub content: String,
     /// Unix timestamp in seconds.
     pub timestamp: i64,
+    /// Optional source surface identifier (e.g. "dashboard").
+    /// None = default channel (telegram), Some("dashboard") = dashboard chat.
+    pub source: Option<String>,
 }

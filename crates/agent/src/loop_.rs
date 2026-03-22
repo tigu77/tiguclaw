@@ -529,6 +529,7 @@ impl AgentLoop {
                                 sender: "master".into(),
                                 content: prompt,
                                 timestamp: chrono::Local::now().timestamp(),
+                                source: None,
                             };
                             if current_task.is_some() {
                                 pending_messages.push((0, msg));
@@ -551,6 +552,7 @@ impl AgentLoop {
                             sender: "master".into(),
                             content: job.command.clone(),
                             timestamp: chrono::Local::now().timestamp(),
+                            source: None,
                         };
                         if current_task.is_some() {
                             pending_messages.push((0, msg));

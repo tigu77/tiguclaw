@@ -472,6 +472,7 @@ impl AgentLoop {
                     sender: "master".into(),
                     content,
                     timestamp: chrono::Local::now().timestamp(),
+                    source: None,
                 };
                 match mode {
                     WakeMode::Now => {
@@ -505,6 +506,7 @@ impl AgentLoop {
                     sender,
                     content: message,
                     timestamp: chrono::Local::now().timestamp(),
+                    source: None,
                 };
 
                 let task = self.try_spawn_handler(&msg, 0, Some(response_tx)).await?;
@@ -529,6 +531,7 @@ impl AgentLoop {
                     sender: "escalation".into(),
                     content,
                     timestamp: chrono::Local::now().timestamp(),
+                    source: None,
                 };
                 if current_task.is_some() {
                     pending_messages.push((0, msg));

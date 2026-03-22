@@ -410,6 +410,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -3510,7 +3511,9 @@ name = "tiguclaw-dashboard"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "chrono",
  "dirs 5.0.1",
  "rusqlite",
  "serde",

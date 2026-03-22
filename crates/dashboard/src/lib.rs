@@ -5,9 +5,11 @@
 //! - Timeline: SQLite 기반 이벤트 영속화 + REST API
 
 pub mod api;
+pub mod channel;
 pub mod server;
 pub mod timeline;
 pub mod ws;
 
+pub use channel::DashboardChannel;
 pub use server::DashboardServer;
 pub use timeline::{TimelineDb, TimelineEvent};

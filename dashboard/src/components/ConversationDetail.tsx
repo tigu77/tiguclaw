@@ -35,13 +35,11 @@ export default function ConversationDetail({ chatId, onClose, apiBase }: Convers
   const [data, setData] = useState<ConversationDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setLoading(true);
-    setData(null);
-    setError(null);
-
+  const fetchConversation = () => {
     fetch(`${apiBase}/api/conversations/${encodeURIComponent(chatId)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -55,11 +53,43 @@ export default function ConversationDetail({ chatId, onClose, apiBase }: Convers
         setError(e instanceof Error ? e.message : "로드 실패");
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    setData(null);
+    setError(null);
+    fetchConversation();
   }, [chatId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [data]);
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+
+    setSending(true);
+    setInput("");
+
+    try {
+      const res = await fetch(`${apiBase}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_name: chatId, message: text }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // 메시지 전송 후 잠시 기다렸다가 대화 새로고침
+      setTimeout(() => {
+        fetchConversation();
+      }, 1000);
+    } catch (e) {
+      console.error("sendMessage error:", e);
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full border border-white/10 rounded-xl bg-white/5 overflow-hidden">
@@ -104,13 +134,20 @@ export default function ConversationDetail({ chatId, onClose, apiBase }: Convers
               className={`flex flex-col gap-0.5 ${isUser ? "items-end" : "items-start"}`}
             >
               <div
-                className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm whitespace-pre-wrap break-words ${
+                className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm break-words ${
                   isUser
-                    ? "bg-blue-600 text-white rounded-br-sm"
+                    ? "bg-blue-600 text-white rounded-br-sm whitespace-pre-wrap"
                     : "bg-white/10 text-gray-100 rounded-bl-sm"
                 }`}
               >
-                {msg.content}
+                {isUser ? (
+                  msg.content
+                ) : (
+                  <div
+                    className="prose-sm prose-invert"
+                    dangerouslySetInnerHTML={{ __html: msg.content }}
+                  />
+                )}
               </div>
               {msg.timestamp > 0 && (
                 <span className="text-xs text-gray-600 font-mono px-1">
@@ -121,6 +158,25 @@ export default function ConversationDetail({ chatId, onClose, apiBase }: Convers
           );
         })}
         <div ref={bottomRef} />
+      </div>
+
+      {/* 채팅 입력창 */}
+      <div className="border-t border-white/10 p-3 flex gap-2 flex-shrink-0">
+        <input
+          className="flex-1 bg-white/5 rounded-lg px-3 py-2 text-sm text-white outline-none border border-white/10 focus:border-blue-500 transition-colors"
+          placeholder="메시지 입력..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendMessage()}
+          disabled={sending}
+        />
+        <button
+          className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors"
+          onClick={sendMessage}
+          disabled={sending || !input.trim()}
+        >
+          {sending ? "..." : "전송"}
+        </button>
       </div>
     </div>
   );

@@ -12,6 +12,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use tiguclaw_core::types::ChannelMessage;
 
 // ---------------------------------------------------------------------------
 // Steer handler
@@ -246,4 +247,61 @@ pub async fn get_conversation_detail(
         id: chat_id,
         messages,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Chat injection handler
+// ---------------------------------------------------------------------------
+
+/// POST /api/chat 요청 바디.
+#[derive(Debug, Deserialize)]
+pub struct ChatBody {
+    pub agent_name: String,
+    pub message: String,
+}
+
+/// POST /api/chat 응답.
+#[derive(Debug, Serialize)]
+pub struct ChatResponse {
+    pub ok: bool,
+}
+
+/// POST /api/chat — 대시보드에서 에이전트로 메시지 주입.
+///
+/// Body: `{ agent_name: String, message: String }`
+///
+/// 해당 에이전트의 DashboardChannel 또는 task_tx로 메시지를 주입한다.
+/// 에이전트의 응답은 ConversationStore에 persisted되며,
+/// `/api/conversations/:id`를 통해 확인할 수 있다.
+pub async fn post_chat(
+    State(state): State<AppState>,
+    Json(body): Json<ChatBody>,
+) -> Result<Json<ChatResponse>, StatusCode> {
+    if body.agent_name.is_empty() || body.message.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // dashboard 메시지임을 표시 + HTML 포맷 힌트 주입
+    let content = format!(
+        "[Dashboard] You are responding via the dashboard. Use HTML tags for formatting: <b>bold</b>, <i>italic</i>, <code>code</code>, <pre>pre</pre>. Do NOT use markdown.\n\n{}",
+        body.message
+    );
+
+    let msg = ChannelMessage {
+        id: format!("dashboard-{}", chrono::Utc::now().timestamp_millis()),
+        sender: "dashboard".to_string(),
+        content,
+        timestamp: chrono::Utc::now().timestamp(),
+        source: Some("dashboard".to_string()),
+    };
+
+    let reg = state.registry.lock().await;
+    let sent = reg.inject_dashboard_message(&body.agent_name, msg).await;
+    drop(reg);
+
+    if sent {
+        Ok(Json(ChatResponse { ok: true }))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }

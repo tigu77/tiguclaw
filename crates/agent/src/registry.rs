@@ -10,6 +10,8 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use tiguclaw_core::types::ChannelMessage;
+
 use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
 
 use tiguclaw_channel_telegram::TelegramChannel;
@@ -131,6 +133,8 @@ pub struct AgentRegistry {
     status_map: HashMap<String, String>,
     /// Phase 9-4: 에이전트별 steer 송신기 (슈퍼마스터 포함).
     steer_txs: HashMap<String, mpsc::Sender<String>>,
+    /// 대시보드 메시지 주입 채널 (에이전트별 inbox_tx).
+    inbox_txs: HashMap<String, mpsc::Sender<ChannelMessage>>,
 }
 
 impl AgentRegistry {
@@ -146,6 +150,7 @@ impl AgentRegistry {
             supermaster: None,
             status_map: HashMap::new(),
             steer_txs: HashMap::new(),
+            inbox_txs: HashMap::new(),
         }
     }
 
@@ -165,6 +170,7 @@ impl AgentRegistry {
             supermaster: None,
             status_map: HashMap::new(),
             steer_txs: HashMap::new(),
+            inbox_txs: HashMap::new(),
         }
     }
 
@@ -222,6 +228,39 @@ impl AgentRegistry {
     /// Phase 9-4: 에이전트의 steer 송신기를 등록한다 (슈퍼마스터 포함).
     pub fn register_steer_tx(&mut self, name: &str, tx: mpsc::Sender<String>) {
         self.steer_txs.insert(name.to_string(), tx);
+    }
+
+    /// 대시보드 메시지 주입용 inbox_tx를 등록한다 (슈퍼마스터용).
+    pub fn register_inbox_tx(&mut self, name: &str, tx: mpsc::Sender<ChannelMessage>) {
+        self.inbox_txs.insert(name.to_string(), tx);
+    }
+
+    /// 에이전트의 inbox_tx를 반환한다 (대시보드 메시지 주입용).
+    pub fn get_inbox_tx(&self, name: &str) -> Option<mpsc::Sender<ChannelMessage>> {
+        self.inbox_txs.get(name).cloned()
+    }
+
+    /// 에이전트에게 대시보드 메시지를 주입한다.
+    /// - 슈퍼마스터: inbox_txs에 등록된 DashboardChannel 채널로 전달
+    /// - 스폰된 에이전트: task_tx로 전달 (fire-and-forget)
+    pub async fn inject_dashboard_message(&self, name: &str, msg: ChannelMessage) -> bool {
+        // 슈퍼마스터 (inbox_txs)
+        if let Some(tx) = self.inbox_txs.get(name) {
+            return tx.send(msg).await.is_ok();
+        }
+        // 스폰된 에이전트 (task_tx)
+        if let Some(handle) = self.agents.get(name) {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            let content = msg.content.clone();
+            if handle.task_tx.send(AgentTask { message: content, reply_tx }).await.is_ok() {
+                // fire-and-forget: 응답을 백그라운드에서 소비
+                tokio::spawn(async move {
+                    let _ = reply_rx.await;
+                });
+                return true;
+            }
+        }
+        false
     }
 
     /// Phase 9-4: 에이전트에게 steer 지시문을 전달한다.

@@ -50,6 +50,7 @@ impl Channel for DummyChannel {
             sender: "test_user".into(),
             content: "hello".into(),
             timestamp: 0,
+            source: None,
         };
         let _ = tx.send(msg).await;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -247,6 +248,7 @@ impl Channel for CommandChannel {
             sender: "test_user".into(),
             content: self.command.clone(),
             timestamp: 0,
+            source: None,
         };
         let _ = tx.send(msg).await;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

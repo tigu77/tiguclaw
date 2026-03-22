@@ -349,6 +349,13 @@ async fn async_main() -> Result<()> {
         reg.register_steer_tx(&config.agent.name, steer_tx_main);
     }
 
+    // Dashboard 채팅 채널 생성 — 대시보드 REST API에서 메시지를 에이전트로 주입.
+    let (dashboard_ch, dashboard_inbox_tx) = tiguclaw_dashboard::DashboardChannel::new();
+    {
+        let mut reg = registry.lock().await;
+        reg.register_inbox_tx(&config.agent.name, dashboard_inbox_tx);
+    }
+
     // Build and run primary agent (L0).
     // apply_agent_config 헬퍼로 name/iterations/compaction/tool_result_chars 일괄 적용.
     let agent = tiguclaw_agent::AgentLoop::new(
@@ -363,6 +370,7 @@ async fn async_main() -> Result<()> {
     let agent = agent
         .with_role(config.agent.role.clone())
         .with_steer_rx(steer_rx_main)
+        .with_channel(std::sync::Arc::new(dashboard_ch))
         .with_registry(registry)
         .with_context_store(context_store)
         .with_context_retention_days(config.context.retention_days)

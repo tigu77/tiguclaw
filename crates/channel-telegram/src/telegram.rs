@@ -157,6 +157,7 @@ impl Channel for TelegramChannel {
                             sender: msg.chat.id.0.to_string(),
                             content: text.to_string(),
                             timestamp: msg.date.timestamp(),
+                            source: None,
                         };
                         debug!(msg_id = %channel_msg.id, "received telegram message");
                         if tx.send(channel_msg).await.is_err() {

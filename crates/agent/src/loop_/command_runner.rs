@@ -293,10 +293,7 @@ impl AgentLoop {
 
     /// Handle /agents command — list available agent specs (folder-based).
     pub(super) async fn handle_agent_specs_command(&self) -> String {
-        let mgr = AgentSpecManager::new(
-            self.agents_dir.clone(),
-            self.personalities_dir.clone(),
-        );
+        let mgr = AgentSpecManager::new(self.agents_dir.clone());
         let list = mgr.list_specs();
         if list.is_empty() {
             return format!(
@@ -321,10 +318,7 @@ impl AgentLoop {
     /// Handle /templates command — list available agent templates (deprecated, use /agents).
     pub(super) async fn handle_templates_command(&self) -> String {
         // First try new agent_spec directory
-        let spec_mgr = AgentSpecManager::new(
-            self.agents_dir.clone(),
-            self.personalities_dir.clone(),
-        );
+        let spec_mgr = AgentSpecManager::new(self.agents_dir.clone());
         let spec_list = spec_mgr.list_specs();
         if !spec_list.is_empty() {
             let mut result = "🤖 *사용 가능한 에이전트 스펙 (/agents로 이동):*\n".to_string();

@@ -102,8 +102,6 @@ pub struct AgentLoop {
     templates_dir: std::path::PathBuf,
     /// 에이전트 스펙 폴더 기반 디렉토리.
     agents_dir: std::path::PathBuf,
-    /// 퍼스널리티 디렉토리.
-    personalities_dir: std::path::PathBuf,
     /// 컨텍스트 보존 기간 (일, 기본값: 3).
     context_retention_days: u64,
 }
@@ -154,7 +152,6 @@ impl AgentLoop {
             auto_spawn_config: None,
             templates_dir: std::path::PathBuf::from("templates"),
             agents_dir: std::path::PathBuf::from("agents"),
-            personalities_dir: std::path::PathBuf::from("personalities"),
             context_retention_days: DEFAULT_CONTEXT_RETENTION_DAYS,
             event_tx: None,
         }
@@ -258,11 +255,7 @@ impl AgentLoop {
         self
     }
 
-    /// Set the personalities directory path.
-    pub fn with_personalities_dir(mut self, dir: std::path::PathBuf) -> Self {
-        self.personalities_dir = dir;
-        self
-    }
+
 
     /// 대시보드 broadcast sender 설정 — 에이전트 상태 이벤트를 실시간 전송한다.
     pub fn with_event_tx(mut self, tx: tokio::sync::broadcast::Sender<DashboardEvent>) -> Self {

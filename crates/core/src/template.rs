@@ -12,7 +12,9 @@ use crate::error::{Result, TiguError};
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentTemplate {
     pub agent: TemplateAgentSection,
-    pub personality: TemplatePersonalitySection,
+    /// [Deprecated] personality 섹션 — 성격/소울은 이제 AGENT.md에 직접 작성.
+    #[serde(default)]
+    pub personality: Option<TemplatePersonalitySection>,
     pub capabilities: Option<TemplateCapabilitiesSection>,
 }
 

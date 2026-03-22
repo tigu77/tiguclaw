@@ -7,6 +7,8 @@ export interface AgentInfo {
   status?: "active" | "idle" | "dead";
   /** 현재 실행 상태: "idle" | "thinking" | "executing:tool명" */
   current_status?: string;
+  /** 부모 에이전트 이름 (L0는 없음) */
+  parent_agent?: string;
 }
 
 export interface LogEntry {

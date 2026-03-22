@@ -57,6 +57,8 @@ pub struct SpawnRequest {
     pub hooks_url: Option<String>,
     /// Phase 8-2: 직통 Hooks API 인증 토큰.
     pub hooks_token: Option<String>,
+    /// 부모 에이전트 이름 (L0는 None, L1은 supermaster 이름, L2는 L1 이름).
+    pub parent_agent: Option<String>,
 }
 
 /// 실행 중인 에이전트 정보 (list 응답용).
@@ -70,6 +72,8 @@ pub struct AgentInfo {
     pub agent_role: AgentRole,
     /// Phase 8-2: 직통 Hooks 엔드포인트 (있는 경우).
     pub hooks_url: Option<String>,
+    /// 부모 에이전트 이름.
+    pub parent_agent: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +97,8 @@ struct AgentHandle {
     hooks_token: Option<String>,
     /// Phase 9-4: steer 신호 송신기.
     steer_tx: mpsc::Sender<String>,
+    /// 부모 에이전트 이름.
+    parent_agent: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +213,7 @@ impl AgentRegistry {
                 channel_type: h.channel_type.clone(),
                 persistent: h.persistent,
                 current_status: self.get_status(&h.name),
+                parent_agent: h.parent_agent.clone(),
             }));
             let _ = tx.send(DashboardEvent::AgentStatus { agents });
         }
@@ -348,6 +355,7 @@ impl AgentRegistry {
                 hooks_url: req.hooks_url.clone(),
                 hooks_token: req.hooks_token.clone(),
                 steer_tx: steer_tx_handle,
+                parent_agent: req.parent_agent.clone(),
             },
         );
 
@@ -521,6 +529,7 @@ impl AgentRegistry {
                 channel_type: sm.channel_type.clone(),
                 agent_role: AgentRole::Supermaster,
                 hooks_url: None,
+                parent_agent: None,
             });
         }
         result.extend(self.agents.values().map(|h| AgentInfo {
@@ -530,6 +539,7 @@ impl AgentRegistry {
             channel_type: h.channel_type.clone(),
             agent_role: h.agent_role.clone(),
             hooks_url: h.hooks_url.clone(),
+            parent_agent: h.parent_agent.clone(),
         }));
         result
     }
@@ -576,6 +586,7 @@ impl AgentRegistry {
                 system_prompt_override: Some(pa.system_prompt.clone()),
                 hooks_url: None,
                 hooks_token: None,
+                parent_agent: None,
             };
 
             match self.spawn_agent(req, None).await {

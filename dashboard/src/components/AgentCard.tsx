@@ -50,7 +50,7 @@ export default function AgentCard({ agent, selected, onClick }: AgentCardProps) 
       <span className="text-xl leading-none">{icon}</span>
       <div className="flex-1 min-w-0">
         <div className="text-sm font-mono text-white truncate">{agent.name}</div>
-        <div className="text-xs text-gray-400">{label} • Lv.{agent.level}</div>
+        <div className="text-xs text-gray-400">{label}</div>
         {(isThinking || isExecuting) && (
           <div className="text-xs text-gray-400 mt-0.5 truncate">
             {isExecuting ? `🔧 ${toolName} 실행 중` : "💭 생각 중..."}

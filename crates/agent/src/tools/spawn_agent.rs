@@ -36,8 +36,6 @@ pub struct SpawnAgentTool {
     templates_dir: PathBuf,
     /// 에이전트 스펙 폴더 기반 디렉토리.
     agents_dir: PathBuf,
-    /// 퍼스널리티 디렉토리.
-    personalities_dir: PathBuf,
 }
 
 impl SpawnAgentTool {
@@ -46,7 +44,6 @@ impl SpawnAgentTool {
             registry,
             templates_dir: PathBuf::from("templates"),
             agents_dir: PathBuf::from("agents"),
-            personalities_dir: PathBuf::from("personalities"),
         }
     }
 
@@ -59,12 +56,6 @@ impl SpawnAgentTool {
     /// agents 디렉토리 경로를 지정한다.
     pub fn with_agents_dir(mut self, dir: PathBuf) -> Self {
         self.agents_dir = dir;
-        self
-    }
-
-    /// personalities 디렉토리 경로를 지정한다.
-    pub fn with_personalities_dir(mut self, dir: PathBuf) -> Self {
-        self.personalities_dir = dir;
         self
     }
 }
@@ -88,10 +79,6 @@ impl Tool for SpawnAgentTool {
                 "agent_spec": {
                     "type": "string",
                     "description": "agents/ 폴더 기반 스펙 이름 (예: researcher, coder, analyst). agent.toml + AGENT.md에서 설정 자동 로드. 시스템 프롬프트 자동 주입."
-                },
-                "personality": {
-                    "type": "string",
-                    "description": "personalities/ 폴더의 말투 스타일 (예: gentle, concise). agent_spec과 함께 사용."
                 },
                 "template": {
                     "type": "string",
@@ -147,11 +134,7 @@ impl Tool for SpawnAgentTool {
     ) -> Result<String> {
         // ── agent_spec 로드 (새 폴더 기반 방식) ──────────────────────────────
         let agent_spec_name = args.get("agent_spec").and_then(|v| v.as_str());
-        let personality_name = args.get("personality").and_then(|v| v.as_str());
-        let spec_mgr = AgentSpecManager::new(
-            self.agents_dir.clone(),
-            self.personalities_dir.clone(),
-        );
+        let spec_mgr = AgentSpecManager::new(self.agents_dir.clone());
         let agent_spec = if let Some(sname) = agent_spec_name {
             Some(spec_mgr.load_spec(sname)?)
         } else {
@@ -183,14 +166,13 @@ impl Tool for SpawnAgentTool {
         let (role, system_prompt_override) = if let Some(r) = args.get("role").and_then(|v| v.as_str()) {
             (r.to_string(), None)
         } else if let Some(sname) = agent_spec_name {
-            let full_prompt = spec_mgr.build_full_system_prompt(
-                sname,
-                personality_name,
-                "supermaster",
-            )?;
+            let full_prompt = spec_mgr.build_full_system_prompt(sname, "supermaster")?;
             ("".to_string(), Some(full_prompt))
         } else if let Some(ref t) = tmpl {
-            (t.personality.system_prompt.trim().to_string(), None)
+            let prompt = t.personality.as_ref()
+                .map(|p| p.system_prompt.trim().to_string())
+                .unwrap_or_default();
+            (prompt, None)
         } else {
             return Err(TiguError::Tool("'role', 'agent_spec', 또는 'template' 파라미터가 필요합니다".into()));
         };
@@ -260,6 +242,7 @@ impl Tool for SpawnAgentTool {
             system_prompt_override,
             hooks_url: hooks_url.clone(),
             hooks_token,
+            parent_agent: None,
         };
 
         let registry_arc = self.registry.clone();
@@ -272,10 +255,7 @@ impl Tool for SpawnAgentTool {
                     String::new()
                 };
                 let template_note = if let Some(sname) = agent_spec_name {
-                    let personality_note = personality_name
-                        .map(|p| format!(", personality={p}"))
-                        .unwrap_or_default();
-                    format!(" [agent_spec: {sname}{personality_note}]")
+                    format!(" [agent_spec: {sname}]")
                 } else if let Some(tname) = template_name {
                     format!(" [템플릿: {tname}]")
                 } else {

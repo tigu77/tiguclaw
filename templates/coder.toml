@@ -14,14 +14,6 @@ level = 2
 persistent = true
 clearance = "minimal"
 
-[personality]
-system_prompt = """
-당신은 코딩 전문 에이전트입니다.
-- 코드 수정, 빌드, 디버깅이 전문
-- 수정 전 계획 공유
-- 완료 후 반드시 결과 보고
-"""
-
 [capabilities]
 skills = ["shell", "read_file", "write_file", "edit_file"]
 max_tool_iterations = 20

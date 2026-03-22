@@ -161,6 +161,7 @@ async fn async_main() -> Result<()> {
                 .unwrap_or_else(|| "internal".to_string()),
             persistent: true,
             current_status: "idle".to_string(),
+            parent_agent: None,
         });
     }
 
@@ -170,13 +171,11 @@ async fn async_main() -> Result<()> {
     // Phase 8-3: 템플릿/에이전트 디렉토리 경로.
     let templates_dir = std::path::PathBuf::from(&config.agent.templates_dir);
     let agents_dir = std::path::PathBuf::from(&config.agent.agents_dir);
-    let personalities_dir = std::path::PathBuf::from(&config.agent.personalities_dir);
 
     // Agent management 툴 생성 (registry 공유).
     let spawn_agent_tool = tiguclaw_agent::tools::SpawnAgentTool::new(registry.clone())
         .with_templates_dir(templates_dir.clone())
-        .with_agents_dir(agents_dir.clone())
-        .with_personalities_dir(personalities_dir.clone());
+        .with_agents_dir(agents_dir.clone());
     let send_to_agent_tool = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone());
     let kill_agent_tool = tiguclaw_agent::tools::KillAgentTool::new(registry.clone());
     let list_agents_tool = tiguclaw_agent::tools::ListAgentsTool::new(registry.clone());
@@ -220,13 +219,10 @@ async fn async_main() -> Result<()> {
             .last()
             .unwrap_or(spec_path.as_str());
         let shared_dir = std::path::PathBuf::from(&config.agent.shared_dir);
-        let spec_manager = tiguclaw_core::AgentSpecManager::new(
-            agents_dir.clone(),
-            personalities_dir.clone(),
-        )
-        .with_shared_dir(shared_dir, config.agent.max_shared_chars);
+        let spec_manager = tiguclaw_core::AgentSpecManager::new(agents_dir.clone())
+            .with_shared_dir(shared_dir, config.agent.max_shared_chars);
         let prompt = spec_manager
-            .build_full_system_prompt(spec_name, None, "human")
+            .build_full_system_prompt(spec_name, "human")
             .map_err(|e| anyhow::anyhow!("spec 프롬프트 로드 실패: {e}"))?;
         info!(
             spec = %spec_path,
@@ -274,27 +270,11 @@ async fn async_main() -> Result<()> {
         (channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
     );
 
-    // Phase 9-4: delegation_only = true인 경우 L0 가용성 정책 주입.
-    let delegation_policy_context = if config.agent.delegation_only {
-        info!("delegation_only = true — injecting L0 availability policy into system prompt");
-        Some("\n\n## L0 Availability Policy\n\
-              You are the L0 commander. NEVER perform long-running tasks directly.\n\
-              Always delegate to L1 agents via spawn_agent.\n\
-              Keep yourself available for user communication at all times.\n\
-              Report escalations from sub-agents to the user immediately."
-            .to_string())
-    } else {
-        None
-    };
-
     // Assemble system prompt via PromptBuilder.
-    let mut prompt_builder = tiguclaw_agent::PromptBuilder::new(base_prompt)
+    let system_prompt = tiguclaw_agent::PromptBuilder::new(base_prompt)
         .with_workspace(workspace_context)
-        .with_section(channel_context);
-    if let Some(ref delegation_ctx) = delegation_policy_context {
-        prompt_builder = prompt_builder.with_section(delegation_ctx.clone());
-    }
-    let system_prompt = prompt_builder.build();
+        .with_section(channel_context)
+        .build();
     info!(total_prompt_len = system_prompt.len(), "system prompt assembled");
 
     // Build conversation store for history persistence.
@@ -389,8 +369,7 @@ async fn async_main() -> Result<()> {
         .with_skills(skill_manager)
         .with_hooks_rx(hooks_rx)
         .with_templates_dir(templates_dir)
-        .with_agents_dir(agents_dir)
-        .with_personalities_dir(personalities_dir);
+        .with_agents_dir(agents_dir);
 
     // Phase 10: 대시보드 event_tx를 AgentLoop에 연결 — 에이전트 상태 실시간 broadcast.
     let agent = if let Some(ref ds) = dashboard_server {

@@ -59,8 +59,6 @@ fn default_max_spawn() -> usize {
 pub struct AgentSpecManager {
     /// `agents/` 루트 디렉토리.
     specs_dir: PathBuf,
-    /// `personalities/` 루트 디렉토리.
-    personalities_dir: PathBuf,
     /// `shared/` 공통 컨텍스트 디렉토리.
     shared_dir: PathBuf,
     /// 각 shared 파일 최대 문자 수.
@@ -88,10 +86,9 @@ fn truncate_chars(s: &str, max_chars: usize) -> String {
 
 impl AgentSpecManager {
     /// 새 AgentSpecManager를 생성한다.
-    pub fn new(specs_dir: PathBuf, personalities_dir: PathBuf) -> Self {
+    pub fn new(specs_dir: PathBuf) -> Self {
         Self {
             specs_dir,
-            personalities_dir,
             shared_dir: PathBuf::from("shared"),
             max_shared_chars: 4000,
         }
@@ -194,23 +191,6 @@ impl AgentSpecManager {
         })
     }
 
-    /// `personalities/{name}.md`를 로드한다.
-    pub fn load_personality(&self, name: &str) -> Result<String> {
-        let path = self.personalities_dir.join(format!("{name}.md"));
-        if !path.exists() {
-            return Err(TiguError::Tool(format!(
-                "personality '{name}'을 찾을 수 없습니다: {}",
-                path.display()
-            )));
-        }
-        std::fs::read_to_string(&path).map_err(|e| {
-            TiguError::Tool(format!(
-                "personality 읽기 실패 ({}): {e}",
-                path.display()
-            ))
-        })
-    }
-
     /// 숨겨진 시스템 프롬프트를 자동 생성한다.
     ///
     /// 포맷:
@@ -275,11 +255,11 @@ impl AgentSpecManager {
 
     /// 전체 시스템 프롬프트를 조합한다.
     ///
-    /// 순서: `hidden_prompt` → `shared context` → `AGENT.md` → `personality` (선택)
+    /// 순서: `hidden_prompt` → `shared context` → `AGENT.md`
+    /// 성격/소울은 각 AGENT.md에 직접 작성한다.
     pub fn build_full_system_prompt(
         &self,
         spec_name: &str,
-        personality: Option<&str>,
         parent_name: &str,
     ) -> Result<String> {
         let spec = self.load_spec(spec_name)?;
@@ -292,11 +272,6 @@ impl AgentSpecManager {
             parts.push(shared);
         }
         parts.push(agent_md);
-
-        if let Some(p) = personality {
-            let personality_content = self.load_personality(p)?;
-            parts.push(format!("## Personality\n\n{}", personality_content));
-        }
 
         Ok(parts.join("\n\n---\n\n"))
     }

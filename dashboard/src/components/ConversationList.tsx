@@ -14,6 +14,7 @@ export interface ConversationSummary {
 interface ConversationListProps {
   onSelect: (id: string) => void;
   selectedId: string | null;
+  apiBase: string;
 }
 
 function formatTime(unixSecs: number): string {
@@ -28,14 +29,14 @@ function formatTime(unixSecs: number): string {
   });
 }
 
-export default function ConversationList({ onSelect, selectedId }: ConversationListProps) {
+export default function ConversationList({ onSelect, selectedId, apiBase }: ConversationListProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchConversations = useCallback(async () => {
     try {
-      const res = await fetch("/dashboard-api/conversations");
+      const res = await fetch(`${apiBase}/api/conversations`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setConversations(data);

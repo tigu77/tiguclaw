@@ -17,6 +17,7 @@ interface ConversationDetailData {
 interface ConversationDetailProps {
   chatId: string;
   onClose: () => void;
+  apiBase: string;
 }
 
 function formatTs(unixSecs: number): string {
@@ -30,7 +31,7 @@ function formatTs(unixSecs: number): string {
   });
 }
 
-export default function ConversationDetail({ chatId, onClose }: ConversationDetailProps) {
+export default function ConversationDetail({ chatId, onClose, apiBase }: ConversationDetailProps) {
   const [data, setData] = useState<ConversationDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +42,7 @@ export default function ConversationDetail({ chatId, onClose }: ConversationDeta
     setData(null);
     setError(null);
 
-    fetch(`/dashboard-api/conversations/${encodeURIComponent(chatId)}`)
+    fetch(`${apiBase}/api/conversations/${encodeURIComponent(chatId)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();

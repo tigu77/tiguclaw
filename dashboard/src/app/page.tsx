@@ -158,6 +158,7 @@ export default function DashboardPage() {
                   <ConversationList
                     onSelect={setSelectedConvId}
                     selectedId={selectedConvId}
+                    apiBase={API_BASE}
                   />
                 </div>
               </div>
@@ -166,6 +167,7 @@ export default function DashboardPage() {
                   <ConversationDetail
                     chatId={selectedConvId}
                     onClose={() => setSelectedConvId(null)}
+                    apiBase={API_BASE}
                   />
                 </div>
               )}

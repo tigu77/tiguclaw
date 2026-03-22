@@ -29,6 +29,7 @@ max_tool_result_chars = 20000
 role = "supermaster"  # L0: 이 인스턴스가 슈퍼마스터 — 전체 군단 지휘권
 templates_dir = "templates"  # Deprecated: agents_dir 사용 권장
 agents_dir = "agents"        # 에이전트 폴더 기반 스펙 디렉토리
+# team = "hotdeal"           # 소속 팀 (shared/teams/{team}.md 자동 주입)
 
 [heartbeat]
 interval_secs = 600

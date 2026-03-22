@@ -278,11 +278,20 @@ async fn async_main() -> Result<()> {
         (channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
     );
 
+    // 팀별 지침 주입 — config.agent.team이 설정된 경우 shared/teams/{team}.md 로드.
+    let team_context = config.agent.team.as_deref().and_then(|team| {
+        let shared_dir = std::path::PathBuf::from(&config.agent.shared_dir);
+        tiguclaw_agent::WorkspaceLoader::load_team_context(&shared_dir, team)
+    });
+
     // Assemble system prompt via PromptBuilder.
-    let system_prompt = tiguclaw_agent::PromptBuilder::new(base_prompt)
+    let mut prompt_builder = tiguclaw_agent::PromptBuilder::new(base_prompt)
         .with_workspace(workspace_context)
-        .with_section(channel_context)
-        .build();
+        .with_section(channel_context);
+    if let Some(tc) = team_context {
+        prompt_builder = prompt_builder.with_section(tc);
+    }
+    let system_prompt = prompt_builder.build();
     info!(total_prompt_len = system_prompt.len(), "system prompt assembled");
 
     // Build conversation store for history persistence.
@@ -452,10 +461,18 @@ async fn async_main() -> Result<()> {
                     "## Communication Channel\nYou are communicating via **{}**. Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>. Do NOT use markdown syntax.",
                     (l1_channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
                 );
-                let l1_system_prompt = tiguclaw_agent::PromptBuilder::new(l1_prompt)
+                // 팀별 지침 주입 — entry.team (향후 확장용) 또는 전역 config.agent.team 참조.
+                let l1_team_context = config.agent.team.as_deref().and_then(|team| {
+                    let shared_dir = std::path::PathBuf::from(&config.agent.shared_dir);
+                    tiguclaw_agent::WorkspaceLoader::load_team_context(&shared_dir, team)
+                });
+                let mut l1_builder = tiguclaw_agent::PromptBuilder::new(l1_prompt)
                     .with_workspace(ws_ctx)
-                    .with_section(l1_channel_ctx)
-                    .build();
+                    .with_section(l1_channel_ctx);
+                if let Some(tc) = l1_team_context {
+                    l1_builder = l1_builder.with_section(tc);
+                }
+                let l1_system_prompt = l1_builder.build();
 
                 let agent_name = entry.name.clone();
                 let l1_provider = provider.clone();

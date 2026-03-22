@@ -159,6 +159,46 @@ impl WorkspaceLoader {
     pub fn workspace_dir(&self) -> &Path {
         &self.workspace_dir
     }
+
+    /// 팀별 지침 파일을 로드한다.
+    ///
+    /// `shared_dir/teams/{team}.md`가 존재하면 그 내용을 반환한다.
+    /// 파일이 없거나 읽기 실패 시 `None`을 반환한다 (non-fatal).
+    pub fn load_team_context(shared_dir: &Path, team: &str) -> Option<String> {
+        let team_file = shared_dir.join("teams").join(format!("{}.md", team));
+        if !team_file.exists() {
+            tracing::debug!(
+                team = %team,
+                path = %team_file.display(),
+                "team file not found — skipping (non-fatal)"
+            );
+            return None;
+        }
+        match std::fs::read_to_string(&team_file) {
+            Ok(content) => {
+                let trimmed = content.trim().to_string();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                info!(
+                    team = %team,
+                    path = %team_file.display(),
+                    bytes = trimmed.len(),
+                    "loaded team context file"
+                );
+                Some(format!("## Team Context ({})\n{}", team, trimmed))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    team = %team,
+                    path = %team_file.display(),
+                    error = %e,
+                    "failed to read team file — skipping"
+                );
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]

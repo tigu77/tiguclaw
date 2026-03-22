@@ -89,7 +89,7 @@ impl Channel for TelegramChannel {
             let result = self
                 .bot
                 .send_message(ChatId(chat_id), chunk)
-                .parse_mode(ParseMode::Markdown)
+                .parse_mode(ParseMode::Html)
                 .await;
 
             match result {

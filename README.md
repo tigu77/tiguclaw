@@ -30,50 +30,61 @@ Think of it as a personal AI army: one supermaster you talk to, and unlimited sp
 - Telegram bot token ([@BotFather](https://t.me/BotFather))
 - Anthropic API key ([console.anthropic.com](https://console.anthropic.com))
 
-### Install
+### Install & Init
 
 ```bash
-git clone https://github.com/tigu77/tiguclaw
-cd tiguclaw
-bash install.sh   # builds & installs to ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | bash
+tiguclaw init   # interactive setup — offers gateway install when done
 ```
 
-> **One-liner** (after the repo goes public):
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | bash
-> ```
-
-### Setup (run once)
+### Uninstall
 
 ```bash
-mkdir ~/.tiguclaw && cd ~/.tiguclaw
-tiguclaw init     # interactive: bot token, API key, agent name
-```
-
-### Start
-
-```bash
-tiguclaw gateway install   # registers as a background service
+curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/uninstall.sh | bash
 ```
 
 ## Architecture
 
 ```
 tiguclaw (single binary)
-├── Agent loop (L0 Supermaster)
+├── L0 Supermaster (delegation_only — never blocks on sub-tasks)
 │   ├── L1 Master agents (persistent, optional bot token)
-│   │   ├── L2 Mini agents (internal IPC)
+│   │   ├── L2 Mini agents (internal IPC, escalate_to_parent on failure)
 │   │   └── L3 Worker agents (ephemeral tasks)
 ├── REST API + WebSocket (axum, port 3002)
-└── Dashboard (static files served from ~/.tiguclaw/dashboard/)
+│   └── /hooks/agent · /hooks/steer · /hooks/escalate
+└── Dashboard (timeline view + real-time WS, DB-persisted)
 ```
+
+### Clearance Levels
+
+Each agent has a **clearance** setting that controls tool access:
+
+| Preset | Description |
+|--------|-------------|
+| `full` | All tools enabled — for trusted L0/L1 agents |
+| `standard` | Default — balanced access for most agents |
+| `minimal` | Restricted — for untrusted or ephemeral workers |
+
+Set per-agent in `agent.toml`:
+```toml
+[agent]
+clearance = "standard"   # full | standard | minimal
+```
+
+### Escalation Protocol
+
+When an L2 agent fails or gets stuck, it automatically escalates:
+1. L2 reports failure to L1 via `escalate_to_parent` tool
+2. L1 assesses and either retries or escalates to L0
+3. L0 decides: reassign, spawn new agent, or surface to human
 
 ## Agent Structure
 
 ```
 agents/
 ├── supermaster/
-│   ├── agent.toml    ← role, level, allowed tools, limits
+│   ├── agent.toml    ← role, level, clearance, allowed tools, limits
 │   └── AGENT.md      ← identity & capabilities
 ├── researcher/
 ├── coder/
@@ -87,19 +98,25 @@ shared/               ← shared across all agents
 personalities/        ← swappable personality packs
 ├── gentle.md
 └── concise.md
+
+installed/            ← market-installed agent packs
 ```
 
 ## Features
 
 - **Multi-level agent hierarchy** — L0~L3 roles with spawn/kill/steer
+- **Clearance system** — full/standard/minimal presets, per-agent in `agent.toml`
+- **Escalation protocol** — L2 failure → L1 report → L0 escalation via `escalate_to_parent`
+- **L0 availability guarantee** — `delegation_only = true` ensures L0 is always responsive
+- **Steer** — redirect a running agent mid-task (`/steer`, CLI, or dashboard)
 - **Telegram-native** — Control your agent army from your phone
-- **Real-time dashboard** — WebSocket-powered web UI, built-in (no Node.js required)
+- **Timeline dashboard** — per-agent and global event flow, DB-persisted, real-time WS
 - **Hybrid memory search** — local embeddings (fastembed) + vector search (sqlite-vec) + BM25 + time decay
-- **Built-in dashboard** — served directly by axum at `localhost:3002`, no separate process needed
-- **Plugin-style dashboard** — swap or customize via `~/.tiguclaw/dashboard/`
+- **DB auto-backup** — configurable retention, `tiguclaw backup` CLI
+- **Agent marketplace** — `tiguclaw market` CLI, `[package]` spec, `installed/` structure
+- **Channel context injection** — agents are told which channel they're operating in
 - **Agent folder structure** — `agents/{name}/AGENT.md` + `agent.toml`
 - **Shared context** — `shared/` folder injected into every agent's prompt
-- **Hidden system prompt** — role, tools, and limits auto-injected at spawn
 - **Personality packs** — swap tone and style without changing core logic
 - **Context management** — `/new`, `/contexts`, `/save`, `/load` with retention
 - **Auto-spawn** — Agents spawn sub-agents autonomously based on workload
@@ -107,7 +124,7 @@ personalities/        ← swappable personality packs
 - **Model escalation** — Sonnet handles all requests; escalates to Opus when complexity demands
 - **Prompt caching** — Anthropic cache for cost efficiency
 - **Monitoring channel** — Broadcast events to a Telegram group
-- **Hooks HTTP API** — `POST /hooks/agent` for external integrations
+- **Hooks HTTP API** — `POST /hooks/agent` · `/hooks/steer` for external integrations
 
 ## Configuration
 
@@ -115,6 +132,8 @@ personalities/        ← swappable personality packs
 [agent]
 name = "MyAgent"
 spec = "agents/supermaster"
+delegation_only = true   # L0: stay available, never block
+clearance = "full"       # full | standard | minimal
 
 [[channels]]
 type = "telegram"
@@ -125,6 +144,15 @@ primary = true
 [dashboard]
 enabled = true
 port = 3002
+
+[backup]
+enabled = true
+retention_days = 7       # keep last N days of DB snapshots
+
+[package]
+name = "my-agent-pack"
+version = "1.0.0"
+description = "Custom agent pack for tiguclaw market"
 ```
 
 See `config.toml.example` for the full configuration reference.
@@ -133,11 +161,12 @@ See `config.toml.example` for the full configuration reference.
 
 The dashboard is built into tiguclaw and served at `http://localhost:3002`. No Node.js required.
 
+Features the **timeline view** — per-agent and global event streams with DB persistence and real-time WebSocket updates.
+
 To develop a custom dashboard:
 
 ```bash
 cd dashboard && npm install && npm run dev
-# Then set the env var to proxy to your dev server:
 export TIGUCLAW_DEV_DASHBOARD=http://localhost:3001
 ```
 
@@ -150,7 +179,7 @@ You can also swap the dashboard entirely by placing your own static files in `~/
 | `/spawn <label> <task>` | Spawn a sub-agent |
 | `/agents` | List active agents |
 | `/kill <label>` | Kill an agent |
-| `/steer <label> <message>` | Redirect a sub-agent |
+| `/steer <label> <message>` | Redirect a running agent |
 | `/send <label> <message>` | Send message to a sub-agent |
 | `/specs` | List available agent specs |
 | `/new [name]` | Save context & start fresh |
@@ -159,16 +188,36 @@ You can also swap the dashboard entirely by placing your own static files in `~/
 | `/load <name>` | Load a saved context |
 | `/status` | Show stats & costs |
 
+CLI equivalent: `tiguclaw steer <name> "<message>"`
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `tiguclaw init` | Interactive setup (offers gateway install on completion) |
+| `tiguclaw gateway install` | Register as background service |
+| `tiguclaw backup` | Manual DB backup |
+| `tiguclaw market` | Browse & install agent packs |
+| `tiguclaw steer <name> "<msg>"` | Redirect a running agent |
+
 ## Roadmap
 
 - [x] Multi-level agent hierarchy (L0~L3)
 - [x] Real-time web dashboard (built-in, no Node.js)
+- [x] Timeline dashboard (per-agent & global, DB-persisted, WS)
 - [x] Hybrid memory search (fastembed + sqlite-vec + BM25)
 - [x] Agent folder structure + personality packs
 - [x] Shared context (`shared/`)
 - [x] Auto-spawn & approval policy
 - [x] Context management with retention
-- [ ] Agent marketplace (`tiguclaw market`)
+- [x] Clearance system (full / standard / minimal)
+- [x] Escalation protocol (L2 → L1 → L0)
+- [x] L0 availability guarantee (`delegation_only`)
+- [x] Steer (mid-task redirect via CLI / hook / dashboard)
+- [x] DB auto-backup + retention
+- [x] Agent marketplace CLI (`tiguclaw market`)
+- [x] Channel context injection
+- [ ] tiguclaw-hub — community market repository (Phase 10, separate repo)
 - [ ] Distributed agents across machines
 - [ ] Discord / Slack channels
 

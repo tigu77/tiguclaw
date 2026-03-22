@@ -3,6 +3,7 @@
 use crate::error::TiguError;
 use crate::security::SecurityPolicy;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Top-level configuration.
@@ -48,6 +49,51 @@ pub struct Config {
     /// Phase 9-3: 마켓 설정.
     #[serde(default)]
     pub market: MarketConfig,
+    /// 에이전트 컨텍스트 접근 권한 프리셋 (full / standard / minimal 및 커스텀).
+    #[serde(default = "default_clearance_presets")]
+    pub clearance: HashMap<String, ClearancePreset>,
+}
+
+// ─── ClearancePreset ────────────────────────────────────────────────────────
+
+/// 에이전트 컨텍스트 접근 권한 프리셋 — 읽어들일 워크스페이스 파일 목록 정의.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ClearancePreset {
+    /// 이 clearance 레벨에서 로드할 워크스페이스 파일 목록 (순서대로 로드됨).
+    pub files: Vec<String>,
+}
+
+/// 기본 clearance 프리셋 3개 (full / standard / minimal).
+fn default_clearance_presets() -> HashMap<String, ClearancePreset> {
+    let mut map = HashMap::new();
+    map.insert(
+        "full".to_string(),
+        ClearancePreset {
+            files: vec![
+                "CORE.md".to_string(),
+                "SOUL.md".to_string(),
+                "USER.md".to_string(),
+                "IDENTITY.md".to_string(),
+                "AGENTS.md".to_string(),
+                "MEMORY.md".to_string(),
+                "HEARTBEAT.md".to_string(),
+                "TOOLS.md".to_string(),
+            ],
+        },
+    );
+    map.insert(
+        "standard".to_string(),
+        ClearancePreset {
+            files: vec!["CORE.md".to_string(), "USER.md".to_string()],
+        },
+    );
+    map.insert(
+        "minimal".to_string(),
+        ClearancePreset {
+            files: vec!["CORE.md".to_string()],
+        },
+    );
+    map
 }
 
 // ─── MemoryConfig / EmbeddingConfig ─────────────────────────────────────────
@@ -133,6 +179,12 @@ pub struct AgentEntry {
     pub hooks_port: Option<u16>,
     /// 활성화 여부.
     pub enabled: bool,
+    /// 컨텍스트 접근 권한 프리셋 이름 (default: L1+="minimal").
+    #[serde(default = "default_entry_clearance")]
+    pub clearance: String,
+    /// 이 에이전트에서 허용할 스킬(툴) 목록. 빈 배열이면 전부 허용.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -275,6 +327,13 @@ pub struct AgentConfig {
     /// 각 shared 파일 최대 문자 수 (default: 4000).
     #[serde(default = "default_max_shared_chars")]
     pub max_shared_chars: usize,
+    /// 컨텍스트 접근 권한 프리셋 이름 (default: L0="full").
+    /// 지정된 이름으로 [clearance.*] 섹션을 조회하여 로드할 파일 목록을 결정한다.
+    #[serde(default = "default_agent_clearance")]
+    pub clearance: String,
+    /// 이 에이전트에서 허용할 스킬(툴) 목록. 빈 배열이면 전부 허용.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 fn default_agent_name() -> String {
@@ -303,6 +362,14 @@ fn default_shared_dir() -> String {
 
 fn default_max_shared_chars() -> usize {
     4000
+}
+
+fn default_agent_clearance() -> String {
+    "full".to_string()
+}
+
+fn default_entry_clearance() -> String {
+    "minimal".to_string()
 }
 
 fn default_max_tool_iterations() -> usize {

@@ -87,6 +87,45 @@ impl WorkspaceLoader {
         result
     }
 
+    /// clearance 파일 목록에 따라 워크스페이스 파일을 선별 로드한다.
+    ///
+    /// `files`에 포함된 파일만 순서대로 로드한다. 비어있으면 빈 문자열 반환.
+    /// 기존 `load_context()`와 달리 CORE.md를 자동으로 먼저 로드하지 않는다.
+    /// (파일 목록 순서 그대로 처리하므로, 목록에 CORE.md가 첫 번째에 있으면 자연히 먼저 로드됨.)
+    pub fn load_context_with_clearance(&self, files: &[String]) -> String {
+        if files.is_empty() {
+            return String::new();
+        }
+
+        let mut sections = Vec::new();
+
+        for name in files {
+            if let Some(content) = self.read_file(name) {
+                let trimmed = content.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let file_path = self.workspace_dir.join(name);
+                let display_path = file_path.display();
+                sections.push(format!("## {display_path}\n{trimmed}"));
+                info!(file = %name, bytes = trimmed.len(), "loaded workspace file (clearance)");
+            }
+        }
+
+        if sections.is_empty() {
+            return String::new();
+        }
+
+        let mut result = String::from(
+            "## Project Context\nThe following project context files have been loaded:\n",
+        );
+        for section in sections {
+            result.push('\n');
+            result.push_str(&section);
+        }
+        result
+    }
+
     /// Read a single file from the workspace directory.
     ///
     /// Returns `None` if the file doesn't exist or can't be read.

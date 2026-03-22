@@ -12,6 +12,7 @@ name = "researcher"
 description = "리서치 전담 에이전트 — 웹 검색, 정보 수집, 요약"
 level = 2
 persistent = true
+clearance = "minimal"
 
 [personality]
 system_prompt = """
@@ -23,5 +24,5 @@ system_prompt = """
 """
 
 [capabilities]
-allowed_tools = ["web_fetch", "shell", "read_file"]
+skills = ["web_fetch", "shell", "read_file"]
 max_tool_iterations = 15

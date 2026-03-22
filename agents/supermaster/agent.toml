@@ -11,9 +11,10 @@ tags = ["orchestration", "master"]
 name = "supermaster"
 description = "Supreme commander — orchestrates the entire agent army"
 level = 0
+clearance = "full"
 
 [capabilities]
-tools = []  # 빈 배열 = 전체 허용 (L0은 모든 툴)
+skills = []  # 빈 배열 = 전부 허용 (L0은 모든 툴)
 max_spawn = 0  # 0 = 무제한
 
 [relations]

@@ -222,13 +222,25 @@ async fn async_main() -> Result<()> {
         prompt
     };
 
-    // Load workspace context files.
+    // Load workspace context files — clearance 기반 필터링 적용.
     let workspace_loader =
         tiguclaw_agent::WorkspaceLoader::new(&config.agent.workspace_dir);
-    let workspace_context = workspace_loader.load_context();
+    let workspace_context = {
+        let clearance_files = config.clearance
+            .get(&config.agent.clearance)
+            .map(|p| p.files.clone())
+            .unwrap_or_default();
+        if clearance_files.is_empty() {
+            // clearance 프리셋이 없거나 빈 경우 전체 로드 (하위 호환).
+            workspace_loader.load_context()
+        } else {
+            workspace_loader.load_context_with_clearance(&clearance_files)
+        }
+    };
     if !workspace_context.is_empty() {
         info!(
             workspace_dir = %config.agent.workspace_dir,
+            clearance = %config.agent.clearance,
             context_len = workspace_context.len(),
             "loaded workspace context"
         );
@@ -388,13 +400,21 @@ async fn async_main() -> Result<()> {
                     load_system_prompt(&config.agent.system_prompt_file)?
                 };
 
-                // 워크스페이스 컨텍스트.
+                // 워크스페이스 컨텍스트 — clearance 기반 필터링 적용.
                 let ws_dir = entry
                     .workspace_dir
                     .clone()
                     .unwrap_or_else(|| config.agent.workspace_dir.clone());
                 let ws_loader = tiguclaw_agent::WorkspaceLoader::new(&ws_dir);
-                let ws_ctx = ws_loader.load_context();
+                let l1_clearance_files = config.clearance
+                    .get(&entry.clearance)
+                    .map(|p| p.files.clone())
+                    .unwrap_or_else(|| vec!["CORE.md".to_string()]);
+                let ws_ctx = if l1_clearance_files.is_empty() {
+                    ws_loader.load_context()
+                } else {
+                    ws_loader.load_context_with_clearance(&l1_clearance_files)
+                };
                 let l1_channel_ctx = format!(
                     "## Communication Channel\nYou are communicating via **{}**. Format your responses accordingly.",
                     (l1_channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()

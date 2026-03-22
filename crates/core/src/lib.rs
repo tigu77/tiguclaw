@@ -3,6 +3,7 @@
 pub mod types;
 pub mod error;
 pub mod config;
+pub mod backup;
 pub mod event;
 pub mod provider;
 pub mod channel;

@@ -70,6 +70,9 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Run a manual DB backup immediately
+    Backup,
 }
 
 #[derive(Subcommand)]
@@ -210,6 +213,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Memory { action } => memory(action),
         Commands::Config { action } => config_cmd(action),
         Commands::Init { yes, dir, force } => init(*yes, dir.clone(), *force),
+        Commands::Backup => backup_now(),
     }
 }
 
@@ -1054,6 +1058,105 @@ fn set_toml_value(
 
     cur[last] = new_item;
     Ok(())
+}
+
+// ─── Backup ───────────────────────────────────────────────────────────────────
+
+fn backup_now() -> Result<()> {
+    use tiguclaw_core::backup::{run_backup, BackupResult, BackupStatus};
+    use tiguclaw_core::Config;
+
+    let config = Config::load(CONFIG_FILE)
+        .map_err(|e| anyhow::anyhow!("config 로드 실패: {e}"))?;
+
+    let config_dir = std::env::current_dir().context("현재 디렉토리 확인 실패")?;
+    let backup_cfg = &config.backup;
+
+    if !backup_cfg.enabled {
+        println!("ℹ️  백업이 비활성화되어 있습니다 (config.toml: backup.enabled = false)");
+        return Ok(());
+    }
+
+    // 소스/대상 경로 미리 계산 (출력용)
+    let backup_root = if std::path::Path::new(&backup_cfg.backup_dir).is_absolute() {
+        std::path::PathBuf::from(&backup_cfg.backup_dir)
+    } else {
+        config_dir.join(&backup_cfg.backup_dir)
+    };
+
+    // 오늘 날짜 (간단 계산)
+    let today = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let days = secs / 86400;
+        unix_days_to_ymd_cli(days as i64)
+    };
+
+    let data_dir = config_dir.join("data");
+    let dest_dir = backup_root.join(&today);
+
+    println!(
+        "📦 Backing up {} → {}/",
+        data_dir.display(),
+        dest_dir.display()
+    );
+
+    let result = run_backup(&config_dir, backup_cfg);
+
+    match result.status {
+        BackupStatus::Success => {
+            println!(
+                "✅ Backup complete ({} files, {})",
+                result.file_count,
+                BackupResult::format_size(result.total_bytes)
+            );
+            for removed in &result.removed {
+                println!("🗑️  Removed old backup: {}/{}", backup_cfg.backup_dir, removed);
+            }
+        }
+        BackupStatus::Skipped => {
+            println!(
+                "ℹ️  {}",
+                result.message.as_deref().unwrap_or("오늘 백업이 이미 있습니다")
+            );
+        }
+        BackupStatus::Disabled => {
+            println!("ℹ️  백업이 비활성화되어 있습니다");
+        }
+        BackupStatus::Error => {
+            let msg = result.message.as_deref().unwrap_or("알 수 없는 오류");
+            anyhow::bail!("백업 실패: {}", msg);
+        }
+    }
+
+    Ok(())
+}
+
+/// YYYY-MM-DD 날짜 문자열 생성 (cli 전용 — core 의존 없이 동일 로직)
+fn unix_days_to_ymd_cli(days: i64) -> String {
+    fn is_leap(y: i64) -> bool {
+        (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    }
+    let mut y = 1970i64;
+    let mut d = days;
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if d < days_in_year { break; }
+        d -= days_in_year;
+        y += 1;
+    }
+    let leap = is_leap(y);
+    let month_days: [i64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 1i64;
+    for md in &month_days {
+        if d < *md { break; }
+        d -= md;
+        m += 1;
+    }
+    format!("{:04}-{:02}-{:02}", y, m, d + 1)
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────────────

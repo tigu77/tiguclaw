@@ -3486,6 +3486,7 @@ dependencies = [
  "anyhow",
  "clap",
  "rusqlite",
+ "tiguclaw-core",
  "toml_edit",
 ]
 

@@ -42,6 +42,9 @@ pub struct Config {
     /// 메모리/임베딩 설정.
     #[serde(default)]
     pub memory: MemoryConfig,
+    /// DB 자동 백업 설정.
+    #[serde(default)]
+    pub backup: BackupConfig,
 }
 
 // ─── MemoryConfig / EmbeddingConfig ─────────────────────────────────────────
@@ -444,6 +447,38 @@ fn default_dashboard_port() -> u16 {
 
 fn default_cors_origin() -> String {
     "*".to_string()
+}
+
+/// DB 자동 백업 설정.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BackupConfig {
+    /// 백업 활성화 여부 (기본값: true).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 백업 보관 일수 (기본값: 7).
+    #[serde(default = "default_backup_retention_days")]
+    pub retention_days: u32,
+    /// 백업 디렉토리 (기본값: "backups").
+    #[serde(default = "default_backup_dir")]
+    pub backup_dir: String,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention_days: default_backup_retention_days(),
+            backup_dir: default_backup_dir(),
+        }
+    }
+}
+
+fn default_backup_retention_days() -> u32 {
+    7
+}
+
+fn default_backup_dir() -> String {
+    "backups".to_string()
 }
 
 /// 컨텍스트 보존 설정.

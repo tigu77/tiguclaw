@@ -8,3 +8,4 @@ clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 toml_edit = "0.22"
 rusqlite = { version = "0.34", features = ["bundled"] }
+tiguclaw-core = { workspace = true }

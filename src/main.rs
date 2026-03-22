@@ -488,6 +488,39 @@ async fn async_main() -> Result<()> {
         });
     }
 
+    // 자동 백업 스케줄 — 시작 시 1회 + 이후 매 24시간마다 실행.
+    {
+        let backup_config = config.backup.clone();
+        let config_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        tokio::spawn(async move {
+            loop {
+                let result = tiguclaw_core::backup::run_backup(&config_dir, &backup_config);
+                match result.status {
+                    tiguclaw_core::backup::BackupStatus::Success => {
+                        tracing::info!(
+                            files = result.file_count,
+                            size = %tiguclaw_core::backup::BackupResult::format_size(result.total_bytes),
+                            dest = ?result.dest,
+                            removed = result.removed.len(),
+                            "backup complete"
+                        );
+                    }
+                    tiguclaw_core::backup::BackupStatus::Skipped => {
+                        tracing::debug!(msg = ?result.message, "backup skipped");
+                    }
+                    tiguclaw_core::backup::BackupStatus::Disabled => {
+                        tracing::debug!("backup disabled — exiting backup task");
+                        break;
+                    }
+                    tiguclaw_core::backup::BackupStatus::Error => {
+                        tracing::warn!(error = ?result.message, "backup failed");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(86400)).await;
+            }
+        });
+    }
+
     info!("tiguclaw ready — listening for messages");
 
     // Run with graceful shutdown on Ctrl+C.

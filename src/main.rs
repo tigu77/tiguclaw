@@ -234,9 +234,16 @@ async fn async_main() -> Result<()> {
         );
     }
 
+    // 채널 컨텍스트 — 에이전트가 어떤 채널로 소통 중인지 인식
+    let channel_context = format!(
+        "## Communication Channel\nYou are communicating via **{}**. Format your responses accordingly (e.g. for telegram: use Markdown, keep messages concise).",
+        (channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
+    );
+
     // Assemble system prompt via PromptBuilder.
     let system_prompt = tiguclaw_agent::PromptBuilder::new(base_prompt)
         .with_workspace(workspace_context)
+        .with_section(channel_context)
         .build();
     info!(total_prompt_len = system_prompt.len(), "system prompt assembled");
 
@@ -388,8 +395,13 @@ async fn async_main() -> Result<()> {
                     .unwrap_or_else(|| config.agent.workspace_dir.clone());
                 let ws_loader = tiguclaw_agent::WorkspaceLoader::new(&ws_dir);
                 let ws_ctx = ws_loader.load_context();
+                let l1_channel_ctx = format!(
+                    "## Communication Channel\nYou are communicating via **{}**. Format your responses accordingly.",
+                    (l1_channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
+                );
                 let l1_system_prompt = tiguclaw_agent::PromptBuilder::new(l1_prompt)
                     .with_workspace(ws_ctx)
+                    .with_section(l1_channel_ctx)
                     .build();
 
                 let agent_name = entry.name.clone();

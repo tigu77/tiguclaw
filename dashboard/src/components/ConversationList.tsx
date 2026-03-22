@@ -12,7 +12,7 @@ export interface ConversationSummary {
 }
 
 interface ConversationListProps {
-  onSelect: (id: string) => void;
+  onSelect: (id: string, agentName: string) => void;
   selectedId: string | null;
   apiBase: string;
 }
@@ -94,7 +94,7 @@ export default function ConversationList({ onSelect, selectedId, apiBase }: Conv
         return (
           <button
             key={conv.id}
-            onClick={() => onSelect(conv.id)}
+            onClick={() => onSelect(conv.id, conv.agent_name)}
             className={`flex flex-col gap-1 px-3 py-2.5 rounded-lg border text-left transition-colors ${
               isSelected
                 ? "border-blue-500/50 bg-blue-500/10"

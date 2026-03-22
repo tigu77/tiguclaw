@@ -33,6 +33,7 @@ export default function DashboardPage() {
   const { agents, logs, connected, timelineEvents } = useDashboard(WS_URL);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedAgentName, setSelectedAgentName] = useState<string>("");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [agentViewMode, setAgentViewMode] = useState<"list" | "tree">("list");
 
@@ -191,7 +192,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="flex-1 min-h-0 rounded-xl border border-white/10 bg-white/5 p-3 overflow-hidden">
                   <ConversationList
-                    onSelect={setSelectedConvId}
+                    onSelect={(id, agentName) => { setSelectedConvId(id); setSelectedAgentName(agentName); }}
                     selectedId={selectedConvId}
                     apiBase={API_BASE}
                   />
@@ -201,6 +202,7 @@ export default function DashboardPage() {
                 <div className="flex-1 min-h-0 min-w-0">
                   <ConversationDetail
                     chatId={selectedConvId}
+                    agentName={selectedAgentName}
                     onClose={() => setSelectedConvId(null)}
                     apiBase={API_BASE}
                   />

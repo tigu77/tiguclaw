@@ -16,6 +16,7 @@ interface ConversationDetailData {
 
 interface ConversationDetailProps {
   chatId: string;
+  agentName: string;
   onClose: () => void;
   apiBase: string;
 }
@@ -31,7 +32,7 @@ function formatTs(unixSecs: number): string {
   });
 }
 
-export default function ConversationDetail({ chatId, onClose, apiBase }: ConversationDetailProps) {
+export default function ConversationDetail({ chatId, agentName, onClose, apiBase }: ConversationDetailProps) {
   const [data, setData] = useState<ConversationDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +78,7 @@ export default function ConversationDetail({ chatId, onClose, apiBase }: Convers
       const res = await fetch(`${apiBase}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_name: chatId, message: text }),
+        body: JSON.stringify({ agent_name: agentName, message: text }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       // 메시지 전송 후 잠시 기다렸다가 대화 새로고침

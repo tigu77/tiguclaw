@@ -363,6 +363,10 @@ impl AgentRegistry {
         let (steer_tx_handle, steer_rx_spawned) = mpsc::channel::<String>(8);
         let provider = self.provider.clone();
         let tools = self.tools.clone();
+        // 부모 에이전트의 inject_tx — 작업 완료 시 결과 자동 주입용.
+        let parent_inject_tx = self.primary_inject_tx.clone();
+        let _parent_name = req.parent_agent.clone();
+
         let name = req.name.clone();
 
         let channel_type: String;
@@ -392,8 +396,10 @@ impl AgentRegistry {
             if !persistent_flag {
                 // Non-persistent: 첫 태스크 완료 후 loop 종료 + registry에서 자동 제거.
                 let (cleanup_tx, cleanup_rx) = oneshot::channel::<String>();
+                let inject_tx = parent_inject_tx.clone();
+                let agent_name_for_report = name.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report).await;
                     debug!(name = %name, "non-persistent agent task ended");
                     let _ = cleanup_tx.send(name.clone());
                 });
@@ -411,8 +417,10 @@ impl AgentRegistry {
                     });
                 }
             } else {
+                let inject_tx = parent_inject_tx.clone();
+                let agent_name_for_report = name.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report).await;
                     debug!(name = %name, "spawned agent task ended");
                 });
             }
@@ -854,6 +862,8 @@ async fn run_spawned_agent(
     mut task_rx: mpsc::Receiver<AgentTask>,
     mut steer_rx: mpsc::Receiver<String>,
     persistent: bool,
+    parent_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
+    agent_name: String,
 ) {
     info!(name = %name, persistent, "spawned agent loop started");
 
@@ -907,8 +917,26 @@ async fn run_spawned_agent(
         };
 
         if let Some(reply_tx) = task.reply_tx {
-            if reply_tx.send(response).is_err() {
+            if reply_tx.send(response.clone()).is_err() {
                 warn!(name = %name, "reply_tx dropped before response could be sent");
+            }
+        } else if let Some(ref inject_tx) = parent_inject_tx {
+            // fire-and-forget: 작업 완료 후 부모 L0에 자동 보고.
+            let report_msg = format!("[{}] 작업 완료:\n{}", agent_name, &response[..response.len().min(500)]);
+            let channel_msg = ChannelMessage {
+                id: String::new(),
+                sender: String::from("0"),
+                content: report_msg,
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
+                source: Some("agent-report".into()),
+            };
+            if inject_tx.send(channel_msg).await.is_err() {
+                warn!(name = %name, "parent inject_tx closed — report not delivered");
+            } else {
+                info!(name = %name, "auto-reported to parent via inject_tx");
             }
         }
 
@@ -951,11 +979,18 @@ async fn run_agent_task(
     // LLM + 툴 루프 (최대 10회 반복).
     const MAX_ITERATIONS: usize = 10;
 
+    info!(name = %name, history_len = history.len(), "run_agent_task: LLM 루프 시작");
+
     for iteration in 0..MAX_ITERATIONS {
+        info!(name = %name, iteration, msg_count = messages.len(), "run_agent_task: LLM 호출 시작");
         let response = provider
             .chat(&messages, &tool_defs)
             .await
-            .map_err(|e| anyhow::anyhow!("provider error: {e}"))?;
+            .map_err(|e| {
+                warn!(name = %name, iteration, error = %e, "run_agent_task: LLM 호출 실패");
+                anyhow::anyhow!("provider error: {e}")
+            })?;
+        info!(name = %name, iteration, text_len = response.text.len(), tool_count = response.tool_calls.len(), "run_agent_task: LLM 응답 수신");
 
         // 텍스트 응답만 있으면 완료.
         if response.tool_calls.is_empty() {
@@ -964,7 +999,7 @@ async fn run_agent_task(
             if !response.text.is_empty() {
                 history.push(ChatMessage::assistant(&response.text));
             }
-            debug!(name = %name, iteration, "agent task completed");
+            info!(name = %name, iteration, reply_len = reply.len(), "run_agent_task: 완료");
             return Ok(reply);
         }
 
@@ -977,12 +1012,13 @@ async fn run_agent_task(
 
         // 모든 툴 호출 실행.
         for tool_call in &response.tool_calls {
+            info!(name = %name, iteration, tool = %tool_call.name, "run_agent_task: 툴 실행 시작");
             let result = execute_tool(tools, tool_call).await;
-            debug!(
+            info!(
                 name = %name,
                 tool = %tool_call.name,
                 result_len = result.len(),
-                "tool executed in spawned agent"
+                "run_agent_task: 툴 실행 완료"
             );
             messages.push(ChatMessage::tool_result(&tool_call.id, &result));
         }

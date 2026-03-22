@@ -4,9 +4,13 @@
 //! Handles tool_use / tool_result message conversion between core types
 //! and the Anthropic API format.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, warn};
 
 use tiguclaw_core::error::{Result, TiguError};
@@ -278,6 +282,7 @@ impl Provider for AnthropicProvider {
             "model": self.model,
             "max_tokens": effective_max_tokens,
             "messages": api_messages,
+            "stream": true,
         });
 
         // Add adaptive thinking configuration.
@@ -354,12 +359,13 @@ impl Provider for AnthropicProvider {
             .map_err(|e| TiguError::Provider(format!("request failed: {e}")))?;
 
         let status = response.status();
-        let response_body: Value = response
-            .json()
-            .await
-            .map_err(|e| TiguError::Provider(format!("failed to parse response: {e}")))?;
 
+        // Non-2xx: read full JSON body and surface the API error.
         if !status.is_success() {
+            let response_body: Value = response
+                .json()
+                .await
+                .map_err(|e| TiguError::Provider(format!("failed to parse error response: {e}")))?;
             warn!(body = %response_body, "API error response body");
             let error_msg = response_body["error"]["message"]
                 .as_str()
@@ -390,7 +396,156 @@ impl Provider for AnthropicProvider {
             }
         }
 
-        let chat_response = Self::parse_response(&response_body, self.use_oauth)?;
+        // --- SSE streaming with per-chunk 30s timeout ---
+        //
+        // The reqwest client already has a 120s total timeout as a fallback.
+        // The per-chunk timeout fires if no new bytes arrive within 30s,
+        // catching hanging connections that bypass the total timeout.
+        let byte_stream = response.bytes_stream();
+        tokio::pin!(byte_stream);
+
+        let mut line_buf: Vec<u8> = Vec::new();
+        let mut text = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+        // Per-index accumulator for streaming tool inputs.
+        // Key: content block index; Value: (tool_id, tool_name, partial_json)
+        let mut tool_input_bufs: HashMap<usize, (String, String, String)> = HashMap::new();
+        let mut usage = Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        };
+
+        'stream: loop {
+            match timeout(Duration::from_secs(30), byte_stream.next()).await {
+                Ok(Some(Ok(chunk))) => {
+                    for &byte in chunk.iter() {
+                        if byte == b'\n' {
+                            let line = String::from_utf8_lossy(&line_buf).into_owned();
+                            line_buf.clear();
+
+                            // SSE lines starting with "data: " carry the event payload.
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if data == "[DONE]" {
+                                    break 'stream;
+                                }
+                                if let Ok(event) = serde_json::from_str::<Value>(data) {
+                                    match event["type"].as_str() {
+                                        Some("message_start") => {
+                                            let u = &event["message"]["usage"];
+                                            usage.input_tokens =
+                                                u["input_tokens"].as_u64().unwrap_or(0) as u32;
+                                            usage.cache_read_tokens =
+                                                u["cache_read_input_tokens"].as_u64().unwrap_or(0)
+                                                    as u32;
+                                            usage.cache_write_tokens =
+                                                u["cache_creation_input_tokens"]
+                                                    .as_u64()
+                                                    .unwrap_or(0) as u32;
+                                        }
+                                        Some("content_block_start") => {
+                                            let idx =
+                                                event["index"].as_u64().unwrap_or(0) as usize;
+                                            let block = &event["content_block"];
+                                            if block["type"].as_str() == Some("tool_use") {
+                                                let id = block["id"]
+                                                    .as_str()
+                                                    .unwrap_or("unknown")
+                                                    .to_string();
+                                                let raw_name =
+                                                    block["name"].as_str().unwrap_or("unknown");
+                                                let name = if self.use_oauth {
+                                                    oauth::from_claude_code_name(raw_name)
+                                                        .to_string()
+                                                } else {
+                                                    raw_name.to_string()
+                                                };
+                                                tool_input_bufs
+                                                    .insert(idx, (id, name, String::new()));
+                                            }
+                                        }
+                                        Some("content_block_delta") => {
+                                            let idx =
+                                                event["index"].as_u64().unwrap_or(0) as usize;
+                                            let delta = &event["delta"];
+                                            match delta["type"].as_str() {
+                                                Some("text_delta") => {
+                                                    if let Some(t) = delta["text"].as_str() {
+                                                        text.push_str(t);
+                                                    }
+                                                }
+                                                Some("input_json_delta") => {
+                                                    if let Some(partial) =
+                                                        delta["partial_json"].as_str()
+                                                    {
+                                                        if let Some(buf) =
+                                                            tool_input_bufs.get_mut(&idx)
+                                                        {
+                                                            buf.2.push_str(partial);
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        Some("content_block_stop") => {
+                                            let idx =
+                                                event["index"].as_u64().unwrap_or(0) as usize;
+                                            if let Some((id, name, json_str)) =
+                                                tool_input_bufs.remove(&idx)
+                                            {
+                                                let args = serde_json::from_str::<
+                                                    serde_json::Map<String, Value>,
+                                                >(&json_str)
+                                                .map(|m| m.into_iter().collect())
+                                                .unwrap_or_default();
+                                                tool_calls.push(ToolCall { id, name, args });
+                                            }
+                                        }
+                                        Some("message_delta") => {
+                                            let u = &event["usage"];
+                                            usage.output_tokens =
+                                                u["output_tokens"].as_u64().unwrap_or(0) as u32;
+                                        }
+                                        Some("message_stop") => {
+                                            break 'stream;
+                                        }
+                                        Some("error") => {
+                                            let err_msg = event["error"]["message"]
+                                                .as_str()
+                                                .unwrap_or("stream error");
+                                            return Err(TiguError::Provider(format!(
+                                                "SSE error: {err_msg}"
+                                            )));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        } else if byte != b'\r' {
+                            line_buf.push(byte);
+                        }
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    return Err(TiguError::Provider(format!("stream read error: {e}")));
+                }
+                Ok(None) => break, // stream ended normally
+                Err(_elapsed) => {
+                    warn!("streaming chunk timeout (30s) — aborting request");
+                    return Err(TiguError::Provider(
+                        "LLM 스트리밍 타임아웃: 30초간 응답 없음".into(),
+                    ));
+                }
+            }
+        }
+
+        let chat_response = ChatResponse {
+            text,
+            tool_calls,
+            usage,
+        };
         debug!(
             text_len = chat_response.text.len(),
             tool_calls = chat_response.tool_calls.len(),

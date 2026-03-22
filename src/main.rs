@@ -275,7 +275,7 @@ async fn async_main() -> Result<()> {
 
     // 채널 컨텍스트 — 에이전트가 어떤 채널로 소통 중인지 인식
     let channel_context = format!(
-        "## Communication Channel\nYou are communicating via **{}**. Messages are rendered with HTML parse_mode. Use HTML tags for formatting: <b>bold</b>, <i>italic</i>, <code>code</code>, <pre>block</pre>. Do NOT use markdown syntax (* _ ` #).",
+        "## Communication Channel\nYou are communicating via **{}**. Format responses naturally with markdown (bold, italic, code blocks, etc.) — the system will auto-convert to the appropriate format for delivery.",
         (channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
     );
 
@@ -459,7 +459,7 @@ async fn async_main() -> Result<()> {
                     ws_loader.load_context_with_clearance(&l1_clearance_files)
                 };
                 let l1_channel_ctx = format!(
-                    "## Communication Channel\nYou are communicating via **{}**. Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>. Do NOT use markdown syntax.",
+                    "## Communication Channel\nYou are communicating via **{}**. Format responses naturally with markdown (bold, italic, code blocks, etc.) — the system will auto-convert to the appropriate format for delivery.",
                     (l1_channel.as_ref() as &dyn tiguclaw_core::channel::Channel).name()
                 );
                 // 팀별 지침 주입 — entry.team (향후 확장용) 또는 전역 config.agent.team 참조.

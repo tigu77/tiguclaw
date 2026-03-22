@@ -1,5 +1,110 @@
 //! TelegramChannel — Channel trait implementation using teloxide long polling.
 
+/// Convert markdown text to Telegram-safe HTML.
+///
+/// Telegram supports only: <b> <i> <u> <s> <code> <pre> <a>
+/// Unsupported elements (headings, lists, etc.) are rendered as plain text.
+fn markdown_to_telegram_html(text: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TABLES);
+
+    let parser = Parser::new_ext(text, opts);
+    let mut output = String::with_capacity(text.len());
+    let mut in_code_block = false;
+
+    for event in parser {
+        match event {
+            // Block-level opening tags
+            Event::Start(Tag::Paragraph) => {}
+            Event::End(TagEnd::Paragraph) => {
+                output.push('\n');
+            }
+            Event::Start(Tag::Heading { .. }) => {}
+            Event::End(TagEnd::Heading(_)) => {
+                output.push('\n');
+            }
+            Event::Start(Tag::BlockQuote(_)) => {}
+            Event::End(TagEnd::BlockQuote(_)) => {}
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                output.push_str("<pre>");
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                output.push_str("</pre>");
+            }
+            Event::Start(Tag::List(_)) => {}
+            Event::End(TagEnd::List(_)) => {
+                output.push('\n');
+            }
+            Event::Start(Tag::Item) => {
+                output.push_str("• ");
+            }
+            Event::End(TagEnd::Item) => {
+                output.push('\n');
+            }
+
+            // Inline formatting
+            Event::Start(Tag::Strong) => output.push_str("<b>"),
+            Event::End(TagEnd::Strong) => output.push_str("</b>"),
+            Event::Start(Tag::Emphasis) => output.push_str("<i>"),
+            Event::End(TagEnd::Emphasis) => output.push_str("</i>"),
+            Event::Start(Tag::Strikethrough) => output.push_str("<s>"),
+            Event::End(TagEnd::Strikethrough) => output.push_str("</s>"),
+
+            // Links
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                output.push_str("<a href=\"");
+                output.push_str(&escape_html(&dest_url));
+                output.push_str("\">");
+            }
+            Event::End(TagEnd::Link) => output.push_str("</a>"),
+
+            // Images — just show alt text
+            Event::Start(Tag::Image { .. }) => {}
+            Event::End(TagEnd::Image) => {}
+
+            // Inline code
+            Event::Code(code) => {
+                output.push_str("<code>");
+                output.push_str(&escape_html(&code));
+                output.push_str("</code>");
+            }
+
+            // Text content
+            Event::Text(text) => {
+                if in_code_block {
+                    output.push_str(&escape_html(&text));
+                } else {
+                    output.push_str(&escape_html(&text));
+                }
+            }
+            Event::SoftBreak => output.push('\n'),
+            Event::HardBreak => output.push('\n'),
+            Event::Rule => output.push_str("\n---\n"),
+
+            // HTML passthrough — strip tags for safety
+            Event::Html(_) | Event::InlineHtml(_) => {}
+
+            _ => {}
+        }
+    }
+
+    // Trim trailing whitespace
+    output.trim_end().to_string()
+}
+
+/// Escape HTML special characters for Telegram HTML parse mode.
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -103,9 +208,10 @@ impl Channel for TelegramChannel {
             .parse()
             .map_err(|_| TiguError::Channel(format!("invalid chat_id: {chat_id}")))?;
 
-        let chunks = split_message(text, MAX_MSG_LEN);
+        let html_text = markdown_to_telegram_html(text);
+        let chunks = split_message(&html_text, MAX_MSG_LEN);
         for chunk in &chunks {
-            // Try Markdown first, fall back to plain text on failure.
+            // Send as HTML (markdown already converted).
             let result = self
                 .bot
                 .send_message(ChatId(chat_id), chunk)

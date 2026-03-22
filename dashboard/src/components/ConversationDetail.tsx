@@ -17,6 +17,7 @@ interface ConversationDetailData {
 interface ConversationDetailProps {
   chatId: string;
   agentName: string;
+  agentStatus?: string;
   onClose: () => void;
   apiBase: string;
   refreshTrigger?: number;
@@ -33,7 +34,7 @@ function formatTs(unixSecs: number): string {
   });
 }
 
-export default function ConversationDetail({ chatId, agentName, onClose, apiBase, refreshTrigger }: ConversationDetailProps) {
+export default function ConversationDetail({ chatId, agentName, agentStatus, onClose, apiBase, refreshTrigger }: ConversationDetailProps) {
   const [data, setData] = useState<ConversationDetailData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,6 +115,12 @@ export default function ConversationDetail({ chatId, agentName, onClose, apiBase
           {data && (
             <span className="text-xs text-gray-500 font-mono">({data.messages.length}개)</span>
           )}
+          {agentStatus === "thinking"
+            ? <span className="text-xs text-blue-400 animate-pulse">💭 thinking…</span>
+            : agentStatus?.startsWith("executing:")
+            ? <span className="text-xs text-yellow-400">🔧 {agentStatus.split(":").slice(1).join(":")}</span>
+            : <span className="text-xs text-gray-500">● idle</span>
+          }
         </div>
         <button
           onClick={onClose}

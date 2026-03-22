@@ -203,6 +203,7 @@ export default function DashboardPage() {
                   <ConversationDetail
                     chatId={selectedConvId}
                     agentName={selectedAgentName}
+                    agentStatus={agents.find(a => a.name === selectedAgentName)?.current_status}
                     onClose={() => setSelectedConvId(null)}
                     apiBase={API_BASE}
                     refreshTrigger={agentIdleCount}

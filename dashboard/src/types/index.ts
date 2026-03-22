@@ -2,8 +2,9 @@ export interface AgentInfo {
   name: string;
   /** 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항) */
   nickname?: string;
-  role: string; // "supermaster" | "master" | "mini" | "worker"
-  level: number;
+  tier: number; // 0=T0(슈퍼마스터), 1=T1(책임자), 2=T2(전문가)
+  /** @deprecated level → tier로 통일됨. 하위호환용 */
+  level?: number;
   channel_type: string;
   persistent: boolean;
   status?: "active" | "idle" | "dead";

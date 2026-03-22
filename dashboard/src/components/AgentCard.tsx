@@ -2,25 +2,18 @@
 
 import { AgentInfo } from "@/types";
 
-const ROLE_ICONS: Record<string, string> = {
-  supermaster: "🌟",
-  L0: "🌟",
-  master: "⚡",
-  L1: "⚡",
-  mini: "🤖",
-  L2: "🤖",
-  worker: "🔧",
-  L3: "🔧",
+const TIER_ICONS: Record<number, string> = {
+  0: "🌟",
+  1: "⚡",
+  2: "🤖",
+  3: "🔧",
 };
 
-const ROLE_LABELS: Record<string, string> = {
-  supermaster: "슈퍼마스터",
-  L0: "슈퍼마스터",
-  master: "마스터",
-  L1: "마스터",
-  mini: "미니",
-  L2: "미니",
-  worker: "워커",
+const TIER_LABELS: Record<number, string> = {
+  0: "T0 · 총괄",
+  1: "T1 · 책임자",
+  2: "T2 · 전문가",
+  3: "T3 · 실무",
 };
 
 interface AgentCardProps {
@@ -31,8 +24,9 @@ interface AgentCardProps {
 }
 
 export default function AgentCard({ agent, selected, onClick, lastMessage }: AgentCardProps) {
-  const icon = ROLE_ICONS[agent.role] ?? "❓";
-  const label = ROLE_LABELS[agent.role] ?? agent.role;
+  const tier = agent.tier ?? agent.level ?? 1;
+  const icon = TIER_ICONS[tier] ?? "❓";
+  const label = TIER_LABELS[tier] ?? `T${tier}`;
 
   const currentStatus = agent.current_status ?? "idle";
   const isThinking = currentStatus === "thinking";

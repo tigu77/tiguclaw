@@ -50,11 +50,11 @@ function formatTime(ts: number): string {
 
 // ─── 에이전트 정보 카드 ───────────────────────────────────────────────────────
 
-const LEVEL_LABEL: Record<number, string> = {
-  0: "L0",
-  1: "L1",
-  2: "L2",
-  3: "L3",
+const TIER_LABEL: Record<number, string> = {
+  0: "T0 · 총괄",
+  1: "T1 · 책임자",
+  2: "T2 · 전문가",
+  3: "T3 · 실무",
 };
 
 function statusDot(status?: string): { dot: string; label: string } {
@@ -72,7 +72,8 @@ interface AgentInfoCardProps {
 
 function AgentInfoCard({ agent }: AgentInfoCardProps) {
   const { dot, label } = statusDot(agent.current_status);
-  const level = LEVEL_LABEL[agent.level] ?? `L${agent.level}`;
+  const tier = agent.tier ?? agent.level ?? 1;
+  const tierLabel = TIER_LABEL[tier] ?? `T${tier}`;
 
   return (
     <div className="mx-3 my-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 flex flex-col gap-1 text-xs font-mono">
@@ -84,11 +85,8 @@ function AgentInfoCard({ agent }: AgentInfoCardProps) {
       <div className="border-t border-white/10 mb-0.5" />
       {/* 속성 목록 */}
       <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-gray-400">
-        <span className="text-gray-600">레벨</span>
-        <span className="text-gray-200">{level}</span>
-
-        <span className="text-gray-600">역할</span>
-        <span className="text-gray-200">{agent.role}</span>
+        <span className="text-gray-600">티어</span>
+        <span className="text-gray-200">{tierLabel}</span>
 
         <span className="text-gray-600">팀</span>
         <span className="text-gray-200">{agent.team ?? "—"}</span>

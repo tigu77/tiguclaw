@@ -33,8 +33,7 @@ function parseEvent(evt: WsEvent): { agentPatch?: Partial<AgentInfo> & { name: s
       return {
         agentPatch: {
           name: String(p.name ?? "unknown"),
-          role: String(p.role ?? "worker"),
-          level: Number(p.level ?? 0),
+          tier: Number(p.tier ?? p.level ?? 1),
           channel_type: String(p.channel_type ?? ""),
           persistent: Boolean(p.persistent ?? false),
           status: "active",
@@ -186,8 +185,7 @@ export function useDashboard(wsUrl: string) {
           ...prev,
           {
             name: patch.name,
-            role: patch.role ?? "worker",
-            level: patch.level ?? 0,
+            tier: patch.tier ?? patch.level ?? 1,
             channel_type: patch.channel_type ?? "",
             persistent: patch.persistent ?? false,
             status: patch.status ?? "active",

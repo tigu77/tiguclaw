@@ -4,7 +4,7 @@ import { useState } from "react";
 import { AgentInfo } from "@/types";
 
 // 레벨별 색상 (이모지 + 텍스트)
-const LEVEL_DOT: Record<number, string> = {
+const TIER_DOT: Record<number, string> = {
   0: "🔵",
   1: "🟢",
   2: "🟡",
@@ -67,7 +67,7 @@ function AgentTreeNode({
   onSelect,
 }: AgentTreeNodeProps) {
   const { agent, children } = node;
-  const dot = LEVEL_DOT[agent.level] ?? "⚪";
+  const dot = TIER_DOT[agent.tier ?? agent.level ?? 1] ?? "⚪";
   const connector = isLast ? "└─" : "├─";
   const childPrefix = prefix + (isLast ? "   " : "│  ");
   const isSelected = selected === agent.name;

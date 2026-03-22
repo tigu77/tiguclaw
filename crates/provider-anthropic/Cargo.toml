@@ -12,3 +12,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 futures-util = { workspace = true }
+backon = "1"

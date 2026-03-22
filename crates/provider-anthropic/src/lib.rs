@@ -2,6 +2,8 @@
 
 mod anthropic;
 mod cascade;
+mod circuit_breaker;
+mod retry;
 pub mod oauth;
 
 pub use anthropic::{AnthropicProvider, ThinkingMode};

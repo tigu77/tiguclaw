@@ -1,29 +1,45 @@
 //! AnthropicProvider — Provider trait implementation using Anthropic Messages API.
 //!
-//! Uses non-streaming requests for simplicity in Phase 1.
+//! Uses streaming (SSE) requests.
 //! Handles tool_use / tool_result message conversion between core types
 //! and the Anthropic API format.
+//!
+//! # Retry strategy
+//!
+//! Transient errors (429, 5xx, network failures, stream timeouts) are retried
+//! up to 3 times with exponential backoff (300ms → 30s, jitter enabled).
+//! A circuit breaker opens after 3 consecutive failures, blocking requests for
+//! 30 seconds before allowing a retry probe.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use backon::{ExponentialBuilder, Retryable};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::{json, Value};
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, sleep};
 use tracing::{debug, warn};
 
 use tiguclaw_core::error::{Result, TiguError};
 use tiguclaw_core::provider::{Provider, ToolDefinition};
 use tiguclaw_core::types::*;
 
+use crate::circuit_breaker::CircuitBreaker;
 use crate::oauth;
+use crate::retry::{is_retryable, parse_retry_after};
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
 
 /// Minimum max_tokens required for adaptive thinking.
 const ADAPTIVE_MIN_MAX_TOKENS: u32 = 16384;
+
+/// Circuit breaker: open after this many consecutive failures.
+const CB_THRESHOLD: u32 = 3;
+/// Circuit breaker: block requests for this duration after opening.
+const CB_COOLDOWN: Duration = Duration::from_secs(30);
 
 /// Thinking mode for Anthropic adaptive thinking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +60,7 @@ pub struct AnthropicProvider {
     use_oauth: bool,
     thinking: ThinkingMode,
     effort: Option<String>,
+    circuit_breaker: CircuitBreaker,
 }
 
 impl AnthropicProvider {
@@ -61,6 +78,7 @@ impl AnthropicProvider {
             use_oauth,
             thinking: ThinkingMode::Off,
             effort: None,
+            circuit_breaker: CircuitBreaker::new(CB_THRESHOLD, CB_COOLDOWN),
         }
     }
 
@@ -85,6 +103,7 @@ impl AnthropicProvider {
             use_oauth,
             thinking,
             effort,
+            circuit_breaker: CircuitBreaker::new(CB_THRESHOLD, CB_COOLDOWN),
         }
     }
 
@@ -255,29 +274,18 @@ impl AnthropicProvider {
             usage,
         })
     }
-}
 
-#[async_trait]
-impl Provider for AnthropicProvider {
-    fn name(&self) -> &str {
-        &self.model
-    }
-
-    async fn chat(
+    /// Core HTTP request + SSE stream parsing. This is the unit retried by backon.
+    ///
+    /// Separated from `chat()` so the retry closure can call it multiple times
+    /// without owning the converted message data.
+    async fn do_request(
         &self,
-        messages: &[ChatMessage],
-        tools: &[ToolDefinition],
+        system: &str,
+        api_messages: &[Value],
+        api_tools: &[Value],
+        effective_max_tokens: u32,
     ) -> Result<ChatResponse> {
-        let (system, api_messages) = Self::convert_messages(messages);
-        let api_tools = Self::convert_tools(tools, self.use_oauth);
-
-        // Adaptive thinking requires max_tokens >= 16384.
-        let effective_max_tokens = if self.thinking == ThinkingMode::Adaptive {
-            self.max_tokens.max(ADAPTIVE_MIN_MAX_TOKENS)
-        } else {
-            self.max_tokens
-        };
-
         let mut body = json!({
             "model": self.model,
             "max_tokens": effective_max_tokens,
@@ -301,19 +309,16 @@ impl Provider for AnthropicProvider {
                 "text": oauth::CLAUDE_CODE_IDENTITY,
             })];
             if !system.is_empty() {
-                // Attach cache_control to the user system prompt (last block).
                 system_blocks.push(json!({
                     "type": "text",
                     "text": system,
                     "cache_control": {"type": "ephemeral"},
                 }));
             } else {
-                // No user system prompt — cache the identity block.
                 system_blocks[0]["cache_control"] = json!({"type": "ephemeral"});
             }
             body["system"] = json!(system_blocks);
         } else if !system.is_empty() {
-            // Array format required for cache_control blocks.
             body["system"] = json!([{
                 "type": "text",
                 "text": system,
@@ -322,10 +327,10 @@ impl Provider for AnthropicProvider {
         }
 
         if !api_tools.is_empty() {
-            body["tools"] = Value::Array(api_tools);
+            body["tools"] = Value::Array(api_tools.to_vec());
         }
 
-        debug!(model = %self.model, msg_count = messages.len(), request_body = %body, "sending chat request");
+        debug!(model = %self.model, msg_count = api_messages.len(), "sending chat request");
 
         let mut request = self
             .client
@@ -334,7 +339,6 @@ impl Provider for AnthropicProvider {
             .header("content-type", "application/json");
 
         if self.use_oauth {
-            // Combine OAuth beta features with prompt caching.
             let beta = format!("{},prompt-caching-2024-07-31", oauth::OAUTH_BETA);
             request = request
                 .header("Authorization", format!("Bearer {}", self.api_key))
@@ -362,11 +366,14 @@ impl Provider for AnthropicProvider {
 
         // Non-2xx: read full JSON body and surface the API error.
         if !status.is_success() {
+            // Save headers before consuming the response body.
+            let retry_after = parse_retry_after(response.headers());
+
             let response_body: Value = response
                 .json()
                 .await
                 .map_err(|e| TiguError::Provider(format!("failed to parse error response: {e}")))?;
-            warn!(body = %response_body, "API error response body");
+            warn!(status = %status, body = %response_body, "API error response");
             let error_msg = response_body["error"]["message"]
                 .as_str()
                 .unwrap_or("unknown error");
@@ -374,19 +381,21 @@ impl Provider for AnthropicProvider {
                 .as_str()
                 .unwrap_or("unknown");
 
-            // Handle specific error types.
             match status.as_u16() {
                 429 => {
-                    warn!("rate limited by Anthropic API");
-                    return Err(TiguError::Provider(format!(
-                        "rate limited: {error_msg}"
-                    )));
+                    // Respect retry-after header: sleep before returning so the
+                    // caller (backon) doesn't retry too soon.
+                    if let Some(wait) = retry_after {
+                        warn!(wait_secs = wait.as_secs(), "rate limited — sleeping retry-after");
+                        sleep(wait).await;
+                    } else {
+                        warn!("rate limited by Anthropic API");
+                    }
+                    return Err(TiguError::Provider(format!("rate limited: {error_msg}")));
                 }
                 529 => {
                     warn!("Anthropic API overloaded");
-                    return Err(TiguError::Provider(format!(
-                        "overloaded: {error_msg}"
-                    )));
+                    return Err(TiguError::Provider(format!("overloaded: {error_msg}")));
                 }
                 _ => {
                     return Err(TiguError::Provider(format!(
@@ -407,8 +416,6 @@ impl Provider for AnthropicProvider {
         let mut line_buf: Vec<u8> = Vec::new();
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
-        // Per-index accumulator for streaming tool inputs.
-        // Key: content block index; Value: (tool_id, tool_name, partial_json)
         let mut tool_input_bufs: HashMap<usize, (String, String, String)> = HashMap::new();
         let mut usage = Usage {
             input_tokens: 0,
@@ -425,7 +432,6 @@ impl Provider for AnthropicProvider {
                             let line = String::from_utf8_lossy(&line_buf).into_owned();
                             line_buf.clear();
 
-                            // SSE lines starting with "data: " carry the event payload.
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if data == "[DONE]" {
                                     break 'stream;
@@ -531,7 +537,7 @@ impl Provider for AnthropicProvider {
                 Ok(Some(Err(e))) => {
                     return Err(TiguError::Provider(format!("stream read error: {e}")));
                 }
-                Ok(None) => break, // stream ended normally
+                Ok(None) => break,
                 Err(_elapsed) => {
                     warn!("streaming chunk timeout (30s) — aborting request");
                     return Err(TiguError::Provider(
@@ -558,13 +564,73 @@ impl Provider for AnthropicProvider {
     }
 }
 
+#[async_trait]
+impl Provider for AnthropicProvider {
+    fn name(&self) -> &str {
+        &self.model
+    }
+
+    async fn chat(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<ChatResponse> {
+        // --- Circuit breaker check ---
+        if let Some(remaining) = self.circuit_breaker.check() {
+            let secs = remaining.as_secs().max(1);
+            warn!(secs, "circuit breaker open — rejecting request");
+            return Err(TiguError::Provider(format!(
+                "Circuit breaker open — API 연결 불안정, {secs}초 후 재시도"
+            )));
+        }
+
+        let (system, api_messages) = Self::convert_messages(messages);
+        let api_tools = Self::convert_tools(tools, self.use_oauth);
+
+        let effective_max_tokens = if self.thinking == ThinkingMode::Adaptive {
+            self.max_tokens.max(ADAPTIVE_MIN_MAX_TOKENS)
+        } else {
+            self.max_tokens
+        };
+
+        // --- Retry with exponential backoff ---
+        let backoff = ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(300))
+            .with_max_delay(Duration::from_secs(30))
+            .with_max_times(3)
+            .with_jitter();
+
+        let result = (|| async {
+            self.do_request(&system, &api_messages, &api_tools, effective_max_tokens)
+                .await
+        })
+        .retry(backoff)
+        .when(|e| is_retryable(e))
+        .notify(|err, dur| {
+            warn!(error = %err, delay_ms = dur.as_millis(), "LLM API retry");
+        })
+        .await;
+
+        // --- Circuit breaker bookkeeping ---
+        match result {
+            Ok(r) => {
+                self.circuit_breaker.record_success();
+                Ok(r)
+            }
+            Err(e) => {
+                self.circuit_breaker.record_failure();
+                Err(e)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_thinking_mode_adaptive_body() {
-        // Verify that with_thinking creates a provider with the right mode.
         let provider = AnthropicProvider::with_thinking(
             "key".into(),
             "claude-sonnet-4".into(),
@@ -583,8 +649,6 @@ mod tests {
 
     #[test]
     fn test_parse_response_with_thinking_block() {
-        // Adaptive thinking responses may include "thinking" content blocks.
-        // They should be skipped (only "text" extracted).
         let body = json!({
             "content": [
                 {"type": "thinking", "thinking": "Let me consider..."},
@@ -640,13 +704,11 @@ mod tests {
         let (_, api_msgs) = AnthropicProvider::convert_messages(&messages);
         assert_eq!(api_msgs.len(), 3);
 
-        // Assistant message should have content array with text + tool_use.
         let assistant_content = api_msgs[1]["content"].as_array().unwrap();
         assert_eq!(assistant_content.len(), 2);
         assert_eq!(assistant_content[0]["type"], "text");
         assert_eq!(assistant_content[1]["type"], "tool_use");
 
-        // Tool result should be a user message with tool_result content.
         assert_eq!(api_msgs[2]["role"], "user");
         let tool_content = api_msgs[2]["content"].as_array().unwrap();
         assert_eq!(tool_content[0]["type"], "tool_result");

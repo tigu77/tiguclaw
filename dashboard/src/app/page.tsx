@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
 import AgentCard from "@/components/AgentCard";
+import AgentTree from "@/components/AgentTree";
 import AgentTimelinePanel from "@/components/AgentTimelinePanel";
 import LogStream from "@/components/LogStream";
 import ConversationList from "@/components/ConversationList";
@@ -33,6 +34,7 @@ export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<Tab>("agents");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [agentViewMode, setAgentViewMode] = useState<"list" | "tree">("list");
 
   const handleAgentClick = (name: string) => {
     setSelectedAgent((prev) => (prev === name ? null : name));
@@ -88,13 +90,46 @@ export default function DashboardPage() {
                   <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
                     에이전트 군단
                   </h2>
-                  <span className="text-xs text-gray-500 font-mono">{agents.length}개</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-500 font-mono">{agents.length}개</span>
+                    {/* 리스트 / 트리 토글 */}
+                    <div className="flex rounded-md overflow-hidden border border-white/10 text-[11px]">
+                      <button
+                        onClick={() => setAgentViewMode("list")}
+                        className={`px-2 py-0.5 transition-colors ${
+                          agentViewMode === "list"
+                            ? "bg-white/20 text-white"
+                            : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title="리스트 뷰"
+                      >
+                        🔲
+                      </button>
+                      <button
+                        onClick={() => setAgentViewMode("tree")}
+                        className={`px-2 py-0.5 transition-colors ${
+                          agentViewMode === "tree"
+                            ? "bg-white/20 text-white"
+                            : "text-gray-500 hover:text-gray-300"
+                        }`}
+                        title="트리 뷰"
+                      >
+                        🌲
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 <div
                   className="flex flex-col gap-1.5 overflow-y-auto flex-1"
                   style={{ scrollbarWidth: "thin", scrollbarColor: "#374151 transparent" }}
                 >
-                  {agents.length === 0 ? (
+                  {agentViewMode === "tree" ? (
+                    <AgentTree
+                      agents={agents}
+                      selected={selectedAgent ?? undefined}
+                      onSelect={(name) => handleAgentClick(name)}
+                    />
+                  ) : agents.length === 0 ? (
                     <div className="text-gray-600 text-xs text-center py-8">에이전트 없음</div>
                   ) : (
                     agents.map((agent) => (

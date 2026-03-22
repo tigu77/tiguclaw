@@ -157,6 +157,42 @@ description = "Custom agent pack for tiguclaw market"
 
 See `config.toml.example` for the full configuration reference.
 
+## Extensibility
+
+tiguclaw is built on three core traits — everything is a plugin:
+
+| Trait | Purpose | Built-in |
+|-------|---------|---------|
+| `Channel` | Messaging platform | Telegram |
+| `Provider` | LLM backend | Anthropic (Claude) |
+| `Tool` | Agent capabilities | shell, web_fetch, spawn_agent, escalate... |
+
+Implement any trait to add your own:
+
+```rust
+// Custom channel (Discord, Slack, WhatsApp...)
+impl Channel for MyChannel {
+    fn name(&self) -> &str { "discord" }
+    async fn send(&self, chat_id: &str, text: &str) -> Result<()> { ... }
+    async fn listen(&self, tx: Sender<ChannelMessage>) -> Result<()> { ... }
+}
+
+// Custom tool
+impl Tool for MyTool {
+    fn name(&self) -> &str { "my_tool" }
+    fn description(&self) -> &str { "Does something useful" }
+    async fn execute(&self, args: &HashMap<String, Value>) -> Result<String> { ... }
+}
+
+// Custom LLM provider (OpenAI, Gemini, local...)
+impl Provider for MyProvider {
+    fn name(&self) -> &str { "openai" }
+    async fn complete(&self, messages: &[Message], ...) -> Result<Response> { ... }
+}
+```
+
+The dashboard UI is also swappable — place any static files in `~/.tiguclaw/dashboard/`.
+
 ## Dashboard
 
 The dashboard is built into tiguclaw and served at `http://localhost:3002`. No Node.js required.

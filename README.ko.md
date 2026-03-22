@@ -154,6 +154,31 @@ description = "tiguclaw market용 커스텀 에이전트 팩"
 
 전체 설정 항목은 `config.toml.example` 참조.
 
+## 확장성
+
+tiguclaw는 세 가지 핵심 트레이트 기반 — 모든 것이 플러그인:
+
+| 트레이트 | 역할 | 기본 구현 |
+|---------|------|---------|
+| `Channel` | 메시징 플랫폼 | Telegram |
+| `Provider` | LLM 백엔드 | Anthropic (Claude) |
+| `Tool` | 에이전트 기능 | shell, web_fetch, spawn_agent, escalate... |
+
+트레이트를 구현하면 자유롭게 확장 가능:
+
+```rust
+// 커스텀 채널 (Discord, Slack, WhatsApp...)
+impl Channel for MyChannel { ... }
+
+// 커스텀 툴
+impl Tool for MyTool { ... }
+
+// 커스텀 LLM (OpenAI, Gemini, 로컬 모델...)
+impl Provider for MyProvider { ... }
+```
+
+대시보드 UI도 교체 가능 — `~/.tiguclaw/dashboard/`에 정적 파일만 넣으면 됩니다.
+
 ## 대시보드
 
 대시보드는 tiguclaw에 내장되어 `http://localhost:3002`에서 서빙됩니다. Node.js 불필요.

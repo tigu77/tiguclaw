@@ -1,7 +1,7 @@
 [agent]
 name = "researcher"
 description = "Web research & information gathering specialist"
-level = 2  # L2 mini
+tier = 2  # L2 mini
 
 [capabilities]
 tools = ["web_fetch", "read_file", "write_file"]

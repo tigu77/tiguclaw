@@ -199,7 +199,7 @@ fn analyze_context(
         if needs_coder && recommendations.len() < available_slots {
             recommendations.push(json!({
                 "name": "code-helper",
-                "level": 2,
+                "tier": 1,
                 "role": "코딩 전담 에이전트. 리팩토링, 코드 리뷰, 빌드 태스크를 담당한다.",
                 "persistent": false,
                 "reason": "코딩/개발 작업을 병렬로 처리하기 위해 추천"
@@ -209,7 +209,7 @@ fn analyze_context(
         if needs_researcher && recommendations.len() < available_slots {
             recommendations.push(json!({
                 "name": "research-helper",
-                "level": 2,
+                "tier": 1,
                 "role": "검색/조사 전담 에이전트. 웹 검색, 문서 수집, 정보 분석을 담당한다.",
                 "persistent": false,
                 "reason": "연구/검색 작업을 병렬로 처리하기 위해 추천"
@@ -228,7 +228,7 @@ fn analyze_context(
 
             recommendations.push(json!({
                 "name": "task-worker",
-                "level": 2,
+                "tier": 1,
                 "role": "범용 태스크 워커. 위임된 작업을 독립적으로 처리한다.",
                 "persistent": false,
                 "reason": reason

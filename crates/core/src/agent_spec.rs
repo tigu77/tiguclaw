@@ -25,7 +25,7 @@ pub struct AgentSpec {
 pub struct AgentMeta {
     pub name: String,
     pub description: String,
-    pub level: u8,
+    pub tier: u8,
 }
 
 /// [capabilities] 섹션 — 툴 접근 제한 및 예산.
@@ -207,7 +207,7 @@ impl AgentSpecManager {
     /// ---
     /// ```
     pub fn build_hidden_system_prompt(&self, spec: &AgentSpec, parent_name: &str) -> String {
-        let role_label = match spec.agent.level {
+        let role_label = match spec.agent.tier {
             0 => "supermaster",
             1 => "master",
             2 => "mini",
@@ -236,7 +236,7 @@ impl AgentSpecManager {
         format!(
             "## System Configuration [Auto-generated, do not modify]\n\
              - Name: {name}\n\
-             - Level: L{level} ({role_label})\n\
+             - Tier: T{tier} ({role_label})\n\
              - Reports to: {parent_name}\n\
              - Allowed tools: {tools_str}\n\
              - Max sub-agents: {max_spawn}{budget_line}\n\
@@ -244,7 +244,7 @@ impl AgentSpecManager {
              You must not exceed these limits. If asked to perform actions outside your allowed tools, decline politely.\n\
              ---",
             name = spec.agent.name,
-            level = spec.agent.level,
+            tier = spec.agent.tier,
             role_label = role_label,
             parent_name = parent_name,
             tools_str = tools_str,

@@ -19,7 +19,7 @@ use tracing::info;
 #[derive(Debug, Clone)]
 pub struct PersistedAgent {
     pub name: String,
-    pub level: u8,
+    pub tier: u8,
     /// "supermaster" | "master" | "mini" | "worker"
     pub agent_role: String,
     /// "telegram" | "internal"
@@ -73,7 +73,8 @@ impl AgentStore {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agents (
                 name          TEXT PRIMARY KEY,
-                level         INTEGER NOT NULL,
+                level         INTEGER NOT NULL DEFAULT 1,
+                tier          INTEGER NOT NULL DEFAULT 1,
                 agent_role    TEXT NOT NULL,
                 channel_type  TEXT NOT NULL,
                 bot_token     TEXT,
@@ -87,13 +88,24 @@ impl AgentStore {
         )
         .context("AgentStore: 테이블 생성 실패")?;
 
-        // 마이그레이션: parent_agent / team / clearance 컬럼 추가 (없으면)
-        for (col, ty) in &[("parent_agent", "TEXT"), ("team", "TEXT"), ("clearance", "TEXT")] {
+        // 마이그레이션: parent_agent / team / clearance / tier 컬럼 추가 (없으면)
+        for (col, ty) in &[
+            ("parent_agent", "TEXT"),
+            ("team", "TEXT"),
+            ("clearance", "TEXT"),
+        ] {
             let _ = conn.execute_batch(&format!(
                 "ALTER TABLE agents ADD COLUMN {col} {ty};"
             ));
             // 이미 존재하면 "duplicate column name" 오류 → 무시
         }
+        // level → tier 마이그레이션 (이전 DB 호환).
+        // 1) tier 컬럼 추가 시도
+        let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN tier INTEGER NOT NULL DEFAULT 1;");
+        // 2) level 컬럼이 있으면 값 복사 (idempotent — 이미 복사돼도 무해)
+        let _ = conn.execute_batch(
+            "UPDATE agents SET tier = (SELECT level FROM agents a2 WHERE a2.name = agents.name);"
+        );
 
         Ok(())
     }
@@ -101,14 +113,15 @@ impl AgentStore {
     /// 에이전트 저장 (이미 있으면 REPLACE).
     pub fn save(&self, agent: &PersistedAgent) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        // level 컬럼은 이전 DB 호환을 위해 tier 값으로 채운다 (NOT NULL 제약 유지).
         conn.execute(
             "INSERT OR REPLACE INTO agents
-                (name, level, agent_role, channel_type, bot_token, admin_chat_id,
+                (name, level, tier, agent_role, channel_type, bot_token, admin_chat_id,
                  system_prompt, persistent, status, parent_agent, team, clearance, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
+             VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
             params![
                 agent.name,
-                agent.level as i64,
+                agent.tier as i64,
                 agent.agent_role,
                 agent.channel_type,
                 agent.bot_token,
@@ -129,7 +142,7 @@ impl AgentStore {
     pub fn load_all(&self) -> Result<Vec<PersistedAgent>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT name, level, agent_role, channel_type, bot_token, admin_chat_id,
+            "SELECT name, tier, agent_role, channel_type, bot_token, admin_chat_id,
                     system_prompt, persistent, status, parent_agent, team, clearance
              FROM agents",
         )?;
@@ -137,7 +150,7 @@ impl AgentStore {
             .query_map([], |row| {
                 Ok(PersistedAgent {
                     name: row.get(0)?,
-                    level: row.get::<_, i64>(1)? as u8,
+                    tier: row.get::<_, i64>(1)? as u8,
                     agent_role: row.get(2)?,
                     channel_type: row.get(3)?,
                     bot_token: row.get(4)?,

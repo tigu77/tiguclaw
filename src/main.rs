@@ -185,8 +185,7 @@ async fn async_main() -> Result<()> {
         reg.set_supermaster(tiguclaw_core::event::AgentStatusInfo {
             name: config.agent.name.clone(),
             nickname: config.agent.nickname.clone(),
-            role: "supermaster".to_string(),
-            level: 0,
+            tier: 0,
             channel_type: config.channels.first()
                 .map(|c| c.channel_type.clone())
                 .unwrap_or_else(|| "internal".to_string()),
@@ -464,7 +463,7 @@ async fn async_main() -> Result<()> {
             continue;
         }
 
-        match entry.level {
+        match entry.tier {
             1 => {
                 // L1: 독립 텔레그램 채널로 AgentLoop spawn.
                 let token = entry

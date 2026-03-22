@@ -10,7 +10,7 @@ tags = ["code", "build"]
 [agent]
 name = "coder"
 description = "코딩 전담 에이전트 — 파일 수정, 빌드, 테스트"
-level = 2
+tier = 2
 persistent = true
 clearance = "minimal"
 

@@ -11,7 +11,7 @@ tags = ["orchestration", "master"]
 name = "supermaster"
 nickname = ""  # 선택사항, 없으면 name으로 표시
 description = "Supreme commander — orchestrates the entire agent army"
-level = 0
+tier = 0
 clearance = "full"
 
 [capabilities]

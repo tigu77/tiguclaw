@@ -40,7 +40,7 @@ pub struct SpawnRequest {
     pub name: String,
     /// 로컬 별칭 (선택사항) — 같은 spec(name)으로 여러 인스턴스 구분용.
     pub nickname: Option<String>,
-    pub level: u8,
+    pub tier: u8,
     /// 에이전트 역할 설명 — 시스템 프롬프트 자동 생성에 사용.
     pub role: String,
     /// 에이전트 계층 역할 (L0~L3).
@@ -76,7 +76,7 @@ pub struct AgentInfo {
     pub name: String,
     /// 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항).
     pub nickname: Option<String>,
-    pub level: u8,
+    pub tier: u8,
     pub persistent: bool,
     /// "telegram" | "internal"
     pub channel_type: String,
@@ -99,7 +99,7 @@ struct AgentHandle {
     name: String,
     /// 로컬 별칭 (선택사항).
     nickname: Option<String>,
-    level: u8,
+    tier: u8,
     persistent: bool,
     /// "telegram" | "internal"
     channel_type: String,
@@ -254,8 +254,7 @@ impl AgentRegistry {
             agents.extend(self.agents.values().map(|h| AgentStatusInfo {
                 name: h.name.clone(),
                 nickname: h.nickname.clone(),
-                role: h.agent_role.label().to_string(),
-                level: h.level,
+                tier: h.tier,
                 channel_type: h.channel_type.clone(),
                 persistent: h.persistent,
                 current_status: self.get_status(&h.name),
@@ -457,7 +456,7 @@ impl AgentRegistry {
             AgentHandle {
                 name: req.name.clone(),
                 nickname: req.nickname.clone(),
-                level: req.level,
+                tier: req.tier,
                 persistent: req.persistent,
                 channel_type: channel_type.clone(),
                 agent_role: req.agent_role.clone(),
@@ -475,8 +474,7 @@ impl AgentRegistry {
 
         info!(
             name = %req.name,
-            level = req.level,
-            role = %req.agent_role.label(),
+            tier = req.tier,
             persistent = req.persistent,
             channel_type = %channel_type,
             hooks_url = ?req.hooks_url,
@@ -488,10 +486,9 @@ impl AgentRegistry {
         if let Some(ref monitor) = self.monitor {
             let monitor = monitor.clone();
             let name = req.name.clone();
-            let role_label = req.agent_role.label().to_string();
-            let level = req.level;
+            let tier = req.tier;
             tokio::spawn(async move {
-                monitor.log_spawn(&name, &role_label, level).await;
+                monitor.log_spawn(&name, tier).await;
             });
         }
 
@@ -506,7 +503,7 @@ impl AgentRegistry {
             if let Some(ref store) = self.store {
                 let persisted = PersistedAgent {
                     name: req.name.clone(),
-                    level: req.level,
+                    tier: req.tier,
                     agent_role: agent_role_to_str(&req.agent_role).to_string(),
                     channel_type: channel_type.clone(),
                     bot_token: req.bot_token.clone(),
@@ -642,7 +639,7 @@ impl AgentRegistry {
             result.push(AgentInfo {
                 name: sm.name.clone(),
                 nickname: sm.nickname.clone(),
-                level: sm.level,
+                tier: sm.tier,
                 persistent: sm.persistent,
                 channel_type: sm.channel_type.clone(),
                 agent_role: AgentRole::Supermaster,
@@ -655,7 +652,7 @@ impl AgentRegistry {
         result.extend(self.agents.values().map(|h| AgentInfo {
             name: h.name.clone(),
             nickname: h.nickname.clone(),
-            level: h.level,
+            tier: h.tier,
             persistent: h.persistent,
             channel_type: h.channel_type.clone(),
             agent_role: h.agent_role.clone(),
@@ -739,7 +736,7 @@ impl AgentRegistry {
             let req = SpawnRequest {
                 name: pa.name.clone(),
                 nickname: None,
-                level: pa.level,
+                tier: pa.tier,
                 role: String::new(), // system_prompt_override로 대체되므로 미사용
                 agent_role: str_to_agent_role(&pa.agent_role),
                 model_tier: None,
@@ -752,7 +749,7 @@ impl AgentRegistry {
                 parent_agent: pa.parent_agent.clone(),
                 team: pa.team.clone(),
                 clearance: pa.clearance.clone().or_else(|| {
-                    Some(if pa.level == 0 { "full" } else { "minimal" }.to_string())
+                    Some(if pa.tier == 0 { "full" } else { "minimal" }.to_string())
                 }),
             };
 

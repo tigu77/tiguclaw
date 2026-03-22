@@ -10,7 +10,7 @@ tags = ["research", "web"]
 [agent]
 name = "researcher"
 description = "리서치 전담 에이전트 — 웹 검색, 정보 수집, 요약"
-level = 2
+tier = 2
 persistent = true
 clearance = "minimal"
 

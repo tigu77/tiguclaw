@@ -23,7 +23,7 @@ pub struct AgentTemplate {
 pub struct TemplateAgentSection {
     pub name: String,
     pub description: String,
-    pub level: u8,
+    pub tier: u8,
     pub persistent: bool,
 }
 

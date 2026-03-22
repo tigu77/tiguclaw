@@ -98,10 +98,10 @@ impl Tool for SpawnAgentTool {
                     "type": "string",
                     "description": "에이전트 고유 이름 (예: code-helper, data-analyst). kebab-case 권장."
                 },
-                "level": {
+                "tier": {
                     "type": "integer",
-                    "description": "에이전트 레벨. L2=2, L3=3.",
-                    "default": 2
+                    "description": "에이전트 티어. T0=최상위(자동설정), T1=1, T2=2. 기본값 1.",
+                    "default": 1
                 },
                 "role": {
                     "type": "string",
@@ -195,15 +195,15 @@ impl Tool for SpawnAgentTool {
             return Err(TiguError::Tool("'role', 'agent_spec', 또는 'template' 파라미터가 필요합니다".into()));
         };
 
-        // ── level / persistent: 명시적 > agent_spec > 템플릿 > 기본값 ─────────
-        let level = if let Some(l) = args.get("level").and_then(|v| v.as_u64()) {
-            l as u8
+        // ── tier / persistent: 명시적 > agent_spec > 템플릿 > 기본값 ─────────
+        let tier = if let Some(t) = args.get("tier").and_then(|v| v.as_u64()) {
+            t as u8
         } else if let Some(ref s) = agent_spec {
-            s.agent.level
+            s.agent.tier
         } else if let Some(ref t) = tmpl {
-            t.agent.level
+            t.agent.tier
         } else {
-            2
+            1
         };
 
         let persistent = if let Some(p) = args.get("persistent").and_then(|v| v.as_bool()) {
@@ -263,7 +263,7 @@ impl Tool for SpawnAgentTool {
         let req = SpawnRequest {
             name: name.clone(),
             nickname: None,
-            level,
+            tier,
             role,
             agent_role,
             model_tier: None,
@@ -295,7 +295,7 @@ impl Tool for SpawnAgentTool {
                     String::new()
                 };
                 Ok(format!(
-                    "✅ 에이전트 '{name}' 생성 완료{template_note} (level={level}, persistent={persistent}, channel={channel_type}){hooks_note}\n\
+                    "✅ 에이전트 '{name}' 생성 완료{template_note} (tier={tier}, persistent={persistent}, channel={channel_type}){hooks_note}\n\
                      {}",
                     if channel_type == "telegram" {
                         "텔레그램 채널 연결됨 — 텔레그램에서 직접 메시지를 받습니다."

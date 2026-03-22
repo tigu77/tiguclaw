@@ -277,8 +277,8 @@ impl Tool for ListAgentsTool {
         for info in &agents {
             let persistent_label = if info.persistent { "상주" } else { "임시" };
             lines.push(format!(
-                "  • {} (L{}, {}, {})",
-                info.name, info.level, persistent_label, info.channel_type
+                "  • {} (T{}, {}, {})",
+                info.name, info.tier, persistent_label, info.channel_type
             ));
         }
         Ok(lines.join("\n"))

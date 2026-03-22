@@ -160,14 +160,14 @@ pub struct ExtraChannelConfig {
 
 /// Phase 6: 멀티 에이전트 군단 항목.
 ///
-/// level=1: 마스터급 — 텔레그램 봇 보유, 독립 AgentLoop
-/// level=2: 미니에이전트 — 내부 IPC (현재 stub)
+/// tier=1: 마스터급 — 텔레그램 봇 보유, 독립 AgentLoop
+/// tier=2: 미니에이전트 — 내부 IPC (현재 stub)
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentEntry {
     /// 에이전트 식별 이름.
     pub name: String,
-    /// 계층 레벨: 1=마스터급, 2=미니에이전트.
-    pub level: u8,
+    /// 에이전트 티어: T1=마스터급, T2=미니에이전트.
+    pub tier: u8,
     /// 채널 종류: "telegram" | "internal".
     pub channel: String,
     /// level=1일 때 필요한 텔레그램 봇 토큰 (없으면 기본 봇 토큰 사용).

@@ -1,7 +1,7 @@
 [agent]
 name = "coder"
 description = "Software development & code modification specialist"
-level = 2  # L2 mini
+tier = 2  # L2 mini
 
 [capabilities]
 tools = ["shell", "read_file", "write_file", "edit_file"]

@@ -59,19 +59,18 @@ impl Monitor {
     }
 
     /// spawn 이벤트 기록.
-    pub async fn log_spawn(&self, name: &str, role: &str, level: u8) {
+    pub async fn log_spawn(&self, name: &str, tier: u8) {
         if !self.config.enabled || !self.config.log_spawns {
             return;
         }
-        let text = format!("🟢 spawn: {name} ({role})");
+        let text = format!("🟢 spawn: {name} (T{tier})");
         self.send(&text).await;
 
         // Phase 9-1: 대시보드 이벤트 broadcast.
         if let Some(ref tx) = self.event_tx {
             let event = DashboardEvent::AgentSpawned {
                 name: name.to_string(),
-                role: role.to_string(),
-                level,
+                tier,
             };
             let _ = tx.send(event);
         }

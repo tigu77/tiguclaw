@@ -33,20 +33,22 @@ use crate::retry::{is_retryable, parse_retry_after};
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
 
-/// Minimum max_tokens required for adaptive thinking.
-const ADAPTIVE_MIN_MAX_TOKENS: u32 = 16384;
-
 /// Circuit breaker: open after this many consecutive failures.
 const CB_THRESHOLD: u32 = 3;
 /// Circuit breaker: block requests for this duration after opening.
 const CB_COOLDOWN: Duration = Duration::from_secs(30);
 
-/// Thinking mode for Anthropic adaptive thinking.
+/// Thinking mode.
+///
+/// NOTE: `Adaptive` was removed — claude-opus-4 does not support `{"type":"adaptive"}`
+/// and sending it causes API errors that trigger double-delivery bugs.
+/// Deep mode now simply routes to the deep model without any special API parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingMode {
-    /// No thinking — standard request.
+    /// Standard request — no thinking parameter sent.
     Off,
-    /// Adaptive thinking — model decides when to think.
+    /// Kept for config/code compatibility; behaves identically to Off.
+    /// The thinking API parameter is NOT sent regardless of this value.
     Adaptive,
 }
 
@@ -293,13 +295,9 @@ impl AnthropicProvider {
             "stream": true,
         });
 
-        // Add adaptive thinking configuration.
-        if self.thinking == ThinkingMode::Adaptive {
-            body["thinking"] = json!({"type": "adaptive"});
-            if let Some(ref effort) = self.effort {
-                body["output_config"] = json!({"effort": effort});
-            }
-        }
+        // NOTE: adaptive thinking parameter intentionally omitted.
+        // claude-opus-4 and newer models do not support {"type":"adaptive"} and return
+        // a 400 error when it is present, which caused double-delivery via retry logic.
 
         // System prompt: OAuth requires array format with Claude Code identity first.
         // In both modes, add cache_control to the last system block to enable prompt caching.
@@ -586,11 +584,7 @@ impl Provider for AnthropicProvider {
         let (system, api_messages) = Self::convert_messages(messages);
         let api_tools = Self::convert_tools(tools, self.use_oauth);
 
-        let effective_max_tokens = if self.thinking == ThinkingMode::Adaptive {
-            self.max_tokens.max(ADAPTIVE_MIN_MAX_TOKENS)
-        } else {
-            self.max_tokens
-        };
+        let effective_max_tokens = self.max_tokens;
 
         // --- Retry with exponential backoff ---
         let backoff = ExponentialBuilder::default()

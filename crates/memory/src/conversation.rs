@@ -40,7 +40,21 @@ impl ConversationStore {
     // ── public API ──────────────────────────────────────────────────
 
     /// Persist a single message. System messages are silently skipped.
+    ///
+    /// `sender` is an optional label for the originator of a `user`-role message:
+    /// - `None`  → direct user (정태님) or Telegram input
+    /// - `Some("agent")` → injected by a parent agent (spawn-agent task)
     pub fn save_message(&self, chat_id: &str, message: &ChatMessage) -> Result<()> {
+        self.save_message_with_sender(chat_id, message, None)
+    }
+
+    /// Like `save_message` but with an explicit sender label.
+    pub fn save_message_with_sender(
+        &self,
+        chat_id: &str,
+        message: &ChatMessage,
+        sender: Option<&str>,
+    ) -> Result<()> {
         if message.role == Role::System {
             debug!("skipping system message (not persisted)");
             return Ok(());
@@ -54,18 +68,19 @@ impl ConversationStore {
         };
 
         self.conn.execute(
-            "INSERT INTO conversations (chat_id, role, content, tool_call_id, tool_calls)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations (chat_id, role, content, tool_call_id, tool_calls, sender)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 chat_id,
                 role,
                 message.content,
                 message.tool_call_id,
                 tool_calls_json,
+                sender,
             ],
         )?;
 
-        debug!(chat_id, role, "saved message");
+        debug!(chat_id, role, ?sender, "saved message");
         Ok(())
     }
 
@@ -171,12 +186,12 @@ impl ConversationStore {
 
     /// Load message history with timestamps for dashboard display.
     ///
-    /// Returns `(role, content, timestamp_unix)`.
-    pub fn load_history_with_ts(&self, chat_id: &str, limit: usize) -> Result<Vec<(String, String, i64)>> {
+    /// Returns `(role, content, timestamp_unix, sender)`.
+    pub fn load_history_with_ts(&self, chat_id: &str, limit: usize) -> Result<Vec<(String, String, i64, Option<String>)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, CAST(strftime('%s', created_at) AS INTEGER) as ts
+            "SELECT role, content, CAST(strftime('%s', created_at) AS INTEGER) as ts, sender
              FROM (
-                 SELECT role, content, created_at, id
+                 SELECT role, content, created_at, sender, id
                  FROM conversations
                  WHERE chat_id = ?1 AND role IN ('user', 'assistant')
                  ORDER BY id DESC
@@ -189,7 +204,8 @@ impl ConversationStore {
             let role: String = row.get(0)?;
             let content: String = row.get(1)?;
             let ts: i64 = row.get(2).unwrap_or(0);
-            Ok((role, content, ts))
+            let sender: Option<String> = row.get(3)?;
+            Ok((role, content, ts, sender))
         })?;
 
         let mut results = Vec::new();
@@ -210,11 +226,16 @@ impl ConversationStore {
                  content     TEXT NOT NULL,
                  tool_call_id TEXT,
                  tool_calls  TEXT,
+                 sender      TEXT,
                  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
              );
              CREATE INDEX IF NOT EXISTS idx_conv_chat_id
                  ON conversations(chat_id);",
         )?;
+        // 기존 DB 마이그레이션: sender 컬럼 없으면 추가.
+        let _ = self.conn.execute_batch(
+            "ALTER TABLE conversations ADD COLUMN sender TEXT;",
+        );
         Ok(())
     }
 }

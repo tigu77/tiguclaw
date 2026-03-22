@@ -160,7 +160,8 @@ pub struct AgentRegistry {
     /// 프라이머리 채널(TelegramChannel)의 inject sender — 대시보드 메시지를 메인채널로 직접 주입.
     primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
     /// spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 채널로 위임).
-    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage)>>,
+    /// 튜플: (chat_id, ChatMessage, sender: Option<String>)
+    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
     /// L0 admin_chat_id — spawn 에이전트 보고 시 수신자.
     admin_chat_id: i64,
 }
@@ -207,7 +208,7 @@ impl AgentRegistry {
     }
 
     /// spawn된 에이전트 대화 저장용 채널 설정.
-    pub fn set_conv_save_tx(&mut self, tx: mpsc::Sender<(String, ChatMessage)>) {
+    pub fn set_conv_save_tx(&mut self, tx: mpsc::Sender<(String, ChatMessage, Option<String>)>) {
         self.conv_save_tx = Some(tx);
     }
 
@@ -902,7 +903,7 @@ async fn run_spawned_agent(
     parent_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
     agent_name: String,
     event_tx: Option<broadcast::Sender<DashboardEvent>>,
-    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage)>>,
+    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
     admin_chat_id: i64,
 ) {
     info!(name = %name, persistent, "spawned agent loop started");
@@ -1002,12 +1003,13 @@ async fn run_agent_task(
     user_message: String,
     thinking_level: ThinkingLevel,
     event_tx: &Option<broadcast::Sender<DashboardEvent>>,
-    conv_save_tx: &Option<mpsc::Sender<(String, ChatMessage)>>,
+    conv_save_tx: &Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
 ) -> anyhow::Result<String> {
     // 사용자 메시지 추가.
+    // sender = Some("agent"): spawn 에이전트에 주입되는 user 메시지는 부모 에이전트가 보낸 것.
     let user_msg = ChatMessage::user(&user_message);
     if let Some(ref tx) = conv_save_tx {
-        let _ = tx.send((name.to_string(), user_msg.clone())).await;
+        let _ = tx.send((name.to_string(), user_msg.clone(), Some("agent".to_string()))).await;
     }
     history.push(user_msg);
 
@@ -1057,7 +1059,7 @@ async fn run_agent_task(
             if !response.text.is_empty() {
                 let assistant_msg = ChatMessage::assistant(&response.text);
                 if let Some(ref tx) = conv_save_tx {
-                    let _ = tx.send((name.to_string(), assistant_msg.clone())).await;
+                    let _ = tx.send((name.to_string(), assistant_msg.clone(), None)).await;
                 }
                 history.push(assistant_msg);
             }
@@ -1112,7 +1114,7 @@ async fn run_agent_task(
     if !reply.is_empty() {
         let assistant_msg = ChatMessage::assistant(&reply);
         if let Some(ref tx) = conv_save_tx {
-            let _ = tx.send((name.to_string(), assistant_msg.clone())).await;
+            let _ = tx.send((name.to_string(), assistant_msg.clone(), None)).await;
         }
         history.push(assistant_msg);
     }

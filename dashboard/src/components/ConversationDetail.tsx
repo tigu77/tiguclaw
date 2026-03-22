@@ -6,6 +6,8 @@ interface MessageItem {
   role: string;
   content: string;
   timestamp: number;
+  /** 발신자 레이블: undefined/"user" → 정태님, "agent" → 부모 에이전트 inject */
+  sender?: string;
 }
 
 interface ConversationDetailData {
@@ -96,15 +98,8 @@ export default function ConversationDetail({ chatId, agentName, agentStatus, onC
         body: JSON.stringify({ agent_name: agentName, message: text }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // 즉시 user 메시지 UI에 추가
-      setData(prev => prev ? {
-        ...prev,
-        messages: [...prev.messages, {
-          role: "user",
-          content: text,
-          timestamp: Math.floor(Date.now() / 1000),
-        }]
-      } : prev);
+      // optimistic update 제거 — DB에서 즉시 재로드하여 중복 방지
+      await fetchConversation();
     } catch (e) {
       console.error("sendMessage error:", e);
     } finally {
@@ -155,7 +150,11 @@ export default function ConversationDetail({ chatId, agentName, agentStatus, onC
         )}
         {data?.messages.map((msg, idx) => {
           const isUser = msg.role === "user";
-          const senderName = isUser ? "정태님" : agentName;
+          // sender="agent" → 부모 에이전트가 inject한 지시문 (spawn 대화에서 user role)
+          // sender=undefined/null → 정태님이 직접 보낸 메시지
+          const senderName = isUser
+            ? (msg.sender === "agent" ? "🤖 에이전트" : "정태님")
+            : agentName;
           return (
             <div
               key={idx}

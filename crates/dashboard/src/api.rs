@@ -215,6 +215,10 @@ pub struct MessageItem {
     pub role: String,
     pub content: String,
     pub timestamp: i64,
+    /// 발신자 레이블. None = 사용자(정태님) 또는 어시스턴트 자신.
+    /// Some("agent") = 부모 에이전트가 inject한 메시지.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
 }
 
 /// GET /api/conversations/:id 응답.
@@ -273,10 +277,11 @@ pub async fn get_conversation_detail(
 
     let messages = rows
         .into_iter()
-        .map(|(role, content, timestamp)| MessageItem {
+        .map(|(role, content, timestamp, sender)| MessageItem {
             role,
             content,
             timestamp,
+            sender,
         })
         .collect();
 

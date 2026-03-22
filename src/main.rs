@@ -144,7 +144,7 @@ async fn async_main() -> Result<()> {
         }
 
         // spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 별도 스레드로 위임).
-        let (conv_tx, mut conv_rx) = tokio::sync::mpsc::channel::<(String, tiguclaw_core::types::ChatMessage)>(256);
+        let (conv_tx, mut conv_rx) = tokio::sync::mpsc::channel::<(String, tiguclaw_core::types::ChatMessage, Option<String>)>(256);
         let conv_db_path = data_dir.join("conversations.db");
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -156,8 +156,8 @@ async fn async_main() -> Result<()> {
                         return;
                     }
                 };
-                while let Some((agent_name, msg)) = conv_rx.recv().await {
-                    if let Err(e) = store.save_message(&agent_name, &msg) {
+                while let Some((agent_name, msg, sender)) = conv_rx.recv().await {
+                    if let Err(e) = store.save_message_with_sender(&agent_name, &msg, sender.as_deref()) {
                         tracing::warn!(agent = %agent_name, error = %e, "conv save failed");
                     }
                 }

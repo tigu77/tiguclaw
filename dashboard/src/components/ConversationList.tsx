@@ -103,7 +103,7 @@ export default function ConversationList({ onSelect, selectedId, apiBase }: Conv
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-mono text-white truncate">
-                {conv.agent_name}
+                정태님 <span className="text-gray-500">↔</span> {conv.agent_name}
               </span>
               <span className="text-xs text-gray-500 flex-shrink-0 font-mono">
                 {formatTime(conv.updated_at)}
@@ -117,9 +117,9 @@ export default function ConversationList({ onSelect, selectedId, apiBase }: Conv
                 <>
                   <span className="text-gray-600">·</span>
                   <span className="text-xs text-gray-400 truncate max-w-[200px]">
-                    {conv.last_message_role === "user" ? "👤" : "🤖"}{" "}
-                    {conv.last_message.slice(0, 60)}
-                    {conv.last_message.length > 60 ? "…" : ""}
+                    {conv.last_message_role === "user" ? "👤 정태님" : `🤖 ${conv.agent_name}`}:{" "}
+                    {conv.last_message.slice(0, 50)}
+                    {conv.last_message.length > 50 ? "…" : ""}
                   </span>
                 </>
               )}

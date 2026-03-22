@@ -18,11 +18,29 @@ export interface AgentInfo {
   clearance?: string;
 }
 
+export type LogEntryType =
+  | "spawn"
+  | "kill"
+  | "comm"
+  | "heartbeat"
+  | "cost"
+  | "thinking"
+  | "executing"
+  | "idle";
+
 export interface LogEntry {
   id: string;
   time: string;
-  type: "spawn" | "kill" | "comm" | "heartbeat" | "cost";
+  type: LogEntryType;
   text: string;
+}
+
+/** 날짜별 JSONL 로그에서 파싱된 이벤트 (REST API /api/logs 응답) */
+export interface ApiLogEvent {
+  type: string;
+  data?: Record<string, unknown>;
+  /** 로그 파일에 저장된 timestamp (ISO string or ms) */
+  ts?: string | number;
 }
 
 /** 타임라인 이벤트 (백엔드 REST API + WS 실시간) */

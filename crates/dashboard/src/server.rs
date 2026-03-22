@@ -16,13 +16,14 @@ use tiguclaw_agent::AgentRegistry;
 use tiguclaw_core::event::DashboardEvent;
 
 use crate::api::{
-    get_agents, get_agent_timeline, get_conversation_detail, get_conversations, get_logs,
-    get_status, get_timeline, post_chat, steer_agent,
+    get_agents, get_agent_timeline, get_conversation_detail, get_conversations,
+    get_log_dates, get_logs_file, get_status, get_timeline, post_chat, steer_agent,
 };
+use crate::event_log::EventLogger;
 use crate::timeline::TimelineDb;
 use crate::ws::ws_handler;
 
-/// 로그 히스토리 최대 크기.
+/// 로그 히스토리 최대 크기 (인메모리).
 const MAX_LOG_SIZE: usize = 100;
 /// broadcast 채널 버퍼 크기.
 const BROADCAST_CAPACITY: usize = 256;
@@ -34,7 +35,7 @@ pub struct AppState {
     pub registry: Arc<TokioMutex<AgentRegistry>>,
     /// 이벤트 broadcast sender (WS 클라이언트에 구독 제공).
     pub event_tx: broadcast::Sender<DashboardEvent>,
-    /// 최근 이벤트 히스토리 (최대 100개).
+    /// 최근 이벤트 히스토리 (최대 100개, 인메모리).
     pub log: Arc<Mutex<VecDeque<DashboardEvent>>>,
     /// 서버 시작 시각.
     pub start_time: Instant,
@@ -44,6 +45,8 @@ pub struct AppState {
     pub timeline_db: Option<Arc<TimelineDb>>,
     /// 관리자 텔레그램 chat_id — 대시보드 메시지 주입 시 sender로 사용.
     pub admin_chat_id: i64,
+    /// JSONL 이벤트 로거 (날짜별 파일).
+    pub event_logger: Option<Arc<EventLogger>>,
 }
 
 /// 대시보드 서버.
@@ -65,6 +68,8 @@ pub struct DashboardServer {
     timeline_db: Option<Arc<TimelineDb>>,
     /// 관리자 텔레그램 chat_id — 대시보드 메시지 주입 시 sender로 사용.
     admin_chat_id: i64,
+    /// JSONL 이벤트 로거 (날짜별 파일).
+    event_logger: Option<Arc<EventLogger>>,
 }
 
 impl DashboardServer {
@@ -88,6 +93,7 @@ impl DashboardServer {
             dashboard_dir,
             timeline_db: None,
             admin_chat_id: 0,
+            event_logger: None,
         }
     }
 
@@ -123,12 +129,28 @@ impl DashboardServer {
         self
     }
 
+    /// JSONL 이벤트 로거 설정 (builder 패턴).
+    pub fn with_event_logger(mut self, data_dir: &std::path::Path) -> Self {
+        let logger = EventLogger::new(data_dir);
+        // 시작 시 30일 초과 파일 삭제
+        logger.cleanup_old(30);
+        info!(logs_dir = %data_dir.join("logs").display(), "event logger initialized");
+        self.event_logger = Some(Arc::new(logger));
+        self
+    }
+
     /// 이벤트를 로그에 저장하고 broadcast 채널로 전송 (sync 메서드).
     pub fn broadcast(&self, event: DashboardEvent) {
         // 타임라인 DB에 저장
         if let Some(ref db) = self.timeline_db {
             if let Err(e) = db.insert(&event) {
                 warn!(error = %e, "timeline DB insert failed");
+            }
+        }
+        // JSONL 파일에 append
+        if let Some(ref logger) = self.event_logger {
+            if let Err(e) = logger.append(&event) {
+                warn!(error = %e, "event log append failed");
             }
         }
         {
@@ -146,6 +168,7 @@ impl DashboardServer {
         // 이벤트 → 로그 저장 + 타임라인 DB 저장 백그라운드 태스크.
         let log_clone = self.log.clone();
         let timeline_db_clone = self.timeline_db.clone();
+        let event_logger_clone = self.event_logger.clone();
         let mut log_rx = self.event_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(event) = log_rx.recv().await {
@@ -153,6 +176,12 @@ impl DashboardServer {
                 if let Some(ref db) = timeline_db_clone {
                     if let Err(e) = db.insert(&event) {
                         warn!(error = %e, "timeline DB background insert failed");
+                    }
+                }
+                // JSONL 파일 append
+                if let Some(ref logger) = event_logger_clone {
+                    if let Err(e) = logger.append(&event) {
+                        warn!(error = %e, "event log background append failed");
                     }
                 }
                 let mut log = log_clone.lock().unwrap();
@@ -199,13 +228,15 @@ impl DashboardServer {
             conv_db_path: self.conv_db_path,
             timeline_db: self.timeline_db,
             admin_chat_id: self.admin_chat_id,
+            event_logger: self.event_logger,
         };
 
         let mut router = Router::new()
             .route("/ws", get(ws_handler))
             .route("/api/agents", get(get_agents))
             .route("/api/status", get(get_status))
-            .route("/api/logs", get(get_logs))
+            .route("/api/logs", get(get_logs_file))
+            .route("/api/logs/dates", get(get_log_dates))
             .route("/api/timeline", get(get_timeline))
             .route("/api/agents/:name/timeline", get(get_agent_timeline))
             .route("/api/agents/:name/steer", axum::routing::post(steer_agent))

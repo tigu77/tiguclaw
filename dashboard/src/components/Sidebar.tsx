@@ -1,6 +1,6 @@
 "use client";
 
-export type Tab = "agents" | "conversations" | "logs" | "timeline";
+export type Tab = "agents" | "conversations" | "logs";
 
 interface SidebarProps {
   activeTab: Tab;
@@ -11,7 +11,6 @@ interface SidebarProps {
 
 const NAV_ITEMS: { id: Tab; icon: string; label: string }[] = [
   { id: "agents", icon: "🤖", label: "에이전트" },
-  { id: "timeline", icon: "🕐", label: "타임라인" },
   { id: "conversations", icon: "💬", label: "대화" },
   { id: "logs", icon: "📋", label: "로그" },
 ];

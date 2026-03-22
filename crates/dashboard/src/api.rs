@@ -11,6 +11,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use serde_json::Value as JsonValue;
 use serde::{Deserialize, Serialize};
 use tiguclaw_core::types::ChannelMessage;
 
@@ -42,7 +43,7 @@ pub async fn steer_agent(
     }
 }
 
-use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
+use tiguclaw_core::event::AgentStatusInfo;
 
 use crate::server::AppState;
 use crate::timeline::TimelineEvent;
@@ -98,10 +99,55 @@ pub async fn get_status(State(state): State<AppState>) -> Json<BotStatus> {
     })
 }
 
-/// GET /api/logs — 최근 이벤트 히스토리 (최대 100개).
-pub async fn get_logs(State(state): State<AppState>) -> Json<Vec<DashboardEvent>> {
+/// GET /api/logs 쿼리 파라미터.
+#[derive(Debug, Deserialize)]
+pub struct LogsQuery {
+    pub date: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// GET /api/logs?date=YYYY-MM-DD&limit=500 — 날짜별 JSONL 로그 조회 (기본: 오늘).
+///
+/// EventLogger가 없으면 인메모리 로그를 반환 (하위 호환).
+pub async fn get_logs_file(
+    State(state): State<AppState>,
+    Query(query): Query<LogsQuery>,
+) -> Json<Vec<JsonValue>> {
+    let limit = query.limit.unwrap_or(500);
+
+    if let Some(ref logger) = state.event_logger {
+        let result = if let Some(ref date) = query.date {
+            logger.read_date(date, limit)
+        } else {
+            logger.read_today(limit)
+        };
+        match result {
+            Ok(events) => return Json(events),
+            Err(e) => {
+                tracing::warn!(error = %e, "event log read failed, falling back to in-memory");
+            }
+        }
+    }
+
+    // fallback: 인메모리 로그
     let log = state.log.lock().unwrap();
-    Json(log.iter().cloned().collect())
+    let events: Vec<JsonValue> = log
+        .iter()
+        .take(limit)
+        .filter_map(|e| serde_json::to_value(e).ok())
+        .collect();
+    Json(events)
+}
+
+/// GET /api/logs/dates — 보관 중인 날짜 목록.
+pub async fn get_log_dates(
+    State(state): State<AppState>,
+) -> Json<Vec<String>> {
+    if let Some(ref logger) = state.event_logger {
+        Json(logger.list_dates())
+    } else {
+        Json(vec![])
+    }
 }
 
 // ---------------------------------------------------------------------------

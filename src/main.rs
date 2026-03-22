@@ -107,7 +107,8 @@ async fn async_main() -> Result<()> {
         )
         .with_admin_chat_id(primary_ch_cfg.admin_chat_id)
         .with_conv_db(data_dir.join("conversations.db"))
-        .with_timeline_db(data_dir.join("timeline.db"));
+        .with_timeline_db(data_dir.join("timeline.db"))
+        .with_event_logger(data_dir);
         info!(
             port = config.dashboard.port,
             cors_origin = %config.dashboard.cors_origin,

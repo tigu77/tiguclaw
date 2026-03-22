@@ -9,7 +9,6 @@ import LogStream from "@/components/LogStream";
 import ConversationList, { ConversationSummary } from "@/components/ConversationList";
 import ConversationDetail from "@/components/ConversationDetail";
 import Sidebar, { Tab } from "@/components/Sidebar";
-import Timeline from "@/components/Timeline";
 
 // 접속한 호스트 기준으로 WS URL 동적 생성 (포트 통일 — server.js가 /ws를 3002로 proxy)
 const WS_URL =
@@ -24,7 +23,6 @@ const API_BASE =
 
 const BOTTOM_NAV: { id: Tab; icon: string; label: string }[] = [
   { id: "agents", icon: "🤖", label: "에이전트" },
-  { id: "timeline", icon: "🕐", label: "타임라인" },
   { id: "conversations", icon: "💬", label: "대화" },
   { id: "logs", icon: "📋", label: "로그" },
 ];
@@ -228,16 +226,11 @@ export default function DashboardPage() {
                     <span className="text-xs text-gray-500 font-mono">{logs.length}/100</span>
                   </div>
                   <div className="flex-1 min-h-0 rounded-xl border border-white/10 bg-white/5 p-3 flex flex-col">
-                    <LogStream logs={logs} />
+                    <LogStream logs={logs} apiBase={API_BASE} />
                   </div>
                 </div>
               )}
             </div>
-          )}
-
-          {/* 🕐 타임라인 */}
-          {activeTab === "timeline" && (
-            <Timeline events={timelineEvents} agents={agents} />
           )}
 
           {/* 💬 대화 */}
@@ -279,14 +272,13 @@ export default function DashboardPage() {
           {/* 📋 로그 */}
           {activeTab === "logs" && (
             <div className="flex flex-col h-full gap-2">
-              <div className="flex items-center justify-between px-1">
+              <div className="flex items-center px-1">
                 <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
-                  실시간 이벤트 로그
+                  이벤트 로그
                 </h2>
-                <span className="text-xs text-gray-500 font-mono">{logs.length}/100</span>
               </div>
               <div className="flex-1 flex flex-col min-h-0 rounded-xl border border-white/10 bg-white/5 p-3">
-                <LogStream logs={logs} />
+                <LogStream logs={logs} apiBase={API_BASE} />
               </div>
             </div>
           )}

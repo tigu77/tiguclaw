@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { AgentInfo, LogEntry, TimelineEvent, WsEvent } from "@/types";
+import { AgentInfo, LogEntry, LogEntryType, TimelineEvent, WsEvent } from "@/types";
 
 const MAX_LOGS = 100;
 const MAX_TIMELINE = 500;
@@ -253,7 +253,10 @@ export function useDashboard(wsUrl: string) {
         // AgentThinking
         if (data.type === "AgentThinking") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string };
-          if (d.name) patchAgent({ name: d.name, current_status: "thinking" });
+          if (d.name) {
+            patchAgent({ name: d.name, current_status: "thinking" });
+            addLog({ id: makeId(), time: nowTime(), type: "thinking" as LogEntryType, text: `💭 thinking: ${d.name}` });
+          }
           const tl = wsToTimeline(data);
           if (tl) addTimelineEvent(tl);
           return;
@@ -262,7 +265,10 @@ export function useDashboard(wsUrl: string) {
         // AgentExecuting
         if (data.type === "AgentExecuting") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string; tool?: string };
-          if (d.name) patchAgent({ name: d.name, current_status: `executing:${d.tool ?? ""}` });
+          if (d.name) {
+            patchAgent({ name: d.name, current_status: `executing:${d.tool ?? ""}` });
+            addLog({ id: makeId(), time: nowTime(), type: "executing" as LogEntryType, text: `🔧 executing: ${d.name} → ${d.tool ?? "?"}` });
+          }
           const tl = wsToTimeline(data);
           if (tl) addTimelineEvent(tl);
           return;
@@ -271,7 +277,10 @@ export function useDashboard(wsUrl: string) {
         // AgentIdle
         if (data.type === "AgentIdle") {
           const d = (data.data ?? data.payload ?? {}) as { name?: string };
-          if (d.name) patchAgent({ name: d.name, current_status: "idle" });
+          if (d.name) {
+            patchAgent({ name: d.name, current_status: "idle" });
+            addLog({ id: makeId(), time: nowTime(), type: "idle" as LogEntryType, text: `✅ idle: ${d.name}` });
+          }
           setAgentIdleCount((c) => c + 1);
           const tl = wsToTimeline(data);
           if (tl) addTimelineEvent(tl);

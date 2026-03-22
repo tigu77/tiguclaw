@@ -148,11 +148,15 @@ export default function ConversationDetail({ chatId, agentName, agentStatus, onC
         )}
         {data?.messages.map((msg, idx) => {
           const isUser = msg.role === "user";
+          const senderName = isUser ? "정태님" : agentName;
           return (
             <div
               key={idx}
               className={`flex flex-col gap-0.5 ${isUser ? "items-end" : "items-start"}`}
             >
+              <span className="text-[11px] text-gray-500 font-mono px-1">
+                {senderName}
+              </span>
               <div
                 className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm break-words ${
                   isUser

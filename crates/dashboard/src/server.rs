@@ -41,6 +41,8 @@ pub struct AppState {
     pub start_time: Instant,
     /// 대화 히스토리 DB 경로 (대화 이력 API용).
     pub conv_db_path: Option<std::path::PathBuf>,
+    /// 대화 히스토리 ConversationStore (공유 인스턴스 — 매 요청마다 재생성 방지).
+    pub conv_store: Option<Arc<Mutex<tiguclaw_memory::ConversationStore>>>,
     /// 타임라인 DB (이벤트 영속화).
     pub timeline_db: Option<Arc<TimelineDb>>,
     /// 관리자 텔레그램 chat_id — 대시보드 메시지 주입 시 sender로 사용.
@@ -220,12 +222,24 @@ impl DashboardServer {
                 .allow_headers(Any)
         };
 
+        // ConversationStore 공유 인스턴스 초기화 (한 번만 열고 Arc로 공유).
+        let conv_store = self.conv_db_path.as_ref().and_then(|p| {
+            match tiguclaw_memory::ConversationStore::open(p) {
+                Ok(s) => Some(Arc::new(Mutex::new(s))),
+                Err(e) => {
+                    warn!("ConversationStore open failed: {e}");
+                    None
+                }
+            }
+        });
+
         let state = AppState {
             registry: self.registry,
             event_tx: self.event_tx,
             log: self.log,
             start_time: self.start_time,
             conv_db_path: self.conv_db_path,
+            conv_store,
             timeline_db: self.timeline_db,
             admin_chat_id: self.admin_chat_id,
             event_logger: self.event_logger,

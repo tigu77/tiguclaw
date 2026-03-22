@@ -233,13 +233,8 @@ pub struct ConversationDetail {
 pub async fn get_conversations(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConversationSummary>>, StatusCode> {
-    let path = state
-        .conv_db_path
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-
-    let store = tiguclaw_memory::ConversationStore::open(path)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let store = state.conv_store.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let store = store.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let rows = store
         .list_conversations(20)
@@ -269,13 +264,8 @@ pub async fn get_conversation_detail(
     State(state): State<AppState>,
     Path(chat_id): Path<String>,
 ) -> Result<Json<ConversationDetail>, StatusCode> {
-    let path = state
-        .conv_db_path
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-
-    let store = tiguclaw_memory::ConversationStore::open(path)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let store = state.conv_store.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let store = store.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let rows = store
         .load_history_with_ts(&chat_id, 100)

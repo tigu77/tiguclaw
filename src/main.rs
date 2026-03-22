@@ -163,6 +163,7 @@ async fn async_main() -> Result<()> {
             });
         });
         reg.set_conv_save_tx(conv_tx);
+        reg.set_admin_chat_id(primary_ch_cfg.admin_chat_id);
 
         if config.monitor.enabled {
             info!(

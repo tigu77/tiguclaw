@@ -158,6 +158,8 @@ pub struct AgentRegistry {
     primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
     /// spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 채널로 위임).
     conv_save_tx: Option<mpsc::Sender<(String, ChatMessage)>>,
+    /// L0 admin_chat_id — spawn 에이전트 보고 시 수신자.
+    admin_chat_id: i64,
 }
 
 impl AgentRegistry {
@@ -175,7 +177,7 @@ impl AgentRegistry {
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
             primary_inject_tx: None,
-            conv_save_tx: None,
+            conv_save_tx: None, admin_chat_id: 0,
         }
     }
 
@@ -197,13 +199,18 @@ impl AgentRegistry {
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
             primary_inject_tx: None,
-            conv_save_tx: None,
+            conv_save_tx: None, admin_chat_id: 0,
         }
     }
 
     /// spawn된 에이전트 대화 저장용 채널 설정.
     pub fn set_conv_save_tx(&mut self, tx: mpsc::Sender<(String, ChatMessage)>) {
         self.conv_save_tx = Some(tx);
+    }
+
+    /// L0 admin_chat_id 설정 (spawn 에이전트 보고 수신자).
+    pub fn set_admin_chat_id(&mut self, id: i64) {
+        self.admin_chat_id = id;
     }
 
     /// 에이전트 현재 상태 업데이트 ("idle" | "thinking" | "executing:tool명").
@@ -378,6 +385,7 @@ impl AgentRegistry {
         // 대시보드 이벤트 + 대화 저장용.
         let spawn_event_tx = self.event_tx.clone();
         let spawn_conv_tx = self.conv_save_tx.clone();
+        let admin_chat_id_val = self.admin_chat_id;
 
         let name = req.name.clone();
 
@@ -413,7 +421,7 @@ impl AgentRegistry {
                 let etx = spawn_event_tx.clone();
                 let conv_tx_clone = spawn_conv_tx.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report, etx, conv_tx_clone).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val).await;
                     debug!(name = %name, "non-persistent agent task ended");
                     let _ = cleanup_tx.send(name.clone());
                 });
@@ -436,7 +444,7 @@ impl AgentRegistry {
                 let etx = spawn_event_tx.clone();
                 let conv_tx_clone = spawn_conv_tx.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val).await;
                     debug!(name = %name, "spawned agent task ended");
                 });
             }
@@ -884,6 +892,7 @@ async fn run_spawned_agent(
     agent_name: String,
     event_tx: Option<broadcast::Sender<DashboardEvent>>,
     conv_save_tx: Option<mpsc::Sender<(String, ChatMessage)>>,
+    admin_chat_id: i64,
 ) {
     info!(name = %name, persistent, "spawned agent loop started");
 
@@ -947,7 +956,7 @@ async fn run_spawned_agent(
             let report_msg = format!("[{}] 작업 완료:\n{}", agent_name, &response[..response.len().min(500)]);
             let channel_msg = ChannelMessage {
                 id: String::new(),
-                sender: String::from("0"),
+                sender: admin_chat_id.to_string(),
                 content: report_msg,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

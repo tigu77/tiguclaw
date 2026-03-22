@@ -511,6 +511,8 @@ impl AgentLoop {
                         if let Err(e) = store.save_message(&chat_id, &msg) {
                             warn!(error = %e, "failed to persist message");
                         }
+                        // L0 에이전트 대화는 정태님이 직접 시작 → initiator="user"
+                        let _ = store.set_initiator(&chat_id, "user");
                     }
                 }
 

@@ -162,6 +162,8 @@ pub struct AgentRegistry {
     /// spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 채널로 위임).
     /// 튜플: (chat_id, ChatMessage, sender: Option<String>)
     conv_save_tx: Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
+    /// 대화 initiator 저장 채널: (chat_id, initiator)
+    initiator_tx: Option<mpsc::Sender<(String, String)>>,
     /// L0 admin_chat_id — spawn 에이전트 보고 시 수신자.
     admin_chat_id: i64,
 }
@@ -181,7 +183,9 @@ impl AgentRegistry {
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
             primary_inject_tx: None,
-            conv_save_tx: None, admin_chat_id: 0,
+            conv_save_tx: None,
+            initiator_tx: None,
+            admin_chat_id: 0,
         }
     }
 
@@ -203,13 +207,20 @@ impl AgentRegistry {
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
             primary_inject_tx: None,
-            conv_save_tx: None, admin_chat_id: 0,
+            conv_save_tx: None,
+            initiator_tx: None,
+            admin_chat_id: 0,
         }
     }
 
     /// spawn된 에이전트 대화 저장용 채널 설정.
     pub fn set_conv_save_tx(&mut self, tx: mpsc::Sender<(String, ChatMessage, Option<String>)>) {
         self.conv_save_tx = Some(tx);
+    }
+
+    /// 대화 initiator 저장용 채널 설정.
+    pub fn set_initiator_tx(&mut self, tx: mpsc::Sender<(String, String)>) {
+        self.initiator_tx = Some(tx);
     }
 
     /// L0 admin_chat_id 설정 (spawn 에이전트 보고 수신자).
@@ -498,6 +509,16 @@ impl AgentRegistry {
 
         // 새 에이전트 상태를 "idle"로 초기화.
         self.status_map.insert(req.name.clone(), "idle".to_string());
+
+        // initiator 저장: parent_agent가 있으면 부모 에이전트 이름, 없으면 "user".
+        if let Some(ref itx) = self.initiator_tx {
+            let chat_id = req.name.clone();
+            let initiator = req.parent_agent.clone().unwrap_or_else(|| "user".to_string());
+            let itx = itx.clone();
+            tokio::spawn(async move {
+                let _ = itx.send((chat_id, initiator)).await;
+            });
+        }
 
         // Phase 9-1: AgentStatus 스냅샷 broadcast (spawn 후 전체 목록 갱신).
         self.broadcast_agent_status();

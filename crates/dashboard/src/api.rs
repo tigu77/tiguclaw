@@ -203,6 +203,8 @@ pub async fn get_agent_timeline(
 pub struct ConversationSummary {
     pub id: String,
     pub agent_name: String,
+    /// 대화 시작자: "user" = 정태님 직접, 에이전트 이름 = 해당 에이전트가 spawn하여 시작.
+    pub initiator: String,
     pub message_count: usize,
     pub last_message: String,
     pub last_message_role: String,
@@ -246,12 +248,13 @@ pub async fn get_conversations(
 
     let summaries = rows
         .into_iter()
-        .map(|(chat_id, msg_count, last_content, last_role, updated_at)| {
+        .map(|(chat_id, msg_count, last_content, last_role, updated_at, initiator)| {
             // chat_id를 그대로 agent_name으로 사용
             let agent_name = chat_id.clone();
             ConversationSummary {
                 id: chat_id,
                 agent_name,
+                initiator,
                 message_count: msg_count,
                 last_message: last_content,
                 last_message_role: last_role,

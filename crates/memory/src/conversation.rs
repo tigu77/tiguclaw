@@ -148,11 +148,11 @@ impl ConversationStore {
 
     /// List recent conversation summaries (for dashboard API).
     ///
-    /// Returns `(chat_id, message_count, last_content, last_role, updated_at_unix)`.
-    pub fn list_conversations(&self, limit: usize) -> Result<Vec<(String, usize, String, String, i64)>> {
+    /// Returns `(chat_id, message_count, last_content, last_role, updated_at_unix, initiator)`.
+    pub fn list_conversations(&self, limit: usize) -> Result<Vec<(String, usize, String, String, i64, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT
-                chat_id,
+                c.chat_id,
                 COUNT(*) as msg_count,
                 (SELECT content FROM conversations c2
                  WHERE c2.chat_id = c.chat_id AND c2.role IN ('user', 'assistant')
@@ -160,10 +160,12 @@ impl ConversationStore {
                 (SELECT role FROM conversations c2
                  WHERE c2.chat_id = c.chat_id AND c2.role IN ('user', 'assistant')
                  ORDER BY c2.id DESC LIMIT 1) as last_role,
-                CAST(strftime('%s', MAX(created_at)) AS INTEGER) as updated_at
+                CAST(strftime('%s', MAX(c.created_at)) AS INTEGER) as updated_at,
+                COALESCE(m.initiator, 'user') as initiator
              FROM conversations c
-             WHERE role IN ('user', 'assistant')
-             GROUP BY chat_id
+             LEFT JOIN conversation_meta m ON m.chat_id = c.chat_id
+             WHERE c.role IN ('user', 'assistant')
+             GROUP BY c.chat_id
              ORDER BY updated_at DESC
              LIMIT ?1",
         )?;
@@ -174,7 +176,8 @@ impl ConversationStore {
             let last_content: String = row.get(2).unwrap_or_default();
             let last_role: String = row.get(3).unwrap_or_default();
             let updated_at: i64 = row.get(4).unwrap_or(0);
-            Ok((chat_id, msg_count as usize, last_content, last_role, updated_at))
+            let initiator: String = row.get(5).unwrap_or_else(|_| "user".to_string());
+            Ok((chat_id, msg_count as usize, last_content, last_role, updated_at, initiator))
         })?;
 
         let mut results = Vec::new();
@@ -215,6 +218,33 @@ impl ConversationStore {
         Ok(results)
     }
 
+    // ── public API — initiator ───────────────────────────────────────
+
+    /// 대화 시작자 저장 (없으면 INSERT, 있으면 무시).
+    ///
+    /// `initiator`:
+    /// - "user" → 정태님이 직접 대화 시작
+    /// - 에이전트 이름 (예: "돌쇠마크2") → 해당 에이전트가 spawn하여 시작
+    pub fn set_initiator(&self, chat_id: &str, initiator: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO conversation_meta (chat_id, initiator) VALUES (?1, ?2)",
+            params![chat_id, initiator],
+        )?;
+        debug!(chat_id, initiator, "set conversation initiator");
+        Ok(())
+    }
+
+    /// 대화 시작자 조회. 기록 없으면 None.
+    pub fn get_initiator(&self, chat_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT initiator FROM conversation_meta WHERE chat_id = ?1",
+                params![chat_id],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
     // ── internal ────────────────────────────────────────────────────
 
     fn ensure_schema(&self) -> Result<()> {
@@ -230,7 +260,12 @@ impl ConversationStore {
                  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
              );
              CREATE INDEX IF NOT EXISTS idx_conv_chat_id
-                 ON conversations(chat_id);",
+                 ON conversations(chat_id);
+             CREATE TABLE IF NOT EXISTS conversation_meta (
+                 chat_id    TEXT PRIMARY KEY,
+                 initiator  TEXT NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
         )?;
         // 기존 DB 마이그레이션: sender 컬럼 없으면 추가.
         let _ = self.conn.execute_batch(

@@ -5,6 +5,8 @@ import { useEffect, useState, useCallback } from "react";
 export interface ConversationSummary {
   id: string;
   agent_name: string;
+  /** 대화 시작자: "user" = 정태님 직접, 에이전트 이름 = 해당 에이전트가 spawn */
+  initiator: string;
   message_count: number;
   last_message: string;
   last_message_role: string;
@@ -103,7 +105,11 @@ export default function ConversationList({ onSelect, selectedId, apiBase }: Conv
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-mono text-white truncate">
-                정태님 <span className="text-gray-500">↔</span> {conv.agent_name}
+                {conv.initiator === "user" ? (
+                  <>정태님 <span className="text-gray-500">↔</span> {conv.agent_name}</>
+                ) : (
+                  <>{conv.initiator} <span className="text-gray-500">→</span> {conv.agent_name}</>
+                )}
               </span>
               <span className="text-xs text-gray-500 flex-shrink-0 font-mono">
                 {formatTime(conv.updated_at)}

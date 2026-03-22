@@ -145,6 +145,7 @@ async fn async_main() -> Result<()> {
 
         // spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 별도 스레드로 위임).
         let (conv_tx, mut conv_rx) = tokio::sync::mpsc::channel::<(String, tiguclaw_core::types::ChatMessage, Option<String>)>(256);
+        let (initiator_tx, mut initiator_rx) = tokio::sync::mpsc::channel::<(String, String)>(64);
         let conv_db_path = data_dir.join("conversations.db");
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -156,14 +157,25 @@ async fn async_main() -> Result<()> {
                         return;
                     }
                 };
-                while let Some((agent_name, msg, sender)) = conv_rx.recv().await {
-                    if let Err(e) = store.save_message_with_sender(&agent_name, &msg, sender.as_deref()) {
-                        tracing::warn!(agent = %agent_name, error = %e, "conv save failed");
+                loop {
+                    tokio::select! {
+                        Some((agent_name, msg, sender)) = conv_rx.recv() => {
+                            if let Err(e) = store.save_message_with_sender(&agent_name, &msg, sender.as_deref()) {
+                                tracing::warn!(agent = %agent_name, error = %e, "conv save failed");
+                            }
+                        }
+                        Some((chat_id, initiator)) = initiator_rx.recv() => {
+                            if let Err(e) = store.set_initiator(&chat_id, &initiator) {
+                                tracing::warn!(chat_id = %chat_id, error = %e, "initiator save failed");
+                            }
+                        }
+                        else => break,
                     }
                 }
             });
         });
         reg.set_conv_save_tx(conv_tx);
+        reg.set_initiator_tx(initiator_tx);
         reg.set_admin_chat_id(primary_ch_cfg.admin_chat_id);
 
         if config.monitor.enabled {

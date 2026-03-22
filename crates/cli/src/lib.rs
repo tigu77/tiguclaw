@@ -775,22 +775,72 @@ fn config_set(key: &str, value: &str) -> Result<()> {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
+/// .env 파일에서 KEY=VALUE 파싱
+fn read_env_file(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for line in content.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                map.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    map
+}
+
+/// 민감한 값 마스킹 (앞 6자만 표시)
+fn mask_secret(s: &str) -> String {
+    if s.len() > 6 {
+        format!("{}****", &s[..6])
+    } else {
+        "****".to_string()
+    }
+}
+
 fn init(yes: bool, dir: Option<PathBuf>, force: bool) -> Result<()> {
     let install_dir = dir.unwrap_or_else(install_dir);
 
     println!("🐯 tiguclaw setup wizard\n");
     println!("📁 Install directory: {}", install_dir.display());
 
-    // 1. config.toml 이미 있으면 확인 (early exit — example 로드 전에)
+    // 1. 기존 설정 로드 (있으면 기본값으로 활용)
     let config_path = install_dir.join(CONFIG_FILE);
-    if config_path.exists() && !force {
-        println!("⚠️  ~/.tiguclaw already initialized.");
-        println!("   Use --force to reinitialize, or edit config.toml directly.");
-        return Ok(());
+    let env_path = install_dir.join(".env");
+    let already_init = config_path.exists();
+
+    if already_init && !force {
+        println!("📝 Already initialized — updating existing config (Enter to keep current values)\n");
     }
 
+    // 기존 .env 값 읽기
+    let existing_env = read_env_file(&env_path);
+    let existing_bot_token = existing_env.get("TELEGRAM_BOT_TOKEN").cloned().unwrap_or_default();
+    let existing_api_key = existing_env.get("ANTHROPIC_API_KEY").cloned().unwrap_or_default();
+
+    // 기존 config.toml 값 읽기
+    let (existing_agent_name, existing_port) = if already_init {
+        let doc = load_toml_doc(config_path.to_str().unwrap_or(CONFIG_FILE)).unwrap_or_default();
+        let name = doc.get("agent")
+            .and_then(|a| a.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("MyAgent")
+            .to_string();
+        let port = doc.get("dashboard")
+            .and_then(|d| d.get("port"))
+            .and_then(|v| v.as_integer())
+            .unwrap_or(3002) as u16;
+        (name, port)
+    } else {
+        ("MyAgent".to_string(), 3002u16)
+    };
+
     // config.toml.example 읽기 — chdir 전에 (binary 옆 또는 cwd에서 찾음)
-    let example = find_config_example()?;
+    // 기존 init인 경우 example 없어도 진행 가능
+    let example = if already_init && !force {
+        std::fs::read_to_string(&config_path).unwrap_or_default()
+    } else {
+        find_config_example()?
+    };
 
     // Install dir 생성 및 이동
     std::fs::create_dir_all(&install_dir)
@@ -798,31 +848,51 @@ fn init(yes: bool, dir: Option<PathBuf>, force: bool) -> Result<()> {
 
     // 2. 필수 정보 입력받기
     let bot_token = if yes {
-        "YOUR_TELEGRAM_BOT_TOKEN".to_string()
+        if existing_bot_token.is_empty() { "YOUR_TELEGRAM_BOT_TOKEN".to_string() } else { existing_bot_token.clone() }
     } else {
-        prompt("Telegram bot token (from @BotFather)")?
+        let default_label = if existing_bot_token.is_empty() {
+            "Telegram bot token (from @BotFather)".to_string()
+        } else {
+            format!("Telegram bot token [{}]", mask_secret(&existing_bot_token))
+        };
+        let input = prompt(&default_label)?;
+        if input.is_empty() && !existing_bot_token.is_empty() {
+            existing_bot_token.clone()
+        } else {
+            input
+        }
     };
 
     // admin_chat_id is auto-registered on first /start — no prompt needed
 
     let api_key = if yes {
-        "${ANTHROPIC_API_KEY}".to_string()
+        if existing_api_key.is_empty() { "${ANTHROPIC_API_KEY}".to_string() } else { existing_api_key.clone() }
     } else {
-        prompt("Anthropic API key (from console.anthropic.com)")?
+        let default_label = if existing_api_key.is_empty() {
+            "Anthropic API key (from console.anthropic.com)".to_string()
+        } else {
+            format!("Anthropic API key [{}]", mask_secret(&existing_api_key))
+        };
+        let input = prompt(&default_label)?;
+        if input.is_empty() && !existing_api_key.is_empty() {
+            existing_api_key.clone()
+        } else {
+            input
+        }
     };
 
     let agent_name = if yes {
-        "MyAgent".to_string()
+        existing_agent_name.clone()
     } else {
-        let s = prompt_with_default("Agent name", "MyAgent")?;
-        if s.is_empty() { "MyAgent".to_string() } else { s }
+        let s = prompt_with_default("Agent name", &existing_agent_name)?;
+        if s.is_empty() { existing_agent_name.clone() } else { s }
     };
 
     let dashboard_port: u16 = if yes {
-        3002
+        existing_port
     } else {
-        let s = prompt_with_default("Dashboard port", "3002")?;
-        s.trim().parse().unwrap_or(3002)
+        let s = prompt_with_default("Dashboard port", &existing_port.to_string())?;
+        s.trim().parse().unwrap_or(existing_port)
     };
 
     // install_dir로 이동 후 파일 생성

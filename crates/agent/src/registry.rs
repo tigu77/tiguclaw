@@ -156,6 +156,8 @@ pub struct AgentRegistry {
     inbox_txs: HashMap<String, mpsc::Sender<ChannelMessage>>,
     /// 프라이머리 채널(TelegramChannel)의 inject sender — 대시보드 메시지를 메인채널로 직접 주입.
     primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
+    /// spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 채널로 위임).
+    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage)>>,
 }
 
 impl AgentRegistry {
@@ -173,6 +175,7 @@ impl AgentRegistry {
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
             primary_inject_tx: None,
+            conv_save_tx: None,
         }
     }
 
@@ -194,7 +197,13 @@ impl AgentRegistry {
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
             primary_inject_tx: None,
+            conv_save_tx: None,
         }
+    }
+
+    /// spawn된 에이전트 대화 저장용 채널 설정.
+    pub fn set_conv_save_tx(&mut self, tx: mpsc::Sender<(String, ChatMessage)>) {
+        self.conv_save_tx = Some(tx);
     }
 
     /// 에이전트 현재 상태 업데이트 ("idle" | "thinking" | "executing:tool명").
@@ -366,6 +375,9 @@ impl AgentRegistry {
         // 부모 에이전트의 inject_tx — 작업 완료 시 결과 자동 주입용.
         let parent_inject_tx = self.primary_inject_tx.clone();
         let _parent_name = req.parent_agent.clone();
+        // 대시보드 이벤트 + 대화 저장용.
+        let spawn_event_tx = self.event_tx.clone();
+        let spawn_conv_tx = self.conv_save_tx.clone();
 
         let name = req.name.clone();
 
@@ -398,8 +410,10 @@ impl AgentRegistry {
                 let (cleanup_tx, cleanup_rx) = oneshot::channel::<String>();
                 let inject_tx = parent_inject_tx.clone();
                 let agent_name_for_report = name.clone();
+                let etx = spawn_event_tx.clone();
+                let conv_tx_clone = spawn_conv_tx.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report, etx, conv_tx_clone).await;
                     debug!(name = %name, "non-persistent agent task ended");
                     let _ = cleanup_tx.send(name.clone());
                 });
@@ -419,8 +433,10 @@ impl AgentRegistry {
             } else {
                 let inject_tx = parent_inject_tx.clone();
                 let agent_name_for_report = name.clone();
+                let etx = spawn_event_tx.clone();
+                let conv_tx_clone = spawn_conv_tx.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone).await;
                     debug!(name = %name, "spawned agent task ended");
                 });
             }
@@ -830,6 +846,8 @@ async fn run_telegram_agent(
             &system_prompt,
             &mut history,
             msg.content,
+            &None,
+            &None,
         )
         .await;
 
@@ -864,6 +882,8 @@ async fn run_spawned_agent(
     persistent: bool,
     parent_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
     agent_name: String,
+    event_tx: Option<broadcast::Sender<DashboardEvent>>,
+    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage)>>,
 ) {
     info!(name = %name, persistent, "spawned agent loop started");
 
@@ -905,6 +925,8 @@ async fn run_spawned_agent(
             &system_prompt,
             &mut history,
             effective_message,
+            &event_tx,
+            &conv_save_tx,
         )
         .await;
 
@@ -957,9 +979,15 @@ async fn run_agent_task(
     system_prompt: &str,
     history: &mut Vec<ChatMessage>,
     user_message: String,
+    event_tx: &Option<broadcast::Sender<DashboardEvent>>,
+    conv_save_tx: &Option<mpsc::Sender<(String, ChatMessage)>>,
 ) -> anyhow::Result<String> {
     // 사용자 메시지 추가.
-    history.push(ChatMessage::user(&user_message));
+    let user_msg = ChatMessage::user(&user_message);
+    if let Some(ref tx) = conv_save_tx {
+        let _ = tx.send((name.to_string(), user_msg.clone())).await;
+    }
+    history.push(user_msg);
 
     // 툴 정의 빌드.
     let tool_defs: Vec<ToolDefinition> = tools
@@ -983,6 +1011,9 @@ async fn run_agent_task(
 
     for iteration in 0..MAX_ITERATIONS {
         info!(name = %name, iteration, msg_count = messages.len(), "run_agent_task: LLM 호출 시작");
+        if let Some(ref tx) = event_tx {
+            let _ = tx.send(DashboardEvent::AgentThinking { name: name.to_string() });
+        }
         let response = provider
             .chat(&messages, &tool_defs)
             .await
@@ -997,7 +1028,14 @@ async fn run_agent_task(
             let reply = response.text.clone();
             // 이력에 assistant 응답 추가.
             if !response.text.is_empty() {
-                history.push(ChatMessage::assistant(&response.text));
+                let assistant_msg = ChatMessage::assistant(&response.text);
+                if let Some(ref tx) = conv_save_tx {
+                    let _ = tx.send((name.to_string(), assistant_msg.clone())).await;
+                }
+                history.push(assistant_msg);
+            }
+            if let Some(ref tx) = event_tx {
+                let _ = tx.send(DashboardEvent::AgentIdle { name: name.to_string() });
             }
             info!(name = %name, iteration, reply_len = reply.len(), "run_agent_task: 완료");
             return Ok(reply);
@@ -1013,6 +1051,12 @@ async fn run_agent_task(
         // 모든 툴 호출 실행.
         for tool_call in &response.tool_calls {
             info!(name = %name, iteration, tool = %tool_call.name, "run_agent_task: 툴 실행 시작");
+            if let Some(ref tx) = event_tx {
+                let _ = tx.send(DashboardEvent::AgentExecuting {
+                    name: name.to_string(),
+                    tool: tool_call.name.clone(),
+                });
+            }
             let result = execute_tool(tools, tool_call).await;
             info!(
                 name = %name,
@@ -1039,7 +1083,14 @@ async fn run_agent_task(
 
     let reply = final_response.text.clone();
     if !reply.is_empty() {
-        history.push(ChatMessage::assistant(&reply));
+        let assistant_msg = ChatMessage::assistant(&reply);
+        if let Some(ref tx) = conv_save_tx {
+            let _ = tx.send((name.to_string(), assistant_msg.clone())).await;
+        }
+        history.push(assistant_msg);
+    }
+    if let Some(ref tx) = event_tx {
+        let _ = tx.send(DashboardEvent::AgentIdle { name: name.to_string() });
     }
     Ok(reply)
 }

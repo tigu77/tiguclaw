@@ -142,6 +142,28 @@ async fn async_main() -> Result<()> {
             reg.set_event_tx(ds.event_tx.clone());
         }
 
+        // spawn된 에이전트 대화 저장용 채널 (ConversationStore는 !Send이므로 별도 스레드로 위임).
+        let (conv_tx, mut conv_rx) = tokio::sync::mpsc::channel::<(String, tiguclaw_core::types::ChatMessage)>(256);
+        let conv_db_path = data_dir.join("conversations.db");
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async move {
+                let store = match tiguclaw_memory::ConversationStore::open(&conv_db_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "conv store open failed for spawned agents");
+                        return;
+                    }
+                };
+                while let Some((agent_name, msg)) = conv_rx.recv().await {
+                    if let Err(e) = store.save_message(&agent_name, &msg) {
+                        tracing::warn!(agent = %agent_name, error = %e, "conv save failed");
+                    }
+                }
+            });
+        });
+        reg.set_conv_save_tx(conv_tx);
+
         if config.monitor.enabled {
             info!(
                 chat_id = %config.monitor.telegram_chat_id,

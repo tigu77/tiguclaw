@@ -521,7 +521,7 @@ impl Default for MarketConfig {
 }
 
 fn default_registry_url() -> String {
-    "https://clawhub.com/api".to_string()
+    "https://tiguclaw-hub.com/api".to_string()
 }
 
 impl Config {

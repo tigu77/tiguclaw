@@ -76,7 +76,7 @@ impl MarketManager {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         Self::new(
             PathBuf::from(home).join(".tiguclaw"),
-            "https://clawhub.com/api",
+            "https://tiguclaw-hub.com/api",
         )
     }
 

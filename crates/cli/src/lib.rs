@@ -1208,7 +1208,7 @@ fn make_market_manager() -> tiguclaw_core::market::MarketManager {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
-        .unwrap_or_else(|| "https://clawhub.com/api".to_string());
+        .unwrap_or_else(|| "https://tiguclaw-hub.com/api".to_string());
 
     tiguclaw_core::market::MarketManager::new(install_dir(), registry_url)
 }

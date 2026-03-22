@@ -70,6 +70,27 @@ Set per-agent in `agent.toml`:
 ```toml
 [agent]
 clearance = "standard"   # full | standard | minimal
+
+[capabilities]
+skills = ["web_fetch", "shell", "read_file"]  # empty = all allowed
+```
+
+Clearance controls **what context the agent sees** (workspace files), while `skills` controls **what tools the agent can use**. An L2 worker can be restricted to only the tools it actually needs:
+
+```toml
+# researcher — can search and read, nothing else
+[agent]
+clearance = "minimal"
+
+[capabilities]
+skills = ["web_fetch", "read_file"]
+
+# coder — can read/write code and run builds
+[agent]
+clearance = "minimal"
+
+[capabilities]
+skills = ["shell", "read_file", "write_file", "edit_file"]
 ```
 
 ### Escalation Protocol

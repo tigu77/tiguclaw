@@ -68,6 +68,27 @@ tiguclaw (단일 바이너리)
 ```toml
 [agent]
 clearance = "standard"   # full | standard | minimal
+
+[capabilities]
+skills = ["web_fetch", "shell", "read_file"]  # 빈 배열 = 전부 허용
+```
+
+clearance는 **에이전트가 볼 수 있는 컨텍스트**(워크스페이스 파일)를 제어하고, `skills`는 **에이전트가 사용할 수 있는 툴**을 제어합니다. L2 워커는 실제 필요한 툴만 제한할 수 있어요:
+
+```toml
+# researcher — 검색/읽기만 허용
+[agent]
+clearance = "minimal"
+
+[capabilities]
+skills = ["web_fetch", "read_file"]
+
+# coder — 코드 읽기/쓰기/빌드만 허용
+[agent]
+clearance = "minimal"
+
+[capabilities]
+skills = ["shell", "read_file", "write_file", "edit_file"]
 ```
 
 ### 에스컬레이션 프로토콜

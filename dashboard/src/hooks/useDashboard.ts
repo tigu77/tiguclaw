@@ -147,7 +147,7 @@ export function useDashboard(wsUrl: string) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connected, setConnected] = useState(false);
-  const [totalCost, setTotalCost] = useState(0);
+
   const [timelineEvents, setTimelineEvents] = useState<TimelineEvent[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -278,19 +278,6 @@ export function useDashboard(wsUrl: string) {
           return;
         }
 
-        // 비용 이벤트
-        if (((data.data ?? data.payload) as Record<string, unknown>)?.cost !== undefined) {
-          const cost = Number(((data.data ?? data.payload) as Record<string, unknown>).cost ?? 0);
-          setTotalCost((prev) => prev + cost);
-          addLog({
-            id: makeId(),
-            time: nowTime(),
-            type: "cost",
-            text: `💰 비용 +$${cost.toFixed(4)}`,
-          });
-          return;
-        }
-
         const result = parseEvent(data);
         if (result) {
           if (result.agentPatch) patchAgent(result.agentPatch);
@@ -333,5 +320,5 @@ export function useDashboard(wsUrl: string) {
     };
   }, [connect]);
 
-  return { agents, logs, connected, totalCost, timelineEvents };
+  return { agents, logs, connected, timelineEvents };
 }

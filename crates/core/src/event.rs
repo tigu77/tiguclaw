@@ -17,8 +17,6 @@ pub enum DashboardEvent {
     AgentComm { from: String, to: String, message: String },
     /// 현재 실행 중인 전체 에이전트 목록 스냅샷.
     AgentStatus { agents: Vec<AgentStatusInfo> },
-    /// 비용 업데이트.
-    CostUpdate { usd_today: f64 },
     /// 30초마다 전송되는 heartbeat ping.
     Heartbeat,
     /// 에이전트 LLM 요청 중.

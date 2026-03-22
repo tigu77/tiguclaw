@@ -29,7 +29,7 @@ const BOTTOM_NAV: { id: Tab; icon: string; label: string }[] = [
 ];
 
 export default function DashboardPage() {
-  const { agents, logs, connected, totalCost, timelineEvents } = useDashboard(WS_URL);
+  const { agents, logs, connected, timelineEvents } = useDashboard(WS_URL);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
@@ -51,7 +51,6 @@ export default function DashboardPage() {
           }}
           connected={connected}
           agentCount={agents.length}
-          totalCost={totalCost}
         />
       </div>
 

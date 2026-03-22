@@ -7,7 +7,6 @@ interface SidebarProps {
   onTabChange: (tab: Tab) => void;
   connected: boolean;
   agentCount: number;
-  totalCost: number;
 }
 
 const NAV_ITEMS: { id: Tab; icon: string; label: string }[] = [
@@ -22,7 +21,6 @@ export default function Sidebar({
   onTabChange,
   connected,
   agentCount,
-  totalCost,
 }: SidebarProps) {
   return (
     <aside className="flex flex-col w-56 flex-shrink-0 border-r border-white/10 bg-white/5">
@@ -61,8 +59,8 @@ export default function Sidebar({
         })}
       </nav>
 
-      {/* 하단: 연결 상태 + 비용 */}
-      <div className="px-4 py-4 border-t border-white/10 space-y-2">
+      {/* 하단: 연결 상태 */}
+      <div className="px-4 py-4 border-t border-white/10">
         <div className="flex items-center gap-2">
           <span
             className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
@@ -76,10 +74,6 @@ export default function Sidebar({
           >
             {connected ? "연결됨" : "연결 끊김"}
           </span>
-        </div>
-        <div className="text-xs text-gray-500 font-mono">
-          오늘 비용:{" "}
-          <span className="text-yellow-400">${totalCost.toFixed(4)}</span>
         </div>
       </div>
     </aside>

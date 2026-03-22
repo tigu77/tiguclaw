@@ -356,10 +356,9 @@ impl AnthropicProvider {
                 .header("anthropic-beta", "prompt-caching-2024-07-31");
         }
 
-        let response = request
-            .json(&body)
-            .send()
+        let response = timeout(Duration::from_secs(30), request.json(&body).send())
             .await
+            .map_err(|_| TiguError::Provider("connection timeout (30s)".into()))?
             .map_err(|e| TiguError::Provider(format!("request failed: {e}")))?;
 
         let status = response.status();

@@ -32,6 +32,10 @@ pub struct PersistedAgent {
     pub persistent: bool,
     /// "running" | "stopped" | "error"
     pub status: String,
+    /// 부모 에이전트 이름 (트리 복원용)
+    pub parent_agent: Option<String>,
+    /// 소속 팀 이름
+    pub team: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +84,15 @@ impl AgentStore {
             );",
         )
         .context("AgentStore: 테이블 생성 실패")?;
+
+        // 마이그레이션: parent_agent / team 컬럼 추가 (없으면)
+        for (col, ty) in &[("parent_agent", "TEXT"), ("team", "TEXT")] {
+            let _ = conn.execute_batch(&format!(
+                "ALTER TABLE agents ADD COLUMN {col} {ty};"
+            ));
+            // 이미 존재하면 "duplicate column name" 오류 → 무시
+        }
+
         Ok(())
     }
 
@@ -89,8 +102,8 @@ impl AgentStore {
         conn.execute(
             "INSERT OR REPLACE INTO agents
                 (name, level, agent_role, channel_type, bot_token, admin_chat_id,
-                 system_prompt, persistent, status, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
+                 system_prompt, persistent, status, parent_agent, team, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))",
             params![
                 agent.name,
                 agent.level as i64,
@@ -101,6 +114,8 @@ impl AgentStore {
                 agent.system_prompt,
                 agent.persistent as i64,
                 agent.status,
+                agent.parent_agent,
+                agent.team,
             ],
         )
         .with_context(|| format!("AgentStore: save 실패 — name={}", agent.name))?;
@@ -112,7 +127,7 @@ impl AgentStore {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
             "SELECT name, level, agent_role, channel_type, bot_token, admin_chat_id,
-                    system_prompt, persistent, status
+                    system_prompt, persistent, status, parent_agent, team
              FROM agents",
         )?;
         let agents = stmt
@@ -127,6 +142,8 @@ impl AgentStore {
                     system_prompt: row.get(6)?,
                     persistent: row.get::<_, i64>(7)? != 0,
                     status: row.get(8)?,
+                    parent_agent: row.get(9)?,
+                    team: row.get(10)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()

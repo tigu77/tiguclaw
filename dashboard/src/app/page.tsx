@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
 import AgentCard from "@/components/AgentCard";
 import AgentTree from "@/components/AgentTree";
 import AgentTimelinePanel from "@/components/AgentTimelinePanel";
 import LogStream from "@/components/LogStream";
-import ConversationList from "@/components/ConversationList";
+import ConversationList, { ConversationSummary } from "@/components/ConversationList";
 import ConversationDetail from "@/components/ConversationDetail";
 import Sidebar, { Tab } from "@/components/Sidebar";
 import Timeline from "@/components/Timeline";
@@ -36,6 +36,47 @@ export default function DashboardPage() {
   const [selectedAgentName, setSelectedAgentName] = useState<string>("");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [agentViewMode, setAgentViewMode] = useState<"list" | "tree">("list");
+  const [teamFilter, setTeamFilter] = useState<string>("전체");
+  const [lastMessageMap, setLastMessageMap] = useState<Record<string, string>>({});
+
+  // 팀 목록 동적 수집
+  const teams = ["전체", ...Array.from(new Set(agents.map((a) => a.team).filter(Boolean) as string[])).sort()];
+
+  // 팀 필터 적용
+  const filteredAgents = teamFilter === "전체"
+    ? agents
+    : agents.filter((a) => a.team === teamFilter);
+
+  // conversations 데이터 주기적으로 fetch → agentName별 마지막 user 메시지 맵 생성
+  const fetchLastMessages = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/conversations`);
+      if (!res.ok) return;
+      const data: ConversationSummary[] = await res.json();
+      // 각 에이전트의 최신 user 메시지만 추출 (updated_at 기준 최신 1개)
+      const map: Record<string, string> = {};
+      const sorted = [...data].sort((a, b) => b.updated_at - a.updated_at);
+      for (const conv of sorted) {
+        if (!map[conv.agent_name] && conv.last_message_role === "user" && conv.last_message) {
+          map[conv.agent_name] = conv.last_message;
+        }
+      }
+      setLastMessageMap(map);
+    } catch {
+      // 조용히 무시
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLastMessages();
+    const timer = setInterval(fetchLastMessages, 30_000);
+    return () => clearInterval(timer);
+  }, [fetchLastMessages]);
+
+  // agentIdleCount 변경 시 (에이전트가 작업 완료) 메시지 갱신
+  useEffect(() => {
+    if (agentIdleCount > 0) fetchLastMessages();
+  }, [agentIdleCount, fetchLastMessages]);
 
   const handleAgentClick = (name: string) => {
     setSelectedAgent((prev) => (prev === name ? null : name));
@@ -92,7 +133,7 @@ export default function DashboardPage() {
                     에이전트 군단
                   </h2>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-gray-500 font-mono">{agents.length}개</span>
+                    <span className="text-xs text-gray-500 font-mono">{filteredAgents.length}개</span>
                     {/* 리스트 / 트리 토글 */}
                     <div className="flex rounded-md overflow-hidden border border-white/10 text-[11px]">
                       <button
@@ -120,25 +161,46 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* 팀 필터 버튼 */}
+                {teams.length > 1 && (
+                  <div className="flex flex-wrap gap-1 px-1">
+                    {teams.map((team) => (
+                      <button
+                        key={team}
+                        onClick={() => setTeamFilter(team)}
+                        className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
+                          teamFilter === team
+                            ? "bg-purple-500/30 border-purple-400/50 text-purple-300"
+                            : "border-white/10 text-gray-500 hover:text-gray-300 hover:border-white/20"
+                        }`}
+                      >
+                        {team === "전체" ? "전체" : `📦 ${team}`}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <div
                   className="flex flex-col gap-1.5 overflow-y-auto flex-1"
                   style={{ scrollbarWidth: "thin", scrollbarColor: "#374151 transparent" }}
                 >
                   {agentViewMode === "tree" ? (
                     <AgentTree
-                      agents={agents}
+                      agents={filteredAgents}
                       selected={selectedAgent ?? undefined}
                       onSelect={(name) => handleAgentClick(name)}
                     />
-                  ) : agents.length === 0 ? (
+                  ) : filteredAgents.length === 0 ? (
                     <div className="text-gray-600 text-xs text-center py-8">에이전트 없음</div>
                   ) : (
-                    agents.map((agent) => (
+                    filteredAgents.map((agent) => (
                       <AgentCard
                         key={agent.name}
                         agent={agent}
                         selected={selectedAgent === agent.name}
                         onClick={() => handleAgentClick(agent.name)}
+                        lastMessage={lastMessageMap[agent.name]}
                       />
                     ))
                   )}

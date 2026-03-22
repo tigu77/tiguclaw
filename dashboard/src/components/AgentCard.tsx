@@ -27,9 +27,10 @@ interface AgentCardProps {
   agent: AgentInfo;
   selected?: boolean;
   onClick?: () => void;
+  lastMessage?: string;
 }
 
-export default function AgentCard({ agent, selected, onClick }: AgentCardProps) {
+export default function AgentCard({ agent, selected, onClick, lastMessage }: AgentCardProps) {
   const icon = ROLE_ICONS[agent.role] ?? "❓";
   const label = ROLE_LABELS[agent.role] ?? agent.role;
 
@@ -55,10 +56,22 @@ export default function AgentCard({ agent, selected, onClick }: AgentCardProps) 
         {agent.nickname && (
           <div className="text-xs text-gray-500 font-mono truncate">({agent.name})</div>
         )}
-        <div className="text-xs text-gray-400">{label}</div>
+        <div className="flex items-center gap-1 flex-wrap">
+          <span className="text-xs text-gray-400">{label}</span>
+          {agent.team && (
+            <span className="text-xs bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded">
+              📦 {agent.team}
+            </span>
+          )}
+        </div>
         {(isThinking || isExecuting) && (
           <div className="text-xs text-gray-400 mt-0.5 truncate">
             {isExecuting ? `🔧 ${toolName} 실행 중` : "💭 생각 중..."}
+          </div>
+        )}
+        {lastMessage && !isThinking && !isExecuting && (
+          <div className="text-xs text-gray-500 mt-0.5 truncate italic">
+            {lastMessage.slice(0, 40)}{lastMessage.length > 40 ? "…" : ""}
           </div>
         )}
       </div>

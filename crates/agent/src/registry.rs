@@ -482,6 +482,8 @@ impl AgentRegistry {
                     system_prompt: system_prompt_for_store,
                     persistent: true,
                     status: "running".to_string(),
+                    parent_agent: req.parent_agent.clone(),
+                    team: req.team.clone(),
                 };
                 if let Err(e) = store.save(&persisted) {
                     warn!(name = %req.name, error = %e, "AgentStore save 실패 (무시)");
@@ -714,8 +716,8 @@ impl AgentRegistry {
                 system_prompt_override: Some(pa.system_prompt.clone()),
                 hooks_url: None,
                 hooks_token: None,
-                parent_agent: None, // TODO: persist parent_agent in AgentStore
-                team: None,
+                parent_agent: pa.parent_agent.clone(),
+                team: pa.team.clone(),
                 clearance: Some("full".to_string()),
             };
 

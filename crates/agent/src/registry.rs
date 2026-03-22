@@ -484,6 +484,7 @@ impl AgentRegistry {
                     status: "running".to_string(),
                     parent_agent: req.parent_agent.clone(),
                     team: req.team.clone(),
+                    clearance: req.clearance.clone(),
                 };
                 if let Err(e) = store.save(&persisted) {
                     warn!(name = %req.name, error = %e, "AgentStore save 실패 (무시)");
@@ -718,7 +719,9 @@ impl AgentRegistry {
                 hooks_token: None,
                 parent_agent: pa.parent_agent.clone(),
                 team: pa.team.clone(),
-                clearance: Some("full".to_string()),
+                clearance: pa.clearance.clone().or_else(|| {
+                    Some(if pa.level == 0 { "full" } else { "minimal" }.to_string())
+                }),
             };
 
             match self.spawn_agent(req, None).await {

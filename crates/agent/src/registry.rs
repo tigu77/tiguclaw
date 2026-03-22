@@ -135,6 +135,8 @@ pub struct AgentRegistry {
     steer_txs: HashMap<String, mpsc::Sender<String>>,
     /// 대시보드 메시지 주입 채널 (에이전트별 inbox_tx).
     inbox_txs: HashMap<String, mpsc::Sender<ChannelMessage>>,
+    /// 프라이머리 채널(TelegramChannel)의 inject sender — 대시보드 메시지를 메인채널로 직접 주입.
+    primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
 }
 
 impl AgentRegistry {
@@ -151,6 +153,7 @@ impl AgentRegistry {
             status_map: HashMap::new(),
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
+            primary_inject_tx: None,
         }
     }
 
@@ -171,6 +174,7 @@ impl AgentRegistry {
             status_map: HashMap::new(),
             steer_txs: HashMap::new(),
             inbox_txs: HashMap::new(),
+            primary_inject_tx: None,
         }
     }
 
@@ -261,6 +265,25 @@ impl AgentRegistry {
             }
         }
         false
+    }
+
+    /// 프라이머리 채널(TelegramChannel)의 inject sender를 등록한다.
+    ///
+    /// 대시보드 메시지를 텔레그램 채널 inbox로 직접 주입할 때 사용한다.
+    pub fn set_primary_inject_tx(&mut self, tx: mpsc::Sender<ChannelMessage>) {
+        self.primary_inject_tx = Some(tx);
+    }
+
+    /// 프라이머리 채널(TelegramChannel)로 메시지를 직접 주입한다.
+    ///
+    /// sender를 admin_chat_id로 설정하면 에이전트 응답이 텔레그램으로 전달된다.
+    /// 반환값: true = 성공, false = inject_tx 미등록 또는 채널 닫힘.
+    pub async fn inject_to_primary_channel(&self, msg: ChannelMessage) -> bool {
+        if let Some(tx) = &self.primary_inject_tx {
+            tx.send(msg).await.is_ok()
+        } else {
+            false
+        }
     }
 
     /// Phase 9-4: 에이전트에게 steer 지시문을 전달한다.

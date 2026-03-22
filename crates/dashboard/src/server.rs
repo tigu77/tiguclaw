@@ -42,6 +42,8 @@ pub struct AppState {
     pub conv_db_path: Option<std::path::PathBuf>,
     /// 타임라인 DB (이벤트 영속화).
     pub timeline_db: Option<Arc<TimelineDb>>,
+    /// 관리자 텔레그램 chat_id — 대시보드 메시지 주입 시 sender로 사용.
+    pub admin_chat_id: i64,
 }
 
 /// 대시보드 서버.
@@ -61,6 +63,8 @@ pub struct DashboardServer {
     dashboard_dir: Option<PathBuf>,
     /// 타임라인 DB (optional).
     timeline_db: Option<Arc<TimelineDb>>,
+    /// 관리자 텔레그램 chat_id — 대시보드 메시지 주입 시 sender로 사용.
+    admin_chat_id: i64,
 }
 
 impl DashboardServer {
@@ -83,7 +87,14 @@ impl DashboardServer {
             conv_db_path: None,
             dashboard_dir,
             timeline_db: None,
+            admin_chat_id: 0,
         }
+    }
+
+    /// 관리자 텔레그램 chat_id 설정 (builder 패턴).
+    pub fn with_admin_chat_id(mut self, admin_chat_id: i64) -> Self {
+        self.admin_chat_id = admin_chat_id;
+        self
     }
 
     /// 대화 히스토리 DB 경로 설정 (builder 패턴).
@@ -187,6 +198,7 @@ impl DashboardServer {
             start_time: self.start_time,
             conv_db_path: self.conv_db_path,
             timeline_db: self.timeline_db,
+            admin_chat_id: self.admin_chat_id,
         };
 
         let mut router = Router::new()

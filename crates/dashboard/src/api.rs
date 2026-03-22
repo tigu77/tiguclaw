@@ -270,38 +270,33 @@ pub struct ChatResponse {
 ///
 /// Body: `{ agent_name: String, message: String }`
 ///
-/// 해당 에이전트의 DashboardChannel 또는 task_tx로 메시지를 주입한다.
-/// 에이전트의 응답은 ConversationStore에 persisted되며,
-/// `/api/conversations/:id`를 통해 확인할 수 있다.
+/// 메시지를 프라이머리 채널(TelegramChannel)로 직접 주입한다.
+/// sender를 admin_chat_id로 설정하여 에이전트 응답이 텔레그램으로 전달되도록 한다.
+/// 대시보드는 `/api/conversations/:id` 폴링으로 응답을 확인할 수 있다.
 pub async fn post_chat(
     State(state): State<AppState>,
     Json(body): Json<ChatBody>,
 ) -> Result<Json<ChatResponse>, StatusCode> {
-    if body.agent_name.is_empty() || body.message.is_empty() {
+    if body.message.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // dashboard 메시지임을 표시 + HTML 포맷 힌트 주입
-    let content = format!(
-        "[Dashboard] You are responding via the dashboard. Use HTML tags for formatting: <b>bold</b>, <i>italic</i>, <code>code</code>, <pre>pre</pre>. Do NOT use markdown.\n\n{}",
-        body.message
-    );
-
     let msg = ChannelMessage {
         id: format!("dashboard-{}", chrono::Utc::now().timestamp_millis()),
-        sender: "dashboard".to_string(),
-        content,
+        // admin_chat_id를 sender로 설정 → 에이전트 응답이 텔레그램으로 전달됨.
+        sender: state.admin_chat_id.to_string(),
+        content: body.message,
         timestamp: chrono::Utc::now().timestamp(),
         source: Some("dashboard".to_string()),
     };
 
     let reg = state.registry.lock().await;
-    let sent = reg.inject_dashboard_message(&body.agent_name, msg).await;
+    let sent = reg.inject_to_primary_channel(msg).await;
     drop(reg);
 
     if sent {
         Ok(Json(ChatResponse { ok: true }))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err(StatusCode::SERVICE_UNAVAILABLE)
     }
 }

@@ -93,12 +93,19 @@ async fn async_main() -> Result<()> {
         tiguclaw_agent::AgentRegistry::new_with_store(provider.clone(), registry_tools, agent_store),
     ));
 
+    // primary channel inject_tx를 registry에 등록 — 대시보드 메시지를 메인채널로 직접 주입.
+    {
+        let mut reg = registry.lock().await;
+        reg.set_primary_inject_tx(channel.inject_sender());
+    }
+
     // Phase 9-1: 대시보드 서버 생성 (enabled 여부와 무관하게 event_tx 준비).
     let dashboard_server = if config.dashboard.enabled {
         let server = tiguclaw_dashboard::DashboardServer::new(
             registry.clone(),
             config.dashboard.cors_origin.clone(),
         )
+        .with_admin_chat_id(primary_ch_cfg.admin_chat_id)
         .with_conv_db(data_dir.join("conversations.db"))
         .with_timeline_db(data_dir.join("timeline.db"));
         info!(
@@ -349,13 +356,6 @@ async fn async_main() -> Result<()> {
         reg.register_steer_tx(&config.agent.name, steer_tx_main);
     }
 
-    // Dashboard 채팅 채널 생성 — 대시보드 REST API에서 메시지를 에이전트로 주입.
-    let (dashboard_ch, dashboard_inbox_tx) = tiguclaw_dashboard::DashboardChannel::new();
-    {
-        let mut reg = registry.lock().await;
-        reg.register_inbox_tx(&config.agent.name, dashboard_inbox_tx);
-    }
-
     // Build and run primary agent (L0).
     // apply_agent_config 헬퍼로 name/iterations/compaction/tool_result_chars 일괄 적용.
     let agent = tiguclaw_agent::AgentLoop::new(
@@ -370,7 +370,6 @@ async fn async_main() -> Result<()> {
     let agent = agent
         .with_role(config.agent.role.clone())
         .with_steer_rx(steer_rx_main)
-        .with_channel(std::sync::Arc::new(dashboard_ch))
         .with_registry(registry)
         .with_context_store(context_store)
         .with_context_retention_days(config.context.retention_days)

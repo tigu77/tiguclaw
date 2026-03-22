@@ -19,23 +19,43 @@ const MAX_MSG_LEN: usize = 4096;
 pub struct TelegramChannel {
     bot: Bot,
     admin_chat_id: Arc<AtomicI64>,
+    /// Sender for external message injection (dashboard → agent).
+    /// Messages sent here are forwarded to the AgentLoop as if they came from Telegram.
+    inject_tx: mpsc::Sender<ChannelMessage>,
+    /// Receiver for injected messages — consumed once by `listen()`.
+    inject_rx: std::sync::Mutex<Option<mpsc::Receiver<ChannelMessage>>>,
 }
 
 impl TelegramChannel {
     /// Create from a core config telegram section.
     pub fn from_config(cfg: &tiguclaw_core::config::TelegramConfig) -> Self {
         let bot = Bot::new(&cfg.bot_token);
+        let (inject_tx, inject_rx) = mpsc::channel(32);
         Self {
             bot,
             admin_chat_id: Arc::new(AtomicI64::new(cfg.admin_chat_id)),
+            inject_tx,
+            inject_rx: std::sync::Mutex::new(Some(inject_rx)),
         }
     }
 
     pub fn new(bot_token: &str, admin_chat_id: i64) -> Self {
+        let (inject_tx, inject_rx) = mpsc::channel(32);
         Self {
             bot: Bot::new(bot_token),
             admin_chat_id: Arc::new(AtomicI64::new(admin_chat_id)),
+            inject_tx,
+            inject_rx: std::sync::Mutex::new(Some(inject_rx)),
         }
+    }
+
+    /// Returns a clone of the inject sender.
+    ///
+    /// Messages sent to this sender are forwarded into the AgentLoop
+    /// as if they arrived from the Telegram channel (sender = admin_chat_id).
+    /// Used by the dashboard REST API to route messages through the primary channel.
+    pub fn inject_sender(&self) -> mpsc::Sender<ChannelMessage> {
+        self.inject_tx.clone()
     }
 }
 
@@ -110,6 +130,18 @@ impl Channel for TelegramChannel {
     async fn listen(&self, tx: mpsc::Sender<ChannelMessage>) -> Result<()> {
         let current_admin = self.admin_chat_id.load(Ordering::SeqCst);
         info!(admin_chat_id = current_admin, "starting telegram listener");
+
+        // Forward injected messages (e.g. from dashboard) → AgentLoop tx.
+        if let Some(mut inject_rx) = self.inject_rx.lock().unwrap().take() {
+            let tx_inject = tx.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = inject_rx.recv().await {
+                    if tx_inject.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
 
         let admin_chat_id = Arc::clone(&self.admin_chat_id);
         let bot_for_welcome = self.bot.clone();

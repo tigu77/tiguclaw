@@ -656,18 +656,24 @@ impl AgentRegistry {
                 clearance: Some("full".to_string()),
             });
         }
-        result.extend(self.agents.values().map(|h| AgentInfo {
-            name: h.name.clone(),
-            nickname: h.nickname.clone(),
-            tier: h.tier,
-            persistent: h.persistent,
-            channel_type: h.channel_type.clone(),
-            agent_role: h.agent_role.clone(),
-            hooks_url: h.hooks_url.clone(),
-            parent_agent: h.parent_agent.clone(),
-            team: h.team.clone(),
-            clearance: h.clearance.clone(),
-        }));
+        // Supermaster는 이미 위에서 추가했으므로 제외.
+        let sm_name = self.supermaster.as_ref().map(|s| s.name.as_str()).unwrap_or("");
+        result.extend(
+            self.agents.values()
+                .filter(|h| h.name != sm_name)
+                .map(|h| AgentInfo {
+                    name: h.name.clone(),
+                    nickname: h.nickname.clone(),
+                    tier: h.tier,
+                    persistent: h.persistent,
+                    channel_type: h.channel_type.clone(),
+                    agent_role: h.agent_role.clone(),
+                    hooks_url: h.hooks_url.clone(),
+                    parent_agent: h.parent_agent.clone(),
+                    team: h.team.clone(),
+                    clearance: h.clearance.clone(),
+                })
+        );
         result
     }
 

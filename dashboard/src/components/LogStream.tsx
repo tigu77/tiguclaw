@@ -119,12 +119,19 @@ export default function LogStream({ logs: wsLogs, apiBase }: LogStreamProps) {
     : fileLogs;
 
   // 자동 스크롤 (사용자가 위로 스크롤하지 않은 경우만)
+  const isInitialLoad = useRef(true);
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    if (isInitialLoad.current) {
+      // 첫 로드: 애니메이션 없이 즉시 맨 아래
+      el.scrollTop = el.scrollHeight;
+      isInitialLoad.current = false;
+      return;
+    }
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (isNearBottom) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
     }
   }, [combinedLogs]);
 

@@ -71,8 +71,15 @@ export default function ConversationDetail({ chatId, agentName, agentStatus, onC
     fetchConversation();
   }, [refreshTrigger]);
 
+  const isInitialLoad = useRef(true);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = bottomRef.current?.parentElement;
+    if (isInitialLoad.current && el) {
+      el.scrollTop = el.scrollHeight;
+      isInitialLoad.current = false;
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    }
   }, [data]);
 
   const sendMessage = async () => {

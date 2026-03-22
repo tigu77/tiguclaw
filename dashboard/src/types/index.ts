@@ -9,6 +9,8 @@ export interface AgentInfo {
   current_status?: string;
   /** 부모 에이전트 이름 (L0는 없음) */
   parent_agent?: string;
+  /** 소속 팀 이름 (선택사항) */
+  team?: string;
 }
 
 export interface LogEntry {

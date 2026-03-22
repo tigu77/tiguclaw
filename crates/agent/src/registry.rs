@@ -61,6 +61,8 @@ pub struct SpawnRequest {
     pub hooks_token: Option<String>,
     /// 부모 에이전트 이름 (L0는 None, L1은 supermaster 이름, L2는 L1 이름).
     pub parent_agent: Option<String>,
+    /// 소속 팀 이름 (선택사항).
+    pub team: Option<String>,
 }
 
 /// 실행 중인 에이전트 정보 (list 응답용).
@@ -76,6 +78,8 @@ pub struct AgentInfo {
     pub hooks_url: Option<String>,
     /// 부모 에이전트 이름.
     pub parent_agent: Option<String>,
+    /// 소속 팀 이름 (선택사항).
+    pub team: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +105,8 @@ struct AgentHandle {
     steer_tx: mpsc::Sender<String>,
     /// 부모 에이전트 이름.
     parent_agent: Option<String>,
+    /// 소속 팀 이름 (선택사항).
+    team: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +230,7 @@ impl AgentRegistry {
                 persistent: h.persistent,
                 current_status: self.get_status(&h.name),
                 parent_agent: h.parent_agent.clone(),
+                team: h.team.clone(),
             }));
             let _ = tx.send(DashboardEvent::AgentStatus { agents });
         }
@@ -418,6 +425,7 @@ impl AgentRegistry {
                 hooks_token: req.hooks_token.clone(),
                 steer_tx: steer_tx_handle,
                 parent_agent: req.parent_agent.clone(),
+                team: req.team.clone(),
             },
         );
 
@@ -592,6 +600,7 @@ impl AgentRegistry {
                 agent_role: AgentRole::Supermaster,
                 hooks_url: None,
                 parent_agent: None,
+                team: sm.team.clone(),
             });
         }
         result.extend(self.agents.values().map(|h| AgentInfo {
@@ -602,8 +611,48 @@ impl AgentRegistry {
             agent_role: h.agent_role.clone(),
             hooks_url: h.hooks_url.clone(),
             parent_agent: h.parent_agent.clone(),
+            team: h.team.clone(),
         }));
         result
+    }
+
+    /// 특정 팀에 속한 에이전트 이름 목록 반환.
+    pub fn list_by_team(&self, team_name: &str) -> Vec<String> {
+        self.agents
+            .values()
+            .filter(|h| h.team.as_deref() == Some(team_name))
+            .map(|h| h.name.clone())
+            .collect()
+    }
+
+    /// 팀 목록 반환 (팀명 → 에이전트 수).
+    pub fn team_summary(&self) -> std::collections::HashMap<String, usize> {
+        let mut map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for h in self.agents.values() {
+            if let Some(ref t) = h.team {
+                if !t.is_empty() {
+                    *map.entry(t.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        map
+    }
+
+    /// 특정 팀의 에이전트를 모두 kill한다. 반환값: kill된 이름 목록.
+    pub fn kill_team(&mut self, team_name: &str) -> Vec<String> {
+        let names: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|(_, h)| h.team.as_deref() == Some(team_name))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let mut killed = Vec::new();
+        for name in names {
+            if self.kill_agent(&name) {
+                killed.push(name);
+            }
+        }
+        killed
     }
 
     /// DB에서 에이전트 목록을 로드하여 status="running"인 것들을 재spawn한다.
@@ -649,6 +698,7 @@ impl AgentRegistry {
                 hooks_url: None,
                 hooks_token: None,
                 parent_agent: None,
+                team: None,
             };
 
             match self.spawn_agent(req, None).await {

@@ -38,7 +38,8 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 channel_type: a.channel_type,
                 persistent: a.persistent,
                 current_status: reg.get_status(&a.name),
-                parent_agent: None,
+                parent_agent: a.parent_agent,
+                team: a.team,
             })
             .collect()
     };

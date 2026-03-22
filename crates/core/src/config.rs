@@ -343,6 +343,9 @@ pub struct AgentConfig {
     /// Phase 9-4: 상위 에이전트 hooks 인증 토큰.
     #[serde(default)]
     pub parent_hooks_token: Option<String>,
+    /// 소속 팀 이름 (선택사항).
+    #[serde(default)]
+    pub team: Option<String>,
 }
 
 fn default_agent_name() -> String {

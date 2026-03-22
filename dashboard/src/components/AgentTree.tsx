@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { AgentInfo } from "@/types";
 
 // 레벨별 색상 (이모지 + 텍스트)
@@ -29,7 +30,7 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-// AgentInfo[] → 트리 구조 변환
+// AgentInfo[] → 트리 구조 변환 (parent_agent 기준)
 function buildTree(agents: AgentInfo[]): TreeNode[] {
   const map = new Map<string, TreeNode>();
   agents.forEach((a) => map.set(a.name, { agent: a, children: [] }));
@@ -128,6 +129,54 @@ function AgentTreeNode({
   );
 }
 
+// 팀 섹션 노드 (접기/펼치기)
+interface TeamSectionProps {
+  teamName: string;
+  nodes: TreeNode[];
+  selected?: string;
+  onSelect?: (name: string) => void;
+}
+
+function TeamSection({ teamName, nodes, selected, onSelect }: TeamSectionProps) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <div className="mb-1">
+      {/* 팀 헤더 */}
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center gap-2 px-2 py-1 rounded-md hover:bg-white/5 transition-colors text-left"
+      >
+        <span className="text-sm select-none">{collapsed ? "▶" : "▼"}</span>
+        <span className="text-base leading-none flex-shrink-0">📦</span>
+        <span className="font-mono text-sm text-gray-300 truncate flex-1">
+          {teamName}
+        </span>
+        <span className="text-xs text-gray-500 flex-shrink-0">
+          {nodes.length}
+        </span>
+      </button>
+
+      {/* 팀 에이전트 목록 */}
+      {!collapsed && (
+        <div className="ml-2">
+          {nodes.map((node, i) => (
+            <AgentTreeNode
+              key={node.agent.name}
+              node={node}
+              depth={1}
+              isLast={i === nodes.length - 1}
+              prefix=""
+              selected={selected}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 메인 AgentTree 컴포넌트
 interface AgentTreeProps {
   agents: AgentInfo[];
@@ -144,15 +193,65 @@ export default function AgentTree({ agents, selected, onSelect }: AgentTreeProps
     );
   }
 
+  // 팀이 있는 에이전트와 없는 에이전트 분리 (roots 레벨만, 하위 자식은 기존 트리 구조 유지)
+  const teamMap = new Map<string, TreeNode[]>();
+  const noTeamRoots: TreeNode[] = [];
+
+  for (const root of roots) {
+    const team = root.agent.team;
+    if (team && team.trim() !== "") {
+      if (!teamMap.has(team)) teamMap.set(team, []);
+      teamMap.get(team)!.push(root);
+    } else {
+      noTeamRoots.push(root);
+    }
+  }
+
+  const hasTeams = teamMap.size > 0;
+
+  // 팀이 하나도 없으면 기존 트리 렌더링
+  if (!hasTeams) {
+    return (
+      <div className="flex flex-col gap-0.5">
+        {roots.map((root, i) => (
+          <AgentTreeNode
+            key={root.agent.name}
+            node={root}
+            depth={0}
+            isLast={i === roots.length - 1}
+            prefix=""
+            selected={selected}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  // 팀 섹션 + 팀 없음 섹션 혼합 렌더링
+  const sortedTeams = Array.from(teamMap.entries()).sort(([a], [b]) => a.localeCompare(b));
+
   return (
     <div className="flex flex-col gap-0.5">
-      {roots.map((root, i) => (
+      {/* 팀 없는 에이전트 (최상위 먼저) */}
+      {noTeamRoots.map((root, i) => (
         <AgentTreeNode
           key={root.agent.name}
           node={root}
           depth={0}
-          isLast={i === roots.length - 1}
+          isLast={i === noTeamRoots.length - 1 && sortedTeams.length === 0}
           prefix=""
+          selected={selected}
+          onSelect={onSelect}
+        />
+      ))}
+
+      {/* 팀 섹션들 */}
+      {sortedTeams.map(([teamName, nodes]) => (
+        <TeamSection
+          key={teamName}
+          teamName={teamName}
+          nodes={nodes}
           selected={selected}
           onSelect={onSelect}
         />

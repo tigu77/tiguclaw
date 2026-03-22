@@ -90,6 +90,12 @@ pub enum Commands {
         #[arg(long, default_value = "http://localhost:3002")]
         api_url: String,
     },
+
+    /// 팀 관리 — 팀별 에이전트 조회 및 일괄 제어
+    Team {
+        #[command(subcommand)]
+        action: TeamAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -166,6 +172,26 @@ pub enum ConfigAction {
     Get { key: String },
     /// Set a config value (dot notation: provider.api_key)
     Set { key: String, value: String },
+}
+
+#[derive(Subcommand)]
+pub enum TeamAction {
+    /// 팀 목록 + 팀별 에이전트 수, 또는 특정 팀 에이전트 목록
+    List {
+        /// 팀 이름 (없으면 전체 팀 목록)
+        team_name: Option<String>,
+        /// 대시보드 API URL (기본값: http://localhost:3002)
+        #[arg(long, default_value = "http://localhost:3002")]
+        api_url: String,
+    },
+    /// 팀 전체 kill (해당 팀 에이전트 모두 종료)
+    Kill {
+        /// 팀 이름
+        team_name: String,
+        /// 대시보드 API URL (기본값: http://localhost:3002)
+        #[arg(long, default_value = "http://localhost:3002")]
+        api_url: String,
+    },
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -256,6 +282,7 @@ fn run_command(cmd: &Commands) -> Result<()> {
         Commands::Steer { agent_name, message, api_url } => {
             steer_cmd(agent_name, message, api_url)
         }
+        Commands::Team { action } => team_cmd(action),
     }
 }
 
@@ -1370,6 +1397,166 @@ fn steer_cmd(agent_name: &str, message: &str, api_url: &str) -> Result<()> {
         eprintln!("   대시보드가 실행 중인지 확인하세요: {api_url}");
         std::process::exit(1);
     }
+    Ok(())
+}
+
+// ─── Team ─────────────────────────────────────────────────────────────────────
+
+fn team_cmd(action: &TeamAction) -> Result<()> {
+    match action {
+        TeamAction::List { team_name, api_url } => team_list(team_name.as_deref(), api_url),
+        TeamAction::Kill { team_name, api_url } => team_kill(team_name, api_url),
+    }
+}
+
+/// GET /api/agents 에서 에이전트 목록 가져오기 (JSON 파싱 없이 curl + 수동 파싱).
+fn fetch_agents_raw(api_url: &str) -> Result<String> {
+    let url = format!("{}/api/agents", api_url.trim_end_matches('/'));
+    let out = std::process::Command::new("curl")
+        .args(["-s", &url])
+        .output()
+        .context("curl 실행 실패 (curl이 설치되어 있는지 확인하세요)")?;
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// JSON 배열에서 특정 필드 값 추출 (간단한 수동 파싱).
+/// `[{"name":"a","team":"t1",...}, ...]` 형태.
+fn parse_agent_teams(json: &str) -> Vec<(String, Option<String>)> {
+    let mut result = Vec::new();
+    // 각 객체를 { } 기준으로 분리.
+    for obj in json.split('{').skip(1) {
+        let obj = obj.split('}').next().unwrap_or("");
+        let name = extract_json_str(obj, "name");
+        let team = extract_json_str(obj, "team");
+        if let Some(n) = name {
+            result.push((n, team));
+        }
+    }
+    result
+}
+
+/// JSON 객체 문자열에서 `"key":"value"` 추출.
+fn extract_json_str(obj: &str, key: &str) -> Option<String> {
+    let search = format!("\"{}\":", key);
+    let pos = obj.find(&search)?;
+    let rest = &obj[pos + search.len()..].trim_start();
+    if rest.starts_with('"') {
+        // 문자열 값
+        let inner = &rest[1..];
+        let end = inner.find('"')?;
+        Some(inner[..end].to_string())
+    } else {
+        None
+    }
+}
+
+fn team_list(team_name: Option<&str>, api_url: &str) -> Result<()> {
+    let raw = fetch_agents_raw(api_url)?;
+    if raw.trim().is_empty() || raw.trim() == "null" {
+        eprintln!("❌ 대시보드에 연결할 수 없습니다: {api_url}");
+        eprintln!("   tiguclaw가 실행 중이고 dashboard.enabled = true인지 확인하세요.");
+        std::process::exit(1);
+    }
+
+    let agents = parse_agent_teams(&raw);
+
+    if let Some(tname) = team_name {
+        // 특정 팀 에이전트 목록
+        let members: Vec<&str> = agents
+            .iter()
+            .filter(|(_, t)| t.as_deref() == Some(tname))
+            .map(|(n, _)| n.as_str())
+            .collect();
+
+        if members.is_empty() {
+            println!("📦 팀 '{tname}' — 에이전트 없음");
+        } else {
+            println!("📦 팀 '{}' ({} 에이전트)", tname, members.len());
+            for m in members {
+                println!("   🟢 {m}");
+            }
+        }
+    } else {
+        // 전체 팀 목록
+        let mut team_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut no_team: Vec<String> = Vec::new();
+
+        for (name, team) in &agents {
+            match team.as_deref() {
+                Some(t) if !t.is_empty() => {
+                    team_map.entry(t.to_string()).or_default().push(name.clone());
+                }
+                _ => no_team.push(name.clone()),
+            }
+        }
+
+        if team_map.is_empty() && no_team.is_empty() {
+            println!("에이전트 없음");
+            return Ok(());
+        }
+
+        println!("📦 팀 목록 ({} 팀)", team_map.len());
+        let mut teams: Vec<(&String, &Vec<String>)> = team_map.iter().collect();
+        teams.sort_by_key(|(k, _)| k.as_str());
+        for (tname, members) in &teams {
+            println!("  {:<20} {} 에이전트", tname, members.len());
+            for m in *members {
+                println!("     └─ {m}");
+            }
+        }
+
+        if !no_team.is_empty() {
+            println!("\n[팀 없음] ({} 에이전트)", no_team.len());
+            for m in &no_team {
+                println!("   └─ {m}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn team_kill(team_name: &str, api_url: &str) -> Result<()> {
+    let raw = fetch_agents_raw(api_url)?;
+    if raw.trim().is_empty() || raw.trim() == "null" {
+        eprintln!("❌ 대시보드에 연결할 수 없습니다: {api_url}");
+        std::process::exit(1);
+    }
+
+    let agents = parse_agent_teams(&raw);
+    let members: Vec<String> = agents
+        .into_iter()
+        .filter(|(_, t)| t.as_deref() == Some(team_name))
+        .map(|(n, _)| n)
+        .collect();
+
+    if members.is_empty() {
+        println!("⚠️  팀 '{team_name}'에 에이전트가 없습니다.");
+        return Ok(());
+    }
+
+    println!("🗑️  팀 '{}' kill — {} 에이전트 종료 중...", team_name, members.len());
+
+    let base_url = api_url.trim_end_matches('/');
+    let mut killed = 0usize;
+    for name in &members {
+        let url = format!("{base_url}/api/agents/{name}/kill");
+        let out = std::process::Command::new("curl")
+            .args(["-s", "-X", "DELETE", "-w", "\n%{http_code}", &url])
+            .output()
+            .context("curl 실행 실패")?;
+        let raw = String::from_utf8_lossy(&out.stdout);
+        let code = raw.trim().lines().last().and_then(|l| l.parse::<u16>().ok()).unwrap_or(0);
+        if code == 200 || code == 204 {
+            println!("   ✅ {name} killed");
+            killed += 1;
+        } else {
+            println!("   ⚠️  {name} kill 실패 (HTTP {code})");
+        }
+    }
+
+    println!("\n완료: {killed}/{} 에이전트 종료", members.len());
     Ok(())
 }
 

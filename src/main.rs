@@ -169,6 +169,7 @@ async fn async_main() -> Result<()> {
             persistent: true,
             current_status: "idle".to_string(),
             parent_agent: None,
+            team: config.agent.team.clone(),
         });
     }
 

@@ -41,4 +41,7 @@ pub struct AgentStatusInfo {
     /// 부모 에이전트 이름 (L0는 None, L1은 supermaster 이름, L2는 L1 이름).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_agent: Option<String>,
+    /// 소속 팀 이름 (선택사항).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
 }

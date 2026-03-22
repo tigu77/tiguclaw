@@ -243,6 +243,7 @@ impl Tool for SpawnAgentTool {
             hooks_url: hooks_url.clone(),
             hooks_token,
             parent_agent: None,
+            team: None,
         };
 
         let registry_arc = self.registry.clone();

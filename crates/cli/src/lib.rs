@@ -964,10 +964,30 @@ fn init(yes: bool, dir: Option<PathBuf>, force: bool) -> Result<()> {
 
     // 7. 완료 안내
     println!("\n✅ tiguclaw initialized at {}/", install_dir.display());
-    println!("\nNext steps:");
-    println!("  1. Edit {}/shared/USER.md with your info", install_dir.display());
-    println!("  2. tiguclaw gateway install   # Register as a background service");
-    println!("  3. Send /start to your bot to auto-register as admin");
+    println!("  → Edit {}/shared/USER.md to personalize your agent", install_dir.display());
+
+    // 8. gateway install 여부 물어보기
+    let start_now = if yes {
+        true
+    } else {
+        let ans = prompt_with_default("\n🚀 Start as a background service now?", "Y")?;
+        !matches!(ans.trim().to_lowercase().as_str(), "n" | "no")
+    };
+
+    if start_now {
+        println!("\n⚙️  Installing gateway service...");
+        match gateway_install(None) {
+            Ok(_) => println!("✅ Gateway installed! Send /start to your bot to register as admin."),
+            Err(e) => {
+                println!("⚠️  Gateway install failed: {e}");
+                println!("   Run manually: tiguclaw gateway install");
+            }
+        }
+    } else {
+        println!("\nNext steps:");
+        println!("  tiguclaw gateway install   # Start background service");
+        println!("  Send /start to your bot    # Auto-register as admin");
+    }
 
     Ok(())
 }

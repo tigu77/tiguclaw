@@ -19,7 +19,7 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use tiguclaw_core::error::Result;
-use tiguclaw_core::provider::{Provider, ToolDefinition};
+use tiguclaw_core::provider::{Provider, ThinkingLevel, ToolDefinition};
 use tiguclaw_core::types::*;
 
 use crate::AnthropicProvider;
@@ -56,7 +56,10 @@ fn escalate_tool_definition() -> ToolDefinition {
 }
 
 /// Tier-based provider that routes via escalation.
-/// tier1 handles all requests; escalates to tier2 when needed.
+/// tier1 (normal) handles all requests; escalates to tier2 (deep) when needed.
+///
+/// `chat_with_options(ThinkingLevel::Deep)` bypasses escalation and sends
+/// directly to the deep (tier2) model with adaptive thinking enabled.
 pub struct TierProvider {
     tier1: Vec<AnthropicProvider>,
     tier2: Vec<AnthropicProvider>,
@@ -70,13 +73,16 @@ impl TierProvider {
 
     /// Create from a core config provider section.
     ///
-    /// When thinking is "adaptive":
-    /// - tier1 → ThinkingMode::Off (fast responses)
-    /// - tier2 → ThinkingMode::Adaptive, effort "high"
+    /// tier1 (normal_models / tier1 fallback):
+    ///   - ThinkingMode::Off (빠른 응답)
+    ///
+    /// tier2 (deep_models / tier2 fallback):
+    ///   - 항상 ThinkingMode::Adaptive + effort "high" (Deep Thinking 전용)
+    ///
+    /// config의 `thinking = "adaptive"` 설정은 더 이상 tier1/tier2 구분에 사용되지 않고,
+    /// `chat_with_options(ThinkingLevel::Deep)` 호출 시 tier2가 활성화된다.
     pub fn from_config(cfg: &tiguclaw_core::config::ProviderConfig) -> Self {
         use crate::anthropic::ThinkingMode;
-
-        let adaptive = cfg.thinking.as_str() == "adaptive";
 
         let build_chain =
             |models: &[String], thinking: ThinkingMode, effort: Option<String>| -> Vec<AnthropicProvider> {
@@ -94,17 +100,13 @@ impl TierProvider {
                     .collect()
             };
 
-        if adaptive {
-            Self::new(
-                build_chain(&cfg.tiers.tier1, ThinkingMode::Off, None),
-                build_chain(&cfg.tiers.tier2, ThinkingMode::Adaptive, Some("high".into())),
-            )
-        } else {
-            Self::new(
-                build_chain(&cfg.tiers.tier1, ThinkingMode::Off, None),
-                build_chain(&cfg.tiers.tier2, ThinkingMode::Off, None),
-            )
-        }
+        let normal_models = cfg.tiers.get_normal_models();
+        let deep_models = cfg.tiers.get_deep_models();
+
+        Self::new(
+            build_chain(normal_models, ThinkingMode::Off, None),
+            build_chain(deep_models, ThinkingMode::Adaptive, Some("high".into())),
+        )
     }
 
     /// Inject tier1 escalation instructions into the system message.
@@ -166,6 +168,26 @@ async fn chat_with_fallback(
 impl Provider for TierProvider {
     fn name(&self) -> &str {
         "anthropic-tier"
+    }
+
+    /// `ThinkingLevel::Deep` → tier2 (deep_models) + adaptive thinking으로 직접 전달.
+    /// `ThinkingLevel::Normal` → 기존 tier1 escalation 흐름.
+    async fn chat_with_options(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+        thinking: ThinkingLevel,
+    ) -> Result<ChatResponse> {
+        match thinking {
+            ThinkingLevel::Deep => {
+                info!(
+                    model = self.tier2.first().map(|p| p.name()).unwrap_or("none"),
+                    "Deep Thinking 모드: tier2 직접 호출"
+                );
+                chat_with_fallback(&self.tier2, messages, tools).await
+            }
+            ThinkingLevel::Normal => self.chat(messages, tools).await,
+        }
     }
 
     async fn chat(
@@ -291,6 +313,8 @@ mod tests {
             tiers: tiguclaw_core::config::TiersConfig {
                 tier1: vec!["sonnet".into()],
                 tier2: vec!["opus".into(), "sonnet".into()],
+                normal_models: vec![],
+                deep_models: vec![],
             },
             thinking: "off".into(),
         };
@@ -303,18 +327,40 @@ mod tests {
     }
 
     #[test]
-    fn test_from_config_adaptive_thinking() {
+    fn test_from_config_new_model_fields() {
+        let cfg = tiguclaw_core::config::ProviderConfig {
+            api_key: "test-key".into(),
+            max_tokens: 4096,
+            tiers: tiguclaw_core::config::TiersConfig {
+                tier1: vec!["old-sonnet".into()],
+                tier2: vec!["old-opus".into()],
+                normal_models: vec!["new-sonnet".into()],
+                deep_models: vec!["new-opus".into()],
+            },
+            thinking: "off".into(),
+        };
+        let provider = TierProvider::from_config(&cfg);
+        // normal_models takes priority over tier1
+        assert_eq!(provider.tier1[0].name(), "new-sonnet");
+        // deep_models takes priority over tier2
+        assert_eq!(provider.tier2[0].name(), "new-opus");
+    }
+
+    #[test]
+    fn test_from_config_deep_thinking_always_adaptive() {
         let cfg = tiguclaw_core::config::ProviderConfig {
             api_key: "test-key".into(),
             max_tokens: 4096,
             tiers: tiguclaw_core::config::TiersConfig {
                 tier1: vec!["sonnet".into()],
                 tier2: vec!["opus".into()],
+                normal_models: vec![],
+                deep_models: vec![],
             },
-            thinking: "adaptive".into(),
+            thinking: "off".into(),
         };
         let provider = TierProvider::from_config(&cfg);
-        // tier1 → Off, tier2 → Adaptive
+        // tier1 → Off, tier2 → always Adaptive (Deep Thinking 전용)
         assert_eq!(provider.tier1[0].thinking_mode(), crate::ThinkingMode::Off);
         assert_eq!(provider.tier2[0].thinking_mode(), crate::ThinkingMode::Adaptive);
     }

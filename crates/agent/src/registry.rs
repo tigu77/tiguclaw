@@ -17,7 +17,7 @@ use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
 use tiguclaw_channel_telegram::TelegramChannel;
 use tiguclaw_core::channel::Channel;
 use tiguclaw_core::config::AgentRole;
-use tiguclaw_core::provider::{Provider, ToolDefinition};
+use tiguclaw_core::provider::{Provider, ThinkingLevel, ToolDefinition};
 use tiguclaw_core::tool::Tool;
 use tiguclaw_core::types::{ChatMessage, ToolCall};
 use tiguclaw_memory::{AgentStore, PersistedAgent};
@@ -33,6 +33,9 @@ pub struct AgentTask {
     pub message: String,
     /// fire-and-forget 모드일 때 None. L0 블로킹 방지를 위해 send_to_agent는 None 사용.
     pub reply_tx: Option<oneshot::Sender<String>>,
+    /// LLM 사고 수준 — Normal(기본) 또는 Deep(깊은 사고 모드).
+    #[allow(dead_code)]
+    pub thinking_level: ThinkingLevel,
 }
 
 /// 에이전트 스폰 요청.
@@ -292,7 +295,7 @@ impl AgentRegistry {
         // 스폰된 에이전트 (task_tx) — fire-and-forget (reply_tx = None)
         if let Some(handle) = self.agents.get(name) {
             let content = msg.content.clone();
-            if handle.task_tx.send(AgentTask { message: content, reply_tx: None }).await.is_ok() {
+            if handle.task_tx.send(AgentTask { message: content, reply_tx: None, thinking_level: ThinkingLevel::Normal }).await.is_ok() {
                 return true;
             }
         }
@@ -551,7 +554,11 @@ impl AgentRegistry {
 
         let (reply_tx, reply_rx) = oneshot::channel();
         task_tx
-            .send(AgentTask { message, reply_tx: Some(reply_tx) })
+            .send(AgentTask {
+                message,
+                reply_tx: Some(reply_tx),
+                thinking_level: ThinkingLevel::Normal,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("에이전트 '{}' 채널이 닫혔습니다. 종료되었을 수 있습니다.", name))?;
 
@@ -851,6 +858,7 @@ async fn run_telegram_agent(
             &system_prompt,
             &mut history,
             msg.content,
+            ThinkingLevel::Normal,
             &None,
             &None,
         )
@@ -931,6 +939,7 @@ async fn run_spawned_agent(
             &system_prompt,
             &mut history,
             effective_message,
+            task.thinking_level,
             &event_tx,
             &conv_save_tx,
         )
@@ -985,6 +994,7 @@ async fn run_agent_task(
     system_prompt: &str,
     history: &mut Vec<ChatMessage>,
     user_message: String,
+    thinking_level: ThinkingLevel,
     event_tx: &Option<broadcast::Sender<DashboardEvent>>,
     conv_save_tx: &Option<mpsc::Sender<(String, ChatMessage)>>,
 ) -> anyhow::Result<String> {
@@ -1013,7 +1023,12 @@ async fn run_agent_task(
     // LLM + 툴 루프 (최대 10회 반복).
     const MAX_ITERATIONS: usize = 10;
 
-    info!(name = %name, history_len = history.len(), "run_agent_task: LLM 루프 시작");
+    info!(
+        name = %name,
+        history_len = history.len(),
+        deep = matches!(thinking_level, ThinkingLevel::Deep),
+        "run_agent_task: LLM 루프 시작"
+    );
 
     for iteration in 0..MAX_ITERATIONS {
         info!(name = %name, iteration, msg_count = messages.len(), "run_agent_task: LLM 호출 시작");
@@ -1021,7 +1036,7 @@ async fn run_agent_task(
             let _ = tx.send(DashboardEvent::AgentThinking { name: name.to_string() });
         }
         let response = provider
-            .chat(&messages, &tool_defs)
+            .chat_with_options(&messages, &tool_defs, thinking_level)
             .await
             .map_err(|e| {
                 warn!(name = %name, iteration, error = %e, "run_agent_task: LLM 호출 실패");
@@ -1083,7 +1098,7 @@ async fn run_agent_task(
 
     // 최대 반복 초과.
     let final_response = provider
-        .chat(&messages, &[])
+        .chat_with_options(&messages, &[], thinking_level)
         .await
         .map_err(|e| anyhow::anyhow!("final provider call failed: {e}"))?;
 

@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info};
 
 use tiguclaw_core::error::{Result, TiguError};
+use tiguclaw_core::provider::ThinkingLevel;
 use tiguclaw_core::tool::Tool;
 
 use crate::registry::{AgentRegistry, AgentTask};
@@ -72,6 +73,11 @@ impl Tool for SendToAgentTool {
                 "message": {
                     "type": "string",
                     "description": "에이전트에게 전달할 태스크 또는 메시지."
+                },
+                "deep_thinking": {
+                    "type": "boolean",
+                    "description": "true로 설정하면 에이전트가 깊은 사고(Deep) 모드로 처리합니다. 전략 수립, 설계, 복잡한 분석 등 고품질 판단이 필요할 때 사용하세요.",
+                    "default": false
                 }
             },
             "required": ["name", "message"]
@@ -94,6 +100,16 @@ impl Tool for SendToAgentTool {
             .ok_or_else(|| TiguError::Tool("'message' 파라미터가 필요합니다".into()))?
             .to_string();
 
+        let thinking_level = if args
+            .get("deep_thinking")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            ThinkingLevel::Deep
+        } else {
+            ThinkingLevel::Normal
+        };
+
         // lock을 최소한으로 유지: send_info와 monitor를 꺼내고 즉시 해제.
         // lock을 잡은 채로 reply_rx.await하면 deadlock이 발생한다.
         let (send_info, monitor_opt) = {
@@ -112,7 +128,12 @@ impl Tool for SendToAgentTool {
             monitor.log_agent_comm(&self.from_name, &name, &message).await;
         }
 
-        info!(from = %self.from_name, to = %name, "send_to_agent: 전달 시작");
+        info!(
+            from = %self.from_name,
+            to = %name,
+            deep = matches!(thinking_level, ThinkingLevel::Deep),
+            "send_to_agent: 전달 시작"
+        );
 
         // fire-and-forget: L0 블로킹 없이 즉시 반환.
         // hooks_url이 있으면 백그라운드 HTTP 전송, 없으면 IPC 채널로 전달 후 즉시 반환.
@@ -120,10 +141,12 @@ impl Tool for SendToAgentTool {
             // HTTP 경로: 백그라운드 태스크로 전송 (L0 블로킹 없음).
             let name_clone = name.clone();
             let token = send_info.hooks_token;
+            let deep = matches!(thinking_level, ThinkingLevel::Deep);
             tokio::spawn(async move {
                 debug!(
                     to = %name_clone,
                     url = %hooks_url,
+                    deep,
                     "send_to_agent: 직통 HTTP fire-and-forget 전송"
                 );
                 let client = reqwest::Client::new();
@@ -133,7 +156,8 @@ impl Tool for SendToAgentTool {
                     .json(&serde_json::json!({
                         "message": message,
                         "deliver": false,
-                        "timeout_seconds": 290
+                        "timeout_seconds": 290,
+                        "deep_thinking": deep
                     }));
                 if let Some(token) = token {
                     req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
@@ -149,6 +173,7 @@ impl Tool for SendToAgentTool {
                 .send(AgentTask {
                     message,
                     reply_tx: None,
+                    thinking_level,
                 })
                 .await
                 .map_err(|_| {

@@ -219,12 +219,45 @@ fn default_thinking() -> String {
 /// Tier-based model routing — two tiers with escalation support.
 /// Each tier is a Vec of model names; the first model is preferred,
 /// subsequent models serve as fallbacks on error.
+///
+/// 새 필드명: `normal_models` (tier1 대체), `deep_models` (tier2 대체).
+/// 하위 호환: `tier1` / `tier2`도 계속 읽힌다. 새 필드가 우선.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TiersConfig {
-    /// Default tier: fast, cost-effective models. First is preferred.
+    /// [하위 호환] 기본 tier (normal_models가 없을 때 fallback).
+    #[serde(default)]
     pub tier1: Vec<String>,
-    /// Escalation tier: more capable models for complex requests. First is preferred.
+    /// [하위 호환] 에스컬레이션 tier (deep_models가 없을 때 fallback).
+    #[serde(default)]
     pub tier2: Vec<String>,
+    /// 기본 모델 목록 (Normal 모드). tier1 대체.
+    #[serde(default)]
+    pub normal_models: Vec<String>,
+    /// 깊은 사고 모델 목록 (Deep 모드). tier2 대체.
+    #[serde(default)]
+    pub deep_models: Vec<String>,
+}
+
+impl TiersConfig {
+    /// 실제 사용할 normal(tier1) 모델 목록 반환.
+    /// `normal_models`가 비어있으면 `tier1`로 fallback.
+    pub fn get_normal_models(&self) -> &[String] {
+        if !self.normal_models.is_empty() {
+            &self.normal_models
+        } else {
+            &self.tier1
+        }
+    }
+
+    /// 실제 사용할 deep(tier2) 모델 목록 반환.
+    /// `deep_models`가 비어있으면 `tier2`로 fallback.
+    pub fn get_deep_models(&self) -> &[String] {
+        if !self.deep_models.is_empty() {
+            &self.deep_models
+        } else {
+            &self.tier2
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

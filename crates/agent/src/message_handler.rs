@@ -340,8 +340,16 @@ fn tool_definitions(tools: &[Arc<dyn Tool>]) -> Vec<ToolDefinition> {
 }
 
 /// Queue a message for persistence (drained by main loop).
+///
+/// conversation key = agent_name (비어 있으면 chat_id 폴백).
+/// 이렇게 하면 텔레그램/대시보드 등 채널이 달라도 같은 에이전트면 단일 대화 스트림에 저장된다.
 fn persist_message(ctx: &HandlerContext, chat_id: &str, message: &ChatMessage) {
-    let _ = ctx.persist_tx.send((chat_id.to_string(), message.clone()));
+    let conv_id = if !ctx.agent_name.is_empty() {
+        ctx.agent_name.clone()
+    } else {
+        chat_id.to_string()
+    };
+    let _ = ctx.persist_tx.send((conv_id, message.clone()));
 }
 
 /// Trim history (public helper for tests).

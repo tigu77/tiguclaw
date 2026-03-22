@@ -45,8 +45,12 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String, max_tokens: u32) -> Self {
         let use_oauth = api_key.starts_with("sk-ant-oat");
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("reqwest client build failed");
         Self {
-            client: Client::new(),
+            client,
             api_key,
             model,
             max_tokens,
@@ -65,8 +69,12 @@ impl AnthropicProvider {
         effort: Option<String>,
     ) -> Self {
         let use_oauth = api_key.starts_with("sk-ant-oat");
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .expect("reqwest client build failed");
         Self {
-            client: Client::new(),
+            client,
             api_key,
             model,
             max_tokens,

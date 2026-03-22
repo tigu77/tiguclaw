@@ -874,7 +874,7 @@ async fn run_spawned_agent(
             None => break, // channel closed
         };
 
-        debug!(name = %name, message = %task.message, "agent received task");
+        info!(name = %name, message_len = %task.message.len(), "agent received task, processing");
 
         // steer 지시문이 있으면 태스크 메시지 앞에 주입.
         let effective_message = if !steer_queue.is_empty() {

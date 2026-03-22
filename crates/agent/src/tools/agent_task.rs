@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use tracing::debug;
+use tracing::{debug, info};
 
 use tiguclaw_core::error::{Result, TiguError};
 use tiguclaw_core::tool::Tool;
@@ -111,6 +111,8 @@ impl Tool for SendToAgentTool {
         if let Some(ref monitor) = monitor_opt {
             monitor.log_agent_comm(&self.from_name, &name, &message).await;
         }
+
+        info!(from = %self.from_name, to = %name, "send_to_agent: 전달 시작");
 
         // fire-and-forget: L0 블로킹 없이 즉시 반환.
         // hooks_url이 있으면 백그라운드 HTTP 전송, 없으면 IPC 채널로 전달 후 즉시 반환.

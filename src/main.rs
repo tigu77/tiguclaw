@@ -161,6 +161,7 @@ async fn async_main() -> Result<()> {
         // 슈퍼마스터(L0) 자신을 API 목록 맨 앞에 포함되도록 등록.
         reg.set_supermaster(tiguclaw_core::event::AgentStatusInfo {
             name: config.agent.name.clone(),
+            nickname: config.agent.nickname.clone(),
             role: "supermaster".to_string(),
             level: 0,
             channel_type: config.channels.first()

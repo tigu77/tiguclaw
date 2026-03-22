@@ -33,6 +33,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             .into_iter()
             .map(|a| AgentStatusInfo {
                 name: a.name.clone(),
+                nickname: a.nickname.clone(),
                 role: a.agent_role.label().to_string(),
                 level: a.level,
                 channel_type: a.channel_type,

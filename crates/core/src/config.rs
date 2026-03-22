@@ -290,6 +290,10 @@ pub struct AgentConfig {
     /// 에이전트 이름 (default: "agent")
     #[serde(default = "default_agent_name")]
     pub name: String,
+    /// 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항).
+    /// 없으면 name으로 표시된다.
+    #[serde(default)]
+    pub nickname: Option<String>,
     /// agents/<name>/ 폴더 기반 스펙 경로 (예: "agents/supermaster").
     /// 설정 시 system_prompt_file 대신 AgentSpecManager로 프롬프트 로드.
     pub spec: Option<String>,
@@ -346,6 +350,13 @@ pub struct AgentConfig {
     /// 소속 팀 이름 (선택사항).
     #[serde(default)]
     pub team: Option<String>,
+}
+
+impl AgentConfig {
+    /// 표시 이름 반환 — nickname이 있으면 nickname, 없으면 name.
+    pub fn display_name(&self) -> &str {
+        self.nickname.as_deref().unwrap_or(&self.name)
+    }
 }
 
 fn default_agent_name() -> String {

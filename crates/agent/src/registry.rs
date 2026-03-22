@@ -37,6 +37,8 @@ pub struct AgentTask {
 /// 에이전트 스폰 요청.
 pub struct SpawnRequest {
     pub name: String,
+    /// 로컬 별칭 (선택사항) — 같은 spec(name)으로 여러 인스턴스 구분용.
+    pub nickname: Option<String>,
     pub level: u8,
     /// 에이전트 역할 설명 — 시스템 프롬프트 자동 생성에 사용.
     pub role: String,
@@ -69,6 +71,8 @@ pub struct SpawnRequest {
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
     pub name: String,
+    /// 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항).
+    pub nickname: Option<String>,
     pub level: u8,
     pub persistent: bool,
     /// "telegram" | "internal"
@@ -88,6 +92,8 @@ pub struct AgentInfo {
 
 struct AgentHandle {
     name: String,
+    /// 로컬 별칭 (선택사항).
+    nickname: Option<String>,
     level: u8,
     persistent: bool,
     /// "telegram" | "internal"
@@ -224,6 +230,7 @@ impl AgentRegistry {
             }
             agents.extend(self.agents.values().map(|h| AgentStatusInfo {
                 name: h.name.clone(),
+                nickname: h.nickname.clone(),
                 role: h.agent_role.label().to_string(),
                 level: h.level,
                 channel_type: h.channel_type.clone(),
@@ -414,6 +421,7 @@ impl AgentRegistry {
             req.name.clone(),
             AgentHandle {
                 name: req.name.clone(),
+                nickname: req.nickname.clone(),
                 level: req.level,
                 persistent: req.persistent,
                 channel_type: channel_type.clone(),
@@ -594,6 +602,7 @@ impl AgentRegistry {
         if let Some(ref sm) = self.supermaster {
             result.push(AgentInfo {
                 name: sm.name.clone(),
+                nickname: sm.nickname.clone(),
                 level: sm.level,
                 persistent: sm.persistent,
                 channel_type: sm.channel_type.clone(),
@@ -605,6 +614,7 @@ impl AgentRegistry {
         }
         result.extend(self.agents.values().map(|h| AgentInfo {
             name: h.name.clone(),
+            nickname: h.nickname.clone(),
             level: h.level,
             persistent: h.persistent,
             channel_type: h.channel_type.clone(),
@@ -687,6 +697,7 @@ impl AgentRegistry {
         for pa in to_restore {
             let req = SpawnRequest {
                 name: pa.name.clone(),
+                nickname: None,
                 level: pa.level,
                 role: String::new(), // system_prompt_override로 대체되므로 미사용
                 agent_role: str_to_agent_role(&pa.agent_role),

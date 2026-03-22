@@ -1,5 +1,7 @@
 export interface AgentInfo {
   name: string;
+  /** 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항) */
+  nickname?: string;
   role: string; // "supermaster" | "master" | "mini" | "worker"
   level: number;
   channel_type: string;

@@ -232,6 +232,7 @@ impl Tool for SpawnAgentTool {
 
         let req = SpawnRequest {
             name: name.clone(),
+            nickname: None,
             level,
             role,
             agent_role,

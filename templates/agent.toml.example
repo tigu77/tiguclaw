@@ -12,6 +12,7 @@ tags = []
 
 [agent]
 name = "my-agent"
+nickname = ""  # 선택사항, 없으면 name으로 표시 (같은 spec 여러 인스턴스 구분용)
 description = "에이전트 역할 설명"
 level = 2
 persistent = true

@@ -97,9 +97,9 @@ function AgentTreeNode({
         {/* 레벨 도트 */}
         <span className="text-base leading-none flex-shrink-0">{dot}</span>
 
-        {/* 이름 */}
+        {/* 이름 (nickname 있으면 "nickname (name)" 형태) */}
         <span className="font-mono text-sm text-white truncate flex-1">
-          {agent.name}
+          {agent.nickname ? `${agent.nickname} (${agent.name})` : agent.name}
         </span>
 
         {/* 상태 */}

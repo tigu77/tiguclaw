@@ -31,6 +31,9 @@ pub enum DashboardEvent {
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentStatusInfo {
     pub name: String,
+    /// 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
     pub role: String,
     pub level: u8,
     pub channel_type: String,

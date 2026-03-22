@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use tiguclaw_core::escalation::EscalationReport;
 
-use crate::types::{AgentPayload, ApiResponse, HookEvent, SteerPayload, WakePayload};
+use crate::types::{AgentPayload, ApiResponse, HookEvent, ReportPayload, SteerPayload, WakePayload};
 
 /// Shared server state.
 #[derive(Clone)]
@@ -160,6 +160,38 @@ pub async fn escalation_handler(
         Ok(()) => (StatusCode::OK, Json(ApiResponse::ok())).into_response(),
         Err(e) => {
             warn!(error = %e, "failed to send escalation event to agent loop");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiResponse::err("agent loop unavailable")),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// POST /hooks/report — L1 에이전트가 부모(L0)에게 완료 보고.
+///
+/// Body: `{ "from": "roblox-master", "message": "팀 구성 완료" }`
+pub async fn report_handler(
+    State(state): State<HookState>,
+    headers: HeaderMap,
+    Json(payload): Json<ReportPayload>,
+) -> impl IntoResponse {
+    if let Err(resp) = check_auth(&headers, &state.token) {
+        return resp.into_response();
+    }
+
+    info!(from = %payload.from, "report hook received");
+
+    let event = HookEvent::Report {
+        from: payload.from,
+        message: payload.message,
+    };
+
+    match state.event_tx.send(event).await {
+        Ok(()) => (StatusCode::OK, Json(ApiResponse::ok())).into_response(),
+        Err(e) => {
+            warn!(error = %e, "failed to send report event to agent loop");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(ApiResponse::err("agent loop unavailable")),

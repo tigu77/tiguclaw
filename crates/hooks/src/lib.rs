@@ -16,7 +16,7 @@ use tracing::info;
 
 pub use types::HookEvent;
 
-use handler::{HookState, agent_handler, escalation_handler, steer_handler, wake_handler};
+use handler::{HookState, agent_handler, escalation_handler, report_handler, steer_handler, wake_handler};
 
 /// Configuration for the hook server.
 #[derive(Debug, Clone)]
@@ -51,6 +51,7 @@ impl HookServer {
             .route("/hooks/agent", post(agent_handler))
             .route("/hooks/escalation", post(escalation_handler))
             .route("/hooks/steer", post(steer_handler))
+            .route("/hooks/report", post(report_handler))
             .with_state(state);
 
         let addr = SocketAddr::from(([0, 0, 0, 0], self.config.port));

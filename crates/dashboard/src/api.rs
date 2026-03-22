@@ -79,6 +79,7 @@ pub async fn get_agents(State(state): State<AppState>) -> Json<Vec<AgentStatusIn
             current_status: reg.get_status(&a.name),
             parent_agent: a.parent_agent,
             team: a.team,
+            clearance: a.clearance,
         })
         .collect::<Vec<_>>();
     Json(agents)

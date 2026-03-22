@@ -31,7 +31,8 @@ use crate::monitor::Monitor;
 /// 에이전트에 전달하는 태스크.
 pub struct AgentTask {
     pub message: String,
-    pub reply_tx: oneshot::Sender<String>,
+    /// fire-and-forget 모드일 때 None. L0 블로킹 방지를 위해 send_to_agent는 None 사용.
+    pub reply_tx: Option<oneshot::Sender<String>>,
 }
 
 /// 에이전트 스폰 요청.
@@ -65,6 +66,8 @@ pub struct SpawnRequest {
     pub parent_agent: Option<String>,
     /// 소속 팀 이름 (선택사항).
     pub team: Option<String>,
+    /// 툴 접근 수준 ("full" | "limited"). 기본 "full".
+    pub clearance: Option<String>,
 }
 
 /// 실행 중인 에이전트 정보 (list 응답용).
@@ -84,6 +87,8 @@ pub struct AgentInfo {
     pub parent_agent: Option<String>,
     /// 소속 팀 이름 (선택사항).
     pub team: Option<String>,
+    /// 툴 접근 수준 ("full" | "limited").
+    pub clearance: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +118,8 @@ struct AgentHandle {
     parent_agent: Option<String>,
     /// 소속 팀 이름 (선택사항).
     team: Option<String>,
+    /// 툴 접근 수준 ("full" | "limited").
+    clearance: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +245,7 @@ impl AgentRegistry {
                 current_status: self.get_status(&h.name),
                 parent_agent: h.parent_agent.clone(),
                 team: h.team.clone(),
+                clearance: h.clearance.clone(),
             }));
             let _ = tx.send(DashboardEvent::AgentStatus { agents });
         }
@@ -266,15 +274,10 @@ impl AgentRegistry {
         if let Some(tx) = self.inbox_txs.get(name) {
             return tx.send(msg).await.is_ok();
         }
-        // 스폰된 에이전트 (task_tx)
+        // 스폰된 에이전트 (task_tx) — fire-and-forget (reply_tx = None)
         if let Some(handle) = self.agents.get(name) {
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             let content = msg.content.clone();
-            if handle.task_tx.send(AgentTask { message: content, reply_tx }).await.is_ok() {
-                // fire-and-forget: 응답을 백그라운드에서 소비
-                tokio::spawn(async move {
-                    let _ = reply_rx.await;
-                });
+            if handle.task_tx.send(AgentTask { message: content, reply_tx: None }).await.is_ok() {
                 return true;
             }
         }
@@ -434,6 +437,7 @@ impl AgentRegistry {
                 steer_tx: steer_tx_handle,
                 parent_agent: req.parent_agent.clone(),
                 team: req.team.clone(),
+                clearance: req.clearance.clone(),
             },
         );
 
@@ -515,7 +519,7 @@ impl AgentRegistry {
 
         let (reply_tx, reply_rx) = oneshot::channel();
         task_tx
-            .send(AgentTask { message, reply_tx })
+            .send(AgentTask { message, reply_tx: Some(reply_tx) })
             .await
             .map_err(|_| anyhow::anyhow!("에이전트 '{}' 채널이 닫혔습니다. 종료되었을 수 있습니다.", name))?;
 
@@ -610,6 +614,7 @@ impl AgentRegistry {
                 hooks_url: None,
                 parent_agent: None,
                 team: sm.team.clone(),
+                clearance: Some("full".to_string()),
             });
         }
         result.extend(self.agents.values().map(|h| AgentInfo {
@@ -622,6 +627,7 @@ impl AgentRegistry {
             hooks_url: h.hooks_url.clone(),
             parent_agent: h.parent_agent.clone(),
             team: h.team.clone(),
+            clearance: h.clearance.clone(),
         }));
         result
     }
@@ -708,8 +714,9 @@ impl AgentRegistry {
                 system_prompt_override: Some(pa.system_prompt.clone()),
                 hooks_url: None,
                 hooks_token: None,
-                parent_agent: None,
+                parent_agent: None, // TODO: persist parent_agent in AgentStore
                 team: None,
+                clearance: Some("full".to_string()),
             };
 
             match self.spawn_agent(req, None).await {
@@ -894,8 +901,10 @@ async fn run_spawned_agent(
             }
         };
 
-        if task.reply_tx.send(response).is_err() {
-            warn!(name = %name, "reply_tx dropped before response could be sent");
+        if let Some(reply_tx) = task.reply_tx {
+            if reply_tx.send(response).is_err() {
+                warn!(name = %name, "reply_tx dropped before response could be sent");
+            }
         }
 
         // Non-persistent 에이전트는 첫 태스크 완료 후 루프를 종료한다.

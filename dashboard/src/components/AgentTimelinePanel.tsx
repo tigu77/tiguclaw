@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { TimelineEvent } from "@/types";
+import { AgentInfo, TimelineEvent } from "@/types";
 
 // ─── 이벤트 표시 헬퍼 ────────────────────────────────────────────────────────
 
@@ -48,10 +48,72 @@ function formatTime(ts: number): string {
   });
 }
 
+// ─── 에이전트 정보 카드 ───────────────────────────────────────────────────────
+
+const LEVEL_LABEL: Record<number, string> = {
+  0: "L0",
+  1: "L1",
+  2: "L2",
+  3: "L3",
+};
+
+function statusDot(status?: string): { dot: string; label: string } {
+  const s = status ?? "idle";
+  if (s === "thinking")
+    return { dot: "🔵", label: "thinking" };
+  if (s.startsWith("executing:"))
+    return { dot: "🟡", label: `executing: ${s.split(":").slice(1).join(":")}` };
+  return { dot: "⚪", label: "idle" };
+}
+
+interface AgentInfoCardProps {
+  agent: AgentInfo;
+}
+
+function AgentInfoCard({ agent }: AgentInfoCardProps) {
+  const { dot, label } = statusDot(agent.current_status);
+  const level = LEVEL_LABEL[agent.level] ?? `L${agent.level}`;
+
+  return (
+    <div className="mx-3 my-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 flex flex-col gap-1 text-xs font-mono">
+      {/* 이름 */}
+      <div className="text-sm font-bold text-white mb-0.5">
+        {agent.nickname ?? agent.name}
+      </div>
+      {/* 구분선 */}
+      <div className="border-t border-white/10 mb-0.5" />
+      {/* 속성 목록 */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-gray-400">
+        <span className="text-gray-600">레벨</span>
+        <span className="text-gray-200">{level}</span>
+
+        <span className="text-gray-600">역할</span>
+        <span className="text-gray-200">{agent.role}</span>
+
+        <span className="text-gray-600">팀</span>
+        <span className="text-gray-200">{agent.team ?? "—"}</span>
+
+        <span className="text-gray-600">채널</span>
+        <span className="text-gray-200">{agent.channel_type}</span>
+
+        <span className="text-gray-600">상태</span>
+        <span className="text-gray-200">
+          {dot} {label}
+        </span>
+
+        <span className="text-gray-600">clearance</span>
+        <span className="text-gray-200">{agent.clearance ?? "full"}</span>
+      </div>
+    </div>
+  );
+}
+
 // ─── AgentTimelinePanel ──────────────────────────────────────────────────────
 
 interface AgentTimelinePanelProps {
   agentName: string;
+  /** 선택된 에이전트 전체 정보 (정보 카드 표시용) */
+  agentInfo?: AgentInfo;
   /** WS로 수신된 전체 타임라인 이벤트 (이 에이전트 관련 것만 필터링) */
   allTimelineEvents: TimelineEvent[];
   apiBase: string;
@@ -60,6 +122,7 @@ interface AgentTimelinePanelProps {
 
 export default function AgentTimelinePanel({
   agentName,
+  agentInfo,
   allTimelineEvents,
   apiBase,
   onClose,
@@ -109,6 +172,9 @@ export default function AgentTimelinePanel({
           ✕
         </button>
       </div>
+
+      {/* 에이전트 정보 카드 */}
+      {agentInfo && <AgentInfoCard agent={agentInfo} />}
 
       {/* 이벤트 리스트 */}
       <div

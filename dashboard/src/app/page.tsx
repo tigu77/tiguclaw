@@ -150,6 +150,7 @@ export default function DashboardPage() {
                 <div className="flex-1 min-h-0 min-w-0 rounded-xl border border-white/10 bg-white/5 overflow-hidden">
                   <AgentTimelinePanel
                     agentName={selectedAgent}
+                    agentInfo={agents.find((a) => a.name === selectedAgent)}
                     allTimelineEvents={timelineEvents}
                     apiBase={API_BASE}
                     onClose={() => setSelectedAgent(null)}

@@ -171,6 +171,7 @@ async fn async_main() -> Result<()> {
             current_status: "idle".to_string(),
             parent_agent: None,
             team: config.agent.team.clone(),
+            clearance: Some(config.agent.clearance.clone()),
         });
     }
 
@@ -184,7 +185,8 @@ async fn async_main() -> Result<()> {
     // Agent management 툴 생성 (registry 공유).
     let spawn_agent_tool = tiguclaw_agent::tools::SpawnAgentTool::new(registry.clone())
         .with_templates_dir(templates_dir.clone())
-        .with_agents_dir(agents_dir.clone());
+        .with_agents_dir(agents_dir.clone())
+        .with_owner_name(config.agent.name.clone());
     let send_to_agent_tool = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone());
     let kill_agent_tool = tiguclaw_agent::tools::KillAgentTool::new(registry.clone());
     let list_agents_tool = tiguclaw_agent::tools::ListAgentsTool::new(registry.clone());
@@ -213,10 +215,20 @@ async fn async_main() -> Result<()> {
             &parent_hooks_token,
         );
         tools.push(Box::new(escalate_tool));
+
+        // report_to_parent 툴: L1이 부모(L0)에게 완료 보고 (fire-and-forget 패턴 완성).
+        let report_tool = tiguclaw_agent::tools::ReportToParentTool::new_http(
+            &config.agent.name,
+            parent_agent,
+            parent_hooks_url,
+            &parent_hooks_token,
+        );
+        tools.push(Box::new(report_tool));
+
         info!(
             parent_agent = %parent_agent,
             parent_hooks_url = %parent_hooks_url,
-            "escalate_to_parent tool enabled"
+            "escalate_to_parent + report_to_parent tools enabled"
         );
     }
 

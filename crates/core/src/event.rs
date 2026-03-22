@@ -47,4 +47,7 @@ pub struct AgentStatusInfo {
     /// 소속 팀 이름 (선택사항).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
+    /// 툴 접근 수준 ("full" | "limited" | ...). 없으면 "full" 기본.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clearance: Option<String>,
 }

@@ -81,6 +81,15 @@ pub struct SteerPayload {
     pub message: String,
 }
 
+/// POST /hooks/report payload — L1 에이전트가 부모(L0)에게 완료 보고.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReportPayload {
+    /// 보고하는 에이전트 이름.
+    pub from: String,
+    /// 보고 내용.
+    pub message: String,
+}
+
 /// Events sent from HookServer to AgentLoop.
 #[derive(Debug)]
 pub enum HookEvent {
@@ -103,6 +112,11 @@ pub enum HookEvent {
     },
     /// Phase 9-4: 에이전트 방향 전환 신호 (steer).
     Steer {
+        message: String,
+    },
+    /// L1 에이전트가 부모(L0)에게 작업 완료 보고.
+    Report {
+        from: String,
         message: String,
     },
 }

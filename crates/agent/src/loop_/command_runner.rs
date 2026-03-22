@@ -545,6 +545,24 @@ impl AgentLoop {
                 info!(message = %message, "steer hook event received");
                 steer_queue.push(message);
             }
+
+            // L1 에이전트 작업 완료 보고.
+            HookEvent::Report { from, message } => {
+                info!(from = %from, "report hook event received");
+                let content = format!("[REPORT from {from}] {message}");
+                let msg = ChannelMessage {
+                    id: format!("report-{from}"),
+                    sender: from,
+                    content,
+                    timestamp: chrono::Local::now().timestamp(),
+                    source: None,
+                };
+                if current_task.is_some() {
+                    pending_messages.push((0, msg));
+                } else {
+                    *current_task = self.try_spawn_handler(&msg, 0, None).await?;
+                }
+            }
         }
         Ok(())
     }

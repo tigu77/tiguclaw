@@ -13,6 +13,8 @@ export interface AgentInfo {
   parent_agent?: string;
   /** 소속 팀 이름 (선택사항) */
   team?: string;
+  /** 툴 접근 수준 ("full" | "limited" | ...) */
+  clearance?: string;
 }
 
 export interface LogEntry {

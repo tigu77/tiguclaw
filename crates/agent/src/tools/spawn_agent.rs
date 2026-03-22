@@ -36,6 +36,8 @@ pub struct SpawnAgentTool {
     templates_dir: PathBuf,
     /// 에이전트 스펙 폴더 기반 디렉토리.
     agents_dir: PathBuf,
+    /// 이 툴을 소유한 에이전트 이름 (spawn 시 parent_agent로 자동 설정).
+    owner_name: Option<String>,
 }
 
 impl SpawnAgentTool {
@@ -44,6 +46,7 @@ impl SpawnAgentTool {
             registry,
             templates_dir: PathBuf::from("templates"),
             agents_dir: PathBuf::from("agents"),
+            owner_name: None,
         }
     }
 
@@ -56,6 +59,13 @@ impl SpawnAgentTool {
     /// agents 디렉토리 경로를 지정한다.
     pub fn with_agents_dir(mut self, dir: PathBuf) -> Self {
         self.agents_dir = dir;
+        self
+    }
+
+    /// 이 툴을 소유한 에이전트 이름을 설정한다.
+    /// spawn된 에이전트의 parent_agent가 이 이름으로 자동 설정된다.
+    pub fn with_owner_name(mut self, name: String) -> Self {
+        self.owner_name = Some(name);
         self
     }
 }
@@ -122,6 +132,14 @@ impl Tool for SpawnAgentTool {
                 "hooks_token": {
                     "type": "string",
                     "description": "Phase 8-2: 직통 Hooks API 인증 토큰."
+                },
+                "parent_agent": {
+                    "type": "string",
+                    "description": "부모 에이전트 이름 (트리 계층 표시용). 미지정 시 이 툴을 소유한 에이전트 이름으로 자동 설정."
+                },
+                "team": {
+                    "type": "string",
+                    "description": "소속 팀 이름 (대시보드 그룹핑용). 예: 'research-team', 'code-team'."
                 }
             },
             "required": ["name", "role"]
@@ -230,6 +248,18 @@ impl Tool for SpawnAgentTool {
 
         let has_hooks = hooks_url.is_some();
 
+        // parent_agent: 명시적 파라미터 > owner_name (자동) 순으로 결정.
+        let parent_agent = args
+            .get("parent_agent")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| self.owner_name.clone());
+
+        let team = args
+            .get("team")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         let req = SpawnRequest {
             name: name.clone(),
             nickname: None,
@@ -243,8 +273,9 @@ impl Tool for SpawnAgentTool {
             system_prompt_override,
             hooks_url: hooks_url.clone(),
             hooks_token,
-            parent_agent: None,
-            team: None,
+            parent_agent,
+            team,
+            clearance: Some("full".to_string()),
         };
 
         let registry_arc = self.registry.clone();

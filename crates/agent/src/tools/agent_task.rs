@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use tokio::sync::oneshot;
 use tracing::debug;
 
 use tiguclaw_core::error::{Result, TiguError};
@@ -18,10 +17,11 @@ use crate::registry::{AgentRegistry, AgentTask};
 // send_to_agent
 // ---------------------------------------------------------------------------
 
-/// 에이전트에 태스크를 전달하고 응답을 기다리는 툴.
+/// 에이전트에 태스크를 fire-and-forget으로 전달하는 툴.
 ///
+/// L0 블로킹 방지: 즉시 "전달됨" 반환. 완료 시 L1이 report_to_parent로 보고한다.
 /// hooks_url이 설정된 에이전트는 직통 HTTP POST로 전달하고,
-/// 없으면 기존 내부 mpsc 방식으로 전달한다.
+/// 없으면 내부 mpsc 방식으로 전달한다.
 ///
 /// # Input
 /// ```json
@@ -55,7 +55,9 @@ impl Tool for SendToAgentTool {
     }
 
     fn description(&self) -> &str {
-        "spawn된 하위 에이전트에 태스크를 전달하고 결과를 받습니다. \
+        "spawn된 하위 에이전트에 태스크를 전달합니다 (fire-and-forget). \
+         즉시 '전달됨'을 반환하고 L0는 계속 응답 가능합니다. \
+         에이전트 완료 시 report_to_parent로 보고가 돌아옵니다. \
          에이전트가 없으면 먼저 spawn_agent로 생성하세요."
     }
 
@@ -110,54 +112,41 @@ impl Tool for SendToAgentTool {
             monitor.log_agent_comm(&self.from_name, &name, &message).await;
         }
 
-        // Phase 8-2: hooks_url이 있으면 직통 HTTP 전송, 없으면 기존 IPC 방식.
+        // fire-and-forget: L0 블로킹 없이 즉시 반환.
+        // hooks_url이 있으면 백그라운드 HTTP 전송, 없으면 IPC 채널로 전달 후 즉시 반환.
         if let Some(hooks_url) = send_info.hooks_url {
-            debug!(
-                from = %self.from_name,
-                to = %name,
-                url = %hooks_url,
-                "send_to_agent: 직통 HTTP 전송"
-            );
-            let client = reqwest::Client::new();
-            let mut req_builder = client
-                .post(format!("{hooks_url}/hooks/agent"))
-                .timeout(std::time::Duration::from_secs(120))
-                .json(&serde_json::json!({
-                    "message": message,
-                    "deliver": false,
-                    "timeout_seconds": 110
-                }));
-
-            if let Some(token) = send_info.hooks_token {
-                req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
-            }
-
-            let http_resp = req_builder.send().await.map_err(|e| {
-                TiguError::Tool(format!("에이전트 '{name}' 직통 HTTP 전송 실패: {e}"))
-            })?;
-
-            let status = http_resp.status();
-            let body: serde_json::Value = http_resp.json().await.map_err(|e| {
-                TiguError::Tool(format!("에이전트 '{name}' 응답 파싱 실패: {e}"))
-            })?;
-
-            if !status.is_success() {
-                let err_msg = body["error"].as_str().unwrap_or("unknown error");
-                return Err(TiguError::Tool(format!(
-                    "에이전트 '{name}' HTTP 오류 {status}: {err_msg}"
-                )));
-            }
-
-            let response_text = body["message"].as_str().unwrap_or("").to_string();
-            Ok(format!("[{name}] {response_text}"))
+            // HTTP 경로: 백그라운드 태스크로 전송 (L0 블로킹 없음).
+            let name_clone = name.clone();
+            let token = send_info.hooks_token;
+            tokio::spawn(async move {
+                debug!(
+                    to = %name_clone,
+                    url = %hooks_url,
+                    "send_to_agent: 직통 HTTP fire-and-forget 전송"
+                );
+                let client = reqwest::Client::new();
+                let mut req_builder = client
+                    .post(format!("{hooks_url}/hooks/agent"))
+                    .timeout(std::time::Duration::from_secs(300))
+                    .json(&serde_json::json!({
+                        "message": message,
+                        "deliver": false,
+                        "timeout_seconds": 290
+                    }));
+                if let Some(token) = token {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
+                }
+                if let Err(e) = req_builder.send().await {
+                    tracing::warn!(to = %name_clone, error = %e, "send_to_agent: HTTP 전송 실패");
+                }
+            });
         } else {
-            // 기존 내부 mpsc 방식.
-            let (reply_tx, reply_rx) = oneshot::channel();
+            // IPC 경로: reply_tx = None (fire-and-forget).
             send_info
                 .task_tx
                 .send(AgentTask {
                     message,
-                    reply_tx,
+                    reply_tx: None,
                 })
                 .await
                 .map_err(|_| {
@@ -165,16 +154,9 @@ impl Tool for SendToAgentTool {
                         "에이전트 '{name}' 채널이 닫혔습니다. 종료되었을 수 있습니다."
                     ))
                 })?;
-
-            // lock 없이 응답 대기 — deadlock 없음.
-            let response = reply_rx.await.map_err(|_| {
-                TiguError::Tool(format!(
-                    "에이전트 '{name}' 응답 수신 실패 (에이전트가 패닉했을 수 있음)"
-                ))
-            })?;
-
-            Ok(format!("[{name}] {response}"))
         }
+
+        Ok(format!("✅ {name}에게 전달됨. 완료 시 보고드릴게요."))
     }
 }
 

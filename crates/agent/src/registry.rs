@@ -23,6 +23,7 @@ use tiguclaw_core::types::{ChatMessage, ToolCall};
 use tiguclaw_memory::{AgentStore, PersistedAgent};
 
 use crate::monitor::Monitor;
+use crate::tools::{SendToAgentTool, SpawnAgentTool};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -187,6 +188,10 @@ pub struct AgentRegistry {
     initiator_tx: Option<mpsc::Sender<(String, String)>>,
     /// L0 admin_chat_id — spawn 에이전트 보고 시 수신자.
     admin_chat_id: i64,
+    /// spawn된 에이전트의 SpawnAgentTool에서 사용할 템플릿 디렉토리.
+    templates_dir: std::path::PathBuf,
+    /// spawn된 에이전트의 SpawnAgentTool에서 사용할 에이전트 스펙 디렉토리.
+    agents_dir: std::path::PathBuf,
 }
 
 impl AgentRegistry {
@@ -207,6 +212,8 @@ impl AgentRegistry {
             conv_save_tx: None,
             initiator_tx: None,
             admin_chat_id: 0,
+            templates_dir: std::path::PathBuf::from("templates"),
+            agents_dir: std::path::PathBuf::from("agents"),
         }
     }
 
@@ -231,7 +238,19 @@ impl AgentRegistry {
             conv_save_tx: None,
             initiator_tx: None,
             admin_chat_id: 0,
+            templates_dir: std::path::PathBuf::from("templates"),
+            agents_dir: std::path::PathBuf::from("agents"),
         }
+    }
+
+    /// spawn된 에이전트의 SpawnAgentTool에서 사용할 디렉토리 경로를 설정한다.
+    pub fn set_spawn_dirs(
+        &mut self,
+        templates_dir: std::path::PathBuf,
+        agents_dir: std::path::PathBuf,
+    ) {
+        self.templates_dir = templates_dir;
+        self.agents_dir = agents_dir;
     }
 
     /// spawn된 에이전트 대화 저장용 채널 설정.
@@ -471,7 +490,31 @@ impl AgentRegistry {
         // Phase 9-4: steer 채널 생성.
         let (steer_tx_handle, steer_rx_spawned) = mpsc::channel::<String>(8);
         let provider = self.provider.clone();
-        let tools = self.tools.clone();
+        // 에이전트별 툴 인스턴스 생성: SendToAgentTool / SpawnAgentTool을 개별 교체.
+        // from_name을 이 에이전트 이름으로 설정 → T2→T1 보고 경로가 올바르게 설정됨.
+        let tools = if let Some(ref reg_arc) = registry_arc {
+            let mut t: Vec<Arc<dyn Tool>> = self.tools.iter()
+                .filter(|tool| tool.name() != "send_to_agent" && tool.name() != "spawn_agent")
+                .cloned()
+                .collect();
+            // SendToAgentTool: from_name = 이 에이전트 이름 → completion 콜백이 올바른 에이전트로 전달.
+            t.push(Arc::new(
+                SendToAgentTool::new(reg_arc.clone())
+                    .with_from_name(&req.name)
+            ));
+            // SpawnAgentTool: owner_name = 이 에이전트 이름, requester_tier = 이 에이전트 티어.
+            t.push(Arc::new(
+                SpawnAgentTool::new(reg_arc.clone())
+                    .with_templates_dir(self.templates_dir.clone())
+                    .with_agents_dir(self.agents_dir.clone())
+                    .with_owner_name(req.name.clone())
+                    .with_requester_tier(req.tier)
+            ));
+            t
+        } else {
+            // registry_arc 없음(restore_from_store 등): 기존 공유 툴 사용 (하위 호환).
+            self.tools.clone()
+        };
         // 부모 에이전트의 inject_tx — 작업 완료 시 결과 자동 주입용.
         let parent_inject_tx = self.primary_inject_tx.clone();
         let _parent_name = req.parent_agent.clone();

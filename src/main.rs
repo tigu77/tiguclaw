@@ -102,6 +102,11 @@ async fn async_main() -> Result<()> {
         // 슈퍼마스터 inbox_tx 등록 — completion callback이 inbox_txs에서 supermaster를 찾을 수 있도록.
         // 이 등록 없이는 from_name이 실제 supermaster 이름이어도 inbox_txs lookup이 None을 반환한다.
         reg.register_inbox_tx(&config.agent.name, channel.inject_sender());
+        // spawn된 에이전트의 SpawnAgentTool 경로 설정 — 에이전트별 툴 인스턴스 생성 시 사용.
+        reg.set_spawn_dirs(
+            std::path::PathBuf::from(&config.agent.templates_dir),
+            std::path::PathBuf::from(&config.agent.agents_dir),
+        );
     }
 
     // T1 에이전트 공유 툴셋에 에이전트 관리 툴 추가 (registry Arc 준비 후 주입).

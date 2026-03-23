@@ -249,6 +249,17 @@ impl AgentRegistry {
         self.admin_chat_id = id;
     }
 
+    /// 공유 툴 목록에 툴을 추가한다.
+    ///
+    /// 레지스트리 초기화 이후 추가 툴(에이전트 관리 툴 등)을 주입할 때 사용.
+    /// 이미 등록된 이름의 툴은 무시한다 (중복 방지).
+    pub fn push_tool(&mut self, tool: Arc<dyn Tool>) {
+        let name = tool.name().to_string();
+        if !self.tools.iter().any(|t| t.name() == name) {
+            self.tools.push(tool);
+        }
+    }
+
     /// 에이전트 현재 상태 업데이트 ("idle" | "thinking" | "executing:tool명").
     pub fn update_status(&mut self, name: &str, status: &str) {
         self.status_map.insert(name.to_string(), status.to_string());

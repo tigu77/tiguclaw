@@ -67,7 +67,9 @@ async fn async_main() -> Result<()> {
     );
 
     // Build AgentRegistry용 base tools (Arc — registry와 L2 에이전트가 공유).
-    let registry_tools: Vec<Arc<dyn tiguclaw_core::tool::Tool>> = {
+    // T1 에이전트용 레지스트리 툴은 나중에 registry Arc가 준비된 뒤 주입한다.
+    // (registry_tools_base: 기본 5개, registry_tools는 에이전트 관리 툴 포함)
+    let registry_tools_base: Vec<Arc<dyn tiguclaw_core::tool::Tool>> = {
         let runtime2 = Arc::new(tiguclaw_runtime::NativeRuntime::from_config(&config.runtime));
         vec![
             Arc::new(tiguclaw_agent::tools::ShellTool::new(runtime2)),
@@ -90,7 +92,7 @@ async fn async_main() -> Result<()> {
 
     // Build AgentRegistry — L2 에이전트들은 provider와 registry_tools를 공유.
     let registry = Arc::new(Mutex::new(
-        tiguclaw_agent::AgentRegistry::new_with_store(provider.clone(), registry_tools, agent_store),
+        tiguclaw_agent::AgentRegistry::new_with_store(provider.clone(), registry_tools_base, agent_store),
     ));
 
     // primary channel inject_tx를 registry에 등록 — 대시보드 메시지를 메인채널로 직접 주입.
@@ -100,6 +102,26 @@ async fn async_main() -> Result<()> {
         // 슈퍼마스터 inbox_tx 등록 — completion callback이 inbox_txs에서 supermaster를 찾을 수 있도록.
         // 이 등록 없이는 from_name이 실제 supermaster 이름이어도 inbox_txs lookup이 None을 반환한다.
         reg.register_inbox_tx(&config.agent.name, channel.inject_sender());
+    }
+
+    // T1 에이전트 공유 툴셋에 에이전트 관리 툴 추가 (registry Arc 준비 후 주입).
+    // T1용 spawn_agent는 requester_tier=1로 설정 → T2(tier >= 2)만 spawn 가능.
+    {
+        let t1_templates_dir = std::path::PathBuf::from(&config.agent.templates_dir);
+        let t1_agents_dir = std::path::PathBuf::from(&config.agent.agents_dir);
+        let t1_spawn = tiguclaw_agent::tools::SpawnAgentTool::new(registry.clone())
+            .with_templates_dir(t1_templates_dir)
+            .with_agents_dir(t1_agents_dir)
+            .with_requester_tier(1);
+        let t1_send = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone());
+        let t1_list = tiguclaw_agent::tools::ListAgentsTool::new(registry.clone());
+        let t1_kill = tiguclaw_agent::tools::KillAgentTool::new(registry.clone());
+        let mut reg = registry.lock().await;
+        reg.push_tool(Arc::new(t1_spawn));
+        reg.push_tool(Arc::new(t1_send));
+        reg.push_tool(Arc::new(t1_list));
+        reg.push_tool(Arc::new(t1_kill));
+        info!("T1 agent management tools injected into registry_tools (requester_tier=1)");
     }
 
     // Phase 9-1: 대시보드 서버 생성 (enabled 여부와 무관하게 event_tx 준비).

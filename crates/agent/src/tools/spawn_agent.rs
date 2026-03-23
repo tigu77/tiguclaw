@@ -38,6 +38,8 @@ pub struct SpawnAgentTool {
     agents_dir: PathBuf,
     /// 이 툴을 소유한 에이전트 이름 (spawn 시 parent_agent로 자동 설정).
     owner_name: Option<String>,
+    /// 이 툴을 사용하는 에이전트의 티어 (0=제한 없음, 1=T2+만 spawn 가능 등).
+    requester_tier: u8,
 }
 
 impl SpawnAgentTool {
@@ -47,6 +49,7 @@ impl SpawnAgentTool {
             templates_dir: PathBuf::from("templates"),
             agents_dir: PathBuf::from("agents"),
             owner_name: None,
+            requester_tier: 0,
         }
     }
 
@@ -66,6 +69,16 @@ impl SpawnAgentTool {
     /// spawn된 에이전트의 parent_agent가 이 이름으로 자동 설정된다.
     pub fn with_owner_name(mut self, name: String) -> Self {
         self.owner_name = Some(name);
+        self
+    }
+
+    /// 이 툴을 사용하는 에이전트의 티어를 설정한다.
+    ///
+    /// - `0` (기본값): 제한 없음 — 모든 티어의 에이전트 spawn 가능.
+    /// - `1`: T2 이상(tier >= 2)만 spawn 가능.
+    /// - `2`: T3 이상(tier >= 3)만 spawn 가능.
+    pub fn with_requester_tier(mut self, tier: u8) -> Self {
+        self.requester_tier = tier;
         self
     }
 }
@@ -150,6 +163,21 @@ impl Tool for SpawnAgentTool {
         &self,
         args: &HashMap<String, serde_json::Value>,
     ) -> Result<String> {
+        // ── 티어 제한 검증 ────────────────────────────────────────────────────
+        // requester_tier > 0이면 요청된 tier가 requester_tier보다 높아야 한다.
+        // 예: T1(requester_tier=1)은 tier >= 2인 에이전트만 spawn 가능.
+        if self.requester_tier > 0 {
+            let requested_tier = args.get("tier").and_then(|v| v.as_u64()).unwrap_or(1) as u8;
+            if requested_tier <= self.requester_tier {
+                return Err(TiguError::Tool(format!(
+                    "하위 티어 에이전트만 spawn 가능합니다. 요청자 티어: {}, 요청 티어: {} (최소 {} 이상이어야 합니다)",
+                    self.requester_tier,
+                    requested_tier,
+                    self.requester_tier + 1,
+                )));
+            }
+        }
+
         // ── agent_spec 로드 (새 폴더 기반 방식) ──────────────────────────────
         let agent_spec_name = args.get("agent_spec").and_then(|v| v.as_str());
         let spec_mgr = AgentSpecManager::new(self.agents_dir.clone());

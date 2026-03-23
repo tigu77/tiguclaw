@@ -234,11 +234,16 @@ impl Tool for SendToAgentTool {
                     }
                 };
 
-                let report = format!(
-                    "[{}] 완료:\n{}",
-                    target_name_clone,
-                    &response_text[..response_text.len().min(2000)]
-                );
+                let truncated = if response_text.len() <= 2000 {
+                    response_text.as_str()
+                } else {
+                    let mut boundary = 2000;
+                    while !response_text.is_char_boundary(boundary) {
+                        boundary -= 1;
+                    }
+                    &response_text[..boundary]
+                };
+                let report = format!("[{}] 완료:\n{}", target_name_clone, truncated);
 
                 // registry lock은 최소 시간만 유지하고 채널만 꺼낸 후 즉시 해제.
                 let delivery: CompletionDeliveryInfo = {

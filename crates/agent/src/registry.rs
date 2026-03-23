@@ -1273,7 +1273,14 @@ async fn run_spawned_agent(
             }
         } else if let Some(ref ptx) = parent_task_tx {
             // initiator가 에이전트 → 부모 에이전트의 task_tx로 완료 결과 push.
-            let report_msg = format!("[{}] 완료:\n{}", agent_name, &response[..response.len().min(2000)]);
+            let truncated_2000 = if response.len() <= 2000 {
+                response.as_str()
+            } else {
+                let mut boundary = 2000;
+                while !response.is_char_boundary(boundary) { boundary -= 1; }
+                &response[..boundary]
+            };
+            let report_msg = format!("[{}] 완료:\n{}", agent_name, truncated_2000);
             let sent = ptx
                 .send(AgentTask {
                     message: report_msg.clone(),
@@ -1289,7 +1296,11 @@ async fn run_spawned_agent(
                     let channel_msg = ChannelMessage {
                         id: String::new(),
                         sender: admin_chat_id.to_string(),
-                        content: format!("[{}] 완료 (부모 에이전트 종료 → 직접 보고):\n{}", agent_name, &response[..response.len().min(500)]),
+                        content: {
+                            let mut b = 500usize.min(response.len());
+                            while b > 0 && !response.is_char_boundary(b) { b -= 1; }
+                            format!("[{}] 완료 (부모 에이전트 종료 → 직접 보고):\n{}", agent_name, &response[..b])
+                        },
                         timestamp: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
@@ -1305,7 +1316,12 @@ async fn run_spawned_agent(
             }
         } else if let Some(ref inject_tx) = parent_inject_tx {
             // initiator가 user → 기존 방식: primary(텔레그램)로 보고.
-            let report_msg = format!("[{}] 작업 완료:\n{}", agent_name, &response[..response.len().min(500)]);
+            let truncated_500 = {
+                let mut b = 500usize.min(response.len());
+                while b > 0 && !response.is_char_boundary(b) { b -= 1; }
+                &response[..b]
+            };
+            let report_msg = format!("[{}] 작업 완료:\n{}", agent_name, truncated_500);
             let channel_msg = ChannelMessage {
                 id: String::new(),
                 sender: admin_chat_id.to_string(),

@@ -4,15 +4,16 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use tiguclaw_core::error::{Result, TiguError};
 use tiguclaw_core::provider::ThinkingLevel;
 use tiguclaw_core::tool::Tool;
+use tiguclaw_core::types::ChannelMessage;
 
-use crate::registry::{AgentRegistry, AgentTask};
+use crate::registry::{AgentRegistry, AgentTask, CompletionDeliveryInfo};
 
 // ---------------------------------------------------------------------------
 // send_to_agent
@@ -167,13 +168,16 @@ impl Tool for SendToAgentTool {
                 }
             });
         } else {
-            // IPC 경로: reply_tx = None (fire-and-forget).
+            // IPC 경로: completion_tx 방식 (fire-and-forget + 완료 콜백).
+            let (completion_tx, mut completion_rx) = mpsc::channel::<String>(1);
+
             let send_result = send_info
                 .task_tx
                 .send(AgentTask {
                     message,
                     reply_tx: None,
                     thinking_level,
+                    completion_tx: Some(completion_tx),
                 })
                 .await;
 
@@ -196,6 +200,98 @@ impl Tool for SendToAgentTool {
                     "에이전트 '{name}' 채널이 닫혔습니다. 종료되었을 수 있습니다."
                 )));
             }
+
+            // 백그라운드에서 완료 콜백 대기 → 결과를 호출자(from_name)에게 전달.
+            let reg_clone = self.registry.clone();
+            let from_name_clone = self.from_name.clone();
+            let target_name_clone = name.clone();
+            tokio::spawn(async move {
+                // 최대 5분(300초) 대기.
+                let wait_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(300),
+                    completion_rx.recv(),
+                )
+                .await;
+
+                let response_text = match wait_result {
+                    Ok(Some(r)) => r,
+                    Ok(None) => format!("[{}] 완료 (결과 없음)", target_name_clone),
+                    Err(_) => format!("[{}] ⏱ 타임아웃 (5분 초과)", target_name_clone),
+                };
+
+                let report = format!(
+                    "[{}] 완료:\n{}",
+                    target_name_clone,
+                    &response_text[..response_text.len().min(2000)]
+                );
+
+                // registry lock은 최소 시간만 유지하고 채널만 꺼낸 후 즉시 해제.
+                let delivery: CompletionDeliveryInfo = {
+                    let registry = reg_clone.lock().await;
+                    registry.get_completion_delivery_info(&from_name_clone)
+                };
+
+                let admin_id = delivery.admin_chat_id;
+                let make_channel_msg = |content: String| ChannelMessage {
+                    id: String::new(),
+                    sender: admin_id.to_string(),
+                    content,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
+                    source: Some("agent-report".into()),
+                };
+
+                // 1순위: supermaster inbox_tx (DashboardChannel)
+                if let Some(tx) = delivery.inbox_tx {
+                    if tx.send(make_channel_msg(report.clone())).await.is_ok() {
+                        info!(
+                            to = %from_name_clone,
+                            from = %target_name_clone,
+                            "completion callback: delivered via inbox_tx"
+                        );
+                        return;
+                    }
+                    warn!(to = %from_name_clone, "completion callback: inbox_tx closed — trying agent_task_tx");
+                }
+
+                // 2순위: 스폰된 에이전트의 task_tx
+                if let Some(tx) = delivery.agent_task_tx {
+                    if tx.send(AgentTask {
+                        message: report.clone(),
+                        reply_tx: None,
+                        completion_tx: None,
+                        thinking_level: ThinkingLevel::Normal,
+                    }).await.is_ok() {
+                        info!(
+                            to = %from_name_clone,
+                            from = %target_name_clone,
+                            "completion callback: delivered via agent_task_tx"
+                        );
+                        return;
+                    }
+                    warn!(to = %from_name_clone, "completion callback: agent_task_tx closed — trying primary_inject_tx");
+                }
+
+                // 3순위: 프라이머리 채널(텔레그램) fallback
+                if let Some(tx) = delivery.primary_inject_tx {
+                    if tx.send(make_channel_msg(report)).await.is_ok() {
+                        info!(
+                            to = %from_name_clone,
+                            from = %target_name_clone,
+                            "completion callback: delivered via primary_inject_tx (fallback)"
+                        );
+                        return;
+                    }
+                }
+
+                warn!(
+                    to = %from_name_clone,
+                    from = %target_name_clone,
+                    "completion callback: all delivery paths failed — report lost"
+                );
+            });
         }
 
         Ok(format!("✅ {name}에게 전달됨. 완료 시 보고드릴게요."))

@@ -36,6 +36,21 @@ pub struct AgentTask {
     /// LLM 사고 수준 — Normal(기본) 또는 Deep(깊은 사고 모드).
     #[allow(dead_code)]
     pub thinking_level: ThinkingLevel,
+    /// 완료 시 결과를 돌려보낼 채널 (fire-and-forget용).
+    /// Some이면 완료 후 이 채널로 결과 전송. reply_tx보다 우선순위가 낮다.
+    pub completion_tx: Option<mpsc::Sender<String>>,
+}
+
+/// `send_to_agent` 완료 콜백 전달 시 필요한 채널 정보.
+pub struct CompletionDeliveryInfo {
+    /// 슈퍼마스터/DashboardChannel inbox — 있으면 최우선으로 사용.
+    pub inbox_tx: Option<mpsc::Sender<ChannelMessage>>,
+    /// 스폰된 에이전트의 task_tx — inbox_tx 없을 때 사용.
+    pub agent_task_tx: Option<mpsc::Sender<AgentTask>>,
+    /// 프라이머리(텔레그램) inject_tx — 최후 fallback.
+    pub primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
+    /// L0 admin_chat_id — ChannelMessage.sender 값으로 사용.
+    pub admin_chat_id: i64,
 }
 
 /// 에이전트 스폰 요청.
@@ -313,7 +328,7 @@ impl AgentRegistry {
         // 스폰된 에이전트 (task_tx) — fire-and-forget (reply_tx = None)
         if let Some(handle) = self.agents.get(name) {
             let content = msg.content.clone();
-            if handle.task_tx.send(AgentTask { message: content, reply_tx: None, thinking_level: ThinkingLevel::Normal }).await.is_ok() {
+            if handle.task_tx.send(AgentTask { message: content, reply_tx: None, thinking_level: ThinkingLevel::Normal, completion_tx: None }).await.is_ok() {
                 return true;
             }
         }
@@ -351,6 +366,18 @@ impl AgentRegistry {
             } else {
                 false
             }
+        }
+    }
+
+    /// send_to_agent 완료 콜백 전달용 채널 정보를 한 번의 lock으로 반환.
+    ///
+    /// 호출자는 lock 해제 후 비동기 전송을 수행해야 deadlock을 피할 수 있다.
+    pub fn get_completion_delivery_info(&self, to_name: &str) -> CompletionDeliveryInfo {
+        CompletionDeliveryInfo {
+            inbox_tx: self.inbox_txs.get(to_name).cloned(),
+            agent_task_tx: self.agents.get(to_name).map(|h| h.task_tx.clone()),
+            primary_inject_tx: self.primary_inject_tx.clone(),
+            admin_chat_id: self.admin_chat_id,
         }
     }
 
@@ -671,6 +698,7 @@ impl AgentRegistry {
                 message,
                 reply_tx: Some(reply_tx),
                 thinking_level: ThinkingLevel::Normal,
+                completion_tx: None,
             })
             .await
             .map_err(|_| anyhow::anyhow!("에이전트 '{}' 채널이 닫혔습니다. 종료되었을 수 있습니다.", name))?;
@@ -1182,6 +1210,13 @@ async fn run_spawned_agent(
             if reply_tx.send(response.clone()).is_err() {
                 warn!(name = %name, "reply_tx dropped before response could be sent");
             }
+        } else if let Some(completion_tx) = task.completion_tx {
+            // completion_tx 있으면 새 방식: send_to_agent 완료 콜백으로 결과 전달.
+            if completion_tx.send(response.clone()).await.is_err() {
+                warn!(name = %name, "completion_tx closed before response could be sent");
+            } else {
+                info!(name = %name, "completion result sent via completion_tx");
+            }
         } else if let Some(ref ptx) = parent_task_tx {
             // initiator가 에이전트 → 부모 에이전트의 task_tx로 완료 결과 push.
             let report_msg = format!("[{}] 완료:\n{}", agent_name, &response[..response.len().min(2000)]);
@@ -1189,6 +1224,7 @@ async fn run_spawned_agent(
                 .send(AgentTask {
                     message: report_msg.clone(),
                     reply_tx: None,
+                    completion_tx: None,
                     thinking_level: ThinkingLevel::Normal,
                 })
                 .await;

@@ -69,6 +69,23 @@ function statusLabel(current_status?: string): string {
   return current_status;
 }
 
+// ──── 상태 텍스트 색상 ───────────────────────────────────────────────────────
+function statusTextColor(current_status?: string): string {
+  if (!current_status || current_status === "idle") return "#f59e0b";
+  if (current_status === "thinking") return "#60a5fa";
+  if (current_status.startsWith("executing:")) return "#34d399";
+  if (current_status === "error") return "#f87171";
+  return "#9ca3af";
+}
+
+function statusShortLabel(current_status?: string): string {
+  if (!current_status || current_status === "idle") return "idle";
+  if (current_status === "thinking") return "thinking";
+  if (current_status.startsWith("executing:")) return "실행중";
+  if (current_status === "error") return "오류";
+  return current_status.slice(0, 8);
+}
+
 // ──── 커스텀 노드 렌더러 ──────────────────────────────────────────────────────
 interface NodeRendererExtraProps {
   selectedName?: string;
@@ -93,6 +110,8 @@ function NodeRenderer({
   const isOnline = agent.status !== "dead";
   const dotColor = statusDotColor(agent.current_status);
   const label = statusLabel(agent.current_status);
+  const statusColor = statusTextColor(agent.current_status);
+  const shortStatus = statusShortLabel(agent.current_status);
   const displayName = agent.nickname ?? agent.name;
 
   return (
@@ -102,10 +121,12 @@ function NodeRenderer({
         ...style,
         display: "flex",
         alignItems: "center",
-        gap: "4px",
+        gap: "5px",
         paddingRight: "6px",
+        paddingTop: "2px",
+        paddingBottom: "2px",
         cursor: "pointer",
-        borderRadius: "4px",
+        borderRadius: "6px",
         backgroundColor: isSelected
           ? "rgba(255,255,255,0.1)"
           : hovered
@@ -127,13 +148,13 @@ function NodeRenderer({
           node.toggle();
         }}
         style={{
-          width: "14px",
-          height: "14px",
+          width: "16px",
+          height: "16px",
           flexShrink: 0,
           background: "none",
           border: "none",
           color: "#6b7280",
-          fontSize: "8px",
+          fontSize: "9px",
           cursor: hasChildren ? "pointer" : "default",
           display: "flex",
           alignItems: "center",
@@ -147,7 +168,7 @@ function NodeRenderer({
 
       {/* 티어 아이콘 */}
       <span
-        style={{ fontSize: "12px", flexShrink: 0, lineHeight: 1 }}
+        style={{ fontSize: "15px", flexShrink: 0, lineHeight: 1 }}
         title={`T${tier}`}
       >
         {tierIcon}
@@ -156,12 +177,12 @@ function NodeRenderer({
       {/* 상태 dot */}
       <span
         style={{
-          width: "7px",
-          height: "7px",
+          width: "9px",
+          height: "9px",
           borderRadius: "50%",
           backgroundColor: dotColor,
           flexShrink: 0,
-          boxShadow: `0 0 4px ${dotColor}`,
+          boxShadow: `0 0 5px ${dotColor}`,
         }}
         title={label}
       />
@@ -170,7 +191,7 @@ function NodeRenderer({
       <span
         style={{
           fontFamily: "monospace",
-          fontSize: "12px",
+          fontSize: "14px",
           color: "#e5e7eb",
           flex: 1,
           overflow: "hidden",
@@ -182,58 +203,76 @@ function NodeRenderer({
         {displayName}
       </span>
 
-      {/* 팀 배지 */}
-      {agent.team && (
+      {/* 오른쪽 배지 영역 */}
+      <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+        {/* 팀 배지 — 항상 표시 */}
+        {agent.team && (
+          <span
+            style={{
+              fontSize: "10px",
+              padding: "1px 5px",
+              borderRadius: "3px",
+              background: "rgba(139,92,246,0.18)",
+              border: "1px solid rgba(139,92,246,0.3)",
+              color: "#c4b5fd",
+              fontFamily: "monospace",
+              maxWidth: "70px",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={agent.team}
+          >
+            {agent.team}
+          </span>
+        )}
+
+        {/* 상태 텍스트 배지 */}
         <span
           style={{
-            fontSize: "9px",
-            padding: "1px 5px",
-            borderRadius: "3px",
-            background: "rgba(139,92,246,0.18)",
-            border: "1px solid rgba(139,92,246,0.3)",
-            color: "#c4b5fd",
-            fontFamily: "monospace",
-            flexShrink: 0,
-            maxWidth: "60px",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            opacity: hovered || isSelected ? 1 : 0.7,
-            transition: "opacity 0.12s",
-          }}
-          title={agent.team}
-        >
-          {agent.team}
-        </span>
-      )}
-
-      {/* Kill 버튼 (T0 제외, hover 시 표시) */}
-      {tier > 0 && hovered && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (confirm(`Kill agent "${agent.name}"?`)) {
-              fetch(`/api/agents/${encodeURIComponent(agent.name)}/kill`, {
-                method: "POST",
-              }).catch(console.error);
-            }
-          }}
-          style={{
-            flexShrink: 0,
-            padding: "1px 5px",
-            borderRadius: "3px",
-            border: "1px solid rgba(239,68,68,0.5)",
-            background: "rgba(239,68,68,0.12)",
-            color: "#f87171",
             fontSize: "10px",
-            cursor: "pointer",
+            padding: "1px 5px",
+            borderRadius: "3px",
+            background: "rgba(0,0,0,0.3)",
+            border: `1px solid ${statusColor}40`,
+            color: statusColor,
             fontFamily: "monospace",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
           }}
-          title={`Kill ${agent.name}`}
+          title={label}
         >
-          ✕
-        </button>
-      )}
+          {shortStatus}
+        </span>
+
+        {/* Kill 버튼 (T0 제외, hover 시 표시) */}
+        {tier > 0 && hovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm(`Kill agent "${agent.name}"?`)) {
+                fetch(`/api/agents/${encodeURIComponent(agent.name)}/kill`, {
+                  method: "POST",
+                }).catch(console.error);
+              }
+            }}
+            style={{
+              padding: "1px 5px",
+              borderRadius: "3px",
+              border: "1px solid rgba(239,68,68,0.5)",
+              background: "rgba(239,68,68,0.12)",
+              color: "#f87171",
+              fontSize: "10px",
+              cursor: "pointer",
+              fontFamily: "monospace",
+              flexShrink: 0,
+            }}
+            title={`Kill ${agent.name}`}
+          >
+            ✕
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -319,7 +358,7 @@ export default function AgentTreeImpl({
         width={containerSize.width}
         height={containerSize.height}
         indent={16}
-        rowHeight={30}
+        rowHeight={40}
         overscanCount={8}
         disableDrag
         disableDrop

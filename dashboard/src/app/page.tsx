@@ -185,22 +185,48 @@ export default function DashboardPage() {
                   <span className="text-xs text-gray-500 font-mono">{filteredAgents.length}개</span>
                 </div>
 
-                {/* 팀 필터 버튼 */}
+                {/* 팀 필터 탭 */}
                 {teams.length > 1 && (
-                  <div className="flex flex-wrap gap-1 px-1">
-                    {teams.map((team) => (
-                      <button
-                        key={team}
-                        onClick={() => setTeamFilter(team)}
-                        className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${
-                          teamFilter === team
-                            ? "bg-purple-500/30 border-purple-400/50 text-purple-300"
-                            : "border-white/10 text-gray-500 hover:text-gray-300 hover:border-white/20"
-                        }`}
-                      >
-                        {team === "전체" ? "전체" : `📦 ${team}`}
-                      </button>
-                    ))}
+                  <div
+                    className="flex overflow-x-auto"
+                    style={{
+                      borderBottom: "1px solid rgba(255,255,255,0.08)",
+                      scrollbarWidth: "none",
+                      gap: 0,
+                    }}
+                  >
+                    {teams.map((team) => {
+                      const isActive = teamFilter === team;
+                      return (
+                        <button
+                          key={team}
+                          onClick={() => setTeamFilter(team)}
+                          style={{
+                            flexShrink: 0,
+                            fontSize: "11px",
+                            padding: "5px 10px",
+                            fontFamily: "monospace",
+                            background: "transparent",
+                            border: "none",
+                            borderBottom: isActive
+                              ? "2px solid #a78bfa"
+                              : "2px solid transparent",
+                            color: isActive ? "#c4b5fd" : "#6b7280",
+                            cursor: "pointer",
+                            transition: "color 0.12s, border-color 0.12s",
+                            whiteSpace: "nowrap",
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!isActive) (e.currentTarget as HTMLElement).style.color = "#d1d5db";
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!isActive) (e.currentTarget as HTMLElement).style.color = "#6b7280";
+                          }}
+                        >
+                          {team === "전체" ? "전체" : team}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -123,6 +123,10 @@ struct AgentHandle {
     team: Option<String>,
     /// 툴 접근 수준 ("full" | "limited").
     clearance: Option<String>,
+    /// KeepAlive: kill_agent() 호출 시 true로 설정 → keepalive 루프가 재spawn을 중단한다.
+    intentionally_killed: Arc<AtomicBool>,
+    /// true이면 이 에이전트는 KeepAlive 루프로 관리됨 (채널 닫힘 시 자동 재spawn).
+    is_keepalive: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +138,8 @@ pub struct AgentSendInfo {
     pub task_tx: mpsc::Sender<AgentTask>,
     pub hooks_url: Option<String>,
     pub hooks_token: Option<String>,
+    /// true이면 KeepAlive 관리 에이전트 — 채널 닫힘 시 registry에서 제거하지 않음.
+    pub is_keepalive: bool,
 }
 
 /// 동적으로 spawn된 에이전트들을 관리하는 레지스트리.
@@ -354,7 +360,42 @@ impl AgentRegistry {
             task_tx: h.task_tx.clone(),
             hooks_url: h.hooks_url.clone(),
             hooks_token: h.hooks_token.clone(),
+            is_keepalive: h.is_keepalive,
         })
+    }
+
+    /// 채널이 닫힌 죽은 에이전트를 레지스트리에서 제거한다 (JoinHandle abort 없이).
+    ///
+    /// `send_to_agent`에서 채널 닫힘 감지 시, 비-KeepAlive 에이전트 정리에 사용한다.
+    pub fn remove_dead_agent(&mut self, name: &str) {
+        if let Some(_handle) = self.agents.remove(name) {
+            // join_handle은 abort하지 않음 — 이미 종료됐으므로.
+            self.status_map.remove(name);
+            if let Some(ref store) = self.store {
+                if let Err(e) = store.remove(name) {
+                    warn!(name, error = %e, "remove_dead_agent: AgentStore remove 실패 (무시)");
+                }
+            }
+            info!(name, "remove_dead_agent: 죽은 에이전트 레지스트리에서 제거");
+            self.broadcast_agent_status();
+        }
+    }
+
+    /// KeepAlive 재spawn 시 에이전트의 채널 송신기를 갱신한다.
+    ///
+    /// keepalive_agent_loop에서 새 run 시작 전 호출된다.
+    pub fn update_agent_task_tx(
+        &mut self,
+        name: &str,
+        new_task_tx: mpsc::Sender<AgentTask>,
+        new_steer_tx: mpsc::Sender<String>,
+    ) {
+        if let Some(handle) = self.agents.get_mut(name) {
+            handle.task_tx = new_task_tx;
+            handle.steer_tx = new_steer_tx;
+            handle.last_active.store(chrono::Local::now().timestamp(), Ordering::Relaxed);
+            debug!(name, "update_agent_task_tx: 채널 갱신 완료");
+        }
     }
 
     /// 새 에이전트를 spawn하고 이름을 반환한다.
@@ -413,6 +454,9 @@ impl AgentRegistry {
 
         let channel_type: String;
         let join_handle: JoinHandle<()>;
+        // KeepAlive 관련 변수 (persistent 내부 에이전트일 때만 Some).
+        let mut keepalive_flag: bool = false;
+        let mut intentionally_killed_arc: Option<Arc<AtomicBool>> = None;
 
         if let Some(bot_token) = req.bot_token.clone() {
             // bot_token 있음 → TelegramChannel로 직접 소통하는 L1 에이전트.
@@ -462,15 +506,49 @@ impl AgentRegistry {
                     });
                 }
             } else {
+                // Persistent (상주) 에이전트: KeepAlive 루프로 감쌈.
+                // 크래시/패닉 등 비정상 종료 시 backoff 후 자동 재spawn.
+                let intentionally_killed = Arc::new(AtomicBool::new(false));
+                let ik = intentionally_killed.clone();
                 let inject_tx = parent_inject_tx.clone();
                 let agent_name_for_report = name.clone();
                 let etx = spawn_event_tx.clone();
                 let conv_tx_clone = spawn_conv_tx.clone();
                 let ptx = parent_task_tx.clone();
-                join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val, ptx).await;
-                    debug!(name = %name, "spawned agent task ended");
-                });
+                // registry_arc가 Some이어야 keepalive가 task_tx를 갱신할 수 있다.
+                // None인 경우(restore_from_store 등) keepalive 없이 단순 spawn으로 fallback.
+                if let Some(reg_arc) = registry_arc {
+                    let ka_reg = reg_arc.clone();
+                    join_handle = tokio::spawn(async move {
+                        keepalive_agent_loop(
+                            name.clone(),
+                            provider,
+                            tools,
+                            system_prompt,
+                            task_rx,
+                            steer_rx_spawned,
+                            inject_tx,
+                            agent_name_for_report,
+                            etx,
+                            conv_tx_clone,
+                            admin_chat_id_val,
+                            ptx,
+                            ka_reg,
+                            ik,
+                        )
+                        .await;
+                        debug!(name = %name, "keepalive agent loop fully ended");
+                    });
+                    // is_keepalive = true — kill_agent와 send_to_agent가 이를 확인.
+                    keepalive_flag = true;
+                    intentionally_killed_arc = Some(intentionally_killed);
+                } else {
+                    // registry_arc 없음: 단순 persistent 실행 (재spawn 없음).
+                    join_handle = tokio::spawn(async move {
+                        run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val, ptx).await;
+                        debug!(name = %name, "persistent agent (no-keepalive) task ended");
+                    });
+                }
             }
         }
 
@@ -494,6 +572,9 @@ impl AgentRegistry {
                 parent_agent: req.parent_agent.clone(),
                 team: req.team.clone(),
                 clearance: req.clearance.clone(),
+                intentionally_killed: intentionally_killed_arc
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+                is_keepalive: keepalive_flag,
             },
         );
 
@@ -602,6 +683,8 @@ impl AgentRegistry {
     /// 에이전트를 종료한다. 반환값: true = 성공, false = 에이전트 없음.
     pub fn kill_agent(&mut self, name: &str) -> bool {
         if let Some(handle) = self.agents.remove(name) {
+            // KeepAlive 루프에게 의도적 종료임을 알려 재spawn을 막는다.
+            handle.intentionally_killed.store(true, Ordering::Relaxed);
             handle.join_handle.abort();
             info!(name, "registry agent killed");
             // status_map에서도 제거.
@@ -750,8 +833,9 @@ impl AgentRegistry {
 
     /// DB에서 에이전트 목록을 로드하여 status="running"인 것들을 재spawn한다.
     ///
+    /// `registry_arc`를 전달하면 복원된 persistent 에이전트가 KeepAlive 모드로 실행된다.
     /// 실패해도 tiguclaw 시작은 계속된다 (에러 로그만).
-    pub async fn restore_from_store(&mut self) {
+    pub async fn restore_from_store(&mut self, registry_arc: Option<Arc<Mutex<AgentRegistry>>>) {
         let store = match &self.store {
             Some(s) => s.clone(),
             None => return,
@@ -798,7 +882,7 @@ impl AgentRegistry {
                 }),
             };
 
-            match self.spawn_agent(req, None).await {
+            match self.spawn_agent(req, registry_arc.clone()).await {
                 Ok(name) => {
                     info!(name = %name, "restore_from_store: 에이전트 복원 완료");
                 }
@@ -850,6 +934,106 @@ fn build_system_prompt(name: &str, role: &str) -> String {
          마스터 에이전트의 하위 에이전트로서, \
          할당된 태스크에만 집중합니다."
     )
+}
+
+// ---------------------------------------------------------------------------
+// KeepAlive 루프
+// ---------------------------------------------------------------------------
+
+/// 상주(persistent) 에이전트를 KeepAlive 루프로 실행한다.
+///
+/// `run_spawned_agent`가 비정상 종료(채널 닫힘, 패닉 등)하면 지수 백오프 후 재spawn한다.
+/// `intentionally_killed` 플래그가 true이거나 최대 재시도 횟수를 초과하면 루프를 종료한다.
+async fn keepalive_agent_loop(
+    name: String,
+    provider: Arc<dyn Provider>,
+    tools: Vec<Arc<dyn Tool>>,
+    system_prompt: String,
+    initial_task_rx: mpsc::Receiver<AgentTask>,
+    initial_steer_rx: mpsc::Receiver<String>,
+    inject_tx: Option<mpsc::Sender<ChannelMessage>>,
+    agent_name_for_report: String,
+    event_tx: Option<broadcast::Sender<DashboardEvent>>,
+    conv_save_tx: Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
+    admin_chat_id: i64,
+    parent_task_tx: Option<mpsc::Sender<AgentTask>>,
+    registry_arc: Arc<Mutex<AgentRegistry>>,
+    intentionally_killed: Arc<AtomicBool>,
+) {
+    const MAX_RETRIES: u32 = 5;
+    let mut attempt: u32 = 0;
+    let mut current_task_rx = initial_task_rx;
+    let mut current_steer_rx = initial_steer_rx;
+
+    info!(name = %name, "keepalive: loop started");
+
+    loop {
+        run_spawned_agent(
+            name.clone(),
+            provider.clone(),
+            tools.clone(),
+            system_prompt.clone(),
+            current_task_rx,
+            current_steer_rx,
+            true, // persistent
+            inject_tx.clone(),
+            agent_name_for_report.clone(),
+            event_tx.clone(),
+            conv_save_tx.clone(),
+            admin_chat_id,
+            parent_task_tx.clone(),
+        )
+        .await;
+
+        // 의도적 종료(kill_agent) 여부 확인.
+        if intentionally_killed.load(Ordering::Relaxed) {
+            info!(name = %name, "keepalive: intentionally killed — stopping keepalive loop");
+            break;
+        }
+
+        attempt += 1;
+        if attempt > MAX_RETRIES {
+            warn!(
+                name = %name,
+                max_retries = MAX_RETRIES,
+                "keepalive: max retries exceeded — removing agent from registry"
+            );
+            let mut reg = registry_arc.lock().await;
+            reg.remove_dead_agent(&name);
+            break;
+        }
+
+        // 지수 백오프: 2^attempt 초 (최대 32초).
+        let delay_secs = 2u64.pow(attempt.min(5));
+        warn!(
+            name = %name,
+            attempt,
+            delay_secs,
+            "keepalive: agent exited unexpectedly — respawning after backoff"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+
+        // 의도적 종료: backoff 대기 중에 kill됐을 수도 있음.
+        if intentionally_killed.load(Ordering::Relaxed) {
+            info!(name = %name, "keepalive: killed during backoff — stopping");
+            break;
+        }
+
+        // 새 채널 생성 후 레지스트리 task_tx 갱신.
+        let (new_task_tx, new_task_rx) = mpsc::channel::<AgentTask>(32);
+        let (new_steer_tx, new_steer_rx) = mpsc::channel::<String>(8);
+
+        {
+            let mut reg = registry_arc.lock().await;
+            reg.update_agent_task_tx(&name, new_task_tx, new_steer_tx);
+        }
+
+        info!(name = %name, attempt, "keepalive: channels refreshed — restarting agent");
+        current_task_rx = new_task_rx;
+        current_steer_rx = new_steer_rx;
+    }
+
+    info!(name = %name, "keepalive: loop ended");
 }
 
 // ---------------------------------------------------------------------------

@@ -192,8 +192,9 @@ async fn async_main() -> Result<()> {
 
     // 시작 시 이전 상주 에이전트 복원 + 슈퍼마스터 자신을 registry에 등록.
     {
+        let registry_arc_for_restore = registry.clone();
         let mut reg = registry.lock().await;
-        reg.restore_from_store().await;
+        reg.restore_from_store(Some(registry_arc_for_restore)).await;
         // 슈퍼마스터(L0) 자신을 API 목록 맨 앞에 포함되도록 등록.
         reg.set_supermaster(tiguclaw_core::event::AgentStatusInfo {
             name: config.agent.name.clone(),

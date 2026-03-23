@@ -168,19 +168,34 @@ impl Tool for SendToAgentTool {
             });
         } else {
             // IPC 경로: reply_tx = None (fire-and-forget).
-            send_info
+            let send_result = send_info
                 .task_tx
                 .send(AgentTask {
                     message,
                     reply_tx: None,
                     thinking_level,
                 })
-                .await
-                .map_err(|_| {
-                    TiguError::Tool(format!(
-                        "에이전트 '{name}' 채널이 닫혔습니다. 종료되었을 수 있습니다."
-                    ))
-                })?;
+                .await;
+
+            if send_result.is_err() {
+                // 채널 닫힘 감지: 비-KeepAlive 에이전트는 레지스트리에서 제거.
+                // KeepAlive 에이전트는 keepalive_agent_loop가 직접 정리/재spawn을 담당한다.
+                if !send_info.is_keepalive {
+                    let reg = self.registry.clone();
+                    let dead_name = name.clone();
+                    tokio::spawn(async move {
+                        let mut registry = reg.lock().await;
+                        registry.remove_dead_agent(&dead_name);
+                        tracing::info!(
+                            name = %dead_name,
+                            "send_to_agent: 채널 닫힘 — 레지스트리에서 죽은 에이전트 제거"
+                        );
+                    });
+                }
+                return Err(TiguError::Tool(format!(
+                    "에이전트 '{name}' 채널이 닫혔습니다. 종료되었을 수 있습니다."
+                )));
+            }
         }
 
         Ok(format!("✅ {name}에게 전달됨. 완료 시 보고드릴게요."))

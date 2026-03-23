@@ -396,6 +396,14 @@ impl AgentRegistry {
         // 부모 에이전트의 inject_tx — 작업 완료 시 결과 자동 주입용.
         let parent_inject_tx = self.primary_inject_tx.clone();
         let _parent_name = req.parent_agent.clone();
+        // 부모 에이전트의 task_tx — initiator가 에이전트인 경우 완료 결과를 직접 push.
+        // parent_agent가 "user"이거나 없으면 None (→ primary_inject_tx로 fallback).
+        let parent_task_tx: Option<mpsc::Sender<AgentTask>> = req
+            .parent_agent
+            .as_ref()
+            .filter(|p| !p.is_empty() && p.as_str() != "user")
+            .and_then(|parent_name| self.agents.get(parent_name))
+            .map(|h| h.task_tx.clone());
         // 대시보드 이벤트 + 대화 저장용.
         let spawn_event_tx = self.event_tx.clone();
         let spawn_conv_tx = self.conv_save_tx.clone();
@@ -434,8 +442,9 @@ impl AgentRegistry {
                 let agent_name_for_report = name.clone();
                 let etx = spawn_event_tx.clone();
                 let conv_tx_clone = spawn_conv_tx.clone();
+                let ptx = parent_task_tx.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, false, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val, ptx).await;
                     debug!(name = %name, "non-persistent agent task ended");
                     let _ = cleanup_tx.send(name.clone());
                 });
@@ -457,8 +466,9 @@ impl AgentRegistry {
                 let agent_name_for_report = name.clone();
                 let etx = spawn_event_tx.clone();
                 let conv_tx_clone = spawn_conv_tx.clone();
+                let ptx = parent_task_tx.clone();
                 join_handle = tokio::spawn(async move {
-                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val).await;
+                    run_spawned_agent(name.clone(), provider, tools, system_prompt, task_rx, steer_rx_spawned, true, inject_tx, agent_name_for_report, etx, conv_tx_clone, admin_chat_id_val, ptx).await;
                     debug!(name = %name, "spawned agent task ended");
                 });
             }
@@ -926,6 +936,9 @@ async fn run_spawned_agent(
     event_tx: Option<broadcast::Sender<DashboardEvent>>,
     conv_save_tx: Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
     admin_chat_id: i64,
+    // initiator가 에이전트인 경우 해당 에이전트의 task_tx (완료 결과 push용).
+    // None이면 primary_inject_tx(텔레그램)로 fallback.
+    parent_task_tx: Option<mpsc::Sender<AgentTask>>,
 ) {
     info!(name = %name, persistent, "spawned agent loop started");
 
@@ -985,8 +998,39 @@ async fn run_spawned_agent(
             if reply_tx.send(response.clone()).is_err() {
                 warn!(name = %name, "reply_tx dropped before response could be sent");
             }
+        } else if let Some(ref ptx) = parent_task_tx {
+            // initiator가 에이전트 → 부모 에이전트의 task_tx로 완료 결과 push.
+            let report_msg = format!("[{}] 완료:\n{}", agent_name, &response[..response.len().min(2000)]);
+            let sent = ptx
+                .send(AgentTask {
+                    message: report_msg.clone(),
+                    reply_tx: None,
+                    thinking_level: ThinkingLevel::Normal,
+                })
+                .await;
+            if sent.is_err() {
+                warn!(name = %name, "parent agent task_tx closed — fallback to inject_tx");
+                // 부모 에이전트가 이미 종료됐으면 primary(텔레그램)로 fallback.
+                if let Some(ref inject_tx) = parent_inject_tx {
+                    let channel_msg = ChannelMessage {
+                        id: String::new(),
+                        sender: admin_chat_id.to_string(),
+                        content: format!("[{}] 완료 (부모 에이전트 종료 → 직접 보고):\n{}", agent_name, &response[..response.len().min(500)]),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64,
+                        source: Some("agent-report".into()),
+                    };
+                    if inject_tx.send(channel_msg).await.is_err() {
+                        warn!(name = %name, "fallback inject_tx also closed — report lost");
+                    }
+                }
+            } else {
+                info!(name = %name, "completion result pushed to parent agent via task_tx");
+            }
         } else if let Some(ref inject_tx) = parent_inject_tx {
-            // fire-and-forget: 작업 완료 후 부모 L0에 자동 보고.
+            // initiator가 user → 기존 방식: primary(텔레그램)로 보고.
             let report_msg = format!("[{}] 작업 완료:\n{}", agent_name, &response[..response.len().min(500)]);
             let channel_msg = ChannelMessage {
                 id: String::new(),

@@ -37,6 +37,10 @@ function parseEvent(evt: WsEvent): { agentPatch?: Partial<AgentInfo> & { name: s
           channel_type: String(p.channel_type ?? ""),
           persistent: Boolean(p.persistent ?? false),
           status: "active",
+          // 계층 구조 필드 — buildTree()에서 부모-자식 관계 구성에 필수
+          ...(p.parent_agent ? { parent_agent: String(p.parent_agent) } : {}),
+          ...(p.nickname ? { nickname: String(p.nickname) } : {}),
+          ...(p.team ? { team: String(p.team) } : {}),
         },
         log: {
           id: makeId(),

@@ -331,7 +331,7 @@ export default function AgentTreeImpl({
         openByDefault={true}
         width={containerSize.width}
         height={containerSize.height}
-        indent={20}
+        indent={16}
         rowHeight={30}
         overscanCount={8}
         disableDrag

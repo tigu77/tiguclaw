@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect, useCallback } from "react";
-import { Tree, NodeApi, NodeRendererProps } from "react-arborist";
+import { Tree, NodeRendererProps } from "react-arborist";
 import { AgentInfo } from "@/types";
 
 // ──── 타입 ────────────────────────────────────────────────────────────────────
@@ -13,18 +13,11 @@ interface ArboristNode {
 }
 
 // ──── 상수 ────────────────────────────────────────────────────────────────────
-const TIER_COLOR: Record<number, string> = {
-  0: "#f59e0b", // T0: amber/gold
-  1: "#3b82f6", // T1: blue
-  2: "#9ca3af", // T2: gray
-  3: "#8b5cf6", // T3: purple
-};
-
-const TIER_LABEL: Record<number, string> = {
-  0: "T0",
-  1: "T1",
-  2: "T2",
-  3: "T3",
+const TIER_ICON: Record<number, string> = {
+  0: "👑",
+  1: "🔷",
+  2: "🔹",
+  3: "🔸",
 };
 
 // ──── buildTree ───────────────────────────────────────────────────────────────
@@ -57,13 +50,13 @@ function buildTree(agents: AgentInfo[]): ArboristNode[] {
   return roots;
 }
 
-// ──── 상태 아이콘 ──────────────────────────────────────────────────────────────
-function statusIcon(current_status?: string): string {
-  if (!current_status || current_status === "idle") return "🟡";
-  if (current_status === "thinking") return "💭";
-  if (current_status.startsWith("executing:")) return "🟢";
-  if (current_status === "error") return "🔴";
-  return "🟡";
+// ──── 상태 dot 색상 ──────────────────────────────────────────────────────────
+function statusDotColor(current_status?: string): string {
+  if (!current_status || current_status === "idle") return "#f59e0b"; // yellow
+  if (current_status === "thinking") return "#60a5fa"; // blue
+  if (current_status.startsWith("executing:")) return "#34d399"; // green
+  if (current_status === "error") return "#f87171"; // red
+  return "#6b7280";
 }
 
 function statusLabel(current_status?: string): string {
@@ -76,19 +69,10 @@ function statusLabel(current_status?: string): string {
   return current_status;
 }
 
-function statusColor(current_status?: string): string {
-  if (!current_status || current_status === "idle") return "#6b7280";
-  if (current_status === "thinking") return "#60a5fa";
-  if (current_status.startsWith("executing:")) return "#34d399";
-  if (current_status === "error") return "#f87171";
-  return "#6b7280";
-}
-
 // ──── 커스텀 노드 렌더러 ──────────────────────────────────────────────────────
 interface NodeRendererExtraProps {
   selectedName?: string;
   onSelect?: (name: string) => void;
-  onKill?: (name: string) => void;
 }
 
 function NodeRenderer({
@@ -101,13 +85,15 @@ function NodeRenderer({
   const [hovered, setHovered] = useState(false);
   const { agent } = node.data;
   const tier = agent.tier ?? agent.level ?? 2;
-  const tierColor = TIER_COLOR[Math.min(tier, 3)] ?? TIER_COLOR[2];
-  const tierLabel = TIER_LABEL[Math.min(tier, 3)] ?? "T?";
+  const tierIcon = TIER_ICON[Math.min(tier, 3)] ?? "🔹";
   const isSelected = selectedName === agent.name;
-  const icon = statusIcon(agent.current_status);
-  const label = statusLabel(agent.current_status);
-  const sColor = statusColor(agent.current_status);
   const hasChildren = node.children && node.children.length > 0;
+
+  // 온라인 여부: status가 "dead"면 오프라인
+  const isOnline = agent.status !== "dead";
+  const dotColor = statusDotColor(agent.current_status);
+  const label = statusLabel(agent.current_status);
+  const displayName = agent.nickname ?? agent.name;
 
   return (
     <div
@@ -128,6 +114,7 @@ function NodeRenderer({
         outline: isSelected ? "1px solid rgba(255,255,255,0.18)" : "none",
         transition: "background-color 0.12s",
         userSelect: "none",
+        opacity: isOnline ? 1 : 0.4,
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
@@ -140,13 +127,13 @@ function NodeRenderer({
           node.toggle();
         }}
         style={{
-          width: "16px",
-          height: "16px",
+          width: "14px",
+          height: "14px",
           flexShrink: 0,
           background: "none",
           border: "none",
           color: "#6b7280",
-          fontSize: "9px",
+          fontSize: "8px",
           cursor: hasChildren ? "pointer" : "default",
           display: "flex",
           alignItems: "center",
@@ -158,37 +145,32 @@ function NodeRenderer({
         {hasChildren ? (node.isOpen ? "▼" : "▶") : ""}
       </button>
 
-      {/* 티어 컬러바 + 라벨 */}
-      <div
-        style={{
-          width: "3px",
-          height: "22px",
-          borderRadius: "2px",
-          backgroundColor: tierColor,
-          flexShrink: 0,
-        }}
-      />
+      {/* 티어 아이콘 */}
       <span
-        style={{
-          fontSize: "9px",
-          color: tierColor,
-          fontFamily: "monospace",
-          fontWeight: 700,
-          flexShrink: 0,
-          minWidth: "18px",
-        }}
+        style={{ fontSize: "12px", flexShrink: 0, lineHeight: 1 }}
+        title={`T${tier}`}
       >
-        {tierLabel}
+        {tierIcon}
       </span>
 
-      {/* 상태 아이콘 */}
-      <span style={{ fontSize: "12px", flexShrink: 0 }}>{icon}</span>
+      {/* 상태 dot */}
+      <span
+        style={{
+          width: "7px",
+          height: "7px",
+          borderRadius: "50%",
+          backgroundColor: dotColor,
+          flexShrink: 0,
+          boxShadow: `0 0 4px ${dotColor}`,
+        }}
+        title={label}
+      />
 
       {/* 에이전트 이름 */}
       <span
         style={{
           fontFamily: "monospace",
-          fontSize: "13px",
+          fontSize: "12px",
           color: "#e5e7eb",
           flex: 1,
           overflow: "hidden",
@@ -197,27 +179,33 @@ function NodeRenderer({
         }}
         title={agent.nickname ? `${agent.nickname} (${agent.name})` : agent.name}
       >
-        {agent.nickname ? agent.nickname : agent.name}
+        {displayName}
       </span>
 
-      {/* 상태 텍스트 */}
-      <span
-        style={{
-          fontSize: "11px",
-          color: sColor,
-          fontFamily: "monospace",
-          flexShrink: 0,
-          maxWidth: "90px",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          opacity: hovered || isSelected ? 1 : 0.6,
-          transition: "opacity 0.12s",
-        }}
-        title={label}
-      >
-        {label}
-      </span>
+      {/* 팀 배지 */}
+      {agent.team && (
+        <span
+          style={{
+            fontSize: "9px",
+            padding: "1px 5px",
+            borderRadius: "3px",
+            background: "rgba(139,92,246,0.18)",
+            border: "1px solid rgba(139,92,246,0.3)",
+            color: "#c4b5fd",
+            fontFamily: "monospace",
+            flexShrink: 0,
+            maxWidth: "60px",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            opacity: hovered || isSelected ? 1 : 0.7,
+            transition: "opacity 0.12s",
+          }}
+          title={agent.team}
+        >
+          {agent.team}
+        </span>
+      )}
 
       {/* Kill 버튼 (T0 제외, hover 시 표시) */}
       {tier > 0 && hovered && (
@@ -279,7 +267,6 @@ export default function AgentTreeImpl({
     });
     ro.observe(el);
 
-    // 초기 크기
     const rect = el.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       setContainerSize({ width: rect.width, height: rect.height });

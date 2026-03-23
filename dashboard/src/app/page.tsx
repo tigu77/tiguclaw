@@ -1,8 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useDashboard } from "@/hooks/useDashboard";
-import AgentCard from "@/components/AgentCard";
 import AgentTree from "@/components/AgentTree";
 import AgentTimelinePanel from "@/components/AgentTimelinePanel";
 import LogStream from "@/components/LogStream";
@@ -27,15 +26,33 @@ const BOTTOM_NAV: { id: Tab; icon: string; label: string }[] = [
   { id: "logs", icon: "📋", label: "로그" },
 ];
 
+const MIN_PANEL_WIDTH = 180;
+const MAX_PANEL_WIDTH = 500;
+const DEFAULT_PANEL_WIDTH = 256;
+const PANEL_WIDTH_KEY = "agentPanelWidth";
+
 export default function DashboardPage() {
   const { agents, logs, connected, timelineEvents, agentIdleCount } = useDashboard(WS_URL);
   const [activeTab, setActiveTab] = useState<Tab>("agents");
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [selectedAgentName, setSelectedAgentName] = useState<string>("");
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [agentViewMode, setAgentViewMode] = useState<"list" | "tree">("list");
   const [teamFilter, setTeamFilter] = useState<string>("전체");
   const [lastMessageMap, setLastMessageMap] = useState<Record<string, string>>({});
+
+  // 리사이즈 패널 너비
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    if (typeof window === "undefined") return DEFAULT_PANEL_WIDTH;
+    const saved = localStorage.getItem(PANEL_WIDTH_KEY);
+    if (saved) {
+      const n = parseInt(saved, 10);
+      if (!isNaN(n) && n >= MIN_PANEL_WIDTH && n <= MAX_PANEL_WIDTH) return n;
+    }
+    return DEFAULT_PANEL_WIDTH;
+  });
+  const isResizing = useRef(false);
+  const resizeStartX = useRef(0);
+  const resizeStartWidth = useRef(0);
 
   // 팀 목록 동적 수집
   const teams = ["전체", ...Array.from(new Set(agents.map((a) => a.team).filter(Boolean) as string[])).sort()];
@@ -51,7 +68,6 @@ export default function DashboardPage() {
       const res = await fetch(`${API_BASE}/api/conversations`);
       if (!res.ok) return;
       const data: ConversationSummary[] = await res.json();
-      // 각 에이전트의 최신 user 메시지만 추출 (updated_at 기준 최신 1개)
       const map: Record<string, string> = {};
       const sorted = [...data].sort((a, b) => b.updated_at - a.updated_at);
       for (const conv of sorted) {
@@ -71,31 +87,48 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, [fetchLastMessages]);
 
-  // agentIdleCount 변경 시 (에이전트가 작업 완료) 메시지 갱신
   useEffect(() => {
     if (agentIdleCount > 0) fetchLastMessages();
   }, [agentIdleCount, fetchLastMessages]);
 
+  // 리사이즈 핸들러
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizing.current = true;
+    resizeStartX.current = e.clientX;
+    resizeStartWidth.current = panelWidth;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!isResizing.current) return;
+      const delta = ev.clientX - resizeStartX.current;
+      const newWidth = Math.min(
+        MAX_PANEL_WIDTH,
+        Math.max(MIN_PANEL_WIDTH, resizeStartWidth.current + delta)
+      );
+      setPanelWidth(newWidth);
+    };
+
+    const onMouseUp = () => {
+      isResizing.current = false;
+      setPanelWidth((w) => {
+        localStorage.setItem(PANEL_WIDTH_KEY, String(w));
+        return w;
+      });
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [panelWidth]);
+
   const handleAgentClick = (name: string) => {
     setSelectedAgent((prev) => (prev === name ? null : name));
   };
-
-  const handleKillAgent = useCallback(async (name: string) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-      });
-      const data = await res.json() as { ok: boolean; name?: string; error?: string };
-      if (!data.ok) {
-        alert(`종료 실패: ${data.error ?? "알 수 없는 오류"}`);
-      } else {
-        // 종료된 에이전트가 선택된 상태면 패널 닫기
-        setSelectedAgent((prev) => (prev === name ? null : prev));
-      }
-    } catch {
-      alert("종료 요청 중 오류가 발생했습니다.");
-    }
-  }, []);
 
   return (
     <div className="flex h-screen" style={{ background: "#0a0a0a" }}>
@@ -105,7 +138,6 @@ export default function DashboardPage() {
           activeTab={activeTab}
           onTabChange={(tab) => {
             setActiveTab(tab);
-            // 타임라인 탭 이동 시 에이전트 패널 닫기
             if (tab !== "agents") setSelectedAgent(null);
           }}
           connected={connected}
@@ -140,41 +172,17 @@ export default function DashboardPage() {
 
           {/* 🤖 에이전트 */}
           {activeTab === "agents" && (
-            <div className="flex h-full gap-4">
-              {/* 에이전트 목록 */}
-              <div className="flex flex-col gap-2 flex-shrink-0 w-64">
+            <div className="flex h-full gap-0">
+              {/* 에이전트 트리 패널 (리사이즈 가능) */}
+              <div
+                className="flex flex-col gap-2 flex-shrink-0"
+                style={{ width: `${panelWidth}px` }}
+              >
                 <div className="flex items-center justify-between px-1">
                   <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
                     에이전트 군단
                   </h2>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs text-gray-500 font-mono">{filteredAgents.length}개</span>
-                    {/* 리스트 / 트리 토글 */}
-                    <div className="flex rounded-md overflow-hidden border border-white/10 text-[11px]">
-                      <button
-                        onClick={() => setAgentViewMode("list")}
-                        className={`px-2 py-0.5 transition-colors ${
-                          agentViewMode === "list"
-                            ? "bg-white/20 text-white"
-                            : "text-gray-500 hover:text-gray-300"
-                        }`}
-                        title="리스트 뷰"
-                      >
-                        🔲
-                      </button>
-                      <button
-                        onClick={() => setAgentViewMode("tree")}
-                        className={`px-2 py-0.5 transition-colors ${
-                          agentViewMode === "tree"
-                            ? "bg-white/20 text-white"
-                            : "text-gray-500 hover:text-gray-300"
-                        }`}
-                        title="트리 뷰"
-                      >
-                        🌲
-                      </button>
-                    </div>
-                  </div>
+                  <span className="text-xs text-gray-500 font-mono">{filteredAgents.length}개</span>
                 </div>
 
                 {/* 팀 필터 버튼 */}
@@ -200,32 +208,44 @@ export default function DashboardPage() {
                   className="flex flex-col gap-1.5 overflow-y-auto flex-1"
                   style={{ scrollbarWidth: "thin", scrollbarColor: "#374151 transparent" }}
                 >
-                  {agentViewMode === "tree" ? (
-                    <AgentTree
-                      agents={filteredAgents}
-                      selected={selectedAgent ?? undefined}
-                      onSelect={(name) => handleAgentClick(name)}
-                    />
-                  ) : filteredAgents.length === 0 ? (
-                    <div className="text-gray-600 text-xs text-center py-8">에이전트 없음</div>
-                  ) : (
-                    filteredAgents.map((agent) => (
-                      <AgentCard
-                        key={agent.name}
-                        agent={agent}
-                        selected={selectedAgent === agent.name}
-                        onClick={() => handleAgentClick(agent.name)}
-                        lastMessage={lastMessageMap[agent.name]}
-                        onKill={handleKillAgent}
-                      />
-                    ))
-                  )}
+                  <AgentTree
+                    agents={filteredAgents}
+                    selected={selectedAgent ?? undefined}
+                    onSelect={(name) => handleAgentClick(name)}
+                  />
                 </div>
               </div>
 
-              {/* 에이전트 타임라인 패널 (클릭 시 표시) */}
+              {/* 리사이즈 핸들 */}
+              <div
+                onMouseDown={handleResizeMouseDown}
+                style={{
+                  width: "6px",
+                  flexShrink: 0,
+                  cursor: "col-resize",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  margin: "0 2px",
+                  borderRadius: "3px",
+                  transition: "background 0.12s",
+                }}
+                className="hover:bg-white/10 active:bg-white/20"
+                title="드래그해서 패널 너비 조절"
+              >
+                <div
+                  style={{
+                    width: "2px",
+                    height: "40px",
+                    borderRadius: "1px",
+                    background: "rgba(255,255,255,0.12)",
+                  }}
+                />
+              </div>
+
+              {/* 에이전트 타임라인 패널 or 실시간 로그 */}
               {selectedAgent ? (
-                <div className="flex-1 min-h-0 min-w-0 rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+                <div className="flex-1 min-h-0 min-w-0 rounded-xl border border-white/10 bg-white/5 overflow-hidden ml-2">
                   <AgentTimelinePanel
                     agentName={selectedAgent}
                     agentInfo={agents.find((a) => a.name === selectedAgent)}
@@ -235,8 +255,7 @@ export default function DashboardPage() {
                   />
                 </div>
               ) : (
-                /* 에이전트 선택 전 — 실시간 로그 표시 (데스크탑) */
-                <div className="hidden md:flex flex-col flex-1 min-h-0 gap-2">
+                <div className="hidden md:flex flex-col flex-1 min-h-0 gap-2 ml-2">
                   <div className="flex items-center justify-between px-1">
                     <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-widest">
                       실시간 로그

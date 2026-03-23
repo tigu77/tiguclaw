@@ -202,9 +202,15 @@ impl Tool for SendToAgentTool {
             }
 
             // 백그라운드에서 완료 콜백 대기 → 결과를 호출자(from_name)에게 전달.
+            // 각 send_to_agent 호출마다 독립적인 completion_tx/rx 채널이 생성됐음을 확인.
             let reg_clone = self.registry.clone();
             let from_name_clone = self.from_name.clone();
             let target_name_clone = name.clone();
+            debug!(
+                from = %self.from_name,
+                to = %name,
+                "send_to_agent: background completion task spawning"
+            );
             tokio::spawn(async move {
                 // 최대 5분(300초) 대기.
                 let wait_result = tokio::time::timeout(
@@ -214,9 +220,18 @@ impl Tool for SendToAgentTool {
                 .await;
 
                 let response_text = match wait_result {
-                    Ok(Some(r)) => r,
-                    Ok(None) => format!("[{}] 완료 (결과 없음)", target_name_clone),
-                    Err(_) => format!("[{}] ⏱ 타임아웃 (5분 초과)", target_name_clone),
+                    Ok(Some(r)) => {
+                        info!(from = %target_name_clone, to = %from_name_clone, "completion callback: rx received result");
+                        r
+                    }
+                    Ok(None) => {
+                        warn!(from = %target_name_clone, to = %from_name_clone, "completion callback: rx returned None (completion_tx dropped without sending)");
+                        format!("[{}] 완료 (결과 없음)", target_name_clone)
+                    }
+                    Err(_) => {
+                        warn!(from = %target_name_clone, to = %from_name_clone, "completion callback: 5분 타임아웃");
+                        format!("[{}] ⏱ 타임아웃 (5분 초과)", target_name_clone)
+                    }
                 };
 
                 let report = format!(

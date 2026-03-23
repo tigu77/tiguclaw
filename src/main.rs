@@ -97,6 +97,9 @@ async fn async_main() -> Result<()> {
     {
         let mut reg = registry.lock().await;
         reg.set_primary_inject_tx(channel.inject_sender());
+        // 슈퍼마스터 inbox_tx 등록 — completion callback이 inbox_txs에서 supermaster를 찾을 수 있도록.
+        // 이 등록 없이는 from_name이 실제 supermaster 이름이어도 inbox_txs lookup이 None을 반환한다.
+        reg.register_inbox_tx(&config.agent.name, channel.inject_sender());
     }
 
     // Phase 9-1: 대시보드 서버 생성 (enabled 여부와 무관하게 event_tx 준비).
@@ -223,7 +226,8 @@ async fn async_main() -> Result<()> {
         .with_templates_dir(templates_dir.clone())
         .with_agents_dir(agents_dir.clone())
         .with_owner_name(config.agent.name.clone());
-    let send_to_agent_tool = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone());
+    let send_to_agent_tool = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone())
+        .with_from_name(config.agent.name.clone()); // completion callback이 올바른 키로 inbox_txs 조회
     let kill_agent_tool = tiguclaw_agent::tools::KillAgentTool::new(registry.clone());
     let list_agents_tool = tiguclaw_agent::tools::ListAgentsTool::new(registry.clone());
 

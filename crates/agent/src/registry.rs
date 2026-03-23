@@ -502,12 +502,13 @@ impl AgentRegistry {
                 SendToAgentTool::new(reg_arc.clone())
                     .with_from_name(&req.name)
             ));
-            // SpawnAgentTool: owner_name = 이 에이전트 이름, requester_tier = 이 에이전트 티어.
+            // SpawnAgentTool: owner_name = 이 에이전트 이름, owner_team = 이 에이전트 팀, requester_tier = 이 에이전트 티어.
             t.push(Arc::new(
                 SpawnAgentTool::new(reg_arc.clone())
                     .with_templates_dir(self.templates_dir.clone())
                     .with_agents_dir(self.agents_dir.clone())
                     .with_owner_name(req.name.clone())
+                    .with_owner_team(req.team.clone())
                     .with_requester_tier(req.tier)
             ));
             t

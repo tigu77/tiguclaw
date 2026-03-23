@@ -38,6 +38,8 @@ pub struct SpawnAgentTool {
     agents_dir: PathBuf,
     /// 이 툴을 소유한 에이전트 이름 (spawn 시 parent_agent로 자동 설정).
     owner_name: Option<String>,
+    /// 이 툴을 소유한 에이전트의 팀 값 (spawn 시 team 미지정 시 상속).
+    owner_team: Option<String>,
     /// 이 툴을 사용하는 에이전트의 티어 (0=제한 없음, 1=T2+만 spawn 가능 등).
     requester_tier: u8,
 }
@@ -49,6 +51,7 @@ impl SpawnAgentTool {
             templates_dir: PathBuf::from("templates"),
             agents_dir: PathBuf::from("agents"),
             owner_name: None,
+            owner_team: None,
             requester_tier: 0,
         }
     }
@@ -69,6 +72,13 @@ impl SpawnAgentTool {
     /// spawn된 에이전트의 parent_agent가 이 이름으로 자동 설정된다.
     pub fn with_owner_name(mut self, name: String) -> Self {
         self.owner_name = Some(name);
+        self
+    }
+
+    /// 이 툴을 소유한 에이전트의 팀 값을 설정한다.
+    /// spawn 시 team 미지정이면 이 값을 상속한다.
+    pub fn with_owner_team(mut self, team: Option<String>) -> Self {
+        self.owner_team = team;
         self
     }
 
@@ -283,22 +293,21 @@ impl Tool for SpawnAgentTool {
             .map(|s| s.to_string())
             .or_else(|| self.owner_name.clone());
 
-        // ── team 강제 검증 ────────────────────────────────────────────────────
-        // owner_name이 있으면 (T1 에이전트) team을 owner_name으로 강제 설정.
-        // 호출자가 다른 팀을 지정하거나 팀을 생략해도 강제 교체된다.
+        // ── team 상속 ────────────────────────────────────────────────────────
+        // 호출자가 team을 명시하지 않으면 owner_team(요청자의 팀 값)을 상속.
+        // 명시적으로 team을 지정한 경우에는 그 값을 그대로 사용한다.
         let mut team = args
             .get("team")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        if let Some(ref owner) = self.owner_name {
-            if team.as_deref().unwrap_or("") != owner.as_str() {
-                tracing::warn!(
-                    "spawn_agent: team 필드를 '{}' 로 강제 설정 (요청값: {:?})",
-                    owner,
-                    team
+        if team.is_none() || team.as_deref() == Some("") {
+            if self.owner_team.is_some() {
+                tracing::debug!(
+                    "spawn_agent: team 미지정 → owner_team '{:?}' 상속",
+                    self.owner_team
                 );
-                team = Some(owner.clone());
+                team = self.owner_team.clone();
             }
         }
 

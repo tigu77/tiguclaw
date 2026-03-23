@@ -1,10 +1,11 @@
 //! Phase 9-1: REST API 핸들러.
 //!
-//! GET /api/agents              → 현재 에이전트 목록 (AgentStatusInfo 배열)
-//! GET /api/status              → 봇 상태 (uptime, version)
-//! GET /api/logs                → 최근 이벤트 히스토리 (최대 100개)
-//! GET /api/conversations       → 최근 대화 목록 (최대 20개)
-//! GET /api/conversations/:id   → 특정 대화 상세
+//! GET    /api/agents              → 현재 에이전트 목록 (AgentStatusInfo 배열)
+//! DELETE /api/agents/:name        → 에이전트 종료 (kill)
+//! GET    /api/status              → 봇 상태 (uptime, version)
+//! GET    /api/logs                → 최근 이벤트 히스토리 (최대 100개)
+//! GET    /api/conversations       → 최근 대화 목록 (최대 20개)
+//! GET    /api/conversations/:id   → 특정 대화 상세
 
 use axum::{
     extract::{Path, Query, State},
@@ -40,6 +41,54 @@ pub async fn steer_agent(
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
+    }
+}
+
+/// DELETE /api/agents/:name 응답.
+#[derive(Debug, Serialize)]
+pub struct KillAgentResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// DELETE /api/agents/:name — 실행 중인 에이전트를 종료(kill)한다.
+///
+/// - 슈퍼마스터(T0) 에이전트는 종료할 수 없다.
+/// - 성공: `{ "ok": true, "name": "..." }`
+/// - 실패: `{ "ok": false, "error": "..." }`
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<KillAgentResponse> {
+    let mut reg = state.registry.lock().await;
+
+    // 슈퍼마스터(T0) 보호: tier=0 이거나 AgentRole::Supermaster이면 거부.
+    // list()에서 슈퍼마스터는 항상 맨 앞에 있고 tier=0이다.
+    let is_supermaster = reg.list().iter().any(|a| a.name == name && a.tier == 0);
+    if is_supermaster {
+        return Json(KillAgentResponse {
+            ok: false,
+            name: None,
+            error: Some("슈퍼마스터(T0)는 대시보드에서 종료할 수 없습니다.".to_string()),
+        });
+    }
+
+    let killed = reg.kill_agent(&name);
+    if killed {
+        Json(KillAgentResponse {
+            ok: true,
+            name: Some(name),
+            error: None,
+        })
+    } else {
+        Json(KillAgentResponse {
+            ok: false,
+            name: None,
+            error: Some(format!("에이전트 '{name}'을 찾을 수 없습니다.")),
+        })
     }
 }
 

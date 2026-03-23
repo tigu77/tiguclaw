@@ -80,6 +80,23 @@ export default function DashboardPage() {
     setSelectedAgent((prev) => (prev === name ? null : name));
   };
 
+  const handleKillAgent = useCallback(async (name: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/agents/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json() as { ok: boolean; name?: string; error?: string };
+      if (!data.ok) {
+        alert(`종료 실패: ${data.error ?? "알 수 없는 오류"}`);
+      } else {
+        // 종료된 에이전트가 선택된 상태면 패널 닫기
+        setSelectedAgent((prev) => (prev === name ? null : prev));
+      }
+    } catch {
+      alert("종료 요청 중 오류가 발생했습니다.");
+    }
+  }, []);
+
   return (
     <div className="flex h-screen" style={{ background: "#0a0a0a" }}>
       {/* 왼쪽 사이드바 — 데스크탑만 */}
@@ -199,6 +216,7 @@ export default function DashboardPage() {
                         selected={selectedAgent === agent.name}
                         onClick={() => handleAgentClick(agent.name)}
                         lastMessage={lastMessageMap[agent.name]}
+                        onKill={handleKillAgent}
                       />
                     ))
                   )}

@@ -343,7 +343,8 @@ async fn async_main() -> Result<()> {
     // Assemble system prompt via PromptBuilder.
     let mut prompt_builder = tiguclaw_agent::PromptBuilder::new(base_prompt)
         .with_workspace(workspace_context)
-        .with_section(channel_context);
+        .with_section(channel_context)
+        .with_agent_principles();
     if let Some(tc) = team_context {
         prompt_builder = prompt_builder.with_section(tc);
     }
@@ -524,7 +525,8 @@ async fn async_main() -> Result<()> {
                 });
                 let mut l1_builder = tiguclaw_agent::PromptBuilder::new(l1_prompt)
                     .with_workspace(ws_ctx)
-                    .with_section(l1_channel_ctx);
+                    .with_section(l1_channel_ctx)
+                    .with_agent_principles();
                 if let Some(tc) = l1_team_context {
                     l1_builder = l1_builder.with_section(tc);
                 }

@@ -283,10 +283,37 @@ impl Tool for SpawnAgentTool {
             .map(|s| s.to_string())
             .or_else(|| self.owner_name.clone());
 
-        let team = args
+        // ── team 강제 검증 ────────────────────────────────────────────────────
+        // owner_name이 있으면 (T1 에이전트) team을 owner_name으로 강제 설정.
+        // 호출자가 다른 팀을 지정하거나 팀을 생략해도 강제 교체된다.
+        let mut team = args
             .get("team")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+
+        if let Some(ref owner) = self.owner_name {
+            if team.as_deref().unwrap_or("") != owner.as_str() {
+                tracing::warn!(
+                    "spawn_agent: team 필드를 '{}' 로 강제 설정 (요청값: {:?})",
+                    owner,
+                    team
+                );
+                team = Some(owner.clone());
+            }
+        }
+
+        // ── clearance 자동 설정 (tier 기반) ──────────────────────────────────
+        // clearance가 명시되지 않으면 tier에 따라 자동 결정:
+        //   tier 1  → "standard" (T1.md)
+        //   tier 2+ → "worker"   (T2.md)
+        let clearance = {
+            let preset = if tier <= 1 {
+                "standard"
+            } else {
+                "worker"
+            };
+            Some(preset.to_string())
+        };
 
         let req = SpawnRequest {
             name: name.clone(),
@@ -303,7 +330,7 @@ impl Tool for SpawnAgentTool {
             hooks_token,
             parent_agent,
             team,
-            clearance: Some("full".to_string()),
+            clearance,
         };
 
         let registry_arc = self.registry.clone();

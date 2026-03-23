@@ -96,6 +96,13 @@ fn default_clearance_presets() -> HashMap<String, ClearancePreset> {
             files: vec!["CORE.md".to_string(), "L2.md".to_string()],
         },
     );
+    // T2 에이전트 전용 프리셋 — spawn_agent에서 tier >= 2 시 자동 적용.
+    map.insert(
+        "worker".to_string(),
+        ClearancePreset {
+            files: vec!["CORE.md".to_string(), "T2.md".to_string()],
+        },
+    );
     map
 }
 

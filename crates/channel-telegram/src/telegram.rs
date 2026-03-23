@@ -117,6 +117,53 @@ use tiguclaw_core::channel::Channel;
 use tiguclaw_core::error::{Result, TiguError};
 use tiguclaw_core::types::ChannelMessage;
 
+/// Download a Telegram file by file_id and save to ~/.tiguclaw/media/inbound/.
+/// Returns the absolute path to the saved file.
+async fn download_telegram_file(bot: &Bot, file_id: &str, ext: &str) -> Result<String> {
+    // Resolve file path from Telegram
+    let file = bot
+        .get_file(file_id)
+        .await
+        .map_err(|e| TiguError::Channel(format!("get_file failed: {e}")))?;
+
+    let token = bot.token();
+    let url = format!("https://api.telegram.org/file/bot{}/{}", token, file.path);
+
+    // Build destination directory
+    let home = std::env::var("HOME")
+        .map_err(|_| TiguError::Channel("HOME env not set".to_string()))?;
+    let media_dir = std::path::PathBuf::from(&home).join(".tiguclaw/media/inbound");
+
+    tokio::fs::create_dir_all(&media_dir)
+        .await
+        .map_err(|e| TiguError::Channel(format!("create_dir_all failed: {e}")))?;
+
+    // Use millisecond timestamp for unique filename
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let filename = format!("{}.{}", ts, ext);
+    let dest_path = media_dir.join(&filename);
+
+    // Download bytes
+    let client = reqwest::Client::new();
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| TiguError::Channel(format!("download request failed: {e}")))?
+        .bytes()
+        .await
+        .map_err(|e| TiguError::Channel(format!("download read failed: {e}")))?;
+
+    tokio::fs::write(&dest_path, &bytes)
+        .await
+        .map_err(|e| TiguError::Channel(format!("write file failed: {e}")))?;
+
+    Ok(dest_path.to_string_lossy().to_string())
+}
+
 /// Maximum Telegram message length in characters.
 const MAX_MSG_LEN: usize = 4096;
 
@@ -310,12 +357,96 @@ impl Channel for TelegramChannel {
                         return respond(());
                     }
 
-                    // Only handle text messages.
-                    if let Some(text) = msg.text() {
+                    // Determine content from message type.
+                    let content_opt: Option<String> = if let Some(text) = msg.text() {
+                        // Plain text message.
+                        Some(text.to_string())
+                    } else if let Some(photos) = msg.photo() {
+                        // Photo — pick the largest size (last in array).
+                        if let Some(photo) = photos.last() {
+                            let caption = msg.caption().unwrap_or("");
+                            match download_telegram_file(&bot_for_welcome, &photo.file.id, "jpg").await {
+                                Ok(path) => {
+                                    let mut content = format!("[이미지: {}]", path);
+                                    if !caption.is_empty() {
+                                        content.push_str(&format!("\n캡션: {}", caption));
+                                    }
+                                    Some(content)
+                                }
+                                Err(e) => {
+                                    warn!("photo download failed: {}", e);
+                                    Some(format!("[이미지 다운로드 실패: {}]", e))
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    } else if let Some(doc) = msg.document() {
+                        // Document / file.
+                        let filename = doc.file_name.clone().unwrap_or_else(|| "file".to_string());
+                        let ext = filename
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or("bin")
+                            .to_string();
+                        let caption = msg.caption().unwrap_or("");
+                        match download_telegram_file(&bot_for_welcome, &doc.file.id, &ext).await {
+                            Ok(path) => {
+                                let mut content = format!("[파일: {}, {}]", filename, path);
+                                if !caption.is_empty() {
+                                    content.push_str(&format!("\n캡션: {}", caption));
+                                }
+                                Some(content)
+                            }
+                            Err(e) => {
+                                warn!("document download failed: {}", e);
+                                Some(format!("[파일 다운로드 실패: {}]", e))
+                            }
+                        }
+                    } else if let Some(voice) = msg.voice() {
+                        // Voice message.
+                        let duration = voice.duration.seconds();
+                        match download_telegram_file(&bot_for_welcome, &voice.file.id, "ogg").await {
+                            Ok(path) => Some(format!("[음성메시지: {}, 길이: {}초]", path, duration)),
+                            Err(e) => {
+                                warn!("voice download failed: {}", e);
+                                Some(format!("[음성 다운로드 실패: {}]", e))
+                            }
+                        }
+                    } else if let Some(video) = msg.video() {
+                        // Video message.
+                        let duration = video.duration.seconds();
+                        let caption = msg.caption().unwrap_or("");
+                        match download_telegram_file(&bot_for_welcome, &video.file.id, "mp4").await {
+                            Ok(path) => {
+                                let mut content = format!("[비디오: {}, 길이: {}초]", path, duration);
+                                if !caption.is_empty() {
+                                    content.push_str(&format!("\n캡션: {}", caption));
+                                }
+                                Some(content)
+                            }
+                            Err(e) => {
+                                warn!("video download failed: {}", e);
+                                Some(format!("[비디오 다운로드 실패: {}]", e))
+                            }
+                        }
+                    } else if let Some(sticker) = msg.sticker() {
+                        // Sticker — no download, just emoji text.
+                        let emoji = sticker.emoji.as_deref().unwrap_or("?");
+                        Some(format!("[스티커: {}]", emoji))
+                    } else if let Some(loc) = msg.location() {
+                        // Location.
+                        Some(format!("[위치: 위도 {}, 경도 {}]", loc.latitude, loc.longitude))
+                    } else {
+                        // Unsupported message type — ignore.
+                        None
+                    };
+
+                    if let Some(content) = content_opt {
                         let channel_msg = ChannelMessage {
                             id: msg.id.0.to_string(),
                             sender: msg.chat.id.0.to_string(),
-                            content: text.to_string(),
+                            content,
                             timestamp: msg.date.timestamp(),
                             source: None,
                         };

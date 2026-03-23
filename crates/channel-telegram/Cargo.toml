@@ -10,3 +10,4 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 teloxide = { workspace = true }
 pulldown-cmark = "0.12"
+reqwest = { workspace = true }

@@ -67,54 +67,69 @@ function AgentTreeNode({
   onSelect,
 }: AgentTreeNodeProps) {
   const { agent, children } = node;
+  const [collapsed, setCollapsed] = useState(false);
   const dot = TIER_DOT[agent.tier ?? agent.level ?? 1] ?? "⚪";
   const connector = isLast ? "└─" : "├─";
   const childPrefix = prefix + (isLast ? "   " : "│  ");
   const isSelected = selected === agent.name;
+  const hasChildren = children.length > 0;
 
   return (
     <div>
       {/* 현재 노드 행 */}
-      <button
-        onClick={() => onSelect?.(agent.name)}
-        className={`w-full flex items-center gap-2 px-2 py-1 rounded-md transition-colors text-left group ${
-          isSelected
-            ? "bg-white/15 ring-1 ring-white/20"
-            : "hover:bg-white/8"
-        }`}
-      >
-        {/* 트리 들여쓰기 + 연결선 */}
-        {depth > 0 && (
-          <span
-            className="font-mono text-gray-600 text-xs select-none flex-shrink-0"
-            style={{ letterSpacing: "-0.02em" }}
+      <div className="flex items-center">
+        {/* 접기/펼치기 토글 버튼 (자식 있을 때만) */}
+        {hasChildren && (
+          <button
+            onClick={() => setCollapsed((c) => !c)}
+            className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors w-4 flex-shrink-0 text-center leading-none"
+            title={collapsed ? "펼치기" : "접기"}
           >
-            {prefix}
-            {connector}
-          </span>
+            {collapsed ? "▶" : "▼"}
+          </button>
         )}
 
-        {/* 레벨 도트 */}
-        <span className="text-base leading-none flex-shrink-0">{dot}</span>
+        <button
+          onClick={() => onSelect?.(agent.name)}
+          className={`flex-1 flex items-center gap-2 px-2 py-1 rounded-md transition-colors text-left group ${
+            isSelected
+              ? "bg-white/15 ring-1 ring-white/20"
+              : "hover:bg-white/8"
+          }`}
+        >
+          {/* 트리 들여쓰기 + 연결선 */}
+          {depth > 0 && (
+            <span
+              className="font-mono text-gray-600 text-xs select-none flex-shrink-0"
+              style={{ letterSpacing: "-0.02em" }}
+            >
+              {prefix}
+              {connector}
+            </span>
+          )}
 
-        {/* 이름 (nickname 있으면 "nickname (name)" 형태) */}
-        <span className="font-mono text-sm text-white truncate flex-1">
-          {agent.nickname ? `${agent.nickname} (${agent.name})` : agent.name}
-        </span>
+          {/* 레벨 도트 */}
+          <span className="text-base leading-none flex-shrink-0">{dot}</span>
 
-        {/* 상태 */}
-        <span className="flex-shrink-0">
-          <StatusBadge status={agent.current_status} />
-        </span>
+          {/* 이름 (nickname 있으면 "nickname (name)" 형태) */}
+          <span className="font-mono text-sm text-white truncate flex-1">
+            {agent.nickname ? `${agent.nickname} (${agent.name})` : agent.name}
+          </span>
 
-        {/* 타임라인 힌트 */}
-        <span className="text-[10px] text-gray-700 group-hover:text-gray-500 transition-colors flex-shrink-0">
-          →
-        </span>
-      </button>
+          {/* 상태 */}
+          <span className="flex-shrink-0">
+            <StatusBadge status={agent.current_status} />
+          </span>
 
-      {/* 자식 노드들 */}
-      {children.map((child, i) => (
+          {/* 타임라인 힌트 */}
+          <span className="text-[10px] text-gray-700 group-hover:text-gray-500 transition-colors flex-shrink-0">
+            →
+          </span>
+        </button>
+      </div>
+
+      {/* 자식 노드들 (접힌 경우 숨김) */}
+      {!collapsed && children.map((child, i) => (
         <AgentTreeNode
           key={child.agent.name}
           node={child}

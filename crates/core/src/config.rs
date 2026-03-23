@@ -66,7 +66,7 @@ pub struct ClearancePreset {
 /// 기본 clearance 프리셋 3개 (full / standard / minimal).
 ///
 /// - full (L0): SOUL.md 포함 — 슈퍼마스터 전용 소울 + 티어 지침
-/// - standard (L1): L1.md 포함 — 마스터급 임무 지침 (소울 없음)
+/// - standard (L1): T1.md 포함 — 마스터급 임무 지침 (소울 없음)
 /// - minimal (L2): L2.md 포함 — 워커급 임무 지침 (소울 없음)
 fn default_clearance_presets() -> HashMap<String, ClearancePreset> {
     let mut map = HashMap::new();
@@ -80,14 +80,14 @@ fn default_clearance_presets() -> HashMap<String, ClearancePreset> {
                 "AGENTS.md".to_string(),
                 "MEMORY.md".to_string(),
                 "TOOLS.md".to_string(),
-                "L0.md".to_string(),
+                "T0.md".to_string(),
             ],
         },
     );
     map.insert(
         "standard".to_string(),
         ClearancePreset {
-            files: vec!["CORE.md".to_string(), "L1.md".to_string()],
+            files: vec!["CORE.md".to_string(), "T1.md".to_string()],
         },
     );
     map.insert(

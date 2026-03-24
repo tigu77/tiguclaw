@@ -250,33 +250,7 @@ function NodeRenderer({
           {shortStatus}
         </span>
 
-        {/* Kill 버튼 (T0 제외, hover 시 표시) */}
-        {tier > 0 && hovered && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              if (confirm(`Kill agent "${agent.name}"?`)) {
-                fetch(`/api/agents/${encodeURIComponent(agent.name)}/kill`, {
-                  method: "POST",
-                }).catch(console.error);
-              }
-            }}
-            style={{
-              padding: "1px 5px",
-              borderRadius: "3px",
-              border: "1px solid rgba(239,68,68,0.5)",
-              background: "rgba(239,68,68,0.12)",
-              color: "#f87171",
-              fontSize: "10px",
-              cursor: "pointer",
-              fontFamily: "monospace",
-              flexShrink: 0,
-            }}
-            title={`Kill ${agent.name}`}
-          >
-            ✕
-          </button>
-        )}
+
       </div>
     </div>
   );

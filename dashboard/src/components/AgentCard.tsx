@@ -21,10 +21,9 @@ interface AgentCardProps {
   selected?: boolean;
   onClick?: () => void;
   lastMessage?: string;
-  onKill?: (name: string) => void;
 }
 
-export default function AgentCard({ agent, selected, onClick, lastMessage, onKill }: AgentCardProps) {
+export default function AgentCard({ agent, selected, onClick, lastMessage }: AgentCardProps) {
   const tier = agent.tier ?? agent.level ?? 1;
   const icon = TIER_ICONS[tier] ?? "❓";
   const label = TIER_LABELS[tier] ?? `T${tier}`;
@@ -34,20 +33,8 @@ export default function AgentCard({ agent, selected, onClick, lastMessage, onKil
   const isExecuting = currentStatus.startsWith("executing:");
   const toolName = isExecuting ? currentStatus.split(":").slice(1).join(":") : "";
 
-  // 슈퍼마스터(T0)는 kill 버튼 미표시
-  const canKill = tier !== 0 && !!onKill;
-
-  const handleKill = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!onKill) return;
-    const displayName = agent.nickname ?? agent.name;
-    if (window.confirm(`"${displayName}"을(를) 종료하시겠습니까?`)) {
-      onKill(agent.name);
-    }
-  };
-
   return (
-    <div className="relative group">
+    <div className="relative">
       <button
         onClick={onClick}
         className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors border text-left ${
@@ -99,19 +86,6 @@ export default function AgentCard({ agent, selected, onClick, lastMessage, onKil
         </div>
       </button>
 
-      {/* Kill 버튼 — hover 시 표시, 슈퍼마스터(T0) 제외 */}
-      {canKill && (
-        <button
-          onClick={handleKill}
-          title={`${agent.nickname ?? agent.name} 종료`}
-          className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity
-                     w-6 h-6 flex items-center justify-center rounded
-                     text-red-400 hover:text-red-300 hover:bg-red-500/20
-                     text-xs leading-none"
-        >
-          ✕
-        </button>
-      )}
     </div>
   );
 }

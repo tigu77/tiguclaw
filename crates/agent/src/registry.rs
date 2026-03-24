@@ -1,6 +1,6 @@
-//! AgentRegistry — 런타임에 동적으로 spawn된 에이전트(L2/L3) 관리.
+//! AgentRegistry — 런타임에 동적으로 spawn된 에이전트(T2/T3) 관리.
 //!
-//! L1 마스터 에이전트가 `spawn_agent` 툴을 통해 하위 에이전트를 동적으로 생성하고,
+//! T1 팀 책임자 에이전트가 `spawn_agent` 툴을 통해 하위 에이전트를 동적으로 생성하고,
 //! `send_to_agent` / `kill_agent` / `list_agents` 툴로 제어한다.
 
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ use crate::tools::{SendToAgentTool, SpawnAgentTool};
 /// 에이전트에 전달하는 태스크.
 pub struct AgentTask {
     pub message: String,
-    /// fire-and-forget 모드일 때 None. L0 블로킹 방지를 위해 send_to_agent는 None 사용.
+    /// fire-and-forget 모드일 때 None. T0 블로킹 방지를 위해 send_to_agent는 None 사용.
     pub reply_tx: Option<oneshot::Sender<String>>,
     /// LLM 사고 수준 — Normal(기본) 또는 Deep(깊은 사고 모드).
     #[allow(dead_code)]
@@ -50,7 +50,7 @@ pub struct CompletionDeliveryInfo {
     pub agent_task_tx: Option<mpsc::Sender<AgentTask>>,
     /// 프라이머리(텔레그램) inject_tx — 최후 fallback.
     pub primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
-    /// L0 admin_chat_id — ChannelMessage.sender 값으로 사용.
+    /// T0 admin_chat_id — ChannelMessage.sender 값으로 사용.
     pub admin_chat_id: i64,
 }
 
@@ -62,14 +62,14 @@ pub struct SpawnRequest {
     pub tier: u8,
     /// 에이전트 역할 설명 — 시스템 프롬프트 자동 생성에 사용.
     pub role: String,
-    /// 에이전트 계층 역할 (L0~L3).
+    /// 에이전트 계층 역할 (T0~T3).
     pub agent_role: AgentRole,
     /// 모델 티어 (None = 기본값).
     pub model_tier: Option<u8>,
     /// true = 상주, false = 태스크 완료 후 소멸 (현재 구현에서는 상주와 동일하게 채널 유지).
     pub persistent: bool,
-    /// Some(token) → 텔레그램 채널로 직접 통신하는 L1 에이전트로 spawn.
-    /// None → 기존 InternalChannel(IPC) 방식 L2 에이전트.
+    /// Some(token) → 텔레그램 채널로 직접 통신하는 T1 에이전트로 spawn.
+    /// None → 기존 InternalChannel(IPC) 방식 T2 에이전트.
     pub bot_token: Option<String>,
     /// 텔레그램 admin chat id. bot_token이 Some일 때 사용.
     pub admin_chat_id: Option<i64>,
@@ -81,7 +81,7 @@ pub struct SpawnRequest {
     pub hooks_url: Option<String>,
     /// Phase 8-2: 직통 Hooks API 인증 토큰.
     pub hooks_token: Option<String>,
-    /// 부모 에이전트 이름 (L0는 None, L1은 supermaster 이름, L2는 L1 이름).
+    /// 부모 에이전트 이름 (T0는 None, T1은 supermaster 이름, T2는 T1 이름).
     pub parent_agent: Option<String>,
     /// 소속 팀 이름 (선택사항).
     pub team: Option<String>,
@@ -171,7 +171,7 @@ pub struct AgentRegistry {
     pub monitor: Option<Arc<Monitor>>,
     /// Phase 9-1: 대시보드 broadcast sender (None이면 비활성화).
     event_tx: Option<broadcast::Sender<DashboardEvent>>,
-    /// 슈퍼마스터(L0) 자신의 정보 — GET /api/agents 및 broadcast에 항상 포함.
+    /// 슈퍼마스터(T0) 자신의 정보 — GET /api/agents 및 broadcast에 항상 포함.
     supermaster: Option<AgentStatusInfo>,
     /// 에이전트별 현재 실행 상태 ("idle" | "thinking" | "executing:tool명").
     status_map: HashMap<String, String>,
@@ -186,7 +186,7 @@ pub struct AgentRegistry {
     conv_save_tx: Option<mpsc::Sender<(String, ChatMessage, Option<String>)>>,
     /// 대화 initiator 저장 채널: (chat_id, initiator)
     initiator_tx: Option<mpsc::Sender<(String, String)>>,
-    /// L0 admin_chat_id — spawn 에이전트 보고 시 수신자.
+    /// T0 admin_chat_id — spawn 에이전트 보고 시 수신자.
     admin_chat_id: i64,
     /// spawn된 에이전트의 SpawnAgentTool에서 사용할 템플릿 디렉토리.
     templates_dir: std::path::PathBuf,
@@ -263,7 +263,7 @@ impl AgentRegistry {
         self.initiator_tx = Some(tx);
     }
 
-    /// L0 admin_chat_id 설정 (spawn 에이전트 보고 수신자).
+    /// T0 admin_chat_id 설정 (spawn 에이전트 보고 수신자).
     pub fn set_admin_chat_id(&mut self, id: i64) {
         self.admin_chat_id = id;
     }
@@ -289,7 +289,7 @@ impl AgentRegistry {
         self.status_map.get(name).cloned().unwrap_or_else(|| "idle".to_string())
     }
 
-    /// 슈퍼마스터(L0) 자신의 정보를 등록한다.
+    /// 슈퍼마스터(T0) 자신의 정보를 등록한다.
     ///
     /// 등록 후 `list()` 및 `broadcast_agent_status()` 결과 맨 앞에 포함된다.
     pub fn set_supermaster(&mut self, info: AgentStatusInfo) {
@@ -307,7 +307,7 @@ impl AgentRegistry {
     }
 
     /// Phase 9-1: 현재 에이전트 목록을 AgentStatus 이벤트로 broadcast.
-    /// 슈퍼마스터(L0) 자신도 목록 맨 앞에 포함된다.
+    /// 슈퍼마스터(T0) 자신도 목록 맨 앞에 포함된다.
     pub fn broadcast_agent_status(&self) {
         if let Some(ref tx) = self.event_tx {
             let mut agents: Vec<AgentStatusInfo> = Vec::new();
@@ -541,7 +541,7 @@ impl AgentRegistry {
         let mut intentionally_killed_arc: Option<Arc<AtomicBool>> = None;
 
         if let Some(bot_token) = req.bot_token.clone() {
-            // bot_token 있음 → TelegramChannel로 직접 소통하는 L1 에이전트.
+            // bot_token 있음 → TelegramChannel로 직접 소통하는 T1 에이전트.
             // send_to_agent 동시 지원은 TODO.
             let admin_chat_id = req.admin_chat_id.unwrap_or(0);
             channel_type = "telegram".to_string();
@@ -836,7 +836,7 @@ impl AgentRegistry {
     }
 
     /// 현재 실행 중인 에이전트 목록 반환.
-    /// 슈퍼마스터(L0) 자신이 set_supermaster()로 등록된 경우 맨 앞에 포함된다.
+    /// 슈퍼마스터(T0) 자신이 set_supermaster()로 등록된 경우 맨 앞에 포함된다.
     pub fn list(&self) -> Vec<AgentInfo> {
         let mut result: Vec<AgentInfo> = Vec::new();
         // 슈퍼마스터 자신을 맨 앞에 추가.
@@ -1123,7 +1123,7 @@ async fn keepalive_agent_loop(
 // Spawned agent execution loop
 // ---------------------------------------------------------------------------
 
-/// TelegramChannel을 사용하는 L1 에이전트 루프.
+/// TelegramChannel을 사용하는 T1 에이전트 루프.
 ///
 /// 텔레그램에서 직접 메시지를 수신하여 처리하고 응답을 전송한다.
 /// NOTE: send_to_agent(IPC) 동시 지원은 TODO.

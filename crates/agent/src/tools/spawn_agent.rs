@@ -1,4 +1,4 @@
-//! spawn_agent 툴 — L1 마스터가 하위 에이전트를 동적으로 생성.
+//! spawn_agent 툴 — T1 팀 책임자가 하위 에이전트를 동적으로 생성.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -100,7 +100,7 @@ impl Tool for SpawnAgentTool {
     }
 
     fn description(&self) -> &str {
-        "하위 에이전트(L2)를 동적으로 생성합니다. \
+        "하위 에이전트(T2)를 동적으로 생성합니다. \
          에이전트는 독립적인 대화 이력과 툴 실행 능력을 가집니다. \
          persistent=true이면 상주하며 여러 태스크를 처리합니다."
     }
@@ -133,7 +133,7 @@ impl Tool for SpawnAgentTool {
                 "agent_role": {
                     "type": "string",
                     "enum": ["supermaster", "master", "mini", "worker"],
-                    "description": "에이전트 계층 역할. supermaster(L0, 1개만 가능), master(L1), mini(L2), worker(L3). 기본값: master"
+                    "description": "에이전트 계층 역할. supermaster(T0, 1개만 가능), master(T1), mini(T2), worker(T3). 기본값: master"
                 },
                 "persistent": {
                     "type": "boolean",
@@ -142,7 +142,7 @@ impl Tool for SpawnAgentTool {
                 },
                 "bot_token": {
                     "type": "string",
-                    "description": "텔레그램 봇 토큰. 있으면 L1 에이전트(텔레그램 직접 소통 가능), 없으면 L2(내부 IPC만)."
+                    "description": "텔레그램 봇 토큰. 있으면 T1 에이전트(텔레그램 직접 소통 가능), 없으면 T2(내부 IPC만)."
                 },
                 "admin_chat_id": {
                     "type": "integer",

@@ -546,7 +546,7 @@ impl AgentLoop {
                 steer_queue.push(message);
             }
 
-            // L1 에이전트 작업 완료 보고.
+            // T1 에이전트 작업 완료 보고.
             HookEvent::Report { from, message } => {
                 info!(from = %from, "report hook event received");
                 let content = format!("[REPORT from {from}] {message}");

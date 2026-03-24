@@ -169,7 +169,7 @@ pub async fn escalation_handler(
     }
 }
 
-/// POST /hooks/report — L1 에이전트가 부모(L0)에게 완료 보고.
+/// POST /hooks/report — T1 에이전트가 부모(T0)에게 완료 보고.
 ///
 /// Body: `{ "from": "roblox-master", "message": "팀 구성 완료" }`
 pub async fn report_handler(

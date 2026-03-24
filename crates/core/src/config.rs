@@ -22,7 +22,7 @@ pub struct Config {
     pub cron: Vec<CronCfg>,
     #[serde(default)]
     pub hooks: HooksConfig,
-    /// Phase 6: 멀티 에이전트 군단 — L1/L2 에이전트 목록 (없으면 빈 Vec).
+    /// Phase 6: 멀티 에이전트 군단 — T1/T2 에이전트 목록 (없으면 빈 Vec).
     #[serde(default)]
     pub agents: Vec<AgentEntry>,
     /// Phase 7-2: 툴 실행 승인 정책 (기본값: disabled).
@@ -65,9 +65,9 @@ pub struct ClearancePreset {
 
 /// 기본 clearance 프리셋 3개 (full / standard / minimal).
 ///
-/// - full (L0): SOUL.md 포함 — 슈퍼마스터 전용 소울 + 티어 지침
-/// - standard (L1): T1.md 포함 — 마스터급 임무 지침 (소울 없음)
-/// - minimal (L2): L2.md 포함 — 워커급 임무 지침 (소울 없음)
+/// - full (T0): SOUL.md 포함 — 슈퍼마스터 전용 소울 + 티어 지침
+/// - standard (T1): T1.md 포함 — 마스터급 임무 지침 (소울 없음)
+/// - minimal (T2): T2.md 포함 — 워커급 임무 지침 (소울 없음)
 fn default_clearance_presets() -> HashMap<String, ClearancePreset> {
     let mut map = HashMap::new();
     map.insert(
@@ -189,7 +189,7 @@ pub struct AgentEntry {
     pub hooks_port: Option<u16>,
     /// 활성화 여부.
     pub enabled: bool,
-    /// 컨텍스트 접근 권한 프리셋 이름 (default: L1+="minimal").
+    /// 컨텍스트 접근 권한 프리셋 이름 (default: T1+="minimal").
     #[serde(default = "default_entry_clearance")]
     pub clearance: String,
     /// 이 에이전트에서 허용할 스킬(툴) 목록. 빈 배열이면 전부 허용.
@@ -274,18 +274,18 @@ pub struct RuntimeConfig {
     pub max_output_bytes: usize,
 }
 
-/// 에이전트 역할 계층 (L0~L3).
+/// 에이전트 역할 계층 (T0~T3).
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentRole {
-    /// L0: 전체 지휘권 — 슈퍼마스터, 정태님 주 소통창구 (1개만 존재)
+    /// T0: 전체 지휘권 — 슈퍼마스터, 정태님 주 소통창구 (1개만 존재)
     Supermaster,
-    /// L1: 도메인 전담 — 텔레그램 봇 보유 마스터급
+    /// T1: 도메인 전담 — 텔레그램 봇 보유 마스터급
     #[default]
     Master,
-    /// L2: 내부 전용 — 상주 미니에이전트 (IPC)
+    /// T2: 내부 전용 — 상주 미니에이전트 (IPC)
     Mini,
-    /// L3: 임시 워커 — 기존 SubAgentManager
+    /// T3: 임시 워커 — 기존 SubAgentManager
     Worker,
 }
 
@@ -356,7 +356,7 @@ pub struct AgentConfig {
     /// Default: 20000
     #[serde(default = "default_max_tool_result_chars")]
     pub max_tool_result_chars: usize,
-    /// 이 인스턴스의 역할 계층 (default: master = L1).
+    /// 이 인스턴스의 역할 계층 (default: master = T1).
     #[serde(default)]
     pub role: AgentRole,
     /// Phase 8-3: 에이전트 템플릿 디렉토리 경로 (default: "templates"). Deprecated: agents_dir 사용 권장.
@@ -371,7 +371,7 @@ pub struct AgentConfig {
     /// 각 shared 파일 최대 문자 수 (default: 4000).
     #[serde(default = "default_max_shared_chars")]
     pub max_shared_chars: usize,
-    /// 컨텍스트 접근 권한 프리셋 이름 (default: L0="full").
+    /// 컨텍스트 접근 권한 프리셋 이름 (default: T0="full").
     /// 지정된 이름으로 [clearance.*] 섹션을 조회하여 로드할 파일 목록을 결정한다.
     #[serde(default = "default_agent_clearance")]
     pub clearance: String,

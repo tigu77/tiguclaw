@@ -21,7 +21,7 @@ use crate::registry::{AgentRegistry, AgentTask, CompletionDeliveryInfo};
 
 /// 에이전트에 태스크를 fire-and-forget으로 전달하는 툴.
 ///
-/// L0 블로킹 방지: 즉시 "전달됨" 반환. 완료 시 L1이 report_to_parent로 보고한다.
+/// T0 블로킹 방지: 즉시 "전달됨" 반환. 완료 시 T1이 report_to_parent로 보고한다.
 /// hooks_url이 설정된 에이전트는 직통 HTTP POST로 전달하고,
 /// 없으면 내부 mpsc 방식으로 전달한다.
 ///
@@ -58,7 +58,7 @@ impl Tool for SendToAgentTool {
 
     fn description(&self) -> &str {
         "spawn된 하위 에이전트에 태스크를 전달합니다 (fire-and-forget). \
-         즉시 '전달됨'을 반환하고 L0는 계속 응답 가능합니다. \
+         즉시 '전달됨'을 반환하고 T0는 계속 응답 가능합니다. \
          에이전트 완료 시 report_to_parent로 보고가 돌아옵니다. \
          에이전트가 없으면 먼저 spawn_agent로 생성하세요."
     }
@@ -136,10 +136,10 @@ impl Tool for SendToAgentTool {
             "send_to_agent: 전달 시작"
         );
 
-        // fire-and-forget: L0 블로킹 없이 즉시 반환.
+        // fire-and-forget: T0 블로킹 없이 즉시 반환.
         // hooks_url이 있으면 백그라운드 HTTP 전송, 없으면 IPC 채널로 전달 후 즉시 반환.
         if let Some(hooks_url) = send_info.hooks_url {
-            // HTTP 경로: 백그라운드 태스크로 전송 (L0 블로킹 없음).
+            // HTTP 경로: 백그라운드 태스크로 전송 (T0 블로킹 없음).
             let name_clone = name.clone();
             let token = send_info.hooks_token;
             let deep = matches!(thinking_level, ThinkingLevel::Deep);

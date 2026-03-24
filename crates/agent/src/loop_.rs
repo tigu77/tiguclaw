@@ -53,7 +53,7 @@ pub use tiguclaw_hooks::HookEvent;
 pub struct AgentLoop {
     /// 에이전트 식별 이름 (Phase 6 멀티 에이전트 군단용).
     name: String,
-    /// 이 인스턴스의 역할 계층 (L0~L3).
+    /// 이 인스턴스의 역할 계층 (T0~T3).
     role: AgentRole,
     /// All registered channels (primary = index 0).
     channels: Vec<Arc<dyn Channel>>,
@@ -284,7 +284,7 @@ impl AgentLoop {
         self
     }
 
-    /// Set the agent role (L0~L3 hierarchy).
+    /// Set the agent role (T0~T3 hierarchy).
     pub fn with_role(mut self, role: AgentRole) -> Self {
         self.role = role;
         self
@@ -511,7 +511,7 @@ impl AgentLoop {
                         if let Err(e) = store.save_message(&chat_id, &msg) {
                             warn!(error = %e, "failed to persist message");
                         }
-                        // L0 에이전트 대화는 정태님이 직접 시작 → initiator="user"
+                        // T0 에이전트 대화는 정태님이 직접 시작 → initiator="user"
                         let _ = store.set_initiator(&chat_id, "user");
                     }
                 }

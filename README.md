@@ -18,7 +18,7 @@
 
 ## What is tiguclaw?
 
-tiguclaw is a lightweight agent operating system written in Rust. Run a hierarchy of AI agents (L0→L3) that can spawn each other, communicate via IPC, and be monitored through a built-in web dashboard — all controlled from Telegram.
+tiguclaw is a lightweight agent operating system written in Rust. Run a hierarchy of AI agents (T0→T3) that can spawn each other, communicate via IPC, and be monitored through a built-in web dashboard — all controlled from Telegram.
 
 Think of it as a personal AI army: one supermaster you talk to, and unlimited specialized sub-agents it commands.
 
@@ -47,10 +47,10 @@ curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/uninstall.sh |
 
 ```
 tiguclaw (single binary)
-├── L0 Supermaster (delegation_only — never blocks on sub-tasks)
-│   ├── L1 Master agents (persistent, optional bot token)
-│   │   ├── L2 Mini agents (internal IPC, escalate_to_parent on failure)
-│   │   └── L3 Worker agents (ephemeral tasks)
+├── T0 슈퍼마스터 (delegation_only — never blocks on sub-tasks)
+│   ├── T1 팀 책임자 에이전트 (persistent, optional bot token)
+│   │   ├── T2 실행 에이전트 (internal IPC, escalate_to_parent on failure)
+│   │   └── T3 에이전트 (ephemeral tasks)
 ├── REST API + WebSocket (axum, port 3002)
 │   └── /hooks/agent · /hooks/steer · /hooks/escalate
 └── Dashboard (timeline view + real-time WS, DB-persisted)
@@ -62,7 +62,7 @@ Each agent has a **clearance** setting that controls tool access:
 
 | Preset | Description |
 |--------|-------------|
-| `full` | All tools enabled — for trusted L0/L1 agents |
+| `full` | All tools enabled — for trusted T0/T1 agents |
 | `standard` | Default — balanced access for most agents |
 | `minimal` | Restricted — for untrusted or ephemeral workers |
 
@@ -75,7 +75,7 @@ clearance = "standard"   # full | standard | minimal
 skills = ["web_fetch", "shell", "read_file"]  # empty = all allowed
 ```
 
-Clearance controls **what context the agent sees** (workspace files), while `skills` controls **what tools the agent can use**. An L2 worker can be restricted to only the tools it actually needs:
+Clearance controls **what context the agent sees** (workspace files), while `skills` controls **what tools the agent can use**. An T2 에이전트 can be restricted to only the tools it actually needs:
 
 ```toml
 # researcher — can search and read, nothing else
@@ -95,10 +95,10 @@ skills = ["shell", "read_file", "write_file", "edit_file"]
 
 ### Escalation Protocol
 
-When an L2 agent fails or gets stuck, it automatically escalates:
-1. L2 reports failure to L1 via `escalate_to_parent` tool
-2. L1 assesses and either retries or escalates to L0
-3. L0 decides: reassign, spawn new agent, or surface to human
+When an T2 agent fails or gets stuck, it automatically escalates:
+1. T2 보고 failure to T1 via `escalate_to_parent` tool
+2. T1이 검토 and either retries or T0으로 에스컬레이션
+3. T0가 결정: reassign, spawn new agent, or surface to human
 
 ## Agent Structure
 
@@ -125,10 +125,10 @@ installed/            ← market-installed agent packs
 
 ## Features
 
-- **Multi-level agent hierarchy** — L0~L3 roles with spawn/kill/steer
+- **Multi-level agent hierarchy** — T0~T3 roles with spawn/kill/steer
 - **Clearance system** — full/standard/minimal presets, per-agent in `agent.toml`
-- **Escalation protocol** — L2 failure → L1 report → L0 escalation via `escalate_to_parent`
-- **L0 availability guarantee** — `delegation_only = true` ensures L0 is always responsive
+- **Escalation protocol** — T2 장애 → T1 보고 → T0 에스컬레이션 via `escalate_to_parent`
+- **T0 가용성 guarantee** — `delegation_only = true` ensures T0 is always responsive
 - **Steer** — redirect a running agent mid-task (`/steer`, CLI, or dashboard)
 - **Telegram-native** — Control your agent army from your phone
 - **Timeline dashboard** — per-agent and global event flow, DB-persisted, real-time WS
@@ -153,7 +153,7 @@ installed/            ← market-installed agent packs
 [agent]
 name = "MyAgent"
 spec = "agents/supermaster"
-delegation_only = true   # L0: stay available, never block
+delegation_only = true   # T0: 항상 응답 대기, never block
 clearance = "full"       # full | standard | minimal
 
 [[channels]]
@@ -259,7 +259,7 @@ CLI equivalent: `tiguclaw steer <name> "<message>"`
 
 ## Roadmap
 
-- [x] Multi-level agent hierarchy (L0~L3)
+- [x] Multi-level agent hierarchy (T0~T3)
 - [x] Real-time web dashboard (built-in, no Node.js)
 - [x] Timeline dashboard (per-agent & global, DB-persisted, WS)
 - [x] Hybrid memory search (fastembed + sqlite-vec + BM25)
@@ -268,8 +268,8 @@ CLI equivalent: `tiguclaw steer <name> "<message>"`
 - [x] Auto-spawn & approval policy
 - [x] Context management with retention
 - [x] Clearance system (full / standard / minimal)
-- [x] Escalation protocol (L2 → L1 → L0)
-- [x] L0 availability guarantee (`delegation_only`)
+- [x] Escalation protocol (T2 → T1 → T0)
+- [x] T0 가용성 guarantee (`delegation_only`)
 - [x] Steer (mid-task redirect via CLI / hook / dashboard)
 - [x] DB auto-backup + retention
 - [x] Agent marketplace CLI (`tiguclaw market`)

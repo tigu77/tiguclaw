@@ -1,6 +1,6 @@
-//! report_to_parent 툴 — L1 에이전트가 작업 완료 후 부모에게 보고한다.
+//! report_to_parent 툴 — T1 에이전트가 작업 완료 후 부모에게 보고한다.
 //!
-//! L0 비동기 위임 패턴의 완료 보고 담당:
+//! T0 비동기 위임 패턴의 완료 보고 담당:
 //! - parent_hooks_url이 있으면 HTTP POST → /hooks/report
 //! - 없으면 IPC를 통해 직접 주입 (registry 사용)
 //!
@@ -97,7 +97,7 @@ impl Tool for ReportToParentTool {
     fn description(&self) -> &str {
         "작업 완료 후 부모 에이전트에게 결과를 보고합니다. \
          send_to_agent로 위임받은 태스크가 끝나면 반드시 이 툴로 보고하세요. \
-         부모(L0)가 보고를 받아 사용자에게 알림을 전달합니다."
+         부모(T0)가 보고를 받아 사용자에게 알림을 전달합니다."
     }
 
     fn schema(&self) -> serde_json::Value {

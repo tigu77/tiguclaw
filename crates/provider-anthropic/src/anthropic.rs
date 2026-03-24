@@ -119,6 +119,23 @@ impl AnthropicProvider {
         self.thinking
     }
 
+    /// 독립적인 circuit breaker를 가진 새 `AnthropicProvider` 인스턴스를 반환한다.
+    ///
+    /// reqwest `Client`는 내부적으로 Arc로 래핑되어 있어 공유해도 안전하다.
+    /// API 키, 모델, 설정값은 복사하고 circuit breaker만 새로 생성한다.
+    pub(crate) fn clone_fresh_internal(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            api_key: self.api_key.clone(),
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+            use_oauth: self.use_oauth,
+            thinking: self.thinking,
+            effort: self.effort.clone(),
+            circuit_breaker: CircuitBreaker::new(CB_THRESHOLD, CB_COOLDOWN),
+        }
+    }
+
     /// Convert core ChatMessages to Anthropic API format.
     /// Returns (system_prompt, api_messages).
     fn convert_messages(messages: &[ChatMessage]) -> (String, Vec<Value>) {
@@ -565,6 +582,10 @@ impl AnthropicProvider {
 impl Provider for AnthropicProvider {
     fn name(&self) -> &str {
         &self.model
+    }
+
+    fn clone_fresh(&self) -> std::sync::Arc<dyn Provider> {
+        std::sync::Arc::new(self.clone_fresh_internal())
     }
 
     async fn chat(

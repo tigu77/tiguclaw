@@ -502,7 +502,9 @@ impl AgentRegistry {
         let (task_tx, task_rx) = mpsc::channel::<AgentTask>(32);
         // Phase 9-4: steer 채널 생성.
         let (steer_tx_handle, steer_rx_spawned) = mpsc::channel::<String>(8);
-        let provider = self.provider.clone();
+        // clone_fresh(): 에이전트별 독립적인 circuit breaker 인스턴스 생성.
+        // T0(supermaster)의 circuit breaker 상태가 스폰된 에이전트에 전파되지 않도록 한다.
+        let provider = self.provider.clone_fresh();
         // 에이전트별 툴 인스턴스 생성: SendToAgentTool / SpawnAgentTool을 개별 교체.
         // from_name을 이 에이전트 이름으로 설정 → T2→T1 보고 경로가 올바르게 설정됨.
         let tools = if let Some(ref reg_arc) = registry_arc {

@@ -1,5 +1,7 @@
 //! Provider trait — abstraction over LLM backends (e.g. Anthropic, OpenAI).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use crate::error::Result;
 use crate::types::{ChatMessage, ChatResponse};
@@ -53,4 +55,11 @@ pub trait Provider: Send + Sync {
         let _ = thinking; // base impl ignores thinking level
         self.chat(messages, tools).await
     }
+
+    /// 독립적인 circuit breaker 상태를 가진 새 인스턴스를 반환한다.
+    ///
+    /// 스폰된 에이전트가 서로의 circuit breaker 상태를 공유하지 않도록,
+    /// `registry.rs`에서 에이전트 스폰 시 `clone()` 대신 이 메서드를 사용한다.
+    /// HTTP client, API 키 등 stateless 자원은 공유해도 무방하다.
+    fn clone_fresh(&self) -> Arc<dyn Provider>;
 }

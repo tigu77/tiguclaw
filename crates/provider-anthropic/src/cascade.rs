@@ -170,6 +170,13 @@ impl Provider for TierProvider {
         "anthropic-tier"
     }
 
+    fn clone_fresh(&self) -> std::sync::Arc<dyn Provider> {
+        std::sync::Arc::new(Self {
+            tier1: self.tier1.iter().map(|p| p.clone_fresh_internal()).collect(),
+            tier2: self.tier2.iter().map(|p| p.clone_fresh_internal()).collect(),
+        })
+    }
+
     /// `ThinkingLevel::Deep` → tier2 (deep_models) + adaptive thinking으로 직접 전달.
     /// `ThinkingLevel::Normal` → 기존 tier1 escalation 흐름.
     async fn chat_with_options(

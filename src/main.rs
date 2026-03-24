@@ -427,6 +427,25 @@ async fn async_main() -> Result<()> {
         Arc::new(raw)
     };
 
+    // memory_search + memory_store 툴 — registry(T1/T2 공유) + T0 툴셋에 주입.
+    {
+        let mem: Arc<dyn tiguclaw_memory::MemoryBackend> = context_store.clone();
+        let mut reg = registry.lock().await;
+        reg.push_tool(Arc::new(tiguclaw_agent::tools::MemorySearchTool::new(mem.clone())));
+        reg.push_tool(Arc::new(tiguclaw_agent::tools::MemoryStoreTool::new(mem)));
+        info!("memory_search + memory_store tools injected into registry_tools (T1/T2 shared)");
+    }
+    // T0 전용 인스턴스: source = 에이전트 이름.
+    {
+        let mem_t0: Arc<dyn tiguclaw_memory::MemoryBackend> = context_store.clone();
+        tools.push(Box::new(tiguclaw_agent::tools::MemorySearchTool::new(mem_t0.clone())));
+        tools.push(Box::new(
+            tiguclaw_agent::tools::MemoryStoreTool::new(mem_t0)
+                .with_source(config.agent.name.clone()),
+        ));
+        info!("memory_search + memory_store tools added to T0 toolset");
+    }
+
     // Scan skill directories.
     let skill_dirs: Vec<std::path::PathBuf> = config
         .agent

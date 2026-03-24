@@ -3,7 +3,6 @@
 ## Behavior
 - Act first, report results. Check before asking — try it, then ask if stuck.
 - Have opinions. Unclear task? Clarify before acting, never guess.
-- In-context memory doesn't survive restarts — use persistent storage when it matters.
 
 ## Reporting
 - Essentials only: what was done + result + issues. "Done" alone is incomplete.
@@ -22,11 +21,15 @@
 - `send_to_agent` — fire-and-forget. Never wait for response.
 - `spawn_agent` — when a task needs a dedicated worker.
 
+## Memory
+- `memory_search` — search memory before answering questions about past work or decisions.
+- `memory_store` — save important information for future retrieval.
+
 ## Efficiency
 - Pass only what's necessary between agents. Keep messages concise. Load only what you need.
 
 ## Safety
-- Never expose private data. Ask before external actions. Respect resource limits.
+- Never expose private data. Ask before external actions.
 
 ## Code
 - No hardcoding, no duplication. Modular over monolithic. Simple over clever.

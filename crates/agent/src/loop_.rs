@@ -674,6 +674,32 @@ impl AgentLoop {
         // Send typing indicator before starting LLM call.
         let _ = src_channel.send_typing(&msg.sender).await;
 
+        // 세션 메타데이터 빌드 (T0 실제 사용자 메시지만 — heartbeat/cron/IPC 제외).
+        let session_meta = if msg.sender != "master" && msg.source.as_deref() != Some("internal") {
+            use chrono::{FixedOffset, TimeZone, Datelike};
+            let kst = FixedOffset::east_opt(9 * 3600).expect("valid KST offset");
+            let dt = kst.timestamp_opt(msg.timestamp, 0)
+                .single()
+                .unwrap_or_else(|| chrono::Utc::now().with_timezone(&kst));
+            let weekday = match dt.weekday() {
+                chrono::Weekday::Mon => "Monday",
+                chrono::Weekday::Tue => "Tuesday",
+                chrono::Weekday::Wed => "Wednesday",
+                chrono::Weekday::Thu => "Thursday",
+                chrono::Weekday::Fri => "Friday",
+                chrono::Weekday::Sat => "Saturday",
+                chrono::Weekday::Sun => "Sunday",
+            };
+            let channel_name = src_channel.name().to_string();
+            let time_str = dt.format("%Y-%m-%d %H:%M").to_string();
+            Some(format!(
+                "[Session Info]\nTime: {time_str} KST ({weekday})\nSender: {}\nChannel: {channel_name}",
+                msg.sender
+            ))
+        } else {
+            None
+        };
+
         let token = CancellationToken::new();
         let ctx = Arc::new(HandlerContext {
             channel: src_channel,
@@ -693,6 +719,7 @@ impl AgentLoop {
             agent_name: self.name.clone(),
             event_tx: self.event_tx.clone(),
             steer_directives,
+            session_meta,
         });
         let chat_id = msg.sender.clone();
         let user_text = msg.content.clone();

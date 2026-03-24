@@ -65,6 +65,9 @@ pub struct HandlerContext {
     /// Phase 9-4: 이 태스크에 주입할 steer 지시문 목록.
     /// 다음 LLM 호출 시 system 메시지로 앞에 주입된다.
     pub steer_directives: Vec<String>,
+    /// 세션 메타데이터 (시간, 발신자, 채널 등) — user_text 앞에 주입된다.
+    /// heartbeat/cron/IPC 메시지는 None.
+    pub session_meta: Option<String>,
 }
 
 /// Process a single user message through the agentic loop (LLM + tool calls).
@@ -90,6 +93,14 @@ pub async fn handle_message(
             "injecting steer directives before user message"
         );
         format!("{steer_block}\n\n{user_text}")
+    } else {
+        user_text
+    };
+
+    // 세션 메타데이터 주입 (T0 실제 사용자 메시지에만).
+    let user_text = if let Some(ref meta) = ctx.session_meta {
+        debug!("injecting session metadata before user message");
+        format!("{meta}\n\n{user_text}")
     } else {
         user_text
     };

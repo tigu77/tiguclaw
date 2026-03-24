@@ -461,9 +461,7 @@ impl AgentLoop {
                     ));
 
                     // 자식 렌더링
-                    let child_prefix = if prefix.is_empty() {
-                        "".to_string()
-                    } else if is_last {
+                    let child_prefix = if is_last {
                         format!("{prefix}    ")
                     } else {
                         format!("{prefix}│   ")

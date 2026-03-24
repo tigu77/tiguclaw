@@ -1,5 +1,7 @@
 //! tiguclaw entrypoint — assembles components and runs the agent.
 
+mod defaults;
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -43,6 +45,13 @@ async fn async_main() -> Result<()> {
         "tiguclaw starting with tier escalation routing"
     );
     info!(shell = %config.runtime.shell, timeout = config.runtime.timeout_secs, "runtime config");
+
+    // 첫 실행 시 shared 기본 파일 자동 생성 (기존 파일 덮어쓰지 않음).
+    {
+        let shared_dir = std::path::PathBuf::from(&config.agent.shared_dir);
+        defaults::init_shared_defaults(&shared_dir)
+            .context("failed to init shared defaults")?;
+    }
 
     // Primary channel config 결정 — primary=true이거나 첫 번째 항목.
     let primary_ch_cfg = config.channels.iter()

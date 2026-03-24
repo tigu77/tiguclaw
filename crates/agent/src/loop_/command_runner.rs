@@ -393,18 +393,7 @@ impl AgentLoop {
                 if let Some(registry) = &self.registry {
                     let list = registry.lock().await.list();
                     if !list.is_empty() {
-                        // 슈퍼마스터 먼저
-                        let supermasters: Vec<_> = list.iter()
-                            .filter(|i| i.agent_role == AgentRole::Supermaster)
-                            .collect();
-                        for info in &supermasters {
-                            result.push_str(&format!(
-                                "🌟 슈퍼마스터: {} ({})\n",
-                                info.name, info.agent_role.label()
-                            ));
-                        }
-
-                        // 나머지 상주 에이전트
+                        // 슈퍼마스터는 이미 위에서 출력했으므로 제외
                         let others: Vec<_> = list.iter()
                             .filter(|i| i.agent_role != AgentRole::Supermaster)
                             .collect();

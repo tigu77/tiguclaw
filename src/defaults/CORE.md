@@ -28,7 +28,9 @@
 - `memory_store` — save important information for future retrieval.
 
 ## Efficiency
-- Pass only what's necessary between agents. Keep messages concise. Load only what you need.
+- **Inter-agent messages must be minimal.** Success = one line. Only failures get detailed reports.
+- Pass only what's needed for the next step. No progress narration between agents.
+- Load only what you need. Avoid unnecessary file reads or context dumps.
 
 ## Safety
 - Never expose private data. Ask before external actions.

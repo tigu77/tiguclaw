@@ -22,13 +22,18 @@ const TIER_ICON: Record<number, string> = {
 
 // ──── buildTree ───────────────────────────────────────────────────────────────
 function buildTree(agents: AgentInfo[]): ArboristNode[] {
+  // 중복 이름 제거 — 같은 이름이 여러 번 있으면 마지막 항목 유지
+  const uniqueAgents = Array.from(
+    new Map(agents.map((a) => [a.name, a])).values()
+  );
+
   const map = new Map<string, ArboristNode>();
-  agents.forEach((a) =>
+  uniqueAgents.forEach((a) =>
     map.set(a.name, { id: a.name, name: a.name, agent: a, children: [] })
   );
 
   const roots: ArboristNode[] = [];
-  agents.forEach((a) => {
+  uniqueAgents.forEach((a) => {
     const node = map.get(a.name)!;
     if (a.parent_agent && map.has(a.parent_agent)) {
       map.get(a.parent_agent)!.children!.push(node);

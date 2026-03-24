@@ -249,7 +249,10 @@ export function useDashboard(wsUrl: string) {
         if (data.type === "AgentStatus") {
           const d = (data.data ?? data.payload ?? {}) as { agents?: AgentInfo[] };
           if (Array.isArray(d.agents)) {
-            setAgents(d.agents.map(a => ({ ...a, status: "active" as const })));
+            // 중복 이름 제거 (name 기준 Map으로 dedup)
+            const seen = new Map<string, AgentInfo>();
+            d.agents.forEach((a) => seen.set(a.name, { ...a, status: "active" as const }));
+            setAgents(Array.from(seen.values()));
           }
           return;
         }

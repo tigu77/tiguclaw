@@ -9,7 +9,6 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use tiguclaw_core::agent_spec::AgentSpecManager;
-use tiguclaw_core::config::AgentRole;
 use tiguclaw_core::template::TemplateManager;
 use tiguclaw_core::types::*;
 use tiguclaw_memory::MemoryBackend;
@@ -372,52 +371,122 @@ impl AgentLoop {
                 format!("🚀 서브에이전트 '{label}' 스폰 완료 (id: {})\n작업: {task}", id.0)
             }
             ContextCommand::Agents => {
-                let mut result = String::new();
+                use std::collections::HashMap;
 
-                // 0. 슈퍼마스터 (자기 자신)
-                let role_label = self.role.label();
-                let role_display = self.role.display_name();
-                if self.role == AgentRole::Supermaster {
-                    result.push_str(&format!(
-                        "🌟 슈퍼마스터: {} ({role_label})\n",
-                        self.name
-                    ));
-                } else {
-                    result.push_str(&format!(
-                        "🐯 메인 에이전트: {} ({role_label}, {role_display})\n",
-                        self.name
-                    ));
+                // AgentInfo를 이름으로 빠르게 찾기 위한 맵과 상태 조회
+                struct AgentEntry {
+                    name: String,
+                    tier: u8,
+                    team: Option<String>,
+                    status: String,
+                    parent_agent: Option<String>,
                 }
 
-                // 1. AgentRegistry (상주 에이전트)
+                let mut entries: Vec<AgentEntry> = Vec::new();
+
                 if let Some(registry) = &self.registry {
-                    let list = registry.lock().await.list();
-                    if !list.is_empty() {
-                        // 슈퍼마스터는 이미 위에서 출력했으므로 제외
-                        let others: Vec<_> = list.iter()
-                            .filter(|i| i.agent_role != AgentRole::Supermaster)
-                            .collect();
-                        if !others.is_empty() {
-                            result.push_str("🤖 상주 에이전트:\n");
-                            for info in others {
-                                let persistent = if info.persistent { "상주" } else { "임시" };
-                                result.push_str(&format!(
-                                    "  • {} ({}, {}, {}, {})\n",
-                                    info.name,
-                                    info.agent_role.label(),
-                                    info.agent_role.display_name(),
-                                    persistent,
-                                    info.channel_type
-                                ));
+                    let reg = registry.lock().await;
+                    let list = reg.list();
+                    for info in &list {
+                        let status = reg.get_status(&info.name);
+                        entries.push(AgentEntry {
+                            name: info.name.clone(),
+                            tier: info.tier,
+                            team: info.team.clone(),
+                            status,
+                            parent_agent: info.parent_agent.clone(),
+                        });
+                    }
+                }
+
+                // parent_agent → children 맵 구성
+                let mut children_map: HashMap<String, Vec<usize>> = HashMap::new();
+                let mut root_indices: Vec<usize> = Vec::new();
+
+                for (idx, entry) in entries.iter().enumerate() {
+                    match &entry.parent_agent {
+                        Some(parent) if !parent.is_empty() && parent != "user" => {
+                            children_map.entry(parent.clone()).or_default().push(idx);
+                        }
+                        _ => {
+                            // T0(슈퍼마스터)는 루트, 나머지 parent 없는 것도 루트
+                            if entry.tier == 0 {
+                                root_indices.insert(0, idx); // T0 맨 앞
+                            } else {
+                                root_indices.push(idx);
                             }
                         }
                     }
                 }
 
-                // 2. SubAgentManager (임시 서브에이전트)
+                // 티어별 아이콘
+                fn tier_icon(tier: u8) -> &'static str {
+                    match tier {
+                        0 => "🌟",
+                        1 => "🤖",
+                        _ => "🔧",
+                    }
+                }
+
+                // 트리 출력 재귀 함수
+                fn render_tree(
+                    idx: usize,
+                    entries: &[AgentEntry],
+                    children_map: &HashMap<String, Vec<usize>>,
+                    prefix: &str,
+                    is_last: bool,
+                    result: &mut String,
+                ) {
+                    let entry = &entries[idx];
+                    let icon = tier_icon(entry.tier);
+                    let connector = if prefix.is_empty() {
+                        "".to_string()
+                    } else if is_last {
+                        format!("{prefix}└── ")
+                    } else {
+                        format!("{prefix}├── ")
+                    };
+
+                    // 팀 정보 표시
+                    let team_str = entry.team.as_deref()
+                        .filter(|t| !t.is_empty())
+                        .map(|t| format!(", {t}"))
+                        .unwrap_or_default();
+
+                    let tier_label = format!("T{}", entry.tier);
+                    result.push_str(&format!(
+                        "{connector}{icon} {} ({tier_label}{team_str}, {})\n",
+                        entry.name,
+                        entry.status
+                    ));
+
+                    // 자식 렌더링
+                    let child_prefix = if prefix.is_empty() {
+                        "".to_string()
+                    } else if is_last {
+                        format!("{prefix}    ")
+                    } else {
+                        format!("{prefix}│   ")
+                    };
+
+                    if let Some(children) = children_map.get(&entry.name) {
+                        let n = children.len();
+                        for (i, &child_idx) in children.iter().enumerate() {
+                            render_tree(child_idx, entries, children_map, &child_prefix, i == n - 1, result);
+                        }
+                    }
+                }
+
+                let mut result = String::new();
+                let n_roots = root_indices.len();
+                for (i, &root_idx) in root_indices.iter().enumerate() {
+                    render_tree(root_idx, &entries, &children_map, "", i == n_roots - 1, &mut result);
+                }
+
+                // SubAgentManager (임시 서브에이전트) — 별도 섹션
                 let sub_list = self.sub_manager.list();
                 if !sub_list.is_empty() {
-                    result.push_str("⚡ 임시 서브에이전트:\n");
+                    result.push_str("\n⚡ 임시 서브에이전트:\n");
                     for (id, label, status) in &sub_list {
                         result.push_str(&format!("  • {label} [{id}] — {status}\n"));
                     }

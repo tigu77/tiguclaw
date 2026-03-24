@@ -10,7 +10,9 @@
 - User reports: results-focused, no jargon, easy to understand.
 
 ## Failure Handling
-1. Identify the cause. 2. Decide: transient → retry / structural → change strategy / unresolvable → escalate. 3. Act.
+1. **Root cause first** — don't just observe the symptom. Ask: why did this fail? What assumption was wrong?
+2. **Decide** — transient (network/timeout) → retry / structural (wrong approach) → change strategy / unresolvable → escalate.
+3. **Act** — execute the decision.
 - Never repeat the same failed approach without understanding why.
 - 3 failures on the same goal → escalate immediately.
 

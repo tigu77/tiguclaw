@@ -50,6 +50,9 @@ pub struct CompletionDeliveryInfo {
     pub agent_task_tx: Option<mpsc::Sender<AgentTask>>,
     /// 프라이머리(텔레그램) inject_tx — 최후 fallback.
     pub primary_inject_tx: Option<mpsc::Sender<ChannelMessage>>,
+    /// true이면 primary_inject_tx fallback 허용 (T0 요청자만 허용).
+    /// T1/T2가 요청자인 경우 false로 설정해 T0 텔레그램으로 잘못 보고되는 것을 방지.
+    pub allow_primary_fallback: bool,
     /// T0 admin_chat_id — ChannelMessage.sender 값으로 사용.
     pub admin_chat_id: i64,
 }
@@ -402,11 +405,21 @@ impl AgentRegistry {
     /// send_to_agent 완료 콜백 전달용 채널 정보를 한 번의 lock으로 반환.
     ///
     /// 호출자는 lock 해제 후 비동기 전송을 수행해야 deadlock을 피할 수 있다.
+    ///
+    /// `to_name`이 supermaster(T0)인 경우에만 `allow_primary_fallback`이 true로 설정된다.
+    /// T1/T2 에이전트가 요청자인 경우 primary_inject_tx fallback을 차단해
+    /// T0 텔레그램 채널로 잘못 보고되는 것을 방지한다.
     pub fn get_completion_delivery_info(&self, to_name: &str) -> CompletionDeliveryInfo {
+        let is_supermaster = self
+            .supermaster
+            .as_ref()
+            .map(|s| s.name == to_name)
+            .unwrap_or(false);
         CompletionDeliveryInfo {
             inbox_tx: self.inbox_txs.get(to_name).cloned(),
             agent_task_tx: self.agents.get(to_name).map(|h| h.task_tx.clone()),
             primary_inject_tx: self.primary_inject_tx.clone(),
+            allow_primary_fallback: is_supermaster,
             admin_chat_id: self.admin_chat_id,
         }
     }

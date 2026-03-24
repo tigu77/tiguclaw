@@ -294,16 +294,25 @@ impl Tool for SendToAgentTool {
                     warn!(to = %from_name_clone, "completion callback: agent_task_tx closed — trying primary_inject_tx");
                 }
 
-                // 3순위: 프라이머리 채널(텔레그램) fallback
-                if let Some(tx) = delivery.primary_inject_tx {
-                    if tx.send(make_channel_msg(report)).await.is_ok() {
-                        info!(
-                            to = %from_name_clone,
-                            from = %target_name_clone,
-                            "completion callback: delivered via primary_inject_tx (fallback)"
-                        );
-                        return;
+                // 3순위: 프라이머리 채널(텔레그램) fallback — T0 요청자에게만 허용
+                if delivery.allow_primary_fallback {
+                    if let Some(tx) = delivery.primary_inject_tx {
+                        if tx.send(make_channel_msg(report)).await.is_ok() {
+                            info!(
+                                to = %from_name_clone,
+                                from = %target_name_clone,
+                                "completion callback: delivered via primary_inject_tx (fallback)"
+                            );
+                            return;
+                        }
                     }
+                } else {
+                    warn!(
+                        to = %from_name_clone,
+                        from = %target_name_clone,
+                        "completion callback: T1/T2 primary fallback 차단 — report lost (요청자가 T0 supermaster 아님)"
+                    );
+                    return;
                 }
 
                 warn!(

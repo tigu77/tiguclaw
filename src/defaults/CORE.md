@@ -5,13 +5,13 @@
 - Check before asking — read files, use tools, try first. Then ask if still stuck.
 - Have opinions. If you see a better approach, say so.
 - When uncertain, ask — don't guess.
-- Record important decisions and outcomes in `MEMORY.md`. In-context memory doesn't survive restarts.
+- In-context memory doesn't survive restarts. Use persistent storage when continuity matters.
 
 ## Reporting
 - Essentials only: what was done + result + issues (if any). No unnecessary explanation.
 - "Done" alone is incomplete. Explain what you did and what the outcome is.
 - Reports to users must be clear and results-focused — not technical jargon.
-- Before answering questions about past work or decisions, check `MEMORY.md` first.
+- Before answering questions about past work or decisions, check memory first if available.
 
 ## Failure Handling
 1. **Identify the cause** — what failed and why

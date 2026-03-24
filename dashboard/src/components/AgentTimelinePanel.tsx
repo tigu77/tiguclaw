@@ -52,14 +52,16 @@ function formatTime(ts: number): string {
 
 function formatConvTime(unixSecs: number): string {
   if (!unixSecs) return "-";
+  const now = Date.now();
+  const diffMs = now - unixSecs * 1000;
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHour = Math.floor(diffMs / 3600000);
+  const diffDay = Math.floor(diffMs / 86400000);
+  if (diffMin < 60) return `${diffMin}분 전`;
+  if (diffHour < 24) return `${diffHour}시간 전`;
+  if (diffDay < 30) return `${diffDay}일 전`;
   const d = new Date(unixSecs * 1000);
-  return d.toLocaleString("ko-KR", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 // ─── 에이전트 정보 카드 ───────────────────────────────────────────────────────
@@ -330,7 +332,7 @@ export default function AgentTimelinePanel({
           <div className="flex h-full">
             {/* 대화 목록 */}
             <div
-              className={`flex flex-col overflow-y-auto p-2 gap-1 flex-shrink-0 ${
+              className={`flex flex-col overflow-y-auto p-2 gap-2 flex-shrink-0 ${
                 selectedConvId ? "w-48 border-r border-white/10" : "flex-1"
               }`}
               style={{ scrollbarWidth: "thin", scrollbarColor: "#374151 transparent" }}
@@ -346,26 +348,33 @@ export default function AgentTimelinePanel({
                     <button
                       key={conv.id}
                       onClick={() => setSelectedConvId(isSelected ? null : conv.id)}
-                      className={`flex flex-col gap-0.5 px-2 py-2 rounded-lg border text-left transition-colors ${
+                      className={`flex flex-col gap-1.5 px-3 py-2.5 rounded-lg border text-left transition-all duration-150 ${
                         isSelected
-                          ? "border-blue-500/50 bg-blue-500/10"
+                          ? "border-blue-500/60 bg-blue-500/15"
                           : "border-white/10 bg-white/5 hover:bg-white/10"
                       }`}
                     >
+                      {/* 상단: 아이콘 + initiator + 상대 시간 */}
                       <div className="flex items-center justify-between gap-1">
-                        <span className="text-xs font-mono text-gray-300 truncate">
-                          {conv.initiator === "user" ? "정태님" : conv.initiator}
+                        <span className="text-sm font-medium text-gray-200 truncate">
+                          {conv.initiator === "user" ? "👤 정태님" : `🤖 ${conv.initiator}`}
                         </span>
-                        <span className="text-[10px] text-gray-600 flex-shrink-0">
+                        <span className="text-[10px] text-gray-500 flex-shrink-0">
                           {formatConvTime(conv.updated_at)}
                         </span>
                       </div>
-                      <div className="text-[10px] text-gray-500">
-                        {conv.message_count}개
-                        {conv.last_message && (
-                          <span className="ml-1 truncate">· {conv.last_message.slice(0, 20)}{conv.last_message.length > 20 ? "…" : ""}</span>
-                        )}
+                      {/* 중단: 메시지 수 pill */}
+                      <div>
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-white/10 text-[10px] text-gray-400">
+                          💬 {conv.message_count}개 메시지
+                        </span>
                       </div>
+                      {/* 하단: last_message 미리보기 */}
+                      {conv.last_message && (
+                        <div className="text-[11px] text-gray-500 italic truncate">
+                          &ldquo;{conv.last_message.slice(0, 35)}{conv.last_message.length > 35 ? "…" : ""}&rdquo;
+                        </div>
+                      )}
                     </button>
                   );
                 })

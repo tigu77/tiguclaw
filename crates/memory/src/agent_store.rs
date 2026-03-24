@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use tracing::info;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -18,6 +19,8 @@ use tracing::info;
 /// DB에 저장되는 에이전트 정보.
 #[derive(Debug, Clone)]
 pub struct PersistedAgent {
+    /// 고유 UUID (Phase 10: 마켓 준비)
+    pub id: String,
     pub name: String,
     /// 로컬 별칭 (선택사항)
     pub nickname: Option<String>,
@@ -74,7 +77,8 @@ impl AgentStore {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agents (
-                name          TEXT PRIMARY KEY,
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
                 level         INTEGER NOT NULL DEFAULT 1,
                 tier          INTEGER NOT NULL DEFAULT 1,
                 agent_role    TEXT NOT NULL,
@@ -110,19 +114,41 @@ impl AgentStore {
             "UPDATE agents SET tier = (SELECT level FROM agents a2 WHERE a2.name = agents.name);"
         );
 
+        // UUID PK 마이그레이션: 기존 테이블에 id 컬럼이 없으면 추가 + UUID 할당.
+        // (새 테이블은 CREATE TABLE에서 이미 id를 PK로 갖고 있으므로 이 ALTER는 무시된다.)
+        let _ = conn.execute_batch("ALTER TABLE agents ADD COLUMN id TEXT;");
+        // id가 NULL인 기존 행에 UUID 할당.
+        // SQLite에 uuid() 함수 없으므로 randomblob으로 UUID v4 형식 생성.
+        let _ = conn.execute_batch(
+            "UPDATE agents SET id = lower(hex(randomblob(4))) || '-' \
+             || lower(hex(randomblob(2))) || '-4' \
+             || substr(lower(hex(randomblob(2))),2) || '-' \
+             || substr('89ab', abs(random()) % 4 + 1, 1) \
+             || substr(lower(hex(randomblob(2))),2) || '-' \
+             || lower(hex(randomblob(6))) \
+             WHERE id IS NULL;"
+        );
+
         Ok(())
     }
 
     /// 에이전트 저장 (이미 있으면 REPLACE).
     pub fn save(&self, agent: &PersistedAgent) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        // id가 비어 있으면 새 UUID 생성.
+        let id = if agent.id.is_empty() {
+            Uuid::new_v4().to_string()
+        } else {
+            agent.id.clone()
+        };
         // level 컬럼은 이전 DB 호환을 위해 tier 값으로 채운다 (NOT NULL 제약 유지).
         conn.execute(
             "INSERT OR REPLACE INTO agents
-                (name, level, tier, agent_role, channel_type, bot_token, admin_chat_id,
+                (id, name, level, tier, agent_role, channel_type, bot_token, admin_chat_id,
                  system_prompt, persistent, status, parent_agent, team, clearance, nickname, updated_at)
-             VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))",
+             VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))",
             params![
+                id,
                 agent.name,
                 agent.tier as i64,
                 agent.agent_role,
@@ -146,26 +172,27 @@ impl AgentStore {
     pub fn load_all(&self) -> Result<Vec<PersistedAgent>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT name, tier, agent_role, channel_type, bot_token, admin_chat_id,
+            "SELECT id, name, tier, agent_role, channel_type, bot_token, admin_chat_id,
                     system_prompt, persistent, status, parent_agent, team, clearance, nickname
              FROM agents",
         )?;
         let agents = stmt
             .query_map([], |row| {
                 Ok(PersistedAgent {
-                    name: row.get(0)?,
-                    tier: row.get::<_, i64>(1)? as u8,
-                    agent_role: row.get(2)?,
-                    channel_type: row.get(3)?,
-                    bot_token: row.get(4)?,
-                    admin_chat_id: row.get(5)?,
-                    system_prompt: row.get(6)?,
-                    persistent: row.get::<_, i64>(7)? != 0,
-                    status: row.get(8)?,
-                    parent_agent: row.get(9)?,
-                    team: row.get(10)?,
-                    clearance: row.get(11)?,
-                    nickname: row.get(12)?,
+                    id: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    name: row.get(1)?,
+                    tier: row.get::<_, i64>(2)? as u8,
+                    agent_role: row.get(3)?,
+                    channel_type: row.get(4)?,
+                    bot_token: row.get(5)?,
+                    admin_chat_id: row.get(6)?,
+                    system_prompt: row.get(7)?,
+                    persistent: row.get::<_, i64>(8)? != 0,
+                    status: row.get(9)?,
+                    parent_agent: row.get(10)?,
+                    team: row.get(11)?,
+                    clearance: row.get(12)?,
+                    nickname: row.get(13)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()

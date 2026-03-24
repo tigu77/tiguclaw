@@ -95,6 +95,8 @@ pub struct SpawnRequest {
 /// 실행 중인 에이전트 정보 (list 응답용).
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
+    /// 고유 UUID (Phase 10: 마켓 준비).
+    pub id: Option<String>,
     pub name: String,
     /// 로컬 별칭 — 같은 spec(name)으로 여러 인스턴스 구분용 (선택사항).
     pub nickname: Option<String>,
@@ -118,6 +120,8 @@ pub struct AgentInfo {
 // ---------------------------------------------------------------------------
 
 struct AgentHandle {
+    /// 고유 UUID (Phase 10: 마켓 준비). None이면 미할당(구버전 복원 등).
+    id: Option<String>,
     name: String,
     /// 로컬 별칭 (선택사항).
     nickname: Option<String>,
@@ -654,6 +658,7 @@ impl AgentRegistry {
         self.agents.insert(
             req.name.clone(),
             AgentHandle {
+                id: None, // spawn 시 DB save 후 id가 할당됨; 런타임은 name 기반으로 동작
                 name: req.name.clone(),
                 nickname: req.nickname.clone(),
                 tier: req.tier,
@@ -715,6 +720,7 @@ impl AgentRegistry {
         if req.persistent {
             if let Some(ref store) = self.store {
                 let persisted = PersistedAgent {
+                    id: String::new(), // save()에서 새 UUID 자동 생성
                     name: req.name.clone(),
                     nickname: req.nickname.clone(),
                     tier: req.tier,
@@ -858,6 +864,7 @@ impl AgentRegistry {
         // 슈퍼마스터 자신을 맨 앞에 추가.
         if let Some(ref sm) = self.supermaster {
             result.push(AgentInfo {
+                id: None,
                 name: sm.name.clone(),
                 nickname: sm.nickname.clone(),
                 tier: sm.tier,
@@ -876,6 +883,7 @@ impl AgentRegistry {
             self.agents.values()
                 .filter(|h| h.name != sm_name)
                 .map(|h| AgentInfo {
+                    id: h.id.clone(),
                     name: h.name.clone(),
                     nickname: h.nickname.clone(),
                     tier: h.tier,

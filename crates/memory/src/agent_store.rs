@@ -19,6 +19,8 @@ use tracing::info;
 #[derive(Debug, Clone)]
 pub struct PersistedAgent {
     pub name: String,
+    /// 로컬 별칭 (선택사항)
+    pub nickname: Option<String>,
     pub tier: u8,
     /// "supermaster" | "master" | "mini" | "worker"
     pub agent_role: String,
@@ -88,11 +90,12 @@ impl AgentStore {
         )
         .context("AgentStore: 테이블 생성 실패")?;
 
-        // 마이그레이션: parent_agent / team / clearance / tier 컬럼 추가 (없으면)
+        // 마이그레이션: parent_agent / team / clearance / nickname / tier 컬럼 추가 (없으면)
         for (col, ty) in &[
             ("parent_agent", "TEXT"),
             ("team", "TEXT"),
             ("clearance", "TEXT"),
+            ("nickname", "TEXT"),
         ] {
             let _ = conn.execute_batch(&format!(
                 "ALTER TABLE agents ADD COLUMN {col} {ty};"
@@ -117,8 +120,8 @@ impl AgentStore {
         conn.execute(
             "INSERT OR REPLACE INTO agents
                 (name, level, tier, agent_role, channel_type, bot_token, admin_chat_id,
-                 system_prompt, persistent, status, parent_agent, team, clearance, updated_at)
-             VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
+                 system_prompt, persistent, status, parent_agent, team, clearance, nickname, updated_at)
+             VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, datetime('now'))",
             params![
                 agent.name,
                 agent.tier as i64,
@@ -132,6 +135,7 @@ impl AgentStore {
                 agent.parent_agent,
                 agent.team,
                 agent.clearance,
+                agent.nickname,
             ],
         )
         .with_context(|| format!("AgentStore: save 실패 — name={}", agent.name))?;
@@ -143,7 +147,7 @@ impl AgentStore {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         let mut stmt = conn.prepare(
             "SELECT name, tier, agent_role, channel_type, bot_token, admin_chat_id,
-                    system_prompt, persistent, status, parent_agent, team, clearance
+                    system_prompt, persistent, status, parent_agent, team, clearance, nickname
              FROM agents",
         )?;
         let agents = stmt
@@ -161,6 +165,7 @@ impl AgentStore {
                     parent_agent: row.get(9)?,
                     team: row.get(10)?,
                     clearance: row.get(11)?,
+                    nickname: row.get(12)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()

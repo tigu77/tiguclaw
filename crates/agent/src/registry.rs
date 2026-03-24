@@ -701,6 +701,7 @@ impl AgentRegistry {
             if let Some(ref store) = self.store {
                 let persisted = PersistedAgent {
                     name: req.name.clone(),
+                    nickname: req.nickname.clone(),
                     tier: req.tier,
                     agent_role: agent_role_to_str(&req.agent_role).to_string(),
                     channel_type: channel_type.clone(),
@@ -947,7 +948,7 @@ impl AgentRegistry {
         for pa in to_restore {
             let req = SpawnRequest {
                 name: pa.name.clone(),
-                nickname: None,
+                nickname: pa.nickname.clone(),
                 tier: pa.tier,
                 role: String::new(), // system_prompt_override로 대체되므로 미사용
                 agent_role: str_to_agent_role(&pa.agent_role),

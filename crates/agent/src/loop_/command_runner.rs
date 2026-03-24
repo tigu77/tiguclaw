@@ -376,6 +376,7 @@ impl AgentLoop {
                 // AgentInfo를 이름으로 빠르게 찾기 위한 맵과 상태 조회
                 struct AgentEntry {
                     name: String,
+                    nickname: Option<String>,
                     tier: u8,
                     team: Option<String>,
                     status: String,
@@ -391,6 +392,7 @@ impl AgentLoop {
                         let status = reg.get_status(&info.name);
                         entries.push(AgentEntry {
                             name: info.name.clone(),
+                            nickname: info.nickname.clone(),
                             tier: info.tier,
                             team: info.team.clone(),
                             status,
@@ -447,6 +449,13 @@ impl AgentLoop {
                         format!("{prefix}├── ")
                     };
 
+                    // 닉네임 / 이름 표시
+                    let display_name = if let Some(ref nick) = entry.nickname {
+                        format!("{} / {}", nick, entry.name)
+                    } else {
+                        entry.name.clone()
+                    };
+
                     // 팀 정보 표시
                     let team_str = entry.team.as_deref()
                         .filter(|t| !t.is_empty())
@@ -455,8 +464,7 @@ impl AgentLoop {
 
                     let tier_label = format!("T{}", entry.tier);
                     result.push_str(&format!(
-                        "{connector}{icon} {} ({tier_label}{team_str}, {})\n",
-                        entry.name,
+                        "{connector}{icon} {display_name} ({tier_label}{team_str}, {})\n",
                         entry.status
                     ));
 

@@ -7,7 +7,6 @@ use anyhow::Result;
 use tracing::info;
 
 const DEFAULT_CORE: &str = include_str!("defaults/CORE.md");
-const DEFAULT_AGENTS: &str = include_str!("defaults/AGENTS.md");
 const DEFAULT_T0: &str = include_str!("defaults/T0.md");
 const DEFAULT_T1: &str = include_str!("defaults/T1.md");
 const DEFAULT_T2: &str = include_str!("defaults/T2.md");
@@ -19,7 +18,6 @@ pub fn init_shared_defaults(shared_dir: &Path) -> Result<()> {
 
     let files = [
         ("CORE.md", DEFAULT_CORE),
-        ("AGENTS.md", DEFAULT_AGENTS),
         ("T0.md", DEFAULT_T0),
         ("T1.md", DEFAULT_T1),
         ("T2.md", DEFAULT_T2),

@@ -15,7 +15,6 @@ const WORKSPACE_FILES: &[&str] = &[
     "SOUL.md",
     "USER.md",
     "IDENTITY.md",
-    "AGENTS.md",
     "MEMORY.md",
     "HEARTBEAT.md",
     "TOOLS.md",

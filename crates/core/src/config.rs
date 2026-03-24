@@ -77,7 +77,6 @@ fn default_clearance_presets() -> HashMap<String, ClearancePreset> {
                 "CORE.md".to_string(),
                 "SOUL.md".to_string(),
                 "USER.md".to_string(),
-                "AGENTS.md".to_string(),
                 "MEMORY.md".to_string(),
                 "TOOLS.md".to_string(),
                 "T0.md".to_string(),

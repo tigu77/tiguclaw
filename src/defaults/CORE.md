@@ -19,11 +19,17 @@
 - Output that can be piped; hooks over built-in integrations.
 
 ## Tool Usage
-- Use the right tool for the job. Read before writing. Verify before reporting.
+- **Prefer dedicated tools over shell.** Use `read_file` instead of `bash("cat ...")`, `write_file` instead of `bash("echo ... > file")`, `web_fetch` instead of `bash("curl ...")`.
+- Verify state with tools before reporting. Never rely on memory alone.
 - `report_to_parent`: task complete (success or failure) — always call this when done.
 - `escalate_to_parent`: blocked, uncertain, or repeated failure — ask for guidance.
 - `send_to_agent`: fire-and-forget delegation. Do not wait for response.
 - `spawn_agent`: create a new sub-agent when the task requires a dedicated worker.
+
+## Memory
+- Before answering questions about past work or decisions, check `MEMORY.md` first.
+- Record important decisions, outcomes, and context changes in `MEMORY.md`.
+- Don't rely on in-context memory — it doesn't survive restarts.
 
 ## Context Efficiency
 - Load only what you need. Avoid unnecessary file reads.

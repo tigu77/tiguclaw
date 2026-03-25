@@ -52,6 +52,10 @@ pub struct Config {
     /// 에이전트 컨텍스트 접근 권한 프리셋 (full / standard / minimal 및 커스텀).
     #[serde(default = "default_clearance_presets")]
     pub clearance: HashMap<String, ClearancePreset>,
+    /// T2 에이전트 전용 모델 설정 (없으면 [provider.tiers]로 폴백).
+    /// 예: [model_t2] normal_models = ["claude-haiku-4-20250514", "claude-sonnet-4-20250514"]
+    #[serde(default)]
+    pub model_t2: Option<TiersConfig>,
 }
 
 // ─── ClearancePreset ────────────────────────────────────────────────────────

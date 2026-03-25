@@ -171,6 +171,8 @@ pub struct AgentSendInfo {
 pub struct AgentRegistry {
     agents: HashMap<String, AgentHandle>,
     provider: Arc<dyn Provider>,
+    /// T2 에이전트 전용 provider (None이면 provider로 폴백).
+    t2_provider: Option<Arc<dyn Provider>>,
     tools: Vec<Arc<dyn Tool>>,
     /// SQLite 영속화 저장소. None이면 영속화 비활성화.
     store: Option<Arc<AgentStore>>,
@@ -207,6 +209,7 @@ impl AgentRegistry {
         Self {
             agents: HashMap::new(),
             provider,
+            t2_provider: None,
             tools,
             store: None,
             monitor: None,
@@ -233,6 +236,7 @@ impl AgentRegistry {
         Self {
             agents: HashMap::new(),
             provider,
+            t2_provider: None,
             tools,
             store: Some(store),
             monitor: None,
@@ -248,6 +252,12 @@ impl AgentRegistry {
             templates_dir: std::path::PathBuf::from("templates"),
             agents_dir: std::path::PathBuf::from("agents"),
         }
+    }
+
+    /// T2 에이전트 전용 provider 설정.
+    /// 설정 시 tier >= 2 에이전트는 이 provider를 사용한다 (None이면 기본 provider로 폴백).
+    pub fn set_t2_provider(&mut self, provider: Arc<dyn Provider>) {
+        self.t2_provider = Some(provider);
     }
 
     /// spawn된 에이전트의 SpawnAgentTool에서 사용할 디렉토리 경로를 설정한다.
@@ -508,7 +518,12 @@ impl AgentRegistry {
         let (steer_tx_handle, steer_rx_spawned) = mpsc::channel::<String>(8);
         // clone_fresh(): 에이전트별 독립적인 circuit breaker 인스턴스 생성.
         // T0(supermaster)의 circuit breaker 상태가 스폰된 에이전트에 전파되지 않도록 한다.
-        let provider = self.provider.clone_fresh();
+        // tier >= 2이면 T2 전용 provider 사용 (없으면 기본 provider로 폴백).
+        let provider = if req.tier >= 2 {
+            self.t2_provider.as_ref().unwrap_or(&self.provider).clone_fresh()
+        } else {
+            self.provider.clone_fresh()
+        };
         // 에이전트별 툴 인스턴스 생성: SendToAgentTool / SpawnAgentTool을 개별 교체.
         // from_name을 이 에이전트 이름으로 설정 → T2→T1 보고 경로가 올바르게 설정됨.
         let tools = if let Some(ref reg_arc) = registry_arc {

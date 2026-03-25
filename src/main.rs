@@ -75,6 +75,29 @@ async fn async_main() -> Result<()> {
         tiguclaw_provider_anthropic::TierProvider::from_config(&config.provider),
     );
 
+    // T2 에이전트 전용 provider — config에 [model_t2]가 있으면 별도 provider 생성.
+    // 없으면 None → spawn_agent에서 기본 provider로 폴백.
+    let t2_provider: Option<Arc<dyn tiguclaw_core::provider::Provider>> =
+        config.model_t2.as_ref().map(|tiers| {
+            let t2_cfg = tiguclaw_core::config::ProviderConfig {
+                api_key: config.provider.api_key.clone(),
+                max_tokens: config.provider.max_tokens,
+                tiers: tiers.clone(),
+                thinking: "off".to_string(),
+            };
+            Arc::new(tiguclaw_provider_anthropic::TierProvider::from_config(&t2_cfg))
+                as Arc<dyn tiguclaw_core::provider::Provider>
+        });
+    if let Some(ref t2) = t2_provider {
+        info!(
+            name = t2.name(),
+            models = ?config.model_t2.as_ref().map(|t| t.get_normal_models().to_vec()),
+            "T2 전용 provider 생성됨"
+        );
+    } else {
+        info!("T2 전용 provider 없음 — T2 에이전트는 기본 provider 사용");
+    }
+
     // Build AgentRegistry용 base tools (Arc — registry와 L2 에이전트가 공유).
     // T1 에이전트용 레지스트리 툴은 나중에 registry Arc가 준비된 뒤 주입한다.
     // (registry_tools_base: 기본 5개, registry_tools는 에이전트 관리 툴 포함)
@@ -103,6 +126,13 @@ async fn async_main() -> Result<()> {
     let registry = Arc::new(Mutex::new(
         tiguclaw_agent::AgentRegistry::new_with_store(provider.clone(), registry_tools_base, agent_store),
     ));
+
+    // T2 전용 provider를 registry에 주입 (Some인 경우에만).
+    if let Some(t2_prov) = t2_provider {
+        let mut reg = registry.lock().await;
+        reg.set_t2_provider(t2_prov);
+        info!("T2 provider registry에 주입 완료");
+    }
 
     // primary channel inject_tx를 registry에 등록 — 대시보드 메시지를 메인채널로 직접 주입.
     {

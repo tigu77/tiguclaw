@@ -18,6 +18,7 @@ use tiguclaw_channel_telegram::TelegramChannel;
 use tiguclaw_core::channel::Channel;
 use tiguclaw_core::config::AgentRole;
 use tiguclaw_core::provider::{Provider, ThinkingLevel, ToolDefinition};
+use tiguclaw_core::runtime::RuntimeAdapter;
 use tiguclaw_core::tool::Tool;
 use tiguclaw_core::types::{ChatMessage, ToolCall};
 use tiguclaw_memory::{AgentStore, PersistedAgent};
@@ -201,6 +202,8 @@ pub struct AgentRegistry {
     templates_dir: std::path::PathBuf,
     /// spawn된 에이전트의 SpawnAgentTool에서 사용할 에이전트 스펙 디렉토리.
     agents_dir: std::path::PathBuf,
+    /// 에이전트별 workspace-aware ShellTool 생성에 사용할 런타임 (선택).
+    runtime: Option<Arc<dyn RuntimeAdapter>>,
 }
 
 impl AgentRegistry {
@@ -224,6 +227,7 @@ impl AgentRegistry {
             admin_chat_id: 0,
             templates_dir: std::path::PathBuf::from("templates"),
             agents_dir: std::path::PathBuf::from("agents"),
+            runtime: None,
         }
     }
 
@@ -251,7 +255,16 @@ impl AgentRegistry {
             admin_chat_id: 0,
             templates_dir: std::path::PathBuf::from("templates"),
             agents_dir: std::path::PathBuf::from("agents"),
+            runtime: None,
         }
+    }
+
+    /// workspace-aware ShellTool 생성에 사용할 런타임을 설정한다.
+    ///
+    /// 설정 시 spawn_agent()에서 각 에이전트의 전용 workspace 디렉토리로 cwd가 고정된
+    /// ShellTool 인스턴스를 자동 생성한다.
+    pub fn set_runtime(&mut self, runtime: Arc<dyn RuntimeAdapter>) {
+        self.runtime = Some(runtime);
     }
 
     /// T2 에이전트 전용 provider 설정.
@@ -505,11 +518,32 @@ impl AgentRegistry {
             }
         }
 
+        // 에이전트 전용 워크스페이스 디렉토리 자동 생성.
+        // ~/.tiguclaw/workspace/<agent-name>/ 경로를 생성하고 ShellTool cwd로 사용한다.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let workspace_path = std::path::PathBuf::from(format!(
+            "{home}/.tiguclaw/workspace/{}",
+            req.name
+        ));
+        if let Err(e) = std::fs::create_dir_all(&workspace_path) {
+            warn!(name = %req.name, workspace = %workspace_path.display(), error = %e, "workspace 디렉토리 생성 실패 (무시)");
+        } else {
+            info!(name = %req.name, workspace = %workspace_path.display(), "agent workspace created");
+        }
+
         // 역할 기반 시스템 프롬프트 자동 생성 (오버라이드 우선).
+        // system_prompt_override가 있으면(복원 시) 그대로 사용 — 이미 workspace 정보 포함.
+        // 새로 생성 시에만 workspace 경로를 system_prompt 끝에 추가한다.
         let system_prompt = req
             .system_prompt_override
             .clone()
-            .unwrap_or_else(|| build_system_prompt(&req.name, &req.role));
+            .unwrap_or_else(|| {
+                let base = build_system_prompt(&req.name, &req.role);
+                format!(
+                    "{base}\n\n## Workspace\nYour dedicated workspace: {}\nAlways work within this directory.",
+                    workspace_path.display()
+                )
+            });
         // store 저장용 복사본 (spawn 클로저에 moved 되기 전).
         let system_prompt_for_store = system_prompt.clone();
 
@@ -526,10 +560,26 @@ impl AgentRegistry {
         };
         // 에이전트별 툴 인스턴스 생성: SendToAgentTool / SpawnAgentTool을 개별 교체.
         // from_name을 이 에이전트 이름으로 설정 → T2→T1 보고 경로가 올바르게 설정됨.
+        // workspace_dir을 cwd로 고정하는 ShellTool 생성 헬퍼.
+        // runtime이 설정된 경우에만 workspace-aware 버전으로 교체한다.
+        let workspace_runtime = self.runtime.clone();
+        let workspace_path_for_tools = workspace_path.clone();
+        let make_workspace_shell = move |tool: &Arc<dyn Tool>| -> Arc<dyn Tool> {
+            if tool.name() == "shell" {
+                if let Some(ref rt) = workspace_runtime {
+                    return Arc::new(
+                        crate::tools::ShellTool::new(rt.clone())
+                            .with_workspace_dir(workspace_path_for_tools.clone())
+                    ) as Arc<dyn Tool>;
+                }
+            }
+            tool.clone()
+        };
+
         let tools = if let Some(ref reg_arc) = registry_arc {
             let mut t: Vec<Arc<dyn Tool>> = self.tools.iter()
                 .filter(|tool| tool.name() != "send_to_agent" && tool.name() != "spawn_agent")
-                .cloned()
+                .map(&make_workspace_shell)
                 .collect();
             // SendToAgentTool: from_name = 이 에이전트 이름 → completion 콜백이 올바른 에이전트로 전달.
             t.push(Arc::new(
@@ -547,8 +597,8 @@ impl AgentRegistry {
             ));
             t
         } else {
-            // registry_arc 없음(restore_from_store 등): 기존 공유 툴 사용 (하위 호환).
-            self.tools.clone()
+            // registry_arc 없음(restore_from_store 등): ShellTool만 workspace-aware로 교체 후 반환.
+            self.tools.iter().map(&make_workspace_shell).collect()
         };
         // 부모 에이전트의 inject_tx — 작업 완료 시 결과 자동 주입용.
         let parent_inject_tx = self.primary_inject_tx.clone();

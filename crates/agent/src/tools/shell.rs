@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -13,11 +14,22 @@ use tiguclaw_core::tool::Tool;
 /// Tool that executes shell commands using the configured runtime.
 pub struct ShellTool {
     runtime: Arc<dyn RuntimeAdapter>,
+    /// 에이전트 전용 워크스페이스 디렉토리.
+    /// Some이면 모든 명령 앞에 `cd "<dir>" && ` 자동 prefix.
+    workspace_dir: Option<PathBuf>,
 }
 
 impl ShellTool {
     pub fn new(runtime: Arc<dyn RuntimeAdapter>) -> Self {
-        Self { runtime }
+        Self { runtime, workspace_dir: None }
+    }
+
+    /// 에이전트 전용 워크스페이스 디렉토리를 설정한다.
+    ///
+    /// 설정 시 모든 shell 명령 앞에 `cd "<dir>" && `를 자동으로 prefix하여
+    /// 에이전트가 전용 워크스페이스 내에서 작업하도록 강제한다.
+    pub fn with_workspace_dir(self, dir: PathBuf) -> Self {
+        Self { workspace_dir: Some(dir), ..self }
     }
 }
 
@@ -49,7 +61,7 @@ impl Tool for ShellTool {
         &self,
         args: &HashMap<String, serde_json::Value>,
     ) -> Result<String> {
-        let command = args
+        let raw_command = args
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or_else(|| TiguError::Tool("missing 'command' argument".into()))?;
@@ -57,6 +69,16 @@ impl Tool for ShellTool {
         if !self.runtime.has_shell() {
             return Err(TiguError::Tool("runtime does not support shell execution".into()));
         }
+
+        // workspace_dir가 설정된 경우 cd prefix를 추가해 cwd를 강제한다.
+        let effective_command: String = match &self.workspace_dir {
+            Some(dir) => {
+                let dir_str = dir.to_string_lossy();
+                format!("cd \"{}\" && {}", dir_str, raw_command)
+            }
+            None => raw_command.to_string(),
+        };
+        let command = effective_command.as_str();
 
         debug!(command, "executing shell tool");
 

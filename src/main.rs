@@ -101,6 +101,8 @@ async fn async_main() -> Result<()> {
     // Build AgentRegistry용 base tools (Arc — registry와 L2 에이전트가 공유).
     // T1 에이전트용 레지스트리 툴은 나중에 registry Arc가 준비된 뒤 주입한다.
     // (registry_tools_base: 기본 5개, registry_tools는 에이전트 관리 툴 포함)
+    // registry_runtime: spawn된 에이전트별 workspace-aware ShellTool 생성용 (별도 인스턴스).
+    let registry_runtime = Arc::new(tiguclaw_runtime::NativeRuntime::from_config(&config.runtime));
     let registry_tools_base: Vec<Arc<dyn tiguclaw_core::tool::Tool>> = {
         let runtime2 = Arc::new(tiguclaw_runtime::NativeRuntime::from_config(&config.runtime));
         vec![
@@ -146,6 +148,20 @@ async fn async_main() -> Result<()> {
             std::path::PathBuf::from(&config.agent.templates_dir),
             std::path::PathBuf::from(&config.agent.agents_dir),
         );
+        // workspace-aware ShellTool 생성을 위한 runtime 주입.
+        reg.set_runtime(registry_runtime as Arc<dyn tiguclaw_core::runtime::RuntimeAdapter>);
+    }
+
+    // supermaster(T0) 전용 워크스페이스 디렉토리 생성.
+    // spawn된 에이전트는 ~/.tiguclaw/workspace/<name>/ — T0는 <agent-name>/ 사용.
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let supermaster_workspace = format!("{home}/.tiguclaw/workspace/{}", config.agent.name);
+        if let Err(e) = std::fs::create_dir_all(&supermaster_workspace) {
+            tracing::warn!(workspace = %supermaster_workspace, error = %e, "supermaster workspace 생성 실패 (무시)");
+        } else {
+            info!(workspace = %supermaster_workspace, "supermaster workspace created");
+        }
     }
 
     // T1 에이전트 공유 툴셋에 에이전트 관리 툴 추가 (registry Arc 준비 후 주입).

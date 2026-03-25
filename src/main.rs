@@ -480,6 +480,20 @@ async fn async_main() -> Result<()> {
         info!("memory_search + memory_store tools added to T0 toolset");
     }
 
+    // web_search 툴 — brave_api_key가 설정된 경우 T0 + registry(T1/T2)에 주입.
+    if let Some(ref brave_key) = config.brave_api_key {
+        if !brave_key.is_empty() {
+            {
+                let search_tool = Arc::new(tiguclaw_agent::tools::WebSearchTool::new(brave_key.clone()));
+                let mut reg = registry.lock().await;
+                reg.push_tool(search_tool);
+                info!("web_search tool injected into registry_tools (T1/T2 shared)");
+            }
+            tools.push(Box::new(tiguclaw_agent::tools::WebSearchTool::new(brave_key.clone())));
+            info!("web_search tool added to T0 toolset");
+        }
+    }
+
     // Scan skill directories.
     let skill_dirs: Vec<std::path::PathBuf> = config
         .agent
@@ -615,11 +629,32 @@ async fn async_main() -> Result<()> {
                     let shared_dir = std::path::PathBuf::from(&config.agent.shared_dir);
                     tiguclaw_agent::WorkspaceLoader::load_team_context(&shared_dir, team)
                 });
+                // agents/<name>/MEMORY.md 가 있으면 시스템 프롬프트에 자동 주입.
+                let l1_agent_memory = {
+                    let mem_path = std::path::PathBuf::from(&config.agent.agents_dir)
+                        .join(&entry.name)
+                        .join("MEMORY.md");
+                    if mem_path.exists() {
+                        let content = std::fs::read_to_string(&mem_path).unwrap_or_default();
+                        if !content.is_empty() {
+                            info!(name = %entry.name, path = %mem_path.display(), "loading agent MEMORY.md");
+                            Some(format!("## Agent Memory\n{}", content))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
                 let mut l1_builder = tiguclaw_agent::PromptBuilder::new(l1_prompt)
                     .with_workspace(ws_ctx)
                     .with_section(l1_channel_ctx);
                 if let Some(tc) = l1_team_context {
                     l1_builder = l1_builder.with_section(tc);
+                }
+                if let Some(mem) = l1_agent_memory {
+                    l1_builder = l1_builder.with_section(mem);
                 }
                 let l1_system_prompt = l1_builder.build();
 

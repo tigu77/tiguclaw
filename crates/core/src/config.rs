@@ -56,6 +56,10 @@ pub struct Config {
     /// 예: [model_t2] normal_models = ["claude-haiku-4-20250514", "claude-sonnet-4-20250514"]
     #[serde(default)]
     pub model_t2: Option<TiersConfig>,
+    /// Brave Search API 키 (https://brave.com/search/api/).
+    /// 설정 시 web_search 툴이 T0/T1 모두에 자동 주입됨.
+    #[serde(default)]
+    pub brave_api_key: Option<String>,
 }
 
 // ─── ClearancePreset ────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ pub mod shell;
 pub mod spawn_agent;
 pub mod send_file;
 pub mod web_fetch;
+pub mod web_search;
 pub mod write_file;
 
 pub use agent_task::{KillAgentTool, ListAgentsTool, SendToAgentTool};
@@ -26,4 +27,5 @@ pub use send_file::SendFileTool;
 pub use shell::ShellTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use web_fetch::WebFetchTool;
+pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;

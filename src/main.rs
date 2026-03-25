@@ -152,18 +152,6 @@ async fn async_main() -> Result<()> {
         reg.set_runtime(registry_runtime as Arc<dyn tiguclaw_core::runtime::RuntimeAdapter>);
     }
 
-    // supermaster(T0) 전용 워크스페이스 디렉토리 생성.
-    // spawn된 에이전트는 ~/.tiguclaw/workspace/<name>/ — T0는 <agent-name>/ 사용.
-    {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let supermaster_workspace = format!("{home}/.tiguclaw/workspace/{}", config.agent.name);
-        if let Err(e) = std::fs::create_dir_all(&supermaster_workspace) {
-            tracing::warn!(workspace = %supermaster_workspace, error = %e, "supermaster workspace 생성 실패 (무시)");
-        } else {
-            info!(workspace = %supermaster_workspace, "supermaster workspace created");
-        }
-    }
-
     // T1 에이전트 공유 툴셋에 에이전트 관리 툴 추가 (registry Arc 준비 후 주입).
     // T1용 spawn_agent는 requester_tier=1로 설정 → T2(tier >= 2)만 spawn 가능.
     {

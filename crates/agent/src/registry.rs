@@ -518,32 +518,19 @@ impl AgentRegistry {
             }
         }
 
-        // 에이전트 전용 워크스페이스 디렉토리 자동 생성.
-        // ~/.tiguclaw/workspace/<agent-name>/ 경로를 생성하고 ShellTool cwd로 사용한다.
+        // workspace_path: ShellTool cwd 고정에 사용 (디렉토리 자동 생성은 하지 않음).
+        // 위임 시 system_prompt에 경로 정보를 포함시켜 에이전트가 직접 준비하도록 한다.
         let home = std::env::var("HOME").unwrap_or_default();
         let workspace_path = std::path::PathBuf::from(format!(
             "{home}/.tiguclaw/workspace/{}",
             req.name
         ));
-        if let Err(e) = std::fs::create_dir_all(&workspace_path) {
-            warn!(name = %req.name, workspace = %workspace_path.display(), error = %e, "workspace 디렉토리 생성 실패 (무시)");
-        } else {
-            info!(name = %req.name, workspace = %workspace_path.display(), "agent workspace created");
-        }
 
         // 역할 기반 시스템 프롬프트 자동 생성 (오버라이드 우선).
-        // system_prompt_override가 있으면(복원 시) 그대로 사용 — 이미 workspace 정보 포함.
-        // 새로 생성 시에만 workspace 경로를 system_prompt 끝에 추가한다.
         let system_prompt = req
             .system_prompt_override
             .clone()
-            .unwrap_or_else(|| {
-                let base = build_system_prompt(&req.name, &req.role);
-                format!(
-                    "{base}\n\n## Workspace\nYour dedicated workspace: {}\nAlways work within this directory.",
-                    workspace_path.display()
-                )
-            });
+            .unwrap_or_else(|| build_system_prompt(&req.name, &req.role));
         // store 저장용 복사본 (spawn 클로저에 moved 되기 전).
         let system_prompt_for_store = system_prompt.clone();
 

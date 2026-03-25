@@ -573,6 +573,8 @@ impl AgentRegistry {
         // KeepAlive 관련 변수 (persistent 내부 에이전트일 때만 Some).
         let mut keepalive_flag: bool = false;
         let mut intentionally_killed_arc: Option<Arc<AtomicBool>> = None;
+        // tier >= 2는 항상 on-demand (non-persistent)
+        let persistent = if req.tier >= 2 { false } else { req.persistent };
 
         if let Some(bot_token) = req.bot_token.clone() {
             // bot_token 있음 → TelegramChannel로 직접 소통하는 T1 에이전트.
@@ -594,7 +596,7 @@ impl AgentRegistry {
         } else {
             // bot_token 없음 → 기존 InternalChannel(IPC) 방식.
             channel_type = "internal".to_string();
-            let persistent_flag = req.persistent;
+            let persistent_flag = persistent;
             if !persistent_flag {
                 // Non-persistent: 첫 태스크 완료 후 loop 종료 + registry에서 자동 제거.
                 let (cleanup_tx, cleanup_rx) = oneshot::channel::<String>();
@@ -677,7 +679,7 @@ impl AgentRegistry {
                 name: req.name.clone(),
                 nickname: req.nickname.clone(),
                 tier: req.tier,
-                persistent: req.persistent,
+                persistent,
                 channel_type: channel_type.clone(),
                 agent_role: req.agent_role.clone(),
                 task_tx,
@@ -698,7 +700,7 @@ impl AgentRegistry {
         info!(
             name = %req.name,
             tier = req.tier,
-            persistent = req.persistent,
+            persistent = persistent,
             channel_type = %channel_type,
             hooks_url = ?req.hooks_url,
             "registry agent spawned"
@@ -732,7 +734,7 @@ impl AgentRegistry {
         self.broadcast_agent_status();
 
         // persistent=true인 에이전트만 DB에 저장.
-        if req.persistent {
+        if persistent {
             if let Some(ref store) = self.store {
                 let persisted = PersistedAgent {
                     id: String::new(), // save()에서 새 UUID 자동 생성

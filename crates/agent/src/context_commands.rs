@@ -33,6 +33,8 @@ pub enum ContextCommand {
     AgentSpecs,
     /// /templates — list available agent templates (deprecated, alias for /specs)
     Templates,
+    /// /reset — clear conversation history (also triggered by Korean keywords)
+    Reset,
     /// Not a context command — pass through to LLM
     None,
 }
@@ -102,7 +104,19 @@ pub fn parse_command(text: &str) -> ContextCommand {
         "/cancel" => ContextCommand::Cancel,
         "/specs" => ContextCommand::AgentSpecs,
         "/templates" => ContextCommand::Templates,
-        _ => ContextCommand::None,
+        "/reset" | "/clear" => ContextCommand::Reset,
+        _ => {
+            // Korean reset keywords (exact match on full trimmed text).
+            let full = trimmed.to_lowercase();
+            if matches!(
+                full.as_str(),
+                "리셋" | "컨텍스트 초기화" | "대화 초기화" | "히스토리 초기화"
+            ) {
+                ContextCommand::Reset
+            } else {
+                ContextCommand::None
+            }
+        }
     }
 }
 
@@ -189,6 +203,19 @@ mod tests {
     fn test_save_auto_command() {
         assert_eq!(parse_command("/save"), ContextCommand::SaveAuto);
         assert_eq!(parse_command("  /SAVE  "), ContextCommand::SaveAuto);
+    }
+
+    #[test]
+    fn test_reset_command() {
+        assert_eq!(parse_command("/reset"), ContextCommand::Reset);
+        assert_eq!(parse_command("/clear"), ContextCommand::Reset);
+        assert_eq!(parse_command("  /RESET  "), ContextCommand::Reset);
+        assert_eq!(parse_command("리셋"), ContextCommand::Reset);
+        assert_eq!(parse_command("컨텍스트 초기화"), ContextCommand::Reset);
+        assert_eq!(parse_command("대화 초기화"), ContextCommand::Reset);
+        assert_eq!(parse_command("히스토리 초기화"), ContextCommand::Reset);
+        // Should NOT match partial text
+        assert_eq!(parse_command("리셋해줘"), ContextCommand::None);
     }
 
     #[test]

@@ -31,6 +31,7 @@ impl AgentLoop {
             | ContextCommand::Kill(_) => return self.handle_subagent_command(cmd).await,
             ContextCommand::Status => return self.handle_status().await,
             ContextCommand::Cancel => return "⏹ /cancel은 작업 처리 중에 사용하세요".to_string(),
+            ContextCommand::Reset => return self.handle_reset().await,
             ContextCommand::AgentSpecs | ContextCommand::Templates => {
                 return if matches!(cmd, ContextCommand::AgentSpecs) {
                     self.handle_agent_specs_command().await
@@ -187,6 +188,7 @@ impl AgentLoop {
             | ContextCommand::Kill(_)
             | ContextCommand::Status
             | ContextCommand::Cancel
+            | ContextCommand::Reset
             | ContextCommand::Templates
             | ContextCommand::AgentSpecs => unreachable!(),
         }
@@ -231,6 +233,28 @@ impl AgentLoop {
                 "대화-저장".to_string()
             }
         }
+    }
+
+    /// Handle /reset and /clear commands — wipe in-memory history and DB history.
+    pub(super) async fn handle_reset(&self) -> String {
+        // 1. Clear in-memory history.
+        self.history.lock().await.clear();
+
+        // 2. Clear persisted history from DB (best-effort).
+        if let Some(store) = &self.conversation_store {
+            let conv_id = if !self.name.is_empty() {
+                self.name.clone()
+            } else {
+                "default".to_string()
+            };
+            match store.clear_history(&conv_id) {
+                Ok(()) => info!(conv_id = %conv_id, "conversation history cleared from DB"),
+                Err(e) => warn!(error = %e, "failed to clear conversation history from DB"),
+            }
+        }
+
+        info!("conversation history reset by user command");
+        "대화 히스토리가 초기화됐어요. 새로 시작할게요! 🪨".to_string()
     }
 
     /// Handle /status command.

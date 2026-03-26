@@ -122,12 +122,23 @@ pub async fn handle_message(
 
     let max_iter = ctx.max_tool_iterations;
     // The "wrap up" warning fires one iteration before the hard limit.
-    // If max_iter is 0 or 1, there's no room for a warning, so set it to max_iter
-    // (unreachable — hard limit fires first).
-    let warn_at = max_iter.saturating_sub(1);
+    // If max_iter is 0 (unlimited) or 1, there's no room for a warning.
+    // warn_at = usize::MAX when unlimited (effectively never fires).
+    let warn_at = if max_iter > 0 { max_iter.saturating_sub(1) } else { usize::MAX };
 
     // Agentic loop: call provider, handle tool calls, repeat.
-    for iteration in 0..max_iter {
+    // max_iter == 0 means unlimited iterations.
+    let mut iteration = 0usize;
+    loop {
+        if max_iter > 0 && iteration >= max_iter {
+            warn!(max_iter, "max tool iterations reached");
+            let notice = "⚠️ Reached maximum tool call iterations. Stopping.";
+            ctx.channel
+                .send(&chat_id, notice)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            return Ok(HandleResult::Done);
+        }
         // ── Cancellation check ──
         if cancel_token.is_cancelled() {
             info!(iteration, "handle_message cancelled before provider call");
@@ -303,16 +314,8 @@ pub async fn handle_message(
         }
 
         // Continue loop to get next provider response.
+        iteration += 1;
     }
-
-    warn!(max_iter, "max tool iterations reached");
-    let notice = "⚠️ Reached maximum tool call iterations. Stopping.";
-    ctx.channel
-        .send(&chat_id, notice)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    Ok(HandleResult::Done)
 }
 
 /// Execute a tool call, returning the result string.

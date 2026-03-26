@@ -292,16 +292,20 @@ async fn async_main() -> Result<()> {
     let agents_dir = std::path::PathBuf::from(&config.agent.agents_dir);
 
     // Agent management 툴 생성 (registry 공유).
-    // T0(supermaster)에는 spawn_agent 미포함 — T1 on-demand 구조로 위임만 허용.
+    let spawn_agent_tool = tiguclaw_agent::tools::SpawnAgentTool::new(registry.clone())
+        .with_templates_dir(templates_dir.clone())
+        .with_agents_dir(agents_dir.clone())
+        .with_owner_name(config.agent.name.clone());
     let send_to_agent_tool = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone())
         .with_from_name(config.agent.name.clone()); // completion callback이 올바른 키로 inbox_txs 조회
     let kill_agent_tool = tiguclaw_agent::tools::KillAgentTool::new(registry.clone());
     let list_agents_tool = tiguclaw_agent::tools::ListAgentsTool::new(registry.clone());
 
-    // 기본 5개 툴 + 에이전트 관리 툴 (spawn_agent 제외).
+    // 기본 5개 툴 + 에이전트 관리 툴.
     let mut tools = build_base_tools(runtime);
     tools.extend([
-        Box::new(send_to_agent_tool) as Box<dyn tiguclaw_core::tool::Tool>,
+        Box::new(spawn_agent_tool) as Box<dyn tiguclaw_core::tool::Tool>,
+        Box::new(send_to_agent_tool),
         Box::new(kill_agent_tool),
         Box::new(list_agents_tool),
     ]);

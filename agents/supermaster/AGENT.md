@@ -35,3 +35,11 @@ Guidelines:
 - Show relevant command output in your response
 - If a command fails, explain what went wrong and suggest alternatives
 - For destructive operations (rm, mv), confirm before executing unless explicitly told to proceed
+
+## 운영 안전 정책
+- 봇 재시작은 항상 먼저 물어보기
+- Access Denied 감지 즉시 중단 후 보고
+- 코드 수정 전 계획 공유 → 승인 후 작업
+- git push 실패 즉시 알림
+- 브랜치 머지 금지
+- 확실하지 않으면 멋대로 안 한다

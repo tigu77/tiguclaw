@@ -6,10 +6,11 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use tiguclaw_core::provider::{Provider, ToolDefinition};
+use tiguclaw_core::tool::Tool;
 use tiguclaw_core::types::ChatMessage;
 
 // ---------------------------------------------------------------------------
@@ -101,15 +102,16 @@ impl SubAgentManager {
 
     /// Spawn a new sub-agent.
     ///
-    /// The sub-agent runs `provider.chat()` with the given `system_prompt` and
-    /// `task`, then reports the result via `report_tx`. It listens for
-    /// `Steer` / `Kill` commands while processing.
+    /// The sub-agent runs a full agentic loop with `provider.chat()` and
+    /// tool execution, then reports the result via `report_tx`. It listens
+    /// for `Steer` / `Kill` commands while processing.
     pub async fn spawn(
         &mut self,
         label: String,
         provider: Arc<dyn Provider>,
         system_prompt: String,
         task: String,
+        tools: Vec<Arc<dyn Tool>>,
         report_tx: mpsc::Sender<SubAgentReport>,
     ) -> SubAgentId {
         let id = SubAgentId(Uuid::new_v4().to_string());
@@ -125,6 +127,7 @@ impl SubAgentManager {
                 provider,
                 system_prompt,
                 task,
+                tools,
                 command_rx,
                 status_clone.clone(),
             )
@@ -257,14 +260,45 @@ impl SubAgentManager {
 // Sub-agent task
 // ---------------------------------------------------------------------------
 
-/// Core execution loop for a sub-agent.
+/// Build ToolDefinition list from registered tools.
+fn tool_definitions(tools: &[Arc<dyn Tool>]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .map(|t| ToolDefinition {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            input_schema: t.schema(),
+        })
+        .collect()
+}
+
+/// Execute a tool call, returning the result string.
+async fn execute_tool(tools: &[Arc<dyn Tool>], tc: &tiguclaw_core::types::ToolCall) -> String {
+    let tool = tools.iter().find(|t| t.name() == tc.name);
+    match tool {
+        Some(tool) => match tool.execute(&tc.args).await {
+            Ok(result) => result,
+            Err(e) => format!("Tool error: {e}"),
+        },
+        None => format!("Unknown tool: {}", tc.name),
+    }
+}
+
+/// Core execution loop for a sub-agent (full agentic loop with tool support).
 ///
-/// Calls `provider.chat()` with the task, then listens for steer/kill.
-/// On steer, appends a user message and calls chat again.
+/// Implements a full LLM + tool call loop, similar to `message_handler.rs`.
+/// Supports Steer (inject additional context) and Kill commands at any point.
+///
+/// The loop:
+/// 1. Calls provider.chat() with current message history + tool definitions
+/// 2. If tool_calls present: execute each tool, append results, continue loop
+/// 3. If no tool_calls: return final text as result
+/// 4. Between iterations: check for Kill/Steer commands
 async fn run_sub_agent(
     provider: Arc<dyn Provider>,
     system_prompt: String,
     task: String,
+    tools: Vec<Arc<dyn Tool>>,
     mut command_rx: mpsc::Receiver<SubAgentCommand>,
     status: Arc<RwLock<SubAgentStatus>>,
 ) -> anyhow::Result<String> {
@@ -272,58 +306,107 @@ async fn run_sub_agent(
         ChatMessage::system(&system_prompt),
         ChatMessage::user(&task),
     ];
-    let no_tools: Vec<ToolDefinition> = Vec::new();
 
-    debug!(task = %task, "sub-agent starting task");
+    debug!(task = %task, tools = tools.len(), "sub-agent starting task (full agentic loop)");
 
-    // Initial chat call.
-    let response = provider
-        .chat(&messages, &no_tools)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let tool_defs = tool_definitions(&tools);
+    let max_iterations = 50usize;
+    let mut iteration = 0usize;
+    let mut last_text = String::new();
 
-    messages.push(ChatMessage::assistant(&response.text));
-    let mut last_result = response.text;
-
-    // Listen for steer/kill commands.
-    loop {
-        // Check if killed.
+    'outer: loop {
+        // ── Kill/Steer check before each LLM call ──
         {
             let s = status.read().await;
             if *s == SubAgentStatus::Killed {
-                return Ok(last_result);
+                info!("sub-agent killed before iteration {iteration}");
+                return Ok(last_text);
+            }
+        }
+        // Non-blocking drain of pending commands.
+        loop {
+            match command_rx.try_recv() {
+                Ok(SubAgentCommand::Kill) => {
+                    info!("sub-agent received kill command");
+                    return Ok(last_text);
+                }
+                Ok(SubAgentCommand::Steer(msg)) => {
+                    debug!(steer = %msg, "sub-agent steered — injecting user message");
+                    messages.push(ChatMessage::user(&msg));
+                }
+                Err(_) => break,
             }
         }
 
-        // Non-blocking check for commands.
-        match command_rx.try_recv() {
-            Ok(SubAgentCommand::Kill) => {
-                info!("sub-agent received kill");
-                return Ok(last_result);
-            }
-            Ok(SubAgentCommand::Steer(msg)) => {
-                debug!(steer = %msg, "sub-agent steered");
-                messages.push(ChatMessage::user(&msg));
+        if iteration >= max_iterations {
+            warn!(max_iterations, "sub-agent reached max iterations — stopping");
+            break 'outer;
+        }
 
-                let response = provider
-                    .chat(&messages, &no_tools)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+        debug!(iteration, "sub-agent calling provider");
 
+        let response = provider
+            .chat(&messages, &tool_defs)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        debug!(
+            text_len = response.text.len(),
+            tool_calls = response.tool_calls.len(),
+            "sub-agent provider response"
+        );
+
+        if response.tool_calls.is_empty() {
+            // No tool calls → final answer.
+            if !response.text.is_empty() {
                 messages.push(ChatMessage::assistant(&response.text));
-                last_result = response.text;
+                last_text = response.text.clone();
             }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // No more commands — we're done with initial task.
-                break;
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                break;
-            }
+            break 'outer;
         }
+
+        // Store assistant message with tool calls.
+        messages.push(ChatMessage::assistant_with_tools(
+            &response.text,
+            response.tool_calls.clone(),
+        ));
+        if !response.text.is_empty() {
+            last_text = response.text.clone();
+        }
+
+        // Execute each tool call.
+        for tc in &response.tool_calls {
+            // Kill check inside tool execution loop.
+            {
+                let s = status.read().await;
+                if *s == SubAgentStatus::Killed {
+                    info!(tool = %tc.name, "sub-agent killed during tool execution");
+                    return Ok(last_text);
+                }
+            }
+            match command_rx.try_recv() {
+                Ok(SubAgentCommand::Kill) => {
+                    info!(tool = %tc.name, "sub-agent received kill during tool loop");
+                    return Ok(last_text);
+                }
+                Ok(SubAgentCommand::Steer(msg)) => {
+                    debug!(steer = %msg, "sub-agent steered during tool loop");
+                    messages.push(ChatMessage::user(&msg));
+                }
+                Err(_) => {}
+            }
+
+            info!(tool = %tc.name, id = %tc.id, "sub-agent executing tool");
+            let result = execute_tool(&tools, tc).await;
+            debug!(tool = %tc.name, result_len = result.len(), "sub-agent tool result");
+
+            messages.push(ChatMessage::tool_result(&tc.id, &result));
+        }
+
+        iteration += 1;
     }
 
-    Ok(last_result)
+    Ok(last_text)
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +482,7 @@ mod tests {
                 provider,
                 "You are a test.".into(),
                 "do something".into(),
+                vec![],
                 report_tx,
             )
             .await;
@@ -434,6 +518,7 @@ mod tests {
                 provider,
                 "system".into(),
                 "task".into(),
+                vec![],
                 report_tx,
             )
             .await;
@@ -489,6 +574,7 @@ mod tests {
                 provider,
                 "system".into(),
                 "task".into(),
+                vec![],
                 report_tx,
             )
             .await;
@@ -514,6 +600,7 @@ mod tests {
                 provider.clone(),
                 "sys".into(),
                 "t1".into(),
+                vec![],
                 report_tx.clone(),
             )
             .await;
@@ -524,6 +611,7 @@ mod tests {
                 provider,
                 "sys".into(),
                 "t2".into(),
+                vec![],
                 report_tx,
             )
             .await;
@@ -546,6 +634,7 @@ mod tests {
                 provider,
                 "sys".into(),
                 "task".into(),
+                vec![],
                 report_tx,
             )
             .await;

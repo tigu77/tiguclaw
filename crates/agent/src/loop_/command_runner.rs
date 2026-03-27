@@ -389,6 +389,7 @@ impl AgentLoop {
                         self.provider.clone(),
                         "You are a sub-agent. Complete the task concisely.".into(),
                         task.clone(),
+                        self.tools.clone(),
                         self.report_tx.clone(),
                     )
                     .await;

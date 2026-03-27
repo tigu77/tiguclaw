@@ -241,10 +241,11 @@ pub async fn handle_message(
             return Ok(HandleResult::Done);
         }
 
-        // Store assistant message with tool calls.
+        // Store assistant message with tool calls in history (for LLM context),
+        // but do NOT persist to DB — text is empty during tool calls and would
+        // appear as blank messages in the dashboard conversation view.
         let assistant_msg =
             ChatMessage::assistant_with_tools(&response.text, response.tool_calls.clone());
-        persist_message(&ctx, &chat_id, &assistant_msg);
         {
             let mut history = ctx.history.lock().await;
             history.push(assistant_msg);

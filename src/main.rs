@@ -291,24 +291,9 @@ async fn async_main() -> Result<()> {
     let templates_dir = std::path::PathBuf::from(&config.agent.templates_dir);
     let agents_dir = std::path::PathBuf::from(&config.agent.agents_dir);
 
-    // Agent management 툴 생성 (registry 공유).
-    let spawn_agent_tool = tiguclaw_agent::tools::SpawnAgentTool::new(registry.clone())
-        .with_templates_dir(templates_dir.clone())
-        .with_agents_dir(agents_dir.clone())
-        .with_owner_name(config.agent.name.clone());
-    let send_to_agent_tool = tiguclaw_agent::tools::SendToAgentTool::new(registry.clone())
-        .with_from_name(config.agent.name.clone()); // completion callback이 올바른 키로 inbox_txs 조회
-    let kill_agent_tool = tiguclaw_agent::tools::KillAgentTool::new(registry.clone());
-    let list_agents_tool = tiguclaw_agent::tools::ListAgentsTool::new(registry.clone());
-
-    // 기본 5개 툴 + 에이전트 관리 툴.
+    // T0는 단독 실행 — spawn/send/kill/list 툴 없음.
+    // 기본 5개 툴만 포함.
     let mut tools = build_base_tools(runtime);
-    tools.extend([
-        Box::new(spawn_agent_tool) as Box<dyn tiguclaw_core::tool::Tool>,
-        Box::new(send_to_agent_tool),
-        Box::new(kill_agent_tool),
-        Box::new(list_agents_tool),
-    ]);
 
     // 파일 전송 툴 (Telegram sendDocument).
     let send_file_tool = tiguclaw_agent::tools::SendFileTool::new(

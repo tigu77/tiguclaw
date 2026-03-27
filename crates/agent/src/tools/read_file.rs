@@ -77,6 +77,16 @@ impl Tool for ReadFileTool {
 
         debug!(file_path, ?offset, ?limit, "reading file");
 
+        // Expand leading `~` to the home directory.
+        let expanded_path;
+        let file_path = if file_path.starts_with('~') {
+            let home = std::env::var("HOME").unwrap_or_default();
+            expanded_path = format!("{}{}", home, &file_path[1..]);
+            expanded_path.as_str()
+        } else {
+            file_path
+        };
+
         // Read raw bytes first to detect binary.
         let bytes = tokio::fs::read(file_path).await.map_err(|e| {
             TiguError::Tool(format!("failed to read '{}': {}", file_path, e))

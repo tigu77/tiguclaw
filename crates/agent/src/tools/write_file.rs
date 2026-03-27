@@ -66,6 +66,16 @@ impl Tool for WriteFileTool {
 
         debug!(file_path, content_len = content.len(), "writing file");
 
+        // Expand leading `~` to the home directory.
+        let expanded_path;
+        let file_path = if file_path.starts_with('~') {
+            let home = std::env::var("HOME").unwrap_or_default();
+            expanded_path = format!("{}{}", home, &file_path[1..]);
+            expanded_path.as_str()
+        } else {
+            file_path
+        };
+
         // Create parent directories if needed.
         let path = std::path::Path::new(file_path);
         if let Some(parent) = path.parent() {

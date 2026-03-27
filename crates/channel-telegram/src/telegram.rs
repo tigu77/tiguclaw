@@ -238,9 +238,15 @@ impl Channel for TelegramChannel {
     }
 
     async fn send_typing(&self, chat_id: &str) -> Result<()> {
-        let chat_id: i64 = chat_id
-            .parse()
-            .map_err(|_| TiguError::Channel(format!("invalid chat_id: {chat_id}")))?;
+        let chat_id: i64 = if chat_id == "master" {
+            let id = self.admin_chat_id.load(std::sync::atomic::Ordering::SeqCst);
+            if id == 0 { return Ok(()); }
+            id
+        } else {
+            chat_id
+                .parse()
+                .map_err(|_| TiguError::Channel(format!("invalid chat_id: {chat_id}")))?
+        };
 
         let _ = self
             .bot
@@ -251,9 +257,18 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, chat_id: &str, text: &str) -> Result<()> {
-        let chat_id: i64 = chat_id
-            .parse()
-            .map_err(|_| TiguError::Channel(format!("invalid chat_id: {chat_id}")))?;
+        // "master" is a special alias for the admin_chat_id.
+        let chat_id: i64 = if chat_id == "master" {
+            let id = self.admin_chat_id.load(std::sync::atomic::Ordering::SeqCst);
+            if id == 0 {
+                return Err(TiguError::Channel("admin_chat_id not set yet".to_string()));
+            }
+            id
+        } else {
+            chat_id
+                .parse()
+                .map_err(|_| TiguError::Channel(format!("invalid chat_id: {chat_id}")))?
+        };
 
         let html_text = markdown_to_telegram_html(text);
         let chunks = split_message(&html_text, MAX_MSG_LEN);

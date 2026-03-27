@@ -131,6 +131,10 @@ pub async fn handle_message(
     {
         let mut history = ctx.history.lock().await;
         prune_old_tool_results(&mut history);
+        // Sanitize after pruning: prune_old_tool_results only truncates content,
+        // but trim_history (called above) may have removed assistant messages while
+        // leaving their tool_results, producing orphan tool_result blocks.
+        sanitize_history(&mut history);
     }
 
     // Build tool definitions.
@@ -177,8 +181,11 @@ pub async fn handle_message(
         }
 
         // Build request messages (system + history snapshot).
+        // Sanitize first to remove orphan tool_result / incomplete tool_call sequences
+        // that would cause a 400 invalid_request_error from the Anthropic API.
         let request_messages = {
-            let history = ctx.history.lock().await;
+            let mut history = ctx.history.lock().await;
+            sanitize_history(&mut history);
             let mut msgs = Vec::with_capacity(history.len() + 1);
             msgs.push(ChatMessage::system(&ctx.system_prompt));
             msgs.extend(history.iter().cloned());
@@ -398,6 +405,89 @@ fn persist_compaction(ctx: &HandlerContext, chat_id: &str, summary_msg: &ChatMes
 /// Trim history (public helper for tests).
 pub fn trim_history_pub(history: &mut Vec<ChatMessage>, max_history: usize) {
     trim_history(history, max_history);
+}
+
+/// Remove orphan tool_result messages and incomplete tool_call sequences from history.
+///
+/// Anthropic API requires:
+/// 1. Every `tool_result` must have a corresponding `tool_use` in an assistant message.
+/// 2. Every `tool_use` in an assistant message must have a corresponding `tool_result`.
+///
+/// Violations happen when:
+/// - `trim_history` removes an assistant_with_tools but keeps its tool_results.
+/// - Cancellation/timeout interrupts tool execution after the assistant message was added
+///   but before all tool_results were appended.
+pub fn sanitize_history(history: &mut Vec<ChatMessage>) {
+    use std::collections::HashSet;
+
+    // Collect all tool_result IDs present in history.
+    let result_ids: HashSet<String> = history
+        .iter()
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| m.tool_call_id.clone())
+        .collect();
+
+    // Collect all tool_call IDs referenced in assistant messages.
+    let all_call_ids: HashSet<String> = history
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .flat_map(|m| m.tool_calls.iter().map(|tc| tc.id.clone()))
+        .collect();
+
+    // Build the set of "complete" tool_call IDs: assistant messages where ALL
+    // tool_calls have matching tool_results.
+    let complete_call_ids: HashSet<String> = history
+        .iter()
+        .filter(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
+        .filter(|m| m.tool_calls.iter().all(|tc| result_ids.contains(&tc.id)))
+        .flat_map(|m| m.tool_calls.iter().map(|tc| tc.id.clone()))
+        .collect();
+
+    // Quick exit: no tool messages at all → nothing to sanitize.
+    if result_ids.is_empty() && all_call_ids.is_empty() {
+        return;
+    }
+
+    // Check whether anything is actually wrong before doing the retain.
+    let needs_sanitize = history.iter().any(|m| match m.role {
+        // Orphan tool_result: tool_call_id not present in any assistant message.
+        Role::Tool => m
+            .tool_call_id
+            .as_ref()
+            .map_or(true, |id| !all_call_ids.contains(id) || !complete_call_ids.contains(id)),
+        // Incomplete assistant message: some tool_calls have no result.
+        Role::Assistant if !m.tool_calls.is_empty() => {
+            !m.tool_calls.iter().all(|tc| result_ids.contains(&tc.id))
+        }
+        _ => false,
+    });
+
+    if !needs_sanitize {
+        return;
+    }
+
+    let original_len = history.len();
+    history.retain(|msg| match msg.role {
+        // Keep tool_results only if they belong to a complete assistant message.
+        Role::Tool => msg
+            .tool_call_id
+            .as_ref()
+            .map_or(false, |id| complete_call_ids.contains(id)),
+        // Keep assistant messages only if ALL their tool_calls have results.
+        Role::Assistant if !msg.tool_calls.is_empty() => {
+            msg.tool_calls.iter().all(|tc| result_ids.contains(&tc.id))
+        }
+        // Keep everything else unchanged.
+        _ => true,
+    });
+
+    let removed = original_len - history.len();
+    if removed > 0 {
+        warn!(
+            removed,
+            "sanitize_history: removed orphan/incomplete tool_call sequences"
+        );
+    }
 }
 
 /// Compact history via LLM summarization when token estimate exceeds threshold.

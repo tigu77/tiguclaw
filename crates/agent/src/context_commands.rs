@@ -35,6 +35,8 @@ pub enum ContextCommand {
     Templates,
     /// /reset — clear conversation history (also triggered by Korean keywords)
     Reset,
+    /// /goal <description> — run a goal through plan→execute→validate loop
+    Goal(String),
     /// Not a context command — pass through to LLM
     None,
 }
@@ -105,6 +107,10 @@ pub fn parse_command(text: &str) -> ContextCommand {
         "/specs" => ContextCommand::AgentSpecs,
         "/templates" => ContextCommand::Templates,
         "/reset" | "/clear" => ContextCommand::Reset,
+        "/goal" => match arg {
+            Some(desc) if !desc.is_empty() => ContextCommand::Goal(desc),
+            _ => ContextCommand::None,
+        },
         _ => {
             // Korean reset keywords (exact match on full trimmed text).
             let full = trimmed.to_lowercase();
@@ -136,6 +142,7 @@ pub fn missing_arg_message(text: &str) -> Option<String> {
         "/spawn" if !has_arg => Some("⚠️ 사용법: /spawn <라벨> <작업>".to_string()),
         "/steer" if !has_arg => Some("⚠️ 사용법: /steer <라벨> <메시지>".to_string()),
         "/kill" if !has_arg => Some("⚠️ 사용법: /kill <라벨>".to_string()),
+        "/goal" if !has_arg => Some("⚠️ 사용법: /goal <목표 설명>".to_string()),
         _ => Option::None,
     }
 }

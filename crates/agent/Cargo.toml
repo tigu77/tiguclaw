@@ -9,6 +9,9 @@ tiguclaw-memory = { workspace = true }
 tiguclaw-runtime = { workspace = true }
 tiguclaw-hooks = { workspace = true }
 tiguclaw-channel-telegram = { workspace = true }
+tiguclaw-orchestrator = { path = "../orchestrator" }
+tiguclaw-goal = { path = "../goal" }
+tiguclaw-planner = { path = "../planner" }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

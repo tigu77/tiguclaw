@@ -12,6 +12,7 @@ members = [
     "crates/dashboard",
     "crates/goal",
     "crates/planner",
+    "crates/orchestrator",
 ]
 
 [workspace.dependencies]

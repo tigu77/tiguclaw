@@ -1,0 +1,12 @@
+[package]
+name = "tiguclaw-orchestrator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tiguclaw-goal = { path = "../goal" }
+tiguclaw-planner = { path = "../planner" }
+tiguclaw-core = { path = "../core" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"

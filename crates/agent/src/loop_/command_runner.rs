@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tokio::sync::mpsc as goal_mpsc;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -38,6 +39,9 @@ impl AgentLoop {
                 } else {
                     self.handle_templates_command().await
                 };
+            }
+            ContextCommand::Goal(description) => {
+                return self.handle_goal(description.clone()).await;
             }
             _ => {}
         }
@@ -190,7 +194,8 @@ impl AgentLoop {
             | ContextCommand::Cancel
             | ContextCommand::Reset
             | ContextCommand::Templates
-            | ContextCommand::AgentSpecs => unreachable!(),
+            | ContextCommand::AgentSpecs
+            | ContextCommand::Goal(_) => unreachable!(),
         }
     }
 
@@ -660,3 +665,48 @@ impl AgentLoop {
 // Suppress unused import warnings — these are needed for method bodies above.
 #[allow(unused_imports)]
 use Arc as _;
+
+impl AgentLoop {
+    /// `/goal <설명>` — GoalRunner를 background로 실행하고 즉시 "계획 시작" 메시지를 반환.
+    ///
+    /// GoalRunner는 tokio::spawn으로 실행되며, 완료 시 goal_tx를 통해
+    /// 결과 메시지를 로그로 남긴다.
+    /// TODO: 완료 결과를 채널로 전달해 사용자에게 push notification.
+    pub(super) async fn handle_goal(&self, description: String) -> String {
+        use tiguclaw_goal::GoalStore;
+        use tiguclaw_orchestrator::{GoalRunner, PhaseExecutor};
+        use tiguclaw_planner::{LlmPlanner, LlmValidator};
+
+        let provider = self.provider.clone();
+        let planner = LlmPlanner::new(provider.clone());
+        let validator = LlmValidator::new(provider.clone());
+        let executor = PhaseExecutor::new(provider.clone());
+
+        let store = match GoalStore::open(None) {
+            Ok(s) => s,
+            Err(e) => return format!("❌ GoalStore 초기화 실패: {e}"),
+        };
+
+        let (tx, mut rx) = goal_mpsc::channel::<String>(4);
+
+        let runner = GoalRunner::new(planner, validator, executor, store, tx);
+        let desc_clone = description.clone();
+
+        tokio::spawn(async move {
+            runner.run(&desc_clone).await;
+        });
+
+        // Background에서 실행 중. 완료 결과는 로그로만 남긴다.
+        // 첫 번째 진행 메시지가 도착하면 1초 내에 받아서 표시 (선택적).
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                info!("GoalRunner result: {}", msg);
+            }
+        });
+
+        format!(
+            "🎯 Goal 시작: *{}*\n\n계획 → 실행 → 검증 루프를 background에서 실행합니다.\n완료 시 로그에서 확인 가능합니다.",
+            description
+        )
+    }
+}

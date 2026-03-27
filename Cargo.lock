@@ -3513,8 +3513,11 @@ dependencies = [
  "tempfile",
  "tiguclaw-channel-telegram",
  "tiguclaw-core",
+ "tiguclaw-goal",
  "tiguclaw-hooks",
  "tiguclaw-memory",
+ "tiguclaw-orchestrator",
+ "tiguclaw-planner",
  "tiguclaw-runtime",
  "tokio",
  "tracing",
@@ -3581,6 +3584,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiguclaw-goal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "tiguclaw-hooks"
 version = "0.1.0"
 dependencies = [
@@ -3609,6 +3625,32 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "tiguclaw-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tiguclaw-core",
+ "tiguclaw-goal",
+ "tiguclaw-planner",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "tiguclaw-planner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tiguclaw-core",
+ "tiguclaw-goal",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

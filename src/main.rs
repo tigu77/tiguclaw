@@ -150,6 +150,12 @@ async fn async_main() -> Result<()> {
         );
         // workspace-aware ShellTool 생성을 위한 runtime 주입.
         reg.set_runtime(registry_runtime as Arc<dyn tiguclaw_core::runtime::RuntimeAdapter>);
+        // clearance 기반 워크스페이스 컨텍스트 주입 설정.
+        // spawn된 에이전트(T1/T2)가 clearance에 맞는 파일만 system_prompt에 받도록 한다.
+        reg.set_workspace_clearance(
+            std::path::PathBuf::from(&config.agent.workspace_dir),
+            config.clearance.clone(),
+        );
     }
 
     // T1 에이전트 공유 툴셋에 에이전트 관리 툴 추가 (registry Arc 준비 후 주입).

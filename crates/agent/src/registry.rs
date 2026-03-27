@@ -16,7 +16,7 @@ use tiguclaw_core::event::{AgentStatusInfo, DashboardEvent};
 
 use tiguclaw_channel_telegram::TelegramChannel;
 use tiguclaw_core::channel::Channel;
-use tiguclaw_core::config::AgentRole;
+use tiguclaw_core::config::{AgentRole, ClearancePreset};
 use tiguclaw_core::provider::{Provider, ThinkingLevel, ToolDefinition};
 use tiguclaw_core::runtime::RuntimeAdapter;
 use tiguclaw_core::tool::Tool;
@@ -204,6 +204,10 @@ pub struct AgentRegistry {
     agents_dir: std::path::PathBuf,
     /// 에이전트별 workspace-aware ShellTool 생성에 사용할 런타임 (선택).
     runtime: Option<Arc<dyn RuntimeAdapter>>,
+    /// 워크스페이스 디렉토리 — spawn된 에이전트의 clearance 컨텍스트 로드에 사용.
+    workspace_dir: Option<std::path::PathBuf>,
+    /// clearance 프리셋 — "standard", "worker" 등에 따라 로드할 파일 목록 정의.
+    clearance_presets: HashMap<String, ClearancePreset>,
 }
 
 impl AgentRegistry {
@@ -228,6 +232,8 @@ impl AgentRegistry {
             templates_dir: std::path::PathBuf::from("templates"),
             agents_dir: std::path::PathBuf::from("agents"),
             runtime: None,
+            workspace_dir: None,
+            clearance_presets: HashMap::new(),
         }
     }
 
@@ -256,6 +262,8 @@ impl AgentRegistry {
             templates_dir: std::path::PathBuf::from("templates"),
             agents_dir: std::path::PathBuf::from("agents"),
             runtime: None,
+            workspace_dir: None,
+            clearance_presets: HashMap::new(),
         }
     }
 
@@ -265,6 +273,19 @@ impl AgentRegistry {
     /// ShellTool 인스턴스를 자동 생성한다.
     pub fn set_runtime(&mut self, runtime: Arc<dyn RuntimeAdapter>) {
         self.runtime = Some(runtime);
+    }
+
+    /// 워크스페이스 디렉토리와 clearance 프리셋을 설정한다.
+    ///
+    /// 설정 시 spawn_agent()에서 각 에이전트의 clearance에 따라 워크스페이스 컨텍스트를
+    /// system_prompt에 자동 주입한다 (예: T1 → CORE.md + T1.md, T2 → CORE.md + T2.md).
+    pub fn set_workspace_clearance(
+        &mut self,
+        workspace_dir: std::path::PathBuf,
+        clearance_presets: HashMap<String, ClearancePreset>,
+    ) {
+        self.workspace_dir = Some(workspace_dir);
+        self.clearance_presets = clearance_presets;
     }
 
     /// T2 에이전트 전용 provider 설정.
@@ -527,10 +548,41 @@ impl AgentRegistry {
         ));
 
         // 역할 기반 시스템 프롬프트 자동 생성 (오버라이드 우선).
-        let system_prompt = req
+        let base_prompt = req
             .system_prompt_override
             .clone()
             .unwrap_or_else(|| build_system_prompt(&req.name, &req.role));
+
+        // clearance에 따라 워크스페이스 컨텍스트를 system_prompt에 주입.
+        // T1 = "standard" → CORE.md + T1.md, T2 = "worker" → CORE.md + T2.md
+        let system_prompt = if let (Some(ref ws_dir), Some(ref clearance_key)) =
+            (&self.workspace_dir, &req.clearance)
+        {
+            if let Some(preset) = self.clearance_presets.get(clearance_key) {
+                if !preset.files.is_empty() {
+                    let loader = crate::workspace::WorkspaceLoader::new(ws_dir);
+                    let ws_ctx = loader.load_context_with_clearance(&preset.files);
+                    if !ws_ctx.is_empty() {
+                        info!(
+                            name = %req.name,
+                            clearance = %clearance_key,
+                            files = ?preset.files,
+                            "주입: clearance 기반 워크스페이스 컨텍스트"
+                        );
+                        format!("{ws_ctx}\n\n---\n\n{base_prompt}")
+                    } else {
+                        base_prompt
+                    }
+                } else {
+                    base_prompt
+                }
+            } else {
+                base_prompt
+            }
+        } else {
+            base_prompt
+        };
+
         // store 저장용 복사본 (spawn 클로저에 moved 되기 전).
         let system_prompt_for_store = system_prompt.clone();
 

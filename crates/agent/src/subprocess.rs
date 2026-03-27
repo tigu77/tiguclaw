@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use tiguclaw_core::provider::{Provider, ToolDefinition};
@@ -310,7 +310,6 @@ async fn run_sub_agent(
     debug!(task = %task, tools = tools.len(), "sub-agent starting task (full agentic loop)");
 
     let tool_defs = tool_definitions(&tools);
-    let max_iterations = 50usize;
     let mut iteration = 0usize;
     let mut last_text = String::new();
 
@@ -338,10 +337,7 @@ async fn run_sub_agent(
             }
         }
 
-        if iteration >= max_iterations {
-            warn!(max_iterations, "sub-agent reached max iterations — stopping");
-            break 'outer;
-        }
+        // No max_iterations limit — runs until context limit or final answer.
 
         debug!(iteration, "sub-agent calling provider");
 

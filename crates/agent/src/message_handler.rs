@@ -29,6 +29,16 @@ pub enum HandleResult {
     Cancelled,
 }
 
+/// Action sent to the persistence queue.
+#[derive(Debug)]
+pub enum PersistAction {
+    /// Save a single message.
+    Save(String, ChatMessage),
+    /// Clear all stored messages for the chat, then save the given summary.
+    /// Used after context compaction to ensure DB reflects compacted history.
+    ClearAndSave(String, ChatMessage),
+}
+
 /// Shared state that the spawned handler task needs.
 ///
 /// Wrapped in `Arc` so it can be moved into `tokio::spawn`.
@@ -43,9 +53,9 @@ pub struct HandlerContext {
     pub max_history: usize,
     /// Maximum tool call iterations per message to prevent infinite loops.
     pub max_tool_iterations: usize,
-    /// Channel to send messages that should be persisted (chat_id, message).
+    /// Channel to send persistence actions.
     /// The main loop drains this and writes to ConversationStore.
-    pub persist_tx: mpsc::UnboundedSender<(String, ChatMessage)>,
+    pub persist_tx: mpsc::UnboundedSender<PersistAction>,
     /// Token threshold for context compaction (0 = disabled).
     pub compaction_threshold: usize,
     /// Maximum characters for a single tool result (0 = unlimited).
@@ -116,6 +126,12 @@ pub async fn handle_message(
 
     // Compact history if token estimate exceeds threshold.
     maybe_compact_history(&ctx, &chat_id).await?;
+
+    // Prune old tool results to save context tokens.
+    {
+        let mut history = ctx.history.lock().await;
+        prune_old_tool_results(&mut history);
+    }
 
     // Build tool definitions.
     let tool_defs = tool_definitions(&ctx.tools);
@@ -363,7 +379,19 @@ fn persist_message(ctx: &HandlerContext, chat_id: &str, message: &ChatMessage) {
     } else {
         chat_id.to_string()
     };
-    let _ = ctx.persist_tx.send((conv_id, message.clone()));
+    let _ = ctx.persist_tx.send(PersistAction::Save(conv_id, message.clone()));
+}
+
+/// Queue a compaction: clear DB history and save only the summary message.
+fn persist_compaction(ctx: &HandlerContext, chat_id: &str, summary_msg: &ChatMessage) {
+    let conv_id = if !ctx.agent_name.is_empty() {
+        ctx.agent_name.clone()
+    } else {
+        chat_id.to_string()
+    };
+    let _ = ctx
+        .persist_tx
+        .send(PersistAction::ClearAndSave(conv_id, summary_msg.clone()));
 }
 
 /// Trim history (public helper for tests).
@@ -425,7 +453,8 @@ async fn maybe_compact_history(
 
     // Replace history with the summary message.
     let summary_msg = ChatMessage::user(format!("이전 대화 요약:\n{summary}"));
-    persist_message(ctx, chat_id, &summary_msg);
+    // Persist compaction: clear DB history and save only the summary.
+    persist_compaction(ctx, chat_id, &summary_msg);
     {
         let mut history = ctx.history.lock().await;
         history.clear();
@@ -447,5 +476,45 @@ fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
             remaining = history.len(),
             "trimmed history"
         );
+    }
+}
+
+/// Number of recent "turns" (assistant messages) whose tool results are preserved.
+const PRUNE_KEEP_RECENT_TURNS: usize = 8;
+
+/// Truncate tool_result contents in old turns to save context tokens.
+///
+/// Counts assistant messages as "turns". Tool results more than
+/// `PRUNE_KEEP_RECENT_TURNS` assistant turns back are replaced with
+/// `[tool result truncated]`.
+pub fn prune_old_tool_results(history: &mut Vec<ChatMessage>) {
+    // Count assistant messages from the end to find the cutoff index.
+    let mut assistant_count = 0usize;
+    let mut cutoff_idx = history.len(); // all messages start preserved
+
+    for (i, msg) in history.iter().enumerate().rev() {
+        if msg.role == Role::Assistant {
+            assistant_count += 1;
+            if assistant_count >= PRUNE_KEEP_RECENT_TURNS {
+                cutoff_idx = i;
+                break;
+            }
+        }
+    }
+
+    if cutoff_idx == history.len() {
+        return; // not enough turns to prune
+    }
+
+    let mut pruned = 0usize;
+    for msg in history[..cutoff_idx].iter_mut() {
+        if msg.role == Role::Tool && msg.content != "[tool result truncated]" {
+            msg.content = "[tool result truncated]".to_string();
+            pruned += 1;
+        }
+    }
+
+    if pruned > 0 {
+        debug!(pruned, cutoff_idx, "pruned old tool results");
     }
 }

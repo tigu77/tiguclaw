@@ -27,7 +27,7 @@ use crate::approval::ApprovalManager;
 use crate::cancel::CancellationToken;
 use crate::context_commands::{self, ContextCommand};
 use crate::heartbeat::{Heartbeat, HeartbeatConfig};
-use crate::message_handler::{self, HandleResult, HandlerContext};
+use crate::message_handler::{self, HandleResult, HandlerContext, PersistAction};
 use crate::registry::AgentRegistry;
 use crate::scheduler::{CronJob, Scheduler};
 use crate::skills::SkillManager;
@@ -74,8 +74,8 @@ pub struct AgentLoop {
     /// 동적으로 spawn된 에이전트 레지스트리 (Phase 6-2).
     registry: Option<Arc<Mutex<AgentRegistry>>>,
     /// Channel for handler tasks to send messages to persist.
-    persist_tx: mpsc::UnboundedSender<(String, ChatMessage)>,
-    persist_rx: mpsc::UnboundedReceiver<(String, ChatMessage)>,
+    persist_tx: mpsc::UnboundedSender<PersistAction>,
+    persist_rx: mpsc::UnboundedReceiver<PersistAction>,
     /// Heartbeat polling system.
     heartbeat: Option<Heartbeat>,
     /// Cron job scheduler.
@@ -506,13 +506,27 @@ impl AgentLoop {
                 }
 
                 // ── Persistence queue (from handler tasks) ──
-                Some((chat_id, msg)) = self.persist_rx.recv() => {
+                Some(action) = self.persist_rx.recv() => {
                     if let Some(store) = &self.conversation_store {
-                        if let Err(e) = store.save_message(&chat_id, &msg) {
-                            warn!(error = %e, "failed to persist message");
+                        match action {
+                            PersistAction::Save(chat_id, msg) => {
+                                if let Err(e) = store.save_message(&chat_id, &msg) {
+                                    warn!(error = %e, "failed to persist message");
+                                }
+                                let _ = store.set_initiator(&chat_id, "user");
+                            }
+                            PersistAction::ClearAndSave(chat_id, summary_msg) => {
+                                // Compaction: clear old messages, save only the summary.
+                                if let Err(e) = store.clear_history(&chat_id) {
+                                    warn!(error = %e, "failed to clear history for compaction");
+                                } else if let Err(e) = store.save_message(&chat_id, &summary_msg) {
+                                    warn!(error = %e, "failed to persist compaction summary");
+                                } else {
+                                    info!(chat_id, "compaction summary persisted to DB");
+                                }
+                                let _ = store.set_initiator(&chat_id, "user");
+                            }
                         }
-                        // T0 에이전트 대화는 정태님이 직접 시작 → initiator="user"
-                        let _ = store.set_initiator(&chat_id, "user");
                     }
                 }
 

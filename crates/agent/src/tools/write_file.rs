@@ -3,23 +3,54 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::debug;
 
 use tiguclaw_core::error::{Result, TiguError};
 use tiguclaw_core::tool::Tool;
 
 /// Tool that writes content to a file.
-pub struct WriteFileTool;
+pub struct WriteFileTool {
+    /// 에이전트 전용 워크스페이스 디렉토리.
+    /// Some이면 상대 경로를 이 디렉토리 기준으로 해석한다.
+    workspace_dir: Option<PathBuf>,
+}
 
 impl WriteFileTool {
     pub fn new() -> Self {
-        Self
+        Self { workspace_dir: None }
+    }
+
+    /// 워크스페이스 디렉토리를 설정한다.
+    /// 상대 경로 입력 시 이 디렉토리 기준으로 변환된다.
+    pub fn with_workspace_dir(self, dir: PathBuf) -> Self {
+        Self { workspace_dir: Some(dir) }
     }
 }
 
 impl Default for WriteFileTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 경로를 해석한다.
+/// - `~`로 시작하면 HOME 디렉토리로 확장
+/// - 절대 경로면 그대로 사용
+/// - 상대 경로이고 workspace_dir이 있으면 workspace_dir 기준으로 변환
+fn resolve_path(raw: &str, workspace_dir: Option<&PathBuf>) -> PathBuf {
+    if raw.starts_with('~') {
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(format!("{}{}", home, &raw[1..]))
+    } else {
+        let p = PathBuf::from(raw);
+        if p.is_absolute() {
+            p
+        } else if let Some(ws) = workspace_dir {
+            ws.join(p)
+        } else {
+            p
+        }
     }
 }
 
@@ -54,7 +85,7 @@ impl Tool for WriteFileTool {
         &self,
         args: &HashMap<String, serde_json::Value>,
     ) -> Result<String> {
-        let file_path = args
+        let file_path_raw = args
             .get("file_path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| TiguError::Tool("missing 'file_path' argument".into()))?;
@@ -64,37 +95,28 @@ impl Tool for WriteFileTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| TiguError::Tool("missing 'content' argument".into()))?;
 
-        debug!(file_path, content_len = content.len(), "writing file");
+        let path = resolve_path(file_path_raw, self.workspace_dir.as_ref());
 
-        // Expand leading `~` to the home directory.
-        let expanded_path;
-        let file_path = if file_path.starts_with('~') {
-            let home = std::env::var("HOME").unwrap_or_default();
-            expanded_path = format!("{}{}", home, &file_path[1..]);
-            expanded_path.as_str()
-        } else {
-            file_path
-        };
+        debug!(file_path = %path.display(), content_len = content.len(), "writing file");
 
         // Create parent directories if needed.
-        let path = std::path::Path::new(file_path);
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 tokio::fs::create_dir_all(parent).await.map_err(|e| {
                     TiguError::Tool(format!(
                         "failed to create directories for '{}': {}",
-                        file_path, e
+                        path.display(), e
                     ))
                 })?;
             }
         }
 
         let bytes = content.len();
-        tokio::fs::write(file_path, content).await.map_err(|e| {
-            TiguError::Tool(format!("failed to write '{}': {}", file_path, e))
+        tokio::fs::write(&path, content).await.map_err(|e| {
+            TiguError::Tool(format!("failed to write '{}': {}", path.display(), e))
         })?;
 
-        Ok(format!("Written {} bytes to {}", bytes, file_path))
+        Ok(format!("Written {} bytes to {}", bytes, path.display()))
     }
 }
 
@@ -153,5 +175,39 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "new content");
+    }
+
+    #[tokio::test]
+    async fn test_write_relative_path_uses_workspace_dir() {
+        let dir = TempDir::new().unwrap();
+        let tool = WriteFileTool::new().with_workspace_dir(dir.path().to_path_buf());
+
+        let mut args = HashMap::new();
+        args.insert("file_path".into(), json!("plan.md"));
+        args.insert("content".into(), json!("# Plan"));
+
+        let result = tool.execute(&args).await.unwrap();
+        assert!(result.contains("Written"));
+
+        let expected = dir.path().join("plan.md");
+        let content = std::fs::read_to_string(expected).unwrap();
+        assert_eq!(content, "# Plan");
+    }
+
+    #[tokio::test]
+    async fn test_write_absolute_path_ignores_workspace_dir() {
+        let dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+        let path = dir.path().join("absolute.txt");
+
+        let tool = WriteFileTool::new().with_workspace_dir(ws_dir.path().to_path_buf());
+
+        let mut args = HashMap::new();
+        args.insert("file_path".into(), json!(path.to_str().unwrap()));
+        args.insert("content".into(), json!("absolute"));
+
+        let result = tool.execute(&args).await.unwrap();
+        assert!(result.contains("Written"));
+        assert!(std::fs::read_to_string(&path).is_ok());
     }
 }

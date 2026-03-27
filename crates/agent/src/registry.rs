@@ -599,18 +599,34 @@ impl AgentRegistry {
         };
         // 에이전트별 툴 인스턴스 생성: SendToAgentTool / SpawnAgentTool을 개별 교체.
         // from_name을 이 에이전트 이름으로 설정 → T2→T1 보고 경로가 올바르게 설정됨.
-        // workspace_dir을 cwd로 고정하는 ShellTool 생성 헬퍼.
-        // runtime이 설정된 경우에만 workspace-aware 버전으로 교체한다.
+        // workspace_dir을 적용하는 툴 교체 헬퍼.
+        // - shell: runtime이 있을 때 workspace-aware ShellTool로 교체 (cd prefix)
+        // - read_file / write_file: workspace_dir 기준 상대 경로 해석
         let workspace_runtime = self.runtime.clone();
         let workspace_path_for_tools = workspace_path.clone();
         let make_workspace_shell = move |tool: &Arc<dyn Tool>| -> Arc<dyn Tool> {
-            if tool.name() == "shell" {
-                if let Some(ref rt) = workspace_runtime {
+            match tool.name() {
+                "shell" => {
+                    if let Some(ref rt) = workspace_runtime {
+                        return Arc::new(
+                            crate::tools::ShellTool::new(rt.clone())
+                                .with_workspace_dir(workspace_path_for_tools.clone())
+                        ) as Arc<dyn Tool>;
+                    }
+                }
+                "read_file" => {
                     return Arc::new(
-                        crate::tools::ShellTool::new(rt.clone())
+                        crate::tools::ReadFileTool::new()
                             .with_workspace_dir(workspace_path_for_tools.clone())
                     ) as Arc<dyn Tool>;
                 }
+                "write_file" => {
+                    return Arc::new(
+                        crate::tools::WriteFileTool::new()
+                            .with_workspace_dir(workspace_path_for_tools.clone())
+                    ) as Arc<dyn Tool>;
+                }
+                _ => {}
             }
             tool.clone()
         };

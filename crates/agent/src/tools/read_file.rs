@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::debug;
 
 use tiguclaw_core::error::{Result, TiguError};
@@ -11,17 +12,47 @@ use tiguclaw_core::tool::Tool;
 const MAX_FILE_SIZE: usize = 50 * 1024; // 50KB
 
 /// Tool that reads the contents of a text file.
-pub struct ReadFileTool;
+pub struct ReadFileTool {
+    /// 에이전트 전용 워크스페이스 디렉토리.
+    /// Some이면 상대 경로를 이 디렉토리 기준으로 해석한다.
+    workspace_dir: Option<PathBuf>,
+}
 
 impl ReadFileTool {
     pub fn new() -> Self {
-        Self
+        Self { workspace_dir: None }
+    }
+
+    /// 워크스페이스 디렉토리를 설정한다.
+    /// 상대 경로 입력 시 이 디렉토리 기준으로 변환된다.
+    pub fn with_workspace_dir(self, dir: PathBuf) -> Self {
+        Self { workspace_dir: Some(dir) }
     }
 }
 
 impl Default for ReadFileTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 경로를 해석한다.
+/// - `~`로 시작하면 HOME 디렉토리로 확장
+/// - 절대 경로면 그대로 사용
+/// - 상대 경로이고 workspace_dir이 있으면 workspace_dir 기준으로 변환
+fn resolve_path(raw: &str, workspace_dir: Option<&PathBuf>) -> PathBuf {
+    if raw.starts_with('~') {
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(format!("{}{}", home, &raw[1..]))
+    } else {
+        let p = PathBuf::from(raw);
+        if p.is_absolute() {
+            p
+        } else if let Some(ws) = workspace_dir {
+            ws.join(p)
+        } else {
+            p
+        }
     }
 }
 
@@ -60,7 +91,7 @@ impl Tool for ReadFileTool {
         &self,
         args: &HashMap<String, serde_json::Value>,
     ) -> Result<String> {
-        let file_path = args
+        let file_path_raw = args
             .get("file_path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| TiguError::Tool("missing 'file_path' argument".into()))?;
@@ -75,21 +106,13 @@ impl Tool for ReadFileTool {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
 
-        debug!(file_path, ?offset, ?limit, "reading file");
+        let path = resolve_path(file_path_raw, self.workspace_dir.as_ref());
 
-        // Expand leading `~` to the home directory.
-        let expanded_path;
-        let file_path = if file_path.starts_with('~') {
-            let home = std::env::var("HOME").unwrap_or_default();
-            expanded_path = format!("{}{}", home, &file_path[1..]);
-            expanded_path.as_str()
-        } else {
-            file_path
-        };
+        debug!(file_path = %path.display(), ?offset, ?limit, "reading file");
 
         // Read raw bytes first to detect binary.
-        let bytes = tokio::fs::read(file_path).await.map_err(|e| {
-            TiguError::Tool(format!("failed to read '{}': {}", file_path, e))
+        let bytes = tokio::fs::read(&path).await.map_err(|e| {
+            TiguError::Tool(format!("failed to read '{}': {}", path.display(), e))
         })?;
 
         // Binary detection: check for null bytes in first 8KB.
@@ -201,5 +224,36 @@ mod tests {
 
         let result = tool.execute(&args).await.unwrap();
         assert_eq!(result, "Binary file, cannot read as text");
+    }
+
+    #[tokio::test]
+    async fn test_read_relative_path_uses_workspace_dir() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("plan.md");
+        std::fs::write(&path, "# Plan").unwrap();
+
+        let tool = ReadFileTool::new().with_workspace_dir(dir.path().to_path_buf());
+
+        let mut args = HashMap::new();
+        args.insert("file_path".into(), json!("plan.md"));
+
+        let result = tool.execute(&args).await.unwrap();
+        assert_eq!(result, "# Plan");
+    }
+
+    #[tokio::test]
+    async fn test_read_absolute_path_ignores_workspace_dir() {
+        let dir = TempDir::new().unwrap();
+        let ws_dir = TempDir::new().unwrap();
+        let path = dir.path().join("absolute.txt");
+        std::fs::write(&path, "absolute content").unwrap();
+
+        let tool = ReadFileTool::new().with_workspace_dir(ws_dir.path().to_path_buf());
+
+        let mut args = HashMap::new();
+        args.insert("file_path".into(), json!(path.to_str().unwrap()));
+
+        let result = tool.execute(&args).await.unwrap();
+        assert_eq!(result, "absolute content");
     }
 }

@@ -669,9 +669,8 @@ use Arc as _;
 impl AgentLoop {
     /// `/goal <설명>` — GoalRunner를 background로 실행하고 즉시 "계획 시작" 메시지를 반환.
     ///
-    /// GoalRunner는 tokio::spawn으로 실행되며, 완료 시 goal_tx를 통해
-    /// 결과 메시지를 로그로 남긴다.
-    /// TODO: 완료 결과를 채널로 전달해 사용자에게 push notification.
+    /// GoalRunner는 tokio::spawn으로 실행되며, 완료 시 primary channel로
+    /// 결과 메시지를 push한다.
     pub(super) async fn handle_goal(&self, description: String) -> String {
         use tiguclaw_goal::GoalStore;
         use tiguclaw_orchestrator::{GoalRunner, PhaseExecutor};
@@ -680,7 +679,10 @@ impl AgentLoop {
         let provider = self.provider.clone();
         let planner = LlmPlanner::new(provider.clone());
         let validator = LlmValidator::new(provider.clone());
-        let executor = PhaseExecutor::new(provider.clone());
+
+        // T0 툴을 executor에 주입해서 실제 shell/file 작업이 가능하도록 한다.
+        let executor = PhaseExecutor::new(provider.clone())
+            .with_tools(self.tools.clone());
 
         let store = match GoalStore::open(None) {
             Ok(s) => s,
@@ -696,16 +698,19 @@ impl AgentLoop {
             runner.run(&desc_clone).await;
         });
 
-        // Background에서 실행 중. 완료 결과는 로그로만 남긴다.
-        // 첫 번째 진행 메시지가 도착하면 1초 내에 받아서 표시 (선택적).
+        // GoalRunner 완료/실패 결과를 primary channel로 push한다.
+        let channel = self.primary_channel().clone();
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 info!("GoalRunner result: {}", msg);
+                if let Err(e) = channel.send("master", &msg).await {
+                    warn!("GoalRunner: failed to send result to channel: {e}");
+                }
             }
         });
 
         format!(
-            "🎯 Goal 시작: *{}*\n\n계획 → 실행 → 검증 루프를 background에서 실행합니다.\n완료 시 로그에서 확인 가능합니다.",
+            "🎯 Goal 시작: *{}*\n\n계획 → 실행 → 검증 루프를 background에서 실행합니다.\n완료 시 결과를 알려드립니다.",
             description
         )
     }

@@ -104,6 +104,10 @@ pub struct AgentLoop {
     agents_dir: std::path::PathBuf,
     /// 컨텍스트 보존 기간 (일, 기본값: 3).
     context_retention_days: u64,
+    /// 마지막 API 호출 시각 (cache-TTL pruning 공유 상태).
+    last_api_call: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Anthropic 프롬프트 캐시 TTL (초). 0이면 비활성화.
+    cache_ttl_secs: u64,
 }
 
 impl AgentLoop {
@@ -154,6 +158,8 @@ impl AgentLoop {
             agents_dir: std::path::PathBuf::from("agents"),
             context_retention_days: DEFAULT_CONTEXT_RETENTION_DAYS,
             event_tx: None,
+            last_api_call: Arc::new(Mutex::new(None)),
+            cache_ttl_secs: tiguclaw_core::config::DEFAULT_CACHE_TTL_SECS,
         }
     }
 
@@ -215,6 +221,12 @@ impl AgentLoop {
     /// Override the maximum tool result characters (default: 20000; 0 = unlimited).
     pub fn with_max_tool_result_chars(mut self, chars: usize) -> Self {
         self.max_tool_result_chars = chars;
+        self
+    }
+
+    /// Set the cache TTL in seconds (Anthropic prompt cache).
+    pub fn with_cache_ttl_secs(mut self, secs: u64) -> Self {
+        self.cache_ttl_secs = secs;
         self
     }
 
@@ -734,6 +746,8 @@ impl AgentLoop {
             event_tx: self.event_tx.clone(),
             steer_directives,
             session_meta,
+            last_api_call: self.last_api_call.clone(),
+            cache_ttl_secs: self.cache_ttl_secs,
         });
         let chat_id = msg.sender.clone();
         let user_text = msg.content.clone();

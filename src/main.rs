@@ -824,6 +824,7 @@ fn apply_agent_config(
         .with_max_tool_iterations(config.max_tool_iterations)
         .with_compaction_threshold(config.compaction_threshold)
         .with_max_tool_result_chars(config.max_tool_result_chars)
+        .with_cache_ttl_secs(config.cache_ttl_secs)
 }
 
 /// Load system prompt from a file path, with a fallback default.

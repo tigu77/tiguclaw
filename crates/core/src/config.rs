@@ -307,6 +307,8 @@ pub const DEFAULT_MAX_TOOL_ITERATIONS: usize = 20;
 pub const DEFAULT_COMPACTION_THRESHOLD: usize = 80_000;
 /// 기본 툴 결과 최대 문자 수.
 pub const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 20_000;
+/// 기본 캐시 TTL (초) — Anthropic 프롬프트 캐시 유효 시간.
+pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
 /// 기본 하트비트 주기 (초).
 pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 600;
 /// 기본 컨텍스트 보존 기간 (일).
@@ -363,6 +365,11 @@ pub struct AgentConfig {
     /// Default: 20000
     #[serde(default = "default_max_tool_result_chars")]
     pub max_tool_result_chars: usize,
+    /// Anthropic 프롬프트 캐시 TTL (초).
+    /// 마지막 API 호출로부터 이 시간이 지나면 오래된 tool_result를 truncate한다.
+    /// Default: 300 (5분). 0이면 비활성화.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
     /// 이 인스턴스의 역할 계층 (default: master = T1).
     #[serde(default)]
     pub role: AgentRole,
@@ -448,6 +455,10 @@ fn default_compaction_threshold() -> usize {
 
 fn default_max_tool_result_chars() -> usize {
     DEFAULT_MAX_TOOL_RESULT_CHARS
+}
+
+fn default_cache_ttl_secs() -> u64 {
+    DEFAULT_CACHE_TTL_SECS
 }
 
 fn default_workspace_dir() -> String {

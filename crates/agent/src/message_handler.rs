@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, info, warn};
 
@@ -78,6 +79,11 @@ pub struct HandlerContext {
     /// 세션 메타데이터 (시간, 발신자, 채널 등) — user_text 앞에 주입된다.
     /// heartbeat/cron/IPC 메시지는 None.
     pub session_meta: Option<String>,
+    /// 마지막 API 호출 시각 (cache-ttl pruning용).
+    /// 이 시각으로부터 cache_ttl_secs 이상 지난 경우 오래된 tool_result를 truncate한다.
+    pub last_api_call: Arc<Mutex<Option<Instant>>>,
+    /// Anthropic 프롬프트 캐시 TTL (초). 0이면 비활성화.
+    pub cache_ttl_secs: u64,
 }
 
 /// Process a single user message through the agentic loop (LLM + tool calls).
@@ -127,14 +133,33 @@ pub async fn handle_message(
     // Compact history if token estimate exceeds threshold.
     maybe_compact_history(&ctx, &chat_id).await?;
 
-    // Prune old tool results to save context tokens.
+    // Prune old tool results if cache TTL has expired (to save context tokens
+    // and avoid re-paying cache-miss costs after a long idle period).
     {
-        let mut history = ctx.history.lock().await;
-        prune_old_tool_results(&mut history);
-        // Sanitize after pruning: prune_old_tool_results only truncates content,
-        // but trim_history (called above) may have removed assistant messages while
-        // leaving their tool_results, producing orphan tool_result blocks.
-        sanitize_history(&mut history);
+        let should_prune = if ctx.cache_ttl_secs > 0 {
+            let last = ctx.last_api_call.lock().await;
+            last.map(|t| t.elapsed().as_secs() >= ctx.cache_ttl_secs)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if should_prune {
+            debug!(
+                cache_ttl_secs = ctx.cache_ttl_secs,
+                "cache TTL expired — pruning old tool results"
+            );
+            let mut history = ctx.history.lock().await;
+            prune_old_tool_results(&mut history);
+            // Sanitize after pruning: prune_old_tool_results only truncates content,
+            // but trim_history (called above) may have removed assistant messages while
+            // leaving their tool_results, producing orphan tool_result blocks.
+            sanitize_history(&mut history);
+        } else {
+            // Still sanitize history even without pruning.
+            let mut history = ctx.history.lock().await;
+            sanitize_history(&mut history);
+        }
     }
 
     // Build tool definitions.
@@ -214,6 +239,12 @@ pub async fn handle_message(
         if cancel_token.is_cancelled() {
             info!(iteration, "handle_message cancelled after provider call");
             return Ok(HandleResult::Cancelled);
+        }
+
+        // Update last_api_call timestamp for cache-TTL pruning.
+        if ctx.cache_ttl_secs > 0 {
+            let mut last = ctx.last_api_call.lock().await;
+            *last = Some(Instant::now());
         }
 
         debug!(

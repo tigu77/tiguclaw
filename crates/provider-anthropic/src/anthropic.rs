@@ -70,6 +70,7 @@ impl AnthropicProvider {
         let use_oauth = api_key.starts_with("sk-ant-oat");
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("reqwest client build failed");
         Self {
@@ -95,6 +96,7 @@ impl AnthropicProvider {
         let use_oauth = api_key.starts_with("sk-ant-oat");
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("reqwest client build failed");
         Self {

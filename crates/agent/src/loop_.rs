@@ -775,7 +775,25 @@ impl AgentLoop {
         let cancel = token.clone();
 
         let handle = tokio::spawn(async move {
-            let result = message_handler::handle_message(ctx, chat_id, user_text, cancel).await;
+            // 전체 메시지 처리 타임아웃: 10분 (무한 루프 방지)
+            let result = tokio::time::timeout(
+                Duration::from_secs(600),
+                message_handler::handle_message(ctx.clone(), chat_id.clone(), user_text, cancel),
+            )
+            .await;
+
+            let result = match result {
+                Ok(inner) => inner,
+                Err(_elapsed) => {
+                    warn!("handle_message timed out after 600s — sending timeout notice");
+                    let _ = ctx
+                        .channel
+                        .send(&chat_id, "⏱️ 작업이 너무 오래 걸려 중단됐어요. 다시 시도해주세요.")
+                        .await;
+                    Ok(message_handler::HandleResult::Done)
+                }
+            };
+
             if let Some(tx) = response_tx {
                 let _ = tx.send("처리 완료".to_string());
             }

@@ -32,6 +32,7 @@ impl AgentLoop {
             | ContextCommand::Kill(_) => return self.handle_subagent_command(cmd).await,
             ContextCommand::Status => return self.handle_status().await,
             ContextCommand::Cancel => return "⏹ /cancel은 작업 처리 중에 사용하세요".to_string(),
+            ContextCommand::StopAll => return "⏹ /stop은 작업 처리 중에 사용하세요".to_string(),
             ContextCommand::Reset => return self.handle_reset().await,
             ContextCommand::AgentSpecs | ContextCommand::Templates => {
                 return if matches!(cmd, ContextCommand::AgentSpecs) {
@@ -192,6 +193,7 @@ impl AgentLoop {
             | ContextCommand::Kill(_)
             | ContextCommand::Status
             | ContextCommand::Cancel
+            | ContextCommand::StopAll
             | ContextCommand::Reset
             | ContextCommand::Templates
             | ContextCommand::AgentSpecs

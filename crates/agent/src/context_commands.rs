@@ -29,6 +29,8 @@ pub enum ContextCommand {
     Status,
     /// /cancel — cancel current task
     Cancel,
+    /// /stop — cancel current task AND kill all sub-agents (cascade stop)
+    StopAll,
     /// /specs — list available agent specs (folder-based, new)
     AgentSpecs,
     /// /templates — list available agent templates (deprecated, alias for /specs)
@@ -104,6 +106,7 @@ pub fn parse_command(text: &str) -> ContextCommand {
         },
         "/status" => ContextCommand::Status,
         "/cancel" => ContextCommand::Cancel,
+        "/stop" => ContextCommand::StopAll,
         "/specs" => ContextCommand::AgentSpecs,
         "/templates" => ContextCommand::Templates,
         "/reset" | "/clear" => ContextCommand::Reset,
@@ -119,6 +122,8 @@ pub fn parse_command(text: &str) -> ContextCommand {
                 "리셋" | "컨텍스트 초기화" | "대화 초기화" | "히스토리 초기화"
             ) {
                 ContextCommand::Reset
+            } else if matches!(full.as_str(), "멈춰" | "중단" | "전부 멈춰" | "다 멈춰") {
+                ContextCommand::StopAll
             } else {
                 ContextCommand::None
             }

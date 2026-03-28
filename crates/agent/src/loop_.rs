@@ -451,6 +451,27 @@ impl AgentLoop {
                                 continue;
                             }
 
+                            // /stop (or "멈춰"/"중단") → cancel current task + kill all sub-agents
+                            {
+                                use crate::context_commands::{parse_command, ContextCommand};
+                                let parsed = parse_command(msg.content.trim());
+                                if matches!(parsed, ContextCommand::StopAll) {
+                                    // Cancel current LLM task
+                                    if let Some((handle, token)) = current_task.take() {
+                                        token.cancel();
+                                        handle.abort();
+                                        pending_messages.clear();
+                                        info!("current task stopped by /stop");
+                                    }
+                                    // Kill all sub-agents
+                                    self.sub_manager.kill_all().await;
+                                    self.sub_manager.cleanup();
+                                    info!("all sub-agents killed by /stop");
+                                    let _ = src_channel.send(&msg.sender, "⏹ 모든 작업이 중단됐어요.").await;
+                                    continue;
+                                }
+                            }
+
                             // /approve <id> → dispatch approval response
                             if let Some(stripped) = msg.content.trim().strip_prefix("/approve ") {
                                 let approval_id = stripped.trim();

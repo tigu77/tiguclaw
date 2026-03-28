@@ -233,6 +233,17 @@ impl SubAgentManager {
         self.kill(&id).await
     }
 
+    /// Kill all active sub-agents.
+    pub async fn kill_all(&self) {
+        for handle in &self.agents {
+            {
+                let mut s = handle.status.write().await;
+                *s = SubAgentStatus::Killed;
+            }
+            let _ = handle.command_tx.send(SubAgentCommand::Kill).await;
+        }
+    }
+
     /// List all agents with their current status.
     pub fn list(&self) -> Vec<(SubAgentId, String, SubAgentStatus)> {
         // Use try_read to avoid blocking; fall back to Running if locked.

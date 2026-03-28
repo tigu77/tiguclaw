@@ -336,150 +336,168 @@ impl Channel for TelegramChannel {
         let admin_chat_id = Arc::clone(&self.admin_chat_id);
         let bot_for_welcome = self.bot.clone();
         let tx = tx.clone();
+        let bot = self.bot.clone();
 
-        let handler = Update::filter_message().endpoint(
-            move |msg: Message| {
-                let tx = tx.clone();
-                let admin_chat_id = Arc::clone(&admin_chat_id);
-                let bot_for_welcome = bot_for_welcome.clone();
-                async move {
-                    let sender_id = msg.chat.id.0;
-                    let current_admin = admin_chat_id.load(Ordering::SeqCst);
+        // Restart loop: if the dispatcher exits for any reason (e.g. TerminatedByOtherGetUpdates),
+        // wait briefly and restart. This ensures message reception survives transient polling errors.
+        loop {
+            let tx_loop = tx.clone();
+            let admin_chat_id_loop = Arc::clone(&admin_chat_id);
+            let bot_loop = bot_for_welcome.clone();
 
-                    // Auto-register first user as admin if admin_chat_id == 0
-                    if current_admin == 0 {
-                        info!(chat_id = sender_id, "auto-registering first user as admin");
-                        admin_chat_id.store(sender_id, Ordering::SeqCst);
+            let handler = Update::filter_message().endpoint(
+                move |msg: Message| {
+                    let tx = tx_loop.clone();
+                    let admin_chat_id = Arc::clone(&admin_chat_id_loop);
+                    let bot_for_welcome = bot_loop.clone();
+                    async move {
+                        let sender_id = msg.chat.id.0;
+                        let current_admin = admin_chat_id.load(Ordering::SeqCst);
 
-                        if let Err(e) = update_admin_chat_id_in_config(sender_id) {
-                            warn!("failed to update config.toml: {}", e);
+                        // Auto-register first user as admin if admin_chat_id == 0
+                        if current_admin == 0 {
+                            info!(chat_id = sender_id, "auto-registering first user as admin");
+                            admin_chat_id.store(sender_id, Ordering::SeqCst);
+
+                            if let Err(e) = update_admin_chat_id_in_config(sender_id) {
+                                warn!("failed to update config.toml: {}", e);
+                            }
+
+                            let welcome = format!(
+                                "✅ Admin registered! Your chat ID: {}\n🐯 tiguclaw is ready. What can I help you with?",
+                                sender_id
+                            );
+                            let _ = bot_for_welcome
+                                .send_message(msg.chat.id, welcome)
+                                .await;
+
+                            // Fall through to process this message normally
+                        } else if msg.chat.id != ChatId(current_admin) {
+                            warn!(
+                                chat_id = sender_id,
+                                "ignoring message from non-admin"
+                            );
+                            return respond(());
                         }
 
-                        let welcome = format!(
-                            "✅ Admin registered! Your chat ID: {}\n🐯 tiguclaw is ready. What can I help you with?",
-                            sender_id
-                        );
-                        let _ = bot_for_welcome
-                            .send_message(msg.chat.id, welcome)
-                            .await;
-
-                        // Fall through to process this message normally
-                    } else if msg.chat.id != ChatId(current_admin) {
-                        warn!(
-                            chat_id = sender_id,
-                            "ignoring message from non-admin"
-                        );
-                        return respond(());
-                    }
-
-                    // Determine content from message type.
-                    let content_opt: Option<String> = if let Some(text) = msg.text() {
-                        // Plain text message.
-                        Some(text.to_string())
-                    } else if let Some(photos) = msg.photo() {
-                        // Photo — pick the largest size (last in array).
-                        if let Some(photo) = photos.last() {
+                        // Determine content from message type.
+                        let content_opt: Option<String> = if let Some(text) = msg.text() {
+                            // Plain text message.
+                            Some(text.to_string())
+                        } else if let Some(photos) = msg.photo() {
+                            // Photo — pick the largest size (last in array).
+                            if let Some(photo) = photos.last() {
+                                let caption = msg.caption().unwrap_or("");
+                                match download_telegram_file(&bot_for_welcome, &photo.file.id, "jpg").await {
+                                    Ok(path) => {
+                                        let mut content = format!("[이미지: {}]", path);
+                                        if !caption.is_empty() {
+                                            content.push_str(&format!("\n캡션: {}", caption));
+                                        }
+                                        Some(content)
+                                    }
+                                    Err(e) => {
+                                        warn!("photo download failed: {}", e);
+                                        Some(format!("[이미지 다운로드 실패: {}]", e))
+                                    }
+                                }
+                            } else {
+                                None
+                            }
+                        } else if let Some(doc) = msg.document() {
+                            // Document / file.
+                            let filename = doc.file_name.clone().unwrap_or_else(|| "file".to_string());
+                            let ext = filename
+                                .rsplit('.')
+                                .next()
+                                .unwrap_or("bin")
+                                .to_string();
                             let caption = msg.caption().unwrap_or("");
-                            match download_telegram_file(&bot_for_welcome, &photo.file.id, "jpg").await {
+                            match download_telegram_file(&bot_for_welcome, &doc.file.id, &ext).await {
                                 Ok(path) => {
-                                    let mut content = format!("[이미지: {}]", path);
+                                    let mut content = format!("[파일: {}, {}]", filename, path);
                                     if !caption.is_empty() {
                                         content.push_str(&format!("\n캡션: {}", caption));
                                     }
                                     Some(content)
                                 }
                                 Err(e) => {
-                                    warn!("photo download failed: {}", e);
-                                    Some(format!("[이미지 다운로드 실패: {}]", e))
+                                    warn!("document download failed: {}", e);
+                                    Some(format!("[파일 다운로드 실패: {}]", e))
                                 }
                             }
+                        } else if let Some(voice) = msg.voice() {
+                            // Voice message.
+                            let duration = voice.duration.seconds();
+                            match download_telegram_file(&bot_for_welcome, &voice.file.id, "ogg").await {
+                                Ok(path) => Some(format!("[음성메시지: {}, 길이: {}초]", path, duration)),
+                                Err(e) => {
+                                    warn!("voice download failed: {}", e);
+                                    Some(format!("[음성 다운로드 실패: {}]", e))
+                                }
+                            }
+                        } else if let Some(video) = msg.video() {
+                            // Video message.
+                            let duration = video.duration.seconds();
+                            let caption = msg.caption().unwrap_or("");
+                            match download_telegram_file(&bot_for_welcome, &video.file.id, "mp4").await {
+                                Ok(path) => {
+                                    let mut content = format!("[비디오: {}, 길이: {}초]", path, duration);
+                                    if !caption.is_empty() {
+                                        content.push_str(&format!("\n캡션: {}", caption));
+                                    }
+                                    Some(content)
+                                }
+                                Err(e) => {
+                                    warn!("video download failed: {}", e);
+                                    Some(format!("[비디오 다운로드 실패: {}]", e))
+                                }
+                            }
+                        } else if let Some(sticker) = msg.sticker() {
+                            // Sticker — no download, just emoji text.
+                            let emoji = sticker.emoji.as_deref().unwrap_or("?");
+                            Some(format!("[스티커: {}]", emoji))
+                        } else if let Some(loc) = msg.location() {
+                            // Location.
+                            Some(format!("[위치: 위도 {}, 경도 {}]", loc.latitude, loc.longitude))
                         } else {
+                            // Unsupported message type — ignore.
                             None
-                        }
-                    } else if let Some(doc) = msg.document() {
-                        // Document / file.
-                        let filename = doc.file_name.clone().unwrap_or_else(|| "file".to_string());
-                        let ext = filename
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or("bin")
-                            .to_string();
-                        let caption = msg.caption().unwrap_or("");
-                        match download_telegram_file(&bot_for_welcome, &doc.file.id, &ext).await {
-                            Ok(path) => {
-                                let mut content = format!("[파일: {}, {}]", filename, path);
-                                if !caption.is_empty() {
-                                    content.push_str(&format!("\n캡션: {}", caption));
-                                }
-                                Some(content)
-                            }
-                            Err(e) => {
-                                warn!("document download failed: {}", e);
-                                Some(format!("[파일 다운로드 실패: {}]", e))
-                            }
-                        }
-                    } else if let Some(voice) = msg.voice() {
-                        // Voice message.
-                        let duration = voice.duration.seconds();
-                        match download_telegram_file(&bot_for_welcome, &voice.file.id, "ogg").await {
-                            Ok(path) => Some(format!("[음성메시지: {}, 길이: {}초]", path, duration)),
-                            Err(e) => {
-                                warn!("voice download failed: {}", e);
-                                Some(format!("[음성 다운로드 실패: {}]", e))
-                            }
-                        }
-                    } else if let Some(video) = msg.video() {
-                        // Video message.
-                        let duration = video.duration.seconds();
-                        let caption = msg.caption().unwrap_or("");
-                        match download_telegram_file(&bot_for_welcome, &video.file.id, "mp4").await {
-                            Ok(path) => {
-                                let mut content = format!("[비디오: {}, 길이: {}초]", path, duration);
-                                if !caption.is_empty() {
-                                    content.push_str(&format!("\n캡션: {}", caption));
-                                }
-                                Some(content)
-                            }
-                            Err(e) => {
-                                warn!("video download failed: {}", e);
-                                Some(format!("[비디오 다운로드 실패: {}]", e))
-                            }
-                        }
-                    } else if let Some(sticker) = msg.sticker() {
-                        // Sticker — no download, just emoji text.
-                        let emoji = sticker.emoji.as_deref().unwrap_or("?");
-                        Some(format!("[스티커: {}]", emoji))
-                    } else if let Some(loc) = msg.location() {
-                        // Location.
-                        Some(format!("[위치: 위도 {}, 경도 {}]", loc.latitude, loc.longitude))
-                    } else {
-                        // Unsupported message type — ignore.
-                        None
-                    };
-
-                    if let Some(content) = content_opt {
-                        let channel_msg = ChannelMessage {
-                            id: msg.id.0.to_string(),
-                            sender: msg.chat.id.0.to_string(),
-                            content,
-                            timestamp: msg.date.timestamp(),
-                            source: None,
                         };
-                        debug!(msg_id = %channel_msg.id, "received telegram message");
-                        if tx.send(channel_msg).await.is_err() {
-                            warn!("channel receiver dropped");
+
+                        if let Some(content) = content_opt {
+                            let channel_msg = ChannelMessage {
+                                id: msg.id.0.to_string(),
+                                sender: msg.chat.id.0.to_string(),
+                                content,
+                                timestamp: msg.date.timestamp(),
+                                source: None,
+                            };
+                            debug!(msg_id = %channel_msg.id, "received telegram message");
+                            if tx.send(channel_msg).await.is_err() {
+                                warn!("channel receiver dropped");
+                            }
                         }
+
+                        respond(())
                     }
+                },
+            );
 
-                    respond(())
-                }
-            },
-        );
+            Dispatcher::builder(bot.clone(), handler)
+                .build()
+                .dispatch()
+                .await;
 
-        Dispatcher::builder(self.bot.clone(), handler)
-            .build()
-            .dispatch()
-            .await;
+            // If the receiver is closed (normal shutdown), stop the loop.
+            if tx.is_closed() {
+                info!("telegram channel receiver closed, stopping listener");
+                break;
+            }
+
+            warn!("telegram dispatcher exited unexpectedly (e.g. TerminatedByOtherGetUpdates), restarting in 5s");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
 
         Ok(())
     }

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use tiguclaw_core::provider::{Provider, ToolDefinition};
@@ -57,7 +57,7 @@ impl std::fmt::Display for SubAgentStatus {
 }
 
 /// Report sent from sub-agent → parent upon completion.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SubAgentReport {
     pub agent_id: SubAgentId,
     pub label: String,
@@ -151,14 +151,25 @@ impl SubAgentManager {
                 *s = final_status.clone();
             }
 
-            // Report to parent.
+            // Report to parent (with retry for resilience).
             let report = SubAgentReport {
                 agent_id,
                 label: agent_label,
                 status: final_status,
             };
-            if let Err(e) = report_tx.send(report).await {
-                error!("failed to send sub-agent report: {e}");
+            let mut sent = false;
+            for attempt in 0..3u32 {
+                if report_tx.send(report.clone()).await.is_ok() {
+                    sent = true;
+                    break;
+                }
+                if attempt < 2 {
+                    warn!(attempt, "failed to send sub-agent report, retrying in 1s");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+            if !sent {
+                error!("failed to send sub-agent report after 3 attempts — dropped");
             }
         });
 

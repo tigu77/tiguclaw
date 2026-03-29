@@ -361,7 +361,11 @@ async fn execute_tool(tools: &[Arc<dyn Tool>], tc: &ToolCall) -> String {
 fn format_args_summary(args: &std::collections::HashMap<String, serde_json::Value>) -> String {
     let raw = serde_json::to_string(args).unwrap_or_else(|_| "{...}".to_string());
     if raw.len() > 500 {
-        format!("{}…", &raw[..500])
+        let mut end = 500;
+        while end > 0 && !raw.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &raw[..end])
     } else {
         raw
     }

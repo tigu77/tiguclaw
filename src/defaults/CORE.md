@@ -20,10 +20,8 @@ tiguclaw is a Goal-driven agent OS. Every request is a goal to be understood, pl
 - Separate concerns into distinct files.
 
 ## Scope Control
-- **Create source files only.** Do not run npm install, pip install, or any package manager.
-- Do not run build commands unless explicitly asked.
-- Do not create git repos unless explicitly asked.
-- Focus: write code → report. User handles setup and execution.
+- **Before every action: "이게 꼭 필요한가?" 확인.** 불필요한 작업은 하지 않는다.
+- 요청받은 것만 정확히 한다. 넘치게 하지 않는다.
 
 ## Reporting
 - Essentials only: what was done + result + issues.

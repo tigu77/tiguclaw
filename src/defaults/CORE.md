@@ -17,7 +17,13 @@ tiguclaw is a Goal-driven agent OS. Every request is a goal to be understood, pl
 - **Every requirement must be implemented.** Do not stop at "핵심만". Check the original request item by item.
 - Before reporting completion: re-read the original request → verify each requirement is met → fill gaps.
 - Types, configs, API routes, pages — if the request implies them, create them.
-- More files is better than fewer files. Separate concerns into distinct files.
+- Separate concerns into distinct files.
+
+## Scope Control
+- **Create source files only.** Do not run npm install, pip install, or any package manager.
+- Do not run build commands unless explicitly asked.
+- Do not create git repos unless explicitly asked.
+- Focus: write code → report. User handles setup and execution.
 
 ## Reporting
 - Essentials only: what was done + result + issues.

@@ -301,8 +301,6 @@ pub enum AgentRole {
 // config.rs의 default_*() 함수들은 이 상수를 사용한다.
 // ---------------------------------------------------------------------------
 
-/// 기본 최대 툴 호출 반복 횟수.
-pub const DEFAULT_MAX_TOOL_ITERATIONS: usize = 20;
 /// 기본 컨텍스트 요약 임계값 (추정 토큰 수).
 pub const DEFAULT_COMPACTION_THRESHOLD: usize = 80_000;
 /// 기본 툴 결과 최대 문자 수.
@@ -353,9 +351,6 @@ pub struct AgentConfig {
     pub skill_dirs: Vec<String>,
     #[serde(default = "default_workspace_dir")]
     pub workspace_dir: String,
-    /// Maximum number of tool call iterations per message (default: 20).
-    #[serde(default = "default_max_tool_iterations")]
-    pub max_tool_iterations: usize,
     /// Token threshold for context compaction via LLM summarization (default: 80000 tokens).
     /// When estimated token count exceeds this, history is summarized and replaced.
     /// Token estimation: total chars / 4. Set to 0 to disable.
@@ -443,10 +438,6 @@ fn default_agent_clearance() -> String {
 
 fn default_entry_clearance() -> String {
     "minimal".to_string()
-}
-
-fn default_max_tool_iterations() -> usize {
-    DEFAULT_MAX_TOOL_ITERATIONS
 }
 
 fn default_compaction_threshold() -> usize {

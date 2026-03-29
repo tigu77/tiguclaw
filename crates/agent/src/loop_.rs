@@ -14,7 +14,7 @@ use tiguclaw_core::channel::Channel;
 use tiguclaw_core::config::{
     AgentRole, AutoSpawnConfig,
     DEFAULT_COMPACTION_THRESHOLD, DEFAULT_CONTEXT_RETENTION_DAYS,
-    DEFAULT_HEARTBEAT_INTERVAL_SECS, DEFAULT_MAX_TOOL_ITERATIONS,
+    DEFAULT_HEARTBEAT_INTERVAL_SECS,
     DEFAULT_MAX_TOOL_RESULT_CHARS,
 };
 use tiguclaw_core::event::DashboardEvent;
@@ -61,7 +61,6 @@ pub struct AgentLoop {
     tools: Vec<Arc<dyn Tool>>,
     system_prompt: String,
     max_history: usize,
-    max_tool_iterations: usize,
     compaction_threshold: usize,
     max_tool_result_chars: usize,
     history: Arc<Mutex<Vec<ChatMessage>>>,
@@ -131,7 +130,6 @@ impl AgentLoop {
             tools,
             system_prompt,
             max_history,
-            max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
             compaction_threshold: DEFAULT_COMPACTION_THRESHOLD,
             max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
             history: Arc::new(Mutex::new(Vec::new())),
@@ -203,12 +201,6 @@ impl AgentLoop {
     /// Set the cron job scheduler.
     pub fn with_cron_jobs(mut self, jobs: Vec<CronJob>) -> Self {
         self.scheduler = Scheduler::new(jobs);
-        self
-    }
-
-    /// Override the maximum tool call iterations (default: 20).
-    pub fn with_max_tool_iterations(mut self, n: usize) -> Self {
-        self.max_tool_iterations = n;
         self
     }
 
@@ -755,7 +747,6 @@ impl AgentLoop {
             system_prompt: self.system_prompt.clone(),
             history: self.history.clone(),
             max_history: self.max_history,
-            max_tool_iterations: self.max_tool_iterations,
             compaction_threshold: self.compaction_threshold,
             max_tool_result_chars: self.max_tool_result_chars,
             persist_tx: self.persist_tx.clone(),

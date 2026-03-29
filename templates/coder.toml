@@ -16,4 +16,3 @@ clearance = "minimal"
 
 [capabilities]
 skills = ["shell", "read_file", "write_file", "edit_file"]
-max_tool_iterations = 20

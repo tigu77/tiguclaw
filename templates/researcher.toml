@@ -16,4 +16,3 @@ clearance = "minimal"
 
 [capabilities]
 skills = ["web_fetch", "shell", "read_file"]
-max_tool_iterations = 15

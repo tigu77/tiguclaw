@@ -813,7 +813,7 @@ fn build_base_tools(
 
 /// AgentLoop에 AgentConfig 공통 설정 적용 헬퍼.
 ///
-/// name, max_tool_iterations, compaction_threshold, max_tool_result_chars를 일괄 적용한다.
+/// name, compaction_threshold, max_tool_result_chars를 일괄 적용한다.
 fn apply_agent_config(
     agent: tiguclaw_agent::AgentLoop,
     name: &str,
@@ -821,7 +821,6 @@ fn apply_agent_config(
 ) -> tiguclaw_agent::AgentLoop {
     agent
         .with_name(name)
-        .with_max_tool_iterations(config.max_tool_iterations)
         .with_compaction_threshold(config.compaction_threshold)
         .with_max_tool_result_chars(config.max_tool_result_chars)
         .with_cache_ttl_secs(config.cache_ttl_secs)

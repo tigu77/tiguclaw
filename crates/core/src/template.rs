@@ -33,11 +33,10 @@ pub struct TemplatePersonalitySection {
     pub system_prompt: String,
 }
 
-/// [capabilities] 섹션 — 툴 접근 제한 및 이터레이션 한도.
+/// [capabilities] 섹션 — 툴 접근 제한.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TemplateCapabilitiesSection {
     pub allowed_tools: Option<Vec<String>>,
-    pub max_tool_iterations: Option<usize>,
 }
 
 /// 템플릿 로더 — `templates_dir`에서 `.toml` 파일을 찾아 로드한다.

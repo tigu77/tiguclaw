@@ -52,8 +52,6 @@ pub struct HandlerContext {
     pub system_prompt: String,
     pub history: Arc<Mutex<Vec<ChatMessage>>>,
     pub max_history: usize,
-    /// Maximum tool call iterations per message to prevent infinite loops.
-    pub max_tool_iterations: usize,
     /// Channel to send persistence actions.
     /// The main loop drains this and writes to ConversationStore.
     pub persist_tx: mpsc::UnboundedSender<PersistAction>,
@@ -165,25 +163,10 @@ pub async fn handle_message(
     // Build tool definitions.
     let tool_defs = tool_definitions(&ctx.tools);
 
-    let max_iter = ctx.max_tool_iterations;
-    // The "wrap up" warning fires one iteration before the hard limit.
-    // If max_iter is 0 (unlimited) or 1, there's no room for a warning.
-    // warn_at = usize::MAX when unlimited (effectively never fires).
-    let warn_at = if max_iter > 0 { max_iter.saturating_sub(1) } else { usize::MAX };
-
     // Agentic loop: call provider, handle tool calls, repeat.
-    // max_iter == 0 means unlimited iterations.
+    // Runs until no tool calls remain (context limit is the only bound).
     let mut iteration = 0usize;
     loop {
-        if max_iter > 0 && iteration >= max_iter {
-            warn!(max_iter, "max tool iterations reached");
-            let notice = "⚠️ Reached maximum tool call iterations. Stopping.";
-            ctx.channel
-                .send(&chat_id, notice)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            return Ok(HandleResult::Done);
-        }
         // ── Cancellation check ──
         if cancel_token.is_cancelled() {
             info!(iteration, "handle_message cancelled before provider call");
@@ -191,18 +174,6 @@ pub async fn handle_message(
                 let _ = tx.send(DashboardEvent::AgentIdle { name: ctx.agent_name.clone() });
             }
             return Ok(HandleResult::Cancelled);
-        }
-
-        // ── "Wrap up" signal injection (one iteration before hard limit) ──
-        if iteration == warn_at && warn_at > 0 {
-            let warning = "[System: Tool call limit almost reached. Please wrap up and provide a final answer without using more tools.]";
-            let warn_msg = ChatMessage::user(warning);
-            persist_message(&ctx, &chat_id, &warn_msg);
-            {
-                let mut history = ctx.history.lock().await;
-                history.push(warn_msg);
-            }
-            debug!(iteration, "injected tool limit warning into history");
         }
 
         // Build request messages (system + history snapshot).

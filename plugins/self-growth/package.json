@@ -1,0 +1,16 @@
+{
+  "name": "self-growth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": ["observer", "provider"],
+    "name": "self-growth",
+    "entry": "./src/index.ts",
+    "provider": {
+      "id": "plugin.self-growth",
+      "entry": "./src/provider.ts"
+    }
+  }
+}

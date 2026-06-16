@@ -1,0 +1,26 @@
+{
+  "name": "@tiguclaw/dashboard",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "tiguclaw 데몬 외부 dashboard — http-bridge endpoint 통해서만 통신",
+  "license": "MIT",
+  "files": [
+    "index.ts",
+    "index.html",
+    "README.md"
+  ],
+  "main": "index.ts",
+  "bin": {
+    "tiguclaw-dashboard": "index.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "homepage": "https://github.com/tigu77/tiguclaw#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tigu77/tiguclaw.git",
+    "directory": "packages/dashboard"
+  }
+}

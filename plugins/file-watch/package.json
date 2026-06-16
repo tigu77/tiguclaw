@@ -1,0 +1,15 @@
+{
+  "name": "file-watch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": ["trigger"],
+    "name": "file-watch",
+    "entry": "./src/index.ts"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0"
+  }
+}

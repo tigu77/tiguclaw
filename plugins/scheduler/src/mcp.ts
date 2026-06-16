@@ -1,0 +1,191 @@
+/**
+ * scheduler MCP — SDK in-process MCP server (memory.ts 동형).
+ *
+ * tools 3종 (contract §5):
+ *  - add_schedule    — cron expression dry-parse + nextRun ISO 응답
+ *  - list_schedules  — only_enabled 옵션 + 각 row 의 next_run ISO 계산
+ *  - delete_schedule — 멱등
+ *
+ * SDK 외부 노출 이름: mcp__scheduler__{tool}.
+ * 권한 게이트가 차단하려면 src/auth/permissions.ts DISALLOWED_TOOLS 에 그 이름으로 추가 가능.
+ *
+ * cron 객체 생성·취소는 plugin entry (index.ts) 의 startSchedule/stopSchedule 가 담당.
+ * 본 모듈은 *등록·조회·삭제* + 새 schedule 활성 시 cron 등록 trigger 만.
+ */
+import { z } from "zod";
+import {
+  createSdkMcpServer,
+  tool,
+  type McpSdkServerConfigWithInstance,
+} from "@anthropic-ai/claude-agent-sdk";
+import { Cron } from "croner";
+import {
+  addSchedule,
+  deleteSchedule,
+  getSchedule,
+  listSchedules,
+  type ScheduleRow,
+} from "../../../src/store/schedules.js";
+
+const okJson = (
+  obj: unknown,
+): { content: Array<{ type: "text"; text: string }> } => ({
+  content: [{ type: "text", text: JSON.stringify(obj) }],
+});
+
+/** 외부에서 plugin lifecycle 콜백 주입 — add_schedule 성공 시 cron 등록 trigger. */
+type LifecycleHooks = {
+  onScheduleAdded?: (row: ScheduleRow) => void;
+  onScheduleDeleted?: (id: number) => void;
+};
+
+let lifecycle: LifecycleHooks = {};
+
+export const setSchedulerLifecycleHooks = (hooks: LifecycleHooks): void => {
+  lifecycle = hooks;
+};
+
+/** cron expression 안전 dry-parse + 다음 발화 시각 ISO. */
+const validateCronExpr = (
+  expr: string,
+  timezone: string,
+): { ok: true; nextRun: string | null } | { ok: false; error: string } => {
+  try {
+    const dry = new Cron(expr, { timezone, paused: true });
+    const next = dry.nextRun();
+    return { ok: true, nextRun: next === null ? null : next.toISOString() };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+};
+
+const addScheduleTool = tool(
+  "add_schedule",
+  "새 schedule 등록. trigger_type 'cron' (default — cron 표현식 5/6 필드 또는 @daily/@hourly 매크로) 또는 'reboot' (데몬 부팅 때마다 발화, cron_expr 무시). timezone (IANA, 기본 Asia/Seoul), prompt (영역 A 가상 사용자 prompt), dest_channel (telegram/cli/http-bridge 등), dest_target (채널별 — telegram chatId 등).",
+  {
+    label: z.string().min(1).max(120),
+    trigger_type: z.enum(["cron", "reboot"]).optional(),
+    cron_expr: z.string().max(120).optional(),
+    timezone: z.string().min(1).max(64).optional(),
+    prompt: z.string().min(1).max(4096),
+    dest_channel: z.string().min(1).max(64),
+    dest_target: z.string().max(256).optional(),
+  },
+  async (args) => {
+    const triggerType = args.trigger_type ?? "cron";
+    const tz = args.timezone ?? "Asia/Seoul";
+
+    let nextRunIso: string | null;
+    let cronExpr: string;
+
+    if (triggerType === "reboot") {
+      // reboot 트리거는 cron 표현식 의미 0 — 빈 문자열로 박고 dryrun 건너뜀.
+      // 사용자가 cron_expr 전달했더라도 무시.
+      cronExpr = "";
+      nextRunIso = null;
+    } else {
+      // cron 트리거 — 기존 V1 동작 100% 보존.
+      const exprArg = args.cron_expr ?? "";
+      if (exprArg.trim().length === 0) {
+        return okJson({
+          ok: false,
+          error: "invalid_cron_expr",
+          detail: "cron_expr is required when trigger_type='cron'",
+        });
+      }
+      const validation = validateCronExpr(exprArg, tz);
+      if (!validation.ok) {
+        return okJson({
+          ok: false,
+          error: "invalid_cron_expr",
+          detail: validation.error,
+        });
+      }
+      cronExpr = exprArg;
+      nextRunIso = validation.nextRun;
+    }
+
+    const row = addSchedule({
+      label: args.label,
+      cronExpr,
+      timezone: tz,
+      prompt: args.prompt,
+      destChannel: args.dest_channel,
+      destTarget: args.dest_target ?? null,
+      triggerType,
+    });
+    // plugin lifecycle 에 추가 알림 — cron/reboot 분기는 plugin index.ts 에서.
+    try {
+      lifecycle.onScheduleAdded?.(row);
+    } catch (e) {
+      console.error("scheduler: onScheduleAdded hook threw", e);
+    }
+    return okJson({
+      ok: true,
+      id: row.id,
+      trigger_type: triggerType,
+      next_run: nextRunIso,
+    });
+  },
+);
+
+const listSchedulesTool = tool(
+  "list_schedules",
+  "등록된 schedule 전체 목록. only_enabled=true 면 활성만. 각 row 에 trigger_type ('cron'|'reboot') + next_run (ISO 또는 null) 포함. reboot row 는 next_run=null (다음 daemon.boot 까지 대기 의미).",
+  {
+    only_enabled: z.boolean().optional(),
+  },
+  async (args) => {
+    const rows = listSchedules({ onlyEnabled: args.only_enabled === true });
+    const items = rows.map((r) => {
+      let nextRun: string | null = null;
+      if (r.enabled && r.triggerType === "cron") {
+        const v = validateCronExpr(r.cronExpr, r.timezone);
+        if (v.ok) nextRun = v.nextRun;
+      }
+      return {
+        id: r.id,
+        label: r.label,
+        trigger_type: r.triggerType,
+        cron_expr: r.cronExpr,
+        timezone: r.timezone,
+        prompt: r.prompt,
+        dest_channel: r.destChannel,
+        dest_target: r.destTarget,
+        enabled: r.enabled,
+        last_fired_at: r.lastFiredAt,
+        last_status: r.lastStatus,
+        last_error: r.lastError,
+        next_run: nextRun,
+      };
+    });
+    return okJson({ ok: true, items });
+  },
+);
+
+const deleteScheduleTool = tool(
+  "delete_schedule",
+  "schedule 영구 삭제. 존재하지 않는 id 도 멱등 (deleted:false).",
+  { id: z.number().int().min(1) },
+  async (args) => {
+    const existed = getSchedule(args.id) !== undefined;
+    const deleted = deleteSchedule(args.id);
+    if (existed) {
+      try {
+        lifecycle.onScheduleDeleted?.(args.id);
+      } catch (e) {
+        console.error("scheduler: onScheduleDeleted hook threw", e);
+      }
+    }
+    return okJson({ ok: true, deleted });
+  },
+);
+
+/** SDK in-process MCP server. src/index.ts 가 부팅 시 import → extraMcpServers 에 박는다. */
+export const schedulerMcpServer: McpSdkServerConfigWithInstance =
+  createSdkMcpServer({
+    name: "scheduler",
+    version: "0.1.0",
+    tools: [addScheduleTool, listSchedulesTool, deleteScheduleTool],
+  });

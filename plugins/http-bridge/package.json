@@ -1,0 +1,12 @@
+{
+  "name": "http-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": ["channel", "observer"],
+    "name": "http-bridge",
+    "entry": "./index.ts"
+  }
+}

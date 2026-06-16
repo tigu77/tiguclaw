@@ -1,0 +1,51 @@
+{
+  "name": "tiguclaw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "tiguclaw": "bin/tiguclaw.mjs"
+  },
+  "description": "Always-on multi-channel AI assistant. Superset of Claude Code capabilities with multi-LLM routing.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "TIGUCLAW_HOME=./tiguclaw-dev tsx watch --env-file=.env src/index.ts",
+    "start": "node --env-file=.env dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "init": "tsx src/scripts/init.ts",
+    "onboard": "tsx src/cli.ts onboard",
+    "doctor": "tsx --env-file=.env src/scripts/doctor.ts",
+    "dashboard": "tsx --env-file=.env packages/dashboard/index.ts",
+    "bridge:grant": "tsx --env-file=.env src/scripts/bridge-grant.ts",
+    "bridge:tokens": "tsx --env-file=.env src/scripts/bridge-tokens.ts",
+    "codex-auth": "tsx --env-file=.env src/scripts/codex-auth.ts",
+    "e2e:ollama": "TIGUCLAW_HOME=tiguclaw-dev tsx --env-file=.env src/scripts/e2e-ollama.ts",
+    "e2e:nano": "TIGUCLAW_HOME=tiguclaw-dev MODEL_TIER_NANO=ollama:llama3.2:3b tsx --env-file=.env src/scripts/e2e-nano.ts",
+    "e2e:compaction": "tsx src/scripts/e2e-compaction.ts",
+    "daemon:install": "tsx src/scripts/install-service.ts",
+    "daemon:uninstall": "launchctl bootout gui/$(id -u)/com.tiguclaw.daemon 2>/dev/null; rm -f \"$HOME/Library/LaunchAgents/com.tiguclaw.daemon.plist\"; echo 'launchd unloaded'",
+    "daemon:restart": "launchctl kickstart -k gui/$(id -u)/com.tiguclaw.daemon && echo restarted",
+    "daemon:status": "launchctl print gui/$(id -u)/com.tiguclaw.daemon 2>/dev/null | grep -E 'state =|pid =' || echo 'not loaded'",
+    "daemon:logs": "tail -n 40 -f \"${TIGUCLAW_HOME:-$HOME/.tiguclaw}/logs/daemon-$(date +%Y-%m-%d).log\""
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@openai/agents": "^0.11.4",
+    "@openauthjs/openauth": "^0.4.3",
+    "better-sqlite3": "^12.9.0",
+    "chokidar": "^5.0.0",
+    "croner": "^10.0.1",
+    "grammy": "^1.30.0",
+    "telegram-markdown-formatter": "^0.1.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,1290 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>티구클로 대시보드</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23080a0f'/%3E%3Cpath d='M14 42V18h10c7 0 12 4 12 10s-5 10-12 10h-4v4h-6zm6-12h4c3 0 5-1 5-4s-2-4-5-4h-4v8z' fill='%237dd3fc'/%3E%3Cpath d='M38 18h12v6h-6v18h-6V18z' fill='%23a78bfa'/%3E%3Ccircle cx='45' cy='45' r='5' fill='%2334d399'/%3E%3C/svg%3E" />
+    <style>
+      * { box-sizing: border-box; }
+      :root {
+        color-scheme: dark;
+        --bg: #080a0f;
+        --bg-soft: #0d1118;
+        --panel: rgba(16, 20, 29, 0.84);
+        --panel-solid: #10141d;
+        --card: rgba(255,255,255,0.045);
+        --card-hover: rgba(255,255,255,0.075);
+        --border: rgba(255,255,255,0.09);
+        --border-strong: rgba(255,255,255,0.16);
+        --text: #f4f7fb;
+        --text-mute: #9aa7b7;
+        --text-dim: #657286;
+        --accent: #7dd3fc;
+        --accent-2: #a78bfa;
+        --good: #34d399;
+        --warn: #fbbf24;
+        --bad: #fb7185;
+        --info: #60a5fa;
+        --purple: #c084fc;
+        --teal: #2dd4bf;
+        --shadow: 0 20px 70px rgba(0,0,0,0.42);
+        --radius: 18px;
+      }
+      html { min-height: 100%; background: var(--bg); }
+      body {
+        margin: 0;
+        min-height: 100%;
+        font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background:
+          radial-gradient(circle at 12% -8%, rgba(125,211,252,0.18), transparent 34%),
+          radial-gradient(circle at 78% 0%, rgba(167,139,250,0.16), transparent 30%),
+          linear-gradient(180deg, #080a0f 0%, #0a0d13 100%);
+        color: var(--text);
+        font-size: 13px;
+        line-height: 1.45;
+        overflow: hidden;
+      }
+      button, input { font: inherit; }
+      header {
+        display: flex; align-items: center; gap: 14px;
+        height: 64px;
+        padding: 0 22px;
+        background: rgba(8,10,15,0.72);
+        border-bottom: 1px solid var(--border);
+        backdrop-filter: blur(18px);
+      }
+      header .brand { display:flex; align-items:center; gap:10px; font-weight: 800; font-size: 16px; letter-spacing: -0.02em; }
+      header .brand .emoji { display:grid; place-items:center; width:32px; height:32px; border-radius: 11px; background: linear-gradient(135deg, rgba(125,211,252,.22), rgba(167,139,250,.2)); border: 1px solid var(--border); }
+      header .sub { color: var(--text-mute); font-size: 12px; }
+      header .spacer { flex: 1; }
+      header .live { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-mute); }
+      header .live .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+      header .live .dot.up { background: var(--good); box-shadow: 0 0 14px rgba(52,211,153,0.65); }
+      header .live .dot.down { background: var(--bad); }
+      header .meter { color: var(--text-dim); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; }
+
+      #tab-bar { display: none; background: rgba(8,10,15,0.9); border-bottom: 1px solid var(--border); }
+      #tab-bar .tab { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:9px 4px; background:transparent; border:0; color:var(--text-mute); cursor:pointer; }
+      #tab-bar .tab .ic { font-size: 16px; line-height: 1; }
+      #tab-bar .tab.active { color: var(--accent); background: rgba(125,211,252,0.08); }
+
+      main {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        gap: 14px;
+        height: calc(100vh - 64px);
+        padding: 14px;
+      }
+      #sidebar, #workbench, #right {
+        min-width: 0;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(18px);
+        overflow: hidden;
+      }
+
+      #sidebar { padding: 14px 12px; overflow-y: auto; display:flex; flex-direction:column; gap:14px; }
+      #sidebar h3, .panel-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-dim); margin: 0; font-weight: 800; }
+      .nav-brand { padding:4px 6px 8px; }
+      .nav-kicker { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.13em; font-weight:850; margin-bottom:6px; }
+      .nav-title { color:var(--text); font-size:18px; font-weight:880; letter-spacing:-.04em; }
+      .nav-sub { margin-top:3px; color:var(--text-mute); font-size:11px; }
+      .nav-section { display:grid; gap:5px; }
+      .nav-button { width:100%; display:flex; align-items:center; gap:10px; padding:10px 11px; border:1px solid transparent; border-radius:13px; background:transparent; color:var(--text-mute); cursor:pointer; text-align:left; }
+      .nav-button:hover { background:var(--card-hover); color:var(--text); }
+      .nav-button.active { background:rgba(125,211,252,.12); border-color:rgba(125,211,252,.28); color:var(--text); }
+      .nav-button .ic { width:18px; text-align:center; font-size:15px; }
+      .nav-button .label { flex:1; font-weight:750; }
+      .nav-button .hint { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .nav-divider { height:1px; background:var(--border); margin:2px 4px; }
+      .nav-note { margin-top:auto; padding:11px; border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text-mute); font-size:11px; }
+      .nav-note strong { color:var(--text); }
+      .cat { margin: 5px 0; }
+      .cat-head { display:flex; align-items:center; gap:9px; padding:8px 9px; border-radius: 12px; cursor:pointer; user-select:none; }
+      .cat-head:hover { background: var(--card-hover); }
+      .cat-head .icon { width:18px; text-align:center; }
+      .cat-head .label { flex:1; color:var(--text); font-weight:650; }
+      .cat-head .count { font-family: ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-mute); background:var(--card); border:1px solid var(--border); padding:2px 8px; border-radius:999px; }
+      .cat-head .caret { color:var(--text-dim); font-size:9px; transition: transform .15s; }
+      .cat.open .caret { transform: rotate(90deg); }
+      .cat-body { display:none; padding:4px 0 6px 30px; }
+      .cat.open .cat-body { display:block; }
+      .cat-item { font-size:11px; color:var(--text-mute); padding:3px 4px; font-family: ui-monospace,"SF Mono",Menlo,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .cat-item .layer-tag { font-size:9px; padding:1px 5px; border-radius:6px; background:var(--card); color:var(--text-dim); margin-right:5px; }
+
+      #workbench { display:block; }
+      #providers-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; }
+      #workbench.show-providers #providers-panel { display:flex; }
+      #workbench.show-providers #detail-panel { display:none; }
+      #providers-head { display:flex; align-items:center; gap:10px; padding:16px 16px 12px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(16,20,29,.92); backdrop-filter: blur(14px); z-index:1; }
+      #providers-head h1 { font-size:12px; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+      #providers-head .count { margin-left:auto; font-family: ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; color:var(--text-mute); }
+      #providers-list { padding:10px; flex:1; }
+      .provider-item { position:relative; background:var(--card); border:1px solid transparent; border-radius:14px; padding:12px 12px 12px 14px; margin-bottom:8px; cursor:pointer; transition: background .12s, border-color .12s, transform .12s; }
+      .provider-item:hover { background:var(--card-hover); border-color:var(--border); transform: translateY(-1px); }
+      .provider-item.selected { background:rgba(125,211,252,.11); border-color:rgba(125,211,252,.38); }
+      .provider-item::before { content:""; position:absolute; left:0; top:12px; bottom:12px; width:3px; border-radius:99px; background:var(--text-dim); }
+      .provider-item.s-active::before { background:var(--good); }
+      .provider-item.s-degraded::before { background:var(--warn); }
+      .provider-item.s-error::before { background:var(--bad); }
+      .pi-head { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+      .pi-name { font-size:13px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .pi-kind { font-size:9px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); padding:2px 6px; background:rgba(255,255,255,.045); border-radius:6px; }
+      .pi-status-dot { margin-left:auto; width:8px; height:8px; border-radius:50%; background:var(--text-dim); }
+      .pi-status-dot.active { background:var(--good); box-shadow:0 0 8px rgba(52,211,153,.55); }
+      .pi-status-dot.degraded { background:var(--warn); }
+      .pi-status-dot.error { background:var(--bad); }
+      .pi-summary { color:var(--text-mute); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .content-stack { display:grid; gap:14px; }
+      .subpanel { border:1px solid var(--border); border-radius:18px; background:rgba(255,255,255,.032); padding:14px; min-width:0; }
+      .subpanel-head { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
+      .subpanel-title { margin:0; color:var(--text); font-size:13px; font-weight:850; letter-spacing:-.015em; }
+      .subpanel-desc { margin:3px 0 0; color:var(--text-mute); font-size:11px; }
+      .subpanel-count { margin-left:auto; color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; padding:3px 8px; border-radius:999px; background:var(--card); border:1px solid var(--border); }
+      .provider-layout { display:grid; grid-template-columns:minmax(320px,.95fr) minmax(360px,1.05fr); gap:12px; align-items:start; }
+      .provider-sections { display:grid; gap:12px; }
+      .provider-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+      .provider-card { width:100%; text-align:left; color:inherit; position:relative; padding:15px 15px 14px 17px; border:1px solid var(--border); border-radius:17px; background:var(--card); cursor:pointer; transition:background .12s,border-color .12s,transform .12s; }
+      .provider-card:hover { background:var(--card-hover); border-color:var(--border-strong); transform:translateY(-1px); }
+      .provider-card.selected { background:rgba(125,211,252,.12); border-color:rgba(125,211,252,.36); }
+      .provider-card::before { content:""; position:absolute; left:0; top:14px; bottom:14px; width:4px; border-radius:99px; background:var(--text-dim); }
+      .provider-card.s-active::before { background:var(--good); } .provider-card.s-degraded::before { background:var(--warn); } .provider-card.s-error::before { background:var(--bad); }
+      .provider-card-head { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+      .provider-card-name { color:var(--text); font-weight:850; font-size:15px; letter-spacing:-.02em; }
+      .provider-card-kind { color:var(--text-dim); font-size:10px; padding:2px 7px; border-radius:999px; background:var(--card); text-transform:uppercase; letter-spacing:.06em; }
+      .provider-card-summary { color:var(--text-mute); font-size:12px; min-height:18px; }
+      .provider-card-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:11px; }
+      .provider-chip { color:var(--text-mute); font-size:10px; padding:3px 7px; border:1px solid var(--border); border-radius:999px; background:rgba(255,255,255,.035); }
+
+      #detail-panel { min-width:0; height:100%; overflow-y:auto; padding:18px; background:transparent; }
+      #detail-empty { color:var(--text-dim); padding:44px 20px; text-align:center; }
+      .summary-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:10px; margin-bottom:16px; }
+      .summary-card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:13px 14px; }
+      .summary-label { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.1em; font-weight:800; }
+      .summary-value { margin-top:5px; font-size:22px; line-height:1; font-weight:850; letter-spacing:-.04em; }
+      .summary-hint { margin-top:5px; color:var(--text-mute); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .detail-head { display:flex; align-items:center; gap:12px; padding:18px; margin-bottom:14px; border:1px solid var(--border); border-radius:18px; background:linear-gradient(135deg, rgba(125,211,252,.10), rgba(167,139,250,.08)); }
+      .detail-accent { width:4px; height:32px; border-radius:99px; background:var(--text-dim); }
+      .detail-accent.active { background:var(--good); } .detail-accent.degraded { background:var(--warn); } .detail-accent.error { background:var(--bad); }
+      .detail-name { font-size:22px; font-weight:850; color:var(--text); letter-spacing:-.035em; }
+      .detail-kind { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); padding:3px 8px; background:var(--card); border-radius:7px; }
+      .detail-status { margin-left:auto; font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:5px 11px; border-radius:999px; background:var(--card); color:var(--text-mute); font-weight:800; }
+      .detail-status.active { background:rgba(52,211,153,.14); color:var(--good); } .detail-status.degraded { background:rgba(251,191,36,.15); color:var(--warn); } .detail-status.error { background:rgba(251,113,133,.15); color:var(--bad); }
+      .detail-summary { color:var(--text-mute); font-size:13px; margin:0 0 14px; }
+      .detail-meta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+      .detail-cap { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-mute); padding:4px 8px; border-radius:999px; background:var(--card); border:1px solid var(--border); }
+      .views { display:grid; gap:10px; }
+      .view { padding:12px; background:var(--card); border-radius:15px; border:1px solid var(--border); }
+      .view-title { font-size:11px; font-weight:800; color:var(--text); text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+      .kv { display:grid; grid-template-columns:minmax(90px,28%) 1fr; gap:6px 12px; font-size:12px; }
+      .kv-key { color:var(--text-mute); }
+      .kv-val { color:var(--text); word-break:break-word; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; }
+      .provider-table { width:100%; border-collapse:collapse; font-size:11px; }
+      .provider-table th { color:var(--text-mute); text-align:left; border-bottom:1px solid var(--border); padding:6px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; font-size:10px; }
+      .provider-table td { color:var(--text); border-bottom:1px solid rgba(255,255,255,.055); padding:6px; vertical-align:top; word-break:break-word; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .detail-card { display:grid; gap:12px; }
+      .detail-card .summary-grid { margin-bottom:0; }
+      .detail-card .detail-head { margin-bottom:0; }
+      .detail-card .detail-summary { margin:0; }
+      .action { display:flex; align-items:center; gap:8px; margin:5px 0; font-size:11px; }
+      .action button { background:var(--card); color:var(--text-mute); border:1px solid var(--border); border-radius:8px; padding:5px 10px; cursor:not-allowed; }
+      .danger-safe { color:var(--good); } .danger-gray { color:var(--warn); } .danger-danger { color:var(--bad); }
+      .more { font-size:10px; color:var(--text-dim); margin-top:5px; }
+      .empty { color:var(--text-dim); padding:18px; text-align:center; background:var(--card); border-radius:14px; border:1px dashed var(--border); }
+
+      .page-view { min-height:100%; }
+      .overview { display:grid; gap:14px; }
+      .hero-card { padding:22px; border:1px solid var(--border); border-radius:20px; background:linear-gradient(135deg, rgba(125,211,252,.12), rgba(167,139,250,.09)); }
+      .hero-card h1 { margin:0; font-size:28px; letter-spacing:-.055em; line-height:1.05; }
+      .hero-card p { margin:8px 0 0; color:var(--text-mute); font-size:13px; max-width:680px; }
+      .quick-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+      .quick-card { padding:14px; border:1px solid var(--border); border-radius:16px; background:var(--card); }
+      .quick-label { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.1em; font-weight:850; }
+      .quick-value { margin-top:6px; font-size:24px; font-weight:880; letter-spacing:-.045em; }
+      .quick-hint { margin-top:4px; color:var(--text-mute); font-size:11px; }
+      .section-head { display:flex; align-items:center; gap:10px; margin:4px 0 0; }
+      .section-head h2 { margin:0; font-size:12px; text-transform:uppercase; letter-spacing:.12em; color:var(--text-dim); }
+      .overview-layout { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr); gap:12px; align-items:start; }
+      .status-list { display:grid; gap:8px; }
+      .status-row { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--border); border-radius:14px; background:var(--card); }
+      .status-dot { width:9px; height:9px; border-radius:50%; background:var(--text-dim); flex:0 0 auto; }
+      .status-dot.good { background:var(--good); box-shadow:0 0 12px rgba(52,211,153,.45); }
+      .status-dot.warn { background:var(--warn); }
+      .status-dot.bad { background:var(--bad); }
+      .status-main { min-width:0; flex:1; }
+      .status-title { color:var(--text); font-weight:820; font-size:12px; }
+      .status-desc { color:var(--text-mute); font-size:11px; margin-top:2px; }
+      .health-pill { color:var(--text-mute); font-size:10px; font-weight:850; padding:4px 8px; border:1px solid var(--border); border-radius:999px; background:rgba(255,255,255,.035); white-space:nowrap; }
+      .health-pill.good { color:var(--good); background:rgba(52,211,153,.11); border-color:rgba(52,211,153,.25); }
+      .health-pill.warn { color:var(--warn); background:rgba(251,191,36,.11); border-color:rgba(251,191,36,.24); }
+      .health-pill.bad { color:var(--bad); background:rgba(251,113,133,.12); border-color:rgba(251,113,133,.25); }
+      .home-actions { display:grid; gap:8px; }
+      .home-action { display:flex; align-items:center; gap:10px; width:100%; padding:12px; border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text); text-align:left; cursor:pointer; }
+      .home-action:hover { background:var(--card-hover); border-color:var(--border-strong); }
+      .home-action .ic { width:22px; text-align:center; font-size:16px; }
+      .home-action strong { display:block; font-size:12px; }
+      .home-action span:last-child { color:var(--text-mute); font-size:11px; display:block; margin-top:2px; }
+      .inventory-shell { display:grid; gap:6px; }
+      .developer-copy { color:var(--text-mute); margin:0 0 12px; }
+      #right { display:none; flex-direction:column; }
+      body[data-main="stream"] #workbench { display:none; }
+      body[data-main="stream"] #right { display:flex; }
+      body[data-view="chat"] #stream { flex:1; }
+      @media (max-width: 900px) {
+        body[data-main="stream"] #right { display:none; }
+        body[data-main="stream"][data-tab="chat"] #right { display:flex; }
+      }
+      #stream-bar { display:grid; gap:10px; padding:13px 14px; border-bottom:1px solid var(--border); }
+      .chat-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+      .chat-title { margin:0; color:var(--text); font-size:16px; font-weight:880; letter-spacing:-.035em; }
+      .chat-desc { margin:3px 0 0; color:var(--text-mute); font-size:11px; }
+      .chat-tabs { display:flex; gap:6px; padding:4px; border:1px solid var(--border); border-radius:13px; background:rgba(255,255,255,.035); }
+      .chat-tab { border:0; border-radius:10px; padding:7px 10px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:800; }
+      .chat-tab.active { background:rgba(125,211,252,.13); color:var(--text); }
+      .log-tools { display:none; align-items:center; gap:10px; }
+      body[data-chat-panel="log"] .log-tools { display:flex; }
+      #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
+      #ev-filter:focus, #chat-input:focus { outline:none; border-color:rgba(125,211,252,.55); }
+      #stream { flex:1; overflow-y:auto; padding:10px; }
+      body[data-chat-panel="chat"] .ev:not(.local),
+      body[data-chat-panel="chat"] .turn-card { display:none !important; }
+      body[data-chat-panel="log"] .ev.local,
+      body[data-chat-panel="log"] .chat-empty { display:none !important; }
+      .ev { padding:8px 10px; margin:7px 0; border:1px solid var(--border); border-left:3px solid var(--text-dim); background:var(--card); border-radius:12px; font-size:11px; word-break:break-word; }
+      .ev .ts { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .ev .type { font-weight:800; margin-left:6px; font-size:11px; }
+      .ev pre { display:none; margin:6px 0 0; white-space:pre-wrap; color:var(--text-mute); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .ev:hover pre, .ev.expanded pre { display:block; }
+      .ev.local { padding:10px 12px; }
+      .ev.local pre { display:block; font-size:12px; color:var(--text); line-height:1.5; }
+      .ev.local .type { text-transform:none; }
+      .chat-message { margin-top:7px; white-space:pre-wrap; color:var(--text); font-size:13px; line-height:1.55; font-family:inherit; }
+      .chat-empty { margin:10px; padding:22px; border:1px dashed var(--border); border-radius:16px; background:rgba(255,255,255,.03); color:var(--text-mute); text-align:center; }
+      .chat-empty strong { display:block; color:var(--text); font-size:14px; margin-bottom:5px; }
+      .t-channel { border-left-color:var(--info); } .t-channel .type { color:var(--info); }
+      .t-region { border-left-color:var(--good); } .t-region .type { color:var(--good); }
+      .t-memory { border-left-color:var(--warn); } .t-memory .type { color:var(--warn); }
+      .t-sched { border-left-color:var(--purple); } .t-sched .type { color:var(--purple); }
+      .t-error { border-left-color:var(--bad); } .t-error .type { color:var(--bad); }
+      .t-other { border-left-color:var(--text-dim); } .t-other .type { color:var(--text); }
+      .ev.local { border-left-color:var(--accent); background:rgba(125,211,252,.08); }
+      .ev.local .type { color:var(--accent); }
+      .ev.activity { border-left-color:var(--good); background:rgba(52,211,153,.08); }
+      .act-line { display:flex; align-items:center; gap:8px; padding:2px 0; }
+      .act-badge { font-size:10px; font-weight:800; padding:2px 7px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; }
+      .act-claude { background:rgba(52,211,153,.14); color:var(--good); } .act-codex { background:rgba(192,132,252,.16); color:var(--purple); } .act-openai { background:rgba(45,212,191,.14); color:var(--teal); } .act-other { background:var(--card); color:var(--text-mute); }
+      .act-icon { font-size:13px; } .act-label { color:var(--text); font-weight:700; } .act-meta { color:var(--text-dim); font-size:10px; margin-left:auto; white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .turn-card { padding:0; overflow:hidden; }
+      .turn-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
+      .turn-head:hover { background:rgba(255,255,255,.04); }
+      .turn-caret { color:var(--text-dim); font-size:9px; width:10px; }
+      .turn-thread { color:var(--text-mute); font-size:11px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .turn-count { color:var(--text-dim); font-size:10px; margin-left:auto; }
+      .turn-body { padding:2px 10px 8px 28px; }
+      #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
+      #chat-form { display:flex; gap:8px; }
+      #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
+      #chat-send { background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#061018; border:0; border-radius:12px; padding:10px 14px; font-weight:850; cursor:pointer; }
+      #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
+      #chat-status { color:var(--text-mute); font-size:10px; margin-top:6px; min-height:12px; }
+
+      @media (max-width: 1440px) { main { grid-template-columns: 220px minmax(0,1fr); gap:12px; padding:12px; } }
+      @media (max-width: 1180px) { main { grid-template-columns: 210px minmax(0,1fr); } }
+      @media (max-width: 900px) {
+        html, body { min-height:100%; overflow-x:hidden; overflow-y:auto; }
+        header { position:sticky; top:0; z-index:20; height:56px; padding:0 14px; } header .sub, header .meter { display:none; }
+        #tab-bar { position:sticky; top:56px; z-index:19; display:flex; }
+        main { display:block; min-height:calc(100svh - 56px - 50px); height:auto; padding:0; overflow:visible; }
+        #sidebar, #workbench, #right { display:none; width:100%; min-height:calc(100svh - 56px - 50px); height:auto; border:0; border-radius:0; box-shadow:none; overflow:visible; }
+        body[data-tab="menu"] #sidebar { display:flex; }
+        body[data-tab="main"] #workbench { display:block; }
+        body[data-tab="chat"] #right { display:flex; }
+        body[data-main="stream"][data-tab="main"] #workbench { display:none; }
+        body[data-main="stream"][data-tab="chat"] #right { display:flex; }
+        #sidebar { overflow:visible; padding-bottom:76px; }
+        #providers-panel { border-right:0; height:auto; overflow:visible; }
+        #detail-panel { height:auto; min-height:calc(100svh - 56px - 50px); overflow:visible; padding:14px 14px 70px; }
+        #right { min-height:calc(100svh - 56px - 50px); }
+        #stream { min-height:calc(100svh - 56px - 50px - 126px); overflow:visible; }
+        .summary-grid { grid-template-columns:repeat(3,1fr); gap:8px; }
+        .quick-grid, .provider-layout, .overview-layout { grid-template-columns:1fr; }
+        .provider-grid { grid-template-columns:1fr; }
+        .summary-card { padding:11px; } .summary-value { font-size:19px; }
+        .detail-head { padding:15px; } .detail-name { font-size:19px; }
+        .pi-summary { white-space:normal; }
+        #chat-input { font-size:16px; }
+      }
+      @media (max-width: 430px) { .summary-grid { grid-template-columns:1fr; } header .brand { font-size:15px; } }
+    </style>
+  </head>
+  <body data-tab="main" data-main="workbench" data-view="overview" data-chat-panel="chat">
+    <header>
+      <div class="brand"><span class="emoji">🐯</span>티구클로</div>
+      <div class="sub">대시보드 · v0.3</div>
+      <div class="spacer"></div>
+      <div class="live">
+        <span class="dot" id="conn-dot"></span>
+        <span id="conn-text">연결 중…</span>
+      </div>
+      <div class="meter" id="ev-count">0개 이벤트</div>
+    </header>
+    <nav id="tab-bar">
+      <button class="tab" data-tab="menu" type="button"><span class="ic">☰</span><span>메뉴</span></button>
+      <button class="tab active" data-tab="main" type="button"><span class="ic">🏠</span><span>화면</span></button>
+      <button class="tab" data-tab="chat" type="button"><span class="ic">💬</span><span>채팅</span></button>
+    </nav>
+    <main>
+      <aside id="sidebar">
+        <div class="nav-brand">
+          <div class="nav-kicker">제어 센터</div>
+          <div class="nav-title">대시보드</div>
+          <div class="nav-sub">핵심 상태와 작업 진입점만 간결하게.</div>
+        </div>
+        <div class="nav-section" aria-label="main menu">
+          <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">개요</span><span class="hint">홈</span></button>
+          <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">프로바이더</span><span class="hint" id="nav-provider-count">0</span></button>
+          <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
+          <div class="nav-divider"></div>
+          <button class="nav-button" data-view="inventory" type="button"><span class="ic">🧩</span><span class="label">런타임 인벤토리</span><span class="hint">관리</span></button>
+          <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
+        </div>
+        <div class="nav-note"><strong>인벤토리</strong>는 런타임 레지스트리 확인용이라 기본 화면에서 숨겼습니다.</div>
+      </aside>
+      <section id="workbench">
+        <section id="providers-panel">
+        <div id="providers-head">
+          <h1>프로바이더</h1>
+          <span class="count" id="providers-count"></span>
+        </div>
+        <div id="providers-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
+      </section>
+        <section id="detail-panel">
+          <div id="detail-empty">개요를 불러오는 중입니다.</div>
+        </section>
+      </section>
+      <section id="right">
+        <div id="stream-bar">
+          <div class="chat-head">
+            <div>
+              <h1 class="chat-title">채팅</h1>
+              <p class="chat-desc">돌쇠와 대화하고, 필요할 때 같은 화면에서 활동 로그를 확인합니다.</p>
+            </div>
+            <div class="chat-tabs" aria-label="chat panels">
+              <button class="chat-tab active" data-chat-panel-target="chat" type="button">대화</button>
+              <button class="chat-tab" data-chat-panel-target="log" type="button">활동 로그</button>
+            </div>
+          </div>
+          <div class="log-tools">
+            <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" />
+          </div>
+        </div>
+        <div id="stream"><div class="chat-empty" id="chat-empty"><strong>아직 대화가 없습니다</strong>아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.</div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
+        <div id="chat">
+          <form id="chat-form" autocomplete="off">
+            <input id="chat-input" type="text" placeholder="대시보드 채팅 — Enter 전송" />
+            <button id="chat-send" type="submit">전송</button>
+          </form>
+          <div id="chat-status"></div>
+        </div>
+      </section>
+    </main>
+    <script>
+      const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp"];
+      const CATEGORY_LABEL = {
+        channel: "채널",
+        external_plugin: "플러그인",
+        skill: "스킬",
+        agent: "에이전트",
+        mcp: "mcp",
+      };
+      const CATEGORY_ICON = {
+        channel: "📡",
+        external_plugin: "🔌",
+        skill: "🛠",
+        agent: "🤖",
+        mcp: "🧩",
+      };
+      const LAYERS = ["meta_infra", "in_tree", "discovered"];
+      const MAX_EVENTS = 200;
+      const THREAD_KEY = "dashboard:default";
+
+      const formatValue = (value) => {
+        if (value === null || value === undefined) return "";
+        if (typeof value === "object") return JSON.stringify(value);
+        return String(value);
+      };
+
+      const appendKv = (root, data) => {
+        const kv = document.createElement("div");
+        kv.className = "kv";
+        const entries = data && typeof data === "object" && !Array.isArray(data)
+          ? Object.entries(data)
+          : [["value", data]];
+        for (const [key, value] of entries) {
+          const k = document.createElement("div");
+          k.className = "kv-key"; k.textContent = key;
+          const v = document.createElement("div");
+          v.className = "kv-val"; v.textContent = formatValue(value);
+          kv.appendChild(k); kv.appendChild(v);
+        }
+        root.appendChild(kv);
+      };
+
+      const kindLabel = (kind) => {
+        const map = {
+          provider: "프로바이더",
+          core: "코어",
+          plugin: "플러그인",
+          runtime: "런타임",
+          system: "시스템",
+          daemon: "데몬",
+          memory: "메모리",
+          schedule: "스케줄",
+        };
+        return map[kind] || kind || "프로바이더";
+      };
+
+      const statusLabel = (status) => {
+        const map = { active: "정상", degraded: "주의", error: "오류", unknown: "알 수 없음" };
+        return map[status] || status || "알 수 없음";
+      };
+
+      const dangerLabel = (danger) => {
+        const map = { safe: "안전", gray: "확인 필요", danger: "위험" };
+        return map[danger] || danger || "안전";
+      };
+
+      const isCoreProvider = (provider) => {
+        const id = provider.id || "";
+        const kind = provider.kind || "";
+        return id.startsWith("core.") || kind === "core" || ["daemon", "memory", "schedule", "plugin-registry"].some((key) => id.includes(key));
+      };
+
+      const renderProviderView = (view) => {
+        const div = document.createElement("div");
+        div.className = "view";
+        const title = document.createElement("div");
+        title.className = "view-title";
+        title.textContent = view.title || view.id || "화면";
+        div.appendChild(title);
+        const data = view.data || {};
+        if (view.kind === "table" && Array.isArray(data.rows)) {
+          const table = document.createElement("table");
+          table.className = "provider-table";
+          const columns = Array.isArray(data.columns) ? data.columns : [];
+          const thead = document.createElement("thead");
+          const hr = document.createElement("tr");
+          for (const col of columns) {
+            const th = document.createElement("th"); th.textContent = col;
+            hr.appendChild(th);
+          }
+          thead.appendChild(hr); table.appendChild(thead);
+          const tbody = document.createElement("tbody");
+          for (const row of data.rows.slice(0, 20)) {
+            const tr = document.createElement("tr");
+            for (const col of columns) {
+              const td = document.createElement("td");
+              td.textContent = formatValue(row ? row[col] : "");
+              tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+          }
+          table.appendChild(tbody); div.appendChild(table);
+          if (data.rows.length > 20) {
+            const more = document.createElement("div");
+            more.className = "more"; more.textContent = "+ " + (data.rows.length - 20) + "개 행 더 있음";
+            div.appendChild(more);
+          }
+        } else if (view.kind === "action-panel" && Array.isArray(data.actions)) {
+          for (const action of data.actions) {
+            const line = document.createElement("div");
+            line.className = "action";
+            const btn = document.createElement("button");
+            btn.textContent = action.label || action.id;
+            btn.disabled = true;
+            const danger = document.createElement("span");
+            danger.className = "danger-" + (action.danger || "safe");
+            danger.textContent = dangerLabel(action.danger || "safe");
+            line.appendChild(btn); line.appendChild(danger);
+            div.appendChild(line);
+          }
+        } else {
+          appendKv(div, data);
+        }
+        return div;
+      };
+
+      let providersCache = [];
+      let inventoryCache = null;
+      let selectedProviderId = null;
+      let currentView = "overview";
+
+      const setActiveNav = (view) => {
+        currentView = view;
+        document.body.dataset.view = view;
+        document.body.dataset.main = view === "chat" ? "stream" : "workbench";
+        for (const btn of document.querySelectorAll(".nav-button")) {
+          btn.classList.toggle("active", btn.dataset.view === view);
+        }
+      };
+
+      const showOverview = () => {
+        setActiveNav("overview");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        const active = providersCache.filter((p) => (p.status || "unknown") === "active").length;
+        const degraded = providersCache.filter((p) => ["degraded", "error"].includes(p.status || "unknown")).length;
+        const errors = providersCache.filter((p) => (p.status || "unknown") === "error").length;
+        const invTotal = inventoryCache
+          ? CATEGORIES.reduce((sum, cat) => sum + ((inventoryCache[cat] || []).length), 0)
+          : "…";
+        const healthClass = errors > 0 ? "bad" : degraded > 0 ? "warn" : "good";
+        const healthText = errors > 0 ? "오류" : degraded > 0 ? "주의" : "정상";
+        const healthDesc = providersCache.length === 0
+          ? "프로바이더 정보를 불러오는 중입니다."
+          : degraded > 0
+            ? "점검이 필요한 프로바이더가 " + degraded + "개 있습니다."
+            : "모든 프로바이더가 정상 상태입니다.";
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view overview";
+
+        const hero = document.createElement("div");
+        hero.className = "hero-card";
+        hero.innerHTML = '<h1>오늘의 운영 상태</h1><p>자주 보는 상태와 다음 행동만 모았습니다. 자세한 런타임 정보는 프로바이더와 인벤토리에서 확인하세요.</p>';
+        wrap.appendChild(hero);
+
+        const quick = document.createElement("div");
+        quick.className = "quick-grid";
+        const metrics = [
+          ["상태", healthText, healthDesc],
+          ["프로바이더", String(providersCache.length), active + "개 정상"],
+          ["이벤트", String(evCount), "채팅의 활동 로그에서 확인"],
+        ];
+        for (const [label, value, hint] of metrics) {
+          const card = document.createElement("div");
+          card.className = "quick-card";
+          card.innerHTML = '<div class="quick-label">' + label + '</div><div class="quick-value">' + value + '</div><div class="quick-hint">' + hint + '</div>';
+          quick.appendChild(card);
+        }
+        wrap.appendChild(quick);
+
+        const layout = document.createElement("div");
+        layout.className = "overview-layout";
+        const statusPanel = document.createElement("section");
+        statusPanel.className = "subpanel";
+        statusPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상태 요약</h2><p class="subpanel-desc">지금 확인해야 할 운영 신호입니다.</p></div><span class="health-pill ' + healthClass + '">' + healthText + '</span></div>';
+        const statusList = document.createElement("div");
+        statusList.className = "status-list";
+        const rows = [
+          [healthClass, "프로바이더 상태", healthDesc, active + "/" + providersCache.length],
+          [localChatCount > 0 ? "good" : "warn", "대화", localChatCount > 0 ? "최근 대화가 대화 탭에 표시됩니다." : "아직 대화가 없습니다.", localChatCount + "개"],
+          [inventoryCache ? "good" : "warn", "런타임 인벤토리", inventoryCache ? "채널·플러그인·스킬·에이전트를 불러왔습니다." : "인벤토리를 불러오는 중입니다.", String(invTotal)],
+        ];
+        for (const [tone, title, desc, meta] of rows) {
+          const row = document.createElement("div");
+          row.className = "status-row";
+          row.innerHTML = '<span class="status-dot ' + tone + '"></span><div class="status-main"><div class="status-title">' + title + '</div><div class="status-desc">' + desc + '</div></div><span class="health-pill ' + tone + '">' + meta + '</span>';
+          statusList.appendChild(row);
+        }
+        statusPanel.appendChild(statusList);
+        layout.appendChild(statusPanel);
+
+        const actionPanel = document.createElement("section");
+        actionPanel.className = "subpanel";
+        actionPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">빠른 이동</h2><p class="subpanel-desc">자주 쓰는 화면으로 바로 들어갑니다.</p></div></div>';
+        const actions = document.createElement("div");
+        actions.className = "home-actions";
+        const actionData = [
+          ["providers", "📦", "프로바이더 보기", "카테고리별 패널과 상세 상태 확인"],
+          ["chat", "💬", "돌쇠와 대화", "대화와 활동 로그를 한 화면에서 확인"],
+          ["inventory", "🧩", "런타임 인벤토리", "설치·발견된 capability 점검"],
+        ];
+        for (const [view, icon, title, desc] of actionData) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "home-action";
+          btn.innerHTML = '<span class="ic">' + icon + '</span><span><strong>' + title + '</strong><span>' + desc + '</span></span>';
+          btn.addEventListener("click", () => {
+            if (view === "providers") showProviders();
+            else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); document.getElementById("chat-input").focus(); }
+            else if (view === "inventory") showInventory();
+            if (window.matchMedia("(max-width: 900px)").matches && view !== "chat") setActiveTab("main");
+          });
+          actions.appendChild(btn);
+        }
+        actionPanel.appendChild(actions);
+        layout.appendChild(actionPanel);
+        wrap.appendChild(layout);
+        root.appendChild(wrap);
+      };
+
+      const showInventory = () => {
+        setActiveNav("inventory");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view";
+        wrap.innerHTML = '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">런타임 인벤토리</div><span class="detail-kind">관리</span></div><p class="developer-copy">설치/발견된 채널, 플러그인, 스킬, 에이전트, MCP를 확인하는 관리용 레지스트리입니다. 평소 작업 흐름에서는 숨겨둡니다.</p><div id="inventory" class="inventory-shell"><div class="empty">불러오는 중…</div></div>';
+        root.appendChild(wrap);
+        if (inventoryCache) renderInventory(inventoryCache);
+      };
+
+      const showSettings = () => {
+        setActiveNav("settings");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div><div class="detail-name">설정</div><span class="detail-kind">준비 중</span></div><div class="empty">설정 화면은 다음 단계에서 연결합니다.</div></div>';
+      };
+
+      const showProviders = () => {
+        setActiveNav("providers");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        if (!selectedProviderId && providersCache.length > 0) selectedProviderId = providersCache[0].id;
+        renderProviderHub();
+      };
+
+      const renderProviderCard = (provider) => {
+        const status = provider.status || "unknown";
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "provider-card s-" + status + (provider.id === selectedProviderId ? " selected" : "");
+        const caps = Array.isArray(provider.capabilities) ? provider.capabilities : [];
+        card.innerHTML = '<div class="provider-card-head"><span class="provider-card-name">' + (provider.name || provider.id) + '</span><span class="provider-card-kind">' + kindLabel(provider.kind) + '</span><span class="pi-status-dot ' + status + '"></span></div><div class="provider-card-summary">' + (provider.summary || "상태 정보 없음") + '</div>';
+        const meta = document.createElement("div");
+        meta.className = "provider-card-meta";
+        meta.innerHTML = '<span class="provider-chip">화면 ' + ((provider.views || []).length) + '</span><span class="provider-chip">작업 ' + ((provider.actions || []).length) + '</span>' + caps.slice(0, 2).map((cap) => '<span class="provider-chip">' + cap + '</span>').join("");
+        card.appendChild(meta);
+        card.addEventListener("click", () => selectProvider(provider.id, { userClick: true }));
+        return card;
+      };
+
+      const renderProviderSection = (title, desc, list) => {
+        const section = document.createElement("section");
+        section.className = "subpanel";
+        section.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">' + title + '</h2><p class="subpanel-desc">' + desc + '</p></div><span class="subpanel-count">' + list.length + '개</span></div>';
+        const grid = document.createElement("div");
+        grid.className = "provider-grid";
+        if (list.length === 0) {
+          const e = document.createElement("div");
+          e.className = "empty";
+          e.textContent = "표시할 항목이 없습니다.";
+          grid.appendChild(e);
+        }
+        for (const provider of list) grid.appendChild(renderProviderCard(provider));
+        section.appendChild(grid);
+        return section;
+      };
+
+      const renderProviderDetailCard = (provider) => {
+        const shell = document.createElement("section");
+        shell.className = "subpanel detail-card";
+        if (!provider) {
+          shell.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상세</h2><p class="subpanel-desc">왼쪽 카드에서 프로바이더를 선택하세요.</p></div></div><div class="empty">선택된 프로바이더가 없습니다.</div>';
+          return shell;
+        }
+        const status = provider.status || "unknown";
+        const summaryGrid = document.createElement("div");
+        summaryGrid.className = "summary-grid";
+        const metricData = [
+          ["상태", statusLabel(status), provider.summary || "프로바이더 상태"],
+          ["화면", String((provider.views || []).length), "사용 가능한 패널"],
+          ["작업", String((provider.actions || []).length), "호출 가능한 기능"],
+        ];
+        for (const [label, value, hint] of metricData) {
+          const card = document.createElement("div");
+          card.className = "summary-card";
+          card.innerHTML = '<div class="summary-label">' + label + '</div><div class="summary-value">' + value + '</div><div class="summary-hint">' + hint + '</div>';
+          summaryGrid.appendChild(card);
+        }
+        const head = document.createElement("div");
+        head.className = "detail-head";
+        head.innerHTML = '<div class="detail-accent ' + status + '"></div><div><div class="detail-name">' + (provider.name || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + (provider.summary || "프로바이더 상태") + '</div></div><span class="detail-kind">' + kindLabel(provider.kind) + '</span><span class="detail-status ' + status + '">' + statusLabel(status) + '</span>';
+        shell.appendChild(head);
+        shell.appendChild(summaryGrid);
+        const caps = Array.isArray(provider.capabilities) ? provider.capabilities : [];
+        if (caps.length > 0) {
+          const meta = document.createElement("div");
+          meta.className = "detail-meta";
+          for (const cap of caps) {
+            const c = document.createElement("span");
+            c.className = "detail-cap"; c.textContent = cap;
+            meta.appendChild(c);
+          }
+          shell.appendChild(meta);
+        }
+        const views = (provider.views || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+        const viewsWrap = document.createElement("div");
+        viewsWrap.className = "views";
+        for (const view of views) viewsWrap.appendChild(renderProviderView(view));
+        if ((provider.actions || []).length > 0) {
+          viewsWrap.appendChild(renderProviderView({ title: "작업", kind: "action-panel", data: { actions: provider.actions } }));
+        }
+        if (views.length === 0 && (provider.actions || []).length === 0) {
+          const e = document.createElement("div");
+          e.className = "empty";
+          e.textContent = "표시할 세부 패널이 없습니다.";
+          viewsWrap.appendChild(e);
+        }
+        shell.appendChild(viewsWrap);
+        return shell;
+      };
+
+      const renderProviderHub = () => {
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view content-stack";
+        const active = providersCache.filter((p) => (p.status || "unknown") === "active").length;
+        const degraded = providersCache.filter((p) => ["degraded", "error"].includes(p.status || "unknown")).length;
+        const head = document.createElement("div");
+        head.className = "detail-head";
+        head.innerHTML = '<div class="detail-accent active"></div><div><div class="detail-name">프로바이더</div><div class="detail-summary" style="margin:4px 0 0">카테고리별 기능 패널과 선택한 프로바이더 상세를 한 화면에서 봅니다.</div></div><span class="detail-status active">' + providersCache.length + '개</span>';
+        wrap.appendChild(head);
+        const summaryGrid = document.createElement("div");
+        summaryGrid.className = "summary-grid";
+        const metricData = [["전체", String(providersCache.length), "등록된 프로바이더"], ["정상", String(active), "활성 상태"], ["주의", String(degraded), "점검 필요"]];
+        for (const [label, value, hint] of metricData) {
+          const card = document.createElement("div");
+          card.className = "summary-card";
+          card.innerHTML = '<div class="summary-label">' + label + '</div><div class="summary-value">' + value + '</div><div class="summary-hint">' + hint + '</div>';
+          summaryGrid.appendChild(card);
+        }
+        wrap.appendChild(summaryGrid);
+        const layout = document.createElement("div");
+        layout.className = "provider-layout";
+        const sections = document.createElement("div");
+        sections.className = "provider-sections";
+        const coreProviders = providersCache.filter(isCoreProvider);
+        const pluginProviders = providersCache.filter((p) => !isCoreProvider(p));
+        sections.appendChild(renderProviderSection("코어 프로바이더", "데몬, 메모리, 스케줄처럼 기본 런타임을 구성하는 패널입니다.", coreProviders));
+        sections.appendChild(renderProviderSection("플러그인 프로바이더", "플러그인이나 외부 확장이 제공하는 패널입니다.", pluginProviders));
+        layout.appendChild(sections);
+        const selected = providersCache.find((p) => p.id === selectedProviderId) || providersCache[0] || null;
+        if (selected && !selectedProviderId) selectedProviderId = selected.id;
+        layout.appendChild(renderProviderDetailCard(selected));
+        wrap.appendChild(layout);
+        root.appendChild(wrap);
+      };
+
+      const renderDetail = (provider) => {
+        setActiveNav("providers");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = "";
+        if (!provider) {
+          const e = document.createElement("div");
+          e.id = "detail-empty";
+          e.textContent = "목록에서 프로바이더를 선택하세요.";
+          root.appendChild(e);
+          return;
+        }
+        const status = provider.status || "unknown";
+        const summaryGrid = document.createElement("div");
+        summaryGrid.className = "summary-grid";
+        const metricData = [
+          ["상태", statusLabel(status), provider.summary || "프로바이더 상태"],
+          ["화면", String((provider.views || []).length), "사용 가능한 패널"],
+          ["작업", String((provider.actions || []).length), "호출 가능한 기능"],
+        ];
+        for (const [label, value, hint] of metricData) {
+          const card = document.createElement("div");
+          card.className = "summary-card";
+          const l = document.createElement("div");
+          l.className = "summary-label"; l.textContent = label;
+          const v = document.createElement("div");
+          v.className = "summary-value"; v.textContent = value;
+          const h = document.createElement("div");
+          h.className = "summary-hint"; h.textContent = hint;
+          card.appendChild(l); card.appendChild(v); card.appendChild(h);
+          summaryGrid.appendChild(card);
+        }
+        root.appendChild(summaryGrid);
+        const head = document.createElement("div");
+        head.className = "detail-head";
+        const accent = document.createElement("div");
+        accent.className = "detail-accent " + status;
+        const name = document.createElement("div");
+        name.className = "detail-name"; name.textContent = provider.name || provider.id;
+        const kind = document.createElement("span");
+        kind.className = "detail-kind"; kind.textContent = kindLabel(provider.kind);
+        const statusEl = document.createElement("span");
+        statusEl.className = "detail-status " + status; statusEl.textContent = statusLabel(status);
+        head.appendChild(accent); head.appendChild(name); head.appendChild(kind); head.appendChild(statusEl);
+        root.appendChild(head);
+        if (provider.summary) {
+          const summary = document.createElement("div");
+          summary.className = "detail-summary"; summary.textContent = provider.summary;
+          root.appendChild(summary);
+        }
+        const caps = Array.isArray(provider.capabilities) ? provider.capabilities : [];
+        if (caps.length > 0) {
+          const meta = document.createElement("div");
+          meta.className = "detail-meta";
+          for (const cap of caps) {
+            const c = document.createElement("span");
+            c.className = "detail-cap"; c.textContent = cap;
+            meta.appendChild(c);
+          }
+          root.appendChild(meta);
+        }
+        const views = (provider.views || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+        const viewsWrap = document.createElement("div");
+        viewsWrap.className = "views";
+        for (const view of views) viewsWrap.appendChild(renderProviderView(view));
+        if ((provider.actions || []).length > 0) {
+          viewsWrap.appendChild(renderProviderView({ title: "작업", kind: "action-panel", data: { actions: provider.actions } }));
+        }
+        root.appendChild(viewsWrap);
+      };
+
+      const selectProvider = (id, opts) => {
+        selectedProviderId = id;
+        for (const child of document.querySelectorAll("#providers-list .provider-item")) {
+          child.classList.toggle("selected", child.dataset.id === id);
+        }
+        const p = providersCache.find((x) => x.id === id) || null;
+        if (currentView === "providers") renderProviderHub();
+        else renderDetail(p);
+        if (id) {
+          try { history.replaceState(null, "", "#provider=" + encodeURIComponent(id)); } catch (e) { /* ignore */ }
+        }
+        // mobile: provider 사용자 클릭 시 메인 화면에 상세를 유지합니다.
+        if (opts && opts.userClick && window.matchMedia("(max-width: 900px)").matches) {
+          setActiveTab("main");
+        }
+      };
+
+      const setActiveTab = (name) => {
+        document.body.dataset.tab = name;
+        for (const btn of document.querySelectorAll("#tab-bar .tab")) {
+          btn.classList.toggle("active", btn.dataset.tab === name);
+        }
+      };
+      for (const btn of document.querySelectorAll("#tab-bar .tab")) {
+        btn.addEventListener("click", () => setActiveTab(btn.dataset.tab));
+      }
+
+      const renderProviders = (registry) => {
+        const list = document.getElementById("providers-list");
+        const countEl = document.getElementById("providers-count");
+        list.innerHTML = "";
+        const providers = registry.providers || [];
+        providersCache = providers;
+        countEl.textContent = providers.length + "개";
+        const navCount = document.getElementById("nav-provider-count");
+        if (navCount) navCount.textContent = String(providers.length);
+        if (providers.length === 0) {
+          const e = document.createElement("div");
+          e.className = "empty"; e.style.margin = "8px";
+          e.textContent = "프로바이더가 없습니다.";
+          list.appendChild(e);
+          renderDetail(null);
+          return;
+        }
+        for (const provider of providers) {
+          const status = provider.status || "unknown";
+          const item = document.createElement("div");
+          item.className = "provider-item s-" + status;
+          item.dataset.id = provider.id;
+          const head = document.createElement("div");
+          head.className = "pi-head";
+          const name = document.createElement("span");
+          name.className = "pi-name"; name.textContent = provider.name || provider.id;
+          const kind = document.createElement("span");
+          kind.className = "pi-kind"; kind.textContent = kindLabel(provider.kind);
+          const dot = document.createElement("span");
+          dot.className = "pi-status-dot " + status;
+          dot.title = status;
+          head.appendChild(name); head.appendChild(kind); head.appendChild(dot);
+          item.appendChild(head);
+          if (provider.summary) {
+            const summary = document.createElement("div");
+            summary.className = "pi-summary"; summary.textContent = provider.summary;
+            item.appendChild(summary);
+          }
+          item.addEventListener("click", () => selectProvider(provider.id, { userClick: true }));
+          list.appendChild(item);
+        }
+        // 선택 유지 (URL hash → 이전 선택 → 첫번째)
+        let nextId = selectedProviderId;
+        if (!nextId) {
+          const hash = (window.location.hash || "").match(/provider=([^&]+)/);
+          if (hash) nextId = decodeURIComponent(hash[1]);
+        }
+        if (!nextId || !providers.some((p) => p.id === nextId)) {
+          nextId = providers[0].id;
+        }
+        selectedProviderId = nextId;
+        if (currentView === "providers") renderProviderHub();
+        else if (currentView === "overview") showOverview();
+      };
+
+      const fetchProviders = async () => {
+        try {
+          const r = await fetch("/api/providers");
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          renderProviders(await r.json());
+        } catch (e) {
+          const list = document.getElementById("providers-list");
+          list.innerHTML = "";
+          const div = document.createElement("div");
+          div.className = "empty"; div.style.margin = "8px";
+          div.textContent = "불러오기 실패: " + e.message;
+          list.appendChild(div);
+        }
+      };
+
+      const renderInventory = (inv) => {
+        inventoryCache = inv;
+        const root = document.getElementById("inventory");
+        if (!root) return;
+        root.innerHTML = "";
+        for (const cat of CATEGORIES) {
+          const items = inv[cat] || [];
+          const wrap = document.createElement("div");
+          wrap.className = "cat";
+          if (items.length > 0 && cat === "channel") wrap.classList.add("open");
+          const head = document.createElement("div");
+          head.className = "cat-head";
+          const icon = document.createElement("span");
+          icon.className = "icon"; icon.textContent = CATEGORY_ICON[cat] || "·";
+          const label = document.createElement("span");
+          label.className = "label"; label.textContent = CATEGORY_LABEL[cat] || cat;
+          const count = document.createElement("span");
+          count.className = "count"; count.textContent = items.length;
+          const caret = document.createElement("span");
+          caret.className = "caret"; caret.textContent = "▶";
+          head.appendChild(icon); head.appendChild(label); head.appendChild(count); head.appendChild(caret);
+          const body = document.createElement("div");
+          body.className = "cat-body";
+          // layer 별 정렬.
+          const sorted = items.slice().sort((a, b) => {
+            const la = LAYERS.indexOf(a.layer); const lb = LAYERS.indexOf(b.layer);
+            return (la === -1 ? 99 : la) - (lb === -1 ? 99 : lb);
+          });
+          for (const it of sorted) {
+            const item = document.createElement("div");
+            item.className = "cat-item";
+            const lt = document.createElement("span");
+            lt.className = "layer-tag";
+            lt.textContent = (it.layer || "").replace("_", "·").slice(0, 8);
+            const name = document.createElement("span");
+            name.textContent = it.name || "?";
+            if (it.enabled === false) name.style.color = "var(--text-dim)";
+            item.appendChild(lt); item.appendChild(name);
+            body.appendChild(item);
+          }
+          if (items.length === 0) {
+            const item = document.createElement("div");
+            item.className = "cat-item"; item.textContent = "(없음)";
+            item.style.color = "var(--text-dim)";
+            body.appendChild(item);
+          }
+          head.addEventListener("click", () => {
+            wrap.classList.toggle("open");
+          });
+          wrap.appendChild(head); wrap.appendChild(body);
+          root.appendChild(wrap);
+        }
+      };
+
+      const fetchInventory = async () => {
+        try {
+          const r = await fetch("/api/inventory");
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          renderInventory(await r.json());
+        } catch (e) {
+          const root = document.getElementById("inventory");
+          if (root) root.innerHTML =
+            '<div class="empty" style="font-size:11px;padding:10px">인벤토리 불러오기 실패: ' + e.message + "</div>";
+        }
+      };
+
+      const typeClass = (type) => {
+        if (type === "plugin.error" || type.endsWith(".error")) return "t-error";
+        if (type.startsWith("channel.message")) return "t-channel";
+        if (type.startsWith("region.")) return "t-region";
+        if (type.startsWith("memory.")) return "t-memory";
+        if (type.startsWith("scheduler.")) return "t-sched";
+        return "t-other";
+      };
+
+      const stream = document.getElementById("stream");
+      const evCountEl = document.getElementById("ev-count");
+      const filterEl = document.getElementById("ev-filter");
+      const setChatPanel = (panel) => {
+        document.body.dataset.chatPanel = panel;
+        for (const btn of document.querySelectorAll(".chat-tab")) {
+          btn.classList.toggle("active", btn.dataset.chatPanelTarget === panel);
+        }
+      };
+      for (const btn of document.querySelectorAll(".chat-tab")) {
+        btn.addEventListener("click", () => setChatPanel(btn.dataset.chatPanelTarget || "chat"));
+      }
+      let firstEvent = true;
+      let evCount = 0;
+      let localChatCount = 0;
+      let filterText = "";
+
+      const refreshChatEmpty = () => {
+        const chatEmpty = document.getElementById("chat-empty");
+        if (chatEmpty) chatEmpty.style.display = localChatCount === 0 ? "" : "none";
+      };
+
+      filterEl.addEventListener("input", () => {
+        filterText = filterEl.value.trim().toLowerCase();
+        for (const child of stream.children) {
+          const t = child.dataset.type || "";
+          child.style.display =
+            filterText === "" || t.includes(filterText) ? "" : "none";
+        }
+      });
+
+      const ADAPTERS = ["claude", "codex", "openai"];
+      const cardByThread = new Map();
+
+      const applyFilter = (el) => {
+        if (filterText !== "" && !(el.dataset.type || "").includes(filterText)) {
+          el.style.display = "none";
+        }
+      };
+      const capStream = () => {
+        while (stream.children.length > MAX_EVENTS) stream.removeChild(stream.lastChild);
+      };
+
+      const buildActivityLine = (p) => {
+        const line = document.createElement("div");
+        line.className = "act-line";
+        const icon = document.createElement("span");
+        icon.className = "act-icon";
+        icon.textContent = p.kind === "tool" ? "🔧" : "▶";
+        const label = document.createElement("span");
+        label.className = "act-label";
+        label.textContent = p.label || p.kind || "activity";
+        const meta = document.createElement("span");
+        meta.className = "act-meta";
+        meta.textContent = (p.model ? p.model + " · " : "") + "#" + (p.seq ?? "");
+        line.appendChild(icon); line.appendChild(label); line.appendChild(meta);
+        return line;
+      };
+
+      const createTurnCard = (p, ts, adapter, thread) => {
+        const el = document.createElement("div");
+        el.className = "ev turn-card";
+        el.dataset.type = "region.a.activity";
+        applyFilter(el);
+        const head = document.createElement("div");
+        head.className = "turn-head";
+        const caret = document.createElement("span");
+        caret.className = "turn-caret"; caret.textContent = "▼";
+        const badge = document.createElement("span");
+        badge.className = "act-badge act-" + adapter;
+        badge.textContent = p.adapter || "?";
+        const th = document.createElement("span");
+        th.className = "turn-thread"; th.textContent = thread;
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts"; tsEl.textContent = ts;
+        const countEl = document.createElement("span");
+        countEl.className = "turn-count"; countEl.textContent = "0단계";
+        head.appendChild(caret); head.appendChild(badge); head.appendChild(th);
+        head.appendChild(tsEl); head.appendChild(countEl);
+        const body = document.createElement("div");
+        body.className = "turn-body";
+        head.addEventListener("click", () => {
+          const hidden = body.style.display === "none";
+          body.style.display = hidden ? "" : "none";
+          caret.textContent = hidden ? "▼" : "▶";
+        });
+        el.appendChild(head); el.appendChild(body);
+        return { el, body, countEl, lastSeq: -1, count: 0 };
+      };
+
+      const renderActivity = (p, ts) => {
+        const thread = p.threadKey || "?";
+        const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
+        let card = cardByThread.get(thread);
+        const isNewTurn = !card || !card.el.isConnected || (p.seq ?? 0) <= card.lastSeq;
+        if (isNewTurn) {
+          card = createTurnCard(p, ts, adapter, thread);
+          cardByThread.set(thread, card);
+          stream.insertBefore(card.el, stream.firstChild);
+          capStream();
+        }
+        card.body.appendChild(buildActivityLine(p));
+        card.lastSeq = p.seq ?? 0;
+        card.count += 1;
+        card.countEl.textContent = card.count + "단계";
+      };
+
+      const renderChannelMessage = (ev, ts) => {
+        const payload = ev.payload || {};
+        const div = document.createElement("div");
+        div.className = "ev local channel-chat";
+        div.dataset.type = (ev.type || "").toLowerCase();
+        const head = document.createElement("div");
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts";
+        tsEl.textContent = ts;
+        const tyEl = document.createElement("span");
+        tyEl.className = "type";
+        tyEl.textContent = ev.type === "channel.message.out" ? "돌쇠" : "나";
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        div.appendChild(head);
+        const msg = document.createElement("div");
+        msg.className = "chat-message";
+        msg.textContent = String(payload.text || "");
+        div.appendChild(msg);
+        stream.insertBefore(div, stream.firstChild);
+        localChatCount += 1;
+        refreshChatEmpty();
+        if (currentView === "overview") setTimeout(showOverview, 0);
+        capStream();
+      };
+
+      const renderEvent = (ev) => {
+        if (firstEvent) {
+          const logEmpty = document.getElementById("log-empty");
+          if (logEmpty) logEmpty.remove();
+          firstEvent = false;
+        }
+        evCount += 1;
+        evCountEl.textContent = evCount + "개 이벤트";
+        const navEventCount = document.getElementById("nav-event-count");
+        if (navEventCount) navEventCount.textContent = String(evCount);
+        if (currentView === "overview") setTimeout(showOverview, 0);
+        const ts = new Date(ev.ts).toISOString().slice(11, 23);
+        if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
+          renderChannelMessage(ev, ts);
+          return;
+        }
+        if (ev.type === "region.a.activity") {
+          renderActivity(ev.payload || {}, ts);
+          return;
+        }
+        const div = document.createElement("div");
+        div.className = "ev " + typeClass(ev.type);
+        div.dataset.type = (ev.type || "").toLowerCase();
+        applyFilter(div);
+        const head = document.createElement("div");
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts"; tsEl.textContent = ts;
+        const tyEl = document.createElement("span");
+        tyEl.className = "type"; tyEl.textContent = ev.type;
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        div.appendChild(head);
+        const pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(ev.payload, null, 2);
+        div.appendChild(pre);
+        stream.insertBefore(div, stream.firstChild);
+        capStream();
+      };
+
+      const renderLocalChat = (kind, text) => {
+        const logEmpty = document.getElementById("log-empty");
+        if (logEmpty && firstEvent) {
+          // 대화 탭의 빈 상태는 유지하고, 로그 placeholder만 정리합니다.
+          logEmpty.remove();
+          firstEvent = false;
+        }
+        localChatCount += 1;
+        refreshChatEmpty();
+        if (currentView === "overview") setTimeout(showOverview, 0);
+        const div = document.createElement("div");
+        div.className = "ev local";
+        const head = document.createElement("div");
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts";
+        tsEl.textContent = new Date().toISOString().slice(11, 23);
+        const tyEl = document.createElement("span");
+        tyEl.className = "type";
+        const chatLabel = { user: "나", reply: "돌쇠", error: "오류" };
+        tyEl.textContent = chatLabel[kind] || kind;
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        div.appendChild(head);
+        const msg = document.createElement("div");
+        msg.className = "chat-message";
+        msg.textContent = text;
+        div.appendChild(msg);
+        stream.insertBefore(div, stream.firstChild);
+        while (stream.children.length > MAX_EVENTS) stream.removeChild(stream.lastChild);
+      };
+
+      for (const btn of document.querySelectorAll(".nav-button")) {
+        btn.addEventListener("click", () => {
+          const view = btn.dataset.view;
+          if (view === "overview") showOverview();
+          else if (view === "providers") showProviders();
+          else if (view === "inventory") showInventory();
+          else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); document.getElementById("chat-input").focus(); }
+          else if (view === "settings") showSettings();
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings"].includes(view)) setActiveTab("main");
+        });
+      }
+
+      refreshChatEmpty();
+      showOverview();
+      fetchProviders();
+      setInterval(fetchProviders, 30000);
+      fetchInventory();
+      setInterval(fetchInventory, 30000);
+
+      const connDot = document.getElementById("conn-dot");
+      const connText = document.getElementById("conn-text");
+      const setConn = (up) => {
+        connDot.className = "dot " + (up ? "up" : "down");
+        connText.textContent = up ? "실시간" : "재연결 중…";
+      };
+
+      const es = new EventSource("/api/events");
+      es.onopen = () => setConn(true);
+      es.onmessage = (m) => {
+        setConn(true);
+        try { renderEvent(JSON.parse(m.data)); } catch (e) { /* skip malformed */ }
+      };
+      es.onerror = () => { setConn(false); };
+
+      const form = document.getElementById("chat-form");
+      const input = document.getElementById("chat-input");
+      const sendBtn = document.getElementById("chat-send");
+      const statusEl = document.getElementById("chat-status");
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (text.length === 0) return;
+        sendBtn.disabled = true;
+        statusEl.textContent = "전송 중...";
+        input.value = "";
+        try {
+          const r = await fetch("/api/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text, threadKey: THREAD_KEY }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            statusEl.textContent = "오류: " + (data.error || ("HTTP " + r.status));
+            renderLocalChat("error", data.error || ("HTTP " + r.status));
+          } else {
+            statusEl.textContent = "";
+          }
+        } catch (err) {
+          statusEl.textContent = "전송 실패: " + err.message;
+          renderLocalChat("error", err.message);
+        } finally {
+          sendBtn.disabled = false;
+          input.focus();
+        }
+      });
+    </script>
+  </body>
+</html>

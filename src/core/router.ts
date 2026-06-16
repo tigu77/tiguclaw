@@ -1,0 +1,77 @@
+/**
+ * 라우터 — 입력 메시지를 LLM 런타임으로 dispatch.
+ *
+ * 진실 소스: `_workspace/region_unification_architect_contract.md` (결정 1·2).
+ * V8 영역 통합: 영역 A/B 구분·prefix·분류 전부 폐기. 단일 파이프라인 pass-through.
+ * 깊은 사고는 prefix 가 아니라 비서가 부리는 능력(서브에이전트 모델 지정 경로).
+ */
+import type { IncomingMessage } from "../channels/types.js";
+import {
+  clearSessionModelOverride,
+  getSessionModelOverride,
+} from "../store/sessions.js";
+import { runClaude } from "./claude.js";
+import { parseModelSpecList } from "./llm-runtime/index.js";
+import { getRegisteredMcpServers } from "./mcp-registry.js";
+
+export interface RouteOutput {
+  text: string;
+  /**
+   * LLM 런타임 output 에서 그대로 전달 — 이 turn 응답을 트리거 메시지 직접 답글로 마킹.
+   */
+  replyToTrigger?: boolean;
+  /**
+   * 세션 모델 override 가 런타임에 거부되어 자동 폴백했음을 호출자에게 통과.
+   * (고지 문구는 이미 text 에 facade 가 덧붙였음 — 이 필드는 관측/메타 용.)
+   */
+  modelOverrideRejected?: { requested: string; fellBackTo: string };
+}
+
+export const route = async (
+  msg: IncomingMessage,
+): Promise<RouteOutput> => {
+  // 세션 모델 override (`/model <provider:model[,provider:model...]>` 로 설정) 조회.
+  // 콤마 멀티스펙 풀 지원(2026-06-02) — 단일에서 풀로 확장.
+  // 있으면 풀(여러 spec)로 runClaude 에 주입 → resolveModelSpecs 가 opts.specs 우선
+  // → env 폴백 무시. runPool 이 풀 순서대로 시도(첫 성공 반환) → 풀 내 폴백은 이미 됨.
+  // 빈 풀(유효 0) → specs 미주입 → 기존 동작(REGION_A_MODELS env 풀) 그대로.
+  // override 풀 *전체*가 모델거부로 소진되면 facade 가 env 풀로 1회 폴백 +
+  // modelOverrideRejected 신호 → 아래에서 깨진 override DB clear (의미 불변).
+  // canonical 저장(`/model` 핸들러) 덕에 parseModelSpecList 는 항상 성공이나, DB 에
+  // 구버전 무효 문자열이 남아있을 가능성 대비 빈 풀 가드 유지(env 폴백).
+  const overrideRaw = getSessionModelOverride(msg.channel, msg.threadKey);
+  const overridePool =
+    overrideRaw !== null ? parseModelSpecList(overrideRaw) : [];
+
+  const out = await runClaude(
+    {
+      text: msg.text,
+      threadKey: msg.threadKey,
+      channel: msg.channel,
+      attachments: msg.attachments,
+      sendAttachment: msg.sendAttachment,
+      extraMcpServers: getRegisteredMcpServers(),
+    },
+    overridePool.length > 0 ? { specs: overridePool } : undefined,
+  );
+  // override 가 런타임에 거부되어 폴백한 경우 — 깨진 override 를 DB 에서 제거해
+  // 다음 turn 정상화 (매 turn 경고 반복 방지). DB 쓰기는 router 경유(facade 는 순수).
+  // 사용자가 다시 `/model` 로 지정하기 전까지는 env 풀(기본)로 동작.
+  if (out.modelOverrideRejected !== undefined) {
+    clearSessionModelOverride(msg.channel, msg.threadKey);
+    console.warn(
+      `route: model override '${out.modelOverrideRejected.requested}' rejected → ` +
+        `cleared (fell back to '${out.modelOverrideRejected.fellBackTo}') ` +
+        `channel=${msg.channel} thread=${msg.threadKey}`,
+    );
+  }
+  console.log(
+    `route channel=${msg.channel} thread=${msg.threadKey}` +
+      (overrideRaw !== null ? ` model_override=${overrideRaw}` : ""),
+  );
+  return {
+    text: out.text,
+    replyToTrigger: out.replyToTrigger,
+    modelOverrideRejected: out.modelOverrideRejected,
+  };
+};

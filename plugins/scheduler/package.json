@@ -1,0 +1,12 @@
+{
+  "name": "scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": ["trigger"],
+    "name": "scheduler",
+    "entry": "./src/index.ts"
+  }
+}

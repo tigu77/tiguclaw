@@ -1,0 +1,12 @@
+{
+  "name": "channel-cli-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": "channel",
+    "name": "cli-plugin",
+    "entry": "./cli.ts"
+  }
+}

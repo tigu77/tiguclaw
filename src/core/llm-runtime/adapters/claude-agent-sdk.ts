@@ -68,6 +68,7 @@ import {
   formatAgentIndex,
   type Agent,
 } from "../capabilities/agent-registry.js";
+import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import {
@@ -75,6 +76,7 @@ import {
   IdleTimeoutError,
   IDLE_TIMEOUT_CONFIG,
 } from "../idle-timeout.js";
+import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -323,6 +325,15 @@ export const runClaude = async (
         ...(input.sendAttachment !== undefined
           ? { "send-file": createSendFileMcpServer(input.sendAttachment, sentFiles) }
           : {}),
+        // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
+        // depth 0(서브에이전트 아님) + workerDepth 0(워커 안 아님) turn 만 등록 →
+        // 워커가 또 워커 발사 불가(W-I5). claude native Task 는 *블로킹* 위임이라
+        // 비차단 백그라운드 워커와 의미가 달라 양 어댑터 모두 명시 등록(W-I3, contract §2).
+        // SDK in-process MCP server (McpSdkServerConfigWithInstance) 를 그대로 맵에 주입
+        // — spawn_agent 와 달리 native 대응이 없으므로 codex/openai 와 동일 server 사용.
+        ...(depth === 0 && (input.workerDepth ?? 0) === 0
+          ? { workers: createWorkerMcpServer(input) }
+          : {}),
         ...(input.extraMcpServers ?? {}),
       };
 
@@ -331,11 +342,18 @@ export const runClaude = async (
   // heartbeat = for-await msg 도착마다. timer.done() = finally (누수 0, I-6).
   const idleAc = new AbortController();
   const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+  // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합. idleTimer 는
+  // 여전히 *원래 idleAc* 를 abort 하고, linkAbort 가 그걸 effectiveAc 로 전파한다
+  // (결선 순서: idleAc abort → effectiveAc abort). SDK 는 signal 이 아닌
+  // AbortController 객체를 받으므로 effectiveAc 를 그대로 abortController 로 넘긴다.
+  // SDK 가 LLM+도구 실행을 같은 abortController 로 정리(runtimeTypes.d.ts:234).
+  // input.abortSignal 미지정이면 link 는 idleAc 만 → 현행 1층 동작 그대로(TT-I7).
+  const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
 
   const options: Options = {
     systemPrompt: SYSTEM_PROMPT,
     permissionMode: "bypassPermissions",
-    abortController: idleAc,
+    abortController: effectiveAc,
     disallowedTools: [...DISALLOWED_TOOLS],
     persistSession: true,
     cwd,
@@ -529,11 +547,16 @@ export const runClaude = async (
     }
   }
   } catch (e) {
-    // SDK 가 abort 시 throw 하는 경우(AbortError 등) — 유휴 타임아웃이 원인이면
-    // IdleTimeoutError 로 승격해 facade 가 일관된 타임아웃 신호를 받게 한다.
-    // (isModelRejected 비매칭 — I-3.) 그 외 에러는 그대로 전파.
-    if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
-      throw idleAc.signal.reason;
+    // SDK 가 abort 시 throw 하는 경우(AbortError 등) — 1층(유휴) 또는 2층(턴) 타임아웃이
+    // 원인이면 해당 에러로 승격해 facade 가 일관된 타임아웃 신호를 받게 한다(둘 다
+    // isModelRejected 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
+    // 그 외 에러는 그대로 전파.
+    const reason = effectiveAc.signal.reason;
+    if (
+      effectiveAc.signal.aborted &&
+      (reason instanceof IdleTimeoutError || reason instanceof TurnTimeoutError)
+    ) {
+      throw reason;
     }
     throw e;
   } finally {
@@ -541,11 +564,17 @@ export const runClaude = async (
     idleTimer.done();
   }
 
-  // 유휴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를
+  // 유휴/턴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를
   // 조용히 끝낼 수 있다. 그 경우 succeeded=false 로 떨어져 facade 가 실패를 못 본다.
-  // signal.reason 이 IdleTimeoutError 면 명시 throw 로 승격 (facade 폴백 경로 진입).
-  if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
-    throw idleAc.signal.reason;
+  // reason 이 Idle/TurnTimeoutError 면 명시 throw 로 승격 (둘 다 비매칭 — facade 무폴백).
+  {
+    const reason = effectiveAc.signal.reason;
+    if (
+      effectiveAc.signal.aborted &&
+      (reason instanceof IdleTimeoutError || reason instanceof TurnTimeoutError)
+    ) {
+      throw reason;
+    }
   }
 
   const text = resultText ?? assistantTextChunks.join("");

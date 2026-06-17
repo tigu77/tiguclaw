@@ -66,6 +66,7 @@ import {
   discoverAgents,
   formatAgentIndex,
 } from "../capabilities/agent-registry.js";
+import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { loadThreadHistory } from "../../../store/memory.js";
@@ -83,6 +84,7 @@ import {
   IdleTimeoutError,
   IDLE_TIMEOUT_CONFIG,
 } from "../idle-timeout.js";
+import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 
 // OAuth 상수 — fork (numman-ali/opencode-openai-codex-auth) 의 lib/auth/auth.ts 답습.
 // codex_cli_rs originator + chatgpt.com/backend-api = Codex 비공식 endpoint 활성화.
@@ -1082,6 +1084,20 @@ export const runOpenAiCodex = async (
       mcpTools.push(...spawnToolsRaw);
     }
 
+    // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
+    // depth 0(서브에이전트 아님) + workerDepth 0(워커 안 아님) turn 만 등록 →
+    // 워커가 또 워커를 발사 불가(W-I5). spawn_agent depth 가드와 동형. claude/openai
+    // 어댑터와 동일 의미(W-I3 — 어댑터 분기 0).
+    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+      const workerServer = createWorkerMcpServer(input);
+      const workerBridge = await adaptClaudeMcpServer(workerServer, "workers");
+      const workerToolsRaw = await workerBridge.listTools();
+      for (const t of workerToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, workerBridge);
+      }
+      mcpTools.push(...workerToolsRaw);
+    }
+
     // V7.5 (parity P0 fix) — extraMcpServers 도 bridge. router 가 facade 통해
     // plugin MCP (scheduler/file-watch 의 add_schedule 등, getRegisteredMcpServers())
     // 를 전달하는데 codex 어댑터가 그간 무시 → plugin 생태가 codex 모드에서 끊김.
@@ -1197,6 +1213,12 @@ export const runOpenAiCodex = async (
 
   try {
     while (iteration < CODEX_MAX_TOOL_ITERATIONS) {
+      // 2층 도구 루프 가드 (TT-I6, §4.4 #1) — iteration 진입(다음 LLM 호출) 직전 체크.
+      // codex 는 수동 agentic 루프라 callTool 에 signal 이 안 들어간다(MCP 한계). 직전
+      // iteration 의 도구 1개가 행이었어도 *그 도구가 반환하면* 여기서 다음 fetch 진입을
+      // 막아 루프 폭주를 차단한다. reason(TurnTimeoutError)을 throw → 바깥 catch(§4.4)가
+      // sideEffectExecuted 따라 안전 처리. 어댑터 *내부* abort 전파(facade 분기 아님).
+      if (input.abortSignal?.aborted) throw input.abortSignal.reason;
       const body: Record<string, unknown> = {
         model,
         // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향).
@@ -1241,6 +1263,11 @@ export const runOpenAiCodex = async (
       // reader.read() 가 reject → parseCodexSse throw → 아래 catch 가 IdleTimeoutError 로.
       const idleAc = new AbortController();
       const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+      // 2층 합성 (TT-I2) — 1층 idle AC(이 iteration 의 fetch 용)와 핸들러 turn signal 을
+      // OR 결합. effectiveAc.signal 을 fetch 에 주입하면 LLM 스트림 구간은 둘 중 하나
+      // abort 시 끊긴다. (도구 실행 구간은 callTool 이 signal 미전달 — §4.4 루프 가드로
+      // 보강.) input.abortSignal 미지정이면 idleAc 만 → 현행 1층 동작 그대로(TT-I7).
+      const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
       let sseResult: CodexSseResult;
       try {
         // 전송 견고성 retry — *초기 fetch + res.ok 확인*만 감싼다. parseCodexSse
@@ -1256,13 +1283,18 @@ export const runOpenAiCodex = async (
               method: "POST",
               headers,
               body: JSON.stringify(body),
-              signal: idleAc.signal,
+              signal: effectiveAc.signal,
             });
           } catch (fe) {
-            // 유휴 abort 면 retry 금지(즉시 IdleTimeoutError 승격) — first 타임아웃이
-            // 연결 스톨을 잡는 경로. 그 외 전송 실패만 기존 retry.
-            if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
-              throw idleAc.signal.reason;
+            // 유휴(1층)·턴(2층) abort 면 retry 금지(즉시 해당 에러 승격) — first 타임아웃이
+            // 연결 스톨을 잡는 경로, 턴 백스톱은 전체 중단. 그 외 전송 실패만 기존 retry.
+            const reason = effectiveAc.signal.reason;
+            if (
+              effectiveAc.signal.aborted &&
+              (reason instanceof IdleTimeoutError ||
+                reason instanceof TurnTimeoutError)
+            ) {
+              throw reason;
             }
             if (attempt < CODEX_FETCH_MAX_RETRIES) {
               await sleep(CODEX_FETCH_BACKOFF_MS[attempt]);
@@ -1293,10 +1325,16 @@ export const runOpenAiCodex = async (
 
         sseResult = await parseCodexSse(res.body, () => idleTimer.beat());
       } catch (e) {
-        // abort 가 유휴 타임아웃이면 IdleTimeoutError 로 승격 (facade 일관 신호, I-3 비매칭).
+        // abort 가 유휴(1층)·턴(2층) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
+        // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
         // sideEffectExecuted 시 throw 대신 fallback 텍스트는 함수 바깥 catch (§4.4)에서.
-        if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
-          throw idleAc.signal.reason;
+        const reason = effectiveAc.signal.reason;
+        if (
+          effectiveAc.signal.aborted &&
+          (reason instanceof IdleTimeoutError ||
+            reason instanceof TurnTimeoutError)
+        ) {
+          throw reason;
         }
         throw e;
       } finally {
@@ -1440,6 +1478,11 @@ export const runOpenAiCodex = async (
       // (OpenClaw L300-311 shape) → callTool 실행 → function_call_output push
       // (L324-342 shape). 도구 에러는 output 에 "Error: <msg>" 박고 loop 계속.
       for (const tc of toolCalls) {
+        // 2층 도구 루프 가드 (TT-I6, §4.4 #2) — 각 도구 실행 *직전* 체크. 여러 도구 중
+        // 하나가 끝난 직후 turn 이 abort 됐으면 나머지 실행을 막는다. *현재 실행 중* 도구는
+        // callTool 에 signal 이 없어 못 끊으나(MCP 한계, §4.4 #3 orphan), 반환 즉시 이
+        // 가드가 루프를 끊고 throw → 사용자 보고. reason(TurnTimeoutError) throw.
+        if (input.abortSignal?.aborted) throw input.abortSignal.reason;
         // function_call item 누적 — assistant 가 보낸 호출 의도 보존 (다음 turn 에 필수).
         inputArray.push({
           type: "function_call",
@@ -1512,6 +1555,14 @@ export const runOpenAiCodex = async (
     //    = feedback_no_cross_adapter_fallback 명시 예외). 빈 응답 분기와 동형 안전 처리.
     //  - false: 부작용 없음 → throw 로 풀 폴백 안전 재실행(중복 없음).
     // 이건 어댑터 *내부* 안전 처리(facade 분기 아님) — 동작(타임아웃→안전 종료)은 동일.
+    // 2층 턴 타임아웃(§4.4, TT-I6) — IdleTimeoutError 와 달리 *항상 throw*. facade 는
+    // TurnTimeoutError 를 isModelRejected 비매칭으로 보아 폴백하지 않고(중복 재실행 0,
+    // §6 runPool 단락) 핸들러로 그대로 올려 "⏱️ 중단" 정직 보고를 시킨다. orphan 도구는
+    // 이미 실행됐어도 facade 가 턴을 재실행하지 않으므로 중복 위험 없음 — 즉 1층의
+    // sideEffectExecuted 중복 방어가 2층엔 불요. 큐 무한 점유 해소가 핵심 목적(TT-I6).
+    if (e instanceof TurnTimeoutError) {
+      throw e;
+    }
     if (e instanceof IdleTimeoutError && sideEffectExecuted) {
       const ranList =
         executedToolNames.size > 0

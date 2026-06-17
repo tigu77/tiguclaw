@@ -31,6 +31,7 @@ import {
   indexJsonlIfNeeded,
 } from "../../store/memory.js";
 import type { RegionASdkInput, RegionASdkOutput } from "./types.js";
+import { TurnTimeoutError } from "./turn-timeout.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
@@ -327,6 +328,11 @@ const runPool = async (
       persistOutput(input, output);
       return output;
     } catch (e) {
+      // 2층 턴 타임아웃(§6) — 폴백 단락. 턴 전체가 wall-clock 초과로 죽은 것이라
+      // 다음 spec 으로 폴백해봐야 같은 turn signal 이 이미 abort 라 즉시 또 죽는다(무의미).
+      // TurnTimeoutError 는 isModelRejected 비매칭(TT-I3)이라 runRegionA 의 override
+      // 자동폴백도 안 타고 핸들러로 직행 → "⏱️ 중단" 정직 보고. 여기서 명시 단락해 깔끔히.
+      if (e instanceof TurnTimeoutError) throw e;
       lastError = e;
       if (pool.length > 1) {
         console.warn(

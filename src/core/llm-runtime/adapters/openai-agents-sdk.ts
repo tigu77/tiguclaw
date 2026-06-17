@@ -47,6 +47,7 @@ import {
   discoverAgents,
   formatAgentIndex,
 } from "../capabilities/agent-registry.js";
+import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
@@ -56,6 +57,7 @@ import {
   IdleTimeoutError,
   IDLE_TIMEOUT_CONFIG,
 } from "../idle-timeout.js";
+import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -157,6 +159,15 @@ export const runOpenAi = async (
   if (!toolsNone && depth === 0) {
     mcpServers.push(
       await adaptClaudeMcpServer(createSpawnAgentMcpServer(input), "agents"),
+    );
+  }
+
+  // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
+  // depth 0 + workerDepth 0 turn 만 등록 → 워커가 또 워커 발사 불가(W-I5). lean(none)
+  // 은 미등록(toolsNone). codex/claude 와 동일 의미(W-I3 — 어댑터 분기 0).
+  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+    mcpServers.push(
+      await adaptClaudeMcpServer(createWorkerMcpServer(input), "workers"),
     );
   }
 
@@ -292,6 +303,10 @@ export const runOpenAi = async (
   // 회귀 0 (아래 text/usage 추출 무변경).
   const idleAc = new AbortController();
   const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+  // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합. effectiveAc.signal
+  // 을 run() 에 주입하면 @openai/agents 가 전체 run 루프(LLM 호출 + listTools/callTool)에
+  // 적용한다 (SharedRunOptions.signal). input.abortSignal 미지정이면 idleAc 만 → 현행(TT-I7).
+  const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
 
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
@@ -300,7 +315,7 @@ export const runOpenAi = async (
     try {
       const streamed = await run(agent, runInput, {
         stream: true,
-        signal: idleAc.signal,
+        signal: effectiveAc.signal,
       });
       // 스트림 이벤트 소비 — 내용 무시(도착 사실만 heartbeat). 활동 세분화는 별건.
       for await (const _ev of streamed) {
@@ -310,9 +325,15 @@ export const runOpenAi = async (
       await streamed.completed;
       return streamed;
     } catch (e) {
-      // abort 가 유휴 타임아웃이면 IdleTimeoutError 로 승격 (facade 일관 신호, I-3 비매칭).
-      if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
-        throw idleAc.signal.reason;
+      // abort 가 1층(유휴)·2층(턴) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
+      // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
+      const reason = effectiveAc.signal.reason;
+      if (
+        effectiveAc.signal.aborted &&
+        (reason instanceof IdleTimeoutError ||
+          reason instanceof TurnTimeoutError)
+      ) {
+        throw reason;
       }
       throw e;
     } finally {

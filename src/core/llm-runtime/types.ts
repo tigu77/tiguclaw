@@ -47,6 +47,15 @@ export interface RegionASdkInput {
    */
   subagentDepth?: number;
   /**
+   * 신규(additive, 2026-06-17) — 백그라운드 워커 중첩 깊이. 메인(채널) turn = 0
+   * (또는 undefined), `spawn_worker`(run_in_background) 로 실행되는 워커 작업 turn = 1.
+   * depth ≥ 1 인 turn 에는 run_in_background/list_workers 도구를 등록하지 않아
+   * 워커가 또 워커를 발사하는 것을 물리적으로 차단(무한 워커 봉쇄, W-I5).
+   * subagentDepth 와 동형 메커니즘(도구 가용성 가드) — 직교(워커 안의 spawn_agent 블로킹
+   * 위임은 허용). architect contract `_workspace/background-worker_architect.md` §2·§9-a.
+   */
+  workerDepth?: number;
+  /**
    * 사용할 모델 (provider 별 모델명, 예 "gpt-5.5" / "claude-opus-4-7").
    * facade 가 `provider:model` 스펙에서 추출해 주입. 미지정 시 어댑터 디폴트
    * (codex=env/gpt-5.5, claude=SDK 디폴트). provider→어댑터 매핑은 facade 책임.
@@ -84,6 +93,15 @@ export interface RegionASdkInput {
    * toolPolicy 가 따로 관할(직교, I-5). (architect contract §2c)
    */
   leanMemory?: boolean;
+  /**
+   * 신규(additive, 2026-06-17) — 2층 턴 타임아웃 신호. 핸들러가 턴당 AbortController
+   * 를 만들어 signal 을 route→runRegionA→어댑터로 운반한다. 어댑터는 자기 1층 idle
+   * AbortController 와 OR 결합(linkAbort) — 둘 중 하나 abort 시 LLM 호출/도구 실행
+   * 중단. 미지정(스케줄러 등 비채널 turn) = 백스톱 없음(현행 회귀 0, TT-I7).
+   * 1층(idle, iteration 단위)과 직교 — 본 신호는 턴 전체 wall-clock.
+   * abort reason 은 TurnTimeoutError(turn-timeout.ts) — isModelRejected 비매칭(TT-I3).
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface RegionASdkOutput {

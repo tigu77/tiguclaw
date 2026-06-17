@@ -29,6 +29,11 @@ export interface RouteOutput {
 
 export const route = async (
   msg: IncomingMessage,
+  // 2층 턴 타임아웃 신호 (additive, 2026-06-17). 핸들러가 턴당 AbortController 의
+  // signal 을 운반 → runRegionA(input.abortSignal) → 어댑터가 1층 idle AC 와 OR 결합.
+  // 미전달(스케줄러 등 비채널 turn) = undefined = 현행 1층-only 동작 그대로(회귀 0, TT-I7).
+  // router 는 신호를 *소비하지 않고 그대로 운반만* 한다(router 순수성 유지).
+  opts?: { abortSignal?: AbortSignal },
 ): Promise<RouteOutput> => {
   // 세션 모델 override (`/model <provider:model[,provider:model...]>` 로 설정) 조회.
   // 콤마 멀티스펙 풀 지원(2026-06-02) — 단일에서 풀로 확장.
@@ -51,6 +56,9 @@ export const route = async (
       attachments: msg.attachments,
       sendAttachment: msg.sendAttachment,
       extraMcpServers: getRegisteredMcpServers(),
+      // 2층 턴 타임아웃 — 핸들러가 만든 turn signal 을 어댑터까지 운반. 미전달 시
+      // undefined → 어댑터가 idle AC 만 link → 1층-only(회귀 0, TT-I7).
+      abortSignal: opts?.abortSignal,
     },
     overridePool.length > 0 ? { specs: overridePool } : undefined,
   );

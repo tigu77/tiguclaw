@@ -78,6 +78,11 @@ import type {
 } from "../types.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
+import {
+  createIdleTimer,
+  IdleTimeoutError,
+  IDLE_TIMEOUT_CONFIG,
+} from "../idle-timeout.js";
 
 // OAuth 상수 — fork (numman-ali/opencode-openai-codex-auth) 의 lib/auth/auth.ts 답습.
 // codex_cli_rs originator + chatgpt.com/backend-api = Codex 비공식 endpoint 활성화.
@@ -426,6 +431,9 @@ interface CodexSseResult {
  */
 const parseCodexSse = async (
   body: ReadableStream<Uint8Array>,
+  // 유휴 타임아웃 heartbeat — chunk 수신마다 호출(타이머 reset). 미지정 = no-op
+  // (회귀 0 — 기존 호출부 호환). abort 시 reader.read() 가 reject → throw 전파.
+  onChunk?: () => void,
 ): Promise<CodexSseResult> => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -442,6 +450,8 @@ const parseCodexSse = async (
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    // chunk 도착 = 살아있음 신호 → 타이머 reset (first→idle 전환).
+    onChunk?.();
     buffer += decoder.decode(value, { stream: true });
     const parts = buffer.split("\n\n");
     buffer = parts.pop() ?? "";
@@ -1225,48 +1235,75 @@ export const runOpenAiCodex = async (
         );
       }
 
-      // 전송 견고성 retry — *초기 fetch + res.ok 확인*만 감싼다. parseCodexSse
-      // (SSE 스트림 소비)는 retry 밖(스트림 중간 실패 재시도는 별개). transient 만
-      // 재시도: (a) fetch 자체 throw(전송 실패), (b) status ∈ {429,500,502,503,504}.
-      // 4xx(429 제외)는 진짜 에러 → 즉시 throw. cause 보존(throw fe — 원본 그대로).
-      let res: Response;
-      let attempt = 0;
-      while (true) {
-        try {
-          res = await fetch(`${CODEX_BASE_URL}/responses`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-          });
-        } catch (fe) {
-          if (attempt < CODEX_FETCH_MAX_RETRIES) {
+      // 유휴 타임아웃 — iteration(LLM 스트림 1회)마다 새 ac/timer (I-4: 도구 실행
+      // 구간은 timer.done() 후라 타임아웃 대상 아님). fetch 에 signal 주입(현재 미주입 =
+      // ~20분 행의 직접 원인) + parseCodexSse chunk 수신마다 heartbeat. abort 시 undici
+      // reader.read() 가 reject → parseCodexSse throw → 아래 catch 가 IdleTimeoutError 로.
+      const idleAc = new AbortController();
+      const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+      let sseResult: CodexSseResult;
+      try {
+        // 전송 견고성 retry — *초기 fetch + res.ok 확인*만 감싼다. parseCodexSse
+        // (SSE 스트림 소비)는 retry 밖(스트림 중간 실패 재시도는 별개). transient 만
+        // 재시도: (a) fetch 자체 throw(전송 실패), (b) status ∈ {429,500,502,503,504}.
+        // 4xx(429 제외)는 진짜 에러 → 즉시 throw. cause 보존(throw fe — 원본 그대로).
+        // abort 된 fetch 는 transient 아님(IdleTimeoutError) → retry 대상 아님(throw).
+        let res: Response;
+        let attempt = 0;
+        while (true) {
+          try {
+            res = await fetch(`${CODEX_BASE_URL}/responses`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify(body),
+              signal: idleAc.signal,
+            });
+          } catch (fe) {
+            // 유휴 abort 면 retry 금지(즉시 IdleTimeoutError 승격) — first 타임아웃이
+            // 연결 스톨을 잡는 경로. 그 외 전송 실패만 기존 retry.
+            if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
+              throw idleAc.signal.reason;
+            }
+            if (attempt < CODEX_FETCH_MAX_RETRIES) {
+              await sleep(CODEX_FETCH_BACKOFF_MS[attempt]);
+              attempt += 1;
+              continue;
+            }
+            throw fe;
+          }
+          if (
+            !res.ok &&
+            RETRIABLE_STATUS.has(res.status) &&
+            attempt < CODEX_FETCH_MAX_RETRIES
+          ) {
             await sleep(CODEX_FETCH_BACKOFF_MS[attempt]);
             attempt += 1;
             continue;
           }
-          throw fe;
+          break;
         }
-        if (
-          !res.ok &&
-          RETRIABLE_STATUS.has(res.status) &&
-          attempt < CODEX_FETCH_MAX_RETRIES
-        ) {
-          await sleep(CODEX_FETCH_BACKOFF_MS[attempt]);
-          attempt += 1;
-          continue;
+        if (!res.ok) {
+          throw new Error(
+            `Codex backend 호출 실패: ${res.status} ${await res.text().catch(() => "")}`,
+          );
         }
-        break;
-      }
-      if (!res.ok) {
-        throw new Error(
-          `Codex backend 호출 실패: ${res.status} ${await res.text().catch(() => "")}`,
-        );
-      }
-      if (res.body === null) {
-        throw new Error("Codex backend response.body 가 null — SSE 스트림 부재.");
-      }
+        if (res.body === null) {
+          throw new Error("Codex backend response.body 가 null — SSE 스트림 부재.");
+        }
 
-      const { text, responseId, toolCalls, usage } = await parseCodexSse(res.body);
+        sseResult = await parseCodexSse(res.body, () => idleTimer.beat());
+      } catch (e) {
+        // abort 가 유휴 타임아웃이면 IdleTimeoutError 로 승격 (facade 일관 신호, I-3 비매칭).
+        // sideEffectExecuted 시 throw 대신 fallback 텍스트는 함수 바깥 catch (§4.4)에서.
+        if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
+          throw idleAc.signal.reason;
+        }
+        throw e;
+      } finally {
+        // 타이머 누수 0 (I-6) + 도구 실행 구간 진입 전 해제 (I-4 — LLM 스트림만 대상).
+        idleTimer.done();
+      }
+      const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) finalUsage = usage;
       // region.a.activity — 모델이 호출하려는 도구당 1 activity (실행 성공/실패 무관,
       // 의도 시점이 곧 "무엇을 하려는 중"). callTool 실행 루프와 별개. final-flush(tools:[])
@@ -1465,6 +1502,24 @@ export const runOpenAiCodex = async (
       compactOldToolOutputs(inputArray);
 
       iteration += 1;
+    }
+  } catch (e) {
+    // 유휴 타임아웃 (§4.4) — 부작용 도구 상호작용. LLM 스트림이 idle abort 되어
+    // IdleTimeoutError 가 올라온 경우, codex 의 부작용 모델 차이에 따른 native 처리:
+    //  - sideEffectExecuted === true: throw 하면 풀 폴백이 턴을 처음부터 재실행 →
+    //    memory/todo/schedule 등 부작용 *중복* 위험(기존 빈-응답 분기 L1519 동일 논리).
+    //    따라서 throw 대신 정직한 timeout fallback 텍스트 반환(중복 회피, claude 폴백 X
+    //    = feedback_no_cross_adapter_fallback 명시 예외). 빈 응답 분기와 동형 안전 처리.
+    //  - false: 부작용 없음 → throw 로 풀 폴백 안전 재실행(중복 없음).
+    // 이건 어댑터 *내부* 안전 처리(facade 분기 아님) — 동작(타임아웃→안전 종료)은 동일.
+    if (e instanceof IdleTimeoutError && sideEffectExecuted) {
+      const ranList =
+        executedToolNames.size > 0
+          ? `\n\n이번 턴에 실행한 도구: ${[...executedToolNames].join(", ")}.`
+          : "";
+      finalText = `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+    } else {
+      throw e; // 부작용 없음 or 일반 에러 → 정직 throw (풀 폴백 / 정직 에러).
     }
   } finally {
     // bridge close (in-memory transport 정리). 실패해도 응답 흐름 영향 0.

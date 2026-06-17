@@ -51,6 +51,11 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
+import {
+  createIdleTimer,
+  IdleTimeoutError,
+  IDLE_TIMEOUT_CONFIG,
+} from "../idle-timeout.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -280,13 +285,38 @@ export const runOpenAi = async (
     } satisfies RegionAActivityPayload,
   });
 
+  // 유휴 타임아웃 (G1 — 비스트림→스트림 전환). 현재 비스트림 run() 은 heartbeat 원천이
+  // 0 이라 유휴 감지 불가 = 층1 parity 깨짐. SDK 동일 `run` 의 stream 오버로드로 전환
+  // (재구현 0). 각 스트림 이벤트 = heartbeat → idle 타이머 reset. abort 시 signal 전파.
+  // finalOutput·context.usage 출력 계약은 StreamedRunResult 에도 동일 형상으로 존재 →
+  // 회귀 0 (아래 text/usage 추출 무변경).
+  const idleAc = new AbortController();
+  const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
   const runOnce = async () => {
     try {
-      return await run(agent, runInput);
+      const streamed = await run(agent, runInput, {
+        stream: true,
+        signal: idleAc.signal,
+      });
+      // 스트림 이벤트 소비 — 내용 무시(도착 사실만 heartbeat). 활동 세분화는 별건.
+      for await (const _ev of streamed) {
+        idleTimer.beat();
+      }
+      // 정리 보장 — 스트림 완료까지 대기 후 finalOutput/usage 가 확정됨.
+      await streamed.completed;
+      return streamed;
+    } catch (e) {
+      // abort 가 유휴 타임아웃이면 IdleTimeoutError 로 승격 (facade 일관 신호, I-3 비매칭).
+      if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
+        throw idleAc.signal.reason;
+      }
+      throw e;
     } finally {
+      idleTimer.done(); // 누수 0 (I-6).
       for (const server of mcpServers) {
         try {
           await server.close();

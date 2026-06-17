@@ -70,6 +70,11 @@ import {
 } from "../capabilities/agent-registry.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import {
+  createIdleTimer,
+  IdleTimeoutError,
+  IDLE_TIMEOUT_CONFIG,
+} from "../idle-timeout.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -321,9 +326,16 @@ export const runClaude = async (
         ...(input.extraMcpServers ?? {}),
       };
 
+  // 유휴 타임아웃 — SDK `Options.abortController` 경로 (runtimeTypes.d.ts:234,
+  // "stop and clean up resources"). idle/first 만료 시 헬퍼가 ac.abort(IdleTimeoutError).
+  // heartbeat = for-await msg 도착마다. timer.done() = finally (누수 0, I-6).
+  const idleAc = new AbortController();
+  const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+
   const options: Options = {
     systemPrompt: SYSTEM_PROMPT,
     permissionMode: "bypassPermissions",
+    abortController: idleAc,
     disallowedTools: [...DISALLOWED_TOOLS],
     persistSession: true,
     cwd,
@@ -418,7 +430,10 @@ export const runClaude = async (
 
   const bus = getEventBus();
 
+  try {
   for await (const msg of q as AsyncIterable<SDKMessage>) {
+    // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
+    idleTimer.beat();
     // 관측 publish — for-await 흐름 영향 0 (publish 동기 + EventBus 격리).
     // payload 핵심 필드만, 큰 객체는 truncate.
     bus.publish({
@@ -512,6 +527,25 @@ export const runClaude = async (
         }
       }
     }
+  }
+  } catch (e) {
+    // SDK 가 abort 시 throw 하는 경우(AbortError 등) — 유휴 타임아웃이 원인이면
+    // IdleTimeoutError 로 승격해 facade 가 일관된 타임아웃 신호를 받게 한다.
+    // (isModelRejected 비매칭 — I-3.) 그 외 에러는 그대로 전파.
+    if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
+      throw idleAc.signal.reason;
+    }
+    throw e;
+  } finally {
+    // 타이머 누수 0 (I-6) — 성공·throw·abort 모든 경로에서 해제.
+    idleTimer.done();
+  }
+
+  // 유휴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를
+  // 조용히 끝낼 수 있다. 그 경우 succeeded=false 로 떨어져 facade 가 실패를 못 본다.
+  // signal.reason 이 IdleTimeoutError 면 명시 throw 로 승격 (facade 폴백 경로 진입).
+  if (idleAc.signal.aborted && idleAc.signal.reason instanceof IdleTimeoutError) {
+    throw idleAc.signal.reason;
   }
 
   const text = resultText ?? assistantTextChunks.join("");

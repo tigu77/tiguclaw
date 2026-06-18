@@ -463,7 +463,25 @@ export class TelegramChannel implements Channel {
       if (ev.type === "commands.changed") void this.refreshMenu();
     });
 
-    void bot.start({ drop_pending_updates: true });
+    // polling 루프 에러는 데몬 전체를 죽이면 안 된다 (unhandled rejection 방지).
+    // 특히 409 Conflict = 같은 봇을 다른 인스턴스가 폴링 중 — 명확히 경고하되
+    // 데몬은 계속 가동(http-bridge·기타 채널 유지). grammy 는 일시적 네트워크
+    // 에러는 내부 재시도하고, 여기 도달하는 건 폴링이 멈춘 치명적 에러다.
+    bot.start({ drop_pending_updates: true }).catch((err: unknown) => {
+      const e = err as { error_code?: number; description?: string } & Error;
+      if (e?.error_code === 409) {
+        console.error(
+          "telegram: 409 Conflict — 같은 봇 토큰을 다른 tiguclaw 인스턴스가 " +
+            "폴링 중입니다. 이 인스턴스의 텔레그램 폴링을 중단합니다(데몬은 계속 " +
+            "가동). 중복 인스턴스를 끄거나, 인스턴스마다 다른 봇 토큰을 쓰세요.",
+        );
+      } else {
+        console.error(
+          "telegram: polling 종료 —",
+          e?.description ?? e?.message ?? String(err),
+        );
+      }
+    });
   }
 
   /**

@@ -62,6 +62,12 @@ export interface TiguclawPaths {
    * (자산=skill/agent/command 마크다운 발견. 실행 코드 로딩은 번들만 — 별도 라운드).
    */
   commonPlugins: string;
+  /**
+   * <home>/endpoints — 데이터 기반 커스텀 HTTP 엔드포인트 정의 루트 (2026-06-18).
+   * 다른 common*(skills/agents/commands) 와 동형 — endpoint-registry 가 home 발견 루트로
+   * walk 한다(슬래시 명령의 HTTP 판). contract `_workspace/custom-endpoints_architect.md` §2.
+   */
+  commonEndpoints: string;
   /** <home>/workspace — 프로젝트 폴더 컨테이너. */
   workspace: string;
 }
@@ -120,6 +126,7 @@ export const getPaths = (): TiguclawPaths => {
     commonAgents: path.join(home, "agents"),
     commonCommands: path.join(home, "commands"),
     commonPlugins: path.join(home, "plugins"),
+    commonEndpoints: path.join(home, "endpoints"),
     workspace: path.join(home, "workspace"),
   });
   return cached;
@@ -164,6 +171,7 @@ export const ensureHome = async (): Promise<void> => {
     p.commonAgents,
     p.commonCommands,
     p.commonPlugins,
+    p.commonEndpoints,
     p.workspace,
   ]) {
     await fs.mkdir(dir, { recursive: true });

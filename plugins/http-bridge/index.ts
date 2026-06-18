@@ -29,6 +29,11 @@ import {
   verifyToken,
   type BridgeTokenRole,
 } from "../../src/store/bridge-tokens.js";
+import { route } from "../../src/core/router.js";
+import {
+  findEndpoint,
+  expandEndpoint,
+} from "../../src/core/entry/endpoint-registry.js";
 
 const VERSION = "0.1.0";
 const DEFAULT_THREAD_KEY = "http-bridge:default";
@@ -46,6 +51,13 @@ const readJsonBody = async (
     throw new Error("body must be a JSON object");
   }
   return parsed as Record<string, unknown>;
+};
+
+// 커스텀 엔드포인트 $BODY 치환용 raw body(파싱 안 함 — 모델이 읽음, §3). GET 은 빈 문자열.
+const readRawBody = async (req: http.IncomingMessage): Promise<string> => {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
 };
 
 const writeJson = (
@@ -336,6 +348,98 @@ class HttpBridge implements Channel, Observer {
       }
       return;
     }
+
+    // ── 커스텀 엔드포인트 폴백 (빌트인 전부 미매칭 후에만 — E-I4 빌트인 우선) ──
+    // 빌트인 5경로(/health·/events·/inventory·/providers·/messages)는 위에서 전부 return
+    // 했으므로 여기 도달 = 빌트인 아님. findEndpoint 가 충돌해도 물리적으로 도달 불가
+    // (코드 순서 = 우선순위). 인증은 위에서 이미 통과(resolved !== null).
+    {
+      let ep;
+      try {
+        ep = await findEndpoint(pathname, method, process.cwd());
+      } catch (e) {
+        // 발견 실패(fs 등) = 데몬 생존 우선. 엔드포인트 없음으로 간주 → 404 로 진행.
+        ep = undefined;
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`http-bridge: findEndpoint failed (${reason})`);
+      }
+      if (ep !== undefined) {
+        // role 게이트 — 인증 없는 커스텀 엔드포인트 0(필수). 기본 write(read 폴백 금지).
+        if (!meetsRole(resolved.role, ep.role)) {
+          writeJson(res, 403, {
+            error: "forbidden",
+            required: ep.role,
+            presented: resolved.role,
+          });
+          return;
+        }
+        // raw body(POST 만) + query → 템플릿 치환. JSON 파싱 안 함(모델이 읽음, §3).
+        const rawBody = method === "POST" ? await readRawBody(req) : "";
+        const queryStr = url.search.startsWith("?")
+          ? url.search.slice(1)
+          : url.search;
+        const prompt = await expandEndpoint(ep, {
+          body: rawBody,
+          query: queryStr,
+        });
+        if (prompt === undefined) {
+          // 정의 파일 read 실패(레이스 등) — 발견됐으나 본문 소실. 500.
+          writeJson(res, 500, { error: "endpoint definition unreadable" });
+          return;
+        }
+
+        // 실행 — route() 직접 호출(channelHandler 우회). 슬래시 비즈니스 로직 불요 +
+        // toolPolicy 주입 필수(채널 어댑터 안 로직 0 = Q4). 사용자 대화 history 오염 0(E-I9).
+        // threadKey 는 **호출마다 고유 nonce** — HTTP 엔드포인트는 stateless(매 호출 독립
+        // 컨텍스트, contract §4-D). 이로써 (a)다른 외부 호출자 간 컨텍스트 bleed 0,
+        // (b)동시 호출 세션 race 0(각 호출 = 별 thread, 직렬화 우회 무해). restricted 면 도구 0(E-I7).
+        let replyText = "";
+        const epNonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const epMsg: IncomingMessage = {
+          channel: this.name,
+          channelUserId: `endpoint:${ep.name}`,
+          threadKey: `endpoint:${ep.name}:${epNonce}`,
+          text: prompt,
+          receivedAt: Date.now(),
+          reply: async (out: string): Promise<void> => {
+            replyText = out;
+          },
+        };
+
+        let timeoutHandle: NodeJS.Timeout | undefined;
+        const timeoutP = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => {
+            reject(new Error("timeout"));
+          }, HANDLER_TIMEOUT_MS);
+        });
+
+        try {
+          const out = await Promise.race([
+            route(epMsg, {
+              // restricted(기본) → 도구 0. full(소유자 명시) → undefined = 전체 도구.
+              toolPolicy:
+                ep.mode === "restricted" ? { mode: "none" } : undefined,
+            }),
+            timeoutP,
+          ]);
+          // route 는 RouteOutput.text 를 반환 — reply 클로저(replyText)와 동일 본문이나,
+          // route 의 반환 text 를 1차 진실로 사용(reply 미호출 어댑터 경로 대비 replyText 폴백).
+          const result = out.text !== "" ? out.text : replyText;
+          writeJson(res, 200, { result });
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          if (reason === "timeout") {
+            writeJson(res, 504, { error: "timeout" });
+          } else {
+            writeJson(res, 500, { error: reason });
+          }
+        } finally {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        }
+        return;
+      }
+    }
+    // ───────────────────────────────────────────────────────────────────────
 
     // 미정의 — 404.
     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });

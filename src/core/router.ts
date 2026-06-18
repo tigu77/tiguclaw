@@ -33,7 +33,16 @@ export const route = async (
   // signal 을 운반 → runRegionA(input.abortSignal) → 어댑터가 1층 idle AC 와 OR 결합.
   // 미전달(스케줄러 등 비채널 turn) = undefined = 현행 1층-only 동작 그대로(회귀 0, TT-I7).
   // router 는 신호를 *소비하지 않고 그대로 운반만* 한다(router 순수성 유지).
-  opts?: { abortSignal?: AbortSignal },
+  //
+  // toolPolicy (additive, 2026-06-18, custom-endpoints contract §7-3): 이 턴에 적용할
+  // 도구 정책. 커스텀 HTTP 엔드포인트(restricted=mode:none)가 무인 full-turn 의 blast
+  // radius 를 가두기 위해 주입한다. abortSignal 운반과 완전 동형 — router 는 값을
+  // *소비/해석하지 않고* runClaude input.toolPolicy 로 그대로 운반만 한다(router 순수성).
+  // 미전달(채널·스케줄러 등 기존 호출자) = undefined = 전체 도구 = 현행 동작(회귀 0).
+  opts?: {
+    abortSignal?: AbortSignal;
+    toolPolicy?: { mode: "none" } | { mode: "allow"; names: string[] };
+  },
 ): Promise<RouteOutput> => {
   // 세션 모델 override (`/model <provider:model[,provider:model...]>` 로 설정) 조회.
   // 콤마 멀티스펙 풀 지원(2026-06-02) — 단일에서 풀로 확장.
@@ -59,6 +68,8 @@ export const route = async (
       // 2층 턴 타임아웃 — 핸들러가 만든 turn signal 을 어댑터까지 운반. 미전달 시
       // undefined → 어댑터가 idle AC 만 link → 1층-only(회귀 0, TT-I7).
       abortSignal: opts?.abortSignal,
+      // 도구 정책 운반(custom-endpoints §7-3) — 미전달 시 undefined = 전체 도구(회귀 0).
+      toolPolicy: opts?.toolPolicy,
     },
     overridePool.length > 0 ? { specs: overridePool } : undefined,
   );

@@ -48,6 +48,7 @@ import {
   formatAgentIndex,
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
+import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
@@ -168,6 +169,16 @@ export const runOpenAi = async (
   if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
     mcpServers.push(
       await adaptClaudeMcpServer(createWorkerMcpServer(input), "workers"),
+    );
+  }
+
+  // 커스텀 HTTP 엔드포인트 등록/조회/삭제 도구 (2026-06-18) — register_endpoint/
+  // list_endpoints/delete_endpoint. worker 와 *동일* 가드(!toolsNone && depth 0 &&
+  // workerDepth 0). lean(none = restricted 엔드포인트 턴)이면 미등록 → 엔드포인트가
+  // 또 엔드포인트를 만드는 재귀 자연 차단. claude/codex 와 동일 의미(어댑터 분기 0).
+  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+    mcpServers.push(
+      await adaptClaudeMcpServer(createEndpointToolsMcpServer(), "endpoints"),
     );
   }
 

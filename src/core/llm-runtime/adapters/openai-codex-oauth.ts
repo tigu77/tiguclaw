@@ -67,6 +67,7 @@ import {
   formatAgentIndex,
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
+import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { loadThreadHistory } from "../../../store/memory.js";
@@ -1096,6 +1097,21 @@ export const runOpenAiCodex = async (
         toolBridgeMap.set((t as { name: string }).name, workerBridge);
       }
       mcpTools.push(...workerToolsRaw);
+    }
+
+    // 커스텀 HTTP 엔드포인트 등록/조회/삭제 도구 (2026-06-18) — register_endpoint/
+    // list_endpoints/delete_endpoint. worker 와 *동일* 가드(이 블록은 !toolsNone 안 +
+    // depth 0 && workerDepth 0). lean(none = restricted 엔드포인트 턴)이면 이 블록
+    // 자체가 미실행 → 엔드포인트가 또 엔드포인트를 만드는 재귀 자연 차단. claude/openai
+    // 와 동일 의미(어댑터 분기 0).
+    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+      const endpointServer = createEndpointToolsMcpServer();
+      const endpointBridge = await adaptClaudeMcpServer(endpointServer, "endpoints");
+      const endpointToolsRaw = await endpointBridge.listTools();
+      for (const t of endpointToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, endpointBridge);
+      }
+      mcpTools.push(...endpointToolsRaw);
     }
 
     // V7.5 (parity P0 fix) — extraMcpServers 도 bridge. router 가 facade 통해

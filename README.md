@@ -116,7 +116,7 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 
 ### Day to day
 
-- **Global command** (optional): run `npm link`, then use `tiguclaw status | restart | logs` from anywhere.
+- **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | logs | doctor | uninstall` work from any folder, like a real app. *(Inside the repo, `npm run daemon:*` works too.)*
 - **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:logs`.
 - **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
 

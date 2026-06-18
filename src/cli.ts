@@ -36,7 +36,7 @@ const providerIsCodex = (): boolean => {
 const onboard = (): number => {
   console.log("\n=== tiguclaw onboard — 원샷 설정 ===\n");
 
-  console.log("[1/4] 설정 마법사 (.env 생성)…");
+  console.log("[1/5] 설정 마법사 (.env 생성)…");
   if (runNpm("init") !== 0) {
     console.error("→ init 실패/중단. onboard 중단.");
     return 1;
@@ -47,22 +47,34 @@ const onboard = (): number => {
   }
 
   if (providerIsCodex()) {
-    console.log("\n[2/4] codex provider — ChatGPT OAuth 발급…");
+    console.log("\n[2/5] codex provider — ChatGPT OAuth 발급…");
     if (runNpm("codex-auth") !== 0) {
       console.error("→ codex-auth 실패. onboard 중단.");
       return 1;
     }
   } else {
-    console.log("\n[2/4] codex 아님 — OAuth 단계 건너뜀.");
+    console.log("\n[2/5] codex 아님 — OAuth 단계 건너뜀.");
   }
 
-  console.log("\n[3/4] 데몬 등록 (supervisor)…");
+  console.log("\n[3/5] 데몬 등록 (supervisor)…");
   if (runNpm("daemon:install") !== 0) {
     console.error("→ daemon:install 실패. onboard 중단.");
     return 1;
   }
 
-  console.log("\n[4/4] 설정 검증…");
+  console.log("\n[4/5] 전역 명령 설치 (npm link → 어디서나 `tiguclaw`)…");
+  const linked = spawnSync("npm", ["link"], { stdio: "inherit", shell: true });
+  if ((linked.status ?? 1) === 0) {
+    console.log(
+      "   ✓ 이제 어느 폴더에서나: tiguclaw status | restart | logs | doctor",
+    );
+  } else {
+    console.warn(
+      "   ⚠ npm link 건너뜀(권한 등) — 수동으로 `npm link` 하면 전역 `tiguclaw` 명령이 생깁니다.",
+    );
+  }
+
+  console.log("\n[5/5] 설정 검증…");
   runNpm("doctor"); // 진단용 — 실패해도 onboard 는 완료로 본다.
 
   console.log("\n✅ onboard 완료!");

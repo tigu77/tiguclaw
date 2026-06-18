@@ -116,7 +116,7 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 
 ### 평소 사용
 
-- **전역 명령**(선택): `npm link` 후 어디서나 `tiguclaw status | restart | logs`.
+- **어디서나 제어** — `onboard` 가 `npm link` 를 자동 실행해, 어느 폴더에서나 `tiguclaw status | restart | logs | doctor | uninstall` 가 됩니다(진짜 앱처럼). *(레포 안에선 `npm run daemon:*` 도 가능.)*
 - **서비스 관리**(macOS / Linux / Windows 공통 명령): `npm run daemon:status | daemon:restart | daemon:logs`.
 - **뭔가 이상하면?** `npm run doctor` 가 키·봇 도달·홈·서비스를 점검합니다.
 

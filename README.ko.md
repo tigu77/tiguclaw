@@ -6,6 +6,10 @@
 
 > 잠들지 않는 Claude Code 가 텔레그램으로 말을 걸고, Claude·GPT·Gemini·무료 로컬 모델을 같은 능력으로 골라 쓰는 느낌.
 
+<p align="center">
+  <img src="assets/screenshot.svg" alt="텔레그램에서의 tiguclaw" width="640">
+</p>
+
 ## 뭘 하나
 
 - **Claude Code 의 모든 것** — 파일 읽기 / 쓰기 / 편집, 쉘 실행, 웹 검색, 스킬, 서브에이전트, 훅, 슬래시 명령, 영구 메모리… 그 위에 더.
@@ -112,6 +116,10 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 3. **항상 떠있다** — 스스로 재시작하는 상시 데몬.
 4. **다채널 단일 인격** — 어느 채널로 들어와도 하나의 비서.
 5. **진짜 일만 직접 만든다** — 코어는 최소로, 나머지는 데이터(컨벤션·prompt·skill·hook·memory)로 확장.
+
+## 변경 이력
+
+릴리스 노트는 [`CHANGELOG.md`](CHANGELOG.md) 참조 (이 프로젝트는 [SemVer](https://semver.org/) 를 따릅니다).
 
 ## 라이선스
 

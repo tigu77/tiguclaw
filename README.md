@@ -6,6 +6,10 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 
 > Think of it as a Claude Code that never sleeps, chats with you on Telegram, and can switch between Claude, GPT, Gemini, or a free local model — all with the same skills.
 
+<p align="center">
+  <img src="assets/screenshot.svg" alt="tiguclaw on Telegram" width="640">
+</p>
+
 ## What it does
 
 - **Everything Claude Code can do** — read / write / edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory… and more on top.
@@ -112,6 +116,10 @@ A few notes:
 3. **Always on** — a persistent daemon that restarts itself.
 4. **One personality across channels** — the same assistant wherever you reach it.
 5. **Build only what's real** — keep the core minimal; everything else extends through data (conventions, prompts, skills, hooks, memory).
+
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release notes (this project follows [SemVer](https://semver.org/)).
 
 ## License
 

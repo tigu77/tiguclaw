@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="460" viewBox="0 0 820 460" font-family="-apple-system, Segoe UI, Roboto, sans-serif">
+  <rect width="820" height="460" rx="16" fill="#0e1621"/>
+  <!-- header -->
+  <rect width="820" height="64" rx="16" fill="#17212b"/>
+  <rect y="48" width="820" height="16" fill="#17212b"/>
+  <circle cx="44" cy="32" r="20" fill="#2b5278"/>
+  <text x="44" y="38" fill="#fff" font-size="18" font-weight="700" text-anchor="middle">t</text>
+  <text x="78" y="28" fill="#fff" font-size="16" font-weight="600">tiguclaw</text>
+  <text x="78" y="46" fill="#6a7a8c" font-size="12">always on · multi-LLM assistant</text>
+  <!-- incoming (assistant, left, gray) -->
+  <rect x="24" y="92" width="430" height="70" rx="14" fill="#182533"/>
+  <text x="44" y="120" fill="#e7eef6" font-size="14">Good morning! 3 PRs need review and your</text>
+  <text x="44" y="142" fill="#e7eef6" font-size="14">10am sync moved to 11. Want the digest?</text>
+  <!-- outgoing (user, right, blue) -->
+  <rect x="486" y="180" width="310" height="48" rx="14" fill="#2b5278"/>
+  <text x="506" y="209" fill="#fff" font-size="14">yes, and research today's AI news</text>
+  <!-- incoming (assistant, left) -->
+  <rect x="24" y="248" width="470" height="92" rx="14" fill="#182533"/>
+  <text x="44" y="276" fill="#e7eef6" font-size="14">On it — delegating the news scan to a local</text>
+  <text x="44" y="298" fill="#e7eef6" font-size="14">model in the background. Here's your digest</text>
+  <text x="44" y="320" fill="#7aa2c4" font-size="14">📄 daily-digest.md · 🔎 worker #1 running…</text>
+  <!-- input bar -->
+  <rect x="24" y="372" width="772" height="56" rx="16" fill="#17212b"/>
+  <text x="44" y="406" fill="#6a7a8c" font-size="14">Message</text>
+  <circle cx="760" cy="400" r="20" fill="#2b5278"/>
+  <path d="M752 400 l16 -8 -6 8 6 8 z" fill="#fff"/>
+  <!-- placeholder ribbon -->
+  <text x="410" y="450" fill="#3a4a5c" font-size="11" text-anchor="middle">placeholder mockup — replace with a real screenshot (assets/screenshot.png)</text>
+</svg>

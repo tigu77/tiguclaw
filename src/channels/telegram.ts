@@ -11,6 +11,8 @@ import type {
   ReplyOptions,
 } from "./types.js";
 import { getPaths } from "../core/paths.js";
+import { discoverCommands } from "../core/entry/command-registry.js";
+import { getEventBus } from "../core/eventbus.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -235,6 +237,8 @@ const parseAllowedTelegramIds = (): Set<string> =>
 export class TelegramChannel implements Channel {
   readonly name = "telegram" as const;
   private bot: Bot | null = null;
+  // EventBus 구독 해제 핸들 — start() 에서 commands.changed 구독, stop() 에서 해제(누수 0).
+  private unsubscribeCommandsChanged: (() => void) | null = null;
 
   constructor() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -449,27 +453,68 @@ export class TelegramChannel implements Channel {
     // 별도 콜백 없이 init 완료로 본다.
     await bot.init();
 
-    // 봇 명령 메뉴를 6 항목으로 강제 교체 (reset + memory V2 슬래시 + plugins + status).
-    // setMyCommands 는 전달된 리스트로 *전체 교체* — 빈 항목·옛 항목 모두 제거.
-    // 실패해도 polling 은 진행 (메뉴는 부수적 UX, 핵심 흐름 무관).
-    await bot.api
-      .setMyCommands([
-        { command: "reset", description: "대화 컨텍스트 초기화" },
-        { command: "memo", description: "메모리 추가" },
-        { command: "forget", description: "메모리 삭제" },
-        { command: "memos", description: "메모리 목록" },
-        { command: "plugins", description: "설치·활성 플러그인 목록" },
-        { command: "status", description: "시스템 상태" },
-        { command: "restart", description: "데몬 재시작" },
-      ])
-      .catch((e) => {
-        console.error("telegram setMyCommands failed:", e);
-      });
+    // 봇 명령 메뉴 — 빌트인 + 발견 커스텀 병합 후 setMyCommands. 추출된 refreshMenu 가 담당.
+    await this.refreshMenu();
+
+    // 런타임 명령 변경 즉시 반영 — region 도구(register_command/delete_command)가 성공 시
+    // EventBus 에 commands.changed 를 publish. telegram 채널은 이를 구독해 setMyCommands 재설정
+    // (재시작 불필요). 핸들러는 동기여야 하므로 async refreshMenu 는 void 로 fire-and-forget.
+    this.unsubscribeCommandsChanged = getEventBus().subscribe((ev) => {
+      if (ev.type === "commands.changed") void this.refreshMenu();
+    });
 
     void bot.start({ drop_pending_updates: true });
   }
 
+  /**
+   * 봇 명령 메뉴 재설정 — 빌트인 네이티브 명령 + 발견된 커스텀 명령(`<home>/commands/*.md`)
+   * 병합 후 setMyCommands(*전체 교체*).
+   *
+   * 텔레그램 명령명 규칙(`^[a-z0-9_]{1,32}$`)을 어기면 호출 전체가 실패하므로 유효 이름만
+   * 합친다 — 한글·하이픈 이름 커스텀 명령은 *동작은 하나* 메뉴엔 못 뜬다(텔레그램 제약).
+   *
+   * 부팅 시 1회 + commands.changed 이벤트마다 호출. bot 미시작/stop 후엔 no-op(가드). 메뉴는
+   * 부수 UX 라 실패해도 catch 만(polling/핵심 흐름 무영향).
+   */
+  private async refreshMenu(): Promise<void> {
+    const bot = this.bot;
+    if (bot === null) return; // stop 후 잔여 이벤트 등 — 안전 no-op.
+    const builtinCommands = [
+      { command: "reset", description: "대화 컨텍스트 초기화" },
+      { command: "memo", description: "메모리 추가" },
+      { command: "forget", description: "메모리 삭제" },
+      { command: "memos", description: "메모리 목록" },
+      { command: "plugins", description: "설치·활성 플러그인 목록" },
+      { command: "status", description: "시스템 상태" },
+      { command: "restart", description: "데몬 재시작" },
+    ];
+    const builtinNames = new Set(builtinCommands.map((c) => c.command));
+    const validTgName = /^[a-z0-9_]{1,32}$/;
+    let discoveredCommands: { command: string; description: string }[] = [];
+    try {
+      const cmds = await discoverCommands();
+      discoveredCommands = cmds
+        .filter((c) => validTgName.test(c.name) && !builtinNames.has(c.name))
+        .map((c) => ({
+          command: c.name,
+          description: (c.description || c.name).slice(0, 256),
+        }));
+    } catch (e) {
+      console.error("telegram: discoverCommands(menu) failed:", e);
+    }
+    // 텔레그램 최대 100개.
+    const menuCommands = [...builtinCommands, ...discoveredCommands].slice(0, 100);
+    await bot.api.setMyCommands(menuCommands).catch((e) => {
+      console.error("telegram setMyCommands failed:", e);
+    });
+  }
+
   async stop(): Promise<void> {
+    // 구독 해제 먼저 — bot 정지 후 잔여 이벤트로 refreshMenu 호출 방지(누수 0).
+    if (this.unsubscribeCommandsChanged !== null) {
+      this.unsubscribeCommandsChanged();
+      this.unsubscribeCommandsChanged = null;
+    }
     if (this.bot !== null) {
       await this.bot.stop();
       if (cachedBot === this.bot) cachedBot = null;

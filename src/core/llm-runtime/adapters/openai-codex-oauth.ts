@@ -68,6 +68,7 @@ import {
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
+import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { loadThreadHistory } from "../../../store/memory.js";
@@ -1112,6 +1113,20 @@ export const runOpenAiCodex = async (
         toolBridgeMap.set((t as { name: string }).name, endpointBridge);
       }
       mcpTools.push(...endpointToolsRaw);
+    }
+
+    // 커스텀 슬래시 명령 등록/조회/삭제 도구 (2026-06-18) — register_command/
+    // list_commands/delete_command. endpoint/worker 와 *동일* 가드(이 블록은 !toolsNone
+    // 안 + depth 0 && workerDepth 0). lean(none) 이면 이 블록 자체가 미실행. claude/openai
+    // 와 동일 의미(어댑터 분기 0). 슬래시 명령은 항상 prompt 라 mode 무관.
+    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+      const commandServer = createCommandToolsMcpServer();
+      const commandBridge = await adaptClaudeMcpServer(commandServer, "commands");
+      const commandToolsRaw = await commandBridge.listTools();
+      for (const t of commandToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, commandBridge);
+      }
+      mcpTools.push(...commandToolsRaw);
     }
 
     // V7.5 (parity P0 fix) — extraMcpServers 도 bridge. router 가 facade 통해

@@ -70,6 +70,7 @@ import {
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
+import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import {
@@ -342,6 +343,13 @@ export const runClaude = async (
         // 엔드포인트를 만드는 재귀 자연 차단. LLM-agnostic(어댑터 분기 0).
         ...(depth === 0 && (input.workerDepth ?? 0) === 0
           ? { endpoints: createEndpointToolsMcpServer() }
+          : {}),
+        // 커스텀 슬래시 명령 등록/조회/삭제 도구 (2026-06-18) —
+        // register_command/list_commands/delete_command. endpoint/worker 와 *동일* 가드
+        // (depth 0 + workerDepth 0). lean(toolsNone) 이면 leanMcpServers={} 라 미등록.
+        // LLM-agnostic(어댑터 분기 0). 슬래시 명령은 항상 prompt 라 mode 무관.
+        ...(depth === 0 && (input.workerDepth ?? 0) === 0
+          ? { commands: createCommandToolsMcpServer() }
           : {}),
         ...(input.extraMcpServers ?? {}),
       };

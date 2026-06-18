@@ -95,10 +95,15 @@ const runShellHook = (
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; code: number }> =>
   new Promise((resolve) => {
-    const child = spawn("sh", ["-c", command], {
-      timeout: timeoutMs,
-      // maxBuffer 는 spawn 에 없음 — stdout 누적 직접 cap.
-    });
+    const child =
+      process.platform === "win32"
+        ? spawn(process.env.ComSpec || "cmd", ["/c", command], {
+            timeout: timeoutMs,
+          })
+        : spawn("sh", ["-c", command], {
+            timeout: timeoutMs,
+            // maxBuffer 는 spawn 에 없음 — stdout 누적 직접 cap.
+          });
     let stdout = "";
     let stderr = "";
     const CAP = 1024 * 1024; // 1MB

@@ -85,18 +85,22 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 ### 평소 사용
 
 - **전역 명령**(선택): `npm link` 후 어디서나 `tiguclaw status | restart | logs`.
-- **서비스 관리**(macOS launchd): `npm run daemon:status | daemon:restart | daemon:logs`.
+- **서비스 관리**(macOS / Linux / Windows 공통 명령): `npm run daemon:status | daemon:restart | daemon:logs`.
 - **뭔가 이상하면?** `npm run doctor` 가 키·봇 도달·홈·서비스를 점검합니다.
 
 참고:
 
 - `.env` 에는 봇 토큰·LLM 키가 들어 있어요 — **절대 커밋·공유 금지**(이미 gitignore 처리됨).
 - LLM 사용 **비용은 본인 부담**(본인 키 / 구독).
-- 자동 서비스 등록은 현재 **macOS** 에서 검증됨. Linux/Windows 는 수동 supervisor 로 실행(설치기가 명령을 안내).
+- `npm run daemon:install` 은 OS별로 상시 서비스를 등록합니다:
+  - **macOS** → launchd (crash 자동 재시작·로그인 시 가동).
+  - **Linux** → systemd **user** 서비스 (`Restart=always`). 로그인 없이 부팅 가동하려면: `loginctl enable-linger $USER`.
+  - **Windows** → Task Scheduler (로그인 시 가동). KeepAlive 가 launchd 보다 약하니, 완전한 parity 가 필요하면 **WSL2** 권장.
+  - KeepAlive 강도는 솔직히 macOS > Linux > Windows 순. 위 관리 명령은 3 OS 모두 동일합니다.
 
 ### 삭제 (Uninstall)
 
-1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd). *(Linux/Windows 는 supervisor 를 직접 중지.)*
+1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd / Linux systemd user / Windows Task Scheduler 공통).
 2. **데이터 삭제** — ⚠️ 되돌릴 수 없음 (세션·메모리·DB·agents·skills): `rm -rf ~/.tiguclaw` (또는 `TIGUCLAW_HOME` 이 가리키는 경로).
 3. **전역 명령 제거** (`npm link` 했을 때만) — `npm rm -g tiguclaw`.
 4. **프로젝트 폴더 삭제** — `rm -rf tiguclaw`.

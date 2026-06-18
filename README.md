@@ -85,18 +85,22 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 ### Day to day
 
 - **Global command** (optional): run `npm link`, then use `tiguclaw status | restart | logs` from anywhere.
-- **Manage the service** (macOS launchd): `npm run daemon:status | daemon:restart | daemon:logs`.
+- **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:logs`.
 - **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
 
 A few notes:
 
 - Your `.env` holds the bot token & LLM keys — **never commit or share it** (it's already gitignored).
 - LLM usage is **billed to you** (your keys / subscription).
-- Auto-service setup is verified on **macOS** for now; Linux/Windows run via a manual supervisor (the installer prints the command).
+- `npm run daemon:install` registers the always-on service per OS:
+  - **macOS** → launchd (auto-restart on crash, starts at login).
+  - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
+  - **Windows** → Task Scheduler (starts at logon). KeepAlive is weaker than launchd; for full parity run under **WSL2**.
+  - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
 
 ### Uninstall
 
-1. **Stop & remove the service** — `npm run daemon:uninstall` (macOS launchd). *(Linux/Windows: stop your supervisor instead.)*
+1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows Task Scheduler).
 2. **Delete your data** — ⚠️ irreversible (sessions, memory, DB, agents, skills): `rm -rf ~/.tiguclaw` (or whatever `TIGUCLAW_HOME` points to).
 3. **Remove the global command** (only if you ran `npm link`) — `npm rm -g tiguclaw`.
 4. **Delete the project folder** — `rm -rf tiguclaw`.

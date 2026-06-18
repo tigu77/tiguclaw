@@ -42,11 +42,11 @@
     "bridge:grant": "tsx --env-file=.env src/scripts/bridge-grant.ts",
     "bridge:tokens": "tsx --env-file=.env src/scripts/bridge-tokens.ts",
     "codex-auth": "tsx --env-file=.env src/scripts/codex-auth.ts",
-    "daemon:install": "tsx src/scripts/install-service.ts",
-    "daemon:uninstall": "L=${TIGUCLAW_SERVICE_LABEL:-com.tiguclaw.daemon}; launchctl bootout gui/$(id -u)/$L 2>/dev/null; rm -f \"$HOME/Library/LaunchAgents/$L.plist\"; echo \"launchd unloaded ($L)\"",
-    "daemon:restart": "launchctl kickstart -k gui/$(id -u)/${TIGUCLAW_SERVICE_LABEL:-com.tiguclaw.daemon} && echo restarted",
-    "daemon:status": "launchctl print gui/$(id -u)/${TIGUCLAW_SERVICE_LABEL:-com.tiguclaw.daemon} 2>/dev/null | grep -E 'state =|pid =' || echo 'not loaded'",
-    "daemon:logs": "tail -n 40 -f \"${TIGUCLAW_HOME:-$HOME/.tiguclaw}/logs/daemon-$(date +%Y-%m-%d).log\""
+    "daemon:install": "tsx src/scripts/daemon.ts install",
+    "daemon:uninstall": "tsx src/scripts/daemon.ts uninstall",
+    "daemon:restart": "tsx src/scripts/daemon.ts restart",
+    "daemon:status": "tsx src/scripts/daemon.ts status",
+    "daemon:logs": "tsx src/scripts/daemon.ts logs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

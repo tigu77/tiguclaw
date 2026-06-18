@@ -128,12 +128,12 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 - `npm run daemon:install` 은 OS별로 상시 서비스를 등록합니다:
   - **macOS** → launchd (crash 자동 재시작·로그인 시 가동).
   - **Linux** → systemd **user** 서비스 (`Restart=always`). 로그인 없이 부팅 가동하려면: `loginctl enable-linger $USER`.
-  - **Windows** → Task Scheduler (로그인 시 가동). KeepAlive 가 launchd 보다 약하니, 완전한 parity 가 필요하면 **WSL2** 권장.
+  - **Windows** → 레지스트리 Run 키(HKCU — **관리자 권한 불요**; 로그온 시 숨김 가동). crash 자동재시작 없음; 완전한 KeepAlive 는 **WSL2** 권장.
   - KeepAlive 강도는 솔직히 macOS > Linux > Windows 순. 위 관리 명령은 3 OS 모두 동일합니다.
 
 ### 삭제 (Uninstall)
 
-1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd / Linux systemd user / Windows Task Scheduler 공통).
+1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd / Linux systemd user / Windows 레지스트리 Run 공통).
 2. **데이터 삭제** — ⚠️ 되돌릴 수 없음 (세션·메모리·DB·agents·skills): `rm -rf ~/.tiguclaw` (또는 `TIGUCLAW_HOME` 이 가리키는 경로).
 3. **전역 명령 제거** (`npm link` 했을 때만) — `npm rm -g tiguclaw`.
 4. **프로젝트 폴더 삭제** — `rm -rf tiguclaw`.

@@ -286,102 +286,133 @@ const linuxPrint = (c: Ctx): void => {
   console.log(`# 부팅가동: loginctl enable-linger ${os.userInfo().username}`);
 };
 
-// ───────────────────────────── Windows (Task Scheduler) ─────────────────────
-// 한계: Task Scheduler 는 launchd 처럼 crash-KeepAlive 가 약하다. ONLOGON 으로
-// 로그인 시 가동하되, crash 자동재시작이 꼭 필요하면 NSSM(선택) 또는 WSL2 를 권장.
-// cwd·env 보장을 위해 TR 을 cmd 로 감싼다.
+// ───────────────────────────── Windows (HKCU Run 키 + 숨김 VBS) ─────────────
+// schtasks /Create 는 환경(그룹정책·ONLOGON 권한)에 따라 Access denied 가 난다.
+// HKCU\...\Run 은 *사용자 자기 레지스트리* 라 관리자 권한 없이 항상 쓰기 가능 →
+// 로그온 시 자동 가동. 콘솔창이 뜨지 않도록 VBS 로 숨겨 실행. crash 자동재시작은
+// 없음(로그온 가동) — 완전한 KeepAlive 가 필요하면 NSSM(선택) 또는 WSL2 권장.
 
-const buildWinTr = (c: Ctx): string =>
-  `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && "${c.nodePath}" "${c.tsxCli}" --env-file=.env "${c.entry}"`;
+const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const winVbsPath = (c: Ctx): string => path.join(c.homeAbs, "win-launch.vbs");
 
-const win = (args: string[], inherit = true) =>
-  spawnSync("schtasks", args, {
-    stdio: inherit ? "inherit" : "pipe",
-    encoding: "utf8",
-  });
+// bridge 포트(.env 우선 → env → 3001). status/restart 의 실행 PID 추정용.
+const winPort = (c: Ctx): string => {
+  try {
+    const m = readFileSync(path.join(c.repoRoot, ".env"), "utf8").match(
+      /^HTTP_BRIDGE_PORT=(.*)$/m,
+    );
+    if (m !== null && m[1]!.trim() !== "") return m[1]!.trim();
+  } catch {
+    /* .env 없음 — 기본값 */
+  }
+  return process.env.HTTP_BRIDGE_PORT?.trim() || "3001";
+};
+
+// 숨김(0)·비대기(False) 로 데몬을 띄우는 VBS. cwd=repoRoot, TIGUCLAW_HOME 주입.
+const buildWinVbs = (c: Ctx): string => {
+  const inner =
+    `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && ` +
+    `"${c.nodePath}" "${c.tsxCli}" --env-file=.env "${c.entry}"`;
+  return [
+    'Set sh = CreateObject("WScript.Shell")',
+    `sh.Run "${inner.replace(/"/g, '""')}", 0, False`,
+    "",
+  ].join("\r\n");
+};
+
+const winReg = (args: string[]) =>
+  spawnSync("reg", args, { stdio: "pipe", encoding: "utf8" });
+
+// 지금 즉시 1회 가동(숨김 VBS 실행).
+const winLaunch = (c: Ctx) =>
+  spawnSync("wscript", [winVbsPath(c)], { stdio: "ignore" });
+
+// bridge 포트를 LISTEN 중인 PID(실행 중 데몬 추정).
+const winListeningPids = (c: Ctx): string[] => {
+  const ns = spawnSync("netstat", ["-ano"], { encoding: "utf8" });
+  const pids = new Set<string>();
+  const needle = `:${winPort(c)}`;
+  for (const l of (ns.stdout ?? "").split(/\r?\n/)) {
+    if (l.includes(needle) && /LISTENING/i.test(l)) {
+      const pid = l.trim().split(/\s+/).pop();
+      if (pid !== undefined && pid !== "0") pids.add(pid);
+    }
+  }
+  return [...pids];
+};
+
+const winKillRunning = (c: Ctx): void => {
+  for (const pid of winListeningPids(c))
+    spawnSync("taskkill", ["/PID", pid, "/F", "/T"], { stdio: "ignore" });
+};
 
 const winInstall = (c: Ctx): void => {
   mkdirSync(c.logsDir, { recursive: true });
-  const tr = buildWinTr(c);
-  // /RU <현재 사용자> + /IT — 작업을 *이 사용자 로그온 시* 로 스코프(관리자 권한 불요).
-  //   /RU 없는 ONLOGON 은 '모든 사용자' 로 간주돼 Access denied 가 나기 쉽다.
-  const user = os.userInfo().username;
-  const r = win([
-    "/Create",
-    "/TN",
+  writeFileSync(winVbsPath(c), buildWinVbs(c), "utf8");
+  // Run 값명 = 라벨(다중 인스턴스 분리). 값 = wscript 가 숨김 VBS 실행.
+  const r = winReg([
+    "add",
+    RUN_KEY,
+    "/v",
     c.label,
-    "/SC",
-    "ONLOGON",
-    "/RU",
-    user,
-    "/IT",
-    "/RL",
-    "LIMITED",
-    "/F",
-    "/TR",
-    tr,
+    "/t",
+    "REG_SZ",
+    "/d",
+    `wscript "${winVbsPath(c)}"`,
+    "/f",
   ]);
   if (r.status !== 0) {
-    console.error(`schtasks /Create 실패 (${r.status}).`);
-    console.error(
-      "   '액세스 거부' 면: ① 관리자 권한 명령 프롬프트에서 다시 실행, 또는",
-    );
-    console.error(
-      "   ② 포그라운드로 `npm run dev` (창 켜둔 동안 가동), 또는 ③ WSL2 사용.",
-    );
+    console.error(`레지스트리 Run 등록 실패 (${r.status}).`);
+    console.error((r.stderr || r.stdout || "").trim());
     return;
   }
-  console.log(`✅ Task Scheduler 등록 완료 (ONLOGON). TIGUCLAW_HOME=${c.homeRaw}`);
   console.log(
-    "   주의: Task Scheduler 는 crash 자동재시작이 약합니다 (로그인 시 가동). " +
-      "완전한 KeepAlive 가 필요하면 NSSM(선택) 또는 WSL2 를 권장합니다.",
+    `✅ 등록 완료 — 로그온 시 자동 가동 (HKCU Run, 관리자 권한 불요). TIGUCLAW_HOME=${c.homeRaw}`,
   );
-  console.log("   상태: npm run daemon:status · 로그: npm run daemon:logs");
+  console.log(
+    "   주의: crash 자동재시작은 없습니다(로그온 가동). 완전한 KeepAlive 는 WSL2/NSSM.",
+  );
+  winLaunch(c); // 지금 바로 1회 가동.
+  console.log(
+    "   지금 가동 시작 — 상태: npm run daemon:status · 로그: npm run daemon:logs",
+  );
 };
 
 const winUninstall = (c: Ctx): void => {
-  const r = win(["/Delete", "/TN", c.label, "/F"]);
-  if (r.status !== 0) {
-    console.error(`schtasks /Delete 실패 (${r.status}) — 이미 없을 수 있음.`);
-    return;
-  }
-  console.log(`✅ Task Scheduler 작업 제거 (${c.label}).`);
+  winKillRunning(c);
+  winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
+  rmSync(winVbsPath(c), { force: true });
+  console.log(`✅ 등록 해제 (Run 키 + VBS 제거, ${c.label}).`);
 };
 
 const winRestart = (c: Ctx): void => {
-  win(["/End", "/TN", c.label], false); // 실행 중이 아니면 조용히 무시(출력 숨김).
-  const r = win(["/Run", "/TN", c.label]);
-  if (r.status !== 0) {
-    console.error(
-      `schtasks /Run 실패 (${r.status}) — 먼저 'tiguclaw install' 로 등록했는지 확인하세요.`,
-    );
-    return;
-  }
+  winKillRunning(c); // 실행 중이면 종료(bridge 포트 PID).
+  winLaunch(c); // 숨김 재가동.
   console.log("✅ restarted");
 };
 
 const winStatus = (c: Ctx): void => {
-  const r = win(["/Query", "/TN", c.label], false);
-  if (r.status !== 0) {
-    console.log("not loaded");
-    return;
+  const reg = winReg(["query", RUN_KEY, "/v", c.label]);
+  console.log(`registered (HKCU Run): ${reg.status === 0 ? "yes" : "no"}`);
+  const pids = winListeningPids(c);
+  if (pids.length > 0) {
+    console.log(`running: yes (pid ${pids.join(", ")}, port ${winPort(c)})`);
+  } else {
+    console.log(
+      `running: 불명 (port ${winPort(c)} 미LISTEN — 작업관리자에서 node 확인)`,
+    );
   }
-  console.log((r.stdout || "").trim() || "not loaded");
 };
 
 const winPrint = (c: Ctx): void => {
-  console.log(`# Task Scheduler task → ${c.label} (ONLOGON, RL LIMITED)`);
-  console.log(`# TR:`);
-  console.log(buildWinTr(c));
   console.log(
-    `# 등록:   schtasks /Create /TN "${c.label}" /SC ONLOGON /RL LIMITED /F /TR "<위 TR>"`,
+    "# Windows: HKCU Run 키 + 숨김 VBS 런처 (관리자 권한 불요, 로그온 가동)",
   );
-  console.log(
-    `# 재시작: schtasks /End /TN "${c.label}" && schtasks /Run /TN "${c.label}"`,
-  );
-  console.log(
-    "# 한계: crash-KeepAlive 약함 → 필요 시 NSSM(선택) 또는 WSL2 권장.",
-  );
+  console.log(`# Run 키: ${RUN_KEY}  값명=${c.label}`);
+  console.log(`#   값 = wscript "${winVbsPath(c)}"`);
+  console.log(`# VBS: ${winVbsPath(c)}`);
+  console.log("# --- VBS 내용 ---");
+  console.log(buildWinVbs(c));
 };
 
 // ───────────────────────────── logs (전 OS 공통) ────────────────────────────

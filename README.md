@@ -128,12 +128,12 @@ A few notes:
 - `npm run daemon:install` registers the always-on service per OS:
   - **macOS** → launchd (auto-restart on crash, starts at login).
   - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
-  - **Windows** → Task Scheduler (starts at logon). KeepAlive is weaker than launchd; for full parity run under **WSL2**.
+  - **Windows** → registry Run key (HKCU — **no admin needed**; starts at logon, runs hidden). No crash-restart; for full KeepAlive run under **WSL2**.
   - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
 
 ### Uninstall
 
-1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows Task Scheduler).
+1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows registry Run).
 2. **Delete your data** — ⚠️ irreversible (sessions, memory, DB, agents, skills): `rm -rf ~/.tiguclaw` (or whatever `TIGUCLAW_HOME` points to).
 3. **Remove the global command** (only if you ran `npm link`) — `npm rm -g tiguclaw`.
 4. **Delete the project folder** — `rm -rf tiguclaw`.

@@ -289,6 +289,7 @@ const main = async (): Promise<void> => {
   console.log("");
   console.log("=== tiguclaw init — 자가호스트 설치 마법사 ===");
   console.log("대화형으로 LLM·텔레그램·토큰을 설정해 .env 를 생성합니다.");
+  console.log("키·토큰 발급 단계가 헷갈리면 README 의 '키·토큰 발급 가이드' 섹션을 참고하세요.");
 
   // ★ 안전장치: 기존 .env 가 있으면 명시적 동의 없이는 중단.
   if (existsSync(ENV_PATH)) {

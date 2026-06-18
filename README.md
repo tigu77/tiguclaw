@@ -38,6 +38,40 @@ That's it. `onboard` walks you through everything: pick your LLM, paste a key (o
 | **OpenAI API key** | platform.openai.com — pay-as-you-go. |
 | **codex (ChatGPT subscription)** | After install, run `npm run codex-auth` to log in. |
 
+### Getting your keys & tokens
+
+Step-by-step — you only need the provider you picked (+ a Telegram bot if you want chat). `onboard` prompts you for each and shows these hints inline.
+
+**Telegram bot token** (the chat interface)
+1. In Telegram, open **[@BotFather](https://t.me/BotFather)** → send `/newbot`.
+2. Give it a display name, then a username ending in `bot` (e.g. `my_assistant_bot`).
+3. BotFather replies with a token like `123456:ABC-DEF…` — copy it.
+4. *(Recommended — lock to 1:1)* send `/setjoingroups` → **Disable**, and `/setprivacy` → **Enable**.
+
+**Your Telegram user ID** (the owner allowlist)
+- Easiest: during `onboard`, just send your bot one message — it auto-detects your ID.
+- Manual: message **[@userinfobot](https://t.me/userinfobot)** — it replies with your numeric `Id`.
+
+**Anthropic API key** (`sk-ant-…`)
+1. Sign in at **console.anthropic.com**.
+2. **Settings → API Keys → Create Key** → name it → copy (shown only once).
+3. Add credit under **Plans & Billing** (pay-as-you-go).
+
+**OpenAI API key** (`sk-…`)
+1. Sign in at **platform.openai.com**.
+2. **API keys → Create new secret key** → copy.
+3. Add credit under **Billing**.
+
+**Google Gemini key** (optional)
+1. Go to **aistudio.google.com** → **Get API key → Create API key** → copy. (Generous free tier.)
+
+**codex (ChatGPT subscription)** — *no key to paste*
+- After install, run `npm run codex-auth`: it opens a login URL → sign in to ChatGPT → approve. The token is saved and auto-refreshed. (Needs a ChatGPT Plus/Pro subscription.)
+
+**Ollama (local)** — *no key*
+1. Install from **ollama.com** (`brew install ollama` on macOS).
+2. Pull a model: `ollama pull llama3.2` (or `ollama pull qwen2.5:7b` for better quality).
+
 ### Day to day
 
 - **Global command** (optional): run `npm link`, then use `tiguclaw status | restart | logs` from anywhere.

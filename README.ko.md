@@ -38,6 +38,40 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 | **OpenAI API 키** | platform.openai.com — 종량제. |
 | **codex (ChatGPT 구독)** | 설치 후 `npm run codex-auth` 로 로그인. |
 
+### 키·토큰 발급 가이드
+
+단계별 — 고른 provider 1개 (+ 채팅 원하면 텔레그램 봇) 만 있으면 됩니다. `onboard` 가 각 항목을 물어보며 이 힌트를 인라인으로 보여줍니다.
+
+**텔레그램 봇 토큰** (채팅 인터페이스)
+1. 텔레그램에서 **[@BotFather](https://t.me/BotFather)** 열고 `/newbot` 전송.
+2. 봇 표시 이름 입력 → 그다음 `bot` 으로 끝나는 username 입력 (예: `my_assistant_bot`).
+3. BotFather 가 `123456:ABC-DEF…` 형태 토큰을 줍니다 — 복사.
+4. *(권장 — 1:1 전용 잠금)* `/setjoingroups` → **Disable**, `/setprivacy` → **Enable**.
+
+**내 텔레그램 user ID** (소유자 allowlist)
+- 가장 쉬움: `onboard` 중에 봇에게 메시지 1번 보내면 ID 자동 감지.
+- 수동: **[@userinfobot](https://t.me/userinfobot)** 에게 메시지 → 숫자 `Id` 확인.
+
+**Anthropic API 키** (`sk-ant-…`)
+1. **console.anthropic.com** 로그인.
+2. **Settings → API Keys → Create Key** → 이름 입력 → 복사 (한 번만 표시됨).
+3. **Plans & Billing** 에서 크레딧 충전 (종량제).
+
+**OpenAI API 키** (`sk-…`)
+1. **platform.openai.com** 로그인.
+2. **API keys → Create new secret key** → 복사.
+3. **Billing** 에서 크레딧 충전.
+
+**Google Gemini 키** (선택)
+1. **aistudio.google.com** → **Get API key → Create API key** → 복사. (무료 한도 넉넉.)
+
+**codex (ChatGPT 구독)** — *붙여넣을 키 없음*
+- 설치 후 `npm run codex-auth` 실행 → 로그인 URL 열림 → ChatGPT 로그인 → 권한 허용. 토큰 자동 저장·갱신. (ChatGPT Plus/Pro 구독 필요.)
+
+**Ollama (로컬)** — *키 없음*
+1. **ollama.com** 에서 설치 (macOS는 `brew install ollama`).
+2. 모델 받기: `ollama pull llama3.2` (품질 원하면 `ollama pull qwen2.5:7b`).
+
 ### 평소 사용
 
 - **전역 명령**(선택): `npm link` 후 어디서나 `tiguclaw status | restart | logs`.

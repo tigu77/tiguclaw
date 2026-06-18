@@ -7,7 +7,7 @@
 > 잠들지 않는 Claude Code 가 텔레그램으로 말을 걸고, Claude·GPT·Gemini·무료 로컬 모델을 같은 능력으로 골라 쓰는 느낌.
 
 <p align="center">
-  <img src="assets/screenshot.svg" alt="텔레그램에서의 tiguclaw" width="640">
+  <img src="assets/banner.png" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
 ## 뭘 하나

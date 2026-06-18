@@ -7,7 +7,7 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 > Think of it as a Claude Code that never sleeps, chats with you on Telegram, and can switch between Claude, GPT, Gemini, or a free local model — all with the same skills.
 
 <p align="center">
-  <img src="assets/screenshot.svg" alt="tiguclaw on Telegram" width="640">
+  <img src="assets/banner.png" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
 ## What it does

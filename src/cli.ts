@@ -14,9 +14,14 @@ import process from "node:process";
 
 const ENV_PATH = path.resolve(process.cwd(), ".env");
 
-/** npm 스크립트 위임 실행 (TTY 상속 — 대화형 마법사 그대로 동작). exit code 반환. */
+/** npm 스크립트 위임 실행 (TTY 상속 — 대화형 마법사 그대로 동작). exit code 반환.
+ *  shell:true — Windows 는 `npm` 이 `npm.cmd` 라 shell 없이는 ENOENT(크로스플랫폼 필수).
+ *  script 는 하드코딩 리터럴만(주입 위험 0). */
 const runNpm = (script: string): number => {
-  const r = spawnSync("npm", ["run", script], { stdio: "inherit" });
+  const r = spawnSync("npm", ["run", script], {
+    stdio: "inherit",
+    shell: true,
+  });
   return r.status ?? 1;
 };
 

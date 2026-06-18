@@ -19,6 +19,38 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and simple tasks to a free local model (the `nano` tier).
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.
 
+## Things you can ask it
+
+Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few examples:
+
+**Code & your machine**
+- "Fix the failing test in `~/projects/api` and open a branch."
+- "What's eating my disk space? Clean up the obvious junk." *(it asks before deleting anything)*
+- "Read these files and explain how auth works."
+
+**Research & writing**
+- "Research today's AI news and send me a short digest."
+- "Draft a reply to this message: …"
+- "Compare two libraries for my use case and recommend one."
+
+**Long jobs, without the wait**
+- "Scrape these 40 pages and build a table." → it hands the heavy work to a background worker and keeps chatting, then pings you when it's done.
+- Routine, bulk, or simple tasks can be delegated to a free local model.
+
+**Remember & schedule**
+- "Remember that I prefer TypeScript and 2-space indents." → it persists across every chat.
+- "Every weekday at 9am, send me a summary of X."
+- "What did we decide about the database last week?"
+
+**Make it yours — just by asking**
+- "Add a `/standup` command that asks me three questions." → it registers the command (your Telegram menu updates live).
+- "Expose an HTTP endpoint my other app can call to do X." → it wires it up, no changes to the core.
+- "Turn this workflow into a reusable skill."
+
+**Reach it anywhere** — your phone (Telegram), your terminal (CLI), or your own apps (HTTP). Same assistant, same memory.
+
+> It has shell & file access to your machine, and **asks for your OK before anything destructive or irreversible** (see [`docs/security.md`](docs/security.md)).
+
 ## Quick start
 
 You'll need **Node 20+**, **git**, one **LLM provider** (pick one below), and optionally a **Telegram bot**.

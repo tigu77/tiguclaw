@@ -32,7 +32,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "dev": "TIGUCLAW_HOME=./tiguclaw-dev tsx watch --env-file=.env src/index.ts",
+    "dev": "node bin/dev.mjs",
     "start": "node --env-file=.env dist/index.js",
     "typecheck": "tsc --noEmit",
     "init": "tsx src/scripts/init.ts",

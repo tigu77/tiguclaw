@@ -59,7 +59,7 @@ You'll need **Node 20+**, **git**, one **LLM provider** (pick one below), and op
 
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw
-npm install
+npm ci            # clean, reproducible install from the lockfile (or: npm install)
 npm run onboard   # interactive setup → .env → (codex) login → service → health check
 ```
 
@@ -124,6 +124,7 @@ A few notes:
 
 - Your `.env` holds the bot token & LLM keys — **never commit or share it** (it's already gitignored).
 - LLM usage is **billed to you** (your keys / subscription).
+- Install with **`npm ci`** for a clean, reproducible setup — it installs exactly from `package-lock.json` and won't modify it. `npm install` works too but may tweak the lockfile locally; no need to commit those changes.
 - `npm run daemon:install` registers the always-on service per OS:
   - **macOS** → launchd (auto-restart on crash, starts at login).
   - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.

@@ -59,7 +59,7 @@
 
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw
-npm install
+npm ci            # lockfile 그대로 깨끗·재현 설치 (또는: npm install)
 npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스 등록 → 검증
 ```
 
@@ -124,6 +124,7 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 
 - `.env` 에는 봇 토큰·LLM 키가 들어 있어요 — **절대 커밋·공유 금지**(이미 gitignore 처리됨).
 - LLM 사용 **비용은 본인 부담**(본인 키 / 구독).
+- 설치는 **`npm ci`** 권장 — `package-lock.json` 그대로 결정적으로 깔고 lockfile 을 수정하지 않습니다. `npm install` 도 되지만 lockfile 을 로컬에서 살짝 바꿀 수 있어요(그 변경은 커밋 안 해도 됨).
 - `npm run daemon:install` 은 OS별로 상시 서비스를 등록합니다:
   - **macOS** → launchd (crash 자동 재시작·로그인 시 가동).
   - **Linux** → systemd **user** 서비스 (`Restart=always`). 로그인 없이 부팅 가동하려면: `loginctl enable-linger $USER`.

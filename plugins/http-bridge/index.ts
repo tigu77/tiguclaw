@@ -93,6 +93,10 @@ class HttpBridge implements Channel, Observer {
   // `verifyToken` 이 null 반환 시 본 토큰과 비교, 매치 시 admin role.
   private readonly ephemeralToken: string | null;
   private readonly port: number;
+  // 바인딩 호스트 — 기본 127.0.0.1 (로컬 전용, LAN 비노출 = 안전 기본). LAN/원격
+  // 접근이 필요하면 명시적으로 HTTP_BRIDGE_HOST=0.0.0.0 (토큰 인증은 항상 적용되나
+  // 노출면이 늘어나므로 의도적으로만).
+  private readonly host: string;
 
   constructor() {
     const envToken = process.env.HTTP_BRIDGE_TOKEN;
@@ -106,6 +110,7 @@ class HttpBridge implements Channel, Observer {
       );
     }
     this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "3001", 10);
+    this.host = process.env.HTTP_BRIDGE_HOST?.trim() || "127.0.0.1";
   }
 
   private resolveToken(
@@ -173,9 +178,11 @@ class HttpBridge implements Channel, Observer {
         reject(err);
       };
       this.server!.once("error", onError);
-      this.server!.listen(this.port, () => {
+      this.server!.listen(this.port, this.host, () => {
         this.server!.removeListener("error", onError);
-        console.log(`http-bridge listening on http://localhost:${this.port}`);
+        console.log(
+          `http-bridge listening on http://${this.host}:${this.port}`,
+        );
         resolve();
       });
     });

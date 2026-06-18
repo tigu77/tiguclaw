@@ -452,10 +452,18 @@ export const runClaude = async (
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 
-  const q = query({ prompt: promptWithMemory, options });
+  // resume 세션 부재/손상은 SDK 가 "process exited with code 1" 로 종료시킨다 →
+  // resume 없이 fresh 세션으로 1회 graceful 폴백 (본질 수정: 마이그레이션·세션 만료·
+  // cwd 변경에도 턴이 안 죽게). model 거부는 별도 표면(is_error throw)이라 무간섭.
+  const isResumeProcessFailure = (e: unknown): boolean =>
+    e instanceof Error && /process exited with code 1/i.test(e.message);
+  const buildQuery = (o: Options) =>
+    query({ prompt: promptWithMemory, options: o });
+  let q = buildQuery(options);
+  let resumeRetried = false;
 
   let resultText: string | undefined;
-  const assistantTextChunks: string[] = [];
+  let assistantTextChunks: string[] = [];
   let lastSessionId: string | undefined;
   let lastModel: string | null = null;
   let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
@@ -465,6 +473,8 @@ export const runClaude = async (
 
   const bus = getEventBus();
 
+  try {
+  for (;;) {
   try {
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
@@ -563,7 +573,29 @@ export const runClaude = async (
       }
     }
   }
+    break; // 스트림 정상 소비 — 재시도 루프 종료.
   } catch (e) {
+    // resume 세션 부재/손상("process exited with code 1") → resume 제거 후 fresh
+    // 세션으로 1회만 재시도. resumable(애초 resume 시도) + 미재시도 + 비-abort 한정.
+    if (
+      !resumeRetried &&
+      resumable &&
+      isResumeProcessFailure(e) &&
+      !effectiveAc.signal.aborted
+    ) {
+      resumeRetried = true;
+      resultText = undefined;
+      assistantTextChunks = [];
+      lastSessionId = undefined;
+      lastModel = null;
+      lastUsage = undefined;
+      succeeded = false;
+      activitySeq = 0;
+      const freshOptions: Options = { ...options };
+      delete (freshOptions as { resume?: unknown }).resume;
+      q = buildQuery(freshOptions);
+      continue; // resume 없이 재실행.
+    }
     // SDK 가 abort 시 throw 하는 경우(AbortError 등) — 1층(유휴) 또는 2층(턴) 타임아웃이
     // 원인이면 해당 에러로 승격해 facade 가 일관된 타임아웃 신호를 받게 한다(둘 다
     // isModelRejected 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
@@ -576,6 +608,8 @@ export const runClaude = async (
       throw reason;
     }
     throw e;
+  }
+  } // for(;;) — resume 폴백 재시도 루프
   } finally {
     // 타이머 누수 0 (I-6) — 성공·throw·abort 모든 경로에서 해제.
     idleTimer.done();

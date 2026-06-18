@@ -19,7 +19,9 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const LABEL = "com.tiguclaw.daemon";
+// 기본 라벨. 한 머신에서 2개 이상 인스턴스(예: prod + 검증용)를 상시 가동하려면
+// TIGUCLAW_SERVICE_LABEL 로 고유 라벨을 지정한다 (홈·봇·포트도 함께 분리할 것).
+const LABEL = process.env.TIGUCLAW_SERVICE_LABEL?.trim() || "com.tiguclaw.daemon";
 
 const expandHome = (p: string): string =>
   p === "~" || p.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p;

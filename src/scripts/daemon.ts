@@ -303,12 +303,18 @@ const win = (args: string[], inherit = true) =>
 const winInstall = (c: Ctx): void => {
   mkdirSync(c.logsDir, { recursive: true });
   const tr = buildWinTr(c);
+  // /RU <현재 사용자> + /IT — 작업을 *이 사용자 로그온 시* 로 스코프(관리자 권한 불요).
+  //   /RU 없는 ONLOGON 은 '모든 사용자' 로 간주돼 Access denied 가 나기 쉽다.
+  const user = os.userInfo().username;
   const r = win([
     "/Create",
     "/TN",
     c.label,
     "/SC",
     "ONLOGON",
+    "/RU",
+    user,
+    "/IT",
     "/RL",
     "LIMITED",
     "/F",
@@ -316,7 +322,13 @@ const winInstall = (c: Ctx): void => {
     tr,
   ]);
   if (r.status !== 0) {
-    console.error(`schtasks /Create 실패 (${r.status}). 위 출력 참조.`);
+    console.error(`schtasks /Create 실패 (${r.status}).`);
+    console.error(
+      "   '액세스 거부' 면: ① 관리자 권한 명령 프롬프트에서 다시 실행, 또는",
+    );
+    console.error(
+      "   ② 포그라운드로 `npm run dev` (창 켜둔 동안 가동), 또는 ③ WSL2 사용.",
+    );
     return;
   }
   console.log(`✅ Task Scheduler 등록 완료 (ONLOGON). TIGUCLAW_HOME=${c.homeRaw}`);
@@ -337,10 +349,12 @@ const winUninstall = (c: Ctx): void => {
 };
 
 const winRestart = (c: Ctx): void => {
-  win(["/End", "/TN", c.label]); // 실행 중이 아니면 실패해도 무시.
+  win(["/End", "/TN", c.label], false); // 실행 중이 아니면 조용히 무시(출력 숨김).
   const r = win(["/Run", "/TN", c.label]);
   if (r.status !== 0) {
-    console.error(`schtasks /Run 실패 (${r.status}).`);
+    console.error(
+      `schtasks /Run 실패 (${r.status}) — 먼저 'tiguclaw install' 로 등록했는지 확인하세요.`,
+    );
     return;
   }
   console.log("✅ restarted");

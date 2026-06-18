@@ -35,6 +35,7 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 |---|---|
 | **Ollama (로컬)** | 키 불필요·무료·오프라인. Ollama 만 설치하면 끝. (작은 모델 = 품질 낮음.) |
 | **Anthropic API 키** | console.anthropic.com 에서 발급 — 가장 쉬움, 종량제. |
+| **Claude 구독** | Claude Pro/Max 구독 사용 — `claude setup-token` 실행 (API 키 불필요, 종량 과금 없음). |
 | **OpenAI API 키** | platform.openai.com — 종량제. |
 | **codex (ChatGPT 구독)** | 설치 후 `npm run codex-auth` 로 로그인. |
 
@@ -56,6 +57,11 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 1. **console.anthropic.com** 로그인.
 2. **Settings → API Keys → Create Key** → 이름 입력 → 복사 (한 번만 표시됨).
 3. **Plans & Billing** 에서 크레딧 충전 (종량제).
+
+**Claude 구독** (API 키 대신 Claude Pro/Max 구독 사용)
+1. Claude Code CLI 설치 후 **`claude setup-token`** 실행.
+2. 브라우저에서 로그인 → 장기 토큰이 출력됨 → 복사.
+3. `CLAUDE_CODE_OAUTH_TOKEN` 으로 붙여넣기 (마법사의 **claude-sub** 옵션, 또는 `.env`). 종량 과금 없이 구독으로 동작.
 
 **OpenAI API 키** (`sk-…`)
 1. **platform.openai.com** 로그인.

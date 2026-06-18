@@ -19,11 +19,12 @@ import process from "node:process";
 
 const ENV_PATH = path.resolve(process.cwd(), ".env");
 
-type Provider = "anthropic" | "openai" | "codex";
+type Provider = "anthropic" | "claude-sub" | "openai" | "codex";
 
 interface Answers {
   provider: Provider;
   anthropicKey: string;
+  claudeOauthToken: string;
   openaiKey: string;
   regionAModels: string;
   tierHigh: string;
@@ -56,20 +57,25 @@ const askProvider = async (): Promise<Provider> => {
   console.log("");
   console.log("[1/4] LLM provider 선택 — 가진 것 하나만 고르세요.");
   console.log("  1) anthropic  — Anthropic API 키 (가장 쉬움, 토큰 종량)");
-  console.log("  2) openai     — OpenAI API 키 (토큰 종량)");
-  console.log("  3) codex      — ChatGPT 구독 OAuth (키 입력 없음, 설치 후 발급)");
+  console.log("  2) claude-sub — Claude 구독 OAuth (`claude setup-token`, 키 입력 없이 토큰)");
+  console.log("  3) openai     — OpenAI API 키 (토큰 종량)");
+  console.log("  4) codex      — ChatGPT 구독 OAuth (키 입력 없음, 설치 후 발급)");
   for (;;) {
-    const v = await ask("  선택 [1/2/3] (기본 1): ");
+    const v = await ask("  선택 [1/2/3/4] (기본 1): ");
     if (v === "" || v === "1" || v.toLowerCase() === "anthropic") return "anthropic";
-    if (v === "2" || v.toLowerCase() === "openai") return "openai";
-    if (v === "3" || v.toLowerCase() === "codex") return "codex";
-    console.log("  ⚠️  1, 2, 3 중 하나를 입력하세요.");
+    if (v === "2" || v.toLowerCase() === "claude-sub" || v.toLowerCase() === "claude")
+      return "claude-sub";
+    if (v === "3" || v.toLowerCase() === "openai") return "openai";
+    if (v === "4" || v.toLowerCase() === "codex") return "codex";
+    console.log("  ⚠️  1, 2, 3, 4 중 하나를 입력하세요.");
   }
 };
 
 const collectProviderConfig = async (
   provider: Provider,
-): Promise<Pick<Answers, "anthropicKey" | "openaiKey" | "regionAModels">> => {
+): Promise<
+  Pick<Answers, "anthropicKey" | "claudeOauthToken" | "openaiKey" | "regionAModels">
+> => {
   if (provider === "anthropic") {
     console.log("");
     console.log("  → Anthropic 콘솔(console.anthropic.com)에서 API 키를 발급하세요.");
@@ -79,6 +85,23 @@ const collectProviderConfig = async (
     );
     return {
       anthropicKey,
+      claudeOauthToken: "",
+      openaiKey: "",
+      regionAModels: "anthropic:claude-sonnet-4-6",
+    };
+  }
+  if (provider === "claude-sub") {
+    console.log("");
+    console.log("  → Claude 구독(Pro/Max)으로 인증합니다 — 키 대신 OAuth 토큰을 씁니다.");
+    console.log("     Claude Code CLI 에서 `claude setup-token` 실행 → 브라우저 로그인 →");
+    console.log("     발급된 토큰을 복사해 아래 붙여넣으세요.");
+    const claudeOauthToken = await askRequired(
+      "  CLAUDE_CODE_OAUTH_TOKEN: ",
+      "토큰은 비워둘 수 없습니다. `claude setup-token` 으로 발급 후 붙여넣으세요.",
+    );
+    return {
+      anthropicKey: "",
+      claudeOauthToken,
       openaiKey: "",
       regionAModels: "anthropic:claude-sonnet-4-6",
     };
@@ -94,6 +117,7 @@ const collectProviderConfig = async (
     console.log("     모델 ID가 안 맞으면 나중에 .env 의 REGION_A_MODELS 를 편집하세요.");
     return {
       anthropicKey: "",
+      claudeOauthToken: "",
       openaiKey,
       regionAModels: "openai:gpt-5.5",
     };
@@ -105,6 +129,7 @@ const collectProviderConfig = async (
   console.log("     설치 후 반드시 `npm run codex-auth` 로 OAuth 토큰을 발급하세요.");
   return {
     anthropicKey: "",
+    claudeOauthToken: "",
     openaiKey: "",
     regionAModels: "codex:gpt-5.5",
   };
@@ -243,6 +268,9 @@ TIGUCLAW_HOME=
 # 선택한 provider = ${a.provider}. 미선택 provider 키는 빈 값으로 남겨둡니다.
 # (다른 provider 로 바꾸려면 해당 키를 채우고 REGION_A_MODELS 를 편집하세요.)
 ANTHROPIC_API_KEY=${a.anthropicKey}
+# Claude 구독 OAuth (claude-sub provider). \`claude setup-token\` 으로 발급, claude 어댑터가
+# ANTHROPIC_API_KEY 대신 이 토큰으로 인증. 둘 중 하나만 있으면 됩니다.
+CLAUDE_CODE_OAUTH_TOKEN=${a.claudeOauthToken}
 OPENAI_API_KEY=${a.openaiKey}
 
 # (미사용 provider — region-A 미연결, 참고용)

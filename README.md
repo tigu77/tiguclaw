@@ -35,6 +35,7 @@ That's it. `onboard` walks you through everything: pick your LLM, paste a key (o
 |---|---|
 | **Ollama (local)** | No key, free, offline. Just install Ollama. (Smaller models, lower quality.) |
 | **Anthropic API key** | Grab one at console.anthropic.com — easiest, pay-as-you-go. |
+| **Claude subscription** | Use your Claude Pro/Max plan — run `claude setup-token` (no API key, no per-token billing). |
 | **OpenAI API key** | platform.openai.com — pay-as-you-go. |
 | **codex (ChatGPT subscription)** | After install, run `npm run codex-auth` to log in. |
 
@@ -56,6 +57,11 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 1. Sign in at **console.anthropic.com**.
 2. **Settings → API Keys → Create Key** → name it → copy (shown only once).
 3. Add credit under **Plans & Billing** (pay-as-you-go).
+
+**Claude subscription** (use your Claude Pro/Max plan instead of an API key)
+1. Install the Claude Code CLI, then run **`claude setup-token`**.
+2. Log in in the browser — it prints a long-lived token; copy it.
+3. Paste it as `CLAUDE_CODE_OAUTH_TOKEN` (the wizard's **claude-sub** option, or in `.env`). No per-token billing — it runs on your subscription.
 
 **OpenAI API key** (`sk-…`)
 1. Sign in at **platform.openai.com**.

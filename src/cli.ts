@@ -8,7 +8,7 @@
  * 기존 npm 스크립트를 순서대로 위임(재사용) — 단일 진실 소스 유지.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -30,6 +30,33 @@ const providerIsCodex = (): boolean => {
   if (!existsSync(ENV_PATH)) return false;
   const m = readFileSync(ENV_PATH, "utf8").match(/^REGION_A_MODELS=(.*)$/m);
   return m !== null && m[1]!.trim().startsWith("codex");
+};
+
+/** 전역 PATH 에서 명령 위치 해석 (unix: which / win: where). 없으면 null. */
+const resolveCmd = (name: string): string | null => {
+  const finder = process.platform === "win32" ? "where" : "which";
+  const r = spawnSync(finder, [name], { encoding: "utf8" });
+  if ((r.status ?? 1) !== 0) return null;
+  const first = (r.stdout ?? "")
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .find(Boolean);
+  return first ?? null;
+};
+
+/** 전역 npm 패키지 `tiguclaw` 가 *이* 설치본(cwd)을 가리키는지 (재링크는 무해, 타인 것은 보존). */
+const globalTiguclawIsOurs = (): boolean => {
+  const r = spawnSync("npm", ["root", "-g"], { encoding: "utf8", shell: true });
+  if ((r.status ?? 1) !== 0) return false;
+  const pkg = path.join((r.stdout ?? "").trim(), "tiguclaw");
+  try {
+    return (
+      path.resolve(realpathSync(pkg)) ===
+      path.resolve(realpathSync(process.cwd()))
+    );
+  } catch {
+    return false;
+  }
 };
 
 /** 원샷 설정 — 설치 후 이 명령 하나로 끝낸다. */
@@ -63,15 +90,26 @@ const onboard = (): number => {
   }
 
   console.log("\n[4/5] 전역 명령 설치 (npm link → 어디서나 `tiguclaw`)…");
-  const linked = spawnSync("npm", ["link"], { stdio: "inherit", shell: true });
-  if ((linked.status ?? 1) === 0) {
-    console.log(
-      "   ✓ 이제 어느 폴더에서나: tiguclaw status | restart | logs | doctor",
+  const existingTiguclaw = resolveCmd("tiguclaw");
+  if (existingTiguclaw !== null && !globalTiguclawIsOurs()) {
+    // 다른 tiguclaw 가 이미 전역에 있음 — 덮어쓰지 않고 보존(예: 레거시 설치본).
+    console.warn(
+      `   ⚠ 이미 다른 'tiguclaw' 전역 명령이 있습니다 (${existingTiguclaw}) — 덮어쓰지 않고 건너뜁니다.`,
+    );
+    console.warn(
+      "     이 설치본을 전역 명령으로 쓰려면 직접 `npm link` 하세요(기존 것을 덮어씀).",
     );
   } else {
-    console.warn(
-      "   ⚠ npm link 건너뜀(권한 등) — 수동으로 `npm link` 하면 전역 `tiguclaw` 명령이 생깁니다.",
-    );
+    const linked = spawnSync("npm", ["link"], { stdio: "inherit", shell: true });
+    if ((linked.status ?? 1) === 0) {
+      console.log(
+        "   ✓ 이제 어느 폴더에서나: tiguclaw status | restart | logs | doctor",
+      );
+    } else {
+      console.warn(
+        "   ⚠ npm link 건너뜀(권한 등) — 수동으로 `npm link` 하면 전역 `tiguclaw` 명령이 생깁니다.",
+      );
+    }
   }
 
   console.log("\n[5/5] 설정 검증…");

@@ -1,13 +1,32 @@
 {
   "name": "tiguclaw",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
     "tiguclaw": "bin/tiguclaw.mjs"
   },
   "description": "Always-on multi-channel AI assistant. Superset of Claude Code capabilities with multi-LLM routing.",
+  "keywords": [
+    "ai-assistant",
+    "claude-code",
+    "llm",
+    "multi-llm",
+    "telegram",
+    "daemon",
+    "ollama",
+    "codex"
+  ],
+  "author": "tigu77",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tigu77/tiguclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tigu77/tiguclaw/issues"
+  },
+  "homepage": "https://github.com/tigu77/tiguclaw#readme",
   "engines": {
     "node": ">=20"
   },
@@ -37,12 +56,12 @@
     "chokidar": "^5.0.0",
     "croner": "^10.0.1",
     "grammy": "^1.30.0",
-    "telegram-markdown-formatter": "^0.1.2"
+    "telegram-markdown-formatter": "^0.1.2",
+    "tsx": "^4.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.0.0",
-    "tsx": "^4.0.0",
     "typescript": "^5.4.0"
   }
 }

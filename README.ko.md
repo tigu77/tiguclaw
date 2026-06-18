@@ -90,6 +90,14 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 - LLM 사용 **비용은 본인 부담**(본인 키 / 구독).
 - 자동 서비스 등록은 현재 **macOS** 에서 검증됨. Linux/Windows 는 수동 supervisor 로 실행(설치기가 명령을 안내).
 
+### 삭제 (Uninstall)
+
+1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd). *(Linux/Windows 는 supervisor 를 직접 중지.)*
+2. **데이터 삭제** — ⚠️ 되돌릴 수 없음 (세션·메모리·DB·agents·skills): `rm -rf ~/.tiguclaw` (또는 `TIGUCLAW_HOME` 이 가리키는 경로).
+3. **전역 명령 제거** (`npm link` 했을 때만) — `npm rm -g tiguclaw`.
+4. **프로젝트 폴더 삭제** — `rm -rf tiguclaw`.
+5. *(선택)* 외부 정리 — **@BotFather** 에서 봇 삭제(`/deletebot`), 콘솔에서 API 키 폐기, 받은 로컬 모델은 `ollama rm <모델>`.
+
 ## 어떻게 만들어졌나
 
 - **코어** — 단일 LLM 런타임(어댑터 풀: claude / codex / openai / ollama / google) + 라우터 + SQLite 스토어(세션·메모리·transcripts).

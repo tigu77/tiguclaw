@@ -90,6 +90,14 @@ A few notes:
 - LLM usage is **billed to you** (your keys / subscription).
 - Auto-service setup is verified on **macOS** for now; Linux/Windows run via a manual supervisor (the installer prints the command).
 
+### Uninstall
+
+1. **Stop & remove the service** — `npm run daemon:uninstall` (macOS launchd). *(Linux/Windows: stop your supervisor instead.)*
+2. **Delete your data** — ⚠️ irreversible (sessions, memory, DB, agents, skills): `rm -rf ~/.tiguclaw` (or whatever `TIGUCLAW_HOME` points to).
+3. **Remove the global command** (only if you ran `npm link`) — `npm rm -g tiguclaw`.
+4. **Delete the project folder** — `rm -rf tiguclaw`.
+5. *(Optional)* Revoke externals — delete the bot in **@BotFather** (`/deletebot`), revoke API keys in their consoles, and `ollama rm <model>` for any local models you pulled.
+
 ## How it's built
 
 - **Core** — one LLM runtime (adapter pool: claude / codex / openai / ollama / google) + router + SQLite store (sessions, memory, transcripts).

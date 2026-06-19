@@ -21,16 +21,18 @@ import type { MCPServer, AgentInputItem } from "@openai/agents-core";
 import {
   agentPathHint,
   agentSizeWarning,
+  readAgent,
+  readSystem,
+} from "../../identity.js";
+import {
   assembleUserPrompt,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
-  memoryMcpServer,
-  readAgent,
-  readSystem,
-  retrieveContext,
-} from "../../memory.js";
+} from "../../prompt-assembly.js";
+import { memoryMcpServer } from "../../memory-mcp.js";
+import { retrieveContext } from "../../memory.js";
 import { loadThreadHistory } from "../../../store/memory.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";

@@ -44,16 +44,18 @@ import path from "node:path";
 import {
   agentPathHint,
   agentSizeWarning,
+  readAgent,
+  readSystem,
+} from "../../identity.js";
+import {
   assembleUserPrompt,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
-  memoryMcpServer,
-  readAgent,
-  readSystem,
-  retrieveContext,
-} from "../../memory.js";
+} from "../../prompt-assembly.js";
+import { memoryMcpServer } from "../../memory-mcp.js";
+import { retrieveContext } from "../../memory.js";
 import { fileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { todoMcpServer } from "../capabilities/todo-mcp.js";
 import {

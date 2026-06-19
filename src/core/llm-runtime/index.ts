@@ -24,7 +24,7 @@ import { runClaude } from "./adapters/claude-agent-sdk.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { saveSession } from "../../store/sessions.js";
-import { formatAttachments } from "../memory.js";
+import { formatAttachments } from "../prompt-assembly.js";
 import {
   appendTranscript,
   indexCodexTurn,

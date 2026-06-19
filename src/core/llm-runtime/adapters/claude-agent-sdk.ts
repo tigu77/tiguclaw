@@ -41,17 +41,18 @@ import { getEventBus } from "../../eventbus.js";
 import {
   agentPathHint,
   agentSizeWarning,
+  readAgent,
+  readSystem,
+} from "../../identity.js";
+import {
   assembleUserPrompt,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
-  memoryMcpServer,
-  readAgent,
-  readSystem,
-  resolveJsonlPath,
-  retrieveContext,
-} from "../../memory.js";
+} from "../../prompt-assembly.js";
+import { memoryMcpServer } from "../../memory-mcp.js";
+import { resolveJsonlPath, retrieveContext } from "../../memory.js";
 import {
   loadCodexTurnHistoryBySessionId,
   loadThreadHistory,

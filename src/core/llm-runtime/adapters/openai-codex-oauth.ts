@@ -84,6 +84,7 @@ import {
 } from "../../../store/thread-summaries.js";
 import { getPaths } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
+import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -812,6 +813,15 @@ export const buildCodexInputArray = (
   const summaryTurn = buildSummaryTurn(summary);
   if (summaryTurn !== undefined) out.push(summaryTurn);
   for (const t of recentRaw) {
+    // 과거 user 턴의 <system-reminder> 스캐폴딩(SYSTEM.md·AGENT.md·메모리 인덱스 등) 제거.
+    // 매 턴 필요한 스캐폴딩은 *현재 턴*(currentTurn)에 fresh 로 들어있으므로, 히스토리
+    // 턴마다 중복 재전송하면 SYSTEM.md(~11KB)가 턴 수만큼 곱해져 입력 토큰을 폭증시킨다
+    // (claude發 턴은 jsonl 이 조립본을 저장 → codex 가 통째 재전송). assistant 턴엔 스캐폴딩
+    // 없음, codex發 raw 턴엔 블록이 없어 no-op. 출구위생 함수 재사용(DRY).
+    const text =
+      t.role === "assistant"
+        ? t.content
+        : stripInternalRuntimeScaffolding(t.content).trim() || t.content;
     out.push({
       type: "message",
       role: t.role,
@@ -821,7 +831,7 @@ export const buildCodexInputArray = (
             t.role === "assistant"
               ? ("output_text" as const)
               : ("input_text" as const),
-          text: t.content,
+          text,
         },
       ],
     });

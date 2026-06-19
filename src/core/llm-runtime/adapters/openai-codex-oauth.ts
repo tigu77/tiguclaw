@@ -71,7 +71,15 @@ import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
-import { loadThreadHistory } from "../../../store/memory.js";
+import {
+  loadThreadHistoryWithIds,
+  type CodexTurn,
+  type CodexTurnWithId,
+} from "../../../store/memory.js";
+import {
+  getThreadSummary,
+  upsertThreadSummary,
+} from "../../../store/thread-summaries.js";
 import { getPaths } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
 import type {
@@ -84,7 +92,7 @@ import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import {
   createIdleTimer,
   IdleTimeoutError,
-  IDLE_TIMEOUT_CONFIG,
+  idleConfigForInput,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 
@@ -652,62 +660,273 @@ export type ResponseInputItem =
   | ResponseInputFunctionCall
   | ResponseInputFunctionCallOutput;
 
-const buildTurnHistory = (
+/**
+ * 6b — 격리(isolated) 최소 요약 호출. codex 자체 머신(token/headers/CODEX_BASE_URL
+ * /responses fetch + parseCodexSse)을 *얇게* 재사용해 codex 안에서 닫는다.
+ *
+ * 격리 불변식 (재귀·레이어링 방지):
+ *  - thread 히스토리 로딩 X (loadThreadHistory* 절대 호출 금지 — 재귀의 핵심 차단).
+ *  - 도구 X (tools 키 omit), prompt_cache_key X (메인 캐시 충돌 회피), store:false.
+ *  - instructions = "간결 요약기" 단발. 입력 = [요약 지시] + (기존요약 + 오래된 턴).
+ *  - idle/turn 타임아웃은 base 구성(입력 작음 → firstTimeoutForInput 불요, 단순한 쪽).
+ *
+ * 실패/타임아웃은 throw — 호출자(buildTurnHistory)가 catch 해 oldest-drop 폴백.
+ */
+const SUMMARIZE_INSTRUCTIONS =
+  "당신은 간결한 대화 요약기입니다. 주어진 대화 조각을 한국어 3~6문장으로 요약하세요. " +
+  "핵심 결정·사실·미해결 항목·사용자 의도를 보존하고, 인사·잡담은 생략하세요. " +
+  "요약 텍스트만 출력하고 머리말/메타설명은 붙이지 마세요.";
+
+async function summarizeViaCodex(
+  text: string,
+  accessToken: string,
+  accountId: string | undefined,
+  model: string,
+): Promise<string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    "OpenAI-Beta": "responses=experimental",
+    originator: "codex_cli_rs",
+  };
+  if (accountId) headers["chatgpt-account-id"] = accountId;
+
+  // 최소 payload — tools 없음, prompt_cache_key 없음(메인 thread 캐시 충돌 회피),
+  // store:false, stream:true. reasoning 최소화로 요약 텍스트 슬롯 확보(finalFlush 동형).
+  const body = JSON.stringify({
+    model,
+    instructions: SUMMARIZE_INSTRUCTIONS,
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: `다음 대화 조각을 위 지침대로 요약하세요:\n\n${text}`,
+          },
+        ],
+      },
+    ],
+    stream: true,
+    store: false,
+    reasoning: { effort: "none" },
+  });
+
+  // idle/turn 타임아웃 — 작은 호출이라 base 면 충분(idleConfigForInput 불요).
+  const ac = new AbortController();
+  const idleTimer = createIdleTimer(ac);
+  try {
+    const res = await fetch(`${CODEX_BASE_URL}/responses`, {
+      method: "POST",
+      headers,
+      body,
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Codex 요약 호출 실패: ${res.status} ${await res.text().catch(() => "")}`,
+      );
+    }
+    if (res.body === null) {
+      throw new Error("Codex 요약 응답 body 가 null — SSE 스트림 부재.");
+    }
+    const result = await parseCodexSse(res.body, () => idleTimer.beat());
+    return result.text;
+  } finally {
+    idleTimer.done();
+  }
+}
+
+/**
+ * 6b — 압축 계획 (순수 함수, LLM·DB 호출 0, 결정적 → 단위 테스트 용이).
+ *
+ * 입력: watermark 이후 전체 타임라인(allTurns, ts ASC, id 동반) + 현재 watermark.
+ * 출력: 이번에 *접을* 오래된 턴 목록(toFold)과, 접은 뒤의 새 watermark(nextWatermark).
+ *
+ * 트리거 가드: 미요약(= watermark 이후) 턴 수가 TRIGGER_TURNS 이하면 압축 불요
+ * (needed=false, toFold=[]). 초과 시에만 [가장 오래된 … (len - keepRecent)] 를 접는다.
+ * 최근 keepRecent 턴은 항상 원문 유지(최신 맥락 손상 0). 매 턴 재요약 방지 핵심.
+ */
+export interface HistoryCompactionPlan {
+  needed: boolean;
+  toFold: CodexTurnWithId[];
+  nextWatermark: number;
+}
+
+export const planHistoryCompaction = (
+  unsummarizedTurns: CodexTurnWithId[],
+  currentWatermark: number,
+  opts?: { triggerTurns?: number; keepRecent?: number },
+): HistoryCompactionPlan => {
+  const triggerTurns = opts?.triggerTurns ?? CODEX_HISTORY_COMPACT_TRIGGER_TURNS;
+  const keepRecent = opts?.keepRecent ?? CODEX_HISTORY_COMPACT_KEEP_RECENT;
+
+  // 미요약 턴이 임계 이하 → 압축 불요 (현행 = 요약 호출 0, 회귀 0).
+  if (unsummarizedTurns.length <= triggerTurns) {
+    return { needed: false, toFold: [], nextWatermark: currentWatermark };
+  }
+  // 최근 keepRecent 는 원문 유지, 그 이전만 접는다.
+  const foldCount = unsummarizedTurns.length - keepRecent;
+  if (foldCount <= 0) {
+    return { needed: false, toFold: [], nextWatermark: currentWatermark };
+  }
+  const toFold = unsummarizedTurns.slice(0, foldCount);
+  // 접힌 마지막 턴의 transcript id 가 새 watermark (그 id 이하 = 요약에 흡수됨).
+  const last = toFold[toFold.length - 1] as CodexTurnWithId;
+  return { needed: true, toFold, nextWatermark: last.id };
+};
+
+/** 요약 합성 턴 1개 ([summary] → user role 스캐폴딩 메시지). 빈 요약이면 undefined. */
+const buildSummaryTurn = (summary: string): ResponseInputItem | undefined => {
+  const trimmed = summary.trim();
+  if (trimmed === "") return undefined;
+  return {
+    type: "message",
+    role: "user",
+    content: [
+      {
+        type: "input_text",
+        text: `<system-reminder>\n${CODEX_SUMMARY_TURN_HEADER}\n${trimmed}\n</system-reminder>`,
+      },
+    ],
+  };
+};
+
+/**
+ * input 재구성 (순수 함수) — [요약 합성 턴?] + [watermark 이후 원문 턴] + [현재 turn].
+ *
+ * recentRaw = watermark 이후 원문으로 보낼 턴들 (압축이 끝난 뒤의 최근 턴 = 항상 원문).
+ * summary = 누적 롤링 요약 (없으면 ""). charCap/limit 가드는 호출자가 recentRaw 산출
+ * 시점에 이미 적용 — 본 함수는 wrap 만 (결정적). 요약 턴은 맨 앞(가장 오래된 맥락).
+ */
+export const buildCodexInputArray = (
+  recentRaw: CodexTurn[],
+  summary: string,
+  currentTurn: ResponseInputItem,
+): ResponseInputItem[] => {
+  const out: ResponseInputItem[] = [];
+  const summaryTurn = buildSummaryTurn(summary);
+  if (summaryTurn !== undefined) out.push(summaryTurn);
+  for (const t of recentRaw) {
+    out.push({
+      type: "message",
+      role: t.role,
+      content: [
+        {
+          type:
+            t.role === "assistant"
+              ? ("output_text" as const)
+              : ("input_text" as const),
+          text: t.content,
+        },
+      ],
+    });
+  }
+  out.push(currentTurn);
+  return out;
+};
+
+const buildCurrentTurn = (
+  currentPromptWithMemory: string,
+  mediaItems: ResponseMediaItem[],
+): ResponseInputItem => ({
+  type: "message",
+  role: "user",
+  // 현재 turn = [미디어 블록들…] + [텍스트]. 미디어 없으면 텍스트만 (회귀 0).
+  content: [...mediaItems, { type: "input_text", text: currentPromptWithMemory }],
+});
+
+/**
+ * 6b — input 누적 본체 (요약 압축 통합). async — 압축 트리거 시 summarizeViaCodex 1회.
+ *
+ * 동작:
+ *  1) 전체 타임라인(id 동반)을 watermark 기준으로 [요약됨 | 미요약]으로 가른다.
+ *  2) 미요약이 임계 초과면(planHistoryCompaction) 오래된 턴 + 기존 요약 → summarizeViaCodex
+ *     → 갱신 요약 + watermark 전진(upsert). 임계 이하면 압축 0 (현행 동작).
+ *  3) 요약 호출 실패/타임아웃 → console.warn + 현행 oldest-drop 폴백(요약 없이 진행,
+ *     턴은 깨지 않음 — 데몬 생존 원칙 3).
+ *  4) 입력 = [요약 합성 턴?] + [watermark 이후 원문 턴(charCap 가드)] + [현재 turn].
+ *
+ * 첫 turn(매핑 0)·짧은 thread(임계 미만) = 요약 0 + 현행과 동일 입력(회귀 0).
+ */
+const buildTurnHistory = async (
   input: RegionASdkInput,
   currentPromptWithMemory: string,
   mediaItems: ResponseMediaItem[] = [],
-): ResponseInputItem[] => {
-  const currentTurn: ResponseInputItem = {
-    type: "message",
-    role: "user",
-    // 현재 turn = [미디어 블록들…] + [텍스트]. 미디어 없으면 텍스트만 (회귀 0).
-    content: [...mediaItems, { type: "input_text", text: currentPromptWithMemory }],
-  };
+  accessToken: string,
+  accountId: string | undefined,
+  model: string,
+): Promise<ResponseInputItem[]> => {
+  const currentTurn = buildCurrentTurn(currentPromptWithMemory, mediaItems);
 
-  // cross-adapter 단일 히스토리 (contract Part B v2 §B-2):
-  //  - 로드를 prior.claudeSessionId 단일 sid → thread 전체(channel, threadKey)로 교체.
-  //    → 폴백으로 끼어든 claude turn 도 누적 (버그 2 해소: prior 가 claude UUID 여도
-  //    thread 전체를 회수하므로 리셋 분기 제거).
-  //  - prior sid 의존(isCodexSid 분기) 전면 제거. 첫 turn (매핑 0) 은 loadThreadHistory
-  //    가 빈 배열 반환 → 새 세션 자연 시작.
-  //  - charCap/limit 가드는 loadThreadHistory opts 로 전달(기존 동작 보존).
-  //
-  // store-auth 는 raw `{role, content: string}` array 만 반환 (ResponseInput shape
-  // 정책 격리). 본 어댑터에서 Codex Responses API shape 으로 wrap.
-  const priorTurns = loadThreadHistory(input.channel, input.threadKey, {
-    limitTurns: CODEX_TURN_HISTORY_LIMIT,
-    charCap: CODEX_TURN_HISTORY_CHAR_CAP,
-  });
-  if (priorTurns.length === 0) {
+  // 전체 타임라인 (id 동반, cap 없음) — 압축 결정 전용. 첫 turn → [].
+  const allTurns = loadThreadHistoryWithIds(input.channel, input.threadKey);
+  if (allTurns.length === 0) {
     return [currentTurn];
   }
 
-  // V5.4 — char cap 가드. 최신 turn 부터 거꾸로 누적, cap 초과 시 가장 오래된
-  // turn 부터 drop. currentPromptWithMemory 도 가산 (AGENT.md / memory prepend 포함).
-  let charSum = currentPromptWithMemory.length;
-  const kept: typeof priorTurns = [];
-  for (let i = priorTurns.length - 1; i >= 0; i--) {
-    const t = priorTurns[i] as (typeof priorTurns)[number];
-    if (charSum + t.content.length > CODEX_TURN_HISTORY_CHAR_CAP) break;
-    charSum += t.content.length;
-    kept.unshift(t);
+  // 기존 롤링 요약 + watermark 회수 (없으면 watermark 0 = 전부 미요약).
+  let existing = getThreadSummary(input.threadKey);
+  let watermark = existing?.compactedThrough ?? 0;
+  let summary = existing?.summary ?? "";
+
+  // watermark 이후(미요약) 턴만 추려 압축 트리거 판정.
+  const unsummarized = allTurns.filter((t) => t.id > watermark);
+  const plan = planHistoryCompaction(unsummarized, watermark);
+
+  if (plan.needed) {
+    // 오래된 턴 + 기존 요약 → 요약 LLM 호출 1회 (isolated, 재귀 없음).
+    const foldedText = plan.toFold
+      .map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`)
+      .join("\n");
+    const prompt =
+      summary === ""
+        ? foldedText
+        : `[기존 요약]\n${summary}\n\n[이어지는 대화]\n${foldedText}`;
+    try {
+      const fresh = await summarizeViaCodex(prompt, accessToken, accountId, model);
+      if (fresh.trim() !== "") {
+        summary = fresh.trim();
+        watermark = plan.nextWatermark;
+        upsertThreadSummary({
+          threadKey: input.threadKey,
+          summary,
+          compactedThrough: watermark,
+        });
+      } else {
+        // 빈 요약 = 무의미 → 폴백(요약 미반영, 기존 watermark 유지). 조용히 X.
+        console.warn(
+          `[codex 6b] 요약 호출이 빈 결과 — oldest-drop 폴백 (threadKey=${input.threadKey})`,
+        );
+      }
+    } catch (e) {
+      // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 (threadKey=${input.threadKey}): ${msg}`,
+      );
+    }
   }
 
-  const wrapped: ResponseInputItem[] = kept.map((t) => ({
-    type: "message" as const,
-    role: t.role,
-    content: [
-      {
-        type:
-          t.role === "assistant"
-            ? ("output_text" as const)
-            : ("input_text" as const),
-        text: t.content,
-      },
-    ],
-  }));
+  // watermark 이후 원문 턴 (압축 성공 시 최근 keepRecent + 그간 신규, 실패 시 전체 미요약).
+  // charCap/limit 가드 = 최신부터 역누적, 초과 시 oldest drop (요약이 없을 때의 안전망).
+  const recentRawAll: CodexTurn[] = allTurns
+    .filter((t) => t.id > watermark)
+    .map((t) => ({ role: t.role, content: t.content }));
 
-  return [...wrapped, currentTurn];
+  let charSum = currentPromptWithMemory.length + summary.length;
+  const recentRaw: CodexTurn[] = [];
+  for (let i = recentRawAll.length - 1; i >= 0; i--) {
+    if (recentRaw.length >= CODEX_TURN_HISTORY_LIMIT) break;
+    const t = recentRawAll[i] as CodexTurn;
+    if (charSum + t.content.length > CODEX_TURN_HISTORY_CHAR_CAP) break;
+    charSum += t.content.length;
+    recentRaw.unshift(t);
+  }
+
+  return buildCodexInputArray(recentRaw, summary, currentTurn);
 };
 
 // V5.3 — agentic loop max iterations. OpenClaw 동등 디폴트 (오용·무한 루프 방어).
@@ -771,6 +990,33 @@ const CODEX_COMPACT_MIN_OUTPUT = parsePosIntEnv(
 // 압축된 output 임을 표시하는 안정 마커. idempotent 보장 — 이미 이 마커가 박힌
 // output 은 (a) 짧아 임계 미달로 자연 제외 + (b) 마커 검사로 명시 제외(이중 안전).
 const CODEX_COMPACTED_MARKER = " __codex_compacted__ ";
+
+// ── 6b: 대화 히스토리 롤링 요약 압축 상수 (architect contract §6b, 2026-06-19) ────
+// codex 는 resume 없어 매 턴 전체 히스토리 재전송 → loadThreadHistory 의 oldest-drop
+// 이 긴 대화 초반을 통째 버린다. 버리는 대신 오래된 턴을 요약 1덩어리로 접어 보존.
+// 매직넘버 금지 — 상수 + env override (parsePosIntEnv, idle-timeout 정책 답습).
+//
+// ⚠ 위 tool-output 압축의 CODEX_COMPACT_KEEP_RECENT(=3, 도구 출력 본문 보존)와는
+//    *별개 노브*다. 이쪽은 대화 *턴* 보존 수 → 충돌 회피 위해 별도 env 이름 사용.
+//
+// 트리거: 미요약(watermark 이후) 턴이 TRIGGER_TURNS 초과 시 압축 1회. 기존 150턴/700KB
+// 하드캡(loadThreadHistory)보다 *먼저* 선제 발동(100 < 150)해 초반 맥락이 drop 되기
+// 전에 요약으로 흡수. 매 턴 재요약 X — 임계 재초과 시에만(롤링이라 비용 분할상환).
+const CODEX_HISTORY_COMPACT_TRIGGER_TURNS = parsePosIntEnv(
+  process.env.CODEX_COMPACT_TRIGGER_TURNS,
+  100,
+);
+// 항상 원문 유지할 최근 턴 수 — 최신 맥락 손상 0 (요약은 이보다 오래된 턴만 대상).
+const CODEX_HISTORY_COMPACT_KEEP_RECENT = parsePosIntEnv(
+  process.env.CODEX_COMPACT_KEEP_RECENT_TURNS,
+  30,
+);
+
+// 요약 합성 턴을 감싸는 스캐폴딩 헤더 — assembleUserPrompt 의 <system-reminder> 패턴
+// 답습. 메인 모델이 "하네스가 주는 배경 정보(사용자 발화 아님)"로 인지 → 그대로 echo
+// 하지 않음. user role 메시지지만 내부 스캐폴딩 형태라 딴소리·메아리 방지.
+const CODEX_SUMMARY_TURN_HEADER =
+  "〔이전 대화 요약 — 하네스 제공 배경, 사용자 발화 아님〕";
 
 /**
  * C2: 단일 tool output 의 inputArray 진입 cap. 임계 초과 시 머리+꼬리만 남기고
@@ -980,16 +1226,26 @@ export const runOpenAiCodex = async (
   // V5.3 — agentic loop 중 function_call / function_call_output 을 같은 배열에 append.
   // 멀티모달 — 현재 turn 미디어 첨부(image/PDF)를 native content 로 인코딩해 전달.
   const mediaItems = await buildMediaContentItems(input.attachments);
-  const inputArray: ResponseInputItem[] = buildTurnHistory(
+  // 6b — 롤링 요약 압축 통합 (async — 압축 트리거 시 summarizeViaCodex 1회). 요약
+  // 호출은 isolated(히스토리 로딩 X, 도구 X) → 재귀 없음. 실패 시 oldest-drop 폴백.
+  const inputArray: ResponseInputItem[] = await buildTurnHistory(
     input,
     promptWithMemory,
     mediaItems,
+    accessToken,
+    accountId,
+    model,
   );
 
   // V5.3 — MCP memory server (claude 어댑터와 동일 instance) in-memory bridge 회수.
   // V5.5 — file-ops MCP server (codex 어댑터 전용 — claude 는 SDK builtin Read/Glob/Grep)
   // 추가. 두 서버의 listTools() 결과를 한 배열에 합쳐 OpenAI Responses tools shape 박음.
   // callTool 디스패치는 tool name → server 매핑 (memory 5종 + file-ops 3종 = 8종).
+  // 모든 bridge 를 모아 finally 에서 일괄 close — in-memory transport 누수 방지.
+  // (그간 memory/file-ops/reply-intent 3개만 닫혀 todo·skill·send-file·agents·workers·
+  // endpoints·commands·extra bridge 가 매 turn 누적됐음, P1.) openai 어댑터의 mcpServers
+  // 일괄 close(openai-agents-sdk) 와 동형. 생성하는 모든 bridge 를 여기 push 한다.
+  const allBridges: Array<{ close: () => Promise<void> }> = [];
   const memoryBridge = await adaptClaudeMcpServer(memoryMcpServer, "memory");
   const fileOpsBridge = await adaptClaudeMcpServer(fileOpsMcpServer, "file-ops");
   // V7.7 — 태스크 관리 (TodoWrite 동등). claude 는 SDK builtin, codex 만 등록.
@@ -1011,6 +1267,14 @@ export const runOpenAiCodex = async (
     }),
     "reply-intent",
   );
+  // 무조건 생성되는 bridge 5종 등록 (close 누락 방지).
+  allBridges.push(
+    memoryBridge,
+    fileOpsBridge,
+    todoBridge,
+    skillBridge,
+    replyIntentBridge,
+  );
   // send-file — 네이티브 멱등 아웃바운드 전송 (claude 어댑터와 parity). per-turn
   // dedup Set(클로저 지역) → 같은 경로 재호출 시 실제 전송 차단(멱등 핵심).
   // 채널 전송 클로저가 있을 때만 bridge 생성 → undefined 면 미등록(도구 노출 0).
@@ -1022,6 +1286,7 @@ export const runOpenAiCodex = async (
           "send-file",
         )
       : undefined;
+  if (sendFileBridge !== undefined) allBridges.push(sendFileBridge);
   // lean 도구 정책 (2026-06-15, architect §2a I-2). 중립 신호 toolPolicy 를 *codex
   // 도구 집합*(bridge MCP 도구들)에서 해석 — 도구명 매핑은 어댑터 안(추상 누수 0, I-3).
   //  - {mode:"none"}: bridge 도구 배열을 빈 배열로 → 도구 0 lean child.
@@ -1079,6 +1344,7 @@ export const runOpenAiCodex = async (
     if (depth === 0) {
       const spawnServer = createSpawnAgentMcpServer(input);
       const spawnBridge = await adaptClaudeMcpServer(spawnServer, "agents");
+      allBridges.push(spawnBridge);
       const spawnToolsRaw = await spawnBridge.listTools();
       for (const t of spawnToolsRaw) {
         toolBridgeMap.set((t as { name: string }).name, spawnBridge);
@@ -1093,6 +1359,7 @@ export const runOpenAiCodex = async (
     if (depth === 0 && (input.workerDepth ?? 0) === 0) {
       const workerServer = createWorkerMcpServer(input);
       const workerBridge = await adaptClaudeMcpServer(workerServer, "workers");
+      allBridges.push(workerBridge);
       const workerToolsRaw = await workerBridge.listTools();
       for (const t of workerToolsRaw) {
         toolBridgeMap.set((t as { name: string }).name, workerBridge);
@@ -1108,6 +1375,7 @@ export const runOpenAiCodex = async (
     if (depth === 0 && (input.workerDepth ?? 0) === 0) {
       const endpointServer = createEndpointToolsMcpServer();
       const endpointBridge = await adaptClaudeMcpServer(endpointServer, "endpoints");
+      allBridges.push(endpointBridge);
       const endpointToolsRaw = await endpointBridge.listTools();
       for (const t of endpointToolsRaw) {
         toolBridgeMap.set((t as { name: string }).name, endpointBridge);
@@ -1122,6 +1390,7 @@ export const runOpenAiCodex = async (
     if (depth === 0 && (input.workerDepth ?? 0) === 0) {
       const commandServer = createCommandToolsMcpServer();
       const commandBridge = await adaptClaudeMcpServer(commandServer, "commands");
+      allBridges.push(commandBridge);
       const commandToolsRaw = await commandBridge.listTools();
       for (const t of commandToolsRaw) {
         toolBridgeMap.set((t as { name: string }).name, commandBridge);
@@ -1135,6 +1404,7 @@ export const runOpenAiCodex = async (
     // claude 어댑터 mcpServers spread 와 동등 (LLM-agnostic parity).
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
       const extraBridge = await adaptClaudeMcpServer(server, name);
+      allBridges.push(extraBridge);
       const extraToolsRaw = await extraBridge.listTools();
       for (const t of extraToolsRaw) {
         toolBridgeMap.set((t as { name: string }).name, extraBridge);
@@ -1293,7 +1563,11 @@ export const runOpenAiCodex = async (
       // ~20분 행의 직접 원인) + parseCodexSse chunk 수신마다 heartbeat. abort 시 undici
       // reader.read() 가 reject → parseCodexSse throw → 아래 catch 가 IdleTimeoutError 로.
       const idleAc = new AbortController();
-      const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+      // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 큰 프리필은 TTFT 가 느려
+      // 고정 first 타임아웃을 오발화시킬 수 있으므로, first 를 payload 크기에 비례해 늘린다
+      // (idle 은 불변). 단일 stringify 로 sizing + fetch body 둘 다 사용(이중 직렬화 회피).
+      const bodyJson = JSON.stringify(body);
+      const idleTimer = createIdleTimer(idleAc, idleConfigForInput(bodyJson.length));
       // 2층 합성 (TT-I2) — 1층 idle AC(이 iteration 의 fetch 용)와 핸들러 turn signal 을
       // OR 결합. effectiveAc.signal 을 fetch 에 주입하면 LLM 스트림 구간은 둘 중 하나
       // abort 시 끊긴다. (도구 실행 구간은 callTool 이 signal 미전달 — §4.4 루프 가드로
@@ -1313,7 +1587,7 @@ export const runOpenAiCodex = async (
             res = await fetch(`${CODEX_BASE_URL}/responses`, {
               method: "POST",
               headers,
-              body: JSON.stringify(body),
+              body: bodyJson,
               signal: effectiveAc.signal,
             });
           } catch (fe) {
@@ -1604,22 +1878,14 @@ export const runOpenAiCodex = async (
       throw e; // 부작용 없음 or 일반 에러 → 정직 throw (풀 폴백 / 정직 에러).
     }
   } finally {
-    // bridge close (in-memory transport 정리). 실패해도 응답 흐름 영향 0.
-    // V5.5 — file-ops bridge 도 동일 정리.
-    try {
-      await memoryBridge.close();
-    } catch {
-      /* noop */
-    }
-    try {
-      await fileOpsBridge.close();
-    } catch {
-      /* noop */
-    }
-    try {
-      await replyIntentBridge.close();
-    } catch {
-      /* noop */
+    // 생성한 모든 bridge 일괄 close (in-memory transport 누수 0). 개별 try 로 격리 —
+    // 한 bridge close 실패가 나머지 정리를 막지 않음. 실패해도 응답 흐름 영향 0.
+    for (const bridge of allBridges) {
+      try {
+        await bridge.close();
+      } catch {
+        /* noop */
+      }
     }
   }
 

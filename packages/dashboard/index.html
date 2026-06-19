@@ -290,6 +290,11 @@
       #chat-send { background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#061018; border:0; border-radius:12px; padding:10px 14px; font-weight:850; cursor:pointer; }
       #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
       #chat-status { color:var(--text-mute); font-size:10px; margin-top:6px; min-height:12px; }
+      #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px); z-index:50; max-width:90vw; padding:11px 16px; border-radius:13px; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); box-shadow:var(--shadow); color:var(--text); font-size:12px; font-weight:700; opacity:0; pointer-events:none; transition:opacity .18s, transform .18s; }
+      #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+      #toast.warn { border-color:rgba(251,191,36,.45); } #toast.bad { border-color:rgba(251,113,133,.5); } #toast.good { border-color:rgba(52,211,153,.45); }
+      .home-action.danger:hover { border-color:rgba(251,113,133,.4); }
+      .home-action .ic.warn { color:var(--warn); }
 
       @media (max-width: 1440px) { main { grid-template-columns: 220px minmax(0,1fr); gap:12px; padding:12px; } }
       @media (max-width: 1180px) { main { grid-template-columns: 210px minmax(0,1fr); } }
@@ -391,6 +396,7 @@
         </div>
       </section>
     </main>
+    <div id="toast" role="status" aria-live="polite"></div>
     <script>
       const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp"];
       const CATEGORY_LABEL = {
@@ -410,6 +416,40 @@
       const LAYERS = ["meta_infra", "in_tree", "discovered"];
       const MAX_EVENTS = 200;
       const THREAD_KEY = "dashboard:default";
+
+      let toastTimer = null;
+      const showToast = (msg, tone) => {
+        const el = document.getElementById("toast");
+        if (!el) return;
+        el.textContent = msg;
+        el.className = "show" + (tone ? " " + tone : "");
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => { el.className = el.className.replace("show", "").trim(); }, 4200);
+      };
+
+      // 데몬 재시작 — POST /api/restart (bridge POST /restart, admin 토큰 server-side 주입).
+      // 메시지 큐를 타지 않는 아웃오브밴드 제어라 턴이 멈춰도 동작. 오발 방지 확인 다이얼로그.
+      let restartInFlight = false;
+      const restartDaemon = async () => {
+        if (restartInFlight) return;
+        if (!window.confirm("데몬을 재시작할까요? 진행 중인 작업이 중단되고 잠시 후 자동 복귀합니다.")) return;
+        restartInFlight = true;
+        showToast("재시작 요청 중…", "warn");
+        try {
+          const r = await fetch("/api/restart", { method: "POST" });
+          if (r.ok || r.status === 202) {
+            showToast("재시작 중… 잠시 후 복귀합니다.", "good");
+          } else {
+            const data = await r.json().catch(() => ({}));
+            showToast("재시작 실패: " + (data.error || ("HTTP " + r.status)), "bad");
+          }
+        } catch (err) {
+          // 데몬이 즉시 종료되면 응답 전에 연결이 끊길 수 있음 — 정상 흐름으로 안내.
+          showToast("재시작 신호 전송됨 (응답 끊김) — 잠시 후 복귀합니다.", "warn");
+        } finally {
+          setTimeout(() => { restartInFlight = false; }, 6000);
+        }
+      };
 
       const formatValue = (value) => {
         if (value === null || value === undefined) return "";
@@ -603,16 +643,19 @@
           ["providers", "📦", "프로바이더 보기", "카테고리별 패널과 상세 상태 확인"],
           ["chat", "💬", "돌쇠와 대화", "대화와 활동 로그를 한 화면에서 확인"],
           ["inventory", "🧩", "런타임 인벤토리", "설치·발견된 capability 점검"],
+          ["restart", "🔄", "데몬 재시작", "멈춘 작업까지 정리하고 자동 복귀"],
         ];
         for (const [view, icon, title, desc] of actionData) {
           const btn = document.createElement("button");
           btn.type = "button";
-          btn.className = "home-action";
-          btn.innerHTML = '<span class="ic">' + icon + '</span><span><strong>' + title + '</strong><span>' + desc + '</span></span>';
+          btn.className = "home-action" + (view === "restart" ? " danger" : "");
+          const iconCls = view === "restart" ? "ic warn" : "ic";
+          btn.innerHTML = '<span class="' + iconCls + '">' + icon + '</span><span><strong>' + title + '</strong><span>' + desc + '</span></span>';
           btn.addEventListener("click", () => {
             if (view === "providers") showProviders();
             else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); document.getElementById("chat-input").focus(); }
             else if (view === "inventory") showInventory();
+            else if (view === "restart") { restartDaemon(); return; }
             if (window.matchMedia("(max-width: 900px)").matches && view !== "chat") setActiveTab("main");
           });
           actions.appendChild(btn);

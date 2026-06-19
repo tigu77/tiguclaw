@@ -11,6 +11,7 @@
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/events    → bridge GET  /events          (SSE pipe)
  *  - POST /api/messages  → bridge POST /messages        (body forward)
+ *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
  *
  * 외부 의존 0 — node 표준 http/fs/path/url 만. Channel/Observer import 0 (외부 client).
  */
@@ -173,6 +174,11 @@ const server = http.createServer((req, res) => {
         headers: { "Content-Type": "application/json" },
         body,
       });
+      return;
+    }
+    // 데몬 재시작 — bridge POST /restart (admin 토큰 server-side 주입, browser 미노출).
+    if (pathname === "/api/restart" && method === "POST") {
+      await proxyJson(res, "/restart", { method: "POST" });
       return;
     }
 

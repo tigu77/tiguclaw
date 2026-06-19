@@ -49,12 +49,15 @@ import {
   specLabel,
   errorDetail,
   resolveModelSpecs,
+  poolDiversityWarning,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
 import { initFileLogging } from "./core/logging.js";
+import { startEventPersistence } from "./core/event-persist.js";
 import {
   enqueueThreadTurn,
   registerWorkerHandler,
+  recoverInterruptedJobs,
 } from "./core/worker-jobs.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
@@ -108,6 +111,10 @@ initStore();
 
 // EventBus 부트 (channels 만들기 전 — region 측 module-level publish 안전).
 const bus = initEventBus({ bufferSize: 1000 });
+
+// 관측 이벤트 영속 sink — ring buffer 는 hot cache 로 두고 의미있는 이벤트를 DB 에 기록
+// (감사·메트릭). publish() 무수정, subscriber 하나만 추가 (코어는 데이터로 확장).
+startEventPersistence(bus);
 
 const channels: Channel[] = [];
 
@@ -327,19 +334,9 @@ const handler: MessageHandler = async (msg) => {
     );
     return;
   }
-  if (trimmed === "/restart") {
-    // 데몬 재시작 — graceful exit 후 supervisor(launchd KeepAlive)가 respawn.
-    // supervisor 미설정 시엔 종료로 끝남(안내 문구로 명시). 재시작 완료 알림은
-    // reboot 스케줄(id=3)이 부팅 후 자동 발화 → "돌쇠 재시작 완료! ✅".
-    await msg.reply(
-      "🔄 재시작합니다… 잠시 후 완료 알림이 옵니다. (supervisor 미설정 시엔 종료됩니다.)",
-    );
-    console.log(
-      "daemon: /restart requested (telegram) — graceful exit for supervisor respawn",
-    );
-    await shutdown("RESTART");
-    return;
-  }
+  // 주: `/restart` 는 serializedHandler 에서 enqueueThreadTurn 큐를 건너뛰고 아웃오브밴드로
+  // 처리된다(멈춘 턴에 막히지 않게). 여기 in-band 핸들러까지 도달하는 일은 없다(serialized
+  // 분기가 선점). 단일 재시작 진실 소스 = restartDaemon() (아래 정의).
   // `/model` — Claude Code 슈퍼셋: 세션별 메인 모델 override. 채널 입구에서 처리
   // (원칙 4: 모델 슬래시 처리 안 시킴). `/reset` 시 함께 클리어(deleteSession 통합).
   // 결정노트 2026-05-27-region-unification §gap "메인 모델 동적 전환"의 사용자-driven 갈래.
@@ -842,8 +839,55 @@ const handler: MessageHandler = async (msg) => {
 // threadKey 별로 직렬화(전역 락 아님 — 다른 thread 병렬). 같은 thread 단일 스트림인
 // 일반 동작은 회귀 0(앞 turn 없으면 즉시 실행). 워커 완료 재주입(onWorkerComplete)도
 // 같은 큐에 합류해 race 0.
-const serializedHandler: MessageHandler = (msg) =>
-  enqueueThreadTurn(msg.threadKey, () => handler(msg));
+// ── 재시작 단일 진실 소스 ────────────────────────────────────────────────
+// graceful exit 후 supervisor(launchd KeepAlive)가 respawn. supervisor 미설정 시엔
+// 종료로 끝남. 재시작 완료 알림은 reboot 스케줄(id=3)이 부팅 후 자동 발화.
+// 텔레그램 /restart(B)·대시보드 버튼(A, control.restart 이벤트)·기존 경로 모두 이 한 곳으로 수렴.
+// 파괴적 작업이므로 명시 트리거(슬래시/버튼)로만 호출 — 자동 재시작 없음.
+const restartDaemon = (source: string): void => {
+  console.log(
+    `daemon: restart requested (${source}) — graceful exit for supervisor respawn`,
+  );
+  void shutdown("RESTART");
+  // force-exit 백스톱 — 이 경로의 존재 이유는 "멈춘 턴에서도 무조건 죽는 탈출구"다.
+  // graceful shutdown 의 server.close() 는 미추적 keep-alive 연결(예: in-flight
+  // POST /messages)을 기다리며 지연될 수 있으므로, 열린 연결과 무관하게 종료를 보장한다.
+  // unref() — 정상 graceful 종료가 더 빠르면 이 타이머는 프로세스를 붙잡지 않는다.
+  setTimeout(() => {
+    console.log("daemon: graceful shutdown 지연 — force exit");
+    process.exit(0);
+  }, 1500).unref();
+};
+
+// control.restart — 채널/제어 차원 재시작 이벤트(A: http-bridge 가 토큰 게이트된 POST /restart
+// 수신 시 publish). 어댑터 무관(LLM-agnostic) — 메시지 큐를 타지 않으므로 멈춘 턴에도 동작.
+bus.subscribe((event) => {
+  if (event.type === "control.restart") {
+    const src =
+      typeof event.payload.source === "string"
+        ? event.payload.source
+        : "control.restart";
+    restartDaemon(src);
+  }
+});
+
+const serializedHandler: MessageHandler = (msg) => {
+  // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
+  // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
+  // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /reset 등은 in-band 유지).
+  if (msg.text.trim() === "/restart") {
+    void msg
+      .reply(
+        "🔄 재시작합니다… 잠시 후 완료 알림이 옵니다. (supervisor 미설정 시엔 종료됩니다.)",
+      )
+      .catch(() => {})
+      .finally(() => {
+        restartDaemon(`telegram:${msg.channel}`);
+      });
+    return Promise.resolve();
+  }
+  return enqueueThreadTurn(msg.threadKey, () => handler(msg));
+};
 
 // 완료 재주입(onWorkerComplete)이 메인 핸들러를 재진입할 수 있게 등록 (W-I1 단일 인격).
 // 재주입도 직렬 큐를 타도록 serializedHandler 를 넘긴다(완료-turn ↔ 유저 turn 직렬).
@@ -881,6 +925,25 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+// 최후 그물 — 어디서도 안 잡힌 예외/거부. "항상 떠있다"는 *수퍼바이저(launchd
+// KeepAlive)의 respawn* 이 보장하는 것이지 코어가 모든 예외를 삼켜서가 아니다.
+// 손상된 상태로 계속 도느니 crash-fast — 로그를 남기고 exit(1) → 깨끗이 재기동.
+// (정상 경로의 턴 에러는 채널 입구 핸들러가 이미 catch·redact 해 데몬을 보존한다.)
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    "daemon: unhandledRejection — crash-fast for supervisor respawn:",
+    reason,
+  );
+  process.exit(1);
+});
+process.on("uncaughtException", (err) => {
+  console.error(
+    "daemon: uncaughtException — crash-fast for supervisor respawn:",
+    err,
+  );
+  process.exit(1);
+});
+
 for (const ch of channels) {
   try {
     await ch.start(serializedHandler);
@@ -889,6 +952,13 @@ for (const ch of channels) {
     console.error(`${ch.name} failed: ${err}`);
   }
 }
+
+// 재시작으로 중단된 백그라운드 워커를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).
+await recoverInterruptedJobs();
+
+// 모델 풀 단일-provider 소프트 경고 (부팅 1회) — 폴백 그물 부재 가시화.
+const poolWarn = poolDiversityWarning();
+if (poolWarn !== null) console.warn(poolWarn);
 
 console.log("tiguclaw daemon: ready");
 

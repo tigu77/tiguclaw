@@ -600,6 +600,56 @@ export const loadThreadHistory = (
   return kept;
 };
 
+// ─── 6b: 롤링 요약 압축용 전체 타임라인 (transcript id 동반) ──────────────────
+//
+// loadThreadHistory 는 oldest-drop + CodexTurn(role/content only) 를 반환 → 압축
+// watermark(어느 turn 까지 요약에 접혔나) 추적 불가. 본 함수는 *압축 결정* 전용으로
+// (channel, threadKey) 의 전체 user/assistant 타임라인을 transcript id 동반으로,
+// **cap 없이** ts ASC 로 반환한다 (압축이 길이를 묶으므로 무한증가 아님). 어댑터가
+// 이 목록에서 [요약 대상 오래된 턴]과 [원문 유지 최근 턴]을 분리한다.
+//
+// loadThreadHistory 와 동일한 sid 횡단·role 필터·정렬을 공유(타임라인 identity 일치
+// — watermark id 가 loadThreadHistory 가 보는 것과 같은 턴을 가리킴).
+
+export interface CodexTurnWithId extends CodexTurn {
+  /** transcript id — 압축 watermark(compacted_through) 기준. */
+  id: number;
+}
+
+/**
+ * (channel, threadKey) 전체 user/assistant 타임라인을 id 동반·cap 없이 ts ASC 반환.
+ * 압축 결정 전용 (loadThreadHistory 의 입력 재구성과 분리). 빈 thread → [].
+ */
+export const loadThreadHistoryWithIds = (
+  channel: ChannelName,
+  threadKey: string,
+): CodexTurnWithId[] => {
+  const db = requireDb("loadThreadHistoryWithIds");
+  const sidRows = db
+    .prepare(
+      `SELECT claude_session_id FROM transcript_index
+       WHERE channel = ? AND thread_key = ?`,
+    )
+    .all(channel, threadKey) as { claude_session_id: string }[];
+  if (sidRows.length === 0) return [];
+
+  const placeholders = sidRows.map(() => "?").join(", ");
+  const sids = sidRows.map((r) => r.claude_session_id);
+  const rows = db
+    .prepare(
+      `SELECT role, content, ts, id FROM transcripts
+       WHERE claude_session_id IN (${placeholders})
+         AND role IN ('user', 'assistant')
+       ORDER BY ts ASC, id ASC`,
+    )
+    .all(...sids) as TranscriptHistoryTsRow[];
+  return rows.map((r) => ({
+    id: r.id,
+    role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
+    content: r.content,
+  }));
+};
+
 /**
  * codex 직접 INSERT 경로 (llm-runtime persist) 가 transcripts INSERT 후 호출 —
  * transcript_index 에 (channel, threadKey, codex sid) upsert 해 thread→sid 매핑 완성.

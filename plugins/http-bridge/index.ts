@@ -231,7 +231,9 @@ class HttpBridge implements Channel, Observer {
             ? "read"
             : pathname === "/messages" && method === "POST"
               ? "write"
-              : null;
+              : pathname === "/restart" && method === "POST"
+                ? "admin"
+                : null;
     if (required !== null && !meetsRole(resolved.role, required)) {
       writeJson(res, 403, {
         error: "forbidden",
@@ -353,6 +355,26 @@ class HttpBridge implements Channel, Observer {
       } finally {
         if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       }
+      return;
+    }
+
+    // /restart — 빌트인 제어 엔드포인트(A: 대시보드 버튼). admin 토큰 게이트(위 role 표) +
+    // 127.0.0.1 바인드(기본). 메시지 큐(enqueueThreadTurn) 를 타지 않고 control.restart 이벤트를
+    // EventBus 에 publish → index.ts 가 구독해 shutdown("RESTART"). 멈춘 턴에도 동작. 빌트인
+    // 경로라 register_endpoint 로는 등록·shadow 불가(코드 순서 = 우선순위, 커스텀 폴백 위에서 선점).
+    if (pathname === "/restart" && method === "POST") {
+      if (this.bus === null) {
+        // observer 미연결 = 재시작 트리거 경로 없음. 거짓 200 금지.
+        writeJson(res, 503, { error: "control bus not started" });
+        return;
+      }
+      this.bus.publish({
+        type: "control.restart",
+        ts: Date.now(),
+        payload: { source: "http-bridge:dashboard" },
+      });
+      // 데몬이 곧 종료되므로 즉시 ack(이 응답 후 graceful shutdown 진행).
+      writeJson(res, 202, { ok: true, restarting: true });
       return;
     }
 

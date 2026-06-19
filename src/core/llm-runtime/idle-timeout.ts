@@ -60,6 +60,28 @@ export const IDLE_TIMEOUT_CONFIG: IdleTimeoutConfig = {
   firstMs: LLM_FIRST_TIMEOUT_MS,
 };
 
+// ── 입력 크기 비례 first 타임아웃 (resume 없는 어댑터의 큰 재전송 가드) ─────────────
+// codex 처럼 resume API 가 없어 매 턴 *전체 히스토리를 재전송* 하는 어댑터는 입력이
+// 클수록 첫 토큰(TTFT)이 느리다. 고정 firstMs 면 큰 프리필이 정상인데도 오발화 →
+// 본 헬퍼가 입력(payload) 크기에 비례해 first 한계만 늘린다. idle 은 불변(흐르기
+// 시작하면 동일). 상한으로 무한대기 방지 — turn wall-clock 백스톱이 최종 상한.
+// claude 는 SDK resume(증분)이라 호출 안 함(불필요 = parity 비대칭 아님, 결함 보정).
+const FIRST_EXTRA_PER_10K_CHARS_MS = 2_000; // payload 10K자당 +2s.
+const FIRST_MAX_MS = 300_000; // first 상한(5분) — 그 위는 turn 백스톱 영역.
+
+/** payload 문자수 → 비례 확장된 first 타임아웃(ms). base 이하로는 안 줄어듦. */
+export const firstTimeoutForInput = (inputChars: number): number => {
+  const extra =
+    Math.floor(Math.max(0, inputChars) / 10_000) * FIRST_EXTRA_PER_10K_CHARS_MS;
+  return Math.min(LLM_FIRST_TIMEOUT_MS + extra, FIRST_MAX_MS);
+};
+
+/** 입력 크기 비례 first + 기본 idle 의 설정. resume 없는 어댑터(codex)가 사용. */
+export const idleConfigForInput = (inputChars: number): IdleTimeoutConfig => ({
+  idleMs: LLM_IDLE_TIMEOUT_MS,
+  firstMs: firstTimeoutForInput(inputChars),
+});
+
 /**
  * 유휴/첫토큰 타임아웃 에러.
  *

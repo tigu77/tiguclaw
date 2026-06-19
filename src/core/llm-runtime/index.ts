@@ -171,6 +171,22 @@ export const resolveModelSpecs = (override?: ModelSpec[]): ModelSpec[] => {
   return [DEFAULT_MODEL_SPEC];
 };
 
+// 풀의 provider 다양성 — 단일 provider 면 그 백엔드가 흔들릴 때(예: idle 타임아웃)
+// 폴백 그물 없이 전 풀이 동시에 전멸한다. 소프트 경고만(차단 아님) — 진짜 한 provider
+// 만 가진 사용자도 정상이므로 정보 제공에 그친다(원칙: 가드는 sysprompt·문구 차원).
+// 풀이 비었거나 단일 spec(폴백 자체가 없는 별개 사안)이면 null.
+export const poolDiversityWarning = (): string | null => {
+  const specs = resolveModelSpecs();
+  if (specs.length < 2) return null;
+  const providers = new Set(specs.map((s) => s.provider ?? s.adapter));
+  if (providers.size > 1) return null; // cross-provider 그물 있음 — OK
+  return (
+    `⚠️ REGION_A_MODELS 풀이 단일 provider(${[...providers][0]})뿐 — 그 백엔드가 ` +
+    `흔들리면(idle 타임아웃 등) 폴백 그물 없이 전 풀이 동시에 실패합니다. ` +
+    `cross-provider 최후 안전망 권장(예: 풀 끝에 codex:gpt-5.5 추가).`
+  );
+};
+
 // 등급(티어) → 모델 풀. agent 정의의 `model:` 이 등급(high/mid/low)이면
 // `MODEL_TIER_<등급>` env 의 콤마 풀(provider:model,...)로 해석 → 폴백 가능.
 // provider:model 직접 지정도 허용 (고급 — 특정 모델 강제). 빈/미지 → [] (어댑터 디폴트).

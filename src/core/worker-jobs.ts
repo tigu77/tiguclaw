@@ -19,6 +19,22 @@
  */
 import { randomUUID } from "node:crypto";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
+import {
+  upsertWorkerJob,
+  updateWorkerJobStatus,
+  listInterruptedWorkerJobs,
+} from "../store/worker-jobs.js";
+
+// DB 미러는 best-effort — 영속 실패가 워커 진행/완료를 막지 않게 격리(데몬 생존, 원칙 3).
+// 런타임 진실 소스는 아래 in-memory Map. DB 는 재시작 생존(정직 통지)만 담당.
+const persistSafe = (label: string, fn: () => void): void => {
+  try {
+    fn();
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`worker-jobs: DB 미러 실패(${label}): ${reason}`);
+  }
+};
 
 // ─── 잡 레코드 (architect §6) ────────────────────────────────────────────────
 
@@ -62,6 +78,7 @@ export interface RegisterJobInput {
  */
 export const registerJob = (input: RegisterJobInput): string => {
   const jobId = randomUUID();
+  const startedAt = Date.now();
   jobs.set(jobId, {
     jobId,
     label: input.label,
@@ -70,8 +87,19 @@ export const registerJob = (input: RegisterJobInput): string => {
     channel: input.channel,
     channelUserId: input.channelUserId,
     status: "running",
-    startedAt: Date.now(),
+    startedAt,
   });
+  persistSafe("registerJob", () =>
+    upsertWorkerJob({
+      jobId,
+      label: input.label,
+      threadKey: input.threadKey,
+      channel: input.channel,
+      channelUserId: input.channelUserId,
+      status: "running",
+      startedAt,
+    }),
+  );
   return jobId;
 };
 
@@ -82,6 +110,9 @@ export const markDone = (jobId: string, result: string): void => {
   job.status = "done";
   job.result = result;
   job.finishedAt = Date.now();
+  persistSafe("markDone", () =>
+    updateWorkerJobStatus(jobId, "done", job.finishedAt!),
+  );
 };
 
 /** 워커 실패/타임아웃 — 원인 기록. */
@@ -91,6 +122,9 @@ export const markFailed = (jobId: string, error: string): void => {
   job.status = "failed";
   job.error = error;
   job.finishedAt = Date.now();
+  persistSafe("markFailed", () =>
+    updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
+  );
 };
 
 export const getJob = (jobId: string): WorkerJobRecord | undefined =>
@@ -370,6 +404,44 @@ export const onWorkerComplete = async (
       `worker-jobs: 완료 재주입 실패 (job='${job.label}' ${jobId} thread=${job.threadKey}): ${reason}`,
     );
   });
+};
+
+// ─── 부팅 복구 (option b, 2026-06-19) ────────────────────────────────────────
+// 재시작/크래시로 중단된 워커(DB status='running')를 사용자에게 정직 통지. index.ts 가
+// 채널 start 직후 1회 호출. 통지는 *raw 아웃바운드*(LLM 무경유) — 모델 풀이 죽어 있어도
+// 결정적으로 전달된다. 통지 후 status='interrupted' 전이 → 다음 부팅 재통지 0(멱등).
+
+export const recoverInterruptedJobs = async (): Promise<void> => {
+  let interrupted: ReturnType<typeof listInterruptedWorkerJobs>;
+  try {
+    interrupted = listInterruptedWorkerJobs();
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`worker-jobs: 중단 잡 조회 실패: ${reason}`);
+    return;
+  }
+  for (const job of interrupted) {
+    const text =
+      `⚠️ 이전에 맡긴 백그라운드 작업 '${job.label}'이 데몬 재시작으로 중단됐어요. ` +
+      `결과를 받지 못했으니, 필요하면 다시 시켜주세요.`;
+    try {
+      const reply = reacquireReply(job.channel as ChannelName, job.threadKey);
+      await reply(text);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(
+        `worker-jobs: 중단 통지 전송 실패 (job='${job.label}' ${job.jobId}): ${reason}`,
+      );
+    }
+    persistSafe("recover", () =>
+      updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
+    );
+  }
+  if (interrupted.length > 0) {
+    console.log(
+      `worker-jobs: 재시작으로 중단된 워커 ${interrupted.length}건 정직 통지`,
+    );
+  }
 };
 
 // ─── region 이 호출할 발사 API 경계 (architect §9-a/§9-b) ─────────────────────

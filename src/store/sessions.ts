@@ -344,6 +344,39 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_watches_enabled ON watches(enabled);
   `);
 
+  // ─── 백그라운드 워커 잡 영속 (메타만 — 재시작 정직 통지용, 2026-06-19) ─────────
+  // 런타임 진실 소스는 core/worker-jobs.ts 의 in-memory Map(핫패스 무변경). 이 테이블은
+  // *재시작 생존*만 담당 — 부팅 시 status='running' 잔류 = 그 잡을 돌던 프로세스가 죽었음
+  // → 중단으로 보고. result/error 본문은 비영속(option b: 메타 영속 + 정직 통지, 풀 재개 아님).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS worker_jobs (
+      job_id          TEXT PRIMARY KEY,
+      label           TEXT NOT NULL,
+      thread_key      TEXT NOT NULL,
+      channel         TEXT NOT NULL,
+      channel_user_id TEXT NOT NULL,
+      status          TEXT NOT NULL,
+      started_at      INTEGER NOT NULL,
+      finished_at     INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status);
+  `);
+
+  // ─── 관측 이벤트 영속 (감사·메트릭 — 2026-06-19) ──────────────────────────────
+  // EventBus 는 비영속 ring buffer(hot cache)뿐 — 재시작 시 이력 소실. 이 테이블은
+  // *의미있는* 이벤트(에러·발화·lifecycle·memory.write 등; 고volume 스트리밍/본문 제외)를
+  // 영속해 감사(누가/언제/무슨 일)와 메트릭 기반을 만든다. core/event-persist.ts 의
+  // 단일 subscriber 가 기록(publish() 무수정 — 데이터로 확장). 보존 한도로 무한증가 방지.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS events (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts      INTEGER NOT NULL,
+      type    TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts);
+  `);
+
   // ─── /model V1: per-session model override (Claude Code 슈퍼셋 — 2026-05-28) ──
   // 사용자가 채널에서 `/model <provider:model>` 로 메인 turn 모델을 세션별로 override.
   // `threads` 와 *분리된* 테이블 → `/reset` 가 영향 0 (threads 만 DELETE). 사용자 명시
@@ -357,6 +390,23 @@ export const initStore = (): void => {
       model_spec  TEXT NOT NULL,
       updated_at  INTEGER NOT NULL,
       PRIMARY KEY (channel, thread_key)
+    );
+  `);
+
+  // ─── 6b: codex 대화 히스토리 롤링 요약 압축 (architect contract §6b, 2026-06-19) ──
+  // codex(ChatGPT 비공식 백엔드)는 resume API 가 없어 매 턴 전체 히스토리를 input[]
+  // 으로 재전송한다. loadThreadHistory 의 oldest-drop(상한 초과 시 버림)이 긴 대화의
+  // 초반 맥락을 통째 소실 → 버리는 대신 오래된 턴을 요약 1덩어리로 압축해 보존한다.
+  // claude 는 SDK resume+자동 compaction 이라 무관 → 이 테이블은 codex 한정(LLM-agnostic
+  // #2: codex 결함을 codex 안에서 닫음). thread_key = 어댑터 무관 단일 히스토리 키
+  // (transcript_index.thread_key 와 동일 의미). compacted_through = 요약에 접힌 마지막
+  // transcript id (loadThreadHistory 의 ts ASC, id ASC 타임라인 기준 watermark).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS thread_summaries (
+      thread_key        TEXT PRIMARY KEY,
+      summary           TEXT NOT NULL,
+      compacted_through INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
     );
   `);
 

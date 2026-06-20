@@ -38,7 +38,7 @@ const persistSafe = (label: string, fn: () => void): void => {
 
 // ─── 잡 레코드 (architect §6) ────────────────────────────────────────────────
 
-export type WorkerJobStatus = "running" | "done" | "failed";
+export type WorkerJobStatus = "running" | "done" | "failed" | "cancelled";
 
 export interface WorkerJobRecord {
   jobId: string;
@@ -127,6 +127,21 @@ export const markFailed = (jobId: string, error: string): void => {
   );
 };
 
+/**
+ * 워커 취소 마킹 — 사용자 명시 취소(타임아웃과 구분, 별도 status). worker_jobs DB
+ * status 는 TEXT 라 자유. 통지 문구는 onWorkerComplete 가 status 로 분기.
+ */
+export const markCancelled = (jobId: string, reason: string): void => {
+  const job = jobs.get(jobId);
+  if (job === undefined) return;
+  job.status = "cancelled";
+  job.error = reason;
+  job.finishedAt = Date.now();
+  persistSafe("markCancelled", () =>
+    updateWorkerJobStatus(jobId, "cancelled", job.finishedAt!),
+  );
+};
+
 export const getJob = (jobId: string): WorkerJobRecord | undefined =>
   jobs.get(jobId);
 
@@ -156,6 +171,7 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
 /** 테스트 전용 — 레지스트리 비움 (프로덕션 경로 미사용). */
 export const __resetJobsForTest = (): void => {
   jobs.clear();
+  cancelHooks.clear();
 };
 
 // ─── 워커 전용 타임아웃 (architect §5, W-I6) ─────────────────────────────────
@@ -178,6 +194,20 @@ export const WORKER_TIMEOUT_MS = parsePosIntEnv(
   DEFAULT_WORKER_TIMEOUT_MS,
 );
 
+/** 하드 백스톱 grace (ms) — index.ts TURN_HARD_GRACE_MS 동형. 기본 60s. */
+const DEFAULT_WORKER_HARD_GRACE_MS = 60_000;
+
+/**
+ * 워커 하드 백스톱 grace (ms). createWorkerAbort 의 abort 가 hung MCP callTool 을
+ * 못 끊는 경우(MCP 한계), abort 시점(WORKER_TIMEOUT_MS) 이후 이만큼 더 기다려도
+ * runRegionA 가 안 settle 하면 runner 가 WorkerTimeoutError 로 *강제* 종료해 통지를
+ * 정시 발화시킨다. env `WORKER_HARD_GRACE_MS` override (매직넘버 금지, 채널 백스톱 동형).
+ */
+export const WORKER_HARD_GRACE_MS = parsePosIntEnv(
+  process.env.WORKER_HARD_GRACE_MS,
+  DEFAULT_WORKER_HARD_GRACE_MS,
+);
+
 /**
  * 워커 상한 타임아웃 에러.
  *
@@ -195,10 +225,28 @@ export class WorkerTimeoutError extends Error {
   }
 }
 
+/**
+ * 워커 사용자 취소 에러 — 타임아웃과 *구분*(통지 문구 "취소됨" vs "시간 초과").
+ * abort reason 으로 운반되거나 cancelJob 이 직접 마킹. WorkerTimeoutError 처럼
+ * "모델 거부 아님" 토큰을 박아 facade MODEL_REJECTED_PATTERNS 오매칭을 막는다.
+ */
+export class WorkerCancelledError extends Error {
+  constructor() {
+    super("워커가 사용자 요청으로 취소됨 — 모델 거부 아님");
+    this.name = "WorkerCancelledError";
+  }
+}
+
+// ─── 외부 취소 레지스트리 (cancel_worker 도구 — 2026-06-20) ───────────────────
+// createWorkerAbort 의 abort 함수는 runWorkerJob 안 지역변수라 외부에서 못 끊는다.
+// jobId → abort 매핑을 daemon 경계(본 모듈)에 둬 cancel_worker 가 호출 가능하게.
+// createWorkerAbort(jobId) 가 발급 시 자기 abort 를 등록하고, done() 이 해제(settle 시).
+const cancelHooks = new Map<string, () => void>();
+
 export interface WorkerAbort {
   /** runRegionA(input.abortSignal) 로 운반할 signal — 어댑터가 1층 idle 과 OR 결합. */
   signal: AbortSignal;
-  /** 워커 정상/throw 종료 시 호출 — 타이머 해제 (누수·오발화 0). 멱등. */
+  /** 워커 정상/throw 종료 시 호출 — 타이머 해제 + 취소 레지스트리 해제(누수·오발화 0). 멱등. */
   done(): void;
 }
 
@@ -206,8 +254,12 @@ export interface WorkerAbort {
  * 워커 전용 abortSignal 발급 — 만료 시 WorkerTimeoutError 로 abort.
  * region 의 runWorkerJob 이 호출해 `RegionASdkInput.abortSignal` 로 주입한다
  * (새 메커니즘 0, 값만 워커 전용 — architect §5).
+ *
+ * jobId 를 주면 그 워커의 abort 를 취소 레지스트리에 등록 → cancelJob(jobId) 이
+ * WorkerCancelledError 로 abort 가능(외부 취소). done() 시 등록 해제.
  */
 export const createWorkerAbort = (
+  jobId?: string,
   ms: number = WORKER_TIMEOUT_MS,
 ): WorkerAbort => {
   const ac = new AbortController();
@@ -215,12 +267,37 @@ export const createWorkerAbort = (
     if (!ac.signal.aborted) ac.abort(new WorkerTimeoutError(ms));
   }, ms);
   (handle as { unref?: () => void }).unref?.();
+  if (jobId !== undefined) {
+    cancelHooks.set(jobId, () => {
+      if (!ac.signal.aborted) ac.abort(new WorkerCancelledError());
+    });
+  }
   return {
     signal: ac.signal,
     done(): void {
       clearTimeout(handle);
+      if (jobId !== undefined) cancelHooks.delete(jobId);
     },
   };
+};
+
+/**
+ * 진행 중 워커 취소(best-effort) — cancel_worker 도구가 호출. abort 를 부르고 취소
+ * 상태로 마킹한다. abort 는 LLM 스트림은 끊지만 hung MCP callTool 은 signal 미수신
+ * (MCP 한계)이라 *다음 도구 경계*(최대 MCP_CALL_TIMEOUT)에서 멈춤 — 도구가 그 점 안내.
+ *
+ * @returns true=취소 신호 발사(running 잡 존재), false=대상이 없거나 이미 종료.
+ */
+export const cancelJob = (jobId: string): boolean => {
+  const job = jobs.get(jobId);
+  if (job === undefined || job.status !== "running") return false;
+  // 취소 상태를 먼저 마킹 — 이후 abort 가 runRegionA 를 reject 시키면 runner 의 catch 가
+  // onWorkerComplete(error) 를 부르는데, 그 시점엔 이미 status="cancelled" 라 통지 문구가
+  // 취소로 나간다(타임아웃과 구분). markCancelled 는 멱등(재호출 무해).
+  markCancelled(jobId, "사용자 요청으로 취소됨");
+  const hook = cancelHooks.get(jobId);
+  if (hook !== undefined) hook();
+  return true;
 };
 
 // ─── thread 별 turn 직렬 큐 (architect §4, W-I4 보강) ────────────────────────
@@ -331,6 +408,14 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
       `위 결과를 사용자에게 자연스럽게 보고하세요.`
     );
   }
+  if (job.status === "cancelled") {
+    return (
+      `〔백그라운드 작업 '${job.label}' 취소 알림 — 사용자에게 알리세요〕\n` +
+      `사용자 요청으로 취소되었습니다.\n` +
+      `〔/알림〕\n\n` +
+      `위 작업이 사용자 요청으로 중단되었음을 자연스럽게 알리세요 (실패가 아니라 취소).`
+    );
+  }
   return (
     `〔백그라운드 작업 '${job.label}' 실패 알림 — 사용자에게 정직히 알리세요〕\n` +
     `원인: ${job.error ?? "알 수 없는 오류"}\n` +
@@ -360,9 +445,14 @@ export const onWorkerComplete = async (
   jobId: string,
   outcome: { result: string } | { error: string },
 ): Promise<void> => {
-  // 1) 레지스트리 마킹.
+  // 1) 레지스트리 마킹. 단 이미 cancelled 면(cancelJob 이 abort 전 마킹) 그 status 보존 —
+  //    abort 가 runRegionA 를 reject 시켜 여기로 error 가 와도 "실패" 아닌 "취소"로 통지.
+  const existing = jobs.get(jobId);
   if ("result" in outcome) {
-    markDone(jobId, outcome.result);
+    // 취소 직후 워커가 마지막 도구를 끝내고 결과를 낸 희귀 경우 — 취소 의도 보존(통지 일관).
+    if (existing?.status !== "cancelled") markDone(jobId, outcome.result);
+  } else if (existing?.status === "cancelled") {
+    // 이미 취소 마킹됨 — 재마킹 불요(멱등). buildCompletionPrompt 가 취소 문구로 분기.
   } else {
     // 시크릿 누수 0 — redactSecrets 통과 후 기록 (architect §7).
     const { redactSecrets } = await import("./outbound-sanitize.js");

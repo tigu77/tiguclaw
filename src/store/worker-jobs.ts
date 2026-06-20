@@ -9,7 +9,12 @@
  */
 import { getDb } from "./sessions.js";
 
-export type PersistedJobStatus = "running" | "done" | "failed" | "interrupted";
+export type PersistedJobStatus =
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
 
 export interface PersistedWorkerJob {
   jobId: string;
@@ -42,6 +47,7 @@ const toJob = (r: DbRow): PersistedWorkerJob => ({
   status:
     r.status === "done" ||
     r.status === "failed" ||
+    r.status === "cancelled" ||
     r.status === "interrupted"
       ? r.status
       : "running",

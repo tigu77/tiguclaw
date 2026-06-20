@@ -65,3 +65,28 @@ export const listEvents = (opts?: {
   params.push(limit);
   return getDb().prepare(sql).all(...params) as DbRow[];
 };
+
+/**
+ * 한 워커 thread(`worker:<jobId>`)의 *최신* region.a.activity 1건 — list_workers 가
+ * running 워커마다 "마지막: <도구> N분 전" 표시에 사용(stuck 신호 가시화).
+ *
+ * 어댑터가 흘린 활동 이벤트의 payload.threadKey 가 워커 thread 이고 payload.label 이
+ * 도구명(kind="tool")/코어스 문구(kind="turn"). 활동이 없으면 null(워커가 아직 첫
+ * 도구 전이거나 openai coarse floor 미발화 — 정직히 "활동 없음" 표시).
+ */
+export const getLastWorkerActivity = (
+  threadKey: string,
+): { label: string; ts: number } | null => {
+  const row = getDb()
+    .prepare(
+      `SELECT ts, json_extract(payload, '$.label') AS label
+         FROM events
+        WHERE type = 'region.a.activity'
+          AND json_extract(payload, '$.threadKey') = ?
+        ORDER BY id DESC
+        LIMIT 1`,
+    )
+    .get(threadKey) as { ts: number; label: string | null } | undefined;
+  if (row === undefined || row.label === null) return null;
+  return { label: row.label, ts: row.ts };
+};

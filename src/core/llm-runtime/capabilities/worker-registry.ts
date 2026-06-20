@@ -29,13 +29,19 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  cancelJob,
   createWorkerAbort,
+  getJob,
   listJobs,
   onWorkerComplete,
   registerWorkerRunner,
   startWorkerJob,
+  WorkerTimeoutError,
+  WORKER_TIMEOUT_MS,
+  WORKER_HARD_GRACE_MS,
   type WorkerJobRecord,
 } from "../../worker-jobs.js";
+import { getLastWorkerActivity } from "../../../store/events.js";
 import type { RegionASdkInput } from "../types.js";
 
 // ─── 워커 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
@@ -66,13 +72,15 @@ const errText = (text: string) => ({
  */
 const runner = (job: WorkerJobRecord): void => {
   // 워커 전용 상한 — 만료 시 WorkerTimeoutError 로 abort (무한 워커 봉쇄, W-I6).
-  const abort = createWorkerAbort();
+  // jobId 등록 → cancel_worker 가 외부에서 이 워커의 abort 를 부를 수 있다(취소 컨트롤).
+  const abort = createWorkerAbort(job.jobId);
 
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const { runRegionA } = await import("../index.js");
-      const out = await runRegionA({
+      const runRegionAP = runRegionA({
         text: job.task,
         threadKey: `worker:${job.jobId}`,
         channel: job.channel,
@@ -80,6 +88,23 @@ const runner = (job: WorkerJobRecord): void => {
         workerDepth: 1,
         abortSignal: abort.signal,
       });
+
+      // 하드 백스톱 (2026-06-20) — index.ts 채널 백스톱(Promise.race) 동형. abort.signal 은
+      // LLM 스트림은 끊지만 hung MCP callTool(signal 미수신 = MCP 한계)은 못 끊어 워커가
+      // 상한을 넘겨 실행(실측: 20s 워커가 273s). WORKER_TIMEOUT_MS + grace 후에도 runRegionA
+      // 미settle 시 WorkerTimeoutError 로 *강제* 종료 → onWorkerComplete 가 정시 발화(통지 옴).
+      // 버려진 runRegionAP 의 늦은 reject 는 흡수(unhandledRejection→crash-fast 오발 방지,
+      // 어제 채널 fix 와 동일 패턴). 정상 워커는 상한 전 settle 이라 영향 0.
+      const hardDeadline = new Promise<never>((_resolve, reject) => {
+        hardTimer = setTimeout(
+          () => reject(new WorkerTimeoutError(WORKER_TIMEOUT_MS)),
+          WORKER_TIMEOUT_MS + WORKER_HARD_GRACE_MS,
+        );
+        (hardTimer as { unref?: () => void }).unref?.();
+      });
+      void runRegionAP.catch(() => {});
+
+      const out = await Promise.race([runRegionAP, hardDeadline]);
       // settle(성공) → daemon 메인 재주입. await 불필요(직렬 큐가 비동기 관리)지만
       // 여기선 await 로 onComplete 예외도 catch 범위에 둔다(데몬 생존, throw 0).
       await onWorkerComplete(job.jobId, { result: out.text });
@@ -88,6 +113,7 @@ const runner = (job: WorkerJobRecord): void => {
       await onWorkerComplete(job.jobId, { error: reason });
     } finally {
       // 타이머 해제 — 정상/실패 무관 항상(누수·오발화 0, 멱등).
+      if (hardTimer !== undefined) clearTimeout(hardTimer);
       abort.done();
     }
   })();
@@ -116,6 +142,7 @@ const STATUS_LABEL: Record<WorkerJobRecord["status"], string> = {
   running: "진행 중",
   done: "완료",
   failed: "실패",
+  cancelled: "취소됨",
 };
 
 /**
@@ -191,13 +218,85 @@ export const createWorkerMcpServer = (
           const end = j.finishedAt ?? now;
           const elapsed = formatElapsed(j.startedAt, end);
           const status = STATUS_LABEL[j.status];
-          const suffix =
-            j.status === "running"
-              ? `${elapsed} 경과`
-              : `${elapsed} 소요`;
-          return `- '${j.label}' — ${status} (${suffix})`;
+          if (j.status === "running") {
+            // 최근 활동 1건(events 의 region.a.activity, threadKey=`worker:<jobId>`) →
+            // "마지막: <도구> N분 전". 활동이 오래됐으면 stuck 신호. 워커당 1회 조회(워커
+            // 수 적어 OK). 조회 실패는 활동 생략(데몬 생존 — 목록 자체는 항상 나간다).
+            let activity = "";
+            try {
+              const last = getLastWorkerActivity(`worker:${j.jobId}`);
+              if (last !== null) {
+                activity = `, 마지막: ${last.label} ${formatElapsed(last.ts, now)} 전`;
+              }
+            } catch {
+              // 활동 조회 실패 — 목록은 그대로, 활동만 생략.
+            }
+            return `- '${j.label}' — ${status} (${elapsed} 경과${activity})`;
+          }
+          return `- '${j.label}' — ${status} (${elapsed} 소요)`;
         });
         return okText(`## 백그라운드 워커\n\n${lines.join("\n")}`);
+      } catch (e) {
+        return errText(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
+  const cancelWorker = tool(
+    "cancel_worker",
+    "진행 중인 백그라운드 워커를 취소합니다. label(작업 이름) 또는 job_id 중 하나로 식별하세요(label 우선). 사용자가 '그 작업 그만해/멈춰' 류로 요청할 때 사용합니다. 취소는 best-effort — 워커가 지금 도구(예: 오래 걸리는 Bash·웹요청)를 실행 중이면 그 도구가 끝나는 대로 멈춥니다(즉시는 아닐 수 있음).",
+    {
+      label: z
+        .string()
+        .optional()
+        .describe("취소할 워커의 작업 이름(run_in_background 의 label). 우선 식별."),
+      job_id: z
+        .string()
+        .optional()
+        .describe("취소할 워커의 jobId. label 미지정 시 사용."),
+    },
+    async (args) => {
+      try {
+        if (
+          (args.label === undefined || args.label === "") &&
+          (args.job_id === undefined || args.job_id === "")
+        ) {
+          return errText("label 또는 job_id 중 하나로 취소할 워커를 지정하세요.");
+        }
+        // label 우선 매칭(running 중에서) → 없으면 job_id. 같은 label 의 running 이
+        // 여럿이면 가장 최근(listJobs 가 startedAt 내림차순)을 취소.
+        let target: WorkerJobRecord | undefined;
+        if (args.label !== undefined && args.label !== "") {
+          target = listJobs({ runningOnly: true }).find(
+            (j) => j.label === args.label,
+          );
+        }
+        if (target === undefined && args.job_id !== undefined && args.job_id !== "") {
+          target = getJob(args.job_id);
+        }
+        if (target === undefined) {
+          const ident = args.label ?? args.job_id ?? "";
+          return okText(
+            `취소할 진행 중인 워커를 찾지 못했습니다 ('${ident}'). ` +
+              `list_workers 로 현재 진행 중인 워커를 확인하세요.`,
+          );
+        }
+        if (target.status !== "running") {
+          return okText(
+            `'${target.label}' 워커는 이미 ${STATUS_LABEL[target.status]} 상태라 취소할 게 없습니다.`,
+          );
+        }
+        const ok = cancelJob(target.jobId);
+        if (!ok) {
+          // 식별과 cancelJob 사이 race 로 막 종료된 경우 — 정직 안내.
+          return okText(
+            `'${target.label}' 워커가 막 종료되어 취소할 게 없습니다.`,
+          );
+        }
+        return okText(
+          `🛑 '${target.label}' 워커 취소를 요청했습니다. ` +
+            `워커가 지금 실행 중인 도구가 있으면 그게 끝나는 대로 중단되고, 취소 알림을 받게 됩니다.`,
+        );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }
@@ -207,6 +306,6 @@ export const createWorkerMcpServer = (
   return createSdkMcpServer({
     name: "workers",
     version: "1.0.0",
-    tools: [runInBackground, listWorkers],
+    tools: [runInBackground, listWorkers, cancelWorker],
   });
 };

@@ -393,12 +393,14 @@ export const onWorkerComplete = async (
     reply,
   };
 
-  // 3) thread 직렬 큐 합류 — 유저 interim turn 과 같은 threadKey 면 직렬(race 0).
-  //    재주입 자체 실패(채널 send throw 등)는 console.error 로 격리(데몬 생존, §7).
+  // 3) 메인 핸들러로 재주입 (유저 interim turn 과 직렬). ★ mainHandler(=serializedHandler)
+  //    가 *자체적으로* enqueueThreadTurn 으로 직렬화하므로 여기서 또 enqueueThreadTurn 으로
+  //    감싸면 같은 thread 에 이중 enqueue → 재진입 deadlock(외부 task 가 내부 task 를
+  //    await 하는데 내부 task 는 외부 tail 을 기다림) → 완료/실패 통지 턴이 영영 실행 안 됨
+  //    (2026-06-20 발견 — 워커 통지 미도착의 원인). 직접 호출해 단일 enqueue 로 닫는다.
+  //    재주입 실패(채널 send throw 등)는 console.error 로 격리(데몬 생존, §7).
   const handler = mainHandler;
-  enqueueThreadTurn(job.threadKey, async () => {
-    await handler(synthetic);
-  }).catch((e) => {
+  void handler(synthetic).catch((e) => {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(
       `worker-jobs: 완료 재주입 실패 (job='${job.label}' ${jobId} thread=${job.threadKey}): ${reason}`,

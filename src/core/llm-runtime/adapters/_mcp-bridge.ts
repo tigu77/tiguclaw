@@ -24,6 +24,18 @@ import type { MCPServer } from "@openai/agents-core";
 type MCPTool = Awaited<ReturnType<MCPServer["listTools"]>>[number];
 type CallToolResultContent = Awaited<ReturnType<MCPServer["callTool"]>>;
 
+// MCP callTool 타임아웃 (2026-06-20, 본질 수정) — in-process bridge 라 네트워크 0,
+// 도구 *자체* 타임아웃(Bash execFile 120s/max 600s 등)이 진짜 경계다. MCP SDK 기본
+// 60s 를 그대로 두면 60s 넘는 정상 도구(예: `npx quartz build`)가 매번 false "MCP
+// timeout" 으로 잘려 재시도 폭주·혼란을 부른다 (2026-06-19 위키 빌드 11h outage 의
+// 본질). Bash max(600s)보다 넉넉히 잡아 도구 자체 타임아웃이 먼저 발화하게 한다.
+// env `MCP_CALL_TIMEOUT_MS` override (양의 정수만).
+const MCP_CALL_TIMEOUT_MS = ((): number => {
+  const raw = process.env.MCP_CALL_TIMEOUT_MS;
+  const n = raw === undefined || raw === "" ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 660_000; // 11분 (Bash max 600s + 여유)
+})();
+
 export const adaptClaudeMcpServer = async (
   config: McpSdkServerConfigWithInstance,
   name: string,
@@ -70,10 +82,11 @@ export const adaptClaudeMcpServer = async (
       args: Record<string, unknown> | null,
     ): Promise<CallToolResultContent> {
       await ensureConnected();
-      const res = await client.callTool({
-        name: toolName,
-        arguments: args ?? {},
-      });
+      const res = await client.callTool(
+        { name: toolName, arguments: args ?? {} },
+        undefined,
+        { timeout: MCP_CALL_TIMEOUT_MS },
+      );
       return res.content as CallToolResultContent;
     },
     async invalidateToolsCache() {

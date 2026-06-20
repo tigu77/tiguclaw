@@ -21,6 +21,7 @@ import { route } from "./core/router.js";
 import {
   createTurnTimer,
   TurnTimeoutError,
+  TURN_TIMEOUT_MS,
 } from "./core/llm-runtime/turn-timeout.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
@@ -310,6 +311,11 @@ try {
 } catch (e) {
   console.error("loadPlugins failed:", e);
 }
+
+// 하드 백스톱 grace — turnAc.abort(2층 wall-clock) 이 hung MCP callTool 을 못 끊는 경우,
+// abort 시점(TURN_TIMEOUT_MS) 이후 이만큼 더 기다려도 route 가 안 끝나면 핸들러를 강제 반환.
+// abort 클린 경로에 grace 를 줘 정상 종료 우선, 그래도 안 되면 turn-abandon.
+const TURN_HARD_GRACE_MS = 60_000;
 
 const handler: MessageHandler = async (msg) => {
   bus.publish({
@@ -759,11 +765,30 @@ const handler: MessageHandler = async (msg) => {
   // 상수 — 핸들러 매직넘버 금지.
   const turnAc = new AbortController();
   const turnTimer = createTurnTimer(turnAc);
-  try {
-    const out = await route(
-      effectiveText === msg.text ? msg : { ...msg, text: effectiveText },
-      { abortSignal: turnAc.signal },
+  // 하드 백스톱 (2026-06-20) — turnAc.abort 는 어댑터의 LLM 스트림은 끊지만, codex 의
+  // hung MCP callTool(signal 미전달 = MCP 한계)은 못 끊는다. 그 경우 `route()` 가 abort
+  // 후에도 영영 settle 안 해 핸들러가 반환 못 하고 → grammy 순차 폴러가 동결(채널 전체
+  // 무응답). Promise.race 로 grace 후 *무조건* 반환을 보장한다 — 버려진 route promise 는
+  // 누수되나 데몬은 계속 서빙(turn-abandon ≫ daemon-freeze). 정상 턴은 480s 전 settle 이라
+  // 영향 0. 백그라운드 워커는 즉시 반환 후 별도 진행이라 무관.
+  let hardTimer: ReturnType<typeof setTimeout> | undefined;
+  const hardDeadline = new Promise<never>((_resolve, reject) => {
+    hardTimer = setTimeout(
+      () => reject(new TurnTimeoutError(TURN_TIMEOUT_MS)),
+      TURN_TIMEOUT_MS + TURN_HARD_GRACE_MS,
     );
+    (hardTimer as { unref?: () => void }).unref?.();
+  });
+  const routeP = route(
+    effectiveText === msg.text ? msg : { ...msg, text: effectiveText },
+    { abortSignal: turnAc.signal },
+  );
+  // turn-abandon(하드 데드라인 발화) 후 route 가 늦게 reject 해도 unhandledRejection
+  // (→ crash-fast 핸들러로 데몬 종료)으로 번지지 않게 흡수. race 가 이미 settle 한
+  // 뒤라 이 결과는 무시된다. 정상/에러 경로는 아래 race+try/catch 가 그대로 처리.
+  void routeP.catch(() => {});
+  try {
+    const out = await Promise.race([routeP, hardDeadline]);
     // Stop 훅 — 응답 후처리/관측 (채널 출구 단일 지점, UserPromptSubmit 대칭).
     // 데몬은 turn 단발이라 block(계속) 의미는 무시. stdout 은 응답에 덧붙임.
     let replyText = out.text;
@@ -830,6 +855,9 @@ const handler: MessageHandler = async (msg) => {
   } finally {
     // TT-I5 — 정상/throw 무관 타이머 해제 (누수·이중발동 0). 멱등.
     turnTimer.done();
+    // 하드 백스톱 타이머 해제 — route 가 settle 했으면(정상/에러) 하드 데드라인 불필요.
+    // 미해제 시 늦게 fire → unhandled rejection. race 가 끝났으므로 여기서 clear 가 안전.
+    if (hardTimer !== undefined) clearTimeout(hardTimer);
   }
 };
 

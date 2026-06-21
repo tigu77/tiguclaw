@@ -44,7 +44,8 @@
  *    본체는 DISALLOWED_TOOLS/DISALLOWED_URLS 만 차단 (정책 진실 소스 hook) — 경로 벽 0.
  */
 import { execFile } from "node:child_process";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -57,6 +58,35 @@ import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js"
 import { getPaths } from "../../paths.js";
 
 const execFileP = promisify(execFile);
+
+// ─── ripgrep 바이너리 해소 (크로스플랫폼) ────────────────────────────────
+// Glob/Grep 는 ripgrep 에 의존한다. claude 는 SDK 내장 도구가 알아서 번들 rg 를
+// 쓰지만, codex 등 SDK 내장도구가 없는 어댑터는 이 file-ops 가 직접 rg 를 부른다.
+// system PATH 의 `rg` 는 mac(brew 미설치·데몬 PATH 누락)·Windows(rg 부재)에서 깨짐.
+// 그런데 하드의존인 @anthropic-ai/claude-agent-sdk 가 *모든 플랫폼* rg 를 vendor 로
+// 동봉한다(npm tarball 동봉 — postinstall 다운로드 아님, files 미지정=전체배포).
+// 그 바이너리를 직접 가리켜 PATH 의존을 제거 → mac·Windows·로컬LLM 사용자 모두
+// 무설치 동작. claude(SDK 내장)는 이 경로를 안 거치므로 영향 0 — codex 결함을
+// codex 어댑터 안에서 닫는 수정. 못 찾으면 PATH 의 "rg" 폴백(절대 현행보다 안 나빠짐).
+const RG_PATH = ((): string => {
+  try {
+    const require = createRequire(import.meta.url);
+    const sdkPkg = require.resolve(
+      "@anthropic-ai/claude-agent-sdk/package.json",
+    );
+    const bin = process.platform === "win32" ? "rg.exe" : "rg";
+    const vendored = path.join(
+      path.dirname(sdkPkg),
+      "vendor",
+      "ripgrep",
+      `${process.arch}-${process.platform}`,
+      bin,
+    );
+    return existsSync(vendored) ? vendored : "rg";
+  } catch {
+    return "rg";
+  }
+})();
 
 // ─── 경로 해소 (β — 벽 아닌 해소만) ──────────────────────────────────────
 // β (2026-05-25): 하드 기술 벽 제거 (SYSTEM.md §1 "기술적 차단 박지 X" 정합).
@@ -139,7 +169,7 @@ const globTool = tool(
         args.cwd !== undefined ? resolvePath(args.cwd) : getPaths().home;
       // rg `--files` = cwd 내 모든 파일 나열 (.gitignore 존중), `-g <pattern>` 으로 필터.
       const { stdout } = await execFileP(
-        "rg",
+        RG_PATH,
         ["--files", "-g", args.pattern, cwd],
         { maxBuffer: GLOB_MAX_BUFFER },
       ).catch((e: NodeJS.ErrnoException & { stdout?: string; code?: number }) => {
@@ -184,7 +214,7 @@ const grepTool = tool(
         rgArgs.push("--glob", args.glob);
       }
       rgArgs.push("-e", args.pattern, searchPath);
-      const { stdout } = await execFileP("rg", rgArgs, {
+      const { stdout } = await execFileP(RG_PATH, rgArgs, {
         maxBuffer: GREP_MAX_BUFFER,
       }).catch((e: NodeJS.ErrnoException & { stdout?: string; code?: number }) => {
         // ripgrep exit code 1 = no matches (정상). code !== 0 && stdout 부재면 오류.

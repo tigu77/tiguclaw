@@ -5,7 +5,7 @@
  * EventBus 의 ring buffer 는 hot cache(SSE·dashboard 라이브)로 남기고, 이 sink 가
  * 영속 이력(감사·메트릭)을 담당한다. logging.ts(콘솔→파일 미러)와 동형 인프라.
  *
- * 제외(SKIP): 고volume 스트리밍(`region.a.sdk_message`)·대화 본문(`channel.message.in/out`,
+ * 제외(SKIP): 고volume 스트리밍(`llm.sdk_message`)·대화 본문(`channel.message.in/out`,
  * 이미 transcripts 에 있고 PII) — 개별 감사 가치 0. 나머지(에러·발화·lifecycle·memory.write
  * + 미래 신규 type)는 기본 영속(allowlist 아닌 denylist — 새 의미있는 이벤트 자동 포함).
  */
@@ -13,7 +13,7 @@ import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
 
 const SKIP_TYPES = new Set<string>([
-  "region.a.sdk_message",
+  "llm.sdk_message",
   "channel.message.in",
   "channel.message.out",
 ]);

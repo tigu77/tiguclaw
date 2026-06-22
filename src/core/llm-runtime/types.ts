@@ -102,6 +102,21 @@ export interface RegionASdkInput {
    * abort reason 은 TurnTimeoutError(turn-timeout.ts) — isModelRejected 비매칭(TT-I3).
    */
   abortSignal?: AbortSignal;
+  /**
+   * 신규(additive, 2026-06-22) — *내부 분류성* 1회 호출 플래그. 데이터 평면(self-growth
+   * 등)이 "작은 yes/no/uncertain 분류"를 현재 활성 어댑터로 돌릴 때 세팅한다.
+   *
+   * true 일 때 facade(runPool)가:
+   *  1. llm.turn_done / llm.turn_error 를 **발행하지 않음** (관측·학습 입력에서
+   *     제외). 이게 *메타-재귀 킬스위치* — self-growth 가 이 경로를 쓰면, 자기 분류 호출이
+   *     다시 turn 이벤트로 self-growth 입력에 되돌아오는 루프를 구조적으로 차단한다.
+   *  2. persistOutput 을 **건너뜀** (transcripts/sessions 미오염 — 분류는 대화가 아니다).
+   *
+   * 어댑터는 이 필드를 읽지 않는다(LLM-agnostic — facade 단일 지점에서만 분기). 모델 선택·
+   * 폴백·provider 해석은 일반 turn 과 *동일* 코드(runPool/resolveModelSpecs)를 타므로
+   * 어댑터 락인 0. 미지정/false = 현행(회귀 0).
+   */
+  internal?: boolean;
 }
 
 export interface RegionASdkOutput {
@@ -155,14 +170,14 @@ export interface RegionASdk {
 }
 
 /**
- * region.a.activity — LLM-agnostic per-step 활동 관측 이벤트 (Round 1).
+ * llm.activity — LLM-agnostic per-step 활동 관측 이벤트 (Round 1).
  *
  * 세 어댑터(claude/codex/openai) 공통. 대시보드가 "지금 무슨 도구를 쓰는 중"을
- * 실시간 표시하기 위한 *중립 rich* 이벤트. claude 전용 raw `region.a.sdk_message`
+ * 실시간 표시하기 위한 *중립 rich* 이벤트. claude 전용 raw `llm.sdk_message`
  * 와는 별개 레이어(병존) — 그쪽은 firehose, 이쪽은 정규화된 활동 단위.
  *
  * EventBus publish 시:
- *   { type: "region.a.activity", ts: Date.now(), payload: RegionAActivityPayload }
+ *   { type: "llm.activity", ts: Date.now(), payload: RegionAActivityPayload }
  *
  * turnId/throttle/nonce 없음 (의도) — 대시보드는 전역 관측면이라 per-turn reply
  * 라우팅 불요(2026-05-27 progress-indicator 철회 교훈). channel/threadKey 는
@@ -193,6 +208,96 @@ export interface RegionAActivityPayload {
    * 사람이 읽는 한 줄. kind="tool" 이면 도구명, kind="turn" 이면 코어스 문구.
    */
   label: string;
+}
+
+/**
+ * llm.turn_done / llm.turn_error — LLM-agnostic per-turn 종료 신호 (self-growth 입력).
+ *
+ * 진실 소스: `_workspace/selfgrowth_events_region_contract.md`.
+ *
+ * 발행처는 facade(`runPool`)의 `callAdapter` 래퍼 *단일 지점* — 세 어댑터를
+ * parity 로 덮는다(어댑터별 분기 0, 원칙 2 하드게이트). 한 어댑터 run() 호출(=한 턴)이
+ * 종료할 때마다 정확히 1회:
+ *  - 성공(return) → llm.turn_done { ok:true }
+ *  - 실패·타임아웃(throw) → llm.turn_error (+ llm.turn_done { ok:false } 미발행,
+ *    아래 contract 참조: error 와 done 은 상호배타 — 한 턴 = 정확히 둘 중 하나 1회)
+ *
+ * llm.activity(per-step firehose)와 별개 레이어: activity 는 "지금 무슨 도구"이고,
+ * 이쪽은 "한 턴이 어떻게 끝났나(효율·실패)" 의 turn-terminal 신호.
+ *
+ * ⚠ 관측 발행 전용 — 코어에 "claude 가 빠르니 claude 로 라우팅" 같은 어댑터별 라우팅
+ * 분기를 만드는 입력으로 *코어 안에서* 쓰지 말 것(feedback_every_feature_llm_agnostic).
+ * 학습·정책은 self-growth 플러그인(데이터 평면)에서.
+ *
+ * 메타-재귀 안전: self-growth 는 LLM 턴을 직접 돌리지 않으므로 이 이벤트 구독이
+ * 또 turn_done/error 를 낳지 않는다(피드백 루프 0). 서브에이전트(subagentDepth)·
+ * 워커(workerDepth)가 runRegionA 를 재귀 호출하는 경로는 *원래 사용자 턴의 하위 작업*
+ * 으로 각자 1 이벤트를 내는 것이 정상이며(중복 아님), depth 필드로 self-growth 가 구분.
+ */
+export interface RegionATurnDonePayload {
+  /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 채널. */
+  channel: ChannelName;
+  /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 thread. */
+  threadKey: string;
+  /**
+   * 어느 어댑터가 이 턴을 돌렸는지. activity payload 와 동일 라벨 도메인
+   * (facade 내부 "codex-oauth" → 사용자/관측 라벨 "codex" 정규화).
+   */
+  adapter: "claude" | "codex" | "openai";
+  /** 사용 모델 (어댑터가 보고하면). spec.model "" (어댑터 디폴트) 거나 미보고면 생략. */
+  model?: string;
+  /** 이 턴(어댑터 run() 호출)의 wall-clock 소요. 항상 채움 (facade 가 측정 — 어댑터 무관). */
+  durationMs: number;
+  /** 항상 true (turn_done 은 성공 종료에만 발행). 분류 가독용 명시 필드. */
+  ok: true;
+  /**
+   * 입력 토큰 (이 턴에 보낸 누적 컨텍스트 proxy). 어댑터가 캡처한 경우만.
+   *  - claude: result `modelUsage[model].inputTokens` — 거의 항상 채워짐.
+   *  - codex : 마지막 turn `response.completed` usage.input_tokens — 거의 항상.
+   *  - openai: RunContext.usage 노출 시 — 스파이크 어댑터라 미보고 빈번 → 생략.
+   * 거짓값 금지 — 못 얻으면 필드 자체를 생략(0 도 박지 않음).
+   */
+  inputTokens?: number;
+  /** 출력 토큰. inputTokens 와 동일 출처·동일 생략 규칙. */
+  outputTokens?: number;
+  /**
+   * 하위 작업 컨텍스트 — self-growth 가 채널 턴 vs 워커 vs 서브에이전트를 구분.
+   *  - subagentDepth: spawn_agent child 면 ≥1, 메인 턴이면 0/생략.
+   *  - workerDepth: 백그라운드 워커 작업이면 ≥1, 메인 턴이면 0/생략.
+   * (depth>0 턴이 자체 turn_done 을 내는 건 정상 — 중복 아님. contract 참조.)
+   */
+  subagentDepth?: number;
+  workerDepth?: number;
+}
+
+export interface RegionATurnErrorPayload {
+  /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 채널. */
+  channel: ChannelName;
+  /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 thread. */
+  threadKey: string;
+  /** 어느 어댑터가 실패했는지 (turn_done 과 동일 라벨 도메인). */
+  adapter: "claude" | "codex" | "openai";
+  /** 시도한 모델 (있으면). spec.model "" 거나 미상이면 생략. */
+  model?: string;
+  /** 실패까지의 wall-clock 소요. 항상 채움 (타임아웃 진단·효율 학습용). */
+  durationMs: number;
+  /** 항상 false. turn_done(ok:true)과 대칭 — 분류 가독용. */
+  ok: false;
+  /**
+   * 실패 분류 (facade 단일 휴리스틱 — 어댑터별 분기 0).
+   *  - "timeout": 1층 유휴 또는 2층 턴 타임아웃(Idle/TurnTimeoutError).
+   *  - "model_rejected": 모델 부재·거부(isModelRejected 매칭) — 폴백 트리거 류.
+   *  - "error": 그 외 일반 실패(네트워크·SDK·빈 응답 throw 등).
+   */
+  errorKind: "timeout" | "model_rejected" | "error";
+  /**
+   * 사람이 읽는 짧은 에러 요약 (errorDetail 결과를 cap). self-growth 가 "이 작업에서
+   * 자꾸 X 에러" 를 군집화하는 학습 입력. PII/대형 본문 방지 위해 길이 cap.
+   */
+  message: string;
+  /** turn_done 과 동형 하위 작업 컨텍스트. */
+  subagentDepth?: number;
+  workerDepth?: number;
 }
 
 // Legacy alias — V1 facade 호환 (plugin 진입점 import 무수정 게이트).

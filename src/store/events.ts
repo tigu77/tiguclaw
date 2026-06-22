@@ -67,7 +67,7 @@ export const listEvents = (opts?: {
 };
 
 /**
- * 한 워커 thread(`worker:<jobId>`)의 *최신* region.a.activity 1건 — list_workers 가
+ * 한 워커 thread(`worker:<jobId>`)의 *최신* llm.activity 1건 — list_workers 가
  * running 워커마다 "마지막: <도구> N분 전" 표시에 사용(stuck 신호 가시화).
  *
  * 어댑터가 흘린 활동 이벤트의 payload.threadKey 가 워커 thread 이고 payload.label 이
@@ -81,7 +81,7 @@ export const getLastWorkerActivity = (
     .prepare(
       `SELECT ts, json_extract(payload, '$.label') AS label
          FROM events
-        WHERE type = 'region.a.activity'
+        WHERE type = 'llm.activity'
           AND json_extract(payload, '$.threadKey') = ?
         ORDER BY id DESC
         LIMIT 1`,

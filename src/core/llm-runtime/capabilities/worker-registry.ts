@@ -219,7 +219,7 @@ export const createWorkerMcpServer = (
           const elapsed = formatElapsed(j.startedAt, end);
           const status = STATUS_LABEL[j.status];
           if (j.status === "running") {
-            // 최근 활동 1건(events 의 region.a.activity, threadKey=`worker:<jobId>`) →
+            // 최근 활동 1건(events 의 llm.activity, threadKey=`worker:<jobId>`) →
             // "마지막: <도구> N분 전". 활동이 오래됐으면 stuck 신호. 워커당 1회 조회(워커
             // 수 적어 OK). 조회 실패는 활동 생략(데몬 생존 — 목록 자체는 항상 나간다).
             let activity = "";

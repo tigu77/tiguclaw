@@ -78,7 +78,7 @@ export const REGION_A_SYSTEM_PROMPT = [
   "- 분담:",
   "  - 룰·선호 (자주 회수, 매 turn 영향 — 한글 커밋·동사 존중·말투 등) → SQLite `add_memory`. 자동 인덱스 prepend 로 빠뜨림 0.",
   "  - 사실·통찰·결정 (가끔 회수, 사용자가 직접 정리 가능 — 프로젝트 결정·중요 통찰·아키텍처 노트 등) → md 파일 (AGENT.md 본문 또는 `<TIGUCLAW_HOME>/data/agent/<topic>.md` + AGENT.md hub 에 reference). git diff·IDE·외부 도구 호환.",
-  "  - 관측 신호 (사용자 부정 신호의 evidence) → SQLite, name=`feedback_obs_<topic>`. 사용자가 「의미없네」·「너무 과해」·「잘못됐어」·「왜 이렇게 했어」·「그게 아니야」 같은 표현 보내면 즉시 `add_memory({type:'feedback', name:'feedback_obs_<topic>', description, body: JSON.stringify({observed: 사용자 원 발언, assumed_cause: 비서 추정, confidence: 0~1})})`. 단발은 무시 (이미 박은 것), 누적 패턴은 self-growth plugin 이 알아서.",
+  "  - 관측 신호 (사용자 부정 신호의 evidence) → SQLite, name=`feedback_obs_<topic>`. 사용자가 「의미없네」·「너무 과해」·「잘못됐어」·「왜 이렇게 했어」·「그게 아니야」 같은 표현 보내면 즉시 `add_memory({type:'feedback', name:'feedback_obs_<topic>', description, body: JSON.stringify({observed: 사용자 원 발언, assumed_cause: 비서 추정, confidence: 0~1})})`. 단발은 무시 (이미 박은 것), 누적 패턴은 하네스가 학습한다.",
   "- 사용자에게 「기억할까요?」 묻지 마세요 — 메모리는 post-hoc 동의 (사용자가 /forget 또는 직접 md 편집으로 거절).",
   "- 기존 메모리 수정 → `update_memory({name, patch})`, 삭제 → `delete_memory({name})`. type (SQLite 한정): user(이름·역할·배경) / feedback(협업·말투·선호) / project(현재 작업·결정·일정) / reference(외부 시스템 포인터).",
 ].join("\n");

@@ -1473,7 +1473,7 @@ export const runOpenAiCodex = async (
     | { inputTokens: number; outputTokens: number; reasoningTokens?: number }
     | undefined;
   let iteration = 0;
-  // region.a.activity — 어댑터 로컬 단조 시퀀스 (iteration 가로질러 누적). nonce 아님.
+  // llm.activity — 어댑터 로컬 단조 시퀀스 (iteration 가로질러 누적). nonce 아님.
   let activitySeq = 0;
   const bus = getEventBus();
   // persistence 보강 (2026-05-27, contract Q3 + recon §5):
@@ -1660,12 +1660,12 @@ export const runOpenAiCodex = async (
       }
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) finalUsage = usage;
-      // region.a.activity — 모델이 호출하려는 도구당 1 activity (실행 성공/실패 무관,
+      // llm.activity — 모델이 호출하려는 도구당 1 activity (실행 성공/실패 무관,
       // 의도 시점이 곧 "무엇을 하려는 중"). callTool 실행 루프와 별개. final-flush(tools:[])
       // turn 은 toolCalls 가 비어 자연히 0 publish.
       for (const tc of toolCalls) {
         bus.publish({
-          type: "region.a.activity",
+          type: "llm.activity",
           ts: Date.now(),
           payload: {
             channel: input.channel,

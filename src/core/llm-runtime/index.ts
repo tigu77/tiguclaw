@@ -30,8 +30,15 @@ import {
   indexCodexTurn,
   indexJsonlIfNeeded,
 } from "../../store/memory.js";
-import type { RegionASdkInput, RegionASdkOutput } from "./types.js";
+import type {
+  RegionASdkInput,
+  RegionASdkOutput,
+  RegionATurnDonePayload,
+  RegionATurnErrorPayload,
+} from "./types.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
+import { IdleTimeoutError } from "./idle-timeout.js";
+import { getEventBus } from "../eventbus.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
@@ -228,6 +235,108 @@ const callAdapter = (
   }
 };
 
+// turn_done/turn_error 의 adapter 라벨 도메인 — 내부 "codex-oauth" → 관측 "codex"
+// (llm.activity payload 와 동일 라벨). claude/openai 는 그대로.
+const adapterLabel = (
+  a: RegionAAdapter,
+): RegionATurnDonePayload["adapter"] =>
+  a === "codex-oauth" ? "codex" : a;
+
+// turn_error message cap — PII/대형 본문이 버스 버퍼에 쌓이지 않게.
+const TURN_ERROR_MESSAGE_CAP = 500;
+
+// 실패 분류 — facade 단일 휴리스틱 (어댑터별 분기 0, 원칙 2). timeout(1·2층) >
+// model_rejected > error 순으로 판정.
+const classifyTurnError = (e: unknown): RegionATurnErrorPayload["errorKind"] => {
+  if (e instanceof TurnTimeoutError || e instanceof IdleTimeoutError) {
+    return "timeout";
+  }
+  if (isModelRejected(errorDetail(e))) return "model_rejected";
+  return "error";
+};
+
+// 견고성(임무 §4) — 발행은 try/catch boundary. 발행 실패가 어댑터 턴/데몬을 절대
+// 못 죽이게 (관측은 best-effort). EventBus 자체도 subscriber throw 를 격리하지만
+// publish 호출 자체(getEventBus 등)의 만일을 위해 한 겹 더 감싼다.
+const publishTurnDone = (
+  spec: ModelSpec,
+  input: RegionASdkInput,
+  output: RegionASdkOutput,
+  durationMs: number,
+): void => {
+  try {
+    const payload: RegionATurnDonePayload = {
+      channel: input.channel,
+      threadKey: input.threadKey,
+      adapter: adapterLabel(spec.adapter),
+      durationMs,
+      ok: true,
+      // 거짓값 금지 — 어댑터가 보고한 경우만 포함(미보고 시 키 생략).
+      ...(output.model !== undefined && output.model !== null && output.model !== ""
+        ? { model: output.model }
+        : spec.model !== ""
+          ? { model: spec.model }
+          : {}),
+      ...(output.usage?.inputTokens !== undefined
+        ? { inputTokens: output.usage.inputTokens }
+        : {}),
+      ...(output.usage?.outputTokens !== undefined
+        ? { outputTokens: output.usage.outputTokens }
+        : {}),
+      ...(input.subagentDepth !== undefined
+        ? { subagentDepth: input.subagentDepth }
+        : {}),
+      ...(input.workerDepth !== undefined
+        ? { workerDepth: input.workerDepth }
+        : {}),
+    };
+    getEventBus().publish({
+      type: "llm.turn_done",
+      ts: Date.now(),
+      payload: payload as unknown as Record<string, unknown>,
+    });
+  } catch (pubErr) {
+    console.error("llm-runtime: turn_done publish failed:", pubErr);
+  }
+};
+
+const publishTurnError = (
+  spec: ModelSpec,
+  input: RegionASdkInput,
+  e: unknown,
+  durationMs: number,
+): void => {
+  try {
+    const detail = errorDetail(e);
+    const payload: RegionATurnErrorPayload = {
+      channel: input.channel,
+      threadKey: input.threadKey,
+      adapter: adapterLabel(spec.adapter),
+      durationMs,
+      ok: false,
+      errorKind: classifyTurnError(e),
+      message:
+        detail.length > TURN_ERROR_MESSAGE_CAP
+          ? `${detail.slice(0, TURN_ERROR_MESSAGE_CAP - 1)}…`
+          : detail,
+      ...(spec.model !== "" ? { model: spec.model } : {}),
+      ...(input.subagentDepth !== undefined
+        ? { subagentDepth: input.subagentDepth }
+        : {}),
+      ...(input.workerDepth !== undefined
+        ? { workerDepth: input.workerDepth }
+        : {}),
+    };
+    getEventBus().publish({
+      type: "llm.turn_error",
+      ts: Date.now(),
+      payload: payload as unknown as Record<string, unknown>,
+    });
+  } catch (pubErr) {
+    console.error("llm-runtime: turn_error publish failed:", pubErr);
+  }
+};
+
 // V5 — 응답 후 어댑터 무관 통합 처리. 어댑터 차이는 jsonlPath 유무로 표현.
 const persistOutput = (
   input: RegionASdkInput,
@@ -332,6 +441,10 @@ const runPool = async (
 ): Promise<RegionASdkOutput> => {
   let lastError: unknown;
   for (const spec of pool) {
+    // self-growth 입력 — 한 어댑터 run() 호출(=한 턴) wall-clock 측정. 발행은 아래
+    // 성공/실패 경로에서 정확히 1회 (turn_done XOR turn_error). 발행 자체는 best-effort
+    // (publishTurnDone/Error 내부 try/catch) — 턴/데몬 안 죽임(임무 §4).
+    const startedAt = Date.now();
     try {
       // model "" → undefined (어댑터 디폴트). input.model 로 주입.
       // provider 운반 — openai 어댑터가 self-lookup 으로 baseURL/apiKey 해석.
@@ -341,9 +454,26 @@ const runPool = async (
         model: spec.model === "" ? undefined : spec.model,
         provider: spec.provider,
       });
-      persistOutput(input, output);
+      // turn_done — 성공 종료 1회 (parity: 세 어댑터 동일 지점). persist 전에 발행해
+      // persist 예외와 무관하게 효율 지표가 남게(persist 는 자체 try/catch 라 throw 0이나
+      // 안전 우선).
+      // internal(분류성 1회 호출) — turn 이벤트 미발행 + persist skip. self-growth 등
+      // 데이터 평면이 자기 분류 호출을 다시 turn 이벤트로 되돌리는 메타-재귀 차단(킬스위치)
+      // + 분류는 대화가 아니므로 transcripts/sessions 미오염. 모델 선택/폴백은 동일 경로라
+      // 어댑터 락인 0.
+      if (input.internal !== true) {
+        publishTurnDone(spec, input, output, Date.now() - startedAt);
+        persistOutput(input, output);
+      }
       return output;
     } catch (e) {
+      // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
+      // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
+      // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
+      // sentinel("uncertain")로 받아 강등하지, self-growth 의 실패 학습 입력이 되면 안 된다.
+      if (input.internal !== true) {
+        publishTurnError(spec, input, e, Date.now() - startedAt);
+      }
       // 2층 턴 타임아웃(§6) — 폴백 단락. 턴 전체가 wall-clock 초과로 죽은 것이라
       // 다음 spec 으로 폴백해봐야 같은 turn signal 이 이미 abort 라 즉시 또 죽는다(무의미).
       // TurnTimeoutError 는 isModelRejected 비매칭(TT-I3)이라 runRegionA 의 override

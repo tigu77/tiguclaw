@@ -303,11 +303,11 @@ export const runOpenAi = async (
   // 첫 turn(히스토리 0) 이면 단일 user item — string 입력과 동치(회귀 0).
   const runInput: AgentInputItem[] = [...historyItems, currentTurn];
 
-  // region.a.activity — coarse floor. run() 이 도구 경계를 외부 노출 안 해 per-tool
+  // llm.activity — coarse floor. run() 이 도구 경계를 외부 노출 안 해 per-tool
   // activity 불가(spike 한계) → run() 1회당 turn activity 1개로 parity 붕괴(0)만 회피.
   const bus = getEventBus();
   bus.publish({
-    type: "region.a.activity",
+    type: "llm.activity",
     ts: Date.now(),
     payload: {
       channel: input.channel,

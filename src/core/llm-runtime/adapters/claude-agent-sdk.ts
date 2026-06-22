@@ -469,7 +469,7 @@ export const runClaude = async (
   let lastModel: string | null = null;
   let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
   let succeeded = false;
-  // region.a.activity — 어댑터 로컬 단조 시퀀스 (turn 시작 0, publish 마다 +1). nonce 아님.
+  // llm.activity — 어댑터 로컬 단조 시퀀스 (turn 시작 0, publish 마다 +1). nonce 아님.
   let activitySeq = 0;
 
   const bus = getEventBus();
@@ -483,7 +483,7 @@ export const runClaude = async (
     // 관측 publish — for-await 흐름 영향 0 (publish 동기 + EventBus 격리).
     // payload 핵심 필드만, 큰 객체는 truncate.
     bus.publish({
-      type: "region.a.sdk_message",
+      type: "llm.sdk_message",
       ts: Date.now(),
       payload: {
         channel: input.channel,
@@ -555,9 +555,9 @@ export const runClaude = async (
             typeof block === "object" &&
             (block as { type?: string }).type === "tool_use"
           ) {
-            // region.a.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
+            // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
             bus.publish({
-              type: "region.a.activity",
+              type: "llm.activity",
               ts: Date.now(),
               payload: {
                 channel: input.channel,

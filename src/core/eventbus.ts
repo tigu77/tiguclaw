@@ -13,7 +13,7 @@
  * backpressure: marketplace 견딤).
  *
  * V1 이벤트 타입 (확장 가능):
- *   channel.message.in / channel.message.out / region.a.sdk_message
+ *   channel.message.in / channel.message.out / llm.sdk_message
  *   memory.write / plugin.error
  */
 

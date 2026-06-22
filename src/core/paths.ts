@@ -49,6 +49,14 @@ export interface TiguclawPaths {
   settings: string;
   /** <home>/SYSTEM.md — α: 앱 정본(appRoot/SYSTEM.md)의 sync-on-boot 미러 (작동 헌법). */
   systemMd: string;
+  /**
+   * <home>/SELF_GROWTH.md — self-growth V4 확정 지침 층 (2026-06-22).
+   * AGENT.md(사용자 인격)·SYSTEM.md(앱 헌법) 와 *동급 홈 위치* 의 제3 markdown.
+   * 코어는 이 파일을 모름 — self-growth 플러그인이 데이터로만 쓰고 읽는다(단방향).
+   * 비서는 `growth_directive_pointer` 메모를 통해 작업 시작 시 이 파일을 Read 한다.
+   * 코어 sysprompt/SYSTEM.md/AGENT.md 무수정(원칙 20) — 파일 쓰기는 *이것만*.
+   */
+  selfGrowthMd: string;
   /** <home>/skills — 공통 스킬 (모든 프로젝트 공유). */
   commonSkills: string;
   /** <home>/agents — 공통 서브에이전트. */
@@ -122,6 +130,7 @@ export const getPaths = (): TiguclawPaths => {
     agentMd: path.join(home, "AGENT.md"),
     settings: path.join(home, "settings.json"),
     systemMd: path.join(home, "SYSTEM.md"),
+    selfGrowthMd: path.join(home, "SELF_GROWTH.md"),
     commonSkills: path.join(home, "skills"),
     commonAgents: path.join(home, "agents"),
     commonCommands: path.join(home, "commands"),

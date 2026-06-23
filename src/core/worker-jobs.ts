@@ -176,7 +176,9 @@ export const __resetJobsForTest = (): void => {
 
 // ─── 워커 전용 타임아웃 (architect §5, W-I6) ─────────────────────────────────
 // 워커는 2층 턴 타임아웃(480s) *제외* — 길게 도는 게 정상. 대신 워커 전용 상한을
-// 기존 abortSignal 메커니즘(turn-timeout.ts 동형)으로 주입. 1층 idle 은 어댑터가 그대로.
+// 기존 abortSignal 메커니즘(turn-timeout.ts 동형)으로 주입. 1층 idle/first 도 워커에선
+// 면제(idleConfigForWorker, 어댑터 wrap — 2026-06-23). 긴 배치의 무이벤트 구간이 정상이라
+// 인터랙티브용 90s idle 이 워커를 오살하던 버그 수정. hung 방어는 이 워커 전용 상한이 담당.
 // 값은 상수+env override (매직넘버 금지, turn-timeout.ts 정책 답습).
 
 const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
@@ -397,46 +399,105 @@ export const registerWorkerHandler = (handler: MessageHandler): void => {
   mainHandler = handler;
 };
 
-/** redact 헬퍼 lazy import 캐시 (모듈 로드 순환 회피 — outbound-sanitize 는 안전하나 일관성). */
-const buildCompletionPrompt = (job: WorkerJobRecord): string => {
+/**
+ * 실패 원인 문자열을 사용자가 *왜 안 됐는지·다음에 뭘 할지* 알 수 있는 한 줄로 정제.
+ *
+ * 통지의 actionable 화 핵심(임무 §2) — generic "실패했습니다" 금지. raw error(어댑터·모델
+ * 포함)는 어댑터 분기 없이(LLM-agnostic) 문자열 휴리스틱으로만 분류한다(facade
+ * isModelRejected 와 동형 — 모델 카탈로그 아님, 에러 *종류* 분류). 미매칭이면 원문 cap.
+ *
+ * 입력 error 는 onWorkerComplete 가 이미 redactSecrets 통과시킨 안전 문자열.
+ */
+const humanizeWorkerError = (raw: string): string => {
+  // codex 사용량 한도(429 usage_limit) — resets_in_seconds 가 있으면 "~N분 후 리셋" 안내.
+  // 사용자가 *언제 다시 시도하면 되는지* 알게(가장 actionable). 양 provider 무관 문자열만.
+  if (/usage_limit_reached|usage limit/i.test(raw)) {
+    const m = raw.match(/resets_in_seconds"\s*:\s*(\d+)/);
+    if (m !== null) {
+      const min = Math.max(1, Math.round(Number(m[1]) / 60));
+      return `LLM 사용량 한도 도달(429) — 약 ${min}분 후 한도가 리셋됩니다. 그 뒤 다시 시켜주세요.`;
+    }
+    return "LLM 사용량 한도 도달(429) — 잠시 후 한도가 리셋되면 다시 시켜주세요.";
+  }
+  // 유휴/턴 타임아웃 — 모델이 응답을 멈춤(거부 아님). 더 작게 쪼개 재시도 권장.
+  if (/유휴 타임아웃|idle|시간 초과|timeout/i.test(raw)) {
+    return "LLM 응답이 멈춰(타임아웃) 완료하지 못했습니다. 작업을 더 작게 쪼개 다시 시켜주세요.";
+  }
+  // 풀 전체 소진 — 모든 어댑터가 동시에 실패(단일 provider 풀 흔들림 등). 원문 일부 보존.
+  if (/모든 어댑터 실패|모델 풀이 비어/i.test(raw)) {
+    return `사용 가능한 LLM 모델이 모두 일시적으로 응답하지 못했습니다. 잠시 후 다시 시켜주세요. (원인: ${raw.slice(0, 160)})`;
+  }
+  // 미분류 — 원문을 길이 cap 해 그대로 노출(사용자=운영자, "에러 다 보이는 게 좋다"). 빈값 방어.
+  const t = raw.trim();
+  return t === "" ? "알 수 없는 오류" : t.slice(0, 400);
+};
+
+/**
+ * 워커 종료를 *LLM 무경유* 로 결정 전달하는 raw 아웃바운드 문구(done/failed/cancelled).
+ *
+ * 안전망 전용 — 정상 경로(LLM 재주입)가 메인 인격으로 자연스럽게 보고하지만, 모델 풀이
+ * 죽어 재주입 turn 마저 실패하면(워커 실패의 흔한 원인과 동일 — codex 429+claude idle)
+ * 통지가 영영 안 가는 deadlock 을 막는다. recoverInterruptedJobs 의 raw 통지와 동형.
+ * failed 는 humanizeWorkerError 로 *왜·언제 다시* 를 담는다(actionable, 임무 §2).
+ */
+const buildRawNotice = (job: WorkerJobRecord): string => {
   if (job.status === "done") {
     return (
-      `〔백그라운드 작업 완료 알림 — 사용자에게 보고하세요〕\n` +
-      `작업: "${job.label}"\n` +
-      `결과:\n${job.result ?? ""}\n` +
-      `〔/알림〕\n\n` +
-      `위 결과를 사용자에게 자연스럽게 보고하세요.`
+      `✅ 백그라운드 작업 '${job.label}'이(가) 완료됐어요.\n` +
+      `결과:\n${job.result ?? "(결과 없음)"}`
     );
   }
   if (job.status === "cancelled") {
+    return `🛑 백그라운드 작업 '${job.label}'을(를) 요청대로 취소했어요.`;
+  }
+  // 부분 진행 힌트 — daemon 경계엔 정확한 처리 건수가 없다(워커 thread 의 부수효과로만
+  // 존재, region 도메인). 카운트를 *지어내지 않고* 일부 진행 가능성을 정직히 안내해
+  // 사용자가 이어서/처음부터 중 결정하게 한다(임무 §3 — feasible 범위 한도).
+  return (
+    `⚠️ 백그라운드 작업 '${job.label}'이(가) 실패했어요.\n` +
+    `원인: ${humanizeWorkerError(job.error ?? "알 수 없는 오류")}\n` +
+    `일부는 처리됐을 수 있어요 — 이어서 할지/처음부터 다시 할지 알려주시면 맞춰 진행할게요.`
+  );
+};
+
+/**
+ * 성공(done) 재주입 prompt — 메인이 결과를 맥락 입혀 보고하게 하는 내부 스캐폴딩.
+ * failed/cancelled 는 onWorkerComplete 가 LLM 무경유 raw 통지(buildRawNotice)로 직행하므로
+ * 이 함수는 done 에만 쓰인다(호출 전 status==="done" 보장). 방어로 비-done 도 일반 문구 반환.
+ */
+const buildCompletionPrompt = (job: WorkerJobRecord): string => {
+  if (job.status !== "done") {
+    // 도달 불가(호출자 가드) — 방어. raw 통지로 가야 할 케이스가 새면 가시화되게 명시 문구.
     return (
-      `〔백그라운드 작업 '${job.label}' 취소 알림 — 사용자에게 알리세요〕\n` +
-      `사용자 요청으로 취소되었습니다.\n` +
-      `〔/알림〕\n\n` +
-      `위 작업이 사용자 요청으로 중단되었음을 자연스럽게 알리세요 (실패가 아니라 취소).`
+      `〔백그라운드 작업 '${job.label}' 종료 알림 (${job.status}) — 사용자에게 알리세요〕\n` +
+      `${job.error ?? ""}\n〔/알림〕`
     );
   }
   return (
-    `〔백그라운드 작업 '${job.label}' 실패 알림 — 사용자에게 정직히 알리세요〕\n` +
-    `원인: ${job.error ?? "알 수 없는 오류"}\n` +
+    `〔백그라운드 작업 완료 알림 — 사용자에게 보고하세요〕\n` +
+    `작업: "${job.label}"\n` +
+    `결과:\n${job.result ?? ""}\n` +
     `〔/알림〕\n\n` +
-    `위 작업이 실패했음을 사용자에게 자연스럽게 알리세요.`
+    `위 결과를 사용자에게 자연스럽게 보고하세요.`
   );
 };
 
 /**
  * region 의 runWorkerJob 이 호출하는 *완료 훅* (인계 경계).
  *
- * 흐름:
- *  1) result/error 로 레지스트리 마킹 (markDone/markFailed).
- *  2) 합성 user-turn(IncomingMessage) 구성 — 원 잡 threadKey/channel/channelUserId,
- *     reply 는 reacquireReply 로 재획득.
- *  3) thread 직렬 큐(enqueueThreadTurn)에 합류 → 메인 핸들러 재진입.
- *     같은 thread 의 유저 interim turn 과 직렬화(race 0, W-I4).
- *  4) 채널로 나가는 텍스트는 메인 핸들러 출력뿐 (W-I1). 워커 출력은 prompt 안 스캐폴딩.
+ * 흐름 (status 분기 — 통지 미도착 0 보장):
+ *  1) result/error 로 레지스트리 마킹 (markDone/markFailed/cancelled 보존).
+ *  2-failed/cancelled) LLM *무경유* raw 아웃바운드 직행(reacquireReply + buildRawNotice).
+ *     워커 실패의 흔한 원인이 모델 풀 소진(429+idle)이라, 같은 죽은 풀로 통지 turn 을 돌리면
+ *     통지마저 침묵하기 때문(2026-06-22 실측). humanizeWorkerError 로 actionable. 메인 thread/
+ *     직렬 큐 미경유(폴러 차단 0). recoverInterruptedJobs 의 raw 통지와 동형.
+ *  2-done) 합성 user-turn 으로 메인 핸들러 재주입(W-I1 — 결과는 맥락 입혀 보고). 재주입을
+ *     await 해 delivered(실제 send 성공) 추적 → 미도달 시 raw 안전망(buildRawNotice)으로
+ *     결과를 결정 전달. mainHandler(serializedHandler)가 *자체* enqueueThreadTurn 단일 직렬화
+ *     하므로 직접 호출(이중 enqueue deadlock 0, 60d1777 유지).
  *
- * region 측은 워커(runRegionA) settle 후 이 함수를 *await 없이* 부르면 된다
- * (재주입은 직렬 큐가 비동기 관리). 본 함수 자체는 throw 하지 않음(데몬 생존, 원칙 3).
+ * 본 함수는 워커의 분리(fire-and-forget) promise 안에서 await 되므로 done 재주입을 await 해도
+ * 채널 폴러·데몬 메인루프를 막지 않는다. 내부 try/catch 로 throw 0(데몬 생존, 원칙 3).
  *
  * @param outcome 성공이면 {result}, 실패면 {error}. error 는 호출자가 redact 후 전달 권장
  *                (방어로 본 모듈도 한 번 더 redact 통과시킨다).
@@ -471,31 +532,85 @@ export const onWorkerComplete = async (
     return;
   }
 
-  // 2) 합성 user-turn 구성. text = 내부 스캐폴딩(메인이 echo 안 하도록 sysprompt +
-  //    stripInternalRuntimeScaffolding 이중 방어). reply = 채널 재획득.
-  const reply = reacquireReply(job.channel, job.threadKey);
+  const baseReply = reacquireReply(job.channel, job.threadKey);
+
+  // ─── 실패/취소 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
+  // failed/cancelled 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
+  // 원인에 보탤 material 이 없으며(원인 문자열이 곧 전부), (c) 워커 실패의 흔한 원인이 모델 풀
+  // 소진(codex 429 + claude idle, 2026-06-22 실측)이라 *같은 죽은 풀로 재주입 turn 을 돌리면
+  // 통지마저 침묵* 한다. → recoverInterruptedJobs 와 동형으로 raw 아웃바운드 직행해 모델
+  // 상태와 무관하게 결정적으로 전달한다(LLM-agnostic — 어댑터·모델 무관). humanizeWorkerError
+  // 가 "왜·언제 다시"(예 429 → ~N분 후 리셋)를 담아 actionable(임무 §2). 채널 직행이라 메인
+  // thread/직렬 큐를 안 타 폴러·메인루프 차단 0(fire-and-forget 격리 유지). 본 함수는 워커의
+  // 분리된 promise 안에서 await 되므로 데몬 메인루프와 무관.
+  if (job.status !== "done") {
+    try {
+      await baseReply(buildRawNotice(job));
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(
+        `worker-jobs: ${job.status} 통지 전송 실패 (job='${job.label}' ${jobId} thread=${job.threadKey}): ${reason}`,
+      );
+    }
+    return;
+  }
+
+  // ─── 성공(done) — 메인 인격 재주입 + raw 안전망 ─────────────────────────────────
+  // 성공 결과는 메인(같은 SYSTEM/AGENT 인격 + thread history)이 맥락 입혀 보고해야 가치가
+  // 산다(W-I1). 단 재주입 turn 도 모델 풀 소진 시 침묵할 수 있으므로 delivered 추적 + raw
+  // 안전망으로 "결과는 무조건 전달" 을 보장한다(통지 미도착 0).
+  //
+  // 합성 user-turn 구성. text = 내부 스캐폴딩(메인이 echo 안 하도록 sysprompt +
+  // stripInternalRuntimeScaffolding 이중 방어). reply 는 delivered 추적으로 감싼다 —
+  // 재주입 turn 이 사용자에게 *실제로* 한 줄이라도 내보냈는지 알아야 안전망 이중 발화를 피한다.
+  let delivered = false;
+  const trackedReply = async (
+    text: string,
+    opts?: ReplyOptions,
+  ): Promise<void> => {
+    await baseReply(text, opts);
+    delivered = true; // send 성공 후에만 마킹 — throw 시 미마킹 → 안전망 발화.
+  };
   const synthetic = {
     channel: job.channel,
     channelUserId: job.channelUserId,
     threadKey: job.threadKey,
     text: buildCompletionPrompt(job),
     receivedAt: Date.now(),
-    reply,
+    reply: trackedReply,
   };
 
-  // 3) 메인 핸들러로 재주입 (유저 interim turn 과 직렬). ★ mainHandler(=serializedHandler)
-  //    가 *자체적으로* enqueueThreadTurn 으로 직렬화하므로 여기서 또 enqueueThreadTurn 으로
-  //    감싸면 같은 thread 에 이중 enqueue → 재진입 deadlock(외부 task 가 내부 task 를
-  //    await 하는데 내부 task 는 외부 tail 을 기다림) → 완료/실패 통지 턴이 영영 실행 안 됨
-  //    (2026-06-20 발견 — 워커 통지 미도착의 원인). 직접 호출해 단일 enqueue 로 닫는다.
-  //    재주입 실패(채널 send throw 등)는 console.error 로 격리(데몬 생존, §7).
+  // 메인 핸들러로 재주입 (유저 interim turn 과 직렬). ★ mainHandler(=serializedHandler)
+  // 가 *자체적으로* enqueueThreadTurn 으로 직렬화하므로 여기서 또 enqueueThreadTurn 으로
+  // 감싸면 같은 thread 에 이중 enqueue → 재진입 deadlock(외부 task 가 내부 task 를 await 하는데
+  // 내부 task 는 외부 tail 을 기다림) → 통지 턴이 영영 실행 안 됨(2026-06-20 발견). 직접 호출해
+  // 단일 enqueue 로 닫는다. 재주입을 *await* 해 delivered 를 본 뒤 안전망을 결정한다 — 이
+  // await 은 워커의 분리 promise 안이라 데몬 메인루프·폴러를 막지 않는다(워커는 fire-and-forget).
   const handler = mainHandler;
-  void handler(synthetic).catch((e) => {
+  try {
+    await handler(synthetic);
+  } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(
       `worker-jobs: 완료 재주입 실패 (job='${job.label}' ${jobId} thread=${job.threadKey}): ${reason}`,
     );
-  });
+  }
+
+  // 안전망 — 재주입 turn 이 사용자에게 아무것도 못 보냈으면(모델 풀 소진·채널 throw 등) LLM
+  // 무경유 raw 통지로 결과를 결정 전달한다. delivered=true 면(LLM 이 이미 보고) 생략 → 이중 0.
+  if (!delivered) {
+    try {
+      await baseReply(buildRawNotice(job));
+      console.warn(
+        `worker-jobs: 완료 재주입 통지 미도달 — raw 안전망 통지 발화 (job='${job.label}' ${jobId})`,
+      );
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(
+        `worker-jobs: raw 안전망 통지마저 실패 (job='${job.label}' ${jobId}): ${reason}`,
+      );
+    }
+  }
 };
 
 // ─── 부팅 복구 (option b, 2026-06-19) ────────────────────────────────────────

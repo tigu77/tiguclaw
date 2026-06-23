@@ -60,6 +60,7 @@ import {
   createIdleTimer,
   IdleTimeoutError,
   IDLE_TIMEOUT_CONFIG,
+  idleConfigForWorker,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import type {
@@ -325,8 +326,13 @@ export const runOpenAi = async (
   // (재구현 0). 각 스트림 이벤트 = heartbeat → idle 타이머 reset. abort 시 signal 전파.
   // finalOutput·context.usage 출력 계약은 StreamedRunResult 에도 동일 형상으로 존재 →
   // 회귀 0 (아래 text/usage 추출 무변경).
+  // 워커(workerDepth≥1)는 1층 idle/first 면제 — 길게 도는 게 정상(2층 WORKER_TIMEOUT_MS
+  // 안전망이 별도 상한). 인터랙티브(workerDepth 0)는 base 그대로(회귀 0). idleConfigForWorker.
   const idleAc = new AbortController();
-  const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+  const idleTimer = createIdleTimer(
+    idleAc,
+    idleConfigForWorker(input.workerDepth, IDLE_TIMEOUT_CONFIG),
+  );
   // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합. effectiveAc.signal
   // 을 run() 에 주입하면 @openai/agents 가 전체 run 루프(LLM 호출 + listTools/callTool)에
   // 적용한다 (SharedRunOptions.signal). input.abortSignal 미지정이면 idleAc 만 → 현행(TT-I7).

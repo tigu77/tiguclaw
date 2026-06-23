@@ -82,6 +82,46 @@ export const idleConfigForInput = (inputChars: number): IdleTimeoutConfig => ({
   firstMs: firstTimeoutForInput(inputChars),
 });
 
+// ── 워커(workerDepth≥1) idle/first 면제 ─────────────────────────────────────
+// 1층 idle/first 타임아웃은 *인터랙티브* 턴 가정의 산물 — 사용자가 응답을 대기하므로
+// 90s 무이벤트면 끊는 게 옳다. 그러나 백그라운드 워커(workerDepth≥1)는 길게 도는 게
+// 정상(예: 712개 API 단일 Bash)이라 90s+ 무이벤트가 결함 아님 — idle 이 정상 워커를
+// 오살(false-kill)한다. 워커는 이미 2층 turn(480s) *제외*(worker-jobs.ts:178)이고
+// hung 안전망은 WORKER_TIMEOUT_MS(30분 wall-clock, abortSignal 경로)가 별도로 건다.
+// 따라서 1층 idle/first 는 워커에선 사실상 무제한으로 비활성.
+//
+// 왜 분기가 #2(어댑터별 특수분기 금지)에 안 걸리나: workerDepth 는 *입력 속성*
+// (RegionASdkInput.workerDepth)이지 어댑터 종류가 아니다. 세 어댑터가 동일 헬퍼를
+// 동일 workerDepth 로 호출 → LLM-agnostic·parity 유지. "worker vs interactive" 분기는
+// 의도된 입력 차원 분기다(#2 가 금하는 "claude/codex 별 if" 아님).
+//
+// first 도 면제하는 근거: 워커의 첫 도구(예: 거대 Bash, 느린 외부 API 워밍업)까지
+// 120s 가 넘을 수 있다. first 만 살리면 같은 종류의 오살이 *첫 이벤트 전*에 재발한다.
+// 워커의 연결-스톨 방어는 1층 first 가 아니라 2층 WORKER_TIMEOUT_MS(30분 + 하드 grace)가
+// 담당하므로 first 도 함께 비활성하는 게 일관적이다(idle 면제와 동일 논리).
+
+/** 워커 면제용 사실상-무제한 한계(ms). setTimeout 32-bit 상한 미만으로 안전(~24.8일). */
+const WORKER_IDLE_DISABLED_MS = 2_147_400_000;
+
+/**
+ * workerDepth 를 반영한 idle/first 설정.
+ *
+ *  - workerDepth 0/생략(인터랙티브) → `base` 그대로(회귀 0).
+ *  - workerDepth≥1(백그라운드 워커) → idle/first 사실상 무제한(비활성). 워커는 2층
+ *    WORKER_TIMEOUT_MS 안전망이 별도로 상한을 건다.
+ *
+ * 세 어댑터가 createIdleTimer 직전 이 함수로 cfg 를 감싼다 → 단일 정책·parity.
+ */
+export const idleConfigForWorker = (
+  workerDepth: number | undefined,
+  base: IdleTimeoutConfig = IDLE_TIMEOUT_CONFIG,
+): IdleTimeoutConfig => {
+  if ((workerDepth ?? 0) >= 1) {
+    return { idleMs: WORKER_IDLE_DISABLED_MS, firstMs: WORKER_IDLE_DISABLED_MS };
+  }
+  return base;
+};
+
 /**
  * 유휴/첫토큰 타임아웃 에러.
  *

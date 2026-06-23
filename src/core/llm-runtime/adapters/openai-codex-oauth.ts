@@ -96,6 +96,7 @@ import {
   createIdleTimer,
   IdleTimeoutError,
   idleConfigForInput,
+  idleConfigForWorker,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 
@@ -1579,7 +1580,12 @@ export const runOpenAiCodex = async (
       // 고정 first 타임아웃을 오발화시킬 수 있으므로, first 를 payload 크기에 비례해 늘린다
       // (idle 은 불변). 단일 stringify 로 sizing + fetch body 둘 다 사용(이중 직렬화 회피).
       const bodyJson = JSON.stringify(body);
-      const idleTimer = createIdleTimer(idleAc, idleConfigForInput(bodyJson.length));
+      // 워커(workerDepth≥1)는 1층 idle/first 면제 — 길게 도는 게 정상(2층 WORKER_TIMEOUT_MS
+      // 안전망이 별도 상한). 인터랙티브는 입력-비례 base 그대로(회귀 0). idleConfigForWorker.
+      const idleTimer = createIdleTimer(
+        idleAc,
+        idleConfigForWorker(input.workerDepth, idleConfigForInput(bodyJson.length)),
+      );
       // 2층 합성 (TT-I2) — 1층 idle AC(이 iteration 의 fetch 용)와 핸들러 turn signal 을
       // OR 결합. effectiveAc.signal 을 fetch 에 주입하면 LLM 스트림 구간은 둘 중 하나
       // abort 시 끊긴다. (도구 실행 구간은 callTool 이 signal 미전달 — §4.4 루프 가드로

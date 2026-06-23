@@ -78,6 +78,7 @@ import {
   createIdleTimer,
   IdleTimeoutError,
   IDLE_TIMEOUT_CONFIG,
+  idleConfigForWorker,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import type {
@@ -358,8 +359,13 @@ export const runClaude = async (
   // 유휴 타임아웃 — SDK `Options.abortController` 경로 (runtimeTypes.d.ts:234,
   // "stop and clean up resources"). idle/first 만료 시 헬퍼가 ac.abort(IdleTimeoutError).
   // heartbeat = for-await msg 도착마다. timer.done() = finally (누수 0, I-6).
+  // 워커(workerDepth≥1)는 1층 idle/first 면제 — 길게 도는 게 정상(2층 WORKER_TIMEOUT_MS
+  // 안전망이 별도 상한). 인터랙티브(workerDepth 0)는 base 그대로(회귀 0). idleConfigForWorker.
   const idleAc = new AbortController();
-  const idleTimer = createIdleTimer(idleAc, IDLE_TIMEOUT_CONFIG);
+  const idleTimer = createIdleTimer(
+    idleAc,
+    idleConfigForWorker(input.workerDepth, IDLE_TIMEOUT_CONFIG),
+  );
   // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합. idleTimer 는
   // 여전히 *원래 idleAc* 를 abort 하고, linkAbort 가 그걸 effectiveAc 로 전파한다
   // (결선 순서: idleAc abort → effectiveAc abort). SDK 는 signal 이 아닌

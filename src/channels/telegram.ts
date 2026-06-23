@@ -346,13 +346,25 @@ export class TelegramChannel implements Channel {
       const heartbeat = setInterval(() => {
         void ctx.replyWithChatAction("typing").catch(() => {});
       }, 4000);
-      try {
-        await handler(msg);
-      } catch (e) {
-        console.error("telegram handler error:", e);
-      } finally {
-        clearInterval(heartbeat);
-      }
+      // ── 비차단 발사 (CLI cli.ts:36 동형) ──────────────────────────────────
+      // 폴러는 턴을 *기다리지 않는다*. `await handler(msg)` 로 직렬화하면 한 턴이
+      // 안 끝날 때 grammy 순차 폴러가 동결 → 채널 전체(모든 대화) 무응답 (a05c368
+      // 11h outage 의 구조적 원인). 발사만 하고 즉시 다음 update 로 넘어가면, 긴/hung
+      // 턴은 그 thread(대화)만 막고 채널·다른 thread 는 정상. thread별 순서는
+      // serializedHandler(enqueueThreadTurn)가 보장하므로 같은 대화 내 순서·typing 정상.
+      //
+      // typing heartbeat 는 `await ... finally` 가 아니라 **턴 Promise 에 재배선** —
+      // 폴러가 p 를 await 안 해도 typing 은 턴 진행 동안 살아있고 settle 시 정확히 멈춘다
+      // (누수 0). handler 에러는 .catch 로 흡수 — 폴러 루프(unhandled rejection)를
+      // 죽이지 않게(cli.ts 동형). 버려진 promise·LLM 연결이 hung thread 에 묶이는 건
+      // 허용(사용자 원칙: turn-abandon ≫ daemon-freeze), heartbeat clear 만 보장.
+      void handler(msg)
+        .catch((e) => {
+          console.error("telegram handler error:", e);
+        })
+        .finally(() => {
+          clearInterval(heartbeat);
+        });
     });
 
     // 첨부 핸들러 (사진/문서/음성/오디오/영상). message:text 와 병렬·독립.
@@ -397,6 +409,10 @@ export class TelegramChannel implements Channel {
           void ctx.replyWithChatAction("typing").catch(() => {});
         }, 4000);
 
+        // 다운로드(acquireAttachment)는 await 유지 — 첨부 데이터가 handler 입력에 필요해
+        // 발사 전 완료돼야 한다. 다운로드는 보통 짧음. (다운로드 자체 비차단화는 별건 — 본
+        // P0 핵심은 "턴 발사 비차단".) 다운로드 I/O 실패는 acquireAttachment 가 acquired.note
+        // 로 흡수하므로 여기 throw 면 아래 catch 가 잡고 finally 가 heartbeat clear.
         try {
           const caption = ctx.message.caption?.trim() ?? "";
           const acquired = await acquireAttachment(ctx, token, "telegram", receivedAtSeconds);
@@ -411,7 +427,13 @@ export class TelegramChannel implements Channel {
             acquired.attachment !== undefined ? [acquired.attachment] : undefined;
 
           // text·attachments 둘 다 비면 drop (message:text 의 빈 텍스트 가드 정합 확장).
-          if (text.length === 0 && attachments === undefined) return;
+          // ★ handler 발사 *전* early-return 이라 아래 비차단 .finally(clearInterval) 이
+          // 안 걸린다 — 여기서 명시 clear 안 하면 heartbeat 누수(QA P0 지적). text 핸들러엔
+          // 없던 분기(첨부 전용)라 별도 가드 필요.
+          if (text.length === 0 && attachments === undefined) {
+            clearInterval(heartbeat);
+            return;
+          }
 
           const msg: IncomingMessage = {
             channel: "telegram",
@@ -435,10 +457,27 @@ export class TelegramChannel implements Channel {
               }
             },
           };
-          await handler(msg);
+          // ── 비차단 발사 (text 핸들러·cli.ts 동형) ─────────────────────────
+          // 폴러는 턴을 *기다리지 않는다*. await handler 로 직렬화하면 사진+긴 캡션 한 턴이
+          // settle 까지 grammy 순차 폴러를 동결 → 채널 전체 무응답(11h outage 재발 경로,
+          // blast radius=채널 전체). 발사만 하고 즉시 반환하면 hung 턴은 그 thread 큐에만
+          // 격리되고 채널·다른 thread 는 정상. thread별 순서는 serializedHandler
+          // (enqueueThreadTurn)가 보장. heartbeat 는 턴 Promise.finally 에 재배선 — 폴러가
+          // await 안 해도 typing 은 턴 진행 동안 살아있고 settle 시 정확히 clear(누수 0).
+          // handler 에러는 .catch 로 흡수 — 폴러 루프(unhandled rejection) 안 죽게.
+          void handler(msg)
+            .catch((e) => {
+              console.error("telegram attachment handler error:", e);
+            })
+            .finally(() => {
+              clearInterval(heartbeat);
+            });
         } catch (e) {
-          console.error("telegram attachment handler error:", e);
-        } finally {
+          // 발사 *전* 동기/다운로드(acquireAttachment) 경로 throw 만 여기 도달. 비차단 발사
+          // 이후엔 turn 에러가 위 .catch 로 흡수되므로 이 catch 로 오지 않는다. 발사 전
+          // throw 면 heartbeat 가 아직 도는 상태라 여기서 명시 clear 필요(위 early-return
+          // 가드와 동일 이유 — finally 제거로 인한 누수 차단).
+          console.error("telegram attachment acquire error:", e);
           clearInterval(heartbeat);
         }
       },

@@ -136,7 +136,11 @@ export const runOpenAi = async (
         await adaptClaudeMcpServer(fileOpsMcpServer, "file-ops"),
         await adaptClaudeMcpServer(todoMcpServer, "todo"),
         await adaptClaudeMcpServer(
-          createSkillInvokeMcpServer(discoveryCwd),
+          createSkillInvokeMcpServer(discoveryCwd, {
+            channel: input.channel,
+            threadKey: input.threadKey,
+            adapter: "openai",
+          }),
           "skills",
         ),
         await adaptClaudeMcpServer(

@@ -229,6 +229,35 @@ export interface RegionAActivityPayload {
 }
 
 /**
+ * skill.invoked — LLM-agnostic 스킬 호출 관측 이벤트 (텔레메트리 Phase 1.5).
+ *
+ * 진실 소스: `_workspace/skill_telemetry_architect_contract.md` §2.1.
+ *
+ * invoke_skill MCP 핸들러가 스킬 본문을 *성공 반환*하는 단일 지점에서 발행한다
+ * (skill-registry.ts `createSkillInvokeMcpServer`). 세 어댑터(claude/codex/openai)가
+ * 같은 팩토리를 per-call 호출하므로 발행 코드 한 벌 = 자동 parity(어댑터별 분기 0,
+ * 원칙 2 하드게이트). 미발견·에러 분기는 발행 안 함 — "실제 호출"만 카운트.
+ *
+ * EventBus publish 시:
+ *   { type: "skill.invoked", ts: Date.now(), payload: SkillInvokedPayload }
+ *
+ * generic 이벤트(turn_done·llm.activity 동형) — 코어는 *어느 스킬인지* 의미를 모름.
+ * self-growth(데이터 평면)가 유일 구독자로 skill_usage 에 누적·P2 거버넌스 상관에 소비.
+ * 코어는 skill_usage·self-growth 를 모른다(단방향). `ts` 는 EventBus 봉투에 있다
+ * (payload 중복 금지 — turn_done 답습).
+ */
+export interface SkillInvokedPayload {
+  /** 호출된 스킬명 (invoke_skill args.name 그대로). 어느 스킬이든 generic. */
+  name: string;
+  /** 표시·상관(P2)용 라벨 — 트리거 메시지의 채널. RegionAActivityPayload 동형. */
+  channel: ChannelName;
+  /** 표시·상관(P2)용 라벨 — 트리거 메시지의 thread. 세그먼트 상관 키. */
+  threadKey: string;
+  /** 어느 어댑터 경로에서 호출됐는지 — parity 가시화(분기 키 아님). */
+  adapter: "claude" | "codex" | "openai";
+}
+
+/**
  * llm.turn_done / llm.turn_error — LLM-agnostic per-turn 종료 신호 (self-growth 입력).
  *
  * 진실 소스: `_workspace/selfgrowth_events_region_contract.md`.

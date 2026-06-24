@@ -321,7 +321,11 @@ export const runClaude = async (
         // invoke_skill 실행 경로 (모든 소스 — home/project/plugin). 격리 모드라
         // .claude/skills 자동발견 0 → 이 in-process MCP 가 유일 실행 경로. cwd 는
         // 위 options.cwd·아래 스킬 인덱스(discoverSkills)와 동일 소스 → 인덱스↔invoke 정합.
-        skills: createSkillInvokeMcpServer(cwd),
+        skills: createSkillInvokeMcpServer(cwd, {
+          channel: input.channel,
+          threadKey: input.threadKey,
+          adapter: "claude",
+        }),
         // reply-intent — 이 turn 응답을 트리거 메시지 직접 답글로 마킹 (codex 와 parity).
         "reply-intent": replyIntentServer,
         // send-file — 네이티브 멱등 아웃바운드 전송. 채널 전송 클로저가 있을 때만 등록

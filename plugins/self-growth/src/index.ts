@@ -27,6 +27,15 @@ import {
   searchMemories,
 } from "../../../src/store/memory.js";
 import { getPaths } from "../../../src/core/paths.js";
+// V5 (2026-06-24) — 스킬화 제안. persisted llm.activity 조회 헬퍼(getLastWorkerActivity
+// 동형, 복수행). 코어 이벤트·payload 무수정 — store SELECT 만 추가.
+import { getRecentActivities } from "../../../src/store/events.js";
+// 텔레메트리 (2026-06-24) — 스킬 사용 장기 누적 카운트(upsert) + P2 시점 상관 조회.
+// 코어는 skill_usage 를 모름 — self-growth 가 generic skill.invoked 를 데이터로만 소비.
+import {
+  recordSkillInvocation,
+  getRecentSkillInvocations,
+} from "../../../src/store/skill-usage.js";
 // V4 (2026-06-22) — 확정 지침 층. 저위험 통과분을 reference 메모 대신 SELF_GROWTH.md
 // 에 upsert(키 덮어쓰기·이중저장 0). 코어는 이 파일을 모름 — self-growth 가 데이터로만.
 import {
@@ -89,10 +98,57 @@ export const LEGACY_LESSON_PREFIX = "growth_failure_lesson_";
 // 실패 지침의 SELF_GROWTH.md 그룹 라벨(사람이 읽는 분류).
 export const FAILURE_DIRECTIVE_GROUP = "failure";
 
+// ─── V5 (2026-06-24) — 스킬화 제안 (반복 작업 능동 감지 → suggester) ───────────
+// 진실 소스: _workspace/skill_proposal_architect_contract.md + ADR
+// 2026-06-24-self-growth-skill-proposal.md. 신호 = persisted llm.activity 도구
+// 시퀀스 fingerprint. 코어 무수정 — 기존 events 조회·reflection 층·maintenance
+// interval 재사용(신규 코어 기계 0).
+//
+// 임계 — V3 REPEAT_THRESHOLD 답습(단발·우연 2회 무시, 서로 다른 세그먼트 N회).
+export const SKILL_PROPOSAL_THRESHOLD = REPEAT_THRESHOLD; // = 3
+// 연속 activity 간 간격이 이 이하면 같은 세그먼트(=1 작업 근사). turnId 부재의 근사.
+export const SEGMENT_GAP_MS = 5 * 60 * 1000; // 5분
+// 세그먼트 fingerprint 의 최소 고유 도구 종류 — 미달이면 fingerprint 안 만듦.
+// 단일 Read 류 trivial·openai coarse turn(도구 0) 자연 제외(어댑터 분기 아님 = 신호 게이트).
+export const MIN_DISTINCT_TOOLS = 2;
+// 제안 reflection name prefix — growth namespace(isSelfNamespace) → 메타재귀 skip 자동.
+export const SKILL_PROPOSAL_PREFIX = `feedback_${SELF_NAMESPACE}_skill_proposal_`;
+// events 스캔 윈도 — 배치마다 전체 10k 재집계 회피(최근 N일분만). cap 도 둠.
+export const SKILL_PROPOSAL_SCAN_DAYS = 14;
+export const SKILL_PROPOSAL_SCAN_LIMIT = 5000;
+// §5 제외 — 메타·거버넌스 스킬/하네스 이름(도구 label 에 이 토큰이 들어가면 제안 skip).
+// activity fingerprint 는 도구 시퀀스라 스킬명을 직접 담진 않지만, 거버넌스 작업이
+// 자기 이름 도구(예: harness 발화·skill 호출)를 쓰면 label 에 묻어 나올 수 있어 방어.
+export const GOVERNANCE_TOKENS: readonly string[] = [
+  "harness",
+  "principle-check",
+  "tiguclaw-orchestrator",
+  "sync-public",
+  "code-review",
+  "daemon-health-check",
+  "claude-code-parity-audit",
+  "integration-qa",
+  "schedule-safety-check",
+  "self-growth",
+  "skill_proposal",
+];
+
 interface MemoryWritePayload {
   name?: string;
   memoryType?: string;
   action?: string;
+}
+
+/**
+ * skill.invoked generic 이벤트 payload — region(invoke_skill MCP 단일 지점)이 발행.
+ * 코어 `SkillInvokedPayload`(types.ts)와 구조 동형이나 self-growth 는 *구조적으로만*
+ * 소비(코어 타입 import 안 함 — 단방향, 데이터로만). name 만 필수 사용, 나머지 optional.
+ */
+interface SkillInvokedPayload {
+  name?: string;
+  channel?: string;
+  threadKey?: string;
+  adapter?: string;
 }
 
 /**
@@ -778,6 +834,290 @@ export const cleanupStaleReflections = (
   return targets.length;
 };
 
+// ─── V5 — 스킬화 제안 (반복 작업 능동 감지 → suggester) ───────────────────────
+// 진실 소스: _workspace/skill_proposal_architect_contract.md §2·§3·§5·§6.
+// 순수 함수 + maintenance interval 배치 스캔. 코어 무수정·단방향 보존.
+
+/** 세그먼트화 입력 1행 — getRecentActivities 산출(threadKey/ts/label/kind). */
+export interface ActivityRow {
+  threadKey: string;
+  ts: number;
+  label: string;
+  kind: string;
+}
+
+/** turn 근사 세그먼트 — 같은 threadKey 의 시간 인접 activity 묶음(=1 작업 근사). */
+export interface ActivitySegment {
+  threadKey: string;
+  startTs: number;
+  endTs: number;
+  /** kind:"tool" label 들(원순서, 정규화 전). fingerprint 가 여기서 파생. */
+  toolLabels: string[];
+}
+
+/**
+ * 메타재귀 §6-2 — skill_proposal 집계는 *사용자 채널 threadKey 만* 대상.
+ * worker:/internal/self 경로 threadKey 는 제외(self-growth 자기 산출물발 활동·
+ * 내부 분류 호출이 fingerprint 로 재트리거되는 루프 차단). 방어적 화이트리스트 아닌
+ * 블랙리스트 — 미래 사용자 채널 추가 시 코드 변경 0(원칙: 채널 분기 금지).
+ */
+export const isAggregableThreadKey = (threadKey: string): boolean => {
+  const k = threadKey.toLowerCase();
+  if (k.startsWith("worker:")) return false;
+  if (k.startsWith("internal:")) return false;
+  if (k.startsWith("internal")) return false;
+  if (k.includes(SELF_NAMESPACE)) return false; // self-growth 경로 방어
+  return true;
+};
+
+/**
+ * persisted llm.activity 행들을 `(threadKey, SEGMENT_GAP_MS)` 로 turn 근사
+ * 세그먼트화. 입력은 store 가 `(threadKey ASC, ts ASC)` 정렬해 줬다고 가정하나,
+ * 방어적으로 threadKey 별 그룹핑 후 ts 재정렬한다(순수 함수 — 입력 순서 비의존).
+ *
+ * 규칙(§2.1): 같은 threadKey 안에서 연속 activity 간 간격 ≤ gapMs 면 같은 세그먼트.
+ * 초과 시 새 세그먼트. kind:"tool" 만 toolLabels 에 수집(turn coarse floor 는 도구
+ * 신호 아님 — openai 자연 제외). worker/internal threadKey 는 §6-2 로 사전 제외.
+ */
+export const segmentActivities = (
+  rows: ActivityRow[],
+  gapMs: number = SEGMENT_GAP_MS,
+): ActivitySegment[] => {
+  // threadKey 별 그룹.
+  const byThread = new Map<string, ActivityRow[]>();
+  for (const r of rows) {
+    if (!isAggregableThreadKey(r.threadKey)) continue; // §6-2 메타재귀
+    const list = byThread.get(r.threadKey);
+    if (list === undefined) byThread.set(r.threadKey, [r]);
+    else list.push(r);
+  }
+
+  const segments: ActivitySegment[] = [];
+  for (const [threadKey, list] of byThread) {
+    list.sort((a, b) => a.ts - b.ts); // 방어적 시간순
+    let cur: ActivitySegment | null = null;
+    for (const r of list) {
+      if (cur === null || r.ts - cur.endTs > gapMs) {
+        // 새 세그먼트 시작 — 직전 세그먼트 확정.
+        if (cur !== null) segments.push(cur);
+        cur = { threadKey, startTs: r.ts, endTs: r.ts, toolLabels: [] };
+      }
+      cur.endTs = r.ts;
+      if (r.kind === "tool") cur.toolLabels.push(r.label);
+    }
+    if (cur !== null) segments.push(cur);
+  }
+  return segments;
+};
+
+/**
+ * 세그먼트 → fingerprint(§2.1 정규화). null 이면 fingerprint 미생성:
+ *  - 고유 도구 종류 < MIN_DISTINCT_TOOLS (단일 Read 류 trivial · openai coarse turn),
+ *  - 거버넌스 토큰 포함(§5 제외 — 메타·거버넌스 작업).
+ *
+ * 정규화: label 소문자 → 연속 중복 도구 1개로 접기 → `|` join. 인자·경로는 label 에
+ * 없음(도구명만)이라 자연 충족.
+ */
+export const fingerprintSegment = (seg: ActivitySegment): string | null => {
+  const raw = seg.toolLabels.map((l) => l.toLowerCase().trim()).filter((l) => l.length > 0);
+  if (raw.length === 0) return null;
+
+  // §5 제외 — 거버넌스 토큰이 도구 label 에 묻어 나오면 제안 대상 아님.
+  for (const l of raw) {
+    for (const tok of GOVERNANCE_TOKENS) {
+      if (l.includes(tok)) return null;
+    }
+  }
+
+  // 연속 중복 접기.
+  const folded: string[] = [];
+  for (const l of raw) {
+    if (folded.length === 0 || folded[folded.length - 1] !== l) folded.push(l);
+  }
+
+  // 최소 고유 도구 게이트 — openai coarse turn(도구 0)·trivial 자연 제외.
+  const distinct = new Set(folded);
+  if (distinct.size < MIN_DISTINCT_TOOLS) return null;
+
+  return folded.join("|");
+};
+
+/** fingerprint → 사람이 읽는 도구 시퀀스(인덱스 description 용). */
+export const fingerprintToHuman = (fingerprint: string): string =>
+  fingerprint
+    .split("|")
+    .map((t) => (t.length > 0 ? t[0]!.toUpperCase() + t.slice(1) : t))
+    .join(" → ");
+
+/** fingerprint → 멱등 reflection name slug(§3, [^a-z0-9]+→_, cap 60). */
+export const fingerprintSlug = (fingerprint: string): string =>
+  fingerprint.replace(/[^a-z0-9]+/gi, "_").slice(0, 60);
+
+/** P2 시점 상관 1건 — skill.invoked 의 (스킬명, threadKey, ts). store 가 events 경유 제공. */
+export interface SkillInvoke {
+  name: string;
+  threadKey: string;
+  ts: number;
+}
+
+/**
+ * ★P2 정통 수정 (이름 기반 거버넌스 제외) — 계약 §5.2.
+ *
+ * 세그먼트 `(threadKey, [startTs,endTs])` 윈도에 *거버넌스 스킬* invoked 가 겹치면 그
+ * 세그먼트를 제안 후보에서 제외한다. V5 의 도구-label fingerprint 토큰 추측(QA P2:
+ * 스킬명이 invoke_skill *인자* 라 label 에 거의 안 묻어남 → 못 거름)을 *이름 상관*으로
+ * 교체 — 이제 skill.invoked.name 으로 스킬명을 직접 안다(오탐 0).
+ *
+ * 거버넌스 판정은 GOVERNANCE_TOKENS(데이터 평면) substring — harness·principle-check
+ * 등 자기 면제(메타재귀). fingerprintSegment 의 도구-label 매칭은 §5.3 잔존 방어로
+ * OR 유지(둘 중 하나 걸리면 제외 — 오탐만 줄고 누락은 안 늘림).
+ */
+export const isGovernanceSegment = (
+  seg: ActivitySegment,
+  govInvokes: SkillInvoke[],
+): boolean =>
+  govInvokes.some(
+    (g) =>
+      g.threadKey === seg.threadKey &&
+      g.ts >= seg.startTs &&
+      g.ts <= seg.endTs &&
+      GOVERNANCE_TOKENS.some((tok) => g.name.toLowerCase().includes(tok)),
+  );
+
+/**
+ * activity 행들을 세그먼트화 → fingerprint 별 *서로 다른* 세그먼트 수 집계.
+ * fingerprint(null 제외)만 카운트. evidence(샘플 세그먼트 근거)도 함께 모은다(≤3).
+ *
+ * `govInvokes` (P2): 스캔 윈도의 skill.invoked 시점 상관. 거버넌스 스킬이 겹친
+ * 세그먼트는 fingerprint 전에 제외(이름 기반, 계약 §5.2). 미지정/빈 배열이면 §5.3
+ * 잔존 방어(fingerprintSegment 도구-label)만 작동 — 회귀 0.
+ */
+export const aggregateFingerprints = (
+  rows: ActivityRow[],
+  gapMs: number = SEGMENT_GAP_MS,
+  govInvokes: SkillInvoke[] = [],
+): Map<string, { count: number; samples: string[]; human: string }> => {
+  const segs = segmentActivities(rows, gapMs);
+  const acc = new Map<string, { count: number; samples: string[]; human: string }>();
+  for (const seg of segs) {
+    // ★P2 — 거버넌스 스킬 invoked 가 이 세그먼트에 겹치면 제외(이름 상관).
+    if (isGovernanceSegment(seg, govInvokes)) continue;
+    const fp = fingerprintSegment(seg);
+    if (fp === null) continue;
+    const entry = acc.get(fp) ?? {
+      count: 0,
+      samples: [],
+      human: fingerprintToHuman(fp),
+    };
+    entry.count += 1;
+    if (entry.samples.length < 3) {
+      entry.samples.push(`${seg.threadKey}@${new Date(seg.startTs).toISOString()}`);
+    }
+    acc.set(fp, entry);
+  }
+  return acc;
+};
+
+/**
+ * 단일 fingerprint 후보 분석 → 임계·멱등·growth skip 통과 시 reflection 1건 박기.
+ * 자동 박기 경로 *없음* — 전부 reflection(suggester, §4-3 불변식). null 이면 미박기.
+ *
+ * 순수성: 박기(addMemory)는 부수효과지만 V3 analyzeRepeatedSegment 선례 답습.
+ * 멱등 — 같은 fingerprintSlug reflection 이 이미 있으면 재박기 skip(§6-3·§2 멱등).
+ */
+export const analyzeSkillProposal = (
+  fingerprint: string,
+  count: number,
+  evidence: { samples: string[]; human: string },
+  threshold: number = SKILL_PROPOSAL_THRESHOLD,
+): { reflectionName: string } | null => {
+  if (count < threshold) return null; // 단발·미달 무시(§2.2)
+
+  const slug = fingerprintSlug(fingerprint);
+  if (slug.length === 0) return null;
+  const reflectionName = `${SKILL_PROPOSAL_PREFIX}${slug}`;
+
+  // growth namespace skip(§6-1) — reflectionName 자체가 growth 라 자기분석 안 됨.
+  // 멱등(§2·§6-3) — 이미 박힌 후보 재박 금지.
+  if (getMemory(reflectionName) !== undefined) return null;
+
+  const description =
+    `반복 작업 감지: '${evidence.human}' 패턴이 ${count}회 — 스킬화하면 반복 절약 가능. ` +
+    `사용자에게 'harness 로 스킬 만들까요?' 확인 후 결정 (suggester).`;
+
+  const body = JSON.stringify(
+    {
+      kind: "skill_proposal",
+      observed_fingerprint: fingerprint,
+      tool_sequence_human: evidence.human,
+      evidence_count: count,
+      sample_segments: evidence.samples,
+      confidence: 0.4,
+      assumed_significance:
+        "같은 도구 시퀀스 반복 = 절차화 가능한 작업 후보(행동 지문 근사 — 의미 동일성은 사용자·비서 확인 단계 판정).",
+      suggested_action:
+        "비서가 사용자에게 이 작업을 harness:harness 로 스킬화할지 명시 확인. 거절 시 이 reflection delete. 승인 시 비서가 harness:harness 발화로 스킬 작성(self-growth 는 작성 안 함).",
+      execution_boundary:
+        "self-growth 는 제안만. 스킬 파일 작성은 harness:harness(비서 프롬프트 경로).",
+    },
+    null,
+    2,
+  );
+
+  addMemory({
+    type: "feedback",
+    name: reflectionName,
+    description,
+    body,
+  });
+
+  return { reflectionName };
+};
+
+/**
+ * 배치 스캔(maintenance interval 합류) — persisted llm.activity 윈도 조회 →
+ * 세그먼트화 → fingerprint 집계 → 임계 통과분 각각 analyzeSkillProposal 로 제안.
+ *
+ * never-throw 계약: store 조회·집계 실패해도 데몬 안 죽음(상위 runMaintenance 도
+ * try/catch 지만 방어적 2겹). 박힌 제안 목록 반환(관측·bus.publish 용).
+ */
+export const runSkillProposalScan = (): {
+  reflectionName: string;
+  fingerprint: string;
+  count: number;
+}[] => {
+  const out: { reflectionName: string; fingerprint: string; count: number }[] = [];
+  const sinceTs = Date.now() - SKILL_PROPOSAL_SCAN_DAYS * 24 * 60 * 60 * 1000;
+  const rows = getRecentActivities({
+    sinceTs,
+    limit: SKILL_PROPOSAL_SCAN_LIMIT,
+  });
+  // ★P2 — 같은 윈도의 skill.invoked 시점 상관(거버넌스 세그먼트 제외용, 계약 §5.2).
+  // events 경유(skill.invoked 영속). 조회 실패는 빈 배열로 강등 → §5.3 잔존 방어만
+  // (회귀 0, never-throw — 스캔이 죽지 않게).
+  let govInvokes: SkillInvoke[] = [];
+  try {
+    govInvokes = getRecentSkillInvocations({
+      sinceTs,
+      limit: SKILL_PROPOSAL_SCAN_LIMIT,
+    });
+  } catch (e) {
+    console.error(`self-growth: getRecentSkillInvocations failed: ${e}`);
+  }
+  const agg = aggregateFingerprints(rows, SEGMENT_GAP_MS, govInvokes);
+  for (const [fingerprint, entry] of agg) {
+    if (entry.count < SKILL_PROPOSAL_THRESHOLD) continue;
+    const result = analyzeSkillProposal(fingerprint, entry.count, {
+      samples: entry.samples,
+      human: entry.human,
+    });
+    if (result !== null) {
+      out.push({ reflectionName: result.reflectionName, fingerprint, count: entry.count });
+    }
+  }
+  return out;
+};
+
 // ─── V4 — 확정 지침 층 포인터·마이그레이션·사람 승격 ──────────────────────────
 
 /**
@@ -915,7 +1255,7 @@ class SelfGrowthPlugin {
       this.runMaintenance();
     }, TTL_CLEANUP_INTERVAL_MS);
     console.log(
-      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done] + TTL cleanup + weekly review + SELF_GROWTH.md directives",
+      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan",
     );
   }
 
@@ -923,6 +1263,35 @@ class SelfGrowthPlugin {
     this.runCleanup();
     this.runWeeklyReview();
     this.runDirectiveCleanup();
+    this.runSkillProposals();
+  }
+
+  // V5 — 스킬화 제안 배치 스캔. 기존 maintenance interval 에 합류(새 interval 신설 0).
+  // 자체 try/catch 로 store 조회 실패해도 데몬·다른 maintenance 안 죽음(견고성).
+  private runSkillProposals(): void {
+    try {
+      const proposals = runSkillProposalScan();
+      for (const p of proposals) {
+        console.log(
+          `self-growth: skill proposal 박힘 — ${p.reflectionName} (fingerprint='${p.fingerprint}', count=${p.count})`,
+        );
+        if (this.bus !== null) {
+          // self_growth.* 는 self-growth 입력 아님(메타재귀 무관, 관측·대시보드용).
+          this.bus.publish({
+            type: "self_growth.skill_proposal.added",
+            ts: Date.now(),
+            payload: {
+              reflectionName: p.reflectionName,
+              fingerprint: p.fingerprint,
+              count: p.count,
+            },
+          });
+        }
+      }
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`self-growth: skill proposal scan failed: ${reason}`);
+    }
   }
 
   // V4 — SELF_GROWTH.md 확정 지침 cap/TTL 정리. maintenance interval 안에서 호출.
@@ -1023,8 +1392,26 @@ class SelfGrowthPlugin {
       case "llm.turn_done":
         this.handleTurnDone(event.payload as TurnDonePayload);
         return;
+      case "skill.invoked":
+        // 텔레메트리(2026-06-24) — upsert *만*. self-growth 입력축(repeated/failure/
+        // drift/skill_proposal)을 *재트리거하지 않음*(메타재귀 차단, 계약 §4·§10-4).
+        // harness 가 스킬 생성 중 invoke_skill 해도 카운트만 오르고 분석은 안 깨움.
+        this.handleSkillInvoked(event.payload as SkillInvokedPayload);
+        return;
       default:
         return;
+    }
+  }
+
+  // 텔레메트리(2026-06-24) — skill.invoked → skill_usage 멱등 upsert. **upsert만** —
+  // 입력축 재트리거 0(메타재귀). never-throw: upsert 실패가 EventBus subscriber 격리를
+  // 넘어 데몬을 못 죽이게(원칙 3). 발행(region)·upsert(여기) 2겹 never-throw.
+  private handleSkillInvoked(payload: SkillInvokedPayload): void {
+    try {
+      if (typeof payload.name !== "string" || payload.name.length === 0) return;
+      recordSkillInvocation(payload.name, Date.now());
+    } catch (e) {
+      console.error(`self-growth: skill.invoked upsert failed: ${e}`);
     }
   }
 

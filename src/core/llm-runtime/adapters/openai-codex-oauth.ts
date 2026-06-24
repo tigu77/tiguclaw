@@ -1269,7 +1269,11 @@ export const runOpenAiCodex = async (
   // V9.3 — 싱글톤 → factory. cwd 는 위 스킬 인덱스(discoverSkills(discoveryCwd))와
   // 동일 소스로 호출 → 인덱스↔invoke cwd 정합(비대칭 해소). β: discoveryCwd = home 폴백.
   const skillBridge = await adaptClaudeMcpServer(
-    createSkillInvokeMcpServer(discoveryCwd),
+    createSkillInvokeMcpServer(discoveryCwd, {
+      channel: input.channel,
+      threadKey: input.threadKey,
+      adapter: "codex",
+    }),
     "skills",
   );
   // reply-intent — per-call factory. 무인자 도구 실행 시 클로저로 플래그 set

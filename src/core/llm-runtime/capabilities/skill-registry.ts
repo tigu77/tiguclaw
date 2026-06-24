@@ -39,6 +39,8 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import { appRoot, getPaths, projectScope } from "../../paths.js";
+import { getEventBus } from "../../eventbus.js";
+import type { ChannelName } from "../../../channels/types.js";
 import { dedupeBySource } from "./dedup-by-source.js";
 
 export interface Skill {
@@ -383,15 +385,25 @@ const errText = (text: string) => ({
 });
 
 /**
- * invoke_skill MCP server 팩토리 (claude/codex 공통).
+ * invoke_skill MCP server 팩토리 (claude/codex/openai 공통).
  *  - cwd: 스킬 본문 해석 기준 디렉터리. 스킬 인덱스(`discoverSkills(cwd)`)와 동일
  *    cwd 를 받아 인덱스↔invoke 정합 보장. 미지정 시 `process.cwd()` (회귀 0).
+ *  - ctx: 텔레메트리 상관 컨텍스트(채널·thread·어댑터). 지정 시 핸들러 성공 분기에서
+ *    generic `skill.invoked` 이벤트를 발행한다(단일 지점 = 세 어댑터 자동 parity,
+ *    contract §2.3). **미지정 시 발행 skip = 하위호환·회귀 0** (ctx 안 넘기는 기존
+ *    호출 경로는 무영향). 발행은 never-throw 로 감싸 invoke_skill 도구 응답·데몬을
+ *    절대 못 깨게(관측 best-effort, turn_done 발행 패턴 답습).
  *
  * V9.3 — 싱글톤 → factory. tool 핸들러가 `getSkillBody(name, cwd)` 로 cwd 전달.
  * spawn_agent 의 `createSpawnAgentMcpServer` factory 패턴 답습.
  */
 export const createSkillInvokeMcpServer = (
   cwd: string = process.cwd(),
+  ctx?: {
+    channel: ChannelName;
+    threadKey: string;
+    adapter: "claude" | "codex" | "openai";
+  },
 ): McpSdkServerConfigWithInstance => {
   const skillInvokeTool = tool(
     "invoke_skill",
@@ -405,6 +417,26 @@ export const createSkillInvokeMcpServer = (
         const body = await getSkillBody(args.name, cwd);
         if (body === undefined) {
           return errText(`스킬 '${args.name}' 미발견.`);
+        }
+        // 텔레메트리 — 성공 호출(body !== undefined)만 generic skill.invoked 발행.
+        // ctx 미지정 시 skip(회귀 0). never-throw — 관측 실패가 도구 응답·데몬을
+        // 절대 못 깨게(turn_done 발행 best-effort 패턴 답습). 코어는 어느 스킬인지
+        // 모름(generic) — self-growth 가 데이터로만 소비(단방향).
+        if (ctx !== undefined) {
+          try {
+            getEventBus().publish({
+              type: "skill.invoked",
+              ts: Date.now(),
+              payload: {
+                name: args.name,
+                channel: ctx.channel,
+                threadKey: ctx.threadKey,
+                adapter: ctx.adapter,
+              },
+            });
+          } catch {
+            // 발행 실패 무시 — 관측 best-effort. 스킬 실행 결과는 그대로 반환.
+          }
         }
         return okText(body);
       } catch (e) {

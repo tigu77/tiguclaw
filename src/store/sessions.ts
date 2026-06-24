@@ -409,6 +409,20 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── 스킬 사용 텔레메트리 (self-growth Phase 1.5, 2026-06-24) ────────────────
+  // events(ring 10k prune)는 *장기* 스킬 카운트 부적합(오래된 호출 잘림) → 전용 누적
+  // 테이블. self-growth 가 generic skill.invoked 구독 시 멱등 upsert(count+1, last_used
+  // 갱신). 코어는 이 테이블을 모름(단방향 — 코어에 skill_usage 문자열 0). 기존
+  // CREATE TABLE IF NOT EXISTS 들과 동형 멱등(신규 테이블이라 IF NOT EXISTS 로 충분 —
+  // ALTER 로직 0). 역할 분리: 시점 상관=events / 장기 누적 카운트=skill_usage.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS skill_usage (
+      skill_name   TEXT PRIMARY KEY,
+      invoke_count INTEGER NOT NULL DEFAULT 0,
+      last_used_at INTEGER NOT NULL
+    );
+  `);
+
   // ─── 6b: codex 대화 히스토리 롤링 요약 압축 (architect contract §6b, 2026-06-19) ──
   // codex(ChatGPT 비공식 백엔드)는 resume API 가 없어 매 턴 전체 히스토리를 input[]
   // 으로 재전송한다. loadThreadHistory 의 oldest-drop(상한 초과 시 버림)이 긴 대화의

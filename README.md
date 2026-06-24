@@ -17,6 +17,7 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Always on** — runs as a background service and restarts itself if it ever dies.
 - **One personality, many channels** — Telegram, CLI, and HTTP all reach the same assistant, sharing one conversation memory.
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and simple tasks to a free local model (the `nano` tier).
+- **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it notices you doing the same multi-step task again, it offers to save it as a reusable skill. Always a proposal you approve — it never rewrites itself silently.
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.
 
 ## Things you can ask it
@@ -143,7 +144,7 @@ A few notes:
 
 - **Core** — one LLM runtime (adapter pool: claude / codex / openai / ollama / google) + router + SQLite store (sessions, memory, transcripts).
 - **Channels** — Telegram / CLI / HTTP adapters render one abstract intent per channel.
-- **Plugins** — scheduler (cron), file-watch, dashboard, http-bridge — extend without touching the core.
+- **Plugins** — scheduler (cron), file-watch, dashboard, http-bridge, self-growth (learns & proposes) — extend without touching the core.
 - **Capabilities are data** — agents, skills, memory, and hooks under `<home>/` extend the assistant endlessly (a microkernel + plugin ecosystem).
 
 ## Principles

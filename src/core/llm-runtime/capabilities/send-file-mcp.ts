@@ -77,14 +77,20 @@ export const createSendFileMcpServer = (
               "이미 이 턴에 전송했습니다(중복 방지). 다시 호출하지 마세요.",
             );
           }
-          // 전송 *시도* 전에 기록 — 동일 turn 재호출이 또 전송하는 걸 차단.
-          sentPaths.add(args.path);
           const r = await sendAttachment(
             args.path,
             args.caption !== undefined ? { caption: args.caption } : undefined,
           );
+          // ★전송 *성공* 시에만 dedup 기록 — 실패한 전송이 같은 턴 재시도를 막지
+          // 않도록 (실패=미기록→즉시 재시도 허용, 성공=기록→중복 전송 차단). 단일
+          // turn 은 도구 호출이 순차라 첫 await 종료 후에만 재호출 가능 = race 없음.
+          // (구버전은 시도 전 기록 → 첫 전송 실패가 dedup 을 오염시켜 같은 턴 재시도를
+          //  전부 "이미 전송" 으로 막는 버그. 2026-06-24 수정.)
+          if (r.ok) sentPaths.add(args.path);
           return okText(
-            r.ok ? `전송 완료: ${args.path}` : `전송 실패: ${r.error}`,
+            r.ok
+              ? `전송 완료: ${args.path}`
+              : `전송 실패: ${r.error}. 일시적 오류일 수 있으니 같은 경로로 다시 호출해 즉시 재시도할 수 있습니다(중복방지에 안 막힙니다). 반복 실패하면 그제서야 경로를 텍스트로 안내하세요.`,
           );
         },
       ),

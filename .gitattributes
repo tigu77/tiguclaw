@@ -1,0 +1,3 @@
+# 레포 전체 일관성 — line-ending 고정 (체크아웃 시 autocrlf 변환 churn 방지).
+# CLI 바이너리는 LF 고정 (#!/usr/bin/env node 셔뱅 + 크로스플랫폼 실행).
+bin/tiguclaw.mjs text eol=lf

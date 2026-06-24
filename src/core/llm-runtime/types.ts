@@ -11,6 +11,7 @@
  */
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { Attachment, ChannelName } from "../../channels/types.js";
+import type { WorkerNotifyDest } from "../worker-jobs.js";
 
 export interface RegionASdkInput {
   text: string;
@@ -117,6 +118,23 @@ export interface RegionASdkInput {
    * 어댑터 락인 0. 미지정/false = 현행(회귀 0).
    */
   internal?: boolean;
+  /**
+   * 신규(additive, 2026-06-24) — 이 turn 이 발사하는 백그라운드 워커의 완료/실패 *통지
+   * 목적지*. generic 좌표(`WorkerNotifyDest` = {channel, target}) — 코어 소유, scheduler 무관.
+   *
+   * 채우는 주체: 비채널 트리거 플러그인(예 scheduler runner)이 자신이 아는 dest
+   * (schedule.destChannel/destTarget)를 주입한다. 텔레그램 등 채널 직접 발화 turn 은
+   * 미지정(undefined) — 그 경우 워커는 job.channel/threadKey 폴백으로 통지(회귀 0).
+   *
+   * 읽는 주체: ★어댑터는 이 필드를 읽지 않는다(LLM-agnostic — 통지 라우팅은 daemon 경계,
+   * 모델 무관·claude/codex/openai 동일 동작·어댑터 분기 0). 오직 워커 발사 도구
+   * (run_in_background, worker-registry.ts)만 parentInput.notifyDest 를 읽어 startWorkerJob
+   * 으로 잡에 박는다 → onWorkerComplete 가 이 generic dest 로 dispatch.
+   *
+   * 멀티모달 attachments(텍스트 prepend)·sendAttachment(아웃바운드 클로저)와 직교 —
+   * 이건 *워커 완료 통지의 라우팅 좌표* 일 뿐 prompt·전송 클로저와 무관.
+   */
+  notifyDest?: WorkerNotifyDest;
 }
 
 export interface RegionASdkOutput {

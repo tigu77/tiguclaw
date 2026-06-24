@@ -36,6 +36,21 @@ const persistSafe = (label: string, fn: () => void): void => {
   }
 };
 
+// ─── 통지 목적지 (generic 좌표 — architect §3-a) ─────────────────────────────
+/**
+ * 워커 완료/실패 통지를 보낼 *목적지* — generic 좌표(어느 플러그인이 채웠는지 코어 무관).
+ * 미지정 시 onWorkerComplete 가 job.channel/threadKey 로 폴백(텔레그램 직접 발화 워커 회귀 0).
+ *  - channel: 통지 채널명(예 "telegram"). reacquireReply 가 이 값으로 dispatch.
+ *  - target : 채널 내 목적지(telegram=chatId, cli=무시). 채널 의미는 reacquireReply 가 해석.
+ *
+ * ★단방향 불변식: 이 타입은 "telegram" 같은 *채널명* 만 담는다. 코어는 어느 플러그인
+ * (scheduler 등)이 이 dest 를 채웠는지 영원히 모른다 — 오직 generic {channel,target} 데이터.
+ */
+export interface WorkerNotifyDest {
+  channel: ChannelName;
+  target: string | null;
+}
+
 // ─── 잡 레코드 (architect §6) ────────────────────────────────────────────────
 
 export type WorkerJobStatus = "running" | "done" | "failed" | "cancelled";
@@ -52,6 +67,11 @@ export interface WorkerJobRecord {
   channel: ChannelName;
   /** 원 잡 발사 사용자 (재주입 합성 메시지의 channelUserId). */
   channelUserId: string;
+  /**
+   * 완료/실패 통지를 보낼 generic 목적지 (additive). 채운 주체(예 스케줄)가 dest 를 데이터로
+   * 주입 → onWorkerComplete 가 이걸로 dispatch. 미지정이면 channel/threadKey 폴백(회귀 0).
+   */
+  notifyDest?: WorkerNotifyDest;
   status: WorkerJobStatus;
   startedAt: number;
   finishedAt?: number;
@@ -70,6 +90,8 @@ export interface RegisterJobInput {
   threadKey: string;
   channel: ChannelName;
   channelUserId: string;
+  /** 완료/실패 통지 generic 목적지 (additive). 미지정 = channel/threadKey 폴백. */
+  notifyDest?: WorkerNotifyDest;
 }
 
 /**
@@ -86,6 +108,7 @@ export const registerJob = (input: RegisterJobInput): string => {
     threadKey: input.threadKey,
     channel: input.channel,
     channelUserId: input.channelUserId,
+    notifyDest: input.notifyDest,
     status: "running",
     startedAt,
   });
@@ -96,6 +119,7 @@ export const registerJob = (input: RegisterJobInput): string => {
       threadKey: input.threadKey,
       channel: input.channel,
       channelUserId: input.channelUserId,
+      notifyDest: input.notifyDest,
       status: "running",
       startedAt,
     }),
@@ -350,23 +374,40 @@ import { sendOutgoing as telegramSendOutgoing } from "../channels/telegram.js";
 import type { ReplyOptions } from "../channels/types.js";
 
 /**
- * 원 잡의 channel/threadKey 로 reply 클로저 재획득.
+ * notifyDest 없는 워커(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
+ * slice 로직을 그대로 추출. 텔레그램 직접 워커는 notifyDest 미주입이므로 이 폴백이 현행과
+ * *비트 동일* 한 chatId 를 낸다(회귀 0, architect §5). cli·미지원 채널은 target 무의미 → null.
+ */
+const deriveTargetFromThreadKey = (
+  channel: ChannelName,
+  threadKey: string,
+): string | null => {
+  if (channel === "telegram") {
+    // threadKey "tg:<chatId>" → chatId. 접두 없으면 threadKey 자체(기존 동작 보존).
+    return threadKey.startsWith("tg:")
+      ? threadKey.slice("tg:".length)
+      : threadKey;
+  }
+  return null;
+};
+
+/**
+ * generic 통지 목적지(dest)로 reply 클로저 재획득. 코어는 dest.channel("telegram" 등)만 보고
+ * dispatch — *어느 플러그인이 dest 를 채웠는지*(scheduler 였는지)는 영원히 모른다(단방향 §6).
  * 미지원 채널은 console.warn + no-op reply (사일런트 실패 회피 — dispatcher 동형).
  */
 const reacquireReply = (
-  channel: ChannelName,
-  threadKey: string,
+  dest: WorkerNotifyDest,
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
-  if (channel === "telegram") {
-    // threadKey "tg:<chatId>" → chatId. sendOutgoing 이 HTML→plain 폴백·분할 보유.
-    const chatId = threadKey.startsWith("tg:")
-      ? threadKey.slice("tg:".length)
-      : threadKey;
+  if (dest.channel === "telegram") {
+    // target = chatId (스케줄이 직접 줬거나 폴백이 threadKey 에서 추출). sendOutgoing 이
+    // HTML→plain 폴백·분할 보유.
+    const chatId = dest.target ?? "";
     return async (text: string): Promise<void> => {
       await telegramSendOutgoing(chatId, text);
     };
   }
-  if (channel === "cli") {
+  if (dest.channel === "cli") {
     return async (text: string): Promise<void> => {
       console.log(text);
     };
@@ -374,10 +415,25 @@ const reacquireReply = (
   // 미지원 채널 — 완료 보고를 콘솔에만 (데몬 생존, W-I7 정직).
   return async (text: string): Promise<void> => {
     console.warn(
-      `worker-jobs: reply 재획득 미지원 채널 "${channel}" (thread=${threadKey}) — 콘솔 출력만:\n${text}`,
+      `worker-jobs: reply 재획득 미지원 채널 "${dest.channel}" (target=${dest.target ?? "—"}) — 콘솔 출력만:\n${text}`,
     );
   };
 };
+
+/**
+ * 잡의 notifyDest(있으면) 또는 channel/threadKey 폴백으로 통지 dest 를 도출 — onWorkerComplete·
+ * recoverInterruptedJobs 공용. notifyDest 미지정 워커(텔레그램 직접 발화)는 폴백이 현행 동작
+ * 재현(회귀 0). 채운 주체가 누구든 코어는 generic 좌표만 본다(단방향).
+ */
+const destForJob = (job: {
+  channel: ChannelName;
+  threadKey: string;
+  notifyDest?: WorkerNotifyDest;
+}): WorkerNotifyDest =>
+  job.notifyDest ?? {
+    channel: job.channel,
+    target: deriveTargetFromThreadKey(job.channel, job.threadKey),
+  };
 
 // ─── 완료 → 메인 재주입 (architect §3, W-I1 단일 인격 핵심) ───────────────────
 // 워커 완료 시 원 잡의 threadKey 로 *합성 user-turn* 을 주입해 메인 핸들러를 재진입 →
@@ -532,7 +588,8 @@ export const onWorkerComplete = async (
     return;
   }
 
-  const baseReply = reacquireReply(job.channel, job.threadKey);
+  // notifyDest(스케줄 등이 주입한 generic 좌표) 우선, 없으면 channel/threadKey 폴백(회귀 0).
+  const baseReply = reacquireReply(destForJob(job));
 
   // ─── 실패/취소 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
   // failed/cancelled 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
@@ -632,7 +689,17 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       `⚠️ 이전에 맡긴 백그라운드 작업 '${job.label}'이 데몬 재시작으로 중단됐어요. ` +
       `결과를 받지 못했으니, 필요하면 다시 시켜주세요.`;
     try {
-      const reply = reacquireReply(job.channel as ChannelName, job.threadKey);
+      // 영속된 notifyDest(store 가 미러)가 있으면 그걸로, 없으면 channel/threadKey 폴백 →
+      // 재시작 후에도 스케줄 워커 통지가 올바른 chatId 로 도달(정직 통지 강화). store 가
+      // notifyDest 컬럼을 아직 안 실어도 폴백이 현행 동작 재현(회귀 0). job.notifyDest 는
+      // PersistedWorkerJob 에 additive 라 미존재 시 undefined → 폴백 분기.
+      const reply = reacquireReply(
+        destForJob({
+          channel: job.channel as ChannelName,
+          threadKey: job.threadKey,
+          notifyDest: (job as { notifyDest?: WorkerNotifyDest }).notifyDest,
+        }),
+      );
       await reply(text);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
@@ -683,6 +750,12 @@ export interface StartWorkerJobInput {
   threadKey: string;
   channel: ChannelName;
   channelUserId: string;
+  /**
+   * 완료/실패 통지 generic 목적지 (additive). 워커 발사 도구(run_in_background)가
+   * parentInput.notifyDest 를 읽어 채운다 — 스케줄이 dest(telegram/chatId)를 주입하는 경로.
+   * 미지정(텔레그램 직접 발화 등)이면 channel/threadKey 폴백(회귀 0).
+   */
+  notifyDest?: WorkerNotifyDest;
 }
 
 /**

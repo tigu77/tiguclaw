@@ -16,6 +16,17 @@ export type PersistedJobStatus =
   | "cancelled"
   | "interrupted";
 
+/**
+ * 워커 완료/실패 통지 목적지 — generic 좌표(어느 플러그인이 채웠는지 store 무관).
+ * core/worker-jobs.ts 의 `WorkerNotifyDest` 와 동형(코어 export 확정 전까지 구조적 호환
+ * 로컬 정의). store 는 이 형 ↔ notify_channel/notify_target 2 컬럼 변환만 담당하며
+ * scheduler·채널 의미를 해석하지 않는다(단방향: store 는 generic channel/target 만 봄).
+ */
+export interface WorkerNotifyDest {
+  channel: string;
+  target: string | null;
+}
+
 export interface PersistedWorkerJob {
   jobId: string;
   label: string;
@@ -25,6 +36,11 @@ export interface PersistedWorkerJob {
   status: PersistedJobStatus;
   startedAt: number;
   finishedAt: number | null;
+  /**
+   * 영속된 통지 목적지. notify_channel 이 있으면 {channel, target} 로 복원,
+   * 미지정(NULL)이면 undefined → core 가 job.channel/threadKey 폴백(회귀 0).
+   */
+  notifyDest?: WorkerNotifyDest;
 }
 
 interface DbRow {
@@ -36,6 +52,8 @@ interface DbRow {
   status: string;
   started_at: number;
   finished_at: number | null;
+  notify_channel: string | null;
+  notify_target: string | null;
 }
 
 const toJob = (r: DbRow): PersistedWorkerJob => ({
@@ -53,6 +71,11 @@ const toJob = (r: DbRow): PersistedWorkerJob => ({
       : "running",
   startedAt: r.started_at,
   finishedAt: r.finished_at,
+  // 채널이 영속돼 있을 때만 dest 복원(미지정 = 기존 워커 → undefined → core 폴백).
+  notifyDest:
+    r.notify_channel !== null
+      ? { channel: r.notify_channel, target: r.notify_target }
+      : undefined,
 });
 
 /** 잡 등록/갱신 — registerJob 시 INSERT (멱등 REPLACE). */
@@ -65,14 +88,28 @@ export const upsertWorkerJob = (job: {
   status: PersistedJobStatus;
   startedAt: number;
   finishedAt?: number | null;
+  notifyDest?: WorkerNotifyDest;
 }): void => {
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO worker_jobs
-         (job_id, label, thread_key, channel, channel_user_id, status, started_at, finished_at)
-       VALUES (@jobId, @label, @threadKey, @channel, @channelUserId, @status, @startedAt, @finishedAt)`,
+         (job_id, label, thread_key, channel, channel_user_id, status,
+          started_at, finished_at, notify_channel, notify_target)
+       VALUES (@jobId, @label, @threadKey, @channel, @channelUserId, @status,
+          @startedAt, @finishedAt, @notifyChannel, @notifyTarget)`,
     )
-    .run({ ...job, finishedAt: job.finishedAt ?? null });
+    .run({
+      jobId: job.jobId,
+      label: job.label,
+      threadKey: job.threadKey,
+      channel: job.channel,
+      channelUserId: job.channelUserId,
+      status: job.status,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt ?? null,
+      notifyChannel: job.notifyDest?.channel ?? null,
+      notifyTarget: job.notifyDest?.target ?? null,
+    });
 };
 
 /** 상태 전이 — markDone/markFailed 시 UPDATE. 없는 jobId 는 no-op. */
@@ -93,7 +130,8 @@ export const listInterruptedWorkerJobs = (): PersistedWorkerJob[] =>
   (
     getDb()
       .prepare(
-        `SELECT job_id, label, thread_key, channel, channel_user_id, status, started_at, finished_at
+        `SELECT job_id, label, thread_key, channel, channel_user_id, status,
+                started_at, finished_at, notify_channel, notify_target
            FROM worker_jobs WHERE status = 'running' ORDER BY started_at ASC`,
       )
       .all() as DbRow[]

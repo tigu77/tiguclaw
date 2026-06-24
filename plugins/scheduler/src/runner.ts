@@ -9,16 +9,27 @@
  *   5) throw 시 recordFiring(id, {ok:false, error}) + EventBus publish "scheduler.error"
  */
 import type { EventBus } from "../../../src/core/eventbus.js";
+import type { WorkerNotifyDest } from "../../../src/core/worker-jobs.js";
 import type { ScheduleRow } from "../../../src/store/schedules.js";
 import { dispatch } from "./dispatcher.js";
 
 export interface RunnerDeps {
-  /** runClaude 주입 — spike 에서 mock 가능. */
+  /**
+   * runClaude 주입 — spike 에서 mock 가능.
+   *
+   * notifyDest(additive, 2026-06-24): 이 발화가 띄울 백그라운드 워커의 완료/실패 통지
+   * 목적지. 스케줄은 자기 dest(destChannel/destTarget)를 알므로 이걸 채워 주입한다 →
+   * facade(defaultRunClaude)가 RegionASdkInput.notifyDest 로 forward → 워커 발사 도구가
+   * 잡에 박아 워커가 그 dest 로 통지(텔레그램 도달). 미지정이면 워커는 channel/threadKey
+   * 폴백(이 경로엔 channel="scheduler" 라 폴백은 통지 미도달 = 본 버그). 단방향: scheduler
+   * 가 *값을 채우는* 쪽, 코어는 generic 좌표만 본다.
+   */
   runClaude: (input: {
     text: string;
     threadKey: string;
     channel: string;
     cwd: string;
+    notifyDest?: WorkerNotifyDest;
   }) => Promise<{ text: string }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (id: number, result: { ok: boolean; error?: string }) => void;
@@ -54,6 +65,13 @@ export const runScheduleFiring = async (
         threadKey: `scheduler:${schedule.id}`,
         channel: "scheduler",
         cwd: deps.cwd,
+        // 워커 통지 dest 주입 — 이 발화가 띄운 워커가 스케줄의 실제 목적지(예 telegram/
+        // chatId)로 완료/실패를 통지하게 한다. channel="scheduler" 는 reacquireReply 가
+        // 모르는 채널이라(폴백 시 통지 미도달) generic dest 를 데이터로 흘려보낸다.
+        notifyDest: {
+          channel: schedule.destChannel,
+          target: schedule.destTarget,
+        },
       });
       resultText = out.text;
     } catch (e) {

@@ -362,6 +362,22 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status);
   `);
 
+  // ─── 워커 통지 dest threading: worker_jobs.notify_channel/notify_target ────
+  // Idempotent ALTER TABLE ADD COLUMN — schedules.trigger_type 패턴 동형.
+  // generic 통지 좌표(채널 무관 데이터) 영속 — 스케줄 발화 워커가 재시작 후에도
+  // 올바른 telegram chatId 등으로 완료/실패 통지 도달하게. NULL 허용 = 미지정(=기존
+  // 텔레그램 직접 발화 워커)이면 core 폴백(job.channel/threadKey)으로 회귀 0.
+  // 신규 DB: CREATE 직후 probe 에 없음 → ADD. 반복 부팅: 이미 존재 → skip.
+  const wjCols = handle
+    .prepare(`PRAGMA table_info(worker_jobs)`)
+    .all() as ColumnInfoRow[];
+  if (!wjCols.some((c) => c.name === "notify_channel")) {
+    handle.exec(`ALTER TABLE worker_jobs ADD COLUMN notify_channel TEXT`);
+  }
+  if (!wjCols.some((c) => c.name === "notify_target")) {
+    handle.exec(`ALTER TABLE worker_jobs ADD COLUMN notify_target TEXT`);
+  }
+
   // ─── 관측 이벤트 영속 (감사·메트릭 — 2026-06-19) ──────────────────────────────
   // EventBus 는 비영속 ring buffer(hot cache)뿐 — 재시작 시 이력 소실. 이 테이블은
   // *의미있는* 이벤트(에러·발화·lifecycle·memory.write 등; 고volume 스트리밍/본문 제외)를

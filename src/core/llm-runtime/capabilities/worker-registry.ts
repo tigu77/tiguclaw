@@ -198,6 +198,11 @@ export const createWorkerMcpServer = (
           // channelUserId — RegionASdkInput 에 없음. 재주입 reply 는 threadKey 로
           // 채널 복원하므로(reacquireReply) threadKey 를 사용자 식별로 운반.
           channelUserId: parentInput.threadKey,
+          // 워커 완료/실패 통지 dest — parentInput.notifyDest 가 있으면(예 스케줄 발화)
+          // 그 generic 좌표를 잡에 박아 워커가 그 dest 로 통지하게 한다. 텔레그램 등 채널
+          // 직접 발화는 undefined → onWorkerComplete 가 channel/threadKey 폴백(회귀 0).
+          // (이 도구만 notifyDest 를 읽는다 — 어댑터는 LLM-agnostic 으로 미독해.)
+          notifyDest: parentInput.notifyDest,
         });
         return okText(
           `🛠️ '${args.label}' 백그라운드 작업을 시작했습니다 (jobId: ${jobId}). ` +

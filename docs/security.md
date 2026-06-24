@@ -1,37 +1,45 @@
-# tiguclaw 신뢰·보안 모델 (자가호스트)
+# Security & trust model (self-hosted)
 
-tiguclaw는 **자가호스트** 비서다 — 당신이 자기 머신/서버에 직접 띄운다. 보안 모델은 그 전제 위에 선다.
+**English** · [한국어](security.ko.md)
 
-## 1. 비서는 *당신 머신*에 접근한다 (의도된 능력)
+tiguclaw is **self-hosted** — you run it on your own machine or server, with your own keys and your own bot. The security model follows from that: it's built to be powerful *on a machine you control*, not locked down for untrusted environments.
 
-비서(영역 A LLM)는 도구로 **당신 머신의 쉘·파일에 접근**한다(Bash·파일 읽기/쓰기). 이는 Claude Code와 동일한 *자기-선택* 모델 — 당신이 자기 컴퓨터에서 에이전트에게 쉘을 내주는 것이다. 매 호출마다 묻지 않고(`bypassPermissions`), 대신 비서가 시스템 프롬프트로 능동 보안 평가자 역할을 맡아 위험 동작 전 확인을 구한다.
+Five things worth understanding before you run it.
 
-→ **이해하고 설치하라**: 신뢰하지 않는 머신/공유 서버에 띄우지 말 것. 자가호스트는 *당신 자신의* 머신 기준이다. (공유 서버·멀티유저는 별도 샌드박스 설계가 필요 — 배포 계획서 §6.)
+## 1. The assistant can touch your machine — by design
 
-## 2. 인터넷 노출은 텔레그램 봇 *하나* — 반드시 잠가라
+The assistant has tools to **run shell commands and read/write files on your machine** — the same self-chosen model as Claude Code, where you hand an agent a shell on your own computer. It doesn't prompt on every call (`bypassPermissions`); instead it acts as an active safety reviewer and **asks for your OK before anything destructive or irreversible**.
 
-CLI는 로컬, http-bridge는 토큰 인증. **외부에서 도달 가능한 유일 입구 = 텔레그램 봇**(봇 토큰만 알면 누구나 메시지 가능).
+So run it accordingly: install it on *your own* machine, not on an untrusted or shared multi-user server. Shared, multi-tenant setups would need a separate sandbox design, which isn't part of this project today.
 
-**필수**: `.env` 의 `TELEGRAM_ALLOWED_USER_IDS` 에 **당신(소유자)의 텔레그램 user id**만 넣어라(콤마로 여러 명 가능).
-- 빈 값 = 봇 **잠금**(모든 메시지 무시) — 안전 기본값. 개방되지 않는다.
-- 허용되지 않은 user 의 메시지는 조용히 무시 + 로그 기록.
+## 2. The only thing exposed to the internet is one Telegram bot — lock it down
 
-→ 이게 안 되면 봇을 발견한 누구나 *당신 머신*을 조종할 수 있다. 자가호스트의 단일 필수 보안 게이트.
+The CLI is local and the HTTP bridge requires a token. The **one entry point reachable from outside is your Telegram bot** — anyone who knows its username can send it a message.
 
-봇은 username 이 공개라 누구나 *메시지를 보낼* 수는 있지만, allowlist 외 user 의 메시지는 **DM·그룹 모두 `from.id` 검사로 무시**된다(응답 0, 로그만). 한 겹 더 (권장) — `@BotFather` 에서 봇을 1:1 전용으로 잠가라:
-- `/setjoingroups` → **Disable** — 봇을 그룹에 추가하는 것 자체를 차단.
-- `/setprivacy` → **Enable**(기본값) — 그룹에서 봇이 명령/답글만 보게.
+So there's one must-do step:
 
-## 3. 시크릿은 절대 공유·커밋 금지
+> Put **only your own Telegram user ID** in `TELEGRAM_ALLOWED_USER_IDS` (in `.env`). Comma-separate if there's more than one.
 
-`.env` 에 봇 토큰·LLM API 키·OAuth 토큰·`HTTP_BRIDGE_TOKEN` 이 들어간다.
-- `.env` 는 gitignore 됨 — **절대 커밋하지 말 것**. 공유 금지.
-- 레포를 공개로 만들 땐 시크릿·PII(토큰·텔레그램 id·절대경로·이메일)가 추적 파일/히스토리에 없는지 스캔(배포 계획서 §1.5).
+- **Empty means the bot is locked** — every message is ignored. That's the safe default; it never opens itself up.
+- Messages from anyone not on the allowlist are silently ignored (checked by `from.id`, in both DMs and groups) and only logged — never answered.
 
-## 4. 당신 데이터의 위치
+Skip this and anyone who finds your bot could drive your machine. It's the one security gate self-hosting depends on.
 
-대화·메모리·DB·로그는 `<TIGUCLAW_HOME>`(기본 `~/.tiguclaw`)에 저장된다 — 레포 밖, 당신 머신 안. 백업·이전 시 이 디렉터리. 민감하므로 비공개 유지.
+For an extra layer, lock the bot to 1:1 chats in [@BotFather](https://t.me/BotFather):
+- `/setjoingroups` → **Disable** — stops the bot from being added to groups at all.
+- `/setprivacy` → **Enable** (the default) — the bot only sees commands and replies in groups.
 
-## 5. 비용
+## 3. Never commit or share your secrets
 
-LLM 호출 비용은 당신 부담(종량 API 키 또는 구독). 사용량에 유의.
+Your `.env` holds the bot token, LLM API keys, OAuth tokens, and `HTTP_BRIDGE_TOKEN`.
+
+- `.env` is gitignored — **never commit it, and never share it.**
+- Before making any repo public, scan its tracked files *and its history* for secrets and personal data first (tokens, Telegram IDs, absolute paths, emails).
+
+## 4. Where your data lives
+
+Conversations, memory, the database, and logs all live under `<TIGUCLAW_HOME>` (default `~/.tiguclaw`) — outside the repo, on your machine. That's the directory to back up or migrate, and to keep private.
+
+## 5. Cost
+
+LLM calls are billed to you (pay-as-you-go API keys, or a subscription). Keep an eye on usage.

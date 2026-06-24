@@ -49,13 +49,13 @@
 
 **어디서든** — 폰(텔레그램)·터미널(CLI)·내 앱(HTTP). 같은 비서, 같은 기억.
 
-> 내 컴퓨터에 셸·파일 접근 권한을 갖고, **파괴적·비가역 작업 전엔 반드시 승인을 받습니다**([`docs/security.md`](docs/security.md)).
+> 내 컴퓨터의 쉘·파일에 접근할 수 있고, **파괴적이거나 되돌릴 수 없는 작업 전에는 반드시 승인을 받습니다**([`docs/security.ko.md`](docs/security.ko.md)).
 
 ## 빠른 시작
 
 **Node 20+**, **git**, **LLM provider 하나**(아래), 그리고 (선택) **텔레그램 봇** 이 필요합니다.
 
-> ⚠️ 먼저 [`docs/security.md`](docs/security.md) 를 읽어주세요 — 비서는 *내* 컴퓨터에 쉘·파일 접근 권한을 가집니다(Claude Code 와 같은 자기-선택 모델).
+> ⚠️ 먼저 [`docs/security.ko.md`](docs/security.ko.md) 를 읽어주세요 — 비서는 *내* 컴퓨터의 쉘·파일에 접근할 수 있습니다(Claude Code 와 같은 자기-선택 모델).
 
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw

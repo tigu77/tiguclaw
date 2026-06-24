@@ -60,67 +60,56 @@ export const IDLE_TIMEOUT_CONFIG: IdleTimeoutConfig = {
   firstMs: LLM_FIRST_TIMEOUT_MS,
 };
 
-// ── 입력 크기 비례 first 타임아웃 (resume 없는 어댑터의 큰 재전송 가드) ─────────────
-// codex 처럼 resume API 가 없어 매 턴 *전체 히스토리를 재전송* 하는 어댑터는 입력이
-// 클수록 첫 토큰(TTFT)이 느리다. 고정 firstMs 면 큰 프리필이 정상인데도 오발화 →
-// 본 헬퍼가 입력(payload) 크기에 비례해 first 한계만 늘린다. idle 은 불변(흐르기
-// 시작하면 동일). 상한으로 무한대기 방지 — turn wall-clock 백스톱이 최종 상한.
-// claude 는 SDK resume(증분)이라 호출 안 함(불필요 = parity 비대칭 아님, 결함 보정).
-const FIRST_EXTRA_PER_10K_CHARS_MS = 2_000; // payload 10K자당 +2s.
-const FIRST_MAX_MS = 300_000; // first 상한(5분) — 그 위는 turn 백스톱 영역.
+// 입력 크기 비례 first 타임아웃(idleConfigForInput/firstTimeoutForInput)은 전 턴
+// idle/first 면제(아래, 2026-06-24) 도입으로 제거됨 — codex 의 큰 프리필 느린 TTFT 도
+// 더는 컷되지 않으니 비례 확장이 무의미. 입력-비례 가드의 역할은 면제가 통째로 흡수했다.
 
-/** payload 문자수 → 비례 확장된 first 타임아웃(ms). base 이하로는 안 줄어듦. */
-export const firstTimeoutForInput = (inputChars: number): number => {
-  const extra =
-    Math.floor(Math.max(0, inputChars) / 10_000) * FIRST_EXTRA_PER_10K_CHARS_MS;
-  return Math.min(LLM_FIRST_TIMEOUT_MS + extra, FIRST_MAX_MS);
-};
-
-/** 입력 크기 비례 first + 기본 idle 의 설정. resume 없는 어댑터(codex)가 사용. */
-export const idleConfigForInput = (inputChars: number): IdleTimeoutConfig => ({
-  idleMs: LLM_IDLE_TIMEOUT_MS,
-  firstMs: firstTimeoutForInput(inputChars),
-});
-
-// ── 워커(workerDepth≥1) idle/first 면제 ─────────────────────────────────────
-// 1층 idle/first 타임아웃은 *인터랙티브* 턴 가정의 산물 — 사용자가 응답을 대기하므로
-// 90s 무이벤트면 끊는 게 옳다. 그러나 백그라운드 워커(workerDepth≥1)는 길게 도는 게
-// 정상(예: 712개 API 단일 Bash)이라 90s+ 무이벤트가 결함 아님 — idle 이 정상 워커를
-// 오살(false-kill)한다. 워커는 이미 2층 turn(480s) *제외*(worker-jobs.ts:178)이고
-// hung 안전망은 WORKER_TIMEOUT_MS(30분 wall-clock, abortSignal 경로)가 별도로 건다.
-// 따라서 1층 idle/first 는 워커에선 사실상 무제한으로 비활성.
+// ── 전 턴 idle/first 면제 (메인·서브에이전트·워커 동형) ─────────────────────────
+// 1층 idle/first 타임아웃은 본래 *인터랙티브* 턴 가정의 산물이었다(사용자 대기 →
+// 90s 무이벤트면 끊는 게 옳다는 발상). 그러나 실측(라이브 대화, 2026-06-24)에서
+// 메인 비서 턴이 100s~170s 짜리 *정상 Bash* 실행 중 idle(90s) 연속 오발화로
+// 응답을 유실했다. idle heartbeat 는 SDK 메시지 도착마다 beat() 인데, 긴 Bash(도구
+// 실행) 동안 SDK 메시지가 0이라 흐르는 작업인데도 90s 에 컷된다 — false-kill.
 //
-// 왜 분기가 #2(어댑터별 특수분기 금지)에 안 걸리나: workerDepth 는 *입력 속성*
-// (RegionASdkInput.workerDepth)이지 어댑터 종류가 아니다. 세 어댑터가 동일 헬퍼를
-// 동일 workerDepth 로 호출 → LLM-agnostic·parity 유지. "worker vs interactive" 분기는
-// 의도된 입력 차원 분기다(#2 가 금하는 "claude/codex 별 if" 아님).
+// 사용자 확정 결정(A안): 메인(workerDepth 0)·서브에이전트도 워커와 동형으로 idle/first
+// 면제. 따라서 1층 idle/first 는 *어떤 비서 턴도* 끊지 않는다. 워커가 이미 면제였고
+// (예: 712개 API 단일 Bash), 그 논리는 메인/서브에이전트에도 그대로 성립한다 —
+// "진행 중 작업을 임의 시간으로 컷하지 않는다"는 사용자 원칙.
 //
-// first 도 면제하는 근거: 워커의 첫 도구(예: 거대 Bash, 느린 외부 API 워밍업)까지
-// 120s 가 넘을 수 있다. first 만 살리면 같은 종류의 오살이 *첫 이벤트 전*에 재발한다.
-// 워커의 연결-스톨 방어는 1층 first 가 아니라 2층 WORKER_TIMEOUT_MS(30분 + 하드 grace)가
-// 담당하므로 first 도 함께 비활성하는 게 일관적이다(idle 면제와 동일 논리).
+// 회복 경로는 그대로 보존: 진짜 API 먹통은 /restart 아웃오브밴드·cancel_worker·외부
+// turn signal(linkAbort) 로 수동 회복하고, 워커는 2층 WORKER_TIMEOUT_MS(30분 wall-clock,
+// abortSignal 경로)가 hung 백스톱을 별도로 건다. 면제는 1층(idle/first)만이다.
+//
+// 왜 #2(어댑터별 특수분기 금지)에 안 걸리나: 이 함수는 입력 속성(workerDepth)·어댑터
+// 종류와 무관하게 *동일한 면제 cfg* 를 반환한다 — 세 어댑터가 동일 헬퍼를 동일하게
+// 호출 → LLM-agnostic·parity 유지. 분기 자체가 사라져 비대칭 여지도 0이다.
+//
+// 구현 선택(옵션1): createIdleTimer 기계는 그대로 두고(2층 linkAbort 가 idleAc 를
+// 구조적으로 필요로 함), 단일 초크포인트인 이 함수가 *항상* 사실상-무제한 cfg 를
+// 반환한다. 타이머는 ~24.8일에 무장되어 어떤 실제 턴에서도 발화하지 않는다(비활성).
+// base/LLM_*_TIMEOUT_MS 상수는 2층 MIN_TURN_MS 하한 가드 계산에 쓰이므로 유지하되,
+// 라이브 턴에는 더 이상 도달하지 않는다.
 
-/** 워커 면제용 사실상-무제한 한계(ms). setTimeout 32-bit 상한 미만으로 안전(~24.8일). */
-const WORKER_IDLE_DISABLED_MS = 2_147_400_000;
+/** idle/first 면제용 사실상-무제한 한계(ms). setTimeout 32-bit 상한 미만으로 안전(~24.8일). */
+const IDLE_DISABLED_MS = 2_147_400_000;
 
 /**
- * workerDepth 를 반영한 idle/first 설정.
+ * 전 턴 idle/first 면제 설정.
  *
- *  - workerDepth 0/생략(인터랙티브) → `base` 그대로(회귀 0).
- *  - workerDepth≥1(백그라운드 워커) → idle/first 사실상 무제한(비활성). 워커는 2층
- *    WORKER_TIMEOUT_MS 안전망이 별도로 상한을 건다.
+ * 메인(workerDepth 0)·서브에이전트·워커 모두 동일하게 idle/first 사실상 무제한(비활성).
+ * workerDepth/base 는 시그니처 호환을 위해 받지만 면제 결과는 동일 — 어떤 비서 작업도
+ * 1층 idle/first 로 끊기지 않는다. hung 회복은 워커 2층 WORKER_TIMEOUT_MS 와
+ * /restart·cancel·외부 turn signal 이 담당한다.
  *
  * 세 어댑터가 createIdleTimer 직전 이 함수로 cfg 를 감싼다 → 단일 정책·parity.
  */
-export const idleConfigForWorker = (
-  workerDepth: number | undefined,
-  base: IdleTimeoutConfig = IDLE_TIMEOUT_CONFIG,
-): IdleTimeoutConfig => {
-  if ((workerDepth ?? 0) >= 1) {
-    return { idleMs: WORKER_IDLE_DISABLED_MS, firstMs: WORKER_IDLE_DISABLED_MS };
-  }
-  return base;
-};
+export const idleConfigExempt = (
+  _workerDepth?: number | undefined,
+  _base: IdleTimeoutConfig = IDLE_TIMEOUT_CONFIG,
+): IdleTimeoutConfig => ({
+  idleMs: IDLE_DISABLED_MS,
+  firstMs: IDLE_DISABLED_MS,
+});
 
 /**
  * 유휴/첫토큰 타임아웃 에러.

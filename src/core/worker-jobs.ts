@@ -200,9 +200,9 @@ export const __resetJobsForTest = (): void => {
 
 // ─── 워커 전용 타임아웃 (architect §5, W-I6) ─────────────────────────────────
 // 워커는 2층 턴 타임아웃(480s) *제외* — 길게 도는 게 정상. 대신 워커 전용 상한을
-// 기존 abortSignal 메커니즘(turn-timeout.ts 동형)으로 주입. 1층 idle/first 도 워커에선
-// 면제(idleConfigForWorker, 어댑터 wrap — 2026-06-23). 긴 배치의 무이벤트 구간이 정상이라
-// 인터랙티브용 90s idle 이 워커를 오살하던 버그 수정. hung 방어는 이 워커 전용 상한이 담당.
+// 기존 abortSignal 메커니즘(turn-timeout.ts 동형)으로 주입. 1층 idle/first 는 전 턴
+// 면제(idleConfigExempt, 어댑터 wrap — 2026-06-24)라 워커도 당연히 면제다. 긴 배치의
+// 무이벤트 구간이 정상이라 idle 오살이 없다. 워커의 hung 방어는 이 워커 전용 상한이 담당.
 // 값은 상수+env override (매직넘버 금지, turn-timeout.ts 정책 답습).
 
 const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {

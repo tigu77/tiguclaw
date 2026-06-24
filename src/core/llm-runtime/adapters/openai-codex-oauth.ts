@@ -95,8 +95,7 @@ import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import {
   createIdleTimer,
   IdleTimeoutError,
-  idleConfigForInput,
-  idleConfigForWorker,
+  idleConfigExempt,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 
@@ -672,7 +671,8 @@ export type ResponseInputItem =
  *  - thread 히스토리 로딩 X (loadThreadHistory* 절대 호출 금지 — 재귀의 핵심 차단).
  *  - 도구 X (tools 키 omit), prompt_cache_key X (메인 캐시 충돌 회피), store:false.
  *  - instructions = "간결 요약기" 단발. 입력 = [요약 지시] + (기존요약 + 오래된 턴).
- *  - idle/turn 타임아웃은 base 구성(입력 작음 → firstTimeoutForInput 불요, 단순한 쪽).
+ *  - idle/turn 타임아웃은 base 구성(작은 bounded 호출 — 전 턴 면제 대상인 비서 작업
+ *    turn 이 아니라 컨텍스트 위생 유틸. 실패 시 호출자가 oldest-drop 으로 graceful 폴백).
  *
  * 실패/타임아웃은 throw — 호출자(buildTurnHistory)가 catch 해 oldest-drop 폴백.
  */
@@ -718,7 +718,8 @@ async function summarizeViaCodex(
     reasoning: { effort: "none" },
   });
 
-  // idle/turn 타임아웃 — 작은 호출이라 base 면 충분(idleConfigForInput 불요).
+  // idle/turn 타임아웃 — 작은 bounded 호출이라 base 면 충분(비서 작업 turn 아님 →
+  // 전 턴 면제 비대상. 실패해도 호출자 oldest-drop 폴백이라 안전).
   const ac = new AbortController();
   const idleTimer = createIdleTimer(ac);
   try {
@@ -1580,12 +1581,12 @@ export const runOpenAiCodex = async (
       // 고정 first 타임아웃을 오발화시킬 수 있으므로, first 를 payload 크기에 비례해 늘린다
       // (idle 은 불변). 단일 stringify 로 sizing + fetch body 둘 다 사용(이중 직렬화 회피).
       const bodyJson = JSON.stringify(body);
-      // 워커(workerDepth≥1)는 1층 idle/first 면제 — 길게 도는 게 정상(2층 WORKER_TIMEOUT_MS
-      // 안전망이 별도 상한). 인터랙티브는 입력-비례 base 그대로(회귀 0). idleConfigForWorker.
-      const idleTimer = createIdleTimer(
-        idleAc,
-        idleConfigForWorker(input.workerDepth, idleConfigForInput(bodyJson.length)),
-      );
+      // 전 턴(메인·서브에이전트·워커) 1층 idle/first 면제 — 진행 중 작업(긴 도구 실행 등
+      // 무이벤트 구간)을 임의 시간으로 컷하지 않는다(사용자 A안, 2026-06-24). codex 의
+      // 입력-비례 first(idleConfigForInput)도 면제에 포함(통째 무제한) — 큰 프리필의 느린
+      // TTFT 도 더는 컷 안 됨. hung 회복은 워커 2층 WORKER_TIMEOUT_MS + /restart·cancel·
+      // 외부 turn signal 이 담당. idleConfigExempt.
+      const idleTimer = createIdleTimer(idleAc, idleConfigExempt(input.workerDepth));
       // 2층 합성 (TT-I2) — 1층 idle AC(이 iteration 의 fetch 용)와 핸들러 turn signal 을
       // OR 결합. effectiveAc.signal 을 fetch 에 주입하면 LLM 스트림 구간은 둘 중 하나
       // abort 시 끊긴다. (도구 실행 구간은 callTool 이 signal 미전달 — §4.4 루프 가드로

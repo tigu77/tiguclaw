@@ -34,18 +34,48 @@ export const recordSkillInvocation = (skillName: string, ts: number): void => {
     .run(skillName, ts);
 };
 
+/**
+ * skill 결과 1건 반영 — Phase 1.6(2026-06-24, 결과 축). ok=true → success_count+1,
+ * ok=false → fail_count+1. "이 스킬 자꾸 실패한다"를 계산 가능하게 누적(Phase 2 연료).
+ *
+ * UPDATE only(upsert 안 함): self-growth 가 *그 턴에 invoke 된* 스킬에만 귀속하므로
+ * 행은 recordSkillInvocation 가 *선행해 이미 존재*한다(invoke 없는 결과 귀속은 정의상
+ * 불가). 행이 없으면(이론상 invoke 누락) UPDATE 가 0행 변경 = 조용한 no-op — 없는
+ * 스킬 carcass row 를 만들지 않는다(스키마 위생). never-throw 는 호출자(self-growth
+ * 턴 핸들러 try/catch). 본 함수는 events.ts 동형 순수 CRUD — throw 가능, 호출자가 가림.
+ */
+export const recordSkillOutcome = (skillName: string, ok: boolean): void => {
+  const column = ok ? "success_count" : "fail_count";
+  getDb()
+    .prepare(
+      `UPDATE skill_usage SET ${column} = ${column} + 1 WHERE skill_name = ?`,
+    )
+    .run(skillName);
+};
+
 /** 단일 스킬 누적 카운트 — P2/대시보드 조회. 없으면 null. */
 export const getSkillUsage = (
   skillName: string,
-): { invokeCount: number; lastUsedAt: number } | null => {
+): {
+  invokeCount: number;
+  lastUsedAt: number;
+  successCount: number;
+  failCount: number;
+} | null => {
   const row = getDb()
     .prepare(
-      `SELECT invoke_count AS invokeCount, last_used_at AS lastUsedAt
+      `SELECT invoke_count AS invokeCount, last_used_at AS lastUsedAt,
+              success_count AS successCount, fail_count AS failCount
          FROM skill_usage
         WHERE skill_name = ?`,
     )
     .get(skillName) as
-    | { invokeCount: number; lastUsedAt: number }
+    | {
+        invokeCount: number;
+        lastUsedAt: number;
+        successCount: number;
+        failCount: number;
+      }
     | undefined;
   return row ?? null;
 };
@@ -56,11 +86,18 @@ export const getSkillUsage = (
  */
 export const listSkillUsage = (opts?: {
   limit?: number;
-}): { skillName: string; invokeCount: number; lastUsedAt: number }[] => {
+}): {
+  skillName: string;
+  invokeCount: number;
+  lastUsedAt: number;
+  successCount: number;
+  failCount: number;
+}[] => {
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 200;
   return getDb()
     .prepare(
-      `SELECT skill_name AS skillName, invoke_count AS invokeCount, last_used_at AS lastUsedAt
+      `SELECT skill_name AS skillName, invoke_count AS invokeCount, last_used_at AS lastUsedAt,
+              success_count AS successCount, fail_count AS failCount
          FROM skill_usage
         ORDER BY invoke_count DESC, last_used_at DESC
         LIMIT ?`,
@@ -69,6 +106,8 @@ export const listSkillUsage = (opts?: {
     skillName: string;
     invokeCount: number;
     lastUsedAt: number;
+    successCount: number;
+    failCount: number;
   }[];
 };
 

@@ -423,6 +423,26 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── 스킬 결과 축 (self-growth Phase 1.6, 2026-06-24) ──────────────────────────
+  // Phase 1.5 의 invoke_count 위에 *성공/실패* 누적을 더한다 — "이 스킬 자꾸 실패한다"를
+  // 계산 가능하게(Phase 2 스킬 개선 제안의 연료). skill_usage 는 1.5 에서 이미 배포됐으니
+  // 멱등 ALTER ADD COLUMN(schedules.trigger_type / worker_jobs.notify_* 패턴 동형) —
+  // PRAGMA table_info probe 후 부재 시만 추가. DEFAULT 0 으로 기존 row 회귀 0.
+  // 결과는 forward-fill(그 순간 안 잡으면 복원 불가)이라 지금 누적 시작.
+  const skillUsageCols = handle
+    .prepare(`PRAGMA table_info(skill_usage)`)
+    .all() as ColumnInfoRow[];
+  if (!skillUsageCols.some((c) => c.name === "success_count")) {
+    handle.exec(
+      `ALTER TABLE skill_usage ADD COLUMN success_count INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+  if (!skillUsageCols.some((c) => c.name === "fail_count")) {
+    handle.exec(
+      `ALTER TABLE skill_usage ADD COLUMN fail_count INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+
   // ─── 6b: codex 대화 히스토리 롤링 요약 압축 (architect contract §6b, 2026-06-19) ──
   // codex(ChatGPT 비공식 백엔드)는 resume API 가 없어 매 턴 전체 히스토리를 input[]
   // 으로 재전송한다. loadThreadHistory 의 oldest-drop(상한 초과 시 버림)이 긴 대화의

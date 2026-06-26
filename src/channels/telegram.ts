@@ -669,6 +669,7 @@ export class TelegramChannel implements Channel {
       { command: "plugins", description: "설치·활성 플러그인 목록" },
       { command: "status", description: "시스템 상태" },
       { command: "restart", description: "데몬 재시작" },
+      { command: "update", description: "tiguclaw 최신으로 업데이트" },
     ];
     const builtinNames = new Set(builtinCommands.map((c) => c.command));
     const validTgName = /^[a-z0-9_]{1,32}$/;

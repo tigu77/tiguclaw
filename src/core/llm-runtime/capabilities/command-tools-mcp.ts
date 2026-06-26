@@ -64,6 +64,7 @@ const BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
   "plugins",
   "status",
   "restart",
+  "update",
 ]);
 
 /**

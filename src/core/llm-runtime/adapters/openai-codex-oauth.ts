@@ -71,6 +71,8 @@ import {
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
+import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
+import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
@@ -1444,6 +1446,26 @@ export const runOpenAiCodex = async (
         toolBridgeMap.set((t as { name: string }).name, commandBridge);
       }
       mcpTools.push(...commandToolsRaw);
+    }
+
+    // 자가 업데이트 도구 (2026-06-26) — update_self. command-tools 와 *동일* 가드
+    // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀
+    // 차단). 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey
+    // 에서 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. claude/openai 와 parity(#2).
+    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+      const updateSelfServer = createUpdateSelfMcpServer(
+        notifyDestFromCoords(input.channel, input.threadKey),
+      );
+      const updateSelfBridge = await adaptClaudeMcpServer(
+        updateSelfServer,
+        "update-self",
+      );
+      allBridges.push(updateSelfBridge);
+      const updateSelfToolsRaw = await updateSelfBridge.listTools();
+      for (const t of updateSelfToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, updateSelfBridge);
+      }
+      mcpTools.push(...updateSelfToolsRaw);
     }
 
     // V7.5 (parity P0 fix) — extraMcpServers 도 bridge. router 가 facade 통해

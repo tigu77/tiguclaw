@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { CliChannel } from "./channels/cli.js";
 import { TelegramChannel } from "./channels/telegram.js";
@@ -55,6 +56,14 @@ import {
   registerWorkerHandler,
   recoverInterruptedJobs,
 } from "./core/worker-jobs.js";
+import {
+  runSelfUpdate,
+  setSelfUpdateRestart,
+  UPDATE_COMPLETE_MARKER,
+  type SelfUpdateNotifyDest,
+  type SelfUpdateResult,
+} from "./core/self-update.js";
+import { sendOutgoing as telegramSendOutgoing } from "./channels/telegram.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -853,6 +862,57 @@ const restartDaemon = (source: string): void => {
   }, 1500).unref();
 };
 
+// 자가 업데이트 도구(update_self) 경로용 전역 restart 콜백 등록 (index→core 단방향, 1회).
+// 도구는 채널-특정 클로저로 restart 를 받기 어려워(restart=데몬 전역) 이 레지스트리에
+// 의존한다 — 등록 후 update_self 는 runSelfUpdate({ notify }) 만 호출해도 재시작된다.
+// 슬래시(/update)는 명시 restart 주입(우선) — 레지스트리와 공존(명시 > 레지스트리 > noop).
+setSelfUpdateRestart(() => restartDaemon("self-update:tool"));
+
+// 자가 업데이트 결과 → 사용자 친화 문구 (LLM 무경유 결정론 렌더 — 채널 무관, 슬래시·도구
+// 공용 톤). status 4종 each. updating 은 from→to·파일수·"곧 재시작" 고지.
+const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
+  if (r.status === "busy") {
+    return "이미 업데이트가 진행 중입니다. 잠시 후 완료 알림이 옵니다.";
+  }
+  if (r.status === "up-to-date") {
+    return "이미 최신 버전입니다. 변경 사항이 없어 재시작하지 않습니다.";
+  }
+  if (r.status === "updating") {
+    const span =
+      r.from !== undefined && r.to !== undefined ? `${r.from} → ${r.to}` : "최신";
+    const files = r.changedFiles !== undefined ? ` (${r.changedFiles}개 파일)` : "";
+    const npm = r.ranNpmInstall === true ? ", 의존성 갱신" : "";
+    const sec = Math.round((r.restartInMs ?? 5000) / 1000);
+    return (
+      `🔄 업데이트 적용: ${span}${files}${npm}. typecheck 게이트 통과.\n` +
+      `약 ${sec}초 후 재시작합니다 — 잠시 후 완료 알림이 옵니다.`
+    );
+  }
+  // failed — typecheck 게이트 실패 시 자동 롤백·데몬 생존을 명시(먹통 아님).
+  const rolled =
+    r.rolledBack === true
+      ? "변경은 자동 롤백됐고 데몬은 그대로 정상 동작합니다."
+      : "데몬은 그대로 정상 동작합니다.";
+  const detail = r.error !== undefined && r.error !== "" ? `\n원인: ${r.error}` : "";
+  return `⚠️ 업데이트 실패. ${rolled}${detail}`;
+};
+
+// 슬래시·통지가 쓰는 notify dest 도출 — 메시지의 channel/threadKey 에서 generic 좌표 추출.
+// telegram threadKey "tg:<chatId>" → chatId(worker-jobs deriveTargetFromThreadKey 동형, 비트 동일).
+// 마커에 적재돼 *다음 부팅* 이 "업데이트 완료" 통지를 이 좌표로 보낸다(요청자에게 회신).
+const notifyDestFromMessage = (
+  channel: string,
+  threadKey: string,
+): SelfUpdateNotifyDest => ({
+  channel,
+  target:
+    channel === "telegram"
+      ? threadKey.startsWith("tg:")
+        ? threadKey.slice("tg:".length)
+        : threadKey
+      : null,
+});
+
 // control.restart — 채널/제어 차원 재시작 이벤트(A: http-bridge 가 토큰 게이트된 POST /restart
 // 수신 시 publish). 어댑터 무관(LLM-agnostic) — 메시지 큐를 타지 않으므로 멈춘 턴에도 동작.
 bus.subscribe((event) => {
@@ -878,6 +938,26 @@ const serializedHandler: MessageHandler = (msg) => {
       .finally(() => {
         restartDaemon(`telegram:${msg.channel}`);
       });
+    return Promise.resolve();
+  }
+  // 아웃오브밴드 /update — /restart 동형으로 직렬 큐를 건너뛴다(자가 업데이트가 재시작을
+  // 트리거하므로 멈춘 턴에 막히면 안 됨). 위험 로직(git/npm/typecheck/롤백/재시작 판단)은
+  // 전부 runSelfUpdate 안에 닫혀 LLM 무경유(원칙 #2). 재시작 트리거도 루틴 안에 있으므로
+  // 핸들러는 restartDaemon 을 직접 부르지 않는다(이중 트리거 방지) — reply 만 하고 끝.
+  if (msg.text.trim() === "/update") {
+    void (async (): Promise<void> => {
+      try {
+        const r = await runSelfUpdate({
+          restart: () => restartDaemon(`self-update:${msg.channel}`),
+          notify: notifyDestFromMessage(msg.channel, msg.threadKey),
+        });
+        await msg.reply(formatSelfUpdateResult(r)).catch(() => {});
+      } catch (e) {
+        // runSelfUpdate 는 throw 0 설계지만 방어적으로 catch — 데몬 생존.
+        const err = redactSecrets(e instanceof Error ? e.message : String(e));
+        await msg.reply(`⚠️ 업데이트 처리 중 오류: ${err}`).catch(() => {});
+      }
+    })();
     return Promise.resolve();
   }
   return enqueueThreadTurn(msg.threadKey, () => handler(msg));
@@ -949,6 +1029,64 @@ for (const ch of channels) {
 
 // 재시작으로 중단된 백그라운드 워커를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).
 await recoverInterruptedJobs();
+
+// 자가 업데이트 완료 통지 — 부팅 시 <home>/.update-complete 마커가 있으면 읽어 요청자에게
+// "업데이트 완료 vX→vY" 1회 통지 후 마커 삭제(멱등). 채널 start 이후(send 가능 시점)라야
+// raw 아웃바운드가 도달. best-effort — 마커 깨졌거나 발송 실패해도 부팅을 막지 않고 마커는
+// 삭제한다(재통지 루프 0). dest 는 마커에 적재된 notify 좌표(요청 슬래시/도구의 channel·target).
+await (async (): Promise<void> => {
+  const markerPath = path.join(getPaths().home, UPDATE_COMPLETE_MARKER);
+  let raw: string;
+  try {
+    raw = await fsp.readFile(markerPath, "utf8");
+  } catch {
+    return; // 마커 없음 = 일반 부팅 — no-op.
+  }
+  // 본문 파싱·통지 실패와 무관하게 마커는 반드시 삭제(1회성 보장).
+  const unlinkMarker = async (): Promise<void> => {
+    try {
+      await fsp.unlink(markerPath);
+    } catch {
+      /* 이미 없음/권한 — 무시 */
+    }
+  };
+  try {
+    const data = JSON.parse(raw) as {
+      from?: string;
+      to?: string;
+      changedFiles?: number;
+      notify?: { channel?: string; target?: string | null };
+    };
+    const span =
+      typeof data.from === "string" && typeof data.to === "string"
+        ? ` (${data.from} → ${data.to})`
+        : "";
+    const files =
+      typeof data.changedFiles === "number"
+        ? ` · ${data.changedFiles}개 파일`
+        : "";
+    const text = `✅ 업데이트 완료${span}${files} — 새 버전으로 재시작했습니다.`;
+    const ch = data.notify?.channel;
+    const target = data.notify?.target ?? null;
+    if (ch === "telegram" && target !== null && target !== "") {
+      await telegramSendOutgoing(target, text);
+    } else if (ch === "cli" || ch === undefined) {
+      console.log(text);
+    } else {
+      console.warn(
+        `self-update: 완료 통지 미지원 채널 "${ch}" — 콘솔 출력만:\n${text}`,
+      );
+    }
+  } catch (e) {
+    console.error(
+      `self-update: 부팅 완료 통지 실패(마커는 삭제): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  } finally {
+    await unlinkMarker();
+  }
+})();
 
 // 모델 풀 단일-provider 소프트 경고 (부팅 1회) — 폴백 그물 부재 가시화.
 const poolWarn = poolDiversityWarning();

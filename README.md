@@ -15,7 +15,9 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Everything Claude Code can do** — read / write / edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory… and more on top.
 - **Many LLMs, one assistant** — mix `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) with a single `provider:model` line. Switch freely; same abilities everywhere.
 - **Always on** — runs as a background service and restarts itself if it ever dies.
-- **One personality, many channels** — Telegram, CLI, and HTTP all reach the same assistant, sharing one conversation memory.
+- **Updates itself on request** — just ask it to update. It pulls the latest, runs a typecheck safety gate (and auto-rolls back if the new code wouldn't build), restarts, and pings you when it's back — no manual `git pull`.
+- **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
+- **One personality, many channels** — Telegram, CLI, HTTP, and a built-in web dashboard all reach the same assistant, sharing one conversation memory. The dashboard is a full chat: live step-by-step progress as it works, replies that stream in, and scrollback that survives restarts.
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and simple tasks to a free local model (the `nano` tier).
 - **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it notices you doing the same multi-step task again, it offers to save it as a reusable skill. Always a proposal you approve — it never rewrites itself silently.
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.

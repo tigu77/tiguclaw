@@ -36,6 +36,11 @@ import {
   recordSkillInvocation,
   getRecentSkillInvocations,
   recordSkillOutcome,
+  listSkillUsage,
+  evaluateSkillImprove,
+  MIN_INVOCATIONS,
+  FAIL_RATE_THRESHOLD,
+  type SkillImproveGuardSnapshot,
 } from "../../../src/store/skill-usage.js";
 // V4 (2026-06-22) — 확정 지침 층. 저위험 통과분을 reference 메모 대신 SELF_GROWTH.md
 // 에 upsert(키 덮어쓰기·이중저장 0). 코어는 이 파일을 모름 — self-growth 가 데이터로만.
@@ -1169,6 +1174,237 @@ export const runSkillProposalScan = (): {
   return out;
 };
 
+// ─── Phase 2 (2026-06-24) — 스킬 *개선* 제안 루프 (telemetry 첫 소비처) ──────────
+// 진실 소스: _workspace/skill_improve_architect_contract.md + ADR Phase 2 절.
+// store 의 evaluateSkillImprove(순수 함수·임계)를 먹어, 사용 多 × 실패율 高 스킬에
+// `feedback_growth_skill_improve_<slug>` reflection(suggester) 1건을 박는다. 집행(스킬
+// 수정)은 사람→harness:harness — self-growth 는 제안만(단방향, Phase 1 §4-3 승계).
+// 신규 코어 기계 0: skill_usage·addMemory/getMemory·reflection 층·maintenance interval·
+// TTL cleanup 전부 재사용. 임계는 store 단일 지점(여기선 description 표기에만 재import).
+
+/** 개선 제안 reflection name prefix — growth namespace(isSelfNamespace) → 메타재귀 skip 자동. */
+export const SKILL_IMPROVE_PREFIX = `feedback_${SELF_NAMESPACE}_skill_improve_`;
+/**
+ * 가드 메모 prefix — 재제안 thrash 차단의 *내부 durable 진실 소스*(계약 §3-2·§5-2).
+ * 제안 메모(사용자 가시·삭제 가능)와 달리 사용자가 안 지운다 → 쿨다운 스냅샷 보존.
+ * reference type·growth namespace·raw addMemory → 메타재귀 0(자기입력 재트리거 없음).
+ */
+export const SKILL_IMPROVE_GUARD_PREFIX = `growth_skill_improve_guard_`;
+
+/** 스킬명 → 멱등 메모 slug(계약 §5-1, fingerprintSlug 동형 — [^a-z0-9]+→_, cap 60). */
+export const skillNameSlug = (skillName: string): string =>
+  skillName.replace(/[^a-z0-9]+/gi, "_").slice(0, 60);
+
+/**
+ * §6 거버넌스 제외 — skill_usage.skill_name 이 *진짜 스킬명* 이라 GOVERNANCE_TOKENS
+ * substring 직접 매칭(Phase 1.5 fingerprint 추측보다 정확, 오탐 0). harness·
+ * principle-check·self-growth 등 메타·거버넌스 스킬은 개선 제안 대상 아님(자기 면제).
+ */
+export const isGovernanceSkill = (skillName: string): boolean => {
+  const n = skillName.toLowerCase();
+  return GOVERNANCE_TOKENS.some((tok) => n.includes(tok));
+};
+
+/**
+ * 가드 메모 body → 스냅샷 파싱. 메모 없음/파싱 불가/필드 누락이면 null(최초 제안 취급 →
+ * 누적 평가). 음수·NaN 등 비정상 필드는 0 으로 보수 폴백(never-throw). 가드 메모는
+ * reference type·SKILL_IMPROVE_GUARD_PREFIX name.
+ */
+export const readGuardSnapshot = (
+  skillName: string,
+): SkillImproveGuardSnapshot | null => {
+  const memo = getMemory(`${SKILL_IMPROVE_GUARD_PREFIX}${skillNameSlug(skillName)}`);
+  if (memo === undefined) return null;
+  try {
+    const parsed = JSON.parse(memo.body) as Record<string, unknown>;
+    const num = (v: unknown): number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+    return {
+      snapshotInvokeCount: num(parsed.snapshot_invoke_count),
+      snapshotSuccessCount: num(parsed.snapshot_success_count),
+      snapshotFailCount: num(parsed.snapshot_fail_count),
+      snapshotTs: num(parsed.snapshot_ts),
+    };
+  } catch {
+    return null; // 파싱 불가 → 최초 제안 취급(누적). 견고성 우선.
+  }
+};
+
+/**
+ * 가드 메모 upsert — 제안 박는 *순간* 현재 카운트 스냅샷으로 갱신(윈도 전진, 계약 §5-2).
+ * reference type(인덱스 노이즈 최소)·growth namespace·raw addMemory(memory.write 미발행)
+ * → 메타재귀 0. addMemory 가 본질적 UPSERT(name 충돌 시 덮어씀)라 매번 호출 = 윈도 전진.
+ */
+export const upsertGuardSnapshot = (
+  skillName: string,
+  snapshot: {
+    invokeCount: number;
+    successCount: number;
+    failCount: number;
+    ts: number;
+  },
+): void => {
+  addMemory({
+    type: "reference",
+    name: `${SKILL_IMPROVE_GUARD_PREFIX}${skillNameSlug(skillName)}`,
+    description: `(내부) ${skillName} 개선제안 가드 스냅샷 — 재제안 thrash 차단용`,
+    body: JSON.stringify({
+      kind: "skill_improve_guard",
+      skill_name: skillName,
+      snapshot_invoke_count: snapshot.invokeCount,
+      snapshot_success_count: snapshot.successCount,
+      snapshot_fail_count: snapshot.failCount,
+      snapshot_ts: snapshot.ts,
+    }),
+  });
+};
+
+/**
+ * 단일 스킬 1행 → 개선 제안 1건 박기(통과 시). null 이면 미박기.
+ *
+ * 파이프라인(계약 §1):
+ *  1. 거버넌스 제외(isGovernanceSkill) — harness 등 자기 면제.
+ *  2. 멱등 — 미해결 제안 메모(feedback_growth_skill_improve_<slug>) 존재 시 재제안 0.
+ *  3. 가드 스냅샷 조회 → evaluateSkillImprove(누적 or 델타·쿨다운·임계). propose 면 박기.
+ *  4. 제안 reflection(suggester) + 가드 메모 스냅샷 upsert(윈도 전진).
+ *
+ * 멱등(제안 메모 존재)을 evaluate *앞* 에서 거른다 — 같은 스킬 미해결 제안 1건만 떠 있게
+ * (계약 §3-1). 단 가드 메모는 멱등과 *별도* 진실 소스라, 사용자가 제안 메모를 지운 뒤에도
+ * 가드 스냅샷이 남아 쿨다운이 유효(thrash 차단의 핵심, 계약 §3-2).
+ *
+ * 순수성: 박기(addMemory)는 부수효과지만 analyzeSkillProposal 선례 답습. 호출자(배치)가
+ * try/catch 로 격리.
+ */
+export const analyzeSkillImprove = (usage: {
+  skillName: string;
+  invokeCount: number;
+  successCount: number;
+  failCount: number;
+  lastUsedAt: number;
+}): {
+  reflectionName: string;
+  basis: "cumulative" | "delta";
+  failRate: number;
+} | null => {
+  // 1. 거버넌스 제외(§6) — 스킬명 직접 매칭(오탐 0).
+  if (isGovernanceSkill(usage.skillName)) return null;
+
+  const slug = skillNameSlug(usage.skillName);
+  if (slug.length === 0) return null;
+  const reflectionName = `${SKILL_IMPROVE_PREFIX}${slug}`;
+
+  // 2. 멱등(§3-1) — 미해결 제안 메모 있으면 재제안 0. growth namespace 라 자기분석도 skip.
+  if (getMemory(reflectionName) !== undefined) return null;
+
+  // 3. 가드 스냅샷(있으면 델타·쿨다운, 없으면 누적) → 순수 평가(store §7).
+  const guard = readGuardSnapshot(usage.skillName);
+  const evalResult = evaluateSkillImprove(
+    {
+      skillName: usage.skillName,
+      invokeCount: usage.invokeCount,
+      successCount: usage.successCount,
+      failCount: usage.failCount,
+      lastUsedAt: usage.lastUsedAt,
+    },
+    guard,
+  );
+  if (!evalResult.propose) return null;
+
+  // 4. 제안 reflection(suggester) — 계약 §5-1 형식. 스냅샷(가드용) 함께 기록.
+  const ratePct = Math.round(evalResult.failRate * 1000) / 10; // 소수 1자리 %
+  const description =
+    `스킬 개선 후보: '${usage.skillName}' ${usage.invokeCount}회 중 ${usage.failCount}회 실패(${ratePct}%) — ` +
+    `harness 로 개선할까요? (suggester, 사용자 확인 후 결정)`;
+
+  const body = JSON.stringify(
+    {
+      kind: "skill_improve_proposal",
+      skill_name: usage.skillName,
+      evaluation_basis: evalResult.basis, // "cumulative"(최초) | "delta"(재평가)
+      invoke_count: usage.invokeCount,
+      success_count: usage.successCount,
+      fail_count: usage.failCount,
+      fail_rate: evalResult.failRate,
+      // 가드용 스냅샷 = 제안 시점 현재값(다음 윈도 기준점). 가드 메모와 동일 값.
+      snapshot_invoke_count: usage.invokeCount,
+      snapshot_success_count: usage.successCount,
+      snapshot_fail_count: usage.failCount,
+      snapshot_ts: Date.now(),
+      confidence: 0.4,
+      thresholds: {
+        min_invocations: MIN_INVOCATIONS,
+        fail_rate_threshold: FAIL_RATE_THRESHOLD,
+      },
+      suggested_action:
+        "비서가 사용자에게 이 스킬을 harness:harness 로 개선할지 명시 확인. 거절/적용 후 이 reflection delete. self-growth 는 제안만 — 스킬 파일 수정은 harness(비서 프롬프트 경로).",
+      execution_boundary:
+        "self-growth 는 skill_usage 읽기 + 제안만. 스킬 수정은 harness:harness.",
+    },
+    null,
+    2,
+  );
+
+  addMemory({
+    type: "feedback",
+    name: reflectionName,
+    description,
+    body,
+  });
+
+  // 가드 메모 스냅샷 upsert(§3-2·§5-2) — 제안 메모를 사용자가 지워도 이게 남아 쿨다운 유효.
+  upsertGuardSnapshot(usage.skillName, {
+    invokeCount: usage.invokeCount,
+    successCount: usage.successCount,
+    failCount: usage.failCount,
+    ts: Date.now(),
+  });
+
+  return {
+    reflectionName,
+    basis: evalResult.basis,
+    failRate: evalResult.failRate,
+  };
+};
+
+/**
+ * 배치 스캔(maintenance interval 합류) — listSkillUsage() → 행마다 analyzeSkillImprove.
+ * never-throw: store 조회·평가·박기 실패해도 데몬·다른 maintenance 안 죽음(상위
+ * runSkillImproveProposals 도 try/catch — 2겹 견고성). 박힌 제안 목록 반환(관측·publish 용).
+ */
+export const runSkillImproveScan = (): {
+  reflectionName: string;
+  skillName: string;
+  basis: "cumulative" | "delta";
+  failRate: number;
+}[] => {
+  const out: {
+    reflectionName: string;
+    skillName: string;
+    basis: "cumulative" | "delta";
+    failRate: number;
+  }[] = [];
+  const rows = listSkillUsage();
+  for (const row of rows) {
+    try {
+      const result = analyzeSkillImprove(row);
+      if (result !== null) {
+        out.push({
+          reflectionName: result.reflectionName,
+          skillName: row.skillName,
+          basis: result.basis,
+          failRate: result.failRate,
+        });
+      }
+    } catch (e) {
+      // 행 단위 격리 — 한 스킬 평가 실패가 나머지 스캔을 못 멈추게(견고성).
+      console.error(
+        `self-growth: skill improve eval failed for '${row.skillName}': ${e}`,
+      );
+    }
+  }
+  return out;
+};
+
 // ─── V4 — 확정 지침 층 포인터·마이그레이션·사람 승격 ──────────────────────────
 
 /**
@@ -1306,7 +1542,7 @@ class SelfGrowthPlugin {
       this.runMaintenance();
     }, TTL_CLEANUP_INTERVAL_MS);
     console.log(
-      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan",
+      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
     );
   }
 
@@ -1315,6 +1551,38 @@ class SelfGrowthPlugin {
     this.runWeeklyReview();
     this.runDirectiveCleanup();
     this.runSkillProposals();
+    this.runSkillImproveProposals();
+  }
+
+  // Phase 2 (2026-06-24) — 스킬 *개선* 제안 배치 스캔. 기존 maintenance interval 에
+  // 합류(새 interval 신설 0). 자체 try/catch 로 store 조회·평가·박기 실패해도 데몬·다른
+  // maintenance 안 죽음(견고성 2겹 — runSkillImproveScan 행 단위 + 여기 전체).
+  private runSkillImproveProposals(): void {
+    try {
+      const proposals = runSkillImproveScan();
+      for (const p of proposals) {
+        console.log(
+          `self-growth: skill improve 제안 박힘 — ${p.reflectionName} ` +
+            `(skill='${p.skillName}', basis=${p.basis}, failRate=${(p.failRate * 100).toFixed(1)}%)`,
+        );
+        if (this.bus !== null) {
+          // self_growth.* 는 self-growth 입력 아님(메타재귀 무관, 관측·대시보드용).
+          this.bus.publish({
+            type: "self_growth.skill_improve.added",
+            ts: Date.now(),
+            payload: {
+              reflectionName: p.reflectionName,
+              skillName: p.skillName,
+              basis: p.basis,
+              failRate: p.failRate,
+            },
+          });
+        }
+      }
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`self-growth: skill improve scan failed: ${reason}`);
+    }
   }
 
   // V5 — 스킬화 제안 배치 스캔. 기존 maintenance interval 에 합류(새 interval 신설 0).

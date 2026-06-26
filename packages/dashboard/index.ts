@@ -9,6 +9,7 @@
  *  - GET  /api/inventory → bridge GET  /inventory       (JSON pass)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
+ *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원)
  *  - GET  /api/events    → bridge GET  /events          (SSE pipe)
  *  - POST /api/messages  → bridge POST /messages        (body forward)
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
@@ -150,6 +151,25 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // 정적 vendored 마크다운 파서 (marked, 단일파일·외부 의존 0).
+    if (pathname === "/marked.min.js" && method === "GET") {
+      try {
+        const js = await fs.readFile(
+          path.join(__dirname, "marked.min.js"),
+          "utf8",
+        );
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "public, max-age=86400",
+        });
+        res.end(js);
+      } catch {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("marked.min.js load failed");
+      }
+      return;
+    }
+
     // API proxy — token browser 미노출.
     if (pathname === "/api/inventory" && method === "GET") {
       await proxyJson(res, "/inventory");
@@ -161,6 +181,13 @@ const server = http.createServer((req, res) => {
     }
     if (pathname === "/api/health" && method === "GET") {
       await proxyJson(res, "/health");
+      return;
+    }
+    // 대화 이력 — bridge GET /chat-history (read 토큰 server-side 주입). 대시보드가 SSE
+    // 연결 전에 과거 채팅 버블을 복원하는 데 사용. limit 쿼리는 그대로 전달.
+    if (pathname === "/api/chat-history" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/chat-history" + qs);
       return;
     }
     if (pathname === "/api/events" && method === "GET") {

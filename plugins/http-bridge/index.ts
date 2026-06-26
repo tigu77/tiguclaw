@@ -34,10 +34,19 @@ import {
   findEndpoint,
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
+import { getRecentChatLog } from "../../src/store/chat-log.js";
 
 const VERSION = "0.1.0";
 const DEFAULT_THREAD_KEY = "http-bridge:default";
 const HANDLER_TIMEOUT_MS = 60_000;
+
+// 신규 SSE 접속 history replay 에서 제외할 고volume 스트리밍 타입.
+// - llm.delta: 토큰 증분(P5). 재연결이 옛 턴 토큰을 재생해 깨진 부분 버블을 만들지 않도록.
+//   라이브 fan-out 은 통과(진행 중 턴 실시간엔 필요), history(과거 재생)에서만 제외.
+//   최종 권위 전체본은 channel.message.out 이라 델타 재생 없이도 수렴.
+// - llm.sdk_message: claude firehose. 같은 고volume·감사가치 낮음(영속 SKIP 과 동렬).
+// core/event-persist.ts 의 SKIP_TYPES 와 의미는 비슷하나 모듈 경계가 달라 로컬 set(과결합 회피).
+const HISTORY_EXCLUDE = new Set<string>(["llm.delta", "llm.sdk_message"]);
 
 const readJsonBody = async (
   req: http.IncomingMessage,
@@ -229,7 +238,9 @@ class HttpBridge implements Channel, Observer {
           ? "read"
           : pathname === "/providers" && method === "GET"
             ? "read"
-            : pathname === "/messages" && method === "POST"
+            : pathname === "/chat-history" && method === "GET"
+              ? "read"
+              : pathname === "/messages" && method === "POST"
               ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
@@ -251,8 +262,11 @@ class HttpBridge implements Channel, Observer {
         Connection: "keep-alive",
       });
       // 초기 history 푸시 (bus 가 붙어있을 때만).
+      // 고volume 스트리밍 타입(llm.delta 등)은 재생 제외 — 라이브 fan-out 은 통과, history 만 필터.
       if (this.bus !== null) {
-        const recent = this.bus.history({ limit: 50 });
+        const recent = this.bus
+          .history({ limit: 50 })
+          .filter((e) => !HISTORY_EXCLUDE.has(e.type));
         for (const e of recent) {
           try {
             res.write(`data: ${JSON.stringify(e)}\n\n`);
@@ -262,7 +276,20 @@ class HttpBridge implements Channel, Observer {
         }
       }
       this.sseClients.add(res);
+      // 하트비트 — 주기적 SSE 코멘트(`: ping`)로 연결을 살아있게 유지한다. half-open
+      // (데몬 재시작·네트워크 블립·프록시 idle timeout)이면 write 가 끝내 실패하거나
+      // 상대가 끊김을 감지 → 브라우저 EventSource 가 자동 재연결(탭 stale 방지). child
+      // proxySse 는 raw 바이트를 그대로 흘리므로 ping 이 브라우저까지 전달된다.
+      const heartbeat = setInterval(() => {
+        try {
+          res.write(`: ping\n\n`);
+        } catch {
+          /* 끊긴 소켓 — close/error 가 cleanup 처리 */
+        }
+      }, 20_000);
+      (heartbeat as { unref?: () => void }).unref?.();
       const cleanup = (): void => {
+        clearInterval(heartbeat);
         this.sseClients.delete(res);
       };
       req.on("close", cleanup);
@@ -287,6 +314,35 @@ class HttpBridge implements Channel, Observer {
       try {
         const providers = await collectProviders();
         writeJson(res, 200, providers);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /chat-history — JSON. 대시보드 대화 이력 복원(기능 B). chat_log 의 최근 N 건을
+    // 시간 오름차순으로 반환 → 대시보드가 SSE 연결 *전에* fetch 해 과거 채팅 버블 렌더.
+    // read 게이트(위 role 표). ts 는 event.ts(쓰기 훅) 이므로 클라이언트가 SSE history
+    // replay 와 ts 로 dedup 한다. ?limit= 허용(기본 200).
+    if (pathname === "/chat-history" && method === "GET") {
+      try {
+        const limitRaw = url.searchParams.get("limit");
+        const parsed = limitRaw !== null ? parseInt(limitRaw, 10) : NaN;
+        const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 200;
+        // beforeTs — 페이지네이션(스크롤 더보기). 그 시각 *이전* N 건을 ASC 반환.
+        // 안전 파싱: 유효 양수만 전달, 그 외엔 undefined(= 최신 묶음).
+        const beforeRaw = url.searchParams.get("beforeTs");
+        const beforeParsed =
+          beforeRaw !== null ? parseInt(beforeRaw, 10) : NaN;
+        const beforeTs =
+          Number.isFinite(beforeParsed) && beforeParsed > 0
+            ? beforeParsed
+            : undefined;
+        const entries = getRecentChatLog(
+          beforeTs !== undefined ? { limit, beforeTs } : { limit },
+        );
+        writeJson(res, 200, { entries });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
@@ -324,6 +380,40 @@ class HttpBridge implements Channel, Observer {
           : "http-bridge";
 
       let replyText = "";
+      // 축1(2026-06-25) — 선택지 제시. http-bridge 는 SSE 채널이므로 inline keyboard
+      // (telegram) 대신 EventBus 에 `prompt.options` 이벤트를 publish 한다. 대시보드가
+      // SSE 로 받아 버튼 묶음을 채팅 흐름에 렌더하고, 클릭 시 그 value 를 POST /messages
+      // {text:value} 로 흘려보낸다(= 사용자가 그 값을 입력한 것과 동치, route() 단일 인격
+      // 재진입). 비차단: 이벤트 1회 publish 후 즉시 {ok:true}. bus 미연결(observer 미부착)
+      // 환경에선 렌더 경로가 없으므로 {ok:false} → MCP 도구가 텍스트 제시로 graceful 폴백.
+      const bus = this.bus;
+      const presentOptions: IncomingMessage["presentOptions"] = async (
+        question,
+        options,
+        presentOpts,
+      ) => {
+        if (bus === null) {
+          return { ok: false, error: "control bus not started (관측 미연결)" };
+        }
+        try {
+          bus.publish({
+            type: "prompt.options",
+            ts: Date.now(),
+            payload: {
+              channel: this.name,
+              threadKey,
+              question,
+              options,
+              ...(presentOpts?.note !== undefined
+                ? { note: presentOpts.note }
+                : {}),
+            },
+          });
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      };
       const msg: IncomingMessage = {
         channel: this.name,
         channelUserId,
@@ -333,6 +423,7 @@ class HttpBridge implements Channel, Observer {
         reply: async (out: string): Promise<void> => {
           replyText = out;
         },
+        presentOptions,
       };
 
       let timeoutHandle: NodeJS.Timeout | undefined;

@@ -17,6 +17,28 @@ import { getEventBus } from "../core/eventbus.js";
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
+// ─── 축1 선택지(inline keyboard) callback_data 맵 ─────────────────────────
+// 텔레그램 callback_data 는 64바이트 제한 — 긴 value(보기 값)를 직접 실으면 잘리거나
+// 전송이 실패한다. 그래서 presentOptions 가 보기를 띄울 때 value 를 *맵에 저장*하고
+// 짧은 id(`o<n>`)만 callback_data 에 싣는다. 사용자가 버튼을 누르면 callback_query
+// 핸들러가 id→value 를 복원해 *일반 인바운드 메시지처럼* router 로 흘려보낸다.
+//
+// 누수 방지: 전역 LRU(삽입순 Map) 로 총 항목 수를 cap. cap 초과 시 가장 오래된 항목부터
+// 제거(per-chat 격리 대신 단순 전역 cap — 작고 견고). id 는 단조 증가 카운터로 충돌 0.
+const PROMPT_OPTION_CAP = 500;
+const promptOptionMap = new Map<string, string>();
+let promptOptionSeq = 0;
+const storePromptOption = (value: string): string => {
+  const id = `o${(promptOptionSeq++).toString(36)}`;
+  promptOptionMap.set(id, value);
+  while (promptOptionMap.size > PROMPT_OPTION_CAP) {
+    const oldest = promptOptionMap.keys().next().value;
+    if (oldest === undefined) break;
+    promptOptionMap.delete(oldest);
+  }
+  return id;
+};
+
 // IANA mime → 확장자 최소 매핑 (mime 우선, 없으면 file_path 확장자, 둘 다 없으면 "bin").
 const MIME_EXT: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -39,6 +61,28 @@ const pickExt = (mime: string | undefined, filePath: string | undefined): string
   }
   return "bin";
 };
+
+// 축1 presentOptions 본체(ctx 클로저) — question + options 를 inline keyboard 로 1회
+// 렌더하고 즉시 반환(비차단). 각 보기의 value 는 promptOptionMap 에 저장하고 짧은 id 만
+// callback_data 로 싣는다(64바이트 제한 회피). note 가 있으면 질문 아래 덧붙인다. 렌더
+// 실패(텔레그램 API 등)는 {ok:false,error} — MCP 도구가 재시도/텍스트 폴백 판단.
+const buildPresentOptions =
+  (ctx: Context): NonNullable<IncomingMessage["presentOptions"]> =>
+  async (question, options, opts) => {
+    try {
+      const inline_keyboard = options.map((o) => [
+        { text: o.label, callback_data: storePromptOption(o.value) },
+      ]);
+      const prompt =
+        opts?.note !== undefined && opts.note.trim() !== ""
+          ? `${question}\n\n${opts.note}`
+          : question;
+      await ctx.reply(prompt, { reply_markup: { inline_keyboard } });
+      return { ok: true as const };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
 
 const yyyymmdd = (epochSeconds: number): string => {
   const d = new Date(epochSeconds * 1000);
@@ -339,6 +383,9 @@ export class TelegramChannel implements Channel {
             return { ok: false, error: e instanceof Error ? e.message : String(e) };
           }
         },
+        // 축1 선택지 제시 — inline keyboard 로 1회 렌더 후 즉시 반환(비차단). 사용자 선택은
+        // callback_query 핸들러가 *다음 인바운드*로 흘려보낸다(같은 chat=같은 thread·인격).
+        presentOptions: buildPresentOptions(ctx),
       };
       // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신.
       // 응답 지연 동안 사용자가 비서가 살아있다는 신호를 받는다.
@@ -456,6 +503,8 @@ export class TelegramChannel implements Channel {
                 return { ok: false, error: e instanceof Error ? e.message : String(e) };
               }
             },
+            // 축1 선택지 제시 — message:text 핸들러와 동일(parity). inline keyboard 1회 렌더.
+            presentOptions: buildPresentOptions(ctx),
           };
           // ── 비차단 발사 (text 핸들러·cli.ts 동형) ─────────────────────────
           // 폴러는 턴을 *기다리지 않는다*. await handler 로 직렬화하면 사진+긴 캡션 한 턴이
@@ -482,6 +531,82 @@ export class TelegramChannel implements Channel {
         }
       },
     );
+
+    // 축1 선택지 클릭 핸들러 — 사용자가 inline keyboard 보기를 누르면 도착. answerCallbackQuery
+    // 로 버튼 로딩을 해제하고, callback_data(id)→value 를 복원해 *일반 인바운드 메시지처럼*
+    // router 로 흘려보낸다(같은 chat=같은 thread·인격 — 새 세션/분기 0). 이는 message:text
+    // 핸들러가 텍스트를 router 로 보내는 경로와 동형(비차단 발사 + heartbeat 재배선).
+    bot.on("callback_query:data", async (ctx) => {
+      if (!isAllowed(ctx)) {
+        // 차단된 사용자에게도 로딩은 풀어줘야 버튼이 영원히 도는 걸 막는다.
+        await ctx.answerCallbackQuery().catch(() => {});
+        return;
+      }
+      const id = ctx.callbackQuery.data;
+      const value = promptOptionMap.get(id);
+      // 로딩 해제(선택값 미복원이어도 먼저). 만료/재시작으로 맵에 없으면 안내 후 종료.
+      await ctx.answerCallbackQuery().catch(() => {});
+      if (value === undefined) {
+        await ctx
+          .reply("이 선택지는 만료되었습니다. 다시 시도해 주세요.")
+          .catch(() => {});
+        return;
+      }
+      // 1회용 — 복원 즉시 제거(중복 클릭 = 중복 메시지 방지 + 맵 위생).
+      promptOptionMap.delete(id);
+      const chat = ctx.chat;
+      if (chat === undefined) return; // 채팅 컨텍스트 없는 콜백(이론상) — 안전 종료.
+      // 선택값을 사용자 발화로 에코(텍스트 흐름과 시각 정합). 부수 UX라 실패해도 무시.
+      await ctx.reply(value).catch(() => {});
+      const msg: IncomingMessage = {
+        channel: "telegram",
+        channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
+        threadKey: `tg:${chat.id}`,
+        text: value,
+        receivedAt: Date.now(),
+        // 답글 송신 — message:text 핸들러와 동일한 변환→분할→HTML→plain 폴백 흐름.
+        reply: async (out: string, _opts?: ReplyOptions): Promise<void> => {
+          const chunks = splitHtmlForTelegram(telegramFormat(out));
+          for (const chunk of chunks) {
+            try {
+              await ctx.reply(chunk, { parse_mode: "HTML" });
+            } catch (e) {
+              console.error("telegram HTML send failed, falling back to plain:", e);
+              await ctx.reply(chunk).catch((e2) => {
+                console.error("telegram plain fallback also failed:", e2);
+              });
+            }
+          }
+        },
+        // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원.
+        sendAttachment: async (filePath, opts) => {
+          try {
+            await ctx.api.sendDocument(
+              chat.id,
+              new InputFile(filePath),
+              opts?.caption !== undefined ? { caption: opts.caption } : undefined,
+            );
+            return { ok: true };
+          } catch (e) {
+            return { ok: false, error: e instanceof Error ? e.message : String(e) };
+          }
+        },
+        presentOptions: buildPresentOptions(ctx),
+      };
+      // typing heartbeat — 선택 후 후속 턴 동안 살아있음 신호. message:text 동형.
+      void ctx.replyWithChatAction("typing").catch(() => {});
+      const heartbeat = setInterval(() => {
+        void ctx.replyWithChatAction("typing").catch(() => {});
+      }, 4000);
+      // 비차단 발사 — 폴러를 막지 않는다(message:text 동형). thread별 순서는 serializedHandler.
+      void handler(msg)
+        .catch((e) => {
+          console.error("telegram callback handler error:", e);
+        })
+        .finally(() => {
+          clearInterval(heartbeat);
+        });
+    });
 
     bot.catch((err) => {
       console.error("telegram polling error:", err.error);

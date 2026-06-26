@@ -36,6 +36,8 @@ import {
 import { getSession } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
+import { buildActivityDetail } from "./_activity-detail.js";
+import { createDeltaStream } from "./_delta-stream.js";
 import { DISALLOWED_TOOLS } from "../../../auth/permissions.js";
 import { getEventBus } from "../../eventbus.js";
 import {
@@ -74,6 +76,7 @@ import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import {
   createIdleTimer,
   IdleTimeoutError,
@@ -258,6 +261,8 @@ export const runClaude = async (
   // send-file — per-turn dedup Set(클로저 지역). 같은 경로 재호출 시 실제 전송 차단.
   // 함수 지역 변수 → 동시 turn 별 격리 (reply-intent per-turn flag 와 동형, 멱등 핵심).
   const sentFiles = new Set<string>();
+  // prompt-options(축1) — per-turn dedup Set(같은 질문 재호출 시 중복 렌더 차단). send-file 동형.
+  const askedQuestions = new Set<string>();
 
   const discoveredAgents: Agent[] = depth === 0 ? await discoverAgents(cwd) : [];
   let agents: Record<string, AgentDefinition> | undefined;
@@ -332,6 +337,16 @@ export const runClaude = async (
         // (스케줄러 등 비채널 turn 은 미등록 = 도구 노출 0). codex 와 parity.
         ...(input.sendAttachment !== undefined
           ? { "send-file": createSendFileMcpServer(input.sendAttachment, sentFiles) }
+          : {}),
+        // prompt-options(축1, 2026-06-25) — 객관식 선택지 제시. 채널 렌더 클로저가 있을
+        // 때만 등록(미지원 채널·비채널 turn 은 미등록 = 도구 노출 0). codex/openai 와 parity.
+        ...(input.presentOptions !== undefined
+          ? {
+              "prompt-options": createPromptOptionsMcpServer(
+                input.presentOptions,
+                askedQuestions,
+              ),
+            }
           : {}),
         // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
         // depth 0(서브에이전트 아님) + workerDepth 0(워커 안 아님) turn 만 등록 →
@@ -485,6 +500,17 @@ export const runClaude = async (
 
   const bus = getEventBus();
 
+  // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
+  // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
+  // SDK assistant message text 는 이미 덩어리(자연 coalesce) — coalescer 가 통일 정책 적용.
+  const deltaStream = createDeltaStream({
+    enabled: depth === 0 && (input.workerDepth ?? 0) === 0,
+    channel: input.channel,
+    threadKey: input.threadKey,
+    adapter: "claude",
+    model: lastModel ?? undefined,
+  });
+
   try {
   for (;;) {
   try {
@@ -509,7 +535,10 @@ export const runClaude = async (
     if (typeof maybeSid === "string") lastSessionId = maybeSid;
 
     if (msg.type === "system" && msg.subtype === "init") {
-      if (typeof msg.model === "string") lastModel = msg.model;
+      if (typeof msg.model === "string") {
+        lastModel = msg.model;
+        deltaStream.setModel(msg.model); // 델타 라벨 보정(늦게 알게 된 모델).
+      }
     } else if (msg.type === "result") {
       if (msg.subtype === "success") {
         // 실측 (probe 2026-06-02): 모델 거부(미존재 model)는 SDK 가 result.subtype
@@ -560,13 +589,20 @@ export const runClaude = async (
             (block as { type?: string }).type === "text"
           ) {
             const t = (block as { text?: unknown }).text;
-            if (typeof t === "string") assistantTextChunks.push(t);
+            if (typeof t === "string") {
+              assistantTextChunks.push(t);
+              // llm.delta — assistant 텍스트 청크 fan-out(sdk_message firehose 와 별개
+              // 레이어, 순수 텍스트 증분). coalescer 가 ~80ms∥120자로 묶어 발행.
+              deltaStream.push(t);
+            }
           } else if (
             block &&
             typeof block === "object" &&
             (block as { type?: string }).type === "tool_use"
           ) {
             // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
+            // detail — tool_use 블록의 input 객체에서 중립 인자 요약(축3 사이드바).
+            const toolInput = (block as { input?: unknown }).input;
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),
@@ -578,6 +614,11 @@ export const runClaude = async (
                 seq: activitySeq++,
                 kind: "tool",
                 label: String((block as { name?: unknown }).name ?? "tool"),
+                detail: buildActivityDetail(
+                  toolInput && typeof toolInput === "object"
+                    ? (toolInput as Record<string, unknown>)
+                    : undefined,
+                ),
               } satisfies RegionAActivityPayload,
             });
           }
@@ -625,6 +666,9 @@ export const runClaude = async (
   } finally {
     // 타이머 누수 0 (I-6) — 성공·throw·abort 모든 경로에서 해제.
     idleTimer.done();
+    // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
+    // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
+    deltaStream.flush();
   }
 
   // 유휴/턴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를

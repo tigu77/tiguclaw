@@ -249,10 +249,17 @@
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
       #ev-filter:focus, #chat-input:focus { outline:none; border-color:rgba(125,211,252,.55); }
       #stream { flex:1; overflow-y:auto; padding:10px; }
-      body[data-chat-panel="chat"] .ev:not(.local),
-      body[data-chat-panel="chat"] .turn-card { display:none !important; }
+      /* 대화 패널: 채팅은 최신이 아래(클로드코드식). 스트림은 prepend(최신=firstChild)이라
+         column-reverse 로 시각 순서만 뒤집어 오래된 것=위·최신=아래 + 스크롤 자동 하단 고정.
+         그룹 내부(스텝→답변) 순서는 그룹이 단일 flex 아이템이라 영향 없음. 로그 패널은
+         기존대로 최신-위(이벤트 로그 관습) 유지. */
+      body[data-chat-panel="chat"] #stream { display:flex; flex-direction:column-reverse; }
+      /* 채팅 패널: 일반 이벤트는 숨기되, 턴 그룹(스텝 리스트+답변)은 대화 흐름에 인터리빙. */
+      body[data-chat-panel="chat"] .ev:not(.local):not(.in-group) { display:none !important; }
+      /* 로그 패널: 로컬 채팅 버블·턴 그룹 래퍼는 숨기고, 그룹 안 turn-card 만 펼침 표시. */
       body[data-chat-panel="log"] .ev.local,
       body[data-chat-panel="log"] .chat-empty { display:none !important; }
+      body[data-chat-panel="log"] .turn-group { display:contents; }
       .ev { padding:8px 10px; margin:7px 0; border:1px solid var(--border); border-left:3px solid var(--text-dim); background:var(--card); border-radius:12px; font-size:11px; word-break:break-word; }
       .ev .ts { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .ev .type { font-weight:800; margin-left:6px; font-size:11px; }
@@ -262,6 +269,21 @@
       .ev.local pre { display:block; font-size:12px; color:var(--text); line-height:1.5; }
       .ev.local .type { text-transform:none; }
       .chat-message { margin-top:7px; white-space:pre-wrap; color:var(--text); font-size:13px; line-height:1.55; font-family:inherit; }
+      /* 마크다운 렌더(봇 답변만). 평문 버블은 white-space:pre-wrap 유지, 마크다운 버블은 normal 로 흐름. */
+      .chat-message.md { white-space:normal; }
+      .chat-message.md > :first-child { margin-top:0; }
+      .chat-message.md > :last-child { margin-bottom:0; }
+      .chat-message.md p { margin:0 0 7px; }
+      .chat-message.md ul, .chat-message.md ol { margin:4px 0 7px; padding-left:20px; }
+      .chat-message.md li { margin:2px 0; }
+      .chat-message.md blockquote { margin:6px 0; padding:2px 10px; border-left:3px solid var(--border-strong); color:var(--text-mute); }
+      .chat-message.md a { color:var(--info); text-decoration:underline; }
+      .chat-message.md code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:rgba(255,255,255,.07); padding:1px 5px; border-radius:5px; }
+      .chat-message.md pre { margin:7px 0; padding:10px 12px; background:rgba(0,0,0,.32); border:1px solid var(--border); border-radius:10px; overflow-x:auto; }
+      .chat-message.md pre code { display:block; background:none; padding:0; white-space:pre; line-height:1.5; }
+      .chat-message.md table { border-collapse:collapse; margin:7px 0; font-size:12px; }
+      .chat-message.md th, .chat-message.md td { border:1px solid var(--border); padding:4px 8px; }
+      .chat-message.md hr { border:none; border-top:1px solid var(--border); margin:9px 0; }
       .chat-empty { margin:10px; padding:22px; border:1px dashed var(--border); border-radius:16px; background:rgba(255,255,255,.03); color:var(--text-mute); text-align:center; }
       .chat-empty strong { display:block; color:var(--text); font-size:14px; margin-bottom:5px; }
       .t-channel { border-left-color:var(--info); } .t-channel .type { color:var(--info); }
@@ -273,6 +295,14 @@
       .ev.local { border-left-color:var(--accent); background:rgba(125,211,252,.08); }
       .ev.local .type { color:var(--accent); }
       .ev.activity { border-left-color:var(--good); background:rgba(52,211,153,.08); }
+      .ev.prompt-options { border-left-color:var(--accent-2); background:rgba(167,139,250,.08); }
+      .ev.prompt-options .type { color:var(--accent-2); }
+      .prompt-note { margin-top:5px; color:var(--text-mute); font-size:11px; }
+      .prompt-buttons { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
+      .prompt-option-btn { background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 13px; font-size:12px; font-weight:750; cursor:pointer; transition:background .12s, border-color .12s, transform .12s; }
+      .prompt-option-btn:hover:not(:disabled) { background:var(--card-hover); border-color:var(--accent-2); transform:translateY(-1px); }
+      .prompt-option-btn:disabled { opacity:.5; cursor:default; }
+      .prompt-option-btn.picked { background:rgba(167,139,250,.18); border-color:var(--accent-2); color:var(--text); opacity:1; }
       .act-line { display:flex; align-items:center; gap:8px; padding:2px 0; }
       .act-badge { font-size:10px; font-weight:800; padding:2px 7px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; }
       .act-claude { background:rgba(52,211,153,.14); color:var(--good); } .act-codex { background:rgba(192,132,252,.16); color:var(--purple); } .act-openai { background:rgba(45,212,191,.14); color:var(--teal); } .act-other { background:var(--card); color:var(--text-mute); }
@@ -284,6 +314,47 @@
       .turn-thread { color:var(--text-mute); font-size:11px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .turn-count { color:var(--text-dim); font-size:10px; margin-left:auto; }
       .turn-body { padding:2px 10px 8px 28px; }
+      /* P3 축2 — 순차 스텝 그룹: 같은 턴의 스텝 리스트(접이식) + 답변 버블을 한 묶음으로. */
+      .turn-group { margin:7px 0; }
+      .turn-group > .turn-card { margin:0 0 6px; }
+      /* 스텝 한 줄 = 클릭 가능(P4 사이드바 자리 예약). 진행 중엔 펼침, 완료 후 접힘. */
+      .act-line.act-step { cursor:pointer; border-radius:8px; padding:3px 6px; }
+      .act-line.act-step:hover { background:rgba(255,255,255,.05); }
+      /* 채팅 패널 전용: 마지막 라벨 미리보기(접힘 시 헤더에 노출). */
+      .turn-last { color:var(--text-dim); font-size:10px; font-style:italic; margin-left:8px; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      body[data-chat-panel="log"] .turn-last { display:none; }
+      /* 완료 표시(답변 도착 시 회색 점). */
+      .turn-card.done .turn-count { color:var(--good); }
+      /* 수동 접힘(.collapsed) = 두 패널 공통(기존 로그 패널 토글 보존). */
+      .turn-card.collapsed .turn-body { display:none; }
+      /* 완료 자동접힘(.done-collapsed) = 채팅 패널만. 로그 패널은 펼친 채 유지(회귀 0). */
+      body[data-chat-panel="chat"] .turn-card.done-collapsed .turn-body { display:none; }
+      /* 선택된 스텝 하이라이트(P4 마스터-디테일). */
+      .act-line.act-step.selected { background:rgba(125,211,252,.16); box-shadow:inset 0 0 0 1px rgba(125,211,252,.4); }
+      /* P5 L3 — 진행(타이핑) 버블: 델타 누적 중엔 평문 + 깜빡이는 커서, out 도착 시 마크다운 전체본으로 승격. */
+      .chat-message.streaming::after { content:"▌"; color:var(--accent-2); animation:tg-cursor-blink 1s step-start infinite; margin-left:1px; }
+      @keyframes tg-cursor-blink { 50% { opacity:0; } }
+      /* P4 축3 — 스텝 클릭 → 상세 사이드바(마스터-디테일). #right 안에서 슬라이드 오버레이.
+         기존 #right 용도(stream/chat)와 충돌 0: 닫혀 있으면 transform 으로 화면 밖, pointer-events 차단. */
+      #step-detail {
+        position:absolute; top:0; right:0; bottom:0; width:320px; max-width:86%;
+        display:flex; flex-direction:column; background:var(--panel);
+        border-left:1px solid var(--border-strong); box-shadow:-12px 0 30px rgba(0,0,0,.36);
+        transform:translateX(100%); transition:transform .18s ease; z-index:8;
+        pointer-events:none; visibility:hidden;
+      }
+      #right { position:relative; }
+      body.step-detail-open #step-detail { transform:translateX(0); pointer-events:auto; visibility:visible; }
+      .sd-head { display:flex; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--border); }
+      .sd-head h3 { flex:1; }
+      .sd-close { border:0; background:var(--card); color:var(--text-mute); cursor:pointer; border-radius:9px; width:26px; height:26px; font-size:14px; line-height:1; }
+      .sd-close:hover { background:var(--card-hover); color:var(--text); }
+      .sd-body { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:12px; }
+      .sd-row { display:flex; flex-direction:column; gap:3px; }
+      .sd-row .sd-k { font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--text-dim); font-weight:800; }
+      .sd-row .sd-v { font-size:13px; color:var(--text); word-break:break-word; }
+      .sd-detail { white-space:pre-wrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:12px; line-height:1.5; color:var(--text); background:rgba(0,0,0,.28); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+      .sd-detail.empty { font-family:inherit; color:var(--text-mute); font-style:italic; background:transparent; border-style:dashed; }
       #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
       #chat-form { display:flex; gap:8px; }
       #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
@@ -324,6 +395,8 @@
       }
       @media (max-width: 430px) { .summary-grid { grid-template-columns:1fr; } header .brand { font-size:15px; } }
     </style>
+    <!-- vendored 마크다운 파서 (marked v4, 단일파일·외부 의존 0·CDN 0). 봇 답변 렌더에만 사용. -->
+    <script src="/marked.min.js"></script>
   </head>
   <body data-tab="main" data-main="workbench" data-view="overview" data-chat-panel="chat">
     <header>
@@ -394,6 +467,13 @@
           </form>
           <div id="chat-status"></div>
         </div>
+        <aside id="step-detail" aria-label="스텝 상세" aria-hidden="true">
+          <div class="sd-head">
+            <h3 class="panel-title">스텝 상세</h3>
+            <button class="sd-close" id="sd-close" type="button" aria-label="닫기" title="닫기">✕</button>
+          </div>
+          <div class="sd-body" id="sd-body"></div>
+        </aside>
       </section>
     </main>
     <div id="toast" role="status" aria-live="polite"></div>
@@ -1078,6 +1158,13 @@
       let localChatCount = 0;
       let filterText = "";
 
+      // ── 대화 이력 dedup (기능 B) ─────────────────────────────────────────
+      // /api/chat-history 로 그린 과거 메시지와 SSE history replay(최근 50) 가 겹친다.
+      // 쓰기 훅이 event.ts 를 그대로 chat_log 에 기록하므로, "ts|role" 키로 이미 렌더된
+      // 메시지를 추적해 SSE 의 channel.message.in/out 이 같은 키면 스킵한다(안정 dedup).
+      const renderedMsgKeys = new Set();
+      const msgKey = (ts, role) => String(ts) + "|" + role;
+
       const refreshChatEmpty = () => {
         const chatEmpty = document.getElementById("chat-empty");
         if (chatEmpty) chatEmpty.style.display = localChatCount === 0 ? "" : "none";
@@ -1095,18 +1182,141 @@
       const ADAPTERS = ["claude", "codex", "openai"];
       const cardByThread = new Map();
 
+      // ── P4 축3 — 스텝 클릭 → 상세 사이드바(마스터-디테일) ─────────────────
+      // 마스터 데이터: llm.activity 전체 payload 를 "threadKey␟seq" 키로 저장.
+      // 스텝 클릭 시 data-threadkey/data-seq 로 이 맵을 조회해 우측 사이드바에 상세 표시.
+      const activityByStep = new Map();
+      const stepKey = (thread, seq) => (thread ?? "?") + "␟" + (seq == null ? "" : String(seq));
+      let selectedStepEl = null;
+
+      const closeStepDetail = () => {
+        document.body.classList.remove("step-detail-open");
+        if (selectedStepEl) { selectedStepEl.classList.remove("selected"); selectedStepEl = null; }
+        const sd = document.getElementById("step-detail");
+        if (sd) sd.setAttribute("aria-hidden", "true");
+      };
+
+      // 상세 1행 추가(키/값). value 는 항상 textContent → XSS 0(detail 은 비서·도구 유래).
+      const sdRow = (body, k, v) => {
+        const row = document.createElement("div");
+        row.className = "sd-row";
+        const ke = document.createElement("span"); ke.className = "sd-k"; ke.textContent = k;
+        const ve = document.createElement("span"); ve.className = "sd-v"; ve.textContent = v;
+        row.appendChild(ke); row.appendChild(ve);
+        body.appendChild(row);
+      };
+
+      const openStepDetail = (p, lineEl) => {
+        const body = document.getElementById("sd-body");
+        if (!body) return;
+        body.textContent = "";
+        sdRow(body, "label", p.label || p.kind || "activity");
+        sdRow(body, "kind", p.kind || "—");
+        sdRow(body, "adapter", p.adapter || "—");
+        if (p.model) sdRow(body, "model", p.model);
+        sdRow(body, "seq", p.seq == null ? "—" : String(p.seq));
+        // detail = 중립 상세 요약(file_path=… / command=…). 여러 줄 가능 → pre-wrap.
+        const dRow = document.createElement("div");
+        dRow.className = "sd-row";
+        const dk = document.createElement("span"); dk.className = "sd-k"; dk.textContent = "detail";
+        const dv = document.createElement("div");
+        if (p.detail != null && String(p.detail).trim() !== "") {
+          dv.className = "sd-detail";
+          dv.textContent = String(p.detail); // ← textContent: XSS 0(마크다운 렌더 불요).
+        } else {
+          dv.className = "sd-detail empty";
+          dv.textContent = "상세 정보 없음";
+        }
+        dRow.appendChild(dk); dRow.appendChild(dv);
+        body.appendChild(dRow);
+
+        // 선택 하이라이트 전환.
+        if (selectedStepEl && selectedStepEl !== lineEl) selectedStepEl.classList.remove("selected");
+        selectedStepEl = lineEl;
+        lineEl.classList.add("selected");
+        document.body.classList.add("step-detail-open");
+        const sd = document.getElementById("step-detail");
+        if (sd) sd.setAttribute("aria-hidden", "false");
+      };
+
+      // 사이드바 닫기(버튼 + Esc). 정의 직후 바인딩 — TDZ 회피.
+      const sdCloseBtn = document.getElementById("sd-close");
+      if (sdCloseBtn) sdCloseBtn.addEventListener("click", closeStepDetail);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && document.body.classList.contains("step-detail-open")) closeStepDetail();
+      });
+
       const applyFilter = (el) => {
         if (filterText !== "" && !(el.dataset.type || "").includes(filterText)) {
           el.style.display = "none";
         }
       };
+      // 사용자가 라이브(최신/하단)를 보고 있는지 판정. column-reverse 라 하단=newest=
+      // scrollTop≈0 (위로 스크롤하면 음수로 멀어짐). |scrollTop| < 80px = near-bottom.
+      const NEAR_BOTTOM_PX = 80;
+      const isNearBottom = () => Math.abs(stream.scrollTop) < NEAR_BOTTOM_PX;
+
+      // 시각 최상단(DOM 끝)부터 가지치기 — MAX_EVENTS 초과분 제거(메모리 바운드).
+      // ★페이지네이션 충돌 회피: 사용자가 스크롤업해 과거 이력을 보는 중이면 prune 을 스킵해야
+      //   방금 로드한 과거가 잘려나가지 않는다. 따라서 near-bottom(라이브 보는 중)일 때만 prune.
+      // 센티넬(DOM 끝 상주)은 절대 제거하지 않는다(observer 누수/단절 방지): 센티넬이
+      // lastChild 면 그 바로 앞(실제 최古 메시지)을 제거한다.
       const capStream = () => {
-        while (stream.children.length > MAX_EVENTS) stream.removeChild(stream.lastChild);
+        if (!isNearBottom()) return; // 이력 보는 중 → prune 보류(보던 것 보존).
+        let pruned = false;
+        while (stream.children.length > MAX_EVENTS) {
+          let victim = stream.lastChild;
+          if (victim === historySentinel) {
+            victim = victim.previousSibling; // 센티넬 앞 = 실제 시각 최古.
+          }
+          if (victim === null || victim === historySentinel) break; // 안전.
+          // dedup Set 정리 — 잘린 메시지의 key 를 제거해, 나중에 다시 스크롤업하면
+          // older 재로드 시 dedup 에 막히지 않고 재렌더된다(보던 이력 복원 가능).
+          if (victim.dataset && victim.dataset.ts) {
+            const t = parseInt(victim.dataset.ts, 10);
+            const ty = victim.dataset.type || "";
+            if (Number.isFinite(t) && ty.indexOf("channel.message") === 0) {
+              const role = ty.endsWith(".out") ? "assistant" : "user";
+              renderedMsgKeys.delete(msgKey(t, role));
+            }
+          }
+          stream.removeChild(victim);
+          pruned = true;
+        }
+        // prune 으로 과거(최古)가 잘렸으면 페이지네이션 커서가 stale → 갱신 필수.
+        // (a) oldestLoadedTs 를 DOM 에 남은 실제 최古 chat 노드 ts 로 재설정 → 다음 beforeTs 정합.
+        // (b) reachedOldest 리셋 + 센티넬 observer 재가동 → 다시 스크롤업하면 그 지점부터 older 재로드.
+        if (pruned) refreshOldestCursorAfterPrune();
+      };
+
+      // prune 후 호출 — DOM 끝(센티넬 제외)에서 거슬러 올라가 dataset.ts 가 있는 첫 노드
+      // (= 남은 시각 최古 메시지)의 ts 로 커서를 갱신한다. 페이지네이션 상태(아래 선언)는
+      // 런타임(이벤트 핸들러)에서만 평가되므로 TDZ 무관(forward 참조 안전).
+      const refreshOldestCursorAfterPrune = () => {
+        let node = historySentinel !== null && stream.lastChild === historySentinel
+          ? historySentinel.previousSibling
+          : stream.lastChild;
+        let foundTs = null;
+        while (node !== null) {
+          if (node !== historySentinel && node.dataset && node.dataset.ts) {
+            const n = parseInt(node.dataset.ts, 10);
+            if (Number.isFinite(n)) { foundTs = n; break; }
+          }
+          node = node.previousSibling;
+        }
+        if (foundTs === null) return; // ts 가진 chat 노드 0(이론상) → 커서 유지.
+        oldestLoadedTs = foundTs;
+        // 과거가 잘렸으니 그 앞이 더 있을 수 있음 → 재로드 가능 상태로.
+        if (reachedOldest) reachedOldest = false;
+        if (olderObserver === null) setupOlderObserver();
       };
 
       const buildActivityLine = (p) => {
         const line = document.createElement("div");
-        line.className = "act-line";
+        // 스텝 = 클릭 가능 요소(P4 사이드바 상세가 여기 붙는다). 지금은 자리 예약만(no-op).
+        line.className = "act-line act-step";
+        line.dataset.threadkey = p.threadKey || "?";
+        if (p.seq != null) line.dataset.seq = String(p.seq);
         const icon = document.createElement("span");
         icon.className = "act-icon";
         icon.textContent = p.kind === "tool" ? "🔧" : "▶";
@@ -1117,14 +1327,29 @@
         meta.className = "act-meta";
         meta.textContent = (p.model ? p.model + " · " : "") + "#" + (p.seq ?? "");
         line.appendChild(icon); line.appendChild(label); line.appendChild(meta);
+        // P4 — 클릭 시 data-threadkey/data-seq 로 마스터 payload 조회 → 우측 사이드바 상세.
+        line.addEventListener("click", () => {
+          const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq));
+          // 저장본 우선(전체 payload). 누락 시 렌더 시점 p 로 폴백.
+          openStepDetail(stored || p, line);
+        });
         return line;
       };
 
+      // 턴 그룹 = 스텝 리스트(접이식 turn-card) + 답변 버블을 한 묶음으로 잡는 컨테이너.
+      // 그룹 자체가 stream 에 삽입되고, 그 안에 스텝 카드 → (도착 시) 답변 버블 순으로 쌓인다.
       const createTurnCard = (p, ts, adapter, thread) => {
+        const group = document.createElement("div");
+        group.className = "turn-group";
+        group.dataset.threadkey = thread;
+        // 로그 패널 필터(stream 직속 자식의 dataset.type 매칭)와 일관되도록 그룹에도 타입 표기.
+        group.dataset.type = "llm.activity";
+
+        applyFilter(group);
         const el = document.createElement("div");
-        el.className = "ev turn-card";
-        el.dataset.type = "region.a.activity";
-        applyFilter(el);
+        el.className = "ev turn-card in-group";
+        el.dataset.type = "llm.activity";
+        el.dataset.threadkey = thread;
         const head = document.createElement("div");
         head.className = "turn-head";
         const caret = document.createElement("span");
@@ -1136,60 +1361,515 @@
         th.className = "turn-thread"; th.textContent = thread;
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
+        const lastEl = document.createElement("span");
+        lastEl.className = "turn-last"; lastEl.textContent = "";
         const countEl = document.createElement("span");
         countEl.className = "turn-count"; countEl.textContent = "0단계";
         head.appendChild(caret); head.appendChild(badge); head.appendChild(th);
-        head.appendChild(tsEl); head.appendChild(countEl);
+        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl);
         const body = document.createElement("div");
         body.className = "turn-body";
-        head.addEventListener("click", () => {
-          const hidden = body.style.display === "none";
-          body.style.display = hidden ? "" : "none";
-          caret.textContent = hidden ? "▼" : "▶";
-        });
+        // 수동 접힘(.collapsed) = 두 패널 공통(헤더 클릭, 기존 로그 토글 보존).
+        // 완료 자동접힘(.done-collapsed) = 채팅 패널만(로그 패널 회귀 0). 수동 클릭이 우선.
+        const setOpen = (open) => {
+          el.classList.toggle("collapsed", !open);
+          el.classList.remove("done-collapsed"); // 수동 조작이 자동접힘을 해제.
+          caret.textContent = open ? "▼" : "▶";
+        };
+        head.addEventListener("click", () => setOpen(
+          el.classList.contains("collapsed") || el.classList.contains("done-collapsed"),
+        ));
         el.appendChild(head); el.appendChild(body);
-        return { el, body, countEl, lastSeq: -1, count: 0 };
+        group.appendChild(el);
+        // replyBubble = 이 턴의 진행(타이핑) 답변 슬롯(P5). 첫 delta 때 생성, out 도착 시 승격.
+        return {
+          group, el, body, countEl, lastEl, setOpen,
+          lastSeq: -1, count: 0, closed: false,
+          replyBubble: null, replyMsg: null, replyRaw: "",
+        };
+      };
+
+      // delta-only 턴(스텝 활동 없이 토큰만 오는 경우)용 경량 그룹 — 진행 버블만 담는다.
+      // 이후 activity 가 오면 renderActivity 의 isNewTurn 판정(seq 리셋/closed)으로 자연 정리.
+      const createDeltaGroup = (p, ts, adapter, thread) => {
+        const group = document.createElement("div");
+        group.className = "turn-group";
+        group.dataset.threadkey = thread;
+        group.dataset.type = "channel.message.out";
+        applyFilter(group);
+        return {
+          group, el: null, body: null, countEl: null, lastEl: null,
+          setOpen: () => {}, lastSeq: -1, count: 0, closed: false,
+          replyBubble: null, replyMsg: null, replyRaw: "",
+        };
+      };
+
+      // 진행(타이핑) 버블을 그 턴 그룹 안(스텝 카드 아래)에 생성. 평문 누적용 빈 버블.
+      const ensureReplyBubble = (card, ts) => {
+        if (card.replyBubble) return card.replyBubble;
+        const div = document.createElement("div");
+        div.className = "ev local channel-chat";
+        div.dataset.type = "channel.message.out";
+        const head = document.createElement("div");
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts"; tsEl.textContent = ts;
+        const tyEl = document.createElement("span");
+        tyEl.className = "type"; tyEl.textContent = "돌쇠";
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        div.appendChild(head);
+        const msg = document.createElement("div");
+        // streaming = 평문 + 깜빡이는 커서. out 도착 시 마크다운 전체본으로 승격(streaming 제거).
+        msg.className = "chat-message streaming";
+        div.appendChild(msg);
+        card.group.appendChild(div); // 스텝 카드(있으면) 다음 = 라이브 답변 슬롯.
+        card.replyBubble = div;
+        card.replyMsg = msg;
+        card.replyRaw = "";
+        return div;
+      };
+
+      // ── P5 L3 — 토큰 델타 증분 렌더 ───────────────────────────────────────
+      // 같은 threadKey 의 진행 버블에 delta 를 순서대로 평문 append(미완성 마크다운 깜빡임 회피).
+      // 스텝 그룹(P3)이 진행 중이면 그 그룹의 답변 슬롯으로, 없으면 경량 delta 그룹을 새로 만든다.
+      // 최종 권위는 channel.message.out — 도착 시 이 버블을 마크다운 전체본으로 승격(renderChannelMessage).
+      const renderDelta = (p, ts) => {
+        const delta = String(p.delta || "");
+        if (delta === "") return;
+        const thread = p.threadKey || THREAD_KEY;
+        const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
+        let card = cardByThread.get(thread);
+        // 진행 버블을 붙일 그룹이 없거나 이미 닫힌(답변 완료) 턴이면 새 경량 그룹 시작.
+        if (!card || !card.group.isConnected || card.closed) {
+          card = createDeltaGroup(p, ts, adapter, thread);
+          cardByThread.set(thread, card);
+          stream.insertBefore(card.group, stream.firstChild);
+          capStream();
+        }
+        ensureReplyBubble(card, ts);
+        // 평문 누적(textContent) — 스트리밍 중 부분 마크다운/미완 코드펜스 위험·깜빡임 회피.
+        card.replyRaw += delta;
+        card.replyMsg.textContent = card.replyRaw;
+        // firstEvent/evCount 는 renderEvent 진입부에서 이미 처리됨(델타도 이벤트 1건).
+        refreshChatEmpty();
+        if (currentView === "overview") setTimeout(showOverview, 0);
       };
 
       const renderActivity = (p, ts) => {
         const thread = p.threadKey || "?";
+        // 마스터 데이터 저장: 전체 payload 를 threadKey+seq 키로(클릭 시 상세 조회).
+        activityByStep.set(stepKey(thread, p.seq), p);
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
         let card = cardByThread.get(thread);
-        const isNewTurn = !card || !card.el.isConnected || (p.seq ?? 0) <= card.lastSeq;
+        // 새 턴 = 카드 없음 / 제거됨 / seq 리셋 / 이미 답변으로 닫힌 턴 / 스텝카드 없는 delta-only 그룹.
+        const isNewTurn =
+          !card || !card.group.isConnected || card.closed || !card.el || (p.seq ?? 0) <= card.lastSeq;
         if (isNewTurn) {
           card = createTurnCard(p, ts, adapter, thread);
           cardByThread.set(thread, card);
-          stream.insertBefore(card.el, stream.firstChild);
+          stream.insertBefore(card.group, stream.firstChild);
           capStream();
         }
         card.body.appendChild(buildActivityLine(p));
         card.lastSeq = p.seq ?? 0;
         card.count += 1;
         card.countEl.textContent = card.count + "단계";
+        // 진행 중 마지막 라벨 미리보기(접힘 시 헤더에 노출).
+        card.lastEl.textContent = p.label || p.kind || "";
+        card.setOpen(true); // 진행 중엔 펼쳐서 라이브로 보이게.
+      };
+
+      // 답변(channel.message.out) 도착 시, 같은 threadKey 의 진행 중 턴 그룹을 마무리한다.
+      // 답변 버블을 그 그룹 안(스텝 아래)에 배치 + 스텝 카드를 "n단계 완료" 로 접는다.
+      // 진행 중 그룹이 없으면 null 반환 → 호출부가 기존 단독 버블로 렌더(회귀 0).
+      const completeTurnGroup = (thread) => {
+        const card = cardByThread.get(thread);
+        if (!card || !card.group.isConnected || card.closed) return null;
+        card.closed = true;
+        // delta-only 경량 그룹(스텝 카드 없음)은 접을 카드가 없다 — 그룹만 반환.
+        if (!card.el) return card.group;
+        card.countEl.textContent = card.count + "단계 완료";
+        card.el.classList.add("done");
+        // 완료 자동접힘(채팅 패널만). caret 도 접힘 표시. 수동 클릭 시 해제됨.
+        card.el.classList.add("done-collapsed");
+        card.el.querySelector(".turn-caret").textContent = "▶";
+        return card.group;
+      };
+
+      // ── 마크다운 렌더(봇 답변 전용) ──────────────────────────────────────
+      // 봇 출력은 신뢰경계 밖(모델이 <script>·onerror·javascript: 토해낼 수 있음).
+      // marked 는 sanitize 안 함 → DOMParser 화이트리스트 재구성으로 안전 태그/속성만 통과.
+      // 구멍 우려 시 DOMPurify(min) 1파일 동봉으로 승격: marked.parse→DOMPurify.sanitize 로 교체.
+      const MD_ALLOWED_TAGS = new Set([
+        "p","br","strong","em","b","i","code","pre","ul","ol","li",
+        "blockquote","h1","h2","h3","h4","h5","h6","a","hr","del","s",
+        "table","thead","tbody","tr","th","td","span",
+      ]);
+      const MD_SAFE_HREF = /^(https?:|mailto:)/i;
+      // 미닫힌 코드펜스(``` 홀수) 봉합 — 답변에 ``` 하나만 있어도 깨진 HTML 방지(렌더용 복사본만).
+      const sealFences = (src) => {
+        const fences = (src.match(/^```/gm) || []).length;
+        return fences % 2 === 1 ? src + "\n```" : src;
+      };
+      const sanitizeMarkdownHtml = (html) => {
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const walk = (node) => {
+          // 자식 스냅샷(순회 중 교체로 인한 라이브 컬렉션 변동 방지).
+          for (const child of Array.from(node.childNodes)) {
+            if (child.nodeType === 1) {
+              const tag = child.tagName.toLowerCase();
+              if (!MD_ALLOWED_TAGS.has(tag)) {
+                // 미허용 태그 = unwrap(자식 텍스트/노드는 보존, 통째 drop 아님).
+                walk(child);
+                while (child.firstChild) node.insertBefore(child.firstChild, child);
+                node.removeChild(child);
+                continue;
+              }
+              // 모든 속성 제거 후, a.href 만 안전 프로토콜로 복원.
+              const href = tag === "a" ? child.getAttribute("href") : null;
+              for (const attr of Array.from(child.attributes)) {
+                child.removeAttribute(attr.name);
+              }
+              if (tag === "a") {
+                if (href && MD_SAFE_HREF.test(href.trim())) {
+                  child.setAttribute("href", href.trim());
+                  child.setAttribute("target", "_blank");
+                  child.setAttribute("rel", "noopener noreferrer");
+                }
+              }
+              walk(child);
+            } else if (child.nodeType !== 3) {
+              // 텍스트(3) 외 코멘트/기타 노드 제거.
+              node.removeChild(child);
+            }
+          }
+        };
+        walk(doc.body);
+        return doc.body.innerHTML;
+      };
+      const renderMarkdown = (src) => {
+        // marked·sanitize 실패 시 평문 폴백(happy-path 금지).
+        return sanitizeMarkdownHtml(
+          window.marked.parse(sealFences(src), { gfm: true, breaks: true }),
+        );
+      };
+      // 봇 답변=마크다운(innerHTML, sanitize 후), 사용자/오류=평문(textContent).
+      const setChatBody = (msgEl, text, asMarkdown) => {
+        const src = String(text || "");
+        if (asMarkdown && typeof window.marked !== "undefined") {
+          try {
+            msgEl.innerHTML = renderMarkdown(src);
+            msgEl.classList.add("md");
+            return;
+          } catch (e) {
+            // 폴백: 평문.
+          }
+        }
+        msgEl.classList.remove("md");
+        msgEl.textContent = src;
       };
 
       const renderChannelMessage = (ev, ts) => {
         const payload = ev.payload || {};
+        const isOut = ev.type === "channel.message.out";
+        const thread = payload.threadKey || THREAD_KEY;
+
+        // ── P5 진행 버블 승격 ──────────────────────────────────────────────
+        // out(봇 답변)이고 같은 threadKey 에 스트리밍 진행 버블이 있으면, 새 버블을 만들지
+        // 말고 그 진행 버블을 "최종 권위 전체본 + 마크다운"으로 승격(중복 버블 생성 금지).
+        // 누적 평문 델타는 폐기되고 out 전체본으로 치환 = 부분 렌더 오차 자가치유.
+        if (isOut) {
+          const card = cardByThread.get(thread);
+          if (card && card.replyBubble && card.replyBubble.isConnected) {
+            setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
+            card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
+            card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
+            completeTurnGroup(thread);                          // 스텝 카드 "n단계 완료"로 접기.
+            localChatCount += 1;
+            refreshChatEmpty();
+            if (currentView === "overview") setTimeout(showOverview, 0);
+            capStream();
+            return;
+          }
+        }
+
         const div = document.createElement("div");
         div.className = "ev local channel-chat";
         div.dataset.type = (ev.type || "").toLowerCase();
+        if (ev.ts != null) div.dataset.ts = String(ev.ts); // prune 후 커서 복구용 수치 ts.
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
         tsEl.textContent = ts;
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = ev.type === "channel.message.out" ? "돌쇠" : "나";
+        tyEl.textContent = isOut ? "돌쇠" : "나";
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
         const msg = document.createElement("div");
         msg.className = "chat-message";
-        msg.textContent = String(payload.text || "");
+        // 봇 출력(돌쇠)만 마크다운, 사용자 입력(나)은 평문 유지.
+        setChatBody(msg, payload.text, isOut);
         div.appendChild(msg);
-        stream.insertBefore(div, stream.firstChild);
+        // 봇 답변(out)이면 같은 턴의 스텝 그룹을 마무리하고 그 그룹 안(스텝 아래)에 버블 배치.
+        // 진행 중 그룹이 없으면(또는 사용자 입력) 기존처럼 stream 최상단에 단독 삽입.
+        const group = isOut ? completeTurnGroup(thread) : null;
+        if (group) {
+          group.appendChild(div); // 그룹 내 스텝 카드 다음 = 답변 말풍선.
+        } else {
+          stream.insertBefore(div, stream.firstChild);
+        }
         localChatCount += 1;
         refreshChatEmpty();
         if (currentView === "overview") setTimeout(showOverview, 0);
+        capStream();
+      };
+
+      // ── 과거 대화 이력 렌더(기능 B) ──────────────────────────────────────
+      // chat_log 에서 온 과거 메시지를 단순 채팅 버블로 렌더한다. 라이브 경로(renderChannelMessage)
+      // 와 달리 스텝 카드·도구 활동·턴 그룹화가 없다(이벤트 미영속 = 설계 한계, 메시지 버블만).
+      // 사용자=평문·비서=마크다운(setChatBody) 으로 라이브 버블과 동일 모양.
+      // 순서: 호출자가 오래된→최신 순으로 넘기고 매번 stream.firstChild 앞에 삽입한다.
+      // column-reverse 라 DOM 최상단(child[0])=시각 최하단이므로, 오래된 것이 먼저 들어가
+      // 깊은 DOM 인덱스(=시각 위)로 밀리고 최신 과거가 child[0](시각 아래, 라이브 바로 위)에 온다.
+      // 버블 div 생성만(삽입은 호출자). 초기 로드는 insertBefore(firstChild)=시각 하단 누적,
+      // 페이지네이션(더 로드)은 appendChild=시각 상단 누적으로 재사용한다.
+      const buildHistoryDiv = (entry) => {
+        const isOut = entry.role === "assistant";
+        const div = document.createElement("div");
+        div.className = "ev local channel-chat";
+        div.dataset.type = isOut ? "channel.message.out" : "channel.message.in";
+        div.dataset.ts = String(entry.ts); // prune 후 oldestLoadedTs 복구용 수치 ts.
+        const head = document.createElement("div");
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts";
+        tsEl.textContent = new Date(entry.ts).toISOString().slice(11, 23);
+        const tyEl = document.createElement("span");
+        tyEl.className = "type";
+        tyEl.textContent = isOut ? "돌쇠" : "나";
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        div.appendChild(head);
+        const msg = document.createElement("div");
+        msg.className = "chat-message";
+        setChatBody(msg, entry.text, isOut); // 비서=마크다운, 사용자=평문.
+        div.appendChild(msg);
+        return div;
+      };
+
+      const renderHistoryMessage = (entry) => {
+        const div = buildHistoryDiv(entry);
+        stream.insertBefore(div, stream.firstChild);
+        localChatCount += 1;
+      };
+
+      // ── 페이지네이션 상태(기능 2) ────────────────────────────────────────
+      // 초기 최근 100 + 위(시각 최上=최古)로 스크롤 시 더 로드. column-reverse 라
+      // 수동 scrollTop 계산은 브라우저 비일관 → IntersectionObserver 센티넬 방식.
+      const HISTORY_PAGE = 100; // 페이지당 건수(초기·추가 동일).
+      let oldestLoadedTs = null; // 현재 로드된 가장 오래된 메시지 ts(다음 beforeTs).
+      let loadingOlder = false; // 동시 로드 가드.
+      let reachedOldest = false; // 빈 배치 → 더 없음(센티넬 observe 해제).
+      let olderObserver = null; // IntersectionObserver 핸들(누수 0 위해 disconnect 추적).
+      let historySentinel = null; // 시각 최上단 센티넬 요소(DOM 끝 = column-reverse 의 top).
+
+      // 센티넬을 항상 DOM 끝(= 시각 최상단)에 유지한다. 더 로드로 위에 메시지를
+      // appendChild 하면 센티넬보다 앞에 들어가므로, 매 로드 후 다시 끝으로 옮긴다.
+      const ensureSentinelAtTop = () => {
+        if (historySentinel === null) {
+          historySentinel = document.createElement("div");
+          historySentinel.id = "history-sentinel";
+          historySentinel.setAttribute("aria-hidden", "true");
+          // 보이지 않는 0높이 마커 — 레이아웃·스크롤에 영향 0.
+          historySentinel.style.cssText = "height:1px;margin:0;padding:0;pointer-events:none;";
+        }
+        stream.appendChild(historySentinel); // DOM 끝 = 시각 최상단.
+      };
+
+      // 과거 배치(ASC: 최古→최新)를 시각 최상단 위로 쌓는다.
+      // column-reverse 에선 시각 상단 = DOM 끝 → 배치를 **내림차순(최新→최古)으로
+      // appendChild** 해야 시각 top-to-bottom 이 [배치最古 … 배치最新, 기존最古 …] 로
+      // 올바르게 쌓인다. dedup: 이미 렌더된 key 는 스킵. 반환 = 실제 추가된 가장 오래된 ts.
+      const prependOlderBatch = (entries) => {
+        // 내림차순 순회(배열은 ASC 라 뒤에서 앞으로) → appendChild(시각 최상단 누적)로
+        // 시각 top-to-bottom 이 [배치最古 … 배치最新] 순이 되게.
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const e = entries[i];
+          const role = e.role === "assistant" ? "assistant" : "user";
+          const key = msgKey(e.ts, role);
+          if (renderedMsgKeys.has(key)) continue; // dedup.
+          renderedMsgKeys.add(key);
+          const div = buildHistoryDiv({ ts: e.ts, role, text: e.text });
+          stream.appendChild(div); // DOM 끝 = 시각 최상단으로 누적.
+          localChatCount += 1;
+        }
+        // 전부 dedup 이어도 배치 最古(entries[0].ts)로 커서를 전진시켜
+        // 같은 묶음 무한 재요청을 막는다.
+        return entries[0].ts;
+      };
+
+      // 더 로드 — 시각 최古까지 스크롤업 트리거(센티넬 가시). try/catch 로 라이브 무손상.
+      const loadOlderHistory = async () => {
+        if (loadingOlder || reachedOldest || oldestLoadedTs === null) return;
+        // ★하단(라이브/최신)에 있을 땐 older 를 로드하지 않는다. 하단에선 capStream 이
+        // near-bottom prune 으로 200 상한을 유지하는데, 거기서 older 를 당기면 "로드→prune"
+        // 싸움이 나 observer/cursor 상태가 꼬이고 스크롤업 더보기가 죽는다(헤드리스 검증
+        // 2026-06-26). older 는 사용자가 실제로 스크롤업해 이력을 볼 때(=not near-bottom)만.
+        if (isNearBottom()) return;
+        loadingOlder = true;
+        try {
+          const r = await fetch(
+            "/api/chat-history?limit=" + HISTORY_PAGE + "&beforeTs=" + oldestLoadedTs,
+          );
+          if (!r.ok) return;
+          const data = await r.json().catch(() => ({}));
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          if (entries.length === 0) {
+            reachedOldest = true; // 더 없음 → 센티넬 해제.
+            if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
+            return;
+          }
+          // 스크롤 위치 보존: column-reverse 는 하단(최신) 앵커라 위 삽입 시 보통
+          // 시각 위치가 유지된다. 만일을 대비해 현재 scrollTop 을 보정 기준으로 잡되,
+          // 정상 경로(앵커 유지)면 보정값 0.
+          const beforeTop = stream.scrollTop;
+          oldestLoadedTs = prependOlderBatch(entries);
+          ensureSentinelAtTop(); // 센티넬을 다시 시각 최상단으로.
+          if (entries.length < HISTORY_PAGE) {
+            reachedOldest = true; // 페이지 미만 = 마지막 묶음.
+            if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
+          }
+          // 점프 보정(브라우저 비일관 대비) — 위치가 변했으면 되돌린다.
+          if (stream.scrollTop !== beforeTop) stream.scrollTop = beforeTop;
+        } catch (err) {
+          console.warn("older history load failed:", err && err.message ? err.message : err);
+        } finally {
+          loadingOlder = false;
+        }
+      };
+
+      // 센티넬 IntersectionObserver 설정 — 1회. root = 스크롤 컨테이너(#stream).
+      // 센티넬(시각 최상단)이 보이면 = 사용자가 최古까지 스크롤업 → 더 로드.
+      const setupOlderObserver = () => {
+        if (olderObserver !== null || reachedOldest) return;
+        ensureSentinelAtTop();
+        olderObserver = new IntersectionObserver(
+          (obsEntries) => {
+            for (const oe of obsEntries) {
+              if (oe.isIntersecting) { void loadOlderHistory(); }
+            }
+          },
+          { root: stream, rootMargin: "120px", threshold: 0 },
+        );
+        olderObserver.observe(historySentinel);
+      };
+
+      // SSE 연결 *전에* 과거 이력을 await 로드해 채팅 흐름을 복원한다. 비어있으면 chat-empty
+      // 안내가 그대로 유지된다(첫 사용). 실패는 무해 — 라이브 SSE 경로엔 영향 0(과거 로드는 추가).
+      // 초기 limit 100(기능 2). 100 미만이면 더 없음(reachedOldest), 아니면 센티넬 관찰 시작.
+      const loadChatHistory = async () => {
+        try {
+          const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE);
+          if (!r.ok) return;
+          const data = await r.json().catch(() => ({}));
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          if (entries.length === 0) return; // 빈 이력 → chat-empty 유지.
+          for (const e of entries) {
+            const role = e.role === "assistant" ? "assistant" : "user";
+            // 과거 메시지 ts|role 을 dedup Set 에 등록 → 곧 연결될 SSE 의 history replay
+            // (같은 ts) 가 중복 버블을 만들지 않게.
+            renderedMsgKeys.add(msgKey(e.ts, role));
+            renderHistoryMessage({ ts: e.ts, role, text: e.text });
+          }
+          // 가장 오래된 ts = ASC 배열의 첫 원소 = 다음 페이지의 beforeTs.
+          oldestLoadedTs = entries[0].ts;
+          if (entries.length < HISTORY_PAGE) {
+            reachedOldest = true; // 첫 로드가 페이지 미만 = 더 없음.
+          } else {
+            setupOlderObserver(); // 더 있을 수 있음 → 위 스크롤 관찰 시작.
+          }
+          refreshChatEmpty();
+          if (currentView === "overview") setTimeout(showOverview, 0);
+        } catch (err) {
+          // 무해 — 라이브 경로 무손상. 콘솔만.
+          console.warn("chat-history load failed:", err && err.message ? err.message : err);
+        }
+      };
+
+      // ── 축1 선택지(버튼 묶음) — 대시보드 채널 렌더 ─────────────────────────
+      // http-bridge 가 publish 한 prompt.options 이벤트를 채팅 흐름에 버튼 묶음으로 렌더.
+      // 버튼 클릭 = 사용자가 그 value 를 입력한 것과 동치 → 기존 chat-form 과 동일하게
+      // POST /api/messages {text:value, threadKey}. 클릭 후 묶음 비활성(중복 클릭 방지).
+      // 비차단: 전송은 백그라운드(에러는 status/로컬 오류 버블로 표면화). route() 단일 인격
+      // 재진입이라 새 세션/스레드 0 — threadKey 는 페이로드 우선, 없으면 대시보드 기본.
+      const submitOptionValue = async (value) => {
+        const statusEl = document.getElementById("chat-status");
+        if (statusEl) statusEl.textContent = "전송 중...";
+        try {
+          const r = await fetch("/api/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: value, threadKey: THREAD_KEY }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            if (statusEl) statusEl.textContent = "오류: " + (data.error || ("HTTP " + r.status));
+            renderLocalChat("error", data.error || ("HTTP " + r.status));
+          } else if (statusEl) {
+            statusEl.textContent = "";
+          }
+        } catch (err) {
+          if (statusEl) statusEl.textContent = "전송 실패: " + err.message;
+          renderLocalChat("error", err.message);
+        }
+      };
+
+      const renderPromptOptions = (payload, ts) => {
+        const options = Array.isArray(payload.options) ? payload.options : [];
+        if (options.length === 0) return;
+        const logEmpty = document.getElementById("log-empty");
+        if (logEmpty && firstEvent) { logEmpty.remove(); firstEvent = false; }
+        localChatCount += 1;
+        refreshChatEmpty();
+        if (currentView === "overview") setTimeout(showOverview, 0);
+        const div = document.createElement("div");
+        div.className = "ev local prompt-options";
+        div.dataset.type = "prompt.options";
+        const head = document.createElement("div");
+        const tsEl = document.createElement("span");
+        tsEl.className = "ts"; tsEl.textContent = ts;
+        const tyEl = document.createElement("span");
+        tyEl.className = "type"; tyEl.textContent = "돌쇠 · 선택";
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        div.appendChild(head);
+        if (payload.question) {
+          const q = document.createElement("div");
+          q.className = "chat-message"; q.textContent = String(payload.question);
+          div.appendChild(q);
+        }
+        if (payload.note) {
+          const n = document.createElement("div");
+          n.className = "prompt-note"; n.textContent = String(payload.note);
+          div.appendChild(n);
+        }
+        const btnWrap = document.createElement("div");
+        btnWrap.className = "prompt-buttons";
+        let chosen = false;
+        for (const opt of options) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "prompt-option-btn";
+          btn.textContent = String(opt.label || opt.value || "");
+          btn.addEventListener("click", () => {
+            if (chosen) return;
+            chosen = true;
+            // 묶음 전체 비활성 + 선택 버튼 표시(중복 클릭 방지).
+            for (const b of btnWrap.querySelectorAll("button")) b.disabled = true;
+            btn.classList.add("picked");
+            submitOptionValue(String(opt.value != null ? opt.value : (opt.label || "")));
+          });
+          btnWrap.appendChild(btn);
+        }
+        div.appendChild(btnWrap);
+        stream.insertBefore(div, stream.firstChild);
         capStream();
       };
 
@@ -1206,11 +1886,24 @@
         if (currentView === "overview") setTimeout(showOverview, 0);
         const ts = new Date(ev.ts).toISOString().slice(11, 23);
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
+          // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
+          const role = ev.type === "channel.message.out" ? "assistant" : "user";
+          const key = msgKey(ev.ts, role);
+          if (renderedMsgKeys.has(key)) return;
+          renderedMsgKeys.add(key);
           renderChannelMessage(ev, ts);
           return;
         }
-        if (ev.type === "region.a.activity") {
+        if (ev.type === "llm.activity") {
           renderActivity(ev.payload || {}, ts);
+          return;
+        }
+        if (ev.type === "llm.delta") {
+          renderDelta(ev.payload || {}, ts);
+          return;
+        }
+        if (ev.type === "prompt.options") {
+          renderPromptOptions(ev.payload || {}, ts);
           return;
         }
         const div = document.createElement("div");
@@ -1255,10 +1948,11 @@
         div.appendChild(head);
         const msg = document.createElement("div");
         msg.className = "chat-message";
-        msg.textContent = text;
+        // 봇 답변(reply)만 마크다운, 사용자/오류는 평문(SSE 권위본과 일관).
+        setChatBody(msg, text, kind === "reply");
         div.appendChild(msg);
         stream.insertBefore(div, stream.firstChild);
-        while (stream.children.length > MAX_EVENTS) stream.removeChild(stream.lastChild);
+        capStream(); // 센티넬 보존 가지치기(위 helper 재사용).
       };
 
       for (const btn of document.querySelectorAll(".nav-button")) {
@@ -1287,13 +1981,29 @@
         connText.textContent = up ? "실시간" : "재연결 중…";
       };
 
-      const es = new EventSource("/api/events");
-      es.onopen = () => setConn(true);
-      es.onmessage = (m) => {
-        setConn(true);
-        try { renderEvent(JSON.parse(m.data)); } catch (e) { /* skip malformed */ }
+      // SSE 연결 — 재연결 가능 클로저. EventSource 는 보통 끊기면 자동 재연결하지만,
+      // 비-200 등 치명 에러면 CLOSED 로 영구 종료(자동 재연결 X) → 탭 stale. 그 경우만
+      // 수동 재연결한다(데몬 재시작·블립 내성). 서버측 하트비트(: ping)와 함께 동작.
+      let es = null;
+      const connectStream = () => {
+        es = new EventSource("/api/events");
+        es.onopen = () => setConn(true);
+        es.onmessage = (m) => {
+          setConn(true);
+          try { renderEvent(JSON.parse(m.data)); } catch (e) { /* skip malformed */ }
+        };
+        es.onerror = () => {
+          setConn(false);
+          // CONNECTING(=자동 재연결 중)이면 브라우저에 맡기고, CLOSED(치명)면 수동 재연결.
+          if (es.readyState === EventSource.CLOSED) {
+            setTimeout(connectStream, 3000);
+          }
+        };
       };
-      es.onerror = () => { setConn(false); };
+      // 과거 대화 이력을 먼저 복원한 뒤 SSE 연결(기능 B). dedup Set 이 채워진 상태로
+      // 라이브 스트림이 붙어 history replay 중복을 막는다. 이력 로드 실패/지연이 SSE 를
+      // 막지 않도록 then 으로 잇되, 실패해도 반드시 connectStream 으로 진행(라이브 무손상).
+      loadChatHistory().finally(connectStream);
 
       const form = document.getElementById("chat-form");
       const input = document.getElementById("chat-input");

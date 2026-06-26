@@ -54,7 +54,9 @@ import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
+import { createDeltaStream } from "./_delta-stream.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import {
   createIdleTimer,
@@ -159,6 +161,19 @@ export const runOpenAi = async (
       await adaptClaudeMcpServer(
         createSendFileMcpServer(input.sendAttachment, sentFiles),
         "send-file",
+      ),
+    );
+  }
+
+  // prompt-options(축1, 2026-06-25) — 객관식 선택지 제시. 채널 렌더 클로저가 있을 때만
+  // 등록 (claude 조건부 주입과 parity). per-turn dedup Set(클로저 지역) → 같은 질문
+  // 재호출 멱등. lean(none) 은 생략. 한쪽만 등록 = #2 차단이라 send-file 과 1:1 동형.
+  if (!toolsNone && input.presentOptions !== undefined) {
+    const askedQuestions = new Set<string>();
+    mcpServers.push(
+      await adaptClaudeMcpServer(
+        createPromptOptionsMcpServer(input.presentOptions, askedQuestions),
+        "prompt-options",
       ),
     );
   }
@@ -310,6 +325,12 @@ export const runOpenAi = async (
 
   // llm.activity — coarse floor. run() 이 도구 경계를 외부 노출 안 해 per-tool
   // activity 불가(spike 한계) → run() 1회당 turn activity 1개로 parity 붕괴(0)만 회피.
+  //
+  // detail(축3 사이드바, 2026-06-25) 의도적 생략: detail = *도구 인자 요약*이라
+  // kind="tool" per-tool activity 에만 존재한다. 여기는 kind="turn" 코어스 floor 라
+  // 요약할 도구 인자 자체가 없음 → claude/codex 가 인자 없을 때 detail 을 생략하는
+  // 것과 *동일 규칙*. 한쪽만 채우는 비대칭(#2 위반) 아님 — kind 에 묶인 동일 의미.
+  // (run() 이 도구 경계를 노출하게 되면 그때 per-tool detail 도 claude/codex 와 동형.)
   const bus = getEventBus();
   bus.publish({
     type: "llm.activity",
@@ -343,6 +364,18 @@ export const runOpenAi = async (
   // 적용한다 (SharedRunOptions.signal). input.abortSignal 미지정이면 idleAc 만 → 현행(TT-I7).
   const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
 
+  // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
+  // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
+  // SDK 가 OpenAI Responses·Chat Completions(openai/google/ollama)를 동일 RunStreamEvent
+  // 로 정규화 → 단일 fan-out 지점 1개로 풀의 3 provider 전부 커버(어댑터 내 provider 분기 0).
+  const deltaStream = createDeltaStream({
+    enabled: depth === 0 && (input.workerDepth ?? 0) === 0,
+    channel: input.channel,
+    threadKey: input.threadKey,
+    adapter: "openai",
+    model,
+  });
+
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
@@ -352,9 +385,23 @@ export const runOpenAi = async (
         stream: true,
         signal: effectiveAc.signal,
       });
-      // 스트림 이벤트 소비 — 내용 무시(도착 사실만 heartbeat). 활동 세분화는 별건.
-      for await (const _ev of streamed) {
+      // 스트림 이벤트 소비 — heartbeat + llm.delta fan-out. raw text delta 면 증분 push,
+      // 그 외 이벤트는 도착 사실만 heartbeat(활동 세분화는 별건). SDK 가 provider 무관
+      // 정규화한 `raw_model_stream_event → output_text_delta` 가 증분 텍스트 소스.
+      for await (const ev of streamed) {
         idleTimer.beat();
+        // 안전 narrowing — SDK union 형상이 바뀌어도 turn 안 깨지게 방어적 접근.
+        if (ev.type === "raw_model_stream_event") {
+          const data = (ev as { data?: unknown }).data as
+            | { type?: unknown; delta?: unknown }
+            | undefined;
+          if (
+            data?.type === "output_text_delta" &&
+            typeof data.delta === "string"
+          ) {
+            deltaStream.push(data.delta); // coalesce → publish (순수 텍스트 증분).
+          }
+        }
       }
       // 정리 보장 — 스트림 완료까지 대기 후 finalOutput/usage 가 확정됨.
       await streamed.completed;
@@ -373,6 +420,9 @@ export const runOpenAi = async (
       throw e;
     } finally {
       idleTimer.done(); // 누수 0 (I-6).
+      // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
+      // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
+      deltaStream.flush();
       for (const server of mcpServers) {
         try {
           await server.close();

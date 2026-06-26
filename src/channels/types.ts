@@ -50,6 +50,27 @@ export interface IncomingMessage {
   /** 아웃바운드 첨부 전송 — 채널이 지원하면 구현(telegram), 미지원이면 undefined.
    *  멱등은 호출자(send_file 도구)가 per-turn dedup 으로 보장. 채널은 1회 전송만 담당. */
   sendAttachment?: (filePath: string, opts?: { caption?: string }) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * 객관식 선택지 제시(축1, 클로드코드 AskUserQuestion 동형) — 채널이 지원하면 구현
+   * (telegram inline keyboard / 대시보드 버튼 / cli 번호목록), 미지원이면 undefined.
+   * sendAttachment 동형 — 추상 의도만(채널 raw 절대 여기 안 옴). prompt_options MCP
+   * 도구가 호출. additive — 미지정 = 현행 text-only(회귀 0).
+   *
+   * ★비차단: 선택지를 *렌더/전송*하고 즉시 반환한다. 답을 기다리지 않는다 —
+   * 사용자의 선택은 *다음 인바운드 메시지*(버튼 클릭/번호 타이핑 = 새 IncomingMessage)
+   * 로 따로 도착한다. 채널은 "보기를 띄우고 곧장 ok 반환"만 구현하면 된다.
+   * 답을 받아야 하면 LLM 이 이 호출 뒤 턴을 마치고, 다음 사용자 메시지에서 이어간다.
+   *
+   * 채널 구현 1줄 계약: presentOptions 는 question + options(label/value)를 *채널 UX*
+   * (버튼·번호 등)로 1회 렌더하고 즉시 `{ok:true}` 반환. 사용자 선택값은 채널이
+   * value 를 *다음 인바운드 메시지의 text* 로 흘려보낸다(텔레그램 callback → POST /
+   * 대시보드 버튼 클릭 → POST /messages 와 동형). 렌더 실패 시 `{ok:false, error}`.
+   */
+  presentOptions?: (
+    question: string,
+    options: { label: string; value: string }[],
+    opts?: { note?: string },
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void>;

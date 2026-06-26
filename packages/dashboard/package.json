@@ -8,6 +8,7 @@
   "files": [
     "index.ts",
     "index.html",
+    "marked.min.js",
     "README.md"
   ],
   "main": "index.ts",

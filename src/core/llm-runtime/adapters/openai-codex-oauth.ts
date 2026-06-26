@@ -73,6 +73,7 @@ import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import {
   loadThreadHistoryWithIds,
   type CodexTurn,
@@ -92,6 +93,8 @@ import type {
 } from "../types.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
+import { buildActivityDetailFromJson } from "./_activity-detail.js";
+import { createDeltaStream } from "./_delta-stream.js";
 import {
   createIdleTimer,
   IdleTimeoutError,
@@ -449,6 +452,9 @@ const parseCodexSse = async (
   // 유휴 타임아웃 heartbeat — chunk 수신마다 호출(타이머 reset). 미지정 = no-op
   // (회귀 0 — 기존 호출부 호환). abort 시 reader.read() 가 reject → throw 전파.
   onChunk?: () => void,
+  // llm.delta fan-out — output_text.delta 누적 시점마다 증분 텍스트 호출(onChunk 선례).
+  // 미지정 = no-op(회귀 0). coalesce·publish 는 호출부 책임(파서 순수성 보존).
+  onTextDelta?: (delta: string) => void,
 ): Promise<CodexSseResult> => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -483,6 +489,9 @@ const parseCodexSse = async (
             typeof event.delta === "string"
           ) {
             text += event.delta;
+            // llm.delta fan-out — 순수 텍스트 증분만(누적본 아님). 호출부 coalescer 가
+            // ~80ms∥120자로 묶어 publish. 미지정(onTextDelta===undefined)이면 no-op.
+            onTextDelta?.(event.delta);
           }
           // V5.3 — function_call lifecycle 1 분기: output_item.added.
           // OpenClaw L407-418 답습 — partialJson 시작값 = item.arguments (대개 "").
@@ -1305,6 +1314,18 @@ export const runOpenAiCodex = async (
         )
       : undefined;
   if (sendFileBridge !== undefined) allBridges.push(sendFileBridge);
+  // prompt-options(축1, 2026-06-25) — 객관식 선택지 제시 (claude 어댑터와 parity).
+  // per-turn dedup Set(클로저 지역) → 같은 질문 재호출 시 중복 렌더 차단. 채널 렌더
+  // 클로저가 있을 때만 bridge 생성 → undefined 면 미등록(도구 노출 0). send-file 1:1 동형.
+  const askedQuestions = new Set<string>();
+  const promptOptionsBridge =
+    input.presentOptions !== undefined
+      ? await adaptClaudeMcpServer(
+          createPromptOptionsMcpServer(input.presentOptions, askedQuestions),
+          "prompt-options",
+        )
+      : undefined;
+  if (promptOptionsBridge !== undefined) allBridges.push(promptOptionsBridge);
   // lean 도구 정책 (2026-06-15, architect §2a I-2). 중립 신호 toolPolicy 를 *codex
   // 도구 집합*(bridge MCP 도구들)에서 해석 — 도구명 매핑은 어댑터 안(추상 누수 0, I-3).
   //  - {mode:"none"}: bridge 도구 배열을 빈 배열로 → 도구 0 lean child.
@@ -1355,6 +1376,15 @@ export const runOpenAiCodex = async (
         toolBridgeMap.set((t as { name: string }).name, sendFileBridge);
       }
       mcpTools.push(...sendFileToolsRaw);
+    }
+
+    // prompt-options(축1) — 채널 렌더 클로저가 있을 때만 등록 (claude 어댑터와 parity).
+    if (promptOptionsBridge !== undefined) {
+      const promptOptionsToolsRaw = await promptOptionsBridge.listTools();
+      for (const t of promptOptionsToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, promptOptionsBridge);
+      }
+      mcpTools.push(...promptOptionsToolsRaw);
     }
 
     // V7.2.b — depth 0 turn 만 spawn_agent 등록. child(depth 1) 는 미등록 →
@@ -1482,6 +1512,19 @@ export const runOpenAiCodex = async (
   // llm.activity — 어댑터 로컬 단조 시퀀스 (iteration 가로질러 누적). nonce 아님.
   let activitySeq = 0;
   const bus = getEventBus();
+
+  // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
+  // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
+  // codex SSE delta 는 토큰 단위(고빈도) → coalescer 가 ~80ms∥120자로 묶음. seq 는
+  // iteration 가로질러 단조(activitySeq 동형). parseCodexSse 의 onTextDelta 콜백으로 push,
+  // 각 iteration SSE 소비 후 flush(도구 실행 전 잔여 발행).
+  const deltaStream = createDeltaStream({
+    enabled: depth === 0 && (input.workerDepth ?? 0) === 0,
+    channel: input.channel,
+    threadKey: input.threadKey,
+    adapter: "codex",
+    model,
+  });
   // persistence 보강 (2026-05-27, contract Q3 + recon §5):
   //  - finalFlushRequested: cap-1 도달 시 set. 다음 turn 은 tools 비우고 "마무리 텍스트만"
   //    요청 → 도구 한도 도달해도 빈 finalText 케이스 격감.
@@ -1651,7 +1694,11 @@ export const runOpenAiCodex = async (
           throw new Error("Codex backend response.body 가 null — SSE 스트림 부재.");
         }
 
-        sseResult = await parseCodexSse(res.body, () => idleTimer.beat());
+        sseResult = await parseCodexSse(
+          res.body,
+          () => idleTimer.beat(),
+          (delta) => deltaStream.push(delta), // llm.delta fan-out (coalesce → publish).
+        );
       } catch (e) {
         // abort 가 유휴(1층)·턴(2층) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
         // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
@@ -1668,6 +1715,9 @@ export const runOpenAiCodex = async (
       } finally {
         // 타이머 누수 0 (I-6) + 도구 실행 구간 진입 전 해제 (I-4 — LLM 스트림만 대상).
         idleTimer.done();
+        // 이 iteration SSE 잔여 델타 flush(도구 실행/다음 iteration 전 발행) + 타이머 정리.
+        // best-effort — 실패해도 out 전체본이 권위 교체. seq 는 다음 iteration 으로 단조 유지.
+        deltaStream.flush();
       }
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) finalUsage = usage;
@@ -1675,6 +1725,7 @@ export const runOpenAiCodex = async (
       // 의도 시점이 곧 "무엇을 하려는 중"). callTool 실행 루프와 별개. final-flush(tools:[])
       // turn 은 toolCalls 가 비어 자연히 0 publish.
       for (const tc of toolCalls) {
+        // detail — function_call arguments(partialJson) 에서 중립 인자 요약(축3 사이드바).
         bus.publish({
           type: "llm.activity",
           ts: Date.now(),
@@ -1686,6 +1737,7 @@ export const runOpenAiCodex = async (
             seq: activitySeq++,
             kind: "tool",
             label: tc.name || "tool",
+            detail: buildActivityDetailFromJson(tc.partialJson),
           } satisfies RegionAActivityPayload,
         });
       }

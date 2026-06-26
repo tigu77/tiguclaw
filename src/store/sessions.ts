@@ -460,6 +460,26 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── 대시보드 대화 이력 영속 (기능 B, 2026-06-25) ──────────────────────────────
+  // 대시보드 채팅이 EventBus 인메모리 ring(최근 50)으로만 그려져 재시작 시 소실. transcripts
+  // 는 raw 모델 I/O(사용자 턴에 system-reminder·SYSTEM.md 주입 섞임)라 그대로 못 씀 → 깨끗한
+  // `channel.message.in/out` 텍스트만 담는 전용 작은 테이블. 메시지당 insert 1줄(비용 무시).
+  // role = 'user'|'assistant'. 기존 CREATE IF NOT EXISTS 들과 동형 멱등(신규 테이블이라
+  // IF NOT EXISTS 로 충분 — ALTER 로직 0). 프루닝 없음(YAGNI — text 행은 작고 transcripts
+  // 도 무한증가 중. 필요해지면 추가). idx_ts=최근 N 조회, idx_thread_ts=향후 per-thread 조회.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS chat_log (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts          INTEGER NOT NULL,
+      thread_key  TEXT NOT NULL,
+      channel     TEXT NOT NULL,
+      role        TEXT NOT NULL,
+      text        TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_log_ts ON chat_log(ts);
+    CREATE INDEX IF NOT EXISTS idx_chat_log_thread_ts ON chat_log(thread_key, ts);
+  `);
+
   db = handle;
 };
 

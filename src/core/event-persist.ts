@@ -11,9 +11,11 @@
  */
 import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
+import { recordChatMessage } from "../store/chat-log.js";
 
 const SKIP_TYPES = new Set<string>([
   "llm.sdk_message",
+  "llm.delta", // 고volume 토큰 스트리밍(보조 점증 렌더) — 전체본은 channel.message.out·transcripts 가 이미 보관.
   "channel.message.in",
   "channel.message.out",
 ]);
@@ -44,6 +46,55 @@ export const startEventPersistence = (bus: EventBus): void => {
     } catch (e) {
       console.error(
         "event-persist: insert 실패:",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  });
+
+  startChatLogPersistence(bus);
+};
+
+/**
+ * 대화 이력 영속 sink (기능 B, 2026-06-25) — generic events 와 *별개* 추가 구독.
+ *
+ * EventBus 의 `channel.message.in`(사용자) / `channel.message.out`(비서) 를 받아 깨끗한
+ * 텍스트만 `chat_log` 에 적재한다. 위 generic sink 의 SKIP_TYPES 가 이 두 type 을 제외하므로
+ * events 테이블과 책임이 겹치지 않는다(전용 테이블 = 대시보드 채팅 흐름 복원·PII 분리).
+ *
+ * ★ts 는 *이벤트의 ts 를 그대로* 기록한다(Date.now() 아님). 대시보드가 `/chat-history` 로
+ * 그린 과거 메시지와 SSE history replay(최근 50) 가 겹칠 때 동일 ts 로 dedup 할 수 있게.
+ *
+ * 모든 채널(telegram·dashboard·cli) 통합 캡처 — 채널 무관·단일 인격. recordChatMessage 가
+ * 이미 best-effort boundary(내부 try/catch)지만, 구독 콜백에서도 이중 try/catch 로 감싼다
+ * (subscriber throw → plugin.error 재귀 위험 차단, 위 generic sink 와 동일 정책).
+ */
+const startChatLogPersistence = (bus: EventBus): void => {
+  bus.subscribe((event) => {
+    if (
+      event.type !== "channel.message.in" &&
+      event.type !== "channel.message.out"
+    ) {
+      return;
+    }
+    try {
+      const payload = event.payload ?? {};
+      const text = typeof payload.text === "string" ? payload.text : "";
+      const threadKey =
+        typeof payload.threadKey === "string" ? payload.threadKey : "";
+      const channel =
+        typeof payload.channel === "string" ? payload.channel : "";
+      // text·threadKey·channel 누락이면 스킵(recordChatMessage 도 빈 text 스킵).
+      if (text === "" || threadKey === "" || channel === "") return;
+      recordChatMessage({
+        ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
+        threadKey,
+        channel,
+        role: event.type === "channel.message.out" ? "assistant" : "user",
+        text,
+      });
+    } catch (e) {
+      console.error(
+        "event-persist: chat_log 적재 실패:",
         e instanceof Error ? e.message : String(e),
       );
     }

@@ -64,6 +64,8 @@ export const route = async (
       channel: msg.channel,
       attachments: msg.attachments,
       sendAttachment: msg.sendAttachment,
+      // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
+      presentOptions: msg.presentOptions,
       extraMcpServers: getRegisteredMcpServers(),
       // 2층 턴 타임아웃 — 핸들러가 만든 turn signal 을 어댑터까지 운반. 미전달 시
       // undefined → 어댑터가 idle AC 만 link → 1층-only(회귀 0, TT-I7).

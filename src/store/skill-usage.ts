@@ -161,3 +161,132 @@ export const getRecentSkillInvocations = (opts?: {
     )
     .map((r) => ({ name: r.name, threadKey: r.threadKey, ts: r.ts }));
 };
+
+// ─── self-growth Phase 2 (2026-06-24) — 스킬 *개선* 제안 평가 (telemetry 첫 소비) ──
+// 진실 소스: _workspace/skill_improve_architect_contract.md §2·§3·§4·§7 + ADR Phase 2 절.
+//
+// store 의 책임은 *순수 평가 함수 + 임계 상수* 단일 지점뿐(계약 §7 작업 분배). 거버넌스
+// 제외·메모 R/W·멱등·박기는 self-growth(메모 store 는 self-growth 도메인 — SQL 에 스킬명
+// 하드코딩 0). 이 함수는 DB 를 안 만진다 — listSkillUsage 의 1행 + (선택)가드 스냅샷만 본다.
+
+/**
+ * 임계 상수 (계약 §4) — 기본값 + env override. Phase 1 REPEAT_THRESHOLD 패턴 답습.
+ * 운영 튜닝 노브일 뿐 어댑터 분기 키 아님(원칙 2 무관). env 가 NaN/≤0 등 비정상이면
+ * 기본값으로 폴백(never-throw). 분기 키 아니라 스팸 방지 임계 = focus_on_essence 정당.
+ */
+const parseIntEnv = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+const parseFloatEnv = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined) return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+/** 최소 사용량 — 통계 의미·단발 스팸 방지. */
+export const MIN_INVOCATIONS = parseIntEnv(
+  process.env.TIGUCLAW_SKILL_IMPROVE_MIN_INVOCATIONS,
+  5,
+);
+/** 누적/델타 공통 실패율 임계(30%). */
+export const FAIL_RATE_THRESHOLD = parseFloatEnv(
+  process.env.TIGUCLAW_SKILL_IMPROVE_FAIL_RATE,
+  0.3,
+);
+/** 재평가 전 필요한 *신규* 호출 수(쿨다운 — 충분히 더 써본 뒤에만 다시 본다). */
+export const COOLDOWN_INVOCATIONS = parseIntEnv(
+  process.env.TIGUCLAW_SKILL_IMPROVE_COOLDOWN,
+  5,
+);
+
+/** 가드 메모(growth_skill_improve_guard_<slug>)에 담기는 durable 스냅샷(계약 §3-2·§5-2). */
+export interface SkillImproveGuardSnapshot {
+  snapshotInvokeCount: number;
+  snapshotSuccessCount: number;
+  snapshotFailCount: number;
+  snapshotTs: number;
+}
+
+/** listSkillUsage() 1행 — evaluateSkillImprove 입력(누적 카운트). */
+export interface SkillUsageRow {
+  skillName: string;
+  invokeCount: number;
+  successCount: number;
+  failCount: number;
+  lastUsedAt: number;
+}
+
+/** propose 판정 결과 — basis 가 cumulative(최초)/delta(재평가) 중 어느 쪽으로 본 건지 함께. */
+export interface SkillImproveEvaluation {
+  propose: boolean;
+  basis: "cumulative" | "delta";
+  /** 판정에 쓴 실패율(누적 또는 델타). 제안 메모 body 근거 기록용. */
+  failRate: number;
+}
+
+/**
+ * 스킬 1행 + (선택)가드 스냅샷 → 개선 제안 여부 평가 (순수 함수, DB 무접근).
+ *
+ * 거버넌스 제외·멱등(미해결 제안 메모 존재)은 *호출자(self-growth)* 책임 — 이 함수는
+ * 그 이전에 통과한 행만 받는다. 여기선 임계·쿨다운·누적/델타 실패율만 본다.
+ *
+ * **스냅샷 null(최초 제안 — 가드 메모 없음):** 누적 `fail/invoke`(전체 이력이 유일 신호).
+ *  - propose = `invokeCount ≥ MIN_INVOCATIONS` AND `누적 실패율 ≥ FAIL_RATE_THRESHOLD`.
+ *
+ * **스냅샷 있음(재평가):** 신규분만 본다(과거 실패 오염 제거 = 자가교정의 본질).
+ *  1. 쿨다운 — `invokeCount − snapInvoke < COOLDOWN_INVOCATIONS` 면 **propose=false**
+ *     (충분한 새 호출이 쌓이기 전엔 재평가 자체를 보류 — thrash 차단).
+ *  2. 델타 실패율 = `(fail−snapFail)/(invoke−snapInvoke)`. 신규 분모(신규 호출 수)도
+ *     `≥ MIN_INVOCATIONS` 여야 통계 의미(쿨다운 통과만으론 부족할 수 있음 — 둘 다 게이트).
+ *  3. propose = `델타 실패율 ≥ FAIL_RATE_THRESHOLD`(신규분도 나쁨 = 개선 안 먹힘/새 양상).
+ *     신규분이 깨끗하면 false(개선이 먹혔다 — 가드 스냅샷만 전진은 호출자가).
+ *
+ * 비정상 입력(invoke ≤ 0, 신규 분모 ≤ 0 등)은 propose=false 로 보수적 수렴(never-throw —
+ * 분기 없음, 나눗셈 가드만). 음수 델타(스냅샷이 현재보다 큼 — 카운트 리셋 등 이상)도 false.
+ */
+export const evaluateSkillImprove = (
+  usage: SkillUsageRow,
+  guardSnapshot: SkillImproveGuardSnapshot | null,
+): SkillImproveEvaluation => {
+  const { invokeCount, failCount } = usage;
+
+  // ── 최초 제안(가드 메모 없음) — 누적 실패율(계약 §2 표). ──
+  if (guardSnapshot === null) {
+    if (invokeCount < MIN_INVOCATIONS) {
+      return { propose: false, basis: "cumulative", failRate: 0 };
+    }
+    if (invokeCount <= 0) {
+      return { propose: false, basis: "cumulative", failRate: 0 };
+    }
+    const cumRate = failCount / invokeCount;
+    return {
+      propose: cumRate >= FAIL_RATE_THRESHOLD,
+      basis: "cumulative",
+      failRate: cumRate,
+    };
+  }
+
+  // ── 재평가(가드 메모 있음) — 신규-호출 쿨다운 + 델타 실패율(계약 §3-2·§3-3). ──
+  const newInvokes = invokeCount - guardSnapshot.snapshotInvokeCount;
+  const newFails = failCount - guardSnapshot.snapshotFailCount;
+
+  // 쿨다운 — 충분한 새 호출이 쌓이기 전엔 재평가 보류.
+  if (newInvokes < COOLDOWN_INVOCATIONS) {
+    return { propose: false, basis: "delta", failRate: 0 };
+  }
+  // 신규 분모도 최소 사용량 게이트(통계 의미) + 0 나눗셈·음수 가드.
+  if (newInvokes < MIN_INVOCATIONS || newInvokes <= 0) {
+    return { propose: false, basis: "delta", failRate: 0 };
+  }
+  // 음수 fail(스냅샷 > 현재 — 카운트 이상)은 0 으로 클램프(보수적, 실패율 음수 방지).
+  const deltaFails = newFails > 0 ? newFails : 0;
+  const deltaRate = deltaFails / newInvokes;
+  return {
+    propose: deltaRate >= FAIL_RATE_THRESHOLD,
+    basis: "delta",
+    failRate: deltaRate,
+  };
+};

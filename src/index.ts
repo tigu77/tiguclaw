@@ -307,6 +307,12 @@ try {
   console.error("loadPlugins failed:", e);
 }
 
+// channel.message.in/out 관측 이벤트의 본문 상한 — 실채팅엔 사실상 무제한(긴 답변·
+// 보고서 전체 보존: 대시보드 표시·chat_log 영속·스트리밍 치환 모두 전체본). 천장은
+// 인메모리 ring/SSE 가 병적으로 거대한 모델 출력에 부풀지 않게 하는 폭주 방어용일 뿐.
+// (구 500자 미리보기 캡은 대시보드=로그 시절 잔재 — 진짜 채팅이 된 지금 제거.)
+const EVENT_TEXT_MAX = 50_000;
+
 const handler: MessageHandler = async (msg) => {
   bus.publish({
     type: "channel.message.in",
@@ -314,7 +320,7 @@ const handler: MessageHandler = async (msg) => {
     payload: {
       channel: msg.channel,
       threadKey: msg.threadKey,
-      text: msg.text.slice(0, 500),
+      text: msg.text.slice(0, EVENT_TEXT_MAX),
     },
   });
   const trimmed = msg.text.trim();
@@ -802,7 +808,7 @@ const handler: MessageHandler = async (msg) => {
       payload: {
         channel: msg.channel,
         threadKey: msg.threadKey,
-        text: out.text.slice(0, 500),
+        text: out.text.slice(0, EVENT_TEXT_MAX),
       },
     });
   } catch (e) {

@@ -75,6 +75,19 @@ export interface RegionASdkInput {
    */
   sendAttachment?: (filePath: string, opts?: { caption?: string }) => Promise<{ ok: boolean; error?: string }>;
   /**
+   * 신규(additive, 2026-06-25, 축1) — 객관식 선택지 제시 클로저. 채널 원본
+   * (IncomingMessage.presentOptions)을 router 가 sendAttachment 와 *동일 경로*로 주입.
+   * prompt_options MCP 도구가 호출. 미지정(미지원 채널·비채널 turn) = 도구가 graceful
+   * 텍스트 안내. ★비차단 — 렌더만 하고 즉시 반환, 사용자 선택은 다음 인바운드 메시지.
+   * 어댑터는 이 필드를 *값으로* createPromptOptionsMcpServer 에 주입만(읽어 분기 0,
+   * LLM-agnostic). claude·codex 양쪽 동일 등록 = #2 parity 하드게이트.
+   */
+  presentOptions?: (
+    question: string,
+    options: { label: string; value: string }[],
+    opts?: { note?: string },
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
    * 신규(additive, 2026-06-15) — 이 turn 에 등록할 도구 정책. 어댑터 무관 *추상 신호*.
    * spawn_agent 가 agent.md `tools` 필드를 정규화해 주입.
    *  - 미지정(undefined): 현행 = 전체 도구 (회귀 0).
@@ -226,6 +239,63 @@ export interface RegionAActivityPayload {
    * 사람이 읽는 한 줄. kind="tool" 이면 도구명, kind="turn" 이면 코어스 문구.
    */
   label: string;
+  /**
+   * 그 활동 한 단계의 *중립 상세* — 사이드바 "자세히" 가 읽는 사람이 읽을 1줄
+   * 요약(구조화 객체 아님, 단순 문자열). 예: "path=src/foo.ts" / "cmd: npm test".
+   *
+   * ★LLM-agnostic 하드게이트(원칙 #2): claude·codex·openai-agents 세 어댑터가
+   * *동일 의미*로 채운다 — 각 어댑터가 이미 가진 도구 인자(tool input)에서 핵심만
+   * 중립 요약. 한쪽만 채우면 #2 위반 — kind="tool"(per-tool activity)이면 셋 다
+   * 채우고, 인자 정보가 없는 코어스 활동(kind="turn", openai spike floor)은 셋 다
+   * 생략한다(= 정보 없으면 생략, optional).
+   *
+   * ★raw `llm.sdk_message`/SDK 내부 구조를 쏟지 말 것 — 사람이 읽을 중립 요약만.
+   * 길면 어댑터에서 적당히 컷(현재 ~160자 상한).
+   */
+  detail?: string;
+}
+
+/**
+ * llm.delta — LLM-agnostic 토큰 스트리밍 증분 관측 이벤트 (대시보드 L3 보조 렌더).
+ *
+ * 진실 소스: `docs/decisions/2026-06-25-dashboard-chat-cc-parity.md` §5.2 + §6.2(D6).
+ *
+ * 세 어댑터(claude/codex/openai) 공통 — 각자 *이미 텍스트가 지나가는 자리*에서
+ * coalesce 후 fan-out. `llm.activity`(이산 step, 저volume, 영속) 와 다른 레이어:
+ * delta = 연속 토큰 스트림(고volume, 영속 SKIP). 대시보드는 델타를 진행 버블에
+ * progressive append 하다가 권위 전체본(`channel.message.out`) 도착 시 그 버블을
+ * 전체본으로 *치환*(자가치유) — 델타 누적이 최종본과 미세 불일치해도 out 우선.
+ *
+ * EventBus publish 시:
+ *   { type: "llm.delta", ts: Date.now(), payload: RegionADeltaPayload }
+ *
+ * ★turnNonce 없음 (D6 확정) — "nonce 제거 + 전체본 자가치유" 채택. 동시 turn 교차
+ * 오염은 depth-0 가드(subagentDepth===0 && workerDepth===0 turn 만 발행)로 차단,
+ * 순차 turn 빠른 전환의 미세 오귀속은 out 전체본 교체로 자가치유. "발행만 nonce"
+ * 중간 상태 구현 금지(ADR §6.2).
+ *
+ * ★raw `llm.sdk_message`/SDK 내부 구조를 delta 에 넣지 말 것 — 순수 텍스트 증분만.
+ */
+export interface RegionADeltaPayload {
+  /** 표시·필터·상관용 라벨 (라우팅 아님). 트리거 메시지의 채널. */
+  channel: ChannelName;
+  /** 진행 버블 상관 키 — 대시보드가 어느 버블에 append 할지. 트리거 메시지의 thread. */
+  threadKey: string;
+  /** 어느 LLM 어댑터가 흘렸는지 — parity 가시화 + 대시보드 색/그룹 단서. */
+  adapter: "claude" | "codex" | "openai";
+  /** 사용 모델 (있으면). 어댑터가 아는 시점에 박음, 모르면 생략. */
+  model?: string;
+  /**
+   * 어댑터 로컬 단조 증가 시퀀스 (이 run() 호출 안에서 0,1,2…).
+   * 대시보드가 델타 순서·유실을 감지. activity 의 seq 와 동일 의미·동일 카운터 패턴
+   * (어댑터 함수 지역 변수라 동시 run 끼리 자연 격리).
+   */
+  seq: number;
+  /**
+   * 증분 텍스트 조각 — 이번 델타에서 *추가된 부분만*(누적본 아님).
+   * coalesce(어댑터측 ~80ms ∥ ~120자) 후의 묶음일 수 있다.
+   */
+  delta: string;
 }
 
 /**

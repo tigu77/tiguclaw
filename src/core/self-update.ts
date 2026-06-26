@@ -333,8 +333,9 @@ export const runSelfUpdate = async (
     }
 
     // ── 단계 8: 5초 지연 분리 재시작 (답 전송 시간 확보 + 정상 종료 비차단) ───────
-    // restartDaemon(주입) 이 graceful shutdown→supervisor respawn. 새 코드는 디스크에
-    // 이미 반영(pull 완료). unref() 로 이 타이머가 정상 종료를 안 붙잡는다.
+    // restartDaemon(주입) 이 OS별로 재시작(mac/linux=graceful exit→supervisor respawn,
+    // win32=detached daemon.ts restart). 새 코드는 디스크에 이미 반영(pull 완료).
+    // unref() 로 이 타이머가 정상 종료를 안 붙잡는다.
     const restart = resolveRestart(deps);
     try {
       setTimeout(() => {

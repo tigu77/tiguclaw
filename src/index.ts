@@ -49,7 +49,11 @@ import {
   poolDiversityWarning,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
-import { hasSupervisorRespawn, spawnDetachedRestart } from "./core/restart.js";
+import {
+  hasSupervisorRespawn,
+  spawnDetachedRestart,
+  cleanupSelfRestartTask,
+} from "./core/restart.js";
 import { initFileLogging } from "./core/logging.js";
 import { startEventPersistence } from "./core/event-persist.js";
 import {
@@ -114,6 +118,11 @@ console.log(`tiguclaw home: ${getPaths().home}`);
 await migrateLegacyAgent(process.cwd());
 
 initStore();
+
+// 잔존 self-restart 예약작업 정리 (win32 only, best-effort). 직전 /restart 가 만든 1회성
+// schtasks 작업이 이 부팅을 띄운 뒤 목록에 남아있으면 제거(멱등 — 없으면 no-op). 재발화는
+// /sc once 라 어차피 안 하지만 죽은 작업 누적 방지. 실패해도 부팅 무중단.
+cleanupSelfRestartTask();
 
 // EventBus 부트 (channels 만들기 전 — region 측 module-level publish 안전).
 const bus = initEventBus({ bufferSize: 1000 });

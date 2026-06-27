@@ -847,35 +847,29 @@ const handler: MessageHandler = async (msg) => {
 // 텔레그램 /restart(B)·대시보드 버튼(A, control.restart)·자가업데이트(/update·도구) 모두
 // 이 한 곳으로 수렴 — 한 곳을 고치면 일괄 적용. 파괴적 작업이라 명시 트리거로만 호출.
 //
-// 재시작 보장은 OS 의 supervisor 유무에 따라 두 갈래(모든 OS 에서 *반드시* 새 데몬이 뜸):
+// 재시작 보장은 OS 의 supervisor 유무에 따라 두 갈래 — 단, 두 갈래 모두 **graceful exit**
+// 로 수렴한다(모든 OS 에서 *반드시* 새 데몬이 뜸):
 //  1. mac/linux (supervisor O): graceful exit → launchd KeepAlive / systemd Restart=always
 //     가 respawn. (실측 정상 — 깨지 말 것. 이중 재시작 금지.)
-//  2. win32 등 (supervisor X): graceful exit 만으론 안 살아나므로, 종료 전에 검증된
-//     `daemon.ts restart`(taskkill 로 옛 데몬·포트 비운 뒤 wscript 재기동 = 포트 race 처리)
-//     를 detached spawn 해 새 데몬을 보장한다. 그 서브프로세스의 taskkill 이 이 부모까지
-//     종료시키므로 별도 exit 불요. 단 spawn 실패 시엔 최소한 graceful exit 로 폴백(견고성).
+//  2. win32 등 (supervisor X): graceful exit 전에 **detached 헬퍼**(ping 지연 → wscript 로
+//     win-launch.vbs 재기동, taskkill 미사용)를 spawn 해 새 데몬을 보장한다. taskkill /T 는
+//     데몬의 *자식*인 헬퍼까지 죽여 respawn 을 깨므로(버그 #2) 쓰지 않는다 — 데몬은 mac 과
+//     동형으로 graceful exit(자식·http 서버 정리 = 포트 해제)하고, 분리된 헬퍼가 대기 후
+//     respawn 담당. 헬퍼 spawn 실패해도 graceful exit 는 진행(최소 종료 보장 — 견고성).
 // 재시작 완료 알림은 reboot 스케줄(id=3)이 부팅 후 자동 발화.
 const restartDaemon = (source: string): void => {
   if (!hasSupervisorRespawn()) {
-    // supervisor 없는 OS — 분리 재기동으로 새 데몬을 보장한 뒤(성공 시) 종료를 서브프로세스에
-    // 위임. 실패하면 아래 graceful exit 경로로 떨어져 최소한 종료는 보장.
-    const spawned = spawnDetachedRestart(source);
-    if (spawned) {
-      // daemon.ts restart 의 taskkill 이 옛 데몬(=이 프로세스)을 확실히 종료 → 포트 해제 →
-      // 새 데몬 기동. 이중 데몬 0 을 위해 여기서 별도 exit 를 서두르지 않고, 백스톱만 건다
-      // (taskkill 이 늦거나 못 잡는 예외 환경에서도 부모가 끝내 죽도록).
-      setTimeout(() => {
-        console.log("daemon: detached restart 위임 — 백스톱 force exit");
-        process.exit(0);
-      }, 3000).unref();
-      return;
-    }
-    // spawn 실패 — graceful exit 로 폴백(아래 공통 경로).
-  } else {
-    console.log(
-      `daemon: restart requested (${source}) — graceful exit for supervisor respawn`,
-    );
+    // supervisor 없는 OS — graceful exit 전에 분리 헬퍼로 respawn 을 보장(taskkill 무사용).
+    // spawn 실패해도 아래 graceful exit 는 그대로 진행(최소한 종료는 보장).
+    spawnDetachedRestart(source);
   }
+  console.log(
+    `daemon: restart requested (${source}) — graceful exit (` +
+      (hasSupervisorRespawn()
+        ? "supervisor respawn"
+        : "detached helper respawn") +
+      ")",
+  );
   void shutdown("RESTART");
   // force-exit 백스톱 — 이 경로의 존재 이유는 "멈춘 턴에서도 무조건 죽는 탈출구"다.
   // graceful shutdown 의 server.close() 는 미추적 keep-alive 연결(예: in-flight

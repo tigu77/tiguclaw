@@ -2,26 +2,36 @@
 /**
  * 크로스플랫폼 데몬 재시작 — supervisor 유무와 무관하게 "새 데몬이 반드시 다시 뜨게".
  *
- * 배경(버그): restartDaemon(index.ts)은 graceful exit 후 supervisor(launchd KeepAlive·
+ * 배경(버그 #1): restartDaemon(index.ts)은 graceful exit 후 supervisor(launchd KeepAlive·
  *  systemd Restart=always)의 respawn 에 의존한다. mac/linux 는 정상이지만 **Windows 는
  *  HKCU Run(로그온 전용, supervisor 없음)** 이라 종료만 하고 안 살아난다.
  *
- * 해결: supervisor 가 없는 OS(현재 win32)에서는 graceful exit 전에 **분리(detached)
- *  재기동을 보장**한다. 검증된 `daemon.ts restart`(taskkill 로 옛 데몬·포트 확실히 비운
- *  뒤 wscript 숨김 VBS 로 새 데몬 기동 — 포트 race 처리 포함)를 detached 서브프로세스로
- *  spawn 한다. 부모가 죽어도 서브프로세스는 생존하며, 자기가 옛 데몬을 taskkill 해
- *  단일 데몬만 남는다(이중 데몬·봇 폴링 충돌 0).
+ * 배경(버그 #2 — 본 재수정): 1차 수정은 supervisor 없는 OS 에서 graceful exit 전에
+ *  `daemon.ts restart`(=winRestart) 를 detached spawn 했다. 하지만 winRestart 는
+ *  `taskkill /F /T`(프로세스 *트리* 종료)를 호출하는데, 그 재기동 헬퍼는 데몬의 *자식*
+ *  프로세스(PPID=데몬)다. 데몬을 트리째 죽이면 /T 가 헬퍼 자신까지 끌고 들어가
+ *  **wscript 재기동 전에 헬퍼가 끊긴다** → respawn 0(윈도우 실검증 확인).
  *
- * 재사용 우선: 새 재시작 로직을 또 짜지 않고 daemon.ts 의 OS별 검증 경로(win32=winRestart)
- *  를 그대로 호출한다. TIGUCLAW_SERVICE_LABEL·TIGUCLAW_HOME env 를 상속해 *올바른
- *  인스턴스* 를 타겟한다.
+ * 해결: self-trigger 경로는 taskkill 을 아예 쓰지 않는다. 데몬은 (mac/linux 와 동형으로)
+ *  **graceful exit** 만 하고 — 그 종료가 자식(대시보드·워커)·http 서버를 정리해 포트를
+ *  비운다 — 별도로 띄운 **detached 헬퍼**가 잠깐 대기 후 wscript 로 win-launch.vbs 를
+ *  재기동한다. 헬퍼는 콘솔 없는 detached 프로세스이고 데몬의 *자식 트리에서 분리*되어
+ *  데몬 graceful 종료에 휩쓸리지 않으므로, 대기 뒤 살아서 새 데몬을 띄운다.
  *
- * import 위생: index→이 코어 모듈(core 방향) 단방향. daemon.ts(CLI 스크립트, 직접
- *  실행 시 side effect)를 import 하지 않고 서브프로세스로 격리 spawn 한다.
+ *  대기는 detached(콘솔 없는) 환경에서 안전한 `ping 127.0.0.1 -n 5 >nul`(≈4s) 지연으로
+ *  한다(`timeout /t` 는 stdin 리다이렉트 상황에서 실패). 4s 는 데몬의 graceful shutdown +
+ *  1.5s force-exit 백스톱 + 포트 해제보다 길어 포트 충돌 0.
+ *
+ * winRestart(taskkill+wscript)는 그대로 둔다 — CLI `tiguclaw restart`(외부 프로세스 실행,
+ *  데몬의 자식이 아니라 taskkill /T 자살 문제 없음) 전용이다. self-trigger(/restart·
+ *  self-update)만 이 헬퍼 경로를 쓴다.
+ *
+ * import 위생: index→이 코어 모듈(core 방향) 단방향. daemon.ts(CLI 스크립트)를 import 하지
+ *  않고, wscript 헬퍼를 직접 격리 spawn 한다.
  */
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { appRoot } from "./paths.js";
+import { getPaths } from "./paths.js";
 
 /**
  * 현 OS 가 supervisor(자동 respawn) 위에서 도는가.
@@ -34,45 +44,49 @@ export const hasSupervisorRespawn = (): boolean =>
   process.platform === "darwin" || process.platform === "linux";
 
 /**
- * supervisor 없는 OS 에서 "분리 재기동" 보장.
+ * supervisor 없는 OS 에서 "분리 재기동" 보장(taskkill 미사용).
  *
- * 반환 true = detached `daemon.ts restart` 를 띄웠다(이 서브프로세스가 taskkill 로
- *  옛 데몬·포트를 비운 뒤 새 데몬 기동). 호출측은 이 경우 graceful exit 를 *생략* 해도
- *  된다(서브프로세스의 taskkill 이 종료까지 처리). 반환 false = spawn 실패 → 호출측은
- *  최소한 graceful exit 로 종료를 보장해야 한다(견고성).
+ * detached 헬퍼를 띄운다: "**짧은 대기 → wscript 로 win-launch.vbs 재기동**". 헬퍼는
+ *  데몬의 자식 트리에서 분리(detached + unref)되어 데몬의 graceful 종료에 죽지 않는다.
+ *  데몬은 헬퍼 spawn 직후 **graceful exit**(자식·http 서버 정리 = 포트 해제)하고, 헬퍼는
+ *  대기(ping ≈4s > shutdown+1.5s 백스톱)가 끝나면 살아서 새 데몬을 띄운다.
  *
- * 데몬은 prod·dev 모두 launchd plist/systemd unit/VBS 런처에서 `node tsx --env-file=.env
- *  src/index.ts` 로 도므로(buildCtx.entry 참조), 같은 src 트리의 `src/scripts/daemon.ts`
- *  를 동일 tsx 러너로 실행한다. appRoot()=레포 루트(이 src 런타임에서 cwd 동치).
+ * 반환 true = 헬퍼 spawn 성공(호출측은 graceful exit 로 진행 — 헬퍼가 respawn 담당).
+ *  반환 false = spawn 실패 → 호출측은 그래도 graceful exit 로 최소한 종료는 보장(견고성).
+ *
+ * VBS 경로 = getPaths().home/win-launch.vbs — daemon.ts winVbsPath 와 동일 위치(둘 다
+ *  TIGUCLAW_HOME 기준). cmd.exe `/c` 한 줄: ping 지연 → wscript(숨김 VBS 재기동).
  */
 export const spawnDetachedRestart = (source: string): boolean => {
-  const repoRoot = appRoot();
-  const nodePath = process.execPath;
-  const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  const daemonScript = path.join(repoRoot, "src", "scripts", "daemon.ts");
+  const vbsPath = path.join(getPaths().home, "win-launch.vbs");
 
   try {
     const child = spawn(
-      nodePath,
-      [tsxCli, "--env-file=.env", daemonScript, "restart"],
+      "cmd.exe",
+      [
+        "/c",
+        // ping 127.0.0.1 -n 5 ≈ 4s 지연(콘솔 없는 detached 환경 안전 — timeout /t 는 stdin
+        // 리다이렉트서 실패). 그 뒤 wscript 가 숨김 VBS 로 새 데몬 기동. taskkill 없음.
+        `ping 127.0.0.1 -n 5 >nul & wscript "${vbsPath}"`,
+      ],
       {
-        cwd: repoRoot,
-        // TIGUCLAW_SERVICE_LABEL·TIGUCLAW_HOME·HTTP_BRIDGE_PORT 등 상속 → 올바른 인스턴스 타겟.
-        env: process.env,
-        detached: true, // 부모(현 데몬)가 죽어도 생존.
+        // detached + unref + 자식 트리 분리 → 데몬 graceful 종료에 휩쓸리지 않음.
+        detached: true,
         stdio: "ignore",
         windowsHide: true,
+        // TIGUCLAW_SERVICE_LABEL·TIGUCLAW_HOME 등 상속 → 올바른 인스턴스 타겟.
+        env: process.env,
       },
     );
-    // 부모 이벤트 루프가 이 자식을 붙잡지 않게 분리(부모는 곧 exit).
+    // 부모 이벤트 루프가 이 자식을 붙잡지 않게 분리(부모는 곧 graceful exit).
     child.unref();
     console.log(
-      `daemon: detached restart spawned (${source}) — daemon.ts restart 가 옛 데몬 종료 후 재기동`,
+      `daemon: detached restart helper spawned (${source}) — ping 지연 후 wscript 가 win-launch.vbs 재기동 (데몬은 graceful exit)`,
     );
     return true;
   } catch (err) {
     console.error(
-      `daemon: detached restart spawn 실패 (${source}) — graceful exit 로 폴백:`,
+      `daemon: detached restart helper spawn 실패 (${source}) — graceful exit 만 진행:`,
       err,
     );
     return false;

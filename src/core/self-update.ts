@@ -125,17 +125,25 @@ export const setSelfUpdateRestart = (fn: () => void): void => {
 const resolveRestart = (deps: SelfUpdateDeps): (() => void) =>
   deps.restart ?? registeredRestart ?? ((): void => {});
 
-/** execFile Promise 래퍼 — 쉘 미경유(인자 배열, 인젝션 0). exit≠0 도 reject(stderr 보존). */
+// Windows 는 npm 이 실행파일이 아니라 `npm.cmd`(배치 스크립트)라 `execFile("npm")` 이
+// ENOENT 로 터진다. npm 호출만 shell 경유로(cmd.exe 가 PATHEXT 로 npm.cmd 해석). git 은
+// git.exe 라 무관. npm 인자는 전부 고정 상수("install"/"run"/"typecheck"/플래그)이고 외부
+// 입력이 안 섞이므로 shell:true 여도 인젝션 0 (동적값은 git reset 의 prevSha 뿐 — git 은 무shell).
+const isWindows = process.platform === "win32";
+
+/** execFile Promise 래퍼 — 기본 쉘 미경유(인자 배열, 인젝션 0). opts.shell 시에만 쉘 경유
+ *  (Windows npm.cmd 용 — 인자 고정 상수 전제). exit≠0 도 reject(stderr 보존). */
 const run = (
   cmd: string,
   args: readonly string[],
   cwd: string,
+  opts: { shell?: boolean } = {},
 ): Promise<{ stdout: string; stderr: string }> =>
   new Promise((resolve, reject) => {
     execFile(
       cmd,
       args,
-      { cwd, maxBuffer: 16 * 1024 * 1024 },
+      { cwd, maxBuffer: 16 * 1024 * 1024, shell: opts.shell ?? false },
       (err, stdout, stderr) => {
         if (err !== null) {
           // err.message 는 명령·exit 코드를 담음. stderr 를 붙여 진단성 확보.
@@ -252,7 +260,9 @@ export const runSelfUpdate = async (
         await run("git", ["reset", "--hard", prevSha], cwd);
         if (depsChanged) {
           // deps 도 prev 상태로 되돌림 — 게이트 실패가 새 deps 였을 수도.
-          await run("npm", ["install", "--no-audit", "--no-fund"], cwd).catch(
+          await run("npm", ["install", "--no-audit", "--no-fund"], cwd, {
+            shell: isWindows,
+          }).catch(
             (e) => {
               console.error(
                 `self-update: 롤백 중 npm install 실패(작업트리는 reset 됨): ${
@@ -277,7 +287,9 @@ export const runSelfUpdate = async (
     let ranNpmInstall = false;
     if (depsChanged) {
       try {
-        await run("npm", ["install", "--no-audit", "--no-fund"], cwd);
+        await run("npm", ["install", "--no-audit", "--no-fund"], cwd, {
+          shell: isWindows,
+        });
         ranNpmInstall = true;
       } catch (e) {
         const rolledBack = await rollback();
@@ -296,7 +308,7 @@ export const runSelfUpdate = async (
 
     // ── 단계 6: ★typecheck 게이트 — 실패 시 롤백 + 재시작 X (먹통 방지) ─────────
     try {
-      await run("npm", ["run", "typecheck"], cwd);
+      await run("npm", ["run", "typecheck"], cwd, { shell: isWindows });
     } catch (e) {
       const rolledBack = await rollback();
       return {

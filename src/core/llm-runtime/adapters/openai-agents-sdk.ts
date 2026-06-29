@@ -1,19 +1,26 @@
 /**
- * 영역 A 두 번째 어댑터 — OpenAI Agents SDK 위임 (V3 spike).
+ * 영역 A 세 번째 어댑터 — OpenAI Agents SDK 위임 (production). 정품 OpenAI 와
+ * **OpenAI-compat 로컬/원격**(ollama·google gemini)을 단일 어댑터로 서빙한다 —
+ * provider id → 이 어댑터(다대일). baseURL/apiKey 는 `resolveProviderConn` 단일
+ * 지점 해석(어댑터별 if 분기 0). facade dispatch 는 `llm-runtime/index.ts` 가 이미 배선.
  *
- * 진실 소스: `_workspace/region_a_v3_openai_architect_contract.md` §5.
+ * 계보: V3 spike(hello world)에서 출발 → 2026-06-15 이후 codex/claude 와 *동형 규칙*
+ * 으로 production 능력을 배선. 현재 구현된 parity(claude/codex 와 동일 의미):
+ *  - 인격(공유 sysprompt) · SYSTEM.md/AGENT.md prepend · 자동 메모리(memoryMcpServer
+ *    +retrieveContext) · `.claude` 자동발견(skills/agents) · 전 capability 도구
+ *    (file-ops·todo·skills·agents·workers·endpoints·commands·update-self·send-file·
+ *    prompt-options·reply-intent, depth/workerDepth 게이트 동형) · extraMcpServers.
+ *  - 세션 연속성: ChatCompletions(ollama/gemini)는 Responses 의 previous_response_id
+ *    미지원 → loadThreadHistory 로 prior turn 을 명시 주입(cross-adapter 연속성, 정답).
+ *  - 토큰 스트리밍(llm.delta) + idle/turn 타임아웃 + abort 전파.
+ *  - **per-tool activity(llm.activity kind="tool")** — run_item_stream_event 소비,
+ *    detail 은 codex 와 동일 빌더(아래 run 루프).
  *
- * 본 라운드 = spike (production 통합 아님). hello world 1 케이스 라이브 + 능력 매트릭스
- * 정적 평가 산출이 본 어댑터의 V3 책임. V5+ production 진입 시 facade 가 env 기반
- * 어댑터 dispatch.
- *
- * V3 미구현 (TODO, V5+):
- *  - extraMcpServers 처리 — MCP 시나리오 (i) 호환 판정 (Workstream A spike). 변환 어댑터 V5.
- *  - 자동 메모리 (AGENT.md prepend, memoryMcpServer) — adapter 안쪽 동등 패턴 가능.
- *  - session resume — OpenAI Responses API previous_response_id 검증 필요.
- *  - stream fan-out (EventBus publish) — `run(... { stream: true })` 검토.
- *  - permission 게이트 (DISALLOWED_TOOLS 매핑) — OpenAI tool 차단 메커니즘 평가.
- *  - 자동 발견 (.claude/) — adapter 안쪽 자체 구현 필요 (능력 매트릭스 부분/대안).
+ * 후속(별건, 실수요 시):
+ *  - DISALLOWED_TOOLS 구조 parity — 현재 그 리스트가 빈 배열(β 무벽: 기술차단 안 박음,
+ *    prompt 가드가 유일 방어)이라 claude 도 실효 0. 채워질 미래 대비 구조 nicety 뿐.
+ *  - usage 추출은 graceful(SDK 가 노출하면 캡처, 없으면 "측정 전").
+ *  - 라이브 e2e(실 ollama/gemini/openai 모델 end-to-end) 실측 — 코드 parity 는 완료.
  */
 import { randomUUID } from "node:crypto";
 import { Agent, run, OpenAIProvider } from "@openai/agents";
@@ -58,6 +65,7 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
+import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import {
@@ -340,28 +348,15 @@ export const runOpenAi = async (
   // 첫 turn(히스토리 0) 이면 단일 user item — string 입력과 동치(회귀 0).
   const runInput: AgentInputItem[] = [...historyItems, currentTurn];
 
-  // llm.activity — coarse floor. run() 이 도구 경계를 외부 노출 안 해 per-tool
-  // activity 불가(spike 한계) → run() 1회당 turn activity 1개로 parity 붕괴(0)만 회피.
-  //
-  // detail(축3 사이드바, 2026-06-25) 의도적 생략: detail = *도구 인자 요약*이라
-  // kind="tool" per-tool activity 에만 존재한다. 여기는 kind="turn" 코어스 floor 라
-  // 요약할 도구 인자 자체가 없음 → claude/codex 가 인자 없을 때 detail 을 생략하는
-  // 것과 *동일 규칙*. 한쪽만 채우는 비대칭(#2 위반) 아님 — kind 에 묶인 동일 의미.
-  // (run() 이 도구 경계를 노출하게 되면 그때 per-tool detail 도 claude/codex 와 동형.)
+  // llm.activity — per-tool (kind="tool"), claude/codex 와 동형. SDK 스트림의
+  // `run_item_stream_event`(name="tool_called")가 도구 경계를 노출하므로(이전 spike
+  // 헤더의 "run() 이 도구 경계 노출 안 함" 은 비스트림 가정의 잔재 — stream 오버로드는
+  // 노출한다) 도구 호출당 1 activity 를 아래 run 루프에서 발행한다. 도구 0개 turn 은
+  // 0 발행(claude/codex 와 동일 — 옛 coarse "turn" floor 폐기). seq = 어댑터 로컬
+  // 단조(0,1,2…, run() 호출 내 누적, nonce 아님). detail 은 codex 와 *동일 빌더*
+  // (buildActivityDetailFromJson — 양쪽 다 arguments=JSON 문자열 → parity DRY 강제).
   const bus = getEventBus();
-  bus.publish({
-    type: "llm.activity",
-    ts: Date.now(),
-    payload: {
-      channel: input.channel,
-      threadKey: input.threadKey,
-      adapter: "openai",
-      model,
-      seq: 0,
-      kind: "turn",
-      label: "실행",
-    } satisfies RegionAActivityPayload,
-  });
+  let activitySeq = 0;
 
   // 유휴 타임아웃 (G1 — 비스트림→스트림 전환). 현재 비스트림 run() 은 heartbeat 원천이
   // 0 이라 유휴 감지 불가 = 층1 parity 깨짐. SDK 동일 `run` 의 stream 오버로드로 전환
@@ -417,6 +412,36 @@ export const runOpenAi = async (
             typeof data.delta === "string"
           ) {
             deltaStream.push(data.delta); // coalesce → publish (순수 텍스트 증분).
+          }
+        } else if (
+          ev.type === "run_item_stream_event" &&
+          (ev as { name?: unknown }).name === "tool_called"
+        ) {
+          // per-tool activity — 모델이 도구를 호출하려는 순간(codex "의도 시점"과
+          // 동일 의미: 실행 성공/실패 무관). rawItem.arguments(JSON 문자열) → codex
+          // 와 *동일* 빌더로 중립 detail(축3 사이드바). MCP 브리지 도구도 SDK 가
+          // function_call 로 노출 → 동일 경로. 방어적 narrowing(union 변동에도 불괴).
+          const raw = (ev as { item?: { rawItem?: unknown } }).item?.rawItem as
+            | { type?: unknown; name?: unknown; arguments?: unknown }
+            | undefined;
+          if (raw?.type === "function_call" && typeof raw.name === "string") {
+            bus.publish({
+              type: "llm.activity",
+              ts: Date.now(),
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                adapter: "openai",
+                model,
+                seq: activitySeq++,
+                kind: "tool",
+                label: raw.name || "tool",
+                detail:
+                  typeof raw.arguments === "string"
+                    ? buildActivityDetailFromJson(raw.arguments)
+                    : undefined,
+              } satisfies RegionAActivityPayload,
+            });
           }
         }
       }

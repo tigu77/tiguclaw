@@ -390,6 +390,15 @@
       .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .bg-job-err { font-size:11px; color:#fca5a5; word-break:break-word; }
+      /* Step3 — 잡 카드 안 접이식 스텝 타임라인 (worker:<jobId> llm.activity). */
+      .bg-job.has-steps .bg-job-top { cursor:pointer; }
+      .bg-job-chev { font-size:10px; color:var(--text-dim); white-space:nowrap; user-select:none; }
+      .bg-job-steps { display:none; flex-direction:column; gap:3px; margin-top:3px; border-top:1px solid var(--border); padding-top:6px; }
+      .bg-job.steps-open .bg-job-steps { display:flex; }
+      .bg-step { display:flex; align-items:baseline; gap:6px; font-size:11px; color:var(--text-mute); line-height:1.4; }
+      .bg-step-icon { flex:none; font-size:10px; }
+      .bg-step-label { font-weight:700; color:var(--text); flex:none; }
+      .bg-step-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; word-break:break-all; }
       #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
       #chat-form { display:flex; gap:8px; }
       #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
@@ -1308,9 +1317,10 @@
         if (e.key === "Escape" && document.body.classList.contains("step-detail-open")) closeStepDetail();
       });
 
-      // ── Step2 (2026-06-30) — 백그라운드 작업 드로어 + 워커 잡 카드 ──────────
-      // worker.* lifecycle 이벤트(Step1)를 받아 잡별 카드로 렌더. payload.status 가
-      // started=running / done / failed / cancelled 를 그대로 담아 카드 상태를 정한다.
+      // ── Step2/3 (2026-06-30) — 백그라운드 작업 드로어 + 잡 카드 + 스텝 타임라인 ──
+      // worker.* lifecycle(Step1)로 잡 카드 생성·상태(payload.status: running/done/failed/
+      // cancelled). 워커 llm.activity(threadKey=worker:<jobId>)는 그 잡 카드 안 접이식
+      // 스텝으로(Step3) — 채팅으로 새지 않게 dispatch 에서 가로채 여기로 보낸다.
       // 토글 드로어(PC 우측 고정·모바일 슬라이드인+백드롭). 배지 = 실행 중 잡 수.
       const bgPanel = document.getElementById("bg-panel");
       const bgList = document.getElementById("bg-list");
@@ -1320,7 +1330,7 @@
         running: "🟡 진행 중", done: "✅ 완료", failed: "⚠️ 실패", cancelled: "⏹ 취소",
       };
       const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
-      const jobCards = new Map(); // jobId -> { el, status, statusEl, errEl }
+      const jobCards = new Map(); // jobId -> { el, labelEl, statusEl, chevEl, stepsEl, errEl, status, stepCount }
       const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); };
       const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
       const bgToggleBtn = document.getElementById("bg-toggle");
@@ -1342,7 +1352,6 @@
         if (bgEmpty) bgEmpty.style.display = jobCards.size === 0 ? "" : "none";
       };
       const capBgList = () => {
-        // 끝난 잡이 BG_MAX 초과면 가장 오래된 끝난 카드(DOM 끝)부터 제거(running 보존).
         while (jobCards.size > BG_MAX) {
           let removed = false;
           for (let node = bgList.lastElementChild; node; node = node.previousElementSibling) {
@@ -1354,30 +1363,48 @@
           if (!removed) break; // 전부 running 이면 중단.
         }
       };
-      const handleWorkerEvent = (p, ts) => {
-        const jobId = p.jobId;
-        if (!jobId) return;
-        const status = p.status || "running";
+      const updateChev = (entry) => {
+        if (entry.stepCount === 0) { entry.chevEl.style.display = "none"; entry.el.classList.remove("has-steps"); return; }
+        entry.chevEl.style.display = "";
+        entry.el.classList.add("has-steps");
+        entry.chevEl.textContent = (entry.el.classList.contains("steps-open") ? "▾ " : "▸ ") + entry.stepCount + "단계";
+      };
+      // 잡 카드 확보(없으면 생성). label 은 worker.started 가 채우고, activity 가 먼저
+      // 와도 placeholder 로 만들었다가 나중에 보정한다.
+      const ensureJobCard = (jobId, opts) => {
         let entry = jobCards.get(jobId);
         if (!entry) {
           const el = document.createElement("div");
-          el.className = "bg-job " + status;
+          el.className = "bg-job running";
           el.dataset.jobId = jobId;
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
-          label.textContent = p.label || "(작업)";
+          label.textContent = (opts && opts.label) || "(작업)";
           const st = document.createElement("span"); st.className = "bg-job-status";
-          top.appendChild(label); top.appendChild(st);
+          const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
+          top.appendChild(label); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
-          meta.textContent = (ts || "") + (p.threadKey ? " · " + p.threadKey : "");
+          meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
+          const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const err = document.createElement("div"); err.className = "bg-job-err"; err.style.display = "none";
-          el.appendChild(top); el.appendChild(meta); el.appendChild(err);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(steps); el.appendChild(err);
+          top.addEventListener("click", () => {
+            if (entry.stepCount > 0) { el.classList.toggle("steps-open"); updateChev(entry); }
+          });
           bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
-          entry = { el, statusEl: st, errEl: err, status };
+          entry = { el, labelEl: label, statusEl: st, chevEl: chev, stepsEl: steps, errEl: err, status: "running", stepCount: 0 };
           jobCards.set(jobId, entry);
         }
+        if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
+        return entry;
+      };
+      const handleWorkerEvent = (p, ts) => {
+        if (!p.jobId) return;
+        const status = p.status || "running";
+        const entry = ensureJobCard(p.jobId, { label: p.label, ts, threadKey: p.threadKey });
         entry.status = status;
-        entry.el.className = "bg-job " + status;
+        entry.el.classList.remove("running", "done", "failed", "cancelled");
+        entry.el.classList.add(status); // steps-open/has-steps 보존.
         entry.statusEl.textContent = BG_STATUS[status] || status;
         if ((status === "failed" || status === "cancelled") && p.error) {
           entry.errEl.textContent = p.error;
@@ -1385,6 +1412,28 @@
         }
         capBgList();
         refreshBgBadge();
+      };
+      // Step3 — 워커 활동(threadKey=worker:<jobId>)을 그 잡 카드 안 스텝으로. true=처리됨.
+      const handleWorkerActivity = (p, ts) => {
+        const tk = typeof p.threadKey === "string" ? p.threadKey : "";
+        if (tk.indexOf("worker:") !== 0) return false;
+        const jobId = tk.slice("worker:".length);
+        const entry = ensureJobCard(jobId, { ts, threadKey: tk });
+        const line = document.createElement("div");
+        line.className = "bg-step";
+        const icon = document.createElement("span"); icon.className = "bg-step-icon";
+        icon.textContent = p.kind === "tool" ? "🔧" : "▶";
+        const lab = document.createElement("span"); lab.className = "bg-step-label";
+        lab.textContent = p.label || p.kind || "활동";
+        line.appendChild(icon); line.appendChild(lab);
+        if (p.detail) {
+          const d = document.createElement("span"); d.className = "bg-step-detail";
+          d.textContent = p.detail; line.appendChild(d);
+        }
+        entry.stepsEl.appendChild(line);
+        entry.stepCount += 1;
+        updateChev(entry);
+        return true;
       };
 
       const applyFilter = (el) => {
@@ -2103,7 +2152,10 @@
           return;
         }
         if (ev.type === "llm.activity") {
-          renderActivity(ev.payload || {}, ts);
+          const ap = ev.payload || {};
+          // 워커 활동(threadKey=worker:<jobId>)은 백그라운드 잡 카드 스텝으로(채팅 누수 차단).
+          if (handleWorkerActivity(ap, ts)) return;
+          renderActivity(ap, ts);
           return;
         }
         if (ev.type === "llm.delta") {

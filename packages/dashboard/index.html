@@ -642,6 +642,14 @@
       let selectedProviderId = null;
       let currentView = "overview";
 
+      // 타임스탬프 — 로컬 날짜+시각 ("YYYY-MM-DD HH:MM:SS"). 기존 toISOString().slice 는
+      // UTC(한국이면 9h 어긋남)+날짜없음+밀리초(.456) 였다 → 로컬·날짜포함·초까지만(밀리초 제거).
+      const fmtTs = (ms) => {
+        const d = new Date(ms);
+        const p = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+      };
+
       const setActiveNav = (view) => {
         currentView = view;
         document.body.dataset.view = view;
@@ -733,7 +741,7 @@
           btn.innerHTML = '<span class="' + iconCls + '">' + icon + '</span><span><strong>' + title + '</strong><span>' + desc + '</span></span>';
           btn.addEventListener("click", () => {
             if (view === "providers") showProviders();
-            else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); document.getElementById("chat-input").focus(); }
+            else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
             else if (view === "inventory") showInventory();
             else if (view === "restart") { restartDaemon(); return; }
             if (window.matchMedia("(max-width: 900px)").matches && view !== "chat") setActiveTab("main");
@@ -1256,6 +1264,15 @@
       const NEAR_BOTTOM_PX = 80;
       const isNearBottom = () => Math.abs(stream.scrollTop) < NEAR_BOTTOM_PX;
 
+      // 채팅을 최신(시각 하단)으로 고정. column-reverse 라 scrollTop=0=newest. 초기 이력 로드/
+      // 뷰 진입 시 브라우저 스크롤 앵커가 *먼저 그려진 최古 항목*을 따라가 위(최古)로 끌려가는
+      // 것을 명시 보정한다(증상: 열면 옛 메시지부터 보임). rAF 2회 = 레이아웃·마크다운 반영 후 확정.
+      const scrollChatToNewest = () => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => { stream.scrollTop = 0; });
+        });
+      };
+
       // 시각 최상단(DOM 끝)부터 가지치기 — MAX_EVENTS 초과분 제거(메모리 바운드).
       // ★페이지네이션 충돌 회피: 사용자가 스크롤업해 과거 이력을 보는 중이면 prune 을 스킵해야
       //   방금 로드한 과거가 잘려나가지 않는다. 따라서 near-bottom(라이브 보는 중)일 때만 prune.
@@ -1642,7 +1659,7 @@
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
-        tsEl.textContent = new Date(entry.ts).toISOString().slice(11, 23);
+        tsEl.textContent = fmtTs(entry.ts);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
         tyEl.textContent = isOut ? "돌쇠" : "나";
@@ -1787,6 +1804,7 @@
             setupOlderObserver(); // 더 있을 수 있음 → 위 스크롤 관찰 시작.
           }
           refreshChatEmpty();
+          scrollChatToNewest(); // 초기 로드 후 최신(하단) 고정 — 앵커 드리프트 보정.
           if (currentView === "overview") setTimeout(showOverview, 0);
         } catch (err) {
           // 무해 — 라이브 경로 무손상. 콘솔만.
@@ -1884,7 +1902,7 @@
         const navEventCount = document.getElementById("nav-event-count");
         if (navEventCount) navEventCount.textContent = String(evCount);
         if (currentView === "overview") setTimeout(showOverview, 0);
-        const ts = new Date(ev.ts).toISOString().slice(11, 23);
+        const ts = fmtTs(ev.ts);
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
@@ -1939,7 +1957,7 @@
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
-        tsEl.textContent = new Date().toISOString().slice(11, 23);
+        tsEl.textContent = fmtTs(Date.now());
         const tyEl = document.createElement("span");
         tyEl.className = "type";
         const chatLabel = { user: "나", reply: "돌쇠", error: "오류" };
@@ -1961,7 +1979,7 @@
           if (view === "overview") showOverview();
           else if (view === "providers") showProviders();
           else if (view === "inventory") showInventory();
-          else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); document.getElementById("chat-input").focus(); }
+          else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
           if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings"].includes(view)) setActiveTab("main");
         });

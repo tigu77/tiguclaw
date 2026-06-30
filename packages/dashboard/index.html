@@ -440,6 +440,14 @@
         .detail-head { padding:15px; } .detail-name { font-size:19px; }
         .pi-summary { white-space:normal; }
         #chat-input { font-size:16px; }
+        /* 모바일 채팅 — 헤더 작게(부제 숨김) + 본문만 스크롤. #right 를 뷰포트 높이(헤더56+
+           탭바56=112 제외)로 묶고 #stream 만 내부 스크롤 → 스트림바·입력은 위/아래 고정,
+           메시지만 흐른다. (page-scroll 모델에선 sticky 가 불안정해 내부 스크롤로 확정.) */
+        #stream-bar { padding:7px 12px; gap:4px; }
+        .chat-desc { display:none; }
+        .chat-title { font-size:14px; }
+        body[data-tab="chat"] #right { height:calc(100svh - 112px); min-height:0; overflow:hidden; }
+        body[data-tab="chat"] #stream { overflow-y:auto; min-height:0; }
       }
       @media (max-width: 430px) { .summary-grid { grid-template-columns:1fr; } header .brand { font-size:15px; } }
     </style>

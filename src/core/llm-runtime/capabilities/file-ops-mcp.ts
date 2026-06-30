@@ -43,7 +43,8 @@
  *  - 위험 명령·위험 경로 차단은 *LLM 측 정책* (sysprompt prompt-gated). MCP server
  *    본체는 DISALLOWED_TOOLS/DISALLOWED_URLS 만 차단 (정책 진실 소스 hook) — 경로 벽 0.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -334,13 +335,87 @@ const truncateBashOutput = (raw: string): string => {
   return `${buf.subarray(0, BASH_MAX_BUFFER_BYTES).toString("utf8")}${BASH_TRUNCATE_MARKER}`;
 };
 
+// ── 백그라운드 Bash (run_in_background + BashOutput + KillShell) ──────────────
+// Claude Code parity(#1) — claude 어댑터는 SDK 빌트인 Bash 가 이 기능을 이미 제공.
+// codex/openai 어댑터는 이 file-ops Bash 를 쓰므로 여기서 채워 #2 parity 회복.
+// 모듈 레지스트리 = 턴을 가로질러 생존(worker-jobs 패턴 동형, in-memory·best-effort).
+// 데몬 종료 시 자식은 함께 죽음(detach 안 함 → orphan 0). 재시작 비생존 = 정직(W-I7 동형).
+interface BgShell {
+  child: ReturnType<typeof spawn>;
+  command: string;
+  stdout: string;
+  stderr: string;
+  stdoutRead: number; // BashOutput 이 이미 반환한 offset (증분 폴링).
+  stderrRead: number;
+  status: "running" | "completed" | "killed";
+  exitCode: number | null;
+  startedAt: number;
+}
+const BG_SHELLS = new Map<string, BgShell>();
+const BG_MAX = 20; // 동시 백그라운드 셸 상한(메모리 바운드).
+
+// 버퍼 append — 1MB cap 도달 후엔 더 안 쌓는다(메모리 바운드 + offset 보존).
+const appendCapped = (cur: string, chunk: string): string => {
+  if (cur.length >= BASH_MAX_BUFFER_BYTES) return cur;
+  const next = cur + chunk;
+  return next.length > BASH_MAX_BUFFER_BYTES
+    ? next.slice(0, BASH_MAX_BUFFER_BYTES) + BASH_TRUNCATE_MARKER
+    : next;
+};
+
+const launchBgShell = (command: string): string => {
+  // 끝난 셸 하나 정리해 상한 압박 완화(전부 running 이면 그대로 진행 — 20 이면 충분).
+  if (BG_SHELLS.size >= BG_MAX) {
+    for (const [k, s] of BG_SHELLS) {
+      if (s.status !== "running") {
+        BG_SHELLS.delete(k);
+        break;
+      }
+    }
+  }
+  const id = `bash_${randomUUID().slice(0, 8)}`;
+  const child = spawn("sh", ["-c", command], { cwd: getPaths().home });
+  const shell: BgShell = {
+    child,
+    command,
+    stdout: "",
+    stderr: "",
+    stdoutRead: 0,
+    stderrRead: 0,
+    status: "running",
+    exitCode: null,
+    startedAt: Date.now(),
+  };
+  child.stdout?.on("data", (d: Buffer) => {
+    shell.stdout = appendCapped(shell.stdout, d.toString("utf8"));
+  });
+  child.stderr?.on("data", (d: Buffer) => {
+    shell.stderr = appendCapped(shell.stderr, d.toString("utf8"));
+  });
+  child.on("error", () => {
+    if (shell.status === "running") {
+      shell.status = "completed";
+      shell.exitCode = -1;
+    }
+  });
+  child.on("close", (code) => {
+    if (shell.status === "running") {
+      shell.status = "completed";
+      shell.exitCode = code ?? 0;
+    }
+  });
+  BG_SHELLS.set(id, shell);
+  return id;
+};
+
 const bashTool = tool(
   "Bash",
-  "셸 명령을 실행합니다 (`sh -c <command>`). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. cwd 기본은 홈 (절대경로·cd 로 밖도 가능).",
+  "셸 명령을 실행합니다 (`sh -c <command>`). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. cwd 기본은 홈 (절대경로·cd 로 밖도 가능). **긴 명령(빌드·서버·스크립트)은 `run_in_background: true` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**",
   {
     command: z.string().min(1),
     timeout: z.number().int().min(1).optional(),
     description: z.string().optional(),
+    run_in_background: z.boolean().optional(),
   },
   async (args) => {
     // V5.7 안전 가드 1 — DISALLOWED_TOOLS pre-check (정책 진실 소스 1개 박기).
@@ -355,6 +430,15 @@ const bashTool = tool(
           `command 에 DISALLOWED_TOOLS 토큰("${banned}") 포함 — 거부.`,
         );
       }
+    }
+
+    // 백그라운드 실행 — 즉시 bash_id 반환(안 막힘). timeout 미적용(완료/Kill 까지 돎).
+    if (args.run_in_background === true) {
+      const id = launchBgShell(args.command);
+      return okText(
+        `백그라운드 실행 시작 (bash_id: ${id}). ` +
+          `BashOutput({ bash_id: "${id}" }) 로 출력 폴링, KillShell 로 종료.`,
+      );
     }
 
     // V5.7 안전 가드 2 — timeout clamp. 미지정 = 디폴트, 초과 = max.
@@ -489,6 +573,57 @@ const stripHtmlToMarkdown = (html: string): string => {
   return s.trim();
 };
 
+const bashOutputTool = tool(
+  "BashOutput",
+  "백그라운드 Bash(run_in_background)의 *새로 쌓인* 출력을 가져옵니다. bash_id 로 조회 — 마지막 호출 이후의 증분 stdout/stderr + 상태(running / 완료 시 exit code)를 반환합니다.",
+  {
+    bash_id: z.string().min(1),
+  },
+  async (args) => {
+    const s = BG_SHELLS.get(args.bash_id);
+    if (s === undefined) {
+      return errText(
+        `bash_id 없음: ${args.bash_id} (종료 후 정리됐거나 잘못된 id).`,
+      );
+    }
+    const newOut = s.stdout.slice(s.stdoutRead);
+    s.stdoutRead = s.stdout.length;
+    const newErr = s.stderr.slice(s.stderrRead);
+    s.stderrRead = s.stderr.length;
+    const parts: string[] = [
+      `status: ${s.status}${s.status !== "running" ? ` (exit ${s.exitCode})` : ""}`,
+    ];
+    if (newOut.length > 0) parts.push(`stdout(new):\n${newOut}`);
+    if (newErr.length > 0) parts.push(`stderr(new):\n${newErr}`);
+    if (newOut.length === 0 && newErr.length === 0)
+      parts.push("(새 출력 없음)");
+    return okText(parts.join("\n\n"));
+  },
+);
+
+const killShellTool = tool(
+  "KillShell",
+  "백그라운드 Bash(run_in_background)를 강제 종료합니다. bash_id 로 지정.",
+  {
+    bash_id: z.string().min(1),
+  },
+  async (args) => {
+    const s = BG_SHELLS.get(args.bash_id);
+    if (s === undefined) {
+      return errText(`bash_id 없음: ${args.bash_id}.`);
+    }
+    if (s.status === "running") {
+      try {
+        s.child.kill("SIGKILL");
+      } catch {
+        /* noop — 이미 죽었을 수 있음 */
+      }
+      s.status = "killed";
+    }
+    return okText(`종료 처리됨: ${args.bash_id} (status: ${s.status}).`);
+  },
+);
+
 const webFetchTool = tool(
   "WebFetch",
   "URL 의 본문을 받아 markdown 변환 후 반환합니다. http(s):// 만 허용. HTML 은 script/style 제거 + tag strip. timeout 디폴트 30s / max 60s. body 5MB cap.",
@@ -590,7 +725,7 @@ const webFetchTool = tool(
 export const fileOpsMcpServer: McpSdkServerConfigWithInstance =
   createSdkMcpServer({
     name: "file-ops",
-    version: "1.5.0",
+    version: "1.6.0",
     tools: [
       readTool,
       globTool,
@@ -598,6 +733,8 @@ export const fileOpsMcpServer: McpSdkServerConfigWithInstance =
       writeTool,
       editTool,
       bashTool,
+      bashOutputTool,
+      killShellTool,
       webFetchTool,
     ],
   });

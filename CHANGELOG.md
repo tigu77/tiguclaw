@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Background shell commands for the codex/openai model lines — `Bash(run_in_background)` + `BashOutput` (poll) + `KillShell`, matching what the Claude line already has. Long builds/servers/scripts run without blocking the conversation.
+
 ### Changed
 - Guideline: prefer the minimal structure when adding automation — fold related rollups (e.g. weekly/monthly summaries) into one routine that handles them by date, instead of a separate schedule per cadence.
 - Guideline: when unsure what/where/how to act (ambiguous target, intent, or structure), confirm first instead of guessing — added to the assistant's required confirmation triggers.

@@ -34,7 +34,7 @@ import { getEventBus } from "./eventbus.js";
 const publishWorkerLifecycle = (
   type: "worker.started" | "worker.done" | "worker.failed" | "worker.cancelled",
   job: { jobId: string; label: string; threadKey: string; status: string },
-  error?: string,
+  extra?: { error?: string; task?: string; result?: string },
 ): void => {
   try {
     getEventBus().publish({
@@ -45,7 +45,11 @@ const publishWorkerLifecycle = (
         label: job.label,
         threadKey: job.threadKey, // 어느 대화가 띄운 잡인지 상관(correlate)용.
         status: job.status,
-        ...(error !== undefined ? { error: error.slice(0, 300) } : {}),
+        // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
+        // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
+        ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
+        ...(extra?.task !== undefined ? { task: extra.task.slice(0, 500) } : {}),
+        ...(extra?.result !== undefined ? { result: extra.result.slice(0, 1200) } : {}),
       },
     });
   } catch {
@@ -152,12 +156,11 @@ export const registerJob = (input: RegisterJobInput): string => {
       startedAt,
     }),
   );
-  publishWorkerLifecycle("worker.started", {
-    jobId,
-    label: input.label,
-    threadKey: input.threadKey,
-    status: "running",
-  });
+  publishWorkerLifecycle(
+    "worker.started",
+    { jobId, label: input.label, threadKey: input.threadKey, status: "running" },
+    { task: input.task },
+  );
   return jobId;
 };
 
@@ -171,7 +174,7 @@ export const markDone = (jobId: string, result: string): void => {
   persistSafe("markDone", () =>
     updateWorkerJobStatus(jobId, "done", job.finishedAt!),
   );
-  publishWorkerLifecycle("worker.done", job);
+  publishWorkerLifecycle("worker.done", job, { task: job.task, result });
 };
 
 /** 워커 실패/타임아웃 — 원인 기록. */
@@ -184,7 +187,7 @@ export const markFailed = (jobId: string, error: string): void => {
   persistSafe("markFailed", () =>
     updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
   );
-  publishWorkerLifecycle("worker.failed", job, error);
+  publishWorkerLifecycle("worker.failed", job, { error, task: job.task });
 };
 
 /**
@@ -200,7 +203,7 @@ export const markCancelled = (jobId: string, reason: string): void => {
   persistSafe("markCancelled", () =>
     updateWorkerJobStatus(jobId, "cancelled", job.finishedAt!),
   );
-  publishWorkerLifecycle("worker.cancelled", job, reason);
+  publishWorkerLifecycle("worker.cancelled", job, { error: reason, task: job.task });
 };
 
 export const getJob = (jobId: string): WorkerJobRecord | undefined =>

@@ -390,11 +390,14 @@
       .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .bg-job-err { font-size:11px; color:#fca5a5; word-break:break-word; }
-      /* Step3 — 잡 카드 안 접이식 스텝 타임라인 (worker:<jobId> llm.activity). */
-      .bg-job.has-steps .bg-job-top { cursor:pointer; }
+      /* Step3 — 잡 카드 접이식 상세(작업 + 스텝 타임라인 + 결과). */
+      .bg-job.has-detail .bg-job-top { cursor:pointer; }
       .bg-job-chev { font-size:10px; color:var(--text-dim); white-space:nowrap; user-select:none; }
-      .bg-job-steps { display:none; flex-direction:column; gap:3px; margin-top:3px; border-top:1px solid var(--border); padding-top:6px; }
-      .bg-job.steps-open .bg-job-steps { display:flex; }
+      .bg-job-detail { display:none; flex-direction:column; gap:7px; margin-top:6px; border-top:1px solid var(--border); padding-top:8px; }
+      .bg-job.open .bg-job-detail { display:flex; }
+      .bg-job-task { font-size:11px; color:var(--text-mute); white-space:pre-wrap; word-break:break-word; line-height:1.45; }
+      .bg-job-result { font-size:11px; color:var(--text); white-space:pre-wrap; word-break:break-word; line-height:1.5; max-height:240px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+      .bg-job-steps { display:flex; flex-direction:column; gap:3px; }
       .bg-step { display:flex; align-items:baseline; gap:6px; font-size:11px; color:var(--text-mute); line-height:1.4; }
       .bg-step-icon { flex:none; font-size:10px; }
       .bg-step-label { font-weight:700; color:var(--text); flex:none; }
@@ -1363,14 +1366,17 @@
           if (!removed) break; // 전부 running 이면 중단.
         }
       };
+      // 펼침 어포던스 — 작업(task)/스텝/결과(result) 중 하나라도 있으면 카드를 펼칠 수 있다.
+      // (도구 안 쓴 잡은 스텝 0 이어도 task/result 로 내용을 보여줘 "눌러도 빈" 문제 해소.)
       const updateChev = (entry) => {
-        if (entry.stepCount === 0) { entry.chevEl.style.display = "none"; entry.el.classList.remove("has-steps"); return; }
+        const hasDetail = entry.stepCount > 0 || entry.hasTask || entry.hasResult;
+        if (!hasDetail) { entry.chevEl.style.display = "none"; entry.el.classList.remove("has-detail"); return; }
         entry.chevEl.style.display = "";
-        entry.el.classList.add("has-steps");
-        entry.chevEl.textContent = (entry.el.classList.contains("steps-open") ? "▾ " : "▸ ") + entry.stepCount + "단계";
+        entry.el.classList.add("has-detail");
+        const open = entry.el.classList.contains("open");
+        entry.chevEl.textContent = (open ? "▾ " : "▸ ") + (entry.stepCount > 0 ? entry.stepCount + "단계" : "자세히");
       };
-      // 잡 카드 확보(없으면 생성). label 은 worker.started 가 채우고, activity 가 먼저
-      // 와도 placeholder 로 만들었다가 나중에 보정한다.
+      // 잡 카드 확보(없으면 생성). label/task 는 worker.started, result 는 worker.done 이 채운다.
       const ensureJobCard = (jobId, opts) => {
         let entry = jobCards.get(jobId);
         if (!entry) {
@@ -1385,30 +1391,46 @@
           top.appendChild(label); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
-          const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const err = document.createElement("div"); err.className = "bg-job-err"; err.style.display = "none";
-          el.appendChild(top); el.appendChild(meta); el.appendChild(steps); el.appendChild(err);
+          // 펼침 영역(open 시 표시): 작업 + 스텝 + 결과.
+          const detail = document.createElement("div"); detail.className = "bg-job-detail";
+          const task = document.createElement("div"); task.className = "bg-job-task"; task.style.display = "none";
+          const steps = document.createElement("div"); steps.className = "bg-job-steps";
+          const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
+          detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(err); el.appendChild(detail);
           top.addEventListener("click", () => {
-            if (entry.stepCount > 0) { el.classList.toggle("steps-open"); updateChev(entry); }
+            if (entry.el.classList.contains("has-detail")) { el.classList.toggle("open"); updateChev(entry); }
           });
           bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
-          entry = { el, labelEl: label, statusEl: st, chevEl: chev, stepsEl: steps, errEl: err, status: "running", stepCount: 0 };
+          entry = {
+            el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
+            resultEl: result, errEl: err, status: "running", stepCount: 0, hasTask: false, hasResult: false,
+          };
           jobCards.set(jobId, entry);
         }
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
+        if (opts && opts.task && !entry.hasTask) {
+          entry.taskEl.textContent = "작업 · " + opts.task;
+          entry.taskEl.style.display = ""; entry.hasTask = true; updateChev(entry);
+        }
         return entry;
       };
       const handleWorkerEvent = (p, ts) => {
         if (!p.jobId) return;
         const status = p.status || "running";
-        const entry = ensureJobCard(p.jobId, { label: p.label, ts, threadKey: p.threadKey });
+        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey });
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");
-        entry.el.classList.add(status); // steps-open/has-steps 보존.
+        entry.el.classList.add(status); // open/has-detail 보존.
         entry.statusEl.textContent = BG_STATUS[status] || status;
         if ((status === "failed" || status === "cancelled") && p.error) {
           entry.errEl.textContent = p.error;
           entry.errEl.style.display = "";
+        }
+        if (status === "done" && p.result) {
+          entry.resultEl.textContent = "결과 · " + p.result;
+          entry.resultEl.style.display = ""; entry.hasResult = true; updateChev(entry);
         }
         capBgList();
         refreshBgBadge();

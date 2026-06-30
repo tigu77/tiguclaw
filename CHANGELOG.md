@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-30
+
 ### Added
 - Dashboard labels each sub-agent's activity with its name (e.g. `🤖 researcher`) so you can tell who did what in a multi-agent turn.
 - Background shell commands for the codex/openai model lines — `Bash(run_in_background)` + `BashOutput` (poll) + `KillShell`, matching what the Claude line already has. Long builds/servers/scripts run without blocking the conversation.
@@ -61,7 +63,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tigu77/tiguclaw/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/tigu77/tiguclaw/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tigu77/tiguclaw/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tigu77/tiguclaw/releases/tag/v0.1.0

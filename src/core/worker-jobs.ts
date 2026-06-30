@@ -24,6 +24,34 @@ import {
   updateWorkerJobStatus,
   listInterruptedWorkerJobs,
 } from "../store/worker-jobs.js";
+import { getEventBus } from "./eventbus.js";
+
+// Step 1 (2026-06-30) — 워커 lifecycle 을 EventBus 에 발행한다. 워커 활동(llm.activity,
+// threadKey=worker:<jobId>)은 이미 버스에 흐르지만 "잡 시작/완료/실패" 상태 전이는 그동안
+// worker_jobs SQLite 에만 있어 대시보드가 라이브로 못 받았다 → 백그라운드 작업 뷰의 토대.
+// best-effort: 관측 발행 실패가 워커 흐름을 무르지 않는다(원칙 3 견고성). 단방향: core
+// worker → core bus(플러그인 무참조). 대시보드 등 구독자가 worker.* 를 받아 렌더.
+const publishWorkerLifecycle = (
+  type: "worker.started" | "worker.done" | "worker.failed" | "worker.cancelled",
+  job: { jobId: string; label: string; threadKey: string; status: string },
+  error?: string,
+): void => {
+  try {
+    getEventBus().publish({
+      type,
+      ts: Date.now(),
+      payload: {
+        jobId: job.jobId,
+        label: job.label,
+        threadKey: job.threadKey, // 어느 대화가 띄운 잡인지 상관(correlate)용.
+        status: job.status,
+        ...(error !== undefined ? { error: error.slice(0, 300) } : {}),
+      },
+    });
+  } catch {
+    /* noop — 관측 발행 실패가 워커를 무르지 않는다. */
+  }
+};
 
 // DB 미러는 best-effort — 영속 실패가 워커 진행/완료를 막지 않게 격리(데몬 생존, 원칙 3).
 // 런타임 진실 소스는 아래 in-memory Map. DB 는 재시작 생존(정직 통지)만 담당.
@@ -124,6 +152,12 @@ export const registerJob = (input: RegisterJobInput): string => {
       startedAt,
     }),
   );
+  publishWorkerLifecycle("worker.started", {
+    jobId,
+    label: input.label,
+    threadKey: input.threadKey,
+    status: "running",
+  });
   return jobId;
 };
 
@@ -137,6 +171,7 @@ export const markDone = (jobId: string, result: string): void => {
   persistSafe("markDone", () =>
     updateWorkerJobStatus(jobId, "done", job.finishedAt!),
   );
+  publishWorkerLifecycle("worker.done", job);
 };
 
 /** 워커 실패/타임아웃 — 원인 기록. */
@@ -149,6 +184,7 @@ export const markFailed = (jobId: string, error: string): void => {
   persistSafe("markFailed", () =>
     updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
   );
+  publishWorkerLifecycle("worker.failed", job, error);
 };
 
 /**
@@ -164,6 +200,7 @@ export const markCancelled = (jobId: string, reason: string): void => {
   persistSafe("markCancelled", () =>
     updateWorkerJobStatus(jobId, "cancelled", job.finishedAt!),
   );
+  publishWorkerLifecycle("worker.cancelled", job, reason);
 };
 
 export const getJob = (jobId: string): WorkerJobRecord | undefined =>

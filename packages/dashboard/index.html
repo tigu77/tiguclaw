@@ -327,7 +327,7 @@
       .act-line.act-step { cursor:pointer; border-radius:8px; padding:3px 6px; }
       .act-line.act-step:hover { background:rgba(255,255,255,.05); }
       /* 채팅 패널 전용: 마지막 라벨 미리보기(접힘 시 헤더에 노출). */
-      .turn-last { color:var(--text-dim); font-size:10px; font-style:italic; margin-left:8px; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .turn-last { color:var(--text-dim); font-size:10px; font-style:italic; margin-left:8px; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       body[data-chat-panel="log"] .turn-last { display:none; }
       /* 완료 표시(답변 도착 시 회색 점). */
       .turn-card.done .turn-count { color:var(--good); }
@@ -1762,8 +1762,9 @@
         card.lastSeq = p.seq ?? 0;
         card.count += 1;
         card.countEl.textContent = card.count + "단계";
-        // 진행 중 마지막 라벨 미리보기(접힘 시 헤더에 노출).
-        card.lastEl.textContent = p.label || p.kind || "";
+        // 진행 중/접힘 시 헤더 미리보기 — 도구명 + 상세(무슨 파일/명령인지 한눈에).
+        card.lastEl.textContent =
+          (p.label || p.kind || "") + (p.detail ? " · " + p.detail : "");
         card.setOpen(true); // 진행 중엔 펼쳐서 라이브로 보이게.
       };
 

@@ -360,6 +360,36 @@
       .sd-row .sd-v { font-size:13px; color:var(--text); word-break:break-word; }
       .sd-detail { white-space:pre-wrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:12px; line-height:1.5; color:var(--text); background:rgba(0,0,0,.28); border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
       .sd-detail.empty { font-family:inherit; color:var(--text-mute); font-style:italic; background:transparent; border-style:dashed; }
+      /* Step2 (2026-06-30) — 백그라운드 작업 드로어. #step-detail 슬라이드 패턴 차용.
+         PC=우측 고정폭 드로어(웹앱식, 백드롭 없음·채팅 계속 보임), 모바일=넓게 슬라이드인+백드롭. */
+      #bg-toggle { position:relative; border:1px solid var(--border); border-radius:11px; padding:7px 11px; background:rgba(255,255,255,.035); color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:800; display:flex; align-items:center; gap:7px; white-space:nowrap; }
+      #bg-toggle:hover { color:var(--text); background:var(--card-hover); }
+      #bg-toggle .bg-badge { min-width:17px; height:17px; padding:0 5px; border-radius:9px; background:var(--accent-2); color:#04121f; font-size:10px; font-weight:900; display:none; align-items:center; justify-content:center; line-height:1; }
+      #bg-toggle .bg-badge.show { display:inline-flex; }
+      #bg-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:18; display:none; }
+      #bg-panel {
+        position:fixed; top:0; right:0; bottom:0; width:380px; max-width:88vw;
+        display:flex; flex-direction:column; background:var(--panel);
+        border-left:1px solid var(--border-strong); box-shadow:-14px 0 36px rgba(0,0,0,.4);
+        transform:translateX(100%); transition:transform .2s ease; z-index:19;
+        pointer-events:none; visibility:hidden;
+      }
+      body.bg-open #bg-panel { transform:translateX(0); pointer-events:auto; visibility:visible; }
+      @media (max-width:900px) { body.bg-open #bg-backdrop { display:block; } }
+      .bg-head { display:flex; align-items:center; gap:8px; padding:14px; border-bottom:1px solid var(--border); }
+      .bg-head h3 { flex:1; margin:0; }
+      .bg-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+      .bg-empty { color:var(--text-mute); font-style:italic; font-size:12px; padding:20px 6px; text-align:center; }
+      .bg-job { border:1px solid var(--border); border-left:3px solid var(--text-dim); border-radius:12px; padding:10px 12px; background:var(--card); display:flex; flex-direction:column; gap:5px; }
+      .bg-job.running { border-left-color:var(--accent-2); }
+      .bg-job.done { border-left-color:#34d399; }
+      .bg-job.failed { border-left-color:#f87171; }
+      .bg-job.cancelled { border-left-color:var(--text-dim); opacity:.85; }
+      .bg-job-top { display:flex; align-items:flex-start; gap:8px; }
+      .bg-job-label { flex:1; font-weight:800; font-size:12px; color:var(--text); word-break:break-word; }
+      .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
+      .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .bg-job-err { font-size:11px; color:#fca5a5; word-break:break-word; }
       #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
       #chat-form { display:flex; gap:8px; }
       #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
@@ -453,12 +483,11 @@
           <div class="chat-head">
             <div>
               <h1 class="chat-title">채팅</h1>
-              <p class="chat-desc">돌쇠와 대화하고, 필요할 때 같은 화면에서 활동 로그를 확인합니다.</p>
+              <p class="chat-desc">돌쇠와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.</p>
             </div>
-            <div class="chat-tabs" aria-label="chat panels">
-              <button class="chat-tab active" data-chat-panel-target="chat" type="button">대화</button>
-              <button class="chat-tab" data-chat-panel-target="log" type="button">활동 로그</button>
-            </div>
+            <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업">
+              백그라운드 <span class="bg-badge" id="bg-badge">0</span>
+            </button>
           </div>
           <div class="log-tools">
             <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" />
@@ -482,6 +511,16 @@
       </section>
     </main>
     <div id="toast" role="status" aria-live="polite"></div>
+    <div id="bg-backdrop"></div>
+    <aside id="bg-panel" aria-label="백그라운드 작업" aria-hidden="true">
+      <div class="bg-head">
+        <h3 class="panel-title">백그라운드 작업</h3>
+        <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
+      </div>
+      <div class="bg-list" id="bg-list">
+        <div class="bg-empty" id="bg-empty">실행 중인 백그라운드 작업이 없습니다.</div>
+      </div>
+    </aside>
     <script>
       const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp"];
       const CATEGORY_LABEL = {
@@ -1269,6 +1308,85 @@
         if (e.key === "Escape" && document.body.classList.contains("step-detail-open")) closeStepDetail();
       });
 
+      // ── Step2 (2026-06-30) — 백그라운드 작업 드로어 + 워커 잡 카드 ──────────
+      // worker.* lifecycle 이벤트(Step1)를 받아 잡별 카드로 렌더. payload.status 가
+      // started=running / done / failed / cancelled 를 그대로 담아 카드 상태를 정한다.
+      // 토글 드로어(PC 우측 고정·모바일 슬라이드인+백드롭). 배지 = 실행 중 잡 수.
+      const bgPanel = document.getElementById("bg-panel");
+      const bgList = document.getElementById("bg-list");
+      const bgEmpty = document.getElementById("bg-empty");
+      const bgBadge = document.getElementById("bg-badge");
+      const BG_STATUS = {
+        running: "🟡 진행 중", done: "✅ 완료", failed: "⚠️ 실패", cancelled: "⏹ 취소",
+      };
+      const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
+      const jobCards = new Map(); // jobId -> { el, status, statusEl, errEl }
+      const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); };
+      const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
+      const bgToggleBtn = document.getElementById("bg-toggle");
+      if (bgToggleBtn) bgToggleBtn.addEventListener("click", () => {
+        document.body.classList.contains("bg-open") ? closeBg() : openBg();
+      });
+      const bgCloseBtn = document.getElementById("bg-close");
+      if (bgCloseBtn) bgCloseBtn.addEventListener("click", closeBg);
+      const bgBackdrop = document.getElementById("bg-backdrop");
+      if (bgBackdrop) bgBackdrop.addEventListener("click", closeBg);
+
+      const refreshBgBadge = () => {
+        let running = 0;
+        for (const e of jobCards.values()) if (e.status === "running") running += 1;
+        if (bgBadge) {
+          bgBadge.textContent = String(running);
+          bgBadge.classList.toggle("show", running > 0);
+        }
+        if (bgEmpty) bgEmpty.style.display = jobCards.size === 0 ? "" : "none";
+      };
+      const capBgList = () => {
+        // 끝난 잡이 BG_MAX 초과면 가장 오래된 끝난 카드(DOM 끝)부터 제거(running 보존).
+        while (jobCards.size > BG_MAX) {
+          let removed = false;
+          for (let node = bgList.lastElementChild; node; node = node.previousElementSibling) {
+            const jid = node.dataset ? node.dataset.jobId : null;
+            if (!jid) continue;
+            const entry = jobCards.get(jid);
+            if (entry && entry.status !== "running") { node.remove(); jobCards.delete(jid); removed = true; break; }
+          }
+          if (!removed) break; // 전부 running 이면 중단.
+        }
+      };
+      const handleWorkerEvent = (p, ts) => {
+        const jobId = p.jobId;
+        if (!jobId) return;
+        const status = p.status || "running";
+        let entry = jobCards.get(jobId);
+        if (!entry) {
+          const el = document.createElement("div");
+          el.className = "bg-job " + status;
+          el.dataset.jobId = jobId;
+          const top = document.createElement("div"); top.className = "bg-job-top";
+          const label = document.createElement("span"); label.className = "bg-job-label";
+          label.textContent = p.label || "(작업)";
+          const st = document.createElement("span"); st.className = "bg-job-status";
+          top.appendChild(label); top.appendChild(st);
+          const meta = document.createElement("div"); meta.className = "bg-job-meta";
+          meta.textContent = (ts || "") + (p.threadKey ? " · " + p.threadKey : "");
+          const err = document.createElement("div"); err.className = "bg-job-err"; err.style.display = "none";
+          el.appendChild(top); el.appendChild(meta); el.appendChild(err);
+          bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
+          entry = { el, statusEl: st, errEl: err, status };
+          jobCards.set(jobId, entry);
+        }
+        entry.status = status;
+        entry.el.className = "bg-job " + status;
+        entry.statusEl.textContent = BG_STATUS[status] || status;
+        if ((status === "failed" || status === "cancelled") && p.error) {
+          entry.errEl.textContent = p.error;
+          entry.errEl.style.display = "";
+        }
+        capBgList();
+        refreshBgBadge();
+      };
+
       const applyFilter = (el) => {
         if (filterText !== "" && !(el.dataset.type || "").includes(filterText)) {
           el.style.display = "none";
@@ -1994,6 +2112,10 @@
         }
         if (ev.type === "prompt.options") {
           renderPromptOptions(ev.payload || {}, ts);
+          return;
+        }
+        if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {
+          handleWorkerEvent(ev.payload || {}, ts);
           return;
         }
         const div = document.createElement("div");

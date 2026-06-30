@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Guideline: prefer the minimal structure when adding automation — fold related rollups (e.g. weekly/monthly summaries) into one routine that handles them by date, instead of a separate schedule per cadence.
+
 ## [0.2.1] - 2026-06-30
 
 ### Changed

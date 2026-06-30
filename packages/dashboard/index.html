@@ -311,7 +311,8 @@
       .act-line { display:flex; align-items:center; gap:8px; padding:2px 0; }
       .act-badge { font-size:10px; font-weight:800; padding:2px 7px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; }
       .act-claude { background:rgba(52,211,153,.14); color:var(--good); } .act-codex { background:rgba(192,132,252,.16); color:var(--purple); } .act-openai { background:rgba(45,212,191,.14); color:var(--teal); } .act-other { background:var(--card); color:var(--text-mute); }
-      .act-icon { font-size:13px; } .act-label { color:var(--text); font-weight:700; } .act-meta { color:var(--text-dim); font-size:10px; margin-left:auto; white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .act-icon { font-size:13px; } .act-label { color:var(--text); font-weight:700; flex:none; } .act-meta { color:var(--text-dim); font-size:10px; margin-left:auto; white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; }
+      .act-detail { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .turn-card { padding:0; overflow:hidden; }
       .turn-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
       .turn-head:hover { background:rgba(255,255,255,.04); }
@@ -1602,10 +1603,19 @@
         const label = document.createElement("span");
         label.className = "act-label";
         label.textContent = p.label || p.kind || "activity";
+        // 인라인 상세(중립 detail = path=…, cmd: … 등). 클릭 안 해도 무슨 일인지 보이게.
+        // 길면 CSS 가 한 줄로 자르고(…), 전체본은 클릭→사이드바.
+        const detail = p.detail
+          ? Object.assign(document.createElement("span"), {
+              className: "act-detail", textContent: p.detail,
+            })
+          : null;
         const meta = document.createElement("span");
         meta.className = "act-meta";
         meta.textContent = (p.model ? p.model + " · " : "") + "#" + (p.seq ?? "");
-        line.appendChild(icon); line.appendChild(label); line.appendChild(meta);
+        line.appendChild(icon); line.appendChild(label);
+        if (detail) line.appendChild(detail);
+        line.appendChild(meta);
         // P4 — 클릭 시 data-threadkey/data-seq 로 마스터 payload 조회 → 우측 사이드바 상세.
         line.addEventListener("click", () => {
           const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq));

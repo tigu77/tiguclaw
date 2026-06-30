@@ -249,17 +249,22 @@
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
       #ev-filter:focus, #chat-input:focus { outline:none; border-color:rgba(125,211,252,.55); }
       #stream { flex:1; overflow-y:auto; padding:10px; }
-      /* 대화 패널: 채팅은 최신이 아래(클로드코드식). 스트림은 prepend(최신=firstChild)이라
-         column-reverse 로 시각 순서만 뒤집어 오래된 것=위·최신=아래 + 스크롤 자동 하단 고정.
+      /* 대화 패널: 최신이 맨 위(피드식). 스트림은 prepend(최신=firstChild)이라 normal column
+         이면 firstChild=시각 최상단=최신. 위→아래 = 최신→과거. scrollTop=0(top)=최신.
          그룹 내부(스텝→답변) 순서는 그룹이 단일 flex 아이템이라 영향 없음. 로그 패널은
          기존대로 최신-위(이벤트 로그 관습) 유지. */
-      body[data-chat-panel="chat"] #stream { display:flex; flex-direction:column-reverse; }
+      body[data-chat-panel="chat"] #stream { display:flex; flex-direction:column; }
       /* 채팅 패널: 일반 이벤트는 숨기되, 턴 그룹(스텝 리스트+답변)은 대화 흐름에 인터리빙. */
       body[data-chat-panel="chat"] .ev:not(.local):not(.in-group) { display:none !important; }
       /* 로그 패널: 로컬 채팅 버블·턴 그룹 래퍼는 숨기고, 그룹 안 turn-card 만 펼침 표시. */
       body[data-chat-panel="log"] .ev.local,
       body[data-chat-panel="log"] .chat-empty { display:none !important; }
       body[data-chat-panel="log"] .turn-group { display:contents; }
+      /* 날짜 구분선 — 날짜가 바뀌는 첫(그 날짜의 최신) 메시지 위. 채팅 패널 전용. */
+      .date-divider { display:flex; align-items:center; gap:8px; margin:16px 4px 7px; color:var(--text-dim); font-size:10px; }
+      .date-divider::before, .date-divider::after { content:""; flex:1; height:1px; background:var(--border); }
+      .date-divider span { font-family:ui-monospace,"SF Mono",Menlo,monospace; letter-spacing:.04em; white-space:nowrap; }
+      body[data-chat-panel="log"] .date-divider { display:none !important; }
       .ev { padding:8px 10px; margin:7px 0; border:1px solid var(--border); border-left:3px solid var(--text-dim); background:var(--card); border-radius:12px; font-size:11px; word-break:break-word; }
       .ev .ts { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .ev .type { font-weight:800; margin-left:6px; font-size:11px; }
@@ -642,12 +647,22 @@
       let selectedProviderId = null;
       let currentView = "overview";
 
-      // 타임스탬프 — 로컬 날짜+시각 ("YYYY-MM-DD HH:MM:SS"). 기존 toISOString().slice 는
-      // UTC(한국이면 9h 어긋남)+날짜없음+밀리초(.456) 였다 → 로컬·날짜포함·초까지만(밀리초 제거).
-      const fmtTs = (ms) => {
+      // 타임스탬프 — 로컬. 기존 toISOString().slice 는 UTC(한국이면 9h 어긋남)+밀리초였다.
+      const tsPad = (n) => String(n).padStart(2, "0");
+      // 메시지 버블 = 시각만(HH:MM:SS). 날짜는 날짜 구분선(date-divider)이 담당.
+      const fmtTime = (ms) => {
         const d = new Date(ms);
-        const p = (n) => String(n).padStart(2, "0");
-        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+        return `${tsPad(d.getHours())}:${tsPad(d.getMinutes())}:${tsPad(d.getSeconds())}`;
+      };
+      // 날짜 경계 판정 키(로컬 YYYY-MM-DD) + 구분선 표시 라벨(요일 포함).
+      const dateKey = (ms) => {
+        const d = new Date(ms);
+        return `${d.getFullYear()}-${tsPad(d.getMonth() + 1)}-${tsPad(d.getDate())}`;
+      };
+      const fmtDate = (ms) => {
+        const d = new Date(ms);
+        const w = ["일", "월", "화", "수", "목", "금", "토"][d.getDay()];
+        return `${dateKey(ms)} (${w})`;
       };
 
       const setActiveNav = (view) => {
@@ -1259,19 +1274,76 @@
           el.style.display = "none";
         }
       };
-      // 사용자가 라이브(최신/하단)를 보고 있는지 판정. column-reverse 라 하단=newest=
-      // scrollTop≈0 (위로 스크롤하면 음수로 멀어짐). |scrollTop| < 80px = near-bottom.
+      // 사용자가 라이브(최신)를 보고 있는지 판정. 최신=맨위(normal column)라 newest=top=
+      // scrollTop≈0. scrollTop < 80px = near-newest. (이름은 관습상 isNearBottom 유지 —
+      // 의미는 "최신 근처".) prune 보류·older 로드 스킵 판정에 쓰인다.
       const NEAR_BOTTOM_PX = 80;
       const isNearBottom = () => Math.abs(stream.scrollTop) < NEAR_BOTTOM_PX;
 
-      // 채팅을 최신(시각 하단)으로 고정. column-reverse 라 scrollTop=0=newest. 초기 이력 로드/
-      // 뷰 진입 시 브라우저 스크롤 앵커가 *먼저 그려진 최古 항목*을 따라가 위(최古)로 끌려가는
-      // 것을 명시 보정한다(증상: 열면 옛 메시지부터 보임). rAF 2회 = 레이아웃·마크다운 반영 후 확정.
+      // 채팅을 최신(맨위)으로 고정. 최신=top 이라 scrollTop=0=newest. 초기 이력 로드/뷰 진입 시
+      // 브라우저 스크롤 앵커 드리프트를 명시 보정(증상: 열면 엉뚱한 위치). rAF 2회 = 레이아웃·
+      // 마크다운·날짜구분선 반영 후 확정.
       const scrollChatToNewest = () => {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => { stream.scrollTop = 0; });
         });
       };
+
+      // ── 날짜 구분선(date-divider) ────────────────────────────────────────
+      // 최신=맨위라 위→아래 = 최신→과거. 날짜가 바뀌는 첫(=그 날짜의 최신) 메시지 위에
+      // "YYYY-MM-DD (요일)" 구분선을 둔다(메시지 버블엔 시각만). 증분 유지 대신 매 변경 후
+      // 전체 재계산(메시지 ≤ MAX_EVENTS 라 저렴·견고). 모든 삽입 경로(라이브·이력·페이지네이션
+      // ·prune)는 MutationObserver 단일 훅이 커버 — 호출처 산재 0.
+      const childTsOf = (el) => {
+        if (el.classList && el.classList.contains("date-divider")) return null;
+        if (el.dataset && el.dataset.ts) return Number(el.dataset.ts);
+        const inner = el.querySelector ? el.querySelector("[data-ts]") : null; // 턴 그룹 내부 메시지.
+        return inner && inner.dataset.ts ? Number(inner.dataset.ts) : null;
+      };
+      let refreshingDividers = false;
+      const refreshDateDividers = () => {
+        refreshingDividers = true;
+        try {
+          for (const d of stream.querySelectorAll(".date-divider")) d.remove();
+          let prevKey = null;
+          for (const child of Array.from(stream.children)) {
+            if (child === historySentinel) continue;
+            const ts = childTsOf(child);
+            if (ts === null) continue;
+            const k = dateKey(ts);
+            if (k !== prevKey) {
+              const div = document.createElement("div");
+              div.className = "date-divider";
+              const span = document.createElement("span");
+              span.textContent = fmtDate(ts);
+              div.appendChild(span);
+              stream.insertBefore(div, child);
+              prevKey = k;
+            }
+          }
+        } finally {
+          refreshingDividers = false;
+        }
+      };
+      let dividerRaf = 0;
+      const scheduleDividerRefresh = () => {
+        if (dividerRaf) return;
+        dividerRaf = requestAnimationFrame(() => { dividerRaf = 0; refreshDateDividers(); });
+      };
+      // childList 변경 감시 — 실 메시지(비-divider) 추가/제거 시에만 재계산(내 divider 변형은
+      // 무시 → 무한루프 0). 단일 훅이라 삽입 경로마다 호출 박을 필요 없음.
+      const dividerObserver = new MutationObserver((muts) => {
+        if (refreshingDividers) return;
+        let relevant = false;
+        for (const m of muts) {
+          for (const n of m.addedNodes)
+            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) relevant = true;
+          for (const n of m.removedNodes)
+            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) relevant = true;
+        }
+        if (relevant) scheduleDividerRefresh();
+      });
+      dividerObserver.observe(stream, { childList: true });
 
       // 시각 최상단(DOM 끝)부터 가지치기 — MAX_EVENTS 초과분 제거(메모리 바운드).
       // ★페이지네이션 충돌 회피: 사용자가 스크롤업해 과거 이력을 보는 중이면 prune 을 스킵해야
@@ -1280,6 +1352,7 @@
       // lastChild 면 그 바로 앞(실제 최古 메시지)을 제거한다.
       const capStream = () => {
         if (!isNearBottom()) return; // 이력 보는 중 → prune 보류(보던 것 보존).
+        stream.scrollTop = 0; // 최신(맨위) 보는 중 → 새 메시지(top prepend) 도착 시 앵커 드리프트 방지.
         let pruned = false;
         while (stream.children.length > MAX_EVENTS) {
           let victim = stream.lastChild;
@@ -1646,10 +1719,10 @@
       // 와 달리 스텝 카드·도구 활동·턴 그룹화가 없다(이벤트 미영속 = 설계 한계, 메시지 버블만).
       // 사용자=평문·비서=마크다운(setChatBody) 으로 라이브 버블과 동일 모양.
       // 순서: 호출자가 오래된→최신 순으로 넘기고 매번 stream.firstChild 앞에 삽입한다.
-      // column-reverse 라 DOM 최상단(child[0])=시각 최하단이므로, 오래된 것이 먼저 들어가
-      // 깊은 DOM 인덱스(=시각 위)로 밀리고 최신 과거가 child[0](시각 아래, 라이브 바로 위)에 온다.
-      // 버블 div 생성만(삽입은 호출자). 초기 로드는 insertBefore(firstChild)=시각 하단 누적,
-      // 페이지네이션(더 로드)은 appendChild=시각 상단 누적으로 재사용한다.
+      // 최신=맨위(normal column)라 child[0]=시각 최상단. 오래된 것이 먼저 들어가 깊은 DOM
+      // 인덱스(=시각 아래)로 밀리고 최신 과거가 child[0](시각 맨위)에 온다.
+      // 버블 div 생성만(삽입은 호출자). 초기 로드는 insertBefore(firstChild)=시각 상단 누적,
+      // 페이지네이션(더 로드)은 appendChild=시각 하단(=DOM 끝=최古쪽) 누적으로 재사용한다.
       const buildHistoryDiv = (entry) => {
         const isOut = entry.role === "assistant";
         const div = document.createElement("div");
@@ -1659,7 +1732,7 @@
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
-        tsEl.textContent = fmtTs(entry.ts);
+        tsEl.textContent = fmtTime(entry.ts);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
         tyEl.textContent = isOut ? "돌쇠" : "나";
@@ -1679,16 +1752,16 @@
       };
 
       // ── 페이지네이션 상태(기능 2) ────────────────────────────────────────
-      // 초기 최근 100 + 위(시각 최上=최古)로 스크롤 시 더 로드. column-reverse 라
-      // 수동 scrollTop 계산은 브라우저 비일관 → IntersectionObserver 센티넬 방식.
+      // 초기 최근 100 + 아래(시각 최下=최古)로 스크롤 시 더 로드(최신=맨위 모델). 수동
+      // scrollTop 계산 비일관 회피 → IntersectionObserver 센티넬(DOM 끝=최古쪽) 방식.
       const HISTORY_PAGE = 100; // 페이지당 건수(초기·추가 동일).
       let oldestLoadedTs = null; // 현재 로드된 가장 오래된 메시지 ts(다음 beforeTs).
       let loadingOlder = false; // 동시 로드 가드.
       let reachedOldest = false; // 빈 배치 → 더 없음(센티넬 observe 해제).
       let olderObserver = null; // IntersectionObserver 핸들(누수 0 위해 disconnect 추적).
-      let historySentinel = null; // 시각 최上단 센티넬 요소(DOM 끝 = column-reverse 의 top).
+      let historySentinel = null; // 시각 최下단(=DOM 끝=최古쪽) 센티넬 요소. (이름은 관습 유지.)
 
-      // 센티넬을 항상 DOM 끝(= 시각 최상단)에 유지한다. 더 로드로 위에 메시지를
+      // 센티넬을 항상 DOM 끝(= 시각 최하단 = 최古쪽)에 유지한다. 더 로드로 메시지를
       // appendChild 하면 센티넬보다 앞에 들어가므로, 매 로드 후 다시 끝으로 옮긴다.
       const ensureSentinelAtTop = () => {
         if (historySentinel === null) {
@@ -1698,13 +1771,13 @@
           // 보이지 않는 0높이 마커 — 레이아웃·스크롤에 영향 0.
           historySentinel.style.cssText = "height:1px;margin:0;padding:0;pointer-events:none;";
         }
-        stream.appendChild(historySentinel); // DOM 끝 = 시각 최상단.
+        stream.appendChild(historySentinel); // DOM 끝 = 시각 최하단(최古쪽).
       };
 
-      // 과거 배치(ASC: 최古→최新)를 시각 최상단 위로 쌓는다.
-      // column-reverse 에선 시각 상단 = DOM 끝 → 배치를 **내림차순(최新→최古)으로
-      // appendChild** 해야 시각 top-to-bottom 이 [배치最古 … 배치最新, 기존最古 …] 로
-      // 올바르게 쌓인다. dedup: 이미 렌더된 key 는 스킵. 반환 = 실제 추가된 가장 오래된 ts.
+      // 과거 배치(ASC: 최古→최新)를 시각 최하단(기존 최古 아래)에 쌓는다(최신=맨위 모델).
+      // DOM 끝=시각 하단 → 배치를 **내림차순(최新→최古)으로 appendChild** 해야 시각
+      // top-to-bottom 이 [… 기존最古, 배치最新 … 배치最古] 로 올바르게 쌓인다(위=최신 유지).
+      // dedup: 이미 렌더된 key 는 스킵. 반환 = 실제 추가된 가장 오래된 ts.
       const prependOlderBatch = (entries) => {
         // 내림차순 순회(배열은 ASC 라 뒤에서 앞으로) → appendChild(시각 최상단 누적)로
         // 시각 top-to-bottom 이 [배치最古 … 배치最新] 순이 되게.
@@ -1744,12 +1817,11 @@
             if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
             return;
           }
-          // 스크롤 위치 보존: column-reverse 는 하단(최신) 앵커라 위 삽입 시 보통
-          // 시각 위치가 유지된다. 만일을 대비해 현재 scrollTop 을 보정 기준으로 잡되,
-          // 정상 경로(앵커 유지)면 보정값 0.
+          // 스크롤 위치 보존: 최신=맨위라 older 는 시각 하단(뷰 아래)에 append → 현재 보던
+          // 위(최신) 위치는 안 흔들린다. 만일을 대비해 scrollTop 보정 기준만 잡아둔다(보통 0).
           const beforeTop = stream.scrollTop;
           oldestLoadedTs = prependOlderBatch(entries);
-          ensureSentinelAtTop(); // 센티넬을 다시 시각 최상단으로.
+          ensureSentinelAtTop(); // 센티넬을 다시 DOM 끝(시각 최하단·최古쪽)으로.
           if (entries.length < HISTORY_PAGE) {
             reachedOldest = true; // 페이지 미만 = 마지막 묶음.
             if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
@@ -1902,7 +1974,7 @@
         const navEventCount = document.getElementById("nav-event-count");
         if (navEventCount) navEventCount.textContent = String(evCount);
         if (currentView === "overview") setTimeout(showOverview, 0);
-        const ts = fmtTs(ev.ts);
+        const ts = fmtTime(ev.ts);
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
@@ -1952,12 +2024,14 @@
         localChatCount += 1;
         refreshChatEmpty();
         if (currentView === "overview") setTimeout(showOverview, 0);
+        const now = Date.now();
         const div = document.createElement("div");
         div.className = "ev local";
+        div.dataset.ts = String(now); // 날짜 구분선 경계 판정용.
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
-        tsEl.textContent = fmtTs(Date.now());
+        tsEl.textContent = fmtTime(now);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
         const chatLabel = { user: "나", reply: "돌쇠", error: "오류" };

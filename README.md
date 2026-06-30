@@ -19,7 +19,7 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
 - **One personality, many channels** — Telegram, CLI, HTTP, and a built-in web dashboard all reach the same assistant, sharing one conversation memory. The dashboard is a full chat: live step-by-step progress as it works (each step shows what it touched), replies that stream in, and scrollback that survives restarts. A side panel tracks background jobs — their status, steps, and results — so you can watch long work without leaving the conversation.
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and simple tasks to a free local model (the `nano` tier).
-- **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it notices you doing the same multi-step task again, it offers to save it as a reusable skill. Always a proposal you approve — it never rewrites itself silently.
+- **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Always a proposal you approve — it never rewrites itself silently.
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.
 
 ## Things you can ask it

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-30
+
+### Changed
+- **Proactive skill proposals** — the assistant now offers to save a workflow as a skill the moment it recognizes a clearly reusable one (by judgment, even on first sight), instead of only after it repeats. It also picks the right scope — a project-local skill for project/folder-specific work, a shared skill for general use. Still always a proposal you approve; never silent self-editing. Complements the existing frequency-based detection.
+
 ## [0.2.0] - 2026-06-30
 
 ### Added
@@ -44,6 +49,7 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/tigu77/tiguclaw/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tigu77/tiguclaw/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tigu77/tiguclaw/releases/tag/v0.1.0

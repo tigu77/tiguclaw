@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Dashboard labels each sub-agent's activity with its name (e.g. `🤖 researcher`) so you can tell who did what in a multi-agent turn.
 - Background shell commands for the codex/openai model lines — `Bash(run_in_background)` + `BashOutput` (poll) + `KillShell`, matching what the Claude line already has. Long builds/servers/scripts run without blocking the conversation.
 
 ### Changed

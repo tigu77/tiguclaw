@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Guideline: prefer the minimal structure when adding automation — fold related rollups (e.g. weekly/monthly summaries) into one routine that handles them by date, instead of a separate schedule per cadence.
 - Guideline: when unsure what/where/how to act (ambiguous target, intent, or structure), confirm first instead of guessing — added to the assistant's required confirmation triggers.
+- Guideline cleanup: the assistant authors approved skills directly (a skill is just a markdown file); the harness meta-skill is reserved for building multi-agent teams/orchestration. Removes a self-contradiction in the operating rules.
 
 ### Fixed
 - Dashboard mobile chat: smaller, fixed header (subtitle hidden) with the message list scrolling on its own and the input pinned to the bottom — the header no longer scrolls away or eats the screen.

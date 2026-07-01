@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-01
+
 ### Fixed
 - Windows `/update` typecheck gate — ran `tsc` directly via node instead of through `npm run` so the update no longer fails with "'tsc' is not recognized" on Windows.
+- Fixed-message notification schedules (e.g. a restart alert) no longer arrive with a spurious "message sent" report or a "shall I send it?" prompt. The `add_schedule` guidance now steers the assistant to phrase such schedules as *reply with exactly this text* — which the scheduler delivers — instead of *send this message*, which tripped the external-send confirmation and tacked a completion narration onto the alert.
 
 ### Changed
 - Dashboard chat is back to the standard order — newest message at the bottom, opening pinned to the bottom (scroll up for history). Also a smaller top bar on mobile.
@@ -69,7 +72,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/tigu77/tiguclaw/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tigu77/tiguclaw/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/tigu77/tiguclaw/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/tigu77/tiguclaw/compare/v0.1.0...v0.2.0

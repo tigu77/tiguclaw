@@ -17,7 +17,11 @@
  * 외부 작성자 reference: scheduler 와 동급 — manifest 1 + lifecycle 2 + EventBus + MCP + dispatcher.
  * 자세한 가이드는 README.md.
  */
-import type { EventBus, EventBusEvent } from "../../../src/core/eventbus.js";
+import {
+  safeUnsubscribe,
+  type EventBus,
+  type EventBusEvent,
+} from "../../../src/core/eventbus.js";
 import { runClaude } from "../../../src/core/claude.js";
 import {
   getWatch,
@@ -100,14 +104,7 @@ class FileWatchPlugin {
   }
 
   async stop(): Promise<void> {
-    if (this.busUnsubscribe !== null) {
-      try {
-        this.busUnsubscribe();
-      } catch {
-        // 무시.
-      }
-      this.busUnsubscribe = null;
-    }
+    this.busUnsubscribe = safeUnsubscribe(this.busUnsubscribe);
     // 모든 watcher close.
     for (const row of listWatches()) {
       unregisterWatcher(row.id);

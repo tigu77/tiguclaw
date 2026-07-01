@@ -23,7 +23,11 @@
  * spike 가 deps 주입 가능 — runClaude/recordFiring mock 으로 라이브 cron 검증.
  */
 import { Cron } from "croner";
-import type { EventBus, EventBusEvent } from "../../../src/core/eventbus.js";
+import {
+  safeUnsubscribe,
+  type EventBus,
+  type EventBusEvent,
+} from "../../../src/core/eventbus.js";
 import {
   getSchedule,
   listSchedules,
@@ -108,14 +112,7 @@ class SchedulerPlugin {
   }
 
   async stop(): Promise<void> {
-    if (this.busUnsubscribe !== null) {
-      try {
-        this.busUnsubscribe();
-      } catch {
-        // 무시.
-      }
-      this.busUnsubscribe = null;
-    }
+    this.busUnsubscribe = safeUnsubscribe(this.busUnsubscribe);
     for (const [, cron] of this.crons) {
       try {
         cron.stop();

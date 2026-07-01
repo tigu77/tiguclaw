@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-01
+
+### Internal
+- Removed one more piece of duplicated logic (no behavior change): the four plugins that subscribe to the event bus each repeated the same "unsubscribe safely on stop" idiom; it's now a single shared helper.
+
 ## [0.3.5] - 2026-07-01
 
 ### Internal
@@ -101,7 +106,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/tigu77/tiguclaw/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/tigu77/tiguclaw/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tigu77/tiguclaw/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tigu77/tiguclaw/compare/v0.3.2...v0.3.3

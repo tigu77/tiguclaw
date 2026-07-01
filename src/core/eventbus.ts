@@ -143,6 +143,23 @@ export const getEventBus = (): EventBus => {
 };
 
 /**
+ * subscribe() 반환 unsub 을 안전 호출(예외 삼킴)하고 null 반환 — 플러그인 stop() 공통.
+ * `this.unsub = safeUnsubscribe(this.unsub)` 한 줄로 "있으면 해지·실패 무시·null 화" 를
+ * 대체한다(4개 플러그인이 동일 try/catch/null 관용구를 복제하던 것 단일화). 이미 null 이면
+ * no-op. 순수 함수 — 상속·추상층 0.
+ */
+export const safeUnsubscribe = (unsub: (() => void) | null): null => {
+  if (unsub !== null) {
+    try {
+      unsub();
+    } catch {
+      /* 해지 실패는 무시 — stop 은 best-effort. */
+    }
+  }
+  return null;
+};
+
+/**
  * daemon 부트스트랩이 명시 호출 가능. 이미 init 되어 있으면 기존 인스턴스 반환
  * (옵션 변경은 무시 — first-init wins). 테스트 reset 은 V2.
  */

@@ -18,7 +18,11 @@
  *  - 원칙 20: 코어 sysprompt·5대 원칙·security 무수정 — 메모리만 박음.
  *  - 메타-재귀 차단: feedback_growth_* prefix 는 분석 skip (자기 트리거 막음).
  */
-import type { EventBus, EventBusEvent } from "../../../src/core/eventbus.js";
+import {
+  safeUnsubscribe,
+  type EventBus,
+  type EventBusEvent,
+} from "../../../src/core/eventbus.js";
 import {
   addMemory,
   deleteMemory,
@@ -1682,14 +1686,7 @@ class SelfGrowthPlugin {
   }
 
   async stop(): Promise<void> {
-    if (this.unsubscribe !== null) {
-      try {
-        this.unsubscribe();
-      } catch {
-        // 무시.
-      }
-      this.unsubscribe = null;
-    }
+    this.unsubscribe = safeUnsubscribe(this.unsubscribe);
     if (this.cleanupInterval !== null) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;

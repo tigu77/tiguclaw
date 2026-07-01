@@ -22,7 +22,7 @@ import type {
   MessageHandler,
 } from "../../src/channels/types.js";
 import type { Observer } from "../../src/core/observers/types.js";
-import type { EventBus } from "../../src/core/eventbus.js";
+import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { collectInventory } from "../../src/core/plugins/inventory.js";
 import { collectProviders } from "../../src/core/plugins/providers.js";
 import {
@@ -567,14 +567,7 @@ class HttpBridge implements Channel, Observer {
   }
 
   async stop(): Promise<void> {
-    if (this.busUnsubscribe !== null) {
-      try {
-        this.busUnsubscribe();
-      } catch {
-        // 무시.
-      }
-      this.busUnsubscribe = null;
-    }
+    this.busUnsubscribe = safeUnsubscribe(this.busUnsubscribe);
     for (const c of this.sseClients) {
       try {
         c.end();

@@ -211,6 +211,18 @@ export const runSelfUpdate = async (
     }
 
     // ── 단계 3: git pull --ff-only (현재 브랜치 origin — install/dev 자동, 분기 0) ──
+    // 선처리: package-lock.json 로컬 드리프트 폐기. 이 파일은 npm install 이 재생성하는
+    // *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게 더러워지고("local changes to
+    // package-lock.json would be overwritten by merge"), 그게 ff-only pull 을 막아 자가
+    // 업데이트가 영영 깨진다(Windows 실사고). 생성물 한 파일만 origin 기준으로 되돌리는 건
+    // 안전 — 사용자 의미 편집이 아니고, pull 후 (단계 5)npm install 이 필요시 다시 만든다.
+    // 다른 트래킹 파일의 미커밋 변경은 건드리지 않으므로 여전히 ff-only 가 정직 실패한다
+    // (암묵 파괴 0 — §1·O1 유지). best-effort: 없거나 이미 clean 이면 무시.
+    try {
+      await run("git", ["checkout", "--", "package-lock.json"], cwd);
+    } catch {
+      /* 파일 없음·이미 clean·git 미지원 — pull 이 판정하므로 무시 */
+    }
     try {
       await run("git", ["pull", "--ff-only"], cwd);
     } catch (e) {

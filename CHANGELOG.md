@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-07-01
+
+### Changed
+- Proactive messages the assistant sends outside a normal reply — background-worker completions, restart/update notifications — now show up in the dashboard chat and history like everything else. Previously each of these send paths was implemented separately and only some recorded the message, so they were invisible on the dashboard. They now go through a single outbound path, so delivery and dashboard visibility are consistent.
+
+### Internal
+- Consolidated duplicated logic: one outbound helper (channel routing + send + observability) instead of per-feature copies across the scheduler, file-watch, worker, and restart/update paths; one Telegram `tg:<chatId>` parser instead of five copies. No behavior change beyond the dashboard-visibility fix above.
+
 ## [0.3.3] - 2026-07-01
 
 ### Fixed
@@ -88,7 +96,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/tigu77/tiguclaw/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tigu77/tiguclaw/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tigu77/tiguclaw/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tigu77/tiguclaw/compare/v0.3.0...v0.3.1

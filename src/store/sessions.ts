@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { extractTelegramChatId } from "../core/threadkey.js";
 import path from "node:path";
 import Database from "better-sqlite3";
 import type { ChannelName } from "../channels/types.js";
@@ -598,8 +599,7 @@ export const getMostRecentTelegramChatId = (): string | null => {
     )
     .get() as { channel_thread_id: string } | undefined;
   if (row === undefined) return null;
-  const chatId = row.channel_thread_id.slice("tg:".length);
-  return chatId.length > 0 ? chatId : null;
+  return extractTelegramChatId(row.channel_thread_id);
 };
 
 export const saveSession = (input: {

@@ -1,4 +1,5 @@
 import os from "node:os";
+import { extractTelegramChatId } from "./core/threadkey.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
@@ -69,7 +70,7 @@ import {
   type SelfUpdateNotifyDest,
   type SelfUpdateResult,
 } from "./core/self-update.js";
-import { sendOutgoing as telegramSendOutgoing } from "./channels/telegram.js";
+import { deliverOutbound } from "./core/outbound.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -936,9 +937,7 @@ const notifyDestFromMessage = (
   channel,
   target:
     channel === "telegram"
-      ? threadKey.startsWith("tg:")
-        ? threadKey.slice("tg:".length)
-        : threadKey
+      ? (extractTelegramChatId(threadKey) ?? threadKey)
       : null,
 });
 
@@ -1095,17 +1094,13 @@ const updateNotified = await (async (): Promise<boolean> => {
         ? ` · ${data.changedFiles}개 파일`
         : "";
     const text = `✅ 업데이트 완료${span}${files} — 새 버전으로 재시작했습니다.`;
-    const ch = data.notify?.channel;
-    const target = data.notify?.target ?? null;
-    if (ch === "telegram" && target !== null && target !== "") {
-      await telegramSendOutgoing(target, text);
-    } else if (ch === "cli" || ch === undefined) {
-      console.log(text);
-    } else {
-      console.warn(
-        `self-update: 완료 통지 미지원 채널 "${ch}" — 콘솔 출력만:\n${text}`,
-      );
-    }
+    // 단일 통로 — 라우팅·발송·관측(대시보드 표시)을 deliverOutbound 가 담당(채널 미지정=cli).
+    await deliverOutbound({
+      channel: data.notify?.channel ?? "cli",
+      target: data.notify?.target ?? null,
+      text,
+      bus,
+    });
   } catch (e) {
     console.error(
       `self-update: 부팅 완료 통지 실패(마커는 삭제): ${
@@ -1134,11 +1129,13 @@ if (!updateNotified) {
     if (!hasRebootSchedule) {
       const chatId = getMostRecentTelegramChatId();
       const text = "✅ 재시작 완료";
-      if (chatId !== null) {
-        await telegramSendOutgoing(chatId, text);
-      } else {
-        console.log(`${text} (텔레그램 대상 없음 — 콘솔만)`);
-      }
+      // 단일 통로 — telegram 이면 발송+관측(대시보드 표시), 대상 없으면(설치 직후) cli 로 콘솔만.
+      await deliverOutbound({
+        channel: chatId !== null ? "telegram" : "cli",
+        target: chatId,
+        text,
+        bus,
+      });
     }
   } catch (e) {
     console.error(

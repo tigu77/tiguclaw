@@ -18,6 +18,7 @@
  * 트리거 안 함(먹통 = respawn 루프 방지) — 대신 작업트리를 `git reset --hard` 로 롤백한다.
  */
 import { execFile } from "node:child_process";
+import { extractTelegramChatId } from "./threadkey.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { appRoot, getPaths } from "./paths.js";
@@ -53,9 +54,7 @@ export const notifyDestFromCoords = (
   channel,
   target:
     channel === "telegram"
-      ? threadKey.startsWith("tg:")
-        ? threadKey.slice("tg:".length)
-        : threadKey
+      ? (extractTelegramChatId(threadKey) ?? threadKey)
       : null,
 });
 

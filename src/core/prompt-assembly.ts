@@ -9,6 +9,7 @@
  *  - `assembleUserPrompt`: system-reminder 래핑 (Claude Code 컨벤션).
  */
 import type { Attachment } from "../channels/types.js";
+import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
 
@@ -80,11 +81,9 @@ export const formatConversationContext = (
   threadKey: string,
 ): string => {
   const lines = [`- 채널 (dest_channel): ${channel}`];
-  if (channel === "telegram" && threadKey.startsWith("tg:")) {
-    const chatId = threadKey.slice("tg:".length).trim();
-    if (chatId !== "") {
-      lines.push(`- 이 대화 대상 (dest_target): ${chatId}`);
-    }
+  const chatId = channel === "telegram" ? extractTelegramChatId(threadKey) : null;
+  if (chatId !== null) {
+    lines.push(`- 이 대화 대상 (dest_target): ${chatId}`);
   }
   return [
     "## 현재 대화 컨텍스트",

@@ -18,6 +18,7 @@
  * MVP = 메모리 레지스트리(영속 0, W-I7 재시작 정직). scheduler `inFlight` Set 동형.
  */
 import { randomUUID } from "node:crypto";
+import { extractTelegramChatId } from "./threadkey.js";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
 import {
   upsertWorkerJob,
@@ -410,7 +411,7 @@ export const pendingThreadCount = (): number => threadTails.size;
 // 단 dispatcher 는 결과 텍스트 직접 push 였고, 여기선 핸들러 재진입의 reply 통로.
 // (telegram threadKey "tg:<chatId>" → chatId 복원, cli → console.log.)
 
-import { sendOutgoing as telegramSendOutgoing } from "../channels/telegram.js";
+import { deliverOutbound } from "./outbound.js";
 import type { ReplyOptions } from "../channels/types.js";
 
 /**
@@ -424,9 +425,7 @@ const deriveTargetFromThreadKey = (
 ): string | null => {
   if (channel === "telegram") {
     // threadKey "tg:<chatId>" → chatId. 접두 없으면 threadKey 자체(기존 동작 보존).
-    return threadKey.startsWith("tg:")
-      ? threadKey.slice("tg:".length)
-      : threadKey;
+    return extractTelegramChatId(threadKey) ?? threadKey;
   }
   return null;
 };
@@ -434,29 +433,20 @@ const deriveTargetFromThreadKey = (
 /**
  * generic 통지 목적지(dest)로 reply 클로저 재획득. 코어는 dest.channel("telegram" 등)만 보고
  * dispatch — *어느 플러그인이 dest 를 채웠는지*(scheduler 였는지)는 영원히 모른다(단방향 §6).
- * 미지원 채널은 console.warn + no-op reply (사일런트 실패 회피 — dispatcher 동형).
+ * 라우팅·발송·관측은 core 단일 통로 deliverOutbound 에 위임(scheduler·file-watch·부팅통지와
+ * 동일 로직 — 같은 걸 두 번 구현 X). 덕분에 워커 완료 통지도 대시보드 chat_log 에 뜬다
+ * (예전엔 raw 발송이라 안 보였음). 미지원 채널·발송 실패는 deliverOutbound 가 정직 처리.
  */
 const reacquireReply = (
   dest: WorkerNotifyDest,
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
-  if (dest.channel === "telegram") {
-    // target = chatId (스케줄이 직접 줬거나 폴백이 threadKey 에서 추출). sendOutgoing 이
-    // HTML→plain 폴백·분할 보유.
-    const chatId = dest.target ?? "";
-    return async (text: string): Promise<void> => {
-      await telegramSendOutgoing(chatId, text);
-    };
-  }
-  if (dest.channel === "cli") {
-    return async (text: string): Promise<void> => {
-      console.log(text);
-    };
-  }
-  // 미지원 채널 — 완료 보고를 콘솔에만 (데몬 생존, W-I7 정직).
   return async (text: string): Promise<void> => {
-    console.warn(
-      `worker-jobs: reply 재획득 미지원 채널 "${dest.channel}" (target=${dest.target ?? "—"}) — 콘솔 출력만:\n${text}`,
-    );
+    await deliverOutbound({
+      channel: dest.channel,
+      target: dest.target ?? null,
+      text,
+      label: "worker",
+    });
   };
 };
 

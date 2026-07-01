@@ -127,8 +127,9 @@ const resolveRestart = (deps: SelfUpdateDeps): (() => void) =>
 
 // Windows 는 npm 이 실행파일이 아니라 `npm.cmd`(배치 스크립트)라 `execFile("npm")` 이
 // ENOENT 로 터진다. npm 호출만 shell 경유로(cmd.exe 가 PATHEXT 로 npm.cmd 해석). git 은
-// git.exe 라 무관. npm 인자는 전부 고정 상수("install"/"run"/"typecheck"/플래그)이고 외부
-// 입력이 안 섞이므로 shell:true 여도 인젝션 0 (동적값은 git reset 의 prevSha 뿐 — git 은 무shell).
+// git.exe 라 무관. npm 인자는 전부 고정 상수("install"/플래그)이고 외부 입력이 안 섞이므로
+// shell:true 여도 인젝션 0 (동적값은 git reset 의 prevSha 뿐 — git 은 무shell). typecheck 는
+// npm 을 안 거치고 `node <tsc.js>` 직접(Windows tsc PATH 이슈 회피, 단계 6 참조).
 const isWindows = process.platform === "win32";
 
 /** execFile Promise 래퍼 — 기본 쉘 미경유(인자 배열, 인젝션 0). opts.shell 시에만 쉘 경유
@@ -307,8 +308,12 @@ export const runSelfUpdate = async (
     }
 
     // ── 단계 6: ★typecheck 게이트 — 실패 시 롤백 + 재시작 X (먹통 방지) ─────────
+    // tsc 를 `node <tsc.js> --noEmit` 로 *직접* 실행 — Windows 에서 `npm run typecheck`
+    // 가 node_modules/.bin 의 tsc(.cmd) 를 self-update spawn 컨텍스트서 PATH 해석 못 해
+    // "'tsc'은(는) 내부/외부 명령이 아닙니다" 로 게이트가 *환경 문제*로 깨지던 것 해소.
+    // node.exe 는 Windows 서도 직접 실행 가능(.cmd 아님) → shell·PATH·.bin 의존 0, 크로스플랫폼.
     try {
-      await run("npm", ["run", "typecheck"], cwd, { shell: isWindows });
+      await run("node", ["node_modules/typescript/bin/tsc", "--noEmit"], cwd);
     } catch (e) {
       const rolledBack = await rollback();
       return {

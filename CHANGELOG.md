@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Windows `/update` typecheck gate — ran `tsc` directly via node instead of through `npm run` so the update no longer fails with "'tsc' is not recognized" on Windows.
+
 ### Changed
 - Dashboard chat is back to the standard order — newest message at the bottom, opening pinned to the bottom (scroll up for history). Also a smaller top bar on mobile.
 

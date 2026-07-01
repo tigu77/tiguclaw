@@ -62,7 +62,7 @@ const validateCronExpr = (
 
 const addScheduleTool = tool(
   "add_schedule",
-  "새 schedule 등록. trigger_type 'cron' (default — cron 표현식 5/6 필드 또는 @daily/@hourly 매크로) 또는 'reboot' (데몬 부팅 때마다 발화, cron_expr 무시). timezone (IANA, 기본 Asia/Seoul), prompt (영역 A 가상 사용자 prompt — ★스케줄러가 이 turn 의 *답* 을 dest_channel 로 자동 전달한다. 그러니 사용자가 '이런 알림 보내줘 <문구>' 처럼 고정 문구 통지를 요청하면 prompt 를 정확히 이 틀로 써라: `다음 문구로만 짧게 정확히 답하라: "<문구>"`. 이러면 turn 이 그 문구만 답하고 스케줄러가 전달한다. '<채널>로 보내라' 같은 *능동 발송* 지시로 쓰지 마라 — 그러면 비서가 외부발송 확인 게이트에 걸려 확인 질문을 하거나 워커로 우회하고, '전송 완료' 같은 완료 보고까지 함께 전달돼 알림이 지저분해진다), dest_channel (telegram/cli/http-bridge 등), dest_target (채널별 — telegram chatId 등).",
+  "새 schedule 등록. trigger_type 'cron' (default — cron 표현식 5/6 필드 또는 @daily/@hourly 매크로) 또는 'reboot' (데몬 부팅 때마다 발화, cron_expr 무시). timezone (IANA, 기본 Asia/Seoul), prompt (영역 A 가상 사용자 prompt — ★스케줄러가 이 turn 의 *답* 을 dest_channel 로 자동 전달한다. 그러니 사용자가 '이런 알림 보내줘 <문구>' 처럼 고정 문구 통지를 요청하면 prompt 를 정확히 이 틀로 써라: `다음 문구로만 짧게 정확히 답하라: '<문구>'`. 이러면 turn 이 그 문구만 답하고 스케줄러가 전달한다. '<채널>로 보내라' 같은 *능동 발송* 지시로 쓰지 마라 — 그러면 비서가 외부발송 확인 게이트에 걸려 확인 질문을 하거나 워커로 우회하고, '전송 완료' 같은 완료 보고까지 함께 전달돼 알림이 지저분해진다), dest_channel (telegram/cli/http-bridge 등), dest_target (채널별 — telegram chatId 등).",
   {
     label: z.string().min(1).max(120),
     trigger_type: z.enum(["cron", "reboot"]).optional(),

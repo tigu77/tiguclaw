@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-07-01
+
+### Fixed
+- **Scheduler plugin failed to load** (regression in 0.3.1) — a stray quote in the `add_schedule` help text broke the plugin's parse, so it silently didn't start and **every cron and reboot schedule stopped firing**. Fixed the string. Upgrade from 0.3.1 as soon as possible.
+
+### Added
+- **Built-in restart notification** — after any restart (`/restart`, a crash, or an automatic supervisor restart) the assistant sends a `✅ 재시작 완료` message to your most recent chat, with zero setup (it uses the last active conversation, so there's nothing to configure at install time). If you already run your own reboot-notification schedule, the built-in stays quiet so you don't get duplicates.
+
+### Internal
+- Release gate now parse-checks every plugin entrypoint (`verify:plugins`). Plugins are loaded at runtime and were outside `tsc`'s scope, which is how the 0.3.1 scheduler breakage slipped through.
+
 ## [0.3.1] - 2026-07-01
 
 ### Fixed
@@ -72,7 +83,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/tigu77/tiguclaw/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/tigu77/tiguclaw/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/tigu77/tiguclaw/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/tigu77/tiguclaw/compare/v0.2.0...v0.2.1

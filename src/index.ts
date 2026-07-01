@@ -35,6 +35,7 @@ import {
 import {
   clearSessionModelOverride,
   deleteSession,
+  getMostRecentTelegramChatId,
   getSession,
   getSessionModelOverride,
   initStore,
@@ -1062,13 +1063,13 @@ await recoverInterruptedJobs();
 // "업데이트 완료 vX→vY" 1회 통지 후 마커 삭제(멱등). 채널 start 이후(send 가능 시점)라야
 // raw 아웃바운드가 도달. best-effort — 마커 깨졌거나 발송 실패해도 부팅을 막지 않고 마커는
 // 삭제한다(재통지 루프 0). dest 는 마커에 적재된 notify 좌표(요청 슬래시/도구의 channel·target).
-await (async (): Promise<void> => {
+const updateNotified = await (async (): Promise<boolean> => {
   const markerPath = path.join(getPaths().home, UPDATE_COMPLETE_MARKER);
   let raw: string;
   try {
     raw = await fsp.readFile(markerPath, "utf8");
   } catch {
-    return; // 마커 없음 = 일반 부팅 — no-op.
+    return false; // 마커 없음 = 일반 부팅 — 아래 일반 재시작 통지가 담당.
   }
   // 본문 파싱·통지 실패와 무관하게 마커는 반드시 삭제(1회성 보장).
   const unlinkMarker = async (): Promise<void> => {
@@ -1114,7 +1115,39 @@ await (async (): Promise<void> => {
   } finally {
     await unlinkMarker();
   }
+  // 마커가 있었으면(=업데이트 부팅) 통지 담당은 여기 — 아래 일반 재시작 통지는 생략.
+  return true;
 })();
+
+// 매 부팅 재시작 통지 — 업데이트 통지가 없었던 부팅(=일반 /restart · 크래시 · launchd
+// 자동재시작)이면 가장 최근 텔레그램 상대에게 "✅ 재시작 완료" 1회. 대상은 DB 의 최근
+// 대화(설정·seed 불필요 — /restart 명령자도 최근 thread 라 자동 커버). best-effort —
+// 대상 없거나(설치 직후) 발송 실패해도 부팅 무영향. v1: 디바운스 없음(크래시 루프는
+// launchd/schtasks respawn 스로틀에 의존, "계속 죽는다" 신호로도 유용).
+// ★사용자가 자기 reboot 스케줄로 재시작 통지를 이미 굴리면(대개 이름 들어간 개인화 문구)
+// built-in 은 물러나 중복을 피한다. 그런 스케줄이 없을 때(신규 설치 등)만 built-in 이 기본
+// 통지를 담당 — /restart '완료 알림' 약속을 제로 셋업으로 충족하면서 중복 0.
+if (!updateNotified) {
+  try {
+    const hasRebootSchedule =
+      listSchedules({ onlyEnabled: true, triggerType: "reboot" }).length > 0;
+    if (!hasRebootSchedule) {
+      const chatId = getMostRecentTelegramChatId();
+      const text = "✅ 재시작 완료";
+      if (chatId !== null) {
+        await telegramSendOutgoing(chatId, text);
+      } else {
+        console.log(`${text} (텔레그램 대상 없음 — 콘솔만)`);
+      }
+    }
+  } catch (e) {
+    console.error(
+      `restart-notify: 부팅 통지 실패: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
 
 // 모델 풀 단일-provider 소프트 경고 (부팅 1회) — 폴백 그물 부재 가시화.
 const poolWarn = poolDiversityWarning();

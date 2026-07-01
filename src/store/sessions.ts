@@ -581,6 +581,27 @@ export const getSession = (
   };
 };
 
+/**
+ * 가장 최근에 봇과 대화한 텔레그램 chatId — 매 부팅 "재시작 완료" 통지의 대상.
+ * `tg:<chatId>` 형태의 primary thread 만(worker:/::sub:: 파생 제외). 없으면 null
+ * (설치 직후·아무도 말 안 검 → 콘솔 통지). config·seed 불필요 — DB 의 활성 대화가 진실.
+ */
+export const getMostRecentTelegramChatId = (): string | null => {
+  const handle = requireDb("getMostRecentTelegramChatId");
+  const row = handle
+    .prepare(
+      `SELECT channel_thread_id FROM threads
+       WHERE channel = 'telegram'
+         AND channel_thread_id LIKE 'tg:%'
+         AND channel_thread_id NOT LIKE '%::%'
+       ORDER BY last_used_at DESC LIMIT 1`,
+    )
+    .get() as { channel_thread_id: string } | undefined;
+  if (row === undefined) return null;
+  const chatId = row.channel_thread_id.slice("tg:".length);
+  return chatId.length > 0 ? chatId : null;
+};
+
 export const saveSession = (input: {
   channel: ChannelName;
   threadKey: string;

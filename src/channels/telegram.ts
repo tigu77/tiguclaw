@@ -17,6 +17,46 @@ import { getEventBus } from "../core/eventbus.js";
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
+// ─── 텔레그램 발송 공통 흐름 ──────────────────────────────────────────────
+// contract §3: 변환(telegramFormat) → 분할(splitHtmlForTelegram) → 청크별 HTML 송신 →
+// 실패 시 plain 1회 폴백. message:text reply·attachment reply·edited reply·sendOutgoing 4곳이
+// 이 흐름을 각자 복제했다 — 발송 함수(ctx.reply vs bot.api.sendMessage)와 옵션만 다르므로
+// 여기 하나로 모은다(같은 걸 두 번 구현 X). 발송 함수는 주입.
+interface TgSendExtra {
+  parse_mode?: "HTML";
+  reply_parameters?: { message_id: number };
+}
+type TgSend = (chunk: string, extra: TgSendExtra) => Promise<unknown>;
+
+// text 를 변환·분할해 청크별로 send 한다. replyToMessageId 있으면 *첫 청크만* 답글로
+// (멀티청크 시각잡음 회피). throwOnFail 이면 plain 폴백까지 실패 시 rethrow(발신 실패를
+// 호출자가 알아야 하는 sendOutgoing 용); 아니면 로그만(답글은 부수 UX).
+const sendFormatted = async (
+  send: TgSend,
+  text: string,
+  opts?: { replyToMessageId?: number; throwOnFail?: boolean },
+): Promise<void> => {
+  const chunks = splitHtmlForTelegram(telegramFormat(text));
+  for (let i = 0; i < chunks.length; i++) {
+    const extra: TgSendExtra =
+      opts?.replyToMessageId !== undefined && i === 0
+        ? {
+            parse_mode: "HTML",
+            reply_parameters: { message_id: opts.replyToMessageId },
+          }
+        : { parse_mode: "HTML" };
+    try {
+      await send(chunks[i]!, extra);
+    } catch (e) {
+      console.error("telegram HTML send failed, falling back to plain:", e);
+      await send(chunks[i]!, {}).catch((e2) => {
+        console.error("telegram plain fallback also failed:", e2);
+        if (opts?.throwOnFail === true) throw e2;
+      });
+    }
+  }
+};
+
 // ─── 축1 선택지(inline keyboard) callback_data 맵 ─────────────────────────
 // 텔레그램 callback_data 는 64바이트 제한 — 긴 value(보기 값)를 직접 실으면 잘리거나
 // 전송이 실패한다. 그래서 presentOptions 가 보기를 띄울 때 value 를 *맵에 저장*하고
@@ -345,28 +385,12 @@ export class TelegramChannel implements Channel {
         ...(replyToText !== undefined ? { replyToText } : {}),
         receivedAt: ctx.message.date * 1000,
         reply: async (out: string, opts?: ReplyOptions): Promise<void> => {
-          // contract §3 흐름: 변환 → 분할 → HTML 송신 → 실패 시 plain 1회 폴백.
-          // replyToTrigger 시 *첫 청크만* reply_parameters 부착 (멀티 청크는 첫 청크만
-          // 답글, 나머지 일반 — 시각 잡음 회피). 답글은 부수 UX라 실패 시 plain 폴백.
-          const chunks = splitHtmlForTelegram(telegramFormat(out));
-          const triggerId = ctx.message.message_id;
-          for (let i = 0; i < chunks.length; i++) {
-            const useReply = opts?.replyToTrigger === true && i === 0;
-            const extra = useReply
-              ? {
-                  parse_mode: "HTML" as const,
-                  reply_parameters: { message_id: triggerId },
-                }
-              : { parse_mode: "HTML" as const };
-            try {
-              await ctx.reply(chunks[i]!, extra);
-            } catch (e) {
-              console.error("telegram HTML send failed, falling back to plain:", e);
-              await ctx.reply(chunks[i]!).catch((e2) => {
-                console.error("telegram plain fallback also failed:", e2);
-              });
-            }
-          }
+          await sendFormatted((chunk, extra) => ctx.reply(chunk, extra), out, {
+            replyToMessageId:
+              opts?.replyToTrigger === true
+                ? ctx.message.message_id
+                : undefined,
+          });
         },
         // 아웃바운드 첨부 — send_file 도구가 호출. 토큰은 grammY 내부라 노출 0.
         // 멱등은 호출자(도구)가 보장; 채널은 1회 전송만. 실패(파일 없음/접근불가 등)는
@@ -429,25 +453,10 @@ export class TelegramChannel implements Channel {
         const buildReply =
           () =>
           async (out: string, opts?: ReplyOptions): Promise<void> => {
-            // message:text 핸들러와 동일한 변환→분할→HTML→plain 폴백 흐름.
-            const chunks = splitHtmlForTelegram(telegramFormat(out));
-            for (let i = 0; i < chunks.length; i++) {
-              const useReply = opts?.replyToTrigger === true && i === 0;
-              const extra = useReply
-                ? {
-                    parse_mode: "HTML" as const,
-                    reply_parameters: { message_id: triggerId },
-                  }
-                : { parse_mode: "HTML" as const };
-              try {
-                await ctx.reply(chunks[i]!, extra);
-              } catch (e) {
-                console.error("telegram HTML send failed, falling back to plain:", e);
-                await ctx.reply(chunks[i]!).catch((e2) => {
-                  console.error("telegram plain fallback also failed:", e2);
-                });
-              }
-            }
+            await sendFormatted((chunk, extra) => ctx.reply(chunk, extra), out, {
+              replyToMessageId:
+                opts?.replyToTrigger === true ? triggerId : undefined,
+            });
           };
 
         // typing heartbeat — 다운로드+영역 A 처리 동안 살아있음 신호.
@@ -564,19 +573,9 @@ export class TelegramChannel implements Channel {
         threadKey: `tg:${chat.id}`,
         text: value,
         receivedAt: Date.now(),
-        // 답글 송신 — message:text 핸들러와 동일한 변환→분할→HTML→plain 폴백 흐름.
+        // 답글 송신 — 공통 흐름(이 경로는 답글 대상 미부착).
         reply: async (out: string, _opts?: ReplyOptions): Promise<void> => {
-          const chunks = splitHtmlForTelegram(telegramFormat(out));
-          for (const chunk of chunks) {
-            try {
-              await ctx.reply(chunk, { parse_mode: "HTML" });
-            } catch (e) {
-              console.error("telegram HTML send failed, falling back to plain:", e);
-              await ctx.reply(chunk).catch((e2) => {
-                console.error("telegram plain fallback also failed:", e2);
-              });
-            }
-          }
+          await sendFormatted((chunk, extra) => ctx.reply(chunk, extra), out);
         },
         // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원.
         sendAttachment: async (filePath, opts) => {
@@ -721,16 +720,9 @@ export const sendOutgoing = async (
   if (bot === null) {
     throw new Error("telegram channel not initialized");
   }
-  const chunks = splitHtmlForTelegram(telegramFormat(text));
-  for (const chunk of chunks) {
-    try {
-      await bot.api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
-    } catch (e) {
-      console.error("telegram sendOutgoing HTML failed, falling back to plain:", e);
-      await bot.api.sendMessage(chatId, chunk).catch((e2) => {
-        console.error("telegram sendOutgoing plain fallback failed:", e2);
-        throw e2;
-      });
-    }
-  }
+  await sendFormatted(
+    (chunk, extra) => bot.api.sendMessage(chatId, chunk, extra),
+    text,
+    { throwOnFail: true },
+  );
 };

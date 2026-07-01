@@ -42,13 +42,13 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
-  agentPathHint,
   agentSizeWarning,
   readAgent,
   readSystem,
 } from "../../identity.js";
 import {
   assembleUserPrompt,
+  buildSystemContextParts,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
@@ -1233,17 +1233,16 @@ export const runOpenAiCodex = async (
   const system = readSystem();
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix,
   //  claude 어댑터와 동일 — parity). 첨부 블록은 사용자 turn 쪽으로 그룹.
-  const systemContextParts = [
+  const systemContextParts = buildSystemContextParts({
     system,
     agent,
     agentWarn,
-    agentPathHint(),
     convoContext,
     memoryIndex,
     memorySnippet,
     skillIndex,
     agentIndex,
-  ];
+  });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 

@@ -26,13 +26,13 @@ import { randomUUID } from "node:crypto";
 import { Agent, run, OpenAIProvider } from "@openai/agents";
 import type { MCPServer, AgentInputItem } from "@openai/agents-core";
 import {
-  agentPathHint,
   agentSizeWarning,
   readAgent,
   readSystem,
 } from "../../identity.js";
 import {
   assembleUserPrompt,
+  buildSystemContextParts,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
@@ -305,17 +305,16 @@ export const runOpenAi = async (
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).
   const attachmentBlock = formatAttachments(input.attachments);
 
-  const systemContextParts = [
+  const systemContextParts = buildSystemContextParts({
     system,
-    agentBody,
+    agent: agentBody,
     agentWarn,
-    agentPathHint(),
     convoContext,
     memoryIndex,
     memorySnippet,
     skillIndex,
     agentIndex,
-  ];
+  });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 

@@ -9,6 +9,7 @@
  *  - `assembleUserPrompt`: system-reminder 래핑 (Claude Code 컨벤션).
  */
 import type { Attachment } from "../channels/types.js";
+import { agentPathHint } from "./identity.js";
 import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
@@ -152,3 +153,34 @@ export const assembleUserPrompt = (
   if (ctx.length === 0) return turn;
   return `<system-reminder>\n${ctx.join("\n\n")}\n</system-reminder>\n\n${turn}`;
 };
+
+/**
+ * system-context 조립 *순서*의 단일 정의점 — claude/codex/openai 세 어댑터가 이 배열을
+ * 각자 동일 순서로 복제했다(parity #2: 셋이 반드시 같은 순서여야 함). 여기 하나로 모아
+ * 순서를 구조적으로 강제한다(같은 걸 두 번 구현 X). 빈 파트는 assembleUserPrompt 가
+ * 거르므로, claude 전용 foreignDelta 를 항상 자리에 두어도 다른 어댑터에선 무해("").
+ * agentPathHint() 도 이 순서의 일부라 여기서 호출한다.
+ */
+export const buildSystemContextParts = (input: {
+  system: string;
+  agent: string;
+  agentWarn: string;
+  convoContext: string;
+  memoryIndex: string;
+  memorySnippet: string;
+  skillIndex: string;
+  agentIndex: string;
+  /** claude 전용 — cross-adapter foreign(codex) delta 블록. 다른 어댑터는 미전달. */
+  foreignDelta?: string;
+}): string[] => [
+  input.system,
+  input.agent,
+  input.agentWarn,
+  agentPathHint(),
+  input.convoContext,
+  input.foreignDelta ?? "", // claude 전용 — 그 외 어댑터는 ""(assembleUserPrompt 가 필터).
+  input.memoryIndex,
+  input.memorySnippet,
+  input.skillIndex,
+  input.agentIndex,
+];

@@ -41,13 +41,13 @@ import { createDeltaStream } from "./_delta-stream.js";
 import { DISALLOWED_TOOLS } from "../../../auth/permissions.js";
 import { getEventBus } from "../../eventbus.js";
 import {
-  agentPathHint,
   agentSizeWarning,
   readAgent,
   readSystem,
 } from "../../identity.js";
 import {
   assembleUserPrompt,
+  buildSystemContextParts,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
@@ -477,18 +477,17 @@ export const runClaude = async (
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix).
   //  스캐폴딩 = SYSTEM.md·AGENT.md·hint·대화컨텍스트·foreign delta·메모리·스킬·에이전트.
   //  사용자 turn = 첨부 블록 + 실제 입력 텍스트 (구분선으로 명시 분리 — assembleUserPrompt).
-  const systemContextParts = [
+  const systemContextParts = buildSystemContextParts({
     system,
     agent,
     agentWarn,
-    agentPathHint(),
     convoContext,
-    foreignDeltaBlock, // (C) cross-adapter — foreign(codex) delta (resume 못 보는 turn).
+    foreignDelta: foreignDeltaBlock, // (C) cross-adapter — foreign(codex) delta (resume 못 보는 turn).
     memoryIndex,
     memorySnippet,
     skillIndex,
     agentIndex,
-  ];
+  });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 

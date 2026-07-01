@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-01
+
+### Internal
+- Removed duplicated logic (no behavior change): the Telegram "format → split → send with plain-text fallback" flow, previously copied across four send paths, is now one helper; the system-context assembly order, previously replicated in all three model adapters (which must stay identical for cross-model parity), is now a single shared builder that structurally enforces the ordering.
+
 ## [0.3.4] - 2026-07-01
 
 ### Changed
@@ -96,7 +101,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/tigu77/tiguclaw/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tigu77/tiguclaw/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/tigu77/tiguclaw/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/tigu77/tiguclaw/compare/v0.3.1...v0.3.2

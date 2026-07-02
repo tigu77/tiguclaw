@@ -318,44 +318,26 @@ export const runSelfUpdate = async (
       }
     }
 
-    // ── 단계 6: ★typecheck 게이트 — tsc 있으면 실행(실패 시 롤백·재시작 X), 없으면 건너뜀 ──
-    // tsc 를 `node <tsc.js> --noEmit` 로 *직접* 실행 — Windows 에서 `npm run typecheck` 가
-    // node_modules/.bin 의 tsc(.cmd) 를 self-update spawn 컨텍스트서 PATH 해석 못 해 게이트가
-    // *환경 문제*로 깨지던 것 해소. node.exe 는 .cmd 아니라 직접 실행(shell·PATH·.bin 의존 0).
-    // ★tsc(typescript devDependency) 부재 시 게이트를 *실패*시키지 않고 건너뛴다 — 실측:
-    // NODE_ENV=production·프로덕션 설치·devDep 미설치 인스턴스(회사 Windows E:\...)엔
-    // typescript 가 없어 MODULE_NOT_FOUND 로 게이트가 깨지며 정당한 업데이트가 영영 막혔다.
-    // 배포본은 릴리스 클린룸(§7)+verify:plugins 로 이미 typecheck 통과 = 상류 검증됨. tsc 가
-    // 있는 인스턴스(dev 등)에선 그대로 게이트 유지(방어 심화). 절대경로로 cwd 의존 제거.
-    const tscPath = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
-    let tscAvailable = false;
+    // ── 단계 6: typecheck — 조언(advisory)만, 업데이트를 *절대 막지 않음* (사용자 B안, 2026-07-02) ──
+    // 배경: 결정론 게이트가 환경 차이(npm.cmd·tsc PATH·typescript 미설치)마다 깨져 3연타 버그.
+    // 그때마다 게이트가 *코드가 아닌 환경 문제*로 실패해 **멀쩡한 pull 을 롤백** — 즉 게이트+
+    // 롤백이 도움보다 해를 끼침(정당한 업데이트를 반복 차단). 배포본은 릴리스 클린룸(§7)+
+    // verify:plugins 로 이미 typecheck 통과 = *안전은 상류에 있다*. → 온-인스턴스 typecheck 는
+    // *조언*으로 강등: tsc 있으면 돌려 결과를 로그로만 남기고, 통과/타입에러/부재/환경실패 무관
+    // 하게 업데이트는 진행(재시작). 이로써 환경 브리틀니스로 정당한 업데이트가 막히는 일 0.
+    // (실 broken 코드는 릴리스 상류에서 걸러진다. npm install 실패는 여전히 롤백 — 그건 진짜
+    // "deps 설치 불가" 이지 환경 브리틀 아님. git pull 은 §3 에서 lockfile-safe.) 절대경로=cwd 무관.
     try {
-      await fs.access(tscPath);
-      tscAvailable = true;
-    } catch {
-      tscAvailable = false;
-    }
-    if (tscAvailable) {
-      try {
-        await run("node", [tscPath, "--noEmit"], cwd);
-      } catch (e) {
-        const rolledBack = await rollback();
-        return {
-          status: "failed",
-          from: prevSha,
-          to: newSha,
-          changedFiles: changed.length,
-          ranNpmInstall,
-          rolledBack,
-          error: redactSecrets(
-            `typecheck 게이트 실패: ${e instanceof Error ? e.message : String(e)}`,
-          ),
-        };
-      }
-    } else {
+      const tscPath = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
+      await fs.access(tscPath); // 부재 시 catch → 조언 skip(업데이트 진행)
+      await run("node", [tscPath, "--noEmit"], cwd);
+      console.log("self-update: typecheck 통과(조언).");
+    } catch (e) {
+      // 게이트가 아니라 조언 — 타입에러·tsc 부재·환경실패 어느 것도 업데이트를 막지 않는다.
       console.warn(
-        "self-update: typescript(devDependency) 미설치 — typecheck 게이트 건너뜀. " +
-          "배포본은 릴리스 시 이미 typecheck 통과(상류 검증). devDep 복원 시 게이트 재활성.",
+        `self-update: typecheck 조언 비통과/미실행(업데이트는 그대로 진행) — ${redactSecrets(
+          e instanceof Error ? e.message : String(e),
+        )}`,
       );
     }
 

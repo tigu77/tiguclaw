@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.9] - 2026-07-02
+## [0.3.10] - 2026-07-02
+
+### Changed
+- **`/update` is now robust to environment quirks — it never gets blocked by the on-instance typecheck.** Three times in a row the self-update typecheck step broke for environment reasons (Windows `npm.cmd`, `tsc` not on PATH, TypeScript absent on production installs), and each time the safety rollback undid a *perfectly good* pull — so the deterministic gate was blocking legitimate updates instead of catching broken code. The typecheck is now **advisory**: it still runs and logs its result when `tsc` is available, but it never rolls back or aborts the update. Every published release is already typechecked upstream (clean-room + plugin-load verification), so the on-instance re-check was redundant defense that only added brittleness. The update now always applies when the pull and dependency install succeed. (`git pull` failures and `npm install` failures still roll back — those are genuine "can't update", not environment noise.) This matches why natural-language "update yourself" was already reliable while the `/update` command was fragile.
 
 ### Fixed
 - **`/update` no longer fails on installs without the TypeScript dev-dependency** (e.g. production installs or `NODE_ENV=production`, where `npm install` omits dev-deps). The update was aborting with `Cannot find module .../typescript/bin/tsc` because the typecheck safety-gate needs `tsc`. Now the gate runs only when `tsc` is present and is skipped with a warning otherwise (published releases are already typechecked upstream), so the update proceeds instead of being permanently blocked. `npm install` also now includes dev-deps, so the gate re-enables once dependencies change.
@@ -124,7 +127,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/tigu77/tiguclaw/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/tigu77/tiguclaw/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/tigu77/tiguclaw/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/tigu77/tiguclaw/compare/v0.3.6...v0.3.7

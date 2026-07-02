@@ -18,6 +18,7 @@
  *  - 원칙 20: 코어 sysprompt·5대 원칙·security 무수정 — 메모리만 박음.
  *  - 메타-재귀 차단: feedback_growth_* prefix 는 분석 skip (자기 트리거 막음).
  */
+import { createHash } from "node:crypto";
 import {
   safeUnsubscribe,
   type EventBus,
@@ -62,6 +63,16 @@ import {
   judgeContradiction,
   type ContradictionVerdict,
 } from "../../../src/core/llm-runtime/classify.js";
+// Phase 7a (2026-07-02) — 실패 주도 개선. worker.failed 신호 → reflect(원인분석) →
+// 4종 라우팅 → reflection 박기(전부 suggester). classify.ts 형제(신규 core 헬퍼).
+// never-throw + internal:true(메타재귀 킬스위치) 계약은 classify.js 와 동일.
+// 진실 소스: _workspace/self_growth_failure_driven_architect.md + ADR
+// 2026-07-02-self-growth-failure-driven-improvement.md.
+import {
+  reflectFailureCause,
+  type CauseCategory,
+  type FailureReflection,
+} from "../../../src/core/llm-runtime/classify-failure.js";
 
 export const REPEAT_THRESHOLD = 3;
 export const SELF_NAMESPACE = "growth";
@@ -751,6 +762,203 @@ export const judgeContradictionGate = async (
   }
   return { verdict, durationMs: Date.now() - start };
 };
+
+// ─── Phase 7a (2026-07-02) — 실패 주도 개선 (worker.failed → reflect → 라우팅) ───
+// 진실 소스: _workspace/self_growth_failure_driven_architect.md §2·§3 + ADR
+// 2026-07-02. worker.failed 는 "무슨 작업이 실패했나"(task)를 아는 1급 신호 —
+// turn_error("어댑터가 왜 끝났나")보다 풍부. 게이트 A(의미)·B(반복 threshold=2) 통과 +
+// 비멱등 순간에만 reflect 1회(비용 bound). 전부 suggester(자동 확정 0 — 7b 별건).
+
+// worker.failed threshold=1 — 실패 시 즉시 분석(반복 대기 X). 근거(2026-07-02 라이브 실측
+// 정정): 비서가 워커 task·label 을 매 실행 리워딩 → 2회 실패해도 다른 키 → 반복 그룹핑이
+// 근본 불안정(반복 게이트 무의미). 게다가 워커 실패는 드문 신호라 스팸방지용 반복 게이트가
+// 불필요하고, 사용자 비전("*실패했으면* 원인 분석해 제안")과도 정합. 비용 bound 는 멱등
+// (같은 키 이미 학습 → LLM skip) + gate A(취소·무근거 drop) + 워커 실패의 희소성으로 유지.
+// (ADR 결정 #1 을 실측이 정정 — turn_error 는 빈발이라 FAILURE_THRESHOLD=3 유지.)
+export const WORKER_FAILURE_THRESHOLD = 1;
+
+/**
+ * worker.failed 이벤트 payload — 코어 worker-jobs 가 발행(worker-jobs.ts markFailed →
+ * publishWorkerLifecycle). self-growth 는 *구조적으로만* 소비(코어 타입 import 안 함 —
+ * 단방향 §0, 데이터로만). 코어가 error≤300자·task≤500자 로 이미 cap 한다.
+ */
+interface WorkerFailedPayload {
+  jobId?: string;
+  label?: string;
+  /** 원 thread(worker:<id> 아님 — worker-jobs record.threadKey). self namespace 방어용. */
+  threadKey?: string;
+  status?: string;
+  /** redact 된 원인(≤300자). 게이트 A: task 와 둘 다 비면 drop. */
+  error?: string;
+  /** 워커 작업 지시(≤500자). 작업 근사 키의 원천. */
+  task?: string;
+}
+
+/**
+ * 작업 근사 키 — worker.failed 의 task 를 정규화(normalizeErrorMessage 재사용 — 휘발
+ * 토큰·경로·id·숫자 마스킹). 같은 일일 워커가 표면 텍스트만 달라도 같은 키로 묶이게 한다.
+ * 빈 task 는 빈 문자열(호출자 게이트 A 가 error·task 둘 다 빈 경우를 이미 drop).
+ */
+export const normalizeTaskKey = (task: string): string =>
+  normalizeErrorMessage(task);
+
+/**
+ * worker.failed error 문자열에서 errorKind 근사 — LLM-agnostic 문자열 휴리스틱(분기 키 아님,
+ * 집계 라벨). worker-jobs payload 는 handleTurnError 처럼 errorKind 를 안 실어주므로 여기서
+ * 근사. evaluateFailureLowRiskGate 의 KNOWN_KINDS(timeout·model_rejected·error)와 정합.
+ */
+export const deriveWorkerErrorKind = (error: string): string => {
+  const t = error.toLowerCase();
+  if (/시간 초과|타임아웃|idle|timeout|무진전|stall|spinning/.test(t)) return "timeout";
+  if (/usage_limit|usage limit|429|rate.?limit|거부|rejected|refus/.test(t))
+    return "model_rejected";
+  return "error";
+};
+
+/**
+ * worker.failed error 문자열에서 adapter 라벨 근사 — *사실* 로만 프롬프트/집계에 들어감
+ * (분기 키 절대 아님, 원칙 2). 미검출이면 "unknown"(어댑터 무관 처리).
+ */
+export const deriveWorkerAdapter = (error: string): string => {
+  const t = error.toLowerCase();
+  if (t.includes("codex")) return "codex";
+  if (t.includes("claude") || t.includes("anthropic")) return "claude";
+  if (t.includes("openai") || t.includes("gpt")) return "openai";
+  if (t.includes("ollama") || t.includes("local")) return "local";
+  return "unknown";
+};
+
+/**
+ * Phase 7a 라우팅 순수함수 — reflect 결과(cause)로 저장 경로 결정 + reflection 박기.
+ * **전부 suggester(자동 확정 0)** — 7b(저위험 자율확정)는 구현 안 함. 모든 경로가 reflection
+ * 또는 skill_reflection(기존 analyzeSkillImprove 위임). null 이면 미박기(멱등·근거부족).
+ *
+ * 라우팅 규칙(§2.3):
+ *  - skill + relatedSkills 있음 → analyzeSkillImprove 경로 위임(skill_reflection). 단
+ *    self-growth 는 스킬파일 안 씀(harness 가 씀). relatedSkills 비면 reflection 강등.
+ *  - prompt_config / task_design / uncertain → feedback_growth_failure_<slug> reflection.
+ *    (uncertain 은 보수 강등 — 사용자 확인. §3-3: 회색지대 기본값 task_design 계열.)
+ *  - core → feedback_growth_core_flag_<slug> reflection **only**(자동 확정 절대 0).
+ *
+ * 멱등: 같은 slug reflection 이 이미 있으면 재박기 skip(getMemory). skill 경로는
+ * analyzeSkillImprove 가 자체 멱등(제안 메모 존재 시 재제안 0).
+ */
+export const routeFailureReflection = (input: {
+  /** 작업 근사 slug(멱등 키). key 원문(정규화 task)에서 [^a-z0-9]+→_ cap 60. */
+  key: string;
+  reflection: FailureReflection;
+  task?: string;
+  errorKind: string;
+  adapter: string;
+  count: number;
+  relatedSkills: string[];
+}): { target: "skill_reflection" | "reflection" | "core_flag"; name: string } | null => {
+  const slug = input.key.replace(/[^a-z0-9]+/gi, "_").slice(0, 60);
+  if (slug.length === 0) return null;
+  const cause: CauseCategory = input.reflection.cause;
+
+  // ── skill 유형 + 관련 스킬 확인됨 → 기존 skill-improve 경로 위임(자동 확정 0, harness 집행) ──
+  if (cause === "skill" && input.relatedSkills.length > 0) {
+    // 실패 윈도에 겹친 각 스킬에 대해 개선 제안 시도. analyzeSkillImprove 는 자체 멱등·
+    // 거버넌스 제외·가드 쿨다운·임계(skill_usage 누적) — 통과분만 reflection 박음. 이 경로가
+    // 하나라도 박으면 skill_reflection 으로 보고, 전부 미박(임계 미달 등)이면 reflection 강등.
+    let landedName: string | null = null;
+    for (const skillName of input.relatedSkills) {
+      try {
+        const usage = listSkillUsage().find((u) => u.skillName === skillName);
+        if (usage === undefined) continue;
+        const r = analyzeSkillImprove(usage);
+        if (r !== null && landedName === null) landedName = r.reflectionName;
+      } catch (e) {
+        console.error(`self-growth: routeFailureReflection skill improve failed for '${skillName}': ${e}`);
+      }
+    }
+    if (landedName !== null) {
+      return { target: "skill_reflection", name: landedName };
+    }
+    // 스킬 개선 임계 미달 등 → 아래 일반 reflection 으로 강등(신호 유실 0).
+  }
+
+  // ── core → core_flag reflection only(자동 확정 절대 0 — 개발자만 코드 수정) ──
+  if (cause === "core") {
+    const name = `feedback_${SELF_NAMESPACE}_core_flag_${slug}`;
+    if (getMemory(name) !== undefined) return null; // 멱등
+    addMemory({
+      type: "feedback",
+      name,
+      description: `[코어 플래그] '${(input.task ?? "").slice(0, 80)}' 작업 반복 실패(${input.count}회) — self-growth 원인분석: 코어 코드/구조 의심. 개발자 확인 필요(자율수정 대상 아님).`,
+      body: buildFailureReflectionBody({
+        cause,
+        reflection: input.reflection,
+        task: input.task,
+        errorKind: input.errorKind,
+        adapter: input.adapter,
+        count: input.count,
+        relatedSkills: input.relatedSkills,
+        guidance:
+          "이건 개발자가 코드로 봐야 하는 코어 이슈일 수 있습니다(자율수정 대상 아님). harness/개발자가 관찰된 증상·재현 맥락을 읽고 판단하세요. self-growth 는 코어를 수정하지 않으며 이 메모를 코어가 읽지도 않습니다(단방향).",
+      }),
+    });
+    return { target: "core_flag", name };
+  }
+
+  // ── prompt_config / task_design / uncertain(+ skill 강등분) → 일반 reflection ──
+  const name = `feedback_${SELF_NAMESPACE}_failure_${slug}`;
+  if (getMemory(name) !== undefined) return null; // 멱등
+  addMemory({
+    type: "feedback",
+    name,
+    description: `반복 워커 실패 '${(input.task ?? "").slice(0, 80)}' (${input.errorKind}·${input.adapter}, ${input.count}회) — 원인분석=${cause}, suggester only, 사용자/harness 확인 후 결정`,
+    body: buildFailureReflectionBody({
+      cause,
+      reflection: input.reflection,
+      task: input.task,
+      errorKind: input.errorKind,
+      adapter: input.adapter,
+      count: input.count,
+      relatedSkills: input.relatedSkills,
+      guidance:
+        cause === "task_design"
+          ? "작업 설계 개선 후보(멱등·증분·분할·타임아웃 넉넉히). 비서가 사용자에게 이 워커 작업을 이렇게 다시 설계할지 확인 후 진행하세요. self-growth 는 제안만 — 자동 확정하지 않습니다."
+          : cause === "prompt_config"
+            ? "설정·프롬프트·타임아웃 값 조정 후보. 비서가 사용자에게 확인하거나 사용자가 직접 교정하세요. self-growth 는 제안만."
+            : "원인 불확실(보수 강등) 또는 관련 스킬 미상 — 비서가 사용자에게 이 반복 실패 대응 의향을 명시 확인하세요. self-growth 는 제안만.",
+    }),
+  });
+  return { target: "reflection", name };
+};
+
+/**
+ * 실패 reflection body 빌더(관찰·원인·제안·안내). routeFailureReflection 공용.
+ * observed(관찰)·cause·oneLine(원인)·suggestedFix(제안)·guidance(harness/사용자 확인 안내).
+ */
+const buildFailureReflectionBody = (input: {
+  cause: CauseCategory;
+  reflection: FailureReflection;
+  task?: string;
+  errorKind: string;
+  adapter: string;
+  count: number;
+  relatedSkills: string[];
+  guidance: string;
+}): string =>
+  JSON.stringify(
+    {
+      kind: "failure_driven_improvement",
+      observed_pattern: `워커 작업 '${(input.task ?? "").slice(0, 200)}' 가 ${input.count}회 실패 (${input.errorKind} · ${input.adapter})`,
+      cause_category: input.cause,
+      one_line_cause: input.reflection.oneLine,
+      suggested_fix: input.reflection.suggestedFix,
+      related_skills: input.relatedSkills,
+      evidence_count: input.count,
+      confidence: 0.4,
+      suggested_action: input.guidance,
+      execution_boundary:
+        "self-growth 는 제안만(suggester) — 스킬 파일 수정은 harness, 코어 수정은 개발자, 설정 변경은 사용자. 자동 확정 0.",
+    },
+    null,
+    2,
+  );
 
 /**
  * V3 효율 관측 — turn_done 의 durationMs/토큰을 (adapter, model) 별로 누적 관측한다.
@@ -1705,6 +1913,13 @@ class SelfGrowthPlugin {
         // 내부 try/catch 로 never-reject. void 로 floating promise 의도 명시.
         void this.handleTurnError(event.payload as TurnErrorPayload);
         return;
+      case "worker.failed":
+        // Phase 7a (2026-07-02) — 실패 주도 개선. 작업 단위(task) 1급 실패 신호.
+        // fire-and-forget async(게이트 통과 시 reflect 1회 LLM 호출) — 내부 try/catch
+        // never-reject. worker.failed 는 유저/스케줄 워커만 발행(self-growth 는 워커 안
+        // 띄움 = internal 분류만) → 구조적으로 자기입력 아님(§4-3).
+        void this.handleWorkerFailed(event.payload as WorkerFailedPayload);
+        return;
       case "llm.turn_done":
         this.handleTurnDone(event.payload as TurnDonePayload);
         return;
@@ -1800,6 +2015,15 @@ class SelfGrowthPlugin {
       this.failureCounts.set(key, count);
       this.capMap(this.failureCounts, PATTERN_MAP_CAP);
 
+      // Phase 7a (§4-2 이중 학습 방지) — workerDepth>0 turn_error 는 워커 내부 LLM 턴.
+      // 같은 작업 실패가 (a) worker.failed(작업 단위·풍부) (b) turn_error(턴 단위) 둘 다 올
+      // 수 있다. worker.failed 를 1급으로 삼고, 워커 turn_error 는 여기서 *reflect 브랜치만*
+      // skip 한다(카운트·효율·스킬 결과 귀속은 위에서 이미 유지 — 이중학습은 박기에서만 막음).
+      // 메인·서브에이전트 턴(workerDepth 미존재)은 종전대로 학습.
+      if (typeof payload.workerDepth === "number" && payload.workerDepth > 0) {
+        return;
+      }
+
       const result = await analyzeFailurePattern({
         errorKind,
         adapter,
@@ -1832,6 +2056,119 @@ class SelfGrowthPlugin {
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`self-growth: turn_error handler failed: ${reason}`);
+    }
+  }
+
+  // ─── Phase 7a (2026-07-02) — worker.failed 실패 주도 개선 ──────────────────────
+  // 게이트 A(의미) → 게이트 B(반복 threshold=2) → 멱등 체크 → 통과+박기임박 순간에만
+  // reflect 1회(비용 bound) → routeFailureReflection(4종 라우팅, 전부 suggester).
+  // fire-and-forget async — 내부 try/catch never-reject(데몬 생존, 원칙 3).
+  private async handleWorkerFailed(payload: WorkerFailedPayload): Promise<void> {
+    try {
+      const task = typeof payload.task === "string" ? payload.task : "";
+      const error = typeof payload.error === "string" ? payload.error : "";
+      const status = typeof payload.status === "string" ? payload.status : "";
+      const threadKey =
+        typeof payload.threadKey === "string" ? payload.threadKey : "";
+
+      // ── 게이트 A (의미성) — reflect 도달 전 drop ─────────────────────────────
+      // error·task 둘 다 비면 학습 근거 0 → drop.
+      if (task === "" && error === "") return;
+      // 사용자 명시 취소는 실패 아님(worker-jobs markCancelled 별도 status) → drop.
+      if (status === "cancelled") return;
+      // self namespace(growth) 경로면 drop(방어적, 실제 미발생 — self-growth 는 워커 안 띄움).
+      if (threadKey.toLowerCase().includes(SELF_NAMESPACE)) return;
+
+      // ── 원인 라벨 도출 (LLM-agnostic 문자열 휴리스틱 — 분기 키 아님, 집계 라벨) ──
+      // worker.failed error 문자열에서 errorKind/adapter 를 근사(handleTurnError 는 코어가
+      // 실어주지만 worker.failed payload 엔 없음). 어댑터명은 프롬프트에 *사실* 로만 들어감.
+      const errorKind = deriveWorkerErrorKind(error);
+      const adapter = deriveWorkerAdapter(error);
+
+      // ── 게이트 B (반복성) — 작업 근사 키 count ≥ threshold 만 reflect ───────────
+      // failureCounts Map 합류(별도 Map 신설 불요). worker 접두로 turn_error 키와 분리.
+      // ★반복 그룹 키 = label 우선. 비서가 task *텍스트* 는 매 실행 재작성(라이브 실측:
+      // 같은 작업도 "사용자 요청: …" vs 리워딩 → 다른 키) 하나 label 은 짧고 안정하며,
+      // 스케줄 label 의 날짜("…루틴 2026-06-24")는 normalizeErrorMessage 의 숫자 마스킹이
+      // 흡수해 날짜 무관 동일 키가 된다. label 없으면 task 폴백.
+      const label = typeof payload.label === "string" ? payload.label : "";
+      const taskNorm = normalizeTaskKey(label || task);
+      const key = `worker|${failureKey({ errorKind, adapter, messageNorm: taskNorm })}`;
+      const count = (this.failureCounts.get(key) ?? 0) + 1;
+      this.failureCounts.set(key, count);
+      this.capMap(this.failureCounts, PATTERN_MAP_CAP);
+      if (count < WORKER_FAILURE_THRESHOLD) return; // 단발/미달 무시(일회성 blip 배제)
+
+      // ── 멱등 체크 — 이미 박힌 reflection 있으면 reflect·박기 skip(LLM 호출 0) ───────
+      // routeFailureReflection 의 두 산출 name(failure/core_flag)을 사전 확인. skill 경로는
+      // analyzeSkillImprove 자체 멱등이라 여기선 failure/core_flag slug 만 확인(보수적 —
+      // 둘 중 하나라도 있으면 이미 이 작업키로 학습됨 → 재reflect 불요, 비용 bound §3).
+      // slug — 멱등·가독 이름. ASCII 화가 3자 미만(한국어 등 비-ASCII 작업)이면 taskNorm
+      // 해시로 폴백 → 빈/동일 slug 충돌 방지(라이브 실측: 한국어 label 이 전부 "_" 로 뭉개져
+      // feedback_growth_failure__ 동명 충돌). 해시는 taskNorm 기반이라 같은 작업=같은 이름(멱등).
+      const asciiSlug = taskNorm
+        .replace(/[^a-z0-9]+/gi, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 50);
+      const slug =
+        asciiSlug.length >= 3
+          ? asciiSlug
+          : `w${createHash("sha1").update(taskNorm).digest("hex").slice(0, 12)}`;
+      const failureName = `feedback_${SELF_NAMESPACE}_failure_${slug}`;
+      const coreFlagName = `feedback_${SELF_NAMESPACE}_core_flag_${slug}`;
+      if (getMemory(failureName) !== undefined || getMemory(coreFlagName) !== undefined) {
+        return; // 이미 학습됨 — 멱등, LLM 호출 skip(매 실패 호출 금지, ADR Q6)
+      }
+
+      // ── reflect 1회 (박기 임박·비멱등 순간에만) — never-throw, internal:true ─────
+      // 실패 윈도에 겹친 skill.invoked 이름들(있으면) — skill 유형 라우팅 근거. threadKey 는
+      // 원 thread(worker:<id> 아님). 워커 활동은 worker:<jobId> 로 흐르므로 원 thread 로는
+      // 못 잡을 수 있음 → 보수적으로 최근 invoke 를 그냥 안 붙이고 빈 배열(과귀속 방지).
+      const relatedSkills: string[] = [];
+      const reflection: FailureReflection = await reflectFailureCause({
+        task,
+        errorKind,
+        adapter,
+        error,
+        relatedSkills,
+      });
+
+      // ── 4종 라우팅 (전부 suggester — 자동 확정 0) ───────────────────────────
+      const routed = routeFailureReflection({
+        key: slug,
+        reflection,
+        task,
+        errorKind,
+        adapter,
+        count,
+        relatedSkills,
+      });
+      if (routed === null) return; // 멱등·근거부족 등으로 미박기
+
+      console.log(
+        `self-growth: worker.failed 학습 — ${routed.target}:${routed.name} ` +
+          `(cause=${reflection.cause}, ${errorKind}·${adapter}, count=${count})`,
+      );
+      if (this.bus !== null) {
+        // self_growth.* 는 self-growth 입력 아님(메타재귀 무관, 관측·대시보드용).
+        this.bus.publish({
+          type: "self_growth.failure.learned",
+          ts: Date.now(),
+          payload: {
+            memoryName: routed.name,
+            autoLanded: false, // Phase 7a 는 전부 suggester
+            target: routed.target,
+            cause: reflection.cause,
+            errorKind,
+            adapter,
+            count,
+            source: "worker.failed",
+          },
+        });
+      }
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`self-growth: worker.failed handler failed: ${reason}`);
     }
   }
 

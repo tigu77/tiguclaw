@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-02
+
+### Added
+- **Self-growth learns from background-task failures.** When a background job fails, the assistant analyzes the cause and proposes a fix — improve a skill, adjust a prompt/setting, redesign the task (e.g. make it incremental so partial progress survives), or flag a core-code issue for the developer. Everything is a suggestion you approve; nothing is auto-applied or self-edited. (Failure signals are gated and de-duplicated so a rare failure doesn't spam.)
+
 ## [0.3.7] - 2026-07-02
 
 ### Fixed
@@ -114,7 +119,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/tigu77/tiguclaw/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/tigu77/tiguclaw/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/tigu77/tiguclaw/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/tigu77/tiguclaw/compare/v0.3.4...v0.3.5

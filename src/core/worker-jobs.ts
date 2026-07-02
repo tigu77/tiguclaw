@@ -481,8 +481,38 @@ let mainHandler: MessageHandler | undefined;
  * 메인 핸들러 등록 — index.ts 가 부팅 시 1회 호출.
  * 등록 전 onWorkerComplete 가 불리면(이론상 워커가 핸들러보다 먼저 끝날 일 없음) 경고.
  */
+// 워커 스트림 스톨 → 유저 통지 (ADR 2026-07-02). codex 어댑터는 llm.stream_stall 만
+// publish(채널 무결합) — 여기서 워커 dest 로 "이어서 재개 중" 핑을 보낸다(deliverOutbound
+// 단일 통로 → 텔레그램+대시보드). threadKey=worker:<jobId> 만 대상(메인 턴은 제외 — 사용자가
+// 직접 대기 중이라 별도 통지 불요). 부팅 1회 구독.
+let stallNotifySubscribed = false;
+const subscribeWorkerStallNotify = (): void => {
+  if (stallNotifySubscribed) return;
+  stallNotifySubscribed = true;
+  getEventBus().subscribe((event) => {
+    if (event.type !== "llm.stream_stall") return;
+    const tk =
+      typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
+    if (!tk.startsWith("worker:")) return;
+    const job = getJob(tk.slice("worker:".length));
+    if (job === undefined) return;
+    const dest = destForJob(job);
+    const attempt = String(event.payload.attempt ?? "?");
+    const max = String(event.payload.maxRetries ?? "?");
+    void deliverOutbound({
+      channel: dest.channel,
+      target: dest.target ?? null,
+      text: `⚠️ 백그라운드 작업 '${job.label}' 의 응답이 잠시 멎어 이어서 재개 중이에요 (${attempt}/${max}).`,
+      label: "worker",
+    }).catch(() => {
+      /* 통지 실패는 재개에 영향 0 */
+    });
+  });
+};
+
 export const registerWorkerHandler = (handler: MessageHandler): void => {
   mainHandler = handler;
+  subscribeWorkerStallNotify(); // 부팅 1회 — 워커 스톨 재개 유저 통지 구독.
 };
 
 /**

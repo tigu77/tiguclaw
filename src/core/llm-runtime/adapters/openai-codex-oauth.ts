@@ -97,11 +97,7 @@ import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js"
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { createDeltaStream } from "./_delta-stream.js";
-import {
-  createIdleTimer,
-  IdleTimeoutError,
-  idleConfigExempt,
-} from "../idle-timeout.js";
+import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 
 // OAuth 상수 — fork (numman-ali/opencode-openai-codex-auth) 의 lib/auth/auth.ts 답습.
@@ -457,6 +453,10 @@ const parseCodexSse = async (
   // llm.delta fan-out — output_text.delta 누적 시점마다 증분 텍스트 호출(onChunk 선례).
   // 미지정 = no-op(회귀 0). coalesce·publish 는 호출부 책임(파서 순수성 보존).
   onTextDelta?: (delta: string) => void,
+  // 진전(progress) heartbeat — *실제 진전* 이벤트(output_text.delta·function_call 시작)
+  // 에만 호출. no-progress 타이머 reset 용(in_progress heartbeat 는 진전 아님 → 미호출).
+  // 미지정 = no-op(회귀 0).
+  onProgress?: () => void,
 ): Promise<CodexSseResult> => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -485,6 +485,12 @@ const parseCodexSse = async (
         if (data === "" || data === "[DONE]") continue;
         try {
           const event = JSON.parse(data) as CodexSseEvent;
+          // 진단(gated) — codex 백엔드가 흘리는 SSE event.type 실측용. "생각 중"에 어떤
+          // 이벤트(reasoning delta vs 무이벤트 keep-alive)가 오는지 = progress-aware 가드
+          // 가능성 판별. 기본 off (CODEX_DEBUG_TOOLS/INPUT 동형 gated 진단 인프라).
+          if (process.env.CODEX_DEBUG_SSE === "1") {
+            console.error(`[codex-sse] ${event.type}`);
+          }
           // output_text.delta event 의 delta 누적 (표준 SSE 패턴).
           if (
             event.type === "response.output_text.delta" &&
@@ -494,6 +500,7 @@ const parseCodexSse = async (
             // llm.delta fan-out — 순수 텍스트 증분만(누적본 아님). 호출부 coalescer 가
             // ~80ms∥120자로 묶어 publish. 미지정(onTextDelta===undefined)이면 no-op.
             onTextDelta?.(event.delta);
+            onProgress?.(); // 실제 output = 진전 → no-progress 타이머 reset.
           }
           // V5.3 — function_call lifecycle 1 분기: output_item.added.
           // OpenClaw L407-418 답습 — partialJson 시작값 = item.arguments (대개 "").
@@ -508,6 +515,7 @@ const parseCodexSse = async (
               name: event.item.name ?? "",
               partialJson: typeof event.item.arguments === "string" ? event.item.arguments : "",
             };
+            onProgress?.(); // 도구 호출 시작 = 진전 → no-progress 타이머 reset.
             if (debugTools) {
               // ADR §6 (c) — Codex backend SSE event 라이브 입증용 1줄 로그.
               console.error(
@@ -1035,6 +1043,32 @@ const CODEX_HISTORY_COMPACT_TRIGGER_TURNS = parsePosIntEnv(
 const CODEX_HISTORY_COMPACT_KEEP_RECENT = parsePosIntEnv(
   process.env.CODEX_COMPACT_KEEP_RECENT_TURNS,
   30,
+);
+
+// ── codex 무진전(no-progress) 감지 + 같은 컨텍스트 스텝 재개 (ADR 2026-07-02) ──────────
+// codex raw fetch + 수동 SSE 리더는 read 타임아웃이 없어 백엔드 무응답 시 영원히 대기한다.
+// ★진전 기준 가드: SSE 실측 결과 codex 는 "생각 중" response.in_progress heartbeat 만 흘리고
+// (output/tool 0), 답/도구가 시작되면 output_text.delta·function_call 이 온다. 그래서 타이머를
+// *진전 이벤트(output_text.delta·function_call)에만* reset — in_progress 엔 안 함. 그러면:
+//   · 답/도구가 흐르는 스트림 = 아무리 길어도 안 잘림(진전 beat).
+//   · in_progress 만 N분(dead=무바이트 포함) = 진짜 무진전 → 컷 → 같은 body 로 재개.
+// blunt 시간 cap(정상 긴 작업도 자름)의 위험을 없앤 정밀 가드. 모델 폴백 아님(codex 안에서
+// 닫음). 남는 한계: 답 전 *순수 reasoning* 이 N분 초과면 컷(codex 가 생각을 content 로 안 흘림
+// = 근본 한계) — N 넉넉+env 튜닝으로 극단만.
+/** codex 무진전(output/tool 무수신) 한계(ms). first/idle 공통. env override. */
+const CODEX_NO_PROGRESS_MS = parsePosIntEnv(
+  process.env.CODEX_NO_PROGRESS_MS,
+  300_000,
+);
+/** 무진전 시 같은 스텝(같은 body) 최대 재개 횟수. env override. */
+const CODEX_STALL_MAX_RETRIES = parsePosIntEnv(
+  process.env.CODEX_STALL_MAX_RETRIES,
+  2,
+);
+/** 재개 사이 backoff(ms) — 백엔드 회복 여유. env override. */
+const CODEX_STALL_BACKOFF_MS = parsePosIntEnv(
+  process.env.CODEX_STALL_BACKOFF_MS,
+  5_000,
 );
 
 // 요약 합성 턴을 감싸는 스캐폴딩 헤더 — assembleUserPrompt 의 <system-reminder> 패턴
@@ -1644,24 +1678,33 @@ export const runOpenAiCodex = async (
       // 구간은 timer.done() 후라 타임아웃 대상 아님). fetch 에 signal 주입(현재 미주입 =
       // ~20분 행의 직접 원인) + parseCodexSse chunk 수신마다 heartbeat. abort 시 undici
       // reader.read() 가 reject → parseCodexSse throw → 아래 catch 가 IdleTimeoutError 로.
-      const idleAc = new AbortController();
-      // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 큰 프리필은 TTFT 가 느려
-      // 고정 first 타임아웃을 오발화시킬 수 있으므로, first 를 payload 크기에 비례해 늘린다
-      // (idle 은 불변). 단일 stringify 로 sizing + fetch body 둘 다 사용(이중 직렬화 회피).
+      // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
+      // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
       const bodyJson = JSON.stringify(body);
-      // 전 턴(메인·서브에이전트·워커) 1층 idle/first 면제 — 진행 중 작업(긴 도구 실행 등
-      // 무이벤트 구간)을 임의 시간으로 컷하지 않는다(사용자 A안, 2026-06-24). codex 의
-      // 입력-비례 first(idleConfigForInput)도 면제에 포함(통째 무제한) — 큰 프리필의 느린
-      // TTFT 도 더는 컷 안 됨. hung 회복은 워커 2층 WORKER_TIMEOUT_MS + /restart·cancel·
-      // 외부 turn signal 이 담당. idleConfigExempt.
-      const idleTimer = createIdleTimer(idleAc, idleConfigExempt(input.workerDepth));
-      // 2층 합성 (TT-I2) — 1층 idle AC(이 iteration 의 fetch 용)와 핸들러 turn signal 을
-      // OR 결합. effectiveAc.signal 을 fetch 에 주입하면 LLM 스트림 구간은 둘 중 하나
-      // abort 시 끊긴다. (도구 실행 구간은 callTool 이 signal 미전달 — §4.4 루프 가드로
-      // 보강.) input.abortSignal 미지정이면 idleAc 만 → 현행 1층 동작 그대로(TT-I7).
-      const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
+      // 무진전(no-progress) 감지 + 같은 컨텍스트 스텝 재개 (ADR 2026-07-02). ★메인·워커
+      // 한방향 — codex 스핀은 워커뿐 아니라 메인 인터랙티브 턴도 때리므로 분기 없이 통일.
+      // 타이머는 *진전 이벤트(output_text.delta·function_call)에만* reset(onProgress) —
+      // response.in_progress heartbeat 로는 reset 안 됨. 그래서 답/도구가 흐르면(진전) 아무리
+      // 길어도 안 잘리고, in_progress 만 N분(dead=무바이트 포함) = 진짜 무진전만 컷 → 같은
+      // body(=같은 대화 컨텍스트)로 재개(이전 완료 스텝은 inputArray 보존). 타이머는 스트림
+      // (fetch) 단위 + 도구 실행 전 done()(finally) 이라 긴 도구 오살 0. per-iteration idleAc
+      // 발화는 turn/워커 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
-      try {
+      let stallAttempt = 0;
+      for (;;) {
+        const idleAc = new AbortController();
+        // no-progress 타이머 — onProgress(진전)에만 beat. abort 시 linkAbort 가 fetch signal 로.
+        const progressTimer = createIdleTimer(idleAc, {
+          idleMs: CODEX_NO_PROGRESS_MS,
+          firstMs: CODEX_NO_PROGRESS_MS,
+        });
+        // 계측 — 이 iteration 스트림의 청크 수·마지막청크 시각 (dead=chunks0 vs spinning 판별).
+        let iterChunks = 0;
+        let iterLastChunkAt = 0;
+        const iterStart = Date.now();
+        // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합해 fetch signal 로.
+        const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
+        try {
         // 전송 견고성 retry — *초기 fetch + res.ok 확인*만 감싼다. parseCodexSse
         // (SSE 스트림 소비)는 retry 밖(스트림 중간 실패 재시도는 별개). transient 만
         // 재시도: (a) fetch 자체 throw(전송 실패), (b) status ∈ {429,500,502,503,504}.
@@ -1717,14 +1760,67 @@ export const runOpenAiCodex = async (
 
         sseResult = await parseCodexSse(
           res.body,
-          () => idleTimer.beat(),
+          () => {
+            // onChunk — 계측만(진전 아님, 타이머 beat X). in_progress heartbeat 도 여기 잡힘.
+            iterChunks += 1;
+            iterLastChunkAt = Date.now();
+          },
           (delta) => deltaStream.push(delta), // llm.delta fan-out (coalesce → publish).
+          () => progressTimer.beat(), // onProgress — 실제 output/tool = 진전 → 타이머 reset.
         );
+        break; // 스트림 소비 성공 → 재시도 루프 탈출.
       } catch (e) {
         // abort 가 유휴(1층)·턴(2층) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
         // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
         // sideEffectExecuted 시 throw 대신 fallback 텍스트는 함수 바깥 catch (§4.4)에서.
         const reason = effectiveAc.signal.reason;
+        // 무진전(IdleTimeoutError = no-progress 타이머)이고 워커/턴 예산이 아직 살아있고
+        // 재시도 여유가 있으면 → turn 을 죽이지 말고 *같은 body(같은 대화 컨텍스트)로* 스텝
+        // 재개(모델 폴백 아님). 계측을 로그·이벤트로 남겨 dead(chunks=0) vs spinning(chunks>0,
+        // in_progress 만 흐름)을 드러낸다.
+        if (
+          reason instanceof IdleTimeoutError &&
+          stallAttempt < CODEX_STALL_MAX_RETRIES &&
+          input.abortSignal?.aborted !== true
+        ) {
+          stallAttempt += 1;
+          const iterSec = Math.round((Date.now() - iterStart) / 1000);
+          const lastChunkAgoSec =
+            iterLastChunkAt > 0
+              ? Math.round((Date.now() - iterLastChunkAt) / 1000)
+              : -1;
+          const kind = iterChunks > 0 ? "무진전(spinning)" : "무응답(dead)";
+          console.warn(
+            `codex ${kind} (chunks=${iterChunks}, iter=${iterSec}s, 마지막청크 ${
+              lastChunkAgoSec < 0 ? "없음" : `${lastChunkAgoSec}s 전`
+            }, iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`,
+          );
+          try {
+            bus.publish({
+              type: "llm.stream_stall",
+              ts: Date.now(),
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                adapter: "codex",
+                model,
+                iteration,
+                kind: iterChunks > 0 ? "spinning" : "dead",
+                chunks: iterChunks,
+                iterMs: Date.now() - iterStart,
+                lastChunkAgoMs:
+                  iterLastChunkAt > 0 ? Date.now() - iterLastChunkAt : -1,
+                attempt: stallAttempt,
+                maxRetries: CODEX_STALL_MAX_RETRIES,
+              },
+            });
+          } catch {
+            /* 관측 발행 실패는 재개를 막지 않는다. */
+          }
+          // progressTimer.done()·deltaStream.flush() 는 아래 finally 가 continue 시에도 수행.
+          await sleep(CODEX_STALL_BACKOFF_MS);
+          continue; // 같은 body 로 iteration 재시도.
+        }
         if (
           effectiveAc.signal.aborted &&
           (reason instanceof IdleTimeoutError ||
@@ -1735,10 +1831,11 @@ export const runOpenAiCodex = async (
         throw e;
       } finally {
         // 타이머 누수 0 (I-6) + 도구 실행 구간 진입 전 해제 (I-4 — LLM 스트림만 대상).
-        idleTimer.done();
+        progressTimer.done();
         // 이 iteration SSE 잔여 델타 flush(도구 실행/다음 iteration 전 발행) + 타이머 정리.
         // best-effort — 실패해도 out 전체본이 권위 교체. seq 는 다음 iteration 으로 단조 유지.
         deltaStream.flush();
+      }
       }
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) finalUsage = usage;

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-07-02
+
+### Fixed
+- **The `codex` (ChatGPT) model line could hang or spin without recovering** — a background task or reply would stall for the whole 30-minute cap and then fail with nothing to show, losing the work. The stream is now guarded on *actual progress*: as long as answer text or tool calls are flowing it's never interrupted, but if only "still thinking" heartbeats arrive with no real output for a few minutes (a dead connection or a thinking-loop), the current step is aborted and **retried from the same context** (not switched to another model), so the work continues instead of failing. Applies to both background workers and interactive replies. Workers also send a brief "resuming…" note. Tunable via `CODEX_NO_PROGRESS_MS` / `CODEX_STALL_MAX_RETRIES`.
+
+### Changed
+- Dashboard now shows a persistent scrollbar in the chat and side panels (previously the OS overlay scrollbar auto-hid, making it hard to tell there was more to scroll).
+
 ## [0.3.6] - 2026-07-01
 
 ### Internal
@@ -106,7 +114,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/tigu77/tiguclaw/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/tigu77/tiguclaw/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/tigu77/tiguclaw/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/tigu77/tiguclaw/compare/v0.3.3...v0.3.4

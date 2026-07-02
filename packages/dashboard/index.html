@@ -7,6 +7,19 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23080a0f'/%3E%3Cpath d='M14 42V18h10c7 0 12 4 12 10s-5 10-12 10h-4v4h-6zm6-12h4c3 0 5-1 5-4s-2-4-5-4h-4v8z' fill='%237dd3fc'/%3E%3Cpath d='M38 18h12v6h-6v18h-6V18z' fill='%23a78bfa'/%3E%3Ccircle cx='45' cy='45' r='5' fill='%2334d399'/%3E%3C/svg%3E" />
     <style>
       * { box-sizing: border-box; }
+      /* 항상 보이는 스크롤바 — macOS 기본(스크롤 시에만 표시=오버레이 자동숨김)을 우회해
+         채팅(#stream)·스크롤 패널(사이드바·상세·드로어·잡목록)에서 스크롤바가 늘 보이게.
+         WebKit(Chrome/Edge/Safari) 커스텀 + Firefox scrollbar-* 폴백. 다크테마 색. */
+      * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.22) transparent; }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb {
+        background: rgba(255,255,255,0.18);
+        border-radius: 8px;
+        border: 2px solid transparent;
+        background-clip: padding-box;
+      }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.32); background-clip: padding-box; }
       :root {
         color-scheme: dark;
         --bg: #080a0f;

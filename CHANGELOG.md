@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-07-02
+
+### Fixed
+- **`/update` no longer fails on installs without the TypeScript dev-dependency** (e.g. production installs or `NODE_ENV=production`, where `npm install` omits dev-deps). The update was aborting with `Cannot find module .../typescript/bin/tsc` because the typecheck safety-gate needs `tsc`. Now the gate runs only when `tsc` is present and is skipped with a warning otherwise (published releases are already typechecked upstream), so the update proceeds instead of being permanently blocked. `npm install` also now includes dev-deps, so the gate re-enables once dependencies change.
+
 ## [0.3.8] - 2026-07-02
 
 ### Added
@@ -119,7 +124,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/tigu77/tiguclaw/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/tigu77/tiguclaw/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/tigu77/tiguclaw/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/tigu77/tiguclaw/compare/v0.3.5...v0.3.6

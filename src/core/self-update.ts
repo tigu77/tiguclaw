@@ -272,7 +272,7 @@ export const runSelfUpdate = async (
         await run("git", ["reset", "--hard", prevSha], cwd);
         if (depsChanged) {
           // deps 도 prev 상태로 되돌림 — 게이트 실패가 새 deps 였을 수도.
-          await run("npm", ["install", "--no-audit", "--no-fund"], cwd, {
+          await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev"], cwd, {
             shell: isWindows,
           }).catch(
             (e) => {
@@ -299,7 +299,7 @@ export const runSelfUpdate = async (
     let ranNpmInstall = false;
     if (depsChanged) {
       try {
-        await run("npm", ["install", "--no-audit", "--no-fund"], cwd, {
+        await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev"], cwd, {
           shell: isWindows,
         });
         ranNpmInstall = true;
@@ -318,26 +318,45 @@ export const runSelfUpdate = async (
       }
     }
 
-    // ── 단계 6: ★typecheck 게이트 — 실패 시 롤백 + 재시작 X (먹통 방지) ─────────
-    // tsc 를 `node <tsc.js> --noEmit` 로 *직접* 실행 — Windows 에서 `npm run typecheck`
-    // 가 node_modules/.bin 의 tsc(.cmd) 를 self-update spawn 컨텍스트서 PATH 해석 못 해
-    // "'tsc'은(는) 내부/외부 명령이 아닙니다" 로 게이트가 *환경 문제*로 깨지던 것 해소.
-    // node.exe 는 Windows 서도 직접 실행 가능(.cmd 아님) → shell·PATH·.bin 의존 0, 크로스플랫폼.
+    // ── 단계 6: ★typecheck 게이트 — tsc 있으면 실행(실패 시 롤백·재시작 X), 없으면 건너뜀 ──
+    // tsc 를 `node <tsc.js> --noEmit` 로 *직접* 실행 — Windows 에서 `npm run typecheck` 가
+    // node_modules/.bin 의 tsc(.cmd) 를 self-update spawn 컨텍스트서 PATH 해석 못 해 게이트가
+    // *환경 문제*로 깨지던 것 해소. node.exe 는 .cmd 아니라 직접 실행(shell·PATH·.bin 의존 0).
+    // ★tsc(typescript devDependency) 부재 시 게이트를 *실패*시키지 않고 건너뛴다 — 실측:
+    // NODE_ENV=production·프로덕션 설치·devDep 미설치 인스턴스(회사 Windows E:\...)엔
+    // typescript 가 없어 MODULE_NOT_FOUND 로 게이트가 깨지며 정당한 업데이트가 영영 막혔다.
+    // 배포본은 릴리스 클린룸(§7)+verify:plugins 로 이미 typecheck 통과 = 상류 검증됨. tsc 가
+    // 있는 인스턴스(dev 등)에선 그대로 게이트 유지(방어 심화). 절대경로로 cwd 의존 제거.
+    const tscPath = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
+    let tscAvailable = false;
     try {
-      await run("node", ["node_modules/typescript/bin/tsc", "--noEmit"], cwd);
-    } catch (e) {
-      const rolledBack = await rollback();
-      return {
-        status: "failed",
-        from: prevSha,
-        to: newSha,
-        changedFiles: changed.length,
-        ranNpmInstall,
-        rolledBack,
-        error: redactSecrets(
-          `typecheck 게이트 실패: ${e instanceof Error ? e.message : String(e)}`,
-        ),
-      };
+      await fs.access(tscPath);
+      tscAvailable = true;
+    } catch {
+      tscAvailable = false;
+    }
+    if (tscAvailable) {
+      try {
+        await run("node", [tscPath, "--noEmit"], cwd);
+      } catch (e) {
+        const rolledBack = await rollback();
+        return {
+          status: "failed",
+          from: prevSha,
+          to: newSha,
+          changedFiles: changed.length,
+          ranNpmInstall,
+          rolledBack,
+          error: redactSecrets(
+            `typecheck 게이트 실패: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+        };
+      }
+    } else {
+      console.warn(
+        "self-update: typescript(devDependency) 미설치 — typecheck 게이트 건너뜀. " +
+          "배포본은 릴리스 시 이미 typecheck 통과(상류 검증). devDep 복원 시 게이트 재활성.",
+      );
     }
 
     // ── 단계 7: 완료 마커 작성 (부팅 통지용, best-effort) ───────────────────────

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-07-03
+
+### Added
+- **Sub-agents are now visible in the dashboard as background jobs, with their per-step activity.** Previously only detached background workers (`run_in_background`) showed up; sub-agents (delegated via `spawn_agent` / the Task tool) ran invisibly inline, so a long-running sub-agent looked like the assistant had simply gone quiet. Now each running sub-agent appears as its own job card — labelled with the sub-agent's name and showing its tool steps — for both the codex and Claude adapters (Claude sub-agent steps are recovered from the SDK stream via `parent_tool_use_id`). Sub-agents still return their result to the parent exactly as before; only observability was added. Workers and sub-agents are now unified under a single job model (`worker_jobs.kind = worker | agent`), with re-injection, worker timeouts, cancellation and restart-recovery kept exclusive to detached workers.
+
 ## [0.3.16] - 2026-07-03
 
 ### Fixed
@@ -169,7 +174,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.16...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.17...HEAD
+[0.3.17]: https://github.com/tigu77/tiguclaw/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/tigu77/tiguclaw/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/tigu77/tiguclaw/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/tigu77/tiguclaw/compare/v0.3.13...v0.3.14

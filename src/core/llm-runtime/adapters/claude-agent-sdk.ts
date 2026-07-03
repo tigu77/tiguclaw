@@ -72,6 +72,11 @@ import {
   type Agent,
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
+import {
+  registerJob,
+  markDone,
+  markFailed,
+} from "../../worker-jobs.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -110,6 +115,80 @@ const truncateForBus = (v: unknown): unknown => {
 const SYSTEM_PROMPT_HASH = createHash("sha256")
   .update(SYSTEM_PROMPT)
   .digest("hex");
+
+// ─── 서브에이전트(Task) 관측 — ADR 2026-07-03 subagent-worker-unify Phase A ────
+//
+// claude 는 SDK native Task tool 로 서브를 *SDK 내부 실행* 한다(codex spawn_agent 처럼
+// runRegionA 재진입이 아님). 그래서 codex 는 자식 turn 의 threadKey=`agent:<jobId>` 로
+// 활동이 자연히 흘렀지만, claude 서브 내부 스텝은 *부모의 SDK 스트림*에 그대로 흘러오며
+// 그 서브를 띄운 Task tool_use id 로 `parent_tool_use_id` 태깅된다(SDK coreTypes.d.ts
+// SDKAssistantMessage:431 / SDKUserMessage:399). → 콜백/후킹 불필요, 메시지 루프에서
+// parent_tool_use_id 만 읽어 라우팅. codex 와 동등한 잡 관측(카드 등장·완료 + per-step).
+//
+// U-I1 자동: registerJob/markDone/markFailed 는 재주입을 안 타므로 kind:'agent' 안전.
+// best-effort: 관측 로직 throw 가 부모 turn 을 무르면 안 됨(원칙 3) → 아래 전 경로 try/catch.
+
+/** Task tool_use input 에서 서브에이전트 이름·작업지시를 방어적으로 추출. */
+const parseTaskInput = (
+  input: unknown,
+): { agentName: string; task: string; label: string } => {
+  const o =
+    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const subagentType =
+    typeof o.subagent_type === "string" && o.subagent_type.trim() !== ""
+      ? o.subagent_type.trim()
+      : "subagent"; // 없으면 방어적 폴백(임무 제약).
+  const prompt = typeof o.prompt === "string" ? o.prompt : "";
+  const description = typeof o.description === "string" ? o.description : "";
+  return {
+    agentName: subagentType,
+    label: subagentType,
+    task: prompt !== "" ? prompt : description,
+  };
+};
+
+/**
+ * user 메시지 content 에서 tool_result 블록들을 (tool_use_id, resultText) 로 추출.
+ * Task 완료 감지용 — Task tool_use id 에 대응하는 tool_result 가 부모 스트림에 도착.
+ * content 는 string | block[] (Anthropic MessageParam). block.content 도 string | block[].
+ */
+const extractToolResults = (
+  msg: unknown,
+): Array<{ toolUseId: string; text: string }> => {
+  const out: Array<{ toolUseId: string; text: string }> = [];
+  const message = (msg as { message?: unknown }).message;
+  const content = (message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return out;
+  for (const block of content) {
+    if (
+      !block ||
+      typeof block !== "object" ||
+      (block as { type?: unknown }).type !== "tool_result"
+    ) {
+      continue;
+    }
+    const toolUseId = (block as { tool_use_id?: unknown }).tool_use_id;
+    if (typeof toolUseId !== "string") continue;
+    const c = (block as { content?: unknown }).content;
+    let text = "";
+    if (typeof c === "string") {
+      text = c;
+    } else if (Array.isArray(c)) {
+      text = c
+        .map((b) =>
+          b &&
+          typeof b === "object" &&
+          (b as { type?: unknown }).type === "text" &&
+          typeof (b as { text?: unknown }).text === "string"
+            ? (b as { text: string }).text
+            : "",
+        )
+        .join("");
+    }
+    out.push({ toolUseId, text });
+  }
+  return out;
+};
 
 // ─── cross-adapter (C) 하이브리드 — foreign(codex) delta prepend (contract B-3) ──
 //
@@ -512,6 +591,76 @@ export const runClaude = async (
 
   const bus = getEventBus();
 
+  // ─── 서브에이전트(Task) 관측 상태 (per-turn, 클로저 지역 = 동시 turn 격리) ────────
+  // Task tool_use id → 관측 jobId 매핑. 한 턴에 Task 여러 개 가능 → Map.
+  // 서브 내부 스텝(parent_tool_use_id === taskId)은 부모 좌표가 아니라 agent:<jobId>
+  // 좌표의 llm.activity 로 발행(codex 서브 per-step 과 동형). agentSeq 는 잡별 단조 시퀀스.
+  const taskJobs = new Map<
+    string,
+    { jobId: string; agentName: string; task: string; seq: number }
+  >();
+
+  // 서브 내부 도구 스텝을 agent:<jobId> 좌표로 발행 (best-effort — throw 격리).
+  // kind 는 "tool" 만 — llm.activity 스키마(RegionAActivityPayload.kind: "tool"|"turn")가
+  // 이산 도구 스텝 단위라, 서브 내부 텍스트는 별도 activity 로 만들지 않는다(codex 서브도
+  // 도구만 per-step 관측 — parity). 코어 타입 무편집(임무 제약) 하에 동형 유지.
+  const publishAgentToolActivity = (
+    entry: { jobId: string; agentName: string; seq: number },
+    label: string,
+    detail: string | undefined,
+  ): void => {
+    try {
+      bus.publish({
+        type: "llm.activity",
+        ts: Date.now(),
+        payload: {
+          channel: input.channel,
+          threadKey: `agent:${entry.jobId}`, // 워커 worker:<jobId> 와 동형 — 대시보드 서브 카드 귀속.
+          adapter: "claude",
+          model: lastModel ?? undefined,
+          seq: entry.seq++,
+          kind: "tool",
+          label,
+          ...(detail !== undefined ? { detail } : {}),
+        } satisfies RegionAActivityPayload,
+      });
+    } catch {
+      /* 관측 발행 실패가 부모 turn 을 무르지 않는다(원칙 3). */
+    }
+  };
+
+  // Task tool_use 감지 시 관측 잡 등록 (best-effort). 등록 실패해도 부모 turn 무영향.
+  const registerTaskJob = (taskId: string, rawInput: unknown): void => {
+    if (taskJobs.has(taskId)) return; // 중복 감지 방어(같은 tool_use id 재관측).
+    try {
+      const { agentName, label, task } = parseTaskInput(rawInput);
+      const jobId = registerJob({
+        kind: "agent",
+        agentName,
+        label,
+        task,
+        threadKey: input.threadKey, // 어느 대화가 띄운 서브인지 상관(codex 와 동일).
+        channel: input.channel,
+        channelUserId: "", // agent 잡은 재주입/통지 안 함(U-I1).
+      });
+      taskJobs.set(taskId, { jobId, agentName, task, seq: 0 });
+    } catch {
+      /* registerJob 실패해도 부모 turn 진행(원칙 3). 이 Task 는 관측 누락으로 degrade. */
+    }
+  };
+
+  // Task 완료 마킹 — tool_result 도착 시. best-effort.
+  const completeTaskJob = (taskId: string, resultText: string): void => {
+    const entry = taskJobs.get(taskId);
+    if (entry === undefined) return;
+    taskJobs.delete(taskId);
+    try {
+      markDone(entry.jobId, resultText);
+    } catch {
+      /* 완료 마킹 실패 무해 — 아래 finally 정리가 고아 방지 백업 아님(이미 delete). */
+    }
+  };
+
   // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
   // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
   // SDK assistant message text 는 이미 덩어리(자연 coalesce) — coalescer 가 통일 정책 적용.
@@ -592,6 +741,15 @@ export const runClaude = async (
         throw new Error(`claude-agent-sdk error: ${errs}`);
       }
     } else if (msg.type === "assistant") {
+      // 서브에이전트(Task) 관측 라우팅 (ADR 2026-07-03 Phase A). parent_tool_use_id 가
+      // 추적 중인 Task id 면 이 assistant 메시지는 *서브 내부* 스텝 → agent:<jobId> 좌표로
+      // 분기. null(부모 자신)이면 기존 부모 좌표 발행 그대로(회귀 0).
+      const parentToolUseId = (msg as { parent_tool_use_id?: unknown })
+        .parent_tool_use_id;
+      const nestedEntry =
+        typeof parentToolUseId === "string"
+          ? taskJobs.get(parentToolUseId)
+          : undefined;
       const blocks = msg.message?.content;
       if (Array.isArray(blocks)) {
         for (const block of blocks) {
@@ -602,38 +760,68 @@ export const runClaude = async (
           ) {
             const t = (block as { text?: unknown }).text;
             if (typeof t === "string") {
-              assistantTextChunks.push(t);
-              // llm.delta — assistant 텍스트 청크 fan-out(sdk_message firehose 와 별개
-              // 레이어, 순수 텍스트 증분). coalescer 가 ~80ms∥120자로 묶어 발행.
-              deltaStream.push(t);
+              // 서브 내부(nested) 텍스트는 부모 answer 수집·delta 에 넣지 않는다 —
+              // 부모 회귀 0 핵심(서브 텍스트가 사용자 답변으로 새거나 부모 델타 버블에
+              // 섞이면 안 됨). 관측은 도구 스텝(아래) 단위라 서브 텍스트는 activity 화 안 함
+              // (스키마상 이산 도구 step 만, codex 서브도 도구만 per-step — parity).
+              if (nestedEntry === undefined) {
+                assistantTextChunks.push(t);
+                // llm.delta — assistant 텍스트 청크 fan-out(sdk_message firehose 와 별개
+                // 레이어, 순수 텍스트 증분). coalescer 가 ~80ms∥120자로 묶어 발행.
+                deltaStream.push(t);
+              }
             }
           } else if (
             block &&
             typeof block === "object" &&
             (block as { type?: string }).type === "tool_use"
           ) {
-            // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
-            // detail — tool_use 블록의 input 객체에서 중립 인자 요약(축3 사이드바).
+            const toolName = String((block as { name?: unknown }).name ?? "tool");
             const toolInput = (block as { input?: unknown }).input;
-            bus.publish({
-              type: "llm.activity",
-              ts: Date.now(),
-              payload: {
-                channel: input.channel,
-                threadKey: input.threadKey,
-                adapter: "claude",
-                model: lastModel ?? undefined,
-                seq: activitySeq++,
-                kind: "tool",
-                label: String((block as { name?: unknown }).name ?? "tool"),
-                detail: buildActivityDetail(
-                  toolInput && typeof toolInput === "object"
-                    ? (toolInput as Record<string, unknown>)
-                    : undefined,
-                ),
-              } satisfies RegionAActivityPayload,
-            });
+            const detail = buildActivityDetail(
+              toolInput && typeof toolInput === "object"
+                ? (toolInput as Record<string, unknown>)
+                : undefined,
+            );
+            if (nestedEntry !== undefined) {
+              // 서브 내부 도구 — agent:<jobId> 좌표 activity(codex 서브 per-step 동형).
+              publishAgentToolActivity(nestedEntry, toolName, detail);
+            } else {
+              // 부모 top-level tool_use. name==="Task" 면 서브에이전트 spawn → 관측 잡 등록.
+              // (nested 는 위에서 이미 분기되므로 여기 도달 = parent_tool_use_id===null 부모.)
+              const toolUseId = (block as { id?: unknown }).id;
+              if (toolName === "Task" && typeof toolUseId === "string") {
+                registerTaskJob(toolUseId, toolInput);
+              }
+              // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
+              // detail — tool_use 블록의 input 객체에서 중립 인자 요약(축3 사이드바).
+              // Task 도구 자체도 부모 좌표 activity 로 남긴다(부모가 '서브를 띄웠다' 스텝).
+              bus.publish({
+                type: "llm.activity",
+                ts: Date.now(),
+                payload: {
+                  channel: input.channel,
+                  threadKey: input.threadKey,
+                  adapter: "claude",
+                  model: lastModel ?? undefined,
+                  seq: activitySeq++,
+                  kind: "tool",
+                  label: toolName,
+                  detail,
+                } satisfies RegionAActivityPayload,
+              });
+            }
           }
+        }
+      }
+    } else if (msg.type === "user") {
+      // Task 완료 감지 — 부모가 자기 Task tool_use 에 대응하는 tool_result 를 받는 user
+      // 메시지(parent_tool_use_id===null). content 의 tool_result 블록 중 tool_use_id 가
+      // 추적 중인 Task id 면 그 서브 완료 → markDone(agent 잡 종료 = 대시보드 카드 완료).
+      // best-effort — extractToolResults·completeTaskJob 은 throw 없음(순수/try 내장).
+      if (taskJobs.size > 0) {
+        for (const { toolUseId, text } of extractToolResults(msg)) {
+          completeTaskJob(toolUseId, text);
         }
       }
     }
@@ -656,6 +844,17 @@ export const runClaude = async (
       lastUsage = undefined;
       succeeded = false;
       activitySeq = 0;
+      // 서브에이전트 관측 리셋 — 첫 시도서 등록된 Task 잡을 닫고(고아 running 방지) 매핑
+      // 초기화. fresh 세션엔 그 Task id 가 안 오므로 tool_result 로 닫힐 길 없음 → 여기서
+      // markFailed 로 명시 종료(best-effort). taskJobs.clear() 로 재실행 매핑 청결.
+      for (const entry of taskJobs.values()) {
+        try {
+          markFailed(entry.jobId, "resume 폴백 재실행으로 서브에이전트 관측 중단");
+        } catch {
+          /* 마킹 실패 무해. */
+        }
+      }
+      taskJobs.clear();
       const freshOptions: Options = { ...options };
       delete (freshOptions as { resume?: unknown }).resume;
       q = buildQuery(freshOptions);
@@ -681,6 +880,18 @@ export const runClaude = async (
     // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
     // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
     deltaStream.flush();
+    // 서브에이전트 관측 고아 정리 — 턴 종료(성공·throw·abort)까지 tool_result 로 안 닫힌
+    // Task 잡(SDK abort·에러로 서브 미완, 또는 완료 메시지 유실)을 running 고아로 남기지
+    // 않는다. 정상 완료는 completeTaskJob 이 이미 delete 했으므로 여기 남은 건 미완만 →
+    // markFailed 로 명시 종료(대시보드 카드가 running 에 영영 머물지 않게). best-effort.
+    for (const entry of taskJobs.values()) {
+      try {
+        markFailed(entry.jobId, "턴 종료까지 서브에이전트 완료 신호 미도착");
+      } catch {
+        /* 마킹 실패 무해 — 데몬 생존 우선(원칙 3). */
+      }
+    }
+    taskJobs.clear();
   }
 
   // 유휴/턴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를

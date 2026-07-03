@@ -379,6 +379,20 @@ export const initStore = (): void => {
     handle.exec(`ALTER TABLE worker_jobs ADD COLUMN notify_target TEXT`);
   }
 
+  // ─── 서브·워커 통합: worker_jobs.kind/agent_name (2026-07-03, ADR subagent-worker-unify) ──
+  // 잡 관측 체계를 워커+서브에이전트 공용으로 통합. kind='worker'(detached, run_in_background)
+  // | 'agent'(awaited 서브에이전트). agent_name = 서브에이전트 정의 이름(대시보드 라벨). NULL
+  // 허용 + DEFAULT 'worker' → 기존 워커 레코드 100% 호환(재시작 복구 시 kind 없으면 worker).
+  // notify_channel 패턴 동형(idempotent probe+ADD). awaited 는 별 컬럼 아닌 kind==='agent' 파생.
+  if (!wjCols.some((c) => c.name === "kind")) {
+    handle.exec(
+      `ALTER TABLE worker_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'worker'`,
+    );
+  }
+  if (!wjCols.some((c) => c.name === "agent_name")) {
+    handle.exec(`ALTER TABLE worker_jobs ADD COLUMN agent_name TEXT`);
+  }
+
   // ─── 관측 이벤트 영속 (감사·메트릭 — 2026-06-19) ──────────────────────────────
   // EventBus 는 비영속 ring buffer(hot cache)뿐 — 재시작 시 이력 소실. 이 테이블은
   // *의미있는* 이벤트(에러·발화·lifecycle·memory.write 등; 고volume 스트리밍/본문 제외)를

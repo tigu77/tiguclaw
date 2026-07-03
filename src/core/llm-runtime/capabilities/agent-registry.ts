@@ -317,6 +317,15 @@ export const createSpawnAgentMcpServer = (
       prompt: z.string().min(1),
     },
     async (args) => {
+      // 관측 잡 (kind:'agent') — 서브에이전트를 워커와 동일한 대시보드 잡으로 노출
+      // (ADR 2026-07-03 subagent-worker-unify, Phase A). 실행 모델은 불변(블로킹 await).
+      // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=워커만) 자동 충족.
+      // 자식 실행 threadKey = `agent:<jobId>` → 활동(llm.activity)이 그 좌표로 흘러
+      // 대시보드가 워커(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
+      const { registerJob, markDone, markFailed } = await import(
+        "../../worker-jobs.js"
+      );
+      let jobId: string | undefined;
       try {
         // agent 정의 회수 (model 등급 포함). 우선순위 project > plugin > user.
         // V9.3 — parentInput.cwd 전파 → child 가 부모 프로젝트 스킬/에이전트 정합.
@@ -331,6 +340,18 @@ export const createSpawnAgentMcpServer = (
           cands[0]!;
         const def = await fs.readFile(agent.filePath, "utf8");
 
+        // 관측 잡 등록 — threadKey=부모(어느 대화가 띄웠나 상관), 실행은 agent:<jobId>.
+        // channelUserId 는 재주입/통지용인데 agent 잡은 둘 다 안 하므로 빈 문자열.
+        jobId = registerJob({
+          kind: "agent",
+          agentName: args.name,
+          label: args.name,
+          task: args.prompt,
+          threadKey: parentInput.threadKey,
+          channel: parentInput.channel,
+          channelUserId: "",
+        });
+
         // lean 신호 — agent.md frontmatter 정규화 (2026-06-15). 어댑터 무관 중립 신호.
         //  - toolPolicy: tools: none → {mode:"none"} / 콤마 리스트 → allow / 미지정 → undefined.
         //  - leanMemory: tools: none agent 는 메모리 생략(단순작업 child). 둘 다 additive.
@@ -338,7 +359,7 @@ export const createSpawnAgentMcpServer = (
         const leanMemory = deriveLeanMemory(agent);
         const childInput: RegionASdkInput = {
           text: `${def}\n\n[Subagent Task]: ${args.prompt}`,
-          threadKey: `${parentInput.threadKey}::sub::${args.name}::${Date.now()}`,
+          threadKey: `agent:${jobId}`,
           channel: parentInput.channel,
           cwd: parentInput.cwd,
           subagentDepth: 1,
@@ -353,9 +374,12 @@ export const createSpawnAgentMcpServer = (
           childInput,
           specs.length > 0 ? { specs } : undefined,
         );
+        markDone(jobId, out.text); // 관측 완료 — 재주입 없음(결과는 아래 return 으로 부모 회수).
         return okText(out.text);
       } catch (e) {
-        return errText(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        if (jobId !== undefined) markFailed(jobId, msg);
+        return errText(msg);
       }
     },
   );

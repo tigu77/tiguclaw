@@ -27,6 +27,9 @@ export interface WorkerNotifyDest {
   target: string | null;
 }
 
+/** 잡 종류 — 'worker'(detached) | 'agent'(awaited 서브에이전트). ADR subagent-worker-unify. */
+export type PersistedJobKind = "worker" | "agent";
+
 export interface PersistedWorkerJob {
   jobId: string;
   label: string;
@@ -36,6 +39,10 @@ export interface PersistedWorkerJob {
   status: PersistedJobStatus;
   startedAt: number;
   finishedAt: number | null;
+  /** 잡 종류. 기존 레코드(컬럼 DEFAULT 'worker')는 항상 'worker'. */
+  kind: PersistedJobKind;
+  /** 서브에이전트 정의 이름(kind==='agent' 만). 대시보드 라벨용. */
+  agentName?: string;
   /**
    * 영속된 통지 목적지. notify_channel 이 있으면 {channel, target} 로 복원,
    * 미지정(NULL)이면 undefined → core 가 job.channel/threadKey 폴백(회귀 0).
@@ -54,6 +61,8 @@ interface DbRow {
   finished_at: number | null;
   notify_channel: string | null;
   notify_target: string | null;
+  kind: string | null;
+  agent_name: string | null;
 }
 
 const toJob = (r: DbRow): PersistedWorkerJob => ({
@@ -71,6 +80,9 @@ const toJob = (r: DbRow): PersistedWorkerJob => ({
       : "running",
   startedAt: r.started_at,
   finishedAt: r.finished_at,
+  // kind 미존재(구 레코드)·비정상값이면 'worker'(회귀 안전).
+  kind: r.kind === "agent" ? "agent" : "worker",
+  agentName: r.agent_name ?? undefined,
   // 채널이 영속돼 있을 때만 dest 복원(미지정 = 기존 워커 → undefined → core 폴백).
   notifyDest:
     r.notify_channel !== null
@@ -89,14 +101,17 @@ export const upsertWorkerJob = (job: {
   startedAt: number;
   finishedAt?: number | null;
   notifyDest?: WorkerNotifyDest;
+  /** 잡 종류(미지정=worker, 회귀 안전). */
+  kind?: PersistedJobKind;
+  agentName?: string;
 }): void => {
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO worker_jobs
          (job_id, label, thread_key, channel, channel_user_id, status,
-          started_at, finished_at, notify_channel, notify_target)
+          started_at, finished_at, notify_channel, notify_target, kind, agent_name)
        VALUES (@jobId, @label, @threadKey, @channel, @channelUserId, @status,
-          @startedAt, @finishedAt, @notifyChannel, @notifyTarget)`,
+          @startedAt, @finishedAt, @notifyChannel, @notifyTarget, @kind, @agentName)`,
     )
     .run({
       jobId: job.jobId,
@@ -109,6 +124,8 @@ export const upsertWorkerJob = (job: {
       finishedAt: job.finishedAt ?? null,
       notifyChannel: job.notifyDest?.channel ?? null,
       notifyTarget: job.notifyDest?.target ?? null,
+      kind: job.kind ?? "worker",
+      agentName: job.agentName ?? null,
     });
 };
 
@@ -131,7 +148,7 @@ export const listInterruptedWorkerJobs = (): PersistedWorkerJob[] =>
     getDb()
       .prepare(
         `SELECT job_id, label, thread_key, channel, channel_user_id, status,
-                started_at, finished_at, notify_channel, notify_target
+                started_at, finished_at, notify_channel, notify_target, kind, agent_name
            FROM worker_jobs WHERE status = 'running' ORDER BY started_at ASC`,
       )
       .all() as DbRow[]

@@ -400,6 +400,15 @@
       .bg-job.done { border-left-color:#34d399; }
       .bg-job.failed { border-left-color:#f87171; }
       .bg-job.cancelled { border-left-color:var(--text-dim); opacity:.85; }
+      /* 서브에이전트 잡 — 워커와 시각적 구분(보라 좌측 강조 + 배지). status 색은 top-border 로,
+         kind 는 좌측 accent+배지로 직교 표현. .agent.done 등 status 색이 kind 색을 덮지 않게
+         .agent 는 border-left 를 항상 보라 유지(status 는 뱃지 텍스트로 이미 구분). */
+      .bg-job.agent { border-left-color:#a78bfa; }
+      .bg-job.agent.running { border-left-color:#a78bfa; }
+      .bg-job.agent.done { border-left-color:#a78bfa; }
+      .bg-job.agent.failed { border-left-color:#f87171; }
+      .bg-job.agent.cancelled { border-left-color:#a78bfa; opacity:.85; }
+      .bg-job-kind { flex:none; font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgba(167,139,250,.16); color:#c4b5fd; border:1px solid rgba(167,139,250,.4); white-space:nowrap; }
       /* ── 진행 중 은은한 pulse (2026-07-03) ── 정적이던 '진행중' 표시(작업카드·상단배지·현재
          스텝)에 생동감. 텍스트 가독성 유지 위해 border-color/opacity 만 건드림. 감속모드 존중. */
       @keyframes tc-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
@@ -1421,13 +1430,16 @@
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
           label.textContent = (opts && opts.label) || "(작업)";
+          // 서브에이전트 배지(kind==="agent") — 워커와 시각적 구분. status 뱃지와 별개 축.
+          const kindBadge = document.createElement("span"); kindBadge.className = "bg-job-kind";
+          kindBadge.textContent = "🤖 서브에이전트"; kindBadge.style.display = "none";
           const st = document.createElement("span"); st.className = "bg-job-status";
           // 기본 상태 텍스트 — 활동(activity)으로만 생성된 카드(대시보드가 worker.started 를
           // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
           // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
           st.textContent = BG_STATUS.running;
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
-          top.appendChild(label); top.appendChild(st); top.appendChild(chev);
+          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
           const err = document.createElement("div"); err.className = "bg-job-err"; err.style.display = "none";
@@ -1444,13 +1456,27 @@
           bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
-            resultEl: result, errEl: err, status: "running", stepCount: 0, hasTask: false, hasResult: false,
+            resultEl: result, errEl: err, kindBadgeEl: kindBadge,
+            status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
           };
           jobCards.set(jobId, entry);
           // 활동으로만 생성된 카드도 헤더 '백그라운드 N' 개수 뱃지·bgEmpty 를 즉시 반영
           // (기존엔 handleWorkerEvent 만 refreshBgBadge 호출 → 활동-only 카드는 개수 누락).
           refreshBgBadge();
+        }
+        // 서브에이전트 마킹(멱등) — lifecycle(kind:"agent")이 활동보다 먼저/나중 어느 쪽으로 와도
+        // 카드를 서브로 승격. 배지 표시 + .agent 클래스. 워커(kind 미지정/"worker")는 무영향.
+        if (opts && opts.kind === "agent" && entry.kind !== "agent") {
+          entry.kind = "agent";
+          entry.el.classList.add("agent");
+          entry.kindBadgeEl.style.display = "";
+        }
+        // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
+        // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.
+        if (entry.kind === "agent" && opts && opts.agentName) {
+          const want = "🤖 " + opts.agentName;
+          if (entry.labelEl.textContent !== want) entry.labelEl.textContent = want;
         }
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
         if (opts && opts.task && !entry.hasTask) {
@@ -1462,7 +1488,7 @@
       const handleWorkerEvent = (p, ts) => {
         if (!p.jobId) return;
         const status = p.status || "running";
-        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey });
+        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName });
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");
         entry.el.classList.add(status); // open/has-detail 보존.
@@ -1478,12 +1504,23 @@
         capBgList();
         refreshBgBadge();
       };
-      // Step3 — 워커 활동(threadKey=worker:<jobId>)을 그 잡 카드 안 스텝으로. true=처리됨.
+      // Step3 — 백그라운드 잡 활동(threadKey=worker:<jobId> | agent:<jobId>)을 그 잡 카드 안
+      // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(워커·서브 동일 격리). 서브 규약(ADR
+      // 2026-07-03): prefix 만 worker:→agent: 로 다르고 payload 구조 동형. agent: 로 온 활동은
+      // 카드를 서브로 마킹(lifecycle 보다 활동이 먼저 도착해도 배지 표시).
       const handleWorkerActivity = (p, ts) => {
         const tk = typeof p.threadKey === "string" ? p.threadKey : "";
-        if (tk.indexOf("worker:") !== 0) return false;
-        const jobId = tk.slice("worker:".length);
-        const entry = ensureJobCard(jobId, { ts, threadKey: tk });
+        let jobId = null;
+        let cardOpts = { ts, threadKey: tk };
+        if (tk.indexOf("worker:") === 0) {
+          jobId = tk.slice("worker:".length);
+        } else if (tk.indexOf("agent:") === 0) {
+          jobId = tk.slice("agent:".length);
+          cardOpts.kind = "agent"; // 활동-선도 카드도 서브로 승격(agentName 은 lifecycle 이 채움).
+        } else {
+          return false;
+        }
+        const entry = ensureJobCard(jobId, cardOpts);
         // ★dedup — SSE replay(새로고침 시 재연결) 가 버퍼 이벤트를 재전송하면 같은 워커 스텝이
         // 매번 다시 append 돼 "무한 반복"처럼 보였다(2026-07-03 실측). seq(어댑터 단조) 로 판정,
         // seq 없으면 label␟detail 로 폴백. 이미 그린 스텝이면 건너뛴다.

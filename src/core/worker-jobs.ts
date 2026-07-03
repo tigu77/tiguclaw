@@ -34,7 +34,14 @@ import { getEventBus } from "./eventbus.js";
 // worker → core bus(플러그인 무참조). 대시보드 등 구독자가 worker.* 를 받아 렌더.
 const publishWorkerLifecycle = (
   type: "worker.started" | "worker.done" | "worker.failed" | "worker.cancelled",
-  job: { jobId: string; label: string; threadKey: string; status: string },
+  job: {
+    jobId: string;
+    label: string;
+    threadKey: string;
+    status: string;
+    kind?: WorkerJobKind;
+    agentName?: string;
+  },
   extra?: { error?: string; task?: string; result?: string },
 ): void => {
   try {
@@ -46,6 +53,9 @@ const publishWorkerLifecycle = (
         label: job.label,
         threadKey: job.threadKey, // 어느 대화가 띄운 잡인지 상관(correlate)용.
         status: job.status,
+        // kind='agent' 면 대시보드가 서브에이전트 카드로 렌더(agentName 라벨). 미지정=worker.
+        kind: job.kind ?? "worker",
+        ...(job.agentName !== undefined ? { agentName: job.agentName } : {}),
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
@@ -88,8 +98,19 @@ export interface WorkerNotifyDest {
 
 export type WorkerJobStatus = "running" | "done" | "failed" | "cancelled";
 
+/**
+ * 잡 종류 — 'worker'(detached, run_in_background) | 'agent'(awaited 서브에이전트).
+ * ADR 2026-07-03 subagent-worker-unify. awaited 는 별 필드 아닌 kind==='agent' 파생.
+ * 배타 불변식(U-I1~U-I5): 재주입·워커타임아웃·cancel_worker·재시작 복구 통지는 'worker'만.
+ */
+export type WorkerJobKind = "worker" | "agent";
+
 export interface WorkerJobRecord {
   jobId: string;
+  /** 잡 종류 — 관측은 공용, 실행 의미(재주입·타임아웃 등)는 kind 로 분기. */
+  kind: WorkerJobKind;
+  /** 서브에이전트 정의 이름(kind==='agent' 만) — 대시보드 라벨. */
+  agentName?: string;
   /** 사람이 읽는 짧은 이름 (완료 보고·상태 조회·로그). */
   label: string;
   /** 워커가 수행한 자연어 작업 지시 (메인이 작성). */
@@ -125,17 +146,24 @@ export interface RegisterJobInput {
   channelUserId: string;
   /** 완료/실패 통지 generic 목적지 (additive). 미지정 = channel/threadKey 폴백. */
   notifyDest?: WorkerNotifyDest;
+  /** 잡 종류 — 미지정=worker(회귀 안전). 'agent'=awaited 서브에이전트. */
+  kind?: WorkerJobKind;
+  /** 서브에이전트 이름(kind==='agent' 만) — 대시보드 라벨. */
+  agentName?: string;
 }
 
 /**
- * 잡 등록 → jobId 반환. spawn_worker 도구가 fire-and-forget 발사 직전 호출.
+ * 잡 등록 → jobId 반환. spawn_worker(kind:worker) / 서브에이전트 관측(kind:agent) 이 사용.
  * status="running" / startedAt=now 로 시작.
  */
 export const registerJob = (input: RegisterJobInput): string => {
   const jobId = randomUUID();
   const startedAt = Date.now();
+  const kind: WorkerJobKind = input.kind ?? "worker";
   jobs.set(jobId, {
     jobId,
+    kind,
+    agentName: input.agentName,
     label: input.label,
     task: input.task,
     threadKey: input.threadKey,
@@ -155,11 +183,20 @@ export const registerJob = (input: RegisterJobInput): string => {
       notifyDest: input.notifyDest,
       status: "running",
       startedAt,
+      kind,
+      agentName: input.agentName,
     }),
   );
   publishWorkerLifecycle(
     "worker.started",
-    { jobId, label: input.label, threadKey: input.threadKey, status: "running" },
+    {
+      jobId,
+      label: input.label,
+      threadKey: input.threadKey,
+      status: "running",
+      kind,
+      agentName: input.agentName,
+    },
     { task: input.task },
   );
   return jobId;
@@ -783,6 +820,15 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
     return;
   }
   for (const job of interrupted) {
+    // U-I5: awaited 서브에이전트(kind='agent')는 부모 turn 에 종속 — 재시작 시 부모도 사라져
+    // 통지 대상이 없다(고아 통지 방지). status='interrupted' 마킹만 하고 통지는 생략.
+    // (detached 워커만 사용자에게 "중단됐어요" 정직 통지 — 그건 부모와 무관하게 돌던 잡.)
+    if (job.kind === "agent") {
+      persistSafe("recover-agent", () =>
+        updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
+      );
+      continue;
+    }
     const text =
       `⚠️ 이전에 맡긴 백그라운드 작업 '${job.label}'이 데몬 재시작으로 중단됐어요. ` +
       `결과를 받지 못했으니, 필요하면 다시 시켜주세요.`;

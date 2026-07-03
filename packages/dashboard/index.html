@@ -1445,6 +1445,7 @@
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             resultEl: result, errEl: err, status: "running", stepCount: 0, hasTask: false, hasResult: false,
+            seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
           };
           jobCards.set(jobId, entry);
           // 활동으로만 생성된 카드도 헤더 '백그라운드 N' 개수 뱃지·bgEmpty 를 즉시 반영
@@ -1483,6 +1484,12 @@
         if (tk.indexOf("worker:") !== 0) return false;
         const jobId = tk.slice("worker:".length);
         const entry = ensureJobCard(jobId, { ts, threadKey: tk });
+        // ★dedup — SSE replay(새로고침 시 재연결) 가 버퍼 이벤트를 재전송하면 같은 워커 스텝이
+        // 매번 다시 append 돼 "무한 반복"처럼 보였다(2026-07-03 실측). seq(어댑터 단조) 로 판정,
+        // seq 없으면 label␟detail 로 폴백. 이미 그린 스텝이면 건너뛴다.
+        const stepKey = p.seq != null ? "s" + p.seq : (p.label || "") + "␟" + (p.detail || "");
+        if (entry.seenSteps.has(stepKey)) return true;
+        entry.seenSteps.add(stepKey);
         const line = document.createElement("div");
         line.className = "bg-step";
         const icon = document.createElement("span"); icon.className = "bg-step-icon";

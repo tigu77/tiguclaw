@@ -1149,6 +1149,16 @@ const CODEX_TOOL_TIMEOUT_MS = parsePosIntEnv(
   480_000,
 );
 
+// ★도구 조기 경고 (2026-07-03) — 도구가 이 시간 안 끝나면 8분 타임아웃 *전에* 로그 경고.
+// 실측: 워커 도구(Bash 등)가 **macOS 권한 요청 다이얼로그**에 막혀 조용히 멈췄는데, 도구
+// 시작(llm.activity)만 찍히고 완료 신호가 없어 "느림 vs 막힘" 구분이 안 돼 30분+ 헤맸다.
+// → 도구가 오래 안 끝나면 ~90초에 `[tool-slow]` 로 알려 "권한 요청 확인" 같은 조치를 빨리
+// 하게. 죽이지 않고 경고만(정상 긴 도구=무해한 로그 1줄). env override.
+const CODEX_TOOL_SLOW_WARN_MS = parsePosIntEnv(
+  process.env.CODEX_TOOL_SLOW_WARN_MS,
+  90_000,
+);
+
 // 요약 합성 턴을 감싸는 스캐폴딩 헤더 — assembleUserPrompt 의 <system-reminder> 패턴
 // 답습. 메인 모델이 "하네스가 주는 배경 정보(사용자 발화 아님)"로 인지 → 그대로 echo
 // 하지 않음. user role 메시지지만 내부 스캐폴딩 형태라 딴소리·메아리 방지.
@@ -1659,6 +1669,31 @@ export const runOpenAiCodex = async (
     adapter: "codex",
     model,
   });
+  // ★워커/서브에이전트 서술 트레이스 (2026-07-03) — deltaStream(대시보드 fan-out)은 depth-0
+  // 전용이라 워커(workerDepth>0)·서브에이전트(depth>0) 서술이 그간 어디에도 안 남아 사후
+  // 진단 불가였다(실측: 워커 크롤/루프를 델타 미영속으로 확인 못 함). event-persist 의
+  // stream-trace 는 llm.delta(=depth-0만 발행)를 보므로 그것도 워커를 못 잡는다. → deltaStream
+  // 이 *꺼진* 턴에서만(중복 회피) 서술을 coalesce 해 `[stream-trace]` 로그로 남긴다. 로그 전용
+  // (events DB 미기록 — 보존 오염 0, event-persist 정책과 동일). 형식도 event-persist 와 동형.
+  const traceDelta = !(depth === 0 && (input.workerDepth ?? 0) === 0);
+  let traceBuf = "";
+  let traceTotal = 0;
+  const traceFlush = (reason: string): void => {
+    if (!traceDelta || traceBuf === "") return;
+    const tail = traceBuf.length > 400 ? `…${traceBuf.slice(-400)}` : traceBuf;
+    console.log(
+      `[stream-trace] ${input.threadKey} total=${traceTotal} +${traceBuf.length}(${reason}) tail: ${tail
+        .replace(/\s+/g, " ")
+        .slice(-140)}`,
+    );
+    traceBuf = "";
+  };
+  const tracePush = (delta: string): void => {
+    if (!traceDelta) return;
+    traceBuf += delta;
+    traceTotal += delta.length;
+    if (traceBuf.length >= 1500) traceFlush("chunk");
+  };
   // persistence 보강 (2026-05-27, contract Q3 + recon §5):
   //  - finalFlushRequested: 절대 백스톱(HARD)-1 도달 시 set(또는 empty-break cap 소진 시).
   //    다음 turn 은 tools 비우고 "마무리 텍스트만" 요청 → 도구 한도 도달해도 빈 finalText 격감.
@@ -1862,7 +1897,10 @@ export const runOpenAiCodex = async (
             iterChunks += 1;
             iterLastChunkAt = Date.now();
           },
-          (delta) => deltaStream.push(delta), // llm.delta fan-out (coalesce → publish).
+          (delta) => {
+            deltaStream.push(delta); // llm.delta fan-out (coalesce → publish, depth-0).
+            tracePush(delta); // 워커/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
+          },
           () => progressTimer.beat(), // onProgress — 실제 output/tool = 진전 → 타이머 reset.
         );
         break; // 스트림 소비 성공 → 재시도 루프 탈출.
@@ -1950,6 +1988,7 @@ export const runOpenAiCodex = async (
         // 이 iteration SSE 잔여 델타 flush(도구 실행/다음 iteration 전 발행) + 타이머 정리.
         // best-effort — 실패해도 out 전체본이 권위 교체. seq 는 다음 iteration 으로 단조 유지.
         deltaStream.flush();
+        traceFlush("iter"); // 워커 서술 트레이스도 iteration 경계마다 flush(길게 끄는 턴도 로그).
       }
       }
       const { text, responseId, toolCalls, usage } = sseResult;
@@ -2159,6 +2198,34 @@ export const runOpenAiCodex = async (
           // (이벤트루프 잔류 0). orphan: MCP callTool 은 signal 없어 timeout 후 detached 로 계속
           // 돌 수 있음(§4.4 #3) — 넉넉한 기본값이 완료 직전 오살 위험 최소화.
           let toolTimer: ReturnType<typeof setTimeout> | undefined;
+          // 조기 경고 — 타임아웃(8분) 전에 ~90초에 로그로 알림(권한 요청/hung/느림 조기 발견).
+          // 죽이지 않고 경고만. callTool 이 먼저 끝나면 아래 finally 가 clearTimeout(누수 0).
+          const slowTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+            console.warn(
+              `[tool-slow] ${input.threadKey} 도구 ${tc.name} 이(가) ${Math.round(
+                CODEX_TOOL_SLOW_WARN_MS / 1000,
+              )}s+ 실행 중 — macOS 권한 요청(다이얼로그 확인)·hung·느림 의심. ${Math.round(
+                CODEX_TOOL_TIMEOUT_MS / 60_000,
+              )}분에 타임아웃.`,
+            );
+            // 관측 이벤트 — worker-jobs 가 구독해 워커면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
+            // 채널 무결합(어댑터는 event 만, dest 라우팅은 worker 계층). best-effort.
+            try {
+              bus.publish({
+                type: "llm.tool_slow",
+                ts: Date.now(),
+                payload: {
+                  channel: input.channel,
+                  threadKey: input.threadKey,
+                  tool: tc.name,
+                  ms: CODEX_TOOL_SLOW_WARN_MS,
+                },
+              });
+            } catch {
+              /* best-effort */
+            }
+          }, CODEX_TOOL_SLOW_WARN_MS);
+          slowTimer.unref?.();
           const result = await Promise.race([
             bridge.callTool(tc.name, args),
             new Promise<never>((_, reject) => {
@@ -2175,6 +2242,7 @@ export const runOpenAiCodex = async (
             }),
           ]).finally(() => {
             if (toolTimer !== undefined) clearTimeout(toolTimer);
+            clearTimeout(slowTimer);
           });
           // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
           executedToolNames.add(tc.name);

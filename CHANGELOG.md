@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-07-03
+
+### Fixed
+- **Dashboard background-job steps duplicated on every refresh — looking like an infinite loop.** Worker step lines weren't de-duplicated, so each time the page reconnected (a refresh replays the recent event buffer) the same steps were appended again, stacking up until it looked like the job was repeating the same actions forever. Steps are now de-duplicated by sequence, so a refresh no longer multiplies them. (The job wasn't actually looping — only the rendering was.)
+
+### Added
+- **Streaming model output is now traceable for after-the-fact diagnosis** — for interactive turns *and background workers/sub-agents*. Previously only a completed turn's final text was saved (in transcripts), and streaming was only observable for the main chat (never for background jobs), so a stuck or looping worker's narration was invisible. The token stream is now written to the log as low-volume coalesced snapshots (a `[stream-trace]` line roughly every 12 seconds or 1500 characters, per thread), for every turn including workers.
+- **A stuck background job now tells you it's stuck** — instead of looking like a mysterious slowdown for tens of minutes. When a tool call on the `codex` line runs longer than a threshold (default 90s, `CODEX_TOOL_SLOW_WARN_MS`) — well before the hard 8-minute timeout — it's logged as `[tool-slow]`, and for a background job you also get a one-time notification: *"the job is stuck on tool X — check whether a permission dialog is waiting on your Mac."* This turns a silent block on a **macOS permission prompt** (or a hung/slow tool) into an actionable heads-up in seconds.
+
 ## [0.3.14] - 2026-07-03
 
 ### Fixed
 - **Dashboard background-job cards missing their status badge (and the header count not updating) when the page was opened while a job was already running.** A job card can be built either from the job's start/finish lifecycle events or from its live activity. Only the lifecycle path set the status label ("🟡 running") and refreshed the header "background N" count — so if the dashboard connected mid-job (e.g. a refresh while a job runs) it only saw activity, and the card showed no status and the header count stayed empty. Card creation now sets a default running status and refreshes the count, regardless of which path created it.
+
+## [0.3.13] - 2026-07-03
 
 ### Fixed
 - **The `codex` (ChatGPT) model line no longer lets one pathologically slow response consume an entire background job.** The stall guard resets every time any answer text streams in, so if the backend dribbles output *very* slowly (a token every couple of minutes), a single turn could crawl for 10–20 minutes without the guard ever firing — and a multi-step job would hit the 30-minute wall-clock limit with nothing to show (observed live during a ChatGPT-backend slowdown). A single response turn now also has an absolute wall-clock cap (default 10 minutes, `CODEX_TURN_MAX_MS`): if one turn exceeds it — regardless of trickle — the step is retried from the same context (not switched to another model), so a spiky slowdown can recover instead of eating the whole budget. This is orthogonal to the existing no-progress guard (which still catches dead connections at 5 minutes).
@@ -18,14 +29,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Dashboard shows a subtle pulse on in-progress indicators** — running background-job cards, the background-tasks badge count, and the currently-running step now gently pulse so it's obvious something is actively working. Respects `prefers-reduced-motion`.
 
+## [0.3.12] - 2026-07-03
+
 ### Fixed
 - **A hung tool call on the `codex` (ChatGPT) model line no longer freezes a background job for up to 30 minutes.** The stream-stall guard only watches the model's streaming response, and tool execution was deliberately exempt (to avoid killing legitimately long tools). But that left a gap: if a tool call itself hung, nothing caught it until the blunt 30-minute worker wall-clock limit — losing all the work with nothing to show (observed live: a maintenance job frozen ~19 minutes inside a shell command). Each tool call now has its own generous wall-clock timeout (default 8 minutes): if it's exceeded, that one call is turned into a tool error so the job keeps going and the model adapts, instead of the whole turn freezing. Tunable via `CODEX_TOOL_TIMEOUT_MS`. (The Claude line already had this via its SDK — this restores parity.)
+
+## [0.3.11] - 2026-07-03
 
 ### Fixed
 - **The `codex` (ChatGPT) model line now finishes large multi-step tasks instead of stopping partway with a "here's what I got done" report.** Background jobs like a daily wiki/library cleanup — which legitimately need dozens of tool calls (read many files, write several summaries, scan, etc.) — were hitting an internal 25-tool-call cap every run: the model was forced to wrap up mid-task, and the next day's run started over from scratch and never converged. The cap was doing double duty (runaway defense *and* task-completion signal); those are now separated. Runaway protection is handled by the progress-aware stall guard and the wall-clock turn backstop (which cut only genuine no-progress, not legitimately long work), so the tool-iteration limit is raised to a far safety ceiling (default 150) and the task now ends *naturally when the model is actually done* — matching how the Claude line already behaves (an LLM-agnostic parity fix). Tunable via `CODEX_MAX_TOOL_ITERATIONS_HARD`; `CODEX_MAX_TOOL_ITERATIONS` is now a soft progress-checkpoint interval.
 
+## [0.3.10] - 2026-07-03
+
 ### Changed
 - **`/update` is now robust to environment quirks — it never gets blocked by the on-instance typecheck.** Three times in a row the self-update typecheck step broke for environment reasons (Windows `npm.cmd`, `tsc` not on PATH, TypeScript absent on production installs), and each time the safety rollback undid a *perfectly good* pull — so the deterministic gate was blocking legitimate updates instead of catching broken code. The typecheck is now **advisory**: it still runs and logs its result when `tsc` is available, but it never rolls back or aborts the update. Every published release is already typechecked upstream (clean-room + plugin-load verification), so the on-instance re-check was redundant defense that only added brittleness. The update now always applies when the pull and dependency install succeed. (`git pull` failures and `npm install` failures still roll back — those are genuine "can't update", not environment noise.) This matches why natural-language "update yourself" was already reliable while the `/update` command was fragile.
+
+## [0.3.9] - 2026-07-02
 
 ### Fixed
 - **`/update` no longer fails on installs without the TypeScript dev-dependency** (e.g. production installs or `NODE_ENV=production`, where `npm install` omits dev-deps). The update was aborting with `Cannot find module .../typescript/bin/tsc` because the typecheck safety-gate needs `tsc`. Now the gate runs only when `tsc` is present and is skipped with a warning otherwise (published releases are already typechecked upstream), so the update proceeds instead of being permanently blocked. `npm install` also now includes dev-deps, so the gate re-enables once dependencies change.
@@ -142,7 +161,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.14...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.15...HEAD
+[0.3.15]: https://github.com/tigu77/tiguclaw/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/tigu77/tiguclaw/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/tigu77/tiguclaw/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/tigu77/tiguclaw/compare/v0.3.11...v0.3.12

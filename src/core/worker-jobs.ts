@@ -510,9 +510,47 @@ const subscribeWorkerStallNotify = (): void => {
   });
 };
 
+// 워커 도구 조기-경고 → 유저 통지 (2026-07-03). codex 어댑터가 `llm.tool_slow` 발행(도구가
+// CODEX_TOOL_SLOW_WARN_MS(기본 90s) 초과 실행). 워커면 dest 로 "멈춤 — Mac 권한 확인" 핑을
+// *잡당 1회*(스팸 방지) 보낸다. 권한요청/hung/느림 구분은 못 하나 "확인해봐"가 actionable —
+// 실측: 워커가 macOS 권한 다이얼로그에 조용히 막혀 30분+ 헤맴. 부팅 1회 구독. 통지 실패 무해.
+const toolSlowNotified = new Set<string>();
+let toolSlowNotifySubscribed = false;
+const subscribeWorkerToolSlowNotify = (): void => {
+  if (toolSlowNotifySubscribed) return;
+  toolSlowNotifySubscribed = true;
+  getEventBus().subscribe((event) => {
+    if (event.type !== "llm.tool_slow") return;
+    const tk =
+      typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
+    if (!tk.startsWith("worker:")) return;
+    const jobId = tk.slice("worker:".length);
+    if (toolSlowNotified.has(jobId)) return; // 잡당 1회.
+    const job = getJob(jobId);
+    if (job === undefined) return;
+    if (toolSlowNotified.size > 500) toolSlowNotified.clear(); // 누수 가드.
+    toolSlowNotified.add(jobId);
+    const dest = destForJob(job);
+    const tool =
+      typeof event.payload.tool === "string" ? event.payload.tool : "도구";
+    const sec = Math.round(
+      (typeof event.payload.ms === "number" ? event.payload.ms : 90_000) / 1000,
+    );
+    void deliverOutbound({
+      channel: dest.channel,
+      target: dest.target ?? null,
+      text: `⏳ 백그라운드 작업 '${job.label}' 이(가) 도구 '${tool}'에서 ${sec}초+ 멈춰 있어요. 혹시 Mac 에 권한 요청 다이얼로그가 떠 있는지 확인해주세요 (없으면 도구가 느리거나 멈춘 것일 수 있어요).`,
+      label: "worker",
+    }).catch(() => {
+      /* 통지 실패는 작업에 영향 0 */
+    });
+  });
+};
+
 export const registerWorkerHandler = (handler: MessageHandler): void => {
   mainHandler = handler;
   subscribeWorkerStallNotify(); // 부팅 1회 — 워커 스톨 재개 유저 통지 구독.
+  subscribeWorkerToolSlowNotify(); // 부팅 1회 — 워커 도구 멈춤(권한 등) 조기 통지 구독.
 };
 
 /**

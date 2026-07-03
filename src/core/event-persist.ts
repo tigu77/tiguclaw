@@ -52,6 +52,85 @@ export const startEventPersistence = (bus: EventBus): void => {
   });
 
   startChatLogPersistence(bus);
+  startStreamTracePersistence(bus);
+};
+
+/**
+ * 스트리밍 서술 트레이스 (2026-07-03) — `llm.delta`(고volume 토큰, SKIP_TYPES 제외)를
+ * *coalesce* 해 주기적 스냅샷을 **로그로만** 남긴다(`[stream-trace]`; DB events 아님).
+ *
+ * 배경: 완료된 turn 의 전체본은 transcripts/channel.message.out 에 있으나, *진행 중·멈춘·
+ * 루프* turn 의 스트리밍 서술은 어디에도 안 남아(delta denylist) 사후 진단 불가였다(실측:
+ * 워커가 무한 재탐색처럼 보이는데 delta 미영속이라 확인 못 함). → threadKey 별로 델타를
+ * 모아 ~12s 또는 ~1500자마다 tail 스냅샷 1건 로그. ★로그 전용 근거: 완료턴은 transcripts
+ * 와 중복이고, events 는 최근 1만 건 prune 이라 스트리밍 트레이스가 에러·lifecycle 을 밀어내는
+ * 보존 오염. 로그(일자별 파일)는 그 문제 0 + grep 으로 충분. 저volume + 누수 가드(동시 추적
+ * 상한·turn 경계 정리). throw 금지(재귀 위험, 위 sink 동일 정책).
+ */
+const startStreamTracePersistence = (bus: EventBus): void => {
+  const FLUSH_MS = 12_000; // 최소 스냅샷 간격.
+  const FLUSH_CHARS = 1500; // 이만큼 쌓이면 조기 flush.
+  const TAIL_CHARS = 400; // 스냅샷에 담는 최근 텍스트 길이(루프=반복 tail 판별용).
+  const MAX_TRACKED = 32; // 동시 추적 threadKey 상한(누수 가드).
+  const traces = new Map<
+    string,
+    { chunk: string; totalLen: number; lastFlushTs: number }
+  >();
+
+  const flush = (tk: string, ts: number, reason: string): void => {
+    const s = traces.get(tk);
+    if (!s || s.chunk === "") return;
+    const tail =
+      s.chunk.length > TAIL_CHARS ? `…${s.chunk.slice(-TAIL_CHARS)}` : s.chunk;
+    // ★로그로만 남긴다(DB events 아님). 근거: (a)완료턴 전체본은 transcripts 에 이미 있어
+    // DB 트레이스는 중복, (b)events 는 최근 1만 건 prune 이라 스트리밍 트레이스가 에러·
+    // lifecycle 같은 중요한 이벤트를 밀어내는 보존 오염. 로그는 일자별 파일이라 그 문제 0 +
+    // grep(threadKey·시각·반복 tail)으로 진행중·멈춘·루프 턴 서술을 사후 확인하기에 충분.
+    console.log(
+      `[stream-trace] ${tk} total=${s.totalLen} +${s.chunk.length}(${reason}) tail: ${tail
+        .replace(/\s+/g, " ")
+        .slice(-140)}`,
+    );
+    s.chunk = "";
+    s.lastFlushTs = ts;
+  };
+
+  bus.subscribe((event) => {
+    try {
+      if (event.type === "llm.delta") {
+        const p = (event.payload ?? {}) as { threadKey?: unknown; delta?: unknown };
+        const tk = typeof p.threadKey === "string" ? p.threadKey : "";
+        const d = typeof p.delta === "string" ? p.delta : "";
+        if (tk === "" || d === "") return;
+        let s = traces.get(tk);
+        if (!s) {
+          if (traces.size >= MAX_TRACKED) return; // 상한 초과 시 무시(드묾, 누수 방지).
+          s = { chunk: "", totalLen: 0, lastFlushTs: event.ts };
+          traces.set(tk, s);
+        }
+        s.chunk += d;
+        s.totalLen += d.length;
+        if (s.chunk.length >= FLUSH_CHARS || event.ts - s.lastFlushTs >= FLUSH_MS) {
+          flush(tk, event.ts, "periodic");
+        }
+        return;
+      }
+      // turn 경계 — 남은 chunk flush + 상태 정리(stall 은 재개하니 유지).
+      if (
+        event.type === "llm.turn_done" ||
+        event.type === "llm.turn_error" ||
+        event.type === "llm.stream_stall"
+      ) {
+        const p = (event.payload ?? {}) as { threadKey?: unknown };
+        const tk = typeof p.threadKey === "string" ? p.threadKey : "";
+        if (tk === "") return;
+        flush(tk, event.ts, event.type.replace("llm.", ""));
+        if (event.type !== "llm.stream_stall") traces.delete(tk);
+      }
+    } catch {
+      /* best-effort — throw 금지(subscriber throw → plugin.error 재귀). */
+    }
+  });
 };
 
 /**

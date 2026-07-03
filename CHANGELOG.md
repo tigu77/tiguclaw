@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-07-03
+
+### Fixed
+- **Background jobs (and sub-agents) could hang indefinitely on their very first tool call.** Each in-process tool server (file operations, memory, to-dos) was a single shared instance that every model turn connected fresh and closed when it ended. When a turn spawned a background worker and then finished, its cleanup closed that shared instance out from under the still-running worker — so the worker's next tool call (e.g. a file read) waited forever for a reply that never came, stalling the whole job for 8–11 minutes per call until a timeout. Each turn now gets its own tool-server instances, so one turn's cleanup can no longer break another turn's concurrent tool calls. (This aligns those three servers with the pattern the other nine in-process servers already used.)
+
+### Added
+- **Optional MCP bridge tracing for diagnosing tool-call stalls** (`MCP_BRIDGE_TRACE=1`, off by default): logs each tool call's send/receive with a per-request id and the in-flight count, so a tool call that never returns is directly visible in the log.
+
 ## [0.3.15] - 2026-07-03
 
 ### Fixed
@@ -161,7 +169,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.15...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.16...HEAD
+[0.3.16]: https://github.com/tigu77/tiguclaw/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/tigu77/tiguclaw/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/tigu77/tiguclaw/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/tigu77/tiguclaw/compare/v0.3.12...v0.3.13

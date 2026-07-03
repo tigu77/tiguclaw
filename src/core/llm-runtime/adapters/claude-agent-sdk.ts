@@ -53,7 +53,7 @@ import {
   formatMemoryIndex,
   formatMemorySnippet,
 } from "../../prompt-assembly.js";
-import { memoryMcpServer } from "../../memory-mcp.js";
+import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { resolveJsonlPath, retrieveContext } from "../../memory.js";
 import {
   loadCodexTurnHistoryBySessionId,
@@ -324,7 +324,7 @@ export const runClaude = async (
   const leanMcpServers: Options["mcpServers"] = toolsNone
     ? {}
     : {
-        memory: memoryMcpServer,
+        memory: createMemoryMcpServer(),
         // invoke_skill 실행 경로 (모든 소스 — home/project/plugin). 격리 모드라
         // .claude/skills 자동발견 0 → 이 in-process MCP 가 유일 실행 경로. cwd 는
         // 위 options.cwd·아래 스킬 인덱스(discoverSkills)와 동일 소스 → 인덱스↔invoke 정합.

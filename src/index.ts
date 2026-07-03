@@ -109,6 +109,29 @@ export const modelSpecSanityWarning = (args: string): string | null => {
 const logFile = initFileLogging();
 
 console.log("tiguclaw daemon: starting");
+
+// ── event-loop wedge 진단 (2026-07-03, gated: LOOP_DIAG=1) ──────────────────
+// 데몬이 워커 실행 중 응답불능(wedge)되는 원인 규명용. event-loop lag(타이머 드리프트)
+// + active handles/requests 수 + rss 를 주기 로그 → 누수(handles 단조 증가) vs 블록
+// (lag 급증 후 로그 멈춤) 판별. 평시 off, 디버깅 시만 켠다.
+if (process.env.LOOP_DIAG === "1") {
+  const DIAG_MS = 3000;
+  let last = Date.now();
+  const diagTimer = setInterval(() => {
+    const now = Date.now();
+    const lag = now - last - DIAG_MS;
+    last = now;
+    const p = process as unknown as {
+      _getActiveHandles?: () => unknown[];
+      _getActiveRequests?: () => unknown[];
+    };
+    const h = p._getActiveHandles?.().length ?? -1;
+    const r = p._getActiveRequests?.().length ?? -1;
+    const rss = Math.round(process.memoryUsage().rss / 1e6);
+    console.log(`[loop-diag] lag=${lag}ms handles=${h} reqs=${r} rss=${rss}MB`);
+  }, DIAG_MS);
+  diagTimer.unref();
+}
 if (logFile !== null) console.log(`tiguclaw logs: ${logFile}`);
 
 // V9.1 — 런타임 홈 준비 (TIGUCLAW_HOME ?? ~/.tiguclaw). 부재 시 생성·시드.

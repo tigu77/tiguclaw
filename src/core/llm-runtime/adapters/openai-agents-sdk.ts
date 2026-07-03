@@ -38,14 +38,14 @@ import {
   formatMemoryIndex,
   formatMemorySnippet,
 } from "../../prompt-assembly.js";
-import { memoryMcpServer } from "../../memory-mcp.js";
+import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { loadThreadHistory } from "../../../store/memory.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
 import { resolveProviderConn } from "../provider-registry.js";
-import { fileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
-import { todoMcpServer } from "../capabilities/todo-mcp.js";
+import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
+import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -144,9 +144,9 @@ export const runOpenAi = async (
   const mcpServers: MCPServer[] = toolsNone
     ? []
     : [
-        await adaptClaudeMcpServer(memoryMcpServer, "memory"),
-        await adaptClaudeMcpServer(fileOpsMcpServer, "file-ops"),
-        await adaptClaudeMcpServer(todoMcpServer, "todo"),
+        await adaptClaudeMcpServer(createMemoryMcpServer(), "memory"),
+        await adaptClaudeMcpServer(createFileOpsMcpServer(), "file-ops"),
+        await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),
         await adaptClaudeMcpServer(
           createSkillInvokeMcpServer(discoveryCwd, {
             channel: input.channel,

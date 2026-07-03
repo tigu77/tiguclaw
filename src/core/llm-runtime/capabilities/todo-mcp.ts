@@ -73,11 +73,15 @@ const updateTodosTool = tool(
 );
 
 /**
- * codex 어댑터 등록용 — 태스크 관리 in-process MCP server.
+ * codex 어댑터 등록용 — 태스크 관리 in-process MCP server **팩토리**(호출마다 새 인스턴스).
  * claude 어댑터는 SDK builtin TodoWrite 사용 (본 server 등록 0, 회귀 0).
+ *
+ * ★공유 금지 (2026-07-03): 싱글턴을 여러 브리지가 나눠 쓰면 한쪽 close 가 다른 쪽
+ * callTool 을 죽인다 → 턴마다 전용 인스턴스. 도구 무상태라 재생성 0-cost. (memory-mcp.ts 동일.)
  */
-export const todoMcpServer: McpSdkServerConfigWithInstance = createSdkMcpServer({
-  name: "todo",
-  version: "1.0.0",
-  tools: [updateTodosTool],
-});
+export const createTodoMcpServer = (): McpSdkServerConfigWithInstance =>
+  createSdkMcpServer({
+    name: "todo",
+    version: "1.0.0",
+    tools: [updateTodosTool],
+  });

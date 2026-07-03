@@ -722,7 +722,15 @@ const webFetchTool = tool(
  * 단일 정의로 통일 (양 어댑터가 같은 server bridge). 본 파일에서 제거 —
  * file-ops 본연(파일·셸·웹)만 담당 (정의 2곳 중복 부채 해소, architect P0).
  */
-export const fileOpsMcpServer: McpSdkServerConfigWithInstance =
+/**
+ * file-ops in-process MCP server **팩토리**(호출마다 새 인스턴스).
+ *
+ * ★공유 금지 (2026-07-03): McpServer 는 transport 하나만 물어 싱글턴 공유 시 한 브리지
+ * close 가 다른 브리지 callTool 을 죽인다(부모 턴 finally 가 워커 인스턴스 close → 워커
+ * Read hang, 온종일 위키 실패의 근본). 턴마다 전용 인스턴스로 격리. 백그라운드 셸
+ * `BG_SHELLS` 는 **모듈 레벨**이라 인스턴스 재생성에도 유지(BashOutput/KillShell 회귀 0).
+ */
+export const createFileOpsMcpServer = (): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "file-ops",
     version: "1.6.0",

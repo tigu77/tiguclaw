@@ -54,10 +54,10 @@ import {
   formatMemoryIndex,
   formatMemorySnippet,
 } from "../../prompt-assembly.js";
-import { memoryMcpServer } from "../../memory-mcp.js";
+import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
-import { fileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
-import { todoMcpServer } from "../capabilities/todo-mcp.js";
+import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
+import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -1392,10 +1392,10 @@ export const runOpenAiCodex = async (
   // endpoints·commands·extra bridge 가 매 turn 누적됐음, P1.) openai 어댑터의 mcpServers
   // 일괄 close(openai-agents-sdk) 와 동형. 생성하는 모든 bridge 를 여기 push 한다.
   const allBridges: Array<{ close: () => Promise<void> }> = [];
-  const memoryBridge = await adaptClaudeMcpServer(memoryMcpServer, "memory");
-  const fileOpsBridge = await adaptClaudeMcpServer(fileOpsMcpServer, "file-ops");
+  const memoryBridge = await adaptClaudeMcpServer(createMemoryMcpServer(), "memory");
+  const fileOpsBridge = await adaptClaudeMcpServer(createFileOpsMcpServer(), "file-ops");
   // V7.7 — 태스크 관리 (TodoWrite 동등). claude 는 SDK builtin, codex 만 등록.
-  const todoBridge = await adaptClaudeMcpServer(todoMcpServer, "todo");
+  const todoBridge = await adaptClaudeMcpServer(createTodoMcpServer(), "todo");
   // V7.8 — invoke_skill 단일 정의(skill-registry) bridge. claude 어댑터도 동일
   // server 등록 (양 어댑터 공통, file-ops 중복 정의 제거 후 통일).
   // V9.3 — 싱글톤 → factory. cwd 는 위 스킬 인덱스(discoverSkills(discoveryCwd))와

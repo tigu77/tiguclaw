@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.13] - 2026-07-03
+## [0.3.14] - 2026-07-03
+
+### Fixed
+- **Dashboard background-job cards missing their status badge (and the header count not updating) when the page was opened while a job was already running.** A job card can be built either from the job's start/finish lifecycle events or from its live activity. Only the lifecycle path set the status label ("🟡 running") and refreshed the header "background N" count — so if the dashboard connected mid-job (e.g. a refresh while a job runs) it only saw activity, and the card showed no status and the header count stayed empty. Card creation now sets a default running status and refreshes the count, regardless of which path created it.
 
 ### Fixed
 - **The `codex` (ChatGPT) model line no longer lets one pathologically slow response consume an entire background job.** The stall guard resets every time any answer text streams in, so if the backend dribbles output *very* slowly (a token every couple of minutes), a single turn could crawl for 10–20 minutes without the guard ever firing — and a multi-step job would hit the 30-minute wall-clock limit with nothing to show (observed live during a ChatGPT-backend slowdown). A single response turn now also has an absolute wall-clock cap (default 10 minutes, `CODEX_TURN_MAX_MS`): if one turn exceeds it — regardless of trickle — the step is retried from the same context (not switched to another model), so a spiky slowdown can recover instead of eating the whole budget. This is orthogonal to the existing no-progress guard (which still catches dead connections at 5 minutes).
@@ -139,7 +142,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.13...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.14...HEAD
+[0.3.14]: https://github.com/tigu77/tiguclaw/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/tigu77/tiguclaw/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/tigu77/tiguclaw/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/tigu77/tiguclaw/compare/v0.3.10...v0.3.11

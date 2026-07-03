@@ -1422,6 +1422,10 @@
           const label = document.createElement("span"); label.className = "bg-job-label";
           label.textContent = (opts && opts.label) || "(작업)";
           const st = document.createElement("span"); st.className = "bg-job-status";
+          // 기본 상태 텍스트 — 활동(activity)으로만 생성된 카드(대시보드가 worker.started 를
+          // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
+          // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
+          st.textContent = BG_STATUS.running;
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
           top.appendChild(label); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
@@ -1443,6 +1447,9 @@
             resultEl: result, errEl: err, status: "running", stepCount: 0, hasTask: false, hasResult: false,
           };
           jobCards.set(jobId, entry);
+          // 활동으로만 생성된 카드도 헤더 '백그라운드 N' 개수 뱃지·bgEmpty 를 즉시 반영
+          // (기존엔 handleWorkerEvent 만 refreshBgBadge 호출 → 활동-only 카드는 개수 누락).
+          refreshBgBadge();
         }
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
         if (opts && opts.task && !entry.hasTask) {

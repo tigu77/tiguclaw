@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.12] - 2026-07-03
+## [0.3.13] - 2026-07-03
+
+### Fixed
+- **The `codex` (ChatGPT) model line no longer lets one pathologically slow response consume an entire background job.** The stall guard resets every time any answer text streams in, so if the backend dribbles output *very* slowly (a token every couple of minutes), a single turn could crawl for 10–20 minutes without the guard ever firing — and a multi-step job would hit the 30-minute wall-clock limit with nothing to show (observed live during a ChatGPT-backend slowdown). A single response turn now also has an absolute wall-clock cap (default 10 minutes, `CODEX_TURN_MAX_MS`): if one turn exceeds it — regardless of trickle — the step is retried from the same context (not switched to another model), so a spiky slowdown can recover instead of eating the whole budget. This is orthogonal to the existing no-progress guard (which still catches dead connections at 5 minutes).
+
+### Changed
+- **Dashboard shows a subtle pulse on in-progress indicators** — running background-job cards, the background-tasks badge count, and the currently-running step now gently pulse so it's obvious something is actively working. Respects `prefers-reduced-motion`.
 
 ### Fixed
 - **A hung tool call on the `codex` (ChatGPT) model line no longer freezes a background job for up to 30 minutes.** The stream-stall guard only watches the model's streaming response, and tool execution was deliberately exempt (to avoid killing legitimately long tools). But that left a gap: if a tool call itself hung, nothing caught it until the blunt 30-minute worker wall-clock limit — losing all the work with nothing to show (observed live: a maintenance job frozen ~19 minutes inside a shell command). Each tool call now has its own generous wall-clock timeout (default 8 minutes): if it's exceeded, that one call is turned into a tool error so the job keeps going and the model adapts, instead of the whole turn freezing. Tunable via `CODEX_TOOL_TIMEOUT_MS`. (The Claude line already had this via its SDK — this restores parity.)
@@ -133,7 +139,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.12...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.13...HEAD
+[0.3.13]: https://github.com/tigu77/tiguclaw/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/tigu77/tiguclaw/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/tigu77/tiguclaw/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/tigu77/tiguclaw/compare/v0.3.9...v0.3.10

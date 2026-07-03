@@ -1095,6 +1095,36 @@ const CODEX_STALL_BACKOFF_MS = parsePosIntEnv(
   5_000,
 );
 
+// ── codex 단일 SSE 턴 절대 wall-clock 캡 (trickle 가드, 2026-07-03) ─────────────────────
+// ★근본 원인(실측): 위 progressTimer(CODEX_NO_PROGRESS_MS)는 진전 이벤트
+// (output_text.delta·function_call)마다 beat=리셋된다. 그래서 codex 백엔드가 델타를
+// *찔끔찔끔*(trickle; 예: 2분마다 한 조각) 흘리면 5분 무진전 가드가 *영영 안 터지고*
+// 한 SSE 턴이 8~22분을 끈다(라이브 2026-07-03: 위키 워커 한 턴 8분 + 22분 trickle 정지
+// → 30분 워커 wall-clock 상한만이 죽임). no-progress 가드도 도구 타임아웃(v0.3.12)도
+// 못 잡음(도구 hang 아니라 SSE trickle이라).
+//
+// 이건 progressTimer(dead=무진전)와 *직교*하는 단일 SSE 턴 절대 wall-clock 캡이다:
+//   · dead(무진전 5분)  = progressTimer(리셋됨) 담당.
+//   · trickle(느리게 흐름 10분) = 이 캡(리셋 안 됨) 담당.
+// 무장 시각부터 리셋 없이 이 시간을 넘으면, 진전 여부와 무관하게 idleAc 를 abort →
+// effectiveAc(linkAbort) 전파 → fetch/parseCodexSse throw → 기존 catch 의
+// IdleTimeoutError 분기가 그대로 *같은 컨텍스트 재개*(progressTimer 발화와 동일 경로,
+// 실패 아님). IdleTimeoutError 재사용(shared idle-timeout.ts·facade MODEL_REJECTED_PATTERNS
+// 불변식 미변경).
+//
+// codex 수동 raw-fetch 루프 전용 — claude/openai 는 SDK가 스트림/타임아웃을 관리하므로
+// 이미 이 보호를 가진다(parity 복구, cross-adapter 폴백 아님 — codex 안에서 닫음).
+//
+// ★blunt-cap 트레이드오프: 정상적으로 10분+ 스트리밍하는 긴 생성을 오살할 위험이 있다.
+// 단일 codex 턴이 10분+ 순수 스트리밍은 극히 드물고, 컷 후 *실패가 아니라 같은 컨텍스트
+// 재개*(위 stall-resume 경로)라 정당한 긴 턴도 spiky 열화에서 완주 기회를 얻는다.
+// 넉넉한 10분 기본값 + env 튜닝으로 이 오살을 완화한다.
+/** codex 단일 SSE 턴 절대 wall-clock 상한(ms) — 리셋 안 됨(trickle 가드). env override. */
+const CODEX_TURN_MAX_MS = parsePosIntEnv(
+  process.env.CODEX_TURN_MAX_MS,
+  600_000,
+);
+
 // ── codex 도구 실행 per-call wall-clock 타임아웃 (2026-07-03) ──────────────────────────
 // ★근본 원인: 위 progressTimer(무진전 가드)는 fetch+parseCodexSse(SSE 스트림)만 감시하고
 // *도구 실행 직전에 .done()* 된다(의도적 면제 — 긴 정상 도구 오살 0). 그래서 hung 도구가
@@ -1752,6 +1782,19 @@ export const runOpenAiCodex = async (
           idleMs: CODEX_NO_PROGRESS_MS,
           firstMs: CODEX_NO_PROGRESS_MS,
         });
+        // trickle 가드 — 단일 SSE 턴 절대 wall-clock 캡(리셋 안 됨). progressTimer(진전마다
+        // 리셋)와 직교: 델타가 찔끔찔끔 흘러 progressTimer 가 영영 안 터지는 trickle 를 잡는다.
+        // 초과 시 idleAc 를 IdleTimeoutError("idle") 로 abort → effectiveAc(linkAbort) 전파 →
+        // fetch/parseCodexSse throw → 기존 catch 의 IdleTimeoutError 분기가 *같은 컨텍스트 재개*
+        // (실패 아님). turnWallExceeded 는 catch 에서 dead/spinning 과 trickle 을 구분(관측).
+        let turnWallExceeded = false;
+        const turnWallTimer = setTimeout(() => {
+          turnWallExceeded = true;
+          if (!idleAc.signal.aborted) {
+            idleAc.abort(new IdleTimeoutError("idle", CODEX_TURN_MAX_MS));
+          }
+        }, CODEX_TURN_MAX_MS);
+        (turnWallTimer as { unref?: () => void }).unref?.();
         // 계측 — 이 iteration 스트림의 청크 수·마지막청크 시각 (dead=chunks0 vs spinning 판별).
         let iterChunks = 0;
         let iterLastChunkAt = 0;
@@ -1843,11 +1886,26 @@ export const runOpenAiCodex = async (
             iterLastChunkAt > 0
               ? Math.round((Date.now() - iterLastChunkAt) / 1000)
               : -1;
-          const kind = iterChunks > 0 ? "무진전(spinning)" : "무응답(dead)";
+          // turnWallExceeded 면 trickle(느리게 흐르다 wall-clock 캡 초과) — dead/spinning
+          // (progressTimer 발화)과 구분해 관측 정확성 확보. resume 동작은 세 경우 모두 동일.
+          const kind = turnWallExceeded
+            ? "trickle"
+            : iterChunks > 0
+              ? "무진전(spinning)"
+              : "무응답(dead)";
+          const eventKind = turnWallExceeded
+            ? "trickle"
+            : iterChunks > 0
+              ? "spinning"
+              : "dead";
           console.warn(
-            `codex ${kind} (chunks=${iterChunks}, iter=${iterSec}s, 마지막청크 ${
-              lastChunkAgoSec < 0 ? "없음" : `${lastChunkAgoSec}s 전`
-            }, iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`,
+            turnWallExceeded
+              ? `codex 턴 wall-clock 상한 초과(trickle, ${
+                  Date.now() - iterStart
+                }ms; chunks=${iterChunks}, iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`
+              : `codex ${kind} (chunks=${iterChunks}, iter=${iterSec}s, 마지막청크 ${
+                  lastChunkAgoSec < 0 ? "없음" : `${lastChunkAgoSec}s 전`
+                }, iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`,
           );
           try {
             bus.publish({
@@ -1859,7 +1917,8 @@ export const runOpenAiCodex = async (
                 adapter: "codex",
                 model,
                 iteration,
-                kind: iterChunks > 0 ? "spinning" : "dead",
+                kind: eventKind,
+                trickle: turnWallExceeded,
                 chunks: iterChunks,
                 iterMs: Date.now() - iterStart,
                 lastChunkAgoMs:
@@ -1886,6 +1945,8 @@ export const runOpenAiCodex = async (
       } finally {
         // 타이머 누수 0 (I-6) + 도구 실행 구간 진입 전 해제 (I-4 — LLM 스트림만 대상).
         progressTimer.done();
+        // trickle 가드 타이머도 매 iteration 정리(재시도 루프라 매번 새로 무장·정리 → 누수 0).
+        clearTimeout(turnWallTimer);
         // 이 iteration SSE 잔여 델타 flush(도구 실행/다음 iteration 전 발행) + 타이머 정리.
         // best-effort — 실패해도 out 전체본이 권위 교체. seq 는 다음 iteration 으로 단조 유지.
         deltaStream.flush();

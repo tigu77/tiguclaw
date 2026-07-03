@@ -1095,6 +1095,30 @@ const CODEX_STALL_BACKOFF_MS = parsePosIntEnv(
   5_000,
 );
 
+// ── codex 도구 실행 per-call wall-clock 타임아웃 (2026-07-03) ──────────────────────────
+// ★근본 원인: 위 progressTimer(무진전 가드)는 fetch+parseCodexSse(SSE 스트림)만 감시하고
+// *도구 실행 직전에 .done()* 된다(의도적 면제 — 긴 정상 도구 오살 0). 그래서 hung 도구가
+// 있으면 SSE 밖 = 아무 가드도 없어 턴 전체가 blunt 30분 워커 wall-clock 상한까지 얼어붙는다
+// (라이브 사고 2026-07-03: Bash 도구 안 ~19.5분 데몬 이벤트 0 → 30분 상한만이 죽임 → 산출 0).
+// 이건 progressTimer/stall-resume 와 *직교*하는 도구 실행 전용 새 가드다.
+//
+// 설계: 각 callTool 을 이 wall-clock 과 Promise.race → 초과 시 reject(throw) → 기존
+// catch (e) { output = `Error: …` } 가 그대로 잡아 function_call_output 으로 push → 루프
+// 계속 → 모델이 "그 도구 실패"를 보고 적응(30분 freeze 대신 bounded 에러). abort/resume
+// 안 함(턴 안 죽이고 재개 안 함 — 재개는 Write·Bash·memory 중복 부작용 위험).
+//
+// ⚠ orphan 한계(기존 §4.4 #3): MCP callTool 은 abort 신호가 안 들어가므로 타임아웃돼도 그
+// 도구는 detached 로 계속 돌 수 있다. 넉넉한 기본값(8분)이 "완료 직전 오살→중복 부작용"
+// 위험을 최소화한다.
+//
+// 기본 480000=8분: 30분 워커 상한보다 아래(freeze 차단) + 정상 긴 도구(sub-agent·긴 Bash)
+// 보다는 위(오살 최소). parsePosIntEnv 재사용, env override.
+/** codex 개별 도구 호출(callTool) wall-clock 상한(ms). env override. */
+const CODEX_TOOL_TIMEOUT_MS = parsePosIntEnv(
+  process.env.CODEX_TOOL_TIMEOUT_MS,
+  480_000,
+);
+
 // 요약 합성 턴을 감싸는 스캐폴딩 헤더 — assembleUserPrompt 의 <system-reminder> 패턴
 // 답습. 메인 모델이 "하네스가 주는 배경 정보(사용자 발화 아님)"로 인지 → 그대로 echo
 // 하지 않음. user role 메시지지만 내부 스캐폴딩 형태라 딴소리·메아리 방지.
@@ -2067,7 +2091,30 @@ export const runOpenAiCodex = async (
           //  부작용 가능성 → claude 폴백 차단 set. (이전엔 bridge 객체 비교라 false
           //  positive·negative 양쪽 다 났음 — 위 HARMLESS_TOOLS 정의 참조.)
           if (!HARMLESS_TOOLS.has(tc.name)) sideEffectExecuted = true;
-          const result = await bridge.callTool(tc.name, args);
+          // 2026-07-03 — 도구 실행 per-call wall-clock 가드 (CODEX_TOOL_TIMEOUT_MS 정의부
+          // 주석 참조). callTool 을 타임아웃과 Promise.race → 초과 시 reject → 아래 catch 가
+          // "Error: …" 로 잡아 루프 계속(hung 도구가 턴을 30분 얼리는 것 차단). abort/resume
+          // 안 함. 타이머는 callTool 이 먼저 끝나면 clearTimeout(누수 0), setTimeout .unref()
+          // (이벤트루프 잔류 0). orphan: MCP callTool 은 signal 없어 timeout 후 detached 로 계속
+          // 돌 수 있음(§4.4 #3) — 넉넉한 기본값이 완료 직전 오살 위험 최소화.
+          let toolTimer: ReturnType<typeof setTimeout> | undefined;
+          const result = await Promise.race([
+            bridge.callTool(tc.name, args),
+            new Promise<never>((_, reject) => {
+              toolTimer = setTimeout(() => {
+                reject(
+                  new Error(
+                    `도구 ${tc.name} 응답 시간 초과 (${Math.round(
+                      CODEX_TOOL_TIMEOUT_MS / 60_000,
+                    )}분) — 무응답(재개 없이 에러 처리)`,
+                  ),
+                );
+              }, CODEX_TOOL_TIMEOUT_MS);
+              toolTimer.unref?.();
+            }),
+          ]).finally(() => {
+            if (toolTimer !== undefined) clearTimeout(toolTimer);
+          });
           // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
           executedToolNames.add(tc.name);
           // MCP CallToolResult.content = Array<{type:"text", text:string} | ...>.

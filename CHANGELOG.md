@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.11] - 2026-07-03
+## [0.3.12] - 2026-07-03
+
+### Fixed
+- **A hung tool call on the `codex` (ChatGPT) model line no longer freezes a background job for up to 30 minutes.** The stream-stall guard only watches the model's streaming response, and tool execution was deliberately exempt (to avoid killing legitimately long tools). But that left a gap: if a tool call itself hung, nothing caught it until the blunt 30-minute worker wall-clock limit — losing all the work with nothing to show (observed live: a maintenance job frozen ~19 minutes inside a shell command). Each tool call now has its own generous wall-clock timeout (default 8 minutes): if it's exceeded, that one call is turned into a tool error so the job keeps going and the model adapts, instead of the whole turn freezing. Tunable via `CODEX_TOOL_TIMEOUT_MS`. (The Claude line already had this via its SDK — this restores parity.)
 
 ### Fixed
 - **The `codex` (ChatGPT) model line now finishes large multi-step tasks instead of stopping partway with a "here's what I got done" report.** Background jobs like a daily wiki/library cleanup — which legitimately need dozens of tool calls (read many files, write several summaries, scan, etc.) — were hitting an internal 25-tool-call cap every run: the model was forced to wrap up mid-task, and the next day's run started over from scratch and never converged. The cap was doing double duty (runaway defense *and* task-completion signal); those are now separated. Runaway protection is handled by the progress-aware stall guard and the wall-clock turn backstop (which cut only genuine no-progress, not legitimately long work), so the tool-iteration limit is raised to a far safety ceiling (default 150) and the task now ends *naturally when the model is actually done* — matching how the Claude line already behaves (an LLM-agnostic parity fix). Tunable via `CODEX_MAX_TOOL_ITERATIONS_HARD`; `CODEX_MAX_TOOL_ITERATIONS` is now a soft progress-checkpoint interval.
@@ -130,7 +133,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.11...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.12...HEAD
+[0.3.12]: https://github.com/tigu77/tiguclaw/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/tigu77/tiguclaw/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/tigu77/tiguclaw/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/tigu77/tiguclaw/compare/v0.3.8...v0.3.9

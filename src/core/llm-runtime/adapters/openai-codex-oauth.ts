@@ -962,17 +962,29 @@ const buildTurnHistory = async (
   return buildCodexInputArray(recentRaw, summary, currentTurn);
 };
 
-// V5.3 — agentic loop max iterations. OpenClaw 동등 디폴트 (오용·무한 루프 방어).
-// persistence 보강 (2026-05-27, contract Q4): 10 → 25. 뉴스급 복잡 작업(스킬 invoke +
-// 서브에이전트 spawn + 검증 + 메모리 쓰기)은 한 작업에 도구 10+ 가 정상이라 10 은 빠듯.
-// claude SDK 는 사실상 cap 없이 도므로 parity 관점 10 은 과소. cap 은 *절대 상한*(무한
-// 루프 방어)이고, 아래 final-flush 가 cap-1 에서 마무리를 유도하므로 일상 도달 대상 아님.
+// V5.3 — agentic loop iteration 노브. 2026-07-03 "자동 이어가기" 재설계로 25 cap 의
+// 이중 역할(런어웨이 방어 + 작업 완료 신호)을 분리했다.
+//
+// ★역할 재정의: CODEX_MAX_TOOL_ITERATIONS(25)는 더 이상 *작업 완료 cap* 이 아니라
+//   **soft checkpoint 간격**이다 — 25·50·75… 마다 "안 끝났으면 계속하라" 가벼운 진행
+//   nudge 1회를 넣을 뿐, 강제 마무리(tools:[])는 하지 않는다(아래 루프 참조).
+//   과거 이 값에서 강제 flush 하던 탓에 위키 정리처럼 도구 30~50+ 가 정당한 큰 작업이
+//   매번 25 에서 잘려 부분보고로 끝났다. claude SDK 는 사실상 무제한으로 완주하므로
+//   이건 #2 LLM-agnostic parity 갭이었다 — 본 변경이 그 갭을 복구한다.
+//
+// ★런어웨이 방어는 raw iteration count 가 아니라 (a) progress-aware stall 가드
+//   (createIdleTimer + CODEX_NO_PROGRESS_MS, output/tool 진전에만 beat), (b) 턴
+//   타임아웃 wall-clock 백스톱, (c) 아래 절대 백스톱(HARD) 3중이 담당한다. (a)/(b)는
+//   *실제 무진전*만 컷하므로 정당한 긴 작업은 안 끊는다 — count 보다 똑똑한 방어다.
+//   ⚠ 본 변경은 (a)/(b)가 루프 바깥에 살아있음에 *의존*한다(런어웨이가 여전히 바운드).
+//
 // env override — 사용자가 비용/안전 트레이드오프를 데몬 재시작만으로 조정 (양수 정수만).
 const parseCapEnv = (raw: string | undefined): number => {
   if (raw === undefined || raw === "") return 25;
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : 25;
 };
+// soft checkpoint 간격 (25·50·75… 마다 진행 nudge). 강제 마무리 아님.
 const CODEX_MAX_TOOL_ITERATIONS = parseCapEnv(
   process.env.CODEX_MAX_TOOL_ITERATIONS,
 );
@@ -989,6 +1001,18 @@ const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : fallback;
 };
+
+// ★절대 백스톱(HARD ceiling) — agentic 루프의 진짜 상한. 런어웨이 최후 방어(무한 루프
+//  0 보장). 일상에선 도달 안 함: 모델이 자연히 도구를 멈추면(toolCalls.length===0 →
+//  break, claude 동형) 그게 진짜 완료 신호이고, 그 전에 stall 가드/턴 타임아웃이 무진전을
+//  컷하기 때문. 여기까지 도달할 때만 마지막 슬롯에서 강제 "tools:[] 마무리"(final-flush).
+//  기본 150 = 옛 25 cap 의 6배 → 위키급 대작업(도구 30~50+)도 자연 완주 여유 충분.
+//  parsePosIntEnv 재사용(양수 정수만, 아니면 150). CODEX_MAX_TOOL_ITERATIONS(간격)와
+//  독립 env override — 둘 다 데몬 재시작만으로 조정. 매직넘버 금지(상수+주석).
+const CODEX_MAX_TOOL_ITERATIONS_HARD = parsePosIntEnv(
+  process.env.CODEX_MAX_TOOL_ITERATIONS_HARD,
+  150,
+);
 
 // C2 — 단일 tool output 의 inputArray 진입 cap. 초과 시 머리+꼬리만 남기고 중간
 // 치환. 도구 자체 cap(Bash 1MB·Read 2000라인)과 *별개* 의 어댑터 진입 게이트.
@@ -1555,7 +1579,8 @@ export const runOpenAiCodex = async (
   // OpenClaw `buildOpenAIResponsesParams` L802-844 답습 — `params.tools = convert...(tools)`.
 
   // V5.3 agentic loop — function_call 발생 → callTool → function_call_output input 에 push
-  // → 다음 turn 재요청. iteration cap = CODEX_MAX_TOOL_ITERATIONS.
+  // → 다음 turn 재요청. 절대 상한 = CODEX_MAX_TOOL_ITERATIONS_HARD(런어웨이 최후 방어),
+  // CODEX_MAX_TOOL_ITERATIONS 는 soft checkpoint 간격(진행 nudge).
   let finalText = "";
   let finalResponseId: string | undefined;
   // /status 개편 — 마지막 turn 의 usage 보존 (마지막 turn = 가장 큰 누적 input →
@@ -1581,8 +1606,8 @@ export const runOpenAiCodex = async (
     model,
   });
   // persistence 보강 (2026-05-27, contract Q3 + recon §5):
-  //  - finalFlushRequested: cap-1 도달 시 set. 다음 turn 은 tools 비우고 "마무리 텍스트만"
-  //    요청 → 도구 한도 도달해도 빈 finalText 케이스 격감.
+  //  - finalFlushRequested: 절대 백스톱(HARD)-1 도달 시 set(또는 empty-break cap 소진 시).
+  //    다음 turn 은 tools 비우고 "마무리 텍스트만" 요청 → 도구 한도 도달해도 빈 finalText 격감.
   //  - emptyBreakRetries: 모델이 도구 0 + 텍스트 0 으로 조기 종료(gpt 계열 성향)할 때
   //    "끝났으면 답을, 아니면 계속" nudge 를 1회 재요청. 무한 재요청 방어 cap=1.
   let finalFlushRequested = false;
@@ -1590,6 +1615,11 @@ export const runOpenAiCodex = async (
   //  로 재시도. 기존엔 flush 응답이 비어도 즉시 break → fallback 메시지로 떨어졌음.
   //  postFlushRetry 1회 한정 (재시도 무한 방지 — flag 한 번 set 되면 다음엔 break).
   let postFlushRetryUsed = false;
+  // 2026-07-03 soft checkpoint — 같은 iteration 에서 진행 nudge 를 두 번 push 하지 않도록
+  //  마지막으로 nudge 를 낸 iteration 을 기록(무한 중복 방지 가드). checkpoint nudge 는
+  //  iteration++ 를 하지 않으므로(슬롯 대체 아님) 이 가드 없이는 같은 값에서 재진입할 수
+  //  있다 — 하지만 실제로는 nudge 후 반드시 도구 turn 이 돌아 iteration 이 오르므로 안전판.
+  let lastCheckpointIteration = -1;
   let emptyBreakRetries = 0;
   // 2026-06-05 — cap 1→2. gpt 계열 빈 응답이 1회 nudge 로도 안 풀리는 케이스가 관측돼
   //  여유 1회 더. 강화된 nudge(아래)와 합쳐 빈 fallback 발생률 추가 감소.
@@ -1629,7 +1659,7 @@ export const runOpenAiCodex = async (
   ]);
 
   try {
-    while (iteration < CODEX_MAX_TOOL_ITERATIONS) {
+    while (iteration < CODEX_MAX_TOOL_ITERATIONS_HARD) {
       // 2층 도구 루프 가드 (TT-I6, §4.4 #1) — iteration 진입(다음 LLM 호출) 직전 체크.
       // codex 는 수동 agentic 루프라 callTool 에 signal 이 안 들어간다(MCP 한계). 직전
       // iteration 의 도구 1개가 행이었어도 *그 도구가 반환하면* 여기서 다음 fetch 진입을
@@ -1946,17 +1976,23 @@ export const runOpenAiCodex = async (
         break;
       }
 
-      // persistence 보강 (contract Q3) — cap-1 도달: 이번 turn 의 도구는 실행하지 않고
-      // "도구 한도 도달, 마무리하라" system note 를 박은 뒤 다음 turn 을 tools:[] 로
-      // 돌려 마무리 텍스트만 받는다. 도구를 실행하면 cap 안에 또 도구 turn 이 끼어 마무리
-      // 기회를 잃으므로, 마지막 슬롯은 마무리 전용으로 비운다 (contract §Q3 핵심 1).
+      // persistence 보강 (contract Q3) — 절대 백스톱(HARD ceiling)-1 도달: 이번 turn 의
+      // 도구는 실행하지 않고 "도구 한도 도달, 마무리하라" system note 를 박은 뒤 다음
+      // turn 을 tools:[] 로 돌려 마무리 텍스트만 받는다. 도구를 실행하면 백스톱 안에 또
+      // 도구 turn 이 끼어 마무리 기회를 잃으므로, 마지막 슬롯은 마무리 전용으로 비운다.
       //
-      // ⚠ iteration 을 *증가시키지 않는다* — flush turn 이 곧 마지막 슬롯이다. cap-1 에서
-      // iteration++ 하면 while(iteration < CAP) 가 즉시 거짓이 되어 flush 요청이 영영
-      // 전송 안 됨(빈 finalText 그대로 종료). flush 는 cap-1 슬롯을 *대체*하므로 다음
+      // ★2026-07-03 재타겟: 이 강제 마무리 트리거를 CODEX_MAX_TOOL_ITERATIONS(옛 25 cap)
+      // 에서 CODEX_MAX_TOOL_ITERATIONS_HARD(절대 백스톱, 기본 150)-1 로 옮겼다. 즉 강제
+      // "tools:[] 마무리"는 *절대 백스톱에서만* 발동하고 일상에선 도달하지 않는다 — 정당한
+      // 긴 작업은 모델의 자연 종료(toolCalls.length===0 → break)로 완주한다. flush
+      // 메커니즘(tools:[]·reasoning none·postFlushRetry·nudge)은 그대로, 트리거 지점만 이동.
+      //
+      // ⚠ iteration 을 *증가시키지 않는다* — flush turn 이 곧 마지막 슬롯이다. HARD-1 에서
+      // iteration++ 하면 while(iteration < HARD) 가 즉시 거짓이 되어 flush 요청이 영영
+      // 전송 안 됨(빈 finalText 그대로 종료). flush 는 HARD-1 슬롯을 *대체*하므로 다음
       // 루프 진입이 보장돼야 한다. flush turn 응답은 위 `if (finalFlushRequested) break`
       // 가 종료를 보장 → 무한 루프 0.
-      if (iteration === CODEX_MAX_TOOL_ITERATIONS - 1) {
+      if (iteration === CODEX_MAX_TOOL_ITERATIONS_HARD - 1) {
         finalFlushRequested = true;
         // 2026-06-11 (Fix 2) — flush nudge 에도 사용자 원 입력 재주입.
         inputArray.push({
@@ -1970,6 +2006,31 @@ export const runOpenAiCodex = async (
           ],
         });
         continue;
+      }
+
+      // ★2026-07-03 soft checkpoint nudge — CODEX_MAX_TOOL_ITERATIONS(옛 25 cap = 이제
+      // "간격") 의 배수마다(25·50·75…) 가벼운 진행 nudge 1개를 push. 강제 마무리(위 HARD-1
+      // flush) 와 달리 tools:[] 로 막지 *않는다* — 도구를 계속 쓸 수 있고 iteration++ 도
+      // 하지 않는다(슬롯 대체 아님, 그냥 다음 fetch 컨텍스트에 추가). 문구는 조기 종료를
+      // 유발하지 않게 "안 끝났으면 계속"을 주문장으로 두고(과거 cap-1 문구처럼 "마무리하라"를
+      // 앞세우지 않음), update_todos 로 진행을 추적하도록 안내. lastCheckpointIteration
+      // 가드로 같은 iteration 에서 두 번 push 하지 않는다(무한 중복 방지).
+      if (
+        iteration > 0 &&
+        iteration % CODEX_MAX_TOOL_ITERATIONS === 0 &&
+        lastCheckpointIteration !== iteration
+      ) {
+        lastCheckpointIteration = iteration;
+        inputArray.push({
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `지금까지 도구를 ${iteration}회 사용했습니다. 작업이 실제로 끝나지 않았으면 계속 진행하세요 — 중단하지 마세요. 진행 상황은 update_todos 로 추적하고, 정말 다 끝났을 때에만 요약으로 마무리하세요.`,
+            },
+          ],
+        });
       }
 
       // V5.3 — 도구 호출 lifecycle: 각 function_call 을 input 배열에 그대로 push
@@ -2103,7 +2164,7 @@ export const runOpenAiCodex = async (
     //  가설 A(reasoning effort 가 텍스트 슬롯 잠식) 검증 + 다음 가설 진단에 사용.
     //  데몬 stderr 로 한 줄 — 사용자 텔레그램 노출 X.
     console.error(
-      `[codex empty-response] threadKey=${input.threadKey} iteration=${iteration}/${CODEX_MAX_TOOL_ITERATIONS}` +
+      `[codex empty-response] threadKey=${input.threadKey} iteration=${iteration}/${CODEX_MAX_TOOL_ITERATIONS_HARD}` +
         ` finalFlush=${finalFlushRequested} postFlushRetry=${postFlushRetryUsed}` +
         ` emptyBreakRetries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES}` +
         ` sideEffect=${sideEffectExecuted}` +

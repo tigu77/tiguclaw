@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.10] - 2026-07-02
+## [0.3.11] - 2026-07-03
+
+### Fixed
+- **The `codex` (ChatGPT) model line now finishes large multi-step tasks instead of stopping partway with a "here's what I got done" report.** Background jobs like a daily wiki/library cleanup — which legitimately need dozens of tool calls (read many files, write several summaries, scan, etc.) — were hitting an internal 25-tool-call cap every run: the model was forced to wrap up mid-task, and the next day's run started over from scratch and never converged. The cap was doing double duty (runaway defense *and* task-completion signal); those are now separated. Runaway protection is handled by the progress-aware stall guard and the wall-clock turn backstop (which cut only genuine no-progress, not legitimately long work), so the tool-iteration limit is raised to a far safety ceiling (default 150) and the task now ends *naturally when the model is actually done* — matching how the Claude line already behaves (an LLM-agnostic parity fix). Tunable via `CODEX_MAX_TOOL_ITERATIONS_HARD`; `CODEX_MAX_TOOL_ITERATIONS` is now a soft progress-checkpoint interval.
 
 ### Changed
 - **`/update` is now robust to environment quirks — it never gets blocked by the on-instance typecheck.** Three times in a row the self-update typecheck step broke for environment reasons (Windows `npm.cmd`, `tsc` not on PATH, TypeScript absent on production installs), and each time the safety rollback undid a *perfectly good* pull — so the deterministic gate was blocking legitimate updates instead of catching broken code. The typecheck is now **advisory**: it still runs and logs its result when `tsc` is available, but it never rolls back or aborts the update. Every published release is already typechecked upstream (clean-room + plugin-load verification), so the on-instance re-check was redundant defense that only added brittleness. The update now always applies when the pull and dependency install succeed. (`git pull` failures and `npm install` failures still roll back — those are genuine "can't update", not environment noise.) This matches why natural-language "update yourself" was already reliable while the `/update` command was fragile.
@@ -127,7 +130,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.11...HEAD
+[0.3.11]: https://github.com/tigu77/tiguclaw/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/tigu77/tiguclaw/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/tigu77/tiguclaw/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/tigu77/tiguclaw/compare/v0.3.7...v0.3.8

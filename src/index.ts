@@ -62,6 +62,7 @@ import {
   enqueueThreadTurn,
   registerWorkerHandler,
   recoverInterruptedJobs,
+  listJobs,
 } from "./core/worker-jobs.js";
 import {
   runSelfUpdate,
@@ -377,6 +378,35 @@ const handler: MessageHandler = async (msg) => {
       had
         ? "컨텍스트 초기화됨. 새 대화로 시작합니다."
         : "초기화할 컨텍스트가 없습니다.",
+    );
+    return;
+  }
+  // `/agents` — 진행 중인 백그라운드 작업(워커+서브에이전트) 요약. 채널 입구 fast-path
+  // (LLM 턴 0, 즉답·무료·결정적). 서브·워커 통합 잡 모델(kind) 기반 — listJobs 단일 소스.
+  // 원칙 4: 상태 조회를 모델에게 안 시킴(원칙 1 슈퍼셋의 사용자-driven 갈래).
+  if (trimmed === "/agents") {
+    const running = listJobs({ runningOnly: true });
+    if (running.length === 0) {
+      await msg.reply("지금 진행 중인 백그라운드 작업이 없어요.");
+      return;
+    }
+    const now = Date.now();
+    const fmtElapsed = (startedAt: number): string => {
+      const sec = Math.max(0, Math.round((now - startedAt) / 1000));
+      if (sec < 60) return `${sec}초째`;
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return s === 0 ? `${m}분째` : `${m}분 ${s}초째`;
+    };
+    // 최신 먼저(listJobs 가 startedAt 내림차순). 워커/서브 구분 라벨.
+    const lines = running.map((j) => {
+      const icon = j.kind === "agent" ? "🤖" : "📦";
+      const kindLabel = j.kind === "agent" ? "서브에이전트" : "워커";
+      const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
+      return `${icon} ${kindLabel} \`${name}\` — ${fmtElapsed(j.startedAt)}`;
+    });
+    await msg.reply(
+      `🔧 진행 중인 백그라운드 작업 ${running.length}개:\n\n${lines.join("\n")}`,
     );
     return;
   }

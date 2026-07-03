@@ -666,6 +666,7 @@ export class TelegramChannel implements Channel {
       { command: "forget", description: "메모리 삭제" },
       { command: "memos", description: "메모리 목록" },
       { command: "plugins", description: "설치·활성 플러그인 목록" },
+      { command: "agents", description: "진행 중인 백그라운드 작업" },
       { command: "status", description: "시스템 상태" },
       { command: "restart", description: "데몬 재시작" },
       { command: "update", description: "tiguclaw 최신으로 업데이트" },

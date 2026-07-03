@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-07-03
+
+### Added
+- **A dedicated "Agents" view in the dashboard, and an `/agents` command** — see what your assistant is running in the background at a glance. The dashboard's left sidebar now has an "Agents" entry (with a live count of in-progress jobs) that opens a view listing every running background job — workers and sub-agents alike — with its type, name, elapsed time and current step, plus a running/all toggle. On Telegram, `/agents` (also added to the command menu) replies instantly with the same summary, with no LLM round-trip. Both are built on the unified job model from 0.3.17 and add no new endpoints.
+
 ## [0.3.17] - 2026-07-03
 
 ### Added
@@ -174,7 +179,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.17...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.18...HEAD
+[0.3.18]: https://github.com/tigu77/tiguclaw/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/tigu77/tiguclaw/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/tigu77/tiguclaw/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/tigu77/tiguclaw/compare/v0.3.14...v0.3.15

@@ -393,8 +393,24 @@
       @media (max-width:900px) { body.bg-open #bg-backdrop { display:block; } }
       .bg-head { display:flex; align-items:center; gap:8px; padding:14px; border-bottom:1px solid var(--border); }
       .bg-head h3 { flex:1; margin:0; }
+      /* 진행 중 필터 탭 — running 잡만 모아 보는 뷰(기본) ↔ 전체. status 클래스 기반 CSS 필터라
+         라이브 이벤트가 status 를 바꾸면 자동 반영(잡 등장/사라짐에 별도 JS 재렌더 불필요). */
+      .bg-filter { display:flex; gap:6px; padding:10px 12px 0; }
+      .bg-filter .bg-fbtn { flex:1; display:inline-flex; align-items:center; justify-content:center; gap:6px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; background:rgba(255,255,255,.03); color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:800; white-space:nowrap; }
+      .bg-filter .bg-fbtn:hover { color:var(--text); background:var(--card-hover); }
+      .bg-filter .bg-fbtn.active { color:var(--accent); background:rgba(125,211,252,0.10); border-color:rgba(125,211,252,.4); }
+      .bg-filter .bg-fcount { min-width:16px; height:16px; padding:0 5px; border-radius:8px; background:var(--accent-2); color:#04121f; font-size:10px; font-weight:900; display:inline-flex; align-items:center; justify-content:center; line-height:1; }
+      .bg-filter .bg-fbtn[data-filter="all"] .bg-fcount { background:var(--text-dim); color:var(--text); }
       .bg-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+      /* filter=running 이면 running 이 아닌 카드를 숨긴다(카드는 그대로 두고 표시만 토글 → 회귀 0). */
+      .bg-list.filter-running .bg-job:not(.running) { display:none; }
       .bg-empty { color:var(--text-mute); font-style:italic; font-size:12px; padding:20px 6px; text-align:center; }
+      /* 진행 중 뷰용 — 카드 헤더 밑에 경과시간 + 마지막 스텝(현재 무엇을 하는 중인지)을 인라인 표시.
+         detail 을 펼치지 않아도 "지금 뭐가 돌고 있나"를 즉시. running 이 끝나면 JS 가 갱신 멈춤. */
+      .bg-job-live { display:flex; align-items:baseline; gap:8px; font-size:10px; color:var(--text-dim); flex-wrap:wrap; }
+      .bg-job-elapsed { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--accent-2); font-weight:700; white-space:nowrap; }
+      .bg-job-laststep { color:var(--text-mute); word-break:break-word; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+      .bg-job:not(.running) .bg-job-elapsed { color:var(--text-dim); }
       .bg-job { border:1px solid var(--border); border-left:3px solid var(--text-dim); border-radius:12px; padding:10px 12px; background:var(--card); display:flex; flex-direction:column; gap:5px; }
       .bg-job.running { border-left-color:var(--accent-2); }
       .bg-job.done { border-left-color:#34d399; }
@@ -436,6 +452,35 @@
       .bg-step-icon { flex:none; font-size:10px; }
       .bg-step-label { font-weight:700; color:var(--text); flex:none; }
       .bg-step-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; word-break:break-all; }
+      /* ── 에이전트 뷰(메인 nav destination) — 진행 중 워커+서브를 크게. 오른쪽 드로어와 동일
+         jobCards 데이터를 읽어 렌더(중복 데이터 모델 없음). 필터 토글·경과·마지막 스텝 재사용. */
+      /* flex 컬럼 — .page-view min-height:100% + grid align-content:stretch 가 행을 늘려
+         헤더·툴바·목록 사이를 벌리던 문제 수정. flex 컬럼은 내용을 위로 자연 스택(gap 유지). */
+      .agents-view { display:flex; flex-direction:column; gap:14px; }
+      .agents-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .agents-toolbar .bg-filter { padding:0; flex:0 0 auto; }
+      .agents-toolbar .bg-fbtn { padding:7px 14px; }
+      .agents-hint { color:var(--text-mute); font-size:11px; margin-left:auto; }
+      .agents-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
+      .agents-grid.filter-running .agent-card:not(.running) { display:none; }
+      .agent-card { border:1px solid var(--border); border-left:4px solid var(--text-dim); border-radius:16px; padding:14px 16px; background:var(--card); display:flex; flex-direction:column; gap:8px; }
+      .agent-card.running { border-left-color:var(--accent-2); animation:bg-job-pulse 1.5s ease-in-out infinite; }
+      .agent-card.done { border-left-color:#34d399; }
+      .agent-card.failed { border-left-color:#f87171; }
+      .agent-card.cancelled { border-left-color:var(--text-dim); opacity:.85; }
+      .agent-card.agent { border-left-color:#a78bfa; }
+      .agent-card.agent.failed { border-left-color:#f87171; }
+      @media (prefers-reduced-motion: reduce) { .agent-card.running { animation:none; } }
+      .agent-card-top { display:flex; align-items:center; gap:8px; }
+      .agent-card-kind { flex:none; font-size:10px; font-weight:900; letter-spacing:.3px; padding:2px 8px; border-radius:999px; white-space:nowrap; border:1px solid var(--border); background:rgba(255,255,255,.05); color:var(--text-mute); }
+      .agent-card.agent .agent-card-kind { background:rgba(167,139,250,.16); color:#c4b5fd; border-color:rgba(167,139,250,.4); }
+      .agent-card-status { flex:none; margin-left:auto; font-size:11px; font-weight:800; color:var(--text-mute); white-space:nowrap; }
+      .agent-card-name { font-size:15px; font-weight:850; color:var(--text); letter-spacing:-.02em; word-break:break-word; }
+      .agent-card-meta { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+      .agent-card-elapsed { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:13px; font-weight:800; color:var(--accent-2); }
+      .agent-card:not(.running) .agent-card-elapsed { color:var(--text-dim); }
+      .agent-card-step { font-size:11px; color:var(--text-mute); display:flex; align-items:baseline; gap:6px; word-break:break-word; }
+      .agent-card-step .lbl { color:var(--text-dim); font-weight:700; flex:none; }
       #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
       #chat-form { display:flex; gap:8px; }
       #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
@@ -516,6 +561,7 @@
           <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">개요</span><span class="hint">홈</span></button>
           <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">프로바이더</span><span class="hint" id="nav-provider-count">0</span></button>
           <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
+          <button class="nav-button" data-view="agents" type="button"><span class="ic">🤖</span><span class="label">에이전트</span><span class="hint" id="nav-agent-count">0</span></button>
           <div class="nav-divider"></div>
           <button class="nav-button" data-view="inventory" type="button"><span class="ic">🧩</span><span class="label">런타임 인벤토리</span><span class="hint">관리</span></button>
           <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
@@ -573,8 +619,12 @@
         <h3 class="panel-title">백그라운드 작업</h3>
         <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
       </div>
-      <div class="bg-list" id="bg-list">
-        <div class="bg-empty" id="bg-empty">실행 중인 백그라운드 작업이 없습니다.</div>
+      <div class="bg-filter" id="bg-filter">
+        <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
+        <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-count-all">0</span></button>
+      </div>
+      <div class="bg-list filter-running" id="bg-list">
+        <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>
       </div>
     </aside>
     <script>
@@ -883,6 +933,115 @@
         document.getElementById("workbench").classList.remove("show-providers");
         const root = document.getElementById("detail-panel");
         root.innerHTML = '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div><div class="detail-name">설정</div><span class="detail-kind">준비 중</span></div><div class="empty">설정 화면은 다음 단계에서 연결합니다.</div></div>';
+      };
+
+      // ── 에이전트 뷰(왼쪽 nav 1급 destination) ──────────────────────────────
+      // 오른쪽 백그라운드 드로어와 "동일한" jobCards 데이터를 읽어 크게 렌더한다(별도 데이터
+      // 모델·엔드포인트 없음). 진행 중/전체 토글·경과시간·마지막 스텝 로직 재사용. worker.*
+      // lifecycle / llm.activity(worker:|agent:) 가 들어올 때마다 renderAgentsView 가 (뷰가
+      // 열려 있으면) 목록을 jobCards 스냅샷으로 다시 그린다. capBgList 로 카드가 정리되면 여기서도 사라진다.
+      let agentsFilter = "running"; // "running" | "all" — 오른쪽 드로어 필터와 독립(각자 뷰).
+      const agentElapsedEls = new Map(); // jobId -> elapsed span (틱 갱신용, 뷰 재렌더마다 재구성).
+      const AGENT_KIND_BADGE = { agent: "🤖 서브에이전트", worker: "📦 워커" };
+      // 카운트/빈상태 동기화 — refreshBgBadge 가 매 이벤트마다 호출(뷰 안 열려도 안전).
+      const syncAgentsCounts = (running, total) => {
+        const rc = document.getElementById("agents-count-running");
+        const ac = document.getElementById("agents-count-all");
+        if (rc) rc.textContent = String(running);
+        if (ac) ac.textContent = String(total);
+      };
+      // jobCards → 에이전트 그리드 렌더. 뷰가 열려 있지 않으면 즉시 반환(no-op).
+      const renderAgentsView = () => {
+        if (currentView !== "agents") return;
+        const grid = document.getElementById("agents-grid");
+        const empty = document.getElementById("agents-empty");
+        if (!grid) return;
+        grid.innerHTML = "";
+        agentElapsedEls.clear();
+        const now = Date.now();
+        let running = 0, total = 0, shown = 0;
+        // 최신 먼저(삽입 순서 역순) — jobCards 는 삽입 순. 진행 중을 위로 정렬(진행 중 우선).
+        const entries = [...jobCards.entries()];
+        entries.sort((a, b) => {
+          const ra = a[1].status === "running" ? 0 : 1;
+          const rb = b[1].status === "running" ? 0 : 1;
+          if (ra !== rb) return ra - rb;
+          return (b[1].startTs || 0) - (a[1].startTs || 0);
+        });
+        for (const [jobId, e] of entries) {
+          total += 1;
+          if (e.status === "running") running += 1;
+          if (agentsFilter === "running" && e.status !== "running") continue;
+          shown += 1;
+          const card = document.createElement("div");
+          card.className = "agent-card " + (e.status || "running") + (e.kind === "agent" ? " agent" : "");
+          card.dataset.jobId = jobId;
+          const top = document.createElement("div"); top.className = "agent-card-top";
+          const kind = document.createElement("span"); kind.className = "agent-card-kind";
+          kind.textContent = AGENT_KIND_BADGE[e.kind === "agent" ? "agent" : "worker"];
+          const st = document.createElement("span"); st.className = "agent-card-status";
+          st.textContent = BG_STATUS[e.status] || e.status || "";
+          top.appendChild(kind); top.appendChild(st);
+          const name = document.createElement("div"); name.className = "agent-card-name";
+          name.textContent = (e.labelEl && e.labelEl.textContent) || "(작업)";
+          const meta = document.createElement("div"); meta.className = "agent-card-meta";
+          const el = document.createElement("span"); el.className = "agent-card-elapsed";
+          el.textContent = fmtElapsed(now - (e.startTs || now));
+          if (e.status === "running") agentElapsedEls.set(jobId, el);
+          meta.appendChild(el);
+          card.appendChild(top); card.appendChild(name); card.appendChild(meta);
+          if (e.lastStep) {
+            const step = document.createElement("div"); step.className = "agent-card-step";
+            const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "지금";
+            const val = document.createElement("span"); val.textContent = e.lastStep;
+            step.appendChild(lbl); step.appendChild(val);
+            card.appendChild(step);
+          }
+          grid.appendChild(card);
+        }
+        syncAgentsCounts(running, total);
+        if (empty) {
+          empty.style.display = shown === 0 ? "" : "none";
+          empty.textContent = agentsFilter === "running"
+            ? "진행 중인 에이전트가 없습니다."
+            : "실행된 에이전트가 없습니다.";
+        }
+      };
+      const setAgentsFilter = (mode) => {
+        agentsFilter = mode === "all" ? "all" : "running";
+        const bar = document.getElementById("agents-filter");
+        if (bar) for (const b of bar.querySelectorAll(".bg-fbtn")) {
+          const on = b.dataset.filter === agentsFilter;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        renderAgentsView();
+      };
+      const showAgents = () => {
+        setActiveNav("agents");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view agents-view";
+        wrap.innerHTML =
+          '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">에이전트</div><span class="detail-kind">실시간</span></div>' +
+          '<p class="developer-copy">지금 돌고 있는 백그라운드 작업(워커 📦 + 서브에이전트 🤖)을 한눈에. 종류·이름·경과시간·현재 스텝을 실시간으로 표시합니다.</p>' +
+          '<div class="agents-toolbar"><div class="bg-filter" id="agents-filter">' +
+          '<button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="agents-count-running">0</span></button>' +
+          '<button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="agents-count-all">0</span></button>' +
+          '</div><span class="agents-hint">라이브 · 오른쪽 드로어와 동일 소스</span></div>' +
+          '<div class="agents-grid filter-running" id="agents-grid"></div>' +
+          '<div class="empty" id="agents-empty">진행 중인 에이전트가 없습니다.</div>';
+        root.appendChild(wrap);
+        // filter=running 클래스는 CSS 보조(카드 렌더 자체가 필터). 토글 버튼 바인딩.
+        const bar = wrap.querySelector("#agents-filter");
+        for (const b of bar.querySelectorAll(".bg-fbtn")) {
+          b.addEventListener("click", () => setAgentsFilter(b.dataset.filter));
+        }
+        agentsFilter = "running";
+        renderAgentsView();
       };
 
       const showProviders = () => {
@@ -1389,14 +1548,49 @@
       const bgBackdrop = document.getElementById("bg-backdrop");
       if (bgBackdrop) bgBackdrop.addEventListener("click", closeBg);
 
+      // 진행 중 필터(기본 "running") — status 클래스 기반 CSS 로 카드 숨김/표시. 라이브 이벤트가
+      // status 를 바꾸면 CSS 가 즉시 재평가 → 잡 등장/사라짐이 별도 재렌더 없이 자동 반영.
+      const bgFilterEl = document.getElementById("bg-filter");
+      const bgCountRunning = document.getElementById("bg-count-running");
+      const bgCountAll = document.getElementById("bg-count-all");
+      let bgFilter = "running"; // "running" | "all"
+      const setBgFilter = (mode) => {
+        bgFilter = mode === "all" ? "all" : "running";
+        bgList.classList.toggle("filter-running", bgFilter === "running");
+        if (bgFilterEl) for (const b of bgFilterEl.querySelectorAll(".bg-fbtn")) {
+          const on = b.dataset.filter === bgFilter;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        refreshBgBadge();
+      };
+      if (bgFilterEl) for (const b of bgFilterEl.querySelectorAll(".bg-fbtn")) {
+        b.addEventListener("click", () => setBgFilter(b.dataset.filter));
+      }
+
       const refreshBgBadge = () => {
         let running = 0;
         for (const e of jobCards.values()) if (e.status === "running") running += 1;
+        const total = jobCards.size;
         if (bgBadge) {
           bgBadge.textContent = String(running);
           bgBadge.classList.toggle("show", running > 0);
         }
-        if (bgEmpty) bgEmpty.style.display = jobCards.size === 0 ? "" : "none";
+        if (bgCountRunning) bgCountRunning.textContent = String(running);
+        if (bgCountAll) bgCountAll.textContent = String(total);
+        // 왼쪽 nav "에이전트" 항목 카운트 뱃지 = 진행 중 개수(라이브).
+        const navAgentCount = document.getElementById("nav-agent-count");
+        if (navAgentCount) navAgentCount.textContent = String(running);
+        // 에이전트 메인 뷰 자체 카운트/빈상태도 함께 갱신(열려 있을 때만 렌더).
+        if (typeof syncAgentsCounts === "function") syncAgentsCounts(running, total);
+        // 빈 메시지 — 활성 필터 기준. running 필터면 "진행 중 없음", 전체면 "작업 없음".
+        const visible = bgFilter === "running" ? running : total;
+        if (bgEmpty) {
+          bgEmpty.style.display = visible === 0 ? "" : "none";
+          bgEmpty.textContent = bgFilter === "running"
+            ? "진행 중인 작업이 없습니다."
+            : "백그라운드 작업이 없습니다.";
+        }
       };
       const capBgList = () => {
         while (jobCards.size > BG_MAX) {
@@ -1442,6 +1636,11 @@
           top.appendChild(label); top.appendChild(kindBadge); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
+          // 진행 중 라이브 줄 — 경과시간 + 마지막 스텝(현재 작업). 펼치지 않아도 "지금 뭘 하나" 즉시.
+          const live = document.createElement("div"); live.className = "bg-job-live";
+          const elapsed = document.createElement("span"); elapsed.className = "bg-job-elapsed"; elapsed.textContent = "0s";
+          const laststep = document.createElement("span"); laststep.className = "bg-job-laststep";
+          live.appendChild(elapsed); live.appendChild(laststep);
           const err = document.createElement("div"); err.className = "bg-job-err"; err.style.display = "none";
           // 펼침 영역(open 시 표시): 작업 + 스텝 + 결과.
           const detail = document.createElement("div"); detail.className = "bg-job-detail";
@@ -1449,7 +1648,7 @@
           const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
-          el.appendChild(top); el.appendChild(meta); el.appendChild(err); el.appendChild(detail);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
           top.addEventListener("click", () => {
             if (entry.el.classList.contains("has-detail")) { el.classList.toggle("open"); updateChev(entry); }
           });
@@ -1457,6 +1656,9 @@
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge,
+            liveEl: live, elapsedEl: elapsed, lastStepEl: laststep,
+            startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
+            lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
           };
@@ -1489,10 +1691,15 @@
         if (!p.jobId) return;
         const status = p.status || "running";
         const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName });
+        const wasRunning = entry.status === "running";
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");
         entry.el.classList.add(status); // open/has-detail 보존.
         entry.statusEl.textContent = BG_STATUS[status] || status;
+        // 잡 종료 시 경과시간 최종 확정(틱은 running 만 갱신 → 여기서 마지막 값 고정).
+        if (wasRunning && status !== "running" && entry.elapsedEl) {
+          entry.elapsedEl.textContent = fmtElapsed(Date.now() - (entry.startTs || Date.now()));
+        }
         if ((status === "failed" || status === "cancelled") && p.error) {
           entry.errEl.textContent = p.error;
           entry.errEl.style.display = "";
@@ -1503,6 +1710,7 @@
         }
         capBgList();
         refreshBgBadge();
+        renderAgentsView(); // 에이전트 메인 뷰가 열려 있으면 상태 전환 반영(닫혀 있으면 no-op).
       };
       // Step3 — 백그라운드 잡 활동(threadKey=worker:<jobId> | agent:<jobId>)을 그 잡 카드 안
       // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(워커·서브 동일 격리). 서브 규약(ADR
@@ -1540,9 +1748,42 @@
         }
         entry.stepsEl.appendChild(line);
         entry.stepCount += 1;
+        // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
+        {
+          const lbl = p.label || p.kind || "활동";
+          entry.lastStep = p.detail ? lbl + " · " + p.detail : lbl;
+          if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
+        }
         updateChev(entry);
+        renderAgentsView(); // 에이전트 메인 뷰가 열려 있으면 라이브 반영(닫혀 있으면 no-op).
         return true;
       };
+
+      // 경과시간 라이브 틱 — running 카드만 갱신(끝난 잡은 고정). 1s 주기, 저렴(카드 ≤ BG_MAX).
+      const fmtElapsed = (ms) => {
+        const s = Math.max(0, Math.floor(ms / 1000));
+        if (s < 60) return s + "s";
+        const m = Math.floor(s / 60), rs = s % 60;
+        if (m < 60) return m + "m " + rs + "s";
+        const h = Math.floor(m / 60), rm = m % 60;
+        return h + "h " + rm + "m";
+      };
+      const tickElapsed = () => {
+        const now = Date.now();
+        for (const e of jobCards.values()) {
+          if (e.status !== "running" || !e.elapsedEl) continue;
+          e.elapsedEl.textContent = fmtElapsed(now - (e.startTs || now));
+        }
+        // 에이전트 뷰가 열려 있으면 그쪽 running 카드 경과시간도 라이브로(별도 DOM ref).
+        if (currentView === "agents") {
+          for (const [jobId, e] of jobCards) {
+            if (e.status !== "running") continue;
+            const el = agentElapsedEls.get(jobId);
+            if (el) el.textContent = fmtElapsed(now - (e.startTs || now));
+          }
+        }
+      };
+      setInterval(tickElapsed, 1000);
 
       const applyFilter = (el) => {
         if (filterText !== "" && !(el.dataset.type || "").includes(filterText)) {
@@ -2368,9 +2609,10 @@
           if (view === "overview") showOverview();
           else if (view === "providers") showProviders();
           else if (view === "inventory") showInventory();
+          else if (view === "agents") showAgents();
           else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings"].includes(view)) setActiveTab("main");
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings","agents"].includes(view)) setActiveTab("main");
         });
       }
 

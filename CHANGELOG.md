@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-07-04
+
+### Changed
+- **The assistant now fans out independent sub-agents in parallel on its own.** With parallel execution in place (0.3.19), the system prompt now nudges the assistant to spawn several sub-agents at once for independent sub-tasks — matching Claude Code's behavior. Ask it to summarize three unrelated documents and it runs them concurrently rather than one at a time, without you having to say "in parallel"; sub-tasks that depend on each other still run in order. Applies to both the codex and Claude adapters.
+
 ## [0.3.20] - 2026-07-04
 
 ### Fixed
@@ -190,7 +195,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.20...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.21...HEAD
+[0.3.21]: https://github.com/tigu77/tiguclaw/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/tigu77/tiguclaw/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/tigu77/tiguclaw/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/tigu77/tiguclaw/compare/v0.3.17...v0.3.18

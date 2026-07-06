@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-07-06
+
+### Fixed
+- **A fresh install could report "SELF_GROWTH.md not found."** The self-growth plugin adds a note reminding the assistant to read `SELF_GROWTH.md` at the start of a task, but that file is only created once the first learned directive is written — so on a brand-new instance with no directives yet, the assistant would follow the pointer to a file that didn't exist. The plugin now seeds an empty `SELF_GROWTH.md` (header only) on startup, so the pointer never dangles.
+
 ## [0.3.23] - 2026-07-06
 
 ### Fixed
@@ -210,7 +215,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.23...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.24...HEAD
+[0.3.24]: https://github.com/tigu77/tiguclaw/compare/v0.3.23...v0.3.24
 [0.3.23]: https://github.com/tigu77/tiguclaw/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/tigu77/tiguclaw/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/tigu77/tiguclaw/compare/v0.3.20...v0.3.21

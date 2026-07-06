@@ -51,6 +51,7 @@ import {
 // 에 upsert(키 덮어쓰기·이중저장 0). 코어는 이 파일을 모름 — self-growth 가 데이터로만.
 import {
   cleanupDirectives,
+  ensureSelfGrowthFile,
   getDirective,
   upsertDirective,
   type DirectiveSource,
@@ -1746,6 +1747,9 @@ class SelfGrowthPlugin {
     });
     // V4 — 시작 시 1회: 포인터 메모 멱등 upsert(단방향 핵심) + 레거시 lesson 마이그레이션.
     // 포인터는 동기·즉시. 마이그레이션은 async(파일 쓰기) → fire-and-forget(내부 never-throw).
+    // ★파일 seed 선행 — 확정 지침이 아직 없어도 SELF_GROWTH.md 가 존재하게 해 포인터가
+    //  dangling 안 되게(fresh install 에서 비서가 "SELF_GROWTH.md 못 찾음" 하던 버그 수정).
+    void ensureSelfGrowthFile();
     ensureDirectivePointer();
     void migrateLegacyLessons();
     // V2.1+V2.2 — 시작 시 즉시 1회 + 1시간 간격 maintenance (cleanup + 주간 회고 + 지침 정리).

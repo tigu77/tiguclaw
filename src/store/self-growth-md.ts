@@ -45,6 +45,28 @@ const FILE_HEADER = `# SELF_GROWTH.md — 확정 지침 층
 <!-- 이 아래는 self-growth 가 자동 관리합니다. 직접 편집 가능하나 키/구분자 형식을 유지하세요. -->
 `;
 
+/**
+ * 파일이 없으면 헤더만으로 seed 생성 — 포인터 메모(`growth_directive_pointer`)가 매 턴
+ * "작업 시작 시 SELF_GROWTH.md 를 Read 하라"고 안내하는데, 확정 지침이 아직 하나도 안
+ * 쓰인 인스턴스(fresh install)엔 파일이 없어 비서가 "SELF_GROWTH.md 못 찾음" 하던 버그
+ * 수정 — 포인터가 dangling 하지 않게 한다. 이미 있으면 no-op. never-throw(데몬 생존).
+ * `wx` flag 로 access↔write 사이 경합도 안전(그 사이 생겼으면 write 실패→흡수).
+ */
+export const ensureSelfGrowthFile = async (): Promise<void> => {
+  try {
+    const file = getPaths().selfGrowthMd;
+    try {
+      await fs.access(file);
+      return; // 이미 존재 → no-op
+    } catch {
+      /* 없음 → seed 생성 */
+    }
+    await fs.writeFile(file, FILE_HEADER, { flag: "wx" }).catch(() => {});
+  } catch {
+    /* best-effort — 생성 실패해도 throw 0 */
+  }
+};
+
 // 각 지침 블록 구분자 (machine-parse 가능 + 사람이 읽기 좋은 HTML 주석 마커).
 const BLOCK_BEGIN = "<!-- directive:";
 const BLOCK_END = "<!-- /directive -->";

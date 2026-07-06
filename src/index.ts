@@ -403,7 +403,12 @@ const handler: MessageHandler = async (msg) => {
       const icon = j.kind === "agent" ? "🤖" : "📦";
       const kindLabel = j.kind === "agent" ? "서브에이전트" : "워커";
       const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
-      return `${icon} ${kindLabel} \`${name}\` — ${fmtElapsed(j.startedAt)}`;
+      // 서브에이전트면 모델 티어도 표시(low/mid/high 등). 워커는 티어 없음(기본 풀).
+      const tier =
+        j.kind === "agent" && j.modelTier !== undefined && j.modelTier !== ""
+          ? ` · ${j.modelTier}`
+          : "";
+      return `${icon} ${kindLabel} \`${name}\`${tier} — ${fmtElapsed(j.startedAt)}`;
     });
     await msg.reply(
       `🔧 진행 중인 백그라운드 작업 ${running.length}개:\n\n${lines.join("\n")}`,

@@ -41,6 +41,7 @@ const publishWorkerLifecycle = (
     status: string;
     kind?: WorkerJobKind;
     agentName?: string;
+    modelTier?: string;
   },
   extra?: { error?: string; task?: string; result?: string },
 ): void => {
@@ -56,6 +57,7 @@ const publishWorkerLifecycle = (
         // kind='agent' 면 대시보드가 서브에이전트 카드로 렌더(agentName 라벨). 미지정=worker.
         kind: job.kind ?? "worker",
         ...(job.agentName !== undefined ? { agentName: job.agentName } : {}),
+        ...(job.modelTier !== undefined && job.modelTier !== "" ? { modelTier: job.modelTier } : {}),
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
@@ -111,6 +113,8 @@ export interface WorkerJobRecord {
   kind: WorkerJobKind;
   /** 서브에이전트 정의 이름(kind==='agent' 만) — 대시보드 라벨. */
   agentName?: string;
+  /** 서브에이전트 모델 티어(high/mid/low/nano 또는 provider:model). 관측용(대시보드·/agents). */
+  modelTier?: string;
   /** 사람이 읽는 짧은 이름 (완료 보고·상태 조회·로그). */
   label: string;
   /** 워커가 수행한 자연어 작업 지시 (메인이 작성). */
@@ -150,6 +154,8 @@ export interface RegisterJobInput {
   kind?: WorkerJobKind;
   /** 서브에이전트 이름(kind==='agent' 만) — 대시보드 라벨. */
   agentName?: string;
+  /** 서브에이전트 모델 티어(관측용). */
+  modelTier?: string;
 }
 
 /**
@@ -164,6 +170,7 @@ export const registerJob = (input: RegisterJobInput): string => {
     jobId,
     kind,
     agentName: input.agentName,
+    modelTier: input.modelTier,
     label: input.label,
     task: input.task,
     threadKey: input.threadKey,
@@ -196,6 +203,7 @@ export const registerJob = (input: RegisterJobInput): string => {
       status: "running",
       kind,
       agentName: input.agentName,
+      modelTier: input.modelTier,
     },
     { task: input.task },
   );

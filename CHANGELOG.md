@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-07-06
+
+### Added
+- **Built-in general-purpose sub-agents (`quick`, `general`) — delegate small tasks cheaply without writing a spec.** `quick` runs on a low (cheap, fast) model tier for small jobs like summarize/extract/transform — ideal for fanning out many at once — and `general` is a mid-tier catch-all. The assistant is now nudged to reach for `quick` for small independent sub-tasks, so bulk simple work runs on a cheap model in parallel without you authoring any agent files. Sub-agents you define still use the tier in their own spec. (`nano`/local tier is only used when you explicitly ask.)
+- **A sub-agent's model tier is now visible** — shown as a chip on the agent card in the dashboard and next to each entry in `/agents`, so you can see which grade (low/mid/high) each running sub-agent is on.
+
 ## [0.3.21] - 2026-07-04
 
 ### Changed
@@ -195,7 +201,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.21...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.22...HEAD
+[0.3.22]: https://github.com/tigu77/tiguclaw/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/tigu77/tiguclaw/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/tigu77/tiguclaw/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/tigu77/tiguclaw/compare/v0.3.18...v0.3.19

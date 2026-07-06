@@ -51,11 +51,12 @@ export interface Agent {
   filePath: string;
   /**
    * 발견 출처 (V9.3 — tiguclaw 런타임 컨벤션):
+   *  - "builtin": `appRoot()/agents` (앱 번들 빌트인 범용 에이전트 — quick/general 등)
    *  - "user": `getPaths().commonAgents` (=`<home>/agents`)
    *  - "project": `projectScope(cwd).agents` (=`<cwd>/agents`)
    *  - "plugin": `<cwd>/plugins/<plugin>/agents/`
    */
-  source: "user" | "project" | "plugin";
+  source: "builtin" | "user" | "project" | "plugin";
   /** source === "plugin" 시 plugin id (디렉터리 이름). 그 외 undefined. */
   pluginId?: string;
 }
@@ -76,21 +77,32 @@ export interface Agent {
 export const discoverAgents = async (
   cwd: string = process.cwd(),
 ): Promise<Agent[]> => {
+  // 빌트인 범용 에이전트 (appRoot()/agents) — 앱과 함께 배포되는 quick/general 등.
+  // 사용자가 명세를 안 써도 저티어(quick=low) 즉석 위임이 되게. skills 의 appRoot()/skills
+  // 미러. dedupeBySource rank 최하(builtin) — 홈에 같은 이름 두면 사용자 것이 우선.
+  const builtinRoot = path.join(appRoot(), "agents");
   const userRoot = getPaths().commonAgents;
   const projectRoot = projectScope(cwd).agents;
   // 플러그인 2루트 (2026-05-27): 번들(appRoot, 앱 배포 코드) + 유저 설치(<home>/plugins).
   const bundledPluginsRoot = path.join(appRoot(), "plugins");
   const homePluginsRoot = getPaths().commonPlugins;
 
-  const [userAgents, projectAgents, bundledPluginAgents, homePluginAgents] =
-    await Promise.all([
-      walkAgentsDir(userRoot, "user"),
-      walkAgentsDir(projectRoot, "project"),
-      walkPluginsAgents(bundledPluginsRoot),
-      walkPluginsAgents(homePluginsRoot),
-    ]);
+  const [
+    builtinAgents,
+    userAgents,
+    projectAgents,
+    bundledPluginAgents,
+    homePluginAgents,
+  ] = await Promise.all([
+    walkAgentsDir(builtinRoot, "builtin"),
+    walkAgentsDir(userRoot, "user"),
+    walkAgentsDir(projectRoot, "project"),
+    walkPluginsAgents(bundledPluginsRoot),
+    walkPluginsAgents(homePluginsRoot),
+  ]);
 
   return dedupeBySource([
+    ...builtinAgents,
     ...userAgents,
     ...projectAgents,
     ...bundledPluginAgents,
@@ -105,7 +117,7 @@ export const discoverAgents = async (
  */
 const walkAgentsDir = async (
   root: string,
-  source: "user" | "project" | "plugin",
+  source: "builtin" | "user" | "project" | "plugin",
 ): Promise<Agent[]> => {
   let rootReal: string;
   try {
@@ -167,7 +179,7 @@ const walkPluginsAgents = async (pluginsRoot: string): Promise<Agent[]> => {
  */
 const loadSingleAgent = async (
   filePath: string,
-  source: "user" | "project" | "plugin",
+  source: "builtin" | "user" | "project" | "plugin",
 ): Promise<Agent | null> => {
   let raw: string;
   try {
@@ -345,6 +357,7 @@ export const createSpawnAgentMcpServer = (
         jobId = registerJob({
           kind: "agent",
           agentName: args.name,
+          modelTier: agent.model ?? "default",
           label: args.name,
           task: args.prompt,
           threadKey: parentInput.threadKey,

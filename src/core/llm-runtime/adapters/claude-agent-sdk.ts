@@ -638,9 +638,14 @@ export const runClaude = async (
     if (taskJobs.has(taskId)) return; // 중복 감지 방어(같은 tool_use id 재관측).
     try {
       const { agentName, label, task } = parseTaskInput(rawInput);
+      // 모델 티어 관측 — 발견된 에이전트 정의의 model(티어) 을 잡에 기록(대시보드·/agents).
+      // codex(agent.model)와 동일 정보. 미발견/미지정이면 "default".
+      const modelTier =
+        discoveredAgents.find((a) => a.name === agentName)?.model ?? "default";
       const jobId = registerJob({
         kind: "agent",
         agentName,
+        modelTier,
         label,
         task,
         threadKey: input.threadKey, // 어느 대화가 띄운 서브인지 상관(codex 와 동일).

@@ -425,6 +425,12 @@
       .bg-job.agent.failed { border-left-color:#f87171; }
       .bg-job.agent.cancelled { border-left-color:#a78bfa; opacity:.85; }
       .bg-job-kind { flex:none; font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgba(167,139,250,.16); color:#c4b5fd; border:1px solid rgba(167,139,250,.4); white-space:nowrap; }
+      /* 모델 티어 칩 — kind 칩과 동형(작은 pill). 티어별 색상 힌트(data-tier). */
+      .bg-job-tier, .agent-card-tier { flex:none; font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; text-transform:uppercase; white-space:nowrap; background:rgba(255,255,255,.06); color:var(--text-mute); border:1px solid var(--border); }
+      .bg-job-tier[data-tier="low"], .agent-card-tier[data-tier="low"] { background:rgba(148,163,184,.16); color:#cbd5e1; border-color:rgba(148,163,184,.4); }
+      .bg-job-tier[data-tier="mid"], .agent-card-tier[data-tier="mid"] { background:rgba(125,211,252,.16); color:#7dd3fc; border-color:rgba(125,211,252,.4); }
+      .bg-job-tier[data-tier="high"], .agent-card-tier[data-tier="high"] { background:rgba(251,191,36,.16); color:#fbbf24; border-color:rgba(251,191,36,.4); }
+      .agent-card-tier { font-size:10px; padding:2px 8px; }
       /* ── 진행 중 은은한 pulse (2026-07-03) ── 정적이던 '진행중' 표시(작업카드·상단배지·현재
          스텝)에 생동감. 텍스트 가독성 유지 위해 border-color/opacity 만 건드림. 감속모드 존중. */
       @keyframes tc-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
@@ -979,9 +985,21 @@
           const top = document.createElement("div"); top.className = "agent-card-top";
           const kind = document.createElement("span"); kind.className = "agent-card-kind";
           kind.textContent = AGENT_KIND_BADGE[e.kind === "agent" ? "agent" : "worker"];
+          top.appendChild(kind);
+          // 모델 티어 칩 — 서브에이전트이고 modelTier 있을 때만("default"/빈값 제외).
+          if (e.kind === "agent" && e.modelTier) {
+            const tier = String(e.modelTier).trim();
+            if (tier !== "" && tier.toLowerCase() !== "default") {
+              const tierEl = document.createElement("span");
+              tierEl.className = "agent-card-tier";
+              tierEl.dataset.tier = tier.toLowerCase();
+              tierEl.textContent = tier;
+              top.appendChild(tierEl);
+            }
+          }
           const st = document.createElement("span"); st.className = "agent-card-status";
           st.textContent = BG_STATUS[e.status] || e.status || "";
-          top.appendChild(kind); top.appendChild(st);
+          top.appendChild(st);
           const name = document.createElement("div"); name.className = "agent-card-name";
           name.textContent = (e.labelEl && e.labelEl.textContent) || "(작업)";
           const meta = document.createElement("div"); meta.className = "agent-card-meta";
@@ -1627,13 +1645,15 @@
           // 서브에이전트 배지(kind==="agent") — 워커와 시각적 구분. status 뱃지와 별개 축.
           const kindBadge = document.createElement("span"); kindBadge.className = "bg-job-kind";
           kindBadge.textContent = "🤖 서브에이전트"; kindBadge.style.display = "none";
+          // 모델 티어 칩 — kind==="agent" 이고 modelTier 있을 때만(default 제외). kindBadge 옆에.
+          const tierBadge = document.createElement("span"); tierBadge.className = "bg-job-tier"; tierBadge.style.display = "none";
           const st = document.createElement("span"); st.className = "bg-job-status";
           // 기본 상태 텍스트 — 활동(activity)으로만 생성된 카드(대시보드가 worker.started 를
           // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
           // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
           st.textContent = BG_STATUS.running;
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
-          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(st); top.appendChild(chev);
+          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
           // 진행 중 라이브 줄 — 경과시간 + 마지막 스텝(현재 작업). 펼치지 않아도 "지금 뭘 하나" 즉시.
@@ -1656,9 +1676,10 @@
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge,
-            liveEl: live, elapsedEl: elapsed, lastStepEl: laststep,
+            liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge,
             startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
             lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
+            modelTier: "", // 서브에이전트 모델 티어(low/mid/high 등) — lifecycle payload.modelTier. 에이전트 뷰도 읽음.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
           };
@@ -1680,6 +1701,18 @@
           const want = "🤖 " + opts.agentName;
           if (entry.labelEl.textContent !== want) entry.labelEl.textContent = want;
         }
+        // 모델 티어(멱등) — kind==="agent" 이고 modelTier 있을 때만. "default"/빈값은 표시 생략.
+        // lifecycle 이 실어 오면(먼저/나중 무관) entry.modelTier 저장 + 드로어 칩 갱신. 에이전트 뷰는 renderAgentsView 가 읽음.
+        if (entry.kind === "agent" && opts && opts.modelTier != null) {
+          const tier = String(opts.modelTier).trim();
+          entry.modelTier = tier;
+          const show = tier !== "" && tier.toLowerCase() !== "default";
+          if (entry.tierBadgeEl) {
+            entry.tierBadgeEl.textContent = tier;
+            entry.tierBadgeEl.dataset.tier = tier.toLowerCase();
+            entry.tierBadgeEl.style.display = show ? "" : "none";
+          }
+        }
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
         if (opts && opts.task && !entry.hasTask) {
           entry.taskEl.textContent = "작업 · " + opts.task;
@@ -1690,7 +1723,7 @@
       const handleWorkerEvent = (p, ts) => {
         if (!p.jobId) return;
         const status = p.status || "running";
-        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName });
+        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier });
         const wasRunning = entry.status === "running";
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");

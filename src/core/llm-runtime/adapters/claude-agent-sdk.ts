@@ -154,8 +154,8 @@ const parseTaskInput = (
  */
 const extractToolResults = (
   msg: unknown,
-): Array<{ toolUseId: string; text: string }> => {
-  const out: Array<{ toolUseId: string; text: string }> = [];
+): Array<{ toolUseId: string; text: string; isError: boolean }> => {
+  const out: Array<{ toolUseId: string; text: string; isError: boolean }> = [];
   const message = (msg as { message?: unknown }).message;
   const content = (message as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return out;
@@ -169,6 +169,10 @@ const extractToolResults = (
     }
     const toolUseId = (block as { tool_use_id?: unknown }).tool_use_id;
     if (typeof toolUseId !== "string") continue;
+    // Anthropic tool_result 표준 is_error — 서브에이전트(Task) 실패면 true. 이걸 읽어야
+    // 실패 서브가 done 이 아니라 failed 로 관측된다(#2 parity: codex spawn_agent 는 throw→
+    // markFailed, claude 도 동일해야). is_error 미존재/비불리언이면 성공 취급(회귀 0).
+    const isError = (block as { is_error?: unknown }).is_error === true;
     const c = (block as { content?: unknown }).content;
     let text = "";
     if (typeof c === "string") {
@@ -185,7 +189,7 @@ const extractToolResults = (
         )
         .join("");
     }
-    out.push({ toolUseId, text });
+    out.push({ toolUseId, text, isError });
   }
   return out;
 };
@@ -649,13 +653,22 @@ export const runClaude = async (
     }
   };
 
-  // Task 완료 마킹 — tool_result 도착 시. best-effort.
-  const completeTaskJob = (taskId: string, resultText: string): void => {
+  // Task 완료 마킹 — tool_result 도착 시. best-effort. isError=true(서브 실패)면 markFailed
+  // 로 닫아 실패 lifecycle 이 codex(spawn_agent throw→markFailed)와 parity(#2 하드게이트).
+  const completeTaskJob = (
+    taskId: string,
+    resultText: string,
+    isError: boolean,
+  ): void => {
     const entry = taskJobs.get(taskId);
     if (entry === undefined) return;
     taskJobs.delete(taskId);
     try {
-      markDone(entry.jobId, resultText);
+      if (isError) {
+        markFailed(entry.jobId, resultText || "서브에이전트 실행 실패");
+      } else {
+        markDone(entry.jobId, resultText);
+      }
     } catch {
       /* 완료 마킹 실패 무해 — 아래 finally 정리가 고아 방지 백업 아님(이미 delete). */
     }
@@ -820,8 +833,8 @@ export const runClaude = async (
       // 추적 중인 Task id 면 그 서브 완료 → markDone(agent 잡 종료 = 대시보드 카드 완료).
       // best-effort — extractToolResults·completeTaskJob 은 throw 없음(순수/try 내장).
       if (taskJobs.size > 0) {
-        for (const { toolUseId, text } of extractToolResults(msg)) {
-          completeTaskJob(toolUseId, text);
+        for (const { toolUseId, text, isError } of extractToolResults(msg)) {
+          completeTaskJob(toolUseId, text, isError);
         }
       }
     }

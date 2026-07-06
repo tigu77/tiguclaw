@@ -395,6 +395,11 @@ export const createWorkerAbort = (
 export const cancelJob = (jobId: string): boolean => {
   const job = jobs.get(jobId);
   if (job === undefined || job.status !== "running") return false;
+  // U-I4 (subagent-worker-unify ADR) — cancel 은 kind='worker' 만. awaited 서브에이전트
+  // (kind='agent')는 부모 턴 종속이라 취소 대상이 아니다(createWorkerAbort 미등록 = 실제
+  // abort 도 안 걸리고, markCancelled 만 하면 서브 완료 시 markDone 이 덮어써 상태 뒤집힘).
+  // 코어 하드 게이트 — 어느 호출자든 agent 잡을 못 끊게(cancel_worker 도구도 별도 필터).
+  if (job.kind !== "worker") return false;
   // 취소 상태를 먼저 마킹 — 이후 abort 가 runRegionA 를 reject 시키면 runner 의 catch 가
   // onWorkerComplete(error) 를 부르는데, 그 시점엔 이미 status="cancelled" 라 통지 문구가
   // 취소로 나간다(타임아웃과 구분). markCancelled 는 멱등(재호출 무해).

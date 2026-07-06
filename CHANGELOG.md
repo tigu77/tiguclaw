@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-07-04
+
+### Fixed
+- **"Cancel" could target a running sub-agent by mistake, sending a false "cancelled" notice and flipping the job's status.** After workers and sub-agents were unified into one job registry (0.3.17), the cancel path didn't distinguish them: cancelling by name/id could match a sub-agent job, which has no real abort hook — so you'd get a "🛑 cancelled" reply while the sub-agent kept running, and its later completion would overwrite the state back to "done". Cancellation is now restricted to background workers only (both in the core `cancelJob` and the cancel tool); asking to cancel a sub-agent returns a clear explanation instead. (Sub-agents still appear in the list — only cancellation is worker-only.)
+- **A failed Claude sub-agent was recorded as "done" instead of "failed."** The Claude adapter ignored the tool-result error flag, so a sub-agent that failed still showed as completed — inconsistent with the codex adapter, which records failures. The error flag is now read, so a failed sub-agent is marked failed on both adapters.
+
 ## [0.3.19] - 2026-07-04
 
 ### Changed
@@ -184,7 +190,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.19...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.20...HEAD
+[0.3.20]: https://github.com/tigu77/tiguclaw/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/tigu77/tiguclaw/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/tigu77/tiguclaw/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/tigu77/tiguclaw/compare/v0.3.16...v0.3.17

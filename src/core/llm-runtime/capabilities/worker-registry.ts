@@ -285,16 +285,33 @@ export const createWorkerMcpServer = (
         }
         // label 우선 매칭(running 중에서) → 없으면 job_id. 같은 label 의 running 이
         // 여럿이면 가장 최근(listJobs 가 startedAt 내림차순)을 취소.
+        // ★U-I4 (subagent-worker-unify ADR) — 대상은 kind='worker' 만. 서브에이전트
+        // (kind='agent')는 부모 턴 종속이라 취소 대상이 아니다(list_workers 엔 표시하되
+        // cancel 에서만 배타). agent 잡이 같은 레지스트리에 running 으로 상주하므로 필터 필수.
         let target: WorkerJobRecord | undefined;
         if (args.label !== undefined && args.label !== "") {
           target = listJobs({ runningOnly: true }).find(
-            (j) => j.label === args.label,
+            (j) => j.kind === "worker" && j.label === args.label,
           );
         }
         if (target === undefined && args.job_id !== undefined && args.job_id !== "") {
-          target = getJob(args.job_id);
+          const j = getJob(args.job_id);
+          if (j !== undefined && j.kind === "worker") target = j;
         }
         if (target === undefined) {
+          // 워커는 없지만 같은 식별자의 *서브에이전트* 잡이 있으면 취지를 안내(오해 방지).
+          const agentMatch = listJobs({ runningOnly: true }).find(
+            (j) =>
+              j.kind === "agent" &&
+              (j.label === args.label || j.jobId === args.job_id),
+          );
+          if (agentMatch !== undefined) {
+            return okText(
+              `'${agentMatch.label}'은(는) 백그라운드 워커가 아니라 지금 대화 중 실행 중인 ` +
+                `서브에이전트예요. 서브에이전트는 따로 취소하지 않고, 진행 중인 대화(부모 작업)를 ` +
+                `멈추면 함께 정리됩니다.`,
+            );
+          }
           const ident = args.label ?? args.job_id ?? "";
           return okText(
             `취소할 진행 중인 워커를 찾지 못했습니다 ('${ident}'). ` +

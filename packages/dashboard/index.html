@@ -487,6 +487,21 @@
       .agent-card:not(.running) .agent-card-elapsed { color:var(--text-dim); }
       .agent-card-step { font-size:11px; color:var(--text-mute); display:flex; align-items:baseline; gap:6px; word-break:break-word; }
       .agent-card-step .lbl { color:var(--text-dim); font-weight:700; flex:none; }
+      /* 한 줄 작업 요약 — 이름 아래, 1줄 truncate(ellipsis). 같은 이름 서브 여러 개 구분용. */
+      .agent-card-summary { font-size:12px; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+      .agent-card-chev { margin-left:auto; font-size:10px; color:var(--text-dim); user-select:none; white-space:nowrap; }
+      /* 펼침 상세 — 기본 숨김, .open 시 표시(은은한 상단 구분선). */
+      .agent-card-detail { display:none; flex-direction:column; gap:9px; margin-top:4px; padding-top:9px; border-top:1px solid var(--border); }
+      .agent-card.open .agent-card-detail { display:flex; }
+      .agent-card-detail-block { display:flex; flex-direction:column; gap:3px; }
+      .acd-label { font-size:9px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; color:var(--text-dim); }
+      .acd-body { font-size:11px; color:var(--text); white-space:pre-wrap; word-break:break-word; line-height:1.5; }
+      .acd-body.result { max-height:220px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+      .acd-body.error { color:#fca5a5; }
+      /* 드로어 카드 한 줄 요약 — 이름 아래 항상 표시(1줄 truncate). 펼치면(.open) 전문(bg-job-task)이
+         나오므로 중복 방지로 요약은 숨김. */
+      .bg-job-summary { font-size:11px; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+      .bg-job.open .bg-job-summary { display:none !important; }
       #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
       #chat-form { display:flex; gap:8px; }
       #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
@@ -1002,18 +1017,70 @@
           top.appendChild(st);
           const name = document.createElement("div"); name.className = "agent-card-name";
           name.textContent = (e.labelEl && e.labelEl.textContent) || "(작업)";
+          card.appendChild(top); card.appendChild(name);
+          // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개 구분.
+          if (e.task) {
+            const summary = document.createElement("div"); summary.className = "agent-card-summary";
+            summary.textContent = e.task;
+            card.appendChild(summary);
+          }
           const meta = document.createElement("div"); meta.className = "agent-card-meta";
           const el = document.createElement("span"); el.className = "agent-card-elapsed";
           el.textContent = fmtElapsed(now - (e.startTs || now));
           if (e.status === "running") agentElapsedEls.set(jobId, el);
           meta.appendChild(el);
-          card.appendChild(top); card.appendChild(name); card.appendChild(meta);
+          // 펼침 어포던스 표시(작업 전문/결과/에러/스텝 중 하나라도 있으면).
+          const hasDetail = !!(e.task || e.result || e.errorText || e.stepCount > 0);
+          let chev = null;
+          if (hasDetail) {
+            chev = document.createElement("span"); chev.className = "agent-card-chev";
+            chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
+            meta.appendChild(chev);
+          }
+          card.appendChild(meta);
           if (e.lastStep) {
             const step = document.createElement("div"); step.className = "agent-card-step";
             const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "지금";
             const val = document.createElement("span"); val.textContent = e.lastStep;
             step.appendChild(lbl); step.appendChild(val);
             card.appendChild(step);
+          }
+          // 펼침 상세 영역 — 작업 전문 + 결과/에러 + 스텝 타임라인. entry.expanded 로 표시 복원.
+          if (hasDetail) {
+            const detail = document.createElement("div"); detail.className = "agent-card-detail";
+            if (e.task) {
+              const t = document.createElement("div"); t.className = "agent-card-detail-block";
+              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "작업";
+              const b = document.createElement("div"); b.className = "acd-body"; b.textContent = e.task;
+              t.appendChild(h); t.appendChild(b); detail.appendChild(t);
+            }
+            if (e.result) {
+              const r = document.createElement("div"); r.className = "agent-card-detail-block";
+              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "결과";
+              const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result;
+              r.appendChild(h); r.appendChild(b); detail.appendChild(r);
+            }
+            if (e.errorText) {
+              const er = document.createElement("div"); er.className = "agent-card-detail-block";
+              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "에러";
+              const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText;
+              er.appendChild(h); er.appendChild(b); detail.appendChild(er);
+            }
+            if (e.stepCount > 0 && e.stepsEl) {
+              const s = document.createElement("div"); s.className = "agent-card-detail-block";
+              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "단계 (" + e.stepCount + ")";
+              const stepsClone = e.stepsEl.cloneNode(true); // 드로어가 만든 스텝 타임라인 재사용(단일 진실 소스).
+              s.appendChild(h); s.appendChild(stepsClone); detail.appendChild(s);
+            }
+            card.appendChild(detail);
+            if (e.expanded) card.classList.add("open");
+            // 카드 클릭 = 펼침 토글(입력·링크 클릭 제외 불필요 — 카드 내 인터랙티브 요소 없음).
+            card.style.cursor = "pointer";
+            card.addEventListener("click", () => {
+              e.expanded = !e.expanded;
+              card.classList.toggle("open", e.expanded);
+              chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
+            });
           }
           grid.appendChild(card);
         }
@@ -1025,6 +1092,18 @@
             : "실행된 에이전트가 없습니다.";
         }
       };
+      // 렌더 throttle — llm.activity/lifecycle 이 초당 여러 개 쏟아질 때 renderAgentsView 가
+      // 매번 grid 전체를 innerHTML="" 후 재구성하면 버벅인다. requestAnimationFrame 으로
+      // 프레임당 1회로 coalesce(스트림 폭주 → 부드럽게). 뷰 닫혀있으면 큐잉도 안 함.
+      let agentsRenderQueued = false;
+      const scheduleAgentsRender = () => {
+        if (currentView !== "agents" || agentsRenderQueued) return;
+        agentsRenderQueued = true;
+        requestAnimationFrame(() => {
+          agentsRenderQueued = false;
+          renderAgentsView();
+        });
+      };
       const setAgentsFilter = (mode) => {
         agentsFilter = mode === "all" ? "all" : "running";
         const bar = document.getElementById("agents-filter");
@@ -1033,6 +1112,11 @@
           b.classList.toggle("active", on);
           b.setAttribute("aria-pressed", on ? "true" : "false");
         }
+        // ★ grid 의 filter-running CSS 클래스도 토글해야 함 — 안 그러면 "전체" 로 바꿔도
+        // CSS `.filter-running .agent-card:not(.running){display:none}` 가 done 카드를 계속
+        // 숨겨 카운트만 나오고 화면은 빈다(버그). renderAgentsView 의 JS 필터와 CSS 를 일치.
+        const grid = document.getElementById("agents-grid");
+        if (grid) grid.classList.toggle("filter-running", agentsFilter === "running");
         renderAgentsView();
       };
       const showAgents = () => {
@@ -1656,6 +1740,9 @@
           top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
+          // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개도 구분되게.
+          // 전문은 펼침 영역(bg-job-task)에. task 없으면 숨김.
+          const summary = document.createElement("div"); summary.className = "bg-job-summary"; summary.style.display = "none";
           // 진행 중 라이브 줄 — 경과시간 + 마지막 스텝(현재 작업). 펼치지 않아도 "지금 뭘 하나" 즉시.
           const live = document.createElement("div"); live.className = "bg-job-live";
           const elapsed = document.createElement("span"); elapsed.className = "bg-job-elapsed"; elapsed.textContent = "0s";
@@ -1668,7 +1755,7 @@
           const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
-          el.appendChild(top); el.appendChild(meta); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
           top.addEventListener("click", () => {
             if (entry.el.classList.contains("has-detail")) { el.classList.toggle("open"); updateChev(entry); }
           });
@@ -1676,10 +1763,12 @@
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge,
-            liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge,
+            liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
             lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
             modelTier: "", // 서브에이전트 모델 티어(low/mid/high 등) — lifecycle payload.modelTier. 에이전트 뷰도 읽음.
+            task: "", result: "", errorText: "", // 작업 지시/결과/에러 원문(문자열) — DOM 과 별개 보관. 에이전트 뷰가 한 줄 요약·펼침 상세에 읽음.
+            expanded: false, // 에이전트 뷰 카드 펼침 상태(jobId 별) — 리렌더돼도 유지. 드로어는 .open 클래스로 별도 관리.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
           };
@@ -1715,8 +1804,13 @@
         }
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
         if (opts && opts.task && !entry.hasTask) {
-          entry.taskEl.textContent = "작업 · " + opts.task;
-          entry.taskEl.style.display = ""; entry.hasTask = true; updateChev(entry);
+          entry.task = String(opts.task); // 원문 보관(에이전트 뷰가 읽음).
+          entry.taskEl.textContent = "작업 · " + opts.task; // 펼침 영역 전문.
+          entry.taskEl.style.display = ""; entry.hasTask = true;
+          // 항상 보이는 한 줄 요약(이름 아래) — 접혀 있어도 무슨 작업인지 구분.
+          entry.summaryEl.textContent = opts.task;
+          entry.summaryEl.style.display = "";
+          updateChev(entry);
         }
         return entry;
       };
@@ -1734,16 +1828,18 @@
           entry.elapsedEl.textContent = fmtElapsed(Date.now() - (entry.startTs || Date.now()));
         }
         if ((status === "failed" || status === "cancelled") && p.error) {
+          entry.errorText = String(p.error); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
           entry.errEl.textContent = p.error;
           entry.errEl.style.display = "";
         }
         if (status === "done" && p.result) {
+          entry.result = String(p.result); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
           entry.resultEl.textContent = "결과 · " + p.result;
           entry.resultEl.style.display = ""; entry.hasResult = true; updateChev(entry);
         }
         capBgList();
         refreshBgBadge();
-        renderAgentsView(); // 에이전트 메인 뷰가 열려 있으면 상태 전환 반영(닫혀 있으면 no-op).
+        scheduleAgentsRender(); // 에이전트 메인 뷰가 열려 있으면 상태 전환 반영(throttle, 닫혀 있으면 no-op).
       };
       // Step3 — 백그라운드 잡 활동(threadKey=worker:<jobId> | agent:<jobId>)을 그 잡 카드 안
       // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(워커·서브 동일 격리). 서브 규약(ADR
@@ -1788,7 +1884,7 @@
           if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
         }
         updateChev(entry);
-        renderAgentsView(); // 에이전트 메인 뷰가 열려 있으면 라이브 반영(닫혀 있으면 no-op).
+        scheduleAgentsRender(); // 에이전트 메인 뷰가 열려 있으면 라이브 반영(throttle, 닫혀 있으면 no-op).
         return true;
       };
 

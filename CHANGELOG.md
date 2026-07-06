@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-07-06
+
+### Fixed
+- **The dashboard "Agents" view could show an empty list under the "All" tab even when the count said there were jobs.** The running/all toggle updated the count but didn't clear the running-only CSS filter, so completed jobs stayed hidden. Switching to "All" now shows them.
+- **Smoothed out rendering jank in the agents/background panels** when many events arrive at once — the view now coalesces re-renders to one per frame instead of rebuilding on every event.
+
+### Added
+- **Job cards now show what each one is working on, and can be expanded.** Every agent/worker card shows a one-line task summary under its name — so multiple same-named sub-agents (e.g. several `quick` fan-outs) are distinguishable — and clicking a card expands it to reveal the full task, the result or error, and its step timeline.
+
 ## [0.3.22] - 2026-07-06
 
 ### Added
@@ -201,7 +210,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.22...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.23...HEAD
+[0.3.23]: https://github.com/tigu77/tiguclaw/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/tigu77/tiguclaw/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/tigu77/tiguclaw/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/tigu77/tiguclaw/compare/v0.3.19...v0.3.20

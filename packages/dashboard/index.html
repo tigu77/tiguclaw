@@ -498,6 +498,46 @@
       .acd-body { font-size:11px; color:var(--text); white-space:pre-wrap; word-break:break-word; line-height:1.5; }
       .acd-body.result { max-height:220px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
       .acd-body.error { color:#fca5a5; }
+
+      /* ── 프로젝트 뷰(축3 마스터-디테일: 그리드 + 오른쪽 상세 패널) ────────────── */
+      .projects-view { display:flex; flex-direction:column; gap:14px; }
+      .projects-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,.85fr); gap:14px; align-items:start; }
+      .projects-split.no-detail { grid-template-columns:minmax(0,1fr); }
+      .projects-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; align-content:start; }
+      .project-card { width:100%; text-align:left; color:inherit; position:relative; padding:15px 15px 14px 17px; border:1px solid var(--border); border-radius:17px; background:var(--card); cursor:pointer; transition:background .12s,border-color .12s,transform .12s; }
+      .project-card:hover { background:var(--card-hover); border-color:var(--border-strong); transform:translateY(-1px); }
+      .project-card.selected { background:rgba(125,211,252,.12); border-color:rgba(125,211,252,.36); }
+      .project-card::before { content:""; position:absolute; left:0; top:14px; bottom:14px; width:4px; border-radius:99px; background:var(--text-dim); }
+      .project-card.s-active::before { background:var(--good); } .project-card.s-paused::before { background:var(--warn); } .project-card.s-done::before { background:var(--accent-2); }
+      .project-card-head { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+      .project-card-name { color:var(--text); font-weight:850; font-size:15px; letter-spacing:-.02em; word-break:break-word; }
+      .project-status { flex:none; margin-left:auto; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; border:1px solid var(--border); background:var(--card); color:var(--text-mute); }
+      .project-status.active { background:rgba(52,211,153,.14); color:var(--good); border-color:rgba(52,211,153,.36); }
+      .project-status.paused { background:rgba(251,191,36,.15); color:var(--warn); border-color:rgba(251,191,36,.36); }
+      .project-status.done { background:rgba(125,211,252,.14); color:var(--accent-2); border-color:rgba(125,211,252,.36); }
+      .project-card-summary { color:var(--text-mute); font-size:12px; line-height:1.45; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+      .project-card-path { margin-top:9px; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 오른쪽 상세 패널 — #detail-panel(축1) 대신 뷰 내부 자체 패널(새 프레임워크 0). */
+      .project-detail { border:1px solid var(--border); border-radius:18px; background:var(--card); padding:16px 18px; position:sticky; top:0; max-height:calc(100svh - 120px); overflow-y:auto; }
+      .project-detail-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+      .project-detail-name { font-size:19px; font-weight:850; color:var(--text); letter-spacing:-.03em; word-break:break-word; }
+      .project-detail-close { margin-left:auto; flex:none; background:var(--card); color:var(--text-mute); border:1px solid var(--border); border-radius:8px; width:26px; height:26px; cursor:pointer; font-size:13px; line-height:1; }
+      .project-detail-close:hover { color:var(--text); border-color:var(--border-strong); }
+      .project-detail-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-dim); margin-bottom:14px; word-break:break-all; }
+      .pd-section { margin-top:16px; }
+      .pd-section-title { font-size:10px; font-weight:900; letter-spacing:.09em; text-transform:uppercase; color:var(--text-dim); margin-bottom:8px; }
+      .pd-body { color:var(--text); font-size:13px; line-height:1.6; word-break:break-word; }
+      .pd-body.md :first-child { margin-top:0; } .pd-body.md :last-child { margin-bottom:0; }
+      .pd-list { display:flex; flex-direction:column; gap:7px; }
+      .pd-item { padding:9px 11px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.02); }
+      .pd-item-name { font-size:12px; font-weight:800; color:var(--text); word-break:break-word; }
+      .pd-item-desc { font-size:11px; color:var(--text-mute); margin-top:2px; line-height:1.45; word-break:break-word; }
+      .pd-related { display:flex; flex-wrap:wrap; gap:6px; }
+      .pd-related-chip { font-size:11px; color:var(--text-mute); padding:5px 10px; border-radius:999px; background:var(--card); border:1px solid var(--border); }
+      .pd-related-chip.link { cursor:pointer; color:var(--accent-2); border-color:rgba(125,211,252,.36); }
+      .pd-related-chip.link:hover { background:rgba(125,211,252,.12); }
+      .pd-empty { font-size:12px; color:var(--text-dim); padding:8px 0; }
+      @media (max-width: 760px) { .projects-split { grid-template-columns:1fr; } .project-detail { position:static; max-height:none; } }
       /* 드로어 카드 한 줄 요약 — 이름 아래 항상 표시(1줄 truncate). 펼치면(.open) 전문(bg-job-task)이
          나오므로 중복 방지로 요약은 숨김. */
       .bg-job-summary { font-size:11px; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
@@ -583,6 +623,7 @@
           <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">프로바이더</span><span class="hint" id="nav-provider-count">0</span></button>
           <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
           <button class="nav-button" data-view="agents" type="button"><span class="ic">🤖</span><span class="label">에이전트</span><span class="hint" id="nav-agent-count">0</span></button>
+          <button class="nav-button" data-view="projects" type="button"><span class="ic">📁</span><span class="label">프로젝트</span><span class="hint" id="nav-project-count">0</span></button>
           <div class="nav-divider"></div>
           <button class="nav-button" data-view="inventory" type="button"><span class="ic">🧩</span><span class="label">런타임 인벤토리</span><span class="hint">관리</span></button>
           <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
@@ -1144,6 +1185,256 @@
         }
         agentsFilter = "running";
         renderAgentsView();
+      };
+
+      // ── 프로젝트 뷰(왼쪽 nav 1급 destination — 축3 마스터-디테일) ──────────────
+      // GET /api/projects → 그리드 카드(name·status 배지·설명 일부). 카드 클릭 → 뷰 내부
+      // 오른쪽 상세 패널에 GET /api/projects/detail?path= 를 렌더(설명 본문 마크다운 +
+      // 전용 스킬/에이전트 + related 클릭 이동). 새 프레임워크 0 — 기존 fetch/renderMarkdown 재사용.
+      const PROJECT_STATUS_LABEL = { active: "진행 중", paused: "보류", done: "완료" };
+      let projectsCache = [];
+      let selectedProjectPath = null;
+
+      const showProjects = () => {
+        setActiveNav("projects");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view projects-view";
+        wrap.innerHTML =
+          '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">프로젝트</div><span class="detail-kind">레지스트리</span></div>' +
+          '<p class="developer-copy">등록된 프로젝트(폴더 + PROJECT.md)를 카드로 봅니다. 카드를 누르면 오른쪽에 설명·전용 스킬/에이전트·연관 프로젝트가 열립니다.</p>' +
+          '<div class="projects-split no-detail" id="projects-split">' +
+          '<div class="projects-grid" id="projects-grid"><div class="empty">불러오는 중…</div></div>' +
+          '</div>';
+        root.appendChild(wrap);
+        selectedProjectPath = null;
+        fetchProjects();
+      };
+
+      const fetchProjects = async () => {
+        try {
+          const r = await fetch("/api/projects");
+          const data = await r.json();
+          projectsCache = Array.isArray(data) ? data : [];
+        } catch (e) {
+          projectsCache = [];
+        }
+        const nav = document.getElementById("nav-project-count");
+        if (nav) nav.textContent = String(projectsCache.length);
+        if (currentView === "projects") renderProjectsGrid();
+      };
+
+      const renderProjectsGrid = () => {
+        const grid = document.getElementById("projects-grid");
+        if (!grid) return;
+        grid.innerHTML = "";
+        if (projectsCache.length === 0) {
+          grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. 돌쇠에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
+          return;
+        }
+        for (const p of projectsCache) {
+          const status = ["active", "paused", "done"].includes(p.status) ? p.status : "active";
+          const card = document.createElement("button");
+          card.type = "button";
+          card.className = "project-card s-" + status + (p.path === selectedProjectPath ? " selected" : "");
+          const head = document.createElement("div");
+          head.className = "project-card-head";
+          const name = document.createElement("span");
+          name.className = "project-card-name";
+          name.textContent = p.name || "(이름 없음)";
+          const st = document.createElement("span");
+          st.className = "project-status " + status;
+          st.textContent = PROJECT_STATUS_LABEL[status] || status;
+          head.appendChild(name); head.appendChild(st);
+          const summary = document.createElement("div");
+          summary.className = "project-card-summary";
+          summary.textContent = p.description || "설명 없음";
+          const pathEl = document.createElement("div");
+          pathEl.className = "project-card-path";
+          pathEl.textContent = p.path;
+          card.appendChild(head); card.appendChild(summary); card.appendChild(pathEl);
+          card.addEventListener("click", () => openProjectDetail(p.path));
+          grid.appendChild(card);
+        }
+      };
+
+      const closeProjectDetail = () => {
+        selectedProjectPath = null;
+        const split = document.getElementById("projects-split");
+        if (split) {
+          split.classList.add("no-detail");
+          const existing = document.getElementById("project-detail");
+          if (existing) existing.remove();
+        }
+        renderProjectsGrid();
+      };
+
+      const openProjectDetail = async (projectPath) => {
+        selectedProjectPath = projectPath;
+        renderProjectsGrid();
+        const split = document.getElementById("projects-split");
+        if (!split) return;
+        split.classList.remove("no-detail");
+        let panel = document.getElementById("project-detail");
+        if (!panel) {
+          panel = document.createElement("aside");
+          panel.id = "project-detail";
+          panel.className = "project-detail";
+          split.appendChild(panel);
+        }
+        panel.innerHTML = '<div class="empty">불러오는 중…</div>';
+        let detail;
+        try {
+          const r = await fetch("/api/projects/detail?path=" + encodeURIComponent(projectPath));
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            panel.innerHTML = '';
+            const msg = document.createElement("div");
+            msg.className = "empty";
+            msg.textContent = r.status === 404
+              ? "PROJECT.md 를 찾을 수 없습니다 (폴더/파일 부재)."
+              : ("상세를 불러오지 못했습니다: " + (err.error || r.status));
+            panel.appendChild(msg);
+            return;
+          }
+          detail = await r.json();
+        } catch (e) {
+          panel.innerHTML = '';
+          const msg = document.createElement("div");
+          msg.className = "empty";
+          msg.textContent = "상세를 불러오지 못했습니다.";
+          panel.appendChild(msg);
+          return;
+        }
+        // 현재 선택이 바뀌었으면(빠른 연속 클릭) 렌더 폐기.
+        if (selectedProjectPath !== projectPath) return;
+        renderProjectDetail(panel, projectPath, detail);
+      };
+
+      const renderProjectDetail = (panel, projectPath, detail) => {
+        const meta = detail.meta || {};
+        const status = ["active", "paused", "done"].includes(meta.status) ? meta.status : "active";
+        panel.innerHTML = "";
+
+        const head = document.createElement("div");
+        head.className = "project-detail-head";
+        const name = document.createElement("div");
+        name.className = "project-detail-name";
+        name.textContent = meta.name || "(이름 없음)";
+        const st = document.createElement("span");
+        st.className = "project-status " + status;
+        st.textContent = PROJECT_STATUS_LABEL[status] || status;
+        const close = document.createElement("button");
+        close.type = "button";
+        close.className = "project-detail-close";
+        close.setAttribute("aria-label", "닫기");
+        close.textContent = "✕";
+        close.addEventListener("click", closeProjectDetail);
+        head.appendChild(name); head.appendChild(st); head.appendChild(close);
+        panel.appendChild(head);
+
+        const pathEl = document.createElement("div");
+        pathEl.className = "project-detail-path";
+        pathEl.textContent = projectPath;
+        panel.appendChild(pathEl);
+
+        // 설명 본문(마크다운 렌더). body 비면 description 폴백.
+        const bodySrc = (meta.body && meta.body.trim() !== "") ? meta.body : (meta.description || "");
+        const bodySec = document.createElement("div");
+        bodySec.className = "pd-section";
+        const bodyInner = document.createElement("div");
+        bodyInner.className = "pd-body";
+        if (bodySrc.trim() === "") {
+          bodyInner.classList.add("pd-empty");
+          bodyInner.textContent = "설명이 없습니다.";
+        } else if (typeof window.marked !== "undefined") {
+          try { bodyInner.innerHTML = renderMarkdown(bodySrc); bodyInner.classList.add("md"); }
+          catch (e) { bodyInner.textContent = bodySrc; }
+        } else {
+          bodyInner.textContent = bodySrc;
+        }
+        bodySec.appendChild(bodyInner);
+        panel.appendChild(bodySec);
+
+        const listSection = (title, items) => {
+          const sec = document.createElement("div");
+          sec.className = "pd-section";
+          const t = document.createElement("div");
+          t.className = "pd-section-title";
+          t.textContent = title;
+          sec.appendChild(t);
+          if (!Array.isArray(items) || items.length === 0) {
+            const e = document.createElement("div");
+            e.className = "pd-empty";
+            e.textContent = "없음";
+            sec.appendChild(e);
+          } else {
+            const list = document.createElement("div");
+            list.className = "pd-list";
+            for (const it of items) {
+              const row = document.createElement("div");
+              row.className = "pd-item";
+              const n = document.createElement("div");
+              n.className = "pd-item-name";
+              n.textContent = it.name || "(이름 없음)";
+              row.appendChild(n);
+              if (it.description) {
+                const d = document.createElement("div");
+                d.className = "pd-item-desc";
+                d.textContent = it.description;
+                row.appendChild(d);
+              }
+              list.appendChild(row);
+            }
+            sec.appendChild(list);
+          }
+          panel.appendChild(sec);
+        };
+
+        listSection("전용 스킬", detail.skills);
+        listSection("전용 에이전트", detail.agents);
+
+        // 연관 프로젝트 — path 있으면 클릭 이동, 없으면 텍스트 칩.
+        const relSec = document.createElement("div");
+        relSec.className = "pd-section";
+        const relTitle = document.createElement("div");
+        relTitle.className = "pd-section-title";
+        relTitle.textContent = "연관 프로젝트";
+        relSec.appendChild(relTitle);
+        const related = Array.isArray(detail.related) ? detail.related : [];
+        if (related.length === 0) {
+          const e = document.createElement("div");
+          e.className = "pd-empty";
+          e.textContent = "없음";
+          relSec.appendChild(e);
+        } else {
+          const chips = document.createElement("div");
+          chips.className = "pd-related";
+          for (const rel of related) {
+            const chip = document.createElement("span");
+            chip.className = "pd-related-chip" + (rel.path ? " link" : "");
+            chip.textContent = rel.name || rel.path || "(연관)";
+            if (rel.path) {
+              chip.title = rel.path;
+              chip.addEventListener("click", () => openProjectDetail(rel.path));
+            }
+            chips.appendChild(chip);
+          }
+          relSec.appendChild(chips);
+        }
+        panel.appendChild(relSec);
+
+        // recentJobs — P1 빈 배열. 관련 활동 섹션(비어 있으면 안내).
+        const jobs = Array.isArray(detail.recentJobs) ? detail.recentJobs : [];
+        if (jobs.length === 0) {
+          const jobSec = document.createElement("div");
+          jobSec.className = "pd-section";
+          jobSec.innerHTML = '<div class="pd-section-title">관련 활동</div><div class="pd-empty">관련 활동 없음</div>';
+          panel.appendChild(jobSec);
+        }
       };
 
       const showProviders = () => {
@@ -2739,9 +3030,10 @@
           else if (view === "providers") showProviders();
           else if (view === "inventory") showInventory();
           else if (view === "agents") showAgents();
+          else if (view === "projects") showProjects();
           else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings","agents"].includes(view)) setActiveTab("main");
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings","agents","projects"].includes(view)) setActiveTab("main");
         });
       }
 
@@ -2751,6 +3043,8 @@
       setInterval(fetchProviders, 30000);
       fetchInventory();
       setInterval(fetchInventory, 30000);
+      fetchProjects();
+      setInterval(fetchProjects, 30000);
 
       const connDot = document.getElementById("conn-dot");
       const connText = document.getElementById("conn-text");

@@ -393,6 +393,22 @@ export const initStore = (): void => {
     handle.exec(`ALTER TABLE worker_jobs ADD COLUMN agent_name TEXT`);
   }
 
+  // ─── 프로젝트 레지스트리 인덱스 (2026-07-06, ADR projects-feature) ──────────────
+  // 등록된 프로젝트 경로 조회 캐시. ★진실은 각 폴더 <path>/PROJECT.md — 이 테이블은
+  // 대시보드/조회용 인덱스일 뿐(self-growth SELF_GROWTH.md+SQLite 하이브리드 동형).
+  // 코어는 프로젝트를 데이터 스키마로만 앎(파일 진실 참조 0, 단방향). CREATE IF NOT EXISTS 멱등.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      path          TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      status        TEXT NOT NULL,
+      description   TEXT,
+      registered_at INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at);
+  `);
+
   // ─── 관측 이벤트 영속 (감사·메트릭 — 2026-06-19) ──────────────────────────────
   // EventBus 는 비영속 ring buffer(hot cache)뿐 — 재시작 시 이력 소실. 이 테이블은
   // *의미있는* 이벤트(에러·발화·lifecycle·memory.write 등; 고volume 스트리밍/본문 제외)를

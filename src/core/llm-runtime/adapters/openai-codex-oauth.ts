@@ -76,6 +76,7 @@ import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
+import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import {
   loadThreadHistoryWithIds,
   type CodexTurn,
@@ -1396,6 +1397,12 @@ export const runOpenAiCodex = async (
   const fileOpsBridge = await adaptClaudeMcpServer(createFileOpsMcpServer(), "file-ops");
   // V7.7 — 태스크 관리 (TodoWrite 동등). claude 는 SDK builtin, codex 만 등록.
   const todoBridge = await adaptClaudeMcpServer(createTodoMcpServer(), "todo");
+  // 프로젝트 레지스트리 (register/list/update/forget) — 양 어댑터 공통(#2). 진실은
+  // 각 폴더 PROJECT.md, 이 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
+  const projectBridge = await adaptClaudeMcpServer(
+    createProjectRegistryMcpServer(),
+    "projects",
+  );
   // V7.8 — invoke_skill 단일 정의(skill-registry) bridge. claude 어댑터도 동일
   // server 등록 (양 어댑터 공통, file-ops 중복 정의 제거 후 통일).
   // V9.3 — 싱글톤 → factory. cwd 는 위 스킬 인덱스(discoverSkills(discoveryCwd))와
@@ -1422,6 +1429,7 @@ export const runOpenAiCodex = async (
     memoryBridge,
     fileOpsBridge,
     todoBridge,
+    projectBridge,
     skillBridge,
     replyIntentBridge,
   );
@@ -1465,6 +1473,7 @@ export const runOpenAiCodex = async (
     const memoryToolsRaw = await memoryBridge.listTools();
     const fileOpsToolsRaw = await fileOpsBridge.listTools();
     const todoToolsRaw = await todoBridge.listTools();
+    const projectToolsRaw = await projectBridge.listTools();
     const skillToolsRaw = await skillBridge.listTools();
     const replyIntentToolsRaw = await replyIntentBridge.listTools();
 
@@ -1477,6 +1486,9 @@ export const runOpenAiCodex = async (
     for (const t of todoToolsRaw) {
       toolBridgeMap.set((t as { name: string }).name, todoBridge);
     }
+    for (const t of projectToolsRaw) {
+      toolBridgeMap.set((t as { name: string }).name, projectBridge);
+    }
     for (const t of skillToolsRaw) {
       toolBridgeMap.set((t as { name: string }).name, skillBridge);
     }
@@ -1488,6 +1500,7 @@ export const runOpenAiCodex = async (
       ...memoryToolsRaw,
       ...fileOpsToolsRaw,
       ...todoToolsRaw,
+      ...projectToolsRaw,
       ...skillToolsRaw,
       ...replyIntentToolsRaw,
     );

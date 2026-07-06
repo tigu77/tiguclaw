@@ -35,6 +35,12 @@ import {
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
+import { listProjects } from "../../src/store/projects.js";
+import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
+import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
+import { discoverAgents } from "../../src/core/llm-runtime/capabilities/agent-registry.js";
+import { promises as fsp } from "node:fs";
+import nodePath from "node:path";
 
 const VERSION = "0.1.0";
 const DEFAULT_THREAD_KEY = "http-bridge:default";
@@ -240,7 +246,11 @@ class HttpBridge implements Channel, Observer {
             ? "read"
             : pathname === "/chat-history" && method === "GET"
               ? "read"
-              : pathname === "/messages" && method === "POST"
+              : pathname === "/projects" && method === "GET"
+                ? "read"
+                : pathname === "/projects/detail" && method === "GET"
+                  ? "read"
+                  : pathname === "/messages" && method === "POST"
               ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
@@ -343,6 +353,101 @@ class HttpBridge implements Channel, Observer {
           beforeTs !== undefined ? { limit, beforeTs } : { limit },
         );
         writeJson(res, 200, { entries });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /projects — JSON. 등록된 프로젝트 목록(레지스트리 조회 캐시). 대시보드 그리드 카드용.
+    // 진실은 각 폴더의 PROJECT.md — 여긴 인덱스일 뿐(상세 열 때 파일 재-Read). read 게이트.
+    if (pathname === "/projects" && method === "GET") {
+      try {
+        writeJson(res, 200, listProjects());
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /projects/detail?path=<abs> — JSON. 매 호출 <path>/PROJECT.md 재-Read(최신 진실) +
+    // discover*(path) project-source 스킬/에이전트 + related 해소. PROJECT.md/폴더 부재 시 404.
+    // recentJobs 는 P1 빈 배열([]) — G2 후속(cwd 귀속 payload 확장에 편승).
+    if (pathname === "/projects/detail" && method === "GET") {
+      const projectPath = url.searchParams.get("path") ?? "";
+      if (projectPath.trim() === "") {
+        writeJson(res, 400, { error: "path required" });
+        return;
+      }
+      try {
+        const mdPath = nodePath.join(projectPath, "PROJECT.md");
+        let raw: string;
+        try {
+          raw = await fsp.readFile(mdPath, "utf8");
+        } catch {
+          // PROJECT.md 부재/폴더 없음 → 404 (best-effort, throw 0).
+          writeJson(res, 404, {
+            error: "PROJECT.md not found",
+            path: projectPath,
+          });
+          return;
+        }
+        const folderName = nodePath.basename(projectPath);
+        const meta = parseProjectMd(raw, folderName);
+
+        // 프로젝트 전용 스킬/에이전트 — discover*(path) 중 source==="project" 만.
+        const [allSkills, allAgents] = await Promise.all([
+          discoverSkills(projectPath).catch(() => []),
+          discoverAgents(projectPath).catch(() => []),
+        ]);
+        const skills = allSkills
+          .filter((s) => s.source === "project")
+          .map((s) => ({ name: s.name, description: s.description }));
+        const agents = allAgents
+          .filter((a) => a.source === "project")
+          .map((a) => ({ name: a.name, description: a.description }));
+
+        // related 해소 — 각 항목(경로 또는 등록 name)을 등록 목록에서 name/path 로.
+        // 못 찾으면 path=null(텍스트로만 표시). 상대경로는 프로젝트 폴더 기준 절대화 후 매칭.
+        let registered: ReturnType<typeof listProjects>;
+        try {
+          registered = listProjects();
+        } catch {
+          registered = [];
+        }
+        const related = meta.related.map((ref: string) => {
+          const trimmed = ref.trim();
+          const abs = nodePath.isAbsolute(trimmed)
+            ? trimmed
+            : nodePath.resolve(projectPath, trimmed);
+          const byPath = registered.find(
+            (p) => p.path === abs || p.path === trimmed,
+          );
+          if (byPath !== undefined) {
+            return { name: byPath.name, path: byPath.path };
+          }
+          const byName = registered.find((p) => p.name === trimmed);
+          if (byName !== undefined) {
+            return { name: byName.name, path: byName.path };
+          }
+          return { name: trimmed, path: null };
+        });
+
+        writeJson(res, 200, {
+          meta: {
+            name: meta.name,
+            description: meta.description,
+            status: meta.status,
+            related: meta.related,
+            body: meta.body,
+          },
+          skills,
+          agents,
+          related,
+          recentJobs: [],
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });

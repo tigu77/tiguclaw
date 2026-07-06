@@ -64,6 +64,7 @@ import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
+import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { createDeltaStream } from "./_delta-stream.js";
@@ -147,6 +148,7 @@ export const runOpenAi = async (
         await adaptClaudeMcpServer(createMemoryMcpServer(), "memory"),
         await adaptClaudeMcpServer(createFileOpsMcpServer(), "file-ops"),
         await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),
+        await adaptClaudeMcpServer(createProjectRegistryMcpServer(), "projects"),
         await adaptClaudeMcpServer(
           createSkillInvokeMcpServer(discoveryCwd, {
             channel: input.channel,

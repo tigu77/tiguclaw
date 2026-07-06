@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.25] - 2026-07-07
+
+### Added
+- **Projects — register folders as projects and see them in the dashboard.** Mark any folder as a project by adding a `PROJECT.md` (frontmatter: `name` · `description` · `status` · `related`), then register it — the assistant manages the registry with new `project_register` / `project_list` / `project_update` / `project_forget` tools (both adapters). The dashboard gains a "Projects" view: a grid of project cards (name + status), and clicking one opens a side panel with the full description, the project's **dedicated skills and agents** (discovered from its `skills/` and `agents/` folders), and any related projects. The registry is a thin index — the source of truth is each folder's `PROJECT.md`, so it travels with the folder. (This first phase surfaces and manages projects; a follow-up will let you *enter* a project so its dedicated skills/agents activate for the conversation.)
+
 ## [0.3.24] - 2026-07-06
 
 ### Fixed
@@ -215,7 +220,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.24...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.25...HEAD
+[0.3.25]: https://github.com/tigu77/tiguclaw/compare/v0.3.24...v0.3.25
 [0.3.24]: https://github.com/tigu77/tiguclaw/compare/v0.3.23...v0.3.24
 [0.3.23]: https://github.com/tigu77/tiguclaw/compare/v0.3.22...v0.3.23
 [0.3.22]: https://github.com/tigu77/tiguclaw/compare/v0.3.21...v0.3.22

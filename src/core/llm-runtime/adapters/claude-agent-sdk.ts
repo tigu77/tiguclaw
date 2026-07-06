@@ -84,6 +84,7 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
+import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import {
   createIdleTimer,
   IdleTimeoutError,
@@ -408,6 +409,9 @@ export const runClaude = async (
     ? {}
     : {
         memory: createMemoryMcpServer(),
+        // 프로젝트 레지스트리 (register/list/update/forget) — codex 와 parity(#2). 진실은
+        // 폴더 PROJECT.md, 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
+        projects: createProjectRegistryMcpServer(),
         // invoke_skill 실행 경로 (모든 소스 — home/project/plugin). 격리 모드라
         // .claude/skills 자동발견 0 → 이 in-process MCP 가 유일 실행 경로. cwd 는
         // 위 options.cwd·아래 스킬 인덱스(discoverSkills)와 동일 소스 → 인덱스↔invoke 정합.

@@ -10,6 +10,8 @@
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원)
+ *  - GET  /api/projects  → bridge GET  /projects        (JSON pass, 프로젝트 목록)
+ *  - GET  /api/projects/detail → bridge GET /projects/detail (JSON pass, 프로젝트 상세)
  *  - GET  /api/events    → bridge GET  /events          (SSE pipe)
  *  - POST /api/messages  → bridge POST /messages        (body forward)
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
@@ -188,6 +190,17 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/chat-history" && method === "GET") {
       const qs = url.search ?? "";
       await proxyJson(res, "/chat-history" + qs);
+      return;
+    }
+    // 프로젝트 목록 — bridge GET /projects (read 토큰 server-side 주입). 대시보드 그리드.
+    if (pathname === "/api/projects" && method === "GET") {
+      await proxyJson(res, "/projects");
+      return;
+    }
+    // 프로젝트 상세 — bridge GET /projects/detail?path= (read). path 쿼리 그대로 전달.
+    if (pathname === "/api/projects/detail" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/projects/detail" + qs);
       return;
     }
     if (pathname === "/api/events" && method === "GET") {

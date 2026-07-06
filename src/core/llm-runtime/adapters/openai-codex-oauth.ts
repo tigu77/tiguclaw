@@ -2160,13 +2160,18 @@ export const runOpenAiCodex = async (
       // V5.3 — 도구 호출 lifecycle: 각 function_call 을 input 배열에 그대로 push
       // (OpenClaw L300-311 shape) → callTool 실행 → function_call_output push
       // (L324-342 shape). 도구 에러는 output 에 "Error: <msg>" 박고 loop 계속.
+      // Phase D (2026-07-04) — 한 turn 의 도구들을 *병렬* 실행(Claude Code parity: 독립
+      // tool_use 동시 실행 → 서브에이전트 팬아웃 등). 동시 callTool 안전은 probe-concurrent-
+      // calltool 로 검증(요청↔응답 매칭 정확), MCP 인스턴스는 v0.3.16 팩토리로 turn 격리 →
+      // 한 브리지에 동시 요청 안전. 단일 도구 turn 은 Promise.all([1]) = 순차와 동일(회귀 0).
+      // 순서: function_call 을 먼저 순서대로 push(의도 보존) → 병렬 실행 → output 을 결과
+      // 배열 순서대로 push(call_id 매칭). per-tool 타임아웃·slow·side-effect·에러는 각 콜백 내.
+      // 2층 도구 루프 가드(TT-I6, §4.4 #2) — 배치 시작 *직전* 1회 체크(이미 시작된 배치는
+      // callTool 에 signal 이 없어 못 끊음 = orphan §4.4 #3, 기존 순차와 동일 한계). abort 시
+      // reason(TurnTimeoutError) throw → 다음 배치 미시작.
+      if (input.abortSignal?.aborted) throw input.abortSignal.reason;
+      // function_call item 순서대로 누적 — assistant 가 보낸 호출 의도 보존 (다음 turn 필수).
       for (const tc of toolCalls) {
-        // 2층 도구 루프 가드 (TT-I6, §4.4 #2) — 각 도구 실행 *직전* 체크. 여러 도구 중
-        // 하나가 끝난 직후 turn 이 abort 됐으면 나머지 실행을 막는다. *현재 실행 중* 도구는
-        // callTool 에 signal 이 없어 못 끊으나(MCP 한계, §4.4 #3 orphan), 반환 즉시 이
-        // 가드가 루프를 끊고 throw → 사용자 보고. reason(TurnTimeoutError) throw.
-        if (input.abortSignal?.aborted) throw input.abortSignal.reason;
-        // function_call item 누적 — assistant 가 보낸 호출 의도 보존 (다음 turn 에 필수).
         inputArray.push({
           type: "function_call",
           ...(tc.id !== undefined ? { id: tc.id } : {}),
@@ -2174,100 +2179,109 @@ export const runOpenAiCodex = async (
           name: tc.name,
           arguments: tc.partialJson === "" ? "{}" : tc.partialJson,
         });
-
-        let output: string;
-        try {
-          const args =
-            tc.partialJson === ""
-              ? {}
-              : (JSON.parse(tc.partialJson) as Record<string, unknown>);
-          // V5.5 — bridge 라우팅. memory 도구는 memoryBridge, file-ops 도구는 fileOpsBridge.
-          // 미등록 tool 명 시 명확 에러 (LLM 환각 호출 방어).
-          const bridge = toolBridgeMap.get(tc.name);
-          if (bridge === undefined) {
-            throw new Error(`unknown tool: ${tc.name}`);
-          }
-          // 2026-06-07 — 도구 이름 화이트리스트 기반 정밀 분류. HARMLESS_TOOLS 에 없으면
-          //  부작용 가능성 → claude 폴백 차단 set. (이전엔 bridge 객체 비교라 false
-          //  positive·negative 양쪽 다 났음 — 위 HARMLESS_TOOLS 정의 참조.)
-          if (!HARMLESS_TOOLS.has(tc.name)) sideEffectExecuted = true;
-          // 2026-07-03 — 도구 실행 per-call wall-clock 가드 (CODEX_TOOL_TIMEOUT_MS 정의부
-          // 주석 참조). callTool 을 타임아웃과 Promise.race → 초과 시 reject → 아래 catch 가
-          // "Error: …" 로 잡아 루프 계속(hung 도구가 턴을 30분 얼리는 것 차단). abort/resume
-          // 안 함. 타이머는 callTool 이 먼저 끝나면 clearTimeout(누수 0), setTimeout .unref()
-          // (이벤트루프 잔류 0). orphan: MCP callTool 은 signal 없어 timeout 후 detached 로 계속
-          // 돌 수 있음(§4.4 #3) — 넉넉한 기본값이 완료 직전 오살 위험 최소화.
-          let toolTimer: ReturnType<typeof setTimeout> | undefined;
-          // 조기 경고 — 타임아웃(8분) 전에 ~90초에 로그로 알림(권한 요청/hung/느림 조기 발견).
-          // 죽이지 않고 경고만. callTool 이 먼저 끝나면 아래 finally 가 clearTimeout(누수 0).
-          const slowTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
-            console.warn(
-              `[tool-slow] ${input.threadKey} 도구 ${tc.name} 이(가) ${Math.round(
-                CODEX_TOOL_SLOW_WARN_MS / 1000,
-              )}s+ 실행 중 — macOS 권한 요청(다이얼로그 확인)·hung·느림 의심. ${Math.round(
-                CODEX_TOOL_TIMEOUT_MS / 60_000,
-              )}분에 타임아웃.`,
-            );
-            // 관측 이벤트 — worker-jobs 가 구독해 워커면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
-            // 채널 무결합(어댑터는 event 만, dest 라우팅은 worker 계층). best-effort.
+      }
+      const toolOutputs = await Promise.all(
+        toolCalls.map(
+          async (tc): Promise<{ callId: string; output: string }> => {
+            let output: string;
             try {
-              bus.publish({
-                type: "llm.tool_slow",
-                ts: Date.now(),
-                payload: {
-                  channel: input.channel,
-                  threadKey: input.threadKey,
-                  tool: tc.name,
-                  ms: CODEX_TOOL_SLOW_WARN_MS,
-                },
-              });
-            } catch {
-              /* best-effort */
-            }
-          }, CODEX_TOOL_SLOW_WARN_MS);
-          slowTimer.unref?.();
-          const result = await Promise.race([
-            bridge.callTool(tc.name, args),
-            new Promise<never>((_, reject) => {
-              toolTimer = setTimeout(() => {
-                reject(
-                  new Error(
-                    `도구 ${tc.name} 응답 시간 초과 (${Math.round(
-                      CODEX_TOOL_TIMEOUT_MS / 60_000,
-                    )}분) — 무응답(재개 없이 에러 처리)`,
-                  ),
+              const args =
+                tc.partialJson === ""
+                  ? {}
+                  : (JSON.parse(tc.partialJson) as Record<string, unknown>);
+              // V5.5 — bridge 라우팅. memory 도구는 memoryBridge, file-ops 도구는 fileOpsBridge.
+              // 미등록 tool 명 시 명확 에러 (LLM 환각 호출 방어).
+              const bridge = toolBridgeMap.get(tc.name);
+              if (bridge === undefined) {
+                throw new Error(`unknown tool: ${tc.name}`);
+              }
+              // 2026-06-07 — 도구 이름 화이트리스트 기반 정밀 분류. HARMLESS_TOOLS 에 없으면
+              //  부작용 가능성 → claude 폴백 차단 set. (이전엔 bridge 객체 비교라 false
+              //  positive·negative 양쪽 다 났음 — 위 HARMLESS_TOOLS 정의 참조.)
+              if (!HARMLESS_TOOLS.has(tc.name)) sideEffectExecuted = true;
+              // 2026-07-03 — 도구 실행 per-call wall-clock 가드 (CODEX_TOOL_TIMEOUT_MS 정의부
+              // 주석 참조). callTool 을 타임아웃과 Promise.race → 초과 시 reject → 아래 catch 가
+              // "Error: …" 로 잡아 루프 계속(hung 도구가 턴을 30분 얼리는 것 차단). abort/resume
+              // 안 함. 타이머는 callTool 이 먼저 끝나면 clearTimeout(누수 0), setTimeout .unref()
+              // (이벤트루프 잔류 0). orphan: MCP callTool 은 signal 없어 timeout 후 detached 로 계속
+              // 돌 수 있음(§4.4 #3) — 넉넉한 기본값이 완료 직전 오살 위험 최소화.
+              let toolTimer: ReturnType<typeof setTimeout> | undefined;
+              // 조기 경고 — 타임아웃(8분) 전에 ~90초에 로그로 알림(권한 요청/hung/느림 조기 발견).
+              // 죽이지 않고 경고만. callTool 이 먼저 끝나면 아래 finally 가 clearTimeout(누수 0).
+              const slowTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+                console.warn(
+                  `[tool-slow] ${input.threadKey} 도구 ${tc.name} 이(가) ${Math.round(
+                    CODEX_TOOL_SLOW_WARN_MS / 1000,
+                  )}s+ 실행 중 — macOS 권한 요청(다이얼로그 확인)·hung·느림 의심. ${Math.round(
+                    CODEX_TOOL_TIMEOUT_MS / 60_000,
+                  )}분에 타임아웃.`,
                 );
-              }, CODEX_TOOL_TIMEOUT_MS);
-              toolTimer.unref?.();
-            }),
-          ]).finally(() => {
-            if (toolTimer !== undefined) clearTimeout(toolTimer);
-            clearTimeout(slowTimer);
-          });
-          // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
-          executedToolNames.add(tc.name);
-          // MCP CallToolResult.content = Array<{type:"text", text:string} | ...>.
-          // text 노드만 join. (memory · file-ops 도구는 모두 text 반환.)
-          const arr = Array.isArray(result) ? result : [];
-          output = arr
-            .filter(
-              (c) =>
-                c !== null && typeof c === "object" && (c as { type?: string }).type === "text",
-            )
-            .map((c) => String((c as { text?: unknown }).text ?? ""))
-            .join("");
-          if (output === "") output = JSON.stringify(result ?? {});
-        } catch (e) {
-          output = `Error: ${e instanceof Error ? e.message : String(e)}`;
-        }
+                // 관측 이벤트 — worker-jobs 가 구독해 워커면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
+                // 채널 무결합(어댑터는 event 만, dest 라우팅은 worker 계층). best-effort.
+                try {
+                  bus.publish({
+                    type: "llm.tool_slow",
+                    ts: Date.now(),
+                    payload: {
+                      channel: input.channel,
+                      threadKey: input.threadKey,
+                      tool: tc.name,
+                      ms: CODEX_TOOL_SLOW_WARN_MS,
+                    },
+                  });
+                } catch {
+                  /* best-effort */
+                }
+              }, CODEX_TOOL_SLOW_WARN_MS);
+              slowTimer.unref?.();
+              const result = await Promise.race([
+                bridge.callTool(tc.name, args),
+                new Promise<never>((_, reject) => {
+                  toolTimer = setTimeout(() => {
+                    reject(
+                      new Error(
+                        `도구 ${tc.name} 응답 시간 초과 (${Math.round(
+                          CODEX_TOOL_TIMEOUT_MS / 60_000,
+                        )}분) — 무응답(재개 없이 에러 처리)`,
+                      ),
+                    );
+                  }, CODEX_TOOL_TIMEOUT_MS);
+                  toolTimer.unref?.();
+                }),
+              ]).finally(() => {
+                if (toolTimer !== undefined) clearTimeout(toolTimer);
+                clearTimeout(slowTimer);
+              });
+              // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
+              executedToolNames.add(tc.name);
+              // MCP CallToolResult.content = Array<{type:"text", text:string} | ...>.
+              // text 노드만 join. (memory · file-ops 도구는 모두 text 반환.)
+              const arr = Array.isArray(result) ? result : [];
+              output = arr
+                .filter(
+                  (c) =>
+                    c !== null && typeof c === "object" && (c as { type?: string }).type === "text",
+                )
+                .map((c) => String((c as { text?: unknown }).text ?? ""))
+                .join("");
+              if (output === "") output = JSON.stringify(result ?? {});
+            } catch (e) {
+              output = `Error: ${e instanceof Error ? e.message : String(e)}`;
+            }
+            return { callId: tc.callId, output };
+          },
+        ),
+      );
 
-        // C2 (compaction, architect §C2) — inputArray *진입* 직전 단발 cap. 큰 단일
-        // output(Bash 1MB·Read 대용량)이 turn 끝까지 매 iteration 재전송되며 비용을
-        // 지배하므로, 진입 시점에 머리+꼬리만 남긴다. 도구 자체 cap 과 별개. 에러
-        // 문자열("Error: …")은 보통 짧아 자연히 cap 미달 → 무영향.
+      // C2 (compaction, architect §C2) — inputArray *진입* 직전 단발 cap. 큰 단일
+      // output(Bash 1MB·Read 대용량)이 turn 끝까지 매 iteration 재전송되며 비용을
+      // 지배하므로, 진입 시점에 머리+꼬리만 남긴다. 도구 자체 cap 과 별개. 에러
+      // 문자열("Error: …")은 보통 짧아 자연히 cap 미달 → 무영향. function_call_output 은
+      // 결과 배열 순서대로 push → call_id 매칭(병렬이라도 순서·매칭 보존, canonical shape).
+      for (const { callId, output } of toolOutputs) {
         inputArray.push({
           type: "function_call_output",
-          call_id: tc.callId,
+          call_id: callId,
           output: capToolOutputForEntry(output),
         });
       }

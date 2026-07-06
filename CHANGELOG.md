@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-07-04
+
+### Changed
+- **Codex tool calls (and sub-agents) now run in parallel within a turn.** The codex adapter previously executed a turn's tool calls one at a time, so delegating to several sub-agents at once (fan-out) ran them serially — noticeably slower than the Claude adapter, which parallelizes. A turn's independent tool calls now execute concurrently (matching the Claude adapter and Claude Code), so multiple sub-agents and tools run at the same time. Result ordering, per-tool timeouts, slow-tool warnings and error handling are all preserved, and single-tool turns behave exactly as before. Safe concurrent tool dispatch relies on the per-turn tool-server isolation shipped in 0.3.16.
+
 ## [0.3.18] - 2026-07-03
 
 ### Added
@@ -179,7 +184,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.18...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.19...HEAD
+[0.3.19]: https://github.com/tigu77/tiguclaw/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/tigu77/tiguclaw/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/tigu77/tiguclaw/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/tigu77/tiguclaw/compare/v0.3.15...v0.3.16

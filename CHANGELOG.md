@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.29] - 2026-07-07
+
+### Added
+- **Registering a folder with no `PROJECT.md` now writes one for you.** When you ask the assistant to register a folder as a project and it has no `PROJECT.md`, it briefly analyzes the folder (key files, structure, purpose), drafts a `PROJECT.md` (name · description · status, plus notes), registers it, and tells you what it named and summarized the project as — which you can adjust. An existing `PROJECT.md` is never overwritten.
+
 ## [0.3.28] - 2026-07-07
 
 ### Added
@@ -244,7 +249,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.28...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.29...HEAD
+[0.3.29]: https://github.com/tigu77/tiguclaw/compare/v0.3.28...v0.3.29
 [0.3.28]: https://github.com/tigu77/tiguclaw/compare/v0.3.27...v0.3.28
 [0.3.27]: https://github.com/tigu77/tiguclaw/compare/v0.3.26...v0.3.27
 [0.3.26]: https://github.com/tigu77/tiguclaw/compare/v0.3.25...v0.3.26

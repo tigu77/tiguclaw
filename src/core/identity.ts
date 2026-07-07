@@ -26,6 +26,26 @@ export const readAgent = (): string => {
   }
 };
 
+/**
+ * 비서 표시 이름 — AGENT.md 의 `이름`/`name` 필드 관대 파싱(`- **이름**: X` / `이름: X` /
+ * `name: X` 등). 없으면 `tiguclaw` 폴백(설치 기본 템플릿엔 이름 필드 없음 — 중립 기본).
+ * 대시보드 채팅 비서 라벨용. 사용자가 AGENT.md 이름을 바꾸면 그 이름으로.
+ */
+export const getAssistantName = (): string => {
+  try {
+    const m = readAgent().match(
+      /(?:^|\n)\s*[-*]?\s*\**\s*(?:이름|name)\s*\**\s*[:：]\s*(.+)/i,
+    );
+    if (m && m[1] !== undefined) {
+      const name = m[1].replace(/\*+/g, "").trim();
+      if (name !== "") return name;
+    }
+  } catch {
+    /* noop — 폴백 */
+  }
+  return "tiguclaw";
+};
+
 // ─── SYSTEM.md (작동 헌법) — 언제나 로드 (2026-05-27) ──────────────────────
 // 사용자 결정: SYSTEM.md 는 on-demand Read 가 아니라 *매 turn 항상* user prompt 앞에
 // prepend 되는 소스다 (AGENT.md 와 동급 상시 컨텍스트). 부팅 시 syncSystemMd 가 앱

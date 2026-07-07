@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.28] - 2026-07-07
+
+### Added
+- **The Runtime Inventory view is now a clean, expandable list.** Channels, plugins, skills, agents, and MCP servers each show as a one-line row — name and a layer badge collapsed — and clicking a row expands it in place to reveal a short description plus its source path and metadata. MCP entries are tagged in-process vs. external so you can see connected external MCP servers at a glance.
+- **The dashboard chat now labels the assistant with its own name.** The name comes from your `AGENT.md` (the `이름`/`name` field), falling back to `tiguclaw` when none is set — so if you give your assistant a name, it shows up in the chat instead of a hardcoded label.
+
+### Fixed
+- **The Runtime Inventory view no longer resets every ~30 seconds.** A background refresh was rebuilding the whole list on a timer, collapsing any rows you had expanded and losing your scroll position; the refresh now only rebuilds when the inventory actually changed.
+
 ## [0.3.27] - 2026-07-07
 
 ### Added
@@ -235,7 +244,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.27...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.28...HEAD
+[0.3.28]: https://github.com/tigu77/tiguclaw/compare/v0.3.27...v0.3.28
 [0.3.27]: https://github.com/tigu77/tiguclaw/compare/v0.3.26...v0.3.27
 [0.3.26]: https://github.com/tigu77/tiguclaw/compare/v0.3.25...v0.3.26
 [0.3.25]: https://github.com/tigu77/tiguclaw/compare/v0.3.24...v0.3.25

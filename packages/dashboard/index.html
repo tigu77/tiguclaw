@@ -126,6 +126,23 @@
       .cat-body { display:none; padding:4px 0 6px 30px; }
       .cat.open .cat-body { display:block; }
       .cat-item { font-size:11px; color:var(--text-mute); padding:3px 4px; font-family: ui-monospace,"SF Mono",Menlo,monospace; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      /* 런타임 인벤토리 — 한 줄씩 리스트 카드(접힘=이름+간략설명, 클릭 펼침=상세). */
+      .inv-list { display:flex; flex-direction:column; gap:6px; padding-top:4px; }
+      .inv-card { border:1px solid var(--border); border-radius:10px; padding:8px 11px; background:rgba(255,255,255,.02); cursor:pointer; transition:border-color .12s; }
+      .inv-card:hover { border-color:var(--accent-2); }
+      .inv-card.disabled { opacity:.48; }
+      .inv-card-top { display:flex; align-items:center; gap:8px; }
+      .inv-card-name { flex:1; min-width:0; font-size:12px; font-weight:800; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .inv-chip { flex:none; font-size:8.5px; font-weight:800; padding:1px 6px; border-radius:999px; border:1px solid var(--border); color:var(--text-mute); background:var(--card); white-space:nowrap; letter-spacing:.02em; }
+      .inv-chip.meta_infra { color:var(--accent-2); border-color:rgba(125,211,252,.36); }
+      .inv-chip.discovered { color:var(--accent); border-color:rgba(52,211,153,.32); }
+      .inv-card-caret { flex:none; color:var(--text-dim); font-size:9px; transition:transform .15s; }
+      .inv-card.open .inv-card-caret { transform:rotate(90deg); }
+      .inv-card-detail { display:none; margin-top:7px; padding-top:7px; border-top:1px solid var(--border); font-size:11px; color:var(--text-mute); line-height:1.55; }
+      .inv-card.open .inv-card-detail { display:block; }
+      .inv-detail-desc { color:var(--text); margin-bottom:6px; }
+      .inv-detail-src { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; word-break:break-all; white-space:pre-wrap; }
+      .inv-tag { display:inline-block; margin-left:2px; font-size:8.5px; font-weight:700; padding:1px 6px; border-radius:999px; border:1px solid var(--border); color:var(--text-mute); }
       .cat-item .layer-tag { font-size:9px; padding:1px 5px; border-radius:6px; background:var(--card); color:var(--text-dim); margin-right:5px; }
 
       #workbench { display:block; }
@@ -649,7 +666,7 @@
           <div class="chat-head">
             <div>
               <h1 class="chat-title">채팅</h1>
-              <p class="chat-desc">돌쇠와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.</p>
+              <p class="chat-desc">tiguclaw와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.</p>
             </div>
             <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업">
               백그라운드 <span class="bg-badge" id="bg-badge">0</span>
@@ -853,6 +870,7 @@
 
       let providersCache = [];
       let inventoryCache = null;
+      let assistantName = "tiguclaw"; // 비서 표시 이름(AGENT.md 이름 → chat-history 응답, 폴백 tiguclaw).
       let selectedProviderId = null;
       let currentView = "overview";
 
@@ -953,7 +971,7 @@
         actions.className = "home-actions";
         const actionData = [
           ["providers", "📦", "프로바이더 보기", "카테고리별 패널과 상세 상태 확인"],
-          ["chat", "💬", "돌쇠와 대화", "대화와 활동 로그를 한 화면에서 확인"],
+          ["chat", "💬", assistantName + "와 대화", "대화와 활동 로그를 한 화면에서 확인"],
           ["inventory", "🧩", "런타임 인벤토리", "설치·발견된 capability 점검"],
           ["restart", "🔄", "데몬 재시작", "멈춘 작업까지 정리하고 자동 복귀"],
         ];
@@ -1237,7 +1255,7 @@
         if (!grid) return;
         grid.innerHTML = "";
         if (projectsCache.length === 0) {
-          grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. 돌쇠에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
+          grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. ' + assistantName + ' 에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
           return;
         }
         for (const p of projectsCache) {
@@ -1796,6 +1814,14 @@
         inventoryCache = inv;
         const root = document.getElementById("inventory");
         if (!root) return;
+        // ★30s 폴 재렌더가 펼친 카드·연 카테고리·스크롤을 초기화하던 버그 픽스 —
+        // 데이터가 이전과 동일하면 DOM 재구성을 스킵(무변 시 화면 그대로 유지).
+        // 실제 변경(새 스킬/MCP 등) 시에만 재구성. 뷰 재진입은 새 #inventory 라 sig 부재→재구성.
+        // ★sig 는 *렌더 대상 카테고리 데이터만*으로 계산 — inv.generatedAt(매 호출 변하는
+        // 타임스탬프)를 포함하면 매번 불일치해 스킵이 안 됨(이 버그의 실원인).
+        const sig = JSON.stringify(CATEGORIES.map((c) => inv[c] || []));
+        if (root.dataset.sig === sig && root.childElementCount > 0) return;
+        root.dataset.sig = sig;
         root.innerHTML = "";
         for (const cat of CATEGORIES) {
           const items = inv[cat] || [];
@@ -1820,23 +1846,67 @@
             const la = LAYERS.indexOf(a.layer); const lb = LAYERS.indexOf(b.layer);
             return (la === -1 ? 99 : la) - (lb === -1 ? 99 : lb);
           });
-          for (const it of sorted) {
-            const item = document.createElement("div");
-            item.className = "cat-item";
-            const lt = document.createElement("span");
-            lt.className = "layer-tag";
-            lt.textContent = (it.layer || "").replace("_", "·").slice(0, 8);
-            const name = document.createElement("span");
-            name.textContent = it.name || "?";
-            if (it.enabled === false) name.style.color = "var(--text-dim)";
-            item.appendChild(lt); item.appendChild(name);
-            body.appendChild(item);
-          }
           if (items.length === 0) {
-            const item = document.createElement("div");
-            item.className = "cat-item"; item.textContent = "(없음)";
-            item.style.color = "var(--text-dim)";
-            body.appendChild(item);
+            const empty = document.createElement("div");
+            empty.className = "cat-item"; empty.textContent = "(없음)";
+            empty.style.color = "var(--text-dim)";
+            body.appendChild(empty);
+          } else {
+            const list = document.createElement("div");
+            list.className = "inv-list";
+            for (const it of sorted) {
+              const md = it.metadata || {};
+              // 설명 — description(frontmatter/manifest). MCP 는 없으면 command/url.
+              let desc = it.description || "";
+              if (!desc && it.category === "mcp") {
+                desc = md.url || (md.command ? md.command + (Array.isArray(md.args) && md.args.length ? " " + md.args.join(" ") : "") : "");
+              }
+              const card = document.createElement("div");
+              card.className = "inv-card" + (it.enabled === false ? " disabled" : "");
+              // ── 접힘 행: 이름 + (mcp)태그 + layer 칩 + caret 만(화면 안 넘침) ──
+              const top = document.createElement("div"); top.className = "inv-card-top";
+              const name = document.createElement("span");
+              name.className = "inv-card-name";
+              name.textContent = it.name || "?"; name.title = it.name || "";
+              top.appendChild(name);
+              if (it.category === "mcp") {
+                const external = md.inProcess === false;
+                const tag = document.createElement("span");
+                tag.className = "inv-tag";
+                tag.textContent = external ? "🔌 외부" : "in-process";
+                if (external) { tag.style.color = "var(--accent)"; tag.style.borderColor = "rgba(52,211,153,.32)"; }
+                top.appendChild(tag);
+              }
+              const chip = document.createElement("span");
+              chip.className = "inv-chip " + (it.layer || "");
+              chip.textContent = (it.layer || "").replace("_", "·");
+              top.appendChild(chip);
+              const caret = document.createElement("span");
+              caret.className = "inv-card-caret"; caret.textContent = "▶";
+              top.appendChild(caret);
+              card.appendChild(top);
+              // ── 펼침 상세: 전체 설명 + 경로 + 메타 ──
+              const detail = document.createElement("div");
+              detail.className = "inv-card-detail";
+              if (desc) {
+                const dd = document.createElement("div");
+                dd.className = "inv-detail-desc"; dd.textContent = desc;
+                detail.appendChild(dd);
+              }
+              const lines = [];
+              if (it.source) lines.push("경로: " + it.source);
+              for (const k of Object.keys(md).filter((k) => k !== "inProcess")) {
+                const v = md[k];
+                lines.push(k + ": " + (typeof v === "object" ? JSON.stringify(v) : String(v)));
+              }
+              const src = document.createElement("div");
+              src.className = "inv-detail-src"; src.textContent = lines.join("\n");
+              detail.appendChild(src);
+              card.appendChild(detail);
+              card.addEventListener("click", () => card.classList.toggle("open"));
+              list.appendChild(card);
+            }
+            body.appendChild(list);
           }
           head.addEventListener("click", () => {
             wrap.classList.toggle("open");
@@ -2541,7 +2611,7 @@
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
         const tyEl = document.createElement("span");
-        tyEl.className = "type"; tyEl.textContent = "돌쇠";
+        tyEl.className = "type"; tyEl.textContent = assistantName;
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
         const msg = document.createElement("div");
@@ -2730,12 +2800,12 @@
         tsEl.textContent = ts;
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isOut ? "돌쇠" : "나";
+        tyEl.textContent = isOut ? assistantName : "나";
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
         const msg = document.createElement("div");
         msg.className = "chat-message";
-        // 봇 출력(돌쇠)만 마크다운, 사용자 입력(나)은 평문 유지.
+        // 봇 출력(비서)만 마크다운, 사용자 입력(나)은 평문 유지.
         setChatBody(msg, payload.text, isOut);
         div.appendChild(msg);
         // 봇 답변(out)이면 같은 턴의 스텝 그룹을 마무리하고 그 그룹 안(스텝 아래)에 버블 배치.
@@ -2773,7 +2843,7 @@
         tsEl.textContent = fmtTime(entry.ts);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isOut ? "돌쇠" : "나";
+        tyEl.textContent = isOut ? assistantName : "나";
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
         const msg = document.createElement("div");
@@ -2892,11 +2962,22 @@
       // SSE 연결 *전에* 과거 이력을 await 로드해 채팅 흐름을 복원한다. 비어있으면 chat-empty
       // 안내가 그대로 유지된다(첫 사용). 실패는 무해 — 라이브 SSE 경로엔 영향 0(과거 로드는 추가).
       // 초기 limit 100(기능 2). 100 미만이면 더 없음(reachedOldest), 아니면 센티넬 관찰 시작.
+      // 비서 이름을 정적 문구(채팅 설명 등)에 반영 — 라벨은 렌더 시점에 assistantName 참조.
+      const applyAssistantName = () => {
+        const desc = document.querySelector(".chat-desc");
+        if (desc) desc.textContent = assistantName + "와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.";
+      };
+
       const loadChatHistory = async () => {
         try {
           const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE);
           if (!r.ok) return;
           const data = await r.json().catch(() => ({}));
+          // 비서 표시 이름(AGENT.md 이름, 폴백 tiguclaw) — 라벨/문구에 반영. 빈 이력이어도 세팅.
+          if (typeof data.assistantName === "string" && data.assistantName.trim() !== "") {
+            assistantName = data.assistantName.trim();
+            applyAssistantName();
+          }
           const entries = Array.isArray(data.entries) ? data.entries : [];
           if (entries.length === 0) return; // 빈 이력 → chat-empty 유지.
           for (const e of entries) {
@@ -2965,7 +3046,7 @@
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
         const tyEl = document.createElement("span");
-        tyEl.className = "type"; tyEl.textContent = "돌쇠 · 선택";
+        tyEl.className = "type"; tyEl.textContent = assistantName + " · 선택";
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
         if (payload.question) {
@@ -3079,7 +3160,7 @@
         tsEl.textContent = fmtTime(now);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        const chatLabel = { user: "나", reply: "돌쇠", error: "오류" };
+        const chatLabel = { user: "나", reply: assistantName, error: "오류" };
         tyEl.textContent = chatLabel[kind] || kind;
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);

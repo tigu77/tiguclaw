@@ -35,6 +35,7 @@ import {
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
+import { getAssistantName } from "../../src/core/identity.js";
 import { listProjects } from "../../src/store/projects.js";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
 import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
@@ -353,7 +354,8 @@ class HttpBridge implements Channel, Observer {
         const entries = getRecentChatLog(
           beforeTs !== undefined ? { limit, beforeTs } : { limit },
         );
-        writeJson(res, 200, { entries });
+        // 비서 표시 이름(AGENT.md 이름 필드, 없으면 tiguclaw) — 대시보드 채팅 라벨용.
+        writeJson(res, 200, { entries, assistantName: getAssistantName() });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });

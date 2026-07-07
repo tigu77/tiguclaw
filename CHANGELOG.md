@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.30] - 2026-07-07
+
+### Changed
+- **The assistant now reliably reaches for a project's dedicated skills and agents.** Its operating guidance still said project-specific skills/agents "weren't wired up" — stale since 0.3.26 — which could stop it from using them. It now correctly discovers and uses them via the folder path (`project_capabilities`, and `spawn_agent` / `invoke_skill` with a `path`), while common (home) capabilities always remain available.
+
 ## [0.3.29] - 2026-07-07
 
 ### Added
@@ -249,7 +254,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.29...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.30...HEAD
+[0.3.30]: https://github.com/tigu77/tiguclaw/compare/v0.3.29...v0.3.30
 [0.3.29]: https://github.com/tigu77/tiguclaw/compare/v0.3.28...v0.3.29
 [0.3.28]: https://github.com/tigu77/tiguclaw/compare/v0.3.27...v0.3.28
 [0.3.27]: https://github.com/tigu77/tiguclaw/compare/v0.3.26...v0.3.27

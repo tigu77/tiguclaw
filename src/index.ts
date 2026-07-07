@@ -1075,6 +1075,15 @@ const shutdown = async (signal: string): Promise<void> => {
       console.error(`service ${svc.name} stop failed: ${err}`);
     }
   }
+  // 외부 MCP 서버(codex/openai 가 연결한 persistent 프로세스) 정리 — orphan 0(ADR §1e).
+  try {
+    const { closeAllExternalMcp } = await import("./core/external-mcp.js");
+    await closeAllExternalMcp();
+  } catch (e) {
+    console.error(
+      `external-mcp close failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   process.exit(0);
 };
 

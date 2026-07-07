@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.27] - 2026-07-07
+
+### Added
+- **Connect external MCP servers by just asking.** New `add_mcp_server` / `list_mcp_servers` / `remove_mcp_server` tools let the assistant register any standard MCP server — an stdio command (e.g. `npx -y @modelcontextprotocol/server-github`) or an SSE URL — into `<home>/mcp.json` from a normal conversation, with no config-file editing. After a restart the server connects and its tools become available to the assistant on **both the Claude and the codex/openai backends** (the assistant connects it natively on Claude, and via the standard MCP client on the others). Because adding a server runs an arbitrary command and exposes its tools, the assistant confirms with you before registering one. Previously external MCP servers were only listed in the dashboard, never actually connected.
+
 ## [0.3.26] - 2026-07-07
 
 ### Added
@@ -230,7 +235,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.26...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.27...HEAD
+[0.3.27]: https://github.com/tigu77/tiguclaw/compare/v0.3.26...v0.3.27
 [0.3.26]: https://github.com/tigu77/tiguclaw/compare/v0.3.25...v0.3.26
 [0.3.25]: https://github.com/tigu77/tiguclaw/compare/v0.3.24...v0.3.25
 [0.3.24]: https://github.com/tigu77/tiguclaw/compare/v0.3.23...v0.3.24

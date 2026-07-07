@@ -81,6 +81,8 @@ import {
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
+import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
+import { readExternalMcpServers } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
@@ -481,8 +483,22 @@ export const runClaude = async (
               ),
             }
           : {}),
+        // 외부 MCP 등록 도구(add/list/remove_mcp_server) — endpoint/command 동형 가드.
+        // 파일(<home>/mcp.json)만 다룸. codex/openai 와 parity(#2 — 어댑터 분기 0).
+        ...(depth === 0 && (input.workerDepth ?? 0) === 0
+          ? { "mcp-admin": createMcpAdminMcpServer() }
+          : {}),
         ...(input.extraMcpServers ?? {}),
       };
+
+  // ★외부 MCP 서버 연결(ADR 2026-07-07) — <home>/mcp.json 의 stdio/sse config 를 SDK
+  // options.mcpServers 유니온에 *그대로* 주입 → SDK 가 네이티브로 spawn+연결·도구 노출.
+  // depth0 메인 턴만(서브/워커는 외부 MCP 재연결 안 함). lean(toolsNone)은 생략. 읽기
+  // 실패=빈 맵(external-mcp never-throw) → 데몬 생존(#3). codex/openai 는 Phase 2 브리지.
+  const externalMcpServers =
+    !toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0
+      ? ((await readExternalMcpServers()) as Options["mcpServers"])
+      : {};
 
   // 유휴 타임아웃 — SDK `Options.abortController` 경로 (runtimeTypes.d.ts:234,
   // "stop and clean up resources"). idle/first 만료 시 헬퍼가 ac.abort(IdleTimeoutError).
@@ -514,7 +530,7 @@ export const runClaude = async (
     ...(toolsNone ? { tools: [] as string[] } : {}),
     // facade 가 provider:model 에서 추출해 주입. 미지정 시 SDK 디폴트.
     ...(input.model !== undefined ? { model: input.model } : {}),
-    mcpServers: leanMcpServers,
+    mcpServers: { ...leanMcpServers, ...externalMcpServers },
     // 커스텀 서브에이전트 (격리라 SDK 가 .claude/agents 못 봄 → 수동 주입).
     // SDK native Task tool 이 이 정의를 발견·실행 (codex spawn_agent 브리지 불요).
     ...(agents !== undefined ? { agents } : {}),

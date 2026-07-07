@@ -58,6 +58,8 @@ import {
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
+import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
+import { getConnectedExternalMcpBridges } from "../../external-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
@@ -230,6 +232,24 @@ export const runOpenAi = async (
     mcpServers.push(
       await adaptClaudeMcpServer(createCommandToolsMcpServer(), "commands"),
     );
+  }
+
+  // 외부 MCP 등록 도구 (2026-07-07) — add/list/remove_mcp_server. endpoint/command 와
+  // *동일* 가드. 파일(<home>/mcp.json)만 다룸. claude/codex 와 parity(#2 — 도구 분기 0).
+  // (외부 MCP 실연결 브리지는 Phase 2 — 지금은 등록 도구만 3어댑터 대칭.)
+  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+    mcpServers.push(
+      await adaptClaudeMcpServer(createMcpAdminMcpServer(), "mcp-admin"),
+    );
+  }
+
+  // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 의 서버를 @mcp/sdk 클라이언트로 연결한
+  // persistent 브리지를 도구로 노출(claude 네이티브와 parity). depth0 메인 턴만. 이 브리지는
+  // close()=no-op 이라 아래 finally 의 일괄 close 가 외부 연결을 끊지 않는다(캐시 재사용).
+  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+    for (const bridge of await getConnectedExternalMcpBridges()) {
+      mcpServers.push(bridge);
+    }
   }
 
   // 자가 업데이트 도구 (2026-06-26) — update_self. command-tools 와 *동일* 가드

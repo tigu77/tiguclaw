@@ -257,13 +257,34 @@ export const deriveLeanMemory = (agent: Agent): boolean => {
  */
 const DEFAULT_AGENT_INVOCATION_HINT =
   "`spawn_agent({name, prompt})` 도구로 실행하세요";
+
+// ─── 능력 인덱스 스케일링 (ADR 2026-07-07-capability-index-scaling) ──────────
+// 상한 K — 에이전트가 아무리 많아져도 상시 프롬프트 무게 바운드. 총 ≤K 전부 표시
+// (회귀 0), >K 상위 K + find_agents 검색 안내. 랭킹=source(project 우선)+이름
+// (에이전트 사용 텔레메트리 부재 — 별건, ADR §4).
+const AGENT_INDEX_CAP = 40;
+const agentSourceRank = (s: Agent["source"]): number =>
+  s === "project" ? 0 : s === "user" ? 1 : s === "plugin" ? 2 : 3;
+
 export const formatAgentIndex = (
   agents: ReadonlyArray<Agent>,
   invocationHint: string = DEFAULT_AGENT_INVOCATION_HINT,
 ): string => {
   if (agents.length === 0) return "";
-  const lines = agents.map((a) => `- ${a.name}: ${a.description}`);
-  return `## 사용 가능 서브에이전트\n\n적합한 하위 작업을 위임할 서브에이전트가 있으면 ${invocationHint} (결과를 받아 이어서 행동).\n\n${lines.join("\n")}`;
+  const header = `## 사용 가능 서브에이전트\n\n적합한 하위 작업을 위임할 서브에이전트가 있으면 ${invocationHint} (결과를 받아 이어서 행동).`;
+  const fmt = (list: ReadonlyArray<Agent>) =>
+    list.map((a) => `- ${a.name}: ${a.description}`).join("\n");
+  if (agents.length <= AGENT_INDEX_CAP) {
+    return `${header}\n\n${fmt(agents)}`;
+  }
+  const top = [...agents]
+    .sort((a, b) => {
+      const r = agentSourceRank(a.source) - agentSourceRank(b.source);
+      return r !== 0 ? r : a.name.localeCompare(b.name);
+    })
+    .slice(0, AGENT_INDEX_CAP);
+  const rest = agents.length - AGENT_INDEX_CAP;
+  return `${header}\n\n${AGENT_INDEX_CAP}개만 표시합니다. 나머지 ${rest}개는 \`find_agents({query})\` 로 검색하세요.\n\n${fmt(top)}`;
 };
 
 /**
@@ -323,10 +344,11 @@ export const createSpawnAgentMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const spawnTool = tool(
     "spawn_agent",
-    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 model 등급(high/mid/low)으로 실행됩니다. 사용 가능 서브에이전트 인덱스는 user prompt 의 `## 사용 가능 서브에이전트` 섹션에 prepend 되어 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한).",
+    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 model 등급(high/mid/low)으로 실행됩니다. 사용 가능 서브에이전트 인덱스는 user prompt 의 `## 사용 가능 서브에이전트` 섹션에 prepend 되어 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요.",
     {
       name: z.string().min(1),
       prompt: z.string().min(1),
+      path: z.string().optional(),
     },
     async (args) => {
       // 관측 잡 (kind:'agent') — 서브에이전트를 워커와 동일한 대시보드 잡으로 노출
@@ -339,9 +361,19 @@ export const createSpawnAgentMcpServer = (
       );
       let jobId: string | undefined;
       try {
+        // ★3a(2026-07-07) — 위임 대상 cwd 결정. path 지정 시 그 폴더로 스코프
+        // (상대경로는 부모 cwd 기준 절대화), 미지정 시 부모 cwd 상속(회귀 0). 이 cwd 로
+        // 에이전트 명세를 발견하고 자식을 실행 → 자식이 그 폴더의 에이전트/스킬/파일
+        // 작업(상대경로) 정합. 서로 다른 path 로 다중 호출 = 폴더(프로젝트)별 병렬 위임.
+        // ★코어는 "프로젝트"를 모른다 — 인자는 일반 path(디렉터리)일 뿐(단방향 §0).
+        const parentCwd = parentInput.cwd ?? process.cwd();
+        const targetCwd =
+          args.path !== undefined
+            ? path.resolve(parentCwd, args.path)
+            : parentCwd;
         // agent 정의 회수 (model 등급 포함). 우선순위 project > plugin > user.
-        // V9.3 — parentInput.cwd 전파 → child 가 부모 프로젝트 스킬/에이전트 정합.
-        const agents = await discoverAgents(parentInput.cwd ?? process.cwd());
+        // targetCwd 로 발견 → project 지정 시 그 프로젝트의 에이전트 명세를 집는다.
+        const agents = await discoverAgents(targetCwd);
         const cands = agents.filter((a) => a.name === args.name);
         if (cands.length === 0) {
           return errText(`서브에이전트 '${args.name}' 미발견.`);
@@ -358,6 +390,9 @@ export const createSpawnAgentMcpServer = (
           kind: "agent",
           agentName: args.name,
           modelTier: agent.model ?? "default",
+          // 실행 cwd 기록 — 대시보드가 프로젝트별 서브에이전트 귀속(ADR §6 G2).
+          // targetCwd = path 지정 시 그 폴더, 미지정 시 부모 cwd(=무귀속 근사).
+          cwd: targetCwd,
           label: args.name,
           task: args.prompt,
           threadKey: parentInput.threadKey,
@@ -374,7 +409,7 @@ export const createSpawnAgentMcpServer = (
           text: `${def}\n\n[Subagent Task]: ${args.prompt}`,
           threadKey: `agent:${jobId}`,
           channel: parentInput.channel,
-          cwd: parentInput.cwd,
+          cwd: targetCwd,
           subagentDepth: 1,
           ...(toolPolicy !== undefined ? { toolPolicy } : {}),
           ...(leanMemory ? { leanMemory: true } : {}),
@@ -397,9 +432,43 @@ export const createSpawnAgentMcpServer = (
     },
   );
 
+  // find_agents — 인덱스가 상한(AGENT_INDEX_CAP)으로 잘렸을 때, 필요한 서브에이전트를
+  // 이름/키워드로 검색(ADR 2026-07-07-capability-index-scaling). 부분일치, throw 0.
+  // parentInput.cwd 소스라 인덱스↔검색↔spawn 정합.
+  const findAgentsTool = tool(
+    "find_agents",
+    "이름·설명에 query 가 포함된 서브에이전트를 검색합니다. 사용 가능 서브에이전트가 많아 인덱스에 다 표시되지 않을 때 키워드/이름 조각으로 찾을 때 사용. 찾은 뒤 spawn_agent 로 위임하세요.",
+    { query: z.string().min(1) },
+    async (args) => {
+      try {
+        const agents = await discoverAgents(parentInput.cwd ?? process.cwd());
+        const q = args.query.toLowerCase();
+        const matched = agents.filter(
+          (a) =>
+            a.name.toLowerCase().includes(q) ||
+            a.description.toLowerCase().includes(q),
+        );
+        if (matched.length === 0) {
+          return errText(`'${args.query}' 에 매칭되는 서브에이전트가 없습니다.`);
+        }
+        const lines = matched
+          .slice(0, 50)
+          .map(
+            (a) =>
+              `- ${a.name} (모델: ${a.model ?? "default"}): ${a.description}`,
+          );
+        return okText(
+          `'${args.query}' 매칭 서브에이전트 ${matched.length}개:\n${lines.join("\n")}`,
+        );
+      } catch (e) {
+        return errText(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
   return createSdkMcpServer({
     name: "agents",
-    version: "1.0.0",
-    tools: [spawnTool],
+    version: "1.1.0",
+    tools: [spawnTool, findAgentsTool],
   });
 };

@@ -512,6 +512,7 @@
       .project-card-head { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
       .project-card-name { color:var(--text); font-weight:850; font-size:15px; letter-spacing:-.02em; word-break:break-word; }
       .project-status { flex:none; margin-left:auto; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; border:1px solid var(--border); background:var(--card); color:var(--text-mute); }
+      .project-run-badge { flex:none; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; white-space:nowrap; border:1px solid var(--accent-2); color:var(--accent-2); background:rgba(0,0,0,.02); }
       .project-status.active { background:rgba(52,211,153,.14); color:var(--good); border-color:rgba(52,211,153,.36); }
       .project-status.paused { background:rgba(251,191,36,.15); color:var(--warn); border-color:rgba(251,191,36,.36); }
       .project-status.done { background:rgba(125,211,252,.14); color:var(--accent-2); border-color:rgba(125,211,252,.36); }
@@ -529,6 +530,7 @@
       .pd-body { color:var(--text); font-size:13px; line-height:1.6; word-break:break-word; }
       .pd-body.md :first-child { margin-top:0; } .pd-body.md :last-child { margin-bottom:0; }
       .pd-list { display:flex; flex-direction:column; gap:7px; }
+      .pd-agents-grid { display:flex; flex-direction:column; gap:8px; }
       .pd-item { padding:9px 11px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.02); }
       .pd-item-name { font-size:12px; font-weight:800; color:var(--text); word-break:break-word; }
       .pd-item-desc { font-size:11px; color:var(--text-mute); margin-top:2px; line-height:1.45; word-break:break-word; }
@@ -1012,6 +1014,96 @@
         if (rc) rc.textContent = String(running);
         if (ac) ac.textContent = String(total);
       };
+      // 잡 카드 1개 빌드(공유) — 에이전트 뷰 + 프로젝트 상세가 동일 카드를 재사용(단일 소스).
+      // elapsedRegistry 에 running 카드의 경과 span 을 등록(호출자별 틱 맵). jobCards entry(e)
+      // 를 그대로 읽어 상태·티어·작업요약·현재 스텝·펼침 상세까지 동일 렌더.
+      const buildAgentCard = (jobId, e, now, elapsedRegistry) => {
+        const card = document.createElement("div");
+        card.className = "agent-card " + (e.status || "running") + (e.kind === "agent" ? " agent" : "");
+        card.dataset.jobId = jobId;
+        const top = document.createElement("div"); top.className = "agent-card-top";
+        const kind = document.createElement("span"); kind.className = "agent-card-kind";
+        kind.textContent = AGENT_KIND_BADGE[e.kind === "agent" ? "agent" : "worker"];
+        top.appendChild(kind);
+        if (e.kind === "agent" && e.modelTier) {
+          const tier = String(e.modelTier).trim();
+          if (tier !== "" && tier.toLowerCase() !== "default") {
+            const tierEl = document.createElement("span");
+            tierEl.className = "agent-card-tier";
+            tierEl.dataset.tier = tier.toLowerCase();
+            tierEl.textContent = tier;
+            top.appendChild(tierEl);
+          }
+        }
+        const st = document.createElement("span"); st.className = "agent-card-status";
+        st.textContent = BG_STATUS[e.status] || e.status || "";
+        top.appendChild(st);
+        const name = document.createElement("div"); name.className = "agent-card-name";
+        name.textContent = (e.labelEl && e.labelEl.textContent) || "(작업)";
+        card.appendChild(top); card.appendChild(name);
+        if (e.task) {
+          const summary = document.createElement("div"); summary.className = "agent-card-summary";
+          summary.textContent = e.task;
+          card.appendChild(summary);
+        }
+        const meta = document.createElement("div"); meta.className = "agent-card-meta";
+        const el = document.createElement("span"); el.className = "agent-card-elapsed";
+        el.textContent = fmtElapsed(now - (e.startTs || now));
+        if (e.status === "running" && elapsedRegistry) elapsedRegistry.set(jobId, el);
+        meta.appendChild(el);
+        const hasDetail = !!(e.task || e.result || e.errorText || e.stepCount > 0);
+        let chev = null;
+        if (hasDetail) {
+          chev = document.createElement("span"); chev.className = "agent-card-chev";
+          chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
+          meta.appendChild(chev);
+        }
+        card.appendChild(meta);
+        if (e.lastStep) {
+          const step = document.createElement("div"); step.className = "agent-card-step";
+          const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "지금";
+          const val = document.createElement("span"); val.textContent = e.lastStep;
+          step.appendChild(lbl); step.appendChild(val);
+          card.appendChild(step);
+        }
+        if (hasDetail) {
+          const detail = document.createElement("div"); detail.className = "agent-card-detail";
+          if (e.task) {
+            const t = document.createElement("div"); t.className = "agent-card-detail-block";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "작업";
+            const b = document.createElement("div"); b.className = "acd-body"; b.textContent = e.task;
+            t.appendChild(h); t.appendChild(b); detail.appendChild(t);
+          }
+          if (e.result) {
+            const r = document.createElement("div"); r.className = "agent-card-detail-block";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "결과";
+            const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result;
+            r.appendChild(h); r.appendChild(b); detail.appendChild(r);
+          }
+          if (e.errorText) {
+            const er = document.createElement("div"); er.className = "agent-card-detail-block";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "에러";
+            const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText;
+            er.appendChild(h); er.appendChild(b); detail.appendChild(er);
+          }
+          if (e.stepCount > 0 && e.stepsEl) {
+            const s = document.createElement("div"); s.className = "agent-card-detail-block";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "단계 (" + e.stepCount + ")";
+            const stepsClone = e.stepsEl.cloneNode(true);
+            s.appendChild(h); s.appendChild(stepsClone); detail.appendChild(s);
+          }
+          card.appendChild(detail);
+          if (e.expanded) card.classList.add("open");
+          card.style.cursor = "pointer";
+          card.addEventListener("click", () => {
+            e.expanded = !e.expanded;
+            card.classList.toggle("open", e.expanded);
+            if (chev) chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
+          });
+        }
+        return card;
+      };
+
       // jobCards → 에이전트 그리드 렌더. 뷰가 열려 있지 않으면 즉시 반환(no-op).
       const renderAgentsView = () => {
         if (currentView !== "agents") return;
@@ -1035,94 +1127,7 @@
           if (e.status === "running") running += 1;
           if (agentsFilter === "running" && e.status !== "running") continue;
           shown += 1;
-          const card = document.createElement("div");
-          card.className = "agent-card " + (e.status || "running") + (e.kind === "agent" ? " agent" : "");
-          card.dataset.jobId = jobId;
-          const top = document.createElement("div"); top.className = "agent-card-top";
-          const kind = document.createElement("span"); kind.className = "agent-card-kind";
-          kind.textContent = AGENT_KIND_BADGE[e.kind === "agent" ? "agent" : "worker"];
-          top.appendChild(kind);
-          // 모델 티어 칩 — 서브에이전트이고 modelTier 있을 때만("default"/빈값 제외).
-          if (e.kind === "agent" && e.modelTier) {
-            const tier = String(e.modelTier).trim();
-            if (tier !== "" && tier.toLowerCase() !== "default") {
-              const tierEl = document.createElement("span");
-              tierEl.className = "agent-card-tier";
-              tierEl.dataset.tier = tier.toLowerCase();
-              tierEl.textContent = tier;
-              top.appendChild(tierEl);
-            }
-          }
-          const st = document.createElement("span"); st.className = "agent-card-status";
-          st.textContent = BG_STATUS[e.status] || e.status || "";
-          top.appendChild(st);
-          const name = document.createElement("div"); name.className = "agent-card-name";
-          name.textContent = (e.labelEl && e.labelEl.textContent) || "(작업)";
-          card.appendChild(top); card.appendChild(name);
-          // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개 구분.
-          if (e.task) {
-            const summary = document.createElement("div"); summary.className = "agent-card-summary";
-            summary.textContent = e.task;
-            card.appendChild(summary);
-          }
-          const meta = document.createElement("div"); meta.className = "agent-card-meta";
-          const el = document.createElement("span"); el.className = "agent-card-elapsed";
-          el.textContent = fmtElapsed(now - (e.startTs || now));
-          if (e.status === "running") agentElapsedEls.set(jobId, el);
-          meta.appendChild(el);
-          // 펼침 어포던스 표시(작업 전문/결과/에러/스텝 중 하나라도 있으면).
-          const hasDetail = !!(e.task || e.result || e.errorText || e.stepCount > 0);
-          let chev = null;
-          if (hasDetail) {
-            chev = document.createElement("span"); chev.className = "agent-card-chev";
-            chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
-            meta.appendChild(chev);
-          }
-          card.appendChild(meta);
-          if (e.lastStep) {
-            const step = document.createElement("div"); step.className = "agent-card-step";
-            const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "지금";
-            const val = document.createElement("span"); val.textContent = e.lastStep;
-            step.appendChild(lbl); step.appendChild(val);
-            card.appendChild(step);
-          }
-          // 펼침 상세 영역 — 작업 전문 + 결과/에러 + 스텝 타임라인. entry.expanded 로 표시 복원.
-          if (hasDetail) {
-            const detail = document.createElement("div"); detail.className = "agent-card-detail";
-            if (e.task) {
-              const t = document.createElement("div"); t.className = "agent-card-detail-block";
-              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "작업";
-              const b = document.createElement("div"); b.className = "acd-body"; b.textContent = e.task;
-              t.appendChild(h); t.appendChild(b); detail.appendChild(t);
-            }
-            if (e.result) {
-              const r = document.createElement("div"); r.className = "agent-card-detail-block";
-              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "결과";
-              const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result;
-              r.appendChild(h); r.appendChild(b); detail.appendChild(r);
-            }
-            if (e.errorText) {
-              const er = document.createElement("div"); er.className = "agent-card-detail-block";
-              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "에러";
-              const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText;
-              er.appendChild(h); er.appendChild(b); detail.appendChild(er);
-            }
-            if (e.stepCount > 0 && e.stepsEl) {
-              const s = document.createElement("div"); s.className = "agent-card-detail-block";
-              const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "단계 (" + e.stepCount + ")";
-              const stepsClone = e.stepsEl.cloneNode(true); // 드로어가 만든 스텝 타임라인 재사용(단일 진실 소스).
-              s.appendChild(h); s.appendChild(stepsClone); detail.appendChild(s);
-            }
-            card.appendChild(detail);
-            if (e.expanded) card.classList.add("open");
-            // 카드 클릭 = 펼침 토글(입력·링크 클릭 제외 불필요 — 카드 내 인터랙티브 요소 없음).
-            card.style.cursor = "pointer";
-            card.addEventListener("click", () => {
-              e.expanded = !e.expanded;
-              card.classList.toggle("open", e.expanded);
-              chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
-            });
-          }
+          const card = buildAgentCard(jobId, e, now, agentElapsedEls);
           grid.appendChild(card);
         }
         syncAgentsCounts(running, total);
@@ -1249,6 +1254,13 @@
           st.className = "project-status " + status;
           st.textContent = PROJECT_STATUS_LABEL[status] || status;
           head.appendChild(name); head.appendChild(st);
+          // 실행 중 에이전트 배지 — "지금 어디가 바쁜지" 한눈에(브리지 runningAgents).
+          if (p.runningAgents > 0) {
+            const rb = document.createElement("span");
+            rb.className = "project-run-badge";
+            rb.textContent = "🤖 " + p.runningAgents + " 실행 중";
+            head.appendChild(rb);
+          }
           const summary = document.createElement("div");
           summary.className = "project-card-summary";
           summary.textContent = p.description || "설명 없음";
@@ -1263,6 +1275,7 @@
 
       const closeProjectDetail = () => {
         selectedProjectPath = null;
+        projectAgentsBox = null; // 라이브 재렌더 훅 중단.
         const split = document.getElementById("projects-split");
         if (split) {
           split.classList.add("no-detail");
@@ -1314,6 +1327,48 @@
         renderProjectDetail(panel, projectPath, detail);
       };
 
+      // ── 프로젝트 상세: 라이브 에이전트 섹션(에이전트 뷰 카드 재사용) ──────────────
+      let projectAgentsBox = null;               // 현재 열린 상세의 에이전트 컨테이너.
+      const projectAgentElapsedEls = new Map();  // jobId -> elapsed span (상세 틱용).
+      const pathNorm = (s) => String(s || "").replace(/\/+$/, "");
+      const renderProjectAgentSections = (box, projectPath) => {
+        box.innerHTML = "";
+        projectAgentElapsedEls.clear();
+        const now = Date.now();
+        const target = pathNorm(projectPath);
+        const mine = [...jobCards.entries()].filter(([, e]) => e.cwd && pathNorm(e.cwd) === target);
+        const running = mine.filter(([, e]) => e.status === "running");
+        const rest = mine.filter(([, e]) => e.status !== "running")
+          .sort((a, b) => (b[1].startTs || 0) - (a[1].startTs || 0));
+        const section = (title, entries, emptyMsg) => {
+          if (entries.length === 0 && !emptyMsg) return; // 최근 섹션은 비면 생략.
+          const sec = document.createElement("div");
+          sec.className = "pd-section";
+          const t = document.createElement("div"); t.className = "pd-section-title"; t.textContent = title;
+          sec.appendChild(t);
+          if (entries.length === 0) {
+            const e = document.createElement("div"); e.className = "pd-empty"; e.textContent = emptyMsg;
+            sec.appendChild(e);
+          } else {
+            const grid = document.createElement("div"); grid.className = "pd-agents-grid";
+            for (const [jobId, e] of entries) grid.appendChild(buildAgentCard(jobId, e, now, projectAgentElapsedEls));
+            sec.appendChild(grid);
+          }
+          box.appendChild(sec);
+        };
+        section("진행 중 에이전트 (" + running.length + ")", running, "지금 이 프로젝트에서 작업 중인 에이전트가 없습니다.");
+        section("최근 에이전트 (" + rest.length + ")", rest, null);
+      };
+      let projectAgentsRenderQueued = false;
+      const scheduleProjectAgentsRender = () => {
+        if (!projectAgentsBox || !selectedProjectPath || projectAgentsRenderQueued) return;
+        projectAgentsRenderQueued = true;
+        requestAnimationFrame(() => {
+          projectAgentsRenderQueued = false;
+          if (projectAgentsBox && selectedProjectPath) renderProjectAgentSections(projectAgentsBox, selectedProjectPath);
+        });
+      };
+
       const renderProjectDetail = (panel, projectPath, detail) => {
         const meta = detail.meta || {};
         const status = ["active", "paused", "done"].includes(meta.status) ? meta.status : "active";
@@ -1340,6 +1395,15 @@
         pathEl.className = "project-detail-path";
         pathEl.textContent = projectPath;
         panel.appendChild(pathEl);
+
+        // ★라이브 에이전트 — 에이전트 뷰와 *동일한* 라이브 카드(buildAgentCard)를 이 프로젝트
+        // (cwd) 로 필터해 재사용(단일 소스·일관). 컨테이너를 보관해 SSE 이벤트마다 이 섹션만
+        // 재렌더(경과·현재 스텝 라이브). 진행 중 / 최근 섹션 분리.
+        const agentsBox = document.createElement("div");
+        agentsBox.id = "project-agents-box";
+        panel.appendChild(agentsBox);
+        projectAgentsBox = agentsBox;
+        renderProjectAgentSections(agentsBox, projectPath);
 
         // 설명 본문(마크다운 렌더). body 비면 description 폴백.
         const bodySrc = (meta.body && meta.body.trim() !== "") ? meta.body : (meta.description || "");
@@ -1427,14 +1491,6 @@
         }
         panel.appendChild(relSec);
 
-        // recentJobs — P1 빈 배열. 관련 활동 섹션(비어 있으면 안내).
-        const jobs = Array.isArray(detail.recentJobs) ? detail.recentJobs : [];
-        if (jobs.length === 0) {
-          const jobSec = document.createElement("div");
-          jobSec.className = "pd-section";
-          jobSec.innerHTML = '<div class="pd-section-title">관련 활동</div><div class="pd-empty">관련 활동 없음</div>';
-          panel.appendChild(jobSec);
-        }
       };
 
       const showProviders = () => {
@@ -2058,6 +2114,7 @@
             startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
             lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
             modelTier: "", // 서브에이전트 모델 티어(low/mid/high 등) — lifecycle payload.modelTier. 에이전트 뷰도 읽음.
+            cwd: "", // 실행 폴더(cwd) — worker.started payload.cwd. 프로젝트 상세가 이걸로 필터/귀속.
             task: "", result: "", errorText: "", // 작업 지시/결과/에러 원문(문자열) — DOM 과 별개 보관. 에이전트 뷰가 한 줄 요약·펼침 상세에 읽음.
             expanded: false, // 에이전트 뷰 카드 펼침 상태(jobId 별) — 리렌더돼도 유지. 드로어는 .open 클래스로 별도 관리.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
@@ -2093,6 +2150,8 @@
             entry.tierBadgeEl.style.display = show ? "" : "none";
           }
         }
+        // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
+        if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
         if (opts && opts.task && !entry.hasTask) {
           entry.task = String(opts.task); // 원문 보관(에이전트 뷰가 읽음).
@@ -2108,7 +2167,7 @@
       const handleWorkerEvent = (p, ts) => {
         if (!p.jobId) return;
         const status = p.status || "running";
-        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier });
+        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier, cwd: p.cwd });
         const wasRunning = entry.status === "running";
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");
@@ -2131,6 +2190,7 @@
         capBgList();
         refreshBgBadge();
         scheduleAgentsRender(); // 에이전트 메인 뷰가 열려 있으면 상태 전환 반영(throttle, 닫혀 있으면 no-op).
+        scheduleProjectAgentsRender(); // 프로젝트 상세 열려 있으면 그 프로젝트 카드도 라이브 반영.
       };
       // Step3 — 백그라운드 잡 활동(threadKey=worker:<jobId> | agent:<jobId>)을 그 잡 카드 안
       // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(워커·서브 동일 격리). 서브 규약(ADR
@@ -2176,6 +2236,7 @@
         }
         updateChev(entry);
         scheduleAgentsRender(); // 에이전트 메인 뷰가 열려 있으면 라이브 반영(throttle, 닫혀 있으면 no-op).
+        scheduleProjectAgentsRender(); // 프로젝트 상세 열려 있으면 현재 스텝까지 라이브 반영.
         return true;
       };
 
@@ -2199,6 +2260,14 @@
           for (const [jobId, e] of jobCards) {
             if (e.status !== "running") continue;
             const el = agentElapsedEls.get(jobId);
+            if (el) el.textContent = fmtElapsed(now - (e.startTs || now));
+          }
+        }
+        // 프로젝트 상세가 열려 있으면 그 카드들 경과도 라이브로(별도 DOM ref).
+        if (projectAgentsBox) {
+          for (const [jobId, e] of jobCards) {
+            if (e.status !== "running") continue;
+            const el = projectAgentElapsedEls.get(jobId);
             if (el) el.textContent = fmtElapsed(now - (e.startTs || now));
           }
         }

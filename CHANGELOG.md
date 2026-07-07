@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.26] - 2026-07-07
+
+### Added
+- **Delegate work scoped to a project folder — no "entering" required.** `spawn_agent`, `invoke_skill`, and `run_in_background` now take an optional `path`: point any of them at a folder and the sub-agent / skill / background worker runs in that folder's context — its dedicated agents and skills are discovered there, and relative file operations are resolved against it. Give different `path`s in one turn and the work fans out across projects in parallel. The assistant stays stateless — instead of switching into a project, it names the folder per task. A new `project_capabilities(path)` tool lists a folder's dedicated agents (with model tier) and skills plus the `PROJECT.md` summary, so the assistant knows what it can delegate there. Relative file paths now resolve against the working folder consistently across the Claude and codex adapters.
+- **See which agents are working in each project.** A project's detail panel now shows its live agent/worker cards — the same rich cards as the Agents view (kind, model tier, status, one-line task, current step, elapsed, expandable) — split into "in progress" and "recent" sections, so you can watch what's running for that project. Each project card also shows a "🤖 N running" badge, and `run_in_background(path=…)` workers are attributed to their project too.
+- **Find skills and agents by keyword when you have a lot of them.** New `find_skills(query)` / `find_agents(query)` tools search by name and description. The prompt's capability index is now capped (showing the most-used first) and points to search for the rest, so a large library of skills/agents no longer grows the prompt every turn.
+
+### Fixed
+- **`related` in `PROJECT.md` now works as a YAML list too.** Previously only the single-line comma form (`related: A, B`) was parsed; related projects written as a bullet list (`- ../other`) were silently dropped. Both forms now resolve and appear as clickable chips in the project detail.
+
 ## [0.3.25] - 2026-07-07
 
 ### Added
@@ -220,7 +230,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.25...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.26...HEAD
+[0.3.26]: https://github.com/tigu77/tiguclaw/compare/v0.3.25...v0.3.26
 [0.3.25]: https://github.com/tigu77/tiguclaw/compare/v0.3.24...v0.3.25
 [0.3.24]: https://github.com/tigu77/tiguclaw/compare/v0.3.23...v0.3.24
 [0.3.23]: https://github.com/tigu77/tiguclaw/compare/v0.3.22...v0.3.23

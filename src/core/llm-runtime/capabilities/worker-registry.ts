@@ -22,6 +22,7 @@
  * LLM-agnostic (W-I3): 발사 도구는 claude/codex/openai *동일 의미* 등록(어댑터 분기 0).
  *   spawn_agent 의 createSpawnAgentMcpServer 등록 지점과 동형.
  */
+import path from "node:path";
 import { z } from "zod";
 import {
   createSdkMcpServer,
@@ -89,7 +90,9 @@ const runner = (job: WorkerJobRecord): void => {
         text: job.task,
         threadKey: `worker:${job.jobId}`,
         channel: job.channel,
-        cwd: undefined, // 원 잡엔 cwd 없음 — 어댑터 home 폴백(메인과 동일 기본 작업 위치).
+        // run_in_background(path=X) 로 스코프됐으면 그 폴더 cwd, 아니면 undefined=home 폴백.
+        // 워커 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
+        cwd: job.cwd,
         workerDepth: 1,
         abortSignal: abort.signal,
       });
@@ -174,7 +177,7 @@ export const createWorkerMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const runInBackground = tool(
     "run_in_background",
-    "오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
+    "오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
     {
       task: z
         .string()
@@ -184,9 +187,18 @@ export const createWorkerMcpServer = (
         .string()
         .min(1)
         .describe("사람이 읽는 짧은 작업 이름 (예 '월간 리포트 생성')."),
+      path: z
+        .string()
+        .optional()
+        .describe("선택 — 워커를 실행할 폴더(프로젝트) 경로. 지정 시 그 폴더 기준."),
     },
     async (args) => {
       try {
+        // path 지정 시 그 폴더로 스코프(상대경로는 부모 cwd 기준). spawn_agent(path) 동형.
+        const workerCwd =
+          args.path !== undefined
+            ? path.resolve(parentInput.cwd ?? process.cwd(), args.path)
+            : undefined;
         // 비차단 발사 — startWorkerJob 이 registerJob 후 workerRunner 를 fire-and-forget
         // 호출하고 jobId 를 *즉시* 반환(블로킹 0, W-I2). 워커 결과는 절대 여기로 안 옴 —
         // daemon 의 onWorkerComplete 가 메인 thread 로 재주입한다(W-I1).
@@ -195,6 +207,7 @@ export const createWorkerMcpServer = (
           task: args.task,
           threadKey: parentInput.threadKey,
           channel: parentInput.channel,
+          cwd: workerCwd,
           // channelUserId — RegionASdkInput 에 없음. 재주입 reply 는 threadKey 로
           // 채널 복원하므로(reacquireReply) threadKey 를 사용자 식별로 운반.
           channelUserId: parentInput.threadKey,

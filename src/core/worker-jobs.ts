@@ -42,6 +42,7 @@ const publishWorkerLifecycle = (
     kind?: WorkerJobKind;
     agentName?: string;
     modelTier?: string;
+    cwd?: string;
   },
   extra?: { error?: string; task?: string; result?: string },
 ): void => {
@@ -58,6 +59,8 @@ const publishWorkerLifecycle = (
         kind: job.kind ?? "worker",
         ...(job.agentName !== undefined ? { agentName: job.agentName } : {}),
         ...(job.modelTier !== undefined && job.modelTier !== "" ? { modelTier: job.modelTier } : {}),
+        // 실행 cwd — 대시보드가 프로젝트별 라이브 카드 필터에 사용(관측용). ADR §6 G2.
+        ...(job.cwd !== undefined && job.cwd !== "" ? { cwd: job.cwd } : {}),
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
@@ -130,6 +133,13 @@ export interface WorkerJobRecord {
    * 주입 → onWorkerComplete 가 이걸로 dispatch. 미지정이면 channel/threadKey 폴백(회귀 0).
    */
   notifyDest?: WorkerNotifyDest;
+  /**
+   * 이 잡이 실행된 작업 폴더(cwd) — spawn_agent(path=X) 로 폴더 스코프 위임 시 그 폴더.
+   * 대시보드가 **프로젝트별 실행/최근 서브에이전트 귀속**에 사용(관측용, in-memory only —
+   * awaited 서브는 재시작 비생존이라 DB 영속 불필요, U-I5). 미지정=부모 cwd 상속(무귀속).
+   * ADR 2026-07-06 §6 G2(잡 귀속 키=실행 cwd).
+   */
+  cwd?: string;
   status: WorkerJobStatus;
   startedAt: number;
   finishedAt?: number;
@@ -156,6 +166,8 @@ export interface RegisterJobInput {
   agentName?: string;
   /** 서브에이전트 모델 티어(관측용). */
   modelTier?: string;
+  /** 실행 cwd(관측용) — spawn_agent(path=X) 가 프로젝트 귀속 위해 전달. 미지정=무귀속. */
+  cwd?: string;
 }
 
 /**
@@ -171,6 +183,7 @@ export const registerJob = (input: RegisterJobInput): string => {
     kind,
     agentName: input.agentName,
     modelTier: input.modelTier,
+    cwd: input.cwd,
     label: input.label,
     task: input.task,
     threadKey: input.threadKey,
@@ -204,6 +217,7 @@ export const registerJob = (input: RegisterJobInput): string => {
       kind,
       agentName: input.agentName,
       modelTier: input.modelTier,
+      cwd: input.cwd,
     },
     { task: input.task },
   );
@@ -913,6 +927,12 @@ export interface StartWorkerJobInput {
    * 미지정(텔레그램 직접 발화 등)이면 channel/threadKey 폴백(회귀 0).
    */
   notifyDest?: WorkerNotifyDest;
+  /**
+   * 실행 cwd(관측+동작) — run_in_background(path=X) 가 프로젝트 스코프 위임 시 그 폴더.
+   * registerJob 으로 흘러 잡 레코드·SSE 에 실리고(대시보드 프로젝트 귀속), runner 가
+   * 이 값을 childInput.cwd 로 써 워커의 file-ops 상대경로가 그 폴더 기준(3b). 미지정=home 폴백.
+   */
+  cwd?: string;
 }
 
 /**

@@ -1394,7 +1394,12 @@ export const runOpenAiCodex = async (
   // 일괄 close(openai-agents-sdk) 와 동형. 생성하는 모든 bridge 를 여기 push 한다.
   const allBridges: Array<{ close: () => Promise<void> }> = [];
   const memoryBridge = await adaptClaudeMcpServer(createMemoryMcpServer(), "memory");
-  const fileOpsBridge = await adaptClaudeMcpServer(createFileOpsMcpServer(), "file-ops");
+  // 3b — baseCwd=discoveryCwd(input.cwd ?? home) 주입 → 상대경로 기준점이 턴 cwd
+  // (프로젝트). claude(SDK options.cwd) 와 대칭 = #2 parity(ADR 2026-07-06 §3b).
+  const fileOpsBridge = await adaptClaudeMcpServer(
+    createFileOpsMcpServer(discoveryCwd),
+    "file-ops",
+  );
   // V7.7 — 태스크 관리 (TodoWrite 동등). claude 는 SDK builtin, codex 만 등록.
   const todoBridge = await adaptClaudeMcpServer(createTodoMcpServer(), "todo");
   // 프로젝트 레지스트리 (register/list/update/forget) — 양 어댑터 공통(#2). 진실은

@@ -146,7 +146,12 @@ export const runOpenAi = async (
     ? []
     : [
         await adaptClaudeMcpServer(createMemoryMcpServer(), "memory"),
-        await adaptClaudeMcpServer(createFileOpsMcpServer(), "file-ops"),
+        // 3b — baseCwd=discoveryCwd(input.cwd ?? home) 주입 → 상대경로 기준점이 턴 cwd
+        // (프로젝트). claude(SDK options.cwd) 와 대칭 = #2 parity(ADR 2026-07-06 §3b).
+        await adaptClaudeMcpServer(
+          createFileOpsMcpServer(discoveryCwd),
+          "file-ops",
+        ),
         await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),
         await adaptClaudeMcpServer(createProjectRegistryMcpServer(), "projects"),
         await adaptClaudeMcpServer(

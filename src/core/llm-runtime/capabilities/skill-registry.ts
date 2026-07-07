@@ -42,6 +42,7 @@ import { appRoot, getPaths, projectScope } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
 import type { ChannelName } from "../../../channels/types.js";
 import { dedupeBySource } from "./dedup-by-source.js";
+import { listSkillUsage } from "../../../store/skill-usage.js";
 
 export interface Skill {
   /** frontmatter `name` (우선) 또는 디렉터리 basename. */
@@ -322,15 +323,44 @@ export const parseBool = (
  * `disableModelInvocation: true` 는 제외 (LLM 자동 호출 금지 정책).
  * 비어 있으면 빈 문자열 — 호출자가 prepend skip.
  */
+// ─── 능력 인덱스 스케일링 (ADR 2026-07-07-capability-index-scaling) ──────────
+// 상한 K — 스킬/에이전트가 아무리 많아져도 상시 프롬프트 무게를 바운드. 하드코딩
+// 상수(env 플래그로 빼지 않음 — future-config 안티패턴 회피). 총 ≤K 면 전부 표시
+// (현행 동일·회귀 0), >K 면 상위 K + find_skills 검색 안내.
+const SKILL_INDEX_CAP = 40;
+
+// 사용빈도 랭킹 재료 — skill_usage(일반 store 테이블, self-growth 가 채움). 코어는
+// opportunistic read(빈 테이블·미초기화 시 무랭킹 폴백 — 플러그인 *의존* 아님).
+const skillUsageRank = (): Map<string, number> => {
+  try {
+    return new Map(
+      listSkillUsage({ limit: 500 }).map((r) => [r.skillName, r.invokeCount]),
+    );
+  } catch {
+    return new Map();
+  }
+};
+
 export const formatSkillIndex = (skills: ReadonlyArray<Skill>): string => {
   const invocable = skills.filter((s) => !s.disableModelInvocation);
   if (invocable.length === 0) return "";
-  const lines = invocable.map((s) => `- ${s.name}: ${s.description}`);
   // 헤더 다음 한 줄 — codex 측에 invoke 도구 이름 명시. sysprompt L18-22 의
   // "하네스 라우팅 — 적합 스킬 호출" 추상 지시를 *도구 이름* 으로 구체화.
-  // sysprompt 본문 변경 0 (명시 PR 로만 변경 게이트 보호) — 본 한 줄은 인덱스
-  // 본문 자체에 박힘.
-  return `## 사용 가능 스킬\n\n적합한 스킬을 발견하면 \`invoke_skill({name})\` 도구로 본문 (frontmatter+가이드) 을 로드한 뒤 그 본문에 따라 행동하세요.\n\n${lines.join("\n")}`;
+  const header = `## 사용 가능 스킬\n\n적합한 스킬을 발견하면 \`invoke_skill({name})\` 도구로 본문 (frontmatter+가이드) 을 로드한 뒤 그 본문에 따라 행동하세요.`;
+  const fmt = (list: ReadonlyArray<Skill>) =>
+    list.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+  // 캡 이하 — 전부 표시(현행과 동일, 회귀 0).
+  if (invocable.length <= SKILL_INDEX_CAP) {
+    return `${header}\n\n${fmt(invocable)}`;
+  }
+  // 캡 초과 — 사용빈도순 상위 K + 검색 안내(상시 무게 바운드). Array.sort 안정정렬로
+  // 동점은 입력(discover) 순서 유지.
+  const usage = skillUsageRank();
+  const top = [...invocable]
+    .sort((a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0))
+    .slice(0, SKILL_INDEX_CAP);
+  const rest = invocable.length - SKILL_INDEX_CAP;
+  return `${header}\n\n자주 쓰는 ${SKILL_INDEX_CAP}개만 표시합니다. 나머지 ${rest}개는 \`find_skills({query})\` 로 검색하세요.\n\n${fmt(top)}`;
 };
 
 /**
@@ -407,14 +437,19 @@ export const createSkillInvokeMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const skillInvokeTool = tool(
     "invoke_skill",
-    "발견된 스킬의 SKILL.md raw 본문 (frontmatter 포함) 을 반환합니다. 사용 가능 스킬 인덱스는 user prompt 의 `## 사용 가능 스킬` 섹션에 prepend 되어 있습니다.",
+    "발견된 스킬의 SKILL.md raw 본문 (frontmatter 포함) 을 반환합니다. 사용 가능 스킬 인덱스는 user prompt 의 `## 사용 가능 스킬` 섹션에 prepend 되어 있습니다. **`path`(폴더 경로)를 주면 그 폴더의 `skills/` 기준으로 스킬을 찾습니다 — 다른 프로젝트/폴더 전용 스킬을 '들어가지 않고' 그 자리에서 사용할 때. 그 폴더에 무슨 스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 미지정 시 현재 컨텍스트 기준.**",
     {
       name: z.string().min(1),
+      path: z.string().optional(),
     },
     async (args) => {
       try {
-        // V9.3 — cwd 전파 → 인덱스(discoverSkills(cwd))와 동일 컨텍스트로 발견.
-        const body = await getSkillBody(args.name, cwd);
+        // ★path(2026-07-07) — 지정 시 그 폴더 기준으로 스킬 발견(상대경로는 현재 cwd
+        // 기준 절대화). 마스터가 enter 없이 임의 폴더 전용 스킬을 per-call 로 사용.
+        // 미지정 시 현재 cwd(회귀 0). V9.3 — 인덱스(discoverSkills(cwd))와 동일 컨텍스트.
+        const resolveCwd =
+          args.path !== undefined ? path.resolve(cwd, args.path) : cwd;
+        const body = await getSkillBody(args.name, resolveCwd);
         if (body === undefined) {
           return errText(`스킬 '${args.name}' 미발견.`);
         }
@@ -445,9 +480,46 @@ export const createSkillInvokeMcpServer = (
     },
   );
 
+  // find_skills — 인덱스가 상한(SKILL_INDEX_CAP)으로 잘렸을 때, 필요한 스킬을
+  // 이름/키워드로 검색(ADR 2026-07-07-capability-index-scaling). 부분일치(임베딩 없음),
+  // 사용빈도순. throw 0(에러텍스트). cwd 는 인덱스와 동일 소스라 인덱스↔검색 정합.
+  const findSkillsTool = tool(
+    "find_skills",
+    "이름·설명에 query 가 포함된 스킬을 검색합니다. 사용 가능 스킬이 많아 인덱스에 다 표시되지 않을 때, 필요한 스킬을 키워드/이름 조각으로 찾을 때 사용. 사용빈도순 정렬. 찾은 뒤 invoke_skill 로 로드하세요.",
+    { query: z.string().min(1) },
+    async (args) => {
+      try {
+        const invocable = (await discoverSkills(cwd)).filter(
+          (s) => !s.disableModelInvocation,
+        );
+        const q = args.query.toLowerCase();
+        const matched = invocable.filter(
+          (s) =>
+            s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q),
+        );
+        if (matched.length === 0) {
+          return errText(`'${args.query}' 에 매칭되는 스킬이 없습니다.`);
+        }
+        const usage = skillUsageRank();
+        matched.sort(
+          (a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0),
+        );
+        const lines = matched
+          .slice(0, 50)
+          .map((s) => `- ${s.name}: ${s.description}`);
+        return okText(
+          `'${args.query}' 매칭 스킬 ${matched.length}개:\n${lines.join("\n")}`,
+        );
+      } catch (e) {
+        return errText(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
   return createSdkMcpServer({
     name: "skills",
-    version: "1.0.0",
-    tools: [skillInvokeTool],
+    version: "1.1.0",
+    tools: [skillInvokeTool, findSkillsTool],
   });
 };

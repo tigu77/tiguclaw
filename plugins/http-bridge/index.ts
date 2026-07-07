@@ -39,6 +39,7 @@ import { listProjects } from "../../src/store/projects.js";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
 import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../../src/core/llm-runtime/capabilities/agent-registry.js";
+import { listJobs } from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
 
@@ -364,7 +365,18 @@ class HttpBridge implements Channel, Observer {
     // 진실은 각 폴더의 PROJECT.md — 여긴 인덱스일 뿐(상세 열 때 파일 재-Read). read 게이트.
     if (pathname === "/projects" && method === "GET") {
       try {
-        writeJson(res, 200, listProjects());
+        // 각 프로젝트에 현재 실행 중 에이전트 수(runningAgents) 부착 — 그리드 카드의
+        // "🤖 N 실행 중" 배지용. in-memory listJobs(running) 을 job.cwd 로 귀속(G2).
+        const running = listJobs({ runningOnly: true, limit: 500 });
+        const rows = listProjects().map((p) => ({
+          ...p,
+          runningAgents: running.filter(
+            (j) =>
+              j.cwd !== undefined &&
+              nodePath.resolve(j.cwd) === nodePath.resolve(p.path),
+          ).length,
+        }));
+        writeJson(res, 200, rows);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
@@ -435,6 +447,27 @@ class HttpBridge implements Channel, Observer {
           return { name: trimmed, path: null };
         });
 
+        // recentJobs — 이 프로젝트(cwd) 에서 실행된/실행 중인 서브에이전트 잡(G2 귀속).
+        // in-memory listJobs 를 실행 cwd 로 필터(spawn_agent(path=X)가 job.cwd=X 기록).
+        // running 먼저(startedAt desc, listJobs 기본 정렬) → 최대 20건. 무귀속(cwd 미기록)
+        // 잡은 자연 제외. 대시보드가 "이 프로젝트에서 작업 중/최근 서브에이전트" 로 렌더.
+        const projAbs = nodePath.resolve(projectPath);
+        const recentJobs = listJobs({ limit: 200 })
+          .filter(
+            (j) => j.cwd !== undefined && nodePath.resolve(j.cwd) === projAbs,
+          )
+          .slice(0, 20)
+          .map((j) => ({
+            jobId: j.jobId,
+            kind: j.kind,
+            agentName: j.agentName ?? j.label,
+            modelTier: j.modelTier ?? null,
+            status: j.status,
+            startedAt: j.startedAt,
+            finishedAt: j.finishedAt ?? null,
+            task: j.task,
+          }));
+
         writeJson(res, 200, {
           meta: {
             name: meta.name,
@@ -446,7 +479,7 @@ class HttpBridge implements Channel, Observer {
           skills,
           agents,
           related,
-          recentJobs: [],
+          recentJobs,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

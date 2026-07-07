@@ -69,6 +69,7 @@ import {
   deriveToolPolicy,
   discoverAgents,
   formatAgentIndex,
+  createSpawnAgentMcpServer,
   type Agent,
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
@@ -454,6 +455,14 @@ export const runClaude = async (
         ...(depth === 0 && (input.workerDepth ?? 0) === 0
           ? { endpoints: createEndpointToolsMcpServer() }
           : {}),
+        // ★spawn_agent MCP (projects 3a, 2026-07-07) — cross-project/병렬 위임 경로.
+        // SDK 네이티브 Task(options.agents)는 *현재 cwd* 서브 전용이라 다른 프로젝트를
+        // 못 띄운다(SDK 가 per-Task cwd 미지원). 이 MCP 도구는 runRegionA(childInput.cwd=
+        // project) 로 실행해 codex/openai 와 **동일 경로·동일 project 인자** = #2 parity.
+        // 분업: Task=현재 컨텍스트 서브 / spawn_agent(project=X)=임의 프로젝트 위임(병렬).
+        // depth 0 만(codex/openai 와 동일 게이트) — 자식은 subagentDepth 1 라 재spawn 차단.
+        // 회귀 0: Task 경로 무변경(additive), 자식이 same-cwd 면 기존과 동일 동작.
+        ...(depth === 0 ? { agents: createSpawnAgentMcpServer(input) } : {}),
         // 커스텀 슬래시 명령 등록/조회/삭제 도구 (2026-06-18) —
         // register_command/list_commands/delete_command. endpoint/worker 와 *동일* 가드
         // (depth 0 + workerDepth 0). lean(toolsNone) 이면 leanMcpServers={} 라 미등록.

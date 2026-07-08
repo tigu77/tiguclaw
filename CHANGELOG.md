@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.35] - 2026-07-08
+
+### Added
+- **The dashboard now shows each agent's model tier, and a project's own MCP servers.** Agent cards in the Runtime Inventory (and a project's dedicated agents in the project detail) now carry a small badge with the agent's model tier (`high`/`mid`/`low`/`nano`, or an explicit `provider:model`), so you can see at a glance which model an agent runs on. A project's detail panel also gained a **"dedicated MCP"** section listing the MCP servers declared in that project's `.mcp.json` — the project-scoped servers that are exposed only when work is delegated to it.
+
 ## [0.3.34] - 2026-07-08
 
 ### Added
@@ -293,7 +298,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.34...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.35...HEAD
+[0.3.35]: https://github.com/tigu77/tiguclaw/compare/v0.3.34...v0.3.35
 [0.3.34]: https://github.com/tigu77/tiguclaw/compare/v0.3.33...v0.3.34
 [0.3.33]: https://github.com/tigu77/tiguclaw/compare/v0.3.32...v0.3.33
 [0.3.32]: https://github.com/tigu77/tiguclaw/compare/v0.3.31...v0.3.32

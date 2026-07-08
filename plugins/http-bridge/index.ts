@@ -45,6 +45,10 @@ import { listProjects } from "../../src/store/projects.js";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
 import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../../src/core/llm-runtime/capabilities/agent-registry.js";
+import {
+  readProjectMcpServers,
+  describeExternalMcpConfig,
+} from "../../src/core/external-mcp.js";
 import { listJobs } from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
@@ -506,7 +510,17 @@ class HttpBridge implements Channel, Observer {
           .map((s) => ({ name: s.name, description: s.description }));
         const agents = allAgents
           .filter((a) => a.source === "project")
-          .map((a) => ({ name: a.name, description: a.description }));
+          .map((a) => ({
+            name: a.name,
+            description: a.description,
+            model: a.model ?? null, // 모델 티어(high/mid/low 또는 provider:model). 대시보드 표시.
+          }));
+        // 프로젝트 전용 MCP — <path>/.mcp.json (프로젝트 스코프). 대시보드 상세에 노출.
+        const projectMcp = await readProjectMcpServers(projectPath).catch(() => ({}));
+        const mcp = Object.entries(projectMcp).map(([name, cfg]) => ({
+          name,
+          desc: describeExternalMcpConfig(name, cfg),
+        }));
 
         // related 해소 — 각 항목(경로 또는 등록 name)을 등록 목록에서 name/path 로.
         // 못 찾으면 path=null(텍스트로만 표시). 상대경로는 프로젝트 폴더 기준 절대화 후 매칭.
@@ -565,6 +579,7 @@ class HttpBridge implements Channel, Observer {
           },
           skills,
           agents,
+          mcp,
           related,
           recentJobs,
         });

@@ -324,15 +324,21 @@ const collectSkills = async (cwd: string): Promise<PluginEntry[]> => {
 
 const collectAgents = async (cwd: string): Promise<PluginEntry[]> => {
   const agents = await discoverAgents(cwd);
-  return agents.map((a) => ({
-    category: "agent" as const,
-    layer: sourceToLayer(a.source),
-    name: a.name,
-    description: a.description,
-    source: a.filePath,
-    enabled: true,
-    metadata: a.pluginId !== undefined ? { pluginId: a.pluginId } : undefined,
-  }));
+  return agents.map((a) => {
+    // 모델 티어(high/mid/low 또는 provider:model)를 메타에 노출 — 대시보드 에이전트 카드 표시.
+    const meta: Record<string, unknown> = {};
+    if (a.pluginId !== undefined) meta.pluginId = a.pluginId;
+    if (a.model !== undefined && a.model !== "") meta.model = a.model;
+    return {
+      category: "agent" as const,
+      layer: sourceToLayer(a.source),
+      name: a.name,
+      description: a.description,
+      source: a.filePath,
+      enabled: true,
+      metadata: Object.keys(meta).length > 0 ? meta : undefined,
+    };
+  });
 };
 
 // ─── (e) MCP — 세 source ─────────────────────────────────────────────────

@@ -143,6 +143,7 @@
       .inv-detail-desc { color:var(--text); margin-bottom:6px; }
       .inv-detail-src { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; word-break:break-all; white-space:pre-wrap; }
       .inv-tag { display:inline-block; margin-left:2px; font-size:8.5px; font-weight:700; padding:1px 6px; border-radius:999px; border:1px solid var(--border); color:var(--text-mute); }
+      .inv-model-tag { color:var(--accent-2); border-color:rgba(167,139,250,.32); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .cat-item .layer-tag { font-size:9px; padding:1px 5px; border-radius:6px; background:var(--card); color:var(--text-dim); margin-right:5px; }
 
       #workbench { display:block; }
@@ -554,6 +555,7 @@
       .pd-agents-grid { display:flex; flex-direction:column; gap:8px; }
       .pd-item { padding:9px 11px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.02); }
       .pd-item-name { font-size:12px; font-weight:800; color:var(--text); word-break:break-word; }
+      .pd-item-model { display:inline-block; margin-left:6px; font-size:9px; font-weight:800; letter-spacing:.03em; color:var(--accent-2); background:rgba(167,139,250,.12); border:1px solid var(--border); border-radius:6px; padding:1px 5px; vertical-align:middle; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .pd-item-desc { font-size:11px; color:var(--text-mute); margin-top:2px; line-height:1.45; word-break:break-word; }
       .pd-related { display:flex; flex-wrap:wrap; gap:6px; }
       .pd-related-chip { font-size:11px; color:var(--text-mute); padding:5px 10px; border-radius:999px; background:var(--card); border:1px solid var(--border); }
@@ -1488,6 +1490,13 @@
               const n = document.createElement("div");
               n.className = "pd-item-name";
               n.textContent = it.name || "(이름 없음)";
+              // 모델 티어(에이전트 명세) — 있으면 이름 옆 뱃지. 스킬·MCP 는 없어 생략.
+              if (it.model) {
+                const m = document.createElement("span");
+                m.className = "pd-item-model";
+                m.textContent = it.model;
+                n.appendChild(m);
+              }
               row.appendChild(n);
               if (it.description) {
                 const d = document.createElement("div");
@@ -1504,6 +1513,11 @@
 
         listSection("전용 스킬", detail.skills);
         listSection("전용 에이전트", detail.agents);
+        // 전용 MCP — 이 프로젝트로 위임할 때만 노출되는 프로젝트 스코프 MCP(<project>/.mcp.json).
+        listSection(
+          "전용 MCP",
+          (detail.mcp || []).map((m) => ({ name: m.name, description: m.desc })),
+        );
 
         // 연관 프로젝트 — path 있으면 클릭 이동, 없으면 텍스트 칩.
         const relSec = document.createElement("div");
@@ -1903,6 +1917,13 @@
                 if (external) { tag.style.color = "var(--accent)"; tag.style.borderColor = "rgba(52,211,153,.32)"; }
                 top.appendChild(tag);
               }
+              // 에이전트 모델 티어 — 접힘 행에 뱃지로 노출(명세 가시화). 없으면 생략.
+              if (it.category === "agent" && md.model) {
+                const mt = document.createElement("span");
+                mt.className = "inv-tag inv-model-tag";
+                mt.textContent = String(md.model);
+                top.appendChild(mt);
+              }
               const chip = document.createElement("span");
               chip.className = "inv-chip " + (it.layer || "");
               chip.textContent = (it.layer || "").replace("_", "·");
@@ -1921,7 +1942,7 @@
               }
               const lines = [];
               if (it.source) lines.push("경로: " + it.source);
-              for (const k of Object.keys(md).filter((k) => k !== "inProcess")) {
+              for (const k of Object.keys(md).filter((k) => k !== "inProcess" && k !== "model")) {
                 const v = md[k];
                 lines.push(k + ": " + (typeof v === "object" ? JSON.stringify(v) : String(v)));
               }

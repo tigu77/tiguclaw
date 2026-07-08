@@ -603,7 +603,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
     void deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
-      text: `⏳ 백그라운드 작업 '${job.label}' 이(가) 도구 '${tool}'에서 ${sec}초+ 멈춰 있어요. 혹시 Mac 에 권한 요청 다이얼로그가 떠 있는지 확인해주세요 (없으면 도구가 느리거나 멈춘 것일 수 있어요).`,
+      text: `⏳ 백그라운드 작업 '${job.label}' 이(가) 도구 '${tool}'에서 ${sec}초+ 멈춰 있어요. OS 권한 요청 다이얼로그가 떠 있는지, 또는 외부 MCP 도구면 대상 앱(예: 에디터)이 실행 중인지 확인해주세요 (아니면 도구가 느리거나 멈춘 것일 수 있어요).`,
       label: "worker",
     }).catch(() => {
       /* 통지 실패는 작업에 영향 0 */

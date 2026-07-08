@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.31] - 2026-07-08
+
+### Added
+- **A built-in `code-review` skill for debugging and code review.** When you ask "why is this bug happening", "review this code", or "is this fix okay?", the assistant now follows a consistent method: pin the *root cause* (not the symptom) by tracing the code path, then — crucially — check whether the *same root cause* also affects adjacent fields/paths (so it doesn't fix one bug and leave its siblings), propose a minimal fix that matches the codebase's existing idioms, and add a short, optional note on a more robust direction. Correctness first, brevity always.
+
+### Changed
+- **Sub-agent model tiers now follow the provider you chose at install.** Previously the `high`/`mid`/`low` tiers were hardcoded to Anthropic models regardless of your provider — so a codex- or OpenAI-only install had its sub-agent tiers pointing at Claude models it might have no key for. New installs now set the tiers to the chosen provider (Anthropic/claude-sub keep the opus/sonnet/haiku spread; OpenAI and codex default to their own models), and you can still refine them in `.env`.
+- **The default model pool is now a last-resort fallback for a misconfigured tier.** If a sub-agent's tier points at a provider you have no credentials for, the run now falls back once to your `REGION_A_MODELS` default pool (with a notice) instead of failing. This only triggers on configuration errors (unknown model · missing credentials) — genuine runtime faults (stalls, hangs, timeouts) are never masked, so a backend defect still surfaces instead of silently switching models.
+- **The "tool is taking a while" warning is now OS-neutral and points at the right cause.** It previously said "macOS permission dialog", which was misleading on Windows and didn't mention that an external MCP tool can hang when its server is connected but the target app/editor isn't running. The warning (and the background-worker ping) now say so.
+
+### Fixed
+- **The dashboard chat no longer shows a false "timeout" error on long turns.** A long-running turn (e.g. a multi-minute codex answer) could make the chat give up and show a timeout while the real answer was still on its way over the live stream. The chat now shows a "working…" indicator and waits for the streamed reply instead of falsely erroring.
+
 ## [0.3.30] - 2026-07-07
 
 ### Changed
@@ -254,7 +267,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.30...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.31...HEAD
+[0.3.31]: https://github.com/tigu77/tiguclaw/compare/v0.3.30...v0.3.31
 [0.3.30]: https://github.com/tigu77/tiguclaw/compare/v0.3.29...v0.3.30
 [0.3.29]: https://github.com/tigu77/tiguclaw/compare/v0.3.28...v0.3.29
 [0.3.28]: https://github.com/tigu77/tiguclaw/compare/v0.3.27...v0.3.28

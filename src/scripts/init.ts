@@ -35,9 +35,24 @@ interface Answers {
   httpBridgeToken: string;
 }
 
-const DEFAULT_TIER_HIGH = "anthropic:claude-opus-4-8";
-const DEFAULT_TIER_MID = "anthropic:claude-sonnet-4-6";
-const DEFAULT_TIER_LOW = "anthropic:claude-haiku-4-5";
+// sub-agent 등급(티어) 기본값 — 선택한 provider 를 따른다. codex/openai 로 설치했는데
+// tier 가 anthropic 을 가리키면(과거 하드코딩) 그 provider 키가 없어 서브에이전트가 실패했다.
+// (런타임 폴백 안전망이 있어도 근본은 tier 를 provider 에 맞추는 것.) anthropic/claude-sub 는
+// opus/sonnet/haiku 스프레드, openai/codex 는 알려진 기본 모델(사용자가 .env 로 세분화 가능).
+const TIER_DEFAULTS: Record<Provider, { high: string; mid: string; low: string }> = {
+  anthropic: {
+    high: "anthropic:claude-opus-4-8",
+    mid: "anthropic:claude-sonnet-4-6",
+    low: "anthropic:claude-haiku-4-5",
+  },
+  "claude-sub": {
+    high: "anthropic:claude-opus-4-8",
+    mid: "anthropic:claude-sonnet-4-6",
+    low: "anthropic:claude-haiku-4-5",
+  },
+  openai: { high: "openai:gpt-5.5", mid: "openai:gpt-5.5", low: "openai:gpt-5.5" },
+  codex: { high: "codex:gpt-5.5", mid: "codex:gpt-5.5", low: "codex:gpt-5.5" },
+};
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -290,6 +305,8 @@ OPENAI_CODEX_OAUTH_EXPIRES=
 REGION_A_MODELS=${a.regionAModels}
 
 # sub-agent 등급(티어) → 모델 폴백 풀. agent.md 의 model: high/mid/low 가 매핑됨.
+# 선택한 provider(${a.provider}) 기준으로 세팅됨 — 다른 모델로 세분화하려면 편집하세요.
+# 여기 지정 모델을 쓸 수 없으면(키/토큰 부재 등) 런타임이 REGION_A_MODELS 기본 풀로 폴백합니다.
 MODEL_TIER_HIGH=${a.tierHigh}
 MODEL_TIER_MID=${a.tierMid}
 MODEL_TIER_LOW=${a.tierLow}
@@ -348,12 +365,13 @@ const main = async (): Promise<void> => {
   console.log("[4/4] 포트 = 기본 사용 (HTTP_BRIDGE_PORT=3001, DASHBOARD_PORT=3000).");
   console.log("  ℹ️  변경하려면 나중에 .env 를 편집하세요.");
 
+  const tier = TIER_DEFAULTS[provider];
   const answers: Answers = {
     provider,
     ...providerCfg,
-    tierHigh: DEFAULT_TIER_HIGH,
-    tierMid: DEFAULT_TIER_MID,
-    tierLow: DEFAULT_TIER_LOW,
+    tierHigh: tier.high,
+    tierMid: tier.mid,
+    tierLow: tier.low,
     ...telegram,
     httpBridgeToken,
   };

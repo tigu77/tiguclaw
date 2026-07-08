@@ -90,6 +90,19 @@ const MODEL_REJECTED_PATTERNS: RegExp[] = [
 export const isModelRejected = (errStr: string): boolean =>
   MODEL_REJECTED_PATTERNS.some((re) => re.test(errStr));
 
+// provider-미가용 식별 — 어댑터 사전 인증 가드(키/토큰 부재)로 인한 실패. isModelRejected 와
+// 별개의 "설정 에러" 클래스. 런타임 결함(스톨·hang·타임아웃·부분응답)이 아니라 "이 어댑터를
+// 애초에 쓸 수 없음"(자격증명 부재)만 좁게 잡는다 — 그래야 override/tier 를 사용자 기본 풀로
+// 폴백해도 어댑터 결함을 가리지 않는다(feedback_no_cross_adapter_fallback: claude 폴백 =
+// 최후 안전망 only, 결함 마스킹 금지). 세 어댑터의 실측 사전-가드 문구(API 호출 前 throw):
+//  - claude : "Claude 인증 없음. ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN..." (claude-agent-sdk.ts:298)
+//  - openai : "'<provider>' 인증 없음. <ENV> 가 필요합니다." (openai-agents-sdk.ts:97)
+//  - codex  : "OpenAI Codex OAuth 토큰 없음. `npm run codex-auth`..." (openai-codex-oauth.ts:365)
+const PROVIDER_UNAVAILABLE_PATTERNS: RegExp[] = [/인증 없음/, /토큰 없음/];
+
+export const isProviderUnavailable = (errStr: string): boolean =>
+  PROVIDER_UNAVAILABLE_PATTERNS.some((re) => re.test(errStr));
+
 export type RegionAAdapter = "claude" | "openai" | "codex-oauth";
 
 /** 모델 스펙 — provider 가 결정한 어댑터(런타임) + 모델 버전. model "" = 어댑터 디폴트. */
@@ -505,10 +518,16 @@ export const runRegionA = async (
   try {
     return await runPool(input, pool);
   } catch (e) {
-    // 세션 모델 override(opts.specs 단일/소수 풀)가 "모델 거부" 로 실패한 경우에만
-    // env 풀로 1회 자동 폴백 (고지 후 자동 폴백 — 사용자 결정). override 가 없던
-    // 일반 turn(=이미 env 풀로 돈 경우)은 폴백 대상이 없으니 그대로 throw (무한 폴백 금지).
-    if (!hadOverride || !isModelRejected(errorDetail(e))) throw e;
+    // override/tier 풀(opts.specs)이 (a) "모델 거부" 또는 (b) "provider 미가용(자격증명 부재)"
+    // 로 실패한 경우에만 env 기본 풀로 1회 자동 폴백 (고지 후 — 사용자 결정). 이 둘은 "이
+    // 모델/어댑터를 애초에 쓸 수 없음"인 설정 에러라 사용자 기본 풀이 최후 안전망이 된다.
+    // 런타임 결함(스톨·hang·타임아웃)은 여기 안 걸려 그대로 throw — 어댑터 결함을 기본 모델로
+    // 가리지 않는다(feedback_no_cross_adapter_fallback). override 없던 일반 turn(=이미 env
+    // 풀로 돈 경우)은 폴백 대상이 없으니 그대로 throw (무한 폴백 금지).
+    const detail = errorDetail(e);
+    if (!hadOverride || !(isModelRejected(detail) || isProviderUnavailable(detail))) {
+      throw e;
+    }
 
     const requestedLabel = pool.map(specLabel).join(",");
     const fallbackPool = resolveModelSpecs(undefined); // env REGION_A_MODELS → 없으면 DEFAULT_MODEL_SPEC

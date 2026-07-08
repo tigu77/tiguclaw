@@ -567,6 +567,8 @@
       #chat-send { background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#061018; border:0; border-radius:12px; padding:10px 14px; font-weight:850; cursor:pointer; }
       #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
       #chat-status { color:var(--text-mute); font-size:10px; margin-top:6px; min-height:12px; }
+      #chat-status.working { color:var(--accent-2); font-weight:700; animation:chat-working-pulse 1.4s ease-in-out infinite; }
+      @keyframes chat-working-pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
       #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px); z-index:50; max-width:90vw; padding:11px 16px; border-radius:13px; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); box-shadow:var(--shadow); color:var(--text); font-size:12px; font-weight:700; opacity:0; pointer-events:none; transition:opacity .18s, transform .18s; }
       #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
       #toast.warn { border-color:rgba(251,191,36,.45); } #toast.bad { border-color:rgba(251,113,133,.5); } #toast.good { border-color:rgba(52,211,153,.45); }
@@ -3009,27 +3011,44 @@
       // POST /api/messages {text:value, threadKey}. 클릭 후 묶음 비활성(중복 클릭 방지).
       // 비차단: 전송은 백그라운드(에러는 status/로컬 오류 버블로 표면화). route() 단일 인격
       // 재진입이라 새 세션/스레드 0 — threadKey 는 페이로드 우선, 없으면 대시보드 기본.
-      const submitOptionValue = async (value) => {
-        const statusEl = document.getElementById("chat-status");
-        if (statusEl) statusEl.textContent = "전송 중...";
+      // 채팅 진행 상태 표시 — 켜면 "<이름> 작업 중…"(펄스), 끄면 지움. 답(SSE)·에러 시 해제.
+      const setChatWorking = (on) => {
+        const s = document.getElementById("chat-status");
+        if (!s) return;
+        if (on) { s.classList.add("working"); s.textContent = assistantName + " 작업 중…"; }
+        else { s.classList.remove("working"); s.textContent = ""; }
+      };
+      // POST /api/messages 공용 전송 — 긴 턴은 응답이 SSE 로 도착하므로, POST 가 오래 기다린 뒤
+      // 끊겨도(프록시/HTTP 타임아웃) 빨간 에러 대신 "작업 중…" 유지(가짜 timeout 방지). 답이
+      // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
+      const sendChatMessage = async (text) => {
+        setChatWorking(true);
+        const t0 = Date.now();
         try {
           const r = await fetch("/api/messages", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: value, threadKey: THREAD_KEY }),
+            body: JSON.stringify({ text, threadKey: THREAD_KEY }),
           });
           const data = await r.json().catch(() => ({}));
           if (!r.ok) {
-            if (statusEl) statusEl.textContent = "오류: " + (data.error || ("HTTP " + r.status));
-            renderLocalChat("error", data.error || ("HTTP " + r.status));
-          } else if (statusEl) {
-            statusEl.textContent = "";
+            if (Date.now() - t0 < 10000) { // 즉시 실패 = 진짜 에러(브리지 다운·잘못된 요청 등).
+              setChatWorking(false);
+              renderLocalChat("error", data.error || ("HTTP " + r.status));
+            }
+            // 오래 기다린 뒤 끊김 = 긴 턴 → 작업 중 유지(답은 SSE 로). 아무것도 안 함.
+          } else {
+            setChatWorking(false); // 동기 POST 반환 = 턴 완료(답은 SSE 로 이미/곧 렌더).
           }
         } catch (err) {
-          if (statusEl) statusEl.textContent = "전송 실패: " + err.message;
-          renderLocalChat("error", err.message);
+          if (Date.now() - t0 < 10000) { // 즉시 네트워크 실패 = 진짜 에러.
+            setChatWorking(false);
+            renderLocalChat("error", err.message);
+          }
+          // 긴 대기 뒤 fetch 끊김 = 긴 턴 → 작업 중 유지(답은 SSE 로).
         }
       };
+      const submitOptionValue = (value) => sendChatMessage(value);
 
       const renderPromptOptions = (payload, ts) => {
         const options = Array.isArray(payload.options) ? payload.options : [];
@@ -3095,6 +3114,12 @@
         if (currentView === "overview") setTimeout(showOverview, 0);
         const ts = fmtTime(ev.ts);
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
+          // 답(out) 도착 → "작업 중…" 해제(긴 턴에서 POST 가 끊겨도 여기서 확실히 끔).
+          // 이 대화(dashboard) 스레드 답일 때만 — payload.threadKey 없으면 관대 허용.
+          if (ev.type === "channel.message.out") {
+            const tk = ev.payload && ev.payload.threadKey;
+            if (!tk || tk === THREAD_KEY) setChatWorking(false);
+          }
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);
@@ -3236,29 +3261,11 @@
         e.preventDefault();
         const text = input.value.trim();
         if (text.length === 0) return;
-        sendBtn.disabled = true;
-        statusEl.textContent = "전송 중...";
         input.value = "";
-        try {
-          const r = await fetch("/api/messages", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, threadKey: THREAD_KEY }),
-          });
-          const data = await r.json().catch(() => ({}));
-          if (!r.ok) {
-            statusEl.textContent = "오류: " + (data.error || ("HTTP " + r.status));
-            renderLocalChat("error", data.error || ("HTTP " + r.status));
-          } else {
-            statusEl.textContent = "";
-          }
-        } catch (err) {
-          statusEl.textContent = "전송 실패: " + err.message;
-          renderLocalChat("error", err.message);
-        } finally {
-          sendBtn.disabled = false;
-          input.focus();
-        }
+        input.focus();
+        // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 워커
+        // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
+        await sendChatMessage(text);
       });
     </script>
   </body>

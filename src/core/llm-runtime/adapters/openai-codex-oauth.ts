@@ -2260,7 +2260,7 @@ export const runOpenAiCodex = async (
                 console.warn(
                   `[tool-slow] ${input.threadKey} 도구 ${tc.name} 이(가) ${Math.round(
                     CODEX_TOOL_SLOW_WARN_MS / 1000,
-                  )}s+ 실행 중 — macOS 권한 요청(다이얼로그 확인)·hung·느림 의심. ${Math.round(
+                  )}s+ 실행 중 — 권한 다이얼로그(OS) 대기·외부 MCP 백엔드 부재(서버는 연결됐어도 대상 앱/에디터 미실행)·hung·느림 의심. ${Math.round(
                     CODEX_TOOL_TIMEOUT_MS / 60_000,
                   )}분에 타임아웃.`,
                 );

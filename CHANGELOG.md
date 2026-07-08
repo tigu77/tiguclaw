@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.33] - 2026-07-08
+
+### Added
+- **The dashboard's progress indicator now reflects turns from every channel — as one assistant.** When a message is being handled from Telegram (or CLI), the dashboard chat shows the same `✳️ <assistant> 작업 중 · 8m 38s` spinner and elapsed timer it shows for your own dashboard messages, clearing when the reply arrives. Whichever channel a request came from, the dashboard presents it as the single assistant at work (no per-channel labels) — consistent with the single-persona model.
+
+### Fixed
+- **Typing in the dashboard chat input is no longer laggy.** The auto-resizing input measured its height on every keystroke, forcing a full layout reflow each time on a dashboard whose DOM is constantly updating from the live stream. Measurement is now batched to one per animation frame, so typing stays responsive.
+
 ## [0.3.32] - 2026-07-08
 
 ### Added
@@ -277,7 +285,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.32...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.33...HEAD
+[0.3.33]: https://github.com/tigu77/tiguclaw/compare/v0.3.32...v0.3.33
 [0.3.32]: https://github.com/tigu77/tiguclaw/compare/v0.3.31...v0.3.32
 [0.3.31]: https://github.com/tigu77/tiguclaw/compare/v0.3.30...v0.3.31
 [0.3.30]: https://github.com/tigu77/tiguclaw/compare/v0.3.29...v0.3.30

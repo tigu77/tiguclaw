@@ -3085,31 +3085,48 @@
       // 비차단: 전송은 백그라운드(에러는 status/로컬 오류 버블로 표면화). route() 단일 인격
       // 재진입이라 새 세션/스레드 0 — threadKey 는 페이로드 우선, 없으면 대시보드 기본.
       // 채팅 진행 상태 표시 — 켜면 "<이름> 작업 중…"(펄스), 끄면 지움. 답(SSE)·에러 시 해제.
-      // 진행 표시 — 회전 스피너 + 경과시간(1초 틱). 답변이 SSE 로 도착하면 setChatWorking(false)
-      // 로 해제. 스피너 요소는 한 번만 만들고 경과 span 텍스트만 갱신(애니메이션 끊김 방지).
+      // 진행 표시(모든 채널) — 회전 스피너 + 경과시간. 대시보드 자기 발신뿐 아니라 텔레그램·CLI
+      // 등 어느 채널의 턴이 진행 중이어도 표시(SSE channel.message.in=시작, .out/turn_done/
+      // turn_error=종료). activeTurns: threadKey→{start,channel}. 하나라도 있으면 working. 대표는
+      // 내 대화(THREAD_KEY) 우선, 없으면 가장 이른 것. 여럿이면 "(+N)". 스피너 요소는 유지하고
+      // 경과 텍스트만 1초 틱 갱신(애니메이션 끊김 방지).
       let chatWorkingTimer = null;
-      let chatWorkingStart = 0;
-      const setChatWorking = (on) => {
-        const s = document.getElementById("chat-status");
-        if (!s) return;
-        if (chatWorkingTimer) { clearInterval(chatWorkingTimer); chatWorkingTimer = null; }
-        if (on) {
-          chatWorkingStart = Date.now();
-          s.classList.add("working");
-          s.innerHTML =
-            '<span class="chat-spinner">✳️</span> ' +
-            '<span class="chat-work-label"></span> ' +
-            '<span class="chat-elapsed"></span>';
-          s.querySelector(".chat-work-label").textContent = assistantName + " 작업 중 ·";
-          const elapsed = s.querySelector(".chat-elapsed");
-          const paint = () => { elapsed.textContent = fmtElapsed(Date.now() - chatWorkingStart); };
-          paint();
-          chatWorkingTimer = setInterval(paint, 1000);
-        } else {
-          s.classList.remove("working");
-          s.textContent = "";
-        }
+      const activeTurns = new Map(); // threadKey -> startTime(ms). 채널 무관 — 단일 인격 취급.
+      // 경과시간 기준 시작시각 — 내 대화(THREAD_KEY) 우선, 없으면 가장 이른 턴.
+      const earliestStart = () => {
+        if (activeTurns.has(THREAD_KEY)) return activeTurns.get(THREAD_KEY);
+        let best = Infinity;
+        for (const t of activeTurns.values()) if (t < best) best = t;
+        return best === Infinity ? Date.now() : best;
       };
+      const paintWorking = (s) => {
+        // ★다채널 단일 인격 — 텔레그램·CLI·대시보드 어디서 온 턴이든 대시보드 발신과 똑같이
+        // "<비서> 작업 중" 으로 통일(채널 라벨 없음). 동시에 여럿이면 "(+N)".
+        const extra = activeTurns.size > 1 ? " (+" + (activeTurns.size - 1) + ")" : "";
+        const lab = s.querySelector(".chat-work-label"); if (lab) lab.textContent = assistantName + " 작업 중" + extra + " ·";
+        const el = s.querySelector(".chat-elapsed"); if (el) el.textContent = fmtElapsed(Date.now() - earliestStart());
+      };
+      const refreshWorking = () => {
+        const s = document.getElementById("chat-status"); if (!s) return;
+        if (activeTurns.size === 0) {
+          if (chatWorkingTimer) { clearInterval(chatWorkingTimer); chatWorkingTimer = null; }
+          s.classList.remove("working"); s.textContent = ""; return;
+        }
+        if (!s.classList.contains("working")) {
+          s.classList.add("working");
+          s.innerHTML = '<span class="chat-spinner">✳️</span> <span class="chat-work-label"></span> <span class="chat-elapsed"></span>';
+        }
+        paintWorking(s);
+        if (!chatWorkingTimer) chatWorkingTimer = setInterval(() => { const el = document.getElementById("chat-status"); if (el) paintWorking(el); }, 1000);
+      };
+      const markTurnActive = (tk) => {
+        const k = tk || THREAD_KEY;
+        if (!activeTurns.has(k)) activeTurns.set(k, Date.now());
+        refreshWorking();
+      };
+      const markTurnDone = (tk) => { const k = tk || THREAD_KEY; if (activeTurns.delete(k)) refreshWorking(); };
+      // 하위호환 — sendChatMessage 의 로컬 즉시 피드백/에러 해제(내 대화 턴).
+      const setChatWorking = (on) => { if (on) markTurnActive(THREAD_KEY); else markTurnDone(THREAD_KEY); };
       // POST /api/messages 공용 전송 — 긴 턴은 응답이 SSE 로 도착하므로, POST 가 오래 기다린 뒤
       // 끊겨도(프록시/HTTP 타임아웃) 빨간 에러 대신 "작업 중…" 유지(가짜 timeout 방지). 답이
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
@@ -3209,13 +3226,16 @@
         if (navEventCount) navEventCount.textContent = String(evCount);
         if (currentView === "overview") setTimeout(showOverview, 0);
         const ts = fmtTime(ev.ts);
+        // 진행 표시 종료(모든 채널) — 턴 종료 신호는 렌더를 막지 않고(return 안 함) 표시만 해제.
+        // channel.message.out 이 안 오는 에러 턴까지 확실히 끄기 위한 authoritative 종료.
+        if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") {
+          markTurnDone(ev.payload && ev.payload.threadKey);
+        }
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
-          // 답(out) 도착 → "작업 중…" 해제(긴 턴에서 POST 가 끊겨도 여기서 확실히 끔).
-          // 이 대화(dashboard) 스레드 답일 때만 — payload.threadKey 없으면 관대 허용.
-          if (ev.type === "channel.message.out") {
-            const tk = ev.payload && ev.payload.threadKey;
-            if (!tk || tk === THREAD_KEY) setChatWorking(false);
-          }
+          const tk = ev.payload && ev.payload.threadKey;
+          // 진행 표시(모든 채널) — 인바운드=턴 시작(텔레그램·CLI 포함), 아웃바운드=턴 종료.
+          if (ev.type === "channel.message.in") markTurnActive(tk);
+          else markTurnDone(tk);
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);
@@ -3357,9 +3377,17 @@
       const statusEl = document.getElementById("chat-status");
 
       // textarea 자동 높이 — 내용에 맞춰 grow(최대 CSS max-height 까지 스크롤). 전송 후 리셋.
+      // 매 키 입력마다 height="auto"→scrollHeight 읽기는 강제 동기 리플로우 → SSE 로 DOM 이
+      // 계속 바뀌는 대시보드에선 키 입력마다 전체 레이아웃 플러시 = 입력 랙. rAF 로 프레임당
+      // 1회만 측정(빠른 연타 coalesce + 키 입력 echo 경로에서 리플로우 분리).
+      let growRaf = 0;
       const autoGrowInput = () => {
-        input.style.height = "auto";
-        input.style.height = Math.min(input.scrollHeight, 148) + "px";
+        if (growRaf) return;
+        growRaf = requestAnimationFrame(() => {
+          growRaf = 0;
+          input.style.height = "auto";
+          input.style.height = Math.min(input.scrollHeight, 148) + "px";
+        });
       };
       input.addEventListener("input", autoGrowInput);
 

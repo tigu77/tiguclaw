@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.34] - 2026-07-08
+
+### Added
+- **Project-scoped MCP servers.** An MCP server can now belong to a specific project instead of being global: declare it in that project's `<project>/.mcp.json` (the same format Claude Code uses) and its tools are exposed **only when work is delegated to that project** (`spawn_agent(path=…)`), not on every turn. Global servers (in `<home>/mcp.json`) remain available everywhere. `add_mcp_server` / `list_mcp_servers` / `remove_mcp_server` take an optional `path` to target a project's config (omit it for global), and `project_capabilities(path)` now lists a project's own MCP servers. This keeps a project-specific tool (e.g. a Unity MCP) from bloating unrelated turns — and it connects lazily, only when you actually work in that project. The assistant reaches a project's MCP tools by delegating to the project, the same way it does for project-specific skills and agents.
+
+### Fixed
+- **The Runtime Inventory now shows connected external MCP servers.** Servers registered via `add_mcp_server` (stored in `<home>/mcp.json`) were never listed in the dashboard's Runtime Inventory because it only read a different config file. They now appear alongside the built-in in-process servers.
+
 ## [0.3.33] - 2026-07-08
 
 ### Added
@@ -285,7 +293,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.33...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.34...HEAD
+[0.3.34]: https://github.com/tigu77/tiguclaw/compare/v0.3.33...v0.3.34
 [0.3.33]: https://github.com/tigu77/tiguclaw/compare/v0.3.32...v0.3.33
 [0.3.32]: https://github.com/tigu77/tiguclaw/compare/v0.3.31...v0.3.32
 [0.3.31]: https://github.com/tigu77/tiguclaw/compare/v0.3.30...v0.3.31

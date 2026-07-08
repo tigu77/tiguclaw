@@ -43,12 +43,30 @@ interface McpJsonFile {
 
 const mcpJsonPath = (): string => path.join(getPaths().home, "mcp.json");
 
-/** `<home>/mcp.json` 읽기 — 부재/손상 시 빈 맵(throw 0). */
-export const readExternalMcpServers = async (): Promise<
-  Record<string, ExternalMcpConfig>
-> => {
+// ─── 프로젝트 스코프 MCP (ADR 2026-07-08) ────────────────────────────────────
+// 전역 = <home>/mcp.json (크로스-프로젝트). 프로젝트 = <cwd>/.mcp.json (Claude Code 파리티,
+// 그 프로젝트 위임 턴에만). 마스터/비프로젝트 턴(cwd 미지정) = 전역만.
+const projectMcpPath = (cwd: string): string => path.join(cwd, ".mcp.json");
+
+/**
+ * cwd 가 프로젝트 스코프 대상인가 — 지정됨 + 홈 아님(홈은 전역 mcp.json 소유). 어댑터가
+ * "프로젝트 위임 서브/워커면 외부 MCP 를 읽는다" 게이트로도 사용(export).
+ */
+export const isProjectMcpCwd = (cwd?: string): cwd is string => {
+  if (cwd === undefined || cwd === "") return false;
   try {
-    const raw = await fs.readFile(mcpJsonPath(), "utf8");
+    return path.resolve(cwd) !== path.resolve(getPaths().home);
+  } catch {
+    return false;
+  }
+};
+
+/** 한 mcp.json/.mcp.json 파일의 mcpServers 읽기 — 부재/손상 시 빈 맵(throw 0). */
+const readMcpFile = async (
+  file: string,
+): Promise<Record<string, ExternalMcpConfig>> => {
+  try {
+    const raw = await fs.readFile(file, "utf8");
     const parsed = JSON.parse(raw) as McpJsonFile;
     const servers = parsed?.mcpServers;
     if (servers === undefined || servers === null || typeof servers !== "object") {
@@ -60,28 +78,57 @@ export const readExternalMcpServers = async (): Promise<
   }
 };
 
-/** name→config upsert 후 파일 저장(디렉터리 ensure). */
+// upsert/remove 대상 파일 — projectPath 지정 시 <projectPath>/.mcp.json, 아니면 <home>/mcp.json.
+const resolveWriteFile = (projectPath?: string): string =>
+  projectPath !== undefined && projectPath !== ""
+    ? projectMcpPath(projectPath)
+    : mcpJsonPath();
+
+/**
+ * 외부 MCP server 맵 — 전역 <home>/mcp.json + (cwd 가 프로젝트면) <cwd>/.mcp.json 병합.
+ * 프로젝트가 같은 이름을 덮어쓴다(더 구체적). claude 어댑터가 네이티브 config 로 사용.
+ * cwd 미지정/홈(마스터·비프로젝트 턴) = 전역만(회귀 0).
+ */
+export const readExternalMcpServers = async (
+  cwd?: string,
+): Promise<Record<string, ExternalMcpConfig>> => {
+  const global = await readMcpFile(mcpJsonPath());
+  if (!isProjectMcpCwd(cwd)) return global;
+  const project = await readMcpFile(projectMcpPath(cwd));
+  return { ...global, ...project }; // 프로젝트 우선.
+};
+
+/** 프로젝트 <cwd>/.mcp.json 만(전역 제외) — project_capabilities 표시용. */
+export const readProjectMcpServers = async (
+  cwd: string,
+): Promise<Record<string, ExternalMcpConfig>> => {
+  if (!isProjectMcpCwd(cwd)) return {};
+  return readMcpFile(projectMcpPath(cwd));
+};
+
+/** name→config upsert 후 파일 저장(디렉터리 ensure). projectPath = 프로젝트 .mcp.json 대상. */
 export const upsertExternalMcpServer = async (
   name: string,
   config: ExternalMcpConfig,
+  projectPath?: string,
 ): Promise<void> => {
-  const servers = await readExternalMcpServers();
+  const file = resolveWriteFile(projectPath);
+  const servers = await readMcpFile(file);
   servers[name] = config;
-  const abs = mcpJsonPath();
-  await fs.mkdir(path.dirname(abs), { recursive: true });
-  await fs.writeFile(abs, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, "utf8");
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, "utf8");
 };
 
-/** name 제거 후 저장. 존재 여부 반환. */
-export const removeExternalMcpServer = async (name: string): Promise<boolean> => {
-  const servers = await readExternalMcpServers();
+/** name 제거 후 저장. 존재 여부 반환. projectPath = 프로젝트 .mcp.json 대상. */
+export const removeExternalMcpServer = async (
+  name: string,
+  projectPath?: string,
+): Promise<boolean> => {
+  const file = resolveWriteFile(projectPath);
+  const servers = await readMcpFile(file);
   if (!(name in servers)) return false;
   delete servers[name];
-  await fs.writeFile(
-    mcpJsonPath(),
-    `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`,
-    "utf8",
-  );
+  await fs.writeFile(file, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, "utf8");
   return true;
 };
 
@@ -116,8 +163,11 @@ interface CachedExt {
   server: MCPServer;
   realClose: () => Promise<void>;
 }
-const cache = new Map<string, CachedExt>();
+const cache = new Map<string, CachedExt>(); // 전역: name → bridge.
 let connectPromise: Promise<void> | null = null;
+// 프로젝트 스코프: projectPath(resolved) → (name → bridge). 지연연결·종료까지 캐시(축출 없음).
+const projectCache = new Map<string, Map<string, CachedExt>>();
+const projectConnect = new Map<string, Promise<void>>();
 
 const buildEnv = (extra?: Record<string, string>): Record<string, string> => {
   const base: Record<string, string> = {};
@@ -190,25 +240,64 @@ const doConnectAll = async (): Promise<void> => {
   }
 };
 
+// 프로젝트 <cwd>/.mcp.json server 들을 지연 연결(그 프로젝트 첫 사용 턴). 격리 스킵.
+const doConnectProject = async (projectPath: string): Promise<void> => {
+  const servers = await readMcpFile(projectMcpPath(projectPath));
+  const map = new Map<string, CachedExt>();
+  for (const [name, config] of Object.entries(servers)) {
+    try {
+      map.set(name, await connectOne(name, config));
+      console.log(
+        `external-mcp: [project ${projectPath}] '${name}' 연결됨 (${describeExternalMcpConfig(name, config)}).`,
+      );
+    } catch (e) {
+      console.error(
+        `external-mcp: [project ${projectPath}] '${name}' 연결 실패 — skip (${e instanceof Error ? e.message : String(e)}).`,
+      );
+    }
+  }
+  projectCache.set(projectPath, map);
+};
+
 /**
  * codex/openai 어댑터가 호출 — 연결된 외부 MCP 브리지 목록(persistent, 캐시). 최초 1회
  * 연결하고 재사용. 동시 최초호출은 connectPromise 로 단일화(중복 spawn 0).
+ * cwd 가 프로젝트면 그 프로젝트 <cwd>/.mcp.json 브리지를 지연연결해 전역에 더한다(프로젝트
+ * 우선 — 같은 이름이면 전역 대신 프로젝트). 마스터/비프로젝트 턴(cwd 미지정) = 전역만.
  */
-export const getConnectedExternalMcpBridges = async (): Promise<MCPServer[]> => {
+export const getConnectedExternalMcpBridges = async (
+  cwd?: string,
+): Promise<MCPServer[]> => {
   if (connectPromise === null) connectPromise = doConnectAll();
   await connectPromise;
-  return [...cache.values()].map((c) => c.server);
+  const globalBridges = [...cache.values()].map((c) => c.server);
+  if (!isProjectMcpCwd(cwd)) return globalBridges;
+  const key = path.resolve(cwd);
+  if (!projectConnect.has(key)) projectConnect.set(key, doConnectProject(key));
+  await projectConnect.get(key);
+  const pm = projectCache.get(key);
+  if (pm === undefined || pm.size === 0) return globalBridges;
+  const names = new Set(pm.keys());
+  return globalBridges
+    .filter((s) => !names.has(s.name)) // 프로젝트가 같은 이름을 덮어씀.
+    .concat([...pm.values()].map((c) => c.server));
 };
 
-/** 데몬 shutdown 시 외부 MCP 프로세스 실제 종료(orphan 0). */
+/** 데몬 shutdown 시 외부 MCP 프로세스 실제 종료(orphan 0). 전역 + 프로젝트 캐시 모두. */
 export const closeAllExternalMcp = async (): Promise<void> => {
-  for (const c of cache.values()) {
-    try {
-      await c.realClose();
-    } catch {
-      /* 이미 죽었을 수 있음 */
+  const closeMap = async (m: Map<string, CachedExt>): Promise<void> => {
+    for (const c of m.values()) {
+      try {
+        await c.realClose();
+      } catch {
+        /* 이미 죽었을 수 있음 */
+      }
     }
-  }
-  cache.clear();
+    m.clear();
+  };
+  await closeMap(cache);
+  for (const pm of projectCache.values()) await closeMap(pm);
+  projectCache.clear();
+  projectConnect.clear();
   connectPromise = null;
 };

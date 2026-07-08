@@ -82,7 +82,7 @@ import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
-import { readExternalMcpServers } from "../../external-mcp.js";
+import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
@@ -495,9 +495,12 @@ export const runClaude = async (
   // options.mcpServers 유니온에 *그대로* 주입 → SDK 가 네이티브로 spawn+연결·도구 노출.
   // depth0 메인 턴만(서브/워커는 외부 MCP 재연결 안 함). lean(toolsNone)은 생략. 읽기
   // 실패=빈 맵(external-mcp never-throw) → 데몬 생존(#3). codex/openai 는 Phase 2 브리지.
+  // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(그 프로젝트 <cwd>/.mcp.json — readExternalMcpServers
+  // 가 전역+프로젝트 병합). 비프로젝트 서브/워커는 기존대로 생략(재spawn 회피). lean 생략.
   const externalMcpServers =
-    !toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0
-      ? ((await readExternalMcpServers()) as Options["mcpServers"])
+    !toolsNone &&
+    ((depth === 0 && (input.workerDepth ?? 0) === 0) || isProjectMcpCwd(input.cwd))
+      ? ((await readExternalMcpServers(input.cwd)) as Options["mcpServers"])
       : {};
 
   // 유휴 타임아웃 — SDK `Options.abortController` 경로 (runtimeTypes.d.ts:234,

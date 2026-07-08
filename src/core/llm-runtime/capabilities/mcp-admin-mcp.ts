@@ -9,6 +9,7 @@
  * 명시하고, 비서는 SYSTEM.md(파괴적=명시승인) 대로 add 전 사용자 확인해야 한다(soft-gate,
  * 하드 훅 아님). 3어댑터 동일 등록(#2) — depth0 게이트는 어댑터가.
  */
+import path from "node:path";
 import { z } from "zod";
 import {
   createSdkMcpServer,
@@ -36,13 +37,14 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
     tools: [
       tool(
         "add_mcp_server",
-        "외부 MCP 서버를 등록합니다(<home>/mcp.json 에 저장). stdio 는 command(+args,env), sse 는 url. **등록 후 재시작해야 실제로 연결됩니다.** ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
+        "외부 MCP 서버를 등록합니다. path 미지정=전역(<home>/mcp.json, 어디서나) / path 지정=그 프로젝트 폴더 전용(<path>/.mcp.json, 그 프로젝트에 위임할 때만 도구 노출). stdio 는 command(+args,env), sse 는 url. **등록 후 재시작해야 실제로 연결됩니다.** ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
         {
           name: z.string().min(1),
           command: z.string().optional(),
           args: z.array(z.string()).optional(),
           env: z.record(z.string(), z.string()).optional(),
           url: z.string().optional(),
+          path: z.string().optional(),
         },
         async (args) => {
           let config: ExternalMcpConfig;
@@ -59,10 +61,15 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
               "command(stdio) 또는 url(sse) 중 하나는 필요합니다.",
             );
           }
+          const projectPath =
+            args.path !== undefined && args.path.trim() !== ""
+              ? path.resolve(args.path.trim())
+              : undefined;
           try {
-            await upsertExternalMcpServer(args.name, config);
+            await upsertExternalMcpServer(args.name, config, projectPath);
             return okText(
-              `외부 MCP 서버 '${args.name}' 등록됨 (${describeExternalMcpConfig(args.name, config)}). ` +
+              `외부 MCP 서버 '${args.name}' 등록됨 (${describeExternalMcpConfig(args.name, config)}) — ` +
+                `${projectPath ? `프로젝트 전용 (${projectPath}/.mcp.json)` : "전역 (<home>/mcp.json)"}. ` +
                 `★재시작해야 연결됩니다 — 사용자에게 재시작할지 물어보세요.`,
             );
           } catch (e) {
@@ -72,11 +79,15 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
       ),
       tool(
         "list_mcp_servers",
-        "등록된 외부 MCP 서버 목록을 반환합니다(<home>/mcp.json). 실제 연결 여부는 재시작 후 로그로 확인.",
-        {},
-        async () => {
+        "등록된 외부 MCP 서버 목록을 반환합니다. path 미지정=전역(<home>/mcp.json)만 / path 지정=전역+그 프로젝트(<path>/.mcp.json) 병합. 실제 연결 여부는 재시작 후 로그로 확인.",
+        { path: z.string().optional() },
+        async (args) => {
           try {
-            const servers = await readExternalMcpServers();
+            const cwd =
+              args.path !== undefined && args.path.trim() !== ""
+                ? path.resolve(args.path.trim())
+                : undefined;
+            const servers = await readExternalMcpServers(cwd);
             const names = Object.keys(servers);
             if (names.length === 0) {
               return okText("등록된 외부 MCP 서버가 없습니다.");
@@ -85,7 +96,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
               (n) => `- ${describeExternalMcpConfig(n, servers[n]!)}`,
             );
             return okText(
-              `등록된 외부 MCP 서버 ${names.length}개:\n${lines.join("\n")}`,
+              `등록된 외부 MCP 서버 ${names.length}개${cwd ? ` (전역+프로젝트 ${cwd})` : " (전역)"}:\n${lines.join("\n")}`,
             );
           } catch (e) {
             return errText(e instanceof Error ? e.message : String(e));
@@ -94,11 +105,15 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
       ),
       tool(
         "remove_mcp_server",
-        "등록된 외부 MCP 서버를 제거합니다(<home>/mcp.json 에서 삭제). 재시작하면 연결이 끊깁니다.",
-        { name: z.string().min(1) },
+        "등록된 외부 MCP 서버를 제거합니다. path 미지정=전역(<home>/mcp.json) / path 지정=그 프로젝트(<path>/.mcp.json)에서 삭제. 재시작하면 연결이 끊깁니다.",
+        { name: z.string().min(1), path: z.string().optional() },
         async (args) => {
           try {
-            const had = await removeExternalMcpServer(args.name);
+            const projectPath =
+              args.path !== undefined && args.path.trim() !== ""
+                ? path.resolve(args.path.trim())
+                : undefined;
+            const had = await removeExternalMcpServer(args.name, projectPath);
             return okText(
               had
                 ? `외부 MCP 서버 '${args.name}' 제거됨. 재시작하면 연결이 끊깁니다.`

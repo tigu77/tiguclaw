@@ -59,7 +59,7 @@ import {
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
-import { getConnectedExternalMcpBridges } from "../../external-mcp.js";
+import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
@@ -246,8 +246,12 @@ export const runOpenAi = async (
   // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 의 서버를 @mcp/sdk 클라이언트로 연결한
   // persistent 브리지를 도구로 노출(claude 네이티브와 parity). depth0 메인 턴만. 이 브리지는
   // close()=no-op 이라 아래 finally 의 일괄 close 가 외부 연결을 끊지 않는다(캐시 재사용).
-  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
-    for (const bridge of await getConnectedExternalMcpBridges()) {
+  // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
+  if (
+    !toolsNone &&
+    ((depth === 0 && (input.workerDepth ?? 0) === 0) || isProjectMcpCwd(input.cwd))
+  ) {
+    for (const bridge of await getConnectedExternalMcpBridges(input.cwd)) {
       mcpServers.push(bridge);
     }
   }

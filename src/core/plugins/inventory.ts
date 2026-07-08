@@ -335,38 +335,52 @@ const collectAgents = async (cwd: string): Promise<PluginEntry[]> => {
   }));
 };
 
-// ─── (e) MCP — 두 source ─────────────────────────────────────────────────
+// ─── (e) MCP — 세 source ─────────────────────────────────────────────────
 
 const collectMcp = async (repoRoot: string): Promise<PluginEntry[]> => {
   const out: PluginEntry[] = [];
 
-  // (i) <repoRoot>/.mcp.json
-  try {
-    const mcpJson = safeReadJson(path.join(repoRoot, ".mcp.json")) as
-      | { mcpServers?: Record<string, Record<string, unknown>> }
-      | undefined;
-    const servers = mcpJson?.mcpServers;
-    if (servers && typeof servers === "object") {
-      for (const [name, cfg] of Object.entries(servers)) {
-        try {
-          out.push({
-            category: "mcp",
-            layer: "discovered", // .mcp.json 외부 server — 우리가 spawn 할 뿐 소유 X
-            name,
-            source: path.join(repoRoot, ".mcp.json"),
-            enabled: true,
-            metadata: { ...cfg, inProcess: false },
-          });
-        } catch {
-          // 한 server 실패 무시.
+  // <repoRoot>/.mcp.json 과 <home>/mcp.json 은 동일 shape(mcpServers 맵) — 한 헬퍼로 처리.
+  const collectFromMcpFile = (file: string): void => {
+    try {
+      const mcpJson = safeReadJson(file) as
+        | { mcpServers?: Record<string, Record<string, unknown>> }
+        | undefined;
+      const servers = mcpJson?.mcpServers;
+      if (servers && typeof servers === "object") {
+        for (const [name, cfg] of Object.entries(servers)) {
+          try {
+            out.push({
+              category: "mcp",
+              layer: "discovered", // 외부 server — 우리가 spawn/연결만, 소유 X
+              name,
+              source: file,
+              enabled: true,
+              metadata: { ...cfg, inProcess: false, external: true },
+            });
+          } catch {
+            // 한 server 실패 무시.
+          }
         }
       }
+    } catch {
+      // 파일 부재/손상 무시.
     }
+  };
+
+  // (i) <repoRoot>/.mcp.json — Claude Code 호환 정적 config.
+  collectFromMcpFile(path.join(repoRoot, ".mcp.json"));
+
+  // (ii) <home>/mcp.json — 비서가 add_mcp_server 로 등록한 외부 MCP 서버(런타임 동적 연결).
+  // external-mcp.ts 가 쓰는 파일과 동일 경로·shape(getPaths().home). 부팅이 연결하므로
+  // 인벤토리에 노출해야 한다(예: mcp-unity). 이게 빠져 연결된 외부 MCP 가 목록에 안 뜨던 버그.
+  try {
+    collectFromMcpFile(path.join(getPaths().home, "mcp.json"));
   } catch {
-    // .mcp.json 부재/손상 무시.
+    // getPaths 실패 등 — 무시(다른 source 는 계속).
   }
 
-  // (ii) in-process MCP — contract §결정 5 에 따라 hardcode (memory.ts import X,
+  // (iii) in-process MCP — contract §결정 5 에 따라 hardcode (memory.ts import X,
   // 단방향 보장: memory.ts 가 inventory.ts 를 import). server name "memory" 와
   // V3 4 도구 + 본 라운드 신규 1 도구 = 5 도구.
   try {

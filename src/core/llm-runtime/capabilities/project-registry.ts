@@ -19,6 +19,10 @@ import {
 import { parseFrontmatter, discoverSkills } from "./skill-registry.js";
 import { discoverAgents } from "./agent-registry.js";
 import {
+  readProjectMcpServers,
+  describeExternalMcpConfig,
+} from "../../external-mcp.js";
+import {
   upsertProject,
   listProjects,
   forgetProject,
@@ -236,8 +240,18 @@ export const createProjectRegistryMcpServer =
                 : skills
                     .map((s) => `  - ${s.name} — ${s.description}`)
                     .join("\n");
+            // 전용 MCP — <abs>/.mcp.json (프로젝트 스코프). 이 프로젝트로 위임(spawn_agent
+            // path=…)하면 그 도구가 그 서브에 노출된다. 전역 MCP 는 어디서나이므로 여기 제외.
+            const projectMcp = await readProjectMcpServers(abs); // never-throw(내부 catch).
+            const mcpNames = Object.keys(projectMcp);
+            const mcpLines =
+              mcpNames.length === 0
+                ? "  (전용 MCP 없음)"
+                : mcpNames
+                    .map((n) => `  - ${describeExternalMcpConfig(n, projectMcp[n]!)}`)
+                    .join("\n");
             return okText(
-              `${metaLine}경로: ${abs}\n\n전용 에이전트 (${agents.length}):\n${agentLines}\n\n전용 스킬 (${skills.length}):\n${skillLines}`,
+              `${metaLine}경로: ${abs}\n\n전용 에이전트 (${agents.length}):\n${agentLines}\n\n전용 스킬 (${skills.length}):\n${skillLines}\n\n전용 MCP (${mcpNames.length}):\n${mcpLines}`,
             );
           },
         ),

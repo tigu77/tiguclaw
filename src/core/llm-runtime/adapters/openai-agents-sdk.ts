@@ -384,6 +384,10 @@ export const runOpenAi = async (
   const bus = getEventBus();
   let activitySeq = 0;
 
+  // 도구 실행시간(#3) — callId → {그 도구의 activity seq, 시작 벽시계, 라벨}. tool_called
+  // 에서 기록, tool_output(function_call_result) 도착 시 phase:"end"+durationMs 로 발행.
+  const toolTiming = new Map<string, { seq: number; t0: number; label: string }>();
+
   // 유휴 타임아웃 (G1 — 비스트림→스트림 전환). 현재 비스트림 run() 은 heartbeat 원천이
   // 0 이라 유휴 감지 불가 = 층1 parity 깨짐. SDK 동일 `run` 의 stream 오버로드로 전환
   // (재구현 0). 각 스트림 이벤트 = heartbeat → idle 타이머 reset. abort 시 signal 전파.
@@ -448,9 +452,20 @@ export const runOpenAi = async (
           // 와 *동일* 빌더로 중립 detail(축3 사이드바). MCP 브리지 도구도 SDK 가
           // function_call 로 노출 → 동일 경로. 방어적 narrowing(union 변동에도 불괴).
           const raw = (ev as { item?: { rawItem?: unknown } }).item?.rawItem as
-            | { type?: unknown; name?: unknown; arguments?: unknown }
+            | { type?: unknown; name?: unknown; arguments?: unknown; callId?: unknown; call_id?: unknown }
             | undefined;
           if (raw?.type === "function_call" && typeof raw.name === "string") {
+            const seq = activitySeq++;
+            // 실행시간(#3) — callId 로 시작 기록 → tool_output 에서 durationMs.
+            const callId =
+              typeof raw.callId === "string"
+                ? raw.callId
+                : typeof raw.call_id === "string"
+                  ? raw.call_id
+                  : undefined;
+            if (callId !== undefined) {
+              toolTiming.set(callId, { seq, t0: Date.now(), label: raw.name || "tool" });
+            }
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),
@@ -459,13 +474,47 @@ export const runOpenAi = async (
                 threadKey: input.threadKey,
                 adapter: "openai",
                 model,
-                seq: activitySeq++,
+                seq,
                 kind: "tool",
                 label: raw.name || "tool",
                 detail:
                   typeof raw.arguments === "string"
                     ? buildActivityDetailFromJson(raw.arguments)
                     : undefined,
+              } satisfies RegionAActivityPayload,
+            });
+          }
+        } else if (
+          ev.type === "run_item_stream_event" &&
+          (ev as { name?: unknown }).name === "tool_output"
+        ) {
+          // 실행시간(#3) — 도구 완료(function_call_result). 같은 callId 의 시작 기록을 찾아
+          // phase:"end"+durationMs 발행(같은 seq → 대시보드가 시작 스텝에 주석). best-effort.
+          const raw = (ev as { item?: { rawItem?: unknown } }).item?.rawItem as
+            | { callId?: unknown; call_id?: unknown }
+            | undefined;
+          const callId =
+            typeof raw?.callId === "string"
+              ? raw.callId
+              : typeof raw?.call_id === "string"
+                ? raw.call_id
+                : undefined;
+          const timing = callId !== undefined ? toolTiming.get(callId) : undefined;
+          if (callId !== undefined && timing !== undefined) {
+            toolTiming.delete(callId);
+            bus.publish({
+              type: "llm.activity",
+              ts: Date.now(),
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                adapter: "openai",
+                model,
+                seq: timing.seq,
+                kind: "tool",
+                label: timing.label,
+                phase: "end",
+                durationMs: Date.now() - timing.t0,
               } satisfies RegionAActivityPayload,
             });
           }

@@ -253,6 +253,20 @@ export interface RegionAActivityPayload {
    * 길면 어댑터에서 적당히 컷(현재 ~160자 상한).
    */
   detail?: string;
+  /**
+   * 도구 실행 단계 (2026-07-08, additive·하위호환). 미지정 = "start"(도구 시작, 기존 동작).
+   *  - "start": 도구 호출 시작 — 대시보드가 새 스텝 렌더(기존과 동일).
+   *  - "end"  : 같은 도구 완료 — 같은 좌표+같은 `seq` 로 1건 더 발행. 대시보드는
+   *    (threadKey, adapter, seq)로 이미 렌더된 스텝을 찾아 `durationMs` 를 주석한다
+   *    (새 스텝 만들지 않음). 못 찾으면 무시(best-effort).
+   */
+  phase?: "start" | "end";
+  /**
+   * 도구 실행 벽시계(ms). `phase:"end"` 에만 실린다 — 도구 시작→완료 구간 실측.
+   * ★LLM-agnostic(#2): 측정 기전은 어댑터 로컬(codex=callTool race 구간,
+   * claude/openai=tool_use→tool_result 구간)이나 필드 의미·단위는 셋 다 동일.
+   */
+  durationMs?: number;
 }
 
 /**

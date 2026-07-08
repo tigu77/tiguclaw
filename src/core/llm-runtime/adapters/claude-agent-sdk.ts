@@ -622,6 +622,10 @@ export const runClaude = async (
   // llm.activity — 어댑터 로컬 단조 시퀀스 (turn 시작 0, publish 마다 +1). nonce 아님.
   let activitySeq = 0;
 
+  // 도구 실행시간(#3) — top-level tool_use id → {그 도구의 activity seq, 시작 벽시계, 라벨}.
+  // tool_result 도착 시 이 맵에서 찾아 phase:"end"+durationMs 로 1건 더 발행(대시보드 seq 매칭).
+  const toolTiming = new Map<string, { seq: number; t0: number; label: string }>();
+
   const bus = getEventBus();
 
   // ─── 서브에이전트(Task) 관측 상태 (per-turn, 클로저 지역 = 동시 turn 격리) ────────
@@ -843,6 +847,11 @@ export const runClaude = async (
               // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
               // detail — tool_use 블록의 input 객체에서 중립 인자 요약(축3 사이드바).
               // Task 도구 자체도 부모 좌표 activity 로 남긴다(부모가 '서브를 띄웠다' 스텝).
+              const toolSeq = activitySeq++;
+              // 실행시간(#3) — tool_use id 로 시작 시각 기록 → tool_result 에서 durationMs.
+              if (typeof toolUseId === "string") {
+                toolTiming.set(toolUseId, { seq: toolSeq, t0: Date.now(), label: toolName });
+              }
               bus.publish({
                 type: "llm.activity",
                 ts: Date.now(),
@@ -851,7 +860,7 @@ export const runClaude = async (
                   threadKey: input.threadKey,
                   adapter: "claude",
                   model: lastModel ?? undefined,
-                  seq: activitySeq++,
+                  seq: toolSeq,
                   kind: "tool",
                   label: toolName,
                   detail,
@@ -866,9 +875,33 @@ export const runClaude = async (
       // 메시지(parent_tool_use_id===null). content 의 tool_result 블록 중 tool_use_id 가
       // 추적 중인 Task id 면 그 서브 완료 → markDone(agent 잡 종료 = 대시보드 카드 완료).
       // best-effort — extractToolResults·completeTaskJob 은 throw 없음(순수/try 내장).
-      if (taskJobs.size > 0) {
+      if (taskJobs.size > 0 || toolTiming.size > 0) {
         for (const { toolUseId, text, isError } of extractToolResults(msg)) {
-          completeTaskJob(toolUseId, text, isError);
+          if (taskJobs.size > 0) completeTaskJob(toolUseId, text, isError);
+          // 실행시간(#3) — 이 tool_result 에 대응하는 top-level 도구가 있으면 phase:"end"
+          // +durationMs 로 발행(같은 seq → 대시보드가 시작 스텝에 실행시간 주석). best-effort.
+          const timing = toolTiming.get(toolUseId);
+          if (timing !== undefined) {
+            toolTiming.delete(toolUseId);
+            try {
+              bus.publish({
+                type: "llm.activity",
+                ts: Date.now(),
+                payload: {
+                  channel: input.channel,
+                  threadKey: input.threadKey,
+                  adapter: "claude",
+                  seq: timing.seq,
+                  kind: "tool",
+                  label: timing.label,
+                  phase: "end",
+                  durationMs: Date.now() - timing.t0,
+                } satisfies RegionAActivityPayload,
+              });
+            } catch {
+              /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
+            }
+          }
         }
       }
     }
@@ -891,6 +924,7 @@ export const runClaude = async (
       lastUsage = undefined;
       succeeded = false;
       activitySeq = 0;
+      toolTiming.clear(); // 실행시간(#3) 매핑도 리셋 — fresh 세션엔 이전 tool_use id 안 옴.
       // 서브에이전트 관측 리셋 — 첫 시도서 등록된 Task 잡을 닫고(고아 running 방지) 매핑
       // 초기화. fresh 세션엔 그 Task id 가 안 오므로 tool_result 로 닫힐 길 없음 → 여기서
       // markFailed 로 명시 종료(best-effort). taskJobs.clear() 로 재실행 매핑 청결.

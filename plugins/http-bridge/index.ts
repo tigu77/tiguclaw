@@ -16,11 +16,16 @@
  */
 import http from "node:http";
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type {
+  Attachment,
+  AttachmentKind,
   Channel,
   IncomingMessage,
   MessageHandler,
 } from "../../src/channels/types.js";
+import { getPaths } from "../../src/core/paths.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { collectInventory } from "../../src/core/plugins/inventory.js";
@@ -55,6 +60,86 @@ const HANDLER_TIMEOUT_MS = 60_000;
 // - llm.sdk_message: claude firehose. 같은 고volume·감사가치 낮음(영속 SKIP 과 동렬).
 // core/event-persist.ts 의 SKIP_TYPES 와 의미는 비슷하나 모듈 경계가 달라 로컬 set(과결합 회피).
 const HISTORY_EXCLUDE = new Set<string>(["llm.delta", "llm.sdk_message"]);
+
+// ── 첨부 intake (#2, 2026-07-08) — 대시보드 채팅이 붙여넣은 파일을 홈에 저장 → Attachment[]. ──
+// 텔레그램 첨부 경로와 동형(진실 소스 = Attachment 계약, <home>/data/attachments/<channel>/
+// <yyyymmdd>/<id>.<ext>). base64 인바운드는 로컬(127.0.0.1)+토큰 게이트 한정 = 외부 노출 아님.
+// 크기/개수 캡은 boundary 검증(메모리·디스크 보호). 캡 위반·저장 실패는 400 으로 닫고 데몬 생존.
+const ATTACH_MAX_COUNT = 10;
+const ATTACH_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB/파일
+const ATTACH_MAX_TOTAL_BYTES = 25 * 1024 * 1024; // 25MB/요청
+class AttachmentError extends Error {}
+const attachmentKindOf = (mime: string): AttachmentKind =>
+  mime.startsWith("image/")
+    ? "image"
+    : mime.startsWith("audio/")
+      ? "audio"
+      : mime.startsWith("video/")
+        ? "video"
+        : "document";
+const EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp",
+  "image/svg+xml": "svg", "application/pdf": "pdf", "text/plain": "txt",
+  "text/markdown": "md", "application/json": "json", "text/csv": "csv",
+};
+const sanitizeFilename = (n: string): string =>
+  n.replace(/[/\\]/g, "_").replace(/[^\w.\- ]/g, "").trim().slice(-120) || "file";
+const extForAttachment = (filename: string, mime: string): string => {
+  const e = path.extname(filename).replace(/^\./, "").toLowerCase();
+  if (e.length > 0 && e.length <= 8) return e;
+  return EXT_BY_MIME[mime] ?? "bin";
+};
+const yyyymmddUtc = (): string =>
+  new Date().toISOString().slice(0, 10).replace(/-/g, "");
+// body.attachments([{filename?, mimeType?, dataBase64}]) → Attachment[] (홈 저장). 캡 위반 throw.
+const ingestAttachments = async (
+  raw: unknown,
+  channel: string,
+): Promise<Attachment[]> => {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  if (raw.length > ATTACH_MAX_COUNT) {
+    throw new AttachmentError(`첨부는 최대 ${ATTACH_MAX_COUNT}개까지 가능합니다.`);
+  }
+  const dir = path.join(getPaths().attachmentsDir, channel, yyyymmddUtc());
+  const out: Attachment[] = [];
+  let total = 0;
+  for (const a of raw) {
+    const item = a as { filename?: unknown; mimeType?: unknown; dataBase64?: unknown };
+    if (typeof item.dataBase64 !== "string" || item.dataBase64 === "") continue;
+    const filename = sanitizeFilename(
+      typeof item.filename === "string" ? item.filename : "file",
+    );
+    const mimeType =
+      typeof item.mimeType === "string" && item.mimeType !== ""
+        ? item.mimeType
+        : "application/octet-stream";
+    const buf = Buffer.from(item.dataBase64, "base64");
+    if (buf.length === 0) continue;
+    if (buf.length > ATTACH_MAX_FILE_BYTES) {
+      throw new AttachmentError(
+        `'${filename}' 이(가) 파일당 한도(${ATTACH_MAX_FILE_BYTES / 1024 / 1024}MB)를 초과합니다.`,
+      );
+    }
+    total += buf.length;
+    if (total > ATTACH_MAX_TOTAL_BYTES) {
+      throw new AttachmentError(
+        `첨부 총합이 한도(${ATTACH_MAX_TOTAL_BYTES / 1024 / 1024}MB)를 초과합니다.`,
+      );
+    }
+    await fs.mkdir(dir, { recursive: true });
+    const id = crypto.randomBytes(8).toString("hex");
+    const abs = path.join(dir, `${id}.${extForAttachment(filename, mimeType)}`);
+    await fs.writeFile(abs, buf);
+    out.push({
+      kind: attachmentKindOf(mimeType),
+      mimeType,
+      path: abs,
+      filename,
+      bytes: buf.length,
+    });
+  }
+  return out;
+};
 
 const readJsonBody = async (
   req: http.IncomingMessage,
@@ -506,8 +591,22 @@ class HttpBridge implements Channel, Observer {
       }
       const text =
         typeof body.text === "string" ? body.text.trim() : "";
-      if (text === "") {
-        writeJson(res, 400, { error: "text required" });
+      // 첨부(#2) — 붙여넣은 파일을 홈에 저장해 Attachment[] 구성. 캡 위반·저장 실패 = 400.
+      let attachments: Attachment[] = [];
+      try {
+        attachments = await ingestAttachments(body.attachments, this.name);
+      } catch (e) {
+        writeJson(res, 400, {
+          error:
+            e instanceof AttachmentError
+              ? e.message
+              : `attachment 처리 실패: ${e instanceof Error ? e.message : String(e)}`,
+        });
+        return;
+      }
+      // 파일만 보내는 경우(캡션 없는 첨부)도 허용 — text 또는 attachments 중 하나면 진행.
+      if (text === "" && attachments.length === 0) {
+        writeJson(res, 400, { error: "text 또는 attachments 가 필요합니다." });
         return;
       }
       const threadKey =
@@ -560,6 +659,7 @@ class HttpBridge implements Channel, Observer {
         threadKey,
         text,
         receivedAt: Date.now(),
+        ...(attachments.length > 0 ? { attachments } : {}),
         reply: async (out: string): Promise<void> => {
           replyText = out;
         },

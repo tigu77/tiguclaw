@@ -2044,7 +2044,12 @@ export const runOpenAiCodex = async (
       // llm.activity — 모델이 호출하려는 도구당 1 activity (실행 성공/실패 무관,
       // 의도 시점이 곧 "무엇을 하려는 중"). callTool 실행 루프와 별개. final-flush(tools:[])
       // turn 은 toolCalls 가 비어 자연히 0 publish.
+      // 실행시간(#3) — callId → 그 도구의 activity seq. 아래 callTool 병렬 실행이 완료 시
+      // phase:"end"+durationMs 를 같은 seq 로 발행(대시보드가 시작 스텝에 실행시간 주석).
+      const callIdToSeq = new Map<string, number>();
       for (const tc of toolCalls) {
+        const seq = activitySeq++;
+        if (tc.callId) callIdToSeq.set(tc.callId, seq);
         // detail — function_call arguments(partialJson) 에서 중립 인자 요약(축3 사이드바).
         bus.publish({
           type: "llm.activity",
@@ -2054,7 +2059,7 @@ export const runOpenAiCodex = async (
             threadKey: input.threadKey,
             adapter: "codex",
             model,
-            seq: activitySeq++,
+            seq,
             kind: "tool",
             label: tc.name || "tool",
             detail: buildActivityDetailFromJson(tc.partialJson),
@@ -2232,6 +2237,7 @@ export const runOpenAiCodex = async (
         toolCalls.map(
           async (tc): Promise<{ callId: string; output: string }> => {
             let output: string;
+            const toolT0 = Date.now(); // 실행시간(#3) — callTool 벽시계 시작.
             try {
               const args =
                 tc.partialJson === ""
@@ -2315,6 +2321,30 @@ export const runOpenAiCodex = async (
               if (output === "") output = JSON.stringify(result ?? {});
             } catch (e) {
               output = `Error: ${e instanceof Error ? e.message : String(e)}`;
+            }
+            // 실행시간(#3) — 성공/실패/타임아웃 무관 도구 실행 벽시계를 phase:"end" 로 발행.
+            // 같은 seq → 대시보드가 시작 스텝에 실행시간 주석. best-effort(원칙 3).
+            const endSeq = tc.callId ? callIdToSeq.get(tc.callId) : undefined;
+            if (endSeq !== undefined) {
+              try {
+                bus.publish({
+                  type: "llm.activity",
+                  ts: Date.now(),
+                  payload: {
+                    channel: input.channel,
+                    threadKey: input.threadKey,
+                    adapter: "codex",
+                    model,
+                    seq: endSeq,
+                    kind: "tool",
+                    label: tc.name || "tool",
+                    phase: "end",
+                    durationMs: Date.now() - toolT0,
+                  } satisfies RegionAActivityPayload,
+                });
+              } catch {
+                /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
+              }
             }
             return { callId: tc.callId, output };
           },

@@ -343,6 +343,10 @@
       .act-claude { background:rgba(52,211,153,.14); color:var(--good); } .act-codex { background:rgba(192,132,252,.16); color:var(--purple); } .act-openai { background:rgba(45,212,191,.14); color:var(--teal); } .act-other { background:var(--card); color:var(--text-mute); }
       .act-icon { font-size:13px; } .act-label { color:var(--text); font-weight:700; flex:none; } .act-meta { color:var(--text-dim); font-size:10px; margin-left:auto; white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; }
       .act-detail { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 도구 실행시간(#3) — phase:"end" 활동이 시작 스텝에 붙이는 뱃지. 임계 초과면 warn 틴트. */
+      .dur-badge { color:var(--accent-2); font-size:10px; font-weight:800; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; margin-left:6px; }
+      .dur-badge.slow { color:var(--warn); }
+      .bg-step .dur-badge { margin-left:auto; }
       .turn-card { padding:0; overflow:hidden; }
       .turn-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
       .turn-head:hover { background:rgba(255,255,255,.04); }
@@ -562,13 +566,30 @@
       .bg-job-summary { font-size:11px; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
       .bg-job.open .bg-job-summary { display:none !important; }
       #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
-      #chat-form { display:flex; gap:8px; }
-      #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; }
+      #chat-form { display:flex; gap:8px; align-items:flex-end; }
+      #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; font-family:inherit; line-height:1.45; resize:none; max-height:148px; overflow-y:auto; }
+      #chat-attach-btn { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:0 11px; font-size:15px; cursor:pointer; flex:none; align-self:stretch; }
+      #chat-attach-btn:hover { border-color:rgba(125,211,252,.55); }
+      /* 첨부 썸네일(#2) — 클로드코드식 작은 정사각 미리보기 + 모서리 ✕. 비어 있으면 숨김. */
+      #chat-attach { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; padding-top:4px; }
+      #chat-attach:empty { display:none; }
+      .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); overflow:hidden; flex:none; }
+      .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; overflow:hidden; padding:3px; }
+      .att-thumb { width:100%; height:100%; object-fit:cover; display:block; }
+      .att-fileicon { font-size:11px; font-weight:850; color:var(--accent-2); letter-spacing:.3px; }
+      .att-fname { font-size:8px; line-height:1.1; max-width:48px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-mute); }
+      .att-x { position:absolute; top:-7px; right:-7px; width:17px; height:17px; border-radius:50%; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); color:var(--text); font-size:9px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; z-index:2; }
+      .att-x:hover { color:var(--warn); border-color:var(--warn); }
+      #right.drag-over { outline:2px dashed var(--accent-2); outline-offset:-6px; }
       #chat-send { background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#061018; border:0; border-radius:12px; padding:10px 14px; font-weight:850; cursor:pointer; }
       #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
       #chat-status { color:var(--text-mute); font-size:10px; margin-top:6px; min-height:12px; }
       #chat-status.working { color:var(--accent-2); font-weight:700; animation:chat-working-pulse 1.4s ease-in-out infinite; }
-      @keyframes chat-working-pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
+      @keyframes chat-working-pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
+      /* 진행 중 스피너(회전) + 경과시간. 답변 도착까지 깜빡이며 카운트업. */
+      .chat-spinner { display:inline-block; animation:chat-spin 1.1s linear infinite; }
+      @keyframes chat-spin { to { transform:rotate(360deg); } }
+      .chat-elapsed { font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%) translateY(20px); z-index:50; max-width:90vw; padding:11px 16px; border-radius:13px; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); box-shadow:var(--shadow); color:var(--text); font-size:12px; font-weight:700; opacity:0; pointer-events:none; transition:opacity .18s, transform .18s; }
       #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
       #toast.warn { border-color:rgba(251,191,36,.45); } #toast.bad { border-color:rgba(251,113,133,.5); } #toast.good { border-color:rgba(52,211,153,.45); }
@@ -680,9 +701,12 @@
         </div>
         <div id="stream"><div class="chat-empty" id="chat-empty"><strong>아직 대화가 없습니다</strong>아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.</div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
         <div id="chat">
+          <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
-            <input id="chat-input" type="text" placeholder="대시보드 채팅 — Enter 전송" />
+            <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>
+            <textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea>
             <button id="chat-send" type="submit">전송</button>
+            <input type="file" id="chat-file" multiple hidden />
           </form>
           <div id="chat-status"></div>
         </div>
@@ -2058,6 +2082,54 @@
       };
       const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
       const jobCards = new Map(); // jobId -> { el, labelEl, statusEl, chevEl, stepsEl, errEl, status, stepCount }
+
+      // 도구 실행시간(#3) — phase:"end" 활동이 같은 seq 의 시작 스텝에 durationMs 뱃지를 붙인다.
+      // 잡 카드 스텝(.bg-step, worker:/agent: 좌표)과 메인 스트림 라인(.act-line) 양쪽 커버.
+      const fmtDur = (ms) => {
+        if (ms == null) return "";
+        if (ms < 1000) return Math.round(ms) + "ms";
+        const s = ms / 1000;
+        if (s < 10) return s.toFixed(1) + "s";
+        if (s < 60) return Math.round(s) + "s";
+        const m = Math.floor(s / 60), rs = Math.round(s % 60);
+        return m + "m " + rs + "s";
+      };
+      const applyDurationBadge = (el, ms) => {
+        if (!el) return;
+        let b = el.querySelector(":scope > .dur-badge");
+        if (!b) { b = document.createElement("span"); b.className = "dur-badge"; el.appendChild(b); }
+        b.textContent = fmtDur(ms);
+        if (ms >= 90000) b.classList.add("slow"); // tool-slow 임계 이상 = warn 틴트.
+        b.title = "도구 실행시간 " + fmtDur(ms);
+      };
+      const annotateToolDuration = (ap) => {
+        if (ap.seq == null || ap.durationMs == null) return;
+        const tk = ap.threadKey || "";
+        // 사이드바 상세도 실행시간 보이게 — 저장된 시작 payload 에 durationMs 병합(있으면).
+        const stored = activityByStep.get(stepKey(tk, ap.seq));
+        if (stored) stored.durationMs = ap.durationMs;
+        // (a) 잡 카드 스텝 — worker:/agent: 좌표면 그 카드 stepsEl 에서 seq 로 찾아 주석.
+        if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0) {
+          const jobId = tk.slice(tk.indexOf(":") + 1);
+          const card = jobCards.get(jobId);
+          if (card && card.stepsEl) {
+            applyDurationBadge(card.stepsEl.querySelector('.bg-step[data-seq="' + ap.seq + '"]'), ap.durationMs);
+          }
+          return;
+        }
+        // (b) 메인 스트림 활동 라인 — threadKey+seq 매칭. seq 는 턴마다 리셋(0,1,2…)이라
+        // 스트림에 같은 seq 라인이 누적될 수 있으므로, 아직 실행시간이 안 붙은 가장 최근 라인을
+        // 고른다(방금 끝난 도구 = 그 스텝). 전부 붙었으면 마지막. threadKey 엔 따옴표 없어 안전.
+        const lines = stream.querySelectorAll('.act-line[data-seq="' + ap.seq + '"][data-threadkey="' + tk + '"]');
+        if (lines.length) {
+          let target = null;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            if (!lines[i].querySelector(":scope > .dur-badge")) { target = lines[i]; break; }
+          }
+          applyDurationBadge(target || lines[lines.length - 1], ap.durationMs);
+        }
+      };
+
       const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); };
       const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
       const bgToggleBtn = document.getElementById("bg-toggle");
@@ -2289,6 +2361,7 @@
         entry.seenSteps.add(stepKey);
         const line = document.createElement("div");
         line.className = "bg-step";
+        if (p.seq != null) line.dataset.seq = String(p.seq); // #3 — phase:"end" 가 실행시간 붙일 앵커.
         const icon = document.createElement("span"); icon.className = "bg-step-icon";
         icon.textContent = p.kind === "tool" ? "🔧" : "▶";
         const lab = document.createElement("span"); lab.className = "bg-step-label";
@@ -3012,23 +3085,46 @@
       // 비차단: 전송은 백그라운드(에러는 status/로컬 오류 버블로 표면화). route() 단일 인격
       // 재진입이라 새 세션/스레드 0 — threadKey 는 페이로드 우선, 없으면 대시보드 기본.
       // 채팅 진행 상태 표시 — 켜면 "<이름> 작업 중…"(펄스), 끄면 지움. 답(SSE)·에러 시 해제.
+      // 진행 표시 — 회전 스피너 + 경과시간(1초 틱). 답변이 SSE 로 도착하면 setChatWorking(false)
+      // 로 해제. 스피너 요소는 한 번만 만들고 경과 span 텍스트만 갱신(애니메이션 끊김 방지).
+      let chatWorkingTimer = null;
+      let chatWorkingStart = 0;
       const setChatWorking = (on) => {
         const s = document.getElementById("chat-status");
         if (!s) return;
-        if (on) { s.classList.add("working"); s.textContent = assistantName + " 작업 중…"; }
-        else { s.classList.remove("working"); s.textContent = ""; }
+        if (chatWorkingTimer) { clearInterval(chatWorkingTimer); chatWorkingTimer = null; }
+        if (on) {
+          chatWorkingStart = Date.now();
+          s.classList.add("working");
+          s.innerHTML =
+            '<span class="chat-spinner">✳️</span> ' +
+            '<span class="chat-work-label"></span> ' +
+            '<span class="chat-elapsed"></span>';
+          s.querySelector(".chat-work-label").textContent = assistantName + " 작업 중 ·";
+          const elapsed = s.querySelector(".chat-elapsed");
+          const paint = () => { elapsed.textContent = fmtElapsed(Date.now() - chatWorkingStart); };
+          paint();
+          chatWorkingTimer = setInterval(paint, 1000);
+        } else {
+          s.classList.remove("working");
+          s.textContent = "";
+        }
       };
       // POST /api/messages 공용 전송 — 긴 턴은 응답이 SSE 로 도착하므로, POST 가 오래 기다린 뒤
       // 끊겨도(프록시/HTTP 타임아웃) 빨간 에러 대신 "작업 중…" 유지(가짜 timeout 방지). 답이
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
-      const sendChatMessage = async (text) => {
+      const sendChatMessage = async (text, attachments) => {
         setChatWorking(true);
         const t0 = Date.now();
         try {
           const r = await fetch("/api/messages", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, threadKey: THREAD_KEY }),
+            body: JSON.stringify({
+              text,
+              threadKey: THREAD_KEY,
+              ...(attachments && attachments.length ? { attachments } : {}),
+            }),
           });
           const data = await r.json().catch(() => ({}));
           if (!r.ok) {
@@ -3130,6 +3226,9 @@
         }
         if (ev.type === "llm.activity") {
           const ap = ev.payload || {};
+          // 도구 실행시간(#3) — phase:"end" 는 새 스텝이 아니라 같은 seq 의 시작 스텝에
+          // durationMs 를 주석(잡 카드 스텝 · 메인 스트림 라인 양쪽). 여기서 가로채 렌더로 안 감.
+          if (ap.phase === "end") { annotateToolDuration(ap); return; }
           // 워커 활동(threadKey=worker:<jobId>)은 백그라운드 잡 카드 스텝으로(채팅 누수 차단).
           if (handleWorkerActivity(ap, ts)) return;
           renderActivity(ap, ts);
@@ -3257,15 +3356,106 @@
       const sendBtn = document.getElementById("chat-send");
       const statusEl = document.getElementById("chat-status");
 
+      // textarea 자동 높이 — 내용에 맞춰 grow(최대 CSS max-height 까지 스크롤). 전송 후 리셋.
+      const autoGrowInput = () => {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 148) + "px";
+      };
+      input.addEventListener("input", autoGrowInput);
+
+      // Enter=전송, Shift+Enter=줄바꿈(기본 동작 유지). IME 조합 중(한글 입력)에는 전송 금지 —
+      // isComposing 이면 Enter 가 조합 확정용이라 가로채면 오전송된다.
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          form.requestSubmit();
+        }
+      });
+
+      // ── 파일 첨부(#2) — 붙여넣기/드롭/파일선택 → base64 큐 → 전송 시 함께 POST. ──
+      const ATT_MAX = 10, ATT_MAX_BYTES = 10 * 1024 * 1024;
+      let pendingAttachments = []; // [{filename, mimeType, dataBase64, bytes}]
+      const attachEl = document.getElementById("chat-attach");
+      const fileInput = document.getElementById("chat-file");
+      const attachBtn = document.getElementById("chat-attach-btn");
+      const fmtBytes = (b) =>
+        b < 1024 ? b + "B" : b < 1048576 ? Math.round(b / 1024) + "KB" : (b / 1048576).toFixed(1) + "MB";
+      const renderAttachChips = () => {
+        attachEl.innerHTML = "";
+        pendingAttachments.forEach((a, i) => {
+          const isImg = (a.mimeType || "").startsWith("image/");
+          const chip = document.createElement("div");
+          chip.className = "att-chip" + (isImg ? " att-img" : " att-file");
+          chip.title = a.filename + " · " + fmtBytes(a.bytes);
+          if (isImg) {
+            // 이미지 = 실제 썸네일 미리보기(base64 data URI).
+            const img = document.createElement("img");
+            img.className = "att-thumb";
+            img.src = "data:" + a.mimeType + ";base64," + a.dataBase64;
+            img.alt = a.filename;
+            chip.appendChild(img);
+          } else {
+            // 그 외 = 확장자 라벨 + 파일명 카드.
+            const ic = document.createElement("div"); ic.className = "att-fileicon";
+            ic.textContent = ((a.filename.split(".").pop() || "FILE").slice(0, 4)).toUpperCase();
+            const nm = document.createElement("div"); nm.className = "att-fname"; nm.textContent = a.filename;
+            chip.appendChild(ic); chip.appendChild(nm);
+          }
+          const x = document.createElement("button");
+          x.type = "button"; x.className = "att-x"; x.textContent = "✕"; x.title = "제거";
+          x.addEventListener("click", () => { pendingAttachments.splice(i, 1); renderAttachChips(); });
+          chip.appendChild(x);
+          attachEl.appendChild(chip);
+        });
+      };
+      const readAsBase64 = (file) => new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => { const s = String(r.result); const c = s.indexOf(","); resolve(c >= 0 ? s.slice(c + 1) : s); };
+        r.onerror = () => reject(r.error || new Error("read failed"));
+        r.readAsDataURL(file);
+      });
+      const addFiles = async (files) => {
+        for (const f of files) {
+          if (pendingAttachments.length >= ATT_MAX) { showToast(`첨부는 최대 ${ATT_MAX}개까지`, "warn"); break; }
+          if (f.size > ATT_MAX_BYTES) { showToast(`'${f.name}' 이(가) 10MB 초과 — 제외`, "warn"); continue; }
+          try {
+            const dataBase64 = await readAsBase64(f);
+            pendingAttachments.push({ filename: f.name || "file", mimeType: f.type || "application/octet-stream", dataBase64, bytes: f.size });
+          } catch { showToast(`'${f.name}' 읽기 실패`, "bad"); }
+        }
+        renderAttachChips();
+      };
+      attachBtn.addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", () => { if (fileInput.files && fileInput.files.length) addFiles([...fileInput.files]); fileInput.value = ""; });
+      // 붙여넣기 — 클립보드에 파일(이미지 등)이 있으면 첨부. 텍스트 붙여넣기는 기본 동작 유지.
+      input.addEventListener("paste", (e) => {
+        const files = e.clipboardData && e.clipboardData.files ? [...e.clipboardData.files] : [];
+        if (files.length) { e.preventDefault(); addFiles(files); }
+      });
+      // 드래그&드롭 — 채팅 패널(#right) 어디든. Files 타입일 때만 가로챈다.
+      const dropZone = document.getElementById("right") || document.getElementById("chat");
+      const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+      dropZone.addEventListener("dragover", (e) => { if (hasFiles(e)) { e.preventDefault(); dropZone.classList.add("drag-over"); } });
+      dropZone.addEventListener("dragleave", (e) => { if (e.target === dropZone) dropZone.classList.remove("drag-over"); });
+      dropZone.addEventListener("drop", (e) => {
+        dropZone.classList.remove("drag-over");
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) { e.preventDefault(); addFiles([...e.dataTransfer.files]); }
+      });
+
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         const text = input.value.trim();
-        if (text.length === 0) return;
+        if (text.length === 0 && pendingAttachments.length === 0) return;
+        // 큐 스냅샷 후 즉시 비움(전송 중 사용자가 새 첨부 추가 가능 — 다음 메시지로).
+        const atts = pendingAttachments;
+        pendingAttachments = [];
+        renderAttachChips();
         input.value = "";
+        input.style.height = "auto"; // 전송 후 한 줄 높이로 리셋.
         input.focus();
         // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 워커
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
-        await sendChatMessage(text);
+        await sendChatMessage(text, atts);
       });
     </script>
   </body>

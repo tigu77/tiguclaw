@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.32] - 2026-07-08
+
+### Added
+- **Attach files to the dashboard chat — paste, drag-and-drop, or the 📎 button.** Pasted or dropped files (images, PDFs, text, etc.) are saved and passed to the assistant just like a Telegram attachment, so you can share a screenshot or a file and ask about it right from the dashboard. Attachments show as small square thumbnails above the input — a live preview for images, an extension card for other files — each removable with a corner ✕. Caps: 10MB per file, 25MB per message, 10 files; a file-only message (no text) is allowed.
+- **Per-tool execution time in the activity view.** Each tool step now shows how long that tool actually took (e.g. `1.8s`), measured on the Claude, codex, and OpenAI backends alike, with a warning tint past 90 seconds — so you can see at a glance which step was slow.
+- **Shift+Enter inserts a newline in the dashboard chat.** The input is now a growing multi-line box: Enter sends, Shift+Enter adds a line, and it resizes to fit (Korean/IME composition no longer mis-sends on Enter).
+
+### Changed
+- **The "working" indicator now shows a spinner and a live elapsed timer.** While a turn is in progress the chat shows `✳️ <assistant> 작업 중 · 8m 38s`, counting up until the reply arrives (and clearing when it does) — so a long-running turn reads as clearly working rather than stuck.
+
 ## [0.3.31] - 2026-07-08
 
 ### Added
@@ -267,7 +277,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.31...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.32...HEAD
+[0.3.32]: https://github.com/tigu77/tiguclaw/compare/v0.3.31...v0.3.32
 [0.3.31]: https://github.com/tigu77/tiguclaw/compare/v0.3.30...v0.3.31
 [0.3.30]: https://github.com/tigu77/tiguclaw/compare/v0.3.29...v0.3.30
 [0.3.29]: https://github.com/tigu77/tiguclaw/compare/v0.3.28...v0.3.29

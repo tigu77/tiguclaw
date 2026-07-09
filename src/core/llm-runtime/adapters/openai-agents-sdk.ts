@@ -289,7 +289,8 @@ export const runOpenAi = async (
   // 2c+2d 블록에서 codex 와 동일 함수로 배선 (sysprompt 는 정적 instructions 로 분리).
   const agent = new Agent({
     name: "tiguclaw-spike",
-    instructions: SYSTEM_PROMPT,
+    // 중립 override(게이트웨이) 지정 시 그 값이 instructions — tiguclaw 작동헌법 대체.
+    instructions: input.systemPromptOverride ?? SYSTEM_PROMPT,
     model: modelArg,
     mcpServers,
   });
@@ -336,16 +337,20 @@ export const runOpenAi = async (
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).
   const attachmentBlock = formatAttachments(input.attachments);
 
-  const systemContextParts = buildSystemContextParts({
-    system,
-    agent: agentBody,
-    agentWarn,
-    convoContext,
-    memoryIndex,
-    memorySnippet,
-    skillIndex,
-    agentIndex,
-  });
+  // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix 전부 스킵(페르소나·컨텍스트 누수 0).
+  const systemContextParts =
+    input.systemPromptOverride !== undefined
+      ? []
+      : buildSystemContextParts({
+          system,
+          agent: agentBody,
+          agentWarn,
+          convoContext,
+          memoryIndex,
+          memorySnippet,
+          skillIndex,
+          agentIndex,
+        });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 

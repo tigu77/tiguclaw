@@ -1358,16 +1358,20 @@ export const runOpenAiCodex = async (
   const system = readSystem();
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix,
   //  claude 어댑터와 동일 — parity). 첨부 블록은 사용자 turn 쪽으로 그룹.
-  const systemContextParts = buildSystemContextParts({
-    system,
-    agent,
-    agentWarn,
-    convoContext,
-    memoryIndex,
-    memorySnippet,
-    skillIndex,
-    agentIndex,
-  });
+  // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix 전부 스킵(페르소나·컨텍스트 누수 0).
+  const systemContextParts =
+    input.systemPromptOverride !== undefined
+      ? []
+      : buildSystemContextParts({
+          system,
+          agent,
+          agentWarn,
+          convoContext,
+          memoryIndex,
+          memorySnippet,
+          skillIndex,
+          agentIndex,
+        });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 
@@ -1807,7 +1811,9 @@ export const runOpenAiCodex = async (
       const body: Record<string, unknown> = {
         model,
         // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향).
-        instructions: `${SYSTEM_PROMPT}\n${CODEX_PERSISTENCE_PROMPT}`,
+        // 중립 override(게이트웨이) 지정 시 그 값이 instructions — 헌법·persistence 대체.
+        instructions:
+          input.systemPromptOverride ?? `${SYSTEM_PROMPT}\n${CODEX_PERSISTENCE_PROMPT}`,
         input: inputArray,
         stream: true,
         store: false,

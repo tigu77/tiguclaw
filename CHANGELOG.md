@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.38] - 2026-07-09
+
+### Added
+- **A local OpenAI-compatible LLM gateway — use tiguclaw's multi-LLM backend from your own apps.** Set `LLM_GATEWAY_TOKEN` and the daemon exposes `POST /v1/chat/completions` on the HTTP bridge, backed by tiguclaw's provider pool with fallback. Point any OpenAI-compatible client at `http://127.0.0.1:<bridge-port>/v1` with that token and you get chat completions — streaming (`stream: true`, SSE) or not — from whichever backend you route to. The call is neutral (your `system` message is honored; the assistant's own persona, tools, memory, and transcripts are never mixed in), so it behaves like a plain model API. Route it to a different backend than the assistant (via `LLM_GATEWAY_MODELS`, e.g. a paid API vs. the assistant's subscription) to keep their rate limits separate; there's a concurrency cap (`LLM_GATEWAY_MAX_CONCURRENCY`, default 4). The endpoint is disabled unless the token is set, binds to localhost, and expects your app's server (not a browser) to hold the token.
+
 ## [0.3.37] - 2026-07-09
 
 ### Added
@@ -313,7 +318,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.37...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.38...HEAD
+[0.3.38]: https://github.com/tigu77/tiguclaw/compare/v0.3.37...v0.3.38
 [0.3.37]: https://github.com/tigu77/tiguclaw/compare/v0.3.36...v0.3.37
 [0.3.36]: https://github.com/tigu77/tiguclaw/compare/v0.3.35...v0.3.36
 [0.3.35]: https://github.com/tigu77/tiguclaw/compare/v0.3.34...v0.3.35

@@ -331,6 +331,16 @@ HTTP_BRIDGE_TOKEN=${a.httpBridgeToken}
 # ── 대시보드 ────────────────────────────────────────────────────
 DASHBOARD_PORT=3000
 
+# ── LLM 게이트웨이 (선택) ───────────────────────────────────────
+# 다른 로컬 앱이 tiguclaw 멀티LLM 백엔드를 OpenAI 호환으로 씀: POST /v1/chat/completions
+# (http-bridge 포트). ★토큰 설정 시에만 활성(미설정=비활성). 앱 *서버* 가 이 토큰으로 호출
+# (브라우저에 노출 금지). 앱은 비서(codex 등)와 다른 백엔드로 분리 권장(rate-limit·밴 격리).
+LLM_GATEWAY_TOKEN=
+# 게이트웨이 기본 모델 풀(콤마, provider:model). 미설정 시 REGION_A_MODELS 사용.
+LLM_GATEWAY_MODELS=
+# 동시 처리 상한(앱 폭주가 비서 흔드는 것 방지). 기본 4.
+LLM_GATEWAY_MAX_CONCURRENCY=4
+
 # ── 데몬 ────────────────────────────────────────────────────────
 LOG_LEVEL=info
 NODE_ENV=production

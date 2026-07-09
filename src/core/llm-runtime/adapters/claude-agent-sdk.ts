@@ -523,7 +523,8 @@ export const runClaude = async (
   const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
 
   const options: Options = {
-    systemPrompt: SYSTEM_PROMPT,
+    // 중립 override(게이트웨이) 지정 시 그 값이 시스템 프롬프트 — tiguclaw 작동헌법 대체.
+    systemPrompt: input.systemPromptOverride ?? SYSTEM_PROMPT,
     permissionMode: "bypassPermissions",
     abortController: effectiveAc,
     disallowedTools: [...DISALLOWED_TOOLS],
@@ -592,17 +593,22 @@ export const runClaude = async (
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix).
   //  스캐폴딩 = SYSTEM.md·AGENT.md·hint·대화컨텍스트·foreign delta·메모리·스킬·에이전트.
   //  사용자 turn = 첨부 블록 + 실제 입력 텍스트 (구분선으로 명시 분리 — assembleUserPrompt).
-  const systemContextParts = buildSystemContextParts({
-    system,
-    agent,
-    agentWarn,
-    convoContext,
-    foreignDelta: foreignDeltaBlock, // (C) cross-adapter — foreign(codex) delta (resume 못 보는 turn).
-    memoryIndex,
-    memorySnippet,
-    skillIndex,
-    agentIndex,
-  });
+  // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix(SYSTEM.md·AGENT.md·메모리·스킬…)를
+  // 통째로 스킵 — 앱 호출에 비서 페르소나·컨텍스트 누수 0.
+  const systemContextParts =
+    input.systemPromptOverride !== undefined
+      ? []
+      : buildSystemContextParts({
+          system,
+          agent,
+          agentWarn,
+          convoContext,
+          foreignDelta: foreignDeltaBlock, // (C) cross-adapter — foreign(codex) delta (resume 못 보는 turn).
+          memoryIndex,
+          memorySnippet,
+          skillIndex,
+          agentIndex,
+        });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
 

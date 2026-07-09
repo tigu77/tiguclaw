@@ -132,6 +132,14 @@ export interface RegionASdkInput {
    */
   internal?: boolean;
   /**
+   * 신규(additive, 2026-07-09) — **중립 시스템 프롬프트 override** (LLM 게이트웨이용).
+   * 지정 시(빈 문자열 포함) 어댑터는 tiguclaw 작동헌법(REGION_A_SYSTEM_PROMPT)·AGENT.md
+   * 페르소나·SYSTEM.md·메모리/스킬 인덱스 등 **모든 tiguclaw context prefix 를 넣지 않고**
+   * 이 값만 시스템 프롬프트로 쓴다. 앱이 자기 system 메시지를 그대로 쓰게(비서 페르소나 누수 0).
+   * 미지정 = 현행(SYSTEM_PROMPT + 전체 context, 회귀 0). 3어댑터 동형 처리.
+   */
+  systemPromptOverride?: string;
+  /**
    * 신규(additive, 2026-06-24) — 이 turn 이 발사하는 백그라운드 워커의 완료/실패 *통지
    * 목적지*. generic 좌표(`WorkerNotifyDest` = {channel, target}) — 코어 소유, scheduler 무관.
    *

@@ -49,6 +49,13 @@ import {
   readProjectMcpServers,
   describeExternalMcpConfig,
 } from "../../src/core/external-mcp.js";
+import {
+  runRegionA,
+  parseModelSpec,
+  parseModelSpecList,
+  resolveTier,
+  type ModelSpec,
+} from "../../src/core/llm-runtime/index.js";
 import { listJobs } from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
@@ -173,6 +180,56 @@ const writeJson = (
 ): void => {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
+};
+
+// ── LLM 게이트웨이(ADR 2026-07-09) — OpenAI 호환 /v1/chat/completions. 앱이 tiguclaw 멀티LLM
+// 폴백을 HTTP 로 사용. 전용 토큰(LLM_GATEWAY_TOKEN) 미설정 시 비활성(안전 기본, 404). 얇은 경로:
+// runRegionA(internal=persist·이벤트 스킵 + toolPolicy:none=도구0 + systemPromptOverride=앱 system,
+// 비서 페르소나 누수 0). ──
+const GATEWAY_MAX_CONCURRENCY = ((): number => {
+  const n = Number(process.env.LLM_GATEWAY_MAX_CONCURRENCY);
+  return Number.isInteger(n) && n > 0 ? n : 4;
+})();
+let gatewayInflight = 0;
+
+// 요청 model → tiguclaw 스펙. `tier:high|mid|low` / `provider:model` / 그 외=env 폴백 풀.
+const resolveGatewaySpecs = (model: unknown): ModelSpec[] => {
+  const m = typeof model === "string" ? model.trim() : "";
+  if (m.startsWith("tier:")) {
+    const t = resolveTier(m.slice("tier:".length));
+    if (t.length > 0) return t;
+  }
+  const direct = parseModelSpec(m);
+  if (direct !== null) return [direct];
+  const env = process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "";
+  return parseModelSpecList(env);
+};
+
+// OpenAI messages[] → (system override, user text). system 은 override 로, 나머지는 순서대로 이어붙임.
+const flattenChatMessages = (
+  messages: Array<{ role?: string; content?: unknown }>,
+): { system: string; text: string } => {
+  const sys: string[] = [];
+  const turns: string[] = [];
+  for (const msg of messages) {
+    const role = typeof msg.role === "string" ? msg.role : "user";
+    const content =
+      typeof msg.content === "string"
+        ? msg.content
+        : Array.isArray(msg.content)
+          ? msg.content
+              .map((c) =>
+                typeof c === "object" && c !== null && "text" in c
+                  ? String((c as { text?: unknown }).text ?? "")
+                  : "",
+              )
+              .join("")
+          : "";
+    if (role === "system") sys.push(content);
+    else if (role === "user") turns.push(content);
+    else turns.push(`[${role}]\n${content}`);
+  }
+  return { system: sys.join("\n\n"), text: turns.join("\n\n") };
 };
 
 // endpoint × role 매핑 — contract §1.Q3 표 그대로.
@@ -312,6 +369,130 @@ class HttpBridge implements Channel, Observer {
         subscribers: this.sseClients.size,
         channel_handler: this.channelHandler !== null,
       });
+      return;
+    }
+
+    // LLM 게이트웨이 — OpenAI 호환. **브리지 role 토큰과 별개**의 전용 토큰(LLM_GATEWAY_TOKEN).
+    // 미설정 = 비활성(404). 앱 서버가 토큰 쥐고 호출(브라우저 직접 금지). 127.0.0.1 바인드.
+    if (pathname === "/v1/chat/completions" && method === "POST") {
+      const gwTok = process.env.LLM_GATEWAY_TOKEN?.trim() ?? "";
+      if (gwTok === "") {
+        writeJson(res, 404, { error: { message: "llm gateway disabled (LLM_GATEWAY_TOKEN not set)" } });
+        return;
+      }
+      const gwAuth = req.headers.authorization ?? "";
+      const bearer = gwAuth.startsWith("Bearer ") ? gwAuth.slice("Bearer ".length).trim() : "";
+      if (bearer !== gwTok) {
+        writeJson(res, 401, { error: { message: "unauthorized" } });
+        return;
+      }
+      if (gatewayInflight >= GATEWAY_MAX_CONCURRENCY) {
+        writeJson(res, 429, { error: { message: "gateway busy (max concurrency reached)" } });
+        return;
+      }
+      let body: Record<string, unknown>;
+      try {
+        body = await readJsonBody(req);
+      } catch (e) {
+        writeJson(res, 400, { error: { message: `invalid body: ${e instanceof Error ? e.message : String(e)}` } });
+        return;
+      }
+      const messages = Array.isArray(body.messages)
+        ? (body.messages as Array<{ role?: string; content?: unknown }>)
+        : [];
+      if (messages.length === 0) {
+        writeJson(res, 400, { error: { message: "messages required" } });
+        return;
+      }
+      const { system, text } = flattenChatMessages(messages);
+      const specs = resolveGatewaySpecs(body.model);
+      const runInput = {
+        text: text !== "" ? text : " ",
+        threadKey: `gateway:${crypto.randomUUID()}`,
+        channel: this.name,
+        internal: true as const, // persist·이벤트 스킵(대시보드·트랜스크립트 무오염).
+        toolPolicy: { mode: "none" as const }, // 도구 0.
+        systemPromptOverride: system, // 앱 system(빈 문자열도 override — 비서 페르소나 스킵).
+      };
+      const specOpt = specs.length > 0 ? { specs } : undefined;
+      const cid = `chatcmpl-${crypto.randomUUID()}`;
+      const created = Math.floor(Date.now() / 1000);
+      const reqModel = typeof body.model === "string" ? body.model : "tiguclaw";
+
+      // ── 스트리밍(stream:true) — SSE, OpenAI chat.completion.chunk. 이 게이트웨이 턴의
+      // llm.delta(threadKey 필터)를 구독해 content 청크로 중계. 델타 전무(비스트리밍 모델)
+      // 시 완료 후 전체본 1청크 폴백. ──
+      if (body.stream === true) {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+        let modelLabel = reqModel;
+        let sawDelta = false;
+        const chunk = (delta: Record<string, unknown>, finish: string | null): void => {
+          res.write(
+            `data: ${JSON.stringify({ id: cid, object: "chat.completion.chunk", created, model: modelLabel, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
+          );
+        };
+        chunk({ role: "assistant" }, null);
+        const unsub =
+          this.bus !== null
+            ? this.bus.subscribe((ev) => {
+                if (ev.type !== "llm.delta") return;
+                const p = ev.payload as {
+                  threadKey?: string;
+                  delta?: string;
+                  model?: string;
+                };
+                if (p.threadKey !== runInput.threadKey) return;
+                if (typeof p.model === "string" && p.model !== "") modelLabel = p.model;
+                if (typeof p.delta === "string" && p.delta !== "") {
+                  sawDelta = true;
+                  chunk({ content: p.delta }, null);
+                }
+              })
+            : null;
+        gatewayInflight += 1;
+        try {
+          const out = await runRegionA(runInput, specOpt);
+          if (out.model !== undefined && out.model !== null && out.model !== "") modelLabel = out.model;
+          if (!sawDelta && out.text) chunk({ content: out.text }, null); // 델타 전무 폴백.
+          chunk({}, "stop");
+          res.write("data: [DONE]\n\n");
+        } catch (e) {
+          res.write(
+            `data: ${JSON.stringify({ error: { message: e instanceof Error ? e.message : String(e) } })}\n\n`,
+          );
+        } finally {
+          if (unsub !== null) safeUnsubscribe(unsub);
+          gatewayInflight -= 1;
+          res.end();
+        }
+        return;
+      }
+
+      // ── 비스트리밍 ──
+      gatewayInflight += 1;
+      try {
+        const out = await runRegionA(runInput, specOpt);
+        const inTok = out.usage?.inputTokens ?? 0;
+        const outTok = out.usage?.outputTokens ?? 0;
+        writeJson(res, 200, {
+          id: cid,
+          object: "chat.completion",
+          created,
+          model: out.model ?? reqModel,
+          choices: [
+            { index: 0, message: { role: "assistant", content: out.text ?? "" }, finish_reason: "stop" },
+          ],
+          usage: { prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok },
+        });
+      } catch (e) {
+        writeJson(res, 502, { error: { message: e instanceof Error ? e.message : String(e) } });
+      } finally {
+        gatewayInflight -= 1;
+      }
       return;
     }
 

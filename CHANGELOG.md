@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.44] - 2026-07-09
+
+### Fixed
+- **The file drag-and-drop highlight no longer gets stuck on the dashboard.** When you drag a file over the chat panel, a dashed outline marks the drop zone. It could stay visible after you cancelled the drag, moved the pointer over a message, or dropped outside the panel, because the clear-on-leave check only fired when leaving the panel element itself. It now clears whenever the drag genuinely leaves the panel (or the window), with a global drop/drag-end safety net.
+
 ## [0.3.43] - 2026-07-09
 
 ### Fixed
@@ -343,7 +348,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.43...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.44...HEAD
+[0.3.44]: https://github.com/tigu77/tiguclaw/compare/v0.3.43...v0.3.44
 [0.3.43]: https://github.com/tigu77/tiguclaw/compare/v0.3.42...v0.3.43
 [0.3.42]: https://github.com/tigu77/tiguclaw/compare/v0.3.41...v0.3.42
 [0.3.41]: https://github.com/tigu77/tiguclaw/compare/v0.3.40...v0.3.41

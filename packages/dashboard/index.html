@@ -3738,12 +3738,21 @@
       // 드래그&드롭 — 채팅 패널(#right) 어디든. Files 타입일 때만 가로챈다.
       const dropZone = document.getElementById("right") || document.getElementById("chat");
       const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+      const clearDragOver = () => dropZone.classList.remove("drag-over");
       dropZone.addEventListener("dragover", (e) => { if (hasFiles(e)) { e.preventDefault(); dropZone.classList.add("drag-over"); } });
-      dropZone.addEventListener("dragleave", (e) => { if (e.target === dropZone) dropZone.classList.remove("drag-over"); });
+      // ★relatedTarget = 드래그가 *들어가는* 요소. dropZone 밖(또는 null=창 밖)으로 나갈 때만
+      // 해제. 기존 `e.target === dropZone` 는 자식 요소 위로 나가면 안 떠서 점선이 stuck 됐다.
+      dropZone.addEventListener("dragleave", (e) => {
+        if (!e.relatedTarget || !dropZone.contains(e.relatedTarget)) clearDragOver();
+      });
       dropZone.addEventListener("drop", (e) => {
-        dropZone.classList.remove("drag-over");
+        clearDragOver();
         if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) { e.preventDefault(); addFiles([...e.dataTransfer.files]); }
       });
+      // 안전망 — 드래그 취소(Esc)·dropZone 밖 드롭·창 밖 종료 등 dragleave 가 안 오는 경우에도
+      // stuck 점선을 확실히 해제(전역 drop/dragend).
+      window.addEventListener("drop", clearDragOver);
+      window.addEventListener("dragend", clearDragOver);
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();

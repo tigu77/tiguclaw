@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.41] - 2026-07-09
+
+### Changed
+- **Tool cards in the dashboard chat now expand and collapse as a single unit, and stay put.** A tool step is a compact one-line summary by default (for an edit: the file and its `+added -removed`); click anywhere on it to expand the full diff or output, click again to collapse. The expanded state is sticky — it no longer closes when you move the mouse away. Edit steps also drop the noisy inline argument echo from the collapsed line (the diff header already shows the path), and an expanded block now shows all of its captured lines instead of scrolling within a fixed height.
+
 ## [0.3.40] - 2026-07-09
 
 ### Added
@@ -328,7 +333,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.40...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.41...HEAD
+[0.3.41]: https://github.com/tigu77/tiguclaw/compare/v0.3.40...v0.3.41
 [0.3.40]: https://github.com/tigu77/tiguclaw/compare/v0.3.39...v0.3.40
 [0.3.39]: https://github.com/tigu77/tiguclaw/compare/v0.3.38...v0.3.39
 [0.3.38]: https://github.com/tigu77/tiguclaw/compare/v0.3.37...v0.3.38

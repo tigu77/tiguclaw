@@ -385,13 +385,15 @@
       .act-diff-head { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-size:10px; color:var(--text-dim); padding:1px 4px; border-radius:6px; }
       .act-diff-head:hover { background:rgba(255,255,255,.05); }
       .act-diff-caret { font-size:8px; transition:transform .12s ease; }
-      .act-diff.open .act-diff-caret { transform:rotate(90deg); }
+      /* 펼침 상태 = 스텝(라이브 act-step·이력 hist-tool) 단위 sticky 토글. 클릭으로만 열림
+         (hover 무관). 접힘=한 줄(헤더만), 펼침=전체 diff/출력. */
+      .act-step.expanded .act-diff-caret, .hist-tool.expanded .act-diff-caret { transform:rotate(90deg); }
       .act-diff-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
       .act-diff-stat .dadd { color:#3fb950; font-weight:700; }
       .act-diff-stat .ddel { color:#f85149; font-weight:700; }
       .act-diff-body { display:none; }
-      .act-diff.open .act-diff-body { display:block; }
-      .act-diff-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow:auto; max-height:340px; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; }
+      .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body { display:block; }
+      .act-diff-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow-x:auto; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; }
       .act-diff-pre .dl { white-space:pre; display:block; padding:0 2px; border-radius:2px; }
       .act-diff-pre .dl-add { color:#7ee787; background:rgba(63,185,80,.15); }
       .act-diff-pre .dl-del { color:#ffa198; background:rgba(248,81,73,.15); }
@@ -401,9 +403,8 @@
       .act-output { flex-basis:100%; width:100%; margin:2px 0 1px; }
       .act-output-head { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-size:10px; color:var(--text-dim); padding:1px 4px; border-radius:6px; }
       .act-output-head:hover { background:rgba(255,255,255,.05); }
-      .act-output.open .act-diff-caret { transform:rotate(90deg); }
       .act-output.err .act-output-lbl { color:#ffa198; }
-      .act-output-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow:auto; max-height:300px; white-space:pre-wrap; word-break:break-word; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); }
+      .act-output-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow-x:auto; white-space:pre-wrap; word-break:break-word; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); }
       .act-output.err .act-output-pre { color:#ffb4ac; }
       /* P5 L3 — 진행(타이핑) 버블: 델타 누적 중엔 평문 + 깜빡이는 커서, out 도착 시 마크다운 전체본으로 승격. */
       .chat-message.streaming::after { content:"▌"; color:var(--accent-2); animation:tg-cursor-blink 1s step-start infinite; margin-left:1px; }
@@ -2669,8 +2670,7 @@
           pre.appendChild(t);
         }
         body.appendChild(pre);
-        // 헤더 클릭 = diff 펼침/접힘. 스텝 클릭(사이드바)로 전파 방지.
-        head.addEventListener("click", (e) => { e.stopPropagation(); wrap.classList.toggle("open"); });
+        // 토글은 스텝(부모) 단위 — 헤더는 접힘 시 요약(경로 + N/-M)만 보여준다(클릭 핸들러 없음).
         wrap.appendChild(head); wrap.appendChild(body);
         return wrap;
       };
@@ -2693,7 +2693,7 @@
         pre.className = "act-output-pre";
         pre.textContent = (output.text != null ? output.text : "") + (output.truncated ? "\n… (이하 생략 — 크기 제한)" : "");
         body.appendChild(pre);
-        head.addEventListener("click", (e) => { e.stopPropagation(); wrap.classList.toggle("open"); });
+        // 토글은 스텝(부모) 단위 — 헤더는 접힘 시 요약("출력")만. (클릭 핸들러 없음.)
         wrap.appendChild(head); wrap.appendChild(body);
         return wrap;
       };
@@ -2710,9 +2710,10 @@
         const label = document.createElement("span");
         label.className = "act-label";
         label.textContent = p.label || p.kind || "activity";
-        // 인라인 상세(중립 detail = path=…, cmd: … 등). 클릭 안 해도 무슨 일인지 보이게.
-        // 길면 CSS 가 한 줄로 자르고(…), 전체본은 클릭→사이드바.
-        const detail = p.detail
+        // 인라인 상세(중립 detail = path=…, cmd: … 등). 단 diff 있는 스텝(Edit/Write)은 diff
+        // 헤더가 경로+N/-M 을 이미 보여주므로 verbose 한 old_string=… 은 접힘 한 줄에서 생략(간결).
+        const hasDiff = p.diff && Array.isArray(p.diff.lines);
+        const detail = p.detail && !hasDiff
           ? Object.assign(document.createElement("span"), {
               className: "act-detail", textContent: p.detail,
             })
@@ -2724,11 +2725,15 @@
         if (detail) line.appendChild(detail);
         line.appendChild(meta);
         // 리치 diff(Edit/Write) — 있으면 스텝 줄 아래 접이식 블록(flex-wrap 로 다음 줄).
-        if (p.diff && Array.isArray(p.diff.lines)) line.appendChild(buildDiffBlock(p.diff));
-        // P4 — 클릭 시 data-threadkey/data-seq 로 마스터 payload 조회 → 우측 사이드바 상세.
+        if (hasDiff) line.appendChild(buildDiffBlock(p.diff));
+        // 클릭 = 도구 스텝 펼침/접힘(리치 diff·출력 있으면). sticky(hover 무관). 리치 블록이
+        // 없는 스텝은 기존대로 사이드바 상세(P4).
         line.addEventListener("click", () => {
+          if (line.querySelector(":scope > .act-diff, :scope > .act-output")) {
+            line.classList.toggle("expanded");
+            return;
+          }
           const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq));
-          // 저장본 우선(전체 payload). 누락 시 렌더 시점 p 로 폴백.
           openStepDetail(stored || p, line);
         });
         return line;
@@ -3101,15 +3106,22 @@
         const label = document.createElement("span");
         label.className = "hist-tool-label"; label.textContent = a.label || "tool";
         line.appendChild(icon); line.appendChild(label);
-        if (a.detail) {
+        // diff 있는 스텝은 diff 헤더가 경로+N/-M 을 보여주므로 verbose detail 생략(접힘 간결).
+        const hasDiff = a.diff && Array.isArray(a.diff.lines);
+        if (a.detail && !hasDiff) {
           const d = document.createElement("span");
           d.className = "hist-tool-detail"; d.textContent = a.detail;
           line.appendChild(d);
         }
         // 리치 diff 복원(Edit/Write) — 라이브와 동일 블록(flex-wrap 로 줄 아래).
-        if (a.diff && Array.isArray(a.diff.lines)) line.appendChild(buildDiffBlock(a.diff));
+        if (hasDiff) line.appendChild(buildDiffBlock(a.diff));
         // 리치 출력 복원(Bash/Read/Grep/Glob) — phase:end 에서 브리지가 병합한 output.
         if (a.output && typeof a.output.text === "string") line.appendChild(buildOutputBlock(a.output));
+        // 클릭 = 펼침/접힘(리치 블록 있으면). sticky. 라이브 act-step 과 동형.
+        if (line.querySelector(":scope > .act-diff, :scope > .act-output")) {
+          line.style.cursor = "pointer";
+          line.addEventListener("click", () => line.classList.toggle("expanded"));
+        }
         stream.insertBefore(line, stream.firstChild);
         localChatCount += 1;
       };

@@ -387,12 +387,29 @@
       .act-diff-caret { font-size:8px; transition:transform .12s ease; }
       /* 펼침 상태 = 스텝(라이브 act-step·이력 hist-tool) 단위 sticky 토글. 클릭으로만 열림
          (hover 무관). 접힘=한 줄(헤더만), 펼침=전체 diff/출력. */
-      .act-step.expanded .act-diff-caret, .hist-tool.expanded .act-diff-caret { transform:rotate(90deg); }
+      .act-step.expanded .act-diff-caret, .hist-tool.expanded .act-diff-caret, .hist-step.expanded .act-diff-caret { transform:rotate(90deg); }
       .act-diff-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
       .act-diff-stat .dadd { color:#3fb950; font-weight:700; }
       .act-diff-stat .ddel { color:#f85149; font-weight:700; }
       .act-diff-body { display:none; }
-      .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body { display:block; }
+      .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body, .hist-step.expanded .act-diff-body { display:block; }
+      /* 이력 turn-card 묶음(새로고침 후 라이브처럼 그룹핑) — 접이식 "N단계" 카드. */
+      .hist-turn { padding:0; }
+      .hist-turn-head { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; padding:8px 10px; font-size:11px; }
+      .hist-turn-head:hover { background:rgba(255,255,255,.04); }
+      .hist-turn-caret { font-size:9px; color:var(--text-dim); transition:transform .12s ease; flex:none; }
+      .hist-turn.expanded .hist-turn-caret { transform:rotate(90deg); }
+      .hist-turn-icon { flex:none; }
+      .hist-turn-count { font-weight:800; color:var(--text); flex:none; }
+      .hist-turn-preview { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .hist-turn-body { display:none; padding:0 10px 8px 26px; }
+      .hist-turn.expanded .hist-turn-body { display:block; }
+      /* turn-card 내부 스텝 = 낱줄(카드 크롬 없이). hist-tool 과 동형 내용. */
+      .hist-step { display:flex; flex-wrap:wrap; align-items:baseline; gap:7px; padding:2px 2px; font-size:11px; color:var(--text-mute); }
+      .hist-step:hover { background:rgba(255,255,255,.04); border-radius:6px; }
+      .hist-step .hist-tool-icon { font-size:12px; flex:none; }
+      .hist-step .hist-tool-label { color:var(--text); font-weight:700; flex:none; }
+      .hist-step .hist-tool-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .act-diff-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow-x:auto; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; }
       .act-diff-pre .dl { white-space:pre; display:block; padding:0 2px; border-radius:2px; }
       .act-diff-pre .dl-add { color:#7ee787; background:rgba(63,185,80,.15); }
@@ -3095,11 +3112,11 @@
         localChatCount += 1;
       };
 
-      // 이력 도구 스텝(기능 B) — 영속 llm.activity 를 한 줄 스텝으로 복원(새로고침 후에도 표시).
-      // 라이브 turn-card 스텝과 다른 경량 표현(라인). insertBefore(firstChild)=메시지와 동일 배치.
-      const renderHistoryActivity = (a) => {
+      // 이력 도구 스텝(기능 B) — 영속 llm.activity 복원. 낱줄 element 빌더(카드 크롬 없음).
+      // 라이브 buildActivityLine 과 동형: diff/출력 리치 블록 + 스텝 단위 클릭 sticky 토글.
+      const buildHistStepLine = (a) => {
         const line = document.createElement("div");
-        line.className = "ev local hist-tool";
+        line.className = "hist-step";
         if (a.ts != null) line.dataset.ts = String(a.ts);
         const icon = document.createElement("span");
         icon.className = "hist-tool-icon"; icon.textContent = "🔧";
@@ -3113,16 +3130,42 @@
           d.className = "hist-tool-detail"; d.textContent = a.detail;
           line.appendChild(d);
         }
-        // 리치 diff 복원(Edit/Write) — 라이브와 동일 블록(flex-wrap 로 줄 아래).
         if (hasDiff) line.appendChild(buildDiffBlock(a.diff));
-        // 리치 출력 복원(Bash/Read/Grep/Glob) — phase:end 에서 브리지가 병합한 output.
         if (a.output && typeof a.output.text === "string") line.appendChild(buildOutputBlock(a.output));
-        // 클릭 = 펼침/접힘(리치 블록 있으면). sticky. 라이브 act-step 과 동형.
+        // 클릭 = 스텝 펼침/접힘(리치 블록 있으면). 부모 turn 접힘으로 전파 방지(stopPropagation).
         if (line.querySelector(":scope > .act-diff, :scope > .act-output")) {
           line.style.cursor = "pointer";
-          line.addEventListener("click", () => line.classList.toggle("expanded"));
+          line.addEventListener("click", (e) => { e.stopPropagation(); line.classList.toggle("expanded"); });
         }
-        stream.insertBefore(line, stream.firstChild);
+        return line;
+      };
+
+      // 이력 turn 묶음 — 연속된 같은 턴의 도구 스텝을 접이식 "N단계" 카드로(라이브 turn-card 파리티).
+      // 새로고침 후에도 라이브처럼 그룹핑돼 보이게. 기본 접힘(완료된 라이브 턴의 done-collapsed 동형).
+      const renderHistoryTurn = (acts) => {
+        for (const a of acts) renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
+        const turn = document.createElement("div");
+        turn.className = "ev local hist-turn";
+        turn.dataset.type = "llm.activity";
+        turn.dataset.ts = String(acts[0].ts);
+        const head = document.createElement("div");
+        head.className = "hist-turn-head";
+        const caret = document.createElement("span");
+        caret.className = "hist-turn-caret"; caret.textContent = "▸";
+        const icon = document.createElement("span");
+        icon.className = "hist-turn-icon"; icon.textContent = "🔧";
+        const count = document.createElement("span");
+        count.className = "hist-turn-count"; count.textContent = acts.length + "단계";
+        const preview = document.createElement("span");
+        preview.className = "hist-turn-preview";
+        preview.textContent = acts.map((a) => a.label || "tool").slice(0, 6).join(" · ");
+        head.appendChild(caret); head.appendChild(icon); head.appendChild(count); head.appendChild(preview);
+        const body = document.createElement("div");
+        body.className = "hist-turn-body";
+        for (const a of acts) body.appendChild(buildHistStepLine(a));
+        head.addEventListener("click", () => turn.classList.toggle("expanded"));
+        turn.appendChild(head); turn.appendChild(body);
+        stream.insertBefore(turn, stream.firstChild);
         localChatCount += 1;
       };
 
@@ -3254,17 +3297,31 @@
             ...entries.map((e) => ({ kind: "m", ts: e.ts, e })),
             ...activities.map((a) => ({ kind: "a", ts: a.ts, a })),
           ].sort((x, y) => x.ts - y.ts);
+          // 연속된 같은 턴(같은 threadKey · seq 증가)의 도구 스텝을 하나의 turn 묶음으로 모아
+          // 라이브 turn-card 처럼 그룹핑 렌더. 메시지·threadKey 변경·seq 리셋이 경계(라이브 동일).
+          let curTurn = null; // { threadKey, lastSeq, acts:[] }
+          const flushTurn = () => {
+            if (curTurn && curTurn.acts.length) renderHistoryTurn(curTurn.acts);
+            curTurn = null;
+          };
           for (const item of merged) {
             if (item.kind === "m") {
+              flushTurn();
               const role = item.e.role === "assistant" ? "assistant" : "user";
               renderedMsgKeys.add(msgKey(item.e.ts, role));
               renderHistoryMessage({ ts: item.e.ts, role, text: item.e.text });
             } else {
               const a = item.a;
-              renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
-              renderHistoryActivity(a);
+              const seq = typeof a.seq === "number" ? a.seq : 0;
+              if (curTurn && curTurn.threadKey === a.threadKey && seq > curTurn.lastSeq) {
+                curTurn.acts.push(a); curTurn.lastSeq = seq;
+              } else {
+                flushTurn();
+                curTurn = { threadKey: a.threadKey, lastSeq: seq, acts: [a] };
+              }
             }
           }
+          flushTurn();
           // 가장 오래된 ts = 다음 페이지의 beforeTs (메시지 기준 — 페이지네이션은 메시지 축).
           oldestLoadedTs = entries.length > 0 ? entries[0].ts : merged[0].ts;
           if (entries.length < HISTORY_PAGE) {

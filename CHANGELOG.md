@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.42] - 2026-07-09
+
+### Fixed
+- **Tool steps stay grouped by turn after a page reload, just like they are live.** When persisted tool steps were restored on refresh, they were drawn as a flat list of individual lines instead of the collapsible "N steps" turn card you see while a turn runs — so reloading scattered a bundled turn into loose lines. History now regroups consecutive steps from the same turn into a collapsible card (matching the live view), collapsed by default; click the card to reveal its steps, and a step to reveal its diff or output.
+
 ## [0.3.41] - 2026-07-09
 
 ### Changed
@@ -333,7 +338,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.41...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.42...HEAD
+[0.3.42]: https://github.com/tigu77/tiguclaw/compare/v0.3.41...v0.3.42
 [0.3.41]: https://github.com/tigu77/tiguclaw/compare/v0.3.40...v0.3.41
 [0.3.40]: https://github.com/tigu77/tiguclaw/compare/v0.3.39...v0.3.40
 [0.3.39]: https://github.com/tigu77/tiguclaw/compare/v0.3.38...v0.3.39

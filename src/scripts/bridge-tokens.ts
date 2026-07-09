@@ -5,6 +5,7 @@
  *   npm run bridge:tokens                      # list
  *   npm run bridge:tokens -- --revoke 3        # id=3 revoke
  */
+import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import process from "node:process";
 import { initStore } from "../store/sessions.js";
 import { listActive, revokeToken } from "../store/bridge-tokens.js";

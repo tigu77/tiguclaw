@@ -1,6 +1,6 @@
 {
   "name": "tiguclaw",
-  "version": "0.3.36",
+  "version": "0.3.37",
   "private": true,
   "type": "module",
   "bin": {
@@ -33,15 +33,15 @@
   "scripts": {
     "build": "tsc",
     "dev": "node bin/dev.mjs",
-    "start": "node --env-file=.env dist/index.js",
+    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "init": "tsx src/scripts/init.ts",
     "onboard": "tsx src/cli.ts onboard",
-    "doctor": "tsx --env-file=.env src/scripts/doctor.ts",
+    "doctor": "tsx src/scripts/doctor.ts",
     "dashboard": "tsx --env-file=.env packages/dashboard/index.ts",
-    "bridge:grant": "tsx --env-file=.env src/scripts/bridge-grant.ts",
-    "bridge:tokens": "tsx --env-file=.env src/scripts/bridge-tokens.ts",
-    "codex-auth": "tsx --env-file=.env src/scripts/codex-auth.ts",
+    "bridge:grant": "tsx src/scripts/bridge-grant.ts",
+    "bridge:tokens": "tsx src/scripts/bridge-tokens.ts",
+    "codex-auth": "tsx src/scripts/codex-auth.ts",
     "daemon:install": "tsx src/scripts/daemon.ts install",
     "daemon:uninstall": "tsx src/scripts/daemon.ts uninstall",
     "daemon:restart": "tsx src/scripts/daemon.ts restart",

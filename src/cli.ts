@@ -9,10 +9,14 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const ENV_PATH = path.resolve(process.cwd(), ".env");
+// 설정(.env)은 런타임 홈에 있다(레포 무오염, 2026-07-09). 홈 = TIGUCLAW_HOME / 기본 ~/.tiguclaw.
+const HOME_DIR =
+  process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
+const ENV_PATH = path.join(HOME_DIR, ".env");
 
 /** npm 스크립트 위임 실행 (TTY 상속 — 대화형 마법사 그대로 동작). exit code 반환.
  *  shell:true — Windows 는 `npm` 이 `npm.cmd` 라 shell 없이는 ENOENT(크로스플랫폼 필수).

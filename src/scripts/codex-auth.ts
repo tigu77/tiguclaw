@@ -10,6 +10,7 @@
  *  5. 어댑터의 `upsertCodexTokens` 로 .env 갱신 (refresh hook 과 단일 진실 소스)
  *  6. server 종료 + 콘솔 안내
  */
+import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import { createServer } from "node:http";
 import {
   createAuthorizationFlow,

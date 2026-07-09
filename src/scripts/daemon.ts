@@ -94,7 +94,6 @@ const buildLaunchdPlist = (c: Ctx): string => {
   <array>
     <string>${c.nodePath}</string>
     <string>${c.tsxCli}</string>
-    <string>--env-file=.env</string>
     <string>${c.entry}</string>
   </array>
   <key>WorkingDirectory</key><string>${c.repoRoot}</string>
@@ -207,7 +206,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${c.nodePath} ${c.tsxCli} --env-file=.env ${c.entry}
+ExecStart=${c.nodePath} ${c.tsxCli} ${c.entry}
 WorkingDirectory=${c.repoRoot}
 Environment="TIGUCLAW_HOME=${c.homeRaw}"
 Restart=always
@@ -312,7 +311,7 @@ const winPort = (c: Ctx): string => {
 const buildWinVbs = (c: Ctx): string => {
   const inner =
     `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && ` +
-    `"${c.nodePath}" "${c.tsxCli}" --env-file=.env "${c.entry}"`;
+    `"${c.nodePath}" "${c.tsxCli}" "${c.entry}"`;
   return [
     'Set sh = CreateObject("WScript.Shell")',
     `sh.Run "${inner.replace(/"/g, '""')}", 0, False`,
@@ -510,7 +509,7 @@ const unsupported = (c: Ctx, cmd: string): void => {
     "프로세스 매니저(pm2/systemd/nohup) 아래에서 다음을 상시 실행하세요:",
   );
   console.log(
-    `  TIGUCLAW_HOME=${c.homeRaw} ${c.nodePath} ${c.tsxCli} --env-file=.env ${c.entry}`,
+    `  TIGUCLAW_HOME=${c.homeRaw} ${c.nodePath} ${c.tsxCli} ${c.entry}`,
   );
 };
 

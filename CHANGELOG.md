@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.37] - 2026-07-09
+
+### Added
+- **Configuration now lives in your home directory, not the repo checkout.** tiguclaw reads its `.env` from the runtime home (`$TIGUCLAW_HOME`, default `~/.tiguclaw/.env`), and `tiguclaw init` writes it there — so you can clone the public repo, keep it as pure code, and `git pull` without ever touching your config. Existing installs with a `.env` at the repo root keep working (it's used as a fallback), so nothing breaks; to migrate, just move your `.env` into the home directory. Environment variables always take precedence over the file.
+
+### Fixed
+- **The dashboard chat no longer gets stuck showing "working…" forever.** After a reconnect, the event replay could re-deliver an old "message received" event and make the chat think a long-finished turn was still running (e.g. a spinner stuck at "working · 15m 22s"). The indicator now only activates for recent turns and self-clears any turn that has been "running" implausibly long.
+- **A tool step no longer blinks forever when a turn ends without a clean reply.** If a turn finished via an error or a hung tool (so no final reply arrived), the last tool step kept pulsing as if still in progress. It now stops as soon as the turn ends, however it ends.
+
 ## [0.3.36] - 2026-07-09
 
 ### Fixed
@@ -304,7 +313,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.36...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.37...HEAD
+[0.3.37]: https://github.com/tigu77/tiguclaw/compare/v0.3.36...v0.3.37
 [0.3.36]: https://github.com/tigu77/tiguclaw/compare/v0.3.35...v0.3.36
 [0.3.35]: https://github.com/tigu77/tiguclaw/compare/v0.3.34...v0.3.35
 [0.3.34]: https://github.com/tigu77/tiguclaw/compare/v0.3.33...v0.3.34

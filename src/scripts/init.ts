@@ -13,11 +13,16 @@
  */
 import { createInterface } from "node:readline/promises";
 import { randomBytes } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const ENV_PATH = path.resolve(process.cwd(), ".env");
+// 설정(.env)은 **런타임 홈**에 둔다(공개 레포 checkout 무오염, 2026-07-09). 홈 =
+// TIGUCLAW_HOME env(있으면) / 기본 ~/.tiguclaw — load-env.ts·daemon.ts 와 동일 규칙.
+const HOME_DIR =
+  process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
+const ENV_PATH = path.join(HOME_DIR, ".env");
 
 type Provider = "anthropic" | "claude-sub" | "openai" | "codex";
 
@@ -276,7 +281,9 @@ const renderEnv = (a: Answers): string => {
   return `# tiguclaw .env — \`tiguclaw init\` 마법사 생성.
 # ★ 이 파일은 비밀(토큰)을 담습니다. 절대 커밋/공유하지 마세요. (.gitignore 처리됨)
 
-# 앱 런타임 홈 (미설정 시 ~/.tiguclaw). 개발은 npm run dev 가 ./tiguclaw-dev 자동 사용.
+# 앱 런타임 홈. ★이 .env 는 홈 안에 있으므로 TIGUCLAW_HOME 은 여기서 결정되지 않습니다 —
+# 환경변수(launchd/셸)로 설정되며 미설정 시 ~/.tiguclaw. daemon:install 이 유닛에 주입합니다.
+# (이 줄은 참고용 — 값을 바꿔도 .env 를 찾는 홈 경로엔 영향 없음.)
 TIGUCLAW_HOME=
 
 # ── LLM provider 키 ─────────────────────────────────────────────
@@ -376,9 +383,10 @@ const main = async (): Promise<void> => {
     httpBridgeToken,
   };
 
+  mkdirSync(HOME_DIR, { recursive: true }); // 홈 디렉터리 보장(첫 설치).
   writeFileSync(ENV_PATH, renderEnv(answers), { encoding: "utf8" });
   console.log("");
-  console.log(`✅ .env 작성 완료: ${ENV_PATH}`);
+  console.log(`✅ .env 작성 완료: ${ENV_PATH}  (런타임 홈 — 레포 아님)`);
 
   console.log("");
   console.log("── 다음 단계 ──────────────────────────────────────");

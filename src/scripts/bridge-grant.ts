@@ -6,6 +6,7 @@
  *
  * raw token 은 stdout 에 1회만 표시되고 다시 볼 수 없다 (token_hash 만 DB 저장).
  */
+import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import process from "node:process";
 import { initStore } from "../store/sessions.js";
 import {

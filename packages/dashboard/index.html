@@ -2775,6 +2775,15 @@
       // 답변(channel.message.out) 도착 시, 같은 threadKey 의 진행 중 턴 그룹을 마무리한다.
       // 답변 버블을 그 그룹 안(스텝 아래)에 배치 + 스텝 카드를 "n단계 완료" 로 접는다.
       // 진행 중 그룹이 없으면 null 반환 → 호출부가 기존 단독 버블로 렌더(회귀 0).
+      // 턴 종료 시 마지막 스텝 pulse 정지용 — 카드에 .done 만 붙인다(collapse·closed 안 함).
+      // completeTurnGroup(응답 도착)은 그대로 full 완료(접기)를 한다. 응답이 안 와도(에러·
+      // Edit hang·타임아웃 종료) turn_done/turn_error 에서 이걸 불러 스텝이 영영 깜빡이는 것 방지.
+      const markTurnCardDone = (thread) => {
+        const card = cardByThread.get(thread);
+        if (card && card.el && !card.el.classList.contains("done")) {
+          card.el.classList.add("done");
+        }
+      };
       const completeTurnGroup = (thread) => {
         const card = cardByThread.get(thread);
         if (!card || !card.group.isConnected || card.closed) return null;
@@ -3113,6 +3122,9 @@
       // 경과 텍스트만 1초 틱 갱신(애니메이션 끊김 방지).
       let chatWorkingTimer = null;
       const activeTurns = new Map(); // threadKey -> startTime(ms). 채널 무관 — 단일 인격 취급.
+      // stale 임계 — 어떤 실제 턴도 이보다 오래 못 감(codex 턴 캡 ~10분 + 여유). 초과 진행표시는
+      // turn_done 을 놓친 유령(SSE 재연결·replay·데몬 재시작 중)으로 보고 해제(영구 '작업 중' 방지).
+      const STALE_TURN_MS = 15 * 60 * 1000;
       // 경과시간 기준 시작시각 — 내 대화(THREAD_KEY) 우선, 없으면 가장 이른 턴.
       const earliestStart = () => {
         if (activeTurns.has(THREAD_KEY)) return activeTurns.get(THREAD_KEY);
@@ -3138,7 +3150,13 @@
           s.innerHTML = '<span class="chat-spinner">✳️</span> <span class="chat-work-label"></span> <span class="chat-elapsed"></span>';
         }
         paintWorking(s);
-        if (!chatWorkingTimer) chatWorkingTimer = setInterval(() => { const el = document.getElementById("chat-status"); if (el) paintWorking(el); }, 1000);
+        if (!chatWorkingTimer) chatWorkingTimer = setInterval(() => {
+          // stale 스윕 — 유령 진행표시(놓친 turn_done)가 영영 안 꺼지는 것 방지. 비면 해제.
+          const now = Date.now(); let swept = false;
+          for (const [k, start] of activeTurns) if (now - start > STALE_TURN_MS) { activeTurns.delete(k); swept = true; }
+          if (swept && activeTurns.size === 0) { refreshWorking(); return; }
+          const el = document.getElementById("chat-status"); if (el) paintWorking(el);
+        }, 1000);
       };
       const markTurnActive = (tk) => {
         const k = tk || THREAD_KEY;
@@ -3250,13 +3268,18 @@
         // 진행 표시 종료(모든 채널) — 턴 종료 신호는 렌더를 막지 않고(return 안 함) 표시만 해제.
         // channel.message.out 이 안 오는 에러 턴까지 확실히 끄기 위한 authoritative 종료.
         if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") {
-          markTurnDone(ev.payload && ev.payload.threadKey);
+          const tk = ev.payload && ev.payload.threadKey;
+          markTurnDone(tk);
+          markTurnCardDone(tk); // 턴 카드 마지막 스텝 pulse 정지(응답 누락·에러·hang 종료 대비).
         }
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
           const tk = ev.payload && ev.payload.threadKey;
           // 진행 표시(모든 채널) — 인바운드=턴 시작(텔레그램·CLI 포함), 아웃바운드=턴 종료.
-          if (ev.type === "channel.message.in") markTurnActive(tk);
-          else markTurnDone(tk);
+          // ★재연결 replay 방어 — 버퍼가 흘리는 과거 .in 은 phantom 진행표시(짝 turn_done 없음)를
+          // 만든다. 최근(2분 이내) .in 만 활성화 → 이미 끝난 옛 턴이 '작업 중'으로 안 뜬다.
+          if (ev.type === "channel.message.in") {
+            if (Date.now() - (ev.ts || 0) < 120000) markTurnActive(tk);
+          } else markTurnDone(tk);
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);

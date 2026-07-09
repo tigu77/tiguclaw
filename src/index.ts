@@ -1,3 +1,4 @@
+import "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import os from "node:os";
 import { extractTelegramChatId } from "./core/threadkey.js";
 import path from "node:path";

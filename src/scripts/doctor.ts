@@ -8,6 +8,7 @@
  * 어댑터 풀(llm-runtime) 도 import 하지 않는다 — top-level POOLS 평가가 env 미설정 시 throw 하기 때문.
  * 자체 splitPool 6 줄 + provider→envvar 매핑 7 줄로 진단만 수행.
  */
+import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import process from "node:process";
 import path from "node:path";
 import { initStore, getDb, resolveDataDir } from "../store/sessions.js";

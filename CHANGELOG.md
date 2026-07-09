@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.36] - 2026-07-09
+
+### Fixed
+- **The dashboard now shows your assistant's name even when it's written as prose.** The assistant is guided to record its identity in `AGENT.md` as "your name is X", but the dashboard's name reader only recognized a structured `이름: X` / `name: X` field — so a naturally-worded name fell back to "tiguclaw". The reader now also understands the prose form ("(your) name is X"), and the assistant is now told to also add a clear `name:` line when it sets or changes its name.
+- **The Runtime Inventory's Plugins section is no longer empty on a fresh install.** Bundled non-channel plugins (dashboard, scheduler, file-watch, self-growth) weren't listed anywhere, and a plugin declaring multiple kinds (e.g. the HTTP bridge, which is both a channel and an observer) was skipped by the channel scan. Bundled plugins now appear — the HTTP bridge under Channels, and the service/trigger/observer plugins under Plugins — alongside any home-installed plugins.
+
 ## [0.3.35] - 2026-07-08
 
 ### Added
@@ -298,7 +304,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.35...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.36...HEAD
+[0.3.36]: https://github.com/tigu77/tiguclaw/compare/v0.3.35...v0.3.36
 [0.3.35]: https://github.com/tigu77/tiguclaw/compare/v0.3.34...v0.3.35
 [0.3.34]: https://github.com/tigu77/tiguclaw/compare/v0.3.33...v0.3.34
 [0.3.33]: https://github.com/tigu77/tiguclaw/compare/v0.3.32...v0.3.33

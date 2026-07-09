@@ -27,18 +27,33 @@ export const readAgent = (): string => {
 };
 
 /**
- * 비서 표시 이름 — AGENT.md 의 `이름`/`name` 필드 관대 파싱(`- **이름**: X` / `이름: X` /
- * `name: X` 등). 없으면 `tiguclaw` 폴백(설치 기본 템플릿엔 이름 필드 없음 — 중립 기본).
+ * 비서 표시 이름 — AGENT.md 에서 관대 파싱. 두 형식 지원(우선순위 순):
+ *  1) 구조화 필드 — `이름: X` / `- **이름**: X` / `name: X`.
+ *  2) 산문 — `당신의 이름은 X (입니다)` / `이름이 X`. sysprompt 가 이 형식을 유도하므로
+ *     시키는 대로 쓴 AGENT.md 도 반드시 읽어야 한다(2026-07-08, 회사 인스턴스 실사례:
+ *     "당신의 이름은 회사돌쇠입니다" 를 못 읽어 tiguclaw 로 폴백하던 버그).
+ * 둘 다 없으면 `tiguclaw` 폴백(설치 기본 템플릿엔 이름 필드 없음 — 중립 기본).
  * 대시보드 채팅 비서 라벨용. 사용자가 AGENT.md 이름을 바꾸면 그 이름으로.
  */
 export const getAssistantName = (): string => {
   try {
-    const m = readAgent().match(
+    const md = readAgent();
+    // (1) 구조화 필드 우선.
+    const field = md.match(
       /(?:^|\n)\s*[-*]?\s*\**\s*(?:이름|name)\s*\**\s*[:：]\s*(.+)/i,
     );
-    if (m && m[1] !== undefined) {
-      const name = m[1].replace(/\*+/g, "").trim();
+    if (field && field[1] !== undefined) {
+      const name = field[1].replace(/\*+/g, "").trim();
       if (name !== "") return name;
+    }
+    // (2) 산문 — 「(당신의) 이름은/이름이 X (입니다)」. 조사·서술어·따옴표에서 종료.
+    // (한글은 \b 미동작 → 서술어 alternation 으로 절단. 이름 아닌 긴 문장 방지로 40자 캡.)
+    const prose = md.match(
+      /이름[은이]\s*["'「]?\s*(.+?)\s*["'」]?(?:\s*(?:입니다|이에요|이예요|예요|이고|이며|이라고|라고|이라)|[.。!?\n]|$)/,
+    );
+    if (prose && prose[1] !== undefined) {
+      const name = prose[1].replace(/[*"'「」]/g, "").trim();
+      if (name !== "" && name.length <= 40) return name;
     }
   } catch {
     /* noop — 폴백 */

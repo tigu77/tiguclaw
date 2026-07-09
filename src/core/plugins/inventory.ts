@@ -111,12 +111,18 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
       const m = pkg?.tiguclaw;
       if (!m || typeof m !== "object") continue;
       const marker = m as {
-        kind?: string;
+        kind?: string | string[];
         name?: string;
         schemaVersion?: number;
         entry?: string;
       };
-      if (marker.kind !== "channel") continue;
+      // kind 는 문자열 또는 배열(예 http-bridge: ['channel','observer']) — 정규화해 검사.
+      const kinds = Array.isArray(marker.kind)
+        ? marker.kind
+        : marker.kind !== undefined
+          ? [marker.kind]
+          : [];
+      if (!kinds.includes("channel")) continue; // 채널이 아니면 여기선 스킵(아래 번들 walker 가 담음).
       if (typeof marker.name !== "string") continue;
       out.push({
         category: "channel",
@@ -125,10 +131,50 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
         source: pluginDir,
         enabled: true,
         metadata: {
-          kind: marker.kind,
+          kind: kinds.join(", "),
           schemaVersion: marker.schemaVersion,
           entry: marker.entry,
         },
+      });
+    } catch {
+      // 한 plugin 실패 무시.
+    }
+  }
+  return out;
+};
+
+// 번들 비채널 플러그인 (appRoot/plugins/* 중 kind 에 "channel" 없는 것 — service·trigger·
+// observer·provider: dashboard·scheduler·file-watch·self-growth 등). 채널은 collectChannels 가
+// "채널"로 담으니 여기선 제외(중복 방지). "플러그인"(external_plugin) 카테고리로 노출 —
+// 이게 없어 홈 플러그인 0인 공개 설치에서 플러그인 섹션이 텅 비던 버그(2026-07-09).
+const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
+  const root = path.join(repoRoot, "plugins");
+  const out: PluginEntry[] = [];
+  for (const dir of safeReaddir(root)) {
+    try {
+      const pluginDir = path.resolve(root, dir);
+      const pkg = safeReadJson(path.join(pluginDir, "package.json")) as
+        | { tiguclaw?: Record<string, unknown>; description?: string }
+        | undefined;
+      const m = pkg?.tiguclaw as
+        | { kind?: string | string[]; name?: string }
+        | undefined;
+      if (!m || typeof m !== "object") continue;
+      const kinds = Array.isArray(m.kind)
+        ? m.kind
+        : m.kind !== undefined
+          ? [m.kind]
+          : [];
+      if (kinds.includes("channel")) continue; // 채널은 collectChannels 담당.
+      if (typeof m.name !== "string") continue;
+      out.push({
+        category: "external_plugin",
+        layer: "in_tree", // appRoot 번들 — in-tree.
+        name: m.name,
+        description: pkg?.description,
+        source: pluginDir,
+        enabled: true,
+        metadata: { kind: kinds.join(", ") },
       });
     } catch {
       // 한 plugin 실패 무시.
@@ -443,10 +489,20 @@ export const collectInventory = async (opts?: {
   };
 
   const channel = safe(() => collectChannels(repoRoot), [] as PluginEntry[]);
-  const external_plugin = safe(
-    () => collectExternalPlugins(),
-    [] as PluginEntry[],
-  );
+  // "플러그인"(external_plugin) = 번들 비채널 플러그인(appRoot) + 홈 플러그인. 이름 중복 제거
+  // (번들 우선 — 데몬이 appRoot 에서 로드하는 canonical). 이게 없어 공개 설치서 텅 비던 버그.
+  const external_plugin = safe(() => {
+    const bundled = collectBundledPlugins(repoRoot);
+    const home = collectExternalPlugins();
+    const seen = new Set<string>();
+    const merged: PluginEntry[] = [];
+    for (const e of [...bundled, ...home]) {
+      if (seen.has(e.name)) continue;
+      seen.add(e.name);
+      merged.push(e);
+    }
+    return merged;
+  }, [] as PluginEntry[]);
   const skill = await safeAsync(
     () => collectSkills(repoRoot),
     [] as PluginEntry[],

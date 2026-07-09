@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.43] - 2026-07-09
+
+### Fixed
+- **Large tool diffs and outputs now survive to the dashboard history, and a background scan no longer breaks on them.** The rich tool cards added in 0.3.40 could produce an event record larger than the persistence size cap; when that happened the record was truncated mid-JSON into invalid JSON. That had two effects: a big diff or command output silently failed to reappear after a page reload, and an internal maintenance scan (the self-improvement/skill-proposal pass) aborted each cycle on the malformed record. Oversized records are now truncated to still-valid JSON (keeping the step's identity, dropping only the oversized preview), the size cap was raised so typical diffs/outputs are kept in full, and the queries that read these records now skip any already-malformed row instead of failing — so existing installs recover immediately.
+
 ## [0.3.42] - 2026-07-09
 
 ### Fixed
@@ -338,7 +343,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.42...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.43...HEAD
+[0.3.43]: https://github.com/tigu77/tiguclaw/compare/v0.3.42...v0.3.43
 [0.3.42]: https://github.com/tigu77/tiguclaw/compare/v0.3.41...v0.3.42
 [0.3.41]: https://github.com/tigu77/tiguclaw/compare/v0.3.40...v0.3.41
 [0.3.40]: https://github.com/tigu77/tiguclaw/compare/v0.3.39...v0.3.40

@@ -20,7 +20,35 @@ const SKIP_TYPES = new Set<string>([
   "channel.message.out",
 ]);
 
-const MAX_PAYLOAD_CHARS = 4000; // 페이로드 비대 가드(큰 snapshot 절단).
+// 페이로드 비대 가드. 리치 도구 카드(diff ≤~7.5KB / output ≤~4.5KB, ADR 2026-07-09)를
+// 수용하되 그 위는 절단. ★절단은 반드시 *유효 JSON* 이어야 한다 — 원본 문자열 슬라이스는
+// JSON 중간을 잘라 깨진 JSON 을 만들고(`{…(truncated)`), events.payload 를 json_extract 로
+// 읽는 소비자(getRecentActivities·skill-usage)를 통째로 터뜨린다(2026-07-09 self-growth 사고).
+// 값은 리치 카드 최대(diff 60줄/6000자 → JSON+escape ~8KB)를 여유 있게 보존하도록 잡음.
+const MAX_PAYLOAD_CHARS = 10000;
+
+/**
+ * payload 를 최대 `maxChars` 로 직렬화하되 **항상 유효 JSON** 을 반환.
+ * 상한 초과 시: 스칼라·짧은 문자열 필드(threadKey/label/kind/seq 등 = 조회 키)는 보존하고
+ * 큰 객체/배열(diff/output 등)은 생략 → 이벤트 정체성·조회 가능성 유지 + 유효 JSON 보장.
+ */
+export const truncatePayloadJson = (payload: unknown, maxChars: number): string => {
+  const full = JSON.stringify(payload ?? {});
+  if (full.length <= maxChars) return full;
+  const src =
+    payload !== null && typeof payload === "object" && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {};
+  const out: Record<string, unknown> = { _truncated: true };
+  for (const [k, v] of Object.entries(src)) {
+    if (v === null || typeof v === "number" || typeof v === "boolean") out[k] = v;
+    else if (typeof v === "string") out[k] = v.length > 300 ? v.slice(0, 300) + "…" : v;
+    // 객체/배열(리치 diff/output 등)은 생략 — 유효 JSON 유지 + 조회 키 보존.
+  }
+  const s = JSON.stringify(out);
+  return s.length <= maxChars ? s : `{"_truncated":true}`; // 스칼라도 초과하는 극단 → 유효 하드폴백.
+};
+
 const RETENTION_KEEP = 10_000; // 최근 N건 유지.
 const PRUNE_EVERY = 256; // N건마다 1회 prune(매 insert prune 회피).
 
@@ -34,10 +62,7 @@ export const startEventPersistence = (bus: EventBus): void => {
   bus.subscribe((event) => {
     if (SKIP_TYPES.has(event.type)) return;
     try {
-      let payload = JSON.stringify(event.payload ?? {});
-      if (payload.length > MAX_PAYLOAD_CHARS) {
-        payload = `${payload.slice(0, MAX_PAYLOAD_CHARS)}…(truncated)`;
-      }
+      const payload = truncatePayloadJson(event.payload, MAX_PAYLOAD_CHARS);
       insertEvent(event.ts, event.type, payload);
       if (++sinceLastPrune >= PRUNE_EVERY) {
         sinceLastPrune = 0;

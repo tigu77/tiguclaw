@@ -127,25 +127,26 @@ export const getRecentSkillInvocations = (opts?: {
   sinceTs?: number;
   limit?: number;
 }): { name: string; threadKey: string; ts: number }[] => {
-  const where: string[] = [
-    `type = 'skill.invoked'`,
-    `json_extract(payload, '$.name') IS NOT NULL`,
-    `json_extract(payload, '$.threadKey') IS NOT NULL`,
-  ];
+  // ★json_valid 가드(2026-07-09, getRecentActivities 동형): 깨진 JSON payload 행이 json_extract
+  // 를 통째로 터뜨리지 못하게 inner 에서 유효 행만 걸러 투영.
+  const innerWhere: string[] = [`type = 'skill.invoked'`, `json_valid(payload)`];
   const params: unknown[] = [];
   if (opts?.sinceTs !== undefined) {
-    where.push(`ts >= ?`);
+    innerWhere.push(`ts >= ?`);
     params.push(opts.sinceTs);
   }
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 5000;
   const rows = getDb()
     .prepare(
-      `SELECT
-         json_extract(payload, '$.name')      AS name,
-         json_extract(payload, '$.threadKey') AS threadKey,
-         ts
-       FROM events
-       WHERE ${where.join(" AND ")}
+      `SELECT name, threadKey, ts FROM (
+         SELECT
+           json_extract(payload, '$.name')      AS name,
+           json_extract(payload, '$.threadKey') AS threadKey,
+           ts
+         FROM events
+         WHERE ${innerWhere.join(" AND ")}
+       )
+       WHERE name IS NOT NULL AND threadKey IS NOT NULL
        ORDER BY ts ASC
        LIMIT ?`,
     )

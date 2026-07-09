@@ -77,14 +77,20 @@ export const listEvents = (opts?: {
 export const getLastWorkerActivity = (
   threadKey: string,
 ): { label: string; ts: number } | null => {
+  // ★json_valid 가드(2026-07-09): 깨진 JSON 행이 json_extract 를 터뜨리지 못하게 inner 에서
+  // 유효 행만 걸러 투영(getRecentActivities 동형).
   const row = getDb()
     .prepare(
-      `SELECT ts, json_extract(payload, '$.label') AS label
+      `SELECT ts, label FROM (
+         SELECT id, ts,
+           json_extract(payload, '$.label') AS label,
+           json_extract(payload, '$.threadKey') AS tk
          FROM events
-        WHERE type = 'llm.activity'
-          AND json_extract(payload, '$.threadKey') = ?
-        ORDER BY id DESC
-        LIMIT 1`,
+         WHERE type = 'llm.activity' AND json_valid(payload)
+       )
+       WHERE tk = ?
+       ORDER BY id DESC
+       LIMIT 1`,
     )
     .get(threadKey) as { ts: number; label: string | null } | undefined;
   if (row === undefined || row.label === null) return null;
@@ -108,26 +114,28 @@ export const getRecentActivities = (opts?: {
   sinceTs?: number;
   limit?: number;
 }): { threadKey: string; ts: number; label: string; kind: string }[] => {
-  const where: string[] = [
-    `type = 'llm.activity'`,
-    `json_extract(payload, '$.threadKey') IS NOT NULL`,
-    `json_extract(payload, '$.label') IS NOT NULL`,
-  ];
+  // ★json_valid 가드(2026-07-09): 깨진 JSON payload 행이 하나라도 스캔 범위에 있으면 SQLite
+  // json_extract 가 전체 쿼리를 "malformed JSON" 으로 터뜨린다. inner 에서 json_valid 로
+  // 걸러 유효 행만 json_extract 로 투영 → 한 나쁜 행이 스캔을 죽이지 못하게(견고성).
+  const innerWhere: string[] = [`type = 'llm.activity'`, `json_valid(payload)`];
   const params: unknown[] = [];
   if (opts?.sinceTs !== undefined) {
-    where.push(`ts >= ?`);
+    innerWhere.push(`ts >= ?`);
     params.push(opts.sinceTs);
   }
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 5000;
   const rows = getDb()
     .prepare(
-      `SELECT
-         json_extract(payload, '$.threadKey') AS threadKey,
-         ts,
-         json_extract(payload, '$.label') AS label,
-         json_extract(payload, '$.kind')  AS kind
-       FROM events
-       WHERE ${where.join(" AND ")}
+      `SELECT threadKey, ts, label, kind FROM (
+         SELECT
+           json_extract(payload, '$.threadKey') AS threadKey,
+           ts,
+           json_extract(payload, '$.label') AS label,
+           json_extract(payload, '$.kind')  AS kind
+         FROM events
+         WHERE ${innerWhere.join(" AND ")}
+       )
+       WHERE threadKey IS NOT NULL AND label IS NOT NULL
        ORDER BY threadKey ASC, ts ASC
        LIMIT ?`,
     )

@@ -244,6 +244,8 @@ interface HistoryActivity {
   seq: number;
   label: string;
   detail: string;
+  diff?: unknown; // 리치 diff(ActivityDiff) — 있으면 그대로 통과(대시보드가 렌더). 2026-07-09.
+  output?: unknown; // 리치 출력(ActivityOutput) — phase:"end" 에서 시작 스텝으로 병합. 2026-07-09.
 }
 const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] => {
   if (entries.length === 0) return [];
@@ -251,7 +253,11 @@ const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] =>
   const newestTs = entries[entries.length - 1].ts;
   try {
     const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 });
+    // 1차 파싱 — start 스텝은 out 으로, end 이벤트의 output 은 (threadKey|adapter|seq) 맵으로
+    // 모아 뒤에 시작 스텝에 병합(라이브의 phase:end→스텝 주석과 동형). durationMs 는 이력 불필요.
     const out: HistoryActivity[] = [];
+    const endOutputs = new Map<string, unknown>();
+    const okey = (tk: string, adapter: string, seq: number) => tk + "|" + adapter + "|" + seq;
     for (const e of raw) {
       if (e.ts > newestTs) continue;
       let p: {
@@ -262,26 +268,42 @@ const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] =>
         detail?: unknown;
         phase?: unknown;
         kind?: unknown;
+        diff?: unknown;
+        output?: unknown;
       };
       try {
         p = JSON.parse(e.payload);
       } catch {
         continue;
       }
-      if (p.phase === "end") continue; // 실행시간 주석 제외 — 스텝만.
       if (p.kind !== "tool") continue;
       const tk = typeof p.threadKey === "string" ? p.threadKey : "";
       if (tk.startsWith("worker:") || tk.startsWith("agent:") || tk.startsWith("gateway:")) {
         continue; // 잡·게이트웨이 스텝은 채팅 이력 아님.
       }
+      const seq = typeof p.seq === "number" ? p.seq : 0;
+      const adapter = typeof p.adapter === "string" ? p.adapter : "";
+      if (p.phase === "end") {
+        // 실행시간 주석 이벤트 — 스텝은 아니나 output 이 있으면 시작 스텝에 병합.
+        if (p.output !== undefined && p.output !== null) endOutputs.set(okey(tk, adapter, seq), p.output);
+        continue;
+      }
       out.push({
         ts: e.ts,
         threadKey: tk,
-        adapter: typeof p.adapter === "string" ? p.adapter : "",
-        seq: typeof p.seq === "number" ? p.seq : 0,
+        adapter,
+        seq,
         label: typeof p.label === "string" ? p.label : "tool",
         detail: typeof p.detail === "string" ? p.detail : "",
+        ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
       });
+    }
+    // 2차 — end output 을 대응 시작 스텝에 병합.
+    if (endOutputs.size > 0) {
+      for (const s of out) {
+        const o = endOutputs.get(okey(s.threadKey, s.adapter, s.seq));
+        if (o !== undefined) s.output = o;
+      }
     }
     return out;
   } catch {

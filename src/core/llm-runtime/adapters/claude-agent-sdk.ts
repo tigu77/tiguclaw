@@ -37,6 +37,8 @@ import { getSession } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { buildActivityDetail } from "./_activity-detail.js";
+import { buildActivityDiff } from "./_activity-diff.js";
+import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { DISALLOWED_TOOLS } from "../../../auth/permissions.js";
 import { getEventBus } from "../../eventbus.js";
@@ -654,6 +656,7 @@ export const runClaude = async (
     entry: { jobId: string; agentName: string; seq: number },
     label: string,
     detail: string | undefined,
+    diff: ReturnType<typeof buildActivityDiff>,
   ): void => {
     try {
       bus.publish({
@@ -668,6 +671,7 @@ export const runClaude = async (
           kind: "tool",
           label,
           ...(detail !== undefined ? { detail } : {}),
+          ...(diff !== undefined ? { diff } : {}),
         } satisfies RegionAActivityPayload,
       });
     } catch {
@@ -838,14 +842,15 @@ export const runClaude = async (
           ) {
             const toolName = String((block as { name?: unknown }).name ?? "tool");
             const toolInput = (block as { input?: unknown }).input;
-            const detail = buildActivityDetail(
+            const normInput =
               toolInput && typeof toolInput === "object"
                 ? (toolInput as Record<string, unknown>)
-                : undefined,
-            );
+                : undefined;
+            const detail = buildActivityDetail(normInput);
+            const diff = buildActivityDiff(toolName, normInput);
             if (nestedEntry !== undefined) {
               // 서브 내부 도구 — agent:<jobId> 좌표 activity(codex 서브 per-step 동형).
-              publishAgentToolActivity(nestedEntry, toolName, detail);
+              publishAgentToolActivity(nestedEntry, toolName, detail, diff);
             } else {
               // 부모 top-level tool_use. name==="Task" 면 서브에이전트 spawn → 관측 잡 등록.
               // (nested 는 위에서 이미 분기되므로 여기 도달 = parent_tool_use_id===null 부모.)
@@ -873,6 +878,7 @@ export const runClaude = async (
                   kind: "tool",
                   label: toolName,
                   detail,
+                  ...(diff !== undefined ? { diff } : {}),
                 } satisfies RegionAActivityPayload,
               });
             }
@@ -892,6 +898,7 @@ export const runClaude = async (
           const timing = toolTiming.get(toolUseId);
           if (timing !== undefined) {
             toolTiming.delete(toolUseId);
+            const output = buildActivityOutput(timing.label, text, isError);
             try {
               bus.publish({
                 type: "llm.activity",
@@ -905,6 +912,7 @@ export const runClaude = async (
                   label: timing.label,
                   phase: "end",
                   durationMs: Date.now() - timing.t0,
+                  ...(output !== undefined ? { output } : {}),
                 } satisfies RegionAActivityPayload,
               });
             } catch {

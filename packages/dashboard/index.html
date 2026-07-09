@@ -378,6 +378,33 @@
       body[data-chat-panel="chat"] .turn-card.done-collapsed .turn-body { display:none; }
       /* 선택된 스텝 하이라이트(P4 마스터-디테일). */
       .act-line.act-step.selected { background:rgba(125,211,252,.16); box-shadow:inset 0 0 0 1px rgba(125,211,252,.4); }
+      /* 리치 diff(Edit/Write, 2026-07-09) — 스텝/이력 줄 아래로 접이식 초록·빨강 diff.
+         부모 flex 행이 wrap 하도록 해 diff 블록(width:100%)이 다음 줄로 내려간다. */
+      .act-line.act-step, .hist-tool { flex-wrap:wrap; }
+      .act-diff { flex-basis:100%; width:100%; margin:2px 0 1px; }
+      .act-diff-head { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-size:10px; color:var(--text-dim); padding:1px 4px; border-radius:6px; }
+      .act-diff-head:hover { background:rgba(255,255,255,.05); }
+      .act-diff-caret { font-size:8px; transition:transform .12s ease; }
+      .act-diff.open .act-diff-caret { transform:rotate(90deg); }
+      .act-diff-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
+      .act-diff-stat .dadd { color:#3fb950; font-weight:700; }
+      .act-diff-stat .ddel { color:#f85149; font-weight:700; }
+      .act-diff-body { display:none; }
+      .act-diff.open .act-diff-body { display:block; }
+      .act-diff-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow:auto; max-height:340px; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; }
+      .act-diff-pre .dl { white-space:pre; display:block; padding:0 2px; border-radius:2px; }
+      .act-diff-pre .dl-add { color:#7ee787; background:rgba(63,185,80,.15); }
+      .act-diff-pre .dl-del { color:#ffa198; background:rgba(248,81,73,.15); }
+      .act-diff-pre .dl-ctx { color:var(--text-mute); }
+      .act-diff-pre .dl-trunc { color:var(--text-dim); font-style:italic; }
+      /* 리치 출력 프리뷰(Bash/Read/Grep/Glob) — diff 와 동형 접이식, 단색 mono. */
+      .act-output { flex-basis:100%; width:100%; margin:2px 0 1px; }
+      .act-output-head { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-size:10px; color:var(--text-dim); padding:1px 4px; border-radius:6px; }
+      .act-output-head:hover { background:rgba(255,255,255,.05); }
+      .act-output.open .act-diff-caret { transform:rotate(90deg); }
+      .act-output.err .act-output-lbl { color:#ffa198; }
+      .act-output-pre { margin:3px 0 2px; padding:6px 8px; background:rgba(0,0,0,.28); border-radius:6px; overflow:auto; max-height:300px; white-space:pre-wrap; word-break:break-word; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); }
+      .act-output.err .act-output-pre { color:#ffb4ac; }
       /* P5 L3 — 진행(타이핑) 버블: 델타 누적 중엔 평문 + 깜빡이는 커서, out 도착 시 마크다운 전체본으로 승격. */
       .chat-message.streaming::after { content:"▌"; color:var(--accent-2); animation:tg-cursor-blink 1s step-start infinite; margin-left:1px; }
       @keyframes tg-cursor-blink { 50% { opacity:0; } }
@@ -2133,11 +2160,26 @@
         b.title = "도구 실행시간 " + fmtDur(ms);
       };
       const annotateToolDuration = (ap) => {
-        if (ap.seq == null || ap.durationMs == null) return;
+        if (ap.seq == null) return;
         const tk = ap.threadKey || "";
-        // 사이드바 상세도 실행시간 보이게 — 저장된 시작 payload 에 durationMs 병합(있으면).
+        // 사이드바 상세도 실행시간·출력 보이게 — 저장된 시작 payload 에 병합(있으면).
         const stored = activityByStep.get(stepKey(tk, ap.seq));
-        if (stored) stored.durationMs = ap.durationMs;
+        if (stored) {
+          if (ap.durationMs != null) stored.durationMs = ap.durationMs;
+          if (ap.output) stored.output = ap.output;
+        }
+        // 리치 출력(Bash/Read/Grep/Glob, phase:end) — 시작 스텝 라인에 접이식 블록 append.
+        // (메인 스트림 스텝만; 잡 카드 스텝은 durationMs 뱃지만 — 아래 (a) 에서 return.)
+        if (ap.output && (tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0)) {
+          const oLines = stream.querySelectorAll('.act-line[data-seq="' + ap.seq + '"][data-threadkey="' + tk + '"]');
+          for (let i = oLines.length - 1; i >= 0; i--) {
+            if (!oLines[i].querySelector(":scope > .act-output")) {
+              oLines[i].appendChild(buildOutputBlock(ap.output));
+              break;
+            }
+          }
+        }
+        if (ap.durationMs == null) return;
         // (a) 잡 카드 스텝 — worker:/agent: 좌표면 그 카드 stepsEl 에서 seq 로 찾아 주석.
         if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0) {
           const jobId = tk.slice(tk.indexOf(":") + 1);
@@ -2587,6 +2629,75 @@
         if (olderObserver === null) setupOlderObserver();
       };
 
+      // 리치 diff 블록(Edit/Write, ADR 2026-07-09) — 접이식 초록·빨강 diff. 라이브 스텝·
+      // 이력 줄 공용. 캡처(런타임)가 구조화한 diff 를 여기선 *렌더*만(초록/빨강 뷰=채널 몫).
+      const buildDiffBlock = (diff) => {
+        const wrap = document.createElement("div");
+        wrap.className = "act-diff";
+        const head = document.createElement("div");
+        head.className = "act-diff-head";
+        const caret = document.createElement("span");
+        caret.className = "act-diff-caret"; caret.textContent = "▸";
+        head.appendChild(caret);
+        if (diff.path) {
+          const ps = document.createElement("span");
+          ps.className = "act-diff-path"; ps.textContent = diff.path;
+          head.appendChild(ps);
+        }
+        const stat = document.createElement("span");
+        stat.className = "act-diff-stat";
+        const add = document.createElement("span");
+        add.className = "dadd"; add.textContent = "+" + (diff.added || 0);
+        const del = document.createElement("span");
+        del.className = "ddel"; del.textContent = "-" + (diff.removed || 0);
+        stat.appendChild(add); stat.appendChild(document.createTextNode(" ")); stat.appendChild(del);
+        head.appendChild(stat);
+        const body = document.createElement("div");
+        body.className = "act-diff-body";
+        const pre = document.createElement("pre");
+        pre.className = "act-diff-pre";
+        for (const ln of (diff.lines || [])) {
+          const row = document.createElement("div");
+          const op = ln.op === "+" ? "add" : ln.op === "-" ? "del" : "ctx";
+          row.className = "dl dl-" + op;
+          row.textContent = (ln.op || " ") + " " + (ln.text != null ? ln.text : "");
+          pre.appendChild(row);
+        }
+        if (diff.truncated) {
+          const t = document.createElement("div");
+          t.className = "dl dl-trunc"; t.textContent = "… (이하 생략 — 크기 제한)";
+          pre.appendChild(t);
+        }
+        body.appendChild(pre);
+        // 헤더 클릭 = diff 펼침/접힘. 스텝 클릭(사이드바)로 전파 방지.
+        head.addEventListener("click", (e) => { e.stopPropagation(); wrap.classList.toggle("open"); });
+        wrap.appendChild(head); wrap.appendChild(body);
+        return wrap;
+      };
+
+      // 리치 출력 블록(Bash/Read/Grep/Glob, ADR 2026-07-09 슬라이스 2/3) — 접이식 결과 프리뷰.
+      const buildOutputBlock = (output) => {
+        const wrap = document.createElement("div");
+        wrap.className = "act-output" + (output.isError ? " err" : "");
+        const head = document.createElement("div");
+        head.className = "act-output-head";
+        const caret = document.createElement("span");
+        caret.className = "act-diff-caret"; caret.textContent = "▸";
+        const lbl = document.createElement("span");
+        lbl.className = "act-output-lbl";
+        lbl.textContent = output.isError ? "출력 (에러)" : "출력";
+        head.appendChild(caret); head.appendChild(lbl);
+        const body = document.createElement("div");
+        body.className = "act-diff-body";
+        const pre = document.createElement("pre");
+        pre.className = "act-output-pre";
+        pre.textContent = (output.text != null ? output.text : "") + (output.truncated ? "\n… (이하 생략 — 크기 제한)" : "");
+        body.appendChild(pre);
+        head.addEventListener("click", (e) => { e.stopPropagation(); wrap.classList.toggle("open"); });
+        wrap.appendChild(head); wrap.appendChild(body);
+        return wrap;
+      };
+
       const buildActivityLine = (p) => {
         const line = document.createElement("div");
         // 스텝 = 클릭 가능 요소(P4 사이드바 상세가 여기 붙는다). 지금은 자리 예약만(no-op).
@@ -2612,6 +2723,8 @@
         line.appendChild(icon); line.appendChild(label);
         if (detail) line.appendChild(detail);
         line.appendChild(meta);
+        // 리치 diff(Edit/Write) — 있으면 스텝 줄 아래 접이식 블록(flex-wrap 로 다음 줄).
+        if (p.diff && Array.isArray(p.diff.lines)) line.appendChild(buildDiffBlock(p.diff));
         // P4 — 클릭 시 data-threadkey/data-seq 로 마스터 payload 조회 → 우측 사이드바 상세.
         line.addEventListener("click", () => {
           const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq));
@@ -2993,6 +3106,10 @@
           d.className = "hist-tool-detail"; d.textContent = a.detail;
           line.appendChild(d);
         }
+        // 리치 diff 복원(Edit/Write) — 라이브와 동일 블록(flex-wrap 로 줄 아래).
+        if (a.diff && Array.isArray(a.diff.lines)) line.appendChild(buildDiffBlock(a.diff));
+        // 리치 출력 복원(Bash/Read/Grep/Glob) — phase:end 에서 브리지가 병합한 output.
+        if (a.output && typeof a.output.text === "string") line.appendChild(buildOutputBlock(a.output));
         stream.insertBefore(line, stream.firstChild);
         localChatCount += 1;
       };

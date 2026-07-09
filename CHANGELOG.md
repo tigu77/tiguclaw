@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.40] - 2026-07-09
+
+### Added
+- **The dashboard chat now shows what a tool actually did — diffs and output, inline and expandable.** A file edit shows a green/red line diff with a `+added -removed` count (the way a code review does); a new file write shows its added lines; and `Bash`, `Read`, `Grep`, and `Glob` show a preview of their output (errors tinted red). Each block is collapsed to a one-line summary you can click to expand, so the chat stays clean. Like the tool steps themselves, these are recorded and restored when you reload the page. The structured data is captured in the LLM runtime (identically across the Claude, Codex, and OpenAI backends) and only rendered by the dashboard, so it's backend-neutral and stays out of your chat channels; previews are size-capped so a huge file or command output can't bloat anything.
+
 ## [0.3.39] - 2026-07-09
 
 ### Fixed
@@ -323,7 +328,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.39...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.40...HEAD
+[0.3.40]: https://github.com/tigu77/tiguclaw/compare/v0.3.39...v0.3.40
 [0.3.39]: https://github.com/tigu77/tiguclaw/compare/v0.3.38...v0.3.39
 [0.3.38]: https://github.com/tigu77/tiguclaw/compare/v0.3.37...v0.3.38
 [0.3.37]: https://github.com/tigu77/tiguclaw/compare/v0.3.36...v0.3.37

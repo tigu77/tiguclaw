@@ -69,6 +69,8 @@ import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
+import { buildActivityDiffFromJson } from "./_activity-diff.js";
+import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import {
@@ -490,6 +492,13 @@ export const runOpenAi = async (
                   typeof raw.arguments === "string"
                     ? buildActivityDetailFromJson(raw.arguments)
                     : undefined,
+                ...(() => {
+                  const diff =
+                    typeof raw.arguments === "string"
+                      ? buildActivityDiffFromJson(raw.name || "tool", raw.arguments)
+                      : undefined;
+                  return diff !== undefined ? { diff } : {};
+                })(),
               } satisfies RegionAActivityPayload,
             });
           }
@@ -500,7 +509,7 @@ export const runOpenAi = async (
           // 실행시간(#3) — 도구 완료(function_call_result). 같은 callId 의 시작 기록을 찾아
           // phase:"end"+durationMs 발행(같은 seq → 대시보드가 시작 스텝에 주석). best-effort.
           const raw = (ev as { item?: { rawItem?: unknown } }).item?.rawItem as
-            | { callId?: unknown; call_id?: unknown }
+            | { callId?: unknown; call_id?: unknown; output?: unknown }
             | undefined;
           const callId =
             typeof raw?.callId === "string"
@@ -511,6 +520,15 @@ export const runOpenAi = async (
           const timing = callId !== undefined ? toolTiming.get(callId) : undefined;
           if (callId !== undefined && timing !== undefined) {
             toolTiming.delete(callId);
+            // 결과 텍스트 추출(방어적) — string 이거나 {type:"text",text} / {text} 노드.
+            const rawOut = raw?.output;
+            const outText =
+              typeof rawOut === "string"
+                ? rawOut
+                : rawOut && typeof rawOut === "object"
+                  ? String((rawOut as { text?: unknown }).text ?? "")
+                  : "";
+            const outPreview = buildActivityOutput(timing.label, outText);
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),
@@ -524,6 +542,7 @@ export const runOpenAi = async (
                 label: timing.label,
                 phase: "end",
                 durationMs: Date.now() - timing.t0,
+                ...(outPreview !== undefined ? { output: outPreview } : {}),
               } satisfies RegionAActivityPayload,
             });
           }

@@ -99,6 +99,8 @@ import type {
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
+import { buildActivityDiffFromJson } from "./_activity-diff.js";
+import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
@@ -2070,6 +2072,10 @@ export const runOpenAiCodex = async (
             kind: "tool",
             label: tc.name || "tool",
             detail: buildActivityDetailFromJson(tc.partialJson),
+            ...(() => {
+              const diff = buildActivityDiffFromJson(tc.name || "tool", tc.partialJson);
+              return diff !== undefined ? { diff } : {};
+            })(),
           } satisfies RegionAActivityPayload,
         });
       }
@@ -2244,6 +2250,7 @@ export const runOpenAiCodex = async (
         toolCalls.map(
           async (tc): Promise<{ callId: string; output: string }> => {
             let output: string;
+            let toolErr = false; // 리치 출력 프리뷰 isError 표기용.
             const toolT0 = Date.now(); // 실행시간(#3) — callTool 벽시계 시작.
             try {
               const args =
@@ -2328,11 +2335,13 @@ export const runOpenAiCodex = async (
               if (output === "") output = JSON.stringify(result ?? {});
             } catch (e) {
               output = `Error: ${e instanceof Error ? e.message : String(e)}`;
+              toolErr = true;
             }
             // 실행시간(#3) — 성공/실패/타임아웃 무관 도구 실행 벽시계를 phase:"end" 로 발행.
             // 같은 seq → 대시보드가 시작 스텝에 실행시간 주석. best-effort(원칙 3).
             const endSeq = tc.callId ? callIdToSeq.get(tc.callId) : undefined;
             if (endSeq !== undefined) {
+              const outPreview = buildActivityOutput(tc.name || "tool", output, toolErr);
               try {
                 bus.publish({
                   type: "llm.activity",
@@ -2347,6 +2356,7 @@ export const runOpenAiCodex = async (
                     label: tc.name || "tool",
                     phase: "end",
                     durationMs: Date.now() - toolT0,
+                    ...(outPreview !== undefined ? { output: outPreview } : {}),
                   } satisfies RegionAActivityPayload,
                 });
               } catch {

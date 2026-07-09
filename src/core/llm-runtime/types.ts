@@ -275,6 +275,61 @@ export interface RegionAActivityPayload {
    * claude/openai=tool_use→tool_result 구간)이나 필드 의미·단위는 셋 다 동일.
    */
   durationMs?: number;
+  /**
+   * 리치 렌더용 구조화 diff (2026-07-09, additive·하위호환·optional).
+   * kind="tool" & 도구가 Edit/Write 일 때만 채운다(그 외 미설정). `phase:"start"` 에만
+   * 실림 — 인자가 알려지는 시점.
+   *
+   * ★캡처/렌더 분리(ADR 2026-07-09): 여기(런타임)서 구조화만 하고, diff *뷰*(초록/빨강)
+   * 는 대시보드 몫. 채널 무관 — 텔레그램은 안 그리지만 데이터는 채널 무관 payload 에 실려
+   * events 로 영속(이력 복원·미래 채널 재사용 가능).
+   *
+   * ★LLM-agnostic 하드게이트(#2): 세 어댑터가 공유 빌더(`_activity-diff.ts`)로 동일하게
+   * 채운다(detail 과 동형). 한쪽만 채우면 #2 위반.
+   */
+  diff?: ActivityDiff;
+  /**
+   * 리치 렌더용 도구 출력 프리뷰 (2026-07-09, additive·optional). diff 와 달리 *결과*
+   * (tool_result)라 `phase:"end"` 에만 실린다 — Bash 출력·Read 내용·Grep/Glob 결과.
+   * 화이트리스트(Bash/Read/Grep/Glob) 밖 도구는 미설정. 크기 캡(프리뷰).
+   *
+   * ★LLM-agnostic(#2): 세 어댑터가 공유 빌더(`_activity-output.ts`)로 동일하게 채운다.
+   * ★캡처/렌더 분리(ADR 2026-07-09): 여기(런타임)선 프리뷰 텍스트만, 렌더는 대시보드 몫.
+   */
+  output?: ActivityOutput;
+}
+
+/** 리치 도구 출력 프리뷰 (ADR 2026-07-09 슬라이스 2/3). */
+export interface ActivityOutput {
+  /** 출력 프리뷰 텍스트 (크기 캡 적용). */
+  text: string;
+  /** 크기 캡으로 잘렸나. */
+  truncated?: boolean;
+  /** 도구 실행 에러 결과인가 (렌더 붉은 틴트). */
+  isError?: boolean;
+}
+
+/**
+ * 리치 도구 렌더용 구조화 diff (ADR 2026-07-09 슬라이스 1).
+ * Edit=old_string↔new_string 줄 diff, Write=쓴 내용 전부 추가.
+ */
+export interface ActivityDiff {
+  /** 대상 파일 경로 (렌더 헤더 편의 — detail 과 중복이나 파싱 불요하게). */
+  path?: string;
+  /** 추가된 줄 수 (총계 — `lines` 컷 전 실제값). */
+  added: number;
+  /** 삭제된 줄 수 (총계 — `lines` 컷 전 실제값). */
+  removed: number;
+  /** 렌더용 줄들 (크기 캡 적용 — 초과 시 컷 + truncated). */
+  lines: ActivityDiffLine[];
+  /** `lines` 가 크기 캡으로 잘렸나. added/removed 카운트는 총계 유지. */
+  truncated?: boolean;
+}
+
+/** diff 한 줄 — op(+추가/-삭제/공백=context) + 텍스트(개행 제외). */
+export interface ActivityDiffLine {
+  op: "+" | "-" | " ";
+  text: string;
 }
 
 /**

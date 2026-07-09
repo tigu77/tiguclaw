@@ -56,6 +56,7 @@ import {
   resolveTier,
   type ModelSpec,
 } from "../../src/core/llm-runtime/index.js";
+import { listEvents } from "../../src/store/events.js";
 import { listJobs } from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
@@ -230,6 +231,62 @@ const flattenChatMessages = (
     else turns.push(`[${role}]\n${content}`);
   }
   return { system: sys.join("\n\n"), text: turns.join("\n\n") };
+};
+
+// ── 이력 도구 스텝(기능 B, 2026-07-09) — chat_log 메시지 window 와 같은 ts 범위의 영속
+// llm.activity(start·tool, 워커·서브·게이트웨이 제외)를 복원용으로 반환. 도구 스텝은 events 에
+// 이미 영속되나 chat-history 는 메시지만 줬다 → 새로고침 시 도구 사용이 사라져 보였음. 이제
+// 여기서 함께 반환하고 대시보드가 메시지와 시간순 인터리브 렌더. best-effort(실패=빈 배열). ──
+interface HistoryActivity {
+  ts: number;
+  threadKey: string;
+  adapter: string;
+  seq: number;
+  label: string;
+  detail: string;
+}
+const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] => {
+  if (entries.length === 0) return [];
+  const sinceTs = entries[0].ts; // ASC — oldest.
+  const newestTs = entries[entries.length - 1].ts;
+  try {
+    const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 });
+    const out: HistoryActivity[] = [];
+    for (const e of raw) {
+      if (e.ts > newestTs) continue;
+      let p: {
+        threadKey?: unknown;
+        adapter?: unknown;
+        seq?: unknown;
+        label?: unknown;
+        detail?: unknown;
+        phase?: unknown;
+        kind?: unknown;
+      };
+      try {
+        p = JSON.parse(e.payload);
+      } catch {
+        continue;
+      }
+      if (p.phase === "end") continue; // 실행시간 주석 제외 — 스텝만.
+      if (p.kind !== "tool") continue;
+      const tk = typeof p.threadKey === "string" ? p.threadKey : "";
+      if (tk.startsWith("worker:") || tk.startsWith("agent:") || tk.startsWith("gateway:")) {
+        continue; // 잡·게이트웨이 스텝은 채팅 이력 아님.
+      }
+      out.push({
+        ts: e.ts,
+        threadKey: tk,
+        adapter: typeof p.adapter === "string" ? p.adapter : "",
+        seq: typeof p.seq === "number" ? p.seq : 0,
+        label: typeof p.label === "string" ? p.label : "tool",
+        detail: typeof p.detail === "string" ? p.detail : "",
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
 };
 
 // endpoint × role 매핑 — contract §1.Q3 표 그대로.
@@ -625,7 +682,12 @@ class HttpBridge implements Channel, Observer {
           beforeTs !== undefined ? { limit, beforeTs } : { limit },
         );
         // 비서 표시 이름(AGENT.md 이름 필드, 없으면 tiguclaw) — 대시보드 채팅 라벨용.
-        writeJson(res, 200, { entries, assistantName: getAssistantName() });
+        // activities(기능 B) — 이력에 도구 스텝 복원(새로고침 후에도 도구 사용 표시).
+        writeJson(res, 200, {
+          entries,
+          activities: historyActivities(entries),
+          assistantName: getAssistantName(),
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });

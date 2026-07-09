@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.39] - 2026-07-09
+
+### Fixed
+- **The dashboard chat now keeps your tool steps after a refresh.** Tool activity (a file read, an edit, a shell command) was shown live while a turn ran but vanished when you reloaded the page — so revisiting a past conversation showed only the messages, not what the assistant actually did. Those steps were already recorded; the chat history now returns them alongside the messages and renders each as a compact step line, interleaved in time. Live steps and reloaded steps are de-duplicated, so a step never appears twice. (Older steps reached by scrolling further up aren't restored yet — only the recent history shown on load.)
+
 ## [0.3.38] - 2026-07-09
 
 ### Added
@@ -318,7 +323,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.38...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.39...HEAD
+[0.3.39]: https://github.com/tigu77/tiguclaw/compare/v0.3.38...v0.3.39
 [0.3.38]: https://github.com/tigu77/tiguclaw/compare/v0.3.37...v0.3.38
 [0.3.37]: https://github.com/tigu77/tiguclaw/compare/v0.3.36...v0.3.37
 [0.3.36]: https://github.com/tigu77/tiguclaw/compare/v0.3.35...v0.3.36

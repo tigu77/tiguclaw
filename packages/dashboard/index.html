@@ -348,6 +348,11 @@
       .dur-badge { color:var(--accent-2); font-size:10px; font-weight:800; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; margin-left:6px; }
       .dur-badge.slow { color:var(--warn); }
       .bg-step .dur-badge { margin-left:auto; }
+      /* 이력 도구 스텝(기능 B) — 새로고침 후 복원된 도구 사용 한 줄. */
+      .hist-tool { display:flex; align-items:baseline; gap:7px; padding:2px 2px; font-size:11px; color:var(--text-mute); }
+      .hist-tool-icon { font-size:12px; flex:none; }
+      .hist-tool-label { color:var(--text); font-weight:700; flex:none; }
+      .hist-tool-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .turn-card { padding:0; overflow:hidden; }
       .turn-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
       .turn-head:hover { background:rgba(255,255,255,.04); }
@@ -2007,6 +2012,10 @@
       // 메시지를 추적해 SSE 의 channel.message.in/out 이 같은 키면 스킵한다(안정 dedup).
       const renderedMsgKeys = new Set();
       const msgKey = (ts, role) => String(ts) + "|" + role;
+      // 도구 스텝 dedup(기능 B) — chat-history 로 그린 영속 스텝과 SSE replay(같은 활동) 가
+      // 겹치지 않게. 키 = ts|threadKey|seq (라이브 activity·영속 activity 동일).
+      const renderedActivityKeys = new Set();
+      const actKey = (ts, threadKey, seq) => String(ts) + "|" + (threadKey || "") + "|" + (seq == null ? "" : seq);
 
       const refreshChatEmpty = () => {
         const chatEmpty = document.getElementById("chat-empty");
@@ -2749,6 +2758,10 @@
 
       const renderActivity = (p, ts) => {
         const thread = p.threadKey || "?";
+        // dedup(기능 B) — chat-history 가 이미 그린 영속 스텝이면 SSE replay 는 스킵(중복 차단).
+        const ak = actKey(p.ts != null ? p.ts : ts, thread, p.seq);
+        if (renderedActivityKeys.has(ak)) return;
+        renderedActivityKeys.add(ak);
         // 마스터 데이터 저장: 전체 payload 를 threadKey+seq 키로(클릭 시 상세 조회).
         activityByStep.set(stepKey(thread, p.seq), p);
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
@@ -2964,6 +2977,26 @@
         localChatCount += 1;
       };
 
+      // 이력 도구 스텝(기능 B) — 영속 llm.activity 를 한 줄 스텝으로 복원(새로고침 후에도 표시).
+      // 라이브 turn-card 스텝과 다른 경량 표현(라인). insertBefore(firstChild)=메시지와 동일 배치.
+      const renderHistoryActivity = (a) => {
+        const line = document.createElement("div");
+        line.className = "ev local hist-tool";
+        if (a.ts != null) line.dataset.ts = String(a.ts);
+        const icon = document.createElement("span");
+        icon.className = "hist-tool-icon"; icon.textContent = "🔧";
+        const label = document.createElement("span");
+        label.className = "hist-tool-label"; label.textContent = a.label || "tool";
+        line.appendChild(icon); line.appendChild(label);
+        if (a.detail) {
+          const d = document.createElement("span");
+          d.className = "hist-tool-detail"; d.textContent = a.detail;
+          line.appendChild(d);
+        }
+        stream.insertBefore(line, stream.firstChild);
+        localChatCount += 1;
+      };
+
       // ── 페이지네이션 상태(기능 2) ────────────────────────────────────────
       // 초기 최근 100 + 위(시각 최上=최古)로 스크롤 시 더 로드(column-reverse). 수동
       // scrollTop 계산 비일관 회피 → IntersectionObserver 센티넬(DOM 끝=최古쪽) 방식.
@@ -3084,16 +3117,27 @@
             applyAssistantName();
           }
           const entries = Array.isArray(data.entries) ? data.entries : [];
-          if (entries.length === 0) return; // 빈 이력 → chat-empty 유지.
-          for (const e of entries) {
-            const role = e.role === "assistant" ? "assistant" : "user";
-            // 과거 메시지 ts|role 을 dedup Set 에 등록 → 곧 연결될 SSE 의 history replay
-            // (같은 ts) 가 중복 버블을 만들지 않게.
-            renderedMsgKeys.add(msgKey(e.ts, role));
-            renderHistoryMessage({ ts: e.ts, role, text: e.text });
+          const activities = Array.isArray(data.activities) ? data.activities : [];
+          if (entries.length === 0 && activities.length === 0) return; // 빈 이력.
+          // 메시지 + 도구 스텝(기능 B)을 ts 오름차순 병합 렌더(인터리브). 각 dedup 키 등록 →
+          // 곧 연결될 SSE replay 가 같은 메시지/스텝을 중복 렌더 안 하게.
+          const merged = [
+            ...entries.map((e) => ({ kind: "m", ts: e.ts, e })),
+            ...activities.map((a) => ({ kind: "a", ts: a.ts, a })),
+          ].sort((x, y) => x.ts - y.ts);
+          for (const item of merged) {
+            if (item.kind === "m") {
+              const role = item.e.role === "assistant" ? "assistant" : "user";
+              renderedMsgKeys.add(msgKey(item.e.ts, role));
+              renderHistoryMessage({ ts: item.e.ts, role, text: item.e.text });
+            } else {
+              const a = item.a;
+              renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
+              renderHistoryActivity(a);
+            }
           }
-          // 가장 오래된 ts = ASC 배열의 첫 원소 = 다음 페이지의 beforeTs.
-          oldestLoadedTs = entries[0].ts;
+          // 가장 오래된 ts = 다음 페이지의 beforeTs (메시지 기준 — 페이지네이션은 메시지 축).
+          oldestLoadedTs = entries.length > 0 ? entries[0].ts : merged[0].ts;
           if (entries.length < HISTORY_PAGE) {
             reachedOldest = true; // 첫 로드가 페이지 미만 = 더 없음.
           } else {
@@ -3290,6 +3334,7 @@
         }
         if (ev.type === "llm.activity") {
           const ap = ev.payload || {};
+          if (ap.ts == null) ap.ts = ev.ts; // 숫자 ts — dedup 키(기능 B)·주석에 사용.
           // 도구 실행시간(#3) — phase:"end" 는 새 스텝이 아니라 같은 seq 의 시작 스텝에
           // durationMs 를 주석(잡 카드 스텝 · 메인 스트림 라인 양쪽). 여기서 가로채 렌더로 안 감.
           if (ap.phase === "end") { annotateToolDuration(ap); return; }

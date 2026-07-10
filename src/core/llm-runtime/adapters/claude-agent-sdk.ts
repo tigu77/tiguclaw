@@ -33,7 +33,7 @@ import {
   type Options,
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { getSession } from "../../../store/sessions.js";
+import { getSession, invalidateResume } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { buildActivityDetail } from "./_activity-detail.js";
@@ -619,6 +619,15 @@ export const runClaude = async (
   // cwd 변경에도 턴이 안 죽게). model 거부는 별도 표면(is_error throw)이라 무간섭.
   const isResumeProcessFailure = (e: unknown): boolean =>
     e instanceof Error && /process exited with code 1/i.test(e.message);
+  // 처리불가 이미지 등 재생 불가한 turn 이 resume jsonl 에 박히는 400 — 그대로 두면 이후 모든
+  // turn 이 그 resume 을 재생하며 영구 실패(스레드 오염). 감지 시 resume 만 무효화(아래) 하면
+  // 다음 turn(풀의 다음 모델·또는 다음 사용자 turn)이 fresh+prepend 로 자가치유.
+  // [[project_bad_image_poisons_claude_resume]]
+  const isUnprocessableImage = (e: unknown): boolean =>
+    e instanceof Error &&
+    /API Error: 400/i.test(e.message) &&
+    /invalid_request_error/i.test(e.message) &&
+    /\bimage\b/i.test(e.message);
   const buildQuery = (o: Options) =>
     query({ prompt: promptWithMemory, options: o });
   let q = buildQuery(options);
@@ -962,6 +971,21 @@ export const runClaude = async (
     // 원인이면 해당 에러로 승격해 facade 가 일관된 타임아웃 신호를 받게 한다(둘 다
     // isModelRejected 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
     // 그 외 에러는 그대로 전파.
+    // 처리불가 이미지 400 — resume 세션 jsonl 이 오염됐다(재생 시 매번 400). resumable 이었을
+    // 때만(= 저장된 세션에 오염이 append 됨) resume 을 무효화 → 다음 turn 은 비-resumable 로
+    // fresh+prepend(문맥 보존, 오염 jsonl 폐기). 풀의 다음 모델이 곧바로 이 turn 을 자가복구할
+    // 수 있고(과거 오염일 때), 아니어도 다음 사용자 turn 이 clean. 에러는 그대로 전파(풀 폴백).
+    if (resumable && isUnprocessableImage(e)) {
+      try {
+        invalidateResume(input.channel, input.threadKey);
+        console.warn(
+          `claude: 처리불가 이미지 400 — resume 무효화(스레드 오염 자가치유). ` +
+            `channel=${input.channel} thread=${input.threadKey}`,
+        );
+      } catch {
+        /* 무효화 실패해도 에러 전파는 계속(원칙 3). */
+      }
+    }
     const reason = effectiveAc.signal.reason;
     if (
       effectiveAc.signal.aborted &&

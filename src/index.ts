@@ -364,6 +364,14 @@ const EVENT_TEXT_MAX = 50_000;
 // (codex·claude·openai 등 어느 백엔드가 한도에 걸려도 동일). 그 외 에러는 원 detail 그대로 노출.
 const formatRegionAError = (detail: string): string => {
   const d = detail || "";
+  // 처리불가 이미지(400 invalid_request + image) — 원문 JSON 대신 명확한 안내. 스레드 자가치유는
+  // 어댑터가 처리(resume 무효화)하므로 여기선 사용자 안내만. [[project_bad_image_poisons_claude_resume]]
+  if (/\b400\b/.test(d) && /invalid_request_error/i.test(d) && /\bimage\b/i.test(d)) {
+    return (
+      `⚠️ 첨부한 이미지를 처리할 수 없습니다. 형식(JPEG·PNG·GIF·WebP)과 크기(너무 작거나 큰 이미지 불가)를 확인해 주세요.\n` +
+      `다른 이미지로 다시 보내면 됩니다. (이 이미지 때문에 대화가 막히지 않도록 처리해 두었습니다.)`
+    );
+  }
   const isLimit = /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b/i.test(d);
   if (!isLimit) return `⚠️ 요청 처리 중 오류가 발생했습니다:\n${detail}`;
   const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);

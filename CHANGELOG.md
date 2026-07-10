@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.66] - 2026-07-10
+
+### Fixed
+- **An image the model can't process no longer breaks the whole conversation.** Previously, if you sent an image Claude couldn't process, that failure got baked into the conversation's resumed session — so *every* later message (even plain text) kept failing with the same error until the thread was manually reset. Now the assistant detects this, self-heals the thread (dropping only the un-processable turn while keeping your conversation context and model choice), and replies with a clear "couldn't process that image — check the format/size and try another" message instead of a raw error.
+
 ## [0.3.65] - 2026-07-10
 
 ### Fixed
@@ -459,7 +464,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.65...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.66...HEAD
+[0.3.66]: https://github.com/tigu77/tiguclaw/compare/v0.3.65...v0.3.66
 [0.3.65]: https://github.com/tigu77/tiguclaw/compare/v0.3.64...v0.3.65
 [0.3.64]: https://github.com/tigu77/tiguclaw/compare/v0.3.63...v0.3.64
 [0.3.63]: https://github.com/tigu77/tiguclaw/compare/v0.3.62...v0.3.63

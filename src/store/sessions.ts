@@ -734,6 +734,26 @@ export const deleteSession = (
   return result.changes > 0;
 };
 
+// resume 세션 오염 복구 — 이미지 처리불가(400) 등으로 resume jsonl 에 재생 불가한 turn 이
+// 박히면(예: Read 로 읽은 처리불가 이미지가 tool_result 에 남음) 이후 모든 turn 이 그 resume 을
+// 재생하며 같은 400 으로 영구 실패한다. system_prompt_hash 를 비워 **resume 만 무효화** →
+// 다음 turn 이 이미 문서화된 "해시 stale = 비-resumable" 경로로 가서 오염 jsonl 을 버리고
+// fresh 세션 + 스레드 히스토리 full prepend(문맥 보존)로 자가치유한다. deleteSession 과 달리
+// claude_session_id·model override·usage 는 **보존**(최소 침습). 행 없으면 no-op.
+// [[project_bad_image_poisons_claude_resume]]
+export const invalidateResume = (
+  channel: ChannelName,
+  threadKey: string,
+): boolean => {
+  const handle = requireDb("invalidateResume");
+  const result = handle
+    .prepare(
+      `UPDATE threads SET system_prompt_hash = '' WHERE channel = ? AND channel_thread_id = ?`,
+    )
+    .run(channel, threadKey);
+  return result.changes > 0;
+};
+
 // ─── /model V1: session_model_override helpers ────────────────────────────
 // 세션별 메인 모델 override. `threads` 와 분리 → `/reset` 무영향. 키는 thread 와
 // 동일(channel, thread_key) 라 같은 채널+스레드에서 ad-hoc 모델 선택이 컨텍스트

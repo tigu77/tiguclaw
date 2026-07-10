@@ -317,6 +317,12 @@
       .chat-message.md code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:rgba(255,255,255,.07); padding:1px 5px; border-radius:5px; }
       .chat-message.md pre { margin:7px 0; padding:10px 12px; background:rgba(0,0,0,.32); border:1px solid var(--border); border-radius:10px; overflow-x:auto; }
       .chat-message.md pre code { display:block; background:none; padding:0; white-space:pre; line-height:1.5; }
+      /* 경량 코드 하이라이터 토큰 색 (다크 테마, One-Dark 계열). */
+      .md pre code .tok-c { color:#7d8590; font-style:italic; }
+      .md pre code .tok-s { color:#a5d6a4; }
+      .md pre code .tok-n { color:#f0b072; }
+      .md pre code .tok-k { color:#d2a8ff; }
+      .md pre code .tok-t { color:#79c0ff; }
       .chat-message.md table { border-collapse:collapse; margin:7px 0; font-size:12px; }
       .chat-message.md th, .chat-message.md td { border:1px solid var(--border); padding:4px 8px; }
       .chat-message.md hr { border:none; border-top:1px solid var(--border); margin:9px 0; }
@@ -3106,8 +3112,11 @@
                 node.removeChild(child);
                 continue;
               }
-              // 모든 속성 제거 후, a.href 만 안전 프로토콜로 복원.
+              // 모든 속성 제거 후, a.href·code 의 language 클래스만 화이트리스트로 복원.
               const href = tag === "a" ? child.getAttribute("href") : null;
+              // 코드블록 언어 클래스(예: language-csharp) 보존 → 하이라이터가 언어 판별에 사용.
+              const codeLang =
+                tag === "code" ? child.getAttribute("class") : null;
               for (const attr of Array.from(child.attributes)) {
                 child.removeAttribute(attr.name);
               }
@@ -3117,6 +3126,9 @@
                   child.setAttribute("target", "_blank");
                   child.setAttribute("rel", "noopener noreferrer");
                 }
+              }
+              if (tag === "code" && codeLang && /^language-[\w#+.\-]+$/.test(codeLang.trim())) {
+                child.setAttribute("class", codeLang.trim());
               }
               walk(child);
             } else if (child.nodeType !== 3) {
@@ -3128,6 +3140,61 @@
         walk(doc.body);
         return doc.body.innerHTML;
       };
+      // ── 경량 코드 하이라이터 (자기완결·CDN·빌드 0) ───────────────────────
+      // 봇 답변 마크다운 코드블록(pre code.language-*)에 언어별 색(주석·문자열·숫자·키워드·타입).
+      // 완벽한 파서 아님 — 채팅 가독성용. sanitize 후 DOM 에 직접 escape 한 토큰 span 부착(안전).
+      const HL_ALIAS = { js:"javascript", jsx:"javascript", ts:"typescript", tsx:"typescript", py:"python", rb:"ruby", cs:"csharp", "c#":"csharp", sh:"bash", shell:"bash", zsh:"bash", yml:"yaml", "c++":"cpp", cc:"cpp", hpp:"cpp", kt:"kotlin", rs:"rust" };
+      const HL_KW = (() => {
+        const common = "if else for while do switch case default break continue return new delete try catch finally throw typeof instanceof void this super null true false";
+        const sets = {
+          javascript: common + " const let var function async await yield class extends import export from as of in with static get set",
+          typescript: common + " const let var function async await yield class extends implements interface type enum namespace declare abstract public private protected readonly import export from as of in keyof infer satisfies static get set",
+          python: "def class return if elif else for while in is not and or None True False import from as with try except finally raise lambda yield global nonlocal pass break continue assert del async await self",
+          csharp: common + " using namespace class struct interface enum record public private protected internal static readonly const async await override virtual abstract sealed partial get set var out ref params where yield lock unsafe checked event delegate operator implicit explicit is as",
+          java: common + " public private protected static final abstract class interface enum extends implements import package synchronized volatile transient native throws instanceof var record sealed",
+          go: "func return if else for range switch case default break continue var const type struct interface map chan go defer select package import nil true false iota fallthrough",
+          rust: "fn let mut const static struct enum trait impl for while loop if else match return use mod pub crate self super where async await move ref dyn as in break continue unsafe true false Some None Ok Err",
+          cpp: common + " int float double char bool auto struct class enum namespace using template typename public private protected virtual override const static inline constexpr nullptr sizeof operator friend",
+          bash: "if then else elif fi for while do done case esac function in select until echo export local return read set unset source",
+          json: "true false null",
+          yaml: "true false null yes no on off",
+          sql: "select from where insert update delete into values set join left right inner outer on group by order having limit distinct as and or not null create table drop alter index",
+        };
+        const out = {}; for (const k in sets) out[k] = new Set(sets[k].split(/\s+/).filter(Boolean));
+        out.generic = new Set((sets.javascript + " " + sets.python + " " + sets.csharp).split(/\s+/).filter(Boolean));
+        return out;
+      })();
+      const HL_TYPE = new Set("int long short byte float double bool boolean char string void var object number String Number Boolean Object Array List Dictionary Map Set Task Vector3 Vector2 Quaternion GameObject Transform".split(/\s+/));
+      const hlEscape = (s) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      const highlightCode = (code, lang) => {
+        const L = (HL_ALIAS[lang] || lang || "").toLowerCase();
+        const kw = HL_KW[L] || HL_KW.generic;
+        const hash = ["python","bash","ruby","yaml","shell","toml","ini","perl","r"].includes(L);
+        const re = new RegExp(
+          "(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/" + (hash ? "|#[^\\n]*" : "") + ")" +
+          "|(\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`)" +
+          "|(\\b0[xX][\\da-fA-F]+\\b|\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)" +
+          "|([A-Za-z_$][\\w$]*)", "g");
+        let out = "", last = 0, m;
+        while ((m = re.exec(code)) !== null) {
+          if (m.index === re.lastIndex) { re.lastIndex++; continue; }
+          out += hlEscape(code.slice(last, m.index)); last = re.lastIndex;
+          if (m[1]) out += '<span class="tok-c">' + hlEscape(m[1]) + '</span>';
+          else if (m[2]) out += '<span class="tok-s">' + hlEscape(m[2]) + '</span>';
+          else if (m[3]) out += '<span class="tok-n">' + hlEscape(m[3]) + '</span>';
+          else { const w = m[4]; out += kw.has(w) ? '<span class="tok-k">'+w+'</span>' : (HL_TYPE.has(w) ? '<span class="tok-t">'+w+'</span>' : hlEscape(w)); }
+        }
+        return out + hlEscape(code.slice(last));
+      };
+      const highlightCodeBlocks = (root) => {
+        try {
+          root.querySelectorAll("pre code").forEach((el) => {
+            const m = (el.className || "").match(/language-([\w#+.\-]+)/);
+            el.innerHTML = highlightCode(el.textContent, m ? m[1] : "");
+          });
+        } catch {}
+      };
+
       const renderMarkdown = (src) => {
         // marked·sanitize 실패 시 평문 폴백(happy-path 금지).
         return sanitizeMarkdownHtml(
@@ -3141,6 +3208,7 @@
           try {
             msgEl.innerHTML = renderMarkdown(src);
             msgEl.classList.add("md");
+            highlightCodeBlocks(msgEl); // 코드블록 언어별 하이라이팅.
             return;
           } catch (e) {
             // 폴백: 평문.

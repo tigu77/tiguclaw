@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.57] - 2026-07-10
+
+### Added
+- **Code blocks in the dashboard chat are now syntax-highlighted by language.** Fenced code in the assistant's replies gets per-language coloring for comments, strings, numbers, keywords, and common types (JavaScript/TypeScript, Python, C#, Java, Go, Rust, C/C++, shell, JSON, YAML, SQL, plus a generic fallback). It's a small self-contained highlighter bundled into the dashboard — no external library, CDN, or build step — so it works offline like the rest of the local dashboard.
+
 ## [0.3.56] - 2026-07-10
 
 ### Changed
@@ -411,7 +416,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.56...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.57...HEAD
+[0.3.57]: https://github.com/tigu77/tiguclaw/compare/v0.3.56...v0.3.57
 [0.3.56]: https://github.com/tigu77/tiguclaw/compare/v0.3.55...v0.3.56
 [0.3.55]: https://github.com/tigu77/tiguclaw/compare/v0.3.54...v0.3.55
 [0.3.54]: https://github.com/tigu77/tiguclaw/compare/v0.3.53...v0.3.54

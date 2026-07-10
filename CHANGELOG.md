@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.59] - 2026-07-10
+
+### Changed
+- **The context-tag bar collapses to a single line and expands with a scroll when you have many tags.** As learned tag chips accumulate, the bar no longer grows tall enough to push the input around: it shows one line by default with a toggle (that includes the tag count), and expanding it caps the height and scrolls, so it never takes over the screen no matter how many tags you have.
+
 ## [0.3.58] - 2026-07-10
 
 ### Changed
@@ -424,7 +429,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.58...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.59...HEAD
+[0.3.59]: https://github.com/tigu77/tiguclaw/compare/v0.3.58...v0.3.59
 [0.3.58]: https://github.com/tigu77/tiguclaw/compare/v0.3.57...v0.3.58
 [0.3.57]: https://github.com/tigu77/tiguclaw/compare/v0.3.56...v0.3.57
 [0.3.56]: https://github.com/tigu77/tiguclaw/compare/v0.3.55...v0.3.56

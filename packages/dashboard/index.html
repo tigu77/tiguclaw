@@ -641,9 +641,16 @@
       #chat-attach { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; padding-top:4px; }
       #chat-attach:empty { display:none; }
       /* 컨텍스트 태그 바 — 클릭하면 #<프로젝트> 태그를 입력창에 껴넣어 그 프로젝트 얘기임을 알림. */
-      .chat-context { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; }
+      .chat-context { display:flex; align-items:flex-start; gap:8px; margin-bottom:8px; }
       .chat-context:empty { display:none; }
-      .ctx-label { font-size:10px; color:var(--text-dim); margin-right:2px; flex:none; }
+      /* 접기/펴기 토글 (라벨+caret+개수) — 항상 보임(칩 클리핑 밖). */
+      .ctx-toggle { flex:none; background:none; border:none; color:var(--text-dim); font-size:10px; cursor:pointer; padding:3px 2px 0 0; white-space:nowrap; }
+      .ctx-toggle:hover { color:var(--text); }
+      .ctx-tcaret { font-size:8px; display:inline-block; transition:transform .12s ease; }
+      .ctx-count { opacity:.55; }
+      /* 칩 영역 — 접힘: 1줄 클립 / 펼침: max-height + 세로 스크롤(너무 길어도 화면 안 넘침). */
+      .ctx-chips { display:flex; flex-wrap:wrap; gap:6px; flex:1; min-width:0; max-height:27px; overflow:hidden; }
+      .chat-context.expanded .ctx-chips { max-height:min(150px, 30vh); overflow-y:auto; padding-bottom:2px; }
       .ctx-chip { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px; cursor:pointer; user-select:none;
         background:rgba(125,211,252,.10); color:var(--accent); border:1px solid rgba(125,211,252,.28); }
       .ctx-chip:hover { background:rgba(125,211,252,.20); border-color:rgba(125,211,252,.55); }
@@ -1427,6 +1434,9 @@
           chip.classList.toggle("active", !!n && val.includes("#" + n));
         });
       };
+      const CTX_EXPANDED_KEY = "tgctx_expanded";
+      const ctxBarExpanded = () => { try { return localStorage.getItem(CTX_EXPANDED_KEY) === "1"; } catch { return false; } };
+      const setCtxBarExpanded = (v) => { try { localStorage.setItem(CTX_EXPANDED_KEY, v ? "1" : "0"); } catch {} renderContextTags(); };
       const renderContextTags = () => {
         const bar = document.getElementById("chat-context");
         if (!bar) return;
@@ -1438,11 +1448,25 @@
         const names = []; const seen = new Set();
         for (const n of ctxRecent()) { if (n && !seen.has(n)) { seen.add(n); names.push(n); } }
         for (const p of projs) { if (!seen.has(p.name)) { seen.add(p.name); names.push(p.name); } }
-        if (names.length === 0) return; // 아무것도 없으면 바 숨김(:empty).
-        const label = document.createElement("span");
-        label.className = "ctx-label"; label.textContent = "컨텍스트:";
-        bar.appendChild(label);
-        for (const name of names.slice(0, 16)) {
+        if (names.length === 0) { bar.classList.remove("expanded"); return; } // 없으면 바 숨김(:empty).
+        const expanded = ctxBarExpanded();
+        bar.classList.toggle("expanded", expanded);
+        // 토글 — 접힘 1줄 / 펼침 다줄+스크롤. caret + "컨텍스트" + 개수.
+        const toggle = document.createElement("button");
+        toggle.type = "button"; toggle.className = "ctx-toggle";
+        toggle.title = expanded ? "컨텍스트 태그 접기" : "컨텍스트 태그 펼치기(" + names.length + ")";
+        const caret = document.createElement("span");
+        caret.className = "ctx-tcaret"; caret.textContent = expanded ? "▾" : "▸";
+        toggle.appendChild(caret); toggle.appendChild(document.createTextNode(" 컨텍스트 "));
+        const cnt = document.createElement("span");
+        cnt.className = "ctx-count"; cnt.textContent = String(names.length);
+        toggle.appendChild(cnt);
+        toggle.addEventListener("click", () => setCtxBarExpanded(!expanded));
+        bar.appendChild(toggle);
+        // 칩 컨테이너
+        const chipWrap = document.createElement("div");
+        chipWrap.className = "ctx-chips";
+        for (const name of names.slice(0, 50)) {
           const p = projByName.get(name);
           const status = p && ["active", "paused", "done"].includes(p.status) ? p.status : null;
           const isResolved = p || resolvable.has(name);
@@ -1461,8 +1485,9 @@
             x.addEventListener("click", (e) => { e.stopPropagation(); ctxUnlearn(name); });
             chip.appendChild(x);
           }
-          bar.appendChild(chip);
+          chipWrap.appendChild(chip);
         }
+        bar.appendChild(chipWrap);
         updateActiveChips();
       };
 

@@ -3106,10 +3106,13 @@
         return div;
       };
 
-      const renderHistoryMessage = (entry) => {
-        const div = buildHistoryDiv(entry);
-        stream.insertBefore(div, stream.firstChild);
-        localChatCount += 1;
+      // 메시지 유닛 → element(+dedup 키 등록). 이미 렌더됐으면 null(SSE/다른 페이지 중복 방지).
+      const buildHistoryMsgEl = (entry) => {
+        const role = entry.role === "assistant" ? "assistant" : "user";
+        const key = msgKey(entry.ts, role);
+        if (renderedMsgKeys.has(key)) return null;
+        renderedMsgKeys.add(key);
+        return buildHistoryDiv({ ts: entry.ts, role, text: entry.text });
       };
 
       // 이력 도구 스텝(기능 B) — 영속 llm.activity 복원. 낱줄 element 빌더(카드 크롬 없음).
@@ -3142,7 +3145,7 @@
 
       // 이력 turn 묶음 — 연속된 같은 턴의 도구 스텝을 접이식 "N단계" 카드로(라이브 turn-card 파리티).
       // 새로고침 후에도 라이브처럼 그룹핑돼 보이게. 기본 접힘(완료된 라이브 턴의 done-collapsed 동형).
-      const renderHistoryTurn = (acts) => {
+      const buildHistoryTurnEl = (acts) => {
         for (const a of acts) renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
         const turn = document.createElement("div");
         turn.className = "ev local hist-turn";
@@ -3165,8 +3168,43 @@
         for (const a of acts) body.appendChild(buildHistStepLine(a));
         head.addEventListener("click", () => turn.classList.toggle("expanded"));
         turn.appendChild(head); turn.appendChild(body);
-        stream.insertBefore(turn, stream.firstChild);
-        localChatCount += 1;
+        return turn;
+      };
+
+      // 메시지+활동 → 시간순 병합 후 연속된 같은 턴(threadKey·seq 증가)의 활동을 turn 으로 묶은
+      // ASC 유닛 배열. 라이브 turn-card 파리티. 메시지·threadKey 변경·seq 리셋이 경계.
+      const groupMergedItems = (entries, activities) => {
+        const merged = [
+          ...entries.map((e) => ({ ts: e.ts, m: e })),
+          ...activities.map((a) => ({ ts: a.ts, a })),
+        ].sort((x, y) => x.ts - y.ts);
+        const units = [];
+        let cur = null; // { threadKey, lastSeq, acts }
+        const flush = () => { if (cur && cur.acts.length) units.push({ kind: "turn", acts: cur.acts }); cur = null; };
+        for (const it of merged) {
+          if (it.m) { flush(); units.push({ kind: "msg", entry: it.m }); }
+          else {
+            const a = it.a; const seq = typeof a.seq === "number" ? a.seq : 0;
+            if (cur && cur.threadKey === a.threadKey && seq > cur.lastSeq) { cur.acts.push(a); cur.lastSeq = seq; }
+            else { flush(); cur = { threadKey: a.threadKey, lastSeq: seq, acts: [a] }; }
+          }
+        }
+        flush();
+        return units;
+      };
+
+      // 이력 배치 렌더 — 초기 로드(append=false: insertBefore firstChild, ASC)와 페이지네이션
+      // (append=true: appendChild=시각 상단, 유닛 역순)이 같은 병합·묶음 로직을 공유. column-reverse
+      // 라 append 방향은 유닛을 역순으로 넣어야 시각 top-to-bottom 이 최古→최新 이 된다.
+      const renderHistoryBatch = (entries, activities, append) => {
+        const units = groupMergedItems(entries, activities);
+        const order = append ? units.slice().reverse() : units;
+        for (const u of order) {
+          const el = u.kind === "turn" ? buildHistoryTurnEl(u.acts) : buildHistoryMsgEl(u.entry);
+          if (el === null) continue;
+          if (append) stream.appendChild(el); else stream.insertBefore(el, stream.firstChild);
+          localChatCount += 1;
+        }
       };
 
       // ── 페이지네이션 상태(기능 2) ────────────────────────────────────────
@@ -3196,24 +3234,6 @@
       // DOM 끝=시각 하단 → 배치를 **내림차순(최新→최古)으로 appendChild** 해야 시각
       // top-to-bottom 이 [… 기존最古, 배치最新 … 배치最古] 로 올바르게 쌓인다(위=최신 유지).
       // dedup: 이미 렌더된 key 는 스킵. 반환 = 실제 추가된 가장 오래된 ts.
-      const prependOlderBatch = (entries) => {
-        // 내림차순 순회(배열은 ASC 라 뒤에서 앞으로) → appendChild(시각 최상단 누적)로
-        // 시각 top-to-bottom 이 [배치最古 … 배치最新] 순이 되게.
-        for (let i = entries.length - 1; i >= 0; i--) {
-          const e = entries[i];
-          const role = e.role === "assistant" ? "assistant" : "user";
-          const key = msgKey(e.ts, role);
-          if (renderedMsgKeys.has(key)) continue; // dedup.
-          renderedMsgKeys.add(key);
-          const div = buildHistoryDiv({ ts: e.ts, role, text: e.text });
-          stream.appendChild(div); // DOM 끝 = 시각 최상단으로 누적.
-          localChatCount += 1;
-        }
-        // 전부 dedup 이어도 배치 最古(entries[0].ts)로 커서를 전진시켜
-        // 같은 묶음 무한 재요청을 막는다.
-        return entries[0].ts;
-      };
-
       // 더 로드 — 시각 최古까지 스크롤업 트리거(센티넬 가시). try/catch 로 라이브 무손상.
       const loadOlderHistory = async () => {
         if (loadingOlder || reachedOldest || oldestLoadedTs === null) return;
@@ -3230,6 +3250,7 @@
           if (!r.ok) return;
           const data = await r.json().catch(() => ({}));
           const entries = Array.isArray(data.entries) ? data.entries : [];
+          const activities = Array.isArray(data.activities) ? data.activities : [];
           if (entries.length === 0) {
             reachedOldest = true; // 더 없음 → 센티넬 해제.
             if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
@@ -3238,8 +3259,10 @@
           // 스크롤 위치 보존: column-reverse 라 older 는 시각 상단(뷰 위)에 append → 현재 보던
           // 위(최신) 위치는 안 흔들린다. 만일을 대비해 scrollTop 보정 기준만 잡아둔다(보통 0).
           const beforeTop = stream.scrollTop;
-          oldestLoadedTs = prependOlderBatch(entries);
-          ensureSentinelAtTop(); // 센티넬을 다시 DOM 끝(시각 최하단·최古쪽)으로.
+          // 도구 스텝·diff·출력·묶음도 함께 복원(초기 로드와 동일 로직, append 방향).
+          renderHistoryBatch(entries, activities, true);
+          oldestLoadedTs = entries[0].ts; // 배치 最古(ASC[0]) = 다음 beforeTs.
+          ensureSentinelAtTop(); // 센티넬을 다시 DOM 끝(시각 최하단·最古쪽)으로.
           if (entries.length < HISTORY_PAGE) {
             reachedOldest = true; // 페이지 미만 = 마지막 묶음.
             if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
@@ -3291,39 +3314,12 @@
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
           if (entries.length === 0 && activities.length === 0) return; // 빈 이력.
-          // 메시지 + 도구 스텝(기능 B)을 ts 오름차순 병합 렌더(인터리브). 각 dedup 키 등록 →
+          // 메시지 + 도구 스텝(기능 B)을 병합·묶음 렌더(초기=prepend). 각 dedup 키 등록 →
           // 곧 연결될 SSE replay 가 같은 메시지/스텝을 중복 렌더 안 하게.
-          const merged = [
-            ...entries.map((e) => ({ kind: "m", ts: e.ts, e })),
-            ...activities.map((a) => ({ kind: "a", ts: a.ts, a })),
-          ].sort((x, y) => x.ts - y.ts);
-          // 연속된 같은 턴(같은 threadKey · seq 증가)의 도구 스텝을 하나의 turn 묶음으로 모아
-          // 라이브 turn-card 처럼 그룹핑 렌더. 메시지·threadKey 변경·seq 리셋이 경계(라이브 동일).
-          let curTurn = null; // { threadKey, lastSeq, acts:[] }
-          const flushTurn = () => {
-            if (curTurn && curTurn.acts.length) renderHistoryTurn(curTurn.acts);
-            curTurn = null;
-          };
-          for (const item of merged) {
-            if (item.kind === "m") {
-              flushTurn();
-              const role = item.e.role === "assistant" ? "assistant" : "user";
-              renderedMsgKeys.add(msgKey(item.e.ts, role));
-              renderHistoryMessage({ ts: item.e.ts, role, text: item.e.text });
-            } else {
-              const a = item.a;
-              const seq = typeof a.seq === "number" ? a.seq : 0;
-              if (curTurn && curTurn.threadKey === a.threadKey && seq > curTurn.lastSeq) {
-                curTurn.acts.push(a); curTurn.lastSeq = seq;
-              } else {
-                flushTurn();
-                curTurn = { threadKey: a.threadKey, lastSeq: seq, acts: [a] };
-              }
-            }
-          }
-          flushTurn();
+          renderHistoryBatch(entries, activities, false);
           // 가장 오래된 ts = 다음 페이지의 beforeTs (메시지 기준 — 페이지네이션은 메시지 축).
-          oldestLoadedTs = entries.length > 0 ? entries[0].ts : merged[0].ts;
+          oldestLoadedTs =
+            entries.length > 0 ? entries[0].ts : (activities.length > 0 ? activities[0].ts : oldestLoadedTs);
           if (entries.length < HISTORY_PAGE) {
             reachedOldest = true; // 첫 로드가 페이지 미만 = 더 없음.
           } else {

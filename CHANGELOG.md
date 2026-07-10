@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.45] - 2026-07-10
+
+### Added
+- **Scrolling back through older chat history now restores the tool cards too, not just the messages.** Previously only the most recent page of history rebuilt the tool steps, diffs, outputs, and per-turn grouping; scrolling further up showed a bare list of messages. Older pages now reconstruct the same collapsible "N steps" turn cards (with their diffs and output previews) as the initial view, using the shared grouping logic. (A turn that straddles a page boundary can still split into two cards — a minor, rare cosmetic edge.)
+
 ## [0.3.44] - 2026-07-09
 
 ### Fixed
@@ -348,7 +353,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.44...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.45...HEAD
+[0.3.45]: https://github.com/tigu77/tiguclaw/compare/v0.3.44...v0.3.45
 [0.3.44]: https://github.com/tigu77/tiguclaw/compare/v0.3.43...v0.3.44
 [0.3.43]: https://github.com/tigu77/tiguclaw/compare/v0.3.42...v0.3.43
 [0.3.42]: https://github.com/tigu77/tiguclaw/compare/v0.3.41...v0.3.42

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.55] - 2026-07-10
+
+### Changed
+- **Context tags are no longer project-only, and you can use several at once.** A `#<tag>` can point to a registered project, a skill (e.g. `#code-review`), or any recurring topic — the assistant resolves each accordingly, and multiple tags in one message are all honored (e.g. `#ProjectA #code-review`). The dashboard tag bar now seeds from your registered projects and *learns* the tags you type: any `#tag` you send appears as a chip next time (project chips in blue, other tags in violet), most-recently-used first.
+
 ## [0.3.54] - 2026-07-10
 
 ### Added
@@ -401,7 +406,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.54...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.55...HEAD
+[0.3.55]: https://github.com/tigu77/tiguclaw/compare/v0.3.54...v0.3.55
 [0.3.54]: https://github.com/tigu77/tiguclaw/compare/v0.3.53...v0.3.54
 [0.3.53]: https://github.com/tigu77/tiguclaw/compare/v0.3.52...v0.3.53
 [0.3.52]: https://github.com/tigu77/tiguclaw/compare/v0.3.51...v0.3.52

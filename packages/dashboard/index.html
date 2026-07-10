@@ -639,6 +639,9 @@
       .ctx-chip .ctx-hash { opacity:.6; }
       .ctx-chip.s-paused { background:rgba(255,255,255,.05); color:var(--text-mute); border-color:var(--border); }
       .ctx-chip.s-done { opacity:.6; }
+      /* 프로젝트 아닌 일반 태그(스킬·주제) — 보라 계열로 프로젝트(하늘색)와 구분. */
+      .ctx-chip.ctx-generic { background:rgba(167,139,250,.10); color:var(--accent-2); border-color:rgba(167,139,250,.28); }
+      .ctx-chip.ctx-generic:hover { background:rgba(167,139,250,.20); border-color:rgba(167,139,250,.55); }
       .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); overflow:hidden; flex:none; }
       .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; overflow:hidden; padding:3px; }
       .att-thumb { width:100%; height:100%; object-fit:cover; display:block; }
@@ -1365,29 +1368,42 @@
         ta.dispatchEvent(new Event("input", { bubbles: true })); // autogrow 트리거.
         ctxBumpRecent(name); renderContextTags();
       };
+      // 타이핑한 태그 학습 — 보낸 메시지에서 `#태그` 를 뽑아 recent 에 기록(다음부터 칩으로 뜸).
+      // 등록 프로젝트명(공백 포함 가능)은 registry 매칭으로 먼저 뽑고 텍스트서 제거, 나머지는 단일 토큰.
+      const recordTypedTags = (text) => {
+        if (typeof text !== "string" || text.indexOf("#") === -1) return;
+        let t = text;
+        for (const p of (Array.isArray(projectsCache) ? projectsCache : [])) {
+          if (p && p.name && t.includes("#" + p.name)) { ctxBumpRecent(p.name); t = t.split("#" + p.name).join(" "); }
+        }
+        const m = t.match(/#([^\s#]{1,40})/g) || [];
+        for (const tag of m) ctxBumpRecent(tag.slice(1));
+        renderContextTags();
+      };
       const renderContextTags = () => {
         const bar = document.getElementById("chat-context");
         if (!bar) return;
         bar.innerHTML = "";
         const projs = Array.isArray(projectsCache) ? projectsCache.filter((p) => p && p.name) : [];
-        if (projs.length === 0) return; // 프로젝트 없으면 바 숨김(:empty).
-        const recent = ctxRecent();
-        const ordered = projs.slice().sort((a, b) => {
-          const ra = recent.indexOf(a.name), rb = recent.indexOf(b.name);
-          return (ra === -1 ? 999 : ra) - (rb === -1 ? 999 : rb); // 최근 클릭 먼저.
-        });
+        const projByName = new Map(projs.map((p) => [p.name, p]));
+        // 후보 = 최근 사용 태그(프로젝트·스킬·주제 무엇이든) ∪ 등록 프로젝트(시드). 최근 먼저.
+        const names = []; const seen = new Set();
+        for (const n of ctxRecent()) { if (n && !seen.has(n)) { seen.add(n); names.push(n); } }
+        for (const p of projs) { if (!seen.has(p.name)) { seen.add(p.name); names.push(p.name); } }
+        if (names.length === 0) return; // 아무것도 없으면 바 숨김(:empty).
         const label = document.createElement("span");
         label.className = "ctx-label"; label.textContent = "컨텍스트:";
         bar.appendChild(label);
-        for (const p of ordered) {
-          const status = ["active", "paused", "done"].includes(p.status) ? p.status : "active";
+        for (const name of names.slice(0, 16)) { // 상한 — 최근/시드 중 앞 16개.
+          const p = projByName.get(name);
+          const status = p && ["active", "paused", "done"].includes(p.status) ? p.status : null;
           const chip = document.createElement("span");
-          chip.className = "ctx-chip s-" + status;
-          chip.title = "이 프로젝트 컨텍스트 태그 삽입 → #" + p.name;
+          chip.className = "ctx-chip" + (p ? " s-" + status : " ctx-generic");
+          chip.title = (p ? "프로젝트" : "태그") + " 컨텍스트 삽입 → #" + name;
           const hash = document.createElement("span");
           hash.className = "ctx-hash"; hash.textContent = "#";
-          chip.appendChild(hash); chip.appendChild(document.createTextNode(p.name));
-          chip.addEventListener("click", () => insertContextTag(p.name));
+          chip.appendChild(hash); chip.appendChild(document.createTextNode(name));
+          chip.addEventListener("click", () => insertContextTag(name));
           bar.appendChild(chip);
         }
       };
@@ -3482,6 +3498,7 @@
       // 끊겨도(프록시/HTTP 타임아웃) 빨간 에러 대신 "작업 중…" 유지(가짜 timeout 방지). 답이
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
       const sendChatMessage = async (text, attachments) => {
+        recordTypedTags(text); // 타이핑/삽입한 #태그 학습 → 다음부터 칩으로.
         // 이미 이 스레드 턴 진행 중이면 이 메시지는 큐잉된다 → "대기 중" 낙관적 버블(텍스트 있을 때).
         if (text && activeTurns.has(THREAD_KEY)) queueOptimisticBubble(text);
         setChatWorking(true);

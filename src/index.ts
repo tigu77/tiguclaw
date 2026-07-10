@@ -379,6 +379,30 @@ const formatRegionAError = (detail: string): string => {
   );
 };
 
+// 빌트인 슬래시 명령(라우터 우회·조기 return)의 응답 통로 — msg.reply 로 보내고 **channel.message.out
+// 도 발행**한다. 그래야 대시보드 '작업 중' 표시가 꺼지고(활성=channel.message.in↔완료=out/turn_done),
+// 명령 답도 대시보드 채팅/이력에 보인다. (2026-07-10: /status 등이 out 미발행이라 in 만 떠서 대시보드가
+// 계속 '작업 중'이던 갭 — [[project_active_send_dashboard_visibility]] 동일 패턴.) 관측 발행 실패는 격리.
+const replyCommand = async (
+  msg: { reply: (t: string) => Promise<unknown>; channel: string; threadKey: string },
+  text: string,
+): Promise<void> => {
+  await Promise.resolve(msg.reply(text)).catch(() => {});
+  try {
+    bus.publish({
+      type: "channel.message.out",
+      ts: Date.now(),
+      payload: {
+        channel: msg.channel,
+        threadKey: msg.threadKey,
+        text: text.slice(0, EVENT_TEXT_MAX),
+      },
+    });
+  } catch {
+    /* 관측 발행 실패가 명령 응답을 무르지 않는다(원칙 3). */
+  }
+};
+
 const handler: MessageHandler = async (msg) => {
   bus.publish({
     type: "channel.message.in",
@@ -395,7 +419,7 @@ const handler: MessageHandler = async (msg) => {
   let effectiveText = msg.text;
   if (trimmed === "/reset") {
     const had = deleteSession(msg.channel, msg.threadKey);
-    await msg.reply(
+    await replyCommand(msg,
       had
         ? "컨텍스트 초기화됨. 새 대화로 시작합니다."
         : "초기화할 컨텍스트가 없습니다.",
@@ -408,7 +432,7 @@ const handler: MessageHandler = async (msg) => {
   if (trimmed === "/agents") {
     const running = listJobs({ runningOnly: true });
     if (running.length === 0) {
-      await msg.reply("지금 진행 중인 백그라운드 작업이 없어요.");
+      await replyCommand(msg,"지금 진행 중인 백그라운드 작업이 없어요.");
       return;
     }
     const now = Date.now();
@@ -431,7 +455,7 @@ const handler: MessageHandler = async (msg) => {
           : "";
       return `${icon} ${kindLabel} \`${name}\`${tier} — ${fmtElapsed(j.startedAt)}`;
     });
-    await msg.reply(
+    await replyCommand(msg,
       `🔧 진행 중인 백그라운드 작업 ${running.length}개:\n\n${lines.join("\n")}`,
     );
     return;
@@ -467,12 +491,12 @@ const handler: MessageHandler = async (msg) => {
         "",
         "참고: provider 는 `anthropic` / `codex` / `openai`. `/reset` 시 override 도 같이 초기화.",
       ];
-      await msg.reply(lines.join("\n"));
+      await replyCommand(msg,lines.join("\n"));
       return;
     }
     if (args === "reset") {
       const had = clearSessionModelOverride(msg.channel, msg.threadKey);
-      await msg.reply(
+      await replyCommand(msg,
         had ? "세션 모델 override 해제됨 — env 폴백 사용." : "해제할 override 가 없습니다.",
       );
       return;
@@ -489,7 +513,7 @@ const handler: MessageHandler = async (msg) => {
     const validPool = parseModelSpecList(args);
     if (validPool.length === 0) {
       // 유효 spec 0개 → 기존 단일 거부 톤 재사용 (저장 안 함).
-      await msg.reply(
+      await replyCommand(msg,
         `형식 오류: \`${args}\` — \`provider:model\` 형식으로 입력하세요. ` +
           "콤마로 풀(폴백 순서)도 가능합니다. provider 는 anthropic / codex / openai. " +
           "예: `anthropic:claude-sonnet-4-6` 또는 `codex:gpt-5-codex,anthropic:claude-sonnet-4-6`",
@@ -515,7 +539,7 @@ const handler: MessageHandler = async (msg) => {
       );
     }
     extraLines.push(...sanityWarnings);
-    await msg.reply(
+    await replyCommand(msg,
       `세션 모델 → \`${canonical}\`${poolNote}. 다음 turn 부터 적용.` +
         (extraLines.length === 0 ? "" : `\n${extraLines.join("\n")}`),
     );
@@ -530,7 +554,7 @@ const handler: MessageHandler = async (msg) => {
 
     if (cmd === "/memo") {
       if (args === "") {
-        await msg.reply("`/memo <기억할 내용>` 형태로 입력하세요.");
+        await replyCommand(msg,"`/memo <기억할 내용>` 형태로 입력하세요.");
         return;
       }
       // 자동 type='user' 고정 (V1 daemon 슬래시는 사용자 직접 입력 → 대부분 사용자 자신 정보).
@@ -544,29 +568,29 @@ const handler: MessageHandler = async (msg) => {
           description: firstLine,
           body: args,
         });
-        await msg.reply(`메모리 추가됨: ${m.name} — ${m.description}`);
+        await replyCommand(msg,`메모리 추가됨: ${m.name} — ${m.description}`);
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        await msg.reply(`메모리 추가 실패: ${err}`);
+        await replyCommand(msg,`메모리 추가 실패: ${err}`);
       }
       return;
     }
 
     if (cmd === "/forget") {
       if (args === "") {
-        await msg.reply("`/forget <name>` 형태로 입력하세요.");
+        await replyCommand(msg,"`/forget <name>` 형태로 입력하세요.");
         return;
       }
       // 단일 토큰 가정 (공백 없는 name, V1 단순). 다중 토큰은 첫 토큰만 사용.
       const name = args.split(/\s+/, 1)[0] ?? args;
       try {
         const ok = deleteMemory(name);
-        await msg.reply(
+        await replyCommand(msg,
           ok ? `메모리 삭제됨: ${name}` : `그런 메모리가 없습니다: ${name}`,
         );
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        await msg.reply(`메모리 삭제 실패: ${err}`);
+        await replyCommand(msg,`메모리 삭제 실패: ${err}`);
       }
       return;
     }
@@ -583,16 +607,16 @@ const handler: MessageHandler = async (msg) => {
       try {
         const list = listMemories({ limit, orderBy: "updated" });
         if (list.length === 0) {
-          await msg.reply("저장된 메모리 없음.");
+          await replyCommand(msg,"저장된 메모리 없음.");
         } else {
           const lines = list.map(
             (m) => `[${m.type}] ${m.name} — ${m.description}`,
           );
-          await msg.reply(lines.join("\n"));
+          await replyCommand(msg,lines.join("\n"));
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        await msg.reply(`메모리 목록 조회 실패: ${err}`);
+        await replyCommand(msg,`메모리 목록 조회 실패: ${err}`);
       }
       return;
     }
@@ -609,7 +633,7 @@ const handler: MessageHandler = async (msg) => {
         try {
           const items = listSchedules();
           if (items.length === 0) {
-            await msg.reply("등록된 스케줄 없음.");
+            await replyCommand(msg,"등록된 스케줄 없음.");
           } else {
             const lines = items.map((s) => {
               const status =
@@ -629,17 +653,17 @@ const handler: MessageHandler = async (msg) => {
                   : `cron (${s.cronExpr} | ${s.timezone})`;
               return `#${s.id} [${en}] ${s.label} ${triggerPart} → ${dest} | last: ${status}`;
             });
-            await msg.reply(lines.join("\n"));
+            await replyCommand(msg,lines.join("\n"));
           }
         } catch (e) {
           const err = e instanceof Error ? e.message : String(e);
-          await msg.reply(`스케줄 목록 조회 실패: ${err}`);
+          await replyCommand(msg,`스케줄 목록 조회 실패: ${err}`);
         }
         return;
       }
 
       if (sub === "add") {
-        await msg.reply(
+        await replyCommand(msg,
           "`/schedule add` 는 V1 슬래시에서 미지원. 비서에게 자연어로 부탁하세요 (예: \"매일 8시에 뉴스 정리해서 텔레그램으로\"). 비서가 add_schedule MCP 도구로 등록합니다.",
         );
         return;
@@ -648,7 +672,7 @@ const handler: MessageHandler = async (msg) => {
       // 그 외 subcommand 는 id 필요
       const id = parseInt(subArgs, 10);
       if (Number.isNaN(id)) {
-        await msg.reply(
+        await replyCommand(msg,
           "`/schedule <list|delete|enable|disable> <id>` 형태로 입력하세요.",
         );
         return;
@@ -669,13 +693,13 @@ const handler: MessageHandler = async (msg) => {
             } catch {
               /* bus throw — ignore */
             }
-            await msg.reply(`스케줄 삭제됨: #${id}`);
+            await replyCommand(msg,`스케줄 삭제됨: #${id}`);
           } else {
-            await msg.reply(`그런 스케줄이 없습니다: #${id}`);
+            await replyCommand(msg,`그런 스케줄이 없습니다: #${id}`);
           }
         } catch (e) {
           const err = e instanceof Error ? e.message : String(e);
-          await msg.reply(`스케줄 삭제 실패: ${err}`);
+          await replyCommand(msg,`스케줄 삭제 실패: ${err}`);
         }
         return;
       }
@@ -685,7 +709,7 @@ const handler: MessageHandler = async (msg) => {
         try {
           const updated = updateSchedule(id, { enabled: enable });
           if (updated === undefined) {
-            await msg.reply(`그런 스케줄이 없습니다: #${id}`);
+            await replyCommand(msg,`그런 스케줄이 없습니다: #${id}`);
           } else {
             try {
               bus.publish({
@@ -696,18 +720,18 @@ const handler: MessageHandler = async (msg) => {
             } catch {
               /* bus throw — ignore */
             }
-            await msg.reply(
+            await replyCommand(msg,
               `스케줄 #${id} ${enable ? "활성화" : "비활성화"}됨.`,
             );
           }
         } catch (e) {
           const err = e instanceof Error ? e.message : String(e);
-          await msg.reply(`스케줄 토글 실패: ${err}`);
+          await replyCommand(msg,`스케줄 토글 실패: ${err}`);
         }
         return;
       }
 
-      await msg.reply(
+      await replyCommand(msg,
         "`/schedule <list|delete|enable|disable> [id]` — 알 수 없는 subcommand.",
       );
       return;
@@ -718,11 +742,11 @@ const handler: MessageHandler = async (msg) => {
       try {
         const inv = await collectInventory();
         const text = formatInventoryForUser(inv);
-        await msg.reply(text);
+        await replyCommand(msg,text);
       } catch (e) {
         console.error("plugins inventory failed:", e);
         const err = e instanceof Error ? e.message : String(e);
-        await msg.reply(`인벤토리 조회 실패: ${err}`);
+        await replyCommand(msg,`인벤토리 조회 실패: ${err}`);
       }
       return;
     }
@@ -809,11 +833,11 @@ const handler: MessageHandler = async (msg) => {
         );
         lines.push(`─ 스케줄: ${sched.length}개 (활성 ${enabled})`);
 
-        await msg.reply(lines.join("\n"));
+        await replyCommand(msg,lines.join("\n"));
       } catch (e) {
         console.error("status failed:", e);
         const err = e instanceof Error ? e.message : String(e);
-        await msg.reply(`상태 조회 실패: ${err}`);
+        await replyCommand(msg,`상태 조회 실패: ${err}`);
       }
       return;
     }
@@ -836,7 +860,7 @@ const handler: MessageHandler = async (msg) => {
     threadKey: msg.threadKey,
   });
   if (hookOut.block) {
-    await msg.reply(`요청이 훅에 의해 차단되었습니다: ${hookOut.blockReason ?? ""}`);
+    await replyCommand(msg,`요청이 훅에 의해 차단되었습니다: ${hookOut.blockReason ?? ""}`);
     return;
   }
   if (hookOut.additionalContext.length > 0) {
@@ -921,9 +945,9 @@ const handler: MessageHandler = async (msg) => {
     // 톤은 폴백 고지(⚠️)와 통일 — 성공경로(폴백)/실패경로(이 catch) 상호배타라 중복 아님.
     // reply 자체가 또 실패해도 핸들러가 throw로 죽지 않게 격리.
     const detail = redactSecrets(errorDetail(e));
-    await msg
-      .reply(formatRegionAError(detail))
-      .catch(() => {});
+    // 에러 응답도 replyCommand 로 — 실패 턴에서도 대시보드 '작업 중'이 꺼지고(out 발행) 에러가
+    // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
+    await replyCommand(msg, formatRegionAError(detail));
   }
 };
 
@@ -1058,11 +1082,11 @@ const serializedHandler: MessageHandler = (msg) => {
           restart: () => restartDaemon(`self-update:${msg.channel}`),
           notify: notifyDestFromMessage(msg.channel, msg.threadKey),
         });
-        await msg.reply(formatSelfUpdateResult(r)).catch(() => {});
+        await replyCommand(msg,formatSelfUpdateResult(r)).catch(() => {});
       } catch (e) {
         // runSelfUpdate 는 throw 0 설계지만 방어적으로 catch — 데몬 생존.
         const err = redactSecrets(e instanceof Error ? e.message : String(e));
-        await msg.reply(`⚠️ 업데이트 처리 중 오류: ${err}`).catch(() => {});
+        await replyCommand(msg,`⚠️ 업데이트 처리 중 오류: ${err}`).catch(() => {});
       }
     })();
     return Promise.resolve();

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.63] - 2026-07-10
+
+### Fixed
+- **Built-in slash commands now work in the web dashboard chat and no longer leave it stuck on "working".** Commands like `/status`, `/memo`, `/schedule`, and `/plugins` replied over the channel but didn't emit the completion event the dashboard uses to (1) render the reply and (2) clear the "working" spinner. As a result, in the dashboard the command appeared to do nothing and the spinner kept spinning, even though it worked fine on Telegram. Every built-in command (and error replies) now emits that event, so replies show up in the dashboard chat and the spinner clears — matching normal turns.
+
 ## [0.3.62] - 2026-07-10
 
 ### Changed
@@ -444,7 +449,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.62...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.63...HEAD
+[0.3.63]: https://github.com/tigu77/tiguclaw/compare/v0.3.62...v0.3.63
 [0.3.62]: https://github.com/tigu77/tiguclaw/compare/v0.3.61...v0.3.62
 [0.3.61]: https://github.com/tigu77/tiguclaw/compare/v0.3.60...v0.3.61
 [0.3.60]: https://github.com/tigu77/tiguclaw/compare/v0.3.59...v0.3.60

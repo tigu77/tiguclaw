@@ -148,6 +148,21 @@ export const getPaths = (): TiguclawPaths => {
 export const projectScope = (
   cwd: string,
 ): { skills: string; agents: string; commands: string; settings: string } => ({
+  skills: path.join(cwd, ".tiguclaw", "skills"),
+  agents: path.join(cwd, ".tiguclaw", "agents"),
+  commands: path.join(cwd, ".tiguclaw", "commands"),
+  settings: path.join(cwd, ".tiguclaw", "settings.json"),
+});
+
+/**
+ * 레거시 flat 프로젝트 자산 경로 (deprecated, 2026-07-10). `.tiguclaw/` 메타 폴더 도입 전엔
+ * `<cwd>/{skills,agents,commands}` 를 평면으로 뒀다. 하위호환 — 발견 시 `.tiguclaw/`(projectScope)
+ * *우선* + 이 레거시 flat 을 함께 스캔(같은 이름은 신규가 이김). 신규 쓰기는 projectScope 사용.
+ * ★flat 은 프로젝트 자기 skills/·agents/ 폴더와 충돌 여지가 있어 deprecated — 새 프로젝트는 `.tiguclaw/`.
+ */
+export const projectScopeLegacy = (
+  cwd: string,
+): { skills: string; agents: string; commands: string; settings: string } => ({
   skills: path.join(cwd, "skills"),
   agents: path.join(cwd, "agents"),
   commands: path.join(cwd, "commands"),

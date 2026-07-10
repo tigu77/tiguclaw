@@ -25,7 +25,7 @@
  */
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
-import { getPaths, projectScope } from "../paths.js";
+import { getPaths, projectScope, projectScopeLegacy } from "../paths.js";
 
 interface HookCommand {
   type: string;
@@ -61,7 +61,12 @@ const loadSettingsHooks = async (
   event: string,
   cwd: string = process.cwd(),
 ): Promise<HookMatcher[]> => {
-  const paths = [getPaths().settings, projectScope(cwd).settings];
+  // 홈 + 프로젝트(.tiguclaw/ 우선 + 레거시 flat 폴백, 2026-07-10). 존재하는 것만 로드(부재=스킵).
+  const paths = [
+    getPaths().settings,
+    projectScope(cwd).settings,
+    projectScopeLegacy(cwd).settings,
+  ];
   const result: HookMatcher[] = [];
   for (const p of paths) {
     try {

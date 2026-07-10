@@ -53,5 +53,5 @@
 
 - 공통 자산 = 홈 바로 아래: `<home>/skills` · `<home>/agents` · `<home>/commands` (모든 작업이 공유).
 - 플러그인 = `<home>/plugins` (유저 설치 생태계). 앱과 함께 배포되는 1st-party 번들 플러그인은 앱 설치 루트(`appRoot/plugins`)에 따로 있고, registry 가 두 루트를 모두 발견한다.
-- 프로젝트 = `<home>/workspace/<프로젝트>/{skills,agents,commands}` (그 프로젝트 전용 하위 자산. cwd 가 그 폴더일 때 발견됨).
+- 프로젝트 = `<프로젝트>/.tiguclaw/{skills,agents,commands}` (그 프로젝트 전용 하위 자산. cwd 가 그 폴더일 때 발견됨). `.tiguclaw/` 메타 폴더(2026-07-10) — `.claude/`·`.codex/` 처럼 tiguclaw 자산을 한 곳에 모아 프로젝트 *자기* `skills/`·`agents/` 폴더와 충돌을 피한다. 레거시 flat `<프로젝트>/{skills,agents,commands}` 도 계속 발견되나(하위호환, deprecated) 신규는 `.tiguclaw/` 아래에 쓴다.
 - **자산 생성·발견의 기본 = 홈.** 새 스킬·서브에이전트·커맨드·플러그인을 만들 때 사용자가 "이 레포에"·"이 프로젝트 폴더에" 처럼 명시하지 않으면 홈의 공통 자리(`<home>/agents` 등)에 만든다. 개발 레포의 `.claude/` 는 tiguclaw *자체 개발* 용이지 비서 런타임 자산 자리가 아니다.

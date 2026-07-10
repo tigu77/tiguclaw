@@ -18,7 +18,7 @@ description: "새 도메인에 맞는 서브에이전트 팀과 오케스트레�
 - **서브에이전트**: `<TIGUCLAW_HOME>/agents/<name>.md`
 - **오케스트레이션 스킬**: `<TIGUCLAW_HOME>/skills/<orchestrator-name>/SKILL.md`
 - **(선택) 슬래시 커맨드**: `<TIGUCLAW_HOME>/commands/<name>.md`
-- **프로젝트 전용 자산** (cwd 가 그 프로젝트 폴더일 때만 발견): `<TIGUCLAW_HOME>/workspace/<project>/{agents,skills,commands}`
+- **프로젝트 전용 자산** (cwd 가 그 프로젝트 폴더일 때만 발견): `<TIGUCLAW_HOME>/workspace/<project>/.tiguclaw/{agents,skills,commands}`
 
 사용자가 명시적으로 "이 레포에"·"이 프로젝트에" 라고 하지 않는 한 **홈이 기본**.
 
@@ -31,7 +31,7 @@ description: "새 도메인에 맞는 서브에이전트 팀과 오케스트레�
 
 1. user prompt 상단에 자동 prepend 되는 「## 사용 가능 서브에이전트」/「## 사용 가능 스킬」
    인덱스를 읽는다. 더 정확히는 `<TIGUCLAW_HOME>/agents/`, `<TIGUCLAW_HOME>/skills/`
-   (프로젝트 작업이면 `<TIGUCLAW_HOME>/workspace/<project>/{agents,skills}` 도) 를
+   (프로젝트 작업이면 `<TIGUCLAW_HOME>/workspace/<project>/.tiguclaw/{agents,skills}` 도) 를
    `Glob`/`Read` 로 확인한다.
 2. 현황에 따라 실행 모드를 분기한다:
 
@@ -87,7 +87,7 @@ description: "새 도메인에 맞는 서브에이전트 팀과 오케스트레�
 각 역할의 서브에이전트 .md 를 `Write` 로 생성한다.
 
 **파일 위치**: `<TIGUCLAW_HOME>/agents/<name>.md` (명시 없으면 홈 기본).
-프로젝트 전용일 때만: `<TIGUCLAW_HOME>/workspace/<project>/agents/<name>.md`.
+프로젝트 전용일 때만: `<TIGUCLAW_HOME>/workspace/<project>/.tiguclaw/agents/<name>.md`.
 
 **필수**: 에이전트 정의 파일 없이 위임 프롬프트에 역할을 직접 박는 것은 금지. 파일로
 존재해야 다음 세션 재사용 + 자동 발견 인덱스 등록이 된다.

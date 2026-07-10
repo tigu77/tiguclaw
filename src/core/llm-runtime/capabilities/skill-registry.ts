@@ -38,7 +38,7 @@ import {
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
-import { appRoot, getPaths, projectScope } from "../../paths.js";
+import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
 import type { ChannelName } from "../../../channels/types.js";
 import { dedupeBySource } from "./dedup-by-source.js";
@@ -100,7 +100,8 @@ export const discoverSkills = async (
   //  이름을 두면 home(user) override 가 이김 ("기본 번들 + 홈 오버라이드" 모델).
   const builtinRoot = path.join(appRoot(), "skills");
   const userRoot = getPaths().commonSkills;
-  const projectRoot = projectScope(cwd).skills;
+  const projectRoot = projectScope(cwd).skills; // .tiguclaw/skills (우선)
+  const projectLegacyRoot = projectScopeLegacy(cwd).skills; // <cwd>/skills (deprecated 폴백)
   // 플러그인 2루트 (2026-05-27): 번들(appRoot, 앱 배포 코드) + 유저 설치(<home>/plugins).
   const bundledPluginsRoot = path.join(appRoot(), "plugins");
   const homePluginsRoot = getPaths().commonPlugins;
@@ -109,12 +110,14 @@ export const discoverSkills = async (
     builtinSkills,
     userSkills,
     projectSkills,
+    projectLegacySkills,
     bundledPluginSkills,
     homePluginSkills,
   ] = await Promise.all([
     walkSkillsRoot(builtinRoot, "builtin"),
     walkSkillsRoot(userRoot, "user"),
     walkSkillsRoot(projectRoot, "project"),
+    walkSkillsRoot(projectLegacyRoot, "project"),
     walkPluginsRoot(bundledPluginsRoot),
     walkPluginsRoot(homePluginsRoot),
   ]);
@@ -122,7 +125,8 @@ export const discoverSkills = async (
   const all = [
     ...builtinSkills,
     ...userSkills,
-    ...projectSkills,
+    ...projectSkills, // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
+    ...projectLegacySkills,
     ...bundledPluginSkills,
     ...homePluginSkills,
   ];

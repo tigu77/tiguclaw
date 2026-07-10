@@ -35,7 +35,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseFrontmatter } from "./skill-registry.js";
 import { dedupeBySource } from "./dedup-by-source.js";
-import { appRoot, getPaths, projectScope } from "../../paths.js";
+import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import type { RegionASdkInput } from "../types.js";
 
 export interface Agent {
@@ -82,7 +82,8 @@ export const discoverAgents = async (
   // 미러. dedupeBySource rank 최하(builtin) — 홈에 같은 이름 두면 사용자 것이 우선.
   const builtinRoot = path.join(appRoot(), "agents");
   const userRoot = getPaths().commonAgents;
-  const projectRoot = projectScope(cwd).agents;
+  const projectRoot = projectScope(cwd).agents; // .tiguclaw/agents (우선)
+  const projectLegacyRoot = projectScopeLegacy(cwd).agents; // <cwd>/agents (deprecated 폴백)
   // 플러그인 2루트 (2026-05-27): 번들(appRoot, 앱 배포 코드) + 유저 설치(<home>/plugins).
   const bundledPluginsRoot = path.join(appRoot(), "plugins");
   const homePluginsRoot = getPaths().commonPlugins;
@@ -91,12 +92,14 @@ export const discoverAgents = async (
     builtinAgents,
     userAgents,
     projectAgents,
+    projectLegacyAgents,
     bundledPluginAgents,
     homePluginAgents,
   ] = await Promise.all([
     walkAgentsDir(builtinRoot, "builtin"),
     walkAgentsDir(userRoot, "user"),
     walkAgentsDir(projectRoot, "project"),
+    walkAgentsDir(projectLegacyRoot, "project"),
     walkPluginsAgents(bundledPluginsRoot),
     walkPluginsAgents(homePluginsRoot),
   ]);
@@ -104,7 +107,8 @@ export const discoverAgents = async (
   return dedupeBySource([
     ...builtinAgents,
     ...userAgents,
-    ...projectAgents,
+    ...projectAgents, // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
+    ...projectLegacyAgents,
     ...bundledPluginAgents,
     ...homePluginAgents,
   ]);

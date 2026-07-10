@@ -27,7 +27,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
 import { dedupeBySource } from "../llm-runtime/capabilities/dedup-by-source.js";
-import { appRoot, getPaths, projectScope } from "../paths.js";
+import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../paths.js";
 
 export interface Command {
   /** 슬래시 이름 = 파일 basename (확장자 제외). `/name` 으로 호출. */
@@ -58,22 +58,25 @@ export const discoverCommands = async (
   cwd: string = process.cwd(),
 ): Promise<Command[]> => {
   const userRoot = getPaths().commonCommands;
-  const projectRoot = projectScope(cwd).commands;
+  const projectRoot = projectScope(cwd).commands; // .tiguclaw/commands (우선)
+  const projectLegacyRoot = projectScopeLegacy(cwd).commands; // <cwd>/commands (deprecated 폴백)
   // 플러그인 2루트 (2026-05-27): 번들(appRoot, 앱 배포 코드) + 유저 설치(<home>/plugins).
   const bundledPluginsRoot = path.join(appRoot(), "plugins");
   const homePluginsRoot = getPaths().commonPlugins;
 
-  const [userCmds, projectCmds, bundledPluginCmds, homePluginCmds] =
+  const [userCmds, projectCmds, projectLegacyCmds, bundledPluginCmds, homePluginCmds] =
     await Promise.all([
       walkCommandsDir(userRoot, "user"),
       walkCommandsDir(projectRoot, "project"),
+      walkCommandsDir(projectLegacyRoot, "project"),
       walkPluginsCommands(bundledPluginsRoot),
       walkPluginsCommands(homePluginsRoot),
     ]);
 
   return dedupeBySource([
     ...userCmds,
-    ...projectCmds,
+    ...projectCmds, // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
+    ...projectLegacyCmds,
     ...bundledPluginCmds,
     ...homePluginCmds,
   ]);

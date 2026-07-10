@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.51] - 2026-07-10
+
+### Added
+- **Import agents and skills from a Claude Code or Codex project with two new built-in skills.** `claude-wrapper-sync` brings a project's `.claude/{agents,skills,commands}` into your assistant, and `codex-wrapper-sync` brings Codex's `~/.codex/skills`. The three tools share essentially the same on-disk format (agents are `<name>.md`, skills are `SKILL.md`), so wrapping is mostly validate-and-copy — with a dry-run preview and a confirmation before anything is overwritten. Wrapped assets are discovered live (no restart) and work identically across the Claude, Codex, and OpenAI backends.
+
+### Changed
+- **Project-scoped assets now live in a `.tiguclaw/` meta folder.** Like `.claude/` and `.codex/`, a project's tiguclaw skills/agents/commands now sit under `<project>/.tiguclaw/{skills,agents,commands}` instead of scattered top-level folders — so they no longer collide with a project's own `skills/` or `agents/` directories. The legacy flat layout is still discovered (deprecated) so nothing breaks; new assets are written under `.tiguclaw/`. Project `.mcp.json` stays where it is (it's the Claude Code standard).
+
 ## [0.3.50] - 2026-07-10
 
 ### Added
@@ -378,7 +386,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.50...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.51...HEAD
+[0.3.51]: https://github.com/tigu77/tiguclaw/compare/v0.3.50...v0.3.51
 [0.3.50]: https://github.com/tigu77/tiguclaw/compare/v0.3.49...v0.3.50
 [0.3.49]: https://github.com/tigu77/tiguclaw/compare/v0.3.48...v0.3.49
 [0.3.48]: https://github.com/tigu77/tiguclaw/compare/v0.3.47...v0.3.48

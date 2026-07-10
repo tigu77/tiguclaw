@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.70] - 2026-07-10
+
+### Added
+- **Local/small models that don't support tool-calling now still respond, instead of failing.** Many local models (e.g. Ollama vision models like `llava`) don't support function-calling, so passing them tools made the whole turn fail with a "does not support tools" error. The OpenAI adapter now detects this and automatically retries once without tools, so those models can still answer (text and image questions). Models that do support tools (OpenAI, Gemini, etc.) are unaffected. Combined with the previous release, this makes vision-capable local models usable for image Q&A.
+
 ## [0.3.69] - 2026-07-10
 
 ### Added
@@ -479,7 +484,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.69...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.70...HEAD
+[0.3.70]: https://github.com/tigu77/tiguclaw/compare/v0.3.69...v0.3.70
 [0.3.69]: https://github.com/tigu77/tiguclaw/compare/v0.3.68...v0.3.69
 [0.3.68]: https://github.com/tigu77/tiguclaw/compare/v0.3.67...v0.3.68
 [0.3.67]: https://github.com/tigu77/tiguclaw/compare/v0.3.66...v0.3.67

@@ -118,6 +118,16 @@ const VISION_MODEL_RE =
   /gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-5|chatgpt-4o|gemini|llava|bakllava|vision|llama-?4|minicpm-v|moondream|qwen[\d.]*-?vl|pixtral|gemma-?3|mistral-small-?3|internvl/i;
 const modelSupportsVision = (model: string): boolean => VISION_MODEL_RE.test(model);
 
+// 도구(function calling) 미지원 모델 에러 감지 — 다수 로컬 비전/소형 모델(ollama llava·moondream
+// 등)이 tools 를 넘기면 400 "does not support tools" 로 거부한다. 감지 시 도구 없이 1회 재시도해
+// (텍스트/vision 만) 그 모델도 최소한 응답하게 한다. 도구가 정말 필요한 작업은 그 모델로 애초에
+// 불가하므로 no-tools 폴백이 최선. openai/gemini(도구 지원)엔 무영향(이 에러 안 남).
+const isToolsUnsupported = (e: unknown): boolean =>
+  e instanceof Error &&
+  /does not support tools|tools?\b[^.]{0,20}not support|not support[^.]{0,20}\btools?\b|does not support function/i.test(
+    e.message,
+  );
+
 export const runOpenAi = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
@@ -470,9 +480,9 @@ export const runOpenAi = async (
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
-  const runOnce = async () => {
+  const runOnce = async (agentToRun: Agent = agent, closeServers = true) => {
     try {
-      const streamed = await run(agent, runInput, {
+      const streamed = await run(agentToRun, runInput, {
         stream: true,
         signal: effectiveAc.signal,
       });
@@ -606,16 +616,45 @@ export const runOpenAi = async (
       // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
       // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
       deltaStream.flush();
-      for (const server of mcpServers) {
-        try {
-          await server.close();
-        } catch {
-          /* noop */
+      if (closeServers) {
+        for (const server of mcpServers) {
+          try {
+            await server.close();
+          } catch {
+            /* noop */
+          }
         }
       }
     }
   };
-  const result = await runOnce();
+  // 도구 미지원 모델 폴백 — run() 이 "does not support tools" 로 실패하면(ollama llava 등) 도구
+  // 없는 Agent 로 1회 재시도(텍스트/vision 만). mcpServers 는 첫 runOnce finally 에서 이미 close
+  // 됐으니 재시도는 closeServers=false. abort/도구 없던 turn(toolsNone)엔 재시도 안 함.
+  let result: Awaited<ReturnType<typeof runOnce>>;
+  try {
+    result = await runOnce();
+  } catch (e) {
+    if (
+      isToolsUnsupported(e) &&
+      !toolsNone &&
+      mcpServers.length > 0 &&
+      !effectiveAc.signal.aborted
+    ) {
+      console.warn(
+        `openai: '${model}' 도구(function calling) 미지원 — 도구 없이 재시도(텍스트/vision). ` +
+          `channel=${input.channel} thread=${input.threadKey}`,
+      );
+      const noToolsAgent = new Agent({
+        name: "tiguclaw-spike",
+        instructions: input.systemPromptOverride ?? SYSTEM_PROMPT,
+        model: modelArg,
+        mcpServers: [],
+      });
+      result = await runOnce(noToolsAgent, false);
+    } else {
+      throw e;
+    }
+  }
 
   const text =
     typeof result.finalOutput === "string"

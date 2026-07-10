@@ -1509,10 +1509,14 @@
           const name = document.createElement("span");
           name.className = "project-card-name";
           name.textContent = p.name || "(이름 없음)";
-          const st = document.createElement("span");
-          st.className = "project-status " + status;
-          st.textContent = PROJECT_STATUS_LABEL[status] || status;
-          head.appendChild(name); head.appendChild(st);
+          head.appendChild(name);
+          // 상태 뱃지 — active(기본)는 모든 카드에 붙어 노이즈라 생략. 보류/완료만 표시(의미 신호).
+          if (status !== "active") {
+            const st = document.createElement("span");
+            st.className = "project-status " + status;
+            st.textContent = PROJECT_STATUS_LABEL[status] || status;
+            head.appendChild(st);
+          }
           // 실행 중 에이전트 배지 — "지금 어디가 바쁜지" 한눈에(브리지 runningAgents).
           if (p.runningAgents > 0) {
             const rb = document.createElement("span");

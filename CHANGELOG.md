@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.60] - 2026-07-10
+
+### Changed
+- **Project cards no longer show an "active" status badge.** Since almost every project is active by default, the badge appeared on every card as noise; it's now omitted for active projects and only shown for the meaningful exceptions — "paused" and "done". (The card's subtle left-edge color still reflects status.)
+
 ## [0.3.59] - 2026-07-10
 
 ### Changed
@@ -429,7 +434,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.59...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.60...HEAD
+[0.3.60]: https://github.com/tigu77/tiguclaw/compare/v0.3.59...v0.3.60
 [0.3.59]: https://github.com/tigu77/tiguclaw/compare/v0.3.58...v0.3.59
 [0.3.58]: https://github.com/tigu77/tiguclaw/compare/v0.3.57...v0.3.58
 [0.3.57]: https://github.com/tigu77/tiguclaw/compare/v0.3.56...v0.3.57

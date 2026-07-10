@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.62] - 2026-07-10
+
+### Changed
+- **Hitting a backend's usage limit now gives a clear message instead of a raw error.** When an LLM backend returns a rate-limit/usage-limit error (e.g. Codex's `429 usage_limit_reached`), the assistant replied with the raw JSON, which was confusing. It now says which backend hit its limit, roughly how many minutes until it resets, and suggests switching backends or using a multi-model pool for automatic fallback. Other errors are still shown as-is. (No automatic cross-backend fallback is added — that stays a configuration choice; this only makes the message clear.)
+
 ## [0.3.61] - 2026-07-10
 
 ### Added
@@ -439,7 +444,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.61...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.62...HEAD
+[0.3.62]: https://github.com/tigu77/tiguclaw/compare/v0.3.61...v0.3.62
 [0.3.61]: https://github.com/tigu77/tiguclaw/compare/v0.3.60...v0.3.61
 [0.3.60]: https://github.com/tigu77/tiguclaw/compare/v0.3.59...v0.3.60
 [0.3.59]: https://github.com/tigu77/tiguclaw/compare/v0.3.58...v0.3.59

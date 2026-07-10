@@ -359,6 +359,26 @@ try {
 // (구 500자 미리보기 캡은 대시보드=로그 시절 잔재 — 진짜 채팅이 된 지금 제거.)
 const EVENT_TEXT_MAX = 50_000;
 
+// 영역 A 에러 → 사용자 친화 메시지. 사용 한도/레이트리밋(codex usage_limit_reached·429·quota 등)은
+// 원문 JSON 덤프 대신 *명확한 안내*(어느 백엔드·리셋까지 대략 N분·전환/다중풀 제안)로. provider 무관
+// (codex·claude·openai 등 어느 백엔드가 한도에 걸려도 동일). 그 외 에러는 원 detail 그대로 노출.
+const formatRegionAError = (detail: string): string => {
+  const d = detail || "";
+  const isLimit = /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b/i.test(d);
+  if (!isLimit) return `⚠️ 요청 처리 중 오류가 발생했습니다:\n${detail}`;
+  const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);
+  const prov = provMatch ? provMatch[0].toLowerCase() : "LLM";
+  const secMatch =
+    d.match(/"resets_in_seconds"\s*:\s*(\d+)/) || d.match(/retry[-_ ]?after["'\s:=]+(\d+)/i);
+  const when = secMatch
+    ? ` 약 ${Math.max(1, Math.round(Number(secMatch[1]) / 60))}분 후 리셋됩니다.`
+    : "";
+  return (
+    `⚠️ ${prov} 백엔드 사용 한도(rate limit)에 도달했습니다.${when}\n` +
+    `지금 바로 쓰려면 다른 백엔드로 모델을 바꾸거나, 여러 모델 풀(예: codex + claude)로 두면 한도·장애 시 자동 폴백됩니다.`
+  );
+};
+
 const handler: MessageHandler = async (msg) => {
   bus.publish({
     type: "channel.message.in",
@@ -902,7 +922,7 @@ const handler: MessageHandler = async (msg) => {
     // reply 자체가 또 실패해도 핸들러가 throw로 죽지 않게 격리.
     const detail = redactSecrets(errorDetail(e));
     await msg
-      .reply(`⚠️ 요청 처리 중 오류가 발생했습니다:\n${detail}`)
+      .reply(formatRegionAError(detail))
       .catch(() => {});
   }
 };

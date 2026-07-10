@@ -13,8 +13,17 @@
 import type { ActivityOutput } from "../types.js";
 
 /** 출력 프리뷰를 붙이는 도구 화이트리스트. 결과가 곧 정보가치인 도구만(Edit/Write 제외 —
- *  그쪽은 diff 가 정보, 결과는 "Wrote N chars" 류라 노이즈). */
-const OUTPUT_TOOLS = new Set(["Bash", "Read", "Grep", "Glob"]);
+ *  그쪽은 diff 가 정보, 결과는 "Wrote N chars" 류라 노이즈. KillShell/TodoWrite 도 확인성 결과라 제외).
+ *  WebSearch 는 claude SDK 전용이나 이름만 포함(codex/openai 엔 도구 부재 → 자연 무발화). */
+const OUTPUT_TOOLS = new Set([
+  "Bash",
+  "Read",
+  "Grep",
+  "Glob",
+  "BashOutput",
+  "WebFetch",
+  "WebSearch",
+]);
 
 /** 프리뷰 줄 수 상한(초과 시 컷 + truncated). diff(60)보다 작게 — 출력은 보조. */
 const MAX_LINES = 40;

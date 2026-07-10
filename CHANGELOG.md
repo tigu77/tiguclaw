@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.47] - 2026-07-10
+
+### Added
+- **More tools show an output preview in the dashboard chat.** In addition to `Bash`, `Read`, `Grep`, and `Glob`, the collapsible output preview now also appears for `WebFetch` (fetched web content), `BashOutput` (background shell output), and `WebSearch`. Tools whose result is just a confirmation (a file write, a shell kill, a todo update) stay preview-free.
+
 ## [0.3.46] - 2026-07-10
 
 ### Changed
@@ -358,7 +363,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.46...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.47...HEAD
+[0.3.47]: https://github.com/tigu77/tiguclaw/compare/v0.3.46...v0.3.47
 [0.3.46]: https://github.com/tigu77/tiguclaw/compare/v0.3.45...v0.3.46
 [0.3.45]: https://github.com/tigu77/tiguclaw/compare/v0.3.44...v0.3.45
 [0.3.44]: https://github.com/tigu77/tiguclaw/compare/v0.3.43...v0.3.44

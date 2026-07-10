@@ -11,6 +11,19 @@ skills=`<dir>/SKILL.md` frontmatter name/description)이라 래핑은 *검증 + 
 새 코어·라이브러리 없음. tiguclaw 는 이 자산을 **매 턴 라이브 발견**하므로 **재시작 불요** —
 동기화 직후 `find_skills`/`find_agents` 또는 바로 `invoke_skill`/`spawn_agent` 로 쓸 수 있다.
 
+## 0) ★메인 지침 먼저 이해·반영 (CLAUDE.md → PROJECT.md)
+Claude Code 스킬/에이전트는 프로젝트 `CLAUDE.md`(+ 하위 `**/CLAUDE.md`, 전역 `~/.claude/CLAUDE.md`)가
+세운 **컨벤션·아키텍처·규칙 컨텍스트를 전제**한다. 스킬만 복사하면 그 맥락이 없어 겉돈다. 순서:
+1. 먼저 `<project>/CLAUDE.md`(및 하위·전역)를 **Read 해 이해**한다.
+2. 그 **핵심 컨텍스트를 tiguclaw 의 `<project>/PROJECT.md` 에 반영**한다 — CLAUDE.md ↔ tiguclaw PROJECT.md
+   (둘 다 프로젝트 메인 지침). PROJECT.md 가 없으면 요지를 정리해 작성(frontmatter `name`·`description`·
+   `status: active`), 있으면 **덮어쓰지 말고** 스킬이 의존하는 규칙만 보강. ★verbatim 통째 복사보다
+   *요지*(스킬이 전제하는 컨벤션·용어·제약)를 담아라(길면 요약).
+3. ★LLM-agnostic(#2): CLAUDE.md 는 claude SDK 만 자동 로드하므로, **PROJECT.md 에 반영해야** codex/openai
+   어댑터로도 같은 맥락이 선다. SDK 자동로드에 의존하지 말 것.
+4. 컨텍스트에 의존하는 스킬은 홈 전역보다 **프로젝트 스코프(`<project>/.tiguclaw/skills`) 래핑 권장**
+   (맥락 PROJECT.md 와 같은 프로젝트에서 함께 산다). 그 폴더는 `project_register` 로 등록.
+
 ## 1) 소스·대상 정하기
 - **소스**: 사용자가 준 Claude Code 프로젝트 경로의 `<project>/.claude/` (없으면 `~/.claude/`).
   하위: `.claude/agents/*.md`, `.claude/skills/<name>/SKILL.md`, `.claude/commands/*.md`.

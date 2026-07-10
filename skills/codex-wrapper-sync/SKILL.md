@@ -10,13 +10,22 @@ Codex 의 스킬을 tiguclaw 의 `skills/` 로 가져온다. **Codex 스킬도 `
 ★Codex 는 Claude Code 식 **서브에이전트가 없다**(단일 에이전트) → agents 는 대상 아님(스킬만).
 tiguclaw 는 매 턴 라이브 발견하므로 **재시작 불요**. 자매 스킬 = `claude-wrapper-sync`.
 
+## 0) ★메인 지침 먼저 이해·반영 (AGENTS.md → PROJECT.md)
+Codex 스킬은 프로젝트 `AGENTS.md`(+ 전역 `~/.codex/AGENTS.md` 있으면)가 세운 **컨벤션·규칙 컨텍스트를
+전제**한다. 스킬만 복사하면 겉돈다. 순서:
+1. 먼저 `<project>/AGENTS.md`(및 전역)를 **Read 해 이해**한다.
+2. 그 **핵심 컨텍스트를 tiguclaw 의 `<project>/PROJECT.md` 에 반영**(AGENTS.md ↔ PROJECT.md, 둘 다
+   프로젝트 메인 지침). 없으면 요지 정리해 작성(frontmatter `name`·`description`·`status: active`),
+   있으면 덮어쓰지 말고 스킬 의존 규칙만 보강. verbatim 통째보다 *요지* 를 담아라(길면 요약).
+3. ★LLM-agnostic(#2): PROJECT.md 에 반영해야 어느 어댑터로든 같은 맥락이 선다.
+4. 컨텍스트 의존 스킬은 프로젝트 스코프(`<project>/.tiguclaw/skills`) 래핑 권장 + `project_register` 등록.
+
 ## 1) 소스·대상 정하기
 - **소스**(존재하는 것만):
   - 유저 스킬: `~/.codex/skills/<name>/SKILL.md`. **`.system/` 은 제외**(skill-creator 등 Codex
     빌트인 — 유저 자산 아님).
   - (선택) 프로젝트 프롬프트: `~/.codex/prompts/*.md` → tiguclaw commands 로 래핑 가능(슬래시커맨드 동형).
-  - (선택) `<project>/AGENTS.md`: Codex 프로젝트 지침(문맥). 스킬이 아니라 *컨텍스트* 라 자동
-    래핑 대상 아님 — 사용자가 원하면 그 요지를 새 스킬 SKILL.md 나 프로젝트 PROJECT.md 로 손수 정리.
+  - `<project>/AGENTS.md`: Codex 프로젝트 메인 지침 — **§0 에서 이미 PROJECT.md 로 반영**(스킬 아닌 컨텍스트).
 - **대상**(불명확하면 물어라): 전역 `<TIGUCLAW_HOME>/skills` (기본) 또는 특정 프로젝트
   **`<project>/.tiguclaw/skills`** (2026-07-10 메타 폴더 컨벤션 — 프로젝트 자기 폴더와 충돌 회피).
 - `Glob` 로 `~/.codex/skills/*/SKILL.md`(단 `.system` 제외) 목록을 만든다.

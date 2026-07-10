@@ -438,7 +438,7 @@ const makeFileOpsTools = (base: string) => {
     "셸 명령을 실행합니다 (`sh -c <command>`). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. cwd 기본은 현재 작업폴더 (절대경로·cd 로 밖도 가능). **긴 명령(빌드·서버·스크립트)은 `run_in_background: true` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**",
     {
       command: z.string().min(1),
-      timeout: z.number().int().min(1).optional(),
+      timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 120, 최대 600)"),
       description: z.string().optional(),
       run_in_background: z.boolean().optional(),
     },
@@ -466,9 +466,10 @@ const makeFileOpsTools = (base: string) => {
         );
       }
 
-      // V5.7 안전 가드 2 — timeout clamp. 미지정 = 디폴트, 초과 = max.
-      const requestedTimeout = args.timeout ?? BASH_DEFAULT_TIMEOUT_MS;
-      const timeout = Math.min(requestedTimeout, BASH_MAX_TIMEOUT_MS);
+      // V5.7 안전 가드 2 — timeout clamp. ★param 은 *초* 단위(설명·모델 기대와 일치). 예전엔
+      // ms 로 써서 모델이 `timeout:120`(120초 의도)을 넘기면 120ms→즉시 SIGKILL 이었다(2026-07-10).
+      const timeoutSec = args.timeout ?? BASH_DEFAULT_TIMEOUT_MS / 1000;
+      const timeout = Math.min(timeoutSec * 1000, BASH_MAX_TIMEOUT_MS);
 
       try {
         // execFile "sh -c" — single shell layer, no shell:true (injection 표면 최소).
@@ -535,7 +536,7 @@ const makeFileOpsTools = (base: string) => {
         if (errWithMarker.length > 0) parts.push(`stderr:\n${errWithMarker}`);
         if (isTimeout) {
           parts.push(
-            `Error: timeout — command 이 ${timeout}ms 안에 끝나지 않아 SIGKILL 로 종료됨.`,
+            `Error: timeout — command 이 ${Math.round(timeout / 1000)}s 안에 끝나지 않아 SIGKILL 로 종료됨.`,
           );
         } else if (isMaxBuffer) {
           parts.push(`Error: maxBuffer 초과 (1MB) — stdout/stderr truncated.`);
@@ -610,7 +611,7 @@ const makeFileOpsTools = (base: string) => {
     {
       url: z.string().min(1),
       prompt: z.string().optional(),
-      timeout: z.number().int().min(1).optional(),
+      timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 30, 최대 60)"),
     },
     async (args) => {
       // 안전 가드 1 — URL 파싱 + 스킴 검사.
@@ -631,9 +632,10 @@ const makeFileOpsTools = (base: string) => {
         return errText(`url 이 DISALLOWED_URLS 에 박혀 있어 거부됨: ${args.url}`);
       }
 
-      // 안전 가드 3 — timeout clamp.
-      const requestedTimeout = args.timeout ?? WEBFETCH_DEFAULT_TIMEOUT_MS;
-      const timeout = Math.min(requestedTimeout, WEBFETCH_MAX_TIMEOUT_MS);
+      // 안전 가드 3 — timeout clamp. ★param 은 *초* 단위(설명·모델 기대와 일치). 예전엔 ms 로
+      // 써서 모델이 `timeout:30`(30초 의도)을 넘기면 30ms→즉시 실패했다(2026-07-10 fix). 내부는 ms.
+      const timeoutSec = args.timeout ?? WEBFETCH_DEFAULT_TIMEOUT_MS / 1000;
+      const timeout = Math.min(timeoutSec * 1000, WEBFETCH_MAX_TIMEOUT_MS);
 
       try {
         const res = await fetch(args.url, {
@@ -681,7 +683,7 @@ const makeFileOpsTools = (base: string) => {
         const err = e as Error & { name?: string };
         // AbortSignal.timeout → DOMException(name="TimeoutError").
         if (err.name === "TimeoutError" || err.name === "AbortError") {
-          return errText(`timeout — fetch 가 ${timeout}ms 안에 끝나지 않음.`);
+          return errText(`timeout — fetch 가 ${Math.round(timeout / 1000)}s 안에 끝나지 않음.`);
         }
         return errText(err.message ?? String(e));
       }

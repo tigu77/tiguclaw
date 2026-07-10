@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.48] - 2026-07-10
+
+### Fixed
+- **`Bash` and `WebFetch` timeouts are now interpreted in seconds, matching their documentation.** The tool descriptions said the timeout defaulted to 120s (Bash) / 30s (WebFetch), but the code treated the value as milliseconds — so a model passing `timeout: 120` got 120 ms and the command was killed instantly (and `WebFetch` failed after 30 ms). The parameter is now seconds as documented, clamped to the same maximums, with the unit spelled out in the parameter description. (Applies to the built-in file tools used by the Codex/OpenAI backends; the Claude backend uses the SDK's own tools, which were unaffected.)
+
 ## [0.3.47] - 2026-07-10
 
 ### Added
@@ -363,7 +368,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.47...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.48...HEAD
+[0.3.48]: https://github.com/tigu77/tiguclaw/compare/v0.3.47...v0.3.48
 [0.3.47]: https://github.com/tigu77/tiguclaw/compare/v0.3.46...v0.3.47
 [0.3.46]: https://github.com/tigu77/tiguclaw/compare/v0.3.45...v0.3.46
 [0.3.45]: https://github.com/tigu77/tiguclaw/compare/v0.3.44...v0.3.45

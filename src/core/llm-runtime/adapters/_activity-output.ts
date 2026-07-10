@@ -44,6 +44,10 @@ export function buildActivityOutput(
   if (!OUTPUT_TOOLS.has(toolName)) return undefined;
   if (typeof text !== "string" || text === "") return undefined;
   try {
+    // isError: 명시 플래그(claude tool_result.is_error·codex callTool throw) OR 내용 휴리스틱.
+    // ★file-ops 도구는 에러를 throw/플래그 아니라 `Error: ...` *텍스트*로 반환(errText) → 세
+    // 어댑터 모두 명시 플래그를 못 받는다. 접두 매칭으로 LLM-agnostic(#2) 동일 감지(붉은 틴트).
+    const err = isError === true || /^Error:\s/.test(text.trimStart());
     const lines = text.split("\n");
     const out: string[] = [];
     let truncated = false;
@@ -63,7 +67,7 @@ export function buildActivityOutput(
     return {
       text: out.join("\n"),
       ...(truncated ? { truncated: true } : {}),
-      ...(isError ? { isError: true } : {}),
+      ...(err ? { isError: true } : {}),
     };
   } catch {
     return undefined;

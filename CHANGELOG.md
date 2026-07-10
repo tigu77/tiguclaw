@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.49] - 2026-07-10
+
+### Fixed
+- **A tool whose result is an error now shows its output preview tinted red across all backends.** The error tint previously relied on a backend-specific flag that the built-in file tools don't set (they return their errors as `Error: …` text rather than a flagged failure), so tool errors often rendered without the red highlight. The preview now also recognizes an `Error:`-prefixed result, so failed reads, greps, fetches, and shell commands are consistently marked — identically on the Claude, Codex, and OpenAI backends. Only a result that *starts* with `Error:` is flagged, so output that merely mentions the word isn't mislabeled.
+
 ## [0.3.48] - 2026-07-10
 
 ### Fixed
@@ -368,7 +373,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.48...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.49...HEAD
+[0.3.49]: https://github.com/tigu77/tiguclaw/compare/v0.3.48...v0.3.49
 [0.3.48]: https://github.com/tigu77/tiguclaw/compare/v0.3.47...v0.3.48
 [0.3.47]: https://github.com/tigu77/tiguclaw/compare/v0.3.46...v0.3.47
 [0.3.46]: https://github.com/tigu77/tiguclaw/compare/v0.3.45...v0.3.46

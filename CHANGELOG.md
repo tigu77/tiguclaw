@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.56] - 2026-07-10
+
+### Changed
+- **Context-tag chips are now removable, toggle in and out of the input, and show which tags are real.** Clicking a chip inserts its tag if it's not in the input and removes it if it already is (so you can clear a tag you added), and the chips for tags currently in your message are highlighted. Learned tag chips have a small × to delete them from the bar (registered projects stay, since they're seeded from the registry). Tags that actually match a project, skill, or agent render solid; ones that don't (typos, ad-hoc topics) render faded/dashed so junk is easy to spot and clear.
+
 ## [0.3.55] - 2026-07-10
 
 ### Changed
@@ -406,7 +411,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.55...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.56...HEAD
+[0.3.56]: https://github.com/tigu77/tiguclaw/compare/v0.3.55...v0.3.56
 [0.3.55]: https://github.com/tigu77/tiguclaw/compare/v0.3.54...v0.3.55
 [0.3.54]: https://github.com/tigu77/tiguclaw/compare/v0.3.53...v0.3.54
 [0.3.53]: https://github.com/tigu77/tiguclaw/compare/v0.3.52...v0.3.53

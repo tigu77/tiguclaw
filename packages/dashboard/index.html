@@ -642,6 +642,13 @@
       /* 프로젝트 아닌 일반 태그(스킬·주제) — 보라 계열로 프로젝트(하늘색)와 구분. */
       .ctx-chip.ctx-generic { background:rgba(167,139,250,.10); color:var(--accent-2); border-color:rgba(167,139,250,.28); }
       .ctx-chip.ctx-generic:hover { background:rgba(167,139,250,.20); border-color:rgba(167,139,250,.55); }
+      /* 미해석 태그(실제 프로젝트/스킬 매칭 안 됨 — 오타 or 임의 주제) — 흐릿·점선. */
+      .ctx-chip.ctx-unresolved { opacity:.55; border-style:dashed; }
+      /* 현재 입력창에 걸린 태그 = 활성(밝게 + 굵은 테두리). */
+      .ctx-chip.active { box-shadow:inset 0 0 0 1px currentColor; filter:brightness(1.25); opacity:1; }
+      /* 칩 제거 × (학습 칩만). */
+      .ctx-x { margin-left:1px; font-size:12px; line-height:1; opacity:.5; cursor:pointer; }
+      .ctx-x:hover { opacity:1; color:var(--warn); }
       .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); overflow:hidden; flex:none; }
       .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; overflow:hidden; padding:3px; }
       .att-thumb { width:100%; height:100%; object-fit:cover; display:block; }
@@ -1355,21 +1362,39 @@
       const ctxBumpRecent = (name) => {
         try { const r = ctxRecent().filter((n) => n !== name); r.unshift(name); localStorage.setItem(CTX_RECENT_KEY, JSON.stringify(r.slice(0, 30))); } catch {}
       };
+      const ctxUnlearn = (name) => { // 학습 칩 제거 — recent 에서 뺀다.
+        try { localStorage.setItem(CTX_RECENT_KEY, JSON.stringify(ctxRecent().filter((n) => n !== name))); } catch {}
+        renderContextTags();
+      };
+      // 해석 가능한 태그 이름 집합 = 등록 프로젝트 ∪ 인벤토리 스킬·에이전트. 실제 뭔가를 가리키는지 표시용.
+      const resolvableNames = () => {
+        const s = new Set();
+        for (const p of (Array.isArray(projectsCache) ? projectsCache : [])) if (p && p.name) s.add(p.name);
+        const inv = inventoryCache || {};
+        for (const cat of ["skill", "agent"]) for (const it of (inv[cat] || [])) if (it && it.name) s.add(it.name);
+        return s;
+      };
+      // 칩 클릭 = 입력창에서 그 태그 토글(없으면 삽입, 있으면 제거 → "현재 걸린 태그도 지움").
       const insertContextTag = (name) => {
         const ta = document.getElementById("chat-input");
         if (!ta) return;
-        if (ta.value.includes("#" + name)) { ta.focus(); return; } // 이미 있으면 중복 삽입 안 함.
-        const tag = "#" + name + " ";
-        const s = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
-        const e = ta.selectionEnd != null ? ta.selectionEnd : ta.value.length;
-        ta.value = ta.value.slice(0, s) + tag + ta.value.slice(e);
-        const pos = s + tag.length;
-        ta.focus(); ta.setSelectionRange(pos, pos);
-        ta.dispatchEvent(new Event("input", { bubbles: true })); // autogrow 트리거.
-        ctxBumpRecent(name); renderContextTags();
+        const core = "#" + name;
+        if (ta.value.includes(core)) {
+          // 제거 — "#name " 우선, 없으면 "#name". 이중 공백 정리.
+          ta.value = ta.value.split(core + " ").join("").split(core).join("").replace(/[ \t]{2,}/g, " ").replace(/^\s+/, "");
+        } else {
+          const tag = core + " ";
+          const s = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+          const e = ta.selectionEnd != null ? ta.selectionEnd : ta.value.length;
+          ta.value = ta.value.slice(0, s) + tag + ta.value.slice(e);
+          const pos = s + tag.length; ta.setSelectionRange(pos, pos);
+          ctxBumpRecent(name);
+        }
+        ta.focus();
+        ta.dispatchEvent(new Event("input", { bubbles: true })); // autogrow.
+        renderContextTags();
       };
       // 타이핑한 태그 학습 — 보낸 메시지에서 `#태그` 를 뽑아 recent 에 기록(다음부터 칩으로 뜸).
-      // 등록 프로젝트명(공백 포함 가능)은 registry 매칭으로 먼저 뽑고 텍스트서 제거, 나머지는 단일 토큰.
       const recordTypedTags = (text) => {
         if (typeof text !== "string" || text.indexOf("#") === -1) return;
         let t = text;
@@ -1380,13 +1405,23 @@
         for (const tag of m) ctxBumpRecent(tag.slice(1));
         renderContextTags();
       };
+      // 입력창의 현재 값 기준으로 각 칩의 활성(걸림) 표시만 갱신(재렌더 없이 저비용).
+      const updateActiveChips = () => {
+        const ta = document.getElementById("chat-input");
+        const val = ta ? ta.value : "";
+        document.querySelectorAll("#chat-context .ctx-chip").forEach((chip) => {
+          const n = chip.dataset.tag;
+          chip.classList.toggle("active", !!n && val.includes("#" + n));
+        });
+      };
       const renderContextTags = () => {
         const bar = document.getElementById("chat-context");
         if (!bar) return;
         bar.innerHTML = "";
         const projs = Array.isArray(projectsCache) ? projectsCache.filter((p) => p && p.name) : [];
         const projByName = new Map(projs.map((p) => [p.name, p]));
-        // 후보 = 최근 사용 태그(프로젝트·스킬·주제 무엇이든) ∪ 등록 프로젝트(시드). 최근 먼저.
+        const resolvable = resolvableNames();
+        // 후보 = 최근 사용 태그 ∪ 등록 프로젝트(시드). 최근 먼저.
         const names = []; const seen = new Set();
         for (const n of ctxRecent()) { if (n && !seen.has(n)) { seen.add(n); names.push(n); } }
         for (const p of projs) { if (!seen.has(p.name)) { seen.add(p.name); names.push(p.name); } }
@@ -1394,18 +1429,28 @@
         const label = document.createElement("span");
         label.className = "ctx-label"; label.textContent = "컨텍스트:";
         bar.appendChild(label);
-        for (const name of names.slice(0, 16)) { // 상한 — 최근/시드 중 앞 16개.
+        for (const name of names.slice(0, 16)) {
           const p = projByName.get(name);
           const status = p && ["active", "paused", "done"].includes(p.status) ? p.status : null;
+          const isResolved = p || resolvable.has(name);
           const chip = document.createElement("span");
-          chip.className = "ctx-chip" + (p ? " s-" + status : " ctx-generic");
-          chip.title = (p ? "프로젝트" : "태그") + " 컨텍스트 삽입 → #" + name;
+          chip.className = "ctx-chip" + (p ? " s-" + status : " ctx-generic") + (isResolved ? "" : " ctx-unresolved");
+          chip.dataset.tag = name;
+          chip.title = (p ? "프로젝트" : isResolved ? "스킬/에이전트" : "태그(미해석)") + " → 클릭: #" + name + " 넣기/빼기";
           const hash = document.createElement("span");
           hash.className = "ctx-hash"; hash.textContent = "#";
           chip.appendChild(hash); chip.appendChild(document.createTextNode(name));
           chip.addEventListener("click", () => insertContextTag(name));
+          // 학습 칩(프로젝트 시드 아님)은 × 로 제거 가능. 프로젝트는 registry 관리라 × 없음.
+          if (!p) {
+            const x = document.createElement("span");
+            x.className = "ctx-x"; x.textContent = "×"; x.title = "이 태그 칩 제거";
+            x.addEventListener("click", (e) => { e.stopPropagation(); ctxUnlearn(name); });
+            chip.appendChild(x);
+          }
           bar.appendChild(chip);
         }
+        updateActiveChips();
       };
 
       const renderProjectsGrid = () => {
@@ -1982,6 +2027,7 @@
 
       const renderInventory = (inv) => {
         inventoryCache = inv;
+        renderContextTags(); // 스킬·에이전트 로드됨 → 태그 해석/미해석 구분 갱신.
         const root = document.getElementById("inventory");
         if (!root) return;
         // ★30s 폴 재렌더가 펼친 카드·연 카테고리·스크롤을 초기화하던 버그 픽스 —
@@ -3778,6 +3824,7 @@
         });
       };
       input.addEventListener("input", autoGrowInput);
+      input.addEventListener("input", updateActiveChips); // 타이핑/백스페이스에 칩 활성표시 동기화.
 
       // Enter=전송, Shift+Enter=줄바꿈(기본 동작 유지). IME 조합 중(한글 입력)에는 전송 금지 —
       // isComposing 이면 Enter 가 조합 확정용이라 가로채면 오전송된다.

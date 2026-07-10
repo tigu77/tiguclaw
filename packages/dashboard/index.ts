@@ -172,6 +172,25 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // 정적 vendored 코드 하이라이터 (highlight.js v11, 단일파일·외부 의존 0·CDN 0).
+    if (pathname === "/highlight.min.js" && method === "GET") {
+      try {
+        const js = await fs.readFile(
+          path.join(__dirname, "highlight.min.js"),
+          "utf8",
+        );
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "public, max-age=86400",
+        });
+        res.end(js);
+      } catch {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("highlight.min.js load failed");
+      }
+      return;
+    }
+
     // API proxy — token browser 미노출.
     if (pathname === "/api/inventory" && method === "GET") {
       await proxyJson(res, "/inventory");

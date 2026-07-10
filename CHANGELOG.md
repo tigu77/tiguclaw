@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.58] - 2026-07-10
+
+### Changed
+- **Code highlighting now uses the real highlight.js library instead of a hand-rolled one.** The syntax highlighter added in 0.3.57 was a small custom implementation; it's been replaced with highlight.js v11 (bundled locally as a single vendored file, like the markdown parser — no CDN, works offline), for accurate highlighting across dozens of languages.
+
+### Fixed
+- **The violet context-tag chips are easier to read.** Newly-typed tags (which don't yet match a known project or skill) were dimmed too much, and the violet chips were low-contrast; both are now brighter.
+
 ## [0.3.57] - 2026-07-10
 
 ### Added
@@ -416,7 +424,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.57...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.58...HEAD
+[0.3.58]: https://github.com/tigu77/tiguclaw/compare/v0.3.57...v0.3.58
 [0.3.57]: https://github.com/tigu77/tiguclaw/compare/v0.3.56...v0.3.57
 [0.3.56]: https://github.com/tigu77/tiguclaw/compare/v0.3.55...v0.3.56
 [0.3.55]: https://github.com/tigu77/tiguclaw/compare/v0.3.54...v0.3.55

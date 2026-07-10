@@ -9,6 +9,7 @@
     "index.ts",
     "index.html",
     "marked.min.js",
+    "highlight.min.js",
     "README.md"
   ],
   "main": "index.ts",

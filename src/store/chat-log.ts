@@ -16,12 +16,29 @@ import { getDb } from "./sessions.js";
 
 export type ChatRole = "user" | "assistant";
 
+/**
+ * 첨부 메타 — base64 본문이 아니라 **참조**만 영속(경로·mime·이름·종류). 실제 바이트는 이미
+ * `<home>/data/attachments/<rel>` 파일로 저장돼 있어, 대시보드가 그 rel 로 서빙 엔드포인트를
+ * 통해 렌더한다(새로고침·과거 이력 보존). base64 를 chat_log 에 담지 않아 DB 비대 0.
+ */
+export interface ChatAttachmentMeta {
+  /** attachmentsDir 기준 상대경로 (예: `http-bridge/20260710/abc.png`). 서빙 키. */
+  rel: string;
+  mime: string;
+  name: string;
+  /** image | pdf | audio | video | file 등 Attachment.kind. */
+  kind: string;
+  bytes?: number;
+}
+
 export interface ChatLogEntry {
   ts: number;
   threadKey: string;
   channel: string;
   role: ChatRole;
   text: string;
+  /** 첨부 참조 메타(있을 때만). 이미지-only 메시지는 text="" + attachments 로 온다. */
+  attachments?: ChatAttachmentMeta[];
 }
 
 interface ChatLogRow {
@@ -30,6 +47,7 @@ interface ChatLogRow {
   channel: string;
   role: string;
   text: string;
+  attachments: string | null;
 }
 
 /**
@@ -39,14 +57,22 @@ interface ChatLogRow {
  * 메시지 처리)를 절대 안 깨게 한다(1차 안전망, 데몬 생존 우선). 실패는 console.error 만.
  */
 export const recordChatMessage = (row: ChatLogEntry): void => {
-  if (row.text === "") return; // 빈 text 스킵.
+  const hasAtt = row.attachments !== undefined && row.attachments.length > 0;
+  if (row.text === "" && !hasAtt) return; // 빈 text·첨부無 = 무의미 로그 스킵(이미지-only 는 통과).
   try {
     getDb()
       .prepare(
-        `INSERT INTO chat_log (ts, thread_key, channel, role, text)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(row.ts, row.threadKey, row.channel, row.role, row.text);
+      .run(
+        row.ts,
+        row.threadKey,
+        row.channel,
+        row.role,
+        row.text,
+        hasAtt ? JSON.stringify(row.attachments) : null,
+      );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[chat-log] recordChatMessage failed (best-effort): ${msg}`);
@@ -81,7 +107,7 @@ export const getRecentChatLog = (opts?: {
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
   const rows = getDb()
     .prepare(
-      `SELECT ts, thread_key, channel, role, text
+      `SELECT ts, thread_key, channel, role, text, attachments
          FROM chat_log
          ${whereClause}
         ORDER BY ts DESC, id DESC
@@ -89,11 +115,23 @@ export const getRecentChatLog = (opts?: {
     )
     .all(...params, limit) as ChatLogRow[];
   // ts DESC 로 최신 N 건을 잡고 ASC(오래된→최신)로 뒤집어 렌더 순서로 반환.
-  return rows.reverse().map((r) => ({
-    ts: r.ts,
-    threadKey: r.thread_key,
-    channel: r.channel,
-    role: r.role === "assistant" ? "assistant" : "user",
-    text: r.text,
-  }));
+  return rows.reverse().map((r) => {
+    const entry: ChatLogEntry = {
+      ts: r.ts,
+      threadKey: r.thread_key,
+      channel: r.channel,
+      role: r.role === "assistant" ? "assistant" : "user",
+      text: r.text,
+    };
+    if (r.attachments !== null && r.attachments !== "") {
+      // 파싱 실패(손상 JSON)는 조용히 무시 — 첨부 없이라도 메시지는 렌더(견고성).
+      try {
+        const parsed = JSON.parse(r.attachments) as ChatAttachmentMeta[];
+        if (Array.isArray(parsed) && parsed.length > 0) entry.attachments = parsed;
+      } catch {
+        /* 손상 첨부 메타 무시. */
+      }
+    }
+    return entry;
+  });
 };

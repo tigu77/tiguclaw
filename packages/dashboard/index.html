@@ -3276,6 +3276,11 @@
         msg.className = "chat-message";
         // 봇 출력(비서)만 마크다운, 사용자 입력(나)은 평문 유지.
         setChatBody(msg, payload.text, isOut);
+        // 라이브 첨부(rel 메타) — 타클라이언트/텔레그램발 사용자 메시지의 이미지/파일 표시. 이
+        // 클라이언트 자기 전송은 낙관적 버블(base64)로 이미 떠서 echo 가 reconcile(여기 안 옴).
+        if (!isOut && payload.attachments && payload.attachments.length) {
+          msg.appendChild(buildAttachmentsPreview(payload.attachments));
+        }
         div.appendChild(msg);
         // 봇 답변(out)이면 같은 턴의 스텝 그룹을 마무리하고 그 그룹 안(스텝 아래)에 버블 배치.
         // 진행 중 그룹이 없으면(또는 사용자 입력) 기존처럼 stream 최상단에 단독 삽입.
@@ -3318,6 +3323,10 @@
         const msg = document.createElement("div");
         msg.className = "chat-message";
         setChatBody(msg, entry.text, isOut); // 비서=마크다운, 사용자=평문.
+        // 영속 첨부(rel 메타) → 이력·새로고침에도 이미지/파일 미리보기(서빙 엔드포인트 경유).
+        if (entry.attachments && entry.attachments.length) {
+          msg.appendChild(buildAttachmentsPreview(entry.attachments));
+        }
         div.appendChild(msg);
         return div;
       };
@@ -3325,24 +3334,33 @@
       // 보낸 메시지 버블 안 첨부 미리보기(읽기전용 썸네일/파일칩). 전송 시 클라이언트가 가진 base64 로
       // 즉시 렌더 — 첨부칩과 동일 비주얼, ✕ 제거버튼만 없음. (관측 이벤트·chat_log 엔 첨부가 안 실리므로
       // 새로고침 후 과거 이력엔 안 남는 건 알려진 한계 — 라이브 세션 동안엔 보인다.)
+      // 첨부 미리보기 — 두 소스 지원: (1) 전송 직후 낙관적 버블 = 클라 base64(dataBase64/mimeType/
+      // filename), (2) 이력/타클라이언트 = 영속 메타(rel/mime/name/kind → /api/attachments/<rel> 서빙).
       const buildAttachmentsPreview = (attachments) => {
         const wrap = document.createElement("div");
         wrap.className = "chat-atts";
         attachments.forEach((a) => {
-          const isImg = (a.mimeType || "").startsWith("image/");
+          const mime = a.mime || a.mimeType || "";
+          const name = a.name || a.filename || "file";
+          const isImg = mime.startsWith("image/") || a.kind === "image";
+          const src = a.dataBase64
+            ? "data:" + mime + ";base64," + a.dataBase64
+            : a.rel
+              ? "/api/attachments/" + a.rel
+              : null;
           const chip = document.createElement("div");
-          chip.className = "att-chip" + (isImg ? " att-img" : " att-file");
-          chip.title = (a.filename || "file") + (a.bytes ? " · " + fmtBytes(a.bytes) : "");
-          if (isImg && a.dataBase64) {
+          chip.className = "att-chip" + (isImg && src ? " att-img" : " att-file");
+          chip.title = name + (a.bytes ? " · " + fmtBytes(a.bytes) : "");
+          if (isImg && src) {
             const img = document.createElement("img");
             img.className = "att-thumb";
-            img.src = "data:" + a.mimeType + ";base64," + a.dataBase64;
-            img.alt = a.filename || "image";
+            img.src = src;
+            img.alt = name;
             chip.appendChild(img);
           } else {
             const ic = document.createElement("div"); ic.className = "att-fileicon";
-            ic.textContent = ((String(a.filename || "file").split(".").pop() || "FILE").slice(0, 4)).toUpperCase();
-            const nm = document.createElement("div"); nm.className = "att-fname"; nm.textContent = a.filename || "file";
+            ic.textContent = ((String(name).split(".").pop() || "FILE").slice(0, 4)).toUpperCase();
+            const nm = document.createElement("div"); nm.className = "att-fname"; nm.textContent = name;
             chip.appendChild(ic); chip.appendChild(nm);
           }
           wrap.appendChild(chip);
@@ -3356,7 +3374,7 @@
         const key = msgKey(entry.ts, role);
         if (renderedMsgKeys.has(key)) return null;
         renderedMsgKeys.add(key);
-        return buildHistoryDiv({ ts: entry.ts, role, text: entry.text });
+        return buildHistoryDiv({ ts: entry.ts, role, text: entry.text, attachments: entry.attachments });
       };
 
       // 이력 도구 스텝(기능 B) — 영속 llm.activity 복원. 낱줄 element 빌더(카드 크롬 없음).

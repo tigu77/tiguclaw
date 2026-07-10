@@ -94,6 +94,13 @@ const EXT_BY_MIME: Record<string, string> = {
   "image/svg+xml": "svg", "application/pdf": "pdf", "text/plain": "txt",
   "text/markdown": "md", "application/json": "json", "text/csv": "csv",
 };
+// 서빙용 확장자→content-type (인바운드 첨부 파일 렌더). 미지 확장자는 octet-stream.
+const CONTENT_TYPE_BY_EXT: Record<string, string> = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf",
+  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8",
+  json: "application/json; charset=utf-8", csv: "text/csv; charset=utf-8",
+};
 const sanitizeFilename = (n: string): string =>
   n.replace(/[/\\]/g, "_").replace(/[^\w.\- ]/g, "").trim().slice(-120) || "file";
 const extForAttachment = (filename: string, mime: string): string => {
@@ -605,7 +612,9 @@ class HttpBridge implements Channel, Observer {
               ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
-                : null;
+                : pathname.startsWith("/attachments/") && method === "GET"
+                  ? "read"
+                  : null;
     if (required !== null && !meetsRole(resolved.role, required)) {
       writeJson(res, 403, {
         error: "forbidden",
@@ -713,6 +722,37 @@ class HttpBridge implements Channel, Observer {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /attachments/<rel> — 저장된 인바운드 첨부 파일 서빙(대시보드 이력 이미지/파일 렌더).
+    // read 게이트(위). rel = attachmentsDir 기준 상대경로. ★path traversal 방어: 해석된 절대
+    // 경로가 반드시 attachmentsDir 하위여야(../ 이스케이프·절대경로 거부). 로컬 바인딩 + 토큰
+    // 게이트 뒤라 표면 작음. base64 를 DB 에 안 담고 이 파일을 재사용 = 이력 이미지 영속.
+    if (pathname.startsWith("/attachments/") && method === "GET") {
+      try {
+        const rel = decodeURIComponent(pathname.slice("/attachments/".length));
+        const dir = getPaths().attachmentsDir;
+        const abs = path.resolve(dir, rel);
+        if (!(abs === dir || abs.startsWith(dir + path.sep))) {
+          writeJson(res, 403, { error: "forbidden" });
+          return;
+        }
+        const buf = await fs.readFile(abs).catch(() => null);
+        if (buf === null) {
+          writeJson(res, 404, { error: "not found" });
+          return;
+        }
+        const ext = path.extname(abs).replace(/^\./, "").toLowerCase();
+        res.writeHead(200, {
+          "Content-Type": CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream",
+          "Cache-Control": "private, max-age=86400",
+          "Content-Length": buf.length,
+        });
+        res.end(buf);
+      } catch (e) {
+        writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
       }
       return;
     }

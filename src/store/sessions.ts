@@ -510,6 +510,15 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_chat_log_ts ON chat_log(ts);
     CREATE INDEX IF NOT EXISTS idx_chat_log_thread_ts ON chat_log(thread_key, ts);
   `);
+  // 첨부 참조 메타(JSON, nullable) — 기존 DB 마이그레이션. 첨부 이미지/파일이 새로고침·과거
+  // 이력에도 남게(base64 아닌 rel 경로 참조만). SQLite 는 ADD COLUMN IF NOT EXISTS 미지원 →
+  // pragma 로 존재 확인 후 추가(threads 마이그레이션과 동형).
+  const chatLogCols = handle
+    .prepare(`SELECT name FROM pragma_table_info('chat_log')`)
+    .all() as { name: string }[];
+  if (!chatLogCols.some((c) => c.name === "attachments")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN attachments TEXT`);
+  }
 
   db = handle;
 };

@@ -6,7 +6,7 @@ import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { CliChannel } from "./channels/cli.js";
 import { TelegramChannel } from "./channels/telegram.js";
-import type { Channel, MessageHandler } from "./channels/types.js";
+import type { Channel, IncomingMessage, MessageHandler } from "./channels/types.js";
 import { initEventBus, type EventBus } from "./core/eventbus.js";
 import { registerMcpServer } from "./core/mcp-registry.js";
 import { expandCommand } from "./core/entry/command-registry.js";
@@ -411,7 +411,31 @@ const replyCommand = async (
   }
 };
 
+// 인바운드 첨부 → 영속용 참조 메타(base64 아님). 실제 바이트는 이미 <attachmentsDir>/<rel> 파일로
+// 저장돼 있어, 대시보드가 rel 로 서빙 엔드포인트를 통해 렌더(새로고침·과거 이력 보존). rel 은
+// attachmentsDir 기준 상대경로 — 그 밖(절대·상위)이면 스킵(path traversal 방어 + 서빙 키 정합).
+const attachmentsMeta = (
+  atts: IncomingMessage["attachments"],
+): Array<{ rel: string; mime: string; name: string; kind: string; bytes?: number }> => {
+  if (atts === undefined || atts.length === 0) return [];
+  const dir = getPaths().attachmentsDir;
+  const out: Array<{ rel: string; mime: string; name: string; kind: string; bytes?: number }> = [];
+  for (const a of atts) {
+    const rel = path.relative(dir, a.path);
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) continue; // dir 밖 = 스킵.
+    out.push({
+      rel: rel.split(path.sep).join("/"), // URL 경로 정규화(윈도우 \ → /).
+      mime: a.mimeType,
+      name: a.filename,
+      kind: a.kind,
+      bytes: a.bytes,
+    });
+  }
+  return out;
+};
+
 const handler: MessageHandler = async (msg) => {
+  const inAttachments = attachmentsMeta(msg.attachments);
   bus.publish({
     type: "channel.message.in",
     ts: Date.now(),
@@ -419,6 +443,7 @@ const handler: MessageHandler = async (msg) => {
       channel: msg.channel,
       threadKey: msg.threadKey,
       text: msg.text.slice(0, EVENT_TEXT_MAX),
+      ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
     },
   });
   const trimmed = msg.text.trim();

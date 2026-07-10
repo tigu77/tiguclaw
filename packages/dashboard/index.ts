@@ -68,6 +68,29 @@ const proxyJson = async (
   }
 };
 
+// 바이너리 프록시(첨부 파일) — 토큰 server-side 주입, bridge 의 content-type 보존. 첨부는
+// 작아(이미지 수십KB~수MB) arrayBuffer 버퍼링으로 충분(스트리밍 불요).
+const proxyRaw = async (
+  res: http.ServerResponse,
+  bridgePath: string,
+): Promise<void> => {
+  try {
+    const r = await fetch(bridgeUrl(bridgePath), {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(r.status, {
+      "Content-Type": r.headers.get("content-type") ?? "application/octet-stream",
+      "Cache-Control": r.headers.get("cache-control") ?? "private, max-age=86400",
+    });
+    res.end(buf);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: `bridge unreachable: ${msg}` }));
+  }
+};
+
 const proxySse = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -220,6 +243,12 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/projects/detail" && method === "GET") {
       const qs = url.search ?? "";
       await proxyJson(res, "/projects/detail" + qs);
+      return;
+    }
+    // 첨부 파일 서빙 — bridge GET /attachments/<rel> (read 토큰 server-side 주입). 대시보드
+    // 이력 이미지/파일 렌더용. rel 은 encoded 그대로 전달(bridge 가 decode + traversal 방어).
+    if (pathname.startsWith("/api/attachments/") && method === "GET") {
+      await proxyRaw(res, "/attachments/" + pathname.slice("/api/attachments/".length));
       return;
     }
     if (pathname === "/api/events" && method === "GET") {

@@ -12,6 +12,7 @@
 import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
 import { recordChatMessage } from "../store/chat-log.js";
+import type { ChatAttachmentMeta } from "../store/chat-log.js";
 
 const SKIP_TYPES = new Set<string>([
   "llm.sdk_message",
@@ -187,14 +188,22 @@ const startChatLogPersistence = (bus: EventBus): void => {
         typeof payload.threadKey === "string" ? payload.threadKey : "";
       const channel =
         typeof payload.channel === "string" ? payload.channel : "";
-      // text·threadKey·channel 누락이면 스킵(recordChatMessage 도 빈 text 스킵).
-      if (text === "" || threadKey === "" || channel === "") return;
+      // 첨부 참조 메타(있으면) — 새로고침 후에도 이미지/파일이 이력에 남게. 이벤트 발행자
+      // (index.ts channel.message.in)가 base64 아닌 rel/mime/name/kind 만 실어 보낸다.
+      const attachments = Array.isArray(payload.attachments)
+        ? (payload.attachments as ChatAttachmentMeta[])
+        : undefined;
+      const hasAtt = attachments !== undefined && attachments.length > 0;
+      // threadKey·channel 누락이면 스킵. text 는 첨부가 있으면 비어도 통과(이미지-only 메시지).
+      if (threadKey === "" || channel === "") return;
+      if (text === "" && !hasAtt) return;
       recordChatMessage({
         ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
         threadKey,
         channel,
         role: event.type === "channel.message.out" ? "assistant" : "user",
         text,
+        ...(hasAtt ? { attachments } : {}),
       });
     } catch (e) {
       console.error(

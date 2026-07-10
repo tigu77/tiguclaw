@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.67] - 2026-07-10
+
+### Added
+- **Images and files you attach now stay in the chat history after a reload.** Previously an attachment preview only showed during the live session and disappeared on refresh (attachments weren't stored with the message). Now the message keeps a lightweight reference to the already-saved file, and the dashboard serves it back — so your sent images/files render in past history too, including image-only messages (no caption). The image bytes aren't duplicated into the database; only a reference is stored, and the file is served from a local, token-protected endpoint with path-traversal protection.
+
 ## [0.3.66] - 2026-07-10
 
 ### Fixed
@@ -464,7 +469,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.66...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.67...HEAD
+[0.3.67]: https://github.com/tigu77/tiguclaw/compare/v0.3.66...v0.3.67
 [0.3.66]: https://github.com/tigu77/tiguclaw/compare/v0.3.65...v0.3.66
 [0.3.65]: https://github.com/tigu77/tiguclaw/compare/v0.3.64...v0.3.65
 [0.3.64]: https://github.com/tigu77/tiguclaw/compare/v0.3.63...v0.3.64

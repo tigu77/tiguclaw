@@ -330,6 +330,10 @@
       .t-other { border-left-color:var(--text-dim); } .t-other .type { color:var(--text); }
       .ev.local { border-left-color:var(--accent); background:rgba(125,211,252,.08); }
       .ev.local .type { color:var(--accent); }
+      /* 큐 대기 메시지 — 아직 처리 시작 안 된(현재 턴 뒤에 큐잉된) 낙관적 버블. 호박색 배지+흐릿. */
+      .ev.local.queued { border-left-color:#fbbf24; background:rgba(251,191,36,.07); opacity:.8; }
+      .queued-badge { margin-left:8px; font-size:9px; font-weight:800; padding:1px 7px; border-radius:999px; background:rgba(251,191,36,.18); color:#fbbf24; white-space:nowrap; }
+      .queued-badge::before { content:"⏳ "; }
       .ev.activity { border-left-color:var(--good); background:rgba(52,211,153,.08); }
       .ev.prompt-options { border-left-color:var(--accent-2); background:rgba(167,139,250,.08); }
       .ev.prompt-options .type { color:var(--accent-2); }
@@ -3397,10 +3401,29 @@
       const markTurnDone = (tk) => { const k = tk || THREAD_KEY; if (activeTurns.delete(k)) refreshWorking(); };
       // 하위호환 — sendChatMessage 의 로컬 즉시 피드백/에러 해제(내 대화 턴).
       const setChatWorking = (on) => { if (on) markTurnActive(THREAD_KEY); else markTurnDone(THREAD_KEY); };
+      // 큐 대기 표시 — 이미 이 스레드 턴이 진행 중일 때(busy) 보낸 메시지는 직렬 큐(enqueueThreadTurn)
+      // 뒤에 붙어 현재 턴이 끝나야 처리된다. 처리 시작(channel.message.in echo) 전까진 화면에 안
+      // 떠서 "등록됐나?" 헷갈린다 → 낙관적 "대기 중" 버블로 즉시 피드백, echo 도착 시 승격(배지 제거).
+      const pendingQueued = []; // [{ text, el }] — 아직 처리 시작(echo) 안 된 큐 대기 버블.
+      const queueOptimisticBubble = (text) => {
+        const div = buildHistoryDiv({ ts: Date.now(), role: "user", text });
+        div.classList.add("queued");
+        const badge = document.createElement("span");
+        badge.className = "queued-badge"; badge.textContent = "대기 중";
+        (div.firstChild || div).appendChild(badge); // head(ts+라벨) 에 배지 부착.
+        stream.insertBefore(div, stream.firstChild);
+        pendingQueued.push({ text, el: div });
+        localChatCount += 1;
+        refreshChatEmpty();
+        scrollChatToNewest();
+      };
+
       // POST /api/messages 공용 전송 — 긴 턴은 응답이 SSE 로 도착하므로, POST 가 오래 기다린 뒤
       // 끊겨도(프록시/HTTP 타임아웃) 빨간 에러 대신 "작업 중…" 유지(가짜 timeout 방지). 답이
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
       const sendChatMessage = async (text, attachments) => {
+        // 이미 이 스레드 턴 진행 중이면 이 메시지는 큐잉된다 → "대기 중" 낙관적 버블(텍스트 있을 때).
+        if (text && activeTurns.has(THREAD_KEY)) queueOptimisticBubble(text);
         setChatWorking(true);
         const t0 = Date.now();
         try {
@@ -3510,6 +3533,18 @@
           // 만든다. 최근(2분 이내) .in 만 활성화 → 이미 끝난 옛 턴이 '작업 중'으로 안 뜬다.
           if (ev.type === "channel.message.in") {
             if (Date.now() - (ev.ts || 0) < 120000) markTurnActive(tk);
+            // 큐 대기 버블 승격 — 이 in echo(=처리 시작)가 대기 중이던 낙관적 버블과 텍스트 일치면
+            // 새로 안 그리고 그 버블의 배지를 떼고 서버 ts 키를 등록(중복 렌더 방지).
+            const inText = ev.payload && ev.payload.text;
+            const pi = pendingQueued.findIndex((p) => p.text === inText);
+            if (pi !== -1) {
+              const { el } = pendingQueued.splice(pi, 1)[0];
+              el.classList.remove("queued");
+              const b = el.querySelector(".queued-badge"); if (b) b.remove();
+              el.dataset.ts = String(ev.ts);
+              renderedMsgKeys.add(msgKey(ev.ts, "user"));
+              return;
+            }
           } else markTurnDone(tk);
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";

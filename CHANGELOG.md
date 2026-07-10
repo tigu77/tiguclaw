@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.50] - 2026-07-10
+
+### Added
+- **Messages you send while the assistant is still working now show up immediately, marked "queued".** A message sent mid-turn is held in the per-thread queue and processed as soon as the current turn finishes (it was never lost) — but until then it didn't appear in the dashboard chat, so it was unclear whether it registered. It now shows right away with a "⏳ queued" badge, and the badge clears the moment the assistant starts processing it. No duplicate bubble appears when it does.
+
 ## [0.3.49] - 2026-07-10
 
 ### Fixed
@@ -373,7 +378,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.49...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.50...HEAD
+[0.3.50]: https://github.com/tigu77/tiguclaw/compare/v0.3.49...v0.3.50
 [0.3.49]: https://github.com/tigu77/tiguclaw/compare/v0.3.48...v0.3.49
 [0.3.48]: https://github.com/tigu77/tiguclaw/compare/v0.3.47...v0.3.48
 [0.3.47]: https://github.com/tigu77/tiguclaw/compare/v0.3.46...v0.3.47

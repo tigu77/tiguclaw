@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **The command menu is now the same across every channel.** Built-in slash commands were maintained in three separate places that had drifted apart — so the Telegram menu was silently missing `/model`, `/schedule`, and `/stop`. All channels (Telegram, dashboard, and the reserved-name guard for custom commands) now draw from a single source, so the same command list shows everywhere and can't drift again.
 
+## [0.3.72] - 2026-07-10
+
 ### Added
 - **`/clear` resets a conversation's context — and it now actually works on every model backend.** Send `/clear` (or the existing `/reset`) to start a fresh conversation: earlier turns are no longer fed to the model. Previously `/reset` only took effect on the Claude backend — on the Codex and OpenAI/local backends the assistant kept re-injecting the prior conversation, so a "reset" didn't really reset. Now all three backends honor it uniformly. Your history isn't deleted (memory search and the dashboard transcript stay intact) — like Claude Code's `/clear`, only the live context is cut, matching the behavior across every channel and model.
 

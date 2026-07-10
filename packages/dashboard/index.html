@@ -2901,10 +2901,16 @@
         activityByStep.set(stepKey(thread, p.seq), p);
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
         let card = cardByThread.get(thread);
+        const prevCard = card; // 직전 턴(있으면) — 새 턴 시작 시 접어 최신만 펼침 유지.
         // 새 턴 = 카드 없음 / 제거됨 / seq 리셋 / 이미 답변으로 닫힌 턴 / 스텝카드 없는 delta-only 그룹.
         const isNewTurn =
           !card || !card.group.isConnected || card.closed || !card.el || (p.seq ?? 0) <= card.lastSeq;
         if (isNewTurn) {
+          // ★최신/진행중 턴만 펼침(2026-07-10) — 새 턴이 시작되면 직전 턴을 접는다(클러터 방지).
+          if (prevCard && prevCard.el) {
+            prevCard.el.classList.add("done-collapsed");
+            const pc = prevCard.el.querySelector(".turn-caret"); if (pc) pc.textContent = "▶";
+          }
           card = createTurnCard(p, ts, adapter, thread);
           cardByThread.set(thread, card);
           stream.insertBefore(card.group, stream.firstChild);
@@ -2940,9 +2946,8 @@
         if (!card.el) return card.group;
         card.countEl.textContent = card.count + "단계 완료";
         card.el.classList.add("done");
-        // 완료 자동접힘(채팅 패널만). caret 도 접힘 표시. 수동 클릭 시 해제됨.
-        card.el.classList.add("done-collapsed");
-        card.el.querySelector(".turn-caret").textContent = "▶";
+        // ★진행중/최신 턴은 펼친 채 유지(사용자 요청 2026-07-10) — 완료돼도 자동접힘 안 함.
+        // 직전 턴 정리는 새 턴 시작 시 renderActivity 가 접는다(최신만 펼침 → 클러터 방지).
         return card.group;
       };
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.46] - 2026-07-10
+
+### Changed
+- **The active (and most recent) tool bundle now stays expanded, instead of collapsing the moment a turn finishes.** Since the tool cards now carry the useful detail (diffs, command output), auto-collapsing a turn the instant it completed meant fast turns flashed by before you could see anything. The live view now keeps the current/most-recent turn expanded, and collapses the previous one only when a new turn starts — so you always see what's happening now, without the chat piling up. (Older turns restored on page reload still start collapsed.)
+
 ## [0.3.45] - 2026-07-10
 
 ### Added
@@ -353,7 +358,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.45...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.46...HEAD
+[0.3.46]: https://github.com/tigu77/tiguclaw/compare/v0.3.45...v0.3.46
 [0.3.45]: https://github.com/tigu77/tiguclaw/compare/v0.3.44...v0.3.45
 [0.3.44]: https://github.com/tigu77/tiguclaw/compare/v0.3.43...v0.3.44
 [0.3.43]: https://github.com/tigu77/tiguclaw/compare/v0.3.42...v0.3.43

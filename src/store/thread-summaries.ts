@@ -13,6 +13,7 @@
  *
  * codex 어댑터 외엔 호출 안 함 (어댑터별 if 가 facade 로 새지 않게). 순수 DB I/O.
  */
+import type { ChannelName } from "../channels/types.js";
 import { getDb } from "./sessions.js";
 
 export interface ThreadSummary {
@@ -76,4 +77,23 @@ export const upsertThreadSummary = (input: {
        compacted_through = excluded.compacted_through,
        updated_at = excluded.updated_at`,
   ).run(input.threadKey, input.summary, input.compactedThrough, now);
+};
+
+/**
+ * 리셋 시 요약 드롭 (/reset·/clear P0, 2026-07-10). 요약은 boundary 이전 오래된 턴을
+ * 접은 것이라 리셋 후 stale — 삭제해야 boundary 이후 대화가 옛 맥락에 오염 안 됨.
+ * index.ts 가 setContextBoundary 와 짝지어 호출. 시그니처는 setContextBoundary 와
+ * 대칭(channel, threadKey)이나 thread_summaries PK 는 thread_key 단일 → DELETE 기준은
+ * thread_key (채널 무관 단일 히스토리 키, transcript_index.thread_key 와 동일 의미).
+ * 행 없으면 no-op(첫 압축 전 리셋).
+ */
+export const clearThreadSummary = (
+  _channel: ChannelName,
+  threadKey: string,
+): boolean => {
+  const db = requireDb("clearThreadSummary");
+  const result = db
+    .prepare(`DELETE FROM thread_summaries WHERE thread_key = ?`)
+    .run(threadKey);
+  return result.changes > 0;
 };

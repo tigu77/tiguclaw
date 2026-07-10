@@ -491,6 +491,25 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── Context boundary watermark (/reset·/clear P0, 2026-07-10) ──────────────
+  // 리셋 = 삭제 아니라 경계선. threadKey 별 boundary_ts(epoch ms) 이후 transcript 만
+  // loadThreadHistory·loadThreadHistoryWithIds 가 반환 → codex/openai 가 과거 턴을
+  // 재주입하던 P0 버그를 단일 enforcement point 로 차단(3어댑터 parity, claude
+  // foreign-delta 도 이 함수 경유라 자동 상속). transcripts 는 물리 보존(FTS 검색·
+  // 대시보드 chat_log 이력 유지). ★전용 테이블인 이유: claude 리셋의 deleteSession 이
+  // `threads` 행을 지우므로 boundary 를 거기 두면 함께 소실 → boundary 는 리셋을
+  // *가로질러* 살아남아야 필터가 유효. 신규 테이블이 threads 컬럼 수정보다 블래스트
+  // 반경 최소. CREATE IF NOT EXISTS 멱등 — 기존 tiguclaw.db 에 안전 적용.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS context_boundaries (
+      channel     TEXT NOT NULL,
+      thread_key  TEXT NOT NULL,
+      boundary_ts INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (channel, thread_key)
+    );
+  `);
+
   // ─── 대시보드 대화 이력 영속 (기능 B, 2026-06-25) ──────────────────────────────
   // 대시보드 채팅이 EventBus 인메모리 ring(최근 50)으로만 그려져 재시작 시 소실. transcripts
   // 는 raw 모델 I/O(사용자 턴에 system-reminder·SYSTEM.md 주입 섞임)라 그대로 못 씀 → 깨끗한
@@ -812,4 +831,42 @@ export const clearSessionModelOverride = (
     )
     .run(channel, threadKey);
   return result.changes > 0;
+};
+
+// ─── Context boundary watermark helpers (/reset·/clear P0, 2026-07-10) ────────
+// 리셋 시 index.ts 가 setContextBoundary(channel, threadKey, Date.now()) 호출 →
+// 이후 loadThreadHistory·loadThreadHistoryWithIds 가 boundary 이후 transcript 만 반환.
+// deleteSession(threads 삭제)과 독립된 전용 테이블이라 리셋을 가로질러 생존.
+
+/** thread 의 context boundary(epoch ms) upsert. 리셋 시각 이후만 히스토리에 노출. */
+export const setContextBoundary = (
+  channel: ChannelName,
+  threadKey: string,
+  ts: number,
+): void => {
+  const handle = requireDb("setContextBoundary");
+  handle
+    .prepare(
+      `INSERT INTO context_boundaries (channel, thread_key, boundary_ts, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (channel, thread_key) DO UPDATE SET
+         boundary_ts = excluded.boundary_ts,
+         created_at = excluded.created_at`,
+    )
+    .run(channel, threadKey, ts, Date.now());
+};
+
+/** thread 의 context boundary(epoch ms) 회수. 미설정(리셋 이력 없음) → 0(전체 노출). */
+export const getContextBoundary = (
+  channel: ChannelName,
+  threadKey: string,
+): number => {
+  const handle = requireDb("getContextBoundary");
+  const row = handle
+    .prepare(
+      `SELECT boundary_ts FROM context_boundaries
+       WHERE channel = ? AND thread_key = ?`,
+    )
+    .get(channel, threadKey) as { boundary_ts: number } | undefined;
+  return row?.boundary_ts ?? 0;
 };

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { ChannelName } from "../channels/types.js";
-import { getDb, getSession } from "./sessions.js";
+import { getContextBoundary, getDb, getSession } from "./sessions.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 export type MemoryType = "user" | "feedback" | "project" | "reference";
@@ -572,6 +572,10 @@ export const loadThreadHistory = (
   const placeholders = sidRows.map(() => "?").join(", ");
   const sids = sidRows.map((r) => r.claude_session_id);
 
+  // Context boundary(/reset·/clear) — 리셋 시각 이후 transcript 만. 미설정 → 0 →
+  // ts > 0 은 모든 epoch-ms ts 에 참이라 기존 동작(전체) 보존. 단일 enforcement point.
+  const boundary = getContextBoundary(channel, threadKey);
+
   // 횡단 IN(…sid), role 필터, ts ASC 병합. 최신 N turn 만 취하려고 ts DESC LIMIT 후
   // reverse 하는 대신, 전체를 ts ASC 로 받아 tail N 을 취함 (인터리브 정확성 우선).
   const rows = db
@@ -579,9 +583,10 @@ export const loadThreadHistory = (
       `SELECT role, content, ts, id FROM transcripts
        WHERE claude_session_id IN (${placeholders})
          AND role IN ('user', 'assistant')
+         AND ts > ?
        ORDER BY ts ASC, id ASC`,
     )
-    .all(...sids) as TranscriptHistoryTsRow[];
+    .all(...sids, boundary) as TranscriptHistoryTsRow[];
   if (rows.length === 0) return [];
 
   // 최신 N turn 만 (tail). limit + charCap 둘 다 최신부터 역누적, 초과 시 oldest drop.
@@ -635,14 +640,20 @@ export const loadThreadHistoryWithIds = (
 
   const placeholders = sidRows.map(() => "?").join(", ");
   const sids = sidRows.map((r) => r.claude_session_id);
+
+  // Context boundary(/reset·/clear) — loadThreadHistory 와 동일 필터로 타임라인
+  // identity 유지(watermark id 가 같은 턴 집합을 가리킴). 미설정 → 0 → 전체 보존.
+  const boundary = getContextBoundary(channel, threadKey);
+
   const rows = db
     .prepare(
       `SELECT role, content, ts, id FROM transcripts
        WHERE claude_session_id IN (${placeholders})
          AND role IN ('user', 'assistant')
+         AND ts > ?
        ORDER BY ts ASC, id ASC`,
     )
-    .all(...sids) as TranscriptHistoryTsRow[];
+    .all(...sids, boundary) as TranscriptHistoryTsRow[];
   return rows.map((r) => ({
     id: r.id,
     role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),

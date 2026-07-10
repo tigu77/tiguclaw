@@ -41,8 +41,14 @@ import {
   getSession,
   getSessionModelOverride,
   initStore,
+  setContextBoundary,
   setSessionModelOverride,
 } from "./store/sessions.js";
+// codex/openai 컨텍스트 리셋 — `/reset`·`/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
+// 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
+// 이전 턴은 재전송 안 함(getContextBoundary 는 codex/openai 어댑터가 소비). clearThreadSummary
+// = codex 롤링 요약 드롭. 둘 다 store-auth contract 대로 (channel, threadKey[, ts]).
+import { clearThreadSummary } from "./store/thread-summaries.js";
 import {
   parseModelSpec,
   parseModelSpecList,
@@ -463,8 +469,15 @@ const handler: MessageHandler = async (msg) => {
   // V7.3 — 영역 A(LLM) 로 넘길 실효 텍스트. 사용자 정의 슬래시 매크로 매치 시
   // 확장된 prompt 로 교체 (기본 = 원본). 채널 입구 단일 지점 = LLM-agnostic.
   let effectiveText = msg.text;
-  if (trimmed === "/reset") {
+  // `/reset` (+ 별칭 `/clear`) — 컨텍스트 전면 초기화. LLM-agnostic 이어야 하므로 세 어댑터를
+  // 모두 끊는다: deleteSession(claude 세션) → setContextBoundary(codex/openai 는 세션 대신 매 턴
+  // 히스토리 재전송 → 이 ts 이전 턴 컷) → clearThreadSummary(codex 롤링 요약 드롭). 순서 고정.
+  // 채널 무관 단일 지점(원칙 4). command-registry expandCommand(파일 매크로) 앞이라 커스텀
+  // 매크로가 이 별칭을 가릴 수 없다. `/clear` 는 별도 로직 복제 없이 동일 경로.
+  if (trimmed === "/reset" || trimmed === "/clear") {
     const had = deleteSession(msg.channel, msg.threadKey);
+    setContextBoundary(msg.channel, msg.threadKey, Date.now());
+    clearThreadSummary(msg.channel, msg.threadKey);
     await replyCommand(msg,
       had
         ? "컨텍스트 초기화됨. 새 대화로 시작합니다."

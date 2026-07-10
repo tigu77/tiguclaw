@@ -662,6 +662,7 @@ export class TelegramChannel implements Channel {
     if (bot === null) return; // stop 후 잔여 이벤트 등 — 안전 no-op.
     const builtinCommands = [
       { command: "reset", description: "대화 컨텍스트 초기화" },
+      { command: "clear", description: "대화 컨텍스트 초기화" },
       { command: "memo", description: "메모리 추가" },
       { command: "forget", description: "메모리 삭제" },
       { command: "memos", description: "메모리 목록" },

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.54] - 2026-07-10
+
+### Added
+- **A context-tag bar above the dashboard chat input for one-click project context.** Your registered projects appear as chips above the input; clicking one inserts a `#<project>` tag (e.g. `#SMGS Android`) at the cursor, so the assistant knows the message is about that project without you re-explaining the topic each time. Chips are ordered most-recently-used first, duplicate insertion is prevented, and the bar hides when you have no projects. The tag is a plain-text convention (channel- and backend-neutral — you can type it in Telegram too): the assistant matches it to the project registry and works in that project's scope.
+
 ## [0.3.53] - 2026-07-10
 
 ### Changed
@@ -396,7 +401,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.53...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.54...HEAD
+[0.3.54]: https://github.com/tigu77/tiguclaw/compare/v0.3.53...v0.3.54
 [0.3.53]: https://github.com/tigu77/tiguclaw/compare/v0.3.52...v0.3.53
 [0.3.52]: https://github.com/tigu77/tiguclaw/compare/v0.3.51...v0.3.52
 [0.3.51]: https://github.com/tigu77/tiguclaw/compare/v0.3.50...v0.3.51

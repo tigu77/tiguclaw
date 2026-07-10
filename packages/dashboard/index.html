@@ -629,6 +629,16 @@
       /* 첨부 썸네일(#2) — 클로드코드식 작은 정사각 미리보기 + 모서리 ✕. 비어 있으면 숨김. */
       #chat-attach { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; padding-top:4px; }
       #chat-attach:empty { display:none; }
+      /* 컨텍스트 태그 바 — 클릭하면 #<프로젝트> 태그를 입력창에 껴넣어 그 프로젝트 얘기임을 알림. */
+      .chat-context { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; }
+      .chat-context:empty { display:none; }
+      .ctx-label { font-size:10px; color:var(--text-dim); margin-right:2px; flex:none; }
+      .ctx-chip { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px; cursor:pointer; user-select:none;
+        background:rgba(125,211,252,.10); color:var(--accent); border:1px solid rgba(125,211,252,.28); }
+      .ctx-chip:hover { background:rgba(125,211,252,.20); border-color:rgba(125,211,252,.55); }
+      .ctx-chip .ctx-hash { opacity:.6; }
+      .ctx-chip.s-paused { background:rgba(255,255,255,.05); color:var(--text-mute); border-color:var(--border); }
+      .ctx-chip.s-done { opacity:.6; }
       .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); overflow:hidden; flex:none; }
       .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; overflow:hidden; padding:3px; }
       .att-thumb { width:100%; height:100%; object-fit:cover; display:block; }
@@ -757,6 +767,7 @@
         </div>
         <div id="stream"><div class="chat-empty" id="chat-empty"><strong>아직 대화가 없습니다</strong>아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.</div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
         <div id="chat">
+          <div id="chat-context" class="chat-context"></div>
           <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
             <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>
@@ -1330,6 +1341,55 @@
         const nav = document.getElementById("nav-project-count");
         if (nav) nav.textContent = String(projectsCache.length);
         if (currentView === "projects") renderProjectsGrid();
+        renderContextTags(); // 입력창 위 컨텍스트 태그 바 갱신.
+      };
+
+      // ── 컨텍스트 태그 바 ─────────────────────────────────────────────────
+      // 등록 프로젝트를 칩으로. 클릭 시 `#<이름>` 태그를 입력창에 껴넣어 "그 프로젝트 얘기"임을
+      // 티구클로가 바로 알게 한다(SYSTEM.md 텍스트 컨벤션 — 채널·LLM 무관). 최근 클릭 순 정렬.
+      const CTX_RECENT_KEY = "tgctx_recent";
+      const ctxRecent = () => { try { return JSON.parse(localStorage.getItem(CTX_RECENT_KEY) || "[]"); } catch { return []; } };
+      const ctxBumpRecent = (name) => {
+        try { const r = ctxRecent().filter((n) => n !== name); r.unshift(name); localStorage.setItem(CTX_RECENT_KEY, JSON.stringify(r.slice(0, 30))); } catch {}
+      };
+      const insertContextTag = (name) => {
+        const ta = document.getElementById("chat-input");
+        if (!ta) return;
+        if (ta.value.includes("#" + name)) { ta.focus(); return; } // 이미 있으면 중복 삽입 안 함.
+        const tag = "#" + name + " ";
+        const s = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+        const e = ta.selectionEnd != null ? ta.selectionEnd : ta.value.length;
+        ta.value = ta.value.slice(0, s) + tag + ta.value.slice(e);
+        const pos = s + tag.length;
+        ta.focus(); ta.setSelectionRange(pos, pos);
+        ta.dispatchEvent(new Event("input", { bubbles: true })); // autogrow 트리거.
+        ctxBumpRecent(name); renderContextTags();
+      };
+      const renderContextTags = () => {
+        const bar = document.getElementById("chat-context");
+        if (!bar) return;
+        bar.innerHTML = "";
+        const projs = Array.isArray(projectsCache) ? projectsCache.filter((p) => p && p.name) : [];
+        if (projs.length === 0) return; // 프로젝트 없으면 바 숨김(:empty).
+        const recent = ctxRecent();
+        const ordered = projs.slice().sort((a, b) => {
+          const ra = recent.indexOf(a.name), rb = recent.indexOf(b.name);
+          return (ra === -1 ? 999 : ra) - (rb === -1 ? 999 : rb); // 최근 클릭 먼저.
+        });
+        const label = document.createElement("span");
+        label.className = "ctx-label"; label.textContent = "컨텍스트:";
+        bar.appendChild(label);
+        for (const p of ordered) {
+          const status = ["active", "paused", "done"].includes(p.status) ? p.status : "active";
+          const chip = document.createElement("span");
+          chip.className = "ctx-chip s-" + status;
+          chip.title = "이 프로젝트 컨텍스트 태그 삽입 → #" + p.name;
+          const hash = document.createElement("span");
+          hash.className = "ctx-hash"; hash.textContent = "#";
+          chip.appendChild(hash); chip.appendChild(document.createTextNode(p.name));
+          chip.addEventListener("click", () => insertContextTag(p.name));
+          bar.appendChild(chip);
+        }
       };
 
       const renderProjectsGrid = () => {

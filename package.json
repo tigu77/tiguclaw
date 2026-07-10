@@ -1,6 +1,6 @@
 {
   "name": "tiguclaw",
-  "version": "0.3.53",
+  "version": "0.3.54",
   "private": true,
   "type": "module",
   "bin": {

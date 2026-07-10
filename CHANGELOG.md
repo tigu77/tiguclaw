@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.64] - 2026-07-10
+
+### Changed
+- **On mobile, Enter in the dashboard chat input now inserts a line break instead of sending.** On phones the on-screen keyboard's Enter key kept sending the message mid-thought; now it adds a newline, and you send with the "Send" button. Desktop is unchanged — Enter still sends, Shift+Enter still adds a newline. The distinction is based on whether the primary input is touch (not screen width), so a narrow desktop window with a physical keyboard still sends on Enter.
+
 ## [0.3.63] - 2026-07-10
 
 ### Fixed
@@ -449,7 +454,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.63...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.64...HEAD
+[0.3.64]: https://github.com/tigu77/tiguclaw/compare/v0.3.63...v0.3.64
 [0.3.63]: https://github.com/tigu77/tiguclaw/compare/v0.3.62...v0.3.63
 [0.3.62]: https://github.com/tigu77/tiguclaw/compare/v0.3.61...v0.3.62
 [0.3.61]: https://github.com/tigu77/tiguclaw/compare/v0.3.60...v0.3.61

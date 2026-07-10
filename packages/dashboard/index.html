@@ -3909,14 +3909,25 @@
       input.addEventListener("input", autoGrowInput);
       input.addEventListener("input", updateActiveChips); // 타이핑/백스페이스에 칩 활성표시 동기화.
 
-      // Enter=전송, Shift+Enter=줄바꿈(기본 동작 유지). IME 조합 중(한글 입력)에는 전송 금지 —
-      // isComposing 이면 Enter 가 조합 확정용이라 가로채면 오전송된다.
+      // 데스크톱(마우스/키보드): Enter=전송, Shift+Enter=줄바꿈. 모바일(터치 주입력): Enter=줄바꿈,
+      // 전송은 '전송' 버튼으로 — 소프트키보드에서 Enter 로 오전송되는 일이 없게. 판별은 화면폭이 아니라
+      // 주 포인터가 터치인지(pointer:coarse) — 좁은 데스크톱 창은 물리 키보드라 Enter=전송 유지.
+      // IME 조합 중(한글)에는 데스크톱에서도 전송 금지(Enter=조합 확정용).
+      const isTouchPrimary = () =>
+        typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isTouchPrimary()) {
           e.preventDefault();
           form.requestSubmit();
         }
       });
+      // 모바일이면 안내문도 버튼 전송으로 — Enter 전송 문구는 오해 소지.
+      if (isTouchPrimary()) {
+        input.setAttribute(
+          "placeholder",
+          "대시보드 채팅 — 전송 버튼으로 전송, Enter 줄바꿈 · 파일 붙여넣기/드롭",
+        );
+      }
 
       // ── 파일 첨부(#2) — 붙여넣기/드롭/파일선택 → base64 큐 → 전송 시 함께 POST. ──
       const ATT_MAX = 10, ATT_MAX_BYTES = 10 * 1024 * 1024;

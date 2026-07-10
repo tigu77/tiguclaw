@@ -671,6 +671,8 @@
       /* 칩 제거 × (학습 칩만). */
       .ctx-x { margin-left:1px; font-size:12px; line-height:1; opacity:.5; cursor:pointer; }
       .ctx-x:hover { opacity:1; color:var(--warn); }
+      .chat-atts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+      .chat-atts .att-chip { cursor:default; }
       .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); overflow:hidden; flex:none; }
       .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; overflow:hidden; padding:3px; }
       .att-thumb { width:100%; height:100%; object-fit:cover; display:block; }
@@ -3320,6 +3322,34 @@
         return div;
       };
 
+      // 보낸 메시지 버블 안 첨부 미리보기(읽기전용 썸네일/파일칩). 전송 시 클라이언트가 가진 base64 로
+      // 즉시 렌더 — 첨부칩과 동일 비주얼, ✕ 제거버튼만 없음. (관측 이벤트·chat_log 엔 첨부가 안 실리므로
+      // 새로고침 후 과거 이력엔 안 남는 건 알려진 한계 — 라이브 세션 동안엔 보인다.)
+      const buildAttachmentsPreview = (attachments) => {
+        const wrap = document.createElement("div");
+        wrap.className = "chat-atts";
+        attachments.forEach((a) => {
+          const isImg = (a.mimeType || "").startsWith("image/");
+          const chip = document.createElement("div");
+          chip.className = "att-chip" + (isImg ? " att-img" : " att-file");
+          chip.title = (a.filename || "file") + (a.bytes ? " · " + fmtBytes(a.bytes) : "");
+          if (isImg && a.dataBase64) {
+            const img = document.createElement("img");
+            img.className = "att-thumb";
+            img.src = "data:" + a.mimeType + ";base64," + a.dataBase64;
+            img.alt = a.filename || "image";
+            chip.appendChild(img);
+          } else {
+            const ic = document.createElement("div"); ic.className = "att-fileicon";
+            ic.textContent = ((String(a.filename || "file").split(".").pop() || "FILE").slice(0, 4)).toUpperCase();
+            const nm = document.createElement("div"); nm.className = "att-fname"; nm.textContent = a.filename || "file";
+            chip.appendChild(ic); chip.appendChild(nm);
+          }
+          wrap.appendChild(chip);
+        });
+        return wrap;
+      };
+
       // 메시지 유닛 → element(+dedup 키 등록). 이미 렌더됐으면 null(SSE/다른 페이지 중복 방지).
       const buildHistoryMsgEl = (entry) => {
         const role = entry.role === "assistant" ? "assistant" : "user";
@@ -3609,13 +3639,22 @@
       // 큐 대기 표시 — 이미 이 스레드 턴이 진행 중일 때(busy) 보낸 메시지는 직렬 큐(enqueueThreadTurn)
       // 뒤에 붙어 현재 턴이 끝나야 처리된다. 처리 시작(channel.message.in echo) 전까진 화면에 안
       // 떠서 "등록됐나?" 헷갈린다 → 낙관적 "대기 중" 버블로 즉시 피드백, echo 도착 시 승격(배지 제거).
-      const pendingQueued = []; // [{ text, el }] — 아직 처리 시작(echo) 안 된 큐 대기 버블.
-      const queueOptimisticBubble = (text) => {
+      const pendingQueued = []; // [{ text, el }] — echo 도착 시 승격할 낙관적 사용자 버블(대기 중 또는 첨부).
+      // opts.attachments 있으면 버블 안에 미리보기, opts.queued 면 '대기 중' 배지. 어느 경우든
+      // pendingQueued 에 등록 → channel.message.in echo 가 텍스트 매칭으로 이 버블을 승격(중복 렌더 방지).
+      const queueOptimisticBubble = (text, opts) => {
+        const o = opts || {};
         const div = buildHistoryDiv({ ts: Date.now(), role: "user", text });
-        div.classList.add("queued");
-        const badge = document.createElement("span");
-        badge.className = "queued-badge"; badge.textContent = "대기 중";
-        (div.firstChild || div).appendChild(badge); // head(ts+라벨) 에 배지 부착.
+        if (o.attachments && o.attachments.length) {
+          const msg = div.querySelector(".chat-message");
+          (msg || div).appendChild(buildAttachmentsPreview(o.attachments));
+        }
+        if (o.queued) {
+          div.classList.add("queued");
+          const badge = document.createElement("span");
+          badge.className = "queued-badge"; badge.textContent = "대기 중";
+          (div.firstChild || div).appendChild(badge); // head(ts+라벨) 에 배지 부착.
+        }
         stream.insertBefore(div, stream.firstChild);
         pendingQueued.push({ text, el: div });
         localChatCount += 1;
@@ -3628,8 +3667,13 @@
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
       const sendChatMessage = async (text, attachments) => {
         recordTypedTags(text); // 타이핑/삽입한 #태그 학습 → 다음부터 칩으로.
-        // 이미 이 스레드 턴 진행 중이면 이 메시지는 큐잉된다 → "대기 중" 낙관적 버블(텍스트 있을 때).
-        if (text && activeTurns.has(THREAD_KEY)) queueOptimisticBubble(text);
+        // 낙관적 사용자 버블: 진행 중이면 "대기 중" 배지, 첨부가 있으면 이미지/파일 미리보기를 즉시 렌더
+        // (전송한 파일을 채팅 카드에서 바로 확인). 둘 중 하나라도 해당하고 내용이 있으면 만든다.
+        const busy = activeTurns.has(THREAD_KEY);
+        const hasAtt = !!(attachments && attachments.length);
+        if ((busy || hasAtt) && (text || hasAtt)) {
+          queueOptimisticBubble(text, { attachments: hasAtt ? attachments : null, queued: busy });
+        }
         setChatWorking(true);
         const t0 = Date.now();
         try {

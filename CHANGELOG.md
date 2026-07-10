@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.65] - 2026-07-10
+
+### Fixed
+- **Images and files you attach in the dashboard chat now show up in your sent message card.** Previously an attachment was sent to the assistant but never appeared in the chat, so there was no visual confirmation of what you sent. Sent messages now render a thumbnail (for images) or a file chip inline in the bubble. (These previews are shown for the live session; because attachments aren't stored in the chat log, reloading the page shows past messages as text only.)
+
 ## [0.3.64] - 2026-07-10
 
 ### Changed
@@ -454,7 +459,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.64...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.65...HEAD
+[0.3.65]: https://github.com/tigu77/tiguclaw/compare/v0.3.64...v0.3.65
 [0.3.64]: https://github.com/tigu77/tiguclaw/compare/v0.3.63...v0.3.64
 [0.3.63]: https://github.com/tigu77/tiguclaw/compare/v0.3.62...v0.3.63
 [0.3.62]: https://github.com/tigu77/tiguclaw/compare/v0.3.61...v0.3.62

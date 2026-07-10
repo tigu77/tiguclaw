@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.69] - 2026-07-10
+
+### Added
+- **The OpenAI backend can now actually see attached images (vision), matching the Claude and Codex backends.** Previously, when using OpenAI/Google(Gemini)/local OpenAI-compatible models, an attached image was only referenced as a file path in text, so those models couldn't view it. Now the image is sent to the model as visual input on vision-capable models (e.g. GPT‑4o, Gemini, and vision-capable local models). Models without vision support fall back to the previous text-reference behavior, so nothing regresses. (Past turns are reconstructed as text only, so a single un-viewable image can't wedge a conversation.)
+
 ## [0.3.68] - 2026-07-10
 
 ### Fixed
@@ -474,7 +479,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.68...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.69...HEAD
+[0.3.69]: https://github.com/tigu77/tiguclaw/compare/v0.3.68...v0.3.69
 [0.3.68]: https://github.com/tigu77/tiguclaw/compare/v0.3.67...v0.3.68
 [0.3.67]: https://github.com/tigu77/tiguclaw/compare/v0.3.66...v0.3.67
 [0.3.66]: https://github.com/tigu77/tiguclaw/compare/v0.3.65...v0.3.66

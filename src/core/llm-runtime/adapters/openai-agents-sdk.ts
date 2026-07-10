@@ -23,6 +23,7 @@
  *  - 라이브 e2e(실 ollama/gemini/openai 모델 end-to-end) 실측 — 코드 parity 는 완료.
  */
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import { Agent, run, OpenAIProvider } from "@openai/agents";
 import type { MCPServer, AgentInputItem } from "@openai/agents-core";
 import {
@@ -85,6 +86,37 @@ import type {
   RegionASdkInput,
   RegionASdkOutput,
 } from "../types.js";
+
+// 멀티모달 (2026-07-10) — 현재 turn 이미지 첨부를 SDK `input_image` content 로 주입. @openai/agents
+// 가 OpenAI(Responses) native + ChatCompletions(gemini/ollama)는 openaiChatCompletionsConverter 로
+// `image_url` 로 자동 번역(node_modules 실측). codex 어댑터 buildMediaContentItems 의 agents-SDK 대응.
+// ★과거 turn 은 텍스트로만 재구성(loadThreadHistory) → 이미지 재주입 0 = claude 식 오염 없음.
+const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
+type SdkImageItem = { type: "input_image"; image: string };
+const buildImageContentItems = async (
+  attachments: RegionASdkInput["attachments"],
+): Promise<SdkImageItem[]> => {
+  if (attachments === undefined) return [];
+  const items: SdkImageItem[] = [];
+  for (const a of attachments) {
+    if (a.kind !== "image" || a.bytes > MAX_INLINE_IMAGE_BYTES) continue;
+    try {
+      const b64 = (await fs.readFile(a.path)).toString("base64");
+      items.push({ type: "input_image", image: `data:${a.mimeType};base64,${b64}` });
+    } catch {
+      /* 읽기 실패 → 텍스트 경로 블록(formatAttachments)이 경로/메타 인지 보장(조용한 실패 0). */
+    }
+  }
+  return items;
+};
+
+// 비전 가능 모델 휴리스틱 — 이 어댑터는 이질 모델(openai·gemini·ollama)을 한 몸으로 굴리고
+// vision 은 모델별이라, 비전 없는 모델에 이미지를 넣으면 그 turn 이 에러난다. 매치 시에만 이미지
+// 주입, 아니면 텍스트 경로 폴백(현행·회귀 0). 미매치(비전인데 누락)=텍스트 폴백(안전), 오탐(비전
+// 아닌데 매치)=그 turn 실패→풀 폴백이라 보수적으로. 새 비전 모델은 여기 패턴만 추가하면 된다.
+const VISION_MODEL_RE =
+  /gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-5|chatgpt-4o|gemini|llava|bakllava|vision|llama-?4|minicpm-v|moondream|qwen[\d.]*-?vl|pixtral|gemma-?3|mistral-small-?3|internvl/i;
+const modelSupportsVision = (model: string): boolean => VISION_MODEL_RE.test(model);
 
 export const runOpenAi = async (
   input: RegionASdkInput,
@@ -378,9 +410,15 @@ export const runOpenAi = async (
           content: [{ type: "input_text", text: t.content }],
         },
   );
+  // 멀티모달 — 모델이 vision 가능하면 현재 turn 이미지 첨부를 input_image 로 함께 주입(SDK 가
+  // Responses/ChatCompletions 로 자동 번역). 비전 없는 모델은 [] → 텍스트 경로 블록만(회귀 0).
+  const imageItems =
+    input.attachments !== undefined && modelSupportsVision(model)
+      ? await buildImageContentItems(input.attachments)
+      : [];
   const currentTurn: AgentInputItem = {
     role: "user",
-    content: [{ type: "input_text", text: promptWithMemory }],
+    content: [{ type: "input_text", text: promptWithMemory }, ...imageItems],
   };
   // 첫 turn(히스토리 0) 이면 단일 user item — string 입력과 동치(회귀 0).
   const runInput: AgentInputItem[] = [...historyItems, currentTurn];

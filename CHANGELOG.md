@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.68] - 2026-07-10
+
+### Fixed
+- **Self-update completion notices now appear in the same dashboard conversation you triggered them from.** When you asked the assistant to update itself from the web dashboard, the "update complete — restarted" notice was posted to a generic thread instead of the conversation you were in, so it looked out of place. It now lands in the right conversation. (Notifications from proactive actions — schedules, file-watch, background workers, self-update, restart — already showed in the dashboard; this only corrects which conversation the self-update notice is grouped under.)
+
 ## [0.3.67] - 2026-07-10
 
 ### Added
@@ -469,7 +474,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.67...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.68...HEAD
+[0.3.68]: https://github.com/tigu77/tiguclaw/compare/v0.3.67...v0.3.68
 [0.3.67]: https://github.com/tigu77/tiguclaw/compare/v0.3.66...v0.3.67
 [0.3.66]: https://github.com/tigu77/tiguclaw/compare/v0.3.65...v0.3.66
 [0.3.65]: https://github.com/tigu77/tiguclaw/compare/v0.3.64...v0.3.65

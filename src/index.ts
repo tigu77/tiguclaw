@@ -1074,7 +1074,12 @@ const notifyDestFromMessage = (
   target:
     channel === "telegram"
       ? (extractTelegramChatId(threadKey) ?? threadKey)
-      : null,
+      : // http-bridge(대시보드 등)는 target=threadKey 를 그대로 보존해야 통지가 *원래 대화*
+        // (예: dashboard:default)에 뜬다. null 로 버리면 deliverOutbound 가 "http-bridge:default"
+        // generic 그룹으로 발행해 통지가 엉뚱한 스레드에 붙었다. telegram 외 채널도 threadKey 유지.
+        channel !== "cli"
+        ? threadKey
+        : null,
 });
 
 // control.restart — 채널/제어 차원 재시작 이벤트(A: http-bridge 가 토큰 게이트된 POST /restart

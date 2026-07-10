@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.61] - 2026-07-10
+
+### Added
+- **Diffs are now syntax-highlighted too, not just fenced code blocks.** The code inside an Edit/Write diff card is colored by language (detected from the file's extension), while the `+`/`-` markers keep their green/red so the added/removed signal stays clear — the GitHub-style combination of a tinted line plus highlighted code. Falls back to plain text when the language can't be determined. (Command/read output blocks are left plain for now.)
+
 ## [0.3.60] - 2026-07-10
 
 ### Changed
@@ -434,7 +439,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.60...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.61...HEAD
+[0.3.61]: https://github.com/tigu77/tiguclaw/compare/v0.3.60...v0.3.61
 [0.3.60]: https://github.com/tigu77/tiguclaw/compare/v0.3.59...v0.3.60
 [0.3.59]: https://github.com/tigu77/tiguclaw/compare/v0.3.58...v0.3.59
 [0.3.58]: https://github.com/tigu77/tiguclaw/compare/v0.3.57...v0.3.58

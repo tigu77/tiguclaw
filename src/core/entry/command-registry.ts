@@ -29,6 +29,43 @@ import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js"
 import { dedupeBySource } from "../llm-runtime/capabilities/dedup-by-source.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../paths.js";
 
+/**
+ * 빌트인(하드코딩) 슬래시 명령의 채널중립 표현 — 커스텀 `Command` 와 달리 파일이 없다.
+ * 채널 입구(`src/index.ts`)가 command-registry fallthrough *이전에* 하드코딩 매치하는
+ * 데몬 기능 슬래시. 여기 정의가 그 목록의 단일 canonical 소스.
+ */
+export interface BuiltinCommand {
+  /** 슬래시 이름(선행 슬래시 제외). `/name` 으로 호출. */
+  name: string;
+  /** 사용자 노출 설명(텔레그램 메뉴·대시보드·MCP 인덱스 공용). */
+  description: string;
+}
+
+/**
+ * ★빌트인 슬래시 명령의 단일 canonical 소스 (진실 = `src/index.ts` 하드코딩 분기).
+ *
+ * 목적: 이전엔 이 목록이 3곳(telegram refreshMenu 배열·command-tools-mcp 예약어 Set·
+ * index.ts 분기)에 중복·drift 됐다(채널마다 명령이 다르게 보임 = 원칙 4 단일 인격 위반).
+ * 이제 텔레그램·대시보드·MCP 가 모두 이 상수(또는 `getAllCommands`)를 소비한다.
+ *
+ * 신규 빌트인 슬래시를 `src/index.ts` 에 추가하면 반드시 여기에도 한 줄 추가할 것.
+ */
+export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
+  { name: "reset", description: "대화 컨텍스트 초기화" },
+  { name: "clear", description: "대화 컨텍스트 초기화 (/reset 별칭)" },
+  { name: "memo", description: "메모리 추가" },
+  { name: "forget", description: "메모리 삭제" },
+  { name: "memos", description: "메모리 목록 조회" },
+  { name: "plugins", description: "설치·활성 플러그인 목록" },
+  { name: "agents", description: "진행 중인 백그라운드 작업(워커·서브에이전트)" },
+  { name: "status", description: "시스템 상태" },
+  { name: "restart", description: "데몬 재시작" },
+  { name: "update", description: "tiguclaw 최신으로 업데이트" },
+  { name: "model", description: "세션 메인 모델 선택/조회" },
+  { name: "schedule", description: "스케줄 관리(목록·삭제·활성·비활성)" },
+  { name: "stop", description: "진행 중 턴 중단" },
+] as const;
+
 export interface Command {
   /** 슬래시 이름 = 파일 basename (확장자 제외). `/name` 으로 호출. */
   name: string;
@@ -230,4 +267,30 @@ export const formatCommandIndex = (commands: ReadonlyArray<Command>): string => 
     (c) => `- /${c.name}${c.description ? ` — ${c.description}` : ""}`,
   );
   return lines.join("\n");
+};
+
+/**
+ * ★빌트인 + 발견 커스텀 슬래시 명령의 병합 목록 — 채널중립 `{name, description}[]`.
+ *
+ * 텔레그램·대시보드·MCP 가 공통으로 소비하는 단일 진입점. 채널별 변환(정규식 필터·slice·
+ * `{command}` 리네임 등)은 각 어댑터에 잔류시키고, 여기선 순수 목록만 낸다.
+ *
+ * happy path 에 예외를 묻지 않도록 try/catch 는 이 병합 경계에만 둔다: `discoverCommands`
+ * 가 던지면(fs 오류 등) 빌트인만이라도 반환해 명령 메뉴가 통째로 사라지지 않게 한다.
+ */
+export const getAllCommands = async (cwd?: string): Promise<BuiltinCommand[]> => {
+  const builtins = BUILTIN_COMMANDS.map((c) => ({
+    name: c.name,
+    description: c.description,
+  }));
+  let discovered: Command[] = [];
+  try {
+    discovered = await discoverCommands(cwd);
+  } catch {
+    return builtins;
+  }
+  return [
+    ...builtins,
+    ...discovered.map((c) => ({ name: c.name, description: c.description })),
+  ];
 };

@@ -11,7 +11,7 @@ import type {
   ReplyOptions,
 } from "./types.js";
 import { getPaths } from "../core/paths.js";
-import { discoverCommands } from "../core/entry/command-registry.js";
+import { getAllCommands } from "../core/entry/command-registry.js";
 import { getEventBus } from "../core/eventbus.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
@@ -660,34 +660,22 @@ export class TelegramChannel implements Channel {
   private async refreshMenu(): Promise<void> {
     const bot = this.bot;
     if (bot === null) return; // stop 후 잔여 이벤트 등 — 안전 no-op.
-    const builtinCommands = [
-      { command: "reset", description: "대화 컨텍스트 초기화" },
-      { command: "clear", description: "대화 컨텍스트 초기화" },
-      { command: "memo", description: "메모리 추가" },
-      { command: "forget", description: "메모리 삭제" },
-      { command: "memos", description: "메모리 목록" },
-      { command: "plugins", description: "설치·활성 플러그인 목록" },
-      { command: "agents", description: "진행 중인 백그라운드 작업" },
-      { command: "status", description: "시스템 상태" },
-      { command: "restart", description: "데몬 재시작" },
-      { command: "update", description: "tiguclaw 최신으로 업데이트" },
-    ];
-    const builtinNames = new Set(builtinCommands.map((c) => c.command));
+    // 명령 목록의 단일 canonical 소스 — 빌트인 + 발견 커스텀 병합(채널중립).
+    // 여기서는 텔레그램 특수 변환만 잔류: (a) 이름 규칙 필터, (b) 이름 dedup(빌트인 우선),
+    // (c) `{command, description}` 리네임, (d) 100개 slice.
+    const all = await getAllCommands();
     const validTgName = /^[a-z0-9_]{1,32}$/;
-    let discoveredCommands: { command: string; description: string }[] = [];
-    try {
-      const cmds = await discoverCommands();
-      discoveredCommands = cmds
-        .filter((c) => validTgName.test(c.name) && !builtinNames.has(c.name))
-        .map((c) => ({
-          command: c.name,
-          description: (c.description || c.name).slice(0, 256),
-        }));
-    } catch (e) {
-      console.error("telegram: discoverCommands(menu) failed:", e);
+    const seen = new Set<string>();
+    const menuCommands: { command: string; description: string }[] = [];
+    for (const c of all) {
+      if (!validTgName.test(c.name) || seen.has(c.name)) continue;
+      seen.add(c.name);
+      menuCommands.push({
+        command: c.name,
+        description: (c.description || c.name).slice(0, 256),
+      });
+      if (menuCommands.length >= 100) break; // 텔레그램 최대 100개.
     }
-    // 텔레그램 최대 100개.
-    const menuCommands = [...builtinCommands, ...discoveredCommands].slice(0, 100);
     await bot.api.setMyCommands(menuCommands).catch((e) => {
       console.error("telegram setMyCommands failed:", e);
     });

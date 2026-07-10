@@ -636,7 +636,16 @@
          나오므로 중복 방지로 요약은 숨김. */
       .bg-job-summary { font-size:11px; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
       .bg-job.open .bg-job-summary { display:none !important; }
-      #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); }
+      #chat { border-top:1px solid var(--border); padding:12px; background:rgba(8,10,15,.42); position:relative; }
+      /* 슬래시 명령 자동완성 팝업 — 입력창 위에 뜨는 오버레이(클로드코드 슬래시 메뉴 동형). #tag 칩 바와 별개. */
+      .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:30;
+        background:rgba(13,17,24,.98); border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--shadow);
+        max-height:min(280px,44vh); overflow-y:auto; padding:5px; }
+      .chat-slash[hidden] { display:none; }
+      .slash-item { display:flex; align-items:baseline; gap:9px; padding:7px 10px; border-radius:9px; cursor:pointer; user-select:none; }
+      .slash-item.active { background:rgba(125,211,252,.14); }
+      .slash-name { color:var(--accent); font-weight:750; font-size:12px; white-space:nowrap; }
+      .slash-desc { color:var(--text-mute); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       #chat-form { display:flex; gap:8px; align-items:flex-end; }
       #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; font-family:inherit; line-height:1.45; resize:none; max-height:148px; overflow-y:auto; }
       #chat-attach-btn { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:0 11px; font-size:15px; cursor:pointer; flex:none; align-self:stretch; }
@@ -803,6 +812,7 @@
         </div>
         <div id="stream"><div class="chat-empty" id="chat-empty"><strong>아직 대화가 없습니다</strong>아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.</div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
         <div id="chat">
+          <div id="chat-slash" class="chat-slash" hidden></div>
           <div id="chat-context" class="chat-context"></div>
           <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
@@ -3955,6 +3965,75 @@
       const sendBtn = document.getElementById("chat-send");
       const statusEl = document.getElementById("chat-status");
 
+      // ── 슬래시 명령 자동완성(/) — 클로드코드 슬래시 메뉴 동형. 입력값이 "/접두사"(맨 앞·공백 전)일
+      //    때만 /api/commands 캐시에서 필터해 팝업으로 띄우고 ↑/↓·Enter/Tab·Esc·클릭으로 수락·삽입.
+      //    로드/매치 실패 시 팝업만 안 뜨고 채팅은 그대로(회귀 0). ──
+      let slashCommands = [];  // [{name, description}] — fetch 실패 시 빈 배열 = 팝업 미표시.
+      let slashMatches = [];   // 현재 접두사로 필터된 목록.
+      let slashActive = -1;    // 선택 인덱스(-1 = 닫힘).
+      const slashPopup = document.getElementById("chat-slash");
+      fetch("/api/commands")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => { if (d && Array.isArray(d.commands)) slashCommands = d.commands.filter((c) => c && c.name); })
+        .catch(() => {}); // 실패 = happy path 무손상(팝업만 미표시).
+      const slashOpen = () => !!slashPopup && !slashPopup.hidden && slashMatches.length > 0;
+      const slashClose = () => {
+        slashActive = -1; slashMatches = [];
+        if (slashPopup) { slashPopup.hidden = true; slashPopup.innerHTML = ""; }
+      };
+      const slashRender = () => {
+        if (!slashPopup) return;
+        slashPopup.innerHTML = "";
+        slashMatches.forEach((c, i) => {
+          const item = document.createElement("div");
+          item.className = "slash-item" + (i === slashActive ? " active" : "");
+          const n = document.createElement("span"); n.className = "slash-name"; n.textContent = "/" + c.name;
+          item.appendChild(n);
+          if (c.description) {
+            const d = document.createElement("span"); d.className = "slash-desc"; d.textContent = c.description;
+            item.appendChild(d);
+          }
+          // mousedown(클릭 아님) — textarea blur 전에 수락해서 blur-close 와 경합하지 않게. preventDefault 로 포커스 유지.
+          item.addEventListener("mousedown", (e) => { e.preventDefault(); slashAccept(i); });
+          item.addEventListener("mousemove", () => { if (slashActive !== i) { slashActive = i; slashRender(); } });
+          slashPopup.appendChild(item);
+        });
+        slashPopup.hidden = false;
+      };
+      // 입력 전체가 "/접두사"(맨 앞 슬래시 + 공백 없음)일 때만 팝업. 중간 "/" 는 무시.
+      const slashSync = () => {
+        if (!slashPopup) return;
+        const m = input.value.match(/^\/(\w*)$/);
+        if (!m || slashCommands.length === 0) { slashClose(); return; }
+        const prefix = m[1].toLowerCase();
+        slashMatches = slashCommands.filter((c) => String(c.name).toLowerCase().startsWith(prefix));
+        if (slashMatches.length === 0) { slashClose(); return; }
+        if (slashActive < 0 || slashActive >= slashMatches.length) slashActive = 0;
+        slashRender();
+      };
+      // 수락 = 입력 전체를 "/name " 로 교체(맨 앞 명령) + autogrow 트리거 + 팝업 닫음. 전송하지 않음.
+      const slashAccept = (i) => {
+        const c = slashMatches[i];
+        if (!c) { slashClose(); return; }
+        const text = "/" + c.name + " ";
+        input.value = text;
+        input.focus();
+        input.setSelectionRange(text.length, text.length);
+        input.dispatchEvent(new Event("input", { bubbles: true })); // autogrow + slashSync(→닫힘, 공백 있음).
+        slashClose();
+      };
+      // 팝업 열림 시 키 가로챔. 처리했으면 true(호출부에서 기존 Enter=전송 스킵). IME 조합 중엔 미개입.
+      const slashKeydown = (e) => {
+        if (!slashOpen() || e.isComposing) return false;
+        if (e.key === "ArrowDown") { e.preventDefault(); slashActive = (slashActive + 1) % slashMatches.length; slashRender(); return true; }
+        if (e.key === "ArrowUp") { e.preventDefault(); slashActive = (slashActive - 1 + slashMatches.length) % slashMatches.length; slashRender(); return true; }
+        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); slashAccept(slashActive); return true; }
+        if (e.key === "Escape") { e.preventDefault(); slashClose(); return true; }
+        return false;
+      };
+      input.addEventListener("input", slashSync); // 타이핑/백스페이스에 팝업 갱신.
+      input.addEventListener("blur", slashClose); // 포커스 이탈 시 닫음(항목 mousedown 은 preventDefault 로 blur 안 남).
+
       // textarea 자동 높이 — 내용에 맞춰 grow(최대 CSS max-height 까지 스크롤). 전송 후 리셋.
       // 매 키 입력마다 height="auto"→scrollHeight 읽기는 강제 동기 리플로우 → SSE 로 DOM 이
       // 계속 바뀌는 대시보드에선 키 입력마다 전체 레이아웃 플러시 = 입력 랙. rAF 로 프레임당
@@ -3978,6 +4057,7 @@
       const isTouchPrimary = () =>
         typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
       input.addEventListener("keydown", (e) => {
+        if (slashKeydown(e)) return; // 슬래시 팝업 열림 → ↑/↓·Enter/Tab·Esc 가로챔(전송 안 함).
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isTouchPrimary()) {
           e.preventDefault();
           form.requestSubmit();
@@ -4080,6 +4160,7 @@
         renderAttachChips();
         input.value = "";
         input.style.height = "auto"; // 전송 후 한 줄 높이로 리셋.
+        slashClose(); // 전송 시 슬래시 팝업 닫음(value 비움은 input 이벤트를 안 쏘므로 명시적으로).
         input.focus();
         // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 워커
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).

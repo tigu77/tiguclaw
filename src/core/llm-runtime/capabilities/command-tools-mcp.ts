@@ -41,6 +41,7 @@ import { getEventBus } from "../../eventbus.js";
 import {
   discoverCommands,
   formatCommandIndex,
+  BUILTIN_COMMANDS as BUILTIN_COMMANDS_ARRAY,
 } from "../../entry/command-registry.js";
 
 const okText = (text: string) => ({
@@ -52,20 +53,20 @@ const errText = (text: string) => ({
 });
 
 /**
- * 빌트인 네이티브 명령 — 등록 충돌 거부 대상. 채널 입구가 하드코딩 데몬 기능 슬래시를
+ * 빌트인 네이티브 명령 예약어 — 등록 충돌 거부 대상. 채널 입구가 하드코딩 데몬 기능 슬래시를
  * command-registry fallthrough *이전에* 매치하므로, 같은 이름으로 .md 를 만들면 영원히
  * 가려진 죽은 정의가 된다. 등록 레벨에서 명시 거부해 혼동을 막는다.
+ *
+ * 단일 canonical 소스(`command-registry` `BUILTIN_COMMANDS`)에서 파생 — 이전엔 여기 8개만
+ * 하드코딩돼 clear·agents·model·schedule·stop 이 예약어에서 빠져 커스텀 명령이 빌트인을
+ * 가릴 수 있었다(갭). 이제 canonical 이 늘면 예약어도 자동 편입된다.
  */
-const BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
-  "reset",
-  "memo",
-  "forget",
-  "memos",
-  "plugins",
-  "status",
-  "restart",
-  "update",
-]);
+const BUILTIN_COMMANDS: ReadonlySet<string> = new Set(
+  BUILTIN_COMMANDS_ARRAY.map((c) => c.name),
+);
+
+/** 빌트인 이름 목록 — 도구 설명·힌트에 보간(canonical 파생, 프로즈 열거 하드코딩 방지). */
+const RESERVED_NAMES = BUILTIN_COMMANDS_ARRAY.map((c) => c.name).join("·");
 
 /**
  * name 정규화 — 소문자·trim. 선행 슬래시도 허용 입력으로 받아 제거(`/daily` → `daily`).
@@ -92,12 +93,12 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
     "커스텀 슬래시 명령을 만듭니다(재사용 prompt 매크로의 슬래시 판). " +
       "<home>/commands/<name>.md 정의 파일을 작성하면 채널 입구가 매-입력 발견해 확장합니다(재시작 불요). " +
       "prompt 는 '/name' 으로 호출될 때 영역 A 에 전달할 프롬프트 템플릿이며, 본문에 $ARGUMENTS placeholder 로 호출 인자를 받을 수 있습니다. " +
-      "빌트인 네이티브 명령(reset·memo·forget·memos·plugins·status·restart)과 같은 이름은 만들 수 없습니다.",
+      `빌트인 네이티브 명령(${RESERVED_NAMES})과 같은 이름은 만들 수 없습니다.`,
     {
       name: z
         .string()
         .min(1)
-        .describe("슬래시 명령 이름(예 'daily'). 선행 슬래시는 자동 제거·소문자화. 빌트인(reset·memo·forget·memos·plugins·status·restart) 금지."),
+        .describe(`슬래시 명령 이름(예 'daily'). 선행 슬래시는 자동 제거·소문자화. 빌트인(${RESERVED_NAMES}) 금지.`),
       prompt: z
         .string()
         .min(1)

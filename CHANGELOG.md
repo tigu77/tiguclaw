@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.72] - 2026-07-10
+## [0.3.73] - 2026-07-11
+
+### Added
+- **Slash-command autocomplete in the dashboard chat.** Type `/` at the start of the chat box and a menu of available commands pops up — filter by typing, navigate with ↑/↓, accept with Enter/Tab or a click, dismiss with Esc. Matches the Claude Code / Telegram slash-menu experience in the web dashboard.
+
+### Fixed
+- **The command menu is now the same across every channel.** Built-in slash commands were maintained in three separate places that had drifted apart — so the Telegram menu was silently missing `/model`, `/schedule`, and `/stop`. All channels (Telegram, dashboard, and the reserved-name guard for custom commands) now draw from a single source, so the same command list shows everywhere and can't drift again.
 
 ### Added
 - **`/clear` resets a conversation's context — and it now actually works on every model backend.** Send `/clear` (or the existing `/reset`) to start a fresh conversation: earlier turns are no longer fed to the model. Previously `/reset` only took effect on the Claude backend — on the Codex and OpenAI/local backends the assistant kept re-injecting the prior conversation, so a "reset" didn't really reset. Now all three backends honor it uniformly. Your history isn't deleted (memory search and the dashboard transcript stay intact) — like Claude Code's `/clear`, only the live context is cut, matching the behavior across every channel and model.

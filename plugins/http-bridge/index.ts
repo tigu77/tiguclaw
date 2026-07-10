@@ -29,6 +29,7 @@ import { getPaths } from "../../src/core/paths.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { collectInventory } from "../../src/core/plugins/inventory.js";
+import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { collectProviders } from "../../src/core/plugins/providers.js";
 import {
   verifyToken,
@@ -600,7 +601,9 @@ class HttpBridge implements Channel, Observer {
         ? "read"
         : pathname === "/inventory" && method === "GET"
           ? "read"
-          : pathname === "/providers" && method === "GET"
+          : pathname === "/commands" && method === "GET"
+            ? "read"
+            : pathname === "/providers" && method === "GET"
             ? "read"
             : pathname === "/chat-history" && method === "GET"
               ? "read"
@@ -672,6 +675,19 @@ class HttpBridge implements Channel, Observer {
       try {
         const inv = await collectInventory();
         writeJson(res, 200, inv);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /commands — JSON. 슬래시 명령 목록(빌트인 + 커스텀) 대시보드 노출. getAllCommands
+    // 가 내부에서 discoverCommands 실패를 흡수(빌트인 폴백)하므로 여기선 경계 표준 에러만.
+    if (pathname === "/commands" && method === "GET") {
+      try {
+        const cmds = await getAllCommands();
+        writeJson(res, 200, { commands: cmds });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });

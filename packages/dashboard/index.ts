@@ -219,6 +219,11 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/inventory");
       return;
     }
+    // 슬래시 명령 목록 — bridge GET /commands (read 토큰 server-side 주입). 대시보드 팝업.
+    if (pathname === "/api/commands" && method === "GET") {
+      await proxyJson(res, "/commands");
+      return;
+    }
     if (pathname === "/api/providers" && method === "GET") {
       await proxyJson(res, "/providers");
       return;

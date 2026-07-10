@@ -28,10 +28,21 @@ skills=`<dir>/SKILL.md` frontmatter name/description)이라 래핑은 *검증 + 
   ⚠️ 표시하고 **덮어쓰기 여부를 명시 확인**받는다(빌트인 클로버링 금지 — 스킵/개명 권장).
 - frontmatter `name`·`description` 누락 항목은 **드롭**(tiguclaw 파서가 버림) — 목록에 "드롭(사유)"로.
 
-## 3) 복사 (확인 후)
-- **에이전트**: `.claude/agents/<name>.md` → `<대상>/agents/<name>.md`. `Read`→`Write` 그대로.
+## 3) ★래핑 방식 — 전체 복사(기본) vs 포인터
+- **기본 = 전체 복사(self-contained)**: 원본 내용을 그대로 대상 파일에 **복사**한다(포인터·요약 아님).
+  자기완결이라 머신·이동·다른 인스턴스(맥·집·회사) sync 에도 안 깨진다. 홈/전역 래핑은 **반드시 복사**
+  (홈 스킬이 특정 프로젝트를 안정적으로 가리킬 수 없음).
+- **포인터(원본 참조)는 예외적으로만**: *프로젝트 스코프* 래핑이고(대상=`<project>/.tiguclaw/skills/`)
+  원본이 **같은 프로젝트** 안이며(`<project>/.claude/skills/...`) 사용자가 원본과 라이브 동기화를
+  명시로 원할 때만. 이때 참조는 **반드시 프로젝트-상대경로**(예: `.claude/skills/editor-ux/SKILL.md`)
+  — 스킬은 cwd=프로젝트로 실행되니 해석된다.
+- ★★**절대·머신종속 경로 절대 금지**(`E:/…`, `/Users/…`, `C:\…`). sync 되면 다른 머신서 깨진다.
+  확신 없으면 **복사**하라.
+
+## 3b) 복사 절차 (확인 후)
+- **에이전트**: `.claude/agents/<name>.md` → `<대상>/agents/<name>.md`. `Read`→`Write` 로 **내용 전체** 복사.
   포맷 동일. 미지정 frontmatter 키(color 등)는 tiguclaw 가 무시하므로 verbatim 안전.
-- **스킬**: `.claude/skills/<name>/` 디렉터리 전체 → `<대상>/skills/<name>/`. `SKILL.md` +
+- **스킬**: `.claude/skills/<name>/` 디렉터리 전체 → `<대상>/skills/<name>/`. `SKILL.md`(내용 전체) +
   보조 파일(스크립트·레퍼런스) 함께 복사(`Glob` 로 하위 파일 열거 후 각각 Read/Write).
 - **커맨드**: `.claude/commands/<name>.md` → `<대상>/commands/<name>.md`. tiguclaw 도 commands 라이브 발견.
 

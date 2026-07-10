@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.52] - 2026-07-10
+
+### Fixed
+- **The wrapper skills now copy the source content instead of pointing at it by an absolute path.** When importing a Claude Code/Codex skill, the assistant could create a thin wrapper that referenced the original file by a machine-specific absolute path (e.g. `E:/work/.../SKILL.md`), which breaks when the assistant's home is synced to another machine. The `claude-wrapper-sync` / `codex-wrapper-sync` skills now make a self-contained full copy the default, forbid absolute/machine-specific paths, and only allow a reference at all when it's a project-scoped wrap using a project-relative path.
+
 ## [0.3.51] - 2026-07-10
 
 ### Added
@@ -386,7 +391,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.51...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.52...HEAD
+[0.3.52]: https://github.com/tigu77/tiguclaw/compare/v0.3.51...v0.3.52
 [0.3.51]: https://github.com/tigu77/tiguclaw/compare/v0.3.50...v0.3.51
 [0.3.50]: https://github.com/tigu77/tiguclaw/compare/v0.3.49...v0.3.50
 [0.3.49]: https://github.com/tigu77/tiguclaw/compare/v0.3.48...v0.3.49

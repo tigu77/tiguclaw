@@ -411,6 +411,19 @@ const replyCommand = async (
   }
 };
 
+// 사용자 중단(/stop) — 진행 중 턴을 프로세스 안 죽이고 abort 할 때 turnAc.abort() 에 넣는 reason.
+// 핸들러가 이 reason 을 보면 에러가 아니라 사용자 취소로 인지해 조용히 종료(안내는 /stop 이 담당).
+class UserCancelledError extends Error {
+  constructor() {
+    super("user cancelled turn (/stop)");
+    this.name = "UserCancelledError";
+  }
+}
+// 진행 중 메인 채널 턴의 AbortController 레지스트리 (threadKey → turnAc). enqueueThreadTurn 이
+// thread 별 직렬화하므로 thread 당 최대 1개. /stop(아웃오브밴드)이 여기서 turnAc 를 찾아 abort =
+// 클로드코드식 인터럽트(옵션 c). 재시작 정직(메모리 레지스트리, 영속 0). 어댑터 분기 0(LLM-agnostic).
+const inflightTurns = new Map<string, AbortController>();
+
 // 인바운드 첨부 → 영속용 참조 메타(base64 아님). 실제 바이트는 이미 <attachmentsDir>/<rel> 파일로
 // 저장돼 있어, 대시보드가 rel 로 서빙 엔드포인트를 통해 렌더(새로고침·과거 이력 보존). rel 은
 // attachmentsDir 기준 상대경로 — 그 밖(절대·상위)이면 스킵(path traversal 방어 + 서빙 키 정합).
@@ -922,6 +935,7 @@ const handler: MessageHandler = async (msg) => {
   // 존재 이유(채널-동결 회피)가 사라졌고, 정상 긴 작업을 자르던 부작용도 제거된다.
   // turnAc 는 idle·외부 cancel 로만 abort, wall-clock 으로는 abort 안 한다.
   const turnAc = new AbortController();
+  inflightTurns.set(msg.threadKey, turnAc); // /stop 이 찾아 abort 할 수 있게 등록.
   const routeP = route(
     effectiveText === msg.text ? msg : { ...msg, text: effectiveText },
     { abortSignal: turnAc.signal },
@@ -969,6 +983,14 @@ const handler: MessageHandler = async (msg) => {
       },
     });
   } catch (e) {
+    // 사용자 /stop 으로 중단된 턴 — 에러 아님. /stop 이 이미 안내·out 발행했으므로 조용히 종료
+    // (에러 메시지 이중 발신 방지). turnAc.signal.reason 으로 판별(어댑터가 뭘 throw 하든 무관).
+    if (
+      turnAc.signal.aborted &&
+      turnAc.signal.reason instanceof UserCancelledError
+    ) {
+      return;
+    }
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
     // (네트워크·모델 거부·idle abort 등)만 받는다 — 폴백 없이 끝나므로 사용자 노출 필수.
     // 콘솔엔 full 진단 — 스택·cause(undici "fetch failed" 등) 통째로 보존(운영자 로컬 경계).
@@ -981,6 +1003,11 @@ const handler: MessageHandler = async (msg) => {
     // 에러 응답도 replyCommand 로 — 실패 턴에서도 대시보드 '작업 중'이 꺼지고(out 발행) 에러가
     // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
     await replyCommand(msg, formatRegionAError(detail));
+  } finally {
+    // 등록 해제 — 단, 그 사이 새 턴이 덮어썼으면(직렬 큐라 이론상 없지만 방어) 건드리지 않음.
+    if (inflightTurns.get(msg.threadKey) === turnAc) {
+      inflightTurns.delete(msg.threadKey);
+    }
   }
 };
 
@@ -1107,6 +1134,24 @@ const serializedHandler: MessageHandler = (msg) => {
       .finally(() => {
         restartDaemon(`telegram:${msg.channel}`);
       });
+    return Promise.resolve();
+  }
+  // 아웃오브밴드 /stop — 진행 중인 이 thread 의 턴을 프로세스 안 죽이고 abort(클로드코드식 인터럽트,
+  // 옵션 c). 직렬 큐를 타면 앞 턴이 끝나야 실행돼 무의미하므로 /restart 동형 out-of-band. 중단 후
+  // 이어서 새 메시지를 보내면 그게 새 턴으로 처리(멈추고 방향 틀기). 진행 턴 없으면 안내만.
+  if (msg.text.trim() === "/stop") {
+    void (async (): Promise<void> => {
+      const ac = inflightTurns.get(msg.threadKey);
+      if (ac !== undefined && !ac.signal.aborted) {
+        ac.abort(new UserCancelledError());
+        await replyCommand(
+          msg,
+          "⏹️ 진행 중이던 작업을 중단했습니다. 이어서 새로 말씀하시면 그걸로 진행할게요.",
+        ).catch(() => {});
+      } else {
+        await replyCommand(msg, "지금 진행 중인 작업이 없어요.").catch(() => {});
+      }
+    })();
     return Promise.resolve();
   }
   // 아웃오브밴드 /update — /restart 동형으로 직렬 큐를 건너뛴다(자가 업데이트가 재시작을

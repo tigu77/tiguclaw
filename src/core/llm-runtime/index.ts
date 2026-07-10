@@ -480,6 +480,18 @@ const runPool = async (
       }
       return output;
     } catch (e) {
+      // 사용자 /stop 취소 = 실패 아님 → turn_error 미발행(self-growth 실패 학습 오염 방지) +
+      // 폴백 단락(같은 abortSignal 이라 다음 모델도 즉시 죽음 = 무의미). abort reason 의 name 으로
+      // 판별 — index.ts UserCancelledError 를 레이어 결합(import) 없이 duck-typing. 핸들러가
+      // turnAc.signal.reason 으로 조용히 종료(사용자엔 /stop 이 이미 안내).
+      const cancelReason = input.abortSignal?.reason;
+      if (
+        input.abortSignal?.aborted === true &&
+        cancelReason instanceof Error &&
+        cancelReason.name === "UserCancelledError"
+      ) {
+        throw e;
+      }
       // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
       // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
       // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.71] - 2026-07-10
+
+### Added
+- **You can now interrupt a turn in progress with `/stop`.** If the assistant is working on something and you want to change direction, send `/stop` — it cancels the in-progress turn for that conversation (without restarting the daemon), and your next message is handled as a fresh turn. Works across all channels and model backends. A cancel is treated as an intentional action, not a failure, so it doesn't pollute error tracking or trigger fallbacks. (This is the "interrupt and redirect" form of steering; seamless mid-turn steering that keeps in-progress work is a separate, larger change.)
+
 ## [0.3.70] - 2026-07-10
 
 ### Added
@@ -484,7 +489,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.70...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.71...HEAD
+[0.3.71]: https://github.com/tigu77/tiguclaw/compare/v0.3.70...v0.3.71
 [0.3.70]: https://github.com/tigu77/tiguclaw/compare/v0.3.69...v0.3.70
 [0.3.69]: https://github.com/tigu77/tiguclaw/compare/v0.3.68...v0.3.69
 [0.3.68]: https://github.com/tigu77/tiguclaw/compare/v0.3.67...v0.3.68

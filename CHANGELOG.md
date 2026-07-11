@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.82] - 2026-07-12
+
+### Changed
+- **API endpoint calls no longer clutter the dashboard chat.** When an external app calls one of tiguclaw's custom HTTP endpoints, that machine-to-machine exchange used to stream into the chat view alongside your real conversation. Those calls now go to a dedicated "🔌 Endpoint calls" section in the background drawer — showing each call's endpoint, time, success/failure, and a response preview — while the chat stays focused on actual conversation. Full request/response records remain in the database as before.
+
+## [0.3.81] - 2026-07-12
+
+### Changed
+- **When you work inside a registered project that has its own harness (dedicated skills and agents), tiguclaw now routes substantial work through that harness instead of quietly doing everything itself in one pass.** Design, new features, MVP builds, and multi-file refactors go to the project's purpose-built team; only genuinely small, localized changes are done inline. It decides "substantial vs simple" by whether the task involves structure or design decisions — not by how many lines it is — so asking it to "design an extensible X and build the MVP" no longer bypasses the very team you set up for that project.
+
 ## [0.3.80] - 2026-07-11
 
 ### Added
@@ -540,7 +550,9 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.80...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.82...HEAD
+[0.3.82]: https://github.com/tigu77/tiguclaw/compare/v0.3.81...v0.3.82
+[0.3.81]: https://github.com/tigu77/tiguclaw/compare/v0.3.80...v0.3.81
 [0.3.80]: https://github.com/tigu77/tiguclaw/compare/v0.3.79...v0.3.80
 [0.3.79]: https://github.com/tigu77/tiguclaw/compare/v0.3.78...v0.3.79
 [0.3.78]: https://github.com/tigu77/tiguclaw/compare/v0.3.77...v0.3.78

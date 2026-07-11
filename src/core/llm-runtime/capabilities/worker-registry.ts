@@ -85,17 +85,27 @@ const runner = (job: WorkerJobRecord): void => {
     // 본체 settle 즉시 해제 — 늦은 워커-timeout abort 의 무의미 발화·자원 누수 0.
     let outcome: { result: string } | { error: string };
     try {
-      const { runRegionA } = await import("../index.js");
-      const runRegionAP = runRegionA({
-        text: job.task,
-        threadKey: `worker:${job.jobId}`,
-        channel: job.channel,
-        // run_in_background(path=X) 로 스코프됐으면 그 폴더 cwd, 아니면 undefined=home 폴백.
-        // 워커 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
-        cwd: job.cwd,
-        workerDepth: 1,
-        abortSignal: abort.signal,
-      });
+      const { runRegionA, resolveTier } = await import("../index.js");
+      // 잡에 modelTier 가 있으면 그 등급 풀을 specs 로 넘긴다(서브에이전트 동형) —
+      // 미지정 시 undefined → runRegionA 가 기본 모델 풀 사용. resolveTier 가 빈 등급이면
+      // [] 반환하므로 그 경우도 specs 미지정으로 처리(기본 모델).
+      const workerSpecs =
+        job.modelTier !== undefined && job.modelTier !== ""
+          ? resolveTier(job.modelTier)
+          : [];
+      const runRegionAP = runRegionA(
+        {
+          text: job.task,
+          threadKey: `worker:${job.jobId}`,
+          channel: job.channel,
+          // run_in_background(path=X) 로 스코프됐으면 그 폴더 cwd, 아니면 undefined=home 폴백.
+          // 워커 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
+          cwd: job.cwd,
+          workerDepth: 1,
+          abortSignal: abort.signal,
+        },
+        workerSpecs.length > 0 ? { specs: workerSpecs } : undefined,
+      );
 
       // 하드 백스톱 (2026-06-20) — index.ts 채널 백스톱(Promise.race) 동형. abort.signal 은
       // LLM 스트림은 끊지만 hung MCP callTool(signal 미수신 = MCP 한계)은 못 끊어 워커가
@@ -177,7 +187,7 @@ export const createWorkerMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const runInBackground = tool(
     "run_in_background",
-    "오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
+    "오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 워커 모델 등급을 지정하세요(미지정 시 기본 모델). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
     {
       task: z
         .string()
@@ -191,6 +201,12 @@ export const createWorkerMcpServer = (
         .string()
         .optional()
         .describe("선택 — 워커를 실행할 폴더(프로젝트) 경로. 지정 시 그 폴더 기준."),
+      tier: z
+        .string()
+        .optional()
+        .describe(
+          "선택 — 워커 모델 등급(high/mid/low/nano 또는 provider:model). 품질 중요(코드리뷰·설계)=high, 단순·대량=low. 미지정 시 기본 모델. 서브에이전트 model 등급과 동일 해석(resolveTier).",
+        ),
     },
     async (args) => {
       try {
@@ -211,6 +227,9 @@ export const createWorkerMcpServer = (
           // channelUserId — RegionASdkInput 에 없음. 재주입 reply 는 threadKey 로
           // 채널 복원하므로(reacquireReply) threadKey 를 사용자 식별로 운반.
           channelUserId: parentInput.threadKey,
+          // 워커 모델 등급 — 지정 시 runner 가 resolveTier→specs 로 그 티어 풀 사용
+          // (미지정 시 기본 모델). 서브에이전트 model 등급과 동일 경로.
+          modelTier: args.tier,
           // 워커 완료/실패 통지 dest — parentInput.notifyDest 가 있으면(예 스케줄 발화)
           // 그 generic 좌표를 잡에 박아 워커가 그 dest 로 통지하게 한다. 텔레그램 등 채널
           // 직접 발화는 undefined → onWorkerComplete 가 channel/threadKey 폴백(회귀 0).

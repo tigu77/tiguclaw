@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.75] - 2026-07-11
+
+### Added
+- **Background workers can now run on a higher-quality model when the task needs it.** When the assistant kicks off a background job, it can pick the model tier for that job — so a code review, a design task, or hard reasoning runs on a stronger model, while bulk or simple jobs stay on a cheaper, faster one. Previously every background worker ran on the default model regardless of the task. There's also a dedicated high-tier code-review helper for when review quality really matters. Simple and cheap tasks are unaffected; nothing runs on an expensive model unless the work calls for it.
+
+### Changed
+- **Smarter about when to spin up a multi-agent team vs. just doing the work.** Coordinating multiple agents costs several times the tokens of a single pass, so the guidance now asks "is a team actually worth it?" up front — reserving fan-out for genuinely independent, sizable subtasks and keeping small or tightly-coupled work on a single agent. Less wasted effort, same results.
+
 ## [0.3.74] - 2026-07-11
 
 ### Added

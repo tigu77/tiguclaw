@@ -933,6 +933,12 @@ export interface StartWorkerJobInput {
    * 이 값을 childInput.cwd 로 써 워커의 file-ops 상대경로가 그 폴더 기준(3b). 미지정=home 폴백.
    */
   cwd?: string;
+  /**
+   * 워커 모델 등급(high/mid/low/nano 또는 provider:model). run_in_background(tier=X) 가
+   * 채운다 — registerJob 이 레코드로 흘려 runner 가 resolveTier→specs 로 그 티어 풀 사용
+   * (미지정 시 기본 모델). 서브에이전트 model 등급과 동일 경로. 대시보드 관측에도 실림.
+   */
+  modelTier?: string;
 }
 
 /**

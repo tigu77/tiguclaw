@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.77] - 2026-07-11
+
+### Added
+- **The dashboard chat now scrolls sensibly.** When you send a message it jumps to the bottom, and while you're viewing the latest messages it follows new ones as they arrive — so you always see the newest reply. If you've scrolled up to read earlier history, it leaves you there instead of yanking you down; scroll back to the bottom and it resumes following.
+
 ## [0.3.76] - 2026-07-11
 
 ### Added

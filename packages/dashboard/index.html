@@ -2750,6 +2750,14 @@
         });
       };
 
+      // stick-to-bottom(따라가기) — 사용자가 최신(하단)을 보고 있으면(near-bottom) 새 메시지를
+      // 자동으로 따라간다. 위로 스크롤(과거 열람)해 벗어나면 stickBottom=false → 끌어내리지 않는다.
+      // (전송 시엔 submit 핸들러가 강제 true+스크롤 — 아래.) capStream 의 near-bottom scrollTop=0
+      // 과 목표(scrollTop=0)가 같아 중복돼도 무해하나, 이쪽은 사용자 스크롤 의도를 연속 추적한다.
+      let stickBottom = true;
+      stream.addEventListener("scroll", () => { stickBottom = isNearBottom(); });
+      const followIfSticky = () => { if (stickBottom) scrollChatToNewest(); };
+
       // ── 날짜 구분선(date-divider) ────────────────────────────────────────
       // 최신=맨아래(column-reverse)라 시각 위→아래 = 과거→최신. 날짜가 바뀌는 첫(=그 날짜의
       // 가장 오래된) 메시지 위에
@@ -2801,14 +2809,17 @@
       // 무시 → 무한루프 0). 단일 훅이라 삽입 경로마다 호출 박을 필요 없음.
       const dividerObserver = new MutationObserver((muts) => {
         if (refreshingDividers) return;
-        let relevant = false;
+        let relevant = false, added = false;
         for (const m of muts) {
           for (const n of m.addedNodes)
-            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) relevant = true;
+            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) { relevant = true; added = true; }
           for (const n of m.removedNodes)
             if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) relevant = true;
         }
         if (relevant) scheduleDividerRefresh();
+        // 새 메시지(실 노드) 추가 시, 하단을 보고 있었으면 따라간다. 과거 이력 로드(위로 스크롤
+        // 중 prepend)는 stickBottom=false 라 followIfSticky 가 no-op → 보던 위치 보존.
+        if (added) followIfSticky();
       });
       dividerObserver.observe(stream, { childList: true });
 
@@ -4199,6 +4210,10 @@
         input.style.height = "auto"; // 전송 후 한 줄 높이로 리셋.
         slashClose(); // 전송 시 슬래시 팝업 닫음(value 비움은 input 이벤트를 안 쏘므로 명시적으로).
         input.focus();
+        // 전송 = 최신을 보겠다는 의도 → 현재 스크롤 위치와 무관하게 하단으로 고정하고 이후
+        // 응답도 따라가게 한다(stickBottom 재활성). 요구: "메시지 보내면 자동으로 끝까지 스크롤".
+        stickBottom = true;
+        scrollChatToNewest();
         // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 워커
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
         await sendChatMessage(text, atts);

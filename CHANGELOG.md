@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.78] - 2026-07-11
+
+### Changed
+- **The dashboard chat stays fast and smooth no matter how long the conversation gets.** The message list is now virtualized — only the messages near what you're viewing are kept rendered, so typing and scrolling stay responsive even in very long, tool-heavy conversations (previously they got progressively laggy as history piled up). Scrolling loads older messages seamlessly, and a "jump to latest" button appears when you've scrolled up. Tool-step cards restored from history now show their model backend (matching live), for consistency.
+
 ## [0.3.77] - 2026-07-11
 
 ### Added

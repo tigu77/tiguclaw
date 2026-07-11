@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.76] - 2026-07-11
+
+### Added
+- **The dashboard now shows which model a background job is running on, and lets you expand a job's tool steps to see the full detail.** Background workers now display a model-tier badge (e.g. a high-tier code review shows it), matching what subagents already showed. And a background job's tool steps — which previously showed only a one-line summary — can now be clicked to reveal the same rich diff and output view as the main chat, on demand. The job timeline stays compact by default (no chat-noise), and expands only when you want the detail.
+
 ## [0.3.75] - 2026-07-11
 
 ### Added

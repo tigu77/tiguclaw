@@ -402,12 +402,12 @@
       .act-diff-caret { font-size:8px; transition:transform .12s ease; }
       /* 펼침 상태 = 스텝(라이브 act-step·이력 hist-tool) 단위 sticky 토글. 클릭으로만 열림
          (hover 무관). 접힘=한 줄(헤더만), 펼침=전체 diff/출력. */
-      .act-step.expanded .act-diff-caret, .hist-tool.expanded .act-diff-caret, .hist-step.expanded .act-diff-caret { transform:rotate(90deg); }
+      .act-step.expanded .act-diff-caret, .hist-tool.expanded .act-diff-caret, .hist-step.expanded .act-diff-caret, .bg-step.expanded .act-diff-caret { transform:rotate(90deg); }
       .act-diff-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
       .act-diff-stat .dadd { color:#3fb950; font-weight:700; }
       .act-diff-stat .ddel { color:#f85149; font-weight:700; }
       .act-diff-body { display:none; }
-      .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body, .hist-step.expanded .act-diff-body { display:block; }
+      .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body, .hist-step.expanded .act-diff-body, .bg-step.expanded .act-diff-body { display:block; }
       /* 이력 turn-card 묶음(새로고침 후 라이브처럼 그룹핑) — 접이식 "N단계" 카드. */
       .hist-turn { padding:0; }
       .hist-turn-head { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; padding:8px 10px; font-size:11px; }
@@ -545,7 +545,10 @@
       .bg-job-task { font-size:11px; color:var(--text-mute); white-space:pre-wrap; word-break:break-word; line-height:1.45; }
       .bg-job-result { font-size:11px; color:var(--text); white-space:pre-wrap; word-break:break-word; line-height:1.5; max-height:240px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
       .bg-job-steps { display:flex; flex-direction:column; gap:3px; }
-      .bg-step { display:flex; align-items:baseline; gap:6px; font-size:11px; color:var(--text-mute); line-height:1.4; }
+      .bg-step { display:flex; align-items:baseline; gap:6px; font-size:11px; color:var(--text-mute); line-height:1.4; flex-wrap:wrap; }
+      .bg-step.bg-step-rich { cursor:pointer; }
+      .bg-step.bg-step-rich:hover { background:rgba(255,255,255,.04); border-radius:6px; }
+      .bg-step .act-diff, .bg-step .act-output { flex-basis:100%; width:100%; }
       .bg-step-icon { flex:none; font-size:10px; }
       .bg-step-label { font-weight:700; color:var(--text); flex:none; }
       .bg-step-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; word-break:break-all; }
@@ -1182,7 +1185,7 @@
         const kind = document.createElement("span"); kind.className = "agent-card-kind";
         kind.textContent = AGENT_KIND_BADGE[e.kind === "agent" ? "agent" : "worker"];
         top.appendChild(kind);
-        if (e.kind === "agent" && e.modelTier) {
+        if (e.modelTier) {
           const tier = String(e.modelTier).trim();
           if (tier !== "" && tier.toLowerCase() !== "default") {
             const tierEl = document.createElement("span");
@@ -2387,7 +2390,11 @@
           const jobId = tk.slice(tk.indexOf(":") + 1);
           const card = jobCards.get(jobId);
           if (card && card.stepsEl) {
-            applyDurationBadge(card.stepsEl.querySelector('.bg-step[data-seq="' + ap.seq + '"]'), ap.durationMs);
+            const stepEl = card.stepsEl.querySelector('.bg-step[data-seq="' + ap.seq + '"]');
+            applyDurationBadge(stepEl, ap.durationMs);
+            // 워커 output(Bash/Read/Grep/Glob 등)은 자동 append 하지 않고(채팅 누수/컴팩트 유지)
+            // 스텝에 보관 + 펼침 affordance 만 배선 — on-demand 로만 buildOutputBlock 렌더.
+            if (stepEl && ap.output) { stepEl._output = ap.output; ensureStepExpandable(stepEl); }
           }
           return;
         }
@@ -2556,9 +2563,9 @@
           const want = "🤖 " + opts.agentName;
           if (entry.labelEl.textContent !== want) entry.labelEl.textContent = want;
         }
-        // 모델 티어(멱등) — kind==="agent" 이고 modelTier 있을 때만. "default"/빈값은 표시 생략.
+        // 모델 티어(멱등) — 워커·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.
         // lifecycle 이 실어 오면(먼저/나중 무관) entry.modelTier 저장 + 드로어 칩 갱신. 에이전트 뷰는 renderAgentsView 가 읽음.
-        if (entry.kind === "agent" && opts && opts.modelTier != null) {
+        if (opts && opts.modelTier != null && String(opts.modelTier).trim() !== "" && String(opts.modelTier).trim().toLowerCase() !== "default") {
           const tier = String(opts.modelTier).trim();
           entry.modelTier = tier;
           const show = tier !== "" && tier.toLowerCase() !== "default";
@@ -2614,6 +2621,33 @@
       // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(워커·서브 동일 격리). 서브 규약(ADR
       // 2026-07-03): prefix 만 worker:→agent: 로 다르고 payload 구조 동형. agent: 로 온 활동은
       // 카드를 서브로 마킹(lifecycle 보다 활동이 먼저 도착해도 배지 표시).
+      // 잡 카드 스텝 on-demand 펼침 — 기본은 컴팩트 한 줄(채팅 누수 차단 유지), diff/output 이
+      // 있는 스텝만 ▸ affordance + 클릭 토글. 클릭 시 메인 채팅과 동일한 리치 블록(buildDiffBlock·
+      // buildOutputBlock, 재사용)을 스텝 아래 append, 다시 클릭하면 제거. diff 는 스텝 시작 이벤트,
+      // output 은 phase:end(annotateToolDuration)로 뒤늦게 도착하므로 데이터는 엘리먼트에 보관·지연 빌드.
+      const toggleWorkerStepRich = (stepEl) => {
+        const existing = stepEl.querySelectorAll(":scope > .act-diff, :scope > .act-output");
+        if (existing.length) { // 이미 펼침 → 접기(리치 블록 제거).
+          existing.forEach((n) => n.remove());
+          stepEl.classList.remove("expanded");
+          return;
+        }
+        // 접힘 → 펼침. 현재 보관된 최신 데이터로 리치 블록 빌드(output 이 나중에 온 경우도 반영).
+        if (stepEl._diff && Array.isArray(stepEl._diff.lines)) stepEl.appendChild(buildDiffBlock(stepEl._diff));
+        if (stepEl._output) stepEl.appendChild(buildOutputBlock(stepEl._output));
+        stepEl.classList.add("expanded");
+      };
+      const ensureStepExpandable = (stepEl) => {
+        if (!stepEl) return;
+        const hasRich = (stepEl._diff && Array.isArray(stepEl._diff.lines)) || stepEl._output;
+        if (!hasRich || stepEl._expandable) return; // 리치 데이터 없거나 이미 배선됨 → no-op(멱등).
+        stepEl._expandable = true;
+        stepEl.classList.add("bg-step-rich");
+        const caret = document.createElement("span");
+        caret.className = "act-diff-caret bg-step-caret"; caret.textContent = "▸";
+        stepEl.insertBefore(caret, stepEl.firstChild); // 아이콘 앞 작은 ▸ affordance.
+        stepEl.addEventListener("click", (e) => { e.stopPropagation(); toggleWorkerStepRich(stepEl); });
+      };
       const handleWorkerActivity = (p, ts) => {
         const tk = typeof p.threadKey === "string" ? p.threadKey : "";
         let jobId = null;
@@ -2645,6 +2679,9 @@
           const d = document.createElement("span"); d.className = "bg-step-detail";
           d.textContent = p.detail; line.appendChild(d);
         }
+        // 리치 diff(Edit/Write)가 스텝 시작 payload 에 실려 오면 보관 + 펼침 affordance 배선.
+        // 자동 펼치지 않음(기본 접힘) — 클릭 시에만 buildDiffBlock 으로 렌더.
+        if (p.diff && Array.isArray(p.diff.lines)) { line._diff = p.diff; ensureStepExpandable(line); }
         entry.stepsEl.appendChild(line);
         entry.stepCount += 1;
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.

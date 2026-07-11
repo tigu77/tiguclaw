@@ -507,9 +507,11 @@ const handler: MessageHandler = async (msg) => {
       const icon = j.kind === "agent" ? "🤖" : "📦";
       const kindLabel = j.kind === "agent" ? "서브에이전트" : "워커";
       const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
-      // 서브에이전트면 모델 티어도 표시(low/mid/high 등). 워커는 티어 없음(기본 풀).
+      // 모델 티어 표시(low/mid/high 등) — 워커·서브 공통. modelTier 있고 default/빈값 아닐 때만.
       const tier =
-        j.kind === "agent" && j.modelTier !== undefined && j.modelTier !== ""
+        j.modelTier !== undefined &&
+        j.modelTier !== "" &&
+        String(j.modelTier).toLowerCase() !== "default"
           ? ` · ${j.modelTier}`
           : "";
       return `${icon} ${kindLabel} \`${name}\`${tier} — ${fmtElapsed(j.startedAt)}`;

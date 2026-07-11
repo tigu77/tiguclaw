@@ -106,44 +106,12 @@ description: "새 도메인에 맞는 서브에이전트 팀과 오케스트레�
 **QA 에이전트 포함 시**: QA 의 핵심은 "존재 확인"이 아니라 **경계면 교차 비교**. 전체
 완성 후 1회가 아니라 각 모듈 완성 직후 점진 실행. 상세: `references/qa-agent-guide.md`.
 
-### Phase 4: 스킬 생성
+### Phase 4: 스킬 생성 — skill-creator 에 위임
 
-각 서브에이전트가 사용할 (또는 비서가 직접 쓰는) 스킬을 `<TIGUCLAW_HOME>/skills/<name>/
-SKILL.md` 에 생성한다.
+팀이 어떤 스킬을 필요로 하는지(각 서브에이전트용 or 비서 직접용)는 여기서 정하되, **개별 스킬을 실제로 작성하는 방법은 `skill-creator` 스킬을 따른다** — 개별 스킬 작성의 단일 정식 경로다. SKILL.md 규격·description 작성 원칙(pushy 트리거)·progressive disclosure·위치 규칙의 진실 소스는 `skill-creator/references/skill-format.md`. 여기에 중복 서술하지 않는다(둘로 갈라지면 drift).
 
-#### 4-0. 기존 스킬 중복 검토
-신규 생성 전 「## 사용 가능 스킬」 인덱스와 대조해 중복을 확인한다.
-
-#### 4-1. 스킬 구조
-```
-skill-name/
-├── SKILL.md (필수: YAML frontmatter[name, description] + 본문)
-└── (선택) scripts/ · references/ · assets/
-```
-
-#### 4-2. Description — 적극적 트리거 유도
-description 은 스킬의 **유일한 트리거 메커니즘**이다(자동 발견 `discoverSkills` 가
-description 을 인덱스에 올림). 보수적으로 판단되니 **적극적("pushy")**으로 쓴다.
-- 나쁜 예: `"PDF 문서를 처리하는 스킬"`
-- 좋은 예: `"PDF 읽기·추출·병합·분할·OCR 등 모든 PDF 작업. .pdf 를 언급하거나 PDF 산출물을 요청하면 반드시 이 스킬을 사용."`
-핵심: 하는 일 + 구체적 트리거 상황을 모두 기술하고, 유사하지만 트리거하면 안 되는 경우와 구분.
-
-#### 4-3. 본문 작성 원칙
-| 원칙 | 설명 |
-|------|------|
-| **Why 를 설명** | 강압적 "ALWAYS/NEVER" 대신 이유를 전달 — 이유를 알면 엣지 케이스에서도 옳게 판단 |
-| **Lean 유지** | SKILL.md 본문은 500줄 이내 목표, 무게 안 버는 내용은 references/ 로 |
-| **일반화** | 좁은 규칙보다 원리를 — 오버피팅 금지 |
-| **반복 코드는 번들** | 공통 스크립트는 `scripts/` 에 미리 번들 |
-
-#### 4-4. Progressive Disclosure
-| 단계 | 로딩 시점 | 크기 |
-|------|----------|------|
-| Metadata (name+description) | 항상 | ~100단어 |
-| SKILL.md 본문 | 트리거 시 | <500줄 |
-| references/ | 필요할 때만 | 무제한 |
-SKILL.md 가 500줄에 근접하면 세부를 references/ 로 분리하고 본문에 "언제 읽으라" 포인터를
-남긴다. 300줄 이상 reference 에는 상단에 목차(ToC).
+- **무엇을 만들지(harness 몫)**: Phase 2 아키텍처에서 도출된, 이 팀에 필요한 스킬 목록. 먼저 「## 사용 가능 스킬」 인덱스와 대조해 중복을 피한다.
+- **어떻게 만들지(skill-creator 몫)**: 각 스킬을 skill-creator 의 **기본 경로**(의도 → 초안 → 빠른 정성 확인 → human-gate)로 작성. 팀 스킬 여러 개를 각각 무겁게 벤치하지 마라 — skill-creator 의 정량 eval 은 그 스킬이 중요/논쟁적일 때만 opt-in.
 
 ### Phase 5: 오케스트레이션 스킬 생성
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.74] - 2026-07-11
+
+### Added
+- **A `skill-creator` skill — the assistant can now author and improve its own skills properly.** Ask it to make or refine a skill and it follows a real process: draft with the right structure and a well-targeted trigger description, do a quick sanity check, and ship on your approval. For skills where it matters, it can optionally *prove* an improvement with a small controlled eval — run test prompts with and without the skill, score them, and report a before/after table — so "this is better" is backed by data instead of a guess. The eval is opt-in, not mandatory: most skills just need the quick path. Unlike the equivalent tooling elsewhere, the eval is model-agnostic, so the same skill can be benchmarked across different backends. Skills are never changed automatically — a person always approves.
+
 ## [0.3.73] - 2026-07-11
 
 ### Added

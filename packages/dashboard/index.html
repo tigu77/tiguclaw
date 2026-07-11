@@ -657,7 +657,20 @@
       .slash-name { color:var(--accent); font-weight:750; font-size:12px; white-space:nowrap; }
       .slash-desc { color:var(--text-mute); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       #chat-form { display:flex; gap:8px; align-items:flex-end; }
-      #chat-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 11px; font-size:12px; font-family:inherit; line-height:1.45; resize:none; max-height:148px; overflow-y:auto; }
+      /* CSS-only 자동 높이 — 매 키입력마다 height=auto + scrollHeight 읽기(강제 동기 리플로우,
+         mount된 stream 크기에 비례: 실측 최대 ~15ms)를 없앤다. 보이지 않는 복제(::after)가 같은
+         그리드 셀에서 입력 텍스트만큼 늘어나 높이를 정하고 textarea 는 그 셀을 채운다 → 레이아웃
+         읽기 0 = 타이핑 JS 비용 O(1)(대화 길이 무관). 두 요소의 박스 메트릭(폰트·패딩·테두리폭)은
+         반드시 동일해야 높이가 일치한다. border-color 는 공유 규칙에서 건드리지 않는다(포커스 파란
+         테두리 규칙과 충돌 방지) — textarea 는 기본/포커스 규칙, ::after 는 transparent. */
+      .grow-wrap { flex:1; min-width:0; display:grid; }
+      .grow-wrap::after { content:attr(data-replicated-value) " "; visibility:hidden; overflow:hidden; border-color:transparent; }
+      .grow-wrap > #chat-input, .grow-wrap::after {
+        grid-area:1 / 1 / 2 / 2; box-sizing:border-box; width:100%;
+        padding:10px 11px; border-width:1px; border-style:solid; border-radius:12px;
+        font-size:12px; font-family:inherit; line-height:1.45; max-height:148px;
+        white-space:pre-wrap; overflow-wrap:anywhere; }
+      #chat-input { background:var(--card); color:var(--text); border-color:var(--border); resize:none; overflow-y:auto; }
       #chat-attach-btn { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:0 11px; font-size:15px; cursor:pointer; flex:none; align-self:stretch; }
       #chat-attach-btn:hover { border-color:rgba(125,211,252,.55); }
       /* 첨부 썸네일(#2) — 클로드코드식 작은 정사각 미리보기 + 모서리 ✕. 비어 있으면 숨김. */
@@ -692,9 +705,11 @@
       .ctx-x:hover { opacity:1; color:var(--warn); }
       .chat-atts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
       .chat-atts .att-chip { cursor:default; }
-      .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); overflow:hidden; flex:none; }
-      .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; overflow:hidden; padding:3px; }
-      .att-thumb { width:100%; height:100%; object-fit:cover; display:block; }
+      /* overflow 는 칩에 걸지 않는다 — 칩 밖(top/right:-7px)에 뜨는 제거 ✕ 버튼이 잘려 안 보이던 버그.
+         둥근 모서리 클리핑은 필요한 자식(썸네일·파일명)에만 적용해 ✕ 는 칩 위로 온전히 뜨게 한다. */
+      .att-chip { position:relative; width:54px; height:54px; border-radius:10px; border:1px solid var(--border); background:var(--card); flex:none; }
+      .att-chip.att-file { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:3px; }
+      .att-thumb { width:100%; height:100%; object-fit:cover; display:block; border-radius:9px; }
       .att-fileicon { font-size:11px; font-weight:850; color:var(--accent-2); letter-spacing:.3px; }
       .att-fname { font-size:8px; line-height:1.1; max-width:48px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-mute); }
       .att-x { position:absolute; top:-7px; right:-7px; width:17px; height:17px; border-radius:50%; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); color:var(--text); font-size:9px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; z-index:2; }
@@ -741,7 +756,8 @@
         .summary-card { padding:11px; } .summary-value { font-size:19px; }
         .detail-head { padding:15px; } .detail-name { font-size:19px; }
         .pi-summary { white-space:normal; }
-        #chat-input { font-size:16px; }
+        /* 복제(::after)도 같이 16px — 안 그러면 replica(12px)와 textarea(16px) 높이 불일치. */
+        .grow-wrap > #chat-input, .grow-wrap::after { font-size:16px; }
         /* 모바일 채팅 — 헤더 작게(부제 숨김) + 본문만 스크롤. #right 를 뷰포트 높이(헤더56+
            탭바56=112 제외)로 묶고 #stream 만 내부 스크롤 → 스트림바·입력은 위/아래 고정,
            메시지만 흐른다. (page-scroll 모델에선 sticky 가 불안정해 내부 스크롤로 확정.) */
@@ -750,6 +766,14 @@
         .chat-title { font-size:14px; }
         body[data-tab="chat"] #right { height:calc(100svh - 92px); min-height:0; overflow:hidden; }
         body[data-tab="chat"] #stream { overflow-y:auto; min-height:0; }
+        /* 모바일 진행표시("작업 중") — 입력창 아래에 두면 전송 후 input.focus()로 뜬 키보드가
+           화면 최하단(컴포저 바닥)을 덮어 가려진다(iOS는 포커스된 입력창만 키보드 위로 노출).
+           그래서 모바일에서만 진행표시를 입력창 위로 올려(order) 키보드가 떠도 늘 보이게 한다.
+           비활성(idle)엔 접어(min-height:0) 입력창 위 상시 여백 방지 — .working 일 때만 자리. */
+        #chat { display:flex; flex-direction:column; }
+        #chat-status { order:1; min-height:0; margin:0; }
+        #chat-form { order:2; }
+        #chat-status.working { margin:0 0 6px; }
       }
       @media (max-width: 430px) { .summary-grid { grid-template-columns:1fr; } header .brand { font-size:15px; } }
     </style>
@@ -828,7 +852,7 @@
           <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
             <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>
-            <textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea>
+            <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea></div>
             <button id="chat-send" type="submit">전송</button>
             <input type="file" id="chat-file" multiple hidden />
           </form>
@@ -4419,28 +4443,23 @@
       input.addEventListener("input", slashSync); // 타이핑/백스페이스에 팝업 갱신.
       input.addEventListener("blur", slashClose); // 포커스 이탈 시 닫음(항목 mousedown 은 preventDefault 로 blur 안 남).
 
-      // textarea 자동 높이 — 내용에 맞춰 grow(최대 CSS max-height 까지 스크롤). 전송 후 리셋.
-      // 매 키 입력마다 height="auto"→scrollHeight 읽기는 강제 동기 리플로우 → SSE 로 DOM 이
-      // 계속 바뀌는 대시보드에선 키 입력마다 전체 레이아웃 플러시 = 입력 랙. rAF 로 프레임당
-      // 1회만 측정(빠른 연타 coalesce + 키 입력 echo 경로에서 리플로우 분리).
-      let growRaf = 0;
+      // textarea 자동 높이 — CSS-only(.grow-wrap ::after 복제). 매 키입력마다 height="auto"→
+      // scrollHeight 읽기(강제 동기 리플로우, mount된 stream 전체 레이아웃 플러시 = 타이핑 랙)를
+      // 없앤다. 핸들러는 복제 텍스트만 갱신 → 레이아웃 읽기 0, 그리드가 텍스트만큼 자란다.
+      const growWrap = input.parentElement; // .grow-wrap
       // ── 성능 진단(?perf=1 일 때만; 평소엔 분기 1회로 사실상 0 비용) ──────────
       // 목적: 타이핑 랙의 진짜 숫자를 사용자 실세션에서 직접 본다(추측 금지).
-      //   · 키입력 리플로우 = scrollHeight read 강제 레이아웃 flush 시간(핵심 비용 지표)
+      //   · 키입력 리플로우 = 입력 핸들러 비용(이제 레이아웃 읽기 없음 → ~0ms 이어야 정상)
       //   · stream 노드 수 = 마운트된(레이아웃 대상) DOM 크기 = 비용의 레버
       const PERF = new URLSearchParams(location.search).get("perf") === "1";
       let perfLastMs = 0;
       const autoGrowInput = () => {
-        if (growRaf) return;
-        growRaf = requestAnimationFrame(() => {
-          growRaf = 0;
-          const t0 = PERF ? performance.now() : 0;
-          input.style.height = "auto";
-          input.style.height = Math.min(input.scrollHeight, 148) + "px";
-          if (PERF) perfLastMs = performance.now() - t0;
-        });
+        const t0 = PERF ? performance.now() : 0;
+        growWrap.dataset.replicatedValue = input.value; // 레이아웃 읽기 없음(쓰기만).
+        if (PERF) perfLastMs = performance.now() - t0;
       };
       input.addEventListener("input", autoGrowInput);
+      autoGrowInput(); // 초기 복제 동기화.
       if (PERF) {
         const hud = document.createElement("div");
         hud.style.cssText = "position:fixed;bottom:8px;left:8px;z-index:99999;background:rgba(0,0,0,.85);color:#a5d6a4;font:11px/1.55 ui-monospace,Menlo,monospace;padding:7px 10px;border-radius:8px;border:1px solid #444;white-space:pre;pointer-events:none;";
@@ -4569,7 +4588,7 @@
         pendingAttachments = [];
         renderAttachChips();
         input.value = "";
-        input.style.height = "auto"; // 전송 후 한 줄 높이로 리셋.
+        growWrap.dataset.replicatedValue = ""; // 전송 후 복제 비워 한 줄 높이로 리셋.
         slashClose(); // 전송 시 슬래시 팝업 닫음(value 비움은 input 이벤트를 안 쏘므로 명시적으로).
         input.focus();
         // 전송 = 최신을 보겠다는 의도 → 현재 스크롤 위치와 무관하게 하단으로 고정하고 이후

@@ -79,6 +79,7 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
+import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
 import {
   loadThreadHistoryWithIds,
   type CodexTurn,
@@ -1657,6 +1658,29 @@ export const runOpenAiCodex = async (
       }
       mcpTools.push(...extraToolsRaw);
     }
+
+    // find_capabilities (P1, capability-awareness contract §3c) — 여기까지 채운
+    // toolBridgeMap 의 bridge 들이 *이번 턴 실제 활성* 서버 집합(게이트-aware, 병렬
+    // static list 0 — §3b). skills 와 동일하게 depth 무관 + !toolsNone 만 게이트.
+    // 자기 자신은 아직 등록 전이라 활성 목록에 안 잡힘(§3d, 순환 없음). claude/openai
+    // 와 parity — 동일 팩토리·동일 카탈로그, 이 어댑터 몫은 activeNames 주입뿐(분기 0).
+    const capabilityActiveNames = [
+      ...new Set([...toolBridgeMap.values()].map((b) => b.name)),
+    ];
+    const findCapabilitiesBridge = await adaptClaudeMcpServer(
+      createFindCapabilitiesMcpServer(
+        capabilityActiveNames,
+        undefined,
+        input.extraMcpServers,
+      ),
+      "find-capabilities",
+    );
+    allBridges.push(findCapabilitiesBridge);
+    const findCapabilitiesToolsRaw = await findCapabilitiesBridge.listTools();
+    for (const t of findCapabilitiesToolsRaw) {
+      toolBridgeMap.set((t as { name: string }).name, findCapabilitiesBridge);
+    }
+    mcpTools.push(...findCapabilitiesToolsRaw);
   }
 
   const functionTools = convertMcpToolsToResponsesTools(

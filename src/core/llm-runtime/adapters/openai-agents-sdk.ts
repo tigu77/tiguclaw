@@ -68,6 +68,7 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
+import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
@@ -321,6 +322,25 @@ export const runOpenAi = async (
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
       mcpServers.push(await adaptClaudeMcpServer(server, name));
     }
+  }
+
+  // find_capabilities (P1, capability-awareness contract §3c) — 여기까지 push 된
+  // mcpServers 가 *이번 턴 실제 활성* 서버 집합(게이트-aware, 병렬 static list 0 —
+  // §3b). skills 와 동일하게 depth 무관 + !toolsNone 만 게이트. 자기 자신은 아직
+  // push 전이라 활성 목록에 안 잡힘(§3d, 순환 없음). claude/codex 와 parity — 동일
+  // 팩토리·동일 카탈로그, 이 어댑터 몫은 activeNames 주입뿐(분기 0).
+  if (!toolsNone) {
+    const capabilityActiveNames = mcpServers.map((s) => s.name);
+    mcpServers.push(
+      await adaptClaudeMcpServer(
+        createFindCapabilitiesMcpServer(
+          capabilityActiveNames,
+          undefined,
+          input.extraMcpServers,
+        ),
+        "find-capabilities",
+      ),
+    );
   }
 
   // 2a (2026-06-15) — 인격(sysprompt) parity. 더미 instructions 폐기, 세 어댑터

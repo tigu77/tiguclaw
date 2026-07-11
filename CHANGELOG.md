@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.80] - 2026-07-11
+
+### Added
+- **tiguclaw now reliably recognizes and reaches for its own capabilities when you describe a need — even an indirect one.** Previously, asked to do something in roundabout terms (e.g. "let an external app call you"), it could miss that it already had the right built-in tool and fall back to a clumsy workaround. Now it maps your request to what it can actually do first, and if nothing fits, it considers acquiring the capability — building a new skill or subagent, connecting an external tool, or exposing a custom HTTP endpoint. A new `find_capabilities` lookup lets it survey what's available in the moment across every model backend.
+
+## [0.3.79] - 2026-07-11
+
+### Fixed
+- **Dashboard chat: mobile progress indicator, attachment remove button, and smoother typing.** On phones the "working…" indicator now stays visible while the assistant replies — previously the on-screen keyboard hid it just below the input box, so it now sits just above the input where it's always in view. The ✕ button for removing an attached file is no longer clipped by the thumbnail's rounded corner and floats fully on top of the chip. And typing in the chat box stays instant no matter how long the conversation is: the input's auto-resize no longer forces a full layout recalculation on every keystroke (which got costly as message history piled up), so keystrokes no longer lag.
+
 ## [0.3.78] - 2026-07-11
 
 ### Changed
@@ -530,7 +540,16 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.71...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.80...HEAD
+[0.3.80]: https://github.com/tigu77/tiguclaw/compare/v0.3.79...v0.3.80
+[0.3.79]: https://github.com/tigu77/tiguclaw/compare/v0.3.78...v0.3.79
+[0.3.78]: https://github.com/tigu77/tiguclaw/compare/v0.3.77...v0.3.78
+[0.3.77]: https://github.com/tigu77/tiguclaw/compare/v0.3.76...v0.3.77
+[0.3.76]: https://github.com/tigu77/tiguclaw/compare/v0.3.75...v0.3.76
+[0.3.75]: https://github.com/tigu77/tiguclaw/compare/v0.3.74...v0.3.75
+[0.3.74]: https://github.com/tigu77/tiguclaw/compare/v0.3.73...v0.3.74
+[0.3.73]: https://github.com/tigu77/tiguclaw/compare/v0.3.72...v0.3.73
+[0.3.72]: https://github.com/tigu77/tiguclaw/compare/v0.3.71...v0.3.72
 [0.3.71]: https://github.com/tigu77/tiguclaw/compare/v0.3.70...v0.3.71
 [0.3.70]: https://github.com/tigu77/tiguclaw/compare/v0.3.69...v0.3.70
 [0.3.69]: https://github.com/tigu77/tiguclaw/compare/v0.3.68...v0.3.69

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.93] - 2026-07-13
+
+### Fixed
+- **Keyboard navigation works in the chat again, and the list no longer drifts sideways.** After the transcript became virtualized, PageUp/PageDown/Home/End stopped scrolling it (and a stray horizontal shift could crop the left edge). These keys now scroll the chat explicitly — PageUp/Down by a page, End to the newest, Home to the top of what's loaded — and the transcript is pinned against horizontal scrolling. (Keys defer to the composer while you're drafting a message.)
+
 ## [0.3.92] - 2026-07-13
 
 ### Changed
@@ -608,7 +613,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.92...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.93...HEAD
+[0.3.93]: https://github.com/tigu77/tiguclaw/compare/v0.3.92...v0.3.93
 [0.3.92]: https://github.com/tigu77/tiguclaw/compare/v0.3.91...v0.3.92
 [0.3.91]: https://github.com/tigu77/tiguclaw/compare/v0.3.90...v0.3.91
 [0.3.90]: https://github.com/tigu77/tiguclaw/compare/v0.3.89...v0.3.90

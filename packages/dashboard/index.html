@@ -279,7 +279,7 @@
       body[data-chat-panel="log"] .log-tools { display:flex; }
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
       #ev-filter:focus, #chat-input:focus { outline:none; border-color:rgba(125,211,252,.55); }
-      #stream { flex:1; overflow-y:auto; padding:10px; position:relative; }
+      #stream { flex:1; overflow-y:auto; overflow-x:hidden; padding:10px; position:relative; }
       /* 대화 채팅 = CC식 가상화(윈도잉) — 위→아래(최古 위·최新 아래) 정상 흐름. 스크롤 컨테이너
          (#stream)는 position:relative, 그 안 .vt-sizer 가 총높이(측정치)만큼 스크롤바를 만들고,
          .vt-window(absolute) 가 뷰포트±버퍼 아이템만 마운트해 translateY 로 얹는다. 아이템 간격은
@@ -2841,6 +2841,7 @@
       const vtItems = [];        // { node, h, measured, isDivider, top } — 오래된→최신.
       const vtIndex = new Map(); // node -> item.
       let stickBottom = true;    // 하단(최신) 고정 팔로우. 사용자가 위로 스크롤하면 해제.
+      let vtJumpTop = false;     // Home 원샷 — 로드된 맨위로 프로그램적 점프(리스너/loadOlder 미발화).
       let vtProgrammatic = false; // 프로그램적 scrollTop 조정 가드(scroll 리스너 무시).
 
       const slotH = (it) =>
@@ -2891,15 +2892,15 @@
 
         // 앵커(프리펜드/측정 점프 방지) — 스틱 아니면 현재 뷰 상단 아이템의 화면 오프셋 보존.
         let anchor = null;
-        if (!stickBottom) {
+        if (!stickBottom && !vtJumpTop) {
           const st = stream.scrollTop;
           for (const it of vtItems) {
             if (it.top + slotH(it) > st) { anchor = { it: it, off: it.top - st }; break; }
           }
         }
 
-        // 가시 범위(±버퍼). 스틱이면 하단 기준으로 범위를 잡는다.
-        const scrollTop = stickBottom ? Math.max(0, total - clientH) : stream.scrollTop;
+        // 가시 범위(±버퍼). 스틱이면 하단, Home 점프면 상단(0) 기준으로 범위를 잡는다.
+        const scrollTop = stickBottom ? Math.max(0, total - clientH) : (vtJumpTop ? 0 : stream.scrollTop);
         const viewTop = scrollTop - VT_BUFFER;
         const viewBot = scrollTop + clientH + VT_BUFFER;
         let first = -1, last = -1;
@@ -2933,6 +2934,8 @@
         // 스크롤 위치 확정 — 스틱이면 하단, 아니면 앵커 복원(둘 다 프로그램적 = 리스너 무시).
         if (stickBottom) {
           setScrollTop(total + 40); // 브라우저가 최대(하단)로 클램프.
+        } else if (vtJumpTop) {
+          setScrollTop(0); vtJumpTop = false; // 로드된 맨위 안착(프로그램적 = loadOlder 미발화).
         } else if (anchor) {
           setScrollTop(anchor.it.top - anchor.off);
         }
@@ -3078,6 +3081,24 @@
         scheduleRelayout();
         if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();
       }, { passive: true });
+
+      // 키보드 네비 — PageUp/Down·Home·End 로 채팅 리스트 스크롤. 가상화(absolute vt-window)라
+      // 네이티브 키 스크롤이 안 먹어서 명시 처리한다. 채팅 뷰 활성 + 입력창에 실 초안이 없을 때만
+      // (작성 중이면 커서 이동 존중). preventDefault 로 브라우저 기본(포커스 요소 scrollIntoView
+      // 로 인한 가로 밀림)도 막는다.
+      document.addEventListener("keydown", (e) => {
+        if (document.body.getAttribute("data-main") !== "stream") return; // 채팅 뷰만
+        if (e.key !== "PageDown" && e.key !== "PageUp" && e.key !== "Home" && e.key !== "End") return;
+        if (e.altKey || e.ctrlKey || e.metaKey) return; // 조합키는 브라우저/OS 몫.
+        const tgt = e.target;
+        if (tgt && tgt.id === "chat-input" && tgt.value && tgt.value.trim() !== "") return; // 작성 중 = 커서 이동 존중.
+        e.preventDefault();
+        const page = Math.max(60, stream.clientHeight * 0.9);
+        if (e.key === "PageDown") { stickBottom = false; stream.scrollTop += page; }
+        else if (e.key === "PageUp") { stickBottom = false; stream.scrollTop -= page; }
+        else if (e.key === "End") scrollChatToNewest();          // 맨아래(최신) 고정.
+        else if (e.key === "Home") { stickBottom = false; vtJumpTop = true; scheduleRelayout(); } // 로드된 맨위 안착.
+      });
 
       // 최신으로 점프 버튼 — 하단 고정이면 숨김, 위로 스크롤(과거 열람) 중이면 표시.
       const chatJump = document.getElementById("chat-jump");

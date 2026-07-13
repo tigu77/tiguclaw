@@ -3122,7 +3122,13 @@
           const nd = winAll[i];
           const hi = winHeightOf(nd); h[i] = hi;
           const near = acc, far = acc + hi;
-          const m = (far > bandLo && near < bandHi) || prot.has(nd);
+          // ★높이 신뢰불가(미연결 + 캐시 없음) 노드는 언마운트 금지 — 그대로 언마운트하면 스페이서가
+          // 40px 폴백으로 쪼그라들어 scrollHeight 붕괴(빈공백·스크롤 불가, refresh 로만 복구). 스트리밍
+          // 턴 중 P5 승격/turn-group 재구성으로 새로 생성돼 캐시를 잃은 노드가 이 경우. 재마운트해
+          // 실측 높이를 확보(정상 지오메트리 보존). winHeightOf 는 연결 노드면 방금 캐시했으므로 여기
+          // false 로 걸리는 건 연결 안 됐고 캐시도 없는(=측정 불가) 노드뿐 → band 무관 항상 마운트.
+          const heightReliable = nd.isConnected || winHeights.has(nd);
+          const m = (far > bandLo && near < bandHi) || prot.has(nd) || !heightReliable;
           mounted[i] = m;
           if (m) { if (firstM < 0) firstM = i; lastM = i; mCount++; }
           acc = far;

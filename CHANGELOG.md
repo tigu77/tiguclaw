@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.85] - 2026-07-13
+
+### Fixed
+- **Dashboard chat no longer drops earlier messages (with the scroll stuck) during a long streaming reply.** As a multi-step reply grew, older messages could be unmounted behind a collapsed placeholder — leaving a blank top you couldn't scroll back to (only a refresh recovered them). The chat now keeps any message whose height it can't reliably measure, so scroll geometry is preserved.
+
 ## [0.3.84] - 2026-07-13
 
 ### Fixed
@@ -565,7 +570,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.84...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.85...HEAD
+[0.3.85]: https://github.com/tigu77/tiguclaw/compare/v0.3.84...v0.3.85
 [0.3.84]: https://github.com/tigu77/tiguclaw/compare/v0.3.83...v0.3.84
 [0.3.83]: https://github.com/tigu77/tiguclaw/compare/v0.3.82...v0.3.83
 [0.3.82]: https://github.com/tigu77/tiguclaw/compare/v0.3.81...v0.3.82

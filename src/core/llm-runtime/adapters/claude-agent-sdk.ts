@@ -927,6 +927,12 @@ export const runClaude = async (
               if (toolName === "Task" && typeof toolUseId === "string") {
                 registerTaskJob(toolUseId, toolInput);
               }
+              // 인라인 스폰 스텝 ↔ 드로어 잡 링크(2026-07-13) — Task 로 등록된 관측 잡 jobId 를
+              // 이 활동에 실어 대시보드가 클릭→드로어 점프·상태 표시. (등록 실패 시 undefined.)
+              const spawnJobId =
+                toolName === "Task" && typeof toolUseId === "string"
+                  ? taskJobs.get(toolUseId)?.jobId
+                  : undefined;
               // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
               // detail — tool_use 블록의 input 객체에서 중립 인자 요약(축3 사이드바).
               // Task 도구 자체도 부모 좌표 activity 로 남긴다(부모가 '서브를 띄웠다' 스텝).
@@ -948,6 +954,7 @@ export const runClaude = async (
                   label: toolName,
                   detail,
                   ...(diff !== undefined ? { diff } : {}),
+                  ...(spawnJobId ? { jobId: spawnJobId } : {}),
                 } satisfies RegionAActivityPayload,
               });
             }

@@ -398,6 +398,14 @@
       body[data-chat-panel="chat"] .turn-card.done-collapsed .turn-body { display:none; }
       /* 선택된 스텝 하이라이트(P4 마스터-디테일). */
       .act-line.act-step.selected { background:rgba(125,211,252,.16); box-shadow:inset 0 0 0 1px rgba(125,211,252,.4); }
+      /* 스폰 스텝 → 백그라운드 잡 링크 칩(2026-07-13). 클릭 시 드로어 열기(+claude jobId 점프). */
+      .act-bg-link { display:inline-flex; align-items:center; gap:5px; margin-left:8px; padding:1px 7px; border-radius:8px; font-size:10px; font-weight:800; color:var(--accent-2); background:rgba(167,139,250,.12); border:1px solid rgba(167,139,250,.28); cursor:pointer; user-select:none; }
+      .act-bg-link:hover { background:rgba(167,139,250,.22); }
+      .act-bg-dot { width:6px; height:6px; border-radius:50%; background:var(--text-dim); flex:none; }
+      .act-bg-dot.running { background:var(--accent-2); animation:tc-pulse 1.5s ease-in-out infinite; }
+      .act-bg-dot.done { background:var(--good); }
+      .act-bg-dot.error { background:#f85149; }
+      .bg-job.bg-flash, .agent-card.bg-flash { outline:2px solid var(--accent-2); outline-offset:2px; border-radius:12px; }
       /* 리치 diff(Edit/Write, 2026-07-09) — 스텝/이력 줄 아래로 접이식 초록·빨강 diff.
          부모 flex 행이 wrap 하도록 해 diff 블록(width:100%)이 다음 줄로 내려간다. */
       .act-line.act-step, .hist-tool { flex-wrap:wrap; }
@@ -3195,6 +3203,32 @@
         line.appendChild(icon); line.appendChild(label);
         if (detail) line.appendChild(detail);
         line.appendChild(meta);
+        // 인라인 스폰 스텝 ↔ 백그라운드 잡 링크(2026-07-13) — 서브에이전트를 띄운 스텝(claude Task
+        // = p.jobId, codex/openai spawn_agent = 라벨)이면 "🤖 백그라운드 ↗" 칩을 붙인다. 클릭 시
+        // 드로어를 열고, jobId 가 있으면(claude) 그 잡카드로 스크롤·하이라이트(codex 는 graceful =
+        // 드로어 열기만). 진행 흐름의 '어디쯤 띄웠나'(인라인 위치) + 상세(드로어)를 잇는다.
+        if (p.jobId || p.label === "Task" || p.label === "spawn_agent") {
+          const bg = document.createElement("span");
+          bg.className = "act-bg-link";
+          const job = p.jobId ? jobCards.get(p.jobId) : null;
+          const dot = document.createElement("span");
+          dot.className = "act-bg-dot" + (job && job.status ? " " + job.status : "");
+          const txt = document.createElement("span");
+          txt.textContent = "🤖 백그라운드 ↗";
+          bg.appendChild(dot); bg.appendChild(txt);
+          bg.title = "백그라운드 작업 열기";
+          bg.addEventListener("click", (e) => {
+            e.stopPropagation(); // 스텝 펼침/상세 클릭과 분리.
+            openBg();
+            const j = p.jobId ? jobCards.get(p.jobId) : null;
+            if (j && j.el && j.el.scrollIntoView) {
+              j.el.scrollIntoView({ block: "nearest" });
+              j.el.classList.add("bg-flash");
+              setTimeout(() => { try { j.el.classList.remove("bg-flash"); } catch {} }, 1500);
+            }
+          });
+          line.appendChild(bg);
+        }
         // 리치 diff(Edit/Write) — 있으면 스텝 줄 아래 접이식 블록(flex-wrap 로 다음 줄).
         if (hasDiff) line.appendChild(buildDiffBlock(p.diff));
         // 클릭 = 도구 스텝 펼침/접힘(리치 diff·출력 있으면). sticky(hover 무관). 리치 블록이

@@ -314,6 +314,14 @@ export interface RegionAActivityPayload {
    * 세그먼트 경계 정책은 공유, seq 출처는 도구와 동일(어댑터 로컬).
    */
   text?: string;
+  /**
+   * 서브에이전트 스폰 스텝 ↔ 백그라운드 잡 연결 (2026-07-13, additive·optional).
+   * claude Task tool_use 처럼 어댑터가 이 스텝에서 관측 잡을 등록했을 때 그 `jobId` 를 실어
+   * 대시보드가 인라인 스폰 스텝을 드로어 잡카드로 링크(클릭→점프·상태)한다. 어댑터가 jobId 를
+   * 못 보는 경우(codex spawn_agent = 도구 핸들러가 생성)엔 미설정 → 프런트는 라벨로 감지해
+   * 드로어 열기만(graceful). 세그먼트/도구 외 필드라 항상 optional.
+   */
+  jobId?: string;
 }
 
 /** 리치 도구 출력 프리뷰 (ADR 2026-07-09 슬라이스 2/3). */

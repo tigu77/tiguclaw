@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.91] - 2026-07-13
+
+### Added
+- **A step that spawns a background sub-agent now links to it from the chat.** The spawn shows inline at its place in the turn with a "🤖 background ↗" chip; clicking it opens the background drawer (and, where the model backend exposes the job id, jumps to and highlights that job with its live status). So you can see where in the conversation a background task was launched and jump to its progress.
+
 ## [0.3.90] - 2026-07-13
 
 ### Added
@@ -598,7 +603,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.90...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.91...HEAD
+[0.3.91]: https://github.com/tigu77/tiguclaw/compare/v0.3.90...v0.3.91
 [0.3.90]: https://github.com/tigu77/tiguclaw/compare/v0.3.89...v0.3.90
 [0.3.89]: https://github.com/tigu77/tiguclaw/compare/v0.3.88...v0.3.89
 [0.3.88]: https://github.com/tigu77/tiguclaw/compare/v0.3.87...v0.3.88

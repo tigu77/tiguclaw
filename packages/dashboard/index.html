@@ -4037,7 +4037,21 @@
       };
       const submitOptionValue = (value) => sendChatMessage(value);
 
-      const renderPromptOptions = (payload, ts) => {
+      // prompt.options 선택 상태 영속 — prompt.options 는 EventBus(SSE) 전용이라 영속 안 됨.
+      // 재시작/리로드 시 SSE replay 로 버튼이 새로(미선택) 다시 그려진다. 사용자가 이미 고른
+      // 질문이 미선택으로 보이는 것을 막기 위해, 클릭값을 안정 키로 localStorage 에 저장하고
+      // 렌더 시 복원한다(이 브라우저). 키 = 이벤트 ts + 질문(replay 시 동일값이라 안정).
+      const PO_KEY_CAP = 300;
+      const poLoad = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+      const poSave = (k, v) => {
+        try {
+          localStorage.setItem(k, v);
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) { const kk = localStorage.key(i); if (kk && kk.indexOf("po:") === 0) keys.push(kk); }
+          if (keys.length > PO_KEY_CAP) { keys.sort(); for (let i = 0; i < keys.length - PO_KEY_CAP; i++) localStorage.removeItem(keys[i]); }
+        } catch {}
+      };
+      const renderPromptOptions = (payload, ts, rawTs) => {
         const options = Array.isArray(payload.options) ? payload.options : [];
         if (options.length === 0) return;
         const logEmpty = document.getElementById("log-empty");
@@ -4067,23 +4081,36 @@
         }
         const btnWrap = document.createElement("div");
         btnWrap.className = "prompt-buttons";
+        const poKey = "po:" + (rawTs != null ? rawTs : ts) + "|" + String(payload.question || "");
         let chosen = false;
+        const applyPick = (value) => {
+          if (chosen) return;
+          chosen = true;
+          // 묶음 전체 비활성 + 선택 버튼 표시(중복 클릭·미선택 오표시 방지).
+          for (const b of btnWrap.querySelectorAll("button")) {
+            b.disabled = true;
+            if (b.dataset.optvalue === value) b.classList.add("picked");
+          }
+        };
         for (const opt of options) {
+          const val = String(opt.value != null ? opt.value : (opt.label || ""));
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "prompt-option-btn";
+          btn.dataset.optvalue = val;
           btn.textContent = String(opt.label || opt.value || "");
           btn.addEventListener("click", () => {
             if (chosen) return;
-            chosen = true;
-            // 묶음 전체 비활성 + 선택 버튼 표시(중복 클릭 방지).
-            for (const b of btnWrap.querySelectorAll("button")) b.disabled = true;
-            btn.classList.add("picked");
-            submitOptionValue(String(opt.value != null ? opt.value : (opt.label || "")));
+            applyPick(val);
+            poSave(poKey, val);       // 선택 영속(리로드 복원용)
+            submitOptionValue(val);
           });
           btnWrap.appendChild(btn);
         }
         div.appendChild(btnWrap);
+        // ★재시작/리로드 복원 — 이미 고른 질문이면 그 버튼을 picked+비활성으로(재전송 없이).
+        const saved = poLoad(poKey);
+        if (saved != null) applyPick(saved);
         vtAppend(div);
       };
 
@@ -4159,7 +4186,7 @@
           return;
         }
         if (ev.type === "prompt.options") {
-          renderPromptOptions(ev.payload || {}, ts);
+          renderPromptOptions(ev.payload || {}, ts, ev.ts);
           return;
         }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {

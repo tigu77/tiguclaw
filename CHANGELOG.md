@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.89] - 2026-07-13
+
+### Fixed
+- **A choice you already made in the dashboard chat now stays selected after a reload/restart.** The interactive option buttons are pushed over a live channel and aren't persisted, so on reconnect they were re-rendered as unselected. Your pick is now remembered locally (keyed to the question) and restored — the chosen button shows selected and the group stays disabled.
+
 ## [0.3.88] - 2026-07-13
 
 ### Fixed
@@ -588,7 +593,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.88...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.89...HEAD
+[0.3.89]: https://github.com/tigu77/tiguclaw/compare/v0.3.88...v0.3.89
 [0.3.88]: https://github.com/tigu77/tiguclaw/compare/v0.3.87...v0.3.88
 [0.3.87]: https://github.com/tigu77/tiguclaw/compare/v0.3.86...v0.3.87
 [0.3.86]: https://github.com/tigu77/tiguclaw/compare/v0.3.85...v0.3.86

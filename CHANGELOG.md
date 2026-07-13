@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.84] - 2026-07-13
+
+### Fixed
+- **Dashboard updates now take effect on a normal refresh.** The dashboard page is served with `no-store`, so a fixed version is no longer masked by browser caching of the old page.
+
 ## [0.3.83] - 2026-07-13
 
 ### Added
@@ -560,7 +565,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.83...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.84...HEAD
+[0.3.84]: https://github.com/tigu77/tiguclaw/compare/v0.3.83...v0.3.84
 [0.3.83]: https://github.com/tigu77/tiguclaw/compare/v0.3.82...v0.3.83
 [0.3.82]: https://github.com/tigu77/tiguclaw/compare/v0.3.81...v0.3.82
 [0.3.81]: https://github.com/tigu77/tiguclaw/compare/v0.3.80...v0.3.81

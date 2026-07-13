@@ -167,7 +167,13 @@ const server = http.createServer((req, res) => {
           path.join(__dirname, "index.html"),
           "utf8",
         );
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        // no-store — HTML(대시보드 코드)은 매 로드 최신을 받아야 한다. 캐시 헤더 없으면 브라우저가
+        // heuristic 캐싱으로 옛 index.html 을 써서 업데이트(버그 픽스)가 일반 새로고침에 반영 안 됨.
+        // (vendored .js 는 내용 고정이라 max-age 캐시 유지 — 코드는 index.html 에만 있음.)
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, must-revalidate",
+        });
         res.end(html);
       } catch {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });

@@ -129,6 +129,11 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     whenToUse: "'업데이트해줘' 처럼 스스로 최신화하라는 요청을 받았을 때.",
     tools: ["update_self"],
   },
+  maintenance: {
+    summary: "런타임 저장소(대화 이력·메모리·워커 잡·관측 이벤트) 구조적 건강 점검. 읽기전용.",
+    whenToUse: "사용자가 '상태 괜찮아?', '용량 어때', '정리 필요해?' 처럼 자기 상태를 물을 때.",
+    tools: ["maintenance_status"],
+  },
   "send-file": {
     summary: "현재 채널로 파일·첨부를 네이티브 전송(멱등).",
     whenToUse:

@@ -153,3 +153,41 @@ export const listInterruptedWorkerJobs = (): PersistedWorkerJob[] =>
       )
       .all() as DbRow[]
   ).map(toJob);
+
+/**
+ * 터미널(비-'running') 잡 중 최신 keepLast 건만 남기고 나머지 삭제 → 무한증가 방지.
+ * `events.ts pruneEvents` 동형(관측 파생 메타 캡). ★running 은 `WHERE status != 'running'`
+ * 가드로 캡·삭제 대상에서 애초에 제외 — 재시작 복구 소스(listInterruptedWorkerJobs) 보존,
+ * 절대 안 지운다. "최신"은 `finished_at`(완료 시각) 우선, 미종료 레코드 방어로 `started_at`
+ * 폴백(COALESCE) — 정상 흐름에선 터미널 행 전부 finished_at 존재.
+ *
+ * job_id 가 시퀀셜 아닌 UUID 라 events 의 `id <= MAX(id)-keep` 패턴을 못 쓴다 — 대신
+ * "유지할 최신 keepLast 건의 id 집합"을 서브쿼리로 뽑아 그 밖을 삭제(NOT IN). 삭제 행수 반환.
+ */
+export const pruneTerminalWorkerJobs = (keepLast: number): number =>
+  getDb()
+    .prepare(
+      `DELETE FROM worker_jobs
+         WHERE status != 'running'
+           AND job_id NOT IN (
+             SELECT job_id FROM worker_jobs
+               WHERE status != 'running'
+               ORDER BY COALESCE(finished_at, started_at) DESC
+               LIMIT ?
+           )`,
+    )
+    .run(keepLast).changes;
+
+/** 관측용 — 전체/터미널(비-running) 잡 건수. maintenance_status 가 캡 대비 표시에 사용. */
+export const countWorkerJobs = (): { total: number; terminal: number } => {
+  const db = getDb();
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM worker_jobs`).get() as {
+    n: number;
+  }).n;
+  const terminal = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM worker_jobs WHERE status != 'running'`)
+      .get() as { n: number }
+  ).n;
+  return { total, terminal };
+};

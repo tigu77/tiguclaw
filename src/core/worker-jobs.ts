@@ -24,6 +24,7 @@ import {
   upsertWorkerJob,
   updateWorkerJobStatus,
   listInterruptedWorkerJobs,
+  pruneTerminalWorkerJobs,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
 
@@ -82,6 +83,22 @@ const persistSafe = (label: string, fn: () => void): void => {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`worker-jobs: DB 미러 실패(${label}): ${reason}`);
   }
+};
+
+// ─── 터미널 잡 캡 (2026-07-12, P1 runtime-maintenance) ───────────────────────
+// worker_jobs DB 미러가 무바운드로 계속 쌓이는 유일한 파생 store 였다(architect contract
+// §1). `events.ts RETENTION_KEEP` 동형이나 events(고volume, 10k) 보다 훨씬 저volume
+// (잡은 spawn_worker/서브에이전트 호출당 1건) 이라 "넉넉히" 훨씬 큰 값을 잡아 관측이력
+// 손실을 최소화한다. running 은 이 캡과 무관하게 절대 보존(store 쿼리 자체가 가드).
+// export: core/maintenance.ts(runMaintenanceScan) 가 store health 판정(count vs bound)에
+// 재사용 — 값 중복 정의 금지(RETENTION_KEEP export 와 동형 패턴).
+export const TERMINAL_WORKER_JOB_KEEP = 1000;
+
+/** 터미널 전이(done/failed/cancelled/interrupted) 마다 호출 — best-effort(persistSafe 동형). */
+const pruneTerminalJobsSafe = (): void => {
+  persistSafe("pruneTerminalWorkerJobs", () =>
+    pruneTerminalWorkerJobs(TERMINAL_WORKER_JOB_KEEP),
+  );
 };
 
 // ─── 통지 목적지 (generic 좌표 — architect §3-a) ─────────────────────────────
@@ -234,6 +251,7 @@ export const markDone = (jobId: string, result: string): void => {
   persistSafe("markDone", () =>
     updateWorkerJobStatus(jobId, "done", job.finishedAt!),
   );
+  pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1, running 은 위 UPDATE 대상 아님).
   publishWorkerLifecycle("worker.done", job, { task: job.task, result });
 };
 
@@ -247,6 +265,7 @@ export const markFailed = (jobId: string, error: string): void => {
   persistSafe("markFailed", () =>
     updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
   );
+  pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
   publishWorkerLifecycle("worker.failed", job, { error, task: job.task });
 };
 
@@ -263,6 +282,7 @@ export const markCancelled = (jobId: string, reason: string): void => {
   persistSafe("markCancelled", () =>
     updateWorkerJobStatus(jobId, "cancelled", job.finishedAt!),
   );
+  pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
   publishWorkerLifecycle("worker.cancelled", job, { error: reason, task: job.task });
 };
 
@@ -882,6 +902,8 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
     );
   }
+  // 터미널 전이(interrupted) 배치 종료 후 1회만 prune — 루프 안에서 N번 부르지 않음(§5 얇게).
+  if (interrupted.length > 0) pruneTerminalJobsSafe();
   if (interrupted.length > 0) {
     console.log(
       `worker-jobs: 재시작으로 중단된 워커 ${interrupted.length}건 정직 통지`,

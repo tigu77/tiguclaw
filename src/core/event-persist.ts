@@ -19,6 +19,9 @@ const SKIP_TYPES = new Set<string>([
   "llm.delta", // 고volume 토큰 스트리밍(보조 점증 렌더) — 전체본은 channel.message.out·transcripts 가 이미 보관.
   "channel.message.in",
   "channel.message.out",
+  // 엔드포인트 호출 관측(요청+응답 전문) — 라이브 SSE 로만 대시보드에 전달. 영속 시 sanitize 가
+  // 전문을 300자 절단 + events 테이블 비대 → SKIP. 전체 기록은 transcripts 에 이미 영속.
+  "endpoint.call",
 ]);
 
 // 페이로드 비대 가드. 리치 도구 카드(diff ≤~7.5KB / output ≤~4.5KB, ADR 2026-07-09)를
@@ -50,7 +53,9 @@ export const truncatePayloadJson = (payload: unknown, maxChars: number): string 
   return s.length <= maxChars ? s : `{"_truncated":true}`; // 스칼라도 초과하는 극단 → 유효 하드폴백.
 };
 
-const RETENTION_KEEP = 10_000; // 최근 N건 유지.
+// export: maintenance.ts(runMaintenanceScan) 가 events store health 판정(count vs bound)에
+// 재사용 — 값 중복 정의 금지(단일 소스, P1 runtime-maintenance).
+export const RETENTION_KEEP = 10_000; // 최근 N건 유지.
 const PRUNE_EVERY = 256; // N건마다 1회 prune(매 insert prune 회피).
 
 /**

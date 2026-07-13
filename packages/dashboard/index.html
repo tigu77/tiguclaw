@@ -729,19 +729,26 @@
       #toast.warn { border-color:rgba(251,191,36,.45); } #toast.bad { border-color:rgba(251,113,133,.5); } #toast.good { border-color:rgba(52,211,153,.45); }
       .home-action.danger:hover { border-color:rgba(251,113,133,.4); }
       .home-action .ic.warn { color:var(--warn); }
-      /* 엔드포인트/API 활동 섹션(드로어 내, B) — 채팅서 뺀 기계 API 호출을 접이식으로 모아 열람. */
-      .ep-section { margin:0 0 10px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.02); overflow:hidden; }
-      .ep-summary { cursor:pointer; list-style:none; padding:9px 12px; font-size:12px; font-weight:800; color:var(--text-mute); display:flex; align-items:center; gap:8px; user-select:none; }
-      .ep-summary::-webkit-details-marker { display:none; }
-      .ep-section[open] .ep-summary { color:var(--text); border-bottom:1px solid var(--border); }
-      .ep-count { min-width:17px; height:17px; padding:0 5px; border-radius:9px; background:rgba(125,211,252,.14); color:var(--accent); font-size:10px; font-weight:900; display:inline-flex; align-items:center; justify-content:center; line-height:1; }
-      .ep-list { max-height:min(46vh,420px); overflow-y:auto; padding:6px; display:flex; flex-direction:column; gap:6px; }
-      .ep-empty { color:var(--text-mute); font-size:11px; padding:10px; text-align:center; }
-      .ep-item { border:1px solid var(--border); border-radius:9px; padding:7px 9px; background:var(--card); }
-      .ep-item.ep-out { border-color:rgba(52,211,153,.28); }
-      .ep-item-head { font-size:10px; font-weight:700; color:var(--text-mute); margin-bottom:3px; }
+      /* 엔드포인트/API 활동 뷰(메인 nav destination) — 외부 앱의 커스텀 HTTP 엔드포인트 호출을
+         채팅과 분리해 읽기 전용으로 열람. 응답 전문은 truncation 없이(pre-wrap) 보여준다. */
+      .ep-view-desc { color:var(--text-mute); font-size:12px; line-height:1.5; margin:0 0 14px; }
+      .ep-view-list { display:flex; flex-direction:column; gap:10px; }
+      .ep-empty { color:var(--text-mute); font-size:12px; padding:22px; text-align:center; border:1px dashed var(--border); border-radius:14px; background:rgba(255,255,255,.02); }
+      .ep-item { border:1px solid var(--border); border-radius:12px; padding:11px 13px; background:var(--card); }
+      .ep-item.ep-err { border-color:rgba(251,113,133,.35); }
+      .ep-item-head { font-size:11px; font-weight:800; color:var(--text-mute); display:flex; gap:8px; align-items:center; flex-wrap:wrap; cursor:pointer; user-select:none; }
       .ep-item.ep-out .ep-item-head { color:#6ee7b7; }
-      .ep-item-body { font-size:11px; line-height:1.45; color:var(--text-dim); white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .ep-item.ep-err .ep-item-head { color:var(--warn); }
+      .ep-caret { font-size:9px; color:var(--text-dim); transition:transform .12s ease; display:inline-block; }
+      .ep-item.open .ep-caret { transform:rotate(90deg); }
+      .ep-item-name { color:var(--accent); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .ep-item-time { color:var(--text-dim); font-weight:600; margin-left:auto; }
+      /* 접힘/펼침 — 헤더 클릭 시 요청·응답 섹션 노출. */
+      .ep-item-detail { display:none; margin-top:9px; flex-direction:column; gap:9px; }
+      .ep-item.open .ep-item-detail { display:flex; }
+      .ep-sec-label { font-size:10px; font-weight:800; color:var(--text-dim); text-transform:uppercase; letter-spacing:.4px; margin-bottom:4px; }
+      /* 요청·응답 전문 — 안 잘리게(pre-wrap). 극단적으로 길 때만 내부 스크롤(내용 전부 접근 가능). */
+      .ep-item-body { font-size:12px; line-height:1.55; color:var(--text-dim); white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,"SF Mono",Menlo,monospace; max-height:60vh; overflow:auto; background:rgba(0,0,0,.18); border-radius:8px; padding:9px 11px; }
 
       @media (max-width: 1440px) { main { grid-template-columns: 220px minmax(0,1fr); gap:12px; padding:12px; } }
       @media (max-width: 1180px) { main { grid-template-columns: 210px minmax(0,1fr); } }
@@ -824,6 +831,7 @@
           <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
           <button class="nav-button" data-view="agents" type="button"><span class="ic">🤖</span><span class="label">에이전트</span><span class="hint" id="nav-agent-count">0</span></button>
           <button class="nav-button" data-view="projects" type="button"><span class="ic">📁</span><span class="label">프로젝트</span><span class="hint" id="nav-project-count">0</span></button>
+          <button class="nav-button" data-view="endpoints" type="button"><span class="ic">🔌</span><span class="label">엔드포인트</span><span class="hint" id="nav-endpoint-count">0</span></button>
           <div class="nav-divider"></div>
           <button class="nav-button" data-view="inventory" type="button"><span class="ic">🧩</span><span class="label">런타임 인벤토리</span><span class="hint">관리</span></button>
           <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
@@ -887,12 +895,6 @@
         <h3 class="panel-title">백그라운드 작업</h3>
         <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
       </div>
-      <!-- 엔드포인트/API 활동(B) — 외부 앱이 register_endpoint 로 호출하는 turn 은 사람 대화가
-           아니라 기계 API 호출이라 채팅에서 제외하고 여기 모은다. 기록 자체는 DB 에 영속. -->
-      <details id="ep-details" class="ep-section">
-        <summary class="ep-summary">🔌 엔드포인트 호출 <span class="ep-count" id="ep-count">0</span></summary>
-        <div class="ep-list" id="ep-list"><div class="ep-empty">아직 엔드포인트 호출이 없습니다.</div></div>
-      </details>
       <div class="bg-filter" id="bg-filter">
         <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
         <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-count-all">0</span></button>
@@ -3099,6 +3101,11 @@
       const reconcileWindow = () => {
         if (winReconciling || winAll.length === 0) return;
         if (!winActive()) return;           // 채팅 패널(column-reverse) 전용.
+        // ★라이브 턴 스트리밍 중엔 윈도잉(언마운트) 금지 — turn-group 내부 성장(스텝·델타)은
+        // #stream childList 옵서버가 못 잡아 followIfSticky 가 안 불려, 자라는 콘텐츠에 하단이 순간
+        // 풀리면 옛 메시지를 스페이서로 언마운트(위쪽 빈공백)하고 턴 후 collapse 도 안 돼 유지됐다
+        // (refresh 로만 복구되던 렌더 버그). 응답 받는 동안엔 절대 안 지운다 — 턴 종료 후 정상 재개.
+        if (activeTurns.size > 0) return;
         const ch = stream.clientHeight;
         if (ch === 0) return;               // 패널 숨김 → 무시.
         if (isNearBottom()) return;         // 하단은 capStream/collapse 담당.
@@ -3495,7 +3502,7 @@
         const delta = String(p.delta || "");
         if (delta === "") return;
         const thread = p.threadKey || THREAD_KEY;
-        if (isEndpointThread(thread)) { accumEndpointDelta(p); return; } // 채팅엔 안 뿌리고 엔드포인트 목록용으로 누적.
+        if (isEndpointThread(thread)) return; // 엔드포인트 스트리밍은 채팅에 안 뿌린다(뷰 데이터는 endpoint.call 이벤트).
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
         let card = cardByThread.get(thread);
         // 진행 버블을 붙일 그룹이 없거나 이미 닫힌(답변 완료) 턴이면 새 경량 그룹 시작.
@@ -3666,49 +3673,82 @@
       };
 
       // ── 엔드포인트/API 활동(B, 2026-07-12) ───────────────────────────────
-      // 외부 앱이 register_endpoint 로 호출하는 turn(threadKey=`endpoint:<name>:<nonce>`)은
-      // 사람 대화가 아니라 기계 API 호출 → 채팅 스트림에서 제외하고 여기 별도 목록으로 모은다.
-      // 기록 자체는 DB(chat_log·transcripts)에 영속 — 이 뷰는 최근 호출 열람용(라이브+과거 이력).
-      // ★endpoint turn 은 channel.message 를 안 내고 llm.delta(응답 스트림)+turn_done/error 만
-      // 낸다(SSE 실측). 그래서 delta 를 threadKey 별로 누적하고 turn 종료에 확정 기록한다. 요청
-      // 프롬프트는 eventbus 에 없어 여기 안 뜨지만, 요청·응답 전체본은 DB(transcripts)에 영속(유실 0).
-      const endpointLog = [];        // {ts, name, ok, text} — 오름차순, 캡 EP_MAX.
-      const epAccum = new Map();     // threadKey -> {name, ts, text} (진행 중 delta 누적).
-      const epSeen = new Set();      // threadKey dedup(turn_done+turn_error 이중 확정 방지).
-      const EP_MAX = 40;
+      // 외부 앱이 register_endpoint 로 호출하는 turn 은 사람 대화가 아니라 기계 API 호출 →
+      // 채팅에서 제외(아래 필터)하고 메인 nav "엔드포인트" 뷰에 모은다. 데이터 소스 = http-bridge
+      // 가 매 호출에 발행하는 `endpoint.call` 이벤트(요청+응답 전문·성공/실패). 전체 기록은
+      // DB(transcripts)에 영속 — 이 뷰는 라이브 세션 열람용.
+      const endpointLog = [];        // {ts, name, ok, request, response} — 오름차순, 캡 EP_MAX.
+      const epOpen = new Set();      // 펼친 항목 ts(재렌더 시 펼침 상태 보존).
+      const epSeenTs = new Set();    // ts dedup.
+      const EP_MAX = 60;
       const isEndpointThread = (tk) => typeof tk === "string" && tk.indexOf("endpoint:") === 0;
-      const epName = (tk) => { const p = String(tk || "").split(":"); return p[1] || String(tk || "endpoint"); };
-      const accumEndpointDelta = (p) => {
-        const tk = p.threadKey; if (!isEndpointThread(tk)) return;
-        let a = epAccum.get(tk);
-        if (!a) { a = { name: epName(tk), ts: (p.ts != null ? p.ts : Date.now()), text: "" }; epAccum.set(tk, a); }
-        a.text += String(p.delta || "");
-      };
-      const finalizeEndpoint = (tk, ok) => {
-        if (!isEndpointThread(tk) || epSeen.has(tk)) return;
-        epSeen.add(tk);
-        const a = epAccum.get(tk); epAccum.delete(tk);
-        endpointLog.push({ ts: a ? a.ts : Date.now(), name: a ? a.name : epName(tk), ok: ok !== false, text: a ? a.text : "" });
+      const captureEndpointCall = (p) => {
+        const ts = Number(p && p.ts) || Date.now();
+        if (epSeenTs.has(ts)) return;
+        epSeenTs.add(ts);
+        endpointLog.push({ ts, name: String((p && p.name) || "endpoint"), ok: (p && p.ok) !== false, request: String((p && p.request) || ""), response: String((p && p.response) || "") });
         endpointLog.sort((x, y) => x.ts - y.ts);
-        if (endpointLog.length > EP_MAX) endpointLog.splice(0, endpointLog.length - EP_MAX);
-        renderEndpointLog();
+        if (endpointLog.length > EP_MAX) { for (const d of endpointLog.splice(0, endpointLog.length - EP_MAX)) epOpen.delete(d.ts); }
+        epOpen.add(ts); // 최신 호출은 기본 펼침.
+        updateEndpointBadge();
+        renderEndpointsView(); // currentView!=endpoints 면 no-op.
       };
-      const renderEndpointLog = () => {
-        const list = document.getElementById("ep-list"); if (!list) return;
-        const cnt = document.getElementById("ep-count"); if (cnt) cnt.textContent = String(endpointLog.length);
-        if (endpointLog.length === 0) { list.innerHTML = '<div class="ep-empty">아직 엔드포인트 호출이 없습니다.</div>'; return; }
-        list.innerHTML = "";
-        for (let i = endpointLog.length - 1; i >= 0; i--) { // 최신 먼저.
-          const e = endpointLog[i];
-          const row = document.createElement("div");
-          row.className = "ep-item" + (e.ok ? " ep-out" : " ep-err");
-          const head = document.createElement("div"); head.className = "ep-item-head";
-          head.textContent = (e.ok ? "✅ 응답" : "⚠ 실패") + " · " + e.name + " · " + fmtTime(e.ts);
-          const body = document.createElement("div"); body.className = "ep-item-body";
-          const t = e.text || (e.ok ? "(출력 없음)" : "(에러)");
-          body.textContent = t.length > 280 ? t.slice(0, 280) + "…" : t;
-          row.appendChild(head); row.appendChild(body); list.appendChild(row);
+      const updateEndpointBadge = () => {
+        const b = document.getElementById("nav-endpoint-count"); if (b) b.textContent = String(endpointLog.length);
+      };
+      const buildEpSection = (label, text) => {
+        const box = document.createElement("div"); box.className = "ep-sec";
+        const lab = document.createElement("div"); lab.className = "ep-sec-label"; lab.textContent = label;
+        const body = document.createElement("div"); body.className = "ep-item-body"; body.textContent = text || "(없음)";
+        box.appendChild(lab); box.appendChild(body); return box;
+      };
+      // 엔드포인트 뷰 렌더 — 메인 nav destination(#detail-panel). currentView 가 endpoints 일 때만
+      // 그린다(라이브 갱신 시 no-op 가드, renderAgentsView 동형). 각 항목: 헤더 클릭 = 접힘/펼침,
+      // 펼치면 요청·응답 전문(pre-wrap, 안 잘림 — 극단 길이만 내부 스크롤).
+      const renderEndpointsView = () => {
+        if (currentView !== "endpoints") return;
+        const root = document.getElementById("detail-panel"); if (!root) return;
+        root.innerHTML = "";
+        const wrap = document.createElement("div"); wrap.className = "page-view";
+        const head = document.createElement("div"); head.className = "detail-head";
+        head.innerHTML = '<div class="detail-accent"></div><div class="detail-name">엔드포인트 호출</div><span class="detail-kind">API 활동</span>';
+        wrap.appendChild(head);
+        const desc = document.createElement("p"); desc.className = "ep-view-desc";
+        desc.textContent = "외부 앱이 커스텀 HTTP 엔드포인트로 호출한 기록입니다(채팅과 분리, 읽기 전용). 헤더를 누르면 요청·응답 전문이 펼쳐집니다. 전체 기록은 DB 에 영속됩니다.";
+        wrap.appendChild(desc);
+        if (endpointLog.length === 0) {
+          const empty = document.createElement("div"); empty.className = "ep-empty";
+          empty.textContent = "아직 엔드포인트 호출이 없습니다.";
+          wrap.appendChild(empty);
+        } else {
+          const list = document.createElement("div"); list.className = "ep-view-list";
+          for (let i = endpointLog.length - 1; i >= 0; i--) { // 최신 먼저.
+            const e = endpointLog[i];
+            const open = epOpen.has(e.ts);
+            const row = document.createElement("div"); row.className = "ep-item" + (e.ok ? " ep-out" : " ep-err") + (open ? " open" : "");
+            const h = document.createElement("div"); h.className = "ep-item-head";
+            const car = document.createElement("span"); car.className = "ep-caret"; car.textContent = "▶";
+            const st = document.createElement("span"); st.textContent = e.ok ? "✅ 응답" : "⚠ 실패";
+            const nm = document.createElement("span"); nm.className = "ep-item-name"; nm.textContent = e.name;
+            const tm = document.createElement("span"); tm.className = "ep-item-time"; tm.textContent = fmtTime(e.ts);
+            h.appendChild(car); h.appendChild(st); h.appendChild(nm); h.appendChild(tm);
+            h.addEventListener("click", () => {
+              const nowOpen = row.classList.toggle("open");
+              if (nowOpen) epOpen.add(e.ts); else epOpen.delete(e.ts);
+            });
+            const detail = document.createElement("div"); detail.className = "ep-item-detail";
+            detail.appendChild(buildEpSection("요청", e.request));
+            detail.appendChild(buildEpSection("응답", e.response));
+            row.appendChild(h); row.appendChild(detail); list.appendChild(row);
+          }
+          wrap.appendChild(list);
         }
+        root.appendChild(wrap);
+      };
+      const showEndpoints = () => {
+        setActiveNav("endpoints");
+        document.getElementById("workbench").classList.remove("show-providers"); // detail-panel 노출(다른 뷰와 동형).
+        renderEndpointsView();
       };
 
       const renderChannelMessage = (ev, ts) => {
@@ -4139,6 +4179,19 @@
         refreshWorking();
       };
       const markTurnDone = (tk) => { const k = tk || THREAD_KEY; if (activeTurns.delete(k)) refreshWorking(); };
+      // ★codex-우선 + claude-폴백 처리 — 한 사용자 턴이 여러 어댑터 시도로 나뉘면(codex 429 →
+      // claude 폴백) codex 의 turn_error 가 *턴 중간*에 온다. 그때 작업표시를 즉시 끄면 폴백 claude
+      // 가 도는 동안 표시가 사라진다(실측 버그). → turn_error 는 즉시 끄지 않고 *유예* 클리어:
+      // 후속 진행 이벤트(channel.message.in/out·delta·activity·성공 turn_done)가 취소하고, 유예
+      // 만료(후속 없음 = 최종 실패)에만 끈다. 진짜 종결(성공·out)은 즉시 끈다.
+      const ERR_CLEAR_GRACE_MS = 15000;
+      const turnErrClearTimers = new Map(); // threadKey -> timeout id.
+      const cancelErrClear = (tk) => { const k = tk || THREAD_KEY; const t = turnErrClearTimers.get(k); if (t) { clearTimeout(t); turnErrClearTimers.delete(k); } };
+      const scheduleErrClear = (tk) => {
+        const k = tk || THREAD_KEY;
+        cancelErrClear(k);
+        turnErrClearTimers.set(k, setTimeout(() => { turnErrClearTimers.delete(k); markTurnDone(k); }, ERR_CLEAR_GRACE_MS));
+      };
       // 하위호환 — sendChatMessage 의 로컬 즉시 피드백/에러 해제(내 대화 턴).
       const setChatWorking = (on) => { if (on) markTurnActive(THREAD_KEY); else markTurnDone(THREAD_KEY); };
       // 큐 대기 표시 — 이미 이 스레드 턴이 진행 중일 때(busy) 보낸 메시지는 직렬 큐(enqueueThreadTurn)
@@ -4278,10 +4331,11 @@
         // channel.message.out 이 안 오는 에러 턴까지 확실히 끄기 위한 authoritative 종료.
         if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") {
           const tk = ev.payload && ev.payload.threadKey;
-          markTurnDone(tk);
           markTurnCardDone(tk); // 턴 카드 마지막 스텝 pulse 정지(응답 누락·에러·hang 종료 대비).
-          if (isEndpointThread(tk)) finalizeEndpoint(tk, ev.type === "llm.turn_done"); // 엔드포인트 호출 확정 기록.
+          if (ev.type === "llm.turn_done") { cancelErrClear(tk); markTurnDone(tk); } // 성공 종결 = 즉시.
+          else scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).
         }
+        if (ev.type === "endpoint.call") { captureEndpointCall(ev.payload || {}); return; } // 엔드포인트 뷰 데이터.
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
           const tk = ev.payload && ev.payload.threadKey;
           // 엔드포인트 turn(기계 API 호출)은 채팅서 제외 — 방어적(보통 endpoint 는 channel.message
@@ -4291,6 +4345,7 @@
           // ★재연결 replay 방어 — 버퍼가 흘리는 과거 .in 은 phantom 진행표시(짝 turn_done 없음)를
           // 만든다. 최근(2분 이내) .in 만 활성화 → 이미 끝난 옛 턴이 '작업 중'으로 안 뜬다.
           if (ev.type === "channel.message.in") {
+            cancelErrClear(tk); // 새 진행 = 유예 클리어 취소.
             if (Date.now() - (ev.ts || 0) < 120000) markTurnActive(tk);
             // 큐 대기 버블 승격 — 이 in echo(=처리 시작)가 대기 중이던 낙관적 버블과 텍스트 일치면
             // 새로 안 그리고 그 버블의 배지를 떼고 서버 ts 키를 등록(중복 렌더 방지).
@@ -4304,7 +4359,7 @@
               renderedMsgKeys.add(msgKey(ev.ts, "user"));
               return;
             }
-          } else markTurnDone(tk);
+          } else { cancelErrClear(tk); markTurnDone(tk); } // out = 성공 종결(즉시).
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);
@@ -4316,6 +4371,7 @@
         if (ev.type === "llm.activity") {
           const ap = ev.payload || {};
           if (ap.ts == null) ap.ts = ev.ts; // 숫자 ts — dedup 키(기능 B)·주석에 사용.
+          cancelErrClear(ap.threadKey); // 도구 활동 = 턴 살아있음(폴백 진행) → 유예 클리어 취소.
           // 도구 실행시간(#3) — phase:"end" 는 새 스텝이 아니라 같은 seq 의 시작 스텝에
           // durationMs 를 주석(잡 카드 스텝 · 메인 스트림 라인 양쪽). 여기서 가로채 렌더로 안 감.
           if (ap.phase === "end") { annotateToolDuration(ap); return; }
@@ -4325,7 +4381,9 @@
           return;
         }
         if (ev.type === "llm.delta") {
-          renderDelta(ev.payload || {}, ts);
+          const dp = ev.payload || {};
+          cancelErrClear(dp.threadKey); // 델타 = 응답 스트리밍 중(폴백 진행) → 유예 클리어 취소.
+          renderDelta(dp, ts);
           return;
         }
         if (ev.type === "prompt.options") {
@@ -4395,9 +4453,10 @@
           else if (view === "inventory") showInventory();
           else if (view === "agents") showAgents();
           else if (view === "projects") showProjects();
+          else if (view === "endpoints") showEndpoints();
           else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings","agents","projects"].includes(view)) setActiveTab("main");
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings","agents","projects","endpoints"].includes(view)) setActiveTab("main");
         });
       }
 

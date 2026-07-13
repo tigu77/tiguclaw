@@ -74,6 +74,7 @@ import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.j
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
+import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
@@ -1438,7 +1439,13 @@ export const runOpenAiCodex = async (
     }),
     "reply-intent",
   );
-  // 무조건 생성되는 bridge 5종 등록 (close 누락 방지).
+  // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =
+  // memory/projects/skills 와 동일 무조건 등록(claude/openai 와 parity, 계약서 §3.1).
+  const maintenanceBridge = await adaptClaudeMcpServer(
+    createMaintenanceMcpServer(),
+    "maintenance",
+  );
+  // 무조건 생성되는 bridge 7종 등록 (close 누락 방지).
   allBridges.push(
     memoryBridge,
     fileOpsBridge,
@@ -1446,6 +1453,7 @@ export const runOpenAiCodex = async (
     projectBridge,
     skillBridge,
     replyIntentBridge,
+    maintenanceBridge,
   );
   // send-file — 네이티브 멱등 아웃바운드 전송 (claude 어댑터와 parity). per-turn
   // dedup Set(클로저 지역) → 같은 경로 재호출 시 실제 전송 차단(멱등 핵심).
@@ -1490,6 +1498,7 @@ export const runOpenAiCodex = async (
     const projectToolsRaw = await projectBridge.listTools();
     const skillToolsRaw = await skillBridge.listTools();
     const replyIntentToolsRaw = await replyIntentBridge.listTools();
+    const maintenanceToolsRaw = await maintenanceBridge.listTools();
 
     for (const t of memoryToolsRaw) {
       toolBridgeMap.set((t as { name: string }).name, memoryBridge);
@@ -1509,6 +1518,9 @@ export const runOpenAiCodex = async (
     for (const t of replyIntentToolsRaw) {
       toolBridgeMap.set((t as { name: string }).name, replyIntentBridge);
     }
+    for (const t of maintenanceToolsRaw) {
+      toolBridgeMap.set((t as { name: string }).name, maintenanceBridge);
+    }
 
     mcpTools.push(
       ...memoryToolsRaw,
@@ -1517,6 +1529,7 @@ export const runOpenAiCodex = async (
       ...projectToolsRaw,
       ...skillToolsRaw,
       ...replyIntentToolsRaw,
+      ...maintenanceToolsRaw,
     );
 
     // send-file — 채널 전송 클로저가 있을 때만 등록 (claude 어댑터 조건부 주입과 parity).

@@ -1122,8 +1122,20 @@ class HttpBridge implements Channel, Observer {
           // route 의 반환 text 를 1차 진실로 사용(reply 미호출 어댑터 경로 대비 replyText 폴백).
           const result = out.text !== "" ? out.text : replyText;
           writeJson(res, 200, { result });
+          // 대시보드 엔드포인트 뷰용 — 요청+응답을 담은 관측 이벤트(채팅 밖 기계 API 호출).
+          // 라이브 SSE 로 전문 전달(event-persist 는 SKIP → 절단/영속 비대 회피).
+          this.bus?.publish({
+            type: "endpoint.call",
+            ts: Date.now(),
+            payload: { name: ep.name, ok: true, request: prompt, response: result },
+          });
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
+          this.bus?.publish({
+            type: "endpoint.call",
+            ts: Date.now(),
+            payload: { name: ep.name, ok: false, request: prompt, response: reason },
+          });
           if (reason === "timeout") {
             writeJson(res, 504, { error: "timeout" });
           } else {

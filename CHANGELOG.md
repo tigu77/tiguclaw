@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.83] - 2026-07-13
+
+### Added
+- **Endpoint calls now have their own main-menu view**, with each call's full request and response and per-call collapse/expand — moved out of the background drawer, nothing truncated.
+- **The assistant can now check its own runtime health.** A read-only `maintenance_status` reports whether storage stays within its designed bounds (hot working set vs. preserved records), and background job records now self-bound (running jobs are always kept).
+
+### Fixed
+- **Dashboard chat no longer blanks out earlier messages while a long response is streaming.** During a multi-step reply, previous messages stayed put instead of collapsing into empty space (a render-only issue — a refresh restored them). Message history is no longer unmounted while a turn is live.
+- **The "working…" indicator stays visible through a model fallback.** When the primary model hits a transient error and the turn falls back to another model, the indicator no longer flickers off mid-response.
+
 ## [0.3.82] - 2026-07-12
 
 ### Changed
@@ -550,7 +560,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.82...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.83...HEAD
+[0.3.83]: https://github.com/tigu77/tiguclaw/compare/v0.3.82...v0.3.83
 [0.3.82]: https://github.com/tigu77/tiguclaw/compare/v0.3.81...v0.3.82
 [0.3.81]: https://github.com/tigu77/tiguclaw/compare/v0.3.80...v0.3.81
 [0.3.80]: https://github.com/tigu77/tiguclaw/compare/v0.3.79...v0.3.80

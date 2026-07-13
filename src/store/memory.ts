@@ -220,6 +220,29 @@ export const countMemories = (): number => {
   return row.n;
 };
 
+/**
+ * name 이 주어진 SQL LIKE 패턴에 매칭하는 메모리 건수 — *제네릭* 유틸(패턴은 호출자가
+ * 결정). maintenance.ts(runMaintenanceScan) 가 '%growth%' 로 self-growth 자동메모리
+ * 콜드 누적을 관측(P1 detect 전용, 읽기전용)하는 데 쓴다. 이 store 함수 자체는 어떤
+ * 플러그인 이름도 모른다(§0 단방향 — 패턴 문자열은 core 정책 registry 가 데이터로 주입).
+ */
+export const countMemoriesByNamePattern = (likePattern: string): number => {
+  const db = requireDb("countMemoriesByNamePattern");
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM memories WHERE name LIKE ?`)
+    .get(likePattern) as { n: number };
+  return row.n;
+};
+
+/** 관측용 — transcripts 총 건수(콜드 보존, 무한이 정상). maintenance_status 정보 표시. */
+export const countTranscripts = (): number => {
+  const db = requireDb("countTranscripts");
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM transcripts`).get() as {
+    n: number;
+  };
+  return row.n;
+};
+
 // ─── §9 V2: transcript search (transcripts_fts) ─────────────────────────────
 // V8 통합 — messages 테이블 폐기로 messages_fts 분기 제거. transcripts_fts 전용.
 // source 는 "transcripts" 단일이지만 TranscriptHit 소비처(어댑터 prompt 포맷) 호환을

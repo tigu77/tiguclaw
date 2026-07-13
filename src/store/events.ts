@@ -32,6 +32,11 @@ export const insertEvent = (
     .run(ts, type, payload);
 };
 
+/** 관측용 — 전체 건수. maintenance_status(runMaintenanceScan) 가 RETENTION_KEEP 대비 표시. */
+export const countEvents = (): number =>
+  (getDb().prepare(`SELECT COUNT(*) AS n FROM events`).get() as { n: number })
+    .n;
+
 /** 최근 keepLast 건만 남기고 오래된 것 삭제 → 무한증가 방지. 삭제 행수 반환. */
 export const pruneEvents = (keepLast: number): number =>
   getDb()

@@ -63,6 +63,7 @@ import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
+import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
@@ -201,6 +202,9 @@ export const runOpenAi = async (
         ),
         await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),
         await adaptClaudeMcpServer(createProjectRegistryMcpServer(), "projects"),
+        // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =
+        // memory/projects/skills 와 동일 무조건 등록(claude/codex 와 parity, 계약서 §3.1).
+        await adaptClaudeMcpServer(createMaintenanceMcpServer(), "maintenance"),
         await adaptClaudeMcpServer(
           createSkillInvokeMcpServer(discoveryCwd, {
             channel: input.channel,

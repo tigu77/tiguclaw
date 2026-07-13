@@ -3277,6 +3277,9 @@
           group, el, body, countEl, lastEl, setOpen,
           lastSeq: -1, count: 0, closed: false,
           replyBubble: null, replyMsg: null, replyRaw: "",
+          // 인터리브(2026-07-13): sawTextSegment=이 턴이 kind:"text" 세그먼트를 냈나(out 중복 방지),
+          // closedByText=직전 텍스트 세그먼트가 도구 런을 닫음(다음 도구는 새 카드로 → 텍스트↔도구 교차).
+          sawTextSegment: false, closedByText: false,
         };
       };
 
@@ -3292,6 +3295,7 @@
           group, el: null, body: null, countEl: null, lastEl: null,
           setOpen: () => {}, lastSeq: -1, count: 0, closed: false,
           replyBubble: null, replyMsg: null, replyRaw: "",
+          sawTextSegment: false, closedByText: false, // 인터리브 상태(createTurnCard 와 동형).
         };
       };
 
@@ -3347,25 +3351,61 @@
 
       const renderActivity = (p, ts) => {
         const thread = p.threadKey || "?";
-        // dedup(기능 B) — chat-history 가 이미 그린 영속 스텝이면 SSE replay 는 스킵(중복 차단).
+        // dedup(기능 B) — chat-history 가 이미 그린 영속 스텝/세그먼트면 SSE replay 는 스킵(중복 차단).
         const ak = actKey(p.ts != null ? p.ts : ts, thread, p.seq);
         if (renderedActivityKeys.has(ak)) return;
         renderedActivityKeys.add(ak);
-        // 마스터 데이터 저장: 전체 payload 를 threadKey+seq 키로(클릭 시 상세 조회).
+        // 마스터 데이터 저장: 전체 payload 를 threadKey+seq 키로(클릭 시 상세 조회 · 텍스트도 일관 저장).
         activityByStep.set(stepKey(thread, p.seq), p);
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
+
+        // ── kind:"text" = 어시스턴트 텍스트 세그먼트(인터리브, 2026-07-13) ─────────────
+        // seq 순서상 자기 뒤 도구보다 먼저 도착(백엔드가 도구 전에 flush) → 진행 중 델타 버블을
+        // 이 세그먼트의 권위 마크다운으로 확정하고, 카드를 "텍스트로 닫힘" 표시해 다음 도구가
+        // 새 카드(=텍스트 아래)로 내려가게 한다. 델타 없이 세그먼트만 온 경우 버블을 새로 만든다.
+        if (p.kind === "text") {
+          let card = cardByThread.get(thread);
+          if (!card || !vtIndex.has(card.group) || card.closed) {
+            card = createDeltaGroup(p, ts, adapter, thread);
+            cardByThread.set(thread, card);
+            vtAppend(card.group);
+          }
+          const txt = String(p.text || "");
+          if (!card.replyBubble && txt !== "") ensureReplyBubble(card, ts); // 델타 없는 세그먼트 = 버블 신설.
+          if (card.replyMsg) {
+            setChatBody(card.replyMsg, txt, true);       // 평문 델타 → 세그먼트 마크다운 전체본(자가치유).
+            card.replyMsg.classList.remove("streaming");  // 타이핑 커서 off(세그먼트 확정).
+          }
+          card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
+          card.sawTextSegment = true;   // out.text 최종 버블 중복 렌더 방지(§5.1).
+          card.closedByText = true;     // 다음 도구는 새 카드로.
+          if ((p.seq ?? -1) > card.lastSeq) card.lastSeq = p.seq;
+          refreshChatEmpty();
+          scheduleRelayout();
+          if (currentView === "overview") setTimeout(showOverview, 0);
+          return;
+        }
+
         let card = cardByThread.get(thread);
-        const prevCard = card; // 직전 턴(있으면) — 새 턴 시작 시 접어 최신만 펼침 유지.
-        // 새 턴 = 카드 없음 / 제거됨 / seq 리셋 / 이미 답변으로 닫힌 턴 / 스텝카드 없는 delta-only 그룹.
+        const prevCard = card; // 직전 턴/런(있으면) — 새 카드 시작 시 접어 최신만 펼침 유지.
+        // 새 카드 = 카드 없음 / 제거됨 / seq 리셋 / 답변으로 닫힘 / delta-only 그룹 / 직전 텍스트가 런을 닫음.
         const isNewTurn =
-          !card || !vtIndex.has(card.group) || card.closed || !card.el || (p.seq ?? 0) <= card.lastSeq;
+          !card || !vtIndex.has(card.group) || card.closed || !card.el ||
+          (p.seq ?? 0) <= card.lastSeq || card.closedByText;
         if (isNewTurn) {
-          // ★최신/진행중 턴만 펼침(2026-07-10) — 새 턴이 시작되면 직전 턴을 접는다(클러터 방지).
+          // 같은 턴의 연속(텍스트 세그먼트가 도구 런을 분할, 또는 delta-only 뒤 첫 도구)이면
+          // sawTextSegment 를 승계해 turn 종료 시 out.text 이중 렌더를 막는다(seq 증가 = 같은 run).
+          const continuation =
+            prevCard && !prevCard.closed && vtIndex.has(prevCard.group) &&
+            (prevCard.closedByText || !prevCard.el) && (p.seq ?? 0) > prevCard.lastSeq;
+          // ★최신/진행중 카드만 펼침(2026-07-10) — 새 카드 시작 시 직전 카드를 접는다(도구 클러터↓,
+          // 단 직전 카드의 텍스트 버블은 turn-body 밖 그룹 형제라 접혀도 계속 보인다).
           if (prevCard && prevCard.el) {
             prevCard.el.classList.add("done-collapsed");
             const pc = prevCard.el.querySelector(".turn-caret"); if (pc) pc.textContent = "▶";
           }
           card = createTurnCard(p, ts, adapter, thread);
+          if (continuation && prevCard.sawTextSegment) card.sawTextSegment = true;
           cardByThread.set(thread, card);
           vtAppend(card.group);
         }
@@ -3585,6 +3625,18 @@
         // 누적 평문 델타는 폐기되고 out 전체본으로 치환 = 부분 렌더 오차 자가치유.
         if (isOut) {
           const card = cardByThread.get(thread);
+          // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 냈으면 마지막 텍스트는 이미
+          // 세그먼트 버블이 소유 → 최종 답변 버블을 따로 만들거나 승격하지 않는다(중복 방지). 턴만 마감.
+          if (card && card.sawTextSegment && vtIndex.has(card.group)) {
+            if (card.replyMsg) card.replyMsg.classList.remove("streaming"); // 혹시 남은 커서 정리.
+            card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
+            completeTurnGroup(thread);
+            localChatCount += 1;
+            refreshChatEmpty();
+            if (currentView === "overview") setTimeout(showOverview, 0);
+            scheduleRelayout();
+            return;
+          }
           if (card && card.replyBubble && vtIndex.has(card.group)) {
             setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
             card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
@@ -3772,6 +3824,14 @@
         return turn;
       };
 
+      // 이력 텍스트 세그먼트(인터리브, 2026-07-13) — 항상 보이는 어시스턴트 마크다운 버블(라이브
+      // 세그먼트 버블 파리티). 도구 런 카드(hist-turn)와 seq 순으로 교차 배치된다. actKey 등록으로
+      // 이후 SSE replay 가 같은 세그먼트를 중복 렌더 안 하게(도구 스텝과 동일 dedup).
+      const buildHistoryTextEl = (a) => {
+        renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
+        return buildHistoryDiv({ ts: a.ts, role: "assistant", text: a.text });
+      };
+
       // 메시지+활동 → 시간순 병합 후 연속된 같은 턴(threadKey·seq 증가)의 활동을 turn 으로 묶은
       // ASC 유닛 배열. 라이브 turn-card 파리티. 메시지·threadKey 변경·seq 리셋이 경계.
       const groupMergedItems = (entries, activities) => {
@@ -3780,14 +3840,32 @@
           ...activities.map((a) => ({ ts: a.ts, a })),
         ].sort((x, y) => x.ts - y.ts);
         const units = [];
-        let cur = null; // { threadKey, lastSeq, acts }
+        let cur = null; // { threadKey, lastSeq, acts } — 연속 도구 런(텍스트 경계에서 끊김).
+        let sawTextThread = null; // 직전 텍스트 세그먼트 스레드 → 뒤따르는 flat assistant row dedup.
         const flush = () => { if (cur && cur.acts.length) units.push({ kind: "turn", acts: cur.acts }); cur = null; };
         for (const it of merged) {
-          if (it.m) { flush(); units.push({ kind: "msg", entry: it.m }); }
-          else {
+          if (it.m) {
+            flush();
+            // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 가졌으면 뒤의 flat assistant
+            // chat_log 행은 세그먼트의 중복 → 드롭(단 msgKey 등록해 SSE out replay 도 재렌더 안 함).
+            if (it.m.role === "assistant" && sawTextThread && it.m.threadKey === sawTextThread) {
+              renderedMsgKeys.add(msgKey(it.m.ts, "assistant"));
+              sawTextThread = null;
+              continue;
+            }
+            sawTextThread = null;
+            units.push({ kind: "msg", entry: it.m });
+          } else {
             const a = it.a; const seq = typeof a.seq === "number" ? a.seq : 0;
-            if (cur && cur.threadKey === a.threadKey && seq > cur.lastSeq) { cur.acts.push(a); cur.lastSeq = seq; }
-            else { flush(); cur = { threadKey: a.threadKey, lastSeq: seq, acts: [a] }; }
+            if (a.kind === "text") {
+              flush();                                  // 텍스트 앞의 도구 런 마감(seq 순 교차).
+              units.push({ kind: "text", act: a });     // 항상 보이는 마크다운 버블(도구 런과 교차).
+              sawTextThread = a.threadKey;
+            } else if (cur && cur.threadKey === a.threadKey && seq > cur.lastSeq) {
+              cur.acts.push(a); cur.lastSeq = seq;
+            } else {
+              flush(); cur = { threadKey: a.threadKey, lastSeq: seq, acts: [a] };
+            }
           }
         }
         flush();
@@ -3800,12 +3878,17 @@
         // 엔드포인트 turn 은 채팅서 제외(방어적 — endpoint 는 chat_log 에 안 남지만 안전).
         const chatEntries = entries.filter((e) => !isEndpointThread(e.threadKey));
         const units = groupMergedItems(chatEntries, activities); // 항상 ASC(최古→최新).
+        // 유닛 → element. turn=도구 런 카드, text=마크다운 세그먼트 버블(인터리브), msg=flat 메시지.
+        const buildUnit = (u) =>
+          u.kind === "turn" ? buildHistoryTurnEl(u.acts)
+          : u.kind === "text" ? buildHistoryTextEl(u.act)
+          : buildHistoryMsgEl(u.entry);
         // 초기 로드(append=false): 오래된→최신 순으로 vtAppend. 페이지네이션(append=true, older
         // 배치): 노드를 모아 vtPrependOlder 로 앞(위)에 붙인다 — 둘 다 최종 vtItems 는 ASC 유지.
         if (append) {
           const nodes = [];
           for (const u of units) {
-            const el = u.kind === "turn" ? buildHistoryTurnEl(u.acts) : buildHistoryMsgEl(u.entry);
+            const el = buildUnit(u);
             if (el === null) continue;
             nodes.push(el);
             localChatCount += 1;
@@ -3813,7 +3896,7 @@
           vtPrependOlder(nodes);
         } else {
           for (const u of units) {
-            const el = u.kind === "turn" ? buildHistoryTurnEl(u.acts) : buildHistoryMsgEl(u.entry);
+            const el = buildUnit(u);
             if (el === null) continue;
             vtAppend(el);
             localChatCount += 1;

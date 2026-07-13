@@ -241,8 +241,15 @@ export interface RegionAActivityPayload {
    * 1 활동의 종류. Round 1 핵심 = "tool".
    *  - "tool": 도구/함수 호출 1개 (claude tool_use 블록, codex toolCalls 항목).
    *  - "turn": iteration 시작 1개 — openai spike 의 coarse floor 전용.
+   *  - "text" (2026-07-13, additive·하위호환): 도구 호출 사이(및 턴 종료 직전)에
+   *    낀 연속 assistant 텍스트 1덩어리(마크다운 원문). `seq` 는 tool activity 와
+   *    *같은* 어댑터 로컬 카운터(`activitySeq`)에서 뽑는다 — 그래서 seq 정렬 순서 =
+   *    실제 발행(=텍스트↔도구 인터리브) 순서가 된다. `_delta-stream.ts` 의
+   *    `llm.delta`(고volume·비영속·타이핑 보조 렌더용)와는 별개 레이어 — 이쪽은
+   *    "경계 확정된 완성 세그먼트 1건"으로, 저volume·영속 대상(기존 llm.activity
+   *    denylist 파이프 그대로 탄다). 빈 세그먼트는 발행 안 함(closeSegment() no-op).
    */
-  kind: "tool" | "turn";
+  kind: "tool" | "turn" | "text";
   /**
    * 사람이 읽는 한 줄. kind="tool" 이면 도구명, kind="turn" 이면 코어스 문구.
    */
@@ -297,6 +304,16 @@ export interface RegionAActivityPayload {
    * ★캡처/렌더 분리(ADR 2026-07-09): 여기(런타임)선 프리뷰 텍스트만, 렌더는 대시보드 몫.
    */
   output?: ActivityOutput;
+  /**
+   * 텍스트 세그먼트 본문 (2026-07-13, additive·optional). `kind==="text"` 일 때만
+   * 채운다 — 도구 경계 직전(또는 턴 종료)까지 누적된 연속 assistant 텍스트 원문
+   * (마크다운, 모델이 생성한 그대로). `kind` 가 "tool"/"turn" 이면 항상 미설정.
+   *
+   * ★LLM-agnostic(#2): 세 어댑터가 공유 레이어(`_delta-stream.ts` `closeSegment()`)로
+   * 동일하게 누적·경계 판단하고, 각 어댑터가 자기 `activitySeq++` 로 발행한다 —
+   * 세그먼트 경계 정책은 공유, seq 출처는 도구와 동일(어댑터 로컬).
+   */
+  text?: string;
 }
 
 /** 리치 도구 출력 프리뷰 (ADR 2026-07-09 슬라이스 2/3). */

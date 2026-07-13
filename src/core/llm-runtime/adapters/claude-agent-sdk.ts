@@ -774,6 +774,34 @@ export const runClaude = async (
     model: lastModel ?? undefined,
   });
 
+  // 대시보드 인터리브(2026-07-13) — 도구 경계(및 턴 종료) 직전까지 deltaStream 이
+  // 누적한 텍스트를 kind:"text" activity 로 발행. seq 는 도구와 *같은* activitySeq
+  // 카운터에서 뽑는다(closeSegment 자체의 delta seq 는 안 씀) — 그래야 seq 정렬 순서
+  // = 실제 발행(텍스트↔도구 인터리브) 순서. best-effort — 실패해도 turn 진행(원칙 3).
+  const closeTextSegment = (): void => {
+    const text = deltaStream.closeSegment();
+    if (text === undefined) return; // 빈 세그먼트 — no-op.
+    const segSeq = activitySeq++;
+    try {
+      bus.publish({
+        type: "llm.activity",
+        ts: Date.now(),
+        payload: {
+          channel: input.channel,
+          threadKey: input.threadKey,
+          adapter: "claude",
+          model: lastModel ?? undefined,
+          seq: segSeq,
+          kind: "text",
+          label: "text",
+          text,
+        } satisfies RegionAActivityPayload,
+      });
+    } catch {
+      /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
+    }
+  };
+
   try {
   for (;;) {
   try {
@@ -892,6 +920,9 @@ export const runClaude = async (
             } else {
               // 부모 top-level tool_use. name==="Task" 면 서브에이전트 spawn → 관측 잡 등록.
               // (nested 는 위에서 이미 분기되므로 여기 도달 = parent_tool_use_id===null 부모.)
+              // 이 도구 앞까지 누적된 연속 텍스트가 있으면 kind:"text" 로 먼저 닫는다
+              // (인터리브 순서 보존 — 텍스트 세그먼트가 이 도구보다 낮은 seq 를 받게).
+              closeTextSegment();
               const toolUseId = (block as { id?: unknown }).id;
               if (toolName === "Task" && typeof toolUseId === "string") {
                 registerTaskJob(toolUseId, toolInput);
@@ -979,6 +1010,8 @@ export const runClaude = async (
       lastUsage = undefined;
       succeeded = false;
       activitySeq = 0;
+      deltaStream.closeSegment(); // 세그먼트 버퍼 드레인(발행 안 함) — 실패한 첫 시도의 잔여
+      // 텍스트가 fresh 세션의 첫 세그먼트로 새지 않게(activitySeq=0 리셋과 동형 취지).
       toolTiming.clear(); // 실행시간(#3) 매핑도 리셋 — fresh 세션엔 이전 tool_use id 안 옴.
       // 서브에이전트 관측 리셋 — 첫 시도서 등록된 Task 잡을 닫고(고아 running 방지) 매핑
       // 초기화. fresh 세션엔 그 Task id 가 안 오므로 tool_result 로 닫힐 길 없음 → 여기서
@@ -1031,6 +1064,10 @@ export const runClaude = async (
     // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
     // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
     deltaStream.flush();
+    // 트레일링 텍스트 세그먼트 닫기(2026-07-13 인터리브) — 마지막 도구 이후(또는 도구가
+    // 전혀 없었던) 턴 종료 시점까지 누적된 텍스트를 kind:"text" 로 발행. flush() 다음(델타
+    // 코얼레스 버퍼와 무관한 별개 버퍼) — 순서·타이밍 상관없이 항상 이 자리 1회.
+    closeTextSegment();
     // 서브에이전트 관측 고아 정리 — 턴 종료(성공·throw·abort)까지 tool_result 로 안 닫힌
     // Task 잡(SDK abort·에러로 서브 미완, 또는 완료 메시지 유실)을 running 고아로 남기지
     // 않는다. 정상 완료는 completeTaskJob 이 이미 delete 했으므로 여기 남은 건 미완만 →

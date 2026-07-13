@@ -254,6 +254,15 @@ interface HistoryActivity {
   detail: string;
   diff?: unknown; // 리치 diff(ActivityDiff) — 있으면 그대로 통과(대시보드가 렌더). 2026-07-09.
   output?: unknown; // 리치 출력(ActivityOutput) — phase:"end" 에서 시작 스텝으로 병합. 2026-07-09.
+  /**
+   * "tool" | "text" (2026-07-13, additive). 미지정 시 프런트 기본 해석 = "tool"
+   * (하위호환 — 옛 이력에 kind 필드가 아예 없던 시절과 동형 형상). "text" 면 `text`
+   * 필드가 그 세그먼트 본문(마크다운). seq 는 tool 활동과 같은 카운터 공간 — seq 정렬
+   * = 인터리브 렌더 순서(`docs/decisions/2026-07-13-dashboard-turn-interleave.md`).
+   */
+  kind?: "tool" | "text";
+  /** kind==="text" 일 때만 — 그 세그먼트의 마크다운 원문. 2026-07-13. */
+  text?: string;
 }
 const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] => {
   if (entries.length === 0) return [];
@@ -278,19 +287,36 @@ const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] =>
         kind?: unknown;
         diff?: unknown;
         output?: unknown;
+        text?: unknown;
       };
       try {
         p = JSON.parse(e.payload);
       } catch {
         continue;
       }
-      if (p.kind !== "tool") continue;
+      // 2026-07-13 인터리브 — "tool" 외에 "text"(도구 경계 텍스트 세그먼트)도 이력에 admit.
+      // "turn"(coarse floor) 은 여전히 제외 — 렌더 대상 아님(기존과 동일).
+      if (p.kind !== "tool" && p.kind !== "text") continue;
       const tk = typeof p.threadKey === "string" ? p.threadKey : "";
       if (tk.startsWith("worker:") || tk.startsWith("agent:") || tk.startsWith("gateway:")) {
-        continue; // 잡·게이트웨이 스텝은 채팅 이력 아님.
+        continue; // 잡·게이트웨이 스텝은 채팅 이력 아님(text 세그먼트도 depth>0 은 애초 미발행).
       }
       const seq = typeof p.seq === "number" ? p.seq : 0;
       const adapter = typeof p.adapter === "string" ? p.adapter : "";
+      if (p.kind === "text") {
+        // 텍스트 세그먼트 — phase/output/diff 없음(발행측이 안 채움). 그대로 1건.
+        out.push({
+          ts: e.ts,
+          threadKey: tk,
+          adapter,
+          seq,
+          label: typeof p.label === "string" ? p.label : "text",
+          detail: "",
+          kind: "text",
+          text: typeof p.text === "string" ? p.text : "",
+        });
+        continue;
+      }
       if (p.phase === "end") {
         // 실행시간 주석 이벤트 — 스텝은 아니나 output 이 있으면 시작 스텝에 병합.
         if (p.output !== undefined && p.output !== null) endOutputs.set(okey(tk, adapter, seq), p.output);
@@ -303,6 +329,7 @@ const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] =>
         seq,
         label: typeof p.label === "string" ? p.label : "tool",
         detail: typeof p.detail === "string" ? p.detail : "",
+        kind: "tool",
         ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
       });
     }

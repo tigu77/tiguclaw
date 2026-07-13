@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.90] - 2026-07-13
+
+### Added
+- **Dashboard chat now shows each assistant turn as an interleaved sequence of text and tool steps, in the order they happened** (like Claude Code) — e.g. *text → tool → tool → text → tool → text* — instead of bundling all tools into one block with the answer below. This is persisted, so it renders identically live, after a reload, and on any device. Works across all model backends (with per-iteration granularity on the ChatGPT/codex backend). A text segment is stored as an additive field on the existing tool-activity event (no schema migration); turns older than the event-retention window gracefully fall back to the previous bundled view.
+
 ## [0.3.89] - 2026-07-13
 
 ### Fixed
@@ -593,7 +598,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.89...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.90...HEAD
+[0.3.90]: https://github.com/tigu77/tiguclaw/compare/v0.3.89...v0.3.90
 [0.3.89]: https://github.com/tigu77/tiguclaw/compare/v0.3.88...v0.3.89
 [0.3.88]: https://github.com/tigu77/tiguclaw/compare/v0.3.87...v0.3.88
 [0.3.87]: https://github.com/tigu77/tiguclaw/compare/v0.3.86...v0.3.87

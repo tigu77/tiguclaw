@@ -501,6 +501,34 @@ export const runOpenAi = async (
     model,
   });
 
+  // 대시보드 인터리브(2026-07-13) — 도구 경계(및 턴 종료) 직전까지 deltaStream 이
+  // 누적한 텍스트를 kind:"text" activity 로 발행. seq 는 도구와 *같은* activitySeq
+  // 카운터에서 뽑는다(closeSegment 자체의 delta seq 는 안 씀) — seq 정렬 순서 = 실제
+  // 발행(텍스트↔도구 인터리브) 순서. best-effort — 실패해도 turn 진행(원칙 3).
+  const closeTextSegment = (): void => {
+    const text = deltaStream.closeSegment();
+    if (text === undefined) return; // 빈 세그먼트 — no-op.
+    const segSeq = activitySeq++;
+    try {
+      bus.publish({
+        type: "llm.activity",
+        ts: Date.now(),
+        payload: {
+          channel: input.channel,
+          threadKey: input.threadKey,
+          adapter: "openai",
+          model,
+          seq: segSeq,
+          kind: "text",
+          label: "text",
+          text,
+        } satisfies RegionAActivityPayload,
+      });
+    } catch {
+      /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
+    }
+  };
+
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
@@ -538,6 +566,9 @@ export const runOpenAi = async (
             | { type?: unknown; name?: unknown; arguments?: unknown; callId?: unknown; call_id?: unknown }
             | undefined;
           if (raw?.type === "function_call" && typeof raw.name === "string") {
+            // 이 도구 앞까지 누적된 연속 텍스트가 있으면 kind:"text" 로 먼저 닫는다
+            // (인터리브 순서 보존 — 텍스트 세그먼트가 이 도구보다 낮은 seq 를 받게).
+            closeTextSegment();
             const seq = activitySeq++;
             // 실행시간(#3) — callId 로 시작 기록 → tool_output 에서 durationMs.
             const callId =
@@ -640,6 +671,9 @@ export const runOpenAi = async (
       // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
       // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
       deltaStream.flush();
+      // 트레일링 텍스트 세그먼트 닫기(2026-07-13 인터리브) — 마지막 도구 이후(또는 도구가
+      // 전혀 없었던) 턴 종료 시점까지 누적된 텍스트를 kind:"text" 로 발행.
+      closeTextSegment();
       if (closeServers) {
         for (const server of mcpServers) {
           try {

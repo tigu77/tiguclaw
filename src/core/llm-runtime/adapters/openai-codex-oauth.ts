@@ -1761,6 +1761,37 @@ export const runOpenAiCodex = async (
     adapter: "codex",
     model,
   });
+  // 대시보드 인터리브(2026-07-13) — codex 는 도구가 iteration SSE 완전 소비 후 사후
+  // 일괄 발행되는 구조라(실현가능성 감사 `_workspace/interleave_region_feasibility.md`
+  // §1) claude/openai 처럼 "그 도구 직전"에 못 닫는다. 대신 "iteration 확정 완료"
+  // 시점(sseResult destructure 직후, toolCalls 발행 루프 진입 직전)에 그 iteration
+  // 이 흘린 텍스트를 kind:"text" 로 닫는다 — iteration 단위 인터리브(문서화된 degrade,
+  // 실전 트래픽은 사실상 완전 충실도). seq 는 도구와 같은 activitySeq 카운터.
+  // ★stall 재시도가 도는 finally(위 progressTimer.done() 옆)에는 넣지 않는다 — 재시도
+  // 중간에 닫으면 진행 중 텍스트가 유실/중복될 위험(감사 §3 명시 경고).
+  const closeTextSegment = (): void => {
+    const text = deltaStream.closeSegment();
+    if (text === undefined) return; // 빈 세그먼트 — no-op.
+    const segSeq = activitySeq++;
+    try {
+      bus.publish({
+        type: "llm.activity",
+        ts: Date.now(),
+        payload: {
+          channel: input.channel,
+          threadKey: input.threadKey,
+          adapter: "codex",
+          model,
+          seq: segSeq,
+          kind: "text",
+          label: "text",
+          text,
+        } satisfies RegionAActivityPayload,
+      });
+    } catch {
+      /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
+    }
+  };
   // ★워커/서브에이전트 서술 트레이스 (2026-07-03) — deltaStream(대시보드 fan-out)은 depth-0
   // 전용이라 워커(workerDepth>0)·서브에이전트(depth>0) 서술이 그간 어디에도 안 남아 사후
   // 진단 불가였다(실측: 워커 크롤/루프를 델타 미영속으로 확인 못 함). event-persist 의
@@ -2087,6 +2118,10 @@ export const runOpenAiCodex = async (
       }
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) finalUsage = usage;
+      // 이 iteration 이 흘린 텍스트를 kind:"text" 로 닫는다 — "iteration 확정 완료"
+      // 시점(재시도 루프 아님, 여기 도달 = SSE 완전 소비·결과 확정)에서, 이번 iteration
+      // 의 toolCalls 보다 앞선 seq 를 받게 도구 발행 루프 진입 전에 닫는다.
+      closeTextSegment();
       // llm.activity — 모델이 호출하려는 도구당 1 activity (실행 성공/실패 무관,
       // 의도 시점이 곧 "무엇을 하려는 중"). callTool 실행 루프와 별개. final-flush(tools:[])
       // turn 은 toolCalls 가 비어 자연히 0 publish.

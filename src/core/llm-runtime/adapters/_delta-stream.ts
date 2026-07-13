@@ -19,6 +19,17 @@
  *   (push/flush 모두 무시) — 발행 비용 0, out↔버블 1:1 유지.
  *
  * ★raw SDK 구조 금지: delta 에는 순수 텍스트 증분만(누적본·sdk_message 아님).
+ *
+ * ★텍스트 세그먼트(`closeSegment()`, 2026-07-13, additive) — 대시보드 인터리브
+ *   (`docs/decisions/2026-07-13-dashboard-turn-interleave.md`) 를 위해 `push()` 가
+ *   흘리는 텍스트를 `llm.delta` 코얼레스 버퍼와 *별도*의 `segBuf` 에도 누적한다.
+ *   `closeSegment()` 호출 시 `segBuf` 를 통째로 반환하고 비운다(비어 있으면
+ *   `undefined` — no-op, 빈 세그먼트 발행 금지). 이 계층은 "언제 세그먼트를 닫을지
+ *   정책 + 텍스트 누적"만 소유한다 — *발행*(`llm.activity kind:"text"`, seq 채번)은
+ *   어댑터 몫이다(어댑터가 이미 가진 도구용 `activitySeq++` 를 그대로 재사용해야
+ *   seq 정렬 순서 = 실제 발행 순서가 됨 — 이 파일의 내부 delta seq 와는 무관).
+ *   `llm.delta` 스트리밍은 완전히 그대로(무변경·additive) — closeSegment 는 별개
+ *   버퍼를 읽을 뿐 delta 파이프라인을 건드리지 않는다.
  */
 import type { ChannelName } from "../../../channels/types.js";
 import { getEventBus } from "../../eventbus.js";
@@ -46,6 +57,13 @@ export interface DeltaStream {
   flush(): void;
   /** 현재 모델 갱신(어댑터가 늦게 알게 되는 경우). best-effort 라벨. */
   setModel(model: string | undefined): void;
+  /**
+   * 도구 경계 직전(또는 턴 종료)까지 `push()` 로 누적된 텍스트를 통째로 반환하고
+   * 세그먼트 버퍼를 비운다(`llm.delta` 코얼레스 버퍼와는 별개 — 그쪽은 안 건드림).
+   * 누적분이 없으면 `undefined`(no-op — 호출측이 빈 세그먼트를 발행하지 않게).
+   * seq 채번·`llm.activity` 발행은 호출측(어댑터) 책임 — 이 함수는 텍스트만 준다.
+   */
+  closeSegment(): string | undefined;
 }
 
 /** no-op 인스턴스 — enabled=false(depth>0) 시 어댑터 코드 분기 없이 동일 API. */
@@ -53,6 +71,7 @@ const NOOP: DeltaStream = {
   push: () => {},
   flush: () => {},
   setModel: () => {},
+  closeSegment: () => undefined,
 };
 
 /**
@@ -73,6 +92,9 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let model = config.model;
+  // closeSegment() 전용 누적 버퍼 — coalesce 버퍼(buf)와 완전 별개(타이머 없음,
+  // push() 시 동기 적재만). 이래야 setTimeout 지연이 세그먼트 경계 순서를 안 깬다.
+  let segBuf = "";
 
   const clearTimer = (): void => {
     if (timer !== undefined) {
@@ -108,6 +130,7 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   return {
     push(delta: string): void {
       if (delta.length === 0) return;
+      segBuf += delta; // closeSegment() 용 — coalesce 타이머와 무관하게 즉시 동기 적재.
       buf += delta;
       if (buf.length >= COALESCE_CHARS) {
         emit(); // 글자 상한 — 즉시 flush(레이턴시 가드).
@@ -122,6 +145,12 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
     },
     setModel(m: string | undefined): void {
       if (m !== undefined) model = m;
+    },
+    closeSegment(): string | undefined {
+      if (segBuf.length === 0) return undefined; // 빈 세그먼트 — no-op.
+      const text = segBuf;
+      segBuf = "";
+      return text;
     },
   };
 }

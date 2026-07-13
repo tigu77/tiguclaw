@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.87] - 2026-07-13
+
+### Changed
+- **Dashboard chat now virtualizes the transcript (Claude-Code style), so scrolling up through a long history stays smooth and fast.** Only the messages near the viewport are kept in the DOM (measured heights, a single sizer + offset window), so you can scroll back indefinitely without the list getting heavy — and without the earlier "stuck at the top / blank space" failures. Live streaming, stick-to-bottom, and date separators are preserved.
+
 ## [0.3.86] - 2026-07-13
 
 ### Changed
@@ -578,7 +583,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.86...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.87...HEAD
+[0.3.87]: https://github.com/tigu77/tiguclaw/compare/v0.3.86...v0.3.87
 [0.3.86]: https://github.com/tigu77/tiguclaw/compare/v0.3.85...v0.3.86
 [0.3.85]: https://github.com/tigu77/tiguclaw/compare/v0.3.84...v0.3.85
 [0.3.84]: https://github.com/tigu77/tiguclaw/compare/v0.3.83...v0.3.84

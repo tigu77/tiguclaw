@@ -279,12 +279,14 @@
       body[data-chat-panel="log"] .log-tools { display:flex; }
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
       #ev-filter:focus, #chat-input:focus { outline:none; border-color:rgba(125,211,252,.55); }
-      #stream { flex:1; overflow-y:auto; padding:10px; }
-      /* 대화 패널: 표준 채팅 — 최신이 맨 아래, 열면 하단 고정. 스트림은 prepend(최신=firstChild)
-         이라 column-reverse 로 시각만 뒤집어 오래된 것=위·최신=아래. scrollTop=0(=시각 하단)이
-         브라우저 기본이라 열면 최신이 보인다. 위→아래 = 과거→최신(표준 채팅 순서). 그룹 내부
-         (스텝→답변)는 그룹이 단일 flex 아이템이라 영향 없음. 로그 패널은 기존대로. */
-      body[data-chat-panel="chat"] #stream { display:flex; flex-direction:column-reverse; }
+      #stream { flex:1; overflow-y:auto; padding:10px; position:relative; }
+      /* 대화 채팅 = CC식 가상화(윈도잉) — 위→아래(최古 위·최新 아래) 정상 흐름. 스크롤 컨테이너
+         (#stream)는 position:relative, 그 안 .vt-sizer 가 총높이(측정치)만큼 스크롤바를 만들고,
+         .vt-window(absolute) 가 뷰포트±버퍼 아이템만 마운트해 translateY 로 얹는다. 아이템 간격은
+         gap 로 균일(margin:0!important) → 기하 단순. scrollTop=scrollHeight = 최신(하단) 고정. */
+      .vt-sizer { position:relative; width:100%; }
+      .vt-window { position:absolute; top:0; left:0; right:0; display:flex; flex-direction:column; gap:8px; }
+      .vt-window > * { margin:0 !important; }
       /* 채팅 패널: 일반 이벤트는 숨기되, 턴 그룹(스텝 리스트+답변)은 대화 흐름에 인터리빙. */
       body[data-chat-panel="chat"] .ev:not(.local):not(.in-group) { display:none !important; }
       /* 로그 패널: 로컬 채팅 버블·턴 그룹 래퍼는 숨기고, 그룹 안 turn-card 만 펼침 표시. */
@@ -920,16 +922,8 @@
         mcp: "🧩",
       };
       const LAYERS = ["meta_infra", "in_tree", "discovered"];
-      // 하단(라이브·타이핑 위치)에 마운트 유지할 메시지 수. 타이핑 랙의 직접 레버 —
-      // 마운트 노드 수 ∝ 키입력당 리플로우 시간(실측: 176메시지=9006노드=9.6ms). 낮출수록 타이핑
-      // 빨라지고, 그 위 과거는 스크롤 시 윈도잉이 부드럽게 로드/마운트. 200→40 = 리플로우 ~4배↓.
-      const MAX_EVENTS = 20;
-      // 과거 열람(스크롤업) 중 DOM 상한 — loadOlder 가 이 개수에서 로드를 멈춰 바운드한다.
-      // 무한 증가 시 매 메시지 O(n) 핫패스(refreshDateDividers 등)가 O(n²) 로 누적돼 "쌓일수록
-      // 느려짐". near-bottom 타이트 바운드(MAX_EVENTS)보다 넉넉해 보던 이력을 넓게 열람하되(플레인
-      // 페이지네이션), 언바운드는 막는다. autoGrow 리플로우가 이미 제거돼(CSS-only) 이 정도
-      // 마운트는 타이핑에 무해.
-      const HARD_MAX_EVENTS = MAX_EVENTS * 6; // 120
+      // (구 MAX_EVENTS/HARD_MAX_EVENTS 는 CC식 가상화 도입으로 제거 — 마운트 노드 수는 뷰포트±버퍼로
+      //  바운드되고, 보관 아이템 상한은 VT_MAX_ITEMS(vtCap)가 담당한다.)
       // 렌더 dedup Set/Map(renderedActivityKeys·activityByStep) 상한 — DOM prune 과 무관하게
       // 활동/스텝마다 누적돼 세션이 길어지면 무한 증가(정상 사용에서도). DOM 윈도우(≤HARD_MAX)
       // 보다 훨씬 크게 잡아, 초과 시 가장 오래된(삽입순=시간순) 것부터 25% 버린다 — 버려지는 건
@@ -2328,7 +2322,8 @@
 
       filterEl.addEventListener("input", () => {
         filterText = filterEl.value.trim().toLowerCase();
-        for (const child of stream.children) {
+        // 일반 이벤트(알 수 없는 유형)는 로그 싱크(데드 로그 패널용·채팅선 숨김)에 쌓인다.
+        for (const child of logSink.children) {
           const t = child.dataset.type || "";
           child.style.display =
             filterText === "" || t.includes(filterText) ? "" : "none";
@@ -2807,38 +2802,275 @@
           el.style.display = "none";
         }
       };
-      // 사용자가 라이브(최신)를 보고 있는지 판정. column-reverse 라 최신=시각 하단=scrollTop≈0
-      // (위로 스크롤하면 음수). |scrollTop| < 80px = near-newest(하단 근처). prune 보류·older
-      // 로드 스킵 판정에 쓰인다. (이름 isNearBottom = 최신=하단 이라 문자 그대로.)
-      const NEAR_BOTTOM_PX = 80;
-      const isNearBottom = () => Math.abs(stream.scrollTop) < NEAR_BOTTOM_PX;
+      // ── CC식 가상화(윈도잉) — #stream 을 위→아래(최古 위·최新 아래) 흐름으로 바운드 렌더 ──
+      // vtItems: 오래된→최신 순서로 실 DOM 노드(스트리밍 중에도 살아있게 detached 로 보관)를 들고,
+      // 뷰포트±버퍼만 마운트한다. 높이는 ResizeObserver 로 실측(측정 전 추정치). 스틱-투-바텀은
+      // scrollTop=scrollHeight, 프리펜드/측정 시엔 앵커 보정으로 점프 0. (구 역방향 flex·상한 prune·
+      // 날짜구분 MutationObserver·센티넬 IntersectionObserver 를 전부 대체.)
+      const VT_EST_H = 72;         // 미측정 아이템 추정 높이(px).
+      const VT_DIVIDER_EST_H = 28; // 날짜 구분선 추정 높이(px).
+      const VT_GAP = 8;            // .vt-window flex gap 과 일치(슬롯 높이 = 실측 + gap).
+      const VT_BUFFER = 800;       // 뷰포트 위·아래 여분 마운트(px). older 로드 트리거 임계도 겸함.
+      const VT_MAX_ITEMS = 4000;   // 보관 아이템 상한(하단 고정 시 최古 detached 부터 드롭).
 
-      // 채팅을 최신(맨아래)으로 고정. column-reverse 라 scrollTop=0=시각 하단=최신. 초기 이력
-      // 로드/뷰 진입 시 브라우저 앵커 드리프트를 명시 보정(증상: 열면 엉뚱한 위치). rAF 2회 =
-      // 레이아웃·마크다운·날짜구분선 반영 후 확정.
-      const scrollChatToNewest = () => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => { stream.scrollTop = 0; });
-        });
+      // sizer(스크롤바 총높이) > window(마운트 서브셋). #chat-empty·#log-empty 는 #stream 직속 형제로 유지.
+      const vtSizer = document.createElement("div");
+      vtSizer.className = "vt-sizer";
+      const vtWindow = document.createElement("div");
+      vtWindow.className = "vt-window";
+      vtSizer.appendChild(vtWindow);
+      stream.appendChild(vtSizer);
+      // 일반 이벤트(알 수 없는 유형) 싱크 — 채팅선 숨김·로그 패널(데드)용. vtItems 오염 방지.
+      const logSink = document.createElement("div");
+      logSink.id = "log-sink";
+      logSink.style.display = "none";
+      stream.appendChild(logSink);
+      const LOG_SINK_MAX = 300;
+
+      const vtItems = [];        // { node, h, measured, isDivider, top } — 오래된→최신.
+      const vtIndex = new Map(); // node -> item.
+      let stickBottom = true;    // 하단(최신) 고정 팔로우. 사용자가 위로 스크롤하면 해제.
+      let vtProgrammatic = false; // 프로그램적 scrollTop 조정 가드(scroll 리스너 무시).
+
+      const slotH = (it) =>
+        (it.measured ? it.h : (it.isDivider ? VT_DIVIDER_EST_H : VT_EST_H)) + VT_GAP;
+
+      // 메시지 노드 → 수치 ts(날짜 경계 판정). 턴 그룹은 내부 첫 [data-ts] 를 본다.
+      const vtTsOf = (el) => {
+        if (el.classList && el.classList.contains("date-divider")) return null;
+        if (el.dataset && el.dataset.ts) return Number(el.dataset.ts);
+        const inner = el.querySelector ? el.querySelector("[data-ts]") : null;
+        return inner && inner.dataset.ts ? Number(inner.dataset.ts) : null;
       };
 
-      // stick-to-bottom(따라가기) — 사용자가 최신(하단)을 보고 있으면(near-bottom) 새 메시지를
-      // 자동으로 따라간다. 위로 스크롤(과거 열람)해 벗어나면 stickBottom=false → 끌어내리지 않는다.
-      // (전송 시엔 submit 핸들러가 강제 true+스크롤 — 아래.) capStream 의 near-bottom scrollTop=0
-      // 과 목표(scrollTop=0)가 같아 중복돼도 무해하나, 이쪽은 사용자 스크롤 의도를 연속 추적한다.
-      let stickBottom = true;
-      // 스크롤마다 stick 추적 + 점프버튼 갱신만. (과거 열람은 아래 older 센티넬이 플레인
-      // 페이지네이션으로 로드 — 가상화/언마운트 없음. DOM 은 capStream/loadOlder 상한으로 바운드.)
-      stream.addEventListener("scroll", () => {
-        stickBottom = isNearBottom();
-        updateChatJump();
-      }, { passive: true });
-      const followIfSticky = () => { if (stickBottom) scrollChatToNewest(); };
+      // 아이템 높이 실측 — 측정되면 model 갱신 후 relayout(추정→실측 정합).
+      const vtObserver = new ResizeObserver((entries) => {
+        let changed = false;
+        for (const e of entries) {
+          const it = vtIndex.get(e.target);
+          if (!it) continue;
+          const h = e.target.offsetHeight;
+          if (h > 0 && (!it.measured || Math.abs(it.h - h) > 0.5)) {
+            it.h = h; it.measured = true; changed = true;
+          }
+        }
+        if (changed) scheduleRelayout();
+      });
+      const vtContainerRO = new ResizeObserver(() => scheduleRelayout());
+      vtContainerRO.observe(stream);
 
-      // 최신으로 점프 버튼 — 하단 근처(isNearBottom)면 숨김, 위로 스크롤(과거 열람) 중이면 표시.
-      // 클릭 = 하단 고정 + 팔로우 재활성(capStream 이 near-bottom 상한으로 되접음).
+      let vtRaf = 0;
+      const scheduleRelayout = () => {
+        if (vtRaf) return;
+        vtRaf = requestAnimationFrame(() => { vtRaf = 0; relayout(); });
+      };
+      const setScrollTop = (v) => {
+        vtProgrammatic = true;
+        stream.scrollTop = v;
+        requestAnimationFrame(() => { vtProgrammatic = false; });
+      };
+
+      const relayout = () => {
+        // 누적 top(슬롯=실측+gap) + 총합 → sizer 높이(스크롤바).
+        let total = 0;
+        for (const it of vtItems) { it.top = total; total += slotH(it); }
+        vtSizer.style.height = total + "px";
+        const clientH = stream.clientHeight;
+        if (clientH === 0) return; // 숨김(다른 뷰) → 마운트 스킵.
+
+        // 앵커(프리펜드/측정 점프 방지) — 스틱 아니면 현재 뷰 상단 아이템의 화면 오프셋 보존.
+        let anchor = null;
+        if (!stickBottom) {
+          const st = stream.scrollTop;
+          for (const it of vtItems) {
+            if (it.top + slotH(it) > st) { anchor = { it: it, off: it.top - st }; break; }
+          }
+        }
+
+        // 가시 범위(±버퍼). 스틱이면 하단 기준으로 범위를 잡는다.
+        const scrollTop = stickBottom ? Math.max(0, total - clientH) : stream.scrollTop;
+        const viewTop = scrollTop - VT_BUFFER;
+        const viewBot = scrollTop + clientH + VT_BUFFER;
+        let first = -1, last = -1;
+        for (let i = 0; i < vtItems.length; i++) {
+          const it = vtItems[i];
+          if (it.top + slotH(it) < viewTop) continue;
+          if (it.top > viewBot) break;
+          if (first === -1) first = i;
+          last = i;
+        }
+
+        // 마운트 집합 교체 — 범위 밖 detach, 범위 안을 순서대로 mount(노드 참조·observer 유지).
+        if (first === -1) {
+          while (vtWindow.firstChild) vtWindow.removeChild(vtWindow.firstChild);
+          vtWindow.style.transform = "translateY(0px)";
+        } else {
+          const desired = [];
+          for (let i = first; i <= last; i++) desired.push(vtItems[i].node);
+          const desiredSet = new Set(desired);
+          for (const ch of Array.from(vtWindow.children)) {
+            if (!desiredSet.has(ch)) vtWindow.removeChild(ch);
+          }
+          for (let k = 0; k < desired.length; k++) {
+            const node = desired[k];
+            const cur = vtWindow.children[k];
+            if (cur !== node) vtWindow.insertBefore(node, cur || null);
+          }
+          vtWindow.style.transform = "translateY(" + vtItems[first].top + "px)";
+        }
+
+        // 스크롤 위치 확정 — 스틱이면 하단, 아니면 앵커 복원(둘 다 프로그램적 = 리스너 무시).
+        if (stickBottom) {
+          setScrollTop(total + 40); // 브라우저가 최대(하단)로 클램프.
+        } else if (anchor) {
+          setScrollTop(anchor.it.top - anchor.off);
+        }
+      };
+
+      // 날짜 구분선 재계산 — 구조 변경(append/prependOlder/history batch/cap) 후 호출. 기존 divider
+      // 아이템 제거 후, 오래된→최신 walk 하며 날짜 바뀌는 첫 아이템 앞에 divider 아이템 삽입.
+      const vtRecomputeDividers = () => {
+        for (let i = vtItems.length - 1; i >= 0; i--) {
+          const it = vtItems[i];
+          if (it.isDivider) {
+            vtObserver.unobserve(it.node);
+            vtIndex.delete(it.node);
+            if (it.node.parentNode) it.node.parentNode.removeChild(it.node);
+            vtItems.splice(i, 1);
+          }
+        }
+        let prevKey = null;
+        for (let i = 0; i < vtItems.length; i++) {
+          const ts = vtTsOf(vtItems[i].node);
+          if (ts === null) continue;
+          const k = dateKey(ts);
+          if (k !== prevKey) {
+            const div = document.createElement("div");
+            div.className = "date-divider";
+            const span = document.createElement("span");
+            span.textContent = fmtDate(ts);
+            div.appendChild(span);
+            const it = { node: div, h: 0, measured: false, isDivider: true, top: 0 };
+            vtItems.splice(i, 0, it);
+            vtIndex.set(div, it);
+            vtObserver.observe(div);
+            prevKey = k;
+            i++; // 방금 삽입한 divider 건너뜀.
+          }
+        }
+      };
+
+      const vtMakeItem = (node) => ({
+        node: node, h: 0, measured: false,
+        isDivider: !!(node.classList && node.classList.contains("date-divider")), top: 0,
+      });
+
+      // 최신 아이템 추가(하단). stick 이면 relayout 이 따라간다.
+      const vtAppend = (node) => {
+        if (vtIndex.has(node)) return;
+        const it = vtMakeItem(node);
+        vtItems.push(it);
+        vtIndex.set(node, it);
+        vtObserver.observe(node);
+        vtRecomputeDividers();
+        vtCap();
+        scheduleRelayout();
+      };
+
+      // 과거 배치(오래된→최신)를 앞(위)에 붙임. 늘어난 위 높이만큼 scrollTop 을 먼저 밀어 점프 방지
+      // (측정 후 앵커가 정밀 보정). older 로드는 not-stick(스크롤업) 상태에서만 호출됨.
+      const vtPrependOlder = (nodes) => {
+        if (!nodes || !nodes.length) return;
+        const newItems = [];
+        let addedH = 0;
+        for (const node of nodes) {
+          if (vtIndex.has(node)) continue;
+          const it = vtMakeItem(node);
+          newItems.push(it);
+          vtIndex.set(node, it);
+          vtObserver.observe(node);
+          addedH += slotH(it);
+        }
+        if (!newItems.length) return;
+        vtItems.unshift.apply(vtItems, newItems);
+        if (addedH) setScrollTop(stream.scrollTop + addedH);
+        vtRecomputeDividers();
+        scheduleRelayout();
+      };
+
+      const vtRemove = (node) => {
+        const it = vtIndex.get(node);
+        if (!it) return;
+        vtObserver.unobserve(node);
+        vtIndex.delete(node);
+        const idx = vtItems.indexOf(it);
+        if (idx !== -1) vtItems.splice(idx, 1);
+        if (node.parentNode === vtWindow) vtWindow.removeChild(node);
+        scheduleRelayout();
+      };
+
+      const vtClear = () => {
+        for (const it of vtItems) {
+          vtObserver.unobserve(it.node);
+          if (it.node.parentNode) it.node.parentNode.removeChild(it.node);
+        }
+        vtItems.length = 0;
+        vtIndex.clear();
+        scheduleRelayout();
+      };
+
+      // 보관 상한 — 하단 고정(라이브) 중일 때만 최古 detached 아이템부터 드롭(보던 이력 보존).
+      // dedup 키 정리 + oldestLoadedTs 갱신(구 refreshOldestCursorAfterPrune 대체)을 접어 넣는다.
+      const vtCap = () => {
+        if (!stickBottom || vtItems.length <= VT_MAX_ITEMS) return;
+        let dropped = 0;
+        while (vtItems.length > VT_MAX_ITEMS) {
+          const it = vtItems[0];
+          if (it.node.parentNode === vtWindow) break; // 마운트(가시) 최古면 중단.
+          vtObserver.unobserve(it.node);
+          vtIndex.delete(it.node);
+          vtItems.shift();
+          if (it.node.dataset && it.node.dataset.ts) {
+            const t = parseInt(it.node.dataset.ts, 10);
+            const ty = it.node.dataset.type || "";
+            if (Number.isFinite(t) && ty.indexOf("channel.message") === 0) {
+              const role = ty.endsWith(".out") ? "assistant" : "user";
+              renderedMsgKeys.delete(msgKey(t, role));
+            }
+          }
+          dropped += 1;
+        }
+        if (dropped) {
+          for (const it of vtItems) {
+            const ts = vtTsOf(it.node);
+            if (ts !== null) { oldestLoadedTs = ts; break; }
+          }
+          if (reachedOldest) reachedOldest = false; // 앞이 더 있을 수 있음 → 재로드 가능.
+          vtRecomputeDividers();
+        }
+        capKeyStore(renderedActivityKeys);
+        capKeyStore(activityByStep);
+      };
+
+      // 채팅을 최신(하단)으로 고정 — 뷰 진입·전송·초기 이력 로드 후.
+      const scrollChatToNewest = () => {
+        stickBottom = true;
+        scheduleRelayout();
+      };
+
+      // 스크롤 리스너 — stick 추적 + 점프버튼 + 상단 근처면 older 로드(센티넬 IntersectionObserver 대체).
+      stream.addEventListener("scroll", () => {
+        if (vtProgrammatic) return;
+        const st = stream.scrollTop;
+        stickBottom = (stream.scrollHeight - st - stream.clientHeight) < 80;
+        updateChatJump();
+        scheduleRelayout();
+        if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();
+      }, { passive: true });
+
+      // 최신으로 점프 버튼 — 하단 고정이면 숨김, 위로 스크롤(과거 열람) 중이면 표시.
       const chatJump = document.getElementById("chat-jump");
-      const updateChatJump = () => { if (chatJump) chatJump.hidden = isNearBottom(); };
+      const updateChatJump = () => { if (chatJump) chatJump.hidden = stickBottom; };
       if (chatJump) {
         chatJump.addEventListener("click", () => {
           stickBottom = true;
@@ -2846,142 +3078,6 @@
           updateChatJump();
         });
       }
-
-      // ── 날짜 구분선(date-divider) ────────────────────────────────────────
-      // 최신=맨아래(column-reverse)라 시각 위→아래 = 과거→최신. 날짜가 바뀌는 첫(=그 날짜의
-      // 가장 오래된) 메시지 위에
-      // "YYYY-MM-DD (요일)" 구분선을 둔다(메시지 버블엔 시각만). 증분 유지 대신 매 변경 후
-      // 전체 재계산(메시지 ≤ MAX_EVENTS 라 저렴·견고). 모든 삽입 경로(라이브·이력·페이지네이션
-      // ·prune)는 MutationObserver 단일 훅이 커버 — 호출처 산재 0.
-      const childTsOf = (el) => {
-        if (el.classList && el.classList.contains("date-divider")) return null;
-        if (el.dataset && el.dataset.ts) return Number(el.dataset.ts);
-        const inner = el.querySelector ? el.querySelector("[data-ts]") : null; // 턴 그룹 내부 메시지.
-        return inner && inner.dataset.ts ? Number(inner.dataset.ts) : null;
-      };
-      let refreshingDividers = false;
-      const refreshDateDividers = () => {
-        refreshingDividers = true;
-        try {
-          for (const d of stream.querySelectorAll(".date-divider")) d.remove();
-          // column-reverse: DOM child[0]=최신=시각 하단. 시각 top→bottom = DOM 역순(오래된→최신).
-          // 각 날짜의 시각-첫(=가장 오래된) 메시지 '위'에 구분선 — column-reverse 에선 그 메시지
-          // DOM '뒤(nextSibling 앞)' 에 삽입해야 시각적으로 위에 온다.
-          const msgs = Array.from(stream.children).filter(
-            (c) => c !== historySentinel && childTsOf(c) !== null,
-          );
-          let prevKey = null;
-          for (let i = msgs.length - 1; i >= 0; i--) {
-            const child = msgs[i];
-            const ts = childTsOf(child);
-            const k = dateKey(ts);
-            if (k !== prevKey) {
-              const div = document.createElement("div");
-              div.className = "date-divider";
-              const span = document.createElement("span");
-              span.textContent = fmtDate(ts);
-              div.appendChild(span);
-              stream.insertBefore(div, child.nextSibling); // DOM after child = 시각적으로 위.
-              prevKey = k;
-            }
-          }
-        } finally {
-          refreshingDividers = false;
-        }
-      };
-      let dividerRaf = 0;
-      const scheduleDividerRefresh = () => {
-        if (dividerRaf) return;
-        dividerRaf = requestAnimationFrame(() => { dividerRaf = 0; refreshDateDividers(); });
-      };
-      // childList 변경 감시 — 실 메시지(비-divider) 추가/제거 시에만 재계산(내 divider 변형은
-      // 무시 → 무한루프 0). 단일 훅이라 삽입 경로마다 호출 박을 필요 없음.
-      const dividerObserver = new MutationObserver((muts) => {
-        if (refreshingDividers) return;
-        let relevant = false, added = false;
-        for (const m of muts) {
-          for (const n of m.addedNodes)
-            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) { relevant = true; added = true; }
-          for (const n of m.removedNodes)
-            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) relevant = true;
-        }
-        if (relevant) scheduleDividerRefresh();
-        // 새 메시지(실 노드) 추가 시, 하단을 보고 있었으면 따라간다. 과거 이력 로드(위로 스크롤
-        // 중 prepend)는 stickBottom=false 라 followIfSticky 가 no-op → 보던 위치 보존.
-        if (added) followIfSticky();
-      });
-      dividerObserver.observe(stream, { childList: true });
-
-      // 시각 최상단(DOM 끝)부터 가지치기 — 초과분 제거(메모리·성능 바운드).
-      // ★역할 분담(2026-07-13 가상화 제거·단순화): near-bottom(라이브 보는 중)이면 여기서
-      //   타이트하게 MAX_EVENTS 로 접고 하단 고정 → 타이핑 리플로우 O(1). scrolled-up(과거
-      //   열람 중)은 여기서 가지치기 안 함(cap=Infinity) — 최古 마운트분을 자르면 사용자가 보던
-      //   이력이 사라지기 때문. 스크롤업 쪽 DOM 은 loadOlder 가 HARD_MAX_EVENTS 에서 로드를 멈춰
-      //   바운드(플레인 페이지네이션 — 스페이서/언마운트 없음).
-      // 센티넬(DOM 끝 상주)은 절대 제거하지 않는다(observer 누수/단절 방지): 센티넬이
-      // lastChild 면 그 바로 앞(실제 최古 메시지)을 제거한다.
-      const capStream = () => {
-        const nearBottom = isNearBottom();
-        // 하단 근처: 타이트 바운드(MAX_EVENTS). 스크롤업: 보던 이력 보존 위해 가지치기 안 함
-        // (cap=Infinity) — 상한은 loadOlder(HARD_MAX_EVENTS)가 담당.
-        const cap = nearBottom ? MAX_EVENTS : Infinity;
-        if (nearBottom) stream.scrollTop = 0; // 최신 보는 중 → 새 메시지(top prepend) 앵커 드리프트 방지.
-        const prevTop = stream.scrollTop; // scrolled-up 에서 최古 자른 뒤 복원용.
-        let pruned = false;
-        while (stream.children.length > cap) {
-          let victim = stream.lastChild;
-          if (victim === historySentinel) {
-            victim = victim.previousSibling; // 센티넬 앞 = 실제 시각 최古.
-          }
-          if (victim === null || victim === historySentinel) break; // 안전.
-          // dedup Set 정리 — 잘린 메시지의 key 를 제거해, 나중에 다시 스크롤업하면
-          // older 재로드 시 dedup 에 막히지 않고 재렌더된다(보던 이력 복원 가능).
-          if (victim.dataset && victim.dataset.ts) {
-            const t = parseInt(victim.dataset.ts, 10);
-            const ty = victim.dataset.type || "";
-            if (Number.isFinite(t) && ty.indexOf("channel.message") === 0) {
-              const role = ty.endsWith(".out") ? "assistant" : "user";
-              renderedMsgKeys.delete(msgKey(t, role));
-            }
-          }
-          stream.removeChild(victim);
-          pruned = true;
-        }
-        // prune 으로 과거(최古)가 잘렸으면 페이지네이션 커서가 stale → 갱신 필수.
-        // (a) oldestLoadedTs 를 DOM 에 남은 실제 최古 chat 노드 ts 로 재설정 → 다음 beforeTs 정합.
-        // (b) reachedOldest 리셋 + 센티넬 observer 재가동 → 다시 스크롤업하면 그 지점부터 older 재로드.
-        if (pruned) {
-          refreshOldestCursorAfterPrune();
-          // scrolled-up 에서 최古(viewport 위쪽)를 잘랐으면 보던 위치가 튀지 않게 복원.
-          // near-bottom 은 scrollTop=0 을 유지(위에서 이미 고정).
-          if (!nearBottom) stream.scrollTop = prevTop;
-        }
-        // DOM prune 과 별개로 누적되는 dedup Set/Map 상한(무한 증가 방지 — 정상 사용 포함).
-        capKeyStore(renderedActivityKeys);
-        capKeyStore(activityByStep);
-      };
-
-      // prune 후 호출 — DOM 끝(센티넬 제외)에서 거슬러 올라가 dataset.ts 가 있는 첫 노드
-      // (= 남은 시각 최古 메시지)의 ts 로 커서를 갱신한다. 페이지네이션 상태(아래 선언)는
-      // 런타임(이벤트 핸들러)에서만 평가되므로 TDZ 무관(forward 참조 안전).
-      const refreshOldestCursorAfterPrune = () => {
-        let node = historySentinel !== null && stream.lastChild === historySentinel
-          ? historySentinel.previousSibling
-          : stream.lastChild;
-        let foundTs = null;
-        while (node !== null) {
-          if (node !== historySentinel && node.dataset && node.dataset.ts) {
-            const n = parseInt(node.dataset.ts, 10);
-            if (Number.isFinite(n)) { foundTs = n; break; }
-          }
-          node = node.previousSibling;
-        }
-        if (foundTs === null) return; // ts 가진 chat 노드 0(이론상) → 커서 유지.
-        oldestLoadedTs = foundTs;
-        // 과거가 잘렸으니 그 앞이 더 있을 수 있음 → 재로드 가능 상태로.
-        if (reachedOldest) reachedOldest = false;
-        if (olderObserver === null) setupOlderObserver();
-      };
 
       // 파일 확장자 → highlight.js 언어. diff 코드 하이라이팅 언어 판별(경로 기반).
       const HL_EXT = { cs:"csharp", ts:"typescript", tsx:"typescript", js:"javascript", jsx:"javascript", mjs:"javascript", cjs:"javascript", py:"python", java:"java", go:"go", rs:"rust", cpp:"cpp", cc:"cpp", cxx:"cpp", hpp:"cpp", h:"cpp", c:"c", rb:"ruby", php:"php", sh:"bash", bash:"bash", zsh:"bash", json:"json", jsonc:"json", yaml:"yaml", yml:"yaml", toml:"ini", ini:"ini", sql:"sql", css:"css", scss:"scss", less:"less", html:"xml", htm:"xml", xml:"xml", vue:"xml", svelte:"xml", md:"markdown", kt:"kotlin", kts:"kotlin", swift:"swift", lua:"lua", dart:"dart", scala:"scala", pl:"perl", r:"r", ps1:"powershell" };
@@ -3232,11 +3328,10 @@
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
         let card = cardByThread.get(thread);
         // 진행 버블을 붙일 그룹이 없거나 이미 닫힌(답변 완료) 턴이면 새 경량 그룹 시작.
-        if (!card || !card.group.isConnected || card.closed) {
+        if (!card || !vtIndex.has(card.group) || card.closed) {
           card = createDeltaGroup(p, ts, adapter, thread);
           cardByThread.set(thread, card);
-          stream.insertBefore(card.group, stream.firstChild);
-          capStream();
+          vtAppend(card.group);
         }
         ensureReplyBubble(card, ts);
         // 평문 누적(textContent) — 스트리밍 중 부분 마크다운/미완 코드펜스 위험·깜빡임 회피.
@@ -3260,7 +3355,7 @@
         const prevCard = card; // 직전 턴(있으면) — 새 턴 시작 시 접어 최신만 펼침 유지.
         // 새 턴 = 카드 없음 / 제거됨 / seq 리셋 / 이미 답변으로 닫힌 턴 / 스텝카드 없는 delta-only 그룹.
         const isNewTurn =
-          !card || !card.group.isConnected || card.closed || !card.el || (p.seq ?? 0) <= card.lastSeq;
+          !card || !vtIndex.has(card.group) || card.closed || !card.el || (p.seq ?? 0) <= card.lastSeq;
         if (isNewTurn) {
           // ★최신/진행중 턴만 펼침(2026-07-10) — 새 턴이 시작되면 직전 턴을 접는다(클러터 방지).
           if (prevCard && prevCard.el) {
@@ -3269,8 +3364,7 @@
           }
           card = createTurnCard(p, ts, adapter, thread);
           cardByThread.set(thread, card);
-          stream.insertBefore(card.group, stream.firstChild);
-          capStream();
+          vtAppend(card.group);
         }
         card.body.appendChild(buildActivityLine(p));
         card.lastSeq = p.seq ?? 0;
@@ -3296,7 +3390,7 @@
       };
       const completeTurnGroup = (thread) => {
         const card = cardByThread.get(thread);
-        if (!card || !card.group.isConnected || card.closed) return null;
+        if (!card || !vtIndex.has(card.group) || card.closed) return null;
         card.closed = true;
         // delta-only 경량 그룹(스텝 카드 없음)은 접을 카드가 없다 — 그룹만 반환.
         if (!card.el) return card.group;
@@ -3488,7 +3582,7 @@
         // 누적 평문 델타는 폐기되고 out 전체본으로 치환 = 부분 렌더 오차 자가치유.
         if (isOut) {
           const card = cardByThread.get(thread);
-          if (card && card.replyBubble && card.replyBubble.isConnected) {
+          if (card && card.replyBubble && vtIndex.has(card.group)) {
             setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
             card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
@@ -3496,7 +3590,7 @@
             localChatCount += 1;
             refreshChatEmpty();
             if (currentView === "overview") setTimeout(showOverview, 0);
-            capStream();
+            scheduleRelayout();
             return;
           }
         }
@@ -3528,25 +3622,21 @@
         // 진행 중 그룹이 없으면(또는 사용자 입력) 기존처럼 stream 최상단에 단독 삽입.
         const group = isOut ? completeTurnGroup(thread) : null;
         if (group) {
-          group.appendChild(div); // 그룹 내 스텝 카드 다음 = 답변 말풍선.
+          group.appendChild(div); // 그룹 내 스텝 카드 다음 = 답변 말풍선(서브트리 변형 → RO 반영).
+          scheduleRelayout();
         } else {
-          stream.insertBefore(div, stream.firstChild);
+          vtAppend(div);
         }
         localChatCount += 1;
         refreshChatEmpty();
         if (currentView === "overview") setTimeout(showOverview, 0);
-        capStream();
       };
 
       // ── 과거 대화 이력 렌더(기능 B) ──────────────────────────────────────
       // chat_log 에서 온 과거 메시지를 단순 채팅 버블로 렌더한다. 라이브 경로(renderChannelMessage)
       // 와 달리 스텝 카드·도구 활동·턴 그룹화가 없다(이벤트 미영속 = 설계 한계, 메시지 버블만).
       // 사용자=평문·비서=마크다운(setChatBody) 으로 라이브 버블과 동일 모양.
-      // 순서: 호출자가 오래된→최신 순으로 넘기고 매번 stream.firstChild 앞에 삽입한다.
-      // column-reverse 라 child[0]=시각 최하단(=최신). 오래된 것이 먼저 들어가 깊은 DOM
-      // 인덱스(=시각 아래)로 밀리고 최신 과거가 child[0](시각 맨위)에 온다.
-      // 버블 div 생성만(삽입은 호출자). 초기 로드는 insertBefore(firstChild)=시각 상단 누적,
-      // 페이지네이션(더 로드)은 appendChild=시각 하단(=DOM 끝=최古쪽) 누적으로 재사용한다.
+      // 버블 div 생성만(가상화 삽입은 renderHistoryBatch 가 vtAppend/vtPrependOlder 로 수행).
       const buildHistoryDiv = (entry) => {
         const isOut = entry.role === "assistant";
         const div = document.createElement("div");
@@ -3701,63 +3791,45 @@
         return units;
       };
 
-      // 이력 배치 렌더 — 초기 로드(append=false: insertBefore firstChild, ASC)와 페이지네이션
-      // (append=true: appendChild=시각 상단, 유닛 역순)이 같은 병합·묶음 로직을 공유. column-reverse
-      // 라 append 방향은 유닛을 역순으로 넣어야 시각 top-to-bottom 이 최古→최新 이 된다.
+      // 이력 배치 렌더 — 초기 로드(append=false: vtAppend, ASC)와 페이지네이션(append=true: older
+      // 배치를 vtPrependOlder 로 앞에 붙임)이 같은 병합·묶음 로직을 공유. 둘 다 최종 vtItems 는 ASC 유지.
       const renderHistoryBatch = (entries, activities, append) => {
         // 엔드포인트 turn 은 채팅서 제외(방어적 — endpoint 는 chat_log 에 안 남지만 안전).
         const chatEntries = entries.filter((e) => !isEndpointThread(e.threadKey));
-        const units = groupMergedItems(chatEntries, activities);
-        const order = append ? units.slice().reverse() : units;
-        for (const u of order) {
-          const el = u.kind === "turn" ? buildHistoryTurnEl(u.acts) : buildHistoryMsgEl(u.entry);
-          if (el === null) continue;
-          if (append) stream.appendChild(el); else stream.insertBefore(el, stream.firstChild);
-          localChatCount += 1;
+        const units = groupMergedItems(chatEntries, activities); // 항상 ASC(최古→최新).
+        // 초기 로드(append=false): 오래된→최신 순으로 vtAppend. 페이지네이션(append=true, older
+        // 배치): 노드를 모아 vtPrependOlder 로 앞(위)에 붙인다 — 둘 다 최종 vtItems 는 ASC 유지.
+        if (append) {
+          const nodes = [];
+          for (const u of units) {
+            const el = u.kind === "turn" ? buildHistoryTurnEl(u.acts) : buildHistoryMsgEl(u.entry);
+            if (el === null) continue;
+            nodes.push(el);
+            localChatCount += 1;
+          }
+          vtPrependOlder(nodes);
+        } else {
+          for (const u of units) {
+            const el = u.kind === "turn" ? buildHistoryTurnEl(u.acts) : buildHistoryMsgEl(u.entry);
+            if (el === null) continue;
+            vtAppend(el);
+            localChatCount += 1;
+          }
         }
       };
 
       // ── 페이지네이션 상태(기능 2) ────────────────────────────────────────
-      // 초기 최근 100 + 위(시각 최上=최古)로 스크롤 시 더 로드(column-reverse). 수동
-      // scrollTop 계산 비일관 회피 → IntersectionObserver 센티넬(DOM 끝=최古쪽) 방식.
-      // 페이지당 건수(초기·추가 동일). 초기 로드가 이만큼 마운트하므로 MAX_EVENTS 이하로 —
-      // 안 그러면 첫 화면부터 노드 과다로 타이핑 랙(초기 100은 ~5000노드였음). 그 위는 스크롤 시 로드.
+      // 초기 최근 HISTORY_PAGE + 위(최古)로 스크롤 시 더 로드. 트리거는 가상화 스크롤 리스너가
+      // scrollTop < VT_BUFFER(상단 근처)에서 loadOlderHistory() 를 호출(구 IntersectionObserver 센티넬 대체).
       const HISTORY_PAGE = 20;
       let oldestLoadedTs = null; // 현재 로드된 가장 오래된 메시지 ts(다음 beforeTs).
       let loadingOlder = false; // 동시 로드 가드.
-      let reachedOldest = false; // 빈 배치 → 더 없음(센티넬 observe 해제).
-      let olderObserver = null; // IntersectionObserver 핸들(누수 0 위해 disconnect 추적).
-      let historySentinel = null; // 시각 최下단(=DOM 끝=최古쪽) 센티넬 요소. (이름은 관습 유지.)
+      let reachedOldest = false; // 빈/부분 배치 → 더 없음.
 
-      // 센티넬을 항상 DOM 끝(= 시각 최하단 = 최古쪽)에 유지한다. 더 로드로 메시지를
-      // appendChild 하면 센티넬보다 앞에 들어가므로, 매 로드 후 다시 끝으로 옮긴다.
-      const ensureSentinelAtTop = () => {
-        if (historySentinel === null) {
-          historySentinel = document.createElement("div");
-          historySentinel.id = "history-sentinel";
-          historySentinel.setAttribute("aria-hidden", "true");
-          // 보이지 않는 0높이 마커 — 레이아웃·스크롤에 영향 0.
-          historySentinel.style.cssText = "height:1px;margin:0;padding:0;pointer-events:none;";
-        }
-        stream.appendChild(historySentinel); // DOM 끝 = 시각 최하단(최古쪽).
-      };
-
-      // 과거 배치(ASC: 최古→최新)를 시각 최상단(기존 최古 위)에 쌓는다(column-reverse: DOM 끝=시각 위).
-      // DOM 끝=시각 하단 → 배치를 **내림차순(최新→최古)으로 appendChild** 해야 시각
-      // top-to-bottom 이 [… 기존最古, 배치最新 … 배치最古] 로 올바르게 쌓인다(위=최신 유지).
-      // dedup: 이미 렌더된 key 는 스킵. 반환 = 실제 추가된 가장 오래된 ts.
-      // 더 로드 — 시각 최古까지 스크롤업 트리거(센티넬 가시). try/catch 로 라이브 무손상.
+      // 더 로드 — 상단 근처 스크롤이 트리거. 과거 배치(ASC)를 vtPrependOlder 로 앞에 붙인다.
+      // vtPrependOlder 가 늘어난 위 높이만큼 scrollTop 을 밀어 보던 위치 유지(점프 0). try/catch 로 라이브 무손상.
       const loadOlderHistory = async () => {
         if (loadingOlder || reachedOldest || oldestLoadedTs === null) return;
-        // ★하단(라이브/최신)에 있을 땐 older 를 로드하지 않는다. 하단에선 capStream 이
-        // near-bottom prune 으로 200 상한을 유지하는데, 거기서 older 를 당기면 "로드→prune"
-        // 싸움이 나 observer/cursor 상태가 꼬이고 스크롤업 더보기가 죽는다(헤드리스 검증
-        // 2026-06-26). older 는 사용자가 실제로 스크롤업해 이력을 볼 때(=not near-bottom)만.
-        if (isNearBottom()) return;
-        // ★DOM 바운드(가상화 대체) — 스크롤업 열람도 HARD_MAX_EVENTS 까지만 마운트하고 로드를
-        // 멈춘다(플레인 상한, 스페이서/언마운트 없음). 넘으면 더 안 당김 → 무한 누적·O(n²) 핫패스
-        // 방지. 하단 복귀 시 capStream 이 MAX_EVENTS 로 되접어 타이핑 O(1) 회복.
-        if (stream.children.length >= HARD_MAX_EVENTS) return;
         loadingOlder = true;
         try {
           const r = await fetch(
@@ -3768,44 +3840,18 @@
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
           if (entries.length === 0) {
-            reachedOldest = true; // 더 없음 → 센티넬 해제.
-            if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
+            reachedOldest = true; // 더 없음.
             return;
           }
-          // 스크롤 위치 보존: column-reverse 라 older 는 시각 상단(뷰 위)에 append → 현재 보던
-          // 위(최신) 위치는 안 흔들린다. 만일을 대비해 scrollTop 보정 기준만 잡아둔다(보통 0).
-          const beforeTop = stream.scrollTop;
-          // 도구 스텝·diff·출력·묶음도 함께 복원(초기 로드와 동일 로직, append 방향).
+          // 도구 스텝·diff·출력·묶음도 함께 복원(초기 로드와 동일 로직, older prepend 방향).
           renderHistoryBatch(entries, activities, true);
           oldestLoadedTs = entries[0].ts; // 배치 最古(ASC[0]) = 다음 beforeTs.
-          ensureSentinelAtTop(); // 센티넬을 다시 DOM 끝(시각 최하단·最古쪽)으로.
-          if (entries.length < HISTORY_PAGE) {
-            reachedOldest = true; // 페이지 미만 = 마지막 묶음.
-            if (olderObserver !== null) { olderObserver.disconnect(); olderObserver = null; }
-          }
-          // 점프 보정(브라우저 비일관 대비) — 위치가 변했으면 되돌린다.
-          if (stream.scrollTop !== beforeTop) stream.scrollTop = beforeTop;
+          if (entries.length < HISTORY_PAGE) reachedOldest = true; // 페이지 미만 = 마지막 묶음.
         } catch (err) {
           console.warn("older history load failed:", err && err.message ? err.message : err);
         } finally {
           loadingOlder = false;
         }
-      };
-
-      // 센티넬 IntersectionObserver 설정 — 1회. root = 스크롤 컨테이너(#stream).
-      // 센티넬(시각 최상단)이 보이면 = 사용자가 최古까지 스크롤업 → 더 로드.
-      const setupOlderObserver = () => {
-        if (olderObserver !== null || reachedOldest) return;
-        ensureSentinelAtTop();
-        olderObserver = new IntersectionObserver(
-          (obsEntries) => {
-            for (const oe of obsEntries) {
-              if (oe.isIntersecting) { void loadOlderHistory(); }
-            }
-          },
-          { root: stream, rootMargin: "120px", threshold: 0 },
-        );
-        olderObserver.observe(historySentinel);
       };
 
       // SSE 연결 *전에* 과거 이력을 await 로드해 채팅 흐름을 복원한다. 비어있으면 chat-empty
@@ -3836,11 +3882,8 @@
           // 가장 오래된 ts = 다음 페이지의 beforeTs (메시지 기준 — 페이지네이션은 메시지 축).
           oldestLoadedTs =
             entries.length > 0 ? entries[0].ts : (activities.length > 0 ? activities[0].ts : oldestLoadedTs);
-          if (entries.length < HISTORY_PAGE) {
-            reachedOldest = true; // 첫 로드가 페이지 미만 = 더 없음.
-          } else {
-            setupOlderObserver(); // 더 있을 수 있음 → 위 스크롤 관찰 시작.
-          }
+          // 첫 로드가 페이지 미만 = 더 없음. 아니면 상단 스크롤이 loadOlderHistory 를 트리거(스크롤 리스너).
+          if (entries.length < HISTORY_PAGE) reachedOldest = true;
           refreshChatEmpty();
           scrollChatToNewest(); // 초기 로드 후 최신(하단) 고정 — 앵커 드리프트 보정.
           if (currentView === "overview") setTimeout(showOverview, 0);
@@ -3940,7 +3983,7 @@
           badge.className = "queued-badge"; badge.textContent = "대기 중";
           (div.firstChild || div).appendChild(badge); // head(ts+라벨) 에 배지 부착.
         }
-        stream.insertBefore(div, stream.firstChild);
+        vtAppend(div);
         pendingQueued.push({ text, el: div });
         localChatCount += 1;
         refreshChatEmpty();
@@ -4038,8 +4081,7 @@
           btnWrap.appendChild(btn);
         }
         div.appendChild(btnWrap);
-        stream.insertBefore(div, stream.firstChild);
-        capStream();
+        vtAppend(div);
       };
 
       const renderEvent = (ev) => {
@@ -4135,8 +4177,10 @@
         const pre = document.createElement("pre");
         pre.textContent = JSON.stringify(ev.payload, null, 2);
         div.appendChild(pre);
-        stream.insertBefore(div, stream.firstChild);
-        capStream();
+        // 일반 이벤트(알 수 없는 유형)는 채팅선 숨김·로그 패널(데드)용 → vtItems 오염 방지 위해
+        // 숨은 log-sink 에 넣고 소량 상한만 유지(#ev-filter 는 logSink.children 를 순회).
+        logSink.insertBefore(div, logSink.firstChild);
+        while (logSink.children.length > LOG_SINK_MAX) logSink.removeChild(logSink.lastChild);
       };
 
       const renderLocalChat = (kind, text) => {
@@ -4168,8 +4212,7 @@
         // 봇 답변(reply)만 마크다운, 사용자/오류는 평문(SSE 권위본과 일관).
         setChatBody(msg, text, kind === "reply");
         div.appendChild(msg);
-        stream.insertBefore(div, stream.firstChild);
-        capStream(); // 센티넬 보존 가지치기(위 helper 재사용).
+        vtAppend(div);
       };
 
       for (const btn of document.querySelectorAll(".nav-button")) {

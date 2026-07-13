@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.88] - 2026-07-13
+
+### Fixed
+- **Expanding a tool step in the dashboard chat now stays open when the mouse moves away.** An expanded tool diff/output was tied to hovering the turn card (a too-broad CSS rule reached into the tool `<pre>` blocks), so it collapsed as soon as the pointer left. Expansion is now a pure click toggle, independent of hover.
+
 ## [0.3.87] - 2026-07-13
 
 ### Changed
@@ -583,7 +588,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.87...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.88...HEAD
+[0.3.88]: https://github.com/tigu77/tiguclaw/compare/v0.3.87...v0.3.88
 [0.3.87]: https://github.com/tigu77/tiguclaw/compare/v0.3.86...v0.3.87
 [0.3.86]: https://github.com/tigu77/tiguclaw/compare/v0.3.85...v0.3.86
 [0.3.85]: https://github.com/tigu77/tiguclaw/compare/v0.3.84...v0.3.85

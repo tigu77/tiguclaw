@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.92] - 2026-07-13
+
+### Changed
+- **The assistant now carries the conversation forward instead of re-asking.** Follow-ups and ambiguous references ("that one", "keep going", an omitted subject) are resolved from the recent context of the thread (latest messages, the active topic/`#tags`, what was just done) rather than asking obvious questions — while still briefly confirming when a request is genuinely ambiguous or hard to undo. (Operating-constitution rule.)
+
 ## [0.3.91] - 2026-07-13
 
 ### Added
@@ -603,7 +608,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.91...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.92...HEAD
+[0.3.92]: https://github.com/tigu77/tiguclaw/compare/v0.3.91...v0.3.92
 [0.3.91]: https://github.com/tigu77/tiguclaw/compare/v0.3.90...v0.3.91
 [0.3.90]: https://github.com/tigu77/tiguclaw/compare/v0.3.89...v0.3.90
 [0.3.89]: https://github.com/tigu77/tiguclaw/compare/v0.3.88...v0.3.89

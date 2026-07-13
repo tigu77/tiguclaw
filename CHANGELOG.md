@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.86] - 2026-07-13
+
+### Changed
+- **Dashboard chat scrolling is simpler and more robust.** The chat list is no longer virtualized with placeholder spacers — it is now a plain bounded list with pagination. Scrolling up to read history loads older messages smoothly, and you no longer have to expand a tool step to get the scroll moving.
+
+### Fixed
+- **Scrolling up in a long chat no longer sticks at the very top or collapses into blank space.** Removing the spacer-based virtualization eliminates the whole class of scroll bugs where unmounted tool cards mispredicted their height.
+
 ## [0.3.85] - 2026-07-13
 
 ### Fixed
@@ -570,7 +578,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.85...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.86...HEAD
+[0.3.86]: https://github.com/tigu77/tiguclaw/compare/v0.3.85...v0.3.86
 [0.3.85]: https://github.com/tigu77/tiguclaw/compare/v0.3.84...v0.3.85
 [0.3.84]: https://github.com/tigu77/tiguclaw/compare/v0.3.83...v0.3.84
 [0.3.83]: https://github.com/tigu77/tiguclaw/compare/v0.3.82...v0.3.83

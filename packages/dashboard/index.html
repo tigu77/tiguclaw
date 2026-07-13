@@ -924,10 +924,12 @@
       // 마운트 노드 수 ∝ 키입력당 리플로우 시간(실측: 176메시지=9006노드=9.6ms). 낮출수록 타이핑
       // 빨라지고, 그 위 과거는 스크롤 시 윈도잉이 부드럽게 로드/마운트. 200→40 = 리플로우 ~4배↓.
       const MAX_EVENTS = 20;
-      // 과거 열람(스크롤업) 중에도 DOM 을 이 상한까지는 바운드한다 — 무한 증가 시 매 메시지
-      // O(n) 핫패스(refreshDateDividers 등)가 O(n²) 로 누적돼 "쌓일수록 느려짐". near-bottom
-      // 타이트 바운드(MAX_EVENTS)보다 넉넉해 보던 이력을 안 자르되, 언바운드는 막는다.
-      const HARD_MAX_EVENTS = MAX_EVENTS * 3; // 600
+      // 과거 열람(스크롤업) 중 DOM 상한 — loadOlder 가 이 개수에서 로드를 멈춰 바운드한다.
+      // 무한 증가 시 매 메시지 O(n) 핫패스(refreshDateDividers 등)가 O(n²) 로 누적돼 "쌓일수록
+      // 느려짐". near-bottom 타이트 바운드(MAX_EVENTS)보다 넉넉해 보던 이력을 넓게 열람하되(플레인
+      // 페이지네이션), 언바운드는 막는다. autoGrow 리플로우가 이미 제거돼(CSS-only) 이 정도
+      // 마운트는 타이핑에 무해.
+      const HARD_MAX_EVENTS = MAX_EVENTS * 6; // 120
       // 렌더 dedup Set/Map(renderedActivityKeys·activityByStep) 상한 — DOM prune 과 무관하게
       // 활동/스텝마다 누적돼 세션이 길어지면 무한 증가(정상 사용에서도). DOM 윈도우(≤HARD_MAX)
       // 보다 훨씬 크게 잡아, 초과 시 가장 오래된(삽입순=시간순) 것부터 25% 버린다 — 버려지는 건
@@ -2825,38 +2827,21 @@
       // (전송 시엔 submit 핸들러가 강제 true+스크롤 — 아래.) capStream 의 near-bottom scrollTop=0
       // 과 목표(scrollTop=0)가 같아 중복돼도 무해하나, 이쪽은 사용자 스크롤 의도를 연속 추적한다.
       let stickBottom = true;
-      // 스크롤마다: (1) stick 추적 (2) 뷰포트 윈도잉 구동. rAF 로 프레임당 1회 coalesce.
-      //  - 하단 근처 복귀 → collapseToBottom(최신 상한으로 접기): 스크롤업으로 누적된 DOM 을
-      //    상한까지 되접어 타이핑 O(1) 유지(capStream 이 라이브에서 하던 것을 스크롤에도).
-      //  - 스크롤업(과거 열람) → reconcileWindow: 뷰포트 밖 노드 언마운트 + 스페이서로 지오메트리
-      //    보존(라이브 DOM 을 윈도우 크기로 바운드 → 총 대화 길이 무관 O(1) 타이핑).
-      // 두 함수는 아래에서 정의(forward 참조 — 콜백은 로드 후 실행이라 TDZ 무관).
-      let winScrollRaf = 0;
+      // 스크롤마다 stick 추적 + 점프버튼 갱신만. (과거 열람은 아래 older 센티넬이 플레인
+      // 페이지네이션으로 로드 — 가상화/언마운트 없음. DOM 은 capStream/loadOlder 상한으로 바운드.)
       stream.addEventListener("scroll", () => {
         stickBottom = isNearBottom();
         updateChatJump();
-        if (winScrollRaf) return;
-        winScrollRaf = requestAnimationFrame(() => {
-          winScrollRaf = 0;
-          try {
-            if (isNearBottom()) collapseToBottom();
-            else reconcileWindow();
-          } catch (err) {
-            // 윈도잉 실패는 무해해야 — 채팅 자체는 계속 동작(바운드만 못할 뿐).
-            console.warn("chat window reconcile failed:", err && err.message ? err.message : err);
-          }
-        });
       }, { passive: true });
       const followIfSticky = () => { if (stickBottom) scrollChatToNewest(); };
 
       // 최신으로 점프 버튼 — 하단 근처(isNearBottom)면 숨김, 위로 스크롤(과거 열람) 중이면 표시.
-      // 클릭 = 윈도우를 최신으로 접고(collapseToBottom) 하단 고정 + 팔로우 재활성.
+      // 클릭 = 하단 고정 + 팔로우 재활성(capStream 이 near-bottom 상한으로 되접음).
       const chatJump = document.getElementById("chat-jump");
       const updateChatJump = () => { if (chatJump) chatJump.hidden = isNearBottom(); };
       if (chatJump) {
         chatJump.addEventListener("click", () => {
           stickBottom = true;
-          try { collapseToBottom(); } catch (e) {}
           scrollChatToNewest();
           updateChatJump();
         });
@@ -2913,44 +2898,32 @@
       // 무시 → 무한루프 0). 단일 훅이라 삽입 경로마다 호출 박을 필요 없음.
       const dividerObserver = new MutationObserver((muts) => {
         if (refreshingDividers) return;
-        // winAll 레지스트리 유지 — reconcile/collapse 자기 mutation(winReconciling)은 제외
-        // (그 노드들은 이미 winAll 에 반영됨 — 단순 마운트/언마운트 이동일 뿐).
-        if (!winReconciling) {
-          for (const m of muts) {
-            for (const n of m.addedNodes) if (isWinItem(n)) winRegister(n);
-            for (const n of m.removedNodes) if (isWinItem(n) && !n.isConnected) winUnregister(n);
-          }
-        }
         let relevant = false, added = false;
         for (const m of muts) {
           for (const n of m.addedNodes)
-            if (n.nodeType === 1 && !(n.classList && (n.classList.contains("date-divider") || n.classList.contains("win-spacer")))) { relevant = true; added = true; }
+            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) { relevant = true; added = true; }
           for (const n of m.removedNodes)
-            if (n.nodeType === 1 && !(n.classList && (n.classList.contains("date-divider") || n.classList.contains("win-spacer")))) relevant = true;
+            if (n.nodeType === 1 && !(n.classList && n.classList.contains("date-divider"))) relevant = true;
         }
         if (relevant) scheduleDividerRefresh();
         // 새 메시지(실 노드) 추가 시, 하단을 보고 있었으면 따라간다. 과거 이력 로드(위로 스크롤
         // 중 prepend)는 stickBottom=false 라 followIfSticky 가 no-op → 보던 위치 보존.
-        if (added && !winReconciling) followIfSticky();
-        // 스크롤업 중 라이브 삽입 → 윈도우 재바운드(누적 방지).
-        if (added && !winReconciling && !isNearBottom()) scheduleReconcile();
+        if (added) followIfSticky();
       });
       dividerObserver.observe(stream, { childList: true });
 
       // 시각 최상단(DOM 끝)부터 가지치기 — 초과분 제거(메모리·성능 바운드).
-      // ★역할 분담(2026-07-11 윈도잉 도입): near-bottom(라이브 보는 중)이면 여기서 타이트하게
-      //   MAX_EVENTS 로 접고 하단 고정. scrolled-up(과거 열람 중)은 reconcileWindow(뷰포트 윈도잉)이
-      //   언마운트+스페이서로 DOM 을 윈도우 크기로 바운드하므로 capStream 은 관여 안 한다(cap=Infinity).
-      //   예전엔 scrolled-up 을 HARD_MAX_EVENTS 로 잘랐는데, 이는 (a) 페이지네이션으로 로드해 쌓인
-      //   DOM 이 상한(600) 넘게 누적되면 결국 랙 (b) 잘린 최古가 사용자가 보던 것일 수 있는 문제 →
-      //   윈도잉이 대체(보던 이력은 언마운트로 보존, refetch 없이 remount).
+      // ★역할 분담(2026-07-13 가상화 제거·단순화): near-bottom(라이브 보는 중)이면 여기서
+      //   타이트하게 MAX_EVENTS 로 접고 하단 고정 → 타이핑 리플로우 O(1). scrolled-up(과거
+      //   열람 중)은 여기서 가지치기 안 함(cap=Infinity) — 최古 마운트분을 자르면 사용자가 보던
+      //   이력이 사라지기 때문. 스크롤업 쪽 DOM 은 loadOlder 가 HARD_MAX_EVENTS 에서 로드를 멈춰
+      //   바운드(플레인 페이지네이션 — 스페이서/언마운트 없음).
       // 센티넬(DOM 끝 상주)은 절대 제거하지 않는다(observer 누수/단절 방지): 센티넬이
       // lastChild 면 그 바로 앞(실제 최古 메시지)을 제거한다.
       const capStream = () => {
         const nearBottom = isNearBottom();
-        // 하단 근처: 타이트 바운드(MAX_EVENTS). 스크롤업: 뷰포트 윈도잉(reconcileWindow)이
-        // DOM 을 바운드하므로 여기선 가지치기 안 함(cap=Infinity) — capStream 이 최古 마운트분을
-        // 잘라 사용자가 보던 이력을 지우는 것을 방지(윈도잉이 언마운트로 대체).
+        // 하단 근처: 타이트 바운드(MAX_EVENTS). 스크롤업: 보던 이력 보존 위해 가지치기 안 함
+        // (cap=Infinity) — 상한은 loadOlder(HARD_MAX_EVENTS)가 담당.
         const cap = nearBottom ? MAX_EVENTS : Infinity;
         if (nearBottom) stream.scrollTop = 0; // 최신 보는 중 → 새 메시지(top prepend) 앵커 드리프트 방지.
         const prevTop = stream.scrollTop; // scrolled-up 에서 최古 자른 뒤 복원용.
@@ -3008,259 +2981,6 @@
         // 과거가 잘렸으니 그 앞이 더 있을 수 있음 → 재로드 가능 상태로.
         if (reachedOldest) reachedOldest = false;
         if (olderObserver === null) setupOlderObserver();
-      };
-
-      // ══ 뷰포트 윈도잉(가상화) ══════════════════════════════════════════════
-      // 목표: 라이브 DOM 메시지 노드 수를 뷰포트 윈도우로 항상 바운드 → 타이핑 비용 O(1)
-      //   (측정: 타이핑 1회 ∝ 라이브 리치 노드 수 N. 총 대화 길이·스크롤·페이지네이션과 무관하게
-      //    바운드). 스크롤로 벗어난 메시지는 DOM 에서 언마운트(detach)하되 재부착용으로 메모리에
-      //    보관(refetch·재렌더 0), 되돌아오면 remount. 언마운트 높이는 스페이서로 예약 →
-      //    scrollHeight·스크롤바 안정(점프 0).
-      //
-      // [경계] 아래 "순수 윈도우 유지"(winAll 레지스트리 + 픽셀 밴드 + mount/unmount + 스페이서 +
-      //   앵커 지오메트리 보존)는 채팅 특유(column-reverse·stick·loadOlder)와 분리돼 있어, 향후
-      //   잡카드·로그 등 다른 메시지뷰가 같은 방식을 재사용하기 쉽게 self-contained 로 둔다.
-      //   단 지금은 채팅 전용 — 선추상화(프레임워크化) 하지 않는다.
-      //
-      // column-reverse 좌표: scrollTop=0=시각 하단(최신), 음수=위로. DOM child[0]=최신, 끝=최古.
-      //   winAll 은 "최신→最古" 순서의 진실소스(마운트/언마운트 무관). MutationObserver 가 유지.
-      const WIN_BUFFER_PX = 1400;      // 뷰포트 위·아래로 유지할 여유(px). 스크롤 시 빈틈·thrash 방지.
-      const WIN_RETAIN_MAX = 4000;     // winAll 최古쪽 보관 상한(메모리 바운드). 초과분은 버리고
-      //                                  키를 지워 loadOlder 로 refetch 가능하게(스크롤 최상단 한정).
-      let winAll = [];                 // 전체 chat item(최신→最古). 진실소스.
-      const winHeights = new WeakMap();// 노드→마지막 측정 높이(px). 언마운트분 스페이서 계산·밴드용.
-      const winSpacerPool = [];        // 스페이서 div 재활용 풀(GC 최소화).
-      let winReconciling = false;      // 재조정 중(옵서버 재진입·자기유발 mutation 무시).
-      let winDirty = true;             // winAll/치수 변경 → 다음 reconcile 강제.
-      let winLastSig = "";             // 마운트 집합 시그니처 — 동일하면 rebuild 스킵(스크롤 중 churn 0).
-      let winWindowed = false;         // 현재 언마운트분(스페이서)이 있는가 — collapse 필요 판단.
-      let winReconcileRaf = 0;         // 옵서버발 reconcile 디바운스(rAF).
-      const scheduleReconcile = () => {
-        if (winReconcileRaf) return;
-        winReconcileRaf = requestAnimationFrame(() => {
-          winReconcileRaf = 0;
-          try { if (!isNearBottom()) reconcileWindow(); } catch (e) {}
-        });
-      };
-
-      const makeWinSpacer = () => {
-        const s = document.createElement("div");
-        s.className = "win-spacer";
-        s.setAttribute("aria-hidden", "true");
-        s.style.cssText = "display:block;flex:0 0 auto;width:100%;height:0;margin:0;padding:0;border:0;pointer-events:none;";
-        return s;
-      };
-      const isWinSpacer = (n) => n && n.classList && n.classList.contains("win-spacer");
-      // 윈도잉은 채팅 패널(column-reverse)에서만. 로그 패널은 일반 스크롤이라 밴드/스페이서
-      // 지오메트리가 성립 안 함 → 개입 금지(회귀 방지).
-      const winActive = () => document.body.getAttribute("data-chat-panel") === "chat";
-      const isWinItem = (n) =>
-        n && n.nodeType === 1 && n !== historySentinel &&
-        !(n.classList && (n.classList.contains("win-spacer") || n.classList.contains("date-divider")));
-
-      // winAll 유지 — 삽입/제거를 DOM 형제 관계로 순서 추론(삽입 경로 재라우팅 0).
-      // previousSibling(=child0 방향=더 최신)이 winAll 에 있으면 그 뒤(더 오래된 쪽), 없으면 최신단.
-      const winRegister = (n) => {
-        if (winAll.indexOf(n) !== -1) return;
-        let ref = n.previousSibling;
-        while (ref && !(isWinItem(ref) && winAll.indexOf(ref) !== -1)) ref = ref.previousSibling;
-        if (ref) winAll.splice(winAll.indexOf(ref) + 1, 0, n);
-        else winAll.unshift(n);
-        winDirty = true;
-      };
-      const winUnregister = (n) => {
-        const j = winAll.indexOf(n);
-        if (j !== -1) { winAll.splice(j, 1); winDirty = true; }
-      };
-      const winHeightOf = (n) => {
-        if (n.isConnected && !isWinSpacer(n)) {
-          const oh = n.offsetHeight;
-          if (oh > 0) {
-            // #stream 은 flex(column-reverse) → 자식은 flex item = 마진 collapse 없음.
-            // 스페이서가 정확히 대체하려면 offsetHeight + 세로 마진까지 포함해야 scrollHeight 보존.
-            let mh = 0;
-            try { const cs = getComputedStyle(n); mh = (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0); } catch {}
-            const total = oh + mh;
-            winHeights.set(n, total); return total;
-          }
-        }
-        return winHeights.get(n) || n.offsetHeight || 40;
-      };
-
-      // 진행 중(라이브) 턴 그룹·스트리밍 버블은 절대 언마운트 안 함(스텝 append·승격이 끊기지
-      // 않게). 최신단이라 보통 밴드 안이지만, 스크롤업 중 진행 시에도 보호.
-      const winProtectedSet = () => {
-        const prot = new Set();
-        try {
-          for (const c of cardByThread.values()) if (c && c.group && !c.closed) prot.add(c.group);
-        } catch {}
-        return prot;
-      };
-
-      // 스크롤업 상태에서 뷰포트 밖 노드를 언마운트/재마운트해 라이브 DOM 을 윈도우로 바운드.
-      const reconcileWindow = () => {
-        if (winReconciling || winAll.length === 0) return;
-        if (!winActive()) return;           // 채팅 패널(column-reverse) 전용.
-        // ★라이브 턴 스트리밍 중엔 윈도잉(언마운트) 금지 — turn-group 내부 성장(스텝·델타)은
-        // #stream childList 옵서버가 못 잡아 followIfSticky 가 안 불려, 자라는 콘텐츠에 하단이 순간
-        // 풀리면 옛 메시지를 스페이서로 언마운트(위쪽 빈공백)하고 턴 후 collapse 도 안 돼 유지됐다
-        // (refresh 로만 복구되던 렌더 버그). 응답 받는 동안엔 절대 안 지운다 — 턴 종료 후 정상 재개.
-        if (activeTurns.size > 0) return;
-        const ch = stream.clientHeight;
-        if (ch === 0) return;               // 패널 숨김 → 무시.
-        if (isNearBottom()) return;         // 하단은 capStream/collapse 담당.
-        const n = winAll.length;
-        const s = -stream.scrollTop;        // 뷰포트 하단에서의 스크롤업 거리(>=0).
-        const bandLo = s - WIN_BUFFER_PX;
-        const bandHi = s + ch + WIN_BUFFER_PX;
-        const prot = winProtectedSet();
-        // 밴드 판정(최신→最古 누적 = 하단 기준 거리). h[]=마운트→실측/언마운트→캐시.
-        const h = new Array(n);
-        const mounted = new Array(n);
-        let acc = 0, firstM = -1, lastM = -1, mCount = 0;
-        for (let i = 0; i < n; i++) {
-          const nd = winAll[i];
-          const hi = winHeightOf(nd); h[i] = hi;
-          const near = acc, far = acc + hi;
-          // ★높이 신뢰불가(미연결 + 캐시 없음) 노드는 언마운트 금지 — 그대로 언마운트하면 스페이서가
-          // 40px 폴백으로 쪼그라들어 scrollHeight 붕괴(빈공백·스크롤 불가, refresh 로만 복구). 스트리밍
-          // 턴 중 P5 승격/turn-group 재구성으로 새로 생성돼 캐시를 잃은 노드가 이 경우. 재마운트해
-          // 실측 높이를 확보(정상 지오메트리 보존). winHeightOf 는 연결 노드면 방금 캐시했으므로 여기
-          // false 로 걸리는 건 연결 안 됐고 캐시도 없는(=측정 불가) 노드뿐 → band 무관 항상 마운트.
-          const heightReliable = nd.isConnected || winHeights.has(nd);
-          const m = (far > bandLo && near < bandHi) || prot.has(nd) || !heightReliable;
-          mounted[i] = m;
-          if (m) { if (firstM < 0) firstM = i; lastM = i; mCount++; }
-          acc = far;
-        }
-        if (firstM < 0) { // 밴드 밖(이론상) → 최신 슬라이스 폴백.
-          firstM = 0; lastM = Math.min(n - 1, 40);
-          for (let i = firstM; i <= lastM; i++) { if (!mounted[i]) { mounted[i] = true; mCount++; } }
-        }
-        // 시그니처 동일(경계 미변화) + 변경 없음 → rebuild 스킵(스크롤 중 대부분 프레임).
-        const sig = firstM + ":" + lastM + ":" + mCount;
-        if (!winDirty && sig === winLastSig) return;
-        winLastSig = sig;
-        winWindowed = mCount < n;   // 언마운트분 존재 → 하단 복귀 시 collapse 필요.
-
-        // 지오메트리 앵커: 현재 마운트·연결된 뷰포트 걸친 item(있으면). 스크린 좌표(rect.top)로
-        // 재구성 전후 위치를 비교해 스크롤을 보정 → 스페이서 오차·divider 변동·offsetParent 무관
-        // 하게 화면상 위치를 보존(점프 0). (offsetTop 은 offsetParent 상대라 좌표계 혼선 → rect 사용.)
-        const streamRect = stream.getBoundingClientRect();
-        let anchor = null, rectBefore = 0;
-        for (const nd of stream.children) {
-          if (isWinItem(nd) && nd.isConnected) {
-            const r = nd.getBoundingClientRect();
-            if (r.bottom > streamRect.top && r.top < streamRect.bottom) { anchor = nd; rectBefore = r.top; break; }
-          }
-        }
-
-        winReconciling = true;
-        try {
-          // 기존 winItem·스페이서 분리(센티넬만 유지). 스페이서는 풀로 회수.
-          for (const nd of Array.from(stream.children)) {
-            if (nd === historySentinel) continue;
-            stream.removeChild(nd);
-            if (isWinSpacer(nd)) { nd.style.height = "0px"; winSpacerPool.push(nd); }
-          }
-          // 원하는 시퀀스 재구성: 마운트 노드 + 언마운트 런은 스페이서 1개로 접기.
-          const frag = document.createDocumentFragment();
-          let runH = 0;
-          const flushRun = () => {
-            if (runH > 0) {
-              const sp = winSpacerPool.pop() || makeWinSpacer();
-              sp.style.height = runH + "px";
-              frag.appendChild(sp); runH = 0;
-            }
-          };
-          for (let i = 0; i < n; i++) {
-            if (mounted[i]) { flushRun(); frag.appendChild(winAll[i]); }
-            else runH += h[i];
-          }
-          flushRun();
-          stream.insertBefore(frag, historySentinel || null);
-          // 날짜 구분선을 동기 재계산 — 지오메트리 보정이 divider 높이까지 포함하게(점프 0).
-          try { refreshDateDividers(); } catch (e) {}
-          // ★MutationObserver 콜백은 비동기(마이크로태스크) — winReconciling 플래그는 콜백 실행
-          //   시점엔 이미 false. 그래서 여기서 내 mutation 레코드를 동기로 비워(takeRecords) 옵서버가
-          //   언마운트된 노드를 winAll 에서 잘못 제거하지 않게 한다(진실소스 보존).
-          try { dividerObserver.takeRecords(); } catch (e) {}
-        } finally { winReconciling = false; }
-        winDirty = false;
-
-        // 지오메트리 보정 — 앵커 화면 위치 유지(rect.top 델타만큼 scrollTop 조정).
-        if (anchor && anchor.isConnected) {
-          const rectAfter = anchor.getBoundingClientRect().top;
-          let stNew = stream.scrollTop + (rectAfter - rectBefore);
-          const minSt = -(stream.scrollHeight - ch);
-          if (stNew > 0) stNew = 0; else if (stNew < minSt) stNew = minSt;
-          stream.scrollTop = stNew;
-        }
-        stickBottom = isNearBottom();
-        winMaybeTrimRetention();
-      };
-
-      // 하단 근처 복귀 — 스크롤업으로 누적/언마운트된 상태를 최신 상한(MAX_EVENTS)으로 접는다.
-      // winAll 을 최신 cap 개로 자르고(초과 최古는 키 삭제 → 재스크롤업 시 loadOlder refetch),
-      // 스페이서 제거 후 마운트를 최신 연속으로 복원 → 하단 고정. 이후 타이핑은 O(1)(≤cap).
-      const collapseToBottom = () => {
-        if (winReconciling || !winActive()) return;
-        const cap = MAX_EVENTS;
-        if (winAll.length === 0) {
-          // winAll 미사용(레지스트리 비어있는 초기) — 기존 capStream 로 위임.
-          capStream();
-          return;
-        }
-        // 언마운트분 없고 상한 이하면 이미 접힘 — 매 스크롤마다 재구성(churn) 방지.
-        if (!winWindowed && winAll.length <= cap) return;
-        const keep = winAll.slice(0, cap);
-        const drop = winAll.slice(cap);
-        winReconciling = true;
-        try {
-          // 드롭 노드(최古 초과분) — dedup 키 삭제(재로드 시 재렌더 가능) 후 참조 해제.
-          for (const nd of drop) winDropKeys(nd);
-          // 기존 winItem·스페이서 분리(센티넬 유지, 스페이서 회수).
-          for (const nd of Array.from(stream.children)) {
-            if (nd === historySentinel) continue;
-            stream.removeChild(nd);
-            if (isWinSpacer(nd)) { nd.style.height = "0px"; winSpacerPool.push(nd); }
-          }
-          const frag = document.createDocumentFragment();
-          for (const nd of keep) frag.appendChild(nd);   // 최신→最古 순 그대로 = DOM child0..
-          stream.insertBefore(frag, historySentinel || null);
-          winAll = keep;
-          try { refreshDateDividers(); } catch (e) {}
-          try { dividerObserver.takeRecords(); } catch (e) {}
-        } finally { winReconciling = false; }
-        winDirty = true; winLastSig = ""; winWindowed = false;
-        if (drop.length > 0) refreshOldestCursorAfterPrune();
-        stream.scrollTop = 0;               // 하단 고정.
-        capKeyStore(renderedActivityKeys);
-        capKeyStore(activityByStep);
-      };
-
-      // 언마운트/드롭 시 dedup 키 정리 — 잘린 메시지를 나중에 다시 스크롤업하면 재렌더되게.
-      const winDropKeys = (nd) => {
-        if (nd && nd.dataset && nd.dataset.ts) {
-          const t = parseInt(nd.dataset.ts, 10);
-          const ty = nd.dataset.type || "";
-          if (Number.isFinite(t) && ty.indexOf("channel.message") === 0) {
-            renderedMsgKeys.delete(msgKey(t, ty.endsWith(".out") ? "assistant" : "user"));
-          }
-        }
-      };
-
-      // winAll 이 보관 상한 초과 시, 최古(스크롤 최상단) 초과분을 버려 메모리 바운드.
-      // 단 마운트되어 보이는 노드는 안 버림(현재 뷰 보존) — 언마운트된 最古만 대상.
-      const winMaybeTrimRetention = () => {
-        if (winAll.length <= WIN_RETAIN_MAX) return;
-        let removable = winAll.length - WIN_RETAIN_MAX;
-        for (let i = winAll.length - 1; i >= 0 && removable > 0; i--) {
-          const nd = winAll[i];
-          if (nd.isConnected) break;        // 마운트된 지점 도달 → 그 위(더 최신)는 다 마운트/보관.
-          winDropKeys(nd); winAll.splice(i, 1); removable--;
-        }
-        if (winAll.length > 0) refreshOldestCursorAfterPrune();
       };
 
       // 파일 확장자 → highlight.js 언어. diff 코드 하이라이팅 언어 판별(경로 기반).
@@ -4034,9 +3754,10 @@
         // 싸움이 나 observer/cursor 상태가 꼬이고 스크롤업 더보기가 죽는다(헤드리스 검증
         // 2026-06-26). older 는 사용자가 실제로 스크롤업해 이력을 볼 때(=not near-bottom)만.
         if (isNearBottom()) return;
-        // 윈도잉: 최古가 언마운트(보관)된 상태면 fetch 대신 remount 가 담당 → 중복 fetch 금지.
-        // (스크롤 최상단까지 올려 보관분을 다 remount 하면 최古가 연결됨 → 그때 진짜 fetch.)
-        if (winAll.length > 0 && !winAll[winAll.length - 1].isConnected) return;
+        // ★DOM 바운드(가상화 대체) — 스크롤업 열람도 HARD_MAX_EVENTS 까지만 마운트하고 로드를
+        // 멈춘다(플레인 상한, 스페이서/언마운트 없음). 넘으면 더 안 당김 → 무한 누적·O(n²) 핫패스
+        // 방지. 하단 복귀 시 capStream 이 MAX_EVENTS 로 되접어 타이핑 O(1) 회복.
+        if (stream.children.length >= HARD_MAX_EVENTS) return;
         loadingOlder = true;
         try {
           const r = await fetch(

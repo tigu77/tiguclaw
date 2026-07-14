@@ -1016,12 +1016,17 @@ class HttpBridge implements Channel, Observer {
           return { ok: false, error: e instanceof Error ? e.message : String(e) };
         }
       };
+      // 답글 인용(대시보드 등) — body.replyToText 를 중립 필드로 실어 route 직전 인용 주입
+      // (telegram 의 reply_to_message 와 동형·LLM-agnostic, index.ts 934 단일 지점). 캡 1500.
+      const replyToText =
+        typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 1500) : "";
       const msg: IncomingMessage = {
         channel: this.name,
         channelUserId,
         threadKey,
         text,
         receivedAt: Date.now(),
+        ...(replyToText !== "" ? { replyToText } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         reply: async (out: string): Promise<void> => {
           replyText = out;

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.94] - 2026-07-14
+
+### Added
+- **You can now reply to a specific message in the dashboard chat.** Hover any message and click "↩ reply" to quote it; a chip above the composer shows what you're replying to, and sending threads that message's text in as context — so "continue this" is unambiguous about which message it means. Same mechanism Telegram replies already used (channel-agnostic; no new backend).
+
 ## [0.3.93] - 2026-07-13
 
 ### Fixed
@@ -613,7 +618,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.93...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.94...HEAD
+[0.3.94]: https://github.com/tigu77/tiguclaw/compare/v0.3.93...v0.3.94
 [0.3.93]: https://github.com/tigu77/tiguclaw/compare/v0.3.92...v0.3.93
 [0.3.92]: https://github.com/tigu77/tiguclaw/compare/v0.3.91...v0.3.92
 [0.3.91]: https://github.com/tigu77/tiguclaw/compare/v0.3.90...v0.3.91

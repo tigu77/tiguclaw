@@ -742,6 +742,14 @@
       .att-fname { font-size:8px; line-height:1.1; max-width:48px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-mute); }
       .att-x { position:absolute; top:-7px; right:-7px; width:17px; height:17px; border-radius:50%; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); color:var(--text); font-size:9px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; padding:0; z-index:2; }
       .att-x:hover { color:var(--warn); border-color:var(--warn); }
+      /* 아웃바운드 첨부 카드(send_file, #2) — 칩 세로 셀(썸네일/아이콘 + 캡션 + 텍스트 프리뷰). */
+      .att-cell { display:flex; flex-direction:column; gap:3px; }
+      .att-chip.att-img[data-zoom] { cursor:zoom-in; }
+      /* 받기(다운로드) 버튼 — 칩 우하단 오버레이(제거 ✕ 와 대칭 위치). download 속성으로 파일 저장. */
+      .att-dl { position:absolute; bottom:-7px; right:-7px; width:17px; height:17px; border-radius:50%; background:rgba(13,17,24,.96); border:1px solid var(--border-strong); color:var(--text); font-size:9px; line-height:1; display:flex; align-items:center; justify-content:center; cursor:pointer; text-decoration:none; z-index:2; }
+      .att-dl:hover { color:var(--accent-2); border-color:var(--accent-2); }
+      .att-caption { font-size:10px; color:var(--text-mute); line-height:1.3; max-width:200px; word-break:break-word; }
+      .att-textpreview { margin:2px 0 0; padding:6px 8px; font-size:10px; line-height:1.35; max-width:230px; max-height:120px; overflow:auto; background:rgba(255,255,255,.03); border:1px solid var(--border); border-radius:8px; white-space:pre-wrap; word-break:break-word; color:var(--text-mute); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       #right.drag-over { outline:2px dashed var(--accent-2); outline-offset:-6px; }
       #chat-send { background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#061018; border:0; border-radius:12px; padding:10px 14px; font-weight:850; cursor:pointer; }
       #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
@@ -3692,6 +3700,39 @@
         const isOut = ev.type === "channel.message.out";
         const thread = payload.threadKey || THREAD_KEY;
 
+        // ── 아웃바운드 첨부 카드(send_file, #2) ────────────────────────────
+        // send_file 은 턴 *중간* 산출물이라 attachments 를 실은 out 이벤트가 온다. 이건 최종
+        // 답변이 아니므로 P5 승격/턴 완료 로직을 타면 안 된다(그러면 턴이 조기 마감되고 첨부가
+        // 안 보인다). 진행 중 턴 그룹이 있으면 그 안(스텝 아래)에, 없으면 스트림에 단독 삽입 —
+        // 턴은 완료하지 않는다(최종 text-out 이 마감). 미리보기+받기 버튼은 buildAttachmentsPreview.
+        if (isOut && payload.attachments && payload.attachments.length) {
+          const div = document.createElement("div");
+          div.className = "ev local channel-chat";
+          div.dataset.type = "channel.message.out";
+          if (ev.ts != null) div.dataset.ts = String(ev.ts);
+          const head = document.createElement("div");
+          const tsEl = document.createElement("span"); tsEl.className = "ts"; tsEl.textContent = ts;
+          const tyEl = document.createElement("span"); tyEl.className = "type"; tyEl.textContent = assistantName;
+          head.appendChild(tsEl); head.appendChild(tyEl);
+          div.appendChild(head);
+          const msg = document.createElement("div");
+          msg.className = "chat-message";
+          if (payload.text) setChatBody(msg, payload.text, true); // 캡션이 text 로 온 경우 대비(현재는 attachment.caption).
+          msg.appendChild(buildAttachmentsPreview(payload.attachments, { download: true }));
+          div.appendChild(msg);
+          const card = cardByThread.get(thread);
+          if (card && card.group && vtIndex.has(card.group) && !card.closed) {
+            card.group.appendChild(div); // 진행 중 턴 그룹 안(스텝 다음).
+            scheduleRelayout();
+          } else {
+            vtAppend(div);
+          }
+          localChatCount += 1;
+          refreshChatEmpty();
+          if (currentView === "overview") setTimeout(showOverview, 0);
+          return;
+        }
+
         // ── P5 진행 버블 승격 ──────────────────────────────────────────────
         // out(봇 답변)이고 같은 threadKey 에 스트리밍 진행 버블이 있으면, 새 버블을 만들지
         // 말고 그 진행 버블을 "최종 권위 전체본 + 마크다운"으로 승격(중복 버블 생성 금지).
@@ -3784,8 +3825,9 @@
         msg.className = "chat-message";
         setChatBody(msg, entry.text, isOut); // 비서=마크다운, 사용자=평문.
         // 영속 첨부(rel 메타) → 이력·새로고침에도 이미지/파일 미리보기(서빙 엔드포인트 경유).
+        // 아웃바운드(비서 send_file) 이면 받기 버튼·캡션·텍스트 프리뷰 포함(인바운드는 무회귀).
         if (entry.attachments && entry.attachments.length) {
-          msg.appendChild(buildAttachmentsPreview(entry.attachments));
+          msg.appendChild(buildAttachmentsPreview(entry.attachments, { download: isOut }));
         }
         div.appendChild(msg);
         return div;
@@ -3796,7 +3838,15 @@
       // 새로고침 후 과거 이력엔 안 남는 건 알려진 한계 — 라이브 세션 동안엔 보인다.)
       // 첨부 미리보기 — 두 소스 지원: (1) 전송 직후 낙관적 버블 = 클라 base64(dataBase64/mimeType/
       // filename), (2) 이력/타클라이언트 = 영속 메타(rel/mime/name/kind → /api/attachments/<rel> 서빙).
-      const buildAttachmentsPreview = (attachments) => {
+      // opts.download(아웃바운드=send_file 카드) 이면 칩에 ⬇받기 버튼 + (텍스트류) 인라인 프리뷰 +
+      // caption 을 붙인다. 인바운드(유저 업로드)는 opts 없음 = 기존 그대로(무회귀). 이미지는 클릭 확대
+      // (원본 새 탭). 텍스트/마크다운/코드는 서빙 파일을 best-effort fetch 해 앞부분 프리뷰(실패=무시).
+      const TEXT_PREVIEW_EXTS = ["md","txt","json","csv","js","ts","jsx","tsx","py","sh","bash","html","css","yml","yaml","xml","log","ini","toml","sql"];
+      const isTextLike = (mime, name) =>
+        /^text\//.test(mime) || mime === "application/json" ||
+        TEXT_PREVIEW_EXTS.includes((String(name).split(".").pop() || "").toLowerCase());
+      const buildAttachmentsPreview = (attachments, opts) => {
+        const download = !!(opts && opts.download);
         const wrap = document.createElement("div");
         wrap.className = "chat-atts";
         attachments.forEach((a) => {
@@ -3808,6 +3858,10 @@
             : a.rel
               ? "/api/attachments/" + a.rel
               : null;
+          // 받기 대상 — 서빙 rel 우선(파일 저장), 없으면 data URI(낙관적 버블).
+          const dlHref = a.rel ? "/api/attachments/" + a.rel : src;
+          const cell = document.createElement("div");
+          cell.className = "att-cell";
           const chip = document.createElement("div");
           chip.className = "att-chip" + (isImg && src ? " att-img" : " att-file");
           chip.title = name + (a.bytes ? " · " + fmtBytes(a.bytes) : "");
@@ -3817,13 +3871,45 @@
             img.src = src;
             img.alt = name;
             chip.appendChild(img);
+            // 미리보기 — 클릭 시 원본 새 탭(경량, 의존 0).
+            chip.dataset.zoom = "1";
+            chip.addEventListener("click", () => window.open(src, "_blank", "noopener"));
           } else {
             const ic = document.createElement("div"); ic.className = "att-fileicon";
             ic.textContent = ((String(name).split(".").pop() || "FILE").slice(0, 4)).toUpperCase();
             const nm = document.createElement("div"); nm.className = "att-fname"; nm.textContent = name;
             chip.appendChild(ic); chip.appendChild(nm);
           }
-          wrap.appendChild(chip);
+          // 받기 버튼(다운로드) — 아웃바운드 카드에서만(인바운드 무회귀). download 속성으로 저장.
+          if (download && dlHref) {
+            const dl = document.createElement("a");
+            dl.className = "att-dl";
+            dl.href = dlHref;
+            dl.setAttribute("download", name);
+            dl.title = "받기";
+            dl.textContent = "⬇";
+            chip.appendChild(dl);
+          }
+          cell.appendChild(chip);
+          // 캡션(send_file caption) — 있으면 칩 아래 설명.
+          if (a.caption) {
+            const cap = document.createElement("div");
+            cap.className = "att-caption";
+            cap.textContent = a.caption;
+            cell.appendChild(cap);
+          }
+          // 텍스트류 인라인 프리뷰(아웃바운드·서빙 rel 한정) — best-effort fetch, 실패 시 조용히 제거.
+          if (download && a.rel && !isImg && isTextLike(mime, name)) {
+            const pre = document.createElement("pre");
+            pre.className = "att-textpreview";
+            pre.textContent = "…";
+            fetch("/api/attachments/" + a.rel)
+              .then((r) => (r.ok ? r.text() : Promise.reject(new Error("fetch"))))
+              .then((t) => { pre.textContent = t.slice(0, 800) + (t.length > 800 ? "\n…" : ""); })
+              .catch(() => { pre.remove(); });
+            cell.appendChild(pre);
+          }
+          wrap.appendChild(cell);
         });
         return wrap;
       };
@@ -3921,7 +4007,10 @@
             flush();
             // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 가졌으면 뒤의 flat assistant
             // chat_log 행은 세그먼트의 중복 → 드롭(단 msgKey 등록해 SSE out replay 도 재렌더 안 함).
-            if (it.m.role === "assistant" && sawTextThread && it.m.threadKey === sawTextThread) {
+            // ★단 첨부(send_file) 를 실은 assistant 행은 텍스트 세그먼트의 중복이 아니므로 절대 드롭
+            // 하지 않는다(아웃바운드 첨부 카드 보존, #2). 순수 텍스트 행만 세그먼트 중복으로 간주.
+            const mHasAtt = it.m.attachments && it.m.attachments.length;
+            if (it.m.role === "assistant" && !mHasAtt && sawTextThread && it.m.threadKey === sawTextThread) {
               renderedMsgKeys.add(msgKey(it.m.ts, "assistant"));
               sawTextThread = null;
               continue;
@@ -4335,6 +4424,20 @@
           // 엔드포인트 turn(기계 API 호출)은 채팅서 제외 — 방어적(보통 endpoint 는 channel.message
           // 미발생, llm.delta/turn 만; 캡처는 delta 누적 경로가 담당). 진행표시도 스킵.
           if (isEndpointThread(tk)) return;
+          // 아웃바운드 첨부(send_file, #2) = 턴 *중간* 산출물 — 최종 답변이 아니므로 턴 종료
+          // (markTurnDone)·진행표시 해제를 하지 않는다(최종 text-out 이 마감). dedup 은 고유 ts 라
+          // 최종 text-out(같은 role assistant, 다른 ts)과 키 충돌 없음. chat-history 로 이미 그렸으면 스킵.
+          if (
+            ev.type === "channel.message.out" &&
+            ev.payload && ev.payload.attachments && ev.payload.attachments.length
+          ) {
+            const akey = msgKey(ev.ts, "assistant");
+            if (renderedMsgKeys.has(akey)) return;
+            renderedMsgKeys.add(akey);
+            cancelErrClear(tk);
+            renderChannelMessage(ev, ts);
+            return;
+          }
           // 진행 표시(모든 채널) — 인바운드=턴 시작(텔레그램·CLI 포함), 아웃바운드=턴 종료.
           // ★재연결 replay 방어 — 버퍼가 흘리는 과거 .in 은 phantom 진행표시(짝 turn_done 없음)를
           // 만든다. 최근(2분 이내) .in 만 활성화 → 이미 끝난 옛 턴이 '작업 중'으로 안 뜬다.

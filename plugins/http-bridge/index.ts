@@ -161,6 +161,46 @@ const ingestAttachments = async (
   return out;
 };
 
+// ── 아웃바운드 첨부(send_file, #2 parity) — 비서가 send_file 로 보낸 절대경로 파일을 대시보드가
+// 받아볼 수 있게 통제 디렉터리로 *복사*해 servable rel 을 확보한다. ★임의 절대경로를 그대로
+// 서빙하지 않는다(보안): 인바운드와 동일하게 attachmentsDir/<channel>/<yyyymmdd>/<id>.<ext> 만
+// /attachments 로 노출된다. 인바운드 ingest 와 대칭(같은 디렉터리·명명·kind 매핑 헬퍼 재사용). ──
+// ext → 깨끗한 mime(CONTENT_TYPE_BY_EXT 는 charset 파라미터 포함 → 첫 토큰만). 미지 = octet-stream.
+const mimeForExt = (ext: string): string => {
+  const ct = CONTENT_TYPE_BY_EXT[ext];
+  return ct !== undefined ? (ct.split(";")[0]?.trim() ?? "application/octet-stream") : "application/octet-stream";
+};
+interface OutboundAttachmentMeta {
+  rel: string;
+  name: string;
+  mime: string;
+  kind: AttachmentKind;
+  bytes: number;
+}
+// srcPath(절대경로) → 통제 디렉터리 복사 후 서빙 메타. 파일 부재/디렉터리/접근불가면 null(호출자 {ok:false}).
+const persistOutboundAttachment = async (
+  srcPath: string,
+  channel: string,
+): Promise<OutboundAttachmentMeta | null> => {
+  const st = await fs.stat(srcPath).catch(() => null);
+  if (st === null || !st.isFile()) return null;
+  const name = sanitizeFilename(path.basename(srcPath));
+  const srcExt = path.extname(srcPath).replace(/^\./, "").toLowerCase();
+  const mime = mimeForExt(srcExt);
+  const kind = attachmentKindOf(mime);
+  const dir = path.join(getPaths().attachmentsDir, channel, yyyymmddUtc());
+  await fs.mkdir(dir, { recursive: true });
+  const id = crypto.randomBytes(8).toString("hex");
+  const destExt = srcExt.length > 0 && srcExt.length <= 8 ? srcExt : (EXT_BY_MIME[mime] ?? "bin");
+  const abs = path.join(dir, `${id}.${destExt}`);
+  await fs.copyFile(srcPath, abs);
+  const rel = path
+    .relative(getPaths().attachmentsDir, abs)
+    .split(path.sep)
+    .join("/"); // URL 경로 정규화(윈도우 \ → /).
+  return { rel, name, mime, kind, bytes: st.size };
+};
+
 const readJsonBody = async (
   req: http.IncomingMessage,
 ): Promise<Record<string, unknown>> => {
@@ -1020,6 +1060,57 @@ class HttpBridge implements Channel, Observer {
       // (telegram 의 reply_to_message 와 동형·LLM-agnostic, index.ts 934 단일 지점). 캡 1500.
       const replyToText =
         typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 1500) : "";
+      // 아웃바운드 첨부(send_file, #2 parity) — 텔레그램 sendDocument 와 동형의 추상 의도
+      // 렌더. send_file 된 절대경로를 통제 디렉터리로 복사(servable rel 확보)한 뒤,
+      // `channel.message.out` 이벤트에 additive `attachments:[{rel,name,mime,kind,caption?}]`
+      // 를 실어 발행한다 → 대시보드가 SSE 로 받아 첨부 카드(미리보기+받기 버튼)로 렌더하고,
+      // event-persist 가 chat_log(role:assistant)에 영속(인바운드 첨부 영속과 대칭 = 새로고침·
+      // 재시작 후에도 유지). 멱등은 호출자(send_file 도구, per-turn sentPaths)가 보장 — 채널은
+      // 복사+발행 1회만. bus 미연결(observer 미부착)이면 렌더 경로 없음 → {ok:false}.
+      const channelName = this.name;
+      const sendAttachment: IncomingMessage["sendAttachment"] = async (
+        filePath,
+        opts,
+      ) => {
+        const meta = await persistOutboundAttachment(filePath, channelName).catch(
+          () => null,
+        );
+        if (meta === null) {
+          return {
+            ok: false,
+            error: `파일을 찾을 수 없거나 접근할 수 없습니다: ${filePath}`,
+          };
+        }
+        if (bus === null) {
+          return { ok: false, error: "control bus not started (대시보드 미연결)" };
+        }
+        try {
+          bus.publish({
+            type: "channel.message.out",
+            ts: Date.now(),
+            payload: {
+              channel: channelName,
+              threadKey,
+              text: "", // 첨부-only 아웃바운드(캡션은 attachment.caption 으로). 최종 답변 text-out 과 별개 버블.
+              attachments: [
+                {
+                  rel: meta.rel,
+                  mime: meta.mime,
+                  name: meta.name,
+                  kind: meta.kind,
+                  bytes: meta.bytes,
+                  ...(opts?.caption !== undefined && opts.caption !== ""
+                    ? { caption: opts.caption }
+                    : {}),
+                },
+              ],
+            },
+          });
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      };
       const msg: IncomingMessage = {
         channel: this.name,
         channelUserId,
@@ -1031,6 +1122,7 @@ class HttpBridge implements Channel, Observer {
         reply: async (out: string): Promise<void> => {
           replyText = out;
         },
+        sendAttachment,
         presentOptions,
       };
 

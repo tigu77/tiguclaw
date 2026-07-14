@@ -29,6 +29,11 @@ export interface ChatAttachmentMeta {
   /** image | pdf | audio | video | file 등 Attachment.kind. */
   kind: string;
   bytes?: number;
+  /**
+   * 아웃바운드 첨부(send_file caption) 전용(additive) — 비서가 파일과 함께 보낸 설명.
+   * 인바운드(유저 업로드)는 미사용. 미지정 = 캡션 없음(회귀 0). 대시보드 카드가 렌더.
+   */
+  caption?: string;
 }
 
 export interface ChatLogEntry {

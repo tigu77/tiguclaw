@@ -65,7 +65,8 @@ export const createSendFileMcpServer = (
             .describe("파일과 함께 보낼 설명(선택)."),
         },
         async (args) => {
-          // 채널 미지원(cli·http-bridge 등) — 전송 시도 없이 graceful 안내.
+          // 채널 미지원(cli 등) — 전송 시도 없이 graceful 안내. (telegram=sendDocument,
+          // http-bridge/대시보드=attachments 다운로드 카드로 지원. cli 는 sendAttachment 미정의.)
           if (sendAttachment === undefined) {
             return okText(
               "이 채널은 파일 전송을 지원하지 않습니다. 사용자에게 파일 절대경로를 텍스트로 안내하세요.",

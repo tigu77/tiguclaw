@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-14
+### Added
+- **대시보드에서 돌쇠가 보낸 파일(`send_file`)을 미리보기하고 받을 수 있습니다.** 대화 중 만들어 보낸 리포트·이미지·zip 등이 첨부 카드로 뜨고 — 이미지는 클릭해 크게 보기, 텍스트·마크다운은 인라인 미리보기, 옆의 **⬇ 받기** 버튼으로 다운로드. `send_file` 이 이제 텔레그램뿐 아니라 웹 대시보드에서도 렌더됩니다(채널 무관 추상 의도). 보낸 파일은 통제된 첨부 저장소(`<home>/data/attachments`)로 복사해 안전하게 서빙하며, 경로 탈출(traversal)은 차단됩니다.
+
 ## [0.4.3] - 2026-07-14
 ### Fixed
 - **프로덕션 빌드(`built`) 모드에서 웹 대시보드가 뜨지 않던 문제 수정.** 대시보드 UI(`packages/dashboard`)가 빌드 산출물에 포함되지 않아, `built` 로 설치한 인스턴스는 대시보드 포트가 빈 응답이었습니다(설치 기본이 `built` 라 신규 설치자 영향). 이제 `build:prod` 가 대시보드를 `dist/` 로 컴파일·복사하고 built 데몬이 직접 서빙합니다(source 모드는 기존대로 동작). 릴리스 검증(클린룸)에 대시보드 실서빙 게이트를 추가해 재발을 막습니다.
@@ -663,7 +667,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/tigu77/tiguclaw/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tigu77/tiguclaw/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/tigu77/tiguclaw/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tigu77/tiguclaw/compare/v0.4.0...v0.4.1

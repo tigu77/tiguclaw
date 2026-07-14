@@ -20,5 +20,9 @@
     // 산출물 슬림 — 런타임 실행엔 .d.ts 불필요.
     "declaration": false
   },
-  "include": ["src/**/*", "plugins/**/*"]
+  // packages/**/* 추가(2026-07-14 dashboard built fix) — packages/dashboard/index.ts 는
+  //  src 의존 0 의 자립 HTTP 서버지만 built 모드에서 tsx 부재라 실행 불가였다. rootDir="."
+  //  덕에 dist/packages/dashboard/index.js 로 경로 보존 emit → dashboard plugin 이 node 로
+  //  직접 스폰(tsx 미경유). 비-.ts 정적파일(index.html 등)은 copy-dist-assets 가 옆에 복사.
+  "include": ["src/**/*", "plugins/**/*", "packages/**/*"]
 }

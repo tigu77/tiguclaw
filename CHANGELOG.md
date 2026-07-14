@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-14
+### Fixed
+- **프로덕션 빌드(`built`) 모드에서 웹 대시보드가 뜨지 않던 문제 수정.** 대시보드 UI(`packages/dashboard`)가 빌드 산출물에 포함되지 않아, `built` 로 설치한 인스턴스는 대시보드 포트가 빈 응답이었습니다(설치 기본이 `built` 라 신규 설치자 영향). 이제 `build:prod` 가 대시보드를 `dist/` 로 컴파일·복사하고 built 데몬이 직접 서빙합니다(source 모드는 기존대로 동작). 릴리스 검증(클린룸)에 대시보드 실서빙 게이트를 추가해 재발을 막습니다.
+
 ## [0.4.2] - 2026-07-14
 ### Changed
 - 대시보드 백그라운드 작업 패널에서 **워커 잡에도 `📦 워커` 배지**를 표시합니다(기존엔 서브에이전트만 배지가 있었음). 서브에이전트(보라)와 워커(중립 회색)를 한눈에 구분 — 에이전트 그리드와 동일한 표기.
@@ -659,7 +663,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/tigu77/tiguclaw/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/tigu77/tiguclaw/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tigu77/tiguclaw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tigu77/tiguclaw/compare/v0.3.99...v0.4.0

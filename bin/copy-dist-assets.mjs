@@ -76,6 +76,12 @@ const main = async () => {
   //    .ts 는 tsc 가 dist/plugins/**/*.js 로 이미 emit — 여기선 제외하고 나머지만 미러.
   await copyTree("plugins", { excludeTs: true });
 
+  // 3) packages 트리의 비-.ts 정적 자산 → dist/packages (2026-07-14 dashboard built fix).
+  //    tsc 가 dist/packages/dashboard/index.js 로 emit 하지만 그 __dirname 기준으로 서빙하는
+  //    index.html·marked.min.js·highlight.min.js·package.json·README.md 는 안 옮긴다 → 옆에 복사.
+  //    없으면 built 대시보드가 정적파일 로드 실패(HTML 0 bytes). .ts 는 이미 .js 로 emit.
+  await copyTree("packages", { excludeTs: true });
+
   log("done.");
 };
 

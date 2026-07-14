@@ -11,8 +11,11 @@
  *    (orphan 재사용·EADDRINUSE 크래시 회피). 없으면 child process 로 packages/dashboard 기동.
  *  - stop() — child SIGTERM kill (데몬 종료 시 src/index.ts shutdown 이 호출).
  *
- * 실행 분기(dev): packages/dashboard/index.ts 를 레포 node_modules 의 tsx CLI 로 실행.
- *   prod(컴파일 dist 미포함·tsx 부재)는 graceful skip + 안내 로그 — 후속 분리(사용자 합의).
+ * 실행 분기(2026-07-14): built(.js) 우선 → source(.ts+tsx). loader 의 .ts→.js 폴백과 결.
+ *   - built: appRoot()=dist → dist/packages/dashboard/index.js 를 node 로 직접 스폰(tsx 미경유).
+ *   - source(dev): packages/dashboard/index.ts 를 레포 node_modules 의 tsx CLI 로 실행(불변).
+ *   둘 다 부재 시에만 graceful skip + 안내 로그. (이전엔 built 에서 소스·tsx 부재로 항상 skip →
+ *   신규 설치자가 대시보드를 못 썼다. build:prod 가 dist/packages/dashboard 로 컴파일+정적복사.)
  *
  * 포트: DASHBOARD_PORT(기본 3101)·HTTP_BRIDGE_PORT 는 child 가 env 에서 직접 읽음(상속).
  *   HTTP_BRIDGE_TOKEN 부재 시 child 가 즉시 exit(1) → 미리 감지해 안내 후 skip.
@@ -55,15 +58,29 @@ class DashboardService {
       return;
     }
 
+    // 엔트리 해석 — built(.js) 우선 → 없으면 source(.ts + tsx). loader 의 .ts→.js 폴백과 결.
+    //  - built: appRoot()=dist → dist/packages/dashboard/index.js 를 node 로 직접 스폰(tsx 미경유).
+    //    정적파일(index.html 등)은 그 __dirname 옆(copy-dist-assets 가 복사)에서 서빙된다.
+    //  - source(dev): packages/dashboard/index.ts 를 레포 node_modules 의 tsx CLI 로 실행(불변).
+    // skip 경고는 양쪽 다 없을 때만 — built 는 tsx 형제 부재가 정상이라 예전처럼 오검출하면 안 됨.
     const root = appRoot();
+    const builtEntry = path.join(root, "packages", "dashboard", "index.js");
     const sourceEntry = path.join(root, "packages", "dashboard", "index.ts");
     const tsxCli = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
 
-    if (!existsSync(sourceEntry) || !existsSync(tsxCli)) {
-      // prod(소스·tsx 미포함) — graceful skip. 후속 prod 분리(사용자 합의).
+    let spawnArgs: string[];
+    if (existsSync(builtEntry)) {
+      // built — node 로 컴파일된 .js 직접 실행. tsx 불요.
+      spawnArgs = [builtEntry];
+    } else if (existsSync(sourceEntry) && existsSync(tsxCli)) {
+      // source(dev) — tsx 로 .ts 실행(현행 동작·바이트 불변).
+      spawnArgs = [tsxCli, sourceEntry];
+    } else {
+      // built .js 도, source .ts(+tsx) 도 없음 — graceful skip.
       console.warn(
-        `dashboard: source or tsx runner not found (looked at ${sourceEntry}). ` +
-          "skipping auto-start — launch dashboard separately in prod.",
+        "dashboard: no runnable entry found " +
+          `(built ${builtEntry} absent; source ${sourceEntry} + tsx missing). ` +
+          "skipping auto-start.",
       );
       return;
     }
@@ -75,7 +92,7 @@ class DashboardService {
       childEnv.DASHBOARD_PORT = DEFAULT_DASHBOARD_PORT;
     }
 
-    const child = spawn(process.execPath, [tsxCli, sourceEntry], {
+    const child = spawn(process.execPath, spawnArgs, {
       cwd: root,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],

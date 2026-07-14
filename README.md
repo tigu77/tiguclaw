@@ -15,7 +15,7 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Everything Claude Code can do** — read / write / edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory… and more on top.
 - **Many LLMs, one assistant** — mix `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) with a single `provider:model` line. Switch freely; same abilities everywhere.
 - **Always on** — runs as a background service and restarts itself if it ever dies.
-- **Updates itself on request** — just ask it to update. It pulls the latest, runs a typecheck safety gate (and auto-rolls back if the new code wouldn't build), restarts, and pings you when it's back — no manual `git pull`.
+- **Updates itself on request** — just ask it to update (or send `/update`). It pulls the latest, restarts, and pings you when it's back — no manual `git pull`. Your memory and sessions carry over, and if an update can't produce runnable code it rolls back and keeps running the previous version.
 - **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
 - **One personality, many channels** — Telegram, CLI, HTTP, and a built-in web dashboard all reach the same assistant, sharing one conversation memory. The dashboard is a full chat: live step-by-step progress as it works (each step shows what it touched), replies that stream in, and scrollback that survives restarts. A side panel tracks background jobs — their status, steps, and results — so you can watch long work without leaving the conversation.
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and simple tasks to a free local model (the `nano` tier).
@@ -133,6 +133,31 @@ A few notes:
   - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
   - **Windows** → registry Run key (HKCU — **no admin needed**; starts at logon, runs hidden). No crash-restart; for full KeepAlive run under **WSL2**.
   - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
+
+### Updating
+
+Just **ask it** — "update yourself" (or send `/update`). It pulls the latest code, restarts, and pings you when it's back. Your memory, sessions, and settings carry over — updates only touch the code, never your data. If an update can't produce runnable code, it rolls back and keeps running the previous version (you're never left with a dead daemon).
+
+Prefer to do it by hand? From the repo: `git pull && npm run daemon:restart`. *(In built mode, add `npm run build:prod` before the restart — the in-app update does this for you.)*
+
+### Reinstalling & production (built) mode
+
+**Reinstall / repair** — just re-run `npm run onboard` (or `npm run daemon:install`); it overwrites the service registration in place. Handy after moving the repo folder or if the service ever gets into a bad state — it's safe and leaves your data untouched.
+
+**Source vs built runtime** — most people can ignore this. By default tiguclaw runs its TypeScript directly (the **source** runtime — quick to tweak, best if you're hacking on it). For a production install you can run the **compiled** build instead: faster boot, no on-the-fly transpile.
+
+```bash
+TIGUCLAW_RUNTIME=built npm run onboard            # builds, then installs the built service
+```
+
+To switch an existing install between modes, set `TIGUCLAW_RUNTIME` and re-run the install:
+
+```bash
+npm run build:prod                               # compile to dist/ (built mode needs this)
+TIGUCLAW_RUNTIME=built npm run daemon:install     # or: TIGUCLAW_RUNTIME=built tiguclaw install
+```
+
+Leave `TIGUCLAW_RUNTIME` unset (or anything other than `built`) to stay on the default source runtime. An existing install never switches modes on its own — only an explicit reinstall changes it. Updates keep whichever mode you installed (built updates rebuild automatically).
 
 ### Uninstall
 

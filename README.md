@@ -140,24 +140,19 @@ Just **ask it** — "update yourself" (or send `/update`). It pulls the latest c
 
 Prefer to do it by hand? From the repo: `git pull && npm run daemon:restart`. *(In built mode, add `npm run build:prod` before the restart — the in-app update does this for you.)*
 
-### Reinstalling & production (built) mode
+### Reinstalling & runtime mode
 
 **Reinstall / repair** — just re-run `npm run onboard` (or `npm run daemon:install`); it overwrites the service registration in place. Handy after moving the repo folder or if the service ever gets into a bad state — it's safe and leaves your data untouched.
 
-**Source vs built runtime** — most people can ignore this. By default tiguclaw runs its TypeScript directly (the **source** runtime — quick to tweak, best if you're hacking on it). For a production install you can run the **compiled** build instead: faster boot, no on-the-fly transpile.
+**Runtime mode** — `npm run onboard` installs the **compiled build** by default: it compiles to `dist/` for you and runs `node dist/src/index.js` — fast startup, no on-the-fly transpile. Nothing extra to do.
+
+If you'd rather run straight from **TypeScript source** — no build step, and updates apply the instant they're pulled (handy while developing) — install with `TIGUCLAW_RUNTIME=source`:
 
 ```bash
-TIGUCLAW_RUNTIME=built npm run onboard            # builds, then installs the built service
+TIGUCLAW_RUNTIME=source npm run onboard
 ```
 
-To switch an existing install between modes, set `TIGUCLAW_RUNTIME` and re-run the install:
-
-```bash
-npm run build:prod                               # compile to dist/ (built mode needs this)
-TIGUCLAW_RUNTIME=built npm run daemon:install     # or: TIGUCLAW_RUNTIME=built tiguclaw install
-```
-
-Leave `TIGUCLAW_RUNTIME` unset (or anything other than `built`) to stay on the default source runtime. An existing install never switches modes on its own — only an explicit reinstall changes it. Updates keep whichever mode you installed (built updates rebuild automatically).
+The mode is pinned when you install, so it never changes on its own — updates keep whichever mode you chose (a built install recompiles automatically, a few extra seconds per update). To switch later, set `TIGUCLAW_RUNTIME` and re-run the install.
 
 ### Uninstall
 

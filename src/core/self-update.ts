@@ -178,9 +178,13 @@ const changedFilesBetween = async (
     .filter((l) => l !== "");
 };
 
-/** built 런타임 모드 여부 — 명시 env 만 진실(daemon.ts D2 와 동일 판정). */
+/** built 런타임 모드 여부 — 명시 env 만 진실(daemon.ts runtimeMode 와 동일 판정).
+ *  Amendment 2026-07-14: **기본 built**(뒤집힘). 정확히 "source" 일 때만 skip(재빌드 없음),
+ *  나머지(미설정·오타 포함)는 built = pull 후 재빌드+dist 원자 교체.
+ *  ★유닛에 새겨진 TIGUCLAW_RUNTIME(install 시 mode-persistence)을 데몬 process.env 로 읽어
+ *   판정하므로, source 로 설치된 dev 데몬은 여기서 skip 되고 built 설치는 재빌드된다. */
 const isBuiltRuntime = (): boolean =>
-  process.env.TIGUCLAW_RUNTIME?.trim() === "built";
+  process.env.TIGUCLAW_RUNTIME?.trim() !== "source";
 
 /**
  * ★built 모드 재빌드 + 원자 dist 교체 (ADR 2026-07-14 D3).

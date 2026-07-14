@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.97] - 2026-07-14
+### Changed
+- 설치 기본 런타임이 **컴파일된 빌드(built)**로 바뀌었습니다. `npm run onboard` 가 이제 기본으로 `dist/` 로 컴파일한 뒤 그 빌드를 서비스로 등록합니다(부팅이 빠르고 실행 중 변환 없음). TypeScript 소스를 그대로 돌리려면 `TIGUCLAW_RUNTIME=source npm run onboard`. 런타임 모드는 **설치할 때 서비스 유닛에 고정**되어, 이후 업데이트나 기본값 변경에 흔들리지 않습니다(기존 설치는 자기 모드를 유지). 개발용 설치는 `npm run daemon:install:dev`(소스 모드 고정).
+
 ## [0.3.96] - 2026-07-14
 ### Added
 - 프로덕션 빌드 런타임: install/프로덕션 인스턴스를 컴파일된 산출물로 실행하는 모드(`TIGUCLAW_RUNTIME=built`). `npm run build:prod` 가 `dist/src` + `dist/plugins` 를 미러 빌드하고, 데몬이 tsx 소스 대신 `node dist/src/index.js` 로 구동 — 빠른 부팅·검증된 산출물. 개발 인스턴스는 소스(tsx) 모드 유지가 기본이라 반복이 빠르다.
@@ -635,7 +639,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.96...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.97...HEAD
+[0.3.97]: https://github.com/tigu77/tiguclaw/compare/v0.3.96...v0.3.97
 [0.3.96]: https://github.com/tigu77/tiguclaw/compare/v0.3.95...v0.3.96
 [0.3.95]: https://github.com/tigu77/tiguclaw/compare/v0.3.94...v0.3.95
 [0.3.94]: https://github.com/tigu77/tiguclaw/compare/v0.3.93...v0.3.94

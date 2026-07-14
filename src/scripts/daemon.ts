@@ -21,8 +21,10 @@
  *   npm run daemon:uninstall            # 등록 해제 + 유닛 제거
  *   tsx src/scripts/daemon.ts print     # 설치 안 하고 유닛/명령만 미리보기
  *
- * 개발 홈 보존: dev 는 `TIGUCLAW_HOME=./tiguclaw-dev npm run daemon:install` 로 실행해야
- *   기존 dev 데이터(./tiguclaw-dev)를 유지한다. 미설정 시 prod 기본 ~/.tiguclaw.
+ * 개발 홈 보존: dev 는 `TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source npm run daemon:install`
+ *   (또는 `npm run daemon:install:dev`) 로 실행해야 기존 dev 데이터(./tiguclaw-dev)를 유지하고,
+ *   **dev 는 source 로 고정**된다(기본이 built 이므로 dev 는 반드시 source 명시). 미설정 시
+ *   prod 기본 = home ~/.tiguclaw · runtime built.
  *
  * KeepAlive 강도(솔직히): macOS(launchd KeepAlive) > Linux(systemd Restart=always)
  *   > Windows(Task Scheduler ONLOGON — crash 자동재시작 약함). 완전 parity 는 WSL2 권장.
@@ -47,13 +49,15 @@ const LABEL = process.env.TIGUCLAW_SERVICE_LABEL?.trim() || "com.tiguclaw.daemon
 const expandHome = (p: string): string =>
   p === "~" || p.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p;
 
-// 런타임 모드 (ADR 2026-07-14-built-artifact-production-runtime D2) — 명시 env 만 진실.
-//   source(기본): `node <tsx cli> src/index.ts` — dev·현행 install 불변(추론 magic 0).
-//   built: `node dist/src/index.js` — tsx 미경유(선빌드 산출물). install/prod 명시 opt-in.
-// 정확히 "built" 만 built; 미설정·오타·빈값은 전부 source 로 안전 낙착.
+// 런타임 모드 (ADR 2026-07-14-built-artifact-production-runtime D2, Amendment 2026-07-14) —
+//   명시 env 만 진실. **기본 built**(뒤집힘: 실사용자 "설치=프로덕션" 기대).
+//   built(기본): `node dist/src/index.js` — tsx 미경유(선빌드 산출물). 미설정·오타·빈값 전부 built.
+//   source: `node <tsx cli> src/index.ts` — dev 전용. 정확히 "source" 일 때만 source 로 낙착.
+// mode-persistence(아래 install): 해석된 모드를 유닛 env(TIGUCLAW_RUNTIME=<mode>)에 새겨,
+//   실행 데몬·self-update 가 자기 모드를 확실히 알고, 기존 설치가 기본값 변경에 안 휩쓸린다(D4).
 type RuntimeMode = "source" | "built";
 const runtimeMode = (): RuntimeMode =>
-  process.env.TIGUCLAW_RUNTIME?.trim() === "built" ? "built" : "source";
+  process.env.TIGUCLAW_RUNTIME?.trim() === "source" ? "source" : "built";
 
 interface Ctx {
   repoRoot: string;
@@ -125,6 +129,7 @@ ${execStrings(c)
   <key>EnvironmentVariables</key>
   <dict>
     <key>TIGUCLAW_HOME</key><string>${c.homeRaw}</string>
+    <key>TIGUCLAW_RUNTIME</key><string>${c.runtime}</string>
     <key>PATH</key><string>${nodeBinDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -234,6 +239,7 @@ Type=simple
 ExecStart=${execStrings(c).join(" ")}
 WorkingDirectory=${c.repoRoot}
 Environment="TIGUCLAW_HOME=${c.homeRaw}"
+Environment="TIGUCLAW_RUNTIME=${c.runtime}"
 Restart=always
 RestartSec=2
 
@@ -336,6 +342,7 @@ const winPort = (c: Ctx): string => {
 const buildWinVbs = (c: Ctx): string => {
   const inner =
     `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && ` +
+    `set "TIGUCLAW_RUNTIME=${c.runtime}" && ` +
     execStrings(c)
       .map((s) => `"${s}"`)
       .join(" ");

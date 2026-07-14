@@ -87,15 +87,16 @@ const onboard = (): number => {
     console.log("\n[2/5] codex 아님 — OAuth 단계 건너뜀.");
   }
 
-  // 런타임 모드 (ADR 2026-07-14 D2/D4) — 명시 env 만 진실. 기본 source(현행 불변, 자동
-  // 플립 0). built 는 프로덕션 명시 opt-in: 유닛 생성 *전에* dist 산출물이 있어야 하므로
-  // 여기서 build:prod 를 먼저 돌린다. 이 env 는 runNpm(상속)으로 daemon:install 까지 전달돼
-  // built 유닛(node dist/src/index.js)이 생성된다.
+  // 런타임 모드 (ADR 2026-07-14 D2/D4, Amendment 2026-07-14) — 명시 env 만 진실.
+  // **기본 built**(뒤집힘: 설치=프로덕션). built 는 유닛 생성 *전에* dist 산출물이 있어야
+  // 하므로 여기서 build:prod 를 먼저 돌린다. 이 env 는 runNpm(상속)으로 daemon:install 까지
+  // 전달돼 built 유닛(node dist/src/index.js)이 생성되고, mode-persistence 로 유닛 env 에
+  // TIGUCLAW_RUNTIME=built 가 새겨진다. dev/디버그는 TIGUCLAW_RUNTIME=source 로 opt-out(빌드 skip).
   const runtime =
-    process.env.TIGUCLAW_RUNTIME?.trim() === "built" ? "built" : "source";
+    process.env.TIGUCLAW_RUNTIME?.trim() === "source" ? "source" : "built";
   if (runtime === "built") {
     console.log(
-      "\n[빌드] TIGUCLAW_RUNTIME=built — 프로덕션 산출물 빌드 (npm run build:prod)…",
+      "\n[빌드] runtime=built (기본) — 프로덕션 산출물 빌드 (npm run build:prod)…",
     );
     if (runNpm("build:prod") !== 0) {
       console.error(
@@ -103,6 +104,8 @@ const onboard = (): number => {
       );
       return 1;
     }
+  } else {
+    console.log("\n[빌드] TIGUCLAW_RUNTIME=source — 빌드 건너뜀(tsx 로 .ts 직접 구동).");
   }
 
   console.log(`\n[3/5] 데몬 등록 (supervisor, runtime=${runtime})…`);
@@ -158,11 +161,12 @@ const USAGE = `tiguclaw — 자가호스트 AI 비서 CLI
   tiguclaw uninstall    데몬 등록 해제
   tiguclaw help         이 도움말
 
-  런타임 모드 (ADR 2026-07-14): 기본 source(tsx 로 .ts 구동, dev·현행 불변).
-    프로덕션 빌드 산출물로 구동하려면 TIGUCLAW_RUNTIME=built 를 설정한 채로
-    onboard(자동 build:prod 선행) 하거나, 수동: npm ci → npm run build:prod →
-    TIGUCLAW_RUNTIME=built tiguclaw install. 기존 install 은 자동 전환되지 않는다
-    (명시 재설치로만). built 인스턴스의 self-update 는 재빌드 후 dist 를 원자 교체한다.
+  런타임 모드 (ADR 2026-07-14, Amendment 2026-07-14): 기본 built(설치=프로덕션 빌드 산출물,
+    node dist/src/index.js). onboard 가 build:prod 를 자동 선행하고, 설치 시 해석된 모드를
+    유닛 env(TIGUCLAW_RUNTIME=built)에 새긴다(mode-persistence). dev/디버그로 tsx .ts 를
+    직접 구동하려면 TIGUCLAW_RUNTIME=source 로 opt-out(빌드 skip, 유닛에 =source 새김).
+    기존 install 은 유닛에 고정된 모드를 유지 — 기본값 변경에 자동 전환되지 않는다(명시 재설치로만).
+    built 인스턴스의 self-update 는 재빌드 후 dist 를 원자 교체한다.
 `;
 
 const main = (): number => {

@@ -1,6 +1,6 @@
 {
   "name": "tiguclaw",
-  "version": "0.3.96",
+  "version": "0.3.97",
   "private": true,
   "type": "module",
   "bin": {
@@ -44,6 +44,7 @@
     "bridge:tokens": "tsx src/scripts/bridge-tokens.ts",
     "codex-auth": "tsx src/scripts/codex-auth.ts",
     "daemon:install": "tsx src/scripts/daemon.ts install",
+    "daemon:install:dev": "TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source tsx src/scripts/daemon.ts install",
     "daemon:uninstall": "tsx src/scripts/daemon.ts uninstall",
     "daemon:restart": "tsx src/scripts/daemon.ts restart",
     "daemon:status": "tsx src/scripts/daemon.ts status",

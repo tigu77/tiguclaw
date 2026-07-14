@@ -140,24 +140,19 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 
 직접 하려면 레포에서 `git pull && npm run daemon:restart`. *(built 모드라면 재시작 전에 `npm run build:prod` 를 먼저 — 인앱 업데이트는 이걸 자동으로 해줍니다.)*
 
-### 재설치 · 프로덕션(built) 모드
+### 재설치 · 런타임 모드
 
 **재설치 / 복구** — `npm run onboard`(또는 `npm run daemon:install`)를 다시 실행하면 서비스 등록을 그 자리에서 덮어씁니다. 레포 폴더를 옮겼거나 서비스가 이상해졌을 때 쓰면 돼요 — 데이터는 건드리지 않고 안전합니다.
 
-**source vs built 런타임** — 대부분은 몰라도 됩니다. 기본으로 tiguclaw 는 TypeScript 소스를 그대로 실행합니다(**source** 런타임 — 고치기 빠르고, 직접 개발할 때 좋음). 프로덕션 설치라면 **컴파일된 빌드**로 돌릴 수 있어요: 부팅이 빠르고 실행 중 변환이 없습니다.
+**런타임 모드** — `npm run onboard` 는 기본으로 **컴파일된 빌드**를 설치합니다: `dist/` 로 컴파일한 뒤 `node dist/src/index.js` 로 구동해요 — 부팅이 빠르고 실행 중 변환이 없습니다. 따로 할 건 없습니다.
+
+**TypeScript 소스**로 바로 돌리고 싶다면 — 빌드 단계가 없고 업데이트가 받는 즉시 적용됩니다(개발할 때 편함) — `TIGUCLAW_RUNTIME=source` 로 설치하세요:
 
 ```bash
-TIGUCLAW_RUNTIME=built npm run onboard            # 빌드 후 built 서비스로 설치
+TIGUCLAW_RUNTIME=source npm run onboard
 ```
 
-기존 설치의 모드를 바꾸려면 `TIGUCLAW_RUNTIME` 을 지정하고 install 을 다시 실행하세요:
-
-```bash
-npm run build:prod                               # dist/ 로 컴파일 (built 모드는 필수)
-TIGUCLAW_RUNTIME=built npm run daemon:install     # 또는: TIGUCLAW_RUNTIME=built tiguclaw install
-```
-
-`TIGUCLAW_RUNTIME` 을 비워두면(또는 `built` 외의 값) 기본 source 런타임을 씁니다. 기존 설치가 저절로 모드를 바꾸는 일은 없고, 명시적 재설치로만 바뀝니다. 업데이트는 설치했던 모드를 그대로 유지합니다(built 는 자동으로 재빌드).
+모드는 설치할 때 고정되어 저절로 바뀌지 않습니다 — 업데이트는 고른 모드를 유지합니다(built 설치는 자동 재컴파일, 업데이트마다 몇 초 추가). 나중에 바꾸려면 `TIGUCLAW_RUNTIME` 을 지정하고 install 을 다시 실행하세요.
 
 ### 삭제 (Uninstall)
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.95] - 2026-07-14
+### Added
+- 명명된 모델 프로파일: `settings.json` 의 `models.profiles` 에 이름·설명·풀(`provider:model` 배열)·폴백으로 모델 구성을 데이터로 정의. 마스터·서브에이전트·워커·세션이 프로파일 이름(`default`/`high` 등)으로 모델을 고른다. 흩어져 있던 티어(`MODEL_TIER_*`)·기본 풀(`REGION_A_MODELS`) 설정을 한 곳으로 통일 — 프로파일 추가·삭제가 파일 편집만으로 된다.
+- 프로파일 2층 폴백: 풀 안 순차 폴백(임의 실패 시 다음 모델) + 프로파일 간 폴백 체인(`fallback` 참조, 모델/자격증명 부재 등 구조적 불가에만 발동). 홈/프로젝트 스코프 병합으로 프로젝트별 오버라이드 지원.
+
+### Changed
+- 설정 로더 일반화(`loadSettings`) — 기존 `.env` 설정(`REGION_A_MODELS`·`MODEL_TIER_*`)은 프로파일 부재 시 레거시 폴백으로 무기한 유지(기존 설치 무중단).
+
 ## [0.3.94] - 2026-07-14
 
 ### Added
@@ -618,7 +626,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.94...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.95...HEAD
+[0.3.95]: https://github.com/tigu77/tiguclaw/compare/v0.3.94...v0.3.95
 [0.3.94]: https://github.com/tigu77/tiguclaw/compare/v0.3.93...v0.3.94
 [0.3.93]: https://github.com/tigu77/tiguclaw/compare/v0.3.92...v0.3.93
 [0.3.92]: https://github.com/tigu77/tiguclaw/compare/v0.3.91...v0.3.92

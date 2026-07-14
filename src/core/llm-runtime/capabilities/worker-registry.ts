@@ -85,13 +85,13 @@ const runner = (job: WorkerJobRecord): void => {
     // 본체 settle 즉시 해제 — 늦은 워커-timeout abort 의 무의미 발화·자원 누수 0.
     let outcome: { result: string } | { error: string };
     try {
-      const { runRegionA, resolveTier } = await import("../index.js");
-      // 잡에 modelTier 가 있으면 그 등급 풀을 specs 로 넘긴다(서브에이전트 동형) —
-      // 미지정 시 undefined → runRegionA 가 기본 모델 풀 사용. resolveTier 가 빈 등급이면
-      // [] 반환하므로 그 경우도 specs 미지정으로 처리(기본 모델).
-      const workerSpecs =
+      const { runRegionA, resolveModelChain } = await import("../index.js");
+      // 잡에 modelTier 가 있으면 그 풀 체인을 넘긴다(서브에이전트 동형) — 프로파일이면
+      // .fallback 체인까지(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 미지정·빈 체인
+      // 이면 undefined → runRegionA 가 기본 모델 풀 사용.
+      const workerChain =
         job.modelTier !== undefined && job.modelTier !== ""
-          ? resolveTier(job.modelTier)
+          ? resolveModelChain(job.modelTier, job.cwd)
           : [];
       const runRegionAP = runRegionA(
         {
@@ -104,7 +104,7 @@ const runner = (job: WorkerJobRecord): void => {
           workerDepth: 1,
           abortSignal: abort.signal,
         },
-        workerSpecs.length > 0 ? { specs: workerSpecs } : undefined,
+        workerChain.length > 0 ? { chain: workerChain } : undefined,
       );
 
       // 하드 백스톱 (2026-06-20) — index.ts 채널 백스톱(Promise.race) 동형. abort.signal 은

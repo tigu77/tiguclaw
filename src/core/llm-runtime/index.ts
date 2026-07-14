@@ -39,6 +39,7 @@ import type {
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import { getEventBus } from "../eventbus.js";
+import { resolveProfileChain } from "../settings.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
@@ -181,8 +182,20 @@ export const parseModelSpecList = (raw: string): ModelSpec[] => {
   return out;
 };
 
-export const resolveModelSpecs = (override?: ModelSpec[]): ModelSpec[] => {
+export const resolveModelSpecs = (
+  override?: ModelSpec[],
+  cwd?: string,
+): ModelSpec[] => {
   if (override !== undefined && override.length > 0) return override;
+  // (신규 2026-07-14, ADR model-profiles) settings.json `models.profiles.default` =
+  //  메인 턴 암묵 풀. 코어가 아는 예약 이름은 `default` 하나뿐(§0 — 모델명 하드코딩 아님,
+  //  데이터 sentinel 1개). 프로파일이 새 진실 소스, env REGION_A_MODELS 는 레거시 폴백(ADR (a)).
+  //  default 는 .fallback 없는 터미널 풀이라 체인의 자기 pool(chain[0])만 사용.
+  const defaultChain = resolveProfileChain("default", cwd);
+  if (defaultChain.length > 0) {
+    const pool = parseModelSpecList(defaultChain[0].join(","));
+    if (pool.length > 0) return pool;
+  }
   const env = process.env.REGION_A_MODELS;
   if (env !== undefined && env !== "") {
     const parsed = parseModelSpecList(env);
@@ -201,9 +214,9 @@ export const poolDiversityWarning = (): string | null => {
   const providers = new Set(specs.map((s) => s.provider ?? s.adapter));
   if (providers.size > 1) return null; // cross-provider 그물 있음 — OK
   return (
-    `⚠️ REGION_A_MODELS 풀이 단일 provider(${[...providers][0]})뿐 — 그 백엔드가 ` +
-    `흔들리면(idle 타임아웃 등) 폴백 그물 없이 전 풀이 동시에 실패합니다. ` +
-    `cross-provider 최후 안전망 권장(예: 풀 끝에 codex:gpt-5.5 추가).`
+    `⚠️ 기본 모델 풀(models.profiles.default 또는 REGION_A_MODELS)이 단일 provider` +
+    `(${[...providers][0]})뿐 — 그 백엔드가 흔들리면(idle 타임아웃 등) 폴백 그물 없이 ` +
+    `전 풀이 동시에 실패합니다. cross-provider 최후 안전망 권장(예: 풀 끝에 codex:gpt-5.5 추가).`
   );
 };
 
@@ -217,10 +230,23 @@ const TIER_ENV: Record<string, string> = {
   nano: "MODEL_TIER_NANO", // 신규 — 로컬 단순작업 모델 풀 (예 ollama:llama3.2:3b)
 };
 
-export const resolveTier = (modelStr: string | undefined): ModelSpec[] => {
-  const s = (modelStr ?? "").trim().toLowerCase();
-  if (s === "") return [];
-  // 등급 키워드 → MODEL_TIER_* 콤마 풀.
+export const resolveTier = (
+  modelStr: string | undefined,
+  cwd?: string,
+): ModelSpec[] => {
+  const raw = (modelStr ?? "").trim();
+  if (raw === "") return [];
+  // (신규 2026-07-14, ADR model-profiles D3) 이름 앞단 프로파일 lookup — models.profiles[token]
+  //  이 있으면 그 프로파일의 자기 pool(intra 폴백)을 단일 풀로 반환. .fallback 체인(inter,
+  //  프로파일 간)은 resolveModelChain 이 조립하며, resolveTier 는 하위호환 시그니처 유지를 위해
+  //  단일 풀만 반환한다(레거시 티어 이름·직접 spec 폴백은 프로파일 부재 시 아래로 존치).
+  //  프로파일 이름은 대소문자 구분(settings 키 그대로) — 티어 소문자화보다 앞에서 원문으로 조회.
+  const profileChain = resolveProfileChain(raw, cwd);
+  if (profileChain.length > 0) {
+    return parseModelSpecList(profileChain[0].join(","));
+  }
+  // 등급 키워드 → MODEL_TIER_* 콤마 풀 (레거시 폴백).
+  const s = raw.toLowerCase();
   const tierEnvKey = TIER_ENV[s];
   if (tierEnvKey !== undefined) {
     const env = process.env[tierEnvKey];
@@ -230,8 +256,36 @@ export const resolveTier = (modelStr: string | undefined): ModelSpec[] => {
     return [];
   }
   // provider:model 직접 (티어 아님) — 단일 spec.
-  const direct = parseModelSpec(modelStr!.trim());
+  const direct = parseModelSpec(raw);
   return direct !== null ? [direct] : [];
+};
+
+/**
+ * 토큰 → 순서 있는 풀 체인(ModelSpec[][]) — 프로파일 간(.fallback) 폴백을 분리 운반.
+ *  (1) models.profiles[token] → 프로파일 체인(pool + .fallback 풀들). 빈/전부무효 풀은 drop.
+ *  (2) 프로파일 아님 → resolveTier(레거시 티어 or 직접 provider:model) 단일 풀 → [pool].
+ *  (3) 둘 다 빔 → [](호출자가 어댑터 디폴트로 강등).
+ *
+ * runRegionA(input, { chain }) 가 chain[0] 을 runPool, 구조적 실패면 chain[1] 로 전진한다.
+ * ★ 절대 하나의 ModelSpec[] 로 평탄화하지 마라 — 그러면 프로파일 간 폴백이 런타임 결함
+ *  (스톨·타임아웃)에도 터져 feedback_no_cross_adapter_fallback 을 깬다(회귀). 풀 안(runPool)=
+ *  임의 실패 폴백 / 풀 간(runRegionA)=구조적 불가만. 이 경계 유지를 위해 체인을 분리해 넘긴다.
+ */
+export const resolveModelChain = (
+  modelStr: string | undefined,
+  cwd?: string,
+): ModelSpec[][] => {
+  const raw = (modelStr ?? "").trim();
+  if (raw === "") return [];
+  const profileChain = resolveProfileChain(raw, cwd);
+  if (profileChain.length > 0) {
+    return profileChain
+      .map((pool) => parseModelSpecList(pool.join(",")))
+      .filter((pool) => pool.length > 0); // 빈/전부무효 풀은 체인에서 제거(다음 풀로 흐름).
+  }
+  // 프로파일 아님 — 레거시 티어/직접 spec 단일 풀. (resolveTier 가 프로파일 재조회하나 무음.)
+  const pool = resolveTier(raw, cwd);
+  return pool.length > 0 ? [pool] : [];
 };
 
 const callAdapter = (
@@ -522,50 +576,85 @@ const runPool = async (
 
 export const runRegionA = async (
   input: RegionASdkInput,
-  opts?: { specs?: ModelSpec[] },
+  opts?: { specs?: ModelSpec[]; chain?: ModelSpec[][] },
 ): Promise<RegionASdkOutput> => {
-  const hadOverride = opts?.specs !== undefined && opts.specs.length > 0;
-  const pool = resolveModelSpecs(opts?.specs);
-
-  try {
-    return await runPool(input, pool);
-  } catch (e) {
-    // override/tier 풀(opts.specs)이 (a) "모델 거부" 또는 (b) "provider 미가용(자격증명 부재)"
-    // 로 실패한 경우에만 env 기본 풀로 1회 자동 폴백 (고지 후 — 사용자 결정). 이 둘은 "이
-    // 모델/어댑터를 애초에 쓸 수 없음"인 설정 에러라 사용자 기본 풀이 최후 안전망이 된다.
-    // 런타임 결함(스톨·hang·타임아웃)은 여기 안 걸려 그대로 throw — 어댑터 결함을 기본 모델로
-    // 가리지 않는다(feedback_no_cross_adapter_fallback). override 없던 일반 turn(=이미 env
-    // 풀로 돈 경우)은 폴백 대상이 없으니 그대로 throw (무한 폴백 금지).
-    const detail = errorDetail(e);
-    if (!hadOverride || !(isModelRejected(detail) || isProviderUnavailable(detail))) {
-      throw e;
-    }
-
-    const requestedLabel = pool.map(specLabel).join(",");
-    const fallbackPool = resolveModelSpecs(undefined); // env REGION_A_MODELS → 없으면 DEFAULT_MODEL_SPEC
-    console.warn(
-      `llm-runtime: override '${requestedLabel}' 모델 거부 — env 풀로 1회 자동 폴백.`,
-    );
-
-    // 폴백도 실패하면(env 풀 전부 거부/에러) 그 에러를 throw → 기존 catch 로.
-    // 단 모델 문제임이 드러나도록 원에러를 재던진다(이미 model-rejected 메시지 포함).
-    const output = await runPool(input, fallbackPool);
-
-    // 고지 — 폴백 성공 응답에 명확 안내 덧붙임 (조용한 폴백 금지). 거부 모델 + 폴백 모델 포함.
-    const fellBackToLabel =
-      output.model !== undefined && output.model !== null && output.model !== ""
-        ? output.model
-        : fallbackPool.map(specLabel).join(",");
-    const notice =
-      `\n\n⚠️ 지정 모델 \`${requestedLabel}\` 을(를) 쓸 수 없어 기본 모델로 답했습니다. ` +
-      `다시 지정하려면 \`/model <provider:model>\`.`;
-    return {
-      ...output,
-      text: output.text === "" ? output.text : `${output.text}${notice}`,
-      // router 가 깨진 override 를 DB 에서 제거하도록 신호 (매 turn 경고 반복 방지).
-      modelOverrideRejected: { requested: requestedLabel, fellBackTo: fellBackToLabel },
-    };
+  // 풀 체인 조립 — 프로파일 간(inter) 폴백을 *분리된 풀들*로 운반한다(평탄화 금지).
+  //  (1) opts.chain(신규 — 프로파일 .fallback 체인): 그대로. chain[0]=요청 풀.
+  //  (2) opts.specs(레거시 — /model override·서브에이전트 단일 풀): [override, 기본 풀] 2단.
+  //      = 기존 "override → env(또는 default 프로파일) 기본 풀 1회 폴백"을 체인으로 표현(의미 불변).
+  //  (3) 둘 다 없음: [기본 풀] 단일 — 폴백 대상 없음(일반 turn, 무한 폴백 금지, 현행 동일).
+  // hadOverride = chain[0] 이 명시 요청 풀인가(폴백 고지·트리거 게이트).
+  let chain: ModelSpec[][];
+  let hadOverride: boolean;
+  if (opts?.chain !== undefined && opts.chain.length > 0) {
+    chain = opts.chain.filter((p) => p.length > 0);
+    if (chain.length === 0) chain = [resolveModelSpecs(undefined, input.cwd)];
+    hadOverride = true;
+  } else if (opts?.specs !== undefined && opts.specs.length > 0) {
+    chain = [opts.specs, resolveModelSpecs(undefined, input.cwd)];
+    hadOverride = true;
+  } else {
+    chain = [resolveModelSpecs(undefined, input.cwd)];
+    hadOverride = false;
   }
+
+  const requestedLabel = chain[0].map(specLabel).join(",");
+  let lastError: unknown;
+
+  for (let i = 0; i < chain.length; i++) {
+    const isLast = i === chain.length - 1;
+    try {
+      const output = await runPool(input, chain[i]);
+      // 요청 풀(chain[0]) 성공, 또는 폴백 아님(hadOverride=false) → 고지 없이 그대로 반환.
+      if (i === 0 || !hadOverride) return output;
+      // 프로파일 간/override 폴백 성공 — 조용한 폴백 금지. 명확 고지 + modelOverrideRejected
+      // 신호(router 가 깨진 override 를 DB 에서 제거해 매 turn 경고 반복 방지).
+      const fellBackToLabel =
+        output.model !== undefined &&
+        output.model !== null &&
+        output.model !== ""
+          ? output.model
+          : chain[i].map(specLabel).join(",");
+      const notice =
+        `\n\n⚠️ 지정 모델 \`${requestedLabel}\` 을(를) 쓸 수 없어 기본 모델로 답했습니다. ` +
+        `다시 지정하려면 \`/model <provider:model>\`.`;
+      return {
+        ...output,
+        text: output.text === "" ? output.text : `${output.text}${notice}`,
+        modelOverrideRejected: {
+          requested: requestedLabel,
+          fellBackTo: fellBackToLabel,
+        },
+      };
+    } catch (e) {
+      // 사용자 /stop 취소 = 실패 아님 → 폴백 없이 그대로 propagate(runPool 이 이미 rethrow).
+      // abort reason name 으로 duck-typing(레이어 결합 회피, 기존과 동일).
+      const cancelReason = input.abortSignal?.reason;
+      if (
+        input.abortSignal?.aborted === true &&
+        cancelReason instanceof Error &&
+        cancelReason.name === "UserCancelledError"
+      ) {
+        throw e;
+      }
+      // 2층 턴 타임아웃 단락 — 런타임 결함이라 다음 풀로 폴백해봐야 같은 turn signal 이 이미
+      // abort 라 무의미 + 어댑터 결함 마스킹 방지(feedback_no_cross_adapter_fallback).
+      if (e instanceof TurnTimeoutError) throw e;
+      // 프로파일 간(inter) 폴백은 *구조적 불가*(모델부재 isModelRejected · 자격증명부재
+      // isProviderUnavailable)만 트리거. 런타임 스톨/hang/타임아웃은 비트리거 — 그대로 throw.
+      // 요청 풀(hadOverride)이면서 구조적 실패이고 다음 풀이 남아있을 때만 전진.
+      const detail = errorDetail(e);
+      const structural =
+        isModelRejected(detail) || isProviderUnavailable(detail);
+      if (isLast || !hadOverride || !structural) throw e;
+      lastError = e;
+      console.warn(
+        `llm-runtime: 요청 풀 '${requestedLabel}' 구조적 실패(모델/자격증명 부재) — 체인의 다음 풀로 1회 폴백.`,
+      );
+    }
+  }
+  // 도달 불가(마지막 풀 실패는 위에서 throw) — 방어적 안전망.
+  throw lastError ?? new Error("llm-runtime: 모델 풀 체인이 비어있음.");
 };
 
 // 기존 export 보존 — 회귀 0.

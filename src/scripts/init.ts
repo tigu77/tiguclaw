@@ -13,16 +13,20 @@
  */
 import { createInterface } from "node:readline/promises";
 import { randomBytes } from "node:crypto";
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import type { ModelProfile } from "../core/settings.js";
 
 // 설정(.env)은 **런타임 홈**에 둔다(공개 레포 checkout 무오염, 2026-07-09). 홈 =
 // TIGUCLAW_HOME env(있으면) / 기본 ~/.tiguclaw — load-env.ts·daemon.ts 와 동일 규칙.
 const HOME_DIR =
   process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
 const ENV_PATH = path.join(HOME_DIR, ".env");
+// settings.json — 구조화 비-시크릿 노브(모델 프로파일 등, ADR model-profiles D5). .env(시크릿)
+// 와 별개 파일. init 이 seed 프로파일을 여기 기록(hooks 등 기존 키는 비파괴 병합).
+const SETTINGS_PATH = path.join(HOME_DIR, "settings.json");
 
 type Provider = "anthropic" | "claude-sub" | "openai" | "codex";
 
@@ -57,6 +61,76 @@ const TIER_DEFAULTS: Record<Provider, { high: string; mid: string; low: string }
   },
   openai: { high: "openai:gpt-5.5", mid: "openai:gpt-5.5", low: "openai:gpt-5.5" },
   codex: { high: "codex:gpt-5.5", mid: "codex:gpt-5.5", low: "codex:gpt-5.5" },
+};
+
+/** 콤마 문자열 → provider:model 배열 (빈/공백 제거). init 값은 보통 단일이나 방어적. */
+const toPool = (raw: string): string[] =>
+  raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+/**
+ * seed 모델 프로파일 (ADR model-profiles 잔여 — TIER_DEFAULTS 2026-07-08 을 프로파일로 승격).
+ *  - default = 메인 턴 암묵 풀(REGION_A_MODELS 대응, 코어 예약 이름).
+ *  - high/mid/low = 서브에이전트/워커 등급(MODEL_TIER_* 대응) → 구조적 실패 시 default 로 폴백.
+ *  - nano = 초경량(분류 등) → low 로 폴백. TIER_DEFAULTS 에 nano 항목이 없어 low 값 재사용.
+ * 값은 선택 provider(TIER_DEFAULTS + regionAModels) 기준 — 사용자가 settings.json 으로 세분화.
+ */
+const buildSeedProfiles = (a: Answers): Record<string, ModelProfile> => ({
+  default: {
+    description: "기본 마스터 모델 풀 (메인 턴)",
+    pool: toPool(a.regionAModels),
+  },
+  high: {
+    description: "설계·분석 등 고난도 작업",
+    pool: toPool(a.tierHigh),
+    fallback: "default",
+  },
+  mid: {
+    description: "일반 작업",
+    pool: toPool(a.tierMid),
+    fallback: "default",
+  },
+  low: {
+    description: "단순·대량 작업",
+    pool: toPool(a.tierLow),
+    fallback: "default",
+  },
+  nano: {
+    description: "초경량·로컬 단순작업 (분류 등)",
+    pool: toPool(a.tierLow),
+    fallback: "low",
+  },
+});
+
+/**
+ * seed 프로파일을 settings.json 에 비파괴 병합. 기존 파일이 있으면 `models.profiles` 만
+ * 병합하고 다른 키(hooks 등)는 보존한다. 기존에 같은 이름 프로파일이 있으면 덮어쓰지 않는다
+ * (사용자 편집 우선). 파싱 실패 시 새 객체로 안전 강등(throw 0).
+ */
+const seedModelProfiles = (profiles: Record<string, ModelProfile>): void => {
+  let root: Record<string, unknown> = {};
+  if (existsSync(SETTINGS_PATH)) {
+    try {
+      const parsed = JSON.parse(readFileSync(SETTINGS_PATH, "utf8")) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        root = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // 파싱 실패 — 기존 내용 복구 불가. 새 객체로 진행(비-시크릿이라 손실 위험 낮음).
+    }
+  }
+  const models =
+    root.models !== null && typeof root.models === "object"
+      ? (root.models as { profiles?: Record<string, unknown> })
+      : {};
+  // 기존 프로파일 보존 + 없는 이름만 seed (뒤가 이김 → 기존이 seed 를 덮어써 비클로버).
+  models.profiles = { ...profiles, ...(models.profiles ?? {}) };
+  root.models = models;
+  writeFileSync(SETTINGS_PATH, `${JSON.stringify(root, null, 2)}\n`, {
+    encoding: "utf8",
+  });
 };
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -397,6 +471,13 @@ const main = async (): Promise<void> => {
   writeFileSync(ENV_PATH, renderEnv(answers), { encoding: "utf8" });
   console.log("");
   console.log(`✅ .env 작성 완료: ${ENV_PATH}  (런타임 홈 — 레포 아님)`);
+
+  // 모델 프로파일 seed (settings.json) — .env 의 REGION_A_MODELS/MODEL_TIER_* 를 명명 프로파일로
+  // 승격(ADR model-profiles). 기존 settings.json 의 hooks 등은 보존, models.profiles 만 병합.
+  seedModelProfiles(buildSeedProfiles(answers));
+  console.log(
+    `✅ settings.json 모델 프로파일 seed 완료: ${SETTINGS_PATH}  (default/high/mid/low/nano)`,
+  );
 
   console.log("");
   console.log("── 다음 단계 ──────────────────────────────────────");

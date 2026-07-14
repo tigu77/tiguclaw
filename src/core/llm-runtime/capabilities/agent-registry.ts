@@ -420,11 +420,13 @@ export const createSpawnAgentMcpServer = (
         };
 
         // lazy import — capabilities → llm-runtime/index circular 회피.
-        const { runRegionA, resolveTier } = await import("../index.js");
-        const specs = resolveTier(agent.model);
+        // resolveModelChain(2026-07-14) — agent.model 이 프로파일이면 .fallback 체인까지
+        //  운반(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 빈 체인 = 어댑터 디폴트.
+        const { runRegionA, resolveModelChain } = await import("../index.js");
+        const chain = resolveModelChain(agent.model, targetCwd);
         const out = await runRegionA(
           childInput,
-          specs.length > 0 ? { specs } : undefined,
+          chain.length > 0 ? { chain } : undefined,
         );
         markDone(jobId, out.text); // 관측 완료 — 재주입 없음(결과는 아래 return 으로 부모 회수).
         return okText(out.text);

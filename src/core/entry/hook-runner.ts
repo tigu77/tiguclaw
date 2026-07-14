@@ -24,8 +24,7 @@
  *  - dep 추가 0 (node builtin child_process/fs/os/path).
  */
 import { spawn } from "node:child_process";
-import { promises as fs } from "node:fs";
-import { getPaths, projectScope, projectScopeLegacy } from "../paths.js";
+import { loadSettingsLayers } from "../settings.js";
 
 interface HookCommand {
   type: string;
@@ -56,38 +55,31 @@ export interface UserPromptSubmitResult {
  * 이전 `.claude/settings.json` 폐기 (V9.3 §20 의도된 dev/runtime 분리 — `.claude` 는
  *  개발 레포 한정). 두 파일 병합 (user → project 순). 부재/파싱 실패는 빈 배열 (throw 0).
  * cwd 옵셔널 (기본 process.cwd()) — V9.3 discover* 하위호환 패턴 답습.
+ *
+ * 2026-07-14 — 공용 `loadSettingsLayers`(src/core/settings.ts) 로 일반화(ADR
+ *  model-profiles-settings-json D4). 병합 순서·never-throw 격리·`.tiguclaw/`+레거시 flat
+ *  경로는 그 헬퍼가 정확히 계승한다. 여기서는 hooks 의미(이벤트별 matcher concat/추가)만
+ *  적용한다 — 소비자 2개(hooks + models.profiles)로 실증된 중복이라 추상화 정당.
  */
-const loadSettingsHooks = async (
+const loadSettingsHooks = (
   event: string,
   cwd: string = process.cwd(),
-): Promise<HookMatcher[]> => {
-  // 홈 + 프로젝트(.tiguclaw/ 우선 + 레거시 flat 폴백, 2026-07-10). 존재하는 것만 로드(부재=스킵).
-  const paths = [
-    getPaths().settings,
-    projectScope(cwd).settings,
-    projectScopeLegacy(cwd).settings,
-  ];
+): HookMatcher[] => {
   const result: HookMatcher[] = [];
-  for (const p of paths) {
-    try {
-      const raw = await fs.readFile(p, "utf8");
-      const json = JSON.parse(raw) as {
-        hooks?: Record<string, unknown>;
-      };
-      const hooks = json.hooks?.[event];
-      if (Array.isArray(hooks)) {
-        for (const m of hooks) {
-          if (
-            m &&
-            typeof m === "object" &&
-            Array.isArray((m as HookMatcher).hooks)
-          ) {
-            result.push(m as HookMatcher);
-          }
+  // 홈 → 프로젝트 순 레이어. hooks 는 override 가 아니라 concat(프로젝트가 추가) — 병합
+  // 순서 보존이 중요(기존 동작). 각 레이어에서 이벤트 matcher 배열만 뽑아 누적.
+  for (const layer of loadSettingsLayers(cwd)) {
+    const hooks = layer.hooks?.[event];
+    if (Array.isArray(hooks)) {
+      for (const m of hooks) {
+        if (
+          m &&
+          typeof m === "object" &&
+          Array.isArray((m as HookMatcher).hooks)
+        ) {
+          result.push(m as HookMatcher);
         }
       }
-    } catch {
-      // 부재·파싱 실패 격리.
     }
   }
   return result;
@@ -148,7 +140,7 @@ export const runHooks = async (
   payload: Record<string, unknown>,
   cwd: string = process.cwd(),
 ): Promise<UserPromptSubmitResult> => {
-  const matchers = await loadSettingsHooks(event, cwd);
+  const matchers = loadSettingsHooks(event, cwd);
   if (matchers.length === 0) {
     return { additionalContext: "", block: false };
   }

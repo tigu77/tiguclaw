@@ -58,6 +58,7 @@ import {
   poolDiversityWarning,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
+import { diagnoseModelProfiles } from "./core/settings.js";
 import {
   hasSupervisorRespawn,
   spawnDetachedRestart,
@@ -1359,6 +1360,13 @@ if (!updateNotified) {
 // 모델 풀 단일-provider 소프트 경고 (부팅 1회) — 폴백 그물 부재 가시화.
 const poolWarn = poolDiversityWarning();
 if (poolWarn !== null) console.warn(poolWarn);
+
+// 모델 프로파일 검증 진단 (부팅 1회, ADR model-profiles (d)) — 댕글링 fallback·순환·빈 풀·
+// 무효 shape 를 로그로 표면화. never-throw at boot: 경고+강등만(데몬 거부 금지). resolve-time
+// cycle-guard(resolveProfileChain)가 실집행이라 여기서는 사용자 가시화가 목적.
+for (const issue of diagnoseModelProfiles()) {
+  console.warn(`⚠️ [model-profiles] ${issue}`);
+}
 
 console.log("tiguclaw daemon: ready");
 

@@ -45,6 +45,14 @@ export interface IncomingMessage {
   replyToText?: string;
   /** 신규 additive — 미지정/빈 배열 = 현행 text-only 경로 (회귀 0). */
   attachments?: Attachment[];
+  /**
+   * 내부 기원 합성 turn 표식(additive) — 워커 done 재주입(buildCompletionPrompt) 등
+   * *사용자가 보낸 게 아닌* turn. 미지정/false = 실제 인바운드(현행 동작, 회귀 0).
+   * 핸들러는 이 플래그일 때 `channel.message.in` 관측 발행을 스킵한다 — 내부 스캐폴딩
+   * 텍스트가 대시보드에 "나(user)" 메시지로 새는 걸 막는다. 라우팅·발송·직렬화 등
+   * 나머지 처리는 실 인바운드와 동일(관측 발행만 억제). 직렬화/resume 무영향.
+   */
+  synthetic?: boolean;
   receivedAt: number;
   reply: (text: string, opts?: ReplyOptions) => Promise<void>;
   /** 아웃바운드 첨부 전송 — 채널이 지원하면 구현(telegram), 미지원이면 undefined.

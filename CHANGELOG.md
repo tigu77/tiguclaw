@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-14
+### Fixed
+- 대시보드 채팅에서 백그라운드 워커 완료 보고가 **2개 버블로 중복** 표시되고, 내부 완료-알림 스캐폴딩(〔…〕)이 **사용자 메시지처럼 노출**되던 문제 수정. 워커 완료 재주입 턴이 관측 이벤트를 이중 발행하던 것과, 합성 턴의 인바운드 발행을 각각 닫았습니다. (텔레그램 발신은 원래 정상 1통이었고, 실패·취소·복구 통지의 대시보드 가시성은 그대로 보존.)
+
 ## [0.4.0] - 2026-07-14
 ### Changed
 - README(영/한)에 능력 쇼케이스 **"Highlights"** 섹션 추가 — 리치 웹 대시보드(라이브 인터리브·도구 카드·백그라운드 잡 패널)·프로젝트(폴더별 전용 스킬/에이전트/MCP)·외부 MCP 즉석 연결·직접 통제하는 모델 티어·관측 가능한 서브에이전트/워커·말로 하는 확장을 전면에 배치. 인트로에 내장 웹 대시보드 명시. (그동안 한 줄로 묻혀 있던 핵심 기능들을 제대로 드러냄.)
@@ -651,7 +655,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/tigu77/tiguclaw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tigu77/tiguclaw/compare/v0.3.99...v0.4.0
 [0.3.99]: https://github.com/tigu77/tiguclaw/compare/v0.3.98...v0.3.99
 [0.3.98]: https://github.com/tigu77/tiguclaw/compare/v0.3.97...v0.3.98

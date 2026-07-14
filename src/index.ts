@@ -457,16 +457,21 @@ const attachmentsMeta = (
 
 const handler: MessageHandler = async (msg) => {
   const inAttachments = attachmentsMeta(msg.attachments);
-  bus.publish({
-    type: "channel.message.in",
-    ts: Date.now(),
-    payload: {
-      channel: msg.channel,
-      threadKey: msg.threadKey,
-      text: msg.text.slice(0, EVENT_TEXT_MAX),
-      ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
-    },
-  });
+  // 내부 기원 합성 turn(워커 done 재주입 등)은 인바운드 관측 발행을 스킵 — 합성 텍스트는
+  // 내부 스캐폴딩(buildCompletionPrompt)이라 대시보드 chat_log 에 "나(user)"로 새면 안 된다.
+  // 라우팅·발송 등 나머지 처리는 실 인바운드와 동일. 아웃바운드 관측은 아래 성공분기 단일 발행.
+  if (msg.synthetic !== true) {
+    bus.publish({
+      type: "channel.message.in",
+      ts: Date.now(),
+      payload: {
+        channel: msg.channel,
+        threadKey: msg.threadKey,
+        text: msg.text.slice(0, EVENT_TEXT_MAX),
+        ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
+      },
+    });
+  }
   const trimmed = msg.text.trim();
   // V7.3 — 영역 A(LLM) 로 넘길 실효 텍스트. 사용자 정의 슬래시 매크로 매치 시
   // 확장된 prompt 로 교체 (기본 = 원본). 채널 입구 단일 지점 = LLM-agnostic.

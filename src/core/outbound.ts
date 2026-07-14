@@ -25,6 +25,14 @@ export interface OutboundInput {
   bus?: EventBus;
   /** cli/미지원 로그 접두 라벨(예: "scheduler:3"). */
   label?: string;
+  /**
+   * 관측(`channel.message.out`) 발행 여부(additive, 기본 true) — 물리 발송(telegram send 등)은
+   * 이 값과 무관하게 항상 수행한다. false 는 *핸들러(index.ts)가 관측을 발행하는 재주입 경로*
+   * 전용 — 워커 done 재주입 reply 가 물리 발송만 하고 관측은 핸들러 성공분기 단일 지점에
+   * 위임해, 일반 turn 과 대칭(대시보드 이중 버블 0)을 이루게 한다. 우회 통지(handler 미경유:
+   * failed/cancelled·done 안전망·부팅 복구)는 이 값을 지정하지 않아 기본 true = 관측 유지.
+   */
+  observe?: boolean;
 }
 
 // 관측(channel.message.out) 발행 — 대시보드 chat_log·라이브 SSE 가 이걸 받아 능동 발신도
@@ -59,6 +67,7 @@ const publishOut = (
 export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
   const { channel, target, text, label } = input;
   const bus = input.bus ?? getEventBus();
+  const observe = input.observe !== false; // 기본 true; false 만 관측 억제(물리 발송 불변).
   const tag = label !== undefined ? `[${label}] ` : "";
 
   if (channel === "cli") {
@@ -71,12 +80,12 @@ export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
       throw new Error("telegram target required (chatId)");
     }
     await telegramSendOutgoing(target, text);
-    publishOut(bus, "telegram", `tg:${target}`, text);
+    if (observe) publishOut(bus, "telegram", `tg:${target}`, text);
     return;
   }
 
   if (channel === "http-bridge") {
-    publishOut(bus, "http-bridge", target ?? "http-bridge:default", text);
+    if (observe) publishOut(bus, "http-bridge", target ?? "http-bridge:default", text);
     return;
   }
 

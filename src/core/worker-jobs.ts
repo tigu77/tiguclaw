@@ -523,13 +523,20 @@ const deriveTargetFromThreadKey = (
  */
 const reacquireReply = (
   dest: WorkerNotifyDest,
+  opts?: { observe?: boolean },
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
+  // observe(기본 true) — 우회 통지(handler 미경유: failed/cancelled·done 안전망·부팅 복구)는
+  // 자체가 유일 발신이라 관측 발행 필요(대시보드 가시성 유지). observe:false 는 done 재주입
+  // reply 전용 — 관측은 핸들러(index.ts) 성공분기 단일 지점에 위임해 일반 turn 과 대칭
+  // (대시보드 이중 버블 0). 물리 발송(telegram send 등)은 두 경우 모두 동일하게 수행된다.
+  const observe = opts?.observe;
   return async (text: string): Promise<void> => {
     await deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
       text,
       label: "worker",
+      ...(observe === false ? { observe: false } : {}),
     });
   };
 };
@@ -771,7 +778,9 @@ export const onWorkerComplete = async (
   }
 
   // notifyDest(스케줄 등이 주입한 generic 좌표) 우선, 없으면 channel/threadKey 폴백(회귀 0).
-  const baseReply = reacquireReply(destForJob(job));
+  // baseReply = 우회 통지용(관측 발행 O) — failed/cancelled 직행·done 안전망이 이걸 쓴다.
+  const dest = destForJob(job);
+  const baseReply = reacquireReply(dest);
 
   // ─── 실패/취소 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
   // failed/cancelled 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
@@ -802,12 +811,16 @@ export const onWorkerComplete = async (
   // 합성 user-turn 구성. text = 내부 스캐폴딩(메인이 echo 안 하도록 sysprompt +
   // stripInternalRuntimeScaffolding 이중 방어). reply 는 delivered 추적으로 감싼다 —
   // 재주입 turn 이 사용자에게 *실제로* 한 줄이라도 내보냈는지 알아야 안전망 이중 발화를 피한다.
+  // 재주입 reply 는 *관측 발행 안 하는* raw 전송(observe:false) — 물리 발송(telegram send)은
+  // 하되 대시보드 관측은 핸들러(index.ts) 성공분기 단일 지점에 위임한다. 일반 turn 과 대칭 →
+  // 대시보드 이중 버블 0(과거엔 여기 baseReply 의 publishOut + 핸들러 발행 둘 다 = 이중이었다).
+  const reinjectReply = reacquireReply(dest, { observe: false });
   let delivered = false;
   const trackedReply = async (
     text: string,
     opts?: ReplyOptions,
   ): Promise<void> => {
-    await baseReply(text, opts);
+    await reinjectReply(text, opts);
     delivered = true; // send 성공 후에만 마킹 — throw 시 미마킹 → 안전망 발화.
   };
   const synthetic = {
@@ -815,6 +828,9 @@ export const onWorkerComplete = async (
     channelUserId: job.channelUserId,
     threadKey: job.threadKey,
     text: buildCompletionPrompt(job),
+    // 내부 기원 표식 — 핸들러가 `channel.message.in` 관측 발행을 스킵(스캐폴딩 텍스트가
+    // 대시보드에 "나(user)"로 새는 걸 차단). 라우팅·직렬화 등 나머지는 실 인바운드와 동일.
+    synthetic: true,
     receivedAt: Date.now(),
     reply: trackedReply,
   };

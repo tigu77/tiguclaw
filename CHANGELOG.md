@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-07-15
+### Changed
+- 대시보드 도구 스텝 클릭을 **인라인 펼침 하나로 통일**했습니다. 예전엔 diff·출력이 있는 도구만 그 자리에서 펼쳐지고, 그 외 도구는 별도 사이드바로 상세가 떴는데 — 이제 **모든 도구가 그 자리에서** 펼쳐집니다(리치 블록이 없는 도구는 인자·상세를 인라인으로). 컨텍스트 전환 없이 일관되게. (사이드바 상세 패널 제거.)
+
 ## [0.4.7] - 2026-07-14
 ### Added
 - **대시보드에서 스킬 사용이 한눈에 보입니다** — 비서가 스킬을 쓰면(`invoke_skill`) 활동 스텝이 일반 도구(🔧)와 구분되는 **`🛠 스킬: <이름>` 배지**로 표시됩니다. 메인 턴·서브에이전트/워커·새로고침 이력 모두 동일. (표시 전용 — 코어는 그대로, 스킬 이름은 기존 활동 데이터에서 읽어 뷰에서만 강조.)
@@ -680,7 +684,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.7...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.8...HEAD
+[0.4.8]: https://github.com/tigu77/tiguclaw/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/tigu77/tiguclaw/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/tigu77/tiguclaw/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/tigu77/tiguclaw/compare/v0.4.4...v0.4.5

@@ -948,13 +948,6 @@
           </form>
           <div id="chat-status"></div>
         </div>
-        <aside id="step-detail" aria-label="스텝 상세" aria-hidden="true">
-          <div class="sd-head">
-            <h3 class="panel-title">스텝 상세</h3>
-            <button class="sd-close" id="sd-close" type="button" aria-label="닫기" title="닫기">✕</button>
-          </div>
-          <div class="sd-body" id="sd-body"></div>
-        </aside>
       </section>
     </main>
     <div id="toast" role="status" aria-live="polite"></div>
@@ -3383,6 +3376,32 @@
         return wrap;
       };
 
+      // 리치 diff/출력이 없는 도구 스텝용 인라인 상세 블록 — 옛 사이드바(#step-detail) 대체.
+      // 모든 도구 스텝을 "그 자리에서 펼침"으로 통일(2026-07-15). .act-output/.act-diff-body 재사용
+      // 으로 기존 펼침 CSS·클릭 쿼리(:scope > .act-output)에 그대로 얹힘. 보여줄 게 없으면 null.
+      const buildDetailBlock = (p) => {
+        const detail = p && p.detail != null ? String(p.detail).trim() : "";
+        const meta = [p && p.kind, p && p.adapter, p && p.model].filter(Boolean).join(" · ");
+        if (detail === "" && meta === "") return null;
+        const wrap = document.createElement("div");
+        wrap.className = "act-output";
+        const head = document.createElement("div");
+        head.className = "act-output-head";
+        const caret = document.createElement("span");
+        caret.className = "act-diff-caret"; caret.textContent = "▸";
+        const lbl = document.createElement("span");
+        lbl.className = "act-output-lbl"; lbl.textContent = "상세";
+        head.appendChild(caret); head.appendChild(lbl);
+        const body = document.createElement("div");
+        body.className = "act-diff-body";
+        const pre = document.createElement("pre");
+        pre.className = "act-output-pre";
+        pre.textContent = (meta ? meta + "\n\n" : "") + (detail || "(상세 정보 없음)");
+        body.appendChild(pre);
+        wrap.appendChild(head); wrap.appendChild(body);
+        return wrap;
+      };
+
       const buildActivityLine = (p) => {
         const line = document.createElement("div");
         // 스텝 = 클릭 가능 요소(P4 사이드바 상세가 여기 붙는다). 지금은 자리 예약만(no-op).
@@ -3439,15 +3458,17 @@
         }
         // 리치 diff(Edit/Write) — 있으면 스텝 줄 아래 접이식 블록(flex-wrap 로 다음 줄).
         if (hasDiff) line.appendChild(buildDiffBlock(p.diff));
-        // 클릭 = 도구 스텝 펼침/접힘(리치 diff·출력 있으면). sticky(hover 무관). 리치 블록이
-        // 없는 스텝은 기존대로 사이드바 상세(P4).
+        // 클릭 = 도구 스텝 펼침/접힘(항상 인라인, sticky·hover 무관). 리치 diff·출력이 있으면
+        // 그 블록을, 없으면 인라인 상세 블록(buildDetailBlock)을 lazy 생성해 그 자리에서 펼친다.
+        // (2026-07-15 — 옛 사이드바 상세 분기 제거, 모든 도구 클릭을 인라인 펼침으로 통일.)
         line.addEventListener("click", () => {
-          if (line.querySelector(":scope > .act-diff, :scope > .act-output")) {
-            line.classList.toggle("expanded");
-            return;
+          let block = line.querySelector(":scope > .act-diff, :scope > .act-output");
+          if (!block) {
+            const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq)) || p;
+            block = buildDetailBlock(stored);
+            if (block) line.appendChild(block);
           }
-          const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq));
-          openStepDetail(stored || p, line);
+          if (block) line.classList.toggle("expanded");
         });
         return line;
       };

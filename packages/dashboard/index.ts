@@ -8,6 +8,7 @@
  * routes:
  *  - GET  /api/inventory → bridge GET  /inventory       (JSON pass)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
+ *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원)
  *  - GET  /api/projects  → bridge GET  /projects        (JSON pass, 프로젝트 목록)
@@ -232,6 +233,11 @@ const server = http.createServer((req, res) => {
     }
     if (pathname === "/api/providers" && method === "GET") {
       await proxyJson(res, "/providers");
+      return;
+    }
+    // 모델 프로파일 — bridge GET /model-profiles (read 토큰 server-side 주입). 대시보드 표시.
+    if (pathname === "/api/model-profiles" && method === "GET") {
+      await proxyJson(res, "/model-profiles");
       return;
     }
     if (pathname === "/api/health" && method === "GET") {

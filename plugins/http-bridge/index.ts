@@ -31,6 +31,7 @@ import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { collectInventory } from "../../src/core/plugins/inventory.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { collectProviders } from "../../src/core/plugins/providers.js";
+import { loadModelProfiles } from "../../src/core/settings.js";
 import {
   verifyToken,
   type BridgeTokenRole,
@@ -672,6 +673,8 @@ class HttpBridge implements Channel, Observer {
             ? "read"
             : pathname === "/providers" && method === "GET"
             ? "read"
+            : pathname === "/model-profiles" && method === "GET"
+            ? "read"
             : pathname === "/chat-history" && method === "GET"
               ? "read"
               : pathname === "/projects" && method === "GET"
@@ -767,6 +770,38 @@ class HttpBridge implements Channel, Observer {
       try {
         const providers = await collectProviders();
         writeJson(res, 200, providers);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /model-profiles — JSON. settings.json `models.profiles` 를 대시보드가 표시(순수 read,
+    // /models 슬래시와 동일 데이터원 loadModelProfiles). /inventory·/providers 와 동형(read 게이트).
+    // 순서는 default 를 맨 앞으로(models-command 렌더와 동일 결정성), 각 프로파일에 isDefault 표식.
+    // 프로파일 부재 시 profiles:[] graceful(400/500 아님). 편집 아님 — 표시만(설정은 대화로).
+    if (pathname === "/model-profiles" && method === "GET") {
+      try {
+        const map = loadModelProfiles();
+        const names = Object.keys(map);
+        const rest = names.filter((n) => n !== "default");
+        const ordered = names.includes("default") ? ["default", ...rest] : rest;
+        const profiles = ordered.map((name) => {
+          const p = map[name]!;
+          return {
+            name,
+            isDefault: name === "default",
+            ...(p.description !== undefined ? { description: p.description } : {}),
+            pool: p.pool,
+            ...(p.fallback !== undefined ? { fallback: p.fallback } : {}),
+          };
+        });
+        writeJson(res, 200, {
+          profiles,
+          count: profiles.length,
+          generatedAt: new Date().toISOString(),
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });

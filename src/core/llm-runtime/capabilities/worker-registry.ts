@@ -205,7 +205,7 @@ export const createWorkerMcpServer = (
         .string()
         .optional()
         .describe(
-          "선택 — 워커 모델 등급(high/mid/low/nano 또는 provider:model). 품질 중요(코드리뷰·설계)=high, 단순·대량=low. 미지정 시 기본 모델. 서브에이전트 model 등급과 동일 해석(resolveTier).",
+          "선택 — 워커 모델 프로파일. settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 user prompt 의 `## 모델 프로파일` 섹션 참고). 품질 중요(코드리뷰·설계)=high, 구현=mid, 단순·대량·요약=low. 미지정 시 기본 모델. 서브에이전트 model 과 동일 해석(resolveModelChain).",
         ),
     },
     async (args) => {

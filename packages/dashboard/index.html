@@ -547,6 +547,25 @@
       .bg-job-tier[data-tier="mid"], .agent-card-tier[data-tier="mid"] { background:rgba(125,211,252,.16); color:#7dd3fc; border-color:rgba(125,211,252,.4); }
       .bg-job-tier[data-tier="high"], .agent-card-tier[data-tier="high"] { background:rgba(251,191,36,.16); color:#fbbf24; border-color:rgba(251,191,36,.4); }
       .agent-card-tier { font-size:10px; padding:2px 8px; }
+      /* ── 모델 프로파일 카드 (표시 전용, provider-card·bg-job-tier 스타일 재사용) ── */
+      .models-shell { display:grid; gap:10px; }
+      .model-card { border:1px solid var(--border); border-radius:15px; background:var(--card); padding:13px 15px; position:relative; }
+      .model-card::before { content:""; position:absolute; left:0; top:13px; bottom:13px; width:4px; border-radius:99px; background:var(--text-dim); }
+      .model-card.is-default::before { background:var(--good); }
+      .model-card-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px; }
+      .model-card-name { color:var(--text); font-weight:850; font-size:14px; letter-spacing:-.02em; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .model-default-badge { font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 7px; border-radius:999px; text-transform:uppercase; background:rgba(52,211,153,.16); color:var(--good); border:1px solid rgba(52,211,153,.4); }
+      .model-card-desc { color:var(--text-mute); font-size:12px; margin-bottom:9px; }
+      .model-pool { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+      .model-pool-label { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-right:2px; }
+      .model-spec { font-size:11px; font-weight:700; font-family:ui-monospace,"SF Mono",Menlo,monospace; padding:2px 8px; border-radius:999px; background:rgba(255,255,255,.06); color:var(--text); border:1px solid var(--border); }
+      .model-spec.tier-low { background:rgba(148,163,184,.16); color:#cbd5e1; border-color:rgba(148,163,184,.4); }
+      .model-spec.tier-mid { background:rgba(125,211,252,.16); color:#7dd3fc; border-color:rgba(125,211,252,.4); }
+      .model-spec.tier-high { background:rgba(251,191,36,.16); color:#fbbf24; border-color:rgba(251,191,36,.4); }
+      .model-pool-arrow { color:var(--text-dim); font-size:11px; }
+      .model-pool-empty { color:var(--text-dim); font-size:11px; font-style:italic; }
+      .model-fallback { color:var(--text-mute); font-size:11px; }
+      .model-fallback code { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text); background:rgba(255,255,255,.06); padding:1px 6px; border-radius:6px; }
       /* ── 진행 중 은은한 pulse (2026-07-03) ── 정적이던 '진행중' 표시(작업카드·상단배지·현재
          스텝)에 생동감. 텍스트 가독성 유지 위해 border-color/opacity 만 건드림. 감속모드 존중. */
       @keyframes tc-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
@@ -873,6 +892,7 @@
         <div class="nav-section" aria-label="main menu">
           <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">개요</span><span class="hint">홈</span></button>
           <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">프로바이더</span><span class="hint" id="nav-provider-count">0</span></button>
+          <button class="nav-button" data-view="models" type="button"><span class="ic">🧠</span><span class="label">모델 프로파일</span><span class="hint" id="nav-model-count">0</span></button>
           <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
           <button class="nav-button" data-view="agents" type="button"><span class="ic">🤖</span><span class="label">에이전트</span><span class="hint" id="nav-agent-count">0</span></button>
           <button class="nav-button" data-view="projects" type="button"><span class="ic">📁</span><span class="label">프로젝트</span><span class="hint" id="nav-project-count">0</span></button>
@@ -1122,6 +1142,7 @@
 
       let providersCache = [];
       let inventoryCache = null;
+      let modelProfilesCache = null; // { profiles:[{name,isDefault,description?,pool[],fallback?}], ... } 또는 null(미로드).
       let assistantName = "tiguclaw"; // 비서 표시 이름(AGENT.md 이름 → chat-history 응답, 폴백 tiguclaw).
       let selectedProviderId = null;
       let currentView = "overview";
@@ -1259,6 +1280,116 @@
         wrap.innerHTML = '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">런타임 인벤토리</div><span class="detail-kind">관리</span></div><p class="developer-copy">설치/발견된 채널, 플러그인, 스킬, 에이전트, MCP를 확인하는 관리용 레지스트리입니다. 평소 작업 흐름에서는 숨겨둡니다.</p><div id="inventory" class="inventory-shell"><div class="empty">불러오는 중…</div></div>';
         root.appendChild(wrap);
         if (inventoryCache) renderInventory(inventoryCache);
+      };
+
+      // ── 모델 프로파일 뷰(표시 전용) ──────────────────────────────────────────
+      // settings.json models.profiles 를 카드로 렌더. /models 슬래시와 동일 정보(이름·설명·
+      // 풀·폴백)를 시각적으로. 편집 없음 — 설정은 대화로(돌쇠가 settings.json 편집). LLM/채널 무관.
+      const KNOWN_TIERS = new Set(["low", "mid", "high", "nano", "default"]);
+      // 풀 원소(provider:model 또는 tier:high 등)에서 티어 힌트 색상 클래스 유추. 미지 = 무색 칩.
+      const specTierClass = (spec) => {
+        const s = String(spec || "").trim().toLowerCase();
+        const t = s.startsWith("tier:") ? s.slice(5) : s;
+        return KNOWN_TIERS.has(t) ? "tier-" + t : "";
+      };
+      const renderModelProfiles = (data) => {
+        modelProfilesCache = data;
+        const root = document.getElementById("models");
+        const navCount = document.getElementById("nav-model-count");
+        const profiles = (data && data.profiles) || [];
+        if (navCount) navCount.textContent = String(profiles.length);
+        if (!root) return;
+        root.innerHTML = "";
+        if (profiles.length === 0) {
+          const e = document.createElement("div");
+          e.className = "empty";
+          e.textContent = "정의된 모델 프로파일이 없습니다 (settings.json 의 models.profiles 비어 있음).";
+          root.appendChild(e);
+          return;
+        }
+        for (const prof of profiles) {
+          const card = document.createElement("div");
+          card.className = "model-card" + (prof.isDefault ? " is-default" : "");
+          const head = document.createElement("div");
+          head.className = "model-card-head";
+          const name = document.createElement("span");
+          name.className = "model-card-name";
+          name.textContent = prof.name;
+          head.appendChild(name);
+          if (prof.isDefault) {
+            const badge = document.createElement("span");
+            badge.className = "model-default-badge";
+            badge.textContent = "default";
+            head.appendChild(badge);
+          }
+          card.appendChild(head);
+          if (prof.description) {
+            const desc = document.createElement("div");
+            desc.className = "model-card-desc";
+            desc.textContent = prof.description;
+            card.appendChild(desc);
+          }
+          const pool = document.createElement("div");
+          pool.className = "model-pool";
+          const plabel = document.createElement("span");
+          plabel.className = "model-pool-label";
+          plabel.textContent = "풀";
+          pool.appendChild(plabel);
+          const specs = (prof.pool || []).map((s) => String(s).trim()).filter((s) => s !== "");
+          if (specs.length === 0) {
+            const empty = document.createElement("span");
+            empty.className = "model-pool-empty";
+            empty.textContent = "(빈 풀 — 어댑터 디폴트로 강등)";
+            pool.appendChild(empty);
+          } else {
+            specs.forEach((spec, i) => {
+              if (i > 0) {
+                const arrow = document.createElement("span");
+                arrow.className = "model-pool-arrow";
+                arrow.textContent = "→";
+                pool.appendChild(arrow);
+              }
+              const chip = document.createElement("span");
+              chip.className = "model-spec " + specTierClass(spec);
+              chip.textContent = spec;
+              pool.appendChild(chip);
+            });
+          }
+          card.appendChild(pool);
+          if (prof.fallback) {
+            const fb = document.createElement("div");
+            fb.className = "model-fallback";
+            fb.innerHTML = "폴백 프로파일: <code></code>";
+            fb.querySelector("code").textContent = prof.fallback;
+            card.appendChild(fb);
+          }
+          root.appendChild(card);
+        }
+      };
+
+      const fetchModelProfiles = async () => {
+        try {
+          const r = await fetch("/api/model-profiles");
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          renderModelProfiles(await r.json());
+        } catch (e) {
+          const root = document.getElementById("models");
+          if (root) root.innerHTML =
+            '<div class="empty" style="font-size:11px;padding:10px">모델 프로파일 불러오기 실패: ' + e.message + "</div>";
+        }
+      };
+
+      const showModels = () => {
+        setActiveNav("models");
+        setChatPanel("chat");
+        document.getElementById("workbench").classList.remove("show-providers");
+        const root = document.getElementById("detail-panel");
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view";
+        wrap.innerHTML = '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">모델 프로파일</div><span class="detail-kind">표시</span></div><p class="developer-copy">settings.json 의 <code>models.profiles</code> 를 보여줍니다. 각 프로파일은 이름·설명·풀(provider:model, 폴백 순서 →)·폴백 프로파일로 구성됩니다. 추가·수정은 대화로 요청하세요(돌쇠가 settings.json 을 편집).</p><div id="models" class="models-shell"><div class="empty">불러오는 중…</div></div>';
+        root.appendChild(wrap);
+        if (modelProfilesCache) renderModelProfiles(modelProfilesCache);
       };
 
       const showSettings = () => {
@@ -4587,13 +4718,14 @@
           const view = btn.dataset.view;
           if (view === "overview") showOverview();
           else if (view === "providers") showProviders();
+          else if (view === "models") showModels();
           else if (view === "inventory") showInventory();
           else if (view === "agents") showAgents();
           else if (view === "projects") showProjects();
           else if (view === "endpoints") showEndpoints();
           else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","inventory","settings","agents","projects","endpoints"].includes(view)) setActiveTab("main");
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","agents","projects","endpoints"].includes(view)) setActiveTab("main");
         });
       }
 
@@ -4605,6 +4737,8 @@
       setInterval(fetchInventory, 30000);
       fetchProjects();
       setInterval(fetchProjects, 30000);
+      fetchModelProfiles();
+      setInterval(fetchModelProfiles, 30000);
 
       const connDot = document.getElementById("conn-dot");
       const connText = document.getElementById("conn-text");

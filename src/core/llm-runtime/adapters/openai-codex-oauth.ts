@@ -54,6 +54,7 @@ import {
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
+  formatModelProfiles,
 } from "../../prompt-assembly.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
@@ -1350,6 +1351,8 @@ export const runOpenAiCodex = async (
     depth === 0
       ? formatAgentIndex(await discoverAgents(discoveryCwd))
       : "";
+  // 모델 프로파일 인지 — depth 0 만 (agentIndex 게이트 parity). 부재/오류 시 ""(graceful).
+  const modelProfiles = depth === 0 ? formatModelProfiles(discoveryCwd) : "";
   // 현재 대화 컨텍스트 — depth 0(실제 사용자 대화)만. sub-agent 는 dest 무관.
   const convoContext =
     depth === 0
@@ -1378,6 +1381,7 @@ export const runOpenAiCodex = async (
           memorySnippet,
           skillIndex,
           agentIndex,
+          modelProfiles,
         });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);

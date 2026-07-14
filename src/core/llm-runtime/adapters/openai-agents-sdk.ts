@@ -38,6 +38,7 @@ import {
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
+  formatModelProfiles,
 } from "../../prompt-assembly.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
@@ -399,6 +400,8 @@ export const runOpenAi = async (
   const skillIndex = formatSkillIndex(skills);
   const agentIndex =
     depth === 0 ? formatAgentIndex(await discoverAgents(discoveryCwd)) : "";
+  // 모델 프로파일 인지 — depth 0 만 (agentIndex 게이트 parity). 부재/오류 시 ""(graceful).
+  const modelProfiles = depth === 0 ? formatModelProfiles(discoveryCwd) : "";
 
   // SYSTEM.md(작동 헌법) — 매 turn 최상단 (codex/claude parity).
   const system = readSystem();
@@ -418,6 +421,7 @@ export const runOpenAi = async (
           memorySnippet,
           skillIndex,
           agentIndex,
+          modelProfiles,
         });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);

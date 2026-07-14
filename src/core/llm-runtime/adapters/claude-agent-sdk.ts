@@ -54,6 +54,7 @@ import {
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
+  formatModelProfiles,
 } from "../../prompt-assembly.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { resolveJsonlPath, retrieveContext } from "../../memory.js";
@@ -610,6 +611,10 @@ export const runClaude = async (
     "`Task` 도구로 위임하세요 (subagent_type 에 에이전트 이름, prompt 에 작업 지시)",
   );
 
+  // 모델 프로파일 인지 — depth 0 turn 만 (agentIndex 와 동일 게이트: 서브에이전트/워커를
+  // 구성하는 최상위 turn 에서만 필요). settings.json 프로파일 부재/오류 시 ""(graceful).
+  const modelProfiles = depth === 0 ? formatModelProfiles(cwd) : "";
+
   // 현재 대화 컨텍스트 — 비서가 dest_channel/dest_target 을 정확히 알게.
   const convoContext = formatConversationContext(
     input.channel,
@@ -639,6 +644,7 @@ export const runClaude = async (
           memorySnippet,
           skillIndex,
           agentIndex,
+          modelProfiles,
         });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);

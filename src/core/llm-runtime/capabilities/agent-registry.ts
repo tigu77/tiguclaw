@@ -43,7 +43,12 @@ export interface Agent {
   name: string;
   /** frontmatter `description` 필수 — 미존재 시 agent drop. */
   description: string;
-  /** frontmatter `model` (opus/sonnet/haiku 등). 미지정 시 undefined (호출자 디폴트). */
+  /**
+   * frontmatter `model`. settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을
+   * 쓰면 그 프로파일의 풀+폴백으로 실행(resolveModelChain). `provider:model` 직접 지정도 가능.
+   * 미지정 시 undefined(호출자 디폴트). (claude 네이티브 Task 는 opus/sonnet/haiku 3등급 축약,
+   * codex/openai 서브에이전트는 프로파일 체인 완전 사용 — ADR 경계 c.)
+   */
   model?: string;
   /** frontmatter `tools` (콤마 구분 raw 문자열). 미지정 시 undefined. */
   tools?: string;
@@ -348,7 +353,7 @@ export const createSpawnAgentMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const spawnTool = tool(
     "spawn_agent",
-    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 model 등급(high/mid/low)으로 실행됩니다. 사용 가능 서브에이전트 인덱스는 user prompt 의 `## 사용 가능 서브에이전트` 섹션에 prepend 되어 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요.",
+    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 user prompt 의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약됩니다. 사용 가능 서브에이전트 인덱스는 user prompt 의 `## 사용 가능 서브에이전트` 섹션에 prepend 되어 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요.",
     {
       name: z.string().min(1),
       prompt: z.string().min(1),

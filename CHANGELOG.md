@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-07-14
+### Added
+- **대시보드에서 모델 프로파일을 볼 수 있습니다** — 사이드바 "🧠 모델 프로파일" 에서 각 프로파일의 이름·설명·풀(`provider:model`)·폴백을 한눈에. (표시 전용 — 프로파일은 대화로 편집.)
+- **에이전트·워커 구성 시 모델 프로파일을 인지하고 알맞게 고릅니다** — 비서가 서브에이전트/워커를 구성·위임할 때 정의된 모델 프로파일(`default`/`high`/`mid`/`low` 또는 커스텀)을 인지하고 작업 성격에 맞는 걸 선택합니다. 에이전트 명세 `model:`·워커 `tier` 에 프로파일 이름을 쓰면 그 풀+폴백으로 실행됩니다(동작은 기존부터 있었고, 이제 안내·자동 활용을 더함). claude 네이티브 서브에이전트는 opus/sonnet/haiku 3등급으로 근사, 그 외(codex/openai/워커)는 프로파일 풀·폴백 전체를 사용.
+
 ## [0.4.5] - 2026-07-14
 ### Added
 - 대시보드 선택지(`prompt_options`)에 **"기타 (직접 입력)" 입력칸이 항상 포함**됩니다. 제시된 보기 중 딱 맞는 게 없으면 옵션 카드 안의 입력칸에 직접 답을 써서 보낼 수 있어요(Enter 또는 보내기 버튼) — AskUserQuestion 의 "기타"와 같은 방식. 보낸 답은 보기를 고른 것과 동일하게 처리됩니다.
@@ -671,7 +676,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.6...HEAD
+[0.4.6]: https://github.com/tigu77/tiguclaw/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/tigu77/tiguclaw/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tigu77/tiguclaw/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tigu77/tiguclaw/compare/v0.4.2...v0.4.3

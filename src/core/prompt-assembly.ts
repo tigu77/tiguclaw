@@ -13,6 +13,7 @@ import { agentPathHint } from "./identity.js";
 import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
+import { loadModelProfiles, type ModelProfile } from "./settings.js";
 
 // ─── formatMemorySnippet — user prompt prepend 본문 ──────────────────────
 const SNIPPET_HARD_CAP = 1500;
@@ -67,6 +68,51 @@ export const formatMemoryIndex = (
     out.push(`… ${truncated}건 더 (오래된 순으로 절단)`);
   }
   return out.join("\n");
+};
+
+// ─── 모델 프로파일 인지 — 에이전트/워커 구성 시 프로파일 선택 (capability-index 패턴) ──
+// 돌쇠가 spawn_agent(model)/run_worker(tier) 를 구성/위임할 때 settings.json 에 정의된
+// 명명 프로파일을 인지하도록, depth 0 turn 의 system-context 에 주입한다. 스킬·에이전트
+// 인덱스와 동일 패턴 — 정적 sysprompt(claude SYSTEM_PROMPT_HASH 보존)가 아니라
+// user-prompt system-reminder 로 prepend(어댑터가 depth 0 만 호출).
+//  - §0(코어가 모델명 하드코딩 X): loadModelProfiles(settings.json) 데이터만 읽어 렌더.
+//    코어엔 default/high/mid/low 같은 이름·pool 이 하나도 박혀 있지 않다.
+//  - #2(LLM-agnostic): 세 어댑터가 이 동일 텍스트를 동일 순서로 prepend. 프로파일
+//    해석(resolveModelChain)은 이미 3어댑터 대칭이라 인지도 대칭.
+//  - 바운드: 프로파일 수는 본질적으로 소수(홈+프로젝트 소수). description/pool 은 캡.
+//  - graceful: 프로파일 부재(settings.json 없음)·loadModelProfiles throw → "" (섹션 생략).
+const PROFILE_DESC_CAP = 120;
+const PROFILE_POOL_SHOW = 3;
+
+export const formatModelProfiles = (
+  cwd: string = process.cwd(),
+): string => {
+  let profiles: Record<string, ModelProfile>;
+  try {
+    profiles = loadModelProfiles(cwd);
+  } catch {
+    // never-throw — 프로파일 렌더 실패가 턴을 죽이지 않게(원칙 3, settings.ts 동형).
+    return "";
+  }
+  const names = Object.keys(profiles);
+  if (names.length === 0) return "";
+  const lines = ["## 모델 프로파일 (에이전트·워커 구성 시 model/tier 로 지정)"];
+  for (const name of names) {
+    const p = profiles[name];
+    const desc =
+      p.description !== undefined && p.description.trim() !== ""
+        ? ` — ${truncate(p.description.replace(/\s+/g, " "), PROFILE_DESC_CAP)}`
+        : "";
+    const shown = p.pool.slice(0, PROFILE_POOL_SHOW);
+    const more = p.pool.length > PROFILE_POOL_SHOW ? ", …" : "";
+    const pool = shown.length > 0 ? ` [${shown.join(", ")}${more}]` : "";
+    lines.push(`- \`${name}\`${desc}${pool}`);
+  }
+  lines.push(
+    "에이전트·워커를 구성/위임할 때 `model`(spawn_agent)·`tier`(run_worker) 에 위 프로파일 이름 중 **작업 성격에 어울리는 걸** 고르세요 — 고난도 설계·분석=high, 구현=mid, 요약·분류=low, 기본=default. 커스텀 프로파일이 있으면 그 description 에 맞춰. 지정한 이름의 풀+폴백으로 실행됩니다. `provider:model` 직접 지정도 가능합니다.",
+    "(claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약되고, 프로파일 풀·폴백 전체는 codex/openai 서브에이전트·워커에서 적용됩니다.)",
+  );
+  return lines.join("\n");
 };
 
 // ─── 현재 대화 컨텍스트 (채널/dest_target) prompt prepend ────────────────
@@ -170,6 +216,8 @@ export const buildSystemContextParts = (input: {
   memorySnippet: string;
   skillIndex: string;
   agentIndex: string;
+  /** 모델 프로파일 인지 블록(depth 0 만) — 미전달/빈 문자열이면 assembleUserPrompt 가 필터. */
+  modelProfiles?: string;
   /** claude 전용 — cross-adapter foreign(codex) delta 블록. 다른 어댑터는 미전달. */
   foreignDelta?: string;
 }): string[] => [
@@ -183,4 +231,5 @@ export const buildSystemContextParts = (input: {
   input.memorySnippet,
   input.skillIndex,
   input.agentIndex,
+  input.modelProfiles ?? "", // depth 0 만 — 그 외/부재는 ""(assembleUserPrompt 가 필터).
 ];

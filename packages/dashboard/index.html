@@ -507,6 +507,12 @@
       }
       body.bg-open #bg-panel { transform:translateX(0); pointer-events:auto; visibility:visible; }
       @media (max-width:900px) { body.bg-open #bg-backdrop { display:block; } }
+      /* 드로어 폭 드래그 조절(왼쪽 가장자리) — 폭은 JS 가 inline style + localStorage 로 관리. */
+      #bg-resize { position:absolute; left:0; top:0; bottom:0; width:8px; cursor:ew-resize; z-index:3; }
+      #bg-resize::before { content:""; position:absolute; left:2px; top:50%; transform:translateY(-50%); width:3px; height:36px; border-radius:2px; background:var(--border-strong); opacity:0; transition:opacity .12s; }
+      #bg-resize:hover::before, #bg-resize.dragging::before { opacity:1; background:var(--accent-2); }
+      body.bg-resizing { cursor:ew-resize; user-select:none; }
+      @media (max-width:900px) { #bg-resize { display:none; } }
       .bg-head { display:flex; align-items:center; gap:8px; padding:14px; border-bottom:1px solid var(--border); }
       .bg-head h3 { flex:1; margin:0; }
       /* 진행 중 필터 탭 — running 잡만 모아 보는 뷰(기본) ↔ 전체. status 클래스 기반 CSS 필터라
@@ -953,6 +959,7 @@
     <div id="toast" role="status" aria-live="polite"></div>
     <div id="bg-backdrop"></div>
     <aside id="bg-panel" aria-label="백그라운드 작업" aria-hidden="true">
+      <div class="bg-resize" id="bg-resize" title="드래그로 폭 조절"></div>
       <div class="bg-head">
         <h3 class="panel-title">백그라운드 작업</h3>
         <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
@@ -2582,6 +2589,27 @@
       };
       const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
       const jobCards = new Map(); // jobId -> { el, labelEl, statusEl, chevEl, stepsEl, errEl, status, stepCount }
+
+      // 백그라운드 드로어 폭 드래그 조절(왼쪽 가장자리) + localStorage 영속. PC 전용(모바일=핸들 숨김).
+      (() => {
+        const handle = document.getElementById("bg-resize");
+        if (!bgPanel || !handle) return;
+        const KEY = "tc:bgPanelWidth";
+        const clamp = (w) => Math.max(300, Math.min(Math.min(760, window.innerWidth * 0.9), w));
+        const apply = (w) => { bgPanel.style.width = clamp(w) + "px"; };
+        const saved = parseInt(localStorage.getItem(KEY) || "", 10);
+        if (Number.isFinite(saved)) apply(saved);
+        let dragging = false;
+        window.addEventListener("mousemove", (e) => { if (dragging) apply(window.innerWidth - e.clientX); });
+        window.addEventListener("mouseup", () => {
+          if (!dragging) return;
+          dragging = false; handle.classList.remove("dragging"); document.body.classList.remove("bg-resizing");
+          try { localStorage.setItem(KEY, String(parseInt(bgPanel.style.width, 10))); } catch {}
+        });
+        handle.addEventListener("mousedown", (e) => {
+          e.preventDefault(); dragging = true; handle.classList.add("dragging"); document.body.classList.add("bg-resizing");
+        });
+      })();
 
       // 도구 실행시간(#3) — phase:"end" 활동이 같은 seq 의 시작 스텝에 durationMs 뱃지를 붙인다.
       // 잡 카드 스텝(.bg-step, worker:/agent: 좌표)과 메인 스트림 라인(.act-line) 양쪽 커버.

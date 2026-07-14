@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-07-15
+### Added
+- 대시보드 **백그라운드 작업 드로어 폭을 드래그로 조절**할 수 있습니다. 드로어 왼쪽 가장자리를 잡고 끌어 넓히거나 좁히면 됩니다 — 조절한 폭은 저장되어 다음에도 유지됩니다.
+
 ## [0.4.8] - 2026-07-15
 ### Changed
 - 대시보드 도구 스텝 클릭을 **인라인 펼침 하나로 통일**했습니다. 예전엔 diff·출력이 있는 도구만 그 자리에서 펼쳐지고, 그 외 도구는 별도 사이드바로 상세가 떴는데 — 이제 **모든 도구가 그 자리에서** 펼쳐집니다(리치 블록이 없는 도구는 인자·상세를 인라인으로). 컨텍스트 전환 없이 일관되게. (사이드바 상세 패널 제거.)
@@ -684,7 +688,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.8...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.9...HEAD
+[0.4.9]: https://github.com/tigu77/tiguclaw/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/tigu77/tiguclaw/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/tigu77/tiguclaw/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/tigu77/tiguclaw/compare/v0.4.5...v0.4.6

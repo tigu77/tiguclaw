@@ -2,7 +2,7 @@
 
 **English** · [한국어](README.ko.md)
 
-Your always-on AI assistant. Everything Claude Code can do — plus several LLMs at once, reachable from Telegram, CLI, or HTTP as a single assistant. You run it on your own machine, with your own keys and your own bot.
+Your always-on AI assistant. Everything Claude Code can do — plus several LLMs at once, reachable from Telegram, a built-in web dashboard, the CLI, or HTTP as a single assistant. You run it on your own machine, with your own keys and your own bot.
 
 > Think of it as a Claude Code that never sleeps, chats with you on Telegram, and can switch between Claude, GPT, Gemini, or a free local model — all with the same skills.
 
@@ -21,6 +21,17 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and simple tasks to a free local model (the `nano` tier).
 - **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Always a proposal you approve — it never rewrites itself silently.
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.
+
+## Highlights
+
+A few things that set it apart from a plain chatbot:
+
+- **A real web dashboard, not just a log.** Open it in your browser and watch the assistant think and act in real time — reasoning and tool steps interleaved in the order they happen (like Claude Code's web app), rich tool cards with diffs and output, and scrollback that survives restarts. A side panel tracks background jobs with per-step timelines; tap to answer multiple-choice prompts, reply to a specific message, or steer with `#tags`.
+- **Projects.** Point it at a folder with a `PROJECT.md` and it picks up that project's own skills, sub-agents, and MCP tools — delegate work per-project, each with exactly the right capabilities.
+- **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core. Full Claude Code MCP parity, and then some.
+- **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and workers run another; edit them just by asking, or list them with `/models`.
+- **Watch the work happen.** Sub-agents and long-running workers run as tracked jobs you follow in the dashboard — status, steps, results. It's Claude Code's Task tool, made observable.
+- **Extend it by asking.** New slash commands, HTTP endpoints, scheduled jobs, reusable skills — it adds them as *data* under your home, never by patching the core (so updates stay clean).
 
 ## Things you can ask it
 

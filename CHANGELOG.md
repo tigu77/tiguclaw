@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-14
+### Changed
+- README(영/한)에 능력 쇼케이스 **"Highlights"** 섹션 추가 — 리치 웹 대시보드(라이브 인터리브·도구 카드·백그라운드 잡 패널)·프로젝트(폴더별 전용 스킬/에이전트/MCP)·외부 MCP 즉석 연결·직접 통제하는 모델 티어·관측 가능한 서브에이전트/워커·말로 하는 확장을 전면에 배치. 인트로에 내장 웹 대시보드 명시. (그동안 한 줄로 묻혀 있던 핵심 기능들을 제대로 드러냄.)
+
 ## [0.3.99] - 2026-07-14
 ### Fixed
 - 레포 체크아웃이 모든 OS 에서 깨끗하게 유지되도록 `.gitattributes` 를 **레포 전체 LF 고정**(`* text=auto eol=lf`)으로 확장. 윈도우 등에서 줄바꿈(CRLF) 변환 탓에 추적 파일(`.mjs`·`.ts` 등)이 "수정됨"으로 떠 `git pull`·자가 업데이트와 충돌하던 문제를 예방합니다(이전엔 `bin/tiguclaw.mjs` 한 파일만 고정). 기존에 이미 지저분해진 클론은 `git checkout -- .` 로 원상복구하거나 다시 clone 하면 됩니다.
@@ -647,7 +651,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.99...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/tigu77/tiguclaw/compare/v0.3.99...v0.4.0
 [0.3.99]: https://github.com/tigu77/tiguclaw/compare/v0.3.98...v0.3.99
 [0.3.98]: https://github.com/tigu77/tiguclaw/compare/v0.3.97...v0.3.98
 [0.3.97]: https://github.com/tigu77/tiguclaw/compare/v0.3.96...v0.3.97

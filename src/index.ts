@@ -58,7 +58,8 @@ import {
   poolDiversityWarning,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
-import { diagnoseModelProfiles } from "./core/settings.js";
+import { diagnoseModelProfiles, loadModelProfiles } from "./core/settings.js";
+import { renderModelProfiles } from "./core/entry/models-command.js";
 import {
   hasSupervisorRespawn,
   spawnDetachedRestart,
@@ -605,6 +606,16 @@ const handler: MessageHandler = async (msg) => {
       `세션 모델 → \`${canonical}\`${poolNote}. 다음 turn 부터 적용.` +
         (extraLines.length === 0 ? "" : `\n${extraLines.join("\n")}`),
     );
+    return;
+  }
+  // `/models` (복수) — 모델 프로파일 *목록 표시*. `/model`(단수, 설정)과 짝. 읽기 전용·
+  // LLM-agnostic(순수 텍스트, prompt_options 아님)·채널 무관 단일 지점(원칙 2·4). 홈은
+  // loadModelProfiles 가 getPaths().settings 로 자동 사용, cwd(기본)는 프로젝트 스코프 병합.
+  // 렌더는 순수 함수(models-command)로 위임 — 격리 테스트 가능. args 는 무시(정보 조회).
+  if (trimmed === "/models" || trimmed.startsWith("/models ")) {
+    const profiles = loadModelProfiles();
+    const sessionOverride = getSessionModelOverride(msg.channel, msg.threadKey);
+    await replyCommand(msg, renderModelProfiles(profiles, sessionOverride));
     return;
   }
   // 슬래시 명령은 채널 입구에서 파싱 (원칙 4 다채널 단일 인격, 원칙: 모델에게

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.96] - 2026-07-14
+### Added
+- 프로덕션 빌드 런타임: install/프로덕션 인스턴스를 컴파일된 산출물로 실행하는 모드(`TIGUCLAW_RUNTIME=built`). `npm run build:prod` 가 `dist/src` + `dist/plugins` 를 미러 빌드하고, 데몬이 tsx 소스 대신 `node dist/src/index.js` 로 구동 — 빠른 부팅·검증된 산출물. 개발 인스턴스는 소스(tsx) 모드 유지가 기본이라 반복이 빠르다.
+- 빌드 모드 자가 업데이트: `built` 모드의 self-update 는 git pull 후 자동 재빌드(스테이징 빌드 → 원자 교체 → 재시작). 빌드 실패 시 롤백하고 재시작하지 않아 **이전 산출물이 계속 살아있다**(먹통 없음).
+- `/models` 명령: 현재 모델 프로파일 목록(이름·설명·풀·폴백)과 이 대화의 세션 모델 override 를 표시. 텔레그램·대시보드·CLI 공통.
+
+### Changed
+- 플러그인 빌드 포함: 프로덕션 빌드가 플러그인(`plugins/`)과 런타임 자산(`SYSTEM.md`·skills·agents)을 `dist/` 로 함께 내보내, 컴파일된 데몬이 모든 플러그인을 온전히 로드한다. 릴리스 검증에 빌드 데몬 실부팅 + 플러그인 로드 게이트 추가.
+
 ## [0.3.95] - 2026-07-14
 ### Added
 - 명명된 모델 프로파일: `settings.json` 의 `models.profiles` 에 이름·설명·풀(`provider:model` 배열)·폴백으로 모델 구성을 데이터로 정의. 마스터·서브에이전트·워커·세션이 프로파일 이름(`default`/`high` 등)으로 모델을 고른다. 흩어져 있던 티어(`MODEL_TIER_*`)·기본 풀(`REGION_A_MODELS`) 설정을 한 곳으로 통일 — 프로파일 추가·삭제가 파일 편집만으로 된다.
@@ -626,7 +635,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.95...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.96...HEAD
+[0.3.96]: https://github.com/tigu77/tiguclaw/compare/v0.3.95...v0.3.96
 [0.3.95]: https://github.com/tigu77/tiguclaw/compare/v0.3.94...v0.3.95
 [0.3.94]: https://github.com/tigu77/tiguclaw/compare/v0.3.93...v0.3.94
 [0.3.93]: https://github.com/tigu77/tiguclaw/compare/v0.3.92...v0.3.93

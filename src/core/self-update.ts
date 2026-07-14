@@ -19,7 +19,7 @@
  */
 import { execFile } from "node:child_process";
 import { extractTelegramChatId } from "./threadkey.js";
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { appRoot, getPaths } from "./paths.js";
 import { redactSecrets } from "./outbound-sanitize.js";
@@ -176,6 +176,125 @@ const changedFilesBetween = async (
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l !== "");
+};
+
+/** built 런타임 모드 여부 — 명시 env 만 진실(daemon.ts D2 와 동일 판정). */
+const isBuiltRuntime = (): boolean =>
+  process.env.TIGUCLAW_RUNTIME?.trim() === "built";
+
+/**
+ * ★built 모드 재빌드 + 원자 dist 교체 (ADR 2026-07-14 D3).
+ *
+ * built 인스턴스는 `dist/` 산출물로 돌기 때문에 `git pull` 만으론 새 코드가 반영되지
+ * 않는다(stale). 새 버전을 돌리려면 on-instance 재빌드가 필수다(D6 — built 인스턴스는
+ * 정의상 툴체인 보유).
+ *
+ * ★원자성 불변식: 도는 데몬의 `dist/` 는 교체 성공 직전까지 무손상. 반쯤 빌드된 dist 로
+ * 절대 재시작하지 않는다. 그래서 **스테이징 디렉터리에 완전 빌드 → 진입점 검증 → dist 를
+ * 원자 rename 으로 교체**한다. 빌드 도중 크래시가 나도 옛 산출물은 그대로 살아있다.
+ *
+ * 성공 판정 = 스테이징에 **실행 진입점(src/index.js)** 이 emit 되었는가.
+ *  tsconfig.build.json 은 noEmitOnError=false 라 잔여 *타입* 에러가 있어도 .js 는 나온다
+ *  (typecheck 를 조언으로 강등한 결정 계승 — 타입에러로 정당 업데이트를 막지 않음).
+ *  진짜 실패 = "실행 가능한 산출물 생산 불가"(진입점 미emit / tsc 실행 불가 / 자산 복사
+ *  실패 / 플러그인 미러 실패). 이건 npm install 실패와 동류의 정당한 블로킹 신호.
+ *
+ * throw 0 — 결과 객체 반환(호출부가 실패 시 롤백 + no-restart 결정).
+ */
+const rebuildBuiltDist = async (
+  cwd: string,
+): Promise<{ ok: true } | { ok: false; error: string }> => {
+  const stamp = `${process.pid}-${Date.now()}`;
+  const staging = path.join(cwd, `.dist-staging-${stamp}`);
+  const distDir = path.join(cwd, "dist");
+  const backup = path.join(cwd, `.dist-old-${stamp}`);
+  const rmrf = async (p: string): Promise<void> => {
+    try {
+      await fs.rm(p, { recursive: true, force: true });
+    } catch {
+      /* best-effort 정리 — 실패해도 치명 아님 */
+    }
+  };
+
+  try {
+    // 1) tsc → staging. noEmitOnError=false 라 타입에러여도 .js emit → exit code 로 막지
+    //    않고(조언), 진입점 emit 여부로 판정. tsc 는 built 인스턴스 필수 툴체인(D6).
+    const tscBin = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
+    try {
+      await run(
+        "node",
+        [tscBin, "-p", "tsconfig.build.json", "--outDir", staging],
+        cwd,
+      );
+    } catch (e) {
+      console.warn(
+        `self-update: built 재빌드 tsc 비정상 종료(진입점 emit 로 최종 판정) — ${redactSecrets(
+          e instanceof Error ? e.message : String(e),
+        )}`,
+      );
+    }
+
+    // 2) 진입점 emit 검증 — 없으면 "실행 가능한 산출물 생산 불가" = 실패.
+    const entryJs = path.join(staging, "src", "index.js");
+    if (!existsSync(entryJs)) {
+      await rmrf(staging);
+      return { ok: false, error: `진입점 미생성: dist(staging)/src/index.js` };
+    }
+
+    // 3) 비-.ts 자산(SYSTEM.md·skills·agents·플러그인 package.json) 복사 → staging.
+    const copyBin = path.join(cwd, "bin", "copy-dist-assets.mjs");
+    try {
+      await run("node", [copyBin, staging], cwd);
+    } catch (e) {
+      await rmrf(staging);
+      return {
+        ok: false,
+        error: `자산 복사 실패: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      };
+    }
+
+    // 4) 플러그인 미러 검증 — dist/plugins 부재면 부팅 시 플러그인 0개(맥락 §2 블로커).
+    if (!existsSync(path.join(staging, "plugins"))) {
+      await rmrf(staging);
+      return { ok: false, error: "staging/plugins 부재(플러그인 미러 실패)" };
+    }
+
+    // 5) ★원자 교체 — dist→backup, staging→dist. 둘 다 cwd 하위(동일 파일시스템)라
+    //    rename 원자. 이 순간 이후로만 새 코드가 재시작 대상이 된다.
+    let distMovedOut = false;
+    try {
+      if (existsSync(distDir)) {
+        await fs.rename(distDir, backup);
+        distMovedOut = true;
+      }
+      await fs.rename(staging, distDir);
+    } catch (e) {
+      // 교체 중 실패 — 옛 dist 복원 시도 후 스테이징 폐기(도는 데몬 무손상 유지).
+      if (distMovedOut && !existsSync(distDir)) {
+        try {
+          await fs.rename(backup, distDir);
+        } catch {
+          /* 복원 실패 — 그대로 보고(드문 경계) */
+        }
+      }
+      await rmrf(staging);
+      return {
+        ok: false,
+        error: `dist 원자 교체 실패: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      };
+    }
+
+    // 6) 옛 dist 백업 정리(best-effort — 실패해도 새 dist 는 이미 자리).
+    await rmrf(backup);
+    return { ok: true };
+  } catch (e) {
+    await rmrf(staging);
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 };
 
 /**
@@ -339,6 +458,30 @@ export const runSelfUpdate = async (
           e instanceof Error ? e.message : String(e),
         )}`,
       );
+    }
+
+    // ── 단계 6b: built 모드 재빌드 + 원자 dist 교체 (ADR 2026-07-14 D3) ─────────
+    // source 모드: 이 블록 통째 skip — pull 이 곧 반영(현행 동작 완전 불변).
+    // built 모드: dist/ 산출물로 돌므로 재빌드 없이는 stale. 스테이징 빌드 → 진입점
+    //  검증 → dist 원자 교체. ★빌드 실패 = 스테이징 폐기 + reset --hard(prev) + 재시작
+    //  안 함 → 옛 dist 가 계속 산다(먹통 0). 이건 npm install 실패와 동류의 정당한 블로킹.
+    if (isBuiltRuntime()) {
+      const rebuild = await rebuildBuiltDist(cwd);
+      if (!rebuild.ok) {
+        const rolledBack = await rollback();
+        return {
+          status: "failed",
+          from: prevSha,
+          to: newSha,
+          changedFiles: changed.length,
+          ranNpmInstall,
+          rolledBack,
+          error: redactSecrets(
+            `built 재빌드 실패(옛 dist 유지·재시작 안 함): ${rebuild.error}`,
+          ),
+        };
+      }
+      console.log("self-update: built 재빌드 + dist 원자 교체 완료.");
     }
 
     // ── 단계 7: 완료 마커 작성 (부팅 통지용, best-effort) ───────────────────────

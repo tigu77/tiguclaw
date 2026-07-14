@@ -1,0 +1,24 @@
+{
+  // 프로덕션/built 런타임 산출물 빌드 (ADR 2026-07-14 D1 — Option B: 디렉터리 보존 tsc).
+  //
+  // 기존 tsconfig.json(rootDir=src, include=src) 은 그대로 유지 — `build`/`typecheck`/
+  // 클린룸(sync §5·§7) 이 계속 그것을 쓴다. 본 설정은 *별도 프로덕션 빌드* 전용.
+  //
+  // 핵심: rootDir="."(레포 루트) + include 에 plugins 추가 → 결과가 소스 트리를 그대로
+  // 미러(dist/src/... + dist/plugins/...). 그래야 플러그인의 리터럴 `../../../src/core/*.js`
+  // 깊은 import 가 dist/ 아래에서 dist/src/core/*.js 로 정확히 해석된다(재작성 0). 진입 =
+  // node dist/src/index.js. 비-.ts 자산(SYSTEM.md·skills·agents·플러그인 package.json)은
+  // tsc 가 안 옮기므로 build:prod 의 copy 단계(bin/copy-dist-assets.mjs)가 dist/ 로 복사한다.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    // 플러그인은 지금껏 typecheck 밖이라 미검증 타입 오류가 잠재할 수 있다(메모리:
+    // "plugins 는 typecheck 밖"). 프로덕션 산출물 emit 을 그런 잔여 타입 이슈로 막지
+    // 않도록 noEmitOnError=false — .js 는 항상 나오게. 타입 게이트는 별도 typecheck 가 담당.
+    "noEmitOnError": false,
+    // 산출물 슬림 — 런타임 실행엔 .d.ts 불필요.
+    "declaration": false
+  },
+  "include": ["src/**/*", "plugins/**/*"]
+}

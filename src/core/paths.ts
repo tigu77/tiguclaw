@@ -27,7 +27,7 @@
  */
 import os from "node:os";
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export interface TiguclawPaths {
@@ -92,23 +92,47 @@ let cachedAppRoot: string | undefined;
 /**
  * α — 앱 설치/레포 루트 (앱과 함께 배포되는 읽기전용 아티팩트 발견 기준). cwd 무관.
  *
- * 메커니즘: 이 파일은 dev `<root>/src/core/paths.ts`, prod `<installDir>/dist/core/paths.ts`.
- *  두 경우 모두 `core/` 의 2단계 위(`src`|`dist` 의 위) = appRoot. plugins 는 컴파일
- *  대상이 아니라 dist 에 안 들어가고 `<root>/plugins` 에 그대로이므로 `appRoot()/plugins`
- *  가 dev·prod 양쪽 정확.
+ * D1-a (2026-07-14, ADR built-artifact-production-runtime) — ★marker walk-up.
+ *  이전엔 고정 2-레벨-업(`core/` 의 2단계 위)이었으나, built(디렉터리 보존 tsc, rootDir=".")
+ *  레이아웃에서 이 파일은 `<root>/dist/src/core/paths.js` 로 emit 되어 2단계 위가
+ *  `dist/src`(plugins 없음)가 되어 어긋난다. dev 는 `<root>/src/core/paths.ts` 로 2단계
+ *  위가 repo root(정상) — 즉 두 레이아웃의 정답 깊이가 달라 고정 카운트로는 둘 다 못 맞춘다.
  *
- * dev 회귀 0: dev 에서 appRoot() = repo root = 현재 process.cwd() (동치). 모든 소비처가
- *  process.cwd() → appRoot() 로 바뀌어도 dev 값 불변. prod 에서만 값이 갈라지며 그게 정정.
+ *  대신 이 파일 위치에서 위로 올라가며 **앱 아티팩트 루트 마커**를 찾는다:
+ *    루트 == `plugins/`(배포 코드) 와 `SYSTEM.md`(작동 헌법 정본) 를 *함께* 가진 디렉터리.
+ *  둘을 함께 요구하는 이유: `src/core/plugins/`(로더 자신의 홈) 가 `plugins` 단독 마커의
+ *  가짜 양성이기 때문 — 하지만 그 디렉터리엔 SYSTEM.md 가 없으므로 복합 마커가 걸러낸다.
+ *   - dev:   src/core → src → repo root(plugins + SYSTEM.md) ✓
+ *   - built: dist/src/core → dist/src → dist (dist/plugins + 복사된 dist/SYSTEM.md) ✓
+ *  build:prod 의 copy 단계가 SYSTEM.md·skills·agents·플러그인 package.json 을 dist/ 로
+ *  미러하므로 built 의 appRoot=dist/ 가 자립(self-contained).
+ *
+ * dev 회귀 0: dev 에서 walk-up 결과 = repo root = 종전 고정 2-업 값과 동일(동치). 모든
+ *  소비처(appRoot()/plugins·skills·agents·SYSTEM.md·packages)의 dev 값 불변.
+ *
+ * 마커 미발견(이론상 비정상 레이아웃) 시 종전 고정 2-업으로 폴백 — 부팅 생존 우선.
  *
  * getPaths(home) 와 완전 별개 — appRoot=앱 아티팩트, getPaths=home/사용자 데이터.
  */
+const isArtifactRoot = (dir: string): boolean =>
+  existsSync(path.join(dir, "plugins")) && existsSync(path.join(dir, "SYSTEM.md"));
+
 export const appRoot = (): string => {
   if (cachedAppRoot !== undefined) return cachedAppRoot;
-  cachedAppRoot = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "..",
-  );
+  const start = path.dirname(fileURLToPath(import.meta.url));
+  let dir = start;
+  // 파일시스템 루트까지 위로 탐색하며 복합 마커를 찾는다.
+  for (;;) {
+    if (isArtifactRoot(dir)) {
+      cachedAppRoot = dir;
+      return cachedAppRoot;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // 파일시스템 루트 도달 — 미발견.
+    dir = parent;
+  }
+  // 폴백: 종전 고정 2-레벨-업(dev 소스 레이아웃에서 repo root 와 동치).
+  cachedAppRoot = path.resolve(start, "..", "..");
   return cachedAppRoot;
 };
 

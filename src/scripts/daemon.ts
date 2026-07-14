@@ -47,11 +47,22 @@ const LABEL = process.env.TIGUCLAW_SERVICE_LABEL?.trim() || "com.tiguclaw.daemon
 const expandHome = (p: string): string =>
   p === "~" || p.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p;
 
+// 런타임 모드 (ADR 2026-07-14-built-artifact-production-runtime D2) — 명시 env 만 진실.
+//   source(기본): `node <tsx cli> src/index.ts` — dev·현행 install 불변(추론 magic 0).
+//   built: `node dist/src/index.js` — tsx 미경유(선빌드 산출물). install/prod 명시 opt-in.
+// 정확히 "built" 만 built; 미설정·오타·빈값은 전부 source 로 안전 낙착.
+type RuntimeMode = "source" | "built";
+const runtimeMode = (): RuntimeMode =>
+  process.env.TIGUCLAW_RUNTIME?.trim() === "built" ? "built" : "source";
+
 interface Ctx {
   repoRoot: string;
   nodePath: string;
   tsxCli: string;
   entry: string;
+  /** built 진입점 = dist/src/index.js (tsconfig.build.json rootDir="." 미러 레이아웃). */
+  distEntry: string;
+  runtime: RuntimeMode;
   homeRaw: string;
   homeAbs: string;
   logsDir: string;
@@ -63,6 +74,7 @@ const buildCtx = (): Ctx => {
   const nodePath = process.execPath;
   const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
   const entry = path.join(repoRoot, "src", "index.ts");
+  const distEntry = path.join(repoRoot, "dist", "src", "index.js");
   const homeRaw =
     process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
   const homeAbs = path.resolve(repoRoot, expandHome(homeRaw));
@@ -72,12 +84,25 @@ const buildCtx = (): Ctx => {
     nodePath,
     tsxCli,
     entry,
+    distEntry,
+    runtime: runtimeMode(),
     homeRaw,
     homeAbs,
     logsDir,
     label: LABEL,
   };
 };
+
+/**
+ * 데몬 실행 argv — 모드별 분기(D2). 유닛(plist/systemd)·VBS·안내가 전부 이 하나만 쓴다.
+ *   source: [node, tsxCli, src/index.ts]  — 종전과 **바이트 동일**(dev 무회귀 보장).
+ *   built:  [node, dist/src/index.js]      — tsx 미경유 순수 node.
+ * WorkingDirectory·TIGUCLAW_HOME 등 나머지 유닛 필드는 모드 무관 동일.
+ */
+const execStrings = (c: Ctx): string[] =>
+  c.runtime === "built"
+    ? [c.nodePath, c.distEntry]
+    : [c.nodePath, c.tsxCli, c.entry];
 
 // ───────────────────────────── macOS (launchd) ─────────────────────────────
 // install-service.ts 의 plist 내용을 100% 동일하게 이식 (라이브 서비스가 이걸로 돈다).
@@ -92,9 +117,9 @@ const buildLaunchdPlist = (c: Ctx): string => {
   <key>Label</key><string>${c.label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${c.nodePath}</string>
-    <string>${c.tsxCli}</string>
-    <string>${c.entry}</string>
+${execStrings(c)
+  .map((s) => `    <string>${s}</string>`)
+  .join("\n")}
   </array>
   <key>WorkingDirectory</key><string>${c.repoRoot}</string>
   <key>EnvironmentVariables</key>
@@ -206,7 +231,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${c.nodePath} ${c.tsxCli} ${c.entry}
+ExecStart=${execStrings(c).join(" ")}
 WorkingDirectory=${c.repoRoot}
 Environment="TIGUCLAW_HOME=${c.homeRaw}"
 Restart=always
@@ -311,7 +336,9 @@ const winPort = (c: Ctx): string => {
 const buildWinVbs = (c: Ctx): string => {
   const inner =
     `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && ` +
-    `"${c.nodePath}" "${c.tsxCli}" "${c.entry}"`;
+    execStrings(c)
+      .map((s) => `"${s}"`)
+      .join(" ");
   return [
     'Set sh = CreateObject("WScript.Shell")',
     `sh.Run "${inner.replace(/"/g, '""')}", 0, False`,
@@ -509,7 +536,7 @@ const unsupported = (c: Ctx, cmd: string): void => {
     "프로세스 매니저(pm2/systemd/nohup) 아래에서 다음을 상시 실행하세요:",
   );
   console.log(
-    `  TIGUCLAW_HOME=${c.homeRaw} ${c.nodePath} ${c.tsxCli} ${c.entry}`,
+    `  TIGUCLAW_HOME=${c.homeRaw} ${execStrings(c).join(" ")}`,
   );
 };
 
@@ -535,6 +562,20 @@ export const runDaemonCommand = (cmd: string): void => {
     );
     process.exitCode = 1;
     return;
+  }
+
+  // 어떤 런타임 모드로 유닛을 생성/미리보기하는지 명시(D2 — 추론 아님, env 진실).
+  if (cmd === "install" || cmd === "print") {
+    console.log(
+      `# TIGUCLAW_RUNTIME=${c.runtime} — 실행: ${execStrings(c)
+        .slice(1)
+        .join(" ")} (WorkingDirectory=${c.repoRoot})`,
+    );
+    if (c.runtime === "built" && !existsSync(c.distEntry)) {
+      console.warn(
+        `# ⚠ built 모드인데 ${c.distEntry} 가 없습니다 — 먼저 'npm run build:prod' 로 dist 를 만드세요.`,
+      );
+    }
   }
 
   const table = handlers[process.platform];

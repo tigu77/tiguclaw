@@ -62,6 +62,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "restart", description: "데몬 재시작" },
   { name: "update", description: "tiguclaw 최신으로 업데이트" },
   { name: "model", description: "세션 메인 모델 선택/조회" },
+  { name: "models", description: "모델 프로파일 목록 표시" },
   { name: "schedule", description: "스케줄 관리(목록·삭제·활성·비활성)" },
   { name: "stop", description: "진행 중 턴 중단" },
 ] as const;

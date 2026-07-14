@@ -13,10 +13,46 @@
  *  - hybrid plugin (channel + observer) 의 경우 `startChannel(handler)` + `startObserver(bus)`
  *    명시 method 우선, 없으면 단일 `start(arg)` fallback (단일 capability plugin 호환).
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { EventBus } from "../eventbus.js";
+
+// D1-c (2026-07-14, ADR built-artifact-production-runtime) — built(순수 node) 런타임에서
+//  컴파일되지 않은 `.ts` drop-in 플러그인을 로드하기 위한 tsx 온디맨드 로더 등록.
+//  source(tsx 상주) 모드에선 이 모듈이 `.ts` 로 실행되므로 RUNNING_COMPILED=false →
+//  아무것도 안 함(현행 동작 완전 불변). built 모드에선 이 모듈이 `.js` 로 실행 →
+//  `.ts` 엔트리를 만났을 때만 tsx/esm 훅을 1회 등록(멱등). tsx 는 이미 runtime dep.
+const RUNNING_COMPILED = import.meta.url.endsWith(".js");
+let tsxRegistered = false;
+const ensureTsxLoader = async (): Promise<void> => {
+  if (!RUNNING_COMPILED || tsxRegistered) return;
+  const { register } = (await import("tsx/esm/api")) as { register: () => unknown };
+  register();
+  tsxRegistered = true;
+};
+
+/**
+ * manifest.entry(예: `./src/index.ts`) → import 가능한 절대 URL 로 해석.
+ *  - source 모드: `.ts` 원본이 실재 → 그대로(tsx 가 처리). 동작 불변.
+ *  - built 1st-party: `.ts` 부재 + `.js` 형제 존재(D1-b) → 컴파일된 `.js` 로드.
+ *  - built drop-in `.ts`(사용자/프로젝트, `.js` 없음): tsx 온디맨드 등록 후 `.ts` 로드(D1-c).
+ */
+const resolveEntry = async (pluginDir: string, entry: string): Promise<string> => {
+  const entryAbs = path.resolve(pluginDir, entry);
+  if (entryAbs.endsWith(".ts")) {
+    const jsSibling = `${entryAbs.slice(0, -3)}.js`;
+    if (!existsSync(entryAbs) && existsSync(jsSibling)) {
+      // built 1st-party — 컴파일 산출물 우선(핫경로·무-tsx).
+      return jsSibling;
+    }
+    if (existsSync(entryAbs)) {
+      // `.ts` 실재 — source 모드는 tsx 상주라 no-op, built 모드는 여기서 tsx 등록.
+      await ensureTsxLoader();
+    }
+  }
+  return entryAbs;
+};
 
 export interface PluginManifest {
   schemaVersion: number;
@@ -123,7 +159,7 @@ export const loadPlugins = async (
         entry: m.entry,
       };
 
-      const entryAbs = path.resolve(pluginDir, manifest.entry);
+      const entryAbs = await resolveEntry(pluginDir, manifest.entry);
       const mod = (await import(pathToFileURL(entryAbs).href)) as {
         default?: new () => unknown;
       };

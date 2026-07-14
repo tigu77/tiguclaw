@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# self-update(built) 스테이징/백업 (ADR 2026-07-14 D3 — 원자 dist 교체 중간산물, 정상 시 삭제)
+.dist-staging-*/
+.dist-old-*/
 .env
 .env.local
 .claude/settings.local.json

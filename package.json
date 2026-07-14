@@ -1,6 +1,6 @@
 {
   "name": "tiguclaw",
-  "version": "0.3.95",
+  "version": "0.3.96",
   "private": true,
   "type": "module",
   "bin": {
@@ -32,6 +32,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "build:prod": "tsc -p tsconfig.build.json && node bin/copy-dist-assets.mjs",
     "dev": "node bin/dev.mjs",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",

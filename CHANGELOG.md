@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.98] - 2026-07-14
+### Fixed
+- 시크릿(`.env`)이 항상 **런타임 홈**(`<home>/.env`)에만 기록되도록 수정. codex(ChatGPT) OAuth 토큰의 주기적 자동 갱신과 onboard 의 codex 로그인이 `.env` 를 **레포 체크아웃**에 쓰던 문제를 고쳐, 공개 레포가 더 이상 토큰으로 더럽혀지지 않습니다(`git pull`·자가 업데이트 깔끔 유지). 데몬 관리 스크립트의 포트 조회도 홈 `.env` 기준으로 통일.
+
 ## [0.3.97] - 2026-07-14
 ### Changed
 - 설치 기본 런타임이 **컴파일된 빌드(built)**로 바뀌었습니다. `npm run onboard` 가 이제 기본으로 `dist/` 로 컴파일한 뒤 그 빌드를 서비스로 등록합니다(부팅이 빠르고 실행 중 변환 없음). TypeScript 소스를 그대로 돌리려면 `TIGUCLAW_RUNTIME=source npm run onboard`. 런타임 모드는 **설치할 때 서비스 유닛에 고정**되어, 이후 업데이트나 기본값 변경에 흔들리지 않습니다(기존 설치는 자기 모드를 유지). 개발용 설치는 `npm run daemon:install:dev`(소스 모드 고정).
@@ -639,7 +643,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.97...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.98...HEAD
+[0.3.98]: https://github.com/tigu77/tiguclaw/compare/v0.3.97...v0.3.98
 [0.3.97]: https://github.com/tigu77/tiguclaw/compare/v0.3.96...v0.3.97
 [0.3.96]: https://github.com/tigu77/tiguclaw/compare/v0.3.95...v0.3.96
 [0.3.95]: https://github.com/tigu77/tiguclaw/compare/v0.3.94...v0.3.95

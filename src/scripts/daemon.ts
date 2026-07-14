@@ -328,7 +328,7 @@ const winVbsPath = (c: Ctx): string => path.join(c.homeAbs, "win-launch.vbs");
 // bridge 포트(.env 우선 → env → 3001). status/restart 의 실행 PID 추정용.
 const winPort = (c: Ctx): string => {
   try {
-    const m = readFileSync(path.join(c.repoRoot, ".env"), "utf8").match(
+    const m = readFileSync(path.join(c.homeAbs, ".env"), "utf8").match(
       /^HTTP_BRIDGE_PORT=(.*)$/m,
     );
     if (m !== null && m[1]!.trim() !== "") return m[1]!.trim();

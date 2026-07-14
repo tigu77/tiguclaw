@@ -23,14 +23,23 @@ import path from "node:path";
 
 let loaded = false;
 
+/**
+ * `<home>/.env` 절대경로 — 홈 = `TIGUCLAW_HOME` env / 기본 `~/.tiguclaw`.
+ * ★.env(시크릿)의 **유일한 정본 위치**. 읽기(load-env)·쓰기(init·codex OAuth refresh)가
+ * 전부 이걸 공유해 **공개 레포 checkout 을 절대 안 건드린다**(레포엔 시크릿 안 씀).
+ */
+export const homeEnvPath = (): string =>
+  path.join(
+    process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw"),
+    ".env",
+  );
+
 /** 홈 우선(레포 폴백)으로 .env 로드. 멱등 — 첫 호출만 실제 로드. */
 export const loadHomeEnv = (): void => {
   if (loaded) return;
   loaded = true;
 
-  const home =
-    process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
-  const homeEnv = path.join(home, ".env");
+  const homeEnv = homeEnvPath();
   const repoEnv = path.resolve(process.cwd(), ".env");
 
   const tryLoad = (file: string): boolean => {

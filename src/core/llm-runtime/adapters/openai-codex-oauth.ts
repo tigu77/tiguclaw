@@ -41,6 +41,7 @@ import { generatePKCE as generatePkceUpstream } from "@openauthjs/openauth/pkce"
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { homeEnvPath } from "../../load-env.js";
 import {
   agentSizeWarning,
   readAgent,
@@ -282,9 +283,10 @@ const extractAccountId = (accessToken: string): string | undefined => {
 };
 
 // V3.3 — .env 자동 upsert 헬퍼 (CLI · 자동 refresh 공유).
-// `.env` 의 OPENAI_CODEX_OAUTH_{TOKEN,REFRESH,EXPIRES} 3 키 in-place 갱신.
+// `<home>/.env` 의 OPENAI_CODEX_OAUTH_{TOKEN,REFRESH,EXPIRES} 3 키 in-place 갱신.
 // 기존 다른 키 유지, 부재 시 append.
-const ENV_PATH = path.resolve(".env");
+// ★홈 .env 에 쓴다(레포 오염 방지) — load-env 의 `homeEnvPath()` 와 동일 정본.
+//   과거 `path.resolve(".env")`=cwd(레포) 라 codex 토큰 갱신이 공개 레포를 더럽혔음(수정).
 // V5 — doctor 가 codex 토큰 키를 하드코딩 중복 없이 재사용하도록 export.
 export const TOKEN_KEYS = [
   "OPENAI_CODEX_OAUTH_TOKEN",
@@ -305,6 +307,7 @@ export const getCodexTokenExpiry = (): number | undefined => {
 };
 
 export const upsertCodexTokens = async (tokens: OAuthTokens): Promise<void> => {
+  const ENV_PATH = homeEnvPath(); // ★홈 .env (레포 아님) — 매 호출 신선 해석.
   let body = "";
   try {
     body = await fs.readFile(ENV_PATH, "utf8");

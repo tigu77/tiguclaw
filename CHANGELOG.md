@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-07-14
+### Added
+- **대시보드에서 스킬 사용이 한눈에 보입니다** — 비서가 스킬을 쓰면(`invoke_skill`) 활동 스텝이 일반 도구(🔧)와 구분되는 **`🛠 스킬: <이름>` 배지**로 표시됩니다. 메인 턴·서브에이전트/워커·새로고침 이력 모두 동일. (표시 전용 — 코어는 그대로, 스킬 이름은 기존 활동 데이터에서 읽어 뷰에서만 강조.)
+
 ## [0.4.6] - 2026-07-14
 ### Added
 - **대시보드에서 모델 프로파일을 볼 수 있습니다** — 사이드바 "🧠 모델 프로파일" 에서 각 프로파일의 이름·설명·풀(`provider:model`)·폴백을 한눈에. (표시 전용 — 프로파일은 대화로 편집.)
@@ -676,7 +680,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.7...HEAD
+[0.4.7]: https://github.com/tigu77/tiguclaw/compare/v0.4.6...v0.4.7
 [0.4.6]: https://github.com/tigu77/tiguclaw/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/tigu77/tiguclaw/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tigu77/tiguclaw/compare/v0.4.3...v0.4.4

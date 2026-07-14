@@ -373,6 +373,9 @@
       .act-claude { background:rgba(52,211,153,.14); color:var(--good); } .act-codex { background:rgba(192,132,252,.16); color:var(--purple); } .act-openai { background:rgba(45,212,191,.14); color:var(--teal); } .act-other { background:var(--card); color:var(--text-mute); }
       .act-icon { font-size:13px; } .act-label { color:var(--text); font-weight:700; flex:none; } .act-meta { color:var(--text-dim); font-size:10px; margin-left:auto; white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; }
       .act-detail { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 🛠 스킬 스텝 배지 (2026-07-14) — invoke_skill 도구 스텝을 뚜렷한 스킬 표시로 승격.
+         라이브(act-skill)·워커/서브(bg-skill)·이력 복원(hist-skill) 공통. 일반 도구 스텝 무영향. */
+      .act-skill, .bg-skill, .hist-skill { color:#ede9fe; background:rgba(139,92,246,.20); border-radius:5px; padding:0 6px; box-shadow:inset 0 0 0 1px rgba(139,92,246,.45); }
       /* 도구 실행시간(#3) — phase:"end" 활동이 시작 스텝에 붙이는 뱃지. 임계 초과면 warn 틴트. */
       .dur-badge { color:var(--accent-2); font-size:10px; font-weight:800; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; margin-left:6px; }
       .dur-badge.slow { color:var(--warn); }
@@ -2892,6 +2895,21 @@
         stepEl.insertBefore(caret, stepEl.firstChild); // 아이콘 앞 작은 ▸ affordance.
         stepEl.addEventListener("click", (e) => { e.stopPropagation(); toggleWorkerStepRich(stepEl); });
       };
+      // 🛠 스킬 스텝 인식 (2026-07-14) — invoke_skill 도구 호출을 스킬 배지로 승격한다.
+      // 스킬명은 공유 detail 빌더(_activity-detail.ts)가 "name=<skill>"(path 지정 시
+      // "path=…, name=<skill>") 로 실어 보낸 p.detail 에서 뽑는다 — 세 어댑터(claude/codex/
+      // openai) 가 같은 빌더를 써 포맷이 동일하므로 LLM-agnostic(원칙 #2). 코어/어댑터는
+      // 스킬 개념을 모르는 채(generic invoke_skill 도구)로 두고, "스킬"이라는 표현은 뷰에서만.
+      // 반환: {name} 이면 스킬 스텝, null 이면 일반 도구/활동(기존 렌더 그대로).
+      function skillStepInfo(p) {
+        if (!p || (p.kind && p.kind !== "tool") || p.label !== "invoke_skill") return null;
+        const d = typeof p.detail === "string" ? p.detail : "";
+        // 마지막 name= 세그먼트를 끝 앵커·콤마 비월경으로 잡는다(path 가 앞설 수 있음).
+        const m = d.match(/name=([^,]*)$/);
+        const name = m && m[1] ? m[1].trim() : "";
+        return { name: name || "?" }; // 파싱 실패해도 스킬 스텝임은 배지로 확실히.
+      }
+
       const handleWorkerActivity = (p, ts) => {
         const tk = typeof p.threadKey === "string" ? p.threadKey : "";
         let jobId = null;
@@ -2914,12 +2932,13 @@
         const line = document.createElement("div");
         line.className = "bg-step";
         if (p.seq != null) line.dataset.seq = String(p.seq); // #3 — phase:"end" 가 실행시간 붙일 앵커.
+        const skill = skillStepInfo(p);
         const icon = document.createElement("span"); icon.className = "bg-step-icon";
-        icon.textContent = p.kind === "tool" ? "🔧" : "▶";
-        const lab = document.createElement("span"); lab.className = "bg-step-label";
-        lab.textContent = p.label || p.kind || "활동";
+        icon.textContent = skill ? "🛠" : (p.kind === "tool" ? "🔧" : "▶");
+        const lab = document.createElement("span"); lab.className = skill ? "bg-step-label bg-skill" : "bg-step-label";
+        lab.textContent = skill ? "스킬: " + skill.name : (p.label || p.kind || "활동");
         line.appendChild(icon); line.appendChild(lab);
-        if (p.detail) {
+        if (p.detail && !skill) { // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
           const d = document.createElement("span"); d.className = "bg-step-detail";
           d.textContent = p.detail; line.appendChild(d);
         }
@@ -2930,8 +2949,8 @@
         entry.stepCount += 1;
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
-          const lbl = p.label || p.kind || "활동";
-          entry.lastStep = p.detail ? lbl + " · " + p.detail : lbl;
+          const lbl = skill ? "🛠 스킬: " + skill.name : (p.label || p.kind || "활동");
+          entry.lastStep = (!skill && p.detail) ? lbl + " · " + p.detail : lbl;
           if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
         }
         updateChev(entry);
@@ -3370,16 +3389,18 @@
         line.className = "act-line act-step";
         line.dataset.threadkey = p.threadKey || "?";
         if (p.seq != null) line.dataset.seq = String(p.seq);
+        const skill = skillStepInfo(p);
         const icon = document.createElement("span");
         icon.className = "act-icon";
-        icon.textContent = p.kind === "tool" ? "🔧" : "▶";
+        icon.textContent = skill ? "🛠" : (p.kind === "tool" ? "🔧" : "▶");
         const label = document.createElement("span");
-        label.className = "act-label";
-        label.textContent = p.label || p.kind || "activity";
+        label.className = skill ? "act-label act-skill" : "act-label";
+        label.textContent = skill ? "스킬: " + skill.name : (p.label || p.kind || "activity");
         // 인라인 상세(중립 detail = path=…, cmd: … 등). 단 diff 있는 스텝(Edit/Write)은 diff
         // 헤더가 경로+N/-M 을 이미 보여주므로 verbose 한 old_string=… 은 접힘 한 줄에서 생략(간결).
+        // 스킬 스텝은 detail(=name=…)이 라벨과 중복이라 생략.
         const hasDiff = p.diff && Array.isArray(p.diff.lines);
-        const detail = p.detail && !hasDiff
+        const detail = p.detail && !hasDiff && !skill
           ? Object.assign(document.createElement("span"), {
               className: "act-detail", textContent: p.detail,
             })
@@ -3635,8 +3656,12 @@
         card.count += 1;
         card.countEl.textContent = card.count + "단계";
         // 진행 중/접힘 시 헤더 미리보기 — 도구명 + 상세(무슨 파일/명령인지 한눈에).
-        card.lastEl.textContent =
-          (p.label || p.kind || "") + (p.detail ? " · " + p.detail : "");
+        {
+          const skill = skillStepInfo(p);
+          card.lastEl.textContent = skill
+            ? "🛠 스킬: " + skill.name
+            : (p.label || p.kind || "") + (p.detail ? " · " + p.detail : "");
+        }
         card.setOpen(true); // 진행 중엔 펼쳐서 라이브로 보이게.
       };
 
@@ -4069,14 +4094,17 @@
         const line = document.createElement("div");
         line.className = "hist-step";
         if (a.ts != null) line.dataset.ts = String(a.ts);
+        const skill = skillStepInfo(a);
         const icon = document.createElement("span");
-        icon.className = "hist-tool-icon"; icon.textContent = "🔧";
+        icon.className = "hist-tool-icon"; icon.textContent = skill ? "🛠" : "🔧";
         const label = document.createElement("span");
-        label.className = "hist-tool-label"; label.textContent = a.label || "tool";
+        label.className = skill ? "hist-tool-label hist-skill" : "hist-tool-label";
+        label.textContent = skill ? "스킬: " + skill.name : (a.label || "tool");
         line.appendChild(icon); line.appendChild(label);
         // diff 있는 스텝은 diff 헤더가 경로+N/-M 을 보여주므로 verbose detail 생략(접힘 간결).
+        // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
         const hasDiff = a.diff && Array.isArray(a.diff.lines);
-        if (a.detail && !hasDiff) {
+        if (a.detail && !hasDiff && !skill) {
           const d = document.createElement("span");
           d.className = "hist-tool-detail"; d.textContent = a.detail;
           line.appendChild(d);
@@ -4113,7 +4141,7 @@
         count.className = "hist-turn-count"; count.textContent = acts.length + "단계";
         const preview = document.createElement("span");
         preview.className = "hist-turn-preview";
-        preview.textContent = acts.map((a) => a.label || "tool").slice(0, 6).join(" · ");
+        preview.textContent = acts.map((a) => { const s = skillStepInfo(a); return s ? "🛠 " + s.name : (a.label || "tool"); }).slice(0, 6).join(" · ");
         head.appendChild(caret); head.appendChild(badge); head.appendChild(count); head.appendChild(preview);
         const body = document.createElement("div");
         body.className = "hist-turn-body";

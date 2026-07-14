@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-14
+### Changed
+- 대시보드 백그라운드 작업 패널에서 **워커 잡에도 `📦 워커` 배지**를 표시합니다(기존엔 서브에이전트만 배지가 있었음). 서브에이전트(보라)와 워커(중립 회색)를 한눈에 구분 — 에이전트 그리드와 동일한 표기.
+
 ## [0.4.1] - 2026-07-14
 ### Fixed
 - 대시보드 채팅에서 백그라운드 워커 완료 보고가 **2개 버블로 중복** 표시되고, 내부 완료-알림 스캐폴딩(〔…〕)이 **사용자 메시지처럼 노출**되던 문제 수정. 워커 완료 재주입 턴이 관측 이벤트를 이중 발행하던 것과, 합성 턴의 인바운드 발행을 각각 닫았습니다. (텔레그램 발신은 원래 정상 1통이었고, 실패·취소·복구 통지의 대시보드 가시성은 그대로 보존.)
@@ -655,7 +659,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/tigu77/tiguclaw/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/tigu77/tiguclaw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/tigu77/tiguclaw/compare/v0.3.99...v0.4.0
 [0.3.99]: https://github.com/tigu77/tiguclaw/compare/v0.3.98...v0.3.99

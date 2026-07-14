@@ -528,7 +528,10 @@
       .bg-job.agent.done { border-left-color:#a78bfa; }
       .bg-job.agent.failed { border-left-color:#f87171; }
       .bg-job.agent.cancelled { border-left-color:#a78bfa; opacity:.85; }
-      .bg-job-kind { flex:none; font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgba(167,139,250,.16); color:#c4b5fd; border:1px solid rgba(167,139,250,.4); white-space:nowrap; }
+      /* kind 배지 — 워커=중립 회색(기본), 서브에이전트=보라(.agent 승격 시). agents 그리드
+         .agent-card-kind 패턴과 동형. 워커도 "📦 워커" 배지가 항상 보인다(2026-07-14). */
+      .bg-job-kind { flex:none; font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgba(255,255,255,.05); color:var(--text-mute); border:1px solid var(--border); white-space:nowrap; }
+      .bg-job.agent .bg-job-kind { background:rgba(167,139,250,.16); color:#c4b5fd; border-color:rgba(167,139,250,.4); }
       /* 모델 티어 칩 — kind 칩과 동형(작은 pill). 티어별 색상 힌트(data-tier). */
       .bg-job-tier, .agent-card-tier { flex:none; font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; text-transform:uppercase; white-space:nowrap; background:rgba(255,255,255,.06); color:var(--text-mute); border:1px solid var(--border); }
       .bg-job-tier[data-tier="low"], .agent-card-tier[data-tier="low"] { background:rgba(148,163,184,.16); color:#cbd5e1; border-color:rgba(148,163,184,.4); }
@@ -2589,9 +2592,10 @@
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
           label.textContent = (opts && opts.label) || "(작업)";
-          // 서브에이전트 배지(kind==="agent") — 워커와 시각적 구분. status 뱃지와 별개 축.
+          // kind 배지(워커/서브에이전트) — status 뱃지와 별개 축. 기본은 워커 배지("📦 워커")를
+          // 항상 표시하고, lifecycle 로 서브에이전트로 승격되면 아래에서 텍스트를 교체(.agent 가 색 전환).
           const kindBadge = document.createElement("span"); kindBadge.className = "bg-job-kind";
-          kindBadge.textContent = "🤖 서브에이전트"; kindBadge.style.display = "none";
+          kindBadge.textContent = AGENT_KIND_BADGE.worker;
           // 모델 티어 칩 — kind==="agent" 이고 modelTier 있을 때만(default 제외). kindBadge 옆에.
           const tierBadge = document.createElement("span"); tierBadge.className = "bg-job-tier"; tierBadge.style.display = "none";
           const st = document.createElement("span"); st.className = "bg-job-status";
@@ -2642,11 +2646,12 @@
           refreshBgBadge();
         }
         // 서브에이전트 마킹(멱등) — lifecycle(kind:"agent")이 활동보다 먼저/나중 어느 쪽으로 와도
-        // 카드를 서브로 승격. 배지 표시 + .agent 클래스. 워커(kind 미지정/"worker")는 무영향.
+        // 카드를 서브로 승격. 배지 텍스트를 워커→서브에이전트로 교체(.agent 클래스가 색 전환).
+        // 워커(kind 미지정/"worker")는 기본 워커 배지 그대로 유지.
         if (opts && opts.kind === "agent" && entry.kind !== "agent") {
           entry.kind = "agent";
           entry.el.classList.add("agent");
-          entry.kindBadgeEl.style.display = "";
+          entry.kindBadgeEl.textContent = AGENT_KIND_BADGE.agent;
         }
         // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.

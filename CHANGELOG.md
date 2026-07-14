@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.99] - 2026-07-14
+### Fixed
+- 레포 체크아웃이 모든 OS 에서 깨끗하게 유지되도록 `.gitattributes` 를 **레포 전체 LF 고정**(`* text=auto eol=lf`)으로 확장. 윈도우 등에서 줄바꿈(CRLF) 변환 탓에 추적 파일(`.mjs`·`.ts` 등)이 "수정됨"으로 떠 `git pull`·자가 업데이트와 충돌하던 문제를 예방합니다(이전엔 `bin/tiguclaw.mjs` 한 파일만 고정). 기존에 이미 지저분해진 클론은 `git checkout -- .` 로 원상복구하거나 다시 clone 하면 됩니다.
+
 ## [0.3.98] - 2026-07-14
 ### Fixed
 - 시크릿(`.env`)이 항상 **런타임 홈**(`<home>/.env`)에만 기록되도록 수정. codex(ChatGPT) OAuth 토큰의 주기적 자동 갱신과 onboard 의 codex 로그인이 `.env` 를 **레포 체크아웃**에 쓰던 문제를 고쳐, 공개 레포가 더 이상 토큰으로 더럽혀지지 않습니다(`git pull`·자가 업데이트 깔끔 유지). 데몬 관리 스크립트의 포트 조회도 홈 `.env` 기준으로 통일.
@@ -643,7 +647,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.98...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.3.99...HEAD
+[0.3.99]: https://github.com/tigu77/tiguclaw/compare/v0.3.98...v0.3.99
 [0.3.98]: https://github.com/tigu77/tiguclaw/compare/v0.3.97...v0.3.98
 [0.3.97]: https://github.com/tigu77/tiguclaw/compare/v0.3.96...v0.3.97
 [0.3.96]: https://github.com/tigu77/tiguclaw/compare/v0.3.95...v0.3.96

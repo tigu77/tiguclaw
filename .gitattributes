@@ -1,3 +1,20 @@
-# 레포 전체 일관성 — line-ending 고정 (체크아웃 시 autocrlf 변환 churn 방지).
-# CLI 바이너리는 LF 고정 (#!/usr/bin/env node 셔뱅 + 크로스플랫폼 실행).
+# 레포 전체 일관성 — 모든 텍스트파일 LF 고정.
+# 목적: 윈도우 등에서 체크아웃 시 autocrlf 가 LF↔CRLF 로 바꿔 추적파일이
+#       "수정됨"으로 뜨는 churn 을 원천 차단 → 레포가 항상 깨끗(= git pull·
+#       자가 업데이트가 로컬 변경과 충돌하지 않음). git 이 바이너리는 자동 감지해
+#       변환하지 않지만, 흔한 바이너리 자산은 아래에서 명시한다.
+* text=auto eol=lf
+
+# 바이너리 (줄바꿈 변환·diff 금지).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# CLI 셔뱅 스크립트 — LF 고정 명시(#!/usr/bin/env node · 크로스플랫폼 실행).
+# 실행권한은 git index 모드(100755)로 보존된다.
 bin/tiguclaw.mjs text eol=lf

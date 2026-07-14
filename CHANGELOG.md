@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-07-14
+### Added
+- 대시보드 선택지(`prompt_options`)에 **"기타 (직접 입력)" 입력칸이 항상 포함**됩니다. 제시된 보기 중 딱 맞는 게 없으면 옵션 카드 안의 입력칸에 직접 답을 써서 보낼 수 있어요(Enter 또는 보내기 버튼) — AskUserQuestion 의 "기타"와 같은 방식. 보낸 답은 보기를 고른 것과 동일하게 처리됩니다.
+
 ## [0.4.4] - 2026-07-14
 ### Added
 - **대시보드에서 돌쇠가 보낸 파일(`send_file`)을 미리보기하고 받을 수 있습니다.** 대화 중 만들어 보낸 리포트·이미지·zip 등이 첨부 카드로 뜨고 — 이미지는 클릭해 크게 보기, 텍스트·마크다운은 인라인 미리보기, 옆의 **⬇ 받기** 버튼으로 다운로드. `send_file` 이 이제 텔레그램뿐 아니라 웹 대시보드에서도 렌더됩니다(채널 무관 추상 의도). 보낸 파일은 통제된 첨부 저장소(`<home>/data/attachments`)로 복사해 안전하게 서빙하며, 경로 탈출(traversal)은 차단됩니다.
@@ -667,7 +671,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/tigu77/tiguclaw/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tigu77/tiguclaw/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tigu77/tiguclaw/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/tigu77/tiguclaw/compare/v0.4.1...v0.4.2

@@ -134,6 +134,11 @@ const isToolsUnsupported = (e: unknown): boolean =>
 export const runOpenAi = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(context/transcripts)은 canonical
+  // 저장 채널로 키잉. route() 가 정규화 시 sessionChannel 실어보냄, 미지정 → channel 폴백
+  // (회귀 0). 표시/감사는 input.channel 유지 — claude 어댑터와 parity(#2).
+  const idChannel = input.sessionChannel ?? input.channel;
+
   // provider 연결 해석 — input.provider 미지정(레거시 호출)이면 정품 openai 로 폴백.
   // ollama/google 은 baseURL/apiKey 가 여기서 단일 지점 해석된다(어댑터별 if 분기 0).
   const conn = resolveProviderConn(input.provider) ?? resolveProviderConn("openai")!;
@@ -314,7 +319,11 @@ export const runOpenAi = async (
     mcpServers.push(
       await adaptClaudeMcpServer(
         createUpdateSelfMcpServer(
-          notifyDestFromCoords(input.channel, input.threadKey),
+          notifyDestFromCoords(
+            input.channel,
+            input.threadKey,
+            input.channelAddress,
+          ),
         ),
         "update-self",
       ),
@@ -385,14 +394,18 @@ export const runOpenAi = async (
   const memorySnippet = leanMemory
     ? ""
     : formatMemorySnippet(
-        retrieveContext(input.channel, input.threadKey, input.text, {
+        retrieveContext(idChannel, input.threadKey, input.text, {
           limit: 5,
         }),
       );
   // 현재 대화 컨텍스트 — depth 0(실제 사용자 대화)만 (codex L814-818 parity).
   const convoContext =
     depth === 0
-      ? formatConversationContext(input.channel, input.threadKey)
+      ? formatConversationContext(
+          input.channel,
+          input.threadKey,
+          input.channelAddress,
+        )
       : "";
   // 스킬/에이전트 인덱스 — depth 0 turn 만 (codex L805-813 parity). depth≥1 child 는
   // spawn 도구 미등록과 정합해 인덱스도 박지 않음 (재spawn 유도 0).
@@ -435,7 +448,7 @@ export const runOpenAi = async (
   //  - 한도(turn/char)는 loadThreadHistory 내부 디폴트에 위임 — openai 전용 매직넘버 0.
   //  - wrap shape: user→input_text, assistant→output_text(+status:"completed")
   //    (protocol.d.ts UserMessageItem/AssistantMessageItem 실측).
-  const priorTurns = loadThreadHistory(input.channel, input.threadKey);
+  const priorTurns = loadThreadHistory(idChannel, input.threadKey);
   const historyItems: AgentInputItem[] = priorTurns.map((t) =>
     t.role === "assistant"
       ? {

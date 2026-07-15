@@ -1,9 +1,36 @@
 import fs from "node:fs";
-import { extractTelegramChatId } from "../core/threadkey.js";
+import { extractTelegramChatId, DEFAULT_SESSION_ID } from "../core/threadkey.js";
 import path from "node:path";
 import Database from "better-sqlite3";
 import type { ChannelName } from "../channels/types.js";
 import { getPaths } from "../core/paths.js";
+
+/**
+ * ★세션-정체성 저장 채널 (canonical) — 채널/세션 분리 Phase 1
+ * (ADR `docs/decisions/2026-07-15-channel-session-decoupling.md` §D1/§D4, 급소).
+ *
+ * 세션-정체성 테이블(`threads`·`transcript_index`·`context_boundaries`·
+ * `session_model_override`)은 현재 **(channel, threadKey) 복합키**다. 세션이 채널
+ * 무관(#4)이 되려면 이 저장 채널이 **인입 채널이 아니라 세션의 함수(=상수)** 여야 한다.
+ *
+ * ★값 = 기존 `dashboard:default` 세션 행들이 만들어진 채널값(`"http-bridge"`). 셀렉터
+ * 없는 채널(telegram·cli·http default) 인입이 `DEFAULT_SESSION_ID`(=`dashboard:default`)
+ * 로 수렴할 때, 세션-정체성을 이 **canonical 채널**로 read/write 해야 기존 대시보드 기본
+ * 세션의 resume(claude_session_id)/transcripts 를 **마이그레이션 0 으로 계승**한다.
+ * 인입 채널(telegram)로 저장하면 기존 `("http-bridge","dashboard:default")` 행과 **다른
+ * 행**이 되어 파편화·resume 미계승 → 이 상수가 그걸 막는다.
+ *
+ * ★§0 단방향 불변식: 이 canonical 규칙은 **store 레이어가 소유**한다(core 는 채널명을
+ * 특수 참조하지 않는다). core(route/adapter)는 이 상수를 opaque 하게 import 해 "세션-정체성
+ * 저장 채널" 로만 쓰고, 채널 정체성으로 분기하지 않는다. 이 문자열은 core 가 "http-bridge"
+ * 채널을 아는 게 아니라 *마이그레이션 0* 을 위해 승계하는 레거시 물리 키다. Phase 2 에서
+ * PK 가 sessionId 단독으로 축소되면 이 값은 순수 내부 관습이 된다.
+ *
+ * ★표시/감사는 분리: 실제 인입 채널·주소는 `setSessionChannelMeta`(last_channel/target)와
+ * chat_log/activity 의 **실채널**로 유지된다(대시보드가 "텔레그램 경유" 를 알게). 즉
+ * 세션-정체성=canonical, 표시/감사=실채널의 2분리(급소).
+ */
+export const SESSION_STORAGE_CHANNEL: ChannelName = "http-bridge";
 
 export interface ThreadSession {
   channel: ChannelName;
@@ -14,6 +41,10 @@ export interface ThreadSession {
   // /status revamp — 이 thread 마지막 turn 의 토큰 사용량 (표시용, 미측정 turn → null 보존).
   lastInputTokens: number | null;
   lastOutputTokens: number | null;
+  // 채널/세션 분리(ADR 2026-07-15 §D3) — 이 세션의 마지막 인입 채널+주소(비동기 outbound
+  // 기본 목적지). 미캡처(기존 row·셀렉터 없는 인입 웨이브2 전) → null.
+  lastChannel: ChannelName | null;
+  lastChannelTarget: string | null;
   lastUsedAt: number;
   createdAt: number;
 }
@@ -26,6 +57,8 @@ interface ThreadRow {
   system_prompt_hash: string | null;
   last_input_tokens: number | null;
   last_output_tokens: number | null;
+  last_channel: string | null;
+  last_channel_target: string | null;
   last_used_at: number;
   created_at: number;
 }
@@ -185,6 +218,26 @@ export const initStore = (): void => {
   const hasOutputTokensCol = cols.some((c) => c.name === "last_output_tokens");
   if (!hasOutputTokensCol) {
     handle.exec(`ALTER TABLE threads ADD COLUMN last_output_tokens INTEGER`);
+  }
+
+  // ─── 채널/세션 분리: threads.last_channel / last_channel_target (ADR 2026-07-15 §D3) ──
+  // 세션은 채널 무관이지만, 비동기 outbound(워커 완료·능동발신)의 **기본 목적지**는
+  // 세션의 *마지막 인입 채널+주소* 다. 채널 주소를 세션 id 에서 파싱하지 않고(=폐지 대상)
+  // 인입 턴 저장 시 **캡처**해 여기 경량 메타로 둔다(§D3). generic 데이터(채널명·주소) —
+  // 코어는 이 값으로 채널 정체성을 분기하지 않는다(§0 단방향). 둘 다 nullable → 미기록
+  // (기존 row·미캡처 인입)이면 호출부가 getMostRecentTelegramChatId 등으로 폴백(회귀 0).
+  // system_prompt_hash/last_*_tokens 패턴 동형(idempotent probe+ADD). 실제 setter 호출은
+  // region/daemon 웨이브2가 채운다 — store 는 스키마 + setSessionChannelMeta 만 제공.
+  // 신규 DB: threads CREATE 직후 cols probe 에 없음 → ADD. 반복 부팅: 이미 존재 → skip.
+  const hasLastChannelCol = cols.some((c) => c.name === "last_channel");
+  if (!hasLastChannelCol) {
+    handle.exec(`ALTER TABLE threads ADD COLUMN last_channel TEXT`);
+  }
+  const hasLastChannelTargetCol = cols.some(
+    (c) => c.name === "last_channel_target",
+  );
+  if (!hasLastChannelTargetCol) {
+    handle.exec(`ALTER TABLE threads ADD COLUMN last_channel_target TEXT`);
   }
 
   // ─── Memory V1: typed memories + FTS5 (contract §2) ─────────────────────
@@ -619,7 +672,7 @@ export const getSession = (
   const handle = requireDb("getSession");
   const row = handle
     .prepare(
-      `SELECT channel, channel_thread_id, claude_session_id, model, system_prompt_hash, last_input_tokens, last_output_tokens, last_used_at, created_at
+      `SELECT channel, channel_thread_id, claude_session_id, model, system_prompt_hash, last_input_tokens, last_output_tokens, last_channel, last_channel_target, last_used_at, created_at
        FROM threads
        WHERE channel = ? AND channel_thread_id = ?`,
     )
@@ -635,58 +688,155 @@ export const getSession = (
     systemPromptHash: row.system_prompt_hash,
     lastInputTokens: row.last_input_tokens,
     lastOutputTokens: row.last_output_tokens,
+    lastChannel: row.last_channel as ChannelName | null,
+    lastChannelTarget: row.last_channel_target,
     lastUsedAt: row.last_used_at,
     createdAt: row.created_at,
   };
 };
 
 /**
- * 세션 목록 조회 — 멀티세션 탭(ADR 2026-07-15 D5.1). 경량 행만
- * (`channel·threadKey·lastUsedAt·model`) last_used_at 내림차순.
+ * 내부(비-대화) 스레드 접두 — 사용자 대면 세션 목록에서 배제 대상(ADR 2026-07-15 §D6).
  *
- * prefix = threadKey 네임스페이스 필터(LIKE `<prefix>%`). 대시보드는 `dashboard:` 를
- * 넘겨 자기 세션만 골라내고, 텔레그램/워커 스레드를 배제한다. **prefix 는 범용 인자**
- * — 코어는 threadKey 를 opaque 로 취급하며 "dashboard" 를 특수 참조하지 않는다(§0
- * 단방향 참조 불변식). 미지정이면 LIKE '%' 로 전체. limit 기본 100(무한증가 바운드).
+ * threadKey 파생(비-채널) 관습(ADR §1.2) + 스케줄 실행 컨텍스트:
+ *  - `worker:<jobId>`      detached 백그라운드 잡
+ *  - `agent:<uuid>`        awaited 서브에이전트 잡
+ *  - `endpoint:<name>:…`   http 엔드포인트 합성 턴
+ *  - `gateway:<uuid>`      게이트웨이 합성 턴
+ *  - `scheduler:<id>`      ★스케줄 발화 실행 컨텍스트(사용자 대화 아님 — worker: 와 동류).
+ *                          task 열거엔 없었으나 "scheduler:3" 같은 합성 실행 스레드를 채팅
+ *                          탭으로 노출하는 건 명백한 오노출이라 §D6 "사용자 대면 대화 세션"
+ *                          기준으로 배제(판단·보고 대상). 제외 원하면 이 상수에서 빼면 됨.
+ *  - `<parent>::sub::…`    서브에이전트 파생(마커 포함, 접두 아님) → 별도 배제.
+ *
+ * ★§0 단방향: 이 접두들은 코어가 특정 채널을 참조하는 게 아니라 *내부 파생 스레드*의
+ * 범용 네임스페이스 관습이다. `tg:`·`cli:`·`dashboard:` 같은 **채널 대화** 접두는
+ * 여기 없다 — 그것들은 과거·현재 사용자 대화이므로 목록에 포함된다.
+ */
+export const INTERNAL_THREAD_PREFIXES = [
+  "worker:",
+  "agent:",
+  "endpoint:",
+  "gateway:",
+  "scheduler:",
+] as const;
+
+/** 서브에이전트 파생 스레드 마커(접두 아닌 중간 삽입). */
+export const SUBAGENT_THREAD_MARKER = "::sub::";
+
+/**
+ * 세션-정체성 저장 채널 도출 — 슬래시 핸들러·워커 재주입이 route() 정규화와 **동일 키**로
+ * 세션-정체성(resume/context boundary/model override/summary)을 read/write 하도록 canonical
+ * 채널을 준다(채널/세션 분리 ADR 2026-07-15 §D1, QA BLOCKER 후속).
+ *
+ * route() 는 정규화 turn 의 세션-정체성을 `(SESSION_STORAGE_CHANNEL, sessionId)` 로 키잉하는데,
+ * 슬래시 핸들러는 route() *이전*에 `(msg.channel, msg.threadKey)` 로 직접 키잉했다 → 텔레그램
+ * 정규화 turn(msg.channel=telegram, msg.threadKey=dashboard:default)에서 orphan
+ * `(telegram, dashboard:default)` 를 만져 실세션 `(http-bridge, dashboard:default)` 을 못
+ * 건드렸다(/reset·/model 무효). 이 헬퍼로 route() 와 같은 결정 규칙에 정렬한다.
+ *
+ *  - **사용자 세션 threadKey**(기본 세션 `DEFAULT_SESSION_ID` 또는 대시보드 세션 `dashboard:`
+ *    네임스페이스 — route 가 정규화하는 대상) → `SESSION_STORAGE_CHANNEL`(canonical).
+ *  - **내부 파생 스레드**(`INTERNAL_THREAD_PREFIXES`=worker:/agent:/endpoint:/gateway:/
+ *    scheduler: · `SUBAGENT_THREAD_MARKER`) → `fallbackChannel` 그대로(정규화 대상 아님 =
+ *    현행 passthrough, 회귀 0). ★스케줄러·서브에이전트 세션 정체성 무변경 보장.
+ *  - 그 외(레거시 `tg:*`·`cli:*` 등 과거 채널-키드 대화) → `fallbackChannel`(무변경 — 신규
+ *    turn 은 이 형태를 안 만든다).
+ *
+ * ★§0 단방향: `dashboard:` 접두는 `DEFAULT_SESSION_ID` 와 동일한 opaque 레거시 물리 키
+ * 네임스페이스(마이그레이션 0 계승)일 뿐 — 코어가 "dashboard" 채널을 특수 참조하는 게 아니다.
+ * 순수·멱등(DB 무접근). resolveSessionId·route() 와 같은 결정 규칙.
+ */
+export const canonicalSessionChannel = (
+  threadKey: string,
+  fallbackChannel: ChannelName,
+): ChannelName => {
+  for (const p of INTERNAL_THREAD_PREFIXES) {
+    if (threadKey.startsWith(p)) return fallbackChannel;
+  }
+  if (threadKey.includes(SUBAGENT_THREAD_MARKER)) return fallbackChannel;
+  if (threadKey === DEFAULT_SESSION_ID || threadKey.startsWith("dashboard:")) {
+    return SESSION_STORAGE_CHANNEL;
+  }
+  return fallbackChannel;
+};
+
+// SQLite LIKE 특수문자(% _ \)를 리터럴 취급하도록 ESCAPE '\' 용 이스케이프.
+const escapeLike = (s: string): string => s.replace(/([\\%_])/g, "\\$1");
+
+/**
+ * 세션 목록 조회 — 멀티세션 탭(ADR 2026-07-15 §D6). 경량 행만
+ * (`channel·threadKey·lastChannel·lastChannelTarget·lastUsedAt·model`) last_used_at 내림차순.
+ *
+ * ★채널/세션 분리(ADR 2026-07-15): 세션은 채널 무관이므로 `dashboard:` prefix 필터는
+ * 무의미해졌다. 대시보드 세션 목록은 이제 **사용자 대면 대화 세션 전체**를 원한다 →
+ * `excludeInternal: true` 로 내부 파생 스레드(worker:/agent:/endpoint:/gateway:/scheduler:/
+ * `::sub::`)만 배제하고 나머지(현행 `dashboard:*` + 레거시 `tg:*`·`cli:*` 과거 대화)는 모두
+ * 포함한다. 텔레그램 기본 세션 = 대시보드 첫 탭 = 동일 id(`DEFAULT_SESSION_ID`)라 중복 0.
+ *
+ * 옵션(전부 additive — 기존 호출부 회귀 0):
+ *  - `prefix`         threadKey 네임스페이스 필터(LIKE `<prefix>%`). **범용 인자** — 코어는
+ *                     threadKey 를 opaque 로 취급(§0 단방향). 미지정이면 전체. 잔존은 하위호환
+ *                     (http-bridge 기존 `prefix:'dashboard:'` 호출 무깨짐 — 라우트 정렬은 웨이브2).
+ *  - `excludeInternal` true 면 위 내부 접두/마커 스레드 배제(사용자 대면 세션만). 기본 false
+ *                     (하위호환). 웨이브2 `/sessions` 라우트가 이 옵션으로 전환.
+ *  - `limit`          기본 100(무한증가 바운드).
  *
  * getSession/getMostRecentTelegramChatId 와 동형 prepared stmt·threads 조회.
- * 기존 함수 무변경(추가만) — 회귀 0.
  */
 export interface ThreadSummary {
   channel: ChannelName;
   threadKey: string;
+  /** 세션의 마지막 인입 채널+주소(§D3, 미캡처 → null). outbound 기본 목적지·목록 표시용. */
+  lastChannel: ChannelName | null;
+  lastChannelTarget: string | null;
   lastUsedAt: number;
   model: string | null;
 }
 
 export const listThreads = (opts?: {
   prefix?: string;
+  excludeInternal?: boolean;
   limit?: number;
 }): ThreadSummary[] => {
   const handle = requireDb("listThreads");
   const prefix = opts?.prefix ?? "";
-  // LIKE 패턴 — prefix 미지정이면 '%'(전체). SQLite LIKE 특수문자(%_)를 프리픽스 내에서
-  // 리터럴 취급하도록 ESCAPE '\' 로 이스케이프(threadKey 는 통상 안전하나 방어적).
-  const like =
-    prefix === "" ? "%" : `${prefix.replace(/([\\%_])/g, "\\$1")}%`;
+  const like = prefix === "" ? "%" : `${escapeLike(prefix)}%`;
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 100;
+
+  const conds: string[] = ["channel_thread_id LIKE ? ESCAPE '\\'"];
+  const params: (string | number)[] = [like];
+  if (opts?.excludeInternal === true) {
+    for (const p of INTERNAL_THREAD_PREFIXES) {
+      conds.push("channel_thread_id NOT LIKE ? ESCAPE '\\'");
+      params.push(`${escapeLike(p)}%`);
+    }
+    conds.push("channel_thread_id NOT LIKE ? ESCAPE '\\'");
+    params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
+  }
+  params.push(limit);
+
   const rows = handle
     .prepare(
-      `SELECT channel, channel_thread_id, last_used_at, model
+      `SELECT channel, channel_thread_id, last_channel, last_channel_target, last_used_at, model
          FROM threads
-        WHERE channel_thread_id LIKE ? ESCAPE '\\'
+        WHERE ${conds.join("\n          AND ")}
         ORDER BY last_used_at DESC
         LIMIT ?`,
     )
-    .all(like, limit) as {
+    .all(...params) as {
     channel: string;
     channel_thread_id: string;
+    last_channel: string | null;
+    last_channel_target: string | null;
     last_used_at: number;
     model: string | null;
   }[];
   return rows.map((r) => ({
     channel: r.channel as ChannelName,
     threadKey: r.channel_thread_id,
+    lastChannel: r.last_channel as ChannelName | null,
+    lastChannelTarget: r.last_channel_target,
     lastUsedAt: r.last_used_at,
     model: r.model,
   }));
@@ -832,6 +982,64 @@ export const invalidateResume = (
     )
     .run(channel, threadKey);
   return result.changes > 0;
+};
+
+// ─── 채널/세션 분리: 세션의 마지막 인입 채널+주소 메타 (ADR 2026-07-15 §D3) ────────
+// 비동기 outbound(워커 완료·능동발신)의 **기본 목적지**를 세션 id 에서 파싱하지 않고
+// 인입 시점에 캡처해 둔다. region/daemon 웨이브2가 인입 턴 처리 시 saveSession **직후**
+// 호출한다(행 존재 전제 — UPDATE-only, 없으면 no-op 폴백). 키는 saveSession 과 동일한
+// (channel, threadKey) — Phase 1 은 threads PK 가 아직 복합키라 동일 키잉으로 정합.
+// generic 데이터(채널명·주소) — 코어는 이 값으로 채널 정체성을 분기하지 않는다(§0 단방향).
+
+/**
+ * 세션 행의 last_channel/last_channel_target upsert(UPDATE-only). 행이 없으면 no-op
+ * (false 반환) — 인입 턴의 saveSession 이 먼저 행을 만든 뒤 호출하는 계약.
+ * target=null 허용(cli 등 outbound 주소 없는 채널). 행 있으면 항상 최신값으로 덮어씀.
+ */
+export const setSessionChannelMeta = (input: {
+  channel: ChannelName;
+  threadKey: string;
+  lastChannel: ChannelName;
+  lastChannelTarget: string | null;
+}): boolean => {
+  const handle = requireDb("setSessionChannelMeta");
+  const result = handle
+    .prepare(
+      `UPDATE threads
+          SET last_channel = ?, last_channel_target = ?
+        WHERE channel = ? AND channel_thread_id = ?`,
+    )
+    .run(
+      input.lastChannel,
+      input.lastChannelTarget,
+      input.channel,
+      input.threadKey,
+    );
+  return result.changes > 0;
+};
+
+/**
+ * 세션의 마지막 인입 채널+주소 회수 — 비동기 outbound 기본 목적지 도출용(§D3).
+ * 행 없음·미캡처 → null(호출부가 getMostRecentTelegramChatId 등으로 폴백).
+ */
+export const getSessionChannelMeta = (
+  channel: ChannelName,
+  threadKey: string,
+): { lastChannel: ChannelName; lastChannelTarget: string | null } | null => {
+  const handle = requireDb("getSessionChannelMeta");
+  const row = handle
+    .prepare(
+      `SELECT last_channel, last_channel_target FROM threads
+        WHERE channel = ? AND channel_thread_id = ?`,
+    )
+    .get(channel, threadKey) as
+    | { last_channel: string | null; last_channel_target: string | null }
+    | undefined;
+  if (row === undefined || row.last_channel === null) return null;
+  return {
+    lastChannel: row.last_channel as ChannelName,
+    lastChannelTarget: row.last_channel_target,
+  };
 };
 
 // ─── /model V1: session_model_override helpers ────────────────────────────

@@ -305,7 +305,13 @@ export const runClaude = async (
     );
   }
 
-  const prior = getSession(input.channel, input.threadKey);
+  // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(resume/transcripts/context)은
+  // canonical 저장 채널로 키잉. route() 가 채널 인입을 세션으로 정규화할 때 sessionChannel
+  // (=SESSION_STORAGE_CHANNEL)을 실어보낸다. 미지정 → channel 폴백(회귀 0). 표시/감사
+  // (activity·delta·notifyDest·log)는 input.channel(실채널) 유지 — 정체성/표시 2분리.
+  const idChannel = input.sessionChannel ?? input.channel;
+
+  const prior = getSession(idChannel, input.threadKey);
   const resumable =
     prior !== undefined && prior.systemPromptHash === SYSTEM_PROMPT_HASH;
 
@@ -316,7 +322,7 @@ export const runClaude = async (
   // 연속 claude turn(foreign 없음) → delta 0 → 현행 resume 그대로(회귀 0).
   let foreignDeltaBlock = "";
   if (prior !== undefined) {
-    const threadTurns = loadThreadHistory(input.channel, input.threadKey);
+    const threadTurns = loadThreadHistory(idChannel, input.threadKey);
     if (threadTurns.length > 0) {
       const claudeOwnTurns = resumable
         ? loadCodexTurnHistoryBySessionId(prior.claudeSessionId)
@@ -488,7 +494,11 @@ export const runClaude = async (
         ...(depth === 0 && (input.workerDepth ?? 0) === 0
           ? {
               "update-self": createUpdateSelfMcpServer(
-                notifyDestFromCoords(input.channel, input.threadKey),
+                notifyDestFromCoords(
+                  input.channel,
+                  input.threadKey,
+                  input.channelAddress,
+                ),
               ),
             }
           : {}),
@@ -588,7 +598,7 @@ export const runClaude = async (
   const memorySnippet = leanMemory
     ? ""
     : formatMemorySnippet(
-        retrieveContext(input.channel, input.threadKey, input.text, {
+        retrieveContext(idChannel, input.threadKey, input.text, {
           limit: 5,
         }),
       );
@@ -619,6 +629,7 @@ export const runClaude = async (
   const convoContext = formatConversationContext(
     input.channel,
     input.threadKey,
+    input.channelAddress,
   );
 
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).
@@ -1052,7 +1063,7 @@ export const runClaude = async (
     // 수 있고(과거 오염일 때), 아니어도 다음 사용자 turn 이 clean. 에러는 그대로 전파(풀 폴백).
     if (resumable && isUnprocessableImage(e)) {
       try {
-        invalidateResume(input.channel, input.threadKey);
+        invalidateResume(idChannel, input.threadKey);
         console.warn(
           `claude: 처리불가 이미지 400 — resume 무효화(스레드 오염 자가치유). ` +
             `channel=${input.channel} thread=${input.threadKey}`,

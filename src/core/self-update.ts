@@ -42,21 +42,32 @@ export interface SelfUpdateNotifyDest {
 }
 
 /**
- * 현재 turn 의 채널/threadKey 에서 완료 통지 좌표를 도출 — telegram threadKey
- * "tg:<chatId>" → chatId(worker-jobs deriveTargetFromThreadKey · index notifyDestFromMessage
- * 와 비트 동일). update_self 도구가 이 좌표를 runSelfUpdate.notify 로 운반해, 재시작 후
+ * 현재 turn 의 채널/threadKey(+캡처 좌표)에서 완료 통지 좌표를 도출 — update_self·워커
+ * notify 캡처 공용. update_self 도구가 이 좌표를 runSelfUpdate.notify 로 운반해, 재시작 후
  * 부팅이 "업데이트 완료" 를 *요청자에게* 회신한다. 채널 미지원(cli 등)은 target=null.
+ *
+ * ★채널/세션 분리(ADR 2026-07-15 §D3): `channelAddress`(배달 좌표 캡처, telegram=chatId)가
+ * 있으면 **그걸 우선** 쓴다 — 세션 id 가 채널 무관(dashboard:*)이 되면 threadKey 파싱으로는
+ * telegram chatId 를 못 얻기 때문. 미지정이면 기존 telegram threadKey "tg:<chatId>" 파싱
+ * 폴백(회귀 0, 비트 동일). §0 단방향: 좌표는 캡처된 generic 데이터, 세션 id 파싱 의존 제거.
  */
 export const notifyDestFromCoords = (
   channel: string,
   threadKey: string,
-): SelfUpdateNotifyDest => ({
-  channel,
-  target:
-    channel === "telegram"
-      ? (extractTelegramChatId(threadKey) ?? threadKey)
-      : null,
-});
+  channelAddress?: string,
+): SelfUpdateNotifyDest => {
+  const captured = channelAddress?.trim();
+  if (captured !== undefined && captured !== "") {
+    return { channel, target: captured };
+  }
+  return {
+    channel,
+    target:
+      channel === "telegram"
+        ? (extractTelegramChatId(threadKey) ?? threadKey)
+        : null,
+  };
+};
 
 export interface SelfUpdateDeps {
   /**

@@ -18,6 +18,36 @@ export interface RegionASdkInput {
   threadKey: string;
   channel: ChannelName;
   /**
+   * 신규(additive, 2026-07-15) — **세션-정체성 저장 채널** (채널/세션 분리 Phase 1,
+   * ADR `docs/decisions/2026-07-15-channel-session-decoupling.md` §D1/§D4, 급소).
+   *
+   * `threadKey`(=세션 id)로 세션-정체성(resume=claude_session_id / transcript_index /
+   * context boundary / model override)을 read/write 할 때 쓸 **canonical 채널**. 세션이
+   * 채널 무관(#4)이 되려면 저장 채널이 인입 채널이 아니라 *세션의 함수(상수)* 여야 한다
+   * → route() 가 채널 인입을 세션으로 정규화할 때 `SESSION_STORAGE_CHANNEL`(store 소유
+   * 상수)을 실어보낸다. 그래야 텔레그램·CLI 인입이 기존 대시보드 기본 세션의 resume/
+   * transcripts 를 **같은 행으로 계승**한다(파편화 0).
+   *
+   * ★미지정 → `channel` 폴백(회귀 0). 셀렉터 없는 채널을 세션으로 정규화하지 않는 경로
+   * (스케줄러·워커·서브에이전트·file-watch·엔드포인트·Phase 1 이전 채널)는 이 필드를 안
+   * 채우므로 현행 (channel, threadKey) 키잉 그대로 — 라이브 데몬 비파괴.
+   *
+   * ★§0/2분리: 이건 *저장 정체성* 채널일 뿐. 표시·감사(llm.activity/delta payload,
+   * turn_done/error, prompt-assembly 좌표)는 `channel`(실채널) 유지 — 대시보드가
+   * "텔레그램 경유" 를 알게. 어댑터는 이 값으로 채널 정체성을 분기하지 않는다(LLM-agnostic).
+   */
+  sessionChannel?: ChannelName;
+  /**
+   * 신규(additive, 2026-07-15) — **배달 좌표(delivery address)** (채널/세션 분리 §D3).
+   * telegram=chatId, http=threadKey 등 이 인입의 outbound 목적지. 세션 id 를 파싱해
+   * 좌표를 도출하던 것(extractTelegramChatId/deriveTargetFromThreadKey)을 대체하는
+   * **캡처된 메타**. 워커 완료 통지 등 비동기 outbound 가 세션 id(=이제 채널 무관 dashboard:*)
+   * 를 파싱해도 텔레그램 chatId 를 못 얻으므로, 인입 시점 좌표를 여기로 운반해
+   * `notifyDestFromCoords` 가 파싱 대신 이 값을 우선 쓴다(파싱은 폴백 보존, 회귀 0).
+   * 미지정(Phase 1 이전·좌표 없는 채널) → 기존 threadKey 파싱 폴백.
+   */
+  channelAddress?: string;
+  /**
    * 멀티모달 입력 V1 (additive) — 사용자가 채널로 보낸 첨부(이미지/문서/음성 등).
    * 운반 타입(`Attachment`)은 SDK 비종속 — path+메타(kind/mime/크기/caption)만.
    * 어댑터는 formatAttachments() 로 placeholder text 를 prompt 에 prepend 하고,

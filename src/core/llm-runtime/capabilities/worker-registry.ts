@@ -231,10 +231,22 @@ export const createWorkerMcpServer = (
           // (미지정 시 기본 모델). 서브에이전트 model 등급과 동일 경로.
           modelTier: args.tier,
           // 워커 완료/실패 통지 dest — parentInput.notifyDest 가 있으면(예 스케줄 발화)
-          // 그 generic 좌표를 잡에 박아 워커가 그 dest 로 통지하게 한다. 텔레그램 등 채널
-          // 직접 발화는 undefined → onWorkerComplete 가 channel/threadKey 폴백(회귀 0).
+          // 그 generic 좌표를 잡에 박아 워커가 그 dest 로 통지하게 한다.
+          // ★채널/세션 분리(ADR 2026-07-15 §D3): notifyDest 미지정(텔레그램 등 채널 직접
+          //   발화)이어도 parentInput.channelAddress(캡처된 배달 좌표)가 있으면 (실채널,
+          //   그 좌표)로 dest 를 **스폰 시점 캡처**한다. 세션 id 가 채널 무관(dashboard:*)이
+          //   되면 job.threadKey 파싱(deriveTargetFromThreadKey)으로는 telegram chatId 를
+          //   못 얻으므로, 파싱 의존을 캡처로 승격(§1.3). 둘 다 없으면 undefined →
+          //   onWorkerComplete 의 channel/threadKey 폴백(회귀 0, 폴백 보존).
           // (이 도구만 notifyDest 를 읽는다 — 어댑터는 LLM-agnostic 으로 미독해.)
-          notifyDest: parentInput.notifyDest,
+          notifyDest:
+            parentInput.notifyDest ??
+            (parentInput.channelAddress !== undefined
+              ? {
+                  channel: parentInput.channel,
+                  target: parentInput.channelAddress,
+                }
+              : undefined),
         });
         return okText(
           `🛠️ '${args.label}' 백그라운드 작업을 시작했습니다 (jobId: ${jobId}). ` +

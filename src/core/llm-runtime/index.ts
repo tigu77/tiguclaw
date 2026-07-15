@@ -412,12 +412,19 @@ const persistOutput = (
   if (output.sessionId === undefined || output.text === "") return;
   const sessionId = output.sessionId;
 
+  // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(threads resume sid / transcript_index)
+  // 은 canonical 저장 채널로 키잉. route() 가 채널 인입을 세션으로 정규화할 때 sessionChannel
+  // (=SESSION_STORAGE_CHANNEL)을 실어보낸다. 미지정(워커·스케줄러·서브에이전트·엔드포인트·
+  // Phase 1 이전 채널) → channel 폴백(현행 (channel, threadKey) 키잉 그대로, 회귀 0).
+  // 어댑터의 getSession(idChannel) 과 대칭 — 저장·조회가 같은 canonical 키를 봐야 계승됨.
+  const idChannel = input.sessionChannel ?? input.channel;
+
   if (output.jsonlPath !== undefined) {
     // claude 어댑터 — SDK 자체 jsonl 이 진실 소스. saveSession 으로 claude resume sid
     // 갱신 (기존 동작 그대로) + catch-up 인덱싱 (fire-and-forget).
     try {
       saveSession({
-        channel: input.channel,
+        channel: idChannel,
         threadKey: input.threadKey,
         claudeSessionId: sessionId,
         model: output.model ?? null,
@@ -433,7 +440,7 @@ const persistOutput = (
     void Promise.resolve()
       .then(() =>
         indexJsonlIfNeeded({
-          channel: input.channel,
+          channel: idChannel,
           threadKey: input.threadKey,
           claudeSessionId: sessionId,
           jsonlPath,
@@ -452,7 +459,7 @@ const persistOutput = (
     //    가 이 codex turn 을 thread 횡단 회수 가능 (cross-adapter 연속성 완성).
     try {
       saveSession({
-        channel: input.channel,
+        channel: idChannel,
         threadKey: input.threadKey,
         claudeSessionId: sessionId,
         model: output.model ?? null,
@@ -487,7 +494,7 @@ const persistOutput = (
         content: output.text,
       });
       indexCodexTurn({
-        channel: input.channel,
+        channel: idChannel,
         threadKey: input.threadKey,
         claudeSessionId: sessionId,
       });

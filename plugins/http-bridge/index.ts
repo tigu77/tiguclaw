@@ -43,6 +43,7 @@ import {
 } from "../../src/core/entry/endpoint-registry.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
 import { listThreads } from "../../src/store/sessions.js";
+import { resolveSessionId } from "../../src/core/threadkey.js";
 import { getAssistantName } from "../../src/core/identity.js";
 import { listProjects } from "../../src/store/projects.js";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
@@ -69,7 +70,6 @@ import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
 
 const VERSION = "0.1.0";
-const DEFAULT_THREAD_KEY = "http-bridge:default";
 const HANDLER_TIMEOUT_MS = 60_000;
 
 // 신규 SSE 접속 history replay 에서 제외할 고volume 스트리밍 타입.
@@ -868,13 +868,15 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
-    // /sessions — JSON. 대시보드 멀티세션 탭(ADR 2026-07-15 D5.2). listThreads(prefix=
-    // 'dashboard:') 로 대시보드 세션 목록(last_used_at 내림차순) + 세션별 프리뷰(chat_log
-    // 최근 1건 text 요약, 짧게 슬라이스). read 게이트(위 role 표 — /providers·/chat-history
-    // 동형, 무인 노출 X). 서버는 세션 필터를 여기서만 관여 — SSE 는 전체 브로드캐스트 유지(D5).
+    // /sessions — JSON. 대시보드 멀티세션 탭(ADR 2026-07-15 §D6). ★채널/세션 분리로 세션이
+    // 채널 무관이 됐으므로 `prefix:'dashboard:'` 필터를 폐지하고 `excludeInternal:true` 로
+    // **사용자 대면 대화 세션 전체**(현행 dashboard:* + 레거시 tg:*/cli:* 과거 대화)를 반환한다
+    // — 내부 파생 스레드(worker:/agent:/endpoint:/gateway:/scheduler:/`::sub::`)만 배제.
+    // 텔레그램 기본 세션 = 대시보드 첫 탭 = 동일 id(DEFAULT_SESSION_ID)라 중복 0. 세션별
+    // 프리뷰(chat_log 최근 1건 요약) 부착. read 게이트. SSE 는 전체 브로드캐스트 유지(D5).
     if (pathname === "/sessions" && method === "GET") {
       try {
-        const threads = listThreads({ prefix: "dashboard:" });
+        const threads = listThreads({ excludeInternal: true });
         const sessions = threads.map((t) => {
           // 프리뷰 — 그 스레드 최근 1건 text 요약(80자 슬라이스). 첨부-only(text="")는
           // 스킵되어 빈 프리뷰(undefined)로 graceful.
@@ -1105,10 +1107,21 @@ class HttpBridge implements Channel, Observer {
         writeJson(res, 400, { error: "text 또는 attachments 가 필요합니다." });
         return;
       }
-      const threadKey =
+      // 채널/세션 분리(ADR 2026-07-15 §D1/§D2) — 대시보드는 활성 탭 세션 id 를 body.threadKey
+      // 로 명시 전달(explicitSessionId → resolveSessionId passthrough). 비-대시보드 http
+      // default(threadKey 미부여)는 기본 세션(DEFAULT_SESSION_ID)으로 수렴. channelAddress =
+      // http 배달 좌표(= sessionId, 대시보드가 SSE 를 그 탭으로 라우팅). msg.threadKey=sessionId
+      // 로 세팅(직렬 큐/`/cancel-queued`/`/stop` 정합) + session 으로 route 가 canonical
+      // (http-bridge, sessionId) 로 정규화. 세션 id 는 채널 무관 — telegram/cli 기본 세션과 공유.
+      const explicitSessionId =
         typeof body.threadKey === "string" && body.threadKey.trim() !== ""
-          ? body.threadKey
-          : DEFAULT_THREAD_KEY;
+          ? body.threadKey.trim()
+          : undefined;
+      const threadKey = resolveSessionId(
+        this.name,
+        explicitSessionId,
+        explicitSessionId,
+      );
       const channelUserId =
         typeof body.userId === "string" && body.userId.trim() !== ""
           ? body.userId
@@ -1214,6 +1227,13 @@ class HttpBridge implements Channel, Observer {
         channel: this.name,
         channelUserId,
         threadKey,
+        // 배달 좌표(http) = sessionId. 세션 정규화 지시(session) — 대시보드는 explicitSessionId
+        // 로 활성 탭 세션 passthrough, 비-대시보드는 미부여 → route 가 DEFAULT 로 수렴.
+        channelAddress: threadKey,
+        session: {
+          ...(explicitSessionId !== undefined ? { explicitSessionId } : {}),
+          channelAddress: threadKey,
+        },
         text,
         receivedAt: Date.now(),
         ...(replyToText !== "" ? { replyToText } : {}),

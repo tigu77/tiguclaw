@@ -9,7 +9,10 @@ import type { IncomingMessage } from "../channels/types.js";
 import {
   clearSessionModelOverride,
   getSessionModelOverride,
+  setSessionChannelMeta,
+  SESSION_STORAGE_CHANNEL,
 } from "../store/sessions.js";
+import { resolveSessionId } from "./threadkey.js";
 import { runClaude } from "./claude.js";
 import { parseModelSpecList } from "./llm-runtime/index.js";
 import { getRegisteredMcpServers } from "./mcp-registry.js";
@@ -42,8 +45,48 @@ export const route = async (
   opts?: {
     abortSignal?: AbortSignal;
     toolPolicy?: { mode: "none" } | { mode: "allow"; names: string[] };
+    // ── 채널/세션 분리 (ADR 2026-07-15 §D1/§D2/§D3) — 웨이브2b(daemon 채널)가 채운다 ──
+    // 채널이 자기 정체성을 threadKey 에 인코딩하던 것을 코어 resolver 단일 정의점으로 대체.
+    //
+    // ★계약(웨이브2b): 실제 채널(telegram/cli/대시보드/http)은 이 `session` 을 넣어
+    //   route() 에 인입을 세션으로 정규화하라고 지시한다. 넣으면 route() 는:
+    //     1) sessionId = resolveSessionId(msg.channel, channelAddress, explicitSessionId)
+    //        - 셀렉터 없는 채널(telegram·cli·http default): explicitSessionId 생략
+    //          → DEFAULT_SESSION_ID(기본 세션). 대시보드: 활성 탭 세션 id 를 explicitSessionId
+    //          로 전달 → 그대로 통과.
+    //     2) 세션-정체성(resume/context/summaries/model override)을 (SESSION_STORAGE_CHANNEL,
+    //        sessionId) 로 read/write — 인입 채널이 아니라 **세션의 함수(canonical 상수)** 로
+    //        키잉해야 기존 dashboard 기본 세션의 resume/transcripts 를 계승(파편화 0).
+    //     3) 표시·감사(activity·delta·chat_log·outbound)는 msg.channel(실채널) 유지 +
+    //        setSessionChannelMeta 로 last_channel/target 캡처(비동기 outbound 기본 목적지).
+    //   ★큐 정합: 웨이브2b 는 enqueueThreadTurn(직렬 큐)·inflightTurns(/stop)가 sessionId
+    //     단독 키로 돌도록, route() 호출 **전에** msg.threadKey = sessionId 로 세팅해야 한다
+    //     (resolveSessionId 는 순수·멱등이라 채널·route 가 같은 sessionId 를 본다).
+    //
+    // ★미전달(스케줄러·워커·서브에이전트·file-watch·엔드포인트·웨이브2b 이전 채널) →
+    //   현행 동작: msg.threadKey 를 세션 id 로, msg.channel 로 세션-정체성 저장(회귀 0).
+    //   §0 단방향: route() 는 채널명으로 분기하지 않는다 — 셀렉터 유무는 호출부가
+    //   explicitSessionId 전달 여부로 표현하고, canonical 상수는 store 소유.
+    session?: {
+      /** 세션 셀렉터가 있는 채널(대시보드 활성 탭)이 명시한 세션 id. 없으면 DEFAULT. */
+      explicitSessionId?: string;
+      /** 배달 좌표(telegram chatId, http threadKey). resolver (b)확장점 + 메타 캡처·outbound. */
+      channelAddress?: string;
+    };
   },
 ): Promise<RouteOutput> => {
+  // 세션 정체성 정규화 (opt-in) — 위 계약 참조. 미전달이면 현행 passthrough(회귀 0).
+  const normalize = opts?.session !== undefined;
+  const channelAddress = opts?.session?.channelAddress ?? msg.channelAddress;
+  const sessionId = normalize
+    ? resolveSessionId(
+        msg.channel,
+        channelAddress,
+        opts?.session?.explicitSessionId,
+      )
+    : msg.threadKey;
+  // 세션-정체성 저장 채널 — 정규화 시 canonical 상수(세션의 함수), 아니면 인입 채널(현행).
+  const sessionChannel = normalize ? SESSION_STORAGE_CHANNEL : msg.channel;
   // 세션 모델 override (`/model <provider:model[,provider:model...]>` 로 설정) 조회.
   // 콤마 멀티스펙 풀 지원(2026-06-02) — 단일에서 풀로 확장.
   // 있으면 풀(여러 spec)로 runClaude 에 주입 → resolveModelSpecs 가 opts.specs 우선
@@ -53,15 +96,24 @@ export const route = async (
   // modelOverrideRejected 신호 → 아래에서 깨진 override DB clear (의미 불변).
   // canonical 저장(`/model` 핸들러) 덕에 parseModelSpecList 는 항상 성공이나, DB 에
   // 구버전 무효 문자열이 남아있을 가능성 대비 빈 풀 가드 유지(env 폴백).
-  const overrideRaw = getSessionModelOverride(msg.channel, msg.threadKey);
+  // 세션-정체성 키 = (sessionChannel, sessionId) — override 조회도 canonical 키로.
+  const overrideRaw = getSessionModelOverride(sessionChannel, sessionId);
   const overridePool =
     overrideRaw !== null ? parseModelSpecList(overrideRaw) : [];
 
   const out = await runClaude(
     {
       text: msg.text,
-      threadKey: msg.threadKey,
+      // 세션 id — 정규화 시 resolveSessionId 결과(채널 무관), 아니면 현행 threadKey.
+      // 어댑터·런타임의 세션-정체성/활동 좌표가 이 값을 세션 단위 키로 본다.
+      threadKey: sessionId,
+      // 실채널(표시·감사·outbound·prompt 좌표) — 정체성/표시 2분리(§D3).
       channel: msg.channel,
+      // 세션-정체성 저장 채널(canonical) — 정규화 시에만 실어보냄. 미지정 → 어댑터가
+      // channel 폴백(회귀 0). 어댑터의 getSession/loadThreadHistory/saveSession 등이 이 값을 봄.
+      ...(normalize ? { sessionChannel } : {}),
+      // 배달 좌표 캡처 — notifyDestFromCoords 가 세션 id 파싱 대신 우선 사용(§D3).
+      ...(channelAddress !== undefined ? { channelAddress } : {}),
       attachments: msg.attachments,
       sendAttachment: msg.sendAttachment,
       // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
@@ -75,19 +127,43 @@ export const route = async (
     },
     overridePool.length > 0 ? { specs: overridePool } : undefined,
   );
+
+  // 세션의 마지막 인입 채널+주소 캡처(§D3) — 비동기 outbound(워커 완료·능동발신) 기본 목적지.
+  // saveSession(runClaude 내부 persistOutput)이 세션 행을 만든 *직후* 이므로 UPDATE-only 성립.
+  // 정규화 인입만 캡처(실채널=msg.channel, 주소=channelAddress). 세션 id 파싱 의존 대체(§1.3).
+  // 행 없음(응답 실패로 saveSession 미실행)이면 UPDATE no-op(false) — 폴백 보존, 회귀 0.
+  if (normalize) {
+    try {
+      setSessionChannelMeta({
+        channel: sessionChannel,
+        threadKey: sessionId,
+        lastChannel: msg.channel,
+        lastChannelTarget: channelAddress ?? null,
+      });
+    } catch (e) {
+      // 메타 캡처 실패는 턴을 절대 못 죽인다(관측/편의 메타일 뿐).
+      console.error("route: setSessionChannelMeta failed:", e);
+    }
+  }
   // override 가 런타임에 거부되어 폴백한 경우 — 깨진 override 를 DB 에서 제거해
   // 다음 turn 정상화 (매 turn 경고 반복 방지). DB 쓰기는 router 경유(facade 는 순수).
   // 사용자가 다시 `/model` 로 지정하기 전까지는 env 풀(기본)로 동작.
   if (out.modelOverrideRejected !== undefined) {
-    clearSessionModelOverride(msg.channel, msg.threadKey);
+    clearSessionModelOverride(sessionChannel, sessionId);
     console.warn(
       `route: model override '${out.modelOverrideRejected.requested}' rejected → ` +
         `cleared (fell back to '${out.modelOverrideRejected.fellBackTo}') ` +
-        `channel=${msg.channel} thread=${msg.threadKey}`,
+        `channel=${msg.channel} session=${sessionId}`,
     );
   }
+  // route 로그 정렬(§1) — 실채널 + 세션 id. 정규화로 인입 채널≠세션-정체성 채널일 때
+  // "via" 로 캡처 좌표를 남겨 감사(대시보드가 "텔레그램 경유" 를 알게)에 정합.
   console.log(
-    `route channel=${msg.channel} thread=${msg.threadKey}` +
+    `route channel=${msg.channel} session=${sessionId}` +
+      (normalize && sessionChannel !== msg.channel
+        ? ` store=${sessionChannel}`
+        : "") +
+      (channelAddress !== undefined ? ` addr=${channelAddress}` : "") +
       (overrideRaw !== null ? ` model_override=${overrideRaw}` : ""),
   );
   return {

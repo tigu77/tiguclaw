@@ -36,6 +36,31 @@ export interface IncomingMessage {
   channel: ChannelName;
   channelUserId: string;
   threadKey: string;
+  /**
+   * 채널 주소 — outbound 배달 좌표(telegram chatId, http threadKey 등). 세션 정체성
+   * (`threadKey`/세션 id)과 **별개** 필드로 운반한다(채널/세션 분리 ADR 2026-07-15 §D1/§D3).
+   * 비동기 outbound(워커 완료·능동발신)의 기본 목적지를 세션 id 에서 *파싱*하지 않고 여기서
+   * *캡처* 하도록 하는 슬롯 — region/daemon 이 인입 시점에 채워 setSessionChannelMeta 로 세션
+   * 메타(last_channel_target)에 적재한다. **어떤 어댑터도 이 값을 읽지 않는다**(순수 배달
+   * 좌표, LLM-agnostic). additive — 미지정(cli 등 주소 없음/미채움 채널) = 현행 동작(회귀 0).
+   * ★declaration only — 실제로 채우는 건 웨이브2(region/daemon).
+   */
+  channelAddress?: string;
+  /**
+   * 세션 정규화 지시(채널/세션 분리 ADR 2026-07-15 §D1/§D2) — 사용자 대면 채널
+   * (telegram/cli/dashboard/http)이 인입 시 채워, daemon handler 가 `route(msg, {session})`
+   * 로 세션 정체성을 정규화하게 한다(채널이 자기 정체성을 threadKey 에 인코딩하던 것을
+   * 코어 resolver 단일 정의점으로 대체). 채널은 `resolveSessionId` 로 sessionId 를 구해
+   * **route 호출 전에** `msg.threadKey = sessionId` 로 세팅(직렬 큐/`/stop` 정합)하고, 이
+   * 필드로 route 에 정규화를 지시한다 — route 가 세션-정체성을 canonical `(http-bridge,
+   * sessionId)` 로 read/write 하고 `setSessionChannelMeta` 로 실채널·주소를 캡처한다.
+   *
+   * 미지정(스케줄러·워커 재주입·서브에이전트·file-watch·엔드포인트 등 내부 파생 turn)
+   * = 현행 passthrough(회귀 0). **어떤 어댑터도 이 값을 읽지 않는다**(순수 세션 라우팅
+   * 메타, `channelAddress`·`synthetic`·`correlationId` 계열의 LLM-agnostic 중립 필드).
+   * shape 는 `route()` opts.session 과 동일(daemon handler 가 그대로 forward). additive.
+   */
+  session?: { explicitSessionId?: string; channelAddress?: string };
   text: string;
   /**
    * 답글(reply) 원문 — 채널이 reply_to 메시지의 텍스트를 실으면 핸들러가 프롬프트에

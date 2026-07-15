@@ -35,14 +35,17 @@ import {
   updateSchedule,
 } from "./store/schedules.js";
 import {
+  canonicalSessionChannel,
   clearSessionModelOverride,
   deleteSession,
   getMostRecentTelegramChatId,
   getSession,
+  getSessionChannelMeta,
   getSessionModelOverride,
   initStore,
   setContextBoundary,
   setSessionModelOverride,
+  SESSION_STORAGE_CHANNEL,
 } from "./store/sessions.js";
 // codex/openai 컨텍스트 리셋 — `/reset`·`/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
 // 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
@@ -479,6 +482,13 @@ const handler: MessageHandler = async (msg) => {
     });
   }
   const trimmed = msg.text.trim();
+  // ★세션-정체성 저장 채널(채널/세션 분리 ADR 2026-07-15, QA BLOCKER 후속) — 슬래시 핸들러가
+  // route() 정규화와 **동일 키**로 세션-정체성(resume/context boundary/model override/summary)
+  // 을 read/write 하도록 canonical 채널을 산출한다. 텔레그램 정규화 turn(msg.channel=telegram,
+  // msg.threadKey=dashboard:default)이면 SESSION_STORAGE_CHANNEL(http-bridge) → route 가 쓰는
+  // 실세션 행 명중. 내부 파생/레거시 스레드면 msg.channel 그대로(회귀 0). 표시·응답·관측은
+  // msg.channel(실채널) 유지 — 정체성/표시 2분리(§D3).
+  const sidChannel = canonicalSessionChannel(msg.threadKey, msg.channel);
   // V7.3 — 영역 A(LLM) 로 넘길 실효 텍스트. 사용자 정의 슬래시 매크로 매치 시
   // 확장된 prompt 로 교체 (기본 = 원본). 채널 입구 단일 지점 = LLM-agnostic.
   let effectiveText = msg.text;
@@ -488,9 +498,9 @@ const handler: MessageHandler = async (msg) => {
   // 채널 무관 단일 지점(원칙 4). command-registry expandCommand(파일 매크로) 앞이라 커스텀
   // 매크로가 이 별칭을 가릴 수 없다. `/clear` 는 별도 로직 복제 없이 동일 경로.
   if (trimmed === "/reset" || trimmed === "/clear") {
-    const had = deleteSession(msg.channel, msg.threadKey);
-    setContextBoundary(msg.channel, msg.threadKey, Date.now());
-    clearThreadSummary(msg.channel, msg.threadKey);
+    const had = deleteSession(sidChannel, msg.threadKey);
+    setContextBoundary(sidChannel, msg.threadKey, Date.now());
+    clearThreadSummary(sidChannel, msg.threadKey);
     await replyCommand(msg,
       had
         ? "컨텍스트 초기화됨. 새 대화로 시작합니다."
@@ -543,7 +553,7 @@ const handler: MessageHandler = async (msg) => {
   if (trimmed === "/model" || trimmed.startsWith("/model ")) {
     const args = trimmed === "/model" ? "" : trimmed.slice("/model ".length).trim();
     if (args === "") {
-      const current = getSessionModelOverride(msg.channel, msg.threadKey);
+      const current = getSessionModelOverride(sidChannel, msg.threadKey);
       const envRaw = process.env.REGION_A_MODELS ?? "";
       const envPool = envRaw === ""
         ? "(미설정 — DEFAULT_MODEL_SPEC = anthropic 디폴트)"
@@ -569,7 +579,7 @@ const handler: MessageHandler = async (msg) => {
       return;
     }
     if (args === "reset") {
-      const had = clearSessionModelOverride(msg.channel, msg.threadKey);
+      const had = clearSessionModelOverride(sidChannel, msg.threadKey);
       await replyCommand(msg,
         had ? "세션 모델 override 해제됨 — env 폴백 사용." : "해제할 override 가 없습니다.",
       );
@@ -597,7 +607,7 @@ const handler: MessageHandler = async (msg) => {
     // canonical 저장 — region specLabel 이 adapter→provider 복원 보장(round-trip 안전).
     // 원문이 아니라 정규화된 provider:model 풀을 저장해 router 재-parse 가 항상 성공.
     const canonical = validPool.map(specLabel).join(",");
-    setSessionModelOverride(msg.channel, msg.threadKey, canonical);
+    setSessionModelOverride(sidChannel, msg.threadKey, canonical);
     // sanity 경고 — 각 유효 spec(canonical 라벨)에 prefix 휴리스틱 적용, 합산.
     const sanityWarnings = validPool
       .map((s) => modelSpecSanityWarning(specLabel(s)))
@@ -625,7 +635,7 @@ const handler: MessageHandler = async (msg) => {
   // 렌더는 순수 함수(models-command)로 위임 — 격리 테스트 가능. args 는 무시(정보 조회).
   if (trimmed === "/models" || trimmed.startsWith("/models ")) {
     const profiles = loadModelProfiles();
-    const sessionOverride = getSessionModelOverride(msg.channel, msg.threadKey);
+    const sessionOverride = getSessionModelOverride(sidChannel, msg.threadKey);
     await replyCommand(msg, renderModelProfiles(profiles, sessionOverride));
     return;
   }
@@ -857,7 +867,7 @@ const handler: MessageHandler = async (msg) => {
         };
 
         // 이번 대화: 이 thread 의 실제 모델 + 컨텍스트 사용량.
-        const session = getSession(msg.channel, msg.threadKey);
+        const session = getSession(sidChannel, msg.threadKey);
         let convo: string;
         if (session === undefined || session.model === null) {
           convo = "측정 전(아직 응답 없음)";
@@ -890,7 +900,7 @@ const handler: MessageHandler = async (msg) => {
         // 세션 override (`/model` 로 설정) — 있을 때만 표시. 풀보다 우선이므로
         // 풀 줄 위에 둬서 사용자가 "다음 turn 무엇이 도는지" 즉시 파악.
         const statusOverride = getSessionModelOverride(
-          msg.channel,
+          sidChannel,
           msg.threadKey,
         );
         if (statusOverride !== null) {
@@ -974,9 +984,15 @@ const handler: MessageHandler = async (msg) => {
   // turnAc 는 idle·외부 cancel 로만 abort, wall-clock 으로는 abort 안 한다.
   const turnAc = new AbortController();
   inflightTurns.set(msg.threadKey, turnAc); // /stop 이 찾아 abort 할 수 있게 등록.
+  // 세션 정규화 지시(채널/세션 분리 ADR 2026-07-15) — 사용자 대면 채널이 msg.session 을
+  // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·워커 재주입·
+  // 서브에이전트·엔드포인트 등 내부 파생 turn)이면 forward 안 함 = 현행 passthrough(회귀 0).
   const routeP = route(
     effectiveText === msg.text ? msg : { ...msg, text: effectiveText },
-    { abortSignal: turnAc.signal },
+    {
+      abortSignal: turnAc.signal,
+      ...(msg.session !== undefined ? { session: msg.session } : {}),
+    },
   );
   try {
     const out = await routeP;
@@ -1131,21 +1147,51 @@ const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
 // 슬래시·통지가 쓰는 notify dest 도출 — 메시지의 channel/threadKey 에서 generic 좌표 추출.
 // telegram threadKey "tg:<chatId>" → chatId(worker-jobs deriveTargetFromThreadKey 동형, 비트 동일).
 // 마커에 적재돼 *다음 부팅* 이 "업데이트 완료" 통지를 이 좌표로 보낸다(요청자에게 회신).
+// ★채널/세션 분리(ADR 2026-07-15 §D3): 세션 id 가 채널 무관(dashboard:*)이 되면
+// threadKey 파싱으로는 telegram chatId 를 못 얻는다. 그래서 (1) 인입 시 캡처된 배달 좌표
+// `channelAddress`(telegram=chatId) 를 **최우선** 쓰고, (2) 없으면 세션 메타
+// `getSessionChannelMeta(SESSION_STORAGE_CHANNEL, sessionId).lastChannelTarget`(route 가 인입
+// 턴에 캡처) 로, (3) 그래도 없으면 기존 `tg:` 파싱/threadKey 폴백(회귀 0, 비트 동일)으로
+// 내려간다. notifyDestFromCoords(self-update.ts)와 동형 우선순위.
 const notifyDestFromMessage = (
   channel: string,
   threadKey: string,
-): SelfUpdateNotifyDest => ({
-  channel,
-  target:
-    channel === "telegram"
-      ? (extractTelegramChatId(threadKey) ?? threadKey)
-      : // http-bridge(대시보드 등)는 target=threadKey 를 그대로 보존해야 통지가 *원래 대화*
-        // (예: dashboard:default)에 뜬다. null 로 버리면 deliverOutbound 가 "http-bridge:default"
-        // generic 그룹으로 발행해 통지가 엉뚱한 스레드에 붙었다. telegram 외 채널도 threadKey 유지.
-        channel !== "cli"
-        ? threadKey
-        : null,
-});
+  channelAddress?: string,
+): SelfUpdateNotifyDest => {
+  // (1) 캡처된 배달 좌표 우선(telegram=chatId, http=sessionId).
+  const captured = channelAddress?.trim();
+  if (captured !== undefined && captured !== "") {
+    return { channel, target: captured };
+  }
+  // (2) 세션 메타 폴백 — 인입 턴이 setSessionChannelMeta 로 적재한 last_channel_target.
+  // 실채널이 이 통지 채널과 같을 때만(다른 채널 좌표를 잘못 쓰지 않게). 조회 실패는 무해.
+  try {
+    const meta = getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey);
+    if (
+      meta !== null &&
+      meta.lastChannel === channel &&
+      meta.lastChannelTarget !== null &&
+      meta.lastChannelTarget !== ""
+    ) {
+      return { channel, target: meta.lastChannelTarget };
+    }
+  } catch {
+    /* 세션 메타 조회 실패 — 아래 파싱 폴백으로 */
+  }
+  // (3) 기존 파싱/threadKey 폴백(회귀 0).
+  return {
+    channel,
+    target:
+      channel === "telegram"
+        ? (extractTelegramChatId(threadKey) ?? threadKey)
+        : // http-bridge(대시보드 등)는 target=threadKey 를 그대로 보존해야 통지가 *원래 대화*
+          // (예: dashboard:default)에 뜬다. null 로 버리면 deliverOutbound 가 "http-bridge:default"
+          // generic 그룹으로 발행해 통지가 엉뚱한 스레드에 붙었다. telegram 외 채널도 threadKey 유지.
+          channel !== "cli"
+          ? threadKey
+          : null,
+  };
+};
 
 // control.restart — 채널/제어 차원 재시작 이벤트(A: http-bridge 가 토큰 게이트된 POST /restart
 // 수신 시 publish). 어댑터 무관(LLM-agnostic) — 메시지 큐를 타지 않으므로 멈춘 턴에도 동작.
@@ -1201,7 +1247,11 @@ const serializedHandler: MessageHandler = (msg) => {
       try {
         const r = await runSelfUpdate({
           restart: () => restartDaemon(`self-update:${msg.channel}`),
-          notify: notifyDestFromMessage(msg.channel, msg.threadKey),
+          notify: notifyDestFromMessage(
+            msg.channel,
+            msg.threadKey,
+            msg.channelAddress,
+          ),
         });
         await replyCommand(msg,formatSelfUpdateResult(r)).catch(() => {});
       } catch (e) {

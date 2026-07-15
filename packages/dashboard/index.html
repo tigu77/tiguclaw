@@ -285,6 +285,9 @@
       .session-tab .st-x:hover { background:rgba(248,81,73,.2); color:#f85149; }
       .session-tab .st-dot { width:6px; height:6px; border-radius:50%; background:var(--accent-2); flex:none; animation:tc-pulse 1.5s ease-in-out infinite; }
       .session-tab.session-add { justify-content:center; font-size:15px; font-weight:800; padding:5px 11px; color:var(--accent); max-width:none; }
+      /* 채널 힌트 — 세션 탭/메시지가 어느 전송로(텔레그램·CLI 등)에서 왔는지. 대시보드 자기 채널은 배지 없음. */
+      .session-tab .st-ch { font-size:9px; font-weight:800; letter-spacing:.3px; padding:1px 4px; border-radius:5px; background:rgba(125,211,252,.16); color:var(--accent); flex:none; }
+      .ch-badge { display:inline-flex; align-items:center; font-size:9px; font-weight:800; letter-spacing:.3px; padding:1px 5px; margin-left:6px; border-radius:6px; background:rgba(125,211,252,.14); color:var(--accent); vertical-align:middle; }
       .log-tools { display:none; align-items:center; gap:10px; }
       body[data-chat-panel="log"] .log-tools { display:flex; }
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
@@ -3867,6 +3870,32 @@
       const epSeenTs = new Set();    // ts dedup.
       const EP_MAX = 60;
       const isEndpointThread = (tk) => typeof tk === "string" && tk.indexOf("endpoint:") === 0;
+      // ── 채널 힌트(ADR 2026-07-15 §D6) — 메시지/세션이 어느 전송로에서 들어왔나. 세션은
+      //    채널 무관이라(텔레그램도 기본 세션에 합류) "텔레그램 경유"를 가시화한다. 대시보드
+      //    자기 채널(http-bridge/dashboard)은 자명하므로 배지 없음. §0 단방향: 코어 아닌
+      //    대시보드/채널 레이어의 UI 컨벤션이라 채널명→라벨 매핑 허용(generic 폴백 유지).
+      const CHANNEL_LABELS = { telegram: { short: "TG", full: "텔레그램" }, cli: { short: "CLI", full: "CLI" } };
+      const OWN_CHANNELS = new Set(["http-bridge", "dashboard"]);
+      const channelMeta = (ch) => {
+        if (!ch || typeof ch !== "string" || OWN_CHANNELS.has(ch)) return null;
+        return CHANNEL_LABELS[ch] || { short: ch.slice(0, 6).toUpperCase(), full: ch };
+      };
+      // threadKey 접두에서 채널 추론(서버가 channel 메타 미제공 시 폴백). tg:/cli:/dashboard:.
+      const channelFromThreadKey = (tk) => {
+        if (typeof tk !== "string" || tk === "") return null;
+        if (tk.indexOf("tg:") === 0) return "telegram";
+        if (tk.indexOf("cli:") === 0) return "cli";
+        if (tk.indexOf("dashboard:") === 0) return "dashboard";
+        const i = tk.indexOf(":");
+        return i > 0 ? tk.slice(0, i) : null;
+      };
+      const buildChannelBadge = (ch) => {
+        const m = channelMeta(ch);
+        if (!m) return null;
+        const b = document.createElement("span");
+        b.className = "ch-badge"; b.textContent = m.short; b.title = m.full + " 경유";
+        return b;
+      };
       const captureEndpointCall = (p) => {
         const ts = Number(p && p.ts) || Date.now();
         if (epSeenTs.has(ts)) return;
@@ -3955,6 +3984,7 @@
           const tsEl = document.createElement("span"); tsEl.className = "ts"; tsEl.textContent = ts;
           const tyEl = document.createElement("span"); tyEl.className = "type"; tyEl.textContent = assistantName;
           head.appendChild(tsEl); head.appendChild(tyEl);
+          { const chb = buildChannelBadge(payload.channel); if (chb) head.appendChild(chb); } // 원격 채널 경유 표시.
           div.appendChild(head);
           const msg = document.createElement("div");
           msg.className = "chat-message";
@@ -4017,6 +4047,7 @@
         tyEl.className = "type";
         tyEl.textContent = isOut ? assistantName : "나";
         head.appendChild(tsEl); head.appendChild(tyEl);
+        { const chb = buildChannelBadge(payload.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         div.appendChild(head);
         const msg = document.createElement("div");
         msg.className = "chat-message";
@@ -4061,6 +4092,7 @@
         tyEl.className = "type";
         tyEl.textContent = isOut ? assistantName : "나";
         head.appendChild(tsEl); head.appendChild(tyEl);
+        { const chb = buildChannelBadge(entry.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         div.appendChild(head);
         const msg = document.createElement("div");
         msg.className = "chat-message";
@@ -4161,7 +4193,7 @@
         const key = msgKey(entry.ts, role);
         if (renderedMsgKeys.has(key)) return null;
         renderedMsgKeys.add(key);
-        return buildHistoryDiv({ ts: entry.ts, role, text: entry.text, attachments: entry.attachments });
+        return buildHistoryDiv({ ts: entry.ts, role, text: entry.text, attachments: entry.attachments, channel: entry.channel });
       };
 
       // 이력 도구 스텝(기능 B) — 영속 llm.activity 복원. 낱줄 element 빌더(카드 크롬 없음).
@@ -4958,17 +4990,37 @@
       // 열린 탭 목록 = 클라 localStorage(UI 선호, D2). 세션 존재/프리뷰 = 서버 /api/sessions.
       // 탭 전환 = 스트림 DOM/게이트(B계층) 리셋 + active 세션 이력 fetch 재빌드(§3.2). 마스터
       // 데이터(A, activityByStep·activeTurns·jobCards)는 전 스레드 무필터 보존(§3.4).
-      const TABS_LS = "dash.tabs.v1";       // [{threadKey,name}]
+      const TABS_LS = "dash.tabs.v1";       // [{threadKey,name,channel?}]
       const ACTIVE_LS = "dash.activeTab.v1"; // activeThreadKey
       const SEQ_LS = "dash.tabSeq.v1";       // "세션 N" 단조 카운터
-      let openTabs = [];       // [{ threadKey, name, preview? }]
+      const CLOSED_LS = "dash.closedTabs.v1"; // 사용자가 명시 닫은 세션 id — 서버 세션 병합 시 재노출 차단(닫기 보존).
+      // 서버 세션 병합 시 자동 노출 상한 — 대시보드 자기 세션 외 원격/레거시 세션(텔레그램·CLI 등)이
+      // 무한 증가해도 탭바를 바운드(recency 순, 서버가 이미 last_used_at DESC). 과설계 방지.
+      const MAX_SURFACED_TABS = 10;
+      // dev DB 노이즈(test:·bridge:·내부 파생)를 목록에서 배제 — prod 엔 없지만 라이브 dev DB 방어.
+      // 서버 excludeInternal 과 belt-and-suspenders(worker:/agent:/endpoint:/gateway:/scheduler:/::sub::).
+      const NON_CONVO_PREFIXES = ["worker:", "agent:", "endpoint:", "gateway:", "scheduler:", "test:", "bridge:"];
+      const isSurfaceableSession = (tk) => {
+        if (typeof tk !== "string" || tk === "") return false;
+        if (tk.indexOf("::sub::") !== -1) return false;
+        for (const p of NON_CONVO_PREFIXES) if (tk.indexOf(p) === 0) return false;
+        return true;
+      };
+      const loadClosedSet = () => {
+        try { const a = JSON.parse(localStorage.getItem(CLOSED_LS) || "[]"); return new Set(Array.isArray(a) ? a : []); }
+        catch { return new Set(); }
+      };
+      const markClosed = (tk) => {
+        try { const s = loadClosedSet(); s.add(tk); localStorage.setItem(CLOSED_LS, JSON.stringify([...s])); } catch {}
+      };
+      let openTabs = [];       // [{ threadKey, name, preview?, channel? }]
       let sessionSeq = 0;
       let switchToken = 0;     // 전환 중 stale 이력 배치가 다른 탭에 렌더되는 것 방지.
       const sessionTabsEl = document.getElementById("session-tabs");
 
       const persistTabs = () => {
         try {
-          localStorage.setItem(TABS_LS, JSON.stringify(openTabs.map((t) => ({ threadKey: t.threadKey, name: t.name }))));
+          localStorage.setItem(TABS_LS, JSON.stringify(openTabs.map((t) => ({ threadKey: t.threadKey, name: t.name, ...(t.channel ? { channel: t.channel } : {}) }))));
           localStorage.setItem(ACTIVE_LS, activeThreadKey);
           localStorage.setItem(SEQ_LS, String(sessionSeq));
         } catch {}
@@ -4979,9 +5031,11 @@
           const raw = localStorage.getItem(TABS_LS);
           const arr = raw ? JSON.parse(raw) : null;
           if (Array.isArray(arr) && arr.length) {
+            // 채널/세션 분리(ADR 2026-07-15) — 세션은 채널 무관이라 dashboard: 접두 필터 폐지.
+            // 서버 병합으로 노출된 레거시 세션(tg:·cli:)도 재로드에 보존되게 임의 threadKey 허용.
             openTabs = arr
-              .filter((t) => t && typeof t.threadKey === "string" && t.threadKey.indexOf("dashboard:") === 0)
-              .map((t) => ({ threadKey: t.threadKey, name: typeof t.name === "string" && t.name ? t.name : "세션" }));
+              .filter((t) => t && typeof t.threadKey === "string" && t.threadKey !== "")
+              .map((t) => ({ threadKey: t.threadKey, name: typeof t.name === "string" && t.name ? t.name : "세션", ...(typeof t.channel === "string" && t.channel ? { channel: t.channel } : {}) }));
           }
         } catch {}
         if (!openTabs.length) openTabs = [{ threadKey: DEFAULT_DASH_THREAD, name: "기본" }];
@@ -5009,6 +5063,10 @@
           nameSpan.className = "st-name";
           nameSpan.textContent = tab.name;
           b.appendChild(nameSpan);
+          // 채널 힌트 칩 — 원격/레거시 세션(텔레그램·CLI 등)을 대시보드 세션과 구분(ADR §D6).
+          // 채널 메타는 서버 세션(refreshSessionPreviews) 또는 threadKey 접두에서 파생. 대시보드 세션은 없음.
+          { const cm = channelMeta(tab.channel || channelFromThreadKey(tab.threadKey));
+            if (cm) { const ch = document.createElement("span"); ch.className = "st-ch"; ch.textContent = cm.short; ch.title = cm.full + " 세션"; b.appendChild(ch); } }
           // 진행 뱃지 — 이 세션(또는 스폰한 워커/서브)이 진행 중이면 점(모든 세션 추적, §5.12).
           if (activeTurns.has(tab.threadKey)) {
             const dot = document.createElement("span"); dot.className = "st-dot"; b.appendChild(dot);
@@ -5103,6 +5161,7 @@
         const idx = openTabs.findIndex((t) => t.threadKey === tk);
         if (idx === -1) return;
         openTabs.splice(idx, 1); // ★localStorage(탭 목록)에서만 제거 — 백엔드 세션 보존(D3, 비파괴).
+        markClosed(tk); // 명시 닫음 기록 — 서버 세션 병합(refreshSessionPreviews)이 이 탭을 재노출하지 않게(닫기 보존).
         if (activeThreadKey === tk) {
           const next = openTabs[Math.max(0, idx - 1)] || openTabs[0] || { threadKey: DEFAULT_DASH_THREAD };
           activeThreadKey = next.threadKey;
@@ -5116,20 +5175,44 @@
         }
       };
 
-      // 서버 /api/sessions = 세션 존재/프리뷰 진실 소스(D2). 열린 탭 이름 옆 title(프리뷰) 채움.
+      // 서버 /api/sessions = 세션 존재/프리뷰 진실 소스(D2). 채널/세션 분리(ADR 2026-07-15 §D6):
+      // /sessions 가 이제 전 대화 세션(내부 파생 제외)을 반환 → 열린 탭 프리뷰/채널 메타를 채우고,
+      // 아직 탭으로 안 열린 대화 세션(레거시 tg:·cli: 등)을 채널 힌트와 함께 목록에 노출한다.
+      // 텔레그램은 기본 세션(dashboard:default)에 합류하므로 별 탭 아님(같은 id = 중복 0). 닫은 세션·
+      // dev 노이즈(test:·bridge:)는 제외, recency 순 상한(MAX_SURFACED_TABS)으로 탭바 바운드.
       const refreshSessionPreviews = async () => {
         try {
           const r = await fetch("/api/sessions");
           if (!r.ok) return;
           const data = await r.json().catch(() => ({}));
           const sessions = Array.isArray(data.sessions) ? data.sessions : [];
-          const byKey = new Map(sessions.map((s) => [s.threadKey, s]));
+          const openByKey = new Map(openTabs.map((t) => [t.threadKey, t]));
+          const closed = loadClosedSet();
           let changed = false;
-          for (const t of openTabs) {
-            const s = byKey.get(t.threadKey);
-            if (s && s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }
+          // (1) 이미 열린 탭 — 프리뷰·채널 메타 갱신.
+          for (const s of sessions) {
+            const t = openByKey.get(s.threadKey);
+            if (!t) continue;
+            if (s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }
+            const ch = s.channel || s.lastChannel || channelFromThreadKey(s.threadKey);
+            if (ch && t.channel !== ch) { t.channel = ch; changed = true; }
           }
-          if (changed) renderTabBar();
+          // (2) 아직 안 열린 대화 세션 노출(recency 순, 상한). 기본 세션·닫은 세션·노이즈 제외.
+          let surfaced = 0;
+          for (const s of sessions) {
+            if (surfaced >= MAX_SURFACED_TABS) break;
+            const tk = s.threadKey;
+            if (openByKey.has(tk) || tk === DEFAULT_DASH_THREAD) continue;
+            if (!isSurfaceableSession(tk) || closed.has(tk)) continue;
+            const ch = s.channel || s.lastChannel || channelFromThreadKey(tk);
+            const cm = channelMeta(ch);
+            const name = (s.preview && s.preview.trim()) ? s.preview.trim().slice(0, 16) : (cm ? cm.full : "세션");
+            const tab = { threadKey: tk, name, ...(s.preview ? { preview: s.preview } : {}), ...(ch ? { channel: ch } : {}) };
+            openTabs.push(tab);
+            openByKey.set(tk, tab);
+            surfaced += 1; changed = true;
+          }
+          if (changed) { persistTabs(); renderTabBar(); }
         } catch {}
       };
 

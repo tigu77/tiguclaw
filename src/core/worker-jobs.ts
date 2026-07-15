@@ -583,6 +583,7 @@ export const pendingThreadCount = (): number => threadTails.size;
 
 import { deliverOutbound } from "./outbound.js";
 import type { ReplyOptions } from "../channels/types.js";
+import { canonicalSessionChannel } from "../store/sessions.js";
 
 /**
  * notifyDest 없는 워커(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
@@ -909,11 +910,29 @@ export const onWorkerComplete = async (
     await reinjectReply(text, opts);
     delivered = true; // send 성공 후에만 마킹 — throw 시 미마킹 → 안전망 발화.
   };
+  // 세션-정체성 정규화(채널/세션 분리 ADR 2026-07-15 §D1, QA §6 P1) — 재주입 완료턴이
+  // route() 를 통해 **실세션 정체성**(resume/history/context boundary)에 붙도록, 사용자 세션
+  // threadKey(dashboard:*)이면서 job.channel 이 canonical 과 다를 때만(telegram/cli發 워커)
+  // session 을 실어 정규화한다 → route 가 (SESSION_STORAGE_CHANNEL, job.threadKey) 로 키잉해
+  // 이전 유저턴과 **동일 세션 정체성**(resume/transcript 파편화 해소). ★내부 파생 스레드
+  // (scheduler:/worker:/endpoint: 등)·대시보드發(이미 canonical)은 idChannel===job.channel →
+  // session 미부여 = 현행 passthrough(스케줄러·서브에이전트 세션 정체성 무변경, 회귀 0).
+  // channelAddress 는 캡처된 배달 좌표(dest.target)로 재확인 — route 의 setSessionChannelMeta
+  // 가 last_channel_target 을 null 로 덮어쓰지 않게(telegram chatId 보존).
+  const idChannel = canonicalSessionChannel(job.threadKey, job.channel);
   const synthetic = {
     channel: job.channel,
     channelUserId: job.channelUserId,
     threadKey: job.threadKey,
     text: buildCompletionPrompt(job),
+    ...(idChannel !== job.channel
+      ? {
+          session: {
+            explicitSessionId: job.threadKey,
+            ...(dest.target !== null ? { channelAddress: dest.target } : {}),
+          },
+        }
+      : {}),
     // 내부 기원 표식 — 핸들러가 `channel.message.in` 관측 발행을 스킵(스캐폴딩 텍스트가
     // 대시보드에 "나(user)"로 새는 걸 차단). 라우팅·직렬화 등 나머지는 실 인바운드와 동일.
     synthetic: true,

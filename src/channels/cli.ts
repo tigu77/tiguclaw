@@ -1,5 +1,6 @@
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { Channel, IncomingMessage, MessageHandler } from "./types.js";
+import { resolveSessionId } from "../core/threadkey.js";
 
 export class CliChannel implements Channel {
   readonly name = "cli" as const;
@@ -62,10 +63,16 @@ export class CliChannel implements Channel {
           text = opts[n - 1]!.value;
         }
       }
+      // 채널/세션 분리(ADR 2026-07-15) — cli 는 세션 셀렉터 없음 → 기본 세션(DEFAULT).
+      // resolveSessionId 로 sessionId 를 구해 threadKey 에 세팅(직렬 큐/`/stop` 정합)하고,
+      // session:{}(셀렉터·주소 없음) 을 실어 route 가 canonical (http-bridge, DEFAULT) 로
+      // 세션-정체성을 정규화하게 한다 → 텔레그램/대시보드 기본 세션과 한 대화로 합류.
+      const sessionId = resolveSessionId("cli");
       const msg: IncomingMessage = {
         channel: "cli",
         channelUserId: "local",
-        threadKey: "cli:local",
+        threadKey: sessionId,
+        session: {},
         text,
         receivedAt: Date.now(),
         reply,

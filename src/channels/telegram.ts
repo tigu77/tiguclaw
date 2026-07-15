@@ -13,6 +13,7 @@ import type {
 import { getPaths } from "../core/paths.js";
 import { getAllCommands } from "../core/entry/command-registry.js";
 import { getEventBus } from "../core/eventbus.js";
+import { resolveSessionId } from "../core/threadkey.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -377,10 +378,20 @@ export class TelegramChannel implements Channel {
           : repliedRaw.length > 1500
             ? `${repliedRaw.slice(0, 1500)}…(이하 생략)`
             : repliedRaw;
+      // 채널/세션 분리(ADR 2026-07-15) — 텔레그램은 세션 셀렉터 없음 → 기본 세션(DEFAULT).
+      // chatId 는 세션 정체성이 아니라 **배달 좌표**(channelAddress)로만 운반한다. resolveSessionId
+      // 로 sessionId 를 구해 threadKey 에 세팅(직렬 큐/`/stop` 정합)하고, session 을 실어 route 가
+      // canonical (http-bridge, DEFAULT) 로 세션-정체성을 정규화 + last_channel/target 캡처하게
+      // 한다 → 텔레그램 대화가 대시보드 기본 세션과 한 대화로 합류. 즉시 답글(reply)은 여전히
+      // ctx 클로저로 텔레그램 직접(세션 무관).
+      const chatId = String(ctx.chat.id);
+      const sessionId = resolveSessionId("telegram", chatId);
       const msg: IncomingMessage = {
         channel: "telegram",
         channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
-        threadKey: `tg:${ctx.chat.id}`,
+        threadKey: sessionId,
+        channelAddress: chatId,
+        session: { channelAddress: chatId },
         text,
         ...(replyToText !== undefined ? { replyToText } : {}),
         receivedAt: ctx.message.date * 1000,
@@ -491,10 +502,16 @@ export class TelegramChannel implements Channel {
             return;
           }
 
+          // 채널/세션 분리(ADR 2026-07-15) — message:text 핸들러와 동형(parity). chatId=배달
+          // 좌표, sessionId=기본 세션. threadKey=sessionId + session 으로 route 정규화.
+          const chatId = String(ctx.chat.id);
+          const sessionId = resolveSessionId("telegram", chatId);
           const msg: IncomingMessage = {
             channel: "telegram",
             channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
-            threadKey: `tg:${ctx.chat.id}`,
+            threadKey: sessionId,
+            channelAddress: chatId,
+            session: { channelAddress: chatId },
             text,
             attachments,
             receivedAt: receivedAtSeconds * 1000,
@@ -567,10 +584,16 @@ export class TelegramChannel implements Channel {
       if (chat === undefined) return; // 채팅 컨텍스트 없는 콜백(이론상) — 안전 종료.
       // 선택값을 사용자 발화로 에코(텍스트 흐름과 시각 정합). 부수 UX라 실패해도 무시.
       await ctx.reply(value).catch(() => {});
+      // 채널/세션 분리(ADR 2026-07-15) — message:text 동형(parity). 선택지 클릭도 같은
+      // 기본 세션으로 흘려보낸다(같은 chat=같은 세션·인격). chatId=배달 좌표.
+      const chatId = String(chat.id);
+      const sessionId = resolveSessionId("telegram", chatId);
       const msg: IncomingMessage = {
         channel: "telegram",
         channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
-        threadKey: `tg:${chat.id}`,
+        threadKey: sessionId,
+        channelAddress: chatId,
+        session: { channelAddress: chatId },
         text: value,
         receivedAt: Date.now(),
         // 답글 송신 — 공통 흐름(이 경로는 답글 대상 미부착).

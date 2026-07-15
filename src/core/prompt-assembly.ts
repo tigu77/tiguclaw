@@ -126,9 +126,20 @@ export const formatModelProfiles = (
 export const formatConversationContext = (
   channel: string,
   threadKey: string,
+  channelAddress?: string,
 ): string => {
   const lines = [`- 채널 (dest_channel): ${channel}`];
-  const chatId = channel === "telegram" ? extractTelegramChatId(threadKey) : null;
+  // 채널/세션 분리(ADR 2026-07-15 §D3): dest_target 은 세션 id 파싱이 아니라 **캡처된
+  // 배달 좌표**(channelAddress)를 우선 쓴다 — 세션 id 가 채널 무관(dashboard:*)이 되면
+  // threadKey 파싱으로 chatId 를 못 얻기 때문. 미지정이면 telegram threadKey "tg:<chatId>"
+  // 파싱 폴백(회귀 0). ★여긴 *실채널* 좌표 — 세션-정체성 채널(canonical)과 무관(2분리).
+  const captured = channelAddress?.trim();
+  const chatId =
+    captured !== undefined && captured !== ""
+      ? captured
+      : channel === "telegram"
+        ? extractTelegramChatId(threadKey)
+        : null;
   if (chatId !== null) {
     lines.push(`- 이 대화 대상 (dest_target): ${chatId}`);
   }

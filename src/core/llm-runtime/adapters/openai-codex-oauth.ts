@@ -906,7 +906,12 @@ const buildTurnHistory = async (
   const currentTurn = buildCurrentTurn(currentPromptWithMemory, mediaItems);
 
   // 전체 타임라인 (id 동반, cap 없음) — 압축 결정 전용. 첫 turn → [].
-  const allTurns = loadThreadHistoryWithIds(input.channel, input.threadKey);
+  // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성은 canonical 저장 채널로 키잉
+  // (sessionChannel, 미지정 → channel 폴백·회귀 0). runOpenAiCodex 의 idChannel 과 동일 규칙.
+  const allTurns = loadThreadHistoryWithIds(
+    input.sessionChannel ?? input.channel,
+    input.threadKey,
+  );
   if (allTurns.length === 0) {
     return [currentTurn];
   }
@@ -1309,6 +1314,11 @@ const convertMcpToolsToResponsesTools = (
 export const runOpenAiCodex = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(context/transcripts)은 canonical
+  // 저장 채널로 키잉(sessionChannel, 미지정 → channel 폴백·회귀 0). 표시/감사는 input.channel
+  // 유지 — claude/openai 어댑터와 parity(#2).
+  const idChannel = input.sessionChannel ?? input.channel;
+
   const accessToken = await ensureFreshAccessToken();
   const accountId = extractAccountId(accessToken);
   // model 우선순위: facade 주입(input.model) > env > 디폴트.
@@ -1329,7 +1339,7 @@ export const runOpenAiCodex = async (
   const memorySnippet = leanMemory
     ? ""
     : formatMemorySnippet(
-        retrieveContext(input.channel, input.threadKey, input.text, {
+        retrieveContext(idChannel, input.threadKey, input.text, {
           limit: 5,
         }),
       );
@@ -1356,7 +1366,11 @@ export const runOpenAiCodex = async (
   // 현재 대화 컨텍스트 — depth 0(실제 사용자 대화)만. sub-agent 는 dest 무관.
   const convoContext =
     depth === 0
-      ? formatConversationContext(input.channel, input.threadKey)
+      ? formatConversationContext(
+          input.channel,
+          input.threadKey,
+          input.channelAddress,
+        )
       : "";
 
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).
@@ -1651,7 +1665,11 @@ export const runOpenAiCodex = async (
     // 에서 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. claude/openai 와 parity(#2).
     if (depth === 0 && (input.workerDepth ?? 0) === 0) {
       const updateSelfServer = createUpdateSelfMcpServer(
-        notifyDestFromCoords(input.channel, input.threadKey),
+        notifyDestFromCoords(
+          input.channel,
+          input.threadKey,
+          input.channelAddress,
+        ),
       );
       const updateSelfBridge = await adaptClaudeMcpServer(
         updateSelfServer,

@@ -3079,6 +3079,7 @@
       let stickBottom = true;    // 하단(최신) 고정 팔로우. 사용자가 위로 스크롤하면 해제.
       let vtJumpTop = false;     // Home 원샷 — 로드된 맨위로 프로그램적 점프(리스너/loadOlder 미발화).
       let vtProgrammatic = false; // 프로그램적 scrollTop 조정 가드(scroll 리스너 무시).
+      let lastScrollTop = 0;     // 직전 scrollTop — 사용자 스크롤 방향(위/아래) 판정용. 작은 위 스크롤도 stick 해제.
 
       const slotH = (it) =>
         (it.measured ? it.h : (it.isDivider ? VT_DIVIDER_EST_H : VT_EST_H)) + VT_GAP;
@@ -3115,25 +3116,27 @@
       const setScrollTop = (v) => {
         vtProgrammatic = true;
         stream.scrollTop = v;
+        lastScrollTop = stream.scrollTop; // 프로그램적 이동 = 사용자 스크롤 방향 비교 기준을 즉시 동기(스냅 후 오판 방지).
         requestAnimationFrame(() => { vtProgrammatic = false; });
       };
 
       const relayout = () => {
-        // 누적 top(슬롯=실측+gap) + 총합 → sizer 높이(스크롤바).
-        let total = 0;
-        for (const it of vtItems) { it.top = total; total += slotH(it); }
-        vtSizer.style.height = total + "px";
         const clientH = stream.clientHeight;
-        if (clientH === 0) return; // 숨김(다른 뷰) → 마운트 스킵.
-
-        // 앵커(프리펜드/측정 점프 방지) — 스틱 아니면 현재 뷰 상단 아이템의 화면 오프셋 보존.
+        // 앵커(프리펜드/측정 점프 방지) — top 재계산 *전* OLD top 으로 현재 뷰 상단 아이템의 화면
+        // 오프셋을 기록해야 위쪽 높이 변화를 실제로 보정한다. (재계산 후 잡으면 off 가 상쇄돼 no-op.)
         let anchor = null;
-        if (!stickBottom && !vtJumpTop) {
+        if (!stickBottom && !vtJumpTop && clientH > 0) {
           const st = stream.scrollTop;
           for (const it of vtItems) {
             if (it.top + slotH(it) > st) { anchor = { it: it, off: it.top - st }; break; }
           }
         }
+
+        // 누적 top(슬롯=실측+gap) + 총합 → sizer 높이(스크롤바). 위 루프의 OLD top 을 여기서 NEW 로 갱신.
+        let total = 0;
+        for (const it of vtItems) { it.top = total; total += slotH(it); }
+        vtSizer.style.height = total + "px";
+        if (clientH === 0) return; // 숨김(다른 뷰) → 마운트 스킵.
 
         // 가시 범위(±버퍼). 스틱이면 하단, Home 점프면 상단(0) 기준으로 범위를 잡는다.
         const scrollTop = stickBottom ? Math.max(0, total - clientH) : (vtJumpTop ? 0 : stream.scrollTop);
@@ -3177,15 +3180,22 @@
         }
       };
 
-      // 날짜 구분선 재계산 — 구조 변경(append/prependOlder/history batch/cap) 후 호출. 기존 divider
-      // 아이템 제거 후, 오래된→최신 walk 하며 날짜 바뀌는 첫 아이템 앞에 divider 아이템 삽입.
+      // 날짜 구분선 재계산 — 구조 변경(append/prependOlder/history batch/cap) 후 호출. 오래된→최신
+      // walk 하며 날짜 바뀌는 첫 아이템 앞에 divider 를 둔다. ★기존 divider 는 dateKey 로 풀링해
+      // *재사용*(측정 높이 h 보존): 매 append 마다 전량 파괴·재생성하면 화면 밖 divider 가 미측정
+      // 추정치로 되돌아 총높이가 흔들리고, 앵커가 그만큼 스크롤을 밀어 사용자가 이력 열람 중
+      // 새 메시지마다 위로 튕겼다(원인 C). 경계는 날짜당 1회 = dateKey 유일 → 안전한 재사용 키.
       const vtRecomputeDividers = () => {
+        const pool = new Map(); // dateKey -> 재사용 후보 divider item(측정 h 보존).
         for (let i = vtItems.length - 1; i >= 0; i--) {
           const it = vtItems[i];
           if (it.isDivider) {
-            vtObserver.unobserve(it.node);
-            vtIndex.delete(it.node);
-            if (it.node.parentNode) it.node.parentNode.removeChild(it.node);
+            if (it.dateKey != null && !pool.has(it.dateKey)) pool.set(it.dateKey, it);
+            else { // 중복 키(비정상 순서) = 폐기.
+              vtObserver.unobserve(it.node);
+              vtIndex.delete(it.node);
+              if (it.node.parentNode) it.node.parentNode.removeChild(it.node);
+            }
             vtItems.splice(i, 1);
           }
         }
@@ -3195,18 +3205,27 @@
           if (ts === null) continue;
           const k = dateKey(ts);
           if (k !== prevKey) {
-            const div = document.createElement("div");
-            div.className = "date-divider";
-            const span = document.createElement("span");
-            span.textContent = fmtDate(ts);
-            div.appendChild(span);
-            const it = { node: div, h: 0, measured: false, isDivider: true, top: 0 };
+            let it = pool.get(k);
+            if (it) { pool.delete(k); } // 재사용 — h/measured/node 그대로(DOM 마운트 유지, relayout 이 정렬).
+            else {
+              const div = document.createElement("div");
+              div.className = "date-divider";
+              const span = document.createElement("span");
+              span.textContent = fmtDate(ts);
+              div.appendChild(span);
+              it = { node: div, h: 0, measured: false, isDivider: true, top: 0, dateKey: k };
+              vtIndex.set(div, it);
+              vtObserver.observe(div);
+            }
             vtItems.splice(i, 0, it);
-            vtIndex.set(div, it);
-            vtObserver.observe(div);
             prevKey = k;
             i++; // 방금 삽입한 divider 건너뜀.
           }
+        }
+        for (const it of pool.values()) { // 더 이상 필요 없는 잔여 divider 폐기.
+          vtObserver.unobserve(it.node);
+          vtIndex.delete(it.node);
+          if (it.node.parentNode) it.node.parentNode.removeChild(it.node);
         }
       };
 
@@ -3310,9 +3329,15 @@
 
       // 스크롤 리스너 — stick 추적 + 점프버튼 + 상단 근처면 older 로드(센티넬 IntersectionObserver 대체).
       stream.addEventListener("scroll", () => {
-        if (vtProgrammatic) return;
+        if (vtProgrammatic) { lastScrollTop = stream.scrollTop; return; }
         const st = stream.scrollTop;
-        stickBottom = (stream.scrollHeight - st - stream.clientHeight) < 80;
+        const nearBottom = (stream.scrollHeight - st - stream.clientHeight) < 80;
+        // 사용자 스크롤 존중 — 위로 스크롤(작은 델타 포함) = 과거 열람 의도 → 즉시 stick 해제(재-스냅 금지).
+        // 아래로 내려와 바닥 근처(threshold)일 때만 팔로우 재개. 위치 임계값만 보면 <80px 위 스크롤이
+        // stick 을 유지해 relayout/ResizeObserver 가 바닥으로 튕겼다(원인 A).
+        if (st < lastScrollTop - 1) stickBottom = false;
+        else if (nearBottom) stickBottom = true;
+        lastScrollTop = st;
         updateChatJump();
         scheduleRelayout();
         if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();

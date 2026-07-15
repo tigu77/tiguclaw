@@ -1,0 +1,18 @@
+{
+  "//": "checkJs 타입검사 전용 (ADR 2026-07-15 U1) — dep-free 매니저 bin/daemon.mjs 를 @ts-check+JSDoc 로 타입검사한다. 기존 npm run typecheck(src) 와 분리 = src 게이트 무영향. 실행: npm run typecheck:bin.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["bin/daemon.mjs"]
+}

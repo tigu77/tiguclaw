@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-15
+### Changed
+- **설치·제거·재시작·멈춤이 언제나 됩니다 — 의존성이 깨져도.** 데몬 관리 명령(`install`/`uninstall`/`restart`/`stop`/`start`/`status`/`logs`)이 이제 순수 Node(`bin/daemon.mjs`)로만 동작해, `node_modules` 나 개발 도구(tsx)가 깨진 상태에서도 항상 실행됩니다. 예전엔 관리 명령까지 tsx 를 거쳐서, 정작 고장났을 때 제거·정지조차 안 되는 상황이 있었습니다.
+### Added
+- **`tiguclaw stop` / `tiguclaw start` 신설.** 등록(자동가동 설정)은 그대로 둔 채 실행만 잠깐 멈추고(`stop`) 다시 켜는(`start`) 명령입니다. 완전 제거는 `uninstall`. macOS·Linux·Windows 모두 지원합니다.
+- **파일 잠금(EPERM) 복구 안내.** 데몬이 실행 중이면 네이티브 모듈 파일이 잠겨 `npm ci` 가 실패할 수 있는데, 이제 `stop → npm ci → start` 순서로 항상 복구할 수 있습니다(README·`tiguclaw` 도움말에 명시). 재설치 시 데몬이 실행 중이면 먼저 `stop` 을 권하는 안내가 표시됩니다.
+
 ## [0.5.0] - 2026-07-15
 ### Added
 - **대시보드 멀티세션 탭.** 대시보드 채팅 상단에서 **`+`** 로 새 세션(독립 맥락/대화)을 열어 여러 작업을 따로 진행하고, 탭 전환·**닫기**(닫아도 대화는 보존)가 됩니다. 각 탭 = 독립 대화 — tiguclaw 는 원래 세션별로 대화를 독립 처리하고(메모리·인격은 공유하는 단일 비서), **서로 다른 세션의 요청을 동시에 병렬로** 처리합니다. 열린 탭은 브라우저에 저장되어 새로고침 후에도 유지됩니다. (모든 세션·채널을 한눈에 보는 "전체 활동" 뷰는 후속으로 추가 예정.)

@@ -29,6 +29,19 @@ const runNpm = (script: string): number => {
   return r.status ?? 1;
 };
 
+/** 데몬 라이프사이클을 dep-free 매니저(bin/daemon.mjs)로 직접 위임(tsx·npm 우회, ADR
+ *  2026-07-15 D2/U2). 전역 `tiguclaw` 는 bin/tiguclaw.mjs 에서 이미 단락되지만, 직접
+ *  `tsx src/cli.ts <cmd>` 로 들어와도 동일하게 dep-free 경로로 일원화한다. */
+const runDaemon = (cmd: string): number => {
+  // bin/tiguclaw.mjs 가 cwd=repoRoot 로 호출 → process.cwd() = 레포 루트(runNpm 과 동일 전제).
+  const daemonMjs = path.join(process.cwd(), "bin", "daemon.mjs");
+  const r = spawnSync(process.execPath, [daemonMjs, cmd], {
+    stdio: "inherit",
+    cwd: process.cwd(),
+  });
+  return r.status ?? 1;
+};
+
 /** .env 의 REGION_A_MODELS 가 codex 로 시작하면 OAuth 발급이 필요. */
 const providerIsCodex = (): boolean => {
   if (!existsSync(ENV_PATH)) return false;
@@ -156,10 +169,17 @@ const USAGE = `tiguclaw — 자가호스트 AI 비서 CLI
   tiguclaw doctor       설정 검증
   tiguclaw status       데몬 상태
   tiguclaw restart      데몬 재시작 (코드 변경 적용)
+  tiguclaw stop         데몬 실행 중지 (등록 유지 — EPERM/락 복구용)
+  tiguclaw start        데몬 재실행 (등록 유지)
   tiguclaw logs         데몬 로그 tail
   tiguclaw install      데몬 supervisor 등록
   tiguclaw uninstall    데몬 등록 해제
   tiguclaw help         이 도움말
+
+  깨진 node_modules/tsx 복구(ADR 2026-07-15): 라이프사이클 명령(install/uninstall/
+    restart/stop/start/status/logs/print)은 dep-free 매니저(bin/daemon.mjs)로 직접
+    돌아 tsx·node_modules 없이도 항상 동작. better_sqlite3 EPERM(실행 중 데몬이 네이티브
+    모듈 락) 복구 순서: tiguclaw stop → npm ci → tiguclaw start(또는 install).
 
   런타임 모드 (ADR 2026-07-14, Amendment 2026-07-14): 기본 built(설치=프로덕션 빌드 산출물,
     node dist/src/index.js). onboard 가 build:prod 를 자동 선행하고, 설치 시 해석된 모드를
@@ -181,15 +201,19 @@ const main = (): number => {
     case "doctor":
       return runNpm("doctor");
     case "status":
-      return runNpm("daemon:status");
+      return runDaemon("status");
     case "restart":
-      return runNpm("daemon:restart");
+      return runDaemon("restart");
+    case "stop":
+      return runDaemon("stop");
+    case "start":
+      return runDaemon("start");
     case "logs":
-      return runNpm("daemon:logs");
+      return runDaemon("logs");
     case "install":
-      return runNpm("daemon:install");
+      return runDaemon("install");
     case "uninstall":
-      return runNpm("daemon:uninstall");
+      return runDaemon("uninstall");
     case "help":
     case "-h":
     case "--help":

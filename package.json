@@ -1,6 +1,6 @@
 {
   "name": "tiguclaw",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -36,6 +36,7 @@
     "dev": "node bin/dev.mjs",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "typecheck:bin": "tsc -p tsconfig.bin.json",
     "init": "tsx src/scripts/init.ts",
     "onboard": "tsx src/cli.ts onboard",
     "doctor": "tsx src/scripts/doctor.ts",
@@ -43,12 +44,14 @@
     "bridge:grant": "tsx src/scripts/bridge-grant.ts",
     "bridge:tokens": "tsx src/scripts/bridge-tokens.ts",
     "codex-auth": "tsx src/scripts/codex-auth.ts",
-    "daemon:install": "tsx src/scripts/daemon.ts install",
-    "daemon:install:dev": "TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source tsx src/scripts/daemon.ts install",
-    "daemon:uninstall": "tsx src/scripts/daemon.ts uninstall",
-    "daemon:restart": "tsx src/scripts/daemon.ts restart",
-    "daemon:status": "tsx src/scripts/daemon.ts status",
-    "daemon:logs": "tsx src/scripts/daemon.ts logs"
+    "daemon:install": "node bin/daemon.mjs install",
+    "daemon:install:dev": "TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source node bin/daemon.mjs install",
+    "daemon:uninstall": "node bin/daemon.mjs uninstall",
+    "daemon:restart": "node bin/daemon.mjs restart",
+    "daemon:stop": "node bin/daemon.mjs stop",
+    "daemon:start": "node bin/daemon.mjs start",
+    "daemon:status": "node bin/daemon.mjs status",
+    "daemon:logs": "node bin/daemon.mjs logs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

@@ -1,25 +1,38 @@
-// src/scripts/daemon.ts
+// @ts-check
+// bin/daemon.mjs
 /**
  * daemon — tiguclaw 데몬 관리 CLI (크로스플랫폼: macOS / Linux / Windows).
  *
- * 단일 진실 소스. 서브커맨드: install | uninstall | restart | status | logs | print.
+ * ★의존성-프리 라이프사이클 매니저 (ADR 2026-07-15). Node 빌트인만 import
+ *   (child_process/fs/os/path/process) → tsx·node_modules 없이도 항상 동작.
+ *   깨진 node_modules/tsx 에서도 stop·restart·uninstall·install 이 된다.
+ *
+ * 단일 진실 소스. 서브커맨드:
+ *   install | uninstall | restart | stop | start | status | logs | print.
  *   - macOS  → launchd LaunchAgent (KeepAlive, 자동 respawn).
  *   - Linux  → systemd **user** 유닛 (Restart=always).
- *   - Windows→ Task Scheduler (ONLOGON; KeepAlive 강도는 약함 — 아래 주석 참조).
+ *   - Windows→ HKCU Run 키 + 숨김 VBS (ONLOGON; KeepAlive 강도는 약함 — 아래 주석 참조).
+ *
+ * 등록(=자동가동 설정 존재) ↔ 실행(=프로세스 생존) 분리 (ADR 2026-07-15 D3):
+ *   - stop  = 실행만 중지, 등록 유지 (plist/유닛/Run키 파일 안 지움).
+ *   - start = 다시 실행.
+ *   - uninstall = 등록까지 제거.
  *
  * 이식형(자가호스트): 하드코딩 경로 0 — *런타임* 값으로 유닛/plist/task 를 생성한다.
  *   node = process.execPath / repo = process.cwd() / home = TIGUCLAW_HOME ?? ~/.tiguclaw.
  *
- * 새 의존성 0 — launchctl/systemctl/schtasks 는 OS 빌트인. node builtin 만 사용
+ * 새 의존성 0 — launchctl/systemctl/reg 는 OS 빌트인. node builtin 만 사용
  *   (child_process/fs/os/path).
  *
  * 사용:
  *   npm run daemon:install              # 등록(상시 가동 + 자동 respawn)
  *   npm run daemon:status               # 상태
  *   npm run daemon:restart              # 재시작
+ *   npm run daemon:stop                 # 실행 중지 (등록 유지)
+ *   npm run daemon:start                # 재실행 (등록 유지)
  *   npm run daemon:logs                 # 로그 tail+follow
  *   npm run daemon:uninstall            # 등록 해제 + 유닛 제거
- *   tsx src/scripts/daemon.ts print     # 설치 안 하고 유닛/명령만 미리보기
+ *   node bin/daemon.mjs print           # 설치 안 하고 유닛/명령만 미리보기
  *
  * 개발 홈 보존: dev 는 `TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source npm run daemon:install`
  *   (또는 `npm run daemon:install:dev`) 로 실행해야 기존 dev 데이터(./tiguclaw-dev)를 유지하고,
@@ -27,7 +40,7 @@
  *   prod 기본 = home ~/.tiguclaw · runtime built.
  *
  * KeepAlive 강도(솔직히): macOS(launchd KeepAlive) > Linux(systemd Restart=always)
- *   > Windows(Task Scheduler ONLOGON — crash 자동재시작 약함). 완전 parity 는 WSL2 권장.
+ *   > Windows(HKCU Run ONLOGON — crash 자동재시작 약함). 완전 parity 는 WSL2 권장.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -46,7 +59,11 @@ import process from "node:process";
 // TIGUCLAW_SERVICE_LABEL 로 고유 라벨을 지정한다 (홈·봇·포트도 함께 분리할 것).
 const LABEL = process.env.TIGUCLAW_SERVICE_LABEL?.trim() || "com.tiguclaw.daemon";
 
-const expandHome = (p: string): string =>
+/**
+ * @param {string} p
+ * @returns {string}
+ */
+const expandHome = (p) =>
   p === "~" || p.startsWith("~/") ? path.join(os.homedir(), p.slice(1)) : p;
 
 // 런타임 모드 (ADR 2026-07-14-built-artifact-production-runtime D2, Amendment 2026-07-14) —
@@ -55,25 +72,27 @@ const expandHome = (p: string): string =>
 //   source: `node <tsx cli> src/index.ts` — dev 전용. 정확히 "source" 일 때만 source 로 낙착.
 // mode-persistence(아래 install): 해석된 모드를 유닛 env(TIGUCLAW_RUNTIME=<mode>)에 새겨,
 //   실행 데몬·self-update 가 자기 모드를 확실히 알고, 기존 설치가 기본값 변경에 안 휩쓸린다(D4).
-type RuntimeMode = "source" | "built";
-const runtimeMode = (): RuntimeMode =>
+/** @typedef {"source" | "built"} RuntimeMode */
+/** @returns {RuntimeMode} */
+const runtimeMode = () =>
   process.env.TIGUCLAW_RUNTIME?.trim() === "source" ? "source" : "built";
 
-interface Ctx {
-  repoRoot: string;
-  nodePath: string;
-  tsxCli: string;
-  entry: string;
-  /** built 진입점 = dist/src/index.js (tsconfig.build.json rootDir="." 미러 레이아웃). */
-  distEntry: string;
-  runtime: RuntimeMode;
-  homeRaw: string;
-  homeAbs: string;
-  logsDir: string;
-  label: string;
-}
+/**
+ * @typedef {Object} Ctx
+ * @property {string} repoRoot
+ * @property {string} nodePath
+ * @property {string} tsxCli
+ * @property {string} entry
+ * @property {string} distEntry built 진입점 = dist/src/index.js (tsconfig.build.json rootDir="." 미러 레이아웃).
+ * @property {RuntimeMode} runtime
+ * @property {string} homeRaw
+ * @property {string} homeAbs
+ * @property {string} logsDir
+ * @property {string} label
+ */
 
-const buildCtx = (): Ctx => {
+/** @returns {Ctx} */
+const buildCtx = () => {
   const repoRoot = process.cwd();
   const nodePath = process.execPath;
   const tsxCli = path.join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
@@ -102,8 +121,10 @@ const buildCtx = (): Ctx => {
  *   source: [node, tsxCli, src/index.ts]  — 종전과 **바이트 동일**(dev 무회귀 보장).
  *   built:  [node, dist/src/index.js]      — tsx 미경유 순수 node.
  * WorkingDirectory·TIGUCLAW_HOME 등 나머지 유닛 필드는 모드 무관 동일.
+ * @param {Ctx} c
+ * @returns {string[]}
  */
-const execStrings = (c: Ctx): string[] =>
+const execStrings = (c) =>
   c.runtime === "built"
     ? [c.nodePath, c.distEntry]
     : [c.nodePath, c.tsxCli, c.entry];
@@ -111,7 +132,11 @@ const execStrings = (c: Ctx): string[] =>
 // ───────────────────────────── macOS (launchd) ─────────────────────────────
 // install-service.ts 의 plist 내용을 100% 동일하게 이식 (라이브 서비스가 이걸로 돈다).
 
-const buildLaunchdPlist = (c: Ctx): string => {
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const buildLaunchdPlist = (c) => {
   const nodeBinDir = path.dirname(c.nodePath);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -142,12 +167,18 @@ ${execStrings(c)
 `;
 };
 
-const launchdPlistPath = (c: Ctx): string =>
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const launchdPlistPath = (c) =>
   path.join(os.homedir(), "Library", "LaunchAgents", `${c.label}.plist`);
 
-const launchdDomain = (): string => `gui/${process.getuid?.() ?? 0}`;
+/** @returns {string} */
+const launchdDomain = () => `gui/${process.getuid?.() ?? 0}`;
 
-const darwinInstall = (c: Ctx): void => {
+/** @param {Ctx} c */
+const darwinInstall = (c) => {
   const plist = buildLaunchdPlist(c);
   mkdirSync(c.logsDir, { recursive: true });
   const plistPath = launchdPlistPath(c);
@@ -178,7 +209,8 @@ const darwinInstall = (c: Ctx): void => {
   );
 };
 
-const darwinUninstall = (c: Ctx): void => {
+/** @param {Ctx} c */
+const darwinUninstall = (c) => {
   const domain = launchdDomain();
   try {
     execFileSync("launchctl", ["bootout", `${domain}/${c.label}`], {
@@ -192,7 +224,8 @@ const darwinUninstall = (c: Ctx): void => {
   console.log(`✅ launchd 등록 해제 + plist 제거 (${c.label}).`);
 };
 
-const darwinRestart = (c: Ctx): void => {
+/** @param {Ctx} c */
+const darwinRestart = (c) => {
   const domain = launchdDomain();
   execFileSync("launchctl", ["kickstart", "-k", `${domain}/${c.label}`], {
     stdio: "inherit",
@@ -200,7 +233,45 @@ const darwinRestart = (c: Ctx): void => {
   console.log("✅ restarted");
 };
 
-const darwinStatus = (c: Ctx): void => {
+// stop = 실행만 중지, plist(등록) 유지 (D3). bootout 은 KeepAlive respawn 도 멈춘다.
+/** @param {Ctx} c */
+const darwinStop = (c) => {
+  const domain = launchdDomain();
+  try {
+    execFileSync("launchctl", ["bootout", `${domain}/${c.label}`], {
+      stdio: "inherit",
+    });
+  } catch {
+    /* 미로드 — 이미 정지 상태로 간주 */
+  }
+  console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
+};
+
+// start = plist 재작성 없이 재적재(재실행). 등록 파일은 이미 디스크에 있어야 한다.
+/** @param {Ctx} c */
+const darwinStart = (c) => {
+  const domain = launchdDomain();
+  const plistPath = launchdPlistPath(c);
+  if (!existsSync(plistPath)) {
+    console.error(
+      `daemon start: 등록 plist 가 없습니다 (${plistPath}). 먼저 install 하세요.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    execFileSync("launchctl", ["bootstrap", domain, plistPath], {
+      stdio: "inherit",
+    });
+  } catch {
+    // 이미 적재돼 있거나 세션 이슈 — 레거시 load 폴백.
+    execFileSync("launchctl", ["load", "-w", plistPath], { stdio: "inherit" });
+  }
+  console.log("✅ started");
+};
+
+/** @param {Ctx} c */
+const darwinStatus = (c) => {
   const domain = launchdDomain();
   const r = spawnSync("launchctl", ["print", `${domain}/${c.label}`], {
     encoding: "utf8",
@@ -216,7 +287,8 @@ const darwinStatus = (c: Ctx): void => {
   console.log(lines.length ? lines.join("\n") : "not loaded");
 };
 
-const darwinPrint = (c: Ctx): void => {
+/** @param {Ctx} c */
+const darwinPrint = (c) => {
   console.log(`# launchd LaunchAgent → ${launchdPlistPath(c)}`);
   console.log(buildLaunchdPlist(c));
   console.log(`# 등록:   launchctl bootstrap ${launchdDomain()} <plist>`);
@@ -225,10 +297,18 @@ const darwinPrint = (c: Ctx): void => {
 
 // ───────────────────────────── Linux (systemd user) ────────────────────────
 
-const systemdUnitPath = (c: Ctx): string =>
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const systemdUnitPath = (c) =>
   path.join(os.homedir(), ".config", "systemd", "user", `${c.label}.service`);
 
-const buildSystemdUnit = (c: Ctx): string =>
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const buildSystemdUnit = (c) =>
   `[Unit]
 Description=tiguclaw always-on AI assistant daemon (${c.label})
 After=network-online.target
@@ -247,13 +327,18 @@ RestartSec=2
 WantedBy=default.target
 `;
 
-const systemctlUser = (args: string[], inherit = true): void => {
+/**
+ * @param {string[]} args
+ * @param {boolean} [inherit]
+ */
+const systemctlUser = (args, inherit = true) => {
   execFileSync("systemctl", ["--user", ...args], {
     stdio: inherit ? "inherit" : "ignore",
   });
 };
 
-const linuxInstall = (c: Ctx): void => {
+/** @param {Ctx} c */
+const linuxInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
   const unitPath = systemdUnitPath(c);
   mkdirSync(path.dirname(unitPath), { recursive: true });
@@ -273,7 +358,8 @@ const linuxInstall = (c: Ctx): void => {
   );
 };
 
-const linuxUninstall = (c: Ctx): void => {
+/** @param {Ctx} c */
+const linuxUninstall = (c) => {
   try {
     systemctlUser(["disable", "--now", c.label]);
   } catch {
@@ -288,12 +374,28 @@ const linuxUninstall = (c: Ctx): void => {
   console.log(`✅ systemd user 서비스 해제 + 유닛 제거 (${c.label}).`);
 };
 
-const linuxRestart = (c: Ctx): void => {
+/** @param {Ctx} c */
+const linuxRestart = (c) => {
   systemctlUser(["restart", c.label]);
   console.log("✅ restarted");
 };
 
-const linuxStatus = (c: Ctx): void => {
+// stop = 실행만 중지, 유닛 enable(등록) 유지 (D3).
+/** @param {Ctx} c */
+const linuxStop = (c) => {
+  systemctlUser(["stop", c.label]);
+  console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
+};
+
+// start = 재실행. 유닛은 이미 디스크에 있어야 한다.
+/** @param {Ctx} c */
+const linuxStart = (c) => {
+  systemctlUser(["start", c.label]);
+  console.log("✅ started");
+};
+
+/** @param {Ctx} c */
+const linuxStatus = (c) => {
   const active = spawnSync("systemctl", ["--user", "is-active", c.label], {
     encoding: "utf8",
   });
@@ -308,7 +410,8 @@ const linuxStatus = (c: Ctx): void => {
   if (pid && pid !== "0") console.log(`pid = ${pid}`);
 };
 
-const linuxPrint = (c: Ctx): void => {
+/** @param {Ctx} c */
+const linuxPrint = (c) => {
   console.log(`# systemd user unit → ${systemdUnitPath(c)}`);
   console.log(buildSystemdUnit(c));
   console.log("# 등록:   systemctl --user daemon-reload && systemctl --user enable --now " + c.label);
@@ -323,15 +426,23 @@ const linuxPrint = (c: Ctx): void => {
 // 없음(로그온 가동) — 완전한 KeepAlive 가 필요하면 NSSM(선택) 또는 WSL2 권장.
 
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const winVbsPath = (c: Ctx): string => path.join(c.homeAbs, "win-launch.vbs");
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const winVbsPath = (c) => path.join(c.homeAbs, "win-launch.vbs");
 
 // bridge 포트(.env 우선 → env → 3001). status/restart 의 실행 PID 추정용.
-const winPort = (c: Ctx): string => {
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const winPort = (c) => {
   try {
     const m = readFileSync(path.join(c.homeAbs, ".env"), "utf8").match(
       /^HTTP_BRIDGE_PORT=(.*)$/m,
     );
-    if (m !== null && m[1]!.trim() !== "") return m[1]!.trim();
+    if (m !== null && m[1].trim() !== "") return m[1].trim();
   } catch {
     /* .env 없음 — 기본값 */
   }
@@ -339,7 +450,11 @@ const winPort = (c: Ctx): string => {
 };
 
 // 숨김(0)·비대기(False) 로 데몬을 띄우는 VBS. cwd=repoRoot, TIGUCLAW_HOME 주입.
-const buildWinVbs = (c: Ctx): string => {
+/**
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const buildWinVbs = (c) => {
   const inner =
     `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && ` +
     `set "TIGUCLAW_RUNTIME=${c.runtime}" && ` +
@@ -353,17 +468,24 @@ const buildWinVbs = (c: Ctx): string => {
   ].join("\r\n");
 };
 
-const winReg = (args: string[]) =>
+/** @param {string[]} args */
+const winReg = (args) =>
   spawnSync("reg", args, { stdio: "pipe", encoding: "utf8" });
 
 // 지금 즉시 1회 가동(숨김 VBS 실행).
-const winLaunch = (c: Ctx) =>
+/** @param {Ctx} c */
+const winLaunch = (c) =>
   spawnSync("wscript", [winVbsPath(c)], { stdio: "ignore" });
 
 // bridge 포트를 LISTEN 중인 PID(실행 중 데몬 추정).
-const winListeningPids = (c: Ctx): string[] => {
+/**
+ * @param {Ctx} c
+ * @returns {string[]}
+ */
+const winListeningPids = (c) => {
   const ns = spawnSync("netstat", ["-ano"], { encoding: "utf8" });
-  const pids = new Set<string>();
+  /** @type {Set<string>} */
+  const pids = new Set();
   const needle = `:${winPort(c)}`;
   for (const l of (ns.stdout ?? "").split(/\r?\n/)) {
     if (l.includes(needle) && /LISTENING/i.test(l)) {
@@ -374,12 +496,14 @@ const winListeningPids = (c: Ctx): string[] => {
   return [...pids];
 };
 
-const winKillRunning = (c: Ctx): void => {
+/** @param {Ctx} c */
+const winKillRunning = (c) => {
   for (const pid of winListeningPids(c))
     spawnSync("taskkill", ["/PID", pid, "/F", "/T"], { stdio: "ignore" });
 };
 
-const winInstall = (c: Ctx): void => {
+/** @param {Ctx} c */
+const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
   writeFileSync(winVbsPath(c), buildWinVbs(c), "utf8");
   // Run 값명 = 라벨(다중 인스턴스 분리). 값 = wscript 가 숨김 VBS 실행.
@@ -411,20 +535,45 @@ const winInstall = (c: Ctx): void => {
   );
 };
 
-const winUninstall = (c: Ctx): void => {
+/** @param {Ctx} c */
+const winUninstall = (c) => {
   winKillRunning(c);
   winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
   rmSync(winVbsPath(c), { force: true });
   console.log(`✅ 등록 해제 (Run 키 + VBS 제거, ${c.label}).`);
 };
 
-const winRestart = (c: Ctx): void => {
+/** @param {Ctx} c */
+const winRestart = (c) => {
   winKillRunning(c); // 실행 중이면 종료(bridge 포트 PID).
   winLaunch(c); // 숨김 재가동.
   console.log("✅ restarted");
 };
 
-const winStatus = (c: Ctx): void => {
+// stop = 실행만 중지(bridge 포트 PID kill), Run 키·VBS(등록) 유지 (D3).
+// 포트 미LISTEN 시 대상 못 찾을 수 있음(기존 status/restart 와 동일 한계 — ADR U3).
+/** @param {Ctx} c */
+const winStop = (c) => {
+  winKillRunning(c);
+  console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
+};
+
+// start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
+/** @param {Ctx} c */
+const winStart = (c) => {
+  if (!existsSync(winVbsPath(c))) {
+    console.error(
+      `daemon start: 런처 VBS 가 없습니다 (${winVbsPath(c)}). 먼저 install 하세요.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  winLaunch(c);
+  console.log("✅ started");
+};
+
+/** @param {Ctx} c */
+const winStatus = (c) => {
   const reg = winReg(["query", RUN_KEY, "/v", c.label]);
   console.log(`registered (HKCU Run): ${reg.status === 0 ? "yes" : "no"}`);
   const pids = winListeningPids(c);
@@ -437,7 +586,8 @@ const winStatus = (c: Ctx): void => {
   }
 };
 
-const winPrint = (c: Ctx): void => {
+/** @param {Ctx} c */
+const winPrint = (c) => {
   console.log(
     "# Windows: HKCU Run 키 + 숨김 VBS 런처 (관리자 권한 불요, 로그온 가동)",
   );
@@ -451,13 +601,16 @@ const winPrint = (c: Ctx): void => {
 // ───────────────────────────── logs (전 OS 공통) ────────────────────────────
 // 셸 tail 금지 — node 로 마지막 ~40줄 출력 후 follow (watchFile 폴링).
 
-const today = (): string => {
+/** @returns {string} */
+const today = () => {
   const d = new Date();
-  const p = (n: number) => String(n).padStart(2, "0");
+  /** @param {number} n */
+  const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
-const tailLogs = (c: Ctx): void => {
+/** @param {Ctx} c */
+const tailLogs = (c) => {
   const file = path.join(c.logsDir, `daemon-${today()}.log`);
   if (!existsSync(file)) {
     console.log(`로그 파일이 아직 없습니다: ${file}`);
@@ -468,7 +621,11 @@ const tailLogs = (c: Ctx): void => {
     return;
   }
 
-  const readFrom = (start: number): number => {
+  /**
+   * @param {number} start
+   * @returns {number}
+   */
+  const readFrom = (start) => {
     try {
       const buf = readFileSync(file);
       if (buf.length > start) {
@@ -502,16 +659,18 @@ const tailLogs = (c: Ctx): void => {
 
 // ───────────────────────────── dispatch ─────────────────────────────────────
 
-type Cmd = "install" | "uninstall" | "restart" | "status" | "logs" | "print";
+/** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print"} Cmd */
 
-const handlers: Record<
-  NodeJS.Platform | "default",
-  Partial<Record<Exclude<Cmd, "logs">, (c: Ctx) => void>> | undefined
-> = {
+/**
+ * @type {Record<string, Record<string, (c: Ctx) => void> | undefined>}
+ */
+const handlers = {
   darwin: {
     install: darwinInstall,
     uninstall: darwinUninstall,
     restart: darwinRestart,
+    stop: darwinStop,
+    start: darwinStart,
     status: darwinStatus,
     print: darwinPrint,
   },
@@ -519,6 +678,8 @@ const handlers: Record<
     install: linuxInstall,
     uninstall: linuxUninstall,
     restart: linuxRestart,
+    stop: linuxStop,
+    start: linuxStart,
     status: linuxStatus,
     print: linuxPrint,
   },
@@ -526,16 +687,51 @@ const handlers: Record<
     install: winInstall,
     uninstall: winUninstall,
     restart: winRestart,
+    stop: winStop,
+    start: winStart,
     status: winStatus,
     print: winPrint,
   },
   default: undefined,
-} as Record<
-  NodeJS.Platform | "default",
-  Partial<Record<Exclude<Cmd, "logs">, (c: Ctx) => void>> | undefined
->;
+};
 
-const unsupported = (c: Ctx, cmd: string): void => {
+// install 이 실행 중 데몬을 감지하면 EPERM(네이티브 모듈 락) 복구 순서를 안내한다(ADR
+//   2026-07-15 D5, 소프트 강제 — 자동 stop/npm 실행은 하지 않는다). best-effort: 감지 실패는
+//   조용히 무시(install 을 절대 막지 않음).
+/**
+ * @param {Ctx} c
+ * @returns {boolean}
+ */
+const isDaemonRunning = (c) => {
+  try {
+    if (process.platform === "darwin") {
+      const r = spawnSync(
+        "launchctl",
+        ["print", `${launchdDomain()}/${c.label}`],
+        { encoding: "utf8" },
+      );
+      return r.status === 0 && /\bpid\s*=/.test(r.stdout ?? "");
+    }
+    if (process.platform === "linux") {
+      const r = spawnSync("systemctl", ["--user", "is-active", c.label], {
+        encoding: "utf8",
+      });
+      return (r.stdout ?? "").trim() === "active";
+    }
+    if (process.platform === "win32") {
+      return winListeningPids(c).length > 0;
+    }
+  } catch {
+    /* 감지 실패 — 무시 */
+  }
+  return false;
+};
+
+/**
+ * @param {Ctx} c
+ * @param {string} cmd
+ */
+const unsupported = (c, cmd) => {
   console.log(
     `daemon: 현재 OS(${process.platform})는 자동 ${cmd} 미지원 (darwin/linux/win32 지원).`,
   );
@@ -547,7 +743,10 @@ const unsupported = (c: Ctx, cmd: string): void => {
   );
 };
 
-export const runDaemonCommand = (cmd: string): void => {
+/**
+ * @param {string} cmd
+ */
+export const runDaemonCommand = (cmd) => {
   const c = buildCtx();
 
   if (cmd === "logs") {
@@ -555,17 +754,20 @@ export const runDaemonCommand = (cmd: string): void => {
     return;
   }
 
-  const known: Cmd[] = [
+  /** @type {Cmd[]} */
+  const known = [
     "install",
     "uninstall",
     "restart",
+    "stop",
+    "start",
     "status",
     "print",
   ];
-  if (!known.includes(cmd as Cmd)) {
+  if (!known.includes(/** @type {Cmd} */ (cmd))) {
     console.error(
       `daemon: 알 수 없는 서브커맨드 '${cmd}'. ` +
-        "사용: install | uninstall | restart | status | logs | print",
+        "사용: install | uninstall | restart | stop | start | status | logs | print",
     );
     process.exitCode = 1;
     return;
@@ -585,8 +787,19 @@ export const runDaemonCommand = (cmd: string): void => {
     }
   }
 
+  // EPERM 복구 안내(D5): install 중 데몬이 살아 있으면 네이티브 모듈(better_sqlite3.node)이
+  //   락돼 `npm ci` 가 EPERM 날 수 있다. 자동 stop/npm 은 안 함 — 순서만 안내(소프트 강제).
+  if (cmd === "install" && isDaemonRunning(c)) {
+    console.warn(
+      "# ⚠ 데몬이 실행 중입니다. 의존성 재설치(npm ci)가 필요하다면 EPERM(파일 락)을 피하기 위해",
+    );
+    console.warn(
+      "#   먼저 `tiguclaw stop` (또는 npm run daemon:stop) → `npm ci` → `tiguclaw start`/install 순서를 권장합니다.",
+    );
+  }
+
   const table = handlers[process.platform];
-  const fn = table?.[cmd as Exclude<Cmd, "logs">];
+  const fn = table?.[cmd];
   if (!fn) {
     unsupported(c, cmd);
     return;
@@ -594,19 +807,19 @@ export const runDaemonCommand = (cmd: string): void => {
   try {
     fn(c);
   } catch (err) {
-    console.error(`daemon ${cmd}: 실패 — ${(err as Error).message}`);
+    console.error(`daemon ${cmd}: 실패 — ${/** @type {Error} */ (err).message}`);
     process.exitCode = 1;
   }
 };
 
 // 직접 실행 시 진입 (얇은 install-service 래퍼가 import 해도 자동 실행 X 하도록 가드).
 const invokedDirectly =
-  process.argv[1] && path.resolve(process.argv[1]).endsWith("daemon.ts");
+  process.argv[1] && path.resolve(process.argv[1]).endsWith("daemon.mjs");
 if (invokedDirectly) {
   const cmd = process.argv[2];
   if (!cmd) {
     console.error(
-      "사용: tsx src/scripts/daemon.ts <install|uninstall|restart|status|logs|print>",
+      "사용: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print>",
     );
     process.exitCode = 1;
   } else {

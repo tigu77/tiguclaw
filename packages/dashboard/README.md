@@ -2,6 +2,22 @@
 
 tiguclaw 데몬 외부 dashboard. http-bridge endpoint 통해서만 데몬과 통신.
 
+## 파일 레이아웃 (2026-07-16 분해)
+
+원래 `index.html` 한 파일(5,931줄, CSS+JS+마크업 전부)이었으나 단순+견고(특히 AI 협업 시
+검증가능성)를 위해 관심사별로 분해했다. ADR: [`docs/decisions/2026-07-16-dashboard-decomposition.md`](../../docs/decisions/2026-07-16-dashboard-decomposition.md).
+
+- `index.html` — 마크업 + `<link href=/app.css>` + `<script src=/js/*.js>` 나열(≈150줄).
+- `app.css` — 전체 스타일.
+- `js/*.js` — 뷰·기능별 모듈(classic 스크립트, **전역 렉시컬 스코프 공유** — 번들러 없음).
+  `js/_manifest.json` = **로드 순서**(= 원본 라인 순서). `index.html` 의 `<script src>` 태그 순서가
+  이와 일치해야 한다. ★즉시실행/부트스트랩이 섞여 있어 **순서가 중요** — 재정렬 금지. 새 모듈은
+  `_manifest.json` 과 `index.html` 태그를 **같은 위치**에 함께 추가.
+- `marked.min.js`/`highlight.min.js` — vendored(내용 고정·캐시). 앱 CSS/JS 는 `no-store`.
+
+불변식 게이트: `scripts/verify-dashboard-split.mjs` (`packages/dashboard/**` 변경 시 실행) —
+인라인 `<style>`/`<script>` 본문 0, 태그 순서 == `_manifest.json`, 디스크 `js/*.js` 집합 == 매니페스트.
+
 ## 사용
 
 1. 데몬 부팅: `npm run dev` (다른 터미널). dev http-bridge 는 `.env HTTP_BRIDGE_PORT`(현재 `3000`) 에서 서빙.

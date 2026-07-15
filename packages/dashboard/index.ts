@@ -3,19 +3,24 @@
  *
  * 데몬과 분리된 별도 process. http-bridge endpoint 만 통해 통신.
  *  - 정적 HTML serve (`/`, `/index.html`)
+ *  - 정적 앱 CSS serve (`/app.css`, dashboard-split Phase1 — ADR 2026-07-16)
  *  - same-origin proxy (`/api/*`) — token server-side 주입, browser 미노출
  *
  * routes:
+ *  - GET  /app.css       → 정적 파일 (index.html 과 동일 no-store, 코드는 캐시 안 함)
+ *  - GET  /js/<name>.js  → 정적 파일 (dashboard-split Phase2a, js/_manifest.json 화이트리스트)
  *  - GET  /api/inventory → bridge GET  /inventory       (JSON pass)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원; threadKey qs 통과)
+ *  - GET  /api/all-activity → bridge GET /all-activity  (JSON pass, 전체활동 크로스세션 타임라인)
  *  - GET  /api/sessions  → bridge GET  /sessions        (JSON pass, 멀티세션 탭 목록+프리뷰)
  *  - GET  /api/projects  → bridge GET  /projects        (JSON pass, 프로젝트 목록)
  *  - GET  /api/projects/detail → bridge GET /projects/detail (JSON pass, 프로젝트 상세)
  *  - GET  /api/events    → bridge GET  /events          (SSE pipe)
  *  - POST /api/messages  → bridge POST /messages        (body forward)
+ *  - POST /api/session-name → bridge POST /session-name (write, 세션 커스텀 이름 설정)
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
  *  - POST /api/cancel-queued → bridge POST /cancel-queued (admin, 대기 중 메시지 취소)
  *
@@ -23,10 +28,27 @@
  */
 import http from "node:http";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// dashboard-split Phase2 (ADR 2026-07-16) — /js/<name>.js 화이트리스트. _manifest.json
+// (로드순서 배열)을 기동 시 1회 읽어 Set 화 — 라우팅 데이터테이블. 매니페스트 없으면 빈
+// 화이트리스트(그 phase 이전엔 /js/ 라우트 자체가 무의미 — 404 로 저절로 닫힘).
+const JS_MANIFEST_PATH = path.join(__dirname, "js", "_manifest.json");
+let jsWhitelist: Set<string> = new Set();
+try {
+  const manifest: unknown = JSON.parse(
+    fsSync.readFileSync(JS_MANIFEST_PATH, "utf8"),
+  );
+  if (Array.isArray(manifest)) {
+    jsWhitelist = new Set(manifest.map((n) => path.basename(String(n))));
+  }
+} catch {
+  jsWhitelist = new Set();
+}
 
 const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "3001", 10);
 const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST ?? "localhost";
@@ -185,6 +207,50 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // 앱 CSS (dashboard-split Phase1, ADR 2026-07-16) — index.html 의 <style> 이 그대로
+    // 옮겨온 코드다. index.html 과 동일하게 no-store(옛 코드 잔존 방지, 코드는 캐시 안 함).
+    if (pathname === "/app.css" && method === "GET") {
+      try {
+        const css = await fs.readFile(
+          path.join(__dirname, "app.css"),
+          "utf8",
+        );
+        res.writeHead(200, {
+          "Content-Type": "text/css; charset=utf-8",
+          "Cache-Control": "no-store, must-revalidate",
+        });
+        res.end(css);
+      } catch {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("app.css load failed");
+      }
+      return;
+    }
+
+    // 잎(leaf) JS 파일 (dashboard-split Phase2a, ADR 2026-07-16) — index.html 인라인에서
+    // 옮겨온 코드다. 화이트리스트(_manifest.json 기반) + path.basename 강제로 경로 탈출 차단.
+    // 데이터테이블 1개(jsWhitelist) — 이름별 분기 없음. index.html 과 동일 no-store(코드 캐시 안 함).
+    if (pathname.startsWith("/js/") && method === "GET") {
+      const base = path.basename(pathname.slice("/js/".length));
+      if (!jsWhitelist.has(base)) {
+        res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+      try {
+        const js = await fs.readFile(path.join(__dirname, "js", base), "utf8");
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "no-store, must-revalidate",
+        });
+        res.end(js);
+      } catch {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(`js/${base} load failed`);
+      }
+      return;
+    }
+
     // 정적 vendored 마크다운 파서 (marked, 단일파일·외부 의존 0).
     if (pathname === "/marked.min.js" && method === "GET") {
       try {
@@ -253,6 +319,14 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/chat-history" + qs);
       return;
     }
+    // 전체활동(크로스세션) — bridge GET /all-activity (read 토큰 server-side 주입).
+    // _workspace/all-activity_architect_contract.md §1.3. /api/chat-history 와 동일 메커니즘
+    // (limit/beforeTs 쿼리 그대로 전달), threadKey 스코프 없음(전 스레드 병합이 본질).
+    if (pathname === "/api/all-activity" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/all-activity" + qs);
+      return;
+    }
     // 세션 목록 — bridge GET /sessions (read 토큰 server-side 주입). 대시보드 멀티세션
     // 탭 picker(존재하는 dashboard: 세션 + 프리뷰). /api/providers 패턴 동형.
     if (pathname === "/api/sessions" && method === "GET") {
@@ -283,6 +357,18 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/messages" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 세션 커스텀 이름 설정 — bridge POST /session-name (write 토큰 server-side 주입,
+    // browser 미노출). 계약 _workspace/session-tabs_architect_contract.md §3-3.
+    // body{threadKey,name} 그대로 전달 — /api/messages 와 동일 메커니즘.
+    if (pathname === "/api/session-name" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/session-name", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

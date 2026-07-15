@@ -42,7 +42,7 @@ import {
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
-import { listThreads } from "../../src/store/sessions.js";
+import { listThreads, setThreadName } from "../../src/store/sessions.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { getAssistantName } from "../../src/core/identity.js";
 import { listProjects } from "../../src/store/projects.js";
@@ -688,6 +688,8 @@ class HttpBridge implements Channel, Observer {
             ? "read"
             : pathname === "/chat-history" && method === "GET"
               ? "read"
+              : pathname === "/all-activity" && method === "GET"
+                ? "read"
               : pathname === "/sessions" && method === "GET"
               ? "read"
               : pathname === "/projects" && method === "GET"
@@ -696,6 +698,8 @@ class HttpBridge implements Channel, Observer {
                   ? "read"
                   : pathname === "/messages" && method === "POST"
               ? "write"
+              : pathname === "/session-name" && method === "POST"
+                ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
                 : pathname === "/cancel-queued" && method === "POST"
@@ -868,6 +872,40 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
+    // /all-activity — JSON. 전체활동(크로스세션) 뷰(_workspace/all-activity_architect_contract.md
+    // §1.1). /chat-history 의 언스코프 버전 — threadKey 를 아예 전달하지 않아 getRecentChatLog
+    // 가 전 스레드 병합으로 동작(chat-log.ts, 이미 준비됨)하고 historyActivities 도
+    // scopeThreadKey 생략 호출로 전 스레드 활동을 병합(L355 분기가 undefined 면 통과 — 이미
+    // 준비됨). store·historyActivities 시그니처 변경 없음. assistantName 등 세션특화 필드는
+    // 이 뷰에 불필요(읽기전용 모니터). read 게이트(위 role 표).
+    if (pathname === "/all-activity" && method === "GET") {
+      try {
+        const limitRaw = url.searchParams.get("limit");
+        const parsed = limitRaw !== null ? parseInt(limitRaw, 10) : NaN;
+        const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 200;
+        const beforeRaw = url.searchParams.get("beforeTs");
+        const beforeParsed =
+          beforeRaw !== null ? parseInt(beforeRaw, 10) : NaN;
+        const beforeTs =
+          Number.isFinite(beforeParsed) && beforeParsed > 0
+            ? beforeParsed
+            : undefined;
+        const entries = getRecentChatLog({
+          limit,
+          ...(beforeTs !== undefined ? { beforeTs } : {}),
+        });
+        writeJson(res, 200, {
+          entries,
+          activities: historyActivities(entries),
+          generatedAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
     // /sessions — JSON. 대시보드 멀티세션 탭(ADR 2026-07-15 §D6). ★채널/세션 분리로 세션이
     // 채널 무관이 됐으므로 `prefix:'dashboard:'` 필터를 폐지하고 `excludeInternal:true` 로
     // **사용자 대면 대화 세션 전체**(현행 dashboard:* + 레거시 tg:*/cli:* 과거 대화)를 반환한다
@@ -891,6 +929,7 @@ class HttpBridge implements Channel, Observer {
             lastUsedAt: t.lastUsedAt,
             ...(t.model !== null ? { model: t.model } : {}),
             ...(preview !== undefined ? { preview } : {}),
+            ...(t.name !== null ? { name: t.name } : {}),
           };
         });
         writeJson(res, 200, {
@@ -1323,6 +1362,43 @@ class HttpBridge implements Channel, Observer {
       }
       const result = cancelQueuedTurn(threadKey, correlationId);
       writeJson(res, 200, { result });
+      return;
+    }
+
+    // /session-name — 세션 커스텀 이름 설정(채널무관·UPDATE-only·비파괴, 계약
+    // _workspace/session-tabs_architect_contract.md §3-1). write 게이트(위 role 표).
+    // body { threadKey, name } — name 은 string|null(빈문자→null=커스텀 제거→파생 폴백).
+    // store setThreadName 이 정규화(trim·60캡·빈값→null)까지 수행 — 여기선 pass-through.
+    if (pathname === "/session-name" && method === "POST") {
+      let nbody: Record<string, unknown>;
+      try {
+        nbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const threadKey =
+        typeof nbody.threadKey === "string" ? nbody.threadKey.trim() : "";
+      if (threadKey === "") {
+        writeJson(res, 400, { error: "threadKey required" });
+        return;
+      }
+      const nameIn =
+        typeof nbody.name === "string" ? nbody.name : null;
+      try {
+        setThreadName(threadKey, nameIn);
+        // 정규화된 값을 응답에 반영 — store 는 changes count 만 반환하므로 여기서
+        // 동일 정규화 규칙(trim·60캡·빈값→null)을 재적용해 클라 로컬 동기화값을 만든다.
+        const normName =
+          nameIn === null || nameIn.trim() === ""
+            ? null
+            : nameIn.trim().slice(0, 60);
+        writeJson(res, 200, { ok: true, threadKey, name: normName });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
       return;
     }
 

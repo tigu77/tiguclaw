@@ -240,6 +240,15 @@ export const initStore = (): void => {
     handle.exec(`ALTER TABLE threads ADD COLUMN last_channel_target TEXT`);
   }
 
+  // ─── 세션 커스텀 이름: threads.name (idempotent ALTER, 채널/세션 탭 계약 §1) ──
+  // nullable TEXT. 미지정(기존 row·미명명) = NULL = 대시보드 파생 폴백(프리뷰/채널/세션N).
+  // threadKey(channel_thread_id) 로만 키잉되는 채널무관 세션 1:1 속성 — system_prompt_hash/
+  // last_channel 과 동형 패턴. 신규 DB: CREATE 직후 probe 에 없음 → ADD. 반복 부팅: skip.
+  const hasNameCol = cols.some((c) => c.name === "name");
+  if (!hasNameCol) {
+    handle.exec(`ALTER TABLE threads ADD COLUMN name TEXT`);
+  }
+
   // ─── Memory V1: typed memories + FTS5 (contract §2) ─────────────────────
   handle.exec(`
     CREATE TABLE IF NOT EXISTS memories (
@@ -792,6 +801,8 @@ export interface ThreadSummary {
   lastChannelTarget: string | null;
   lastUsedAt: number;
   model: string | null;
+  /** 커스텀 세션 이름(채널무관, 사용자 지정). NULL = 미지정 → 소비자가 파생 라벨로 폴백. */
+  name: string | null;
 }
 
 export const listThreads = (opts?: {
@@ -818,7 +829,7 @@ export const listThreads = (opts?: {
 
   const rows = handle
     .prepare(
-      `SELECT channel, channel_thread_id, last_channel, last_channel_target, last_used_at, model
+      `SELECT channel, channel_thread_id, last_channel, last_channel_target, last_used_at, model, name
          FROM threads
         WHERE ${conds.join("\n          AND ")}
         ORDER BY last_used_at DESC
@@ -831,6 +842,7 @@ export const listThreads = (opts?: {
     last_channel_target: string | null;
     last_used_at: number;
     model: string | null;
+    name: string | null;
   }[];
   return rows.map((r) => ({
     channel: r.channel as ChannelName,
@@ -839,7 +851,22 @@ export const listThreads = (opts?: {
     lastChannelTarget: r.last_channel_target,
     lastUsedAt: r.last_used_at,
     model: r.model,
+    name: r.name as string | null,
   }));
+};
+
+/**
+ * 세션 커스텀 이름 설정(채널무관·비파괴). name=null|"" → 커스텀 제거(NULL, 파생 폴백).
+ * threadKey 로만 매칭(channel 무시) = 단일인격. UPDATE-only(행 없으면 no-op).
+ * @returns 갱신된 행 수(0 = 아직 백엔드 세션 없음, 호출부 graceful).
+ */
+export const setThreadName = (threadKey: string, name: string | null): number => {
+  const handle = requireDb("setThreadName");
+  const norm = name === null ? null : name.trim() === "" ? null : name.trim().slice(0, 60);
+  const info = handle
+    .prepare(`UPDATE threads SET name = ? WHERE channel_thread_id = ?`)
+    .run(norm, threadKey);
+  return info.changes;
 };
 
 /**

@@ -130,8 +130,9 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 
 ### 평소 사용
 
-- **어디서나 제어** — `onboard` 가 `npm link` 를 자동 실행해, 어느 폴더에서나 `tiguclaw status | restart | logs | doctor | uninstall` 가 됩니다(진짜 앱처럼). *(레포 안에선 `npm run daemon:*` 도 가능.)*
-- **서비스 관리**(macOS / Linux / Windows 공통 명령): `npm run daemon:status | daemon:restart | daemon:logs`.
+- **어디서나 제어** — `onboard` 가 `npm link` 를 자동 실행해, 어느 폴더에서나 `tiguclaw status | restart | stop | start | logs | doctor | uninstall` 가 됩니다(진짜 앱처럼). *(레포 안에선 `npm run daemon:*` 도 가능.)*
+- **서비스 관리**(macOS / Linux / Windows 공통 명령): `npm run daemon:status | daemon:restart | daemon:stop | daemon:start | daemon:logs`.
+- **일시정지 vs 제거** — `daemon:stop` 은 실행만 멈추고 등록은 유지합니다(다음 로그인 때 다시 자동 가동). `daemon:start` 로 재개. 완전히 없애려면 `daemon:uninstall`.
 - **뭔가 이상하면?** `npm run doctor` 가 키·봇 도달·홈·서비스를 점검합니다.
 
 참고:
@@ -144,6 +145,7 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
   - **Linux** → systemd **user** 서비스 (`Restart=always`). 로그인 없이 부팅 가동하려면: `loginctl enable-linger $USER`.
   - **Windows** → 레지스트리 Run 키(HKCU — **관리자 권한 불요**; 로그온 시 숨김 가동). crash 자동재시작 없음; 완전한 KeepAlive 는 **WSL2** 권장.
   - KeepAlive 강도는 솔직히 macOS > Linux > Windows 순. 위 관리 명령은 3 OS 모두 동일합니다.
+- **의존성이 깨져도 관리 명령은 항상 됩니다** — install / uninstall / restart / stop / start 는 순수 Node 로만 돕니다(빌드·`tsx` 불필요). 그래서 `node_modules` 가 깨졌거나 없어도 서비스를 멈추거나 제거할 수 있습니다. `npm ci` 가 파일 잠금 오류(네이티브 모듈 `EPERM`)로 실패하면 실행 중인 데몬이 그 파일을 잡고 있는 것이니, `tiguclaw stop`(또는 `npm run daemon:stop`) → `npm ci` → `tiguclaw start` 순서로 풀면 됩니다.
 
 ### 업데이트
 

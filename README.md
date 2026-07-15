@@ -130,8 +130,9 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 
 ### Day to day
 
-- **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | logs | doctor | uninstall` work from any folder, like a real app. *(Inside the repo, `npm run daemon:*` works too.)*
-- **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:logs`.
+- **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | stop | start | logs | doctor | uninstall` work from any folder, like a real app. *(Inside the repo, `npm run daemon:*` works too.)*
+- **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:stop | daemon:start | daemon:logs`.
+- **Pause vs remove** — `daemon:stop` stops the process but keeps it registered (it still auto-starts at next login); `daemon:start` resumes it. `daemon:uninstall` removes the registration entirely.
 - **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
 
 A few notes:
@@ -144,6 +145,7 @@ A few notes:
   - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
   - **Windows** → registry Run key (HKCU — **no admin needed**; starts at logon, runs hidden). No crash-restart; for full KeepAlive run under **WSL2**.
   - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
+- **Lifecycle always works, even if deps break** — install / uninstall / restart / stop / start run on plain Node (no build step, no `tsx`), so you can still stop or remove the service even when `node_modules` is broken or missing. If `npm ci` ever fails with a file-lock error (`EPERM` on a native module), it's because the running daemon is holding the file — just `tiguclaw stop` (or `npm run daemon:stop`), then `npm ci`, then `tiguclaw start`.
 
 ### Updating
 

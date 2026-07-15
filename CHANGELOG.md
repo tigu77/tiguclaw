@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-15
+### Added
+- **대시보드 멀티세션 탭.** 대시보드 채팅 상단에서 **`+`** 로 새 세션(독립 맥락/대화)을 열어 여러 작업을 따로 진행하고, 탭 전환·**닫기**(닫아도 대화는 보존)가 됩니다. 각 탭 = 독립 대화 — tiguclaw 는 원래 세션별로 대화를 독립 처리하고(메모리·인격은 공유하는 단일 비서), **서로 다른 세션의 요청을 동시에 병렬로** 처리합니다. 열린 탭은 브라우저에 저장되어 새로고침 후에도 유지됩니다. (모든 세션·채널을 한눈에 보는 "전체 활동" 뷰는 후속으로 추가 예정.)
+
 ## [0.4.10] - 2026-07-15
 ### Added
 - **대기 중인 메시지를 취소할 수 있습니다.** 비서가 처리 중일 때 보낸 메시지는 큐에 쌓이는데(⏳ 대기 중), 아직 시작하지 않은 메시지는 대시보드에서 옆의 **✕** 로 취소할 수 있습니다 — 취소하면 실행되지 않고 "취소됨"으로 표시됩니다. (이미 시작된 턴을 멈추는 `/stop` 과는 별개.) 클라이언트가 부여한 상관 id 로 정확한 메시지만 지목해 취소하며, 큐의 직렬화·순서는 그대로 보존됩니다.
@@ -692,7 +696,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.10...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tigu77/tiguclaw/compare/v0.4.10...v0.5.0
 [0.4.10]: https://github.com/tigu77/tiguclaw/compare/v0.4.9...v0.4.10
 [0.4.9]: https://github.com/tigu77/tiguclaw/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/tigu77/tiguclaw/compare/v0.4.7...v0.4.8

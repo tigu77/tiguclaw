@@ -97,10 +97,20 @@ export const getRecentChatLog = (opts?: {
   limit?: number;
   sinceTs?: number;
   beforeTs?: number;
+  /**
+   * threadKey 스코프(멀티세션 탭 — ADR 2026-07-15 D5.3). 지정 시 `WHERE thread_key = ?`
+   * 를 기존 sinceTs/beforeTs 와 AND 결합 → per-thread 이력. **미지정 = 현행(전 스레드
+   * 병합, 회귀 0).** 코어는 threadKey 를 opaque 로 취급(§0 — "dashboard" 특수참조 X).
+   */
+  threadKey?: string;
 }): ChatLogEntry[] => {
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 200;
   const where: string[] = [];
   const params: unknown[] = [];
+  if (opts?.threadKey !== undefined) {
+    where.push(`thread_key = ?`);
+    params.push(opts.threadKey);
+  }
   if (opts?.sinceTs !== undefined) {
     where.push(`ts >= ?`);
     params.push(opts.sinceTs);

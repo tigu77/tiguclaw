@@ -42,6 +42,7 @@ import {
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
+import { listThreads } from "../../src/store/sessions.js";
 import { getAssistantName } from "../../src/core/identity.js";
 import { listProjects } from "../../src/store/projects.js";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
@@ -309,7 +310,10 @@ interface HistoryActivity {
   /** kind==="text" 일 때만 — 그 세그먼트의 마크다운 원문. 2026-07-13. */
   text?: string;
 }
-const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] => {
+const historyActivities = (
+  entries: Array<{ ts: number }>,
+  scopeThreadKey?: string,
+): HistoryActivity[] => {
   if (entries.length === 0) return [];
   const sinceTs = entries[0].ts; // ASC — oldest.
   const newestTs = entries[entries.length - 1].ts;
@@ -346,6 +350,9 @@ const historyActivities = (entries: Array<{ ts: number }>): HistoryActivity[] =>
       if (tk.startsWith("worker:") || tk.startsWith("agent:") || tk.startsWith("gateway:")) {
         continue; // 잡·게이트웨이 스텝은 채팅 이력 아님(text 세그먼트도 depth>0 은 애초 미발행).
       }
+      // 멀티세션 탭(ADR 2026-07-15) — 요청 threadKey 로 스코프해 entries 와 동일 계약 유지
+      //  (안 하면 타 스레드 도구 스텝이 세션 이력에 샘 = 크로스세션 누수). 미지정=현행(전 스레드).
+      if (scopeThreadKey !== undefined && scopeThreadKey !== "" && tk !== scopeThreadKey) continue;
       const seq = typeof p.seq === "number" ? p.seq : 0;
       const adapter = typeof p.adapter === "string" ? p.adapter : "";
       if (p.kind === "text") {
@@ -681,6 +688,8 @@ class HttpBridge implements Channel, Observer {
             ? "read"
             : pathname === "/chat-history" && method === "GET"
               ? "read"
+              : pathname === "/sessions" && method === "GET"
+              ? "read"
               : pathname === "/projects" && method === "GET"
                 ? "read"
                 : pathname === "/projects/detail" && method === "GET"
@@ -833,15 +842,58 @@ class HttpBridge implements Channel, Observer {
           Number.isFinite(beforeParsed) && beforeParsed > 0
             ? beforeParsed
             : undefined;
-        const entries = getRecentChatLog(
-          beforeTs !== undefined ? { limit, beforeTs } : { limit },
-        );
+        // threadKey — 멀티세션 탭(ADR 2026-07-15 D5.3). 지정 시 그 스레드만, 미지정 시
+        // 현행(전 스레드 병합, 회귀 0). limit/beforeTs 와 결합.
+        const threadKeyRaw = url.searchParams.get("threadKey");
+        const threadKey =
+          threadKeyRaw !== null && threadKeyRaw.trim() !== ""
+            ? threadKeyRaw
+            : undefined;
+        const entries = getRecentChatLog({
+          limit,
+          ...(beforeTs !== undefined ? { beforeTs } : {}),
+          ...(threadKey !== undefined ? { threadKey } : {}),
+        });
         // 비서 표시 이름(AGENT.md 이름 필드, 없으면 tiguclaw) — 대시보드 채팅 라벨용.
         // activities(기능 B) — 이력에 도구 스텝 복원(새로고침 후에도 도구 사용 표시).
         writeJson(res, 200, {
           entries,
-          activities: historyActivities(entries),
+          activities: historyActivities(entries, threadKey),
           assistantName: getAssistantName(),
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /sessions — JSON. 대시보드 멀티세션 탭(ADR 2026-07-15 D5.2). listThreads(prefix=
+    // 'dashboard:') 로 대시보드 세션 목록(last_used_at 내림차순) + 세션별 프리뷰(chat_log
+    // 최근 1건 text 요약, 짧게 슬라이스). read 게이트(위 role 표 — /providers·/chat-history
+    // 동형, 무인 노출 X). 서버는 세션 필터를 여기서만 관여 — SSE 는 전체 브로드캐스트 유지(D5).
+    if (pathname === "/sessions" && method === "GET") {
+      try {
+        const threads = listThreads({ prefix: "dashboard:" });
+        const sessions = threads.map((t) => {
+          // 프리뷰 — 그 스레드 최근 1건 text 요약(80자 슬라이스). 첨부-only(text="")는
+          // 스킵되어 빈 프리뷰(undefined)로 graceful.
+          const recent = getRecentChatLog({ threadKey: t.threadKey, limit: 1 });
+          const previewText = recent.length > 0 ? recent[recent.length - 1]!.text : "";
+          const preview =
+            previewText.trim() !== ""
+              ? previewText.replace(/\s+/g, " ").slice(0, 80)
+              : undefined;
+          return {
+            threadKey: t.threadKey,
+            lastUsedAt: t.lastUsedAt,
+            ...(t.model !== null ? { model: t.model } : {}),
+            ...(preview !== undefined ? { preview } : {}),
+          };
+        });
+        writeJson(res, 200, {
+          sessions,
+          generatedAt: new Date().toISOString(),
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

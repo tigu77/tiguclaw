@@ -275,6 +275,16 @@
       .chat-tabs { display:flex; gap:6px; padding:4px; border:1px solid var(--border); border-radius:13px; background:rgba(255,255,255,.035); }
       .chat-tab { border:0; border-radius:10px; padding:7px 10px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:800; }
       .chat-tab.active { background:rgba(125,211,252,.13); color:var(--text); }
+      /* 세션 탭 바(멀티세션, ADR 2026-07-15) — 화면 네비(#tab-bar/.chat-tab)와 별개 개념: 각 탭 = 독립 대화 세션. */
+      .session-tabs { display:flex; align-items:center; gap:5px; padding:6px 2px 2px; flex-wrap:wrap; }
+      .session-tab { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:10px; padding:5px 9px; background:rgba(255,255,255,.03); color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:700; max-width:180px; }
+      .session-tab:hover { background:rgba(255,255,255,.07); color:var(--text); }
+      .session-tab.active { background:rgba(125,211,252,.14); color:var(--text); border-color:rgba(125,211,252,.4); }
+      .session-tab .st-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .session-tab .st-x { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:5px; color:var(--text-dim); font-size:13px; line-height:1; }
+      .session-tab .st-x:hover { background:rgba(248,81,73,.2); color:#f85149; }
+      .session-tab .st-dot { width:6px; height:6px; border-radius:50%; background:var(--accent-2); flex:none; animation:tc-pulse 1.5s ease-in-out infinite; }
+      .session-tab.session-add { justify-content:center; font-size:15px; font-weight:800; padding:5px 11px; color:var(--accent); max-width:none; }
       .log-tools { display:none; align-items:center; gap:10px; }
       body[data-chat-panel="log"] .log-tools { display:flex; }
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
@@ -944,6 +954,7 @@
               백그라운드 <span class="bg-badge" id="bg-badge">0</span>
             </button>
           </div>
+          <div id="session-tabs" class="session-tabs" role="tablist" aria-label="세션 탭"></div>
           <div class="log-tools">
             <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" />
           </div>
@@ -1010,7 +1021,14 @@
         let drop = store.size - Math.floor(KEY_CACHE_MAX * 0.75);
         for (const k of store.keys()) { store.delete(k); if (--drop <= 0) break; }
       };
-      const THREAD_KEY = "dashboard:default";
+      // 멀티세션 탭(ADR 2026-07-15) — 대시보드 세션 = dashboard:<...> threadKey. 기본 세션은
+      // dashboard:default(현행 상수와 동일 = 무이관 연속성). activeThreadKey = 지금 화면에 렌더
+      // 중인 세션(C계층 = 활성 참조). 전송·큐취소·폴백·워킹표시 대표는 이 값 기준. SSE 는 전
+      // 스레드를 계속 수신(§3.4 하드룰)하되, 채팅 스트림 DOM(B계층)은 activeThreadKey 만 그린다.
+      const DEFAULT_DASH_THREAD = "dashboard:default";
+      let activeThreadKey = DEFAULT_DASH_THREAD;
+      // 이벤트 threadKey 가 지금 활성 세션인가(미지정 = 활성으로 취급 — 구 `|| activeThreadKey` 폴백 동형).
+      const isActiveThread = (tk) => !tk || tk === activeThreadKey;
 
       let toastTimer = null;
       const showToast = (msg, tone) => {
@@ -3630,7 +3648,7 @@
       const renderDelta = (p, ts) => {
         const delta = String(p.delta || "");
         if (delta === "") return;
-        const thread = p.threadKey || THREAD_KEY;
+        const thread = p.threadKey || activeThreadKey;
         if (isEndpointThread(thread)) return; // 엔드포인트 스트리밍은 채팅에 안 뿌린다(뷰 데이터는 endpoint.call 이벤트).
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
         let card = cardByThread.get(thread);
@@ -3921,7 +3939,7 @@
       const renderChannelMessage = (ev, ts) => {
         const payload = ev.payload || {};
         const isOut = ev.type === "channel.message.out";
-        const thread = payload.threadKey || THREAD_KEY;
+        const thread = payload.threadKey || activeThreadKey;
 
         // ── 아웃바운드 첨부 카드(send_file, #2) ────────────────────────────
         // send_file 은 턴 *중간* 산출물이라 attachments 를 실은 out 이벤트가 온다. 이건 최종
@@ -4307,7 +4325,8 @@
         loadingOlder = true;
         try {
           const r = await fetch(
-            "/api/chat-history?limit=" + HISTORY_PAGE + "&beforeTs=" + oldestLoadedTs,
+            "/api/chat-history?limit=" + HISTORY_PAGE + "&beforeTs=" + oldestLoadedTs +
+              "&threadKey=" + encodeURIComponent(activeThreadKey), // 멀티세션 — active 세션만 더보기.
           );
           if (!r.ok) return;
           const data = await r.json().catch(() => ({}));
@@ -4339,7 +4358,9 @@
 
       const loadChatHistory = async () => {
         try {
-          const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE);
+          // 멀티세션(ADR 2026-07-15) — 초기 로드도 active 세션(기본=dashboard:default)만. 미지정이면
+          // 전 스레드 병합이라 텔레그램/워커가 섞임(D4 위배). threadKey 로 스코프.
+          const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(activeThreadKey));
           if (!r.ok) return;
           const data = await r.json().catch(() => ({}));
           // 비서 표시 이름(AGENT.md 이름, 폴백 tiguclaw) — 라벨/문구에 반영. 빈 이력이어도 세팅.
@@ -4377,16 +4398,19 @@
       // 진행 표시(모든 채널) — 회전 스피너 + 경과시간. 대시보드 자기 발신뿐 아니라 텔레그램·CLI
       // 등 어느 채널의 턴이 진행 중이어도 표시(SSE channel.message.in=시작, .out/turn_done/
       // turn_error=종료). activeTurns: threadKey→{start,channel}. 하나라도 있으면 working. 대표는
-      // 내 대화(THREAD_KEY) 우선, 없으면 가장 이른 것. 여럿이면 "(+N)". 스피너 요소는 유지하고
+      // 내 대화(activeThreadKey) 우선, 없으면 가장 이른 것. 여럿이면 "(+N)". 스피너 요소는 유지하고
       // 경과 텍스트만 1초 틱 갱신(애니메이션 끊김 방지).
       let chatWorkingTimer = null;
       const activeTurns = new Map(); // threadKey -> startTime(ms). 채널 무관 — 단일 인격 취급.
+      // activeTurns 변경 시 세션 탭 진행 뱃지 갱신 훅(멀티세션 탭, 나중에 renderTabBar 로 연결).
+      // let 홀더로 두어 TDZ(const 상수 뒤늦은 정의) 회피 — 정의 전엔 null 이라 no-op.
+      let onTurnsChanged = null;
       // stale 임계 — 어떤 실제 턴도 이보다 오래 못 감(codex 턴 캡 ~10분 + 여유). 초과 진행표시는
       // turn_done 을 놓친 유령(SSE 재연결·replay·데몬 재시작 중)으로 보고 해제(영구 '작업 중' 방지).
       const STALE_TURN_MS = 15 * 60 * 1000;
-      // 경과시간 기준 시작시각 — 내 대화(THREAD_KEY) 우선, 없으면 가장 이른 턴.
+      // 경과시간 기준 시작시각 — 내 대화(activeThreadKey) 우선, 없으면 가장 이른 턴.
       const earliestStart = () => {
-        if (activeTurns.has(THREAD_KEY)) return activeTurns.get(THREAD_KEY);
+        if (activeTurns.has(activeThreadKey)) return activeTurns.get(activeThreadKey);
         let best = Infinity;
         for (const t of activeTurns.values()) if (t < best) best = t;
         return best === Infinity ? Date.now() : best;
@@ -4399,6 +4423,7 @@
         const el = s.querySelector(".chat-elapsed"); if (el) el.textContent = fmtElapsed(Date.now() - earliestStart());
       };
       const refreshWorking = () => {
+        if (onTurnsChanged) onTurnsChanged(); // 세션 탭 진행 뱃지 갱신(모든 세션 추적, active 대표).
         const s = document.getElementById("chat-status"); if (!s) return;
         if (activeTurns.size === 0) {
           if (chatWorkingTimer) { clearInterval(chatWorkingTimer); chatWorkingTimer = null; }
@@ -4418,11 +4443,11 @@
         }, 1000);
       };
       const markTurnActive = (tk) => {
-        const k = tk || THREAD_KEY;
+        const k = tk || activeThreadKey;
         if (!activeTurns.has(k)) activeTurns.set(k, Date.now());
         refreshWorking();
       };
-      const markTurnDone = (tk) => { const k = tk || THREAD_KEY; if (activeTurns.delete(k)) refreshWorking(); };
+      const markTurnDone = (tk) => { const k = tk || activeThreadKey; if (activeTurns.delete(k)) refreshWorking(); };
       // ★codex-우선 + claude-폴백 처리 — 한 사용자 턴이 여러 어댑터 시도로 나뉘면(codex 429 →
       // claude 폴백) codex 의 turn_error 가 *턴 중간*에 온다. 그때 작업표시를 즉시 끄면 폴백 claude
       // 가 도는 동안 표시가 사라진다(실측 버그). → turn_error 는 즉시 끄지 않고 *유예* 클리어:
@@ -4430,14 +4455,14 @@
       // 만료(후속 없음 = 최종 실패)에만 끈다. 진짜 종결(성공·out)은 즉시 끈다.
       const ERR_CLEAR_GRACE_MS = 15000;
       const turnErrClearTimers = new Map(); // threadKey -> timeout id.
-      const cancelErrClear = (tk) => { const k = tk || THREAD_KEY; const t = turnErrClearTimers.get(k); if (t) { clearTimeout(t); turnErrClearTimers.delete(k); } };
+      const cancelErrClear = (tk) => { const k = tk || activeThreadKey; const t = turnErrClearTimers.get(k); if (t) { clearTimeout(t); turnErrClearTimers.delete(k); } };
       const scheduleErrClear = (tk) => {
-        const k = tk || THREAD_KEY;
+        const k = tk || activeThreadKey;
         cancelErrClear(k);
         turnErrClearTimers.set(k, setTimeout(() => { turnErrClearTimers.delete(k); markTurnDone(k); }, ERR_CLEAR_GRACE_MS));
       };
       // 하위호환 — sendChatMessage 의 로컬 즉시 피드백/에러 해제(내 대화 턴).
-      const setChatWorking = (on) => { if (on) markTurnActive(THREAD_KEY); else markTurnDone(THREAD_KEY); };
+      const setChatWorking = (on) => { if (on) markTurnActive(activeThreadKey); else markTurnDone(activeThreadKey); };
       // 큐 대기 표시 — 이미 이 스레드 턴이 진행 중일 때(busy) 보낸 메시지는 직렬 큐(enqueueThreadTurn)
       // 뒤에 붙어 현재 턴이 끝나야 처리된다. 처리 시작(channel.message.in echo) 전까진 화면에 안
       // 떠서 "등록됐나?" 헷갈린다 → 낙관적 "대기 중" 버블로 즉시 피드백, echo 도착 시 승격(배지 제거).
@@ -4455,7 +4480,7 @@
           const r = await fetch("/api/cancel-queued", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ threadKey: THREAD_KEY, correlationId: entry.cid }),
+            body: JSON.stringify({ threadKey: activeThreadKey, correlationId: entry.cid }),
           });
           const data = await r.json().catch(() => ({}));
           const result = r.ok ? data.result : null;
@@ -4558,7 +4583,7 @@
           : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
         // 낙관적 사용자 버블: 진행 중이면 "대기 중" 배지, 첨부가 있으면 이미지/파일 미리보기를 즉시 렌더
         // (전송한 파일을 채팅 카드에서 바로 확인). 둘 중 하나라도 해당하고 내용이 있으면 만든다.
-        const busy = activeTurns.has(THREAD_KEY);
+        const busy = activeTurns.has(activeThreadKey);
         const hasAtt = !!(attachments && attachments.length);
         if ((busy || hasAtt) && (text || hasAtt)) {
           queueOptimisticBubble(text, { attachments: hasAtt ? attachments : null, queued: busy, cid: correlationId });
@@ -4571,7 +4596,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text,
-              threadKey: THREAD_KEY,
+              threadKey: activeThreadKey,
               correlationId,
               ...(attachments && attachments.length ? { attachments } : {}),
               ...(replyToText ? { replyToText } : {}),
@@ -4737,38 +4762,46 @@
             ev.type === "channel.message.out" &&
             ev.payload && ev.payload.attachments && ev.payload.attachments.length
           ) {
+            cancelErrClear(tk); // 턴 살아있음(모든 세션) — 워킹표시 유지.
+            if (!isActiveThread(tk)) return; // 멀티세션(B계층) — DOM 카드는 active 세션만.
             const akey = msgKey(ev.ts, "assistant");
             if (renderedMsgKeys.has(akey)) return;
             renderedMsgKeys.add(akey);
-            cancelErrClear(tk);
             renderChannelMessage(ev, ts);
             return;
           }
           // 진행 표시(모든 채널) — 인바운드=턴 시작(텔레그램·CLI 포함), 아웃바운드=턴 종료.
           // ★재연결 replay 방어 — 버퍼가 흘리는 과거 .in 은 phantom 진행표시(짝 turn_done 없음)를
           // 만든다. 최근(2분 이내) .in 만 활성화 → 이미 끝난 옛 턴이 '작업 중'으로 안 뜬다.
+          // ★워킹표시(activeTurns)·유예클리어는 모든 세션 무조건 처리(§3.4 — SSE 조기드롭 금지).
           if (ev.type === "channel.message.in") {
             cancelErrClear(tk); // 새 진행 = 유예 클리어 취소.
             if (Date.now() - (ev.ts || 0) < 120000) markTurnActive(tk);
             // 큐 대기 버블 승격 — 이 in echo(=처리 시작=취소 불가 경계, D3)가 대기 중이던 낙관적
             // 버블과 일치하면 새로 안 그리고 배지·✕ 취소 버튼을 떼고 서버 ts 키를 등록(중복 렌더
             // 방지). 매칭은 correlationId(있으면) 우선 → 동일 텍스트 오매칭 해소, 없으면(텔레그램
-            // echo 등) 텍스트-매칭 폴백(보존 §6).
-            const inText = ev.payload && ev.payload.text;
-            const inCid = ev.payload && ev.payload.correlationId;
-            let pi = -1;
-            if (inCid) pi = pendingQueued.findIndex((p) => p.cid && p.cid === inCid);
-            if (pi === -1) pi = pendingQueued.findIndex((p) => p.text === inText);
-            if (pi !== -1) {
-              const { el } = pendingQueued.splice(pi, 1)[0];
-              el.classList.remove("queued");
-              const b = el.querySelector(".queued-badge"); if (b) b.remove();
-              const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
-              el.dataset.ts = String(ev.ts);
-              renderedMsgKeys.add(msgKey(ev.ts, "user"));
-              return;
+            // echo 등) 텍스트-매칭 폴백(보존 §6). 낙관적 버블은 active 세션 DOM 에만 있으므로
+            // active 일 때만 승격(pendingQueued 는 전환 시 비워짐).
+            if (isActiveThread(tk)) {
+              const inText = ev.payload && ev.payload.text;
+              const inCid = ev.payload && ev.payload.correlationId;
+              let pi = -1;
+              if (inCid) pi = pendingQueued.findIndex((p) => p.cid && p.cid === inCid);
+              if (pi === -1) pi = pendingQueued.findIndex((p) => p.text === inText);
+              if (pi !== -1) {
+                const { el } = pendingQueued.splice(pi, 1)[0];
+                el.classList.remove("queued");
+                const b = el.querySelector(".queued-badge"); if (b) b.remove();
+                const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
+                el.dataset.ts = String(ev.ts);
+                renderedMsgKeys.add(msgKey(ev.ts, "user"));
+                return;
+              }
             }
           } else { cancelErrClear(tk); markTurnDone(tk); } // out = 성공 종결(즉시).
+          // ★멀티세션(B계층) — 채팅 스트림 DOM 은 active 세션만. 비active 는 워킹표시만 갱신하고
+          // 스트림 미출력(원본은 chat_log/SSE 보존 = 전환 시 fetch 재빌드, §3.4).
+          if (!isActiveThread(tk)) return;
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);
@@ -4784,18 +4817,30 @@
           // 도구 실행시간(#3) — phase:"end" 는 새 스텝이 아니라 같은 seq 의 시작 스텝에
           // durationMs 를 주석(잡 카드 스텝 · 메인 스트림 라인 양쪽). 여기서 가로채 렌더로 안 감.
           if (ap.phase === "end") { annotateToolDuration(ap); return; }
-          // 워커 활동(threadKey=worker:<jobId>)은 백그라운드 잡 카드 스텝으로(채팅 누수 차단).
+          // 워커 활동(threadKey=worker:<jobId>|agent:<jobId>)은 백그라운드 잡 카드 스텝으로 —
+          // 모든 세션 무조건 처리(잡 카드=글로벌 드로어, 채팅 스트림 아님). 채팅 누수 차단.
           if (handleWorkerActivity(ap, ts)) return;
+          // ★§3.4 마스터 데이터 보존 — 전 스레드 활동 원본을 activityByStep 에 무필터 저장(후속
+          // 전체 활동 뷰 인에이블러). 렌더 게이트(B계층)는 아래 activeThreadKey 필터에서만 건다.
+          activityByStep.set(stepKey(ap.threadKey || "?", ap.seq), ap);
+          // 멀티세션(B계층) — 채팅 스트림 DOM(스폰 칩 포함)은 active 세션만. 세션 A 스폰 칩이 B 에
+          // 새지 않음(§3.3 교차 누수 0 — 스폰 스텝의 부모 threadKey 가 곧 그 세션이므로 자연 격리).
+          if (!isActiveThread(ap.threadKey)) return;
           renderActivity(ap, ts);
           return;
         }
         if (ev.type === "llm.delta") {
           const dp = ev.payload || {};
           cancelErrClear(dp.threadKey); // 델타 = 응답 스트리밍 중(폴백 진행) → 유예 클리어 취소.
+          // 델타는 휘발성(최종 out 은 chat_log 보존) — active 세션만 스트림 렌더.
+          if (!isActiveThread(dp.threadKey)) return;
           renderDelta(dp, ts);
           return;
         }
         if (ev.type === "prompt.options") {
+          // 선택지가 특정 세션에 귀속(threadKey 있음)이면 그 탭에서만 렌더. 미지정(레거시)은 active.
+          const ptk = ev.payload && ev.payload.threadKey;
+          if (ptk && !isActiveThread(ptk)) return;
           renderPromptOptions(ev.payload || {}, ts, ev.ts);
           return;
         }
@@ -4908,10 +4953,193 @@
           }
         };
       };
+      // ══ 멀티세션 탭(ADR 2026-07-15 Phase 2) ══════════════════════════════════
+      // 각 탭 = 독립 대화 세션(dashboard:<uuid> threadKey). 기본 = dashboard:default(연속성).
+      // 열린 탭 목록 = 클라 localStorage(UI 선호, D2). 세션 존재/프리뷰 = 서버 /api/sessions.
+      // 탭 전환 = 스트림 DOM/게이트(B계층) 리셋 + active 세션 이력 fetch 재빌드(§3.2). 마스터
+      // 데이터(A, activityByStep·activeTurns·jobCards)는 전 스레드 무필터 보존(§3.4).
+      const TABS_LS = "dash.tabs.v1";       // [{threadKey,name}]
+      const ACTIVE_LS = "dash.activeTab.v1"; // activeThreadKey
+      const SEQ_LS = "dash.tabSeq.v1";       // "세션 N" 단조 카운터
+      let openTabs = [];       // [{ threadKey, name, preview? }]
+      let sessionSeq = 0;
+      let switchToken = 0;     // 전환 중 stale 이력 배치가 다른 탭에 렌더되는 것 방지.
+      const sessionTabsEl = document.getElementById("session-tabs");
+
+      const persistTabs = () => {
+        try {
+          localStorage.setItem(TABS_LS, JSON.stringify(openTabs.map((t) => ({ threadKey: t.threadKey, name: t.name }))));
+          localStorage.setItem(ACTIVE_LS, activeThreadKey);
+          localStorage.setItem(SEQ_LS, String(sessionSeq));
+        } catch {}
+      };
+
+      const loadTabs = () => {
+        try {
+          const raw = localStorage.getItem(TABS_LS);
+          const arr = raw ? JSON.parse(raw) : null;
+          if (Array.isArray(arr) && arr.length) {
+            openTabs = arr
+              .filter((t) => t && typeof t.threadKey === "string" && t.threadKey.indexOf("dashboard:") === 0)
+              .map((t) => ({ threadKey: t.threadKey, name: typeof t.name === "string" && t.name ? t.name : "세션" }));
+          }
+        } catch {}
+        if (!openTabs.length) openTabs = [{ threadKey: DEFAULT_DASH_THREAD, name: "기본" }];
+        // 기본 세션은 항상 존재(닫기 불가) — 복원 목록에 없으면 맨 앞에 삽입.
+        if (!openTabs.some((t) => t.threadKey === DEFAULT_DASH_THREAD)) {
+          openTabs.unshift({ threadKey: DEFAULT_DASH_THREAD, name: "기본" });
+        }
+        try { const s = parseInt(localStorage.getItem(SEQ_LS) || "0", 10); if (Number.isFinite(s) && s > 0) sessionSeq = s; } catch {}
+        let act = DEFAULT_DASH_THREAD;
+        try { const a = localStorage.getItem(ACTIVE_LS); if (a && openTabs.some((t) => t.threadKey === a)) act = a; } catch {}
+        activeThreadKey = act;
+      };
+
+      const renderTabBar = () => {
+        if (!sessionTabsEl) return;
+        sessionTabsEl.innerHTML = "";
+        for (const tab of openTabs) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "session-tab" + (tab.threadKey === activeThreadKey ? " active" : "");
+          b.dataset.threadKey = tab.threadKey;
+          b.setAttribute("role", "tab");
+          if (tab.preview) b.title = tab.preview;
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "st-name";
+          nameSpan.textContent = tab.name;
+          b.appendChild(nameSpan);
+          // 진행 뱃지 — 이 세션(또는 스폰한 워커/서브)이 진행 중이면 점(모든 세션 추적, §5.12).
+          if (activeTurns.has(tab.threadKey)) {
+            const dot = document.createElement("span"); dot.className = "st-dot"; b.appendChild(dot);
+          }
+          b.addEventListener("click", () => switchToThread(tab.threadKey));
+          // 닫기(×) — 기본 세션 제외. 백엔드 세션은 보존(deleteSession 호출 X, D3) = 재열기 복원.
+          if (tab.threadKey !== DEFAULT_DASH_THREAD) {
+            const x = document.createElement("span");
+            x.className = "st-x"; x.textContent = "×"; x.title = "탭 닫기(대화는 보존)";
+            x.addEventListener("click", (e) => { e.stopPropagation(); closeTab(tab.threadKey); });
+            b.appendChild(x);
+          }
+          sessionTabsEl.appendChild(b);
+        }
+        const plus = document.createElement("button");
+        plus.type = "button"; plus.className = "session-tab session-add"; plus.textContent = "+";
+        plus.title = "새 세션";
+        plus.addEventListener("click", newTab);
+        sessionTabsEl.appendChild(plus);
+      };
+      onTurnsChanged = renderTabBar; // activeTurns 변경 시 진행 뱃지 갱신(refreshWorking 훅).
+
+      // 스트림 DOM/게이트(B계층) 리셋 — 탭 전환 시 채팅 DOM·dedup Set·가상화 인덱스·활성 렌더
+      // 참조를 모두 비운다. 마스터 데이터(activityByStep·activeTurns·jobCards, A계층)는 안 건드림.
+      const resetStreamState = () => {
+        vtClear();                     // 가상화 sizer/vtItems/vtIndex 비움 + 스트림 DOM 제거.
+        renderedMsgKeys.clear();
+        renderedActivityKeys.clear();
+        cardByThread.clear();          // 진행 카드 참조(제거된 DOM) — 새 세션서 재빌드.
+        pendingQueued.length = 0;      // 낙관적 대기 버블(active DOM 참조) — 승격 대상 초기화.
+        localChatCount = 0;
+        oldestLoadedTs = null;
+        reachedOldest = false;
+        loadingOlder = false;
+      };
+
+      // active 세션 이력 fetch → 기존 병합·인터리브·가상화 렌더 파이프 재실행(§3.2 3). 렌더러
+      // 자체는 안 바꾼다 — 입력(entries/activities)이 threadKey 로 스코프될 뿐. token 으로 전환
+      // 경합 방어(빠른 연속 전환 시 stale 배치가 다른 탭에 안 들어가게).
+      const loadThreadHistory = async (tk) => {
+        resetStreamState();
+        refreshChatEmpty();
+        const myToken = ++switchToken;
+        try {
+          const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(tk));
+          if (myToken !== switchToken) return; // 그 사이 또 전환됨 — 이 배치는 버림.
+          if (!r.ok) { refreshChatEmpty(); return; }
+          const data = await r.json().catch(() => ({}));
+          if (myToken !== switchToken) return;
+          const entries = Array.isArray(data.entries) ? data.entries : [];
+          const activities = Array.isArray(data.activities) ? data.activities : [];
+          if (entries.length === 0 && activities.length === 0) { refreshChatEmpty(); return; } // 빈(새) 세션.
+          renderHistoryBatch(entries, activities, false);
+          oldestLoadedTs = entries.length > 0 ? entries[0].ts : (activities.length > 0 ? activities[0].ts : null);
+          if (entries.length < HISTORY_PAGE) reachedOldest = true;
+          refreshChatEmpty();
+          scrollChatToNewest();
+          if (currentView === "overview") setTimeout(showOverview, 0);
+        } catch (err) {
+          refreshChatEmpty();
+          console.warn("thread history load failed:", err && err.message ? err.message : err);
+        }
+      };
+
+      const switchToThread = (tk) => {
+        if (tk === activeThreadKey || !openTabs.some((t) => t.threadKey === tk)) return;
+        activeThreadKey = tk;
+        clearReply();          // 답글 인용은 세션 스코프 — 전환 시 초기화.
+        renderTabBar();
+        persistTabs();
+        void loadThreadHistory(tk);
+        try { document.getElementById("chat-input").focus(); } catch {}
+      };
+
+      const newTab = () => {
+        const uuid = (self.crypto && self.crypto.randomUUID)
+          ? self.crypto.randomUUID()
+          : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
+        const tk = "dashboard:" + uuid;
+        sessionSeq += 1;
+        openTabs.push({ threadKey: tk, name: "세션 " + sessionSeq });
+        activeThreadKey = tk;   // 백엔드 행은 첫 전송에 lazy 생성(빈 탭 = 무흔적, D3).
+        clearReply();
+        renderTabBar();
+        persistTabs();
+        void loadThreadHistory(tk); // 빈 스트림(새 세션 = 이력 없음) 즉시.
+        try { document.getElementById("chat-input").focus(); } catch {}
+      };
+
+      const closeTab = (tk) => {
+        if (tk === DEFAULT_DASH_THREAD) return; // 기본 세션 닫기 불가.
+        const idx = openTabs.findIndex((t) => t.threadKey === tk);
+        if (idx === -1) return;
+        openTabs.splice(idx, 1); // ★localStorage(탭 목록)에서만 제거 — 백엔드 세션 보존(D3, 비파괴).
+        if (activeThreadKey === tk) {
+          const next = openTabs[Math.max(0, idx - 1)] || openTabs[0] || { threadKey: DEFAULT_DASH_THREAD };
+          activeThreadKey = next.threadKey;
+          clearReply();
+          renderTabBar();
+          persistTabs();
+          void loadThreadHistory(activeThreadKey);
+        } else {
+          renderTabBar();
+          persistTabs();
+        }
+      };
+
+      // 서버 /api/sessions = 세션 존재/프리뷰 진실 소스(D2). 열린 탭 이름 옆 title(프리뷰) 채움.
+      const refreshSessionPreviews = async () => {
+        try {
+          const r = await fetch("/api/sessions");
+          if (!r.ok) return;
+          const data = await r.json().catch(() => ({}));
+          const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+          const byKey = new Map(sessions.map((s) => [s.threadKey, s]));
+          let changed = false;
+          for (const t of openTabs) {
+            const s = byKey.get(t.threadKey);
+            if (s && s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }
+          }
+          if (changed) renderTabBar();
+        } catch {}
+      };
+
       // 과거 대화 이력을 먼저 복원한 뒤 SSE 연결(기능 B). dedup Set 이 채워진 상태로
       // 라이브 스트림이 붙어 history replay 중복을 막는다. 이력 로드 실패/지연이 SSE 를
       // 막지 않도록 then 으로 잇되, 실패해도 반드시 connectStream 으로 진행(라이브 무손상).
-      loadChatHistory().finally(connectStream);
+      loadTabs();          // localStorage 에서 열린 탭 + activeThreadKey 복원(없으면 기본 단일 탭).
+      renderTabBar();
+      loadChatHistory().finally(() => { connectStream(); refreshSessionPreviews(); });
+      setInterval(refreshSessionPreviews, 30000);
 
       const form = document.getElementById("chat-form");
       const input = document.getElementById("chat-input");

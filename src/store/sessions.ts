@@ -641,6 +641,58 @@ export const getSession = (
 };
 
 /**
+ * 세션 목록 조회 — 멀티세션 탭(ADR 2026-07-15 D5.1). 경량 행만
+ * (`channel·threadKey·lastUsedAt·model`) last_used_at 내림차순.
+ *
+ * prefix = threadKey 네임스페이스 필터(LIKE `<prefix>%`). 대시보드는 `dashboard:` 를
+ * 넘겨 자기 세션만 골라내고, 텔레그램/워커 스레드를 배제한다. **prefix 는 범용 인자**
+ * — 코어는 threadKey 를 opaque 로 취급하며 "dashboard" 를 특수 참조하지 않는다(§0
+ * 단방향 참조 불변식). 미지정이면 LIKE '%' 로 전체. limit 기본 100(무한증가 바운드).
+ *
+ * getSession/getMostRecentTelegramChatId 와 동형 prepared stmt·threads 조회.
+ * 기존 함수 무변경(추가만) — 회귀 0.
+ */
+export interface ThreadSummary {
+  channel: ChannelName;
+  threadKey: string;
+  lastUsedAt: number;
+  model: string | null;
+}
+
+export const listThreads = (opts?: {
+  prefix?: string;
+  limit?: number;
+}): ThreadSummary[] => {
+  const handle = requireDb("listThreads");
+  const prefix = opts?.prefix ?? "";
+  // LIKE 패턴 — prefix 미지정이면 '%'(전체). SQLite LIKE 특수문자(%_)를 프리픽스 내에서
+  // 리터럴 취급하도록 ESCAPE '\' 로 이스케이프(threadKey 는 통상 안전하나 방어적).
+  const like =
+    prefix === "" ? "%" : `${prefix.replace(/([\\%_])/g, "\\$1")}%`;
+  const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 100;
+  const rows = handle
+    .prepare(
+      `SELECT channel, channel_thread_id, last_used_at, model
+         FROM threads
+        WHERE channel_thread_id LIKE ? ESCAPE '\\'
+        ORDER BY last_used_at DESC
+        LIMIT ?`,
+    )
+    .all(like, limit) as {
+    channel: string;
+    channel_thread_id: string;
+    last_used_at: number;
+    model: string | null;
+  }[];
+  return rows.map((r) => ({
+    channel: r.channel as ChannelName,
+    threadKey: r.channel_thread_id,
+    lastUsedAt: r.last_used_at,
+    model: r.model,
+  }));
+};
+
+/**
  * 가장 최근에 봇과 대화한 텔레그램 chatId — 매 부팅 "재시작 완료" 통지의 대상.
  * `tg:<chatId>` 형태의 primary thread 만(worker:/::sub:: 파생 제외). 없으면 null
  * (설치 직후·아무도 말 안 검 → 콘솔 통지). config·seed 불필요 — DB 의 활성 대화가 진실.

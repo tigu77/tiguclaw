@@ -10,7 +10,8 @@
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
- *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원)
+ *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원; threadKey qs 통과)
+ *  - GET  /api/sessions  → bridge GET  /sessions        (JSON pass, 멀티세션 탭 목록+프리뷰)
  *  - GET  /api/projects  → bridge GET  /projects        (JSON pass, 프로젝트 목록)
  *  - GET  /api/projects/detail → bridge GET /projects/detail (JSON pass, 프로젝트 상세)
  *  - GET  /api/events    → bridge GET  /events          (SSE pipe)
@@ -250,6 +251,12 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/chat-history" && method === "GET") {
       const qs = url.search ?? "";
       await proxyJson(res, "/chat-history" + qs);
+      return;
+    }
+    // 세션 목록 — bridge GET /sessions (read 토큰 server-side 주입). 대시보드 멀티세션
+    // 탭 picker(존재하는 dashboard: 세션 + 프리뷰). /api/providers 패턴 동형.
+    if (pathname === "/api/sessions" && method === "GET") {
+      await proxyJson(res, "/sessions");
       return;
     }
     // 프로젝트 목록 — bridge GET /projects (read 토큰 server-side 주입). 대시보드 그리드.

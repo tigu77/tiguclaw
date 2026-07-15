@@ -350,6 +350,15 @@
       .ev.local.queued { border-left-color:#fbbf24; background:rgba(251,191,36,.07); opacity:.8; }
       .queued-badge { margin-left:8px; font-size:9px; font-weight:800; padding:1px 7px; border-radius:999px; background:rgba(251,191,36,.18); color:#fbbf24; white-space:nowrap; }
       .queued-badge::before { content:"⏳ "; }
+      /* 큐 대기 취소 버튼(ADR 2026-07-15) — 대기 중 버블에만. echo 승격/취소 시 제거. */
+      .queued-cancel { margin-left:6px; font-size:10px; font-weight:800; line-height:1; padding:1px 6px; border-radius:999px; background:transparent; color:var(--text-dim); border:1px solid var(--border-strong); cursor:pointer; white-space:nowrap; transition:background .12s, color .12s, border-color .12s; }
+      .queued-cancel:hover:not(:disabled) { background:rgba(248,113,113,.14); color:#f87171; border-color:rgba(248,113,113,.5); }
+      .queued-cancel:disabled { opacity:.45; cursor:default; }
+      /* 취소된 버블(G2) — 취소선 + "취소됨" 라벨로 이력 명료(제거 X). */
+      .ev.local.cancelled-turn { border-left-color:#6b7280; background:rgba(107,114,128,.07); opacity:.65; }
+      .ev.local.cancelled-turn .chat-message { text-decoration:line-through; color:var(--text-dim); }
+      .cancelled-badge { background:rgba(107,114,128,.18); color:#9ca3af; }
+      .cancelled-badge::before { content:"🚫 "; }
       .ev.activity { border-left-color:var(--good); background:rgba(52,211,153,.08); }
       .ev.prompt-options { border-left-color:var(--accent-2); background:rgba(167,139,250,.08); }
       .ev.prompt-options .type { color:var(--accent-2); }
@@ -4432,24 +4441,68 @@
       // 큐 대기 표시 — 이미 이 스레드 턴이 진행 중일 때(busy) 보낸 메시지는 직렬 큐(enqueueThreadTurn)
       // 뒤에 붙어 현재 턴이 끝나야 처리된다. 처리 시작(channel.message.in echo) 전까진 화면에 안
       // 떠서 "등록됐나?" 헷갈린다 → 낙관적 "대기 중" 버블로 즉시 피드백, echo 도착 시 승격(배지 제거).
-      const pendingQueued = []; // [{ text, el }] — echo 도착 시 승격할 낙관적 사용자 버블(대기 중 또는 첨부).
-      // opts.attachments 있으면 버블 안에 미리보기, opts.queued 면 '대기 중' 배지. 어느 경우든
-      // pendingQueued 에 등록 → channel.message.in echo 가 텍스트 매칭으로 이 버블을 승격(중복 렌더 방지).
+      const pendingQueued = []; // [{ text, el, cid }] — echo 도착 시 승격할 낙관적 사용자 버블(대기 중 또는 첨부).
+      // opts.attachments 있으면 버블 안에 미리보기, opts.queued 면 '대기 중' 배지 + ✕ 취소 버튼
+      // (ADR 2026-07-15). 어느 경우든 pendingQueued 에 등록 → channel.message.in echo 가
+      // correlationId(있으면) 또는 텍스트 매칭으로 이 버블을 승격(중복 렌더 방지, 배지·버튼 제거).
+      // 큐-취소(대기 중 버블) — ✕ 클릭 시 POST /api/cancel-queued. "cancelled" 면 버블을 취소선+
+      // "취소됨"(G2)·pendingQueued 에서 제거(echo 승격 대상 아님). "already-started"/"not-found"
+      // (echo 이후 등)면 안내만(G3, 자동 /stop 전환 X). 실패해도 버블은 유지(비파괴).
+      const cancelQueuedBubble = async (entry, btn) => {
+        if (!entry || !entry.cid) return;
+        btn.disabled = true;
+        try {
+          const r = await fetch("/api/cancel-queued", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ threadKey: THREAD_KEY, correlationId: entry.cid }),
+          });
+          const data = await r.json().catch(() => ({}));
+          const result = r.ok ? data.result : null;
+          if (result === "cancelled") {
+            const el = entry.el;
+            el.classList.remove("queued");
+            el.classList.add("cancelled-turn");
+            const b = el.querySelector(".queued-badge");
+            if (b) { b.textContent = "취소됨"; b.classList.add("cancelled-badge"); }
+            btn.remove();
+            const idx = pendingQueued.indexOf(entry);
+            if (idx !== -1) pendingQueued.splice(idx, 1); // echo 승격 대상에서 제외.
+          } else {
+            // 이미 시작됨(echo 도착 후) 또는 미상 — 안내만(G3).
+            btn.disabled = false;
+            btn.title = "이미 시작됨 — 중지하려면 /stop 을 보내세요";
+            renderLocalChat("info", "이미 처리가 시작됐어요 — 중지하려면 /stop 을 보내세요.");
+          }
+        } catch {
+          btn.disabled = false; // 네트워크 실패 = 버블 유지, 재시도 가능.
+        }
+      };
       const queueOptimisticBubble = (text, opts) => {
         const o = opts || {};
+        const cid = o.cid || "";
         const div = buildHistoryDiv({ ts: Date.now(), role: "user", text });
         if (o.attachments && o.attachments.length) {
           const msg = div.querySelector(".chat-message");
           (msg || div).appendChild(buildAttachmentsPreview(o.attachments));
         }
+        const entry = { text, el: div, cid };
         if (o.queued) {
           div.classList.add("queued");
           const badge = document.createElement("span");
           badge.className = "queued-badge"; badge.textContent = "대기 중";
           (div.firstChild || div).appendChild(badge); // head(ts+라벨) 에 배지 부착.
+          if (cid) {
+            // ✕ 취소 버튼 — 대기 중(미시작) 버블에만. echo 승격 시 제거(D3).
+            const x = document.createElement("button");
+            x.type = "button"; x.className = "queued-cancel"; x.textContent = "✕";
+            x.title = "대기 취소";
+            x.addEventListener("click", (ev) => { ev.stopPropagation(); void cancelQueuedBubble(entry, x); });
+            (div.firstChild || div).appendChild(x);
+          }
         }
         vtAppend(div);
-        pendingQueued.push({ text, el: div });
+        pendingQueued.push(entry);
         localChatCount += 1;
         refreshChatEmpty();
         scrollChatToNewest();
@@ -4498,12 +4551,17 @@
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
       const sendChatMessage = async (text, attachments, replyToText) => {
         recordTypedTags(text); // 타이핑/삽입한 #태그 학습 → 다음부터 칩으로.
+        // 큐-취소 correlationId(ADR 2026-07-15) — 전송 순간 만들어 (a)낙관적 버블 (b)POST body
+        // 를 하나로 묶는다(대기 중이면 ✕ 취소가 이 id 로 그 큐 항목을 지목). 어댑터 무독해(#2).
+        const correlationId = (self.crypto && self.crypto.randomUUID)
+          ? self.crypto.randomUUID()
+          : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
         // 낙관적 사용자 버블: 진행 중이면 "대기 중" 배지, 첨부가 있으면 이미지/파일 미리보기를 즉시 렌더
         // (전송한 파일을 채팅 카드에서 바로 확인). 둘 중 하나라도 해당하고 내용이 있으면 만든다.
         const busy = activeTurns.has(THREAD_KEY);
         const hasAtt = !!(attachments && attachments.length);
         if ((busy || hasAtt) && (text || hasAtt)) {
-          queueOptimisticBubble(text, { attachments: hasAtt ? attachments : null, queued: busy });
+          queueOptimisticBubble(text, { attachments: hasAtt ? attachments : null, queued: busy, cid: correlationId });
         }
         setChatWorking(true);
         const t0 = Date.now();
@@ -4514,6 +4572,7 @@
             body: JSON.stringify({
               text,
               threadKey: THREAD_KEY,
+              correlationId,
               ...(attachments && attachments.length ? { attachments } : {}),
               ...(replyToText ? { replyToText } : {}),
             }),
@@ -4691,14 +4750,20 @@
           if (ev.type === "channel.message.in") {
             cancelErrClear(tk); // 새 진행 = 유예 클리어 취소.
             if (Date.now() - (ev.ts || 0) < 120000) markTurnActive(tk);
-            // 큐 대기 버블 승격 — 이 in echo(=처리 시작)가 대기 중이던 낙관적 버블과 텍스트 일치면
-            // 새로 안 그리고 그 버블의 배지를 떼고 서버 ts 키를 등록(중복 렌더 방지).
+            // 큐 대기 버블 승격 — 이 in echo(=처리 시작=취소 불가 경계, D3)가 대기 중이던 낙관적
+            // 버블과 일치하면 새로 안 그리고 배지·✕ 취소 버튼을 떼고 서버 ts 키를 등록(중복 렌더
+            // 방지). 매칭은 correlationId(있으면) 우선 → 동일 텍스트 오매칭 해소, 없으면(텔레그램
+            // echo 등) 텍스트-매칭 폴백(보존 §6).
             const inText = ev.payload && ev.payload.text;
-            const pi = pendingQueued.findIndex((p) => p.text === inText);
+            const inCid = ev.payload && ev.payload.correlationId;
+            let pi = -1;
+            if (inCid) pi = pendingQueued.findIndex((p) => p.cid && p.cid === inCid);
+            if (pi === -1) pi = pendingQueued.findIndex((p) => p.text === inText);
             if (pi !== -1) {
               const { el } = pendingQueued.splice(pi, 1)[0];
               el.classList.remove("queued");
               const b = el.querySelector(".queued-badge"); if (b) b.remove();
+              const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
               el.dataset.ts = String(ev.ts);
               renderedMsgKeys.add(msgKey(ev.ts, "user"));
               return;
@@ -4778,7 +4843,7 @@
         tsEl.textContent = fmtTime(now);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        const chatLabel = { user: "나", reply: assistantName, error: "오류" };
+        const chatLabel = { user: "나", reply: assistantName, error: "오류", info: "안내" };
         tyEl.textContent = chatLabel[kind] || kind;
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);

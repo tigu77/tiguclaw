@@ -59,7 +59,11 @@ import {
   type ModelSpec,
 } from "../../src/core/llm-runtime/index.js";
 import { listEvents } from "../../src/store/events.js";
-import { listJobs } from "../../src/core/worker-jobs.js";
+import {
+  listJobs,
+  cancelQueuedTurn,
+  isCancelledTurnResult,
+} from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
 
@@ -685,6 +689,8 @@ class HttpBridge implements Channel, Observer {
               ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
+                : pathname === "/cancel-queued" && method === "POST"
+                  ? "admin"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
                   : null;
@@ -1095,6 +1101,12 @@ class HttpBridge implements Channel, Observer {
       // (telegram 의 reply_to_message 와 동형·LLM-agnostic, index.ts 934 단일 지점). 캡 1500.
       const replyToText =
         typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 1500) : "";
+      // 큐-취소 correlationId(ADR 2026-07-15) — 클라(대시보드)가 전송 순간 만든 상관 id.
+      // 실제 사용자 인바운드(POST /messages)만 실린다 — 이 값을 큐 항목 식별 키로 전달해
+      // 대기 중(미시작) 항목을 나중에 POST /cancel-queued 로 지목 취소 가능. 미부여 = 익명
+      // 큐 항목(현행 동작). 어댑터는 이 값을 안 읽는다(순수 큐 상관, #2 LLM-agnostic).
+      const correlationId =
+        typeof body.correlationId === "string" ? body.correlationId.trim() : "";
       // 아웃바운드 첨부(send_file, #2 parity) — 텔레그램 sendDocument 와 동형의 추상 의도
       // 렌더. send_file 된 절대경로를 통제 디렉터리로 복사(servable rel 확보)한 뒤,
       // `channel.message.out` 이벤트에 additive `attachments:[{rel,name,mime,kind,caption?}]`
@@ -1153,6 +1165,7 @@ class HttpBridge implements Channel, Observer {
         text,
         receivedAt: Date.now(),
         ...(replyToText !== "" ? { replyToText } : {}),
+        ...(correlationId !== "" ? { correlationId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         reply: async (out: string): Promise<void> => {
           replyText = out;
@@ -1169,8 +1182,15 @@ class HttpBridge implements Channel, Observer {
       });
 
       try {
-        await Promise.race([this.channelHandler(msg), timeoutP]);
-        writeJson(res, 200, { replyText });
+        const outcome = await Promise.race([this.channelHandler(msg), timeoutP]);
+        // 큐-취소(ADR 2026-07-15, G1) — 이 항목이 대기 중 취소돼 handler 미실행 no-op
+        // resolve 면 정상 흐름으로 {replyText:"", cancelled:true} 응답(에러 아님). 클라는
+        // 이미 취소 UI 를 로컬 처리했으므로 무시 가능. isCancelledTurnResult 가 sentinel 판정.
+        if (isCancelledTurnResult(outcome)) {
+          writeJson(res, 200, { replyText: "", cancelled: true });
+        } else {
+          writeJson(res, 200, { replyText });
+        }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         if (reason === "timeout") {
@@ -1201,6 +1221,36 @@ class HttpBridge implements Channel, Observer {
       });
       // 데몬이 곧 종료되므로 즉시 ack(이 응답 후 graceful shutdown 진행).
       writeJson(res, 202, { ok: true, restarting: true });
+      return;
+    }
+
+    // /cancel-queued — 대기 중(미시작) 큐 메시지 취소(ADR 2026-07-15). admin 토큰 게이트(위
+    // role 표) + 127.0.0.1 바인드. 메시지 큐(enqueueThreadTurn)를 *타지 않는* 제어 경로
+    // (/restart·/stop 동형 out-of-band) — 큐 뒤에 붙으면 자기 앞 항목이 끝나야 실행돼 무의미.
+    // §0 단방향: 코어 export `cancelQueuedTurn` 을 호출(코어는 http-bridge 를 모른다). 특정
+    // 대기 항목을 correlationId 로 지목 취소하고 결과("cancelled"/"already-started"/"not-found")
+    // 를 그대로 반환. 텔레그램 후속(/cancel 슬래시 등)도 동일 코어 primitive 재사용 가능(범위 밖).
+    if (pathname === "/cancel-queued" && method === "POST") {
+      let cbody: Record<string, unknown>;
+      try {
+        cbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const threadKey =
+        typeof cbody.threadKey === "string" ? cbody.threadKey.trim() : "";
+      const correlationId =
+        typeof cbody.correlationId === "string" ? cbody.correlationId.trim() : "";
+      if (threadKey === "" || correlationId === "") {
+        writeJson(res, 400, {
+          error: "threadKey and correlationId required",
+        });
+        return;
+      }
+      const result = cancelQueuedTurn(threadKey, correlationId);
+      writeJson(res, 200, { result });
       return;
     }
 

@@ -316,6 +316,7 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
 export const __resetJobsForTest = (): void => {
   jobs.clear();
   cancelHooks.clear();
+  pendingTurnIds.clear();
 };
 
 // ─── 워커 전용 타임아웃 (architect §5, W-I6) ─────────────────────────────────
@@ -458,32 +459,117 @@ export const cancelJob = (jobId: string): boolean => {
 
 const threadTails = new Map<string, Promise<unknown>>();
 
+// ─── 큐-취소 primitive (ADR 2026-07-15, 대기 중 메시지 취소) ──────────────────
+// threadKey 별 *아직 시작 안 한* 큐 항목의 correlationId → marker 를 추적한다. 항목이
+// 디큐(task 실행 직전)되면 marker.state="started"(취소 불가), 체인 settle 후 map 에서 제거.
+// cancelQueuedTurn 이 디큐 전에 marker.cancelled=true 로 마킹하면, 체인이 그 항목에
+// 도달했을 때 task 를 실행하지 않고 sentinel 로 no-op resolve → 순서 자리에서 즉시 다음으로.
+// ★보존(구현 시 보존 목록 §1·§2): 단일-enqueue 레이어·`prev.then(task,task)` 체인·tail
+// settle-무관 이음·map 엔트리 정리(누수 0)·재주입 deadlock 불변식(60d1777, onWorkerComplete
+// 직접-호출·재주입 id 미부여) 전부 불변 — id 추적은 *얹기만* 한다. 스킵 항목도 반드시
+// resolve 로 체인을 이어 뒤 항목 순서·병렬 threadKey 를 왜곡하지 않는다.
+interface QueueMarker {
+  state: "pending" | "started";
+  cancelled: boolean;
+}
+const pendingTurnIds = new Map<string, Map<string, QueueMarker>>();
+
+/**
+ * 취소된 큐 항목이 resolve 하는 sentinel — task 미실행 no-op 신호. POST /messages 핸들러가
+ * 이 값을 감지해 `{replyText:"", cancelled:true}` 200 으로 응답한다(회색지대 G1, 정상 흐름·
+ * 에러 아님). 일반 완료와 구분되는 유일 목적. 어댑터는 이 값을 읽지 않는다(큐 차원, #2).
+ */
+export const CANCELLED_TURN_RESULT: unique symbol = Symbol(
+  "tiguclaw.cancelledQueuedTurn",
+);
+
+/** enqueueThreadTurn 결과가 큐-취소 no-op 인지 판정 — http-bridge POST 응답 분기용. */
+export const isCancelledTurnResult = (v: unknown): boolean =>
+  v === CANCELLED_TURN_RESULT;
+
 /**
  * 같은 threadKey 작업을 직렬화 — 앞 작업 settle(성공/실패 무관) 후 다음 시작.
  * 다른 threadKey 는 병렬. 작업 throw 가 체인을 끊지 않게 tail 은 항상 settle 로 잇는다.
  *
- * 반환 = 이 작업의 결과 Promise (호출자가 await 가능). chain 무결성은 내부 tail 이 보장.
+ * `opts.id`(클라 correlationId) 지정 시 그 항목을 큐-취소 대상으로 추적한다. 미지정 =
+ * 익명 항목(취소 불가, 현행 동작 — 텔레그램·cli·스케줄·합성 turn 회귀 0).
+ *
+ * 반환 = 이 작업의 결과 Promise (호출자가 await 가능). 취소된 항목은 CANCELLED_TURN_RESULT
+ * 로 resolve(task 미실행). chain 무결성은 내부 tail 이 보장.
  */
 export const enqueueThreadTurn = <T>(
   threadKey: string,
   task: () => Promise<T>,
+  opts?: { id?: string },
 ): Promise<T> => {
+  // id 있으면 미시작 집합에 marker 등록(같은 threadKey 스코프 마지막 등록만 신뢰 — G4).
+  const id = opts?.id !== undefined && opts.id !== "" ? opts.id : undefined;
+  let marker: QueueMarker | undefined;
+  if (id !== undefined) {
+    marker = { state: "pending", cancelled: false };
+    let m = pendingTurnIds.get(threadKey);
+    if (m === undefined) {
+      m = new Map();
+      pendingTurnIds.set(threadKey, m);
+    }
+    m.set(id, marker);
+  }
+  // 디큐(task 실행 직전) = "시작". 취소 마킹돼 있으면 task 미실행 no-op sentinel resolve.
+  // 스킵도 resolve 로 체인을 이어 뒤 항목이 곧장 진행(순서 왜곡 0).
+  const gatedTask = (): Promise<T> => {
+    if (marker !== undefined) {
+      marker.state = "started"; // 이 순간부터 취소 불가(already-started).
+      if (marker.cancelled) {
+        return Promise.resolve(CANCELLED_TURN_RESULT as unknown as T);
+      }
+    }
+    return task();
+  };
   const prev = threadTails.get(threadKey) ?? Promise.resolve();
   // 앞 작업이 reject 해도 다음이 실행되도록 catch 로 흡수한 prev 에 chain.
-  const run = prev.then(() => task(), () => task());
+  const run = prev.then(() => gatedTask(), () => gatedTask());
   // tail 은 결과/에러 무관 settle 로 — chain 끊김 0. 최신 tail 만 추적(완료 후 정리).
   const tail = run.then(
     () => undefined,
     () => undefined,
   );
   threadTails.set(threadKey, tail);
-  // tail 이 끝나고 그 사이 새 turn 이 안 들어왔으면 map 엔트리 정리 (누수 0).
+  // tail(settle-safe) 종료 후: (1) 이 항목의 marker map 엔트리 정리(누수 0), (2) 그 사이
+  // 새 turn 이 안 들어왔으면 threadTails 정리. tail 은 절대 reject 안 하므로 finally 안전.
   void tail.finally(() => {
+    if (marker !== undefined && id !== undefined) {
+      const m = pendingTurnIds.get(threadKey);
+      if (m !== undefined && m.get(id) === marker) {
+        m.delete(id);
+        if (m.size === 0) pendingTurnIds.delete(threadKey);
+      }
+    }
     if (threadTails.get(threadKey) === tail) {
       threadTails.delete(threadKey);
     }
   });
   return run;
+};
+
+/**
+ * 대기 중(미시작) 큐 항목 취소 — 멱등. http-bridge `POST /cancel-queued` 가 코어 export 인
+ * 본 함수를 부른다(§0 단방향 — 코어는 http-bridge 를 모른다). `/stop`(러닝 턴 abort)의
+ * 자매: 이건 아직 시작 안 된 특정 대기 항목을 correlationId 로 지목해 스킵한다.
+ *  - "cancelled": 미시작 항목을 취소 마킹(체인 도달 시 no-op resolve).
+ *  - "already-started": 이미 디큐돼 실행 중(취소 불가 — /stop 영역, G3).
+ *  - "not-found": 해당 threadKey 에 그 id 없음(미상·완료 후 제거됨).
+ */
+export const cancelQueuedTurn = (
+  threadKey: string,
+  id: string,
+): "cancelled" | "already-started" | "not-found" => {
+  if (id === "") return "not-found";
+  const m = pendingTurnIds.get(threadKey);
+  const marker = m?.get(id);
+  if (marker === undefined) return "not-found";
+  if (marker.state === "started") return "already-started";
+  marker.cancelled = true; // 멱등 — 중복 취소 무해(이미 true 여도 동일 결과).
+  return "cancelled";
 };
 
 /** 테스트·진단용 — 현재 직렬 큐가 추적 중인 thread 수. */

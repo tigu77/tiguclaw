@@ -53,6 +53,15 @@ export interface IncomingMessage {
    * 나머지 처리는 실 인바운드와 동일(관측 발행만 억제). 직렬화/resume 무영향.
    */
   synthetic?: boolean;
+  /**
+   * 클라 부여 상관 id(additive 중립 필드) — 대기 중(큐) 메시지 취소용 식별 키
+   * (ADR 2026-07-15). 클라가 전송 순간 `crypto.randomUUID()` 로 만들어 (a) 낙관적 버블,
+   * (b) POST body, (c) 취소 요청을 하나로 묶는다. **어떤 어댑터도 이 값을 읽지 않는다**
+   * (순수 큐/전송 상관용, LLM-agnostic — `synthetic`·`replyToText` 계열). 실제 사용자
+   * 인바운드만 채운다 — 합성 turn(synthetic)·슬래시·스케줄·워커 재주입은 미부여
+   * (취소 대상 아님). 미지정 = 현행 동작(익명 큐 항목, 회귀 0).
+   */
+  correlationId?: string;
   receivedAt: number;
   reply: (text: string, opts?: ReplyOptions) => Promise<void>;
   /** 아웃바운드 첨부 전송 — 채널이 지원하면 구현(telegram), 미지원이면 undefined.

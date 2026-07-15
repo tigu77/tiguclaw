@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-07-15
+### Added
+- **대기 중인 메시지를 취소할 수 있습니다.** 비서가 처리 중일 때 보낸 메시지는 큐에 쌓이는데(⏳ 대기 중), 아직 시작하지 않은 메시지는 대시보드에서 옆의 **✕** 로 취소할 수 있습니다 — 취소하면 실행되지 않고 "취소됨"으로 표시됩니다. (이미 시작된 턴을 멈추는 `/stop` 과는 별개.) 클라이언트가 부여한 상관 id 로 정확한 메시지만 지목해 취소하며, 큐의 직렬화·순서는 그대로 보존됩니다.
+
 ## [0.4.9] - 2026-07-15
 ### Added
 - 대시보드 **백그라운드 작업 드로어 폭을 드래그로 조절**할 수 있습니다. 드로어 왼쪽 가장자리를 잡고 끌어 넓히거나 좁히면 됩니다 — 조절한 폭은 저장되어 다음에도 유지됩니다.
@@ -688,7 +692,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.9...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.4.10...HEAD
+[0.4.10]: https://github.com/tigu77/tiguclaw/compare/v0.4.9...v0.4.10
 [0.4.9]: https://github.com/tigu77/tiguclaw/compare/v0.4.8...v0.4.9
 [0.4.8]: https://github.com/tigu77/tiguclaw/compare/v0.4.7...v0.4.8
 [0.4.7]: https://github.com/tigu77/tiguclaw/compare/v0.4.6...v0.4.7

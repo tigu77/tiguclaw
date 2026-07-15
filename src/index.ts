@@ -469,6 +469,12 @@ const handler: MessageHandler = async (msg) => {
         threadKey: msg.threadKey,
         text: msg.text.slice(0, EVENT_TEXT_MAX),
         ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
+        // 큐-취소(ADR 2026-07-15) — echo 에 correlationId 를 실어 대시보드가 낙관적
+        // "대기 중" 버블 승격을 텍스트 대신 id 로 정확 매칭(동일 텍스트 오매칭 해소).
+        // additive — 미부여(텔레그램 등)면 미포함 → 대시보드 텍스트-매칭 폴백(회귀 0).
+        ...(msg.correlationId !== undefined && msg.correlationId !== ""
+          ? { correlationId: msg.correlationId }
+          : {}),
       },
     });
   }
@@ -1206,7 +1212,13 @@ const serializedHandler: MessageHandler = (msg) => {
     })();
     return Promise.resolve();
   }
-  return enqueueThreadTurn(msg.threadKey, () => handler(msg));
+  // 큐-취소(ADR 2026-07-15) — 클라 correlationId 를 큐 항목 식별 키로 전달. 대기 중(미시작)
+  // 항목을 대시보드 ✕ 버튼→POST /cancel-queued→cancelQueuedTurn 이 지목 취소 가능. 미부여
+  // (텔레그램·cli·스케줄·합성 turn)는 익명 항목 = 취소 불가·현행 동작(회귀 0). 취소된 항목은
+  // CANCELLED_TURN_RESULT 로 no-op resolve → POST 핸들러가 {cancelled:true} 응답(G1).
+  return enqueueThreadTurn(msg.threadKey, () => handler(msg), {
+    id: msg.correlationId,
+  });
 };
 
 // 완료 재주입(onWorkerComplete)이 메인 핸들러를 재진입할 수 있게 등록 (W-I1 단일 인격).

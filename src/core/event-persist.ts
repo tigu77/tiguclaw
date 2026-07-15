@@ -11,6 +11,7 @@
  */
 import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
+import { pruneInternalThreads } from "../store/sessions.js";
 import { recordChatMessage } from "../store/chat-log.js";
 import type { ChatAttachmentMeta } from "../store/chat-log.js";
 
@@ -58,6 +59,16 @@ export const truncatePayloadJson = (payload: unknown, maxChars: number): string 
 export const RETENTION_KEEP = 10_000; // 최근 N건 유지.
 const PRUNE_EVERY = 256; // N건마다 1회 prune(매 insert prune 회피).
 
+// ─── threads 내부 파생 스레드 프루닝 (효율감사 P3, 2026-07-16) ────────────────────
+// `threads`(worker:/agent:/endpoint:/gateway:/`::sub::`)는 프루닝 기제가 없어 무한증가
+// 중이었다(실측: agent 75·sub 46·worker 23·endpoint 19, 이 세션 서브 스폰만으로도 계속 증가).
+// events 의 PRUNE_EVERY 배치 정리와 *같은 주기*에 얹는다 — 별도 타이머 없이(원칙 3: 코어
+// 단순 불변) events insert 트래픽에 올라탄 저비용 tick. 내부 잡은 분/시간 단위로 완료되므로
+// 30일은 활성 잡을 절대 안 건드리는 보수적 TTL([[project_hotpath_bound_preserve_record]] —
+// 핫경로만 바운드, transcripts/chat_log 레코드는 별 테이블이라 무영향·콜드 보존).
+// ★scheduler: 스레드는 pruneInternalThreads 내부에서 이미 제외(재사용되는 반복 스레드).
+export const INTERNAL_THREAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30일.
+
 /**
  * 영속 sink 등록 — 부팅 시 1회. 핸들러는 *throw 하지 않는다*: subscriber throw 는
  * EventBus 가 plugin.error 를 publish → 그 이벤트를 우리가 또 받아 insert 재실패 →
@@ -73,6 +84,9 @@ export const startEventPersistence = (bus: EventBus): void => {
       if (++sinceLastPrune >= PRUNE_EVERY) {
         sinceLastPrune = 0;
         pruneEvents(RETENTION_KEEP);
+        // threads 내부 파생 스레드도 같은 주기에(going-forward 바운드, 위 상수 주석 참조).
+        // best-effort — 실패해도 이벤트 영속 자체는 계속(원칙 3, 위 catch 와 동일 격리).
+        pruneInternalThreads(INTERNAL_THREAD_RETENTION_MS);
       }
     } catch (e) {
       console.error(

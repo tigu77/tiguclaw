@@ -65,7 +65,14 @@ export const formatMemoryIndex = (
   const out = [`## 메모리 인덱스 (전체 ${total}건, body 는 read_memory 로 fetch)`];
   out.push(...lines);
   if (truncated > 0) {
-    out.push(`… ${truncated}건 더 (오래된 순으로 절단)`);
+    // 인덱스 티어링(효율감사 P2a 계약 §3.6) — 소실 오인 방지 재프레이밍. 절단분은
+    // 데이터 소실이 아니라 "지도에 안 실렸을 뿐": (1) 관련 대화가 오면 자동 검색
+    // (retrieveContext)이 여전히 찾아 스니펫으로 되살리고, (2) 정확한 이름을 알면
+    // `read_memory` 로 바로 fetch 가능(FTS 는 아카이브·절단 무관 전 메모리를 계속
+    // findable 하게 유지).
+    out.push(
+      `… ${truncated}건 더 (인덱스 캡 — 소실 아님: 관련 대화 시 자동 검색으로 도달, 이름 알면 read_memory 로 직접 fetch)`,
+    );
   }
   return out.join("\n");
 };

@@ -252,13 +252,16 @@ export const initStore = (): void => {
   // ─── Memory V1: typed memories + FTS5 (contract §2) ─────────────────────
   handle.exec(`
     CREATE TABLE IF NOT EXISTS memories (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      type        TEXT NOT NULL CHECK(type IN ('user','feedback','project','reference')),
-      name        TEXT NOT NULL UNIQUE,
-      description TEXT NOT NULL,
-      body        TEXT NOT NULL,
-      created_at  INTEGER NOT NULL,
-      updated_at  INTEGER NOT NULL
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      type          TEXT NOT NULL CHECK(type IN ('user','feedback','project','reference')),
+      name          TEXT NOT NULL UNIQUE,
+      description   TEXT NOT NULL,
+      body          TEXT NOT NULL,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      access_count  INTEGER NOT NULL DEFAULT 0,
+      last_accessed INTEGER,
+      archived_at   INTEGER
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       name, description, body,
@@ -280,6 +283,35 @@ export const initStore = (): void => {
       VALUES (new.id, new.name, new.description, new.body);
     END;
   `);
+
+  // ─── Memory 인덱스 티어링 P0: access_count/last_accessed/archived_at
+  // idempotent ALTER 가드 (효율감사 P2a 계약 §0.1/§3.1, 2026-07-16) ──────────
+  // 라이브 dev DB 는 이미 out-of-band ALTER 로 세 컬럼 보유(신규 CREATE 문 무영향
+  // — IF NOT EXISTS). 신규 DB(설치·타 인스턴스·테스트)는 위 CREATE TABLE 에 이미
+  // 세 컬럼이 있어 여기서도 no-op. 이 가드는 **과거에 이미 배포된, CREATE 문에
+  // 컬럼이 없던 버전으로 만들어진 DB**(라이브 dev DB 포함— 그쪽은 실제로 out-of-band
+  // 였을 수도, 혹은 아직 컬럼이 전혀 없을 수도 있음 — 확실히 하기 위해 항상 probe)를
+  // 위한 안전망. system_prompt_hash 패턴 동형(PRAGMA table_info probe 후 부재 시 ADD).
+  const memCols = handle
+    .prepare(`PRAGMA table_info(memories)`)
+    .all() as ColumnInfoRow[];
+  if (!memCols.some((c) => c.name === "access_count")) {
+    handle.exec(
+      `ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+  if (!memCols.some((c) => c.name === "last_accessed")) {
+    handle.exec(`ALTER TABLE memories ADD COLUMN last_accessed INTEGER`);
+  }
+  if (!memCols.some((c) => c.name === "archived_at")) {
+    handle.exec(`ALTER TABLE memories ADD COLUMN archived_at INTEGER`);
+  }
+  // 핫 쿼리 커버 인덱스(계약 §3.1 선택 권고) — listMemoriesForIndex 의
+  // WHERE archived_at IS NULL ORDER BY updated_at DESC 를 커버. 132행엔 성능상
+  // 불필요하나 정합상 저비용 추가(CREATE INDEX IF NOT EXISTS 멱등).
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_memories_live ON memories(archived_at, updated_at)`,
+  );
 
   // ─── V8: messages_fts 도 dropLegacyMessages 에서 함께 폐기됨 (위 참조). ──
 
@@ -732,6 +764,65 @@ export const INTERNAL_THREAD_PREFIXES = [
 
 /** 서브에이전트 파생 스레드 마커(접두 아닌 중간 삽입). */
 export const SUBAGENT_THREAD_MARKER = "::sub::";
+
+/**
+ * 프루닝 *대상* 내부 접두 — `INTERNAL_THREAD_PREFIXES` 에서 `scheduler:` 를 뺀 부분집합
+ * (효율감사 P3, 2026-07-16). `scheduler:` 는 사용자 뷰에서는 배제 대상(대화 세션 아님)이지만
+ * **재사용되는 반복 스레드**(같은 스케줄이 매 발화 같은 threadKey 를 다시 씀 — 스케줄 실행
+ * 컨텍스트·resume 연속성)이라 완료 즉시 휘발되는 worker:/agent:/endpoint:/gateway:/`::sub::`
+ * 과 볼라틸리티 클래스가 다르다. 프루닝하면 다음 발화가 신선한(비어있는) 세션으로 재시작되어
+ * 그 스케줄의 대화 연속성이 끊긴다 → 절대 제외.
+ */
+const INTERNAL_THREAD_PRUNABLE_PREFIXES = INTERNAL_THREAD_PREFIXES.filter(
+  (p) => p !== "scheduler:",
+);
+
+/**
+ * 내부 파생 스레드(`threads` 행) 프루닝 — 효율감사 P3(2026-07-16), events(`pruneEvents`)·
+ * worker_jobs(`pruneTerminalWorkerJobs`) 동형 패턴(순수 DELETE, keep/cutoff 는 호출자가 결정).
+ *
+ * ★핫경로 바운드 + 레코드 보존 원칙([[project_hotpath_bound_preserve_record]]): 여기서
+ * 지우는 건 `threads` **메타 행**(세션-정체성 포인터: claude_session_id·model·last_used_at
+ * 등)뿐이다. 대화 레코드 자체(`transcripts`·`transcript_index`·`chat_log`)는 threadKey 로
+ * 키잉된 **별 테이블**이라 이 DELETE 로 전혀 건드리지 않는다 — 완료된 워커/서브에이전트/
+ * 엔드포인트/게이트웨이 잡의 메타 포인터만 정리하고, 그 잡이 실제로 무슨 대화를 했는지의
+ * 레코드는 콜드 보존된다(감사·검색 가능, 대시보드 세션 탭에만 안 뜸 — 원래도 excludeInternal
+ * 로 배제되던 것들).
+ *
+ * 대상 네임스페이스(★`scheduler:` 는 제외 — 위 `INTERNAL_THREAD_PRUNABLE_PREFIXES` 주석 참조):
+ *  - `worker:<jobId>`      detached 백그라운드 잡
+ *  - `agent:<uuid>`        awaited 서브에이전트 잡
+ *  - `endpoint:<name>:…`   http 엔드포인트 합성 턴
+ *  - `gateway:<uuid>`      게이트웨이 합성 턴
+ *  - `<parent>::sub::…`    서브에이전트 파생(마커 포함, 어느 접두든)
+ *
+ * `olderThanMs` 이전에 `last_used_at` 이 갱신된 행만 삭제(살아있는/최근 잡은 안 건드림 —
+ * 내부 잡은 분/시간 단위로 완료되므로 보수적인 TTL(예 30일)이면 활성 잡 오삭제 위험 0).
+ *
+ * @returns 삭제된 행 수.
+ */
+export const pruneInternalThreads = (olderThanMs: number): number => {
+  const handle = requireDb("pruneInternalThreads");
+  const cutoff = Date.now() - olderThanMs;
+
+  const conds: string[] = [];
+  const params: (string | number)[] = [];
+  for (const p of INTERNAL_THREAD_PRUNABLE_PREFIXES) {
+    conds.push(`channel_thread_id LIKE ? ESCAPE '\\'`);
+    params.push(`${escapeLike(p)}%`);
+  }
+  conds.push(`channel_thread_id LIKE ? ESCAPE '\\'`);
+  params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
+
+  const result = handle
+    .prepare(
+      `DELETE FROM threads
+        WHERE last_used_at < ?
+          AND (${conds.join(" OR ")})`,
+    )
+    .run(cutoff, ...params);
+  return result.changes;
+};
 
 /**
  * 세션-정체성 저장 채널 도출 — 슬래시 핸들러·워커 재주입이 route() 정규화와 **동일 키**로

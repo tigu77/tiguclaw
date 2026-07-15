@@ -35,6 +35,25 @@ const rowToMemory = (row: MemoryRow): Memory => ({
   updatedAt: row.updated_at,
 });
 
+// ─── 메모리 인덱스 티어링 (효율감사 P2a, 2026-07-16 — architect 계약
+// `_workspace/memory-index-tiering_contract.md`, ★사용자 확정 Option A) ─────
+//
+// archived_at: always-on 인덱스(listMemoriesForIndex)·listMemories 기본에서만 제외.
+// searchMemories/getMemory 는 무변경 — FTS 에 아카이브 행이 그대로 남아 findable
+// 보증(콜드=밀렸을 뿐, 검색으로 도달 가능). 비파괴·가역(unarchiveMemory).
+//
+// access_count/last_accessed: getMemory·searchMemories 히트 시 증분(별도 UPDATE,
+// updated_at·FTS 무영향 — 트리거 재동기 content 동일). 지금 당장 절단 개선에는
+// 무효(cold-start 전량 0) — 미래 hot-first 정렬(§6 Option D)로 가는 forward 투자.
+const bumpAccess = (db: ReturnType<typeof requireDb>, ids: readonly number[]): void => {
+  if (ids.length === 0) return;
+  const now = Date.now();
+  const stmt = db.prepare(
+    `UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`,
+  );
+  for (const id of ids) stmt.run(now, id);
+};
+
 const requireDb = (caller: string) => {
   // getDb() throws if initStore() not called — wrap to add caller context.
   try {
@@ -86,7 +105,9 @@ export const getMemory = (name: string): Memory | undefined => {
        FROM memories WHERE name = ?`,
     )
     .get(name) as MemoryRow | undefined;
-  return row === undefined ? undefined : rowToMemory(row);
+  if (row === undefined) return undefined;
+  bumpAccess(db, [row.id]);
+  return rowToMemory(row);
 };
 
 export const deleteMemory = (name: string): boolean => {
@@ -136,10 +157,13 @@ export const listMemoriesForIndex = (
   maxBytes: number,
 ): { lines: string[]; total: number; truncated: number } => {
   const db = requireDb("listMemoriesForIndex");
+  // 인덱스 티어링(계약 §3.2): archived_at IS NULL — 아카이브분은 always-on 핫셋에서
+  // 제외(FTS/searchMemories 로는 여전히 도달, §3.3 무변경).
   const rows = db
     .prepare(
       `SELECT type, name, description
        FROM memories
+       WHERE archived_at IS NULL
        ORDER BY updated_at DESC`,
     )
     .all() as Pick<MemoryRow, "type" | "name" | "description">[];
@@ -168,6 +192,8 @@ export const searchMemories = (query: string, limit = 10): Memory[] => {
   // FTS5 MATCH against description+body+name; bm25 ascending = best first.
   // Quote query as a phrase to neutralize FTS5 syntax characters from user input.
   const matchExpr = `"${trimmed.replace(/"/g, '""')}"`;
+  // ★무변경(계약 §3.3) — archived 필터 없음. FTS 에 아카이브 행이 그대로 남아
+  // always-on 에서 밀린 콜드 메모리도 검색으로 계속 도달(findability 보증).
   const rows = db
     .prepare(
       `SELECT m.id, m.type, m.name, m.description, m.body, m.created_at, m.updated_at
@@ -178,6 +204,7 @@ export const searchMemories = (query: string, limit = 10): Memory[] => {
        LIMIT ?`,
     )
     .all(matchExpr, limit) as MemoryRow[];
+  bumpAccess(db, rows.map((r) => r.id));
   return rows.map(rowToMemory);
 };
 
@@ -185,16 +212,25 @@ export const listMemories = (opts?: {
   type?: MemoryType;
   limit?: number;
   orderBy?: "updated" | "created";
+  /**
+   * true 면 archived_at 필터를 생략(아카이브분 포함) — unarchive 후보 탐색·유지보수용.
+   * 기본(false/미지정) = archived_at IS NULL 만(계약 §3.5). ★중요: `retrieveContext`
+   * 의 `recent`(ALWAYS_RECENT_MEMS) 가 이 기본을 쓴다 — 필터 없으면 방금 아카이브한
+   * 항목이 always-on 스니펫에 계속 떠 아카이브가 무효화된다(gotcha, 계약 §3.5).
+   */
+  includeArchived?: boolean;
 }): Memory[] => {
   const db = requireDb("listMemories");
   const limit = opts?.limit ?? 50;
   const orderCol = opts?.orderBy === "created" ? "created_at" : "updated_at";
+  const archivedCond =
+    opts?.includeArchived === true ? "" : "AND archived_at IS NULL";
 
   if (opts?.type !== undefined) {
     const rows = db
       .prepare(
         `SELECT id, type, name, description, body, created_at, updated_at
-         FROM memories WHERE type = ?
+         FROM memories WHERE type = ? ${archivedCond}
          ORDER BY ${orderCol} DESC LIMIT ?`,
       )
       .all(opts.type, limit) as MemoryRow[];
@@ -204,10 +240,49 @@ export const listMemories = (opts?: {
     .prepare(
       `SELECT id, type, name, description, body, created_at, updated_at
        FROM memories
+       WHERE 1=1 ${archivedCond}
        ORDER BY ${orderCol} DESC LIMIT ?`,
     )
     .all(limit) as MemoryRow[];
   return rows.map(rowToMemory);
+};
+
+// ─── 아카이브/되돌리기 (비파괴·가역 — 계약 §3.7) ─────────────────────────────
+// archived_at 스탬프만 UPDATE. ★updated_at 은 건드리지 않는다 — 아카이브가 recency
+// 를 흔들면 unarchive 시 부당하게 최상단 점프(계약 명문). updateMemory 재사용 금지
+// (그건 항상 updated_at 범프). 없는 name → undefined(no-op).
+export const archiveMemory = (name: string): Memory | undefined => {
+  const db = requireDb("archiveMemory");
+  const info = db
+    .prepare(`UPDATE memories SET archived_at = ? WHERE name = ?`)
+    .run(Date.now(), name);
+  if (info.changes === 0) return undefined;
+  return getMemoryRaw(db, name);
+};
+
+export const unarchiveMemory = (name: string): Memory | undefined => {
+  const db = requireDb("unarchiveMemory");
+  const info = db
+    .prepare(`UPDATE memories SET archived_at = NULL WHERE name = ?`)
+    .run(name);
+  if (info.changes === 0) return undefined;
+  return getMemoryRaw(db, name);
+};
+
+// getMemory 는 access_count 를 증분하는 "read" 시맨틱(계약 §3.8) — archiveMemory/
+// unarchiveMemory 는 관리 오퍼레이션이라 read 히트로 잡히면 안 됨. 원본 row 조회만
+// 하는 내부 헬퍼로 분리(bumpAccess 미호출).
+const getMemoryRaw = (
+  db: ReturnType<typeof requireDb>,
+  name: string,
+): Memory | undefined => {
+  const row = db
+    .prepare(
+      `SELECT id, type, name, description, body, created_at, updated_at
+       FROM memories WHERE name = ?`,
+    )
+    .get(name) as MemoryRow | undefined;
+  return row === undefined ? undefined : rowToMemory(row);
 };
 
 // ─── /status revamp: 메모리 총 개수 (contract §3.1) ──────────────────────────

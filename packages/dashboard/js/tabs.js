@@ -100,8 +100,8 @@
         el.addEventListener("blur", onBlur);
       };
 
-      // ── 컨텍스트메뉴(세션, context-menu 계약 §2.2) — 이름변경·닫기·새 세션. 기존 더블클릭/×/+
-      // 는 그대로 유지(중복 아님, 메뉴는 추가 경로). closeTab/newTab 은 아래 정의되지만 클로저
+      // ── 컨텍스트메뉴(세션, context-menu 계약 §2.2) — 이름변경·닫기·새 세션. 닫기는 이 메뉴로만
+      // (붙은 × 버튼 폐지, 사용자 요청). 더블클릭 이름변경·+ 새탭은 유지. closeTab/newTab 은 아래 정의되지만 클로저
       // 참조라 호출 시점(사용자 클릭 후)엔 이미 존재 — 선언 순서 무관.
       registerBuiltinHandler("session.rename", (ctx) => { startEditingTab(ctx.targetId); });
       registerBuiltinHandler("session.close", (ctx) => { closeTab(ctx.targetId); });
@@ -142,13 +142,8 @@
             const dot = document.createElement("span"); dot.className = "st-dot"; b.appendChild(dot);
           }
           b.addEventListener("click", () => switchToThread(tab.threadKey));
-          // 닫기(×) — 기본 세션 제외. 백엔드 세션은 보존(deleteSession 호출 X, D3) = 재열기 복원.
-          if (tab.threadKey !== DEFAULT_DASH_THREAD) {
-            const x = document.createElement("span");
-            x.className = "st-x"; x.textContent = "×"; x.title = "탭 닫기(대화는 보존)";
-            x.addEventListener("click", (e) => { e.stopPropagation(); closeTab(tab.threadKey); });
-            b.appendChild(x);
-          }
+          // 닫기는 ⋯ 메뉴의 "탭 닫기"로만(붙은 × 버튼 폐지 — 사용자 요청). 기본 세션은 메뉴에도
+          // 닫기 항목 없음(registerMenuItems 조건). 대화는 보존(deleteSession 호출 X, D3) = 재열기 복원.
           // 컨텍스트메뉴 트리거 — kebab + 우클릭 + 롱프레스(탭류, 3경로 동일 메뉴).
           const sessionCtx = () => ({ type: "session", targetId: tab.threadKey, threadKey: tab.threadKey, label: tab.name });
           attachKebab(b, "session", sessionCtx);

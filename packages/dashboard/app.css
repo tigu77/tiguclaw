@@ -724,6 +724,22 @@
       .project-status.done { background:rgba(125,211,252,.14); color:var(--accent-2); border-color:rgba(125,211,252,.36); }
       .project-card-summary { color:var(--text-mute); font-size:12px; line-height:1.45; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
       .project-card-path { margin-top:9px; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 채널 뷰(읽기전용) — 프로젝트 카드 골격 재사용(status 좌측 액센트·배지). */
+      .channels-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; align-content:start; }
+      .channel-card { position:relative; padding:15px 15px 14px 17px; border:1px solid var(--border); border-radius:17px; background:var(--card); }
+      .channel-card::before { content:""; position:absolute; left:0; top:14px; bottom:14px; width:4px; border-radius:99px; background:var(--text-dim); }
+      .channel-card.s-up::before { background:var(--good); } .channel-card.s-disabled::before { background:var(--text-dim); }
+      .channel-card.s-disabled { opacity:.72; }
+      .channel-card-head { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+      .channel-card-name { color:var(--text); font-weight:850; font-size:15px; letter-spacing:-.02em; word-break:break-word; }
+      .channel-status { flex:none; margin-left:auto; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; border:1px solid var(--border); background:var(--card); color:var(--text-mute); }
+      .channel-status.up { background:rgba(52,211,153,.14); color:var(--good); border-color:rgba(52,211,153,.36); }
+      .channel-status.disabled { background:var(--card); color:var(--text-mute); border-color:var(--border); }
+      .channel-card-kind { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; }
+      /* 프로젝트 카드 ⋯ 메뉴(폴더 열기 등) — 카드 우측 상단. hover/focus 시 노출. */
+      .project-card > .cm-kebab { position:absolute; top:9px; right:9px; opacity:0; z-index:2; transition:opacity .12s;
+        border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
+      .project-card:hover > .cm-kebab, .project-card:focus-within > .cm-kebab { opacity:1; }
       /* 오른쪽 상세 패널 — #detail-panel(축1) 대신 뷰 내부 자체 패널(새 프레임워크 0). */
       .project-detail { border:1px solid var(--border); border-radius:18px; background:var(--card); padding:16px 18px; position:sticky; top:0; max-height:calc(100svh - 120px); overflow-y:auto; }
       .project-detail-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }

@@ -6,6 +6,7 @@
   "view-models.js",
   "view-agents.js",
   "view-projects.js",
+  "view-channels.js",
   "view-providers.js",
   "view-inventory.js",
   "chat-core.js",

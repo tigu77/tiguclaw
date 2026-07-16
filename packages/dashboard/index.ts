@@ -10,6 +10,7 @@
  *  - GET  /app.css       → 정적 파일 (index.html 과 동일 no-store, 코드는 캐시 안 함)
  *  - GET  /js/<name>.js  → 정적 파일 (dashboard-split Phase2a, js/_manifest.json 화이트리스트)
  *  - GET  /api/inventory → bridge GET  /inventory       (JSON pass)
+ *  - GET  /api/channels  → bridge GET  /channels        (JSON pass, 라이브 채널 presence 읽기전용)
  *  - GET  /api/context-menu-items → bridge GET /context-menu-items (JSON pass, 컨텍스트메뉴 외부 기여)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
@@ -296,6 +297,12 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/inventory");
       return;
     }
+    // 라이브 채널 presence — bridge GET /channels (read 토큰 server-side 주입). 채널 1급
+    // 읽기전용 뷰(ADR 2026-07-16 §D4 Phase A). /api/inventory 와 동형 패턴.
+    if (pathname === "/api/channels" && method === "GET") {
+      await proxyJson(res, "/channels");
+      return;
+    }
     // 컨텍스트메뉴 외부 기여 — bridge GET /context-menu-items (read 토큰 server-side 주입).
     // `_workspace/context-menu_architect_contract.md` §2.3. /api/inventory 와 동형 패턴.
     if (pathname === "/api/context-menu-items" && method === "GET") {
@@ -405,6 +412,18 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/cancel-worker" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/cancel-worker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+
+    // 프로젝트 폴더를 데몬 호스트 파일 탐색기로 열기(프로젝트 카드 ⋯ 메뉴). bridge 가 등록
+    // 프로젝트 경로만 허용(검증). write 토큰.
+    if (pathname === "/api/open-path" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/open-path", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

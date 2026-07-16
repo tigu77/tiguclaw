@@ -8,6 +8,10 @@ import { CliChannel } from "./channels/cli.js";
 import { TelegramChannel } from "./channels/telegram.js";
 import type { Channel, IncomingMessage, MessageHandler } from "./channels/types.js";
 import { initEventBus, type EventBus } from "./core/eventbus.js";
+import {
+  setChannelPresence,
+  type ChannelPresence,
+} from "./core/channel-registry.js";
 import { registerMcpServer } from "./core/mcp-registry.js";
 import { expandCommand } from "./core/entry/command-registry.js";
 import {
@@ -1373,6 +1377,24 @@ for (const ch of channels) {
     const err = e instanceof Error ? e.message : String(e);
     console.error(`${ch.name} failed: ${err}`);
   }
+}
+
+// 채널 presence 등록 (ADR 2026-07-16 §D4 Phase A / U4) — 산 channels[] 를 진실원으로
+// http-bridge GET /channels 에 노출(순수 가시성, outbound 라우팅 무관). 코어·플러그인 채널
+// 모두 로드된 것을 "up" 으로. ★텔레그램 토큰 부재로 push 안 된 경우(위 line 183 warn 분기)는
+// "존재하나 꺼짐"을 사용자가 보도록 disabled 로 명시 추가(토큰 있으면 이미 channels[] 에 있어
+// 중복 추가 금지). kind 는 표시용 — Phase A 는 채널별 특수 로직 없이 c.name 을 그대로 쓴다.
+{
+  const presence: ChannelPresence[] = channels.map((c) => ({
+    name: c.name,
+    kind: c.name,
+    status: "up",
+  }));
+  const telegramLoaded = channels.some((c) => c.name === "telegram");
+  if (!telegramLoaded) {
+    presence.push({ name: "telegram", kind: "telegram", status: "disabled" });
+  }
+  setChannelPresence(presence);
 }
 
 // 재시작으로 중단된 백그라운드 워커를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).

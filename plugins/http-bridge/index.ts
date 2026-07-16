@@ -26,6 +26,7 @@ import type {
   MessageHandler,
 } from "../../src/channels/types.js";
 import { getPaths } from "../../src/core/paths.js";
+import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import {
@@ -74,6 +75,7 @@ import {
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
 import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
 
 // 앱 버전 = 레포 루트 package.json(데몬 cwd=repoRoot). 하드코딩 stale 방지 — /health 가 이걸
 // 반환하고 대시보드 헤더가 표시한다. 읽기 실패 시 "unknown".
@@ -700,6 +702,8 @@ class HttpBridge implements Channel, Observer {
             ? "read"
           : pathname === "/commands" && method === "GET"
             ? "read"
+            : pathname === "/channels" && method === "GET"
+            ? "read"
             : pathname === "/providers" && method === "GET"
             ? "read"
             : pathname === "/model-profiles" && method === "GET"
@@ -723,6 +727,8 @@ class HttpBridge implements Channel, Observer {
                 : pathname === "/cancel-queued" && method === "POST"
                   ? "admin"
                 : pathname === "/cancel-worker" && method === "POST"
+                  ? "write"
+                : pathname === "/open-path" && method === "POST"
                   ? "write"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
@@ -788,6 +794,15 @@ class HttpBridge implements Channel, Observer {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
       }
+      return;
+    }
+
+    // /channels — JSON. 라이브 채널 presence(ADR 2026-07-16 §D4 Phase A / U4). 정적 파일
+    // walk(collectInventory)와 달리 index.ts 가 부팅 때 실제 로드·시작한 산 channels[] 를
+    // 모듈레벨 레지스트리(channel-registry.ts, 동일 프로세스 공유)에서 읽어 그대로 노출.
+    // 읽기전용 — outbound 라우팅 무관.
+    if (pathname === "/channels" && method === "GET") {
+      writeJson(res, 200, { channels: getChannelPresence() });
       return;
     }
 
@@ -1487,6 +1502,53 @@ class HttpBridge implements Channel, Observer {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });
       }
+      return;
+    }
+
+    // /open-path — 프로젝트 폴더를 데몬 호스트의 OS 파일 탐색기로 연다(대시보드 프로젝트 카드
+    // ⋯ 메뉴). ★보안: **등록된 프로젝트 경로만** 허용(임의 경로 열기·정찰 차단). execFile(배열
+    // 인자, no shell)이라 셸 인젝션 0 — 경로는 검증된 등록값만 인자로 넘긴다.
+    if (pathname === "/open-path" && method === "POST") {
+      let obody: Record<string, unknown>;
+      try {
+        obody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const pathIn =
+        typeof obody.path === "string" ? obody.path.trim() : "";
+      if (pathIn === "") {
+        writeJson(res, 400, { error: "path required" });
+        return;
+      }
+      const abs = nodePath.resolve(pathIn);
+      const match = listProjects().find(
+        (p) => nodePath.resolve(p.path) === abs,
+      );
+      if (match === undefined) {
+        writeJson(res, 403, {
+          error: "등록된 프로젝트 경로가 아닙니다(허용된 경로만 열 수 있음)",
+        });
+        return;
+      }
+      // darwin=open · win32=explorer · 그 외=xdg-open. 폴더 열기는 fire-and-forget(즉시 200).
+      // Windows explorer 는 성공해도 exit 1 을 내는 알려진 quirk → win32 는 에러를 무시한다.
+      const opener =
+        process.platform === "darwin"
+          ? "open"
+          : process.platform === "win32"
+            ? "explorer"
+            : "xdg-open";
+      execFile(opener, [match.path], (err) => {
+        if (err !== null && process.platform !== "win32") {
+          console.warn(
+            `http-bridge: open-path 실패(${opener} ${match.path}) — ${err.message}`,
+          );
+        }
+      });
+      writeJson(res, 200, { ok: true, path: match.path });
       return;
     }
 

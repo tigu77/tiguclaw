@@ -293,11 +293,12 @@
           else if (view === "inventory") showInventory();
           else if (view === "agents") showAgents();
           else if (view === "projects") showProjects();
+          else if (view === "channels") showChannels();
           else if (view === "endpoints") showEndpoints();
           else if (view === "activity") showActivityView();
           else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","agents","projects","endpoints","activity"].includes(view)) setActiveTab("main");
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","agents","projects","channels","endpoints","activity"].includes(view)) setActiveTab("main");
         });
       }
 

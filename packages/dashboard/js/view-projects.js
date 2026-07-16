@@ -6,6 +6,26 @@
       let projectsCache = [];
       let selectedProjectPath = null;
 
+      // 프로젝트 카드 ⋯ 메뉴 — "폴더 열기"(데몬 호스트의 OS 파일 탐색기로 프로젝트 폴더 열기).
+      // 1회 등록(모듈 로드 시). bridge 가 등록 프로젝트 경로만 허용(검증). 브라우저가 아니라
+      // 데몬(tiguclaw 호스트)에서 열리므로 폰에서 눌러도 호스트 Mac 의 Finder 가 열린다.
+      registerMenuItems("project", () => [
+        { id: "open-folder", label: "폴더 열기", icon: "📂", action: { kind: "builtin", handler: "project.openFolder" } },
+      ]);
+      registerBuiltinHandler("project.openFolder", async (ctx) => {
+        if (!ctx || !ctx.path) return;
+        try {
+          const r = await fetch("/api/open-path", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: ctx.path }),
+          });
+          showToast(r.ok ? "폴더를 열었습니다" : "폴더 열기 실패", r.ok ? "good" : "bad");
+        } catch {
+          showToast("폴더 열기 실패", "bad");
+        }
+      });
+
       const showProjects = () => {
         setActiveNav("projects");
         setChatPanel("chat");
@@ -197,6 +217,11 @@
           pathEl.textContent = p.path;
           card.appendChild(head); card.appendChild(summary); card.appendChild(pathEl);
           card.addEventListener("click", () => openProjectDetail(p.path));
+          // ⋯ 메뉴 + 우클릭 + 롱프레스(카드류 3경로 동일). ctx 에 path 를 실어 "폴더 열기"가 씀.
+          const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || "(이름 없음)", path: p.path });
+          attachKebab(card, "project", projectCtx);
+          attachContextMenu(card, "project", projectCtx);
+          attachLongPress(card, "project", projectCtx);
           grid.appendChild(card);
         }
       };

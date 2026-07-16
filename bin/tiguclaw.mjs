@@ -3,9 +3,10 @@
 // `npm link`(또는 전역 설치) 후 `tiguclaw <명령>` 으로 사용. cwd 를 레포 루트로
 // 고정해 .env·npm 스크립트·플러그인 발견이 어디서 호출하든 일관되게 동작한다.
 //
-// 라이프사이클 단락(ADR 2026-07-15 D2): 데몬 관리 8종은 dep-free `bin/daemon.mjs`
+// 라이프사이클 단락(ADR 2026-07-15 D2): 데몬 관리 9종은 dep-free `bin/daemon.mjs`
 //   로 **직접** spawn — tsx·cli.ts·npm·node_modules 를 전혀 거치지 않는다. 깨진
-//   node_modules/tsx 에서도 stop·restart·uninstall·install 이 항상 된다.
+//   node_modules/tsx 에서도 stop·restart·uninstall·install·update 가 항상 된다
+//   (update 는 자체적으로 npm ci 로 node_modules 를 복구한다).
 // 그 외 앱 명령(onboard/init/doctor/codex-auth/help)은 종전대로 tsx 로 src/cli.ts 실행
 //   (앱 전체 deps 가 있어야 의미 있는 명령이라 tsx OK).
 import { spawnSync } from "node:child_process";
@@ -25,6 +26,7 @@ const LIFECYCLE = new Set([
   "status",
   "logs",
   "print",
+  "update",
 ]);
 
 const cmd = process.argv[2];

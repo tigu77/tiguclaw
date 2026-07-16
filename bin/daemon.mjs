@@ -8,10 +8,14 @@
  *   깨진 node_modules/tsx 에서도 stop·restart·uninstall·install 이 된다.
  *
  * 단일 진실 소스. 서브커맨드:
- *   install | uninstall | restart | stop | start | status | logs | print.
+ *   install | uninstall | restart | stop | start | status | logs | print | update.
  *   - macOS  → launchd LaunchAgent (KeepAlive, 자동 respawn).
  *   - Linux  → systemd **user** 유닛 (Restart=always).
  *   - Windows→ HKCU Run 키 + 숨김 VBS (ONLOGON; KeepAlive 강도는 약함 — 아래 주석 참조).
+ *
+ * update = 터미널 직접 자가 갱신(채팅 /update 와 별개). dep-free 라 깨진
+ *   node_modules/tsx/typescript 에서도 `npm ci` 로 스스로 복구한다. 순서:
+ *   (돌고 있으면) stop → npm ci → build(built 만) → start. 실패 시 prevSha 롤백.
  *
  * 등록(=자동가동 설정 존재) ↔ 실행(=프로세스 생존) 분리 (ADR 2026-07-15 D3):
  *   - stop  = 실행만 중지, 등록 유지 (plist/유닛/Run키 파일 안 지움).
@@ -32,6 +36,7 @@
  *   npm run daemon:start                # 재실행 (등록 유지)
  *   npm run daemon:logs                 # 로그 tail+follow
  *   npm run daemon:uninstall            # 등록 해제 + 유닛 제거
+ *   npm run daemon:update               # dep-free 자가 갱신 (stop→npm ci→build→start)
  *   node bin/daemon.mjs print           # 설치 안 하고 유닛/명령만 미리보기
  *
  * 개발 홈 보존: dev 는 `TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source npm run daemon:install`
@@ -659,7 +664,7 @@ const tailLogs = (c) => {
 
 // ───────────────────────────── dispatch ─────────────────────────────────────
 
-/** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print"} Cmd */
+/** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update"} Cmd */
 
 /**
  * @type {Record<string, Record<string, (c: Ctx) => void> | undefined>}
@@ -728,6 +733,168 @@ const isDaemonRunning = (c) => {
 };
 
 /**
+ * 등록(자동가동 설정 파일 존재) 여부 — 실행과 무관(D3). update 후 미가동일 때 install 안내용.
+ * @param {Ctx} c
+ * @returns {boolean}
+ */
+const isRegistered = (c) => {
+  try {
+    if (process.platform === "darwin") return existsSync(launchdPlistPath(c));
+    if (process.platform === "linux") return existsSync(systemdUnitPath(c));
+    if (process.platform === "win32") return existsSync(winVbsPath(c));
+  } catch {
+    /* 감지 실패 — 무시 */
+  }
+  return false;
+};
+
+// ───────────────────────────── update (dep-free 자가 갱신) ──────────────────
+// `tiguclaw update` — 터미널에서 직접 실행하는 dep-free 자가 갱신(채팅 /update=runSelfUpdate
+//   와 별개). 목적: 깨진 node_modules/tsx/typescript 에서도 `npm ci` 로 스스로 복구한다.
+//   따라서 node 빌트인만 쓴다(tsx·src/cli.ts·앱 코드 import 0 — daemon.mjs 철학 정합).
+// 사용자 확정 순서(회사 인스턴스 EPERM 실사고 대응): 돌고 있는 데몬이 있으면 먼저 stop →
+//   npm ci → build → start. 안 그러면 Windows 에서 실행 중 데몬이 better_sqlite3.node 를
+//   잠가 npm ci 가 EPERM 으로 또 실패한다. runSelfUpdate(src/core/self-update.ts) 정신 + stop-first.
+/** @param {Ctx} c */
+const runUpdate = (c) => {
+  const isWin = process.platform === "win32";
+  // spawnSync 래퍼 — stdio 상속(사용자가 라이브 출력을 본다), cwd=repoRoot. npm 은 Windows
+  //   에서 실행파일이 아니라 npm.cmd(배치)라 shell 경유 필요; 인자는 전부 고정 상수라
+  //   인젝션 0(동적값은 rollback 의 git reset prevSha 뿐 — git 은 git.exe 라 무shell).
+  //   exit≠0 = 실패로 판정(self-update.ts:138-143 과 동일 근거).
+  /**
+   * @param {string} cmd
+   * @param {string[]} args
+   * @param {{shell?: boolean}} [opts]
+   * @returns {number}
+   */
+  const run = (cmd, args, opts = {}) => {
+    const r = spawnSync(cmd, args, {
+      cwd: c.repoRoot,
+      stdio: "inherit",
+      shell: opts.shell ?? false,
+    });
+    return r.status ?? 1;
+  };
+
+  // ── 단계 1: 배너 ────────────────────────────────────────────────────────────
+  console.log("── tiguclaw update (dep-free) ──");
+  console.log(`   runtime=${c.runtime} · home=${c.homeRaw} · label=${c.label}`);
+  console.log(
+    "   힌트: 설치 때와 같은 env(TIGUCLAW_HOME/TIGUCLAW_RUNTIME/TIGUCLAW_SERVICE_LABEL)로",
+  );
+  console.log("         실행해야 올바른 인스턴스를 갱신합니다.");
+
+  // ── 단계 2: prevSha capture (롤백 앵커) ──────────────────────────────────────
+  const prev = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: c.repoRoot,
+    encoding: "utf8",
+  });
+  if (prev.status !== 0 || !(prev.stdout ?? "").trim()) {
+    console.error("update: git 저장소가 아니거나 git 이 없습니다 — 갱신 불가.");
+    process.exitCode = 1;
+    return;
+  }
+  const prevSha = prev.stdout.trim();
+
+  // ── 단계 3: lock 드리프트 선폐기(생성물 한 파일만) ──────────────────────────
+  // package-lock.json 은 npm 이 재생성하는 *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게
+  //   더러워지고("local changes to package-lock.json would be overwritten by merge") 그게
+  //   ff-only pull 을 막아 갱신이 영영 깨진다(Windows 실사고, self-update.ts:346-358 동일 근거).
+  //   생성물 한 파일만 origin 기준으로 되돌리는 건 안전 — 사용자 의미 편집이 아니다.
+  //   ★자동 폐기는 이 파일 하나뿐. 다른 트래킹 파일의 미커밋 변경은 절대 건드리지 않으므로
+  //   여전히 ff-only 가 정직 실패한다(암묵 파괴 0 — §1·O1). best-effort: 없거나 clean 이면 무시.
+  run("git", ["checkout", "--", "package-lock.json"]);
+
+  // ── 단계 4: git pull --ff-only ──────────────────────────────────────────────
+  if (run("git", ["pull", "--ff-only"]) !== 0) {
+    // 실패(로컬 미커밋 진짜 변경·충돌·detached) → 정직 실패. pull 은 원자적이라 작업트리를
+    //   보존(부분 적용 0) → 롤백 불요. 자동 stash/merge 는 파괴적·암묵이라 안 함(§1·O1).
+    console.error(
+      "update: 로컬 미커밋 변경/충돌로 pull 실패 — 수동 확인 필요 (git status).",
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const next = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: c.repoRoot,
+    encoding: "utf8",
+  });
+  const newSha = next.status === 0 ? (next.stdout ?? "").trim() : prevSha;
+  if (newSha === prevSha) {
+    // ★early-exit 안 함 — update 의 흔한 목적이 깨진 node_modules 복구라 코드가 안 바뀌어도
+    //   npm ci·build 는 돌려야 한다.
+    console.log("   코드 변경 없음 — 의존성·빌드만 갱신합니다.");
+  }
+
+  const table = handlers[process.platform];
+  const wasRunning = isDaemonRunning(c);
+
+  // rollback 헬퍼(self-update.ts:401-424 미러) — reset --hard prevSha → npm ci(best-effort)
+  //   → (돌고 있었으면) start. 데몬은 반드시 원복 가동. 예외는 삼켜 데몬 생존.
+  // ★§1 파괴 0 논증: 이 reset --hard 는 pull 성공(HEAD 이동) *이후*에만 도는데, pull 이
+  //   성공했다는 건 그 시점 작업트리에 사용자 미커밋 변경이 없었다는 뜻이다(있었으면 위
+  //   ff-only 가 실패했다 → 여기 도달 못 함). 따라서 prevSha 로 되돌려도 지울 사용자 편집이
+  //   애초에 없다 = 파괴 0.
+  const rollback = () => {
+    try {
+      run("git", ["reset", "--hard", prevSha]);
+      run("npm", ["ci", "--no-audit", "--no-fund"], { shell: isWin });
+      if (wasRunning) table?.start?.(c);
+    } catch {
+      /* 롤백 자체 실패도 삼켜 데몬 생존(best-effort) */
+    }
+  };
+
+  // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
+  if (wasRunning) {
+    console.log("   npm ci 를 위해 데몬을 정지합니다 (짧은 다운타임).");
+    table?.stop?.(c);
+  }
+
+  // ── 단계 6: npm ci ──────────────────────────────────────────────────────────
+  if (run("npm", ["ci", "--no-audit", "--no-fund"], { shell: isWin }) !== 0) {
+    console.error("update: npm ci 실패 — 롤백합니다.");
+    rollback();
+    console.error("update: 롤백 완료, 데몬 원복. exit 1.");
+    process.exitCode = 1;
+    return;
+  }
+
+  // ── 단계 7: 빌드(built 런타임만) ───────────────────────────────────────────
+  if (c.runtime === "built") {
+    if (
+      run("npm", ["run", "build:prod"], { shell: isWin }) !== 0 ||
+      !existsSync(c.distEntry)
+    ) {
+      console.error("update: 빌드 실패(진입점 미생성) — 롤백합니다.");
+      rollback();
+      console.error("update: 롤백 완료, 데몬 원복. exit 1.");
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    // source 런타임은 tsx 로 src 를 직접 구동 — dist 불요(daemon.mjs 철학 정합).
+    console.log("   source 런타임 — 빌드 건너뜀 (tsx 로 src 직접 구동).");
+  }
+
+  // ── 단계 8: 재가동 ──────────────────────────────────────────────────────────
+  if (wasRunning) {
+    table?.start?.(c); // 5에서 stop 했으니 start(restart 아님).
+  } else if (!isRegistered(c)) {
+    console.log("   데몬 미등록 — 'tiguclaw install' 후 가동하세요.");
+  } else {
+    console.log("   데몬이 실행 중이 아니었습니다 — 'tiguclaw start' 로 가동하세요.");
+  }
+
+  // ── 단계 9: 성공 요약 ───────────────────────────────────────────────────────
+  console.log(
+    `✅ update 완료: ${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
+      `(runtime=${c.runtime}). 가동 재개.`,
+  );
+};
+
+/**
  * @param {Ctx} c
  * @param {string} cmd
  */
@@ -754,6 +921,13 @@ export const runDaemonCommand = (cmd) => {
     return;
   }
 
+  // update = dep-free 자가 갱신(stop→npm ci→build→start). known-check *앞*에 분기 — logs 처럼
+  //   OS handlers 테이블과 무관한 자체 루틴이다.
+  if (cmd === "update") {
+    runUpdate(c);
+    return;
+  }
+
   /** @type {Cmd[]} */
   const known = [
     "install",
@@ -767,7 +941,7 @@ export const runDaemonCommand = (cmd) => {
   if (!known.includes(/** @type {Cmd} */ (cmd))) {
     console.error(
       `daemon: 알 수 없는 서브커맨드 '${cmd}'. ` +
-        "사용: install | uninstall | restart | stop | start | status | logs | print",
+        "사용: install | uninstall | restart | stop | start | status | logs | print | update",
     );
     process.exitCode = 1;
     return;
@@ -819,7 +993,7 @@ if (invokedDirectly) {
   const cmd = process.argv[2];
   if (!cmd) {
     console.error(
-      "사용: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print>",
+      "사용: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print|update>",
     );
     process.exitCode = 1;
   } else {

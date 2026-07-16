@@ -48,6 +48,7 @@
     "daemon:install:dev": "TIGUCLAW_HOME=./tiguclaw-dev TIGUCLAW_RUNTIME=source node bin/daemon.mjs install",
     "daemon:uninstall": "node bin/daemon.mjs uninstall",
     "daemon:restart": "node bin/daemon.mjs restart",
+    "daemon:update": "node bin/daemon.mjs update",
     "daemon:stop": "node bin/daemon.mjs stop",
     "daemon:start": "node bin/daemon.mjs start",
     "daemon:status": "node bin/daemon.mjs status",

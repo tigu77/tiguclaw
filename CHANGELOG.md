@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- **`tiguclaw update` — 터미널에서 한 번에 자가 갱신.** 채팅 `/update`와 별개로, 셸에서 `tiguclaw update`(또는 `npm run daemon:update`)를 실행하면 돌고 있는 데몬을 멈추고 → 최신 코드를 받고(`git pull`) → 의존성을 재설치(`npm ci`)하고 → 빌드한 뒤 → 다시 가동합니다. 실행 중인 데몬이 파일을 잠가 재설치가 실패하던 문제(특히 Windows)를 "먼저 멈추고 설치" 순서로 방지하고, 중간에 실패하면 자동으로 이전 커밋 상태로 되돌리며 데몬을 원복 가동합니다. `node_modules`가 깨져 있어도 `npm ci`로 스스로 복구합니다(의존성 없는 순수 실행).
 
 ## [0.13.0] - 2026-07-16
 ### Added

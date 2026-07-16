@@ -3,7 +3,7 @@
  * tiguclaw CLI — 자가호스트 통합 진입점 (bin/tiguclaw.mjs 가 cwd=repo 로 호출).
  *
  *   tiguclaw onboard   # 원샷 설정: init → (codex)codex-auth → daemon 등록 → doctor
- *   tiguclaw status|restart|logs|uninstall|install|doctor|init|codex-auth
+ *   tiguclaw status|restart|update|logs|uninstall|install|doctor|init|codex-auth
  *
  * 기존 npm 스크립트를 순서대로 위임(재사용) — 단일 진실 소스 유지.
  */
@@ -169,6 +169,7 @@ const USAGE = `tiguclaw — 자가호스트 AI 비서 CLI
   tiguclaw doctor       설정 검증
   tiguclaw status       데몬 상태
   tiguclaw restart      데몬 재시작 (코드 변경 적용)
+  tiguclaw update       dep-free 자가 갱신 (stop→git pull→npm ci→build→start, 롤백 안전)
   tiguclaw stop         데몬 실행 중지 (등록 유지 — EPERM/락 복구용)
   tiguclaw start        데몬 재실행 (등록 유지)
   tiguclaw logs         데몬 로그 tail
@@ -180,6 +181,8 @@ const USAGE = `tiguclaw — 자가호스트 AI 비서 CLI
     restart/stop/start/status/logs/print)은 dep-free 매니저(bin/daemon.mjs)로 직접
     돌아 tsx·node_modules 없이도 항상 동작. better_sqlite3 EPERM(실행 중 데몬이 네이티브
     모듈 락) 복구 순서: tiguclaw stop → npm ci → tiguclaw start(또는 install).
+    ★tiguclaw update 가 이 순서(stop→pull→npm ci→build→start)를 자동화한다 — 깨진
+    node_modules 도 npm ci 로 복구하고 실패 시 이전 커밋으로 롤백(데몬 원복 가동).
 
   런타임 모드 (ADR 2026-07-14, Amendment 2026-07-14): 기본 built(설치=프로덕션 빌드 산출물,
     node dist/src/index.js). onboard 가 build:prod 를 자동 선행하고, 설치 시 해석된 모드를

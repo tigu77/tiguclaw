@@ -82,9 +82,34 @@
         if (entry.errorText) parts.push("에러: " + entry.errorText);
         try { await navigator.clipboard.writeText(parts.join("\n")); } catch {}
       });
+      // 세션으로 이동 — 그 작업을 띄운 세션(threadKey)으로 점프(전체활동 activity.jump 동형).
+      registerBuiltinHandler("job.jumpSession", (ctx) => {
+        const tk = ctx.threadKey;
+        if (!tk || typeof switchToThread !== "function") return;
+        if (typeof openTabs !== "undefined" && !openTabs.some((t) => t.threadKey === tk)) {
+          openTabs.push({ threadKey: tk, name: typeof deriveTabFallbackName === "function" ? deriveTabFallbackName(tk) : tk });
+        }
+        if (typeof setActiveNav === "function") setActiveNav("chat");
+        if (typeof setChatPanel === "function") setChatPanel("chat");
+        if (typeof setActiveTab === "function") setActiveTab("chat");
+        switchToThread(tk);
+      });
+      registerBuiltinHandler("job.copyResult", async (ctx) => {
+        const entry = jobCards.get(ctx.targetId);
+        if (!entry || !navigator.clipboard || !entry.result) return;
+        try { await navigator.clipboard.writeText(entry.result); } catch {}
+      });
+      registerBuiltinHandler("job.copyId", async (ctx) => {
+        if (!navigator.clipboard) return;
+        try { await navigator.clipboard.writeText(ctx.targetId || ""); } catch {}
+      });
       registerMenuItems("job", (ctx) => {
         const entry = jobCards.get(ctx.targetId);
         const items = [];
+        // 세션으로 이동 — 원 세션 threadKey 가 있을 때만(worker:/agent: 의사키·미지정 제외).
+        if (ctx.threadKey) {
+          items.push({ id: "jump", label: "세션으로 이동", icon: "↪️", action: { kind: "builtin", handler: "job.jumpSession" } });
+        }
         if (entry && entry.el.classList.contains("has-detail")) {
           items.push({
             id: "detail",
@@ -94,6 +119,10 @@
           });
         }
         items.push({ id: "copy", label: "복사", icon: "📋", action: { kind: "builtin", handler: "job.copy" } });
+        if (entry && entry.result) {
+          items.push({ id: "copy-result", label: "결과만 복사", icon: "📄", action: { kind: "builtin", handler: "job.copyResult" } });
+        }
+        items.push({ id: "copy-id", label: "작업 ID 복사", icon: "🔖", action: { kind: "builtin", handler: "job.copyId" } });
         if (canCancelJob(entry) && !entry._cancelRequested) {
           items.push({
             id: "cancel",

@@ -13,6 +13,88 @@
       const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
       const jobCards = new Map(); // jobId -> { el, labelEl, statusEl, chevEl, stepsEl, errEl, status, stepCount }
 
+      // ── 취소(중지) — POST /api/cancel-worker { jobId } → { ok, cancelled }. 대상: 실행 중
+      // (status running) + detached worker(kind==="worker") 뿐 — awaited 서브에이전트(kind==="agent")
+      // 는 취소 대상 아님(백엔드 계약). 낙관적 UI: 클릭 즉시 버튼 비활성화+"중지 요청…" 텍스트로,
+      // 상태 배지도 "취소 중…"(기존 잡 상태 렌더 재사용, BG_STATUS 확장). cancelled:false(대상없음/
+      // 이미종료) 나 네트워크 실패는 무해하게 되돌린다 — 실제 종료 반영은 worker.cancelled lifecycle
+      // SSE(handleWorkerEvent, BG_STATUS.cancelled="⏹ 취소")가 한다.
+      const canCancelJob = (entry) => !!entry && entry.status === "running" && entry.kind === "worker";
+      const updateStopBtn = (entry) => {
+        if (!entry || !entry.stopBtnEl) return;
+        const show = canCancelJob(entry);
+        entry.stopBtnEl.style.display = show ? "" : "none";
+        entry.stopBtnEl.disabled = !!entry._cancelRequested;
+        entry.stopBtnEl.textContent = entry._cancelRequested ? "중지 요청…" : "⏹️ 중지";
+      };
+      const requestCancelJob = async (jobId) => {
+        const entry = jobCards.get(jobId);
+        if (!canCancelJob(entry) || entry._cancelRequested) return;
+        entry._cancelRequested = true;
+        updateStopBtn(entry);
+        if (entry.statusEl) entry.statusEl.textContent = "⏳ 취소 중…";
+        const revert = () => {
+          entry._cancelRequested = false;
+          updateStopBtn(entry);
+          if (entry.statusEl && entry.status === "running") entry.statusEl.textContent = BG_STATUS.running;
+        };
+        try {
+          const res = await fetch("/api/cancel-worker", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jobId }),
+          });
+          const data = res.ok ? await res.json().catch(() => null) : null;
+          // cancelled:true → worker.cancelled lifecycle 이 곧 status 갱신(handleWorkerEvent). 그 외
+          // (대상없음/이미종료/네트워크 실패)는 무해 폴백 — 낙관 표시를 되돌려 사용자가 재시도 가능.
+          if (!data || data.cancelled !== true) revert();
+        } catch (err) {
+          revert();
+          console.warn("cancel-worker 요청 실패:", err && err.message ? err.message : err);
+        }
+      };
+      registerBuiltinHandler("job.cancel", (ctx) => requestCancelJob(ctx.targetId));
+
+      // ── 컨텍스트메뉴(잡, context-menu 계약 §2.2) — 상세 보기/접기 · 복사 · (해당 시) 중지.
+      registerBuiltinHandler("job.toggleDetail", (ctx) => {
+        const entry = jobCards.get(ctx.targetId);
+        if (!entry || !entry.el.classList.contains("has-detail")) return;
+        entry.el.classList.toggle("open");
+        updateChev(entry);
+      });
+      registerBuiltinHandler("job.copy", async (ctx) => {
+        const entry = jobCards.get(ctx.targetId);
+        if (!entry || !navigator.clipboard) return;
+        const parts = [entry.labelEl.textContent || ""];
+        if (entry.task) parts.push("작업: " + entry.task);
+        if (entry.result) parts.push("결과: " + entry.result);
+        if (entry.errorText) parts.push("에러: " + entry.errorText);
+        try { await navigator.clipboard.writeText(parts.join("\n")); } catch {}
+      });
+      registerMenuItems("job", (ctx) => {
+        const entry = jobCards.get(ctx.targetId);
+        const items = [];
+        if (entry && entry.el.classList.contains("has-detail")) {
+          items.push({
+            id: "detail",
+            label: entry.el.classList.contains("open") ? "상세 접기" : "상세 보기",
+            icon: "🔎",
+            action: { kind: "builtin", handler: "job.toggleDetail" },
+          });
+        }
+        items.push({ id: "copy", label: "복사", icon: "📋", action: { kind: "builtin", handler: "job.copy" } });
+        if (canCancelJob(entry) && !entry._cancelRequested) {
+          items.push({
+            id: "cancel",
+            label: "중지",
+            icon: "⏹️",
+            danger: true,
+            action: { kind: "builtin", handler: "job.cancel" },
+          });
+        }
+        return items;
+      });
+
       // 백그라운드 드로어 폭 드래그 조절(왼쪽 가장자리) + localStorage 영속. PC 전용(모바일=핸들 숨김).
       (() => {
         const handle = document.getElementById("bg-resize");
@@ -245,8 +327,14 @@
           // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
           // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
           st.textContent = BG_STATUS.running;
+          // 중지 버튼 — running+worker 일 때만 노출(updateStopBtn 이 켜고/끔). 클릭은 top 의
+          // 펼침 토글로 버블링되지 않게 stopPropagation.
+          const stopBtn = document.createElement("button");
+          stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = "작업 중지";
+          stopBtn.textContent = "⏹️ 중지"; stopBtn.style.display = "none";
+          stopBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestCancelJob(jobId); });
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
-          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(st); top.appendChild(chev);
+          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
           // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개도 구분되게.
@@ -271,7 +359,7 @@
           bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
-            resultEl: result, errEl: err, kindBadgeEl: kindBadge,
+            resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
             lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
@@ -282,9 +370,20 @@
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
             threadKey: realSessionThreadKey(opts && opts.threadKey), // 원 세션 threadKey(세션 스코프 필터용) — 없으면 "".
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
+            _cancelRequested: false, // 낙관 취소 요청 중(재클릭 방지) — cancelled:false/실패 시 되돌림.
           };
           entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey));
           jobCards.set(jobId, entry);
+          updateStopBtn(entry); // 신규 카드 기본 running+worker → 중지 버튼 노출.
+          // 컨텍스트메뉴 트리거 — kebab(top 우측) + 우클릭 + 롱프레스(카드류, 3경로 동일 메뉴).
+          // ctxFn 은 매 호출 시 최신 entry 를 다시 읽어(jobCards.get) label/threadKey 드리프트 없음.
+          const jobCtx = () => {
+            const e = jobCards.get(jobId);
+            return { type: "job", targetId: jobId, threadKey: e ? e.threadKey : "", label: e ? e.labelEl.textContent : jobId };
+          };
+          attachKebab(top, "job", jobCtx);
+          attachContextMenu(el, "job", jobCtx);
+          attachLongPress(el, "job", jobCtx);
           // 활동으로만 생성된 카드도 헤더 '백그라운드 N' 개수 뱃지·bgEmpty 를 즉시 반영
           // (기존엔 handleWorkerEvent 만 refreshBgBadge 호출 → 활동-only 카드는 개수 누락).
           refreshBgBadge();
@@ -306,6 +405,7 @@
           entry.kind = "agent";
           entry.el.classList.add("agent");
           entry.kindBadgeEl.textContent = AGENT_KIND_BADGE.agent;
+          updateStopBtn(entry); // awaited 서브에이전트 승격 — 취소 대상 아님, 버튼 숨김.
         }
         // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.
@@ -347,7 +447,9 @@
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");
         entry.el.classList.add(status); // open/has-detail 보존.
+        if (status !== "running") entry._cancelRequested = false; // 종료됐으면 낙관 플래그 리셋(멱등).
         entry.statusEl.textContent = BG_STATUS[status] || status;
+        updateStopBtn(entry); // running 이탈/kind 무관 — 버튼 노출조건 재평가.
         // 잡 종료 시 경과시간 최종 확정(틱은 running 만 갱신 → 여기서 마지막 값 고정).
         if (wasRunning && status !== "running" && entry.elapsedEl) {
           entry.elapsedEl.textContent = fmtElapsed(Date.now() - (entry.startTs || Date.now()));

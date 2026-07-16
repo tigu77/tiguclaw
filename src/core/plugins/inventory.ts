@@ -50,29 +50,120 @@ export interface InventoryResult {
 
 // ─── 내부 유틸 ───────────────────────────────────────────────────────────
 
-/** frontmatter `name`/`description` 만 정규식 추출. 외부 yaml lib 0. */
+/** 인용부호(작은/큰) 제거 — 값 그대로면 통과. */
+const stripQuotes = (val: string): string => {
+  if (
+    (val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+    (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
+  ) {
+    return val.slice(1, -1);
+  }
+  return val;
+};
+
+/**
+ * 컨텍스트메뉴 외부 기여 — 항목 원시 스키마 (`_workspace/context-menu_architect_contract.md`
+ * §2.1 §2.3). 스킬 frontmatter 선언 형식은 `on`/`label`(+선택 danger/group/icon) 만 —
+ * **`action` 은 여기서 절대 읽지 않는다**: 스킬 기여의 실행 action 은 항상 `invoke_skill`
+ * (그 스킬명, 집계기 http-bridge 가 고정) — frontmatter 가 임의 action 을 지정할 방법
+ * 자체가 없다(구조적 화이트리스트, §2.4 보안).
+ */
+export interface ContextMenuItemRaw {
+  on: string; // ctx.type 매칭 키 (예: "session" | "job" | ...)
+  label: string;
+  danger?: boolean;
+  group?: string;
+  icon?: string;
+}
+
+/**
+ * frontmatter `context-menu:` 중첩 리스트 정규식 파싱. yaml lib 0(계약 제약).
+ * 지원 shape 은 딱 하나만:
+ *   context-menu:
+ *     - on: session
+ *       label: "이 세션 요약"
+ *       danger: false
+ *     - on: job
+ *       label: "실패 로그 분석"
+ * 리스트 밖 최상위 라인(들여쓰기 0) 도달 시 종료. 항목 단위 개별 skip(파일 전체 drop
+ * 아님) — `on`/`label` 둘 다 비어있지 않아야 유효. 파싱 실패는 빈 배열(never-throw).
+ */
+const parseContextMenuBlock = (frontmatterBody: string): ContextMenuItemRaw[] => {
+  const items: ContextMenuItemRaw[] = [];
+  try {
+    let inList = false;
+    let current: Record<string, string> | null = null;
+    const flush = (): void => {
+      if (current === null) return;
+      const on = (current.on ?? "").trim();
+      const label = (current.label ?? "").trim();
+      const c = current;
+      current = null;
+      if (on === "" || label === "") return; // 필수 필드 결여 — 항목 skip.
+      const item: ContextMenuItemRaw = { on, label };
+      if (c.danger !== undefined) {
+        const d = c.danger.trim().toLowerCase();
+        if (d === "true") item.danger = true;
+        else if (d === "false") item.danger = false;
+      }
+      if (c.group !== undefined && c.group.trim() !== "") item.group = c.group.trim();
+      if (c.icon !== undefined) {
+        const ic = c.icon.trim();
+        if (ic !== "" && ic.length <= 8) item.icon = ic; // 이모지/문자 1개 — 과도한 값은 조용히 생략.
+      }
+      items.push(item);
+    };
+    for (const rawLine of frontmatterBody.split(/\r?\n/)) {
+      if (!inList) {
+        if (/^context-menu\s*:\s*$/.test(rawLine)) inList = true;
+        continue;
+      }
+      if (/^\S/.test(rawLine)) {
+        // 들여쓰기 0 라인 도달 — context-menu 리스트 섹션 종료.
+        flush();
+        inList = false;
+        continue;
+      }
+      const itemStart = rawLine.match(/^\s*-\s*(.*)$/);
+      if (itemStart) {
+        flush();
+        current = {};
+        const rest = itemStart[1];
+        if (rest) {
+          const kv = rest.match(/^([\w-]+)\s*:\s*(.+?)\s*$/);
+          if (kv) current[kv[1]!] = stripQuotes(kv[2]!);
+        }
+        continue;
+      }
+      if (current !== null) {
+        const kv = rawLine.match(/^\s+([\w-]+)\s*:\s*(.+?)\s*$/);
+        if (kv) current[kv[1]!] = stripQuotes(kv[2]!);
+      }
+    }
+    flush();
+  } catch {
+    return [];
+  }
+  return items;
+};
+
+/** frontmatter `name`/`description`(+선택 `context-menu`) 정규식 추출. 외부 yaml lib 0. */
 const parseFrontmatter = (
   filePath: string,
-): { name?: string; description?: string } => {
+): { name?: string; description?: string; contextMenu?: ContextMenuItemRaw[] } => {
   try {
     const raw = fs.readFileSync(filePath, "utf8");
     const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!m) return {};
-    const out: { name?: string; description?: string } = {};
-    for (const line of m[1].split(/\r?\n/)) {
+    const out: { name?: string; description?: string; contextMenu?: ContextMenuItemRaw[] } = {};
+    for (const line of m[1]!.split(/\r?\n/)) {
       const kv = line.match(/^(name|description)\s*:\s*(.+?)\s*$/);
       if (!kv) continue;
       const key = kv[1] as "name" | "description";
-      let val = kv[2];
-      // 인용부호 제거
-      if (
-        (val.startsWith('"') && val.endsWith('"')) ||
-        (val.startsWith("'") && val.endsWith("'"))
-      ) {
-        val = val.slice(1, -1);
-      }
-      out[key] = val;
+      out[key] = stripQuotes(kv[2]!);
     }
+    const contextMenu = parseContextMenuBlock(m[1]!);
+    if (contextMenu.length > 0) out.contextMenu = contextMenu;
     return out;
   } catch {
     return {};
@@ -366,6 +457,65 @@ const collectSkills = async (cwd: string): Promise<PluginEntry[]> => {
     enabled: true,
     metadata: s.pluginId !== undefined ? { pluginId: s.pluginId } : undefined,
   }));
+};
+
+// ─── 컨텍스트메뉴 외부 기여 (스킬 frontmatter) ────────────────────────────
+// `_workspace/context-menu_architect_contract.md` §2.3 Phase 3. 스킬 discovery
+// (discoverSkills — 이미 builtin/user/project/plugin 4 source 를 회수)를 그대로 타고,
+// 각 스킬의 SKILL.md 를 위 확장된 parseFrontmatter 로 다시 읽어 `context-menu` 선언만
+// 뽑는다. 스킬 목록 재-walk 0(discoverSkills 단일 진실원 재사용) — 새 디렉터리 순회
+// 로직 추가 X.
+
+export interface ContextMenuContribution {
+  skillName: string;
+  items: ContextMenuItemRaw[];
+}
+
+/**
+ * 외부 기여 action 화이트리스트(계약 §2.4 보안). `endpoint`/`builtin` = 빌트인 전용 —
+ * 외부 데이터에서 이 값이 나오면(향후 플러그인 매니페스트 기여 확장 대비 방어선) drop.
+ * 스킬 기여는 애초에 action 을 frontmatter 에서 읽지 않으므로(항상 invoke_skill 고정)
+ * 구조적으로 이미 안전 — 이 화이트리스트는 집계기(http-bridge)가 최종 항목을 만들 때
+ * 통과시키는 defense-in-depth 체크포인트.
+ */
+export const CONTEXT_MENU_EXTERNAL_ACTION_WHITELIST = [
+  "send_message",
+  "invoke_skill",
+  "navigate",
+] as const;
+export type ContextMenuExternalActionKind =
+  (typeof CONTEXT_MENU_EXTERNAL_ACTION_WHITELIST)[number];
+
+export const isWhitelistedContextMenuAction = (
+  kind: string,
+): kind is ContextMenuExternalActionKind =>
+  (CONTEXT_MENU_EXTERNAL_ACTION_WHITELIST as readonly string[]).includes(kind);
+
+/**
+ * 전 스킬(4 source)을 discoverSkills 로 열거 → 각 SKILL.md frontmatter 의
+ * `context-menu` 선언만 파싱해 반환. 항목 없는 스킬은 결과에서 제외. 한 스킬 실패가
+ * 다른 스킬을 막지 않음(격리 try/catch), 전체 실패 시 빈 배열(never-throw).
+ */
+export const collectContextMenuContributions = async (
+  cwd?: string,
+): Promise<ContextMenuContribution[]> => {
+  try {
+    const skills = await discoverSkills(cwd ?? appRoot());
+    const out: ContextMenuContribution[] = [];
+    for (const s of skills) {
+      try {
+        const fm = parseFrontmatter(s.filePath);
+        if (fm.contextMenu && fm.contextMenu.length > 0) {
+          out.push({ skillName: s.name, items: fm.contextMenu });
+        }
+      } catch {
+        // 한 스킬 실패 — 무시(격리).
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 };
 
 const collectAgents = async (cwd: string): Promise<PluginEntry[]> => {

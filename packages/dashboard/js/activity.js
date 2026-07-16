@@ -41,6 +41,31 @@
 
       // chat_log 행(entries) → 한 줄. 채팅뷰 buildHistoryDiv 와 달리 turn/스킵 dedup·마크다운 없이
       // 단순 flat 플레인 라인(§2.2 단순 우선 + 프리즈 방지).
+      // ── 컨텍스트메뉴(전체활동 라인, context-menu 계약 §2.2) — 세션 점프(백로그 흡수)·복사.
+      // 롱프레스 없음(계약 "카드/탭류"에만 롱프레스 — 라인은 kebab+우클릭만).
+      registerBuiltinHandler("activity.jump", (ctx) => {
+        const tk = ctx.threadKey;
+        if (!tk || typeof switchToThread !== "function") return;
+        if (!openTabs.some((t) => t.threadKey === tk)) {
+          openTabs.push({ threadKey: tk, name: typeof deriveTabFallbackName === "function" ? deriveTabFallbackName(tk) : tk });
+        }
+        // 전체활동뷰 → 채팅뷰로 전환 + 그 세션 활성화(전체활동 라인에서 세션으로 점프).
+        if (typeof setActiveNav === "function") setActiveNav("chat");
+        if (typeof setChatPanel === "function") setChatPanel("chat");
+        if (typeof setActiveTab === "function") setActiveTab("chat");
+        switchToThread(tk);
+      });
+      registerBuiltinHandler("activity.copy", async (ctx) => {
+        if (!navigator.clipboard) return;
+        try { await navigator.clipboard.writeText(ctx.label || ""); } catch {}
+      });
+      registerMenuItems("activity", (ctx) => {
+        const items = [];
+        if (ctx.threadKey) items.push({ id: "jump", label: "세션으로 이동", icon: "↪️", action: { kind: "builtin", handler: "activity.jump" } });
+        items.push({ id: "copy", label: "복사", icon: "📋", action: { kind: "builtin", handler: "activity.copy" } });
+        return items;
+      });
+
       const buildActivityLineFromEntry = (e) => {
         const line = document.createElement("div");
         const role = e.role === "assistant" ? "assistant" : "user";
@@ -68,6 +93,10 @@
         }
         line.appendChild(meta); line.appendChild(body);
         line.addEventListener("click", () => line.classList.toggle("expanded"));
+        // 컨텍스트메뉴 트리거 — kebab(메타 끝) + 우클릭(라인 전체, 클릭 토글과 별개 이벤트).
+        const actCtx = () => ({ type: "activity", targetId: "m|" + e.ts, threadKey: e.threadKey, label: preview || e.text || "" });
+        attachKebab(meta, "activity", actCtx);
+        attachContextMenu(line, "activity", actCtx);
         return line;
       };
 
@@ -98,6 +127,10 @@
         }
         line.appendChild(meta); line.appendChild(body);
         line.addEventListener("click", () => line.classList.toggle("expanded"));
+        // 컨텍스트메뉴 트리거 — buildActivityLineFromEntry 와 동형.
+        const actCtx2 = () => ({ type: "activity", targetId: "a|" + a.ts + "|" + (a.seq == null ? "" : a.seq), threadKey: a.threadKey, label: body.textContent });
+        attachKebab(meta, "activity", actCtx2);
+        attachContextMenu(line, "activity", actCtx2);
         return line;
       };
 

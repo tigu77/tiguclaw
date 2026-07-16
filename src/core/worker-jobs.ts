@@ -332,8 +332,14 @@ const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 };
 
-/** 기본 워커 상한 (ms) — 30분. 2층 turn(8분)보다 훨씬 김(워커는 오래 도는 게 정상). */
-const DEFAULT_WORKER_TIMEOUT_MS = 30 * 60_000;
+/**
+ * 기본 워커 상한 (ms) — 2시간. 2층 turn(8분)보다 훨씬 김(워커는 오래 도는 게 정상).
+ * 수동 취소(cancel_worker 도구 · POST /cancel-worker) 가 신설돼 사용자가 언제든 자리비운
+ * 워커를 직접 끊을 수 있으므로, 이 자동 상한은 이제 "잊혀진 hung 워커" 최종 백스톱 역할만
+ * 한다 — 넉넉하게 잡아 정상 장시간 작업을 오살하지 않는다(2026-07-16, 기존 dev override 값과
+ * 동일해짐). env `WORKER_TIMEOUT_MS` 로 여전히 override 가능.
+ */
+const DEFAULT_WORKER_TIMEOUT_MS = 2 * 60 * 60_000;
 
 /** 워커 1잡 전체 wall-clock 상한 (ms). env `WORKER_TIMEOUT_MS` override. */
 export const WORKER_TIMEOUT_MS = parsePosIntEnv(

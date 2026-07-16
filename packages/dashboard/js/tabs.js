@@ -100,6 +100,23 @@
         el.addEventListener("blur", onBlur);
       };
 
+      // ── 컨텍스트메뉴(세션, context-menu 계약 §2.2) — 이름변경·닫기·새 세션. 기존 더블클릭/×/+
+      // 는 그대로 유지(중복 아님, 메뉴는 추가 경로). closeTab/newTab 은 아래 정의되지만 클로저
+      // 참조라 호출 시점(사용자 클릭 후)엔 이미 존재 — 선언 순서 무관.
+      registerBuiltinHandler("session.rename", (ctx) => { startEditingTab(ctx.targetId); });
+      registerBuiltinHandler("session.close", (ctx) => { closeTab(ctx.targetId); });
+      registerBuiltinHandler("session.new", () => { newTab(); });
+      registerMenuItems("session", (ctx) => {
+        const items = [
+          { id: "rename", label: "이름 변경", icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },
+          { id: "new", label: "새 세션", icon: "➕", action: { kind: "builtin", handler: "session.new" } },
+        ];
+        if (ctx.targetId !== DEFAULT_DASH_THREAD) {
+          items.push({ id: "close", label: "탭 닫기", icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });
+        }
+        return items;
+      });
+
       const renderTabBar = () => {
         if (!sessionTabsEl) return;
         sessionTabsEl.innerHTML = "";
@@ -132,6 +149,11 @@
             x.addEventListener("click", (e) => { e.stopPropagation(); closeTab(tab.threadKey); });
             b.appendChild(x);
           }
+          // 컨텍스트메뉴 트리거 — kebab + 우클릭 + 롱프레스(탭류, 3경로 동일 메뉴).
+          const sessionCtx = () => ({ type: "session", targetId: tab.threadKey, threadKey: tab.threadKey, label: tab.name });
+          attachKebab(b, "session", sessionCtx);
+          attachContextMenu(b, "session", sessionCtx);
+          attachLongPress(b, "session", sessionCtx);
           sessionTabsEl.appendChild(b);
         }
         const plus = document.createElement("button");

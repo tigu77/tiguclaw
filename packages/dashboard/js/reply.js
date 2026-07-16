@@ -34,6 +34,35 @@
         btn._replyLabel = typeEl && typeEl.textContent ? typeEl.textContent : "메시지";
         btn.addEventListener("click", (ev) => { ev.stopPropagation(); startReply(btn._replyText, btn._replyLabel); });
         msg.appendChild(btn);
+        // 컨텍스트메뉴 kebab — 같은 hover 주입 패스에 동승(메시지=kebab+우클릭만, 롱프레스 없음
+        // — 계약 "카드/탭류"에만 롱프레스). 위 reply-btn 가드가 이미 1회 주입을 보장.
+        attachKebab(msg, "message", () => messageCtxFromEl(msg));
+      });
+
+      // ── 컨텍스트메뉴(메시지, context-menu 계약 §2.2) — 답글(기존 startReply 재사용)·복사 ──
+      const messageCtxFromEl = (msg) => {
+        const host = msg.closest(".ev.local, .turn-group") || msg.parentElement;
+        const typeEl = host ? host.querySelector(".type") : null;
+        const label = typeEl && typeEl.textContent ? typeEl.textContent : "메시지";
+        const tsAttr = host && host.dataset ? host.dataset.ts : null;
+        return { type: "message", targetId: tsAttr || ("m" + Date.now()), label, text: msg.textContent };
+      };
+      registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label); });
+      registerBuiltinHandler("message.copy", async (ctx) => {
+        if (!navigator.clipboard) return;
+        try { await navigator.clipboard.writeText(ctx.text || ""); } catch {}
+      });
+      registerMenuItems("message", () => [
+        { id: "reply", label: "답글", icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },
+        { id: "copy", label: "복사", icon: "📋", action: { kind: "builtin", handler: "message.copy" } },
+      ]);
+      // 우클릭 — 채팅 스트림 위임(가상화로 메시지가 계속 추가/제거되므로 델리게이션, hover 주입과
+      // 동형). 텍스트 선택(드래그)과 우클릭은 별개 이벤트라 선택 방해 없음.
+      stream.addEventListener("contextmenu", (e) => {
+        const msg = e.target && e.target.closest ? e.target.closest(".chat-message") : null;
+        if (!msg) return;
+        e.preventDefault();
+        openMenu("message", messageCtxFromEl(msg), { pos: { x: e.clientX, y: e.clientY } });
       });
 
       // POST /api/messages 공용 전송 — 긴 턴은 응답이 SSE 로 도착하므로, POST 가 오래 기다린 뒤

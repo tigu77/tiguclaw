@@ -5,7 +5,7 @@
  *          `_workspace/eventbus_http_daemon_engineer_delegation.md` §3.
  *
  * 양방향:
- *  - read: SSE `/events` 로 EventBus stream + `/inventory`/`/providers` JSON.
+ *  - read: SSE `/events` 로 EventBus stream + `/inventory`/`/providers`/`/context-menu-items` JSON.
  *  - write: POST `/messages` 로 channel handler 호출 (synchronous request/response).
  *
  * 단일 instance 가 두 capability 동시 보유 — `startChannel(handler)` (channel) +
@@ -28,7 +28,11 @@ import type {
 import { getPaths } from "../../src/core/paths.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
-import { collectInventory } from "../../src/core/plugins/inventory.js";
+import {
+  collectInventory,
+  collectContextMenuContributions,
+  isWhitelistedContextMenuAction,
+} from "../../src/core/plugins/inventory.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { collectProviders } from "../../src/core/plugins/providers.js";
 import { loadModelProfiles } from "../../src/core/settings.js";
@@ -64,6 +68,7 @@ import { listEvents } from "../../src/store/events.js";
 import {
   listJobs,
   cancelQueuedTurn,
+  cancelJob,
   isCancelledTurnResult,
 } from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
@@ -680,6 +685,8 @@ class HttpBridge implements Channel, Observer {
         ? "read"
         : pathname === "/inventory" && method === "GET"
           ? "read"
+          : pathname === "/context-menu-items" && method === "GET"
+            ? "read"
           : pathname === "/commands" && method === "GET"
             ? "read"
             : pathname === "/providers" && method === "GET"
@@ -704,6 +711,8 @@ class HttpBridge implements Channel, Observer {
                 ? "admin"
                 : pathname === "/cancel-queued" && method === "POST"
                   ? "admin"
+                : pathname === "/cancel-worker" && method === "POST"
+                  ? "write"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
                   : null;
@@ -764,6 +773,48 @@ class HttpBridge implements Channel, Observer {
       try {
         const inv = await collectInventory();
         writeJson(res, 200, inv);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /context-menu-items — JSON. 대시보드 확장 가능 컨텍스트메뉴 외부 기여 집계
+    // (`_workspace/context-menu_architect_contract.md` §2.3 Phase 3, 스킬 기여만 —
+    // 플러그인 매니페스트는 후속). 전 스킬 SKILL.md frontmatter `context-menu` 선언을
+    // 평탄화 → `MenuItem` shape. action 은 여기서 **고정**(스킬 기여는 항상
+    // `invoke_skill`) 후 화이트리스트 통과분만 포함 — endpoint/builtin 은 구조적으로
+    // 나올 수 없지만 방어선으로 재검사(§2.4). 전용 스킬-실행 엔드포인트는 만들지 않음
+    // — 실행은 프론트가 기존 POST /api/messages(모델 매개)로 발동, 여기선 read 만.
+    if (pathname === "/context-menu-items" && method === "GET") {
+      try {
+        const contributions = await collectContextMenuContributions();
+        const items: Array<{
+          id: string;
+          type: string;
+          label: string;
+          icon?: string;
+          action: { kind: "invoke_skill"; skill: string };
+          group?: string;
+          danger?: boolean;
+        }> = [];
+        for (const c of contributions) {
+          c.items.forEach((raw, idx) => {
+            const action = { kind: "invoke_skill" as const, skill: c.skillName };
+            if (!isWhitelistedContextMenuAction(action.kind)) return; // 방어선(도달 불가 — 항상 invoke_skill).
+            items.push({
+              id: `skill:${c.skillName}:${idx}`,
+              type: raw.on,
+              label: raw.label,
+              ...(raw.icon !== undefined ? { icon: raw.icon } : {}),
+              action,
+              ...(raw.group !== undefined ? { group: raw.group } : {}),
+              ...(raw.danger !== undefined ? { danger: raw.danger } : {}),
+            });
+          });
+        }
+        writeJson(res, 200, { items, generatedAt: Date.now() });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
@@ -1362,6 +1413,32 @@ class HttpBridge implements Channel, Observer {
       }
       const result = cancelQueuedTurn(threadKey, correlationId);
       writeJson(res, 200, { result });
+      return;
+    }
+
+    // /cancel-worker — 진행 중(running) 백그라운드 워커 수동 취소(2026-07-16). write 게이트
+    // (위 role 표) — /messages·/stop 동형 "사용자 자기 잡 제어"(admin 아님, /cancel-queued 는
+    // out-of-band 큐 조작이라 admin 이었으나 이건 이미 시작된 *자기* 워커를 멈추는 것뿐).
+    // §0 단방향: 코어 export `cancelJob`(src/core/worker-jobs.ts) 를 그대로 호출 — 코어는
+    // http-bridge 를 모른다. running·kind='worker' 만 실제 취소(agent/done 은 false, 코어가
+    // 이미 가드). abort 는 LLM 스트림은 끊지만 hung 도구 호출은 다음 도구 경계까지 못 끊을
+    // 수 있다(코어 주석 참조) — 여기선 신호 발사 여부만 정직 반환.
+    if (pathname === "/cancel-worker" && method === "POST") {
+      let wbody: Record<string, unknown>;
+      try {
+        wbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const jobId = typeof wbody.jobId === "string" ? wbody.jobId.trim() : "";
+      if (jobId === "") {
+        writeJson(res, 400, { error: "jobId required" });
+        return;
+      }
+      const cancelled = cancelJob(jobId);
+      writeJson(res, 200, { ok: true, cancelled });
       return;
     }
 

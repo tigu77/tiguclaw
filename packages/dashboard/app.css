@@ -299,6 +299,7 @@
       .session-tab.session-add { justify-content:center; font-size:15px; font-weight:800; padding:6px 11px; color:var(--accent); max-width:none; }
       /* 채널 힌트 — 세션 탭/메시지가 어느 전송로(텔레그램·CLI 등)에서 왔는지. 대시보드 자기 채널은 배지 없음. */
       .session-tab .st-ch { font-size:9px; font-weight:800; letter-spacing:.3px; padding:1px 4px; border-radius:5px; background:rgba(125,211,252,.16); color:var(--accent); flex:none; }
+      .session-tab .cm-kebab { font-size:11px; padding:0 3px; }
       .ch-badge { display:inline-flex; align-items:center; font-size:9px; font-weight:800; letter-spacing:.3px; padding:1px 5px; margin-left:6px; border-radius:6px; background:rgba(125,211,252,.14); color:var(--accent); vertical-align:middle; }
       .log-tools { display:none; align-items:center; gap:10px; }
       body[data-chat-panel="log"] .log-tools { display:flex; }
@@ -628,6 +629,19 @@
       .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .bg-job-err { font-size:11px; color:#fca5a5; word-break:break-word; }
+      /* 중지 버튼 — running+worker 카드에만(updateStopBtn). danger 톤(cm-danger 과 정합, var(--bad)),
+         기존 배지들과 같은 줄에 자연스럽게 얹히도록 컴팩트. 모바일 터치타깃 확보(min 28px). */
+      .bg-job-stop {
+        flex:none; font-size:10px; font-weight:800; line-height:1; white-space:nowrap;
+        padding:3px 8px; min-height:24px; border-radius:999px;
+        border:1px solid rgba(251,113,133,.4); background:rgba(251,113,133,.1); color:var(--bad);
+        cursor:pointer; transition:background .12s, opacity .12s;
+      }
+      .bg-job-stop:hover { background:rgba(251,113,133,.22); }
+      .bg-job-stop:disabled { opacity:.6; cursor:default; }
+      @media (max-width: 640px) {
+        .bg-job-stop { padding:5px 10px; min-height:28px; }
+      }
       /* Step3 — 잡 카드 접이식 상세(작업 + 스텝 타임라인 + 결과). */
       .bg-job.has-detail .bg-job-top { cursor:pointer; }
       .bg-job-chev { font-size:10px; color:var(--text-dim); white-space:nowrap; user-select:none; }
@@ -779,6 +793,9 @@
       .msg-reply-btn { position:absolute; top:-4px; right:-4px; opacity:0; cursor:pointer; border:1px solid var(--border-strong); background:var(--card); color:var(--text-mute); border-radius:8px; font-size:10px; font-weight:800; padding:1px 6px; transition:opacity .12s; z-index:2; }
       .chat-message:hover .msg-reply-btn { opacity:1; }
       .msg-reply-btn:hover { color:var(--accent-2); border-color:var(--accent-2); }
+      /* 메시지 컨텍스트메뉴 kebab — 답글 버튼 왼쪽에 나란히(같은 hover 오버레이 패턴). */
+      .chat-message .cm-kebab { position:absolute; top:-4px; right:34px; opacity:0; z-index:2; border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:1px 6px; transition:opacity .12s; }
+      .chat-message:hover .cm-kebab { opacity:1; }
       /* 컨텍스트 태그 바 — 클릭하면 #<프로젝트> 태그를 입력창에 껴넣어 그 프로젝트 얘기임을 알림. */
       .chat-context { display:flex; align-items:flex-start; gap:8px; margin-bottom:8px; }
       .chat-context:empty { display:none; }
@@ -891,6 +908,25 @@
       .aav-line.expanded { flex-wrap:wrap; align-items:flex-start; }
       .aav-line.expanded .aav-body { flex:1 1 100%; white-space:pre-wrap; word-break:break-word; overflow:visible; text-overflow:clip; margin-top:2px; }
       .aav-att-hint { color:var(--text-mute); font-size:11px; margin-left:4px; }
+
+      /* ── 확장 가능 컨텍스트메뉴(js/context-menu.js) — 계약: _workspace/
+         context-menu_architect_contract.md. 드롭다운 오버레이(anchor/좌표 위치, JS 가 top/left
+         지정) + kebab 트리거 버튼. 다크테마 토큰 재사용, 프레임워크·아이콘셋 도입 0. */
+      .cm-kebab { flex:none; border:1px solid transparent; background:transparent; color:var(--text-mute); cursor:pointer; font-size:13px; line-height:1; padding:2px 6px; border-radius:8px; opacity:.7; }
+      .cm-kebab:hover { opacity:1; background:var(--card-hover); color:var(--text); }
+      .ctx-menu { position:fixed; z-index:400; min-width:160px; max-width:280px; background:var(--panel-solid); border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--shadow); padding:6px; display:flex; flex-direction:column; gap:1px; }
+      .cm-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:8px; font-size:12.5px; color:var(--text); cursor:pointer; outline:none; }
+      .cm-item:hover, .cm-item:focus { background:var(--card-hover); }
+      .cm-item.cm-danger { color:var(--bad); }
+      .cm-item.cm-danger:hover, .cm-item.cm-danger:focus { background:rgba(251,113,133,.14); }
+      .cm-item.cm-disabled { color:var(--text-dim); cursor:default; opacity:.55; }
+      .cm-item .cm-icon { flex:none; font-size:13px; width:16px; text-align:center; }
+      .cm-item .cm-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .cm-sep { height:1px; margin:5px 4px; background:var(--border); flex:none; }
+      @media (max-width: 900px) {
+        .ctx-menu { min-width:180px; max-width:min(320px, 92vw); }
+        .cm-item { padding:11px 12px; font-size:13.5px; } /* 터치 타깃 확대. */
+      }
 
       @media (max-width: 1440px) { main { grid-template-columns: 220px minmax(0,1fr); gap:12px; padding:12px; } }
       @media (max-width: 1180px) { main { grid-template-columns: 210px minmax(0,1fr); } }

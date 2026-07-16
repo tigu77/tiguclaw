@@ -458,29 +458,45 @@ const attachmentsMeta = (
   return out;
 };
 
-const handler: MessageHandler = async (msg) => {
+// 인바운드 echo 발행 — 대시보드 낙관적 "대기 중" 버블 승격 신호(js/sse.js 가 correlationId 로
+// 매칭해 클리어). handler(in-band) 정상 경로와 serializedHandler 의 out-of-band 슬래시
+// (/restart, /stop, /update — 직렬 큐를 건너뛰어 handler 를 아예 호출하지 않음) 양쪽이
+// 이 헬퍼로 **배타적으로** 1회씩만 호출한다(이중발행 0). 합성(synthetic) turn 은 항상 스킵
+// (버그 트레이스 2026-07-16: out-of-band 분기가 이 echo 를 안 내보내 /stop 후 "대기 중"
+// 버블이 클리어 신호를 못 받아 스턱 — [[project_dashboard_multisession]] 인접 갭).
+const publishInboundEcho = (msg: {
+  synthetic?: boolean;
+  channel: string;
+  threadKey: string;
+  text: string;
+  attachments?: IncomingMessage["attachments"];
+  correlationId?: string;
+}): void => {
+  if (msg.synthetic === true) return;
   const inAttachments = attachmentsMeta(msg.attachments);
+  bus.publish({
+    type: "channel.message.in",
+    ts: Date.now(),
+    payload: {
+      channel: msg.channel,
+      threadKey: msg.threadKey,
+      text: msg.text.slice(0, EVENT_TEXT_MAX),
+      ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
+      // 큐-취소(ADR 2026-07-15) — echo 에 correlationId 를 실어 대시보드가 낙관적
+      // "대기 중" 버블 승격을 텍스트 대신 id 로 정확 매칭(동일 텍스트 오매칭 해소).
+      // additive — 미부여(텔레그램 등)면 미포함 → 대시보드 텍스트-매칭 폴백(회귀 0).
+      ...(msg.correlationId !== undefined && msg.correlationId !== ""
+        ? { correlationId: msg.correlationId }
+        : {}),
+    },
+  });
+};
+
+const handler: MessageHandler = async (msg) => {
   // 내부 기원 합성 turn(워커 done 재주입 등)은 인바운드 관측 발행을 스킵 — 합성 텍스트는
   // 내부 스캐폴딩(buildCompletionPrompt)이라 대시보드 chat_log 에 "나(user)"로 새면 안 된다.
   // 라우팅·발송 등 나머지 처리는 실 인바운드와 동일. 아웃바운드 관측은 아래 성공분기 단일 발행.
-  if (msg.synthetic !== true) {
-    bus.publish({
-      type: "channel.message.in",
-      ts: Date.now(),
-      payload: {
-        channel: msg.channel,
-        threadKey: msg.threadKey,
-        text: msg.text.slice(0, EVENT_TEXT_MAX),
-        ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
-        // 큐-취소(ADR 2026-07-15) — echo 에 correlationId 를 실어 대시보드가 낙관적
-        // "대기 중" 버블 승격을 텍스트 대신 id 로 정확 매칭(동일 텍스트 오매칭 해소).
-        // additive — 미부여(텔레그램 등)면 미포함 → 대시보드 텍스트-매칭 폴백(회귀 0).
-        ...(msg.correlationId !== undefined && msg.correlationId !== ""
-          ? { correlationId: msg.correlationId }
-          : {}),
-      },
-    });
-  }
+  publishInboundEcho(msg);
   const trimmed = msg.text.trim();
   // ★세션-정체성 저장 채널(채널/세션 분리 ADR 2026-07-15, QA BLOCKER 후속) — 슬래시 핸들러가
   // route() 정규화와 **동일 키**로 세션-정체성(resume/context boundary/model override/summary)
@@ -1210,6 +1226,10 @@ const serializedHandler: MessageHandler = (msg) => {
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
   // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /reset 등은 in-band 유지).
   if (msg.text.trim() === "/restart") {
+    // handler(in-band) 를 우회하므로 대시보드 낙관적 "대기 중" 버블을 클리어할 echo 를
+    // 여기서 직접 낸다(2026-07-16 /stop 스턱 버블 픽스와 동형 — handler 는 절대 호출되지
+    // 않으므로 이중발행 걱정 없음).
+    publishInboundEcho(msg);
     void msg
       .reply(
         "🔄 곧 재시작합니다… 잠시 후 완료 알림이 옵니다.",
@@ -1224,6 +1244,11 @@ const serializedHandler: MessageHandler = (msg) => {
   // 옵션 c). 직렬 큐를 타면 앞 턴이 끝나야 실행돼 무의미하므로 /restart 동형 out-of-band. 중단 후
   // 이어서 새 메시지를 보내면 그게 새 턴으로 처리(멈추고 방향 틀기). 진행 턴 없으면 안내만.
   if (msg.text.trim() === "/stop") {
+    // 버그 픽스(2026-07-16) — 이 분기는 handler(in-band) 를 호출하지 않으므로 handler 의
+    // channel.message.in echo 가 안 나가 대시보드 낙관적 "대기 중" 버블이 클리어 신호를
+    // 영영 못 받아 스턱됐다(새로고침해야 사라짐). replyCommand(out) 전에 echo(in) 를 내
+    // js/sse.js 가 correlationId 매칭으로 버블을 정상 유저 버블로 승격하게 한다.
+    publishInboundEcho(msg);
     void (async (): Promise<void> => {
       const ac = inflightTurns.get(msg.threadKey);
       if (ac !== undefined && !ac.signal.aborted) {
@@ -1243,6 +1268,8 @@ const serializedHandler: MessageHandler = (msg) => {
   // 전부 runSelfUpdate 안에 닫혀 LLM 무경유(원칙 #2). 재시작 트리거도 루틴 안에 있으므로
   // 핸들러는 restartDaemon 을 직접 부르지 않는다(이중 트리거 방지) — reply 만 하고 끝.
   if (msg.text.trim() === "/update") {
+    // handler 우회 — /stop 과 동형 픽스(위 주석 참고).
+    publishInboundEcho(msg);
     void (async (): Promise<void> => {
       try {
         const r = await runSelfUpdate({

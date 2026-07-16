@@ -1,6 +1,7 @@
 [
   "constants.js",
   "util.js",
+  "context-menu.js",
   "view-overview.js",
   "view-models.js",
   "view-agents.js",

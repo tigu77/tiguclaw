@@ -10,6 +10,7 @@
  *  - GET  /app.css       → 정적 파일 (index.html 과 동일 no-store, 코드는 캐시 안 함)
  *  - GET  /js/<name>.js  → 정적 파일 (dashboard-split Phase2a, js/_manifest.json 화이트리스트)
  *  - GET  /api/inventory → bridge GET  /inventory       (JSON pass)
+ *  - GET  /api/context-menu-items → bridge GET /context-menu-items (JSON pass, 컨텍스트메뉴 외부 기여)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
@@ -23,6 +24,7 @@
  *  - POST /api/session-name → bridge POST /session-name (write, 세션 커스텀 이름 설정)
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
  *  - POST /api/cancel-queued → bridge POST /cancel-queued (admin, 대기 중 메시지 취소)
+ *  - POST /api/cancel-worker → bridge POST /cancel-worker (write, 진행 중 백그라운드 워커 취소)
  *
  * 외부 의존 0 — node 표준 http/fs/path/url 만. Channel/Observer import 0 (외부 client).
  */
@@ -294,6 +296,12 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/inventory");
       return;
     }
+    // 컨텍스트메뉴 외부 기여 — bridge GET /context-menu-items (read 토큰 server-side 주입).
+    // `_workspace/context-menu_architect_contract.md` §2.3. /api/inventory 와 동형 패턴.
+    if (pathname === "/api/context-menu-items" && method === "GET") {
+      await proxyJson(res, "/context-menu-items");
+      return;
+    }
     // 슬래시 명령 목록 — bridge GET /commands (read 토큰 server-side 주입). 대시보드 팝업.
     if (pathname === "/api/commands" && method === "GET") {
       await proxyJson(res, "/commands");
@@ -385,6 +393,18 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/cancel-queued" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/cancel-queued", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 진행 중 백그라운드 워커 취소 — bridge POST /cancel-worker (write 토큰 server-side
+    // 주입, browser 미노출). 2026-07-16. body{jobId} 그대로 전달, /api/cancel-queued 와
+    // 동일 프록시 메커니즘(POST /api/messages 동형).
+    if (pathname === "/api/cancel-worker" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/cancel-worker", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

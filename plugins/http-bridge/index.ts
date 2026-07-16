@@ -73,8 +73,19 @@ import {
 } from "../../src/core/worker-jobs.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
+import { readFileSync } from "node:fs";
 
-const VERSION = "0.1.0";
+// 앱 버전 = 레포 루트 package.json(데몬 cwd=repoRoot). 하드코딩 stale 방지 — /health 가 이걸
+// 반환하고 대시보드 헤더가 표시한다. 읽기 실패 시 "unknown".
+const VERSION: string = (() => {
+  try {
+    const raw = readFileSync(nodePath.join(process.cwd(), "package.json"), "utf8");
+    const v = (JSON.parse(raw) as { version?: unknown }).version;
+    return typeof v === "string" && v !== "" ? v : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
 const HANDLER_TIMEOUT_MS = 60_000;
 
 // 신규 SSE 접속 history replay 에서 제외할 고volume 스트리밍 타입.

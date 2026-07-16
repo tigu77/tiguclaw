@@ -312,6 +312,12 @@
       fetchModelProfiles();
       setInterval(fetchModelProfiles, 30000);
 
+      // 앱 버전 — /api/health(bridge)의 version 을 헤더 부제에 1회 반영(하드코딩 stale 방지).
+      fetch("/api/health").then((r) => r.json()).then((h) => {
+        const sub = document.getElementById("app-sub");
+        if (sub && h && typeof h.version === "string") sub.textContent = "대시보드 · v" + h.version;
+      }).catch(() => { /* health 미도달 — 부제 기본 유지 */ });
+
       const connDot = document.getElementById("conn-dot");
       const connText = document.getElementById("conn-text");
       const setConn = (up) => {

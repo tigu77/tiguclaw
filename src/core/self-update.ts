@@ -157,8 +157,12 @@ const run = (
       { cwd, maxBuffer: 16 * 1024 * 1024, shell: opts.shell ?? false },
       (err, stdout, stderr) => {
         if (err !== null) {
-          // err.message 는 명령·exit 코드를 담음. stderr 를 붙여 진단성 확보.
-          const detail = stderr.trim() !== "" ? `${err.message}\n${stderr}` : err.message;
+          // err.message 는 명령·exit 코드를 담음. stdout+stderr 를 붙여 진단성 확보 — tsc 는
+          // 진단(에러 목록)을 **stdout** 으로 낸다(stderr 아님). stdout 을 빼면 "왜 실패했나"가
+          // 통째로 유실돼 호출자·사용자에게 "진입점 미생성"만 남는다(회사 /update 실사고).
+          const detail = [err.message, stdout.trim(), stderr.trim()]
+            .filter((s) => s !== "")
+            .join("\n");
           reject(new Error(detail));
           return;
         }
@@ -235,25 +239,40 @@ const rebuildBuiltDist = async (
     // 1) tsc → staging. noEmitOnError=false 라 타입에러여도 .js emit → exit code 로 막지
     //    않고(조언), 진입점 emit 여부로 판정. tsc 는 built 인스턴스 필수 툴체인(D6).
     const tscBin = path.join(cwd, "node_modules", "typescript", "bin", "tsc");
+    // tsc 출력을 캡처해 진입점 미생성 시 **실제 원인**을 사용자에게 전달(회사 /update 가
+    // "진입점 미생성"만 뜨고 이유가 안 보이던 문제 — 이유는 데몬 로그에만 남았다).
+    let tscOutput = "";
     try {
-      await run(
+      const r = await run(
         "node",
         [tscBin, "-p", "tsconfig.build.json", "--outDir", staging],
         cwd,
       );
+      tscOutput = `${r.stdout}\n${r.stderr}`.trim();
     } catch (e) {
+      tscOutput = redactSecrets(e instanceof Error ? e.message : String(e));
       console.warn(
-        `self-update: built 재빌드 tsc 비정상 종료(진입점 emit 로 최종 판정) — ${redactSecrets(
-          e instanceof Error ? e.message : String(e),
-        )}`,
+        `self-update: built 재빌드 tsc 비정상 종료(진입점 emit 로 최종 판정) — ${tscOutput}`,
       );
     }
 
-    // 2) 진입점 emit 검증 — 없으면 "실행 가능한 산출물 생산 불가" = 실패.
+    // 2) 진입점 emit 검증 — 없으면 "실행 가능한 산출물 생산 불가" = 실패. tsc 마지막 출력을
+    //    실어 원인 노출(무출력이면 node_modules/tsc 손상 의심 → CLI `tiguclaw update`(npm ci 선행) 유도).
     const entryJs = path.join(staging, "src", "index.js");
     if (!existsSync(entryJs)) {
       await rmrf(staging);
-      return { ok: false, error: `진입점 미생성: dist(staging)/src/index.js` };
+      const tail = redactSecrets(tscOutput)
+        .split("\n")
+        .filter((l) => l.trim() !== "")
+        .slice(-6)
+        .join("\n")
+        .slice(-600);
+      return {
+        ok: false,
+        error: tail
+          ? `진입점 미생성: dist(staging)/src/index.js\n원인(tsc 마지막 출력):\n${tail}`
+          : "진입점 미생성: dist(staging)/src/index.js — tsc 무출력(node_modules/typescript 손상 의심). 터미널에서 `tiguclaw update`(npm ci 선행) 로 복구하세요.",
+      };
     }
 
     // 3) 비-.ts 자산(SYSTEM.md·skills·agents·플러그인 package.json) 복사 → staging.

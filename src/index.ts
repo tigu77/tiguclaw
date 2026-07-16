@@ -22,6 +22,7 @@ import { loadPlugins } from "./core/plugins/loader.js";
 import { stripInternalRuntimeScaffolding, redactSecrets } from "./core/outbound-sanitize.js";
 import { route } from "./core/router.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
+import { appVersion } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
   addMemory,
@@ -907,8 +908,11 @@ const handler: MessageHandler = async (msg) => {
           }
         }
 
+        const runtimeMode =
+          process.env.TIGUCLAW_RUNTIME === "source" ? "source" : "built";
         const lines = [
           "🐂 tiguclaw 상태",
+          `─ 버전: v${appVersion()} (${runtimeMode})`,
           `─ 업타임: ${uptime}`,
           `─ 이번 대화: ${convo}`,
         ];

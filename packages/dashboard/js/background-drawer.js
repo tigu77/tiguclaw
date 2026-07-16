@@ -225,7 +225,6 @@
       // AND 결합(카드 레벨 .bg-in-scope 클래스 + 리스트 레벨 .scope-session 클래스, app.css 참조).
       // 영속 불필요(사용자 확정) — 매 로드 기본 "session".
       const bgScopeFilterEl = document.getElementById("bg-scope-filter");
-      const bgScopeCountEl = document.getElementById("bg-scope-count");
       let bgSessionScope = "session"; // "session" | "all"
       // 카드가 활성 세션 소속인가 — threadKey 없음(레거시/구버전 카드)은 항상 소속 취급(누락 0,
       // isActiveThread 의 "미지정=활성" 관례와 동형).
@@ -270,7 +269,6 @@
         const dispTotal = bgSessionScope === "session" ? totalScoped : total;
         if (bgCountRunning) bgCountRunning.textContent = String(dispRunning);
         if (bgCountAll) bgCountAll.textContent = String(dispTotal);
-        if (bgScopeCountEl) bgScopeCountEl.textContent = String(totalScoped);
         // 왼쪽 nav "에이전트" 항목 카운트 뱃지 = 진행 중 개수(라이브, 전역).
         const navAgentCount = document.getElementById("nav-agent-count");
         if (navAgentCount) navAgentCount.textContent = String(running);

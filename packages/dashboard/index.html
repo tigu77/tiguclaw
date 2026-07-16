@@ -113,13 +113,14 @@
         <h3 class="panel-title">백그라운드 작업</h3>
         <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
       </div>
+      <!-- 세션 스코프 = 기준(맨 위). 이 선택에 따라 아래 진행중/전체 카운트가 갱신된다. 스코프 버튼엔 갯수 없음. -->
+      <div class="bg-filter" id="bg-scope-filter">
+        <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true">현재 세션</button>
+        <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false">전체 세션</button>
+      </div>
       <div class="bg-filter" id="bg-filter">
         <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
         <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-count-all">0</span></button>
-      </div>
-      <div class="bg-filter" id="bg-scope-filter">
-        <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true">이 세션 <span class="bg-fcount" id="bg-scope-count">0</span></button>
-        <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false">전체 세션</button>
       </div>
       <div class="bg-list filter-running scope-session" id="bg-list">
         <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>

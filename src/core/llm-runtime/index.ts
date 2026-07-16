@@ -39,7 +39,7 @@ import type {
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import { getEventBus } from "../eventbus.js";
-import { resolveProfileChain } from "../settings.js";
+import { resolveProfileChain, getDefaultProfileName } from "../settings.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
@@ -187,11 +187,11 @@ export const resolveModelSpecs = (
   cwd?: string,
 ): ModelSpec[] => {
   if (override !== undefined && override.length > 0) return override;
-  // (신규 2026-07-14, ADR model-profiles) settings.json `models.profiles.default` =
-  //  메인 턴 암묵 풀. 코어가 아는 예약 이름은 `default` 하나뿐(§0 — 모델명 하드코딩 아님,
-  //  데이터 sentinel 1개). 프로파일이 새 진실 소스, env REGION_A_MODELS 는 레거시 폴백(ADR (a)).
-  //  default 는 .fallback 없는 터미널 풀이라 체인의 자기 pool(chain[0])만 사용.
-  const defaultChain = resolveProfileChain("default", cwd);
+  // (신규 2026-07-14, ADR model-profiles / 2026-07-16 models.default 포인터) 메인 턴 암묵 풀 =
+  //  기본 프로파일. 이름은 settings.json `models.default` 포인터로 지정(미설정 시 `"default"` —
+  //  무회귀: 현행 바이트 동일). 프로파일이 진실 소스, env REGION_A_MODELS 는 레거시 폴백(ADR (a)).
+  //  기본 풀은 체인의 자기 pool(chain[0])만 사용(메인 턴은 인터-프로파일 폴백 없이 풀 내 폴백만).
+  const defaultChain = resolveProfileChain(getDefaultProfileName(cwd), cwd);
   if (defaultChain.length > 0) {
     const pool = parseModelSpecList(defaultChain[0].join(","));
     if (pool.length > 0) return pool;
@@ -214,7 +214,7 @@ export const poolDiversityWarning = (): string | null => {
   const providers = new Set(specs.map((s) => s.provider ?? s.adapter));
   if (providers.size > 1) return null; // cross-provider 그물 있음 — OK
   return (
-    `⚠️ 기본 모델 풀(models.profiles.default 또는 REGION_A_MODELS)이 단일 provider` +
+    `⚠️ 기본 모델 풀(models.default 가 가리키는 프로파일 또는 REGION_A_MODELS)이 단일 provider` +
     `(${[...providers][0]})뿐 — 그 백엔드가 흔들리면(idle 타임아웃 등) 폴백 그물 없이 ` +
     `전 풀이 동시에 실패합니다. cross-provider 최후 안전망 권장(예: 풀 끝에 codex:gpt-5.5 추가).`
   );

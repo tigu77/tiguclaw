@@ -14,6 +14,7 @@
  *  - GET  /api/context-menu-items → bridge GET /context-menu-items (JSON pass, 컨텍스트메뉴 외부 기여)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
+ *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원; threadKey qs 통과)
  *  - GET  /api/all-activity → bridge GET /all-activity  (JSON pass, 전체활동 크로스세션 타임라인)
@@ -321,6 +322,17 @@ const server = http.createServer((req, res) => {
     // 모델 프로파일 — bridge GET /model-profiles (read 토큰 server-side 주입). 대시보드 표시.
     if (pathname === "/api/model-profiles" && method === "GET") {
       await proxyJson(res, "/model-profiles");
+      return;
+    }
+    // 기본 프로파일 포인터 설정 — bridge POST /set-default-profile (write 토큰 server-side
+    // 주입, browser 미노출). body{name} 그대로 전달 — /api/session-name 과 동일 메커니즘.
+    if (pathname === "/api/set-default-profile" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-default-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
       return;
     }
     if (pathname === "/api/health" && method === "GET") {

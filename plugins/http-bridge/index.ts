@@ -37,7 +37,11 @@ import {
 } from "../../src/core/plugins/inventory.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { collectProviders } from "../../src/core/plugins/providers.js";
-import { loadModelProfiles } from "../../src/core/settings.js";
+import {
+  loadModelProfiles,
+  getDefaultProfileName,
+  setDefaultProfile,
+} from "../../src/core/settings.js";
 import {
   verifyToken,
   type BridgeTokenRole,
@@ -735,6 +739,8 @@ class HttpBridge implements Channel, Observer {
               ? "write"
               : pathname === "/session-name" && method === "POST"
                 ? "write"
+              : pathname === "/set-default-profile" && method === "POST"
+                ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
                 : pathname === "/cancel-queued" && method === "POST"
@@ -888,19 +894,23 @@ class HttpBridge implements Channel, Observer {
 
     // /model-profiles — JSON. settings.json `models.profiles` 를 대시보드가 표시(순수 read,
     // /models 슬래시와 동일 데이터원 loadModelProfiles). /inventory·/providers 와 동형(read 게이트).
-    // 순서는 default 를 맨 앞으로(models-command 렌더와 동일 결정성), 각 프로파일에 isDefault 표식.
-    // 프로파일 부재 시 profiles:[] graceful(400/500 아님). 편집 아님 — 표시만(설정은 대화로).
+    // 순서는 기본 프로파일을 맨 앞으로(models-command 렌더와 동일 결정성), 각 프로파일에 isDefault 표식.
+    // 기본 = settings.json `models.default` 포인터(미설정 시 "default") — 하드코딩 아님.
+    // 프로파일 부재 시 profiles:[] graceful(400/500 아님). 편집 아님 — 표시만(설정은 대화·POST /set-default-profile).
     if (pathname === "/model-profiles" && method === "GET") {
       try {
         const map = loadModelProfiles();
+        const defaultName = getDefaultProfileName();
         const names = Object.keys(map);
-        const rest = names.filter((n) => n !== "default");
-        const ordered = names.includes("default") ? ["default", ...rest] : rest;
+        const rest = names.filter((n) => n !== defaultName);
+        const ordered = names.includes(defaultName)
+          ? [defaultName, ...rest]
+          : rest;
         const profiles = ordered.map((name) => {
           const p = map[name]!;
           return {
             name,
-            isDefault: name === "default",
+            isDefault: name === defaultName,
             ...(p.description !== undefined ? { description: p.description } : {}),
             pool: p.pool,
             ...(p.fallback !== undefined ? { fallback: p.fallback } : {}),
@@ -914,6 +924,41 @@ class HttpBridge implements Channel, Observer {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /set-default-profile — 기본 프로파일 포인터(models.default) 설정. write 게이트(위 role 표).
+    // body { name } — name 은 실존 프로파일이어야(loadModelProfiles 검증) → 없으면 400(댕글링 차단).
+    // OK 면 settings.json read-modify-write(다른 키 보존) → 재시작 없이 fresh read 로 다음 턴 반영.
+    if (pathname === "/set-default-profile" && method === "POST") {
+      let dbody: Record<string, unknown>;
+      try {
+        dbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const name = typeof dbody.name === "string" ? dbody.name.trim() : "";
+      if (name === "") {
+        writeJson(res, 400, { error: "name required" });
+        return;
+      }
+      const profiles = loadModelProfiles();
+      if (profiles[name] === undefined) {
+        writeJson(res, 400, {
+          error: `존재하지 않는 프로파일: ${name}`,
+          available: Object.keys(profiles),
+        });
+        return;
+      }
+      try {
+        setDefaultProfile(name);
+        writeJson(res, 200, { ok: true, default: name });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
       }
       return;
     }

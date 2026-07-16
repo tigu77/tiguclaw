@@ -66,7 +66,11 @@ import {
   poolDiversityWarning,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
-import { diagnoseModelProfiles, loadModelProfiles } from "./core/settings.js";
+import {
+  diagnoseModelProfiles,
+  loadModelProfiles,
+  getDefaultProfileName,
+} from "./core/settings.js";
 import { renderModelProfiles } from "./core/entry/models-command.js";
 import {
   hasSupervisorRespawn,
@@ -670,7 +674,10 @@ const handler: MessageHandler = async (msg) => {
   if (trimmed === "/models" || trimmed.startsWith("/models ")) {
     const profiles = loadModelProfiles();
     const sessionOverride = getSessionModelOverride(sidChannel, msg.threadKey);
-    await replyCommand(msg, renderModelProfiles(profiles, sessionOverride));
+    await replyCommand(
+      msg,
+      renderModelProfiles(profiles, sessionOverride, getDefaultProfileName()),
+    );
     return;
   }
   // 슬래시 명령은 채널 입구에서 파싱 (원칙 4 다채널 단일 인격, 원칙: 모델에게

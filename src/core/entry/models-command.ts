@@ -27,11 +27,20 @@ const formatPool = (pool: readonly string[]): string => {
   return parts.map((p) => `\`${p}\``).join(" → ");
 };
 
-/** 프로파일 하나를 블록으로. `default` 이름도 그대로 표시(숨기지 않음). */
-const formatProfile = (name: string, prof: ModelProfile): string => {
+/** 프로파일 하나를 블록으로. 기본 프로파일(`defaultName` 지목)에는 (기본) 표식. */
+const formatProfile = (
+  name: string,
+  prof: ModelProfile,
+  isDefault: boolean,
+): string => {
   const lines: string[] = [];
   const desc = prof.description?.trim();
-  lines.push(desc && desc !== "" ? `● \`${name}\` — ${desc}` : `● \`${name}\``);
+  const tag = isDefault ? " (기본)" : "";
+  lines.push(
+    desc && desc !== ""
+      ? `● \`${name}\`${tag} — ${desc}`
+      : `● \`${name}\`${tag}`,
+  );
   lines.push(`   풀: ${formatPool(prof.pool)}`);
   if (prof.fallback !== undefined && prof.fallback.trim() !== "") {
     lines.push(`   폴백 프로파일: \`${prof.fallback.trim()}\``);
@@ -40,13 +49,16 @@ const formatProfile = (name: string, prof: ModelProfile): string => {
 };
 
 /**
- * 프로파일 순서 — `default` 를 맨 앞으로, 나머지는 삽입(settings.json 키) 순서 유지.
- * 결정적이라 렌더 출력이 안정적(테스트·다채널 동일).
+ * 프로파일 순서 — 기본 프로파일(`defaultName`)을 맨 앞으로, 나머지는 삽입 순서 유지.
+ * 결정적이라 렌더 출력이 안정적(테스트·다채널 동일 — 대시보드 /model-profiles 정렬과 일치).
  */
-const orderedNames = (profiles: Record<string, ModelProfile>): string[] => {
+const orderedNames = (
+  profiles: Record<string, ModelProfile>,
+  defaultName: string,
+): string[] => {
   const keys = Object.keys(profiles);
-  const rest = keys.filter((k) => k !== "default");
-  return keys.includes("default") ? ["default", ...rest] : rest;
+  const rest = keys.filter((k) => k !== defaultName);
+  return keys.includes(defaultName) ? [defaultName, ...rest] : rest;
 };
 
 /** 프로파일 0개일 때의 레거시 env 폴백 안내 블록. */
@@ -81,11 +93,14 @@ const renderLegacyFallback = (env: NodeJS.ProcessEnv): string => {
  *
  * @param profiles       `loadModelProfiles()` 결과(홈+프로젝트 병합).
  * @param sessionOverride 이 채널/thread 의 세션 모델 override(`getSessionModelOverride`), 없으면 null.
+ * @param defaultName    기본 프로파일 이름(`getDefaultProfileName()` = settings.json models.default
+ *                        포인터). 정렬(맨 앞)·(기본) 표식 기준. 미지정 시 `"default"`(무회귀).
  * @param env            레거시 폴백 안내용 env 스냅샷(기본 process.env — 테스트는 주입).
  */
 export const renderModelProfiles = (
   profiles: Record<string, ModelProfile>,
   sessionOverride: string | null,
+  defaultName = "default",
   env: NodeJS.ProcessEnv = process.env,
 ): string => {
   const blocks: string[] = ["🧩 모델 프로파일"];
@@ -98,13 +113,17 @@ export const renderModelProfiles = (
     );
   }
 
-  const names = orderedNames(profiles);
+  const names = orderedNames(profiles, defaultName);
   if (names.length === 0) {
     blocks.push(renderLegacyFallback(env));
     return blocks.join("\n\n");
   }
 
-  blocks.push(names.map((n) => formatProfile(n, profiles[n]!)).join("\n\n"));
+  blocks.push(
+    names
+      .map((n) => formatProfile(n, profiles[n]!, n === defaultName))
+      .join("\n\n"),
+  );
   blocks.push("프로파일 추가·수정은 대화로 요청하세요 (돌쇠가 settings.json 을 편집합니다).");
   return blocks.join("\n\n");
 };

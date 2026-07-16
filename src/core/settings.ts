@@ -18,7 +18,8 @@
  * 시크릿은 여기 없다(D5): API 키·토큰은 `.env`(provider-registry). 프로파일 pool 은
  *  `provider:model` 문자열만 참조.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { getPaths, projectScope, projectScopeLegacy } from "./paths.js";
 
 /** 명명된 모델 프로파일 — settings.json `models.profiles.<name>` 의 검증된 형태. */
@@ -34,7 +35,8 @@ export interface ModelProfile {
 /** settings.json 최상위 형태 — 임의 키 허용(hooks·models·기타). */
 export interface LoadedSettings {
   hooks?: Record<string, unknown>;
-  models?: { profiles?: Record<string, unknown> };
+  /** `models.default` = 기본 프로파일 포인터(어떤 프로파일이든 기본 지정), `models.profiles` = 명명된 풀. */
+  models?: { default?: unknown; profiles?: Record<string, unknown> };
   [key: string]: unknown;
 }
 
@@ -152,6 +154,62 @@ export const resolveProfileChain = (
     cur = prof.fallback; // 다음 프로파일(있으면). 순환은 while 조건이 절단.
   }
   return chain;
+};
+
+/**
+ * 기본 프로파일 이름 — settings.json `models.default`(포인터). 미설정이면 `"default"`.
+ *  - 어떤 프로파일도 기본이 될 수 있게 하는 간접 지시자. resolveModelSpecs 의 메인 턴 풀 해석이
+ *    하드코딩 `"default"` 대신 이 값을 쓴다(무회귀: 미설정 = 기존 바이트 동일).
+ *  - 병합 의미: 홈→프로젝트 순서로 훑어 마지막 비어있지 않은 문자열이 이김(프로파일 override 와 동형).
+ *  - ★댕글링 안전: 지목된 이름이 실제 존재하는 프로파일이 아니면 `"default"` 로 폴백
+ *    (오타·삭제된 프로파일이 메인 턴을 어댑터 디폴트로 무너뜨리지 않게).
+ */
+export const getDefaultProfileName = (
+  cwd: string = process.cwd(),
+): string => {
+  let name = "default";
+  for (const layer of loadSettingsLayers(cwd)) {
+    const d = layer.models?.default;
+    if (typeof d === "string" && d.trim() !== "") name = d.trim();
+  }
+  if (name === "default") return "default";
+  // 지목된 이름이 실존 프로파일일 때만 채택 — 아니면 안전하게 default 로.
+  const profiles = loadModelProfiles(cwd);
+  return profiles[name] !== undefined ? name : "default";
+};
+
+/**
+ * 기본 프로파일 포인터 쓰기 — **홈 settings.json**(`getPaths().settings`) read-modify-write.
+ *  - ★나머지 키 전부 보존: 파일 전체를 parse → `models.default` 만 세팅 → 2-space stringify.
+ *    hooks·models.profiles·기타 최상위 키를 절대 건드리지 않는다(데이터 안전 핵심).
+ *  - 파일 부재/파싱 실패 시 최소 `{}` 에서 시작(신규 생성). 원자적 쓰기(temp→rename)로 부분쓰기 차단.
+ *  - name 유효성(실존 프로파일 여부)은 호출자(엔드포인트)가 검증 — 여기선 순수 저장.
+ */
+export const setDefaultProfile = (name: string): void => {
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const raw = readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음).
+  }
+  const existingModels = root.models;
+  const models: Record<string, unknown> =
+    existingModels !== null &&
+    typeof existingModels === "object" &&
+    !Array.isArray(existingModels)
+      ? (existingModels as Record<string, unknown>)
+      : {};
+  models.default = name;
+  root.models = models;
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
 };
 
 /**

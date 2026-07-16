@@ -603,6 +603,9 @@
       .model-card-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px; }
       .model-card-name { color:var(--text); font-weight:850; font-size:14px; letter-spacing:-.02em; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .model-default-badge { font-size:9px; font-weight:900; letter-spacing:.3px; padding:1px 7px; border-radius:999px; text-transform:uppercase; background:rgba(52,211,153,.16); color:var(--good); border:1px solid rgba(52,211,153,.4); }
+      .model-set-default { margin-left:auto; font-size:10px; font-weight:700; padding:2px 9px; border-radius:6px; background:transparent; color:var(--text-mute); border:1px solid var(--border); cursor:pointer; transition:color .12s,border-color .12s,background .12s; }
+      .model-set-default:hover { color:var(--good); border-color:rgba(52,211,153,.5); background:rgba(52,211,153,.08); }
+      .model-set-default:disabled { opacity:.5; cursor:default; }
       .model-card-desc { color:var(--text-mute); font-size:12px; margin-bottom:9px; }
       .model-pool { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
       .model-pool-label { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-right:2px; }

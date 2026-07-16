@@ -34,6 +34,30 @@
             badge.className = "model-default-badge";
             badge.textContent = "default";
             head.appendChild(badge);
+          } else {
+            // 기본이 아닌 프로파일 → "기본으로 설정" 버튼(models.default 포인터 이동).
+            const setBtn = document.createElement("button");
+            setBtn.type = "button";
+            setBtn.className = "model-set-default";
+            setBtn.textContent = "기본으로 설정";
+            setBtn.addEventListener("click", async () => {
+              setBtn.disabled = true;
+              try {
+                const r = await fetch("/api/set-default-profile", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ name: prof.name }),
+                });
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+                showToast("기본 프로파일: " + prof.name, "good");
+                await fetchModelProfiles(); // 배지 이동 반영(재렌더).
+              } catch (e) {
+                showToast("기본 설정 실패: " + e.message, "bad");
+                setBtn.disabled = false;
+              }
+            });
+            head.appendChild(setBtn);
           }
           card.appendChild(head);
           if (prof.description) {

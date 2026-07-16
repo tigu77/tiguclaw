@@ -56,6 +56,7 @@ import {
   formatMemorySnippet,
   formatModelProfiles,
 } from "../../prompt-assembly.js";
+import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
@@ -1380,6 +1381,8 @@ export const runOpenAiCodex = async (
 
   // SYSTEM.md(작동 헌법) — 매 turn 최상단 (on-demand Read 아님, 2026-05-27). claude parity.
   const system = readSystem();
+  // 환경 자기인지(env 블록, runtime-env.ts) — depth 게이트 없음(전 depth, 계약 §1.4).
+  const env = formatEnvContext({ cwd: discoveryCwd });
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix,
   //  claude 어댑터와 동일 — parity). 첨부 블록은 사용자 turn 쪽으로 그룹.
   // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix 전부 스킵(페르소나·컨텍스트 누수 0).
@@ -1388,6 +1391,7 @@ export const runOpenAiCodex = async (
       ? []
       : buildSystemContextParts({
           system,
+          env,
           agent,
           agentWarn,
           convoContext,

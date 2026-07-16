@@ -56,6 +56,7 @@ import {
   formatMemorySnippet,
   formatModelProfiles,
 } from "../../prompt-assembly.js";
+import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { resolveJsonlPath, retrieveContext } from "../../memory.js";
 import {
@@ -637,8 +638,11 @@ export const runClaude = async (
 
   // SYSTEM.md(작동 헌법) — 매 turn 최상단 (on-demand Read 아님, 2026-05-27). codex parity.
   const system = readSystem();
+  // 환경 자기인지(env 블록, runtime-env.ts) — depth 게이트 없음(전 depth, 계약 §1.4).
+  // 서브에이전트/워커도 Bash 를 쓰고 플랫폼을 알아야 하므로 child turn 에도 간다.
+  const env = formatEnvContext({ cwd });
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix).
-  //  스캐폴딩 = SYSTEM.md·AGENT.md·hint·대화컨텍스트·foreign delta·메모리·스킬·에이전트.
+  //  스캐폴딩 = SYSTEM.md·env·AGENT.md·hint·대화컨텍스트·foreign delta·메모리·스킬·에이전트.
   //  사용자 turn = 첨부 블록 + 실제 입력 텍스트 (구분선으로 명시 분리 — assembleUserPrompt).
   // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix(SYSTEM.md·AGENT.md·메모리·스킬…)를
   // 통째로 스킵 — 앱 호출에 비서 페르소나·컨텍스트 누수 0.
@@ -647,6 +651,7 @@ export const runClaude = async (
       ? []
       : buildSystemContextParts({
           system,
+          env,
           agent,
           agentWarn,
           convoContext,

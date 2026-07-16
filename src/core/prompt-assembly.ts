@@ -227,6 +227,8 @@ export const assembleUserPrompt = (
  */
 export const buildSystemContextParts = (input: {
   system: string;
+  /** 환경 자기인지(env 블록, runtime-env.ts formatEnvContext) — depth 게이트 없음(전 depth). */
+  env: string;
   agent: string;
   agentWarn: string;
   convoContext: string;
@@ -240,6 +242,7 @@ export const buildSystemContextParts = (input: {
   foreignDelta?: string;
 }): string[] => [
   input.system,
+  input.env,
   input.agent,
   input.agentWarn,
   agentPathHint(),

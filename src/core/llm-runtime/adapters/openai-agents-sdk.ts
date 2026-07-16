@@ -40,6 +40,7 @@ import {
   formatMemorySnippet,
   formatModelProfiles,
 } from "../../prompt-assembly.js";
+import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { loadThreadHistory } from "../../../store/memory.js";
@@ -418,6 +419,8 @@ export const runOpenAi = async (
 
   // SYSTEM.md(작동 헌법) — 매 turn 최상단 (codex/claude parity).
   const system = readSystem();
+  // 환경 자기인지(env 블록, runtime-env.ts) — depth 게이트 없음(전 depth, 계약 §1.4).
+  const env = formatEnvContext({ cwd: discoveryCwd });
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).
   const attachmentBlock = formatAttachments(input.attachments);
 
@@ -427,6 +430,7 @@ export const runOpenAi = async (
       ? []
       : buildSystemContextParts({
           system,
+          env,
           agent: agentBody,
           agentWarn,
           convoContext,

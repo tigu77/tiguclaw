@@ -41,7 +41,9 @@
  *  - Glob/Grep: base 미지정 시 baseCwd(턴 cwd 또는 home).
  *  - Write: 디렉터리 부재 시 `fs.mkdir({recursive:true})` 자동 생성.
  *  - Edit: `old_string` 0/다수 매칭 시 명확 에러 (`replace_all=false` 디폴트).
- *  - Bash: `execFile("sh", ["-c", cmd], {cwd: baseCwd, timeout, maxBuffer})`.
+ *  - Bash: `execFile(SHELL.bin, SHELL.argsFor(cmd), {cwd: baseCwd, timeout, maxBuffer})`
+ *    — `detectShell()`(runtime-env.ts) 단일 소스. unix="sh -c", win32="cmd /c"
+ *    (env 블록의 Shell 힌트와 동일 함수 — 계약 `env-awareness_architect_contract.md`).
  *    timeout 디폴트 120s / max 600s (초과 시 clamp). maxBuffer 1MB (stdout/stderr 각).
  *    초과 시 truncate marker 박음. `DISALLOWED_TOOLS` pre-check (현재 빈 배열, 정책 진실 소스 1개 박기).
  *  - 위험 명령·위험 경로 차단은 *LLM 측 정책* (sysprompt prompt-gated). MCP server
@@ -61,8 +63,15 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js";
 import { getPaths } from "../../paths.js";
+import { detectShell } from "../../runtime-env.js";
 
 const execFileP = promisify(execFile);
+
+// 셸 선택 — env 블록(runtime-env.ts formatEnvContext)의 Shell 힌트와 단일 소스
+// (계약 §0 핵심통찰: 모델이 뱉는 문법 = 도구가 실행하는 셸 = 항상 일치). 모듈 로드
+// 1회 호출(불변) — RG_PATH 패턴과 동형. unix 는 {bin:"sh", argsFor:["-c",cmd]} 라
+// 아래 fg/bg 배선이 기존 하드코딩과 인자 바이트 동일(회귀 0).
+const SHELL = detectShell();
 
 // ─── ripgrep 바이너리 해소 (크로스플랫폼) ────────────────────────────────
 // Glob/Grep 는 ripgrep 에 의존한다. claude 는 SDK 내장 도구가 알아서 번들 rg 를
@@ -167,7 +176,7 @@ const launchBgShell = (command: string, cwd: string): string => {
     }
   }
   const id = `bash_${randomUUID().slice(0, 8)}`;
-  const child = spawn("sh", ["-c", command], { cwd });
+  const child = spawn(SHELL.bin, SHELL.argsFor(command), { cwd });
   const shell: BgShell = {
     child,
     command,
@@ -435,7 +444,7 @@ const makeFileOpsTools = (base: string) => {
   // 밖 접근은 벽 없이 허용, 위험 경로는 sysprompt prompt-gated).
   const bashTool = tool(
     "Bash",
-    "셸 명령을 실행합니다 (`sh -c <command>`). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. cwd 기본은 현재 작업폴더 (절대경로·cd 로 밖도 가능). **긴 명령(빌드·서버·스크립트)은 `run_in_background: true` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**",
+    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. cwd 기본은 현재 작업폴더 (절대경로·cd 로 밖도 가능). **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**`,
     {
       command: z.string().min(1),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 120, 최대 600)"),
@@ -472,14 +481,20 @@ const makeFileOpsTools = (base: string) => {
       const timeout = Math.min(timeoutSec * 1000, BASH_MAX_TIMEOUT_MS);
 
       try {
-        // execFile "sh -c" — single shell layer, no shell:true (injection 표면 최소).
-        // killSignal = SIGKILL (디폴트 SIGTERM 무시하는 sleep/yes 등 강제 종료).
-        const { stdout, stderr } = await execFileP("sh", ["-c", args.command], {
-          cwd: base,
-          timeout,
-          maxBuffer: BASH_MAX_BUFFER_BYTES,
-          killSignal: "SIGKILL",
-        });
+        // execFile SHELL.bin/argsFor — single shell layer, no shell:true (injection
+        // 표면 최소). unix=sh -c, win32=cmd /c (detectShell() 단일 소스, env 블록의
+        // Shell 힌트와 동형). killSignal = SIGKILL (디폴트 SIGTERM 무시하는 sleep/yes
+        // 등 강제 종료).
+        const { stdout, stderr } = await execFileP(
+          SHELL.bin,
+          SHELL.argsFor(args.command),
+          {
+            cwd: base,
+            timeout,
+            maxBuffer: BASH_MAX_BUFFER_BYTES,
+            killSignal: "SIGKILL",
+          },
+        );
         const out = truncateBashOutput(stdout);
         const err = truncateBashOutput(stderr);
         // okText 본문 — stdout + stderr + exit code (성공 시 0).

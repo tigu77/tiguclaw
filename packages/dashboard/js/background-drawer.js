@@ -7,6 +7,13 @@
       const bgList = document.getElementById("bg-list");
       const bgEmpty = document.getElementById("bg-empty");
       const bgBadge = document.getElementById("bg-badge");
+      // "↑ 최신" 점프 — 아래로 내려 과거 잡 열람 중(scrollTop>임계)일 때만 노출, 클릭하면 맨 위(최신)로.
+      // 채팅 chat-jump 의 상단판(newest=insertBefore 로 top). stickTop 이 안 끌어당기는 케이스의 어포던스.
+      const bgJump = document.getElementById("bg-jump");
+      const BG_JUMP_THRESHOLD = 40; // stickTop 임계(ensureJobCard _bgNearTop)와 동일.
+      const updateBgJump = () => { if (bgJump) bgJump.hidden = bgList.scrollTop < BG_JUMP_THRESHOLD; };
+      if (bgJump) bgJump.addEventListener("click", () => { bgList.scrollTop = 0; updateBgJump(); });
+      bgList.addEventListener("scroll", updateBgJump, { passive: true });
       const BG_STATUS = {
         running: "🟡 진행 중", done: "✅ 완료", failed: "⚠️ 실패", cancelled: "⏹ 취소",
       };
@@ -182,7 +189,7 @@
         }
       };
 
-      const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); };
+      const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); updateBgJump(); };
       const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
       const bgToggleBtn = document.getElementById("bg-toggle");
       if (bgToggleBtn) bgToggleBtn.addEventListener("click", () => {
@@ -356,7 +363,13 @@
           top.addEventListener("click", () => {
             if (entry.el.classList.contains("has-detail")) { el.classList.toggle("open"); updateChev(entry); }
           });
+          // 최신=위 삽입 + stickTop 팔로우 — 삽입 전 맨 위 근처(최신 주시)면 삽입 후 top 으로
+          // 스냅해 새 카드 노출. 아래로 내려 과거 잡을 보는 중이면 존중(브라우저 scroll-anchoring
+          // 이 위치 보존, yank 금지) = 채팅 stickBottom 의 상단판. 임계 40px.
+          const _bgNearTop = bgList.scrollTop < 40;
           bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
+          if (_bgNearTop) bgList.scrollTop = 0;
+          updateBgJump(); // 새 카드가 위에 쌓임 — 내려본 상태면 "↑ 최신" 노출 갱신.
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
@@ -550,8 +563,14 @@
         // 리치 diff(Edit/Write)가 스텝 시작 payload 에 실려 오면 보관 + 펼침 affordance 배선.
         // 자동 펼치지 않음(기본 접힘) — 클릭 시에만 buildDiffBlock 으로 렌더.
         if (p.diff && Array.isArray(p.diff.lines)) { line._diff = p.diff; ensureStepExpandable(line); }
-        entry.stepsEl.appendChild(line);
+        // 최신 스텝 팔로우 — bounded(.bg-job-steps max-height) 영역이라 append 전 바닥 근처였으면
+        // append 후 바닥으로(최신 스텝 노출). 위로 올려 과거 스텝을 읽는 중이면 존중(yank 금지) =
+        // 채팅 stickBottom 과 동형. 임계 24px.
+        const _stepsEl = entry.stepsEl;
+        const _stepsNearBot = _stepsEl.scrollHeight - _stepsEl.scrollTop - _stepsEl.clientHeight < 24;
+        _stepsEl.appendChild(line);
         entry.stepCount += 1;
+        if (_stepsNearBot) _stepsEl.scrollTop = _stepsEl.scrollHeight;
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
           const lbl = skill ? "🛠 스킬: " + skill.name : (p.label || p.kind || "활동");

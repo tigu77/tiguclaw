@@ -649,7 +649,7 @@
       .bg-job.open .bg-job-detail { display:flex; }
       .bg-job-task { font-size:11px; color:var(--text-mute); white-space:pre-wrap; word-break:break-word; line-height:1.45; }
       .bg-job-result { font-size:11px; color:var(--text); white-space:pre-wrap; word-break:break-word; line-height:1.5; max-height:240px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
-      .bg-job-steps { display:flex; flex-direction:column; gap:3px; }
+      .bg-job-steps { display:flex; flex-direction:column; gap:3px; max-height:240px; overflow-y:auto; overflow-anchor:none; }
       .bg-step { display:flex; align-items:baseline; gap:6px; font-size:11px; color:var(--text-mute); line-height:1.4; flex-wrap:wrap; }
       .bg-step.bg-step-rich { cursor:pointer; }
       .bg-step.bg-step-rich:hover { background:rgba(255,255,255,.04); border-radius:6px; }
@@ -757,6 +757,14 @@
         box-shadow:var(--shadow); cursor:pointer; }
       .chat-jump:hover { border-color:rgba(125,211,252,.55); color:var(--accent); }
       .chat-jump[hidden] { display:none; }
+      /* 드로어 "↑ 최신" 점프 — 채팅 chat-jump 의 상단판. 아래로 내려 과거 잡을 보는 중(스크롤>임계)
+         일 때만 노출, 클릭하면 맨 위(최신=insertBefore 로 top)로. bottom 앵커라 헤더/필터 높이 무관. */
+      .bg-jump { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); z-index:20;
+        display:inline-flex; align-items:center; gap:5px; padding:7px 12px; font-size:12px; font-weight:600;
+        color:var(--text); background:rgba(13,17,24,.96); border:1px solid var(--border-strong); border-radius:999px;
+        box-shadow:var(--shadow); cursor:pointer; }
+      .bg-jump:hover { border-color:rgba(125,211,252,.55); color:var(--accent); }
+      .bg-jump[hidden] { display:none; }
       .slash-item { display:flex; align-items:baseline; gap:9px; padding:7px 10px; border-radius:9px; cursor:pointer; user-select:none; }
       .slash-item.active { background:rgba(125,211,252,.14); }
       .slash-name { color:var(--accent); font-weight:750; font-size:12px; white-space:nowrap; }

@@ -733,6 +733,8 @@ class HttpBridge implements Channel, Observer {
               ? "read"
               : pathname === "/projects" && method === "GET"
                 ? "read"
+              : pathname === "/worker-jobs" && method === "GET"
+                ? "read"
                 : pathname === "/projects/detail" && method === "GET"
                   ? "read"
                   : pathname === "/messages" && method === "POST"
@@ -822,6 +824,27 @@ class HttpBridge implements Channel, Observer {
     // 읽기전용 — outbound 라우팅 무관.
     if (pathname === "/channels" && method === "GET") {
       writeJson(res, 200, { channels: getChannelPresence() });
+      return;
+    }
+
+    // /worker-jobs — 현재 실행 중(running) 백그라운드 잡 목록. 대시보드 부팅 시 하이드레이션용:
+    // 긴 워커의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시 activity-only 카드
+    // 라 라벨이 "(작업)"으로 뜨던 문제 → in-memory listJobs 로 label·kind·task 복원. read 게이트.
+    if (pathname === "/worker-jobs" && method === "GET") {
+      const jobs = listJobs({ runningOnly: true, limit: 200 }).map((j) => ({
+        jobId: j.jobId,
+        label: j.label,
+        kind: j.kind ?? "worker",
+        threadKey: j.threadKey,
+        status: j.status,
+        ...(j.agentName !== undefined ? { agentName: j.agentName } : {}),
+        ...(j.modelTier !== undefined && j.modelTier !== ""
+          ? { modelTier: j.modelTier }
+          : {}),
+        ...(j.task !== undefined ? { task: j.task } : {}),
+        ...(j.cwd !== undefined && j.cwd !== "" ? { cwd: j.cwd } : {}),
+      }));
+      writeJson(res, 200, { jobs });
       return;
     }
 

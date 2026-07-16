@@ -553,6 +553,22 @@
         stepEl.insertBefore(caret, stepEl.firstChild); // 아이콘 앞 작은 ▸ affordance.
         stepEl.addEventListener("click", (e) => { e.stopPropagation(); toggleWorkerStepRich(stepEl); });
       };
+
+      // ── 부팅 하이드레이션 — 실행 중 잡을 서버(GET /api/worker-jobs = in-memory listJobs)에서
+      // 받아 카드 복원. 긴 워커의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시
+      // activity-only 카드라 라벨이 "(작업)"으로 뜨던 문제를 label·kind·task 복원으로 해소.
+      // handleWorkerEvent 재사용(멱등 ensureJobCard — SSE 와 중복돼도 같은 jobId=같은 카드).
+      const hydrateActiveJobs = () => {
+        fetch("/api/worker-jobs").then((r) => r.json()).then((d) => {
+          if (!d || !Array.isArray(d.jobs)) return;
+          for (const j of d.jobs) {
+            if (!j || !j.jobId) continue;
+            handleWorkerEvent({ ...j, status: j.status || "running" }, Date.now());
+          }
+        }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
+      };
+      hydrateActiveJobs();
+
       // 🛠 스킬 스텝 인식 (2026-07-14) — invoke_skill 도구 호출을 스킬 배지로 승격한다.
       // 스킬명은 공유 detail 빌더(_activity-detail.ts)가 "name=<skill>"(path 지정 시
       // "path=…, name=<skill>") 로 실어 보낸 p.detail 에서 뽑는다 — 세 어댑터(claude/codex/

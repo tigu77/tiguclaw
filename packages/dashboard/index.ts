@@ -304,6 +304,11 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/channels");
       return;
     }
+    // 실행 중 백그라운드 잡 하이드레이션(대시보드 부팅 시 라벨 복원 — worker.started SSE 놓친 경우).
+    if (pathname === "/api/worker-jobs" && method === "GET") {
+      await proxyJson(res, "/worker-jobs");
+      return;
+    }
     // 컨텍스트메뉴 외부 기여 — bridge GET /context-menu-items (read 토큰 server-side 주입).
     // `_workspace/context-menu_architect_contract.md` §2.3. /api/inventory 와 동형 패턴.
     if (pathname === "/api/context-menu-items" && method === "GET") {

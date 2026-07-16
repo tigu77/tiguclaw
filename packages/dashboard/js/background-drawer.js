@@ -131,23 +131,64 @@
         b.addEventListener("click", () => setBgFilter(b.dataset.filter));
       }
 
+      // 세션 스코프 필터(기본 "session" — 사용자 확정) — 활성 세션(activeThreadKey)이 띄운 잡만
+      // 보여주고, "전체 세션" 토글로 전 세션 잡을 드러낸다. 위 상태필터(running/all)와 독립 축이라
+      // AND 결합(카드 레벨 .bg-in-scope 클래스 + 리스트 레벨 .scope-session 클래스, app.css 참조).
+      // 영속 불필요(사용자 확정) — 매 로드 기본 "session".
+      const bgScopeFilterEl = document.getElementById("bg-scope-filter");
+      const bgScopeCountEl = document.getElementById("bg-scope-count");
+      let bgSessionScope = "session"; // "session" | "all"
+      // 카드가 활성 세션 소속인가 — threadKey 없음(레거시/구버전 카드)은 항상 소속 취급(누락 0,
+      // isActiveThread 의 "미지정=활성" 관례와 동형).
+      const isBgInScope = (tk) => !tk || tk === activeThreadKey;
+      const setBgSessionScope = (mode) => {
+        bgSessionScope = mode === "all" ? "all" : "session";
+        bgList.classList.toggle("scope-session", bgSessionScope === "session");
+        if (bgScopeFilterEl) for (const b of bgScopeFilterEl.querySelectorAll(".bg-fbtn")) {
+          const on = b.dataset.scope === bgSessionScope;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        }
+        refreshBgBadge();
+      };
+      if (bgScopeFilterEl) for (const b of bgScopeFilterEl.querySelectorAll(".bg-fbtn")) {
+        b.addEventListener("click", () => setBgSessionScope(b.dataset.scope));
+      }
+      // 탭 전환(activeThreadKey 변경) 후 재적용 훅 — js/tabs.js 가 switchToThread/newTab/closeTab
+      // 뒤에 호출(전역 스코프, background-drawer.js 가 tabs.js 보다 먼저 로드돼 참조 가능).
+      const refreshBgScope = () => {
+        for (const e of jobCards.values()) e.el.classList.toggle("bg-in-scope", isBgInScope(e.threadKey));
+        refreshBgBadge();
+      };
+
       const refreshBgBadge = () => {
-        let running = 0;
-        for (const e of jobCards.values()) if (e.status === "running") running += 1;
+        let running = 0, runningScoped = 0, totalScoped = 0;
+        for (const e of jobCards.values()) {
+          if (e.status === "running") running += 1;
+          if (isBgInScope(e.threadKey)) {
+            totalScoped += 1;
+            if (e.status === "running") runningScoped += 1;
+          }
+        }
         const total = jobCards.size;
         if (bgBadge) {
           bgBadge.textContent = String(running);
           bgBadge.classList.toggle("show", running > 0);
         }
-        if (bgCountRunning) bgCountRunning.textContent = String(running);
-        if (bgCountAll) bgCountAll.textContent = String(total);
-        // 왼쪽 nav "에이전트" 항목 카운트 뱃지 = 진행 중 개수(라이브).
+        // 드로어 내부 필터 카운트(진행 중/전체 버튼) — 현재 세션 스코프 반영(화면에 실제 보이는
+        // 수와 일치시킴). 헤더 배지·nav·에이전트뷰는 아래에서 전역 유지(스코프 무관, 회귀 방지).
+        const dispRunning = bgSessionScope === "session" ? runningScoped : running;
+        const dispTotal = bgSessionScope === "session" ? totalScoped : total;
+        if (bgCountRunning) bgCountRunning.textContent = String(dispRunning);
+        if (bgCountAll) bgCountAll.textContent = String(dispTotal);
+        if (bgScopeCountEl) bgScopeCountEl.textContent = String(totalScoped);
+        // 왼쪽 nav "에이전트" 항목 카운트 뱃지 = 진행 중 개수(라이브, 전역).
         const navAgentCount = document.getElementById("nav-agent-count");
         if (navAgentCount) navAgentCount.textContent = String(running);
-        // 에이전트 메인 뷰 자체 카운트/빈상태도 함께 갱신(열려 있을 때만 렌더).
+        // 에이전트 메인 뷰 자체 카운트/빈상태도 함께 갱신(전역, 열려 있을 때만 렌더).
         if (typeof syncAgentsCounts === "function") syncAgentsCounts(running, total);
-        // 빈 메시지 — 활성 필터 기준. running 필터면 "진행 중 없음", 전체면 "작업 없음".
-        const visible = bgFilter === "running" ? running : total;
+        // 빈 메시지 — 활성 상태필터 × 세션스코프 AND 기준(드로어에 실제 보이는 카드 수와 일치).
+        const visible = bgFilter === "running" ? dispRunning : dispTotal;
         if (bgEmpty) {
           bgEmpty.style.display = visible === 0 ? "" : "none";
           bgEmpty.textContent = bgFilter === "running"
@@ -177,6 +218,11 @@
         const open = entry.el.classList.contains("open");
         entry.chevEl.textContent = (open ? "▾ " : "▸ ") + (entry.stepCount > 0 ? entry.stepCount + "단계" : "자세히");
       };
+      // opts.threadKey 에서 "진짜" 원 세션 threadKey 만 뽑는다 — handleWorkerActivity 는 라우팅용
+      // 내부 의사-threadKey("worker:<jobId>"/"agent:<jobId>")를 opts.threadKey 로 넘기기도 하는데,
+      // 그건 세션 스코프 판정에 쓰면 안 됨(원 세션이 아니라 잡 좌표라 activeThreadKey 와 절대 안 맞음).
+      const realSessionThreadKey = (tk) =>
+        (typeof tk === "string" && tk && tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0) ? tk : "";
       // 잡 카드 확보(없으면 생성). label/task 는 worker.started, result 는 worker.done 이 채운다.
       const ensureJobCard = (jobId, opts) => {
         let entry = jobCards.get(jobId);
@@ -184,6 +230,7 @@
           const el = document.createElement("div");
           el.className = "bg-job running";
           el.dataset.jobId = jobId;
+          el.dataset.threadkey = realSessionThreadKey(opts && opts.threadKey); // 세션 스코프 필터 대상.
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
           label.textContent = (opts && opts.label) || "(작업)";
@@ -233,12 +280,24 @@
             task: "", result: "", errorText: "", // 작업 지시/결과/에러 원문(문자열) — DOM 과 별개 보관. 에이전트 뷰가 한 줄 요약·펼침 상세에 읽음.
             expanded: false, // 에이전트 뷰 카드 펼침 상태(jobId 별) — 리렌더돼도 유지. 드로어는 .open 클래스로 별도 관리.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
+            threadKey: realSessionThreadKey(opts && opts.threadKey), // 원 세션 threadKey(세션 스코프 필터용) — 없으면 "".
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
           };
+          entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey));
           jobCards.set(jobId, entry);
           // 활동으로만 생성된 카드도 헤더 '백그라운드 N' 개수 뱃지·bgEmpty 를 즉시 반영
           // (기존엔 handleWorkerEvent 만 refreshBgBadge 호출 → 활동-only 카드는 개수 누락).
           refreshBgBadge();
+        }
+        // 세션 스코프 threadKey 갱신(멱등) — 활동-선도 카드(worker:/agent: 의사값만 있던 카드)에
+        // 나중에 lifecycle 이 진짜 원 세션 threadKey 를 실어 오면 반영. 이미 같으면 no-op.
+        {
+          const realTk = realSessionThreadKey(opts && opts.threadKey);
+          if (realTk && entry.threadKey !== realTk) {
+            entry.threadKey = realTk;
+            entry.el.dataset.threadkey = realTk;
+            entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey));
+          }
         }
         // 서브에이전트 마킹(멱등) — lifecycle(kind:"agent")이 활동보다 먼저/나중 어느 쪽으로 와도
         // 카드를 서브로 승격. 배지 텍스트를 워커→서브에이전트로 교체(.agent 클래스가 색 전환).

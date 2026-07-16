@@ -117,7 +117,11 @@
         <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
         <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-count-all">0</span></button>
       </div>
-      <div class="bg-list filter-running" id="bg-list">
+      <div class="bg-filter" id="bg-scope-filter">
+        <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true">이 세션 <span class="bg-fcount" id="bg-scope-count">0</span></button>
+        <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false">전체 세션</button>
+      </div>
+      <div class="bg-list filter-running scope-session" id="bg-list">
         <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>
       </div>
     </aside>

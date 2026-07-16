@@ -191,6 +191,7 @@
         renderTabBar();
         persistTabs();
         void loadThreadHistory(tk);
+        if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         try { document.getElementById("chat-input").focus(); } catch {}
       };
 
@@ -206,6 +207,7 @@
         renderTabBar();
         persistTabs();
         void loadThreadHistory(tk); // 빈 스트림(새 세션 = 이력 없음) 즉시.
+        if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         try { document.getElementById("chat-input").focus(); } catch {}
       };
 
@@ -222,6 +224,7 @@
           renderTabBar();
           persistTabs();
           void loadThreadHistory(activeThreadKey);
+          if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         } else {
           renderTabBar();
           persistTabs();

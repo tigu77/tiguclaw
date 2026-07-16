@@ -560,6 +560,10 @@
       .bg-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
       /* filter=running 이면 running 이 아닌 카드를 숨긴다(카드는 그대로 두고 표시만 토글 → 회귀 0). */
       .bg-list.filter-running .bg-job:not(.running) { display:none; }
+      /* 세션 스코프(2026-07-16) — 기본은 활성 세션(activeThreadKey)이 띄운 잡만. 카드의 .bg-in-scope
+         는 JS 가 세션 전환/카드 생성 때마다 갱신(threadKey==activeThreadKey 또는 threadKey 없음=레거시
+         항상 소속). 상태필터(위)와 독립 클래스 → 두 규칙이 겹쳐 AND 로 숨김(둘 중 하나만 걸려도 숨김). */
+      .bg-list.scope-session .bg-job:not(.bg-in-scope) { display:none; }
       .bg-empty { color:var(--text-mute); font-style:italic; font-size:12px; padding:20px 6px; text-align:center; }
       /* 진행 중 뷰용 — 카드 헤더 밑에 경과시간 + 마지막 스텝(현재 무엇을 하는 중인지)을 인라인 표시.
          detail 을 펼치지 않아도 "지금 뭐가 돌고 있나"를 즉시. running 이 끝나면 JS 가 갱신 멈춤. */

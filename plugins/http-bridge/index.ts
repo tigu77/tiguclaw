@@ -1301,14 +1301,21 @@ class HttpBridge implements Channel, Observer {
       // 큐 항목(현행 동작). 어댑터는 이 값을 안 읽는다(순수 큐 상관, #2 LLM-agnostic).
       const correlationId =
         typeof body.correlationId === "string" ? body.correlationId.trim() : "";
-      // egress override(ADR 2026-07-16 §D4 Phase B2) — 컴포저 outbound 셀렉터가 인입(대시보드)
-      // 이 아닌 *다른* 채널(예 telegram)을 고르면 그 이름을 body.outboundChannel 로 실어 온다.
-      // 여기선 문자열 검증만(라우팅 판단·outbound-capable 여부는 코어 handler 가 레지스트리
-      // 조회로) → egressChannel 중립 필드로 전달. 미지정/빈문자 = undefined(현행 동작·회귀 0).
-      const egressChannel =
-        typeof body.outboundChannel === "string" && body.outboundChannel.trim() !== ""
-          ? body.outboundChannel.trim()
-          : undefined;
+      // egress fan-out(ADR 2026-07-16 §D4 Phase B2) — 컴포저 체크박스가 "이 답도 함께 보낼"
+      // 추가 채널들(예 telegram)을 body.outboundChannels(string[]) 로 실어 온다. swap 아님 —
+      // 인입 채널 응답은 항상 유지. 여기선 문자열 배열 검증만(라우팅·outbound-capable 여부는 코어
+      // handler 가 레지스트리 조회로) → egressChannels 중립 필드로 전달. 미지정/빈 배열/비배열 =
+      // undefined(현행 동작·회귀 0). 중복·빈문자 제거.
+      const egressChannels = Array.isArray(body.outboundChannels)
+        ? [
+            ...new Set(
+              body.outboundChannels
+                .filter((c): c is string => typeof c === "string")
+                .map((c) => c.trim())
+                .filter((c) => c !== ""),
+            ),
+          ]
+        : [];
       // 아웃바운드 첨부(send_file, #2 parity) — 텔레그램 sendDocument 와 동형의 추상 의도
       // 렌더. send_file 된 절대경로를 통제 디렉터리로 복사(servable rel 확보)한 뒤,
       // `channel.message.out` 이벤트에 additive `attachments:[{rel,name,mime,kind,caption?}]`
@@ -1375,7 +1382,7 @@ class HttpBridge implements Channel, Observer {
         receivedAt: Date.now(),
         ...(replyToText !== "" ? { replyToText } : {}),
         ...(correlationId !== "" ? { correlationId } : {}),
-        ...(egressChannel !== undefined ? { egressChannel } : {}),
+        ...(egressChannels.length > 0 ? { egressChannels } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         reply: async (out: string): Promise<void> => {
           replyText = out;

@@ -1058,31 +1058,41 @@ const handler: MessageHandler = async (msg) => {
     } else {
       replyText = sanitized;
     }
-    // ── egress override (ADR 2026-07-16 §D4 Phase B2 / D2) ─────────────────────
-    // 컴포저 outbound 셀렉터가 인입 채널이 아닌 다른 채널(msg.egressChannel, 예 telegram)을
-    // 골랐고 그 채널이 outbound-capable(레지스트리 등록 + defaultOutboundTarget 표명)이면 이
-    // 턴의 응답을 그 채널로 배달한다 — msg.reply(인입 채널 바인딩) 대신 deliverOutbound(채널별
-    // 분기 0, 레지스트리 조회). deliverOutbound 가 물리 발송 + 관측(channel.message.out)을 항상
-    // 발행하므로 아래 수동 publish 는 스킵(이중 방지) = "deliverOutbound 만". push-to-telegram
-    // 은 이 경로의 인스턴스. ★egressChannel 미지정/미충족이면 else = 현행 코드 비트 동일(회귀 0).
-    const egress = msg.egressChannel;
-    const egressOutbound =
-      egress !== undefined && egress !== msg.channel
-        ? getChannelOutbound(egress)
-        : undefined;
-    const egressCapable =
-      egressOutbound !== undefined &&
-      egressOutbound.defaultOutboundTarget !== undefined;
-    if (egress !== undefined && egressCapable) {
-      // D2 target 체인: 명시 target 없음(컴포저는 좌표 미전달) → 세션 last_channel_target
-      // (단 last_channel === egress 일 때만 — 타 채널 좌표 오용 방지, notifyDestFromMessage
-      // §2 가드 동형) → deliverOutbound 가 null 이면 채널 defaultOutboundTarget() 로 폴백.
+    // 인입 채널 응답 — **항상**(현행 그대로, 바이트 동일). egress fan-out 은 이 뒤에 opt-in 추가.
+    await msg.reply(
+      replyText,
+      out.replyToTrigger === true ? { replyToTrigger: true } : undefined,
+    );
+    // V1 단순+견고: route() 결과만 publish. 슬래시 응답 publish 는 V2
+    // (msg.reply wrap 또는 분기별 명시 — 현 단계 회귀 위험 회피).
+    bus.publish({
+      type: "channel.message.out",
+      ts: Date.now(),
+      payload: {
+        channel: msg.channel,
+        threadKey: msg.threadKey,
+        text: out.text.slice(0, EVENT_TEXT_MAX),
+      },
+    });
+    // ── egress fan-out (ADR 2026-07-16 §D4 Phase B2 / D2) ──────────────────────
+    // "이 답도 함께 보낼" 추가 채널들(msg.egressChannels, 컴포저 체크박스). swap 아님 — 인입
+    // 응답은 위에서 항상. 각 채널이 인입과 다르고 outbound-capable(레지스트리 등록 +
+    // defaultOutboundTarget 표명)이면 deliverOutbound 로 추가 배달(채널별 분기 0, 레지스트리
+    // 조회 — deliverOutbound 가 물리 발송 + 채널별 관측 발행). push-to-telegram = telegram 체크
+    // 인스턴스. ★egressChannels 미지정/빈 배열이면 이 루프는 0회 = 현행 비트 동일(회귀 0).
+    for (const ch of msg.egressChannels ?? []) {
+      if (ch === msg.channel) continue; // 인입은 이미 위에서 응답.
+      const o = getChannelOutbound(ch);
+      if (o === undefined || o.defaultOutboundTarget === undefined) continue; // outbound-capable 만.
+      // D2 target 체인: 명시 target 없음(컴포저 좌표 미전달) → 세션 last_channel_target(단
+      // last_channel === ch 일 때만 — 타 채널 좌표 오용 방지, notifyDestFromMessage §2 가드
+      // 동형) → deliverOutbound 가 null 이면 채널 defaultOutboundTarget() 로 폴백.
       let egressTarget: string | null = null;
       try {
         const meta = getSessionChannelMeta(SESSION_STORAGE_CHANNEL, msg.threadKey);
         if (
           meta !== null &&
-          meta.lastChannel === egress &&
+          meta.lastChannel === ch &&
           meta.lastChannelTarget !== null &&
           meta.lastChannelTarget !== ""
         ) {
@@ -1091,28 +1101,20 @@ const handler: MessageHandler = async (msg) => {
       } catch {
         /* 세션 메타 조회 실패 — defaultOutboundTarget() 폴백(무해) */
       }
-      await deliverOutbound({
-        channel: egress,
-        target: egressTarget, // null → deliverOutbound 가 defaultOutboundTarget() 로 해석.
-        text: replyText,
-        bus,
-      });
-    } else {
-      await msg.reply(
-        replyText,
-        out.replyToTrigger === true ? { replyToTrigger: true } : undefined,
-      );
-      // V1 단순+견고: route() 결과만 publish. 슬래시 응답 publish 는 V2
-      // (msg.reply wrap 또는 분기별 명시 — 현 단계 회귀 위험 회피).
-      bus.publish({
-        type: "channel.message.out",
-        ts: Date.now(),
-        payload: {
-          channel: msg.channel,
-          threadKey: msg.threadKey,
-          text: out.text.slice(0, EVENT_TEXT_MAX),
-        },
-      });
+      // 한 채널 배달 실패가 다른 채널·인입 응답을 무르지 않게 격리(fan-out best-effort).
+      try {
+        await deliverOutbound({
+          channel: ch,
+          target: egressTarget, // null → deliverOutbound 가 defaultOutboundTarget() 로 해석.
+          text: replyText,
+          bus,
+        });
+      } catch (e) {
+        console.error(
+          `egress fan-out to "${ch}" failed (인입 응답은 정상):`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
   } catch (e) {
     // 사용자 /stop 으로 중단된 턴 — 에러 아님. /stop 이 이미 안내·out 발행했으므로 조용히 종료

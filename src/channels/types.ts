@@ -64,18 +64,18 @@ export interface IncomingMessage {
    */
   session?: { explicitSessionId?: string; channelAddress?: string };
   /**
-   * 이 턴의 응답 egress 채널 override(additive, ADR 2026-07-16 §D4 Phase B2) — 인입 채널이
-   * 아닌 *다른* 채널로 그 턴의 답변을 배달하라는 지시(대시보드 컴포저 셀렉터 → http-bridge
-   * `body.outboundChannel`). daemon handler 가 route() 후 egress 지점에서 읽어, 값이 있고
-   * 인입 채널과 다르며 outbound-capable(레지스트리 등록 + defaultOutboundTarget 해석 가능)이면
-   * `msg.reply` 대신 `deliverOutbound({channel: egressChannel, …})` 로 스왑한다(채널별 분기 0,
-   * 레지스트리 조회). push-to-telegram = 이 경로의 인스턴스.
+   * 이 턴의 응답을 **인입 채널에 더해** 함께 배달할 *추가* 채널들(additive fan-out, ADR
+   * 2026-07-16 §D4 Phase B2) — swap 아님. 대시보드 컴포저 체크박스 → http-bridge
+   * `body.outboundChannels`. daemon handler 는 route() 후 인입 채널로 **항상** 답(현행 그대로)한
+   * 다음, 이 목록의 각 채널(인입과 다르고 outbound-capable = 레지스트리 등록 + defaultOutboundTarget
+   * 표명)에 대해 `deliverOutbound` 로 추가 배달한다("이 답도 텔레그램/슬랙에 보내"). 채널별 분기
+   * 0(레지스트리 조회). push-to-telegram = 체크박스에 telegram 을 켠 인스턴스.
    *
-   * 미지정(현행 모든 인입·슬래시·워커·스케줄) = 인입 채널로 답(회귀 0, 코드경로 바이트 동일).
+   * 미지정/빈 배열(현행 모든 인입·슬래시·워커·스케줄) = 인입 채널만(회귀 0, 코드경로 바이트 동일).
    * **어떤 어댑터도 이 값을 읽지 않는다**(순수 배달 라우팅 메타, `channelAddress`·`session`
    * 계열 LLM-agnostic 중립 필드). additive.
    */
-  egressChannel?: string;
+  egressChannels?: string[];
   text: string;
   /**
    * 답글(reply) 원문 — 채널이 reply_to 메시지의 텍스트를 실으면 핸들러가 프롬프트에

@@ -625,7 +625,14 @@
         .bg-job.running, #bg-toggle .bg-badge.show, .turn-card:not(.done) .act-step:last-child .act-icon { animation:none; }
       }
       .bg-job-top { display:flex; align-items:flex-start; gap:8px; }
-      .bg-job-label { flex:1; font-weight:800; font-size:12px; color:var(--text); word-break:break-word; }
+      .bg-job-label { flex:1; min-width:0; font-weight:800; font-size:12px; color:var(--text); word-break:break-word; overflow-wrap:anywhere; }
+      /* 모바일(오버레이 드로어) — 라벨+배지 6개가 한 flex 줄에 몰려 좁은 폭에서 긴 슬러그
+         라벨이 1글자씩 세로로 깨지던 문제. 라벨을 한 줄 통째로(flex-basis:100%) 쓰고 배지는
+         아래로 wrap → 라벨은 제 폭에서 정상 줄바꿈(하이픈/단어 경계). 데스크톱은 무영향. */
+      @media (max-width:900px) {
+        .bg-job-top { flex-wrap:wrap; }
+        .bg-job-label { flex-basis:100%; }
+      }
       .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .bg-job-err { font-size:11px; color:#fca5a5; word-break:break-word; }

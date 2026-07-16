@@ -127,6 +127,10 @@
         } else if (anchor) {
           setScrollTop(anchor.it.top - anchor.off);
         }
+        // "↓ 최신" 점프버튼 갱신 — 프로그램적 스크롤(setScrollTop=vtProgrammatic)은 scroll
+        // 리스너가 조기 return 해 updateChatJump 를 건너뛴다. relayout 끝에서 stickBottom 기준
+        // 직접 갱신해야 전송 후 하단인데(stickBottom=true) 버튼이 남던 버그를 막는다.
+        updateChatJump();
       };
 
       // 날짜 구분선 재계산 — 구조 변경(append/prependOlder/history batch/cap) 후 호출. 오래된→최신

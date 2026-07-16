@@ -819,6 +819,10 @@
       .chat-reply .cr-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
       .chat-reply .cr-x { flex:none; cursor:pointer; border:0; background:transparent; color:var(--text-dim); font-size:13px; line-height:1; padding:0 2px; }
       .chat-reply .cr-x:hover { color:var(--text); }
+      /* 컴포저 백그라운드 작업 인디케이터 — 현재 세션에 워커가 돌면 입력창 위에 노출(클릭=드로어). */
+      .chat-bg-active { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:6px 11px; border:1px solid rgba(52,211,153,.4); background:rgba(52,211,153,.10); border-radius:999px; font-size:11px; font-weight:700; color:var(--good); cursor:pointer; align-self:flex-start; }
+      .chat-bg-active:hover { border-color:var(--good); background:rgba(52,211,153,.16); }
+      .chat-bg-active[hidden] { display:none; }
       .chat-message { position:relative; }
       /* ⋯ 메뉴 kebab — 채팅 카드 맨 윗라인 우측(답글 버튼 폐지, 답글은 메뉴 안). hover 시 노출.
          단순 버블(.ev.local)=head 우측 절대배치 / 턴그룹=turn-head flex 끝(margin-left:auto). */

@@ -7,6 +7,10 @@
       const bgList = document.getElementById("bg-list");
       const bgEmpty = document.getElementById("bg-empty");
       const bgBadge = document.getElementById("bg-badge");
+      // 컴포저(입력창 위) 인디케이터 — 현재 세션에 백그라운드 작업이 돌면 노출(runningScoped>0).
+      // 클릭하면 드로어를 연다. refreshBgBadge 가 잡 상태·탭 전환마다 갱신.
+      const chatBgActiveEl = document.getElementById("chat-bg-active");
+      if (chatBgActiveEl) chatBgActiveEl.addEventListener("click", () => { if (typeof openBg === "function") openBg(); });
       // "↑ 최신" 점프 — 아래로 내려 과거 잡 열람 중(scrollTop>임계)일 때만 노출, 클릭하면 맨 위(최신)로.
       // 채팅 chat-jump 의 상단판(newest=insertBefore 로 top). stickTop 이 안 끌어당기는 케이스의 어포던스.
       const bgJump = document.getElementById("bg-jump");
@@ -281,6 +285,15 @@
           bgEmpty.textContent = bgFilter === "running"
             ? "진행 중인 작업이 없습니다."
             : "백그라운드 작업이 없습니다.";
+        }
+        // 컴포저 인디케이터 — 현재 세션(runningScoped)에 도는 작업이 있으면 입력창 위에 표시.
+        if (chatBgActiveEl) {
+          if (runningScoped > 0) {
+            chatBgActiveEl.textContent = "🔄 이 세션 백그라운드 작업 " + runningScoped + "개 진행 중";
+            chatBgActiveEl.hidden = false;
+          } else {
+            chatBgActiveEl.hidden = true;
+          }
         }
       };
       const capBgList = () => {

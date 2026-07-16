@@ -18,6 +18,7 @@
   "channel-hints.js",
   "history-render.js",
   "axis1-options.js",
+  "egress-selector.js",
   "reply.js",
   "prompt-options.js",
   "sse.js",

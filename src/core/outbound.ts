@@ -7,13 +7,18 @@
  * 대시보드에 보이고(관측 발행함) 어떤 건 안 보이는(빠뜨림) 불일치가 있었다. 이 통로로
  * 모아 그 부류를 없앤다(단순·견고, 같은 걸 두 번 구현 X).
  *
- * 단방향 불변식(§6): core 함수다. telegram(core 채널)은 직접 호출하고, 그 외 채널은
- * EventBus 이벤트로 디커플한다 — 플러그인을 이름/경로로 참조하지 않는다. 플러그인이 이
- * 함수를 부르는 건 허용(plugin→core).
+ * 단방향 불변식(§6, ADR 2026-07-16 §D6 강화): core 함수다. 채널 이름을 하드코딩하지 않고
+ * 채널 outbound 레지스트리(`channel-outbound.ts`)를 *조회*만 한다 — 채널(코어·플러그인)이
+ * 자기 `deliver`/`defaultOutboundTarget` 를 데이터로 등록하고(plugin→core, startChannel
+ * duck-typing 과 동형) 코어는 telegram/http-bridge 문자열·telegram import 를 알지 않는다.
+ * 플러그인이 이 함수를 부르는 건 허용(plugin→core).
  */
 import type { EventBus } from "./eventbus.js";
 import { getEventBus } from "./eventbus.js";
-import { sendOutgoing as telegramSendOutgoing } from "../channels/telegram.js";
+import {
+  getChannelOutbound,
+  threadKeyForObservation,
+} from "./channel-outbound.js";
 
 export interface OutboundInput {
   /** 목적지 채널명 — "telegram" | "cli" | "http-bridge" | (그 외=미지원). */
@@ -57,12 +62,13 @@ const publishOut = (
 
 /**
  * (channel, target) 로 text 를 발송하고 `channel.message.out` 를 발행한다.
- *   telegram    → sendOutgoing(HTML→plain 폴백·분할 보유) + publishOut(tg:target)
- *   cli         → console.log(라벨 접두)
- *   http-bridge → publishOut(threadKey=target) — 대시보드 SSE 가 전달(동기 요청 없음)
- *   그 외       → console.warn(사일런트 실패 회피). 실제 전달 수단 없음.
- * 전송 실패(예: telegram target 없음)는 throw — 호출자가 판단(부팅 통지 등은 best-effort
- * catch, 스케줄러는 last_status 에 반영). 관측 발행만 실패하는 건 삼켜진다(위 publishOut).
+ * 채널 outbound 레지스트리 조회로 라우팅(ADR 2026-07-16 §D1, switch→데이터 등록):
+ *   등록됨 + deliver 有  → 물리 발송(telegram=sendOutgoing) + (observe 면) publishOut
+ *   등록됨 + deliver 無  → 관측-전용(http-bridge). publishOut 이 대시보드 SSE 배달
+ *   미등록               → console.warn(사일런트 실패 회피). 실제 전달 수단 없음
+ * target 미지정 시 채널의 `defaultOutboundTarget()` 로 해석(telegram=owner chatId 등).
+ * 전송 실패(예: telegram target 없음)는 채널 `deliver` 가 throw — 호출자가 판단(부팅 통지
+ * 등은 best-effort catch, 스케줄러는 last_status 에 반영). 관측 발행만 실패하는 건 삼켜진다.
  */
 export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
   const { channel, target, text, label } = input;
@@ -70,29 +76,29 @@ export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
   const observe = input.observe !== false; // 기본 true; false 만 관측 억제(물리 발송 불변).
   const tag = label !== undefined ? `[${label}] ` : "";
 
-  if (channel === "cli") {
-    console.log(`${tag}${text}`);
+  const o = getChannelOutbound(channel);
+  if (o === undefined) {
+    // 미등록 채널 — 사일런트 실패 회피(정직 경고). 실제 전달 수단 없음(현행 switch default).
+    console.warn(
+      `deliverOutbound: unsupported channel "${channel}" (target=${
+        target ?? "—"
+      }) — no delivery:\n${tag}${text}`,
+    );
     return;
   }
 
-  if (channel === "telegram") {
-    if (target === null || target.trim() === "") {
-      throw new Error("telegram target required (chatId)");
-    }
-    await telegramSendOutgoing(target, text);
-    if (observe) publishOut(bus, "telegram", `tg:${target}`, text);
-    return;
-  }
+  // target 해석: 명시 target 우선, 없으면 채널의 기본 좌표(defaultOutboundTarget).
+  const resolved =
+    target ??
+    (o.defaultOutboundTarget !== undefined
+      ? await o.defaultOutboundTarget()
+      : null);
 
-  if (channel === "http-bridge") {
-    if (observe) publishOut(bus, "http-bridge", target ?? "http-bridge:default", text);
-    return;
-  }
+  // 물리 발송(deliver 있는 채널만) — telegram=sendOutgoing. 관측-전용(http-bridge)은 스킵.
+  if (o.deliver !== undefined) await o.deliver(resolved, text);
 
-  // 미지원 채널 — 사일런트 실패 회피(정직 경고). 실제 전달 수단이 없으므로 관측만 남긴다.
-  console.warn(
-    `deliverOutbound: unsupported channel "${channel}" (target=${
-      target ?? "—"
-    }) — no delivery:\n${tag}${text}`,
-  );
+  // 관측은 항상(채널무관) — 대시보드 chat_log·라이브 SSE(원칙 #4). observe:false 만 억제.
+  if (observe) {
+    publishOut(bus, channel, threadKeyForObservation(channel, resolved), text);
+  }
 };

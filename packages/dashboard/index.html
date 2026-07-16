@@ -88,6 +88,7 @@
           <form id="chat-form" autocomplete="off">
             <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>
             <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea></div>
+            <select id="chat-egress" class="chat-egress" title="응답을 보낼 채널 (egress)" aria-label="응답 채널" hidden></select>
             <button id="chat-send" type="submit">전송</button>
             <input type="file" id="chat-file" multiple hidden />
           </form>
@@ -147,6 +148,7 @@
     <script src="/js/channel-hints.js"></script>
     <script src="/js/history-render.js"></script>
     <script src="/js/axis1-options.js"></script>
+    <script src="/js/egress-selector.js"></script>
     <script src="/js/reply.js"></script>
     <script src="/js/prompt-options.js"></script>
     <script src="/js/sse.js"></script>

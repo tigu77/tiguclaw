@@ -25,6 +25,7 @@ import type {
   IncomingMessage,
   MessageHandler,
 } from "../../src/channels/types.js";
+import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
 import { getPaths } from "../../src/core/paths.js";
 import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
@@ -430,6 +431,18 @@ const meetsRole = (
 
 class HttpBridge implements Channel, Observer {
   readonly name = "http-bridge";
+
+  /**
+   * 아웃바운드 능력(ADR 2026-07-16 §D1/§D3) — **관측-전용**. `deliver` 없음(undefined):
+   * 물리 발송 없이 `deliverOutbound` 의 publishOut(`channel.message.out`)이 대시보드 SSE 로
+   * 배달한다(현행 switch http-bridge 케이스 = publishOut 만, 비트 동일). "미등록(unsupported)"
+   * 과 "등록+deliver없음(관측전용)" 은 레지스트리 존재로 구분 — 자신을 *등록*하되 deliver 를
+   * 안 실어 현행 동작 유지. index.ts loader 가 이 필드를 duck-typing 으로 읽어 등록(§0 준수).
+   * defaultOutboundTarget = null(세션 문맥 의존, 명시 target 필요).
+   */
+  readonly outbound: ChannelOutbound = {
+    defaultOutboundTarget: (): string | null => null,
+  };
 
   private server: http.Server | null = null;
   private readonly sseClients = new Set<http.ServerResponse>();
@@ -1288,6 +1301,14 @@ class HttpBridge implements Channel, Observer {
       // 큐 항목(현행 동작). 어댑터는 이 값을 안 읽는다(순수 큐 상관, #2 LLM-agnostic).
       const correlationId =
         typeof body.correlationId === "string" ? body.correlationId.trim() : "";
+      // egress override(ADR 2026-07-16 §D4 Phase B2) — 컴포저 outbound 셀렉터가 인입(대시보드)
+      // 이 아닌 *다른* 채널(예 telegram)을 고르면 그 이름을 body.outboundChannel 로 실어 온다.
+      // 여기선 문자열 검증만(라우팅 판단·outbound-capable 여부는 코어 handler 가 레지스트리
+      // 조회로) → egressChannel 중립 필드로 전달. 미지정/빈문자 = undefined(현행 동작·회귀 0).
+      const egressChannel =
+        typeof body.outboundChannel === "string" && body.outboundChannel.trim() !== ""
+          ? body.outboundChannel.trim()
+          : undefined;
       // 아웃바운드 첨부(send_file, #2 parity) — 텔레그램 sendDocument 와 동형의 추상 의도
       // 렌더. send_file 된 절대경로를 통제 디렉터리로 복사(servable rel 확보)한 뒤,
       // `channel.message.out` 이벤트에 additive `attachments:[{rel,name,mime,kind,caption?}]`
@@ -1354,6 +1375,7 @@ class HttpBridge implements Channel, Observer {
         receivedAt: Date.now(),
         ...(replyToText !== "" ? { replyToText } : {}),
         ...(correlationId !== "" ? { correlationId } : {}),
+        ...(egressChannel !== undefined ? { egressChannel } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         reply: async (out: string): Promise<void> => {
           replyText = out;

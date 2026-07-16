@@ -1,9 +1,20 @@
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { Channel, IncomingMessage, MessageHandler } from "./types.js";
+import type { ChannelOutbound } from "../core/channel-outbound.js";
 import { resolveSessionId } from "../core/threadkey.js";
 
 export class CliChannel implements Channel {
   readonly name = "cli" as const;
+  /**
+   * 아웃바운드 능력(ADR 2026-07-16 §D3, 3어댑터 parity) — deliver = console.log(현행 switch
+   * cli 케이스 상당). defaultOutboundTarget = null(cli 는 배달 좌표 없음 — 로컬 콘솔).
+   */
+  readonly outbound: ChannelOutbound = {
+    deliver: async (_target: string | null, text: string): Promise<void> => {
+      console.log(text);
+    },
+    defaultOutboundTarget: (): string | null => null,
+  };
   private rl: ReadlineInterface | null = null;
 
   async start(handler: MessageHandler): Promise<void> {

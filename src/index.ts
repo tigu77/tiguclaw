@@ -89,6 +89,11 @@ import {
   type SelfUpdateResult,
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
+import {
+  registerChannelOutbound,
+  getChannelOutbound,
+  type ChannelOutbound,
+} from "./core/channel-outbound.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -207,6 +212,7 @@ try {
       startService?: (eventBus: EventBus) => Promise<void>;
       stop?: () => Promise<void>;
       getMcpServer?: () => McpSdkServerConfigWithInstance | undefined;
+      outbound?: ChannelOutbound;
     };
     const relDir = path.relative(appRoot(), lp.pluginDir);
 
@@ -256,6 +262,13 @@ try {
           start: startFn,
           stop: stopFn,
         });
+        // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — plugin 이 `outbound` 를 표명하면
+        // loader 가 duck-typing 으로 읽어 코어 레지스트리에 등록(startChannel 과 동형, §0 준수:
+        // core→plugin import 0). http-bridge = 관측-전용(deliver 없음) 이지만 *등록*은 한다
+        // ("미등록/unsupported" 과 구분). 코어 채널은 아래 channels.start 루프가 등록.
+        if (inst.outbound !== undefined) {
+          registerChannelOutbound(channelName, inst.outbound);
+        }
         console.log(
           `loaded channel plugin: ${lp.manifest.name} (from ${relDir})`,
         );
@@ -1045,21 +1058,62 @@ const handler: MessageHandler = async (msg) => {
     } else {
       replyText = sanitized;
     }
-    await msg.reply(
-      replyText,
-      out.replyToTrigger === true ? { replyToTrigger: true } : undefined,
-    );
-    // V1 단순+견고: route() 결과만 publish. 슬래시 응답 publish 는 V2
-    // (msg.reply wrap 또는 분기별 명시 — 현 단계 회귀 위험 회피).
-    bus.publish({
-      type: "channel.message.out",
-      ts: Date.now(),
-      payload: {
-        channel: msg.channel,
-        threadKey: msg.threadKey,
-        text: out.text.slice(0, EVENT_TEXT_MAX),
-      },
-    });
+    // ── egress override (ADR 2026-07-16 §D4 Phase B2 / D2) ─────────────────────
+    // 컴포저 outbound 셀렉터가 인입 채널이 아닌 다른 채널(msg.egressChannel, 예 telegram)을
+    // 골랐고 그 채널이 outbound-capable(레지스트리 등록 + defaultOutboundTarget 표명)이면 이
+    // 턴의 응답을 그 채널로 배달한다 — msg.reply(인입 채널 바인딩) 대신 deliverOutbound(채널별
+    // 분기 0, 레지스트리 조회). deliverOutbound 가 물리 발송 + 관측(channel.message.out)을 항상
+    // 발행하므로 아래 수동 publish 는 스킵(이중 방지) = "deliverOutbound 만". push-to-telegram
+    // 은 이 경로의 인스턴스. ★egressChannel 미지정/미충족이면 else = 현행 코드 비트 동일(회귀 0).
+    const egress = msg.egressChannel;
+    const egressOutbound =
+      egress !== undefined && egress !== msg.channel
+        ? getChannelOutbound(egress)
+        : undefined;
+    const egressCapable =
+      egressOutbound !== undefined &&
+      egressOutbound.defaultOutboundTarget !== undefined;
+    if (egress !== undefined && egressCapable) {
+      // D2 target 체인: 명시 target 없음(컴포저는 좌표 미전달) → 세션 last_channel_target
+      // (단 last_channel === egress 일 때만 — 타 채널 좌표 오용 방지, notifyDestFromMessage
+      // §2 가드 동형) → deliverOutbound 가 null 이면 채널 defaultOutboundTarget() 로 폴백.
+      let egressTarget: string | null = null;
+      try {
+        const meta = getSessionChannelMeta(SESSION_STORAGE_CHANNEL, msg.threadKey);
+        if (
+          meta !== null &&
+          meta.lastChannel === egress &&
+          meta.lastChannelTarget !== null &&
+          meta.lastChannelTarget !== ""
+        ) {
+          egressTarget = meta.lastChannelTarget;
+        }
+      } catch {
+        /* 세션 메타 조회 실패 — defaultOutboundTarget() 폴백(무해) */
+      }
+      await deliverOutbound({
+        channel: egress,
+        target: egressTarget, // null → deliverOutbound 가 defaultOutboundTarget() 로 해석.
+        text: replyText,
+        bus,
+      });
+    } else {
+      await msg.reply(
+        replyText,
+        out.replyToTrigger === true ? { replyToTrigger: true } : undefined,
+      );
+      // V1 단순+견고: route() 결과만 publish. 슬래시 응답 publish 는 V2
+      // (msg.reply wrap 또는 분기별 명시 — 현 단계 회귀 위험 회피).
+      bus.publish({
+        type: "channel.message.out",
+        ts: Date.now(),
+        payload: {
+          channel: msg.channel,
+          threadKey: msg.threadKey,
+          text: out.text.slice(0, EVENT_TEXT_MAX),
+        },
+      });
+    }
   } catch (e) {
     // 사용자 /stop 으로 중단된 턴 — 에러 아님. /stop 이 이미 안내·out 발행했으므로 조용히 종료
     // (에러 메시지 이중 발신 방지). turnAc.signal.reason 으로 판별(어댑터가 뭘 throw 하든 무관).
@@ -1371,6 +1425,10 @@ process.on("uncaughtException", (err) => {
 });
 
 for (const ch of channels) {
+  // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — 코어 채널(cli/telegram)이 `outbound` 를
+  // 표명하면 코어 레지스트리에 등록(switch→데이터 등록). plugin 채널은 위 loader 가 이미 등록
+  // (여기 push 된 plugin 객체엔 outbound 없음 → 이중 등록 0). start 성공 여부와 무관하게 등록.
+  if (ch.outbound !== undefined) registerChannelOutbound(ch.name, ch.outbound);
   try {
     await ch.start(serializedHandler);
   } catch (e) {
@@ -1385,14 +1443,46 @@ for (const ch of channels) {
 // "존재하나 꺼짐"을 사용자가 보도록 disabled 로 명시 추가(토큰 있으면 이미 channels[] 에 있어
 // 중복 추가 금지). kind 는 표시용 — Phase A 는 채널별 특수 로직 없이 c.name 을 그대로 쓴다.
 {
-  const presence: ChannelPresence[] = channels.map((c) => ({
-    name: c.name,
-    kind: c.name,
-    status: "up",
-  }));
+  // outbound 능력 플래그(ADR 2026-07-16 §D4 Phase B2) — 코어 레지스트리(위 등록 완료)를 조회해
+  // canDeliver(`deliver` 표명)·hasDefaultTarget(`defaultOutboundTarget()` non-null)을 채운다.
+  // 컴포저 egress 셀렉터가 hasDefaultTarget 채널만 노출(U3). defaultOutboundTarget 은 sync|async
+  // 둘 다 허용(interface) — await 로 통일. 조회 실패(예외)는 false(무해·안전 기본). §0: 채널명
+  // 하드코딩 0(레지스트리 조회만).
+  const outboundFlags = async (
+    name: string,
+  ): Promise<{ canDeliver: boolean; hasDefaultTarget: boolean }> => {
+    const o = getChannelOutbound(name);
+    if (o === undefined) return { canDeliver: false, hasDefaultTarget: false };
+    let hasDefaultTarget = false;
+    try {
+      const t =
+        o.defaultOutboundTarget !== undefined
+          ? await o.defaultOutboundTarget()
+          : null;
+      hasDefaultTarget = typeof t === "string" && t.trim() !== "";
+    } catch {
+      hasDefaultTarget = false;
+    }
+    return { canDeliver: o.deliver !== undefined, hasDefaultTarget };
+  };
+  const presence: ChannelPresence[] = await Promise.all(
+    channels.map(async (c) => ({
+      name: c.name,
+      kind: c.name,
+      status: "up" as const,
+      ...(await outboundFlags(c.name)),
+    })),
+  );
   const telegramLoaded = channels.some((c) => c.name === "telegram");
   if (!telegramLoaded) {
-    presence.push({ name: "telegram", kind: "telegram", status: "disabled" });
+    // 토큰 부재로 미로드 = outbound 미등록 → canDeliver/hasDefaultTarget=false(셀렉터 후보 아님).
+    presence.push({
+      name: "telegram",
+      kind: "telegram",
+      status: "disabled",
+      canDeliver: false,
+      hasDefaultTarget: false,
+    });
   }
   setChannelPresence(presence);
 }

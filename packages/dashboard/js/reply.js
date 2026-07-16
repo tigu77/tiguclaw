@@ -92,6 +92,11 @@
               correlationId,
               ...(attachments && attachments.length ? { attachments } : {}),
               ...(replyToText ? { replyToText } : {}),
+              // egress override(ADR 2026-07-16 §D4 Phase B2) — 컴포저 셀렉터가 세션(기본)이
+              // 아닌 채널을 골랐을 때만 실어 그 턴 응답 egress 를 스왑. 기본("") = 미전송(회귀 0).
+              ...(typeof egressChannel === "string" && egressChannel !== ""
+                ? { outboundChannel: egressChannel }
+                : {}),
             }),
           });
           const data = await r.json().catch(() => ({}));

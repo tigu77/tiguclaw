@@ -1,3 +1,5 @@
+import type { ChannelOutbound } from "../core/channel-outbound.js";
+
 export type ChannelName = string;
 
 export interface ReplyOptions {
@@ -61,6 +63,19 @@ export interface IncomingMessage {
    * shape 는 `route()` opts.session 과 동일(daemon handler 가 그대로 forward). additive.
    */
   session?: { explicitSessionId?: string; channelAddress?: string };
+  /**
+   * 이 턴의 응답 egress 채널 override(additive, ADR 2026-07-16 §D4 Phase B2) — 인입 채널이
+   * 아닌 *다른* 채널로 그 턴의 답변을 배달하라는 지시(대시보드 컴포저 셀렉터 → http-bridge
+   * `body.outboundChannel`). daemon handler 가 route() 후 egress 지점에서 읽어, 값이 있고
+   * 인입 채널과 다르며 outbound-capable(레지스트리 등록 + defaultOutboundTarget 해석 가능)이면
+   * `msg.reply` 대신 `deliverOutbound({channel: egressChannel, …})` 로 스왑한다(채널별 분기 0,
+   * 레지스트리 조회). push-to-telegram = 이 경로의 인스턴스.
+   *
+   * 미지정(현행 모든 인입·슬래시·워커·스케줄) = 인입 채널로 답(회귀 0, 코드경로 바이트 동일).
+   * **어떤 어댑터도 이 값을 읽지 않는다**(순수 배달 라우팅 메타, `channelAddress`·`session`
+   * 계열 LLM-agnostic 중립 필드). additive.
+   */
+  egressChannel?: string;
   text: string;
   /**
    * 답글(reply) 원문 — 채널이 reply_to 메시지의 텍스트를 실으면 핸들러가 프롬프트에
@@ -121,4 +136,11 @@ export interface Channel {
   readonly name: ChannelName;
   start(handler: MessageHandler): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * 아웃바운드 능력(additive, ADR 2026-07-16 §D3) — 채널이 능동/직접 발신을 지원하면 구현.
+   * 부팅 채널 로딩 때 코어 outbound 레지스트리에 등록(deliverOutbound 가 조회). 미구현 =
+   * 관측-전용(http-bridge) or unsupported(현행). 3어댑터 parity: telegram=send/owner,
+   * cli=console/null, http-bridge=관측전용/null.
+   */
+  outbound?: ChannelOutbound;
 }

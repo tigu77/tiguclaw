@@ -10,10 +10,12 @@ import type {
   MessageHandler,
   ReplyOptions,
 } from "./types.js";
+import type { ChannelOutbound } from "../core/channel-outbound.js";
 import { getPaths } from "../core/paths.js";
 import { getAllCommands } from "../core/entry/command-registry.js";
 import { getEventBus } from "../core/eventbus.js";
 import { resolveSessionId } from "../core/threadkey.js";
+import { getMostRecentTelegramChatId } from "../store/sessions.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -321,6 +323,26 @@ const parseAllowedTelegramIds = (): Set<string> =>
 
 export class TelegramChannel implements Channel {
   readonly name = "telegram" as const;
+  /**
+   * 아웃바운드 능력(ADR 2026-07-16 §D1/§D3) — 코어 레지스트리에 등록.
+   *  - deliver = sendOutgoing(현행 switch telegram 케이스와 동일 함수). null/빈 target 은
+   *    현행 그대로 throw("telegram target required") — 비트 동일 가드 이관.
+   *  - defaultOutboundTarget = owner allowlist 첫 id → 폴백 getMostRecentTelegramChatId().
+   *    (파싱 특수분기를 코어에서 채널 안으로 이관 = §D2/§D3 Phase 3 정합. 명시 target 이
+   *    있는 현행 호출자는 이 함수를 타지 않음 → 현행 발송 경로 비트 동일.)
+   */
+  readonly outbound: ChannelOutbound = {
+    deliver: async (target: string | null, text: string): Promise<void> => {
+      if (target === null || target.trim() === "") {
+        throw new Error("telegram target required (chatId)");
+      }
+      await sendOutgoing(target, text);
+    },
+    defaultOutboundTarget: (): string | null => {
+      const owner = [...parseAllowedTelegramIds()][0];
+      return owner ?? getMostRecentTelegramChatId();
+    },
+  };
   private bot: Bot | null = null;
   // EventBus 구독 해제 핸들 — start() 에서 commands.changed 구독, stop() 에서 해제(누수 0).
   private unsubscribeCommandsChanged: (() => void) | null = null;

@@ -21,22 +21,20 @@
         chatReplyEl.hidden = false;
         try { document.getElementById("chat-input").focus(); } catch {}
       };
-      // 메시지 버블(.chat-message) hover 시 "↩" 버튼 1회 주입. 툴 스텝(.act-line)엔 .chat-message
-      // 없어 무영향. 버튼 텍스트가 본문에 안 섞이게 주입 직전 textContent 를 캡처.
+      // 메시지 카드 hover 시 ⋯ 메뉴 kebab 을 **카드 맨 윗라인 우측**에 1회 주입. 붙어있던
+      // ↩답글 버튼은 폐지 — 답글은 ⋯ 메뉴 안(아래 registerMenuItems "message")에 있어 무손실.
+      // 단순 버블(.ev.local)=head 우측 절대배치 / 턴그룹=turn-head flex 끝(margin-left:auto,
+      // turn-count 겹침 회피). 툴 스텝(.act-line)엔 .chat-message 없어 무영향. 카드당 1회(가상화
+      // detach 후에도 dataset 이 노드에 유지 = 재주입 0).
       stream.addEventListener("mouseover", (e) => {
         const msg = e.target && e.target.closest ? e.target.closest(".chat-message") : null;
-        if (!msg || msg.querySelector(":scope > .msg-reply-btn")) return;
-        const btn = document.createElement("button");
-        btn.type = "button"; btn.className = "msg-reply-btn"; btn.textContent = "↩ 답글"; btn.title = "이 메시지에 답글";
-        btn._replyText = msg.textContent;
+        if (!msg) return;
         const host = msg.closest(".ev.local, .turn-group") || msg.parentElement;
-        const typeEl = host ? host.querySelector(".type") : null;
-        btn._replyLabel = typeEl && typeEl.textContent ? typeEl.textContent : "메시지";
-        btn.addEventListener("click", (ev) => { ev.stopPropagation(); startReply(btn._replyText, btn._replyLabel); });
-        msg.appendChild(btn);
-        // 컨텍스트메뉴 kebab — 같은 hover 주입 패스에 동승(메시지=kebab+우클릭만, 롱프레스 없음
-        // — 계약 "카드/탭류"에만 롱프레스). 위 reply-btn 가드가 이미 1회 주입을 보장.
-        attachKebab(msg, "message", () => messageCtxFromEl(msg));
+        if (!host || host.dataset.kebabDone) return;
+        host.dataset.kebabDone = "1";
+        const turnHead = host.classList && host.classList.contains("turn-group")
+          ? host.querySelector(":scope > .turn-head") : null;
+        attachKebab(turnHead || host, "message", () => messageCtxFromEl(msg));
       });
 
       // ── 컨텍스트메뉴(메시지, context-menu 계약 §2.2) — 답글(기존 startReply 재사용)·복사 ──

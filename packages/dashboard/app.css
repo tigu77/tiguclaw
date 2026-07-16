@@ -796,14 +796,15 @@
       .chat-reply .cr-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
       .chat-reply .cr-x { flex:none; cursor:pointer; border:0; background:transparent; color:var(--text-dim); font-size:13px; line-height:1; padding:0 2px; }
       .chat-reply .cr-x:hover { color:var(--text); }
-      /* 메시지 버블 hover → "↩ 답글" 버튼 (델리게이션 lazy 주입). */
       .chat-message { position:relative; }
-      .msg-reply-btn { position:absolute; top:-4px; right:-4px; opacity:0; cursor:pointer; border:1px solid var(--border-strong); background:var(--card); color:var(--text-mute); border-radius:8px; font-size:10px; font-weight:800; padding:1px 6px; transition:opacity .12s; z-index:2; }
-      .chat-message:hover .msg-reply-btn { opacity:1; }
-      .msg-reply-btn:hover { color:var(--accent-2); border-color:var(--accent-2); }
-      /* 메시지 컨텍스트메뉴 kebab — 답글 버튼 왼쪽에 나란히(같은 hover 오버레이 패턴). */
-      .chat-message .cm-kebab { position:absolute; top:-4px; right:34px; opacity:0; z-index:2; border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:1px 6px; transition:opacity .12s; }
-      .chat-message:hover .cm-kebab { opacity:1; }
+      /* ⋯ 메뉴 kebab — 채팅 카드 맨 윗라인 우측(답글 버튼 폐지, 답글은 메뉴 안). hover 시 노출.
+         단순 버블(.ev.local)=head 우측 절대배치 / 턴그룹=turn-head flex 끝(margin-left:auto). */
+      .ev.local { position:relative; }
+      .ev.local > .cm-kebab { position:absolute; top:7px; right:9px; opacity:0; z-index:3; transition:opacity .12s;
+        border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
+      .ev.local:hover > .cm-kebab { opacity:1; }
+      .turn-head > .cm-kebab { margin-left:auto; flex:none; opacity:0; transition:opacity .12s; }
+      .turn-group:hover .turn-head > .cm-kebab { opacity:1; }
       /* 컨텍스트 태그 바 — 클릭하면 #<프로젝트> 태그를 입력창에 껴넣어 그 프로젝트 얘기임을 알림. */
       .chat-context { display:flex; align-items:flex-start; gap:8px; margin-bottom:8px; }
       .chat-context:empty { display:none; }

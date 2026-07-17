@@ -25,7 +25,12 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { Agent, run, OpenAIProvider } from "@openai/agents";
-import type { MCPServer, AgentInputItem } from "@openai/agents-core";
+import type {
+  MCPServer,
+  AgentInputItem,
+  CallModelInputFilterArgs,
+  ModelInputData,
+} from "@openai/agents-core";
 import {
   agentSizeWarning,
   readAgent,
@@ -85,6 +90,7 @@ import {
   idleConfigExempt,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
+import type { SteeringInput } from "../../steering.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -550,6 +556,40 @@ export const runOpenAi = async (
     }
   };
 
+  // P1b mid-turn steering (ADR `2026-07-16-midturn-steering.md` §openai, Phase P1b).
+  // codex(수동 루프 inputArray.push)·claude(streaming-input)와 *동일 계약* = "대기 steering
+  // 은 다음 model-call 경계에서 대화에 append". openai 는 run() 을 유지한 채 RunConfig
+  // `callModelInputFilter`(각 agentic turn 모델호출 직전 실행, stream/non-stream 동일 —
+  // node_modules `@openai/agents-core/dist/runner/conversation.d.ts:17` CallModelInputFilter
+  // 시그니처 / `run.js:1024` applyCallModelInputFilter 를 #prepareModelCall = per-turn 에서
+  // 호출)에서 대기 steering 을 `modelData.input` 에 append 한다 → run() 의 도구·usage·스트림·
+  // 에러·폴백 비트 전부 SDK 보존(동작 보존 하드게이트 자동 충족, manual-loop 재작성 0).
+  //
+  // ★SP-2 교정(accumulator): `modelData.input` 은 매 turn `getTurnInput` 가 새로 만드는
+  // clone(run.js items.js:232 `[...toAgentInputList, ...outputItems]`) → 필터가 push 한
+  // 아이템은 그 turn 에만 있고 다음 turn 엔 사라지는 **ephemeral**(codex 의 inputArray.push
+  // 영속과 대비). 따라서 drain-once(§openai 스니펫)면 turn N 에 도착한 steer 가 turn N+1
+  // 에서 소실(SP-2 3턴 프로브 재현). codex parity(inputArray 영속)를 위해 **adapter-local
+  // accumulator 를 유지 — 매 filter 호출마다 새 drain 분을 축적하고 전량을 재-append** 한다.
+  //  - accumulate 단위 = *조립된* AgentInputItem (초기 유저 턴과 바이트 동형: buildSteering
+  //    Item = input_text + modelSupportsVision 시 input_image, 스캐폴딩 prefix 0 = 순수
+  //    사용자 발화. codex buildSteeringInputItem 과 동형). 한 번 조립 후 재사용(파일 재-read 0).
+  //  - runOpenAi 스코프(runOnce 밖) → 도구 미지원 no-tools 재시도(2번째 runOnce)에서도
+  //    이미 drain 된 steer 가 accumulator 에 남아 유지(재시도 중 손실 0).
+  const accumulatedSteering: AgentInputItem[] = [];
+  const steeringChannel = input.steering;
+  const buildSteeringItem = async (s: SteeringInput): Promise<AgentInputItem> => {
+    // 초기 유저 턴(currentTurn)과 동형 — 순수 사용자 발화(text + vision 모델이면 image).
+    // 비전 미지원 모델은 이미지 생략(현재 turn 게이트와 동일 = 그 turn 에러 회피, 텍스트만).
+    const imgs = modelSupportsVision(model)
+      ? await buildImageContentItems(s.attachments)
+      : [];
+    return {
+      role: "user",
+      content: [{ type: "input_text", text: s.text }, ...imgs],
+    };
+  };
+
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
@@ -558,6 +598,35 @@ export const runOpenAi = async (
       const streamed = await run(agentToRun, runInput, {
         stream: true,
         signal: effectiveAc.signal,
+        // ★무회귀 하드게이트: steering 미주입/STEERING_ENABLED off = `input.steering`
+        // undefined → `steeringChannel === undefined` → 아래 조건부 spread = `{}` →
+        // runConfig = `{ stream, signal }` = 현행과 바이트 동일(훅 미등록). 어댑터는 이
+        // 값을 *소비만* — 채널/모델 분기 0(#2 LLM-agnostic). Phase 2 관측(steering.injected)
+        // 은 deferred — 여기선 codex 와 동형 console 만(P0 가 도착 시 channel.message.in 발행).
+        ...(steeringChannel !== undefined
+          ? {
+              callModelInputFilter: async (
+                args: CallModelInputFilterArgs,
+              ): Promise<ModelInputData> => {
+                // 이번 turn 새로 도착한 steer 를 축적(조립 1회) 후, accumulator 전량을
+                // 이 turn 의 (clone) input 에 재-append → N/N+1/N+2 모든 후속 호출 present.
+                const drained = steeringChannel.drain();
+                for (const s of drained) {
+                  accumulatedSteering.push(await buildSteeringItem(s));
+                }
+                if (drained.length > 0) {
+                  console.error(
+                    `[openai-agents steering] injected ${drained.length} mid-turn message(s) ` +
+                      `(accumulated=${accumulatedSteering.length}) threadKey=${input.threadKey}`,
+                  );
+                }
+                for (const item of accumulatedSteering) {
+                  args.modelData.input.push(item);
+                }
+                return args.modelData;
+              },
+            }
+          : {}),
       });
       // 스트림 이벤트 소비 — heartbeat + llm.delta fan-out. raw text delta 면 증분 push,
       // 그 외 이벤트는 도착 사실만 heartbeat(활동 세분화는 별건). SDK 가 provider 무관

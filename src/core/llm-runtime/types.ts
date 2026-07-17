@@ -12,6 +12,7 @@
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { Attachment, ChannelName } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
+import type { SteeringChannel } from "../steering.js";
 
 export interface RegionASdkInput {
   text: string;
@@ -186,6 +187,18 @@ export interface RegionASdkInput {
    * 이건 *워커 완료 통지의 라우팅 좌표* 일 뿐 prompt·전송 클로저와 무관.
    */
   notifyDest?: WorkerNotifyDest;
+  /**
+   * 신규(additive, 2026-07-16) — **진행 중 턴에 끼워넣을 사용자 steering 소스**(채널·LLM 무관).
+   * ADR `docs/decisions/2026-07-16-midturn-steering.md` §4. 핸들러가 turn 별 SteeringChannel
+   * 을 만들어 주입(inflightTurns 자매 레지스트리). 어댑터는 이 필드를 *값으로* 소비만 —
+   * 읽어서 채널/모델 분기 0(#2). 소비 idiom 은 어댑터별(claude=stream·codex/openai=drain)이나
+   * 계약(다음 model-call 경계 append)은 동일 = 인터페이스 parity 하드게이트.
+   *
+   * ★미지정 → 주입 없음(회귀 0). 스케줄러·워커·서브에이전트·비대화 turn 및 STEERING_ENABLED
+   * off(기본) = 이 필드를 안 채움 = 현행 route input 바이트 동일. P0 = 계약·프리미티브·개입점만;
+   * 어댑터 소비(drain/stream)는 P1(codex→openai→claude) 범위.
+   */
+  steering?: SteeringChannel;
 }
 
 export interface RegionASdkOutput {

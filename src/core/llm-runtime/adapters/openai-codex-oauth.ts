@@ -107,6 +107,7 @@ import {
   parseCodexSse,
   buildMediaContentItems,
   buildTurnHistory,
+  buildSteeringInputItem,
   capToolOutputForEntry,
   compactOldToolOutputs,
   type CodexSseResult,
@@ -893,6 +894,28 @@ export const runOpenAiCodex = async (
       // 막아 루프 폭주를 차단한다. reason(TurnTimeoutError)을 throw → 바깥 catch(§4.4)가
       // sideEffectExecuted 따라 안전 처리. 어댑터 *내부* abort 전파(facade 분기 아님).
       if (input.abortSignal?.aborted) throw input.abortSignal.reason;
+
+      // P1a mid-turn steering (ADR `2026-07-16-midturn-steering.md` §codex, Phase P1a).
+      // 다음 모델 fetch 진입 직전에 대기 steering 메시지를 pull-all(drain)해 **사용자 메시지
+      // 아이템으로 inputArray 에 append** → 이번 iteration 의 모델 호출이 그걸 본다. 이미
+      // function_call_output 을 inputArray.push 하는 자리와 동형(자연 적합). 초기 유저 턴과
+      // 바이트 동형 포맷(buildSteeringInputItem = buildMediaContentItems+buildCurrentTurn 재사용,
+      // 첨부 있으면 media item 동형). 첫 iteration 포함 — 첫 fetch 전 대기분도 반영.
+      //
+      // ★무회귀 하드게이트: steering 미주입/STEERING_ENABLED off = `input.steering` undefined
+      // → `?.drain() ?? []` = [] → for-of no-op → push 0 → 현행 코드경로 바이트 동일.
+      // 어댑터는 이 값을 *소비만* — 채널/모델 분기 0(#2 LLM-agnostic). Phase 2 관측(steering.
+      // injected)은 deferred — 여기선 추가 관측 없음(P0 가 도착 시 channel.message.in 발행).
+      const steered = input.steering?.drain() ?? [];
+      for (const s of steered) {
+        inputArray.push(await buildSteeringInputItem(s));
+      }
+      if (steered.length > 0) {
+        console.error(
+          `[codex-oauth steering] injected ${steered.length} mid-turn message(s) at iteration=${iteration} threadKey=${input.threadKey}`,
+        );
+      }
+
       const body: Record<string, unknown> = {
         model,
         // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향).

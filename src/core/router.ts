@@ -6,6 +6,7 @@
  * 깊은 사고는 prefix 가 아니라 비서가 부리는 능력(서브에이전트 모델 지정 경로).
  */
 import type { IncomingMessage } from "../channels/types.js";
+import type { SteeringChannel } from "./steering.js";
 import {
   clearSessionModelOverride,
   getSessionModelOverride,
@@ -45,6 +46,11 @@ export const route = async (
   opts?: {
     abortSignal?: AbortSignal;
     toolPolicy?: { mode: "none" } | { mode: "allow"; names: string[] };
+    // mid-turn steering (additive, 2026-07-16, ADR 2026-07-16-midturn-steering §5). 핸들러가
+    // turn 별 SteeringChannel 을 만들어 운반 → runClaude input.steering 으로 그대로 전달(router
+    // 순수성 — 소비/해석 0, abortSignal·toolPolicy 운반과 동형). 미전달(STEERING_ENABLED off·
+    // 스케줄러·워커 등) = undefined = 어댑터 미주입 = 현행 동작(회귀 0).
+    steering?: SteeringChannel;
     // ── 채널/세션 분리 (ADR 2026-07-15 §D1/§D2/§D3) — 웨이브2b(daemon 채널)가 채운다 ──
     // 채널이 자기 정체성을 threadKey 에 인코딩하던 것을 코어 resolver 단일 정의점으로 대체.
     //
@@ -124,6 +130,9 @@ export const route = async (
       abortSignal: opts?.abortSignal,
       // 도구 정책 운반(custom-endpoints §7-3) — 미전달 시 undefined = 전체 도구(회귀 0).
       toolPolicy: opts?.toolPolicy,
+      // mid-turn steering 소스 운반(ADR 2026-07-16 §4/§5) — 미전달 시 undefined = 어댑터
+      // 미주입 = 현행(회귀 0). P0 = 운반만; 어댑터 소비는 P1.
+      steering: opts?.steering,
     },
     overridePool.length > 0 ? { specs: overridePool } : undefined,
   );

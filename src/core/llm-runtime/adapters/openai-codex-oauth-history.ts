@@ -18,6 +18,7 @@ import {
   upsertThreadSummary,
 } from "../../../store/thread-summaries.js";
 import type { RegionASdkInput } from "../types.js";
+import type { SteeringInput } from "../../steering.js";
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -535,6 +536,27 @@ const buildCurrentTurn = (
   // 현재 turn = [미디어 블록들…] + [텍스트]. 미디어 없으면 텍스트만 (회귀 0).
   content: [...mediaItems, { type: "input_text", text: currentPromptWithMemory }],
 });
+
+/**
+ * P1a mid-turn steering (ADR `2026-07-16-midturn-steering.md` §codex) — 진행 중 codex
+ * 턴 루프 상단에서 drain 한 사용자 steering 메시지를 **초기 사용자 턴과 바이트 동형** 의
+ * `ResponseInputItem`(user message)으로 조립한다.
+ *
+ * ★새 포맷 만들지 않음 — 초기 유저 턴이 쓰는 그 빌더(`buildMediaContentItems` +
+ * `buildCurrentTurn`)를 그대로 재사용한다. 결과 shape = `{ type:"message", role:"user",
+ * content:[...media, { type:"input_text", text }] }` 로 초기 turn 과 동일(첨부 있으면
+ * input_image/input_file 동형 media item).
+ *
+ * ★스캐폴딩(SYSTEM.md·메모리 인덱스 등 currentPromptWithMemory prefix)은 붙이지 않는다 —
+ * 그건 이미 진행 턴 inputArray 최상단(currentTurn)에 fresh 로 있고, mid-loop user 메시지는
+ * 순수 사용자 발화(text + 첨부)여야 한다. 초기 사용자 발화가 대화에 이어 온 것과 동형.
+ */
+export const buildSteeringInputItem = async (
+  s: SteeringInput,
+): Promise<ResponseInputItem> => {
+  const mediaItems = await buildMediaContentItems(s.attachments);
+  return buildCurrentTurn(s.text, mediaItems);
+};
 
 /**
  * 6b — input 누적 본체 (요약 압축 통합). async — 압축 트리거 시 summarizeViaCodex 1회.

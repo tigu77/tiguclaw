@@ -104,6 +104,18 @@
       .nav-button .ic { width:18px; text-align:center; font-size:15px; }
       .nav-button .label { flex:1; font-weight:750; }
       .nav-button .hint { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      /* 사이드바 접기 토글 — 넓은(그리드) 레이아웃에서 사이드바를 아이콘 레일(≈54px)로 줄여
+         콘텐츠 폭 확보. body.nav-collapsed 로 토글, 선택은 localStorage 영속. 모바일(≤900px,
+         탭바 레이아웃)에선 사이드바가 이미 탭으로 숨겨져 무의미 → 토글 자체를 숨긴다. */
+      .nav-collapse { align-self:flex-end; width:26px; height:26px; display:flex; align-items:center; justify-content:center; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; }
+      .nav-collapse:hover { background:var(--card-hover); color:var(--text); border-color:var(--border-strong); }
+      body.nav-collapsed main { grid-template-columns: 54px minmax(0,1fr) !important; }
+      body.nav-collapsed #sidebar { padding:12px 6px; align-items:center; }
+      body.nav-collapsed .nav-brand { display:none; }
+      body.nav-collapsed .nav-collapse { align-self:center; }
+      body.nav-collapsed .nav-button { justify-content:center; padding:10px 0; gap:0; }
+      body.nav-collapsed .nav-button .label, body.nav-collapsed .nav-button .hint { display:none; }
+      body.nav-collapsed .nav-button .ic { width:auto; font-size:17px; }
       .nav-divider { height:1px; background:var(--border); margin:2px 4px; }
       .nav-note { margin-top:auto; padding:11px; border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text-mute); font-size:11px; }
       .nav-note strong { color:var(--text); }
@@ -975,6 +987,8 @@
       @media (max-width: 1180px) { main { grid-template-columns: 210px minmax(0,1fr); } }
       @media (max-width: 900px) {
         html, body { min-height:100%; overflow-x:hidden; overflow-y:auto; }
+        .nav-collapse { display:none; }  /* 탭바 레이아웃 = 사이드바 이미 탭으로 숨김, 접기 무의미. */
+        body.nav-collapsed main { grid-template-columns:none !important; }  /* 접힘 상태로 좁혀졌어도 탭바 레이아웃은 block 유지. */
         header { position:sticky; top:0; z-index:20; height:46px; padding:0 12px; } header .sub, header .meter { display:none; }
         header .brand { font-size:15px; }
         #tab-bar { position:sticky; top:46px; z-index:19; display:flex; }

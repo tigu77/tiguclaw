@@ -25,6 +25,11 @@ import {
 import { loadPlugins } from "./core/plugins/loader.js";
 import { stripInternalRuntimeScaffolding, redactSecrets } from "./core/outbound-sanitize.js";
 import { route } from "./core/router.js";
+import {
+  createSteeringChannel,
+  type SteeringChannel,
+  type SteeringInput,
+} from "./core/steering.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
 import { appVersion } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
@@ -456,6 +461,17 @@ class UserCancelledError extends Error {
 // thread 별 직렬화하므로 thread 당 최대 1개. /stop(아웃오브밴드)이 여기서 turnAc 를 찾아 abort =
 // 클로드코드식 인터럽트(옵션 c). 재시작 정직(메모리 레지스트리, 영속 0). 어댑터 분기 0(LLM-agnostic).
 const inflightTurns = new Map<string, AbortController>();
+
+// mid-turn steering (ADR 2026-07-16-midturn-steering §5) — 진행 중 턴에 새 사용자 메시지를
+// "다음 model-call 경계에서 append"(손실 0)하기 위한 turn 별 SteeringChannel 레지스트리
+// (inflightTurns 자매 — threadKey → SteeringChannel, thread 당 최대 1개). 핸들러가 turn 시작 시
+// 생성·등록, finally 에서 close+삭제. 개입점(serializedHandler)이 진행 턴 있으면 여기로 push.
+const steeringChannels = new Map<string, SteeringChannel>();
+// ★feature flag(ADR §안전 "STEERING_ENABLED 기본 off") — 라이브 메인 비서 대공사 + 3어댑터
+// 라이브 처리라 견고성>단순성 trade-off(검증 후 제거·영구 플래그 금지). off(기본)이면 개입점
+// no-op·steeringCh 미생성·route input 미주입 = **현행 큐 바이트 동일**(P0 회귀 0 하드게이트).
+// P0 = 계약·프리미티브·개입점만; 어댑터 소비(drain/stream)는 P1(codex→openai→claude) 범위.
+const STEERING_ENABLED = process.env.STEERING_ENABLED === "1";
 
 // 인바운드 첨부 → 영속용 참조 메타(base64 아님). 실제 바이트는 이미 <attachmentsDir>/<rel> 파일로
 // 저장돼 있어, 대시보드가 rel 로 서빙 엔드포인트를 통해 렌더(새로고침·과거 이력 보존). rel 은
@@ -1028,6 +1044,15 @@ const handler: MessageHandler = async (msg) => {
   // turnAc 는 idle·외부 cancel 로만 abort, wall-clock 으로는 abort 안 한다.
   const turnAc = new AbortController();
   inflightTurns.set(msg.threadKey, turnAc); // /stop 이 찾아 abort 할 수 있게 등록.
+  // mid-turn steering 채널 등록(ADR 2026-07-16 §5) — flag on 일 때만 생성·등록·주입한다.
+  // ★flag off = steeringCh 미생성 + steering 필드 미주입 = route input 현행 동일(회귀 0).
+  // 개입점(serializedHandler)이 진행 턴을 감지하면 steeringChannels.get(threadKey).push 로 이
+  // 채널에 적재 → (P1)어댑터가 drain/stream 소비. P0 에선 어댑터 미소비라 사실상 no-op.
+  let steeringCh: SteeringChannel | undefined;
+  if (STEERING_ENABLED) {
+    steeringCh = createSteeringChannel();
+    steeringChannels.set(msg.threadKey, steeringCh);
+  }
   // 세션 정규화 지시(채널/세션 분리 ADR 2026-07-15) — 사용자 대면 채널이 msg.session 을
   // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·워커 재주입·
   // 서브에이전트·엔드포인트 등 내부 파생 turn)이면 forward 안 함 = 현행 passthrough(회귀 0).
@@ -1036,6 +1061,8 @@ const handler: MessageHandler = async (msg) => {
     {
       abortSignal: turnAc.signal,
       ...(msg.session !== undefined ? { session: msg.session } : {}),
+      // steering 소스 주입 — flag on 일 때만 존재(off 면 미포함 = 현행 opts 동일, 회귀 0).
+      ...(steeringCh !== undefined ? { steering: steeringCh } : {}),
     },
   );
   try {
@@ -1148,6 +1175,15 @@ const handler: MessageHandler = async (msg) => {
     // 등록 해제 — 단, 그 사이 새 턴이 덮어썼으면(직렬 큐라 이론상 없지만 방어) 건드리지 않음.
     if (inflightTurns.get(msg.threadKey) === turnAc) {
       inflightTurns.delete(msg.threadKey);
+    }
+    // steering 채널 종료(ADR 2026-07-16 §5) — 턴 종료 시 close(멱등 — pending stream 대기자
+    // unblock)+삭제. flag off 면 steeringCh=undefined → no-op(회귀 0). 위 방어와 동형으로 그
+    // 사이 새 턴이 덮어썼으면 건드리지 않음.
+    if (steeringCh !== undefined) {
+      steeringCh.close();
+      if (steeringChannels.get(msg.threadKey) === steeringCh) {
+        steeringChannels.delete(msg.threadKey);
+      }
     }
   }
 };
@@ -1292,6 +1328,21 @@ bus.subscribe((event) => {
   }
 });
 
+// mid-turn steering 개입 판정(ADR 2026-07-16 §5) — steer 대상 = 일반 사용자 대화 메시지만.
+//  - 슬래시(`/…`)는 제어 명령(out-of-band /stop·/restart·/update 는 위에서 이미 처리, in-band
+//    /reset·/model 등은 큐로) → steering 대상 아님.
+//  - 합성(synthetic) turn(워커 완료 재주입 등)은 사용자 메시지가 아니고 자체 프롬프트를 turn 으로
+//    처리해야 하므로 제외(steering 으로 새면 완료 통지 유실) — publishInboundEcho 스킵 대상과 정합.
+const steerable = (msg: IncomingMessage): boolean =>
+  msg.synthetic !== true && !msg.text.trim().startsWith("/");
+
+// 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트·첨부·도착시각만 실어 채널 무관화.
+const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
+  text: msg.text,
+  ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
+  ts: Date.now(),
+});
+
 const serializedHandler: MessageHandler = (msg) => {
   // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
@@ -1359,6 +1410,23 @@ const serializedHandler: MessageHandler = (msg) => {
       }
     })();
     return Promise.resolve();
+  }
+  // ── mid-turn steering 개입점(ADR 2026-07-16-midturn-steering §5) ──────────────
+  // 진행 중인 이 thread 의 턴이 있고(inflightTurns 보유) 일반 대화 메시지(슬래시 아님)면,
+  // 새 별도 턴을 큐잉하는 대신 진행 턴의 SteeringChannel 로 push 해 "다음 model-call 경계에서
+  // append"(손실 0, 진행 작업 유지)한다. 사용자 메시지 landed 는 publishInboundEcho 로 표시
+  // (별도 턴 X — 대시보드 낙관적 버블 승격). 슬래시(/stop·/restart·/update 등 제어)는 위에서
+  // 이미 out-of-band 처리됐고, 여기 도달한 슬래시(예 /reset·/model 등 in-band 명령)는 steerable
+  // =false 로 걸러 현행 큐 경로 유지 — 제어 명령은 steering 대상 아님.
+  // ★flag off(기본) → 이 분기 통째 skip → 아래 enqueueThreadTurn = **현행 바이트 동일**(회귀 0).
+  if (
+    STEERING_ENABLED &&
+    inflightTurns.has(msg.threadKey) &&
+    steerable(msg)
+  ) {
+    steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg));
+    publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
+    return Promise.resolve(); // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비.
   }
   // 큐-취소(ADR 2026-07-15) — 클라 correlationId 를 큐 항목 식별 키로 전달. 대기 중(미시작)
   // 항목을 대시보드 ✕ 버튼→POST /cancel-queued→cancelQueuedTurn 이 지목 취소 가능. 미부여

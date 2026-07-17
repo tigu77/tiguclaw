@@ -32,7 +32,9 @@ import {
   type AgentDefinition,
   type Options,
   type SDKMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { SteeringChannel } from "../../steering.js";
 import { getSession, invalidateResume } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
@@ -679,8 +681,53 @@ export const runClaude = async (
     /API Error: 400/i.test(e.message) &&
     /invalid_request_error/i.test(e.message) &&
     /\bimage\b/i.test(e.message);
+  // ── P1c mid-turn steering (ADR `2026-07-16-midturn-steering.md` §claude, Phase P1c) ──
+  //
+  // steering 미주입(STEERING_ENABLED off·스케줄러·워커·서브에이전트·비대화 turn) =
+  // `input.steering === undefined` → **현행 string-prompt 경로 바이트 동일**(회귀 0,
+  // 하드게이트). steering 주입 시에만 async-generator prompt(streaming-input 모드)로 전환.
+  //
+  // ★SP-1 종료조건(SDK 소스 확정): streaming 모드는 첫 result 후 stdin 을 *안 닫는다* →
+  // 제너레이터가 result 뒤 추가 user 메시지를 yield 하면 CLI 가 또 한 턴(추가 result) =
+  // 응답 2개 발산. 따라서 제너레이터는 **미완 steering 이 없으면 즉시 return** 해야 단일
+  // result 가 보장된다. 이 조건은 steering.stream(signal) 이 SteeringChannel.close()(턴
+  // finally, P0 배선) 또는 abort 에 종료 → for-await 종료 → 제너레이터 자연 return →
+  // SDK 가 stdin(endInput) close → 단일 result. (빈 steering·무한대기 0.)
+  //
+  // 초기 유저 메시지 = 현행 promptWithMemory(string)를 그대로 SDKUserMessage.content(string)로
+  // 실어 컨텍스트 바이트 동일. steering 메시지 = s.text + 첨부 placeholder(현행 claude 첨부
+  // 주입 = formatAttachments 텍스트, 초기 turn userTurnParts 와 동형). resume·hook·permission·
+  // options(o)·첨부 배선은 두 경로 공통(제너레이터도 동일 options 로 query).
+  const toUserMessage = (content: string): SDKUserMessage => ({
+    type: "user",
+    session_id: "", // streaming 모드 = CLI 가 세션 배정(SP-1 SDK-layer 스파이크 확인).
+    parent_tool_use_id: null,
+    message: { role: "user", content },
+  });
+  const buildSteeringPrompt = (
+    steering: SteeringChannel,
+    signal: AbortSignal,
+  ): AsyncGenerator<SDKUserMessage> =>
+    (async function* () {
+      yield toUserMessage(promptWithMemory); // 초기 유저 메시지 — 현행 string 동일 텍스트.
+      for await (const s of steering.stream(signal)) {
+        // 첨부 placeholder(있으면) + steer 텍스트 = 초기 turn(userTurnParts)과 동형 조립.
+        const parts = [formatAttachments(s.attachments), s.text].filter(
+          (p) => p.trim() !== "",
+        );
+        yield toUserMessage(parts.join("\n\n"));
+      }
+      // stream 종료(close/abort) → 제너레이터 return → stdin close → 단일 result(발산 0).
+    })();
+  // signal = effectiveAc.signal(현행 turn abort + idle/turn 타임아웃 합성) 재사용 →
+  // 턴이 abort/타임아웃돼도 steering 대기가 매달리지 않고 즉시 종료(무한대기 0).
   const buildQuery = (o: Options) =>
-    query({ prompt: promptWithMemory, options: o });
+    input.steering === undefined
+      ? query({ prompt: promptWithMemory, options: o }) // 현행 경로 — 바이트 동일(회귀 0).
+      : query({
+          prompt: buildSteeringPrompt(input.steering, effectiveAc.signal),
+          options: o,
+        });
   let q = buildQuery(options);
   let resumeRetried = false;
 

@@ -36,11 +36,12 @@ import {
   isWhitelistedContextMenuAction,
 } from "../../src/core/plugins/inventory.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
-import { collectProviders } from "../../src/core/plugins/providers.js";
+import { collectModules } from "../../src/core/plugins/providers.js";
 import {
   loadModelProfiles,
   getDefaultProfileName,
   setDefaultProfile,
+  setModuleDisabled,
 } from "../../src/core/settings.js";
 import {
   verifyToken,
@@ -107,6 +108,12 @@ const HANDLER_TIMEOUT_MS = 60_000;
 // - llm.sdk_message: claude firehose. 같은 고volume·감사가치 낮음(영속 SKIP 과 동렬).
 // core/event-persist.ts 의 SKIP_TYPES 와 의미는 비슷하나 모듈 경계가 달라 로컬 set(과결합 회피).
 const HISTORY_EXCLUDE = new Set<string>(["llm.delta", "llm.sdk_message"]);
+
+// 핵심 플러그인(비활성 = "자기 눈 가림", ADR 2026-07-17 §5.6 가드) — dashboard 가 꺼지면
+// 대시보드 UI 자체가 안 뜨고, http-bridge(자기 자신)가 꺼지면 이 API 자체가 죽는다.
+// 막지 않는다(사용자 결정, 파괴적-행위 소프트 게이트) — /set-module-enabled 응답에
+// warning:"critical" 만 실어 프런트가 danger 확인 UX 를 붙이게 한다.
+const CRITICAL_MODULE_NAMES = new Set<string>(["dashboard", "http-bridge"]);
 
 // ── 첨부 intake (#2, 2026-07-08) — 대시보드 채팅이 붙여넣은 파일을 홈에 저장 → Attachment[]. ──
 // 텔레그램 첨부 경로와 동형(진실 소스 = Attachment 계약, <home>/data/attachments/<channel>/
@@ -752,6 +759,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write"
               : pathname === "/set-default-profile" && method === "POST"
                 ? "write"
+              : pathname === "/set-module-enabled" && method === "POST"
+                ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
                 : pathname === "/cancel-queued" && method === "POST"
@@ -946,7 +955,7 @@ class HttpBridge implements Channel, Observer {
     // /providers — JSON. Dashboard/Dolsoe 공통 provider interface.
     if (pathname === "/providers" && method === "GET") {
       try {
-        const providers = await collectProviders();
+        const providers = await collectModules();
         writeJson(res, 200, providers);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1019,6 +1028,63 @@ class HttpBridge implements Channel, Observer {
       try {
         setDefaultProfile(name);
         writeJson(res, 200, { ok: true, default: name });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /set-module-enabled — kind:plugin 모듈 활성/비활성(ADR 2026-07-17-module-capability-model
+    // §5.6 MVP). write 게이트(위 role 표, /set-default-profile·/cancel-worker 패턴).
+    // body { name, enabled }. 코어는 이 경로에 없음(loadPlugins 가 <root>/plugins/* 만 훑음 —
+    // 가드1 이 자연 강제, 여기서 별도 kind 검사 불필요). ★MVP = config 만 갱신 — 재시작해야
+    // loadPlugins 스킵이 실제 적용(핫토글 아님) → 응답에 requiresRestart:true 로 항상 안내.
+    // dashboard·http-bridge 비활성 = "자기 눈 가림"(대시보드 자체가 안 뜨거나 이 API 자체가
+    // 죽음) — 막지 않되(사용자 결정, 파괴적-행위 소프트 게이트) warning:"critical" 을 실어
+    // 프런트가 danger 확인하게 한다.
+    if (pathname === "/set-module-enabled" && method === "POST") {
+      let dbody: Record<string, unknown>;
+      try {
+        dbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const name = typeof dbody.name === "string" ? dbody.name.trim() : "";
+      const enabled = dbody.enabled;
+      if (name === "") {
+        writeJson(res, 400, { error: "name required" });
+        return;
+      }
+      if (typeof enabled !== "boolean") {
+        writeJson(res, 400, { error: "enabled(boolean) required" });
+        return;
+      }
+      // 존재 검증(댕글링 이름 차단) — inventory 의 channel/external_plugin 카테고리(loadPlugins
+      // 가 <root>/plugins/* 에서 훑는 대상과 동일 모집단)에서 이름을 찾는다.
+      try {
+        const inv = await collectInventory();
+        const known = [...inv.channel, ...inv.external_plugin].some(
+          (e) => e.name === name,
+        );
+        if (!known) {
+          writeJson(res, 400, {
+            error: `존재하지 않는 모듈: ${name}`,
+            available: [...inv.channel, ...inv.external_plugin].map((e) => e.name),
+          });
+          return;
+        }
+        setModuleDisabled(name, !enabled);
+        const warning = CRITICAL_MODULE_NAMES.has(name) ? "critical" : undefined;
+        writeJson(res, 200, {
+          ok: true,
+          name,
+          enabled,
+          requiresRestart: true,
+          ...(warning !== undefined ? { warning } : {}),
+        });
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });

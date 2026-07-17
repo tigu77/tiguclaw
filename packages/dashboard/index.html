@@ -36,29 +36,43 @@
         </div>
         <div class="nav-section" aria-label="main menu">
           <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">개요</span><span class="hint">홈</span></button>
-          <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">프로바이더</span><span class="hint" id="nav-provider-count">0</span></button>
+          <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">모듈</span><span class="hint" id="nav-provider-count">0</span></button>
           <button class="nav-button" data-view="models" type="button"><span class="ic">🧠</span><span class="label">모델 프로파일</span><span class="hint" id="nav-model-count">0</span></button>
           <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
-          <button class="nav-button" data-view="agents" type="button"><span class="ic">🤖</span><span class="label">에이전트</span><span class="hint" id="nav-agent-count">0</span></button>
-          <button class="nav-button" data-view="shells" type="button"><span class="ic">🖥️</span><span class="label">셸</span><span class="hint" id="nav-shell-count">0</span></button>
           <button class="nav-button" data-view="projects" type="button"><span class="ic">📁</span><span class="label">프로젝트</span><span class="hint" id="nav-project-count">0</span></button>
-          <button class="nav-button" data-view="channels" type="button"><span class="ic">📡</span><span class="label">채널</span><span class="hint" id="nav-channel-count">0</span></button>
           <button class="nav-button" data-view="endpoints" type="button"><span class="ic">🔌</span><span class="label">엔드포인트</span><span class="hint" id="nav-endpoint-count">0</span></button>
           <button class="nav-button" data-view="activity" type="button"><span class="ic">📜</span><span class="label">전체 활동</span><span class="hint">모니터</span></button>
           <div class="nav-divider"></div>
-          <button class="nav-button" data-view="inventory" type="button"><span class="ic">🧩</span><span class="label">런타임 인벤토리</span><span class="hint">관리</span></button>
+          <button class="nav-button" data-view="inventory" type="button"><span class="ic">📚</span><span class="label">능력</span><span class="hint" id="nav-capability-count">0</span></button>
           <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
         </div>
-        <div class="nav-note"><strong>인벤토리</strong>는 런타임 레지스트리 확인용이라 기본 화면에서 숨겼습니다.</div>
+        <div class="nav-note"><strong>능력</strong>은 스킬·에이전트(명세)·MCP 등 비서가 쓰는 데이터 자산입니다. 항목을 눌러 상세를 확인하세요(읽기 전용 — 편집은 대화로).</div>
       </aside>
       <section id="workbench">
         <section id="providers-panel">
         <div id="providers-head">
-          <h1>프로바이더</h1>
+          <h1>모듈</h1>
           <span class="count" id="providers-count"></span>
+        </div>
+        <!-- 검색+접이식 카테고리(ADR 2026-07-17 §5·§5.5) — 리스트 서브패널 상단, 그룹 위. input 은
+             #providers-list 밖이라 30s 폴 재렌더(list.innerHTML 재구성)에도 값이 사라지지 않는다. -->
+        <div class="list-search-row">
+          <input type="search" id="providers-search" class="list-search-input" placeholder="모듈 검색 (이름·종류)" />
         </div>
         <div id="providers-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
       </section>
+        <!-- 능력 뷰(ADR 2026-07-17 §5·§7 P2, ←인벤토리) 리스트 서브패널 — 모듈 뷰(#providers-panel)와
+             동형 3패널(사이드바 nav | 리스트 | 디테일). #workbench.show-capabilities 가 그리드를 켠다. -->
+        <section id="capabilities-panel">
+          <div id="capabilities-head">
+            <h1>능력</h1>
+            <span class="count" id="capabilities-count"></span>
+          </div>
+          <div class="list-search-row">
+            <input type="search" id="capabilities-search" class="list-search-input" placeholder="능력 검색 (이름·설명)" />
+          </div>
+          <div id="capabilities-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
+        </section>
         <section id="detail-panel">
           <div id="detail-empty">개요를 불러오는 중입니다.</div>
         </section>
@@ -86,9 +100,10 @@
           <div id="chat-context" class="chat-context"></div>
           <div id="chat-reply" class="chat-reply" hidden></div>
           <button id="chat-bg-active" class="chat-bg-active" type="button" hidden title="백그라운드 작업 보기"></button>
-          <!-- 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b). 워커 스트립(위)과 물리적으로
-               분리된 별도 레인(사용자 확정 — 다른 종). 세션 스코프 러닝 카운트, 누르면 셸 사이드바
-               뷰(view-shells.js showShells)로 점프. background-drawer.js refreshShellStrip 이 갱신. -->
+          <!-- 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b → §5 셸 드로어 이식 Phase 3b-2).
+               워커 스트립(위)과 물리적으로 분리된 별도 레인(사용자 확정 — 다른 종). 세션 스코프
+               러닝 카운트, 누르면 백그라운드 드로어를 열고 셸 섹션으로 포커스(view-shells.js
+               showShells → openBg). background-drawer.js refreshShellStrip 이 갱신. -->
           <button id="chat-shell-active" class="chat-bg-active chat-shell-active" type="button" hidden title="셸 보기"></button>
           <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
@@ -133,6 +148,20 @@
       <div class="bg-list filter-running scope-session" id="bg-list">
         <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>
       </div>
+      <!-- 셸/프로세스 섹션(ADR 2026-07-17 §5, Phase 3b-2) — 워커·에이전트 잡(위 #bg-list)과
+           데이터 레인이 다른 별도 섹션(shellRegistry ≠ jobCards, view-shells.js 소관). 카드
+           빌더·tail 폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 이 컨테이너로. -->
+      <div class="bg-section-divider"></div>
+      <div class="bg-shells-section" id="bg-shells-section">
+        <div class="bg-shells-head"><h4 class="bg-section-title">🖥️ 셸 / 프로세스</h4></div>
+        <div class="bg-filter" id="bg-shells-filter">
+          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">실행 중 <span class="bg-fcount" id="bg-shells-count-running">0</span></button>
+          <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
+        </div>
+        <div class="bg-list bg-shells-list filter-running" id="bg-shells-list">
+          <div class="bg-empty" id="bg-shells-empty">실행 중인 셸이 없습니다.</div>
+        </div>
+      </div>
       <button id="bg-jump" class="bg-jump" type="button" hidden aria-label="맨 위로 (최신 작업)" title="맨 위로 (최신 작업)">↑ 최신</button>
     </aside>
     <script src="/js/constants.js"></script>
@@ -140,10 +169,12 @@
     <script src="/js/context-menu.js"></script>
     <script src="/js/view-overview.js"></script>
     <script src="/js/view-models.js"></script>
+    <!-- view-agents.js: nav 뷰(showAgents)는 IA Phase 3b-1(ADR 2026-07-17 §5 오픈이슈#1)로 제거됐지만
+         buildAgentCard/AGENT_KIND_BADGE/agentElapsedEls/syncAgentsCounts 를 background-drawer.js·
+         view-projects.js 가 공유(같은 전역 스코프, non-module script) — 스크립트는 유지. -->
     <script src="/js/view-agents.js"></script>
     <script src="/js/view-shells.js"></script>
     <script src="/js/view-projects.js"></script>
-    <script src="/js/view-channels.js"></script>
     <script src="/js/view-providers.js"></script>
     <script src="/js/view-inventory.js"></script>
     <script src="/js/chat-core.js"></script>

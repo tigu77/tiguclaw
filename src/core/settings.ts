@@ -37,6 +37,12 @@ export interface LoadedSettings {
   hooks?: Record<string, unknown>;
   /** `models.default` = 기본 프로파일 포인터(어떤 프로파일이든 기본 지정), `models.profiles` = 명명된 풀. */
   models?: { default?: unknown; profiles?: Record<string, unknown> };
+  /**
+   * `modules.disabled` = 사용자가 끈 `kind:plugin` 모듈 이름 목록(ADR
+   * 2026-07-17-module-capability-model §5.6 MVP). loadPlugins 가 이 목록을 스킵.
+   * 코어(라우터·스토어)는 이 목록과 무관 — 애초에 kind:plugin 이 아니다.
+   */
+  modules?: { disabled?: unknown };
   [key: string]: unknown;
 }
 
@@ -206,6 +212,80 @@ export const setDefaultProfile = (name: string): void => {
       : {};
   models.default = name;
   root.models = models;
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+};
+
+/**
+ * 모듈(kind:plugin) 비활성 목록 — `modules.disabled` 문자열 배열을 레이어(홈→프로젝트)
+ * 전체에서 합집합(union)으로 읽는다. hooks(concat) 와 같은 "추가적" 병합 의미 — 어느
+ * 레이어든 그 이름을 disabled 로 올리면 전체에서 비활성(로컬이 홈 설정을 몰래 되살리지
+ * 못하게 — 안전 쪽으로 편향). MVP 는 홈 settings.json 만 쓰지만(setModuleDisabled),
+ * 읽기는 loadSettingsLayers 동형으로 프로젝트 레이어도 존중.
+ */
+const readDisabledModules = (cwd: string = process.cwd()): Set<string> => {
+  const disabled = new Set<string>();
+  for (const layer of loadSettingsLayers(cwd)) {
+    const list = layer.modules?.disabled;
+    if (!Array.isArray(list)) continue;
+    for (const name of list) {
+      if (typeof name === "string" && name.trim() !== "") disabled.add(name.trim());
+    }
+  }
+  return disabled;
+};
+
+/** 모듈(plugin) 이름 → 사용자가 껐는지(disabled). "off" 만 참 — 목록 부재/미기재는 false(inactive 아님, 이 함수 관할 밖). */
+export const isModuleDisabled = (
+  name: string,
+  cwd: string = process.cwd(),
+): boolean => readDisabledModules(cwd).has(name);
+
+/** 현재 disabled 목록 스냅샷(진단/엔드포인트 노출용) — 정렬된 배열. */
+export const listDisabledModules = (cwd: string = process.cwd()): string[] =>
+  [...readDisabledModules(cwd)].sort();
+
+/**
+ * 모듈 활성/비활성 쓰기 — **홈 settings.json** read-modify-write(setDefaultProfile 동형).
+ *  - ★나머지 키 전부 보존(hooks·models·기타 최상위 키 무수정). 원자적 쓰기(temp→rename).
+ *  - disabled=true → 목록에 추가(dedup). disabled=false → 목록에서 제거. 목록이 빈
+ *    배열이 되면 `modules.disabled: []` 로 남긴다(부재와 동일 의미지만 파일에 흔적을
+ *    남겨 다음 read 가 명시적 — 삭제 대신 빈 배열, 데이터 보존 철학).
+ *  - name 유효성(실존 플러그인 여부)은 호출자(엔드포인트)가 검증 — 여기선 순수 저장.
+ *  - MVP(ADR §5.6): 재시작해야 loadPlugins 스킵이 적용된다(핫토글 아님) — 호출자가
+ *    안내(`requiresRestart:true`).
+ */
+export const setModuleDisabled = (name: string, disabled: boolean): void => {
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const raw = readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음).
+  }
+  const existingModules = root.modules;
+  const modules: Record<string, unknown> =
+    existingModules !== null &&
+    typeof existingModules === "object" &&
+    !Array.isArray(existingModules)
+      ? (existingModules as Record<string, unknown>)
+      : {};
+  const existingList = modules.disabled;
+  const current = new Set<string>(
+    Array.isArray(existingList)
+      ? existingList.filter((x): x is string => typeof x === "string")
+      : [],
+  );
+  if (disabled) current.add(name);
+  else current.delete(name);
+  modules.disabled = [...current].sort();
+  root.modules = modules;
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");

@@ -404,6 +404,117 @@ const publishTurnError = (
   }
 };
 
+// ─── 어댑터 쿨다운(서킷 브레이커) — 2026-07-17, 사용자 확정 ───────────────────
+// "폴백되면 에러 안 올려도 됨, 대신 죽은 어댑터 ~10분 쿨다운" — rate-limit/사용량한도로
+// 죽은 어댑터를 매 턴 재두드리는 통신 낭비 제거. 키는 provider(운반값 있으면)·adapter
+// (레거시 spec) — poolDiversityWarning/cooldownKey 와 동일 관용구(다대일 openai 어댑터도
+// provider 로 구분). 어댑터별 분기 0(문자열 휴리스틱만, 원칙 2 LLM-agnostic 하드게이트).
+// 429/사용량한도만 대상 — 일반 에러·모델거부·네트워크는 미등록(기존 폴백 로직 그대로).
+const cooldownUntil = new Map<string, number>();
+
+// 명시 값(resets_in_seconds/retry-after) 없을 때 기본. 상한은 오파싱·비정상 값 방어일 뿐
+// (실측 codex usage_limit_reached 는 수일(예 5.7일=492480s) 지속 — 그 값은 "정확히" 존중해야
+// 무의미 재탐 0 이 성립한다. 24h 로 잡으면 실측 사례 자체가 잘려나가 모순 → 7일로 넉넉히
+// 잡아 정상 다일(多日) 한도는 그대로 통과시키고, 진짜 비정상(파싱버그로 인한 천문학적 값)만 방어).
+const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000; // 10분
+const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7일 상한(비정상 값 방어, 실측 다일 한도는 통과)
+
+// rate-limit/사용량한도 식별 — src/index.ts formatRegionAError · worker-jobs.ts
+// humanizeWorkerError 와 동형 문자열 휴리스틱(진실 통일, 신규 분류축 아님).
+const isRateLimited = (errStr: string): boolean =>
+  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b/i.test(errStr);
+
+// resets_in_seconds(codex 실측) / retry-after(HTTP 표준) 초 단위 파싱 → ms. 없으면 null
+// (호출자가 DEFAULT_COOLDOWN_MS 로 강등). src/index.ts 의 동일 정규식과 진실 통일.
+const parseCooldownMs = (errStr: string): number | null => {
+  const m =
+    errStr.match(/"resets_in_seconds"\s*:\s*(\d+)/) ||
+    errStr.match(/retry[-_ ]?after["'\s:=]+(\d+)/i);
+  if (m === null) return null;
+  const sec = Number(m[1]);
+  if (!Number.isFinite(sec) || sec <= 0) return null;
+  return Math.min(sec * 1000, MAX_COOLDOWN_MS);
+};
+
+// 쿨다운 키 — provider 명시 우선(다대일 openai 어댑터를 ollama/google/openai 로 구분),
+// 없으면 adapter(레거시 spec). specLabel/poolDiversityWarning 과 동일 관용구.
+const cooldownKey = (spec: ModelSpec): string => spec.provider ?? spec.adapter;
+
+// 남은 쿨다운(ms). 만료됐으면 엔트리 정리하고 0 반환(다음 조회부터 쿨다운 아님).
+// export — 격리 검증(_workspace)이 등록/해제 결과를 직접 조회.
+export const cooldownRemainingMs = (spec: ModelSpec): number => {
+  const key = cooldownKey(spec);
+  const until = cooldownUntil.get(key);
+  if (until === undefined) return 0;
+  const remaining = until - Date.now();
+  if (remaining <= 0) {
+    cooldownUntil.delete(key);
+    return 0;
+  }
+  return remaining;
+};
+
+// 관측 — 진입/스킵/해제를 이벤트로(대시보드/진단 "N분 남음" 가시화). best-effort
+// (publishTurnDone/Error 와 동형 try/catch) — 발행 실패가 쿨다운 로직·턴에 무영향.
+const publishCooldownEvent = (
+  action: "enter" | "skip" | "clear",
+  key: string,
+  remainingMs: number,
+): void => {
+  try {
+    getEventBus().publish({
+      type: "llm.cooldown",
+      ts: Date.now(),
+      payload: { action, key, remainingMs },
+    });
+  } catch (pubErr) {
+    console.error("llm-runtime: cooldown event publish failed:", pubErr);
+  }
+};
+
+// 쿨다운 스킵 선별 — runPool 이 그대로 사용(로직 단일 소스, 중복 0). rate-limit 걸린
+// spec 은 제외하고, ★전부 쿨다운이면 원본 pool 그대로 반환(last-resort) — 유효 풀이 비어
+// 턴이 응답 0 으로 죽으면 안 됨(쿨다운은 최적화일 뿐, 하드 차단 아님). export — 격리 검증
+// (_workspace) 이 실제 runPool 이 쓰는 이 함수를 직접 호출(mock 어댑터 불필요, 순수 함수).
+export const selectEligiblePool = (pool: ModelSpec[]): ModelSpec[] => {
+  const eligible = pool.filter((spec) => {
+    const remaining = cooldownRemainingMs(spec);
+    if (remaining <= 0) return true;
+    const key = cooldownKey(spec);
+    console.warn(
+      `llm-runtime: '${key}' 쿨다운 중(${Math.ceil(remaining / 60000)}분 남음) — 스킵.`,
+    );
+    publishCooldownEvent("skip", key, remaining);
+    return false;
+  });
+  return eligible.length > 0 ? eligible : pool;
+};
+
+// 실패가 rate-limit 이면 쿨다운 등록(문자열 미매칭 → no-op, 기존 폴백 로직 그대로).
+// errorDetail(cause 포함) 문자열로 판정 — isModelRejected 와 동일 지점(facade 단일 휴리스틱).
+// export — 격리 검증(_workspace)이 mock 어댑터 없이 직접 호출.
+export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void => {
+  const detail = errorDetail(e);
+  if (!isRateLimited(detail)) return;
+  const ms = parseCooldownMs(detail) ?? DEFAULT_COOLDOWN_MS;
+  const key = cooldownKey(spec);
+  cooldownUntil.set(key, Date.now() + ms);
+  console.warn(
+    `llm-runtime: '${key}' rate-limited — ${Math.ceil(ms / 60000)}분 쿨다운 등록.`,
+  );
+  publishCooldownEvent("enter", key, ms);
+};
+
+// 성공 시 조기 회복 — 만료 전이라도 실제 성공하면 즉시 해제(재탐 낭비 축소). 엔트리
+// 없으면 no-op(쿨다운 아니었던 정상 어댑터 — 매 턴 no-op 오버헤드 0에 가까움).
+// export — 격리 검증(_workspace)이 직접 호출.
+export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
+  const key = cooldownKey(spec);
+  if (cooldownUntil.delete(key)) {
+    publishCooldownEvent("clear", key, 0);
+  }
+};
+
 // V5 — 응답 후 어댑터 무관 통합 처리. 어댑터 차이는 jsonlPath 유무로 표현.
 const persistOutput = (
   input: RegionASdkInput,
@@ -514,7 +625,11 @@ const runPool = async (
   pool: ModelSpec[],
 ): Promise<RegionASdkOutput> => {
   let lastError: unknown;
-  for (const spec of pool) {
+  // 쿨다운 스킵 — rate-limit 걸린 어댑터를 매 턴 재두드리지 않음(호출 자체를 안 함,
+  // 레이턴시+통신 낭비 제거). 전부 쿨다운이면 selectEligiblePool 이 원본 pool 그대로
+  // 반환(last-resort, 유효 풀이 비어 턴이 응답 0 으로 죽지 않게).
+  const effectivePool = selectEligiblePool(pool);
+  for (const spec of effectivePool) {
     // self-growth 입력 — 한 어댑터 run() 호출(=한 턴) wall-clock 측정. 발행은 아래
     // 성공/실패 경로에서 정확히 1회 (turn_done XOR turn_error). 발행 자체는 best-effort
     // (publishTurnDone/Error 내부 try/catch) — 턴/데몬 안 죽임(임무 §4).
@@ -539,6 +654,9 @@ const runPool = async (
         publishTurnDone(spec, input, output, Date.now() - startedAt);
         persistOutput(input, output);
       }
+      // 성공 — 조기 회복(만료 전이라도 쿨다운 해제). internal 호출도 해제(어댑터 헬스는
+      // 대화 여부와 무관) — 엔트리 없으면 no-op.
+      clearCooldownOnSuccess(spec);
       return output;
     } catch (e) {
       // 사용자 /stop 취소 = 실패 아님 → turn_error 미발행(self-growth 실패 학습 오염 방지) +
@@ -575,8 +693,10 @@ const runPool = async (
       // TurnTimeoutError 는 isModelRejected 비매칭(TT-I3)이라 runRegionA 의 override
       // 자동폴백도 안 타고 핸들러로 직행 → "⏱️ 중단" 정직 보고. 여기서 명시 단락해 깔끔히.
       if (e instanceof TurnTimeoutError) throw e;
+      // rate-limit/사용량한도면 쿨다운 등록(문자열 미매칭 → no-op, 폴백 로직 그대로).
+      registerCooldownIfRateLimited(spec, e);
       lastError = e;
-      if (pool.length > 1) {
+      if (effectivePool.length > 1) {
         console.warn(
           `llm-runtime: '${spec.adapter}:${spec.model}' failed — ${errorDetail(e)}. 다음 모델로 폴백.`,
         );

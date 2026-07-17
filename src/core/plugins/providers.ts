@@ -5,9 +5,10 @@ import { appRoot, getPaths } from "../paths.js";
 import { countMemories, listMemories } from "../../store/memory.js";
 import { listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
+import { PROVIDER_REGISTRY, resolveProviderConn } from "../llm-runtime/provider-registry.js";
 
-export type ProviderKind = "core" | "plugin";
-export type ProviderStatus = "active" | "inactive" | "degraded" | "missing" | "error";
+export type ModuleKind = "core" | "plugin" | "llm-adapter";
+export type ModuleStatus = "active" | "inactive" | "degraded" | "missing" | "error";
 export type ViewKind =
   | "summary-card"
   | "metric-card"
@@ -46,11 +47,11 @@ export interface EventSpec {
   relatedActionId?: string;
 }
 
-export interface Provider {
+export interface Module {
   id: string;
-  kind: ProviderKind;
+  kind: ModuleKind;
   name: string;
-  status: ProviderStatus;
+  status: ModuleStatus;
   summary?: string;
   capabilities?: string[];
   views?: ViewSpec[];
@@ -59,8 +60,8 @@ export interface Provider {
   updatedAt?: string;
 }
 
-export interface ProviderRegistryResult {
-  providers: Provider[];
+export interface ModuleRegistryResult {
+  providers: Module[]; // ★와이어 유지: JSON 응답 키 `providers`(프런트 view-providers.js 소비)
   generatedAt: string;
 }
 
@@ -72,7 +73,7 @@ const latestUpdatedAt = (rows: Array<{ updatedAt: number }>): string | null => {
   return first === undefined ? null : new Date(first.updatedAt).toISOString();
 };
 
-const coreDaemonProvider = (): Provider => ({
+const coreDaemonModule = (): Module => ({
   id: "core.daemon",
   kind: "core",
   name: "Daemon",
@@ -96,7 +97,7 @@ const coreDaemonProvider = (): Provider => ({
   updatedAt: new Date().toISOString(),
 });
 
-const coreMemoryProvider = (): Provider => {
+const coreMemoryModule = (): Module => {
   const total = countMemories();
   const recent = listMemories({ limit: 10, orderBy: "updated" });
   const sample = listMemories({ limit: 1000, orderBy: "updated" });
@@ -143,7 +144,7 @@ const coreMemoryProvider = (): Provider => {
   };
 };
 
-const coreScheduleProvider = (): Provider => {
+const coreScheduleModule = (): Module => {
   const schedules = listSchedules();
   const enabled = schedules.filter((s) => s.enabled);
   return {
@@ -198,7 +199,7 @@ const coreScheduleProvider = (): Provider => {
   };
 };
 
-const corePluginRegistryProvider = async (): Promise<Provider> => {
+const corePluginRegistryModule = async (): Promise<Module> => {
   const inv = await collectInventory();
   const categories = {
     channel: inv.channel.length,
@@ -257,17 +258,68 @@ const corePluginRegistryProvider = async (): Promise<Provider> => {
   };
 };
 
-export interface PluginProviderExport {
+// LLM 어댑터 벤더 표시명 — 고정 5종 하드매핑(ADR 2026-07-17 §5: 동적 일반화 금지,
+// PROVIDER_REGISTRY 가 실제로 5종을 넘을 때만 키 추가). 미지 provider = provider id 원문 폴백.
+const LLM_ADAPTER_DISPLAY_NAME: Record<string, string> = {
+  anthropic: "Anthropic (Claude)",
+  codex: "OpenAI Codex (구독)",
+  openai: "OpenAI",
+  ollama: "Ollama (로컬)",
+  google: "Google Gemini",
+};
+
+const llmAdapterModule = (provider: string): Module => {
+  const conn = resolveProviderConn(provider);
+  const authenticated = conn?.apiKey !== undefined;
+  const adapter = conn?.adapter ?? "unknown";
+  const name = LLM_ADAPTER_DISPLAY_NAME[provider] ?? provider;
+  const summary = authenticated
+    ? `${adapter} 어댑터 · 인증됨`
+    : `${adapter} 어댑터 · ${conn?.apiKeyEnv ?? "?"} 미설정`;
+
+  return {
+    id: `llm-adapter.${provider}`,
+    kind: "llm-adapter",
+    name,
+    status: authenticated ? "active" : "inactive",
+    summary,
+    capabilities: ["llm.turn"],
+    views: [
+      {
+        id: `llm-adapter.${provider}.summary`,
+        title: name,
+        kind: "summary-card",
+        data: {
+          provider,
+          adapter,
+          ...(conn?.baseURL !== undefined ? { baseURL: conn.baseURL } : {}),
+          apiKeyEnv: conn?.apiKeyEnv,
+          authenticated,
+        },
+        order: 40,
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+// PROVIDER_REGISTRY(진실 소스: src/core/llm-runtime/provider-registry.ts) 를 순회만 —
+// 어댑터별 특수 if 분기 0(§0 LLM-agnostic 하드게이트). resolveProviderConn 재사용(자체 인증
+// 판정 로직 재구현 금지). 실 백엔드 호출/핑 없음 — 인증 설정 유무만(값싸게).
+const collectLlmAdapterModules = (): Module[] =>
+  Object.keys(PROVIDER_REGISTRY).map((provider) => llmAdapterModule(provider));
+
+export interface PluginModuleExport {
   id: string;
-  load: () => Provider | Promise<Provider>;
+  load: () => Module | Promise<Module>;
 }
 
-const asPluginProviderExport = (value: unknown): PluginProviderExport | null => {
+const asPluginModuleExport = (value: unknown): PluginModuleExport | null => {
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as { id?: unknown; load?: unknown };
   if (typeof candidate.id !== "string") return null;
   if (typeof candidate.load !== "function") return null;
-  return candidate as PluginProviderExport;
+  return candidate as PluginModuleExport;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -299,12 +351,13 @@ const discoverPluginDirs = async (root: string): Promise<string[]> => {
   }
 };
 
-const readProviderExportFromManifest = async (
+const readModuleExportFromManifest = async (
   pluginDir: string,
 ): Promise<{ id: string; entry: string } | null> => {
   const pkg = await readJson(path.join(pluginDir, "package.json"));
   if (!isRecord(pkg) || !isRecord(pkg.tiguclaw)) return null;
 
+  // ★와이어 유지: 매니페스트 마커 문자열 "provider" + provider:{} 블록(플러그인 저작 계약).
   const marker = pkg.tiguclaw;
   const capabilities = asStringArray(marker.kind);
   const provider = marker.provider;
@@ -316,36 +369,37 @@ const readProviderExportFromManifest = async (
   return { id: provider.id, entry: provider.entry };
 };
 
-const loadPluginProviderExports = async (): Promise<PluginProviderExport[]> => {
+const loadPluginModuleExports = async (): Promise<PluginModuleExport[]> => {
   const roots = [appRoot(), getPaths().home];
-  const exports: PluginProviderExport[] = [];
+  const exports: PluginModuleExport[] = [];
   const seen = new Set<string>();
 
   for (const root of roots) {
     for (const pluginDir of await discoverPluginDirs(root)) {
-      const manifest = await readProviderExportFromManifest(pluginDir);
+      const manifest = await readModuleExportFromManifest(pluginDir);
       if (manifest === null) continue;
 
-      const providerPath = path.resolve(pluginDir, manifest.entry);
-      const key = `${manifest.id}:${providerPath}`;
+      const modulePath = path.resolve(pluginDir, manifest.entry);
+      const key = `${manifest.id}:${modulePath}`;
       if (seen.has(key)) continue;
       seen.add(key);
 
       try {
-        const mod = (await import(pathToFileURL(providerPath).href)) as {
+        // ★와이어 유지: plugin export lookup 키 mod.provider/default/collectProvider.
+        const mod = (await import(pathToFileURL(modulePath).href)) as {
           provider?: unknown;
           default?: unknown;
           collectProvider?: unknown;
         };
-        const pluginProvider =
-          asPluginProviderExport(mod.provider) ??
-          asPluginProviderExport(mod.default) ??
+        const pluginModule =
+          asPluginModuleExport(mod.provider) ??
+          asPluginModuleExport(mod.default) ??
           (typeof mod.collectProvider === "function"
-            ? { id: manifest.id, load: mod.collectProvider as () => Provider | Promise<Provider> }
+            ? { id: manifest.id, load: mod.collectProvider as () => Module | Promise<Module> }
             : null);
-        if (pluginProvider !== null) exports.push(pluginProvider);
+        if (pluginModule !== null) exports.push(pluginModule);
       } catch {
-        // 부재/로드 실패는 discovery skip. provider 실행 중 throw는 providerError 경계에서 처리.
+        // 부재/로드 실패는 discovery skip. module 실행 중 throw는 moduleError 경계에서 처리.
       }
     }
   }
@@ -353,12 +407,12 @@ const loadPluginProviderExports = async (): Promise<PluginProviderExport[]> => {
   return exports;
 };
 
-const providerError = (id: string, err: unknown): Provider => {
+const moduleError = (id: string, err: unknown): Module => {
   const msg = err instanceof Error ? err.message : String(err);
   return {
     id,
     kind: id.startsWith("plugin.") ? "plugin" : "core",
-    name: "Provider error",
+    name: "Module error",
     status: "error",
     summary: msg,
     events: [
@@ -366,7 +420,7 @@ const providerError = (id: string, err: unknown): Provider => {
         id: `${id}.${Date.now()}`,
         ts: new Date().toISOString(),
         level: "error",
-        title: "provider load failed",
+        title: "module load failed",
         message: msg,
       },
     ],
@@ -374,23 +428,25 @@ const providerError = (id: string, err: unknown): Provider => {
   };
 };
 
-export const collectProviders = async (): Promise<ProviderRegistryResult> => {
-  const loaders: Array<{ id: string; load: () => Provider | Promise<Provider> }> = [
-    { id: "core.daemon", load: coreDaemonProvider },
-    { id: "core.memory", load: coreMemoryProvider },
-    { id: "core.schedule", load: coreScheduleProvider },
-    { id: "core.plugin-registry", load: corePluginRegistryProvider },
-    ...(await loadPluginProviderExports()),
+export const collectModules = async (): Promise<ModuleRegistryResult> => {
+  const loaders: Array<{ id: string; load: () => Module | Promise<Module> }> = [
+    { id: "core.daemon", load: coreDaemonModule },
+    { id: "core.memory", load: coreMemoryModule },
+    { id: "core.schedule", load: coreScheduleModule },
+    { id: "core.plugin-registry", load: corePluginRegistryModule },
+    ...(await loadPluginModuleExports()),
   ];
 
-  const providers: Provider[] = [];
+  const modules: Module[] = [];
   for (const loader of loaders) {
     try {
-      providers.push(await loader.load());
+      modules.push(await loader.load());
     } catch (err) {
-      providers.push(providerError(loader.id, err));
+      modules.push(moduleError(loader.id, err));
     }
   }
 
-  return { providers, generatedAt: new Date().toISOString() };
+  modules.push(...collectLlmAdapterModules());
+
+  return { providers: modules, generatedAt: new Date().toISOString() }; // ★와이어 유지: 키 `providers`
 };

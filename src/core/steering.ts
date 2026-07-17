@@ -33,8 +33,13 @@ export interface SteeringInput {
 }
 
 export interface SteeringChannel {
-  /** producer(핸들러 개입점) — 대기 steering 1건 적재 + pending stream 대기자 unblock. */
-  push(msg: SteeringInput): void;
+  /**
+   * producer(핸들러 개입점) — 대기 steering 1건 적재 + pending stream 대기자 unblock.
+   * 반환값(ADR §"완료 데드락 + 수정" Part B) — `true`=적재 성공(진행 턴에 반영),
+   * `false`=채널이 이미 close 됨(result 후 손실창 — 호출자는 새 턴으로 fall-through 해야
+   * 손실 0 유지). 호출자는 index.ts 개입점 1곳뿐(codex/openai 는 drain 소비라 반환값 무영향).
+   */
+  push(msg: SteeringInput): boolean;
   /** consumer(codex/openai) — 비블로킹 pull-all(버퍼 반환+클리어, 빈 배열 안전). */
   drain(): SteeringInput[];
   /** consumer(claude) — 도착 시 yield, close/abort 시 종료(무한대기 0). */
@@ -63,12 +68,14 @@ export const createSteeringChannel = (): SteeringChannel => {
   };
 
   return {
-    push(msg: SteeringInput): void {
-      // 턴 종료(close) 후 도착 = 소비자 없음 → 드롭(개입점이 inflightTurns 재판단으로
-      // 이미 걸러내나, close↔push 경합 방어). 회귀 무관(P0 소비 0).
-      if (closed) return;
+    push(msg: SteeringInput): boolean {
+      // 턴 종료(close) 후 도착 = 소비자 없음 → 드롭 + false 반환(호출자가 새 턴으로
+      // fall-through 해 손실 0 유지 — ADR §Part B). close↔push 경합 방어(P0 부터 동일 가드,
+      // 반환형만 boolean 화).
+      if (closed) return false;
       buffer.push(msg);
       wake();
+      return true;
     },
     drain(): SteeringInput[] {
       if (buffer.length === 0) return []; // 빈 배열 안전.

@@ -1,8 +1,10 @@
-      // ── 셸/프로세스 뷰(왼쪽 nav 1급 destination) — 표면 C+D(ADR 2026-07-17 §5).
-      // view-agents.js 클론(카드 그리드·경과 틱·상태 배지) — 별도 레인(P2 계약: shell.started/
-      // shell.exited, GET /api/shells·/api/shell-output·POST /api/kill-shell). 워커/에이전트
-      // jobCards 와 완전 분리된 자체 registry(shellRegistry) — 이 파일 하나로 자기완결
-      // (ADR §2 "레지스트리 분리" — worker_jobs 아님, in-memory BG_SHELLS 미러).
+      // ── 셸/프로세스 섹션(백그라운드 드로어 안, background-drawer.js #bg-shells-list) —
+      // 표면 C+D(ADR 2026-07-17 §5). ★Phase 3b-2: 왼쪽 nav 🖥️ 셸 top-nav 는 제거됐다 — 이
+      // 파일은 이제 페이지 뷰가 아니라 드로어 안 별도 섹션을 그린다(showShells()는 openBg()로
+      // 드로어를 열 뿐). 카드 그리드·경과 틱·상태 배지 로직(view-agents.js 클론)과 shell.started/
+      // shell.exited, GET /api/shells·/api/shell-output·POST /api/kill-shell 계약은 그대로.
+      // 워커/에이전트 jobCards 와 완전 분리된 자체 registry(shellRegistry) — 이 파일 하나로
+      // 자기완결(ADR §2 "레지스트리 분리" — worker_jobs 아님, in-memory BG_SHELLS 미러).
       // codex/openai=프로세스 우리 소유(GET /api/shells 시드+kill/tail 완전). claude=SDK 내부
       // 소유라 Phase 4 관측 브리지(SSE shell.*, owner:"sdk"·killable:false)로만 라이브 유입 —
       // /api/shells 시드엔 없음(BG_SHELLS 밖), kill/tail 정직 미지원(Phase 3b, ADR §6).
@@ -52,8 +54,9 @@
         }
       };
 
-      // 헤더 nav 배지("🖥️ 셸")는 뷰가 닫혀 있어도 항상 최신 — background-drawer.js 의
-      // refreshBgBadge(nav-agent-count) 와 동형(뷰 오픈 무관 상시 갱신).
+      // nav 배지(레거시) — Phase 3b-2(ADR §5)로 🖥️ 셸 top-nav 자체가 사라져 엘리먼트가 없다.
+      // getElementById 가드로 무해(nav-agent-count 의 동일 전례). 드로어 셸 섹션 카운트(#bg-shells-
+      // count-running/-all)는 renderShellsView 가 필터 반영 실카운트로 갱신(아래).
       const updateShellsBadge = () => {
         let running = 0;
         for (const e of shellRegistry.values()) {
@@ -299,10 +302,12 @@
         return card;
       };
 
+      // 렌더 타깃 — 옛 사이드바 페이지(#shells-grid, currentView==="shells")에서 백그라운드 드로어
+      // 셸 섹션(#bg-shells-list, ADR §5 Phase 3b-2)으로 이식. 드로어는 항상 DOM 에 존재(열림/닫힘은
+      // CSS body.bg-open)이라 currentView 게이트가 불필요 — jobCards 와 동형으로 상시 라이브 갱신.
       const renderShellsView = () => {
-        if (currentView !== "shells") return;
-        const grid = document.getElementById("shells-grid");
-        const empty = document.getElementById("shells-empty");
+        const grid = document.getElementById("bg-shells-list");
+        const empty = document.getElementById("bg-shells-empty");
         if (!grid) return;
         grid.innerHTML = "";
         shellElapsedEls.clear();
@@ -324,8 +329,8 @@
           shown += 1;
           grid.appendChild(buildShellCard(e, now));
         }
-        const rc = document.getElementById("shells-count-running");
-        const ac = document.getElementById("shells-count-all");
+        const rc = document.getElementById("bg-shells-count-running");
+        const ac = document.getElementById("bg-shells-count-all");
         if (rc) rc.textContent = String(running);
         if (ac) ac.textContent = String(total);
         if (empty) {
@@ -334,15 +339,17 @@
         }
       };
       let shellsRenderQueued = false;
+      // 드로어가 닫혀 있어도 배지 카운트가 최신이어야 하므로(jobCards 동형) currentView 게이트 없이
+      // rAF 로만 배칭(고volume SSE 방어).
       const scheduleShellsRender = () => {
-        if (currentView !== "shells" || shellsRenderQueued) return;
+        if (shellsRenderQueued) return;
         shellsRenderQueued = true;
         requestAnimationFrame(() => { shellsRenderQueued = false; renderShellsView(); });
       };
 
       const setShellsFilter = (mode) => {
         shellsFilter = mode === "all" ? "all" : "running";
-        const bar = document.getElementById("shells-filter");
+        const bar = document.getElementById("bg-shells-filter");
         if (bar) for (const b of bar.querySelectorAll(".bg-fbtn")) {
           const on = b.dataset.filter === shellsFilter;
           b.classList.toggle("active", on);
@@ -350,9 +357,19 @@
         }
         renderShellsView();
       };
+      // 드로어 셸 섹션 필터 버튼(진행 중/전체) — 정적 DOM(index.html, 드로어는 항상 존재)이라
+      // showShells() 안이 아니라 부팅 시 1회 배선(background-drawer.js bg-filter 배선과 동형).
+      (() => {
+        const bar = document.getElementById("bg-shells-filter");
+        if (!bar) return;
+        for (const b of bar.querySelectorAll(".bg-fbtn")) {
+          b.addEventListener("click", () => setShellsFilter(b.dataset.filter));
+        }
+      })();
 
-      // 뷰 오픈 시 GET /api/shells 시드(ADR §5 "C — 뷰 오픈 시 list 엔드포인트 시드"). 시드된
-      // 셸은 이미 존재가 확정돼 있으므로 디바운스 없이 즉시 visible.
+      // 부팅/SSE 시 GET /api/shells 시드(ADR §5 "C — 뷰 오픈 시 list 엔드포인트 시드", Phase 3b-2
+      // 부터는 드로어가 상시 존재하므로 부팅 하이드레이션으로 재해석). 시드된 셸은 이미 존재가
+      // 확정돼 있으므로 디바운스 없이 즉시 visible.
       const fetchShellsSeed = () => {
         fetch("/api/shells").then((r) => r.json()).then((d) => {
           if (!d || !Array.isArray(d.shells)) return;
@@ -370,37 +387,23 @@
         }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
       };
 
+      // showShells — Phase 3b-1(에이전트)과 같은 이식: 옛 전체페이지 사이드바 뷰 대신 백그라운드
+      // 드로어를 열고 셸 섹션으로 포커스(짧은 flash 하이라이트, bg-flash 관례 재사용). 표면 A(채팅
+      // 인라인 칩)·B(컴포저 "🖥️ 셸 N개" 스트립, background-drawer.js)는 이 함수를 그대로 호출 —
+      // shellRegistry 계약 무변경이라 두 표면 다 무수정으로 계속 동작.
       const showShells = () => {
-        setActiveNav("shells");
-        setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        const root = document.getElementById("detail-panel");
-        root.innerHTML = "";
-        const wrap = document.createElement("div");
-        wrap.className = "page-view shells-view";
-        wrap.innerHTML =
-          '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">셸 / 프로세스</div><span class="detail-kind">실시간</span></div>' +
-          '<p class="developer-copy">모델이 백그라운드로 띄운 셸(Bash) 프로세스를 관측합니다. codex/openai 셸은 강제 종료·출력 확인 가능. claude 셸(SDK 소유)은 실시간으로 표시만 되며 이 목록엔 사후 시드되지 않습니다 — "SDK 소유" 표식.</p>' +
-          '<div class="agents-toolbar" id="shells-toolbar">' +
-          '<div class="bg-filter" id="shells-filter">' +
-          '<button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">실행 중 <span class="bg-fcount" id="shells-count-running">0</span></button>' +
-          '<button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="shells-count-all">0</span></button>' +
-          '</div><span class="agents-hint">라이브 · GET /api/shells 시드</span></div>' +
-          '<div class="agents-grid shells-grid filter-running" id="shells-grid"></div>' +
-          '<div class="empty" id="shells-empty">실행 중인 셸이 없습니다.</div>';
-        root.appendChild(wrap);
-        const bar = wrap.querySelector("#shells-filter");
-        for (const b of bar.querySelectorAll(".bg-fbtn")) {
-          b.addEventListener("click", () => setShellsFilter(b.dataset.filter));
+        if (typeof openBg === "function") openBg();
+        const sec = document.getElementById("bg-shells-section");
+        if (sec) {
+          sec.classList.add("bg-flash");
+          setTimeout(() => sec.classList.remove("bg-flash"), 900);
+          try { sec.scrollIntoView({ block: "nearest" }); } catch {}
         }
-        shellsFilter = "running";
-        renderShellsView();
-        fetchShellsSeed();
       };
 
       // 경과시간 라이브 틱(1s) — running 카드만(background-drawer.js tickElapsed 동형, 별도 셋).
+      // 드로어가 닫혀 있어도 카운트/카드가 최신이어야 하므로 currentView 게이트 없음(jobCards 동형).
       setInterval(() => {
-        if (currentView !== "shells") return;
         const now = Date.now();
         for (const [shellId, e] of shellRegistry) {
           if (e.status !== "running") continue;
@@ -409,6 +412,6 @@
         }
       }, 1000);
 
-      // 부팅 하이드레이션 — nav 배지("🖥️ 셸" running 카운트)가 뷰를 한 번도 안 열어도
+      // 부팅 하이드레이션 — 드로어 셸 섹션·컴포저 스트립(표면 B)이 드로어를 한 번도 안 열어도
       // 최신이게. hydrateActiveJobs(background-drawer.js) 동형.
       fetchShellsSeed();

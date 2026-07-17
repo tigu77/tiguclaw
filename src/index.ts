@@ -1421,22 +1421,27 @@ const serializedHandler: MessageHandler = (msg) => {
     })();
     return Promise.resolve();
   }
-  // ── mid-turn steering 개입점(ADR 2026-07-16-midturn-steering §5) ──────────────
-  // 진행 중인 이 thread 의 턴이 있고(inflightTurns 보유) 일반 대화 메시지(슬래시 아님)면,
-  // 새 별도 턴을 큐잉하는 대신 진행 턴의 SteeringChannel 로 push 해 "다음 model-call 경계에서
+  // ── mid-turn steering 개입점(ADR 2026-07-16-midturn-steering §5, §"완료 데드락 + 수정" Part B) ──
+  // 진행 중인 이 thread 의 채널이 존재하고 열려 있으면(=진행 턴 있음) 일반 대화 메시지(슬래시
+  // 아님)를 새 별도 턴으로 큐잉하는 대신 그 SteeringChannel 로 push 해 "다음 model-call 경계에서
   // append"(손실 0, 진행 작업 유지)한다. 사용자 메시지 landed 는 publishInboundEcho 로 표시
   // (별도 턴 X — 대시보드 낙관적 버블 승격). 슬래시(/stop·/restart·/update 등 제어)는 위에서
   // 이미 out-of-band 처리됐고, 여기 도달한 슬래시(예 /reset·/model 등 in-band 명령)는 steerable
   // =false 로 걸러 현행 큐 경로 유지 — 제어 명령은 steering 대상 아님.
   // ★flag off(기본) → 이 분기 통째 skip → 아래 enqueueThreadTurn = **현행 바이트 동일**(회귀 0).
-  if (
-    STEERING_ENABLED &&
-    inflightTurns.has(msg.threadKey) &&
-    steerable(msg)
-  ) {
-    steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg));
-    publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
-    return Promise.resolve(); // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비.
+  // ★Part B — push 반환값이 진짜 게이트(채널 존재+open). 종전 `inflightTurns.has` 게이트는
+  // 제거: claude 어댑터가 result 수신 시 채널을 즉시 close 하므로(Part A), result 후 턴 finally
+  // 의 map delete 사이(수 초 가능한 async 구간)에 도착한 메시지는 채널이 이미 닫혀 있어
+  // push 가 false 를 반환한다 — 이때 fall-through 해 아래 enqueueThreadTurn = **새 턴**(ADR
+  // "result 후 도착 = 다음 턴" 시맨틱 정합, 조용한 드롭 0).
+  if (STEERING_ENABLED && steerable(msg)) {
+    const accepted =
+      steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg)) === true;
+    if (accepted) {
+      publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
+      return Promise.resolve(); // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비.
+    }
+    // 미적재(채널 없음=진행 턴 없음 / 닫힘=result 후 꼬리창) → 아래로 fall-through, 새 턴.
   }
   // 큐-취소(ADR 2026-07-15) — 클라 correlationId 를 큐 항목 식별 키로 전달. 대기 중(미시작)
   // 항목을 대시보드 ✕ 버튼→POST /cancel-queued→cancelQueuedTurn 이 지목 취소 가능. 미부여

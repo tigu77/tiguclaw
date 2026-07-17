@@ -54,22 +54,30 @@
         root.appendChild(kv);
       };
 
+      // kind 배지 라벨. ADR 2026-07-17(모듈/능력 2축) §5 P0 — 모듈 뷰(옛 프로바이더 뷰)가
+      // provider(core|plugin)와 채널 presence(kind:"channel")를 한 목록에 섞어 렌더하므로
+      // "channel" 값도 여기서 라벨링한다. provider/service/trigger/observer 는 P1(3패널·type
+      // 필드 도입) 이후 실제로 채워질 값 — 지금은 core|plugin|channel 만 실사용.
       const kindLabel = (kind) => {
         const map = {
-          provider: "프로바이더",
+          provider: "모듈",
           core: "코어",
           plugin: "플러그인",
+          channel: "채널",
+          service: "서비스",
+          trigger: "트리거",
+          observer: "옵저버",
           runtime: "런타임",
           system: "시스템",
           daemon: "데몬",
           memory: "메모리",
           schedule: "스케줄",
         };
-        return map[kind] || kind || "프로바이더";
+        return map[kind] || kind || "모듈";
       };
 
       const statusLabel = (status) => {
-        const map = { active: "정상", degraded: "주의", error: "오류", unknown: "알 수 없음" };
+        const map = { active: "정상", degraded: "주의", error: "오류", inactive: "비활성", unknown: "알 수 없음" };
         return map[status] || status || "알 수 없음";
       };
 
@@ -136,6 +144,99 @@
           appendKv(div, data);
         }
         return div;
+      };
+
+      // ── 리스트 서브패널 공용: 검색(라이브 필터) + 접이식 카테고리(localStorage 영속) ──────────
+      // 모듈 뷰·능력 뷰가 동일 마스터-디테일 패턴이라(ADR 2026-07-17 §5 마스터-디테일 통일) 한 벌만
+      // 구현해 재사용한다(§5.5 선언형 — 새 뷰가 같은 패턴을 쓰면 코드변경0으로 편입).
+      const isGroupCollapsed = (storagePrefix, groupKey) => {
+        try { return localStorage.getItem(storagePrefix + ":" + groupKey) === "1"; } catch (e) { return false; }
+      };
+      const setGroupCollapsed = (storagePrefix, groupKey, collapsed) => {
+        try {
+          const key = storagePrefix + ":" + groupKey;
+          if (collapsed) localStorage.setItem(key, "1"); else localStorage.removeItem(key);
+        } catch (e) { /* storage 비활성(프라이빗 모드 등) — 접힘 상태만 비영속, 기능은 계속 동작 */ }
+      };
+
+      // 그룹(헤더+아이템 컨테이너) 한 쌍을 만들어 listEl 에 append. buildItems(itemsWrap) 이 실제
+      // 항목 DOM 을 채운다(호출자가 provider-item/능력-item 렌더러를 그대로 재사용). 헤더 클릭 →
+      // 접기/펴기 토글(chevron 은 CSS 로 회전, app.css .module-group-head.collapsed) + localStorage
+      // 저장. ★검색 중(listEl.dataset.searching==="1", applyListSearchFilter 가 세팅)엔 클릭 무시 —
+      // 강제 펼침 중 접어봤자 시각 변화 없이 localStorage 만 오염되는 걸 막는다.
+      const appendCollapsibleGroup = (listEl, storagePrefix, groupKey, label, count, buildItems) => {
+        const collapsed = isGroupCollapsed(storagePrefix, groupKey);
+        const head = document.createElement("div");
+        head.className = "module-group-head" + (collapsed ? " collapsed" : "");
+        const chevron = document.createElement("span");
+        chevron.className = "module-group-chevron"; chevron.textContent = "▾";
+        const labelEl = document.createElement("span");
+        labelEl.className = "module-group-label"; labelEl.textContent = label;
+        const countEl = document.createElement("span");
+        countEl.className = "module-group-count"; countEl.textContent = String(count);
+        head.appendChild(chevron); head.appendChild(labelEl); head.appendChild(countEl);
+        const itemsWrap = document.createElement("div");
+        itemsWrap.className = "module-group-items";
+        buildItems(itemsWrap);
+        head.addEventListener("click", () => {
+          if (listEl.dataset.searching === "1") return; // 검색 중 접기 무시
+          const next = !head.classList.contains("collapsed");
+          head.classList.toggle("collapsed", next);
+          setGroupCollapsed(storagePrefix, groupKey, next);
+        });
+        listEl.appendChild(head);
+        listEl.appendChild(itemsWrap);
+        return itemsWrap;
+      };
+
+      // 라이브 검색 필터 — listEl 의 직계 자식 .module-group-head/.module-group-items 쌍을 순회해
+      // .provider-item 을 name/kind/description 텍스트(각 렌더러가 채운 item.dataset.searchText)로
+      // 매치시킨다. rebuild(list.innerHTML 재구성) 없이 클래스 토글만 하므로 30s 폴 재렌더 뒤에도
+      // 각 뷰가 렌더 끝에서 다시 호출하면 검색어가 안 사라진다(호출자 책임). query 빈 문자열 = 전체
+      // 복원(접힘은 appendCollapsibleGroup 이 이미 반영한 localStorage 값 그대로 — 손대지 않음).
+      const applyListSearchFilter = (listEl, rawQuery) => {
+        if (!listEl) return;
+        const q = String(rawQuery || "").trim().toLowerCase();
+        if (q) listEl.dataset.searching = "1"; else delete listEl.dataset.searching;
+        let anyVisible = false;
+        for (const head of listEl.querySelectorAll(":scope > .module-group-head")) {
+          const itemsWrap = head.nextElementSibling;
+          if (!itemsWrap || !itemsWrap.classList.contains("module-group-items")) continue;
+          const items = itemsWrap.querySelectorAll(".provider-item");
+          const countEl = head.querySelector(".module-group-count");
+          if (!q) {
+            head.classList.remove("search-hidden-group");
+            itemsWrap.classList.remove("search-hidden-group", "force-expanded");
+            for (const item of items) item.classList.remove("search-hidden");
+            if (countEl) countEl.textContent = String(items.length);
+            anyVisible = true;
+            continue;
+          }
+          let visible = 0;
+          for (const item of items) {
+            const match = (item.dataset.searchText || "").includes(q);
+            item.classList.toggle("search-hidden", !match);
+            if (match) visible += 1;
+          }
+          if (countEl) countEl.textContent = String(visible);
+          const groupEmpty = visible === 0;
+          head.classList.toggle("search-hidden-group", groupEmpty);
+          itemsWrap.classList.toggle("search-hidden-group", groupEmpty);
+          itemsWrap.classList.toggle("force-expanded", !groupEmpty);
+          if (!groupEmpty) anyVisible = true;
+        }
+        let emptyMsg = listEl.querySelector(".search-empty-msg");
+        if (q && !anyVisible) {
+          if (!emptyMsg) {
+            emptyMsg = document.createElement("div");
+            emptyMsg.className = "empty search-empty-msg";
+            emptyMsg.style.margin = "8px";
+            emptyMsg.textContent = "검색 결과가 없습니다.";
+            listEl.appendChild(emptyMsg);
+          }
+        } else if (emptyMsg) {
+          emptyMsg.remove();
+        }
       };
 
       let providersCache = [];

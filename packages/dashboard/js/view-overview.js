@@ -11,6 +11,7 @@
         setActiveNav("overview");
         setChatPanel("chat");
         document.getElementById("workbench").classList.remove("show-providers");
+        document.getElementById("workbench").classList.remove("show-capabilities");
         const root = document.getElementById("detail-panel");
         const active = providersCache.filter((p) => (p.status || "unknown") === "active").length;
         const degraded = providersCache.filter((p) => ["degraded", "error"].includes(p.status || "unknown")).length;
@@ -21,24 +22,24 @@
         const healthClass = errors > 0 ? "bad" : degraded > 0 ? "warn" : "good";
         const healthText = errors > 0 ? "오류" : degraded > 0 ? "주의" : "정상";
         const healthDesc = providersCache.length === 0
-          ? "프로바이더 정보를 불러오는 중입니다."
+          ? "모듈 정보를 불러오는 중입니다."
           : degraded > 0
-            ? "점검이 필요한 프로바이더가 " + degraded + "개 있습니다."
-            : "모든 프로바이더가 정상 상태입니다.";
+            ? "점검이 필요한 모듈이 " + degraded + "개 있습니다."
+            : "모든 모듈이 정상 상태입니다.";
         root.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "page-view overview";
 
         const hero = document.createElement("div");
         hero.className = "hero-card";
-        hero.innerHTML = '<h1>오늘의 운영 상태</h1><p>자주 보는 상태와 다음 행동만 모았습니다. 자세한 런타임 정보는 프로바이더와 인벤토리에서 확인하세요.</p>';
+        hero.innerHTML = '<h1>오늘의 운영 상태</h1><p>자주 보는 상태와 다음 행동만 모았습니다. 자세한 런타임 정보는 모듈과 능력에서 확인하세요.</p>';
         wrap.appendChild(hero);
 
         const quick = document.createElement("div");
         quick.className = "quick-grid";
         const metrics = [
           ["상태", healthText, healthDesc],
-          ["프로바이더", String(providersCache.length), active + "개 정상"],
+          ["모듈", String(providersCache.length), active + "개 정상"],
           ["이벤트", String(evCount), "채팅의 활동 로그에서 확인"],
         ];
         for (const [label, value, hint] of metrics) {
@@ -57,9 +58,9 @@
         const statusList = document.createElement("div");
         statusList.className = "status-list";
         const rows = [
-          [healthClass, "프로바이더 상태", healthDesc, active + "/" + providersCache.length],
+          [healthClass, "모듈 상태", healthDesc, active + "/" + providersCache.length],
           [localChatCount > 0 ? "good" : "warn", "대화", localChatCount > 0 ? "최근 대화가 대화 탭에 표시됩니다." : "아직 대화가 없습니다.", localChatCount + "개"],
-          [inventoryCache ? "good" : "warn", "런타임 인벤토리", inventoryCache ? "채널·플러그인·스킬·에이전트를 불러왔습니다." : "인벤토리를 불러오는 중입니다.", String(invTotal)],
+          [inventoryCache ? "good" : "warn", "능력", inventoryCache ? "스킬·에이전트·MCP 등 능력을 불러왔습니다." : "능력 목록을 불러오는 중입니다.", String(invTotal)],
         ];
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
@@ -76,9 +77,9 @@
         const actions = document.createElement("div");
         actions.className = "home-actions";
         const actionData = [
-          ["providers", "📦", "프로바이더 보기", "카테고리별 패널과 상세 상태 확인"],
+          ["providers", "📦", "모듈 보기", "채널·어댑터 등 카테고리별 패널과 상세 상태 확인"],
           ["chat", "💬", assistantName + "와 대화", "대화와 활동 로그를 한 화면에서 확인"],
-          ["inventory", "🧩", "런타임 인벤토리", "설치·발견된 capability 점검"],
+          ["inventory", "📚", "능력", "스킬·에이전트(명세)·MCP 등 설치·발견된 capability 점검"],
           ["restart", "🔄", "데몬 재시작", "멈춘 작업까지 정리하고 자동 복귀"],
         ];
         for (const [view, icon, title, desc] of actionData) {
@@ -102,18 +103,10 @@
         root.appendChild(wrap);
       };
 
-      const showInventory = () => {
-        setActiveNav("inventory");
-        setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        const root = document.getElementById("detail-panel");
-        root.innerHTML = "";
-        const wrap = document.createElement("div");
-        wrap.className = "page-view";
-        wrap.innerHTML = '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">런타임 인벤토리</div><span class="detail-kind">관리</span></div><p class="developer-copy">설치/발견된 채널, 플러그인, 스킬, 에이전트, MCP를 확인하는 관리용 레지스트리입니다. 평소 작업 흐름에서는 숨겨둡니다.</p><div id="inventory" class="inventory-shell"><div class="empty">불러오는 중…</div></div>';
-        root.appendChild(wrap);
-        if (inventoryCache) renderInventory(inventoryCache);
-      };
+      // showInventory (능력 뷰 진입) — view-inventory.js 로 이관(ADR 2026-07-17 §5·§7 P2, 3패널화
+      // 로직이 리스트 서브패널·선택 상태를 함께 다루므로 그 파일에 정의를 모음). 이 파일에서의
+      // 호출부(overview 액션 버튼 등)는 call-time 해석이라 로드 순서(view-inventory.js 는 이
+      // 파일 다음에 로드)에 영향받지 않는다.
 
       // ── 모델 프로파일 뷰(표시 전용) ──────────────────────────────────────────
       // settings.json models.profiles 를 카드로 렌더. /models 슬래시와 동일 정보(이름·설명·

@@ -15,6 +15,7 @@
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
+ *  - POST /api/set-module-enabled → bridge POST /set-module-enabled (write, 모듈 활성/비활성 — P4a-2)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원; threadKey qs 통과)
  *  - GET  /api/all-activity → bridge GET /all-activity  (JSON pass, 전체활동 크로스세션 타임라인)
@@ -337,6 +338,17 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/set-default-profile" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-default-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 모듈 활성/비활성 — bridge POST /set-module-enabled (write 토큰 server-side 주입). P4a-2
+    // 프런트(view-providers.js)가 body{name,enabled} 그대로 전달 — /set-default-profile 과 동형.
+    if (pathname === "/api/set-module-enabled" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-module-enabled", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

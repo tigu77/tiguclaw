@@ -12,13 +12,16 @@ import os from "node:os";
 import { appRoot, getPaths } from "../paths.js";
 import { discoverSkills } from "../llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../llm-runtime/capabilities/agent-registry.js";
+import { discoverEndpoints, type Endpoint } from "../entry/endpoint-registry.js";
+import { isModuleDisabled } from "../settings.js";
 
 export type PluginCategory =
   | "channel"
   | "external_plugin"
   | "skill"
   | "agent"
-  | "mcp";
+  | "mcp"
+  | "endpoint";
 
 /**
  * 3 layer — 사용자 멘탈 모델: 개발 레포가 *in-tree* 로 들고 있는가, 외부가 떠 있는 걸 *발견* 만 하는가, 그도 저도 아닌 코어 *메타 인프라* 인가.
@@ -45,6 +48,7 @@ export interface InventoryResult {
   skill: PluginEntry[];
   agent: PluginEntry[];
   mcp: PluginEntry[];
+  endpoint: PluginEntry[];
   generatedAt: number;
 }
 
@@ -220,7 +224,9 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
         layer: "in_tree", // <repo>/plugins/* — 위치 자체가 in-tree dogfood
         name: marker.name,
         source: pluginDir,
-        enabled: true,
+        // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 동일 판정
+        // (settings.json modules.disabled). "disabled" ≠ "inactive" — 이건 명시 off.
+        enabled: !isModuleDisabled(marker.name),
         metadata: {
           kind: kinds.join(", "),
           schemaVersion: marker.schemaVersion,
@@ -264,7 +270,8 @@ const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
         name: m.name,
         description: pkg?.description,
         source: pluginDir,
-        enabled: true,
+        // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 동일 판정.
+        enabled: !isModuleDisabled(m.name),
         metadata: { kind: kinds.join(", ") },
       });
     } catch {
@@ -610,6 +617,39 @@ const collectMcp = async (repoRoot: string): Promise<PluginEntry[]> => {
   return out;
 };
 
+// ─── (f) 엔드포인트 — 능력(데이터) 축 (ADR 2026-07-17-module-capability-model P4c) ────────
+
+/**
+ * 슬래시 명령의 HTTP 판 — `discoverEndpoints`(endpoint-registry.ts, 진실 소스)를 그대로
+ * 재사용(신규 walk 로직 0). endpoint-registry 는 inventory.ts 를 역참조하지 않음(단방향
+ * import 유지 — 파일 상단 주석 §0 준수, memory.ts → inventory.ts 방향과 동일 결).
+ *  - layer: user/project(개발 레포·홈이 직접 들고 있는 정의) → in_tree, plugin(번들/설치
+ *    플러그인 산 정의) → discovered. skill/agent 의 sourceToLayer 와 소스 종류가 달라
+ *    (endpoint 엔 builtin 이 없음) 별도 매핑.
+ *  - enabled: 항상 true (V1 — skill/agent 동형, settings.modules.disabled 대상 아님).
+ */
+const endpointSourceToLayer = (source: Endpoint["source"]): PluginLayer =>
+  source === "plugin" ? "discovered" : "in_tree"; // user | project
+
+const collectEndpoints = async (cwd: string): Promise<PluginEntry[]> => {
+  const endpoints = await discoverEndpoints(cwd);
+  return endpoints.map((ep) => ({
+    category: "endpoint" as const,
+    layer: endpointSourceToLayer(ep.source),
+    name: ep.name,
+    description: ep.desc || ep.label || ep.routePath,
+    source: ep.filePath,
+    enabled: true,
+    metadata: {
+      routePath: ep.routePath,
+      method: ep.method,
+      role: ep.role,
+      mode: ep.mode,
+      source: ep.source,
+    },
+  }));
+};
+
 // ─── 통합 walker ─────────────────────────────────────────────────────────
 
 export const collectInventory = async (opts?: {
@@ -665,6 +705,10 @@ export const collectInventory = async (opts?: {
     () => collectMcp(repoRoot),
     [] as PluginEntry[],
   );
+  const endpoint = await safeAsync(
+    () => collectEndpoints(repoRoot),
+    [] as PluginEntry[],
+  );
 
   return {
     channel,
@@ -672,6 +716,7 @@ export const collectInventory = async (opts?: {
     skill,
     agent,
     mcp,
+    endpoint,
     generatedAt: Date.now(),
   };
 };

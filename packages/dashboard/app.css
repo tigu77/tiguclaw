@@ -139,13 +139,54 @@
       .cat-item .layer-tag { font-size:9px; padding:1px 5px; border-radius:6px; background:var(--card); color:var(--text-dim); margin-right:5px; }
 
       #workbench { display:block; }
-      #providers-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; }
+      /* 모듈 뷰 3패널(ADR 2026-07-17 §5) — show-providers 는 이제 "모듈 리스트 서브패널을 detail-panel
+         과 나란히 노출" 의미(과거엔 리스트 단독/디테일 단독 배타 토글이었음). 데스크톱: providers-panel
+         (리스트, 고정폭)+detail-panel(디테일, 나머지 폭)이 동시에 보임. 다른 뷰(모델·에이전트·채널 등)는
+         이 클래스를 붙이지 않으므로 기존처럼 detail-panel 단일 컬럼 그대로(무영향). 모바일(≤900px)은
+         아래 미디어쿼리가 #workbench 를 display:block 로 강제(특이성 우위)해 리스트→디테일 세로 스택. */
+      #providers-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; border-right:1px solid var(--border); }
+      #workbench.show-providers { display:grid; grid-template-columns: minmax(240px,300px) minmax(0,1fr); gap:0; height:100%; }
       #workbench.show-providers #providers-panel { display:flex; }
-      #workbench.show-providers #detail-panel { display:none; }
       #providers-head { display:flex; align-items:center; gap:10px; padding:16px 16px 12px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(16,20,29,.92); backdrop-filter: blur(14px); z-index:1; }
       #providers-head h1 { font-size:12px; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
       #providers-head .count { margin-left:auto; font-family: ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; color:var(--text-mute); }
       #providers-list { padding:10px; flex:1; }
+      /* 능력 뷰 3패널(ADR 2026-07-17 §5·§7 P2, ←인벤토리 재명명) — show-providers 와 완전 동형
+         (리스트 서브패널+detail-panel 동시 노출). 컨테이너만 별도 id(#capabilities-… 접두)로 둬
+         모듈 뷰 폴러(fetchProviders)와 인벤토리 폴러(fetchInventory)가 서로 다른 DOM 을 그려 충돌
+         0 — 리스트 항목 자체는 provider-item·pi-계열·module-group-계열 클래스를 그대로 재사용(시각
+         동형). ★주의: 이 주석엔 문자 그대로 별표-슬래시(주석 종료 토큰)를 넣지 말 것. */
+      #capabilities-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; border-right:1px solid var(--border); }
+      #workbench.show-capabilities { display:grid; grid-template-columns: minmax(240px,300px) minmax(0,1fr); gap:0; height:100%; }
+      #workbench.show-capabilities #capabilities-panel { display:flex; }
+      #capabilities-head { display:flex; align-items:center; gap:10px; padding:16px 16px 12px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(16,20,29,.92); backdrop-filter: blur(14px); z-index:1; }
+      #capabilities-head h1 { font-size:12px; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+      #capabilities-head .count { margin-left:auto; font-family: ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; color:var(--text-mute); }
+      #capabilities-list { padding:10px; flex:1; }
+      /* 모듈 리스트 그룹 헤더(kind 별, ADR §5 "채널/어댑터/트리거/옵저버/서비스/코어" 그룹핑 — 현재
+         실사용 kind 값 core|plugin|channel 기준, 미지 kind 는 kindLabel 폴백 라벨 그대로 새 그룹). */
+      /* 검색창(리스트 서브패널 상단, 그룹 위 — 모듈/능력 뷰 공용) — #providers-list/#capabilities-list
+         밖(재렌더로 지워지지 않음)에 둬 타이핑 중 30s 폴이 와도 값이 유지된다. */
+      .list-search-row { padding:10px 12px 2px; flex:none; }
+      .list-search-input { width:100%; box-sizing:border-box; padding:7px 10px; border-radius:10px; border:1px solid var(--border); background:var(--card); color:var(--text); font-size:12px; outline:none; font-family:inherit; }
+      .list-search-input::placeholder { color:var(--text-dim); }
+      .list-search-input:focus { border-color:rgba(125,211,252,.5); }
+      /* 접이식 카테고리(ADR §5) — 헤더 클릭 토글, chevron 회전. .collapsed 는 다음 형제
+         .module-group-items 를 숨긴다(appendCollapsibleGroup 이 항상 헤더+아이템쌍으로 생성). */
+      .module-group-head { display:flex; align-items:center; gap:9px; padding:14px 6px 7px; cursor:pointer; user-select:none; }
+      .module-group-head:first-child { padding-top:4px; }
+      .module-group-head:hover .module-group-label { color:var(--text); }
+      .module-group-chevron { font-size:11px; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
+      .module-group-head.collapsed .module-group-chevron { transform:rotate(-90deg); }
+      .module-group-head.collapsed + .module-group-items { display:none; }
+      .module-group-label { font-size:14px; font-weight:800; letter-spacing:.01em; color:var(--text-mute); }
+      .module-group-count { margin-left:auto; font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; color:var(--text-mute); background:var(--card); border:1px solid var(--border); padding:2px 8px; border-radius:999px; }
+      /* 검색 필터(js/util.js applyListSearchFilter) — 매치 그룹은 접힘 무시(강제 펼침 !important),
+         0매치 그룹은 헤더+아이템 통째로 숨김, 개별 미매치 항목은 숨김. */
+      .module-group-items.force-expanded { display:block !important; }
+      .module-group-head.search-hidden-group,
+      .module-group-head.search-hidden-group + .module-group-items { display:none !important; }
+      .provider-item.search-hidden { display:none; }
       .provider-item { position:relative; background:var(--card); border:1px solid transparent; border-radius:14px; padding:12px 12px 12px 14px; margin-bottom:8px; cursor:pointer; transition: background .12s, border-color .12s, transform .12s; }
       .provider-item:hover { background:var(--card-hover); border-color:var(--border); transform: translateY(-1px); }
       .provider-item.selected { background:rgba(125,211,252,.11); border-color:rgba(125,211,252,.38); }
@@ -574,6 +615,18 @@
          항상 소속). 상태필터(위)와 독립 클래스 → 두 규칙이 겹쳐 AND 로 숨김(둘 중 하나만 걸려도 숨김). */
       .bg-list.scope-session .bg-job:not(.bg-in-scope) { display:none; }
       .bg-empty { color:var(--text-mute); font-style:italic; font-size:12px; padding:20px 6px; text-align:center; }
+      /* ── 셸/프로세스 섹션(ADR 2026-07-17 §5, Phase 3b-2) — 워커/에이전트 잡 리스트(#bg-list,
+         위)와 물리적으로 분리된 별도 섹션(데이터 레인 분리 유지: shellRegistry ≠ jobCards).
+         #bg-list 는 flex:1 로 남은 공간을 다 쓰고, 이 섹션은 auto-height(콘텐츠만큼)로 아래 붙되
+         셸이 많아지면 max-height 에서 자체 스크롤 — 잡 리스트의 스크롤/점프 로직은 무변경. */
+      .bg-section-divider { flex:none; height:1px; margin:0 12px; background:var(--border); }
+      .bg-shells-section { flex:0 0 auto; max-height:42%; min-height:0; display:flex; flex-direction:column; overflow:hidden; transition:outline-color .15s ease; }
+      .bg-shells-head { flex:none; display:flex; align-items:center; padding:10px 12px 0; }
+      .bg-section-title { margin:0; font-size:11px; font-weight:900; letter-spacing:.03em; text-transform:uppercase; color:var(--text-mute); }
+      .bg-shells-section .bg-filter { flex:none; }
+      .bg-shells-list { min-height:0; }
+      /* showShells() 포커스 하이라이트(컴포저 스트립 클릭 등) — .bg-job.bg-flash/.agent-card.bg-flash 관례. */
+      .bg-shells-section.bg-flash { outline:2px solid var(--accent-2); outline-offset:-2px; border-radius:10px; }
       /* 진행 중 뷰용 — 카드 헤더 밑에 경과시간 + 마지막 스텝(현재 무엇을 하는 중인지)을 인라인 표시.
          detail 을 펼치지 않아도 "지금 뭐가 돌고 있나"를 즉시. running 이 끝나면 JS 가 갱신 멈춤. */
       .bg-job-live { display:flex; align-items:baseline; gap:8px; font-size:10px; color:var(--text-dim); flex-wrap:wrap; }
@@ -614,6 +667,17 @@
       .model-set-default { margin-left:auto; font-size:10px; font-weight:700; padding:2px 9px; border-radius:6px; background:transparent; color:var(--text-mute); border:1px solid var(--border); cursor:pointer; transition:color .12s,border-color .12s,background .12s; }
       .model-set-default:hover { color:var(--good); border-color:rgba(52,211,153,.5); background:rgba(52,211,153,.08); }
       .model-set-default:disabled { opacity:.5; cursor:default; }
+
+      /* 모듈 활성/비활성 토글 (P4a-2 — ADR 2026-07-17-module-capability-model §5.6). */
+      .module-toggle-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:2px 0 10px; }
+      .module-toggle-btn { font-size:11px; font-weight:800; padding:5px 13px; border-radius:8px; background:rgba(251,113,133,.12); color:var(--bad); border:1px solid rgba(251,113,133,.4); cursor:pointer; transition:opacity .12s,background .12s; }
+      .module-toggle-btn:hover { background:rgba(251,113,133,.2); }
+      .module-toggle-btn.is-off { background:rgba(52,211,153,.14); color:var(--good); border-color:rgba(52,211,153,.4); }
+      .module-toggle-btn.is-off:hover { background:rgba(52,211,153,.22); }
+      .module-toggle-btn:disabled { opacity:.5; cursor:default; }
+      .module-toggle-hint { flex-basis:100%; color:var(--text-dim); font-size:10.5px; }
+      .module-disabled-badge { font-size:9.5px; font-weight:800; letter-spacing:.2px; padding:2px 8px; border-radius:999px; background:rgba(251,191,36,.16); color:#fbbf24; border:1px solid rgba(251,191,36,.4); white-space:nowrap; }
+      .module-disabled-badge-sm { display:inline-block; margin-top:6px; }
       .model-card-desc { color:var(--text-mute); font-size:12px; margin-bottom:9px; }
       .model-pool { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
       .model-pool-label { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-right:2px; }
@@ -747,8 +811,9 @@
       .channel-status.up { background:rgba(52,211,153,.14); color:var(--good); border-color:rgba(52,211,153,.36); }
       .channel-status.disabled { background:var(--card); color:var(--text-mute); border-color:var(--border); }
       .channel-card-kind { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; }
-      /* ── 셸/프로세스 뷰(표면 C+D, ADR 2026-07-17) — agent-card 골격 재사용 + 카드별 상태 색. ── */
-      .shells-view { display:flex; flex-direction:column; gap:14px; }
+      /* ── 셸/프로세스 섹션(표면 C+D, ADR 2026-07-17 §5 → Phase 3b-2 드로어 이식) — agent-card
+         골격 재사용 + 카드별 상태 색. 옛 전체페이지 사이드바 뷰(.shells-view 래퍼)는 nav 제거와
+         함께 정리(#bg-shells-section 이 대체 컨테이너, app.css 아래 .bg-shells-section 참조). */
       .agent-card.shell-card.exited { border-left-color:#34d399; }
       .agent-card.shell-card.killed { border-left-color:var(--text-dim); opacity:.85; }
       .shell-card-command { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:13px; }
@@ -763,6 +828,11 @@
       /* SDK 소유 표식 + kill 비활성 안내(Phase 3b, ADR §6 — cosmetic ⏹️ 금지, 정직한 한계 노출). */
       .shell-card-owner { margin-left:auto; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; text-transform:uppercase; letter-spacing:.03em; background:rgba(251,191,36,.14); color:var(--warn); border:1px solid rgba(251,191,36,.34); }
       .shell-card-kill-disabled { margin-left:auto; font-size:11px; color:var(--text-dim); font-weight:600; cursor:help; }
+      /* 드로어 컴팩트 카드(ADR §5 Phase 3b-2) — 잡카드 스타일 답습(#bg-job 패딩과 맞춤). 폭 좁은
+         드로어(min 300px)에 맞춰 agent-card 기본보다 여백·라운드를 줄인다. 유일 소비처(다른 grid
+         컨텍스트 없음)라 기저 .agent-card 클래스는 그대로 두고 스코프 오버라이드만. */
+      .bg-shells-list .agent-card.shell-card { padding:10px 12px; border-radius:12px; gap:6px; }
+      .bg-shells-list .agent-card-name { font-size:13px; }
       /* 프로젝트 카드 ⋯ 메뉴(폴더 열기 등) — 카드 우측 상단. hover/focus 시 노출. */
       .project-card > .cm-kebab { position:absolute; top:9px; right:9px; opacity:0; z-index:2; transition:opacity .12s;
         border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
@@ -1025,6 +1095,7 @@
         body[data-main="activity"][data-tab="main"] #activity-view { display:flex; }
         #sidebar { overflow:visible; padding-bottom:76px; }
         #providers-panel { border-right:0; height:auto; overflow:visible; }
+        #capabilities-panel { border-right:0; height:auto; overflow:visible; }
         #detail-panel { height:auto; min-height:calc(100svh - 56px - 50px); overflow:visible; padding:14px 14px 70px; }
         #right { min-height:calc(100svh - 56px - 50px); }
         #stream { min-height:calc(100svh - 56px - 50px - 126px); overflow:visible; }

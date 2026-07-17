@@ -120,6 +120,7 @@
         setActiveNav("models");
         setChatPanel("chat");
         document.getElementById("workbench").classList.remove("show-providers");
+        document.getElementById("workbench").classList.remove("show-capabilities");
         const root = document.getElementById("detail-panel");
         root.innerHTML = "";
         const wrap = document.createElement("div");
@@ -133,6 +134,7 @@
         setActiveNav("settings");
         setChatPanel("chat");
         document.getElementById("workbench").classList.remove("show-providers");
+        document.getElementById("workbench").classList.remove("show-capabilities");
         const root = document.getElementById("detail-panel");
         root.innerHTML = '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div><div class="detail-name">설정</div><span class="detail-kind">준비 중</span></div><div class="empty">설정 화면은 다음 단계에서 연결합니다.</div></div>';
       };

@@ -291,15 +291,16 @@
           else if (view === "providers") showProviders();
           else if (view === "models") showModels();
           else if (view === "inventory") showInventory();
-          else if (view === "agents") showAgents();
-          else if (view === "shells") showShells();
           else if (view === "projects") showProjects();
-          else if (view === "channels") showChannels();
           else if (view === "endpoints") showEndpoints();
           else if (view === "activity") showActivityView();
           else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
           else if (view === "settings") showSettings();
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","agents","shells","projects","channels","endpoints","activity"].includes(view)) setActiveTab("main");
+          // 채널·에이전트 top-nav 제거(ADR 2026-07-17 §5 오픈이슈#1, Phase 3b-1) — 채널은 모듈 뷰
+          // (data-view="providers")에 흡수, 실행 중 에이전트는 백그라운드 드로어 잡카드 소관.
+          // 🖥️ 셸 top-nav 제거(ADR §5, Phase 3b-2) — 백그라운드 드로어 안 별도 섹션으로 이식
+          // (showShells 는 이제 openBg 로 드로어를 여는 함수, background-drawer.js 표면 B 소관).
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
         });
       }
 

@@ -957,9 +957,22 @@ export const runClaude = async (
   try {
   for (;;) {
   try {
+  // 완료-hang 진단 계측(2026-07-17) — sdk_message 는 firehose 라 DB 미영속이므로, 완료 경로가
+  // 어디서 멈추는지 *로그*(영속)로 남긴다. stream_event(토큰)는 flood 라 200개마다만, 그 외
+  // 메시지·loop-exit·return 은 매번. hang 재현 시 로그 마지막 [claude-complete] 줄이 멈춘 지점.
+  let diagStreamCount = 0;
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
     idleTimer.beat();
+    if (msg.type === "stream_event") {
+      diagStreamCount += 1;
+      if (diagStreamCount % 200 === 0) {
+        console.log(`[claude-complete] ${input.threadKey} stream_event x${diagStreamCount} (still consuming, no result yet)`);
+      }
+    } else {
+      const sub = (msg as { subtype?: unknown }).subtype;
+      console.log(`[claude-complete] ${input.threadKey} recv=${msg.type}${sub ? "/" + String(sub) : ""}`);
+    }
     // 관측 publish — for-await 흐름 영향 0 (publish 동기 + EventBus 격리).
     // payload 핵심 필드만, 큰 객체는 truncate.
     bus.publish({
@@ -1019,6 +1032,19 @@ export const runClaude = async (
         }
       }
     } else if (msg.type === "result") {
+      // 완료 데드락 수정(ADR 2026-07-16-midturn-steering §"완료 데드락 + 수정" 채택안 Part A) —
+      // result 는 모델 turn 종료 신호. steering.stream(signal) 을 소비하는 제너레이터
+      // (buildQuery) 는 이 채널이 close 되어야 return → SDK 가 stdin(endInput) close →
+      // 출력 스트림 done → 이 for-await 가 LOOP-EXIT. 종전엔 close 가 **턴 finally**(index.ts)
+      // 에만 걸려 있어 "턴 완료(=이 루프 종료) 대기 ↔ 채널 close(=턴 완료 후) 대기" 순환 데드락이
+      // 났다. result 를 **관측하는 이 지점**(어댑터 루프)에서 직접 close 해 순환을 끊는다.
+      // 미주입(steering undefined, flag off·비대화 turn)은 `?.` no-op → string 경로 바이트
+      // 동일(회귀 0). success·is_error throw·error subtype throw 모든 result 경로를 아래
+      // subtype 분기 *이전*에 덮으므로 throw 경로에서도 제너레이터가 return 해 stdin 이 닫힌다.
+      // close 는 동기(closed=true+waiter wake) — 인라인 호출 안전, for-await 흐름 영향 0.
+      // 턴 finally 의 steeringCh.close()(index.ts, 멱등)는 2차 안전망으로 그대로 유지
+      // (abort·에러로 result 미도달 시 여전히 닫음).
+      input.steering?.close();
       if (msg.subtype === "success") {
         // 실측 (probe 2026-06-02): 모델 거부(미존재 model)는 SDK 가 result.subtype
         // "success" + is_error=true + result 본문에 API 에러를 실어 보낸다 (errors[]
@@ -1304,6 +1330,7 @@ export const runClaude = async (
       }
     }
   }
+    console.log(`[claude-complete] ${input.threadKey} LOOP-EXIT (스트림 정상 종료) resultText=${resultText !== undefined} chunks=${assistantTextChunks.length} streamDeltas=${diagStreamCount}`);
     break; // 스트림 정상 소비 — 재시도 루프 종료.
   } catch (e) {
     // resume 세션 부재/손상("process exited with code 1") → resume 제거 후 fresh
@@ -1419,8 +1446,10 @@ export const runClaude = async (
     }
   }
 
+  console.log(`[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${(resultText ?? assistantTextChunks.join("")).length} succeeded=${succeeded}`);
   const text = resultText ?? assistantTextChunks.join("");
   const effectiveSuccess = succeeded || text.length > 0;
+  console.log(`[claude-complete] ${input.threadKey} RETURN (어댑터 반환 — 이후 turn_done/전달은 facade) len=${text.length}`);
   if (effectiveSuccess && lastSessionId !== undefined) {
     const sessionId: string = lastSessionId;
     const jsonl = resolveJsonlPath(input.cwd ?? getPaths().home, sessionId);

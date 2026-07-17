@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { Provider, ProviderStatus } from "../../../src/core/plugins/providers.js";
+import type { Module, ModuleStatus } from "../../../src/core/plugins/providers.js";
 import { listMemories } from "../../../src/store/memory.js";
 
 const toIso = (ms: number | null | undefined): string | null =>
@@ -19,7 +19,7 @@ const parseMemoryBody = (body: string): unknown => {
   }
 };
 
-export const collectProvider = (): Provider => {
+export const collectProvider = (): Module => {
   const feedback = listMemories({ type: "feedback", limit: 10000, orderBy: "updated" });
   const reflections = feedback.filter((m) => m.name.startsWith("feedback_growth_reflection_"));
   const drift = feedback.filter((m) => m.name.startsWith("feedback_growth_drift_"));
@@ -32,7 +32,7 @@ export const collectProvider = (): Provider => {
   const repoPackage = join(process.cwd(), "plugins", "self-growth", "package.json");
   const runtimeManifestExists = existsSync(runtimeManifest);
   const repoPackageExists = existsSync(repoPackage);
-  const status: ProviderStatus = runtimeManifestExists || repoPackageExists ? "active" : "missing";
+  const status: ModuleStatus = runtimeManifestExists || repoPackageExists ? "active" : "missing";
 
   return {
     id: "plugin.self-growth",

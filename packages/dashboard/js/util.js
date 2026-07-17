@@ -1,22 +1,3 @@
-      // 사이드바 접기 토글 — 넓은(그리드) 레이아웃에서 사이드바를 아이콘 레일로 줄여 콘텐츠 폭
-      // 확보. body.nav-collapsed + localStorage 영속. 모바일(≤900)에선 CSS 가 토글을 숨김.
-      (() => {
-        const btn = document.getElementById("nav-collapse");
-        if (!btn) return;
-        const KEY = "nav-collapsed";
-        const apply = (collapsed) => {
-          document.body.classList.toggle("nav-collapsed", collapsed);
-          btn.textContent = collapsed ? "»" : "«";
-          btn.setAttribute("aria-label", collapsed ? "메뉴 펼치기" : "메뉴 접기");
-        };
-        apply(localStorage.getItem(KEY) === "1");
-        btn.addEventListener("click", () => {
-          const collapsed = !document.body.classList.contains("nav-collapsed");
-          apply(collapsed);
-          try { localStorage.setItem(KEY, collapsed ? "1" : "0"); } catch {}
-        });
-      })();
-
       let toastTimer = null;
       const showToast = (msg, tone) => {
         const el = document.getElementById("toast");

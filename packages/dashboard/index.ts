@@ -27,6 +27,9 @@
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
  *  - POST /api/cancel-queued → bridge POST /cancel-queued (admin, 대기 중 메시지 취소)
  *  - POST /api/cancel-worker → bridge POST /cancel-worker (write, 진행 중 백그라운드 워커 취소)
+ *  - GET  /api/shells    → bridge GET  /shells          (JSON pass, 백그라운드 셸 관측 레인 시드)
+ *  - GET  /api/shell-output → bridge GET /shell-output  (JSON pass, ★비소비 tail 스냅샷 폴링)
+ *  - POST /api/kill-shell → bridge POST /kill-shell     (write, 백그라운드 셸 강제 종료)
  *
  * 외부 의존 0 — node 표준 http/fs/path/url 만. Channel/Observer import 0 (외부 client).
  */
@@ -429,6 +432,30 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/cancel-worker" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/cancel-worker", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 백그라운드 셸 관측 레인(ADR 2026-07-17 Phase 3, 표면 C) — bridge GET /shells
+    // (read 토큰 server-side 주입). 사이드바 "🖥️ 셸" 뷰 오픈 시 시드. /api/worker-jobs 동형.
+    if (pathname === "/api/shells" && method === "GET") {
+      await proxyJson(res, "/shells");
+      return;
+    }
+    // 셸 라이브 tail(표면 D, ★비소비 스냅샷) — bridge GET /shell-output?id= (read). 대시보드
+    // 전용 폴링, 모델 BashOutput offset 미소비(ADR §1 불변식). id 쿼리 그대로 전달.
+    if (pathname === "/api/shell-output" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/shell-output" + qs);
+      return;
+    }
+    // 셸 강제 종료 — bridge POST /kill-shell (write 토큰 server-side 주입, browser 미노출).
+    // body{shellId} 그대로 전달, /api/cancel-worker 와 동일 프록시 메커니즘.
+    if (pathname === "/api/kill-shell" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/kill-shell", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

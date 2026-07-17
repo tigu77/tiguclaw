@@ -438,6 +438,76 @@
         return wrap;
       };
 
+      // ── 표면 A — 백그라운드 셸 인라인 칩 (ADR 2026-07-17 §5-A, Phase 3b) ──────────────
+      // 백엔드 무변경(계약: "도구 result 텍스트에 bash_<id> 가 이미 있음 → 클라이언트에서 파싱").
+      // file-ops launchBgShell 의 고정 문구 "…(bash_id: bash_xxxxxxxx). BashOutput(…" 만 매칭
+      // (codex/openai 전용) — claude SDK 네이티브 Bash 의 tool_result 문구는 다른 포맷("Command
+      // running in background with ID: …")이라 이 정규식이 매칭 안 함 = 이 칩은 자연히 미부착.
+      // claude 백그라운드 셸은 표면 C(view-shells.js)가 SSE 관측 브리지로 별도 표시(ADR §6) —
+      // 의도된 비대칭, cross-adapter 폴백 아님(어댑터 안에서 각자 닫힘, feedback_no_cross_adapter_fallback).
+      const SHELL_CHIP_ID_RE = /\(bash_id:\s*(bash_[a-z0-9]+)\)/i;
+
+      const shellChipStatusLabel = (entry) => {
+        if (!entry || entry.status === "running") return "실행 중";
+        if (entry.status === "killed") return "killed";
+        return "exited(" + (entry.exitCode != null ? entry.exitCode : "?") + ")";
+      };
+
+      // shellRegistry(view-shells.js 공유, 단일 진실 소스)의 최신 상태를 부착된 칩(들)에 반영.
+      // view-shells.js 의 handleShellStarted/handleShellExited·requestKillShell 이 매 상태변화마다
+      // 이 함수를 호출(cross-file, typeof 가드 — 로드순서 무관, syncAgentsCounts 패턴 동형).
+      const syncShellChip = (shellId) => {
+        if (!shellId) return;
+        const entry = (typeof shellRegistry !== "undefined") ? shellRegistry.get(shellId) : null;
+        const chips = document.querySelectorAll(".act-shell-chip");
+        for (const chip of chips) {
+          if (chip.dataset.shellId !== shellId) continue;
+          const running = !entry || entry.status === "running";
+          const dot = chip.querySelector(".act-shell-chip-dot");
+          if (dot) dot.className = "act-shell-chip-dot" + (running ? " running" : entry.status === "killed" ? " killed" : " exited");
+          const txt = chip.querySelector(".act-shell-chip-txt");
+          if (txt) txt.textContent = "🖥️ " + shellChipStatusLabel(entry);
+          const killBtn = chip.querySelector(".act-shell-chip-kill");
+          if (killBtn) {
+            const killable = !entry || entry.killable !== false; // 부재=killable:true(계약).
+            killBtn.style.display = (running && killable) ? "" : "none";
+            killBtn.disabled = !!(entry && entry.killRequested);
+            killBtn.title = entry && entry.killRequested ? "중지 요청…" : "셸 강제 종료";
+          }
+          const sdkNote = chip.querySelector(".act-shell-chip-sdk");
+          if (sdkNote) sdkNote.style.display = (running && entry && entry.killable === false) ? "" : "none";
+        }
+      };
+
+      // 도구 스텝 라인에 셸 칩을 부착(멱등 — 이미 이 shellId 로 부착돼 있으면 상태만 재동기화).
+      // annotateToolDuration(background-drawer.js phase:end)이 output 텍스트에서 shellId 를
+      // 찾으면 이 함수를 호출 — 그 자리(백그라운드 Bash 스텝 라인)에 라이브 칩을 얹는다.
+      const attachShellChip = (lineEl, shellId) => {
+        if (!lineEl || !shellId) return;
+        let chip = lineEl.querySelector(":scope > .act-shell-chip");
+        if (chip && chip.dataset.shellId === shellId) { syncShellChip(shellId); return; }
+        if (chip) chip.remove(); // 방어적(정상 경로 X) — 다른 shellId 칩이 이미 있으면 교체.
+        chip = document.createElement("span");
+        chip.className = "act-shell-chip";
+        chip.dataset.shellId = shellId;
+        chip.title = "백그라운드 셸 " + shellId;
+        const dot = document.createElement("span"); dot.className = "act-shell-chip-dot running";
+        const txt = document.createElement("span"); txt.className = "act-shell-chip-txt"; txt.textContent = "🖥️ 실행 중";
+        const sdkNote = document.createElement("span"); sdkNote.className = "act-shell-chip-sdk"; sdkNote.style.display = "none";
+        sdkNote.textContent = "SDK 소유"; sdkNote.title = "claude 백그라운드 셸은 대화 턴 안에서만 제어됩니다.";
+        const killBtn = document.createElement("button");
+        killBtn.type = "button"; killBtn.className = "act-shell-chip-kill"; killBtn.textContent = "⏹️";
+        killBtn.title = "셸 강제 종료";
+        // 워커/서브 스폰 칩(.act-bg-link)과 클릭 핸들러 패턴 동형 — 스텝 펼침 클릭과 분리.
+        killBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          if (typeof requestKillShell === "function") void requestKillShell(shellId);
+        });
+        chip.appendChild(dot); chip.appendChild(txt); chip.appendChild(sdkNote); chip.appendChild(killBtn);
+        lineEl.appendChild(chip);
+        syncShellChip(shellId); // 부착 시점 최신 상태 즉시 반영(이미 종료돼 있었을 수도 있음).
+      };
+
       const buildActivityLine = (p) => {
         const line = document.createElement("div");
         // 스텝 = 클릭 가능 요소(P4 사이드바 상세가 여기 붙는다). 지금은 자리 예약만(no-op).

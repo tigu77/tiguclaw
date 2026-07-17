@@ -775,6 +775,57 @@ export const runClaude = async (
     { jobId: string; agentName: string; task: string; seq: number }
   >();
 
+  // ─── claude 백그라운드 셸 관측 브리지 (ADR `2026-07-17-background-shell-observability.md`
+  // §6, Phase 4) ────────────────────────────────────────────────────────────────────
+  //
+  // file-ops BG_SHELLS(codex/openai 전용)와 달리 claude 는 SDK 빌트인 Bash
+  // (run_in_background) 가 셸을 *SDK 내부에서* 소유한다 — pid 를 몰라 밖에서 kill/reap
+  // 불가. 여기서는 SDK 메시지 스트림에서 Bash(run_in_background) tool_use/tool_result 를
+  // 파싱해 file-ops 와 동일 shell.started/shell.exited 스키마로 **관측만**(read-only)
+  // 미러링한다 — status/lifecycle 의 진실은 항상 SDK. 이 브리지는 kill·reap 을 절대
+  // 수행하지 않는다(payload 에 owner:"sdk"·killable:false — 대시보드가 이 두 필드로
+  // claude 셸엔 ⏹️ 를 비활성/미표시하고 "SDK 소유" 안내를 렌더할 계약, P3 가 읽음).
+  //
+  // 식별 신호(이 저장소에 고정된 @anthropic-ai/claude-agent-sdk 버전의 cli.js 실측 —
+  // node_modules/@anthropic-ai/claude-agent-sdk/cli.js 소스 대조로 확정, 추측 아님):
+  //  - Bash tool_use(top-level, input.run_in_background===true) 자체엔 shellId 가 없다
+  //    (SDK 가 나중에 배정) — 그 tool_result 텍스트에 "Command running in background
+  //    with ID: <id>. Output is being written to: <path>"(모델이 수동 backgrounding 시
+  //    "was manually backgrounded by user with ID: ...")가 실려야 비로소 shellId 를 안다.
+  //  - 종료는 모델이 후속으로 `TaskOutput`(canonical 이름 — SDK 는 "BashOutput" 도
+  //    alias 로 받지만 실제 발행되는 tool_use.name 은 "TaskOutput")·`KillShell` 을 호출해
+  //    그 tool_result 를 받을 때만 추론 가능(coarse, ADR §6 명시 — 모델이 한 번도 상태를
+  //    확인 안 하면 exited 는 영영 관측 안 됨. 정직한 한계, 억지 폴링 0).
+  //  - 매칭 실패(향후 SDK 가 문구를 바꾸면) → 조용히 미관측(throw 0, best-effort,
+  //    기존 claude Bash 동작·부모 turn 은 무변경, additive).
+  const pendingBgBash = new Map<string, { command: string }>(); // toolUseId -> 대기중 백그라운드 Bash 요청.
+  const pendingTaskOutput = new Map<string, string>(); // toolUseId -> 조회 대상 shellId(우리가 관측 중인 것만 등록).
+  const pendingKillShellCalls = new Map<string, string>(); // toolUseId -> kill 대상 shellId(관측 중인 것만).
+  const observedShells = new Map<string, { command: string; startedAt: number }>(); // shellId -> shell.started 발행 시 기록(관측 중 = 우리가 발행한 것만).
+  const finalizedShells = new Set<string>(); // shell.exited 이미 발행된 shellId(이중발행 0).
+
+  const BG_BASH_ID_RE =
+    /Command (?:running in background|was manually backgrounded by user) with ID:\s*(\S+?)\.\s*Output is being written to:/;
+  const TASK_STATUS_RE = /<status>([^<]*)<\/status>/;
+  const TASK_EXIT_CODE_RE = /<exit_code>(-?\d+)<\/exit_code>/;
+  const KILL_SUCCESS_RE = /Successfully killed shell:\s*(\S+)/;
+
+  /** file-ops publishShellEventSafe 동형 — best-effort, 발행 실패가 turn 을 무르지 않는다. */
+  const publishClaudeShellEvent = (
+    type: "shell.started" | "shell.exited",
+    payload: Record<string, unknown>,
+  ): void => {
+    try {
+      bus.publish({
+        type,
+        ts: Date.now(),
+        payload: { owner: "sdk", killable: false, ...payload },
+      });
+    } catch {
+      /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
+    }
+  };
+
   // 서브 내부 도구 스텝을 agent:<jobId> 좌표로 발행 (best-effort — throw 격리).
   // kind 는 "tool" 만 — llm.activity 스키마(RegionAActivityPayload.kind: "tool"|"turn")가
   // 이산 도구 스텝 단위라, 서브 내부 텍스트는 별도 activity 로 만들지 않는다(codex 서브도
@@ -1070,6 +1121,38 @@ export const runClaude = async (
               if (toolName === "Task" && typeof toolUseId === "string") {
                 registerTaskJob(toolUseId, toolInput);
               }
+              // claude 백그라운드 셸 관측 등록(Phase 4, best-effort) — 이 tool_use 자체는
+              // 아직 shellId 를 모른다(Bash 는 tool_result 에서, TaskOutput/KillShell 은
+              // *우리가 이미 관측 중인* shellId 를 요청할 때만 상관— 서브에이전트 백그라운드
+              // (`Agent` run_in_background)나 리모트 세션 등 남의 task_id 는 무시).
+              if (typeof toolUseId === "string") {
+                try {
+                  if (toolName === "Bash" && normInput?.run_in_background === true) {
+                    pendingBgBash.set(toolUseId, {
+                      command:
+                        typeof normInput.command === "string" ? normInput.command : "",
+                    });
+                  } else if (toolName === "TaskOutput") {
+                    const reqId =
+                      typeof normInput?.task_id === "string"
+                        ? normInput.task_id
+                        : undefined;
+                    if (reqId !== undefined && observedShells.has(reqId)) {
+                      pendingTaskOutput.set(toolUseId, reqId);
+                    }
+                  } else if (toolName === "KillShell") {
+                    const reqId =
+                      typeof normInput?.shell_id === "string"
+                        ? normInput.shell_id
+                        : undefined;
+                    if (reqId !== undefined && observedShells.has(reqId)) {
+                      pendingKillShellCalls.set(toolUseId, reqId);
+                    }
+                  }
+                } catch {
+                  /* 관측 등록 실패 무해 — 부모 turn 무영향(원칙 3). */
+                }
+              }
               // 인라인 스폰 스텝 ↔ 드로어 잡 링크(2026-07-13) — Task 로 등록된 관측 잡 jobId 를
               // 이 활동에 실어 대시보드가 클릭→드로어 점프·상태 표시. (등록 실패 시 undefined.)
               const spawnJobId =
@@ -1109,7 +1192,13 @@ export const runClaude = async (
       // 메시지(parent_tool_use_id===null). content 의 tool_result 블록 중 tool_use_id 가
       // 추적 중인 Task id 면 그 서브 완료 → markDone(agent 잡 종료 = 대시보드 카드 완료).
       // best-effort — extractToolResults·completeTaskJob 은 throw 없음(순수/try 내장).
-      if (taskJobs.size > 0 || toolTiming.size > 0) {
+      if (
+        taskJobs.size > 0 ||
+        toolTiming.size > 0 ||
+        pendingBgBash.size > 0 ||
+        pendingTaskOutput.size > 0 ||
+        pendingKillShellCalls.size > 0
+      ) {
         for (const { toolUseId, text, isError } of extractToolResults(msg)) {
           if (taskJobs.size > 0) completeTaskJob(toolUseId, text, isError);
           // 실행시간(#3) — 이 tool_result 에 대응하는 top-level 도구가 있으면 phase:"end"
@@ -1137,6 +1226,79 @@ export const runClaude = async (
             } catch {
               /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
             }
+          }
+
+          // claude 백그라운드 셸 관측(Phase 4) — best-effort, 매칭 실패 시 조용히 미관측.
+          try {
+            // (a) Bash(run_in_background) tool_result — 여기서 처음 shellId 를 안다.
+            const pendingBash = pendingBgBash.get(toolUseId);
+            if (pendingBash !== undefined) {
+              pendingBgBash.delete(toolUseId);
+              const m = !isError ? BG_BASH_ID_RE.exec(text) : null;
+              const shellId = m?.[1];
+              if (shellId !== undefined) {
+                const startedAt = Date.now();
+                observedShells.set(shellId, { command: pendingBash.command, startedAt });
+                publishClaudeShellEvent("shell.started", {
+                  shellId,
+                  command: pendingBash.command,
+                  cwd,
+                  status: "running",
+                  startedAt,
+                  threadKey: input.threadKey,
+                });
+              }
+            }
+
+            // (b) KillShell tool_result — 모델이 자기 KillShell 도구로 종료(우리 kill 아님,
+            // 대시보드 ⏹️ 는 killable:false 라 비활성 — 이건 모델 스스로의 종료를 미러링).
+            const killTarget = pendingKillShellCalls.get(toolUseId);
+            if (killTarget !== undefined) {
+              pendingKillShellCalls.delete(toolUseId);
+              if (
+                !isError &&
+                !finalizedShells.has(killTarget) &&
+                KILL_SUCCESS_RE.test(text)
+              ) {
+                finalizedShells.add(killTarget);
+                const meta = observedShells.get(killTarget);
+                publishClaudeShellEvent("shell.exited", {
+                  shellId: killTarget,
+                  command: meta?.command,
+                  cwd,
+                  status: "killed",
+                  exitCode: null,
+                  startedAt: meta?.startedAt,
+                  threadKey: input.threadKey,
+                });
+              }
+            }
+
+            // (c) TaskOutput tool_result — coarse exit 추론(모델이 상태를 확인했을 때만).
+            const pollTarget = pendingTaskOutput.get(toolUseId);
+            if (pollTarget !== undefined) {
+              pendingTaskOutput.delete(toolUseId);
+              if (!finalizedShells.has(pollTarget)) {
+                const statusMatch = TASK_STATUS_RE.exec(text);
+                const status = statusMatch?.[1]?.trim();
+                if (status !== undefined && status !== "" && status !== "running") {
+                  finalizedShells.add(pollTarget);
+                  const exitMatch = TASK_EXIT_CODE_RE.exec(text);
+                  const meta = observedShells.get(pollTarget);
+                  publishClaudeShellEvent("shell.exited", {
+                    shellId: pollTarget,
+                    command: meta?.command,
+                    cwd,
+                    status: "exited",
+                    exitCode: exitMatch !== null ? Number(exitMatch[1]) : null,
+                    startedAt: meta?.startedAt,
+                    threadKey: input.threadKey,
+                  });
+                }
+              }
+            }
+          } catch {
+            /* 관측 실패가 turn 을 무르지 않는다(원칙 3). */
           }
         }
       }

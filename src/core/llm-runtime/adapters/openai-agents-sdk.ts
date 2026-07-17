@@ -209,8 +209,10 @@ export const runOpenAi = async (
         await adaptClaudeMcpServer(createMemoryMcpServer(), "memory"),
         // 3b — baseCwd=discoveryCwd(input.cwd ?? home) 주입 → 상대경로 기준점이 턴 cwd
         // (프로젝트). claude(SDK options.cwd) 와 대칭 = #2 parity(ADR 2026-07-06 §3b).
+        // threadKey(ADR 2026-07-17 §Phase 2/§6 마감) — openai 백그라운드 셸의
+        // shell.started.threadKey 가 실 세션이 되도록 전파(이전엔 baseCwd 만 넘겨 "" 폴백).
         await adaptClaudeMcpServer(
-          createFileOpsMcpServer(discoveryCwd),
+          createFileOpsMcpServer(discoveryCwd, input.threadKey),
           "file-ops",
         ),
         await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),

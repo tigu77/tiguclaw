@@ -64,6 +64,7 @@ import {
 import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js";
 import { getPaths } from "../../paths.js";
 import { detectShell } from "../../runtime-env.js";
+import { getEventBus } from "../../eventbus.js";
 import {
   insertBgShell as insertBgShellDb,
   markBgShellStatus as markBgShellStatusDb,
@@ -175,6 +176,9 @@ interface BgShell {
   status: "running" | "completed" | "killed";
   exitCode: number | null;
   startedAt: number;
+  // 어느 대화 턴이 이 셸을 띄웠나 (ADR §1 shell.started.threadKey). 팩토리/Bash 도구가
+  // 전파 안 하면 "" 폴백(회귀 0) — 대시보드 관측용, 실행/추적 로직엔 영향 0.
+  threadKey: string;
 }
 const BG_SHELLS = new Map<string, BgShell>();
 const BG_MAX = 20; // 동시 백그라운드 셸 상한(메모리 바운드).
@@ -201,6 +205,22 @@ const persistBgShellSafe = (label: string, fn: () => void): void => {
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`bg-shells: DB 미러 실패(${label}): ${reason}`);
+  }
+};
+
+// ─── shell.* 라이프사이클 이벤트 (ADR 2026-07-17 Phase 2 §1) ───────────────────
+// worker-jobs.ts `publishWorkerLifecycle` 동형 — best-effort try-catch(발행 실패가
+// 셸 실행을 무르지 않는다, persistBgShellSafe 동형). 셸은 상태공간이 단순(running→
+// exited(code)|killed)이라 2종만: shell.started(등록 시)·shell.exited(자연종료/kill 시).
+// §0 단방향: 코어(file-ops-mcp)가 generic type 을 버스에 발행 — 대시보드 이름 참조 0.
+const publishShellEventSafe = (
+  type: "shell.started" | "shell.exited",
+  payload: Record<string, unknown>,
+): void => {
+  try {
+    getEventBus().publish({ type, ts: Date.now(), payload });
+  } catch {
+    /* noop — 관측 발행 실패가 셸을 무르지 않는다. */
   }
 };
 
@@ -271,7 +291,12 @@ const killTree = async (
 };
 
 // baseCwd 주입(3b) — 백그라운드 셸도 턴 cwd 기준으로 실행(포그라운드 Bash 와 대칭).
-const launchBgShell = async (command: string, cwd: string): Promise<string> => {
+// threadKey(ADR Phase 2 §1) — 어느 대화 턴이 이 셸을 띄웠나(관측용, 미전파 시 "" 폴백).
+const launchBgShell = async (
+  command: string,
+  cwd: string,
+  threadKey: string,
+): Promise<string> => {
   // 끝난 셸 하나 정리해 상한 압박 완화(전부 running 이면 그대로 진행 — 20 이면 충분).
   if (BG_SHELLS.size >= BG_MAX) {
     for (const [k, s] of BG_SHELLS) {
@@ -304,6 +329,7 @@ const launchBgShell = async (command: string, cwd: string): Promise<string> => {
     status: "running",
     exitCode: null,
     startedAt,
+    threadKey,
   };
   child.stdout?.on("data", (d: Buffer) => {
     shell.stdout = appendCapped(shell.stdout, d.toString("utf8"));
@@ -311,6 +337,20 @@ const launchBgShell = async (command: string, cwd: string): Promise<string> => {
   child.stderr?.on("data", (d: Buffer) => {
     shell.stderr = appendCapped(shell.stderr, d.toString("utf8"));
   });
+  // shell.exited 페이로드 — close/error(자연종료) 공용 빌더. status="exited"(kill 경로는
+  // killShellById/killAllBgShells 가 별도로 "killed" 를 발행 — 이 핸들러는 status==="running"
+  // 가드 덕에 kill 이후엔 실행돼도 no-op 이라 이중발행 0).
+  const publishExited = (): void => {
+    publishShellEventSafe("shell.exited", {
+      shellId: id,
+      command: shell.command,
+      cwd: shell.cwd,
+      status: "exited",
+      exitCode: shell.exitCode,
+      startedAt: shell.startedAt,
+      threadKey: shell.threadKey,
+    });
+  };
   child.on("error", () => {
     if (shell.status === "running") {
       shell.status = "completed";
@@ -318,6 +358,7 @@ const launchBgShell = async (command: string, cwd: string): Promise<string> => {
       persistBgShellSafe("close(error)", () =>
         markShellTerminalDb(id, "completed", shell.exitCode),
       );
+      publishExited();
     }
   });
   child.on("close", (code) => {
@@ -327,9 +368,18 @@ const launchBgShell = async (command: string, cwd: string): Promise<string> => {
       persistBgShellSafe("close", () =>
         markShellTerminalDb(id, "completed", shell.exitCode),
       );
+      publishExited();
     }
   });
   BG_SHELLS.set(id, shell);
+  publishShellEventSafe("shell.started", {
+    shellId: id,
+    command,
+    cwd,
+    status: "running",
+    startedAt,
+    threadKey,
+  });
   // DB insert — *동기* 실행(spawn 과 같은 tick). ★레이스 회피: child 의 close/error
   // 이벤트는 libuv 콜백이라 이번 tick 안엔 절대 못 들어온다 — 그래서 이 INSERT 가
   // 항상 close/error 의 UPDATE(markShellTerminalDb)보다 먼저 반영됨을 보장한다(순서
@@ -414,10 +464,123 @@ export const killAllBgShells = async (): Promise<void> => {
             exitCode: s.exitCode,
           });
         });
+        publishShellEventSafe("shell.exited", {
+          shellId: id,
+          command: s.command,
+          cwd: s.cwd,
+          status: "killed",
+          exitCode: s.exitCode,
+          startedAt: s.startedAt,
+          threadKey: s.threadKey,
+        });
       }
       BG_SHELLS.delete(id);
     }),
   );
+};
+
+// ─── 코어 export (ADR 2026-07-17 Phase 2 §B) — http-bridge 가 §0 단방향으로 호출 ──────
+// (코어는 http-bridge/대시보드 이름을 참조하지 않는다 — 플러그인이 아래 3개를 가져다 쓴다.)
+
+/** 대시보드 표면 C 라이브 시드용 셸 레코드 shape — listShells 반환 원소. */
+export interface BgShellSnapshot {
+  shellId: string;
+  command: string;
+  cwd: string;
+  status: "running" | "completed" | "killed";
+  startedAt: number;
+  threadKey: string;
+  exitCode: number | null;
+}
+
+/**
+ * 현재 BG_SHELLS 스냅샷(모듈 레벨 in-memory Map 그대로 복사) — startedAt 내림차순(최신 먼저,
+ * listJobs 패턴 동형). running·터미널(completed/killed, 아직 캡에 밀려 안 지워진 것) 전부
+ * 포함 — 대시보드 사이드바 뷰가 방금 끝난 셸도 잠시 보여줄 수 있게(worker-jobs 의 "런타임
+ * 진실=in-memory Map" 원칙과 동형). http-bridge `GET /shells` 가 그대로 JSON 직렬화.
+ */
+export const listShells = (): BgShellSnapshot[] =>
+  [...BG_SHELLS.entries()]
+    .map(([shellId, s]) => ({
+      shellId,
+      command: s.command,
+      cwd: s.cwd,
+      status: s.status,
+      startedAt: s.startedAt,
+      threadKey: s.threadKey,
+      exitCode: s.exitCode,
+    }))
+    .sort((a, b) => b.startedAt - a.startedAt);
+
+// 대시보드 tail 스냅샷 cap — 버퍼 꼬리 마지막 N KB 만 반환(ADR §1 "출력=폴링, 비소비").
+const SHELL_TAIL_BYTES = 16 * 1024;
+
+/** utf8 문자열의 마지막 N 바이트만 잘라낸다(byte 경계 — appendCapped 의 truncate 와 동형 사고). */
+const tailBytes = (s: string, cap: number): string => {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= cap) return s;
+  return buf.subarray(buf.length - cap).toString("utf8");
+};
+
+/** tailShell 반환 shape. */
+export interface BgShellTail {
+  shellId: string;
+  status: "running" | "completed" | "killed";
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * 대시보드 라이브 tail(표면 D) — ★비소비 스냅샷. `s.stdoutRead`/`s.stderrRead`(모델
+ * BashOutput 의 증분 폴링 offset)를 **절대 건드리지 않는다** — 버퍼 꼬리(마지막 16KB)를
+ * 그냥 slice 해 반환할 뿐, 커서를 전진시키지 않는다. 이게 P2 검증 핵심 불변식(ADR §1·검증
+ * line 141): 모델 offset 커서와 대시보드 tail 은 완전히 분리된 두 소비자다 — 대시보드
+ * 폴링이 모델이 받을 증분 출력을 훔치면 안 된다. 존재하지 않는 shellId 는 undefined.
+ */
+export const tailShell = (shellId: string): BgShellTail | undefined => {
+  const s = BG_SHELLS.get(shellId);
+  if (s === undefined) return undefined;
+  return {
+    shellId,
+    status: s.status,
+    exitCode: s.exitCode,
+    stdout: tailBytes(s.stdout, SHELL_TAIL_BYTES),
+    stderr: tailBytes(s.stderr, SHELL_TAIL_BYTES),
+  };
+};
+
+/**
+ * 셸 강제 종료 — killTree(그룹 전체) + status=killed 마킹 + DB 미러 + shell.exited 발행
+ * (ADR Phase 2 §B). 모델 대면 `KillShell` 도구와 대시보드 `POST /api/kill-shell`(http-bridge)
+ * 이 공유하는 단일 헬퍼(로직 재사용 — 두 경로가 각자 구현 X). 존재하지 않는 shellId·이미
+ * 종료된 셸은 무해(변경 0, false 아님 — "요청 자체는 처리됨" 의미로 존재 여부만 반환).
+ *
+ * @returns true=shellId 존재(이미 종료돼 있었어도), false=그런 shellId 없음.
+ */
+export const killShellById = async (shellId: string): Promise<boolean> => {
+  const s = BG_SHELLS.get(shellId);
+  if (s === undefined) return false;
+  if (s.status === "running") {
+    await killTree(s.pgid, "SIGKILL");
+    s.status = "killed";
+    persistBgShellSafe("killShellById", () => {
+      markBgShellStatusDb(shellId, "killed", {
+        finishedAt: Date.now(),
+        exitCode: s.exitCode,
+      });
+    });
+    publishShellEventSafe("shell.exited", {
+      shellId,
+      command: s.command,
+      cwd: s.cwd,
+      status: "killed",
+      exitCode: s.exitCode,
+      startedAt: s.startedAt,
+      threadKey: s.threadKey,
+    });
+  }
+  return true;
 };
 
 /**
@@ -523,7 +686,9 @@ const stripHtmlToMarkdown = (html: string): string => {
 // ─── 도구 빌더 (baseCwd 클로저) ──────────────────────────────────────────
 // ★3b: 도구들이 base(턴 cwd)를 클로저로 잡는다. 상대경로 기준점·Glob/Grep/Bash 기본
 //   cwd 가 전부 base. 팩토리가 턴마다 base 를 주입하므로 병렬 안전(무전역, 인스턴스=턴).
-const makeFileOpsTools = (base: string) => {
+// ★threadKey(ADR Phase 2 §1) — baseCwd 와 동형으로 팩토리가 턴마다 주입. run_in_background
+//   Bash 가 launchBgShell 에 전달해 shell.started.threadKey 로 관측(미전파 시 "" 폴백).
+const makeFileOpsTools = (base: string, threadKey: string) => {
   // β — 벽 아닌 해소만. 상대경로 → base 기준, 절대경로 → 그대로(home/프로젝트 밖 허용).
   const resolvePath = (target: string): string =>
     path.isAbsolute(target) ? target : path.resolve(base, target);
@@ -742,7 +907,7 @@ const makeFileOpsTools = (base: string) => {
 
       // 백그라운드 실행 — 즉시 bash_id 반환(안 막힘). timeout 미적용(완료/Kill 까지 돎).
       if (args.run_in_background === true) {
-        const id = await launchBgShell(args.command, base);
+        const id = await launchBgShell(args.command, base, threadKey);
         return okText(
           `백그라운드 실행 시작 (bash_id: ${id}). ` +
             `BashOutput({ bash_id: "${id}" }) 로 출력 폴링, KillShell 로 종료.`,
@@ -881,18 +1046,10 @@ const makeFileOpsTools = (base: string) => {
       if (s === undefined) {
         return errText(`bash_id 없음: ${args.bash_id}.`);
       }
-      if (s.status === "running") {
-        // ★Unit 1: killTree(pgid) 로 교체 — 이전엔 s.child.kill(단일 PID)만이라 조용한
-        // (stdout 무출력) 손자 프로세스가 고아로 생존할 수 있었다. 그룹 전체 종료.
-        await killTree(s.pgid, "SIGKILL");
-        s.status = "killed";
-        persistBgShellSafe("KillShell", () => {
-          markBgShellStatusDb(args.bash_id, "killed", {
-            finishedAt: Date.now(),
-            exitCode: s.exitCode,
-          });
-        });
-      }
+      // ★Phase 2: killShellById 로 위임(단일 헬퍼 재사용 — 대시보드 POST /kill-shell 과
+      // 로직 동일화). killTree(pgid, 그룹 전체)+status=killed+DB미러+shell.exited 발행까지
+      // 그 안에서 수행(이전엔 여기 인라인 — Unit 1 의 손자 그룹킬 동작은 그대로 보존).
+      await killShellById(args.bash_id);
       return okText(`종료 처리됨: ${args.bash_id} (status: ${s.status}).`);
     },
   );
@@ -1012,14 +1169,20 @@ const makeFileOpsTools = (base: string) => {
  * ★3b (2026-07-07): `baseCwd` 주입 — 상대경로·Glob/Grep/Bash 기본 cwd 의 기준점.
  * 미주입 시 `getPaths().home`(회귀 0). codex/openai 어댑터가 턴 등록 시
  * `input.cwd ?? home` 을 넘겨 claude(SDK options.cwd) 와 대칭화 → #2 parity.
+ *
+ * ★threadKey (ADR 2026-07-17 Phase 2 §1, additive) — `baseCwd` 와 동형 선택적 2번째
+ * 인자. 호출자(codex/openai 어댑터)가 `RegionASdkInput.threadKey` 를 전달하면
+ * run_in_background Bash 가 그 값을 `shell.started.threadKey` 로 발행(대시보드 상관용).
+ * 미전달 시 `""` 폴백 — 기존 호출부(baseCwd 만 주입) 전부 회귀 0.
  */
 export const createFileOpsMcpServer = (
   baseCwd?: string,
+  threadKey?: string,
 ): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "file-ops",
     version: "1.7.0",
-    tools: makeFileOpsTools(baseCwd ?? getPaths().home),
+    tools: makeFileOpsTools(baseCwd ?? getPaths().home, threadKey ?? ""),
   });
 
 // 노출 도구 목록 (inventory 등에서 참조 가능 — 본 라운드 hardcode 0).

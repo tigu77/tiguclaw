@@ -120,6 +120,12 @@
           handleWorkerEvent(ev.payload || {}, ts);
           return;
         }
+        // 백그라운드 셸 관측 레인(ADR 2026-07-17 §1) — worker.* 라우팅과 동형. handleShellEvent
+        // (view-shells.js) 가 shell.started/shell.exited 를 registry 갱신+뷰 리렌더로 처리.
+        if (typeof ev.type === "string" && ev.type.indexOf("shell.") === 0) {
+          handleShellEvent(ev.type, ev.payload || {}, ts);
+          return;
+        }
         const div = document.createElement("div");
         div.className = "ev " + typeClass(ev.type);
         div.dataset.type = (ev.type || "").toLowerCase();

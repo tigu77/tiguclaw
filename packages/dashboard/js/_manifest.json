@@ -5,6 +5,7 @@
   "view-overview.js",
   "view-models.js",
   "view-agents.js",
+  "view-shells.js",
   "view-projects.js",
   "view-channels.js",
   "view-providers.js",

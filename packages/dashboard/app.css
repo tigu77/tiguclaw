@@ -450,6 +450,16 @@
       .act-bg-dot.running { background:var(--accent-2); animation:tc-pulse 1.5s ease-in-out infinite; }
       .act-bg-dot.done { background:var(--good); }
       .act-bg-dot.error { background:#f85149; }
+      /* 백그라운드 셸 인라인 칩(표면 A, ADR 2026-07-17 §5-A / Phase 3b) — 워커/서브 스폰 칩
+         (.act-bg-link, 보라)과 시각 구분(청록) — 이건 프로세스, 그건 잡. */
+      .act-shell-chip { display:inline-flex; align-items:center; gap:5px; margin-left:8px; padding:1px 7px; border-radius:8px; font-size:10px; font-weight:800; color:var(--teal); background:rgba(45,212,191,.12); border:1px solid rgba(45,212,191,.3); user-select:none; }
+      .act-shell-chip-dot { width:6px; height:6px; border-radius:50%; background:var(--text-dim); flex:none; }
+      .act-shell-chip-dot.running { background:var(--teal); animation:tc-pulse 1.5s ease-in-out infinite; }
+      .act-shell-chip-dot.exited { background:var(--good); }
+      .act-shell-chip-dot.killed { background:var(--text-dim); }
+      .act-shell-chip-sdk { padding:0 5px; border-radius:6px; background:rgba(251,191,36,.16); color:var(--warn); font-size:9px; }
+      .act-shell-chip-kill { border:none; background:none; color:inherit; cursor:pointer; padding:0; font-size:10px; line-height:1; }
+      .act-shell-chip-kill:disabled { opacity:.5; cursor:default; }
       .bg-job.bg-flash, .agent-card.bg-flash { outline:2px solid var(--accent-2); outline-offset:2px; border-radius:12px; }
       /* 리치 diff(Edit/Write, 2026-07-09) — 스텝/이력 줄 아래로 접이식 초록·빨강 diff.
          부모 flex 행이 wrap 하도록 해 diff 블록(width:100%)이 다음 줄로 내려간다. */
@@ -737,6 +747,22 @@
       .channel-status.up { background:rgba(52,211,153,.14); color:var(--good); border-color:rgba(52,211,153,.36); }
       .channel-status.disabled { background:var(--card); color:var(--text-mute); border-color:var(--border); }
       .channel-card-kind { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; }
+      /* ── 셸/프로세스 뷰(표면 C+D, ADR 2026-07-17) — agent-card 골격 재사용 + 카드별 상태 색. ── */
+      .shells-view { display:flex; flex-direction:column; gap:14px; }
+      .agent-card.shell-card.exited { border-left-color:#34d399; }
+      .agent-card.shell-card.killed { border-left-color:var(--text-dim); opacity:.85; }
+      .shell-card-command { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:13px; }
+      .shell-card-cwd { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .shell-card-exitcode { font-size:11px; color:var(--text-mute); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .shell-card-tailline { font-size:11px; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      .shell-card-controls { display:flex; align-items:center; gap:8px; margin-top:2px; }
+      .shell-card-toggle { background:none; border:none; color:var(--accent-2); font-size:11px; font-weight:700; cursor:pointer; padding:4px 0; }
+      .shell-card-toggle:hover { text-decoration:underline; }
+      .shell-card-kill { margin-left:auto; }
+      .shell-card-output { margin-top:4px; max-height:220px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:11px; line-height:1.5; color:var(--text); white-space:pre-wrap; word-break:break-word; }
+      /* SDK 소유 표식 + kill 비활성 안내(Phase 3b, ADR §6 — cosmetic ⏹️ 금지, 정직한 한계 노출). */
+      .shell-card-owner { margin-left:auto; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; text-transform:uppercase; letter-spacing:.03em; background:rgba(251,191,36,.14); color:var(--warn); border:1px solid rgba(251,191,36,.34); }
+      .shell-card-kill-disabled { margin-left:auto; font-size:11px; color:var(--text-dim); font-weight:600; cursor:help; }
       /* 프로젝트 카드 ⋯ 메뉴(폴더 열기 등) — 카드 우측 상단. hover/focus 시 노출. */
       .project-card > .cm-kebab { position:absolute; top:9px; right:9px; opacity:0; z-index:2; transition:opacity .12s;
         border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
@@ -824,6 +850,10 @@
       .chat-bg-active { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:6px 11px; border:1px solid rgba(52,211,153,.4); background:rgba(52,211,153,.10); border-radius:999px; font-size:11px; font-weight:700; color:var(--good); cursor:pointer; align-self:flex-start; }
       .chat-bg-active:hover { border-color:var(--good); background:rgba(52,211,153,.16); }
       .chat-bg-active[hidden] { display:none; }
+      /* 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) — 워커 스트립(위 .chat-bg-active
+         초록)과 별도 레인·별도 색(청록, .act-shell-chip 과 동일 팔레트로 "이건 셸" 일관 신호). */
+      .chat-shell-active { border-color:rgba(45,212,191,.4); background:rgba(45,212,191,.10); color:var(--teal); }
+      .chat-shell-active:hover { border-color:var(--teal); background:rgba(45,212,191,.18); }
       .chat-message { position:relative; }
       /* ⋯ 메뉴 kebab — 채팅 카드 맨 윗라인 우측(답글 버튼 폐지, 답글은 메뉴 안). hover 시 노출.
          단순 버블(.ev.local)=head 우측 절대배치 / 턴그룹=turn-head flex 끝(margin-left:auto). */

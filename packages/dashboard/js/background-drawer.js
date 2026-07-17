@@ -11,6 +11,35 @@
       // 클릭하면 드로어를 연다. refreshBgBadge 가 잡 상태·탭 전환마다 갱신.
       const chatBgActiveEl = document.getElementById("chat-bg-active");
       if (chatBgActiveEl) chatBgActiveEl.addEventListener("click", () => { if (typeof openBg === "function") openBg(); });
+
+      // ── 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) ─────────────────────────
+      // chat-bg-active(워커)와 물리적으로 분리된 별도 레인(사용자 확정 — 셸=다른 종). 세션
+      // 스코프(runningScoped 패턴 동형) — shell.started.threadKey 가 활성 세션과 같은 running
+      // 셸만 카운트. 누르면 셸 사이드바 뷰로 점프(택1 중 간단한 쪽 — 별도 팝오버 신설 안 함).
+      const chatShellActiveEl = document.getElementById("chat-shell-active");
+      const isShellInScope = (tk) => !tk || tk === activeThreadKey; // isBgInScope 동형(threadKey 미지정=항상 소속).
+      if (chatShellActiveEl) chatShellActiveEl.addEventListener("click", () => {
+        if (typeof showShells === "function") showShells();
+      });
+      const refreshShellStrip = () => {
+        if (!chatShellActiveEl) return;
+        let running = 0;
+        if (typeof shellRegistry !== "undefined") {
+          for (const e of shellRegistry.values()) {
+            if (e.status === "running" && isShellInScope(e.threadKey)) running += 1;
+          }
+        }
+        if (running > 0) {
+          chatShellActiveEl.textContent = "🖥️ 셸 " + running + "개 실행 중";
+          chatShellActiveEl.hidden = false;
+        } else {
+          chatShellActiveEl.hidden = true;
+        }
+      };
+      // view-shells.js 의 handleShellStarted/handleShellExited 가 상태변화마다 이 함수를 직접
+      // 부르지만(cross-file 훅), 세션 탭 전환(activeThreadKey 변경)은 tabs.js 를 건드리지 않고도
+      // 최대 1s 이내 반영되도록 가벼운 폴 — background-drawer.js 자기완결(무접촉 파일 원칙 준수).
+      setInterval(refreshShellStrip, 1000);
       // "↑ 최신" 점프 — 아래로 내려 과거 잡 열람 중(scrollTop>임계)일 때만 노출, 클릭하면 맨 위(최신)로.
       // 채팅 chat-jump 의 상단판(newest=insertBefore 로 top). stickTop 이 안 끌어당기는 케이스의 어포던스.
       const bgJump = document.getElementById("bg-jump");
@@ -189,11 +218,18 @@
         // (메인 스트림 스텝만; 잡 카드 스텝은 durationMs 뱃지만 — 아래 (a) 에서 return.)
         if (ap.output && (tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0)) {
           const oLines = stream.querySelectorAll('.act-line[data-seq="' + ap.seq + '"][data-threadkey="' + tk + '"]');
+          let target = null;
           for (let i = oLines.length - 1; i >= 0; i--) {
-            if (!oLines[i].querySelector(":scope > .act-output")) {
-              oLines[i].appendChild(buildOutputBlock(ap.output));
-              break;
-            }
+            if (!oLines[i].querySelector(":scope > .act-output")) { target = oLines[i]; break; }
+          }
+          if (target) {
+            target.appendChild(buildOutputBlock(ap.output));
+            // 표면 A(Phase 3b) — 백그라운드 셸 인라인 칩. 백엔드 무변경, 출력 텍스트에 이미 실린
+            // bash_id 를 파싱만(virtualization.js SHELL_CHIP_ID_RE/attachShellChip, 정의 순서
+            // 무관 — SSE 는 부팅 완료 후에만 발화, typeof 가드 불요할 만큼 확정적이나 방어적으로 유지).
+            const shellM = (typeof ap.output.text === "string" && typeof SHELL_CHIP_ID_RE !== "undefined")
+              ? SHELL_CHIP_ID_RE.exec(ap.output.text) : null;
+            if (shellM && typeof attachShellChip === "function") attachShellChip(target, shellM[1]);
           }
         }
         if (ap.durationMs == null) return;

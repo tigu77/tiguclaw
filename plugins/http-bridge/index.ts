@@ -77,6 +77,11 @@ import {
   cancelJob,
   isCancelledTurnResult,
 } from "../../src/core/worker-jobs.js";
+import {
+  listShells,
+  tailShell,
+  killShellById,
+} from "../../src/core/llm-runtime/capabilities/file-ops-mcp.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
 import { readFileSync } from "node:fs";
@@ -735,6 +740,10 @@ class HttpBridge implements Channel, Observer {
                 ? "read"
               : pathname === "/worker-jobs" && method === "GET"
                 ? "read"
+                : pathname === "/shells" && method === "GET"
+                  ? "read"
+                : pathname === "/shell-output" && method === "GET"
+                  ? "read"
                 : pathname === "/projects/detail" && method === "GET"
                   ? "read"
                   : pathname === "/messages" && method === "POST"
@@ -748,6 +757,8 @@ class HttpBridge implements Channel, Observer {
                 : pathname === "/cancel-queued" && method === "POST"
                   ? "admin"
                 : pathname === "/cancel-worker" && method === "POST"
+                  ? "write"
+                : pathname === "/kill-shell" && method === "POST"
                   ? "write"
                 : pathname === "/open-path" && method === "POST"
                   ? "write"
@@ -845,6 +856,35 @@ class HttpBridge implements Channel, Observer {
         ...(j.cwd !== undefined && j.cwd !== "" ? { cwd: j.cwd } : {}),
       }));
       writeJson(res, 200, { jobs });
+      return;
+    }
+
+    // /shells — 백그라운드 셸 관측 레인(ADR 2026-07-17 Phase 2 §C). 대시보드 표면 C
+    // (사이드바 "🖥️ 셸/프로세스") 뷰 오픈 시 라이브 시드용. §0 단방향: 코어 export
+    // `listShells`(file-ops-mcp.ts) 를 그대로 호출 — 코어는 http-bridge 를 모른다.
+    // codex/openai 전용 레인(claude SDK 소유 셸은 Phase 4 관측 브리지 전까지 미포함,
+    // ADR §6 명시). read 게이트(자기 셸 목록 조회, /worker-jobs 동형).
+    if (pathname === "/shells" && method === "GET") {
+      writeJson(res, 200, { shells: listShells() });
+      return;
+    }
+
+    // /shell-output — 특정 셸의 ★비소비 tail 스냅샷(마지막 16KB stdout/stderr). 대시보드
+    // 표면 D(라이브 tail) 폴링용. ★불변식(ADR §1·검증 line 141): 코어 tailShell() 은 모델
+    // BashOutput 의 증분 폴링 offset(stdoutRead/stderrRead)을 절대 소비하지 않는다 —
+    // 이 엔드포인트를 아무리 폴링해도 모델이 받을 출력이 줄지 않는다. 없는 id 는 404.
+    if (pathname === "/shell-output" && method === "GET") {
+      const shellId = url.searchParams.get("id") ?? "";
+      if (shellId === "") {
+        writeJson(res, 400, { error: "id required" });
+        return;
+      }
+      const tail = tailShell(shellId);
+      if (tail === undefined) {
+        writeJson(res, 404, { error: "shell not found", shellId });
+        return;
+      }
+      writeJson(res, 200, tail);
       return;
     }
 
@@ -1564,6 +1604,31 @@ class HttpBridge implements Channel, Observer {
       }
       const cancelled = cancelJob(jobId);
       writeJson(res, 200, { ok: true, cancelled });
+      return;
+    }
+
+    // /kill-shell — 백그라운드 셸 강제 종료(ADR 2026-07-17 Phase 2 §C). write 게이트
+    // (/cancel-worker 동형 — "자기 셸 제어", admin 아님). §0 단방향: 코어 export
+    // `killShellById`(file-ops-mcp.ts) 를 그대로 호출 — killTree(그룹 전체)+status=killed+
+    // shell.exited 발행까지 그 안에서 처리(모델 대면 KillShell 도구와 동일 헬퍼 재사용).
+    // claude 셸(SDK 소유)은 이 레인 밖 — codex/openai BG_SHELLS 에 없는 id 는 killed:false.
+    if (pathname === "/kill-shell" && method === "POST") {
+      let kbody: Record<string, unknown>;
+      try {
+        kbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const shellId =
+        typeof kbody.shellId === "string" ? kbody.shellId.trim() : "";
+      if (shellId === "") {
+        writeJson(res, 400, { error: "shellId required" });
+        return;
+      }
+      const killed = await killShellById(shellId);
+      writeJson(res, 200, { ok: true, killed });
       return;
     }
 

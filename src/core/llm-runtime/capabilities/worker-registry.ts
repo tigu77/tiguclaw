@@ -31,7 +31,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   cancelJob,
-  createWorkerAbort,
+  createJobAbort,
   getJob,
   listJobs,
   onWorkerComplete,
@@ -54,7 +54,7 @@ import type { RegionASdkInput } from "../types.js";
 //    history 를 오염시키지 않게. 최종 결과만 daemon 이 메인 thread 로 재주입, §3·§12-1).
 //  - workerDepth: 1 (어댑터가 run_in_background/list_workers 미등록 → 재발사 차단, W-I5).
 //  - subagentDepth: 0 (미설정) — 워커 안 spawn_agent 블로킹 위임은 허용(§2, W-I5 직교).
-//  - abortSignal: createWorkerAbort() 의 signal (워커 전용 상한 30분, §5·W-I6).
+//  - abortSignal: createJobAbort(jobId, {timeoutMs}) 의 signal (워커 전용 상한, §5·W-I6).
 //    어댑터가 1층 idle 과 OR 결합 — 새 메커니즘 0, 값만 워커 전용.
 //  - channel/cwd: 원 잡 상속 (메인과 동일 작업 환경).
 
@@ -72,9 +72,9 @@ const errText = (text: string) => ({
  * onWorkerComplete 로 닫고 항상 abort 타이머를 done() 으로 해제(누수 0).
  */
 const runner = (job: WorkerJobRecord): void => {
-  // 워커 전용 상한 — 만료 시 WorkerTimeoutError 로 abort (무한 워커 봉쇄, W-I6).
-  // jobId 등록 → cancel_worker 가 외부에서 이 워커의 abort 를 부를 수 있다(취소 컨트롤).
-  const abort = createWorkerAbort(job.jobId);
+  // 워커 전용 상한 — timeoutMs 만료 시 WorkerTimeoutError 로 abort (무한 워커 봉쇄, W-I6).
+  // jobId 등록 → cancel_worker·대시보드 중지 버튼이 외부에서 이 워커의 abort 를 부를 수 있다.
+  const abort = createJobAbort(job.jobId, { timeoutMs: WORKER_TIMEOUT_MS });
 
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
@@ -329,9 +329,11 @@ export const createWorkerMcpServer = (
         }
         // label 우선 매칭(running 중에서) → 없으면 job_id. 같은 label 의 running 이
         // 여럿이면 가장 최근(listJobs 가 startedAt 내림차순)을 취소.
-        // ★U-I4 (subagent-worker-unify ADR) — 대상은 kind='worker' 만. 서브에이전트
-        // (kind='agent')는 부모 턴 종속이라 취소 대상이 아니다(list_workers 엔 표시하되
-        // cancel 에서만 배타). agent 잡이 같은 레지스트리에 running 으로 상주하므로 필터 필수.
+        // ★U-I4 — 이 LLM-대면 cancel_worker 도구의 대상은 kind='worker' 전용(유지). 서브
+        // 에이전트(kind='agent')는 아래 안내처럼 부모 대화를 멈추면 함께 정리되는 게 자연스러워
+        // 이 도구에선 배타한다. (별건: 대시보드 중지 버튼 → /api/cancel-worker → 코어 cancelJob
+        // 은 U-I4 개정으로 worker·agent 모두 취소함 — 그건 사용자가 카드에서 명시 지목한 경우라
+        // 경로가 다르다.) agent 잡이 같은 레지스트리에 running 으로 상주하므로 필터 필수.
         let target: WorkerJobRecord | undefined;
         if (args.label !== undefined && args.label !== "") {
           target = listJobs({ runningOnly: true }).find(

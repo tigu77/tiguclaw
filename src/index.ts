@@ -1159,6 +1159,16 @@ const handler: MessageHandler = async (msg) => {
     ) {
       return;
     }
+    // 잡 취소(WorkerCancelledError, U-I4 개정) — 대시보드 잡 카드에서 native Task 를 ⏹️ 중지하면
+    // SDK per-Task abort 한계상 부모 턴 전체(effectiveAc)가 coarse 취소돼 이 에러가 올라온다.
+    // 여기선 turnAc(부모 /stop 신호)가 아닌 effectiveAc 가 abort 된 것이라 위 UserCancelledError
+    // 분기가 안 잡는다 → 던져진 에러 name 으로 판별. 잡 카드는 이미 worker.cancelled lifecycle 로
+    // '취소' 표시되므로, 부모 턴엔 에러(⚠️)가 아닌 짧은 중립 통지만 보낸다(작업중 인디케이터도
+    // 이 out 으로 꺼짐). 내부 토큰("모델 거부 아님") 노출 없이 깔끔히.
+    if (e instanceof Error && e.name === "WorkerCancelledError") {
+      await replyCommand(msg, "🛑 진행 중이던 작업을 중지했어요.");
+      return;
+    }
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
     // (네트워크·모델 거부·idle abort 등)만 받는다 — 폴백 없이 끝나므로 사용자 노출 필수.
     // 콘솔엔 full 진단 — 스택·cause(undici "fetch failed" 등) 통째로 보존(운영자 로컬 경계).

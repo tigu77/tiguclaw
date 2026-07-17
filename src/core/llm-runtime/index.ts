@@ -553,6 +553,16 @@ const runPool = async (
       ) {
         throw e;
       }
+      // 잡 취소(WorkerCancelledError) = 실패 아님 (U-I4 개정) — worker 취소, 그리고 claude
+      // native Task 취소(cancelJob → 부모 턴 effectiveAc abort → 어댑터가 이 에러로 승격)가
+      // 여기 온다. 후자는 input.abortSignal(부모 turn 신호)이 아닌 effectiveAc 가 abort 된
+      // 것이라 위 UserCancelledError 분기가 안 잡는다 → 던져진 에러의 name 으로 duck-typing.
+      // turn_error 미발행(취소는 self-growth 실패 학습 대상 아님) + 폴백 단락(같은 abort 라
+      // 다음 모델도 즉시 죽음 = 무의미, 또 Task 취소는 폴백=재실행이라 "stop 이 실제 stop" 위반).
+      // worker 경로는 onWorkerComplete 가 이미 status="cancelled" 를 보존한다.
+      if (e instanceof Error && e.name === "WorkerCancelledError") {
+        throw e;
+      }
       // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
       // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
       // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
@@ -642,6 +652,12 @@ export const runRegionA = async (
         cancelReason instanceof Error &&
         cancelReason.name === "UserCancelledError"
       ) {
+        throw e;
+      }
+      // 잡 취소(WorkerCancelledError) = 실패 아님 (U-I4 개정) — 프로파일 간 폴백 없이 그대로
+      // propagate. isModelRejected 비매칭이라 아래 structural 게이트도 어차피 통과 못 하지만,
+      // 명시 단락으로 취소 의도를 분명히 한다(runPool 분류와 대칭).
+      if (e instanceof Error && e.name === "WorkerCancelledError") {
         throw e;
       }
       // 2층 턴 타임아웃 단락 — 런타임 결함이라 다음 풀로 폴백해봐야 같은 turn signal 이 이미

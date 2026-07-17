@@ -83,6 +83,9 @@ import {
   registerJob,
   markDone,
   markFailed,
+  setCancelHook,
+  clearCancelHook,
+  WorkerCancelledError,
 } from "../../worker-jobs.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
@@ -806,6 +809,17 @@ export const runClaude = async (
         channelUserId: "", // agent 잡은 재주입/통지 안 함(U-I1).
       });
       taskJobs.set(taskId, { jobId, agentName, task, seq: 0 });
+      // U-I4 개정(2026-07-17) — native Task 실 취소 훅. SDK 는 per-Task abort 를 안 주므로
+      // cancelJob(jobId)이 **부모 턴 전체**(effectiveAc)를 abort 한다 = coarse(턴 단위) 취소:
+      // 형제 Task·부모 답변까지 함께 멈춘다(SDK 한계상 정당 — "stop 이 실제 stop"이 우선).
+      // 이 훅이 없으면 cancelJob 은 카드만 cancelled 로 바꾸고 Task 는 SDK 안에서 계속 도는
+      // cosmetic 취소가 된다(#2 위반). 새 AbortController 를 만들지 않고 effectiveAc 재사용.
+      // completeTaskJob(정상/실패)·턴 종료 고아 정리·resume 폴백에서 clearCancelHook 로 해제.
+      setCancelHook(jobId, () => {
+        if (!effectiveAc.signal.aborted) {
+          effectiveAc.abort(new WorkerCancelledError());
+        }
+      });
     } catch {
       /* registerJob 실패해도 부모 turn 진행(원칙 3). 이 Task 는 관측 누락으로 degrade. */
     }
@@ -821,6 +835,7 @@ export const runClaude = async (
     const entry = taskJobs.get(taskId);
     if (entry === undefined) return;
     taskJobs.delete(taskId);
+    clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — 종료된 Task 를 취소하려는 늦은 시도 무효화.
     try {
       if (isError) {
         markFailed(entry.jobId, resultText || "서브에이전트 실행 실패");
@@ -1093,6 +1108,7 @@ export const runClaude = async (
       // 초기화. fresh 세션엔 그 Task id 가 안 오므로 tool_result 로 닫힐 길 없음 → 여기서
       // markFailed 로 명시 종료(best-effort). taskJobs.clear() 로 재실행 매핑 청결.
       for (const entry of taskJobs.values()) {
+        clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — fresh 세션엔 이 Task id 안 옴.
         try {
           markFailed(entry.jobId, "resume 폴백 재실행으로 서브에이전트 관측 중단");
         } catch {
@@ -1124,10 +1140,16 @@ export const runClaude = async (
         /* 무효화 실패해도 에러 전파는 계속(원칙 3). */
       }
     }
+    // abort reason 승격 — 유휴/턴 타임아웃, 그리고 native Task 취소(WorkerCancelledError,
+    // U-I4 개정)면 raw AbortError 대신 그 typed reason 을 throw 해 상위(index.ts)가 일관되게
+    // 분류하게 한다. WorkerCancelledError 는 "모델 거부 아님" 토큰이라 isModelRejected 비매칭 +
+    // index.ts 가 name 으로 취소 분류(폴백 단락·turn_error 미발행) → "stop 이 실제 stop".
     const reason = effectiveAc.signal.reason;
     if (
       effectiveAc.signal.aborted &&
-      (reason instanceof IdleTimeoutError || reason instanceof TurnTimeoutError)
+      (reason instanceof IdleTimeoutError ||
+        reason instanceof TurnTimeoutError ||
+        reason instanceof WorkerCancelledError)
     ) {
       throw reason;
     }
@@ -1149,6 +1171,7 @@ export const runClaude = async (
     // 않는다. 정상 완료는 completeTaskJob 이 이미 delete 했으므로 여기 남은 건 미완만 →
     // markFailed 로 명시 종료(대시보드 카드가 running 에 영영 머물지 않게). best-effort.
     for (const entry of taskJobs.values()) {
+      clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — 턴 종료 후 늦은 취소 시도 무효화.
       try {
         markFailed(entry.jobId, "턴 종료까지 서브에이전트 완료 신호 미도착");
       } catch {
@@ -1160,12 +1183,15 @@ export const runClaude = async (
 
   // 유휴/턴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를
   // 조용히 끝낼 수 있다. 그 경우 succeeded=false 로 떨어져 facade 가 실패를 못 본다.
-  // reason 이 Idle/TurnTimeoutError 면 명시 throw 로 승격 (둘 다 비매칭 — facade 무폴백).
+  // reason 이 Idle/TurnTimeoutError, 또는 native Task 취소(WorkerCancelledError, U-I4 개정)면
+  // 명시 throw 로 승격 (셋 다 isModelRejected 비매칭 — facade 무폴백, index.ts 취소 분류).
   {
     const reason = effectiveAc.signal.reason;
     if (
       effectiveAc.signal.aborted &&
-      (reason instanceof IdleTimeoutError || reason instanceof TurnTimeoutError)
+      (reason instanceof IdleTimeoutError ||
+        reason instanceof TurnTimeoutError ||
+        reason instanceof WorkerCancelledError)
     ) {
       throw reason;
     }

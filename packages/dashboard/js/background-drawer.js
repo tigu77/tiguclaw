@@ -24,13 +24,14 @@
       const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
       const jobCards = new Map(); // jobId -> { el, labelEl, statusEl, chevEl, stepsEl, errEl, status, stepCount }
 
-      // ── 취소(중지) — POST /api/cancel-worker { jobId } → { ok, cancelled }. 대상: 실행 중
-      // (status running) + detached worker(kind==="worker") 뿐 — awaited 서브에이전트(kind==="agent")
-      // 는 취소 대상 아님(백엔드 계약). 낙관적 UI: 클릭 즉시 버튼 비활성화+"중지 요청…" 텍스트로,
-      // 상태 배지도 "취소 중…"(기존 잡 상태 렌더 재사용, BG_STATUS 확장). cancelled:false(대상없음/
+      // ── 취소(중지) — POST /api/cancel-worker { jobId } → { ok, cancelled }. 대상: 진행 중인
+      // 잡(worker·agent) 모두 — U-I4 개정(2026-07-17): awaited 서브에이전트(kind==="agent")도
+      // 이제 취소 가능(백엔드가 cancel-only abort 핸들 등록). kind 무관, status==="running" 만
+      // 게이트. 낙관적 UI: 클릭 즉시 버튼 비활성화+"중지 요청…" 텍스트로, 상태 배지도
+      // "취소 중…"(기존 잡 상태 렌더 재사용, BG_STATUS 확장). cancelled:false(대상없음/
       // 이미종료) 나 네트워크 실패는 무해하게 되돌린다 — 실제 종료 반영은 worker.cancelled lifecycle
       // SSE(handleWorkerEvent, BG_STATUS.cancelled="⏹ 취소")가 한다.
-      const canCancelJob = (entry) => !!entry && entry.status === "running" && entry.kind === "worker";
+      const canCancelJob = (entry) => !!entry && entry.status === "running";
       const updateStopBtn = (entry) => {
         if (!entry || !entry.stopBtnEl) return;
         const show = canCancelJob(entry);
@@ -374,8 +375,8 @@
           // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
           // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
           st.textContent = BG_STATUS.running;
-          // 중지 버튼 — running+worker 일 때만 노출(updateStopBtn 이 켜고/끔). 클릭은 top 의
-          // 펼침 토글로 버블링되지 않게 stopPropagation.
+          // 중지 버튼 — running 이면 노출(worker·agent 무관, U-I4 개정; updateStopBtn 이 켜고/끔).
+          // 클릭은 top 의 펼침 토글로 버블링되지 않게 stopPropagation.
           const stopBtn = document.createElement("button");
           stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = "작업 중지";
           stopBtn.textContent = "⏹️ 중지"; stopBtn.style.display = "none";
@@ -427,7 +428,7 @@
           };
           entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey));
           jobCards.set(jobId, entry);
-          updateStopBtn(entry); // 신규 카드 기본 running+worker → 중지 버튼 노출.
+          updateStopBtn(entry); // 신규 카드 기본 running → 중지 버튼 노출(worker·agent 무관).
           // 컨텍스트메뉴 트리거 — kebab(top 우측) + 우클릭 + 롱프레스(카드류, 3경로 동일 메뉴).
           // ctxFn 은 매 호출 시 최신 entry 를 다시 읽어(jobCards.get) label/threadKey 드리프트 없음.
           const jobCtx = () => {
@@ -458,7 +459,7 @@
           entry.kind = "agent";
           entry.el.classList.add("agent");
           entry.kindBadgeEl.textContent = AGENT_KIND_BADGE.agent;
-          updateStopBtn(entry); // awaited 서브에이전트 승격 — 취소 대상 아님, 버튼 숨김.
+          updateStopBtn(entry); // awaited 서브에이전트 승격 후에도 running 이면 중지버튼 표시(U-I4 개정).
         }
         // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.

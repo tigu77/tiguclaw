@@ -10,7 +10,7 @@
  * 경계 (W-I4 코어 불변):
  *  - daemon (본 모듈): registerJob / markDone / markFailed / listJobs (레지스트리),
  *    onWorkerComplete (완료→메인 재주입 훅), thread 직렬 큐, reply 재획득,
- *    워커 전용 abortSignal 발급(createWorkerAbort).
+ *    잡 전용 abortSignal 발급(createJobAbort) + 취소 훅 레지스트리(setCancelHook/clearCancelHook).
  *  - region (worker-registry.ts): spawn_worker 도구 + runWorkerJob(job, deps) 가
  *    runRegionA 를 `worker:<jobId>` thread 에서 fire-and-forget 실행 후, 완료/실패를
  *    daemon 이 주입한 `deps.onComplete(jobId, ...)` = onWorkerComplete 로 콜백.
@@ -245,6 +245,10 @@ export const registerJob = (input: RegisterJobInput): string => {
 export const markDone = (jobId: string, result: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
+  // 취소는 terminal·sticky (U-I4 개정 2026-07-17) — 늦게 도착한 완료가 사용자 취소를
+  // 못 뒤집는다. worker 경로는 onWorkerComplete 의 existing?.status==="cancelled" 가드와
+  // 중복이나 무해; agent 직접호출(agent-registry.ts) 경로엔 이 가드가 유일 방어선이다.
+  if (job.status === "cancelled") return;
   job.status = "done";
   job.result = result;
   job.finishedAt = Date.now();
@@ -259,6 +263,10 @@ export const markDone = (jobId: string, result: string): void => {
 export const markFailed = (jobId: string, error: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
+  // 취소는 terminal·sticky (U-I4 개정 2026-07-17) — 늦게 도착한 실패가 사용자 취소를
+  // 못 뒤집는다. worker 경로는 onWorkerComplete 의 existing?.status==="cancelled" 가드와
+  // 중복이나 무해; agent 직접호출(agent-registry.ts) 경로엔 이 가드가 유일 방어선이다.
+  if (job.status === "cancelled") return;
   job.status = "failed";
   job.error = error;
   job.finishedAt = Date.now();
@@ -351,7 +359,7 @@ export const WORKER_TIMEOUT_MS = parsePosIntEnv(
 const DEFAULT_WORKER_HARD_GRACE_MS = 60_000;
 
 /**
- * 워커 하드 백스톱 grace (ms). createWorkerAbort 의 abort 가 hung MCP callTool 을
+ * 워커 하드 백스톱 grace (ms). createJobAbort 의 abort 가 hung MCP callTool 을
  * 못 끊는 경우(MCP 한계), abort 시점(WORKER_TIMEOUT_MS) 이후 이만큼 더 기다려도
  * runRegionA 가 안 settle 하면 runner 가 WorkerTimeoutError 로 *강제* 종료해 통지를
  * 정시 발화시킨다. env `WORKER_HARD_GRACE_MS` override (매직넘버 금지, 채널 백스톱 동형).
@@ -390,52 +398,76 @@ export class WorkerCancelledError extends Error {
   }
 }
 
-// ─── 외부 취소 레지스트리 (cancel_worker 도구 — 2026-06-20) ───────────────────
-// createWorkerAbort 의 abort 함수는 runWorkerJob 안 지역변수라 외부에서 못 끊는다.
-// jobId → abort 매핑을 daemon 경계(본 모듈)에 둬 cancel_worker 가 호출 가능하게.
-// createWorkerAbort(jobId) 가 발급 시 자기 abort 를 등록하고, done() 이 해제(settle 시).
+// ─── 외부 취소 레지스트리 (cancel_worker 도구 — 2026-06-20, U-I4 개정 2026-07-17) ──
+// jobId → "이 잡을 취소하라" 콜백 매핑을 daemon 경계(본 모듈)에 둔다. cancelJob(jobId) 이
+// 이 훅을 불러 실제 abort 를 발화한다. 훅의 *내용*(무엇을 abort 하는지)은 등록 주체가 정한다:
+//  - createJobAbort 발급자(worker·spawn_agent MCP 경로): 자기 AbortController 를 abort.
+//  - claude native Task 경로(claude-agent-sdk.ts): 부모 턴 effectiveAc 를 abort(coarse,
+//    턴 단위 — SDK 가 per-Task abort 를 안 주는 한계상 정당). setCancelHook 를 직접 쓴다.
+// 어느 경로든 취소는 이 단일 레지스트리로 수렴한다(어댑터 분기 0, LLM-agnostic).
 const cancelHooks = new Map<string, () => void>();
+
+/**
+ * jobId 의 취소 콜백을 등록 — cancelJob(jobId) 이 이 fn 을 호출해 실제 abort 를 발화한다.
+ * createJobAbort 내부와, 자체 abort 레버(effectiveAc)를 가진 claude native Task 경로가 쓴다.
+ * 같은 jobId 재등록은 덮어쓴다(멱등적 최신 훅 우선).
+ */
+export const setCancelHook = (jobId: string, fn: () => void): void => {
+  cancelHooks.set(jobId, fn);
+};
+
+/** jobId 의 취소 콜백 해제 — 잡 정상/throw 종료 시 호출(누수·오발화 0). 멱등. */
+export const clearCancelHook = (jobId: string): void => {
+  cancelHooks.delete(jobId);
+};
 
 export interface WorkerAbort {
   /** runRegionA(input.abortSignal) 로 운반할 signal — 어댑터가 1층 idle 과 OR 결합. */
   signal: AbortSignal;
-  /** 워커 정상/throw 종료 시 호출 — 타이머 해제 + 취소 레지스트리 해제(누수·오발화 0). 멱등. */
+  /** 잡 정상/throw 종료 시 호출 — 타이머 해제 + 취소 레지스트리 해제(누수·오발화 0). 멱등. */
   done(): void;
 }
 
 /**
- * 워커 전용 abortSignal 발급 — 만료 시 WorkerTimeoutError 로 abort.
- * region 의 runWorkerJob 이 호출해 `RegionASdkInput.abortSignal` 로 주입한다
- * (새 메커니즘 0, 값만 워커 전용 — architect §5).
+ * 잡 전용 abortSignal 발급 (2026-07-17 통합 — 기존 createWorkerAbort·createAgentAbort 일원화).
+ * region 의 runWorkerJob(워커)·spawn_agent 핸들러(서브에이전트)가 호출해
+ * `RegionASdkInput.abortSignal` 로 주입한다(새 메커니즘 0, 값만 잡별 — architect §5).
  *
- * jobId 를 주면 그 워커의 abort 를 취소 레지스트리에 등록 → cancelJob(jobId) 이
- * WorkerCancelledError 로 abort 가능(외부 취소). done() 시 등록 해제.
+ * `opts.timeoutMs` 지정 시(워커): 그 ms 에 WorkerTimeoutError 로 자동 abort(무한 워커 봉쇄,
+ * W-I6). 생략 시(서브에이전트): **타이머 없음 = cancel-only** — 서브는 부모 턴에 종속(awaited)
+ * 되어 부모 턴 타임아웃/생명주기를 이미 따르므로 별도 상한이 부적절(이중·불일치 자동종료 방지).
+ *
+ * 어느 경우든 jobId 의 취소 훅을 setCancelHook 로 등록 → cancelJob(jobId) 이 WorkerCancelledError
+ * 로 abort 가능(외부 취소). done() 이 타이머(있으면)+취소 훅을 clearCancelHook 로 해제한다.
  */
-export const createWorkerAbort = (
-  jobId?: string,
-  ms: number = WORKER_TIMEOUT_MS,
+export const createJobAbort = (
+  jobId: string,
+  opts?: { timeoutMs?: number },
 ): WorkerAbort => {
   const ac = new AbortController();
-  const handle = setTimeout(() => {
-    if (!ac.signal.aborted) ac.abort(new WorkerTimeoutError(ms));
-  }, ms);
-  (handle as { unref?: () => void }).unref?.();
-  if (jobId !== undefined) {
-    cancelHooks.set(jobId, () => {
-      if (!ac.signal.aborted) ac.abort(new WorkerCancelledError());
-    });
+  const ms = opts?.timeoutMs;
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  if (ms !== undefined) {
+    handle = setTimeout(() => {
+      if (!ac.signal.aborted) ac.abort(new WorkerTimeoutError(ms));
+    }, ms);
+    (handle as { unref?: () => void }).unref?.();
   }
+  setCancelHook(jobId, () => {
+    if (!ac.signal.aborted) ac.abort(new WorkerCancelledError());
+  });
   return {
     signal: ac.signal,
     done(): void {
-      clearTimeout(handle);
-      if (jobId !== undefined) cancelHooks.delete(jobId);
+      if (handle !== undefined) clearTimeout(handle);
+      clearCancelHook(jobId);
     },
   };
 };
 
 /**
- * 진행 중 워커 취소(best-effort) — cancel_worker 도구가 호출. abort 를 부르고 취소
+ * 진행 중 워커/서브에이전트 취소(best-effort) — cancel_worker 도구(worker)·백그라운드
+ * 잡 카드 중지 버튼(worker·agent 공통, U-I4 개정 2026-07-17)이 호출. abort 를 부르고 취소
  * 상태로 마킹한다. abort 는 LLM 스트림은 끊지만 hung MCP callTool 은 signal 미수신
  * (MCP 한계)이라 *다음 도구 경계*(최대 MCP_CALL_TIMEOUT)에서 멈춤 — 도구가 그 점 안내.
  *
@@ -444,11 +476,14 @@ export const createWorkerAbort = (
 export const cancelJob = (jobId: string): boolean => {
   const job = jobs.get(jobId);
   if (job === undefined || job.status !== "running") return false;
-  // U-I4 (subagent-worker-unify ADR) — cancel 은 kind='worker' 만. awaited 서브에이전트
-  // (kind='agent')는 부모 턴 종속이라 취소 대상이 아니다(createWorkerAbort 미등록 = 실제
-  // abort 도 안 걸리고, markCancelled 만 하면 서브 완료 시 markDone 이 덮어써 상태 뒤집힘).
-  // 코어 하드 게이트 — 어느 호출자든 agent 잡을 못 끊게(cancel_worker 도구도 별도 필터).
-  if (job.kind !== "worker") return false;
+  // 개정(U-I4, 2026-07-17): worker·agent 모두 취소 가능. 이전엔 kind==='worker' 만 통과시켜
+  // awaited 서브에이전트를 하드 게이트했으나, 이제 agent 도 cancelHooks 에 훅이 등록된다:
+  //  - spawn_agent MCP 경로(codex/openai + claude path=): createJobAbort(cancel-only).
+  //  - claude native Task 경로: claude-agent-sdk.ts 가 setCancelHook 로 부모 턴 effectiveAc
+  //    abort 훅을 등록(coarse, 턴 단위 — SDK per-Task abort 한계).
+  // 따라서 코어에서 kind 로 막을 이유가 없다. WorkerJobKind 가 "worker"|"agent" 뿐이라 아래는
+  // 사실상 항상 통과(방어적 명시 — 향후 kind 추가 대비).
+  if (job.kind !== "worker" && job.kind !== "agent") return false;
   // 취소 상태를 먼저 마킹 — 이후 abort 가 runRegionA 를 reject 시키면 runner 의 catch 가
   // onWorkerComplete(error) 를 부르는데, 그 시점엔 이미 status="cancelled" 라 통지 문구가
   // 취소로 나간다(타임아웃과 구분). markCancelled 는 멱등(재호출 무해).
@@ -1047,7 +1082,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
  * region 이 구현·주입하는 워커 실행 본체 시그니처.
  *  - job: 본 모듈이 registerJob 으로 만든 레코드 (jobId·task·threadKey 등).
  *  - 워커는 `worker:<jobId>` thread 에서 runRegionA 실행(메인 history 청결, §3).
- *  - workerDepth:1 가드 + createWorkerAbort().signal 주입은 region 책임(daemon 헬퍼 제공).
+ *  - workerDepth:1 가드 + createJobAbort().signal 주입은 region 책임(daemon 헬퍼 제공).
  *  - 완료/실패 시 onWorkerComplete(jobId, ...) 를 부른다 (await 불필요).
  *  - fire-and-forget — 반환 즉시(워커는 백그라운드). throw 금지(내부에서 onComplete 로 닫음).
  */

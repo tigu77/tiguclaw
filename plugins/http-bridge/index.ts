@@ -1543,9 +1543,11 @@ class HttpBridge implements Channel, Observer {
     // (위 role 표) — /messages·/stop 동형 "사용자 자기 잡 제어"(admin 아님, /cancel-queued 는
     // out-of-band 큐 조작이라 admin 이었으나 이건 이미 시작된 *자기* 워커를 멈추는 것뿐).
     // §0 단방향: 코어 export `cancelJob`(src/core/worker-jobs.ts) 를 그대로 호출 — 코어는
-    // http-bridge 를 모른다. running·kind='worker' 만 실제 취소(agent/done 은 false, 코어가
-    // 이미 가드). abort 는 LLM 스트림은 끊지만 hung 도구 호출은 다음 도구 경계까지 못 끊을
-    // 수 있다(코어 주석 참조) — 여기선 신호 발사 여부만 정직 반환.
+    // http-bridge 를 모른다. running 인 worker·agent 모두 실제 취소(U-I4 개정 2026-07-17 —
+    // 코어 cancelJob 이 kind∈{worker,agent} 게이트: worker=워커 abort, agent=서브에이전트
+    // cancel-only abort 또는 claude native Task 는 부모 턴 coarse abort). done 은 false. abort 는
+    // LLM 스트림은 끊지만 hung 도구 호출은 다음 도구 경계까지 못 끊을 수 있다(코어 주석 참조)
+    // — 여기선 신호 발사 여부만 정직 반환.
     if (pathname === "/cancel-worker" && method === "POST") {
       let wbody: Record<string, unknown>;
       try {

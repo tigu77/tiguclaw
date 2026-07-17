@@ -36,7 +36,7 @@ import {
 import { parseFrontmatter } from "./skill-registry.js";
 import { dedupeBySource } from "./dedup-by-source.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
-import type { RegionASdkInput } from "../types.js";
+import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 
 export interface Agent {
   /** frontmatter `name` (우선) 또는 파일 basename (확장자 제외). */
@@ -365,10 +365,10 @@ export const createSpawnAgentMcpServer = (
       // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=워커만) 자동 충족.
       // 자식 실행 threadKey = `agent:<jobId>` → 활동(llm.activity)이 그 좌표로 흘러
       // 대시보드가 워커(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
-      const { registerJob, markDone, markFailed } = await import(
-        "../../worker-jobs.js"
-      );
+      const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError } =
+        await import("../../worker-jobs.js");
       let jobId: string | undefined;
+      let abort: ReturnType<typeof createJobAbort> | undefined;
       try {
         // ★3a(2026-07-07) — 위임 대상 cwd 결정. path 지정 시 그 폴더로 스코프
         // (상대경로는 부모 cwd 기준 절대화), 미지정 시 부모 cwd 상속(회귀 0). 이 cwd 로
@@ -409,6 +409,11 @@ export const createSpawnAgentMcpServer = (
           channelUserId: "",
         });
 
+        // 취소용 abort 핸들 (U-I4 개정, 2026-07-17) — 백그라운드 잡 카드 중지 버튼이 이
+        // jobId 로 cancelJob() 을 부르면 signal 이 abort 돼 runRegionA 가 reject 한다.
+        // timeoutMs 생략 = cancel-only(자동 타임아웃 없음 — 부모 턴 종속). 워커는 timeoutMs 지정.
+        abort = createJobAbort(jobId);
+
         // lean 신호 — agent.md frontmatter 정규화 (2026-06-15). 어댑터 무관 중립 신호.
         //  - toolPolicy: tools: none → {mode:"none"} / 콤마 리스트 → allow / 미지정 → undefined.
         //  - leanMemory: tools: none agent 는 메모리 생략(단순작업 child). 둘 다 additive.
@@ -420,6 +425,7 @@ export const createSpawnAgentMcpServer = (
           channel: parentInput.channel,
           cwd: targetCwd,
           subagentDepth: 1,
+          abortSignal: abort.signal,
           ...(toolPolicy !== undefined ? { toolPolicy } : {}),
           ...(leanMemory ? { leanMemory: true } : {}),
         };
@@ -429,14 +435,28 @@ export const createSpawnAgentMcpServer = (
         //  운반(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 빈 체인 = 어댑터 디폴트.
         const { runRegionA, resolveModelChain } = await import("../index.js");
         const chain = resolveModelChain(agent.model, targetCwd);
-        const out = await runRegionA(
-          childInput,
-          chain.length > 0 ? { chain } : undefined,
-        );
+        let out: RegionASdkOutput;
+        try {
+          out = await runRegionA(
+            childInput,
+            chain.length > 0 ? { chain } : undefined,
+          );
+        } finally {
+          // 정상·throw·취소 모두 해제 — cancelHooks 누수 0(worker-registry.ts 동형 패턴).
+          abort.done();
+        }
         markDone(jobId, out.text); // 관측 완료 — 재주입 없음(결과는 아래 return 으로 부모 회수).
         return okText(out.text);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+        // 위 finally 가 이미 abort.done() 을 부르므로 여기서 재호출 불요(멱등이라도 무해).
+        const isCancelled = e instanceof WorkerCancelledError;
+        const msg = isCancelled
+          ? "사용자 요청으로 취소되었습니다."
+          : e instanceof Error
+            ? e.message
+            : String(e);
+        // #1 가드(markDone/markFailed 의 status==="cancelled" 보존)가 있어 여기서 markFailed 를
+        // 불러도 이미 cancelled 인 잡은 뒤집히지 않는다 — 안전하게 그대로 호출.
         if (jobId !== undefined) markFailed(jobId, msg);
         return errText(msg);
       }

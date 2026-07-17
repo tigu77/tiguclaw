@@ -466,11 +466,19 @@
         line.appendChild(icon); line.appendChild(label);
         if (detail) line.appendChild(detail);
         line.appendChild(meta);
-        // 인라인 스폰 스텝 ↔ 백그라운드 잡 링크(2026-07-13) — 서브에이전트를 띄운 스텝(claude Task
-        // = p.jobId, codex/openai spawn_agent = 라벨)이면 "🤖 백그라운드 ↗" 칩을 붙인다. 클릭 시
-        // 드로어를 열고, jobId 가 있으면(claude) 그 잡카드로 스크롤·하이라이트(codex 는 graceful =
-        // 드로어 열기만). 진행 흐름의 '어디쯤 띄웠나'(인라인 위치) + 상세(드로어)를 잇는다.
-        if (p.jobId || p.label === "Task" || p.label === "spawn_agent") {
+        // 인라인 스폰 스텝 ↔ 백그라운드 잡 링크(2026-07-13) — 서브에이전트/워커를 띄운 스텝이면
+        // "🤖 백그라운드 ↗" 칩을 붙인다. 라벨 매칭은 어댑터-불문(원칙 #2): claude native Task
+        // (=p.jobId), codex/openai bare `spawn_agent`/`run_in_background`, 그리고 claude 가
+        // path= 크로스프로젝트 위임 시 쓰는 MCP 라벨 `mcp__agents__spawn_agent`·
+        // `mcp__workers__run_in_background`(접미사 매칭으로 흡수). 클릭 시 드로어를 열고, jobId 가
+        // 있으면(claude native Task) 그 잡카드로 스크롤·하이라이트(그 외는 graceful = 드로어 열기만).
+        const spawnLabel = p.label || "";
+        if (
+          p.jobId ||
+          spawnLabel === "Task" ||
+          spawnLabel.endsWith("spawn_agent") ||
+          spawnLabel.endsWith("run_in_background")
+        ) {
           const bg = document.createElement("span");
           bg.className = "act-bg-link";
           const job = p.jobId ? jobCards.get(p.jobId) : null;

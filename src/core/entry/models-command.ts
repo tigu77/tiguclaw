@@ -124,6 +124,6 @@ export const renderModelProfiles = (
       .map((n) => formatProfile(n, profiles[n]!, n === defaultName))
       .join("\n\n"),
   );
-  blocks.push("프로파일 추가·수정은 대화로 요청하세요 (돌쇠가 settings.json 을 편집합니다).");
+  blocks.push("프로파일 추가·수정은 대화로 요청하세요 (비서가 settings.json 을 편집합니다).");
   return blocks.join("\n\n");
 };

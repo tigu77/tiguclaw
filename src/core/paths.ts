@@ -281,7 +281,7 @@ export const syncSystemMd = async (): Promise<void> => {
 };
 
 /**
- * V9.4 — 레거시 레포 `./AGENT.md`(사용자 인격, 예: "돌쇠") → 홈 `getPaths().agentMd`
+ * V9.4 — 레거시 레포 `./AGENT.md`(사용자 인격, 예: "내비서") → 홈 `getPaths().agentMd`
  * 1회 마이그레이션 (멱등·안전·비클로버). V9.2 `migrateLegacyData` copy-verify 패턴 답습.
  *
  * 배경: readAgent() 경로가 V9.4 에서 `process.cwd()/AGENT.md` → `getPaths().agentMd` 로

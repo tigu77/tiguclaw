@@ -78,7 +78,7 @@ export const formatMemoryIndex = (
 };
 
 // ─── 모델 프로파일 인지 — 에이전트/워커 구성 시 프로파일 선택 (capability-index 패턴) ──
-// 돌쇠가 spawn_agent(model)/run_worker(tier) 를 구성/위임할 때 settings.json 에 정의된
+// 비서가 spawn_agent(model)/run_worker(tier) 를 구성/위임할 때 settings.json 에 정의된
 // 명명 프로파일을 인지하도록, depth 0 turn 의 system-context 에 주입한다. 스킬·에이전트
 // 인덱스와 동일 패턴 — 정적 sysprompt(claude SYSTEM_PROMPT_HASH 보존)가 아니라
 // user-prompt system-reminder 로 prepend(어댑터가 depth 0 만 호출).

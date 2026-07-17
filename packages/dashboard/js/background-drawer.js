@@ -319,7 +319,7 @@
         // 컴포저 인디케이터 — 현재 세션(runningScoped)에 도는 작업이 있으면 입력창 위에 표시.
         if (chatBgActiveEl) {
           if (runningScoped > 0) {
-            chatBgActiveEl.textContent = "🔄 이 세션 백그라운드 작업 " + runningScoped + "개 진행 중";
+            chatBgActiveEl.textContent = "🔄 백그라운드 작업 " + runningScoped + "개 진행중";
             chatBgActiveEl.hidden = false;
           } else {
             chatBgActiveEl.hidden = true;

@@ -64,6 +64,14 @@ import {
 import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js";
 import { getPaths } from "../../paths.js";
 import { detectShell } from "../../runtime-env.js";
+import {
+  insertBgShell as insertBgShellDb,
+  markBgShellStatus as markBgShellStatusDb,
+  updateBgShellStartedLabel as updateBgShellStartedLabelDb,
+  listRunningBgShells as listRunningBgShellsDb,
+  pruneTerminalBgShells as pruneTerminalBgShellsDb,
+  type BgShellStatus,
+} from "../../../store/bg-shells.js";
 
 const execFileP = promisify(execFile);
 
@@ -136,14 +144,30 @@ const truncateBashOutput = (raw: string): string => {
 
 // ── 백그라운드 Bash (run_in_background + BashOutput + KillShell) ──────────────
 // Claude Code parity(#1) — claude 어댑터는 SDK 빌트인 Bash 가 이 기능을 이미 제공.
-// codex/openai 어댑터는 이 file-ops Bash 를 쓰므로 여기서 채워 #2 parity 회복.
+// codex/openai 어댑터는 이 file-ops Bash 를 쓰므로 여기서 채워 #2 parity 회복. claude
+// 어댑터는 이 모듈을 아예 안 로드하므로(§ 정책 게이트: codex 전용 등록) 아래 detached·
+// killTree·bg_shells 영속·reaper 전부 claude 무영향 — SDK 가 자체 소유하는 claude 셸은
+// 이 파일 밖(ADR `2026-07-17-background-shell-observability.md` §6, Phase 4 후행 과제).
+//
 // ★모듈 레지스트리 = 턴을 가로질러 생존(worker-jobs 패턴 동형, in-memory·best-effort).
 //   file-ops 팩토리가 턴마다 새 인스턴스여도(baseCwd 주입, McpServer transport 격리)
 //   BG_SHELLS 는 모듈 레벨이라 유지 → BashOutput/KillShell 회귀 0.
-// 데몬 종료 시 자식은 함께 죽음(detach 안 함 → orphan 0). 재시작 비생존 = 정직(W-I7 동형).
+//
+// ★고아 정확성(Unit 1 Phase 0+1, 2026-07-17) — 이전엔 non-detached spawn 이라 데몬
+// 프로세스그룹에 얹혀, graceful 종료·KillShell 이 셸 래퍼 단일 PID 만 죽이고 조용한
+// (stdout 무출력) 손자 프로세스가 고아로 생존할 수 있었다. 지금은:
+//  - detached:true(POSIX setsid) — child 가 새 프로세스그룹 리더(pgid===pid). unref() 는
+//    하지 않는다(추적·킬·exit 이벤트 유지 필요, 데몬이 핸들 보유).
+//  - killTree(pgid, signal) — POSIX `process.kill(-pgid, sig)`(그룹 전체=셸+손자),
+//    win32 `taskkill /PID <pid> /T /F`(트리 kill). KillShell·killAllBgShells·부팅
+//    reaper 가 전부 이 단일 헬퍼로 수렴(정확성+단순성, ADR §3).
+//  - detached 의 유일 손실(`daemon:restart` kickstart -k 시 잡그룹 이탈)은 bg_shells
+//    영속 + 부팅 reaper(reapPreviousGeneration)가 벌충 — P0/P1 은 함께 간다(ADR §3-3).
 interface BgShell {
   child: ReturnType<typeof spawn>;
+  pgid: number; // detached=true → child 가 그룹 리더 → pgid === child.pid.
   command: string;
+  cwd: string;
   stdout: string;
   stderr: string;
   stdoutRead: number; // BashOutput 이 이미 반환한 offset (증분 폴링).
@@ -155,6 +179,10 @@ interface BgShell {
 const BG_SHELLS = new Map<string, BgShell>();
 const BG_MAX = 20; // 동시 백그라운드 셸 상한(메모리 바운드).
 
+// 터미널(비-running) bg_shells DB 행 캡 — worker_jobs TERMINAL_WORKER_JOB_KEEP 동형
+// (저volume: 백그라운드 명령당 1행). running 은 캡 대상 아님(reaper 소스 보존).
+const TERMINAL_BG_SHELL_KEEP = 500;
+
 // 버퍼 append — 1MB cap 도달 후엔 더 안 쌓는다(메모리 바운드 + offset 보존).
 const appendCapped = (cur: string, chunk: string): string => {
   if (cur.length >= BASH_MAX_BUFFER_BYTES) return cur;
@@ -164,8 +192,86 @@ const appendCapped = (cur: string, chunk: string): string => {
     : next;
 };
 
+// ─── DB 미러(bg_shells) — best-effort, 영속 실패가 셸 실행을 무르지 않는다 ─────────
+// worker-jobs.ts `persistSafe` 동형. 런타임 진실은 위 BG_SHELLS Map — DB 는 재시작
+// 생존(부팅 reaper 신원검증 소스)만 담당.
+const persistBgShellSafe = (label: string, fn: () => void): void => {
+  try {
+    fn();
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`bg-shells: DB 미러 실패(${label}): ${reason}`);
+  }
+};
+
+/**
+ * 프로세스 신원 스냅샷 — 부팅 reaper 의 PID 재사용 봉쇄용(ADR §4). launch 직후와
+ * 부팅 reap 시 같은 pid 를 조회해 문자열 동일성으로 "같은 프로세스"를 판정한다.
+ *  - POSIX: `ps -o lstart=,command= -p <pid>` (OS 가 보고하는 정확한 시작시각+커맨드).
+ *  - win32: `wmic process where ProcessId=<pid> get CreationDate,CommandLine /value`
+ *    (신형 Windows 는 wmic 이 없을 수 있음 — 실패 시 undefined, reaper 는 그 행을
+ *    stale 로만 마킹하고 kill 하지 않는다 = 안전측 열화, ADR §4 best-effort 명시).
+ * 프로세스 부재·조회 실패는 undefined(호출자가 "신원 불일치"로 취급).
+ */
+const captureProcessLabel = async (pid: number): Promise<string | undefined> => {
+  try {
+    if (process.platform === "win32") {
+      const { stdout } = await execFileP("wmic", [
+        "process",
+        "where",
+        `ProcessId=${pid}`,
+        "get",
+        "CreationDate,CommandLine",
+        "/value",
+      ]);
+      const trimmed = stdout.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    }
+    const { stdout } = await execFileP("ps", [
+      "-o",
+      "lstart=,command=",
+      "-p",
+      String(pid),
+    ]);
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * 손자 포함 프로세스 그룹 전체 종료 — 고아 봉쇄의 유일 신뢰 경로(ADR §3).
+ *  - POSIX: `process.kill(-pgid, signal)` — detached(setsid) 로 pgid===pid 인 그룹
+ *    리더에 음수 pid 를 주면 커널이 그룹 전체(셸+손자)에 시그널을 보낸다.
+ *  - win32: `taskkill /PID <pid> /T /F` — 프로세스 트리 강제 종료(`/T`=tree, `/F`=force).
+ * ESRCH(이미 종료)·권한 등은 무해(정리가 목적) — never-throw.
+ */
+const killTree = async (
+  pgid: number,
+  signal: NodeJS.Signals = "SIGTERM",
+): Promise<void> => {
+  // 방어 — pgid<=1 은 spawn 실패(pid 미할당, 위 launchBgShell 의 -1 fallback)나 손상값.
+  // 음수 변환한 process.kill(-1, sig) 은 *시스템 전역* 프로세스 그룹(사실상 전 프로세스)에
+  // 시그널을 보내는 위험한 케이스라 반드시 걸러야 한다(never-touch PID 1/그룹 0).
+  if (!Number.isInteger(pgid) || pgid <= 1) return;
+  if (process.platform === "win32") {
+    try {
+      await execFileP("taskkill", ["/PID", String(pgid), "/T", "/F"]);
+    } catch {
+      // 이미 종료·PID 부재 등 — 무해.
+    }
+    return;
+  }
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    // ESRCH(이미 종료)·EPERM 등 — 무해.
+  }
+};
+
 // baseCwd 주입(3b) — 백그라운드 셸도 턴 cwd 기준으로 실행(포그라운드 Bash 와 대칭).
-const launchBgShell = (command: string, cwd: string): string => {
+const launchBgShell = async (command: string, cwd: string): Promise<string> => {
   // 끝난 셸 하나 정리해 상한 압박 완화(전부 running 이면 그대로 진행 — 20 이면 충분).
   if (BG_SHELLS.size >= BG_MAX) {
     for (const [k, s] of BG_SHELLS) {
@@ -176,17 +282,28 @@ const launchBgShell = (command: string, cwd: string): string => {
     }
   }
   const id = `bash_${randomUUID().slice(0, 8)}`;
-  const child = spawn(SHELL.bin, SHELL.argsFor(command), { cwd });
+  // detached:true(POSIX setsid) — 새 프로세스그룹 리더(pgid===pid). unref() 는 하지
+  // 않는다: 데몬이 child 핸들을 계속 들고 stdout/stderr/close 를 추적해야 BashOutput/
+  // KillShell 이 정상 동작(unref 는 이벤트루프 이탈만 막을 뿐 추적엔 무관하나, 명시로
+  // "추적 유지 의도"를 박아둔다 — ADR §3-1).
+  const child = spawn(SHELL.bin, SHELL.argsFor(command), {
+    cwd,
+    detached: true,
+  });
+  const pgid = child.pid ?? -1;
+  const startedAt = Date.now();
   const shell: BgShell = {
     child,
+    pgid,
     command,
+    cwd,
     stdout: "",
     stderr: "",
     stdoutRead: 0,
     stderrRead: 0,
     status: "running",
     exitCode: null,
-    startedAt: Date.now(),
+    startedAt,
   };
   child.stdout?.on("data", (d: Buffer) => {
     shell.stdout = appendCapped(shell.stdout, d.toString("utf8"));
@@ -198,16 +315,173 @@ const launchBgShell = (command: string, cwd: string): string => {
     if (shell.status === "running") {
       shell.status = "completed";
       shell.exitCode = -1;
+      persistBgShellSafe("close(error)", () =>
+        markShellTerminalDb(id, "completed", shell.exitCode),
+      );
     }
   });
   child.on("close", (code) => {
     if (shell.status === "running") {
       shell.status = "completed";
       shell.exitCode = code ?? 0;
+      persistBgShellSafe("close", () =>
+        markShellTerminalDb(id, "completed", shell.exitCode),
+      );
     }
   });
   BG_SHELLS.set(id, shell);
+  // DB insert — *동기* 실행(spawn 과 같은 tick). ★레이스 회피: child 의 close/error
+  // 이벤트는 libuv 콜백이라 이번 tick 안엔 절대 못 들어온다 — 그래서 이 INSERT 가
+  // 항상 close/error 의 UPDATE(markShellTerminalDb)보다 먼저 반영됨을 보장한다(순서
+  // 뒤집히면 INSERT OR REPLACE 가 완료 상태를 'running' 으로 덮어써버리는 버그가 된다).
+  // best-effort — 실패해도 셸 실행/추적엔 무영향(런타임 진실=BG_SHELLS).
+  persistBgShellSafe("insert", () => {
+    insertBgShellDb({
+      bashId: id,
+      pid: pgid,
+      pgid,
+      command,
+      cwd,
+      startedAt,
+      // startedLabel 은 아래서 비동기 사후 채움(ps 조회가 async라 아직 없음).
+    });
+  });
+  // started_label(신원검증 스냅샷) — spawn 직후 비동기 ps 조회(수 ms) 후 채운다. bash_id
+  // 를 즉시 반환하는 "안 막힘" 계약을 지키려 이 조회는 await 하지 않는다(fire-and-forget).
+  // status 는 안 건드리는 별도 UPDATE 라 close/error 와 경합해도 안전(무엇을 먼저 실행해도
+  // 결과 동일 — 이미 종료된 행에 label 만 채워져도 reaper 는 status='running' 만 보므로 무해).
+  void captureProcessLabel(pgid)
+    .then((startedLabel) => {
+      if (startedLabel === undefined) return;
+      persistBgShellSafe("updateStartedLabel", () => {
+        updateBgShellStartedLabelDb(id, startedLabel);
+      });
+    })
+    .catch(() => {
+      /* 무해 — label 미보유 시 reaper 는 "신원확인 불가"로 stale 처리(안전측). */
+    });
   return id;
+};
+
+// ─── bg_shells DB 접근 — worker-jobs.ts 정적 import 패턴 동형(store/bg-shells.js,
+// 상단 import 블록). 순환 없음(store→core 참조 0, 단방향). ─────────────────────────
+
+/**
+ * close/error 전이 시 DB 미러 + 터미널 캡. 없는 bashId 는 no-op(UPDATE 0-row, 무해).
+ *
+ * ★반드시 동기 함수 — `persistBgShellSafe(label, fn: () => void)` 는 *동기* throw 만
+ * try/catch 로 잡는다. 이 함수가 `async` 면 내부 synchronous throw 가 (spec 상) rejected
+ * Promise 로 바뀌어 persistBgShellSafe 의 catch 를 그냥 통과해버리고, 호출자가 그 Promise
+ * 를 버리므로(void 호출) unhandled rejection 이 된다 — 데몬의 `process.on("unhandledRejection")`
+ * 은 *crash-fast* 라 벌한 DB 미러 실패 하나가 데몬 전체를 죽이는 회귀가 된다(실측: 본 함수를
+ * async 로 뒀을 때 verify-bg-bash.ts 가 정확히 이 경로로 크래시했다). markBgShellStatusDb·
+ * pruneTerminalBgShellsDb 는 better-sqlite3 라 원래 동기 — async 로 감쌀 이유가 없었다.
+ */
+const markShellTerminalDb = (
+  bashId: string,
+  status: Exclude<BgShellStatus, "running">,
+  exitCode: number | null,
+): void => {
+  markBgShellStatusDb(bashId, status, { finishedAt: Date.now(), exitCode });
+  pruneTerminalBgShellsDb(TERMINAL_BG_SHELL_KEEP);
+};
+
+/**
+ * 데몬 shutdown 시 백그라운드 Bash 셸 정리 — external-mcp `closeAllExternalMcp` orphan-0
+ * 의도 동형(ADR §1e). BG_SHELLS 는 모듈 레벨이라 file-ops 인스턴스와 무관하게 전체 정리.
+ *
+ * ★Unit 1: killTree(pgid, "SIGTERM") 로 교체 — 셸 래퍼뿐 아니라 손자까지 그룹 종료
+ * (이전 단일-PID 부분픽스가 남기던 "조용한 손자 고아" 갭을 닫음). DB 도 'killed' 로
+ * 마킹해(best-effort) 이 경로로 정상 종료된 셸을 부팅 reaper 가 다시 건드리지 않게 한다.
+ *
+ * 커버리지(정직):
+ *  - `daemon:restart`(launchctl kickstart -k)=SIGKILL 즉시 → shutdown() 자체가 실행
+ *    안 됨(launchd 몫). detached 라 셸이 잡그룹 이탈 가능 → 다음 부팅의
+ *    `reapPreviousGeneration()` 이 벌충(P0+P1 동반 설계, ADR §3-3).
+ *  - graceful(`/restart`·SIGTERM/SIGINT)=본 함수가 각 running 셸에 killTree(SIGTERM) →
+ *    셸+손자 그룹 전체 종료. 레지스트리 정리(추적 소실 방지)까지 수행.
+ *  - 데몬 hard kill(kill -9)·전원상실·크래시 = 본 함수 미실행 → 부팅 reaper 가 닫음.
+ */
+export const killAllBgShells = async (): Promise<void> => {
+  const entries = [...BG_SHELLS.entries()];
+  await Promise.all(
+    entries.map(async ([id, s]) => {
+      if (s.status === "running") {
+        await killTree(s.pgid, "SIGTERM");
+        persistBgShellSafe("killAllBgShells", () => {
+          markBgShellStatusDb(id, "killed", {
+            finishedAt: Date.now(),
+            exitCode: s.exitCode,
+          });
+        });
+      }
+      BG_SHELLS.delete(id);
+    }),
+  );
+};
+
+/**
+ * 부팅 reaper — 이전 세대(재시작 전 데몬)가 띄운 detached 셸 고아를 정리(ADR §4).
+ * `recoverInterruptedJobs`(core/worker-jobs.ts) 동형 위치·논리: 갓 부팅한 데몬엔 도는
+ * 셸이 없으므로 bg_shells 의 status='running' 잔류 행 = 전부 이전 세대 후보.
+ *
+ * ★PID 재사용 함정 봉쇄(신원검증 필수) — 맹목 kill 금지. `captureProcessLabel(pid)` 로
+ * *지금* 그 PID 의 OS 신원 스냅샷을 다시 뜨고, launch 시 저장해둔 `startedLabel` 과
+ * 문자열 동일성 비교. 일치할 때만 killTree(실제로 그 프로세스). 불일치(PID 가 다른
+ * 프로세스로 재사용됨)·프로세스 부재(label 조회 실패)·label 미보유(launch 직후 재시작
+ * 레이스) 는 전부 status='stale' 로만 마킹하고 **kill 하지 않는다**(무고한 프로세스
+ * 오살 0, 안전측 열화).
+ *
+ * never-throw at boot — 최상위 + 행별 try/catch 이중 격리. 실패는 로그만(데몬 생존).
+ */
+export const reapPreviousGeneration = async (): Promise<void> => {
+  let rows: ReturnType<typeof listRunningBgShellsDb>;
+  try {
+    rows = listRunningBgShellsDb();
+  } catch (e) {
+    console.error(
+      `bg-shells reaper: listRunningBgShells 실패(무해, 부팅 계속): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    return;
+  }
+  for (const row of rows) {
+    try {
+      const nowLabel = await captureProcessLabel(row.pid);
+      const identityMatch =
+        nowLabel !== undefined &&
+        row.startedLabel !== undefined &&
+        nowLabel === row.startedLabel;
+      if (identityMatch) {
+        await killTree(row.pgid, "SIGKILL");
+        markBgShellStatusDb(row.bashId, "killed", {
+          finishedAt: Date.now(),
+          exitCode: null,
+        });
+        console.log(
+          `bg-shells reaper: 이전 세대 고아 killTree(bashId=${row.bashId}, pgid=${row.pgid}).`,
+        );
+      } else {
+        // 프로세스 부재 / 신원 불일치(PID 재사용) / label 미보유 — 전부 안전측 stale.
+        markBgShellStatusDb(row.bashId, "stale", {
+          finishedAt: Date.now(),
+          exitCode: null,
+        });
+      }
+    } catch (e) {
+      console.error(
+        `bg-shells reaper: 행 처리 실패(bashId=${row.bashId}, 무해): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+  try {
+    pruneTerminalBgShellsDb(TERMINAL_BG_SHELL_KEEP);
+  } catch {
+    // 캡 실패는 무해(무한증가 리스크만, 다음 전이 때 재시도).
+  }
 };
 
 // ─── WebFetch 상수/헬퍼 (cwd 무관 — 모듈 레벨) ───────────────────────────
@@ -468,7 +742,7 @@ const makeFileOpsTools = (base: string) => {
 
       // 백그라운드 실행 — 즉시 bash_id 반환(안 막힘). timeout 미적용(완료/Kill 까지 돎).
       if (args.run_in_background === true) {
-        const id = launchBgShell(args.command, base);
+        const id = await launchBgShell(args.command, base);
         return okText(
           `백그라운드 실행 시작 (bash_id: ${id}). ` +
             `BashOutput({ bash_id: "${id}" }) 로 출력 폴링, KillShell 로 종료.`,
@@ -608,12 +882,16 @@ const makeFileOpsTools = (base: string) => {
         return errText(`bash_id 없음: ${args.bash_id}.`);
       }
       if (s.status === "running") {
-        try {
-          s.child.kill("SIGKILL");
-        } catch {
-          /* noop — 이미 죽었을 수 있음 */
-        }
+        // ★Unit 1: killTree(pgid) 로 교체 — 이전엔 s.child.kill(단일 PID)만이라 조용한
+        // (stdout 무출력) 손자 프로세스가 고아로 생존할 수 있었다. 그룹 전체 종료.
+        await killTree(s.pgid, "SIGKILL");
         s.status = "killed";
+        persistBgShellSafe("KillShell", () => {
+          markBgShellStatusDb(args.bash_id, "killed", {
+            finishedAt: Date.now(),
+            exitCode: s.exitCode,
+          });
+        });
       }
       return okText(`종료 처리됨: ${args.bash_id} (status: ${s.status}).`);
     },

@@ -1482,6 +1482,21 @@ const shutdown = async (signal: string): Promise<void> => {
       `external-mcp close failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  // 백그라운드 Bash 셸(file-ops run_in_background) 정리 — orphan 0 (외부 MCP 와 동형).
+  // graceful self-exit(/restart) 경로에서 조용한 장기 셸(손자 포함)이 고아로 남는 구멍을
+  // killTree(그룹 전체 종료)로 닫는다(ADR 2026-07-17 §3, Unit 1 Phase 0). ★await 필수 —
+  // killAllBgShells 가 async(내부에서 process.kill/taskkill 실행)라 아래 process.exit(0)
+  // 전에 시그널 발송이 실제로 끝나야 한다(fire-and-forget 이면 exit 가 먼저 뜰 수 있음).
+  try {
+    const { killAllBgShells } = await import(
+      "./core/llm-runtime/capabilities/file-ops-mcp.js"
+    );
+    await killAllBgShells();
+  } catch (e) {
+    console.error(
+      `bg-shells kill failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   process.exit(0);
 };
 
@@ -1576,6 +1591,24 @@ for (const ch of channels) {
 
 // 재시작으로 중단된 백그라운드 워커를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).
 await recoverInterruptedJobs();
+
+// 백그라운드 셸(file-ops run_in_background) 부팅 reaper — ADR 2026-07-17 §4, Unit 1
+// Phase 1. `recoverInterruptedJobs` 와 동형 위치·논리: 이전 세대(재시작 전 데몬)가 띄운
+// detached 셸이 `daemon:restart`(kickstart -k) 잡그룹 이탈·hard-kill·크래시·전원상실로
+// 살아남았을 수 있는 고아를 PID 재사용 신원검증 후 정리한다(killAllBgShells 의 graceful
+// 경로가 못 미친 나머지 절반). never-throw(내부 완전 격리) — await 실패해도 부팅 불가 X.
+// 통지 없음(셸은 사용자 통지 대상 아님, ADR §4 — 워커와 달리 조용히 reap). 사용자 turn 처리
+// 시작 전(채널 start 이후) 실행 — 신규 셸이 아직 없어 status='running' 잔류=전부 이전 세대.
+try {
+  const { reapPreviousGeneration } = await import(
+    "./core/llm-runtime/capabilities/file-ops-mcp.js"
+  );
+  await reapPreviousGeneration();
+} catch (e) {
+  console.error(
+    `bg-shells reaper failed (부팅 계속): ${e instanceof Error ? e.message : String(e)}`,
+  );
+}
 
 // 자가 업데이트 완료 통지 — 부팅 시 <home>/.update-complete 마커가 있으면 읽어 요청자에게
 // "업데이트 완료 vX→vY" 1회 통지 후 마커 삭제(멱등). 채널 start 이후(send 가능 시점)라야

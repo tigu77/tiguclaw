@@ -428,6 +428,15 @@ export const createSpawnAgentMcpServer = (
           abortSignal: abort.signal,
           ...(toolPolicy !== undefined ? { toolPolicy } : {}),
           ...(leanMemory ? { leanMemory: true } : {}),
+          // presentOptions 전파(2026-07-17, AskUserQuestion 차단 파리티) — 부모 채널의
+          // 인터랙티브 선택지 렌더 클로저를 자식에도 상속. 이게 없으면 prompt-options MCP
+          // 가 자식 turn 에 미등록(claude-agent-sdk.ts createPromptOptionsMcpServer 게이트
+          // = input.presentOptions!==undefined) → 자식이 네이티브 AskUserQuestion 으로
+          // 새는 유일한 남은 경로였다(그 도구는 이제 disallowedTools 로도 차단되지만,
+          // 상속 없인 자식이 "선택지 제시 불가"로 저하 — 부모와 동일 능력이 원칙).
+          ...(parentInput.presentOptions !== undefined
+            ? { presentOptions: parentInput.presentOptions }
+            : {}),
         };
 
         // lazy import — capabilities → llm-runtime/index circular 회피.

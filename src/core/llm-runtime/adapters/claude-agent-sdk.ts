@@ -563,7 +563,18 @@ export const runClaude = async (
     systemPrompt: input.systemPromptOverride ?? SYSTEM_PROMPT,
     permissionMode: "bypassPermissions",
     abortController: effectiveAc,
-    disallowedTools: [...DISALLOWED_TOOLS],
+    // AskUserQuestion 차단(2026-07-17) — claude 전용 SDK 네이티브 도구. tiguclaw 인터랙티브
+    // 선택지는 자체 prompt_options(prompt.options 이벤트)만 렌더(축1, 2026-06-25) — 네이티브로
+    // 새면 대시보드/텔레그램이 옵션을 못 그려 질문만 뜨고 응답 불가(대기 고아). 어댑터-지역
+    // 차단(codex/openai 는 이 도구 자체가 없어 무영향 = #2 parity, 공유 DISALLOWED_TOOLS 정책은
+    // 무편집). SDK 문서 도구명 정확 매칭(coreTypes.d.ts 네이티브 도구 목록).
+    disallowedTools: [...DISALLOWED_TOOLS, "AskUserQuestion"],
+    // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
+    // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
+    // SDKPartialAssistantMessage(type:"stream_event")가 함께 오고, 아래 메시지 루프가
+    // content_block_delta/text_delta 를 즉시 deltaStream.push (이중발행 방지는 완성 블록
+    // 분기에서 receivedPartialText 가드로 처리).
+    includePartialMessages: true,
     persistSession: true,
     cwd,
     // lean(toolsNone) child 는 SDK 빌트인 도구도 0 (`tools: []` = disable all built-ins).
@@ -740,6 +751,12 @@ export const runClaude = async (
   let lastModel: string | null = null;
   let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
   let succeeded = false;
+  // 이중발행 방지 가드(2026-07-17, delta 파리티) — depth-0 부모 turn 에서 부분 델타
+  // (stream_event/content_block_delta)를 한 번이라도 push 했으면, 뒤따르는 완성
+  // assistant 텍스트 블록에서는 deltaStream.push 를 다시 하지 않는다(같은 텍스트 2번
+  // 스트리밍 방지). 무회귀 하드게이트 — SDK 가 부분 이벤트를 안 주는 경우(비지원/누락)엔
+  // 이 플래그가 false 로 남아 기존 완성블록 push 경로가 그대로 동작(폴백 보존).
+  let receivedPartialText = false;
   // llm.activity — 어댑터 로컬 단조 시퀀스 (turn 시작 0, publish 마다 +1). nonce 아님.
   let activitySeq = 0;
 
@@ -914,6 +931,42 @@ export const runClaude = async (
         lastModel = msg.model;
         deltaStream.setModel(msg.model); // 델타 라벨 보정(늦게 알게 된 모델).
       }
+    } else if (msg.type === "stream_event") {
+      // ★델타 스트리밍 파리티(2026-07-17) — `includePartialMessages: true` 로 켠
+      // SDKPartialAssistantMessage. content_block_delta/text_delta 만 다룬다(다른
+      // stream_event 서브타입 — message_start/content_block_start/stop 등 — 은 텍스트
+      // 증분이 없어 무시). 서브(Task) 내부 텍스트는 위 "assistant" 분기와 동형으로
+      // parent_tool_use_id 로 depth 게이트(부모 답변/델타 버블에 섞이면 안 됨 — 회귀 0).
+      const parentToolUseId = (msg as { parent_tool_use_id?: unknown })
+        .parent_tool_use_id;
+      const nestedEntry =
+        typeof parentToolUseId === "string"
+          ? taskJobs.get(parentToolUseId)
+          : undefined;
+      if (nestedEntry === undefined) {
+        const event = msg.event;
+        if (
+          event &&
+          typeof event === "object" &&
+          (event as { type?: unknown }).type === "content_block_delta"
+        ) {
+          const delta = (event as { delta?: unknown }).delta;
+          if (
+            delta &&
+            typeof delta === "object" &&
+            (delta as { type?: unknown }).type === "text_delta"
+          ) {
+            const t = (delta as { text?: unknown }).text;
+            if (typeof t === "string" && t.length > 0) {
+              receivedPartialText = true; // 완성 블록 재push 방지 가드(위 "assistant" 분기).
+              // 부분델타 = deltaStream.push (llm.delta 실시간 스트리밍 + segBuf 겸용 적재
+              // — closeSegment 인터리브(2026-07-13)는 push() 를 그대로 재사용하므로 별도
+              // 처리 불요, 도구 경계/턴종료 시 기존 closeTextSegment() 가 자연히 커버).
+              deltaStream.push(t);
+            }
+          }
+        }
+      }
     } else if (msg.type === "result") {
       if (msg.subtype === "success") {
         // 실측 (probe 2026-06-02): 모델 거부(미존재 model)는 SDK 가 result.subtype
@@ -979,10 +1032,16 @@ export const runClaude = async (
               // 섞이면 안 됨). 관측은 도구 스텝(아래) 단위라 서브 텍스트는 activity 화 안 함
               // (스키마상 이산 도구 step 만, codex 서브도 도구만 per-step — parity).
               if (nestedEntry === undefined) {
-                assistantTextChunks.push(t);
+                assistantTextChunks.push(t); // 권위 전체본(resultText 폴백) — 항상 적재.
                 // llm.delta — assistant 텍스트 청크 fan-out(sdk_message firehose 와 별개
                 // 레이어, 순수 텍스트 증분). coalescer 가 ~80ms∥120자로 묶어 발행.
-                deltaStream.push(t);
+                // ★이중발행 가드(2026-07-17) — 이 turn 에서 부분 델타(stream_event)를 이미
+                // 한 번이라도 스트리밍했으면, 완성 블록에서 같은 텍스트를 또 push 하지 않는다
+                // (완성 블록 = 그 텍스트의 부분 델타들이 이미 합쳐진 것). 부분 델타를 못 받은
+                // 경우(SDK 미지원·이벤트 누락)에만 기존처럼 완성 블록에서 push(폴백 보존).
+                if (!receivedPartialText) {
+                  deltaStream.push(t);
+                }
               }
             }
           } else if (
@@ -1101,6 +1160,7 @@ export const runClaude = async (
       lastUsage = undefined;
       succeeded = false;
       activitySeq = 0;
+      receivedPartialText = false; // fresh 세션 재시도 — 이중발행 가드도 새 시도 기준 리셋.
       deltaStream.closeSegment(); // 세그먼트 버퍼 드레인(발행 안 함) — 실패한 첫 시도의 잔여
       // 텍스트가 fresh 세션의 첫 세그먼트로 새지 않게(activitySeq=0 리셋과 동형 취지).
       toolTiming.clear(); // 실행시간(#3) 매핑도 리셋 — fresh 세션엔 이전 tool_use id 안 옴.

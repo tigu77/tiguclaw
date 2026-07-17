@@ -633,6 +633,32 @@ export const initStore = (): void => {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN attachments TEXT`);
   }
 
+  // ─── 백그라운드 셸 프로세스 영속 (reap 전용 메타 — 2026-07-17) ──────────────────
+  // ADR `docs/decisions/2026-07-17-background-shell-observability.md` §4. 런타임
+  // 진실은 file-ops-mcp.ts 의 in-memory BG_SHELLS Map(worker_jobs 와 동형 — 이 테이블은
+  // *재시작 생존*만 담당). 부팅 reaper 가 status='running' 잔류 행(=이전 세대, detached
+  // 프로세스가 데몬 프로세스그룹을 이탈해 kickstart -k/hard-kill/크래시로 살아남을 수 있는
+  // 고아)을 PID 재사용 신원검증(started_label — ps lstart+command 스냅샷) 후에만 killTree.
+  // 신원 불일치·프로세스 부재는 status='stale' 로만 마킹(무고한 프로세스 오살 0). 출력·결과는
+  // 비영속(순수 프로세스 위생 메타만 — worker_jobs 의 "메타만" 보다도 얇음, 재개·통지 없음).
+  // codex/openai 전용(file-ops BG_SHELLS 소유) — claude 는 SDK 빌트인 Bash 가 셸을 자체
+  // 소유해 이 테이블·reaper 범위 밖(ADR §6, 무영향).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS bg_shells (
+      bash_id       TEXT PRIMARY KEY,
+      pid           INTEGER NOT NULL,
+      pgid          INTEGER NOT NULL,
+      command       TEXT NOT NULL,
+      cwd           TEXT NOT NULL,
+      status        TEXT NOT NULL,
+      started_at    INTEGER NOT NULL,
+      finished_at   INTEGER,
+      exit_code     INTEGER,
+      started_label TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_bg_shells_status ON bg_shells(status);
+  `);
+
   db = handle;
 };
 

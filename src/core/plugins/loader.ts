@@ -39,7 +39,7 @@ const ensureTsxLoader = async (): Promise<void> => {
  *  - built 1st-party: `.ts` 부재 + `.js` 형제 존재(D1-b) → 컴파일된 `.js` 로드.
  *  - built drop-in `.ts`(사용자/프로젝트, `.js` 없음): tsx 온디맨드 등록 후 `.ts` 로드(D1-c).
  */
-const resolveEntry = async (pluginDir: string, entry: string): Promise<string> => {
+export const resolveEntry = async (pluginDir: string, entry: string): Promise<string> => {
   const entryAbs = path.resolve(pluginDir, entry);
   if (entryAbs.endsWith(".ts")) {
     const jsSibling = `${entryAbs.slice(0, -3)}.js`;

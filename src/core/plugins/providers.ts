@@ -5,6 +5,7 @@ import { appRoot, getPaths } from "../paths.js";
 import { countMemories, listMemories } from "../../store/memory.js";
 import { listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
+import { resolveEntry } from "./loader.js";
 import { PROVIDER_REGISTRY, resolveProviderConn } from "../llm-runtime/provider-registry.js";
 
 export type ModuleKind = "core" | "plugin" | "llm-adapter";
@@ -379,7 +380,10 @@ const loadPluginModuleExports = async (): Promise<PluginModuleExport[]> => {
       const manifest = await readModuleExportFromManifest(pluginDir);
       if (manifest === null) continue;
 
-      const modulePath = path.resolve(pluginDir, manifest.entry);
+      // ★built 런타임 대응: loader 와 동일한 entry 해석(.ts→.js 폴백 + tsx 등록).
+      // raw path.resolve 면 built 에서 `.ts` entry(예: self-growth provider)가 존재하지
+      // 않아 import 실패→조용히 skip→모듈뷰 카드 누락. resolveEntry 재사용으로 대칭 복구.
+      const modulePath = await resolveEntry(pluginDir, manifest.entry);
       const key = `${manifest.id}:${modulePath}`;
       if (seen.has(key)) continue;
       seen.add(key);

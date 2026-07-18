@@ -134,6 +134,13 @@ export type MessageHandler = (msg: IncomingMessage) => Promise<void>;
 
 export interface Channel {
   readonly name: ChannelName;
+  /**
+   * 채널 가용성 자기선언(additive, D1(b) 2026-07-18) — 채널이 자기 presence 상태를
+   * 선언한다. 미지정 = "up"(하위호환·회귀 0, cli·http-bridge 등 기존 채널 무수정).
+   * presence 루프가 `c.status ?? "up"` 으로 범용 조회 → 특정 채널명 하드코딩 불필요(§0).
+   * telegram: 토큰 있으면 "up"·폴링, 없으면 "disabled"·self-disable(목록엔 균일 표시).
+   */
+  status?: "up" | "disabled";
   start(handler: MessageHandler): Promise<void>;
   stop(): Promise<void>;
   /**

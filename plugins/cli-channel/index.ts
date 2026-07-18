@@ -1,9 +1,9 @@
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import type { Channel, IncomingMessage, MessageHandler } from "./types.js";
-import type { ChannelOutbound } from "../core/channel-outbound.js";
-import { resolveSessionId } from "../core/threadkey.js";
+import type { Channel, IncomingMessage, MessageHandler } from "../../src/channels/types.js";
+import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
+import { resolveSessionId } from "../../src/core/threadkey.js";
 
-export class CliChannel implements Channel {
+export default class CliChannel implements Channel {
   readonly name = "cli" as const;
   /**
    * 아웃바운드 능력(ADR 2026-07-16 §D3, 3어댑터 parity) — deliver = console.log(현행 switch

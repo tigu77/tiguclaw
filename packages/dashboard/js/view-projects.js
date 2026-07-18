@@ -26,23 +26,23 @@
         }
       });
 
+      // 모듈/능력 뷰와 완전 동형 3패널 — #projects-panel(리스트 서브패널) + #detail-panel(상세).
+      // show-projects 모드는 setActiveNav 가 다른 모드를 지운 뒤 여기서 add. 리스트는 정적
+      // #projects-list, 검색창(#projects-search)도 정적(index.html) — 재렌더에도 값 보존.
       const showProjects = () => {
         setActiveNav("projects");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        document.getElementById("workbench").classList.remove("show-capabilities");
-        const root = document.getElementById("detail-panel");
-        root.innerHTML = "";
-        const wrap = document.createElement("div");
-        wrap.className = "page-view projects-view";
-        wrap.innerHTML =
-          '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">프로젝트</div><span class="detail-kind">레지스트리</span></div>' +
-          '<p class="developer-copy">등록된 프로젝트(폴더 + PROJECT.md)를 카드로 봅니다. 카드를 누르면 오른쪽에 설명·전용 스킬/에이전트·연관 프로젝트가 열립니다.</p>' +
-          '<div class="projects-split no-detail" id="projects-split">' +
-          '<div class="projects-grid" id="projects-grid"><div class="empty">불러오는 중…</div></div>' +
-          '</div>';
-        root.appendChild(wrap);
+        document.getElementById("workbench").classList.add("show-projects");
         selectedProjectPath = null;
+        document.getElementById("detail-panel").innerHTML =
+          '<div id="detail-empty">프로젝트를 선택하세요.</div>';
+        const searchInput = document.getElementById("projects-search");
+        if (searchInput && !searchInput.dataset.wired) {
+          searchInput.dataset.wired = "1";
+          searchInput.addEventListener("input", () => {
+            applyListSearchFilter(document.getElementById("projects-list"), searchInput.value);
+          });
+        }
         fetchProjects();
       };
 
@@ -178,8 +178,10 @@
       };
 
       const renderProjectsGrid = () => {
-        const grid = document.getElementById("projects-grid");
+        const grid = document.getElementById("projects-list");
         if (!grid) return;
+        const countEl = document.getElementById("projects-count");
+        if (countEl) countEl.textContent = String(projectsCache.length);
         grid.innerHTML = "";
         if (projectsCache.length === 0) {
           grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. ' + assistantName + ' 에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
@@ -215,6 +217,9 @@
           pathEl.className = "pi-summary pi-path";
           pathEl.textContent = p.path;
           item.appendChild(pathEl);
+          // 검색 대상 텍스트(이름·설명·경로·상태) — 모듈/능력 뷰와 동형(applyListSearchFilter).
+          item.dataset.searchText = [p.name, p.description, p.path, PROJECT_STATUS_LABEL[status] || status]
+            .filter(Boolean).join(" ").toLowerCase();
           item.addEventListener("click", () => openProjectDetail(p.path));
           // ⋯ 메뉴 + 우클릭 + 롱프레스(3경로 동일). ctx 에 path 를 실어 "폴더 열기"가 씀.
           const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || "(이름 없음)", path: p.path });
@@ -223,33 +228,25 @@
           attachLongPress(item, "project", projectCtx);
           grid.appendChild(item);
         }
+        // 재렌더 후 현재 검색어 재적용 (모듈/능력 뷰와 동형).
+        const searchInput = document.getElementById("projects-search");
+        if (searchInput) applyListSearchFilter(grid, searchInput.value);
       };
 
       const closeProjectDetail = () => {
         selectedProjectPath = null;
         projectAgentsBox = null; // 라이브 재렌더 훅 중단.
-        const split = document.getElementById("projects-split");
-        if (split) {
-          split.classList.add("no-detail");
-          const existing = document.getElementById("project-detail");
-          if (existing) existing.remove();
-        }
+        document.getElementById("detail-panel").innerHTML =
+          '<div id="detail-empty">프로젝트를 선택하세요.</div>';
         renderProjectsGrid();
       };
 
       const openProjectDetail = async (projectPath) => {
         selectedProjectPath = projectPath;
         renderProjectsGrid();
-        const split = document.getElementById("projects-split");
-        if (!split) return;
-        split.classList.remove("no-detail");
-        let panel = document.getElementById("project-detail");
-        if (!panel) {
-          panel = document.createElement("aside");
-          panel.id = "project-detail";
-          panel.className = "project-detail";
-          split.appendChild(panel);
-        }
+        // 상세는 공유 #detail-panel 에 렌더(모듈/능력 뷰 동형).
+        const panel = document.getElementById("detail-panel");
+        if (!panel) return;
         panel.innerHTML = '<div class="empty">불러오는 중…</div>';
         let detail;
         try {

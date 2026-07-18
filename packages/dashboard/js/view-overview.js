@@ -2,6 +2,10 @@
         currentView = view;
         document.body.dataset.view = view;
         document.body.dataset.main = view === "chat" ? "stream" : view === "activity" ? "activity" : "workbench";
+        // 워크벤치 3패널 모드 클래스 중앙 초기화 — 각 뷰가 setActiveNav 후 자기 모드만 add.
+        // (모듈=show-providers / 능력=show-capabilities / 프로젝트=show-projects. 나머지=없음).
+        const wb = document.getElementById("workbench");
+        if (wb) wb.classList.remove("show-providers", "show-capabilities", "show-projects");
         for (const btn of document.querySelectorAll(".nav-button")) {
           btn.classList.toggle("active", btn.dataset.view === view);
         }

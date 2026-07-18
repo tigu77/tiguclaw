@@ -6,7 +6,7 @@ import { countMemories, listMemories } from "../../store/memory.js";
 import { listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
 import { resolveEntry } from "./loader.js";
-import { PROVIDER_REGISTRY, resolveProviderConn } from "../llm-runtime/provider-registry.js";
+import { listProviderNames, resolveProviderConn } from "../llm-runtime/provider-registry.js";
 
 export type ModuleKind = "core" | "plugin" | "llm-adapter";
 export type ModuleStatus = "active" | "inactive" | "degraded" | "missing" | "error";
@@ -304,11 +304,12 @@ const llmAdapterModule = (provider: string): Module => {
   };
 };
 
-// PROVIDER_REGISTRY(진실 소스: src/core/llm-runtime/provider-registry.ts) 를 순회만 —
-// 어댑터별 특수 if 분기 0(§0 LLM-agnostic 하드게이트). resolveProviderConn 재사용(자체 인증
-// 판정 로직 재구현 금지). 실 백엔드 호출/핑 없음 — 인증 설정 유무만(값싸게).
+// listProviderNames(진실 소스: src/core/llm-runtime/provider-registry.ts) 를 순회만 — 하드코딩
+// 5종 + 사용자 정의 provider(settings.json models.providers, config-driven 2026-07-18, known
+// adapter 만). 어댑터별 특수 if 분기 0(§0 LLM-agnostic 하드게이트). resolveProviderConn 재사용
+// (자체 인증 판정 로직 재구현 금지). 실 백엔드 호출/핑 없음 — 인증 설정 유무만(값싸게).
 const collectLlmAdapterModules = (): Module[] =>
-  Object.keys(PROVIDER_REGISTRY).map((provider) => llmAdapterModule(provider));
+  listProviderNames().map((provider) => llmAdapterModule(provider));
 
 export interface PluginModuleExport {
   id: string;

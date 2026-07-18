@@ -1,0 +1,12 @@
+{
+  // 플러그인 타입검사 전용 (2026-07-18). 기존 tsconfig.json 은 include=src 뿐이라 plugins/
+  // 가 typecheck 밖이었다(메모리 project_plugins_outside_typecheck — 구문/타입 오류가 조용히
+  // 배포되던 부채). rootDir="." + plugins 포함으로 플러그인이 리터럴 import 하는 ../../src 도
+  // 해석. noEmit = 순수 게이트(산출물 0). build:prod(tsconfig.build.json)와 별개 = 검사 전용.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "plugins/**/*"]
+}

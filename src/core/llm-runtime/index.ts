@@ -39,7 +39,11 @@ import type {
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import { getEventBus } from "../eventbus.js";
-import { resolveProfileChain, getDefaultProfileName } from "../settings.js";
+import {
+  resolveProfileChain,
+  getDefaultProfileName,
+  loadModelProviders,
+} from "../settings.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
@@ -120,15 +124,39 @@ export interface ModelSpec {
 }
 
 // provider id → 어댑터(런타임). 다대일 허용 (openai 어댑터 ← openai/ollama/google).
-// 진실 소스는 provider-registry.ts (이 맵은 parse lookup 용 호환 view) — 키 추가만,
-// 구조 변경 금지. principle-check: 동적 레지스트리 일반화 금지 — provider 가 실제
-// 5종 넘을 때만 키 확장. OpenClaw provider-id 정합.
+// 진실 소스는 provider-registry.ts (이 맵은 parse lookup 용 호환 view) — 하드코딩 5종.
+// 사용자 정의 provider(settings.json models.providers, 2026-07-18)는 이 맵에 없고
+// parseModelSpec 이 loadModelProviders 폴백으로 adapter 를 해석한다(config-driven 개방).
+// principle-check: 하드코딩 5종 authoritative — 사용자는 새 이름만 추가(override 불가).
 const PROVIDER_TO_ADAPTER: Record<string, RegionAAdapter> = {
   anthropic: "claude",
   codex: "codex-oauth",
   openai: "openai",
   ollama: "openai",
   google: "openai",
+};
+
+// known adapter 판정 — RegionAAdapter union 의 런타임 미러(exhaustive record 로 union 변경 시
+// 컴파일 에러). ★provider-registry.ts 에도 같은 record 가 있으나 provider-registry→index 는
+// type-only(런타임 미로드)로 유지해야 순환이 안 나므로 value import 대신 각자 소유한다
+// (cycle-forced 중복, 3키·안정). 사용자 정의 provider 의 미지 adapter 는 여기서 거부한다.
+const KNOWN_ADAPTERS: Record<RegionAAdapter, true> = {
+  claude: true,
+  openai: true,
+  "codex-oauth": true,
+};
+const isKnownAdapter = (a: string): a is RegionAAdapter =>
+  Object.prototype.hasOwnProperty.call(KNOWN_ADAPTERS, a);
+
+// 사용자 정의 provider → 어댑터. 하드코딩 5종에 없는 provider 만 settings.json models.providers
+// 에서 해석(known adapter 검증). 미지 provider·미지 adapter → undefined(parseModelSpec 이 drop).
+const userProviderAdapter = (
+  provider: string,
+  cwd?: string,
+): RegionAAdapter | undefined => {
+  const cfg = loadModelProviders(cwd)[provider];
+  if (cfg === undefined || !isKnownAdapter(cfg.adapter)) return undefined;
+  return cfg.adapter;
 };
 
 // adapter id → provider 라벨 (PROVIDER_TO_ADAPTER 역매핑). specLabel 이 사용자 친화
@@ -158,13 +186,15 @@ export const DEFAULT_MODEL_SPEC: ModelSpec = { adapter: "claude", model: "" };
 // "provider:model" → ModelSpec (OpenClaw parseStaticModelRef 답습).
 // 형식 불일치·미지 provider·빈 model → null (drop).
 // V1.1 (2026-05-28) — `/model` 슬래시가 형식 검증·spec 변환에 재사용 (export).
-export const parseModelSpec = (raw: string): ModelSpec | null => {
+// 2026-07-18 — 하드코딩 5종에 없으면 settings.json models.providers(config-driven) 폴백.
+//   precedence: 하드코딩 우선(authoritative). cwd = 프로젝트 스코프 provider 해석용(옵셔널).
+export const parseModelSpec = (raw: string, cwd?: string): ModelSpec | null => {
   const trimmed = raw.trim();
   const idx = trimmed.indexOf(":");
   if (idx === -1) return null;
   const provider = trimmed.slice(0, idx).trim();
   const model = trimmed.slice(idx + 1).trim();
-  const adapter = PROVIDER_TO_ADAPTER[provider];
+  const adapter = PROVIDER_TO_ADAPTER[provider] ?? userProviderAdapter(provider, cwd);
   if (adapter === undefined || model === "") return null;
   // provider 운반(round-trip 핵심) — specLabel 이 역산 대신 이 값을 직접 사용,
   // 어댑터가 provider-registry self-lookup 으로 baseURL/apiKey 해석.
@@ -172,11 +202,11 @@ export const parseModelSpec = (raw: string): ModelSpec | null => {
 };
 
 // export (2026-06-02) — `/model` 슬래시(daemon)·router 가 콤마 풀 파싱에 사용.
-// 무효 part 는 drop (로직 무변경). 빈/전부무효 → [].
-export const parseModelSpecList = (raw: string): ModelSpec[] => {
+// 무효 part 는 drop (로직 무변경). 빈/전부무효 → []. cwd = 프로젝트 스코프 user provider 해석용.
+export const parseModelSpecList = (raw: string, cwd?: string): ModelSpec[] => {
   const out: ModelSpec[] = [];
   for (const part of raw.split(",")) {
-    const spec = parseModelSpec(part);
+    const spec = parseModelSpec(part, cwd);
     if (spec !== null) out.push(spec);
   }
   return out;
@@ -193,12 +223,12 @@ export const resolveModelSpecs = (
   //  기본 풀은 체인의 자기 pool(chain[0])만 사용(메인 턴은 인터-프로파일 폴백 없이 풀 내 폴백만).
   const defaultChain = resolveProfileChain(getDefaultProfileName(cwd), cwd);
   if (defaultChain.length > 0) {
-    const pool = parseModelSpecList(defaultChain[0].join(","));
+    const pool = parseModelSpecList(defaultChain[0].join(","), cwd);
     if (pool.length > 0) return pool;
   }
   const env = process.env.REGION_A_MODELS;
   if (env !== undefined && env !== "") {
-    const parsed = parseModelSpecList(env);
+    const parsed = parseModelSpecList(env, cwd);
     if (parsed.length > 0) return parsed;
   }
   return [DEFAULT_MODEL_SPEC];

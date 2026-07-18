@@ -35,7 +35,7 @@
           <div class="nav-sub">핵심 상태와 작업 진입점만 간결하게.</div>
         </div>
         <div class="nav-section" aria-label="main menu">
-          <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">개요</span><span class="hint">홈</span></button>
+          <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">홈</span><span class="hint">요약</span></button>
           <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">모듈</span><span class="hint" id="nav-provider-count">0</span></button>
           <button class="nav-button" data-view="models" type="button"><span class="ic">🧠</span><span class="label">모델 프로파일</span><span class="hint" id="nav-model-count">0</span></button>
           <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
@@ -46,7 +46,6 @@
           <button class="nav-button" data-view="inventory" type="button"><span class="ic">📚</span><span class="label">능력</span><span class="hint" id="nav-capability-count">0</span></button>
           <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
         </div>
-        <div class="nav-note"><strong>능력</strong>은 스킬·에이전트(명세)·MCP 등 비서가 쓰는 데이터 자산입니다. 항목을 눌러 상세를 확인하세요(읽기 전용 — 편집은 대화로).</div>
       </aside>
       <section id="workbench">
         <section id="providers-panel">
@@ -73,8 +72,20 @@
           </div>
           <div id="capabilities-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
         </section>
+        <!-- 프로젝트 뷰 3패널 — 모듈/능력(#providers-panel·#capabilities-panel)과 완전 동형.
+             #workbench.show-projects 가 리스트 서브패널을 detail-panel 과 나란히 켠다. -->
+        <section id="projects-panel">
+          <div id="projects-head">
+            <h1>프로젝트</h1>
+            <span class="count" id="projects-count"></span>
+          </div>
+          <div class="list-search-row">
+            <input type="search" id="projects-search" class="list-search-input" placeholder="프로젝트 검색 (이름·설명·경로)" />
+          </div>
+          <div id="projects-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
+        </section>
         <section id="detail-panel">
-          <div id="detail-empty">개요를 불러오는 중입니다.</div>
+          <div id="detail-empty">홈을 불러오는 중입니다.</div>
         </section>
       </section>
       <section id="right">

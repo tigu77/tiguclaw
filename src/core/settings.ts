@@ -32,11 +32,37 @@ export interface ModelProfile {
   fallback?: string;
 }
 
+/**
+ * 사용자 정의 LLM provider — settings.json `models.providers.<name>` 의 검증된 형태
+ * (2026-07-18, config-driven provider 개방). 하드코딩 5종(provider-registry) 과 동형이되
+ * **새 이름만 추가**한다(precedence: 하드코딩 authoritative). 시크릿은 여기 없다 — apiKeyEnv
+ * 로 env 를 참조하고 raw 키는 파일에 두지 않는다(loadModelProfiles 의 D5 원칙 계승).
+ *
+ * ★adapter 는 여기서 문자열로만 검증(비어있지 않음). "알려진 adapter 인가"(openai/claude/
+ * codex-oauth) 판정은 LLM 층(provider-registry·llm-runtime)에서 — settings.ts 는 llm-runtime
+ * 무참조(순환 0)라 RegionAAdapter 를 알지 못한다. 미지 adapter 거부는 소비 지점의 몫.
+ */
+export interface ModelProviderConfig {
+  /** 이 provider 가 타는 어댑터 이름(문자열). known 검증은 LLM 층. */
+  adapter: string;
+  /** OpenAI-compatible baseURL(optional). undefined = 어댑터 정품 경로. */
+  baseURL?: string;
+  /** apiKey 를 읽을 env 변수명. 파일에 raw 키 금지 — env 참조만. */
+  apiKeyEnv: string;
+}
+
 /** settings.json 최상위 형태 — 임의 키 허용(hooks·models·기타). */
 export interface LoadedSettings {
   hooks?: Record<string, unknown>;
-  /** `models.default` = 기본 프로파일 포인터(어떤 프로파일이든 기본 지정), `models.profiles` = 명명된 풀. */
-  models?: { default?: unknown; profiles?: Record<string, unknown> };
+  /**
+   * `models.default` = 기본 프로파일 포인터(어떤 프로파일이든 기본 지정), `models.profiles` =
+   * 명명된 풀, `models.providers` = 사용자 정의 LLM provider(config-driven, 2026-07-18).
+   */
+  models?: {
+    default?: unknown;
+    profiles?: Record<string, unknown>;
+    providers?: Record<string, unknown>;
+  };
   /**
    * `modules.disabled` = 사용자가 끈 `kind:plugin` 모듈 이름 목록(ADR
    * 2026-07-17-module-capability-model §5.6 MVP). loadPlugins 가 이 목록을 스킵.
@@ -130,6 +156,76 @@ export const loadModelProfiles = (
       profiles as Record<string, unknown>,
     )) {
       const validated = validateProfile(name, val, diagnose);
+      if (validated !== undefined) merged[name] = validated;
+    }
+  }
+  return merged;
+};
+
+/**
+ * 한 provider 값 shape 검증(2026-07-18) — adapter·apiKeyEnv 가 비어있지 않은 문자열이어야
+ * 유효. baseURL 은 optional 문자열. adapter 의 "known 여부"(openai/claude/codex-oauth)는 여기서
+ * 판정하지 않는다(settings.ts 는 llm-runtime 무참조) — 소비 지점(provider-registry·parseModelSpec)
+ * 이 미지 adapter 를 거부한다.
+ */
+const validateProviderConfig = (
+  name: string,
+  val: unknown,
+  diagnose: boolean,
+): ModelProviderConfig | undefined => {
+  if (val === null || typeof val !== "object" || Array.isArray(val)) {
+    if (diagnose) {
+      console.warn(`[settings] models.providers.${name}: 객체가 아님 — 무시.`);
+    }
+    return undefined;
+  }
+  const o = val as Record<string, unknown>;
+  if (typeof o.adapter !== "string" || o.adapter.trim() === "") {
+    if (diagnose) {
+      console.warn(
+        `[settings] models.providers.${name}: adapter 가 비어있지 않은 문자열이 아님 — 무시.`,
+      );
+    }
+    return undefined;
+  }
+  if (typeof o.apiKeyEnv !== "string" || o.apiKeyEnv.trim() === "") {
+    if (diagnose) {
+      console.warn(
+        `[settings] models.providers.${name}: apiKeyEnv 가 비어있지 않은 문자열이 아님 — 무시.`,
+      );
+    }
+    return undefined;
+  }
+  const config: ModelProviderConfig = {
+    adapter: o.adapter.trim(),
+    apiKeyEnv: o.apiKeyEnv.trim(),
+  };
+  if (typeof o.baseURL === "string" && o.baseURL.trim() !== "") {
+    config.baseURL = o.baseURL.trim();
+  }
+  return config;
+};
+
+/**
+ * 검증된 사용자 provider 맵(2026-07-18) — 홈→프로젝트 병합(이름 충돌 시 프로젝트가 이김,
+ * loadModelProfiles 동형). 무효 config 는 drop. diagnose=true(부팅 진단)일 때만 콘솔 경고.
+ *
+ * ★precedence 는 여기서 강제하지 않는다 — 이 맵은 "settings.json 에 쓰인 것"의 순수 뷰다.
+ * 하드코딩 5종이 authoritative(사용자가 override 못 함)라는 규칙은 소비 지점(provider-registry
+ * resolveProviderConn / listProviderNames)이 하드코딩 우선 lookup 으로 강제한다.
+ */
+export const loadModelProviders = (
+  cwd: string = process.cwd(),
+  diagnose = false,
+): Record<string, ModelProviderConfig> => {
+  const merged: Record<string, ModelProviderConfig> = {};
+  for (const layer of loadSettingsLayers(cwd)) {
+    const providers = layer.models?.providers;
+    if (providers === null || typeof providers !== "object") continue;
+    for (const [name, val] of Object.entries(
+      providers as Record<string, unknown>,
+    )) {
+      const validated = validateProviderConfig(name, val, diagnose);
       if (validated !== undefined) merged[name] = validated;
     }
   }

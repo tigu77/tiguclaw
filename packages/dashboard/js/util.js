@@ -225,6 +225,13 @@
           itemsWrap.classList.toggle("force-expanded", !groupEmpty);
           if (!groupEmpty) anyVisible = true;
         }
+        // 그룹 없는 직접 항목(플랫 리스트, 예: 프로젝트 패널)도 동일 필터.
+        for (const item of listEl.querySelectorAll(":scope > .provider-item")) {
+          if (!q) { item.classList.remove("search-hidden"); anyVisible = true; continue; }
+          const match = (item.dataset.searchText || "").includes(q);
+          item.classList.toggle("search-hidden", !match);
+          if (match) anyVisible = true;
+        }
         let emptyMsg = listEl.querySelector(".search-empty-msg");
         if (q && !anyVisible) {
           if (!emptyMsg) {

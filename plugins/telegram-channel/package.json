@@ -1,0 +1,11 @@
+{
+  "name": "telegram-channel",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": "channel",
+    "name": "telegram",
+    "entry": "./index.ts"
+  }
+}

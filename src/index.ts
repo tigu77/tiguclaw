@@ -4,8 +4,6 @@ import { extractTelegramChatId, DEFAULT_SESSION_ID } from "./core/threadkey.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
-import { CliChannel } from "./channels/cli.js";
-import { TelegramChannel } from "./channels/telegram.js";
 import type { Channel, IncomingMessage, MessageHandler } from "./channels/types.js";
 import { initEventBus, type EventBus } from "./core/eventbus.js";
 import {
@@ -193,14 +191,10 @@ const channels: Channel[] = [];
 // service capability plugin 의 stop() 수집 — shutdown 이 일괄 호출(채널과 대칭).
 const serviceStops: Array<{ name: string; stop: () => Promise<void> }> = [];
 
-channels.push(new CliChannel());
-
-const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
-if (telegramToken !== undefined && telegramToken.trim() !== "") {
-  channels.push(new TelegramChannel());
-} else {
-  console.warn("telegram: TELEGRAM_BOT_TOKEN not set, channel disabled");
-}
+// ★코어 하드코딩 채널 0 (2026-07-18) — cli·telegram 모두 채널 플러그인으로 이전
+// (plugins/cli-channel name="cli", plugins/telegram-channel name="telegram"). 로더가
+// 발견·기동한다. telegram 무토큰이면 플러그인이 self-disable(status:"disabled").
+// presence 는 채널 self-report(c.status ?? "up") — 코어가 특정 채널명 모름(§0).
 
 // 통합 로더 — 한 plugin 인스턴스를 capability 별로 분기 등록 (contract §3 보강 D-(ii)).
 // hybrid plugin (channel + observer 등) 의 인스턴스 1개 보장.
@@ -222,6 +216,7 @@ try {
       stop?: () => Promise<void>;
       getMcpServer?: () => McpSdkServerConfigWithInstance | undefined;
       outbound?: ChannelOutbound;
+      status?: "up" | "disabled";
     };
     const relDir = path.relative(appRoot(), lp.pluginDir);
 
@@ -270,6 +265,11 @@ try {
           name: channelName,
           start: startFn,
           stop: stopFn,
+          // presence 상태 forward(D1(b), §12.3) — 플러그인 채널은 wrapper 로 push 되므로
+          // 인스턴스가 선언한 status 를 duck-type 으로 읽어 wrapper 에 실어야 presence 루프가
+          // 본다(inst.outbound → registerChannelOutbound forward 와 동형). 미선언 = 미포함
+          // → presence `?? "up"`(회귀 0).
+          ...(inst.status !== undefined ? { status: inst.status } : {}),
         });
         // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — plugin 이 `outbound` 를 표명하면
         // loader 가 duck-typing 으로 읽어 코어 레지스트리에 등록(startChannel 과 동형, §0 준수:
@@ -1572,25 +1572,17 @@ for (const ch of channels) {
     }
     return { canDeliver: o.deliver !== undefined, hasDefaultTarget };
   };
+  // 범용 presence — 채널이 스스로 status 선언(§12.4). 미선언 채널(cli·http-bridge)은
+  // `?? "up"` 폴백(회귀 0). 무토큰 telegram 플러그인은 자기 channels[] 에 있고 status:
+  // "disabled" 를 보고하므로, 옛 `name:"telegram"` 하드코딩 특수분기가 불필요(§0 순개선).
   const presence: ChannelPresence[] = await Promise.all(
     channels.map(async (c) => ({
       name: c.name,
       kind: c.name,
-      status: "up" as const,
+      status: c.status ?? "up",
       ...(await outboundFlags(c.name)),
     })),
   );
-  const telegramLoaded = channels.some((c) => c.name === "telegram");
-  if (!telegramLoaded) {
-    // 토큰 부재로 미로드 = outbound 미등록 → canDeliver/hasDefaultTarget=false(셀렉터 후보 아님).
-    presence.push({
-      name: "telegram",
-      kind: "telegram",
-      status: "disabled",
-      canDeliver: false,
-      hasDefaultTarget: false,
-    });
-  }
   setChannelPresence(presence);
 }
 

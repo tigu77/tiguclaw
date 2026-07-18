@@ -37,6 +37,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "typecheck:bin": "tsc -p tsconfig.bin.json",
+    "typecheck:plugins": "tsc -p tsconfig.plugins.json",
     "init": "tsx src/scripts/init.ts",
     "onboard": "tsx src/cli.ts onboard",
     "doctor": "tsx src/scripts/doctor.ts",

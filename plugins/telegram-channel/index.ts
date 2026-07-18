@@ -9,13 +9,13 @@ import type {
   IncomingMessage,
   MessageHandler,
   ReplyOptions,
-} from "./types.js";
-import type { ChannelOutbound } from "../core/channel-outbound.js";
-import { getPaths } from "../core/paths.js";
-import { getAllCommands } from "../core/entry/command-registry.js";
-import { getEventBus } from "../core/eventbus.js";
-import { resolveSessionId } from "../core/threadkey.js";
-import { getMostRecentTelegramChatId } from "../store/sessions.js";
+} from "../../src/channels/types.js";
+import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
+import { getPaths } from "../../src/core/paths.js";
+import { getAllCommands } from "../../src/core/entry/command-registry.js";
+import { getEventBus } from "../../src/core/eventbus.js";
+import { resolveSessionId } from "../../src/core/threadkey.js";
+import { getMostRecentTelegramChatId } from "../../src/store/sessions.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -321,8 +321,13 @@ const parseAllowedTelegramIds = (): Set<string> =>
       .filter((s) => s !== ""),
   );
 
-export class TelegramChannel implements Channel {
+export default class TelegramChannel implements Channel {
   readonly name = "telegram" as const;
+  /**
+   * presence 상태 자기선언(D1(b) §12.2) — 토큰 있으면 "up"(폴링), 없으면 "disabled"
+   * (self-disable). 생성자에서 스냅샷(env 는 런타임 불변). 로더가 wrapper 로 forward.
+   */
+  readonly status: "up" | "disabled";
   /**
    * 아웃바운드 능력(ADR 2026-07-16 §D1/§D3) — 코어 레지스트리에 등록.
    *  - deliver = sendOutgoing(현행 switch telegram 케이스와 동일 함수). null/빈 target 은
@@ -330,36 +335,48 @@ export class TelegramChannel implements Channel {
    *  - defaultOutboundTarget = owner allowlist 첫 id → 폴백 getMostRecentTelegramChatId().
    *    (파싱 특수분기를 코어에서 채널 안으로 이관 = §D2/§D3 Phase 3 정합. 명시 target 이
    *    있는 현행 호출자는 이 함수를 타지 않음 → 현행 발송 경로 비트 동일.)
+   *
+   * ★정직성(§12.2): 무토큰(disabled)이면 undefined 로 두어 로더가 registerChannelOutbound
+   * 를 건너뛰게 한다(canDeliver/hasDefaultTarget=false 로 정확 — 현행 무토큰=미등록과 동일).
    */
-  readonly outbound: ChannelOutbound = {
-    deliver: async (target: string | null, text: string): Promise<void> => {
-      if (target === null || target.trim() === "") {
-        throw new Error("telegram target required (chatId)");
-      }
-      await sendOutgoing(target, text);
-    },
-    defaultOutboundTarget: (): string | null => {
-      const owner = [...parseAllowedTelegramIds()][0];
-      return owner ?? getMostRecentTelegramChatId();
-    },
-  };
+  readonly outbound?: ChannelOutbound;
   private bot: Bot | null = null;
   // EventBus 구독 해제 핸들 — start() 에서 commands.changed 구독, stop() 에서 해제(누수 0).
   private unsubscribeCommandsChanged: (() => void) | null = null;
 
   constructor() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
+    // 무조건 로드 + self-disable(§12.2) — 생성자 throw 금지. 토큰 없으면 disabled 로
+    // 인스턴스화만 하고(로더가 channels[] 등록 → presence 균일 표시) bot·outbound 미구성.
     if (token === undefined || token.trim() === "") {
-      throw new Error("TELEGRAM_BOT_TOKEN not set");
+      this.status = "disabled";
+      return;
     }
+    this.status = "up";
     this.bot = new Bot(token);
     cachedBot = this.bot;
+    this.outbound = {
+      deliver: async (target: string | null, text: string): Promise<void> => {
+        if (target === null || target.trim() === "") {
+          throw new Error("telegram target required (chatId)");
+        }
+        await sendOutgoing(target, text);
+      },
+      defaultOutboundTarget: (): string | null => {
+        const owner = [...parseAllowedTelegramIds()][0];
+        return owner ?? getMostRecentTelegramChatId();
+      },
+    };
   }
 
   async start(handler: MessageHandler): Promise<void> {
     const bot = this.bot;
+    // self-disable(§12.2 / D2) — 무토큰이면 폴링 no-op return(grammy 미기동 → 409 hazard 0).
     if (bot === null) {
-      throw new Error("telegram channel: bot not initialized");
+      console.warn(
+        "telegram: TELEGRAM_BOT_TOKEN not set, channel disabled (폴링 미시작).",
+      );
+      return;
     }
 
     // 소유자 allowlist (자가호스트 보안 게이트 — 배포 계획서 Phase 0). 인터넷 노출은

@@ -163,6 +163,15 @@
       #capabilities-head h1 { font-size:12px; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
       #capabilities-head .count { margin-left:auto; font-family: ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; color:var(--text-mute); }
       #capabilities-list { padding:10px; flex:1; }
+      /* 프로젝트 뷰 3패널 — show-providers/show-capabilities 와 완전 동형(별도 id 로 폴러 충돌 0). */
+      #projects-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; border-right:1px solid var(--border); }
+      #workbench.show-projects { display:grid; grid-template-columns: minmax(240px,300px) minmax(0,1fr); gap:0; height:100%; }
+      #workbench.show-projects #projects-panel { display:flex; }
+      #projects-head { display:flex; align-items:center; gap:10px; padding:16px 16px 12px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(16,20,29,.92); backdrop-filter: blur(14px); z-index:1; }
+      #projects-head h1 { font-size:12px; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+      #projects-head .count { margin-left:auto; font-family: ui-monospace,"SF Mono",Menlo,monospace; font-size:11px; color:var(--text-mute); }
+      #projects-list { padding:10px; flex:1; }
+      #projects-list .provider-item { display:block; width:100%; text-align:left; }
       /* 모듈 리스트 그룹 헤더(kind 별, ADR §5 "채널/어댑터/트리거/옵저버/서비스/코어" 그룹핑 — 현재
          실사용 kind 값 core|plugin|channel 기준, 미지 kind 는 kindLabel 폴백 라벨 그대로 새 그룹). */
       /* 검색창(리스트 서브패널 상단, 그룹 위 — 모듈/능력 뷰 공용) — #providers-list/#capabilities-list
@@ -785,6 +794,7 @@
       .projects-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,.85fr); gap:14px; align-items:start; }
       .projects-split.no-detail { grid-template-columns:minmax(0,1fr); }
       /* 모듈/능력 뷰와 동형 — 카드 그리드 폐기, provider-item 세로 리스트(master-detail). */
+      .projects-list-col { display:flex; flex-direction:column; min-width:0; }
       .projects-grid { display:flex; flex-direction:column; align-items:stretch; align-content:start; }
       .projects-grid .provider-item { text-align:left; width:100%; }
       .projects-grid .pi-path { margin-top:2px; opacity:.7; }
@@ -1099,6 +1109,7 @@
         #sidebar { overflow:visible; padding-bottom:76px; }
         #providers-panel { border-right:0; height:auto; overflow:visible; }
         #capabilities-panel { border-right:0; height:auto; overflow:visible; }
+        #projects-panel { border-right:0; height:auto; overflow:visible; }
         #detail-panel { height:auto; min-height:calc(100svh - 56px - 50px); overflow:visible; padding:14px 14px 70px; }
         #right { min-height:calc(100svh - 56px - 50px); }
         #stream { min-height:calc(100svh - 56px - 50px - 126px); overflow:visible; }

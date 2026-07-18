@@ -147,27 +147,37 @@
         <h3 class="panel-title">백그라운드 작업</h3>
         <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
       </div>
-      <!-- 세션 스코프 = 기준(맨 위). 이 선택에 따라 아래 진행중/전체 카운트가 갱신된다. 스코프 버튼엔 갯수 없음. -->
+      <!-- 세션 스코프 = 공유 기준(맨 위). 두 카테고리 그룹(작업·셸)의 진행중/완료 카운트가 이 선택을 따른다. 스코프 버튼엔 갯수 없음. -->
       <div class="bg-filter" id="bg-scope-filter">
         <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true">현재 세션</button>
         <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false">전체 세션</button>
       </div>
-      <div class="bg-filter" id="bg-filter">
-        <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
-        <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-count-all">0</span></button>
+      <!-- 작업 그룹(워커·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
+           kind(워커/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
+      <div class="bg-group-head" id="bg-jobs-head" role="button" tabindex="0" aria-expanded="true">
+        <span class="bg-group-chevron">▾</span>
+        <span class="bg-group-label">⚙️ 워커 / 에이전트</span>
       </div>
-      <div class="bg-list filter-running scope-session" id="bg-list">
-        <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>
+      <div class="bg-group-body bg-jobs-body" id="bg-jobs-body">
+        <div class="bg-filter" id="bg-filter">
+          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
+          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false">완료 <span class="bg-fcount" id="bg-count-all">0</span></button>
+        </div>
+        <div class="bg-list filter-running scope-session" id="bg-list">
+          <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>
+        </div>
       </div>
-      <!-- 셸/프로세스 섹션(ADR 2026-07-17 §5, Phase 3b-2) — 워커·에이전트 잡(위 #bg-list)과
-           데이터 레인이 다른 별도 섹션(shellRegistry ≠ jobCards, view-shells.js 소관). 카드
-           빌더·tail 폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 이 컨테이너로. -->
-      <div class="bg-section-divider"></div>
-      <div class="bg-shells-section" id="bg-shells-section">
-        <div class="bg-shells-head"><h4 class="bg-section-title">🖥️ 셸 / 프로세스</h4></div>
+      <!-- 셸/프로세스 그룹(ADR 2026-07-17 §5, Phase 3b-2) — 워커·에이전트 잡(위)과 데이터
+           레인이 다른 별도 그룹(shellRegistry ≠ jobCards, view-shells.js 소관). 카드 빌더·tail
+           폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 #bg-shells-list. 접이식 헤더 동형. -->
+      <div class="bg-group-head" id="bg-shells-head" role="button" tabindex="0" aria-expanded="true">
+        <span class="bg-group-chevron">▾</span>
+        <span class="bg-group-label">🖥️ 셸 / 프로세스</span>
+      </div>
+      <div class="bg-group-body bg-shells-body" id="bg-shells-body">
         <div class="bg-filter" id="bg-shells-filter">
           <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">실행 중 <span class="bg-fcount" id="bg-shells-count-running">0</span></button>
-          <button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
+          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false">완료 <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
         </div>
         <div class="bg-list bg-shells-list filter-running" id="bg-shells-list">
           <div class="bg-empty" id="bg-shells-empty">실행 중인 셸이 없습니다.</div>

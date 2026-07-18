@@ -17,7 +17,7 @@
       const shellOutputEls = new Map(); // shellId -> <pre> el(폴링이 쓰는 대상, 렌더마다 재구성).
       const shellTailLineEls = new Map(); // shellId -> tail-line span(폴 결과 직접 갱신, 풀 리렌더 없이).
       const shellPollTimers = new Map(); // shellId -> intervalId(표면 D, 펼침 카드만).
-      let shellsFilter = "running"; // "running" | "all"
+      let shellsFilter = "running"; // "running" | "done"(완료=exited/killed, 상호배타)
 
       // /api/shells(listShells) 는 내부 status "running"|"completed"|"killed" 를 그대로 낸다
       // (BgShellSnapshot). 라이브 shell.exited 이벤트는 status "exited"|"killed" 를 쓴다(ADR §1).
@@ -326,16 +326,17 @@
           total += 1;
           if (e.status === "running") running += 1;
           if (shellsFilter === "running" && e.status !== "running") continue;
+          if (shellsFilter === "done" && e.status === "running") continue; // 완료 탭 = 종료된 셸만.
           shown += 1;
           grid.appendChild(buildShellCard(e, now));
         }
         const rc = document.getElementById("bg-shells-count-running");
-        const ac = document.getElementById("bg-shells-count-all");
+        const ac = document.getElementById("bg-shells-count-all"); // id 유지·의미=완료(종료) 수.
         if (rc) rc.textContent = String(running);
-        if (ac) ac.textContent = String(total);
+        if (ac) ac.textContent = String(total - running);
         if (empty) {
           empty.style.display = shown === 0 ? "" : "none";
-          empty.textContent = shellsFilter === "running" ? "실행 중인 셸이 없습니다." : "관측된 셸이 없습니다.";
+          empty.textContent = shellsFilter === "running" ? "실행 중인 셸이 없습니다." : "완료된 셸이 없습니다.";
         }
       };
       let shellsRenderQueued = false;
@@ -348,7 +349,7 @@
       };
 
       const setShellsFilter = (mode) => {
-        shellsFilter = mode === "all" ? "all" : "running";
+        shellsFilter = mode === "done" ? "done" : "running";
         const bar = document.getElementById("bg-shells-filter");
         if (bar) for (const b of bar.querySelectorAll(".bg-fbtn")) {
           const on = b.dataset.filter === shellsFilter;
@@ -393,7 +394,7 @@
       // shellRegistry 계약 무변경이라 두 표면 다 무수정으로 계속 동작.
       const showShells = () => {
         if (typeof openBg === "function") openBg();
-        const sec = document.getElementById("bg-shells-section");
+        const sec = document.getElementById("bg-shells-body");
         if (sec) {
           sec.classList.add("bg-flash");
           setTimeout(() => sec.classList.remove("bg-flash"), 900);

@@ -174,6 +174,16 @@ await migrateLegacyAgent(process.cwd());
 
 initStore();
 
+// auth-provider 등록 (2026-07-18, 계약 §5·§8) — Tier 2 구독 인증(codex OAuth)을 레지스트리에
+// self-register 하는 side-effect 모듈을 optional dynamic import 로 로드. 첫 turn 전 완료 보장
+// (부팅 초기·채널 기동 전). Business/OSS 빌드는 이 파일을 EXCLUDE → import 실패 → catch 로
+// graceful(레지스트리 빈 채, codex 백엔드가 조회 시 typed 에러→폴백). 코어 크래시 0.
+await import("./core/llm-runtime/auth-providers.js").catch((e) => {
+  console.log(
+    `[auth-provider] codex 구독 인증 미등록(EXCLUDE 빌드 또는 로드 실패): ${String(e)}`,
+  );
+});
+
 // 잔존 self-restart 예약작업 정리 (win32 only, best-effort). 직전 /restart 가 만든 1회성
 // schtasks 작업이 이 부팅을 띄운 뒤 목록에 남아있으면 제거(멱등 — 없으면 no-op). 재발화는
 // /sc once 라 어차피 안 하지만 죽은 작업 누적 방지. 실패해도 부팅 무중단.

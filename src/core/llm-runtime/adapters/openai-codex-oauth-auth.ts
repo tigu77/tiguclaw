@@ -9,6 +9,7 @@ import { generatePKCE as generatePkceUpstream } from "@openauthjs/openauth/pkce"
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homeEnvPath } from "../../load-env.js";
+import type { AuthProvider } from "../auth-registry.js";
 
 // OAuth 상수 — fork (numman-ali/opencode-openai-codex-auth) 의 lib/auth/auth.ts 답습.
 // codex_cli_rs originator + chatgpt.com/backend-api = Codex 비공식 endpoint 활성화.
@@ -274,4 +275,13 @@ export const ensureFreshAccessToken = async (): Promise<string> => {
   const refreshed = await refreshAccessToken(refresh);
   await upsertCodexTokens(refreshed);
   return refreshed.access;
+};
+
+// ★auth-provider 심(2026-07-18) — codex 를 Tier 2(라이브-리프레시 구독) auth-provider 로
+// 얇게 어댑팅. 로직 변경 0: 기존 ensureFreshAccessToken 에 그대로 위임(refresh·PKCE·만료·
+// 토큰저장은 이미 그 함수 뒤 은닉). provider id "codex" = 이 어댑터 자기 정체성(계약 §2, §0
+// 불변식 대상 아님). 실제 등록은 side-effect 모듈 auth-providers.ts(=Business EXCLUDE 단위).
+export const codexAuthProvider: AuthProvider = {
+  provider: "codex",
+  getAccessToken: ensureFreshAccessToken,
 };

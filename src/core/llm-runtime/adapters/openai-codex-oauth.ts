@@ -96,10 +96,13 @@ import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import {
-  ensureFreshAccessToken,
   extractAccountId,
   sleep,
 } from "./openai-codex-oauth-auth.js";
+import {
+  getAuthProvider,
+  AuthProviderMissingError,
+} from "../auth-registry.js";
 import {
   CODEX_BASE_URL,
   parseCapEnv,
@@ -307,7 +310,15 @@ export const runOpenAiCodex = async (
   // 유지 — claude/openai 어댑터와 parity(#2).
   const idChannel = input.sessionChannel ?? input.channel;
 
-  const accessToken = await ensureFreshAccessToken();
+  // auth-provider 심(2026-07-18, 계약 §2·§4) — 직접 import 대신 provider-id 레지스트리 조회.
+  // "codex" = 이 어댑터 자기 정체성. 부재(Business EXCLUDE 빌드/미인증) → typed 에러 → 기존
+  // 폴백(claude 합류). getAccessToken 은 codexAuthProvider→ensureFreshAccessToken 위임이라
+  // refresh·만료·토큰저장 경로 무결(간접 경유). 데몬 크래시 0.
+  const codexAuth = getAuthProvider("codex");
+  if (codexAuth === undefined) {
+    throw new AuthProviderMissingError("codex");
+  }
+  const accessToken = await codexAuth.getAccessToken();
   const accountId = extractAccountId(accessToken);
   // model 우선순위: facade 주입(input.model) > env > 디폴트.
   const model =

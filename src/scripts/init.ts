@@ -74,8 +74,8 @@ const toPool = (raw: string): string[] =>
  * seed 모델 프로파일 (ADR model-profiles 잔여 — TIER_DEFAULTS 2026-07-08 을 프로파일로 승격).
  *  - default = 메인 턴 암묵 풀(REGION_A_MODELS 대응, 코어 예약 이름).
  *  - high/mid/low = 서브에이전트/워커 등급(MODEL_TIER_* 대응) → 구조적 실패 시 default 로 폴백.
- *  - nano = 초경량(분류 등) → low 로 폴백. TIER_DEFAULTS 에 nano 항목이 없어 low 값 재사용.
  * 값은 선택 provider(TIER_DEFAULTS + regionAModels) 기준 — 사용자가 settings.json 으로 세분화.
+ * (nano 는 시드하지 않는다 — 사용자 요청 2026-07-18. 필요하면 사용자가 직접 추가.)
  */
 const buildSeedProfiles = (a: Answers): Record<string, ModelProfile> => ({
   default: {
@@ -97,17 +97,13 @@ const buildSeedProfiles = (a: Answers): Record<string, ModelProfile> => ({
     pool: toPool(a.tierLow),
     fallback: "default",
   },
-  nano: {
-    description: "초경량·로컬 단순작업 (분류 등)",
-    pool: toPool(a.tierLow),
-    fallback: "low",
-  },
 });
 
 /**
- * seed 프로파일을 settings.json 에 비파괴 병합. 기존 파일이 있으면 `models.profiles` 만
- * 병합하고 다른 키(hooks 등)는 보존한다. 기존에 같은 이름 프로파일이 있으면 덮어쓰지 않는다
- * (사용자 편집 우선). 파싱 실패 시 새 객체로 안전 강등(throw 0).
+ * seed 프로파일을 settings.json 에 쓴다. **★기존에 프로파일이 하나라도 있으면 시드 스킵**
+ * (사용자 요청 2026-07-18 — 사용자 설정을 존중, 없는 이름 추가조차 안 함). 프로파일이
+ * 0개(부재/빈 객체)일 때만 seed 를 통째로 깐다. 다른 키(hooks·models.default 등)는 보존.
+ * 파싱 실패 시 새 객체로 안전 강등(throw 0).
  */
 const seedModelProfiles = (profiles: Record<string, ModelProfile>): void => {
   let root: Record<string, unknown> = {};
@@ -125,8 +121,14 @@ const seedModelProfiles = (profiles: Record<string, ModelProfile>): void => {
     root.models !== null && typeof root.models === "object"
       ? (root.models as { profiles?: Record<string, unknown> })
       : {};
-  // 기존 프로파일 보존 + 없는 이름만 seed (뒤가 이김 → 기존이 seed 를 덮어써 비클로버).
-  models.profiles = { ...profiles, ...(models.profiles ?? {}) };
+  const existing = models.profiles;
+  const existingCount =
+    existing !== null && typeof existing === "object" && !Array.isArray(existing)
+      ? Object.keys(existing).length
+      : 0;
+  // ★기존 프로파일이 하나라도 있으면 시드 스킵 — 사용자 설정 존중.
+  if (existingCount > 0) return;
+  models.profiles = { ...profiles };
   root.models = models;
   writeFileSync(SETTINGS_PATH, `${JSON.stringify(root, null, 2)}\n`, {
     encoding: "utf8",

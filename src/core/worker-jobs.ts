@@ -624,7 +624,10 @@ export const pendingThreadCount = (): number => threadTails.size;
 
 import { deliverOutbound } from "./outbound.js";
 import type { ReplyOptions } from "../channels/types.js";
-import { canonicalSessionChannel } from "../store/sessions.js";
+import {
+  canonicalSessionChannel,
+  notifySessionThreadKey,
+} from "../store/sessions.js";
 
 /**
  * notifyDest 없는 워커(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
@@ -651,7 +654,7 @@ const deriveTargetFromThreadKey = (
  */
 const reacquireReply = (
   dest: WorkerNotifyDest,
-  opts?: { observe?: boolean },
+  opts?: { observe?: boolean; sessionThreadKey?: string },
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
   // observe(기본 true) — 우회 통지(handler 미경유: failed/cancelled·done 안전망·부팅 복구)는
   // 자체가 유일 발신이라 관측 발행 필요(대시보드 가시성 유지). observe:false 는 done 재주입
@@ -665,6 +668,10 @@ const reacquireReply = (
       text,
       label: "worker",
       ...(observe === false ? { observe: false } : {}),
+      // 관측 세션 = 발원 세션(dashboard:*) 또는 기본(내부 파생·물리 채널). 배달 좌표와 독립.
+      ...(opts?.sessionThreadKey !== undefined
+        ? { observeThreadKey: opts.sessionThreadKey }
+        : {}),
     });
   };
 };
@@ -723,6 +730,7 @@ const subscribeWorkerStallNotify = (): void => {
       target: dest.target ?? null,
       text: `⚠️ 백그라운드 작업 '${job.label}' 의 응답이 잠시 멎어 이어서 재개 중이에요 (${attempt}/${max}).`,
       label: "worker",
+      observeThreadKey: notifySessionThreadKey(job.threadKey),
     }).catch(() => {
       /* 통지 실패는 재개에 영향 0 */
     });
@@ -760,6 +768,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
       target: dest.target ?? null,
       text: `⏳ 백그라운드 작업 '${job.label}' 이(가) 도구 '${tool}'에서 ${sec}초+ 멈춰 있어요. OS 권한 요청 다이얼로그가 떠 있는지, 또는 외부 MCP 도구면 대상 앱(예: 에디터)이 실행 중인지 확인해주세요 (아니면 도구가 느리거나 멈춘 것일 수 있어요).`,
       label: "worker",
+      observeThreadKey: notifySessionThreadKey(job.threadKey),
     }).catch(() => {
       /* 통지 실패는 작업에 영향 0 */
     });
@@ -908,7 +917,9 @@ export const onWorkerComplete = async (
   // notifyDest(스케줄 등이 주입한 generic 좌표) 우선, 없으면 channel/threadKey 폴백(회귀 0).
   // baseReply = 우회 통지용(관측 발행 O) — failed/cancelled 직행·done 안전망이 이걸 쓴다.
   const dest = destForJob(job);
-  const baseReply = reacquireReply(dest);
+  const baseReply = reacquireReply(dest, {
+    sessionThreadKey: notifySessionThreadKey(job.threadKey),
+  });
 
   // ─── 실패/취소 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
   // failed/cancelled 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
@@ -1052,6 +1063,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
           threadKey: job.threadKey,
           notifyDest: (job as { notifyDest?: WorkerNotifyDest }).notifyDest,
         }),
+        { sessionThreadKey: notifySessionThreadKey(job.threadKey) },
       );
       await reply(text);
     } catch (e) {

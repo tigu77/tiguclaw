@@ -189,12 +189,28 @@ export const getCodexTokenExpiry = (): number | undefined => {
 };
 
 export const upsertCodexTokens = async (tokens: OAuthTokens): Promise<void> => {
+  // in-memory 먼저 — 파일 write 성패와 무관하게 현재 turn 이 새 토큰을 즉시 사용한다.
+  process.env.OPENAI_CODEX_OAUTH_TOKEN = tokens.access;
+  process.env.OPENAI_CODEX_OAUTH_REFRESH = tokens.refresh;
+  process.env.OPENAI_CODEX_OAUTH_EXPIRES = String(tokens.expires);
+
   const ENV_PATH = homeEnvPath(); // ★홈 .env (레포 아님) — 매 호출 신선 해석.
   let body = "";
   try {
     body = await fs.readFile(ENV_PATH, "utf8");
-  } catch {
-    // .env 부재 — 새로 작성.
+  } catch (err) {
+    // ★ENOENT(진짜 부재)만 "새로 작성". 그 외 읽기 실패(일시적 EBUSY·업데이트 중 파일
+    //  교체 레이스 등)를 "부재"로 오인하면 body="" → OAuth 3키만 write → 기존 다른 키
+    //  (TELEGRAM_BOT_TOKEN·HTTP_BRIDGE_TOKEN 등) 전부 소멸(데이터 손실 사고). 부재가
+    //  아니면 clobber 방지 위해 파일 갱신을 건너뛴다(process.env 는 위에서 이미 갱신됨).
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      console.error(
+        `[codex] upsertCodexTokens: .env 읽기 실패(${String(err)}) at ${ENV_PATH} — ` +
+          `기존 .env clobber 방지 위해 파일 갱신 skip (process.env 는 갱신됨).`,
+      );
+      return;
+    }
+    // ENOENT — 진짜 부재, 새로 작성 OK.
   }
   const updates: Record<string, string> = {
     OPENAI_CODEX_OAUTH_TOKEN: tokens.access,
@@ -218,13 +234,13 @@ export const upsertCodexTokens = async (tokens: OAuthTokens): Promise<void> => {
     if (!seen.has(key)) next.push(`${key}=${updates[key]}`);
   }
   const out = next.join("\n");
-  await fs.writeFile(ENV_PATH, out.endsWith("\n") ? out : `${out}\n`, "utf8");
-
-  // process.env in-memory 동기화 — 호출자(runOpenAiCodex 등) 가 같은 turn 안에서
-  // 새 토큰 즉시 사용 가능.
-  process.env.OPENAI_CODEX_OAUTH_TOKEN = tokens.access;
-  process.env.OPENAI_CODEX_OAUTH_REFRESH = tokens.refresh;
-  process.env.OPENAI_CODEX_OAUTH_EXPIRES = String(tokens.expires);
+  const finalBody = out.endsWith("\n") ? out : `${out}\n`;
+  // ★원자적 write — temp 파일에 쓰고 rename. 재작성 도중 프로세스가 죽어도(업데이트
+  //  stop·crash) 기존 .env 가 truncate 되지 않는다(rename 은 원자적). in-memory 동기화는
+  //  함수 상단에서 이미 완료.
+  const tmp = `${ENV_PATH}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, finalBody, "utf8");
+  await fs.rename(tmp, ENV_PATH);
 };
 
 // V3.3 — token 자동 refresh. 만료 임박(5분 이내) 시 refresh 호출 + .env 갱신.

@@ -62,6 +62,7 @@ import {
 import {
   accumulateEfficiency,
   cleanupStaleReflections,
+  archiveColdObservations,
   efficiencyKey,
   emptyEfficiencyAccumulator,
   generateWeeklyReview,
@@ -196,15 +197,17 @@ class SelfGrowthPlugin {
   private runCleanup(): void {
     try {
       const removed = cleanupStaleReflections();
-      if (removed > 0) {
+      // P2 — 콜드 관측(feedback-obs-*) 아카이브(삭제 아님·가역·검색 유지). 핫 인덱스만 비운다.
+      const archived = archiveColdObservations();
+      if (removed > 0 || archived > 0) {
         console.log(
-          `self-growth: TTL cleanup — ${removed} stale reflection(s) removed`,
+          `self-growth: TTL cleanup — ${removed} stale reflection(s) removed, ${archived} cold obs archived`,
         );
         if (this.bus !== null) {
           this.bus.publish({
             type: "self_growth.cleanup.run",
             ts: Date.now(),
-            payload: { removed },
+            payload: { removed, archived },
           });
         }
       }

@@ -18,7 +18,10 @@
       const CAPABILITY_GROUPS = [
         { key: "skill", srcKey: "skill", label: "🛠️ 스킬", emptyNote: null },
         { key: "agent", srcKey: "agent", label: "🤖 에이전트", emptyNote: null },
-        { key: "mcp", srcKey: "mcp", label: "⌨️ 커맨드 (MCP)", emptyNote: null },
+        { key: "mcp", srcKey: "mcp", label: "🧩 도구 (MCP)", emptyNote: null },
+        // 커맨드 = 슬래시 명령 모음(빌트인 /models·/update … + 유저 <home>/commands/*.md).
+        // /api/inventory 가 command[] 를 주므로 srcKey 만 추가(엔드포인트와 동형, 신규 렌더코드 0).
+        { key: "command", srcKey: "command", label: "⌨️ 커맨드", emptyNote: null },
         // P4c(ADR 2026-07-17 § 2축모델) — 엔드포인트(<home>/endpoints/*.md, 슬래시 명령의
         // HTTP 판)도 능력(데이터) 축. /api/inventory 가 endpoint[] 를 주므로 srcKey 만 추가
         // — 정의 0건 홈은 빈 카테고리 자동 숨김(위 렌더 로직, 신규 코드 0).

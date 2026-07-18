@@ -185,45 +185,43 @@
           grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. ' + assistantName + ' 에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
           return;
         }
+        // 모듈/능력 뷰와 동형 master-detail 리스트(provider-item) — 카드 그리드 폐기(2026-07-18
+        // 사용자 요청). 플랫 리스트(그룹화 없음) + 우측 상세. "실행 중(진행중)" 배지는 제거,
+        // 상태는 보류/완료만 작은 라벨(active 는 노이즈라 생략).
         for (const p of projectsCache) {
           const status = ["active", "paused", "done"].includes(p.status) ? p.status : "active";
-          const card = document.createElement("button");
-          card.type = "button";
-          card.className = "project-card s-" + status + (p.path === selectedProjectPath ? " selected" : "");
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "provider-item" + (p.path === selectedProjectPath ? " selected" : "");
           const head = document.createElement("div");
-          head.className = "project-card-head";
+          head.className = "pi-head";
           const name = document.createElement("span");
-          name.className = "project-card-name";
+          name.className = "pi-name";
           name.textContent = p.name || "(이름 없음)";
+          name.title = p.name || "";
           head.appendChild(name);
-          // 상태 뱃지 — active(기본)는 모든 카드에 붙어 노이즈라 생략. 보류/완료만 표시(의미 신호).
           if (status !== "active") {
             const st = document.createElement("span");
-            st.className = "project-status " + status;
+            st.className = "pi-kind";
             st.textContent = PROJECT_STATUS_LABEL[status] || status;
             head.appendChild(st);
           }
-          // 실행 중 에이전트 배지 — "지금 어디가 바쁜지" 한눈에(브리지 runningAgents).
-          if (p.runningAgents > 0) {
-            const rb = document.createElement("span");
-            rb.className = "project-run-badge";
-            rb.textContent = "🤖 " + p.runningAgents + " 실행 중";
-            head.appendChild(rb);
-          }
+          item.appendChild(head);
           const summary = document.createElement("div");
-          summary.className = "project-card-summary";
+          summary.className = "pi-summary";
           summary.textContent = p.description || "설명 없음";
+          item.appendChild(summary);
           const pathEl = document.createElement("div");
-          pathEl.className = "project-card-path";
+          pathEl.className = "pi-summary pi-path";
           pathEl.textContent = p.path;
-          card.appendChild(head); card.appendChild(summary); card.appendChild(pathEl);
-          card.addEventListener("click", () => openProjectDetail(p.path));
-          // ⋯ 메뉴 + 우클릭 + 롱프레스(카드류 3경로 동일). ctx 에 path 를 실어 "폴더 열기"가 씀.
+          item.appendChild(pathEl);
+          item.addEventListener("click", () => openProjectDetail(p.path));
+          // ⋯ 메뉴 + 우클릭 + 롱프레스(3경로 동일). ctx 에 path 를 실어 "폴더 열기"가 씀.
           const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || "(이름 없음)", path: p.path });
-          attachKebab(card, "project", projectCtx);
-          attachContextMenu(card, "project", projectCtx);
-          attachLongPress(card, "project", projectCtx);
-          grid.appendChild(card);
+          attachKebab(item, "project", projectCtx);
+          attachContextMenu(item, "project", projectCtx);
+          attachLongPress(item, "project", projectCtx);
+          grid.appendChild(item);
         }
       };
 

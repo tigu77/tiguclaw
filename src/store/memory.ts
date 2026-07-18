@@ -184,14 +184,39 @@ export const listMemoriesForIndex = (
   return { lines, total: rows.length, truncated };
 };
 
+// 쿼리 → 단어별 연속 3-그램 집합(FTS5 trigram tokenizer 단위). 공백/구두점으로 단어 분리
+// 후 각 단어 *안에서만* 슬라이딩(공백 넘는 트라이그램=노이즈 방지). <3자 단어는 skip
+// (trigram 이 못 매치). 중복 제거 + 상한(쿼리 크기 바운드).
+// ★배경: 예전엔 쿼리 전체를 한 phrase 로 quote → 문장 전체가 연속으로 나와야만 매치돼
+//  대화체 입력에 사실상 0건이었다(실증). 트라이그램 OR 은 부분·조사(스케줄"이" → "스케줄"
+//  트라이그램)까지 회수(실증 0→다수). bm25 가 흔한 트라이그램(낮은 IDF)을 자연 down-weight.
+const QUERY_TRIGRAM_CAP = 64;
+const queryToTrigrams = (q: string): string[] => {
+  const words = q
+    .split(/[\s,.;:!?()[\]{}"'`~/\\|@#$%^&*+=<>·…\n\t-]+/u)
+    .filter((w) => w.length >= 3);
+  const seen = new Set<string>();
+  for (const w of words) {
+    for (let i = 0; i + 3 <= w.length; i++) {
+      seen.add(w.slice(i, i + 3));
+      if (seen.size >= QUERY_TRIGRAM_CAP) return [...seen];
+    }
+  }
+  return [...seen];
+};
+
 export const searchMemories = (query: string, limit = 10): Memory[] => {
   const db = requireDb("searchMemories");
   const trimmed = query.trim();
   if (trimmed === "") return [];
 
   // FTS5 MATCH against description+body+name; bm25 ascending = best first.
-  // Quote query as a phrase to neutralize FTS5 syntax characters from user input.
-  const matchExpr = `"${trimmed.replace(/"/g, '""')}"`;
+  // 트라이그램 OR (위 queryToTrigrams). 각 그램을 quote 해 FTS5 문법문자 중화.
+  const grams = queryToTrigrams(trimmed);
+  if (grams.length === 0) return [];
+  const matchExpr = grams
+    .map((g) => `"${g.replace(/"/g, '""')}"`)
+    .join(" OR ");
   // ★무변경(계약 §3.3) — archived 필터 없음. FTS 에 아카이브 행이 그대로 남아
   // always-on 에서 밀린 콜드 메모리도 검색으로 계속 도달(findability 보증).
   const rows = db
@@ -267,6 +292,27 @@ export const unarchiveMemory = (name: string): Memory | undefined => {
     .run(name);
   if (info.changes === 0) return undefined;
   return getMemoryRaw(db, name);
+};
+
+/**
+ * 아카이브 후보 이름 목록 — 이름 프리픽스 + **access_count = 0**(한 번도 surfaced 안 됨)
+ * + updated_at ≤ cutoff + 미아카이브. access_count 는 Memory 타입에 없어(read 시맨틱 분리)
+ * SQL 에서 직접 필터 → 진짜 콜드만 정확히 잡는다. self-growth 콜드-obs 아카이브 정책이 씀.
+ * 이름만 반환(archiveMemory 가 이름으로 처리). 프리픽스는 LIKE 특수문자 없는 것만 넘긴다.
+ */
+export const listColdMemoriesForArchive = (
+  namePrefix: string,
+  cutoffMs: number,
+): string[] => {
+  const db = requireDb("listColdMemoriesForArchive");
+  const rows = db
+    .prepare(
+      `SELECT name FROM memories
+       WHERE name LIKE ? AND access_count = 0
+         AND updated_at <= ? AND archived_at IS NULL`,
+    )
+    .all(`${namePrefix}%`, cutoffMs) as Array<{ name: string }>;
+  return rows.map((r) => r.name);
 };
 
 // getMemory 는 access_count 를 증분하는 "read" 시맨틱(계약 §3.8) — archiveMemory/

@@ -13,6 +13,11 @@ import { appRoot, getPaths } from "../paths.js";
 import { discoverSkills } from "../llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../llm-runtime/capabilities/agent-registry.js";
 import { discoverEndpoints, type Endpoint } from "../entry/endpoint-registry.js";
+import {
+  discoverCommands,
+  BUILTIN_COMMANDS,
+  type Command,
+} from "../entry/command-registry.js";
 import { isModuleDisabled } from "../settings.js";
 
 export type PluginCategory =
@@ -21,7 +26,8 @@ export type PluginCategory =
   | "skill"
   | "agent"
   | "mcp"
-  | "endpoint";
+  | "endpoint"
+  | "command";
 
 /**
  * 3 layer — 사용자 멘탈 모델: 개발 레포가 *in-tree* 로 들고 있는가, 외부가 떠 있는 걸 *발견* 만 하는가, 그도 저도 아닌 코어 *메타 인프라* 인가.
@@ -49,6 +55,7 @@ export interface InventoryResult {
   agent: PluginEntry[];
   mcp: PluginEntry[];
   endpoint: PluginEntry[];
+  command: PluginEntry[];
   generatedAt: number;
 }
 
@@ -591,7 +598,7 @@ const collectMcp = async (repoRoot: string): Promise<PluginEntry[]> => {
 
   // (iii) in-process MCP — contract §결정 5 에 따라 hardcode (memory.ts import X,
   // 단방향 보장: memory.ts 가 inventory.ts 를 import). server name "memory" 와
-  // V3 4 도구 + 본 라운드 신규 1 도구 = 5 도구.
+  // memory CRUD + search + list_installed_plugins = 6 도구.
   try {
     out.push({
       category: "mcp",
@@ -602,6 +609,7 @@ const collectMcp = async (repoRoot: string): Promise<PluginEntry[]> => {
       metadata: {
         tools: [
           "read_memory",
+          "search_memory",
           "add_memory",
           "update_memory",
           "delete_memory",
@@ -648,6 +656,48 @@ const collectEndpoints = async (cwd: string): Promise<PluginEntry[]> => {
       source: ep.source,
     },
   }));
+};
+
+// ─── (g) 커맨드 — 능력(데이터) 축: 슬래시 명령 모음 ────────────────────────────
+//
+// 빌트인(코드 등록 코어 명령: /models·/update·/status …) = meta_infra, 유저/프로젝트/
+// 플러그인 `<home>/commands/*.md`(discoverCommands, 진실 소스 재사용 — 신규 walk 0) =
+// in_tree/discovered. ★비서 트리거 아님(사용자 단축키) — enabled 항상 true(비활성 개념 밖).
+// command-registry 는 inventory 를 역참조 안 함(단방향 §0 유지).
+const commandSourceToLayer = (source: Command["source"]): PluginLayer =>
+  source === "plugin" ? "discovered" : "in_tree"; // user | project
+
+const collectCommands = async (cwd: string): Promise<PluginEntry[]> => {
+  const out: PluginEntry[] = [];
+  // 빌트인 슬래시 명령(코드 등록·항상 존재) — meta_infra.
+  for (const c of BUILTIN_COMMANDS) {
+    out.push({
+      category: "command" as const,
+      layer: "meta_infra",
+      name: c.name,
+      description: c.description,
+      source: "builtin:command",
+      enabled: true,
+      metadata: { builtin: true },
+    });
+  }
+  // 유저/프로젝트/플러그인 슬래시 명령(.md).
+  const discovered = await discoverCommands(cwd);
+  for (const c of discovered) {
+    out.push({
+      category: "command" as const,
+      layer: commandSourceToLayer(c.source),
+      name: c.name,
+      description: c.description,
+      source: c.filePath,
+      enabled: true,
+      metadata: {
+        source: c.source,
+        ...(c.pluginId !== undefined ? { pluginId: c.pluginId } : {}),
+      },
+    });
+  }
+  return out;
 };
 
 // ─── 통합 walker ─────────────────────────────────────────────────────────
@@ -709,6 +759,10 @@ export const collectInventory = async (opts?: {
     () => collectEndpoints(repoRoot),
     [] as PluginEntry[],
   );
+  const command = await safeAsync(
+    () => collectCommands(repoRoot),
+    [] as PluginEntry[],
+  );
 
   return {
     channel,
@@ -717,6 +771,7 @@ export const collectInventory = async (opts?: {
     agent,
     mcp,
     endpoint,
+    command,
     generatedAt: Date.now(),
   };
 };

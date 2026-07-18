@@ -17,6 +17,7 @@ import {
   addMemory,
   deleteMemory,
   getMemory,
+  searchMemories,
   updateMemory,
   type Memory,
   type MemoryType,
@@ -77,6 +78,26 @@ const readMemoryTool = tool(
     const m = getMemory(args.name);
     if (m === undefined) return okJson({ ok: false, error: "not_found" });
     return okJson({ ok: true, memory: memoryToJson(m) });
+  },
+);
+
+const searchMemoryTool = tool(
+  "search_memory",
+  "키워드·구절로 메모리를 능동 검색합니다(FTS, 관련도 순). 이름을 모르거나, 매 턴 자동 " +
+    "주입되는 메모리에 원하는 게 안 보일 때 직접 찾는 용도. 아카이브·인덱스 캡에 밀린 콜드 " +
+    "메모리도 도달. 반환 = 관련 메모리 배열(이름·설명·본문). 특정 이름의 전문이 필요하면 " +
+    "read_memory 로 다시 fetch.",
+  {
+    query: z.string().min(1),
+    limit: z.number().int().min(1).max(20).optional(),
+  },
+  async (args) => {
+    const hits = searchMemories(args.query, args.limit ?? 8);
+    return okJson({
+      ok: true,
+      count: hits.length,
+      memories: hits.map(memoryToJson),
+    });
   },
 );
 
@@ -186,6 +207,7 @@ export const createMemoryMcpServer = (): McpSdkServerConfigWithInstance =>
     version: "1.0.0",
     tools: [
       readMemoryTool,
+      searchMemoryTool,
       addMemoryTool,
       updateMemoryTool,
       deleteMemoryTool,

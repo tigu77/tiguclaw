@@ -2,9 +2,13 @@ import {
   addMemory,
   deleteMemory,
   listMemories,
+  archiveMemory,
+  listColdMemoriesForArchive,
 } from "../../../src/store/memory.js";
 import {
   REFLECTION_TTL_DAYS,
+  OBS_ARCHIVE_DAYS,
+  OBS_ARCHIVE_PREFIX,
   SELF_NAMESPACE,
   WEEKLY_REVIEW_INTERVAL_MS,
 } from "./constants.js";
@@ -149,4 +153,27 @@ export const cleanupStaleReflections = (
     }
   }
   return targets.length;
+};
+
+/**
+ * P2 (2026-07-18) — 콜드 관측 아카이브. `feedback-obs-*` 중 OBS_ARCHIVE_DAYS 일 미변경 +
+ * access_count 0(한 번도 surfaced 안 됨)을 archive(삭제 아님·가역·FTS 검색 유지). 핫 인덱스
+ * (always-on) 만 비우고 콜드 레코드는 보존([[project_hotpath_bound_preserve_record]]). access
+ * 필터는 store SQL(listColdMemoriesForArchive)에 있어 자주 surfaced 되는 durable obs 는 남는다.
+ * 아카이브 갯수 반환. maintenance interval 에서 cleanupStaleReflections 와 나란히 호출.
+ */
+export const archiveColdObservations = (
+  thresholdDays: number = OBS_ARCHIVE_DAYS,
+): number => {
+  const cutoffMs = Date.now() - thresholdDays * 24 * 60 * 60 * 1000;
+  const names = listColdMemoriesForArchive(OBS_ARCHIVE_PREFIX, cutoffMs);
+  let archived = 0;
+  for (const name of names) {
+    try {
+      if (archiveMemory(name) !== undefined) archived++;
+    } catch {
+      // 무시 — 동시 아카이브/삭제 경합.
+    }
+  }
+  return archived;
 };

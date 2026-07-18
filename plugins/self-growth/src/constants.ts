@@ -12,6 +12,15 @@ export const DRIFT_THRESHOLD = 5;
 export const REFLECTION_TTL_DAYS = 90;
 export const TTL_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1시간
 
+// P2 (2026-07-18) — 콜드 관측(feedback-obs-*) 아카이브. reflection TTL 이 growth reflection
+// 만 대상이라 assistant 가 기록한 obs 관측은 핫 인덱스에 무한 누적(인덱스 캡 8KB 초과 →
+// 제목 잘림). 정책: `feedback-obs-*` 중 N일 미변경 + access_count 0(한 번도 surfaced 안 됨)
+// → **archive**(삭제 아님·가역 unarchive·FTS 검색 유지, [[project_hotpath_bound_preserve_record]]).
+// 삭제(reflection TTL 90일)보다 짧아도 됨 — archive 는 가역·검색유지(비파괴)라. access 0(한 번도
+// surfaced 안 됨) + 45일 미변경 = 확실히 콜드. 인덱스 과부하 즉시 완화 + 안전(1.5개월 미접근).
+export const OBS_ARCHIVE_DAYS = 45;
+export const OBS_ARCHIVE_PREFIX = "feedback-obs-";
+
 // V2.2 (2026-05-23) — 사후 회고 cron. 매 7일 1회 회고 메모 자동 생성.
 // 마지막 회고 메모의 updated_at 검사로 멱등 (데몬 재시작 시점 어긋남 무관).
 // cleanup 과 같은 1시간 interval 안에서 추가 호출.

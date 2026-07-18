@@ -10,6 +10,7 @@
  */
 import type { EventBus } from "../../../src/core/eventbus.js";
 import { deliverOutbound } from "../../../src/core/outbound.js";
+import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
 
 export interface DispatchInput {
   watchId: number;
@@ -26,5 +27,7 @@ export const dispatch = async (input: DispatchInput): Promise<void> => {
     text: input.text,
     bus: input.bus,
     label: `file-watch:${input.watchId}`,
+    // 세션 귀속 = 기본 세션(file-watch 는 세션 없는 파일 트리거). 배달은 dest 그대로.
+    observeThreadKey: DEFAULT_SESSION_ID,
   });
 };

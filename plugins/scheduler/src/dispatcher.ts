@@ -15,6 +15,8 @@ export interface DispatchInput {
   destTarget: string | null;
   text: string;
   bus: EventBus;
+  /** 관측(세션 귀속)용 threadKey — 세션 미지정 스케줄은 기본 세션. 배달 좌표와 독립. */
+  sessionThreadKey: string;
 }
 
 export const dispatch = async (input: DispatchInput): Promise<void> => {
@@ -24,5 +26,6 @@ export const dispatch = async (input: DispatchInput): Promise<void> => {
     text: input.text,
     bus: input.bus,
     label: `scheduler:${input.scheduleId}`,
+    observeThreadKey: input.sessionThreadKey,
   });
 };

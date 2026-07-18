@@ -887,6 +887,24 @@ export const canonicalSessionChannel = (
   return fallbackChannel;
 };
 
+/**
+ * 우회 통지(워커 done/failed·stall·tool-slow 등)의 **관측 세션 threadKey** 도출 —
+ * canonicalSessionChannel 과 동일 분류(§D3 표시 귀속). job.threadKey 가 실 dashboard
+ * 세션이면 그 세션에 표시, 아니면(내부 파생 scheduler:/worker:/sub·물리 tg:/cli) 기본
+ * 세션. deliverOutbound({observeThreadKey}) 에 실어 통지가 발원 세션(또는 기본)에 뜨게 한다.
+ * ★스케줄이 띄운 워커(job.threadKey="scheduler:<id>")를 물리 tg: 키에 남기던 비대칭 해소.
+ */
+export const notifySessionThreadKey = (threadKey: string): string => {
+  for (const p of INTERNAL_THREAD_PREFIXES) {
+    if (threadKey.startsWith(p)) return DEFAULT_SESSION_ID;
+  }
+  if (threadKey.includes(SUBAGENT_THREAD_MARKER)) return DEFAULT_SESSION_ID;
+  if (threadKey === DEFAULT_SESSION_ID || threadKey.startsWith("dashboard:")) {
+    return threadKey;
+  }
+  return DEFAULT_SESSION_ID;
+};
+
 // SQLite LIKE 특수문자(% _ \)를 리터럴 취급하도록 ESCAPE '\' 용 이스케이프.
 const escapeLike = (s: string): string => s.replace(/([\\%_])/g, "\\$1");
 

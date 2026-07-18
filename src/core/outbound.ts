@@ -38,6 +38,14 @@ export interface OutboundInput {
    * failed/cancelled·done 안전망·부팅 복구)는 이 값을 지정하지 않아 기본 true = 관측 유지.
    */
   observe?: boolean;
+  /**
+   * 관측(세션 귀속)용 threadKey — 배달 좌표(channel/target)와 **독립**. 세션을 아는 caller 가
+   * 채운다(예: 스케줄·워커·통지가 `dashboard:default` 등 세션 id 를 실어보냄). 미전달 시 현행
+   * 물리 채널 키(`threadKeyForObservation`) 폴백 = 회귀 0. §D3 정체성/표시 2분리: 관측
+   * threadKey 는 *세션*이며 채널은 payload.channel 이 운반한다. opaque 문자열(세션 id)로만
+   * 받는다 — 세션→값 결정은 caller(plugin) 몫(§0 단방향: 코어는 채널명 분기·telegram import 없음).
+   */
+  observeThreadKey?: string;
 }
 
 // 관측(channel.message.out) 발행 — 대시보드 chat_log·라이브 SSE 가 이걸 받아 능동 발신도
@@ -98,7 +106,14 @@ export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
   if (o.deliver !== undefined) await o.deliver(resolved, text);
 
   // 관측은 항상(채널무관) — 대시보드 chat_log·라이브 SSE(원칙 #4). observe:false 만 억제.
+  // 관측 threadKey = caller 가 준 세션 id(observeThreadKey) 우선, 없으면 물리 채널 키 폴백
+  //  (회귀 0). 배달 좌표(channel/target)와 세션 귀속의 분리 — §D3.
   if (observe) {
-    publishOut(bus, channel, threadKeyForObservation(channel, resolved), text);
+    publishOut(
+      bus,
+      channel,
+      input.observeThreadKey ?? threadKeyForObservation(channel, resolved),
+      text,
+    );
   }
 };

@@ -784,7 +784,10 @@
       .projects-view { display:flex; flex-direction:column; gap:14px; }
       .projects-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,.85fr); gap:14px; align-items:start; }
       .projects-split.no-detail { grid-template-columns:minmax(0,1fr); }
-      .projects-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; align-content:start; }
+      /* 모듈/능력 뷰와 동형 — 카드 그리드 폐기, provider-item 세로 리스트(master-detail). */
+      .projects-grid { display:flex; flex-direction:column; align-items:stretch; align-content:start; }
+      .projects-grid .provider-item { text-align:left; width:100%; }
+      .projects-grid .pi-path { margin-top:2px; opacity:.7; }
       .project-card { width:100%; text-align:left; color:inherit; position:relative; padding:15px 15px 14px 17px; border:1px solid var(--border); border-radius:17px; background:var(--card); cursor:pointer; transition:background .12s,border-color .12s,transform .12s; }
       .project-card:hover { background:var(--card-hover); border-color:var(--border-strong); transform:translateY(-1px); }
       .project-card.selected { background:rgba(125,211,252,.12); border-color:rgba(125,211,252,.36); }

@@ -1,6 +1,6 @@
 import "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import os from "node:os";
-import { extractTelegramChatId } from "./core/threadkey.js";
+import { extractTelegramChatId, DEFAULT_SESSION_ID } from "./core/threadkey.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
@@ -1652,11 +1652,14 @@ const updateNotified = await (async (): Promise<boolean> => {
         : "";
     const text = `✅ 업데이트 완료${span}${files} — 새 버전으로 재시작했습니다.`;
     // 단일 통로 — 라우팅·발송·관측(대시보드 표시)을 deliverOutbound 가 담당(채널 미지정=cli).
+    // 세션 귀속 = 기본 세션(업데이트 통지는 세션 없는 시스템 발화 → 새 세션 생성 대신
+    // dashboard:default 메인 채팅에 표시). 배달은 요청자 좌표(notify) 그대로.
     await deliverOutbound({
       channel: data.notify?.channel ?? "cli",
       target: data.notify?.target ?? null,
       text,
       bus,
+      observeThreadKey: DEFAULT_SESSION_ID,
     });
   } catch (e) {
     console.error(
@@ -1687,11 +1690,13 @@ if (!updateNotified) {
       const chatId = getMostRecentTelegramChatId();
       const text = "✅ 재시작 완료";
       // 단일 통로 — telegram 이면 발송+관측(대시보드 표시), 대상 없으면(설치 직후) cli 로 콘솔만.
+      // 세션 귀속 = 기본 세션(재시작 통지 = 세션 없는 시스템 발화 → dashboard:default 표시).
       await deliverOutbound({
         channel: chatId !== null ? "telegram" : "cli",
         target: chatId,
         text,
         bus,
+        observeThreadKey: DEFAULT_SESSION_ID,
       });
     }
   } catch (e) {

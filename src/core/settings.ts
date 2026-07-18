@@ -151,37 +151,50 @@ export const resolveProfileChain = (
   if (profiles[name] === undefined) return [];
   const chain: string[][] = [];
   const visited = new Set<string>();
-  let cur: string | undefined = name;
-  while (cur !== undefined && !visited.has(cur)) {
-    const prof: ModelProfile | undefined = profiles[cur];
-    if (prof === undefined) break; // 댕글링 fallback → 엣지 drop(체인 종료).
-    visited.add(cur);
-    chain.push(prof.pool);
-    cur = prof.fallback; // 다음 프로파일(있으면). 순환은 while 조건이 절단.
-  }
+  // 한 프로파일에서 .fallback 링크를 따라가며 풀을 누적(순환·댕글링 절단). visited 공유.
+  const follow = (start: string | undefined): void => {
+    let cur = start;
+    while (cur !== undefined && !visited.has(cur)) {
+      const prof: ModelProfile | undefined = profiles[cur];
+      if (prof === undefined) break; // 댕글링 fallback → 엣지 drop(체인 종료).
+      visited.add(cur);
+      chain.push(prof.pool);
+      cur = prof.fallback; // 다음 프로파일(있으면). 순환은 while 조건이 절단.
+    }
+  };
+  follow(name);
+  // ★최종 폴백 = 지정된 default 프로파일(사용자 요청 2026-07-18). 명시 .fallback 체인이
+  //  default 를 안 거쳤으면 default 프로파일 풀(+그 자신의 .fallback 체인)을 말미에 덧붙인다.
+  //  요청 프로파일이 default 이거나 이미 경유했으면 visited 로 no-op. 이건 인터-프로파일
+  //  (구조적) 폴백 층 — 풀 내(runPool) 임의실패 폴백과 분리 유지(feedback_no_cross_adapter_fallback).
+  follow(getDefaultProfileName(cwd));
   return chain;
 };
 
 /**
- * 기본 프로파일 이름 — settings.json `models.default`(포인터). 미설정이면 `"default"`.
+ * 기본 프로파일 이름 — settings.json `models.default`(포인터).
  *  - 어떤 프로파일도 기본이 될 수 있게 하는 간접 지시자. resolveModelSpecs 의 메인 턴 풀 해석이
- *    하드코딩 `"default"` 대신 이 값을 쓴다(무회귀: 미설정 = 기존 바이트 동일).
+ *    하드코딩 `"default"` 대신 이 값을 쓴다.
  *  - 병합 의미: 홈→프로젝트 순서로 훑어 마지막 비어있지 않은 문자열이 이김(프로파일 override 와 동형).
- *  - ★댕글링 안전: 지목된 이름이 실제 존재하는 프로파일이 아니면 `"default"` 로 폴백
- *    (오타·삭제된 프로파일이 메인 턴을 어댑터 디폴트로 무너뜨리지 않게).
+ *  - ★미지정/댕글링 폴백 = **첫 프로파일**(사용자 요청 2026-07-18). 포인터가 없거나 오타·
+ *    삭제된 이름을 가리키면, 하드코딩 `"default"` 가 아니라 settings.json 에 쓰인 순서상
+ *    첫 프로파일을 기본으로 쓴다(사용자가 커스텀 이름만 뒀을 때 어댑터 디폴트로 무너지지
+ *    않게). 프로파일이 0개면 `"default"`(어댑터 디폴트로 흐르는 무해한 이름).
  */
 export const getDefaultProfileName = (
   cwd: string = process.cwd(),
 ): string => {
-  let name = "default";
+  let explicit: string | undefined;
   for (const layer of loadSettingsLayers(cwd)) {
     const d = layer.models?.default;
-    if (typeof d === "string" && d.trim() !== "") name = d.trim();
+    if (typeof d === "string" && d.trim() !== "") explicit = d.trim();
   }
-  if (name === "default") return "default";
-  // 지목된 이름이 실존 프로파일일 때만 채택 — 아니면 안전하게 default 로.
   const profiles = loadModelProfiles(cwd);
-  return profiles[name] !== undefined ? name : "default";
+  // 명시 포인터가 실존 프로파일이면 그것.
+  if (explicit !== undefined && profiles[explicit] !== undefined) return explicit;
+  // 미지정/댕글링 → 첫 프로파일(순서상 처음). 없으면 "default"(어댑터 디폴트 폴백).
+  const first = Object.keys(profiles)[0];
+  return first ?? "default";
 };
 
 /**

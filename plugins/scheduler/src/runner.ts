@@ -12,6 +12,7 @@ import type { EventBus } from "../../../src/core/eventbus.js";
 import type { WorkerNotifyDest } from "../../../src/core/worker-jobs.js";
 import type { ScheduleRow } from "../../../src/store/schedules.js";
 import { dispatch } from "./dispatcher.js";
+import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
 
 export interface RunnerDeps {
   /**
@@ -98,6 +99,10 @@ export const runScheduleFiring = async (
         destTarget: schedule.destTarget,
         text: resultText,
         bus,
+        // 세션 귀속 = 기본 세션(dashboard:default). 스케줄엔 아직 세션 지정 필드가 없다
+        // (옵션 B 확장점: 생기면 `schedule.sessionId ?? DEFAULT_SESSION_ID`). 배달은
+        // destChannel/destTarget(telegram 등) 그대로 — 세션과 채널 분리.
+        sessionThreadKey: DEFAULT_SESSION_ID,
       });
       deps.recordFiring(schedule.id, { ok: true });
       bus.publish({

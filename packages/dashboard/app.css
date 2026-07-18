@@ -850,6 +850,12 @@
       .project-card > .cm-kebab { position:absolute; top:9px; right:9px; opacity:0; z-index:2; transition:opacity .12s;
         border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
       .project-card:hover > .cm-kebab, .project-card:focus-within > .cm-kebab { opacity:1; }
+      /* 프로젝트 리스트가 카드 그리드→provider-item(master-detail)로 리팩터됨(2026-07-18). 위
+         .project-card 규칙은 더 이상 매치 안 됨 → provider-item 앵커(:199 position:relative)에
+         동일 스타일 미러. #projects-list 스코프로 능력/모듈 리스트엔 영향 0. */
+      #projects-list .provider-item > .cm-kebab { position:absolute; top:9px; right:9px; opacity:0; z-index:2; transition:opacity .12s;
+        border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
+      #projects-list .provider-item:hover > .cm-kebab, #projects-list .provider-item:focus-within > .cm-kebab { opacity:1; }
       /* 오른쪽 상세 패널 — #detail-panel(축1) 대신 뷰 내부 자체 패널(새 프레임워크 0). */
       .project-detail { border:1px solid var(--border); border-radius:18px; background:var(--card); padding:16px 18px; position:sticky; top:0; max-height:calc(100svh - 120px); overflow-y:auto; }
       .project-detail-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }

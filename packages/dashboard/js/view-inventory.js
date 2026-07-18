@@ -26,6 +26,11 @@
         // HTTP 판)도 능력(데이터) 축. /api/inventory 가 endpoint[] 를 주므로 srcKey 만 추가
         // — 정의 0건 홈은 빈 카테고리 자동 숨김(위 렌더 로직, 신규 코드 0).
         { key: "endpoint", srcKey: "endpoint", label: "🔌 엔드포인트", emptyNote: null },
+        // 스케줄(cron/reboot 트리거) — /api/inventory 가 schedules[] 를 주므로 srcKey 만 추가
+        // (엔드포인트와 동형, 신규 렌더코드 0). 스케줄 아이템은 layer 없음 → renderCapabilityListItem
+        // 의 pi-kind 는 빈 문자열 폴백(entry.layer || ""), 정렬은 LAYERS.indexOf(-1)→99 로 안전.
+        // 읽기 전용(디테일은 제네릭 renderCapabilityDetailCard). 스케줄 0건 홈은 빈 카테고리 자동 숨김.
+        { key: "schedules", srcKey: "schedules", label: "⏰ 스케줄", emptyNote: null },
         {
           key: "memory",
           srcKey: null,

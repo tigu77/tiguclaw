@@ -64,7 +64,7 @@
         const rows = [
           [healthClass, "모듈 상태", healthDesc, active + "/" + providersCache.length],
           [localChatCount > 0 ? "good" : "warn", "대화", localChatCount > 0 ? "최근 대화가 대화 탭에 표시됩니다." : "아직 대화가 없습니다.", localChatCount + "개"],
-          [inventoryCache ? "good" : "warn", "능력", inventoryCache ? "스킬·에이전트·MCP 등 능력을 불러왔습니다." : "능력 목록을 불러오는 중입니다.", String(invTotal)],
+          [inventoryCache ? "good" : "warn", "인벤토리", inventoryCache ? "스킬·에이전트·MCP 등 능력을 불러왔습니다." : "인벤토리를 불러오는 중입니다.", String(invTotal)],
         ];
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
@@ -83,7 +83,7 @@
         const actionData = [
           ["providers", "📦", "모듈 보기", "채널·어댑터 등 카테고리별 패널과 상세 상태 확인"],
           ["chat", "💬", assistantName + "와 대화", "대화와 활동 로그를 한 화면에서 확인"],
-          ["inventory", "📚", "능력", "스킬·에이전트(명세)·MCP 등 설치·발견된 capability 점검"],
+          ["inventory", "📚", "인벤토리", "스킬·에이전트(명세)·MCP·스케줄 등 설치·발견된 capability 점검"],
           ["restart", "🔄", "데몬 재시작", "멈춘 작업까지 정리하고 자동 복귀"],
         ];
         for (const [view, icon, title, desc] of actionData) {

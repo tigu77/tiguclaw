@@ -487,6 +487,18 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // 프로젝트 등록 해제(⋯ 메뉴 "제거") — bridge POST /project-forget (write 토큰 server-side
+    // 주입). ★비파괴: 레지스트리 인덱스에서만 제거, 폴더/PROJECT.md 는 보존. body{path} 그대로 전달.
+    if (pathname === "/api/project-forget" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/project-forget", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+
     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: "not found" }));
   })();

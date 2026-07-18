@@ -11,6 +11,7 @@
       // 데몬(tiguclaw 호스트)에서 열리므로 폰에서 눌러도 호스트 Mac 의 Finder 가 열린다.
       registerMenuItems("project", () => [
         { id: "open-folder", label: "폴더 열기", icon: "📂", action: { kind: "builtin", handler: "project.openFolder" } },
+        { id: "remove", label: "제거", icon: "🗑", action: { kind: "builtin", handler: "project.remove" } },
       ]);
       registerBuiltinHandler("project.openFolder", async (ctx) => {
         if (!ctx || !ctx.path) return;
@@ -23,6 +24,29 @@
           showToast(r.ok ? "폴더를 열었습니다" : "폴더 열기 실패", r.ok ? "good" : "bad");
         } catch {
           showToast("폴더 열기 실패", "bad");
+        }
+      });
+      // 프로젝트 "제거" — ★비파괴: 레지스트리(인덱스)에서만 등록 해제, 폴더/PROJECT.md 는 안 지운다
+      // (store forgetProject = DELETE FROM projects). 파괴적이지 않지만 사용자 명시 확인(confirm)
+      // 후에만 실행(파괴적 행위 소프트 게이트 원칙과 동형 — "목록에서 제거" 의도 재확인).
+      registerBuiltinHandler("project.remove", async (ctx) => {
+        if (!ctx || !ctx.path) return;
+        const label = ctx.label || ctx.path;
+        if (!window.confirm(label + " 을 목록에서 제거할까요? 폴더는 삭제되지 않습니다.")) return;
+        try {
+          const r = await fetch("/api/project-forget", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: ctx.path }),
+          });
+          if (!r.ok) { showToast("제거 실패", "bad"); return; }
+          // 열려 있던 프로젝트면 상세 닫기(closeProjectDetail 이 리스트 재렌더까지 수행).
+          if (selectedProjectPath === ctx.path) closeProjectDetail();
+          await fetchProjects(); // 레지스트리 재조회 → renderProjectsGrid + 컨텍스트 태그 갱신.
+          if (currentView === "projects") renderProjectsGrid();
+          showToast("목록에서 제거했습니다(폴더는 보존)", "good");
+        } catch {
+          showToast("제거 실패", "bad");
         }
       });
 
@@ -328,16 +352,21 @@
         const name = document.createElement("div");
         name.className = "project-detail-name";
         name.textContent = meta.name || "(이름 없음)";
-        const st = document.createElement("span");
-        st.className = "project-status " + status;
-        st.textContent = PROJECT_STATUS_LABEL[status] || status;
         const close = document.createElement("button");
         close.type = "button";
         close.className = "project-detail-close";
         close.setAttribute("aria-label", "닫기");
         close.textContent = "✕";
         close.addEventListener("click", closeProjectDetail);
-        head.appendChild(name); head.appendChild(st); head.appendChild(close);
+        head.appendChild(name);
+        // "진행 중"(active) 배지는 노이즈라 숨김(리스트와 동형, 2026-07-18) — 보류/완료만 표시.
+        if (status !== "active") {
+          const st = document.createElement("span");
+          st.className = "project-status " + status;
+          st.textContent = PROJECT_STATUS_LABEL[status] || status;
+          head.appendChild(st);
+        }
+        head.appendChild(close);
         panel.appendChild(head);
 
         const pathEl = document.createElement("div");

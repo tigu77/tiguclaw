@@ -56,7 +56,9 @@ import { getRecentChatLog } from "../../src/store/chat-log.js";
 import { listThreads, setThreadName } from "../../src/store/sessions.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { getAssistantName } from "../../src/core/identity.js";
-import { listProjects } from "../../src/store/projects.js";
+import { listProjects, forgetProject } from "../../src/store/projects.js";
+import { listSchedules } from "../../src/store/schedules.js";
+import { Cron } from "croner";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
 import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../../src/core/llm-runtime/capabilities/agent-registry.js";
@@ -771,6 +773,8 @@ class HttpBridge implements Channel, Observer {
                   ? "write"
                 : pathname === "/open-path" && method === "POST"
                   ? "write"
+                : pathname === "/project-forget" && method === "POST"
+                  ? "write"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
                   : null;
@@ -826,11 +830,63 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
-    // /inventory — JSON.
+    // /inventory — JSON. collectInventory(5 카테고리) + 스케줄(능력 축 확장, 2026-07-18). 스케줄은
+    // scheduler 플러그인 store(listSchedules)에서 읽어 인벤토리 아이템 shape(PluginEntry 호환:
+    // name·description·enabled·source·metadata)로 매핑 — 대시보드 인벤토리 뷰가 '⏰ 스케줄'
+    // 카테고리로 렌더(읽기 전용). next_run 계산은 scheduler mcp list_schedules 로직 재사용(croner
+    // dry-run). 격리: 스케줄 수집 실패해도 나머지 인벤토리는 그대로 응답(빈 배열 폴백).
     if (pathname === "/inventory" && method === "GET") {
       try {
         const inv = await collectInventory();
-        writeJson(res, 200, inv);
+        let schedules: Array<Record<string, unknown>> = [];
+        try {
+          schedules = listSchedules().map((r) => {
+            let nextRun: string | null = null;
+            if (r.enabled && r.triggerType === "cron") {
+              try {
+                const dry = new Cron(r.cronExpr, {
+                  timezone: r.timezone,
+                  paused: true,
+                });
+                const next = dry.nextRun();
+                nextRun = next === null ? null : next.toISOString();
+              } catch {
+                nextRun = null;
+              }
+            }
+            const en = r.enabled ? "켜짐" : "꺼짐";
+            const status = r.lastStatus ?? "미실행";
+            const description =
+              r.triggerType === "reboot"
+                ? `재부팅 시 · ${en}(${status})`
+                : `${r.cronExpr} · 다음 ${nextRun ?? "-"} · ${en}(${status})`;
+            const metadata: Record<string, unknown> = {
+              trigger_type: r.triggerType,
+              dest_channel: r.destChannel,
+            };
+            if (r.triggerType === "cron") {
+              metadata.cron_expr = r.cronExpr;
+              metadata.timezone = r.timezone;
+              if (nextRun !== null) metadata.next_run = nextRun;
+            }
+            if (r.destTarget !== null && r.destTarget !== "")
+              metadata.dest_target = r.destTarget;
+            if (r.lastStatus !== null) metadata.last_status = r.lastStatus;
+            if (r.lastError !== null && r.lastError !== "")
+              metadata.last_error = r.lastError;
+            return {
+              category: "schedule",
+              name: r.label,
+              description,
+              source: `schedule:${r.id}`,
+              enabled: r.enabled,
+              metadata,
+            };
+          });
+        } catch {
+          schedules = [];
+        }
+        writeJson(res, 200, { ...inv, schedules });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
@@ -1728,6 +1784,34 @@ class HttpBridge implements Channel, Observer {
             ? null
             : nameIn.trim().slice(0, 60);
         writeJson(res, 200, { ok: true, threadKey, name: normName });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /project-forget — 프로젝트 등록 해제(레지스트리 인덱스에서만 제거). ★비파괴: PROJECT.md
+    // 파일·폴더는 절대 안 지운다(store forgetProject = DELETE FROM projects WHERE path=?). write
+    // 게이트(위 role 표, /session-name 동형). body { path } — 정규화·검증 후 forgetProject 호출.
+    if (pathname === "/project-forget" && method === "POST") {
+      let pbody: Record<string, unknown>;
+      try {
+        pbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const pathIn =
+        typeof pbody.path === "string" ? pbody.path.trim() : "";
+      if (pathIn === "") {
+        writeJson(res, 400, { error: "path required" });
+        return;
+      }
+      try {
+        forgetProject(pathIn);
+        writeJson(res, 200, { ok: true, path: pathIn });
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });

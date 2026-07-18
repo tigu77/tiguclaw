@@ -233,6 +233,118 @@ export const loadModelProviders = (
 };
 
 /**
+ * config-driven 오디오 전사 설정(2026-07-18, ADR 후보
+ * docs/decisions/2026-07-18-transcription-config-driven.md) — settings.json `transcription:{}`.
+ * `models.providers` 로더 패턴 동형(never-throw·layer 병합·diagnose 경고). 시크릿은 여기 없다 —
+ * openai apiKey 는 `models.providers.<name>.apiKeyEnv`(env 참조) 경유. settings.ts 는 llm-runtime
+ * 무참조라 provider/model 문자열만 담고, "known 여부"·해석은 소비 지점(transcription/ 팩토리) 몫.
+ */
+export interface TranscriptionConfig {
+  /** 생략=true. false = 전사 끔(현행 path-reference 렌더). */
+  enabled: boolean;
+  /** 선택된 impl — "openai" | "local"(미래 user-defined). 생략 시 "openai". */
+  provider: string;
+  /** 언어 힌트(양 provider 공유, 예 "ko"). 미지정 = provider 자동감지. */
+  language?: string;
+  /** openai impl 설정(HTTP `/audio/transcriptions`). */
+  openai?: {
+    /** models.providers 중 baseURL/apiKey 공급원 이름. 생략 = "openai". */
+    provider?: string;
+    /** 전사 model 문자열. 생략 시 소비 지점 기본("gpt-4o-transcribe"). */
+    model?: string;
+  };
+  /** local impl 설정(CLI spawn). */
+  local?: {
+    /** 바이너리 경로/이름(예 "whisper-cli"). */
+    command?: string;
+    /** 인자 배열 — 플레이스홀더 {file}/{language} 치환. */
+    args?: string[];
+    /** spawn 타임아웃(ms). 생략 시 소비 지점 기본. */
+    timeoutMs?: number;
+    /** 출력 회수 방식 지정 파일 — 지정 시 stdout 대신 이 파일({file} 치환 가능)을 읽음. */
+    outputFile?: string;
+  };
+}
+
+/**
+ * 한 transcription 값 shape 검증 — never-throw, 무효/부재 필드는 안전 기본으로 채운다.
+ * validateProviderConfig 동형(diagnose=true 부팅 진단에서만 경고). 최상위가 객체 아니면 undefined
+ * → 로더가 해당 레이어 스킵. enabled 생략=true, provider 생략="openai".
+ */
+const validateTranscriptionConfig = (
+  val: unknown,
+  diagnose: boolean,
+): TranscriptionConfig | undefined => {
+  if (val === null || typeof val !== "object" || Array.isArray(val)) {
+    if (diagnose) {
+      console.warn(`[settings] transcription: 객체가 아님 — 무시.`);
+    }
+    return undefined;
+  }
+  const o = val as Record<string, unknown>;
+  const config: TranscriptionConfig = {
+    enabled: o.enabled === undefined ? true : o.enabled === true,
+    provider:
+      typeof o.provider === "string" && o.provider.trim() !== ""
+        ? o.provider.trim()
+        : "openai",
+  };
+  if (typeof o.language === "string" && o.language.trim() !== "") {
+    config.language = o.language.trim();
+  }
+  if (o.openai !== null && typeof o.openai === "object" && !Array.isArray(o.openai)) {
+    const oa = o.openai as Record<string, unknown>;
+    const openai: NonNullable<TranscriptionConfig["openai"]> = {};
+    if (typeof oa.provider === "string" && oa.provider.trim() !== "") {
+      openai.provider = oa.provider.trim();
+    }
+    if (typeof oa.model === "string" && oa.model.trim() !== "") {
+      openai.model = oa.model.trim();
+    }
+    config.openai = openai;
+  }
+  if (o.local !== null && typeof o.local === "object" && !Array.isArray(o.local)) {
+    const lo = o.local as Record<string, unknown>;
+    const local: NonNullable<TranscriptionConfig["local"]> = {};
+    if (typeof lo.command === "string" && lo.command.trim() !== "") {
+      local.command = lo.command.trim();
+    }
+    if (Array.isArray(lo.args) && lo.args.every((x) => typeof x === "string")) {
+      local.args = lo.args as string[];
+    }
+    if (typeof lo.timeoutMs === "number" && Number.isFinite(lo.timeoutMs) && lo.timeoutMs > 0) {
+      local.timeoutMs = lo.timeoutMs;
+    }
+    if (typeof lo.outputFile === "string" && lo.outputFile.trim() !== "") {
+      local.outputFile = lo.outputFile.trim();
+    }
+    config.local = local;
+  }
+  return config;
+};
+
+/**
+ * 병합된 전사 설정(2026-07-18) — 홈→프로젝트(.tiguclaw) layer 병합(뒤가 이김, loadModelProfiles
+ * 동형). 어느 레이어에도 `transcription` 키가 없으면 `undefined` 반환(호출자가 "기본 openai" 판정).
+ * never-throw. diagnose=true(부팅 진단)일 때만 무효 shape 경고.
+ *
+ * ★반환 undefined 의 의미 = "명시 설정 없음"이지 "전사 끔"이 아니다 — 소비 지점(팩토리)이
+ * undefined 를 "기본 openai enabled" 로 해석(contract §3, apiKey 부재면 graceful fallback).
+ */
+export const loadTranscriptionConfig = (
+  cwd: string = process.cwd(),
+  diagnose = false,
+): TranscriptionConfig | undefined => {
+  let merged: TranscriptionConfig | undefined;
+  for (const layer of loadSettingsLayers(cwd)) {
+    if (!("transcription" in layer)) continue;
+    const validated = validateTranscriptionConfig(layer.transcription, diagnose);
+    if (validated !== undefined) merged = validated; // 뒤 레이어(프로젝트)가 이김.
+  }
+  return merged;
+};
+
+/**
  * 프로파일 이름 → 순서 있는 풀 체인(raw `provider:model` 배열들).
  *  - 각 원소 = 한 프로파일의 pool(파싱 전 raw). 파싱/ModelSpec 변환은 llm-runtime 몫.
  *  - `.fallback` 을 따라 조립하되 visited-set 로 순환 절단, 댕글링 참조는 그 엣지 drop(체인 종료).

@@ -32,6 +32,15 @@ export interface Attachment {
   bytes: number;
   /** 첨부와 함께 온 caption. V1 텔레그램 미사용 (text 가 caption 진실 소스). */
   caption?: string;
+  /**
+   * 오디오/음성 전사 결과 텍스트(additive, 2026-07-18 config-driven 전사).
+   * ★코어(`runRegionA` 진입 seam `enrichTranscripts`)가 채운다 — 채널은 안 건드린다.
+   * SDK 비종속 순수 텍스트(다른 중립 첨부 메타와 동류). 미설정 = 전사 미설정/실패/비대상
+   * (image·document 등) → `formatAttachments` 가 현행 path-reference 그대로 렌더(회귀 0).
+   * `kind==="audio"|"voice"` 첨부에만 채워지며, 값이 있으면 프롬프트에 전사 텍스트로 실린다.
+   * contract: `_workspace/transcription_architect_contract.md` §1/§8.
+   */
+  transcript?: string;
 }
 
 export interface IncomingMessage {

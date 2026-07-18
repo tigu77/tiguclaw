@@ -25,6 +25,7 @@ import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { saveSession } from "../../store/sessions.js";
 import { formatAttachments } from "../prompt-assembly.js";
+import { enrichTranscripts } from "./transcription/index.js";
 import {
   appendTranscript,
   indexCodexTurn,
@@ -745,6 +746,11 @@ export const runRegionA = async (
   input: RegionASdkInput,
   opts?: { specs?: ModelSpec[]; chain?: ModelSpec[][] },
 ): Promise<RegionASdkOutput> => {
+  // 전사 seam(contract §1) — 오디오/음성 첨부를 chain 루프 *전* 1회 전사해 Attachment.transcript 를
+  // 채운다. best-effort(enrichTranscripts 자체가 첨부 단위 격리·never-throw). 다운스트림 3 어댑터
+  // formatAttachments + persistOutput 이 분기 0 으로 동일 소비 → #2 구조보장·resume 재전사 0.
+  // 미설정/실패/비대상 = Attachment.transcript 미설정 → path-reference 폴백(회귀 0).
+  await enrichTranscripts(input.attachments, input.cwd);
   // 풀 체인 조립 — 프로파일 간(inter) 폴백을 *분리된 풀들*로 운반한다(평탄화 금지).
   //  (1) opts.chain(신규 — 프로파일 .fallback 체인): 그대로. chain[0]=요청 풀.
   //  (2) opts.specs(레거시 — /model override·서브에이전트 단일 풀): [override, 기본 풀] 2단.

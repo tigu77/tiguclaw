@@ -175,7 +175,15 @@ export const formatAttachments = (
   const lines = atts.map((a) => {
     const cap =
       a.caption !== undefined && a.caption !== "" ? ` — "${a.caption}"` : "";
-    return `- [${a.kind} | ${a.mimeType} | ${a.bytes}B] ${a.filename} → ${a.path}${cap}`;
+    const base = `- [${a.kind} | ${a.mimeType} | ${a.bytes}B] ${a.filename} → ${a.path}${cap}`;
+    // 오디오/음성: 전사(runRegionA seam 이 채움) 있으면 텍스트로 실어 모델이 바로 이해.
+    // 없으면(미설정/실패) 현행 path-reference + 중립 노트. "전사" 라벨로 원문 아님 명시(환각 완화).
+    if (a.kind === "audio" || a.kind === "voice") {
+      return a.transcript !== undefined && a.transcript !== ""
+        ? `${base}\n  전사: "${truncate(a.transcript.replace(/\s+/g, " "), 4000)}"`
+        : `${base}\n  (오디오는 파일로만 첨부됨 — 전사 미설정/실패)`;
+    }
+    return base;
   });
   const hasImage = atts.some((a) => a.kind === "image");
   const out = [

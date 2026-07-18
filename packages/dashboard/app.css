@@ -940,6 +940,23 @@
       #chat-input { background:var(--card); color:var(--text); border-color:var(--border); resize:none; overflow-y:auto; }
       #chat-attach-btn { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:0 11px; font-size:15px; cursor:pointer; flex:none; align-self:stretch; }
       #chat-attach-btn:hover { border-color:rgba(125,211,252,.55); }
+      /* 🎤 음성 입력(press-and-hold, 2026-07-18) — 첨부 버튼과 동형 크기. 롱프레스 시 텍스트
+         선택/스크롤/컨텍스트메뉴 억제(user-select·touch-action). 녹음중 = 빨간 펄스, 취소임박 = 앰버. */
+      #chat-mic-btn { position:relative; background:var(--card); color:var(--text); border:1px solid var(--border);
+        border-radius:12px; padding:0 11px; font-size:15px; cursor:pointer; flex:none; align-self:stretch;
+        user-select:none; -webkit-user-select:none; touch-action:none; display:inline-flex; align-items:center; gap:6px; }
+      #chat-mic-btn:hover { border-color:rgba(125,211,252,.55); }
+      #chat-mic-btn .mic-timer { font-size:11px; font-variant-numeric:tabular-nums; color:var(--muted); }
+      #chat-mic-btn.recording { border-color:rgba(248,113,113,.85); background:rgba(248,113,113,.16); color:#fecaca;
+        animation:micPulse 1.2s ease-in-out infinite; }
+      #chat-mic-btn.recording .mic-timer { color:#fecaca; }
+      #chat-mic-btn.cancel-armed { border-color:rgba(251,191,36,.9); background:rgba(251,191,36,.18); color:#fde68a; animation:none; }
+      #chat-mic-btn.cancel-armed .mic-timer { color:#fde68a; }
+      #chat-mic-btn.transcribing { opacity:.6; cursor:progress; animation:none; }
+      @keyframes micPulse {
+        0%,100% { box-shadow:0 0 0 0 rgba(248,113,113,.5); }
+        50% { box-shadow:0 0 0 6px rgba(248,113,113,0); }
+      }
       /* 첨부 썸네일(#2) — 클로드코드식 작은 정사각 미리보기 + 모서리 ✕. 비어 있으면 숨김. */
       #chat-attach { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; padding-top:4px; }
       #chat-attach:empty { display:none; }

@@ -73,6 +73,7 @@ import {
   resolveTier,
   type ModelSpec,
 } from "../../src/core/llm-runtime/index.js";
+import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
 import { listEvents } from "../../src/store/events.js";
 import {
   listJobs,
@@ -137,6 +138,14 @@ const EXT_BY_MIME: Record<string, string> = {
   "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp",
   "image/svg+xml": "svg", "application/pdf": "pdf", "text/plain": "txt",
   "text/markdown": "md", "application/json": "json", "text/csv": "csv",
+};
+// 🎤 음성입력(/transcribe) 임시파일 확장자 — 오디오 mime → ext. MediaRecorder 기본은 webm/opus.
+// whisper wrapper 가 ffmpeg 로 재변환하므로 확장자만 맞으면 충분(미지 = webm 폴백).
+const AUDIO_EXT_BY_MIME: Record<string, string> = {
+  "audio/webm": "webm", "audio/ogg": "ogg", "audio/oga": "ogg",
+  "audio/mp4": "mp4", "audio/x-m4a": "m4a", "audio/aac": "aac",
+  "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav",
+  "audio/x-wav": "wav", "audio/wave": "wav", "audio/flac": "flac",
 };
 // 서빙용 확장자→content-type (인바운드 첨부 파일 렌더). 미지 확장자는 octet-stream.
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
@@ -763,6 +772,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write"
               : pathname === "/set-module-enabled" && method === "POST"
                 ? "write"
+              : pathname === "/transcribe" && method === "POST"
+                ? "write"
               : pathname === "/restart" && method === "POST"
                 ? "admin"
                 : pathname === "/cancel-queued" && method === "POST"
@@ -1144,6 +1155,84 @@ class HttpBridge implements Channel, Observer {
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /transcribe — 오디오 바이트 → 텍스트(대시보드 🎤 음성입력, 2026-07-18). config-driven 전사
+    // 인프라(resolveTranscriptionProvider) 재사용 — 첨부/텔레그램 음성 전사와 동일 provider·언어
+    // (settings.json transcription). body { dataBase64, mimeType } → 임시파일(attachmentsDir/transcribe)
+    // 저장 → provider.transcribe → { text }. 전사 미설정/disabled 는 { error }(200, 프런트 토스트).
+    // ★never-throw: 저장/전사/파싱 실패는 { error } + 로그로 닫고 데몬 생존(핫경로 격리). write 게이트
+    // (읽기성이나 파일 업로드라 write 권장). 임시파일은 전사 후 정리(우발 누적 방지 — 채팅 첨부와
+    // 달리 회수/서빙 대상 아님). openai 25MB 한도 정합 위해 파일당 캡(ATTACH_MAX_FILE_BYTES) 재사용.
+    if (pathname === "/transcribe" && method === "POST") {
+      let tbody: Record<string, unknown>;
+      try {
+        tbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const dataBase64 = typeof tbody.dataBase64 === "string" ? tbody.dataBase64 : "";
+      const mimeRaw =
+        typeof tbody.mimeType === "string" && tbody.mimeType !== ""
+          ? tbody.mimeType
+          : "audio/webm";
+      if (dataBase64 === "") {
+        writeJson(res, 400, { error: "dataBase64 required" });
+        return;
+      }
+      const buf = Buffer.from(dataBase64, "base64");
+      if (buf.length === 0) {
+        writeJson(res, 400, { error: "빈 오디오" });
+        return;
+      }
+      if (buf.length > ATTACH_MAX_FILE_BYTES) {
+        writeJson(res, 400, {
+          error: `오디오가 한도(${ATTACH_MAX_FILE_BYTES / 1024 / 1024}MB)를 초과합니다.`,
+        });
+        return;
+      }
+      // provider 해석은 저장 전에(미설정이면 파일 안 만들고 조기 종료). cwd = 데몬 루트(dev 홈은
+      // TIGUCLAW_HOME 이 아닌 settings 레이어가 해석 — loadTranscriptionConfig 가 홈/프로젝트 병합).
+      const resolved = resolveTranscriptionProvider(process.cwd());
+      if (resolved === null) {
+        writeJson(res, 200, {
+          error: "전사가 설정되지 않았습니다 (settings.json transcription).",
+        });
+        return;
+      }
+      const mime = (mimeRaw.split(";")[0] ?? "audio/webm").trim();
+      const ext = AUDIO_EXT_BY_MIME[mime] ?? "webm";
+      const tmpDir = path.join(getPaths().attachmentsDir, "transcribe");
+      let tmpPath = "";
+      try {
+        await fs.mkdir(tmpDir, { recursive: true });
+        tmpPath = path.join(
+          tmpDir,
+          `${crypto.randomBytes(8).toString("hex")}.${ext}`,
+        );
+        await fs.writeFile(tmpPath, buf);
+        const text = await resolved.provider.transcribe({
+          filePath: tmpPath,
+          mimeType: mime,
+          language: resolved.language,
+        });
+        writeJson(res, 200, { text: text.trim() });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[transcribe] 실패 — ${msg}`);
+        writeJson(res, 200, { error: `전사 실패: ${msg}` });
+      } finally {
+        if (tmpPath !== "") {
+          try {
+            await fs.unlink(tmpPath);
+          } catch {
+            /* 임시파일 정리 실패 무해(다음 부팅·OS 청소) */
+          }
+        }
       }
       return;
     }

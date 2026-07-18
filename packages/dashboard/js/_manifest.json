@@ -27,5 +27,6 @@
   "tabs.js",
   "slash.js",
   "perf.js",
-  "chat-send.js"
+  "chat-send.js",
+  "mic-input.js"
 ]

@@ -410,6 +410,17 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
+    // 음성입력 전사(🎤, 2026-07-18) — bridge POST /transcribe (write 토큰 server-side 주입,
+    // browser 미노출). /api/messages 동형 프록시. body{dataBase64,mimeType} 그대로 전달.
+    if (pathname === "/api/transcribe" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
     // 세션 커스텀 이름 설정 — bridge POST /session-name (write 토큰 server-side 주입,
     // browser 미노출). 계약 _workspace/session-tabs_architect_contract.md §3-3.
     // body{threadKey,name} 그대로 전달 — /api/messages 와 동일 메커니즘.

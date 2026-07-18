@@ -1001,7 +1001,27 @@ export const setThreadName = (threadKey: string, name: string | null): number =>
   const info = handle
     .prepare(`UPDATE threads SET name = ? WHERE channel_thread_id = ?`)
     .run(norm, threadKey);
-  return info.changes;
+  if (info.changes > 0) return info.changes;
+  // 행이 아직 없음 = 대화 전 새 세션 탭을 rename 한 경우. UPDATE-only 면 이름이 조용히
+  // 증발하고, 이후 첫 turn 의 saveSession 이 name=NULL 로 행을 만들어 대시보드 폴이 "세션N"
+  // 으로 되돌린다(revert 버그). placeholder 행을 만들어 이름을 미리 보존한다.
+  //   - 이름 제거(norm=null)인데 행도 없으면 할 일 없음 → no-op.
+  //   - system_prompt_hash=NULL 로 둬 resumable(hash===SYSTEM_PROMPT_HASH) 을 피함 →
+  //     빈 claude_session_id 로 resume 시도하는 사고 방지. 첫 claude turn 의 saveSession
+  //     (default 경로, ON CONFLICT)이 실제 sid/hash 로 채운다(placeholder 대체).
+  //   - 채널은 canonicalSessionChannel 로 saveSession 과 동일 산출(dashboard:*→저장채널) →
+  //     복합 PK (channel, channel_thread_id) 일치 → 중복행 없이 이후 turn 이 같은 행 갱신.
+  if (norm === null) return 0;
+  const channel = canonicalSessionChannel(threadKey, SESSION_STORAGE_CHANNEL);
+  const now = Date.now();
+  const ins = handle
+    .prepare(
+      `INSERT INTO threads (channel, channel_thread_id, claude_session_id, model, system_prompt_hash, last_used_at, created_at, name)
+       VALUES (?, ?, '', NULL, NULL, ?, ?, ?)
+       ON CONFLICT (channel, channel_thread_id) DO UPDATE SET name = excluded.name`,
+    )
+    .run(channel, threadKey, now, now, norm);
+  return ins.changes;
 };
 
 /**

@@ -7,6 +7,32 @@
       const bgList = document.getElementById("bg-list");
       const bgEmpty = document.getElementById("bg-empty");
       const bgBadge = document.getElementById("bg-badge");
+      // ── 잡 그룹화(에이전트 / 워커) — 셸/프로세스 섹션과 통일된 접이식 그룹(모듈 서브패널의
+      // appendCollapsibleGroup 재사용, ADR §5 마스터-디테일). 카드는 kind 별 그룹 컨테이너로
+      // 라우팅(기본 워커, lifecycle 로 에이전트 승격 시 재부모). 필터 CSS(.bg-list ... .bg-job)는
+      // 후손 선택자라 중첩돼도 그대로 동작, collapse 는 .module-group-head.collapsed + .items 로.
+      // 지연 생성(첫 카드 때) — appendCollapsibleGroup 미로드 시 평면 bgList 로 폴백(회귀 0).
+      let bgGroups = null; // { agent:{items,head,countEl}, worker:{...} } | null(폴백)
+      const ensureBgGroups = () => {
+        if (bgGroups) return bgGroups;
+        if (typeof appendCollapsibleGroup !== "function" || !bgList) return null;
+        bgGroups = {};
+        const labels = { agent: (typeof AGENT_KIND_BADGE !== "undefined" ? AGENT_KIND_BADGE.agent : "🤖 서브에이전트"),
+                         worker: (typeof AGENT_KIND_BADGE !== "undefined" ? AGENT_KIND_BADGE.worker : "📦 워커") };
+        for (const key of ["agent", "worker"]) {
+          let itemsWrap = null;
+          appendCollapsibleGroup(bgList, "bg-group", key, labels[key], 0, (w) => { itemsWrap = w; });
+          const head = itemsWrap ? itemsWrap.previousElementSibling : null;
+          bgGroups[key] = { items: itemsWrap, head, countEl: head ? head.querySelector(".module-group-count") : null };
+        }
+        return bgGroups;
+      };
+      // kind → 그 그룹의 카드 컨테이너(폴백 시 bgList). 카드 삽입·재부모 공용.
+      const bgGroupContainer = (kind) => {
+        const g = ensureBgGroups();
+        if (!g) return bgList;
+        return (kind === "agent" ? g.agent : g.worker).items;
+      };
       // 컴포저(입력창 위) 인디케이터 — 현재 세션에 백그라운드 작업이 돌면 노출(runningScoped>0).
       // 클릭하면 드로어를 연다. refreshBgBadge 가 잡 상태·탭 전환마다 갱신.
       const chatBgActiveEl = document.getElementById("chat-bg-active");
@@ -344,6 +370,24 @@
         if (navAgentCount) navAgentCount.textContent = String(running);
         // 에이전트 메인 뷰 자체 카운트/빈상태도 함께 갱신(전역, 열려 있을 때만 렌더).
         if (typeof syncAgentsCounts === "function") syncAgentsCounts(running, total);
+        // 그룹별 보이는 카드 수(현재 필터×스코프 통과) — 접이식 그룹 헤더 카운트 갱신 + 빈 그룹 숨김.
+        // CSS 필터와 동일 판정(passStatus/passScope)을 JS 로 재현. items 는 빈 문자열로 되돌려 collapse
+        // CSS(.collapsed + .items{display:none})가 계속 지배하게(inline none 은 빈 그룹에만).
+        if (bgGroups) {
+          const vis = { agent: 0, worker: 0 };
+          for (const e of jobCards.values()) {
+            const passStatus = bgFilter !== "running" || e.status === "running";
+            const passScope = bgSessionScope !== "session" || isBgInScope(e.threadKey);
+            if (passStatus && passScope) vis[e.kind === "agent" ? "agent" : "worker"] += 1;
+          }
+          for (const key of ["agent", "worker"]) {
+            const g = bgGroups[key];
+            if (g.countEl) g.countEl.textContent = String(vis[key]);
+            const hide = vis[key] === 0;
+            if (g.head) g.head.style.display = hide ? "none" : "";
+            if (g.items) g.items.style.display = hide ? "none" : "";
+          }
+        }
         // 빈 메시지 — 활성 상태필터 × 세션스코프 AND 기준(드로어에 실제 보이는 카드 수와 일치).
         const visible = bgFilter === "running" ? dispRunning : dispTotal;
         if (bgEmpty) {
@@ -364,8 +408,11 @@
       };
       const capBgList = () => {
         while (jobCards.size > BG_MAX) {
+          // 카드는 그룹 컨테이너 안에 중첩될 수 있어 직계 순회 대신 .bg-job 후손을 뒤에서부터.
+          const cards = bgList.querySelectorAll(".bg-job");
           let removed = false;
-          for (let node = bgList.lastElementChild; node; node = node.previousElementSibling) {
+          for (let i = cards.length - 1; i >= 0; i--) {
+            const node = cards[i];
             const jid = node.dataset ? node.dataset.jobId : null;
             if (!jid) continue;
             const entry = jobCards.get(jid);
@@ -444,7 +491,9 @@
           // 스냅해 새 카드 노출. 아래로 내려 과거 잡을 보는 중이면 존중(브라우저 scroll-anchoring
           // 이 위치 보존, yank 금지) = 채팅 stickBottom 의 상단판. 임계 40px.
           const _bgNearTop = bgList.scrollTop < 40;
-          bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
+          // kind 별 그룹으로 라우팅(기본 워커, opts.kind==="agent" 면 에이전트 그룹). 승격은 아래 재부모.
+          const _container = bgGroupContainer(opts && opts.kind === "agent" ? "agent" : "worker");
+          _container.insertBefore(el, _container.firstChild); // 최신=위(그룹 내). 폴백 시 bgList.
           if (_bgNearTop) bgList.scrollTop = 0;
           updateBgJump(); // 새 카드가 위에 쌓임 — 내려본 상태면 "↑ 최신" 노출 갱신.
           entry = {
@@ -495,7 +544,13 @@
           entry.kind = "agent";
           entry.el.classList.add("agent");
           entry.kindBadgeEl.textContent = AGENT_KIND_BADGE.agent;
+          // 워커 그룹→에이전트 그룹 재부모(카드는 워커로 생성됐다가 lifecycle 로 승격). 최신=위 유지.
+          const _ag = ensureBgGroups();
+          if (_ag && entry.el.parentNode !== _ag.agent.items) {
+            _ag.agent.items.insertBefore(entry.el, _ag.agent.items.firstChild);
+          }
           updateStopBtn(entry); // awaited 서브에이전트 승격 후에도 running 이면 중지버튼 표시(U-I4 개정).
+          if (typeof refreshBgBadge === "function") refreshBgBadge(); // 그룹 카운트·빈그룹 즉시 갱신.
         }
         // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.

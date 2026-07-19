@@ -1,8 +1,0 @@
-{
-  "id": "fix-failing-test",
-  "title": "Fix a failing unit-test suite (one-shot)",
-  "prompt": "This project has a small module `mathutils.js` and a test suite `mathutils.test.js`. The tests are currently failing because of bugs in `mathutils.js`. Fix the source code in `mathutils.js` so that every test passes when you run `node --test`. Do NOT modify the test file. Only edit `mathutils.js`.",
-  "timeoutMs": 300000,
-  "tags": ["coding", "oneshot"],
-  "verifyCmd": "bash verify.sh"
-}

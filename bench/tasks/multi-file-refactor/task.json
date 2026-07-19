@@ -1,8 +1,0 @@
-{
-  "id": "multi-file-refactor",
-  "title": "Rename a symbol across multiple files, keep tests green",
-  "prompt": "This project defines a helper function named `computeTax` in `tax.js` and uses it from `invoice.js`. Rename that function from `computeTax` to `calculateTax` EVERYWHERE: its definition, its export, and every call site across all files. The test suite (`tax.test.js`) already expects the new name `calculateTax`. When you are done, `node --test` must pass AND the old name `computeTax` must not appear anywhere in the source. Do NOT modify the test file.",
-  "timeoutMs": 300000,
-  "tags": ["coding", "refactor"],
-  "verifyCmd": "bash verify.sh"
-}

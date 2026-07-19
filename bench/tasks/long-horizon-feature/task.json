@@ -1,8 +1,0 @@
-{
-  "id": "long-horizon-feature",
-  "title": "Implement a multi-module TTL + LRU key-value store",
-  "prompt": "Implement an in-memory key-value store with TTL expiry and LRU eviction, spread across several modules. The test suite `store.test.js` pins the exact behavior and must pass with `node --test`. You must implement: (1) `serialize.js` — `serializeEntries`/`deserializeEntries` (JSON round-trip of [key, {value, expiresAt}] pairs). (2) `store.js` — the `KVStore` class: `set(key, value, ttlMs?)`, `get(key)`, `has(key)`, `delete(key)`, `size`, `toJSON()`, and `static fromJSON(str, {clock})`, with lazy TTL expiry (using the injected clock) and LRU eviction when `maxSize` is exceeded (get and set both count as a use). (3) `index.js` — `createStore(options)` that wires a default real clock when none is provided. `clock.js` is already complete — use it as-is. Do NOT modify `store.test.js` or `clock.js`. Read the tests carefully for exact recency/expiry/eviction semantics.",
-  "timeoutMs": 600000,
-  "tags": ["long-horizon", "multi-file"],
-  "verifyCmd": "bash verify.sh"
-}

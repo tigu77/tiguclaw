@@ -1,0 +1,8 @@
+{
+  "id": "iterative-multi-bug",
+  "title": "Fix a multi-stage pipeline with sequential bugs (iterative)",
+  "prompt": "This project has a data-processing pipeline in `pipeline.js` (parse -> normalize -> aggregate) and a test suite `pipeline.test.js`. Several stages contain bugs. The end-to-end result is only correct once every stage is fixed, so you will likely need to fix a bug, re-run `node --test`, find the next failure, and repeat until the entire suite passes. Fix `pipeline.js` only. Do NOT modify the test file.",
+  "timeoutMs": 420000,
+  "tags": ["coding", "iterative"],
+  "verifyCmd": "bash verify.sh"
+}

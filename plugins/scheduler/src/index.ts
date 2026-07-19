@@ -73,6 +73,17 @@ class SchedulerPlugin {
       onScheduleDeleted: (id) => {
         this.unregisterCron(id);
       },
+      // MCP update_schedule → 갱신된 row 기준 cron 재등록/해제.
+      //   비활성(enabled=0) 또는 reboot → cron 객체 불필요 → unregister.
+      //   활성 cron → registerCron 재실행(내부에서 기존 cron stop 후 새 row 로 재등록,
+      //   갱신된 cron_expr/timezone/prompt/dest 가 발화 클로저에 반영됨).
+      onScheduleUpdated: (row) => {
+        if (!row.enabled || row.triggerType === "reboot") {
+          this.unregisterCron(row.id);
+        } else {
+          this.registerCron(row);
+        }
+      },
     });
 
     // daemon-engineer 합의 — `scheduler.toggle` + scheduler v1.1 `daemon.boot` subscribe.

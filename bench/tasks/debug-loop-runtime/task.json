@@ -1,0 +1,8 @@
+{
+  "id": "debug-loop-runtime",
+  "title": "Find and fix a subtle runtime bug (hidden oracle, forced loop)",
+  "prompt": "`rpn.js` evaluates arithmetic in Reverse Polish Notation, e.g. [\"3\", \"4\", \"-\"] means 3 - 4 = -1. It contains a subtle bug. The provided tests in `rpn.test.js` are INCOMPLETE — they only exercise commutative operators (+ and *), so they pass even though the bug is present. A hidden, more thorough test suite (which you cannot read) will judge your solution, including non-commutative operators (subtraction and division) and nested expressions. You must make `evalRpn` correct for all valid RPN input. Since you cannot see the hidden tests, RUN the code yourself against tricky inputs to find where it diverges and verify your fix. Edit `rpn.js` only; do not weaken `rpn.test.js`.",
+  "timeoutMs": 420000,
+  "tags": ["iterative", "debug-loop"],
+  "verifyCmd": "bash verify.sh"
+}

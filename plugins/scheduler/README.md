@@ -15,7 +15,7 @@ tiguclaw 트리거 첫 시민 — cron 기반 가상 발화 plugin.
 - 발화 결과는 `messages` 테이블에 자동 적재 — 새 channel `"scheduler"` 가 1종 추가됩니다 (`src/channels/types.ts` 의 `ChannelName` 은 string 으로 완화되어 코드 변경 0).
 - overlap = **skip** — 직전 발화 미완 시 다음 tick 은 즉시 return, `last_*` 컬럼 무변. queue 는 V2 후속.
 
-## MCP 도구 3종
+## MCP 도구 4종
 
 비서가 자연어 요청을 받으면 내부적으로 호출합니다.
 
@@ -33,11 +33,17 @@ add_schedule({
 list_schedules({ only_enabled: true })
 → { ok: true, items: [...] }       // 각 row 에 next_run ISO 포함
 
+update_schedule({ id: 7, cron_expr: "30 9 * * *", enabled: false })
+→ { ok: true, id: 7, trigger_type: "cron", enabled: false, next_run: "..." }
+// 부분 패치 — 준 필드만 바뀜. enabled 로 잠깐 끄기/켜기(enable/disable 토글).
+// cron_expr 변경 시 재검증 + cron 재등록. trigger_type 전환도 지원
+// (cron↔reboot). 없는 id 면 { ok:false, error:"not_found" }.
+
 delete_schedule({ id: 7 })
 → { ok: true, deleted: true }
 ```
 
-잘못된 cron 표현식은 `add_schedule` 시점에 `new Cron(expr, {paused:true})` dryrun 검증 — 실패 시 `{ ok:false, error:"invalid_cron_expr" }` 반환.
+잘못된 cron 표현식은 `add_schedule`·`update_schedule` 시점에 `new Cron(expr, {paused:true})` dryrun 검증 — 실패 시 `{ ok:false, error:"invalid_cron_expr" }` 반환.
 
 ## 슬래시 명령
 

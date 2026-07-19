@@ -19,3 +19,7 @@ Thumbs.db
 .vscode/
 *.tsbuildinfo
 tiguclaw-dev/
+
+# bench harness — results + throwaway homes are not tracked (tasks/ IS tracked = data/fixture)
+bench/results/
+bench/.home*

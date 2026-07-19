@@ -1,9 +1,10 @@
 /**
  * scheduler MCP — SDK in-process MCP server (memory.ts 동형).
  *
- * tools 3종 (contract §5):
+ * tools 4종 (contract §5):
  *  - add_schedule    — cron expression dry-parse + nextRun ISO 응답
  *  - list_schedules  — only_enabled 옵션 + 각 row 의 next_run ISO 계산
+ *  - update_schedule — 부분 패치 + cron 재검증 + enable/disable 토글 흡수
  *  - delete_schedule — 멱등
  *
  * SDK 외부 노출 이름: mcp__scheduler__{tool}.
@@ -24,6 +25,7 @@ import {
   deleteSchedule,
   getSchedule,
   listSchedules,
+  updateSchedule,
   type ScheduleRow,
 } from "../../../src/store/schedules.js";
 
@@ -37,6 +39,8 @@ const okJson = (
 type LifecycleHooks = {
   onScheduleAdded?: (row: ScheduleRow) => void;
   onScheduleDeleted?: (id: number) => void;
+  /** update_schedule 성공 시 갱신 row 전달 — cron 재등록/해제는 plugin index.ts 가 판단. */
+  onScheduleUpdated?: (row: ScheduleRow) => void;
 };
 
 let lifecycle: LifecycleHooks = {};
@@ -164,6 +168,93 @@ const listSchedulesTool = tool(
   },
 );
 
+const updateScheduleTool = tool(
+  "update_schedule",
+  "기존 schedule 수정 (부분 패치 — 준 필드만 바뀜). id 로 대상 지정. 바꿀 수 있는 것: label, trigger_type ('cron'|'reboot'), cron_expr, timezone, prompt, dest_channel, dest_target, enabled (true=활성/false=비활성 — enable/disable 토글을 이 도구로 한다. delete 대신 잠깐 끄고 싶을 때 enabled=false). cron_expr 이 바뀌거나 trigger_type 이 'cron' 인데 기존 cron_expr 이 비어있으면 유효성 검사 후 next_run 을 재계산해 응답. trigger_type='reboot' 로 전환하면 cron_expr 은 무시·초기화(다음 daemon.boot 발화). trigger_type='cron' 으로 전환하는데 저장된 cron_expr 이 없으면 cron_expr 을 반드시 함께 줘야 함. prompt 를 바꿀 때는 add_schedule 과 동일한 고정문구 규칙(`다음 문구로만 짧게 정확히 답하라: '<문구>'`)을 따른다. 존재하지 않는 id 면 ok:false, error:'not_found'.",
+  {
+    id: z.number().int().min(1),
+    label: z.string().min(1).max(120).optional(),
+    trigger_type: z.enum(["cron", "reboot"]).optional(),
+    cron_expr: z.string().max(120).optional(),
+    timezone: z.string().min(1).max(64).optional(),
+    prompt: z.string().min(1).max(4096).optional(),
+    dest_channel: z.string().min(1).max(64).optional(),
+    dest_target: z.string().max(256).optional(),
+    enabled: z.boolean().optional(),
+  },
+  async (args) => {
+    const existing = getSchedule(args.id);
+    if (existing === undefined) {
+      return okJson({
+        ok: false,
+        error: "not_found",
+        detail: `no schedule id=${args.id}`,
+      });
+    }
+
+    // 유효한 최종 상태 기준으로 cron 검증 — 패치 후 실제 저장될 값을 미리 합성.
+    const effectiveTrigger = args.trigger_type ?? existing.triggerType;
+    const effectiveTz = args.timezone ?? existing.timezone;
+
+    const patch: Parameters<typeof updateSchedule>[1] = {};
+    if (args.label !== undefined) patch.label = args.label;
+    if (args.timezone !== undefined) patch.timezone = args.timezone;
+    if (args.prompt !== undefined) patch.prompt = args.prompt;
+    if (args.dest_channel !== undefined) patch.destChannel = args.dest_channel;
+    if (args.dest_target !== undefined) patch.destTarget = args.dest_target;
+    if (args.enabled !== undefined) patch.enabled = args.enabled;
+    if (args.trigger_type !== undefined) patch.triggerType = args.trigger_type;
+
+    let nextRunIso: string | null;
+    if (effectiveTrigger === "reboot") {
+      // reboot 전환 시 cron_expr 은 의미 0 — 초기화 (add_schedule 와 동형).
+      // 사용자가 cron_expr 을 함께 줬더라도 무시.
+      if (args.trigger_type === "reboot") {
+        patch.cronExpr = "";
+      }
+      nextRunIso = null;
+    } else {
+      // 최종 cron 표현식 = 패치값 우선, 없으면 기존값.
+      const effectiveExpr = args.cron_expr ?? existing.cronExpr;
+      if (effectiveExpr.trim().length === 0) {
+        return okJson({
+          ok: false,
+          error: "invalid_cron_expr",
+          detail: "cron_expr is required when trigger_type='cron'",
+        });
+      }
+      const validation = validateCronExpr(effectiveExpr, effectiveTz);
+      if (!validation.ok) {
+        return okJson({
+          ok: false,
+          error: "invalid_cron_expr",
+          detail: validation.error,
+        });
+      }
+      if (args.cron_expr !== undefined) patch.cronExpr = args.cron_expr;
+      nextRunIso = validation.nextRun;
+    }
+
+    const updated = updateSchedule(args.id, patch);
+    if (updated === undefined) {
+      return okJson({ ok: false, error: "not_found" });
+    }
+    // plugin lifecycle 에 갱신 알림 — cron 재등록/해제는 index.ts 에서 판단.
+    try {
+      lifecycle.onScheduleUpdated?.(updated);
+    } catch (e) {
+      console.error("scheduler: onScheduleUpdated hook threw", e);
+    }
+    return okJson({
+      ok: true,
+      id: updated.id,
+      trigger_type: updated.triggerType,
+      enabled: updated.enabled,
+      next_run: nextRunIso,
+    });
+  },
+);
+
 const deleteScheduleTool = tool(
   "delete_schedule",
   "schedule 영구 삭제. 존재하지 않는 id 도 멱등 (deleted:false).",
@@ -187,5 +278,10 @@ export const schedulerMcpServer: McpSdkServerConfigWithInstance =
   createSdkMcpServer({
     name: "scheduler",
     version: "0.1.0",
-    tools: [addScheduleTool, listSchedulesTool, deleteScheduleTool],
+    tools: [
+      addScheduleTool,
+      listSchedulesTool,
+      updateScheduleTool,
+      deleteScheduleTool,
+    ],
   });

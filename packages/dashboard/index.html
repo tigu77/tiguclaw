@@ -13,6 +13,8 @@
   </head>
   <body data-tab="main" data-main="workbench" data-view="overview" data-chat-panel="chat">
     <header>
+      <!-- 모바일 전용 — 헤더 좌측 ☰ 드로어 버튼(얇은 헤더 바 안). 데스크탑 CSS 로 숨김. 뒤로가기는 뺌. -->
+      <button id="menu-toggle" class="hdr-btn" type="button" aria-label="메뉴 열기" title="메뉴">☰</button>
       <div class="brand"><span class="emoji">🐯</span>티구클로</div>
       <div class="sub" id="app-sub">대시보드</div>
       <div class="spacer"></div>
@@ -22,6 +24,8 @@
       </div>
       <div class="meter" id="ev-count">0개 이벤트</div>
     </header>
+    <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
+    <div id="menu-backdrop"></div>
     <nav id="tab-bar">
       <button class="tab" data-tab="menu" type="button"><span class="ic">☰</span><span>메뉴</span></button>
       <button class="tab active" data-tab="main" type="button"><span class="ic">🏠</span><span>화면</span></button>
@@ -99,16 +103,16 @@
               백그라운드 <span class="bg-badge" id="bg-badge">0</span>
             </button>
           </div>
-          <div id="session-tabs" class="session-tabs" role="tablist" aria-label="세션 탭"></div>
           <div class="log-tools">
             <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" />
           </div>
         </div>
+        <!-- 세션 탭 = #right 직접 자식(2026-07-19) — 모바일 페이지스크롤에서 상단 sticky 로 남기려면
+             부모가 대화 전체를 감싸야 한다(sticky 는 부모 박스 안에서만 붙음). 데스크탑은 위치 동일. -->
+        <div id="session-tabs" class="session-tabs" role="tablist" aria-label="세션 탭"></div>
         <div id="stream"><div class="chat-empty" id="chat-empty"><strong>아직 대화가 없습니다</strong>아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.</div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
         <div id="chat">
           <button id="chat-jump" class="chat-jump" type="button" hidden aria-label="맨 아래로" title="맨 아래로 (최신)">↓ 최신</button>
-          <!-- 모바일 전용 — 헤더(제목·세션탭)가 스크롤로 숨겨진 동안 맨 위로 되돌리는 어포던스(ADR 2026-07-19 모바일 채팅 헤더 자동숨김). 데스크탑은 CSS 로 항상 display:none. -->
-          <button id="chat-top-jump" class="chat-jump chat-top-jump" type="button" hidden aria-label="맨 위로" title="맨 위로 (헤더·세션탭)">↑ 위로</button>
           <div id="chat-slash" class="chat-slash" hidden></div>
           <div id="chat-context" class="chat-context"></div>
           <div id="chat-reply" class="chat-reply" hidden></div>
@@ -122,6 +126,8 @@
           <form id="chat-form" autocomplete="off">
             <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>
             <button id="chat-mic-btn" type="button" title="길게 눌러 음성 입력 (텔레그램식)" aria-label="음성 입력 (길게 누르기)">🎤<span id="chat-mic-timer" class="mic-timer" hidden></span></button>
+            <!-- 채널 fan-out 버튼 — 추가 발신 채널 있을 때만 노출(egress-selector.js). 누르면 위 팝오버 열림. -->
+            <button id="chat-egress-btn" type="button" title="추가 채널로 함께 보내기" aria-label="추가 발신 채널" hidden aria-haspopup="true" aria-expanded="false">📤<span id="egress-dot" class="egress-dot" hidden></span></button>
             <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea></div>
             <div id="chat-egress" class="chat-egress" title="이 답을 함께 보낼 추가 채널 (fan-out)" role="group" aria-label="추가 발신 채널" hidden></div>
             <button id="chat-send" type="submit">전송</button>
@@ -220,5 +226,6 @@
     <script src="/js/perf.js"></script>
     <script src="/js/chat-send.js"></script>
     <script src="/js/mic-input.js"></script>
+    <script src="/js/mobile-nav.js"></script>
   </body>
 </html>

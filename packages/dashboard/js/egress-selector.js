@@ -8,14 +8,22 @@
       // 공유 상태 egressChecked(체크된 채널명 Set) — 전송 시 배열로 읽힌다.
       // §0/채널레이어: 채널명→라벨은 대시보드 UI 컨벤션(generic 폴백, channel-hints 동형).
       const egressChecked = new Set(); // 체크된 추가 발신 채널명.
-      const egressBoxEl = document.getElementById("chat-egress");
+      const egressBoxEl = document.getElementById("chat-egress");        // 옵션 팝오버(체크박스 목록).
+      const egressBtnEl = document.getElementById("chat-egress-btn");    // 📤 도구 버튼(팝오버 토글).
+      const egressDotEl = document.getElementById("egress-dot");         // 체크됨 표시 점.
       const EGRESS_LABELS = { telegram: "텔레그램", cli: "CLI", slack: "슬랙", discord: "디스코드" };
       const egressLabel = (name) => EGRESS_LABELS[name] || name;
       // 전송 시 reply.js 가 호출 — 체크된 채널 배열(빈 배열 = fan-out 없음 = 현행).
       const getEgressChannels = () => [...egressChecked];
       const syncEgressStyle = () => {
-        if (!egressBoxEl) return;
-        egressBoxEl.classList.toggle("active", egressChecked.size > 0);
+        const on = egressChecked.size > 0;
+        if (egressBoxEl) egressBoxEl.classList.toggle("active", on);
+        if (egressBtnEl) egressBtnEl.classList.toggle("active", on); // 버튼 하이라이트(선택됨).
+        if (egressDotEl) egressDotEl.hidden = !on;                   // 선택 개수 점.
+      };
+      const closeEgressPopover = () => {
+        if (egressBoxEl) egressBoxEl.hidden = true;
+        if (egressBtnEl) egressBtnEl.setAttribute("aria-expanded", "false");
       };
       const populateEgressChannels = async () => {
         if (!egressBoxEl) return;
@@ -34,8 +42,10 @@
           egressBoxEl.hidden = true;
           egressBoxEl.innerHTML = "";
           egressChecked.clear();
+          if (egressBtnEl) egressBtnEl.hidden = true; // 후보 없으면 버튼도 숨김.
           return;
         }
+        if (egressBtnEl) egressBtnEl.hidden = false;   // 후보 있으면 도구 버튼 노출.
         // 사라진 후보의 체크 상태 정리(재채움 시 stale 제거).
         const names = new Set(candidates.map((c) => c.name));
         for (const n of [...egressChecked]) if (!names.has(n)) egressChecked.delete(n);
@@ -63,9 +73,23 @@
           lbl.appendChild(span);
           egressBoxEl.appendChild(lbl);
         }
-        egressBoxEl.hidden = false;
+        egressBoxEl.hidden = true; // 팝오버는 기본 닫힘 — 📤 버튼 클릭 시 열림.
         syncEgressStyle();
       };
+      // 📤 버튼 → 팝오버 토글. 바깥 클릭·Esc 로 닫힘.
+      if (egressBtnEl && egressBoxEl) {
+        egressBtnEl.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const willOpen = egressBoxEl.hidden;
+          egressBoxEl.hidden = !willOpen;
+          egressBtnEl.setAttribute("aria-expanded", String(willOpen));
+        });
+        document.addEventListener("click", (e) => {
+          if (egressBoxEl.hidden) return;
+          if (!egressBoxEl.contains(e.target) && e.target !== egressBtnEl) closeEgressPopover();
+        });
+        document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEgressPopover(); });
+      }
       // 초기 채움(비차단·best-effort). 채널 집합은 부팅 고정(런타임 추가 = 재시작 경로)이라
       // 1회 채움으로 충분. 실패 = 컨테이너 숨김(무회귀).
       void populateEgressChannels();

@@ -94,7 +94,7 @@
           btn.innerHTML = '<span class="' + iconCls + '">' + icon + '</span><span><strong>' + title + '</strong><span>' + desc + '</span></span>';
           btn.addEventListener("click", () => {
             if (view === "providers") showProviders();
-            else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
+            else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); if (!window.matchMedia("(max-width: 900px)").matches) document.getElementById("chat-input").focus(); } /* 모바일=포커스 안 함(가상키보드 팝업 방지) */
             else if (view === "inventory") showInventory();
             else if (view === "restart") { restartDaemon(); return; }
             if (window.matchMedia("(max-width: 900px)").matches && view !== "chat") setActiveTab("main");

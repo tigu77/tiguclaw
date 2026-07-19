@@ -28,5 +28,6 @@
   "slash.js",
   "perf.js",
   "chat-send.js",
-  "mic-input.js"
+  "mic-input.js",
+  "mobile-nav.js"
 ]

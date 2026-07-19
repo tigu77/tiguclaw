@@ -294,7 +294,7 @@
           else if (view === "projects") showProjects();
           else if (view === "endpoints") showEndpoints();
           else if (view === "activity") showActivityView();
-          else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); document.getElementById("chat-input").focus(); }
+          else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); if (!window.matchMedia("(max-width: 900px)").matches) document.getElementById("chat-input").focus(); } /* 모바일=포커스 안 함(가상키보드 팝업 방지) */
           else if (view === "settings") showSettings();
           // 채널·에이전트 top-nav 제거(ADR 2026-07-17 §5 오픈이슈#1, Phase 3b-1) — 채널은 모듈 뷰
           // (data-view="providers")에 흡수, 실행 중 에이전트는 백그라운드 드로어 잡카드 소관.

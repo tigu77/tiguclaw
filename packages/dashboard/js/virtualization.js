@@ -30,6 +30,20 @@
       let vtProgrammatic = false; // 프로그램적 scrollTop 조정 가드(scroll 리스너 무시).
       let lastScrollTop = 0;     // 직전 scrollTop — 사용자 스크롤 방향(위/아래) 판정용. 작은 위 스크롤도 stick 해제.
 
+      // ── 모바일 페이지 스크롤 모드 (2026-07-19) — 다른 메뉴 패널처럼 문서(window)가 스크롤 ──
+      // 데스크탑(>900px)은 기존 #stream 내부 스크롤·윈도잉 그대로(무접촉). 모바일 채팅에선 #right/
+      // #stream 이 페이지 흐름(CSS height:auto)이라 문서가 스크롤하고 헤더가 함께 흐른다(입력창은
+      // CSS sticky 하단 고정). 이 모드에선 (a) 렌더는 전량 마운트(윈도잉 오프셋 회피 — pageScroll()
+      // 분기), (b) 스크롤 읽기/쓰기는 scEl()(=문서 스크롤러)로 라우팅, (c) 스크롤 리스너는 window
+      // 에도 붙는다. vtCap 은 그대로 동작해 렌더 노드 수 상한 유지(폭주 방지).
+      const mqMobile = window.matchMedia("(max-width: 900px)");
+      const pageScroll = () =>
+        mqMobile.matches && document.body.getAttribute("data-tab") === "chat";
+      const scEl = () => (pageScroll() ? (document.scrollingElement || document.documentElement) : stream);
+      const getScrollTop = () => scEl().scrollTop;
+      const getClientH = () => scEl().clientHeight;
+      const getScrollH = () => scEl().scrollHeight;
+
       const slotH = (it) =>
         (it.measured ? it.h : (it.isDivider ? VT_DIVIDER_EST_H : VT_EST_H)) + VT_GAP;
 
@@ -64,18 +78,20 @@
       };
       const setScrollTop = (v) => {
         vtProgrammatic = true;
-        stream.scrollTop = v;
-        lastScrollTop = stream.scrollTop; // 프로그램적 이동 = 사용자 스크롤 방향 비교 기준을 즉시 동기(스냅 후 오판 방지).
+        const el = scEl();
+        el.scrollTop = v;
+        lastScrollTop = el.scrollTop; // 프로그램적 이동 = 사용자 스크롤 방향 비교 기준을 즉시 동기(스냅 후 오판 방지).
         requestAnimationFrame(() => { vtProgrammatic = false; });
       };
 
       const relayout = () => {
-        const clientH = stream.clientHeight;
+        const pS = pageScroll();       // 모바일 페이지 스크롤 모드?
+        const clientH = getClientH();  // 데스크탑=#stream, 모바일=뷰포트(윈도 스크롤러).
         // 앵커(프리펜드/측정 점프 방지) — top 재계산 *전* OLD top 으로 현재 뷰 상단 아이템의 화면
         // 오프셋을 기록해야 위쪽 높이 변화를 실제로 보정한다. (재계산 후 잡으면 off 가 상쇄돼 no-op.)
         let anchor = null;
         if (!stickBottom && !vtJumpTop && clientH > 0) {
-          const st = stream.scrollTop;
+          const st = getScrollTop();
           for (const it of vtItems) {
             if (it.top + slotH(it) > st) { anchor = { it: it, off: it.top - st }; break; }
           }
@@ -87,17 +103,22 @@
         vtSizer.style.height = total + "px";
         if (clientH === 0) return; // 숨김(다른 뷰) → 마운트 스킵.
 
-        // 가시 범위(±버퍼). 스틱이면 하단, Home 점프면 상단(0) 기준으로 범위를 잡는다.
-        const scrollTop = stickBottom ? Math.max(0, total - clientH) : (vtJumpTop ? 0 : stream.scrollTop);
-        const viewTop = scrollTop - VT_BUFFER;
-        const viewBot = scrollTop + clientH + VT_BUFFER;
+        // 마운트 범위 결정. 모바일 페이지 스크롤 = 전량 마운트(문서가 스크롤하므로 윈도잉 오프셋
+        // 회피 — vtCap 이 노드 상한 유지). 데스크탑 = ±버퍼 윈도잉(스틱이면 하단, Home 점프면 상단).
         let first = -1, last = -1;
-        for (let i = 0; i < vtItems.length; i++) {
-          const it = vtItems[i];
-          if (it.top + slotH(it) < viewTop) continue;
-          if (it.top > viewBot) break;
-          if (first === -1) first = i;
-          last = i;
+        if (pS) {
+          if (vtItems.length > 0) { first = 0; last = vtItems.length - 1; }
+        } else {
+          const scrollTop = stickBottom ? Math.max(0, total - clientH) : (vtJumpTop ? 0 : getScrollTop());
+          const viewTop = scrollTop - VT_BUFFER;
+          const viewBot = scrollTop + clientH + VT_BUFFER;
+          for (let i = 0; i < vtItems.length; i++) {
+            const it = vtItems[i];
+            if (it.top + slotH(it) < viewTop) continue;
+            if (it.top > viewBot) break;
+            if (first === -1) first = i;
+            last = i;
+          }
         }
 
         // 마운트 집합 교체 — 범위 밖 detach, 범위 안을 순서대로 mount(노드 참조·observer 유지).
@@ -120,20 +141,20 @@
         }
 
         // 스크롤 위치 확정 — 스틱이면 하단, 아니면 앵커 복원(둘 다 프로그램적 = 리스너 무시).
+        // 모바일 페이지 스크롤에선 하단 = 문서 전체 높이(헤더·입력 포함)라 getScrollH() 로 클램프.
         if (stickBottom) {
-          setScrollTop(total + 40); // 브라우저가 최대(하단)로 클램프.
+          setScrollTop(pS ? getScrollH() : total + 40); // 브라우저가 최대(하단)로 클램프.
         } else if (vtJumpTop) {
           setScrollTop(0); vtJumpTop = false; // 로드된 맨위 안착(프로그램적 = loadOlder 미발화).
-        } else if (anchor) {
+        } else if (anchor && !pS) {
+          // 앵커 복원은 데스크탑 윈도잉·측정 점프 방지용. 페이지스크롤(pS)에선 네이티브 스크롤 +
+          // vtPrependOlder 의 delta 보정이 이미 안정화하므로 setScrollTop 을 또 걸면 스크롤과 싸운다.
           setScrollTop(anchor.it.top - anchor.off);
         }
         // "↓ 최신" 점프버튼 갱신 — 프로그램적 스크롤(setScrollTop=vtProgrammatic)은 scroll
         // 리스너가 조기 return 해 updateChatJump 를 건너뛴다. relayout 끝에서 stickBottom 기준
         // 직접 갱신해야 전송 후 하단인데(stickBottom=true) 버튼이 남던 버그를 막는다.
         updateChatJump();
-        // 모바일 헤더 자동숨김/"↑ 위로" 도 동일 이유로 relayout 끝에서 직접 갱신 — 콘텐츠 높이
-        // 변화(scrollable 여부 전환)가 scroll 이벤트 없이 일어나도 상태를 맞춘다.
-        updateMobileChrome();
       };
 
       // 날짜 구분선 재계산 — 구조 변경(append/prependOlder/history batch/cap) 후 호출. 오래된→최신
@@ -218,7 +239,7 @@
         }
         if (!newItems.length) return;
         vtItems.unshift.apply(vtItems, newItems);
-        if (addedH) setScrollTop(stream.scrollTop + addedH);
+        if (addedH) setScrollTop(getScrollTop() + addedH);
         vtRecomputeDividers();
         scheduleRelayout();
       };
@@ -284,10 +305,12 @@
       };
 
       // 스크롤 리스너 — stick 추적 + 점프버튼 + 상단 근처면 older 로드(센티넬 IntersectionObserver 대체).
-      stream.addEventListener("scroll", () => {
-        if (vtProgrammatic) { lastScrollTop = stream.scrollTop; updateMobileChrome(); return; }
-        const st = stream.scrollTop;
-        const nearBottom = (stream.scrollHeight - st - stream.clientHeight) < 80;
+      // scEl() 로 라우팅 — 데스크탑=#stream 스크롤, 모바일=문서(window) 스크롤. 그래서 #stream 과
+      // window 둘 다에 붙이되(모드별로 한쪽만 발화), 핸들러는 활성 스크롤러를 읽는다.
+      const onScroll = () => {
+        if (vtProgrammatic) { lastScrollTop = getScrollTop(); return; }
+        const st = getScrollTop();
+        const nearBottom = (getScrollH() - st - getClientH()) < 80;
         // 사용자 스크롤 존중 — 위로 스크롤(작은 델타 포함) = 과거 열람 의도 → 즉시 stick 해제(재-스냅 금지).
         // 아래로 내려와 바닥 근처(threshold)일 때만 팔로우 재개. 위치 임계값만 보면 <80px 위 스크롤이
         // stick 을 유지해 relayout/ResizeObserver 가 바닥으로 튕겼다(원인 A).
@@ -295,10 +318,14 @@
         else if (nearBottom) stickBottom = true;
         lastScrollTop = st;
         updateChatJump();
-        updateMobileChrome();
-        scheduleRelayout();
+        // 모바일 페이지스크롤(전체 마운트)에선 스크롤마다 relayout 불필요 — 아이템 위치가 고정이라
+        // 재마운트/anchor-setScrollTop 이 네이티브 스크롤과 싸워 *끊김*을 만든다. 데스크탑(윈도잉)만
+        // 스크롤 중 relayout(가시범위 재계산). 콘텐츠 변화(append/prepend/measure)는 별도 경로.
+        if (!pageScroll()) scheduleRelayout();
         if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();
-      }, { passive: true });
+      };
+      stream.addEventListener("scroll", onScroll, { passive: true });
+      window.addEventListener("scroll", () => { if (pageScroll()) onScroll(); }, { passive: true });
 
       // 키보드 네비 — PageUp/Down·Home·End 로 채팅 리스트 스크롤. 가상화(absolute vt-window)라
       // 네이티브 키 스크롤이 안 먹어서 명시 처리한다. 채팅 뷰 활성 + 입력창에 실 초안이 없을 때만
@@ -311,9 +338,9 @@
         const tgt = e.target;
         if (tgt && tgt.id === "chat-input" && tgt.value && tgt.value.trim() !== "") return; // 작성 중 = 커서 이동 존중.
         e.preventDefault();
-        const page = Math.max(60, stream.clientHeight * 0.9);
-        if (e.key === "PageDown") { stickBottom = false; stream.scrollTop += page; }
-        else if (e.key === "PageUp") { stickBottom = false; stream.scrollTop -= page; }
+        const page = Math.max(60, getClientH() * 0.9);
+        if (e.key === "PageDown") { stickBottom = false; scEl().scrollTop += page; }
+        else if (e.key === "PageUp") { stickBottom = false; scEl().scrollTop -= page; }
         else if (e.key === "End") scrollChatToNewest();          // 맨아래(최신) 고정.
         else if (e.key === "Home") { stickBottom = false; vtJumpTop = true; scheduleRelayout(); } // 로드된 맨위 안착.
       });
@@ -326,32 +353,6 @@
           stickBottom = true;
           scrollChatToNewest();
           updateChatJump();
-        });
-      }
-
-      // ── 모바일 채팅 헤더 자동숨김 + "↑ 위로" 점프 (ADR 2026-07-19) ──
-      // 헤더(#stream-bar: 제목·세션탭)를 스크롤 흐름에 넣는 대신(가상화·내부스크롤 모델 유지 =
-      // 회귀 0), 스크롤 위치로 #right.hdr-hidden 을 토글한다: 맨 위 근처면 헤더 표시, 내려가면
-      // 숨겨 채팅 공간 확보(길게). CSS 가 모바일(max-width:900px)에서만 실제 접힘을 적용 →
-      // 데스크탑 무영향. 짧은(스크롤 불가) 대화는 항상 표시. "↑ 위로" 버튼은 헤더가 숨겨진
-      // 동안만 노출(헤더·세션탭 복귀 어포던스, 모바일 전용은 CSS).
-      const rightPanel = document.getElementById("right");
-      const chatTopJump = document.getElementById("chat-top-jump");
-      const HDR_REVEAL_PX = 8; // 이 이하 스크롤 = "맨 위" = 헤더 표시.
-      const updateMobileChrome = () => {
-        if (!rightPanel) return;
-        const scrollable = (stream.scrollHeight - stream.clientHeight) > 24;
-        const hideHeader = scrollable && stream.scrollTop > HDR_REVEAL_PX;
-        rightPanel.classList.toggle("hdr-hidden", hideHeader);
-        if (chatTopJump) chatTopJump.hidden = !hideHeader;
-      };
-      if (chatTopJump) {
-        chatTopJump.addEventListener("click", () => {
-          // Home 키와 동일 경로 — 로드된 맨 위 안착(가상화 정합). 헤더는 scrollTop→0 후 자동 표시.
-          stickBottom = false;
-          vtJumpTop = true;
-          scheduleRelayout();
-          requestAnimationFrame(() => updateMobileChrome());
         });
       }
 

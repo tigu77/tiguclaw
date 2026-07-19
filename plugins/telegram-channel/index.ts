@@ -676,10 +676,27 @@ export default class TelegramChannel implements Channel {
     // bot.start() 는 polling 동안 resolve 되지 않으므로 await 하지 않는다.
     // grammy 는 init 후 첫 getUpdates 가 시작되면 polling on. 안정 시점은
     // 별도 콜백 없이 init 완료로 본다.
-    await bot.init();
-
-    // 봇 명령 메뉴 — 빌트인 + 발견 커스텀 병합 후 setMyCommands. 추출된 refreshMenu 가 담당.
-    await this.refreshMenu();
+    // ★부팅 hang 수정(2026-07-19) — bot.init()(getMe)·refreshMenu()(setMyCommands)는 텔레그램 API
+    // 네트워크 호출이다. API 가 실패/지연하면 이 await 가 무한 대기해 *데몬 부팅 전체*(채널 presence
+    // 등록·recoverInterruptedJobs·"daemon: ready" 등 이후 코드)가 멈췄다(실측: 로그가 여기서 정지,
+    // /channels 빈 배열, ready 미도달). polling 루프(bot.start, 아래)만 가드돼 있고 init 은 무가드였다.
+    // → 타임아웃 가드 + 비치명으로 부팅을 막지 않는다. polling 이 네트워크 회복 시 재시도하고, 채널은
+    // 로드 상태(presence 균일)를 유지한다.
+    const initTimeout = (p: Promise<unknown>, ms: number, label: string): Promise<unknown> =>
+      Promise.race([
+        p,
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} ${ms}ms 타임아웃`)), ms)),
+      ]);
+    try {
+      await initTimeout(bot.init(), 8000, "telegram bot.init");
+    } catch (e) {
+      console.error(
+        "telegram: bot.init 실패/타임아웃 — 부팅 계속(polling 이 회복 시 재시도)",
+        e instanceof Error ? e.message : e,
+      );
+    }
+    // 봇 명령 메뉴(setMyCommands) — 부수 UX. 부팅 블로킹 금지 → fire-and-forget(실패 무해).
+    void this.refreshMenu().catch(() => {});
 
     // 런타임 명령 변경 즉시 반영 — region 도구(register_command/delete_command)가 성공 시
     // EventBus 에 commands.changed 를 publish. telegram 채널은 이를 구독해 setMyCommands 재설정

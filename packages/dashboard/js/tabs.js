@@ -209,7 +209,8 @@
         persistTabs();
         void loadThreadHistory(tk);
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
-        try { document.getElementById("chat-input").focus(); } catch {}
+        // 세션탭 *이동* 시엔 입력 포커스 안 줌 — 모바일에서 전환 때마다 가상키보드가 올라오는 문제.
+        // (새 탭 생성 newTab 은 타이핑 의도라 포커스 유지.)
       };
 
       const newTab = () => {

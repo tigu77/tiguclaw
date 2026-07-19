@@ -526,6 +526,12 @@
       .act-diff-stat .ddel { color:#f85149; font-weight:700; }
       .act-diff-body { display:none; }
       .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body, .hist-step.expanded .act-diff-body, .bg-step.expanded .act-diff-body { display:block; }
+      /* ExitPlanMode 계획 카드 — 항상 표시(.expanded 무관). 계획(마크다운)을 사용자가 바로 보게. */
+      .act-plan { flex-basis:100%; width:100%; margin:5px 0 3px; border:1px solid rgba(125,211,252,.38); border-radius:10px; background:rgba(125,211,252,.06); overflow:hidden; }
+      .act-plan-head { font-size:11px; font-weight:800; color:var(--accent); padding:6px 10px; border-bottom:1px solid rgba(125,211,252,.22); background:rgba(125,211,252,.08); }
+      .act-plan-body { padding:8px 12px; font-size:12.5px; line-height:1.5; color:var(--text); max-height:440px; overflow-y:auto; }
+      .act-plan-body > :first-child { margin-top:0; }
+      .act-plan-body > :last-child { margin-bottom:0; }
       /* 이력 turn-card 묶음(새로고침 후 라이브처럼 그룹핑) — 접이식 "N단계" 카드. */
       .hist-turn { padding:0; }
       .hist-turn-head { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; padding:8px 10px; font-size:11px; }
@@ -911,6 +917,9 @@
         box-shadow:var(--shadow); cursor:pointer; }
       .chat-jump:hover { border-color:rgba(125,211,252,.55); color:var(--accent); }
       .chat-jump[hidden] { display:none; }
+      /* "↑ 위로" — 모바일 전용(헤더 자동숨김 복귀 어포던스). 데스크탑은 항상 숨김. chat-jump(우측)와
+         안 겹치게 좌측 앵커. 실제 표시는 모바일 미디어쿼리에서 :not([hidden]) 로. */
+      .chat-top-jump { display:none; left:14px; right:auto; }
       /* 드로어 "↑ 최신" 점프 — 채팅 chat-jump 의 상단판. 아래로 내려 과거 잡을 보는 중(스크롤>임계)
          일 때만 노출, 클릭하면 맨 위(최신=insertBefore 로 top)로. bottom 앵커라 헤더/필터 높이 무관. */
       .bg-jump { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); z-index:20;
@@ -1175,5 +1184,22 @@
         #chat-status { order:1; min-height:0; margin:0; }
         #chat-form { order:2; }
         #chat-status.working { margin:0 0 6px; }
+        /* ── 모바일 채팅 헤더 자동숨김 (ADR 2026-07-19) — 스크롤 내리면 #stream-bar(제목·세션탭)를
+           접어 채팅 공간 확보. #right.hdr-hidden 은 virtualization.js 가 스크롤 위치로 토글. 데스크탑
+           무영향(이 규칙 모바일 전용). max-height 접힘 = 접힌 만큼 #stream(flex:1)이 늘고 ResizeObserver
+           가 가상화 relayout. */
+        body[data-tab="chat"] #right #stream-bar {
+          overflow:hidden; transition:max-height .24s ease, opacity .18s ease, padding .24s ease, border-color .24s ease;
+        }
+        body[data-tab="chat"] #right.hdr-hidden #stream-bar {
+          max-height:0; opacity:0; padding-top:0; padding-bottom:0; border-bottom-color:transparent;
+        }
+        /* "↑ 위로" 버튼 — 헤더 숨겨진 동안만(JS 가 [hidden] 토글) 표시. */
+        .chat-top-jump:not([hidden]) { display:inline-flex; }
+        /* ── 채팅 입력필드를 도구 버튼들 위 전용 행으로 (요청 3) — textarea 가 첫 행 전폭,
+           📎·🎤·(egress)·전송 은 아래 행. 전송은 우측 정렬. ── */
+        #chat-form { flex-wrap:wrap; }
+        #chat-form .grow-wrap { order:-1; flex-basis:100%; width:100%; }
+        #chat-form #chat-send { margin-left:auto; }
       }
       @media (max-width: 430px) { .summary-grid { grid-template-columns:1fr; } header .brand { font-size:15px; } }

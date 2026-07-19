@@ -131,6 +131,9 @@
         // 리스너가 조기 return 해 updateChatJump 를 건너뛴다. relayout 끝에서 stickBottom 기준
         // 직접 갱신해야 전송 후 하단인데(stickBottom=true) 버튼이 남던 버그를 막는다.
         updateChatJump();
+        // 모바일 헤더 자동숨김/"↑ 위로" 도 동일 이유로 relayout 끝에서 직접 갱신 — 콘텐츠 높이
+        // 변화(scrollable 여부 전환)가 scroll 이벤트 없이 일어나도 상태를 맞춘다.
+        updateMobileChrome();
       };
 
       // 날짜 구분선 재계산 — 구조 변경(append/prependOlder/history batch/cap) 후 호출. 오래된→최신
@@ -282,7 +285,7 @@
 
       // 스크롤 리스너 — stick 추적 + 점프버튼 + 상단 근처면 older 로드(센티넬 IntersectionObserver 대체).
       stream.addEventListener("scroll", () => {
-        if (vtProgrammatic) { lastScrollTop = stream.scrollTop; return; }
+        if (vtProgrammatic) { lastScrollTop = stream.scrollTop; updateMobileChrome(); return; }
         const st = stream.scrollTop;
         const nearBottom = (stream.scrollHeight - st - stream.clientHeight) < 80;
         // 사용자 스크롤 존중 — 위로 스크롤(작은 델타 포함) = 과거 열람 의도 → 즉시 stick 해제(재-스냅 금지).
@@ -292,6 +295,7 @@
         else if (nearBottom) stickBottom = true;
         lastScrollTop = st;
         updateChatJump();
+        updateMobileChrome();
         scheduleRelayout();
         if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();
       }, { passive: true });
@@ -322,6 +326,32 @@
           stickBottom = true;
           scrollChatToNewest();
           updateChatJump();
+        });
+      }
+
+      // ── 모바일 채팅 헤더 자동숨김 + "↑ 위로" 점프 (ADR 2026-07-19) ──
+      // 헤더(#stream-bar: 제목·세션탭)를 스크롤 흐름에 넣는 대신(가상화·내부스크롤 모델 유지 =
+      // 회귀 0), 스크롤 위치로 #right.hdr-hidden 을 토글한다: 맨 위 근처면 헤더 표시, 내려가면
+      // 숨겨 채팅 공간 확보(길게). CSS 가 모바일(max-width:900px)에서만 실제 접힘을 적용 →
+      // 데스크탑 무영향. 짧은(스크롤 불가) 대화는 항상 표시. "↑ 위로" 버튼은 헤더가 숨겨진
+      // 동안만 노출(헤더·세션탭 복귀 어포던스, 모바일 전용은 CSS).
+      const rightPanel = document.getElementById("right");
+      const chatTopJump = document.getElementById("chat-top-jump");
+      const HDR_REVEAL_PX = 8; // 이 이하 스크롤 = "맨 위" = 헤더 표시.
+      const updateMobileChrome = () => {
+        if (!rightPanel) return;
+        const scrollable = (stream.scrollHeight - stream.clientHeight) > 24;
+        const hideHeader = scrollable && stream.scrollTop > HDR_REVEAL_PX;
+        rightPanel.classList.toggle("hdr-hidden", hideHeader);
+        if (chatTopJump) chatTopJump.hidden = !hideHeader;
+      };
+      if (chatTopJump) {
+        chatTopJump.addEventListener("click", () => {
+          // Home 키와 동일 경로 — 로드된 맨 위 안착(가상화 정합). 헤더는 scrollTop→0 후 자동 표시.
+          stickBottom = false;
+          vtJumpTop = true;
+          scheduleRelayout();
+          requestAnimationFrame(() => updateMobileChrome());
         });
       }
 
@@ -408,6 +438,27 @@
         pre.textContent = (output.text != null ? output.text : "") + (output.truncated ? "\n… (이하 생략 — 크기 제한)" : "");
         body.appendChild(pre);
         // 토글은 스텝(부모) 단위 — 헤더는 접힘 시 요약("출력")만. (클릭 핸들러 없음.)
+        wrap.appendChild(head); wrap.appendChild(body);
+        return wrap;
+      };
+
+      // ExitPlanMode 계획 카드 — 계획(마크다운)을 *항상 보이게* 렌더(펼침 뒤 숨김 아님, 사용자가
+      // 계획을 봐야 하므로). detail 1줄로 잘려 안 보이던 갭 수정(A안). renderMarkdown 은 봇출력용
+      // sanitize 렌더(markdown.js) 재사용. plan 없으면 호출 안 함.
+      const buildPlanBlock = (plan) => {
+        const wrap = document.createElement("div");
+        wrap.className = "act-plan";
+        const head = document.createElement("div");
+        head.className = "act-plan-head";
+        head.textContent = "📋 계획 (승인 대기)";
+        const body = document.createElement("div");
+        body.className = "act-plan-body md";
+        try {
+          body.innerHTML = (typeof renderMarkdown === "function")
+            ? renderMarkdown(String(plan))
+            : "";
+          if (!body.innerHTML) body.textContent = String(plan); // 폴백(마크다운 실패=평문).
+        } catch { body.textContent = String(plan); }
         wrap.appendChild(head); wrap.appendChild(body);
         return wrap;
       };
@@ -572,11 +623,13 @@
         }
         // 리치 diff(Edit/Write) — 있으면 스텝 줄 아래 접이식 블록(flex-wrap 로 다음 줄).
         if (hasDiff) line.appendChild(buildDiffBlock(p.diff));
+        // ExitPlanMode 계획 — 항상 보이는 계획 카드(즉시 append).
+        if (p.plan) line.appendChild(buildPlanBlock(p.plan));
         // 클릭 = 도구 스텝 펼침/접힘(항상 인라인, sticky·hover 무관). 리치 diff·출력이 있으면
         // 그 블록을, 없으면 인라인 상세 블록(buildDetailBlock)을 lazy 생성해 그 자리에서 펼친다.
         // (2026-07-15 — 옛 사이드바 상세 분기 제거, 모든 도구 클릭을 인라인 펼침으로 통일.)
         line.addEventListener("click", () => {
-          let block = line.querySelector(":scope > .act-diff, :scope > .act-output");
+          let block = line.querySelector(":scope > .act-diff, :scope > .act-output, :scope > .act-plan");
           if (!block) {
             const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq)) || p;
             block = buildDetailBlock(stored);

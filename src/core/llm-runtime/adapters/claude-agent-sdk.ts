@@ -115,6 +115,9 @@ import type {
 // payload 사이즈 가드 — tool_use input · result text 등이 큰 경우 truncate.
 // in-memory ring buffer 라 토큰/비용 영향 0 이지만 buffer 점유 보호.
 const PAYLOAD_FIELD_CAP = 2048;
+// ExitPlanMode 계획 전용 캡 — 계획은 detail(1줄) 대신 전체를 보여줘야 하므로 넉넉히(16KB).
+// 현실적 계획은 대개 몇 KB. 과대 payload(bus/DB) 방지를 위한 상한.
+const PLAN_FIELD_CAP = 16384;
 const truncateForBus = (v: unknown): unknown => {
   if (v === null || v === undefined) return v;
   let s: string;
@@ -1134,6 +1137,14 @@ export const runClaude = async (
                 : undefined;
             const detail = buildActivityDetail(normInput);
             const diff = buildActivityDiff(toolName, normInput);
+            // ExitPlanMode(plan 모드 계획 승인) — 전체 계획을 잘리지 않게 실어 대시보드가
+            // 전체 렌더(detail 1줄로는 계획이 잘려 안 보이던 갭, A안). 과대 payload 방지 캡.
+            const plan =
+              toolName === "ExitPlanMode" &&
+              normInput &&
+              typeof normInput.plan === "string"
+                ? normInput.plan.slice(0, PLAN_FIELD_CAP)
+                : undefined;
             if (nestedEntry !== undefined) {
               // 서브 내부 도구 — agent:<jobId> 좌표 activity(codex 서브 per-step 동형).
               publishAgentToolActivity(nestedEntry, toolName, detail, diff);
@@ -1206,6 +1217,7 @@ export const runClaude = async (
                   label: toolName,
                   detail,
                   ...(diff !== undefined ? { diff } : {}),
+                  ...(plan !== undefined ? { plan } : {}),
                   ...(spawnJobId ? { jobId: spawnJobId } : {}),
                 } satisfies RegionAActivityPayload,
               });

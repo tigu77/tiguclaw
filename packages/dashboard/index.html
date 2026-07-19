@@ -107,6 +107,8 @@
         <div id="stream"><div class="chat-empty" id="chat-empty"><strong>아직 대화가 없습니다</strong>아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.</div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
         <div id="chat">
           <button id="chat-jump" class="chat-jump" type="button" hidden aria-label="맨 아래로" title="맨 아래로 (최신)">↓ 최신</button>
+          <!-- 모바일 전용 — 헤더(제목·세션탭)가 스크롤로 숨겨진 동안 맨 위로 되돌리는 어포던스(ADR 2026-07-19 모바일 채팅 헤더 자동숨김). 데스크탑은 CSS 로 항상 display:none. -->
+          <button id="chat-top-jump" class="chat-jump chat-top-jump" type="button" hidden aria-label="맨 위로" title="맨 위로 (헤더·세션탭)">↑ 위로</button>
           <div id="chat-slash" class="chat-slash" hidden></div>
           <div id="chat-context" class="chat-context"></div>
           <div id="chat-reply" class="chat-reply" hidden></div>

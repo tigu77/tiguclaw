@@ -144,8 +144,9 @@
         }
         if (hasDiff) line.appendChild(buildDiffBlock(a.diff));
         if (a.output && typeof a.output.text === "string") line.appendChild(buildOutputBlock(a.output));
+        if (a.plan) line.appendChild(buildPlanBlock(a.plan)); // ExitPlanMode 계획 — 항상 보이게.
         // 클릭 = 스텝 펼침/접힘(리치 블록 있으면). 부모 turn 접힘으로 전파 방지(stopPropagation).
-        if (line.querySelector(":scope > .act-diff, :scope > .act-output")) {
+        if (line.querySelector(":scope > .act-diff, :scope > .act-output, :scope > .act-plan")) {
           line.style.cursor = "pointer";
           line.addEventListener("click", (e) => { e.stopPropagation(); line.classList.toggle("expanded"); });
         }

@@ -365,6 +365,18 @@ export interface RegionAActivityPayload {
    * 드로어 열기만(graceful). 세그먼트/도구 외 필드라 항상 optional.
    */
   jobId?: string;
+  /**
+   * 계획 승인(ExitPlanMode) 전체 계획 본문 (2026-07-19, additive·optional).
+   * claude 가 plan 모드에서 `ExitPlanMode({plan})` 를 호출할 때 그 계획(마크다운)을 *잘리지
+   * 않게* 실어 대시보드가 전체 렌더한다. `detail`(1줄 요약, ~160자)로는 계획이 잘려 사용자가
+   * 계획을 못 보던 갭 수정(A안 — 계획 표시). `kind==="tool" & label==="ExitPlanMode"` 일 때만
+   * 채운다(그 외 미설정). 크기 캡은 어댑터(과대 payload 방지).
+   *
+   * ★#2 노트: ExitPlanMode 는 Claude Code SDK 네이티브 도구(plan 모드) — codex/openai 모델은
+   * 이 도구를 호출하지 않으므로 현재 claude 전용 필드다(존재하지 않는 도구의 parity 대상 아님).
+   * 추상 "계획 승인" 능력의 3어댑터 parity 는 별건(인터랙티브 승인 UI = B안, 후속).
+   */
+  plan?: string;
 }
 
 /** 리치 도구 출력 프리뷰 (ADR 2026-07-09 슬라이스 2/3). */

@@ -346,6 +346,7 @@ interface HistoryActivity {
   detail: string;
   diff?: unknown; // 리치 diff(ActivityDiff) — 있으면 그대로 통과(대시보드가 렌더). 2026-07-09.
   output?: unknown; // 리치 출력(ActivityOutput) — phase:"end" 에서 시작 스텝으로 병합. 2026-07-09.
+  plan?: string; // ExitPlanMode 전체 계획(마크다운) — 있으면 통과(대시보드 전체 렌더). 2026-07-19.
   /**
    * "tool" | "text" (2026-07-13, additive). 미지정 시 프런트 기본 해석 = "tool"
    * (하위호환 — 옛 이력에 kind 필드가 아예 없던 시절과 동형 형상). "text" 면 `text`
@@ -383,6 +384,7 @@ const historyActivities = (
         diff?: unknown;
         output?: unknown;
         text?: unknown;
+        plan?: unknown;
       };
       try {
         p = JSON.parse(e.payload);
@@ -429,6 +431,7 @@ const historyActivities = (
         detail: typeof p.detail === "string" ? p.detail : "",
         kind: "tool",
         ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
+        ...(typeof p.plan === "string" ? { plan: p.plan } : {}),
       });
     }
     // 2차 — end output 을 대응 시작 스텝에 병합.

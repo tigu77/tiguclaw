@@ -87,6 +87,7 @@ import {
   registerWorkerHandler,
   recoverInterruptedJobs,
   listJobs,
+  STEERED_TURN_RESULT,
 } from "./core/worker-jobs.js";
 import {
   runSelfUpdate,
@@ -477,11 +478,11 @@ const inflightTurns = new Map<string, AbortController>();
 // (inflightTurns 자매 — threadKey → SteeringChannel, thread 당 최대 1개). 핸들러가 turn 시작 시
 // 생성·등록, finally 에서 close+삭제. 개입점(serializedHandler)이 진행 턴 있으면 여기로 push.
 const steeringChannels = new Map<string, SteeringChannel>();
-// ★feature flag(ADR §안전 "STEERING_ENABLED 기본 off") — 라이브 메인 비서 대공사 + 3어댑터
-// 라이브 처리라 견고성>단순성 trade-off(검증 후 제거·영구 플래그 금지). off(기본)이면 개입점
-// no-op·steeringCh 미생성·route input 미주입 = **현행 큐 바이트 동일**(P0 회귀 0 하드게이트).
-// P0 = 계약·프리미티브·개입점만; 어댑터 소비(drain/stream)는 P1(codex→openai→claude) 범위.
-const STEERING_ENABLED = process.env.STEERING_ENABLED === "1";
+// ★feature flag — mid-turn steering. ADR §안전은 처음에 "기본 off"(라이브 대공사 안전)였으나,
+// 3어댑터 구현(P1a codex/P1b openai/P1c claude) + 작업중 조기-OFF 버그픽스(2026-07-20)까지
+// 검증돼 **기본 on 으로 승격**(2026-07-20). opt-out = `STEERING_ENABLED=0`(그때만 개입점 no-op·
+// steeringCh 미생성·route input 미주입 = **현행 큐 바이트 동일**, 회귀 0 하드게이트 유지).
+const STEERING_ENABLED = process.env.STEERING_ENABLED !== "0";
 
 // 인바운드 첨부 → 영속용 참조 메타(base64 아님). 실제 바이트는 이미 <attachmentsDir>/<rel> 파일로
 // 저장돼 있어, 대시보드가 rel 로 서빙 엔드포인트를 통해 렌더(새로고침·과거 이력 보존). rel 은
@@ -1449,7 +1450,13 @@ const serializedHandler: MessageHandler = (msg) => {
       steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg)) === true;
     if (accepted) {
       publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
-      return Promise.resolve(); // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비.
+      // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비. ★단, 이 핸들러는 *즉시* resolve
+      // 하므로 이를 await 하는 POST /messages 가 **원래 턴 종료 전에** 반환한다 → 대시보드 클라가
+      // "턴 완료"로 오인해 작업중을 조기에 끄던 버그(2026-07-20). STEERED_TURN_RESULT sentinel 로
+      // resolve 해 http-bridge 가 `{steered:true}` 로 응답 → 클라가 작업중 유지(실제 종료 = 원래
+      // 턴의 SSE out/turn_done). CANCELLED_TURN_RESULT 와 동형. 비-대시보드 채널(telegram/cli)은
+      // 반환값을 작업표시에 안 쓰므로 무영향(#2 채널무관). flag off 면 이 분기 미도달 = 회귀 0.
+      return Promise.resolve(STEERED_TURN_RESULT as unknown as void);
     }
     // 미적재(채널 없음=진행 턴 없음 / 닫힘=result 후 꼬리창) → 아래로 fall-through, 새 턴.
   }

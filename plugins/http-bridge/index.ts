@@ -87,6 +87,7 @@ import {
   cancelQueuedTurn,
   cancelJob,
   isCancelledTurnResult,
+  isSteeredTurnResult,
 } from "../../src/core/worker-jobs.js";
 import {
   listShells,
@@ -1868,6 +1869,12 @@ class HttpBridge implements Channel, Observer {
         // 이미 취소 UI 를 로컬 처리했으므로 무시 가능. isCancelledTurnResult 가 sentinel 판정.
         if (isCancelledTurnResult(outcome)) {
           writeJson(res, 200, { replyText: "", cancelled: true });
+        } else if (isSteeredTurnResult(outcome)) {
+          // mid-turn steering 주입(ADR 2026-07-16) — 이 메시지는 새 턴이 아니라 진행 턴에
+          // append 됐고 핸들러가 즉시 resolve 한다(원래 턴은 아직 진행). 클라가 이 200-반환을
+          // "턴 완료"로 오인해 작업중을 조기에 끄지 않도록 steered 플래그를 실어 응답한다.
+          // 실제 종료는 원래 턴의 SSE channel.message.out/turn_done 이 담당(steering 조기-off 픽스).
+          writeJson(res, 200, { replyText: "", steered: true });
         } else {
           writeJson(res, 200, { replyText });
         }

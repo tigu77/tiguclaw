@@ -111,6 +111,12 @@
               renderLocalChat("error", data.error || ("HTTP " + r.status));
             }
             // 오래 기다린 뒤 끊김 = 긴 턴 → 작업 중 유지(답은 SSE 로). 아무것도 안 함.
+          } else if (data && data.steered) {
+            // mid-turn steering 주입(ADR 2026-07-16) — 이 POST 는 진행 턴을 *이어가게* 메시지를
+            // 끼워넣고 즉시 반환한다(턴 완료 아님). 여기서 setChatWorking(false) 하면 긴 codex
+            // 턴이 계속 도는데도 작업중이 조기에 꺼진다(steering 조기-off 버그). 스킵 — 작업중은
+            // 원래 턴의 실제 종료(SSE channel.message.out/turn_done)까지 유지. 사용자 버블은
+            // channel.message.in echo 가 낙관적 '대기 중' 버블을 정상 버블로 승격한다.
           } else {
             setChatWorking(false); // 동기 POST 반환 = 턴 완료(답은 SSE 로 이미/곧 렌더).
           }

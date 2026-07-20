@@ -529,6 +529,24 @@ export const isCancelledTurnResult = (v: unknown): boolean =>
   v === CANCELLED_TURN_RESULT;
 
 /**
+ * mid-turn steering 이 진행 턴에 append 됐음을 알리는 sentinel — CANCELLED_TURN_RESULT 의
+ * 자매(둘 다 "POST /messages 핸들러 응답 마커"). steering 개입점(src/index.ts serializedHandler)
+ * 은 새 턴을 만들지 않고 진행 턴에 메시지를 끼워넣은 뒤 *즉시* 이 값으로 resolve 한다 —
+ * `channelHandler(msg)` 를 await 하는 POST /messages 가 **원래 턴 종료 전에** 반환하기 때문에,
+ * 이 마커가 없으면 대시보드 클라가 그 200-반환을 "턴 완료"로 오인해 `setChatWorking(false)` →
+ * 긴 codex 턴이 계속 도는데도 '작업 중'이 조기에 꺼진다(steering 조기-off 버그, 2026-07-20).
+ * 마커를 받은 POST 핸들러는 `{replyText:"", steered:true}` 로 응답하고, 클라는 작업중을 유지한다
+ * (실제 종료 = 원래 턴의 SSE channel.message.out/turn_done). 어댑터는 이 값을 읽지 않는다(#2).
+ */
+export const STEERED_TURN_RESULT: unique symbol = Symbol(
+  "tiguclaw.steeredIntoActiveTurn",
+);
+
+/** serializedHandler 결과가 steering-append no-op 인지 판정 — http-bridge POST 응답 분기용. */
+export const isSteeredTurnResult = (v: unknown): boolean =>
+  v === STEERED_TURN_RESULT;
+
+/**
  * 같은 threadKey 작업을 직렬화 — 앞 작업 settle(성공/실패 무관) 후 다음 시작.
  * 다른 threadKey 는 병렬. 작업 throw 가 체인을 끊지 않게 tail 은 항상 settle 로 잇는다.
  *

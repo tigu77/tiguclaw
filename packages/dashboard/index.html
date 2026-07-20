@@ -26,6 +26,8 @@
     </header>
     <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
     <div id="menu-backdrop"></div>
+    <!-- 모바일 마스터-디테일 뒤로 버튼 — 상세(#detail-panel) 볼 때만 노출, 누르면 리스트로. 데스크탑 미표시. -->
+    <button id="wb-detail-back" type="button" hidden>‹ 목록</button>
     <nav id="tab-bar">
       <button class="tab" data-tab="menu" type="button"><span class="ic">☰</span><span>메뉴</span></button>
       <button class="tab active" data-tab="main" type="button"><span class="ic">🏠</span><span>화면</span></button>
@@ -130,6 +132,9 @@
             <button id="chat-egress-btn" type="button" title="추가 채널로 함께 보내기" aria-label="추가 발신 채널" hidden aria-haspopup="true" aria-expanded="false">📤<span id="egress-dot" class="egress-dot" hidden></span></button>
             <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea></div>
             <div id="chat-egress" class="chat-egress" title="이 답을 함께 보낼 추가 채널 (fan-out)" role="group" aria-label="추가 발신 채널" hidden></div>
+            <!-- 모델 프로파일 빠른선택 (탭별 sticky, ADR model-dropdown §3). 이름만 표시(제약3),
+                 model-select.js 가 GET /api/model-profiles 로 채우고 선택 시 POST /api/set-session-profile. -->
+            <select id="chat-model-select" class="chat-model-select" title="이 세션에 쓸 모델 프로파일 (이 탭만)" aria-label="모델 프로파일"></select>
             <button id="chat-send" type="submit">전송</button>
             <input type="file" id="chat-file" multiple hidden />
           </form>
@@ -222,6 +227,7 @@
     <script src="/js/sse.js"></script>
     <script src="/js/activity.js"></script>
     <script src="/js/tabs.js"></script>
+    <script src="/js/model-select.js"></script>
     <script src="/js/slash.js"></script>
     <script src="/js/perf.js"></script>
     <script src="/js/chat-send.js"></script>

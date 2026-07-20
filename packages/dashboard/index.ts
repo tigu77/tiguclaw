@@ -10,11 +10,13 @@
  *  - GET  /app.css       → 정적 파일 (index.html 과 동일 no-store, 코드는 캐시 안 함)
  *  - GET  /js/<name>.js  → 정적 파일 (dashboard-split Phase2a, js/_manifest.json 화이트리스트)
  *  - GET  /api/inventory → bridge GET  /inventory       (JSON pass)
+ *  - GET  /api/inventory-item → bridge GET /inventory-item?source= (JSON pass, 능력 항목 정의 본문·allowlist)
  *  - GET  /api/channels  → bridge GET  /channels        (JSON pass, 라이브 채널 presence 읽기전용)
  *  - GET  /api/context-menu-items → bridge GET /context-menu-items (JSON pass, 컨텍스트메뉴 외부 기여)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
+ *  - POST /api/set-session-profile → bridge POST /set-session-profile (write, 이 세션(탭)만 sticky 프로파일)
  *  - POST /api/set-module-enabled → bridge POST /set-module-enabled (write, 모듈 활성/비활성 — P4a-2)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원; threadKey qs 통과)
@@ -306,6 +308,13 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/inventory");
       return;
     }
+    // 인벤토리 항목 정의 본문 — bridge GET /inventory-item?source= (read). source 쿼리 그대로
+    // 전달(bridge 가 allowlist 검사 후 파일 재-Read). 능력 상세뷰 본문 섹션이 소비.
+    if (pathname === "/api/inventory-item" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/inventory-item" + qs);
+      return;
+    }
     // 라이브 채널 presence — bridge GET /channels (read 토큰 server-side 주입). 채널 1급
     // 읽기전용 뷰(ADR 2026-07-16 §D4 Phase A). /api/inventory 와 동형 패턴.
     if (pathname === "/api/channels" && method === "GET") {
@@ -342,6 +351,18 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/set-default-profile" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-default-profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 세션(탭) 모델 프로파일 설정 — bridge POST /set-session-profile (write 토큰 server-side
+    // 주입, browser 미노출). body{threadKey,profile} 그대로 전달 — /set-default-profile 과 동형.
+    // 전역 default 는 안 건드림(세션 스코프). ADR model-dropdown §3-b.
+    if (pathname === "/api/set-session-profile" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-session-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

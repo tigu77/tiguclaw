@@ -1,4 +1,4 @@
-import { Bot, InputFile, type Context } from "grammy";
+import { Bot, HttpError, InputFile, type Context } from "grammy";
 import { telegramFormat, splitHtmlForTelegram } from "telegram-markdown-formatter";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -31,10 +31,48 @@ interface TgSendExtra {
 }
 type TgSend = (chunk: string, extra: TgSendExtra) => Promise<unknown>;
 
+// ─── transport(HttpError) 재시도 ─────────────────────────────────────────
+// 실 버그(2026-07): 새벽 스케줄 outbound 가 grammy HttpError("Network request … failed")
+// 로 실패 → 재시도 없어 알림 유실(schedules.last_error). 맥 sleep 아님·폴링 생존 =
+// 순간 transport 실패(유휴 커넥션 노화 추정). 재연결이면 곧 복구되므로 바운드 재시도한다.
+//
+// ★재시도 대상은 transport 실패(grammy HttpError)로 한정한다:
+//   - HttpError = 네트워크/전송 계층 실패 → 재연결로 복구 가능 → 재시도.
+//   - GrammyError = 텔레그램 API 가 응답한 논리 에러(예: 400 parse HTML 실패) →
+//     같은 요청 재전송해도 동일 실패 → 재시도 무의미. 즉시 전파해서 호출부의
+//     HTML→plain 폴백이 처리하게 둔다.
+// sendMessage 는 멱등이 아니라 재시도 시 드문 중복 가능하나, 알림은 "드문 중복 > 유실"
+// 이므로 재시도 채택. 추가 dedup 장치는 두지 않는다(과설계 회피 — 중복은 감수).
+const TRANSPORT_RETRY_DELAYS_MS = [500, 1500, 3000];
+
+export const sendWithTransportRetry = async (
+  send: TgSend,
+  chunk: string,
+  extra: TgSendExtra,
+): Promise<unknown> => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await send(chunk, extra);
+    } catch (e) {
+      // transport 실패(HttpError)만, 그리고 바운드 내에서만 재시도. 그 외는 즉시 전파.
+      const retriable = e instanceof HttpError;
+      if (!retriable || attempt >= TRANSPORT_RETRY_DELAYS_MS.length) throw e;
+      const delay = TRANSPORT_RETRY_DELAYS_MS[attempt]!;
+      console.warn(
+        `telegram transport failed (HttpError), retry ${attempt + 1}/${TRANSPORT_RETRY_DELAYS_MS.length} in ${delay}ms:`,
+        e,
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+};
+
 // text 를 변환·분할해 청크별로 send 한다. replyToMessageId 있으면 *첫 청크만* 답글로
 // (멀티청크 시각잡음 회피). throwOnFail 이면 plain 폴백까지 실패 시 rethrow(발신 실패를
 // 호출자가 알아야 하는 sendOutgoing 용); 아니면 로그만(답글은 부수 UX).
-const sendFormatted = async (
+// send 는 sendWithTransportRetry 로 감싸므로 여기 하나로 4곳(reply·attachment·edited·
+// sendOutgoing) 발송 경로 전부가 transport 재시도를 얻는다.
+export const sendFormatted = async (
   send: TgSend,
   text: string,
   opts?: { replyToMessageId?: number; throwOnFail?: boolean },
@@ -49,10 +87,12 @@ const sendFormatted = async (
           }
         : { parse_mode: "HTML" };
     try {
-      await send(chunks[i]!, extra);
+      await sendWithTransportRetry(send, chunks[i]!, extra);
     } catch (e) {
+      // HTML 실패(주로 GrammyError parse) → plain 폴백. transport 실패였다면 여기
+      // 도달 시점엔 이미 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
       console.error("telegram HTML send failed, falling back to plain:", e);
-      await send(chunks[i]!, {}).catch((e2) => {
+      await sendWithTransportRetry(send, chunks[i]!, {}).catch((e2) => {
         console.error("telegram plain fallback also failed:", e2);
         if (opts?.throwOnFail === true) throw e2;
       });

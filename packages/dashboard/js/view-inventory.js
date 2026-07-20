@@ -200,6 +200,58 @@
           ? "전체 정의 본문(스킬/에이전트 전문)은 위 경로의 파일에서 확인할 수 있습니다 — 이 화면은 메타 정보까지만 보여줍니다(읽기 전용, 편집은 대화로)."
           : "이 항목은 메타 정보만 보여줍니다(읽기 전용, 편집은 대화로).";
         shell.appendChild(note);
+
+        // 정의 본문(파일 source) — bridge GET /api/inventory-item?source= 로 파일을 재-Read 해
+        // 마크다운 렌더(view-projects.js:396 의 renderMarkdown+`.md` 패턴 재사용, 읽기 전용).
+        // 공용 카드라 인벤토리·모듈·모델프로파일 상세 전부 자동 적용 — 파일 source 없는 항목
+        // (in-process:/builtin:/schedule: 또는 source 부재)은 fetch 스킵, 위 안내 유지(회귀 0).
+        // 실패(403 allowlist 거부·404 부재·네트워크)도 안내 유지(graceful). 선택이 바뀌면 스테일
+        // 응답 무시. 로딩/성공 시에만 본문 섹션이 뜨고, 성공하면 안내 문구는 제거(본문이 대체).
+        const src = entry.source || "";
+        const isFileSource = src !== "" && !/^(in-process|builtin|schedule):/.test(src);
+        if (isFileSource) {
+          const capturedId = item.id;
+          const bodySec = document.createElement("div");
+          bodySec.className = "views";
+          const view = document.createElement("div");
+          view.className = "view";
+          const title = document.createElement("div");
+          title.className = "view-title"; title.textContent = "정의 본문";
+          const bodyInner = document.createElement("div");
+          bodyInner.className = "cap-body-inner";
+          bodyInner.style.maxHeight = "50vh";
+          bodyInner.style.overflowY = "auto";
+          bodyInner.textContent = "본문 불러오는 중…";
+          view.appendChild(title);
+          view.appendChild(bodyInner);
+          bodySec.appendChild(view);
+          shell.appendChild(bodySec);
+          (async () => {
+            try {
+              const r = await fetch("/api/inventory-item?source=" + encodeURIComponent(src));
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              const data = await r.json();
+              const body = (data && typeof data.body === "string") ? data.body : "";
+              // 선택이 바뀌었거나(스테일) 카드가 떨어져나갔으면 무시.
+              if (!bodyInner.isConnected || selectedCapabilityId !== capturedId) return;
+              if (body.trim() === "") { bodySec.remove(); return; } // 빈 본문 — 안내 유지.
+              note.remove(); // 실제 본문을 보여주므로 "파일에서 확인" 안내 제거.
+              if (typeof window.marked !== "undefined") {
+                try {
+                  bodyInner.innerHTML = renderMarkdown(body);
+                  bodyInner.classList.add("md");
+                } catch (e) {
+                  bodyInner.textContent = body; // 렌더 실패 — 평문 폴백.
+                }
+              } else {
+                bodyInner.textContent = body; // marked 미로드 — 평문.
+              }
+            } catch (e) {
+              // 403/404/네트워크 — 본문 섹션 제거, 안내 유지(graceful, 크래시 X).
+              if (bodyInner.isConnected) bodySec.remove();
+            }
+          })();
+        }
         return shell;
       };
 

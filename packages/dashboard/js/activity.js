@@ -38,6 +38,10 @@
         const s = String(text || "").replace(/\s+/g, " ").trim();
         return s.length > ACTIVITY_TEXT_MAX ? s.slice(0, ACTIVITY_TEXT_MAX) + "…" : s;
       };
+      // 아코디언 본문에 넣는 *전체* 텍스트(자르지 않음). 접힘=CSS 1줄 클램프(nowrap+ellipsis, 개행은
+      // 시각적으로 접힘), 펼침(.expanded)=pre-wrap 로 개행·공백 보존해 전문 표시. 트렁케이트를 렌더
+      // 시 baked 하지 않으므로 펼침이 실제로 전문을 드러낸다(재렌더 0). \r\n 정규화 + 양끝 트림만.
+      const activityFullText = (text) => String(text || "").replace(/\r\n/g, "\n").trim();
 
       // chat_log 행(entries) → 한 줄. 채팅뷰 buildHistoryDiv 와 달리 turn/스킵 dedup·마크다운 없이
       // 단순 flat 플레인 라인(§2.2 단순 우선 + 프리즈 방지).
@@ -83,9 +87,9 @@
         const chev = document.createElement("span"); chev.className = "aav-chevron"; chev.textContent = "▸";
         meta.appendChild(chev); meta.appendChild(time); meta.appendChild(badges); meta.appendChild(icon);
         const body = document.createElement("div"); body.className = "aav-body";
-        const preview = activityPlainPreview(e.text);
+        const full = activityFullText(e.text);
         const hasAtt = e.attachments && e.attachments.length;
-        body.textContent = preview || (hasAtt ? "" : "(빈 메시지)");
+        body.textContent = full || (hasAtt ? "" : "(빈 메시지)");
         if (hasAtt) {
           const att = document.createElement("span"); att.className = "aav-att-hint";
           att.textContent = "📎×" + e.attachments.length;
@@ -94,7 +98,7 @@
         line.appendChild(meta); line.appendChild(body);
         line.addEventListener("click", () => line.classList.toggle("expanded"));
         // 컨텍스트메뉴 트리거 — kebab(메타 끝) + 우클릭(라인 전체, 클릭 토글과 별개 이벤트).
-        const actCtx = () => ({ type: "activity", targetId: "m|" + e.ts, threadKey: e.threadKey, label: preview || e.text || "" });
+        const actCtx = () => ({ type: "activity", targetId: "m|" + e.ts, threadKey: e.threadKey, label: full || e.text || "" });
         attachKebab(meta, "activity", actCtx);
         attachContextMenu(line, "activity", actCtx);
         return line;
@@ -118,11 +122,11 @@
         meta.appendChild(chev); meta.appendChild(time); meta.appendChild(badges); meta.appendChild(icon);
         const body = document.createElement("div"); body.className = "aav-body";
         if (a.kind === "text") {
-          const preview = String(a.text || "").replace(/\s+/g, " ").trim().slice(0, ACTIVITY_TEXT_MAX);
-          body.textContent = preview ? "텍스트 응답: " + preview : "(텍스트 세그먼트)";
+          const full = activityFullText(a.text);
+          body.textContent = full ? "텍스트 응답: " + full : "(텍스트 세그먼트)";
         } else {
           const label = skill ? "스킬: " + skill.name : String(a.label || "tool");
-          const detail = (!skill && a.detail) ? " — " + String(a.detail).slice(0, 160) : "";
+          const detail = (!skill && a.detail) ? " — " + activityFullText(a.detail) : "";
           body.textContent = label + detail;
         }
         line.appendChild(meta); line.appendChild(body);

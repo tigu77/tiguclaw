@@ -10,12 +10,14 @@ import type { SteeringChannel } from "./steering.js";
 import {
   clearSessionModelOverride,
   getSessionModelOverride,
+  getSessionModelProfile,
   setSessionChannelMeta,
   SESSION_STORAGE_CHANNEL,
 } from "../store/sessions.js";
 import { resolveSessionId } from "./threadkey.js";
 import { runClaude } from "./claude.js";
 import { parseModelSpecList } from "./llm-runtime/index.js";
+import { resolveProfileChain } from "./settings.js";
 import { getRegisteredMcpServers } from "./mcp-registry.js";
 
 export interface RouteOutput {
@@ -104,8 +106,29 @@ export const route = async (
   // 구버전 무효 문자열이 남아있을 가능성 대비 빈 풀 가드 유지(env 폴백).
   // 세션-정체성 키 = (sessionChannel, sessionId) — override 조회도 canonical 키로.
   const overrideRaw = getSessionModelOverride(sessionChannel, sessionId);
-  const overridePool =
+  let overridePool =
     overrideRaw !== null ? parseModelSpecList(overrideRaw) : [];
+  // ── 세션 모델 *프로파일* override (대시보드 드롭다운, 2026-07-19, ADR
+  //    _workspace/model-dropdown_architect_contract.md §2). raw `/model` override 가
+  //    **없을 때만**(precedence: raw override > 세션 프로파일 > 전역 default) 진입 →
+  //    위 raw 경로는 바이트 불변(회귀 0). 저장값은 프로파일 *이름*(constraint 3);
+  //    해석은 코어(resolveProfileChain, constraint 1). 미지/댕글링 이름 → 빈 chain →
+  //    specs 미주입 → resolveModelSpecs 가 전역 default 프로파일로 자연 폴백(constraint 2).
+  //    chain[0](자기 pool)만 사용 = 메인 턴 resolveModelSpecs 와 동일 semantic.
+  let appliedProfile: string | null = null; // route 로그·관측용(QA anchor).
+  if (overridePool.length === 0) {
+    const profileName = getSessionModelProfile(sessionChannel, sessionId);
+    if (profileName !== null) {
+      const chain = resolveProfileChain(profileName, process.cwd());
+      if (chain.length > 0) {
+        const pool = parseModelSpecList(chain[0].join(","), process.cwd());
+        if (pool.length > 0) {
+          overridePool = pool;
+          appliedProfile = profileName;
+        }
+      }
+    }
+  }
 
   const out = await runClaude(
     {
@@ -173,7 +196,8 @@ export const route = async (
         ? ` store=${sessionChannel}`
         : "") +
       (channelAddress !== undefined ? ` addr=${channelAddress}` : "") +
-      (overrideRaw !== null ? ` model_override=${overrideRaw}` : ""),
+      (overrideRaw !== null ? ` model_override=${overrideRaw}` : "") +
+      (appliedProfile !== null ? ` model_profile=${appliedProfile}` : ""),
   );
   return {
     text: out.text,

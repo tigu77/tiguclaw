@@ -55,7 +55,27 @@
         return inner && inner.dataset.ts ? Number(inner.dataset.ts) : null;
       };
 
-      // 아이템 높이 실측 — 측정되면 model 갱신 후 relayout(추정→실측 정합).
+      // 하단 재-pin(원인 D, 2026-07-19) — stick 유지 중일 때만 바닥에 즉시 재고정. relayout 의
+      // stickBottom 분기(setScrollTop=바닥)와 같은 일을 하되 *ResizeObserver 콜백 안에서 동기적으로*
+      // 실행한다는 점이 핵심이다. 왜 필요한가: 멀티라인 메시지를 보내면 입력창(textarea)이 여러 줄
+      // →한 줄로 줄어 #stream 의 clientHeight 가 늘고, 브라우저가 스크롤 최대치 감소분만큼 scrollTop 을
+      // 아래로 클램프한다. 그 클램프가 쏘는 (비프로그램적) scroll 이벤트가 다음 프레임에서 onScroll 의
+      // 방향판정(`st < lastScrollTop-1`)에 걸려 stick 을 잘못 해제 → 뒤이어 도착하는 그 큰 메시지가
+      // 바닥을 안 따라간다(짧은 1줄 메시지는 입력창이 안 줄어 클램프도 없어 정상 — 버그 비대칭의 원인).
+      // async 인 scheduleRelayout 로는 relayout 이 다음 프레임에 돌아 클램프 이벤트에게 선수를 뺏긴다.
+      // 여기서 total/sizer 를 즉시 재계산해 scrollHeight 를 최신화한 뒤 setScrollTop(가드 vtProgrammatic)
+      // 으로 바닥을 다시 잡아 lastScrollTop 을 바닥으로 동기 → 지연 클램프 이벤트가 와도 st==lastScrollTop
+      // 라 오해제되지 않는다. stickBottom=false(사용자가 위로 스크롤)면 no-op → 사용자 스크롤 존중(회귀 0).
+      const vtPinBottom = () => {
+        if (!stickBottom || vtJumpTop) return;
+        let total = 0;
+        for (const it of vtItems) { it.top = total; total += slotH(it); }
+        vtSizer.style.height = total + "px";
+        setScrollTop(pageScroll() ? getScrollH() : total + 40);
+      };
+
+      // 아이템 높이 실측 — 측정되면 model 갱신 후 relayout(추정→실측 정합). stick 유지 중이면 실측
+      // 콜백에서 즉시 바닥 재-pin(추정→실측으로 커진 높이만큼 바닥이 더 내려간 것을 그 자리에서 따라감).
       const vtObserver = new ResizeObserver((entries) => {
         let changed = false;
         for (const e of entries) {
@@ -66,9 +86,10 @@
             it.h = h; it.measured = true; changed = true;
           }
         }
-        if (changed) scheduleRelayout();
+        if (changed) { vtPinBottom(); scheduleRelayout(); }
       });
-      const vtContainerRO = new ResizeObserver(() => scheduleRelayout());
+      // 컨테이너(#stream) 크기 변화 = 입력창 자동높이 변동 등 → 클램프 유발. stick 이면 동기 재-pin.
+      const vtContainerRO = new ResizeObserver(() => { vtPinBottom(); scheduleRelayout(); });
       vtContainerRO.observe(stream);
 
       let vtRaf = 0;

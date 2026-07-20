@@ -53,7 +53,14 @@ import {
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
-import { listThreads, setThreadName } from "../../src/store/sessions.js";
+import {
+  listThreads,
+  setThreadName,
+  getSessionModelProfile,
+  setSessionModelProfile,
+  clearSessionModelProfile,
+  SESSION_STORAGE_CHANNEL,
+} from "../../src/store/sessions.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { getAssistantName } from "../../src/core/identity.js";
 import { listProjects, forgetProject } from "../../src/store/projects.js";
@@ -741,6 +748,8 @@ class HttpBridge implements Channel, Observer {
         ? "read"
         : pathname === "/inventory" && method === "GET"
           ? "read"
+          : pathname === "/inventory-item" && method === "GET"
+          ? "read"
           : pathname === "/context-menu-items" && method === "GET"
             ? "read"
           : pathname === "/commands" && method === "GET"
@@ -901,6 +910,63 @@ class HttpBridge implements Channel, Observer {
           schedules = [];
         }
         writeJson(res, 200, { ...inv, schedules });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /inventory-item?source=<abs> — JSON. 인벤토리 항목의 정의 본문(스킬 SKILL.md·에이전트
+    // .md 등 파일)을 경로로 재-Read 해 `{ source, body }`(utf8)로 반환. 대시보드 능력 상세뷰의
+    // "본문" 섹션이 소비(/projects/detail 이 PROJECT.md 를 재-Read 하는 것과 동일 결).
+    //
+    // ★보안 하드제약(allowlist): 임의 파일 읽기 절대 금지. collectInventory 를 매 호출 다시
+    // 빌드해 **유효 source 파일 경로 집합**을 만들고(walker 재사용 — 신규 walk 로직 0), 요청
+    // source 가 그 집합에 정확히 있을 때만 읽는다. 경로 트래버설(`..`)·심볼릭 우회·레포 무관
+    // 임의 경로(예: /etc/passwd)는 집합 불일치로 자연 차단(403). in-process:/builtin:/schedule:
+    // 등 비파일 source 는 절대경로가 아니라 집합에 애초에 안 들어감 → 403. 파일 부재 404.
+    // read 게이트(위 role 표, /inventory·/projects/detail 과 동일 role).
+    if (pathname === "/inventory-item" && method === "GET") {
+      const source = url.searchParams.get("source") ?? "";
+      if (source.trim() === "") {
+        writeJson(res, 400, { error: "source required" });
+        return;
+      }
+      try {
+        const inv = await collectInventory();
+        const allow = new Set<string>();
+        // 모든 카테고리의 파일 source(절대 경로)만 허용 집합에 편입. in-process:/builtin:/
+        // schedule: 같은 비파일 source 는 path.isAbsolute 가 false → 자동 제외.
+        for (const arr of [
+          inv.channel,
+          inv.external_plugin,
+          inv.skill,
+          inv.agent,
+          inv.mcp,
+          inv.endpoint,
+          inv.command,
+        ]) {
+          for (const e of arr) {
+            if (typeof e.source === "string" && path.isAbsolute(e.source)) {
+              allow.add(e.source);
+            }
+          }
+        }
+        if (!allow.has(source)) {
+          // allowlist 밖 = 임의 경로·비파일 source·부재 항목 → 읽기 거부(보안).
+          writeJson(res, 403, { error: "forbidden" });
+          return;
+        }
+        let body: string;
+        try {
+          body = await fs.readFile(source, "utf8");
+        } catch {
+          // 집합엔 있으나 파일 부재/디렉터리(예: 플러그인 dir) → 본문 없음.
+          writeJson(res, 404, { error: "not found", source });
+          return;
+        }
+        writeJson(res, 200, { source, body });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
@@ -1098,6 +1164,74 @@ class HttpBridge implements Channel, Observer {
       try {
         setDefaultProfile(name);
         writeJson(res, 200, { ok: true, default: name });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /set-session-profile — 이 세션(대시보드 탭)만 sticky 한 모델 프로파일 선택
+    // (ADR _workspace/model-dropdown_architect_contract.md §3-b). write 게이트
+    // (/set-default-profile 패턴 복제). ★전역 models.default 는 절대 안 건드림 — 세션 스코프.
+    // body { threadKey, profile } — profile 은 실존 프로파일 이름(loadModelProfiles 검증) 또는
+    // "default"/"" (= 상속으로 되돌림 → clearSessionModelProfile). 미지 이름 → 400(constraint 2).
+    // 저장 키 = (SESSION_STORAGE_CHANNEL, resolveSessionId(...)) — /messages·router 와 동일 정규화.
+    if (pathname === "/set-session-profile" && method === "POST") {
+      let dbody: Record<string, unknown>;
+      try {
+        dbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const rawThreadKey =
+        typeof dbody.threadKey === "string" ? dbody.threadKey.trim() : "";
+      if (rawThreadKey === "") {
+        writeJson(res, 400, { error: "threadKey required" });
+        return;
+      }
+      // profile 필드(계약) — name alias 도 관용 허용.
+      const rawProfile =
+        typeof dbody.profile === "string"
+          ? dbody.profile.trim()
+          : typeof dbody.name === "string"
+            ? dbody.name.trim()
+            : "";
+      // /messages 와 동일 정규화 — sessionId = resolveSessionId(this.name, threadKey, threadKey).
+      const sessionId = resolveSessionId(this.name, rawThreadKey, rawThreadKey);
+      // "" / "default" / 현재 전역 default 이름 → 세션 override 제거(전역 default 상속).
+      const isInherit =
+        rawProfile === "" ||
+        rawProfile === "default" ||
+        rawProfile === getDefaultProfileName();
+      if (isInherit) {
+        try {
+          clearSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId);
+          writeJson(res, 200, { ok: true, threadKey: rawThreadKey, profile: null });
+        } catch (e) {
+          const m = e instanceof Error ? e.message : String(e);
+          writeJson(res, 500, { error: m });
+        }
+        return;
+      }
+      // 실존 프로파일 검증(댕글링 차단 = constraint 2 방어심).
+      const profiles = loadModelProfiles();
+      if (profiles[rawProfile] === undefined) {
+        writeJson(res, 400, {
+          error: `존재하지 않는 프로파일: ${rawProfile}`,
+          available: Object.keys(profiles),
+        });
+        return;
+      }
+      try {
+        setSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId, rawProfile);
+        writeJson(res, 200, {
+          ok: true,
+          threadKey: rawThreadKey,
+          profile: rawProfile,
+        });
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });
@@ -1336,12 +1470,19 @@ class HttpBridge implements Channel, Observer {
             previewText.trim() !== ""
               ? previewText.replace(/\s+/g, " ").slice(0, 80)
               : undefined;
+          // 세션 모델 프로파일(대시보드 드롭다운 상태 복원용, additive — 기존 소비자 무영향,
+          // ADR model-dropdown §3-c). 미기재 세션 → null(드롭다운 default 로 hydrate).
+          const modelProfile = getSessionModelProfile(
+            SESSION_STORAGE_CHANNEL,
+            t.threadKey,
+          );
           return {
             threadKey: t.threadKey,
             lastUsedAt: t.lastUsedAt,
             ...(t.model !== null ? { model: t.model } : {}),
             ...(preview !== undefined ? { preview } : {}),
             ...(t.name !== null ? { name: t.name } : {}),
+            modelProfile: modelProfile ?? null,
           };
         });
         writeJson(res, 200, {

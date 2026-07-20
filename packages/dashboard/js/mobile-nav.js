@@ -87,3 +87,19 @@
         if (mnLive) mnHeader.insertBefore(mnBgToggle, mnLive);
         else mnHeader.appendChild(mnBgToggle);
       }
+
+      // ── 모바일 마스터-디테일 (2026-07-19) — 모듈·인벤토리·프로젝트 상세를 리스트 밑 스택 대신
+      // 전환 화면으로. 세 뷰 공통 리스트 아이템(.provider-item) 탭 → body.m-detail(상세 전체화면),
+      // ‹목록 뒤로 버튼 → 리스트 복귀. 뷰 전환(nav) 시엔 항상 리스트부터(m-detail 해제). 데스크탑 무영향.
+      const mnWorkbench = document.getElementById("workbench");
+      const mnDetailBack = document.getElementById("wb-detail-back");
+      const mnSetDetail = (on) => mnBody.classList.toggle("m-detail", on);
+      if (mnWorkbench) {
+        mnWorkbench.addEventListener("click", (e) => {
+          if (!window.matchMedia("(max-width: 900px)").matches) return;
+          if (e.target && e.target.closest && e.target.closest(".provider-item")) mnSetDetail(true);
+        });
+      }
+      if (mnDetailBack) mnDetailBack.addEventListener("click", () => mnSetDetail(false));
+      // 뷰 전환(data-view 변경) 시 상세 초기화 — 새 뷰는 리스트부터.
+      new MutationObserver(() => mnSetDetail(false)).observe(mnBody, { attributes: true, attributeFilter: ["data-view"] });

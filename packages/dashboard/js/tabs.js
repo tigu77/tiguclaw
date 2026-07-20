@@ -209,6 +209,7 @@
         persistTabs();
         void loadThreadHistory(tk);
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
+        if (window.hydrateModelSelect) window.hydrateModelSelect(); // 모델 프로파일 드롭다운 = 이 탭 상태로.
         // 세션탭 *이동* 시엔 입력 포커스 안 줌 — 모바일에서 전환 때마다 가상키보드가 올라오는 문제.
         // (새 탭 생성 newTab 은 타이핑 의도라 포커스 유지.)
       };
@@ -219,13 +220,14 @@
           : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
         const tk = "dashboard:" + uuid;
         sessionSeq += 1;
-        openTabs.push({ threadKey: tk, name: deriveTabFallbackName(tk) }); // 번호식 세션명(공백없는 "세션N", 영속 번호). 커스텀은 더블클릭 편집.
+        openTabs.push({ threadKey: tk, name: deriveTabFallbackName(tk), modelProfile: null }); // 번호식 세션명(공백없는 "세션N", 영속 번호). 커스텀은 더블클릭 편집. 새 세션 = 프로파일 미선택(상속).
         activeThreadKey = tk;   // 백엔드 행은 첫 전송에 lazy 생성(빈 탭 = 무흔적, D3).
         clearReply();
         renderTabBar();
         persistTabs();
         void loadThreadHistory(tk); // 빈 스트림(새 세션 = 이력 없음) 즉시.
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
+        if (window.hydrateModelSelect) window.hydrateModelSelect(); // 새 세션 = 드롭다운 기본으로.
         try { document.getElementById("chat-input").focus(); } catch {}
       };
 
@@ -277,6 +279,10 @@
               t.name = serverName || deriveTabFallbackName(t.threadKey);
               changed = true;
             }
+            // 세션 모델 프로파일(드롭다운 상태 복원, ADR model-dropdown §3-c) — 서버가 진실.
+            // in-memory only(TABS_LS 직렬화 shape 불변). null = 상속(기본).
+            const sp = (typeof s.modelProfile === "string" && s.modelProfile) ? s.modelProfile : null;
+            if ((t.modelProfile || null) !== sp) { t.modelProfile = sp; changed = true; }
           }
           // (2) 아직 안 열린 대화 세션 노출(recency 순, 상한). 기본 세션·닫은 세션·노이즈 제외.
           // 이름 = 서버 커스텀(s.name) ?? 프리뷰 파생(slice16) ?? 채널 라벨(§4-2, 현행 파생 폴백 유지).
@@ -291,7 +297,8 @@
             const serverName = (typeof s.name === "string" && s.name) ? s.name : null;
             const derived = (s.preview && s.preview.trim()) ? s.preview.trim().slice(0, 16) : (cm ? cm.full : "세션");
             const name = serverName || derived;
-            const tab = { threadKey: tk, name, ...(serverName ? { customName: serverName } : {}), ...(s.preview ? { preview: s.preview } : {}), ...(ch ? { channel: ch } : {}) };
+            const sp = (typeof s.modelProfile === "string" && s.modelProfile) ? s.modelProfile : null;
+            const tab = { threadKey: tk, name, modelProfile: sp, ...(serverName ? { customName: serverName } : {}), ...(s.preview ? { preview: s.preview } : {}), ...(ch ? { channel: ch } : {}) };
             openTabs.push(tab);
             openByKey.set(tk, tab);
             surfaced += 1; changed = true;
@@ -299,6 +306,7 @@
           // 편집 중엔 렌더를 미룬다(진행 중인 contenteditable DOM 보존) — 데이터는 반영, 다음
           // renderTabBar(편집 종료 시 호출)가 자연히 최신 상태로 그림.
           if (changed) { persistTabs(); if (!editingTabKey) renderTabBar(); }
+          if (window.hydrateModelSelect) window.hydrateModelSelect(); // 활성 탭 프로파일 → 드롭다운 반영.
         } catch {}
       };
 

@@ -534,6 +534,23 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── 세션 모델 *프로파일* 선택 (대시보드 드롭다운, 2026-07-19, ADR
+  //     _workspace/model-dropdown_architect_contract.md §1) ────────────────────
+  // session_model_override(raw specs)의 *mirror* 별 테이블. 저장값 = **프로파일 이름**만
+  // (constraint 3: raw model id 미노출). 코어(router)가 resolveProfileChain 으로 이름을
+  // 해석(constraint 1). override 와 분리된 별 테이블이라 서로 clobber 0 이고, 세션
+  // clear/reset(deleteSession)의 override DELETE 에 **의도적으로 포함하지 않는다** —
+  // 프로파일 선택은 대화 리셋을 가로질러 sticky(durable UI 선호, 계약 §2).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS session_model_profile (
+      channel      TEXT NOT NULL,
+      thread_key   TEXT NOT NULL,
+      profile_name TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (channel, thread_key)
+    );
+  `);
+
   // ─── 스킬 사용 텔레메트리 (self-growth Phase 1.5, 2026-06-24) ────────────────
   // events(ring 10k prune)는 *장기* 스킬 카운트 부적합(오래된 호출 잘림) → 전용 누적
   // 테이블. self-growth 가 generic skill.invoked 구독 시 멱등 upsert(count+1, last_used
@@ -1269,6 +1286,58 @@ export const clearSessionModelOverride = (
   const result = handle
     .prepare(
       `DELETE FROM session_model_override
+       WHERE channel = ? AND thread_key = ?`,
+    )
+    .run(channel, threadKey);
+  return result.changes > 0;
+};
+
+// ─── 세션 모델 프로파일 helpers (대시보드 드롭다운, 2026-07-19) ─────────────────
+// getSessionModelOverride 3종의 mirror. 저장·조회값은 **프로파일 이름**(constraint 3).
+// 미기재 세션(텔레그램·cli·http-default·새 탭) → null → 상속(전역 default 프로파일).
+// ★sticky: deleteSession(/reset)의 override DELETE 에 이 테이블을 포함하지 않는다 —
+// 프로파일 선택은 대화 리셋과 독립 durable(계약 §2).
+
+export const getSessionModelProfile = (
+  channel: ChannelName,
+  threadKey: string,
+): string | null => {
+  const handle = requireDb("getSessionModelProfile");
+  const row = handle
+    .prepare(
+      `SELECT profile_name FROM session_model_profile
+       WHERE channel = ? AND thread_key = ?`,
+    )
+    .get(channel, threadKey) as { profile_name: string } | undefined;
+  return row?.profile_name ?? null;
+};
+
+export const setSessionModelProfile = (
+  channel: ChannelName,
+  threadKey: string,
+  profileName: string,
+): void => {
+  const handle = requireDb("setSessionModelProfile");
+  const now = Date.now();
+  handle
+    .prepare(
+      `INSERT INTO session_model_profile (channel, thread_key, profile_name, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(channel, thread_key) DO UPDATE SET
+         profile_name = excluded.profile_name,
+         updated_at = excluded.updated_at`,
+    )
+    .run(channel, threadKey, profileName, now);
+};
+
+export const clearSessionModelProfile = (
+  channel: ChannelName,
+  threadKey: string,
+): boolean => {
+  const handle = requireDb("clearSessionModelProfile");
+  const result = handle
+    .prepare(
+      `DELETE FROM session_model_profile
        WHERE channel = ? AND thread_key = ?`,
     )
     .run(channel, threadKey);

@@ -1,5 +1,5 @@
 import { Bot, HttpError, InputFile, type Context } from "grammy";
-import { telegramFormat, splitHtmlForTelegram } from "telegram-markdown-formatter";
+import telegramifyMarkdown from "telegramify-markdown";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
@@ -21,15 +21,66 @@ import { getMostRecentTelegramChatId } from "../../src/store/sessions.js";
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
 // ─── 텔레그램 발송 공통 흐름 ──────────────────────────────────────────────
-// contract §3: 변환(telegramFormat) → 분할(splitHtmlForTelegram) → 청크별 HTML 송신 →
-// 실패 시 plain 1회 폴백. message:text reply·attachment reply·edited reply·sendOutgoing 4곳이
-// 이 흐름을 각자 복제했다 — 발송 함수(ctx.reply vs bot.api.sendMessage)와 옵션만 다르므로
-// 여기 하나로 모은다(같은 걸 두 번 구현 X). 발송 함수는 주입.
+// contract §3: Markdown → Telegram MarkdownV2 변환 → 청크별 송신 → 실패 시 plain 1회 폴백.
+// message:text reply·attachment reply·edited reply·sendOutgoing 4곳이 이 흐름을 공유한다.
+// 발송 함수(ctx.reply vs bot.api.sendMessage)와 옵션만 다르므로 여기 하나로 모은다.
 interface TgSendExtra {
-  parse_mode?: "HTML";
+  parse_mode?: "MarkdownV2";
   reply_parameters?: { message_id: number };
 }
 type TgSend = (chunk: string, extra: TgSendExtra) => Promise<unknown>;
+
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+// Telegramify-Markdown output 은 Telegram MarkdownV2 다. parse 실패 fallback 에서는
+// parse_mode 없이 보낼 plain text 가 필요하므로 MarkdownV2 escape 를 낮춘다.
+const markdownV2ToPlainText = (markdown: string): string =>
+  markdown
+    .replace(/```(?:[^\n`]*)\n?([\s\S]*?)```/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/\\([_\*\[\]\(\)~`>#+\-=|{}.!\\])/g, "$1");
+
+// 긴 MarkdownV2 는 줄 경계로 분할해 포맷을 보존한다. plain 으로 낮추면 사용자에게
+// raw 마크다운(`**`, 백틱, `[..](..)`)이 그대로 노출되므로 하지 않는다. 청크가 어쩌다
+// entity/코드펜스 경계를 가로질러 깨지면 sendFormatted 의 per-chunk plain 폴백
+// (markdownV2ToPlainText)이 그 청크만 안전하게 낮춘다 — raw 노출은 발생하지 않는다.
+const splitMarkdownV2ForTelegram = (formatted: string): string[] => {
+  if (formatted.length <= TELEGRAM_MESSAGE_LIMIT) return [formatted];
+  const chunks: string[] = [];
+  let current = "";
+  const flush = () => {
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+  };
+  for (const line of formatted.split("\n")) {
+    // 한 줄 자체가 한도를 넘으면(드묾) 줄 안에서 하드 슬라이스.
+    if (line.length > TELEGRAM_MESSAGE_LIMIT) {
+      flush();
+      for (let i = 0; i < line.length; i += TELEGRAM_MESSAGE_LIMIT) {
+        chunks.push(line.slice(i, i + TELEGRAM_MESSAGE_LIMIT));
+      }
+      continue;
+    }
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > TELEGRAM_MESSAGE_LIMIT) {
+      flush();
+      current = line;
+    } else {
+      current = candidate;
+    }
+  }
+  flush();
+  return chunks;
+};
+
+// Markdown → MarkdownV2 변환 후 줄 경계로 분할. 짧든 길든 포맷을 유지한 채 보낸다.
+const formatForTelegram = (text: string): { chunks: string[]; parseMode?: "MarkdownV2" } => {
+  const formatted = telegramifyMarkdown(text, "escape");
+  return { chunks: splitMarkdownV2ForTelegram(formatted), parseMode: "MarkdownV2" };
+};
 
 // ─── transport(HttpError) 재시도 ─────────────────────────────────────────
 // 실 버그(2026-07): 새벽 스케줄 outbound 가 grammy HttpError("Network request … failed")
@@ -77,22 +128,21 @@ export const sendFormatted = async (
   text: string,
   opts?: { replyToMessageId?: number; throwOnFail?: boolean },
 ): Promise<void> => {
-  const chunks = splitHtmlForTelegram(telegramFormat(text));
+  const { chunks, parseMode } = formatForTelegram(text);
   for (let i = 0; i < chunks.length; i++) {
-    const extra: TgSendExtra =
-      opts?.replyToMessageId !== undefined && i === 0
-        ? {
-            parse_mode: "HTML",
-            reply_parameters: { message_id: opts.replyToMessageId },
-          }
-        : { parse_mode: "HTML" };
+    const extra: TgSendExtra = {
+      ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
+      ...(opts?.replyToMessageId !== undefined && i === 0
+        ? { reply_parameters: { message_id: opts.replyToMessageId } }
+        : {}),
+    };
     try {
       await sendWithTransportRetry(send, chunks[i]!, extra);
     } catch (e) {
-      // HTML 실패(주로 GrammyError parse) → plain 폴백. transport 실패였다면 여기
+      // MarkdownV2 실패(주로 Telegram parse error) → plain 폴백. transport 실패였다면 여기
       // 도달 시점엔 이미 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
-      console.error("telegram HTML send failed, falling back to plain:", e);
-      await sendWithTransportRetry(send, chunks[i]!, {}).catch((e2) => {
+      console.error("telegram formatted send failed, falling back to plain:", e);
+      await sendWithTransportRetry(send, markdownV2ToPlainText(chunks[i]!), {}).catch((e2) => {
         console.error("telegram plain fallback also failed:", e2);
         if (opts?.throwOnFail === true) throw e2;
       });
@@ -342,9 +392,9 @@ const acquireAttachment = async (
   }
 };
 
-// markdown → 텔레그램 HTML subset 변환 + 4096 분할.
-// `telegram-markdown-formatter@0.1.2` 위임 (원칙 6 "직접 만들 일 아님").
-// 검증: _workspace/tg_html_alt_spike.{ts,md} (§2.2 (a)~(d) + 분할 ALL PASS).
+// Markdown → Telegram MarkdownV2 변환 + 4096 분할.
+// `telegramify-markdown` 위임. 짧든 길든 MarkdownV2 포맷을 유지한 채 줄 경계로
+// 분할하고, 청크가 깨지면 per-chunk plain 폴백이 그 청크만 낮춘다.
 
 // module-scope bot 인스턴스 — sendOutgoing 이 scheduler 등 outgoing 사용자 (region
 // dispatcher) 에게서 직접 호출될 때 재사용. TelegramChannel.start 가 가장 먼저

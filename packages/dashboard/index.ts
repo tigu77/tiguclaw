@@ -535,6 +535,18 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // 프로젝트 표시명 수정(⋯ 메뉴 "이름 수정") — bridge POST /project-rename (write).
+    // body{path,name} 그대로 전달. bridge 가 PROJECT.md frontmatter 갱신 + 레지스트리 캐시 갱신.
+    if (pathname === "/api/project-rename" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/project-rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+
     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: "not found" }));
   })();

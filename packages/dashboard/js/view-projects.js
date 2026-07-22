@@ -11,6 +11,7 @@
       // 데몬(tiguclaw 호스트)에서 열리므로 폰에서 눌러도 호스트 Mac 의 Finder 가 열린다.
       registerMenuItems("project", () => [
         { id: "open-folder", label: "폴더 열기", icon: "📂", action: { kind: "builtin", handler: "project.openFolder" } },
+        { id: "rename", label: "이름 수정", icon: "✏️", action: { kind: "builtin", handler: "project.rename" } },
         { id: "remove", label: "제거", icon: "🗑", action: { kind: "builtin", handler: "project.remove" } },
       ]);
       registerBuiltinHandler("project.openFolder", async (ctx) => {
@@ -29,6 +30,31 @@
       // 프로젝트 "제거" — ★비파괴: 레지스트리(인덱스)에서만 등록 해제, 폴더/PROJECT.md 는 안 지운다
       // (store forgetProject = DELETE FROM projects). 파괴적이지 않지만 사용자 명시 확인(confirm)
       // 후에만 실행(파괴적 행위 소프트 게이트 원칙과 동형 — "목록에서 제거" 의도 재확인).
+
+      registerBuiltinHandler("project.rename", async (ctx) => {
+        const currentName = String(ctx.name || ctx.title || "").trim();
+        const nextName = prompt("새 프로젝트 이름", currentName);
+        if (nextName === null) return;
+        const name = nextName.trim();
+        if (!name) return alert("프로젝트 이름을 입력하세요.");
+        if (name === currentName) return;
+        try {
+          const r = await fetch("/api/project-rename", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: ctx.path, name }),
+          });
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}));
+            throw new Error(j.error || `HTTP ${r.status}`);
+          }
+          await fetchProjects();
+          if (selectedProjectPath === ctx.path) await openProjectDetail(ctx.path);
+        } catch (e) {
+          alert(`프로젝트 이름 수정 실패: ${e.message || e}`);
+        }
+      });
+
       registerBuiltinHandler("project.remove", async (ctx) => {
         if (!ctx || !ctx.path) return;
         const label = ctx.label || ctx.path;
@@ -246,7 +272,7 @@
             .filter(Boolean).join(" ").toLowerCase();
           item.addEventListener("click", () => openProjectDetail(p.path));
           // ⋯ 메뉴 + 우클릭 + 롱프레스(3경로 동일). ctx 에 path 를 실어 "폴더 열기"가 씀.
-          const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || "(이름 없음)", path: p.path });
+          const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || "(이름 없음)", name: p.name || "", path: p.path });
           attachKebab(item, "project", projectCtx);
           attachContextMenu(item, "project", projectCtx);
           attachLongPress(item, "project", projectCtx);

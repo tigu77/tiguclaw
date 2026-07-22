@@ -63,7 +63,7 @@ import {
 } from "../../src/store/sessions.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { getAssistantName } from "../../src/core/identity.js";
-import { listProjects, forgetProject } from "../../src/store/projects.js";
+import { listProjects, forgetProject, upsertProject } from "../../src/store/projects.js";
 import { listSchedules } from "../../src/store/schedules.js";
 import { Cron } from "croner";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
@@ -798,6 +798,8 @@ class HttpBridge implements Channel, Observer {
                 : pathname === "/open-path" && method === "POST"
                   ? "write"
                 : pathname === "/project-forget" && method === "POST"
+                  ? "write"
+                : pathname === "/project-rename" && method === "POST"
                   ? "write"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
@@ -2052,6 +2054,82 @@ class HttpBridge implements Channel, Observer {
       try {
         forgetProject(pathIn);
         writeJson(res, 200, { ok: true, path: pathIn });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+
+    // /project-rename — PROJECT.md frontmatter name 갱신 + 레지스트리 캐시 갱신. write.
+    if (pathname === "/project-rename" && method === "POST") {
+      let pbody: Record<string, unknown>;
+      try {
+        pbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const pathIn = typeof pbody.path === "string" ? pbody.path.trim() : "";
+      const name = typeof pbody.name === "string" ? pbody.name.trim() : "";
+      if (pathIn === "" || name === "") {
+        writeJson(res, 400, { error: "path and name required" });
+        return;
+      }
+      if (/[\x00-\x1f\x7f]/.test(name)) {
+        writeJson(res, 400, { error: "name must not contain control characters" });
+        return;
+      }
+      const abs = nodePath.resolve(pathIn);
+      const projects = listProjects();
+      const registered = projects.find((p) => nodePath.resolve(p.path) === abs);
+      if (registered === undefined) {
+        writeJson(res, 404, { error: "project not registered" });
+        return;
+      }
+      const duplicate = projects.find(
+        (p) => nodePath.resolve(p.path) !== abs && p.name === name,
+      );
+      if (duplicate !== undefined) {
+        writeJson(res, 409, { error: "project name already exists" });
+        return;
+      }
+      try {
+        const mdPath = path.join(registered.path, "PROJECT.md");
+        const raw = await fs.readFile(mdPath, "utf8");
+        let next: string;
+        if (raw.startsWith("---\n")) {
+          const end = raw.indexOf("\n---", 4);
+          if (end >= 0) {
+            const fm = raw.slice(4, end);
+            const rest = raw.slice(end);
+            const escaped = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+            const nameLine = `name: "${escaped}"`;
+            const nextFm = /^name\s*:/m.test(fm)
+              ? fm.replace(/^name\s*:.*$/m, nameLine)
+              : `${nameLine}\n${fm}`;
+            next = `---\n${nextFm}${rest}`;
+          } else {
+            next = raw;
+          }
+        } else {
+          const escapedName = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          const escapedDescription = (registered.description ?? "")
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"');
+          next = `---\nname: "${escapedName}"\ndescription: "${escapedDescription}"\nstatus: ${registered.status}\n---\n\n${raw}`;
+        }
+        if (next === raw) {
+          writeJson(res, 400, { error: "invalid PROJECT.md frontmatter" });
+          return;
+        }
+        await fs.writeFile(mdPath, next, "utf8");
+        const folderName = path.basename(registered.path);
+        const meta = parseProjectMd(next, folderName);
+        upsertProject({ path: registered.path, ...meta });
+        writeJson(res, 200, { ok: true, path: registered.path, name: meta.name });
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });

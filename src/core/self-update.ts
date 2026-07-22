@@ -21,7 +21,7 @@ import { execFile } from "node:child_process";
 import { extractTelegramChatId } from "./threadkey.js";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
-import { appRoot, getPaths } from "./paths.js";
+import { sourceRoot, getPaths } from "./paths.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 
 /** 마커파일 — 부팅 시 1회 소비되는 "업데이트 완료" 통지 좌표 (architect §4). */
@@ -86,7 +86,7 @@ export interface SelfUpdateDeps {
    * 호출부(슬래시·도구)가 자기 msg.channel/threadKey 에서 도출해 넘긴다. 미지정 가능(통지 best-effort).
    */
   notify?: SelfUpdateNotifyDest;
-  /** 테스트·격리용 — 기본 appRoot()(레포 루트). */
+  /** 테스트·격리용 — 기본 sourceRoot()(소스 빌드 루트 = 레포 루트, built 서도). */
   cwd?: string;
   /** 답 전송 후 분리 재시작까지 지연(ms). 기본 5000. */
   restartDelayMs?: number;
@@ -346,7 +346,10 @@ export const runSelfUpdate = async (
   }
   updating = true;
 
-  const cwd = deps.cwd ?? appRoot();
+  // ★sourceRoot() (not appRoot()) — 재빌드는 소스 툴체인(node_modules·tsconfig.build.json·
+  // bin·.git) 위치가 필요하다. built 런타임은 appRoot()=dist 라 거기엔 그게 없어 전체 실패했다
+  // (Windows /update MODULE_NOT_FOUND). sourceRoot 는 built 서도 repo root 로 해소된다.
+  const cwd = deps.cwd ?? sourceRoot();
   const restartDelayMs = deps.restartDelayMs ?? DEFAULT_RESTART_DELAY_MS;
   let triggeredRestart = false;
 

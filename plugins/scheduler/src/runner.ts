@@ -77,6 +77,10 @@ export const runScheduleFiring = async (
       resultText = out.text;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
+      // 영구 로그에 스케줄 맥락과 함께 남긴다(EventBus·DB last_error 외 사후 grep 용).
+      console.error(
+        `[scheduler:${schedule.id}] '${schedule.label}' runClaude FAILED: ${reason}`,
+      );
       deps.recordFiring(schedule.id, { ok: false, error: `runClaude: ${reason}` });
       bus.publish({
         type: "scheduler.error",
@@ -117,6 +121,11 @@ export const runScheduleFiring = async (
       });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
+      // 발화·생성은 됐으나 전달 실패(예: telegram transport 재시도 소진). 영역 A 결과는
+      // transcripts 에 보존됨. 영구 로그에 스케줄+목적지 맥락을 남겨 사후 grep 가능하게.
+      console.error(
+        `[scheduler:${schedule.id}] '${schedule.label}' → ${schedule.destChannel}:${schedule.destTarget} DISPATCH FAILED (내용 생성됨·전달 실패): ${reason}`,
+      );
       deps.recordFiring(schedule.id, {
         ok: false,
         error: `dispatch: ${reason}`,

@@ -141,6 +141,31 @@ export const __resetAppRootCache = (): void => {
   cachedAppRoot = undefined;
 };
 
+/**
+ * 소스 빌드 루트 — self-update 의 재빌드가 필요한 *소스 툴체인* 위치
+ * (`tsconfig.build.json`·`node_modules`·`bin/`·`.git` 가 있는 곳).
+ *
+ * ★appRoot() 와 구분해야 하는 이유: built 런타임에선 `dist/` 가 `plugins/`+`SYSTEM.md`
+ *   미러를 가져 **appRoot()=`<repo>/dist`**(런타임 artifact root)로 잡힌다. 하지만 dist 엔
+ *   node_modules·tsconfig.build.json·bin·.git 이 없어, self-update 가 cwd=appRoot 로 재빌드하면
+ *   `dist/node_modules/typescript/bin/tsc` 를 못 찾아 MODULE_NOT_FOUND 로 전체 실패한다
+ *   (Windows /update 실사고 2026-07-22). dev 에선 appRoot=repo root 라 문제 없이 잠복했다.
+ *
+ * appRoot 에서 위로(자신 포함) `tsconfig.build.json` 을 찾는다 — dist 엔 없으니 built 는
+ * repo root 로 올라가고, dev 는 appRoot(=repo root)에서 즉시 발견. 미발견(소스 없는 설치 =
+ * self-update git 경로 자체가 불가한 케이스)이면 appRoot 폴백.
+ */
+export const sourceRoot = (): string => {
+  let dir = appRoot();
+  for (;;) {
+    if (existsSync(path.join(dir, "tsconfig.build.json"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return appRoot();
+};
+
 let cached: TiguclawPaths | undefined;
 
 /** 런타임 경로 묶음. 부팅 시 1회 계산 + freeze (캐시). */

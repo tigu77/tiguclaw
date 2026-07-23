@@ -1,5 +1,5 @@
 import { Bot, HttpError, InputFile, type Context } from "grammy";
-import telegramifyMarkdown from "telegramify-markdown";
+import { telegramFormat, splitHtmlForTelegram } from "telegram-markdown-formatter";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
@@ -21,66 +21,41 @@ import { getMostRecentTelegramChatId } from "../../src/store/sessions.js";
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 
 // ─── 텔레그램 발송 공통 흐름 ──────────────────────────────────────────────
-// contract §3: Markdown → Telegram MarkdownV2 변환 → 청크별 송신 → 실패 시 plain 1회 폴백.
+// contract §3: Markdown → Telegram HTML subset 변환 → 청크별 송신 → 실패 시 plain 1회 폴백.
 // message:text reply·attachment reply·edited reply·sendOutgoing 4곳이 이 흐름을 공유한다.
 // 발송 함수(ctx.reply vs bot.api.sendMessage)와 옵션만 다르므로 여기 하나로 모은다.
+//
+// ★HTML 채택 근거(2026-07-23): 텔레그램 HTML 은 `< > &` 3글자만 이스케이프하면 되고 표·긴
+// 메시지에도 크래시가 없다. MarkdownV2(telegramify)는 18개 예약문자를 문맥마다 이스케이프해야
+// 해 표 셀 하이픈(`\\-`) 등에서 parse 400 → plain 폴백으로 포맷을 통째로 잃었다(라이브 실사고).
 interface TgSendExtra {
-  parse_mode?: "MarkdownV2";
+  parse_mode?: "HTML";
   reply_parameters?: { message_id: number };
 }
 type TgSend = (chunk: string, extra: TgSendExtra) => Promise<unknown>;
 
 const TELEGRAM_MESSAGE_LIMIT = 4096;
 
-// Telegramify-Markdown output 은 Telegram MarkdownV2 다. parse 실패 fallback 에서는
-// parse_mode 없이 보낼 plain text 가 필요하므로 MarkdownV2 escape 를 낮춘다.
-const markdownV2ToPlainText = (markdown: string): string =>
-  markdown
-    .replace(/```(?:[^\n`]*)\n?([\s\S]*?)```/g, "$1")
-    .replace(/`([^`]*)`/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-    .replace(/\\([_\*\[\]\(\)~`>#+\-=|{}.!\\])/g, "$1");
+// telegramFormat output 은 Telegram HTML subset(<b>·<code>·<a> 등)이다. HTML parse 실패
+// fallback 에서는 parse_mode 없이 보낼 plain text 가 필요하므로 태그를 제거·언이스케이프한다.
+// ★원래 태그 노출 버그(2026-07): 실패 시 raw HTML 을 그대로 보내 <b> 등이 노출됐다 — 폴백에서
+// 태그를 스트립해 재발을 막는다(라이브러리 교체가 아니라 폴백을 고치는 게 옳은 수정이었다).
+const htmlToPlainText = (html: string): string =>
+  html
+    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "$2 ($1)")
+    .replace(
+      /<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span)[^>]*>/gi,
+      "",
+    )
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 
-// 긴 MarkdownV2 는 줄 경계로 분할해 포맷을 보존한다. plain 으로 낮추면 사용자에게
-// raw 마크다운(`**`, 백틱, `[..](..)`)이 그대로 노출되므로 하지 않는다. 청크가 어쩌다
-// entity/코드펜스 경계를 가로질러 깨지면 sendFormatted 의 per-chunk plain 폴백
-// (markdownV2ToPlainText)이 그 청크만 안전하게 낮춘다 — raw 노출은 발생하지 않는다.
-const splitMarkdownV2ForTelegram = (formatted: string): string[] => {
-  if (formatted.length <= TELEGRAM_MESSAGE_LIMIT) return [formatted];
-  const chunks: string[] = [];
-  let current = "";
-  const flush = () => {
-    if (current) {
-      chunks.push(current);
-      current = "";
-    }
-  };
-  for (const line of formatted.split("\n")) {
-    // 한 줄 자체가 한도를 넘으면(드묾) 줄 안에서 하드 슬라이스.
-    if (line.length > TELEGRAM_MESSAGE_LIMIT) {
-      flush();
-      for (let i = 0; i < line.length; i += TELEGRAM_MESSAGE_LIMIT) {
-        chunks.push(line.slice(i, i + TELEGRAM_MESSAGE_LIMIT));
-      }
-      continue;
-    }
-    const candidate = current ? `${current}\n${line}` : line;
-    if (candidate.length > TELEGRAM_MESSAGE_LIMIT) {
-      flush();
-      current = line;
-    } else {
-      current = candidate;
-    }
-  }
-  flush();
-  return chunks;
-};
-
-// Markdown → MarkdownV2 변환 후 줄 경계로 분할. 짧든 길든 포맷을 유지한 채 보낸다.
-const formatForTelegram = (text: string): { chunks: string[]; parseMode?: "MarkdownV2" } => {
-  const formatted = telegramifyMarkdown(text, "escape");
-  return { chunks: splitMarkdownV2ForTelegram(formatted), parseMode: "MarkdownV2" };
-};
+// Markdown → Telegram HTML subset 변환 + 4096 분할(라이브러리가 태그 경계 보존).
+const formatForTelegram = (text: string): { chunks: string[]; parseMode?: "HTML" } => ({
+  chunks: splitHtmlForTelegram(telegramFormat(text)),
+  parseMode: "HTML",
+});
 
 // ─── transport(HttpError) 재시도 ─────────────────────────────────────────
 // 실 버그(2026-07): 새벽 스케줄 outbound 가 grammy HttpError("Network request … failed")
@@ -139,10 +114,11 @@ export const sendFormatted = async (
     try {
       await sendWithTransportRetry(send, chunks[i]!, extra);
     } catch (e) {
-      // MarkdownV2 실패(주로 Telegram parse error) → plain 폴백. transport 실패였다면 여기
-      // 도달 시점엔 이미 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
+      // HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML
+      // 그대로 보내면 <b> 등이 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미
+      // 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
       console.error("telegram formatted send failed, falling back to plain:", e);
-      await sendWithTransportRetry(send, markdownV2ToPlainText(chunks[i]!), {}).catch((e2) => {
+      await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}).catch((e2) => {
         console.error("telegram plain fallback also failed:", e2);
         if (opts?.throwOnFail === true) throw e2;
       });
@@ -392,9 +368,9 @@ const acquireAttachment = async (
   }
 };
 
-// Markdown → Telegram MarkdownV2 변환 + 4096 분할.
-// `telegramify-markdown` 위임. 짧든 길든 MarkdownV2 포맷을 유지한 채 줄 경계로
-// 분할하고, 청크가 깨지면 per-chunk plain 폴백이 그 청크만 낮춘다.
+// Markdown → Telegram HTML subset 변환 + 4096 분할.
+// `telegram-markdown-formatter` 위임(원칙 6 "직접 만들 일 아님"). 파싱 실패 시 per-chunk
+// plain 폴백이 태그를 스트립해 보낸다(htmlToPlainText).
 
 // module-scope bot 인스턴스 — sendOutgoing 이 scheduler 등 outgoing 사용자 (region
 // dispatcher) 에게서 직접 호출될 때 재사용. TelegramChannel.start 가 가장 먼저

@@ -1,4 +1,5 @@
 import "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
+import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
 import { extractTelegramChatId, DEFAULT_SESSION_ID } from "./core/threadkey.js";
 import path from "node:path";

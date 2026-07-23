@@ -34,17 +34,17 @@ interface TgSendExtra {
 }
 type TgSend = (chunk: string, extra: TgSendExtra) => Promise<unknown>;
 
-const TELEGRAM_MESSAGE_LIMIT = 4096;
-
 // telegramFormat output 은 Telegram HTML subset(<b>·<code>·<a> 등)이다. HTML parse 실패
 // fallback 에서는 parse_mode 없이 보낼 plain text 가 필요하므로 태그를 제거·언이스케이프한다.
 // ★원래 태그 노출 버그(2026-07): 실패 시 raw HTML 을 그대로 보내 <b> 등이 노출됐다 — 폴백에서
 // 태그를 스트립해 재발을 막는다(라이브러리 교체가 아니라 폴백을 고치는 게 옳은 수정이었다).
 const htmlToPlainText = (html: string): string =>
   html
+    // 링크는 "텍스트 (url)" 로 살린다. 아래 태그 스트립에 `a` 도 포함해, 이 규칙이 못 잡은
+    // 비표준 <a>(href 없음 등)의 잔여 태그까지 반드시 제거(태그 노출 재발 안전망).
     .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, "$2 ($1)")
     .replace(
-      /<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span)[^>]*>/gi,
+      /<\/?(?:a|b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|tg-spoiler|span)[^>]*>/gi,
       "",
     )
     .replace(/&lt;/g, "<")

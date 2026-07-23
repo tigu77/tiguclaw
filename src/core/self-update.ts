@@ -17,7 +17,7 @@
  * 실패는 전부 `SelfUpdateResult` 상태 객체로 수렴. 깨진 코드(typecheck 실패)는 절대 재시작
  * 트리거 안 함(먹통 = respawn 루프 방지) — 대신 작업트리를 `git reset --hard` 로 롤백한다.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { extractTelegramChatId } from "./threadkey.js";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
@@ -419,6 +419,57 @@ export const runSelfUpdate = async (
         f.endsWith("/package.json") ||
         f.endsWith("/package-lock.json"),
     );
+
+    // ── 위임 (Windows+built 만): in-process dist 교체가 EBUSY(실행 데몬이 dist 잠금)로
+    //    실패한다 — Windows 는 사용 중 디렉터리 rename 불가 + in-daemon 은 자기 프로세스라
+    //    stop-first 불가. 그래서 데몬 env 를 물려받은 detached CLI `bin/daemon.mjs update`
+    //    (stop-first)로 위임한다. CLI 는 별 프로세스라 데몬을 stop 하고(잠금 해제) dist 를
+    //    in-place 덮어쓰기·재시작한다(rename 없음 = EBUSY 없음).
+    //    ★고아화(`cmd /c start /b`): CLI 가 데몬의 자식으로 남으면 stop 의 taskkill /F /T 가
+    //    동반살해 → cmd 중간프로세스로 재부모화해 데몬 프로세스트리 밖으로.
+    //    unix 는 위임 안 함(mac in-process 검증됨 · linux systemd cgroup 이 detached 도 kill).
+    //    완료 통지: CLI 가 build 성공 후 마커 write(notify 좌표는 아래 env 2키). 계약 §2·§4·§5.
+    if (process.platform === "win32" && isBuiltRuntime()) {
+      try {
+        const daemonMjs = path.join(sourceRoot(), "bin", "daemon.mjs");
+        const child = spawn(
+          "cmd",
+          ["/c", "start", "/b", "", process.execPath, daemonMjs, "update"],
+          {
+            cwd: sourceRoot(),
+            env: {
+              ...process.env,
+              ...(deps.notify !== undefined
+                ? {
+                    TIGUCLAW_UPDATE_NOTIFY_CHANNEL: deps.notify.channel,
+                    TIGUCLAW_UPDATE_NOTIFY_TARGET: deps.notify.target ?? "",
+                  }
+                : {}),
+            },
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          },
+        );
+        child.unref();
+        return {
+          status: "updating",
+          from: prevSha,
+          to: newSha,
+          changedFiles: changed.length,
+        };
+      } catch (e) {
+        return {
+          status: "failed",
+          from: prevSha,
+          error: redactSecrets(
+            `자동 업데이트 위임 실패(${
+              e instanceof Error ? e.message : String(e)
+            }) — 터미널에서 \`tiguclaw update\` 를 실행하세요.`,
+          ),
+        };
+      }
+    }
 
     // 롤백 헬퍼 — reset --hard <prev> + (deps 바뀌었으면) npm install 재실행.
     // 현재 도는 데몬은 손대지 않으므로 롤백 후에도 계속 산다(재시작 X). 롤백 자체 실패도

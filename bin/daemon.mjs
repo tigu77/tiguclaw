@@ -878,6 +878,37 @@ const runUpdate = (c) => {
     console.log("   source 런타임 — 빌드 건너뜀 (tsx 로 src 직접 구동).");
   }
 
+  // ── 단계 7b: 완료 통지 마커 (위임 경로) ─────────────────────────────────────
+  // telegram /update 가 이 CLI 를 detached 로 띄웠을 때(Windows+built), 재시작 데몬이 부팅 시
+  //   소비해 "✅ 업데이트 완료" 를 요청자에게 통지하도록 마커를 쓴다. notify 좌표는 데몬이
+  //   env 2키로 전달. 파일명 ".update-complete" 는 self-update.ts:28 UPDATE_COMPLETE_MARKER 와
+  //   동기(dep-free 라 import 불가 → 리터럴). build 성공 후·start 전에만 쓰므로 실패/rollback
+  //   경로는 여기 도달 못 함 = 오탐 0. env 없으면(터미널 직접 실행) 안 씀.
+  const notifyChannel = process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
+  if (notifyChannel) {
+    try {
+      writeFileSync(
+        path.join(c.homeAbs, ".update-complete"),
+        `${JSON.stringify(
+          {
+            from: prevSha.slice(0, 7),
+            to: newSha.slice(0, 7),
+            changedFiles: 0,
+            ts: Date.now(),
+            notify: {
+              channel: notifyChannel,
+              target: process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null,
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } catch {
+      /* 통지 마커 best-effort — 업데이트는 계속 */
+    }
+  }
+
   // ── 단계 8: 재가동 ──────────────────────────────────────────────────────────
   if (wasRunning) {
     table?.start?.(c); // 5에서 stop 했으니 start(restart 아님).

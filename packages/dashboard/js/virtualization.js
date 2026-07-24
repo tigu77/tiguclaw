@@ -323,6 +323,17 @@
       const scrollChatToNewest = () => {
         stickBottom = true;
         scheduleRelayout();
+        // 전송/로드 직후 추정→실측·입력창 축소 클램프가 여러 프레임에 걸쳐 바닥을 흔들어 "종종 끝까지
+        //   스크롤 안 됨"이 났다(단일 relayout/pin 이 지연 height 변화보다 먼저 끝나 놓침). 몇 프레임
+        //   연속 재-pin 해 지연분을 넘어 확실히 바닥 안착. stickBottom 풀리면(사용자 위로 스크롤) 즉시
+        //   중단 = 존중. rAF 체인이라 비용 미미.
+        let n = 0;
+        const settle = () => {
+          if (!stickBottom || vtJumpTop || n++ >= 4) return;
+          vtPinBottom();
+          requestAnimationFrame(settle);
+        };
+        requestAnimationFrame(settle);
       };
 
       // 스크롤 리스너 — stick 추적 + 점프버튼 + 상단 근처면 older 로드(센티넬 IntersectionObserver 대체).

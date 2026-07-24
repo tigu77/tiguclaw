@@ -100,8 +100,16 @@
       registerBuiltinHandler("job.toggleDetail", (ctx) => {
         const entry = jobCards.get(ctx.targetId);
         if (!entry || !entry.el.classList.contains("has-detail")) return;
-        entry.el.classList.toggle("open");
+        const nowOpen = entry.el.classList.toggle("open");
         updateChev(entry);
+        // 펼칠 때 스텝박스를 최신(바닥)으로 — 안 그러면 scrollTop=0(맨위)이라 스텝 append 팔로우
+        //   (near-bottom 24px 판정)가 영영 안 붙어 진행 중 잡의 라이브 스텝을 못 따라간다. rAF 로
+        //   .open 레이아웃 반영 후 스크롤(접힘 상태 clientHeight=0 회피).
+        if (nowOpen && entry.stepsEl) {
+          requestAnimationFrame(() => {
+            entry.stepsEl.scrollTop = entry.stepsEl.scrollHeight;
+          });
+        }
       });
       registerBuiltinHandler("job.copy", async (ctx) => {
         const entry = jobCards.get(ctx.targetId);

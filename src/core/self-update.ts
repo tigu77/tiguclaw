@@ -27,6 +27,11 @@ import { redactSecrets } from "./outbound-sanitize.js";
 /** 마커파일 — 부팅 시 1회 소비되는 "업데이트 완료" 통지 좌표 (architect §4). */
 export const UPDATE_COMPLETE_MARKER = ".update-complete";
 
+/** 마커파일 — 위임 CLI update(telegram /update) 가 실패·롤백했을 때의 "업데이트 실패"
+ *  통지 좌표. 위임 실행은 stdio 가 버려져 실패가 조용히 사라졌다 → 롤백 후 재가동한 데몬이
+ *  부팅 시 1회 소비해 요청자에게 실패 단계+로그 경로를 통지한다. UPDATE_COMPLETE_MARKER 와 대칭. */
+export const UPDATE_FAILED_MARKER = ".update-failed";
+
 export type SelfUpdateStatus =
   | "up-to-date" // 변경 0 — 재시작 X
   | "updating" // 게이트 통과 → 통지 적재 + 분리 재시작 트리거됨

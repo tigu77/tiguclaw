@@ -94,6 +94,7 @@ import {
   runSelfUpdate,
   setSelfUpdateRestart,
   UPDATE_COMPLETE_MARKER,
+  UPDATE_FAILED_MARKER,
   type SelfUpdateNotifyDest,
   type SelfUpdateResult,
 } from "./core/self-update.js";
@@ -1635,6 +1636,53 @@ try {
   );
 }
 
+// 자가 업데이트 실패 통지 — 위임 CLI update(telegram /update)가 실패·롤백하면 조용히 옛
+// 버전으로 재가동될 뿐 요청자는 원인을 못 봤다(윈도우 "빌드 실패"). CLI 가 롤백 전 남긴
+// <home>/.update-failed 마커를 부팅 시 1회 소비해 실패 단계+로그 경로를 요청자에게 통지 후
+// 삭제(멱등). .update-complete 소비와 대칭. best-effort — 파싱·발송 실패해도 마커는 삭제.
+const updateFailedNotified = await (async (): Promise<boolean> => {
+  const markerPath = path.join(getPaths().home, UPDATE_FAILED_MARKER);
+  let raw: string;
+  try {
+    raw = await fsp.readFile(markerPath, "utf8");
+  } catch {
+    return false; // 마커 없음 = 실패 아님.
+  }
+  try {
+    const data = JSON.parse(raw) as {
+      stage?: string;
+      detail?: string;
+      logPath?: string | null;
+      notify?: { channel?: string; target?: string | null };
+    };
+    const stage = typeof data.stage === "string" ? data.stage : "unknown";
+    const detail = typeof data.detail === "string" && data.detail ? `\n${data.detail}` : "";
+    const logLine =
+      typeof data.logPath === "string" && data.logPath ? `\n로그: ${data.logPath}` : "";
+    const text = `❌ 업데이트 실패 (단계: ${stage}) — 이전 버전으로 되돌려 재가동했습니다.${detail}${logLine}`;
+    await deliverOutbound({
+      channel: data.notify?.channel ?? "cli",
+      target: data.notify?.target ?? null,
+      text,
+      bus,
+      observeThreadKey: DEFAULT_SESSION_ID,
+    });
+  } catch (e) {
+    console.error(
+      `self-update: 부팅 실패 통지 실패(마커는 삭제): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  } finally {
+    try {
+      await fsp.unlink(markerPath);
+    } catch {
+      /* 이미 없음/권한 — 무시 */
+    }
+  }
+  return true;
+})();
+
 // 자가 업데이트 완료 통지 — 부팅 시 <home>/.update-complete 마커가 있으면 읽어 요청자에게
 // "업데이트 완료 vX→vY" 1회 통지 후 마커 삭제(멱등). 채널 start 이후(send 가능 시점)라야
 // raw 아웃바운드가 도달. best-effort — 마커 깨졌거나 발송 실패해도 부팅을 막지 않고 마커는
@@ -1702,7 +1750,7 @@ const updateNotified = await (async (): Promise<boolean> => {
 // ★사용자가 자기 reboot 스케줄로 재시작 통지를 이미 굴리면(대개 이름 들어간 개인화 문구)
 // built-in 은 물러나 중복을 피한다. 그런 스케줄이 없을 때(신규 설치 등)만 built-in 이 기본
 // 통지를 담당 — /restart '완료 알림' 약속을 제로 셋업으로 충족하면서 중복 0.
-if (!updateNotified) {
+if (!updateNotified && !updateFailedNotified) {
   try {
     const hasRebootSchedule =
       listSchedules({ onlyEnabled: true, triggerType: "reboot" }).length > 0;

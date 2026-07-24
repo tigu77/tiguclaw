@@ -51,10 +51,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
   watchFile,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -758,10 +760,69 @@ const isRegistered = (c) => {
 /** @param {Ctx} c */
 const runUpdate = (c) => {
   const isWin = process.platform === "win32";
-  // spawnSync 래퍼 — stdio 상속(사용자가 라이브 출력을 본다), cwd=repoRoot. npm 은 Windows
-  //   에서 실행파일이 아니라 npm.cmd(배치)라 shell 경유 필요; 인자는 전부 고정 상수라
-  //   인젝션 0(동적값은 rollback 의 git reset prevSha 뿐 — git 은 git.exe 라 무shell).
-  //   exit≠0 = 실패로 판정(self-update.ts:138-143 과 동일 근거).
+
+  // ── A(관측): 위임 실행(telegram /update)은 detached·stdio "ignore" 라 실패 원인이 어디에도
+  //   안 남았다(윈도우 "빌드 실패"를 로그로 못 봄). delegated(=notify env 존재)면 이 CLI 의
+  //   콘솔 + 모든 하위프로세스(git/npm/tsc) 출력을 <home>/logs/update-<stamp>.log 로 캡처한다.
+  //   터미널 직접 실행(env 없음)은 종전대로 stdio 상속(라이브 출력)이라 회귀 0.
+  const delegated = !!process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
+  let logFd = null;
+  let updateLogPath = null;
+  if (delegated) {
+    try {
+      const logsDir = path.join(c.homeAbs, "logs");
+      mkdirSync(logsDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      updateLogPath = path.join(logsDir, `update-${stamp}.log`);
+      logFd = openSync(updateLogPath, "a");
+      const tee = (orig, level) => (...a) => {
+        try {
+          writeSync(logFd, `[${new Date().toISOString()}] [${level}] ${a.join(" ")}\n`);
+        } catch {
+          /* 파일 기록 실패해도 콘솔은 낸다 */
+        }
+        orig(...a);
+      };
+      console.log = tee(console.log.bind(console), "log");
+      console.error = tee(console.error.bind(console), "err");
+    } catch {
+      logFd = null; /* 로그 셋업 실패해도 업데이트는 계속 */
+    }
+  }
+
+  // 실패 마커 — 롤백 전에 써서, 재가동한 데몬이 부팅 시 소비해 요청자에게 "❌ 실패" 통지.
+  //   notify env 없으면(터미널 직접) 안 씀(오탐 0). UPDATE_FAILED_MARKER=".update-failed" 리터럴
+  //   (dep-free 라 import 불가 — self-update.ts 상수와 동기).
+  const writeFailedMarker = (stage, detail) => {
+    if (!delegated) return;
+    try {
+      writeFileSync(
+        path.join(c.homeAbs, ".update-failed"),
+        `${JSON.stringify(
+          {
+            stage,
+            detail: String(detail ?? "").slice(0, 500),
+            logPath: updateLogPath,
+            from: prevSha?.slice(0, 7) ?? null,
+            ts: Date.now(),
+            notify: {
+              channel: process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL,
+              target: process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null,
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } catch {
+      /* 마커 best-effort */
+    }
+  };
+
+  // spawnSync 래퍼 — 터미널 직접 실행은 stdio 상속(라이브 출력), 위임 실행은 logFd 로 리다이렉트
+  //   (하위프로세스 출력까지 로그 파일에). cwd=repoRoot. npm 은 Windows 에서 npm.cmd(배치)라
+  //   shell 경유 필요; 인자는 전부 고정 상수라 인젝션 0(동적값은 rollback 의 git reset prevSha
+  //   뿐 — git 은 git.exe 라 무shell). exit≠0 = 실패로 판정(self-update.ts:138-143 과 동일 근거).
   /**
    * @param {string} cmd
    * @param {string[]} args
@@ -771,7 +832,7 @@ const runUpdate = (c) => {
   const run = (cmd, args, opts = {}) => {
     const r = spawnSync(cmd, args, {
       cwd: c.repoRoot,
-      stdio: "inherit",
+      stdio: logFd !== null ? ["ignore", logFd, logFd] : "inherit",
       shell: opts.shell ?? false,
     });
     return r.status ?? 1;
@@ -813,6 +874,7 @@ const runUpdate = (c) => {
     console.error(
       "update: 로컬 미커밋 변경/충돌로 pull 실패 — 수동 확인 필요 (git status).",
     );
+    writeFailedMarker("git pull", "로컬 미커밋 변경/충돌로 pull 실패");
     process.exitCode = 1;
     return;
   }
@@ -855,6 +917,7 @@ const runUpdate = (c) => {
   // ── 단계 6: npm ci ──────────────────────────────────────────────────────────
   if (run("npm", ["ci", "--no-audit", "--no-fund"], { shell: isWin }) !== 0) {
     console.error("update: npm ci 실패 — 롤백합니다.");
+    writeFailedMarker("npm ci", "npm ci 실패(의존성 설치)");
     rollback();
     console.error("update: 롤백 완료, 데몬 원복. exit 1.");
     process.exitCode = 1;
@@ -868,6 +931,7 @@ const runUpdate = (c) => {
       !existsSync(c.distEntry)
     ) {
       console.error("update: 빌드 실패(진입점 미생성) — 롤백합니다.");
+      writeFailedMarker("build", "build:prod 비정상 종료 또는 진입점(dist/src/index.js) 미생성");
       rollback();
       console.error("update: 롤백 완료, 데몬 원복. exit 1.");
       process.exitCode = 1;

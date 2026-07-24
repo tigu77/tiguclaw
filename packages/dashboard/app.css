@@ -617,6 +617,15 @@
       }
       body.bg-open #bg-panel { transform:translateX(0); pointer-events:auto; visibility:visible; }
       @media (max-width:900px) { body.bg-open #bg-backdrop { display:block; } }
+      /* PC(>900px): 백그라운드 패널을 오버레이가 아니라 레이아웃을 미는 사이드 패널로(CC 웹식).
+         패널은 position:fixed 우측 고정이라, 열리면 header/main 에 패널 폭(--bg-panel-w, JS가 드래그
+         시 갱신·기본 380px)만큼 margin-right 를 줘 채팅 영역을 그만큼 좁힌다 = 덮지 않고 밀어냄.
+         모바일(≤900px)은 종전 오버레이+백드롭 유지(위 미디어쿼리). */
+      @media (min-width:901px) {
+        header, main { transition:margin-right .2s ease; }
+        body.bg-open header, body.bg-open main { margin-right:var(--bg-panel-w, 380px); }
+        body.bg-resizing header, body.bg-resizing main { transition:none; }
+      }
       /* 드로어 폭 드래그 조절(왼쪽 가장자리) — 폭은 JS 가 inline style + localStorage 로 관리. */
       #bg-resize { position:absolute; left:0; top:0; bottom:0; width:8px; cursor:ew-resize; z-index:3; }
       #bg-resize::before { content:""; position:absolute; left:2px; top:50%; transform:translateY(-50%); width:3px; height:36px; border-radius:2px; background:var(--border-strong); opacity:0; transition:opacity .12s; }

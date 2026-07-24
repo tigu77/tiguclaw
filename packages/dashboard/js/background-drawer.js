@@ -171,7 +171,13 @@
         if (!bgPanel || !handle) return;
         const KEY = "tc:bgPanelWidth";
         const clamp = (w) => Math.max(300, Math.min(Math.min(760, window.innerWidth * 0.9), w));
-        const apply = (w) => { bgPanel.style.width = clamp(w) + "px"; };
+        // PC 사이드 패널 푸시(CC 웹식) — 패널 폭을 --bg-panel-w 로 공유해 header/main 이 그만큼
+        //   margin-right 로 채팅을 좁힌다(app.css). 드래그 중에도 라이브 추적.
+        const apply = (w) => {
+          const cw = clamp(w);
+          bgPanel.style.width = cw + "px";
+          document.body.style.setProperty("--bg-panel-w", cw + "px");
+        };
         const saved = parseInt(localStorage.getItem(KEY) || "", 10);
         if (Number.isFinite(saved)) apply(saved);
         let dragging = false;

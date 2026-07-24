@@ -138,6 +138,34 @@
         return line;
       };
 
+      // 훅 발화 라인 — 도구 라인(buildActivityLineFromAct)과 동형. 차단(blocked)은 눈에 띄게(aav-hook-blocked).
+      //   event(PreToolUse/PostToolUse/UserPromptSubmit/Stop) + toolName + 차단사유를 한 줄로.
+      const buildActivityLineFromHook = (h) => {
+        const line = document.createElement("div");
+        line.className = "aav-line aav-hook" + (h.blocked ? " aav-hook-blocked" : "");
+        if (h.ts != null) line.dataset.ts = String(h.ts);
+        const time = document.createElement("span"); time.className = "aav-time"; time.textContent = fmtTime(h.ts);
+        const badges = document.createElement("span"); badges.className = "aav-badges";
+        badges.appendChild(buildActivitySessionBadge(h.threadKey));
+        const chb = buildChannelBadge(channelFromThreadKey(h.threadKey)); if (chb) badges.appendChild(chb);
+        const icon = document.createElement("span"); icon.className = "aav-role-icon";
+        icon.textContent = h.blocked ? "⛔" : "🪝";
+        const meta = document.createElement("div"); meta.className = "aav-meta";
+        const chev = document.createElement("span"); chev.className = "aav-chevron"; chev.textContent = "▸";
+        meta.appendChild(chev); meta.appendChild(time); meta.appendChild(badges); meta.appendChild(icon);
+        const body = document.createElement("div"); body.className = "aav-body";
+        const evName = String(h.event || "hook");
+        const tool = h.toolName ? " · " + h.toolName : "";
+        const blocked = h.blocked ? " — 차단" + (h.blockReason ? ": " + activityFullText(h.blockReason) : "") : "";
+        body.textContent = "훅 " + evName + tool + blocked;
+        line.appendChild(meta); line.appendChild(body);
+        line.addEventListener("click", () => line.classList.toggle("expanded"));
+        const hookCtx = () => ({ type: "activity", targetId: "h|" + h.ts + "|" + evName + "|" + (h.toolName || ""), threadKey: h.threadKey, label: body.textContent });
+        attachKebab(meta, "activity", hookCtx);
+        attachContextMenu(line, "activity", hookCtx);
+        return line;
+      };
+
       const pruneActivityStream = () => {
         if (!activityStreamEl) return;
         while (activityStreamEl.children.length > ACTIVITY_MAX_LINES) {
@@ -186,6 +214,13 @@
           if (activitySeenMsgKeys.has(key)) return null;
           activitySeenMsgKeys.add(key);
           return buildActivityLineFromEntry(u.e);
+        }
+        if (u.kind === "hook") {
+          const h = u.h;
+          const key = "h|" + h.ts + "|" + (h.threadKey || "") + "|" + (h.event || "") + "|" + (h.toolName || "");
+          if (activitySeenActKeys.has(key)) return null;
+          activitySeenActKeys.add(key);
+          return buildActivityLineFromHook(h);
         }
         const key = "a|" + u.a.ts + "|" + (u.a.threadKey || "") + "|" + (u.a.seq == null ? "" : u.a.seq);
         if (activitySeenActKeys.has(key)) return null;
@@ -282,6 +317,16 @@
           if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0 || tk.indexOf("gateway:") === 0) return;
           const node = renderActivityUnit({ kind: "act", a: ap });
           if (node) appendActivityNode(node, ap.ts);
+          return;
+        }
+        if (ev.type === "hook.activity") {
+          const h = ev.payload || {};
+          if (h.ts == null) h.ts = ev.ts;
+          const tk = typeof h.threadKey === "string" ? h.threadKey : "";
+          // 도구 라인과 동일 규칙 — 워커/서브/게이트웨이는 드로어 소관이라 모니터 제외.
+          if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0 || tk.indexOf("gateway:") === 0) return;
+          const node = renderActivityUnit({ kind: "hook", h });
+          if (node) appendActivityNode(node, h.ts);
           return;
         }
         // prompt.options·llm.turn_*·worker.* 등 — 읽기전용 원칙(§5, 선택지 버튼 렌더 안 함) 또는

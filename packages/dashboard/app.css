@@ -1138,6 +1138,8 @@
       .aav-line.aav-user { border-left:3px solid var(--accent); }
       .aav-line.aav-assistant { border-left:3px solid var(--accent-2); }
       .aav-line.aav-tool { border-left:3px solid var(--text-dim); opacity:.92; }
+      .aav-line.aav-hook { border-left:3px solid var(--accent-2); opacity:.92; }
+      .aav-line.aav-hook-blocked { border-left:3px solid var(--danger, #f87171); background:rgba(248,113,113,.08); opacity:1; }
       .aav-meta { display:flex; align-items:center; justify-content:flex-start; gap:8px; flex:none; flex-wrap:wrap; }
       .aav-chevron { flex:none; font-size:9px; color:var(--text-dim); transition:transform .12s ease; display:inline-block; }
       .aav-line.expanded .aav-chevron { transform:rotate(90deg); }

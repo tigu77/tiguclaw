@@ -19,6 +19,7 @@ import {
   type Command,
 } from "../entry/command-registry.js";
 import { isModuleDisabled } from "../settings.js";
+import { listHooksForInventory } from "../entry/hook-runner.js";
 
 export type PluginCategory =
   | "channel"
@@ -27,7 +28,8 @@ export type PluginCategory =
   | "agent"
   | "mcp"
   | "endpoint"
-  | "command";
+  | "command"
+  | "hook";
 
 /**
  * 3 layer — 사용자 멘탈 모델: 개발 레포가 *in-tree* 로 들고 있는가, 외부가 떠 있는 걸 *발견* 만 하는가, 그도 저도 아닌 코어 *메타 인프라* 인가.
@@ -56,6 +58,7 @@ export interface InventoryResult {
   mcp: PluginEntry[];
   endpoint: PluginEntry[];
   command: PluginEntry[];
+  hook: PluginEntry[];
   generatedAt: number;
 }
 
@@ -700,6 +703,47 @@ const collectCommands = async (cwd: string): Promise<PluginEntry[]> => {
   return out;
 };
 
+// ─── (h) 훅 — settings.json `hooks[event]` (능력(데이터) 축, 2026-07-24) ──────────
+//
+// PROJECT.md daemon-engineer 지시: "등록된 훅을 채널·플러그인·스킬처럼 1급 능력
+// 카테고리로" — hook-runner.ts 의 `listHooksForInventory`(단일 파서, settings.ts
+// `loadSettingsLayersWithSource` 재사용) 를 그대로 소비. 신규 walk/파싱 로직 0.
+//  - scope "home"(`<home>/settings.json`) → discovered (skill/agent 의 user-scope 와
+//    동형 매핑 — 사용자가 홈에 설정해 "발견"되는 능력).
+//  - scope "project"(`.tiguclaw/settings.json`+레거시) → in_tree (project-scope skill/
+//    agent 와 동형 — 현재 작업 폴더가 직접 들고 있음).
+//  - enabled: 항상 true(V1 — settings.json 훅엔 on/off 필드가 없다, disable 은 항목
+//    자체를 지우는 것). name = "<event>" 또는 "<event> (<matcher>)"(matcher!="*" 일 때만).
+const hookScopeToLayer = (scope: "home" | "project"): PluginLayer =>
+  scope === "project" ? "in_tree" : "discovered";
+
+/** command 요약 — 인벤토리 리스트/디테일에 그대로 노출하기엔 긴 셸 명령이 흔해 자름. */
+const COMMAND_SUMMARY_CAP = 160;
+const summarizeCommand = (command: string): string => {
+  const oneLine = command.replace(/\s+/g, " ").trim();
+  return oneLine.length > COMMAND_SUMMARY_CAP
+    ? `${oneLine.slice(0, COMMAND_SUMMARY_CAP)}…`
+    : oneLine;
+};
+
+const collectHooks = (cwd: string): PluginEntry[] => {
+  const items = listHooksForInventory(cwd);
+  return items.map((h) => ({
+    category: "hook" as const,
+    layer: hookScopeToLayer(h.scope),
+    name: h.matcher === "*" ? h.event : `${h.event} (${h.matcher})`,
+    description: summarizeCommand(h.command),
+    source: h.source,
+    enabled: true,
+    metadata: {
+      event: h.event,
+      matcher: h.matcher,
+      command: h.command,
+      scope: h.scope,
+    },
+  }));
+};
+
 // ─── 통합 walker ─────────────────────────────────────────────────────────
 
 export const collectInventory = async (opts?: {
@@ -763,6 +807,7 @@ export const collectInventory = async (opts?: {
     () => collectCommands(repoRoot),
     [] as PluginEntry[],
   );
+  const hook = safe(() => collectHooks(repoRoot), [] as PluginEntry[]);
 
   return {
     channel,
@@ -772,6 +817,7 @@ export const collectInventory = async (opts?: {
     mcp,
     endpoint,
     command,
+    hook,
     generatedAt: Date.now(),
   };
 };

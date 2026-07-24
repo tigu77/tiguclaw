@@ -16,6 +16,7 @@ import { expandCommand } from "./core/entry/command-registry.js";
 import {
   runStopHooks,
   runUserPromptSubmitHooks,
+  setHookObserver,
 } from "./core/entry/hook-runner.js";
 import {
   collectInventory,
@@ -198,6 +199,18 @@ const bus = initEventBus({ bufferSize: 1000 });
 // 관측 이벤트 영속 sink — ring buffer 는 hot cache 로 두고 의미있는 이벤트를 DB 에 기록
 // (감사·메트릭). publish() 무수정, subscriber 하나만 추가 (코어는 데이터로 확장).
 startEventPersistence(bus);
+
+// 훅 발화 → EventBus 배선 (self-update 의 `setSelfUpdateRestart` 와 동형 — 부팅 1회
+// 레지스트리 등록, 어댑터 시그니처 불변). `hook-runner.ts` 는 매칭된 훅을 실제 spawn
+// 했을 때만 emit(미설정/미매칭 훅은 콜백 0회 — 노이즈 0). 프런트 렌더는 별도 소비자
+// 몫 — 여기선 `hook.activity` 로 EventBus/SSE 에 얹기만 한다.
+setHookObserver((ev) => {
+  bus.publish({
+    type: "hook.activity",
+    ts: Date.now(),
+    payload: ev as unknown as Record<string, unknown>,
+  });
+});
 
 const channels: Channel[] = [];
 

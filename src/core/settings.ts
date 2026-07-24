@@ -87,6 +87,40 @@ const readOne = (p: string): LoadedSettings | undefined => {
   }
 };
 
+/** 레이어 하나 — 파싱된 settings + 어느 스코프/경로에서 왔는지(인벤토리 노출용, 2026-07-24). */
+export interface SettingsLayer {
+  /** "home" = `<home>/settings.json`. "project" = `.tiguclaw/settings.json`(+레거시 flat). */
+  scope: "home" | "project";
+  /** 절대 경로 — inventory 등 소비자가 source 로 노출. */
+  path: string;
+  settings: LoadedSettings;
+}
+
+/**
+ * settings.json 레이어를 우선순위 순서로, 출처(scope/path) 를 보존한 채 반환: 홈 →
+ * 프로젝트(.tiguclaw) → 프로젝트(레거시 flat). 존재·파싱 성공한 것만. 병합은 호출자가
+ * 자기 의미로 수행(hooks=concat / profiles=override). cwd 옵셔널(기본 process.cwd()).
+ *
+ * 2026-07-24 — hooks 인벤토리 노출(daemon-engineer) 이 "어느 파일에서 온 훅인지" 를
+ *  필요로 해 신설. `loadSettingsLayers` 는 이 함수의 `.settings` 투영(단일 파서 유지 —
+ *  중복 readOne 0).
+ */
+export const loadSettingsLayersWithSource = (
+  cwd: string = process.cwd(),
+): SettingsLayer[] => {
+  const sources: { scope: "home" | "project"; path: string }[] = [
+    { scope: "home", path: getPaths().settings },
+    { scope: "project", path: projectScope(cwd).settings },
+    { scope: "project", path: projectScopeLegacy(cwd).settings },
+  ];
+  const layers: SettingsLayer[] = [];
+  for (const { scope, path } of sources) {
+    const settings = readOne(path);
+    if (settings !== undefined) layers.push({ scope, path, settings });
+  }
+  return layers;
+};
+
 /**
  * settings.json 레이어를 우선순위 순서로 반환: 홈 → 프로젝트(.tiguclaw) → 프로젝트(레거시 flat).
  * 존재·파싱 성공한 것만. 병합은 호출자가 자기 의미로 수행(hooks=concat / profiles=override).
@@ -94,19 +128,7 @@ const readOne = (p: string): LoadedSettings | undefined => {
  */
 export const loadSettingsLayers = (
   cwd: string = process.cwd(),
-): LoadedSettings[] => {
-  const paths = [
-    getPaths().settings,
-    projectScope(cwd).settings,
-    projectScopeLegacy(cwd).settings,
-  ];
-  const layers: LoadedSettings[] = [];
-  for (const p of paths) {
-    const s = readOne(p);
-    if (s !== undefined) layers.push(s);
-  }
-  return layers;
-};
+): LoadedSettings[] => loadSettingsLayersWithSource(cwd).map((l) => l.settings);
 
 /** 한 프로파일 값 shape 검증 — pool 이 문자열 배열이 아니면 무효(undefined). */
 const validateProfile = (

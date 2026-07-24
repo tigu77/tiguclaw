@@ -90,6 +90,11 @@ import {
   idleConfigExempt,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
+import {
+  runPreToolUseHooks,
+  runPostToolUseHooks,
+  formatToolBlock,
+} from "../../entry/hook-runner.js";
 import type { SteeringInput } from "../../steering.js";
 import type {
   RegionAActivityPayload,
@@ -137,6 +142,22 @@ const isToolsUnsupported = (e: unknown): boolean =>
   /does not support tools|tools?\b[^.]{0,20}not support|not support[^.]{0,20}\btools?\b|does not support function/i.test(
     e.message,
   );
+
+// PostToolUse 관찰용 문자열화(Phase 1, 2026-07-24) — MCP CallToolResult.content =
+// Array<{type:"text", text:string} | ...>. codex 어댑터(openai-codex-oauth.ts
+// "MCP CallToolResult.content" 주석)와 동일 규칙: text 노드만 join, 빈 결과면
+// JSON.stringify 폴백(관찰 전용이라 손실 있어도 무해 — 계약 §1.1 "요약" 허용).
+const summarizeMcpToolResult = (result: unknown): string => {
+  const arr = Array.isArray(result) ? result : [];
+  const text = arr
+    .filter(
+      (c) =>
+        c !== null && typeof c === "object" && (c as { type?: string }).type === "text",
+    )
+    .map((c) => String((c as { text?: unknown }).text ?? ""))
+    .join("");
+  return text !== "" ? text : JSON.stringify(result ?? {});
+};
 
 export const runOpenAi = async (
   input: RegionASdkInput,
@@ -364,6 +385,72 @@ export const runOpenAi = async (
         "find-capabilities",
       ),
     );
+  }
+
+  // PreToolUse/PostToolUse 훅 배선 — Phase 1 (2026-07-24, 계약 §3.3 실측 갱신).
+  // 계약 초안은 ToolInputGuardrail(tool 정의 시 부착)+AgentHooks onToolEnd 를 지시했으나,
+  // node_modules 실측(`@openai/agents-core/dist/mcp.js` mcpToFunctionTool → `tool({...})`
+  // 호출에 inputGuardrails/outputGuardrails 옵션 미전달)상 **MCP 로 노출되는 도구는 guardrail
+  // 이 물리적으로 안 붙는다** — 이 어댑터의 전 capability(file-ops/memory/todo/skills/...) 와
+  // 외부 MCP 브리지가 전부 MCP 경로라 guardrail 방식으론 커버리지 0%. 대신 실제 실행
+  // choke-point 인 `MCPServer.callTool()` 자체를 **이 파일 로컬에서만** wrap 한다 — 원본
+  // 팩토리(`_mcp-bridge.ts`/`external-mcp.ts`, codex 어댑터와 공유)는 원본 그대로 두고
+  // (다른 어댑터 무영향·회귀 0), 여기서 만든 `mcpServers` 배열 원소만 감싼다. 결과: 이
+  // 어댑터가 등록하는 **모든** MCP 도구(capability + extraMcpServers + 외부 MCP 브리지)가
+  // 예외 없이 한 지점에서 Pre(차단)/Post(관찰)를 통과 — guardrail 방식보다 오히려 커버리지가
+  // 넓다(§한계 없음, MCP 기반이 아닌 native `tool()` 을 이 어댑터가 쓰지 않으므로 100%).
+  //  - Pre: block 이면 실제 callTool 을 스킵하고 `formatToolBlock` 문자열을 content 로 반환
+  //    (모델이 tool_result 자리에서 거부를 인지 — claude/codex 와 동일 시맨틱, 계약 §2).
+  //    codex parity — 차단된 호출은 Post 를 발행하지 않는다(도구가 실행되지 않았으므로).
+  //  - Post: callTool 성공/실패(에러 포함) 양쪽에서 발행(계약 §3.1 "에러 케이스 포함" 과
+  //    동형) — 관찰 전용, fire-and-forget(`void`, claude 콜백과 동일 — 도구 결과 반환을
+  //    지연시키지 않는다). 훅 미설정(대부분) 이면 `runHooks` 조기반환으로 오버헤드 0.
+  //  - tool_name 정규화(계약 §4-3)는 `runPreToolUseHooks`/`runPostToolUseHooks` 내부에서
+  //    이미 수행(hook-runner.ts) — 이 어댑터의 MCP 브리지가 노출하는 이름은 애초에
+  //    `mcp__` 접두사가 없어(codex 와 동일 무접두사 규약) normalize 는 no-op, 원본 이름을
+  //    그대로 넘긴다(claude 의 `mcp__server__tool` 접두사 케이스와 무관).
+  const wireToolHooks = (server: MCPServer): MCPServer => ({
+    ...server,
+    async callTool(toolName, args, meta) {
+      const toolInput = (args ?? {}) as Record<string, unknown>;
+      const pre = await runPreToolUseHooks({
+        toolName,
+        toolInput,
+        cwd: discoveryCwd,
+        channel: input.channel,
+        threadKey: input.threadKey,
+      });
+      if (pre.block) {
+        return [
+          { type: "text", text: formatToolBlock(toolName, pre.blockReason) },
+        ] as Awaited<ReturnType<MCPServer["callTool"]>>;
+      }
+      try {
+        const result = await server.callTool(toolName, args, meta);
+        void runPostToolUseHooks({
+          toolName,
+          toolInput,
+          toolResponse: summarizeMcpToolResult(result),
+          cwd: discoveryCwd,
+          channel: input.channel,
+          threadKey: input.threadKey,
+        });
+        return result;
+      } catch (e) {
+        void runPostToolUseHooks({
+          toolName,
+          toolInput,
+          toolResponse: `Error: ${e instanceof Error ? e.message : String(e)}`,
+          cwd: discoveryCwd,
+          channel: input.channel,
+          threadKey: input.threadKey,
+        });
+        throw e;
+      }
+    },
+  });
+  for (let i = 0; i < mcpServers.length; i++) {
+    mcpServers[i] = wireToolHooks(mcpServers[i]);
   }
 
   // 2a (2026-06-15) — 인격(sysprompt) parity. 더미 instructions 폐기, 세 어댑터

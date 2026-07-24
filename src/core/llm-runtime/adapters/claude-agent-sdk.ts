@@ -33,6 +33,9 @@ import {
   type Options,
   type SDKMessage,
   type SDKUserMessage,
+  type HookCallbackMatcher,
+  type PreToolUseHookInput,
+  type PostToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { SteeringChannel } from "../../steering.js";
 import { getSession, invalidateResume } from "../../../store/sessions.js";
@@ -97,6 +100,12 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
+import {
+  runPreToolUseHooks,
+  runPostToolUseHooks,
+  formatToolBlock,
+  normalizeToolName,
+} from "../../entry/hook-runner.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
 import {
@@ -561,6 +570,79 @@ export const runClaude = async (
   // input.abortSignal 미지정이면 link 는 idleAc 만 → 현행 1층 동작 그대로(TT-I7).
   const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
 
+  // PreToolUse/PostToolUse 훅 배선 — Phase 1 (2026-07-24, 계약 §3.2·O1 실측).
+  // settings.json 의 `hooks` 는 hook-runner(`runHooks`)만 읽는 유일 소스다. 여기서
+  // 쓰는 `options.hooks` 는 filesystem settings 로딩(`settingSources`, 위 §L11-17
+  // 가드로 계속 미설정)과 무관한 SDK 의 순수 JS 콜백 슬롯이라, settings.json 훅을
+  // 중복 로드하지 않는다(이중실행 위험 0 — O1, `_workspace/hooks_phase1_O1_claude_doubleload.md`).
+  // 두 콜백 모두 이 파일이 아니라 `runPreToolUseHooks`/`runPostToolUseHooks` 로
+  // 즉시 위임 — codex/openai 와 동일 엔진을 통과해 #2(멀티 LLM 대칭) 를 물리적으로
+  // 보장한다(계약 §4-1). 차단 문자열은 `formatToolBlock` 단일 포맷(계약 §2).
+  const hooksOption: Options["hooks"] = {
+    PreToolUse: [
+      {
+        hooks: [
+          async (rawInput) => {
+            const hookInput = rawInput as PreToolUseHookInput;
+            // 결함 B 수정(2026-07-24) — formatToolBlock 에도 정규화값 재사용(아래
+            // runPreToolUseHooks 와 동일 값). RAW `mcp__file_ops__Read` 를 그대로
+            // 넘기면 codex/openai(`⛔ Tool \`Read\` blocked...`)와 바이트 불일치 →
+            // #2(멀티 LLM 대칭) 위반(계약 §2/§4-3).
+            const normalizedToolName = normalizeToolName(hookInput.tool_name);
+            const pre = await runPreToolUseHooks({
+              toolName: normalizedToolName,
+              toolInput: (hookInput.tool_input ?? {}) as Record<
+                string,
+                unknown
+              >,
+              cwd,
+              channel: input.channel,
+              threadKey: input.threadKey,
+            });
+            if (!pre.block) return {};
+            // SDK deny 반환 — hookSpecificOutput.permissionDecision:"deny" (coreTypes.d.ts
+            // SyncHookJSONOutput). 도구는 실행되지 않고 모델은 reason 을 tool_result 로 받는다.
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: formatToolBlock(
+                  normalizedToolName,
+                  pre.blockReason,
+                ),
+              },
+            };
+          },
+        ],
+      },
+    ] satisfies HookCallbackMatcher[],
+    PostToolUse: [
+      {
+        hooks: [
+          async (rawInput) => {
+            const hookInput = rawInput as PostToolUseHookInput;
+            // 관찰 전용(계약 §1.2) — 반환 무시, 도구 결과 확정을 지연시키지 않는다.
+            void runPostToolUseHooks({
+              toolName: normalizeToolName(hookInput.tool_name),
+              toolInput: (hookInput.tool_input ?? {}) as Record<
+                string,
+                unknown
+              >,
+              toolResponse:
+                typeof hookInput.tool_response === "string"
+                  ? hookInput.tool_response
+                  : JSON.stringify(hookInput.tool_response ?? ""),
+              cwd,
+              channel: input.channel,
+              threadKey: input.threadKey,
+            });
+            return {};
+          },
+        ],
+      },
+    ] satisfies HookCallbackMatcher[],
+  };
+
   const options: Options = {
     // 중립 override(게이트웨이) 지정 시 그 값이 시스템 프롬프트 — tiguclaw 작동헌법 대체.
     systemPrompt: input.systemPromptOverride ?? SYSTEM_PROMPT,
@@ -580,6 +662,7 @@ export const runClaude = async (
     includePartialMessages: true,
     persistSession: true,
     cwd,
+    hooks: hooksOption,
     // lean(toolsNone) child 는 SDK 빌트인 도구도 0 (`tools: []` = disable all built-ins).
     ...(toolsNone ? { tools: [] as string[] } : {}),
     // facade 가 provider:model 에서 추출해 주입. 미지정 시 SDK 디폴트.

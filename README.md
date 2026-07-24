@@ -32,6 +32,7 @@ A few things that set it apart from a plain chatbot:
 - **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and workers run another; edit them just by asking, or list them with `/models`.
 - **Watch the work happen.** Sub-agents and long-running workers run as tracked jobs you follow in the dashboard — status, steps, results. It's Claude Code's Task tool, made observable.
 - **Extend it by asking.** New slash commands, HTTP endpoints, scheduled jobs, reusable skills — it adds them as *data* under your home, never by patching the core (so updates stay clean).
+- **Hooks that run on every model.** Drop a Claude Code-style `hooks` block in `settings.json` to observe or block tool calls (and gate turns), and the *same* config behaves identically whether the turn runs on `anthropic`, `codex`, or `openai`. See [Hooks](#hooks).
 
 ## Things you can ask it
 
@@ -181,6 +182,66 @@ The mode is pinned when you install, so it never changes on its own — updates 
 - **Channels** — Telegram / CLI / HTTP adapters render one abstract intent per channel.
 - **Plugins** — scheduler (cron), file-watch, dashboard, http-bridge, self-growth (learns & proposes) — extend without touching the core.
 - **Capabilities are data** — agents, skills, memory, and hooks under `<home>/` extend the assistant endlessly (a microkernel + plugin ecosystem).
+
+## Hooks
+
+Hooks are shell commands the assistant runs at defined moments — to observe what it's doing, or to block an action before it happens. They use the **same `hooks` format as Claude Code's `settings.json`**, so if you already write Claude Code hooks, they carry straight over.
+
+Four events are wired up:
+
+| Event | When it fires | Typical use |
+|---|---|---|
+| `UserPromptSubmit` | before a turn starts | log or gate incoming prompts |
+| `PreToolUse` | before a tool runs | **block** a tool call (e.g. deny writes to a path) |
+| `PostToolUse` | after a tool returns | observe / audit tool results |
+| `Stop` | after a turn finishes | post-turn notifications or logging |
+
+Each hook receives a small JSON payload on stdin (`tool_name`, `tool_input`, `cwd`, and so on). For `PreToolUse`, exit code `2` blocks the tool — the assistant sees your reason (on stderr) in place of the tool result and moves on. Any other non-zero exit is isolated and logged, so a broken hook never takes the daemon down.
+
+Add a block to `<home>/settings.json`. The optional `matcher` is a regexp against the tool name (empty = every tool):
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.tiguclaw/hooks/guard-writes.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "~/.tiguclaw/hooks/audit.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+A guard script might exit `2` to refuse any write outside a directory you allow:
+
+```bash
+#!/usr/bin/env bash
+read -r payload
+path=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty')
+case "$path" in
+  "$HOME"/projects/*) exit 0 ;;              # allow
+  *) echo "writes are only allowed under ~/projects" >&2; exit 2 ;;  # block
+esac
+```
+
+A few things worth knowing:
+
+- **The same config runs on every LLM.** One `settings.json` `hooks` block behaves identically whether the turn runs on `anthropic`, `codex`, or `openai` — a single hook engine drives all three, so there's nothing provider-specific to learn or maintain.
+- **Per-project hooks.** Put a `hooks` block in `<project>/.tiguclaw/settings.json` and it *merges with* your home hooks whenever the assistant works in that folder — project rules and global rules both fire, no override.
+- **You can watch them.** Hook runs show up in the dashboard's activity monitor (a blocked call is tinted red), and every registered hook is listed under the **🪝 Hooks** category in the dashboard inventory.
+
+Today hooks cover **observing and blocking** tool calls. Finer control — rewriting a tool's input, or injecting extra context — is planned for a later phase.
 
 ## Principles
 

@@ -32,6 +32,7 @@
 - **내가 통제하는 모델 티어.** 모델 프로파일(`default`·`high`·`mid`·`low`)을 크로스-프로바이더 풀 + 자동 폴백으로 이름 붙인다. 메인 턴은 한 티어, 서브에이전트·워커는 다른 티어로 돈다 — 대화로 편집하거나 `/models` 로 목록을 본다.
 - **일하는 걸 지켜본다.** 서브에이전트와 오래 걸리는 워커가 추적 가능한 잡으로 돌아, 대시보드에서 상태·단계·결과를 따라본다. Claude Code 의 Task 도구를, 관측 가능하게.
 - **말로 확장한다.** 새 슬래시 명령·HTTP 엔드포인트·예약 작업·재사용 스킬 — 코어를 패치하지 않고 홈 아래 *데이터*로 추가한다(그래서 업데이트가 깨끗하게 유지된다).
+- **모든 모델에서 도는 훅.** `settings.json` 에 Claude Code 식 `hooks` 블록을 넣으면 도구 호출을 관찰하거나 차단한다(턴 앞뒤도). 그 *같은* 설정이 `anthropic`·`codex`·`openai` 어디서 턴이 돌든 똑같이 동작한다. [훅](#훅) 참고.
 
 ## 뭘 시킬 수 있나
 
@@ -181,6 +182,66 @@ TIGUCLAW_RUNTIME=source npm run onboard
 - **채널** — 텔레그램 / CLI / HTTP 어댑터가 추상 의도를 채널별로 렌더.
 - **플러그인** — 스케줄러(cron)·파일 워치·대시보드·http-bridge·self-growth(학습·제안) — 코어를 안 건드리고 확장.
 - **능력은 데이터** — `<home>/` 아래 에이전트·스킬·메모리·훅으로 무한 확장(마이크로커널 + 플러그인 생태).
+
+## 훅
+
+훅은 정해진 순간에 비서가 실행하는 셸 명령이다 — 하는 일을 관찰하거나, 어떤 동작을 실행 전에 차단한다. **Claude Code `settings.json` 의 `hooks` 포맷을 그대로** 쓰기 때문에, 이미 Claude Code 훅을 써봤다면 그대로 넘어온다.
+
+배선된 이벤트는 네 가지다:
+
+| 이벤트 | 발화 시점 | 대표 용도 |
+|---|---|---|
+| `UserPromptSubmit` | 턴 시작 전 | 들어오는 프롬프트 로깅·게이팅 |
+| `PreToolUse` | 도구 실행 전 | 도구 호출 **차단**(예: 특정 경로 쓰기 거부) |
+| `PostToolUse` | 도구 반환 후 | 도구 결과 관찰·감사 |
+| `Stop` | 턴 종료 후 | 턴 후 알림·로깅 |
+
+각 훅은 stdin 으로 작은 JSON payload(`tool_name`·`tool_input`·`cwd` 등)를 받는다. `PreToolUse` 는 exit code `2` 로 도구를 차단한다 — 비서는 도구 결과 자리에 (stderr 로 넘긴) 사유를 보고 넘어간다. 그 외 non-zero exit 은 격리·로깅되어, 훅이 깨져도 데몬은 절대 죽지 않는다.
+
+`<home>/settings.json` 에 블록을 추가한다. 선택 `matcher` 는 도구 이름에 대한 정규식이다(빈값 = 모든 도구):
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/.tiguclaw/hooks/guard-writes.sh" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "~/.tiguclaw/hooks/audit.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+가드 스크립트는 허용한 디렉터리 밖 쓰기를 exit `2` 로 거부할 수 있다:
+
+```bash
+#!/usr/bin/env bash
+read -r payload
+path=$(printf '%s' "$payload" | jq -r '.tool_input.file_path // empty')
+case "$path" in
+  "$HOME"/projects/*) exit 0 ;;              # 허용
+  *) echo "쓰기는 ~/projects 아래에서만 허용됩니다" >&2; exit 2 ;;  # 차단
+esac
+```
+
+알아둘 것 몇 가지:
+
+- **같은 설정이 모든 LLM 에서 돈다.** 하나의 `settings.json` `hooks` 블록이 `anthropic`·`codex`·`openai` 어디서 턴이 돌든 똑같이 동작한다 — 단일 훅 엔진이 셋 다 굴리므로, 프로바이더별로 따로 배울 것도 관리할 것도 없다.
+- **프로젝트별 훅.** `<project>/.tiguclaw/settings.json` 에 `hooks` 블록을 넣으면, 비서가 그 폴더에서 일할 때 홈 훅과 *병합*되어 함께 발화한다 — 프로젝트 규칙과 전역 규칙이 둘 다 돈다(override 아님).
+- **눈으로 볼 수 있다.** 훅 실행은 대시보드 활동 모니터에 뜨고(차단은 붉은 틴트), 등록된 훅은 대시보드 인벤토리 **🪝 훅** 카테고리에 나온다.
+
+지금 훅은 도구 호출의 **관찰과 차단**을 다룬다. 더 세밀한 제어 — 도구 입력을 고쳐 넣거나 맥락을 주입하는 것 — 는 다음 단계로 계획돼 있다.
 
 ## 핵심 원칙
 

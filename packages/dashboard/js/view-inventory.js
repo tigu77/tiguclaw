@@ -31,6 +31,10 @@
         // 의 pi-kind 는 빈 문자열 폴백(entry.layer || ""), 정렬은 LAYERS.indexOf(-1)→99 로 안전.
         // 읽기 전용(디테일은 제네릭 renderCapabilityDetailCard). 스케줄 0건 홈은 빈 카테고리 자동 숨김.
         { key: "schedules", srcKey: "schedules", label: "⏰ 스케줄", emptyNote: null },
+        // 훅(settings.json hooks[event], daemon-engineer PROJECT.md 2026-07-24) — 채널·
+        // 플러그인·스킬과 동형 1급 능력. /api/inventory 가 hook[] 을 주므로 srcKey 만 추가
+        // (스케줄과 동형, 신규 렌더코드 0). 0건 홈은 빈 카테고리 자동 숨김.
+        { key: "hook", srcKey: "hook", label: "🪝 훅", emptyNote: null },
         {
           key: "memory",
           srcKey: null,

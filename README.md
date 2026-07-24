@@ -195,6 +195,7 @@ Four events are wired up:
 | `PreToolUse` | before a tool runs | **block** a tool call (e.g. deny writes to a path) |
 | `PostToolUse` | after a tool returns | observe / audit tool results |
 | `Stop` | after a turn finishes | post-turn notifications or logging |
+| `SubagentStop` | after a delegated subagent finishes | react to background/subagent completion |
 
 Each hook receives a small JSON payload on stdin (`tool_name`, `tool_input`, `cwd`, and so on). For `PreToolUse`, exit code `2` blocks the tool — the assistant sees your reason (on stderr) in place of the tool result and moves on. Any other non-zero exit is isolated and logged, so a broken hook never takes the daemon down.
 

@@ -27,6 +27,7 @@ import {
   pruneTerminalWorkerJobs,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
+import { runSubagentStopHooks } from "./entry/hook-runner.js";
 
 // Step 1 (2026-06-30) — 워커 lifecycle 을 EventBus 에 발행한다. 워커 활동(llm.activity,
 // threadKey=worker:<jobId>)은 이미 버스에 흐르지만 "잡 시작/완료/실패" 상태 전이는 그동안
@@ -241,6 +242,39 @@ export const registerJob = (input: RegisterJobInput): string => {
   return jobId;
 };
 
+/**
+ * SubagentStop 훅 디스패치 (Phase 1.1, 2026-07-24) — kind==='agent' 잡의 done/failed
+ * 전이에서만 발화한다. 워커(kind==='worker', run_in_background)는 Claude Code
+ * SubagentStop 시맨틱 대상이 아니라(SubagentStop = Task *서브에이전트* 종료 전용)
+ * 제외(`src/core/entry/hook-runner.ts` Phase 1.1 주석 참고).
+ *
+ * markDone/markFailed 는 codex/openai(agent-registry.ts)·claude(claude-agent-sdk.ts)
+ * 양쪽 서브에이전트 경로가 이미 수렴하는 단일 지점이라, 여기 하나만 배선하면 3어댑터
+ * 대칭이 공짜로 확보된다(README "데몬에서 강제" — 새 실행 경로 0).
+ *
+ * fire-and-forget — markDone/markFailed 는 동기 함수라 훅 실행(셸 spawn, 최대 60s)을
+ * await 하면 잡 완료 마킹·DB 미러·EventBus publish 가 그만큼 지연된다(원칙 3 위배).
+ * `runSubagentStopHooks` 자체가 내부 try/catch 로 never-throw 라 미처리 rejection 없음.
+ */
+const dispatchSubagentStopHook = (
+  job: WorkerJobRecord,
+  status: "done" | "failed",
+  summary: string,
+): void => {
+  if (job.kind !== "agent") return;
+  void runSubagentStopHooks({
+    jobId: job.jobId,
+    agentName: job.agentName,
+    threadKey: job.threadKey, // 잡을 띄운 원 대화 thread(실행 thread agent:<jobId> 아님).
+    cwd: job.cwd,
+    channel: job.channel,
+    status,
+    // publishWorkerLifecycle 의 result/error cap(1200/300) 과 별개 — 훅 stdin payload 는
+    // 셸 프로세스로 나가는 텍스트라 관대하게, 단 무바운드는 피한다(이벤트 바운드 원칙).
+    summary: summary.slice(0, 2000),
+  });
+};
+
 /** 워커 성공 — 결과 기록. 재주입(채널 보고)은 onWorkerComplete 가 별도 수행. */
 export const markDone = (jobId: string, result: string): void => {
   const job = jobs.get(jobId);
@@ -257,6 +291,7 @@ export const markDone = (jobId: string, result: string): void => {
   );
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1, running 은 위 UPDATE 대상 아님).
   publishWorkerLifecycle("worker.done", job, { task: job.task, result });
+  dispatchSubagentStopHook(job, "done", result); // Phase 1.1 — agent kind 만(no-op for worker).
 };
 
 /** 워커 실패/타임아웃 — 원인 기록. */
@@ -275,6 +310,7 @@ export const markFailed = (jobId: string, error: string): void => {
   );
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
   publishWorkerLifecycle("worker.failed", job, { error, task: job.task });
+  dispatchSubagentStopHook(job, "failed", error); // Phase 1.1 — agent kind 만(no-op for worker).
 };
 
 /**

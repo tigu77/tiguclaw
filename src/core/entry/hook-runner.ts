@@ -1,6 +1,10 @@
 /**
  * V7.4.a — Claude Code 훅 실행기 (UserPromptSubmit). 데몬에서 강제.
  * Phase 1 (2026-07-24) — PreToolUse(차단)/PostToolUse(관찰) 확장.
+ * Phase 1.1 (2026-07-24) — SubagentStop(관찰) 확장. 지점: `worker-jobs.ts`
+ *   `markDone`/`markFailed` 단일 진입점(kind==='agent' 만) — codex/openai(agent-registry.ts)
+ *   ·claude(claude-agent-sdk.ts) 양쪽 경로가 이미 이 두 함수로 수렴하므로 새 실행 경로
+ *   0 으로 3어댑터 대칭이 공짜로 확보된다(데몬레벨 단일 지점, README "데몬에서 강제").
  *
  * 진실 소스:
  *  - ADR: `docs/decisions/2026-05-23-region-a-v74a-userpromptsubmit-hook.md`,
@@ -168,14 +172,16 @@ const loadSettingsHooks = (
 /**
  * 인벤토리 노출용 훅 이벤트 목록(2026-07-24, daemon-engineer PROJECT.md 지시) —
  * 대시보드가 "등록된 훅"을 1급 능력 카테고리로 봐야 하므로, `runHooks`가 실제 지원하는
- * 4이벤트를 열거한다. 새 이벤트 추가 시 이 배열도 갱신(런타임 `runHooks` 자체는 임의
- * event 문자열을 받지만, settings.json 관례상 알려진 이벤트만 사용자가 채운다).
+ * 5이벤트를 열거한다(SubagentStop 추가, Phase 1.1). 새 이벤트 추가 시 이 배열도 갱신
+ * (런타임 `runHooks` 자체는 임의 event 문자열을 받지만, settings.json 관례상 알려진
+ * 이벤트만 사용자가 채운다).
  */
 const INVENTORY_HOOK_EVENTS = [
   "UserPromptSubmit",
   "Stop",
   "PreToolUse",
   "PostToolUse",
+  "SubagentStop",
 ] as const;
 
 /** 인벤토리 한 항목 — 이벤트/matcher/command 요약 + 어느 settings.json 스코프에서 왔는지. */
@@ -515,5 +521,58 @@ export const runPostToolUseHooks = async (params: {
   } catch (err) {
     // runHooks 는 원래 never-throw 지만, 관찰 전용 경로라 이중 방어(원칙 3).
     console.error("[hook] PostToolUse 실행 중 예외(격리):", err);
+  }
+};
+
+// ── Phase 1.1 (2026-07-24) — SubagentStop ───────────────────────────────────
+// 지점: `src/core/worker-jobs.ts` `markDone`/`markFailed`(kind==='agent' 잡만).
+// 서브에이전트(spawn_agent, claude 네이티브 Task 포함) 완료 시 daemon 이 강제 호출.
+// 워커(kind==='worker', run_in_background)는 Claude Code 시맨틱상 SubagentStop 대상이
+// 아니라(SubagentStop = Task *서브에이전트* 종료 전용, 워커는 별개 개념) 제외.
+
+/**
+ * SubagentStop 훅 — 서브에이전트(kind:'agent' 워커 잡) 완료(done/failed) 시 daemon 이
+ * 호출(관찰 전용, Claude Code 표준 SubagentStop 시맨틱 답습). PreToolUse/PostToolUse 와
+ * 마찬가지로 `runHooks("SubagentStop", ...)` 를 재사용(새 실행 경로 0). 이미 종료된
+ * 잡에 대한 통지라 block/additionalContext 는 의미가 없어 전부 버린다(반환 void) —
+ * PostToolUse 와 동형(계약 §0 관찰형 이벤트 패턴).
+ *
+ * 호출자(`worker-jobs.ts`)가 동기 함수(markDone/markFailed) 안에서 fire-and-forget
+ * (`void runSubagentStopHooks(...)`)으로 부르므로, 내부에서 예외를 이중 격리해
+ * 훅 실행이 절대 잡 완료 마킹 경로를 지연·실패시키지 않는다(원칙 3).
+ */
+export const runSubagentStopHooks = async (params: {
+  /** 완료된 잡 id (worker-jobs 의 jobId). */
+  jobId: string;
+  /** 서브에이전트 정의 이름(agent.md 의 name). */
+  agentName?: string;
+  /** 잡을 띄운 *원* 대화 thread (부모 threadKey — 실행 thread `agent:<jobId>` 가 아님). */
+  threadKey: string;
+  /** 잡이 실행된 cwd. 미지정 시 process.cwd() 폴백(호출자가 항상 채우는 게 원칙). */
+  cwd?: string;
+  channel: string;
+  status: "done" | "failed";
+  /** 결과(done) 또는 에러(failed) 요약 — stdin JSON 의 `summary` 필드. 길이 컷은 호출자 몫. */
+  summary: string;
+}): Promise<void> => {
+  try {
+    const cwd = params.cwd ?? process.cwd();
+    await runHooks(
+      "SubagentStop",
+      {
+        job_id: params.jobId,
+        agent_name: params.agentName,
+        threadKey: params.threadKey,
+        cwd,
+        channel: params.channel,
+        status: params.status,
+        summary: params.summary,
+      },
+      cwd,
+    );
+  } catch (err) {
+    // runHooks 는 never-throw 지만, 완료-마킹 경로 안에서 fire-and-forget 되므로
+    // 이중 방어(PostToolUse 패턴 동형, 원칙 3).
+    console.error("[hook] SubagentStop 실행 중 예외(격리):", err);
   }
 };

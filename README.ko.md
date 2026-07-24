@@ -195,6 +195,7 @@ TIGUCLAW_RUNTIME=source npm run onboard
 | `PreToolUse` | 도구 실행 전 | 도구 호출 **차단**(예: 특정 경로 쓰기 거부) |
 | `PostToolUse` | 도구 반환 후 | 도구 결과 관찰·감사 |
 | `Stop` | 턴 종료 후 | 턴 후 알림·로깅 |
+| `SubagentStop` | 위임한 서브에이전트 종료 후 | 백그라운드·서브에이전트 완료에 반응 |
 
 각 훅은 stdin 으로 작은 JSON payload(`tool_name`·`tool_input`·`cwd` 등)를 받는다. `PreToolUse` 는 exit code `2` 로 도구를 차단한다 — 비서는 도구 결과 자리에 (stderr 로 넘긴) 사유를 보고 넘어간다. 그 외 non-zero exit 은 격리·로깅되어, 훅이 깨져도 데몬은 절대 죽지 않는다.
 

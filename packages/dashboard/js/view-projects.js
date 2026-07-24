@@ -330,33 +330,57 @@
       let projectAgentsBox = null;               // 현재 열린 상세의 에이전트 컨테이너.
       const projectAgentElapsedEls = new Map();  // jobId -> elapsed span (상세 틱용).
       const pathNorm = (s) => String(s || "").replace(/\/+$/, "");
+      // "최근 에이전트" 섹션 제거(사용자 요청) — 진행 중만. 진행 중 섹션은 접기 가능(localStorage
+      //   영속), 카드는 compact(인라인 상세 없음)이고 클릭 시 백그라운드 패널로 위임(focusBgJob).
+      const PD_RUNNING_COLLAPSE_LS = "tc:pdRunningCollapsed";
       const renderProjectAgentSections = (box, projectPath) => {
         box.innerHTML = "";
         projectAgentElapsedEls.clear();
         const now = Date.now();
         const target = pathNorm(projectPath);
-        const mine = [...jobCards.entries()].filter(([, e]) => e.cwd && pathNorm(e.cwd) === target);
-        const running = mine.filter(([, e]) => e.status === "running");
-        const rest = mine.filter(([, e]) => e.status !== "running")
-          .sort((a, b) => (b[1].startTs || 0) - (a[1].startTs || 0));
-        const section = (title, entries, emptyMsg) => {
-          if (entries.length === 0 && !emptyMsg) return; // 최근 섹션은 비면 생략.
-          const sec = document.createElement("div");
-          sec.className = "pd-section";
-          const t = document.createElement("div"); t.className = "pd-section-title"; t.textContent = title;
-          sec.appendChild(t);
-          if (entries.length === 0) {
-            const e = document.createElement("div"); e.className = "pd-empty"; e.textContent = emptyMsg;
-            sec.appendChild(e);
-          } else {
-            const grid = document.createElement("div"); grid.className = "pd-agents-grid";
-            for (const [jobId, e] of entries) grid.appendChild(buildAgentCard(jobId, e, now, projectAgentElapsedEls));
-            sec.appendChild(grid);
+        const running = [...jobCards.entries()]
+          .filter(([, e]) => e.cwd && pathNorm(e.cwd) === target && e.status === "running");
+        let collapsed = false;
+        try { collapsed = localStorage.getItem(PD_RUNNING_COLLAPSE_LS) === "1"; } catch {}
+        const sec = document.createElement("div");
+        sec.className = "pd-section";
+        const t = document.createElement("div");
+        t.className = "pd-section-title pd-collapsible" + (collapsed ? " collapsed" : "");
+        t.setAttribute("role", "button"); t.tabIndex = 0;
+        const chevS = document.createElement("span"); chevS.className = "pd-sec-chev"; chevS.textContent = collapsed ? "▸" : "▾";
+        const label = document.createElement("span"); label.textContent = "진행 중 에이전트 (" + running.length + ")";
+        t.appendChild(chevS); t.appendChild(label);
+        sec.appendChild(t);
+        const body = document.createElement("div"); body.className = "pd-sec-body";
+        if (collapsed) body.style.display = "none";
+        if (running.length === 0) {
+          const e = document.createElement("div"); e.className = "pd-empty";
+          e.textContent = "지금 이 프로젝트에서 작업 중인 에이전트가 없습니다.";
+          body.appendChild(e);
+        } else {
+          const grid = document.createElement("div"); grid.className = "pd-agents-grid";
+          for (const [jobId, e] of running) {
+            grid.appendChild(buildAgentCard(jobId, e, now, projectAgentElapsedEls, {
+              compact: true,
+              onOpen: (jid) => {
+                if (typeof focusBgJob === "function") focusBgJob(jid);
+                else if (typeof openBg === "function") openBg();
+              },
+            }));
           }
-          box.appendChild(sec);
+          body.appendChild(grid);
+        }
+        sec.appendChild(body);
+        const toggle = () => {
+          const isCollapsing = body.style.display !== "none";
+          body.style.display = isCollapsing ? "none" : "";
+          chevS.textContent = isCollapsing ? "▸" : "▾";
+          t.classList.toggle("collapsed", isCollapsing);
+          try { localStorage.setItem(PD_RUNNING_COLLAPSE_LS, isCollapsing ? "1" : "0"); } catch {}
         };
-        section("진행 중 에이전트 (" + running.length + ")", running, "지금 이 프로젝트에서 작업 중인 에이전트가 없습니다.");
-        section("최근 에이전트 (" + rest.length + ")", rest, null);
+        t.addEventListener("click", toggle);
+        t.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+        box.appendChild(sec);
       };
       let projectAgentsRenderQueued = false;
       const scheduleProjectAgentsRender = () => {

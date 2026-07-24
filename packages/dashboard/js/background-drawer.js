@@ -275,6 +275,21 @@
 
       const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); updateBgJump(); };
       const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
+      // 프로젝트 상세의 compact 카드 클릭 → bg 패널 열고 그 잡으로 스크롤·펼침(자세히는 여기서).
+      //   best-effort: 잡이 현재 bg 스코프 필터에 안 걸려 미렌더면 패널만 열림(스코프는 존중).
+      window.focusBgJob = (jobId) => {
+        openBg();
+        requestAnimationFrame(() => {
+          const entry = jobCards.get(jobId);
+          if (!entry || !entry.el) return;
+          if (entry.el.classList.contains("has-detail") && !entry.el.classList.contains("open")) {
+            entry.el.classList.add("open");
+            if (typeof updateChev === "function") updateChev(entry);
+            if (entry.stepsEl) requestAnimationFrame(() => { entry.stepsEl.scrollTop = entry.stepsEl.scrollHeight; });
+          }
+          if (entry.el.scrollIntoView) entry.el.scrollIntoView({ block: "center" });
+        });
+      };
       const bgToggleBtn = document.getElementById("bg-toggle");
       if (bgToggleBtn) bgToggleBtn.addEventListener("click", () => {
         document.body.classList.contains("bg-open") ? closeBg() : openBg();

@@ -906,6 +906,9 @@
       .project-detail-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; color:var(--text-dim); margin-bottom:14px; word-break:break-all; }
       .pd-section { margin-top:16px; }
       .pd-section-title { font-size:10px; font-weight:900; letter-spacing:.09em; text-transform:uppercase; color:var(--text-dim); margin-bottom:8px; }
+      .pd-section-title.pd-collapsible { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
+      .pd-section-title.pd-collapsible:hover { color:var(--text-mute); }
+      .pd-sec-chev { font-size:9px; opacity:.8; }
       .pd-body { color:var(--text); font-size:13px; line-height:1.6; word-break:break-word; }
       .pd-body.md :first-child { margin-top:0; } .pd-body.md :last-child { margin-bottom:0; }
       .pd-list { display:flex; flex-direction:column; gap:7px; }

@@ -12,7 +12,10 @@
       // 잡 카드 1개 빌드(공유) — 에이전트 뷰 + 프로젝트 상세가 동일 카드를 재사용(단일 소스).
       // elapsedRegistry 에 running 카드의 경과 span 을 등록(호출자별 틱 맵). jobCards entry(e)
       // 를 그대로 읽어 상태·티어·작업요약·현재 스텝·펼침 상세까지 동일 렌더.
-      const buildAgentCard = (jobId, e, now, elapsedRegistry) => {
+      // opts.compact = 인라인 상세 생략(카드 작게 유지) + 카드 클릭 시 opts.onOpen(jobId) 호출
+      //   (프로젝트 상세에서 "자세히는 백그라운드 패널로" 용). 미지정 = 기존 인라인 펼침 동작.
+      const buildAgentCard = (jobId, e, now, elapsedRegistry, opts) => {
+        opts = opts || {};
         const card = document.createElement("div");
         card.className = "agent-card " + (e.status || "running") + (e.kind === "agent" ? " agent" : "");
         card.dataset.jobId = jobId;
@@ -50,7 +53,7 @@
         let chev = null;
         if (hasDetail) {
           chev = document.createElement("span"); chev.className = "agent-card-chev";
-          chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
+          chev.textContent = opts.compact ? "자세히 ↗" : (e.expanded ? "▾ 접기" : "▸ 자세히");
           meta.appendChild(chev);
         }
         card.appendChild(meta);
@@ -61,7 +64,11 @@
           step.appendChild(lbl); step.appendChild(val);
           card.appendChild(step);
         }
-        if (hasDetail) {
+        if (hasDetail && opts.compact) {
+          // compact: 인라인 상세 생략 — 카드 클릭 시 백그라운드 패널로 위임(작게 유지).
+          card.style.cursor = "pointer";
+          card.addEventListener("click", () => { if (opts.onOpen) opts.onOpen(jobId); });
+        } else if (hasDetail) {
           const detail = document.createElement("div"); detail.className = "agent-card-detail";
           if (e.task) {
             const t = document.createElement("div"); t.className = "agent-card-detail-block";

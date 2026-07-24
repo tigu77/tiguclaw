@@ -229,7 +229,21 @@
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
           if (entries.length === 0 && activities.length === 0) { refreshChatEmpty(); return; } // 빈(새) 세션.
-          renderHistoryBatch(entries, activities, false);
+          // ★진행 중 턴 seamless 재개(멀티세션 도구폭주 픽스) — 이 스레드에 활성 턴(activeTurns)
+          // 이 있으면, 이력 활동의 마지막 seq-run(=진행 중 턴)을 정적 hist-turn 이 아니라 라이브
+          // 경로(renderActivity)로 재구성한다. 그래야 cardByThread 가 세팅돼 뒤이어 SSE 로
+          // 도착하는 라이브 활동이 같은 turn-group 에 이어붙고, 한 턴이 hist-turn+turn-group
+          // 두 카드로 쪼개지지 않는다(전환-복귀 시 도구 플랫/중복 나열의 근본). 완료된 앞선
+          // 턴들은 그대로 hist-turn(N단계)으로. seq 리셋(비증가 경계)이 진행 중 턴의 시작.
+          let histActivities = activities, liveResume = [];
+          if (activeTurns.has(tk) && activities.length > 0) {
+            let start = activities.length - 1;
+            while (start > 0 && (activities[start].seq ?? 0) > (activities[start - 1].seq ?? 0)) start--;
+            histActivities = activities.slice(0, start);
+            liveResume = activities.slice(start);
+          }
+          renderHistoryBatch(entries, histActivities, false);
+          for (const a of liveResume) { try { renderActivity(a, fmtTime(a.ts)); } catch { /* best-effort 재개 */ } }
           oldestLoadedTs = entries.length > 0 ? entries[0].ts : (activities.length > 0 ? activities[0].ts : null);
           if (entries.length < HISTORY_PAGE) reachedOldest = true;
           refreshChatEmpty();

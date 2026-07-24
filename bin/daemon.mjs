@@ -901,7 +901,7 @@ const runUpdate = (c) => {
   const rollback = () => {
     try {
       run("git", ["reset", "--hard", prevSha]);
-      run("npm", ["ci", "--no-audit", "--no-fund"], { shell: isWin });
+      run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev"], { shell: isWin });
       if (wasRunning) table?.start?.(c);
     } catch {
       /* 롤백 자체 실패도 삼켜 데몬 생존(best-effort) */
@@ -915,7 +915,11 @@ const runUpdate = (c) => {
   }
 
   // ── 단계 6: npm ci ──────────────────────────────────────────────────────────
-  if (run("npm", ["ci", "--no-audit", "--no-fund"], { shell: isWin }) !== 0) {
+  // --include=dev 필수: built 인스턴스는 tsc(typescript, devDependency)로 재빌드하는데,
+  //   데몬 env 에 NODE_ENV=production(init.ts 가 .env 에 기록) 이 실려 이 CLI 로 상속되면
+  //   기본 npm ci 가 devDeps 를 스킵 → tsc 미설치 → build:prod 가 "'tsc' 없음"으로 실패한다
+  //   (Windows /update 실사고). self-update.ts 롤백이 이미 쓰는 --include=dev 와 정합.
+  if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev"], { shell: isWin }) !== 0) {
     console.error("update: npm ci 실패 — 롤백합니다.");
     writeFailedMarker("npm ci", "npm ci 실패(의존성 설치)");
     rollback();

@@ -243,7 +243,9 @@
 
       const switchToThread = (tk) => {
         if (tk === activeThreadKey || !openTabs.some((t) => t.threadKey === tk)) return;
+        if (window.saveChatDraft) window.saveChatDraft(activeThreadKey); // 떠나는 탭 draft 저장.
         activeThreadKey = tk;
+        if (window.restoreChatDraft) window.restoreChatDraft(tk);        // 들어오는 탭 draft 복원.
         clearReply();          // 답글 인용은 세션 스코프 — 전환 시 초기화.
         renderTabBar();
         persistTabs();
@@ -260,8 +262,10 @@
           : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
         const tk = "dashboard:" + uuid;
         sessionSeq += 1;
+        if (window.saveChatDraft) window.saveChatDraft(activeThreadKey); // 떠나는 탭 draft 저장.
         openTabs.push({ threadKey: tk, name: deriveTabFallbackName(tk), modelProfile: null }); // 번호식 세션명(공백없는 "세션N", 영속 번호). 커스텀은 더블클릭 편집. 새 세션 = 프로파일 미선택(상속).
         activeThreadKey = tk;   // 백엔드 행은 첫 전송에 lazy 생성(빈 탭 = 무흔적, D3).
+        if (window.restoreChatDraft) window.restoreChatDraft(tk);        // 새 탭 = 빈 draft(입력 클리어).
         clearReply();
         renderTabBar();
         persistTabs();
@@ -277,9 +281,11 @@
         if (idx === -1) return;
         openTabs.splice(idx, 1); // ★localStorage(탭 목록)에서만 제거 — 백엔드 세션 보존(D3, 비파괴).
         markClosed(tk); // 명시 닫음 기록 — 서버 세션 병합(refreshSessionPreviews)이 이 탭을 재노출하지 않게(닫기 보존).
+        if (window.clearChatDraft) window.clearChatDraft(tk); // 닫는 탭의 draft 정리.
         if (activeThreadKey === tk) {
           const next = openTabs[Math.max(0, idx - 1)] || openTabs[0] || { threadKey: DEFAULT_DASH_THREAD };
           activeThreadKey = next.threadKey;
+          if (window.restoreChatDraft) window.restoreChatDraft(activeThreadKey); // 전환된 탭 draft 복원.
           clearReply();
           renderTabBar();
           persistTabs();

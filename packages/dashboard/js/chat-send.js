@@ -87,6 +87,7 @@
         renderAttachChips();
         input.value = "";
         growWrap.dataset.replicatedValue = ""; // 전송 후 복제 비워 한 줄 높이로 리셋.
+        try { if (window.clearChatDraft) window.clearChatDraft(activeThreadKey); } catch {} // 전송했으니 이 탭 draft 비움.
         slashClose(); // 전송 시 슬래시 팝업 닫음(value 비움은 input 이벤트를 안 쏘므로 명시적으로).
         focusChatInput();
         // 전송 = 최신을 보겠다는 의도 → 현재 스크롤 위치와 무관하게 하단으로 고정하고 이후
@@ -100,3 +101,50 @@
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
         await sendChatMessage(text, atts, replyToText);
       });
+
+      // ── 세션 탭별 draft(입력 대기 텍스트 + 첨부) 보존 ──────────────────────────
+      // 탭 전환 시 떠나는 탭 threadKey 로 현재 입력+첨부를 저장, 들어오는 탭 것을 복원(tabs.js 가
+      //   switchToThread/newTab/closeTab 에서 window.* 호출). 텍스트는 localStorage 영속(몇 KB, 새로고침·
+      //   재접속 생존), 첨부(base64)는 메모리 Map 만 — 용량이 커 localStorage 쿼터를 깨므로 영속 안 함
+      //   (세션 동안만·새로고침 소실). 개수·용량 캡(ATT_MAX·10MB)이 이미 바운드.
+      const DRAFTS_LS = "tc:drafts";
+      const chatDrafts = new Map(); // threadKey -> { text, attachments:[{filename,mimeType,dataBase64,bytes}] }
+      try { // 부팅 시 텍스트 draft 복원(첨부는 영속 대상 아님).
+        const raw = JSON.parse(localStorage.getItem(DRAFTS_LS) || "{}");
+        for (const tk in raw) {
+          if (typeof raw[tk] === "string" && raw[tk]) chatDrafts.set(tk, { text: raw[tk], attachments: [] });
+        }
+      } catch { /* 손상 무시 */ }
+      const persistDraftText = () => {
+        // 텍스트만 직렬화(첨부 제외 = 쿼터 안전). 빈 draft 는 키 누락.
+        try {
+          const obj = {};
+          for (const [tk, d] of chatDrafts) { if (d.text) obj[tk] = d.text; }
+          localStorage.setItem(DRAFTS_LS, JSON.stringify(obj));
+        } catch { /* 쿼터/비활성 무시 */ }
+      };
+      window.saveChatDraft = (tk) => {
+        if (!tk) return;
+        const text = input.value;
+        if (text.trim() !== "" || pendingAttachments.length > 0) {
+          chatDrafts.set(tk, { text, attachments: pendingAttachments.slice() });
+        } else {
+          chatDrafts.delete(tk);
+        }
+        persistDraftText();
+      };
+      window.restoreChatDraft = (tk) => {
+        const d = (tk && chatDrafts.get(tk)) || { text: "", attachments: [] };
+        input.value = d.text;
+        if (growWrap) growWrap.dataset.replicatedValue = d.text; // autogrow 높이 복원.
+        pendingAttachments = d.attachments.slice();
+        renderAttachChips();
+      };
+      window.clearChatDraft = (tk) => {
+        if (!tk) return;
+        chatDrafts.delete(tk);
+        persistDraftText();
+      };
+      // 부팅 복원 — chat-send.js 는 tabs.js 뒤에 로드되므로 loadTabs()가 activeThreadKey 를 이미
+      //   세팅한 뒤다. 초기 활성 탭의 저장 draft 를 입력창에 복원(첨부는 영속 안 해 텍스트만).
+      try { if (typeof activeThreadKey !== "undefined") window.restoreChatDraft(activeThreadKey); } catch {}

@@ -2,6 +2,7 @@
       // 표시 우선순위: 서버 커스텀(tab.customName, /api/sessions 의 name) > 로컬 파생 라벨.
       // customName 은 순수 인메모리 부기(diff 용) — TABS_LS 직렬화 shape 은 불변(name 필드만 저장, §4-3).
       let editingTabKey = null; // 동시 편집 방지(단순화) — 활성 편집 threadKey.
+      let dragThreadKey = null; // 드래그 재정렬 중인 탭의 threadKey (null = 드래그 아님).
 
       // 세션 파생 이름 = "세션N"(번호식). ★프리뷰·채널명("텔레그램")·"기본" 폴백은 전부 제거 —
       // 세션 배지는 세션 정체성(세션N)만, 채널(TG)은 별도 채널 배지가 뒤에 붙는다(전체활동 뷰).
@@ -69,6 +70,7 @@
         const tab = openTabs.find((t) => t.threadKey === tk);
         if (!el || !tab) return;
         editingTabKey = tk;
+        if (el.parentElement) el.parentElement.draggable = false; // 편집 중 드래그 off (텍스트 선택 충돌 방지).
         const original = tab.name;
         el.classList.add("editing");
         el.contentEditable = "true";
@@ -126,6 +128,43 @@
           b.className = "session-tab" + (tab.threadKey === activeThreadKey ? " active" : "");
           b.dataset.threadKey = tab.threadKey;
           b.setAttribute("role", "tab");
+          // ── 드래그 재정렬 — openTabs 배열 순서 = 렌더·직렬화 순서(persistTabs)라, 배열을
+          //    재배치하면 재접속·리로드 후에도 순서 유지. 편집 중(editingTabKey)엔 draggable off
+          //    (contentEditable 텍스트 선택과 충돌 방지). 드롭 위치는 대상 탭 중앙 기준 앞/뒤.
+          b.draggable = editingTabKey !== tab.threadKey;
+          b.addEventListener("dragstart", (e) => {
+            if (editingTabKey) { e.preventDefault(); return; }
+            dragThreadKey = tab.threadKey;
+            b.classList.add("dragging");
+            if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", tab.threadKey); } catch {} }
+          });
+          b.addEventListener("dragend", () => {
+            dragThreadKey = null;
+            b.classList.remove("dragging");
+            for (const el of sessionTabsEl.querySelectorAll(".drag-over")) el.classList.remove("drag-over");
+          });
+          b.addEventListener("dragover", (e) => {
+            if (dragThreadKey === null || dragThreadKey === tab.threadKey) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            b.classList.add("drag-over");
+          });
+          b.addEventListener("dragleave", () => { b.classList.remove("drag-over"); });
+          b.addEventListener("drop", (e) => {
+            e.preventDefault();
+            b.classList.remove("drag-over");
+            if (dragThreadKey === null || dragThreadKey === tab.threadKey) return;
+            const rect = b.getBoundingClientRect();
+            const after = e.clientX > rect.left + rect.width / 2;
+            const from = openTabs.findIndex((t) => t.threadKey === dragThreadKey);
+            if (from < 0) return;
+            const [moved] = openTabs.splice(from, 1);
+            let to = openTabs.findIndex((t) => t.threadKey === tab.threadKey);
+            if (to < 0) to = openTabs.length; else if (after) to += 1;
+            openTabs.splice(to, 0, moved);
+            persistTabs();
+            renderTabBar();
+          });
           if (tab.preview) b.title = tab.preview;
           const nameSpan = document.createElement("span");
           nameSpan.className = "st-name";
@@ -146,9 +185,10 @@
           // 닫기 항목 없음(registerMenuItems 조건). 대화는 보존(deleteSession 호출 X, D3) = 재열기 복원.
           // 컨텍스트메뉴 트리거 — kebab + 우클릭 + 롱프레스(탭류, 3경로 동일 메뉴).
           const sessionCtx = () => ({ type: "session", targetId: tab.threadKey, threadKey: tab.threadKey, label: tab.name });
+          // 메뉴 = 항상 보이는 ⋯ kebab(클릭/탭) + 우클릭. 롱프레스는 뺀다 — 드래그 재정렬
+          // (누르고 끌기)과 충돌(누르고 있으면 메뉴 뜸)하고, kebab 이 이미 전 기기서 접근 가능.
           attachKebab(b, "session", sessionCtx);
           attachContextMenu(b, "session", sessionCtx);
-          attachLongPress(b, "session", sessionCtx);
           sessionTabsEl.appendChild(b);
         }
         const plus = document.createElement("button");
@@ -228,7 +268,7 @@
         void loadThreadHistory(tk); // 빈 스트림(새 세션 = 이력 없음) 즉시.
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         if (window.hydrateModelSelect) window.hydrateModelSelect(); // 새 세션 = 드롭다운 기본으로.
-        try { document.getElementById("chat-input").focus(); } catch {}
+        focusChatInput();
       };
 
       const closeTab = (tk) => {

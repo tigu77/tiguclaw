@@ -19,7 +19,7 @@
         x.addEventListener("click", clearReply);
         chatReplyEl.appendChild(lb); chatReplyEl.appendChild(tx); chatReplyEl.appendChild(x);
         chatReplyEl.hidden = false;
-        try { document.getElementById("chat-input").focus(); } catch {}
+        focusChatInput();
       };
       // 메시지 카드 hover 시 ⋯ 메뉴 kebab 을 **카드 맨 윗라인 우측**에 1회 주입. 붙어있던
       // ↩답글 버튼은 폐지 — 답글은 ⋯ 메뉴 안(아래 registerMenuItems "message")에 있어 무손실.

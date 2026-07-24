@@ -347,6 +347,8 @@
       .session-tab { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:9px 9px 0 0; padding:6px 9px; background:rgba(255,255,255,.03); color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:700; max-width:180px; flex:none; }
       .session-tab:hover { background:rgba(255,255,255,.07); color:var(--text); }
       .session-tab.active { background:var(--panel); color:var(--text); border-color:var(--border-strong); border-bottom-color:transparent; }
+      .session-tab.dragging { opacity:.4; }
+      .session-tab.drag-over { box-shadow: inset 2px 0 0 0 var(--accent); }
       .session-tab .st-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       /* 인라인 편집(더블클릭 진입, §4 계약) — contenteditable 로 전환된 st-name. 편집 중엔 탭 폭을
          살짝 넓혀(:has, 미지원 브라우저는 180px 유지 = graceful) 긴 이름 입력이 인접 탭을 덜 침범. */

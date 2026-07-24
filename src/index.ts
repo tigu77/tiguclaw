@@ -1358,9 +1358,19 @@ bus.subscribe((event) => {
 const steerable = (msg: IncomingMessage): boolean =>
   msg.synthetic !== true && !msg.text.trim().startsWith("/");
 
-// 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트·첨부·도착시각만 실어 채널 무관화.
+// ★steering framing(2026-07-24): mid-turn 메시지를 "새 지시"가 아니라 "작업 중 끼어든 노트"로
+// 감싼다. 안 감싸면 진행 중 codex/claude 모델이 새 사용자 메시지를 새 지시로 받아 **하던 작업을
+// 버리고** 그것만 답하고 턴을 끝냈다(강제완료 버그). 이 note 로 "작업 이어가되 반영/후처리" 를
+// 지시. echo(publishInboundEcho)는 원문 msg 를 쓰므로 사용자 화면엔 원문만 보인다 — 이 framing 은
+// 모델 입력에만 실린다. 3어댑터 전부 s.text 를 읽으므로 여기 한 곳 = LLM-agnostic parity.
+const STEERING_NOTE_PREFIX =
+  "[진행 중 작업에 사용자가 끼어들어 보낸 메시지입니다. 지금 하던 작업을 중단·포기하지 말고 " +
+  "계속하세요 — 현재 작업에 대한 조정·추가 지시면 반영해 이어가고, 별개의 새 요청이면 지금 " +
+  "작업을 마친 뒤에 다루세요. 사용자 원문:]";
+
+// 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트(framing 래핑)·첨부·도착시각만 실어 채널 무관화.
 const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
-  text: msg.text,
+  text: `${STEERING_NOTE_PREFIX}\n${msg.text}`,
   ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
   ts: Date.now(),
 });

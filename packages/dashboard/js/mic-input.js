@@ -111,7 +111,7 @@
             input.dispatchEvent(new Event("input", { bubbles: true }));
           } catch { /* noop */ }
           try {
-            input.focus();
+            focusChatInput();
             input.setSelectionRange(input.value.length, input.value.length);
           } catch { /* noop */ }
         };

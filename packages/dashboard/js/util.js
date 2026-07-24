@@ -1,3 +1,9 @@
+      // 입력창(chat-input) 자동 포커스 = 중앙 정책 한 곳. ★현재 비활성(사용자 결정 2026-07-24):
+      //   새 탭·뷰 전환·전송·슬래시·마이크·답글 어디서도 입력창으로 자동 포커스하지 않는다
+      //   (모바일 가상키보드 팝업 방지 + 데스크톱서도 포커스 뺏기 방지). 포커스는 사용자가
+      //   직접 클릭. 다시 켜려면 이 함수 한 곳만 고친다(흩어진 호출부는 이미 전부 여기로 모음).
+      const focusChatInput = () => {};
+
       let toastTimer = null;
       const showToast = (msg, tone) => {
         const el = document.getElementById("toast");

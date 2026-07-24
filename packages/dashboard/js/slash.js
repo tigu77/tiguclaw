@@ -50,7 +50,7 @@
         if (!c) { slashClose(); return; }
         const text = "/" + c.name + " ";
         input.value = text;
-        input.focus();
+        focusChatInput();
         input.setSelectionRange(text.length, text.length);
         input.dispatchEvent(new Event("input", { bubbles: true })); // autogrow + slashSync(→닫힘, 공백 있음).
         slashClose();

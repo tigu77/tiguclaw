@@ -1212,7 +1212,16 @@ export const runClaude = async (
             typeof block === "object" &&
             (block as { type?: string }).type === "tool_use"
           ) {
-            const toolName = String((block as { name?: unknown }).name ?? "tool");
+            // ★MCP 도구명 정규화 (#2 LLM-agnostic) — claude Agent SDK 는 in-process MCP
+            // 도구를 `mcp__<server>__<tool>` 로 노출한다(예 `mcp__skills__invoke_skill`).
+            // 그대로 activity label 로 쓰면 codex/openai(접두사 없는 bare 이름) 와 label 이
+            // 달라져, 대시보드의 label 기반 렌더(예 invoke_skill → 🛠 스킬 배지, background-drawer
+            // skillStepInfo)가 claude 에서만 안 걸린다. 훅 경로가 이미 쓰는 normalizeToolName 으로
+            // 접두사를 벗겨 세 어댑터 label 을 일치시킨다. 빌트인 도구(Edit/Task/Bash…)는 접두사가
+            // 없어 무변(raw===정규화) → diff/timing/output/스폰 감지 분기 전부 회귀 0.
+            const toolName = normalizeToolName(
+              String((block as { name?: unknown }).name ?? "tool"),
+            );
             const toolInput = (block as { input?: unknown }).input;
             const normInput =
               toolInput && typeof toolInput === "object"

@@ -78,6 +78,7 @@ import {
   parseModelSpec,
   parseModelSpecList,
   resolveTier,
+  specLabel,
   type ModelSpec,
 } from "../../src/core/llm-runtime/index.js";
 import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
@@ -312,6 +313,76 @@ const resolveGatewaySpecs = (model: unknown): ModelSpec[] => {
   if (direct !== null) return [direct];
   const env = process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "";
   return parseModelSpecList(env);
+};
+
+// ── GET /v1/models (ADR 2026-07-25) — 사용 가능 모델 id 목록. ★왕복(round-trip) 보장:
+//   프로파일/티어는 `tier:<name>` 로 노출(resolveGatewaySpecs 가 tier: 접두만 resolveTier 를
+//   타므로 — 순수 이름을 그대로 노출하면 클라가 body.model 에 넣었을 때 조용히 기본 풀로 치환
+//   되는 기존 갭을 광고하는 꼴). 직접 풀 스펙은 specLabel(provider:model) 로 대칭 노출. ──
+const GATEWAY_MODELS_CREATED = Math.floor(Date.now() / 1000); // 부팅 1회 고정(매요청 Date.now()면 클라 캐시 무효화).
+const GATEWAY_TIER_ENV: Record<string, string> = {
+  high: "MODEL_TIER_HIGH",
+  mid: "MODEL_TIER_MID",
+  low: "MODEL_TIER_LOW",
+  nano: "MODEL_TIER_NANO",
+};
+const buildModelsListResponse = (): {
+  object: "list";
+  data: Array<{ id: string; object: "model"; created: number; owned_by: string }>;
+} => {
+  const seen = new Set<string>();
+  const data: Array<{ id: string; object: "model"; created: number; owned_by: string }> = [];
+  const add = (id: string, owner: string): void => {
+    if (id === "" || seen.has(id)) return;
+    seen.add(id);
+    data.push({ id, object: "model", created: GATEWAY_MODELS_CREATED, owned_by: owner });
+  };
+  // 1) 명명 프로파일 → tier:<name>
+  try {
+    for (const name of Object.keys(loadModelProfiles())) add(`tier:${name}`, "tiguclaw");
+  } catch {
+    /* settings 파싱 실패 — 프로파일 스킵(부재 graceful) */
+  }
+  // 2) 레거시 티어 — MODEL_TIER_* env 가 실제로 채워진 것만(빈 풀=어댑터 디폴트라 제외).
+  for (const [tier, envKey] of Object.entries(GATEWAY_TIER_ENV)) {
+    const v = process.env[envKey];
+    if (typeof v === "string" && v.trim() !== "") add(`tier:${tier}`, "tiguclaw");
+  }
+  // 3) 직접 풀 스펙 — LLM_GATEWAY_MODELS ?? REGION_A_MODELS (resolveGatewaySpecs 폴백 동일 소스).
+  const poolEnv = process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "";
+  for (const spec of parseModelSpecList(poolEnv)) {
+    const label = specLabel(spec);
+    add(label, label.includes(":") ? label.slice(0, label.indexOf(":")) : "tiguclaw");
+  }
+  return { object: "list", data };
+};
+
+// OpenAI messages content 의 image_url 파트 → ingestAttachments 입력 shape (vision, ADR 2026-07-25).
+//   v1 은 `data:<mime>;base64,<payload>` 인라인만 지원 — http(s) URL 다운로드는 SSRF 표면이라
+//   스코프아웃(후속). 텍스트 파트·기타는 무시(flattenChatMessages 가 텍스트 담당).
+const extractGatewayImageAttachments = (
+  messages: Array<{ content?: unknown }>,
+): Array<{ filename: string; mimeType: string; dataBase64: string }> => {
+  const out: Array<{ filename: string; mimeType: string; dataBase64: string }> = [];
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (
+        part === null ||
+        typeof part !== "object" ||
+        (part as { type?: unknown }).type !== "image_url"
+      ) {
+        continue;
+      }
+      const urlRaw = (part as { image_url?: { url?: unknown } }).image_url?.url;
+      if (typeof urlRaw !== "string") continue;
+      const m = /^data:([^;,]+);base64,(.+)$/s.exec(urlRaw);
+      if (m === null) continue; // data: URI 만 (http URL = 스코프아웃).
+      const ext = (m[1].split("/")[1] ?? "png").replace(/[^a-z0-9]/gi, "") || "png";
+      out.push({ filename: `image.${ext}`, mimeType: m[1], dataBase64: m[2] });
+    }
+  }
+  return out;
 };
 
 // OpenAI messages[] → (system override, user text). system 은 override 로, 나머지는 순서대로 이어붙임.
@@ -607,6 +678,24 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
+    // LLM 게이트웨이 모델 목록 — OpenAI 호환 `GET /v1/models`(ADR 2026-07-25). chat 과 동일
+    // LLM_GATEWAY_TOKEN 인증, 미설정=404. read-only 라 동시성 캡 밖(gatewayInflight 무증감).
+    if (pathname === "/v1/models" && method === "GET") {
+      const gwTok = process.env.LLM_GATEWAY_TOKEN?.trim() ?? "";
+      if (gwTok === "") {
+        writeJson(res, 404, { error: { message: "llm gateway disabled (LLM_GATEWAY_TOKEN not set)" } });
+        return;
+      }
+      const auth = req.headers.authorization ?? "";
+      const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
+      if (bearer !== gwTok) {
+        writeJson(res, 401, { error: { message: "unauthorized" } });
+        return;
+      }
+      writeJson(res, 200, buildModelsListResponse());
+      return;
+    }
+
     // LLM 게이트웨이 — OpenAI 호환. **브리지 role 토큰과 별개**의 전용 토큰(LLM_GATEWAY_TOKEN).
     // 미설정 = 비활성(404). 앱 서버가 토큰 쥐고 호출(브라우저 직접 금지). 127.0.0.1 바인드.
     if (pathname === "/v1/chat/completions" && method === "POST") {
@@ -640,6 +729,21 @@ class HttpBridge implements Channel, Observer {
         return;
       }
       const { system, text } = flattenChatMessages(messages);
+      // 비전(ADR 2026-07-25) — messages content 의 image_url(data: URI) → Attachment. 기존
+      //   ingestAttachments/attachments seam 재사용(어댑터 vision 경로 그대로). 이미지 없으면
+      //   빈 배열=현행 text-only(회귀 0). 파싱/캡 위반은 400.
+      let gatewayAttachments: Attachment[] = [];
+      try {
+        gatewayAttachments = await ingestAttachments(
+          extractGatewayImageAttachments(messages),
+          this.name,
+        );
+      } catch (e) {
+        writeJson(res, 400, {
+          error: { message: `image parse failed: ${e instanceof Error ? e.message : String(e)}` },
+        });
+        return;
+      }
       const specs = resolveGatewaySpecs(body.model);
       const runInput = {
         text: text !== "" ? text : " ",
@@ -648,6 +752,7 @@ class HttpBridge implements Channel, Observer {
         internal: true as const, // persist·이벤트 스킵(대시보드·트랜스크립트 무오염).
         toolPolicy: { mode: "none" as const }, // 도구 0.
         systemPromptOverride: system, // 앱 system(빈 문자열도 override — 비서 페르소나 스킵).
+        ...(gatewayAttachments.length > 0 ? { attachments: gatewayAttachments } : {}), // 비전.
       };
       const specOpt = specs.length > 0 ? { specs } : undefined;
       const cid = `chatcmpl-${crypto.randomUUID()}`;

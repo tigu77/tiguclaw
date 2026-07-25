@@ -1216,9 +1216,40 @@ const handler: MessageHandler = async (msg) => {
     // unblock)+삭제. flag off 면 steeringCh=undefined → no-op(회귀 0). 위 방어와 동형으로 그
     // 사이 새 턴이 덮어썼으면 건드리지 않음.
     if (steeringCh !== undefined) {
+      // close 를 먼저 — 이후 도착 push 는 false 반환 → 개입점이 새 턴으로 fall-through(손실 0).
       steeringCh.close();
       if (steeringChannels.get(msg.threadKey) === steeringCh) {
         steeringChannels.delete(msg.threadKey);
+      }
+      // ★미소비 steering 재주입(2026-07-25 라이브 실측 스킵 버그) — 턴의 마지막 model-call
+      // *이후*·close *이전* 창에 push 된 입력은 소비할 경계(drain/stream)가 없어 buffer 에
+      // 남는다. 그런데 push 는 true 를 반환했으므로 개입점(serializedHandler)은 새 턴도 안
+      // 만들었다 → 그대로 두면 사용자 메시지가 대기도 처리도 아닌 채 조용히 스킵된다. close
+      // *후* 남은 buffer 를 drain 해 새 턴으로 재주입한다. ★원자성: close 전 push=버퍼(여기서
+      // drain 회수) / close 후 push=false(개입점이 새 턴) → 두 경로 어디로도 손실 0.
+      const leftover = steeringCh.drain();
+      if (leftover.length > 0) {
+        const text = leftover
+          .map((s) => s.text)
+          .filter((t) => typeof t === "string" && t.trim() !== "")
+          .join("\n\n");
+        const atts = leftover.flatMap((s) => s.attachments ?? []);
+        if (text !== "" || atts.length > 0) {
+          const reinject = {
+            ...msg,
+            text,
+            ...(atts.length > 0 ? { attachments: atts } : {}),
+            receivedAt: Date.now(),
+          };
+          // serializedHandler 경유 = thread 직렬 큐 합류(이 턴 finally 종료 후 실행) + 정상 턴
+          // 시맨틱. 재주입 시점엔 이 채널이 이미 close+삭제라 재-steer 안 됨(새 턴으로 처리).
+          void Promise.resolve(serializedHandler(reinject)).catch((e) => {
+            console.error(
+              "steering re-inject failed:",
+              e instanceof Error ? e.message : String(e),
+            );
+          });
+        }
       }
     }
   }

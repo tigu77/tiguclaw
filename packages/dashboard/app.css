@@ -364,7 +364,13 @@
       body[data-chat-panel="log"] .log-tools { display:flex; }
       #ev-filter { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:8px 10px; flex:1; min-width:0; font-size:12px; }
       #ev-filter:focus, #chat-input:focus { outline:none; border-color:rgba(125,211,252,.55); }
-      #stream { flex:1; overflow-y:auto; overflow-x:hidden; padding:10px; position:relative; }
+      /* overflow-anchor:none (2026-07-25) — 브라우저 네이티브 스크롤 앵커링을 끈다. 스트리밍
+         응답(renderDelta)이 위쪽 버블을 키우면 브라우저 앵커링이 scrollTop 을 조정하는데, 그게
+         onScroll 을 "위로 스크롤"로 오인시켜 stickBottom 을 꺼버려(하단 팔로우 해제) "전송 후
+         스크롤이 바닥에 안 감" 버그를 냈다(busy 스트리밍 중 전송 시 재현). 이 스크롤 컨테이너는
+         relayout 이 자체 앵커링(not-stick 시 anchor 오프셋 복원)을 하므로 브라우저 앵커링은
+         중복·충돌일 뿐 — 꺼서 앱이 스크롤 위치를 단독 관리하게 한다. 헤드리스 재현으로 실증. */
+      #stream { flex:1; overflow-y:auto; overflow-x:hidden; padding:10px; position:relative; overflow-anchor:none; }
       /* 대화 채팅 = CC식 가상화(윈도잉) — 위→아래(최古 위·최新 아래) 정상 흐름. 스크롤 컨테이너
          (#stream)는 position:relative, 그 안 .vt-sizer 가 총높이(측정치)만큼 스크롤바를 만들고,
          .vt-window(absolute) 가 뷰포트±버퍼 아이템만 마운트해 translateY 로 얹는다. 아이템 간격은

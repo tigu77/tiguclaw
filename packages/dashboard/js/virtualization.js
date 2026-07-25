@@ -28,6 +28,14 @@
       let stickBottom = true;    // 하단(최신) 고정 팔로우. 사용자가 위로 스크롤하면 해제.
       let vtJumpTop = false;     // Home 원샷 — 로드된 맨위로 프로그램적 점프(리스너/loadOlder 미발화).
       let vtProgrammatic = false; // 프로그램적 scrollTop 조정 가드(scroll 리스너 무시).
+      // ★프로그램적 스크롤의 async scroll 이벤트는 다음 프레임 이후에도 늦게(stale) 도착한다.
+      // vtProgrammatic 를 next-rAF 로 풀면 그 사이 도착한 stale 이벤트가 리스너에 새어, 스트리밍
+      // (연속 pin) 중 st(옛값)<lastScrollTop(새값) 으로 "위로 스크롤" 오판 → stickBottom 해제 →
+      // 하단 팔로우가 끊긴다("전송 후 스크롤 바닥 안 감", busy 스트리밍서 재현). 마지막 프로그램적
+      // 스크롤 후 짧은 창(ms) 동안 scroll 이벤트를 프로그램적으로 간주해 stale 유입을 흡수한다.
+      // 사용자 wheel/touch/키 제스처는 이 창과 무관하게 즉시 unstick(아래 별도 리스너)이라 무영향.
+      let vtProgUntil = 0;
+      const perfNow = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
       let lastScrollTop = 0;     // 직전 scrollTop — 사용자 스크롤 방향(위/아래) 판정용. 작은 위 스크롤도 stick 해제.
 
       // ── 모바일 페이지 스크롤 모드 (2026-07-19) — 다른 메뉴 패널처럼 문서(window)가 스크롤 ──
@@ -99,6 +107,7 @@
       };
       const setScrollTop = (v) => {
         vtProgrammatic = true;
+        vtProgUntil = perfNow() + 160; // stale scroll 이벤트 흡수 창(위 주석).
         const el = scEl();
         el.scrollTop = v;
         lastScrollTop = el.scrollTop; // 프로그램적 이동 = 사용자 스크롤 방향 비교 기준을 즉시 동기(스냅 후 오판 방지).
@@ -340,7 +349,8 @@
       // scEl() 로 라우팅 — 데스크탑=#stream 스크롤, 모바일=문서(window) 스크롤. 그래서 #stream 과
       // window 둘 다에 붙이되(모드별로 한쪽만 발화), 핸들러는 활성 스크롤러를 읽는다.
       const onScroll = () => {
-        if (vtProgrammatic) { lastScrollTop = getScrollTop(); return; }
+        // 프로그램적 스크롤(+그 stale 잔향 창) 은 stick 판정에서 제외 — 위 vtProgUntil 주석.
+        if (vtProgrammatic || perfNow() < vtProgUntil) { lastScrollTop = getScrollTop(); return; }
         const st = getScrollTop();
         const nearBottom = (getScrollH() - st - getClientH()) < 80;
         // 사용자 스크롤 존중 — 위로 스크롤(작은 델타 포함) = 과거 열람 의도 → 즉시 stick 해제(재-스냅 금지).
@@ -358,6 +368,21 @@
       };
       stream.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("scroll", () => { if (pageScroll()) onScroll(); }, { passive: true });
+      // 사용자 위로-스크롤 제스처 = 명시적 unstick(과거 열람 의도) — scroll 이벤트가 프로그램적
+      // 잔향 창(vtProgUntil)에 흡수되는 동안에도 실제 유저 제스처는 즉시 stick 을 해제하게 한다
+      // (스트리밍 중에도 위로 스크롤해 과거를 볼 수 있음). 아래로 향한 제스처는 무시(팔로우 유지·
+      // nearBottom 재stick 은 onScroll 이 담당). touch 는 시작 Y 대비 아래로 끌면(=콘텐츠 위로)
+      // 위로-스크롤. wheel/touch 는 데스크탑=#stream·모바일=문서 공통 발생.
+      const userScrollUp = () => { stickBottom = false; };
+      stream.addEventListener("wheel", (e) => { if (e.deltaY < 0) userScrollUp(); }, { passive: true });
+      window.addEventListener("wheel", (e) => { if (pageScroll() && e.deltaY < 0) userScrollUp(); }, { passive: true });
+      let _touchY = 0;
+      const onTouchStart = (e) => { _touchY = e.touches && e.touches[0] ? e.touches[0].clientY : 0; };
+      const onTouchMove = (e) => { const y = e.touches && e.touches[0] ? e.touches[0].clientY : 0; if (y - _touchY > 6) userScrollUp(); _touchY = y; };
+      stream.addEventListener("touchstart", onTouchStart, { passive: true });
+      stream.addEventListener("touchmove", onTouchMove, { passive: true });
+      window.addEventListener("touchstart", (e) => { if (pageScroll()) onTouchStart(e); }, { passive: true });
+      window.addEventListener("touchmove", (e) => { if (pageScroll()) onTouchMove(e); }, { passive: true });
 
       // 키보드 네비 — PageUp/Down·Home·End 로 채팅 리스트 스크롤. 가상화(absolute vt-window)라
       // 네이티브 키 스크롤이 안 먹어서 명시 처리한다. 채팅 뷰 활성 + 입력창에 실 초안이 없을 때만

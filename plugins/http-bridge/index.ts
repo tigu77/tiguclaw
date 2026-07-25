@@ -385,12 +385,40 @@ const extractGatewayImageAttachments = (
   return out;
 };
 
-// OpenAI messages[] → (system override, user text). system 은 override 로, 나머지는 순서대로 이어붙임.
+// OpenAI chat message shape — 게이트웨이가 받는 요청 messages[] 원소. tool_calls/tool_call_id
+// 는 함수콜 패스스루(ADR 2026-07-25 §Decision-5, role:"assistant"/"tool" 직렬화)에서만 읽힘.
+interface GatewayChatMessage {
+  role?: string;
+  content?: unknown;
+  tool_calls?: Array<{
+    id?: string;
+    type?: string;
+    function?: { name?: string; arguments?: string };
+  }>;
+  tool_call_id?: string;
+}
+
+// OpenAI messages[] → (system override, user text). system 은 override 로, 나머지는 순서대로
+// 이어붙임. ★role:"assistant"(tool_calls 있음)/"tool"(결과) 는 텍스트로 서술 직렬화한다 —
+// 게이트웨이는 매 요청 새 threadKey(gateway:<uuid>) 라 무상태(어댑터 세션 resume 없음) →
+// 이건 진짜 네이티브 멀티턴 tool state 재현이 아니라 "과거 tool 호출 기록"의 프롬프트 문자열
+// 재구성일 뿐이다(설계 §2-b 최소안, 과대약속 금지). 모델은 이 서술을 컨텍스트로만 인지한다.
 const flattenChatMessages = (
-  messages: Array<{ role?: string; content?: unknown }>,
+  messages: GatewayChatMessage[],
 ): { system: string; text: string } => {
   const sys: string[] = [];
   const turns: string[] = [];
+  // tool_call_id → 호출 시점 함수명(role:"tool" 결과를 그 함수명과 함께 서술하기 위한 역참조 맵).
+  const toolCallNames = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (typeof tc?.id === "string" && tc.id !== "") {
+          toolCallNames.set(tc.id, tc.function?.name ?? "tool");
+        }
+      }
+    }
+  }
   for (const msg of messages) {
     const role = typeof msg.role === "string" ? msg.role : "user";
     const content =
@@ -405,11 +433,63 @@ const flattenChatMessages = (
               )
               .join("")
           : "";
-    if (role === "system") sys.push(content);
-    else if (role === "user") turns.push(content);
-    else turns.push(`[${role}]\n${content}`);
+    if (role === "system") {
+      sys.push(content);
+    } else if (role === "user") {
+      turns.push(content);
+    } else if (role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      // 과거 함수콜 turn — 실행 없이 "이렇게 불렀었다"만 서술(2-b 최소안).
+      const calls = msg.tool_calls
+        .map((tc) => `[assistant called ${tc.function?.name ?? "tool"}(${tc.function?.arguments ?? ""})]`)
+        .join("\n");
+      turns.push(content !== "" ? `${calls}\n${content}` : calls);
+    } else if (role === "tool") {
+      const name =
+        typeof msg.tool_call_id === "string" ? (toolCallNames.get(msg.tool_call_id) ?? "tool") : "tool";
+      turns.push(`[tool result for ${name}]\n${content}`);
+    } else {
+      turns.push(`[${role}]\n${content}`);
+    }
   }
   return { system: sys.join("\n\n"), text: turns.join("\n\n") };
+};
+
+// OpenAI tools[]/tool_choice → externalTools 패스스루(ADR 2026-07-25 §Decision-5). 실행은
+//   tiguclaw 가 하지 않는다 — 모델이 고른 의도만 그대로 caller(게이트웨이 클라이언트)에 반환.
+//   body.tools 부재/빈 배열 = 미주입(현행, 회귀 0).
+const parseGatewayTools = (
+  body: Record<string, unknown>,
+): {
+  externalTools?: Array<{ name: string; description?: string; parameters: unknown }>;
+  externalToolChoice?: "auto" | "none" | "required" | { name: string };
+} => {
+  const rawTools = body.tools;
+  if (!Array.isArray(rawTools) || rawTools.length === 0) return {};
+  const externalTools: Array<{ name: string; description?: string; parameters: unknown }> = [];
+  for (const t of rawTools) {
+    if (t === null || typeof t !== "object") continue;
+    if ((t as { type?: unknown }).type !== "function") continue;
+    const fn = (t as { function?: unknown }).function;
+    if (fn === null || typeof fn !== "object") continue;
+    const name = (fn as { name?: unknown }).name;
+    if (typeof name !== "string" || name === "") continue;
+    const description = (fn as { description?: unknown }).description;
+    externalTools.push({
+      name,
+      ...(typeof description === "string" ? { description } : {}),
+      parameters: (fn as { parameters?: unknown }).parameters ?? {},
+    });
+  }
+  if (externalTools.length === 0) return {}; // 전부 무효 항목이면 미주입(안전 degrade).
+  const rawChoice = body.tool_choice;
+  let externalToolChoice: "auto" | "none" | "required" | { name: string } | undefined;
+  if (rawChoice === "auto" || rawChoice === "none" || rawChoice === "required") {
+    externalToolChoice = rawChoice;
+  } else if (rawChoice !== null && typeof rawChoice === "object") {
+    const fnName = (rawChoice as { function?: { name?: unknown } }).function?.name;
+    if (typeof fnName === "string" && fnName !== "") externalToolChoice = { name: fnName };
+  }
+  return { externalTools, ...(externalToolChoice !== undefined ? { externalToolChoice } : {}) };
 };
 
 // ── 이력 도구 스텝(기능 B, 2026-07-09) — chat_log 메시지 window 와 같은 ts 범위의 영속
@@ -722,13 +802,15 @@ class HttpBridge implements Channel, Observer {
         return;
       }
       const messages = Array.isArray(body.messages)
-        ? (body.messages as Array<{ role?: string; content?: unknown }>)
+        ? (body.messages as GatewayChatMessage[])
         : [];
       if (messages.length === 0) {
         writeJson(res, 400, { error: { message: "messages required" } });
         return;
       }
       const { system, text } = flattenChatMessages(messages);
+      // 함수콜 패스스루(ADR 2026-07-25 §Decision-5) — body.tools 없으면 미주입(현행, 회귀 0).
+      const gatewayTools = parseGatewayTools(body);
       // 비전(ADR 2026-07-25) — messages content 의 image_url(data: URI) → Attachment. 기존
       //   ingestAttachments/attachments seam 재사용(어댑터 vision 경로 그대로). 이미지 없으면
       //   빈 배열=현행 text-only(회귀 0). 파싱/캡 위반은 400.
@@ -753,6 +835,7 @@ class HttpBridge implements Channel, Observer {
         toolPolicy: { mode: "none" as const }, // 도구 0.
         systemPromptOverride: system, // 앱 system(빈 문자열도 override — 비서 페르소나 스킵).
         ...(gatewayAttachments.length > 0 ? { attachments: gatewayAttachments } : {}), // 비전.
+        ...gatewayTools, // 함수콜 패스스루(externalTools/externalToolChoice, 없으면 미주입).
       };
       const specOpt = specs.length > 0 ? { specs } : undefined;
       const cid = `chatcmpl-${crypto.randomUUID()}`;
@@ -761,7 +844,9 @@ class HttpBridge implements Channel, Observer {
 
       // ── 스트리밍(stream:true) — SSE, OpenAI chat.completion.chunk. 이 게이트웨이 턴의
       // llm.delta(threadKey 필터)를 구독해 content 청크로 중계. 델타 전무(비스트리밍 모델)
-      // 시 완료 후 전체본 1청크 폴백. ──
+      // 시 완료 후 전체본 1청크 폴백. 함수콜(ADR 2026-07-25 §Decision-5) — llm.tool_call_delta
+      // (형제 이벤트, llm.delta 확장 아님)를 옆에서 구독해 index-기반 tool_calls 조각으로 중계.
+      // externalTools 미요청 turn 은 이 이벤트 발행처 자체가 없어 이 구독은 그냥 무동작(회귀 0). ──
       if (body.stream === true) {
         res.writeHead(200, {
           "Content-Type": "text/event-stream; charset=utf-8",
@@ -770,6 +855,7 @@ class HttpBridge implements Channel, Observer {
         });
         let modelLabel = reqModel;
         let sawDelta = false;
+        let sawToolCallDelta = false;
         const chunk = (delta: Record<string, unknown>, finish: string | null): void => {
           res.write(
             `data: ${JSON.stringify({ id: cid, object: "chat.completion.chunk", created, model: modelLabel, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
@@ -793,12 +879,65 @@ class HttpBridge implements Channel, Observer {
                 }
               })
             : null;
+        const unsubTool =
+          this.bus !== null
+            ? this.bus.subscribe((ev) => {
+                if (ev.type !== "llm.tool_call_delta") return;
+                const p = ev.payload as {
+                  threadKey?: string;
+                  index?: number;
+                  id?: string;
+                  name?: string;
+                  argumentsDelta?: string;
+                };
+                if (p.threadKey !== runInput.threadKey) return;
+                if (typeof p.index !== "number") return;
+                sawToolCallDelta = true;
+                chunk(
+                  {
+                    tool_calls: [
+                      {
+                        index: p.index,
+                        ...(typeof p.id === "string" && p.id !== "" ? { id: p.id, type: "function" } : {}),
+                        function: {
+                          ...(typeof p.name === "string" && p.name !== "" ? { name: p.name } : {}),
+                          ...(typeof p.argumentsDelta === "string" && p.argumentsDelta !== ""
+                            ? { arguments: p.argumentsDelta }
+                            : {}),
+                        },
+                      },
+                    ],
+                  },
+                  null,
+                );
+              })
+            : null;
         gatewayInflight += 1;
         try {
           const out = await runRegionA(runInput, specOpt);
           if (out.model !== undefined && out.model !== null && out.model !== "") modelLabel = out.model;
-          if (!sawDelta && out.text) chunk({ content: out.text }, null); // 델타 전무 폴백.
-          chunk({}, "stop");
+          const toolCalls = out.externalToolCalls ?? [];
+          if (toolCalls.length > 0) {
+            if (!sawToolCallDelta) {
+              // 델타 미발행(폴링형/비스트리밍 어댑터) — llm.delta 전무 폴백과 동형: 완료 후
+              // 전체 tool_calls 1청크로.
+              chunk(
+                {
+                  tool_calls: toolCalls.map((tc, i) => ({
+                    index: i,
+                    id: tc.id,
+                    type: "function",
+                    function: { name: tc.name, arguments: tc.argumentsJson },
+                  })),
+                },
+                null,
+              );
+            }
+            chunk({}, "tool_calls");
+          } else {
+            if (!sawDelta && out.text) chunk({ content: out.text }, null); // 델타 전무 폴백.
+            chunk({}, "stop");
+          }
           res.write("data: [DONE]\n\n");
         } catch (e) {
           res.write(
@@ -806,25 +945,43 @@ class HttpBridge implements Channel, Observer {
           );
         } finally {
           if (unsub !== null) safeUnsubscribe(unsub);
+          if (unsubTool !== null) safeUnsubscribe(unsubTool);
           gatewayInflight -= 1;
           res.end();
         }
         return;
       }
 
-      // ── 비스트리밍 ──
+      // ── 비스트리밍 — out.externalToolCalls 있으면 tool_calls 응답(§Decision-5), 없으면
+      // 기존 그대로(content:out.text, finish_reason:"stop") — 하위호환 100%. ──
       gatewayInflight += 1;
       try {
         const out = await runRegionA(runInput, specOpt);
         const inTok = out.usage?.inputTokens ?? 0;
         const outTok = out.usage?.outputTokens ?? 0;
+        const toolCalls = out.externalToolCalls ?? [];
+        const hasToolCalls = toolCalls.length > 0;
         writeJson(res, 200, {
           id: cid,
           object: "chat.completion",
           created,
           model: out.model ?? reqModel,
           choices: [
-            { index: 0, message: { role: "assistant", content: out.text ?? "" }, finish_reason: "stop" },
+            {
+              index: 0,
+              message: hasToolCalls
+                ? {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: toolCalls.map((tc) => ({
+                      id: tc.id,
+                      type: "function",
+                      function: { name: tc.name, arguments: tc.argumentsJson },
+                    })),
+                  }
+                : { role: "assistant", content: out.text ?? "" },
+              finish_reason: hasToolCalls ? "tool_calls" : "stop",
+            },
           ],
           usage: { prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok },
         });

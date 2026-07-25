@@ -314,6 +314,15 @@ const mapTierToSdkModel = (
 export const runClaude = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  // externalTools/externalToolChoice(LLM 게이트웨이 함수콜 패스스루) — ★스코프아웃(ADR
+  // `docs/decisions/2026-07-25-llm-gateway-openrouter-scope.md` §Decision-3). Claude Agent
+  // SDK 구독 로그인 경로는 agent loop 를 서브프로세스로 통째 소유해 "실행 말고 tool_calls
+  // 만 반환하고 멈춤" 원시기능이 없다(개입점은 allow/deny 뿐) — abort-후-재개는 resume jsonl
+  // 오염 위험(project_bad_image_poisons_claude_resume 동급). "Claude 모델 + 툴"은 prod
+  // 모드(openai 어댑터, Anthropic OpenAI-호환 엔드포인트)가 이미 커버해 능력 공백 0(ADR
+  // §Decision-2/§Decision-4). 이 어댑터는 `input.externalTools`/`externalToolChoice` 를
+  // **의도적으로 읽지 않는다** — 값이 있어도 무시하고 기존 텍스트/비전 경로 그대로 동작
+  // (방어적 no-op, 회귀 0). 재검토는 실 수요 발생 시 별도 스파이크(ADR 본문 "추후 재검토").
   if (
     !process.env.ANTHROPIC_API_KEY &&
     !process.env.CLAUDE_CODE_OAUTH_TOKEN

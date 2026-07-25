@@ -123,6 +123,18 @@ export const parseCodexSse = async (
   // 에만 호출. no-progress 타이머 reset 용(in_progress heartbeat 는 진전 아님 → 미호출).
   // 미지정 = no-op(회귀 0).
   onProgress?: () => void,
+  // externalTools 패스스루 스트리밍(2026-07-26, additive) — function_call lifecycle 의
+  // 3분기(added→arguments.delta→done) 에서 index-기반 조각을 호출부에 노출한다. index 는
+  // 이 parseCodexSse 호출(=1 iteration) 안에서 function_call 등장 순서(0,1,2…) — 병렬
+  // 호출도 SSE 상 순차 도착이라 순서 그대로 인덱스가 된다. 미지정 = no-op(회귀 0, 기존
+  // onTextDelta/onProgress 선례와 동형). 필터링(externalTools 이름 매치 여부)·발행(llm.
+  // tool_call_delta publish)은 호출부(어댑터) 책임 — 파서는 순수 조각만 넘긴다.
+  onToolCallDelta?: (info: {
+    index: number;
+    id?: string;
+    name?: string;
+    argumentsDelta?: string;
+  }) => void,
 ): Promise<CodexSseResult> => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -134,6 +146,8 @@ export const parseCodexSse = async (
     | undefined;
   const toolCalls: CodexToolCall[] = [];
   let currentToolCall: CodexToolCall | null = null;
+  // externalTools 스트리밍용 — 현재 진행 중인 function_call 의 index(이 파서 호출 안 단조).
+  let currentToolCallIndex = -1;
   const debugTools = process.env.CODEX_DEBUG_TOOLS === "1";
 
   while (true) {
@@ -181,7 +195,13 @@ export const parseCodexSse = async (
               name: event.item.name ?? "",
               partialJson: typeof event.item.arguments === "string" ? event.item.arguments : "",
             };
+            currentToolCallIndex += 1;
             onProgress?.(); // 도구 호출 시작 = 진전 → no-progress 타이머 reset.
+            onToolCallDelta?.({
+              index: currentToolCallIndex,
+              id: callId !== "" ? callId : currentToolCall.id,
+              name: currentToolCall.name,
+            });
             if (debugTools) {
               // ADR §6 (c) — Codex backend SSE event 라이브 입증용 1줄 로그.
               console.error(
@@ -197,6 +217,10 @@ export const parseCodexSse = async (
             typeof event.delta === "string"
           ) {
             currentToolCall.partialJson += event.delta;
+            onToolCallDelta?.({
+              index: currentToolCallIndex,
+              argumentsDelta: event.delta,
+            });
           }
           // V5.3 — function_call lifecycle 3 분기: output_item.done.
           // OpenClaw L491-507 답습 — partialJson final 확정 후 toolCalls 에 push.

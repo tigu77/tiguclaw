@@ -18,6 +18,11 @@ import type { ChatAttachmentMeta } from "../store/chat-log.js";
 const SKIP_TYPES = new Set<string>([
   "llm.sdk_message",
   "llm.delta", // 고volume 토큰 스트리밍(보조 점증 렌더) — 전체본은 channel.message.out·transcripts 가 이미 보관.
+  // llm.delta 의 형제 이벤트(2026-07-26, ADR 2026-07-25-llm-gateway-openrouter-scope §Decision-5) —
+  // 함수콜 인자 스트리밍 조각. externalToolCalls 최종본이 RegionASdkOutput/게이트웨이 응답에
+  // 실려 별도 경로로 이미 확정되므로(llm.delta↔channel.message.out 관계와 동형) 개별 조각의
+  // 감사 가치 0 — 동일 사유로 SKIP.
+  "llm.tool_call_delta",
   "channel.message.in",
   "channel.message.out",
   // 엔드포인트 호출 관측(요청+응답 전문) — 라이브 SSE 로만 대시보드에 전달. 영속 시 sanitize 가

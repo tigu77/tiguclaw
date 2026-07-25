@@ -24,7 +24,7 @@
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { Agent, run, OpenAIProvider } from "@openai/agents";
+import { Agent, run, tool, OpenAIProvider } from "@openai/agents";
 import type {
   MCPServer,
   AgentInputItem,
@@ -100,6 +100,7 @@ import type {
   RegionAActivityPayload,
   RegionASdkInput,
   RegionASdkOutput,
+  RegionAToolCallDeltaPayload,
 } from "../types.js";
 
 // 멀티모달 (2026-07-10) — 현재 turn 이미지 첨부를 SDK `input_image` content 로 주입. @openai/agents
@@ -220,6 +221,43 @@ export const runOpenAi = async (
   //  - undefined: 현행 전체 도구 (회귀 0).
   // codex/claude 와 *동형 규칙* — 한쪽만 적용 시 미완성(I-2).
   const toolsNone = input.toolPolicy?.mode === "none";
+
+  // externalTools 패스스루 (ADR 2026-07-25 §Decision-5, 스파이크 §2) — LLM 게이트웨이 전용,
+  // toolsNone(=tiguclaw MCP 서버 0)과 완전 독립인 `Agent.tools`(native FunctionTool[]) 필드에
+  // 등록한다(§2.3 확정 — mcpServers 와 서로 다른 필드라 toolPolicy 게이팅과 애초에 안 만남).
+  // execute() 는 부작용 0 — 실제 실행 대신 `{callId, name, argumentsJson}` 을 클로저 배열에
+  // 수집만 하고 마커 문자열을 반환한다. `stopAtToolNames` 가 그 반환값을 finalOutput 으로
+  // 승격해(§2.1) 즉시 턴을 멈추지만, 우리는 finalOutput 을 안 쓰고 이 수집 배열로 판정한다
+  // (실제 실행 자체를 막는 원시기능이 SDK 에 없어 "실행되지만 부작용 0"으로 동등 효과, 확인됨).
+  // 병렬 tool_call 도 SDK 가 각 호출마다 execute() 를 1회씩 부르므로(§2.2 코드 확정) 전량 수집.
+  const externalToolNames = new Set((input.externalTools ?? []).map((t) => t.name));
+  const externalToolCallsCollected: NonNullable<RegionASdkOutput["externalToolCalls"]> = [];
+  const nativeExternalTools = (input.externalTools ?? []).map((t) =>
+    tool({
+      name: t.name,
+      description: t.description ?? "",
+      // 앱 함수 스키마(JSON Schema) 원본 그대로 통과 — non-strict(스키마를 tiguclaw 가
+      // 임의로 조이지 않는다). 런타임 형상 검증은 model+SDK 가 수행, 여기선 캐스팅만.
+      parameters: (t.parameters ?? {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: true,
+      }) as never,
+      strict: false,
+      execute: async (
+        _args: unknown,
+        _ctx?: unknown,
+        details?: { toolCall?: { callId?: string; arguments?: string } },
+      ) => {
+        const callId = details?.toolCall?.callId ?? randomUUID();
+        const argumentsJson =
+          details?.toolCall?.arguments ?? JSON.stringify(_args ?? {});
+        externalToolCallsCollected.push({ id: callId, name: t.name, argumentsJson });
+        return JSON.stringify({ __passthrough: true, name: t.name });
+      },
+    } as Parameters<typeof tool>[0]),
+  );
 
   // reply-intent — 무인자 도구 호출 시 클로저로 플래그 set (turn 별 격리, 함수 지역).
   let replyToTrigger = false;
@@ -467,6 +505,15 @@ export const runOpenAi = async (
     instructions: input.systemPromptOverride ?? SYSTEM_PROMPT,
     model: modelArg,
     mcpServers,
+    // externalTools 패스스루(§2.3) — 미지정/빈 배열이면 두 필드 모두 생략(스프레드 {} =
+    // 현행과 바이트 동일 Agent 구성, 회귀 0). toolsNone 게이팅과 무관 — mcpServers 축과
+    // 별개 필드라 tiguclaw 도구가 꺼져도 앱 함수는 그대로 노출된다(ADR §Decision-1 3항).
+    ...(nativeExternalTools.length > 0
+      ? {
+          tools: nativeExternalTools,
+          toolUseBehavior: { stopAtToolNames: [...externalToolNames] },
+        }
+      : {}),
   });
 
   // 2c+2d (2026-06-15) — 세션 연속성 + 메모리/정체성 parity (층 1).
@@ -586,6 +633,14 @@ export const runOpenAi = async (
   // 도구 실행시간(#3) — callId → {그 도구의 activity seq, 시작 벽시계, 라벨}. tool_called
   // 에서 기록, tool_output(function_call_result) 도착 시 phase:"end"+durationMs 로 발행.
   const toolTiming = new Map<string, { seq: number; t0: number; label: string }>();
+
+  // externalTools 스트리밍(llm.tool_call_delta, §2.4) — SDK 는 `tool_called` 를 도구콜이
+  // *완전히 조립된 뒤* 1회만 노출한다(codex 의 문자 단위 진짜 델타와 달리 이 어댑터는 "단일
+  // 청크 = 전체 call", 스파이크 §2.4 명시 비대칭 — 추가 열화 아님, additive 이벤트). index 는
+  // 이 run() 호출 안에서 externalTools 매치 도구가 등장한 순서(0,1,2…), seq 는 여타 이벤트와
+  // 동일 패턴의 독립 단조 카운터.
+  let externalToolDeltaIndex = 0;
+  let toolCallDeltaSeq = 0;
 
   // 유휴 타임아웃 (G1 — 비스트림→스트림 전환). 현재 비스트림 run() 은 heartbeat 원천이
   // 0 이라 유휴 감지 불가 = 층1 parity 깨짐. SDK 동일 `run` 의 stream 오버로드로 전환
@@ -783,6 +838,29 @@ export const runOpenAi = async (
                 })(),
               } satisfies RegionAActivityPayload,
             });
+            // externalTools 스트리밍(§2.4) — 매치되는 이름만, 단일 청크(전체 call)로 발행.
+            if (externalToolNames.has(raw.name)) {
+              try {
+                bus.publish({
+                  type: "llm.tool_call_delta",
+                  ts: Date.now(),
+                  payload: {
+                    channel: input.channel,
+                    threadKey: input.threadKey,
+                    adapter: "openai",
+                    seq: toolCallDeltaSeq++,
+                    index: externalToolDeltaIndex++,
+                    id: callId,
+                    name: raw.name,
+                    ...(typeof raw.arguments === "string"
+                      ? { argumentsDelta: raw.arguments }
+                      : {}),
+                  } satisfies RegionAToolCallDeltaPayload,
+                });
+              } catch {
+                /* best-effort — 스트리밍 관측 실패가 turn 을 무르지 않는다(원칙 3). */
+              }
+            }
           }
         } else if (
           ev.type === "run_item_stream_event" &&
@@ -893,11 +971,6 @@ export const runOpenAi = async (
     }
   }
 
-  const text =
-    typeof result.finalOutput === "string"
-      ? result.finalOutput
-      : JSON.stringify(result.finalOutput);
-
   // /status 개편 — usage graceful 추출 (이번 라운드 필수 아님). Agents SDK 가
   // result 에 usage 를 노출하면(통상 RunContext.usage = {inputTokens, outputTokens, ...})
   // 동일 형상으로 캡처, 없으면 미설정(정직 → /status "측정 전"). spike 어댑터라 SDK
@@ -910,6 +983,27 @@ export const runOpenAi = async (
       usage = { inputTokens: u.inputTokens, outputTokens: u.outputTokens };
     }
   }
+
+  // externalTools 패스스루 얼리 리턴 (ADR 2026-07-25 §Decision-5, 스파이크 §2.1) — 이
+  // 경우 `result.finalOutput` 은 우리 execute() 마커의 반환값(`stopAtToolNames` 가 승격한
+  // 것)이라 사용자에게 보일 진짜 텍스트가 아니다 — 절대 text 로 흘리지 않는다. 게이트웨이도
+  // externalToolCalls 값이 있으면 content:null 로 매핑하므로(types.ts §Output 주석) text=""
+  // 는 무해(호출자가 애초에 안 읽음). sessionId/usage 는 일반 경로와 동일 값.
+  if (externalToolCallsCollected.length > 0) {
+    return {
+      text: "",
+      sessionId: `openai-${randomUUID()}`,
+      model,
+      replyToTrigger,
+      usage,
+      externalToolCalls: externalToolCallsCollected,
+    };
+  }
+
+  const text =
+    typeof result.finalOutput === "string"
+      ? result.finalOutput
+      : JSON.stringify(result.finalOutput);
 
   // V5 — 자체 sessionId 생성. session resume(previous_response_id)·메모리 통합은 후속.
   // replyToTrigger — reply-intent 도구 호출 시 set (codex/claude 와 동일 출력 필드).

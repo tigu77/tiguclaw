@@ -199,6 +199,21 @@ export interface RegionASdkInput {
    * 어댑터 소비(drain/stream)는 P1(codex→openai→claude) 범위.
    */
   steering?: SteeringChannel;
+  /**
+   * 신규(additive, 2026-07-25) — **caller-supplied 함수 스키마 패스스루** (LLM 게이트웨이
+   * 함수콜, ADR `docs/decisions/2026-07-25-llm-gateway-openrouter-scope.md` §Decision-5).
+   * `toolPolicy`(tiguclaw 내장 도구 allowlist)와 시맨틱이 다르다 — 이 스키마들은 tiguclaw 가
+   * *실행하지 않고* 모델에게 제시만 한다. 모델이 하나를 고르면 실행 대신
+   * `RegionASdkOutput.externalToolCalls` 로 그대로 caller 에 반환. 미지정 = 현행(회귀 0).
+   * 세 어댑터가 각자 SDK 별 방식으로 "제시하되 실행 가로채기"를 구현(#2 parity, region 소유).
+   */
+  externalTools?: Array<{ name: string; description?: string; parameters: unknown }>;
+  /**
+   * 신규(additive, 2026-07-25) — externalTools 와 짝(같은 ADR). OpenAI `tool_choice` 그대로:
+   * "auto"=모델 재량, "none"=이번 turn 무시, "required"=반드시 하나 호출,
+   * `{name}`=특정 함수 강제. 미지정 = "auto" 와 동형(어댑터 디폴트).
+   */
+  externalToolChoice?: "auto" | "none" | "required" | { name: string };
 }
 
 export interface RegionASdkOutput {
@@ -245,6 +260,14 @@ export interface RegionASdkOutput {
    *  - fellBackTo: 실제로 응답한 폴백 모델 spec ("provider:model").
    */
   modelOverrideRejected?: { requested: string; fellBackTo: string };
+  /**
+   * 신규(additive, 2026-07-25) — `externalTools` 로 제시된 스키마 중 모델이 실제로 호출을
+   * 선택한 것들(LLM 게이트웨이 함수콜, ADR `2026-07-25-llm-gateway-openrouter-scope.md`
+   * §Decision-5). 값이 있으면 호출자(게이트웨이)가 `finish_reason:"tool_calls"` 로 매핑하고
+   * `content:null`. 미지정/빈 배열 = 현행(텍스트 응답, 회귀 0). 실행은 어댑터가 하지 않는다 —
+   * 의도만 그대로 caller 에 반환(client-side function calling).
+   */
+  externalToolCalls?: Array<{ id: string; name: string; argumentsJson: string }>;
 }
 
 export interface RegionASdk {
@@ -453,6 +476,37 @@ export interface RegionADeltaPayload {
    * coalesce(어댑터측 ~80ms ∥ ~120자) 후의 묶음일 수 있다.
    */
   delta: string;
+}
+
+/**
+ * llm.tool_call_delta — LLM-agnostic 함수콜 스트리밍 증분 관측 이벤트 (LLM 게이트웨이 전용
+ * 소비자, ADR `docs/decisions/2026-07-25-llm-gateway-openrouter-scope.md` §Decision-5).
+ *
+ * `RegionADeltaPayload`(순수 텍스트 증분)와 **형제 이벤트**로 신설 — ADR
+ * `2026-06-25-dashboard-chat-cc-parity.md` §6.2 "llm.delta 는 순수 텍스트 증분만" 불변식을
+ * `llm.delta` 필드 확장이 아니라 별도 타입으로 우회. `externalTools`(패스스루 함수 스키마)를
+ * 받은 turn 에서만 발행 — 그 외 turn 은 발행처 자체가 없음(§2-c 의존).
+ *
+ * OpenAI 스트리밍 `delta.tool_calls[]` 와 동형 index-기반 조각 계약: 첫 조각에 id+name,
+ * 이후 조각은 argumentsDelta(누적 아닌 증분) 만.
+ *
+ * EventBus publish 시:
+ *   { type: "llm.tool_call_delta", ts: Date.now(), payload: RegionAToolCallDeltaPayload }
+ */
+export interface RegionAToolCallDeltaPayload {
+  channel: ChannelName;
+  threadKey: string;
+  adapter: "claude" | "codex" | "openai";
+  /** 어댑터 로컬 단조 증가 시퀀스 — llm.delta 의 seq 와 동일 패턴. */
+  seq: number;
+  /** OpenAI tool_calls[] 배열 위치. */
+  index: number;
+  /** 신규 tool_call 시작 조각에만(이후 조각은 생략). */
+  id?: string;
+  /** 신규 tool_call 시작 조각에만. */
+  name?: string;
+  /** 매 조각 — 누적 아닌 증분(text delta 와 동형 계약). */
+  argumentsDelta?: string;
 }
 
 /**

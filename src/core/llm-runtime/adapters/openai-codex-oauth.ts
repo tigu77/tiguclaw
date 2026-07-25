@@ -92,6 +92,7 @@ import type {
   RegionAActivityPayload,
   RegionASdkInput,
   RegionASdkOutput,
+  RegionAToolCallDeltaPayload,
 } from "../types.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
@@ -518,6 +519,25 @@ export const runOpenAiCodex = async (
   //  - undefined: 현행 전체 도구 (회귀 0). openai/claude 동형 규칙(I-2).
   const toolsNone = input.toolPolicy?.mode === "none";
 
+  // externalTools 패스스루 (ADR 2026-07-25 §Decision-5, 스파이크 §1) — LLM 게이트웨이
+  // 전용, tiguclaw 내장 도구(toolPolicy)와 직교(별개 축, architect 결정 불요). 이름 집합은
+  // 아래 "unknown tool" 분기 앞 판별에, 스키마는 responsesTools 조립부에서 concat
+  // (toolsNone/webSearchEnabled 게이팅 밖 — !toolsNone 이어도 tiguclaw MCP 도구 0 +
+  // 앱 함수만 노출이 자연히 성립). 미지정/빈 배열 = 이 turn 은 완전히 무영향(회귀 0).
+  const externalToolNames = new Set((input.externalTools ?? []).map((t) => t.name));
+  const externalFunctionTools = (input.externalTools ?? []).map((t) => ({
+    type: "function" as const,
+    name: t.name,
+    description: t.description ?? "",
+    parameters:
+      t.parameters !== undefined && t.parameters !== null
+        ? t.parameters
+        : { type: "object", properties: {}, required: [] },
+  }));
+  // 이 turn 에서 모델이 실제로 부른 externalTools 호출 수집(tiguclaw 는 실행하지 않음).
+  // 값이 있으면 run() 이 finalText==="" 폴백 유도보다 먼저 조기 반환한다(§ 아래).
+  const pendingExternalToolCalls: NonNullable<RegionASdkOutput["externalToolCalls"]> = [];
+
   // tool name → bridge 라우팅 테이블. function_call 도착 시 어느 server 의 도구인지 판별.
   const toolBridgeMap = new Map<string, typeof memoryBridge>();
   const mcpTools: Awaited<ReturnType<typeof memoryBridge.listTools>> = [];
@@ -751,9 +771,13 @@ export const runOpenAiCodex = async (
     !toolsNone &&
     process.env.CODEX_WEB_SEARCH !== "0" &&
     process.env.CODEX_WEB_SEARCH !== "false";
-  const responsesTools = webSearchEnabled
-    ? [...functionTools, { type: "web_search" as const }]
-    : functionTools;
+  // externalTools 는 toolsNone/webSearchEnabled 게이팅 *밖*에서 concat — 게이트웨이가
+  // toolPolicy:none 으로 tiguclaw 도구를 꺼도 앱 함수 스키마는 그대로 노출된다(스파이크 §1.1
+  // 확정, architect 결정 불요 — 순수 배열 concat).
+  const responsesTools = [
+    ...(webSearchEnabled ? [...functionTools, { type: "web_search" as const }] : functionTools),
+    ...externalFunctionTools,
+  ];
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -1072,6 +1096,11 @@ export const runOpenAiCodex = async (
           throw new Error("Codex backend response.body 가 null — SSE 스트림 부재.");
         }
 
+        // externalTools 스트리밍(2026-07-26) — index → "이 index 가 externalTools 이름과
+        // 매치되는가" 판정 캐시. added 이벤트가 name 을 처음 알려주므로 거기서 채우고,
+        // 이후 arguments.delta 조각은 이 캐시로 필터(파서는 이름 모름, 필터는 어댑터 몫).
+        // 매 재시도(stall-resume)마다 새 parseCodexSse 호출 = index 재출발이라 로컬 재선언.
+        const toolDeltaIsExternal = new Map<number, boolean>();
         sseResult = await parseCodexSse(
           res.body,
           () => {
@@ -1084,6 +1113,35 @@ export const runOpenAiCodex = async (
             tracePush(delta); // 워커/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
           },
           () => progressTimer.beat(), // onProgress — 실제 output/tool = 진전 → 타이머 reset.
+          externalToolNames.size === 0
+            ? undefined
+            : (info) => {
+                // 이름이 새로 확정되는 시점(added 조각)에 매치 여부 캐시.
+                if (info.name !== undefined) {
+                  toolDeltaIsExternal.set(info.index, externalToolNames.has(info.name));
+                }
+                if (toolDeltaIsExternal.get(info.index) !== true) return; // 내장 도구 조각은 무시.
+                try {
+                  bus.publish({
+                    type: "llm.tool_call_delta",
+                    ts: Date.now(),
+                    payload: {
+                      channel: input.channel,
+                      threadKey: input.threadKey,
+                      adapter: "codex",
+                      seq: activitySeq++,
+                      index: info.index,
+                      ...(info.id !== undefined ? { id: info.id } : {}),
+                      ...(info.name !== undefined ? { name: info.name } : {}),
+                      ...(info.argumentsDelta !== undefined
+                        ? { argumentsDelta: info.argumentsDelta }
+                        : {}),
+                    } satisfies RegionAToolCallDeltaPayload,
+                  });
+                } catch {
+                  /* best-effort — 스트리밍 관측 실패가 turn 을 무르지 않는다(원칙 3). */
+                }
+              },
         );
         break; // 스트림 소비 성공 → 재시도 루프 탈출.
       } catch (e) {
@@ -1217,6 +1275,30 @@ export const runOpenAiCodex = async (
         finalText = finalText === "" ? text : `${finalText}\n\n${text}`;
       }
       if (responseId !== undefined) finalResponseId = responseId;
+
+      // externalTools 패스스루 실행 가로채기 (ADR 2026-07-25 §Decision-5, 스파이크 §1.2) —
+      // 이 iteration 의 toolCalls 중 externalTools 이름과 일치하는 것들은 toolBridgeMap 에
+      // 없어 원래 "unknown tool" throw 로 갔을 자리다. 그 앞에서 가로채 tiguclaw 가 실행하지
+      // 않고(bridge.callTool 미호출) 수집만 한 뒤 루프를 그대로 종료한다 —
+      // toolCalls.length===0 자연종료 분기와 나란한 별도 조기종료 경로. 위에서 이미 이번
+      // iteration 의 텍스트(도구 호출 *전* assistant 텍스트, 있으면)를 finalText 에 누적했다 —
+      // 스파이크 §4 계약("text 는 도구 호출 전 텍스트만") 충족. function_call item 은 이미 위
+      // (activity 루프)에서 의도 기록됐고, 아래(실행 루프) function_call push 는 이 break 로
+      // 도달하지 않으므로 자연히 스킵(inputArray 는 이 호출 반환 후 폐기 — 다음 라운드 재구성은
+      // 게이트웨이/§3 관할, 이 어댑터는 관여 안 함).
+      if (externalToolNames.size > 0) {
+        const externalMatched = toolCalls.filter((tc) => externalToolNames.has(tc.name));
+        if (externalMatched.length > 0) {
+          for (const tc of externalMatched) {
+            pendingExternalToolCalls.push({
+              id: tc.callId || tc.id || randomBytes(8).toString("hex"),
+              name: tc.name,
+              argumentsJson: tc.partialJson === "" ? "{}" : tc.partialJson,
+            });
+          }
+          break;
+        }
+      }
 
       // 2026-06-11 (Fix 2 — 가설 B) — nudge 에 사용자 원 입력 재주입. 큰 컨텍스트
       //  (216k+) 안에서 짧은 입력("어 진행해") 이 묻혀 모델이 "결국 뭘 답해야" 하는지
@@ -1597,6 +1679,25 @@ export const runOpenAiCodex = async (
         /* noop */
       }
     }
+  }
+
+  // externalTools 패스스루 얼리 리턴 (ADR 2026-07-25 §Decision-5) — finalText==="" 폴백/
+  // 풀 폴백 throw 로직(아래)보다 *먼저* 처리해야 한다: 패스스루는 부작용이 아예 없으므로
+  // (tiguclaw 가 실행 안 함) "부작용 도구 미실행 + 빈 텍스트 = throw" 분기를 타면 안 되고,
+  // "요약 텍스트 못 만듦" fallback 문구도 붙이면 안 된다(그건 정상 tool_calls 반환이지 실패가
+  // 아니다). sessionId/usage 는 일반 경로와 동일 값을 채워 세션 연속성·토큰 관측을 보존.
+  if (pendingExternalToolCalls.length > 0) {
+    return {
+      text: finalText,
+      sessionId:
+        finalResponseId !== undefined
+          ? `codex-${finalResponseId}`
+          : `codex-${randomBytes(16).toString("hex")}`,
+      model,
+      replyToTrigger,
+      usage: finalUsage,
+      externalToolCalls: pendingExternalToolCalls,
+    };
   }
 
   // V5.1' sid 매핑 — `codex-${response.id}` 박음. response.id 부재 시 randomBytes

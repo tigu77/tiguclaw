@@ -698,6 +698,17 @@
         return line;
       };
 
+      // 진행 중 턴 카드 경과시간 틱 (2026-07-26) — 열려 있는(미완료) 카드만 1초마다 갱신.
+      // 카드 하나당 타이머를 두지 않고 단일 인터벌로 순회(cardByThread 는 스레드당 1개라 소수).
+      // 마운트된 카드만(vtIndex) 갱신 = 비활성 세션·detached 노드는 건너뜀.
+      setInterval(() => {
+        if (typeof cardByThread === "undefined" || typeof fmtElapsed !== "function") return;
+        for (const c of cardByThread.values()) {
+          if (!c || c.closed || !c.elapsedEl || !vtIndex.has(c.group)) continue;
+          c.elapsedEl.textContent = fmtElapsed(Date.now() - (c.startTs || Date.now()));
+        }
+      }, 1000);
+
       // 서브에이전트 threadKey = `${부모}::sub::<name>::<ts>` (agent-registry spawn_agent).
       // → 에이전트명 추출(없으면 null). 멀티에이전트 턴에서 "누가 무엇을" 구분 라벨용.
       const agentOfThread = (thread) => {
@@ -745,7 +756,13 @@
           th.style.display = "none";
         }
         head.appendChild(th);
-        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl);
+        // 진행 중 경과시간 (2026-07-26) — 서브에이전트가 끝나고 부모 턴이 조용히 이어지는
+        //  구간에서 카드가 "멈춘 것처럼" 보이던 문제. 입력창 옆 상태줄(10px)은 모바일에서
+        //  잘 안 보이므로, **사용자 시선이 있는 카드 자체**가 살아있음을 1초 틱으로 증명한다.
+        //  완료 시 completeTurnGroup 이 최종값으로 고정.
+        const elapsedEl = document.createElement("span");
+        elapsedEl.className = "turn-elapsed";
+        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl); head.appendChild(elapsedEl);
         const body = document.createElement("div");
         body.className = "turn-body";
         // 수동 접힘(.collapsed) = 두 패널 공통(헤더 클릭, 기존 로그 토글 보존).
@@ -763,6 +780,7 @@
         // replyBubble = 이 턴의 진행(타이핑) 답변 슬롯(P5). 첫 delta 때 생성, out 도착 시 승격.
         return {
           group, el, body, countEl, lastEl, setOpen,
+          elapsedEl, startTs: Date.now(), // 진행 중 경과 틱(위 주석) — 완료 시 고정.
           lastSeq: -1, count: 0, closed: false,
           replyBubble: null, replyMsg: null, replyRaw: "",
           // 인터리브(2026-07-13): sawTextSegment=이 턴이 kind:"text" 세그먼트를 냈나(out 중복 방지),

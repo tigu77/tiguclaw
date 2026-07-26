@@ -114,6 +114,10 @@
         const card = cardByThread.get(thread);
         if (!card || !vtIndex.has(card.group) || card.closed) return null;
         card.closed = true;
+        // 경과시간 최종 고정(진행 틱은 closed 로 멈춤 — 마지막 1초 오차 없이 정확값으로).
+        if (card.elapsedEl && typeof fmtElapsed === "function") {
+          card.elapsedEl.textContent = fmtElapsed(Date.now() - (card.startTs || Date.now()));
+        }
         // delta-only 경량 그룹(스텝 카드 없음)은 접을 카드가 없다 — 그룹만 반환.
         if (!card.el) return card.group;
         card.countEl.textContent = card.count + "단계 완료";

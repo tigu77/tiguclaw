@@ -68,6 +68,7 @@ import {
   specLabel,
   errorDetail,
   resolveModelSpecs,
+  listActiveCooldowns,
   poolDiversityWarning,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
@@ -996,6 +997,27 @@ const handler: MessageHandler = async (msg) => {
         }
 
         lines.push(`─ 모델 풀: ${regionA}`);
+
+        // ★쿨다운 표시 (2026-07-27) — 풀에 있어도 *지금은 안 쓰이는* 모델을 알린다.
+        //  실사고: ChatGPT Plus 주간 한도 소진으로 codex 가 6일 쿨다운에 들어갔는데
+        //  폴백(claude)이 조용히 받아내 사용자는 로그를 뒤지기 전엔 알 수 없었다.
+        //  ★푸시는 하지 않는다(폴백이 정상 동작 = 알림은 노이즈, 사용자 판단).
+        //  물어봤을 때 보이면 충분하다. 없으면 줄 자체 생략(정상 시 노이즈 0).
+        const cooldowns = listActiveCooldowns();
+        for (const c of cooldowns) {
+          const mins = Math.round(c.remainingMs / 60000);
+          const when =
+            mins >= 1440
+              ? `${(mins / 1440).toFixed(1)}일`
+              : mins >= 60
+                ? `${Math.floor(mins / 60)}시간 ${mins % 60}분`
+                : `${mins}분`;
+          const at = new Date(Date.now() + c.remainingMs);
+          const stamp = `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}시`;
+          lines.push(
+            `─ ⏸ \`${c.key}\` 사용 불가 — ${when} 뒤 복구(${stamp}경). 그동안 풀의 다음 모델로 대체됩니다.`,
+          );
+        }
 
         // codex 토큰 만료: 미설정(undefined)이면 줄 자체 생략.
         const expiry = getCodexTokenExpiry();

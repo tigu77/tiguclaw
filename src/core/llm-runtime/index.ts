@@ -561,6 +561,27 @@ export const selectEligiblePool = (
   return eligible.length > 0 ? eligible : sized;
 };
 
+/**
+ * 현재 쿨다운 중인 provider 목록 — `/status` 표시용 (2026-07-27).
+ *
+ * ★왜 필요한가(실사고): ChatGPT Plus 주간 한도 소진으로 codex 가 **6일간** 쿨다운에
+ *  들어갔는데, 그 사실이 로그 외 어디에도 안 보였다. 폴백(claude)이 받아내 서비스는
+ *  안 끊겼지만 사용자는 "왜 codex 를 안 쓰지?" 를 확인할 방법이 없었다.
+ *  **푸시는 안 한다**(폴백이 정상 동작하므로 알림은 노이즈 — 사용자 판단).
+ *  물어봤을 때 보이기만 하면 된다.
+ *
+ * 만료분은 자연히 빠진다(cooldownRemainingMs 가 만료 엔트리를 정리).
+ */
+export const listActiveCooldowns = (): { key: string; remainingMs: number }[] => {
+  const now = Date.now();
+  const out: { key: string; remainingMs: number }[] = [];
+  for (const [key, until] of cooldownUntil) {
+    const remaining = until - now;
+    if (remaining > 0) out.push({ key, remainingMs: remaining });
+  }
+  return out.sort((a, b) => b.remainingMs - a.remainingMs);
+};
+
 // 실패가 rate-limit 이면 쿨다운 등록(문자열 미매칭 → no-op, 기존 폴백 로직 그대로).
 // errorDetail(cause 포함) 문자열로 판정 — isModelRejected 와 동일 지점(facade 단일 휴리스틱).
 // export — 격리 검증(_workspace)이 mock 어댑터 없이 직접 호출.

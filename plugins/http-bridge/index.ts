@@ -39,6 +39,7 @@ import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { collectModules } from "../../src/core/plugins/providers.js";
 import {
   loadModelProfiles,
+  loadGatewayConfig,
   getDefaultProfileName,
   setDefaultProfile,
   setModuleDisabled,
@@ -296,14 +297,41 @@ const writeJson = (
 // 폴백을 HTTP 로 사용. 전용 토큰(LLM_GATEWAY_TOKEN) 미설정 시 비활성(안전 기본, 404). 얇은 경로:
 // runRegionA(internal=persist·이벤트 스킵 + toolPolicy:none=도구0 + systemPromptOverride=앱 system,
 // 비서 페르소나 누수 0). ──
-const GATEWAY_MAX_CONCURRENCY = ((): number => {
-  const n = Number(process.env.LLM_GATEWAY_MAX_CONCURRENCY);
-  return Number.isInteger(n) && n > 0 ? n : 4;
-})();
 let gatewayInflight = 0;
 
-// 요청 model → tiguclaw 스펙. `tier:high|mid|low` / `provider:model` / 그 외=env 폴백 풀.
-const resolveGatewaySpecs = (model: unknown): ModelSpec[] => {
+// ── 게이트웨이 런타임 설정 해석(2026-07-26) — **settings.json `gateway:{}` 우선, env 레거시 폴백**.
+//   settings 는 매 요청 fresh read(캐시 0)라 켜기/끄기·모델·동시성 변경이 **재시작 불요**.
+//   settings 에 gateway 섹션이 없으면 종전 env 경로 그대로(= 토큰 존재만으로 활성) → 회귀 0.
+//   토큰은 언제나 env 에서만 읽는다(D5 — raw 토큰을 settings 파일에 두지 않음).
+interface GatewayRuntime {
+  /** 활성 여부(= 토큰 있음 AND settings.enabled). false 면 /v1/* 는 404. */
+  enabled: boolean;
+  /** 인증 토큰(빈 문자열이면 비활성). */
+  token: string;
+  /** 기본 모델 풀 raw 문자열(콤마) — 요청 model 미매칭 시 폴백. */
+  poolRaw: string;
+  /** 동시 처리 상한(초과 429). */
+  maxConcurrency: number;
+}
+const resolveGatewayRuntime = (): GatewayRuntime => {
+  const cfg = loadGatewayConfig();
+  const tokenEnvName = cfg?.tokenEnv ?? "LLM_GATEWAY_TOKEN";
+  const token = process.env[tokenEnvName]?.trim() ?? "";
+  // settings 섹션 부재 = 레거시(토큰만으로 판정) / 존재 = enabled 플래그가 킬스위치.
+  const enabled = token !== "" && (cfg === undefined || cfg.enabled);
+  const poolRaw =
+    cfg?.models !== undefined && cfg.models.length > 0
+      ? cfg.models.join(",")
+      : (process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "");
+  const envCap = Number(process.env.LLM_GATEWAY_MAX_CONCURRENCY);
+  const maxConcurrency =
+    cfg?.maxConcurrency ??
+    (Number.isInteger(envCap) && envCap > 0 ? envCap : 4);
+  return { enabled, token, poolRaw, maxConcurrency };
+};
+
+// 요청 model → tiguclaw 스펙. `tier:high|mid|low` / `provider:model` / 그 외=기본 풀 폴백.
+const resolveGatewaySpecs = (model: unknown, poolRaw: string): ModelSpec[] => {
   const m = typeof model === "string" ? model.trim() : "";
   if (m.startsWith("tier:")) {
     const t = resolveTier(m.slice("tier:".length));
@@ -311,8 +339,7 @@ const resolveGatewaySpecs = (model: unknown): ModelSpec[] => {
   }
   const direct = parseModelSpec(m);
   if (direct !== null) return [direct];
-  const env = process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "";
-  return parseModelSpecList(env);
+  return parseModelSpecList(poolRaw);
 };
 
 // ── GET /v1/models (ADR 2026-07-25) — 사용 가능 모델 id 목록. ★왕복(round-trip) 보장:
@@ -326,7 +353,7 @@ const GATEWAY_TIER_ENV: Record<string, string> = {
   low: "MODEL_TIER_LOW",
   nano: "MODEL_TIER_NANO",
 };
-const buildModelsListResponse = (): {
+const buildModelsListResponse = (poolRaw: string): {
   object: "list";
   data: Array<{ id: string; object: "model"; created: number; owned_by: string }>;
 } => {
@@ -348,9 +375,8 @@ const buildModelsListResponse = (): {
     const v = process.env[envKey];
     if (typeof v === "string" && v.trim() !== "") add(`tier:${tier}`, "tiguclaw");
   }
-  // 3) 직접 풀 스펙 — LLM_GATEWAY_MODELS ?? REGION_A_MODELS (resolveGatewaySpecs 폴백 동일 소스).
-  const poolEnv = process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "";
-  for (const spec of parseModelSpecList(poolEnv)) {
+  // 3) 직접 풀 스펙 — settings gateway.models ?? env (resolveGatewaySpecs 폴백과 동일 소스).
+  for (const spec of parseModelSpecList(poolRaw)) {
     const label = specLabel(spec);
     add(label, label.includes(":") ? label.slice(0, label.indexOf(":")) : "tiguclaw");
   }
@@ -759,38 +785,38 @@ class HttpBridge implements Channel, Observer {
     }
 
     // LLM 게이트웨이 모델 목록 — OpenAI 호환 `GET /v1/models`(ADR 2026-07-25). chat 과 동일
-    // LLM_GATEWAY_TOKEN 인증, 미설정=404. read-only 라 동시성 캡 밖(gatewayInflight 무증감).
+    // 인증(gateway 토큰), 비활성=404. read-only 라 동시성 캡 밖(gatewayInflight 무증감).
     if (pathname === "/v1/models" && method === "GET") {
-      const gwTok = process.env.LLM_GATEWAY_TOKEN?.trim() ?? "";
-      if (gwTok === "") {
-        writeJson(res, 404, { error: { message: "llm gateway disabled (LLM_GATEWAY_TOKEN not set)" } });
+      const gw = resolveGatewayRuntime(); // settings fresh read → 재시작 없이 반영.
+      if (!gw.enabled) {
+        writeJson(res, 404, { error: { message: "llm gateway disabled (settings gateway.enabled / token not set)" } });
         return;
       }
       const auth = req.headers.authorization ?? "";
       const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-      if (bearer !== gwTok) {
+      if (bearer !== gw.token) {
         writeJson(res, 401, { error: { message: "unauthorized" } });
         return;
       }
-      writeJson(res, 200, buildModelsListResponse());
+      writeJson(res, 200, buildModelsListResponse(gw.poolRaw));
       return;
     }
 
-    // LLM 게이트웨이 — OpenAI 호환. **브리지 role 토큰과 별개**의 전용 토큰(LLM_GATEWAY_TOKEN).
-    // 미설정 = 비활성(404). 앱 서버가 토큰 쥐고 호출(브라우저 직접 금지). 127.0.0.1 바인드.
+    // LLM 게이트웨이 — OpenAI 호환. **브리지 role 토큰과 별개**의 전용 게이트웨이 토큰.
+    // 비활성 = 404. 앱 서버가 토큰 쥐고 호출(브라우저 직접 금지). 127.0.0.1 바인드.
     if (pathname === "/v1/chat/completions" && method === "POST") {
-      const gwTok = process.env.LLM_GATEWAY_TOKEN?.trim() ?? "";
-      if (gwTok === "") {
-        writeJson(res, 404, { error: { message: "llm gateway disabled (LLM_GATEWAY_TOKEN not set)" } });
+      const gw = resolveGatewayRuntime(); // settings fresh read → 재시작 없이 반영.
+      if (!gw.enabled) {
+        writeJson(res, 404, { error: { message: "llm gateway disabled (settings gateway.enabled / token not set)" } });
         return;
       }
       const gwAuth = req.headers.authorization ?? "";
       const bearer = gwAuth.startsWith("Bearer ") ? gwAuth.slice("Bearer ".length).trim() : "";
-      if (bearer !== gwTok) {
+      if (bearer !== gw.token) {
         writeJson(res, 401, { error: { message: "unauthorized" } });
         return;
       }
-      if (gatewayInflight >= GATEWAY_MAX_CONCURRENCY) {
+      if (gatewayInflight >= gw.maxConcurrency) {
         writeJson(res, 429, { error: { message: "gateway busy (max concurrency reached)" } });
         return;
       }
@@ -826,7 +852,7 @@ class HttpBridge implements Channel, Observer {
         });
         return;
       }
-      const specs = resolveGatewaySpecs(body.model);
+      const specs = resolveGatewaySpecs(body.model, gw.poolRaw);
       const runInput = {
         text: text !== "" ? text : " ",
         threadKey: `gateway:${crypto.randomUUID()}`,

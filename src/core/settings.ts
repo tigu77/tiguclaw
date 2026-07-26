@@ -367,6 +367,83 @@ export const loadTranscriptionConfig = (
 };
 
 /**
+ * LLM 게이트웨이 설정(2026-07-26, ADR docs/decisions/2026-07-25-llm-gateway-openrouter-scope.md)
+ * — settings.json `gateway:{}`. `transcription` 로더 패턴 동형(never-throw·layer 병합·diagnose).
+ *
+ * ★왜 settings.json 인가: 여기는 **매 요청 fresh read**(캐시 0)라 게이트웨이를 켜고/끄고 모델을
+ *  바꾸는 데 **데몬 재시작이 불요**하다(env 는 부팅 고정이라 재시작 필요). 비서가 스스로
+ *  게이트웨이를 토글할 수 있게 되는 것도 이 때문.
+ *
+ * ★시크릿은 여기 없다(D5 계승) — 게이트웨이 **토큰은 raw 로 파일에 두지 않고** `tokenEnv` 가
+ *  가리키는 env 변수에서 읽는다(models.providers.apiKeyEnv 동형).
+ */
+export interface GatewayConfig {
+  /** 생략=true(섹션을 썼다 = 구성 의도). false = 킬스위치(토큰은 둔 채 끔). */
+  enabled: boolean;
+  /** 토큰을 읽을 env 변수명. 생략 = "LLM_GATEWAY_TOKEN". 파일에 raw 토큰 금지 — env 참조만. */
+  tokenEnv: string;
+  /** 기본 모델 풀(`provider:model` | `tier:<프로파일>`). 생략 = env 폴백(소비 지점). */
+  models?: string[];
+  /** 동시 처리 상한(초과 429). 생략 = 소비 지점 기본(4). */
+  maxConcurrency?: number;
+}
+
+/**
+ * 한 gateway 값 shape 검증 — never-throw, 무효/부재는 안전 기본. validateTranscriptionConfig 동형.
+ * 최상위가 객체 아니면 undefined → 로더가 해당 레이어 스킵(= 그 레이어엔 설정 없음).
+ */
+const validateGatewayConfig = (
+  val: unknown,
+  diagnose: boolean,
+): GatewayConfig | undefined => {
+  if (val === null || typeof val !== "object" || Array.isArray(val)) {
+    if (diagnose) console.warn(`[settings] gateway: 객체가 아님 — 무시.`);
+    return undefined;
+  }
+  const o = val as Record<string, unknown>;
+  const config: GatewayConfig = {
+    enabled: o.enabled === undefined ? true : o.enabled === true,
+    tokenEnv:
+      typeof o.tokenEnv === "string" && o.tokenEnv.trim() !== ""
+        ? o.tokenEnv.trim()
+        : "LLM_GATEWAY_TOKEN",
+  };
+  if (Array.isArray(o.models)) {
+    const models = o.models
+      .filter((x): x is string => typeof x === "string" && x.trim() !== "")
+      .map((x) => x.trim());
+    if (models.length > 0) config.models = models;
+  }
+  if (
+    typeof o.maxConcurrency === "number" &&
+    Number.isInteger(o.maxConcurrency) &&
+    o.maxConcurrency > 0
+  ) {
+    config.maxConcurrency = o.maxConcurrency;
+  }
+  return config;
+};
+
+/**
+ * 병합된 게이트웨이 설정 — 홈→프로젝트 layer 병합(뒤가 이김). never-throw.
+ *
+ * ★반환 `undefined` = "settings.json 에 gateway 섹션 없음" → 소비 지점이 **레거시 env 경로**
+ *  (LLM_GATEWAY_TOKEN 존재 = 활성)로 폴백한다 = 기존 사용자 회귀 0.
+ */
+export const loadGatewayConfig = (
+  cwd: string = process.cwd(),
+  diagnose = false,
+): GatewayConfig | undefined => {
+  let merged: GatewayConfig | undefined;
+  for (const layer of loadSettingsLayers(cwd)) {
+    if (!("gateway" in layer)) continue;
+    const validated = validateGatewayConfig(layer.gateway, diagnose);
+    if (validated !== undefined) merged = validated;
+  }
+  return merged;
+};
+
+/**
  * 프로파일 이름 → 순서 있는 풀 체인(raw `provider:model` 배열들).
  *  - 각 원소 = 한 프로파일의 pool(파싱 전 raw). 파싱/ModelSpec 변환은 llm-runtime 몫.
  *  - `.fallback` 을 따라 조립하되 visited-set 로 순환 절단, 댕글링 참조는 그 엣지 drop(체인 종료).

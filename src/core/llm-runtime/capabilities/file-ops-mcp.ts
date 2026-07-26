@@ -63,6 +63,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js";
 import { getPaths } from "../../paths.js";
+import { loadWebSearchConfig } from "../../settings.js";
 import { detectShell } from "../../runtime-env.js";
 import { getEventBus } from "../../eventbus.js";
 import {
@@ -683,6 +684,76 @@ const stripHtmlToMarkdown = (html: string): string => {
   return s.trim();
 };
 
+// ─── WebSearch 상수/헬퍼 (2026-07-26 — parity 갭 해소) ────────────────────
+// claude 어댑터는 SDK 내장 WebSearch 가 있는데 codex 엔 없었다 → "모르는 것을 찾기" 가
+// 어댑터에 따라 갈렸다(원칙 #2 위반). 여기서 codex 안에 닫는다(claude 폴백으로 덮지 않음).
+//
+// ★결과는 강하게 바운드한다. 검색 결과는 그대로 컨텍스트에 쌓이는 순수 비용이라
+//  "많이 주면 좋다" 가 아니라 **판단에 필요한 최소**가 맞다. 제목+URL+요약 3필드만,
+//  기본 5건, 요약 240자. 더 필요하면 모델이 WebFetch 로 파고든다(검색=발견, fetch=깊이 2단 구조).
+const WEBSEARCH_DEFAULT_COUNT = 5;
+const WEBSEARCH_MAX_COUNT = 10;
+const WEBSEARCH_SNIPPET_CHARS = 240;
+const WEBSEARCH_TIMEOUT_MS = 20_000;
+
+interface WebSearchHit {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+const clipSnippet = (s: unknown): string => {
+  const t = stripHtmlToMarkdown(String(s ?? "")).replace(/\s+/g, " ").trim();
+  return t.length > WEBSEARCH_SNIPPET_CHARS
+    ? `${t.slice(0, WEBSEARCH_SNIPPET_CHARS)}…`
+    : t;
+};
+
+/** Brave Search — GET + 헤더 토큰. */
+const searchBrave = async (
+  q: string,
+  count: number,
+  apiKey: string,
+): Promise<WebSearchHit[]> => {
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${count}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json", "X-Subscription-Token": apiKey },
+    signal: AbortSignal.timeout(WEBSEARCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`brave ${res.status} ${res.statusText}`);
+  const data = (await res.json()) as {
+    web?: { results?: { title?: string; url?: string; description?: string }[] };
+  };
+  return (data.web?.results ?? []).slice(0, count).map((r) => ({
+    title: String(r.title ?? ""),
+    url: String(r.url ?? ""),
+    snippet: clipSnippet(r.description),
+  }));
+};
+
+/** Tavily — POST + body 토큰. */
+const searchTavily = async (
+  q: string,
+  count: number,
+  apiKey: string,
+): Promise<WebSearchHit[]> => {
+  const res = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey, query: q, max_results: count }),
+    signal: AbortSignal.timeout(WEBSEARCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`tavily ${res.status} ${res.statusText}`);
+  const data = (await res.json()) as {
+    results?: { title?: string; url?: string; content?: string }[];
+  };
+  return (data.results ?? []).slice(0, count).map((r) => ({
+    title: String(r.title ?? ""),
+    url: String(r.url ?? ""),
+    snippet: clipSnippet(r.content),
+  }));
+};
+
 // ─── 도구 빌더 (baseCwd 클로저) ──────────────────────────────────────────
 // ★3b: 도구들이 base(턴 cwd)를 클로저로 잡는다. 상대경로 기준점·Glob/Grep/Bash 기본
 //   cwd 가 전부 base. 팩토리가 턴마다 base 를 주입하므로 병렬 안전(무전역, 인스턴스=턴).
@@ -1140,6 +1211,50 @@ const makeFileOpsTools = (base: string, threadKey: string) => {
     },
   );
 
+  // ─── WebSearch 도구 (2026-07-26 — 설정됐을 때만 등록) ────────────────────
+  const searchCfg = loadWebSearchConfig(base);
+  const webSearchTool = tool(
+    "WebSearch",
+    `웹을 검색해 상위 결과(제목·URL·요약)를 반환합니다. 결과는 요약만 주므로, 내용이 필요하면 WebFetch 로 해당 URL 을 이어서 읽으세요. 기본 ${WEBSEARCH_DEFAULT_COUNT}건 / 최대 ${WEBSEARCH_MAX_COUNT}건.`,
+    {
+      query: z.string().min(1).describe("검색어"),
+      count: z
+        .number()
+        .int()
+        .min(1)
+        .max(WEBSEARCH_MAX_COUNT)
+        .optional()
+        .describe(`결과 수 (기본 ${WEBSEARCH_DEFAULT_COUNT}, 최대 ${WEBSEARCH_MAX_COUNT})`),
+    },
+    async (args) => {
+      if (searchCfg === undefined) {
+        // 등록 조건상 도달 불가지만, 설정이 런타임에 사라진 경우를 대비한 정직한 안내.
+        return errText(
+          "웹 검색이 설정되지 않았습니다. settings.json 의 `search.provider`(brave|tavily) + 해당 API 키 env 를 설정하세요.",
+        );
+      }
+      const count = Math.min(args.count ?? WEBSEARCH_DEFAULT_COUNT, WEBSEARCH_MAX_COUNT);
+      try {
+        const hits =
+          searchCfg.provider === "brave"
+            ? await searchBrave(args.query, count, searchCfg.apiKey)
+            : await searchTavily(args.query, count, searchCfg.apiKey);
+        if (hits.length === 0) return okText(`검색 결과 없음: "${args.query}"`);
+        // 사람·모델이 같이 읽는 최소 형태. JSON 이 아니라 줄 단위 — 토큰이 덜 든다.
+        const body = hits
+          .map((h, i) => `${i + 1}. ${h.title}\n   ${h.url}\n   ${h.snippet}`)
+          .join("\n\n");
+        return okText(`검색: "${args.query}" (${hits.length}건)\n\n${body}`);
+      } catch (e) {
+        const err = e as Error & { name?: string };
+        if (err.name === "TimeoutError" || err.name === "AbortError") {
+          return errText(`timeout — 검색이 ${WEBSEARCH_TIMEOUT_MS / 1000}s 안에 끝나지 않음.`);
+        }
+        return errText(err.message ?? String(e));
+      }
+    },
+  );
+
   return [
     readTool,
     globTool,
@@ -1150,6 +1265,9 @@ const makeFileOpsTools = (base: string, threadKey: string) => {
     bashOutputTool,
     killShellTool,
     webFetchTool,
+    // ★미설정이면 등록 자체를 안 한다 — 항상 실패하는 도구를 목록에 두면 매 턴 스키마
+    //   토큰만 먹는다(호출도 안 될 도구에 컨텍스트를 내주지 않는다).
+    ...(searchCfg !== undefined ? [webSearchTool] : []),
   ];
 };
 

@@ -246,7 +246,25 @@ export interface RegionASdkOutput {
    *  - codex: 마지막 turn 의 `response.completed` usage → {input_tokens, output_tokens}.
    *  - openai: 미캡처 → 생략 (NULL → /status "측정 전").
    */
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    /**
+     * ★prefix 캐시 적중 입력 토큰 (2026-07-26, additive). 어댑터가 보고할 때만.
+     * inputTokens 중 **재전송이지만 캐시로 처리된 몫** — 실효 비용은 (input - cached).
+     * codex 처럼 매 반복 전체 재전송하는 루프에서 이 값이 곧 효율 지표다. 미보고 = 생략.
+     */
+    cachedTokens?: number;
+    /**
+     * ★턴 전체 합계 (2026-07-26, additive) — 도구 루프가 2회 이상 돈 턴에만 채운다.
+     * codex 는 resume 이 없어 **매 iteration 마다 누적 입력을 통째로 재전송**한다.
+     * 위 inputTokens 는 *마지막 한 번*이라 턴의 실제 비용을 iteration 수만큼
+     * 과소평가한다. 진짜 비용·진짜 캐시 적중률은 이 합계 기준이다.
+     */
+    iterations?: number;
+    inputTokensTotal?: number;
+    cachedTokensTotal?: number;
+  };
   /**
    * 신규 (additive) — 세션 모델 override(opts.specs 단일 spec)가 런타임에 거부되어
    * env 풀로 자동 폴백했음을 호출자에게 알리는 신호. facade(runRegionA)만 세팅한다.
@@ -588,6 +606,14 @@ export interface RegionATurnDonePayload {
   inputTokens?: number;
   /** 출력 토큰. inputTokens 와 동일 출처·동일 생략 규칙. */
   outputTokens?: number;
+  /** 캐시 적중 입력 토큰(2026-07-26). 실효 입력 = inputTokens - cachedTokens. 미보고 시 생략. */
+  cachedTokens?: number;
+  /** 도구 루프 iteration 수(2026-07-26). 2 이상일 때만. codex 는 매 iteration 전체 재전송. */
+  iterations?: number;
+  /** 턴 전체 입력 합계 — 진짜 비용(위 inputTokens 는 마지막 iteration 값). */
+  inputTokensTotal?: number;
+  /** 턴 전체 캐시 적중 합계 — 진짜 적중률 = cachedTokensTotal / inputTokensTotal. */
+  cachedTokensTotal?: number;
   /**
    * 하위 작업 컨텍스트 — self-growth 가 채널 턴 vs 워커 vs 서브에이전트를 구분.
    *  - subagentDepth: spawn_agent child 면 ≥1, 메인 턴이면 0/생략.

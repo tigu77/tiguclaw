@@ -762,7 +762,12 @@
         //  완료 시 completeTurnGroup 이 최종값으로 고정.
         const elapsedEl = document.createElement("span");
         elapsedEl.className = "turn-elapsed";
-        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl); head.appendChild(elapsedEl);
+        // 턴 비용 (2026-07-26) — 완료 시 turn_done 의 토큰을 여기 박는다. 종전엔 한 턴이
+        //  25만 토큰을 써도 화면에 흔적이 없어 "이 턴 왜 비쌌나"를 사후에도 알 수 없었다.
+        //  진행 중엔 비어 있고(아직 측정값이 없다) 완료 시에만 채운다.
+        const costEl = document.createElement("span");
+        costEl.className = "turn-cost";
+        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl); head.appendChild(elapsedEl); head.appendChild(costEl);
         const body = document.createElement("div");
         body.className = "turn-body";
         // 수동 접힘(.collapsed) = 두 패널 공통(헤더 클릭, 기존 로그 토글 보존).
@@ -780,7 +785,7 @@
         // replyBubble = 이 턴의 진행(타이핑) 답변 슬롯(P5). 첫 delta 때 생성, out 도착 시 승격.
         return {
           group, el, body, countEl, lastEl, setOpen,
-          elapsedEl, startTs: Date.now(), // 진행 중 경과 틱(위 주석) — 완료 시 고정.
+          elapsedEl, costEl, startTs: Date.now(), // 진행 중 경과 틱(위 주석) — 완료 시 고정.
           lastSeq: -1, count: 0, closed: false,
           replyBubble: null, replyMsg: null, replyRaw: "",
           // 인터리브(2026-07-13): sawTextSegment=이 턴이 kind:"text" 세그먼트를 냈나(out 중복 방지),
@@ -800,6 +805,7 @@
         return {
           group, el: null, body: null, countEl: null, lastEl: null,
           setOpen: () => {}, lastSeq: -1, count: 0, closed: false,
+          costEl: null, replyCostEl: null, // 비용 표시 자리(카드 헤더 없음 → 버블 헤더 사용).
           replyBubble: null, replyMsg: null, replyRaw: "",
           sawTextSegment: false, closedByText: false, // 인터리브 상태(createTurnCard 와 동형).
         };
@@ -817,6 +823,14 @@
         const tyEl = document.createElement("span");
         tyEl.className = "type"; tyEl.textContent = assistantName;
         head.appendChild(tsEl); head.appendChild(tyEl);
+        // ★턴 비용 자리 (2026-07-26) — 도구 없이 텍스트만 답하는 턴은 스텝 카드(헤더)가 아예
+        //  안 생겨서(createDeltaGroup: el/countEl = null) 카드 헤더에만 두면 **가장 흔한 턴에
+        //  비용이 안 보인다**. 답변 버블 헤더는 두 경로 모두에 있으므로 여기에도 자리를 만들고,
+        //  setTurnCost 가 카드 헤더 → 버블 헤더 순으로 채운다.
+        const costEl = document.createElement("span");
+        costEl.className = "turn-cost";
+        head.appendChild(costEl);
+        card.replyCostEl = costEl;
         div.appendChild(head);
         const msg = document.createElement("div");
         // streaming = 평문 + 깜빡이는 커서. out 도착 시 마크다운 전체본으로 승격(streaming 제거).

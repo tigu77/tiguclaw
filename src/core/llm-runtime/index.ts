@@ -382,6 +382,16 @@ const publishTurnDone = (
       ...(output.usage?.outputTokens !== undefined
         ? { outputTokens: output.usage.outputTokens }
         : {}),
+      ...(output.usage?.cachedTokens !== undefined
+        ? { cachedTokens: output.usage.cachedTokens }
+        : {}),
+      ...(output.usage?.iterations !== undefined
+        ? {
+            iterations: output.usage.iterations,
+            inputTokensTotal: output.usage.inputTokensTotal,
+            cachedTokensTotal: output.usage.cachedTokensTotal,
+          }
+        : {}),
       ...(input.subagentDepth !== undefined
         ? { subagentDepth: input.subagentDepth }
         : {}),

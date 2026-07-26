@@ -110,6 +110,56 @@
           card.el.classList.add("done");
         }
       };
+      // ── 턴 비용 표시 (2026-07-26) ───────────────────────────────────────
+      // 실측 동기: codex 148턴 평균 입력 68,629 토큰(최대 257,501), 출력 평균 1,025 —
+      // 입력:출력이 300~2000:1 인데 화면엔 아무 흔적이 없었다. codex 는 매 도구 반복마다
+      // 누적 입력을 통째로 재전송하는 구조(store:false)라, **캐시가 먹는지**가 실효 비용을
+      // 좌우한다. cached_tokens 는 종전에 CODEX_DEBUG_USAGE=1 콘솔로만 나가고 버려졌다.
+      // 여기서 "입력 68.6K (캐시 62%) · 출력 1.0K" 로 사후에도 보이게 만든다.
+      const fmtTokens = (n) => {
+        const v = Number(n) || 0;
+        if (v >= 1000000) return (v / 1000000).toFixed(1) + "M";
+        if (v >= 1000) return (v / 1000).toFixed(1) + "K";
+        return String(v);
+      };
+      const setTurnCost = (thread, payload) => {
+        const card = cardByThread.get(thread);
+        // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.
+        const target = card && (card.costEl || card.replyCostEl);
+        if (!target) return;
+        const inTok = Number(payload && payload.inputTokens);
+        if (!Number.isFinite(inTok) || inTok <= 0) return; // 미보고 어댑터 = 표시 안 함(거짓값 금지).
+        const outTok = Number(payload && payload.outputTokens) || 0;
+        // ★도구 루프가 여러 번 돈 턴은 **합계**가 진짜 비용이다(codex 는 매 iteration
+        //  전체 입력을 재전송). 합계가 오면 그걸 쓰고, 없으면(1회 턴·다른 어댑터) 단일값.
+        const iters = Number(payload && payload.iterations);
+        const inTotal = Number(payload && payload.inputTokensTotal);
+        const useTotal = Number.isFinite(iters) && iters > 1 && Number.isFinite(inTotal) && inTotal > 0;
+        const shownIn = useTotal ? inTotal : inTok;
+        const cached = useTotal
+          ? Number(payload && payload.cachedTokensTotal)
+          : Number(payload && payload.cachedTokens);
+        const parts = ["↓" + fmtTokens(shownIn)];
+        if (useTotal) parts.push(iters + "회");   // 몇 번 재전송했나 = 낭비의 직접 신호.
+        // 캐시 적중률 — 재전송분 중 캐시로 처리된 몫. 낮으면 루프가 비싸다는 신호.
+        if (Number.isFinite(cached) && cached > 0) {
+          parts.push("캐시 " + Math.round((cached / shownIn) * 100) + "%");
+        }
+        parts.push("↑" + fmtTokens(outTok));
+        target.textContent = parts.join(" · ");
+        const exact = (useTotal
+            ? "도구 루프 " + iters + "회 · 입력 합계 " + shownIn.toLocaleString() + " 토큰(마지막 회 "
+              + inTok.toLocaleString() + ")"
+            : "입력 " + shownIn.toLocaleString() + " 토큰")
+          + (Number.isFinite(cached) && cached > 0
+              ? " (캐시 적중 " + cached.toLocaleString() + " — 실효 " + (shownIn - cached).toLocaleString() + ")"
+              : "")
+          + " / 출력 " + outTok.toLocaleString() + " 토큰";
+        target.title = exact;
+        // 입력이 유난히 큰 턴은 눈에 띄게(임계는 관측 평균의 ~3배 — 확실히 이상한 것만).
+        if (shownIn >= 200000) target.classList.add("heavy");
+      };
+
       const completeTurnGroup = (thread) => {
         const card = cardByThread.get(thread);
         if (!card || !vtIndex.has(card.group) || card.closed) return null;

@@ -23,16 +23,35 @@ import type { SteeringInput } from "../../steering.js";
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
 // codex 가 매 턴 재전송하는 thread 히스토리 윈도 (codex 의 1차 컨텍스트 기제).
-// 2026-06-12 상향 40→150: gpt-5.5 윈도(400K)의 ~6%만 쓰던 과보수 캡 → "옛 맥락 잊음"
-// 완화. ChatGPT 구독 백엔드라 토큰 과금 0(비용=레이턴시뿐). 150턴 ≈ 윈도 ~20%.
+// 2026-06-12 상향 40→150: gpt-5.5 윈도(400K)의 ~6%만 쓰던 과보수 캡 → "옛 맥락 잊음" 완화.
 // ※ memory.ts 의 동명 export(40)와 *별개 노브* — 그건 claude foreign-delta 등의
 //   default 라 claude(200K 윈도) 안전 위해 의도적으로 안 올림(작게 유지).
+//
+// ★2026-07-26 근거 정정: 종전 주석은 "ChatGPT 구독 백엔드라 토큰 과금 0(비용=레이턴시뿐)"
+//  을 상향 근거로 들었다. **이 논리는 폐기한다** — 과금이 없어도 낭비는 레이턴시·컨텍스트
+//  한도·품질로 돌아온다(SYSTEM.md §1 "보내는 컨텍스트도 낭비 대상"). 턴 수는 아래 char cap
+//  이 실질 binding 이라 유지하되, 근거를 "공짜라서"가 아니라 "필요해서"로 바꾼다.
 const CODEX_TURN_HISTORY_LIMIT = 150;
 
-// turn count 위의 char cap — 단일 turn 이 비정상적으로 길 때 overflow 방지.
-// 2026-06-12 상향 200K→700K (≈175k token 상한, 윈도 절반). 최신 turn 부터 누적,
-// 초과 시 가장 오래된 turn drop. 보통 150턴 limit 가 먼저 binding (이건 안전 ceiling).
-const CODEX_TURN_HISTORY_CHAR_CAP = 700_000;
+// turn count 위의 char cap — 매 턴 재전송되는 히스토리의 실질 상한(보통 이게 binding).
+// 최신 turn 부터 누적, 초과 시 가장 오래된 turn drop.
+//
+// ★2026-07-26 하향 700K→500K — **비용이 아니라 correctness 근거**:
+//  같은 날 실측(같은 엔드포인트 16건, 크기순 정렬 시 성공/실패 완전 분리)에서 이 백엔드는
+//  입력이 커지면 오류가 아니라 **빈 응답**을 돌려줬다. 성공 상한 594,960자 / 실패 하한
+//  825,885자. 종전 700K 캡은 그 위험 구간에 닿는 천장이었다 — 히스토리만 700K 를 채워도
+//  시스템 프롬프트(실측 ~22K)가 얹히면 합계 ~717K 로 **회색지대**에 들어간다.
+//
+//  값 선정도 실측으로(360턴 실사용 스레드 기준, 합계 = 히스토리 + 시스템프롬프트):
+//    700K → 150턴 / 716,852자  ⚠️ 회색지대   ← 종전
+//    600K → 118턴 / 605,077자  ⚠️ 회색지대
+//    500K → 102턴 / 519,471자  ✅ 안전       ← 채택(안전 구간 안에서 턴 최대 보존)
+//    400K →  86턴 / 419,516자  ✅ 안전       (더 자를 이유 없음)
+//
+//  ★영향 정직히: "영향 0" 이 아니다. 그 스레드는 150턴 → 102턴으로 줄어든다. 다만 잘리는
+//  건 *가장 오래된* 턴이고 thread_summaries 요약이 그 맥락을 보존한다(기록을 지우는 게
+//  아니라 핫 경로만 바운드 — 유지보수 철학). 짧은 스레드는 애초에 캡에 안 닿아 무영향.
+const CODEX_TURN_HISTORY_CHAR_CAP = 500_000;
 
 /**
  * V5.1' — Codex Responses API SSE event 의 부분 타입.
@@ -98,7 +117,16 @@ export interface CodexSseResult {
    */
   // 2026-06-07 — reasoningTokens 추가 (빈 응답 진단용, optional. 일반 status 표시는 무영향).
   //  ChatGPT 백엔드의 reasoning.effort 가 텍스트 슬롯 잠식하는지 측정.
-  usage?: { inputTokens: number; outputTokens: number; reasoningTokens?: number };
+  // ★cachedTokens (2026-07-26) — prefix 캐시 적중분. 종전엔 CODEX_DEBUG_USAGE=1 일 때
+  //  콘솔로만 찍고 버렸다 → **캐시가 먹는지조차 알 수 없었다**. codex 는 매 도구 반복마다
+  //  누적 입력을 통째로 재전송하는 구조라, 캐시 적중률이 이 어댑터의 실효 비용을 좌우한다.
+  //  측정 없이 루프를 손대는 건 근거 없는 최적화라 **관측부터** 연다.
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens?: number;
+    cachedTokens?: number;
+  };
 }
 
 /**
@@ -260,10 +288,12 @@ export const parseCodexSse = async (
               const rt = (
                 u as { output_tokens_details?: { reasoning_tokens?: number } }
               ).output_tokens_details?.reasoning_tokens;
+              const ct = u.input_tokens_details?.cached_tokens;
               usage = {
                 inputTokens: u.input_tokens ?? 0,
                 outputTokens: u.output_tokens ?? 0,
                 ...(typeof rt === "number" ? { reasoningTokens: rt } : {}),
+                ...(typeof ct === "number" ? { cachedTokens: ct } : {}),
               };
             }
             // V5.10 — prompt_cache_key 효과 메트릭. CODEX_DEBUG_USAGE=1 gate.

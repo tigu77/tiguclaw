@@ -82,6 +82,7 @@ import { createProjectRegistryMcpServer } from "../capabilities/project-registry
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
 import { getPaths } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
+import { loadModelInputLimits } from "../../settings.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -308,6 +309,39 @@ const convertMcpToolsToResponsesTools = (
 //        (claude 어댑터는 SDK builtin 그대로). 두 서버 tools 한 배열에 합쳐 8 도구 노출,
 //        tool name → bridge 라우팅 테이블로 callTool 디스패치. cwd 외부 path 접근 거부.
 // 깨짐 시 error throw — V4 폴백 (claude 어댑터 자동 합류) 후속.
+
+/**
+ * 턴 usage = 마지막 iteration 값(기존 계약 보존) + **턴 전체 합계**(신규, additive).
+ *
+ * ★왜 합계가 필요한가: codex 는 resume 이 없어 매 iteration 마다 누적 입력을 통째로
+ *  재전송한다. 도구를 10번 쓰는 턴은 입력을 10번 보낸다. 그런데 종전엔 마지막 한 번만
+ *  기록해 "이 턴이 얼마나 썼나" 를 iteration 수만큼 과소평가했다.
+ *  캐시 적중률도 마찬가지 — 합계 기준이라야 "재전송분 중 얼마가 캐시로 처리됐나" 가 된다.
+ *
+ * iterations<=1 이면 합계가 마지막 값과 같으므로 키를 붙이지 않는다(노이즈 0).
+ */
+const withTurnTotals = (
+  last: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined,
+  totals: { iterations: number; inputTokens: number; outputTokens: number; cachedTokens: number },
+):
+  | {
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens?: number;
+      iterations?: number;
+      inputTokensTotal?: number;
+      cachedTokensTotal?: number;
+    }
+  | undefined => {
+  if (last === undefined) return undefined;
+  if (totals.iterations <= 1) return last;
+  return {
+    ...last,
+    iterations: totals.iterations,
+    inputTokensTotal: totals.inputTokens,
+    cachedTokensTotal: totals.cachedTokens,
+  };
+};
 
 export const runOpenAiCodex = async (
   input: RegionASdkInput,
@@ -801,8 +835,20 @@ export const runOpenAiCodex = async (
   // /status 개편 — 마지막 turn 의 usage 보존 (마지막 turn = 가장 큰 누적 input →
   // "얼마나 찼나" 의 정확 proxy). usage 미캡처 turn 은 갱신 안 함 (graceful).
   let finalUsage:
-    | { inputTokens: number; outputTokens: number; reasoningTokens?: number }
+    | {
+        inputTokens: number;
+        outputTokens: number;
+        reasoningTokens?: number;
+        cachedTokens?: number;
+      }
     | undefined;
+  // ★턴 전체 누적 (2026-07-26) — finalUsage 는 **마지막 iteration 한 번**의 값이라
+  //  턴의 실제 비용을 크게 과소평가한다. codex 는 매 iteration 마다 누적 입력을 통째로
+  //  재전송하므로, 도구를 10번 쓰는 턴은 입력을 10번 보낸다. "이 턴이 얼마나 썼나" 의
+  //  정답은 **합계**이고, 캐시 적중률도 합계 기준이어야 의미가 있다.
+  //  ★이벤트를 iteration 마다 쏘지 않고 턴 안에서 합산한다 — 관측이 스스로 낭비가 되면
+  //   안 된다(SYSTEM.md §1). 턴당 정확히 1건.
+  const usageTotals = { iterations: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
   let iteration = 0;
   // llm.activity — 어댑터 로컬 단조 시퀀스 (iteration 가로질러 누적). nonce 아님.
   let activitySeq = 0;
@@ -1006,6 +1052,30 @@ export const runOpenAiCodex = async (
       // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
       const bodyJson = JSON.stringify(body);
+      // ★조립된 입력 상한 검사 (2026-07-26) — 호출 *전에* 끊는다.
+      //
+      //  왜 여기인가: facade 의 용량 스킵(selectEligiblePool)은 `input.text` 즉 **현재
+      //  메시지만** 본다. 긴 스레드에서 부피의 대부분은 히스토리라 그쪽으로는 안 걸린다.
+      //  여기서는 **실제로 보낼 body** 를 재므로 추정이 아니라 사실이다.
+      //
+      //  왜 필요한가: 이 백엔드는 입력이 한도를 넘으면 오류가 아니라 **빈 응답**을 준다
+      //  (실측 성공 상한 594,960자 / 실패 하한 825,885자). 그대로 두면 20초를 버리고
+      //  빈 응답을 받은 뒤에야 폴백한다 — 사용자에겐 그냥 느린 턴으로 보인다.
+      //  여기서 끊으면 **즉시·이유와 함께** 다음 모델로 넘어간다.
+      //
+      //  ★iteration 0 에서만 검사한다. 도구가 한 번이라도 돌면 부작용이 났을 수 있고,
+      //   그때 throw 하면 폴백 모델이 턴을 처음부터 재실행해 **부작용이 중복**된다
+      //   (기존 sideEffectExecuted 가드와 같은 이유). 이후 iteration 의 비대는
+      //   compactOldToolOutputs 가 맡는다.
+      if (iteration === 0) {
+        const cap = loadModelInputLimits().get(`codex:${model}`);
+        if (cap !== undefined && bodyJson.length > cap) {
+          throw new Error(
+            `codex: 조립된 입력 ${bodyJson.length.toLocaleString()}자가 상한 ${cap.toLocaleString()}자를 넘어 호출하지 않음 ` +
+              `(이 백엔드는 한도 초과 시 오류 없이 빈 응답을 준다 — 20초를 버리는 대신 즉시 다음 모델로).`,
+          );
+        }
+      }
       // 무진전(no-progress) 감지 + 같은 컨텍스트 스텝 재개 (ADR 2026-07-02). ★메인·워커
       // 한방향 — codex 스핀은 워커뿐 아니라 메인 인터랙티브 턴도 때리므로 분기 없이 통일.
       // 타이머는 *진전 이벤트(output_text.delta·function_call)에만* reset(onProgress) —
@@ -1232,7 +1302,13 @@ export const runOpenAiCodex = async (
       }
       }
       const { text, responseId, toolCalls, usage } = sseResult;
-      if (usage !== undefined) finalUsage = usage;
+      if (usage !== undefined) {
+        finalUsage = usage;
+        usageTotals.iterations += 1;
+        usageTotals.inputTokens += usage.inputTokens;
+        usageTotals.outputTokens += usage.outputTokens;
+        usageTotals.cachedTokens += usage.cachedTokens ?? 0;
+      }
       // 이 iteration 이 흘린 텍스트를 kind:"text" 로 닫는다 — "iteration 확정 완료"
       // 시점(재시도 루프 아님, 여기 도달 = SSE 완전 소비·결과 확정)에서, 이번 iteration
       // 의 toolCalls 보다 앞선 seq 를 받게 도구 발행 루프 진입 전에 닫는다.
@@ -1712,7 +1788,7 @@ export const runOpenAiCodex = async (
           : `codex-${randomBytes(16).toString("hex")}`,
       model,
       replyToTrigger,
-      usage: finalUsage,
+      usage: withTurnTotals(finalUsage, usageTotals),
       externalToolCalls: pendingExternalToolCalls,
     };
   }
@@ -1787,6 +1863,6 @@ export const runOpenAiCodex = async (
         : `codex-${randomBytes(16).toString("hex")}`,
     model,
     replyToTrigger,
-    usage: finalUsage,
+    usage: withTurnTotals(finalUsage, usageTotals),
   };
 };

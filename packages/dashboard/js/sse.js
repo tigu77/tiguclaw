@@ -1,3 +1,22 @@
+      // ★턴 실패 고지 (2026-07-26) — "에러가 났는데 조용히 있는 거 아니냐"(사용자 지적).
+      // 실제로 조용했다. 폴백은 두 종류인데 고지가 한쪽만 있었다:
+      //   ① 풀 *간* 폴백(지정 모델 거부 → 기본 프로파일) → 답변에 ⚠️ 고지 있음.
+      //   ② 풀 *안* 폴백(codex 실패 → 같은 풀의 claude) → **고지 0**. 정상 답변만 보인다.
+      // 오늘 codex 빈 응답 3건이 전부 ②였고, 그래서 몇 주간 아무도 몰랐다.
+      // 답변 본문은 오염시키지 않는다(성공한 답은 그대로) — 대신 실패 사실을 별도 줄로 남긴다.
+      // 개별 건은 여기(대시보드), 급증(3건+)은 self-growth 자가 점검이 텔레그램으로 민다.
+      const renderTurnFailure = (p) => {
+        const tk = p.threadKey;
+        if (isEndpointThread(tk)) return;   // 기계 API 호출 — 엔드포인트 뷰가 따로 보여준다.
+        if (!isActiveThread(tk)) return;    // 멀티세션 — 자기 세션에만.
+        const who = p.adapter ? String(p.adapter) : "모델";
+        const why = p.message ? ` — ${String(p.message).slice(0, 140)}` : "";
+        renderLocalChat(
+          "error",
+          `⚠️ ${who} 턴 실패${why}\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다).`,
+        );
+      };
+
       const renderEvent = (ev) => {
         // 전송 계층 하트비트(2026-07-26) — EventBus 이벤트가 아니라 SSE liveness 신호.
         // 수신 시각 갱신은 호출자(connectStream)가 이미 했으므로 여기선 **렌더 0**으로 즉시 반환
@@ -22,8 +41,14 @@
         if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") {
           const tk = ev.payload && ev.payload.threadKey;
           markTurnCardDone(tk); // 턴 카드 마지막 스텝 pulse 정지(응답 누락·에러·hang 종료 대비).
-          if (ev.type === "llm.turn_done") { cancelErrClear(tk); markTurnDone(tk); } // 성공 종결 = 즉시.
-          else scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).
+          if (ev.type === "llm.turn_done") {
+            cancelErrClear(tk); markTurnDone(tk); // 성공 종결 = 즉시.
+            setTurnCost(tk, ev.payload || {});    // 턴 비용(토큰) 카드에 고정 — 2026-07-26.
+          }
+          else {
+            scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).
+            renderTurnFailure(ev.payload || {});
+          }
         }
         if (ev.type === "endpoint.call") { captureEndpointCall(ev.payload || {}); return; } // 엔드포인트 뷰 데이터.
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {

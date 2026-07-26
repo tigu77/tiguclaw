@@ -844,7 +844,9 @@ export const runClaude = async (
   let assistantTextChunks: string[] = [];
   let lastSessionId: string | undefined;
   let lastModel: string | null = null;
-  let lastUsage: { inputTokens: number; outputTokens: number } | undefined;
+  let lastUsage:
+    | { inputTokens: number; outputTokens: number; cachedTokens?: number }
+    | undefined;
   let succeeded = false;
   // 이중발행 방지 가드(2026-07-17, delta 파리티) — depth-0 부모 turn 에서 부분 델타
   // (stream_event/content_block_delta)를 한 번이라도 push 했으면, 뒤따르는 완성
@@ -1166,12 +1168,21 @@ export const runClaude = async (
           const mu = msg.modelUsage ?? {};
           const usageEntry = ((lastModel !== null && mu[lastModel]) ??
             Object.values(mu)[0]) as
-            | { inputTokens?: number; outputTokens?: number }
+            | {
+                inputTokens?: number;
+                outputTokens?: number;
+                cacheReadInputTokens?: number;
+              }
             | undefined;
           if (usageEntry !== undefined) {
+            // ★cachedTokens (2026-07-26) — codex 와 **같은 이름으로 정규화**해 올린다
+            //  (SDK 는 cacheReadInputTokens, codex 는 input_tokens_details.cached_tokens).
+            //  어느 어댑터를 쓰든 관측 지표가 같아야 비교가 된다(원칙 #2).
+            const cached = usageEntry.cacheReadInputTokens;
             lastUsage = {
               inputTokens: usageEntry.inputTokens ?? 0,
               outputTokens: usageEntry.outputTokens ?? 0,
+              ...(typeof cached === "number" ? { cachedTokens: cached } : {}),
             };
           }
         }

@@ -497,6 +497,10 @@
       .turn-count { color:var(--text-dim); font-size:10px; margin-left:auto; flex:none; white-space:nowrap; }
       /* 진행 중 경과시간 — 카드가 살아있음을 보이는 신호(2026-07-26). 진행 중엔 강조,
          완료(.done)되면 톤다운해 최종 소요시간으로 읽히게. 배지류와 같이 flex:none·nowrap. */
+      /* 턴 비용(2026-07-26) — 완료된 턴의 토큰. 경과시간과 같은 급의 부가정보라 톤을 낮춘다.
+         .heavy = 입력 20만 토큰 이상(관측 평균의 ~3배) — 확실히 이상한 턴만 눈에 띄게. */
+      .turn-cost { color:var(--text-dim); font-weight:700; font-size:10px; font-variant-numeric:tabular-nums; opacity:.8; }
+      .turn-cost.heavy { color:var(--warn); opacity:1; }
       .turn-elapsed { color:var(--accent-2); font-size:10px; font-weight:700; font-variant-numeric:tabular-nums; flex:none; white-space:nowrap; }
       .turn-card.done .turn-elapsed { color:var(--text-dim); font-weight:600; }
       .turn-body { padding:2px 10px 8px 28px; }

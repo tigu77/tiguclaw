@@ -446,6 +446,61 @@ export const loadGatewayConfig = (
 };
 
 /**
+ * 웹 검색 provider 설정 (2026-07-26) — settings.json `search`.
+ *
+ * ```json
+ * { "search": { "provider": "brave", "apiKeyEnv": "BRAVE_SEARCH_API_KEY" } }
+ * ```
+ *
+ * ★왜 필요한가(원칙 #2 parity): claude 어댑터는 SDK 내장 WebSearch 로 열린 웹을 검색하는데
+ *  codex 어댑터엔 검색 도구가 아예 없었다(WebFetch=URL 을 이미 알 때만). "모르는 것을 찾는" 게
+ *  검색인데 그게 안 되니, 능력이 어댑터에 따라 갈렸다. 폴백(claude)으로 덮는 건 금지
+ *  ([[feedback_no_cross_adapter_fallback]]) — 그 어댑터 안에서 닫는다.
+ *
+ * ★키는 settings 에 **넣지 않는다**(D5) — `apiKeyEnv` 로 env 이름만 가리킨다.
+ * ★미설정이면 도구를 **등록조차 하지 않는다** — 항상 실패하는 도구를 목록에 두면 매 턴
+ *  스키마 토큰만 먹는다(토큰 위생).
+ */
+export interface WebSearchConfig {
+  provider: "brave" | "tavily";
+  apiKey: string;
+}
+
+/** provider → 기본 env 이름. settings 없이 env 만 있어도 켜지게(설정 부담 0). */
+const SEARCH_ENV_DEFAULTS: { provider: "brave" | "tavily"; env: string }[] = [
+  { provider: "brave", env: "BRAVE_SEARCH_API_KEY" },
+  { provider: "tavily", env: "TAVILY_API_KEY" },
+];
+
+/**
+ * 검색 설정 해석 — settings.json 우선, 없으면 env 자동 감지. 키가 실제로 있어야 반환한다
+ * (이름만 있고 값이 없으면 미설정과 같다). 미설정 = `undefined` = 도구 미등록.
+ */
+export const loadWebSearchConfig = (
+  cwd: string = process.cwd(),
+): WebSearchConfig | undefined => {
+  for (const layer of loadSettingsLayers(cwd)) {
+    const sec = layer.search;
+    if (sec === null || typeof sec !== "object" || Array.isArray(sec)) continue;
+    const o = sec as Record<string, unknown>;
+    const provider = o.provider;
+    if (provider !== "brave" && provider !== "tavily") continue;
+    const envName =
+      typeof o.apiKeyEnv === "string" && o.apiKeyEnv.trim() !== ""
+        ? o.apiKeyEnv.trim()
+        : SEARCH_ENV_DEFAULTS.find((d) => d.provider === provider)?.env;
+    const key = envName === undefined ? "" : (process.env[envName] ?? "");
+    if (key.trim() !== "") return { provider, apiKey: key.trim() };
+  }
+  // settings 미설정 — env 만으로 자동 감지.
+  for (const d of SEARCH_ENV_DEFAULTS) {
+    const key = process.env[d.env] ?? "";
+    if (key.trim() !== "") return { provider: d.provider, apiKey: key.trim() };
+  }
+  return undefined;
+};
+
+/**
  * 모델별 **입력 크기 상한**(문자 수) — settings.json `models.limits`.
  *
  * ```json

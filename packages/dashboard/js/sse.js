@@ -120,6 +120,22 @@
           renderPromptOptions(ev.payload || {}, ts, ev.ts);
           return;
         }
+        // 스케줄 실패 통보(2026-07-26) — 발화는 됐는데 **전달이 실패**하면 종전엔 로그·DB·
+        // 이벤트에만 남아 사용자가 유실을 몰랐다(아침 리포트 2건 실사고: 내용은 생성됐고
+        // transcripts 에 있는데 텔레그램 502 로 미도달). 텔레그램이 죽어도 대시보드는 살아
+        // 있으므로 **다른 전송로**인 여기에 사람이 읽을 수 있게 띄운다. 생성 단계 실패
+        // (phase!=="dispatch")도 같이 알린다 — 어느 쪽이든 사용자는 결과를 못 받았다.
+        if (ev.type === "scheduler.error") {
+          const p = ev.payload || {};
+          const what = p.label ? `'${p.label}'` : `스케줄 #${p.scheduleId ?? "?"}`;
+          const where = p.destChannel ? ` → ${p.destChannel}` : "";
+          const why = p.error ? ` (${String(p.error).slice(0, 120)})` : "";
+          const tail = p.phase === "dispatch"
+            ? " · 내용은 생성됐고 대화 기록에 남아 있습니다."
+            : "";
+          renderLocalChat("error", `⚠️ 스케줄 ${p.phase === "dispatch" ? "전송" : "실행"} 실패 — ${what}${where}${why}${tail}`);
+          return;
+        }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {
           handleWorkerEvent(ev.payload || {}, ts);
           return;

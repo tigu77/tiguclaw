@@ -138,6 +138,11 @@ export const runScheduleFiring = async (
           phase: "dispatch",
           destChannel: schedule.destChannel,
           error: reason,
+          // 사용자 대면 통보용 additive 필드(2026-07-26) — 대시보드가 이걸로 "무엇이/어디로
+          // 실패했나"를 사람이 읽을 수 있게 렌더한다. 종전엔 실패가 로그·DB·이벤트에만 남아
+          // **사용자가 유실을 몰랐다**(아침 리포트 2건 실사고). scheduleId 만으론 무의미.
+          label: schedule.label,
+          destTarget: schedule.destTarget,
         },
       });
     }

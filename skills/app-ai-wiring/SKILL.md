@@ -43,6 +43,22 @@ description: "앱(웹·서버·스크립트 등)에 AI/LLM 을 연결할 때 사
    - 본문 = 프롬프트 템플릿(요청 파라미터를 끼워 넣음).
 2. 앱은 그 경로를 호출: `POST http://127.0.0.1:<HTTP_BRIDGE_PORT>/<path>` + bridge 토큰.
 
+### 동기 / 스트리밍 (2026-07-26 추가)
+엔드포인트도 **둘 다** 된다 — 앱이 고른다.
+- **동기(기본)**: 그냥 POST → `{ "result": "<본문>" }` 한 번에. 앱 코드 2줄.
+- **스트리밍**: body 에 `"stream": true`(또는 `?stream=1`) → SSE.
+  ```
+  data: {"type":"delta","text":"…"}    진행 조각(0회 이상)
+  data: {"type":"result","result":"…"}  최종(성공 시 1회)
+  data: {"type":"error","error":"…"}    실패(1회)
+  data: [DONE]                           종료 표식
+  ```
+  ★앱은 **result/error 를 받았는지**로 성패를 판정할 것(연결만 끊긴 것과 구분).
+  ★`EventSource` 는 POST 불가 → `fetch` + `ReadableStream` 으로 읽는다.
+- **타임아웃**: 엔드포인트 전용 `ENDPOINT_TIMEOUT_MS`(기본 5분, env 조정). 종전 60초 캡에서
+  폴백 낀 긴 턴(70초)이 504로 잘리던 실사고 때문에 분리·상향했다. 스트리밍이면 데이터가
+  흘러 중간 계층(프록시·Tailscale) idle timeout 도 회피된다.
+
 ### 주의
 - 기본이 `restricted`(도구 0)라 **에이전틱 능력을 쓰려면 mode 를 열어야** 한다. 열 때는
   무인 트리거라는 점을 감안해 위험 도구 노출을 최소화(사용자 확인).
@@ -102,8 +118,9 @@ const client = new OpenAI({
   반드시 `/v1/models` 의 id 를 쓸 것.
 
 ### 지원 범위
-**되는 것**: 채팅 · 스트리밍(SSE) · **함수호출(tools/tool_calls)** · **비전(이미지 입력)** ·
-`usage` 토큰 · `/v1/models`
+**되는 것**: 채팅 · 스트리밍(SSE, `stream:true` — **OpenAI SDK 가 파싱까지 처리**하므로 앱
+부담 거의 0. 엔드포인트 스트리밍은 직접 파싱해야 하는 것과 대비되는 장점) ·
+**함수호출(tools/tool_calls)** · **비전(이미지 입력)** · `usage` 토큰 · `/v1/models`
 - 함수호출: 앱이 `tools` 를 주면 모델이 **실행하지 않고** `tool_calls` 를 반환
   (`finish_reason:"tool_calls"`) → **앱이 실행**하고 `role:"tool"` 로 결과를 돌려주면 이어감.
 - 비전: `image_url` 의 **`data:` URI(base64)만** 지원. `http(s)` URL 은 미지원(SSRF 방지).

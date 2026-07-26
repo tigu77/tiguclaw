@@ -1,4 +1,4 @@
-import { Bot, HttpError, InputFile, type Context } from "grammy";
+import { Bot, GrammyError, HttpError, InputFile, type Context } from "grammy";
 import { telegramFormat, splitHtmlForTelegram } from "telegram-markdown-formatter";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -62,30 +62,47 @@ const formatForTelegram = (text: string): { chunks: string[]; parseMode?: "HTML"
 // 로 실패 → 재시도 없어 알림 유실(schedules.last_error). 맥 sleep 아님·폴링 생존 =
 // 순간 transport 실패(유휴 커넥션 노화 추정). 재연결이면 곧 복구되므로 바운드 재시도한다.
 //
-// ★재시도 대상은 transport 실패(grammy HttpError)로 한정한다:
+// ★재시도 대상 = **일시적 실패**만. 영구/논리 실패는 즉시 전파해 호출부 폴백에 맡긴다:
 //   - HttpError = 네트워크/전송 계층 실패 → 재연결로 복구 가능 → 재시도.
-//   - GrammyError = 텔레그램 API 가 응답한 논리 에러(예: 400 parse HTML 실패) →
-//     같은 요청 재전송해도 동일 실패 → 재시도 무의미. 즉시 전파해서 호출부의
-//     HTML→plain 폴백이 처리하게 둔다.
+//   - GrammyError **5xx**(502 Bad Gateway 등) = 텔레그램 **서버측 일시 장애** → 재시도.
+//     ★2026-07-26 실측 버그: 종전엔 GrammyError 를 전부 "논리 에러"로 보고 재시도에서
+//     제외했는데, grammy 는 502 도 GrammyError 로 던진다(error.js:47 `Call to '<m>' failed!`
+//     + error_code=502). 그래서 아침 스케줄 알림 2건(뉴스 브리핑 5661자·GA 리포트 2056자)이
+//     **재시도 한 번 없이** 버려졌다 — 내용은 transcripts 에 남았는데 사용자에겐 미도달.
+//   - GrammyError **4xx**(400 parse HTML 실패·403 forbidden 등) = 같은 요청 재전송해도
+//     동일 실패 → 재시도 무의미. 즉시 전파해서 호출부의 HTML→plain 폴백이 처리하게 둔다.
 // sendMessage 는 멱등이 아니라 재시도 시 드문 중복 가능하나, 알림은 "드문 중복 > 유실"
 // 이므로 재시도 채택. 추가 dedup 장치는 두지 않는다(과설계 회피 — 중복은 감수).
+const isRetriableSendError = (e: unknown): boolean => {
+  if (e instanceof HttpError) return true;
+  // 5xx = 서버측 일시 장애(502/503/504…). 4xx(논리 오류)는 재시도 안 함.
+  if (e instanceof GrammyError) return e.error_code >= 500;
+  return false;
+};
+
+// 재시도 예산 2종 — **호출 성격에 따라 다르다**:
+//  - 대화형(답글·첨부·수정): 사용자가 기다리므로 짧게(총 ~5s). 늦은 답보다 빠른 실패가 낫다.
+//  - 아웃바운드 알림(scheduler 등 fire-and-forget): 아무도 안 기다리므로 길게(총 ~80s).
+//    실측 502 장애가 분 단위였다 — 5s 창으론 못 넘긴다. 유실이 지연보다 훨씬 나쁘다.
 const TRANSPORT_RETRY_DELAYS_MS = [500, 1500, 3000];
+const OUTBOUND_RETRY_DELAYS_MS = [500, 1500, 3000, 15_000, 60_000];
 
 export const sendWithTransportRetry = async (
   send: TgSend,
   chunk: string,
   extra: TgSendExtra,
+  delays: readonly number[] = TRANSPORT_RETRY_DELAYS_MS,
 ): Promise<unknown> => {
   for (let attempt = 0; ; attempt++) {
     try {
       return await send(chunk, extra);
     } catch (e) {
-      // transport 실패(HttpError)만, 그리고 바운드 내에서만 재시도. 그 외는 즉시 전파.
-      const retriable = e instanceof HttpError;
-      if (!retriable || attempt >= TRANSPORT_RETRY_DELAYS_MS.length) throw e;
-      const delay = TRANSPORT_RETRY_DELAYS_MS[attempt]!;
+      // 일시적 실패만, 그리고 바운드 내에서만 재시도. 그 외는 즉시 전파.
+      if (!isRetriableSendError(e) || attempt >= delays.length) throw e;
+      const delay = delays[attempt]!;
       console.warn(
-        `telegram transport failed (HttpError), retry ${attempt + 1}/${TRANSPORT_RETRY_DELAYS_MS.length} in ${delay}ms:`,
+        `telegram send failed (일시적 — ${e instanceof GrammyError ? `API ${e.error_code}` : "transport"}), ` +
+          `retry ${attempt + 1}/${delays.length} in ${delay}ms:`,
         e,
       );
       await new Promise((r) => setTimeout(r, delay));
@@ -101,7 +118,7 @@ export const sendWithTransportRetry = async (
 export const sendFormatted = async (
   send: TgSend,
   text: string,
-  opts?: { replyToMessageId?: number; throwOnFail?: boolean },
+  opts?: { replyToMessageId?: number; throwOnFail?: boolean; retryDelays?: readonly number[] },
 ): Promise<void> => {
   const { chunks, parseMode } = formatForTelegram(text);
   for (let i = 0; i < chunks.length; i++) {
@@ -112,13 +129,13 @@ export const sendFormatted = async (
         : {}),
     };
     try {
-      await sendWithTransportRetry(send, chunks[i]!, extra);
+      await sendWithTransportRetry(send, chunks[i]!, extra, opts?.retryDelays);
     } catch (e) {
       // HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML
       // 그대로 보내면 <b> 등이 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미
       // 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
       console.error("telegram formatted send failed, falling back to plain:", e);
-      await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}).catch((e2) => {
+      await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}, TRANSPORT_RETRY_DELAYS_MS).catch((e2) => {
         console.error("telegram plain fallback also failed:", e2);
         if (opts?.throwOnFail === true) throw e2;
       });
@@ -858,6 +875,7 @@ export const sendOutgoing = async (
   await sendFormatted(
     (chunk, extra) => bot.api.sendMessage(chatId, chunk, extra),
     text,
-    { throwOnFail: true },
+    // fire-and-forget 알림 = 긴 재시도 예산(위 OUTBOUND_RETRY_DELAYS_MS 주석) — 유실 > 지연.
+    { throwOnFail: true, retryDelays: OUTBOUND_RETRY_DELAYS_MS },
   );
 };

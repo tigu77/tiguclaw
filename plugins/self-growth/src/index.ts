@@ -50,6 +50,8 @@ import {
   type TurnDonePayload,
   type TurnErrorPayload,
 } from "./analysis.js";
+import { deliverOutbound } from "../../../src/core/outbound.js";
+import { runHealthSweep } from "./health.js";
 import {
   analyzeFailurePattern,
   deriveWorkerAdapter,
@@ -84,6 +86,8 @@ class SelfGrowthPlugin {
   private cleanupInterval: NodeJS.Timeout | null = null;
   // V3 — 실패 패턴 누적 카운트 (부팅 이후 in-memory, 영구성 불필요). cap 으로 누수 방지.
   private failureCounts: Map<string, number> = new Map();
+  /** 자가 진단 스윕 증분 기준(마지막 스윕 시각). 부팅 시각으로 시작 = 과거분 재보고 0. */
+  private lastHealthSweepTs = Date.now();
   // V3 — 효율 관측 누적 ((adapter,model) 별). 관측 신호까지만 — 라우팅 분기 0.
   private efficiency: Map<string, EfficiencyAccumulator> = new Map();
 
@@ -110,11 +114,51 @@ class SelfGrowthPlugin {
   }
 
   private runMaintenance(): void {
+    this.runHealthSweep();
     this.runCleanup();
     this.runWeeklyReview();
     this.runDirectiveCleanup();
     this.runSkillProposals();
     this.runSkillImproveProposals();
+  }
+
+  // ★자가 진단 스윕 (2026-07-26) — 기존 maintenance interval 에 합류(새 interval 0).
+  // "티구클로가 자기 이상을 스스로 알아채고 먼저 보고한다" — 종전엔 codex 22문단 반복도,
+  // 아침 알림 502 유실도 **사용자가** 발견했다(자기관측 맹점). 읽기 전용 진단만 하고 조치는
+  // 사용자 몫. **증분**(마지막 스윕 이후 발생분만)이라 같은 문제를 매 시간 재보고하지 않고,
+  // 정상이면 아무것도 안 보낸다(침묵이 기본 — 통보가 잦으면 무시하게 된다).
+  // 보고 경로는 2겹: EventBus(대시보드 표시) + 기본 outbound 채널(텔레그램 등). 텔레그램이
+  // 죽어 생긴 이상이면 발송도 실패하지만, 대시보드 이벤트는 남아 나중에 확인된다.
+  private runHealthSweep(): void {
+    try {
+      const since = this.lastHealthSweepTs;
+      this.lastHealthSweepTs = Date.now();
+      const findings = runHealthSweep(since);
+      if (findings.length === 0) return; // 정상 = 침묵.
+      for (const f of findings) {
+        console.log(`self-growth: health — ${f.kind}: ${f.summary}`);
+      }
+      if (this.bus !== null) {
+        this.bus.publish({
+          type: "self_growth.health.finding",
+          ts: Date.now(),
+          payload: { findings },
+        });
+      }
+      const lines = findings.map((f) => `• ${f.summary}`).join("\n");
+      void deliverOutbound({
+        channel: "telegram",
+        target: null, // 채널 기본 대상(소유자)으로 — 좌표 하드코딩 0.
+        text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
+        label: "self-growth:health",
+      }).catch(() => {
+        /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
+      });
+    } catch (e) {
+      console.error(
+        `self-growth: health sweep failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   // Phase 2 (2026-06-24) — 스킬 *개선* 제안 배치 스캔. 기존 maintenance interval 에

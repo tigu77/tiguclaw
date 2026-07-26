@@ -1266,13 +1266,30 @@ export const runOpenAiCodex = async (
           } satisfies RegionAActivityPayload,
         });
       }
-      // codex empty-response fix (2026-05-24) Fix 1 — 텍스트 누적 (덮어쓰기 제거).
-      // 기존 `finalText = text` 는 매 iteration 덮어써서, iteration 1 이 텍스트+도구호출을
-      // 내고 도구 실행 후 iteration 2 가 reasoning 만 하고 빈 메시지면 앞 텍스트가 소실 →
-      // 빈 응답. 비지 않은 turn 텍스트만 누적해 도구 루프 중간 텍스트("확인할게요")와 최종
-      // 텍스트를 보존하고, 빈 턴이 앞 텍스트를 지우지 못하게 한다.
+      // ★자기 발화 재주입 (2026-07-26) — 이 iteration 의 assistant 텍스트를 다음 iteration 이
+      //  보도록 inputArray 에 넣는다. store:false + previous_response_id 폐기 설계(파일 헤더
+      //  §14)라 **대화 상태는 전적으로 input 배열**인데, 종전엔 루프가 function_call /
+      //  function_call_output / user 넛지만 push 하고 **모델 자기 텍스트는 한 번도 안 넣었다**.
+      //  그래서 모델은 매 iteration "아직 아무 말도 안 했다"고 보고 같은 서두를 다시 냈다 —
+      //  실측: 한 턴에 "맞습니다… 하겠습니다" 류 문단이 22개 누적(3295자)돼 사용자가 "계속
+      //  같은 말만 한다"고 체감. shape 는 턴-간 이력이 이미 쓰는 것과 동일
+      //  (openai-codex-oauth-history.ts buildCodexInputArray: role:"assistant" + output_text).
+      //  순서도 규약대로 [assistant 텍스트] → [function_call] → [function_call_output].
       if (text !== "") {
-        finalText = finalText === "" ? text : `${finalText}\n\n${text}`;
+        inputArray.push({
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text }],
+        });
+      }
+      // 최종 텍스트 = **마지막 non-empty**(2026-07-26). 종전엔 전 iteration 을 `\n\n` 로 누적
+      //  했는데(2026-05-24 empty-response fix), 그건 위 재주입 부재로 서두가 반복되던 시절의
+      //  증상 완화였고 지금은 중복 노출의 주범이다. claude(resultText=최종 result 1건)·
+      //  openai(finalOutput 1건)와 semantics 를 맞춘다 = #2 parity. 원래 막으려던 회귀(빈
+      //  iteration 이 앞 텍스트를 지움)는 `text !== ""` 가드가 그대로 막는다 —
+      //  빈 응답이면 덮어쓰지 않고 마지막 실질 텍스트를 유지. 완전 무텍스트 턴은 아래 폴백 관할.
+      if (text !== "") {
+        finalText = text;
       }
       if (responseId !== undefined) finalResponseId = responseId;
 

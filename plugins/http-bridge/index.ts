@@ -113,6 +113,16 @@ const VERSION: string = (() => {
   }
 })();
 const HANDLER_TIMEOUT_MS = 60_000;
+// 커스텀 엔드포인트 전용 타임아웃(2026-07-26) — `/messages`(대시보드)와 **성격이 다르다**:
+//  - /messages: 최종 답은 SSE 로 가므로 HTTP 응답이 잘려도 사용자는 답을 받는다(504 무해).
+//  - 엔드포인트: 앱이 **HTTP 응답 본문을 결과로 쓴다** → 잘리면 진짜 실패다.
+// 실측(2026-07-26): codex 빈응답 → claude 폴백으로 한 턴이 70초 걸려 60초 캡에 걸렸고, 서버는
+// 정상 완료(textLen=3164)했는데 앱만 504 를 받았다(작업완료·전달실패 부류). 폴백이 끼면 시간이
+// 배가 되므로 캡을 넉넉히. env 로 조정 가능.
+const ENDPOINT_TIMEOUT_MS = ((): number => {
+  const n = Number(process.env.ENDPOINT_TIMEOUT_MS);
+  return Number.isInteger(n) && n > 0 ? n : 300_000; // 기본 5분
+})();
 
 // 신규 SSE 접속 history replay 에서 제외할 고volume 스트리밍 타입.
 // - llm.delta: 토큰 증분(P5). 재연결이 옛 턴 토큰을 재생해 깨진 부분 버블을 만들지 않도록.
@@ -2534,22 +2544,88 @@ class HttpBridge implements Channel, Observer {
           },
         };
 
+        // ── 스트리밍 opt-in (2026-07-26) — body `"stream":true` 또는 `?stream=1`.
+        //   미지정 = 종전 동기 JSON(회귀 0). 스트리밍이면 진행 델타를 흘려 (a)중간 계층
+        //   idle timeout 회피 (b)앱이 진행 상황 표시 가능("멈춘 것처럼" 방지).
+        //   프로토콜은 tiguclaw 고유(엔드포인트는 규약 자유):
+        //     data: {"type":"delta","text":"…"}   진행 조각(0회 이상)
+        //     data: {"type":"result","result":"…"} 최종 결과(정확히 1회, 성공 시)
+        //     data: {"type":"error","error":"…"}   실패(정확히 1회)
+        //     data: [DONE]                          종료 표식(성공·실패 공통)
+        //   ★앱은 **result/error 이벤트를 받았는지**로 성패를 판정해야 한다(연결만 끝난 것과 구분).
+        const wantStream =
+          url.searchParams.get("stream") === "1" ||
+          /"stream"\s*:\s*true/.test(rawBody);
+
         let timeoutHandle: NodeJS.Timeout | undefined;
         const timeoutP = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
             reject(new Error("timeout"));
-          }, HANDLER_TIMEOUT_MS);
+          }, ENDPOINT_TIMEOUT_MS);
         });
+        const runTurn = (): Promise<{ text: string }> =>
+          route(epMsg, {
+            // restricted(기본) → 도구 0. full(소유자 명시) → undefined = 전체 도구.
+            toolPolicy: ep.mode === "restricted" ? { mode: "none" } : undefined,
+          });
+
+        if (wantStream) {
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          });
+          const send = (obj: unknown): void => {
+            try {
+              res.write(`data: ${JSON.stringify(obj)}\n\n`);
+            } catch {
+              /* 끊긴 소켓 — 아래 finally 가 정리 */
+            }
+          };
+          // 이 턴의 llm.delta 만 중계(threadKey 필터) — 게이트웨이 스트리밍과 동형 패턴.
+          const unsub =
+            this.bus !== null
+              ? this.bus.subscribe((ev) => {
+                  if (ev.type !== "llm.delta") return;
+                  const p = ev.payload as { threadKey?: string; delta?: string };
+                  if (p.threadKey !== epMsg.threadKey) return;
+                  if (typeof p.delta === "string" && p.delta !== "") {
+                    send({ type: "delta", text: p.delta });
+                  }
+                })
+              : null;
+          try {
+            const out = await Promise.race([runTurn(), timeoutP]);
+            const result = out.text !== "" ? out.text : replyText;
+            send({ type: "result", result });
+            this.bus?.publish({
+              type: "endpoint.call",
+              ts: Date.now(),
+              payload: { name: ep.name, ok: true, request: prompt, response: result },
+            });
+          } catch (e) {
+            const reason = e instanceof Error ? e.message : String(e);
+            send({ type: "error", error: reason });
+            this.bus?.publish({
+              type: "endpoint.call",
+              ts: Date.now(),
+              payload: { name: ep.name, ok: false, request: prompt, response: reason },
+            });
+          } finally {
+            if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+            if (unsub !== null) safeUnsubscribe(unsub);
+            try {
+              res.write("data: [DONE]\n\n");
+            } catch {
+              /* 끊긴 소켓 */
+            }
+            res.end();
+          }
+          return;
+        }
 
         try {
-          const out = await Promise.race([
-            route(epMsg, {
-              // restricted(기본) → 도구 0. full(소유자 명시) → undefined = 전체 도구.
-              toolPolicy:
-                ep.mode === "restricted" ? { mode: "none" } : undefined,
-            }),
-            timeoutP,
-          ]);
+          const out = await Promise.race([runTurn(), timeoutP]);
           // route 는 RouteOutput.text 를 반환 — reply 클로저(replyText)와 동일 본문이나,
           // route 의 반환 text 를 1차 진실로 사용(reply 미호출 어댑터 경로 대비 replyText 폴백).
           const result = out.text !== "" ? out.text : replyText;

@@ -381,10 +381,25 @@
       // 비-200 등 치명 에러면 CLOSED 로 영구 종료(자동 재연결 X) → 탭 stale. 그 경우만
       // 수동 재연결한다(데몬 재시작·블립 내성). 서버측 하트비트(: ping)와 함께 동작.
       let es = null;
+      // ★liveness 워치독(2026-07-26) — onerror 만으로는 **조용한 죽음**을 못 잡는다. 연결이
+      //  half-open 이 되면(맥 절전·네트워크 전환·프록시 idle timeout) 브라우저는 에러를 안 받고
+      //  readyState 도 OPEN 이라 자동 재연결이 영영 안 걸린다. 그 사이 발행된 이벤트를 통째로
+      //  놓쳐 카드가 "실행 중"으로 굳었다(실측: 끝난 워커가 30분째 도는 것처럼 보임).
+      //  서버가 20s 마다 `stream.heartbeat` **실제 이벤트**를 보내므로(코멘트 ping 은 onmessage
+      //  미발화라 관측 불가였음), 마지막 수신 시각을 추적해 임계 초과면 강제 재연결한다.
+      let lastRecvAt = Date.now();
+      const STREAM_STALE_MS = 70_000; // 하트비트 3회(60s) + 여유.
+      const forceReconnect = () => {
+        try { if (es) es.close(); } catch { /* 이미 닫힘 */ }
+        setConn(false);
+        connectStream();
+      };
       const connectStream = () => {
         es = new EventSource("/api/events");
-        es.onopen = () => setConn(true);
+        lastRecvAt = Date.now();
+        es.onopen = () => { lastRecvAt = Date.now(); setConn(true); };
         es.onmessage = (m) => {
+          lastRecvAt = Date.now(); // 하트비트 포함 — 모든 수신이 liveness 증거.
           setConn(true);
           try { renderEvent(JSON.parse(m.data)); } catch (e) { /* skip malformed */ }
         };
@@ -396,6 +411,18 @@
           }
         };
       };
+      // 주기 점검 — 무수신이 임계를 넘으면(=조용한 죽음) 강제 재연결. 재연결 시 서버가 최근
+      // 이벤트를 replay 하므로 놓친 상태가 복구된다(유령 카드 해소).
+      setInterval(() => {
+        if (Date.now() - lastRecvAt > STREAM_STALE_MS) forceReconnect();
+      }, 15_000);
+      // 탭 복귀 즉시 점검 — 절전/백그라운드 복귀가 가장 흔한 조용한 죽음 케이스라, 다음 주기를
+      // 기다리지 않고 바로 회복시킨다(모바일 사파리 포함).
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && Date.now() - lastRecvAt > STREAM_STALE_MS) {
+          forceReconnect();
+        }
+      });
       // ══ 멀티세션 탭(ADR 2026-07-15 Phase 2) ══════════════════════════════════
       // 각 탭 = 독립 대화 세션(dashboard:<uuid> threadKey). 기본 = dashboard:default(연속성).
       // 열린 탭 목록 = 클라 localStorage(UI 선호, D2). 세션 존재/프리뷰 = 서버 /api/sessions.

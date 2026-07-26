@@ -1123,13 +1123,18 @@ class HttpBridge implements Channel, Observer {
         }
       }
       this.sseClients.add(res);
-      // 하트비트 — 주기적 SSE 코멘트(`: ping`)로 연결을 살아있게 유지한다. half-open
-      // (데몬 재시작·네트워크 블립·프록시 idle timeout)이면 write 가 끝내 실패하거나
-      // 상대가 끊김을 감지 → 브라우저 EventSource 가 자동 재연결(탭 stale 방지). child
-      // proxySse 는 raw 바이트를 그대로 흘리므로 ping 이 브라우저까지 전달된다.
+      // 하트비트 — 연결 유지 + **클라이언트 liveness 관측**(2026-07-26).
+      //  종전엔 SSE 코멘트(`: ping`)만 보냈는데, 코멘트는 EventSource 의 onmessage 를
+      //  발화시키지 않아 **브라우저가 "핑이 끊겼다"를 알 방법이 없었다**. 그래서 연결이
+      //  조용히 half-open 으로 죽으면(맥 절전·네트워크 전환·프록시 idle) onerror 도 안 뜨고
+      //  readyState 는 OPEN 이라 재연결이 영영 안 걸려, 그 뒤 발행된 이벤트(worker.done 등)를
+      //  못 받아 카드가 "실행 중"으로 영구히 남았다(실측: 끝난 워커가 30분째 도는 것처럼 보임).
+      //  → 코멘트 대신 **실제 이벤트**로 보내 클라가 수신 시각을 추적/워치독할 수 있게 한다.
+      //  `stream.heartbeat` 는 EventBus 를 타지 않는 **전송 계층 전용** 신호(영속·관측 대상 아님)
+      //  라 소비자(대시보드)는 렌더하지 않고 liveness 갱신에만 쓴다.
       const heartbeat = setInterval(() => {
         try {
-          res.write(`: ping\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "stream.heartbeat", ts: Date.now() })}\n\n`);
         } catch {
           /* 끊긴 소켓 — close/error 가 cleanup 처리 */
         }

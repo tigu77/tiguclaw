@@ -1,4 +1,8 @@
       const renderEvent = (ev) => {
+        // 전송 계층 하트비트(2026-07-26) — EventBus 이벤트가 아니라 SSE liveness 신호.
+        // 수신 시각 갱신은 호출자(connectStream)가 이미 했으므로 여기선 **렌더 0**으로 즉시 반환
+        // (이벤트 카운트·로그·채팅 어디에도 안 샘).
+        if (ev && ev.type === "stream.heartbeat") return;
         if (firstEvent) {
           const logEmpty = document.getElementById("log-empty");
           if (logEmpty) logEmpty.remove();

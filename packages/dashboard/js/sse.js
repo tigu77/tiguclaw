@@ -130,10 +130,37 @@
           const what = p.label ? `'${p.label}'` : `스케줄 #${p.scheduleId ?? "?"}`;
           const where = p.destChannel ? ` → ${p.destChannel}` : "";
           const why = p.error ? ` (${String(p.error).slice(0, 120)})` : "";
-          const tail = p.phase === "dispatch"
-            ? " · 내용은 생성됐고 대화 기록에 남아 있습니다."
-            : "";
-          renderLocalChat("error", `⚠️ 스케줄 ${p.phase === "dispatch" ? "전송" : "실행"} 실패 — ${what}${where}${why}${tail}`);
+          const isDelivery = p.phase === "dispatch" || p.phase === "dispatch_retry";
+          // 자동 재전송이 예약된 실패는 **아직 확정이 아니다** — "유실됐다" 고 단정하지 않고
+          // 무엇이 예정돼 있는지 알린다(결과는 복구/최종실패로 다시 알림). 재전송이 꺼져
+          // 있거나 이미 재전송까지 실패한 건은 그대로 확정 실패.
+          const tail = p.willRetry === true
+            ? " · 내용은 생성됐습니다. 5분 뒤 자동으로 다시 보냅니다."
+            : isDelivery
+              ? " · 내용은 생성됐고 대화 기록에 남아 있습니다."
+              : "";
+          const verb = p.phase === "dispatch_retry"
+            ? "전송 최종 실패(자동 재전송도 실패)"
+            : isDelivery
+              ? "전송 실패"
+              : "실행 실패";
+          renderLocalChat(
+            p.willRetry === true ? "info" : "error",
+            `⚠️ 스케줄 ${verb} — ${what}${where}${why}${tail}`,
+          );
+          return;
+        }
+        // 자동 복구 통보(2026-07-26) — 전달만 실패한 스케줄을 스케줄러가 5분 뒤 1회 자동
+        // 재전송해 되살렸다. 자동으로 **조치까지** 한 경우라 결과를 반드시 보인다: 사용자가
+        // "그러지 마" 할 수 있어야 자동화가 정당하다(settings.json
+        // scheduler.retryFailedDispatch=false 로 끈다).
+        if (ev.type === "scheduler.recovered") {
+          const p = ev.payload || {};
+          const what = p.label ? `'${p.label}'` : `스케줄 #${p.scheduleId ?? "?"}`;
+          renderLocalChat(
+            "info",
+            `✅ 스케줄 자동 복구 — ${what} 전송이 실패해 자동으로 다시 보냈고 성공했습니다.`,
+          );
           return;
         }
         // 자동 지침 적재 통보(2026-07-26) — self-growth 가 반복 실패를 학습해 SELF_GROWTH.md

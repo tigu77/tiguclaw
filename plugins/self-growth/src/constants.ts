@@ -12,6 +12,11 @@ export const DRIFT_THRESHOLD = 5;
 export const REFLECTION_TTL_DAYS = 90;
 export const TTL_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1시간
 
+// 2026-07-26 — 자가 진단 스윕을 *이벤트로도* 깨울 때의 최소 간격. 주기 스윕(1시간)만으론
+// 알림 유실을 최대 한 시간 뒤에야 보고하는데, 못 받은 알림은 지연이 곧 손해다. 짧게 잡되
+// 장애 시 실패 이벤트가 연쇄해도 DB 조회가 폭주하지 않게 최소 간격을 둔다.
+export const EVENT_SWEEP_MIN_INTERVAL_MS = 30 * 1000; // 30초
+
 // P2 (2026-07-18) — 콜드 관측(feedback-obs-*) 아카이브. reflection TTL 이 growth reflection
 // 만 대상이라 assistant 가 기록한 obs 관측은 핫 인덱스에 무한 누적(인덱스 캡 8KB 초과 →
 // 제목 잘림). 정책: `feedback-obs-*` 중 N일 미변경 + access_count 0(한 번도 surfaced 안 됨)

@@ -444,6 +444,31 @@ export const loadGatewayConfig = (
 };
 
 /**
+ * 스케줄 **전달** 실패 시 자동 재전송 여부 — settings.json `scheduler.retryFailedDispatch`
+ * (기본 **켜짐**). 명시 `false` 일 때만 끈다(부재·오타·비-boolean = 기본값 유지, never-throw).
+ *
+ * ★왜 코드가 읽는 플래그인가(soft enforcement 와의 구분): SYSTEM.md 문구는 **비서의 판단**을
+ *  제약하는 수단이라 자동화된 코드 경로엔 집행력이 없다. 이건 사람 없이 도는 동작이므로
+ *  실제 스위치가 필요하다. 반대로 `selfDevelopment` 처럼 비서가 지키는 규칙은 코드가 읽지
+ *  않는다(하드 게이트 금지 — feedback_destructive_actions_soft_enforcement).
+ *
+ * ★이 스위치가 있어야 "자동 조치 + 통보" 가 성립한다. 통보를 받은 사용자가 "그거 하지 마"
+ *  라고 했을 때 끌 수단이 없으면 통보는 사후 고지일 뿐 선택지가 아니다.
+ */
+export const loadSchedulerRetryEnabled = (
+  cwd: string = process.cwd(),
+): boolean => {
+  let enabled = true;
+  for (const layer of loadSettingsLayers(cwd)) {
+    const sec = layer.scheduler;
+    if (sec === null || typeof sec !== "object" || Array.isArray(sec)) continue;
+    const v = (sec as Record<string, unknown>).retryFailedDispatch;
+    if (typeof v === "boolean") enabled = v;
+  }
+  return enabled;
+};
+
+/**
  * 프로파일 이름 → 순서 있는 풀 체인(raw `provider:model` 배열들).
  *  - 각 원소 = 한 프로파일의 pool(파싱 전 raw). 파싱/ModelSpec 변환은 llm-runtime 몫.
  *  - `.fallback` 을 따라 조립하되 visited-set 로 순환 절단, 댕글링 참조는 그 엣지 drop(체인 종료).

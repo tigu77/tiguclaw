@@ -38,6 +38,7 @@ import {
   PATTERN_MAP_CAP,
   SELF_NAMESPACE,
   TTL_CLEANUP_INTERVAL_MS,
+  EVENT_SWEEP_MIN_INTERVAL_MS,
 } from "./constants.js";
 import {
   analyzeDriftPattern,
@@ -109,7 +110,7 @@ class SelfGrowthPlugin {
       this.runMaintenance();
     }, TTL_CLEANUP_INTERVAL_MS);
     console.log(
-      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
+      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked, scheduler.error] + health sweep(주기+이벤트) + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
     );
   }
 
@@ -129,6 +130,17 @@ class SelfGrowthPlugin {
   // 정상이면 아무것도 안 보낸다(침묵이 기본 — 통보가 잦으면 무시하게 된다).
   // 보고 경로는 2겹: EventBus(대시보드 표시) + 기본 outbound 채널(텔레그램 등). 텔레그램이
   // 죽어 생긴 이상이면 발송도 실패하지만, 대시보드 이벤트는 남아 나중에 확인된다.
+  /**
+   * 이벤트로 깨우는 스윕 — 짧은 창에 실패가 몰려도 스윕은 한 번만(디바운스). 스윕 자체가
+   * 증분이라 중복 보고는 안 되지만, 장애 시 실패 이벤트가 연달아 터지면 DB 조회가 그만큼
+   * 반복되므로 최소 간격을 둔다. 주기 스윕(1시간)은 그대로 백스톱으로 남는다.
+   */
+  private runHealthSweepDebounced(): void {
+    const now = Date.now();
+    if (now - this.lastHealthSweepTs < EVENT_SWEEP_MIN_INTERVAL_MS) return;
+    this.runHealthSweep();
+  }
+
   private runHealthSweep(): void {
     try {
       const since = this.lastHealthSweepTs;
@@ -320,6 +332,19 @@ class SelfGrowthPlugin {
       case "llm.turn_done":
         this.handleTurnDone(event.payload as TurnDonePayload);
         return;
+      case "scheduler.error": {
+        // ★즉시 감지 (2026-07-26) — 주기 스윕(1시간)만으론 유실 알림을 최대 한 시간 뒤에야
+        // 보고한다. 전달 실패는 사용자가 **받았어야 할 것을 못 받은** 상태라 지연이 그대로
+        // 손해다. 실패 이벤트가 오면 그 자리에서 스윕을 돌린다(지표·임계는 동일 — 트리거만 추가).
+        //
+        // ★단 `willRetry` 면 무시한다. 스케줄러가 자동 재전송을 예약해 둔 상태라 아직 확정된
+        //  유실이 아니다. 여기서 알리면 5분 뒤 복구될 건을 "실패했다" 고 먼저 떠드는 꼴
+        //  (자동 조치와 통보가 서로를 밟는 전형적 중복).
+        const p = event.payload as { willRetry?: unknown } | null;
+        if (p !== null && typeof p === "object" && p.willRetry === true) return;
+        this.runHealthSweepDebounced();
+        return;
+      }
       case "skill.invoked":
         // 텔레메트리(2026-06-24) — upsert *만*. self-growth 입력축(repeated/failure/
         // drift/skill_proposal)을 *재트리거하지 않음*(메타재귀 차단, 계약 §4·§10-4).
@@ -448,6 +473,25 @@ class SelfGrowthPlugin {
             adapter,
             count,
           },
+        });
+      }
+      // ★푸시 통보 (2026-07-26) — 확정 지침은 **사람 승인 없이** 행동을 바꾸고 TTL 까지
+      // 최장 90일 남는다. 종전엔 대시보드 이벤트로만 알려서, 대시보드를 안 보는 동안 적재된
+      // 지침은 사실상 조용히 들어갔다(교정 기회 0). 자동으로 반영하되 **알리고, 사용자가
+      // 되돌릴 수 있게** 한다 — 자동화의 안전판은 확신도가 아니라 취소 가능성이다.
+      // reflection 강등(제안 상태)은 여기서 침묵 — 아직 아무것도 안 바뀌었다(노이즈 억제).
+      if (result.autoLanded && result.target === "directive") {
+        void deliverOutbound({
+          channel: "telegram",
+          target: null,
+          text:
+            `🧠 반복된 실패를 학습해 **행동 지침**을 자동 반영했습니다.\n\n` +
+            `• ${result.memoryName}\n\n` +
+            `SELF_GROWTH.md 에 적재됐고 다음 턴부터 적용됩니다. ` +
+            `잘못된 판단이면 "그 지침 지워" 라고 말씀해 주세요(확정 안 하면 자동 만료).`,
+          label: "self-growth:directive",
+        }).catch(() => {
+          /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
         });
       }
     } catch (e) {

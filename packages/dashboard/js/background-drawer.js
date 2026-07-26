@@ -467,6 +467,8 @@
       // 그건 세션 스코프 판정에 쓰면 안 됨(원 세션이 아니라 잡 좌표라 activeThreadKey 와 절대 안 맞음).
       const realSessionThreadKey = (tk) =>
         (typeof tk === "string" && tk && tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0) ? tk : "";
+      // 워커 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
+      const WORKER_LABEL_PREFIX = "📦 ";
       // 잡 카드 확보(없으면 생성). label/task 는 worker.started, result 는 worker.done 이 채운다.
       const ensureJobCard = (jobId, opts) => {
         let entry = jobCards.get(jobId);
@@ -596,6 +598,22 @@
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
+        // 라벨 kind 접두 (2026-07-26) — 서브에이전트는 위에서 "🤖 <name>" 으로 쓰는데 워커는
+        // 접두가 없어 비대칭이었다. 워커도 "📦 <작업>" 으로 맞춰, 드로어에 워커·서브가 섞여
+        // 있을 때 **이름만 보고** 구분되게 한다. 특히 모바일에선 kind 배지가 다음 줄로 wrap
+        // 되므로(.bg-job-top flex-wrap) 라벨 접두가 사실상 유일한 구분 단서다.
+        // 멱등 — 이미 붙었으면 재적용 0. agent 로 승격되면 위(agentName 분기)가 라벨을 통째
+        // 교체하지만, agentName 없이 승격된 드문 경우엔 여기서 접두를 떼어 정합을 지킨다.
+        if (entry.labelEl.textContent !== "(작업)") {
+          const cur = entry.labelEl.textContent;
+          if (entry.kind === "agent") {
+            if (cur.indexOf(WORKER_LABEL_PREFIX) === 0) {
+              entry.labelEl.textContent = cur.slice(WORKER_LABEL_PREFIX.length);
+            }
+          } else if (cur.indexOf(WORKER_LABEL_PREFIX) !== 0) {
+            entry.labelEl.textContent = WORKER_LABEL_PREFIX + cur;
+          }
+        }
         if (opts && opts.task && !entry.hasTask) {
           entry.task = String(opts.task); // 원문 보관(에이전트 뷰가 읽음).
           entry.taskEl.textContent = "작업 · " + opts.task; // 펼침 영역 전문.

@@ -62,6 +62,8 @@ export interface LoadedSettings {
     default?: unknown;
     profiles?: Record<string, unknown>;
     providers?: Record<string, unknown>;
+    /** `models.limits` = 모델별 입력 크기 상한(관측값, 2026-07-26). loadModelInputLimits 참조. */
+    limits?: Record<string, unknown>;
   };
   /**
    * `modules.disabled` = 사용자가 끈 `kind:plugin` 모듈 이름 목록(ADR
@@ -441,6 +443,38 @@ export const loadGatewayConfig = (
     if (validated !== undefined) merged = validated;
   }
   return merged;
+};
+
+/**
+ * 모델별 **입력 크기 상한**(문자 수) — settings.json `models.limits`.
+ *
+ * ```json
+ * { "models": { "limits": { "codex:gpt-5.5": { "maxInputChars": 600000 } } } }
+ * ```
+ *
+ * ★왜 코드에 상수로 안 박는가: 이건 **관측값**이지 사양이 아니다. 백엔드가 바뀌면 같이
+ *  변하고, 사용자마다 다른 모델을 쓴다. 코어는 "한도가 있으면 지킨다" 만 알고 **숫자는
+ *  데이터로** 온다(핵심 설계: 코어 단순 불변 / 능력은 데이터).
+ *
+ * ★기본은 **한도 없음**. 관측 안 된 모델에 추측 한도를 씌우면 멀쩡한 모델을 건너뛴다 —
+ *  모르는 것에 대해선 아무 것도 하지 않는 쪽이 안전하다.
+ *
+ * 키는 `adapter:model`(풀 표기 그대로). 값이 양의 정수가 아니면 무시(never-throw).
+ */
+export const loadModelInputLimits = (
+  cwd: string = process.cwd(),
+): Map<string, number> => {
+  const out = new Map<string, number>();
+  for (const layer of loadSettingsLayers(cwd)) {
+    const limits = layer.models?.limits;
+    if (limits === null || typeof limits !== "object" || Array.isArray(limits)) continue;
+    for (const [key, val] of Object.entries(limits as Record<string, unknown>)) {
+      if (val === null || typeof val !== "object" || Array.isArray(val)) continue;
+      const n = (val as Record<string, unknown>).maxInputChars;
+      if (typeof n === "number" && Number.isInteger(n) && n > 0) out.set(key, n);
+    }
+  }
+  return out;
 };
 
 /**

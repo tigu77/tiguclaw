@@ -8,6 +8,22 @@
       // 공유 상태 egressChecked(체크된 채널명 Set) — 전송 시 배열로 읽힌다.
       // §0/채널레이어: 채널명→라벨은 대시보드 UI 컨벤션(generic 폴백, channel-hints 동형).
       const egressChecked = new Set(); // 체크된 추가 발신 채널명.
+      // ★영속 (2026-07-26) — 종전엔 메모리에만 있어 새로고침·데몬 재시작마다 꺼졌다("재시작하면
+      //   꺼지는거같더라고"). 열린 탭 목록과 같은 부류의 **클라이언트 UI 선호**라 localStorage.
+      //   서버에 안 두는 이유: 기기·브라우저마다 다를 수 있고, 발신 좌표가 아니라 화면 설정이다.
+      const EGRESS_LS = "dash.egressChannels.v1";
+      const loadEgressSaved = () => {
+        try {
+          const a = JSON.parse(localStorage.getItem(EGRESS_LS) || "[]");
+          return new Set(Array.isArray(a) ? a.filter((x) => typeof x === "string") : []);
+        } catch { return new Set(); } // 프라이빗 모드·손상 값 → 기본(꺼짐).
+      };
+      // ★사용자가 직접 바꿀 때만 저장한다. 후보 정리(stale prune)로는 저장하지 않는다 —
+      //   텔레그램이 잠깐 down 이면 후보에서 빠지는데 그때 저장해 버리면 선택이 **영구 소실**
+      //   된다(사용자는 끈 적이 없다). 저장본은 남기고 이번 세션 메모리만 정리한다.
+      const saveEgressChoice = () => {
+        try { localStorage.setItem(EGRESS_LS, JSON.stringify([...egressChecked])); } catch { /* quota·프라이빗 모드 */ }
+      };
       const egressBoxEl = document.getElementById("chat-egress");        // 옵션 팝오버(체크박스 목록).
       const egressBtnEl = document.getElementById("chat-egress-btn");    // 📤 도구 버튼(팝오버 토글).
       const egressDotEl = document.getElementById("egress-dot");         // 체크됨 표시 점.
@@ -41,13 +57,15 @@
         if (candidates.length === 0) {
           egressBoxEl.hidden = true;
           egressBoxEl.innerHTML = "";
-          egressChecked.clear();
+          egressChecked.clear(); // 메모리만 — 저장본은 유지(채널이 돌아오면 복원된다).
           if (egressBtnEl) egressBtnEl.hidden = true; // 후보 없으면 버튼도 숨김.
           return;
         }
         if (egressBtnEl) egressBtnEl.hidden = false;   // 후보 있으면 도구 버튼 노출.
-        // 사라진 후보의 체크 상태 정리(재채움 시 stale 제거).
+        // 저장된 선택 복원 — 지금 살아있는 후보에 한해서(없는 채널을 체크된 척하지 않는다).
         const names = new Set(candidates.map((c) => c.name));
+        for (const n of loadEgressSaved()) if (names.has(n)) egressChecked.add(n);
+        // 사라진 후보의 체크 상태 정리(재채움 시 stale 제거) — 저장본은 안 건드린다.
         for (const n of [...egressChecked]) if (!names.has(n)) egressChecked.delete(n);
         egressBoxEl.innerHTML = "";
         const lead = document.createElement("span");
@@ -65,6 +83,7 @@
           cb.addEventListener("change", () => {
             if (cb.checked) egressChecked.add(c.name);
             else egressChecked.delete(c.name);
+            saveEgressChoice(); // 사용자 의사표시 = 저장 시점(유일).
             syncEgressStyle();
           });
           const span = document.createElement("span");

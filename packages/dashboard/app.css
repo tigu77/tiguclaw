@@ -1122,10 +1122,23 @@
       .ep-item-head { font-size:11px; font-weight:800; color:var(--text-mute); display:flex; gap:8px; align-items:center; flex-wrap:wrap; cursor:pointer; user-select:none; }
       .ep-item.ep-out .ep-item-head { color:#6ee7b7; }
       .ep-item.ep-err .ep-item-head { color:var(--warn); }
+      /* 진행 중(2026-07-26) — 요청 접수 시점에 뜨고 완료되면 제자리에서 바뀐다. 종전엔 완료
+         후에만 나타나 20초~5분 도는 동안 화면이 비어 "멈춘 것처럼" 보였다. 은은한 맥박으로
+         "살아 있음"을 보여준다(경과시간은 1초마다 텍스트만 갱신 — 재렌더 없음). */
+      .ep-item.ep-pending { border-color:rgba(96,165,250,.45); }
+      .ep-item.ep-pending .ep-item-head { color:#93c5fd; }
+      .ep-item.ep-pending .ep-item-state { animation:ep-pulse 1.6s ease-in-out infinite; }
+      @keyframes ep-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+      @media (prefers-reduced-motion:reduce) { .ep-item.ep-pending .ep-item-state { animation:none; } }
+      .ep-item-elapsed { color:var(--text-dim); font-weight:700; font-size:10px; font-variant-numeric:tabular-nums; }
+      #nav-endpoint-count.ep-running { color:#93c5fd; }
       .ep-caret { font-size:9px; color:var(--text-dim); transition:transform .12s ease; display:inline-block; }
       .ep-item.open .ep-caret { transform:rotate(90deg); }
       .ep-item-name { color:var(--accent); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .ep-item-time { color:var(--text-dim); font-weight:600; margin-left:auto; }
+      /* 큰 항목 무게 예고(2026-07-26) — 펼치기 전에 크기를 알린다. 이 배포의 엔드포인트 요청은
+         실측 최대 1.3MB 라, 무심코 펼쳤다 느려지는 걸 미리 막는다. */
+      .ep-item-size { color:var(--text-dim); font-weight:700; font-size:10px; opacity:.75; }
       /* 접힘/펼침 — 헤더 클릭 시 요청·응답 섹션 노출. */
       .ep-item-detail { display:none; margin-top:9px; flex-direction:column; gap:9px; }
       .ep-item.open .ep-item-detail { display:flex; }

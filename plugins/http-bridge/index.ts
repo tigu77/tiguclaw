@@ -124,6 +124,29 @@ const ENDPOINT_TIMEOUT_MS = ((): number => {
   return Number.isInteger(n) && n > 0 ? n : 300_000; // 기본 5분
 })();
 
+/**
+ * ★`endpoint.call` 관측 이벤트에 실을 요청/응답 **미리보기** 길이 (2026-07-26).
+ *
+ * 실측: 이 배포의 엔드포인트 요청은 평균 **253,000자**, 최대 **1,324,574자(1.3MB)** 였다.
+ * 종전엔 이걸 통째로 SSE 로 흘려보냈고 대시보드가 최대 60건을 **전부 펼친 채** DOM 에 넣어
+ * 브라우저가 멈췄다(사용자 신고: "엔드포인트 화면 들어가면 멈춰있어").
+ *
+ * 정책 = 핫 경로만 바운드, 레코드는 보존([[project_hotpath_bound_preserve_record]]):
+ *  - 전문은 `transcripts` 에 그대로 남는다(잘리는 건 **라이브 UI 미리보기뿐**).
+ *  - 잘렸으면 얼마나 잘렸는지 본문에 명시 — 조용한 절단은 "이게 전부" 로 읽힌다.
+ */
+const ENDPOINT_PREVIEW_MAX = 4000;
+
+/** 관측 이벤트용 미리보기 — 길면 앞부분만 + 잘린 사실·원본 길이 명시(조용한 절단 금지). */
+const endpointPreview = (s: string): string => {
+  const text = String(s ?? "");
+  if (text.length <= ENDPOINT_PREVIEW_MAX) return text;
+  return (
+    text.slice(0, ENDPOINT_PREVIEW_MAX) +
+    `\n\n… (전체 ${text.length.toLocaleString()}자 중 앞 ${ENDPOINT_PREVIEW_MAX.toLocaleString()}자만 표시 — 전문은 대화 기록에 보존됩니다)`
+  );
+};
+
 // 신규 SSE 접속 history replay 에서 제외할 고volume 스트리밍 타입.
 // - llm.delta: 토큰 증분(P5). 재연결이 옛 턴 토큰을 재생해 깨진 부분 버블을 만들지 않도록.
 //   라이브 fan-out 은 통과(진행 중 턴 실시간엔 필요), history(과거 재생)에서만 제외.
@@ -2544,6 +2567,38 @@ class HttpBridge implements Channel, Observer {
           },
         };
 
+        // ★수명주기 관측 (2026-07-26) — 종전엔 `endpoint.call` 을 **완료 후에만** 발행해서
+        //  호출이 도는 20초~5분 동안 대시보드에 아무것도 안 보였다("멈춘 것처럼 보인다").
+        //  요청 접수 시점에 먼저 알리고(진행 중), 끝나면 같은 callId 로 갱신한다.
+        //  callId = threadKey nonce 재사용(이미 호출마다 고유 — 새 식별자 만들 필요 0).
+        const epStartedAt = Date.now();
+        this.bus?.publish({
+          type: "endpoint.call",
+          ts: epStartedAt,
+          payload: {
+            callId: epNonce,
+            phase: "start",
+            name: ep.name,
+            request: endpointPreview(prompt),
+          },
+        });
+        /** 완료(성공·실패 공통) 관측 — 같은 callId 로 진행 중 항목을 대체한다. */
+        const publishEndpointDone = (ok: boolean, response: string): void => {
+          this.bus?.publish({
+            type: "endpoint.call",
+            ts: Date.now(),
+            payload: {
+              callId: epNonce,
+              phase: "done",
+              name: ep.name,
+              ok,
+              request: endpointPreview(prompt),
+              response: endpointPreview(response),
+              durationMs: Date.now() - epStartedAt,
+            },
+          });
+        };
+
         // ── 스트리밍 opt-in (2026-07-26) — body `"stream":true` 또는 `?stream=1`.
         //   미지정 = 종전 동기 JSON(회귀 0). 스트리밍이면 진행 델타를 흘려 (a)중간 계층
         //   idle timeout 회피 (b)앱이 진행 상황 표시 가능("멈춘 것처럼" 방지).
@@ -2598,19 +2653,11 @@ class HttpBridge implements Channel, Observer {
             const out = await Promise.race([runTurn(), timeoutP]);
             const result = out.text !== "" ? out.text : replyText;
             send({ type: "result", result });
-            this.bus?.publish({
-              type: "endpoint.call",
-              ts: Date.now(),
-              payload: { name: ep.name, ok: true, request: prompt, response: result },
-            });
+            publishEndpointDone(true, result);
           } catch (e) {
             const reason = e instanceof Error ? e.message : String(e);
             send({ type: "error", error: reason });
-            this.bus?.publish({
-              type: "endpoint.call",
-              ts: Date.now(),
-              payload: { name: ep.name, ok: false, request: prompt, response: reason },
-            });
+            publishEndpointDone(false, reason);
           } finally {
             if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
             if (unsub !== null) safeUnsubscribe(unsub);
@@ -2632,18 +2679,10 @@ class HttpBridge implements Channel, Observer {
           writeJson(res, 200, { result });
           // 대시보드 엔드포인트 뷰용 — 요청+응답을 담은 관측 이벤트(채팅 밖 기계 API 호출).
           // 라이브 SSE 로 전문 전달(event-persist 는 SKIP → 절단/영속 비대 회피).
-          this.bus?.publish({
-            type: "endpoint.call",
-            ts: Date.now(),
-            payload: { name: ep.name, ok: true, request: prompt, response: result },
-          });
+          publishEndpointDone(true, result);
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
-          this.bus?.publish({
-            type: "endpoint.call",
-            ts: Date.now(),
-            payload: { name: ep.name, ok: false, request: prompt, response: reason },
-          });
+          publishEndpointDone(false, reason);
           if (reason === "timeout") {
             writeJson(res, 504, { error: "timeout" });
           } else {

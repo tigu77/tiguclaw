@@ -1,12 +1,19 @@
       // ── 엔드포인트/API 활동(B, 2026-07-12) ───────────────────────────────
       // 외부 앱이 register_endpoint 로 호출하는 turn 은 사람 대화가 아니라 기계 API 호출 →
       // 채팅에서 제외(아래 필터)하고 메인 nav "엔드포인트" 뷰에 모은다. 데이터 소스 = http-bridge
-      // 가 매 호출에 발행하는 `endpoint.call` 이벤트(요청+응답 전문·성공/실패). 전체 기록은
-      // DB(transcripts)에 영속 — 이 뷰는 라이브 세션 열람용.
+      // 가 매 호출에 발행하는 `endpoint.call` 이벤트(요청+응답 **미리보기**·성공/실패). 전체
+      // 기록은 DB(transcripts)에 영속 — 이 뷰는 라이브 세션 열람용.
       const endpointLog = [];        // {ts, name, ok, request, response} — 오름차순, 캡 EP_MAX.
       const epOpen = new Set();      // 펼친 항목 ts(재렌더 시 펼침 상태 보존).
       const epSeenTs = new Set();    // ts dedup.
       const EP_MAX = 60;
+      // ★자동 펼침은 **최신 1건만** (2026-07-26). 종전엔 캡처마다 epOpen.add 라 최대 60건이
+      //   전부 펼쳐진 채 DOM 에 들어갔다. 엔드포인트 요청은 실측 평균 25만자·최대 1.3MB(!)
+      //   여서 pre-wrap 레이아웃이 브라우저를 멈춰 세웠다(사용자 신고: "들어가면 멈춰있어").
+      //   서버가 미리보기로 자르고(ENDPOINT_PREVIEW_MAX), 여기선 펼침 수를 줄이고,
+      //   본문 DOM 은 펼칠 때 만든다(lazy) — 3중으로 핫 경로를 바운드.
+      //   사용자가 직접 펼친 건 그대로 두고 *자동으로* 펼쳤던 직전 것만 접는다.
+      let epAutoOpenTs = null;
       const isEndpointThread = (tk) => typeof tk === "string" && tk.indexOf("endpoint:") === 0;
       // ── 채널 힌트(ADR 2026-07-15 §D6) — 메시지/세션이 어느 전송로에서 들어왔나. 세션은
       //    채널 무관이라(텔레그램도 기본 세션에 합류) "텔레그램 경유"를 가시화한다. 대시보드
@@ -34,20 +41,65 @@
         b.className = "ch-badge"; b.textContent = m.short; b.title = m.full + " 경유";
         return b;
       };
+      // ★수명주기 (2026-07-26) — 서버가 요청 접수 시 phase:"start", 끝나면 phase:"done" 을
+      //   **같은 callId** 로 보낸다. 종전엔 완료 이벤트 하나뿐이라 20초~5분 도는 동안 화면에
+      //   아무것도 없었다("멈춘 것처럼 보인다" — 실제 엔드포인트가 20초+ 걸림).
+      //   start 를 못 받은 옛 이벤트(callId 없음)는 그대로 완료 1건으로 취급(회귀 0).
       const captureEndpointCall = (p) => {
         const ts = Number(p && p.ts) || Date.now();
+        const phase = (p && p.phase) || "done";
+        const callId = (p && p.callId) || null;
+
+        // 완료 — 진행 중이던 같은 호출을 **제자리에서** 갱신(새 항목 만들지 않는다).
+        if (phase === "done" && callId !== null) {
+          const prev = endpointLog.find((d) => d.callId === callId);
+          if (prev) {
+            prev.pending = false;
+            prev.ok = (p && p.ok) !== false;
+            prev.response = String((p && p.response) || "");
+            prev.durationMs = Number(p && p.durationMs) || (ts - prev.ts);
+            renderEndpointsView();
+            return;
+          }
+        }
         if (epSeenTs.has(ts)) return;
         epSeenTs.add(ts);
-        endpointLog.push({ ts, name: String((p && p.name) || "endpoint"), ok: (p && p.ok) !== false, request: String((p && p.request) || ""), response: String((p && p.response) || "") });
+        endpointLog.push({
+          ts, callId,
+          pending: phase === "start",
+          name: String((p && p.name) || "endpoint"),
+          ok: (p && p.ok) !== false,
+          request: String((p && p.request) || ""),
+          response: String((p && p.response) || ""),
+          durationMs: Number(p && p.durationMs) || 0,
+        });
         endpointLog.sort((x, y) => x.ts - y.ts);
         if (endpointLog.length > EP_MAX) { for (const d of endpointLog.splice(0, endpointLog.length - EP_MAX)) epOpen.delete(d.ts); }
-        epOpen.add(ts); // 최신 호출은 기본 펼침.
+        if (epAutoOpenTs !== null) epOpen.delete(epAutoOpenTs); // 직전 자동 펼침만 접는다.
+        epOpen.add(ts); epAutoOpenTs = ts;                       // 최신 호출 1건만 기본 펼침.
         updateEndpointBadge();
         renderEndpointsView(); // currentView!=endpoints 면 no-op.
       };
+      // nav 배지 = 진행 중이 있으면 그 수를 강조(없으면 총 건수). 화면 밖에서도 "지금 돌고
+      // 있다" 를 알 수 있어야 한다 — 이게 없어서 사용자가 멈춘 걸로 오해했다.
       const updateEndpointBadge = () => {
-        const b = document.getElementById("nav-endpoint-count"); if (b) b.textContent = String(endpointLog.length);
+        const b = document.getElementById("nav-endpoint-count"); if (!b) return;
+        const running = endpointLog.filter((d) => d.pending).length;
+        b.textContent = running > 0 ? `⏳${running}` : String(endpointLog.length);
+        b.classList.toggle("ep-running", running > 0);
       };
+      // 경과시간 포맷은 background-drawer.js 의 `fmtElapsed` 를 그대로 쓴다 — 대시보드 js 는
+      // **한 스코프를 공유**하므로 재선언하면 SyntaxError 로 이 파일 전체가 죽는다(실제로 당함:
+      // "showEndpoints is not defined" → 엔드포인트 뷰 전멸). 잡 카드와 표기도 통일된다.
+      // 진행 중 항목의 경과시간을 1초마다 갱신(전체 재렌더 없이 텍스트만 — 무거운 DOM 재구성 X).
+      setInterval(() => {
+        if (!endpointLog.some((d) => d.pending)) return;
+        updateEndpointBadge();
+        document.querySelectorAll("#detail-panel .ep-item.ep-pending .ep-item-elapsed").forEach((el) => {
+          const t0 = Number(el.dataset.ts) || Date.now();
+          el.textContent = fmtElapsed(Date.now() - t0);
+        });
+      }, 1000);
       const buildEpSection = (label, text) => {
         const box = document.createElement("div"); box.className = "ep-sec";
         const lab = document.createElement("div"); lab.className = "ep-sec-label"; lab.textContent = label;
@@ -77,20 +129,51 @@
           for (let i = endpointLog.length - 1; i >= 0; i--) { // 최신 먼저.
             const e = endpointLog[i];
             const open = epOpen.has(e.ts);
-            const row = document.createElement("div"); row.className = "ep-item" + (e.ok ? " ep-out" : " ep-err") + (open ? " open" : "");
+            // 상태 3종: ⏳ 진행 중(경과시간 실시간) → ✅ 완료 / ⚠ 실패(소요시간).
+            const state = e.pending ? " ep-pending" : e.ok ? " ep-out" : " ep-err";
+            const row = document.createElement("div"); row.className = "ep-item" + state + (open ? " open" : "");
             const h = document.createElement("div"); h.className = "ep-item-head";
             const car = document.createElement("span"); car.className = "ep-caret"; car.textContent = "▶";
-            const st = document.createElement("span"); st.textContent = e.ok ? "✅ 응답" : "⚠ 실패";
+            const st = document.createElement("span"); st.className = "ep-item-state";
+            st.textContent = e.pending ? "⏳ 진행 중" : e.ok ? "✅ 완료" : "⚠ 실패";
             const nm = document.createElement("span"); nm.className = "ep-item-name"; nm.textContent = e.name;
             const tm = document.createElement("span"); tm.className = "ep-item-time"; tm.textContent = fmtTime(e.ts);
-            h.appendChild(car); h.appendChild(st); h.appendChild(nm); h.appendChild(tm);
+            h.appendChild(car); h.appendChild(st); h.appendChild(nm);
+            if (e.pending) { // 살아 있다는 신호 — 1초마다 갱신(전체 재렌더 없이 텍스트만).
+              const el = document.createElement("span"); el.className = "ep-item-elapsed";
+              el.dataset.ts = String(e.ts); el.textContent = fmtElapsed(Date.now() - e.ts);
+              h.appendChild(el);
+            } else if (e.durationMs > 0) {
+              const dur = document.createElement("span"); dur.className = "ep-item-elapsed";
+              dur.textContent = fmtElapsed(e.durationMs);
+              h.appendChild(dur);
+            }
+            const sz = (e.request || "").length + (e.response || "").length;
+            if (sz > 2000) { // 큰 항목은 접힌 상태에서도 무게를 알 수 있게(펼치기 전 예고).
+              const szEl = document.createElement("span"); szEl.className = "ep-item-size";
+              szEl.textContent = `${Math.round(sz / 1000)}KB`;
+              h.appendChild(szEl);
+            }
+            h.appendChild(tm);
+            const detail = document.createElement("div"); detail.className = "ep-item-detail";
+            // ★lazy — 본문 DOM 은 **펼칠 때** 만든다. 접힌 항목은 CSS 로 숨겨도 텍스트 노드가
+            //   DOM 에 남아 레이아웃 비용을 그대로 낸다(멈춤의 실제 원인). 접혀 있으면 아예 없다.
+            const fillDetail = () => {
+              if (detail.dataset.filled === "1") return;
+              detail.dataset.filled = "1";
+              detail.appendChild(buildEpSection("요청", e.request));
+              // 진행 중이면 응답이 아직 없다 — "(없음)" 은 실패로 읽히므로 상태를 그대로 쓴다.
+              detail.appendChild(
+                e.pending
+                  ? buildEpSection("응답", "아직 처리 중입니다 — 완료되면 여기에 표시됩니다.")
+                  : buildEpSection("응답", e.response),
+              );
+            };
+            if (open) fillDetail();
             h.addEventListener("click", () => {
               const nowOpen = row.classList.toggle("open");
-              if (nowOpen) epOpen.add(e.ts); else epOpen.delete(e.ts);
+              if (nowOpen) { fillDetail(); epOpen.add(e.ts); } else epOpen.delete(e.ts);
             });
-            const detail = document.createElement("div"); detail.className = "ep-item-detail";
-            detail.appendChild(buildEpSection("요청", e.request));
-            detail.appendChild(buildEpSection("응답", e.response));
             row.appendChild(h); row.appendChild(detail); list.appendChild(row);
           }
           wrap.appendChild(list);

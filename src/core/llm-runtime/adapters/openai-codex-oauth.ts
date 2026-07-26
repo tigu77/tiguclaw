@@ -1724,6 +1724,23 @@ export const runOpenAiCodex = async (
   // user + assistant 한 쌍만 transcripts INSERT (function_call/output 자동 격리).
   // loadCodexTurnHistoryBySessionId 의 `role IN ('user','assistant')` 필터로 다음 turn
   // 복원 시 도구 turn 자동 제외 — V5 통합 게이트 회귀 0.
+  // ★대형 입력 의심 단서 (2026-07-26) — 빈 응답의 *원인*을 메시지에 남긴다.
+  //
+  //  관측(실측, 같은 엔드포인트 16건): 요청 크기로 성공/실패가 **완전히 갈렸다**.
+  //    실패 4건 = 1,324,574 / 1,324,357 / 1,324,357 / 825,885자
+  //    성공 12건 = 594,960자 이하 (섞인 구간 0)
+  //  특히 594,960자(성공)와 825,885자(실패)는 **50초 간격 같은 엔드포인트** = 사실상 대조쌍.
+  //  이 백엔드는 컨텍스트 한도를 넘겨도 오류를 주지 않고 **빈 응답**을 돌려주는 것으로 보인다
+  //  (usage 도 비어서 온다). 종전 메시지는 "비어있음" 뿐이라 원인 추적이 불가능했다.
+  //
+  //  ★단정하지 않는다 — 상관은 매우 강하나 통제 실험을 못 했다(실호출 비용). "가능성" 으로
+  //   적어 다음 사람이 오진하지 않게 한다.
+  const OVERSIZE_SUSPECT_CHARS = 600_000;
+  const describeOversizeSuspicion = (chars: number): string =>
+    chars >= OVERSIZE_SUSPECT_CHARS
+      ? ` (요청이 ${chars.toLocaleString()}자로 매우 큽니다 — 이 백엔드는 컨텍스트 한도 초과 시 오류 대신 빈 응답을 주는 것으로 관측됐습니다. 관측된 성공 상한은 약 60만자)`
+      : "";
+
   // codex empty-response fix (2026-05-24) Fix 2 — 최종 빈 출력 처리.
   // 기존 `"(빈 응답)"` 플레이스홀더를 텔레그램에 그대로 보내던 성공 반환이 폴백을
   // 가로막았다(runRegionA 풀 폴백은 throw 시에만 작동). 누적(Fix 1) 후에도 finalText 가
@@ -1745,11 +1762,12 @@ export const runOpenAiCodex = async (
         ` usage=input:${finalUsage?.inputTokens ?? "?"}/output:${finalUsage?.outputTokens ?? "?"}` +
         `/reasoning:${finalUsage?.reasoningTokens ?? "?"}` +
         ` tools=[${[...executedToolNames].join(",")}]` +
+        ` inputChars=${input.text.length}` +
         ` userText=${JSON.stringify(input.text.slice(0, 80))}`,
     );
     if (!sideEffectExecuted) {
       throw new Error(
-        "codex: 최종 응답 텍스트 비어있음 (부작용 도구 미실행) — 풀 폴백 유도",
+        `codex: 최종 응답 텍스트 비어있음 (부작용 도구 미실행) — 풀 폴백 유도${describeOversizeSuspicion(input.text.length)}`,
       );
     }
     // 2026-06-05 — 실행된 도구 이름을 fallback 텍스트에 자동 포함. 사용자가 텔레그램

@@ -44,6 +44,7 @@ import {
   resolveProfileChain,
   getDefaultProfileName,
   loadModelProviders,
+  loadModelInputLimits,
 } from "../settings.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
@@ -507,8 +508,37 @@ const publishCooldownEvent = (
 // spec 은 제외하고, ★전부 쿨다운이면 원본 pool 그대로 반환(last-resort) — 유효 풀이 비어
 // 턴이 응답 0 으로 죽으면 안 됨(쿨다운은 최적화일 뿐, 하드 차단 아님). export — 격리 검증
 // (_workspace) 이 실제 runPool 이 쓰는 이 함수를 직접 호출(mock 어댑터 불필요, 순수 함수).
-export const selectEligiblePool = (pool: ModelSpec[]): ModelSpec[] => {
-  const eligible = pool.filter((spec) => {
+export const selectEligiblePool = (
+  pool: ModelSpec[],
+  inputChars = 0,
+): ModelSpec[] => {
+  // ★용량 스킵 (2026-07-26) — 입력이 그 모델의 관측 상한을 넘으면 **아예 호출하지 않는다**.
+  //
+  //  동기(실측): 60만자 넘는 요청이 codex 에서 매번 빈 응답으로 돌아왔고(오류조차 아님),
+  //  20초를 버린 뒤 다음 모델로 폴백해 결국 성공했다. 앱은 멀쩡해 보이지만 매 호출 20초를
+  //  버리고, 사용자는 원인을 모른다.
+  //
+  //  ★이건 "폴백으로 결함 덮기" 가 아니라 **처음부터 감당 가능한 모델을 고르는 것**이다.
+  //   [[feedback_no_cross_adapter_fallback]] 이 금지하는 건 결함을 가리는 폴백이지,
+  //   용량에 맞는 라우팅이 아니다. 한도는 관측값이라 코드가 아닌 settings 에서 온다.
+  //
+  //  한도 미설정 모델은 그대로 통과 — 모르는 것에 추측 한도를 씌우지 않는다.
+  const limits = inputChars > 0 ? loadModelInputLimits() : new Map<string, number>();
+  const withinCapacity = pool.filter((spec) => {
+    // ★키는 `provider:model`(specLabel) — 쿨다운 키(provider 단위)와 다르다. 용량은
+    //  같은 provider 안에서도 모델마다 다르므로 모델까지 구분해야 한다.
+    const cap = limits.get(specLabel(spec));
+    if (cap === undefined || inputChars <= cap) return true;
+    console.warn(
+      `llm-runtime: '${specLabel(spec)}' 입력 ${inputChars.toLocaleString()}자 > 상한 ` +
+        `${cap.toLocaleString()}자 — 호출 없이 스킵(용량 초과).`,
+    );
+    return false;
+  });
+  // 전부 초과여도 풀을 비우지 않는다 — 상한은 관측값(추정)이라 하드 차단이면 오관측 하나가
+  // 턴을 통째로 죽인다. 마지막엔 그냥 시도해 본다(쿨다운의 last-resort 와 같은 태도).
+  const sized = withinCapacity.length > 0 ? withinCapacity : pool;
+  const eligible = sized.filter((spec) => {
     const remaining = cooldownRemainingMs(spec);
     if (remaining <= 0) return true;
     const key = cooldownKey(spec);
@@ -518,7 +548,7 @@ export const selectEligiblePool = (pool: ModelSpec[]): ModelSpec[] => {
     publishCooldownEvent("skip", key, remaining);
     return false;
   });
-  return eligible.length > 0 ? eligible : pool;
+  return eligible.length > 0 ? eligible : sized;
 };
 
 // 실패가 rate-limit 이면 쿨다운 등록(문자열 미매칭 → no-op, 기존 폴백 로직 그대로).
@@ -659,7 +689,7 @@ const runPool = async (
   // 쿨다운 스킵 — rate-limit 걸린 어댑터를 매 턴 재두드리지 않음(호출 자체를 안 함,
   // 레이턴시+통신 낭비 제거). 전부 쿨다운이면 selectEligiblePool 이 원본 pool 그대로
   // 반환(last-resort, 유효 풀이 비어 턴이 응답 0 으로 죽지 않게).
-  const effectivePool = selectEligiblePool(pool);
+  const effectivePool = selectEligiblePool(pool, input.text?.length ?? 0);
   for (const spec of effectivePool) {
     // self-growth 입력 — 한 어댑터 run() 호출(=한 턴) wall-clock 측정. 발행은 아래
     // 성공/실패 경로에서 정확히 1회 (turn_done XOR turn_error). 발행 자체는 best-effort

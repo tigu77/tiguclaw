@@ -17,7 +17,21 @@
       // 스코프(runningScoped 패턴 동형) — shell.started.threadKey 가 활성 세션과 같은 running
       // 셸만 카운트. 누르면 셸 사이드바 뷰로 점프(택1 중 간단한 쪽 — 별도 팝오버 신설 안 함).
       const chatShellActiveEl = document.getElementById("chat-shell-active");
-      const isShellInScope = (tk) => !tk || tk === activeThreadKey; // isBgInScope 동형(threadKey 미지정=항상 소속).
+      // 셸 세션 스코프 판정. ★worker/서브가 띄운 셸의 threadKey 는 세션 좌표가 아니라 **잡 좌표**
+      //  ("worker:<jobId>"/"agent:<jobId>")라 activeThreadKey 와 **절대** 안 맞는다(아래
+      //  realSessionThreadKey 주석과 동일 근거). 종전 `tk === activeThreadKey` 단순 비교는 그런 셸을
+      //  영구히 숨겨, 워커가 띄운 dev 서버가 30분째 돌아도 "🖥️ 셸 N개 실행 중"이 안 뜨는 버그를 냈다
+      //  (2026-07-26 실측). 잡 좌표면 그 잡 카드가 아는 원 세션으로 판정하고, 잡을 모르면(카드 prune·
+      //  새로고침으로 유실) **보수적으로 노출** — 실행 중인 셸을 숨기는 쪽이 더 나쁜 실패다.
+      const isShellInScope = (tk) => {
+        if (!tk || tk === activeThreadKey) return true;
+        const m = /^(?:worker|agent):(.+)$/.exec(tk);
+        if (!m) return false;
+        if (typeof jobCards === "undefined") return true;
+        const card = jobCards.get(m[1]);
+        const owner = card && card.el ? card.el.dataset.threadkey : "";
+        return !owner || owner === activeThreadKey;
+      };
       if (chatShellActiveEl) chatShellActiveEl.addEventListener("click", () => {
         if (typeof showShells === "function") showShells();
       });

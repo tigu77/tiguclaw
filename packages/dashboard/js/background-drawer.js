@@ -23,14 +23,45 @@
       //  영구히 숨겨, 워커가 띄운 dev 서버가 30분째 돌아도 "🖥️ 셸 N개 실행 중"이 안 뜨는 버그를 냈다
       //  (2026-07-26 실측). 잡 좌표면 그 잡 카드가 아는 원 세션으로 판정하고, 잡을 모르면(카드 prune·
       //  새로고침으로 유실) **보수적으로 노출** — 실행 중인 셸을 숨기는 쪽이 더 나쁜 실패다.
+      // 셸 threadKey → **원 세션** threadKey 환원. 잡 좌표(worker:/agent:<jobId>)면 그 잡 카드가
+      // 아는 원 세션으로, 이미 세션 좌표면 그대로. 모르면 ""(=소속 미상).
+      const shellOwnerSession = (tk) => {
+        if (!tk) return "";
+        const m = /^(?:worker|agent):(.+)$/.exec(tk);
+        if (!m) return tk;
+        if (typeof jobCards === "undefined") return "";
+        const card = jobCards.get(m[1]);
+        return (card && card.threadKey) || "";
+      };
       const isShellInScope = (tk) => {
         if (!tk || tk === activeThreadKey) return true;
-        const m = /^(?:worker|agent):(.+)$/.exec(tk);
-        if (!m) return false;
-        if (typeof jobCards === "undefined") return true;
-        const card = jobCards.get(m[1]);
-        const owner = card && card.el ? card.el.dataset.threadkey : "";
+        const owner = shellOwnerSession(tk);
+        // 소속 미상(잡 카드 유실 등)은 보수적으로 노출 — 실행 중 셸을 숨기는 게 더 나쁜 실패.
         return !owner || owner === activeThreadKey;
+      };
+      // 세션별 진행 중 백그라운드(잡·셸) 보유 집합 — 세션 탭 진행 배지가 읽는다(tabs.js).
+      // ★"자기 세션 것만" 원칙: 소속이 확정된 것만 넣는다(미상은 넣지 않음 — 남의 탭에 점이
+      // 찍히는 오탐이 누락보다 나쁘다. 미상 카드는 아래 threadKey 지연 채움으로 대부분 확정된다).
+      const bgWorkSessions = new Set();
+      let lastBgWorkSig = "";
+      const syncSessionBgBadges = () => {
+        const next = new Set();
+        for (const e of jobCards.values()) {
+          if (e.status === "running" && e.threadKey) next.add(e.threadKey);
+        }
+        if (typeof shellRegistry !== "undefined") {
+          for (const s of shellRegistry.values()) {
+            if (s.status !== "running") continue;
+            const owner = shellOwnerSession(s.threadKey);
+            if (owner) next.add(owner);
+          }
+        }
+        const sig = [...next].sort().join("|");
+        if (sig === lastBgWorkSig) return; // 변화 없으면 리렌더 0(1초 폴에 매번 갱신 방지).
+        lastBgWorkSig = sig;
+        bgWorkSessions.clear();
+        for (const k of next) bgWorkSessions.add(k);
+        if (typeof renderTabBar === "function") renderTabBar();
       };
       if (chatShellActiveEl) chatShellActiveEl.addEventListener("click", () => {
         if (typeof showShells === "function") showShells();
@@ -53,7 +84,7 @@
       // view-shells.js 의 handleShellStarted/handleShellExited 가 상태변화마다 이 함수를 직접
       // 부르지만(cross-file 훅), 세션 탭 전환(activeThreadKey 변경)은 tabs.js 를 건드리지 않고도
       // 최대 1s 이내 반영되도록 가벼운 폴 — background-drawer.js 자기완결(무접촉 파일 원칙 준수).
-      setInterval(refreshShellStrip, 1000);
+      setInterval(() => { refreshShellStrip(); syncSessionBgBadges(); }, 1000);
       // "↑ 최신" 점프 — 아래로 내려 과거 잡 열람 중(scrollTop>임계)일 때만 노출, 클릭하면 맨 위(최신)로.
       // 채팅 chat-jump 의 상단판(newest=insertBefore 로 top). stickTop 이 안 끌어당기는 케이스의 어포던스.
       const bgJump = document.getElementById("bg-jump");
@@ -595,6 +626,18 @@
             entry.tierBadgeEl.style.display = show ? "" : "none";
           }
         }
+        // 원 세션 threadKey **지연 채움**(2026-07-26) — 활동-선도 카드는 생성 시 잡 좌표
+        // (worker:<jobId>)뿐이라 threadKey 가 ""(소속 미상)로 남는데, isBgInScope 가 빈 값을
+        // "모든 세션 소속"으로 취급해 **남의 세션 칩·배지에도 떴다**. lifecycle 이 원 세션을
+        // 실어 오면 그때 확정한다(멱등 — 이미 있으면 무변).
+        if (!entry.threadKey) {
+          const real = realSessionThreadKey(opts && opts.threadKey);
+          if (real) {
+            entry.threadKey = real;
+            entry.el.dataset.threadkey = real;
+            entry.el.classList.toggle("bg-in-scope", isBgInScope(real));
+          }
+        }
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
@@ -652,6 +695,7 @@
         }
         capBgList();
         refreshBgBadge();
+        syncSessionBgBadges(); // 세션 탭 진행 배지(백그라운드) 갱신.
         scheduleAgentsRender(); // 에이전트 메인 뷰가 열려 있으면 상태 전환 반영(throttle, 닫혀 있으면 no-op).
         scheduleProjectAgentsRender(); // 프로젝트 상세 열려 있으면 그 프로젝트 카드도 라이브 반영.
       };

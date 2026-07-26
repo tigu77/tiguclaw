@@ -177,7 +177,11 @@
           { const cm = channelMeta(tab.channel || channelFromThreadKey(tab.threadKey));
             if (cm) { const ch = document.createElement("span"); ch.className = "st-ch"; ch.textContent = cm.short; ch.title = cm.full + " 세션"; b.appendChild(ch); } }
           // 진행 뱃지 — 이 세션(또는 스폰한 워커/서브)이 진행 중이면 점(모든 세션 추적, §5.12).
-          if (activeTurns.has(tab.threadKey)) {
+          // 진행 배지 = 활성 턴 **또는** 그 세션이 띄운 백그라운드(워커·서브·셸)가 도는 중
+          // (2026-07-26 사용자 요청). 종전엔 턴만 봐서, 워커/셸이 도는 세션 탭이 조용했다.
+          // bgWorkSessions 는 background-drawer.js 가 소속 확정된 것만 담는다(남의 탭 오탐 0).
+          const hasBgWork = typeof bgWorkSessions !== "undefined" && bgWorkSessions.has(tab.threadKey);
+          if (activeTurns.has(tab.threadKey) || hasBgWork) {
             const dot = document.createElement("span"); dot.className = "st-dot"; b.appendChild(dot);
           }
           b.addEventListener("click", () => switchToThread(tab.threadKey));

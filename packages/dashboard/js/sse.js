@@ -136,6 +136,23 @@
           renderLocalChat("error", `⚠️ 스케줄 ${p.phase === "dispatch" ? "전송" : "실행"} 실패 — ${what}${where}${why}${tail}`);
           return;
         }
+        // 자동 지침 적재 통보(2026-07-26) — self-growth 가 반복 실패를 학습해 SELF_GROWTH.md
+        // 에 **행동 지침을 자동으로** 박는다(source:"auto", 캡·TTL 로 자동 만료). 구조는 안전
+        // 하지만 종전엔 **조용히** 들어가 사용자가 모르니 틀려도 교정할 수 없었다. 행동을 바꾸는
+        // 변경은 보이게 한다 — 사용자가 즉시 부정하거나 확정(user 승격)할 기회를 준다.
+        // ★directive 로 확정된 것만 알린다. reflection 강등(autoLanded=false)은 행동을 안 바꾸므로
+        //   알리지 않는다(노이즈 억제 — 통보가 잦으면 무시하게 돼 없느니만 못하다).
+        if (ev.type === "self_growth.failure.learned") {
+          const p = ev.payload || {};
+          if (p.autoLanded === true && p.target === "directive") {
+            renderLocalChat(
+              "info",
+              `🧠 자동 지침 추가 — '${p.memoryName}' (반복 실패 ${p.count ?? "?"}회 학습 · ` +
+                `SELF_GROWTH.md · 확정 안 하면 자동 만료). 잘못된 지침이면 알려주세요.`,
+            );
+          }
+          return;
+        }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {
           handleWorkerEvent(ev.payload || {}, ts);
           return;

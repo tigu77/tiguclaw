@@ -271,7 +271,12 @@ export const runOpenAi = async (
         // threadKey(ADR 2026-07-17 §Phase 2/§6 마감) — openai 백그라운드 셸의
         // shell.started.threadKey 가 실 세션이 되도록 전파(이전엔 baseCwd 만 넘겨 "" 폴백).
         await adaptClaudeMcpServer(
-          createFileOpsMcpServer(discoveryCwd, input.threadKey),
+          // ★includeWebSearch — openai 어댑터는 자체 웹 검색 수단이 없다(claude=SDK
+          //  builtin, codex=backend native). 여기만 config-driven provider 로 닫는다
+          //  (settings.json search.provider + 키 env, 미설정이면 도구 미등록).
+          createFileOpsMcpServer(discoveryCwd, input.threadKey, {
+            includeWebSearch: true,
+          }),
           "file-ops",
         ),
         await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),

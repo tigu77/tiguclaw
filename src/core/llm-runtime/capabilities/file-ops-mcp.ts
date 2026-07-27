@@ -759,7 +759,11 @@ const searchTavily = async (
 //   cwd 가 전부 base. 팩토리가 턴마다 base 를 주입하므로 병렬 안전(무전역, 인스턴스=턴).
 // ★threadKey(ADR Phase 2 §1) — baseCwd 와 동형으로 팩토리가 턴마다 주입. run_in_background
 //   Bash 가 launchBgShell 에 전달해 shell.started.threadKey 로 관측(미전파 시 "" 폴백).
-const makeFileOpsTools = (base: string, threadKey: string) => {
+const makeFileOpsTools = (
+  base: string,
+  threadKey: string,
+  includeWebSearch: boolean,
+) => {
   // β — 벽 아닌 해소만. 상대경로 → base 기준, 절대경로 → 그대로(home/프로젝트 밖 허용).
   const resolvePath = (target: string): string =>
     path.isAbsolute(target) ? target : path.resolve(base, target);
@@ -1211,8 +1215,13 @@ const makeFileOpsTools = (base: string, threadKey: string) => {
     },
   );
 
-  // ─── WebSearch 도구 (2026-07-26 — 설정됐을 때만 등록) ────────────────────
-  const searchCfg = loadWebSearchConfig(base);
+  // ─── WebSearch 도구 (2026-07-26 · 2026-07-27 스코프 정정) ────────────────
+  // ★codex 는 제외한다 — backend native `{type:"web_search"}` 를 이미 보낸다
+  //  (ADR 2026-05-23-region-a-v76, 2026-07-27 전송 payload 로 재확인: tools 42개 중 1개).
+  //  같은 능력을 두 벌 붙이면 모델이 어느 쪽을 쓸지 흔들리고, 이쪽은 API 키까지 든다.
+  //  실제 갭은 **openai 어댑터**다 — file-ops 를 쓰는데 검색 수단이 없다.
+  //  claude=SDK builtin / codex=backend native / openai=config provider 로 각자 닫는다.
+  const searchCfg = includeWebSearch ? loadWebSearchConfig(base) : undefined;
   const webSearchTool = tool(
     "WebSearch",
     `웹을 검색해 상위 결과(제목·URL·요약)를 반환합니다. 결과는 요약만 주므로, 내용이 필요하면 WebFetch 로 해당 URL 을 이어서 읽으세요. 기본 ${WEBSEARCH_DEFAULT_COUNT}건 / 최대 ${WEBSEARCH_MAX_COUNT}건.`,
@@ -1296,11 +1305,18 @@ const makeFileOpsTools = (base: string, threadKey: string) => {
 export const createFileOpsMcpServer = (
   baseCwd?: string,
   threadKey?: string,
+  opts?: { includeWebSearch?: boolean },
 ): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "file-ops",
-    version: "1.7.0",
-    tools: makeFileOpsTools(baseCwd ?? getPaths().home, threadKey ?? ""),
+    version: "1.8.0",
+    tools: makeFileOpsTools(
+      baseCwd ?? getPaths().home,
+      threadKey ?? "",
+      // 기본 false — 자체 검색 수단이 있는 어댑터(codex)에 중복 부착하지 않는다.
+      // 검색이 없는 어댑터(openai)만 명시적으로 켠다.
+      opts?.includeWebSearch === true,
+    ),
   });
 
 // 노출 도구 목록 (inventory 등에서 참조 가능 — 본 라운드 hardcode 0).

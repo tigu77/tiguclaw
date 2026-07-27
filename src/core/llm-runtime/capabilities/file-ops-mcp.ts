@@ -759,11 +759,26 @@ const searchTavily = async (
 //   cwd 가 전부 base. 팩토리가 턴마다 base 를 주입하므로 병렬 안전(무전역, 인스턴스=턴).
 // ★threadKey(ADR Phase 2 §1) — baseCwd 와 동형으로 팩토리가 턴마다 주입. run_in_background
 //   Bash 가 launchBgShell 에 전달해 shell.started.threadKey 로 관측(미전파 시 "" 폴백).
+// 턴 스코프 읽기 캐시 상한 — 긴 턴에서도 메모리·오동작이 없도록 바운드.
+const READ_CACHE_MAX_ENTRIES = 512; // 넘으면 통째 비움(단순·안전, LRU 불필요).
+const READ_CACHE_MAX_STUBS = 2; // 같은 키에 스텁 2회까지 — 그 이상은 본문 재제공(탈출구).
+// ★작은 파일은 캐시하지 않는다 — 스텁 자체가 ~200자라, 그보다 조금 큰 본문을 스텁으로
+//  바꾸면 절감이 거의 없거나 오히려 손해다(검증에서 310자 파일이 195자 스텁으로 바뀌며
+//  드러났다). 캐시의 값어치는 "큰 본문이 여러 벌 쌓이는 것"을 막는 데 있으므로 그 구간만 건다.
+const READ_CACHE_MIN_BYTES = 1024;
+
 const makeFileOpsTools = (
   base: string,
   threadKey: string,
   includeWebSearch: boolean,
 ) => {
+  // ★이 Map 이 곧 "턴 스코프" — createFileOpsMcpServer 가 턴마다 새로 호출되므로
+  //  (openai-codex-oauth.ts:490) 클로저 하나가 그 턴의 수명과 정확히 일치한다.
+  //  턴이 끝나면 서버·브리지가 close 되며 통째로 사라진다 = 누수·교차오염 0.
+  const turnReadCache = new Map<
+    string,
+    { sig: string; lines: number; bytes: number; stubs: number }
+  >();
   // β — 벽 아닌 해소만. 상대경로 → base 기준, 절대경로 → 그대로(home/프로젝트 밖 허용).
   const resolvePath = (target: string): string =>
     path.isAbsolute(target) ? target : path.resolve(base, target);
@@ -784,6 +799,31 @@ const makeFileOpsTools = (
         if (!stat.isFile()) {
           return errText(`path 가 파일이 아닙니다: ${abs}`);
         }
+        // ★턴 스코프 읽기 캐시 (2026-07-27) — 같은 턴에서 같은 구간을 또 읽으면 본문을 다시
+        //  주지 않는다. 실측(codex Read 933건): 12%(114건)가 **같은 턴 안** 재읽기였고, 한
+        //  파일을 같은 초에 3번 읽는 경우까지 있었다. 그 내용은 이미 그 턴의 누적 입력에
+        //  들어 있으므로 순수 낭비다 — codex 는 매 iteration 히스토리를 통째로 재전송해서
+        //  중복 본문이 iteration 수만큼 곱해진다.
+        //  ★무효화는 추측이 아니라 관측으로: mtime+size 가 그대로일 때만 캐시 적중.
+        //   파일이 바뀌었으면 정상적으로 다시 읽는다(오래된 내용을 쥐여주지 않는다).
+        //  ★탈출구: 같은 키에 스텁을 2회까지만 준다. 그 이상 물으면 앞선 결과가 실제로
+        //   컨텍스트에서 사라진 것으로 보고 본문을 다시 준다(스텁 무한루프 방지).
+        const ck = `${abs}\u0000${args.offset ?? 1}\u0000${args.limit ?? DEFAULT_READ_LIMIT}`;
+        const sig = `${stat.mtimeMs}:${stat.size}`;
+        const hit = turnReadCache.get(ck);
+        if (
+          hit !== undefined &&
+          hit.sig === sig &&
+          hit.bytes >= READ_CACHE_MIN_BYTES &&
+          hit.stubs < READ_CACHE_MAX_STUBS
+        ) {
+          hit.stubs += 1;
+          return okText(
+            `(이 턴에서 이미 읽은 파일입니다 — 파일이 그대로라 본문을 다시 싣지 않습니다.)\n` +
+              `path=${abs}${args.offset !== undefined ? `, offset=${args.offset}` : ""} · ${hit.lines}줄\n` +
+              `앞서 이 턴에서 반환한 내용을 그대로 사용하세요. 다시 확인이 꼭 필요하면 한 번 더 호출하면 본문을 줍니다.`,
+          );
+        }
         const raw = await fs.readFile(abs, "utf8");
         const lines = raw.split("\n");
         const start = (args.offset ?? 1) - 1;
@@ -793,6 +833,9 @@ const makeFileOpsTools = (
         if (body.length > READ_BODY_HARD_CAP) {
           body = `${body.slice(0, READ_BODY_HARD_CAP - 1)}…`;
         }
+        // 캐시 적재(턴 스코프). 상한을 둬 긴 턴에서도 Map 이 무한 증가하지 않는다.
+        if (turnReadCache.size >= READ_CACHE_MAX_ENTRIES) turnReadCache.clear();
+        turnReadCache.set(ck, { sig, lines: slice.length, bytes: body.length, stubs: 0 });
         return okText(body);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));

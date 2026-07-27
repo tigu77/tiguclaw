@@ -37,6 +37,17 @@
       let vtProgUntil = 0;
       const perfNow = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
       let lastScrollTop = 0;     // 직전 scrollTop — 사용자 스크롤 방향(위/아래) 판정용. 작은 위 스크롤도 stick 해제.
+      // ★팔로우 판정 근거 = 의도 추측이 아니라 실측 관측 (2026-07-27, 4번째 재발에서 방향 전환).
+      //  이 자리는 세 번 고쳤는데(40e0d51·4b5d5c1·1343212) 전부 "pin 을 더 세게" 였고, 정작 새는
+      //  곳은 stickBottom 이 *꺼지는* 쪽이었다. wheel deltaY<0 는 **실제 스크롤이 0px 이어도**
+      //  팔로우를 비가역적으로 껐다(헤드리스 실측: 전송 후 팬텀 wheel 1회 → 도착 메시지가 638px
+      //  아래로 밀림 = "맨 아래에 위에만 살짝 보임"). 그래서 제스처는 *신호* 로만 쓰고, 해제·복귀
+      //  확정은 둘 다 **실측 gap** 으로 한다. 아래 두 상수가 그 유일한 기준이다.
+      const NEAR_BOTTOM_PX = 80;  // 이보다 가까우면 "바닥에 있다"(팔로우 재개 가능).
+      const MOVED_EPS_PX = 8;     // 이보다 덜 움직였으면 스크롤한 게 아니다(팬텀 제스처 차단).
+      const gapNow = () => getScrollH() - getScrollTop() - getClientH();
+      // 사용자 우선권 창 — 실제 제스처 직후엔 pin 이 사용자와 싸우지 않는다(해제 확정 전이라도).
+      let userIntentUntil = 0;
 
       // ── 모바일 페이지 스크롤 모드 (2026-07-19) — 다른 메뉴 패널처럼 문서(window)가 스크롤 ──
       // 데스크탑(>900px)은 기존 #stream 내부 스크롤·윈도잉 그대로(무접촉). 모바일 채팅에선 #right/
@@ -76,10 +87,14 @@
       // 라 오해제되지 않는다. stickBottom=false(사용자가 위로 스크롤)면 no-op → 사용자 스크롤 존중(회귀 0).
       const vtPinBottom = () => {
         if (!stickBottom || vtJumpTop) return;
+        if (perfNow() < userIntentUntil) return; // 실제 제스처 직후 = 사용자 우선(바닥으로 튕기지 않음).
         let total = 0;
         for (const it of vtItems) { it.top = total; total += slotH(it); }
         vtSizer.style.height = total + "px";
-        setScrollTop(pageScroll() ? getScrollH() : total + 40);
+        // ★착지점은 모델 추정(total+40)이 아니라 실측 scrollHeight — 브라우저가 max 로 클램프한다.
+        //  미측정 아이템이 크면 추정치는 바닥에 못 닿았다(실측 최대 3,381px 미달). +40 슬랙이
+        //  뷰포트 높이보다 작아 open-loop 오차가 그대로 노출되던 구조를 닫는다.
+        setScrollTop(getScrollH());
       };
 
       // 아이템 높이 실측 — 측정되면 model 갱신 후 relayout(추정→실측 정합). stick 유지 중이면 실측
@@ -349,15 +364,17 @@
       // scEl() 로 라우팅 — 데스크탑=#stream 스크롤, 모바일=문서(window) 스크롤. 그래서 #stream 과
       // window 둘 다에 붙이되(모드별로 한쪽만 발화), 핸들러는 활성 스크롤러를 읽는다.
       const onScroll = () => {
-        // 프로그램적 스크롤(+그 stale 잔향 창) 은 stick 판정에서 제외 — 위 vtProgUntil 주석.
-        if (vtProgrammatic || perfNow() < vtProgUntil) { lastScrollTop = getScrollTop(); return; }
         const st = getScrollTop();
-        const nearBottom = (getScrollH() - st - getClientH()) < 80;
-        // 사용자 스크롤 존중 — 위로 스크롤(작은 델타 포함) = 과거 열람 의도 → 즉시 stick 해제(재-스냅 금지).
-        // 아래로 내려와 바닥 근처(threshold)일 때만 팔로우 재개. 위치 임계값만 보면 <80px 위 스크롤이
-        // stick 을 유지해 relayout/ResizeObserver 가 바닥으로 튕겼다(원인 A).
-        if (st < lastScrollTop - 1) stickBottom = false;
-        else if (nearBottom) stickBottom = true;
+        const gap = gapNow();
+        // ★재stick 은 프로그램적 가드 **밖** — "지금 바닥에 있다" 는 누가 스크롤했든 참인 관측이다.
+        //  종전엔 이 판정이 가드 뒤에 있어, 콘텐츠가 움직이는 동안 vtProgUntil 이 계속 갱신되며
+        //  복귀가 사실상 영구 차단됐다(한 번 새면 사용자가 "↓최신" 을 누를 때까지 안 돌아옴).
+        //  단 사용자 우선권 창에는 재개하지 않는다(위로 스크롤 중인 사람을 되잡지 않기 위해).
+        if (gap < NEAR_BOTTOM_PX && st >= lastScrollTop && perfNow() >= userIntentUntil) stickBottom = true;
+        // 프로그램적 스크롤(+그 stale 잔향 창) 은 **해제** 판정에서만 제외 — 위 vtProgUntil 주석.
+        if (vtProgrammatic || perfNow() < vtProgUntil) { lastScrollTop = st; return; }
+        // 위로 스크롤 = 과거 열람 의도 → 해제. 단 실제로 움직였을 때만(팬텀 이벤트 차단).
+        if (st < lastScrollTop - 1 && gap > MOVED_EPS_PX) stickBottom = false;
         lastScrollTop = st;
         updateChatJump();
         // 모바일 페이지스크롤(전체 마운트)에선 스크롤마다 relayout 불필요 — 아이템 위치가 고정이라
@@ -373,7 +390,16 @@
       // (스트리밍 중에도 위로 스크롤해 과거를 볼 수 있음). 아래로 향한 제스처는 무시(팔로우 유지·
       // nearBottom 재stick 은 onScroll 이 담당). touch 는 시작 Y 대비 아래로 끌면(=콘텐츠 위로)
       // 위로-스크롤. wheel/touch 는 데스크탑=#stream·모바일=문서 공통 발생.
-      const userScrollUp = () => { stickBottom = false; };
+      // ★제스처는 *신호* 일 뿐 — 해제 확정은 다음 프레임의 실측 gap 이 한다. deltaY<0 만 보고 껐더니
+      //  실제 스크롤 0px 인 팬텀 wheel(트랙패드 관성·대각 스와이프 등)이 팔로우를 비가역적으로 끄고
+      //  있었다(재현 실측). 우선권 창은 즉시 열어 pin 이 사용자와 싸우지 않게 하고, 해제는 정말로
+      //  바닥에서 떨어졌을 때만. 해제되면 그 자리에서 "↓최신" 을 띄운다(종전엔 무피드백이었다).
+      const userScrollUp = () => {
+        userIntentUntil = perfNow() + 400;
+        requestAnimationFrame(() => {
+          if (gapNow() > MOVED_EPS_PX) { stickBottom = false; updateChatJump(); }
+        });
+      };
       stream.addEventListener("wheel", (e) => { if (e.deltaY < 0) userScrollUp(); }, { passive: true });
       window.addEventListener("wheel", (e) => { if (pageScroll() && e.deltaY < 0) userScrollUp(); }, { passive: true });
       let _touchY = 0;

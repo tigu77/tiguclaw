@@ -33,12 +33,36 @@ export interface HealthFinding {
 
 // 보수적 임계 — 넘으면 "확실히 이상"인 값만.
 const TURN_ERROR_THRESHOLD = 3; // 창 안 턴 실패 3건 이상 = 이상(평소 0~1건)
-const REPEAT_PARAGRAPH_THRESHOLD = 5; // 한 답변에 같은 앞머리 문단 5개 이상 = 반복 이상
-const REPEAT_HEAD_CHARS = 25; // 문단 앞머리 비교 길이
+const REPEAT_PARAGRAPH_THRESHOLD = 5; // 한 답변에 같은 앞머리 산문 문단 5개 이상 = 반복 이상
 
-/** 문단 앞머리 중복 최대값 — 같은 시작을 가진 문단이 몇 개까지 겹치나. */
-const maxParagraphRepeat = (text: string): number => {
-  const parts = String(text).split(/\n\n+/).map((p) => p.replace(/\s+/g, "").slice(0, REPEAT_HEAD_CHARS)).filter((p) => p.length >= 10);
+// ★반복 판정 재조정(2026-07-27) — 초판(앞머리 25자·최소 10자·코드펜스 미제외)은 실데이터에서
+//  **오탐만 냈다**. dev corpus 5,418건(transcripts+chat_log) 실측: 발화 5건 전부 9k~14k자
+//  정상 장문(같은 코드블록·유사 구조가 겹친 것)이고, 진짜 반복 사례는 0건이었다.
+//  근본 원인 = 세는 대상이 틀렸다. "같은 25자로 시작하는 무언가"는 코드블록·리스트·표에서
+//  자연히 반복된다. 우리가 잡으려는 건 **산문이 통째로 되풀이되는 것**(대화 재구성 결함).
+//  그래서 임계(5)는 그대로 두고 *무엇을 세는지*를 바꾼다:
+//    ① 코드펜스 제거  ② 리스트·표·헤딩 문단 제외  ③ 최소 40자 산문만  ④ 앞머리 60자 비교
+//  실측 결과 정상 corpus 최대 반복 2(임계 5까지 마진 2.5배·발화 0건), 재현한 실사례 형상
+//  (150자×22 동일 / tail 갈림 / 70자 짧은 문단)은 전부 rep=22 로 탐지.
+//  ★최소 길이를 80자로 잡았다가 한국어 70자 문단 사례를 통째로 놓치는 것을 실측에서 발견 —
+//   한국어는 정보 밀도가 높아 80자면 이미 긴 문단이다. 40자로 낮춰 재검증했다.
+const REPEAT_HEAD_CHARS = 60; // 문단 앞머리 비교 길이(25 → 60: 우연 일치 차단)
+const REPEAT_MIN_PARAGRAPH = 40; // 이보다 짧은 조각은 판정 대상 아님(한 줄 응답·라벨 등)
+/** 리스트·표·헤딩·인용 = 구조적으로 같은 시작이 반복되는 게 정상인 문단. */
+const STRUCTURAL_HEAD = /^[|#>*\-]|^\d+[.)]/;
+
+/**
+ * 한 답변 안에서 **같은 서두의 산문 문단**이 최대 몇 개 겹치는지.
+ * 코드블록·리스트·표는 세지 않는다(정상적으로 반복되는 형식이라 신호가 아니라 잡음).
+ * 검증 스크립트가 직접 호출하므로 export — 순수 함수(입출력만, 부수효과 0).
+ */
+export const maxParagraphRepeat = (text: string): number => {
+  const parts = String(text)
+    .replace(/```[\s\S]*?```/g, "\n\n") // ① 코드펜스 제거
+    .split(/\n\n+/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .filter((p) => p.length >= REPEAT_MIN_PARAGRAPH && !STRUCTURAL_HEAD.test(p)) // ②③
+    .map((p) => p.slice(0, REPEAT_HEAD_CHARS)); // ④
   if (parts.length < 2) return 0;
   const counts = new Map<string, number>();
   let max = 0;

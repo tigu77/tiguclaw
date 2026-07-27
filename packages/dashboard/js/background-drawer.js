@@ -256,6 +256,28 @@
         const m = Math.floor(s / 60), rs = Math.round(s % 60);
         return m + "m " + rs + "s";
       };
+      // ★잡 카드의 실제 응답 모델 (2026-07-27) — 채팅의 setTurnModel 과 같은 규칙:
+      //  값 없으면 안 그린다(거짓값 금지) · 같은 값 반복은 no-op · 도중에 바뀌면 "이전→현재" 로
+      //  남긴다(폴백을 지우지 않는다). 워커·서브에이전트는 사용자가 안 보는 동안 도는 것이라
+      //  "어느 모델로 돌았나" 가 사후에 더 중요하다.
+      const setJobModel = (entry, model) => {
+        const m = typeof model === "string" ? model.trim() : "";
+        if (!entry || m === "" || entry.modelSeen === m) return;
+        const prev = entry.modelSeen;
+        entry.modelSeen = m;
+        const el = entry.modelBadgeEl;
+        if (!el) return;
+        el.style.display = "";
+        if (prev && prev !== m) {
+          el.textContent = prev + "→" + m;
+          el.classList.add("switched");
+          el.title = "작업 도중 모델이 바뀌었습니다(폴백): " + prev + " → " + m;
+        } else {
+          el.textContent = m;
+          el.title = "이 작업이 실제로 사용한 모델";
+        }
+      };
+
       const applyDurationBadge = (el, ms) => {
         if (!el) return;
         let b = el.querySelector(":scope > .dur-badge");
@@ -529,7 +551,12 @@
           stopBtn.textContent = "⏹️ 중지"; stopBtn.style.display = "none";
           stopBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestCancelJob(jobId); });
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
-          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
+          // 실제 응답 모델 (2026-07-27) — tierBadge 는 *요청한* 티어(high/mid/low)이고 이건 그
+          //  요청이 실제로 어느 모델로 실행됐나다. 둘이 갈리는 경우(폴백·쿨다운)를 보이게 하는 게
+          //  목적이라 티어 바로 옆에 둔다 — "high 로 보냈는데 뭐가 답했나"가 한 줄에 보인다.
+          const modelBadge = document.createElement("span");
+          modelBadge.className = "bg-job-model"; modelBadge.style.display = "none";
+          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
           // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개도 구분되게.
@@ -562,6 +589,7 @@
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
+            modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
             startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
             lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
             modelTier: "", // 서브에이전트 모델 티어(low/mid/high 등) — lifecycle payload.modelTier. 에이전트 뷰도 읽음.
@@ -774,6 +802,9 @@
           return false;
         }
         const entry = ensureJobCard(jobId, cardOpts);
+        // 실제 모델 — dedup(아래) *앞*에서 반영한다. 재전송된 스텝이라도 모델 정보는 유효하고,
+        //  폴백이 늦은 스텝에서 일어나면 그 스텝이 dedup 에 걸려도 전환은 남아야 한다.
+        setJobModel(entry, p.model);
         // ★dedup — SSE replay(새로고침 시 재연결) 가 버퍼 이벤트를 재전송하면 같은 워커 스텝이
         // 매번 다시 append 돼 "무한 반복"처럼 보였다(2026-07-03 실측). seq(어댑터 단조) 로 판정,
         // seq 없으면 label␟detail 로 폴백. 이미 그린 스텝이면 건너뛴다.

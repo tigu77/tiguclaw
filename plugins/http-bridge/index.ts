@@ -594,6 +594,7 @@ const historyActivities = (
       let p: {
         threadKey?: unknown;
         adapter?: unknown;
+        model?: unknown;
         seq?: unknown;
         label?: unknown;
         detail?: unknown;
@@ -621,12 +622,17 @@ const historyActivities = (
       if (scopeThreadKey !== undefined && scopeThreadKey !== "" && tk !== scopeThreadKey) continue;
       const seq = typeof p.seq === "number" ? p.seq : 0;
       const adapter = typeof p.adapter === "string" ? p.adapter : "";
+      // ★실제 응답 모델을 이력 투영에 포함 (2026-07-27). 종전엔 여기서 버려져, 라이브 SSE 에는
+      //  모델이 보이는데 **새로고침하면 사라지고** 전체활동 뷰엔 아예 안 나왔다(같은 데이터인데
+      //  경로에 따라 달라지는 것 = 관측을 믿을 수 없게 만든다). 없으면 키 자체를 생략(거짓값 금지).
+      const model = typeof p.model === "string" && p.model !== "" ? p.model : undefined;
       if (p.kind === "text") {
         // 텍스트 세그먼트 — phase/output/diff 없음(발행측이 안 채움). 그대로 1건.
         out.push({
           ts: e.ts,
           threadKey: tk,
           adapter,
+          ...(model !== undefined ? { model } : {}),
           seq,
           label: typeof p.label === "string" ? p.label : "text",
           detail: "",
@@ -644,6 +650,7 @@ const historyActivities = (
         ts: e.ts,
         threadKey: tk,
         adapter,
+        ...(model !== undefined ? { model } : {}),
         seq,
         label: typeof p.label === "string" ? p.label : "tool",
         detail: typeof p.detail === "string" ? p.detail : "",

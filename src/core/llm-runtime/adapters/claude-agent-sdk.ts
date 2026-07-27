@@ -1365,6 +1365,12 @@ export const runClaude = async (
                   channel: input.channel,
                   threadKey: input.threadKey,
                   adapter: "claude",
+                  // ★도구 *완료* 이벤트만 model 을 빠뜨리고 있었다(2026-07-27). 실측: claude
+                  //  tool activity 2,103건 중 904건(43%)에 model 부재 — 전부 이 phase:"end".
+                  //  같은 파일의 다른 3개 발행부는 전부 싣고 codex 는 100% 라, "알 수 없는 값"
+                  //  이 아니라 단순 누락이었다. 대시보드가 실제 모델을 표시하려면 여기가 채워져야
+                  //  같은 도구의 시작/완료가 같은 모델로 보인다(폴백 추적의 전제).
+                  model: lastModel ?? undefined,
                   seq: timing.seq,
                   kind: "tool",
                   label: timing.label,

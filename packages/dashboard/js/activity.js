@@ -120,6 +120,15 @@
         const meta = document.createElement("div"); meta.className = "aav-meta";
         const chev = document.createElement("span"); chev.className = "aav-chevron"; chev.textContent = "▸";
         meta.appendChild(chev); meta.appendChild(time); meta.appendChild(badges); meta.appendChild(icon);
+        // 실제 응답 모델 (2026-07-27) — 전체활동은 여러 세션·채널이 섞여 흐르는 자리라 어느 줄이
+        //  어떤 모델로 돌았는지가 여기서 제일 잘 드러난다(폴백 구간이 뭉텅이로 보인다).
+        //  값이 없으면 요소를 아예 안 만든다(거짓값 금지 + 빈 배지가 줄 폭 먹지 않게).
+        if (typeof a.model === "string" && a.model.trim() !== "") {
+          const mb = document.createElement("span");
+          mb.className = "aav-model"; mb.textContent = a.model.trim();
+          mb.title = "실제로 응답한 모델";
+          meta.appendChild(mb);
+        }
         const body = document.createElement("div"); body.className = "aav-body";
         if (a.kind === "text") {
           const full = activityFullText(a.text);

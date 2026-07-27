@@ -240,12 +240,26 @@ const CODEX_TOOL_TIMEOUT_MS = parsePosIntEnv(
 // ★도구 조기 경고 (2026-07-03) — 도구가 이 시간 안 끝나면 8분 타임아웃 *전에* 로그 경고.
 // 실측: 워커 도구(Bash 등)가 **macOS 권한 요청 다이얼로그**에 막혀 조용히 멈췄는데, 도구
 // 시작(llm.activity)만 찍히고 완료 신호가 없어 "느림 vs 막힘" 구분이 안 돼 30분+ 헤맸다.
-// → 도구가 오래 안 끝나면 ~90초에 `[tool-slow]` 로 알려 "권한 요청 확인" 같은 조치를 빨리
+// → 도구가 오래 안 끝나면 `[tool-slow]` 로 알려 "권한 요청 확인" 같은 조치를 빨리
 // 하게. 죽이지 않고 경고만(정상 긴 도구=무해한 로그 1줄). env override.
 const CODEX_TOOL_SLOW_WARN_MS = parsePosIntEnv(
   process.env.CODEX_TOOL_SLOW_WARN_MS,
-  90_000,
+  180_000, // 90초 → 180초 (2026-07-27, 아래 실측 근거).
 );
+
+// ★도구별 임계 (2026-07-27) — "오래 걸리는 게 정상" 인 도구는 이 경고의 대상이 아니다.
+//  실측(dev, 완료 서브에이전트 138건): 평균 124초·최대 627초. 90초 임계로는 **59%(82건)가
+//  초과** — 즉 이 경고는 사실상 "서브에이전트가 돌고 있다" 는 알림이었다(실제 발생 20건 중
+//  12건이 spawn_agent). 기본을 180초로 올려도 16% 가 남아, 그 계층만 따로 뺀다.
+//  ★서브에이전트는 백그라운드 드로어에 스텝이 실시간으로 보인다 — 이 경고가 시키는 "확인해봐"
+//   를 사용자가 이미 다른 수단으로 하고 있어 actionable 가치가 낮다. 반대로 Bash·외부 MCP 는
+//   그런 관측 수단이 없어(권한 다이얼로그에 조용히 막힘) 짧은 임계가 그대로 유효하다.
+//  300초 = 초과 5%(7/138) + 도구 타임아웃(8분)보다 3분 앞 → 진짜 hung 은 죽기 전에 알린다.
+const TOOL_SLOW_WARN_OVERRIDE_MS: Readonly<Record<string, number>> = {
+  spawn_agent: 300_000,
+};
+const toolSlowWarnMs = (tool: string): number =>
+  TOOL_SLOW_WARN_OVERRIDE_MS[tool] ?? CODEX_TOOL_SLOW_WARN_MS;
 
 // persistence 보강 (2026-05-27, contract Q1(B)) — codex 전용 instructions delta.
 // claude 는 SDK 도구 루프가 작업 완료까지 자율 persistence (코드 차원). codex 는 우리
@@ -1600,12 +1614,14 @@ export const runOpenAiCodex = async (
                 // (이벤트루프 잔류 0). orphan: MCP callTool 은 signal 없어 timeout 후 detached 로 계속
                 // 돌 수 있음(§4.4 #3) — 넉넉한 기본값이 완료 직전 오살 위험 최소화.
                 let toolTimer: ReturnType<typeof setTimeout> | undefined;
-                // 조기 경고 — 타임아웃(8분) 전에 ~90초에 로그로 알림(권한 요청/hung/느림 조기 발견).
+                // 조기 경고 — 타임아웃(8분) 전에 로그로 알림(권한 요청/hung/느림 조기 발견).
                 // 죽이지 않고 경고만. callTool 이 먼저 끝나면 아래 finally 가 clearTimeout(누수 0).
+                // 임계는 도구별(toolSlowWarnMs) — 정의부 주석의 실측 근거 참조.
+                const slowMs = toolSlowWarnMs(tc.name);
                 const slowTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
                   console.warn(
                     `[tool-slow] ${input.threadKey} 도구 ${tc.name} 이(가) ${Math.round(
-                      CODEX_TOOL_SLOW_WARN_MS / 1000,
+                      slowMs / 1000,
                     )}s+ 실행 중 — 권한 다이얼로그(OS) 대기·외부 MCP 백엔드 부재(서버는 연결됐어도 대상 앱/에디터 미실행)·hung·느림 의심. ${Math.round(
                       CODEX_TOOL_TIMEOUT_MS / 60_000,
                     )}분에 타임아웃.`,
@@ -1620,13 +1636,13 @@ export const runOpenAiCodex = async (
                         channel: input.channel,
                         threadKey: input.threadKey,
                         tool: tc.name,
-                        ms: CODEX_TOOL_SLOW_WARN_MS,
+                        ms: slowMs,
                       },
                     });
                   } catch {
                     /* best-effort */
                   }
-                }, CODEX_TOOL_SLOW_WARN_MS);
+                }, slowMs);
                 slowTimer.unref?.();
                 const result = await Promise.race([
                   bridge.callTool(tc.name, args),

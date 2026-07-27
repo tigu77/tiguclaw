@@ -171,12 +171,26 @@
         const badge = document.createElement("span");
         if (adp) { badge.className = "act-badge act-" + (ADAPTERS.includes(adp) ? adp : "other"); badge.textContent = adp; }
         else { badge.className = "hist-turn-icon"; badge.textContent = "🔧"; }
+        // 실제 응답 모델 (2026-07-27) — 라이브 turn-card 파리티(새로고침해도 안 사라지게).
+        //  한 런 안에서 바뀌었으면(폴백) 첫→마지막으로. 라이브에선 setTurnModel 이 같은 일을 한다.
+        const models = acts.map((a) => (typeof a.model === "string" ? a.model.trim() : "")).filter(Boolean);
+        const mFirst = models[0] || "", mLast = models[models.length - 1] || "";
+        const modelEl = document.createElement("span");
+        modelEl.className = "turn-model";
+        if (mFirst && mFirst !== mLast) {
+          modelEl.textContent = mFirst + "→" + mLast;
+          modelEl.classList.add("switched");
+          modelEl.title = "이 런 도중 모델이 바뀌었습니다(폴백): " + mFirst + " → " + mLast;
+        } else if (mFirst) {
+          modelEl.textContent = mFirst;
+          modelEl.title = "이 런이 실제로 사용한 모델";
+        }
         const count = document.createElement("span");
         count.className = "hist-turn-count"; count.textContent = acts.length + "단계";
         const preview = document.createElement("span");
         preview.className = "hist-turn-preview";
         preview.textContent = acts.map((a) => { const s = skillStepInfo(a); return s ? "🛠 " + s.name : (a.label || "tool"); }).slice(0, 6).join(" · ");
-        head.appendChild(caret); head.appendChild(badge); head.appendChild(count); head.appendChild(preview);
+        head.appendChild(caret); head.appendChild(badge); head.appendChild(modelEl); head.appendChild(count); head.appendChild(preview);
         const body = document.createElement("div");
         body.className = "hist-turn-body";
         for (const a of acts) body.appendChild(buildHistStepLine(a));

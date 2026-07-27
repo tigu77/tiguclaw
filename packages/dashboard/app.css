@@ -501,6 +501,10 @@
          .heavy = 입력 20만 토큰 이상(관측 평균의 ~3배) — 확실히 이상한 턴만 눈에 띄게. */
       .turn-cost { color:var(--text-dim); font-weight:700; font-size:10px; font-variant-numeric:tabular-nums; opacity:.8; }
       .turn-cost.heavy { color:var(--warn); opacity:1; }
+      /* 실제 응답 모델 — adapter 배지(누가)와 달리 *어떤 모델*인지. 값 없으면 빈 span = 자리 차지 0. */
+      .turn-model { color:var(--text-dim); font-size:10px; font-weight:600; flex:none; white-space:nowrap; opacity:.75; }
+      /* 턴 도중 폴백(A→B) = 조용히 넘어가던 것을 드러내는 게 목적이라 흐리게 두지 않는다. */
+      .turn-model.switched { color:var(--warn); opacity:1; font-weight:700; }
       .turn-elapsed { color:var(--accent-2); font-size:10px; font-weight:700; font-variant-numeric:tabular-nums; flex:none; white-space:nowrap; }
       .turn-card.done .turn-elapsed { color:var(--text-dim); font-weight:600; }
       .turn-body { padding:2px 10px 8px 28px; }
@@ -722,6 +726,9 @@
       .bg-job-tier[data-tier="low"], .agent-card-tier[data-tier="low"] { background:rgba(148,163,184,.16); color:#cbd5e1; border-color:rgba(148,163,184,.4); }
       .bg-job-tier[data-tier="mid"], .agent-card-tier[data-tier="mid"] { background:rgba(125,211,252,.16); color:#7dd3fc; border-color:rgba(125,211,252,.4); }
       .bg-job-tier[data-tier="high"], .agent-card-tier[data-tier="high"] { background:rgba(251,191,36,.16); color:#fbbf24; border-color:rgba(251,191,36,.4); }
+      /* 실제 응답 모델 — 티어(요청) 옆의 결과값. 소문자 유지(모델 id 는 대문자화하면 안 읽힌다). */
+      .bg-job-model { flex:none; font-size:9px; font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgba(255,255,255,.04); color:var(--text-dim); border:1px solid var(--border); }
+      .bg-job-model.switched { color:var(--warn); border-color:var(--warn); font-weight:800; }
       .agent-card-tier { font-size:10px; padding:2px 8px; }
       /* ── 모델 프로파일 카드 (표시 전용, provider-card·bg-job-tier 스타일 재사용) ── */
       .models-shell { display:grid; gap:10px; }
@@ -1177,6 +1184,8 @@
       .aav-badges { display:flex; gap:4px; flex:none; flex-wrap:wrap; align-items:center; }
       .aav-session-badge { font-size:9.5px; font-weight:800; padding:2px 7px; border-radius:999px; background:rgba(125,211,252,.12); border:1px solid rgba(125,211,252,.28); color:var(--text); white-space:nowrap; max-width:120px; overflow:hidden; text-overflow:ellipsis; }
       .aav-role-icon { flex:none; font-size:11px; }
+      /* 실제 응답 모델 — 좁은 행이라 배지 대신 흐린 텍스트로(정보는 주되 라벨을 가리지 않게). */
+      .aav-model { flex:none; font-size:9px; font-weight:600; color:var(--text-mute); opacity:.8; white-space:nowrap; }
       /* 플레인 텍스트(마크다운 X). 접힘=메타 옆 한 줄 프리뷰(남는 폭 채우고 …), 펼침=전체폭 줄바꿈. */
       .aav-body { flex:1 1 0; min-width:0; text-align:left; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
       .aav-line.expanded { flex-wrap:wrap; align-items:flex-start; }

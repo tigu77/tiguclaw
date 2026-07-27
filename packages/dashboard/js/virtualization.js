@@ -793,7 +793,13 @@
         //  진행 중엔 비어 있고(아직 측정값이 없다) 완료 시에만 채운다.
         const costEl = document.createElement("span");
         costEl.className = "turn-cost";
-        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl); head.appendChild(elapsedEl); head.appendChild(costEl);
+        // 실제 모델 (2026-07-27) — adapter 배지는 "누가"(claude/codex)만 말하고 정작 *어떤 모델*이
+        //  답했는지는 스텝을 클릭해야 보였다. 모델 프로파일(요청한 것)과 실제 응답 모델은 폴백·
+        //  쿨다운으로 갈릴 수 있어(지금 codex 한도 소진 상태가 정확히 그 경우), 그 차이가 보이는
+        //  게 이 표시의 핵심 가치다. 턴 도중 바뀌면 setTurnModel 이 "이전→현재" 로 드러낸다.
+        const modelEl = document.createElement("span");
+        modelEl.className = "turn-model";
+        head.appendChild(tsEl); head.appendChild(lastEl); head.appendChild(countEl); head.appendChild(modelEl); head.appendChild(elapsedEl); head.appendChild(costEl);
         const body = document.createElement("div");
         body.className = "turn-body";
         // 수동 접힘(.collapsed) = 두 패널 공통(헤더 클릭, 기존 로그 토글 보존).
@@ -812,6 +818,7 @@
         return {
           group, el, body, countEl, lastEl, setOpen,
           elapsedEl, costEl, startTs: Date.now(), // 진행 중 경과 틱(위 주석) — 완료 시 고정.
+          modelEl, replyModelEl: null, modelSeen: "", // 실제 응답 모델(카드 헤더 우선, 없으면 버블).
           lastSeq: -1, count: 0, closed: false,
           replyBubble: null, replyMsg: null, replyRaw: "",
           // 인터리브(2026-07-13): sawTextSegment=이 턴이 kind:"text" 세그먼트를 냈나(out 중복 방지),
@@ -832,6 +839,7 @@
           group, el: null, body: null, countEl: null, lastEl: null,
           setOpen: () => {}, lastSeq: -1, count: 0, closed: false,
           costEl: null, replyCostEl: null, // 비용 표시 자리(카드 헤더 없음 → 버블 헤더 사용).
+          modelEl: null, replyModelEl: null, modelSeen: "", // 모델 표시도 동일(버블 헤더 사용).
           replyBubble: null, replyMsg: null, replyRaw: "",
           sawTextSegment: false, closedByText: false, // 인터리브 상태(createTurnCard 와 동형).
         };
@@ -855,8 +863,15 @@
         //  setTurnCost 가 카드 헤더 → 버블 헤더 순으로 채운다.
         const costEl = document.createElement("span");
         costEl.className = "turn-cost";
+        // 모델도 같은 이유로 버블 헤더에 자리를 둔다 — 도구 없이 텍스트만 답하는 턴(가장 흔하다)엔
+        //  스텝 카드 헤더가 아예 없어서, 카드에만 두면 정작 제일 자주 보는 턴에 모델이 안 보인다.
+        const modelEl = document.createElement("span");
+        modelEl.className = "turn-model";
+        head.appendChild(modelEl);
         head.appendChild(costEl);
         card.replyCostEl = costEl;
+        card.replyModelEl = modelEl;
+        if (card.modelSeen) modelEl.textContent = card.modelSeen; // 버블이 늦게 생겨도 이미 본 모델 반영.
         div.appendChild(head);
         const msg = document.createElement("div");
         // streaming = 평문 + 깜빡이는 커서. out 도착 시 마크다운 전체본으로 승격(streaming 제거).

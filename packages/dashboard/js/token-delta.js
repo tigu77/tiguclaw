@@ -16,6 +16,7 @@
           vtAppend(card.group);
         }
         ensureReplyBubble(card, ts);
+        setTurnModel(card, p.model); // 델타에도 model 이 실린다 — 스트리밍 시작 즉시 표시.
         // 평문 누적(textContent) — 스트리밍 중 부분 마크다운/미완 코드펜스 위험·깜빡임 회피.
         card.replyRaw += delta;
         card.replyMsg.textContent = card.replyRaw;
@@ -47,6 +48,7 @@
           }
           const txt = String(p.text || "");
           if (!card.replyBubble && txt !== "") ensureReplyBubble(card, ts); // 델타 없는 세그먼트 = 버블 신설.
+          setTurnModel(card, p.model);
           if (card.replyMsg) {
             setChatBody(card.replyMsg, txt, true);       // 평문 델타 → 세그먼트 마크다운 전체본(자가치유).
             card.replyMsg.classList.remove("streaming");  // 타이핑 커서 off(세그먼트 확정).
@@ -84,6 +86,7 @@
           cardByThread.set(thread, card);
           vtAppend(card.group);
         }
+        setTurnModel(card, p.model); // 도구 스텝 — 시작/완료 모두 model 을 싣는다(어댑터 수정 후).
         card.body.appendChild(buildActivityLine(p));
         card.lastSeq = p.seq ?? 0;
         card.count += 1;
@@ -122,6 +125,28 @@
         if (v >= 1000) return (v / 1000).toFixed(1) + "K";
         return String(v);
       };
+      // ★실제 응답 모델 표시 (2026-07-27) — payload.model 은 "요청한 프로파일"이 아니라 **그 스텝에
+      //  실제로 답한 모델**이다. 둘은 폴백·쿨다운으로 갈린다(codex 한도 소진 → claude 승계 등).
+      //  그래서 턴 도중 값이 바뀌면 덮어쓰지 않고 "이전→현재" 로 남긴다 — 그 전환이 이 표시의
+      //  가장 중요한 정보다(종전엔 조용히 다른 모델로 넘어가도 화면에 흔적이 0이었다).
+      //  값이 없으면 아무것도 그리지 않는다(거짓값 금지 — setTurnCost 와 같은 규칙).
+      const setTurnModel = (card, model) => {
+        const m = typeof model === "string" ? model.trim() : "";
+        if (!card || m === "" || card.modelSeen === m) return;
+        const prev = card.modelSeen;
+        card.modelSeen = m;
+        const target = card.modelEl || card.replyModelEl; // 카드 헤더 우선, 없으면 답변 버블.
+        if (!target) return;
+        if (prev && prev !== m) {
+          target.textContent = prev + "→" + m;
+          target.classList.add("switched"); // 폴백 발생 = 눈에 띄게.
+          target.title = "턴 도중 모델이 바뀌었습니다(폴백): " + prev + " → " + m;
+        } else {
+          target.textContent = m;
+          target.title = "이 턴에 실제로 응답한 모델";
+        }
+      };
+
       const setTurnCost = (thread, payload) => {
         const card = cardByThread.get(thread);
         // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.

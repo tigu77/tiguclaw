@@ -792,9 +792,24 @@ const subscribeWorkerStallNotify = (): void => {
 };
 
 // 워커 도구 조기-경고 → 유저 통지 (2026-07-03). codex 어댑터가 `llm.tool_slow` 발행(도구가
-// CODEX_TOOL_SLOW_WARN_MS(기본 90s) 초과 실행). 워커면 dest 로 "멈춤 — Mac 권한 확인" 핑을
+// CODEX_TOOL_SLOW_WARN_MS 초과 실행). 워커면 dest 로 "멈춤 — Mac 권한 확인" 핑을
 // *잡당 1회*(스팸 방지) 보낸다. 권한요청/hung/느림 구분은 못 하나 "확인해봐"가 actionable —
 // 실측: 워커가 macOS 권한 다이얼로그에 조용히 막혀 30분+ 헤맴. 부팅 1회 구독. 통지 실패 무해.
+
+/**
+ * 이 도구의 지연을 **사용자에게 푸시**할 가치가 있는가.
+ *
+ * ★기준은 "느린가" 가 아니라 **사용자만 풀 수 있는 종류인가** (2026-07-27).
+ *  이 통지의 존재 이유는 macOS 권한 다이얼로그·외부 앱 미실행처럼 *사람이 클릭해야*
+ *  풀리는 막힘이다(Bash·외부 MCP). 그 경우 알리지 않으면 30분+ 날린다.
+ *  반대로 서브에이전트(spawn_agent)는 (a) 원래 오래 걸리고(실측 평균 124초·최대 627초)
+ *  (b) 진행 스텝이 백그라운드 드로어에 실시간으로 보인다 — 사용자가 할 조치가 없는데
+ *  대화에 *비서 발화와 같은 모양으로* 끼어들어 "응답인 줄 알았다" 는 혼선만 만들었다.
+ *  그래서 채널 푸시에서만 뺀다 — 로그·EventBus(관측)는 그대로라 진단 능력은 안 잃는다.
+ */
+export const shouldNotifyToolSlow = (tool: string): boolean =>
+  tool !== "spawn_agent";
+
 const toolSlowNotified = new Set<string>();
 let toolSlowNotifySubscribed = false;
 const subscribeWorkerToolSlowNotify = (): void => {
@@ -806,16 +821,19 @@ const subscribeWorkerToolSlowNotify = (): void => {
       typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
     if (!tk.startsWith("worker:")) return;
     const jobId = tk.slice("worker:".length);
+    const tool =
+      typeof event.payload.tool === "string" ? event.payload.tool : "도구";
+    // ★게이트는 "잡당 1회" 마커보다 **앞** — 뒤에 두면 서브에이전트 지연이 그 잡의 1회
+    //  슬롯을 먹어치워, 뒤이어 진짜 막힌 Bash 가 영영 통지되지 않는다.
+    if (!shouldNotifyToolSlow(tool)) return;
     if (toolSlowNotified.has(jobId)) return; // 잡당 1회.
     const job = getJob(jobId);
     if (job === undefined) return;
     if (toolSlowNotified.size > 500) toolSlowNotified.clear(); // 누수 가드.
     toolSlowNotified.add(jobId);
     const dest = destForJob(job);
-    const tool =
-      typeof event.payload.tool === "string" ? event.payload.tool : "도구";
     const sec = Math.round(
-      (typeof event.payload.ms === "number" ? event.payload.ms : 90_000) / 1000,
+      (typeof event.payload.ms === "number" ? event.payload.ms : 180_000) / 1000,
     );
     void deliverOutbound({
       channel: dest.channel,

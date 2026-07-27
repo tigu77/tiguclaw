@@ -258,7 +258,12 @@
         }
 
         const div = document.createElement("div");
-        div.className = "ev local channel-chat";
+        // ★시스템 통지 구분 (2026-07-27) — 스케줄 실패·자가 점검·작업 멈춤 같은 인프라 통지가
+        //  비서 발화와 **같은 말풍선**으로 들어와 "내가 뭘 물어본 것도 아닌데 답장이 온" 것처럼
+        //  보였다(사용자 신고). 통지를 없애면 관측을 잃으니, 없애는 대신 *모양을 나눈다*.
+        //  발신부(deliverOutbound notice:true)가 의도를 표시하고 여기서 렌더만 분기한다.
+        const isNotice = isOut && payload.notice === true;
+        div.className = isNotice ? "ev local channel-chat sys-notice" : "ev local channel-chat";
         div.dataset.type = (ev.type || "").toLowerCase();
         if (ev.ts != null) div.dataset.ts = String(ev.ts); // prune 후 커서 복구용 수치 ts.
         const head = document.createElement("div");
@@ -267,7 +272,7 @@
         tsEl.textContent = ts;
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isOut ? assistantName : "나";
+        tyEl.textContent = isNotice ? "시스템 알림" : (isOut ? assistantName : "나");
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(payload.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         div.appendChild(head);

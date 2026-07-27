@@ -67,6 +67,7 @@
             if (!isActiveThread(tk)) return; // 멀티세션(B계층) — DOM 카드는 active 세션만.
             const akey = msgKey(ev.ts, "assistant");
             if (renderedMsgKeys.has(akey)) return;
+            if (vtIsStaleForAppend(ev.ts)) return; // 첨부 out 도 동일 — replay 과거분 append 금지.
             renderedMsgKeys.add(akey);
             renderChannelMessage(ev, ts);
             return;
@@ -107,6 +108,13 @@
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);
           if (renderedMsgKeys.has(key)) return;
+          // ★재연결 replay 로 온 *과거* 메시지는 바닥에 붙이지 않는다 — 붙이면 옛 메시지가
+          //  최신처럼 보인다(vtIsStaleForAppend 주석의 실측 사례). 원본은 chat_log 에 있어
+          //  위로 스크롤하거나 새로고침하면 제 순서로 나온다 = 손실 아님.
+          if (vtIsStaleForAppend(ev.ts)) {
+            console.debug("[sse] stale replay 무시(순서 보호):", role, new Date(ev.ts).toISOString());
+            return;
+          }
           renderedMsgKeys.add(key);
           renderChannelMessage(ev, ts);
           return;

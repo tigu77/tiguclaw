@@ -46,6 +46,17 @@ export interface OutboundInput {
    * 받는다 — 세션→값 결정은 caller(plugin) 몫(§0 단방향: 코어는 채널명 분기·telegram import 없음).
    */
   observeThreadKey?: string;
+  /**
+   * **시스템 통지**인가(기본 false = 비서 발화).
+   *
+   * ★사용자 신고(2026-07-27): 작업 중 메시지를 보냈더니 "⏳ 도구에서 멈춰 있어요" 가 도착해
+   *  "이런 메시지가 나한테 *응답으로* 오는데?" — 스케줄 실패·자가 점검 같은 인프라 통지가
+   *  비서가 한 말과 **완전히 같은 모양**으로 대화에 들어가고 있었다(chat_log 도 role=assistant).
+   *  통지를 없애는 건 관측을 버리는 것이라 답이 아니고, 진짜 문제는 *구분이 없다* 는 것이다.
+   *  그래서 여기서 **의도만** 표시하고, 어떻게 보일지는 각 채널 렌더가 정한다(§0 단방향 —
+   *  코어는 채널명으로 분기하지 않는다).
+   */
+  notice?: boolean;
 }
 
 // 관측(channel.message.out) 발행 — 대시보드 chat_log·라이브 SSE 가 이걸 받아 능동 발신도
@@ -56,12 +67,14 @@ const publishOut = (
   channel: string,
   threadKey: string,
   text: string,
+  notice: boolean,
 ): void => {
   try {
     bus.publish({
       type: "channel.message.out",
       ts: Date.now(),
-      payload: { channel, threadKey, text },
+      // notice = 시스템 통지(비서 발화 아님). false 면 키 자체를 생략해 기존 소비자 회귀 0.
+      payload: { channel, threadKey, text, ...(notice ? { notice: true } : {}) },
     });
   } catch {
     /* noop — 관측 발행 실패가 전송을 무르지 않는다. */
@@ -114,6 +127,7 @@ export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
       channel,
       input.observeThreadKey ?? threadKeyForObservation(channel, resolved),
       text,
+      input.notice === true,
     );
   }
 };

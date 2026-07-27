@@ -228,6 +228,9 @@ const startChatLogPersistence = (bus: EventBus): void => {
         role: event.type === "channel.message.out" ? "assistant" : "user",
         text,
         ...(hasAtt ? { attachments } : {}),
+        // 시스템 통지 표식 승계 — 새로고침 후에도 비서 발화와 구분되게. 라이브만 구분되면
+        // 같은 데이터가 경로마다 달라진다(모델 표시에서 겪은 함정과 동형).
+        ...(payload.notice === true ? { notice: true } : {}),
       });
     } catch (e) {
       console.error(

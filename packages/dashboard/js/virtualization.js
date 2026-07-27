@@ -74,6 +74,33 @@
         return inner && inner.dataset.ts ? Number(inner.dataset.ts) : null;
       };
 
+      // ★현재 렌더된 마지막(최신) 아이템의 ts — **파생 상태**(저장 플래그 아님).
+      //  용도: SSE 재연결 replay 로 들어온 *과거* 메시지를 바닥에 append 하는 것을 막는다.
+      //  (2026-07-27 사용자 신고 "옛날 메시지가 갑자기 최근으로 보일때가 있네" — 70분 전
+      //   메시지가 최신 아래에 붙는 것을 헤드리스로 재현.)
+      //  왜 생기나: vtCap 이 prune 하면서 그 메시지의 dedup 키를 **일부러 지운다**(뒤로
+      //  스크롤 시 재렌더되게 — 그건 옳다). 그 상태에서 재연결 replay 가 같은 이벤트를 다시
+      //  흘리면 "처음 보는 메시지" 가 되어 append = 순서 붕괴. 자동 재연결(d2d25d6) 이후
+      //  replay 빈도가 올라 눈에 띄기 시작했다.
+      //  ★플래그로 최신 ts 를 들고 다니면 탭 전환·이력 재빌드마다 초기화 지점이 늘어난다
+      //   (오늘 stickBottom 에서 겪은 실패). 리스트 끝에서 읽으면 언제나 참이다.
+      const vtNewestTs = () => {
+        for (let i = vtItems.length - 1; i >= 0; i--) {
+          const t = vtTsOf(vtItems[i].node);
+          if (t !== null && Number.isFinite(t)) return t;
+        }
+        return 0;
+      };
+      // 근소한 역전(같은 순간 다른 채널에서 도착 등)까지 버리지 않도록 여유를 둔다.
+      // replay 는 분 단위로 과거라 이 창에 걸리지 않는다.
+      const VT_STALE_TOLERANCE_MS = 5000;
+      /** 이 ts 의 메시지를 지금 바닥에 붙이면 순서가 깨지는가(= 재연결 replay 로 온 과거분). */
+      const vtIsStaleForAppend = (ts) => {
+        if (typeof ts !== "number" || !Number.isFinite(ts)) return false;
+        const newest = vtNewestTs();
+        return newest > 0 && ts < newest - VT_STALE_TOLERANCE_MS;
+      };
+
       // 하단 재-pin(원인 D, 2026-07-19) — stick 유지 중일 때만 바닥에 즉시 재고정. relayout 의
       // stickBottom 분기(setScrollTop=바닥)와 같은 일을 하되 *ResizeObserver 콜백 안에서 동기적으로*
       // 실행한다는 점이 핵심이다. 왜 필요한가: 멀티라인 메시지를 보내면 입력창(textarea)이 여러 줄

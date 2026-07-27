@@ -5,8 +5,11 @@
       // 버블 div 생성만(가상화 삽입은 renderHistoryBatch 가 vtAppend/vtPrependOlder 로 수행).
       const buildHistoryDiv = (entry) => {
         const isOut = entry.role === "assistant";
+        // 시스템 통지 — 라이브(renderChannelMessage) 파리티. 새로고침해도 구분이 유지돼야
+        //  한다(chat_log.notice 컬럼 → /chat-history entries 로 그대로 따라온다).
+        const isNotice = isOut && entry.notice === true;
         const div = document.createElement("div");
-        div.className = "ev local channel-chat";
+        div.className = isNotice ? "ev local channel-chat sys-notice" : "ev local channel-chat";
         div.dataset.type = isOut ? "channel.message.out" : "channel.message.in";
         div.dataset.ts = String(entry.ts); // prune 후 oldestLoadedTs 복구용 수치 ts.
         const head = document.createElement("div");
@@ -15,7 +18,7 @@
         tsEl.textContent = fmtTime(entry.ts);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isOut ? assistantName : "나";
+        tyEl.textContent = isNotice ? "시스템 알림" : (isOut ? assistantName : "나");
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(entry.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         div.appendChild(head);

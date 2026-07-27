@@ -649,6 +649,13 @@ export const initStore = (): void => {
   if (!chatLogCols.some((c) => c.name === "attachments")) {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN attachments TEXT`);
   }
+  // 시스템 통지 표식(2026-07-27) — 스케줄 실패·자가 점검 같은 인프라 통지가 비서 발화와
+  // 같은 role='assistant' 로 저장돼, 새로고침하면 구분이 완전히 사라졌다. ★role 값을 늘리지
+  // 않고 **additive 컬럼**으로 둔다 — role='assistant' 로 필터하는 기존 소비자(자가 점검
+  // 스윕·이력 렌더·전체활동)의 동작을 그대로 두기 위해서다(NULL/0 = 종전 동작).
+  if (!chatLogCols.some((c) => c.name === "notice")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN notice INTEGER`);
+  }
 
   // ─── 백그라운드 셸 프로세스 영속 (reap 전용 메타 — 2026-07-17) ──────────────────
   // ADR `docs/decisions/2026-07-17-background-shell-observability.md` §4. 런타임

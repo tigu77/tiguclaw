@@ -21,8 +21,19 @@ import type { Attachment } from "../channels/types.js";
 
 /** 채널이 만드는 중립 steering 의도(채널·LLM 무관). telegram·대시보드·cli·http 동형. */
 export interface SteeringInput {
-  /** steer 텍스트 — 진행 턴에 끼워넣을 사용자 메시지 본문. */
+  /** steer 텍스트 — 진행 턴에 끼워넣을 사용자 메시지 본문(개입점이 framing 으로 감싼 값). */
   text: string;
+  /**
+   * 사용자가 실제로 친 **원문**(framing 없음).
+   *
+   * ★왜 따로 드는가 (2026-07-27 라이브 버그): `text` 는 모델에게 "하던 작업을 이어가라" 고
+   *  지시하는 노트로 감싼 값이다. 그 문맥은 *진행 중 턴에 끼워넣을 때만* 맞는데, 미소비
+   *  steering 재주입(새 턴으로 다시 태우는 경로)이 감싼 값을 그대로 써서 **사용자 화면에
+   *  "내가 보낸 메시지" 로 framing 전문이 노출**됐다(회사 인스턴스 대시보드 실측).
+   *  게다가 새 턴엔 "이어갈 작업" 이 없으니 모델에게도 틀린 문맥이다.
+   *  재주입·표시처럼 *사용자 관점* 이 필요한 곳은 반드시 이 필드를 쓴다.
+   */
+  raw: string;
   /**
    * 멀티모달 parity — 첨부도 steer 가능(없으면 생략). `IncomingMessage.attachments` 와
    * 동형(운반 타입 `Attachment` = SDK 비종속, path+메타만).

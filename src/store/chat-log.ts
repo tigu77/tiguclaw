@@ -44,6 +44,11 @@ export interface ChatLogEntry {
   text: string;
   /** 첨부 참조 메타(있을 때만). 이미지-only 메시지는 text="" + attachments 로 온다. */
   attachments?: ChatAttachmentMeta[];
+  /**
+   * 시스템 통지인가(스케줄 실패·자가 점검 등). 기본 false = 비서 발화.
+   * role 을 늘리지 않고 이 플래그로 구분한다 — role='assistant' 를 보는 기존 소비자 무영향.
+   */
+  notice?: boolean;
 }
 
 interface ChatLogRow {
@@ -53,6 +58,7 @@ interface ChatLogRow {
   role: string;
   text: string;
   attachments: string | null;
+  notice: number | null;
 }
 
 /**
@@ -67,8 +73,8 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
   try {
     getDb()
       .prepare(
-        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.ts,
@@ -77,6 +83,7 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
         row.role,
         row.text,
         hasAtt ? JSON.stringify(row.attachments) : null,
+        row.notice === true ? 1 : null, // null = 종전 행과 동일(비서 발화).
       );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -122,7 +129,7 @@ export const getRecentChatLog = (opts?: {
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
   const rows = getDb()
     .prepare(
-      `SELECT ts, thread_key, channel, role, text, attachments
+      `SELECT ts, thread_key, channel, role, text, attachments, notice
          FROM chat_log
          ${whereClause}
         ORDER BY ts DESC, id DESC
@@ -137,6 +144,7 @@ export const getRecentChatLog = (opts?: {
       channel: r.channel,
       role: r.role === "assistant" ? "assistant" : "user",
       text: r.text,
+      ...(r.notice === 1 ? { notice: true } : {}), // 구 행(NULL) = 비서 발화(종전 동작).
     };
     if (r.attachments !== null && r.attachments !== "") {
       // 파싱 실패(손상 JSON)는 조용히 무시 — 첨부 없이라도 메시지는 렌더(견고성).

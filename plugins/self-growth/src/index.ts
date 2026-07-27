@@ -163,6 +163,7 @@ class SelfGrowthPlugin {
         target: null, // 채널 기본 대상(소유자)으로 — 좌표 하드코딩 0.
         text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
         label: "self-growth:health",
+        notice: true, // 인프라 통지(자가 점검) — 비서 발화 아님.
       }).catch(() => {
         /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
       });
@@ -490,6 +491,7 @@ class SelfGrowthPlugin {
             `SELF_GROWTH.md 에 적재됐고 다음 턴부터 적용됩니다. ` +
             `잘못된 판단이면 "그 지침 지워" 라고 말씀해 주세요(확정 안 하면 자동 만료).`,
           label: "self-growth:directive",
+          notice: true, // 인프라 통지(자동 학습 반영 알림) — 비서 발화 아님.
         }).catch(() => {
           /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
         });

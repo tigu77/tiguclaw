@@ -1251,8 +1251,12 @@ const handler: MessageHandler = async (msg) => {
       // drain 회수) / close 후 push=false(개입점이 새 턴) → 두 경로 어디로도 손실 0.
       const leftover = steeringCh.drain();
       if (leftover.length > 0) {
+        // ★원문(raw)으로 재주입한다 (2026-07-27 라이브 버그 수정). 종전엔 framing 으로 감싼
+        //  `s.text` 를 그대로 써서 (a) 사용자 화면에 "내가 보낸 메시지" 로 framing 전문이
+        //  노출되고 (b) 새 턴엔 "이어갈 작업" 이 없는데 "하던 작업을 계속하라" 는 틀린 문맥이
+        //  모델에 들어갔다. framing 은 *진행 중 턴에 끼워넣을 때* 만 유효하다.
         const text = leftover
-          .map((s) => s.text)
+          .map((s) => s.raw)
           .filter((t) => typeof t === "string" && t.trim() !== "")
           .join("\n\n");
         const atts = leftover.flatMap((s) => s.attachments ?? []);
@@ -1262,6 +1266,11 @@ const handler: MessageHandler = async (msg) => {
             text,
             ...(atts.length > 0 ? { attachments: atts } : {}),
             receivedAt: Date.now(),
+            // ★재-echo 금지 — 이 메시지는 steering buffer 에 accept 될 때 이미
+            //  publishInboundEcho 로 화면에 떴다. 재주입에서 또 echo 하면 같은 메시지가
+            //  두 번 보인다(사용자 지적: "대기중이면 대기중 처리가 들어갔을거고, 아니면
+            //  화면에 보이잖아"). synthetic=true 가 echo 스킵의 기존 수단이다.
+            synthetic: true as const,
           };
           // serializedHandler 경유 = thread 직렬 큐 합류(이 턴 finally 종료 후 실행) + 정상 턴
           // 시맨틱. 재주입 시점엔 이 채널이 이미 close+삭제라 재-steer 안 됨(새 턴으로 처리).
@@ -1438,6 +1447,7 @@ const STEERING_NOTE_PREFIX =
 // 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트(framing 래핑)·첨부·도착시각만 실어 채널 무관화.
 const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
   text: `${STEERING_NOTE_PREFIX}\n${msg.text}`,
+  raw: msg.text, // 사용자 원문 — 재주입·표시는 반드시 이걸 쓴다(framing 노출 사고 방지).
   ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
   ts: Date.now(),
 });

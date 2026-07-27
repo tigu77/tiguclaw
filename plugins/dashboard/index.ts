@@ -91,6 +91,12 @@ class DashboardService {
     if (childEnv.DASHBOARD_PORT === undefined || childEnv.DASHBOARD_PORT.trim() === "") {
       childEnv.DASHBOARD_PORT = DEFAULT_DASHBOARD_PORT;
     }
+    // ★고아 방지 (2026-07-27) — 자식에게 부모 pid 를 알려준다. stop() 의 SIGTERM 은 데몬이
+    //  *정상 종료*할 때만 불린다. SIGKILL·크래시·하드킬이면 stop() 이 안 돌고, 자식은 부모를
+    //  잃은 채 계속 살아 포트를 문다(실측: 대시보드 고아 4개가 최장 6일 20시간 생존, ppid=1).
+    //  부모 종료를 자식이 스스로 감지해 빠지게 하는 것이 유일하게 확실한 방법 — 부모가 어떻게
+    //  죽든 동작한다. 데몬이 띄운 경우에만 설정하므로 수동 실행(npm run dashboard)은 무영향.
+    childEnv.TIGUCLAW_PARENT_PID = String(process.pid);
 
     const child = spawn(process.execPath, spawnArgs, {
       cwd: root,

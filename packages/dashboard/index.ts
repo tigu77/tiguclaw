@@ -564,3 +564,26 @@ const shutdown = (): void => {
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// ★부모(데몬) 사망 감지 — 고아 방지 (2026-07-27).
+//  데몬 플러그인의 stop() 은 SIGTERM 을 보내지만 그건 데몬이 *정상 종료* 할 때만 돈다.
+//  SIGKILL·크래시·하드킬이면 stop() 이 안 돌고 이 프로세스는 부모 없이 남아 포트를 계속 문다
+//  (실측: 고아 대시보드 4개가 최장 6일 20시간 생존, 그중 3개는 이미 삭제된 임시 디렉터리에서).
+//  부모가 *어떻게* 죽든 동작하려면 자식이 스스로 확인하는 수밖에 없다 — signal 0 은 프로세스를
+//  건드리지 않고 존재만 묻는 표준 방법이다.
+//  ★데몬이 띄운 경우에만 활성(env 부재 = 수동 실행 → 감시 안 함, 회귀 0).
+const parentPid = Number(process.env.TIGUCLAW_PARENT_PID ?? "");
+if (Number.isInteger(parentPid) && parentPid > 1) {
+  const timer = setInterval(() => {
+    try {
+      process.kill(parentPid, 0); // 존재 확인만(시그널 미전달).
+    } catch {
+      console.log(
+        `tiguclaw-dashboard: 부모 데몬(pid ${parentPid}) 종료 감지 — 함께 내려갑니다(고아 방지).`,
+      );
+      clearInterval(timer);
+      shutdown();
+    }
+  }, 15_000);
+  timer.unref?.(); // 이 타이머 때문에 프로세스가 살아있지는 않게.
+}

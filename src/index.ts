@@ -1789,15 +1789,18 @@ const updateNotified = await (async (): Promise<boolean> => {
       changedFiles?: number;
       notify?: { channel?: string; target?: string | null };
     };
-    const span =
+    // ★사용자에게 커밋 해시·파일 수를 보이지 않는다 (2026-07-27) — 알아도 할 게 없는
+    //  내부 좌표다. 진단이 필요하면 로그·`/status` 가 있다.
+    //  ★같은 해시 = 받을 게 없었다는 뜻인데 "새 버전으로 재시작" 은 사실과 다르다
+    //   (실측 보고: "완료 (fc6f983 → fc6f983) · 0개 파일 — 새 버전으로 재시작했습니다").
+    //   받은 게 없으면 그렇게 말한다 — 정직한 보고(§2 사실 왜곡 X).
+    const changed =
       typeof data.from === "string" && typeof data.to === "string"
-        ? ` (${data.from} → ${data.to})`
-        : "";
-    const files =
-      typeof data.changedFiles === "number"
-        ? ` · ${data.changedFiles}개 파일`
-        : "";
-    const text = `✅ 업데이트 완료${span}${files} — 새 버전으로 재시작했습니다.`;
+        ? data.from !== data.to
+        : data.changedFiles === undefined || data.changedFiles > 0;
+    const text = changed
+      ? "✅ 업데이트 완료 — 새 버전으로 재시작했습니다."
+      : "✅ 이미 최신입니다 — 받을 변경이 없어 그대로 재시작했습니다.";
     // 단일 통로 — 라우팅·발송·관측(대시보드 표시)을 deliverOutbound 가 담당(채널 미지정=cli).
     // 세션 귀속 = 기본 세션(업데이트 통지는 세션 없는 시스템 발화 → 새 세션 생성 대신
     // dashboard:default 메인 채팅에 표시). 배달은 요청자 좌표(notify) 그대로.

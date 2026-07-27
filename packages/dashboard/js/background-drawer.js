@@ -47,7 +47,11 @@
       const syncSessionBgBadges = () => {
         const next = new Set();
         for (const e of jobCards.values()) {
-          if (e.status === "running" && e.threadKey) next.add(e.threadKey);
+          // 좌표(worker:/agent:)는 원 세션으로 환원해 담는다 — 서브에이전트가 도는 세션 탭에도
+          // 점이 찍혀야 하고, 남의 탭엔 안 찍혀야 한다. 환원 불가(미상)는 담지 않는다(오탐 0 정책).
+          if (e.status !== "running") continue;
+          const owner = jobOwnerSession(e.threadKey);
+          if (owner) next.add(owner);
         }
         if (typeof shellRegistry !== "undefined") {
           for (const s of shellRegistry.values()) {
@@ -395,7 +399,13 @@
       let bgSessionScope = "session"; // "session" | "all"
       // 카드가 활성 세션 소속인가 — threadKey 없음(레거시/구버전 카드)은 항상 소속 취급(누락 0,
       // isActiveThread 의 "미지정=활성" 관례와 동형).
-      const isBgInScope = (tk) => !tk || tk === activeThreadKey;
+      // 세션 스코프 판정 — 잡 좌표는 원 세션으로 환원한 뒤 비교(서브에이전트가 남의 세션에
+      //  뜨던 원인). 환원 불가(미상)는 종전대로 노출 — 진행 중인 작업을 숨기는 쪽이 더 나쁜
+      //  실패라서(isShellInScope 와 같은 정책). 대부분은 부모 카드가 있어 환원된다.
+      const isBgInScope = (tk) => {
+        const owner = jobOwnerSession(tk);
+        return !owner || owner === activeThreadKey;
+      };
       const setBgSessionScope = (mode) => {
         bgSessionScope = mode === "all" ? "all" : "session";
         bgList.classList.toggle("scope-session", bgSessionScope === "session");
@@ -518,8 +528,30 @@
       // opts.threadKey 에서 "진짜" 원 세션 threadKey 만 뽑는다 — handleWorkerActivity 는 라우팅용
       // 내부 의사-threadKey("worker:<jobId>"/"agent:<jobId>")를 opts.threadKey 로 넘기기도 하는데,
       // 그건 세션 스코프 판정에 쓰면 안 됨(원 세션이 아니라 잡 좌표라 activeThreadKey 와 절대 안 맞음).
-      const realSessionThreadKey = (tk) =>
-        (typeof tk === "string" && tk && tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0) ? tk : "";
+      // ★잡 좌표를 버리지 않는다 (2026-07-27). 종전엔 `worker:`/`agent:` 접두면 ""(미상)로
+      //  버렸는데, **서브에이전트의 threadKey 는 원래 부모 잡 좌표**다(DB 실측: kind=agent
+      //  138건 중 33건이 `worker:<부모id>`). 그래서 서브에이전트 카드는 영구히 미상이 되고,
+      //  isBgInScope 가 미상을 "모든 세션 소속" 으로 취급해 **다른 세션에서도 진행 중으로 떴다**
+      //  (사용자 신고). 좌표는 버릴 정보가 아니라 *부모를 가리키는 링크* 이므로 그대로 두고,
+      //  세션 귀속은 판정 시점에 jobOwnerSession 이 부모를 따라 올라가 환원한다(파생 상태).
+      const realSessionThreadKey = (tk) => (typeof tk === "string" ? tk : "");
+      /**
+       * 잡 좌표(`worker:`/`agent:<jobId>`)를 **원 세션 threadKey** 로 환원. 이미 세션 키면 그대로.
+       * 부모 체인을 따라 올라가며(서브에이전트가 서브에이전트를 띄운 경우) 자기참조·순환은 끊는다
+       * (활동-선도 카드는 자기 좌표를 들고 있어 자기참조가 실제로 발생한다).
+       * 못 찾으면 ""(미상) — 호출자가 정책을 정한다. shellOwnerSession 의 잡 버전.
+       */
+      const jobOwnerSession = (tk, seen) => {
+        if (typeof tk !== "string" || tk === "") return "";
+        const m = /^(?:worker|agent):(.+)$/.exec(tk);
+        if (!m) return tk; // 세션 키 — 환원 끝.
+        const id = m[1];
+        const s = seen || new Set();
+        if (s.has(id)) return ""; // 자기참조/순환 — 미상으로 닫는다.
+        s.add(id);
+        const parent = jobCards.get(id);
+        return parent ? jobOwnerSession(parent.threadKey, s) : "";
+      };
       // 워커 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
       const WORKER_LABEL_PREFIX = "📦 ";
       // 잡 카드 확보(없으면 생성). label/task 는 worker.started, result 는 worker.done 이 채운다.
@@ -658,13 +690,14 @@
         // (worker:<jobId>)뿐이라 threadKey 가 ""(소속 미상)로 남는데, isBgInScope 가 빈 값을
         // "모든 세션 소속"으로 취급해 **남의 세션 칩·배지에도 떴다**. lifecycle 이 원 세션을
         // 실어 오면 그때 확정한다(멱등 — 이미 있으면 무변).
-        if (!entry.threadKey) {
-          const real = realSessionThreadKey(opts && opts.threadKey);
-          if (real) {
-            entry.threadKey = real;
-            entry.el.dataset.threadkey = real;
-            entry.el.classList.toggle("bg-in-scope", isBgInScope(real));
-          }
+        // ★승격 조건 (2026-07-27): 종전엔 `!entry.threadKey` 라 **좌표를 이미 들고 있으면
+        //  진짜 세션 키가 와도 갱신되지 않았다**. 세션 키가 아닌 동안엔 계속 업그레이드한다.
+        const incomingTk = realSessionThreadKey(opts && opts.threadKey);
+        const isSessionKey = (t) => typeof t === "string" && t !== "" && !/^(?:worker|agent):/.test(t);
+        if (incomingTk !== "" && !isSessionKey(entry.threadKey)) {
+          entry.threadKey = incomingTk;
+          entry.el.dataset.threadkey = incomingTk;
+          entry.el.classList.toggle("bg-in-scope", isBgInScope(incomingTk));
         }
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);

@@ -171,6 +171,18 @@ export const unregisterWatcher = (id: number): void => {
 };
 
 /** 단일 발화 — 격리 try/catch + recordFiring + EventBus publish. */
+/**
+ * overlap 가드 — watch id 별 in-flight 추적 (scheduler `inFlight` 와 동형).
+ *
+ * ★없으면: 파일 N개가 한꺼번에 떨어지면 `add` 이벤트 N회 → **같은 threadKey
+ *  (`file-watch:<id>`)로 동시 LLM 턴 N개**가 발사된다. 그 스레드의 resume/history 를
+ *  동시에 갱신해 race 가 나고(직렬 큐가 존재하는 이유 그 자체), 비용도 N배가 된다.
+ *  debounce_ms 는 chokidar `awaitWriteFinish`(파일 1개의 쓰기 안정화)로만 매핑돼 있어
+ *  서로 다른 파일의 동시 발화는 전혀 억제하지 못한다 — 그 구멍을 여기서 닫는다.
+ *  scheduler 는 이미 같은 가드를 갖고 있다(runner.ts inFlight).
+ */
+const inFlightWatches = new Set<number>();
+
 const fireWatch = async (
   row: WatchRow,
   event: string,
@@ -178,6 +190,14 @@ const fireWatch = async (
   bus: EventBus,
   deps: WatcherDeps,
 ): Promise<void> => {
+  if (inFlightWatches.has(row.id)) {
+    console.log(
+      `file-watch: watch ${row.id} 이미 실행 중 — 이번 ${event}(${eventPath}) 는 건너뜁니다(overlap skip).`,
+    );
+    return;
+  }
+  inFlightWatches.add(row.id);
+  try {
   try {
     const text = substitutePrompt(row.prompt, { path: eventPath, event });
     await deps.runClaude({
@@ -216,5 +236,8 @@ const fireWatch = async (
         error: reason,
       },
     });
+  }
+  } finally {
+    inFlightWatches.delete(row.id);
   }
 };

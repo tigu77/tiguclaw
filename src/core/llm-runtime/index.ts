@@ -39,6 +39,7 @@ import type {
 } from "./types.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
+import { saveCooldown, deleteCooldown, loadLiveCooldowns } from "../../store/cooldowns.js";
 import { getEventBus } from "../eventbus.js";
 import {
   resolveProfileChain,
@@ -585,12 +586,30 @@ export const listActiveCooldowns = (): { key: string; remainingMs: number }[] =>
 // 실패가 rate-limit 이면 쿨다운 등록(문자열 미매칭 → no-op, 기존 폴백 로직 그대로).
 // errorDetail(cause 포함) 문자열로 판정 — isModelRejected 와 동일 지점(facade 단일 휴리스틱).
 // export — 격리 검증(_workspace)이 mock 어댑터 없이 직접 호출.
+/**
+ * 부팅 복원 — 만료 전 쿨다운을 메모리 Map 으로 되살린다. 데몬 부팅 1회 호출.
+ * 실패해도 빈 상태로 시작(종전 동작) — 쿨다운은 최적화지 정합성 요건이 아니다.
+ */
+export const restoreCooldowns = (): void => {
+  const live = loadLiveCooldowns(Date.now());
+  for (const { key, untilTs } of live) cooldownUntil.set(key, untilTs);
+  if (live.length > 0) {
+    console.log(
+      `llm-runtime: 쿨다운 ${live.length}건 복원 — ${live
+        .map((c) => `${c.key}(${Math.ceil((c.untilTs - Date.now()) / 60000)}분 남음)`)
+        .join(", ")}`,
+    );
+  }
+};
+
 export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void => {
   const detail = errorDetail(e);
   if (!isRateLimited(detail)) return;
   const ms = parseCooldownMs(detail) ?? DEFAULT_COOLDOWN_MS;
   const key = cooldownKey(spec);
-  cooldownUntil.set(key, Date.now() + ms);
+  const untilTs = Date.now() + ms;
+  cooldownUntil.set(key, untilTs);
+  saveCooldown(key, untilTs); // 영속 — 재시작해도 죽은 백엔드를 다시 두드리지 않게.
   console.warn(
     `llm-runtime: '${key}' rate-limited — ${Math.ceil(ms / 60000)}분 쿨다운 등록.`,
   );
@@ -603,6 +622,7 @@ export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void
 export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
   const key = cooldownKey(spec);
   if (cooldownUntil.delete(key)) {
+    deleteCooldown(key);
     publishCooldownEvent("clear", key, 0);
   }
 };

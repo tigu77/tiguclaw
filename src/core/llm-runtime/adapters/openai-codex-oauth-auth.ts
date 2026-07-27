@@ -240,8 +240,12 @@ export const upsertCodexTokens = async (tokens: OAuthTokens): Promise<void> => {
   //  stop·crash) 기존 .env 가 truncate 되지 않는다(rename 은 원자적). in-memory 동기화는
   //  함수 상단에서 이미 완료.
   const tmp = `${ENV_PATH}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, finalBody, "utf8");
+  // ★0600 유지 (2026-07-28) — mode 미지정이면 tmp 가 0644 로 생기고 rename 이 그 퍼미션을
+  //  가져간다. 사용자가 chmod 600 해도 **다음 토큰 refresh 때 0644 로 되돌아가는** 루프였다.
+  await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 });
   await fs.rename(tmp, ENV_PATH);
+  // 기존 파일이 이미 느슨하면 승격(신규는 위 mode 로 충분 — 이건 구 설치본 치유).
+  await fs.chmod(ENV_PATH, 0o600).catch(() => {});
 };
 
 // V3.3 — token 자동 refresh. 만료 임박(5분 이내) 시 refresh 호출 + .env 갱신.

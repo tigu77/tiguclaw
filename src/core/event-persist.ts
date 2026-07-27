@@ -13,6 +13,7 @@ import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
 import { pruneInternalThreads } from "../store/sessions.js";
 import { recordChatMessage } from "../store/chat-log.js";
+import { redactSecrets } from "./outbound-sanitize.js";
 import type { ChatAttachmentMeta } from "../store/chat-log.js";
 
 const SKIP_TYPES = new Set<string>([
@@ -84,7 +85,18 @@ export const startEventPersistence = (bus: EventBus): void => {
   bus.subscribe((event) => {
     if (SKIP_TYPES.has(event.type)) return;
     try {
-      const payload = truncatePayloadJson(event.payload, MAX_PAYLOAD_CHARS);
+      // ★영속·방출되는 payload 는 게이트 없이 redact (2026-07-28 보안 감사).
+      //  실측: 이 경로로 `TELEGRAM_BOT_TOKEN` 10행 · `HTTP_BRIDGE_TOKEN` 2행이 events 에
+      //  **평문으로** 들어가 있었다(도구 Read/Bash 출력이 llm.activity.payload.output.text 에
+      //  통째로 담긴다). 게다가 llm.activity 는 SSE HISTORY_EXCLUDE 대상이 아니라
+      //  `/events`(요구 role=**read**)로 그대로 나간다 → 최저권한 토큰 하나로 admin·봇 토큰을
+      //  관측할 수 있어 role 계층이 무의미해진다.
+      //  redactSecrets 는 종전에 *에러 경로 전용* 이었다("정상 응답엔 불필요"). 그 전제는
+      //  사용자 답변 텍스트엔 참이지만 **도구 출력 이벤트엔 거짓**이다 — 여기서 무조건 통과시켜
+      //  DB 와 SSE 를 한 지점에서 동시에 닫는다.
+      const payload = redactSecrets(
+        truncatePayloadJson(event.payload, MAX_PAYLOAD_CHARS),
+      );
       insertEvent(event.ts, event.type, payload);
       if (++sinceLastPrune >= PRUNE_EVERY) {
         sinceLastPrune = 0;

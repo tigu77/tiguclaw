@@ -1111,6 +1111,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write"
               : pathname === "/set-default-profile" && method === "POST"
                 ? "write"
+              : pathname === "/set-session-profile" && method === "POST"
+                ? "write" // ★누락돼 있었다(2026-07-28) — required=null 로 게이트를 통과해 **read 토큰이 세션 프로파일을 변경**할 수 있었다.
               : pathname === "/set-module-enabled" && method === "POST"
                 ? "write"
               : pathname === "/transcribe" && method === "POST"

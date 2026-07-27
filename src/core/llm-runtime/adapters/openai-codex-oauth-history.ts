@@ -776,7 +776,10 @@ const CODEX_COMPACT_MIN_OUTPUT = parsePosIntEnv(
 
 // 압축된 output 임을 표시하는 안정 마커. idempotent 보장 — 이미 이 마커가 박힌
 // output 은 (a) 짧아 임계 미달로 자연 제외 + (b) 마커 검사로 명시 제외(이중 안전).
-const CODEX_COMPACTED_MARKER = " __codex_compacted__ ";
+// ★소스에 NUL 리터럴을 두지 않는다(2026-07-28) — 값은 같고 표기만 바꾸다.
+//  리터럴 NUL 이 있으면 file(1) 이 이 파일을 binary 로 보고 **grep 이 조용히 건너뛴다**
+//  (-a 없이는 0건). 감사·검증 스크립트가 이 파일만 무음으로 놓치는 사고가 실제로 났다.
+const CODEX_COMPACTED_MARKER = "\u0000__codex_compacted__\u0000";
 
 // ── 6b: 대화 히스토리 롤링 요약 압축 상수 (architect contract §6b, 2026-06-19) ────
 // codex 는 resume 없어 매 턴 전체 히스토리 재전송 → loadThreadHistory 의 oldest-drop

@@ -649,6 +649,16 @@ export const initStore = (): void => {
   if (!chatLogCols.some((c) => c.name === "attachments")) {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN attachments TEXT`);
   }
+  // ─── 어댑터 쿨다운 영속 (2026-07-28) ────────────────────────────────────────
+  // 프로세스 메모리에만 있던 쿨다운이 재시작마다 사라져, 매 부팅 직후 죽은 백엔드를 다시
+  // 두드렸다(실측 07-27: 부팅 22회 ↔ 429 22건). 절대 만료시각 1행으로 영속한다.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS cooldowns (
+      key      TEXT PRIMARY KEY,
+      until_ts INTEGER NOT NULL
+    );
+  `);
+
   // 시스템 통지 표식(2026-07-27) — 스케줄 실패·자가 점검 같은 인프라 통지가 비서 발화와
   // 같은 role='assistant' 로 저장돼, 새로고침하면 구분이 완전히 사라졌다. ★role 값을 늘리지
   // 않고 **additive 컬럼**으로 둔다 — role='assistant' 로 필터하는 기존 소비자(자가 점검

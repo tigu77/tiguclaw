@@ -248,6 +248,9 @@ export const listHooksForInventory = (
 };
 
 /** spawn 셸 실행 — stdin JSON 주입, stdout/stderr 캡처, timeout. */
+/** 훅 하드 백스톱 여유(ms) — spawn timeout 이 sh 만 죽이고 stdio 가 안 닫히는 경우 대비. */
+const HOOK_BACKSTOP_GRACE_MS = 5_000;
+
 const runShellHook = (
   command: string,
   stdinData: string,
@@ -272,12 +275,38 @@ const runShellHook = (
     child.stderr.on("data", (d: Buffer) => {
       if (stderr.length < CAP) stderr += d.toString();
     });
+    // ★하드 백스톱 (2026-07-28) — `close` 는 프로세스 종료 **+ stdio 스트림 close** 를 모두
+    //  요구한다. 훅 명령이 손자를 백그라운드로 남기면(`tail -f log &` 류) 그 손자가 stdout
+    //  파이프를 상속해 **close 가 영영 오지 않는다**. spawn 의 `timeout` 은 `sh` 만 죽이므로
+    //  이 promise 는 pending 으로 남고, PreToolUse 훅은 3어댑터가 **도구 호출마다 await** 하므로
+    //  그 턴이 조용히 멈춘다(`/stop` 도 훅 경로엔 전파되지 않아 못 푼다).
+    //  → 종료 신호가 안 와도 반드시 풀리게 한다. 이미 resolve 됐으면 no-op(멱등).
+    let settled = false;
+    const done = (r: { stdout: string; stderr: string; code: number }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(backstop);
+      resolve(r);
+    };
+    const backstop = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* 이미 죽었을 수 있음 */
+      }
+      console.warn(
+        `[hook] 명령이 ${timeoutMs}ms + 여유 안에 끝나지 않아 강제 종료했습니다(백스톱): ${command.slice(0, 80)}`,
+      );
+      done({ stdout, stderr, code: -1 });
+    }, timeoutMs + HOOK_BACKSTOP_GRACE_MS);
+    backstop.unref?.();
+
     child.on("close", (code) => {
-      resolve({ stdout, stderr, code: code ?? 0 });
+      done({ stdout, stderr, code: code ?? 0 });
     });
     child.on("error", () => {
       // spawn 실패 (sh 부재 등) — 에러 격리 (데몬 보호).
-      resolve({ stdout, stderr, code: -1 });
+      done({ stdout, stderr, code: -1 });
     });
     try {
       child.stdin.write(stdinData);

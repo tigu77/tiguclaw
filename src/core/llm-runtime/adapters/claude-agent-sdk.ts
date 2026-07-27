@@ -1188,6 +1188,39 @@ export const runClaude = async (
         }
       } else {
         const errs = (msg.errors ?? []).join("; ") || msg.subtype;
+        // ★이미 받은 성공 결과를 뒤따르는 에러로 버리지 않는다 (2026-07-28 실사고).
+        //  SDK 는 한 실행에서 `result` 를 **두 번** 보낼 수 있다 — 실측 로그:
+        //    01:15:17 recv=result/success
+        //    01:15:17 recv=result/error_during_execution
+        //      errors=["only prompt commands are supported in streaming mode",
+        //              "MaxFileReadTokenExceededError: File content (33,579 tokens) …"]
+        //  종전엔 두 번째를 무조건 throw 해 **55분짜리 워커의 완성된 결과를 통째로 폐기**하고
+        //  "모든 어댑터 실패" 로 끝냈다(폴백까지 태우고 실패). 큰 파일 Read 는 모델이
+        //  offset/limit 으로 다시 읽으면 되는 **회복 가능한 도구 에러**지, 완료된 작업을
+        //  날릴 사유가 아니다. 로그 전수 3건 발생(07-19 2 · 07-28 1) — 드물지만 손실이 크다.
+        //  ★결과가 없을 때만 throw 한다(그때는 진짜 실패라 폴백이 맞다). 결과가 있으면
+        //   경고 + 관측 이벤트로 남기고 그 결과로 턴을 닫는다 — 조용히 삼키지 않는다.
+        if (succeeded && resultText !== undefined && resultText !== "") {
+          console.warn(
+            `[claude-complete] ${input.threadKey} 완료 후 에러 result 수신 — 이미 받은 결과를 유지합니다: ${errs}`,
+          );
+          try {
+            bus.publish({
+              type: "llm.post_result_error",
+              ts: Date.now(),
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                adapter: "claude",
+                subtype: String(msg.subtype),
+                errors: errs.slice(0, 500),
+              },
+            });
+          } catch {
+            /* 관측 실패가 턴을 무르지 않는다 */
+          }
+          continue;
+        }
         throw new Error(`claude-agent-sdk error: ${errs}`);
       }
     } else if (msg.type === "assistant") {

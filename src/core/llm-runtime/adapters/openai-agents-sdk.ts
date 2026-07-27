@@ -48,6 +48,7 @@ import {
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
+import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import { loadThreadHistory } from "../../../store/memory.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
@@ -600,16 +601,24 @@ export const runOpenAi = async (
   //  - wrap shape: user→input_text, assistant→output_text(+status:"completed")
   //    (protocol.d.ts UserMessageItem/AssistantMessageItem 실측).
   const priorTurns = loadThreadHistory(idChannel, input.threadKey);
+  // ★스캐폴딩 스트립 (2026-07-28) — transcripts 의 user 턴에는 SYSTEM.md·system-reminder 등
+  //  런타임 주입물이 함께 박혀 있다(실측: 최근 14일 282행 평균 41,132자·최대 1,324,574자).
+  //  그대로 재주입하면 **캡의 대부분을 헌법 재전송이 먹어** 정작 대화 히스토리가 밀려난다
+  //  (charCap 200,000 기준 스캐폴딩 5턴이면 대화 0). codex 는 같은 자리에서 이미 스트립한다
+  //  (openai-codex-oauth-history.ts) — 어댑터 간 동작이 갈리던 것을 맞춘다(원칙 2).
+  //  스트립 결과가 비면 원문 유지(정보 손실 방지) — codex 와 같은 폴백.
+  const stripped = (c: string): string =>
+    stripInternalRuntimeScaffolding(c).trim() || c;
   const historyItems: AgentInputItem[] = priorTurns.map((t) =>
     t.role === "assistant"
       ? {
           role: "assistant",
           status: "completed",
-          content: [{ type: "output_text", text: t.content }],
+          content: [{ type: "output_text", text: stripped(t.content) }],
         }
       : {
           role: "user",
-          content: [{ type: "input_text", text: t.content }],
+          content: [{ type: "input_text", text: stripped(t.content) }],
         },
   );
   // 멀티모달 — 모델이 vision 가능하면 현재 turn 이미지 첨부를 input_image 로 함께 주입(SDK 가
@@ -1005,10 +1014,15 @@ export const runOpenAi = async (
     };
   }
 
+  // ★undefined 누출 차단 (2026-07-28) — finalOutput 이 undefined 면 JSON.stringify 는
+  //  문자열이 아니라 **undefined 값**을 돌려준다. 타입은 string 이라 컴파일러도 못 잡고,
+  //  그 값이 facade·router·채널까지 그대로 흘러간다. 빈 문자열로 닫는다(다른 어댑터와 동형).
   const text =
     typeof result.finalOutput === "string"
       ? result.finalOutput
-      : JSON.stringify(result.finalOutput);
+      : result.finalOutput === undefined || result.finalOutput === null
+        ? ""
+        : JSON.stringify(result.finalOutput);
 
   // V5 — 자체 sessionId 생성. session resume(previous_response_id)·메모리 통합은 후속.
   // replyToTrigger — reply-intent 도구 호출 시 set (codex/claude 와 동일 출력 필드).

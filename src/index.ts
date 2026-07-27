@@ -70,6 +70,7 @@ import {
   resolveModelSpecs,
   listActiveCooldowns,
   poolDiversityWarning,
+  restoreCooldowns,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
 import {
@@ -178,6 +179,10 @@ console.log(`tiguclaw home: ${getPaths().home}`);
 await migrateLegacyAgent(process.cwd());
 
 initStore();
+// 쿨다운 복원(2026-07-28) — 메모리 Map 에만 있던 쿨다운이 재시작마다 사라져 매 부팅 직후
+// 죽은 백엔드를 다시 두드렸다(실측 07-27: 부팅 22회 ↔ 429 22건). initStore 직후 = DB 준비된
+// 가장 이른 지점. 실패해도 빈 상태로 진행(종전 동작).
+restoreCooldowns();
 
 // auth-provider 등록 (2026-07-18, 계약 §5·§8) — Tier 2 구독 인증(codex OAuth)을 레지스트리에
 // self-register 하는 side-effect 모듈을 optional dynamic import 로 로드. 첫 turn 전 완료 보장

@@ -470,7 +470,10 @@ const main = async (): Promise<void> => {
   };
 
   mkdirSync(HOME_DIR, { recursive: true }); // 홈 디렉터리 보장(첫 설치).
-  writeFileSync(ENV_PATH, renderEnv(answers), { encoding: "utf8" });
+  // ★0600 (2026-07-28 보안 감사) — 종전엔 mode 미지정이라 umask 기본 0644 로 만들어져
+  //  봇 토큰·OAuth 토큰·게이트웨이 토큰이 **같은 머신의 다른 계정에게 읽혔다**.
+  //  공유/회사 PC·다중 사용자 환경에서 전 백엔드 크리덴셜 노출 경로.
+  writeFileSync(ENV_PATH, renderEnv(answers), { encoding: "utf8", mode: 0o600 });
   console.log("");
   console.log(`✅ .env 작성 완료: ${ENV_PATH}  (런타임 홈 — 레포 아님)`);
 

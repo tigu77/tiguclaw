@@ -356,6 +356,27 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
   return all.map((j) => ({ ...j }));
 };
 
+/**
+ * 이 스레드에 **살아있는 자식 잡**(워커·서브에이전트)이 있는가.
+ *
+ * ★용도: 부모의 도구 wall-clock 타임아웃이 "무응답"을 판정할 때 쓴다(2026-07-27).
+ *  자식이 running 이라는 건 *관측된 사실* 이므로 무응답이 아니다 — 그 상태에서 부모가
+ *  시계만 보고 끊으면, 자식은 계속 돌면서(부모 abort 가 자식에 전파되지 않는다) 결과만
+ *  버려진다. 실측: 서브에이전트 138건 중 5건이 8분을 넘겼고 **전부 done** 이었다
+ *  (627·582·563·499·496초). 일은 다 하고 돈도 쓰고 결과만 잃은 셈.
+ *  자식은 자기 상한(WORKER_TIMEOUT_MS 2시간)·자기 타임아웃·사용자 취소를 이미 갖고 있으므로
+ *  부모가 이중으로 감시할 이유가 없다(경계 중복 제거).
+ *
+ * jobs 는 in-memory 레지스트리 — 조회 비용 무시(수십 개 규모).
+ */
+export const hasLiveChildJob = (threadKey: string): boolean => {
+  if (threadKey === "") return false;
+  for (const j of jobs.values()) {
+    if (j.status === "running" && j.threadKey === threadKey) return true;
+  }
+  return false;
+};
+
 /** 테스트 전용 — 레지스트리 비움 (프로덕션 경로 미사용). */
 export const __resetJobsForTest = (): void => {
   jobs.clear();

@@ -1644,10 +1644,37 @@ export const runOpenAiCodex = async (
                   }
                 }, slowMs);
                 slowTimer.unref?.();
-                const result = await Promise.race([
-                  bridge.callTool(tc.name, args),
+                // ★"무응답" 판정을 시간이 아니라 **관측**으로 (2026-07-27, 사용자 지적:
+                //  "정말 무응답을 문제라고 판단해야지, 무응답이 아닌데").
+                //  이 타이머의 존재 이유는 hung 도구가 턴을 영영 얼리는 것을 막는 것이다.
+                //  그런데 spawn_agent 처럼 **자식 잡을 띄우는 도구**는, 자식이 running 인 한
+                //  무응답이 아니다 — 그건 관측된 사실이다. 그 상태에서 시계만 보고 끊으면
+                //  자식은 abort 전파가 안 돼 계속 돌고(토큰도 계속 쓰고) **결과만 버려진다**.
+                //  실측: 서브에이전트 138건 중 5건이 8분 초과했고 전부 done 이었다.
+                //  → 발화 시점에 살아있는 자식이 있으면 끊지 않고 **재무장**한다. 자식이
+                //   조용히 사라진 경우엔 다음 발화에서 정상적으로 끊긴다(구멍 0). 자식 자체는
+                //   자기 상한(2시간)·자기 타임아웃·사용자 취소로 이미 바운드돼 있다.
+                const armToolTimeout = (): Promise<never> =>
                   new Promise<never>((_, reject) => {
-                    toolTimer = setTimeout(() => {
+                    const fire = async (): Promise<void> => {
+                      let alive = false;
+                      try {
+                        const { hasLiveChildJob } = await import("../../worker-jobs.js");
+                        alive = hasLiveChildJob(input.threadKey);
+                      } catch {
+                        /* 조회 실패는 종전 동작(끊음)으로 — 안전한 쪽 */
+                      }
+                      if (alive) {
+                        console.warn(
+                          `[tool-timeout] ${input.threadKey} 도구 ${tc.name} 상한 초과지만 ` +
+                            `자식 잡이 실행 중 — 끊지 않고 대기 연장(${Math.round(
+                              CODEX_TOOL_TIMEOUT_MS / 60_000,
+                            )}분).`,
+                        );
+                        toolTimer = setTimeout(() => void fire(), CODEX_TOOL_TIMEOUT_MS);
+                        toolTimer.unref?.();
+                        return;
+                      }
                       reject(
                         new Error(
                           `도구 ${tc.name} 응답 시간 초과 (${Math.round(
@@ -1655,9 +1682,13 @@ export const runOpenAiCodex = async (
                           )}분) — 무응답(재개 없이 에러 처리)`,
                         ),
                       );
-                    }, CODEX_TOOL_TIMEOUT_MS);
+                    };
+                    toolTimer = setTimeout(() => void fire(), CODEX_TOOL_TIMEOUT_MS);
                     toolTimer.unref?.();
-                  }),
+                  });
+                const result = await Promise.race([
+                  bridge.callTool(tc.name, args),
+                  armToolTimeout(),
                 ]).finally(() => {
                   if (toolTimer !== undefined) clearTimeout(toolTimer);
                   clearTimeout(slowTimer);

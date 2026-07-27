@@ -23,6 +23,12 @@ import { getRegisteredMcpServers } from "./mcp-registry.js";
 export interface RouteOutput {
   text: string;
   /**
+   * 이 턴에 **실제로 응답한 모델**(어댑터가 보고하면). 요청한 프로파일이 아니라 결과다 —
+   * 폴백·쿨다운으로 갈리므로 관측·표시는 이 값을 써야 한다(2026-07-27).
+   * 미보고 어댑터는 생략(거짓값 금지).
+   */
+  model?: string;
+  /**
    * LLM 런타임 output 에서 그대로 전달 — 이 turn 응답을 트리거 메시지 직접 답글로 마킹.
    */
   replyToTrigger?: boolean;
@@ -203,5 +209,6 @@ export const route = async (
     text: out.text,
     replyToTrigger: out.replyToTrigger,
     modelOverrideRejected: out.modelOverrideRejected,
+    ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
   };
 };

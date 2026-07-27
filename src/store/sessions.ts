@@ -656,6 +656,12 @@ export const initStore = (): void => {
   if (!chatLogCols.some((c) => c.name === "notice")) {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN notice INTEGER`);
   }
+  // 실제 응답 모델(2026-07-27) — 답변이 *어느 모델로* 나왔는지. 활동 이벤트에만 있으면
+  // 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시할 길이 없다(실측: 세션 답변 12건 중
+  // 11건 미표시). 메시지에 직접 붙여 경로 무관하게 같은 값이 보이게 한다. 구 행은 NULL.
+  if (!chatLogCols.some((c) => c.name === "model")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN model TEXT`);
+  }
 
   // ─── 백그라운드 셸 프로세스 영속 (reap 전용 메타 — 2026-07-17) ──────────────────
   // ADR `docs/decisions/2026-07-17-background-shell-observability.md` §4. 런타임

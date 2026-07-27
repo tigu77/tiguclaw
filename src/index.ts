@@ -1154,6 +1154,9 @@ const handler: MessageHandler = async (msg) => {
         channel: msg.channel,
         threadKey: msg.threadKey,
         text: out.text.slice(0, EVENT_TEXT_MAX),
+        // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
+        //  종전엔 활동 이벤트에만 있어, 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시가 없었다.
+        ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
       },
     });
     // ── egress fan-out (ADR 2026-07-16 §D4 Phase B2 / D2) ──────────────────────

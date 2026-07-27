@@ -267,19 +267,12 @@
       const setJobModel = (entry, model) => {
         const m = typeof model === "string" ? model.trim() : "";
         if (!entry || m === "" || entry.modelSeen === m) return;
-        const prev = entry.modelSeen;
         entry.modelSeen = m;
         const el = entry.modelBadgeEl;
         if (!el) return;
         el.style.display = "";
-        if (prev && prev !== m) {
-          el.textContent = prev + "→" + m;
-          el.classList.add("switched");
-          el.title = "작업 도중 모델이 바뀌었습니다(폴백): " + prev + " → " + m;
-        } else {
-          el.textContent = m;
-          el.title = "이 작업이 실제로 사용한 모델";
-        }
+        el.textContent = m; // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
+        el.title = "이 작업이 실제로 사용한 모델";
       };
 
       const applyDurationBadge = (el, ms) => {

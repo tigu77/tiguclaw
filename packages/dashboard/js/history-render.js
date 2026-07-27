@@ -21,6 +21,15 @@
         tyEl.textContent = isNotice ? "시스템 알림" : (isOut ? assistantName : "나");
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(entry.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
+        // 실제 응답 모델 — 라이브 답변 버블(ensureReplyBubble) 파리티. 값 없으면 요소를 만들지
+        //  않는다(거짓값 금지 + 사용자 메시지·통지처럼 모델 개념이 없는 행에 빈 배지 방지).
+        if (isOut && typeof entry.model === "string" && entry.model.trim() !== "") {
+          const mEl = document.createElement("span");
+          mEl.className = "turn-model";
+          mEl.textContent = entry.model.trim();
+          mEl.title = "이 답변에 실제로 응답한 모델";
+          head.appendChild(mEl);
+        }
         div.appendChild(head);
         const msg = document.createElement("div");
         msg.className = "chat-message";
@@ -121,7 +130,15 @@
         const key = msgKey(entry.ts, role);
         if (renderedMsgKeys.has(key)) return null;
         renderedMsgKeys.add(key);
-        return buildHistoryDiv({ ts: entry.ts, role, text: entry.text, attachments: entry.attachments, channel: entry.channel });
+        // ★notice·model 을 반드시 함께 넘긴다 (2026-07-27). 종전엔 여기서 빠뜨려, chat_log 에
+        //  값이 있어도 **새로고침하면 시스템 통지 구분도 모델 표시도 사라졌다**(사용자 신고
+        //  "안 보이는 애들"의 정체). 필드를 추가할 때 이 전달 지점을 같이 안 고치면 저장은
+        //  되는데 화면엔 없는 상태가 조용히 생긴다.
+        return buildHistoryDiv({
+          ts: entry.ts, role, text: entry.text, attachments: entry.attachments, channel: entry.channel,
+          ...(entry.notice === true ? { notice: true } : {}),
+          ...(typeof entry.model === "string" && entry.model !== "" ? { model: entry.model } : {}),
+        });
       };
 
       // 이력 도구 스텝(기능 B) — 영속 llm.activity 복원. 낱줄 element 빌더(카드 크롬 없음).
@@ -177,15 +194,11 @@
         // 실제 응답 모델 (2026-07-27) — 라이브 turn-card 파리티(새로고침해도 안 사라지게).
         //  한 런 안에서 바뀌었으면(폴백) 첫→마지막으로. 라이브에선 setTurnModel 이 같은 일을 한다.
         const models = acts.map((a) => (typeof a.model === "string" ? a.model.trim() : "")).filter(Boolean);
-        const mFirst = models[0] || "", mLast = models[models.length - 1] || "";
+        const mLast = models[models.length - 1] || "";
         const modelEl = document.createElement("span");
         modelEl.className = "turn-model";
-        if (mFirst && mFirst !== mLast) {
-          modelEl.textContent = mFirst + "→" + mLast;
-          modelEl.classList.add("switched");
-          modelEl.title = "이 런 도중 모델이 바뀌었습니다(폴백): " + mFirst + " → " + mLast;
-        } else if (mFirst) {
-          modelEl.textContent = mFirst;
+        if (mLast) { // 현재(마지막) 모델만 — 전환 표기 없음.
+          modelEl.textContent = mLast;
           modelEl.title = "이 런이 실제로 사용한 모델";
         }
         const count = document.createElement("span");
@@ -207,7 +220,14 @@
       // 이후 SSE replay 가 같은 세그먼트를 중복 렌더 안 하게(도구 스텝과 동일 dedup).
       const buildHistoryTextEl = (a) => {
         renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
-        return buildHistoryDiv({ ts: a.ts, role: "assistant", text: a.text });
+        // ★model 을 버블로 전달 (2026-07-27). 이 버블의 출처는 kind:"text" 활동이고 거기엔
+        //  실제 응답 모델이 실려 있는데(활동 API 실측 364/364), 종전엔 여기서 떨어뜨려
+        //  **새로고침 후 답변 버블에 모델이 하나도 안 보였다**(사용자 신고 "카드들에 제대로
+        //  안 되고 있다"). 도구 런 카드에만 넣고 *가장 흔한 답변 버블*을 빠뜨린 누락이다.
+        return buildHistoryDiv({
+          ts: a.ts, role: "assistant", text: a.text,
+          ...(typeof a.model === "string" && a.model.trim() !== "" ? { model: a.model.trim() } : {}),
+        });
       };
 
       // 메시지+활동 → 시간순 병합 후 연속된 같은 턴(threadKey·seq 증가)의 활동을 turn 으로 묶은

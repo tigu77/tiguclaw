@@ -231,6 +231,10 @@ const startChatLogPersistence = (bus: EventBus): void => {
         // 시스템 통지 표식 승계 — 새로고침 후에도 비서 발화와 구분되게. 라이브만 구분되면
         // 같은 데이터가 경로마다 달라진다(모델 표시에서 겪은 함정과 동형).
         ...(payload.notice === true ? { notice: true } : {}),
+        // 실제 응답 모델 — 있으면 함께 영속(새로고침 후 표시). 없으면 키 생략(거짓값 금지).
+        ...(typeof payload.model === "string" && payload.model !== ""
+          ? { model: payload.model }
+          : {}),
       });
     } catch (e) {
       console.error(

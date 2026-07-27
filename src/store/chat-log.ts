@@ -49,6 +49,8 @@ export interface ChatLogEntry {
    * role 을 늘리지 않고 이 플래그로 구분한다 — role='assistant' 를 보는 기존 소비자 무영향.
    */
   notice?: boolean;
+  /** 이 답변에 **실제로 응답한 모델**(어댑터가 보고하면). 사용자 메시지·통지엔 없음. */
+  model?: string;
 }
 
 interface ChatLogRow {
@@ -59,6 +61,7 @@ interface ChatLogRow {
   text: string;
   attachments: string | null;
   notice: number | null;
+  model: string | null;
 }
 
 /**
@@ -73,8 +76,8 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
   try {
     getDb()
       .prepare(
-        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.ts,
@@ -84,6 +87,7 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
         row.text,
         hasAtt ? JSON.stringify(row.attachments) : null,
         row.notice === true ? 1 : null, // null = 종전 행과 동일(비서 발화).
+        typeof row.model === "string" && row.model !== "" ? row.model : null,
       );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -129,7 +133,7 @@ export const getRecentChatLog = (opts?: {
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
   const rows = getDb()
     .prepare(
-      `SELECT ts, thread_key, channel, role, text, attachments, notice
+      `SELECT ts, thread_key, channel, role, text, attachments, notice, model
          FROM chat_log
          ${whereClause}
         ORDER BY ts DESC, id DESC
@@ -145,6 +149,7 @@ export const getRecentChatLog = (opts?: {
       role: r.role === "assistant" ? "assistant" : "user",
       text: r.text,
       ...(r.notice === 1 ? { notice: true } : {}), // 구 행(NULL) = 비서 발화(종전 동작).
+      ...(typeof r.model === "string" && r.model !== "" ? { model: r.model } : {}),
     };
     if (r.attachments !== null && r.attachments !== "") {
       // 파싱 실패(손상 JSON)는 조용히 무시 — 첨부 없이라도 메시지는 렌더(견고성).

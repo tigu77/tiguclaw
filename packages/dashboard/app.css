@@ -510,8 +510,6 @@
       .turn-cost.heavy { color:var(--warn); opacity:1; }
       /* 실제 응답 모델 — adapter 배지(누가)와 달리 *어떤 모델*인지. 값 없으면 빈 span = 자리 차지 0. */
       .turn-model { color:var(--text-dim); font-size:10px; font-weight:600; flex:none; white-space:nowrap; opacity:.75; }
-      /* 턴 도중 폴백(A→B) = 조용히 넘어가던 것을 드러내는 게 목적이라 흐리게 두지 않는다. */
-      .turn-model.switched { color:var(--warn); opacity:1; font-weight:700; }
       .turn-elapsed { color:var(--accent-2); font-size:10px; font-weight:700; font-variant-numeric:tabular-nums; flex:none; white-space:nowrap; }
       .turn-card.done .turn-elapsed { color:var(--text-dim); font-weight:600; }
       .turn-body { padding:2px 10px 8px 28px; }
@@ -735,7 +733,6 @@
       .bg-job-tier[data-tier="high"], .agent-card-tier[data-tier="high"] { background:rgba(251,191,36,.16); color:#fbbf24; border-color:rgba(251,191,36,.4); }
       /* 실제 응답 모델 — 티어(요청) 옆의 결과값. 소문자 유지(모델 id 는 대문자화하면 안 읽힌다). */
       .bg-job-model { flex:none; font-size:9px; font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgba(255,255,255,.04); color:var(--text-dim); border:1px solid var(--border); }
-      .bg-job-model.switched { color:var(--warn); border-color:var(--warn); font-weight:800; }
       .agent-card-tier { font-size:10px; padding:2px 8px; }
       /* ── 모델 프로파일 카드 (표시 전용, provider-card·bg-job-tier 스타일 재사용) ── */
       .models-shell { display:grid; gap:10px; }

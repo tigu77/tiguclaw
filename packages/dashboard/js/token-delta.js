@@ -127,24 +127,18 @@
       };
       // ★실제 응답 모델 표시 (2026-07-27) — payload.model 은 "요청한 프로파일"이 아니라 **그 스텝에
       //  실제로 답한 모델**이다. 둘은 폴백·쿨다운으로 갈린다(codex 한도 소진 → claude 승계 등).
-      //  그래서 턴 도중 값이 바뀌면 덮어쓰지 않고 "이전→현재" 로 남긴다 — 그 전환이 이 표시의
-      //  가장 중요한 정보다(종전엔 조용히 다른 모델로 넘어가도 화면에 흔적이 0이었다).
       //  값이 없으면 아무것도 그리지 않는다(거짓값 금지 — setTurnCost 와 같은 규칙).
       const setTurnModel = (card, model) => {
         const m = typeof model === "string" ? model.trim() : "";
         if (!card || m === "" || card.modelSeen === m) return;
-        const prev = card.modelSeen;
         card.modelSeen = m;
         const target = card.modelEl || card.replyModelEl; // 카드 헤더 우선, 없으면 답변 버블.
         if (!target) return;
-        if (prev && prev !== m) {
-          target.textContent = prev + "→" + m;
-          target.classList.add("switched"); // 폴백 발생 = 눈에 띄게.
-          target.title = "턴 도중 모델이 바뀌었습니다(폴백): " + prev + " → " + m;
-        } else {
-          target.textContent = m;
-          target.title = "이 턴에 실제로 응답한 모델";
-        }
+        // ★현재 모델만 표시 (2026-07-27 사용자 지정). 종전엔 턴 도중 모델이 바뀌면 "이전→현재"
+        //  로 남겼는데, 폴백 이력까지 화면에 들고 있을 필요는 없다는 판단. 폴백 사실은 turn_error
+        //  통지·로그·events 에 이미 남는다. 표시는 "지금 무엇으로 답했나" 하나만.
+        target.textContent = m;
+        target.title = "이 턴에 실제로 응답한 모델";
       };
 
       const setTurnCost = (thread, payload) => {

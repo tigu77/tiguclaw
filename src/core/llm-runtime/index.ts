@@ -39,7 +39,13 @@ import type {
 } from "./types.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
-import { saveCooldown, deleteCooldown, loadLiveCooldowns } from "../../store/cooldowns.js";
+import {
+  saveCooldown,
+  deleteCooldown,
+  loadLiveCooldowns,
+  getCooldownRow,
+  markCooldownProbe,
+} from "../../store/cooldowns.js";
 import { getEventBus } from "../eventbus.js";
 import {
   resolveProfileChain,
@@ -455,6 +461,13 @@ const publishTurnError = (
 // 429/사용량한도만 대상 — 일반 에러·모델거부·네트워크는 미등록(기존 폴백 로직 그대로).
 const cooldownUntil = new Map<string, number>();
 
+/** 긴 쿨다운을 실제로 찔러보는 간격(ms). env `COOLDOWN_PROBE_INTERVAL_MS`. 기본 2시간. */
+const COOLDOWN_PROBE_INTERVAL_MS = ((): number => {
+  const raw = process.env.COOLDOWN_PROBE_INTERVAL_MS;
+  const n = raw === undefined || raw === "" ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 2 * 60 * 60_000;
+})();
+
 // 명시 값(resets_in_seconds/retry-after) 없을 때 기본. 상한은 오파싱·비정상 값 방어일 뿐
 // (실측 codex usage_limit_reached 는 수일(예 5.7일=492480s) 지속 — 그 값은 "정확히" 존중해야
 // 무의미 재탐 0 이 성립한다. 24h 로 잡으면 실측 사례 자체가 잘려나가 모순 → 7일로 넉넉히
@@ -487,14 +500,49 @@ const cooldownKey = (spec: ModelSpec): string => spec.provider ?? spec.adapter;
 // export — 격리 검증(_workspace)이 등록/해제 결과를 직접 조회.
 export const cooldownRemainingMs = (spec: ModelSpec): number => {
   const key = cooldownKey(spec);
-  const until = cooldownUntil.get(key);
-  if (until === undefined) return 0;
-  const remaining = until - Date.now();
-  if (remaining <= 0) {
-    cooldownUntil.delete(key);
-    return 0;
+  const now = Date.now();
+  // ★진실은 DB (2026-07-28). 메모리 Map 만 보면 **다른 프로세스가 지운 것**(재인증 CLI,
+  //  다른 인스턴스)이 돌고 있는 데몬에 안 먹혀 "인증했는데 왜 계속 폴백하지" 가 된다
+  //  (실사고: codex 재인증 후에도 4일치 쿨다운이 그대로 남음). Map 은 DB 조회 실패 시의
+  //  폴백 캐시로만 둔다 — 조회는 PK 단건이라 비용 무시.
+  try {
+    const row = getCooldownRow(key, now);
+    if (row === null) {
+      cooldownUntil.delete(key); // 캐시 동기화.
+      return 0;
+    }
+    cooldownUntil.set(key, row.untilTs);
+    // ★주기 탐침 (2026-07-28, 사용자 실측) — 백엔드가 알려준 해제 시각은 **힌트지 사실이
+    //  아니다**. codex 는 그 날짜보다 일찍 풀리는 경우가 관측됐다. 시계만 믿고 며칠을
+    //  기다리면 이미 풀린 백엔드를 계속 놀린다(그동안 폴백 비용을 계속 낸다).
+    //  긴 쿨다운에 한해 일정 간격으로 **실제로 한 번 찔러본다** — 성공하면
+    //  clearCooldownOnSuccess 가 즉시 해제하고, 아직이면 429 로 다시 등록될 뿐이다
+    //  (자기교정). 탐침 시각을 영속해 재시작이 탐침 폭주가 되지 않게 한다.
+    const remaining = row.untilTs - now;
+    if (
+      remaining > COOLDOWN_PROBE_INTERVAL_MS &&
+      now - row.lastProbeTs >= COOLDOWN_PROBE_INTERVAL_MS
+    ) {
+      markCooldownProbe(key, now);
+      console.log(
+        `llm-runtime: '${key}' 쿨다운 탐침 — 남은 ${Math.round(remaining / 3600000)}시간이지만 ` +
+          `${Math.round(COOLDOWN_PROBE_INTERVAL_MS / 3600000)}시간마다 한 번 실제로 시도합니다(조기 회복 감지).`,
+      );
+      return 0; // 이번 한 번만 통과 — 실패하면 429 로 재등록된다.
+    }
+    return remaining;
+  } catch {
+    // DB 조회 실패 — 쿨다운을 "없음" 으로 오판하면 죽은 백엔드를 다시 두드린다.
+    // 메모리 캐시로 폴백(보수적).
+    const cached = cooldownUntil.get(key);
+    if (cached === undefined) return 0;
+    const remaining = cached - now;
+    if (remaining <= 0) {
+      cooldownUntil.delete(key);
+      return 0;
+    }
+    return remaining;
   }
-  return remaining;
 };
 
 // 관측 — 진입/스킵/해제를 이벤트로(대시보드/진단 "N분 남음" 가시화). best-effort

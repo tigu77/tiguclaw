@@ -50,6 +50,44 @@ export const deleteCooldown = (key: string): void => {
  * 부팅 복원 — **아직 만료되지 않은** 항목만 반환하고, 만료분은 그 자리에서 정리한다.
  * 실패 시 빈 배열(쿨다운 없이 시작 = 종전 동작, 회귀 0).
  */
+/**
+ * 단건 조회 — 살아있으면 {해제시각, 마지막 탐침시각}, 아니면 null(만료 행은 지운다).
+ *
+ * ★쿨다운의 **진실은 DB** 다 (2026-07-28). 메모리 Map 만 보면 외부에서 지운 것(재인증 CLI,
+ *  다른 프로세스)이 돌고 있는 데몬에 안 먹혀 "인증했는데 왜 안 풀리지" 가 된다.
+ *  조회 비용은 인덱스된 PK 단건이라 무시 가능(턴당 수 회).
+ */
+export const getCooldownRow = (
+  key: string,
+  nowTs: number,
+): { untilTs: number; lastProbeTs: number } | null => {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT until_ts, last_probe_ts FROM cooldowns WHERE key = ?`)
+    .get(key) as { until_ts?: number; last_probe_ts?: number } | undefined;
+  const until = typeof row?.until_ts === "number" ? row.until_ts : 0;
+  if (until <= 0) return null;
+  if (until <= nowTs) {
+    db.prepare(`DELETE FROM cooldowns WHERE key = ?`).run(key);
+    return null;
+  }
+  return {
+    untilTs: until,
+    lastProbeTs: typeof row?.last_probe_ts === "number" ? row.last_probe_ts : 0,
+  };
+};
+
+/** 탐침 시각 기록 — 성공·실패 무관(허용한 시점 기준). 다음 탐침 간격의 기준이 된다. */
+export const markCooldownProbe = (key: string, nowTs: number): void => {
+  try {
+    getDb()
+      .prepare(`UPDATE cooldowns SET last_probe_ts = ? WHERE key = ?`)
+      .run(nowTs, key);
+  } catch {
+    /* best-effort — 기록 실패해도 탐침 자체는 진행(다음에 또 탐침할 뿐) */
+  }
+};
+
 export const loadLiveCooldowns = (nowTs: number): Array<{ key: string; untilTs: number }> => {
   try {
     const db = getDb();

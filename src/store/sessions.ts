@@ -706,6 +706,19 @@ export const initStore = (): void => {
       until_ts INTEGER NOT NULL
     );
   `);
+  // ─── 쿨다운 주기 탐침 (2026-07-28) ─────────────────────────────────────────
+  // 백엔드가 알려주는 해제 시각은 **힌트지 사실이 아니다** — codex 는 그 날짜보다 일찍
+  // 풀리는 경우가 관측됐다(사용자 실측). 그래서 긴 쿨다운은 몇 시간에 한 번 실제로
+  // 찔러본다. 마지막 탐침 시각을 영속해 재시작이 탐침 폭주로 이어지지 않게 한다.
+  // 멱등 ALTER(기존 DB 는 컬럼만 추가, 신규는 위 CREATE 후 여기서 추가 — 같은 결과).
+  {
+    const cols = handle
+      .prepare(`PRAGMA table_info(cooldowns)`)
+      .all() as ColumnInfoRow[];
+    if (!cols.some((c) => c.name === "last_probe_ts")) {
+      handle.exec(`ALTER TABLE cooldowns ADD COLUMN last_probe_ts INTEGER`);
+    }
+  }
 
   // 시스템 통지 표식(2026-07-27) — 스케줄 실패·자가 점검 같은 인프라 통지가 비서 발화와
   // 같은 role='assistant' 로 저장돼, 새로고침하면 구분이 완전히 사라졌다. ★role 값을 늘리지

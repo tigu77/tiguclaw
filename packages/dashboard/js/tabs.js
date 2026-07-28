@@ -224,6 +224,10 @@
         resetStreamState();
         refreshChatEmpty();
         const myToken = ++switchToken;
+        // ★리스트를 비운 직후부터 이력 렌더까지의 창 — 이 사이 SSE 메시지는 보류한다.
+        //  안 그러면 빈 리스트 때문에 stale 가드가 꺼져 옛 메시지가 바닥에 붙고, 그 위로
+        //  이력이 prepend 되며 옛 대화가 최신 사이에 끼어든다(2026-07-28 실측).
+        beginHistoryLoad();
         try {
           const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(tk));
           if (myToken !== switchToken) return; // 그 사이 또 전환됨 — 이 배치는 버림.
@@ -256,6 +260,8 @@
         } catch (err) {
           refreshChatEmpty();
           console.warn("thread history load failed:", err && err.message ? err.message : err);
+        } finally {
+          endHistoryLoad(); // 조기 return(토큰 무효·!ok·빈 세션) 포함 — 보류분 유실 0.
         }
       };
 

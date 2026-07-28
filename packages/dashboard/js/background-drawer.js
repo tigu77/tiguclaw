@@ -21,8 +21,7 @@
       //  ("worker:<jobId>"/"agent:<jobId>")라 activeThreadKey 와 **절대** 안 맞는다(아래
       //  realSessionThreadKey 주석과 동일 근거). 종전 `tk === activeThreadKey` 단순 비교는 그런 셸을
       //  영구히 숨겨, 워커가 띄운 dev 서버가 30분째 돌아도 "🖥️ 셸 N개 실행 중"이 안 뜨는 버그를 냈다
-      //  (2026-07-26 실측). 잡 좌표면 그 잡 카드가 아는 원 세션으로 판정하고, 잡을 모르면(카드 prune·
-      //  새로고침으로 유실) **보수적으로 노출** — 실행 중인 셸을 숨기는 쪽이 더 나쁜 실패다.
+      //  (2026-07-26 실측). 잡 좌표면 원 세션으로 환원해 판정한다.
       // 셸 threadKey → **원 세션** threadKey 환원. 잡 좌표(worker:/agent:<jobId>)면 그 잡 카드가
       // 아는 원 세션으로, 이미 세션 좌표면 그대로. 모르면 ""(=소속 미상).
       const shellOwnerSession = (tk) => {
@@ -37,11 +36,18 @@
         //  서버 환원값(ownerTk) 우선, 없으면 부모 체인을 끝까지 따라간다.
         return card.ownerTk || jobOwnerSession(card.threadKey);
       };
-      const isShellInScope = (tk) => {
-        if (!tk || tk === activeThreadKey) return true;
-        const owner = shellOwnerSession(tk);
-        // 소속 미상(잡 카드 유실 등)은 보수적으로 노출 — 실행 중 셸을 숨기는 게 더 나쁜 실패.
-        return !owner || owner === activeThreadKey;
+      // ★잡 카드(isBgInScope)와 **같은 기준** (2026-07-28, 사용자 확정 "다 맞춰야지").
+      //  근거 우선순위: ①서버가 환원해 실어 준 ownerThreadKey(shell.* payload / GET /api/shells)
+      //  ②없으면 프런트 환원. **미상은 숨긴다(fail-closed)** — 종전엔 노출이었는데, 사용자가
+      //  명시한 세션 필터를 어기는 쪽이 안 보이는 쪽보다 나쁜 실패다(남의 세션 배지 오탐).
+      const isShellInScope = (tk, ownerHint) => {
+        if (!tk) return false; // 소속 근거 자체가 없음 — 활성 세션 것이라 단정하지 않는다.
+        if (tk === activeThreadKey) return true;
+        const owner =
+          typeof ownerHint === "string" && ownerHint !== ""
+            ? ownerHint
+            : shellOwnerSession(tk);
+        return owner !== "" && owner === activeThreadKey;
       };
       // 세션별 진행 중 백그라운드(잡·셸) 보유 집합 — 세션 탭 진행 배지가 읽는다(tabs.js).
       // ★"자기 세션 것만" 원칙: 소속이 확정된 것만 넣는다(미상은 넣지 않음 — 남의 탭에 점이
@@ -60,7 +66,7 @@
         if (typeof shellRegistry !== "undefined") {
           for (const s of shellRegistry.values()) {
             if (s.status !== "running") continue;
-            const owner = shellOwnerSession(s.threadKey);
+            const owner = s.ownerTk || shellOwnerSession(s.threadKey); // 서버 환원값 우선.
             if (owner) next.add(owner);
           }
         }
@@ -79,7 +85,7 @@
         let running = 0;
         if (typeof shellRegistry !== "undefined") {
           for (const e of shellRegistry.values()) {
-            if (e.status === "running" && isShellInScope(e.threadKey)) running += 1;
+            if (e.status === "running" && isShellInScope(e.threadKey, e.ownerTk)) running += 1;
           }
         }
         if (running > 0) {
@@ -420,6 +426,9 @@
           b.setAttribute("aria-pressed", on ? "true" : "false");
         }
         refreshBgBadge();
+        // 셸 그룹도 같은 토글을 따른다(2026-07-28) — 셸은 CSS 숨김이 아니라 렌더에서 거르므로
+        // (카운트 정합) 여기서 재렌더를 걸어 준다. 로드 순서 무관하게 typeof 가드.
+        if (typeof scheduleShellsRender === "function") scheduleShellsRender();
       };
       if (bgScopeFilterEl) for (const b of bgScopeFilterEl.querySelectorAll(".bg-fbtn")) {
         b.addEventListener("click", () => setBgSessionScope(b.dataset.scope));
@@ -459,6 +468,9 @@
       const refreshBgScope = () => {
         for (const e of jobCards.values()) e.el.classList.toggle("bg-in-scope", isBgInScope(e.threadKey, e.ownerTk));
         refreshBgBadge();
+        // 셸 그룹은 렌더에서 거르므로(카운트 정합) 세션이 바뀌면 재렌더가 필요하다.
+        if (typeof scheduleShellsRender === "function") scheduleShellsRender();
+        if (typeof refreshShellStrip === "function") refreshShellStrip(); // 상단 "🖥️ N개" 도 갱신.
       };
 
       const refreshBgBadge = () => {

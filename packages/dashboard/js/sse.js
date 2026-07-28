@@ -104,6 +104,10 @@
           // ★멀티세션(B계층) — 채팅 스트림 DOM 은 active 세션만. 비active 는 워킹표시만 갱신하고
           // 스트림 미출력(원본은 chat_log/SSE 보존 = 전환 시 fetch 재빌드, §3.4).
           if (!isActiveThread(tk)) return;
+          // ★이력 로드 창이면 보류 (2026-07-28) — 이 창엔 리스트가 비어 있어 아래 stale 가드가
+          //  꺼진다(빈 리스트 = 비교 기준 없음). 지금 붙이면 뒤이어 prepend 되는 이력 아래에
+          //  옛 메시지가 남아 순서가 깨진다. 이력 렌더 후 시간순으로 다시 흘린다(chat-core).
+          if (holdSseEventDuringHistory(ev)) return;
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);

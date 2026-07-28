@@ -352,6 +352,7 @@
       };
 
       const loadChatHistory = async () => {
+        beginHistoryLoad(); // 이 창의 SSE 메시지는 보류 — 빈 리스트에 붙으면 순서가 깨진다.
         try {
           // 멀티세션(ADR 2026-07-15) — 초기 로드도 active 세션(기본=dashboard:default)만. 미지정이면
           // 전 스레드 병합이라 텔레그램/워커가 섞임(D4 위배). threadKey 로 스코프.
@@ -380,6 +381,8 @@
         } catch (err) {
           // 무해 — 라이브 경로 무손상. 콘솔만.
           console.warn("chat-history load failed:", err && err.message ? err.message : err);
+        } finally {
+          endHistoryLoad(); // 실패·조기 return 경로 포함 — 보류분을 반드시 흘린다(유실 0).
         }
       };
 

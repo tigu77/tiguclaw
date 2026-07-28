@@ -66,6 +66,9 @@ import { getPaths } from "../../paths.js";
 import { loadWebSearchConfig } from "../../settings.js";
 import { detectShell } from "../../runtime-env.js";
 import { getEventBus } from "../../eventbus.js";
+// 셸의 원 세션 환원 — 워커·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
+// 아니다. 잡 레지스트리를 보는 코어가 환원해서 관측면에 실어 준다(대시보드 추측 제거).
+import { resolveOwnerThreadKey } from "../../worker-jobs.js";
 import {
   insertBgShell as insertBgShellDb,
   markBgShellStatus as markBgShellStatusDb,
@@ -350,6 +353,7 @@ const launchBgShell = async (
       exitCode: shell.exitCode,
       startedAt: shell.startedAt,
       threadKey: shell.threadKey,
+      ownerThreadKey: resolveOwnerThreadKey(shell.threadKey), // 원 세션(잡 좌표 환원).
     });
   };
   child.on("error", () => {
@@ -380,6 +384,7 @@ const launchBgShell = async (
     status: "running",
     startedAt,
     threadKey,
+    ownerThreadKey: resolveOwnerThreadKey(threadKey), // 원 세션(잡 좌표 환원).
   });
   // DB insert — *동기* 실행(spawn 과 같은 tick). ★레이스 회피: child 의 close/error
   // 이벤트는 libuv 콜백이라 이번 tick 안엔 절대 못 들어온다 — 그래서 이 INSERT 가
@@ -491,6 +496,8 @@ export interface BgShellSnapshot {
   status: "running" | "completed" | "killed";
   startedAt: number;
   threadKey: string;
+  /** 원 세션 threadKey — threadKey 가 잡 좌표(worker:/agent:)면 환원한 값. 미상은 "". */
+  ownerThreadKey: string;
   exitCode: number | null;
 }
 
@@ -509,6 +516,9 @@ export const listShells = (): BgShellSnapshot[] =>
       status: s.status,
       startedAt: s.startedAt,
       threadKey: s.threadKey,
+      // 워커·서브가 띄운 셸의 threadKey 는 세션 키가 아니라 잡 좌표 → 서버가 환원해서 준다
+      // (잡 레지스트리 전체를 보는 쪽이 authoritative — 대시보드 세션 스코프 판정 근거).
+      ownerThreadKey: resolveOwnerThreadKey(s.threadKey),
       exitCode: s.exitCode,
     }))
     .sort((a, b) => b.startedAt - a.startedAt);

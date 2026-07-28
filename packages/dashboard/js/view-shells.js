@@ -29,7 +29,7 @@
         if (!e) {
           e = {
             shellId, command: "", cwd: "", status: "running", startedAt: Date.now(),
-            threadKey: "", exitCode: null, expanded: false, killRequested: false,
+            threadKey: "", ownerTk: "", exitCode: null, expanded: false, killRequested: false,
             visible: !!(opts && opts.visible), lastLine: "",
             // owner/killable(Phase 3b, ADR §6) — 부재=killable:true(codex/openai, 프로세스 우리
             // 소유·⏹️ 가능). owner:"sdk"/killable:false(claude 관측 브리지)=⏹️ 비활성·SDK 표식.
@@ -81,6 +81,7 @@
         const e = upsertShellEntry(p.shellId, {
           command: p.command || "", cwd: p.cwd || "", status: "running",
           startedAt: p.startedAt || ts || Date.now(), threadKey: p.threadKey || "", exitCode: null,
+          ownerTk: typeof p.ownerThreadKey === "string" ? p.ownerThreadKey : "", // 서버 환원 원 세션.
           owner: own.owner, killable: own.killable,
         });
         capShellRegistry();
@@ -107,6 +108,7 @@
           command: p.command || "", cwd: p.cwd || "",
           status: p.status === "killed" ? "killed" : "exited",
           exitCode: p.exitCode != null ? p.exitCode : null, threadKey: p.threadKey || "",
+          ownerTk: typeof p.ownerThreadKey === "string" ? p.ownerThreadKey : "", // 서버 환원 원 세션.
           owner: own.owner, killable: own.killable,
         });
         e.visible = true; // 이미 결론난 상태라 더 이상 깜빡임 리스크 없음(ADR §5 취지).
@@ -236,6 +238,21 @@
           ownerBadge.title = "claude 백그라운드 셸은 SDK 내부 소유 — 강제 종료·출력 tail 불가(대화 턴 안에서만 제어).";
           top.appendChild(ownerBadge);
         }
+        // 어느 세션이 띄운 셸인가 (2026-07-28) — 이 뷰는 세션 필터 없는 *전체 인벤토리* 라
+        // (작업관리자 성격) 필터 대신 **귀속을 명시**한다. 근거는 서버 환원값(ownerTk) 우선,
+        // 없으면 프런트 환원. 워커·서브가 띄운 셸은 threadKey 가 잡 좌표라 그대로 쓰면 안 된다.
+        {
+          const owner =
+            entry.ownerTk ||
+            (typeof shellOwnerSession === "function" ? shellOwnerSession(entry.threadKey) : "");
+          const sess = document.createElement("span");
+          sess.className = "shell-card-session" + (owner ? "" : " unknown");
+          sess.textContent = owner ? sessionLabelFor(owner) : "세션 미상";
+          sess.title = owner
+            ? "이 셸을 띄운 세션: " + owner
+            : "띄운 세션을 알 수 없습니다(부모 잡 유실 — 새로고침하면 복원될 수 있습니다).";
+          top.appendChild(sess);
+        }
         card.appendChild(top);
         const name = document.createElement("div"); name.className = "agent-card-name shell-card-command";
         name.textContent = entry.command || "(명령 없음)";
@@ -315,7 +332,16 @@
         shellTailLineEls.clear();
         const now = Date.now();
         let running = 0, total = 0, shown = 0;
-        const entries = [...shellRegistry.values()].filter((e) => e.visible);
+        // ★드로어 상단 "현재 세션 / 전체 세션" 토글을 셸 그룹도 따른다 (2026-07-28).
+        //  종전엔 잡 그룹만 따랐다 — "현재 세션"으로 둬도 남의 세션 셸이 그대로 보였다.
+        //  CSS 숨김이 아니라 여기서 거른다: 아래 running/total 카운트가 화면과 어긋나지 않게.
+        //  판정은 잡과 같은 근거(isShellInScope: 서버 환원값 우선, 미상 숨김).
+        const scoped =
+          typeof bgSessionScope !== "undefined" && bgSessionScope === "session" &&
+          typeof isShellInScope === "function";
+        const entries = [...shellRegistry.values()].filter(
+          (e) => e.visible && (!scoped || isShellInScope(e.threadKey, e.ownerTk)),
+        );
         entries.sort((a, b) => {
           const ra = a.status === "running" ? 0 : 1;
           const rb = b.status === "running" ? 0 : 1;
@@ -379,6 +405,7 @@
             upsertShellEntry(s.shellId, {
               command: s.command || "", cwd: s.cwd || "", status: normalizeSeedStatus(s.status),
               startedAt: s.startedAt || Date.now(), threadKey: s.threadKey || "",
+              ownerTk: typeof s.ownerThreadKey === "string" ? s.ownerThreadKey : "", // 서버 환원 원 세션.
               exitCode: s.exitCode != null ? s.exitCode : null,
             }, { visible: true });
           }

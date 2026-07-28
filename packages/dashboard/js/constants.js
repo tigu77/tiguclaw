@@ -34,4 +34,21 @@
       let activeThreadKey = DEFAULT_DASH_THREAD;
       // 이벤트 threadKey 가 지금 활성 세션인가(미지정 = 활성으로 취급 — 구 `|| activeThreadKey` 폴백 동형).
       const isActiveThread = (tk) => !tk || tk === activeThreadKey;
+      // 채널 접두 표시명 — 탭으로 안 열려 있는 세션(텔레그램·CLI 등)의 폴백 라벨.
+      const CHANNEL_LABEL = { dashboard: "대시보드", telegram: "텔레그램", cli: "CLI", http: "HTTP" };
+      /**
+       * 세션 threadKey → 사람이 읽는 라벨. 탭으로 열려 있으면 그 이름(사용자가 붙인 이름 포함),
+       * 아니면 채널 접두로 폴백. 미상("")은 ""를 돌려주고 표시 정책은 호출자가 정한다.
+       * ★잡 좌표(worker:/agent:)를 그대로 넣지 말 것 — 원 세션으로 환원한 뒤 부를 것.
+       */
+      const sessionLabelFor = (tk) => {
+        if (typeof tk !== "string" || tk === "") return "";
+        if (typeof openTabs !== "undefined" && Array.isArray(openTabs)) {
+          const tab = openTabs.find((t) => t && t.threadKey === tk);
+          if (tab && tab.name) return tab.name;
+        }
+        const i = tk.indexOf(":");
+        const ch = i > 0 ? tk.slice(0, i) : tk;
+        return CHANNEL_LABEL[ch] || ch;
+      };
 

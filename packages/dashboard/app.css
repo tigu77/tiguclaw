@@ -909,6 +909,12 @@
       .shell-card-output { margin-top:4px; max-height:220px; overflow-y:auto; background:rgba(0,0,0,.22); border:1px solid var(--border); border-radius:8px; padding:8px 10px; font-size:11px; line-height:1.5; color:var(--text); white-space:pre-wrap; word-break:break-word; }
       /* SDK 소유 표식 + kill 비활성 안내(Phase 3b, ADR §6 — cosmetic ⏹️ 금지, 정직한 한계 노출). */
       .shell-card-owner { margin-left:auto; font-size:10px; font-weight:800; padding:2px 8px; border-radius:999px; text-transform:uppercase; letter-spacing:.03em; background:rgba(251,191,36,.14); color:var(--warn); border:1px solid rgba(251,191,36,.34); }
+      /* 셸 귀속 세션 배지 — 이 뷰는 전 세션 인벤토리라 "누가 띄웠나"를 카드에 명시한다.
+         SDK 소유 배지(.shell-card-owner)와 나란히 설 수 있어 margin-left:auto 는 첫 배지에만
+         걸리고 이건 그 옆에 붙는다. 미상(.unknown)은 강조하지 않고 흐리게. */
+      .shell-card-session { margin-left:auto; font-size:10px; font-weight:700; padding:2px 8px; border-radius:999px; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:var(--card); color:var(--text-mute); border:1px solid var(--border); }
+      .shell-card-owner ~ .shell-card-session { margin-left:6px; }
+      .shell-card-session.unknown { opacity:.6; font-style:italic; }
       .shell-card-kill-disabled { margin-left:auto; font-size:11px; color:var(--text-dim); font-weight:600; cursor:help; }
       /* 드로어 컴팩트 카드(ADR §5 Phase 3b-2) — 잡카드 스타일 답습(#bg-job 패딩과 맞춤). 폭 좁은
          드로어(min 300px)에 맞춰 agent-card 기본보다 여백·라운드를 줄인다. 유일 소비처(다른 grid

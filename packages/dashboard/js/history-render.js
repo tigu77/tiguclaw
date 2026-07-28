@@ -13,6 +13,7 @@
         div.dataset.type = isOut ? "channel.message.out" : "channel.message.in";
         div.dataset.ts = String(entry.ts); // prune 후 oldestLoadedTs 복구용 수치 ts.
         const head = document.createElement("div");
+        head.className = "bubble-meta"; // 라이브 답변 버블과 같은 간격(새로고침해도 동일해야 함).
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
         tsEl.textContent = fmtTime(entry.ts);

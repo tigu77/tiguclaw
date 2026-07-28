@@ -392,6 +392,15 @@
       .ev { padding:8px 10px; margin:7px 0; border:1px solid var(--border); border-left:3px solid var(--text-dim); background:var(--card); border-radius:12px; font-size:11px; word-break:break-word; }
       .ev .ts { color:var(--text-dim); font-size:10px; font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       .ev .type { font-weight:800; margin-left:6px; font-size:11px; }
+      /* 채팅 버블 메타 줄 — 시각·이름·채널·모델·비용이 서로 붙어 읽기 어려웠다(2026-07-28
+         사용자 요청 "사이사이 살짝씩 띄워줘"). 스텝 카드 헤더(.turn-head)와 같은 flex+gap
+         규칙을 쓴다 — 두 헤더가 같은 배지들을 담으므로 간격 규칙도 같아야 한다.
+         flex-wrap: 모바일·긴 모델명에서 넘칠 때 잘리지 않고 접히게.
+         gap 이 간격을 담당하므로 .type 의 margin-left 는 여기선 0(이중 간격 방지). */
+      /* ★클래스명 주의: `.chat-head` 는 채팅 패널 상단 헤더가 이미 쓰고 있다(justify-content:
+         space-between). 그 이름을 재사용했다가 버블 메타가 양끝으로 벌어졌다 — 고유 이름을 쓴다. */
+      .bubble-meta { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-start; gap:7px; }
+      .bubble-meta > .type { margin-left:0; }
       /* 원시 로그 이벤트(JSON dump)의 직속 <pre> 만 hover/expanded 로 토글. ★직속 자식(>)으로
          스코프 — 턴카드(=.ev)의 중첩된 도구 <pre>(.act-diff-pre·.act-output-pre)까지 잡으면
          스텝 클릭 펼침이 hover 에 종속돼 마우스 빠질 때 접혀버린다(설계=클릭 토글·hover 무관). */

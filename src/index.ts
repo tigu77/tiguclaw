@@ -83,6 +83,7 @@ import {
   listActiveCooldowns,
   poolDiversityWarning,
   restoreCooldowns,
+  clearCooldowns,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
 import {
@@ -984,7 +985,7 @@ const handler: MessageHandler = async (msg) => {
       })();
       const nameOf = (id: string): string => {
         if (id === DEFAULT_SESSION_ID) return "기본 세션";
-        const t = listThreads({ excludeInternal: true }).find(
+        const t = listThreads({ excludeInternal: true, excludeProbes: true }).find(
           (x: { threadKey: string; name?: string | null }) => x.threadKey === id,
         );
         const nm = t?.name?.trim();
@@ -999,7 +1000,7 @@ const handler: MessageHandler = async (msg) => {
           await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.");
           return;
         }
-        const exists = listThreads({ excludeInternal: true }).some(
+        const exists = listThreads({ excludeInternal: true, excludeProbes: true }).some(
           (x: { threadKey: string }) => x.threadKey === target,
         );
         if (!exists) {
@@ -1041,7 +1042,7 @@ const handler: MessageHandler = async (msg) => {
       }
 
       // 인자 없음 — 현재 세션 + 선택지. 선택 UI 가 없는 채널(값 미지원)엔 목록 텍스트로 폴백.
-      const threads = listThreads({ excludeInternal: true }).slice(0, 20);
+      const threads = listThreads({ excludeInternal: true, excludeProbes: true }).slice(0, 20);
       const options = [
         { label: `기본 세션${current === DEFAULT_SESSION_ID ? " ✅" : ""}`, value: `/sessions use ${DEFAULT_SESSION_ID}` },
         ...threads
@@ -1064,6 +1065,42 @@ const handler: MessageHandler = async (msg) => {
       await replyCommand(
         msg,
         `${header}\n\n${lines.join("\n")}\n\n새로 만들기: \`/sessions new [이름]\``,
+      );
+      return;
+    }
+
+    // ── /cooldown — 백엔드 쿨다운 조회·해제 (2026-07-28) ─────────────────────────
+    // 쿨다운은 "호출 성공 시" 풀리는데 쿨다운 중엔 그 백엔드를 안 부르므로 스스로는 안 풀린다.
+    // 재인증·요금제 변경처럼 **전제가 바뀐 경우**를 위한 명시적 해제 수단(LLM 미경유).
+    if (cmd === "/cooldown") {
+      const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+      const target = args.trim().slice(sub.length).trim();
+      if (sub === "clear") {
+        const cleared = clearCooldowns(target === "" ? undefined : target);
+        await replyCommand(
+          msg,
+          cleared.length === 0
+            ? target === ""
+              ? "해제할 쿨다운이 없습니다."
+              : `'${target}' 로 시작하는 쿨다운이 없습니다.`
+            : `쿨다운 해제: ${cleared.join(", ")}\n다음 턴부터 그 백엔드를 다시 시도합니다.`,
+        );
+        return;
+      }
+      const live = listActiveCooldowns();
+      if (live.length === 0) {
+        await replyCommand(msg, "쿨다운 중인 백엔드가 없습니다.");
+        return;
+      }
+      const lines = live.map((c) => {
+        const mins = Math.round(c.remainingMs / 60000);
+        const when = new Date(Date.now() + c.remainingMs).toLocaleString("ko-KR");
+        return `· ${c.key} — ${mins >= 120 ? `${Math.round(mins / 60)}시간` : `${mins}분`} 남음 (해제 ${when})`;
+      });
+      await replyCommand(
+        msg,
+        `쿨다운 중인 백엔드:\n${lines.join("\n")}\n\n` +
+          "재인증했거나 한도가 풀렸으면 `/cooldown clear` 로 즉시 해제하세요(대상 지정: `/cooldown clear codex`).",
       );
       return;
     }

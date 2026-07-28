@@ -33,6 +33,8 @@
       // 도구 스텝 dedup(기능 B) — chat-history 로 그린 영속 스텝과 SSE replay(같은 활동) 가
       // 겹치지 않게. 키 = ts|threadKey|seq (라이브 activity·영속 activity 동일).
       const renderedActivityKeys = new Set();
+      /** prompt.options dedup — 키 = 이벤트ts|세션. replay 가 같은 선택지를 다시 그리지 않게. */
+      const renderedPromptOptionKeys = new Set();
       const actKey = (ts, threadKey, seq) => String(ts) + "|" + (threadKey || "") + "|" + (seq == null ? "" : seq);
 
       // ── 이력 로드 창 보호 (2026-07-28) ───────────────────────────────────

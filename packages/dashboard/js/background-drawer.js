@@ -108,7 +108,12 @@
       bgList.addEventListener("scroll", updateBgJump, { passive: true });
       const BG_STATUS = {
         running: "🟡 진행 중", done: "✅ 완료", failed: "⚠️ 실패", cancelled: "⏹ 취소",
+        // 종료된 건 확실한데 결과를 못 받은 경우(연결이 끊긴 사이 종료·데몬 재시작).
+        // "완료"로 단정하지 않는다 — 성공 여부를 모르는데 성공처럼 보이면 거짓값이다.
+        interrupted: "⏹ 종료됨(결과 미수신)",
       };
+      /** 되돌릴 수 없는 종료 상태 — 이 상태의 카드는 다시 running 이 되지 않는다. */
+      const TERMINAL_JOB_STATUS = new Set(["done", "failed", "cancelled", "interrupted"]);
       const BG_MAX = 50; // 카드 상한(메모리 바운드). 오래된 끝난 잡부터 제거.
       const jobCards = new Map(); // jobId -> { el, labelEl, statusEl, chevEl, stepsEl, errEl, status, stepCount }
 
@@ -764,6 +769,12 @@
         // ownerThreadKey = 서버가 환원한 원 세션(worker.* payload / GET /api/worker-jobs).
         // 세션 스코프 판정의 1순위 근거라 반드시 함께 넘긴다(빠뜨리면 프런트 추측으로 폴백).
         const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, ownerThreadKey: p.ownerThreadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier, cwd: p.cwd });
+        // ★잡 상태는 **단조**다 — running → 종료, 되돌아가지 않는다 (2026-07-28).
+        //  종전엔 마지막 이벤트가 무조건 이겨서, 재연결 replay 가 흘린 옛 worker.started 가
+        //  이미 끝난 카드를 **다시 "진행 중"으로 되돌렸고** 그 뒤로 갱신할 이벤트가 없어
+        //  영원히 진행 중으로 남았다(사용자 신고). 오늘 채팅 순서에서 고친 것과 같은 뿌리 —
+        //  replay 를 최신 사실로 착각하는 것. 종료는 되돌릴 수 없는 사실이므로 sticky 로 둔다.
+        if (TERMINAL_JOB_STATUS.has(entry.status) && status === "running") return entry;
         const wasRunning = entry.status === "running";
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");
@@ -828,15 +839,31 @@
       // activity-only 카드라 라벨이 "(작업)"으로 뜨던 문제를 label·kind·task 복원으로 해소.
       // handleWorkerEvent 재사용(멱등 ensureJobCard — SSE 와 중복돼도 같은 jobId=같은 카드).
       const hydrateActiveJobs = () => {
+        // ★서버가 주는 건 "지금 도는 잡" 전량이므로, 하이드레이션은 **복원 + 대조** 두 일을 한다.
+        //  대조가 없으면: 잡이 끝났는데 그 worker.done 이 replay 창 밖으로 밀린 경우(긴 잡·
+        //  오래 끊긴 연결) 카드가 영원히 "진행 중"으로 남는다 — 갱신해 줄 이벤트가 더는 없다.
+        //  서버 목록에 없는 running 카드 = 이미 끝난 잡이다(관측된 사실). 결과는 모르므로
+        //  "완료"로 단정하지 않고 종료 사실만 반영한다(거짓값 금지).
+        const startedAt = Date.now();
         fetch("/api/worker-jobs").then((r) => r.json()).then((d) => {
           if (!d || !Array.isArray(d.jobs)) return;
+          const live = new Set();
           for (const j of d.jobs) {
             if (!j || !j.jobId) continue;
+            live.add(j.jobId);
             handleWorkerEvent({ ...j, status: j.status || "running" }, Date.now());
+          }
+          for (const [jobId, e] of jobCards) {
+            if (e.status !== "running" || live.has(jobId)) continue;
+            // 이 fetch 이후에 생긴 카드는 대조 대상이 아니다(응답이 그 잡을 알 리 없다) — race 방지.
+            if ((e.startTs || 0) > startedAt) continue;
+            handleWorkerEvent({ jobId, status: "interrupted" }, Date.now());
           }
         }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
       };
       hydrateActiveJobs();
+      // 재연결마다 다시 대조 — 끊겨 있는 동안 끝난 잡이 유령으로 남지 않게(활동.js 가 부름).
+      window.reconcileBgJobs = hydrateActiveJobs;
 
       // 🛠 스킬 스텝 인식 (2026-07-14) — invoke_skill 도구 호출을 스킬 배지로 승격한다.
       // 스킬명은 공유 detail 빌더(_activity-detail.ts)가 "name=<skill>"(path 지정 시

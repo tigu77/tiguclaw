@@ -1802,7 +1802,8 @@ class HttpBridge implements Channel, Observer {
     // 프리뷰(chat_log 최근 1건 요약) 부착. read 게이트. SSE 는 전체 브로드캐스트 유지(D5).
     if (pathname === "/sessions" && method === "GET") {
       try {
-        const threads = listThreads({ excludeInternal: true });
+        // 사용자에게 보이는 목록 — 프로브·검증 흔적 제외(대시보드 세션 목록과 /sessions 공통 기준).
+        const threads = listThreads({ excludeInternal: true, excludeProbes: true });
         const sessions = threads.map((t) => {
           // 프리뷰 — 그 스레드 최근 1건 text 요약(80자 슬라이스). 첨부-only(text="")는
           // 스킵되어 빈 프리뷰(undefined)로 graceful.

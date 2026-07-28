@@ -627,6 +627,37 @@ export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
   }
 };
 
+/**
+ * 쿨다운 강제 해제 — 사용자 명시 조치용(`/cooldown clear`).
+ *
+ * ★왜 필요한가 (2026-07-28): 쿨다운은 "호출이 성공하면" 풀리는데(clearCooldownOnSuccess),
+ *  쿨다운 중엔 그 백엔드를 **아예 안 부르므로** 스스로는 절대 안 풀린다 = 자기 잠금.
+ *  종전엔 재시작이 메모리를 비워 우연히 탈출구 역할을 했지만, 쿨다운을 영속으로 바꾸면서
+ *  (죽은 백엔드를 매 부팅 다시 두드리던 낭비 차단) 그 우연한 탈출구가 사라졌다.
+ *  그래서 **재인증·요금제 변경처럼 전제가 바뀐 경우**를 위한 명시적 해제가 필요하다.
+ *  메모리와 DB 를 함께 지운다 — 한쪽만 지우면 재시작 때 되살아나거나 즉시 안 먹는다.
+ *
+ * @param prefix 비우면 전체. 주면 그 접두(예 "codex")로 시작하는 키만.
+ * @returns 해제된 키 목록.
+ */
+export const clearCooldowns = (prefix?: string): string[] => {
+  const want = prefix?.trim() ?? "";
+  const cleared: string[] = [];
+  for (const key of [...cooldownUntil.keys()]) {
+    if (want !== "" && !key.startsWith(want)) continue;
+    cooldownUntil.delete(key);
+    try {
+      deleteCooldown(key);
+    } catch {
+      /* DB 실패해도 메모리는 풀렸다 — 다음 부팅에 되살아나면 다시 해제 가능 */
+    }
+    publishCooldownEvent("clear", key, 0);
+    cleared.push(key);
+  }
+  return cleared;
+};
+
+
 // V5 — 응답 후 어댑터 무관 통합 처리. 어댑터 차이는 jsonlPath 유무로 표현.
 const persistOutput = (
   input: RegionASdkInput,

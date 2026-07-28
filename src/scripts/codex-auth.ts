@@ -76,7 +76,31 @@ const main = async (): Promise<void> => {
               "<h1>tiguclaw OAuth 완료</h1><p>창을 닫고 터미널로 돌아가세요.</p>",
             );
           server.close();
-          console.log(`\n✅ 토큰 발급 + .env 저장 완료.`);
+          // ★재인증했으면 이전 한도 판정은 무효다 (2026-07-28). 쿨다운은 "호출 성공 시"에만
+          //  풀리는데 쿨다운 중엔 그 백엔드를 아예 안 부르므로 스스로는 안 풀린다 = 자기 잠금.
+          //  새 자격증명은 전제가 바뀐 것이므로 여기서 지운다. 이 CLI 는 데몬과 별 프로세스라
+          //  DB 만 지울 수 있다 → 돌고 있는 데몬에는 `/cooldown clear codex` 또는 재시작이 필요.
+          //  (그래서 아래 안내를 반드시 함께 출력한다 — 조용히 안 풀리면 원인을 알 수 없다.)
+          let cooldownNote = "";
+          try {
+            const { initStore } = await import("../store/sessions.js");
+            const { loadLiveCooldowns, deleteCooldown } = await import(
+              "../store/cooldowns.js"
+            );
+            initStore();
+            const live = loadLiveCooldowns(Date.now()).filter((c) =>
+              c.key.startsWith("codex"),
+            );
+            for (const c of live) deleteCooldown(c.key);
+            if (live.length > 0) {
+              cooldownNote =
+                `\n⚠️ codex 쿨다운 ${live.length}건을 해제했습니다(재인증 = 이전 한도 판정 무효).` +
+                `\n   돌고 있는 데몬에는 즉시 반영되지 않습니다 — 채팅에서 \`/cooldown clear codex\` 를 보내거나 데몬을 재시작하세요.`;
+            }
+          } catch {
+            /* store 미준비 등 — 인증 자체는 성공했으므로 진행 */
+          }
+          console.log(`\n✅ 토큰 발급 + .env 저장 완료.${cooldownNote}`);
           console.log(`   access_token expires in ~${expiresInSec}s`);
           console.log(`   refresh_token 보존 (V3.3 자동 refresh hook 활성)`);
           console.log(`\n다음: REGION_A_MODELS=codex:gpt-5.5 npm run dev 또는 직접 runRegionA 호출.\n`);

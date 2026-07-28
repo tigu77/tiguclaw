@@ -5,7 +5,7 @@
       // 오늘 codex 빈 응답 3건이 전부 ②였고, 그래서 몇 주간 아무도 몰랐다.
       // 답변 본문은 오염시키지 않는다(성공한 답은 그대로) — 대신 실패 사실을 별도 줄로 남긴다.
       // 개별 건은 여기(대시보드), 급증(3건+)은 self-growth 자가 점검이 텔레그램으로 민다.
-      const renderTurnFailure = (p) => {
+      const renderTurnFailure = (p, evTs) => {
         const tk = p.threadKey;
         if (isEndpointThread(tk)) return;   // 기계 API 호출 — 엔드포인트 뷰가 따로 보여준다.
         if (!isActiveThread(tk)) return;    // 멀티세션 — 자기 세션에만.
@@ -14,6 +14,7 @@
         renderLocalChat(
           "error",
           `⚠️ ${who} 턴 실패${why}\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다).`,
+          { ts: evTs, key: "turn-failure|" + (tk || "") },
         );
       };
 
@@ -47,7 +48,7 @@
           }
           else {
             scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).
-            renderTurnFailure(ev.payload || {});
+            renderTurnFailure(ev.payload || {}, ev.ts);
           }
         }
         if (ev.type === "endpoint.call") { captureEndpointCall(ev.payload || {}); return; } // 엔드포인트 뷰 데이터.
@@ -139,6 +140,14 @@
           // 멀티세션(B계층) — 채팅 스트림 DOM(스폰 칩 포함)은 active 세션만. 세션 A 스폰 칩이 B 에
           // 새지 않음(§3.3 교차 누수 0 — 스폰 스텝의 부모 threadKey 가 곧 그 세션이므로 자연 격리).
           if (!isActiveThread(ap.threadKey)) return;
+          // ★재연결 replay 순서 보호 (2026-07-28 검수) — dedup(renderedActivityKeys)이
+          //  중복은 막지만 **순서**는 안 본다. 이력 페이지에 없던 옛 활동이 replay 로 오면
+          //  최신 대화 아래에 도구 스텝이 붙는다(메시지·선택지에서 고친 것과 같은 부류).
+          //  진행 중 활동은 항상 최신이라 이 가드에 안 걸린다(라이브 무영향).
+          if (vtIsStaleForAppend(ev.ts)) {
+            console.debug("[activity] stale replay 무시(순서 보호):", ap.label || ap.kind || "?");
+            return;
+          }
           renderActivity(ap, ts);
           return;
         }
@@ -161,6 +170,19 @@
             );
             return;
           }
+          // ★재연결 replay 방어 (2026-07-28) — 이 렌더러엔 dedup 도 순서 가드도 없었다.
+          //  replay 창(최근 50건)에 prompt.options 가 들어 있으면 **재연결할 때마다** 같은
+          //  선택지가 채팅 바닥에 다시 그려진다("옛 메시지가 마지막에 들어온다" 실사고).
+          //  메시지 경로가 이미 쓰는 두 가드를 그대로 적용한다: 같은 이벤트는 한 번만,
+          //  그리고 이미 지나간 것은 바닥에 붙이지 않는다.
+          //  ★진행 중 질문은 살린다 — 최신이면 stale 이 아니므로 재연결해도 버튼이 남는다.
+          const okey = `${ev.ts}|${ptk || ""}`;
+          if (renderedPromptOptionKeys.has(okey)) return;
+          if (vtIsStaleForAppend(ev.ts)) {
+            console.debug("[prompt-options] stale replay 무시(순서 보호):", new Date(ev.ts).toISOString());
+            return;
+          }
+          renderedPromptOptionKeys.add(okey);
           renderPromptOptions(ev.payload || {}, ts, ev.ts);
           return;
         }
@@ -191,6 +213,7 @@
           renderLocalChat(
             p.willRetry === true ? "info" : "error",
             `⚠️ 스케줄 ${verb} — ${what}${where}${why}${tail}`,
+            { ts: ev.ts, key: "scheduler.error" },
           );
           return;
         }
@@ -204,6 +227,7 @@
           renderLocalChat(
             "info",
             `✅ 스케줄 자동 복구 — ${what} 전송이 실패해 자동으로 다시 보냈고 성공했습니다.`,
+            { ts: ev.ts, key: "scheduler.recovered" },
           );
           return;
         }
@@ -220,6 +244,7 @@
               "info",
               `🧠 자동 지침 추가 — '${p.memoryName}' (반복 실패 ${p.count ?? "?"}회 학습 · ` +
                 `SELF_GROWTH.md · 확정 안 하면 자동 만료). 잘못된 지침이면 알려주세요.`,
+              { ts: ev.ts, key: "self-growth|" + (p.memoryName || "") },
             );
           }
           return;
@@ -254,7 +279,28 @@
         while (logSink.children.length > LOG_SINK_MAX) logSink.removeChild(logSink.lastChild);
       };
 
-      const renderLocalChat = (kind, text) => {
+      /**
+       * 로컬 채팅 줄(통지·오류·안내) 렌더.
+       *
+       * ★opts.ts 를 주면 **replay 방어**가 켜진다 (2026-07-28). 이벤트에서 온 통지는 반드시
+       *  주라 — 안 주면 `Date.now()` 가 찍혀 **옛 통지가 방금 온 새 경고처럼** 바닥에 붙고,
+       *  재연결마다 반복된다(스케줄 실패·턴 오류가 매번 다시 뜨던 실사고). 사용자가 직접
+       *  만든 줄(전송 실패·안내 등 로컬 발생)은 언제나 지금이므로 안 줘도 된다.
+       *  가드는 채팅 메시지와 동일: 같은 이벤트는 한 번만, 지나간 것은 바닥에 안 붙인다.
+       */
+      const renderedNoticeKeys = new Set();
+      const renderLocalChat = (kind, text, opts) => {
+        const evTs =
+          opts && typeof opts.ts === "number" && Number.isFinite(opts.ts) ? opts.ts : null;
+        if (evTs !== null) {
+          const nkey = `${(opts && opts.key) || kind}|${evTs}`;
+          if (renderedNoticeKeys.has(nkey)) return; // replay 중복.
+          if (vtIsStaleForAppend(evTs)) {
+            console.debug("[notice] stale replay 무시(순서 보호):", nkey);
+            return;
+          }
+          renderedNoticeKeys.add(nkey);
+        }
         const logEmpty = document.getElementById("log-empty");
         if (logEmpty && firstEvent) {
           // 대화 탭의 빈 상태는 유지하고, 로그 placeholder만 정리합니다.
@@ -264,7 +310,7 @@
         localChatCount += 1;
         refreshChatEmpty();
         if (currentView === "overview") setTimeout(showOverview, 0);
-        const now = Date.now();
+        const now = evTs !== null ? evTs : Date.now(); // 통지는 **발생 시각**으로 표기.
         const div = document.createElement("div");
         div.className = "ev local";
         div.dataset.ts = String(now); // 날짜 구분선 경계 판정용.

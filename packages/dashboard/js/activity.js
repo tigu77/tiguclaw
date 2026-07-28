@@ -406,7 +406,13 @@
       const connectStream = () => {
         es = new EventSource("/api/events");
         lastRecvAt = Date.now();
-        es.onopen = () => { lastRecvAt = Date.now(); setConn(true); };
+        es.onopen = () => {
+          lastRecvAt = Date.now();
+          setConn(true);
+          // 끊겨 있는 동안 끝난 잡이 "진행 중" 유령으로 남지 않게 서버와 대조(2026-07-28).
+          // replay 는 창(최근 N건) 밖의 종료 이벤트를 못 주므로 replay 만으로는 못 고친다.
+          try { if (typeof window.reconcileBgJobs === "function") window.reconcileBgJobs(); } catch {}
+        };
         es.onmessage = (m) => {
           lastRecvAt = Date.now(); // 하트비트 포함 — 모든 수신이 liveness 증거.
           setConn(true);

@@ -1028,9 +1028,14 @@ export interface ThreadSummary {
   name: string | null;
 }
 
+/** 이 개수 이하의 메시지만 있는 무명 스레드 = 대화가 아닌 흔적(프로브·헬스체크). */
+const PROBE_MESSAGE_MAX = 2;
+
 export const listThreads = (opts?: {
   prefix?: string;
   excludeInternal?: boolean;
+  /** 프로브·검증 흔적(무명 + 왕복 1회 이하) 제외 — 사용자에게 보이는 세션 목록용. */
+  excludeProbes?: boolean;
   limit?: number;
 }): ThreadSummary[] => {
   const handle = requireDb("listThreads");
@@ -1047,6 +1052,19 @@ export const listThreads = (opts?: {
     }
     conds.push("channel_thread_id NOT LIKE ? ESCAPE '\\'");
     params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
+  }
+  // ★프로브·검증 흔적 제외 (2026-07-28) — "대화가 아닌 것" 을 거른다.
+  //  실측(dev 12건): 찌꺼기는 전부 **이름 없음 + 메시지 2건**(왕복 1회) 이었다
+  //  (test:healthcheck·cr-e2e-high·검증 프로브 등). 진짜 대화는 14~1842건.
+  //  판별을 키 패턴(`test:` 등)으로 하지 않는 이유: 그건 우리 내부 관습이라 새 프로브가
+  //  다른 접두를 쓰면 또 샌다(실제로 오늘 `dashboard:` 접두 프로브가 목록에 올라왔다).
+  //  "이름을 붙였다" = 사용자가 쓰는 세션이라는 확실한 증거이므로 이름 있으면 무조건 통과.
+  if (opts?.excludeProbes === true) {
+    conds.push(
+      `(name IS NOT NULL AND TRIM(name) <> ''
+        OR (SELECT COUNT(*) FROM chat_log c WHERE c.thread_key = threads.channel_thread_id) > ?)`,
+    );
+    params.push(PROBE_MESSAGE_MAX);
   }
   params.push(limit);
 

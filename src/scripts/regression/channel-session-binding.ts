@@ -19,6 +19,7 @@ import {
   setChannelSessionBinding,
   clearChannelSessionBinding,
 } from "../../store/channel-session.js";
+import { listThreads, getDb } from "../../store/sessions.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CH = "telegram";
@@ -76,6 +77,42 @@ export const check: RegressionCheck = {
     out.push(assert("해제하면 기본 세션으로", resolveSessionId(CH, DM) === DEFAULT_SESSION_ID, resolveSessionId(CH, DM)));
 
     clearChannelSessionBinding(CH, GROUP);
+
+    // ── 프로브 흔적 필터 (2026-07-28) — 사용자에게 보이는 세션 목록에 검증 찌꺼기가 섞이던 것.
+    //  실측: 찌꺼기는 전부 "무명 + 왕복 1회(메시지 2건)". 이름을 붙였으면 실사용 증거다.
+    const db = getDb();
+    const ins = db.prepare(
+      `INSERT OR REPLACE INTO threads (channel, channel_thread_id, claude_session_id, model, system_prompt_hash, last_used_at, created_at, name)
+       VALUES ('http-bridge', ?, '', NULL, NULL, ?, ?, ?)`,
+    );
+    const msg = db.prepare(
+      `INSERT INTO chat_log (thread_key, channel, role, text, ts) VALUES (?, 'http-bridge', 'user', 'x', ?)`,
+    );
+    const now = Date.now();
+    ins.run("probe:regression-junk", now, now, null); // 무명 + 메시지 2건 = 프로브
+    msg.run("probe:regression-junk", now);
+    msg.run("probe:regression-junk", now + 1);
+    ins.run("probe:regression-named", now, now, "이름있는세션"); // 이름 있으면 메시지 적어도 통과
+    msg.run("probe:regression-named", now);
+    const listed = listThreads({ excludeInternal: true, excludeProbes: true, limit: 200 }).map(
+      (t) => t.threadKey,
+    );
+    out.push(
+      assert(
+        "무명 + 왕복1회는 목록에서 제외",
+        !listed.includes("probe:regression-junk"),
+        `${listed.length}건 중 포함=${listed.includes("probe:regression-junk")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "이름 있으면 메시지가 적어도 표시(실사용 증거)",
+        listed.includes("probe:regression-named"),
+        `포함=${listed.includes("probe:regression-named")}`,
+      ),
+    );
+    db.prepare(`DELETE FROM threads WHERE channel_thread_id LIKE 'probe:regression-%'`).run();
+    db.prepare(`DELETE FROM chat_log WHERE thread_key LIKE 'probe:regression-%'`).run();
     return out;
   },
 };

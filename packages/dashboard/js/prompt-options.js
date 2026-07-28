@@ -14,7 +14,17 @@
       };
       const renderPromptOptions = (payload, ts, rawTs) => {
         const options = Array.isArray(payload.options) ? payload.options : [];
-        if (options.length === 0) return;
+        // ★조용히 삼키지 않는다 (2026-07-28). 여기서 그냥 return 하면 "선택지를 띄웠습니다"
+        //  라는 답변만 남고 화면엔 아무것도 안 뜬다 — 사용자는 무엇이 잘못됐는지 알 길이
+        //  없고(실제 신고: 같은 요청 3회 반복), 진단할 흔적도 안 남는다. 이벤트는 왔는데
+        //  못 그린 경우이므로 원인은 페이로드에 있다 = 그 페이로드를 남긴다.
+        if (options.length === 0) {
+          console.warn(
+            "[prompt-options] 선택지 0건 — 렌더 생략. 도구는 호출됐지만 보기가 비었다:",
+            payload,
+          );
+          return;
+        }
         const logEmpty = document.getElementById("log-empty");
         if (logEmpty && firstEvent) { logEmpty.remove(); firstEvent = false; }
         localChatCount += 1;

@@ -28,6 +28,8 @@ const main = async (): Promise<void> => {
     (await import("./fts-reindex.js")).check,
     (await import("./bash-foreground.js")).check,
     (await import("./tool-watchdog-parity.js")).check,
+    (await import("./live-child-job.js")).check,
+    (await import("./timeout-layering.js")).check,
   ];
 
   let failed = 0;

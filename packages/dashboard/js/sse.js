@@ -153,7 +153,14 @@
         if (ev.type === "prompt.options") {
           // 선택지가 특정 세션에 귀속(threadKey 있음)이면 그 탭에서만 렌더. 미지정(레거시)은 active.
           const ptk = ev.payload && ev.payload.threadKey;
-          if (ptk && !isActiveThread(ptk)) return;
+          if (ptk && !isActiveThread(ptk)) {
+            // ★조용히 버리지 않는다 (2026-07-28) — 사용자에겐 "선택지가 안 뜬다"로만 보이고
+            //  원인(다른 탭 소속)이 어디에도 안 남았다. 두 키를 함께 남겨 한 눈에 갈리게.
+            console.warn(
+              `[prompt-options] 다른 세션 소속이라 렌더 생략 — 이벤트=${ptk} 활성=${activeThreadKey}`,
+            );
+            return;
+          }
           renderPromptOptions(ev.payload || {}, ts, ev.ts);
           return;
         }

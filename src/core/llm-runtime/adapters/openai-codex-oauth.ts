@@ -104,6 +104,7 @@ import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
+import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 import {
   extractAccountId,
   sleep,
@@ -214,29 +215,14 @@ const CODEX_TURN_MAX_MS = parsePosIntEnv(
   600_000,
 );
 
-// ── codex 도구 실행 per-call wall-clock 타임아웃 (2026-07-03) ──────────────────────────
-// ★근본 원인: 위 progressTimer(무진전 가드)는 fetch+parseCodexSse(SSE 스트림)만 감시하고
-// *도구 실행 직전에 .done()* 된다(의도적 면제 — 긴 정상 도구 오살 0). 그래서 hung 도구가
-// 있으면 SSE 밖 = 아무 가드도 없어 턴 전체가 blunt 30분 워커 wall-clock 상한까지 얼어붙는다
-// (라이브 사고 2026-07-03: Bash 도구 안 ~19.5분 데몬 이벤트 0 → 30분 상한만이 죽임 → 산출 0).
-// 이건 progressTimer/stall-resume 와 *직교*하는 도구 실행 전용 새 가드다.
-//
-// 설계: 각 callTool 을 이 wall-clock 과 Promise.race → 초과 시 reject(throw) → 기존
-// catch (e) { output = `Error: …` } 가 그대로 잡아 function_call_output 으로 push → 루프
-// 계속 → 모델이 "그 도구 실패"를 보고 적응(30분 freeze 대신 bounded 에러). abort/resume
-// 안 함(턴 안 죽이고 재개 안 함 — 재개는 Write·Bash·memory 중복 부작용 위험).
-//
-// ⚠ orphan 한계(기존 §4.4 #3): MCP callTool 은 abort 신호가 안 들어가므로 타임아웃돼도 그
-// 도구는 detached 로 계속 돌 수 있다. 넉넉한 기본값(8분)이 "완료 직전 오살→중복 부작용"
-// 위험을 최소화한다.
-//
-// 기본 480000=8분: 30분 워커 상한보다 아래(freeze 차단) + 정상 긴 도구(sub-agent·긴 Bash)
-// 보다는 위(오살 최소). parsePosIntEnv 재사용, env override.
-/** codex 개별 도구 호출(callTool) wall-clock 상한(ms). env override. */
-const CODEX_TOOL_TIMEOUT_MS = parsePosIntEnv(
-  process.env.CODEX_TOOL_TIMEOUT_MS,
-  480_000,
-);
+// codex 개별 도구 호출의 wall-clock 상한은 **폐기됐다** (2026-07-28, 근본 수정).
+// 경계가 역전돼 있었다 — 도구 자체(Bash 120~600s) < MCP 브리지(11분) 로 설계해 놓고
+// 그보다 바깥인 어댑터가 8분으로 조여, 정상 진행 중인 작업(특히 서브에이전트)을
+// "무응답"으로 잘랐다. 모델은 그 에러를 보고 같은 일을 워커로 다시 띄웠다(작업 충돌).
+// 이제 경계는 각 층이 소유한다: 도구 자체 → 잡 상한(2시간) → MCP callTool 천장 →
+// 사용자 /stop. 잡을 소유하는 브리지는 JOB_OWNING_TOOL_CALL_TIMEOUT_MS 로 천장을 넘긴다.
+// 이 순서(안쪽이 조이고 바깥이 느슨)는 `scripts/regression/timeout-layering.ts` 가 지킨다.
+// env CODEX_TOOL_TIMEOUT_MS 는 더 이상 읽지 않는다.
 
 // 도구 조기 경고(tool-slow)는 **공통 엔진**으로 이관됐다 (2026-07-28, 딥리뷰 D):
 // `core/llm-runtime/tool-watchdog.ts`. 임계·도구별 override·경고 문구·llm.tool_slow 이벤트가
@@ -638,7 +624,13 @@ export const runOpenAiCodex = async (
     // 재spawn 물리적 불가. runner = runOpenAiCodex 자기 자신 (circular 회피 인자 주입).
     if (depth === 0) {
       const spawnServer = createSpawnAgentMcpServer(input);
-      const spawnBridge = await adaptClaudeMcpServer(spawnServer, "agents");
+      // 잡 소유 브리지 — 안쪽 경계(잡 상한 2시간)보다 넉넉한 천장을 넘긴다.
+      // 기본 11분을 그대로 쓰면 정상 진행 중인 서브에이전트를 바깥이 먼저 자른다.
+      const spawnBridge = await adaptClaudeMcpServer(
+        spawnServer,
+        "agents",
+        JOB_OWNING_TOOL_CALL_TIMEOUT_MS(),
+      );
       allBridges.push(spawnBridge);
       const spawnToolsRaw = await spawnBridge.listTools();
       for (const t of spawnToolsRaw) {
@@ -1592,74 +1584,32 @@ export const runOpenAiCodex = async (
                 //  부작용 가능성 → claude 폴백 차단 set. (이전엔 bridge 객체 비교라 false
                 //  positive·negative 양쪽 다 났음 — 위 HARMLESS_TOOLS 정의 참조.)
                 if (!HARMLESS_TOOLS.has(tc.name)) sideEffectExecuted = true;
-                // 2026-07-03 — 도구 실행 per-call wall-clock 가드 (CODEX_TOOL_TIMEOUT_MS 정의부
-                // 주석 참조). callTool 을 타임아웃과 Promise.race → 초과 시 reject → 아래 catch 가
-                // "Error: …" 로 잡아 루프 계속(hung 도구가 턴을 30분 얼리는 것 차단). abort/resume
-                // 안 함. 타이머는 callTool 이 먼저 끝나면 clearTimeout(누수 0), setTimeout .unref()
-                // (이벤트루프 잔류 0). orphan: MCP callTool 은 signal 없어 timeout 후 detached 로 계속
-                // 돌 수 있음(§4.4 #3) — 넉넉한 기본값이 완료 직전 오살 위험 최소화.
-                let toolTimer: ReturnType<typeof setTimeout> | undefined;
-                // 조기 경고 — 타임아웃(8분) 전에 로그로 알림(권한 요청/hung/느림 조기 발견).
-                // 죽이지 않고 경고만. callTool 이 먼저 끝나면 아래 finally 가 clearTimeout(누수 0).
-                // 임계는 도구별(toolSlowWarnMs) — 정의부 주석의 실측 근거 참조.
-                // ★공통 엔진(tool-watchdog)으로 위임 (2026-07-28) — 판정·문구·이벤트가
-                //  claude/openai 와 한 곳에서 나온다(원칙 #2). 여기선 codex 만 아는 맥락
-                //  (도구 타임아웃 시각)을 note 로 덧붙인다.
+                // ★어댑터 층 per-tool wall-clock **폐기** (2026-07-28, 근본 수정).
+                //  왜 있었나: hung 도구가 턴을 영영 얼리는 것을 막으려고 8분 시계를 뒀다.
+                //  왜 틀렸나: 경계가 **역전**돼 있었다 —
+                //    도구 자체(Bash 120~600s) < MCP 브리지(11분) 가 되도록 설계해 놓고
+                //    (`_mcp-bridge.ts` 상수 주석: "바깥은 넉넉히 잡아 도구 자체 타임아웃이
+                //     먼저 발화하게 한다"), 그보다 **더 바깥인** 어댑터가 8분으로 조였다.
+                //    바깥이 안쪽보다 조이면 정상 진행 중인 작업이 "무응답"으로 잘린다.
+                //    2026-06-19 위키 11h outage(MCP 60s 가 정상 도구를 자름)와 같은 구조이고,
+                //    2026-06-23 에 메인 턴 wall-clock 을 폐기한 결정과도 어긋난다.
+                //  실측 피해: 서브에이전트가 멀쩡히 일하는데 부모가 끊고, 모델은 그 에러를
+                //    보고 같은 작업을 워커로 다시 띄웠다 = 중복 실행·작업 충돌(사용자 신고 3회).
+                //  이제 경계는 각자 소유한다: 도구 자체 타임아웃 → 잡 상한(2시간, 잡 소유
+                //    브리지는 그보다 넉넉한 천장) → MCP callTool 천장 → 사용자 /stop·취소.
+                //  재무장·자식 관측 같은 보정 장치도 함께 제거한다(그건 역전을 덮던 땜빵이다).
+                // 도구 지연 **경고**는 남긴다 — 끊지 않고 알리기만 하므로 위 폐기와 무관하다.
+                // (공통 엔진 tool-watchdog: 임계·문구·llm.tool_slow 발행이 3어댑터 공통.)
                 const stopSlowWatch = watchToolStart({
                   channel: input.channel,
                   threadKey: input.threadKey,
                   tool: tc.name,
-                  note: `${Math.round(CODEX_TOOL_TIMEOUT_MS / 60_000)}분에 타임아웃.`,
                 });
-                // ★"무응답" 판정을 시간이 아니라 **관측**으로 (2026-07-27, 사용자 지적:
-                //  "정말 무응답을 문제라고 판단해야지, 무응답이 아닌데").
-                //  이 타이머의 존재 이유는 hung 도구가 턴을 영영 얼리는 것을 막는 것이다.
-                //  그런데 spawn_agent 처럼 **자식 잡을 띄우는 도구**는, 자식이 running 인 한
-                //  무응답이 아니다 — 그건 관측된 사실이다. 그 상태에서 시계만 보고 끊으면
-                //  자식은 abort 전파가 안 돼 계속 돌고(토큰도 계속 쓰고) **결과만 버려진다**.
-                //  실측: 서브에이전트 138건 중 5건이 8분 초과했고 전부 done 이었다.
-                //  → 발화 시점에 살아있는 자식이 있으면 끊지 않고 **재무장**한다. 자식이
-                //   조용히 사라진 경우엔 다음 발화에서 정상적으로 끊긴다(구멍 0). 자식 자체는
-                //   자기 상한(2시간)·자기 타임아웃·사용자 취소로 이미 바운드돼 있다.
-                const armToolTimeout = (): Promise<never> =>
-                  new Promise<never>((_, reject) => {
-                    const fire = async (): Promise<void> => {
-                      let alive = false;
-                      try {
-                        const { hasLiveChildJob } = await import("../../worker-jobs.js");
-                        alive = hasLiveChildJob(input.threadKey);
-                      } catch {
-                        /* 조회 실패는 종전 동작(끊음)으로 — 안전한 쪽 */
-                      }
-                      if (alive) {
-                        console.warn(
-                          `[tool-timeout] ${input.threadKey} 도구 ${tc.name} 상한 초과지만 ` +
-                            `자식 잡이 실행 중 — 끊지 않고 대기 연장(${Math.round(
-                              CODEX_TOOL_TIMEOUT_MS / 60_000,
-                            )}분).`,
-                        );
-                        toolTimer = setTimeout(() => void fire(), CODEX_TOOL_TIMEOUT_MS);
-                        toolTimer.unref?.();
-                        return;
-                      }
-                      reject(
-                        new Error(
-                          `도구 ${tc.name} 응답 시간 초과 (${Math.round(
-                            CODEX_TOOL_TIMEOUT_MS / 60_000,
-                          )}분) — 무응답(재개 없이 에러 처리)`,
-                        ),
-                      );
-                    };
-                    toolTimer = setTimeout(() => void fire(), CODEX_TOOL_TIMEOUT_MS);
-                    toolTimer.unref?.();
+                const result = await bridge
+                  .callTool(tc.name, args)
+                  .finally(() => {
+                    stopSlowWatch();
                   });
-                const result = await Promise.race([
-                  bridge.callTool(tc.name, args),
-                  armToolTimeout(),
-                ]).finally(() => {
-                  if (toolTimer !== undefined) clearTimeout(toolTimer);
-                  stopSlowWatch();
-                });
                 // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
                 executedToolNames.add(tc.name);
                 // MCP CallToolResult.content = Array<{type:"text", text:string} | ...>.

@@ -46,7 +46,21 @@ let bridgeReqSeq = 0;
 export const adaptClaudeMcpServer = async (
   config: McpSdkServerConfigWithInstance,
   name: string,
+  /**
+   * 이 브리지의 callTool 상한(ms). 미지정 = MCP_CALL_TIMEOUT_MS(11분).
+   *
+   * ★불변식: **바깥 경계는 안쪽 경계보다 넉넉해야 한다.** 위 상수 주석의 근거 그대로다
+   *  (2026-06-19 위키 11h outage = MCP 60s 가 정상 도구를 잘라 재시도 폭주). 그런데 그
+   *  불변식이 도구마다 다르다 — 백그라운드 잡을 소유하는 도구(spawn_agent)의 **진짜
+   *  경계는 잡의 상한(WORKER_TIMEOUT_MS 2시간)** 이라, 11분 천장은 다시 "바깥이 더 조임"
+   *  이 된다. 그런 브리지는 자기 안쪽 경계에 맞춰 여기로 넉넉한 값을 넘긴다.
+   */
+  callTimeoutMs?: number,
 ): Promise<MCPServer> => {
+  const callTimeout =
+    typeof callTimeoutMs === "number" && Number.isFinite(callTimeoutMs) && callTimeoutMs > 0
+      ? callTimeoutMs
+      : MCP_CALL_TIMEOUT_MS;
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
   const client = new Client(
@@ -94,7 +108,7 @@ export const adaptClaudeMcpServer = async (
         const res = await client.callTool(
           { name: toolName, arguments: args ?? {} },
           undefined,
-          { timeout: MCP_CALL_TIMEOUT_MS },
+          { timeout: callTimeout },
         );
         return res.content as CallToolResultContent;
       }
@@ -108,7 +122,7 @@ export const adaptClaudeMcpServer = async (
       const p = client.callTool(
         { name: toolName, arguments: args ?? {} },
         undefined,
-        { timeout: MCP_CALL_TIMEOUT_MS },
+        { timeout: callTimeout },
       );
       p.then(
         () => {

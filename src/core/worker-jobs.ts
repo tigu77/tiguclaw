@@ -402,9 +402,30 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
 export const hasLiveChildJob = (threadKey: string): boolean => {
   if (threadKey === "") return false;
   for (const j of jobs.values()) {
-    if (j.status === "running" && j.threadKey === threadKey) return true;
+    if (j.status !== "running") continue;
+    if (j.threadKey === threadKey) return true;
+    // ★손자까지 본다 (2026-07-28). 종전엔 **직계 자식(정확 일치)** 만 봤다. 서브에이전트가
+    //  또 서브를 띄우면 손자의 threadKey 는 `agent:<자식jobId>` 라 이 비교에 안 걸린다 —
+    //  그래서 "자식이 끝났지만 손자가 아직 일하는" 창에서 부모가 무응답으로 오판해 끊었고,
+    //  모델은 그 에러를 보고 **같은 일을 워커로 다시 돌렸다**(사용자 신고: 중복 실행).
+    //  판정 기준은 "이 대화가 띄운 잡이 살아있나" 이므로 원 세션으로 환원해 비교한다.
+    if (resolveOwnerThreadKey(j.threadKey) === threadKey) return true;
   }
   return false;
+};
+
+/**
+ * 진단용 스냅샷 — "왜 자식이 없다고 봤나"를 로그로 설명하기 위한 최소 정보.
+ * 끊는 판정은 되돌릴 수 없으므로(모델이 곧 다른 행동을 한다) 근거를 남긴다.
+ */
+export const describeChildJobs = (threadKey: string): string => {
+  const rows: string[] = [];
+  for (const j of jobs.values()) {
+    const owner = resolveOwnerThreadKey(j.threadKey);
+    if (j.threadKey !== threadKey && owner !== threadKey) continue;
+    rows.push(`${j.kind ?? "worker"}:${j.jobId.slice(0, 8)}=${j.status}`);
+  }
+  return rows.length === 0 ? "(이 대화에 귀속된 잡 없음)" : rows.join(", ");
 };
 
 /** 테스트 전용 — 레지스트리 비움 (프로덕션 경로 미사용). */
@@ -435,6 +456,16 @@ const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
  * 동일해짐). env `WORKER_TIMEOUT_MS` 로 여전히 override 가능.
  */
 const DEFAULT_WORKER_TIMEOUT_MS = 2 * 60 * 60_000;
+
+/**
+ * 잡을 소유하는 도구(spawn_agent 등)의 **바깥 경계** — 잡 상한보다 넉넉해야 한다.
+ *
+ * ★경계 순서 불변식 (2026-07-28): 안쪽(잡 자신의 상한·취소) → 바깥(MCP callTool) 순으로
+ *  느슨해져야, 진짜 경계인 안쪽이 먼저 발화한다. 반대로 바깥이 더 조이면 정상 진행 중인
+ *  작업이 "무응답"으로 잘리고, 모델은 그 에러를 보고 같은 일을 다시 띄운다(작업 충돌).
+ *  실제로 그랬다 — 어댑터 8분 시계 · MCP 11분 천장 < 잡 상한 2시간.
+ */
+export const JOB_OWNING_TOOL_CALL_TIMEOUT_MS = (): number => WORKER_TIMEOUT_MS + 5 * 60_000;
 
 /** 워커 1잡 전체 wall-clock 상한 (ms). env `WORKER_TIMEOUT_MS` override. */
 export const WORKER_TIMEOUT_MS = parsePosIntEnv(

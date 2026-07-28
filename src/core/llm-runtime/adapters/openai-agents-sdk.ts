@@ -92,6 +92,7 @@ import {
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
+import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -333,7 +334,12 @@ export const runOpenAi = async (
   // codex L932-940 답습. runner 인자 주입(circular 회피)은 팩토리 내부 처리.
   if (!toolsNone && depth === 0) {
     mcpServers.push(
-      await adaptClaudeMcpServer(createSpawnAgentMcpServer(input), "agents"),
+      // 잡 소유 브리지 — 안쪽 경계(잡 상한)보다 넉넉한 천장(codex 어댑터와 동형).
+      await adaptClaudeMcpServer(
+        createSpawnAgentMcpServer(input),
+        "agents",
+        JOB_OWNING_TOOL_CALL_TIMEOUT_MS(),
+      ),
     );
   }
 

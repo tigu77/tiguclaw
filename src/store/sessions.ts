@@ -584,6 +584,19 @@ export const initStore = (): void => {
       updated_at   INTEGER NOT NULL,
       PRIMARY KEY (channel, thread_key)
     );
+    -- ─── 채널→세션 바인딩 (2026-07-28, ADR channel-session-decoupling §D5 확장점 (b)) ──
+    -- 세션 셀렉터가 없는 채널(텔레그램·CLI)이 "이 대화방은 이 세션" 을 **영속**으로 기억한다.
+    -- 대시보드 탭은 브라우저 localStorage 라 그 브라우저에서만 유지되는데, 이쪽은 서버라
+    -- 재시작·기기교체와 무관하게 유지된다. 키 = (채널, 채널주소) — 같은 사람이라도 DM 과
+    -- 그룹은 다른 대화방이므로 각각 따로 묶인다(사용자 확정 2026-07-28).
+    -- 행이 없으면 = 바인딩 없음 = 기본 세션(기존 동작 그대로, 회귀 0).
+    CREATE TABLE IF NOT EXISTS channel_session_binding (
+      channel         TEXT NOT NULL,
+      channel_address TEXT NOT NULL,
+      session_id      TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      PRIMARY KEY (channel, channel_address)
+    );
   `);
 
   // ─── 스킬 사용 텔레메트리 (self-growth Phase 1.5, 2026-06-24) ────────────────

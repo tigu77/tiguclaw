@@ -55,13 +55,47 @@ export const resolveSessionId = (
   const explicit = explicitSessionId?.trim();
   if (explicit !== undefined && explicit !== "") return explicit;
 
-  // ── (b) 채널→세션 바인딩 확장점 (미구현) ────────────────────────────────
-  // const bound = lookupChannelSessionBinding(channel, channelAddress);
-  // if (bound !== null) return bound;
-  // ────────────────────────────────────────────────────────────────────────
-  void channel;
-  void channelAddress;
+  // ── (b) 채널→세션 바인딩 (2026-07-28 구현 — 위 주석의 확장점) ──────────────
+  // 세션 셀렉터가 없는 채널이 `/sessions` 로 고른 세션을 여기서 되살린다. 한 겹만 얹는다.
+  // ★조회 실패(store 미초기화·DB 오류)는 **기본 세션으로 안전 degrade** 하되 조용히 넘기지
+  //  않는다 — 사용자는 "왜 다른 세션으로 가지" 를 알 길이 없으므로 로그를 남긴다.
+  //  (로그는 1회성 소음이 되지 않게 실패 종류별 첫 발생만.)
+  const addr = channelAddress?.trim();
+  if (addr !== undefined && addr !== "") {
+    try {
+      const bound = lookupBinding(channel, addr);
+      if (bound !== null && bound !== "") return bound;
+    } catch (e) {
+      warnBindingLookupOnce(e);
+    }
+  }
   return DEFAULT_SESSION_ID;
+};
+
+/** 바인딩 조회 주입점 — 코어가 store 를 직접 import 하지 않게 한다(단방향 유지). */
+type BindingLookup = (channel: string, channelAddress: string) => string | null;
+let lookupBindingImpl: BindingLookup | null = null;
+let bindingWarned = false;
+
+const lookupBinding: BindingLookup = (channel, channelAddress) =>
+  lookupBindingImpl === null ? null : lookupBindingImpl(channel, channelAddress);
+
+const warnBindingLookupOnce = (e: unknown): void => {
+  if (bindingWarned) return;
+  bindingWarned = true;
+  console.warn(
+    `threadkey: 채널→세션 바인딩 조회 실패 — 기본 세션으로 진행합니다: ${
+      e instanceof Error ? e.message : String(e)
+    }`,
+  );
+};
+
+/**
+ * 바인딩 조회 구현 등록 — 부팅 시 1회(index.ts). 미등록이면 바인딩 없음으로 동작하므로
+ * 기존 경로(기본 세션)와 완전히 동일하다(테스트·검증 스크립트에서 DB 없이 임포트 가능).
+ */
+export const setChannelSessionBindingLookup = (fn: BindingLookup | null): void => {
+  lookupBindingImpl = fn;
 };
 
 /**

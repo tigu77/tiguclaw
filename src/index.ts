@@ -1,7 +1,17 @@
 import "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
-import { extractTelegramChatId, DEFAULT_SESSION_ID } from "./core/threadkey.js";
+import { randomUUID } from "node:crypto";
+import {
+  extractTelegramChatId,
+  DEFAULT_SESSION_ID,
+  setChannelSessionBindingLookup,
+} from "./core/threadkey.js";
+import {
+  getChannelSessionBinding,
+  setChannelSessionBinding,
+  clearChannelSessionBinding,
+} from "./store/channel-session.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
@@ -56,6 +66,8 @@ import {
   setContextBoundary,
   setSessionModelOverride,
   SESSION_STORAGE_CHANNEL,
+  listThreads,
+  setThreadName,
 } from "./store/sessions.js";
 // codex/openai 컨텍스트 리셋 — `/reset`·`/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
 // 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
@@ -179,6 +191,21 @@ console.log(`tiguclaw home: ${getPaths().home}`);
 await migrateLegacyAgent(process.cwd());
 
 initStore();
+// 채널→세션 바인딩 조회 등록 (2026-07-28) — 코어(threadkey)가 store 를 직접 import 하지
+// 않도록 부팅 시 주입한다. ★미등록이면 바인딩이 **조용히 무시**되고 전부 기본 세션으로
+// 가므로(사용자는 "왜 세션이 안 바뀌지" 만 겪는다), initStore 직후 = DB 준비된 가장 이른
+// 지점에 붙인다. 등록 실패는 그 자체가 기능 부재이므로 로그로 드러낸다.
+try {
+  setChannelSessionBindingLookup((channel, address) =>
+    getChannelSessionBinding(channel, address),
+  );
+} catch (e) {
+  console.error(
+    `채널→세션 바인딩 조회 등록 실패 — /sessions 로 고른 세션이 무시됩니다: ${
+      e instanceof Error ? e.message : String(e)
+    }`,
+  );
+}
 // 쿨다운 복원(2026-07-28) — 메모리 Map 에만 있던 쿨다운이 재시작마다 사라져 매 부팅 직후
 // 죽은 백엔드를 다시 두드렸다(실측 07-27: 부팅 22회 ↔ 429 22건). initStore 직후 = DB 준비된
 // 가장 이른 지점. 실패해도 빈 상태로 진행(종전 동작).
@@ -916,6 +943,127 @@ const handler: MessageHandler = async (msg) => {
 
       await replyCommand(msg,
         "`/schedule <list|delete|enable|disable> [id]` — 알 수 없는 subcommand.",
+      );
+      return;
+    }
+
+    // ── /sessions — 채널 대화방을 어느 세션에 묶을지 (2026-07-28) ────────────────
+    // 세션 셀렉터가 없는 채널(텔레그램·CLI)용. 대시보드 탭과 같은 일을 하되 **서버에**
+    // 기억하므로 재시작·기기교체와 무관하게 유지된다. LLM 미경유(결정론) — 슬래시는
+    // 모델에게 시키지 않는다는 기존 원칙 그대로.
+    // 채널 무관: 텔레그램 전용이 아니라 channelAddress 를 가진 모든 채널에서 동작한다.
+    if (cmd === "/sessions") {
+      // ★셀렉터가 이미 있는 채널(대시보드)은 대상이 아니다. 그런 채널은 매 요청에
+      //  explicitSessionId 를 실어 보내므로 바인딩이 **무시**되고(resolveSessionId 가 explicit
+      //  우선), 게다가 http-bridge 는 channelAddress = threadKey 라 "세션이 자기를 가리키는"
+      //  무의미한 행만 남는다(개발 중 실측). 조용히 되게 두면 "묶었습니다" 라고 답해 놓고
+      //  아무 일도 안 일어난다 = 오늘 종일 고친 조용한 실패 부류. 명시적으로 거절한다.
+      if (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "") {
+        await replyCommand(
+          msg,
+          "이 채널은 이미 세션 셀렉터가 있습니다 — 대시보드 상단 탭에서 세션을 고르세요. `/sessions` 는 셀렉터가 없는 채널(텔레그램·CLI)용입니다.",
+        );
+        return;
+      }
+      const addr = msg.channelAddress?.trim() ?? "";
+      if (addr === "") {
+        await replyCommand(
+          msg,
+          "이 채널은 대화방 주소가 없어 세션을 묶을 수 없습니다.",
+        );
+        return;
+      }
+      const sub = args === "" ? "" : (args.split(/\s+/)[0] ?? "").toLowerCase();
+      const rest = args === "" ? "" : args.slice(sub.length).trim();
+      const current = (() => {
+        try {
+          return getChannelSessionBinding(msg.channel, addr) ?? DEFAULT_SESSION_ID;
+        } catch {
+          return DEFAULT_SESSION_ID;
+        }
+      })();
+      const nameOf = (id: string): string => {
+        if (id === DEFAULT_SESSION_ID) return "기본 세션";
+        const t = listThreads({ excludeInternal: true }).find(
+          (x: { threadKey: string; name?: string | null }) => x.threadKey === id,
+        );
+        const nm = t?.name?.trim();
+        return nm !== undefined && nm !== "" ? nm : id;
+      };
+
+      // /sessions use <id> — 선택지 버튼이 돌려보내는 값이자 수동 입력 경로.
+      if (sub === "use" && rest !== "") {
+        const target = rest.trim();
+        if (target === DEFAULT_SESSION_ID || target === "default") {
+          clearChannelSessionBinding(msg.channel, addr);
+          await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.");
+          return;
+        }
+        const exists = listThreads({ excludeInternal: true }).some(
+          (x: { threadKey: string }) => x.threadKey === target,
+        );
+        if (!exists) {
+          await replyCommand(
+            msg,
+            `그런 세션이 없습니다: ${target}\n\`/sessions\` 로 목록을 확인하세요.`,
+          );
+          return;
+        }
+        setChannelSessionBinding(msg.channel, addr, target);
+        await replyCommand(
+          msg,
+          `이 대화방을 **${nameOf(target)}** 세션에 묶었습니다. 앞으로 이 방의 대화는 그 세션에 쌓입니다(재시작해도 유지).`,
+        );
+        return;
+      }
+
+      // /sessions new [이름] — 새 세션 생성 + 즉시 바인딩(텔레그램만 쓰는 경우의 유일한 생성 수단).
+      if (sub === "new") {
+        // id 형식은 대시보드 새 탭과 동일(`dashboard:<uuid>`). 접두는 채널 참조가 아니라
+        // ADR 이 명시한 **opaque 레거시 물리 키** 라, 같은 네임스페이스를 쓰는 게 맞다.
+        const sid = `dashboard:${randomUUID()}`;
+        setChannelSessionBinding(msg.channel, addr, sid);
+        const wanted = rest.trim();
+        if (wanted !== "") {
+          try {
+            setThreadName(sid, wanted); // 행이 없으면 placeholder 를 만들어 이름 보존.
+          } catch (e) {
+            console.warn(
+              `세션 이름 저장 실패(세션은 생성됨): ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+        await replyCommand(
+          msg,
+          `새 세션 **${wanted !== "" ? wanted : nameOf(sid)}** 을 만들고 이 대화방을 묶었습니다.`,
+        );
+        return;
+      }
+
+      // 인자 없음 — 현재 세션 + 선택지. 선택 UI 가 없는 채널(값 미지원)엔 목록 텍스트로 폴백.
+      const threads = listThreads({ excludeInternal: true }).slice(0, 20);
+      const options = [
+        { label: `기본 세션${current === DEFAULT_SESSION_ID ? " ✅" : ""}`, value: `/sessions use ${DEFAULT_SESSION_ID}` },
+        ...threads
+          .filter((t: { threadKey: string }) => t.threadKey !== DEFAULT_SESSION_ID)
+          .map((t: { threadKey: string }) => ({
+            label: `${nameOf(t.threadKey)}${t.threadKey === current ? " ✅" : ""}`,
+            value: `/sessions use ${t.threadKey}`,
+          })),
+      ];
+      const header = `현재 세션: **${nameOf(current)}**`;
+      if (msg.presentOptions !== undefined && options.length > 1) {
+        const r = await msg.presentOptions("이 대화방을 어느 세션에 묶을까요?", options, {
+          note: `${header}\n새로 만들려면 \`/sessions new [이름]\``,
+        });
+        if (r.ok) return;
+        // 렌더 실패 — 조용히 넘기지 않고 텍스트로 폴백(선택지가 사라지는 사고 방지).
+        console.warn(`/sessions 선택지 렌더 실패 — 텍스트 폴백: ${r.error ?? "(사유 없음)"}`);
+      }
+      const lines = options.map((o) => `· ${o.label} — \`${o.value}\``);
+      await replyCommand(
+        msg,
+        `${header}\n\n${lines.join("\n")}\n\n새로 만들기: \`/sessions new [이름]\``,
       );
       return;
     }

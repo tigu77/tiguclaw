@@ -30,6 +30,7 @@ const main = async (): Promise<void> => {
     (await import("./tool-watchdog-parity.js")).check,
     (await import("./live-child-job.js")).check,
     (await import("./timeout-layering.js")).check,
+    (await import("./channel-session-binding.js")).check,
   ];
 
   let failed = 0;

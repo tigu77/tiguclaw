@@ -1789,23 +1789,17 @@ const updateNotified = await (async (): Promise<boolean> => {
   };
   try {
     const data = JSON.parse(raw) as {
-      from?: string;
-      to?: string;
-      changedFiles?: number;
       notify?: { channel?: string; target?: string | null };
     };
     // ★사용자에게 커밋 해시·파일 수를 보이지 않는다 (2026-07-27) — 알아도 할 게 없는
     //  내부 좌표다. 진단이 필요하면 로그·`/status` 가 있다.
-    //  ★같은 해시 = 받을 게 없었다는 뜻인데 "새 버전으로 재시작" 은 사실과 다르다
-    //   (실측 보고: "완료 (fc6f983 → fc6f983) · 0개 파일 — 새 버전으로 재시작했습니다").
-    //   받은 게 없으면 그렇게 말한다 — 정직한 보고(§2 사실 왜곡 X).
-    const changed =
-      typeof data.from === "string" && typeof data.to === "string"
-        ? data.from !== data.to
-        : data.changedFiles === undefined || data.changedFiles > 0;
-    const text = changed
-      ? "✅ 업데이트 완료 — 새 버전으로 재시작했습니다."
-      : "✅ 이미 최신입니다 — 받을 변경이 없어 그대로 재시작했습니다.";
+    // ★마커의 from/to 로 "받은 게 있었나"를 판정하지 말 것 (2026-07-28). 마커의 존재
+    //  자체가 이미 "받았다"를 뜻한다 — 받을 게 없으면 self-update.ts 의 up-to-date 가
+    //  early return 해 마커를 안 쓴다(요청자에겐 그 자리에서 동기 응답). 게다가
+    //  win32+built 는 pull 을 마친 뒤 CLI 에 위임하므로 CLI 가 뜨는 prevSha 는 이미 새
+    //  커밋 = from===to 가 항상 참 → 그걸로 분기하면 윈도우의 정상 업데이트가 전부
+    //  "이미 최신" 으로 오보된다(실측). 조건 없이 완료로 보고한다.
+    const text = "✅ 업데이트 완료 — 새 버전으로 재시작했습니다.";
     // 단일 통로 — 라우팅·발송·관측(대시보드 표시)을 deliverOutbound 가 담당(채널 미지정=cli).
     // 세션 귀속 = 기본 세션(업데이트 통지는 세션 없는 시스템 발화 → 새 세션 생성 대신
     // dashboard:default 메인 채팅에 표시). 배달은 요청자 좌표(notify) 그대로.

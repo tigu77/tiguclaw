@@ -31,7 +31,11 @@
         if (!m) return tk;
         if (typeof jobCards === "undefined") return "";
         const card = jobCards.get(m[1]);
-        return (card && card.threadKey) || "";
+        if (!card) return "";
+        // ★card.threadKey 를 세션 키로 단정하지 않는다 (2026-07-28). 잡 카드의 threadKey 는
+        //  자기를 띄운 부모 *잡 좌표*일 수 있어(서브가 띄운 서브) 한 단계로는 안 끝난다.
+        //  서버 환원값(ownerTk) 우선, 없으면 부모 체인을 끝까지 따라간다.
+        return card.ownerTk || jobOwnerSession(card.threadKey);
       };
       const isShellInScope = (tk) => {
         if (!tk || tk === activeThreadKey) return true;
@@ -50,7 +54,7 @@
           // 좌표(worker:/agent:)는 원 세션으로 환원해 담는다 — 서브에이전트가 도는 세션 탭에도
           // 점이 찍혀야 하고, 남의 탭엔 안 찍혀야 한다. 환원 불가(미상)는 담지 않는다(오탐 0 정책).
           if (e.status !== "running") continue;
-          const owner = jobOwnerSession(e.threadKey);
+          const owner = e.ownerTk || jobOwnerSession(e.threadKey); // 서버 환원값 우선.
           if (owner) next.add(owner);
         }
         if (typeof shellRegistry !== "undefined") {
@@ -393,11 +397,19 @@
       // 카드가 활성 세션 소속인가 — threadKey 없음(레거시/구버전 카드)은 항상 소속 취급(누락 0,
       // isActiveThread 의 "미지정=활성" 관례와 동형).
       // 세션 스코프 판정 — 잡 좌표는 원 세션으로 환원한 뒤 비교(서브에이전트가 남의 세션에
-      //  뜨던 원인). 환원 불가(미상)는 종전대로 노출 — 진행 중인 작업을 숨기는 쪽이 더 나쁜
-      //  실패라서(isShellInScope 와 같은 정책). 대부분은 부모 카드가 있어 환원된다.
-      const isBgInScope = (tk) => {
-        const owner = jobOwnerSession(tk);
-        return !owner || owner === activeThreadKey;
+      //  뜨던 원인). 근거 우선순위: ①서버가 환원해 실어 준 ownerThreadKey(authoritative —
+      //  잡 레지스트리 전체를 봄) ②없으면 프런트 부모-체인 추측(구버전 이벤트 replay 대비).
+      // ★미상은 숨긴다 (2026-07-28, fail-closed). 종전엔 노출이었는데("숨기는 쪽이 더 나쁜
+      //  실패"), 프런트 지도가 부분집합이라 미상이 흔했고 결과적으로 **사용자가 "현재 세션만"
+      //  으로 해뒀는데도 남의 세션 잡이 떴다**(신고 2회). 명시한 필터를 어기는 쪽이 더 나쁜
+      //  실패다. 숨겨도 "전체 세션" 토글이 escape hatch 이고, 진행 중 잡은 부팅
+      //  하이드레이션(GET /api/worker-jobs)이 전부 ownerThreadKey 를 실어 오므로 미상 ≈ 0.
+      const isBgInScope = (tk, ownerHint) => {
+        const owner =
+          typeof ownerHint === "string" && ownerHint !== ""
+            ? ownerHint
+            : jobOwnerSession(tk);
+        return owner !== "" && owner === activeThreadKey;
       };
       const setBgSessionScope = (mode) => {
         bgSessionScope = mode === "all" ? "all" : "session";
@@ -445,7 +457,7 @@
       // 탭 전환(activeThreadKey 변경) 후 재적용 훅 — js/tabs.js 가 switchToThread/newTab/closeTab
       // 뒤에 호출(전역 스코프, background-drawer.js 가 tabs.js 보다 먼저 로드돼 참조 가능).
       const refreshBgScope = () => {
-        for (const e of jobCards.values()) e.el.classList.toggle("bg-in-scope", isBgInScope(e.threadKey));
+        for (const e of jobCards.values()) e.el.classList.toggle("bg-in-scope", isBgInScope(e.threadKey, e.ownerTk));
         refreshBgBadge();
       };
 
@@ -453,7 +465,7 @@
         let running = 0, runningScoped = 0, totalScoped = 0;
         for (const e of jobCards.values()) {
           if (e.status === "running") running += 1;
-          if (isBgInScope(e.threadKey)) {
+          if (isBgInScope(e.threadKey, e.ownerTk)) {
             totalScoped += 1;
             if (e.status === "running") runningScoped += 1;
           }
@@ -622,11 +634,14 @@
             task: "", result: "", errorText: "", // 작업 지시/결과/에러 원문(문자열) — DOM 과 별개 보관. 에이전트 뷰가 한 줄 요약·펼침 상세에 읽음.
             expanded: false, // 에이전트 뷰 카드 펼침 상태(jobId 별) — 리렌더돼도 유지. 드로어는 .open 클래스로 별도 관리.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
-            threadKey: realSessionThreadKey(opts && opts.threadKey), // 원 세션 threadKey(세션 스코프 필터용) — 없으면 "".
+            threadKey: realSessionThreadKey(opts && opts.threadKey), // 잡 좌표 원본(부모 링크일 수 있음).
+            // 서버가 환원한 원 세션(worker.* payload / GET /api/worker-jobs 의 ownerThreadKey).
+            // 세션 스코프 판정의 1순위 근거 — 없으면 "" 로 두고 프런트 추측으로 폴백.
+            ownerTk: opts && typeof opts.ownerThreadKey === "string" ? opts.ownerThreadKey : "",
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
             _cancelRequested: false, // 낙관 취소 요청 중(재클릭 방지) — cancelled:false/실패 시 되돌림.
           };
-          entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey));
+          entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, entry.ownerTk));
           jobCards.set(jobId, entry);
           updateStopBtn(entry); // 신규 카드 기본 running → 중지 버튼 노출(worker·agent 무관).
           // 컨텍스트메뉴 트리거 — kebab(top 우측) + 우클릭 + 롱프레스(카드류, 3경로 동일 메뉴).
@@ -649,7 +664,7 @@
           if (realTk && entry.threadKey !== realTk) {
             entry.threadKey = realTk;
             entry.el.dataset.threadkey = realTk;
-            entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey));
+            entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, entry.ownerTk));
           }
         }
         // 서브에이전트 마킹(멱등) — lifecycle(kind:"agent")이 활동보다 먼저/나중 어느 쪽으로 와도
@@ -690,7 +705,16 @@
         if (incomingTk !== "" && !isSessionKey(entry.threadKey)) {
           entry.threadKey = incomingTk;
           entry.el.dataset.threadkey = incomingTk;
-          entry.el.classList.toggle("bg-in-scope", isBgInScope(incomingTk));
+          entry.el.classList.toggle("bg-in-scope", isBgInScope(incomingTk, entry.ownerTk));
+        }
+        // 서버 환원 원 세션(멱등) — lifecycle SSE·부팅 하이드레이션 어느 쪽이 먼저 오든 확정.
+        // 이게 오면 프런트 부모-체인 추측은 더 쓰지 않는다(authoritative 가 이김).
+        {
+          const ownTk = opts && typeof opts.ownerThreadKey === "string" ? opts.ownerThreadKey : "";
+          if (ownTk !== "" && entry.ownerTk !== ownTk) {
+            entry.ownerTk = ownTk;
+            entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, ownTk));
+          }
         }
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
@@ -725,7 +749,9 @@
       const handleWorkerEvent = (p, ts) => {
         if (!p.jobId) return;
         const status = p.status || "running";
-        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier, cwd: p.cwd });
+        // ownerThreadKey = 서버가 환원한 원 세션(worker.* payload / GET /api/worker-jobs).
+        // 세션 스코프 판정의 1순위 근거라 반드시 함께 넘긴다(빠뜨리면 프런트 추측으로 폴백).
+        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, ownerThreadKey: p.ownerThreadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier, cwd: p.cwd });
         const wasRunning = entry.status === "running";
         entry.status = status;
         entry.el.classList.remove("running", "done", "failed", "cancelled");

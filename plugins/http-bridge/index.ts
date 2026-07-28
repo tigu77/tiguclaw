@@ -86,6 +86,7 @@ import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcr
 import { listEvents } from "../../src/store/events.js";
 import {
   listJobs,
+  resolveOwnerThreadKey,
   cancelQueuedTurn,
   cancelJob,
   isCancelledTurnResult,
@@ -1330,6 +1331,9 @@ class HttpBridge implements Channel, Observer {
         label: j.label,
         kind: j.kind ?? "worker",
         threadKey: j.threadKey,
+        // 원 세션(잡 좌표 환원) — worker.* 이벤트 payload 와 동형. 대시보드 세션 스코프 필터가
+        // SSE·하이드레이션 어느 경로로 카드를 만들든 같은 근거로 판정하게 한다.
+        ownerThreadKey: resolveOwnerThreadKey(j.threadKey),
         status: j.status,
         ...(j.agentName !== undefined ? { agentName: j.agentName } : {}),
         ...(j.modelTier !== undefined && j.modelTier !== ""

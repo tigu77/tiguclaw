@@ -56,6 +56,9 @@ const publishWorkerLifecycle = (
         jobId: job.jobId,
         label: job.label,
         threadKey: job.threadKey, // 어느 대화가 띄운 잡인지 상관(correlate)용.
+        // 원 세션 threadKey — 서브에이전트처럼 threadKey 가 부모 *잡 좌표*인 경우를 환원한 값.
+        // 대시보드 세션 스코프 필터가 이걸로 판정한다(프런트의 부분 지도 추측 제거).
+        ownerThreadKey: resolveOwnerThreadKey(job.threadKey),
         status: job.status,
         // kind='agent' 면 대시보드가 서브에이전트 카드로 렌더(agentName 라벨). 미지정=worker.
         kind: job.kind ?? "worker",
@@ -339,6 +342,33 @@ export interface ListJobsOpts {
   /** 최근 N개 (startedAt 내림차순). 미지정 = 전체. */
   limit?: number;
 }
+
+/**
+ * 잡 좌표(`worker:`/`agent:<jobId>`)를 **원 세션 threadKey** 로 환원. 이미 세션 키면 그대로.
+ *
+ * ★서버가 환원한다 (2026-07-28). 서브에이전트의 threadKey 는 자기를 띄운 *부모 잡 좌표*라
+ *  세션 키가 아니다. 종전엔 대시보드가 자기 화면에 렌더된 카드 지도만 보고 부모를 거슬러
+ *  올라갔는데, 그 지도는 부분집합이라(부모 카드가 안 그려졌거나 replay 창 밖이면 없음)
+ *  환원 실패 → "소속 미상" → 미상을 노출로 처리해 **다른 세션에서도 진행 중으로 보였다**
+ *  (사용자 신고 2회). 여기 `jobs` 는 런타임 진실 소스(전체)라 환원이 정확하다.
+ *
+ * 부모 체인을 따라 올라가며(서브에이전트가 서브에이전트를 띄운 경우) 자기참조·순환은 끊는다.
+ * 못 찾으면 ""(미상) — 호출자가 정책을 정한다. jobs 는 수십 개 규모라 조회 비용 무시.
+ */
+export const resolveOwnerThreadKey = (
+  threadKey: string,
+  seen?: Set<string>,
+): string => {
+  if (typeof threadKey !== "string" || threadKey === "") return "";
+  const m = /^(?:worker|agent):(.+)$/.exec(threadKey);
+  if (m === null) return threadKey; // 세션 키 — 환원 끝.
+  const id = m[1] ?? "";
+  const s = seen ?? new Set<string>();
+  if (s.has(id)) return ""; // 자기참조/순환 — 미상으로 닫는다.
+  s.add(id);
+  const parent = jobs.get(id);
+  return parent !== undefined ? resolveOwnerThreadKey(parent.threadKey, s) : "";
+};
 
 /**
  * 잡 목록 — list_workers 도구(region)가 사용. startedAt 내림차순(최신 먼저).

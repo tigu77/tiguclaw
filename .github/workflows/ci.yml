@@ -17,3 +17,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # 회귀 스위트 — 실제 사고에서 나온 계약만 모아 매 push 에서 다시 돌린다.
+      # (종전엔 typecheck 하나뿐이라, 검증 하네스를 아무리 만들어도 재실행되지 않았다.)
+      # 격리: 러너가 TIGUCLAW_HOME 을 임시 디렉터리로 잡아 실제 홈·DB 를 안 건드린다.
+      # timeout: 검사들이 자체 시한을 갖지만, 러너가 매달리는 최악의 경우를 막는 바깥 그물.
+      - run: npm run test:regression
+        timeout-minutes: 5

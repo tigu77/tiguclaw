@@ -49,7 +49,7 @@
  *  - 위험 명령·위험 경로 차단은 *LLM 측 정책* (sysprompt prompt-gated). MCP server
  *    본체는 DISALLOWED_TOOLS/DISALLOWED_URLS 만 차단 (정책 진실 소스 hook) — 경로 벽 0.
  */
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { createRequire } from "node:module";
@@ -294,6 +294,72 @@ const killTree = async (
   }
 };
 
+/**
+ * 추적 중인 백그라운드 셸을 **동기로** SIGKILL — process.on("exit") 전용.
+ *
+ * ★왜 별도로 있나 (2026-07-28): killAllBgShells 는 DB 기록·이벤트 발행까지 하는 async
+ *  경로라 force-exit(1500ms 백스톱)·크래시 때는 실행될 시간이 없다(실측: /restart 2건에서
+ *  종료 시작 2초 뒤 force exit, 자식 정리 로그 없음). 종료 훅은 async 를 못 기다리므로
+ *  여기서는 **시그널만** 보낸다 — 장부(DB·이벤트)는 포기하고 프로세스 누수만 막는다.
+ *  우선순위가 명확하다: 기록보다 고아 0.
+ *  killTree 와 같은 pgid<=1 방어(전역 그룹 시그널 금지)를 그대로 지킨다.
+ */
+let bgShellExitHookInstalled = false;
+/** 최후 그물 등록(1회) — 첫 셸을 띄울 때 건다. 자식이 없는 런타임엔 훅도 안 걸린다. */
+const ensureBgShellExitHook = (): void => {
+  if (bgShellExitHookInstalled) return;
+  bgShellExitHookInstalled = true;
+  process.on("exit", () => {
+    try {
+      const n = killAllBgShellsSync();
+      // 여기서 남았다는 건 정상 정리(shutdown)를 못 탔다는 뜻 — 진단에 필요하니 남긴다.
+      if (n > 0) console.log(`bg-shells: exit 훅 최후 정리 — ${n}건 강제 종료`);
+    } catch {
+      /* 종료 중 — 더 할 수 있는 게 없다 */
+    }
+  });
+};
+
+/** 실행 중인 **포그라운드** 셸의 그룹장 pid — detached 로 띄우므로 최후 그물이 필요하다.
+ *  정상 종료(성공·실패·타임아웃) 시 cleanupExec 가 즉시 뺀다 = 평시엔 거의 비어 있다. */
+const FOREGROUND_SHELL_PIDS = new Set<number>();
+
+export const killAllBgShellsSync = (): number => {
+  let killed = 0;
+  for (const pgid of FOREGROUND_SHELL_PIDS) {
+    if (!Number.isInteger(pgid) || pgid <= 1) continue;
+    try {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(pgid), "/T", "/F"], { stdio: "ignore" });
+      } else {
+        process.kill(-pgid, "SIGKILL");
+      }
+      killed += 1;
+    } catch {
+      /* 이미 종료 */
+    }
+  }
+  FOREGROUND_SHELL_PIDS.clear();
+  for (const [, s] of BG_SHELLS) {
+    if (s.status !== "running") continue;
+    const pgid = s.pgid;
+    if (!Number.isInteger(pgid) || pgid <= 1) continue;
+    try {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(pgid), "/T", "/F"], {
+          stdio: "ignore",
+        });
+      } else {
+        process.kill(-pgid, "SIGKILL");
+      }
+      killed += 1;
+    } catch {
+      /* 이미 종료·권한 — 무시 */
+    }
+  }
+  return killed;
+};
+
 // baseCwd 주입(3b) — 백그라운드 셸도 턴 cwd 기준으로 실행(포그라운드 Bash 와 대칭).
 // threadKey(ADR Phase 2 §1) — 어느 대화 턴이 이 셸을 띄웠나(관측용, 미전파 시 "" 폴백).
 const launchBgShell = async (
@@ -377,6 +443,7 @@ const launchBgShell = async (
     }
   });
   BG_SHELLS.set(id, shell);
+  ensureBgShellExitHook(); // 자식이 생겼다 = 최후 그물이 필요하다(1회 등록, 멱등).
   publishShellEventSafe("shell.started", {
     shellId: id,
     command,
@@ -781,6 +848,8 @@ const makeFileOpsTools = (
   base: string,
   threadKey: string,
   includeWebSearch: boolean,
+  /** 턴/워커 중단 신호 — /stop·취소가 실행 중인 포그라운드 셸까지 끊게 한다(G, 2026-07-28). */
+  abortSignal?: AbortSignal,
 ) => {
   // ★이 Map 이 곧 "턴 스코프" — createFileOpsMcpServer 가 턴마다 새로 호출되므로
   //  (openai-codex-oauth.ts:490) 클로저 하나가 그 턴의 수명과 정확히 일치한다.
@@ -1047,90 +1116,84 @@ const makeFileOpsTools = (
       const timeoutSec = args.timeout ?? BASH_DEFAULT_TIMEOUT_MS / 1000;
       const timeout = Math.min(timeoutSec * 1000, BASH_MAX_TIMEOUT_MS);
 
-      try {
-        // execFile SHELL.bin/argsFor — single shell layer, no shell:true (injection
-        // 표면 최소). unix=sh -c, win32=cmd /c (detectShell() 단일 소스, env 블록의
-        // Shell 힌트와 동형). killSignal = SIGKILL (디폴트 SIGTERM 무시하는 sleep/yes
-        // 등 강제 종료).
-        const { stdout, stderr } = await execFileP(
-          SHELL.bin,
-          SHELL.argsFor(args.command),
-          {
-            cwd: base,
-            timeout,
-            maxBuffer: BASH_MAX_BUFFER_BYTES,
-            killSignal: "SIGKILL",
-          },
-        );
-        const out = truncateBashOutput(stdout);
-        const err = truncateBashOutput(stderr);
-        // okText 본문 — stdout + stderr + exit code (성공 시 0).
-        const parts: string[] = [];
-        if (out.length > 0) parts.push(`stdout:\n${out}`);
-        if (err.length > 0) parts.push(`stderr:\n${err}`);
-        parts.push(`exit code: 0`);
-        return okText(parts.join("\n\n"));
-      } catch (e) {
-        // execFile 실패 — timeout / non-zero exit / maxBuffer 초과 등.
-        // NodeJS.ErrnoException 에 stdout/stderr/code/killed/signal 박혀 있음.
-        const errExec = e as NodeJS.ErrnoException & {
-          stdout?: string | Buffer;
-          stderr?: string | Buffer;
-          code?: number | string;
-          killed?: boolean;
-          signal?: NodeJS.Signals;
-        };
-        const stdout =
-          typeof errExec.stdout === "string"
-            ? errExec.stdout
-            : errExec.stdout instanceof Buffer
-              ? errExec.stdout.toString("utf8")
-              : "";
-        const stderr =
-          typeof errExec.stderr === "string"
-            ? errExec.stderr
-            : errExec.stderr instanceof Buffer
-              ? errExec.stderr.toString("utf8")
-              : "";
-        const out = truncateBashOutput(stdout);
-        const err = truncateBashOutput(stderr);
-
-        // maxBuffer 초과 케이스 — ERR_CHILD_PROCESS_STDIO_MAXBUFFER.
-        const isMaxBuffer =
-          errExec.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
-        // timeout 케이스 — killed === true && signal === "SIGKILL" (timeout clamp 후).
-        // (maxBuffer 도 killed 박힘 — 분리 필수.)
-        const isTimeout = errExec.killed === true && !isMaxBuffer;
-
-        // maxBuffer 초과 시 stdout/stderr 의 끝에 truncate marker 박음
-        // (truncateBashOutput 가 byte cap 이하라 marker 박지 않은 경계 케이스 보강).
-        const outWithMarker =
-          isMaxBuffer && !out.endsWith(BASH_TRUNCATE_MARKER)
-            ? `${out}${BASH_TRUNCATE_MARKER}`
-            : out;
-        const errWithMarker =
-          isMaxBuffer && err.length > 0 && !err.endsWith(BASH_TRUNCATE_MARKER)
-            ? `${err}${BASH_TRUNCATE_MARKER}`
-            : err;
-
-        const parts: string[] = [];
-        if (outWithMarker.length > 0) parts.push(`stdout:\n${outWithMarker}`);
-        if (errWithMarker.length > 0) parts.push(`stderr:\n${errWithMarker}`);
-        if (isTimeout) {
-          parts.push(
-            `Error: timeout — command 이 ${Math.round(timeout / 1000)}s 안에 끝나지 않아 SIGKILL 로 종료됨.`,
-          );
-        } else if (isMaxBuffer) {
-          parts.push(`Error: maxBuffer 초과 (1MB) — stdout/stderr truncated.`);
-        } else {
-          const codeStr =
-            typeof errExec.code === "number"
-              ? `exit code: ${errExec.code}`
-              : `Error: ${errExec.message ?? String(e)}`;
-          parts.push(codeStr);
-        }
-        return okText(parts.join("\n\n"));
+      // ★포그라운드 셸을 **그룹장**으로 띄운다 (G, 2026-07-28).
+      //  종전엔 execFile 의 내장 timeout 이 **직계 자식(sh)만** 죽여, `sh -c "node srv.js"`
+      //  의 손자는 그대로 살아남았다(라이브 고아 1건 실측: 10일 생존·포트 3911 점유).
+      //  ★execFile 은 detached 옵션을 **전달하지 않는다**(실측: pgid 가 부모 그룹으로 남아
+      //   process.kill(-pid) 이 ESRCH). 그래서 백그라운드 셸(launchBgShell)과 동형으로
+      //   spawn 을 직접 쓴다 — 그래야 setsid 가 걸려 그룹 전체를 정리할 수 있다.
+      //  ★detach 는 "부모가 죽어도 살아남음"이므로 추적 집합에 넣어 exit 훅 리퍼가 덮는다.
+      const useGroup = process.platform !== "win32";
+      const child = spawn(SHELL.bin, SHELL.argsFor(args.command), {
+        cwd: base,
+        windowsHide: true,
+        ...(useGroup ? { detached: true } : {}),
+      });
+      const childPid = child.pid ?? -1;
+      if (childPid > 1) {
+        FOREGROUND_SHELL_PIDS.add(childPid);
+        ensureBgShellExitHook();
       }
+      const killGroup = (): void => {
+        if (childPid > 1) void killTree(childPid, "SIGKILL");
+        else child.kill("SIGKILL"); // spawn 실패(pid 미할당) 방어 — 그룹 시그널 금지.
+      };
+
+      // stdout/stderr 수집 — cap 초과 시 즉시 죽이고 maxBuffer 로 보고(execFile 동형).
+      let outBuf = "", errBuf = "", outBytes = 0, errBytes = 0;
+      let overflow = false, timedOut = false, abortedByUser = false;
+      const collect = (chunk: Buffer, which: "out" | "err"): void => {
+        const n = chunk.length;
+        if (which === "out") { outBytes += n; if (outBuf.length < BASH_MAX_BUFFER_BYTES * 2) outBuf += chunk.toString("utf8"); }
+        else { errBytes += n; if (errBuf.length < BASH_MAX_BUFFER_BYTES * 2) errBuf += chunk.toString("utf8"); }
+        if (!overflow && (outBytes > BASH_MAX_BUFFER_BYTES || errBytes > BASH_MAX_BUFFER_BYTES)) {
+          overflow = true;
+          killGroup();
+        }
+      };
+      child.stdout?.on("data", (c: Buffer) => collect(c, "out"));
+      child.stderr?.on("data", (c: Buffer) => collect(c, "err"));
+
+      // timeout 은 우리가 소유한다(내장은 직계 자식만 죽임 = 위 구멍).
+      const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeout);
+      const onAbort = (): void => { abortedByUser = true; killGroup(); };
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+      const finished = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; err?: Error }>(
+        (resolve) => {
+          child.once("error", (err) => resolve({ code: null, signal: null, err }));
+          child.once("close", (code, signal) => resolve({ code, signal }));
+        },
+      );
+      clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", onAbort);
+      if (childPid > 1) FOREGROUND_SHELL_PIDS.delete(childPid);
+
+      const out = truncateBashOutput(outBuf);
+      const err = truncateBashOutput(errBuf);
+      const outWithMarker =
+        overflow && !out.endsWith(BASH_TRUNCATE_MARKER) ? `${out}${BASH_TRUNCATE_MARKER}` : out;
+      const errWithMarker =
+        overflow && err.length > 0 && !err.endsWith(BASH_TRUNCATE_MARKER)
+          ? `${err}${BASH_TRUNCATE_MARKER}`
+          : err;
+      const parts: string[] = [];
+      if (outWithMarker.length > 0) parts.push(`stdout:\n${outWithMarker}`);
+      if (errWithMarker.length > 0) parts.push(`stderr:\n${errWithMarker}`);
+      if (timedOut) {
+        parts.push(
+          `Error: timeout — command 이 ${Math.round(timeout / 1000)}s 안에 끝나지 않아 SIGKILL 로 종료됨.`,
+        );
+      } else if (abortedByUser) {
+        parts.push(`Error: 중단됨 — 사용자/상위 취소로 셸(프로세스 그룹)을 SIGKILL 했습니다.`);
+      } else if (overflow) {
+        parts.push(`Error: maxBuffer 초과 (1MB) — stdout/stderr truncated.`);
+      } else if (finished.err !== undefined) {
+        parts.push(`Error: ${finished.err.message}`);
+      } else {
+        parts.push(`exit code: ${finished.code ?? 0}`);
+      }
+      return okText(parts.join("\n\n"));
     },
   );
 
@@ -1358,7 +1421,7 @@ const makeFileOpsTools = (
 export const createFileOpsMcpServer = (
   baseCwd?: string,
   threadKey?: string,
-  opts?: { includeWebSearch?: boolean },
+  opts?: { includeWebSearch?: boolean; abortSignal?: AbortSignal },
 ): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "file-ops",
@@ -1369,6 +1432,7 @@ export const createFileOpsMcpServer = (
       // 기본 false — 자체 검색 수단이 있는 어댑터(codex)에 중복 부착하지 않는다.
       // 검색이 없는 어댑터(openai)만 명시적으로 켠다.
       opts?.includeWebSearch === true,
+      opts?.abortSignal,
     ),
   });
 

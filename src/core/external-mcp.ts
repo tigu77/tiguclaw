@@ -169,6 +169,47 @@ let connectPromise: Promise<void> | null = null;
 const projectCache = new Map<string, Map<string, CachedExt>>();
 const projectConnect = new Map<string, Promise<void>>();
 
+// ★외부 MCP 자식 pid 집합 (2026-07-28) — 정상 종료는 close() 가 맡지만 그건 async 라
+//  force-exit(1500ms 백스톱)·크래시 경로에선 실행될 시간이 없다. 실측: /restart 두 건에서
+//  종료 시작 2초 뒤 force exit 이 떴고 그 사이 자식 정리 로그가 없었다. 그 구멍을
+//  process.on("exit") 의 **동기** 리퍼가 이 집합으로 닫는다(고아 0). 외부 MCP 는 부팅
+//  reaper 도 없어 한 번 새면 영구 고아라 특히 중요하다.
+const EXTERNAL_MCP_PIDS = new Set<number>();
+
+/**
+ * 추적 중인 외부 MCP 자식을 **동기로** 종료. process.on("exit") 전용(그 훅은 async 를
+ * 못 기다린다). 정상 경로는 closeAllExternalMcp 가 먼저 지우므로 보통 빈 집합이다.
+ * 실패는 전부 무시 — 종료 중이라 할 수 있는 게 없고, 한 건 실패가 나머지를 막으면 안 된다.
+ */
+let extMcpExitHookInstalled = false;
+/** 최후 그물 등록(1회) — 첫 stdio 자식이 생길 때 건다(자식 없으면 훅도 없음). */
+const ensureExternalMcpExitHook = (): void => {
+  if (extMcpExitHookInstalled) return;
+  extMcpExitHookInstalled = true;
+  process.on("exit", () => {
+    try {
+      const n = killExternalMcpChildrenSync();
+      if (n > 0) console.log(`external-mcp: exit 훅 최후 정리 — ${n}건 강제 종료`);
+    } catch {
+      /* 종료 중 */
+    }
+  });
+};
+
+export const killExternalMcpChildrenSync = (): number => {
+  let killed = 0;
+  for (const pid of EXTERNAL_MCP_PIDS) {
+    try {
+      process.kill(pid, "SIGKILL");
+      killed += 1;
+    } catch {
+      /* 이미 죽음/권한 — 무시 */
+    }
+  }
+  EXTERNAL_MCP_PIDS.clear();
+  return killed;
+};
+
 const buildEnv = (extra?: Record<string, string>): Record<string, string> => {
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) base[k] = v;
@@ -192,6 +233,15 @@ const connectOne = async (
           env: buildEnv((config as StdioMcpConfig).env),
         });
   await client.connect(transport); // 실제 프로세스 spawn(stdio) 또는 SSE 연결.
+  // 자식 pid 등록 — 동기 리퍼(killExternalMcpChildrenSync)의 대상. SSE 전송은 자식이
+  // 없으므로 pid 도 없다(instanceof 로 구분 — stdio 만 등록).
+  if (transport instanceof StdioClientTransport) {
+    const pid = transport.pid;
+    if (typeof pid === "number" && pid > 0) {
+      EXTERNAL_MCP_PIDS.add(pid);
+      ensureExternalMcpExitHook(); // 자식이 생겼다 = 최후 그물 필요(1회, 멱등).
+    }
+  }
   const server: MCPServer = {
     cacheToolsList: true,
     get name() {
@@ -222,7 +272,20 @@ const connectOne = async (
       /* cache 미사용 */
     },
   };
-  return { server, realClose: () => client.close() };
+  // 정상 종료 시 추적에서 뺀다 — 안 그러면 exit 훅이 이미 죽은 pid 를 다시 kill 하며
+  // "최후 정리 N건" 을 잘못 찍는다(그 로그는 "정상 정리를 못 탔다"는 신호여야 한다).
+  const trackedPid =
+    transport instanceof StdioClientTransport ? transport.pid : null;
+  return {
+    server,
+    realClose: async () => {
+      try {
+        await client.close();
+      } finally {
+        if (typeof trackedPid === "number") EXTERNAL_MCP_PIDS.delete(trackedPid);
+      }
+    },
+  };
 };
 
 const doConnectAll = async (): Promise<void> => {

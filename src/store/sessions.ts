@@ -276,13 +276,48 @@ export const initStore = (): void => {
       INSERT INTO memories_fts(memories_fts, rowid, name, description, body)
       VALUES ('delete', old.id, old.name, old.description, old.body);
     END;
-    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    -- ★UPDATE OF 로 좁힌다 (2026-07-28). 종전엔 컬럼 제한 없는 AFTER UPDATE 라 **모든**
+    -- UPDATE 에 반응했고, 조회 때마다 도는 bumpAccess(access_count/last_accessed 갱신)가
+    -- 매번 FTS 삭제+재삽입을 일으켰다 → memories_fts_data 가 원본의 11배(실측 1.76MB
+    -- vs 156KB). 색인 대상 3컬럼이 바뀔 때만 재색인하면 된다. 기존 DB 는 아래 마이그레이션.
+    CREATE TRIGGER IF NOT EXISTS memories_au
+      AFTER UPDATE OF name, description, body ON memories BEGIN
       INSERT INTO memories_fts(memories_fts, rowid, name, description, body)
       VALUES ('delete', old.id, old.name, old.description, old.body);
       INSERT INTO memories_fts(rowid, name, description, body)
       VALUES (new.id, new.name, new.description, new.body);
     END;
   `);
+
+  // ─── memories_au 범위 축소 마이그레이션 (2026-07-28) ─────────────────────
+  // `CREATE TRIGGER IF NOT EXISTS` 는 이미 있는 트리거를 갱신하지 않으므로, 구 정의
+  // (UPDATE OF 없음)를 감지해 교체한다. 교체 후 rebuild 로 그동안 쌓인 중복 색인을
+  // 회수한다(external content FTS5 라 원본에서 무손실 재구성 — 데이터 삭제 아님).
+  // 멱등: 이미 좁혀져 있으면 probe 만 하고 끝(부팅 비용 무시).
+  const memAuSql = handle
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type='trigger' AND name='memories_au'`,
+    )
+    .get() as { sql?: string } | undefined;
+  if (
+    memAuSql?.sql !== undefined &&
+    !/UPDATE\s+OF/i.test(memAuSql.sql)
+  ) {
+    handle.exec(`
+      DROP TRIGGER memories_au;
+      CREATE TRIGGER memories_au
+        AFTER UPDATE OF name, description, body ON memories BEGIN
+        INSERT INTO memories_fts(memories_fts, rowid, name, description, body)
+        VALUES ('delete', old.id, old.name, old.description, old.body);
+        INSERT INTO memories_fts(rowid, name, description, body)
+        VALUES (new.id, new.name, new.description, new.body);
+      END;
+      INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
+    `);
+    console.log(
+      "store: memories_au 트리거 범위 축소(UPDATE OF name/description/body) + FTS 재구축",
+    );
+  }
 
   // ─── Memory 인덱스 티어링 P0: access_count/last_accessed/archived_at
   // idempotent ALTER 가드 (효율감사 P2a 계약 §0.1/§3.1, 2026-07-16) ──────────

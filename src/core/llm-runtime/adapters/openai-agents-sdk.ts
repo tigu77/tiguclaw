@@ -91,6 +91,7 @@ import {
   idleConfigExempt,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
+import { watchToolStart } from "../tool-watchdog.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -277,6 +278,8 @@ export const runOpenAi = async (
           //  (settings.json search.provider + 키 env, 미설정이면 도구 미등록).
           createFileOpsMcpServer(discoveryCwd, input.threadKey, {
             includeWebSearch: true,
+            // abortSignal — /stop·취소가 포그라운드 셸까지 끊게(G, 2026-07-28).
+            abortSignal: input.abortSignal,
           }),
           "file-ops",
         ),
@@ -646,7 +649,10 @@ export const runOpenAi = async (
 
   // 도구 실행시간(#3) — callId → {그 도구의 activity seq, 시작 벽시계, 라벨}. tool_called
   // 에서 기록, tool_output(function_call_result) 도착 시 phase:"end"+durationMs 로 발행.
-  const toolTiming = new Map<string, { seq: number; t0: number; label: string }>();
+  const toolTiming = new Map<
+    string,
+    { seq: number; t0: number; label: string; stopSlow?: () => void }
+  >();
 
   // externalTools 스트리밍(llm.tool_call_delta, §2.4) — SDK 는 `tool_called` 를 도구콜이
   // *완전히 조립된 뒤* 1회만 노출한다(codex 의 문자 단위 진짜 델타와 달리 이 어댑터는 "단일
@@ -826,7 +832,18 @@ export const runOpenAi = async (
                   ? raw.call_id
                   : undefined;
             if (callId !== undefined) {
-              toolTiming.set(callId, { seq, t0: Date.now(), label: raw.name || "tool" });
+              toolTiming.set(callId, {
+                seq,
+                t0: Date.now(),
+                label: raw.name || "tool",
+                // 도구 지연 감시(2026-07-28, D) — codex 에만 있던 신호를 openai 에도.
+                // 판정은 공통 엔진(tool-watchdog), 여기선 시작/종료만 건다.
+                stopSlow: watchToolStart({
+                  channel: input.channel,
+                  threadKey: input.threadKey,
+                  tool: raw.name || "tool",
+                }),
+              });
             }
             bus.publish({
               type: "llm.activity",
@@ -894,6 +911,7 @@ export const runOpenAi = async (
           const timing = callId !== undefined ? toolTiming.get(callId) : undefined;
           if (callId !== undefined && timing !== undefined) {
             toolTiming.delete(callId);
+            timing.stopSlow?.(); // 결과 도착 = 감시 종료(타이머 누수 0).
             // 결과 텍스트 추출(방어적) — string 이거나 {type:"text",text} / {text} 노드.
             const rawOut = raw?.output;
             const outText =
@@ -939,6 +957,10 @@ export const runOpenAi = async (
       throw e;
     } finally {
       idleTimer.done(); // 누수 0 (I-6).
+      // 도구 지연 감시 잔여 해제 — 결과 없이 턴이 끝나면(중단·에러) 타이머가 남아 끝난
+      // 도구에 대해 뒤늦게 경고를 찍는다(오탐). claude 어댑터와 동형.
+      for (const t of toolTiming.values()) t.stopSlow?.();
+      toolTiming.clear();
       // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
       // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
       deltaStream.flush();

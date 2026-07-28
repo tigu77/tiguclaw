@@ -103,6 +103,7 @@ import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
+import { watchToolStart } from "../tool-watchdog.js";
 import {
   extractAccountId,
   sleep,
@@ -237,29 +238,10 @@ const CODEX_TOOL_TIMEOUT_MS = parsePosIntEnv(
   480_000,
 );
 
-// ★도구 조기 경고 (2026-07-03) — 도구가 이 시간 안 끝나면 8분 타임아웃 *전에* 로그 경고.
-// 실측: 워커 도구(Bash 등)가 **macOS 권한 요청 다이얼로그**에 막혀 조용히 멈췄는데, 도구
-// 시작(llm.activity)만 찍히고 완료 신호가 없어 "느림 vs 막힘" 구분이 안 돼 30분+ 헤맸다.
-// → 도구가 오래 안 끝나면 `[tool-slow]` 로 알려 "권한 요청 확인" 같은 조치를 빨리
-// 하게. 죽이지 않고 경고만(정상 긴 도구=무해한 로그 1줄). env override.
-const CODEX_TOOL_SLOW_WARN_MS = parsePosIntEnv(
-  process.env.CODEX_TOOL_SLOW_WARN_MS,
-  180_000, // 90초 → 180초 (2026-07-27, 아래 실측 근거).
-);
-
-// ★도구별 임계 (2026-07-27) — "오래 걸리는 게 정상" 인 도구는 이 경고의 대상이 아니다.
-//  실측(dev, 완료 서브에이전트 138건): 평균 124초·최대 627초. 90초 임계로는 **59%(82건)가
-//  초과** — 즉 이 경고는 사실상 "서브에이전트가 돌고 있다" 는 알림이었다(실제 발생 20건 중
-//  12건이 spawn_agent). 기본을 180초로 올려도 16% 가 남아, 그 계층만 따로 뺀다.
-//  ★서브에이전트는 백그라운드 드로어에 스텝이 실시간으로 보인다 — 이 경고가 시키는 "확인해봐"
-//   를 사용자가 이미 다른 수단으로 하고 있어 actionable 가치가 낮다. 반대로 Bash·외부 MCP 는
-//   그런 관측 수단이 없어(권한 다이얼로그에 조용히 막힘) 짧은 임계가 그대로 유효하다.
-//  300초 = 초과 5%(7/138) + 도구 타임아웃(8분)보다 3분 앞 → 진짜 hung 은 죽기 전에 알린다.
-const TOOL_SLOW_WARN_OVERRIDE_MS: Readonly<Record<string, number>> = {
-  spawn_agent: 300_000,
-};
-const toolSlowWarnMs = (tool: string): number =>
-  TOOL_SLOW_WARN_OVERRIDE_MS[tool] ?? CODEX_TOOL_SLOW_WARN_MS;
+// 도구 조기 경고(tool-slow)는 **공통 엔진**으로 이관됐다 (2026-07-28, 딥리뷰 D):
+// `core/llm-runtime/tool-watchdog.ts`. 임계·도구별 override·경고 문구·llm.tool_slow 이벤트가
+// 거기 한 곳에 있고 claude/openai 도 같은 것을 쓴다. env 는 TOOL_SLOW_WARN_MS
+// (구 CODEX_TOOL_SLOW_WARN_MS 도 계속 읽음 — 기존 설정 무파손).
 
 // persistence 보강 (2026-05-27, contract Q1(B)) — codex 전용 instructions delta.
 // claude 는 SDK 도구 루프가 작업 완료까지 자율 persistence (코드 차원). codex 는 우리
@@ -487,7 +469,10 @@ export const runOpenAiCodex = async (
   // threadKey(ADR 2026-07-17 §Phase 2/§6 마감) — codex 백그라운드 셸의
   // shell.started.threadKey 가 실 세션이 되도록 전파(이전엔 baseCwd 만 넘겨 "" 폴백).
   const fileOpsBridge = await adaptClaudeMcpServer(
-    createFileOpsMcpServer(discoveryCwd, input.threadKey),
+    // abortSignal — /stop·취소가 실행 중인 포그라운드 셸까지 끊게(G, 2026-07-28).
+    createFileOpsMcpServer(discoveryCwd, input.threadKey, {
+      abortSignal: input.abortSignal,
+    }),
     "file-ops",
   );
   // V7.7 — 태스크 관리 (TodoWrite 동등). claude 는 SDK builtin, codex 만 등록.
@@ -1617,33 +1602,15 @@ export const runOpenAiCodex = async (
                 // 조기 경고 — 타임아웃(8분) 전에 로그로 알림(권한 요청/hung/느림 조기 발견).
                 // 죽이지 않고 경고만. callTool 이 먼저 끝나면 아래 finally 가 clearTimeout(누수 0).
                 // 임계는 도구별(toolSlowWarnMs) — 정의부 주석의 실측 근거 참조.
-                const slowMs = toolSlowWarnMs(tc.name);
-                const slowTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
-                  console.warn(
-                    `[tool-slow] ${input.threadKey} 도구 ${tc.name} 이(가) ${Math.round(
-                      slowMs / 1000,
-                    )}s+ 실행 중 — 권한 다이얼로그(OS) 대기·외부 MCP 백엔드 부재(서버는 연결됐어도 대상 앱/에디터 미실행)·hung·느림 의심. ${Math.round(
-                      CODEX_TOOL_TIMEOUT_MS / 60_000,
-                    )}분에 타임아웃.`,
-                  );
-                  // 관측 이벤트 — worker-jobs 가 구독해 워커면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
-                  // 채널 무결합(어댑터는 event 만, dest 라우팅은 worker 계층). best-effort.
-                  try {
-                    bus.publish({
-                      type: "llm.tool_slow",
-                      ts: Date.now(),
-                      payload: {
-                        channel: input.channel,
-                        threadKey: input.threadKey,
-                        tool: tc.name,
-                        ms: slowMs,
-                      },
-                    });
-                  } catch {
-                    /* best-effort */
-                  }
-                }, slowMs);
-                slowTimer.unref?.();
+                // ★공통 엔진(tool-watchdog)으로 위임 (2026-07-28) — 판정·문구·이벤트가
+                //  claude/openai 와 한 곳에서 나온다(원칙 #2). 여기선 codex 만 아는 맥락
+                //  (도구 타임아웃 시각)을 note 로 덧붙인다.
+                const stopSlowWatch = watchToolStart({
+                  channel: input.channel,
+                  threadKey: input.threadKey,
+                  tool: tc.name,
+                  note: `${Math.round(CODEX_TOOL_TIMEOUT_MS / 60_000)}분에 타임아웃.`,
+                });
                 // ★"무응답" 판정을 시간이 아니라 **관측**으로 (2026-07-27, 사용자 지적:
                 //  "정말 무응답을 문제라고 판단해야지, 무응답이 아닌데").
                 //  이 타이머의 존재 이유는 hung 도구가 턴을 영영 얼리는 것을 막는 것이다.
@@ -1691,7 +1658,7 @@ export const runOpenAiCodex = async (
                   armToolTimeout(),
                 ]).finally(() => {
                   if (toolTimer !== undefined) clearTimeout(toolTimer);
-                  clearTimeout(slowTimer);
+                  stopSlowWatch();
                 });
                 // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
                 executedToolNames.add(tc.name);

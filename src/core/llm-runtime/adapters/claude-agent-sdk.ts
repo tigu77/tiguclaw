@@ -115,6 +115,7 @@ import {
   idleConfigExempt,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
+import { watchToolStart } from "../tool-watchdog.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -859,7 +860,10 @@ export const runClaude = async (
 
   // 도구 실행시간(#3) — top-level tool_use id → {그 도구의 activity seq, 시작 벽시계, 라벨}.
   // tool_result 도착 시 이 맵에서 찾아 phase:"end"+durationMs 로 1건 더 발행(대시보드 seq 매칭).
-  const toolTiming = new Map<string, { seq: number; t0: number; label: string }>();
+  const toolTiming = new Map<
+    string,
+    { seq: number; t0: number; label: string; stopSlow?: () => void }
+  >();
 
   const bus = getEventBus();
 
@@ -1347,7 +1351,20 @@ export const runClaude = async (
               const toolSeq = activitySeq++;
               // 실행시간(#3) — tool_use id 로 시작 시각 기록 → tool_result 에서 durationMs.
               if (typeof toolUseId === "string") {
-                toolTiming.set(toolUseId, { seq: toolSeq, t0: Date.now(), label: toolName });
+                toolTiming.set(toolUseId, {
+                  seq: toolSeq,
+                  t0: Date.now(),
+                  label: toolName,
+                  // ★도구 지연 감시 (2026-07-28, D) — 종전엔 codex 에만 있어, claude 로 도는
+                  //  워커는 도구가 권한 다이얼로그에 막혀도 사용자에게 신호가 없었다.
+                  //  판정은 공통 엔진이 하고 여기선 시작/종료만 건다. 죽이지 않고 경고만
+                  //  (실행 취소는 SDK 소관 — 경계 침범 금지).
+                  stopSlow: watchToolStart({
+                    channel: input.channel,
+                    threadKey: input.threadKey,
+                    tool: toolName,
+                  }),
+                });
               }
               bus.publish({
                 type: "llm.activity",
@@ -1389,6 +1406,7 @@ export const runClaude = async (
           const timing = toolTiming.get(toolUseId);
           if (timing !== undefined) {
             toolTiming.delete(toolUseId);
+            timing.stopSlow?.(); // 결과 도착 = 더 감시할 이유 없음(타이머 누수 0).
             const output = buildActivityOutput(timing.label, text, isError);
             try {
               bus.publish({
@@ -1571,6 +1589,10 @@ export const runClaude = async (
   } finally {
     // 타이머 누수 0 (I-6) — 성공·throw·abort 모든 경로에서 해제.
     idleTimer.done();
+    // 도구 지연 감시 잔여 해제 — tool_result 없이 턴이 끝난 경우(중단·에러·SDK abort)
+    // 타이머가 남아 **끝난 도구에 대해 뒤늦게 경고**를 찍는다. 그건 오탐이다.
+    for (const t of toolTiming.values()) t.stopSlow?.();
+    toolTiming.clear();
     // 델타 잔여 flush(꼬리 유실 0) + coalesce 타이머 정리. best-effort — 실패해도
     // out 전체본이 권위 교체(자가치유). 성공·throw·abort 모든 경로에서 1회.
     deltaStream.flush();

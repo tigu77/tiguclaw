@@ -1575,6 +1575,32 @@ const shutdown = async (signal: string): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`tiguclaw daemon: received ${signal}, shutting down`);
+  // ★자식 프로세스 정리를 **맨 앞으로** (2026-07-28). 종전엔 채널·서비스 정지가 끝난 뒤에야
+  //  외부 MCP·백그라운드 셸을 정리했는데, 그 앞단이 1500ms force-exit 백스톱을 넘기면
+  //  자식 정리에 **도달하지 못했다**(실측 2건: 종료 시작 2초 뒤 force exit, 사이에 자식
+  //  정리 로그 없음). 채널·서비스는 소켓이라 프로세스가 죽으면 OS 가 회수하지만, 자식
+  //  프로세스는 우리가 안 죽이면 영구 고아다(외부 MCP 는 부팅 reaper 도 없음).
+  //  → 되돌릴 수 없는 것(고아)을 먼저, 저절로 회수되는 것(소켓)을 나중에.
+  try {
+    const { closeAllExternalMcp } = await import("./core/external-mcp.js");
+    await closeAllExternalMcp();
+  } catch (e) {
+    console.error(
+      `external-mcp close failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  // ★await 필수 — killAllBgShells 가 async(내부 process.kill/taskkill)라 시그널 발송이
+  //  실제로 끝나야 한다. killTree(그룹 전체)라 손자까지 함께 정리된다.
+  try {
+    const { killAllBgShells } = await import(
+      "./core/llm-runtime/capabilities/file-ops-mcp.js"
+    );
+    await killAllBgShells();
+  } catch (e) {
+    console.error(
+      `bg-shells kill failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
   for (const ch of channels) {
     try {
       await ch.stop();
@@ -1591,32 +1617,13 @@ const shutdown = async (signal: string): Promise<void> => {
       console.error(`service ${svc.name} stop failed: ${err}`);
     }
   }
-  // 외부 MCP 서버(codex/openai 가 연결한 persistent 프로세스) 정리 — orphan 0(ADR §1e).
-  try {
-    const { closeAllExternalMcp } = await import("./core/external-mcp.js");
-    await closeAllExternalMcp();
-  } catch (e) {
-    console.error(
-      `external-mcp close failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  // 백그라운드 Bash 셸(file-ops run_in_background) 정리 — orphan 0 (외부 MCP 와 동형).
-  // graceful self-exit(/restart) 경로에서 조용한 장기 셸(손자 포함)이 고아로 남는 구멍을
-  // killTree(그룹 전체 종료)로 닫는다(ADR 2026-07-17 §3, Unit 1 Phase 0). ★await 필수 —
-  // killAllBgShells 가 async(내부에서 process.kill/taskkill 실행)라 아래 process.exit(0)
-  // 전에 시그널 발송이 실제로 끝나야 한다(fire-and-forget 이면 exit 가 먼저 뜰 수 있음).
-  try {
-    const { killAllBgShells } = await import(
-      "./core/llm-runtime/capabilities/file-ops-mcp.js"
-    );
-    await killAllBgShells();
-  } catch (e) {
-    console.error(
-      `bg-shells kill failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
+  // (자식 정리는 위로 옮겼다 — force-exit 백스톱에 잘리지 않게. 아래 exit 훅이 최후 그물.)
   process.exit(0);
 };
+
+// (최후 그물 = 자식을 spawn 하는 모듈이 자기 exit 훅을 등록한다 — file-ops-mcp.ts 의
+//  백그라운드 셸, external-mcp.ts 의 stdio 자식. 소유자가 정리한다 = index 가 캡처할
+//  static import 를 늘리지 않고, 자식이 없는 런타임엔 훅도 안 걸린다.)
 
 process.on("SIGINT", () => {
   void shutdown("SIGINT");

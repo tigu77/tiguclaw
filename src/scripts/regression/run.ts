@@ -45,29 +45,32 @@ const main = async (): Promise<void> => {
   const { initStore } = await import("../../store/sessions.js");
   initStore();
 
-  const checks: RegressionCheck[] = [
-    (await import("./owner-thread-key.js")).check,
-    (await import("./fts-reindex.js")).check,
-    (await import("./bash-foreground.js")).check,
-    (await import("./tool-watchdog-parity.js")).check,
-    (await import("./live-child-job.js")).check,
-    (await import("./timeout-layering.js")).check,
-    (await import("./mcp-tool-listing.js")).check,
-    (await import("./codex-early-stop.js")).check,
-    (await import("./job-session-scope.js")).check,
-    (await import("./job-interrupt-event.js")).check,
-    (await import("./tool-output-coverage.js")).check,
-    (await import("./worker-steering.js")).check,
-    (await import("./dead-exports.js")).check,
-    (await import("./history-compaction-budget.js")).check,
-    (await import("./history-prefix-strip.js")).check,
-    (await import("./tool-output-line-snap.js")).check,
-    (await import("./compaction-fail-observability.js")).check,
-    (await import("./rate-limit-cooldown.js")).check,
-    (await import("./channel-session-binding.js")).check,
-    (await import("./cooldown-probe.js")).check,
-    (await import("./live-jobs-context.js")).check,
-  ];
+  // ★디렉터리 스캔 — 손으로 관리하는 명시 목록이었다 (2026-07-30 원칙 검토 지적).
+  //  회귀 파일을 추가하고 등록을 잊으면 **그물이 조용히 없다.** 오늘 그 구멍의 실증이 나왔다:
+  //  `context-windows.ts` 주석이 "회귀 context-window-coverage 가 지킨다"고 적었는데 그 파일이
+  //  아예 없었다(주석만 있고 그물은 없음). 오늘 내내 고친 "사람이 손으로 관리하던 이름 목록"
+  //  부류가 회귀 러너 자신에 남아 있던 것이라 구조적으로 닫는다.
+  //  `_` 접두(프레임워크·헬퍼)와 `run.ts` 는 제외. 파일명 순으로 결정적 실행.
+  const dir = new URL("./", import.meta.url);
+  const { readdirSync } = await import("node:fs");
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith(".ts") && !f.startsWith("_") && f !== "run.ts")
+    .sort();
+  const checks: RegressionCheck[] = [];
+  for (const f of files) {
+    const mod = (await import(`./${f.replace(/\.ts$/, ".js")}`)) as {
+      check?: RegressionCheck;
+    };
+    if (mod.check === undefined) {
+      console.error(`🔴 ${f} 에 export const check 가 없다 — 회귀 파일 규약 위반.`);
+      process.exitCode = 1;
+      continue;
+    }
+    checks.push(mod.check);
+  }
+  console.log(`  (검사 파일 ${checks.length}개 자동 발견 — 등록 누락 구조적 불가)`);
+
+
 
   let failed = 0;
   let total = 0;

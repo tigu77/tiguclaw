@@ -657,7 +657,12 @@ export const loadCodexTurnHistoryBySessionId = (
 // retrieveContext (L309-322) 의 transcript_index JOIN 패턴 재사용 (단 FTS MATCH 대신
 // ts 정렬 전체). 기존 loadCodexTurnHistoryBySessionId 는 보존 (회귀/타 호출 안전).
 
-/** charCap 디폴트 — 어댑터 charCap (CODEX_TURN_HISTORY_CHAR_CAP) 와 정합. */
+/**
+ * charCap 디폴트 — **어댑터가 이 값을 import 한다**(단일 진실 소스, 2026-07-30 정정).
+ * 종전 주석은 "어댑터와 정합"이라 적혀 있었지만 어댑터는 500_000 이었다(2.5배 차이).
+ * ★주의: `loadThreadHistoryWithIds`(codex 압축 입력)는 charCap 을 적용하지 않는다 —
+ *  그쪽은 `planHistoryCompaction` 의 적응 예산이 크기를 통제한다.
+ */
 export const CODEX_TURN_HISTORY_CHAR_CAP = 200_000;
 
 interface TranscriptHistoryTsRow {

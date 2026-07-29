@@ -156,6 +156,40 @@ export const runScheduleFiring = async (
   inFlight.add(schedule.id);
   try {
     let resultText: string;
+
+    // ★직송 모드 (2026-07-30 사용자 확정: "재시작알림은 LLM 안태워도 돼").
+    //
+    //  실측: `scheduler:3` 재시작 알림이 *"돌쇠 재시작 완료! ✅"* 12자를 답하려고 매번
+    //  **입력 29,635 토큰**을 태웠다(그중 ~90%가 조립 프리픽스, 게다가 그 프리픽스는 input
+    //  배열 맨 끝이라 캐시도 못 받는다). 재시작 27회/일 → **약 80만 입력토큰/일**,
+    //  누적 136회 = **약 400만 토큰**을 상수 문자열 에코에 썼다.
+    //
+    //  ★문구를 패턴으로 추측하지 않는다("정확히 이 문구로 답하세요:" 매칭 같은 것). 그건
+    //   오늘 내내 고친 "손으로 관리하는 목록" 부류다. 대신 **명시 접두**로 옵트인한다 —
+    //   프롬프트가 `!say ` 로 시작하면 그 뒤를 **그대로** 보내고 LLM 을 건너뛴다.
+    //   판정이 프롬프트 작성자의 의도 그 자체라 드리프트할 여지가 없다.
+    const VERBATIM_PREFIX = "!say ";
+    if (schedule.prompt.startsWith(VERBATIM_PREFIX)) {
+      const text = schedule.prompt.slice(VERBATIM_PREFIX.length).trim();
+      if (text === "") {
+        deps.recordFiring(schedule.id, { ok: false, error: "직송 문구가 비어있음" });
+        return;
+      }
+      await (deps.dispatch ?? dispatch)({
+        scheduleId: schedule.id,
+        destChannel: schedule.destChannel,
+        destTarget: schedule.destTarget,
+        text,
+        bus,
+        sessionThreadKey: DEFAULT_SESSION_ID, // LLM 경유와 동일 귀속(아래 호출부와 정합).
+      });
+      deps.recordFiring(schedule.id, { ok: true });
+      console.log(
+        `[scheduler:${schedule.id}] '${schedule.label}' 직송(LLM 미경유) — ${text.length}자.`,
+      );
+      return;
+    }
+
     try {
       const out = await deps.runClaude({
         text: schedule.prompt,

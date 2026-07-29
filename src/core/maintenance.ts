@@ -25,7 +25,7 @@ import path from "node:path";
 import { getPaths } from "./paths.js";
 import { RETENTION_KEEP } from "./event-persist.js";
 import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
-import { countEvents } from "../store/events.js";
+import { eventsTotalBound, countEvents } from "../store/events.js";
 import { countWorkerJobs } from "../store/worker-jobs.js";
 import { TERMINAL_WORKER_JOB_KEEP } from "./worker-jobs.js";
 import {
@@ -123,8 +123,10 @@ export const runMaintenanceScan = (): MaintenanceReport => {
     store: "events",
     axis: "volatile",
     count: eventsCount,
-    bound: RETENTION_KEEP,
-    status: boundedStatus(eventsCount, RETENTION_KEEP),
+    // ★실제 상한 공식(희귀 몫 + 고volume 타입별 몫) — RETENTION_KEEP 단독은 여유 0 이라
+    //  고volume 종류가 하나 늘면 즉시 영구 attention 오경보가 난다(2026-07-30 원칙 검토).
+    bound: eventsTotalBound(RETENTION_KEEP),
+    status: boundedStatus(eventsCount, eventsTotalBound(RETENTION_KEEP)),
     note: `관측 이벤트(감사·메트릭) — 최근 ${RETENTION_KEEP.toLocaleString()}건만 보존, 초과분은 주기적으로 자동 정리(파생 데이터, 삭제 안전).`,
   });
 

@@ -10,6 +10,10 @@ import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
+// ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
+//  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
+import { isRateLimited } from "../rate-limit.js";
+import { CODEX_TURN_HISTORY_CHAR_CAP as STORE_TURN_HISTORY_CHAR_CAP } from "../../../store/memory.js";
 import {
   loadThreadHistoryWithIds,
   type CodexTurn,
@@ -53,7 +57,11 @@ const CODEX_TURN_HISTORY_LIMIT = 150;
 //  ★영향 정직히: "영향 0" 이 아니다. 그 스레드는 150턴 → 102턴으로 줄어든다. 다만 잘리는
 //  건 *가장 오래된* 턴이고 thread_summaries 요약이 그 맥락을 보존한다(기록을 지우는 게
 //  아니라 핫 경로만 바운드 — 유지보수 철학). 짧은 스레드는 애초에 캡에 안 닿아 무영향.
-const CODEX_TURN_HISTORY_CHAR_CAP = 500_000;
+// ★store 의 값을 그대로 쓴다 (2026-07-30 원칙 검토 — 원칙 #2 실질 위반 정정).
+//  종전엔 같은 이름 상수가 **두 값**이었다: store 200_000(claude·openai 가 loadThreadHistory
+//  로 쓰는 값) vs 여기 500_000(codex 전용). 같은 대화를 codex↔openai 로 전환하면 회수되는
+//  과거 턴 양이 **2.5배** 달랐고, store 쪽 주석은 "어댑터 charCap 과 정합"이라 적혀 있었다.
+const CODEX_TURN_HISTORY_CHAR_CAP = STORE_TURN_HISTORY_CHAR_CAP;
 
 /**
  * V5.1' — Codex Responses API SSE event 의 부분 타입.
@@ -885,7 +893,7 @@ export const buildTurnHistory = async (
             // ★예외 경로도 축소한다 (2026-07-30 검토 지적) — 종전엔 빈 결과만 백오프를 탔다.
             //  크기 때문에 hang → idle abort 로 죽는 실패가 이 catch 로 오는데 축소가 0이면
             //  같은 크기를 계속 재시도한다. 단 429/한도는 크기 문제가 아니므로 제외.
-            (isRateLimitedText(msg)
+            (isRateLimited(msg)
               ? " (한도성 실패 — 예산 유지)"
               : ` → 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`),
       );
@@ -1023,12 +1031,6 @@ const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
  *  절반으로 줄이고 다음 턴에 다시 시도한다. 몇 턴 안에 반드시 삼킬 수 있는 크기에 닿는다
  *  (진행 보장). 성공하면 천천히 되돌려 평소엔 큰 덩이로 접는다.
  */
-/** 한도성 실패 판정(크기 무관) — 코어 isRateLimited 와 같은 취지의 최소 사본(단방향 유지). */
-const isRateLimitedText = (t: string): boolean =>
-  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b|hit your (usage )?limit|usage limit/i.test(
-    t,
-  );
-
 const foldBudgetByThread = new Map<string, number>();
 const MIN_FOLD_CHARS = 5_000;
 

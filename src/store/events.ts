@@ -37,14 +37,68 @@ export const countEvents = (): number =>
   (getDb().prepare(`SELECT COUNT(*) AS n FROM events`).get() as { n: number })
     .n;
 
-/** 최근 keepLast 건만 남기고 오래된 것 삭제 → 무한증가 방지. 삭제 행수 반환. */
-export const pruneEvents = (keepLast: number): number =>
-  getDb()
+/**
+ * **고volume 타입 목록** — 이들만 자기 몫으로 따로 프루닝한다 (2026-07-30).
+ *
+ * ★왜: 종전 프루닝은 **전체 건수** 기준(`id <= MAX(id) - keepLast`)이라, 잦은 타입이 상한을
+ *  혼자 채우면 **드물지만 중요한 타입이 같이 밀려났다.** 실측: events 10,118건 중
+ *  `llm.activity` 8,925건(**88.2%**) → 보존창이 **3.8일**로 줄었고, 그 창 안에만
+ *  `llm.turn_error`·`worker.*`·`llm.compaction_stuck` 같은 사고 단서가 남았다.
+ *  오늘 고친 버그가 12일 묻혔던 것을 생각하면 조사 창 4일은 너무 짧다.
+ *
+ *  같은 파일 위쪽 주석이 stream-trace 를 DB 에서 뺀 근거로 **정확히 이 오염**("1만 건 prune
+ *  이 에러·lifecycle 을 밀어내는 보존 오염")을 들고 있었는데, `llm.activity` 가 그 역할을
+ *  하고 있었다 — 진단은 맞았고 대상만 놓쳤다.
+ */
+// ★`llm.delta`·`llm.sdk_message` 는 넣지 않는다 — event-persist 의 SKIP_TYPES 라 **애초에
+//  영속되지 않는다**(DELETE 가 매번 0행). 원칙 검토 지적: "미래 가능성 위해 만든 항목" 차단.
+const HIGH_VOLUME_TYPES = ["llm.activity"] as const;
+
+/**
+ * 프루닝 — 고volume 타입은 **타입별 상한**, 그 외는 **전체 상한**.
+ *
+ * 고volume 을 먼저 자기 몫으로 자르므로, 남는 상한을 희귀 타입이 쓴다 → 에러·lifecycle 의
+ * 보존창이 활동량과 무관해진다. 반환값은 삭제된 총 행수(호출부 관측 문구 무변경).
+ */
+/**
+ * **실제 총 상한** = 희귀 타입 몫(keepLast) + 고volume 타입별 몫(keepLast/2 × 종류수).
+ * ★관측(maintenance)이 `RETENTION_KEEP` 을 총 상한으로 쓰면 경보선(bound×1.5)이 실제 상한과
+ *  **정확히 같아져 여유가 0** 이 된다(원칙 검토 지적). 고volume 종류가 하나 늘면 그 즉시
+ *  영구 `attention` 오경보가 난다. 그래서 공식을 여기서 노출한다.
+ */
+export const eventsTotalBound = (keepLast: number): number =>
+  keepLast + Math.max(1, Math.floor(keepLast / 2)) * HIGH_VOLUME_TYPES.length;
+
+export const pruneEvents = (keepLast: number): number => {
+  const db = getDb();
+  const marks = HIGH_VOLUME_TYPES.map(() => "?").join(", ");
+  let removed = 0;
+  // ★순위 기반으로 자른다 — `id <= MAX(id) - keepLast` 같은 **오프셋** 방식은 id 가 전역
+  //  단조라 고volume 을 먼저 지워도 희귀 행이 여전히 컷오프 아래에 남는다(실측: 그 방식으로
+  //  turn_error 5건이 0건이 됐다). 그룹별 "최신 N개만 남긴다"로 바꿔야 공정해진다.
+  // ① 고volume 타입: 각자 자기 몫(전체 상한의 절반)까지만.
+  const perType = Math.max(1, Math.floor(keepLast / 2));
+  for (const t of HIGH_VOLUME_TYPES) {
+    removed += db
+      .prepare(
+        `DELETE FROM events
+           WHERE type = ?
+             AND id NOT IN (SELECT id FROM events WHERE type = ? ORDER BY id DESC LIMIT ?)`,
+      )
+      .run(t, t, perType).changes;
+  }
+  // ② 그 외(희귀 타입 전부): 자기들끼리 상한을 쓴다 — 활동량과 무관해진다.
+  removed += db
     .prepare(
       `DELETE FROM events
-         WHERE id <= (SELECT MAX(id) FROM events) - ?`,
+         WHERE type NOT IN (${marks})
+           AND id NOT IN (
+             SELECT id FROM events WHERE type NOT IN (${marks}) ORDER BY id DESC LIMIT ?
+           )`,
     )
-    .run(keepLast).changes;
+    .run(...HIGH_VOLUME_TYPES, ...HIGH_VOLUME_TYPES, keepLast).changes;
+  return removed;
+};
 
 /** 감사·대시보드 조회 — 최신 먼저. type/sinceTs/limit 필터. */
 export const listEvents = (opts?: {

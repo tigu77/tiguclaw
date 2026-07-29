@@ -64,6 +64,8 @@ export const truncatePayloadJson = (payload: unknown, maxChars: number): string 
 // 재사용 — 값 중복 정의 금지(단일 소스, P1 runtime-maintenance).
 export const RETENTION_KEEP = 10_000; // 최근 N건 유지.
 const PRUNE_EVERY = 256; // N건마다 1회 prune(매 insert prune 회피).
+/** 주기 정리 — 재시작이 잦아 카운터가 굶는 것을 막는 두 번째 축(효율 감사 2026-07-30). */
+const PRUNE_INTERVAL_MS = 15 * 60 * 1000;
 
 // ─── threads 내부 파생 스레드 프루닝 (효율감사 P3, 2026-07-16) ────────────────────
 // `threads`(worker:/agent:/endpoint:/gateway:/`::sub::`)는 프루닝 기제가 없어 무한증가
@@ -82,6 +84,37 @@ export const INTERNAL_THREAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30일.
  */
 export const startEventPersistence = (bus: EventBus): void => {
   let sinceLastPrune = 0;
+
+  /**
+   * 정리 1회 — 카운터·타이머·부팅이 모두 이걸 부른다. best-effort(원칙 3).
+   */
+  const runPrune = (why: string): void => {
+    try {
+      const removed = pruneEvents(RETENTION_KEEP);
+      pruneInternalThreads(INTERNAL_THREAD_RETENTION_MS);
+      if (removed > 0) {
+        console.log(`event-persist: 정리 ${removed}행 (${why}).`);
+      }
+    } catch (e) {
+      console.error(
+        `event-persist: 정리 실패 (${why}):`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  // ★부팅 1회 + 주기 타이머 (2026-07-30 효율 감사 지적).
+  //
+  //  종전엔 **`sinceLastPrune` 카운터 하나**가 유일한 트리거였다. 그런데 그건 프로세스
+  //  로컬이고 `PRUNE_EVERY=256` 이라, 실측(이벤트율 111건/시간)으로는 발화에 **연속 138분**
+  //  가동이 필요하다. 그런데 데몬 부팅이 **하루 21~32회**(평균 간격 48.8분) — 카운터가 256에
+  //  닿기 전에 매번 0으로 리셋된다. 그래서 events 가 10,124건까지 자랐고 보존창은 3.8일에
+  //  머물렀다. **코드엔 바운드가 있고 집행 경로가 비어 있던 것**이다(그 자체가 오늘 여러 번
+  //  나온 부류 — 만들어 두고 안 도는 것).
+  //  카운터는 그대로 두고(폭주 시 즉시 반응) 부팅·주기를 더한다 — 재시작이 잦아도 굶지 않는다.
+  runPrune("부팅");
+  const pruneTimer = setInterval(() => runPrune("주기"), PRUNE_INTERVAL_MS);
+  (pruneTimer as { unref?: () => void }).unref?.(); // 프로세스 종료를 붙잡지 않는다.
   bus.subscribe((event) => {
     if (SKIP_TYPES.has(event.type)) return;
     try {
@@ -102,10 +135,7 @@ export const startEventPersistence = (bus: EventBus): void => {
       insertEvent(event.ts, event.type, payload);
       if (++sinceLastPrune >= PRUNE_EVERY) {
         sinceLastPrune = 0;
-        pruneEvents(RETENTION_KEEP);
-        // threads 내부 파생 스레드도 같은 주기에(going-forward 바운드, 위 상수 주석 참조).
-        // best-effort — 실패해도 이벤트 영속 자체는 계속(원칙 3, 위 catch 와 동일 격리).
-        pruneInternalThreads(INTERNAL_THREAD_RETENTION_MS);
+        runPrune("건수");
       }
     } catch (e) {
       console.error(

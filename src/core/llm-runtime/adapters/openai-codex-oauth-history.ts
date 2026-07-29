@@ -502,7 +502,7 @@ export interface HistoryCompactionPlan {
 export const planHistoryCompaction = (
   unsummarizedTurns: CodexTurnWithId[],
   currentWatermark: number,
-  opts?: { triggerTurns?: number; keepRecent?: number },
+  opts?: { triggerTurns?: number; keepRecent?: number; maxFoldChars?: number },
 ): HistoryCompactionPlan => {
   const triggerTurns = opts?.triggerTurns ?? CODEX_HISTORY_COMPACT_TRIGGER_TURNS;
   const keepRecent = opts?.keepRecent ?? CODEX_HISTORY_COMPACT_KEEP_RECENT;
@@ -516,7 +516,30 @@ export const planHistoryCompaction = (
   if (foldCount <= 0) {
     return { needed: false, toFold: [], nextWatermark: currentWatermark };
   }
-  const toFold = unsummarizedTurns.slice(0, foldCount);
+  const candidates = unsummarizedTurns.slice(0, foldCount);
+
+  // ★한 번에 접는 양을 **바이트로 묶는다** (2026-07-29 실사고).
+  //
+  //  종전엔 턴 수만 봤다. 그래서 오래 산 스레드에서 "666턴 = 2,838,563자" 를 한 번에
+  //  요약하라고 보냈고(실측), 컨텍스트를 한참 넘겨 **빈 응답**이 왔다. 빈 응답이면 요약을
+  //  저장하지 않으니 watermark 가 그대로고, 다음 턴에 **같은 280만 자를 또** 보낸다 —
+  //  매 턴 1회씩 영원히 실패하는 루프다(로그: "[codex 6b] 요약 호출이 빈 결과" 가 턴마다).
+  //  그 동안 히스토리는 oldest-drop 으로 잘려나가 모델이 하던 작업의 맥락을 잃고,
+  //  사용자에겐 "진행하겠습니다" 만 하고 실행을 안 하는 것으로 보였다(신고된 증상).
+  //
+  //  그래서 진행을 **보장**하는 쪽으로 바꾼다: 예산 안에서 접을 수 있는 만큼만 접고
+  //  watermark 를 그만큼 전진시킨다. 밀린 양이 많아도 턴을 거치며 점진적으로 따라잡고,
+  //  각 호출은 항상 성공 가능한 크기다. 예산을 넘는 단일 턴은 혼자라도 접는다(무진행 방지 —
+  //  턴 본문은 CODEX_TURN_HISTORY_CHAR_CAP 으로 이미 상한이 있다).
+  const budget = opts?.maxFoldChars ?? CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS;
+  const toFold: CodexTurnWithId[] = [];
+  let used = 0;
+  for (const t of candidates) {
+    const size = String(t.content ?? "").length;
+    if (toFold.length > 0 && used + size > budget) break;
+    toFold.push(t);
+    used += size;
+  }
   // 접힌 마지막 턴의 transcript id 가 새 watermark (그 id 이하 = 요약에 흡수됨).
   const last = toFold[toFold.length - 1] as CodexTurnWithId;
   return { needed: true, toFold, nextWatermark: last.id };
@@ -792,6 +815,16 @@ const CODEX_COMPACTED_MARKER = "\u0000__codex_compacted__\u0000";
 // 트리거: 미요약(watermark 이후) 턴이 TRIGGER_TURNS 초과 시 압축 1회. 기존 150턴/700KB
 // 하드캡(loadThreadHistory)보다 *먼저* 선제 발동(100 < 150)해 초반 맥락이 drop 되기
 // 전에 요약으로 흡수. 매 턴 재요약 X — 임계 재초과 시에만(롤링이라 비용 분할상환).
+/**
+ * 한 번의 요약 호출에 넣을 **최대 문자 수**. 실측(2026-07-29): 12만 자까지는 정상 요약,
+ * 280만 자는 빈 응답. 넉넉히 아래로 잡아 항상 성공하게 둔다 — 밀린 분량은 다음 턴들이
+ * 이어서 접는다(진행 보장이 1회 처리량보다 중요하다).
+ */
+const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
+  process.env.CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS,
+  100_000,
+);
+
 const CODEX_HISTORY_COMPACT_TRIGGER_TURNS = parsePosIntEnv(
   process.env.CODEX_COMPACT_TRIGGER_TURNS,
   100,

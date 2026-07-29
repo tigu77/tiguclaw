@@ -104,7 +104,7 @@ export const formatModelProfiles = (
   }
   const names = Object.keys(profiles);
   if (names.length === 0) return "";
-  const lines = ["## 모델 프로파일 (에이전트·워커 구성 시 model/tier 로 지정)"];
+  const lines = ["## 모델 프로파일 (에이전트·매니저 구성 시 model/tier 로 지정)"];
   for (const name of names) {
     const p = profiles[name];
     const desc =
@@ -117,8 +117,8 @@ export const formatModelProfiles = (
     lines.push(`- \`${name}\`${desc}${pool}`);
   }
   lines.push(
-    "에이전트·워커를 구성/위임할 때 `model`(spawn_agent)·`tier`(run_worker) 에 위 프로파일 이름 중 **작업 성격에 어울리는 걸** 고르세요 — 고난도 설계·분석=high, 구현=mid, 요약·분류=low, 기본=default. 커스텀 프로파일이 있으면 그 description 에 맞춰. 지정한 이름의 풀+폴백으로 실행됩니다. `provider:model` 직접 지정도 가능합니다.",
-    "(claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약되고, 프로파일 풀·폴백 전체는 codex/openai 서브에이전트·워커에서 적용됩니다.)",
+    "에이전트·매니저를 구성/위임할 때 `model`(spawn_agent)·`tier`(run_worker) 에 위 프로파일 이름 중 **작업 성격에 어울리는 걸** 고르세요 — 고난도 설계·분석=high, 구현=mid, 요약·분류=low, 기본=default. 커스텀 프로파일이 있으면 그 description 에 맞춰. 지정한 이름의 풀+폴백으로 실행됩니다. `provider:model` 직접 지정도 가능합니다.",
+    "(claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약되고, 프로파일 풀·폴백 전체는 codex/openai 서브에이전트·매니저에서 적용됩니다.)",
   );
   return lines.join("\n");
 };
@@ -183,7 +183,7 @@ const liveChildJobsLine = (threadKey: string): string => {
       .slice(0, 5)
       .map((j) => {
         const mins = Math.max(0, Math.round((now - j.startedAt) / 60000));
-        return `${j.kind === "agent" ? "서브에이전트" : "워커"} '${j.label}'(${mins}분째)`;
+        return `${j.kind === "agent" ? "서브에이전트" : "매니저"} '${j.label}'(${mins}분째)`;
       })
       .join(", ");
     const more = jobs.length > 5 ? ` 외 ${jobs.length - 5}건` : "";

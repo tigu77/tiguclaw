@@ -516,7 +516,7 @@ export const routeFailureReflection = (input: {
   addMemory({
     type: "feedback",
     name,
-    description: `반복 워커 실패 '${(input.task ?? "").slice(0, 80)}' (${input.errorKind}·${input.adapter}, ${input.count}회) — 원인분석=${cause}, suggester only, 사용자/harness 확인 후 결정`,
+    description: `반복 매니저 실패 '${(input.task ?? "").slice(0, 80)}' (${input.errorKind}·${input.adapter}, ${input.count}회) — 원인분석=${cause}, suggester only, 사용자/harness 확인 후 결정`,
     body: buildFailureReflectionBody({
       cause,
       reflection: input.reflection,
@@ -527,7 +527,7 @@ export const routeFailureReflection = (input: {
       relatedSkills: input.relatedSkills,
       guidance:
         cause === "task_design"
-          ? "작업 설계 개선 후보(멱등·증분·분할·타임아웃 넉넉히). 비서가 사용자에게 이 워커 작업을 이렇게 다시 설계할지 확인 후 진행하세요. self-growth 는 제안만 — 자동 확정하지 않습니다."
+          ? "작업 설계 개선 후보(멱등·증분·분할·타임아웃 넉넉히). 비서가 사용자에게 이 매니저 작업을 이렇게 다시 설계할지 확인 후 진행하세요. self-growth 는 제안만 — 자동 확정하지 않습니다."
           : cause === "prompt_config"
             ? "설정·프롬프트·타임아웃 값 조정 후보. 비서가 사용자에게 확인하거나 사용자가 직접 교정하세요. self-growth 는 제안만."
             : "원인 불확실(보수 강등) 또는 관련 스킬 미상 — 비서가 사용자에게 이 반복 실패 대응 의향을 명시 확인하세요. self-growth 는 제안만.",
@@ -553,7 +553,7 @@ const buildFailureReflectionBody = (input: {
   JSON.stringify(
     {
       kind: "failure_driven_improvement",
-      observed_pattern: `워커 작업 '${(input.task ?? "").slice(0, 200)}' 가 ${input.count}회 실패 (${input.errorKind} · ${input.adapter})`,
+      observed_pattern: `매니저 작업 '${(input.task ?? "").slice(0, 200)}' 가 ${input.count}회 실패 (${input.errorKind} · ${input.adapter})`,
       cause_category: input.cause,
       one_line_cause: input.reflection.oneLine,
       suggested_fix: input.reflection.suggestedFix,

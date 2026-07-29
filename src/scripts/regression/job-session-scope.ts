@@ -14,7 +14,7 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
   name: "job-session-scope",
-  guards: "다른 세션의 워커를 자기 것으로 오인해 새 작업을 안 띄우던 것",
+  guards: "다른 세션의 매니저를 자기 것으로 오인해 새 작업을 안 띄우던 것",
   run: async (): Promise<Assertion[]> => {
     const A = "dashboard:aaa";
     const B = "dashboard:bbb";

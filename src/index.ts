@@ -644,7 +644,7 @@ const handler: MessageHandler = async (msg) => {
     // 최신 먼저(listJobs 가 startedAt 내림차순). 워커/서브 구분 라벨.
     const lines = running.map((j) => {
       const icon = j.kind === "agent" ? "🤖" : "📦";
-      const kindLabel = j.kind === "agent" ? "서브에이전트" : "워커";
+      const kindLabel = j.kind === "agent" ? "서브에이전트" : "매니저";
       const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
       // 모델 티어 표시(low/mid/high 등) — 워커·서브 공통. modelTier 있고 default/빈값 아닐 때만.
       const tier =

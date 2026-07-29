@@ -82,7 +82,7 @@ export const createMaintenanceMcpServer = (): McpSdkServerConfigWithInstance =>
     tools: [
       tool(
         "maintenance_status",
-        "tiguclaw 런타임 저장소(대화 이력·메모리·워커 잡·관측 이벤트 등)가 구조적으로 건강한지 점검합니다. 읽기전용 — 아무것도 삭제·변경하지 않습니다. 사용자가 '상태 괜찮아?', '용량 어때', '정리 필요해?' 처럼 물을 때 사용하세요.",
+        "tiguclaw 런타임 저장소(대화 이력·메모리·매니저 잡·관측 이벤트 등)가 구조적으로 건강한지 점검합니다. 읽기전용 — 아무것도 삭제·변경하지 않습니다. 사용자가 '상태 괜찮아?', '용량 어때', '정리 필요해?' 처럼 물을 때 사용하세요.",
         {},
         async () => {
           const report = runMaintenanceScan();

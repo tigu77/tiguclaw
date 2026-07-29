@@ -1,7 +1,7 @@
       // 열려 있으면) 목록을 jobCards 스냅샷으로 다시 그린다. capBgList 로 카드가 정리되면 여기서도 사라진다.
       let agentsFilter = "running"; // "running" | "all" — 오른쪽 드로어 필터와 독립(각자 뷰).
       const agentElapsedEls = new Map(); // jobId -> elapsed span (틱 갱신용, 뷰 재렌더마다 재구성).
-      const AGENT_KIND_BADGE = { agent: "🤖 서브에이전트", worker: "📦 워커" };
+      const AGENT_KIND_BADGE = { agent: "🤖 서브에이전트", worker: "📦 매니저" };
       // 카운트/빈상태 동기화 — refreshBgBadge 가 매 이벤트마다 호출(뷰 안 열려도 안전).
       const syncAgentsCounts = (running, total) => {
         const rc = document.getElementById("agents-count-running");
@@ -178,7 +178,7 @@
         wrap.className = "page-view agents-view";
         wrap.innerHTML =
           '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">에이전트</div><span class="detail-kind">실시간</span></div>' +
-          '<p class="developer-copy">지금 돌고 있는 백그라운드 작업(워커 📦 + 서브에이전트 🤖)을 한눈에. 종류·이름·경과시간·현재 스텝을 실시간으로 표시합니다.</p>' +
+          '<p class="developer-copy">지금 돌고 있는 백그라운드 작업(매니저 📦 + 에이전트 🤖)을 한눈에. 종류·이름·경과시간·현재 스텝을 실시간으로 표시합니다.</p>' +
           '<div class="agents-toolbar"><div class="bg-filter" id="agents-filter">' +
           '<button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="agents-count-running">0</span></button>' +
           '<button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="agents-count-all">0</span></button>' +

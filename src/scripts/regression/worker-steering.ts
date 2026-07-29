@@ -37,7 +37,7 @@ const runnerPassesSteering = async (): Promise<boolean> => {
 
 export const check: RegressionCheck = {
   name: "worker-steering",
-  guards: "돌고 있는 워커에 추가 지시가 안 닿아 fire-and-forget 이던 것",
+  guards: "돌고 있는 매니저에 추가 지시가 안 닿아 fire-and-forget 이던 것",
   run: async (): Promise<Assertion[]> => {
     const id = "regr-steer-1";
     const ch = createSteeringChannel();
@@ -50,11 +50,11 @@ export const check: RegressionCheck = {
     const afterClose = steerJob(id, msg("늦은 지시"));
 
     clearSteerChannel(id);
-    const afterClear = steerJob(id, msg("없는 워커"));
+    const afterClear = steerJob(id, msg("없는 매니저"));
 
     return [
       assert("기본 활성(끄려면 명시적으로)", WORKER_STEERING_ENABLED === true, "기본 on"),
-      assert("★진행 중 워커에 전달된다", delivered === "delivered", delivered),
+      assert("★진행 중 매니저에 전달된다", delivered === "delivered", delivered),
       assert(
         "전달된 지시가 버퍼에 실린다(어댑터가 다음 경계에서 소비)",
         buffered.length === 1 && buffered[0]?.raw === "이것도 해줘",
@@ -65,14 +65,14 @@ export const check: RegressionCheck = {
         afterClose === "closed",
         afterClose,
       ),
-      assert("없는 워커는 absent", afterClear === "absent", afterClear),
+      assert("없는 매니저는 absent", afterClear === "absent", afterClear),
       assert(
         // ★배선이 실제로 존재하는가 (변이 테스트가 잡은 구멍, 2026-07-29): 위 단언들은
         //  레지스트리 *계약*만 본다. runner 가 runRegionA 에 steering 을 안 넘겨도 전부
         //  통과했고 타입체크도 0 에러였다 — 즉 이 검사만으론 원래 결함을 못 잡는다.
         //  timeout-layering 이 "서브에이전트에 자체 상한이 실제로 있나"를 소스로 확인하는 것과
         //  같은 이유·같은 방식(배포본엔 .ts 가 없어 오탐 0으로 통과).
-        "워커 runner 가 runRegionA 에 steering 을 넘긴다(배선 확인)",
+        "매니저 runner 가 runRegionA 에 steering 을 넘긴다(배선 확인)",
         await runnerPassesSteering(),
         "worker-registry.ts",
       ),

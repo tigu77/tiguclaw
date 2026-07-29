@@ -57,7 +57,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "forget", description: "메모리 삭제" },
   { name: "memos", description: "메모리 목록 조회" },
   { name: "plugins", description: "설치·활성 플러그인 목록" },
-  { name: "agents", description: "진행 중인 백그라운드 작업(워커·서브에이전트)" },
+  { name: "agents", description: "진행 중인 백그라운드 작업(매니저·서브에이전트)" },
   { name: "status", description: "시스템 상태" },
   { name: "restart", description: "데몬 재시작" },
   { name: "update", description: "tiguclaw 최신으로 업데이트" },

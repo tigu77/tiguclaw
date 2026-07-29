@@ -30,9 +30,9 @@ export const check: RegressionCheck = {
     const w = registerJob({ label: "파이프라인", threadKey: TK, channel: "dashboard", channelUserId: "u", task: "t" });
     const a = registerJob({ label: "검증 서브", threadKey: `worker:${w}`, channel: "dashboard", channelUserId: "u", task: "t", kind: "agent" });
     const withJobs = formatConversationContext("http-bridge", TK, "addr");
-    out.push(assert("워커가 보인다", withJobs.includes("파이프라인"), "포함 여부"));
+    out.push(assert("매니저가 보인다", withJobs.includes("파이프라인"), "포함 여부"));
     // ★손자까지 — 워커가 띄운 서브는 threadKey 가 잡 좌표라 정확 일치로는 안 걸린다.
-    out.push(assert("손자(워커가 띄운 서브)도 보인다", withJobs.includes("검증 서브"), "포함 여부"));
+    out.push(assert("손자(매니저가 띄운 서브)도 보인다", withJobs.includes("검증 서브"), "포함 여부"));
     markDone(a, "ok");
     markDone(w, "ok");
     const after = formatConversationContext("http-bridge", TK, "addr");

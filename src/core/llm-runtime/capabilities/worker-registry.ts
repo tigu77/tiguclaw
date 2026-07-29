@@ -183,7 +183,7 @@ const runner = (job: WorkerJobRecord): void => {
       try {
         await notifyJobOwner(
           job,
-          `⚠️ 방금 보내신 지시는 '${job.label}' 워커가 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
+          `⚠️ 방금 보내신 지시는 '${job.label}' 매니저가 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
             pendingSteerNotice.map((t) => `· ${t}`).join("\n") +
             `\n필요하면 위 결과를 보고 다시 시켜주세요.`,
         );
@@ -235,12 +235,12 @@ export const createWorkerMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const runInBackground = tool(
     "run_in_background",
-    "**규모 있는 작업의 기본 선택지입니다** — 이 워커가 *지휘자*가 되어 필요하면 spawn_agent 로 하위 작업을 팬아웃할 수 있습니다(워커 안에서 서브에이전트 위임은 가능, 워커 재발사만 불가). 발사 후에도 steer_worker 로 지시를 더 얹을 수 있지만 반영은 워커의 다음 판단 시점이므로(즉시 아님) 범위·판단기준은 task 에 최대한 담아 보내세요. 오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 워커 모델 등급을 지정하세요(미지정 시 기본 모델). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
+    "**일을 통째로 맡기는 곳입니다** — 매니저는 당신(메인 비서)과 **동급의 전권**으로 작업을 끝까지 책임집니다. 고르는 기준은 난이도가 아니라 **시간**입니다: 오래 걸리는 일이면 쉬워도 매니저, 결과를 *이번 답변 안에서* 써야 하면 어려워도 spawn_agent. 필요하면 매니저가 **지휘자**가 되어 spawn_agent 로 에이전트를 붙일 수 있습니다(매니저가 또 매니저를 띄우는 것만 불가). 발사 후에도 steer_worker 로 지시를 더 얹을 수 있지만 반영은 매니저의 다음 판단 시점이므로(즉시 아님) 범위·판단기준은 task 에 최대한 담아 보내세요. 즉시 시작 확인(jobId)을 반환하고 매니저는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (매니저를 기다리지 마세요). 매니저는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 매니저가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(매니저는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 매니저가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 매니저 모델 등급을 지정하세요(미지정 시 기본 모델). 매니저 안에서는 다시 백그라운드 매니저를 발사할 수 없습니다.",
     {
       task: z
         .string()
         .min(1)
-        .describe("워커가 수행할 자연어 작업 지시 (필요한 맥락 포함)."),
+        .describe("매니저가 수행할 자연어 작업 지시 (필요한 맥락 포함)."),
       label: z
         .string()
         .min(1)
@@ -248,12 +248,12 @@ export const createWorkerMcpServer = (
       path: z
         .string()
         .optional()
-        .describe("선택 — 워커를 실행할 폴더(프로젝트) 경로. 지정 시 그 폴더 기준."),
+        .describe("선택 — 매니저를 실행할 폴더(프로젝트) 경로. 지정 시 그 폴더 기준."),
       tier: z
         .string()
         .optional()
         .describe(
-          "선택 — 워커 모델 프로파일. settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 user prompt 의 `## 모델 프로파일` 섹션 참고). 품질 중요(코드리뷰·설계)=high, 구현=mid, 단순·대량·요약=low. 미지정 시 기본 모델. 서브에이전트 model 과 동일 해석(resolveModelChain).",
+          "선택 — 매니저 모델 프로파일. settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 user prompt 의 `## 모델 프로파일` 섹션 참고). 품질 중요(코드리뷰·설계)=high, 구현=mid, 단순·대량·요약=low. 미지정 시 기본 모델. 서브에이전트 model 과 동일 해석(resolveModelChain).",
         ),
     },
     async (args) => {
@@ -308,12 +308,12 @@ export const createWorkerMcpServer = (
 
   const listWorkers = tool(
     "list_workers",
-    "**지금 이 대화(세션)가 띄운** 백그라운드 워커의 상태를 조회합니다. 사용자가 '지금 뭐 돌고 있어?' 류로 물을 때 사용하세요. 다른 대화의 워커는 건수만 덧붙습니다(전체 목록이 필요하면 list_all_workers). running_only=true 면 진행 중인 워커만.",
+    "**지금 이 대화(세션)가 띄운** 백그라운드 매니저의 상태를 조회합니다. 사용자가 '지금 뭐 돌고 있어?' 류로 물을 때 사용하세요. 다른 대화의 매니저는 건수만 덧붙습니다(전체 목록이 필요하면 list_all_workers). running_only=true 면 진행 중인 매니저만.",
     {
       running_only: z
         .boolean()
         .optional()
-        .describe("true 면 진행 중(running)인 워커만. 미지정 = 전체."),
+        .describe("true 면 진행 중(running)인 매니저만. 미지정 = 전체."),
     },
     async (args) => {
       try {
@@ -343,8 +343,8 @@ export const createWorkerMcpServer = (
         if (jobs.length === 0) {
           return okText(
             (running
-              ? "이 대화에서 진행 중인 백그라운드 워커가 없습니다."
-              : "이 대화의 백그라운드 워커가 없습니다.") + otherNote,
+              ? "이 대화에서 진행 중인 백그라운드 매니저가 없습니다."
+              : "이 대화의 백그라운드 매니저가 없습니다.") + otherNote,
           );
         }
         const lines = jobs.map((j) => {
@@ -368,7 +368,7 @@ export const createWorkerMcpServer = (
           }
           return `- '${j.label}' — ${status} (${elapsed} 소요)`;
         });
-        const header = scoped ? "## 백그라운드 워커 (이 대화)" : "## 백그라운드 워커 (전체 대화)";
+        const header = scoped ? "## 백그라운드 매니저 (이 대화)" : "## 백그라운드 매니저 (전체 대화)";
         return okText(`${header}\n\n${lines.join("\n")}${otherNote}`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -386,12 +386,12 @@ export const createWorkerMcpServer = (
    */
   const listAllWorkers = tool(
     "list_all_workers",
-    "**모든 대화(세션)** 의 백그라운드 워커를 조회합니다. 사용자가 '전체'·'다른 대화 것까지'·'서버에서 도는 거 전부' 처럼 **명시적으로** 물을 때만 쓰세요. 평소 '지금 뭐 돌고 있어?' 는 list_workers(이 대화) 입니다.",
+    "**모든 대화(세션)** 의 백그라운드 매니저를 조회합니다. 사용자가 '전체'·'다른 대화 것까지'·'서버에서 도는 거 전부' 처럼 **명시적으로** 물을 때만 쓰세요. 평소 '지금 뭐 돌고 있어?' 는 list_workers(이 대화) 입니다.",
     {
       running_only: z
         .boolean()
         .optional()
-        .describe("true 면 진행 중(running)인 워커만. 미지정 = 전체."),
+        .describe("true 면 진행 중(running)인 매니저만. 미지정 = 전체."),
     },
     async (args) => {
       try {
@@ -401,8 +401,8 @@ export const createWorkerMcpServer = (
         if (all.length === 0) {
           return okText(
             args.running_only === true
-              ? "진행 중인 백그라운드 워커가 (어느 대화에도) 없습니다."
-              : "백그라운드 워커가 (어느 대화에도) 없습니다.",
+              ? "진행 중인 백그라운드 매니저가 (어느 대화에도) 없습니다."
+              : "백그라운드 매니저가 (어느 대화에도) 없습니다.",
           );
         }
         // 내 것/남의 것을 **줄 단위로 표시** — 통합 목록이라도 오인하지 않게.
@@ -415,7 +415,7 @@ export const createWorkerMcpServer = (
               : "다른 대화";
           return `- '${j.label}' — ${STATUS_LABEL[j.status]} (${elapsed}, ${mine})`;
         });
-        return okText(`## 백그라운드 워커 (전체 대화)\n\n${lines.join("\n")}`);
+        return okText(`## 백그라운드 매니저 (전체 대화)\n\n${lines.join("\n")}`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }
@@ -430,17 +430,17 @@ export const createWorkerMcpServer = (
    */
   const steerWorker = tool(
     "steer_worker",
-    "**진행 중인 백그라운드 워커에 지시를 추가로 전달**합니다. 사용자가 돌고 있는 작업에 대해 '거기에 ~도 해줘'·'~는 빼고'·'방향 바꿔' 처럼 말할 때 쓰세요(작업을 새로 띄우지 말고 이걸로). 반영은 **워커의 다음 판단 시점**에 일어납니다 — 지금 오래 걸리는 도구(빌드·대량 처리)를 실행 중이면 그게 끝난 뒤에 반영되니 즉시가 아닐 수 있습니다. 이미 끝난 워커에는 전달되지 않으며 그 사실을 알려드립니다.",
+    "**진행 중인 백그라운드 매니저에 지시를 추가로 전달**합니다. 사용자가 돌고 있는 작업에 대해 '거기에 ~도 해줘'·'~는 빼고'·'방향 바꿔' 처럼 말할 때 쓰세요(작업을 새로 띄우지 말고 이걸로). 반영은 **매니저의 다음 판단 시점**에 일어납니다 — 지금 오래 걸리는 도구(빌드·대량 처리)를 실행 중이면 그게 끝난 뒤에 반영되니 즉시가 아닐 수 있습니다. 이미 끝난 매니저에는 전달되지 않으며 그 사실을 알려드립니다.",
     {
       message: z
         .string()
         .min(1)
-        .describe("워커에게 전달할 지시 — 사용자 원문을 그대로 싣는 것을 권장."),
+        .describe("매니저에게 전달할 지시 — 사용자 원문을 그대로 싣는 것을 권장."),
       label: z
         .string()
         .optional()
-        .describe("대상 워커의 작업 이름(run_in_background 의 label). 우선 식별."),
-      job_id: z.string().optional().describe("대상 워커의 jobId. label 미지정 시 사용."),
+        .describe("대상 매니저의 작업 이름(run_in_background 의 label). 우선 식별."),
+      job_id: z.string().optional().describe("대상 매니저의 jobId. label 미지정 시 사용."),
     },
     async (args) => {
       try {
@@ -448,7 +448,7 @@ export const createWorkerMcpServer = (
           (args.label === undefined || args.label === "") &&
           (args.job_id === undefined || args.job_id === "")
         ) {
-          return errText("label 또는 job_id 중 하나로 대상 워커를 지정하세요.");
+          return errText("label 또는 job_id 중 하나로 대상 매니저를 지정하세요.");
         }
         const scope = resolveOwnerThreadKey(parentInput.threadKey);
         const running = listJobs({
@@ -464,7 +464,7 @@ export const createWorkerMcpServer = (
             );
             if (elsewhere !== undefined) {
               return okText(
-                `'${args.label}' 워커는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
+                `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
               );
             }
           }
@@ -475,7 +475,7 @@ export const createWorkerMcpServer = (
         }
         if (target === undefined) {
           return okText(
-            `지정하신 워커를 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
+            `지정하신 매니저를 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
           );
         }
         const now = Date.now();
@@ -486,16 +486,16 @@ export const createWorkerMcpServer = (
         });
         if (outcome === "delivered") {
           return okText(
-            `'${target.label}' 워커에 지시를 전달했어요. 워커의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
+            `'${target.label}' 매니저에 지시를 전달했어요. 매니저의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
           );
         }
         if (outcome === "closed") {
           return okText(
-            `'${target.label}' 워커가 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
+            `'${target.label}' 매니저가 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
           );
         }
         return okText(
-          `'${target.label}' 워커에 지시를 전달할 수 없었어요(워커 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
+          `'${target.label}' 매니저에 지시를 전달할 수 없었어요(매니저 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -505,16 +505,16 @@ export const createWorkerMcpServer = (
 
   const cancelWorker = tool(
     "cancel_worker",
-    "진행 중인 백그라운드 워커를 취소합니다. label(작업 이름) 또는 job_id 중 하나로 식별하세요(label 우선). 사용자가 '그 작업 그만해/멈춰' 류로 요청할 때 사용합니다. 취소는 best-effort — 워커가 지금 도구(예: 오래 걸리는 Bash·웹요청)를 실행 중이면 그 도구가 끝나는 대로 멈춥니다(즉시는 아닐 수 있음).",
+    "진행 중인 백그라운드 매니저를 취소합니다. label(작업 이름) 또는 job_id 중 하나로 식별하세요(label 우선). 사용자가 '그 작업 그만해/멈춰' 류로 요청할 때 사용합니다. 취소는 best-effort — 매니저가 지금 도구(예: 오래 걸리는 Bash·웹요청)를 실행 중이면 그 도구가 끝나는 대로 멈춥니다(즉시는 아닐 수 있음).",
     {
       label: z
         .string()
         .optional()
-        .describe("취소할 워커의 작업 이름(run_in_background 의 label). 우선 식별."),
+        .describe("취소할 매니저의 작업 이름(run_in_background 의 label). 우선 식별."),
       job_id: z
         .string()
         .optional()
-        .describe("취소할 워커의 jobId. label 미지정 시 사용."),
+        .describe("취소할 매니저의 jobId. label 미지정 시 사용."),
     },
     async (args) => {
       try {
@@ -522,7 +522,7 @@ export const createWorkerMcpServer = (
           (args.label === undefined || args.label === "") &&
           (args.job_id === undefined || args.job_id === "")
         ) {
-          return errText("label 또는 job_id 중 하나로 취소할 워커를 지정하세요.");
+          return errText("label 또는 job_id 중 하나로 취소할 매니저를 지정하세요.");
         }
         // label 우선 매칭(running 중에서) → 없으면 job_id. 같은 label 의 running 이
         // 여럿이면 가장 최근(listJobs 가 startedAt 내림차순)을 취소.
@@ -552,7 +552,7 @@ export const createWorkerMcpServer = (
             );
             if (elsewhere !== undefined) {
               return okText(
-                `'${args.label}' 워커는 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
+                `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
                   `그 대화에서 멈추거나, 대시보드 작업 카드에서 직접 중지해 주세요.`,
               );
             }
@@ -573,32 +573,32 @@ export const createWorkerMcpServer = (
           );
           if (agentMatch !== undefined) {
             return okText(
-              `'${agentMatch.label}'은(는) 백그라운드 워커가 아니라 지금 대화 중 실행 중인 ` +
+              `'${agentMatch.label}'은(는) 백그라운드 매니저가 아니라 지금 대화 중 실행 중인 ` +
                 `서브에이전트예요. 서브에이전트는 따로 취소하지 않고, 진행 중인 대화(부모 작업)를 ` +
                 `멈추면 함께 정리됩니다.`,
             );
           }
           const ident = args.label ?? args.job_id ?? "";
           return okText(
-            `취소할 진행 중인 워커를 찾지 못했습니다 ('${ident}'). ` +
-              `list_workers 로 현재 진행 중인 워커를 확인하세요.`,
+            `취소할 진행 중인 매니저를 찾지 못했습니다 ('${ident}'). ` +
+              `list_workers 로 현재 진행 중인 매니저를 확인하세요.`,
           );
         }
         if (target.status !== "running") {
           return okText(
-            `'${target.label}' 워커는 이미 ${STATUS_LABEL[target.status]} 상태라 취소할 게 없습니다.`,
+            `'${target.label}' 매니저는 이미 ${STATUS_LABEL[target.status]} 상태라 취소할 게 없습니다.`,
           );
         }
         const ok = cancelJob(target.jobId);
         if (!ok) {
           // 식별과 cancelJob 사이 race 로 막 종료된 경우 — 정직 안내.
           return okText(
-            `'${target.label}' 워커가 막 종료되어 취소할 게 없습니다.`,
+            `'${target.label}' 매니저가 막 종료되어 취소할 게 없습니다.`,
           );
         }
         return okText(
-          `🛑 '${target.label}' 워커 취소를 요청했습니다. ` +
-            `워커가 지금 실행 중인 도구가 있으면 그게 끝나는 대로 중단되고, 취소 알림을 받게 됩니다.`,
+          `🛑 '${target.label}' 매니저 취소를 요청했습니다. ` +
+            `매니저가 지금 실행 중인 도구가 있으면 그게 끝나는 대로 중단되고, 취소 알림을 받게 됩니다.`,
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));

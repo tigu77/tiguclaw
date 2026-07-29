@@ -130,7 +130,7 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     tools: ["update_self"],
   },
   maintenance: {
-    summary: "런타임 저장소(대화 이력·메모리·워커 잡·관측 이벤트) 구조적 건강 점검. 읽기전용.",
+    summary: "런타임 저장소(대화 이력·메모리·매니저 잡·관측 이벤트) 구조적 건강 점검. 읽기전용.",
     whenToUse: "사용자가 '상태 괜찮아?', '용량 어때', '정리 필요해?' 처럼 자기 상태를 물을 때.",
     tools: ["maintenance_status"],
   },
@@ -230,7 +230,7 @@ export const createFindCapabilitiesMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const findCapabilitiesTool = tool(
     "find_capabilities",
-    "지금 이 턴에 실제로 쓸 수 있는 빌트인/플러그인 능력(엔드포인트·워커·프로젝트·외부 MCP 관리·자가업데이트·슬래시명령·스케줄 등)을 조회합니다. 사용자의 간접 의도를 자기 도구로 매핑할 때, 또는 필요한 능력이 없어 습득 경로를 찾을 때 사용하세요. query 생략 시 전체 그룹 요약, query 지정 시 이름/설명/도구명 키워드 매칭.",
+    "지금 이 턴에 실제로 쓸 수 있는 빌트인/플러그인 능력(엔드포인트·매니저·프로젝트·외부 MCP 관리·자가업데이트·슬래시명령·스케줄 등)을 조회합니다. 사용자의 간접 의도를 자기 도구로 매핑할 때, 또는 필요한 능력이 없어 습득 경로를 찾을 때 사용하세요. query 생략 시 전체 그룹 요약, query 지정 시 이름/설명/도구명 키워드 매칭.",
     { query: z.string().optional() },
     async (args) => {
       try {

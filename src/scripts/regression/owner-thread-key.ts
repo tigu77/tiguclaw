@@ -34,7 +34,7 @@ export const check: RegressionCheck = {
     const orphan = mk("worker:does-not-exist", "orphan");
     const out = [
       assert("세션 키는 그대로", resolveOwnerThreadKey(SESSION) === SESSION, resolveOwnerThreadKey(SESSION)),
-      assert("워커 좌표 → 세션", resolveOwnerThreadKey(`worker:${w}`) === SESSION, resolveOwnerThreadKey(`worker:${w}`)),
+      assert("매니저 좌표 → 세션", resolveOwnerThreadKey(`worker:${w}`) === SESSION, resolveOwnerThreadKey(`worker:${w}`)),
       assert("서브 좌표 → 세션(2단)", resolveOwnerThreadKey(`agent:${a1}`) === SESSION, resolveOwnerThreadKey(`agent:${a1}`)),
       assert("서브의 서브 → 세션(3단)", resolveOwnerThreadKey(`agent:${a2}`) === SESSION, resolveOwnerThreadKey(`agent:${a2}`)),
       // ★미상은 ""여야 한다 — 여기서 활성 세션을 반환하면 그게 곧 남의 세션 노출 버그다.

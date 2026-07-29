@@ -571,7 +571,7 @@ export class WorkerTimeoutError extends Error {
   readonly timeoutMs: number;
   constructor(timeoutMs: number = WORKER_TIMEOUT_MS) {
     super(
-      `워커 처리 시간 초과 (${timeoutMs}ms wall-clock 상한) — 모델 거부 아님`,
+      `매니저 처리 시간 초과 (${timeoutMs}ms wall-clock 상한) — 모델 거부 아님`,
     );
     this.name = "WorkerTimeoutError";
     this.timeoutMs = timeoutMs;
@@ -585,7 +585,7 @@ export class WorkerTimeoutError extends Error {
  */
 export class WorkerCancelledError extends Error {
   constructor() {
-    super("워커가 사용자 요청으로 취소됨 — 모델 거부 아님");
+    super("매니저가 사용자 요청으로 취소됨 — 모델 거부 아님");
     this.name = "WorkerCancelledError";
   }
 }
@@ -1188,7 +1188,7 @@ export const onWorkerComplete = async (
   }
   if (mainHandler === undefined) {
     console.error(
-      `worker-jobs: 메인 핸들러 미등록 — 워커 '${job.label}'(${jobId}) 완료 보고 불가`,
+      `worker-jobs: 메인 핸들러 미등록 — 매니저 '${job.label}'(${jobId}) 완료 보고 불가`,
     );
     return;
   }
@@ -1412,7 +1412,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
   if (interrupted.length > 0) pruneTerminalJobsSafe();
   if (interrupted.length > 0) {
     console.log(
-      `worker-jobs: 재시작으로 중단된 워커 ${interrupted.length}건 정직 통지`,
+      `worker-jobs: 재시작으로 중단된 매니저 ${interrupted.length}건 정직 통지`,
     );
   }
 };
@@ -1481,7 +1481,7 @@ export interface StartWorkerJobInput {
 export const startWorkerJob = (input: StartWorkerJobInput): string => {
   const jobId = registerJob(input);
   if (workerRunner === undefined) {
-    markFailed(jobId, "워커 실행기 미등록(부팅 순서 이상)");
+    markFailed(jobId, "매니저 실행기 미등록(부팅 순서 이상)");
     console.error("worker-jobs: startWorkerJob — workerRunner 미등록");
     return jobId;
   }

@@ -437,6 +437,23 @@
       window.addEventListener("touchstart", (e) => { if (pageScroll()) onTouchStart(e); }, { passive: true });
       window.addEventListener("touchmove", (e) => { if (pageScroll()) onTouchMove(e); }, { passive: true });
 
+      /**
+       * 편집 중인 요소인가 — 전역 키 단축키가 양보해야 하는 대상.
+       * input(텍스트류)·textarea·select·contenteditable. readOnly/disabled 는 편집 아님.
+       */
+      const isEditableTarget = (el) => {
+        if (!el || typeof el.tagName !== "string") return false;
+        const tag = el.tagName.toUpperCase();
+        if (tag === "TEXTAREA" || tag === "SELECT") return !el.disabled;
+        if (tag === "INPUT") {
+          // 버튼류(button/checkbox/radio/submit 등)는 편집이 아니다 — 그 위에선 단축키 유효.
+          const t = String(el.type || "text").toLowerCase();
+          const nonText = ["button", "checkbox", "radio", "submit", "reset", "file", "image", "range", "color"];
+          return !nonText.includes(t) && !el.readOnly && !el.disabled;
+        }
+        return el.isContentEditable === true;
+      };
+
       // 키보드 네비 — PageUp/Down·Home·End 로 채팅 리스트 스크롤. 가상화(absolute vt-window)라
       // 네이티브 키 스크롤이 안 먹어서 명시 처리한다. 채팅 뷰 활성 + 입력창에 실 초안이 없을 때만
       // (작성 중이면 커서 이동 존중). preventDefault 로 브라우저 기본(포커스 요소 scrollIntoView
@@ -445,8 +462,14 @@
         if (document.body.getAttribute("data-main") !== "stream") return; // 채팅 뷰만
         if (e.key !== "PageDown" && e.key !== "PageUp" && e.key !== "Home" && e.key !== "End") return;
         if (e.altKey || e.ctrlKey || e.metaKey) return; // 조합키는 브라우저/OS 몫.
+        // ★편집 중인 요소면 **무조건** 양보한다 (2026-07-29 사용자 신고). 종전엔 `chat-input`
+        //  하나만, 그것도 "내용이 있을 때만" 봐서 — 선택지의 '기타' 입력, 세션 이름 편집,
+        //  검색 필드 등 **다른 모든 입력에서 Home/End 가 채팅 스크롤로 먹혔다**. 빈 입력창
+        //  에서도 커서 이동은 정당한 동작이다(빈 값이라고 편집 중이 아닌 게 아니다).
+        //  판정은 "무슨 요소인가"(input/textarea/contenteditable/select)로 — 특정 id 목록은
+        //  새 입력이 생길 때마다 또 빠진다(이번이 그 사례).
         const tgt = e.target;
-        if (tgt && tgt.id === "chat-input" && tgt.value && tgt.value.trim() !== "") return; // 작성 중 = 커서 이동 존중.
+        if (isEditableTarget(tgt)) return;
         e.preventDefault();
         const page = Math.max(60, getClientH() * 0.9);
         if (e.key === "PageDown") { stickBottom = false; scEl().scrollTop += page; }

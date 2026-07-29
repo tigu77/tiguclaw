@@ -39,9 +39,6 @@ export const getChannelOutbound = (
   name: string,
 ): ChannelOutbound | undefined => registry.get(name);
 
-/** 등록된 아웃바운드 채널명 목록(대시보드 egress 셀렉터·진단용). */
-export const listOutboundChannels = (): string[] => [...registry.keys()];
-
 /**
  * 관측(`channel.message.out`) threadKey — 현행 `deliverOutbound` 관습을 비트 동일 함수화.
  *   telegram → `tg:${target}` (src/channels/telegram.ts 관습과 동일).

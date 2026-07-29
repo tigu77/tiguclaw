@@ -646,24 +646,6 @@ export const loadCodexTurnHistoryBySessionId = (
   }));
 };
 
-/**
- * V5.1' input 누적 — (channel, threadKey) 진입점. 사용자 작업지시 시그니처.
- * (1) sessions 테이블에서 claudeSessionId 회수 → (2) transcripts 매칭.
- * - prior session 없음 (첫 turn) → [].
- * - prior 있어도 transcripts 비어있음 → [].
- */
-export const loadCodexTurnHistory = (
-  channel: ChannelName,
-  threadKey: string,
-  limit: number = CODEX_TURN_HISTORY_LIMIT,
-): CodexTurn[] => {
-  const session = getSession(channel, threadKey);
-  if (session === undefined) return [];
-  return loadCodexTurnHistoryBySessionId(session.claudeSessionId, {
-    limitTurns: limit,
-  });
-};
-
 // ─── Cross-adapter 단일 히스토리 (contract Part B v2 §B-1) ──────────────────
 //
 // 어댑터 무관 단일 진실 소스. transcript_index 로 (channel, threadKey) 의 모든

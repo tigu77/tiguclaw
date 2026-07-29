@@ -39,6 +39,3 @@ export const lookupContextWindow = (
   }
   return undefined;
 };
-
-/** 별칭 — 동일 동작 (호출자 네이밍 호환). */
-export const contextWindowFor = lookupContextWindow;

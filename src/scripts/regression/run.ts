@@ -40,6 +40,7 @@ const main = async (): Promise<void> => {
     (await import("./job-interrupt-event.js")).check,
     (await import("./tool-output-coverage.js")).check,
     (await import("./worker-steering.js")).check,
+    (await import("./dead-exports.js")).check,
     (await import("./channel-session-binding.js")).check,
     (await import("./cooldown-probe.js")).check,
     (await import("./live-jobs-context.js")).check,

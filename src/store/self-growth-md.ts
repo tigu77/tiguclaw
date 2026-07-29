@@ -361,16 +361,6 @@ export const getDirective = (key: string): Promise<Directive | null> =>
     }
   });
 
-/** 전체 목록 (정렬은 renderFile 순서와 무관 — 호출자 책임). never-throw → 실패 시 []. */
-export const listDirectives = (): Promise<Directive[]> =>
-  serialize(async () => {
-    try {
-      return await readDirectivesRaw();
-    } catch {
-      return [];
-    }
-  });
-
 /** 키로 1건 삭제. 삭제했으면 true. never-throw. */
 export const deleteDirective = (key: string): Promise<boolean> =>
   serialize(async () => {

@@ -136,11 +136,6 @@ export const appRoot = (): string => {
   return cachedAppRoot;
 };
 
-// 테스트용 — appRoot 캐시 리셋.
-export const __resetAppRootCache = (): void => {
-  cachedAppRoot = undefined;
-};
-
 /**
  * 소스 빌드 루트 — self-update 의 재빌드가 필요한 *소스 툴체인* 위치
  * (`tsconfig.build.json`·`node_modules`·`bin/`·`.git` 가 있는 곳).

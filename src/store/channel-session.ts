@@ -97,24 +97,3 @@ export const clearBindingsForSession = (sessionId: string): number => {
     .prepare(`DELETE FROM channel_session_binding WHERE session_id = ?`)
     .run(sid).changes;
 };
-
-/** 전체 바인딩(진단·관측용). */
-export const listChannelSessionBindings = (): ChannelSessionBinding[] =>
-  (
-    getDb()
-      .prepare(
-        `SELECT channel, channel_address, session_id, updated_at
-         FROM channel_session_binding ORDER BY updated_at DESC`,
-      )
-      .all() as Array<{
-      channel: string;
-      channel_address: string;
-      session_id: string;
-      updated_at: number;
-    }>
-  ).map((r) => ({
-    channel: r.channel,
-    channelAddress: r.channel_address,
-    sessionId: r.session_id,
-    updatedAt: r.updated_at,
-  }));

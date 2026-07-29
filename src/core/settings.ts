@@ -677,10 +677,6 @@ export const isModuleDisabled = (
   cwd: string = process.cwd(),
 ): boolean => readDisabledModules(cwd).has(name);
 
-/** 현재 disabled 목록 스냅샷(진단/엔드포인트 노출용) — 정렬된 배열. */
-export const listDisabledModules = (cwd: string = process.cwd()): string[] =>
-  [...readDisabledModules(cwd)].sort();
-
 /**
  * 모듈 활성/비활성 쓰기 — **홈 settings.json** read-modify-write(setDefaultProfile 동형).
  *  - ★나머지 키 전부 보존(hooks·models·기타 최상위 키 무수정). 원자적 쓰기(temp→rename).

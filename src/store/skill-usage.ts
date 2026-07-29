@@ -53,33 +53,6 @@ export const recordSkillOutcome = (skillName: string, ok: boolean): void => {
     .run(skillName);
 };
 
-/** 단일 스킬 누적 카운트 — P2/대시보드 조회. 없으면 null. */
-export const getSkillUsage = (
-  skillName: string,
-): {
-  invokeCount: number;
-  lastUsedAt: number;
-  successCount: number;
-  failCount: number;
-} | null => {
-  const row = getDb()
-    .prepare(
-      `SELECT invoke_count AS invokeCount, last_used_at AS lastUsedAt,
-              success_count AS successCount, fail_count AS failCount
-         FROM skill_usage
-        WHERE skill_name = ?`,
-    )
-    .get(skillName) as
-    | {
-        invokeCount: number;
-        lastUsedAt: number;
-        successCount: number;
-        failCount: number;
-      }
-    | undefined;
-  return row ?? null;
-};
-
 /**
  * 전체 사용 통계 — Phase 2(개선/정리 루프) 입력 + 대시보드. count desc, ties → 최근.
  * limit 미지정 시 cap(무한 반환 방지).

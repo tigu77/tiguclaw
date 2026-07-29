@@ -82,16 +82,6 @@ export const listProjects = (): ProjectRow[] =>
       .all() as DbRow[]
   ).map(toRow);
 
-export const getProject = (path: string): ProjectRow | undefined => {
-  const r = getDb()
-    .prepare(
-      `SELECT path, name, status, description, registered_at, updated_at
-         FROM projects WHERE path = ?`,
-    )
-    .get(path) as DbRow | undefined;
-  return r === undefined ? undefined : toRow(r);
-};
-
 /** 등록 해제 — 인덱스에서만 제거. PROJECT.md 파일은 안 지운다. */
 export const forgetProject = (path: string): void => {
   getDb().prepare(`DELETE FROM projects WHERE path = ?`).run(path);

@@ -1435,14 +1435,3 @@ export const createFileOpsMcpServer = (
       opts?.abortSignal,
     ),
   });
-
-// 노출 도구 목록 (inventory 등에서 참조 가능 — 본 라운드 hardcode 0).
-export const FILE_OPS_TOOLS = [
-  "Read",
-  "Glob",
-  "Grep",
-  "Write",
-  "Edit",
-  "Bash",
-  "WebFetch",
-] as const;

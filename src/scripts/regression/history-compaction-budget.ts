@@ -49,7 +49,7 @@ export const check: RegressionCheck = {
       assert("압축이 필요한 상황을 잡는다", huge.needed, String(huge.needed)),
       assert(
         "★한 번에 접는 양이 예산 안(실사고 2,838,563자 → 상한 이하)",
-        foldedChars(huge.toFold) <= 100_000,
+        foldedChars(huge.toFold) <= 40_000,
         `${foldedChars(huge.toFold)}자 / ${huge.toFold.length}턴`,
       ),
       assert(
@@ -61,6 +61,14 @@ export const check: RegressionCheck = {
         "예산을 넘는 단일 턴도 혼자서 접힌다(무진행 방지)",
         oversize.needed && oversize.toFold.length === 1,
         `${oversize.toFold.length}턴`,
+      ),
+      assert(
+        // ★2026-07-30 라이브: 10만 자 예산에서 87,387자가 실패했다(60,650은 성공).
+        //  글자 수는 토큰 밀도를 못 담아 상수로는 못 맞춘다 → 기본을 낮추고 실패 시
+        //  절반으로 백오프한다. 이 단언은 **기본값이 다시 커지는 것**을 막는다.
+        "기본 예산이 라이브 실패값(87,387자)보다 작다",
+        foldedChars(huge.toFold) < 87_387,
+        `${foldedChars(huge.toFold)}자`,
       ),
       assert(
         "작은 스레드는 종전대로 전량 접는다(회귀 0)",

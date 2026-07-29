@@ -477,19 +477,54 @@ const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7일 상한(비정상 값 �
 
 // rate-limit/사용량한도 식별 — src/index.ts formatRegionAError · worker-jobs.ts
 // humanizeWorkerError 와 동형 문자열 휴리스틱(진실 통일, 신규 분류축 아님).
-const isRateLimited = (errStr: string): boolean =>
-  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b/i.test(errStr);
+export const isRateLimited = (errStr: string): boolean =>
+  // ★claude 문구 추가 (2026-07-30 라이브): claude SDK 는 "You've hit your limit · resets
+  //  2:20am (Asia/Seoul)" 로 말한다 — 위 어느 패턴에도 안 걸려 **쿨다운이 등록되지 않았고**
+  //  죽은 백엔드를 매 턴 다시 때렸다(윈도우 로그 00:39·00:40·00:43). 그 사이 codex 도 흔들려
+  //  "모든 어댑터 실패"가 반복됐다.
+  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b|hit your (usage )?limit|usage limit/i.test(
+    errStr,
+  );
 
 // resets_in_seconds(codex 실측) / retry-after(HTTP 표준) 초 단위 파싱 → ms. 없으면 null
 // (호출자가 DEFAULT_COOLDOWN_MS 로 강등). src/index.ts 의 동일 정규식과 진실 통일.
-const parseCooldownMs = (errStr: string): number | null => {
+export const parseCooldownMs = (errStr: string): number | null => {
   const m =
     errStr.match(/"resets_in_seconds"\s*:\s*(\d+)/) ||
     errStr.match(/retry[-_ ]?after["'\s:=]+(\d+)/i);
+  if (m !== null) {
+    const sec = Number(m[1]);
+    if (Number.isFinite(sec) && sec > 0) return Math.min(sec * 1000, MAX_COOLDOWN_MS);
+  }
+  return parseResetsAtMs(errStr);
+};
+
+/**
+ * **벽시계 해제 시각 파싱** — claude SDK 는 초가 아니라 `resets 2:20am (Asia/Seoul)` 로 말한다.
+ *
+ * 위 초 단위 파서가 못 읽어 DEFAULT(10분)로 강등되거나 아예 쿨다운이 안 걸렸다. 다음 도래
+ * 시각까지의 ms 로 환산한다(이미 지난 시각이면 내일 그 시각).
+ *
+ * ★타임존: 메시지가 TZ 이름을 주지만 우리는 **로컬 시간으로 해석**한다. 데몬과 계정 TZ 가
+ *  다르면 몇 시간 어긋날 수 있는데, 그 방향은 안전하다 — 짧으면 재시도 한 번 더일 뿐이고,
+ *  길어도 `cooldownRemainingMs` 의 **2시간 주기 탐침**이 실제로 다시 시도한다(6일 공백 사고
+ *  대응으로 이미 들어가 있다). 즉 이 파싱이 틀려도 백엔드를 영구히 놀리지 않는다.
+ */
+const parseResetsAtMs = (errStr: string): number | null => {
+  const m = errStr.match(/resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
   if (m === null) return null;
-  const sec = Number(m[1]);
-  if (!Number.isFinite(sec) || sec <= 0) return null;
-  return Math.min(sec * 1000, MAX_COOLDOWN_MS);
+  let hour = Number(m[1]);
+  const min = m[2] === undefined ? 0 : Number(m[2]);
+  const mer = (m[3] ?? "").toLowerCase();
+  if (!Number.isFinite(hour) || hour < 1 || hour > 12 || min > 59) return null;
+  if (mer === "pm" && hour !== 12) hour += 12;
+  if (mer === "am" && hour === 12) hour = 0;
+  const now = new Date();
+  const at = new Date(now);
+  at.setHours(hour, min, 0, 0);
+  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1); // 이미 지났으면 내일.
+  const ms = at.getTime() - now.getTime();
+  return ms > 0 ? Math.min(ms, MAX_COOLDOWN_MS) : null;
 };
 
 // 쿨다운 키 — provider 명시 우선(다대일 openai 어댑터를 ollama/google/openai 로 구분),
@@ -670,13 +705,19 @@ export const restoreCooldowns = (): void => {
 export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void => {
   const detail = errorDetail(e);
   if (!isRateLimited(detail)) return;
-  const ms = parseCooldownMs(detail) ?? DEFAULT_COOLDOWN_MS;
+  const parsed = parseCooldownMs(detail);
+  const ms = parsed ?? DEFAULT_COOLDOWN_MS;
   const key = cooldownKey(spec);
   const untilTs = Date.now() + ms;
   cooldownUntil.set(key, untilTs);
   saveCooldown(key, untilTs); // 영속 — 재시작해도 죽은 백엔드를 다시 두드리지 않게.
   console.warn(
-    `llm-runtime: '${key}' rate-limited — ${Math.ceil(ms / 60000)}분 쿨다운 등록.`,
+    // ★출처 분기 병기 (2026-07-30) — "8228분"이 백엔드가 말한 값인지, 파싱 실패로 기본값
+    //  인지, 비정상 값이 7일 상한에 잘린 건지 로그만으로는 구분이 안 됐다. 상수를 외워야
+    //  산술로 추론해야 했고, 그게 "6일 공백" 사고에서 답을 못 낸 질문이었다.
+    `llm-runtime: '${key}' rate-limited — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
+      `(${parsed === null ? "기본값" : ms >= MAX_COOLDOWN_MS ? "상한 클램프" : "백엔드 지정"}, ` +
+      `해제 ${new Date(untilTs).toLocaleString("ko-KR")}).`,
   );
   publishCooldownEvent("enter", key, ms);
 };
@@ -845,7 +886,13 @@ const runPool = async (
   // 레이턴시+통신 낭비 제거). 전부 쿨다운이면 selectEligiblePool 이 원본 pool 그대로
   // 반환(last-resort, 유효 풀이 비어 턴이 응답 0 으로 죽지 않게).
   const effectivePool = selectEligiblePool(pool, input.text?.length ?? 0);
+  /** 시도한 spec 체인 — 실패 통보가 "왜 이 어댑터냐"를 설명할 수 있게(2026-07-30). */
+  const attemptChain: string[] = [];
+  const poolStartedAt = Date.now();
+  let specIndex = -1;
   for (const spec of effectivePool) {
+    specIndex += 1;
+    attemptChain.push(`${spec.adapter}:${spec.model}`);
     // self-growth 입력 — 한 어댑터 run() 호출(=한 턴) wall-clock 측정. 발행은 아래
     // 성공/실패 경로에서 정확히 1회 (turn_done XOR turn_error). 발행 자체는 best-effort
     // (publishTurnDone/Error 내부 try/catch) — 턴/데몬 안 죽임(임무 §4).
@@ -913,8 +960,13 @@ const runPool = async (
       registerCooldownIfRateLimited(spec, e);
       lastError = e;
       if (effectivePool.length > 1) {
+        // ★진단 수치 병기 (2026-07-30) — 종전엔 "무엇이 실패했다"만 있어 **어느 대화가
+        //  죽었는지** 알 수 없었다(동시에 dashboard:*·scheduler:*·worker:* 가 도는 데몬에서
+        //  주인 없는 줄). 로그만으로 원인을 좁힐 수 있어야 한다.
         console.warn(
-          `llm-runtime: '${spec.adapter}:${spec.model}' failed — ${errorDetail(e)}. 다음 모델로 폴백.`,
+          `llm-runtime: '${spec.adapter}:${spec.model}' failed — ${errorDetail(e)}. 다음 모델로 폴백. ` +
+            `(thread=${input.threadKey} ${Date.now() - startedAt}ms in=${input.text?.length ?? 0}자 ` +
+            `풀=${specIndex + 1}/${effectivePool.length})`,
         );
       }
     }
@@ -922,7 +974,10 @@ const runPool = async (
   // 풀 크기 무관 진짜 원인 보존 — warn 은 pool.length>1 에서만 찍혀 단일 어댑터
   // 풀이면 cause 가 안 남음. 이 1줄로 풀 크기 무관하게 진짜 원인을 콘솔에 박는다.
   if (lastError !== undefined) {
-    console.error(`llm-runtime: 모든 어댑터 실패 — ${errorDetail(lastError)}`);
+    console.error(
+      `llm-runtime: 모든 어댑터 실패 — ${errorDetail(lastError)} ` +
+        `(thread=${input.threadKey} 시도=${attemptChain.join(" → ")} ${Date.now() - poolStartedAt}ms)`,
+    );
   }
   throw lastError ?? new Error("llm-runtime: 모델 풀이 비어있음.");
 };

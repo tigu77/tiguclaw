@@ -1541,7 +1541,12 @@ const handler: MessageHandler = async (msg) => {
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
     // (네트워크·모델 거부·idle abort 등)만 받는다 — 폴백 없이 끝나므로 사용자 노출 필수.
     // 콘솔엔 full 진단 — 스택·cause(undici "fetch failed" 등) 통째로 보존(운영자 로컬 경계).
-    console.error("handler route failed:", e);
+    // ★채널·스레드 병기 (2026-07-30) — 종전엔 스택은 다 있는데 **누구 턴이 죽었는지**가
+    //  없어 로그만으로 역추적이 안 됐다(바로 위 관측 발행은 둘 다 쓰고 있었다).
+    console.error(
+      `handler route failed (channel=${msg.channel} thread=${msg.threadKey}):`,
+      e,
+    );
     // 사용자엔 redact 된 detail 노출 (사용자=운영자 단일 인격, "에러가 다 보이는 게 좋겠어").
     // 보안 불변식: errorDetail 결과는 무조건 redactSecrets 통과 후에만 reply (게이트 없음).
     // 톤은 폴백 고지(⚠️)와 통일 — 성공경로(폴백)/실패경로(이 catch) 상호배타라 중복 아님.

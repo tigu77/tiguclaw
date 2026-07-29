@@ -129,6 +129,8 @@ export interface CodexSseResult {
     reasoningTokens?: number;
     cachedTokens?: number;
   };
+  /** 마지막으로 본 SSE 이벤트 타입(빈 응답 진단 — completed 없이 끊겼는지). */
+  lastEvent?: string;
 }
 
 /**
@@ -166,6 +168,8 @@ export const parseCodexSse = async (
     argumentsDelta?: string;
   }) => void,
 ): Promise<CodexSseResult> => {
+  /** 마지막으로 본 SSE 이벤트 타입 — 빈 응답이 completed 없이 끊겼는지 판별용. */
+  let lastEvent = "(없음)";
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -277,6 +281,7 @@ export const parseCodexSse = async (
             if (text === "" && typeof event.response?.output_text === "string") {
               text = event.response.output_text;
             }
+            lastEvent = typeof event.type === "string" ? event.type : lastEvent;
             if (typeof event.response?.id === "string") {
               responseId = event.response.id;
             }
@@ -316,7 +321,8 @@ export const parseCodexSse = async (
     }
   }
 
-  return { text, responseId, toolCalls, usage };
+  // lastEvent — 빈 응답 진단용(2026-07-30). `response.completed` 가 안 왔는지 로그로 가른다.
+  return { text, responseId, toolCalls, usage, lastEvent };
 };
 
 /**
@@ -796,7 +802,9 @@ export const buildTurnHistory = async (
 
   // watermark 이후(미요약) 턴만 추려 압축 트리거 판정.
   const unsummarized = allTurns.filter((t) => t.id > watermark);
-  const plan = planHistoryCompaction(unsummarized, watermark);
+  const plan = planHistoryCompaction(unsummarized, watermark, {
+    maxFoldChars: currentFoldBudget(input.threadKey),
+  });
 
   if (plan.needed) {
     // 오래된 턴 + 기존 요약 → 요약 LLM 호출 1회 (isolated, 재귀 없음).
@@ -820,6 +828,7 @@ export const buildTurnHistory = async (
         console.log(
           `[codex 6b] 압축 성공 — ${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} 요약=${summary.length}자`,
         );
+        growFoldBudget(input.threadKey);
         noteCompactionOutcome(input.threadKey, true, "", prompt.length);
         // ★압축 사실을 알린다 (2026-07-29). 종전엔 **성공해도 아무도 몰랐다** — 실패만
         //  로그에 남았다. 대화가 길어져 옛 내용이 요약으로 바뀌는 건 사용자가 알아야 할
@@ -843,7 +852,8 @@ export const buildTurnHistory = async (
         // 빈 요약 = 무의미 → 폴백(요약 미반영, 기존 watermark 유지). 조용히 X.
         console.warn(
           `[codex 6b] 요약 호출이 빈 결과 — oldest-drop 폴백 ` +
-            `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)})`,
+            `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
+            `→ 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`,
         );
         noteCompactionOutcome(input.threadKey, false, "빈 결과", prompt.length);
       }
@@ -973,8 +983,44 @@ const CODEX_COMPACTED_MARKER = "\u0000__codex_compacted__\u0000";
  */
 const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
   process.env.CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS,
-  100_000,
+  40_000,
 );
+
+/**
+ * **적응 백오프** — 고정 상수로는 못 맞춘다 (2026-07-30 라이브 실측).
+ *
+ * ★어제 10만 자로 잡았는데 **87,387자가 실패**했다(60,650자는 성공). 내 측정이 낙관적이었다:
+ *  프로브는 같은 문장을 반복한 텍스트였고, 실제 대화는 한국어+코드+JSON 이라 **같은 글자
+ *  수라도 토큰이 훨씬 많다.** 즉 안전한 글자 수는 **내용 밀도에 따라 달라져서** 상수로
+ *  고정할 수 없다.
+ *
+ *  그래서 추측을 그만두고 **실패에서 배우게** 한다: 빈 결과가 오면 그 스레드의 예산을
+ *  절반으로 줄이고 다음 턴에 다시 시도한다. 몇 턴 안에 반드시 삼킬 수 있는 크기에 닿는다
+ *  (진행 보장). 성공하면 천천히 되돌려 평소엔 큰 덩이로 접는다.
+ */
+const foldBudgetByThread = new Map<string, number>();
+const MIN_FOLD_CHARS = 5_000;
+
+/** 이 스레드에 지금 쓸 예산. */
+const currentFoldBudget = (threadKey: string): number =>
+  foldBudgetByThread.get(threadKey) ?? CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS;
+
+/** 실패 → 절반으로(하한 유지). 다음 턴이 더 작은 덩이로 재시도한다. */
+const shrinkFoldBudget = (threadKey: string): number => {
+  const next = Math.max(MIN_FOLD_CHARS, Math.floor(currentFoldBudget(threadKey) / 2));
+  foldBudgetByThread.set(threadKey, next);
+  return next;
+};
+
+/** 성공 → 1.5배로 완만 복귀(상한 유지). 한 번 성공한 크기 근처를 유지한다. */
+const growFoldBudget = (threadKey: string): void => {
+  const cur = currentFoldBudget(threadKey);
+  if (cur >= CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS) return;
+  foldBudgetByThread.set(
+    threadKey,
+    Math.min(CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS, Math.floor(cur * 1.5)),
+  );
+};
 
 const CODEX_HISTORY_COMPACT_TRIGGER_TURNS = parsePosIntEnv(
   process.env.CODEX_COMPACT_TRIGGER_TURNS,

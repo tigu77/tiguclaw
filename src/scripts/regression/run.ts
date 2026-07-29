@@ -45,6 +45,7 @@ const main = async (): Promise<void> => {
     (await import("./history-prefix-strip.js")).check,
     (await import("./tool-output-line-snap.js")).check,
     (await import("./compaction-fail-observability.js")).check,
+    (await import("./rate-limit-cooldown.js")).check,
     (await import("./channel-session-binding.js")).check,
     (await import("./cooldown-probe.js")).check,
     (await import("./live-jobs-context.js")).check,

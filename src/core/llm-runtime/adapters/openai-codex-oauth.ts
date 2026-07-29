@@ -838,6 +838,18 @@ export const runOpenAiCodex = async (
    * 없다"를 구분해 같은 nudge 를 태운다.
    */
   let toolCallsSinceText = 0;
+  /**
+   * **전송 계층 계측** — 빈 응답의 원인을 로그만으로 가르기 위함 (2026-07-30).
+   *
+   * ★실사고: `usage=?` 인 빈 응답이 3회 났다(윈도우 00:39·00:40·00:43, inputChars=4 에도).
+   *  usage 는 `response.completed` 에서만 추출하므로 `usage=?` = **completed 가 안 왔다**
+   *  = 스트림이 정상 종료 없이 끊겼다는 뜻이다. 그런데 **왜 끊겼는지**가 로그에 없어서
+   *  "우리가 abort 했나 / 서버가 닫았나" 를 가릴 수 없었다. 그 둘은 처방이 정반대다.
+   *  그래서 청크·바이트·마지막 이벤트·abort 주체를 누적해 빈 응답 로그에 싣는다.
+   */
+  let turnChunks = 0;
+  let turnBytes = 0;
+  let lastSseEvent = "(없음)";
   /** 같은 창의 도구 이름 — 설계상 턴을 끝내는 도구(prompt_options)를 구분하기 위함. */
   let toolNamesSinceText: string[] = [];
   let finalResponseId: string | undefined;
@@ -1185,6 +1197,7 @@ export const runOpenAiCodex = async (
           () => {
             // onChunk — 계측만(진전 아님, 타이머 beat X). in_progress heartbeat 도 여기 잡힘.
             iterChunks += 1;
+            turnChunks += 1;
             iterLastChunkAt = Date.now();
           },
           (delta) => {
@@ -1222,7 +1235,8 @@ export const runOpenAiCodex = async (
                 }
               },
         );
-        break; // 스트림 소비 성공 → 재시도 루프 탈출.
+                if (typeof sseResult.lastEvent === "string") lastSseEvent = sseResult.lastEvent;
+break; // 스트림 소비 성공 → 재시도 루프 탈출.
       } catch (e) {
         // abort 가 유휴(1층)·턴(2층) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
         // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
@@ -1832,6 +1846,8 @@ export const runOpenAiCodex = async (
         ` usage=input:${finalUsage?.inputTokens ?? "?"}/output:${finalUsage?.outputTokens ?? "?"}` +
         `/reasoning:${finalUsage?.reasoningTokens ?? "?"}` +
         ` tools=[${[...executedToolNames].join(",")}]` +
+        ` chunks=${turnChunks} lastEvent=${lastSseEvent}` +
+        ` aborted=${input.abortSignal?.aborted === true ? (input.abortSignal.reason instanceof Error ? input.abortSignal.reason.name : "yes") : "no"}` +
         ` inputChars=${input.text.length}` +
         ` userText=${JSON.stringify(input.text.slice(0, 80))}`,
     );

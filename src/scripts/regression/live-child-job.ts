@@ -14,7 +14,7 @@ import {
   describeChildJobs,
   __resetJobsForTest,
 } from "../../core/worker-jobs.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const SESSION = "dashboard:live-child-regression";
 
@@ -22,6 +22,7 @@ export const check: RegressionCheck = {
   name: "live-child-job",
   guards: "손자만 살아있을 때 부모가 무응답으로 오판해 끊고, 모델이 같은 일을 다시 돌리던 것",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // DB 에 잡을 심으므로 라이브 홈 오염 방지(감사 실측: worker_jobs 행 증가).
     __resetJobsForTest();
     const mk = (threadKey: string, label: string): string =>
       registerJob({

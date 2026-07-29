@@ -16,6 +16,16 @@
  * 없으면, 모델은 자기가 한 일을 보고하지 않고 끝낸 것이다 — (b).
  */
 
+/**
+ * **설계상 턴을 끝내는 도구** — 이걸 부른 뒤 텍스트 없이 끝나는 건 정상이다.
+ *
+ * `prompt_options` 는 도구 설명·반환문 둘 다 "답을 받아야 하면 이 호출 뒤 **턴을 마치세요**"
+ * 라고 지시한다(`prompt-options-mcp.ts`). 그런데 아래 판정은 "도구는 돌았는데 보고가 없다"
+ * 를 미완결로 보므로, 도구가 끝내라 하고 루프가 끝내지 말라 하는 **정면충돌**이 된다
+ * (실측: 그 턴마다 nudge 2회 + 강제 flush 1회 = 최대 3왕복 낭비 + 선택지 카드 밑에 군더더기).
+ */
+const TURN_ENDING_TOOLS = new Set(["prompt_options"]);
+
 export interface TurnClosingState {
   /** 이번 iteration 이 낸 텍스트("" = 없음). */
   readonly text: string;
@@ -23,6 +33,8 @@ export interface TurnClosingState {
   readonly finalText: string;
   /** 그 마지막 텍스트 **이후** 실행한 도구 수. 텍스트가 나올 때마다 0 으로 리셋된다. */
   readonly toolCallsSinceText: number;
+  /** 마지막 텍스트 이후 실행한 도구 **이름들**(설계상 종료 도구 판별용). */
+  readonly toolNamesSinceText?: readonly string[];
 }
 
 /**
@@ -34,5 +46,9 @@ export interface TurnClosingState {
 export const needsClosingReport = (s: TurnClosingState): boolean => {
   if (s.text !== "") return false; // 이번에 보고했다 — 끝내도 된다.
   if (s.finalText === "") return true; // 턴 전체가 무텍스트 — 기존 빈 응답 경로.
-  return s.toolCallsSinceText > 0; // 예고 뒤 도구만 돌고 보고 없음 = 미완결.
+  if (s.toolCallsSinceText === 0) return false; // 보고 후 도구 없음 = 정상 종료.
+  // 설계상 종료 도구만 돌았으면 그 종료는 의도된 것이다(위 TURN_ENDING_TOOLS 주석).
+  const names = s.toolNamesSinceText ?? [];
+  if (names.length > 0 && names.every((n) => TURN_ENDING_TOOLS.has(n))) return false;
+  return true; // 예고 뒤 도구만 돌고 보고 없음 = 미완결.
 };

@@ -12,6 +12,18 @@ import { jobBelongsToSession } from "../../core/worker-jobs.js";
 import { formatConversationContext } from "../../core/prompt-assembly.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
+/** ★질의 쪽 배선 — 사고는 데이터가 아니라 **질의**의 결함이었다(list_workers 가 전 세션 통합). */
+const queryScoped = async (): Promise<boolean> => {
+  const { readFile } = await import("node:fs/promises");
+  const url = new URL("../../core/llm-runtime/capabilities/worker-registry.ts", import.meta.url);
+  try {
+    const src = await readFile(url, "utf8");
+    return /ownerThreadKey:\s*ownSession/.test(src);
+  } catch {
+    return true;
+  }
+};
+
 export const check: RegressionCheck = {
   name: "job-session-scope",
   guards: "다른 세션의 매니저를 자기 것으로 오인해 새 작업을 안 띄우던 것",
@@ -44,6 +56,11 @@ export const check: RegressionCheck = {
         "★프롬프트가 자기 세션 id 를 노출한다(구분할 근거)",
         ctx.includes(A),
         ctx.split("\n")[0] ?? "",
+      ),
+      assert(
+        "★list_workers 질의가 세션으로 스코프된다(배선 확인)",
+        await queryScoped(),
+        "worker-registry.ts",
       ),
     ];
   },

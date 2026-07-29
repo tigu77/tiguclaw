@@ -834,6 +834,8 @@ export const runOpenAiCodex = async (
    * 없다"를 구분해 같은 nudge 를 태운다.
    */
   let toolCallsSinceText = 0;
+  /** 같은 창의 도구 이름 — 설계상 턴을 끝내는 도구(prompt_options)를 구분하기 위함. */
+  let toolNamesSinceText: string[] = [];
   let finalResponseId: string | undefined;
   // /status 개편 — 마지막 turn 의 usage 보존 (마지막 turn = 가장 큰 누적 input →
   // "얼마나 찼나" 의 정확 proxy). usage 미캡처 turn 은 갱신 안 함 (graceful).
@@ -1370,6 +1372,7 @@ export const runOpenAiCodex = async (
       if (text !== "") {
         finalText = text;
         toolCallsSinceText = 0; // 보고가 나왔다 — 이후 도구부터 다시 센다.
+        toolNamesSinceText = [];
       }
       if (responseId !== undefined) finalResponseId = responseId;
 
@@ -1436,7 +1439,12 @@ export const runOpenAiCodex = async (
         // "끝났으면 답을, 아니면 계속" nudge. 텍스트가 조금이라도 있으면(중간 보고)
         // nudge 0 — 정상 종료로 취급(과도 재요청 회피).
         // 판정은 `_turn-completion.ts` 단일 규칙 — 왜 예고문이 정상 종료가 아닌지는 거기 주석.
-        if (needsClosingReport({ text, finalText, toolCallsSinceText })) {
+        if (needsClosingReport({
+          text,
+          finalText,
+          toolCallsSinceText,
+          toolNamesSinceText,
+        })) {
           if (emptyBreakRetries < MAX_EMPTY_BREAK_RETRIES) {
             emptyBreakRetries += 1;
             // 2026-06-05/06-11 — nudge 에 실행 도구 목록 + 사용자 원 입력 재주입.
@@ -1534,6 +1542,7 @@ export const runOpenAiCodex = async (
 
       // 이번 iteration 의 도구는 "마지막 텍스트 이후" 에 속한다(위 카운터 주석 참조).
       toolCallsSinceText += toolCalls.length;
+      toolNamesSinceText.push(...toolCalls.map((tc) => tc.name));
 
       // V5.3 — 도구 호출 lifecycle: 각 function_call 을 input 배열에 그대로 push
       // (OpenClaw L300-311 shape) → callTool 실행 → function_call_output push

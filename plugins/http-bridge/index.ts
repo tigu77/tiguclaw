@@ -103,6 +103,7 @@ import {
 } from "../../src/core/llm-runtime/capabilities/file-ops-mcp.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
+import { redactSecrets } from "../../src/core/outbound-sanitize.js";
 
 /**
  * in-process MCP 서버 팩토리 — `/mcp-tools` 가 **실제 인스턴스에 물어보기** 위한 유일한 맵.
@@ -768,7 +769,13 @@ class HttpBridge implements Channel, Observer {
   async startObserver(eventBus: EventBus): Promise<void> {
     this.bus = eventBus;
     this.busUnsubscribe = eventBus.subscribe((event) => {
-      const line = `data: ${JSON.stringify(event)}\n\n`;
+      // ★SSE 도 redact 한다 (2026-07-29 검토). event-persist 는 **insertEvent 로 넘기는
+      //  문자열 사본만** redact 해서 DB 만 닫혔고, 여기 fan-out 은 원본 객체를 그대로
+      //  stringify 했다(그 파일 주석의 "DB 와 SSE 를 한 지점에서 동시에 닫는다"는 사실이
+      //  아니었다). 실증: events id=34467 에 `[REDACTED:TIGUCLAW_BRIDGE_TOKEN]` 마커가 있다
+      //  = 그 순간 버스 payload 엔 토큰 평문이 있었고 그게 /events(요구 role=read)로 나갔다.
+      //  이벤트당 1회만 계산되므로(클라이언트 수와 무관) 비용은 문자열 1벌.
+      const line = `data: ${redactSecrets(JSON.stringify(event))}\n\n`;
       for (const c of this.sseClients) {
         try {
           c.write(line);
@@ -1174,7 +1181,7 @@ class HttpBridge implements Channel, Observer {
           .filter((e) => !HISTORY_EXCLUDE.has(e.type));
         for (const e of recent) {
           try {
-            res.write(`data: ${JSON.stringify(e)}\n\n`);
+            res.write(`data: ${redactSecrets(JSON.stringify(e))}\n\n`); // 위와 같은 이유.
           } catch {
             return;
           }

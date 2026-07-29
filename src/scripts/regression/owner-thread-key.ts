@@ -11,7 +11,7 @@ import {
   resolveOwnerThreadKey,
   __resetJobsForTest,
 } from "../../core/worker-jobs.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const SESSION = "dashboard:regression";
 
@@ -19,6 +19,7 @@ export const check: RegressionCheck = {
   name: "owner-thread-key",
   guards: "서브에이전트가 남의 세션에 진행 중으로 뜨던 것(잡 좌표 미환원)",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // DB 에 잡을 심으므로 라이브 홈 오염 방지(감사 실측: worker_jobs 행 증가).
     __resetJobsForTest();
     const mk = (threadKey: string, label: string): string =>
       registerJob({

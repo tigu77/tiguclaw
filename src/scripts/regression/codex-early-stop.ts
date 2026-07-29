@@ -11,6 +11,22 @@
 import { needsClosingReport } from "../../core/llm-runtime/adapters/_turn-completion.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
+/**
+ * ★배선 확인 — 순수 함수만 검사하면 **카운터 배선을 지워도 초록**이다(감사 실측: 회귀
+ *  81/81 통과 + tsc 0 에러). 그러면 원 사고가 그대로 복귀한다. worker-steering·
+ *  timeout-layering 과 같은 방식(배포본엔 .ts 가 없어 오탐 0).
+ */
+const adapterWired = async (): Promise<boolean> => {
+  const { readFile } = await import("node:fs/promises");
+  const url = new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url);
+  try {
+    const src = await readFile(url, "utf8");
+    return /toolCallsSinceText\s*\+=/.test(src) && /needsClosingReport\(/.test(src);
+  } catch {
+    return true;
+  }
+};
+
 export const check: RegressionCheck = {
   name: "codex-early-stop",
   guards: "예고문만 남기고 작업 없이 끝나던 턴(조기 중단)을 정상 종료로 오인하던 것",
@@ -34,6 +50,21 @@ export const check: RegressionCheck = {
       "이번 iteration 이 보고를 냈으면 끝냄",
       !needsClosingReport({ text: "요약입니다.", finalText: "이전", toolCallsSinceText: 3 }),
       "이번에 보고함",
+    ),
+    assert(
+      "설계상 종료 도구(prompt_options)만 돌았으면 끝냄 — 도구가 '턴을 마치라' 지시한다",
+      !needsClosingReport({
+        text: "",
+        finalText: "골라주세요",
+        toolCallsSinceText: 1,
+        toolNamesSinceText: ["prompt_options"],
+      }),
+      "의도된 종료",
+    ),
+    assert(
+      "★어댑터 배선이 존재한다(카운터 누적 + 판정 호출)",
+      await adapterWired(),
+      "openai-codex-oauth.ts",
     ),
   ],
 };

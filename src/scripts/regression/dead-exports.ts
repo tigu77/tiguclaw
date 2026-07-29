@@ -44,18 +44,35 @@ const readAll = (dir: string, out: string[]): void => {
 
 const EXPORT_RE = /^export (?:const|function|async function|class) ([A-Za-z_$][\w$]*)/gm;
 
+/** 레포 루트(cwd 무관 — 다른 검사들과 동형으로 import.meta.url 기준). */
+const repoRoot = (): string => new URL("../../../", import.meta.url).pathname;
+
+/**
+ * 이 트리에서 판정이 성립하는가.
+ *
+ * ★public 트리에서 false red 가 났다 (2026-07-29, 실제 CI 실패): sync 가 `src/scripts/
+ *  {verify-,e2e-,probe-}*` 와 `bench/` 를 스크럽하는데, `__resetPathsCache`·
+ *  `pendingThreadCount` 의 **유일한 소비자가 그 스크럽된 스크립트들**이라 배포 트리에서만
+ *  죽은 것으로 보였다. dev 는 0건, public 은 2건 — 같은 코드에 다른 판정.
+ *  이 게이트의 목적은 **dev 레포를 깨끗이 유지**하는 것이므로, 소비자 절반이 없는 트리에선
+ *  판정하지 않는다. 단 조용히 통과하지 않고 **그 사실을 got 에 남긴다**(무음 통과 금지).
+ */
+const devToolingPresent = (root: string): boolean => {
+  try {
+    return readdirSync(join(root, "src/scripts")).some((f) => f.startsWith("verify-"));
+  } catch {
+    return false;
+  }
+};
+
 const findDead = (): string[] => {
   const files: string[] = [];
-  try {
-    walkTs("src", files);
-  } catch {
-    return []; // 배포본(소스 미포함) — 검사 불가, 오탐 0.
-  }
+  walkTs(join(repoRoot(), "src"), files);
   const src = new Map(files.map((f) => [f, readFileSync(f, "utf8")]));
   const extra: string[] = [];
   for (const d of ["plugins", "packages", "skills", "agents"]) {
     try {
-      readAll(d, extra);
+      readAll(join(repoRoot(), d), extra);
     } catch {
       /* 없으면 무시 */
     }
@@ -86,7 +103,26 @@ export const check: RegressionCheck = {
   name: "dead-exports",
   guards: "아무도 안 부르는 코드가 남아 틀린 채로 늙던 것(도구 목록 드리프트의 배경)",
   run: async (): Promise<Assertion[]> => {
-    const dead = findDead();
+    const root = repoRoot();
+    // ★fail-loud: 소스를 아예 못 찾으면 통과가 아니라 실패다. 종전엔 cwd 가 레포 밖이면
+    //  catch → 빈 배열 → "0건" 으로 **진짜 통과와 구분 불가**하게 초록이 떴다(무음 통과).
+    let dead: string[];
+    try {
+      dead = findDead();
+    } catch (e) {
+      return [
+        assert("소스 트리를 찾을 수 있다", false, e instanceof Error ? e.message : String(e)),
+      ];
+    }
+    if (!devToolingPresent(root)) {
+      return [
+        assert(
+          "판정 생략 — dev 전용 스크립트가 없는 트리(배포본)",
+          true,
+          "스크럽된 트리라 소비자 절반이 없다 — dev 레포에서 판정한다",
+        ),
+      ];
+    }
     return [
       assert(
         "★죽은 값 export 0건",

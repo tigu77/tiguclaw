@@ -92,8 +92,10 @@ export const startEventPersistence = (bus: EventBus): void => {
       //  `/events`(요구 role=**read**)로 그대로 나간다 → 최저권한 토큰 하나로 admin·봇 토큰을
       //  관측할 수 있어 role 계층이 무의미해진다.
       //  redactSecrets 는 종전에 *에러 경로 전용* 이었다("정상 응답엔 불필요"). 그 전제는
-      //  사용자 답변 텍스트엔 참이지만 **도구 출력 이벤트엔 거짓**이다 — 여기서 무조건 통과시켜
-      //  DB 와 SSE 를 한 지점에서 동시에 닫는다.
+      //  사용자 답변 텍스트엔 참이지만 **도구 출력 이벤트엔 거짓**이다 — 여기서 무조건 통과시킨다.
+      //  ★단 이건 **DB 만** 닫는다 (2026-07-29 정정): redact 대상은 insertEvent 로 넘기는
+      //   *문자열 사본* 이고 버스 payload 객체는 그대로다. SSE fan-out 은 별도 subscriber 라
+      //   거기서 따로 닫는다(plugins/http-bridge 의 startObserver·history replay).
       const payload = redactSecrets(
         truncatePayloadJson(event.payload, MAX_PAYLOAD_CHARS),
       );

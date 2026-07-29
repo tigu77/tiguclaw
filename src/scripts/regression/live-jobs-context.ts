@@ -14,7 +14,7 @@ import {
   __resetJobsForTest,
 } from "../../core/worker-jobs.js";
 import { formatConversationContext } from "../../core/prompt-assembly.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const TK = "dashboard:regression-livejobs";
 
@@ -22,6 +22,7 @@ export const check: RegressionCheck = {
   name: "live-jobs-context",
   guards: "메인이 자기가 띄운 작업을 모른 채 같은 일을 또 띄우던 것(중복 실행·충돌)",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // DB 에 잡을 심으므로 라이브 홈 오염 방지(감사 실측: worker_jobs 행 증가).
     __resetJobsForTest();
     const none = formatConversationContext("http-bridge", TK, "addr");
     const out: Assertion[] = [

@@ -642,7 +642,7 @@ export const loadCodexTurnHistoryBySessionId = (
     .all(claudeSessionId, limit) as TranscriptHistoryRow[];
   return rows.reverse().map((r) => ({
     role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
-    content: r.content,
+    content: r.role === "assistant" ? r.content : stripAssembledPrefix(r.content),
   }));
 };
 
@@ -676,6 +676,37 @@ interface TranscriptHistoryTsRow {
  * - charCap: 최신 turn 부터 역누적, 초과 시 oldest drop.
  * - 빈 thread / 매핑 없음 → [].
  */
+
+/**
+ * **조립 프리픽스를 걷어낸 사용자 원문.**
+ *
+ * ★왜 (2026-07-29 실사고): claude 어댑터는 SDK 가 남긴 jsonl 을 색인하는데, 그 jsonl 의
+ *  "user 메시지" 는 우리가 `query()` 에 넘긴 **조립된 프롬프트 전문**이다 — SYSTEM.md 헌법 +
+ *  메모리 인덱스 + 스킬·에이전트 인덱스까지 통째로. 그래서 사용자가 `진행해`(3자)를 쳐도
+ *  히스토리엔 22,562자가 쌓인다. 같은 대화가 codex 로 돌면 262자다(원문만 INSERT) —
+ *  **어댑터에 따라 81배 차이**(실측: claude 124턴 263만자 vs codex 68턴 1.8만자).
+ *
+ *  결과: 한 스레드 히스토리가 2,838,563자까지 부풀어 요약 압축이 매 턴 실패하고
+ *  (oldest-drop 폴백) 모델이 하던 작업의 맥락을 잃었다 = "진행한다고 해놓고 안 함".
+ *
+ * ★읽을 때 걷어낸다(색인 때가 아니라): 이미 쌓인 레코드도 즉시 효과가 나고, 원본은
+ *  그대로 보존된다("정리 ≠ 삭제" — 콜드 레코드는 안 지운다). 프리픽스는 어차피 매 턴
+ *  새로 조립돼 주입되므로 히스토리에 실어 보낼 이유가 없다(순수 중복).
+ *
+ * 판정은 보수적으로: `<system-reminder>` 로 **시작할 때만**, **마지막** 닫는 태그 뒤를
+ * 원문으로 본다. 사용자가 본문에 그 문자열을 쓴 경우를 잘라먹지 않는다.
+ */
+export const stripAssembledPrefix = (content: string): string => {
+  if (typeof content !== "string") return "";
+  if (!content.startsWith("<system-reminder>")) return content;
+  const close = "</system-reminder>";
+  const i = content.lastIndexOf(close);
+  if (i === -1) return content;
+  const rest = content.slice(i + close.length).trim();
+  // 프리픽스만 있고 본문이 없으면(드묾) 원본 유지 — 빈 턴을 만들지 않는다.
+  return rest === "" ? content : rest;
+};
+
 export const loadThreadHistory = (
   channel: ChannelName,
   threadKey: string,
@@ -721,11 +752,14 @@ export const loadThreadHistory = (
   for (let i = rows.length - 1; i >= 0; i--) {
     if (kept.length >= limit) break;
     const r = rows[i]!;
-    if (charSum + r.content.length > charCap) break;
-    charSum += r.content.length;
+    // ★프리픽스를 **먼저** 걷어내고 센다 — 안 그러면 charCap 예산을 조립 보일러플레이트가
+    //  잡아먹어 정작 실제 대화가 잘린다(위 stripAssembledPrefix 주석의 사고).
+    const body = r.role === "assistant" ? r.content : stripAssembledPrefix(r.content);
+    if (charSum + body.length > charCap) break;
+    charSum += body.length;
     kept.unshift({
       role: r.role === "assistant" ? "assistant" : "user",
-      content: r.content,
+      content: body,
     });
   }
   return kept;
@@ -783,7 +817,8 @@ export const loadThreadHistoryWithIds = (
   return rows.map((r) => ({
     id: r.id,
     role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
-    content: r.content,
+    // user 턴만 — assistant 응답엔 프리픽스가 없다(위 stripAssembledPrefix 주석).
+    content: r.role === "assistant" ? r.content : stripAssembledPrefix(r.content),
   }));
 };
 

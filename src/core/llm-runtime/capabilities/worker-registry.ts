@@ -24,6 +24,7 @@
  */
 import path from "node:path";
 import { z } from "zod";
+import { createSteeringChannel, type SteeringInput } from "../../steering.js";
 import {
   createSdkMcpServer,
   tool,
@@ -43,6 +44,11 @@ import {
   type WorkerJobRecord,
   resolveOwnerThreadKey,
   jobBelongsToSession,
+  WORKER_STEERING_ENABLED,
+  setSteerChannel,
+  clearSteerChannel,
+  notifyJobOwner,
+  steerJob,
 }
 from "../../worker-jobs.js";
 import { getLastWorkerActivity } from "../../../store/events.js";
@@ -79,6 +85,13 @@ const runner = (job: WorkerJobRecord): void => {
   // jobId 등록 → cancel_worker·대시보드 중지 버튼이 외부에서 이 워커의 abort 를 부를 수 있다.
   const abort = createJobAbort(job.jobId, { timeoutMs: WORKER_TIMEOUT_MS });
 
+  // 워커 스티어 채널 (2026-07-29) — 돌고 있는 워커에 지시를 얹을 수 있게 한다.
+  // 소비층(3어댑터)은 `input.steering` 하나만 보므로 어댑터 변경 0 — 여기서 넘기기만 하면 된다.
+  // 비활성(WORKER_STEERING_ENABLED=0)이면 채널 자체를 만들지 않는다: steering 주입 여부가
+  // claude 의 실행 경로(string-prompt ↔ streaming-input)를 바꾸므로, 끄면 종전 경로 그대로다.
+  const steerCh = WORKER_STEERING_ENABLED ? createSteeringChannel() : undefined;
+  if (steerCh !== undefined) setSteerChannel(job.jobId, steerCh);
+
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
     let hardTimer: ReturnType<typeof setTimeout> | undefined;
@@ -87,6 +100,8 @@ const runner = (job: WorkerJobRecord): void => {
     // 메인 재주입 LLM 턴까지 await 하므로(통지 보장), 그 동안 워커 타임아웃이 남아있지 않게
     // 본체 settle 즉시 해제 — 늦은 워커-timeout abort 의 무의미 발화·자원 누수 0.
     let outcome: { result: string } | { error: string };
+    /** 워커가 끝나는 순간 도착해 반영 못 한 지시(원문). 완료 통지 뒤 소유 세션에 알린다. */
+    let pendingSteerNotice: string[] = [];
     try {
       const { runRegionA, resolveModelChain } = await import("../index.js");
       // 잡에 modelTier 가 있으면 그 풀 체인을 넘긴다(서브에이전트 동형) — 프로파일이면
@@ -106,6 +121,7 @@ const runner = (job: WorkerJobRecord): void => {
           cwd: job.cwd,
           workerDepth: 1,
           abortSignal: abort.signal,
+          ...(steerCh !== undefined ? { steering: steerCh } : {}),
         },
         workerChain.length > 0 ? { chain: workerChain } : undefined,
       );
@@ -133,6 +149,18 @@ const runner = (job: WorkerJobRecord): void => {
       // 워커 전용 자원 해제 — 본체 settle 즉시(통지 전). 정상/실패 무관 항상(누수·오발화 0, 멱등).
       if (hardTimer !== undefined) clearTimeout(hardTimer);
       abort.done();
+      // 스티어 채널 종료 + **잔여 회수**. 메인 턴은 미소비 steering 을 새 턴으로 재주입하지만
+      // (index.ts) 워커엔 다음 턴이 없다 — 그냥 close 하면 막 도착한 지시가 조용히 사라진다
+      // (project_steering_endturn_skip 과 같은 손실창). 사용자 확정(2026-07-29): **소유 세션에
+      // 정직 통지**. 원문(raw)을 쓴다 — framing 문구가 사용자 화면에 노출된 실사고가 있었다.
+      if (steerCh !== undefined) {
+        clearSteerChannel(job.jobId);
+        steerCh.close();
+        const leftover = steerCh.drain();
+        if (leftover.length > 0) {
+          pendingSteerNotice = leftover.map((m: SteeringInput) => m.raw).filter((t: string) => t !== "");
+        }
+      }
     }
 
     // 완료/실패 통지 — daemon 이 done 은 메인 재주입(+raw 안전망), failed/cancelled 는 raw
@@ -146,6 +174,23 @@ const runner = (job: WorkerJobRecord): void => {
       console.error(
         `worker-registry: onWorkerComplete 예외 흡수 (job=${job.jobId}): ${reason}`,
       );
+    }
+
+    // 반영 못 한 지시 정직 통지 — 결과 보고 *뒤*에 보내야 "그 작업 끝났는데 이건 못 받았다"
+    // 순서가 맞는다. raw 아웃바운드(LLM 무경유) — 모델 풀이 죽어 있어도 결정적으로 전달된다
+    // (recoverInterruptedJobs 의 중단 통지와 동형).
+    if (pendingSteerNotice.length > 0) {
+      try {
+        await notifyJobOwner(
+          job,
+          `⚠️ 방금 보내신 지시는 '${job.label}' 워커가 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
+            pendingSteerNotice.map((t) => `· ${t}`).join("\n") +
+            `\n필요하면 위 결과를 보고 다시 시켜주세요.`,
+        );
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        console.error(`worker-registry: 잔여 steer 통지 실패 (job=${job.jobId}): ${reason}`);
+      }
     }
   })();
 };
@@ -190,7 +235,7 @@ export const createWorkerMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const runInBackground = tool(
     "run_in_background",
-    "**규모 있는 작업의 기본 선택지입니다** — 이 워커가 *지휘자*가 되어 필요하면 spawn_agent 로 하위 작업을 팬아웃할 수 있습니다(워커 안에서 서브에이전트 위임은 가능, 워커 재발사만 불가). 단 발사 후에는 지시를 더 얹을 수 없으므로(스티어 미도달) 범위·판단기준을 task 에 확정해 보내세요. 오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 워커 모델 등급을 지정하세요(미지정 시 기본 모델). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
+    "**규모 있는 작업의 기본 선택지입니다** — 이 워커가 *지휘자*가 되어 필요하면 spawn_agent 로 하위 작업을 팬아웃할 수 있습니다(워커 안에서 서브에이전트 위임은 가능, 워커 재발사만 불가). 발사 후에도 steer_worker 로 지시를 더 얹을 수 있지만 반영은 워커의 다음 판단 시점이므로(즉시 아님) 범위·판단기준은 task 에 최대한 담아 보내세요. 오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 워커 모델 등급을 지정하세요(미지정 시 기본 모델). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
     {
       task: z
         .string()
@@ -377,6 +422,87 @@ export const createWorkerMcpServer = (
     },
   );
 
+  /**
+   * 돌고 있는 워커에 지시를 얹는다 (2026-07-29).
+   *
+   * cancel_worker 와 **같은 지목 규약**을 쓴다: label 우선·job_id 보조, kind='worker' 게이트,
+   * label 매칭은 이 대화 안에서만(남의 대화 워커에 오주입 = 되돌릴 수 없다).
+   */
+  const steerWorker = tool(
+    "steer_worker",
+    "**진행 중인 백그라운드 워커에 지시를 추가로 전달**합니다. 사용자가 돌고 있는 작업에 대해 '거기에 ~도 해줘'·'~는 빼고'·'방향 바꿔' 처럼 말할 때 쓰세요(작업을 새로 띄우지 말고 이걸로). 반영은 **워커의 다음 판단 시점**에 일어납니다 — 지금 오래 걸리는 도구(빌드·대량 처리)를 실행 중이면 그게 끝난 뒤에 반영되니 즉시가 아닐 수 있습니다. 이미 끝난 워커에는 전달되지 않으며 그 사실을 알려드립니다.",
+    {
+      message: z
+        .string()
+        .min(1)
+        .describe("워커에게 전달할 지시 — 사용자 원문을 그대로 싣는 것을 권장."),
+      label: z
+        .string()
+        .optional()
+        .describe("대상 워커의 작업 이름(run_in_background 의 label). 우선 식별."),
+      job_id: z.string().optional().describe("대상 워커의 jobId. label 미지정 시 사용."),
+    },
+    async (args) => {
+      try {
+        if (
+          (args.label === undefined || args.label === "") &&
+          (args.job_id === undefined || args.job_id === "")
+        ) {
+          return errText("label 또는 job_id 중 하나로 대상 워커를 지정하세요.");
+        }
+        const scope = resolveOwnerThreadKey(parentInput.threadKey);
+        const running = listJobs({
+          runningOnly: true,
+          ...(scope !== "" ? { ownerThreadKey: scope } : {}),
+        });
+        let target: WorkerJobRecord | undefined;
+        if (args.label !== undefined && args.label !== "") {
+          target = running.find((j) => j.kind === "worker" && j.label === args.label);
+          if (target === undefined && scope !== "") {
+            const elsewhere = listJobs({ runningOnly: true }).find(
+              (j) => j.kind === "worker" && j.label === args.label,
+            );
+            if (elsewhere !== undefined) {
+              return okText(
+                `'${args.label}' 워커는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
+              );
+            }
+          }
+        }
+        if (target === undefined && args.job_id !== undefined && args.job_id !== "") {
+          const j = getJob(args.job_id);
+          if (j !== undefined && j.kind === "worker") target = j;
+        }
+        if (target === undefined) {
+          return okText(
+            `지정하신 워커를 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
+          );
+        }
+        const now = Date.now();
+        const outcome = steerJob(target.jobId, {
+          text: `[사용자 추가 지시] ${args.message}\n\n하던 작업을 이어가되 위 지시를 반영하세요.`,
+          raw: args.message,
+          ts: now,
+        });
+        if (outcome === "delivered") {
+          return okText(
+            `'${target.label}' 워커에 지시를 전달했어요. 워커의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
+          );
+        }
+        if (outcome === "closed") {
+          return okText(
+            `'${target.label}' 워커가 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
+          );
+        }
+        return okText(
+          `'${target.label}' 워커에 지시를 전달할 수 없었어요(워커 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
+        );
+      } catch (e) {
+        return errText(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
   const cancelWorker = tool(
     "cancel_worker",
     "진행 중인 백그라운드 워커를 취소합니다. label(작업 이름) 또는 job_id 중 하나로 식별하세요(label 우선). 사용자가 '그 작업 그만해/멈춰' 류로 요청할 때 사용합니다. 취소는 best-effort — 워커가 지금 도구(예: 오래 걸리는 Bash·웹요청)를 실행 중이면 그 도구가 끝나는 대로 멈춥니다(즉시는 아닐 수 있음).",
@@ -483,6 +609,6 @@ export const createWorkerMcpServer = (
   return createSdkMcpServer({
     name: "workers",
     version: "1.0.0",
-    tools: [runInBackground, listWorkers, listAllWorkers, cancelWorker],
+    tools: [runInBackground, listWorkers, listAllWorkers, steerWorker, cancelWorker],
   });
 };

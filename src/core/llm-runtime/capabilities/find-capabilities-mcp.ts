@@ -102,10 +102,10 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     tools: ["spawn_agent", "find_agents"],
   },
   workers: {
-    summary: "긴 작업을 백그라운드로 발사·조회·취소(비차단, 대시보드에 노출).",
+    summary: "긴 작업을 백그라운드로 발사·조회·**추가 지시**·취소(비차단, 대시보드에 노출).",
     whenToUse:
       "지금 응답을 끝내지 않고 오래 걸리는 작업(빌드·대량 처리 등)을 뒤에서 계속 돌리고 싶을 때.",
-    tools: ["run_in_background", "list_workers", "list_all_workers", "cancel_worker"],
+    tools: ["run_in_background", "list_workers", "list_all_workers", "steer_worker", "cancel_worker"],
   },
   endpoints: {
     summary: "커스텀 HTTP 엔드포인트 등록·조회·삭제 — 외부에서 나를 호출.",

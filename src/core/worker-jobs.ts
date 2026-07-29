@@ -27,6 +27,7 @@ import {
   pruneTerminalWorkerJobs,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
+import type { SteeringChannel, SteeringInput } from "./steering.js";
 import { runSubagentStopHooks } from "./entry/hook-runner.js";
 
 // Step 1 (2026-06-30) — 워커 lifecycle 을 EventBus 에 발행한다. 워커 활동(llm.activity,
@@ -610,6 +611,52 @@ export const setCancelHook = (jobId: string, fn: () => void): void => {
 /** jobId 의 취소 콜백 해제 — 잡 정상/throw 종료 시 호출(누수·오발화 0). 멱등. */
 export const clearCancelHook = (jobId: string): void => {
   cancelHooks.delete(jobId);
+};
+
+// ─── 워커 스티어 레지스트리 (2026-07-29) ─────────────────────────────────────
+// jobId → 그 워커 턴의 SteeringChannel. 위 cancelHooks 의 **자매**다(같은 데몬 경계, 같은
+// 생명주기: 잡 시작 시 등록 → finally 해제).
+//
+// ★왜 워커엔 원래 없었나: steering 소비층(3어댑터)은 `input.steering` 하나만 보고 채널·워커를
+//  구분하지 않는다 — 즉 배관은 처음부터 LLM-agnostic 이었다. 워커가 못 받은 이유는 단 하나,
+//  워커 runner 가 steering 을 안 넘기고 아무도 `worker:<jobId>` 키로 채널을 만들지 않아서다
+//  (채널 핸들러의 steeringChannels 는 세션 threadKey 전용). 버퍼 키 불일치가 아니라 부재.
+//
+// 그래서 여기 두는 이유: index.ts(데몬)와 worker-registry(region)가 **둘 다 이미 import 하는
+// 유일한 경계 모듈**. 취소가 cancelJob 단일 레지스트리로 수렴하듯, 스티어도 여기로 수렴한다.
+const steerChannels = new Map<string, SteeringChannel>();
+
+/** 기본 on. 문제 시 끌 수 있게 — 채널 경로의 STEERING_ENABLED 와 동형(하드 게이트 금지). */
+export const WORKER_STEERING_ENABLED = process.env.WORKER_STEERING_ENABLED !== "0";
+
+/** 워커 턴의 steering 채널 등록 — runner 가 잡 시작 시 1회. 같은 jobId 재등록은 덮어쓴다. */
+export const setSteerChannel = (jobId: string, ch: SteeringChannel): void => {
+  steerChannels.set(jobId, ch);
+};
+
+/** 해제 — 잡 종료 시(정상·실패 무관) 반드시. 멱등. */
+export const clearSteerChannel = (jobId: string): void => {
+  steerChannels.delete(jobId);
+};
+
+/**
+ * 돌고 있는 워커에 지시를 얹는다.
+ *
+ * @returns "delivered"=적재 성공(다음 model-call 경계에서 반영) /
+ *          "closed"=턴이 이미 닫힘(막 끝났다) / "absent"=그런 워커 없음·스티어 비활성.
+ *
+ * ★반영 시점은 **다음 model-call 경계**다 — 워커가 10분짜리 Bash 안이면 그때까지 대기한다
+ *  (선점 없음). 호출부가 이 사실을 사용자에게 정직하게 고지해야 한다(cancel_worker 가
+ *  "즉시는 아닐 수 있음" 을 고지하는 것과 같은 이유).
+ */
+export const steerJob = (
+  jobId: string,
+  msg: SteeringInput,
+): "delivered" | "closed" | "absent" => {
+  if (!WORKER_STEERING_ENABLED) return "absent";
+  const ch = steerChannels.get(jobId);
+  if (ch === undefined) return "absent";
+  return ch.push(msg) ? "delivered" : "closed";
 };
 
 export interface WorkerAbort {
@@ -1285,6 +1332,32 @@ const publishInterrupted = (
   } catch {
     // 관측 발행 실패는 복구를 되돌리지 않는다.
   }
+};
+
+/**
+ * 잡 소유 대화로 **raw 통지**(LLM 무경유). 워커 잔여 steer 고지처럼, 모델 턴을 새로 태우지
+ * 않고 사실만 결정적으로 전달해야 하는 곳이 쓴다 — recoverInterruptedJobs 의 중단 통지와 동형.
+ * 발송 실패는 호출부가 흡수한다(통지 실패가 워커 종료를 되돌리지 않는다).
+ */
+export const notifyJobOwner = async (
+  job: {
+    jobId: string;
+    label: string;
+    threadKey: string;
+    channel: string;
+    notifyDest?: WorkerNotifyDest;
+  },
+  text: string,
+): Promise<void> => {
+  const reply = reacquireReply(
+    destForJob({
+      channel: job.channel as ChannelName,
+      threadKey: job.threadKey,
+      notifyDest: job.notifyDest,
+    }),
+    { sessionThreadKey: notifySessionThreadKey(job.threadKey) },
+  );
+  await reply(text);
 };
 
 export const recoverInterruptedJobs = async (): Promise<void> => {

@@ -5,6 +5,7 @@
  * 진실 소스·설계 근거는 메인 파일(openai-codex-oauth.ts) 헤더 주석 참조.
  * 공개 표면은 메인 파일의 배럴 re-export 로 보존된다.
  */
+import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
@@ -420,6 +421,50 @@ const SUMMARIZE_INSTRUCTIONS =
   "핵심 결정·사실·미해결 항목·사용자 의도를 보존하고, 인사·잡담은 생략하세요. " +
   "요약 텍스트만 출력하고 머리말/메타설명은 붙이지 마세요.";
 
+/**
+ * **압축 연속 실패 추적** (2026-07-29).
+ *
+ * ★왜: 2026-07-29 사고가 **12일간 안 보인 이유**가 이것이다. 요약이 매 턴 실패했고
+ *  로그엔 매 턴 경고가 찍혔는데, **아무도 세지 않았다.** 100번 실패해도 101번째에 같은 걸
+ *  보낸다. 사용자는 "말만 하고 진행을 안 해"라는 *증상*만 겪고, 원인은 로그에 조용히 쌓였다.
+ *  크기 문제는 예산으로 닫았지만(planHistoryCompaction), **다음에 다른 이유로 실패하면
+ *  똑같이 조용할** 구조는 그대로였다. 그래서 실패 자체를 관측 대상으로 승격한다.
+ *
+ * 성공하면 0 으로 리셋 — 일시적 흔들림(429·네트워크)은 통과시키고 **고착만** 드러낸다.
+ */
+const compactionFailStreak = new Map<string, number>();
+/** 이 횟수 연속 실패하면 이벤트로 올린다(그 뒤로는 재발행하지 않는다 — 로그 폭주 방지). */
+const COMPACTION_STUCK_THRESHOLD = 3;
+
+export const noteCompactionOutcome = (
+  threadKey: string,
+  ok: boolean,
+  reason: string,
+  foldChars: number,
+): void => {
+  if (ok) {
+    compactionFailStreak.delete(threadKey);
+    return;
+  }
+  const n = (compactionFailStreak.get(threadKey) ?? 0) + 1;
+  compactionFailStreak.set(threadKey, n);
+  if (n !== COMPACTION_STUCK_THRESHOLD) return; // 임계에서 정확히 1회만.
+  console.error(
+    `[codex 6b] ★히스토리 압축이 ${n}회 연속 실패 — 대화 맥락이 계속 버려지는 중입니다 ` +
+      `(threadKey=${threadKey}, 접으려던 양=${foldChars}자, 사유=${reason}). ` +
+      `이 상태가 지속되면 비서가 하던 작업을 잊고 계획만 반복합니다.`,
+  );
+  try {
+    getEventBus().publish({
+      type: "llm.compaction_stuck",
+      ts: Date.now(),
+      payload: { threadKey, streak: n, foldChars, reason },
+    });
+  } catch {
+    // 관측 발행 실패가 턴을 무르지 않는다(원칙 3).
+  }
+};
+
 async function summarizeViaCodex(
   text: string,
   accessToken: string,
@@ -518,7 +563,7 @@ export const planHistoryCompaction = (
   }
   const candidates = unsummarizedTurns.slice(0, foldCount);
 
-  // ★한 번에 접는 양을 **바이트로 묶는다** (2026-07-29 실사고).
+  // ★한 번에 접는 양을 **글자 수로 묶는다** (2026-07-29 실사고).
   //
   //  종전엔 턴 수만 봤다. 그래서 오래 산 스레드에서 "666턴 = 2,838,563자" 를 한 번에
   //  요약하라고 보냈고(실측), 컨텍스트를 한참 넘겨 **빈 응답**이 왔다. 빈 응답이면 요약을
@@ -697,11 +742,13 @@ export const buildTurnHistory = async (
           summary,
           compactedThrough: watermark,
         });
+        noteCompactionOutcome(input.threadKey, true, "", prompt.length);
       } else {
         // 빈 요약 = 무의미 → 폴백(요약 미반영, 기존 watermark 유지). 조용히 X.
         console.warn(
           `[codex 6b] 요약 호출이 빈 결과 — oldest-drop 폴백 (threadKey=${input.threadKey})`,
         );
+        noteCompactionOutcome(input.threadKey, false, "빈 결과", prompt.length);
       }
     } catch (e) {
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
@@ -709,6 +756,7 @@ export const buildTurnHistory = async (
       console.warn(
         `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 (threadKey=${input.threadKey}): ${msg}`,
       );
+      noteCompactionOutcome(input.threadKey, false, msg, prompt.length);
     }
   }
 
@@ -816,9 +864,14 @@ const CODEX_COMPACTED_MARKER = "\u0000__codex_compacted__\u0000";
 // 하드캡(loadThreadHistory)보다 *먼저* 선제 발동(100 < 150)해 초반 맥락이 drop 되기
 // 전에 요약으로 흡수. 매 턴 재요약 X — 임계 재초과 시에만(롤링이라 비용 분할상환).
 /**
- * 한 번의 요약 호출에 넣을 **최대 문자 수**. 실측(2026-07-29): 12만 자까지는 정상 요약,
- * 280만 자는 빈 응답. 넉넉히 아래로 잡아 항상 성공하게 둔다 — 밀린 분량은 다음 턴들이
- * 이어서 접는다(진행 보장이 1회 처리량보다 중요하다).
+ * 한 번의 요약 호출에 넣을 **최대 글자 수**(UTF-16 length, 바이트 아님).
+ *
+ * ★진짜 한계는 **토큰**이지 글자가 아니다. 같은 글자 수라도 한국어는 영어의 3~4배 토큰을
+ *  먹는다(영 1토큰≈4글자, 한 1토큰≈1~1.5글자). 그래도 글자 수로 재는 이유는 **오차가 한
+ *  방향으로만 아프기 때문**이다: 크게 잡으면 요약 실패 → 영구 루프(오늘 사고), 작게 잡으면
+ *  압축이 여러 번 나뉠 뿐이다. 그래서 토크나이저 의존성을 들이는 대신 **가장 토큰을 많이
+ *  먹는 언어(한국어)로 실측하고 그보다 낮게** 잡는다.
+ *  실측(2026-07-29, 한국어): 12만 글자 정상 요약 / 280만 글자 빈 응답 → 예산 10만.
  */
 const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
   process.env.CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS,
@@ -848,6 +901,26 @@ const CODEX_SUMMARY_TURN_HEADER =
  * - cap 이하면 원본 그대로 반환 (짧은 출력 = 현행과 100% 동일, 회귀 0).
  * - head+tail 이 cap 이상이면 잘릴 게 없으므로 원본 반환 (방어).
  */
+/**
+ * 절단 허용오차 — 줄 경계가 목표 지점에서 이만큼 안쪽이면 거기로 당긴다.
+ * 넘으면 스냅을 포기한다(내용을 과하게 버리는 것보다 줄 중간 절단이 낫다).
+ */
+const LINE_SNAP_TOLERANCE = 2_000;
+
+/** head 를 마지막 개행에서 끊는다(허용오차 안일 때만). */
+const snapHeadToLine = (text: string, headChars: number): string => {
+  const raw = text.slice(0, headChars);
+  const nl = raw.lastIndexOf("\n");
+  return nl >= 0 && headChars - nl <= LINE_SNAP_TOLERANCE ? raw.slice(0, nl) : raw;
+};
+
+/** tail 을 첫 개행 다음에서 시작한다(허용오차 안일 때만). */
+const snapTailToLine = (text: string, tailChars: number): string => {
+  const raw = text.slice(text.length - tailChars);
+  const nl = raw.indexOf("\n");
+  return nl >= 0 && nl + 1 <= LINE_SNAP_TOLERANCE ? raw.slice(nl + 1) : raw;
+};
+
 export const capToolOutputForEntry = (
   output: string,
   opts?: { cap?: number; headChars?: number; tailChars?: number },
@@ -861,8 +934,12 @@ export const capToolOutputForEntry = (
   const omitted = output.length - headChars - tailChars;
   // 경계에서 surrogate pair(이모지 등)가 쪼개지면 lone surrogate(깨진 글자)가 남는다.
   // head 끝의 lone high-surrogate, tail 앞의 lone low-surrogate 만 제거(최대 1 code unit).
-  const head = output.slice(0, headChars).replace(/[\uD800-\uDBFF]$/, "");
-  const tail = output.slice(output.length - tailChars).replace(/^[\uDC00-\uDFFF]/, "");
+  // ★가능하면 **줄 경계**에서 끊는다 (2026-07-29 사용자 제안). 글자 수로만 자르면 JSON·로그가
+  //  줄 한복판에서 끊겨 모델이 조각을 오해한다("…"key": "va" 처럼). 다만 **될 만할 때만** —
+  //  한 줄이 통째로 거대하면(미니파이 JSON 등) 스냅할 자리가 없으므로, 경계가 허용오차 안에
+  //  있을 때만 당기고 아니면 종전대로 글자 수로 자른다(내용을 더 버리지 않는다).
+  const head = snapHeadToLine(output, headChars).replace(/[\uD800-\uDBFF]$/, "");
+  const tail = snapTailToLine(output, tailChars).replace(/^[\uDC00-\uDFFF]/, "");
   return (
     `${head}\n…[중략 ${omitted}자 — 전체 출력이 잘렸습니다. ` +
     `특정 부분이 필요하면 Read offset/limit 또는 Grep 으로 좁혀 재요청하세요.]…\n` +

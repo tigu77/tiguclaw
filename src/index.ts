@@ -42,7 +42,7 @@ import {
   type SteeringInput,
 } from "./core/steering.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
-import { appVersion } from "./core/version.js";
+import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
   addMemory,
@@ -1256,7 +1256,9 @@ const handler: MessageHandler = async (msg) => {
           process.env.TIGUCLAW_RUNTIME === "source" ? "source" : "built";
         const lines = [
           "🐂 tiguclaw 상태",
-          `─ 버전: v${appVersion()} (${runtimeMode})`,
+          // 빌드 식별자 — "업데이트를 받았나" 를 한 줄로 가르는 유일한 수단(버전은 마일스톤
+          // 에서만 오르므로 같은 v0.15.0 이 30커밋 차이일 수 있다).
+          `─ 버전: v${appVersion()} (${runtimeMode})${appBuildId() !== "" ? ` · 빌드 ${appBuildId()}` : ""}`,
           `─ 업타임: ${uptime}`,
           `─ 이번 대화: ${convo}`,
         ];

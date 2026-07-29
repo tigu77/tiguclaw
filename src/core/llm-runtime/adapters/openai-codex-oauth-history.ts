@@ -5,6 +5,7 @@
  * 진실 소스·설계 근거는 메인 파일(openai-codex-oauth.ts) 헤더 주석 참조.
  * 공개 표면은 메인 파일의 배럴 re-export 로 보존된다.
  */
+import type { ChannelName } from "../../../channels/types.js";
 import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
@@ -693,6 +694,80 @@ export const buildSteeringInputItem = async (
  *
  * 첫 turn(매핑 0)·짧은 thread(임계 미만) = 요약 0 + 현행과 동일 입력(회귀 0).
  */
+/**
+ * **지금 즉시 압축** — `/compact` 명령이 부른다. 자동 압축(임계 초과 시)과 같은 경로·같은
+ * 규칙을 쓰되 트리거만 건너뛴다. ★최근 턴은 그대로 둔다(keepRecent 유지) — 사용자가
+ * "당연히 최근 건 압축하지 말고" 라고 한 그 규칙이 자동/수동 양쪽에 동일하게 적용된다.
+ */
+/**
+ * 압축 진단 한 줄 — **로그만으로 원인을 좁힐 수 있게** 수치를 싣는다 (2026-07-29).
+ *
+ * ★왜: 회사 인스턴스처럼 **붙어서 DB 를 볼 수 없는 곳**이 있다. 오늘 그 로그로 진단했는데
+ *  "요약 호출이 빈 결과" 는 방향만 알려줬고 **얼마나 큰지가 없어** dev DB 를 봐야 280만 자를
+ *  알았다. 로그가 유일한 창구인 인스턴스에선 거기서 막힌다. 그래서 판정에 필요한 수치
+ *  (접은 턴/글자·남은 미요약·watermark)를 성공·실패 양쪽에 남긴다.
+ */
+const compactionDiag = (
+  threadKey: string,
+  plan: { toFold: unknown[]; nextWatermark: number },
+  promptChars: number,
+  totalTurns: number,
+  watermark: number,
+): string =>
+  `threadKey=${threadKey} fold=${plan.toFold.length}턴/${promptChars}자 ` +
+  `watermark=${watermark}→${plan.nextWatermark} 전체=${totalTurns}턴`;
+
+export const compactThreadNow = async (
+  channel: ChannelName,
+  threadKey: string,
+  model: string,
+  accessToken: string,
+  accountId: string | undefined,
+): Promise<
+  | { ok: true; foldedTurns: number; foldedChars: number; summaryChars: number }
+  | { ok: false; reason: string }
+> => {
+  const allTurns = loadThreadHistoryWithIds(channel, threadKey);
+  if (allTurns.length === 0) return { ok: false, reason: "이 대화엔 아직 기록이 없습니다." };
+  const existing = getThreadSummary(threadKey);
+  const watermark = existing?.compactedThrough ?? 0;
+  const prior = existing?.summary ?? "";
+  const unsummarized = allTurns.filter((t) => t.id > watermark);
+  // triggerTurns 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
+  const plan = planHistoryCompaction(unsummarized, watermark, { triggerTurns: 0 });
+  if (!plan.needed || plan.toFold.length === 0) {
+    return { ok: false, reason: "압축할 만큼 오래된 대화가 없습니다(최근 대화는 원문 유지)." };
+  }
+  const folded = plan.toFold
+    .map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`)
+    .join("\n");
+  const prompt =
+    prior === "" ? folded : `[기존 요약]\n${prior}\n\n[이어지는 대화]\n${folded}`;
+  try {
+    const fresh = await summarizeViaCodex(prompt, accessToken, accountId, model);
+    if (fresh.trim() === "") {
+      noteCompactionOutcome(threadKey, false, "빈 결과(수동)", prompt.length);
+      return { ok: false, reason: "요약 결과가 비어 압축하지 못했습니다." };
+    }
+    upsertThreadSummary({
+      threadKey,
+      summary: fresh.trim(),
+      compactedThrough: plan.nextWatermark,
+    });
+    noteCompactionOutcome(threadKey, true, "", prompt.length);
+    return {
+      ok: true,
+      foldedTurns: plan.toFold.length,
+      foldedChars: prompt.length,
+      summaryChars: fresh.trim().length,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    noteCompactionOutcome(threadKey, false, msg, prompt.length);
+    return { ok: false, reason: msg };
+  }
+};
+
 export const buildTurnHistory = async (
   input: RegionASdkInput,
   currentPromptWithMemory: string,
@@ -742,11 +817,33 @@ export const buildTurnHistory = async (
           summary,
           compactedThrough: watermark,
         });
+        console.log(
+          `[codex 6b] 압축 성공 — ${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} 요약=${summary.length}자`,
+        );
         noteCompactionOutcome(input.threadKey, true, "", prompt.length);
+        // ★압축 사실을 알린다 (2026-07-29). 종전엔 **성공해도 아무도 몰랐다** — 실패만
+        //  로그에 남았다. 대화가 길어져 옛 내용이 요약으로 바뀌는 건 사용자가 알아야 할
+        //  상태 변화다(클로드코드가 압축을 표시하는 것과 같은 이유). 임계 초과 시에만
+        //  일어나므로 매 턴 뜨지 않는다.
+        try {
+          getEventBus().publish({
+            type: "llm.compacted",
+            ts: Date.now(),
+            payload: {
+              threadKey: input.threadKey,
+              foldedTurns: plan.toFold.length,
+              foldedChars: prompt.length,
+              summaryChars: summary.length,
+            },
+          });
+        } catch {
+          /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+        }
       } else {
         // 빈 요약 = 무의미 → 폴백(요약 미반영, 기존 watermark 유지). 조용히 X.
         console.warn(
-          `[codex 6b] 요약 호출이 빈 결과 — oldest-drop 폴백 (threadKey=${input.threadKey})`,
+          `[codex 6b] 요약 호출이 빈 결과 — oldest-drop 폴백 ` +
+            `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)})`,
         );
         noteCompactionOutcome(input.threadKey, false, "빈 결과", prompt.length);
       }
@@ -754,7 +851,8 @@ export const buildTurnHistory = async (
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(
-        `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 (threadKey=${input.threadKey}): ${msg}`,
+        `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 ` +
+          `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}`,
       );
       noteCompactionOutcome(input.threadKey, false, msg, prompt.length);
     }

@@ -136,6 +136,10 @@ export * from "./openai-codex-oauth-history.js";
 
 const CODEX_DEFAULT_MODEL = "gpt-5.5";
 
+/** codex 모델 해석 — 턴 밖(예: /compact)에서도 같은 규칙을 쓰도록 단일화(상수 중복 0). */
+export const resolveCodexModel = (explicit?: string): string =>
+  explicit ?? process.env.OPENAI_CODEX_MODEL ?? CODEX_DEFAULT_MODEL;
+
 // fetch 전송 견고성 parity — claude/openai 어댑터는 SDK 내장 retry 가 있으나
 // codex 는 raw fetch → transient 전송 실패(undici throw)·일시 backend 에러를
 // 흡수해 불필요한 풀 폴백을 줄인다. transient 만 재시도(4xx 429 제외는 즉시 throw).

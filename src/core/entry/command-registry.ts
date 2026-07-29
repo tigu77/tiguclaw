@@ -53,6 +53,7 @@ export interface BuiltinCommand {
 export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "reset", description: "대화 컨텍스트 초기화" },
   { name: "clear", description: "대화 컨텍스트 초기화 (/reset 별칭)" },
+  { name: "compact", description: "대화 압축 — 오래된 대화를 요약으로 접는다(최근 대화는 원문 유지)" },
   { name: "memo", description: "메모리 추가" },
   { name: "forget", description: "메모리 삭제" },
   { name: "memos", description: "메모리 목록 조회" },

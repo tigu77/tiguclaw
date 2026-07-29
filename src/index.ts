@@ -1159,6 +1159,45 @@ const handler: MessageHandler = async (msg) => {
     // ── /cooldown — 백엔드 쿨다운 조회·해제 (2026-07-28) ─────────────────────────
     // 쿨다운은 "호출 성공 시" 풀리는데 쿨다운 중엔 그 백엔드를 안 부르므로 스스로는 안 풀린다.
     // 재인증·요금제 변경처럼 **전제가 바뀐 경우**를 위한 명시적 해제 수단(LLM 미경유).
+    // 수동 압축 (2026-07-29) — /reset 이 "다 버림"이면 이건 "요약해서 보존".
+    // 자동 압축과 같은 경로·같은 규칙(최근 턴은 안 접는다). codex 히스토리 전용 —
+    // claude/openai 는 SDK 가 자기 컨텍스트를 관리하므로 대상이 아니다(정직 고지).
+    if (cmd === "/compact") {
+      const { compactThreadNow } = await import(
+        "./core/llm-runtime/adapters/openai-codex-oauth-history.js"
+      );
+      const { resolveCodexModel } = await import(
+        "./core/llm-runtime/adapters/openai-codex-oauth.js"
+      );
+      const { ensureFreshAccessToken, extractAccountId } = await import(
+        "./core/llm-runtime/adapters/openai-codex-oauth-auth.js"
+      );
+      try {
+        const token = await ensureFreshAccessToken();
+        const r = await compactThreadNow(
+          msg.channel,
+          msg.threadKey,
+          resolveCodexModel(),
+          token,
+          extractAccountId(token),
+        );
+        await replyCommand(
+          msg,
+          r.ok
+            ? `🗜 압축했습니다 — 이전 ${r.foldedTurns}턴을 요약으로 접었습니다 ` +
+              `(${r.foldedChars.toLocaleString()}자 → ${r.summaryChars.toLocaleString()}자).\n` +
+              `최근 대화는 원문 그대로 유지됩니다.`
+            : `압축하지 않았습니다 — ${r.reason}`,
+        );
+      } catch (e) {
+        await replyCommand(
+          msg,
+          `압축 실패: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return;
+    }
+
     if (cmd === "/cooldown") {
       const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
       const target = args.trim().slice(sub.length).trim();

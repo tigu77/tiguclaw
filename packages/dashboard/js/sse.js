@@ -18,6 +18,22 @@
         );
       };
 
+      // 대화 압축 통지 (2026-07-29) — 옛 대화가 요약으로 바뀐 상태 변화를 사용자에게 알린다.
+      // 임계 초과 시에만 발생하므로 매 턴 뜨지 않는다. 자기 세션에만(멀티세션 누수 0).
+      const renderCompacted = (p, evTs) => {
+        const tk = p.threadKey;
+        if (isEndpointThread(tk)) return;
+        if (!isActiveThread(tk)) return;
+        const turns = Number(p.foldedTurns) || 0;
+        const from = Number(p.foldedChars) || 0;
+        const to = Number(p.summaryChars) || 0;
+        renderLocalChat(
+          "info",
+          `🗜 대화가 길어져 이전 ${turns}턴을 요약으로 압축했습니다 (${from.toLocaleString()}자 → ${to.toLocaleString()}자). 최근 대화는 원문 그대로 유지됩니다.`,
+          { ts: evTs, key: "compacted|" + (tk || "") + "|" + evTs },
+        );
+      };
+
       const renderEvent = (ev) => {
         // 전송 계층 하트비트(2026-07-26) — EventBus 이벤트가 아니라 SSE liveness 신호.
         // 수신 시각 갱신은 호출자(connectStream)가 이미 했으므로 여기선 **렌더 0**으로 즉시 반환
@@ -251,6 +267,10 @@
               { ts: ev.ts, key: "self-growth|" + (p.memoryName || "") },
             );
           }
+          return;
+        }
+        if (ev.type === "llm.compacted") {
+          renderCompacted(ev.payload || {}, ev.ts);
           return;
         }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {

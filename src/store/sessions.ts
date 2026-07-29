@@ -304,7 +304,7 @@ export const initStore = (): void => {
     !/UPDATE\s+OF/i.test(memAuSql.sql)
   ) {
     handle.exec(`
-      DROP TRIGGER memories_au;
+      DROP TRIGGER IF EXISTS memories_au;
       CREATE TRIGGER memories_au
         AFTER UPDATE OF name, description, body ON memories BEGIN
         INSERT INTO memories_fts(memories_fts, rowid, name, description, body)
@@ -706,6 +706,19 @@ export const initStore = (): void => {
       until_ts INTEGER NOT NULL
     );
   `);
+  // ─── 세션 보관 (2026-07-29) ────────────────────────────────────────────────
+  // 사용자가 세션을 "제거" 하면 **숨기되 기록은 남긴다**(사용자 확정). 삭제는 되돌릴 수
+  // 없고 "콜드 레코드는 안 지운다" 원칙과 충돌한다 — 화면에서 사라지는 결과는 동일하다.
+  // memories.archived_at 선례와 동형(멱등 ALTER).
+  {
+    const cols = handle
+      .prepare(`PRAGMA table_info(threads)`)
+      .all() as ColumnInfoRow[];
+    if (!cols.some((c) => c.name === "archived_at")) {
+      handle.exec(`ALTER TABLE threads ADD COLUMN archived_at INTEGER`);
+    }
+  }
+
   // ─── 쿨다운 주기 탐침 (2026-07-28) ─────────────────────────────────────────
   // 백엔드가 알려주는 해제 시각은 **힌트지 사실이 아니다** — codex 는 그 날짜보다 일찍
   // 풀리는 경우가 관측됐다(사용자 실측). 그래서 긴 쿨다운은 몇 시간에 한 번 실제로
@@ -1049,6 +1062,10 @@ export const listThreads = (opts?: {
   excludeInternal?: boolean;
   /** 프로브·검증 흔적(무명 + 왕복 1회 이하) 제외 — 사용자에게 보이는 세션 목록용. */
   excludeProbes?: boolean;
+  /** 보관된 세션만 (기본: 보관 안 된 것만). 복원 UI 용. */
+  onlyArchived?: boolean;
+  /** 보관 포함(진단용). onlyArchived 가 우선. */
+  includeArchived?: boolean;
   limit?: number;
 }): ThreadSummary[] => {
   const handle = requireDb("listThreads");
@@ -1065,6 +1082,12 @@ export const listThreads = (opts?: {
     }
     conds.push("channel_thread_id NOT LIKE ? ESCAPE '\\'");
     params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
+  }
+  // 보관 필터 — 기본은 "보관 안 된 것만"(사용자 목록). 삭제가 아니라 숨김이므로 행은 남는다.
+  if (opts?.onlyArchived === true) {
+    conds.push("archived_at IS NOT NULL");
+  } else if (opts?.includeArchived !== true) {
+    conds.push("archived_at IS NULL");
   }
   // ★프로브·검증 흔적 제외 (2026-07-28) — "대화가 아닌 것" 을 거른다.
   //  실측(dev 12건): 찌꺼기는 전부 **이름 없음 + 메시지 2건**(왕복 1회) 이었다
@@ -1114,6 +1137,18 @@ export const listThreads = (opts?: {
  * threadKey 로만 매칭(channel 무시) = 단일인격. UPDATE-only(행 없으면 no-op).
  * @returns 갱신된 행 수(0 = 아직 백엔드 세션 없음, 호출부 graceful).
  */
+/**
+ * 세션 보관/복원 — `archived_at` 만 바꾼다. **삭제가 아니다**(대화 기록·transcripts 무손상).
+ * @param at null 이면 복원.
+ * @returns 바뀐 행 수(0 = 그런 세션 없음).
+ */
+export const setThreadArchived = (threadKey: string, at: number | null): number => {
+  const handle = requireDb("setThreadArchived");
+  return handle
+    .prepare(`UPDATE threads SET archived_at = ? WHERE channel_thread_id = ?`)
+    .run(at, threadKey).changes;
+};
+
 export const setThreadName = (threadKey: string, name: string | null): number => {
   const handle = requireDb("setThreadName");
   const norm = name === null ? null : name.trim() === "" ? null : name.trim().slice(0, 60);
@@ -1262,6 +1297,13 @@ export const deleteSession = (
       `DELETE FROM session_model_override WHERE channel = ? AND thread_key = ?`,
     )
     .run(channel, threadKey);
+  // ★그 세션을 가리키던 채널 바인딩도 함께 푼다 (2026-07-29 검토 실측). 안 그러면
+  //  삭제된 id 로 인입이 계속되고, 다음 턴의 saveSession 이 **이름 없는 행으로 부활**시킨다
+  //  → 목록 필터(무명+왕복1회=프로브)에 걸려 사용자 눈에서도 사라진다. 세 결함이 연쇄한다.
+  //  같은 파일 안이라 직접 실행(store→store, 순환 없음).
+  handle
+    .prepare(`DELETE FROM channel_session_binding WHERE session_id = ?`)
+    .run(threadKey);
   return result.changes > 0;
 };
 

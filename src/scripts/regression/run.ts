@@ -15,6 +15,10 @@ import type { RegressionCheck } from "./_framework.js";
 
 const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-"));
 process.env.TIGUCLAW_HOME = home;
+// ★DATA_DIR 은 TIGUCLAW_HOME 보다 우선이다(store/sessions.ts resolveDataDir) — 안 지우면
+//  그 환경에서 검사가 **라이브 DB** 를 친다(실제로 삭제 문을 쓰는 검사가 있다). 격리는
+//  "홈만 바꿨다" 로는 부족하다.
+delete process.env.DATA_DIR;
 // 실수로 라이브 채널이 뜨지 않게(부팅 경로를 안 타지만 방어).
 process.env.TELEGRAM_BOT_TOKEN = "";
 
@@ -32,6 +36,7 @@ const main = async (): Promise<void> => {
     (await import("./timeout-layering.js")).check,
     (await import("./channel-session-binding.js")).check,
     (await import("./cooldown-probe.js")).check,
+    (await import("./live-jobs-context.js")).check,
   ];
 
   let failed = 0;

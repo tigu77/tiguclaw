@@ -29,6 +29,24 @@ export interface RegressionCheck {
   run: () => Promise<Assertion[]>;
 }
 
+/**
+ * 격리 확인 — 러너를 거치지 않고 개별 체크를 직접 import 하면 **라이브 홈/DB** 를 친다.
+ * (실측: 한 검사가 실제 codex 쿨다운 행을 지웠다.) 러너가 임시 홈을 잡았는지 확인하고,
+ * 아니면 즉시 던진다 — 조용히 라이브를 만지는 것보다 요란하게 실패하는 게 낫다.
+ */
+export const assertIsolated = (): void => {
+  const home = process.env.TIGUCLAW_HOME ?? "";
+  if (!/tiguclaw-regression-/.test(home)) {
+    throw new Error(
+      `회귀 검사는 격리된 임시 홈에서만 돈다 — 지금 TIGUCLAW_HOME=${home || "(미설정)"}. ` +
+        "`npm run test:regression` 으로 실행하세요.",
+    );
+  }
+  if (process.env.DATA_DIR !== undefined) {
+    throw new Error("DATA_DIR 이 설정돼 있으면 격리가 깨진다 — 러너가 지운다.");
+  }
+};
+
 export const assert = (name: string, ok: boolean, got: unknown): Assertion => ({
   name,
   ok,

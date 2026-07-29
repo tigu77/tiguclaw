@@ -62,7 +62,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "restart", description: "데몬 재시작" },
   { name: "update", description: "tiguclaw 최신으로 업데이트" },
   { name: "cooldown", description: "백엔드 쿨다운 조회·해제(재인증·한도 회복 시)" },
-  { name: "sessions", description: "이 대화방을 어느 세션에 묶을지 선택(목록·전환·새로 만들기)" },
+  { name: "sessions", description: "세션 선택·생성·보관(목록·전환·new·archive)" },
   { name: "model", description: "세션 메인 모델 선택/조회" },
   { name: "models", description: "모델 프로파일 목록 표시" },
   { name: "schedule", description: "스케줄 관리(목록·삭제·활성·비활성)" },

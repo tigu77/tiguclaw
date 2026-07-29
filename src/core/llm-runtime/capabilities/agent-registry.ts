@@ -365,7 +365,7 @@ export const createSpawnAgentMcpServer = (
       // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=워커만) 자동 충족.
       // 자식 실행 threadKey = `agent:<jobId>` → 활동(llm.activity)이 그 좌표로 흘러
       // 대시보드가 워커(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
-      const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError } =
+      const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS } =
         await import("../../worker-jobs.js");
       let jobId: string | undefined;
       let abort: ReturnType<typeof createJobAbort> | undefined;
@@ -412,7 +412,10 @@ export const createSpawnAgentMcpServer = (
         // 취소용 abort 핸들 (U-I4 개정, 2026-07-17) — 백그라운드 잡 카드 중지 버튼이 이
         // jobId 로 cancelJob() 을 부르면 signal 이 abort 돼 runRegionA 가 reject 한다.
         // timeoutMs 생략 = cancel-only(자동 타임아웃 없음 — 부모 턴 종속). 워커는 timeoutMs 지정.
-        abort = createJobAbort(jobId);
+        // ★자체 상한을 준다 (2026-07-29 검토). 종전엔 cancel-only 라 멈춘 서브에이전트가
+        //  부모 턴을 브리지 천장까지 잡았다. 안쪽(이 상한)이 바깥(천장=상한+5분)보다 먼저
+        //  끝나야 "무엇이 왜 끝났는지" 가 정확히 남는다 — 경계 순서 불변식의 안쪽 축.
+        abort = createJobAbort(jobId, { timeoutMs: SUBAGENT_TIMEOUT_MS });
 
         // lean 신호 — agent.md frontmatter 정규화 (2026-06-15). 어댑터 무관 중립 신호.
         //  - toolPolicy: tools: none → {mode:"none"} / 콤마 리스트 → allow / 미지정 → undefined.

@@ -140,6 +140,9 @@
           // 멀티세션(B계층) — 채팅 스트림 DOM(스폰 칩 포함)은 active 세션만. 세션 A 스폰 칩이 B 에
           // 새지 않음(§3.3 교차 누수 0 — 스폰 스텝의 부모 threadKey 가 곧 그 세션이므로 자연 격리).
           if (!isActiveThread(ap.threadKey)) return;
+          // ★이력 로드 창 보류 (2026-07-29 검토) — 메시지에만 걸려 있어 활동은 빈 리스트에
+          //  그대로 붙었다(05d2f46 이 고친 것과 같은 버그가 이 경로에 남아 있었다).
+          if (holdSseEventDuringHistory(ev)) return;
           // ★재연결 replay 순서 보호 (2026-07-28 검수) — dedup(renderedActivityKeys)이
           //  중복은 막지만 **순서**는 안 본다. 이력 페이지에 없던 옛 활동이 replay 로 오면
           //  최신 대화 아래에 도구 스텝이 붙는다(메시지·선택지에서 고친 것과 같은 부류).
@@ -176,6 +179,7 @@
           //  메시지 경로가 이미 쓰는 두 가드를 그대로 적용한다: 같은 이벤트는 한 번만,
           //  그리고 이미 지나간 것은 바닥에 붙이지 않는다.
           //  ★진행 중 질문은 살린다 — 최신이면 stale 이 아니므로 재연결해도 버튼이 남는다.
+          if (holdSseEventDuringHistory(ev)) return; // 이력 창 보류(2026-07-29).
           const okey = `${ev.ts}|${ptk || ""}`;
           if (renderedPromptOptionKeys.has(okey)) return;
           if (vtIsStaleForAppend(ev.ts)) {
@@ -288,11 +292,20 @@
        *  만든 줄(전송 실패·안내 등 로컬 발생)은 언제나 지금이므로 안 줘도 된다.
        *  가드는 채팅 메시지와 동일: 같은 이벤트는 한 번만, 지나간 것은 바닥에 안 붙인다.
        */
-      const renderedNoticeKeys = new Set();
       const renderLocalChat = (kind, text, opts) => {
         const evTs =
           opts && typeof opts.ts === "number" && Number.isFinite(opts.ts) ? opts.ts : null;
         if (evTs !== null) {
+          // 이력 로드 창이면 통지도 보류한다(2026-07-29 검토) — 빈 리스트에선 아래 stale
+          // 가드가 꺼지므로 옛 경고가 "방금 온 것" 처럼 붙는다. 이력 렌더 후 다시 흘린다.
+          if (
+            holdSseEventDuringHistory({
+              ts: evTs,
+              __render: () => renderLocalChat(kind, text, opts),
+            })
+          ) {
+            return;
+          }
           const nkey = `${(opts && opts.key) || kind}|${evTs}`;
           if (renderedNoticeKeys.has(nkey)) return; // replay 중복.
           if (vtIsStaleForAppend(evTs)) {

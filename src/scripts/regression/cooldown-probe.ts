@@ -16,7 +16,7 @@ import {
 } from "../../core/llm-runtime/index.js";
 import { saveCooldown, markCooldownProbe } from "../../store/cooldowns.js";
 import { getDb } from "../../store/sessions.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const PROBE_MS = 2 * 60 * 60_000; // 기본 탐침 간격(구현 기본값과 동일 가정 — 어긋나면 아래가 잡는다).
 
@@ -24,6 +24,7 @@ export const check: RegressionCheck = {
   name: "cooldown-probe",
   guards: "재인증해도 안 풀리던 자기 잠금 + 백엔드 해제시각을 사실로 믿어 백엔드를 놀리던 것",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // 라이브 DB 접촉 차단(러너 밖 실행 방지).
     const spec = parseModelSpec("codex:gpt-5.5");
     if (spec === null) return [assert("spec 파싱", false, "codex:gpt-5.5 파싱 실패")];
     const key = spec.provider ?? spec.adapter;

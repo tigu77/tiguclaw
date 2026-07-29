@@ -78,12 +78,18 @@ export default class CliChannel implements Channel {
       // resolveSessionId 로 sessionId 를 구해 threadKey 에 세팅(직렬 큐/`/stop` 정합)하고,
       // session:{}(셀렉터·주소 없음) 을 실어 route 가 canonical (http-bridge, DEFAULT) 로
       // 세션-정체성을 정규화하게 한다 → 텔레그램/대시보드 기본 세션과 한 대화로 합류.
-      const sessionId = resolveSessionId("cli");
+      // ★대화방 주소 부여 (2026-07-29) — CLI 는 터미널 하나가 곧 한 대화방이다. 종전엔
+      //  주소가 없어 `/sessions` 가 "주소 없음" 으로 끝났는데, 명령 설명·안내문은 "텔레그램·
+      //  **CLI**용" 이라고 광고하고 있었다(검토 지적). 고정 주소를 줘서 광고와 실제를 맞춘다.
+      //  bindings 조회 키가 되므로 세션 선택이 재시작 뒤에도 유지된다(텔레그램과 동형).
+      const CLI_ADDRESS = "local";
+      const sessionId = resolveSessionId("cli", CLI_ADDRESS);
       const msg: IncomingMessage = {
         channel: "cli",
         channelUserId: "local",
         threadKey: sessionId,
-        session: {},
+        channelAddress: CLI_ADDRESS,
+        session: { channelAddress: CLI_ADDRESS },
         text,
         receivedAt: Date.now(),
         reply,

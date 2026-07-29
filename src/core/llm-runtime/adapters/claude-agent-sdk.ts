@@ -116,6 +116,22 @@ import {
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
+import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
+
+// ★claude 도구 천장 (2026-07-29 검토) — SDK 는 `MCP_TOOL_TIMEOUT` 미설정 시 1e8ms
+//  (27.8시간, SDK 주석도 "effectively infinite")를 쓴다. codex/openai 는 브리지에서
+//  11분(잡 소유 125분) 천장을 받는데 claude 만 사실상 무한 = 어댑터 비대칭.
+//  ★11분으로 맞추면 안 된다 — claude 의 Task(서브에이전트)는 **잡 소유 도구**라
+//   그렇게 조이면 codex 에서 고친 "정상 진행 중인 작업을 바깥이 자른다" 를 claude 에
+//   그대로 심는다. SDK env 는 도구별이 아니라 프로세스 전역이므로, 안전한 쪽인
+//   **잡 소유 천장**에 맞춘다(바깥은 느슨하게 — 경계 순서 원칙).
+//  사용자가 명시 설정했으면 존중한다(미설정일 때만).
+if (
+  process.env.MCP_TOOL_TIMEOUT === undefined ||
+  process.env.MCP_TOOL_TIMEOUT.trim() === ""
+) {
+  process.env.MCP_TOOL_TIMEOUT = String(JOB_OWNING_TOOL_CALL_TIMEOUT_MS());
+}
 import type {
   RegionAActivityPayload,
   RegionASdkInput,

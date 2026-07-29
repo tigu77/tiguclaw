@@ -18,9 +18,10 @@ import {
   getChannelSessionBinding,
   setChannelSessionBinding,
   clearChannelSessionBinding,
+  clearBindingsForSession,
 } from "../../store/channel-session.js";
-import { listThreads, getDb } from "../../store/sessions.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { listThreads, getDb, setThreadArchived, deleteSession } from "../../store/sessions.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CH = "telegram";
 const DM = "chat-dm-1";
@@ -32,6 +33,7 @@ export const check: RegressionCheck = {
   name: "channel-session-binding",
   guards: "셀렉터 없는 채널의 세션 고정 — 바인딩 무시/역전 시 대화가 엉뚱한 세션에 쌓임",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // 라이브 DB 접촉 차단(러너 밖 실행 방지).
     // 부팅(index.ts)이 하는 등록을 여기서도 한다 — 미등록이면 바인딩이 **조용히 무시**되므로
     // 그 상태를 통과로 오판하지 않게 등록 후/전을 모두 확인한다.
     setChannelSessionBindingLookup(null);
@@ -111,7 +113,55 @@ export const check: RegressionCheck = {
         `포함=${listed.includes("probe:regression-named")}`,
       ),
     );
+    // ── 세션 보관 (2026-07-29) — 삭제가 아니라 숨김. 기록은 남아야 한다.
+    const AK = "probe:regression-named";
+    setThreadArchived(AK, Date.now());
+    const afterArchive = listThreads({ excludeInternal: true, excludeProbes: true, limit: 200 })
+      .map((t) => t.threadKey);
+    const msgsKept = (
+      getDb().prepare(`SELECT count(*) n FROM chat_log WHERE thread_key = ?`).get(AK) as { n: number }
+    ).n;
+    out.push(assert("보관하면 목록에서 빠진다", !afterArchive.includes(AK), `포함=${afterArchive.includes(AK)}`));
+    out.push(assert("★보관은 삭제가 아니다 — 대화 기록 보존", msgsKept > 0, `메시지 ${msgsKept}건`));
+    const archivedOnly = listThreads({ excludeInternal: true, onlyArchived: true, limit: 200 })
+      .map((t) => t.threadKey);
+    out.push(assert("보관 목록에서는 보인다(복원 가능)", archivedOnly.includes(AK), `${archivedOnly.length}건`));
+    setThreadArchived(AK, null);
+    const afterRestore = listThreads({ excludeInternal: true, excludeProbes: true, limit: 200 })
+      .map((t) => t.threadKey);
+    out.push(assert("복원하면 목록에 다시 나온다", afterRestore.includes(AK), `포함=${afterRestore.includes(AK)}`));
+
+    // ── 2026-07-29 검토 반영 — 배포된 /sessions 의 실기능 결함들 ──────────────
+    // ① 보관하면 **모든 방**의 바인딩이 풀려야 한다(명령 보낸 방 하나가 아니라).
+    const R1 = "probe:regression-multi";
+    ins.run(R1, now, now, "여러방세션");
+    setChannelSessionBinding("telegram", "roomA", R1);
+    setChannelSessionBinding("telegram", "roomB", R1);
+    setThreadArchived(R1, Date.now());
+    const freed = clearBindingsForSession(R1);
+    out.push(
+      assert(
+        "보관 시 그 세션을 가리키던 모든 방이 풀린다",
+        freed === 2 && resolveSessionId("telegram", "roomB") === DEFAULT_SESSION_ID,
+        `해제 ${freed}곳 / roomB=${resolveSessionId("telegram", "roomB")}`,
+      ),
+    );
+
+    // ② 세션 삭제(/reset)도 바인딩을 지워야 한다 — 안 지우면 삭제된 id 로 계속 인입된다.
+    const R2 = "probe:regression-deleted";
+    ins.run(R2, now, now, "지울세션");
+    setChannelSessionBinding("telegram", "roomC", R2);
+    deleteSession("http-bridge", R2);
+    out.push(
+      assert(
+        "세션 삭제 시 바인딩도 사라진다(유령 인입 차단)",
+        resolveSessionId("telegram", "roomC") === DEFAULT_SESSION_ID,
+        resolveSessionId("telegram", "roomC"),
+      ),
+    );
+
     db.prepare(`DELETE FROM threads WHERE channel_thread_id LIKE 'probe:regression-%'`).run();
+    db.prepare(`DELETE FROM channel_session_binding WHERE channel='telegram' AND channel_address IN ('roomA','roomB','roomC')`).run();
     db.prepare(`DELETE FROM chat_log WHERE thread_key LIKE 'probe:regression-%'`).run();
     return out;
   },

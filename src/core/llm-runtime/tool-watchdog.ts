@@ -18,11 +18,19 @@ const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 };
 
-/** 기본 임계. 구 이름(CODEX_*)도 계속 읽는다 — 이미 설정해 둔 사용자를 깨지 않는다. */
-const TOOL_SLOW_WARN_MS = parsePosIntEnv(
-  process.env.TOOL_SLOW_WARN_MS ?? process.env.CODEX_TOOL_SLOW_WARN_MS,
-  180_000,
-);
+/**
+ * 기본 임계. 구 이름(CODEX_*)도 계속 읽는다 — 이미 설정해 둔 사용자를 깨지 않는다.
+ *
+ * ★모듈 로드 시점이 아니라 **호출 시점**에 읽는다 (2026-07-29). 상수로 굳히면 (a) 설정을
+ *  바꿔도 재시작 전엔 안 먹고 (b) 회귀 검사가 짧은 임계로 **실제 발화**를 확인할 수 없다.
+ *  실제로 그래서 tool-watchdog-parity 가 상수 비교만 하는 vacuous 검사였다(변이 테스트에서
+ *  watchToolStart 를 통째로 no-op 으로 만들어도 46건 전부 초록). env 파싱은 마이크로초.
+ */
+const toolSlowWarnDefaultMs = (): number =>
+  parsePosIntEnv(
+    process.env.TOOL_SLOW_WARN_MS ?? process.env.CODEX_TOOL_SLOW_WARN_MS,
+    180_000,
+  );
 
 /**
  * 도구별 임계 — "오래 걸리는 게 정상"인 도구는 이 경고의 대상이 아니다.
@@ -37,7 +45,7 @@ const OVERRIDE_MS: Readonly<Record<string, number>> = {
 };
 
 export const toolSlowWarnMs = (tool: string): number =>
-  OVERRIDE_MS[tool] ?? TOOL_SLOW_WARN_MS;
+  OVERRIDE_MS[tool] ?? toolSlowWarnDefaultMs();
 
 export interface ToolWatchInput {
   readonly channel: string;

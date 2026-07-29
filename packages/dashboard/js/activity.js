@@ -185,7 +185,24 @@
       };
 
       // append-only. 바닥 근처였으면 자동 스크롤 유지(모니터=최근 위주 관측).
+      /** 이 활동을 지금 바닥에 붙이면 순서가 깨지는가(=replay 과거분). */
+      const ACT_STALE_TOLERANCE_MS = 5000;
+      const activityStaleForAppend = (a) => {
+        const ts = a && typeof a.ts === "number" ? a.ts : null;
+        if (ts === null) return false;
+        const list = document.getElementById("activity-stream");
+        const last = list && list.lastElementChild;
+        const lastTs = last && last.dataset ? Number(last.dataset.ts) : NaN;
+        if (!Number.isFinite(lastTs) || lastTs <= 0) return false;
+        return ts < lastTs - ACT_STALE_TOLERANCE_MS;
+      };
+
       const appendActivityNode = (node, ts) => {
+        // ★순서 가드 (2026-07-29 검토) — dedup 은 있으나 pruneActivityStream 이 키를 축출하고
+        //  (KEY_CACHE_MAX) append 는 무조건이라, 키가 빠진 옛 이벤트가 replay 로 오면 바닥에
+        //  재삽입된다. 채팅(vtIsStaleForAppend)·워커(단조)에 넣은 가드가 이 뷰만 빠져 있었다.
+        //  이 뷰는 자체 리스트라 마지막 노드의 ts 와 비교한다(임계는 채팅과 동일 5초).
+        if (activityStaleForAppend(a)) return;
         if (!activityStreamEl || !node) return;
         const empty = document.getElementById("activity-empty"); if (empty) empty.remove();
         const nearBottom = activityStreamEl.scrollTop + activityStreamEl.clientHeight >= activityStreamEl.scrollHeight - 60;

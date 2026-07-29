@@ -209,6 +209,12 @@
         vtClear();                     // 가상화 sizer/vtItems/vtIndex 비움 + 스트림 DOM 제거.
         renderedMsgKeys.clear();
         renderedActivityKeys.clear();
+        // ★신규 dedup Set 2개도 비운다 (2026-07-29 검토). 안 비우면 탭 전환으로 DOM 이
+        //  지워진 뒤 **진행 중 선택지가 replay 로도 복구되지 않는다**(가드가 과잉이 된다).
+        //  순서 보호는 vtIsStaleForAppend 가 별도로 하므로 dedup 을 비워도 옛것은 안 붙는다.
+        //  상한도 없던 Set 이라 여기서 비우는 게 메모리 관리도 겸한다.
+        renderedPromptOptionKeys.clear();
+        renderedNoticeKeys.clear();
         cardByThread.clear();          // 진행 카드 참조(제거된 DOM) — 새 세션서 재빌드.
         pendingQueued.length = 0;      // 낙관적 대기 버블(active DOM 참조) — 승격 대상 초기화.
         localChatCount = 0;

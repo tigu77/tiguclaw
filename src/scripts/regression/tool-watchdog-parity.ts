@@ -1,14 +1,16 @@
 /**
- * 회귀: 도구 지연 경고가 **어댑터 무관**으로 같은 판정을 낸다 (2026-07-28, 딥리뷰 D).
+ * 회귀: 도구 지연 경고가 **실제로 발화**하고 **3어댑터 모두 배선**돼 있다 (2026-07-29 개정).
  *
- * 사고: 이 경고는 codex 어댑터의 수동 도구 루프 안에만 있었다. claude·openai 로 도는
- * 워커는 도구가 권한 다이얼로그에 막혀 조용히 멈춰도 **사용자에게 신호가 안 갔다**
- * (원칙 #2 "모든 기능은 LLM 무관" 위반). 공통 엔진으로 올린 뒤 이 검사가 계약을 지킨다.
+ * 사고: 이 경고는 codex 어댑터에만 있어, claude·openai 로 도는 워커는 도구가 권한
+ * 다이얼로그에 막혀 조용히 멈춰도 사용자에게 신호가 없었다(원칙 #2 위반).
  *
- * 여기서 지키는 계약 3가지:
- *  1. 임계 판정이 도구 이름에만 의존한다(어댑터 인자 없음 = 구조적으로 어댑터 무관).
- *  2. 임계를 넘기면 llm.tool_slow 이벤트가 정확히 1건 나간다.
- *  3. 도구가 제때 끝나면(stop 호출) 이벤트가 **안** 나간다 — 오탐 0.
+ * ★이 검사 자체가 한 번 무의미했다 (변이 테스트 실측 2026-07-29): `watchToolStart` 를
+ *  통째로 no-op 으로 만들어도 46건이 전부 초록이었다. 상수만 비교하고 **발화도, 어댑터
+ *  배선도** 안 봤기 때문이다. "검사가 있는데 못 잡는 것" 은 없는 것보다 나쁘다 —
+ *  안심하고 넘어가게 만든다. 그래서 세 축으로 다시 세운다:
+ *   ① 임계를 넘기면 llm.tool_slow 가 **정확히 1건** 나간다(실제 타이머 발화).
+ *   ② 제때 끝나면 안 나간다(오탐 0).
+ *   ③ 3어댑터가 모두 watchToolStart 를 호출한다(소스 스캔 — timeout-layering 과 같은 방식).
  */
 import { getEventBus } from "../../core/eventbus.js";
 import { watchToolStart, toolSlowWarnMs } from "../../core/llm-runtime/tool-watchdog.js";
@@ -16,13 +18,35 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+const ADAPTERS = [
+  "openai-codex-oauth.ts",
+  "claude-agent-sdk.ts",
+  "openai-agents-sdk.ts",
+] as const;
+
+/** 어댑터 소스에 watchToolStart 호출이 살아 있는가(배선이 빠지면 그 어댑터만 조용해진다). */
+const adapterWiring = async (): Promise<string[]> => {
+  const { readFile } = await import("node:fs/promises");
+  const missing: string[] = [];
+  for (const f of ADAPTERS) {
+    const url = new URL(`../../core/llm-runtime/adapters/${f}`, import.meta.url);
+    try {
+      const src = await readFile(url, "utf8");
+      if (!/watchToolStart\s*\(/.test(src)) missing.push(f);
+    } catch {
+      // 배포본(.ts 미포함)에선 검사 불가 — 없는 것으로 치지 않는다(오탐 0).
+    }
+  }
+  return missing;
+};
+
 export const check: RegressionCheck = {
   name: "tool-watchdog-parity",
-  guards: "도구 지연 경고가 codex 에만 있어 claude/openai 워커는 멈춰도 신호가 없던 것",
+  guards: "도구 지연 경고가 안 나가거나 특정 어댑터에서만 나가던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
-    // ① 임계는 도구 이름만 본다 — 어댑터별 분기가 없다(있었다면 여기 인자가 필요했다).
+    // ① 임계는 도구 이름만 본다 — 어댑터별 분기가 없다(있었다면 인자가 필요했다).
     out.push(
       assert(
         "서브에이전트류는 완화된 임계(오탐 방지)",
@@ -32,22 +56,46 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ②③ 실제 발화 — 임계를 아주 짧게 흉내낼 수 없으므로(상수), 이벤트 구독으로 관찰한다.
-    // 짧은 임계를 위해 env 를 쓰지 않는다(모듈 로드 시점에 굳음) — 대신 stop 동작만 검증.
+    // ②③ 실제 발화 — 임계를 짧게 잡고 타이머가 정말 도는지 본다(상수 비교 아님).
+    //  임계는 호출 시점에 env 를 읽으므로 여기서 낮출 수 있다. 끝나면 원복.
+    const prevEnv = process.env.TOOL_SLOW_WARN_MS;
+    process.env.TOOL_SLOW_WARN_MS = "60";
     const seen: string[] = [];
-    const bus = getEventBus();
-    const unsub = bus.subscribe((e) => {
+    const unsub = getEventBus().subscribe((e) => {
       if (e.type === "llm.tool_slow") seen.push(String(e.payload.tool ?? "?"));
     });
+    try {
+      // 제때 끝난 도구 — 경고가 나가면 안 된다.
+      const stop = watchToolStart({ channel: "test", threadKey: "regression", tool: "Bash" });
+      stop();
+      stop(); // 멱등(claude 는 결과·턴종료 두 곳에서 부른다).
+      await sleep(150);
+      out.push(assert("제때 끝나면 경고 없음(오탐 0)", seen.length === 0, `발화 ${seen.length}건`));
 
-    // 제때 끝난 도구 — 감시를 걸었다가 즉시 멈춘다. 경고가 나가면 안 된다.
-    const stop = watchToolStart({ channel: "test", threadKey: "regression", tool: "Bash" });
-    stop();
-    stop(); // 멱등 — 어댑터가 중복 호출해도 안전해야 한다(claude 는 결과+턴종료 두 곳에서 부른다).
-    await sleep(50);
-    out.push(assert("제때 끝나면 경고 없음(오탐 0)", seen.length === 0, `발화 ${seen.length}건`));
+      // 임계를 넘긴 도구 — 정확히 1건 발화해야 한다. ★no-op 이면 여기서 잡힌다.
+      watchToolStart({ channel: "test", threadKey: "regression", tool: "Bash" });
+      await sleep(200);
+      out.push(
+        assert(
+          "임계 초과 시 llm.tool_slow 1건 발화(핵심)",
+          seen.length === 1 && seen[0] === "Bash",
+          `발화 ${seen.length}건 ${JSON.stringify(seen)}`,
+        ),
+      );
+    } finally {
+      unsub();
+      if (prevEnv === undefined) delete process.env.TOOL_SLOW_WARN_MS;
+      else process.env.TOOL_SLOW_WARN_MS = prevEnv;
+    }
 
-    unsub();
+    const missing = await adapterWiring();
+    out.push(
+      assert(
+        "3어댑터 모두 배선(한 곳만 빠져도 그 어댑터는 조용해진다)",
+        missing.length === 0,
+        missing.length === 0 ? "claude·codex·openai" : `누락: ${missing.join(", ")}`,
+      ),
+    );
     return out;
   },
 };

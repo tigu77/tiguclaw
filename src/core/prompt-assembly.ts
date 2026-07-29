@@ -14,6 +14,7 @@ import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
 import { loadModelProfiles, type ModelProfile } from "./settings.js";
+import { listLiveChildJobs } from "./worker-jobs.js";
 
 // ─── formatMemorySnippet — user prompt prepend 본문 ──────────────────────
 const SNIPPET_HARD_CAP = 1500;
@@ -150,11 +151,44 @@ export const formatConversationContext = (
   if (chatId !== null) {
     lines.push(`- 이 대화 대상 (dest_target): ${chatId}`);
   }
+  // ★진행 중인 백그라운드 작업 (2026-07-29) — 이 대화가 띄워 **지금 돌고 있는** 잡.
+  //  실사고: 워커가 아직 도는데 메인이 같은 일로 워커를 하나 더 띄웠다(23:41 시작한 잡이
+  //  살아있는 채 23:43 에 또 발사 — DB 실측). 원인은 모델이 게을러서가 아니라 **자기가 뭘
+  //  띄웠는지 턴 안에서 볼 수단이 없었기** 때문이다. 규칙으로 훈계하는 대신 사실을 준다
+  //  (판단 근거를 가진 쪽이 판단한다). 없으면 줄 자체를 안 넣는다 = 평시 토큰 0.
+  const live = liveChildJobsLine(threadKey);
   return [
     "## 현재 대화 컨텍스트",
     ...lines,
+    ...(live !== "" ? [live] : []),
     '스케줄·알림 등을 "지금 이 대화로" 보낼 때 위 dest_channel/dest_target 를 사용하세요.',
   ].join("\n");
+};
+
+/**
+ * 이 대화가 띄워 진행 중인 잡 한 줄. 없으면 "".
+ * 손자까지 포함(잡 좌표는 원 세션으로 환원 — hasLiveChildJob 과 같은 기준).
+ */
+const liveChildJobsLine = (threadKey: string): string => {
+  try {
+    const jobs = listLiveChildJobs(threadKey);
+    if (jobs.length === 0) return "";
+    const now = Date.now();
+    const items = jobs
+      .slice(0, 5)
+      .map((j) => {
+        const mins = Math.max(0, Math.round((now - j.startedAt) / 60000));
+        return `${j.kind === "agent" ? "서브에이전트" : "워커"} '${j.label}'(${mins}분째)`;
+      })
+      .join(", ");
+    const more = jobs.length > 5 ? ` 외 ${jobs.length - 5}건` : "";
+    return (
+      `- **진행 중인 백그라운드 작업**: ${items}${more}\n` +
+      "  같은 일을 또 띄우지 마세요 — 끝나면 결과가 이 대화로 돌아옵니다. 상태는 list_workers 로 확인하세요."
+    );
+  } catch {
+    return ""; // 조회 실패는 컨텍스트 누락일 뿐 — 턴을 막지 않는다.
+  }
 };
 
 // ─── 멀티모달 입력 V1 — 첨부 placeholder 블록 prepend ──────────────────────

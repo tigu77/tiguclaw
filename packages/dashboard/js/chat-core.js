@@ -35,6 +35,8 @@
       const renderedActivityKeys = new Set();
       /** prompt.options dedup — 키 = 이벤트ts|세션. replay 가 같은 선택지를 다시 그리지 않게. */
       const renderedPromptOptionKeys = new Set();
+      /** 로컬 통지 dedup — 키 = 종류|이벤트ts. 탭 전환 시 함께 비운다(tabs.js resetStreamState). */
+      const renderedNoticeKeys = new Set();
       const actKey = (ts, threadKey, seq) => String(ts) + "|" + (threadKey || "") + "|" + (seq == null ? "" : seq);
 
       // ── 이력 로드 창 보호 (2026-07-28) ───────────────────────────────────
@@ -57,7 +59,15 @@
         if (heldSseEvents.length === 0) return;
         const q = heldSseEvents.splice(0, heldSseEvents.length);
         q.sort((a, b) => (a && a.ts ? a.ts : 0) - (b && b.ts ? b.ts : 0)); // 도착순 아님, 시간순.
-        for (const e of q) { try { renderEvent(e); } catch { /* 한 건 실패가 나머지를 막지 않음 */ } }
+        for (const e of q) {
+          try {
+            // ★재렌더 함수를 실은 항목은 그걸 부른다 (2026-07-29) — 로컬 통지(renderLocalChat)
+            //  는 SSE 이벤트 타입이 아니라서 renderEvent 로는 다시 그릴 수 없다. 그걸 모르고
+            //  합성 이벤트를 큐에 넣으면 흘릴 때 조용히 사라진다(보류가 곧 유실).
+            if (e && typeof e.__render === "function") e.__render();
+            else renderEvent(e);
+          } catch { /* 한 건 실패가 나머지를 막지 않음 */ }
+        }
       };
       /** 이력 로드 중이면 붙잡는다(true = 호출자는 지금 렌더하지 않는다). */
       const holdSseEventDuringHistory = (ev) => {

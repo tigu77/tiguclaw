@@ -81,6 +81,23 @@ export const clearChannelSessionBinding = (
     .run(ch, addr);
 };
 
+/**
+ * **그 세션을 가리키는 모든 바인딩 해제** — 세션이 사라지거나(삭제) 목록에서 빠질 때
+ * (보관) 남은 방들이 유령 세션에 계속 쌓는 것을 막는다.
+ *
+ * ★방 하나만 푸는 것으로는 부족하다 (2026-07-29 검토 실측): 보관 명령을 보낸 방만 풀면
+ *  다른 방(다른 채널·다른 그룹)은 그대로 묶여 있고, 대시보드에서 보관하면 **아무 방도**
+ *  안 풀린다(대시보드는 바인딩을 안 쓰므로 명령자의 방이 없다) — 그게 주 경로였다.
+ * @returns 해제된 (채널, 주소) 수.
+ */
+export const clearBindingsForSession = (sessionId: string): number => {
+  const sid = norm(sessionId);
+  if (sid === "") return 0;
+  return getDb()
+    .prepare(`DELETE FROM channel_session_binding WHERE session_id = ?`)
+    .run(sid).changes;
+};
+
 /** 전체 바인딩(진단·관측용). */
 export const listChannelSessionBindings = (): ChannelSessionBinding[] =>
   (

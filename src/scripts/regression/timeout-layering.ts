@@ -10,7 +10,11 @@
  *
  * 그래서 "이번엔 안 그러겠지"가 아니라 숫자 관계 자체를 검사한다.
  */
-import { WORKER_TIMEOUT_MS, JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../core/worker-jobs.js";
+import {
+  WORKER_TIMEOUT_MS,
+  SUBAGENT_TIMEOUT_MS,
+  JOB_OWNING_TOOL_CALL_TIMEOUT_MS,
+} from "../../core/worker-jobs.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** _mcp-bridge.ts 의 기본 천장(같은 기본값·같은 env 키를 여기서도 해석 — 드리프트 감지). */
@@ -45,6 +49,19 @@ export const check: RegressionCheck = {
         `천장=${jobOwning} 기본=${mcp}`,
       ),
       assert(
+        // ★안쪽 축이 **실제로 존재**하는가 (2026-07-29). 숫자 관계만 보면, 안쪽 경계가
+        //  아예 없는데도(서브에이전트가 cancel-only 였다) 부등식은 전부 참이라 통과한다.
+        //  그 구멍으로 "멈춘 서브가 부모를 125분 잡는" 상태가 검사를 통과했다.
+        "서브에이전트에 자체 상한이 있다(안쪽 축 존재)",
+        SUBAGENT_TIMEOUT_MS > 0 && jobOwning > SUBAGENT_TIMEOUT_MS,
+        `서브상한=${SUBAGENT_TIMEOUT_MS} 천장=${jobOwning}`,
+      ),
+      assert(
+        "서브에이전트 잡이 timeoutMs 로 abort 를 만든다(배선 확인)",
+        await subagentAbortHasTimeout(),
+        "agent-registry.ts",
+      ),
+      assert(
         // 어댑터 층에 별도 도구 시계가 되살아나면 이 검사가 의미를 잃으므로 소스로 확인한다.
         "어댑터에 per-tool wall-clock 이 없다(중복 경계 0)",
         await adapterHasNoToolWallClock(),
@@ -52,6 +69,21 @@ export const check: RegressionCheck = {
       ),
     ];
   },
+};
+
+/** 서브에이전트 abort 가 timeoutMs 를 받는지(배선이 빠지면 안쪽 축이 사라진다). */
+const subagentAbortHasTimeout = async (): Promise<boolean> => {
+  const { readFile } = await import("node:fs/promises");
+  const url = new URL(
+    "../../core/llm-runtime/capabilities/agent-registry.ts",
+    import.meta.url,
+  );
+  try {
+    const src = await readFile(url, "utf8");
+    return /createJobAbort\(jobId,\s*\{\s*timeoutMs/.test(src);
+  } catch {
+    return true; // 배포본(.ts 미포함) — 오탐 0.
+  }
 };
 
 /** 어댑터 소스에 도구 wall-clock 이 다시 생겼는지 확인(문자열 검사 — 의도적으로 무디게). */

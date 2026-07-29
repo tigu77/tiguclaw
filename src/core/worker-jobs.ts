@@ -415,6 +415,33 @@ export const hasLiveChildJob = (threadKey: string): boolean => {
 };
 
 /**
+ * 이 대화가 띄워 **지금 돌고 있는** 잡 목록. hasLiveChildJob 과 같은 기준(손자 포함).
+ *
+ * 용도: 턴 컨텍스트에 "진행 중인 백그라운드 작업" 을 넣어, 메인이 자기가 띄운 걸 모른 채
+ * 같은 일을 또 띄우는 것을 막는다(2026-07-29 실측: 워커가 도는 중에 워커 재발사).
+ * 규칙으로 훈계하는 대신 **사실을 준다** — 판단 근거를 가진 쪽이 판단한다.
+ */
+export const listLiveChildJobs = (
+  threadKey: string,
+): Array<{ jobId: string; label: string; kind: string; startedAt: number }> => {
+  if (threadKey === "") return [];
+  const out: Array<{ jobId: string; label: string; kind: string; startedAt: number }> = [];
+  for (const j of jobs.values()) {
+    if (j.status !== "running") continue;
+    if (j.threadKey !== threadKey && resolveOwnerThreadKey(j.threadKey) !== threadKey) {
+      continue;
+    }
+    out.push({
+      jobId: j.jobId,
+      label: j.label,
+      kind: j.kind ?? "worker",
+      startedAt: j.startedAt,
+    });
+  }
+  return out.sort((a, b) => a.startedAt - b.startedAt);
+};
+
+/**
  * 진단용 스냅샷 — "왜 자식이 없다고 봤나"를 로그로 설명하기 위한 최소 정보.
  * 끊는 판정은 되돌릴 수 없으므로(모델이 곧 다른 행동을 한다) 근거를 남긴다.
  */
@@ -482,6 +509,21 @@ const DEFAULT_WORKER_HARD_GRACE_MS = 60_000;
  * runRegionA 가 안 settle 하면 runner 가 WorkerTimeoutError 로 *강제* 종료해 통지를
  * 정시 발화시킨다. env `WORKER_HARD_GRACE_MS` override (매직넘버 금지, 채널 백스톱 동형).
  */
+/**
+ * 서브에이전트 1잡 상한 (ms). env `SUBAGENT_TIMEOUT_MS`. 기본 = 워커 상한과 동일.
+ *
+ * ★없었다 (2026-07-29 검토가 잡음). 워커는 `createJobAbort(jobId, {timeoutMs})` 로 상한을
+ *  받는데 서브에이전트는 `createJobAbort(jobId)`(cancel-only)라 **자체 상한이 0** 이었다.
+ *  그 상태에서 부모의 도구 wall-clock 을 폐기(0cffeb7)했으니, 멈춘 서브에이전트는 브리지
+ *  천장(잡상한+5분)까지 부모 턴을 잡는다 — 없앤 8분의 15배. "안쪽이 먼저 끝난다" 는
+ *  경계 순서가 서브에이전트에선 성립하지 않았다(내가 그렇다고 단정하고 시계를 없앴다).
+ *  이제 안쪽(이 상한) < 바깥(브리지 천장 = 상한+5분)이 실제로 성립한다.
+ */
+export const SUBAGENT_TIMEOUT_MS = parsePosIntEnv(
+  process.env.SUBAGENT_TIMEOUT_MS,
+  WORKER_TIMEOUT_MS,
+);
+
 export const WORKER_HARD_GRACE_MS = parsePosIntEnv(
   process.env.WORKER_HARD_GRACE_MS,
   DEFAULT_WORKER_HARD_GRACE_MS,
@@ -891,7 +933,10 @@ const subscribeWorkerStallNotify = (): void => {
  *  그래서 채널 푸시에서만 뺀다 — 로그·EventBus(관측)는 그대로라 진단 능력은 안 잃는다.
  */
 export const shouldNotifyToolSlow = (tool: string): boolean =>
-  tool !== "spawn_agent";
+  // ★서브에이전트류는 푸시하지 않는다 — 오래 걸리는 게 정상이고 드로어에 스텝이 보인다.
+  //  `Task`(claude 의 서브에이전트 도구)가 빠져 있어 claude 경로만 노이즈가 살아났다
+  //  (2026-07-29 검토). 임계는 tool-watchdog 이 이미 같은 계층으로 묶고 있다.
+  tool !== "spawn_agent" && tool !== "Task";
 
 const toolSlowNotified = new Set<string>();
 let toolSlowNotifySubscribed = false;

@@ -24,8 +24,20 @@
       // 두 어휘를 이 뷰의 공통 상태값("running"|"exited"|"killed")으로 정규화.
       const normalizeSeedStatus = (raw) => (raw === "completed" ? "exited" : raw === "killed" ? "killed" : "running");
 
+      /** 되돌릴 수 없는 셸 종료 상태 — 잡 카드(TERMINAL_JOB_STATUS)와 같은 규칙. */
+      const TERMINAL_SHELL_STATUS = new Set(["exited", "killed"]);
       const upsertShellEntry = (shellId, patch, opts) => {
         let e = shellRegistry.get(shellId);
+        // ★셸 상태도 단조다 (2026-07-29 검토). 워커 잡엔 넣었는데 셸엔 안 넣어서,
+        //  재연결 replay 가 옛 shell.started 를 흘리면 **종료된 셸이 running 으로
+        //  되돌아갔고**(CDP 실측) 셸엔 하이드레이션 대조도 없어 영영 유령으로 남았다.
+        if (
+          e !== undefined &&
+          TERMINAL_SHELL_STATUS.has(e.status) &&
+          patch && patch.status === "running"
+        ) {
+          return e; // 종료는 되돌리지 않는다.
+        }
         if (!e) {
           e = {
             shellId, command: "", cwd: "", status: "running", startedAt: Date.now(),

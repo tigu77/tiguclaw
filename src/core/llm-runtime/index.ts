@@ -623,12 +623,29 @@ export const selectEligiblePool = (
  */
 export const listActiveCooldowns = (): { key: string; remainingMs: number }[] => {
   const now = Date.now();
-  const out: { key: string; remainingMs: number }[] = [];
-  for (const [key, until] of cooldownUntil) {
-    const remaining = until - now;
-    if (remaining > 0) out.push({ key, remainingMs: remaining });
+  // ★표시도 **집행과 같은 소스**를 본다 (2026-07-29 검토). 종전엔 메모리 Map 만 읽어,
+  //  집행(cooldownRemainingMs)은 DB 를 보는데 /status·/cooldown 은 다른 답을 했다.
+  //  실측 시나리오: 다른 프로세스(codex-auth)가 DB 를 지우면 표시엔 계속 남고, 반대로
+  //  DB 에만 있으면 표시는 비었는데 집행은 계속 막는다 = 자기 잠금 재발 경로.
+  try {
+    const rows = loadLiveCooldowns(now);
+    for (const r of rows) cooldownUntil.set(r.key, r.untilTs); // 캐시 동기화.
+    for (const key of [...cooldownUntil.keys()]) {
+      if (!rows.some((r) => r.key === key)) cooldownUntil.delete(key);
+    }
+    return rows
+      .map((r) => ({ key: r.key, remainingMs: r.untilTs - now }))
+      .filter((c) => c.remainingMs > 0)
+      .sort((a, b) => b.remainingMs - a.remainingMs);
+  } catch {
+    // DB 조회 실패 — 메모리 폴백(보수적: 있는 것을 없다고 하지 않는다).
+    const out: { key: string; remainingMs: number }[] = [];
+    for (const [key, until] of cooldownUntil) {
+      const remaining = until - now;
+      if (remaining > 0) out.push({ key, remainingMs: remaining });
+    }
+    return out.sort((a, b) => b.remainingMs - a.remainingMs);
   }
-  return out.sort((a, b) => b.remainingMs - a.remainingMs);
 };
 
 // 실패가 rate-limit 이면 쿨다운 등록(문자열 미매칭 → no-op, 기존 폴백 로직 그대로).
@@ -691,6 +708,14 @@ export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
 export const clearCooldowns = (prefix?: string): string[] => {
   const want = prefix?.trim() ?? "";
   const cleared: string[] = [];
+  // ★DB 에만 있는 행도 대상 (2026-07-29 검토). 메모리 Map 만 순회하면, 다른 프로세스가
+  //  등록했거나 이 프로세스가 아직 안 읽은 쿨다운은 "해제할 게 없습니다" 라고 답해 놓고
+  //  집행은 계속 막힌다 — c8a702e 가 없애려던 자기 잠금이 그대로 재발한다.
+  try {
+    for (const r of loadLiveCooldowns(Date.now())) cooldownUntil.set(r.key, r.untilTs);
+  } catch {
+    /* DB 조회 실패 — 메모리에 있는 것만이라도 해제 */
+  }
   for (const key of [...cooldownUntil.keys()]) {
     if (want !== "" && !key.startsWith(want)) continue;
     cooldownUntil.delete(key);

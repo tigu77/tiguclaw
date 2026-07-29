@@ -8,7 +8,7 @@
  * 격리: 이 검사는 **임시 홈의 새 DB** 만 쓴다(runner 가 TIGUCLAW_HOME 을 임시로 잡음).
  */
 import { getDb } from "../../store/sessions.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const ftsBytes = (): number =>
   (
@@ -23,6 +23,7 @@ export const check: RegressionCheck = {
   name: "fts-reindex",
   guards: "조회가 FTS 를 재색인해 색인이 원본의 11배로 부푼 것",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // 라이브 DB 접촉 차단(러너 밖 실행 방지).
     const db = getDb();
     const trig = db
       .prepare(
@@ -33,7 +34,16 @@ export const check: RegressionCheck = {
     db.prepare(
       `INSERT INTO memories(name, description, body, type, created_at, updated_at)
        VALUES (?, ?, ?, 'reference', ?, ?)`,
-    ).run("regression-fts", "회귀 검사용", "본문 zqxbase", Date.now(), Date.now());
+      // ★본문을 충분히 길게 (2026-07-29). 12자 본문이면 200회 재색인해도 dbstat 한 페이지
+      //  (4096B) 안에 들어가 **크기 무변** 단언이 항상 통과했다(변이 테스트에서 트리거를
+      //  넓혀도 초록). 400자면 재색인이 페이지를 넘겨 실제로 잡힌다(실측 4096→12288).
+    ).run(
+      "regression-fts",
+      "회귀 검사용",
+      `본문 zqxbase ${"가나다라마바사아자차카타파하".repeat(30)}`,
+      Date.now(),
+      Date.now(),
+    );
     const id = (db.prepare(`SELECT id FROM memories WHERE name='regression-fts'`).get() as { id: number }).id;
 
     const before = ftsBytes();

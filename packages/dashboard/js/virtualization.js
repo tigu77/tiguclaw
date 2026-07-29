@@ -879,6 +879,7 @@
         div.className = "ev local channel-chat";
         div.dataset.type = "channel.message.out";
         const head = document.createElement("div");
+        head.className = "bubble-meta"; // 채팅 버블 메타 줄 간격(생성 지점 4곳 공통).
         // 메타 줄(시각·이름·모델·비용)이 서로 붙어 읽기 어려웠다 — 스텝 카드 헤더(.turn-head,
         // gap:8px)와 같은 간격 규칙을 쓴다(2026-07-28 사용자 요청).
         head.className = "bubble-meta";

@@ -203,6 +203,7 @@
           div.dataset.type = "channel.message.out";
           if (ev.ts != null) div.dataset.ts = String(ev.ts);
           const head = document.createElement("div");
+          head.className = "bubble-meta"; // 이력 버블과 같은 간격(새로고침 전후 동일해야 함).
           const tsEl = document.createElement("span"); tsEl.className = "ts"; tsEl.textContent = ts;
           const tyEl = document.createElement("span"); tyEl.className = "type"; tyEl.textContent = assistantName;
           head.appendChild(tsEl); head.appendChild(tyEl);
@@ -267,6 +268,7 @@
         div.dataset.type = (ev.type || "").toLowerCase();
         if (ev.ts != null) div.dataset.ts = String(ev.ts); // prune 후 커서 복구용 수치 ts.
         const head = document.createElement("div");
+        head.className = "bubble-meta"; // 채팅 버블 메타 줄 간격(생성 지점 4곳 공통).
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
         tsEl.textContent = ts;

@@ -25,10 +25,10 @@ export const saveCooldown = (key: string, untilTs: number): void => {
   try {
     getDb()
       .prepare(
-        `INSERT INTO cooldowns (key, until_ts) VALUES (?, ?)
-         ON CONFLICT(key) DO UPDATE SET until_ts = excluded.until_ts`,
+        `INSERT INTO cooldowns (key, until_ts, last_probe_ts) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET until_ts = excluded.until_ts, last_probe_ts = excluded.last_probe_ts`,
       )
-      .run(key, untilTs);
+      .run(key, untilTs, Date.now());
   } catch (err) {
     // best-effort — 영속 실패가 턴을 깨지 않는다(메모리 Map 은 그대로 동작).
     console.error(

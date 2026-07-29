@@ -11,6 +11,7 @@ import {
   getChannelSessionBinding,
   setChannelSessionBinding,
   clearChannelSessionBinding,
+  clearBindingsForSession,
 } from "./store/channel-session.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
@@ -68,6 +69,7 @@ import {
   SESSION_STORAGE_CHANNEL,
   listThreads,
   setThreadName,
+  setThreadArchived,
 } from "./store/sessions.js";
 // codex/openai 컨텍스트 리셋 — `/reset`·`/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
 // 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
@@ -954,26 +956,9 @@ const handler: MessageHandler = async (msg) => {
     // 모델에게 시키지 않는다는 기존 원칙 그대로.
     // 채널 무관: 텔레그램 전용이 아니라 channelAddress 를 가진 모든 채널에서 동작한다.
     if (cmd === "/sessions") {
-      // ★셀렉터가 이미 있는 채널(대시보드)은 대상이 아니다. 그런 채널은 매 요청에
-      //  explicitSessionId 를 실어 보내므로 바인딩이 **무시**되고(resolveSessionId 가 explicit
-      //  우선), 게다가 http-bridge 는 channelAddress = threadKey 라 "세션이 자기를 가리키는"
-      //  무의미한 행만 남는다(개발 중 실측). 조용히 되게 두면 "묶었습니다" 라고 답해 놓고
-      //  아무 일도 안 일어난다 = 오늘 종일 고친 조용한 실패 부류. 명시적으로 거절한다.
-      if (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "") {
-        await replyCommand(
-          msg,
-          "이 채널은 이미 세션 셀렉터가 있습니다 — 대시보드 상단 탭에서 세션을 고르세요. `/sessions` 는 셀렉터가 없는 채널(텔레그램·CLI)용입니다.",
-        );
-        return;
-      }
+      // 대화방 주소 — 바인딩(use/new)에만 필요. archive/unarchive 는 채널 무관이라
+      // 아래 가드보다 먼저 처리된다(대시보드에서도 세션 정리가 돼야 한다).
       const addr = msg.channelAddress?.trim() ?? "";
-      if (addr === "") {
-        await replyCommand(
-          msg,
-          "이 채널은 대화방 주소가 없어 세션을 묶을 수 없습니다.",
-        );
-        return;
-      }
       const sub = args === "" ? "" : (args.split(/\s+/)[0] ?? "").toLowerCase();
       const rest = args === "" ? "" : args.slice(sub.length).trim();
       const current = (() => {
@@ -992,6 +977,98 @@ const handler: MessageHandler = async (msg) => {
         return nm !== undefined && nm !== "" ? nm : id;
       };
 
+      // /sessions archive [id] — 목록에서 숨긴다. ★삭제가 아니다(대화 기록 보존, 복원 가능).
+      //  인자 없으면 선택지로 고르게 한다(값 = `/sessions archive <id>`).
+      if (sub === "archive" || sub === "unarchive") {
+        const restoring = sub === "unarchive";
+        const id = rest.trim();
+        if (id !== "") {
+          if (!restoring && id === DEFAULT_SESSION_ID) {
+            await replyCommand(msg, "기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).");
+            return;
+          }
+          const changed = setThreadArchived(id, restoring ? null : Date.now());
+          if (changed === 0) {
+            await replyCommand(msg, `그런 세션이 없습니다: ${id}`);
+            return;
+          }
+          // ★그 세션을 가리키는 **모든 방**의 바인딩을 푼다 (2026-07-29 검토).
+          //  종전엔 명령을 보낸 방 하나만 봐서, 다른 방은 목록에 없는 세션에 계속 쌓았고
+          //  대시보드에서 보관하면(주 경로) 명령자의 방이 없어 **아무것도 안 풀렸다**.
+          let note = "";
+          if (!restoring) {
+            const freed = clearBindingsForSession(id);
+            if (freed > 0) {
+              note = `\n그 세션에 묶여 있던 대화방 ${freed}곳을 **기본 세션**으로 되돌렸습니다.`;
+            }
+          }
+          await replyCommand(
+            msg,
+            restoring
+              ? `복원했습니다 — 목록에 다시 나옵니다.`
+              : `보관했습니다 — 목록에서 숨깁니다. **대화 기록은 그대로 남아 있고** \`/sessions unarchive\` 로 되돌릴 수 있습니다.${note}`,
+          );
+          return;
+        }
+        const pool = restoring
+          ? listThreads({ excludeInternal: true, onlyArchived: true, limit: 20 })
+          : listThreads({ excludeInternal: true, excludeProbes: true, limit: 20 }).filter(
+              (t: { threadKey: string }) => t.threadKey !== DEFAULT_SESSION_ID,
+            );
+        if (pool.length === 0) {
+          await replyCommand(msg, restoring ? "보관된 세션이 없습니다." : "보관할 세션이 없습니다.");
+          return;
+        }
+        const opts2 = pool.map((t: { threadKey: string }) => ({
+          label: nameOf(t.threadKey),
+          value: `/sessions ${sub} ${t.threadKey}`,
+        }));
+        const q = restoring ? "어떤 세션을 복원할까요?" : "어떤 세션을 보관할까요?";
+        if (msg.presentOptions !== undefined) {
+          const r = await msg.presentOptions(q, opts2, {
+            note: restoring
+              ? "복원하면 목록에 다시 나옵니다."
+              : "보관 = 목록에서 숨김. 대화 기록은 지우지 않습니다(되돌리기 가능).",
+          });
+          if (r.ok) return;
+          console.warn(`/sessions ${sub} 선택지 렌더 실패 — 텍스트 폴백: ${r.error ?? "(사유 없음)"}`);
+        }
+        await replyCommand(
+          msg,
+          `${q}\n${opts2.map((o) => `· ${o.label} — \`${o.value}\``).join("\n")}`,
+        );
+        return;
+      }
+
+      // ★셀렉터가 이미 있는 채널(대시보드)은 대상이 아니다. 그런 채널은 매 요청에
+      //  explicitSessionId 를 실어 보내므로 바인딩이 **무시**되고(resolveSessionId 가 explicit
+      //  우선), 게다가 http-bridge 는 channelAddress = threadKey 라 "세션이 자기를 가리키는"
+      //  무의미한 행만 남는다(개발 중 실측). 조용히 되게 두면 "묶었습니다" 라고 답해 놓고
+      //  아무 일도 안 일어난다 = 오늘 종일 고친 조용한 실패 부류. 명시적으로 거절한다.
+      // ★explicit 유무가 아니라 **세션 정규화 자체**로 판정한다 (2026-07-29 검토).
+      //  종전엔 explicitSessionId 가 있을 때만 거절했는데, http-bridge 는 threadKey 를 안 준
+      //  요청에선 explicit 도 addr 도 없이 들어온다 → 가드를 통과해 바인딩 행을 쓰고
+      //  "묶었습니다" 라 답하지만 그 채널은 바인딩을 **절대 읽지 않는다**(항상 explicit 를
+      //  실어 보내므로) = 죽은 쓰기 + 거짓 확인. 심지어 그렇게 띄운 선택지를 대시보드에서
+      //  누르면 이번엔 가드가 거절한다 — 자기가 띄운 걸 자기가 거절(검토 실측).
+      //  기준: 세션 셀렉터를 가진 채널(session.explicitSessionId 를 쓰는 계열) 전체를 거절.
+      const hasSelector =
+        msg.channel === SESSION_STORAGE_CHANNEL ||
+        (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "");
+      if (hasSelector) {
+        await replyCommand(
+          msg,
+          "이 채널은 이미 세션 셀렉터가 있습니다 — 대시보드 상단 탭에서 세션을 고르세요. `/sessions` 는 셀렉터가 없는 채널(텔레그램·CLI)용입니다.",
+        );
+        return;
+      }
+      if (addr === "") {
+        await replyCommand(
+          msg,
+          "이 채널은 대화방 주소가 없어 세션을 묶을 수 없습니다.",
+        );
+        return;
+      }
       // /sessions use <id> — 선택지 버튼이 돌려보내는 값이자 수동 입력 경로.
       if (sub === "use" && rest !== "") {
         const target = rest.trim();
@@ -1000,7 +1077,12 @@ const handler: MessageHandler = async (msg) => {
           await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.");
           return;
         }
-        const exists = listThreads({ excludeInternal: true, excludeProbes: true }).some(
+        // ★존재 판정에 **목록용 필터를 쓰지 않는다** (2026-07-29 검토). excludeProbes 는
+        //  "보여줄 가치가 있나"(무명 + 왕복 1회 이하 = 프로브)를 거르는 표시 정책이지
+        //  존재 여부가 아니다. 그걸로 존재를 판정하면 방금 만든 세션(당연히 무명·대화 0건)이
+        //  "그런 세션이 없습니다" 가 된다 — 내 필터가 내 기능을 막았다(3개 축이 독립 지적).
+        //  보관된 세션도 존재는 한다(복원 대상) → includeArchived.
+        const exists = listThreads({ excludeInternal: true, includeArchived: true, limit: 500 }).some(
           (x: { threadKey: string }) => x.threadKey === target,
         );
         if (!exists) {
@@ -1025,9 +1107,14 @@ const handler: MessageHandler = async (msg) => {
         const sid = `dashboard:${randomUUID()}`;
         setChannelSessionBinding(msg.channel, addr, sid);
         const wanted = rest.trim();
-        if (wanted !== "") {
+        // ★이름을 안 줘도 행을 만든다 (2026-07-29). 종전엔 이름이 있을 때만 setThreadName 이
+        //  placeholder 를 만들어서, 무명 new 는 threads 행이 아예 없었다 → 목록에도 안 뜨고
+        //  보관도 "그런 세션이 없습니다". 만든 즉시 다룰 수 있어야 만든 것이다.
+        //  이름 없으면 번호식 기본명을 준다(대시보드 "세션N" 관례와 같은 의도).
+        const finalName = wanted !== "" ? wanted : `세션 ${new Date().toLocaleDateString("ko-KR")}`;
+        {
           try {
-            setThreadName(sid, wanted); // 행이 없으면 placeholder 를 만들어 이름 보존.
+            setThreadName(sid, finalName); // 행이 없으면 placeholder 를 만들어 이름 보존.
           } catch (e) {
             console.warn(
               `세션 이름 저장 실패(세션은 생성됨): ${e instanceof Error ? e.message : String(e)}`,
@@ -1036,7 +1123,7 @@ const handler: MessageHandler = async (msg) => {
         }
         await replyCommand(
           msg,
-          `새 세션 **${wanted !== "" ? wanted : nameOf(sid)}** 을 만들고 이 대화방을 묶었습니다.`,
+          `새 세션 **${finalName}** 을 만들고 이 대화방을 묶었습니다.`,
         );
         return;
       }

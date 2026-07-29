@@ -14,12 +14,29 @@
  *
  * 어댑터 무관 상수 — types.ts(타입 전용)·index.ts(facade 전용) 와 분리.
  */
+/**
+ * ★손으로 관리하는 목록이라 드리프트했다 (2026-07-30 검토 실측).
+ *
+ *  실사용(`llm.turn_done` 358턴): gpt-5.6-sol 119 · gpt-5.5 102 · **claude-opus-5 84** ·
+ *  **claude-sonnet-5 36** · gpt-5.6-terra 17. 그런데 표의 `claude-opus-4-7`·
+ *  `claude-sonnet-4-6`·`claude-haiku-4-5` 는 **각 0턴**이었다. `claude-*-5` 는 접두 매칭도
+ *  실패 → `lookupContextWindow`=undefined → `/status` 가 "(윈도우 미상)" 만 찍고
+ *  **70%/85% "거의 참" 경고가 claude 백엔드에선 한 번도 안 떴다**(그 120턴 내내).
+ *  `gpt-5.6-*` 는 맨 아래 `gpt-5` 엔트리에 **우연히** 접두로 걸려 살아남았을 뿐이다.
+ *
+ *  키는 **세대 접두**로 둔다(`claude-opus-5` 가 `claude-opus-5-20260xx` 까지 흡수).
+ *  회귀 `context-window-coverage` 가 "settings.json 풀의 모든 모델이 해석되는가"를 지킨다.
+ */
 export const CONTEXT_WINDOWS: Record<string, number> = {
-  // Anthropic (claude). 표준 윈도우 200K. (1M 베타는 모델 id 다르면 별도 — 미상이면 미등재)
-  "claude-opus-4-7": 200_000,
-  "claude-sonnet-4-6": 200_000,
-  "claude-haiku-4-5": 200_000,
+  // Anthropic (claude). 표준 윈도우 200K.
+  "claude-opus-5": 200_000,
+  "claude-sonnet-5": 200_000,
+  "claude-haiku-5": 200_000,
+  "claude-opus-4": 200_000,
+  "claude-sonnet-4": 200_000,
+  "claude-haiku-4": 200_000,
   // OpenAI / codex. gpt-5.x 계열 — 공개 추정. 불확실 → 보수값.
+  "gpt-5.6": 400_000,
   "gpt-5.5": 400_000,
   "gpt-5.1": 400_000,
   "gpt-5": 400_000,

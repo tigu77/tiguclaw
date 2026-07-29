@@ -11,6 +11,7 @@
  */
 import { noteCompactionOutcome } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 import { getEventBus } from "../../core/eventbus.js";
+import { sourceHasCount } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
@@ -21,6 +22,11 @@ export const check: RegressionCheck = {
     const unsub = getEventBus().subscribe((e: { type: string; payload?: unknown }) => {
       if (e.type === "llm.compaction_stuck") seen.push((e.payload ?? {}) as Record<string, unknown>);
     });
+    const wired = await sourceHasCount(
+      "../../core/llm-runtime/adapters/openai-codex-oauth-history.ts",
+      /noteCompactionOutcome\(/,
+      5,
+    );
     const TK = "regr:compaction";
     try {
       noteCompactionOutcome(TK, false, "빈 결과", 1000);
@@ -47,6 +53,12 @@ export const check: RegressionCheck = {
             typeof seen[0]?.foldChars === "number" &&
             typeof seen[0]?.reason === "string",
           JSON.stringify(seen[0] ?? {}),
+        ),
+        assert(
+          // ★배선 확인 — 순수 계약만 보면 호출부 6곳을 각각 지워도 초록이었다(감사 실측).
+          "★호출부가 살아있다(성공·빈결과·예외·수동 경로)",
+          wired.ok,
+          `noteCompactionOutcome 호출 ${wired.found}회`,
         ),
       ];
     } finally {

@@ -581,16 +581,35 @@ export const planHistoryCompaction = (
   //
   //  그래서 진행을 **보장**하는 쪽으로 바꾼다: 예산 안에서 접을 수 있는 만큼만 접고
   //  watermark 를 그만큼 전진시킨다. 밀린 양이 많아도 턴을 거치며 점진적으로 따라잡고,
-  //  각 호출은 항상 성공 가능한 크기다. 예산을 넘는 단일 턴은 혼자라도 접는다(무진행 방지 —
-  //  턴 본문은 CODEX_TURN_HISTORY_CHAR_CAP 으로 이미 상한이 있다).
+  //  각 호출은 항상 성공 가능한 크기다.
+  //
+  // ★단일 턴이 예산을 넘으면 **본문을 잘라서** 접는다 (2026-07-30 검토 지적).
+  //  종전엔 `toFold.length > 0` 가드 때문에 첫 턴은 크기와 무관하게 통째로 들어갔다. 즉
+  //  실효 하한이 "가장 오래된 턴 하나의 크기"였고, 그 턴이 백엔드 한도를 넘으면 예산을
+  //  5,000까지 줄여도 **매 턴 같은 크기를 재전송** → watermark 정지 → 07-29 와 같은 영구
+  //  루프다. 실측: 압축 대상 스레드에 단일 턴 **115,130자**가 존재하고, dashboard:default
+  //  에도 58,798자가 대기 중이다(라이브 실패 관측치 87,387자를 넘는 구간).
+  //  요약은 원문 보존이 목적이 아니라 **맥락 압축**이므로, 넘치는 부분은 마커를 남기고
+  //  자르는 편이 "영원히 못 접는" 것보다 낫다. 원본 transcripts 는 그대로 남는다.
   const budget = opts?.maxFoldChars ?? CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS;
   const toFold: CodexTurnWithId[] = [];
   let used = 0;
   for (const t of candidates) {
-    const size = String(t.content ?? "").length;
-    if (toFold.length > 0 && used + size > budget) break;
+    const body = String(t.content ?? "");
+    const room = budget - used;
+    if (toFold.length > 0 && body.length > room) break;
+    if (body.length > room) {
+      // 첫 턴이 예산을 넘음 → 잘라서라도 접어 진행을 보장한다.
+      const kept = Math.max(1, room);
+      toFold.push({
+        ...t,
+        content: `${body.slice(0, kept)}\n…[요약 입력 상한으로 ${body.length - kept}자 생략 — 원문은 transcripts 에 보존]`,
+      });
+      used = budget;
+      break;
+    }
     toFold.push(t);
-    used += size;
+    used += body.length;
   }
   // 접힌 마지막 턴의 transcript id 가 새 watermark (그 id 이하 = 요약에 흡수됨).
   const last = toFold[toFold.length - 1] as CodexTurnWithId;
@@ -862,7 +881,13 @@ export const buildTurnHistory = async (
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(
         `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 ` +
-          `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}`,
+          `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}` +
+            // ★예외 경로도 축소한다 (2026-07-30 검토 지적) — 종전엔 빈 결과만 백오프를 탔다.
+            //  크기 때문에 hang → idle abort 로 죽는 실패가 이 catch 로 오는데 축소가 0이면
+            //  같은 크기를 계속 재시도한다. 단 429/한도는 크기 문제가 아니므로 제외.
+            (isRateLimitedText(msg)
+              ? " (한도성 실패 — 예산 유지)"
+              : ` → 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`),
       );
       noteCompactionOutcome(input.threadKey, false, msg, prompt.length);
     }
@@ -998,6 +1023,12 @@ const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
  *  절반으로 줄이고 다음 턴에 다시 시도한다. 몇 턴 안에 반드시 삼킬 수 있는 크기에 닿는다
  *  (진행 보장). 성공하면 천천히 되돌려 평소엔 큰 덩이로 접는다.
  */
+/** 한도성 실패 판정(크기 무관) — 코어 isRateLimited 와 같은 취지의 최소 사본(단방향 유지). */
+const isRateLimitedText = (t: string): boolean =>
+  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b|hit your (usage )?limit|usage limit/i.test(
+    t,
+  );
+
 const foldBudgetByThread = new Map<string, number>();
 const MIN_FOLD_CHARS = 5_000;
 

@@ -847,6 +847,20 @@ export const runOpenAiCodex = async (
    *  "우리가 abort 했나 / 서버가 닫았나" 를 가릴 수 없었다. 그 둘은 처방이 정반대다.
    *  그래서 청크·바이트·마지막 이벤트·abort 주체를 누적해 빈 응답 로그에 싣는다.
    */
+  /**
+   * abort 주체 판별 — **우리가 끊었나 서버가 닫았나** (2026-07-30 검토 지적).
+   * 종전엔 `input.abortSignal` 만 봤는데 유휴·턴 타임아웃은 `effectiveAc` 만 abort 하고
+   * 연결이 단방향이라 **우리가 끊었는데 `aborted=no`** 로 찍혔다 — 이 진단의 목적이 반쯤
+   * 무효였다. 둘 다 보고 이름까지 남긴다.
+   */
+  let innerAbortName: string | null = null; // iteration 내부(idle/turn wall) abort 기록.
+  const describeAbort = (outer?: AbortSignal): string => {
+    if (outer?.aborted === true) {
+      const r = outer.reason;
+      return r instanceof Error && r.name !== "" ? r.name : "yes";
+    }
+    return innerAbortName === null ? "no" : `inner:${innerAbortName}`;
+  };
   let turnChunks = 0;
   let turnBytes = 0;
   let lastSseEvent = "(없음)";
@@ -1123,6 +1137,7 @@ export const runOpenAiCodex = async (
         const turnWallTimer = setTimeout(() => {
           turnWallExceeded = true;
           if (!idleAc.signal.aborted) {
+            innerAbortName = "IdleTimeoutError(turn-wall)"; // 빈 응답 진단용 기록.
             idleAc.abort(new IdleTimeoutError("idle", CODEX_TURN_MAX_MS));
           }
         }, CODEX_TURN_MAX_MS);
@@ -1847,7 +1862,7 @@ break; // 스트림 소비 성공 → 재시도 루프 탈출.
         `/reasoning:${finalUsage?.reasoningTokens ?? "?"}` +
         ` tools=[${[...executedToolNames].join(",")}]` +
         ` chunks=${turnChunks} lastEvent=${lastSseEvent}` +
-        ` aborted=${input.abortSignal?.aborted === true ? (input.abortSignal.reason instanceof Error ? input.abortSignal.reason.name : "yes") : "no"}` +
+        ` aborted=${describeAbort(input.abortSignal)}` +
         ` inputChars=${input.text.length}` +
         ` userText=${JSON.stringify(input.text.slice(0, 80))}`,
     );

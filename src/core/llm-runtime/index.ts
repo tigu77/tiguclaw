@@ -48,6 +48,12 @@ import {
 } from "../../store/cooldowns.js";
 import { getEventBus } from "../eventbus.js";
 import {
+  DEFAULT_COOLDOWN_MS,
+  MAX_COOLDOWN_MS,
+  isRateLimited,
+  parseCooldownMs,
+} from "./rate-limit.js";
+import {
   resolveProfileChain,
   getDefaultProfileName,
   loadModelProviders,
@@ -472,61 +478,11 @@ const COOLDOWN_PROBE_INTERVAL_MS = ((): number => {
 // (실측 codex usage_limit_reached 는 수일(예 5.7일=492480s) 지속 — 그 값은 "정확히" 존중해야
 // 무의미 재탐 0 이 성립한다. 24h 로 잡으면 실측 사례 자체가 잘려나가 모순 → 7일로 넉넉히
 // 잡아 정상 다일(多日) 한도는 그대로 통과시키고, 진짜 비정상(파싱버그로 인한 천문학적 값)만 방어).
-const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000; // 10분
-const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7일 상한(비정상 값 방어, 실측 다일 한도는 통과)
 
 // rate-limit/사용량한도 식별 — src/index.ts formatRegionAError · worker-jobs.ts
 // humanizeWorkerError 와 동형 문자열 휴리스틱(진실 통일, 신규 분류축 아님).
-export const isRateLimited = (errStr: string): boolean =>
-  // ★claude 문구 추가 (2026-07-30 라이브): claude SDK 는 "You've hit your limit · resets
-  //  2:20am (Asia/Seoul)" 로 말한다 — 위 어느 패턴에도 안 걸려 **쿨다운이 등록되지 않았고**
-  //  죽은 백엔드를 매 턴 다시 때렸다(윈도우 로그 00:39·00:40·00:43). 그 사이 codex 도 흔들려
-  //  "모든 어댑터 실패"가 반복됐다.
-  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b|hit your (usage )?limit|usage limit/i.test(
-    errStr,
-  );
-
 // resets_in_seconds(codex 실측) / retry-after(HTTP 표준) 초 단위 파싱 → ms. 없으면 null
 // (호출자가 DEFAULT_COOLDOWN_MS 로 강등). src/index.ts 의 동일 정규식과 진실 통일.
-export const parseCooldownMs = (errStr: string): number | null => {
-  const m =
-    errStr.match(/"resets_in_seconds"\s*:\s*(\d+)/) ||
-    errStr.match(/retry[-_ ]?after["'\s:=]+(\d+)/i);
-  if (m !== null) {
-    const sec = Number(m[1]);
-    if (Number.isFinite(sec) && sec > 0) return Math.min(sec * 1000, MAX_COOLDOWN_MS);
-  }
-  return parseResetsAtMs(errStr);
-};
-
-/**
- * **벽시계 해제 시각 파싱** — claude SDK 는 초가 아니라 `resets 2:20am (Asia/Seoul)` 로 말한다.
- *
- * 위 초 단위 파서가 못 읽어 DEFAULT(10분)로 강등되거나 아예 쿨다운이 안 걸렸다. 다음 도래
- * 시각까지의 ms 로 환산한다(이미 지난 시각이면 내일 그 시각).
- *
- * ★타임존: 메시지가 TZ 이름을 주지만 우리는 **로컬 시간으로 해석**한다. 데몬과 계정 TZ 가
- *  다르면 몇 시간 어긋날 수 있는데, 그 방향은 안전하다 — 짧으면 재시도 한 번 더일 뿐이고,
- *  길어도 `cooldownRemainingMs` 의 **2시간 주기 탐침**이 실제로 다시 시도한다(6일 공백 사고
- *  대응으로 이미 들어가 있다). 즉 이 파싱이 틀려도 백엔드를 영구히 놀리지 않는다.
- */
-const parseResetsAtMs = (errStr: string): number | null => {
-  const m = errStr.match(/resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-  if (m === null) return null;
-  let hour = Number(m[1]);
-  const min = m[2] === undefined ? 0 : Number(m[2]);
-  const mer = (m[3] ?? "").toLowerCase();
-  if (!Number.isFinite(hour) || hour < 1 || hour > 12 || min > 59) return null;
-  if (mer === "pm" && hour !== 12) hour += 12;
-  if (mer === "am" && hour === 12) hour = 0;
-  const now = new Date();
-  const at = new Date(now);
-  at.setHours(hour, min, 0, 0);
-  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1); // 이미 지났으면 내일.
-  const ms = at.getTime() - now.getTime();
-  return ms > 0 ? Math.min(ms, MAX_COOLDOWN_MS) : null;
-};
-
 // 쿨다운 키 — provider 명시 우선(다대일 openai 어댑터를 ollama/google/openai 로 구분),
 // 없으면 adapter(레거시 spec). specLabel/poolDiversityWarning 과 동일 관용구.
 const cooldownKey = (spec: ModelSpec): string => spec.provider ?? spec.adapter;
@@ -701,6 +657,8 @@ export const restoreCooldowns = (): void => {
     );
   }
 };
+
+export { isRateLimited, parseCooldownMs };
 
 export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void => {
   const detail = errorDetail(e);

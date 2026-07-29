@@ -12,9 +12,15 @@
  * 수정 후 실측: 히스토리 2,853,784자 → 888,954자, user 턴 평균 21,258 → 3,604자.
  */
 import { stripAssembledPrefix } from "../../store/memory.js";
+import { sourceHasCount } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REAL = `<system-reminder>\n# SYSTEM.md — 비서 작동 헌법 (변경 금지)\n${"본문 ".repeat(4000)}\n</system-reminder>\n\n오늘은 여기까지 하자\n`;
+// ★실제 조립 프롬프트는 `<system-reminder>` 블록이 **여럿**이다(SYSTEM.md + AGENT.md 등).
+//  1블록 픽스처는 `lastIndexOf`→`indexOf` 변이를 못 잡는다(감사 실측: 그 변이에서 18,081자
+//  중 9,042자가 남는데 검사는 초록이었다).
+const REAL =
+  `<system-reminder>\n# SYSTEM.md — 비서 작동 헌법 (변경 금지)\n${"헌법 ".repeat(2000)}\n</system-reminder>\n` +
+  `<system-reminder>\n# 돌쇠 (AGENT.md)\n${"정체성 ".repeat(2000)}\n</system-reminder>\n\n오늘은 여기까지 하자\n`;
 
 export const check: RegressionCheck = {
   name: "history-prefix-strip",
@@ -36,7 +42,11 @@ export const check: RegressionCheck = {
         // 보수적 판정 — 사용자가 본문에 그 문자열을 쓴 경우를 잘라먹지 않는다.
         "발화 중간에 태그가 있어도 시작이 아니면 안 건드린다",
         stripAssembledPrefix("이거 </system-reminder> 왜 나와?") ===
-          "이거 </system-reminder> 왜 나와?",
+          "이거 </system-reminder> 왜 나와?" &&
+          // ★startsWith 게이트를 실제로 시험한다 — 종전 입력은 닫는 태그만 있어 게이트를
+          //  전혀 안 건드렸다(includes 로 바꿔도 초록이었고, 그러면 사용자 발화를 먹는다).
+          stripAssembledPrefix("이거 봐 <system-reminder>주의</system-reminder> 왜 나와?") ===
+            "이거 봐 <system-reminder>주의</system-reminder> 왜 나와?",
         "오탐 0",
       ),
       assert(
@@ -44,6 +54,11 @@ export const check: RegressionCheck = {
         stripAssembledPrefix("<system-reminder>x</system-reminder>") ===
           "<system-reminder>x</system-reminder>",
         "빈 턴 방지",
+      ),
+      assert(
+        "★세 로더 모두에 배선돼 있다(하나만 떼도 사고의 3분의 1이 복귀)",
+        (await sourceHasCount("../../store/memory.ts", /stripAssembledPrefix\(/, 3)).ok,
+        `로더 호출 ${(await sourceHasCount("../../store/memory.ts", /stripAssembledPrefix\(/, 3)).found}/3`,
       ),
       assert(
         "이어받기 요약처럼 프리픽스가 아닌 큰 본문은 보존",

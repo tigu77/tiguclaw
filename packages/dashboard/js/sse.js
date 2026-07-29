@@ -269,6 +269,22 @@
           }
           return;
         }
+        // ★압축 고착 통지 (2026-07-30) — 발행은 했는데 **핸들러가 없어** 신호가 다시
+        //  데몬 로그에만 있었다. "12일간 아무도 안 봤다"를 고친 신호를 또 안 보이게 두면
+        //  같은 사고가 반복된다(감사 지적).
+        if (ev.type === "llm.compaction_stuck") {
+          const p = ev.payload || {};
+          if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
+            renderLocalChat(
+              "error",
+              `⚠️ 대화 압축이 ${p.streak || 3}회 연속 실패하고 있습니다 — 오래된 맥락이 계속 버려지는 중입니다.\n` +
+                `(접으려던 양 ${Number(p.foldChars || 0).toLocaleString()}자, 사유: ${p.reason || "미상"})\n` +
+                `이 상태가 지속되면 하던 작업을 잊고 계획만 반복할 수 있습니다. \`/compact\` 로 수동 압축을 시도해 보세요.`,
+              { ts: ev.ts, key: "compaction-stuck|" + (p.threadKey || "") },
+            );
+          }
+          return;
+        }
         if (ev.type === "llm.compacted") {
           renderCompacted(ev.payload || {}, ev.ts);
           return;

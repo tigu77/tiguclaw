@@ -17,6 +17,7 @@
  *
  * MVP = 메모리 레지스트리(영속 0, W-I7 재시작 정직). scheduler `inFlight` Set 동형.
  */
+import { isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
 import { randomUUID } from "node:crypto";
 import { extractTelegramChatId } from "./threadkey.js";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
@@ -1072,10 +1073,14 @@ export const registerWorkerHandler = (handler: MessageHandler): void => {
 const humanizeWorkerError = (raw: string): string => {
   // codex 사용량 한도(429 usage_limit) — resets_in_seconds 가 있으면 "~N분 후 리셋" 안내.
   // 사용자가 *언제 다시 시도하면 되는지* 알게(가장 actionable). 양 provider 무관 문자열만.
-  if (/usage_limit_reached|usage limit/i.test(raw)) {
-    const m = raw.match(/resets_in_seconds"\s*:\s*(\d+)/);
-    if (m !== null) {
-      const min = Math.max(1, Math.round(Number(m[1]) / 60));
+  // ★공용 판정·파서를 쓴다 (2026-07-30 검토 지적). 종전 정규식은 claude 의
+  //  "You've hit your limit · resets 2:20am" 에 false → "모든 어댑터 실패" 분기로 떨어져
+  //  **"잠시 후 다시 시켜주세요"** 를 출력했다. 실제론 수 시간 계정 한도라 적극적 오해였다
+  //  (어젯밤 윈도우 인스턴스에서 실제로 그 문구가 나갔다).
+  if (isRateLimited(raw)) {
+    const ms = parseCooldownMs(raw);
+    if (ms !== null) {
+      const min = Math.max(1, Math.round(ms / 60000));
       return `LLM 사용량 한도 도달(429) — 약 ${min}분 후 한도가 리셋됩니다. 그 뒤 다시 시켜주세요.`;
     }
     return "LLM 사용량 한도 도달(429) — 잠시 후 한도가 리셋되면 다시 시켜주세요.";

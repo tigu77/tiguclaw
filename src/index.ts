@@ -1,3 +1,4 @@
+import { isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
 import "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
@@ -472,7 +473,11 @@ const formatRegionAError = (detail: string): string => {
       `다른 이미지로 다시 보내면 됩니다. (이 이미지 때문에 대화가 막히지 않도록 처리해 두었습니다.)`
     );
   }
-  const isLimit = /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b/i.test(d);
+  // ★공용 판정을 쓴다 (2026-07-30 검토 지적) — 사본이 3곳이었고 그중 llm-runtime 만 claude
+  //  문구를 고쳐서, 사용자에겐 여전히 "⚠️ 요청 처리 중 오류" + 원문 덤프가 나갔다(한도 안내·
+  //  ETA 없음). 실측: `claude-agent-sdk error: You've hit your limit · resets 2:20am` 이
+  //  이 정규식엔 false 였다. 주석은 "진실 통일"이라 적혀 있었는데 사실이 아니었다.
+  const isLimit = isRateLimited(d);
   if (!isLimit) return `⚠️ 요청 처리 중 오류가 발생했습니다:\n${detail}`;
   const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);
   const prov = provMatch ? provMatch[0].toLowerCase() : "LLM";

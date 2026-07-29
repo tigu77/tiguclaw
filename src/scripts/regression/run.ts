@@ -19,6 +19,24 @@ process.env.TIGUCLAW_HOME = home;
 //  그 환경에서 검사가 **라이브 DB** 를 친다(실제로 삭제 문을 쓰는 검사가 있다). 격리는
 //  "홈만 바꿨다" 로는 부족하다.
 delete process.env.DATA_DIR;
+// ★튜닝 env 봉인 (2026-07-30 감사 지적) — `load-env.ts` 가 **레포 `.env` 를 폴백 로드**해서
+//  dev `.env` 의 값이 스위트 판정에 들어갔다. 실측: `CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS=200000`
+//  이면 history-compaction-budget 2건이, `WORKER_TIMEOUT_MS=1000` 이면 timeout-layering 1건이
+//  **코드 무수정으로 빨간불**이 됐다. public 트리는 `.env` 가 없어 이 결합이 안 보였다 —
+//  "내 머신에선 빨간불"의 정석적 원인이라 검사가 읽는 상수는 전부 기본값으로 고정한다.
+for (const k of Object.keys(process.env)) {
+  if (
+    /^CODEX_/.test(k) ||
+    /^WORKER_/.test(k) ||
+    /^SUBAGENT_/.test(k) ||
+    /^MCP_/.test(k) ||
+    /^LLM_/.test(k) ||
+    /^REGION_A_/.test(k) ||
+    /^STEERING_/.test(k)
+  ) {
+    delete process.env[k];
+  }
+}
 // 실수로 라이브 채널이 뜨지 않게(부팅 경로를 안 타지만 방어).
 process.env.TELEGRAM_BOT_TOKEN = "";
 

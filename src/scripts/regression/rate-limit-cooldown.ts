@@ -10,6 +10,7 @@
  * 기본값(10분)으로 강등.
  */
 import { isRateLimited, parseCooldownMs } from "../../core/llm-runtime/index.js";
+import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CLAUDE = "claude-agent-sdk error: You've hit your limit · resets 2:20am (Asia/Seoul)";
@@ -46,6 +47,24 @@ export const check: RegressionCheck = {
         "시각 정보가 없으면 null(호출자가 기본값으로 강등)",
         parseCooldownMs("some unrelated failure") === null,
         "null",
+      ),
+      assert(
+        "★registerCooldownIfRateLimited 이 판정·파서를 실제로 쓴다(배선)",
+        (
+          await sourceHas("../../core/llm-runtime/index.ts", [
+            /isRateLimited\(detail\)/,
+            /parseCooldownMs\(detail\)/,
+          ])
+        ).ok,
+        "llm-runtime/index.ts",
+      ),
+      assert(
+        // ★사본이 3곳이었고 1곳만 고쳐서, 사용자 안내는 원문 덤프·워커 통지는
+        //  "잠시 후 다시" 를 냈다(실제론 수 시간 계정 한도). 같은 판정을 쓰는지 고정.
+        "★사용자 안내·워커 통지도 같은 판정을 쓴다(사본 금지)",
+        (await sourceHas("../../index.ts", [/isRateLimited\(/])).ok &&
+          (await sourceHas("../../core/worker-jobs.ts", [/isRateLimited\(/])).ok,
+        "index.ts · worker-jobs.ts",
       ),
     ];
   },

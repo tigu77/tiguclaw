@@ -4,8 +4,7 @@
  * 7b 분해(2026-06-19)로 슬림화 — 동작 무변경, 순수 이동. 분리된 모듈:
  *  - 정체성 read(readAgent/readSystem/agentPathHint/agentSizeWarning) → `identity.ts`
  *  - 프롬프트 조립(assembleUserPrompt/format*) → `prompt-assembly.ts`
- *  - in-process MCP memory 서버 + 가드(memoryMcpServer/addMemoryWithGuard/
- *    getInProcessMcpServers) → `memory-mcp.ts`
+ *  - in-process MCP memory 서버 + 가드(memoryMcpServer/addMemoryWithGuard) → `memory-mcp.ts`
  *
  * 본 모듈 잔존:
  *  - `retrieveContext`: searchMemories(query) (+ 선택적 transcripts 검색).

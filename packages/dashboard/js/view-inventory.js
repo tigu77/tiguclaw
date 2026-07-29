@@ -198,6 +198,63 @@
           viewsWrap.appendChild(view);
           shell.appendChild(viewsWrap);
         }
+        // ★MCP 서버는 "제공 도구"를 펼쳐 보여준다 (2026-07-29 사용자 요청). 종전엔 메타데이터
+        //  kv 에 이름만 한 줄로 나열돼 눌러도 더 볼 게 없었다. 여기서 실제 서버에 물어본
+        //  결과(설명·파라미터)를 렌더한다 — 지연 조회라 이 항목을 열 때만 요청이 나간다.
+        if (entry.category === "mcp") {
+          const capturedMcpId = item.id;
+          const sec = document.createElement("div");
+          sec.className = "views";
+          const v = document.createElement("div");
+          v.className = "view";
+          const t = document.createElement("div");
+          t.className = "view-title"; t.textContent = "제공 도구";
+          const body = document.createElement("div");
+          body.textContent = "불러오는 중…";
+          v.appendChild(t); v.appendChild(body); sec.appendChild(v); shell.appendChild(sec);
+          fetch("/api/mcp-tools?name=" + encodeURIComponent(entry.name || ""))
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+            .then((d) => {
+              if (selectedCapabilityId !== capturedMcpId) return; // 그 사이 선택이 바뀜 — 스테일 무시.
+              const tools = Array.isArray(d.tools) ? d.tools : [];
+              body.textContent = "";
+              if (tools.length === 0) {
+                body.className = "developer-copy";
+                body.textContent = d.note || "노출된 도구가 없습니다.";
+                return;
+              }
+              for (const tool of tools) {
+                const row = document.createElement("div");
+                row.className = "provider-item s-active";
+                const h = document.createElement("div");
+                h.className = "pi-head";
+                const nm = document.createElement("span");
+                nm.className = "pi-name"; nm.textContent = tool.name || "?";
+                h.appendChild(nm);
+                if (Array.isArray(tool.params) && tool.params.length > 0) {
+                  const kd = document.createElement("span");
+                  kd.className = "pi-kind";
+                  // 필수 인자는 * 로 구분 — 호출 형태를 한 줄로 가늠하게.
+                  kd.textContent = tool.params
+                    .map((k) => ((tool.required || []).includes(k) ? k + "*" : k))
+                    .join(", ");
+                  h.appendChild(kd);
+                }
+                row.appendChild(h);
+                if (tool.description) {
+                  const ds = document.createElement("div");
+                  ds.className = "pi-summary"; ds.textContent = tool.description;
+                  row.appendChild(ds);
+                }
+                body.appendChild(row);
+              }
+            })
+            .catch(() => {
+              if (selectedCapabilityId !== capturedMcpId) return;
+              body.className = "developer-copy";
+              body.textContent = "도구 목록을 불러오지 못했습니다.";
+            });
+        }
         const note = document.createElement("p");
         note.className = "developer-copy";
         note.textContent = entry.source

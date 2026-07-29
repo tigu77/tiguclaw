@@ -35,7 +35,13 @@ import { runSubagentStopHooks } from "./entry/hook-runner.js";
 // best-effort: 관측 발행 실패가 워커 흐름을 무르지 않는다(원칙 3 견고성). 단방향: core
 // worker → core bus(플러그인 무참조). 대시보드 등 구독자가 worker.* 를 받아 렌더.
 const publishWorkerLifecycle = (
-  type: "worker.started" | "worker.done" | "worker.failed" | "worker.cancelled",
+  type:
+    | "worker.started"
+    | "worker.done"
+    | "worker.failed"
+    | "worker.cancelled"
+    /** 재시작으로 중단 — 부팅 복구가 발행(2026-07-29). 아래 recoverInterruptedJobs 주석 참조. */
+    | "worker.interrupted",
   job: {
     jobId: string;
     label: string;
@@ -341,6 +347,16 @@ export interface ListJobsOpts {
   runningOnly?: boolean;
   /** 최근 N개 (startedAt 내림차순). 미지정 = 전체. */
   limit?: number;
+  /**
+   * **이 세션이 띄운 잡만** (잡 좌표는 원 세션으로 환원 — 손자 포함).
+   *
+   * ★왜 필요한가 (2026-07-29 사용자 신고): 잡 레코드에는 띄운 세션의 threadKey 가
+   *  처음부터 실려 있는데 **읽는 쪽이 그걸 안 썼다.** 그래서 `list_workers` 가 전 세션의
+   *  잡을 돌려줬고, 메인 비서는 다른 세션에서 도는 general 워커를 보고 "이전 워커가 실행
+   *  중" 이라고 판단했다. 게다가 비서는 자기 세션 id 조차 몰라(컨텍스트 블록에 없었다)
+   *  남의 것인지 구분할 수단도 없었다. 미지정 = 전체(대시보드·브리지는 전역이 맞다).
+   */
+  ownerThreadKey?: string;
 }
 
 /**
@@ -378,6 +394,10 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
   let all = [...jobs.values()];
   if (opts?.runningOnly === true) {
     all = all.filter((j) => j.status === "running");
+  }
+  const owner = opts?.ownerThreadKey;
+  if (owner !== undefined && owner !== "") {
+    all = all.filter((j) => jobBelongsToSession(j, owner));
   }
   all.sort((a, b) => b.startedAt - a.startedAt);
   if (opts?.limit !== undefined && opts.limit > 0) {
@@ -421,6 +441,19 @@ export const hasLiveChildJob = (threadKey: string): boolean => {
  * 같은 일을 또 띄우는 것을 막는다(2026-07-29 실측: 워커가 도는 중에 워커 재발사).
  * 규칙으로 훈계하는 대신 **사실을 준다** — 판단 근거를 가진 쪽이 판단한다.
  */
+/**
+ * 이 잡이 그 세션 것인가 — 소속 판정 **단일 규칙**.
+ * 잡의 threadKey 가 세션 키 그대로거나, 잡 좌표를 환원했을 때 그 세션이면 소속(손자 포함).
+ */
+export const jobBelongsToSession = (
+  job: { threadKey: string },
+  sessionThreadKey: string,
+): boolean => {
+  if (sessionThreadKey === "") return false;
+  if (job.threadKey === sessionThreadKey) return true;
+  return resolveOwnerThreadKey(job.threadKey) === sessionThreadKey;
+};
+
 export const listLiveChildJobs = (
   threadKey: string,
 ): Array<{ jobId: string; label: string; kind: string; startedAt: number }> => {
@@ -428,9 +461,7 @@ export const listLiveChildJobs = (
   const out: Array<{ jobId: string; label: string; kind: string; startedAt: number }> = [];
   for (const j of jobs.values()) {
     if (j.status !== "running") continue;
-    if (j.threadKey !== threadKey && resolveOwnerThreadKey(j.threadKey) !== threadKey) {
-      continue;
-    }
+    if (!jobBelongsToSession(j, threadKey)) continue;
     out.push({
       jobId: j.jobId,
       label: j.label,
@@ -1231,6 +1262,31 @@ export const onWorkerComplete = async (
 // 채널 start 직후 1회 호출. 통지는 *raw 아웃바운드*(LLM 무경유) — 모델 풀이 죽어 있어도
 // 결정적으로 전달된다. 통지 후 status='interrupted' 전이 → 다음 부팅 재통지 0(멱등).
 
+/**
+ * 중단 사실을 **관측자에게 알린다** (2026-07-29).
+ *
+ * ★사고: 재시작하면 DB status 만 조용히 running→interrupted 로 바뀌고 **이벤트가 안 나갔다.**
+ *  started/done/failed/cancelled 는 전부 발행하는데 이 전이만 빠져 있었다. 그래서 이벤트
+ *  스트림만 보는 관측자(대시보드 SSE replay 등)는 "시작"만 알고 "끝"을 영영 못 배웠고,
+ *  재시작 후에도 워커·서브에이전트가 진행 중으로 남았다(사용자 신고). 실측: dev events 에
+ *  종료 이벤트가 아예 없는 worker.started 6건.
+ *  대시보드는 이걸 클라이언트 폴링(/api/worker-jobs 대조)으로 덮고 있었는데, 그건 부팅·
+ *  재연결 시점에만 도는 **부분 보정**이다 — 사실을 안 알리는 쪽이 근본이다.
+ *  발행 실패가 부팅을 막지 않게 조용히 삼킨다(복구 자체는 DB 전이로 이미 끝났다).
+ */
+const publishInterrupted = (
+  job: ReturnType<typeof listInterruptedWorkerJobs>[number],
+): void => {
+  try {
+    publishWorkerLifecycle("worker.interrupted", { ...job, status: "interrupted" }, {
+      error: "데몬 재시작으로 중단",
+      task: (job as { task?: string }).task,
+    });
+  } catch {
+    // 관측 발행 실패는 복구를 되돌리지 않는다.
+  }
+};
+
 export const recoverInterruptedJobs = async (): Promise<void> => {
   let interrupted: ReturnType<typeof listInterruptedWorkerJobs>;
   try {
@@ -1248,6 +1304,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       persistSafe("recover-agent", () =>
         updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
       );
+      publishInterrupted(job);
       continue;
     }
     const text =
@@ -1276,6 +1333,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
     persistSafe("recover", () =>
       updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
     );
+    publishInterrupted(job);
   }
   // 터미널 전이(interrupted) 배치 종료 후 1회만 prune — 루프 안에서 N번 부르지 않음(§5 얇게).
   if (interrupted.length > 0) pruneTerminalJobsSafe();

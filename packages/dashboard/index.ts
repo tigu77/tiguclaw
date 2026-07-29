@@ -321,6 +321,12 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/channels");
       return;
     }
+    // MCP 서버가 제공하는 도구 상세(설명·파라미터) — 능력 뷰에서 항목을 열 때만 요청된다.
+    if (pathname === "/api/mcp-tools" && method === "GET") {
+      const name = url.searchParams.get("name") ?? "";
+      await proxyJson(res, `/mcp-tools?name=${encodeURIComponent(name)}`);
+      return;
+    }
     // 실행 중 백그라운드 잡 하이드레이션(대시보드 부팅 시 라벨 복원 — worker.started SSE 놓친 경우).
     if (pathname === "/api/worker-jobs" && method === "GET") {
       await proxyJson(res, "/worker-jobs");

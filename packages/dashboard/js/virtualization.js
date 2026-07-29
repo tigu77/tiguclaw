@@ -283,11 +283,32 @@
         isDivider: !!(node.classList && node.classList.contains("date-divider")), top: 0,
       });
 
-      // 최신 아이템 추가(하단). stick 이면 relayout 이 따라간다.
+      // 아이템 추가. 이름은 append 지만 **자리는 ts 가 정한다**(2026-07-29).
+      //
+      // ★왜 정렬 삽입인가: 종전엔 무조건 맨 뒤로 push 했다. 그래서 어떤 경로로든 과거
+      //  항목이 한 번 들어오면 리스트가 즉시 시간 역순이 됐고("15:01:52 아래에 14:12:53"
+      //  실사고), 우리는 그걸 **호출부마다** stale 가드를 달아 막아 왔다 — 메시지·활동·
+      //  선택지·통지·첨부… 그리고 새 경로가 생길 때마다 또 샜다(오늘까지 3회). 가드를
+      //  네 번째로 얹는 대신, 리스트가 **구조적으로** ASC 를 유지하게 한다. 그러면 늦게
+      //  도착한 과거 항목은 버려지지도(정보 손실) 바닥에 붙지도(순서 붕괴) 않고 제자리에
+      //  꽂힌다. 호출부 가드는 그대로 둔다 — 애초에 안 그리는 게 더 싸므로 중복이 아니라
+      //  1차 방어다.
+      //
+      // 비용: 정상 흐름(도착=최신)에서는 while 이 0회 — push 와 동일. 역행분만 뒤에서
+      //  몇 칸 걸어 들어간다. ts 없는 항목(구분선·ts 미상)은 만나면 멈춰 그 뒤에 놓는다.
       const vtAppend = (node) => {
         if (vtIndex.has(node)) return;
         const it = vtMakeItem(node);
-        vtItems.push(it);
+        const ts = vtTsOf(node);
+        let idx = vtItems.length;
+        if (ts !== null && Number.isFinite(ts)) {
+          while (idx > 0) {
+            const prev = vtTsOf(vtItems[idx - 1].node);
+            if (prev === null || !Number.isFinite(prev) || prev <= ts) break;
+            idx--;
+          }
+        }
+        vtItems.splice(idx, 0, it);
         vtIndex.set(node, it);
         vtObserver.observe(node);
         vtRecomputeDividers();
@@ -798,6 +819,13 @@
         const group = document.createElement("div");
         group.className = "turn-group";
         group.dataset.threadkey = thread;
+        // ★숫자 ts 를 반드시 싣는다 (2026-07-29). 종전엔 헤더에 **표시용 문자열**만 있고
+        //  dataset.ts 가 없어서, 이 그룹은 순서 기계장치에 **투명**했다(vtTsOf → null).
+        //  그래서 화면 맨 아래가 도구 카드일 때 vtNewestTs() 가 그 카드를 건너뛰고 더
+        //  오래된 메시지를 "최신"으로 잡았고, replay 로 온 과거 활동이 stale 판정을
+        //  빠져나가 바닥에 붙었다(= 옛 카드가 최신 대화 사이에 끼는 실사고). 날짜 구분선도
+        //  같은 이유로 도구 카드 주변에서 경계를 못 잡았다.
+        if (p && typeof p.ts === "number" && Number.isFinite(p.ts)) group.dataset.ts = String(p.ts);
         // 로그 패널 필터(stream 직속 자식의 dataset.type 매칭)와 일관되도록 그룹에도 타입 표기.
         group.dataset.type = "llm.activity";
 
@@ -883,6 +911,7 @@
         const group = document.createElement("div");
         group.className = "turn-group";
         group.dataset.threadkey = thread;
+        if (p && typeof p.ts === "number" && Number.isFinite(p.ts)) group.dataset.ts = String(p.ts);
         group.dataset.type = "channel.message.out";
         applyFilter(group);
         return {

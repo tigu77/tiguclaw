@@ -918,15 +918,27 @@ export const runOpenAi = async (
           if (callId !== undefined && timing !== undefined) {
             toolTiming.delete(callId);
             timing.stopSlow?.(); // 결과 도착 = 감시 종료(타이머 누수 0).
-            // 결과 텍스트 추출(방어적) — string 이거나 {type:"text",text} / {text} 노드.
-            const rawOut = raw?.output;
-            const outText =
-              typeof rawOut === "string"
-                ? rawOut
-                : rawOut && typeof rawOut === "object"
-                  ? String((rawOut as { text?: unknown }).text ?? "")
+            // 결과 텍스트 추출(방어적) — string / {text} 노드 / **text 노드 배열**.
+            // ★배열 처리 누락 (2026-07-29): MCP CallToolResult 는 content 가 배열이라
+            //  `{text}` 만 보던 종전 코드는 String(undefined ?? "") = "" 를 만들어 openai
+            //  에서만 출력이 안 붙었다(codex 는 배열 join, claude 는 블록 배열 join — 이쪽만
+            //  빠진 parity 구멍). MCP 도구까지 출력을 붙이기로 한 이상 여기서 닫아야 한다.
+            const textOf = (n: unknown): string =>
+              typeof n === "string"
+                ? n
+                : n && typeof n === "object"
+                  ? String((n as { text?: unknown }).text ?? "")
                   : "";
-            const outPreview = buildActivityOutput(timing.label, outText);
+            const rawOut = raw?.output;
+            const outText = Array.isArray(rawOut)
+              ? rawOut.map(textOf).filter((t) => t !== "").join("\n")
+              : textOf(rawOut);
+            // isError 전달 (parity) — claude/codex 는 넘기는데 여기만 빠져 오류 틴트가 없었다.
+            const outIsError =
+              raw && typeof raw === "object"
+                ? (raw as { isError?: unknown }).isError === true
+                : false;
+            const outPreview = buildActivityOutput(timing.label, outText, outIsError);
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),

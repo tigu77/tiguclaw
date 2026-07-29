@@ -41,7 +41,10 @@ import {
   WORKER_TIMEOUT_MS,
   WORKER_HARD_GRACE_MS,
   type WorkerJobRecord,
-} from "../../worker-jobs.js";
+  resolveOwnerThreadKey,
+  jobBelongsToSession,
+}
+from "../../worker-jobs.js";
 import { getLastWorkerActivity } from "../../../store/events.js";
 import type { RegionASdkInput } from "../types.js";
 
@@ -187,7 +190,7 @@ export const createWorkerMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const runInBackground = tool(
     "run_in_background",
-    "오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 워커 모델 등급을 지정하세요(미지정 시 기본 모델). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
+    "**규모 있는 작업의 기본 선택지입니다** — 이 워커가 *지휘자*가 되어 필요하면 spawn_agent 로 하위 작업을 팬아웃할 수 있습니다(워커 안에서 서브에이전트 위임은 가능, 워커 재발사만 불가). 단 발사 후에는 지시를 더 얹을 수 없으므로(스티어 미도달) 범위·판단기준을 task 에 확정해 보내세요. 오래 걸리는 작업을 백그라운드 워커로 비차단 실행합니다. 즉시 시작 확인(jobId)을 반환하고 워커는 백그라운드에서 진행하므로, 호출 후 사용자에게 바로 '시작했어요'라고 답하고 대화를 이어가세요 (워커를 기다리지 마세요). 워커는 당신과 동급의 모든 도구를 쓸 수 있습니다. 작업이 끝나면 별도 알림으로 결과를 받아 당신이 사용자에게 보고하게 됩니다. task 에는 사용자 원문 + 워커가 단독으로 작업하는 데 필요한 맥락을 충분히 적으세요(워커는 이 대화 history 를 보지 못합니다). **`path`(폴더 경로)를 주면 워커가 그 폴더 컨텍스트로 실행됩니다 — 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이고, 대시보드 그 프로젝트에 귀속되어 보입니다.** 품질이 결과를 좌우하는 작업(코드리뷰·설계·복잡 추론)은 `tier: 'high'`, 단순·대량 작업은 `tier: 'low'` 로 워커 모델 등급을 지정하세요(미지정 시 기본 모델). 워커 안에서는 다시 백그라운드 워커를 발사할 수 없습니다.",
     {
       task: z
         .string()
@@ -260,7 +263,7 @@ export const createWorkerMcpServer = (
 
   const listWorkers = tool(
     "list_workers",
-    "현재 백그라운드 워커들의 상태를 조회합니다. 사용자가 '지금 뭐 돌고 있어?' 류로 물을 때 사용하세요. running_only=true 면 진행 중인 워커만 반환합니다.",
+    "**지금 이 대화(세션)가 띄운** 백그라운드 워커의 상태를 조회합니다. 사용자가 '지금 뭐 돌고 있어?' 류로 물을 때 사용하세요. 다른 대화의 워커는 건수만 덧붙습니다(전체 목록이 필요하면 list_all_workers). running_only=true 면 진행 중인 워커만.",
     {
       running_only: z
         .boolean()
@@ -270,12 +273,33 @@ export const createWorkerMcpServer = (
     async (args) => {
       try {
         const now = Date.now();
-        const jobs = listJobs({ runningOnly: args.running_only === true });
+        // ★세션 스코프 (2026-07-29 사용자 신고) — 종전엔 **전 세션 통합**이라, 다른 대화에서
+        //  도는 워커를 보고 메인이 "이전 워커가 실행 중" 이라고 판단해 새 작업을 안 띄웠다.
+        //  잡에는 띄운 세션이 처음부터 실려 있었는데 읽는 쪽이 안 썼던 것 = 데이터가 아니라
+        //  질의의 결함. 소속 미상(부모 잡이 정리된 경우)은 전역으로 열어 둔다 — 읽기 도구라
+        //  숨기는 쪽이 더 나쁘다.
+        const ownSession = resolveOwnerThreadKey(parentInput.threadKey);
+        const scoped = ownSession !== "";
+        const running = args.running_only === true;
+        const jobs = listJobs({
+          runningOnly: running,
+          ...(scoped ? { ownerThreadKey: ownSession } : {}),
+        });
+        // 다른 세션에서 도는 건수 — 숨기지 않되 내 것과 섞지 않는다.
+        const otherRunning = scoped
+          ? listJobs({ runningOnly: true }).filter(
+              (j) => !jobBelongsToSession(j, ownSession),
+            ).length
+          : 0;
+        const otherNote =
+          otherRunning > 0
+            ? `\n(다른 대화에서 ${otherRunning}건이 진행 중입니다 — 이 대화와 무관하니 같은 작업으로 오해하지 마세요. 전체 목록은 list_all_workers.)`
+            : "";
         if (jobs.length === 0) {
           return okText(
-            args.running_only === true
-              ? "진행 중인 백그라운드 워커가 없습니다."
-              : "백그라운드 워커가 없습니다.",
+            (running
+              ? "이 대화에서 진행 중인 백그라운드 워커가 없습니다."
+              : "이 대화의 백그라운드 워커가 없습니다.") + otherNote,
           );
         }
         const lines = jobs.map((j) => {
@@ -299,7 +323,54 @@ export const createWorkerMcpServer = (
           }
           return `- '${j.label}' — ${status} (${elapsed} 소요)`;
         });
-        return okText(`## 백그라운드 워커\n\n${lines.join("\n")}`);
+        const header = scoped ? "## 백그라운드 워커 (이 대화)" : "## 백그라운드 워커 (전체 대화)";
+        return okText(`${header}\n\n${lines.join("\n")}${otherNote}`);
+      } catch (e) {
+        return errText(e instanceof Error ? e.message : String(e));
+      }
+    },
+  );
+
+  /**
+   * 전체 세션 워커 — **별도 도구**로 분리 (2026-07-29, 사용자 확정).
+   *
+   * 원래는 list_workers 에 `all_sessions` 플래그로 붙였는데, 그건 footgun 이다: 모델이
+   * "혹시 모르니 전체로" 켜는 순간 이번 사고(다른 대화 워커를 자기 것으로 오인)가 그대로
+   * 재발한다. 도구를 나누면 **호출하는 순간 의도가 확정**되고, list_workers 는 어떤 인자
+   * 조합에서도 세션을 넘지 않는다. 비용은 능력 인덱스 한 줄.
+   */
+  const listAllWorkers = tool(
+    "list_all_workers",
+    "**모든 대화(세션)** 의 백그라운드 워커를 조회합니다. 사용자가 '전체'·'다른 대화 것까지'·'서버에서 도는 거 전부' 처럼 **명시적으로** 물을 때만 쓰세요. 평소 '지금 뭐 돌고 있어?' 는 list_workers(이 대화) 입니다.",
+    {
+      running_only: z
+        .boolean()
+        .optional()
+        .describe("true 면 진행 중(running)인 워커만. 미지정 = 전체."),
+    },
+    async (args) => {
+      try {
+        const now = Date.now();
+        const ownSession = resolveOwnerThreadKey(parentInput.threadKey);
+        const all = listJobs({ runningOnly: args.running_only === true });
+        if (all.length === 0) {
+          return okText(
+            args.running_only === true
+              ? "진행 중인 백그라운드 워커가 (어느 대화에도) 없습니다."
+              : "백그라운드 워커가 (어느 대화에도) 없습니다.",
+          );
+        }
+        // 내 것/남의 것을 **줄 단위로 표시** — 통합 목록이라도 오인하지 않게.
+        const lines = all.map((j) => {
+          const end = j.finishedAt ?? now;
+          const elapsed = formatElapsed(j.startedAt, end);
+          const mine =
+            ownSession !== "" && jobBelongsToSession(j, ownSession)
+              ? "이 대화"
+              : "다른 대화";
+          return `- '${j.label}' — ${STATUS_LABEL[j.status]} (${elapsed}, ${mine})`;
+        });
+        return okText(`## 백그라운드 워커 (전체 대화)\n\n${lines.join("\n")}`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }
@@ -335,13 +406,36 @@ export const createWorkerMcpServer = (
         // 은 U-I4 개정으로 worker·agent 모두 취소함 — 그건 사용자가 카드에서 명시 지목한 경우라
         // 경로가 다르다.) agent 잡이 같은 레지스트리에 running 으로 상주하므로 필터 필수.
         let target: WorkerJobRecord | undefined;
+        // ★label 매칭은 **이 대화의 워커 안에서만** (2026-07-29). label 은 사람이 붙인
+        //  이름이라 세션 간 충돌이 흔하다("리서치", "정리"…). 전역에서 최신 것을 집으면
+        //  사용자가 의도하지 않은 **남의 대화 작업을 취소**할 수 있다 — 되돌릴 수 없는 행위라
+        //  범위를 좁히는 쪽이 옳다. 소속 미상이면 종전대로 전역(부모 잡이 정리된 예외).
+        const cancelScope = resolveOwnerThreadKey(parentInput.threadKey);
+        const runningForCancel = listJobs({
+          runningOnly: true,
+          ...(cancelScope !== "" ? { ownerThreadKey: cancelScope } : {}),
+        });
         if (args.label !== undefined && args.label !== "") {
-          target = listJobs({ runningOnly: true }).find(
+          target = runningForCancel.find(
             (j) => j.kind === "worker" && j.label === args.label,
           );
+          if (target === undefined && cancelScope !== "") {
+            // 다른 대화에 같은 이름이 있으면 조용히 넘기지 말고 사실을 알린다.
+            const elsewhere = listJobs({ runningOnly: true }).find(
+              (j) => j.kind === "worker" && j.label === args.label,
+            );
+            if (elsewhere !== undefined) {
+              return okText(
+                `'${args.label}' 워커는 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
+                  `그 대화에서 멈추거나, 대시보드 작업 카드에서 직접 중지해 주세요.`,
+              );
+            }
+          }
         }
         if (target === undefined && args.job_id !== undefined && args.job_id !== "") {
           const j = getJob(args.job_id);
+          // job_id 는 사용자가 카드에서 직접 집은 정확한 좌표 — 세션 밖이라도 존중한다
+          // (label 과 달리 오인 여지가 없다). 다만 워커만(agent 는 아래 안내 분기).
           if (j !== undefined && j.kind === "worker") target = j;
         }
         if (target === undefined) {
@@ -389,6 +483,6 @@ export const createWorkerMcpServer = (
   return createSdkMcpServer({
     name: "workers",
     version: "1.0.0",
-    tools: [runInBackground, listWorkers, cancelWorker],
+    tools: [runInBackground, listWorkers, listAllWorkers, cancelWorker],
   });
 };

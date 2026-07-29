@@ -104,6 +104,7 @@ import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
+import { needsClosingReport } from "./_turn-completion.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 import {
   extractAccountId,
@@ -822,6 +823,17 @@ export const runOpenAiCodex = async (
   // → 다음 turn 재요청. 절대 상한 = CODEX_MAX_TOOL_ITERATIONS_HARD(런어웨이 최후 방어),
   // CODEX_MAX_TOOL_ITERATIONS 는 soft checkpoint 간격(진행 nudge).
   let finalText = "";
+  /**
+   * **마지막 텍스트 이후 실행한 도구 수** — "예고만 하고 사라지는 턴" 탐지용 (2026-07-29).
+   *
+   * gpt 계열은 "확인하겠습니다" 같은 *예고*를 먼저 뱉고 도구를 부른 뒤, 다음 iteration 을
+   * 통째로 비워 턴을 끝내는 성향이 있다. 그러면 사용자에게는 예고문만 남고 실제 작업도
+   * 결과 보고도 없다(실측 2026-07-29 14:07 dev / 회사 인스턴스 동일 패턴, 신고 2회).
+   * 종전 빈-턴 nudge 는 `finalText === ""` 일 때만 돌아서 **예고문이 있으면 정상 종료로
+   * 오인**했다 — 그게 조기 중단의 뿌리다. 이 카운터로 "텍스트 이후 도구가 돌았는데 보고가
+   * 없다"를 구분해 같은 nudge 를 태운다.
+   */
+  let toolCallsSinceText = 0;
   let finalResponseId: string | undefined;
   // /status 개편 — 마지막 turn 의 usage 보존 (마지막 turn = 가장 큰 누적 input →
   // "얼마나 찼나" 의 정확 proxy). usage 미캡처 turn 은 갱신 안 함 (graceful).
@@ -1357,6 +1369,7 @@ export const runOpenAiCodex = async (
       //  빈 응답이면 덮어쓰지 않고 마지막 실질 텍스트를 유지. 완전 무텍스트 턴은 아래 폴백 관할.
       if (text !== "") {
         finalText = text;
+        toolCallsSinceText = 0; // 보고가 나왔다 — 이후 도구부터 다시 센다.
       }
       if (responseId !== undefined) finalResponseId = responseId;
 
@@ -1422,7 +1435,8 @@ export const runOpenAiCodex = async (
         // reasoning 만 하거나 "이제 끝" 신호로 빈 turn) + 누적 텍스트도 0 + 재요청 여유 →
         // "끝났으면 답을, 아니면 계속" nudge. 텍스트가 조금이라도 있으면(중간 보고)
         // nudge 0 — 정상 종료로 취급(과도 재요청 회피).
-        if (text === "" && finalText === "") {
+        // 판정은 `_turn-completion.ts` 단일 규칙 — 왜 예고문이 정상 종료가 아닌지는 거기 주석.
+        if (needsClosingReport({ text, finalText, toolCallsSinceText })) {
           if (emptyBreakRetries < MAX_EMPTY_BREAK_RETRIES) {
             emptyBreakRetries += 1;
             // 2026-06-05/06-11 — nudge 에 실행 도구 목록 + 사용자 원 입력 재주입.
@@ -1517,6 +1531,9 @@ export const runOpenAiCodex = async (
           ],
         });
       }
+
+      // 이번 iteration 의 도구는 "마지막 텍스트 이후" 에 속한다(위 카운터 주석 참조).
+      toolCallsSinceText += toolCalls.length;
 
       // V5.3 — 도구 호출 lifecycle: 각 function_call 을 input 배열에 그대로 push
       // (OpenClaw L300-311 shape) → callTool 실행 → function_call_output push

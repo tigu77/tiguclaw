@@ -5,7 +5,6 @@
  *  - `addMemoryWithGuard`: store.addMemory thin wrapper. UPSERT 결과 분류 + 이벤트 발행.
  *  - `memoryMcpServer`: SDK in-process MCP server 의 도구(read/add/update/delete +
  *    list_installed_plugins).
- *  - `getInProcessMcpServers`: in-process MCP server 메타 (inventory 용 단일 진실 소스).
  */
 import { z } from "zod";
 import {
@@ -214,22 +213,3 @@ export const createMemoryMcpServer = (): McpSdkServerConfigWithInstance =>
       listInstalledPluginsTool,
     ],
   });
-
-// ─── in-process MCP server 메타 — inventory.ts (e) (ii) 의 hardcode 대신
-// 향후 다중 server 도입 시 본 export 가 단일 진실 소스가 되도록 미리 export.
-// V1 단계 inventory.ts 는 contract §결정 5 (단방향 import) 로 hardcode 사용.
-export const getInProcessMcpServers = (): {
-  name: string;
-  tools: string[];
-}[] => [
-  {
-    name: "memory",
-    tools: [
-      "read_memory",
-      "add_memory",
-      "update_memory",
-      "delete_memory",
-      "list_installed_plugins",
-    ],
-  },
-];

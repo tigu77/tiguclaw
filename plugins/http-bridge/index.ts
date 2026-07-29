@@ -84,6 +84,10 @@ import {
 } from "../../src/core/llm-runtime/index.js";
 import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
 import { listEvents } from "../../src/store/events.js";
+import { createMemoryMcpServer } from "../../src/core/memory-mcp.js";
+import { adaptClaudeMcpServer } from "../../src/core/llm-runtime/adapters/_mcp-bridge.js";
+
+
 import {
   listJobs,
   resolveOwnerThreadKey,
@@ -99,6 +103,15 @@ import {
 } from "../../src/core/llm-runtime/capabilities/file-ops-mcp.js";
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
+
+/**
+ * in-process MCP 서버 팩토리 — `/mcp-tools` 가 **실제 인스턴스에 물어보기** 위한 유일한 맵.
+ * 새 in-process 서버가 생기면 여기 한 줄만 추가하면 도구 상세가 자동으로 따라온다
+ * (하드코딩 목록을 또 만들지 않는다 — 기존 두 곳이 이미 드리프트했다, 2026-07-29).
+ */
+const IN_PROCESS_MCP_FACTORIES: Record<string, () => ReturnType<typeof createMemoryMcpServer>> = {
+  memory: createMemoryMcpServer,
+};
 import { readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 
@@ -1100,6 +1113,8 @@ class HttpBridge implements Channel, Observer {
                 ? "read"
               : pathname === "/worker-jobs" && method === "GET"
                 ? "read"
+                : pathname === "/mcp-tools" && method === "GET"
+                  ? "read"
                 : pathname === "/shells" && method === "GET"
                   ? "read"
                 : pathname === "/shell-output" && method === "GET"
@@ -1351,6 +1366,45 @@ class HttpBridge implements Channel, Observer {
     // `listShells`(file-ops-mcp.ts) 를 그대로 호출 — 코어는 http-bridge 를 모른다.
     // codex/openai 전용 레인(claude SDK 소유 셸은 Phase 4 관측 브리지 전까지 미포함,
     // ADR §6 명시). read 게이트(자기 셸 목록 조회, /worker-jobs 동형).
+    // /mcp-tools?name=<server> — 그 MCP 서버가 제공하는 도구를 **설명·스키마까지** 반환.
+    // 인벤토리는 서버 단위라 도구는 이름만 하드코딩돼 있었고(두 곳에 있어 이미 드리프트),
+    // 대시보드에서 눌러도 더 볼 게 없었다(사용자 지적). 여기서 **실제 서버 인스턴스에
+    // 물어본다** — 하드코딩이 아니라 단일 진실 소스이므로 드리프트가 구조적으로 불가능하다.
+    // 지연 조회(이 요청이 올 때만 인스턴스 생성) — 평시 비용 0. read 게이트.
+    if (pathname === "/mcp-tools" && method === "GET") {
+      const want = (url.searchParams.get("name") ?? "").trim();
+      if (want === "") {
+        writeJson(res, 400, { error: "name 파라미터가 필요합니다" });
+        return;
+      }
+      try {
+        const factory = IN_PROCESS_MCP_FACTORIES[want];
+        if (factory === undefined) {
+          // 외부 MCP 는 연결된 클라이언트가 있어야 물어볼 수 있다 — 없으면 정직하게 빈 목록.
+          writeJson(res, 200, { name: want, tools: [], note: "in-process 서버가 아니라 도구 상세를 조회할 수 없습니다(외부 MCP 는 연결 시점에만 노출)." });
+          return;
+        }
+        const bridge = await adaptClaudeMcpServer(factory(), want);
+        const raw = (await bridge.listTools()) as Array<{
+          name?: string;
+          description?: string;
+          inputSchema?: { properties?: Record<string, unknown>; required?: string[] };
+        }>;
+        const tools = raw.map((t) => ({
+          name: String(t.name ?? ""),
+          description: String(t.description ?? ""),
+          params: Object.keys(t.inputSchema?.properties ?? {}),
+          required: Array.isArray(t.inputSchema?.required) ? t.inputSchema.required : [],
+        }));
+        writeJson(res, 200, { name: want, tools });
+      } catch (e) {
+        writeJson(res, 500, {
+          error: `도구 조회 실패: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+      return;
+    }
+
     if (pathname === "/shells" && method === "GET") {
       writeJson(res, 200, { shells: listShells() });
       return;

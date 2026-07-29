@@ -136,7 +136,12 @@ export const formatConversationContext = (
   threadKey: string,
   channelAddress?: string,
 ): string => {
-  const lines = [`- 채널 (dest_channel): ${channel}`];
+  // ★자기 세션 정체성 (2026-07-29 사용자 질문 "메인비서가 현재 세션을 알고 있나?" → 몰랐다).
+  //  종전 블록엔 **배달 좌표**(dest_channel/dest_target)만 있고 "나는 어느 대화인가"가
+  //  없었다. 그래서 전 세션 통합 목록(옛 list_workers)을 봐도 어느 줄이 자기 것인지
+  //  판단할 근거가 아예 없었고, 남의 대화 워커를 자기 것으로 오인했다(실사고). 도구를
+  //  세션 스코프로 좁히는 것과 짝이다 — 좁힌 범위가 무엇인지 본인이 알아야 한다.
+  const lines = [`- 이 대화(세션) id: ${threadKey}`, `- 채널 (dest_channel): ${channel}`];
   // 채널/세션 분리(ADR 2026-07-15 §D3): dest_target 은 세션 id 파싱이 아니라 **캡처된
   // 배달 좌표**(channelAddress)를 우선 쓴다 — 세션 id 가 채널 무관(dashboard:*)이 되면
   // threadKey 파싱으로 chatId 를 못 얻기 때문. 미지정이면 telegram threadKey "tg:<chatId>"
@@ -184,7 +189,7 @@ const liveChildJobsLine = (threadKey: string): string => {
     const more = jobs.length > 5 ? ` 외 ${jobs.length - 5}건` : "";
     return (
       `- **진행 중인 백그라운드 작업**: ${items}${more}\n` +
-      "  같은 일을 또 띄우지 마세요 — 끝나면 결과가 이 대화로 돌아옵니다. 상태는 list_workers 로 확인하세요."
+      "  같은 일을 또 띄우지 마세요 — 끝나면 결과가 이 대화로 돌아옵니다. 상태는 list_workers(이 대화 것만) 로 확인하세요."
     );
   } catch {
     return ""; // 조회 실패는 컨텍스트 누락일 뿐 — 턴을 막지 않는다.

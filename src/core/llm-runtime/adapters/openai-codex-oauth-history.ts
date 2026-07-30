@@ -78,6 +78,15 @@ const CODEX_TURN_HISTORY_CHAR_CAP = STORE_TURN_HISTORY_CHAR_CAP;
 interface CodexSseEvent {
   type?: string;
   delta?: string;
+  /**
+   * ★`error` 이벤트(최상위) — 공식 SDK `ResponseErrorEvent` 형상
+   * (`node_modules/openai/resources/responses/responses.d.ts`).
+   * 종전엔 이 세 필드가 타입에도 파서에도 없어 **사유를 통째로 버렸다**(2026-07-30 실사고:
+   * 백엔드가 error+response.failed 를 보내는데 우리는 "모델이 빈 응답" 으로 오진).
+   */
+  code?: string | null;
+  message?: string;
+  param?: string | null;
   item?: {
     type?: string;
     id?: string;
@@ -88,6 +97,11 @@ interface CodexSseEvent {
   response?: {
     id?: string;
     output_text?: string;
+    /** `response.failed` 의 사유 — 공식 `ResponseError`(code·message). */
+    error?: { code?: string; message?: string } | null;
+    /** `response.incomplete` 의 사유 — `max_output_tokens` | `content_filter`. */
+    incomplete_details?: { reason?: string } | null;
+    status?: string;
     output?: Array<{
       content?: Array<{ text?: string; type?: string }>;
     }>;
@@ -145,6 +159,13 @@ export interface CodexSseResult {
   /** 마지막으로 본 SSE 이벤트 타입(빈 응답 진단 — completed 없이 끊겼는지). */
   lastEvent?: string;
   /**
+   * ★백엔드가 **명시적으로 보고한 실패** (2026-07-30). 200 OK 로 열린 스트림 안에서
+   * `error` / `response.failed` / `response.incomplete` 로 도착한다.
+   * 종전엔 이 세 이벤트를 파서가 아예 안 읽어 사유가 사라졌고, 호출부는 빈 텍스트만 보고
+   * "모델이 침묵" 으로 오진해 nudge 3회를 태운 뒤 틀린 에러를 냈다.
+   */
+  failure?: { source: string; code?: string; message?: string; param?: string };
+  /**
    * ★이 스트림이 흘린 이벤트 타입별 개수 (2026-07-30, 관측 전용).
    *
    * `response.completed` 없이 끝난 스트림에서 **무엇이 왔는지** 를 남기기 위한 것.
@@ -194,6 +215,8 @@ export const parseCodexSse = async (
   let lastEvent = "(없음)";
   /** 이벤트 타입별 개수 — completed 없이 끝났을 때만 호출부가 읽는다(관측 전용). */
   const eventCounts: Record<string, number> = {};
+  /** 백엔드가 명시 보고한 실패(먹지 않는다 — 첫 건을 보존해 호출부로 올린다). */
+  let failure: CodexSseResult["failure"];
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -303,6 +326,42 @@ export const parseCodexSse = async (
             });
             currentToolCall = null;
           }
+          // ★터미널 실패 3종 — 공식 SDK 이벤트(ResponseErrorEvent / ResponseFailedEvent /
+          //  ResponseIncompleteEvent). 이 백엔드는 **HTTP 200 으로 스트림을 열어놓고 그 안에서
+          //  실패를 통보**한다. 종전엔 어느 분기에도 안 걸려 조용히 버려졌고(예외가 아니라
+          //  무관심), 호출부는 빈 텍스트만 보고 "모델이 침묵" 으로 오진했다.
+          //  첫 실패만 보존한다 — 뒤따르는 이벤트가 사유를 덮어쓰지 않게.
+          if (failure === undefined) {
+            if (event.type === "error") {
+              failure = {
+                source: "error",
+                ...(typeof event.code === "string" ? { code: event.code } : {}),
+                ...(typeof event.message === "string" ? { message: event.message } : {}),
+                ...(typeof event.param === "string" ? { param: event.param } : {}),
+              };
+            } else if (event.type === "response.failed") {
+              const e = event.response?.error;
+              failure = {
+                source: "response.failed",
+                ...(typeof e?.code === "string" ? { code: e.code } : {}),
+                ...(typeof e?.message === "string" ? { message: e.message } : {}),
+              };
+            } else if (event.type === "response.incomplete") {
+              const r = event.response?.incomplete_details?.reason;
+              failure = {
+                source: "response.incomplete",
+                ...(typeof r === "string" ? { code: r } : {}),
+              };
+            }
+          }
+          // 터미널 이벤트는 lastEvent 에도 남긴다 — "무엇으로 끝났나" 가 completed 여부만이
+          // 아니라 실패 종류까지 보이게(종전엔 completed 분기에서만 대입해 전부 "(없음)").
+          if (
+            event.type === "response.failed" ||
+            event.type === "response.incomplete"
+          ) {
+            lastEvent = event.type;
+          }
           // response.completed — final output_text fallback + response.id 추출.
           if (event.type === "response.completed") {
             if (text === "" && typeof event.response?.output_text === "string") {
@@ -349,7 +408,15 @@ export const parseCodexSse = async (
   }
 
   // lastEvent — 빈 응답 진단용(2026-07-30). `response.completed` 가 안 왔는지 로그로 가른다.
-  return { text, responseId, toolCalls, usage, lastEvent, eventCounts };
+  return {
+    text,
+    responseId,
+    toolCalls,
+    usage,
+    lastEvent,
+    eventCounts,
+    ...(failure !== undefined ? { failure } : {}),
+  };
 };
 
 /**

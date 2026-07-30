@@ -1292,6 +1292,31 @@ export const runOpenAiCodex = async (
           // ★completed 없이 끝난 스트림만 상세 1줄 — 정의상 드물어 소음 0. 무엇이 왔는지
           //  (reasoning 만? in_progress 만? 아예 조기 절단?) 를 이벤트 히스토그램으로 남긴다.
           //  이 표본이 "전송 실패로 재시도해도 되는가" 판단의 재료다.
+          // ★백엔드가 사유를 말했으면 **그걸 쓴다** — 먹지 않는다.
+          //  종전 흐름: 사유 폐기 → 빈 텍스트 → "모델이 침묵" 오진 → nudge 3회(17.8초)
+          //  → "최종 응답 텍스트 비어있음" 이라는 틀린 에러.
+          //  이제: 사유를 그대로 올린다. 부작용 도구가 이미 돌았으면 throw 하지 않는다
+          //  (폴백 모델이 턴을 재실행해 memory/todo/schedule 을 중복 실행하는 것 방지 —
+          //   기존 sideEffectExecuted 가드와 같은 이유·같은 기준).
+          if (sseResult.failure !== undefined) {
+            const f = sseResult.failure;
+            const why =
+              `${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
+              `${f.message !== undefined ? `: ${f.message}` : ""}` +
+              `${f.param !== undefined ? ` (param=${f.param})` : ""}`;
+            console.error(
+              `[codex-backend-failure] ${why} — iteration=${iteration} ` +
+                `text=${sseResult.text.length} toolCalls=${sseResult.toolCalls.length} ` +
+                `sideEffect=${sideEffectExecuted} thread=${input.threadKey}`,
+            );
+            if (
+              sseResult.text === "" &&
+              sseResult.toolCalls.length === 0 &&
+              !sideEffectExecuted
+            ) {
+              throw new Error(`codex 백엔드가 요청 실패를 보고했습니다 — ${why}`);
+            }
+          }
           if (endKey === "none") {
             const hist = Object.entries(sseResult.eventCounts ?? {})
               .sort((a, b) => b[1] - a[1])

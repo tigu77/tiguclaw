@@ -54,7 +54,8 @@
     "daemon:start": "node bin/daemon.mjs start",
     "daemon:status": "node bin/daemon.mjs status",
     "daemon:logs": "node bin/daemon.mjs logs",
-    "test:regression": "tsx src/scripts/regression/run.ts"
+    "test:regression": "tsx src/scripts/regression/run.ts",
+    "diagnose:codex": "tsx src/scripts/diagnose-codex.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

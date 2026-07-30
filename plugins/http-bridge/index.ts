@@ -593,10 +593,27 @@ interface HistoryActivity {
 const historyActivities = (
   entries: Array<{ ts: number }>,
   scopeThreadKey?: string,
+  /**
+   * ★상한 적용 여부 (2026-07-30) — **최신 페이지에서는 상한을 걸면 안 된다.**
+   *
+   * 사고: 탭을 전환하면 그 세션에서 *진행 중인* 턴이 통째로 안 보였다. 원인은 아래
+   * `newestTs` 컷이다 — `chat_log` 는 `channel.message.in`(사용자 발화, 인바운드 즉시)과
+   * `channel.message.out`(비서 응답, **턴 완료 후**)로만 쌓이므로, 진행 중 턴에는
+   * assistant 행이 아직 없어 `newestTs` = 사용자 발화 시각이다. 그 턴의 도구 스텝·텍스트
+   * 세그먼트는 전부 그 이후라 **100% 버려졌다**. 그래서 `tabs.js` 의 "진행 중 턴 seamless
+   * 재개"(activeTurns && activities.length > 0)가 **한 번도 발동하지 못했다** — 방어 코드는
+   * 있는데 서버가 재료를 안 줬다.
+   *
+   * 상한의 원래 의도는 **역방향 페이지네이션**(옛 페이지를 볼 때 창 밖 활동 배제)이다.
+   * 그래서 `beforeTs` 가 지정된 과거 페이지에서만 건다.
+   */
+  upperBounded = false,
 ): HistoryActivity[] => {
   if (entries.length === 0) return [];
   const sinceTs = entries[0].ts; // ASC — oldest.
-  const newestTs = entries[entries.length - 1].ts;
+  const newestTs = upperBounded
+    ? entries[entries.length - 1].ts
+    : Number.POSITIVE_INFINITY;
   try {
     const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 });
     // 1차 파싱 — start 스텝은 out 으로, end 이벤트의 output 은 (threadKey|adapter|seq) 맵으로
@@ -681,6 +698,13 @@ const historyActivities = (
         if (o !== undefined) s.output = o;
       }
     }
+    // ★ASC 로 돌려준다 (2026-07-30) — `entries`(ASC, 위 sinceTs 주석)와 **같은 방향**이어야
+    //  한다. listEvents 는 `ORDER BY id DESC` 라 여기까지 최신순인데, 소비처는 ASC 를
+    //  가정한다: `tabs.js` 의 진행 중 턴 분할이 배열 끝에서부터 seq 증가 구간을 되짚어
+    //  "마지막 turn" 을 찾는다(DESC 면 가장 오래된 1건만 집어 재개가 깨진다).
+    //  `groupMergedItems` 는 자체 정렬이라 무영향 — 즉 지금까지 이 뒤집힘이 드러난 곳이
+    //  분할 로직 하나뿐이었고, 그마저 위 상한 컷 때문에 실행된 적이 없어 가려져 있었다.
+    out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
     return out;
   } catch {
     return [];
@@ -1815,7 +1839,9 @@ class HttpBridge implements Channel, Observer {
         // activities(기능 B) — 이력에 도구 스텝 복원(새로고침 후에도 도구 사용 표시).
         writeJson(res, 200, {
           entries,
-          activities: historyActivities(entries, threadKey),
+          // 상한은 역방향 페이지네이션(beforeTs)일 때만 — 최신 페이지는 진행 중 턴의
+          // 활동이 chat_log 마지막 행보다 뒤에 있어 상한을 걸면 통째로 사라진다.
+          activities: historyActivities(entries, threadKey, beforeTs !== undefined),
           assistantName: getAssistantName(),
         });
       } catch (e) {
@@ -1849,7 +1875,8 @@ class HttpBridge implements Channel, Observer {
         });
         writeJson(res, 200, {
           entries,
-          activities: historyActivities(entries),
+          // /chat-history 와 동일 규칙 — 상한은 역방향 페이지(beforeTs)에서만.
+          activities: historyActivities(entries, undefined, beforeTs !== undefined),
           generatedAt: new Date().toISOString(),
         });
       } catch (e) {

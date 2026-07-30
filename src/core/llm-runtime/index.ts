@@ -418,6 +418,84 @@ export const isPrefixCacheCold = (usage: {
 /** threadKey → 연속 콜드 턴 수. 정상 턴이 오면 지운다(핫 워킹셋만 바운드). */
 const coldStreak = new Map<string, number>();
 
+/**
+ * 주기 롤업 — **정상일 때도 로그에 수치를 남긴다** (2026-07-30).
+ *
+ * ★왜 필요한가(실제로 막혔던 일): 위 경고는 "나쁠 때만" 운다. 그래서 **원격 접속이 안 되는
+ *  인스턴스**(회사돌쇠·회사PC·윈도우)에서는 개선이 됐는지 **영영 확인할 수 없다** — 망가진
+ *  것만 알 수 있다. 실제로 회사돌쇠 로그 284줄을 받았는데 `usage`·`cached` 문자열이 0건이라
+ *  적중률을 못 쟀다(디버그 라인은 `CODEX_DEBUG_USAGE=1` 게이트 뒤).
+ *  운영 원칙이 "로그가 1차 진단면 / **성공도 남기고**, 반복은 세라" 인데 뒤쪽만 지켰던 것.
+ *
+ * 매 턴이 아니라 N턴마다 **집계 한 줄** — 배경소음 0, 로그만으로 판정 가능.
+ * 분모는 **턴 합계**(Total 우선)다: "이 하네스가 실제로 태운 입력 중 얼마가 캐시였나"가
+ * 알고 싶은 값이라, 마지막 호출 1회가 아니라 턴 전체가 맞다.
+ */
+const ROLLUP_EVERY_TURNS = 50;
+const ROLLUP_MAX_WINDOW_MS = 6 * 60 * 60 * 1000; // 조용한 인스턴스도 하루 몇 줄은 남게.
+
+interface RollupBucket {
+  turns: number;
+  input: number;
+  cached: number;
+}
+const rollup = new Map<string, RollupBucket>();
+let rollupTurns = 0;
+let rollupUnreported = 0;
+let rollupWindowStart = 0;
+
+const flushPrefixCacheRollup = (now: number): void => {
+  const parts: string[] = [];
+  let totalIn = 0;
+  let totalCached = 0;
+  for (const [adapter, b] of [...rollup.entries()].sort()) {
+    totalIn += b.input;
+    totalCached += b.cached;
+    const pct = b.input > 0 ? ((b.cached / b.input) * 100).toFixed(1) : "—";
+    parts.push(`${adapter} ${b.turns}턴 ${pct}%`);
+  }
+  const overall = totalIn > 0 ? ((totalCached / totalIn) * 100).toFixed(1) : "—";
+  const mins = Math.round((now - rollupWindowStart) / 60000);
+  console.log(
+    `[prefix-cache] 최근 ${rollupTurns}턴/${mins}분 적중률 ${overall}% ` +
+      `(cached ${totalCached.toLocaleString("en-US")} / input ${totalIn.toLocaleString("en-US")})` +
+      (parts.length > 0 ? ` — ${parts.join(" · ")}` : "") +
+      (rollupUnreported > 0 ? ` · usage 미보고 ${rollupUnreported}턴` : ""),
+  );
+  rollup.clear();
+  rollupTurns = 0;
+  rollupUnreported = 0;
+  rollupWindowStart = now;
+};
+
+const accumulatePrefixCacheRollup = (
+  spec: ModelSpec,
+  output: RegionASdkOutput,
+): void => {
+  const now = Date.now();
+  if (rollupWindowStart === 0) rollupWindowStart = now;
+  rollupTurns += 1;
+  // 턴 전체 소비 기준(Total 우선) — 호출 1회가 아니라 "이 턴이 태운 총량".
+  const input = output.usage?.inputTokensTotal ?? output.usage?.inputTokens;
+  const cached = output.usage?.cachedTokensTotal ?? output.usage?.cachedTokens;
+  if (typeof input === "number" && typeof cached === "number" && input > 0) {
+    const adapter = adapterLabel(spec.adapter);
+    const b = rollup.get(adapter) ?? { turns: 0, input: 0, cached: 0 };
+    b.turns += 1;
+    b.input += input;
+    b.cached += cached;
+    rollup.set(adapter, b);
+  } else {
+    rollupUnreported += 1; // 미보고 어댑터도 세어 둔다(그 자체가 관측 갭 신호).
+  }
+  if (
+    rollupTurns >= ROLLUP_EVERY_TURNS ||
+    now - rollupWindowStart >= ROLLUP_MAX_WINDOW_MS
+  ) {
+    flushPrefixCacheRollup(now);
+  }
+};
+
 const warnIfPrefixCacheCold = (
   spec: ModelSpec,
   input: RegionASdkInput,
@@ -456,6 +534,7 @@ const publishTurnDone = (
 ): void => {
   try {
     warnIfPrefixCacheCold(spec, input, output);
+    accumulatePrefixCacheRollup(spec, output);
     const payload: RegionATurnDonePayload = {
       channel: input.channel,
       threadKey: input.threadKey,

@@ -79,6 +79,23 @@ export const check: RegressionCheck = {
         w.ok ? "4개 배선 확인" : `누락 ${w.missing.join(" ")}`,
       ),
     );
+
+    // ★성공도 로그에 남는다 — 없으면 **원격 인스턴스**(회사돌쇠·회사PC·윈도우)에서 개선
+    //  여부를 영영 확인 못 한다(실제로 로그 284줄에 usage 0건이라 못 쟀다). 경고는
+    //  "나쁠 때만" 이므로 정상 구간을 증명할 수단이 따로 있어야 한다.
+    const r = await sourceHas("../../core/llm-runtime/index.ts", [
+      /accumulatePrefixCacheRollup\(spec, output\);/,
+      /적중률 \$\{overall\}%/,
+      // 롤업 분모는 **턴 합계**(Total 우선) — 하네스가 실제로 태운 총량이 알고 싶은 값.
+      /output\.usage\?\.inputTokensTotal \?\? output\.usage\?\.inputTokens/,
+    ]);
+    out.push(
+      assert(
+        "★정상 구간도 주기 롤업으로 로그에 남는다(원격 인스턴스 측정 가능)",
+        r.ok,
+        r.ok ? "3개 배선 확인" : `누락 ${r.missing.join(" ")}`,
+      ),
+    );
     return out;
   },
 };

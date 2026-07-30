@@ -11,9 +11,15 @@
         if (!isActiveThread(tk)) return;    // 멀티세션 — 자기 세션에만.
         const who = p.adapter ? String(p.adapter) : "모델";
         const why = p.message ? ` — ${String(p.message).slice(0, 140)}` : "";
+        // ★"다른 모델로 이어서" 는 **다음 후보가 실제로 있을 때만** (2026-07-30).
+        //  종전엔 무조건 붙여서, 단일 모델 세션(의도적 설정)에서는 항상 거짓말이었다 —
+        //  사용자는 오지 않을 답을 기다렸다(실측: 27분 과부하 중 7회 전부 후보 0).
+        const next = p.hasFallback
+          ? "\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다)."
+          : "\n재시도할 다른 모델이 없습니다 — 잠시 후 다시 시도해 주세요.";
         renderLocalChat(
           "error",
-          `⚠️ ${who} 턴 실패${why}\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다).`,
+          `⚠️ ${who} 턴 실패${why}${next}`,
           { ts: evTs, key: "turn-failure|" + (tk || "") },
         );
       };

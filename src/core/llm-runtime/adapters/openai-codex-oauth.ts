@@ -1070,6 +1070,14 @@ export const runOpenAiCodex = async (
   const sseEndTally = new Map<string, number>();
   /** 백엔드 보고 실패로 같은 body 를 재전송한 횟수(전송 재시도와 같은 cap 공유). */
   let backendFailAttempt = 0;
+  /**
+   * ★마지막 요청의 **크기 분해** (2026-07-30) — "인풋이 커서 실패하나" 에 답하려면 이게 있어야
+   *  한다. 종전 로그의 `inputChars` 는 **사용자 발화 길이**(예: 5자)라 아무 답도 못 준다.
+   *  실측 배경: 같은 코드가 6시간 멀쩡하다 16:00 부터 실패 시작(재시작 없음) → 누적 컨텍스트
+   *  의심. 그런데 `/clear` 후에도 실패 → 고정 스캐폴딩(instructions·인덱스) 의심. 둘을 가르려면
+   *  instructions / input / tools 를 **따로** 재야 한다.
+   */
+  let lastReqBytes = { total: 0, instructions: 0, input: 0, tools: 0, items: 0 };
 
   try {
     while (iteration < CODEX_MAX_TOOL_ITERATIONS_HARD) {
@@ -1150,6 +1158,13 @@ export const runOpenAiCodex = async (
       // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
       const bodyJson = JSON.stringify(body);
+      lastReqBytes = {
+        total: bodyJson.length,
+        instructions: String(body.instructions ?? "").length,
+        input: JSON.stringify(body.input ?? []).length,
+        tools: JSON.stringify(body.tools ?? []).length,
+        items: Array.isArray(body.input) ? body.input.length : 0,
+      };
       // ★조립된 입력 상한 검사 (2026-07-26) — 호출 *전에* 끊는다.
       //
       //  왜 여기인가: facade 의 용량 스킵(selectEligiblePool)은 `input.text` 즉 **현재
@@ -1339,7 +1354,12 @@ export const runOpenAiCodex = async (
             console.error(
               `[codex-backend-failure] ${why} — iteration=${iteration} ` +
                 `text=${sseResult.text.length} toolCalls=${sseResult.toolCalls.length} ` +
-                `sideEffect=${sideEffectExecuted} thread=${input.threadKey}`,
+                `sideEffect=${sideEffectExecuted} ` +
+                `req=${lastReqBytes.total.toLocaleString()}자` +
+                `(instructions ${lastReqBytes.instructions.toLocaleString()}` +
+                ` + input ${lastReqBytes.input.toLocaleString()}/${lastReqBytes.items}건` +
+                ` + tools ${lastReqBytes.tools.toLocaleString()}) ` +
+                `thread=${input.threadKey}`,
             );
             // 건진 게 없으면(텍스트·도구 0) 재전송 가치가 있다 → typed throw 로 올려
             // 바깥 catch 가 **같은 body 로 재시도**한다(부작용 판단도 거기서 한 번에).
@@ -1629,6 +1649,7 @@ export const runOpenAiCodex = async (
             } ` +
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
             `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
+            `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
             `thread=${input.threadKey} tail: ${tail}`,
         );
         if (closing) {

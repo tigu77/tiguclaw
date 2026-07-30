@@ -657,6 +657,8 @@ export interface RegionATurnErrorPayload {
    *  - "error": 그 외 일반 실패(네트워크·SDK·빈 응답 throw 등).
    */
   errorKind: "timeout" | "model_rejected" | "error";
+  /** 이 실패 뒤에 시도할 다음 모델이 있나 — 없으면 UI 가 "다른 모델로 이어서" 라고 하면 안 된다. */
+  hasFallback?: boolean;
   /**
    * 사람이 읽는 짧은 에러 요약 (errorDetail 결과를 cap). self-growth 가 "이 작업에서
    * 자꾸 X 에러" 를 군집화하는 학습 입력. PII/대형 본문 방지 위해 길이 cap.

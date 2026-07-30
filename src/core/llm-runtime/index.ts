@@ -587,6 +587,13 @@ const publishTurnDone = (
 
 const publishTurnError = (
   spec: ModelSpec,
+  /**
+   * ★이 실패 뒤에 **실제로 시도할 다음 모델이 있는가** (2026-07-30).
+   * 대시보드는 지금까지 무조건 "다른 모델로 이어서 시도합니다" 를 붙였는데, 단일 모델
+   * 세션(의도적 설정)에서는 **항상 거짓말**이었다 — 사용자는 오지 않을 답을 기다린다.
+   * 실측(회사 27분 과부하): `시도=codex-oauth:gpt-5.6-sol` 7회 전부 후보 0인데 그 문구가 떴다.
+   */
+  hasFallback: boolean,
   input: RegionASdkInput,
   e: unknown,
   durationMs: number,
@@ -600,6 +607,7 @@ const publishTurnError = (
       durationMs,
       ok: false,
       errorKind: classifyTurnError(e),
+      hasFallback,
       message:
         detail.length > TURN_ERROR_MESSAGE_CAP
           ? `${detail.slice(0, TURN_ERROR_MESSAGE_CAP - 1)}…`
@@ -1070,7 +1078,13 @@ const runPool = async (
       // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
       // sentinel("uncertain")로 받아 강등하지, self-growth 의 실패 학습 입력이 되면 안 된다.
       if (input.internal !== true) {
-        publishTurnError(spec, input, e, Date.now() - startedAt);
+        publishTurnError(
+          spec,
+          specIndex < effectivePool.length - 1,
+          input,
+          e,
+          Date.now() - startedAt,
+        );
       }
       // 2층 턴 타임아웃(§6) — 폴백 단락. 턴 전체가 wall-clock 초과로 죽은 것이라
       // 다음 spec 으로 폴백해봐야 같은 turn signal 이 이미 abort 라 즉시 또 죽는다(무의미).

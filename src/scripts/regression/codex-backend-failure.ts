@@ -108,6 +108,51 @@ export const check: RegressionCheck = {
         backoff.ok ? "1s+3s+8s+15s" : "전송 재시도용 짧은 백오프를 그대로 쓰고 있다",
       ),
     );
+    // ★"다른 모델로 이어서 시도합니다" 는 후보가 있을 때만 — 단일 모델 세션(의도적 설정)에서
+    //  무조건 붙으면 **항상 거짓말**이고 사용자는 오지 않을 답을 기다린다(실측 27분 과부하,
+    //  7회 전부 후보 0). 코어가 hasFallback 을 싣고 UI 가 분기해야 성립한다 — 양쪽 다 본다.
+    const honest = await sourceHas("../../core/llm-runtime/index.ts", [
+      /hasFallback,/,
+      /specIndex < effectivePool\.length - 1/,
+    ]);
+    out.push(
+      assert(
+        "★코어가 '다음 후보 있음' 을 실어 보낸다",
+        honest.ok,
+        honest.ok ? "2개 확인" : `누락 ${honest.missing.join(" ")}`,
+      ),
+    );
+    const ui = await sourceHas("../../../packages/dashboard/js/sse.js", [
+      /p\.hasFallback/,
+      /재시도할 다른 모델이 없습니다/,
+    ]);
+    out.push(
+      assert(
+        "★UI 가 후보 없을 때 다른 문구를 낸다(거짓 안내 0)",
+        ui.ok,
+        ui.ok ? "분기 확인" : `누락 ${ui.missing.join(" ")}`,
+      ),
+    );
+    // ★"인풋이 커서 실패하나" 에 답하려면 요청 **크기 분해**가 있어야 한다. 종전 로그의
+    //  inputChars 는 사용자 발화 길이(예: 5자)라 아무 답도 못 줬다. 실패 때만 재면 비교
+    //  대상이 없으므로 **정상 턴에도** 남긴다(instructions/input/tools 를 따로 — 누적
+    //  컨텍스트 문제인지 고정 스캐폴딩 문제인지 갈라야 한다).
+    const size = await sourceHas(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
+      [
+        /lastReqBytes = \{\s*\n\s*total: bodyJson\.length,/,
+        /instructions: String\(body\.instructions \?\? ""\)\.length/,
+        /req=\$\{lastReqBytes\.total\.toLocaleString\(\)\}자/,
+        /req=\$\{lastReqBytes\.total\.toLocaleString\(\)\}\(i/,
+      ],
+    );
+    out.push(
+      assert(
+        "★요청 크기를 instructions/input/tools 로 갈라 실패·정상 양쪽에 남긴다",
+        size.ok,
+        size.ok ? "4개 확인" : `누락 ${size.missing.join(" ")}`,
+      ),
+    );
     return out;
   },
 };

@@ -18,14 +18,16 @@
  *   둘 다 실패            → 계정·클라이언트 식별 쪽. 경량화로는 못 푼다.
  *   둘 다 성공            → 그 순간은 정상(백엔드 회복). 실패 중에 다시 돌릴 것.
  *
- * 실행: `npm run diagnose:codex`  (원격 접속 불가 인스턴스에서 사용자가 직접)
+ * 진입점 둘 — 셸(`npm run diagnose:codex`)과 **슬래시 명령 `/diagnose`**(LLM 미경유).
+ * ★후자가 핵심: 백엔드가 죽으면 비서 자신이 응답을 못 하므로, 진단은 **LLM 을 안 타야**
+ *  텔레그램만 연결된 원격 인스턴스에서도 돌릴 수 있다(실사고: 회사돌쇠가 codex 단일
+ *  구성이라 codex 가 죽자 '진단을 시켜볼 비서'까지 같이 죽었다).
  * 부작용 0 — 도구 미등록·짧은 응답만 요청하고 결과를 저장하지 않는다.
  */
-import { loadHomeEnv } from "../core/load-env.js";
-import { CODEX_BASE_URL } from "../core/llm-runtime/adapters/openai-codex-oauth-history.js";
-import { resolveCodexModel } from "../core/llm-runtime/adapters/openai-codex-oauth.js";
-import { getAuthProvider } from "../core/llm-runtime/auth-registry.js";
-import "../core/llm-runtime/auth-providers.js"; // side-effect 등록.
+import { CODEX_BASE_URL } from "./adapters/openai-codex-oauth-history.js";
+import { resolveCodexModel } from "./adapters/openai-codex-oauth.js";
+import { getAuthProvider } from "./auth-registry.js";
+import "./auth-providers.js"; // side-effect 등록.
 
 const LEAN_INSTRUCTIONS = "You are a helpful assistant. Answer in one short line.";
 /** 실제 어댑터와 같은 무게로 맞춘다 — 그래야 A/B 가 성립한다. */
@@ -68,7 +70,6 @@ interface Outcome {
 }
 
 const send = async (
-  label: string,
   token: string,
   accountId: string | undefined,
   model: string,
@@ -160,119 +161,76 @@ const send = async (
   return { ok: true, detail: `"${text.trim().slice(0, 40)}"`, ms };
 };
 
-const main = async (): Promise<void> => {
-  // `--dry` — 네트워크·인증 없이 두 요청의 **무게만** 출력한다. 실제 전송 전에 A/B 가
-  //  의도한 대비(가벼움 vs 실제 tiguclaw 수준)를 이루는지 확인하는 용도.
-  if (process.argv.includes("--dry")) {
-    const lean = JSON.stringify({
-      instructions: LEAN_INSTRUCTIONS,
-      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "1+1은?" }] }],
-    });
-    const heavy = JSON.stringify({
-      instructions: buildHeavyInstructions(),
-      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "1+1은?" }] }],
-      tools: buildHeavyTools(),
-    });
-    console.log(`LEAN  총 ${lean.length.toLocaleString()}자 (도구 0개)`);
-    console.log(
-      `HEAVY 총 ${heavy.length.toLocaleString()}자 ` +
-        `(instructions ${HEAVY_INSTRUCTION_CHARS.toLocaleString()} + 도구 ${HEAVY_TOOL_COUNT}개 ` +
-        `${JSON.stringify(buildHeavyTools()).length.toLocaleString()}자)`,
-    );
-    console.log("\n(실제 전송하려면 --dry 없이 실행)");
-    return;
-  }
-  loadHomeEnv();
-  // ★어느 홈·어느 토큰을 봤는지 먼저 말한다 (2026-07-30).
-  //  데몬은 자기 TIGUCLAW_HOME 으로 뜨는데 사용자 셸엔 그 변수가 없을 수 있다. 그러면
-  //  다른 홈의 .env 를 읽어 "토큰 없음" 만 뜨고, 정작 **어디를 봤는지** 안 알려줘서
-  //  "토큰이 없네" 로 끝난다(실사고). 진단 도구가 진단 불가 이유를 숨기면 안 된다.
-  const { getPaths } = await import("../core/paths.js");
+
+export interface WeightProbeReport {
+  lines: string[];
+  verdict: string;
+}
+
+/** A/B 본체 — 셸 스크립트와 슬래시 명령이 같은 함수를 쓴다(판정 기준 사본 0). */
+export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
+  const { getPaths } = await import("../paths.js");
   const home = getPaths().home;
   const hasAccess = (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "";
   const hasRefresh = (process.env.OPENAI_CODEX_OAUTH_REFRESH ?? "") !== "";
-  console.log(
-    `홈: ${home}   토큰: access=${hasAccess ? "있음" : "없음"} refresh=${hasRefresh ? "있음" : "없음"}`,
-  );
+  const lines: string[] = [
+    `홈: ${home}`,
+    `토큰: access=${hasAccess ? "있음" : "없음"} refresh=${hasRefresh ? "있음" : "없음"}`,
+  ];
   if (!hasAccess && !hasRefresh) {
-    console.error(
-      `\n🔴 이 홈에 codex 토큰이 없습니다.\n` +
-        `   데몬이 쓰는 홈과 다를 수 있습니다 — 데몬 로그 첫 줄의 "tiguclaw home:" 값을 확인해\n` +
-        `   같은 홈으로 다시 실행하세요:\n` +
-        `     TIGUCLAW_HOME=<그 경로> npm run diagnose:codex        (mac/linux)\n` +
-        `     $env:TIGUCLAW_HOME='<그 경로>'; npm run diagnose:codex  (Windows PowerShell)\n` +
-        `   그래도 없으면 \`npm run codex-auth\` 로 발급이 필요합니다.`,
-    );
-    process.exit(1);
+    return {
+      lines,
+      verdict: "🔴 이 홈에 codex 토큰이 없습니다 — 데몬 로그의 `tiguclaw home:` 과 같은 홈인지 확인하세요.",
+    };
   }
   const auth = getAuthProvider("codex");
   if (auth === undefined) {
-    console.error("codex auth provider 없음 — 이 빌드는 codex 를 지원하지 않습니다.");
-    process.exit(1);
+    return { lines, verdict: "🔴 codex auth provider 없음 — 이 빌드는 codex 미지원." };
   }
   let token: string;
   try {
     token = await auth.getAccessToken();
   } catch (e) {
-    console.error(
-      `\n🔴 토큰 획득 실패: ${e instanceof Error ? e.message : String(e)}\n` +
-        `   위 홈(${home})의 .env 를 확인하세요.`,
-    );
-    process.exit(1);
+    return {
+      lines,
+      verdict: `🔴 토큰 획득 실패: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`,
+    };
   }
-  // accountId 는 JWT payload 의 chatgpt_account_id — 없으면 헤더 생략(어댑터 동형).
   let accountId: string | undefined;
   try {
     const payload = JSON.parse(
       Buffer.from(token.split(".")[1] ?? "", "base64").toString("utf8"),
     ) as Record<string, unknown>;
-    const authClaim = payload["https://api.openai.com/auth"] as
-      | { chatgpt_account_id?: string }
-      | undefined;
-    accountId = authClaim?.chatgpt_account_id;
+    accountId = (
+      payload["https://api.openai.com/auth"] as { chatgpt_account_id?: string } | undefined
+    )?.chatgpt_account_id;
   } catch {
     /* 없으면 생략 */
   }
   const model = resolveCodexModel();
-
-  console.log(`모델: ${model}   엔드포인트: ${CODEX_BASE_URL}`);
-  console.log(
-    `LEAN = 도구 0개 / instructions ${LEAN_INSTRUCTIONS.length}자   ` +
-      `HEAVY = 도구 ${HEAVY_TOOL_COUNT}개 / instructions ${HEAVY_INSTRUCTION_CHARS.toLocaleString()}자\n`,
+  lines.push(`모델: ${model}`);
+  lines.push(
+    `LEAN=도구 0개·${LEAN_INSTRUCTIONS.length}자 / HEAVY=도구 ${HEAVY_TOOL_COUNT}개·${HEAVY_INSTRUCTION_CHARS.toLocaleString()}자`,
   );
 
-  const results: Array<[string, Outcome]> = [];
+  let leanOk = 0;
+  let heavyOk = 0;
   for (let round = 1; round <= 2; round++) {
     for (const heavy of [false, true]) {
-      const label = `${heavy ? "HEAVY" : "LEAN "} #${round}`;
-      const r = await send(label, token, accountId, model, heavy);
-      results.push([label, r]);
-      console.log(
-        `${r.ok ? "✅" : "🔴"} ${label}  ${String(r.ms).padStart(6)}ms  ${r.detail}`,
+      const r = await send(token, accountId, model, heavy);
+      if (r.ok) heavy ? (heavyOk += 1) : (leanOk += 1);
+      lines.push(
+        `${r.ok ? "✅" : "🔴"} ${heavy ? "HEAVY" : "LEAN "} #${round} ${r.ms}ms ${r.detail.slice(0, 120)}`,
       );
     }
   }
-
-  const lean = results.filter(([l]) => l.startsWith("LEAN"));
-  const heavy = results.filter(([l]) => l.startsWith("HEAVY"));
-  const leanOk = lean.filter(([, r]) => r.ok).length;
-  const heavyOk = heavy.filter(([, r]) => r.ok).length;
-  console.log(`\nLEAN ${leanOk}/${lean.length} 성공   HEAVY ${heavyOk}/${heavy.length} 성공`);
-  if (leanOk > 0 && heavyOk === 0) {
-    console.log(
-      "→ ★무게가 원인. 도구 수·instructions 크기를 줄이는 게 실효 대책입니다.",
-    );
-  } else if (leanOk === 0 && heavyOk === 0) {
-    console.log(
-      "→ 무게 무관 — 계정/클라이언트 식별 쪽입니다. 경량화로는 안 풀립니다.",
-    );
-  } else if (leanOk > 0 && heavyOk > 0) {
-    console.log(
-      "→ 지금은 둘 다 정상입니다. **실패가 나는 중에** 다시 돌려야 판정됩니다.",
-    );
-  } else {
-    console.log("→ 혼재 — 간헐적입니다. 몇 번 더 돌려 비율을 보세요.");
-  }
+  const verdict =
+    leanOk > 0 && heavyOk === 0
+      ? "★무게가 원인 — 도구 수·instructions 크기를 줄이는 게 실효 대책입니다."
+      : leanOk === 0 && heavyOk === 0
+        ? "무게 무관 — 계정/클라이언트 쪽입니다. 경량화로는 안 풀립니다."
+        : leanOk > 0 && heavyOk > 0
+          ? "지금은 둘 다 정상 — **실패가 나는 중에** 다시 돌려야 판정됩니다."
+          : "혼재(간헐) — 몇 번 더 돌려 비율을 보세요.";
+  return { lines: [...lines, `LEAN ${leanOk}/2  HEAVY ${heavyOk}/2`], verdict };
 };
-
-void main();

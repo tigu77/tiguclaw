@@ -1250,6 +1250,63 @@ const handler: MessageHandler = async (msg) => {
       return;
     }
 
+    // ─── `/logs [n]` — 오늘 데몬 로그 tail (LLM 미경유) ──────────────────────
+    //  ★왜 있나 (2026-07-30 실사고): 회사 인스턴스가 codex 단일 구성인데 그 백엔드가
+    //   죽자 **비서 자신이 대답을 못 해** 로그조차 못 받았다. 사용자가 로그 파일을 손으로
+    //   옮겨야 했다. 폴백 모델을 두면 되지만 그건 자격증명이 필요하고(그 머신엔 없었다),
+    //   무엇보다 **진단 수단이 진단 대상에 의존하면 안 된다.** 그래서 LLM 미경유.
+    //  시크릿은 redactSecrets 통과 — 로그에 토큰이 섞여 있어도 채널로 안 나간다.
+    if (cmd === "/logs") {
+      try {
+        const n = Math.min(
+          Math.max(parseInt(args.trim(), 10) || 40, 1),
+          200,
+        );
+        const { readFileSync } = await import("node:fs");
+        const pathMod = await import("node:path");
+        const d = new Date();
+        const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const file = pathMod.join(getPaths().home, "logs", `daemon-${ymd}.log`);
+        const raw = readFileSync(file, "utf8");
+        const lines = raw.split(/\r?\n/).filter((l) => l !== "");
+        const tail = lines.slice(-n).join("\n");
+        const { redactSecrets } = await import("./core/outbound-sanitize.js");
+        // 채널 길이 한도(텔레그램 ~4096) — 뒤에서부터 자른다(최신이 중요).
+        const body = redactSecrets(tail).slice(-3500);
+        await replyCommand(
+          msg,
+          `📜 ${ymd} 로그 마지막 ${n}줄 (전체 ${lines.length}줄)\n\n\`\`\`\n${body}\n\`\`\``,
+        );
+      } catch (e) {
+        await replyCommand(
+          msg,
+          `로그 읽기 실패: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return;
+    }
+
+    // ─── `/diagnose` — codex 요청 무게 A/B (LLM 미경유) ──────────────────────
+    //  같은 계정·같은 순간에 가벼운 요청과 실제 무게의 요청을 번갈아 보내, 백엔드 거절이
+    //  **요청 무게** 때문인지 **계정/클라이언트** 때문인지 가른다. 셸을 못 쓰는 원격
+    //  인스턴스(텔레그램만 연결)에서 사용자가 직접 돌릴 수 있어야 하므로 명령으로 노출.
+    if (cmd === "/diagnose") {
+      await replyCommand(msg, "🔬 codex 요청 무게 A/B 진단 중… (최대 1분)");
+      try {
+        const { runCodexWeightProbe } = await import(
+          "./core/llm-runtime/codex-weight-probe.js"
+        );
+        const r = await runCodexWeightProbe();
+        await replyCommand(msg, `${r.lines.join("\n")}\n\n→ ${r.verdict}`);
+      } catch (e) {
+        await replyCommand(
+          msg,
+          `진단 실패: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return;
+    }
+
     if (cmd === "/status") {
       // 라우터 우회 — 데몬 현재 상태 직접 조회. 전부 DB/env/상수 읽기 (LLM 호출 0, route 미경유).
       try {

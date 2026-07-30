@@ -65,7 +65,7 @@ export const check: RegressionCheck = {
         // ★같은 body 재전송 — 백엔드 보고 실패는 HTTP 5xx 와 같은 부류다. 종전엔 모델
         //  nudge 경로로 흘러 17.8초를 태우고 턴이 죽었다(사용자: "중간에 멈춤").
         /\[codex-backend-retry\]/,
-        /backendFailAttempt < CODEX_FETCH_MAX_RETRIES/,
+        /backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS\.length/,
         /continue; \/\/ 같은 body 로 재전송\./,
       ],
     );
@@ -77,18 +77,35 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★부작용 판단은 **함수 바깥 catch(§4.4)에 위임**한다 — 안쪽에서 중복 구현하면
-    //  (a) 기준이 두 곳으로 갈리고 (b) 실제로 `break` 가 `for(;;)` 스톨 루프만 빠져나가
-    //  sseResult 미할당 지점으로 떨어졌다(tsc 가 잡음). 재시도 소진 시엔 그냥 throw 한다.
-    const delegate = await sourceHas(
+    // ★부작용 가드 — 내가 "바깥 catch 가 이미 판단한다"고 단언했는데 **틀렸다**(2026-07-30).
+    //  그 분기는 IdleTimeoutError 에만 걸려 있어서, 백엔드 실패는 sideEffect=true 여도
+    //  throw 되어 폴백 모델이 턴을 재실행 → memory/todo/schedule 중복 적용 위험이었다.
+    //  실측에선 체인에 codex 하나뿐이라 드러나지 않았다(운이 좋았을 뿐).
+    const guard = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
-      [/재시도 소진 → \*\*그냥 throw\*\*/],
+      [
+        /\(e instanceof IdleTimeoutError \|\| e instanceof CodexBackendFailureError\) &&\s*\n\s*sideEffectExecuted/,
+      ],
     );
     out.push(
       assert(
-        "★재시도 소진 시 부작용 판단을 바깥 catch 에 위임한다(중복 구현 금지)",
-        delegate.ok,
-        delegate.ok ? "위임 확인" : "안쪽에서 부작용 분기를 재구현하고 있다",
+        "★백엔드 실패도 부작용 가드에 걸린다(폴백 재실행 중복 방지)",
+        guard.ok,
+        guard.ok ? "가드 확인" : "IdleTimeout 에만 걸려 있다 — 폴백이 도구를 중복 실행한다",
+      ),
+    );
+
+    // ★과부하 백오프 — [500,1500] 은 실측에서 5초 만에 포기했다(17:59:08→13). 백엔드가
+    //  "try again later" 라고 말하는데 2초 기다리고 포기하면 재전송의 의미가 없다.
+    const backoff = await sourceHas(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
+      [/CODEX_BACKEND_FAIL_BACKOFF_MS = \[1_000, 3_000, 8_000, 15_000\]/],
+    );
+    out.push(
+      assert(
+        "★백엔드 실패 백오프는 과부하를 견딜 만큼 길다(총 27초)",
+        backoff.ok,
+        backoff.ok ? "1s+3s+8s+15s" : "전송 재시도용 짧은 백오프를 그대로 쓰고 있다",
       ),
     );
     return out;

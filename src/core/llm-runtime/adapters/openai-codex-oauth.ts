@@ -160,6 +160,18 @@ class CodexBackendFailureError extends Error {
   }
 }
 
+/**
+ * ★백엔드 보고 실패 전용 백오프 (2026-07-30 실측 기반).
+ *
+ * 처음엔 전송 재시도와 같은 [500, 1500] 을 썼는데 **실측에서 5초 만에 포기**했다
+ * (회사 17:59:08 실패 → 17:59:10 → 17:59:13 소진). 백엔드 메시지 자체가
+ * "Our servers are currently overloaded. **Please try again later**" 인데 2초를 기다리고
+ * 포기한 셈이다. 과부하는 초~분 단위로 풀리므로 더 길게·더 많이 기다린다.
+ * 총 대기 = 1+3+8+15 = 27초. 턴 타임아웃 안에서 소화되고, 그동안 사용자는 "진행 중"으로 본다
+ * (조르는 게 아니라 같은 요청 재전송이라 토큰도 안 태운다).
+ */
+const CODEX_BACKEND_FAIL_BACKOFF_MS = [1_000, 3_000, 8_000, 15_000];
+
 const CODEX_FETCH_MAX_RETRIES = 2;
 const CODEX_FETCH_BACKOFF_MS = [500, 1500];
 const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -1362,13 +1374,13 @@ export const runOpenAiCodex = async (
         //  전송 재시도와 같은 cap·같은 백오프를 쓴다(무한루프 0).
         if (e instanceof CodexBackendFailureError) {
           if (
-            backendFailAttempt < CODEX_FETCH_MAX_RETRIES &&
+            backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS.length &&
             input.abortSignal?.aborted !== true
           ) {
-            const wait = CODEX_FETCH_BACKOFF_MS[backendFailAttempt] ?? 1500;
+            const wait = CODEX_BACKEND_FAIL_BACKOFF_MS[backendFailAttempt] ?? 8000;
             backendFailAttempt += 1;
             console.warn(
-              `[codex-backend-retry] ${backendFailAttempt}/${CODEX_FETCH_MAX_RETRIES} ` +
+              `[codex-backend-retry] ${backendFailAttempt}/${CODEX_BACKEND_FAIL_BACKOFF_MS.length} ` +
                 `${wait}ms 뒤 같은 요청 재전송 — ${e.why} thread=${input.threadKey}`,
             );
             await sleep(wait);
@@ -1918,12 +1930,23 @@ export const runOpenAiCodex = async (
     if (e instanceof TurnTimeoutError) {
       throw e;
     }
-    if (e instanceof IdleTimeoutError && sideEffectExecuted) {
+    if (
+      (e instanceof IdleTimeoutError || e instanceof CodexBackendFailureError) &&
+      sideEffectExecuted
+    ) {
+      // ★CodexBackendFailureError 도 같은 가드가 필요하다 (2026-07-30 — 내가 "바깥 catch 가
+      //  이미 부작용 판단을 한다"고 단언했는데 **틀렸다**. 이 분기는 IdleTimeoutError 에만
+      //  걸려 있었고, 그래서 백엔드 실패는 sideEffect=true 여도 throw 되어 폴백 모델이 턴을
+      //  재실행 → 이미 실행된 memory/todo/schedule 이 **중복 적용**될 수 있었다.
+      //  실측(회사 17:59)에선 체인에 codex 하나뿐이라 드러나지 않았을 뿐이다.)
       const ranList =
         executedToolNames.size > 0
           ? `\n\n이번 턴에 실행한 도구: ${[...executedToolNames].join(", ")}.`
           : "";
-      finalText = `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+      finalText =
+        e instanceof CodexBackendFailureError
+          ? `백엔드가 요청을 처리하지 못했습니다 — ${e.why}${ranList}\n\n잠시 후 다시 시도해 주세요.`
+          : `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
     } else {
       throw e; // 부작용 없음 or 일반 에러 → 정직 throw (풀 폴백 / 정직 에러).
     }

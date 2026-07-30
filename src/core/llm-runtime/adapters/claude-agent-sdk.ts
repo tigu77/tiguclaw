@@ -11,19 +11,20 @@
  * Claude Code 능력 발견 — **SDK 격리 모드** (settingSources 미설정,
  * runtimeTypes.d.ts L504). SDK 는 `.claude/{skills,agents,commands}` 를 자동
  * 발견하지 않는다. 따라서 tiguclaw 컨벤션(`<home>`/`<cwd>`/plugins)에서
- * `discoverSkills`/`discoverAgents` 로 직접 인덱스를 구성해 user prompt 에 prepend
+ * `discoverSkills`/`discoverAgents` 로 직접 인덱스를 구성해 시스템 채널에 주입
  * + 서브에이전트는 `options.agents` 로 주입(SDK native Task tool 이 실행) +
  * 스킬 실행은 invoke_skill MCP — codex 어댑터와 parity (원칙 1·2).
  * 이중 노출 방지: settingSources 를 켜지 말 것 (아래 options 가드 주석 참조).
  *
  * Memory Round 2 변경 (contract `_workspace/memory_round2_architect_contract.md`):
- *  - AGENT.md (1층 self markdown, cwd 루트 hub) user prompt prepend.
+ *  - AGENT.md (1층 self markdown, 런타임 홈 hub) 시스템 채널 주입.
  *  - V3 도구 4종 (read/add/update/delete memory) SDK in-process MCP server 로 노출.
- *  - 전체 memories 1줄 인덱스 user prompt prepend.
+ *  - 전체 memories 1줄 인덱스 user prompt prepend (휘발 조각 — 채널 유지).
  *  - V2 fire-and-forget haiku 자동 추출 deprecate (LLM 자기 도구로 대체).
  *
- *  fingerprint 가드 양립: 모든 동적 컨텐츠 (AGENT.md, 인덱스, snippet) 는 user prompt
- *  prepend — sysprompt 는 정적으로 두어 SYSTEM_PROMPT_HASH 무변, resume 보존.
+ *  fingerprint 가드 양립: SYSTEM_PROMPT_HASH 는 **정적 sysprompt 본문만** 해싱한다
+ *  (2026-07-30 이후 systemPrompt 엔 안정 스캐폴딩이 함께 실리지만 해시엔 안 들어간다)
+ *  — AGENT.md 편집·스킬 추가로 resume 이 끊기지 않게. 상세는 조립부 주석.
  */
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -54,14 +55,16 @@ import {
 } from "../../identity.js";
 import {
   assembleUserPrompt,
-  buildSystemContextParts,
+  composeSystemChannel,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
   formatModelProfiles,
+  splitSystemContext,
 } from "../../prompt-assembly.js";
 import { formatEnvContext } from "../../runtime-env.js";
+import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { resolveJsonlPath, retrieveContext } from "../../memory.js";
 import {
@@ -156,6 +159,10 @@ const truncateForBus = (v: unknown): unknown => {
   return `${s.slice(0, PAYLOAD_FIELD_CAP - 1)}…`;
 };
 
+// ★정적 헌법 본문만 해싱한다 — systemPrompt 로 함께 나가는 안정 스캐폴딩(SYSTEM.md·
+//  AGENT.md·스킬/에이전트 인덱스)은 **의도적으로 제외**. 그것들은 매 턴 최신값이 새로
+//  실려 stale 이 없고, 해시에 넣으면 비서가 AGENT.md 를 한 줄 고칠 때마다 세션이
+//  끊겨 thread 전체가 재prepend 된다.
 const SYSTEM_PROMPT_HASH = createHash("sha256")
   .update(SYSTEM_PROMPT)
   .digest("hex");
@@ -285,7 +292,14 @@ const formatForeignDelta = (delta: CodexTurn[]): string => {
   if (delta.length === 0) return "";
   const lines = delta.map((t) => {
     const who = t.role === "assistant" ? "다른 응답(예: codex)" : "사용자";
-    return `${who}: ${t.content}`;
+    // ★저장된 user 턴은 *조립된* 프롬프트다 — 걷어내지 않으면 옛 SYSTEM.md·인덱스
+    //  사본이 통째로 되돌아온다(실측 평균 41,132자·최대 1,324,574자). 더 나쁜 건
+    //  본문 속 `</system-reminder>` 가 새 래퍼를 조기 종료시켜 뒤따르는 메모리·실제
+    //  사용자 텍스트가 태그 밖(=사용자 발화)으로 보이는 것 — 태그를 도입한 원 사고
+    //  (딴소리·imperative 메아리)의 재현 조건 그대로다. codex/openai 는 이미 같은
+    //  strip 을 건다(2026-07-28). 여기만 빠져 있었다(#2 parity). 빈 결과면 원문 보존.
+    const content = stripInternalRuntimeScaffolding(t.content).trim() || t.content;
+    return `${who}: ${content}`;
   });
   return [
     "## 지난 대화 (다른 응답 포함)",
@@ -669,52 +683,13 @@ export const runClaude = async (
     ] satisfies HookCallbackMatcher[],
   };
 
-  const options: Options = {
-    // 중립 override(게이트웨이) 지정 시 그 값이 시스템 프롬프트 — tiguclaw 작동헌법 대체.
-    systemPrompt: input.systemPromptOverride ?? SYSTEM_PROMPT,
-    permissionMode: "bypassPermissions",
-    abortController: effectiveAc,
-    // AskUserQuestion 차단(2026-07-17) — claude 전용 SDK 네이티브 도구. tiguclaw 인터랙티브
-    // 선택지는 자체 prompt_options(prompt.options 이벤트)만 렌더(축1, 2026-06-25) — 네이티브로
-    // 새면 대시보드/텔레그램이 옵션을 못 그려 질문만 뜨고 응답 불가(대기 고아). 어댑터-지역
-    // 차단(codex/openai 는 이 도구 자체가 없어 무영향 = #2 parity, 공유 DISALLOWED_TOOLS 정책은
-    // 무편집). SDK 문서 도구명 정확 매칭(coreTypes.d.ts 네이티브 도구 목록).
-    disallowedTools: [...DISALLOWED_TOOLS, "AskUserQuestion"],
-    // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
-    // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
-    // SDKPartialAssistantMessage(type:"stream_event")가 함께 오고, 아래 메시지 루프가
-    // content_block_delta/text_delta 를 즉시 deltaStream.push (이중발행 방지는 완성 블록
-    // 분기에서 receivedPartialText 가드로 처리).
-    includePartialMessages: true,
-    persistSession: true,
-    cwd,
-    hooks: hooksOption,
-    // lean(toolsNone) child 는 SDK 빌트인 도구도 0 (`tools: []` = disable all built-ins).
-    ...(toolsNone ? { tools: [] as string[] } : {}),
-    // facade 가 provider:model 에서 추출해 주입. 미지정 시 SDK 디폴트.
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    mcpServers: {
-      ...leanMcpServers,
-      ...externalMcpServers,
-      ...(toolsNone
-        ? {}
-        : {
-            "find-capabilities": createFindCapabilitiesMcpServer(
-              capabilityActiveNames,
-              "`Task` 도구로 위임하세요 (subagent_type 에 에이전트 이름, prompt 에 작업 지시). 다른 프로젝트/병렬 위임엔 spawn_agent 도 사용 가능",
-              input.extraMcpServers,
-            ),
-          }),
-    },
-    // 커스텀 서브에이전트 (격리라 SDK 가 .claude/agents 못 봄 → 수동 주입).
-    // SDK native Task tool 이 이 정의를 발견·실행 (codex spawn_agent 브리지 불요).
-    ...(agents !== undefined ? { agents } : {}),
-    ...(resumable ? { resume: prior.claudeSessionId } : {}),
-  };
-
-  // user prompt prefix 조립 순서:
-  //   [AGENT body] + [AGENT warning] + [memory index] + [formatMemorySnippet] + [user text]
-  // sysprompt 는 정적 → fingerprint 가드 보존 (Phase 2 회귀 0).
+  // 컨텍스트 조립 — 안정 조각은 시스템 프롬프트(캐시 대상), 휘발 조각은 user
+  //   `<system-reminder>` (2026-07-30, splitSystemContext 주석 참조).
+  // ★resume 게이트(SYSTEM_PROMPT_HASH)는 **정적 sysprompt 본문만** 해싱한다 — 아래에서
+  //  systemPrompt 에 붙는 안정 스캐폴딩은 해시에 안 들어간다. AGENT.md 는 비서 자신이
+  //  수시로 편집하고 스킬은 추가될 수 있는데, 그걸 해시에 넣으면 편집 한 번에 세션이
+  //  끊기고 thread 전체가 재prepend 된다(값비싼 폴백). 게이트의 목적은 "작동 헌법이
+  //  바뀌면 세션 무효화" 이고, 스캐폴딩은 매 턴 최신값이 새로 실리므로 stale 이 없다.
   const agent = readAgent();
   const agentWarn = agentSizeWarning(agent);
   // leanMemory (2026-06-15, architect §2c I-5) — claude-as-child 경로의 메모리 생략.
@@ -774,10 +749,10 @@ export const runClaude = async (
   //  사용자 turn = 첨부 블록 + 실제 입력 텍스트 (구분선으로 명시 분리 — assembleUserPrompt).
   // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix(SYSTEM.md·AGENT.md·메모리·스킬…)를
   // 통째로 스킵 — 앱 호출에 비서 페르소나·컨텍스트 누수 0.
-  const systemContextParts =
+  const { stable: stableContext, volatileParts } =
     input.systemPromptOverride !== undefined
-      ? []
-      : buildSystemContextParts({
+      ? { stable: "", volatileParts: [] as string[] }
+      : splitSystemContext({
           system,
           env,
           agent,
@@ -791,7 +766,54 @@ export const runClaude = async (
           modelProfiles,
         });
   const userTurnParts = [attachmentBlock, input.text];
-  const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
+  const promptWithMemory = assembleUserPrompt(volatileParts, userTurnParts);
+  // 중립 override(게이트웨이) 지정 시 그 값이 시스템 프롬프트 — tiguclaw 작동헌법 대체.
+  const systemChannel =
+    input.systemPromptOverride ??
+    composeSystemChannel(SYSTEM_PROMPT, stableContext);
+
+  const options: Options = {
+    // 작동헌법 + 안정 스캐폴딩 (위에서 조립). override 시 그 값이 전부 대체.
+    systemPrompt: systemChannel,
+    permissionMode: "bypassPermissions",
+    abortController: effectiveAc,
+    // AskUserQuestion 차단(2026-07-17) — claude 전용 SDK 네이티브 도구. tiguclaw 인터랙티브
+    // 선택지는 자체 prompt_options(prompt.options 이벤트)만 렌더(축1, 2026-06-25) — 네이티브로
+    // 새면 대시보드/텔레그램이 옵션을 못 그려 질문만 뜨고 응답 불가(대기 고아). 어댑터-지역
+    // 차단(codex/openai 는 이 도구 자체가 없어 무영향 = #2 parity, 공유 DISALLOWED_TOOLS 정책은
+    // 무편집). SDK 문서 도구명 정확 매칭(coreTypes.d.ts 네이티브 도구 목록).
+    disallowedTools: [...DISALLOWED_TOOLS, "AskUserQuestion"],
+    // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
+    // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
+    // SDKPartialAssistantMessage(type:"stream_event")가 함께 오고, 아래 메시지 루프가
+    // content_block_delta/text_delta 를 즉시 deltaStream.push (이중발행 방지는 완성 블록
+    // 분기에서 receivedPartialText 가드로 처리).
+    includePartialMessages: true,
+    persistSession: true,
+    cwd,
+    hooks: hooksOption,
+    // lean(toolsNone) child 는 SDK 빌트인 도구도 0 (`tools: []` = disable all built-ins).
+    ...(toolsNone ? { tools: [] as string[] } : {}),
+    // facade 가 provider:model 에서 추출해 주입. 미지정 시 SDK 디폴트.
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    mcpServers: {
+      ...leanMcpServers,
+      ...externalMcpServers,
+      ...(toolsNone
+        ? {}
+        : {
+            "find-capabilities": createFindCapabilitiesMcpServer(
+              capabilityActiveNames,
+              "`Task` 도구로 위임하세요 (subagent_type 에 에이전트 이름, prompt 에 작업 지시). 다른 프로젝트/병렬 위임엔 spawn_agent 도 사용 가능",
+              input.extraMcpServers,
+            ),
+          }),
+    },
+    // 커스텀 서브에이전트 (격리라 SDK 가 .claude/agents 못 봄 → 수동 주입).
+    // SDK native Task tool 이 이 정의를 발견·실행 (codex spawn_agent 브리지 불요).
+    ...(agents !== undefined ? { agents } : {}),
+    ...(resumable ? { resume: prior.claudeSessionId } : {}),
+  };
 
   // resume 세션 부재/손상은 SDK 가 "process exited with code 1" 로 종료시킨다 →
   // resume 없이 fresh 세션으로 1회 graceful 폴백 (본질 수정: 마이그레이션·세션 만료·
@@ -862,7 +884,26 @@ export const runClaude = async (
   let lastSessionId: string | undefined;
   let lastModel: string | null = null;
   let lastUsage:
-    | { inputTokens: number; outputTokens: number; cachedTokens?: number }
+    | {
+        inputTokens: number;
+        outputTokens: number;
+        cachedTokens?: number;
+        iterations?: number;
+        inputTokensTotal?: number;
+        cachedTokensTotal?: number;
+      }
+    | undefined;
+  /**
+   * ★**마지막 API 호출 한 번**의 입력 규모 (2026-07-30). 계약(types.ts)상 `inputTokens`
+   *  는 "이 턴에 보낸 누적 컨텍스트 proxy = 얼마나 찼나" 이고 턴 합계는 `*Total` 이다.
+   *  claude 는 그간 `result.modelUsage[model]` 을 썼는데 그건 **턴 안 모든 호출의 누적합**
+   *  이다 — 실측: 한 턴의 cachedTokens 가 10,182,800 (200K 창의 50.9배). 그래서 /status
+   *  컨텍스트 %가 구조적으로 틀린다. assistant 메시지마다 오는 호출 단위 usage 를 잡는다.
+   *  ★parent_tool_use_id 가 null 인 것만 — 서브에이전트(Task) 내부 호출은 부모의 "컨텍스트
+   *  참 정도"가 아니다.
+   */
+  let lastCallUsage:
+    | { input: number; cacheRead: number; output: number }
     | undefined;
   let succeeded = false;
   // 이중발행 방지 가드(2026-07-17, delta 파리티) — depth-0 부모 turn 에서 부분 델타
@@ -1192,17 +1233,47 @@ export const runClaude = async (
                 inputTokens?: number;
                 outputTokens?: number;
                 cacheReadInputTokens?: number;
+                cacheCreationInputTokens?: number;
               }
             | undefined;
-          if (usageEntry !== undefined) {
-            // ★cachedTokens (2026-07-26) — codex 와 **같은 이름으로 정규화**해 올린다
-            //  (SDK 는 cacheReadInputTokens, codex 는 input_tokens_details.cached_tokens).
-            //  어느 어댑터를 쓰든 관측 지표가 같아야 비교가 된다(원칙 #2).
-            const cached = usageEntry.cacheReadInputTokens;
+          if (usageEntry !== undefined || lastCallUsage !== undefined) {
+            // ★두 축을 **분리해서** 싣는다 (2026-07-30). 계약(types.ts §usage):
+            //   inputTokens/cachedTokens = **마지막 호출 1회** ("얼마나 찼나" — /status)
+            //   *Total                   = **턴 전체 합계**   (진짜 비용·적중률)
+            //  codex 는 원래 이 계약을 지켰는데 claude 만 안 지켰다. `modelUsage[model]`
+            //  은 턴 안 모든 호출의 **누적합**이다 — 실측: 한 턴 cachedTokens=10,182,800
+            //  (200K 창의 50.9배, 단일 호출로는 물리적으로 불가능). 그걸 inputTokens 에
+            //  넣으면 /status 가 "컨텍스트 ~3293%" 를 띄우고 85% 경고가 상시 울린다
+            //  (직전 상태는 캐시 읽기를 빼 늘 ~0% 라 경고가 아예 안 떴다 — 반대 방향의
+            //  같은 실패). 호출 단위 값은 assistant 메시지 usage 에서 잡는다.
+            const cumCached = usageEntry?.cacheReadInputTokens;
+            const cumCreate = usageEntry?.cacheCreationInputTokens;
+            const cumInput =
+              (usageEntry?.inputTokens ?? 0) +
+              (cumCached ?? 0) +
+              (cumCreate ?? 0);
+            // 호출 단위가 없으면(비정상 종료 등) 누적값으로 폴백 — 없는 것보단 낫다.
+            const perCall = lastCallUsage;
             lastUsage = {
-              inputTokens: usageEntry.inputTokens ?? 0,
-              outputTokens: usageEntry.outputTokens ?? 0,
-              ...(typeof cached === "number" ? { cachedTokens: cached } : {}),
+              inputTokens: perCall?.input ?? cumInput,
+              outputTokens: perCall?.output ?? usageEntry?.outputTokens ?? 0,
+              ...(perCall !== undefined
+                ? { cachedTokens: perCall.cacheRead }
+                : typeof cumCached === "number"
+                  ? { cachedTokens: cumCached }
+                  : {}),
+              // 턴 합계는 누적값 그대로. num_turns 를 iterations 로 실어야 소비처
+              // (대시보드 카드·벤치)가 "여러 호출짜리 턴" 임을 알고 Total 을 쓴다.
+              ...(usageEntry !== undefined && cumInput > 0
+                ? {
+                    iterations:
+                      typeof msg.num_turns === "number" ? msg.num_turns : 2,
+                    inputTokensTotal: cumInput,
+                    ...(typeof cumCached === "number"
+                      ? { cachedTokensTotal: cumCached }
+                      : {}),
+                  }
+                : {}),
             };
           }
         }
@@ -1253,6 +1324,30 @@ export const runClaude = async (
         typeof parentToolUseId === "string"
           ? taskJobs.get(parentToolUseId)
           : undefined;
+      // 호출 단위 usage 캡처 — 부모 자신의 호출만(서브 내부 호출은 부모 컨텍스트가 아님).
+      if (typeof parentToolUseId !== "string") {
+        const u = (
+          msg.message as unknown as {
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+          }
+        )?.usage;
+        if (u !== undefined && typeof u.input_tokens === "number") {
+          lastCallUsage = {
+            // 이 호출이 실제로 먹은 입력 = 비캐시 증분 + 캐시 읽기 + 캐시 생성.
+            input:
+              u.input_tokens +
+              (u.cache_read_input_tokens ?? 0) +
+              (u.cache_creation_input_tokens ?? 0),
+            cacheRead: u.cache_read_input_tokens ?? 0,
+            output: u.output_tokens ?? 0,
+          };
+        }
+      }
       const blocks = msg.message?.content;
       if (Array.isArray(blocks)) {
         for (const block of blocks) {
@@ -1544,6 +1639,7 @@ export const runClaude = async (
       lastSessionId = undefined;
       lastModel = null;
       lastUsage = undefined;
+      lastCallUsage = undefined; // 실패한 첫 시도의 호출 단위 값이 새 시도로 새지 않게.
       succeeded = false;
       activitySeq = 0;
       receivedPartialText = false; // fresh 세션 재시도 — 이중발행 가드도 새 시도 기준 리셋.

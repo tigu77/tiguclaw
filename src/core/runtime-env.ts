@@ -3,7 +3,7 @@
  *
  * 계약: `_workspace/env-awareness_architect_contract.md` (architect, 2026-07-16).
  *
- * 문제: `buildSystemContextParts`(prompt-assembly.ts)가 매 턴 SYSTEM.md·AGENT.md·
+ * 문제: `splitSystemContext`(prompt-assembly.ts)가 매 턴 SYSTEM.md·AGENT.md·
  * 메모리·스킬/에이전트 인덱스 등을 주입하나 **환경 사실이 0개** — Claude Code 의
  * `<env>`(Working directory·Platform·OS Version·Today's date) 대비 파리티 갭이었다.
  * 또한 file-ops Bash 가 `sh` 하드코딩이라 Windows 에서 ENOENT — 그런데 셸을

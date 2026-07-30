@@ -1044,7 +1044,11 @@ class HttpBridge implements Channel, Observer {
       gatewayInflight += 1;
       try {
         const out = await runRegionA(runInput, specOpt);
-        const inTok = out.usage?.inputTokens ?? 0;
+        // ★prompt_tokens 는 **턴 전체 합계** (2026-07-30). `inputTokens` 는 계약상
+        //  "마지막 호출 1회"(컨텍스트 참 정도)라, 도구 루프를 도는 요청에서 그걸 내보내면
+        //  클라이언트 비용·예산 회계가 실제의 일부만 본다. 제3자에게 나가는 값이라
+        //  우리 화면처럼 나중에 눈으로 걸러지지 않는다 — 합계가 정직하다.
+        const inTok = out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0;
         const outTok = out.usage?.outputTokens ?? 0;
         const toolCalls = out.externalToolCalls ?? [];
         const hasToolCalls = toolCalls.length > 0;

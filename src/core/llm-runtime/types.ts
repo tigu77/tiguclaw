@@ -241,10 +241,16 @@ export interface RegionASdkOutput {
   /**
    * 신규 (additive, /status 개편) — 이 turn 의 토큰 사용량. 세 어댑터 공통 형상.
    * 어댑터가 *이미 받는* result/SSE 에서 추출 (추가 호출 0). 미캡처 시 미지정.
-   * inputTokens = 이 turn 에 보낸 누적 컨텍스트 proxy ("얼마나 찼나" 측정용).
-   *  - claude: result 메시지 `modelUsage[model]` → {inputTokens, outputTokens}.
-   *  - codex: 마지막 turn 의 `response.completed` usage → {input_tokens, output_tokens}.
-   *  - openai: 미캡처 → 생략 (NULL → /status "측정 전").
+   * ★두 축을 **분리**한다 (2026-07-30, 세 어댑터 공통 계약):
+   *   `inputTokens`/`cachedTokens` = **마지막 API 호출 1회** ("얼마나 찼나" — /status 컨텍스트 %)
+   *   `*Total`                     = **턴 전체 합계**       (진짜 비용·진짜 적중률)
+   *  섞으면 조용히 틀린다 — claude 가 누적합을 inputTokens 에 넣었을 때 실측 한 턴이
+   *  cachedTokens=10,182,800(200K 창의 50.9배)이라 /status 가 "컨텍스트 ~3293%" 를 띄웠다.
+   *  ★캐시 읽기 포함 여부도 통일: 셋 다 "이 호출이 실제로 먹은 입력"(비캐시+캐시읽기+캐시생성).
+   *   Anthropic 원값은 캐시 읽기를 빼고 주므로 어댑터가 더해서 올린다.
+   *  - claude: assistant 메시지 usage(호출 단위) + result `modelUsage`(누적) → Total.
+   *  - codex: 마지막 turn 의 `response.completed` usage + iteration 합계 → Total.
+   *  - openai: RunContext.usage(run 누적) — 미보고 빈번 → 생략.
    */
   usage?: {
     inputTokens: number;
@@ -597,8 +603,15 @@ export interface RegionATurnDonePayload {
   /** 항상 true (turn_done 은 성공 종료에만 발행). 분류 가독용 명시 필드. */
   ok: true;
   /**
-   * 입력 토큰 (이 턴에 보낸 누적 컨텍스트 proxy). 어댑터가 캡처한 경우만.
-   *  - claude: result `modelUsage[model].inputTokens` — 거의 항상 채워짐.
+   * usage 페이로드 의미 버전 (2026-07-30 도입, 현재 2). 없거나 1 = **옛 의미**
+   * (claude 는 캐시 읽기 제외 증분). 같은 컬럼에 두 시대가 섞여 있으니 사후 집계는
+   * 반드시 이 값으로 가를 것 — 날짜 손목록 말고.
+   */
+  usageSchema?: number;
+  /**
+   * 입력 토큰 — **마지막 API 호출 1회**(컨텍스트 참 정도). 턴 합계는 inputTokensTotal.
+   * 캐시 읽기·생성을 **포함**한다(어댑터가 정규화). 캡처한 경우만.
+   *  - claude: 마지막 parent assistant 메시지의 usage — 거의 항상 채워짐.
    *  - codex : 마지막 turn `response.completed` usage.input_tokens — 거의 항상.
    *  - openai: RunContext.usage 노출 시 — 스파이크 어댑터라 미보고 빈번 → 생략.
    * 거짓값 금지 — 못 얻으면 필드 자체를 생략(0 도 박지 않음).
@@ -608,9 +621,9 @@ export interface RegionATurnDonePayload {
   outputTokens?: number;
   /** 캐시 적중 입력 토큰(2026-07-26). 실효 입력 = inputTokens - cachedTokens. 미보고 시 생략. */
   cachedTokens?: number;
-  /** 도구 루프 iteration 수(2026-07-26). 2 이상일 때만. codex 는 매 iteration 전체 재전송. */
+  /** 도구 루프 iteration(=API 호출) 수. 2 이상일 때만. codex 는 매 iteration 전체 재전송. */
   iterations?: number;
-  /** 턴 전체 입력 합계 — 진짜 비용(위 inputTokens 는 마지막 iteration 값). */
+  /** 턴 전체 입력 합계 — 진짜 비용(위 inputTokens 는 **마지막 호출 1회** 값). */
   inputTokensTotal?: number;
   /** 턴 전체 캐시 적중 합계 — 진짜 적중률 = cachedTokensTotal / inputTokensTotal. */
   cachedTokensTotal?: number;

@@ -45,12 +45,13 @@ import {
 } from "../../identity.js";
 import {
   assembleUserPrompt,
-  buildSystemContextParts,
+  composeSystemChannel,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
   formatModelProfiles,
+  splitSystemContext,
 } from "../../prompt-assembly.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
@@ -411,11 +412,14 @@ export const runOpenAiCodex = async (
   const env = formatEnvContext({ cwd: discoveryCwd });
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix,
   //  claude 어댑터와 동일 — parity). 첨부 블록은 사용자 turn 쪽으로 그룹.
+  // ★안정/휘발 채널 분리 (2026-07-30) — 안정 조각은 `instructions` 로 올라가 프리픽스
+  //  캐시를 탄다(아래 payload). 여기 남는 건 턴마다 변하는 조각뿐이라 히스토리 적재량도
+  //  같이 줄어든다(헌법이 히스토리에 91번 복제되던 것 — codex 압축 붕괴의 재료였다).
   // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix 전부 스킵(페르소나·컨텍스트 누수 0).
-  const systemContextParts =
+  const { stable: stableContext, volatileParts } =
     input.systemPromptOverride !== undefined
-      ? []
-      : buildSystemContextParts({
+      ? { stable: "", volatileParts: [] as string[] }
+      : splitSystemContext({
           system,
           env,
           agent,
@@ -428,7 +432,16 @@ export const runOpenAiCodex = async (
           modelProfiles,
         });
   const userTurnParts = [attachmentBlock, input.text];
-  const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
+  const promptWithMemory = assembleUserPrompt(volatileParts, userTurnParts);
+
+  // instructions = [공유 헌법 + codex persistence delta] + [안정 스캐폴딩]. 턴 안 모든
+  // iteration 이 같은 문자열을 보내야 프리픽스 캐시가 걸리므로 루프 밖에서 1회 조립한다.
+  const instructions =
+    input.systemPromptOverride ??
+    composeSystemChannel(
+      `${SYSTEM_PROMPT}\n${CODEX_PERSISTENCE_PROMPT}`,
+      stableContext,
+    );
 
   // V5.1' 신규 — input 누적 (prior turn 들 + 현재 turn).
   // V5.3 — agentic loop 중 function_call / function_call_output 을 같은 배열에 append.
@@ -443,6 +456,7 @@ export const runOpenAiCodex = async (
     accessToken,
     accountId,
     model,
+    instructions.length, // 예산의 고정 비용 — 안정 조각이 여기로 옮겨갔다.
   );
 
   // V5.3 — MCP memory server (claude 어댑터와 동일 instance) in-memory bridge 회수.
@@ -1042,10 +1056,9 @@ export const runOpenAiCodex = async (
 
       const body: Record<string, unknown> = {
         model,
-        // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향).
-        // 중립 override(게이트웨이) 지정 시 그 값이 instructions — 헌법·persistence 대체.
-        instructions:
-          input.systemPromptOverride ?? `${SYSTEM_PROMPT}\n${CODEX_PERSISTENCE_PROMPT}`,
+        // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향)
+        // + 안정 스캐폴딩(위에서 1회 조립). 중립 override 시 그 값이 전부 대체.
+        instructions,
         input: inputArray,
         stream: true,
         store: false,

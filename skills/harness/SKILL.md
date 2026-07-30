@@ -29,7 +29,7 @@ description: "새 도메인에 맞는 서브에이전트 팀과 오케스트레�
 하네스 스킬이 트리거되면 **가장 먼저 기존 하네스 현황을 확인**한다. 매번 신규 구축으로
 가정하면 역할 겹치는 에이전트·스킬이 다른 이름으로 누적된다.
 
-1. user prompt 상단에 자동 prepend 되는 「## 사용 가능 서브에이전트」/「## 사용 가능 스킬」
+1. 매 턴 작동 컨텍스트에 자동으로 실리는 「## 사용 가능 서브에이전트」/「## 사용 가능 스킬」
    인덱스를 읽는다. 더 정확히는 `<TIGUCLAW_HOME>/agents/`, `<TIGUCLAW_HOME>/skills/`
    (프로젝트 작업이면 `<TIGUCLAW_HOME>/workspace/<project>/.tiguclaw/{agents,skills}` 도) 를
    `Glob`/`Read` 로 확인한다.

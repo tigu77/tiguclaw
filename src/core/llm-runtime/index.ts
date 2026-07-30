@@ -367,6 +367,84 @@ const classifyTurnError = (e: unknown): RegionATurnErrorPayload["errorKind"] => 
   return "error";
 };
 
+/**
+ * 프리픽스 캐시가 **식었다**는 판정 — 나쁠 때만 로그 한 줄 (2026-07-30).
+ *
+ * ★왜 조건부인가: 매 턴 같은 줄을 찍으면 배경소음이 돼 실제로 12일간 묻힌 전례가 있다.
+ *  그래서 "정상 = 침묵, 이상 = 판정 수치와 함께 한 줄".
+ *
+ * 무엇을 지키나: 안정 스캐폴딩(SYSTEM.md·스킬/에이전트 인덱스·AGENT.md ~30KB)을 어댑터
+ *  시스템 채널로 올려 프리픽스 캐시를 타게 했는데(prompt-assembly splitSystemContext),
+ *  누군가 그 자리에 **턴마다 변하는 값**을 끼워 넣으면 배치 회귀는 전부 초록인 채로
+ *  캐시가 다시 죽는다. 그때 남는 유일한 신호가 이 줄이다. 어댑터 무관(#2).
+ *
+ * ★임계는 **직감이 아니라 실측**으로 잡았다 (첫 판에 10% *비율*로 뒀다가, 정작 이 작업을
+ *  촉발한 조건(단일턴 11.7%)이 임계를 넘어 침묵한다는 걸 데이터로 확인하고 갈아엎었다):
+ *
+ *    배포 전 codex 표본의 `cachedTokens` 분포 — 0:13턴 / 1~3,999:48턴 / 4,000~9,999:8턴
+ *    / 10,000~19,999:31턴 / 20,000+:46턴.  **정확히 3,456 인 턴이 48개** = 사고의 지문
+ *    (instructions=sysprompt 19,385B 만 적중, 조립 프리픽스는 캐시 밖).
+ *
+ *  그래서 *비율*이 아니라 **절대 바닥**으로 본다. 비율은 다중 iteration 턴의 턴-내 재사용이
+ *  분자를 부풀려 두 모집단(단일턴 11.7% vs 다중 49~62%)이 섞여 신호가 죽는다. 반면
+ *  "안정 프리픽스가 걸렸나" 는 절대량으로 깨끗이 갈린다:
+ *    - 깨진 상태 = instructions 만 적중 ≈ 3,456 (또는 0)
+ *    - 정상 상태 = sysprompt + 안정 스캐폴딩 49,468B ≈ 8,800 토큰 이상
+ *  6,000 은 그 사이. 위/아래 어느 쪽에도 붙지 않게 뒀다.
+ *
+ * 콜드 오탐 방지: 유휴 후 첫 턴은 캐시 TTL 만료로 **정상적으로** 0 이다. 그래서 한 번은
+ *  세기만 하고, 같은 대화에서 연속 3턴이면 그때 운다(진짜 회귀는 지속적이다).
+ */
+const PREFIX_CACHE_MIN_INPUT_TOKENS = 8_000;
+/** 이 아래면 "안정 스캐폴딩이 캐시에 안 걸렸다" — 위 주석의 실측 분포에서 유도. */
+const PREFIX_CACHE_MIN_CACHED_TOKENS = 6_000;
+/** 연속 몇 턴이면 콜드가 아니라 회귀로 볼지. */
+const PREFIX_CACHE_COLD_STREAK = 3;
+
+/**
+ * 순수 판정 — "이 턴은 안정 프리픽스를 못 탔다". 판정 불가(미보고)·소형 턴은 false.
+ * 회귀 검사가 실측 수치로 이 경계를 고정한다(regression/prefix-cache-threshold).
+ */
+export const isPrefixCacheCold = (usage: {
+  inputTokens?: number;
+  cachedTokens?: number;
+}): boolean => {
+  const { inputTokens, cachedTokens } = usage;
+  if (inputTokens === undefined || cachedTokens === undefined) return false;
+  if (inputTokens < PREFIX_CACHE_MIN_INPUT_TOKENS) return false;
+  return cachedTokens < PREFIX_CACHE_MIN_CACHED_TOKENS;
+};
+
+/** threadKey → 연속 콜드 턴 수. 정상 턴이 오면 지운다(핫 워킹셋만 바운드). */
+const coldStreak = new Map<string, number>();
+
+const warnIfPrefixCacheCold = (
+  spec: ModelSpec,
+  input: RegionASdkInput,
+  output: RegionASdkOutput,
+): void => {
+  // 턴-내 재사용이 섞이지 않도록 **호출 단위** 값으로 본다(Total 은 iteration 합계).
+  const inputTokens = output.usage?.inputTokens;
+  const cached = output.usage?.cachedTokens;
+  if (!isPrefixCacheCold({ inputTokens, cachedTokens: cached })) {
+    coldStreak.delete(input.threadKey);
+    return;
+  }
+  // 스레드가 많아져도 무한 성장하지 않게 — 휘발성 카운터라 통째로 버려도 무해.
+  if (coldStreak.size > 500) coldStreak.clear();
+  const streak = (coldStreak.get(input.threadKey) ?? 0) + 1;
+  coldStreak.set(input.threadKey, streak);
+  if (streak < PREFIX_CACHE_COLD_STREAK) return;
+  console.warn(
+    `[prefix-cache] 안정 프리픽스가 ${streak}턴 연속 캐시에 안 걸린다 — ` +
+      `cached=${cached} (기대 ${PREFIX_CACHE_MIN_CACHED_TOKENS}+), input=${inputTokens}, ` +
+      `adapter=${adapterLabel(spec.adapter)} thread=${input.threadKey}. ` +
+      "시스템 채널의 안정 조각이 턴마다 바뀌고 있다는 신호 " +
+      '— prompt-assembly buildContextSlots 의 channel:"system" 슬롯을 의심하라 ' +
+      "(과거 지문: cached 가 정확히 3,456 = sysprompt 만 적중).",
+  );
+};
+
 // 견고성(임무 §4) — 발행은 try/catch boundary. 발행 실패가 어댑터 턴/데몬을 절대
 // 못 죽이게 (관측은 best-effort). EventBus 자체도 subscriber throw 를 격리하지만
 // publish 호출 자체(getEventBus 등)의 만일을 위해 한 겹 더 감싼다.
@@ -377,6 +455,7 @@ const publishTurnDone = (
   durationMs: number,
 ): void => {
   try {
+    warnIfPrefixCacheCold(spec, input, output);
     const payload: RegionATurnDonePayload = {
       channel: input.channel,
       threadKey: input.threadKey,
@@ -389,6 +468,11 @@ const publishTurnDone = (
         : spec.model !== ""
           ? { model: spec.model }
           : {}),
+      // ★시대 표식 (2026-07-30) — 같은 컬럼에 **두 의미**가 섞였다. 07-30 이전 claude 행은
+      //  캐시 읽기를 뺀 증분(평균 199), 이후는 호출 단위 전체 입력. 스케일이 수천 배 다르다.
+      //  사후 집계(context-windows.ts 주석의 "실사용 358턴" 같은 실측)가 시대를 가르려면
+      //  날짜 손목록이 아니라 판정 가능한 필드가 있어야 한다.
+      usageSchema: 2,
       ...(output.usage?.inputTokens !== undefined
         ? { inputTokens: output.usage.inputTokens }
         : {}),

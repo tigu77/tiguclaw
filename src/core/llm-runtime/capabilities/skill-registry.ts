@@ -323,9 +323,12 @@ export const parseBool = (
 };
 
 /**
- * 스킬 인덱스 → user prompt prepend 용 문자열.
+ * 스킬 인덱스 → 작동 컨텍스트(어댑터 시스템 채널) 주입용 문자열.
  * `disableModelInvocation: true` 는 제외 (LLM 자동 호출 금지 정책).
- * 비어 있으면 빈 문자열 — 호출자가 prepend skip.
+ * 비어 있으면 빈 문자열 — 호출자가 주입 skip.
+ *
+ * ★안정 조각이다 — 같은 스킬 집합이면 **바이트 동일**해야 한다(prompt-assembly
+ * splitSystemContext). 여기 순서를 턴마다 변하는 값으로 정하지 마라.
  */
 // ─── 능력 인덱스 스케일링 (ADR 2026-07-07-capability-index-scaling) ──────────
 // 상한 K — 스킬/에이전트가 아무리 많아져도 상시 프롬프트 무게를 바운드. 하드코딩
@@ -359,10 +362,17 @@ export const formatSkillIndex = (skills: ReadonlyArray<Skill>): string => {
   }
   // 캡 초과 — 사용빈도순 상위 K + 검색 안내(상시 무게 바운드). Array.sort 안정정렬로
   // 동점은 입력(discover) 순서 유지.
+  // ★빈도는 **선정에만** 쓰고 **표시는 discover 순서**로 되돌린다 (2026-07-30):
+  //  이 인덱스는 이제 시스템 채널(프리픽스 캐시 대상)에 실린다. 빈도순 그대로 렌더하면
+  //  invoke_skill 한 번이 카운트를 올려 다음 턴 문자열이 달라지고 — 스킬이 캡을 넘는
+  //  순간부터 — "스킬을 쓴 턴 다음 턴"마다 30KB 캐시가 통째로 깨진다. 선정 집합이
+  //  바뀔 때만 문자열이 바뀌게 하면 무효화가 실제 변화에만 국한된다.
   const usage = skillUsageRank();
+  const order = new Map(invocable.map((s, i) => [s.name, i]));
   const top = [...invocable]
     .sort((a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0))
-    .slice(0, SKILL_INDEX_CAP);
+    .slice(0, SKILL_INDEX_CAP)
+    .sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0));
   const rest = invocable.length - SKILL_INDEX_CAP;
   return `${header}\n\n자주 쓰는 ${SKILL_INDEX_CAP}개만 표시합니다. 나머지 ${rest}개는 \`find_skills({query})\` 로 검색하세요.\n\n${fmt(top)}`;
 };
@@ -441,7 +451,7 @@ export const createSkillInvokeMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const skillInvokeTool = tool(
     "invoke_skill",
-    "발견된 스킬의 SKILL.md raw 본문 (frontmatter 포함) 을 반환합니다. 사용 가능 스킬 인덱스는 user prompt 의 `## 사용 가능 스킬` 섹션에 prepend 되어 있습니다. **`path`(폴더 경로)를 주면 그 폴더의 `skills/` 기준으로 스킬을 찾습니다 — 다른 프로젝트/폴더 전용 스킬을 '들어가지 않고' 그 자리에서 사용할 때. 그 폴더에 무슨 스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 미지정 시 현재 컨텍스트 기준.**",
+    "발견된 스킬의 SKILL.md raw 본문 (frontmatter 포함) 을 반환합니다. 사용 가능 스킬 인덱스는 작동 컨텍스트의 `## 사용 가능 스킬` 섹션에 이미 실려 있습니다. **`path`(폴더 경로)를 주면 그 폴더의 `skills/` 기준으로 스킬을 찾습니다 — 다른 프로젝트/폴더 전용 스킬을 '들어가지 않고' 그 자리에서 사용할 때. 그 폴더에 무슨 스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 미지정 시 현재 컨텍스트 기준.**",
     {
       name: z.string().min(1),
       path: z.string().optional(),

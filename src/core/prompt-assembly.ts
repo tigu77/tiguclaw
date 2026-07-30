@@ -81,8 +81,8 @@ export const formatMemoryIndex = (
 // ─── 모델 프로파일 인지 — 에이전트/워커 구성 시 프로파일 선택 (capability-index 패턴) ──
 // 비서가 spawn_agent(model)/run_worker(tier) 를 구성/위임할 때 settings.json 에 정의된
 // 명명 프로파일을 인지하도록, depth 0 turn 의 system-context 에 주입한다. 스킬·에이전트
-// 인덱스와 동일 패턴 — 정적 sysprompt(claude SYSTEM_PROMPT_HASH 보존)가 아니라
-// user-prompt system-reminder 로 prepend(어댑터가 depth 0 만 호출).
+// 인덱스와 동일 패턴 — 어댑터 시스템 채널의 *안정* 스캐폴딩으로 실린다(2026-07-30
+// splitSystemContext. 그 전엔 user-prompt system-reminder). 어댑터가 depth 0 만 호출.
 //  - §0(코어가 모델명 하드코딩 X): loadModelProfiles(settings.json) 데이터만 읽어 렌더.
 //    코어엔 default/high/mid/low 같은 이름·pool 이 하나도 박혀 있지 않다.
 //  - #2(LLM-agnostic): 세 어댑터가 이 동일 텍스트를 동일 순서로 prepend. 프로파일
@@ -250,10 +250,13 @@ export const formatAttachments = (
 // 해결(Claude Code 슈퍼셋답게): Claude Code 본가가 CLAUDE.md·환경·도구 안내를
 //  user 채널에 깔 때 쓰는 컨벤션 — `<system-reminder>` 태그 래핑 — 을 그대로 채용.
 //  Claude 는 이 태그를 "하네스가 주는 배경 정보, 사용자 발화 아님" 으로 학습돼
-//  있어 안의 imperative 를 메아리치지 않고, 지시어 해석도 태그 밖만 본다. 한 어댑터
-//  옵션 안 건드리고(API system 채널은 정적·캐시 친화 그대로) user 채널 안에서
-//  텍스트 컨벤션으로 channel 효과를 낸다 — Anthropic 자체 패턴. codex/GPT 는 태그
-//  자체엔 학습 안 됐을 수 있으나 명시 구획 표식이라 raw 보다는 강하게 작동.
+//  있어 안의 imperative 를 메아리치지 않고, 지시어 해석도 태그 밖만 본다 — Anthropic
+//  자체 패턴. codex/GPT 는 태그 자체엔 학습 안 됐을 수 있으나 명시 구획 표식이라 raw
+//  보다는 강하게 작동.
+// 2026-07-30 — 이 함수가 받는 건 이제 **휘발 조각만**이다. 안정 조각(SYSTEM.md·AGENT.md·
+//  스킬/에이전트 인덱스·모델 프로파일)은 프리픽스 캐시를 타도록 시스템 채널로 올라갔다
+//  (splitSystemContext 주석). 위 메아리 위험은 *user 채널*이라서 생긴 것이라 이동한
+//  조각들엔 해당하지 않는다.
 // 양 어댑터 공통 헬퍼 → 분기 0, parity 유지.
 export const assembleUserPrompt = (
   systemContextParts: string[],
@@ -265,14 +268,7 @@ export const assembleUserPrompt = (
   return `<system-reminder>\n${ctx.join("\n\n")}\n</system-reminder>\n\n${turn}`;
 };
 
-/**
- * system-context 조립 *순서*의 단일 정의점 — claude/codex/openai 세 어댑터가 이 배열을
- * 각자 동일 순서로 복제했다(parity #2: 셋이 반드시 같은 순서여야 함). 여기 하나로 모아
- * 순서를 구조적으로 강제한다(같은 걸 두 번 구현 X). 빈 파트는 assembleUserPrompt 가
- * 거르므로, claude 전용 foreignDelta 를 항상 자리에 두어도 다른 어댑터에선 무해("").
- * agentPathHint() 도 이 순서의 일부라 여기서 호출한다.
- */
-export const buildSystemContextParts = (input: {
+interface SystemContextInput {
   system: string;
   /** 환경 자기인지(env 블록, runtime-env.ts formatEnvContext) — depth 게이트 없음(전 depth). */
   env: string;
@@ -283,21 +279,107 @@ export const buildSystemContextParts = (input: {
   memorySnippet: string;
   skillIndex: string;
   agentIndex: string;
-  /** 모델 프로파일 인지 블록(depth 0 만) — 미전달/빈 문자열이면 assembleUserPrompt 가 필터. */
+  /** 모델 프로파일 인지 블록(depth 0 만) — 미전달/빈 문자열이면 슬롯이 걸러진다. */
   modelProfiles?: string;
   /** claude 전용 — cross-adapter foreign(codex) delta 블록. 다른 어댑터는 미전달. */
   foreignDelta?: string;
-}): string[] => [
-  input.system,
-  input.env,
-  input.agent,
-  input.agentWarn,
-  agentPathHint(),
-  input.convoContext,
-  input.foreignDelta ?? "", // claude 전용 — 그 외 어댑터는 ""(assembleUserPrompt 가 필터).
-  input.memoryIndex,
-  input.memorySnippet,
-  input.skillIndex,
-  input.agentIndex,
-  input.modelProfiles ?? "", // depth 0 만 — 그 외/부재는 ""(assembleUserPrompt 가 필터).
+}
+
+/**
+ * 조각이 실릴 채널.
+ *  - `"system"`: 어댑터의 **시스템 채널**(codex/openai `instructions`, claude SDK
+ *    `systemPrompt`). 프롬프트 앞머리라 프리픽스 캐시가 걸린다.
+ *  - `"user"`: user 프롬프트의 `<system-reminder>` 블록. 캐시 밖.
+ */
+type ContextChannel = "system" | "user";
+
+interface ContextSlot {
+  readonly key: string;
+  readonly text: string;
+  readonly channel: ContextChannel;
+}
+
+/**
+ * system-context 조립 *순서*와 **채널 배치**의 단일 정의점 — claude/codex/openai 세
+ * 어댑터가 이 배열을 각자 동일 순서로 복제했다(parity #2: 셋이 반드시 같은 순서여야 함).
+ * 여기 하나로 모아 순서를 구조적으로 강제한다(같은 걸 두 번 구현 X). 빈 파트는
+ * splitSystemContext 가 거르므로, claude 전용 foreignDelta 를 항상 자리에 두어도 다른
+ * 어댑터에선 무해(""). agentPathHint() 도 이 순서의 일부라 여기서 호출한다.
+ *
+ * ★channel 배치 기준 = **턴마다 변하나** (2026-07-30, 프리픽스 캐시 실측 기반):
+ *  OpenAI/Anthropic 프리픽스 캐시는 **앞에서만** 매칭한다. 종전엔 조립 프리픽스 48.8KB
+ *  전부가 input 배열의 **맨 끝**(현재 턴)에 실려 구조적으로 캐시 불가였다 — codex 실측
+ *  `cachedTokens` 가 거의 모든 턴 정확히 3,456(= instructions 뿐), 단일턴 적중률 11.7%.
+ *  그래서 턴 사이에 안 변하는 조각(SYSTEM.md·AGENT.md·스킬/에이전트 인덱스·모델 프로파일
+ *  ≈ 36.9KB, 76%)만 시스템 채널로 올린다. 나머지(env=날짜, 대화 컨텍스트=진행 중인 잡,
+ *  메모리 인덱스=추가 시 변, 메모리 스니펫=질의마다, foreign delta=턴마다)는 user 채널에
+ *  남긴다 — 거기 올려봐야 매 턴 캐시를 깨뜨려 앞쪽 조각까지 무효화한다.
+ *
+ *  ★원저자 의도와 충돌하지 않는다: `<system-reminder>` 래핑은 스캐폴딩을 *user 채널*에
+ *  raw 로 깔면 모델이 지시어를 오인하거나 안의 imperative 를 메아리치던 실사고 대응이다
+ *  (아래 assembleUserPrompt 주석). 시스템 채널은 애초에 그 위험이 없는 채널이다.
+ *
+ *  새 조각을 추가할 땐 `channel` 을 반드시 고른다(타입이 강제) — "안 변하면 system".
+ */
+const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
+  { key: "system", text: input.system, channel: "system" },
+  // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면
+  // 자정마다 시스템 채널 전체(30KB)의 캐시를 깨뜨린다. user 채널이 정답.
+  { key: "env", text: input.env, channel: "user" },
+  { key: "convoContext", text: input.convoContext, channel: "user" },
+  // claude 전용 — 그 외 어댑터는 ""(빈 슬롯은 걸러진다).
+  { key: "foreignDelta", text: input.foreignDelta ?? "", channel: "user" },
+  { key: "memoryIndex", text: input.memoryIndex, channel: "user" },
+  { key: "memorySnippet", text: input.memorySnippet, channel: "user" },
+  { key: "skillIndex", text: input.skillIndex, channel: "system" },
+  { key: "agentIndex", text: input.agentIndex, channel: "system" },
+  // depth 0 만 — 그 외/부재는 ""(빈 슬롯은 걸러진다).
+  { key: "modelProfiles", text: input.modelProfiles ?? "", channel: "system" },
+  // ★AGENT.md 3인방을 시스템 채널의 **꼬리**에 둔다 (2026-07-30 검토 지적):
+  //  안정 조각 중 가장 자주 바뀌는 게 AGENT.md 다 — 비서 자신이 정체성·습관을 수시로
+  //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
+  //  에이전트 인덱스·프로파일)의 캐시까지 통째로 무효화한다. 꼬리에 두면 무효화가
+  //  자기 자신으로 국한된다. "프리픽스는 앞에서만 매칭한다"를 블록 *안*에도 적용한 것.
+  { key: "agentPathHint", text: agentPathHint(), channel: "system" },
+  { key: "agent", text: input.agent, channel: "system" },
+  { key: "agentWarn", text: input.agentWarn, channel: "system" },
 ];
+
+/**
+ * 시스템 채널로 올라간 스캐폴딩임을 모델에게 알리는 머리말. 시스템 채널은 메아리 위험이
+ * 없으니 태그가 아니라 한 줄이면 충분하고, 안정 조각이라 캐시에 함께 실린다.
+ */
+const STABLE_CONTEXT_HEADER =
+  "아래는 하네스가 주입하는 작동 컨텍스트입니다 (사용자 발화 아님 — 상시 배경 정보).";
+
+/**
+ * 슬롯을 채널별로 가른다. 빈 텍스트는 양쪽 모두에서 제거.
+ *  - `stable`: 시스템 채널에 이어붙일 한 덩어리(없으면 "").
+ *  - `volatileParts`: `assembleUserPrompt` 에 그대로 넘길 user 채널 파트들.
+ */
+export const splitSystemContext = (
+  input: SystemContextInput,
+): { stable: string; volatileParts: string[] } => {
+  const slots = buildContextSlots(input).filter((s) => s.text.length > 0);
+  const stableParts = slots
+    .filter((s) => s.channel === "system")
+    .map((s) => s.text);
+  return {
+    stable:
+      stableParts.length === 0
+        ? ""
+        : [STABLE_CONTEXT_HEADER, ...stableParts].join("\n\n"),
+    volatileParts: slots
+      .filter((s) => s.channel === "user")
+      .map((s) => s.text),
+  };
+};
+
+/**
+ * 시스템 채널 문자열 = [어댑터 sysprompt] + [안정 스캐폴딩]. 세 어댑터가 같은 방식으로
+ * 이어붙이도록 여기 한 곳에 둔다(각자 join 하면 구분자가 갈린다).
+ */
+export const composeSystemChannel = (
+  sysprompt: string,
+  stable: string,
+): string => (stable === "" ? sysprompt : `${sysprompt}\n\n${stable}`);

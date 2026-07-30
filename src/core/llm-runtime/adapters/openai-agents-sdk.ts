@@ -38,12 +38,13 @@ import {
 } from "../../identity.js";
 import {
   assembleUserPrompt,
-  buildSystemContextParts,
+  composeSystemChannel,
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
   formatMemorySnippet,
   formatModelProfiles,
+  splitSystemContext,
 } from "../../prompt-assembly.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
@@ -506,31 +507,6 @@ export const runOpenAi = async (
     mcpServers[i] = wireToolHooks(mcpServers[i]);
   }
 
-  // 2a (2026-06-15) — 인격(sysprompt) parity. 더미 instructions 폐기, 세 어댑터
-  // 공유 작동헌법(`_shared-sysprompt.ts` REGION_A_SYSTEM_PROMPT)을 그대로 주입.
-  //  - claude 어댑터: options.systemPrompt = SYSTEM_PROMPT (claude-agent-sdk.ts L283)
-  //  - codex 어댑터: instructions = `${SYSTEM_PROMPT}\n${CODEX_PERSISTENCE_PROMPT}`
-  //    (openai-codex-oauth.ts L1056, persistence 는 codex 전용 append)
-  //  - openai 어댑터(본): instructions = SYSTEM_PROMPT (동일 소스, 어댑터 분기 0).
-  // SYSTEM.md·AGENT.md 본문 user-prompt prepend·세션 연속성·메모리 본문 검색은 아래
-  // 2c+2d 블록에서 codex 와 동일 함수로 배선 (sysprompt 는 정적 instructions 로 분리).
-  const agent = new Agent({
-    name: "tiguclaw-spike",
-    // 중립 override(게이트웨이) 지정 시 그 값이 instructions — tiguclaw 작동헌법 대체.
-    instructions: input.systemPromptOverride ?? SYSTEM_PROMPT,
-    model: modelArg,
-    mcpServers,
-    // externalTools 패스스루(§2.3) — 미지정/빈 배열이면 두 필드 모두 생략(스프레드 {} =
-    // 현행과 바이트 동일 Agent 구성, 회귀 0). toolsNone 게이팅과 무관 — mcpServers 축과
-    // 별개 필드라 tiguclaw 도구가 꺼져도 앱 함수는 그대로 노출된다(ADR §Decision-1 3항).
-    ...(nativeExternalTools.length > 0
-      ? {
-          tools: nativeExternalTools,
-          toolUseBehavior: { stopAtToolNames: [...externalToolNames] },
-        }
-      : {}),
-  });
-
   // 2c+2d (2026-06-15) — 세션 연속성 + 메모리/정체성 parity (층 1).
   // codex 어댑터(openai-codex-oauth.ts L785-841)와 *동일 조립 함수*를 그대로 배선:
   // 어댑터 무관 단일 소스(readSystem/readAgent/retrieveContext/...)로 user prompt prefix
@@ -582,10 +558,10 @@ export const runOpenAi = async (
   const attachmentBlock = formatAttachments(input.attachments);
 
   // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix 전부 스킵(페르소나·컨텍스트 누수 0).
-  const systemContextParts =
+  const { stable: stableContext, volatileParts } =
     input.systemPromptOverride !== undefined
-      ? []
-      : buildSystemContextParts({
+      ? { stable: "", volatileParts: [] as string[] }
+      : splitSystemContext({
           system,
           env,
           agent: agentBody,
@@ -598,7 +574,36 @@ export const runOpenAi = async (
           modelProfiles,
         });
   const userTurnParts = [attachmentBlock, input.text];
-  const promptWithMemory = assembleUserPrompt(systemContextParts, userTurnParts);
+  const promptWithMemory = assembleUserPrompt(volatileParts, userTurnParts);
+
+  // 2a (2026-06-15) — 인격(sysprompt) parity. 더미 instructions 폐기, 세 어댑터
+  // 공유 작동헌법(`_shared-sysprompt.ts` REGION_A_SYSTEM_PROMPT)을 그대로 주입.
+  //  - claude 어댑터: options.systemPrompt (claude-agent-sdk.ts)
+  //  - codex 어댑터: instructions = `${SYSTEM_PROMPT}\n${CODEX_PERSISTENCE_PROMPT}`
+  //    (persistence 는 codex 전용 append)
+  //  - openai 어댑터(본): instructions = SYSTEM_PROMPT (동일 소스, 어댑터 분기 0).
+  // ★2026-07-30 — 셋 다 여기에 **안정 스캐폴딩**(SYSTEM.md·AGENT.md·스킬/에이전트 인덱스·
+  //  모델 프로파일)을 이어붙인다(composeSystemChannel). 프리픽스 캐시는 앞에서만 매칭해서
+  //  user 턴 끝에 실린 48.8KB 가 구조적으로 캐시 불가였다 — splitSystemContext 주석 참조.
+  //  휘발 조각(env·대화 컨텍스트·메모리)만 user `<system-reminder>` 에 남는다.
+  const instructions =
+    input.systemPromptOverride ??
+    composeSystemChannel(SYSTEM_PROMPT, stableContext);
+  const agent = new Agent({
+    name: "tiguclaw-spike",
+    instructions,
+    model: modelArg,
+    mcpServers,
+    // externalTools 패스스루(§2.3) — 미지정/빈 배열이면 두 필드 모두 생략(스프레드 {} =
+    // 현행과 바이트 동일 Agent 구성, 회귀 0). toolsNone 게이팅과 무관 — mcpServers 축과
+    // 별개 필드라 tiguclaw 도구가 꺼져도 앱 함수는 그대로 노출된다(ADR §Decision-1 3항).
+    ...(nativeExternalTools.length > 0
+      ? {
+          tools: nativeExternalTools,
+          toolUseBehavior: { stopAtToolNames: [...externalToolNames] },
+        }
+      : {}),
+  });
 
   // 2c 세션 연속성 — thread 단위 단일 소스(loadThreadHistory) 로 prior turn 들을 로드해
   // @openai/agents 입력 메시지 배열로 주입(node_modules run.d.ts L204: run(agent,
@@ -1015,7 +1020,7 @@ export const runOpenAi = async (
       );
       const noToolsAgent = new Agent({
         name: "tiguclaw-spike",
-        instructions: input.systemPromptOverride ?? SYSTEM_PROMPT,
+        instructions,
         model: modelArg,
         mcpServers: [],
       });
@@ -1030,11 +1035,37 @@ export const runOpenAi = async (
   // 동일 형상으로 캡처, 없으면 미설정(정직 → /status "측정 전"). spike 어댑터라 SDK
   // 타입 미검증 → 런타임 가드 + 옵셔널 체이닝으로 안전 추출(타입 결합 0).
   const rawUsage = (result as { context?: { usage?: unknown } }).context?.usage;
-  let usage: { inputTokens: number; outputTokens: number } | undefined;
+  let usage:
+    | { inputTokens: number; outputTokens: number; cachedTokens?: number }
+    | undefined;
   if (rawUsage !== null && typeof rawUsage === "object") {
-    const u = rawUsage as { inputTokens?: unknown; outputTokens?: unknown };
+    const u = rawUsage as {
+      inputTokens?: unknown;
+      outputTokens?: unknown;
+      inputTokensDetails?: unknown;
+    };
     if (typeof u.inputTokens === "number" && typeof u.outputTokens === "number") {
-      usage = { inputTokens: u.inputTokens, outputTokens: u.outputTokens };
+      // 캐시 적중(2026-07-30) — codex/claude 는 이미 cachedTokens 를 싣는데 여기만 빠져
+      // 있어서, 프리픽스 캐시가 openai 어댑터에서 걸리는지 **원리적으로 확인 불가**였다
+      // (관측 비대칭 = 원칙 #2 위반). Agents SDK 는 상세를 inputTokensDetails 로 넘긴다
+      // (배열 또는 단일 객체, provider 별 키 표기도 갈림) — 있는 것만 긁고 없으면 미설정.
+      const details = Array.isArray(u.inputTokensDetails)
+        ? u.inputTokensDetails
+        : u.inputTokensDetails !== undefined
+          ? [u.inputTokensDetails]
+          : [];
+      let cached = 0;
+      for (const d of details) {
+        if (d === null || typeof d !== "object") continue;
+        const rec = d as Record<string, unknown>;
+        const v = rec.cached_tokens ?? rec.cachedTokens;
+        if (typeof v === "number") cached += v;
+      }
+      usage = {
+        inputTokens: u.inputTokens,
+        outputTokens: u.outputTokens,
+        ...(cached > 0 ? { cachedTokens: cached } : {}),
+      };
     }
   }
 

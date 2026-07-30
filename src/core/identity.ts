@@ -62,10 +62,11 @@ export const getAssistantName = (): string => {
 };
 
 // ─── SYSTEM.md (작동 헌법) — 언제나 로드 (2026-05-27) ──────────────────────
-// 사용자 결정: SYSTEM.md 는 on-demand Read 가 아니라 *매 turn 항상* user prompt 앞에
-// prepend 되는 소스다 (AGENT.md 와 동급 상시 컨텍스트). 부팅 시 syncSystemMd 가 앱
-// 정본을 `<home>/SYSTEM.md` 로 미러하므로 그 미러를 읽는다. 양 어댑터(claude·codex)가
-// 동일하게 prepend 해 LLM parity 유지. 부재 시 빈 문자열 (헌법 미러 실패해도 turn 생존).
+// 사용자 결정: SYSTEM.md 는 on-demand Read 가 아니라 *매 turn 항상* 실리는 소스다
+// (AGENT.md 와 동급 상시 컨텍스트). 자리는 어댑터 **시스템 채널**(2026-07-30 이후 —
+// prompt-assembly splitSystemContext). 부팅 시 syncSystemMd 가 앱 정본을
+// `<home>/SYSTEM.md` 로 미러하므로 그 미러를 읽는다. 세 어댑터가 동일하게 실어 LLM
+// parity 유지. 부재 시 빈 문자열 (헌법 미러 실패해도 turn 생존).
 export const readSystem = (): string => {
   try {
     return fs.readFileSync(getPaths().systemMd, "utf8");
@@ -75,7 +76,7 @@ export const readSystem = (): string => {
 };
 
 /**
- * AGENT.md 실제 경로 1줄 안내 — 매 turn prepend.
+ * AGENT.md 실제 경로 1줄 안내 — 매 turn 작동 컨텍스트(시스템 채널)에 실린다.
  * V9.4 후 readAgent 는 `<home>/AGENT.md` 를 읽는데, 비서의 파일 도구 cwd 는
  * `process.cwd()`(데몬 cwd) 라 "AGENT.md" 만으로 Edit 하면 엉뚱한 파일에 써질 수
  * 있다(home ≠ cwd 시). 데몬만 아는 절대 경로를 알려줘 자기 정체성 편집이 실제로
@@ -83,7 +84,7 @@ export const readSystem = (): string => {
  * 편집 제약 — V10 file-ops 샌드박스 분리 후속.)
  */
 export const agentPathHint = (): string =>
-  `> [system] 당신의 AGENT.md 실제 경로: \`${getPaths().agentMd}\` — 이름·말투·습관 등 정체성 갱신은 *이 경로* 를 \`Edit\`/\`Write\` 하세요 (데몬이 매 turn 이 파일을 읽어 prepend). 레포 루트의 AGENT.md 가 아닙니다.`;
+  `> [system] 당신의 AGENT.md 실제 경로: \`${getPaths().agentMd}\` — 이름·말투·습관 등 정체성 갱신은 *이 경로* 를 \`Edit\`/\`Write\` 하세요 (데몬이 매 turn 이 파일을 읽어 작동 컨텍스트에 싣습니다). 레포 루트의 AGENT.md 가 아닙니다.`;
 
 /** body 가 4096B 초과 시 한 줄 경고, 그 외 빈 문자열. */
 export const agentSizeWarning = (body: string): string => {

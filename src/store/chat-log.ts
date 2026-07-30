@@ -2,7 +2,7 @@
  * 대시보드 대화 이력 영속 (기능 B, 2026-06-25).
  *
  * 대시보드 채팅은 EventBus 인메모리 ring(최근 50)으로만 그려져 데몬 재시작 시 화면서
- * 사라진다. `transcripts` 는 raw 모델 I/O(사용자 턴에 system-reminder·SYSTEM.md 주입이
+ * 사라진다. `transcripts` 는 raw 모델 I/O(사용자 턴에 system-reminder 스캐폴딩이
  * 섞임)라 그대로 못 쓴다 → 깨끗한 `channel.message.in/out` 텍스트만 담는 전용 작은
  * 테이블(`chat_log`)의 read/write 헬퍼. 메시지당 insert 1줄(비용 무시).
  *

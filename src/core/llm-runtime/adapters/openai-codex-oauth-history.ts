@@ -48,6 +48,11 @@ const CODEX_TURN_HISTORY_LIMIT = 150;
 //  825,885자. 종전 700K 캡은 그 위험 구간에 닿는 천장이었다 — 히스토리만 700K 를 채워도
 //  시스템 프롬프트(실측 ~22K)가 얹히면 합계 ~717K 로 **회색지대**에 들어간다.
 //
+//  ★2026-07-30 — 시스템프롬프트 실측이 ~22K → **~50K** 로 늘었다(안정 스캐폴딩이
+//  instructions 로 이동, prompt-assembly splitSystemContext). 그만큼을 buildTurnHistory
+//  의 `instructionsChars` 로 예산에 명시로 싣는다 — 안 그러면 옮겨간 자리가 비어
+//  과거 턴을 더 끌어오고 총 전송량이 조용히 늘어난다. 아래 표의 "시스템프롬프트" 항목은
+//  그 새 값으로 읽어라(현 캡 200K + 50K = 250K, 실측 안전 상한 594,960자 대비 여유).
 //  값 선정도 실측으로(360턴 실사용 스레드 기준, 합계 = 히스토리 + 시스템프롬프트):
 //    700K → 150턴 / 716,852자  ⚠️ 회색지대   ← 종전
 //    600K → 118턴 / 605,077자  ⚠️ 회색지대
@@ -808,6 +813,15 @@ export const buildTurnHistory = async (
   accessToken: string,
   accountId: string | undefined,
   model: string,
+  /**
+   * 이번 요청의 `instructions` 바이트 — char 예산의 **고정 비용**(2026-07-30).
+   * 종전엔 조립 프리픽스가 전부 currentPromptWithMemory 안에 있어서 예산이 그걸
+   * 통해 시스템 프롬프트 무게를 자동으로 셌다. 안정 조각(~30KB)이 instructions 로
+   * 옮겨간 뒤로는 그 자리가 예산에서 **비어** 과거 턴을 그만큼 더 끌어온다 —
+   * 총 전송량이 조용히 늘어난다. 캡의 근거가 "합계 = 히스토리 + 시스템프롬프트"
+   * 이므로(위 CODEX_TURN_HISTORY_CHAR_CAP 주석의 실측 표) 여기서 명시로 센다.
+   */
+  instructionsChars = 0,
 ): Promise<ResponseInputItem[]> => {
   const currentTurn = buildCurrentTurn(currentPromptWithMemory, mediaItems);
 
@@ -907,7 +921,8 @@ export const buildTurnHistory = async (
     .filter((t) => t.id > watermark)
     .map((t) => ({ role: t.role, content: t.content }));
 
-  let charSum = currentPromptWithMemory.length + summary.length;
+  let charSum =
+    instructionsChars + currentPromptWithMemory.length + summary.length;
   const recentRaw: CodexTurn[] = [];
   for (let i = recentRawAll.length - 1; i >= 0; i--) {
     if (recentRaw.length >= CODEX_TURN_HISTORY_LIMIT) break;

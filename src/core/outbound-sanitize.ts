@@ -9,7 +9,7 @@
  * 마커(`<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>`, `UNTRUSTED_CHILD_RESULT`,
  * `prompt-data`, `untrusted-text` 등)는 우리 생성 0 이라 잡지 않음.
  *
- * 방어 의도: sysprompt(`_shared-sysprompt.ts` "<system-reminder> 컨벤션" 섹션)가
+ * 방어 의도: sysprompt(`_shared-sysprompt.ts` "입력 컨텍스트 채널" 섹션)가
  * 첫 방어선, sanitize 가 두 번째(defense in depth). codex 같이 sysprompt 가이드를
  * 못 따르고 자기 input 의 <system-reminder> 태그를 echo 한 모델이라도 사용자
  * 화면엔 안 새게 한다.

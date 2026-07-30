@@ -35,19 +35,23 @@ export const check: RegressionCheck = {
         /event\.type === "error"/,
         /event\.type === "response\.failed"/,
         /event\.type === "response\.incomplete"/,
-        // 사유 필드를 실제로 꺼낸다(분기만 만들고 버리는 것 방지).
-        /source: "error"/,
-        /event\.response\?\.error/,
-        /incomplete_details\?\.reason/,
-        // 첫 실패 보존 — 뒤 이벤트가 사유를 덮어쓰지 않게.
-        /if \(failure === undefined\) \{/,
+        // ★형상 비종속 추출 — 문서(SDK 타입)와 이 백엔드 실물이 다르다(1차 실측: 문서대로
+        //  top-level code/message 를 읽었더니 빈 error 였다). 특정 경로를 더 추측하는 대신
+        //  payload 안을 깊이 제한으로 훑는다. 내려갈 키를 손목록으로 정하지 않는다.
+        /const digFailure = \(/,
+        /if \(depth > 3 \|\| o === null \|\| typeof o !== "object"\) return;/,
+        /k === "reason" && found\.code === undefined/,
+        // 내용 있는 쪽으로 승격(사유 없는 error 가 먼저, 사유 있는 failed 가 뒤에 온다).
+        /if \(!hasDetail\(failure\)\) \{/,
+        // 문서와 실물이 다를 수 있으니 원문도 남긴다.
+        /raw: redactSecrets\(data\)\.slice\(0, 400\)/,
       ],
     );
     out.push(
       assert(
         "★파서가 error·response.failed·response.incomplete 를 읽고 사유를 보존한다",
         parser.ok,
-        parser.ok ? "7개 확인" : `누락 ${parser.missing.join(" ")}`,
+        parser.ok ? "8개 확인" : `누락 ${parser.missing.join(" ")}`,
       ),
     );
 
@@ -57,29 +61,34 @@ export const check: RegressionCheck = {
       [
         /\[codex-backend-failure\]/,
         /sseResult\.failure !== undefined/,
-        /codex 백엔드가 요청 실행 실패를 보고했습니다|codex 백엔드가 요청 실패를 보고했습니다/,
+        /throw new CodexBackendFailureError\(why\)/,
+        // ★같은 body 재전송 — 백엔드 보고 실패는 HTTP 5xx 와 같은 부류다. 종전엔 모델
+        //  nudge 경로로 흘러 17.8초를 태우고 턴이 죽었다(사용자: "중간에 멈춤").
+        /\[codex-backend-retry\]/,
+        /backendFailAttempt < CODEX_FETCH_MAX_RETRIES/,
+        /continue; \/\/ 같은 body 로 재전송\./,
       ],
     );
     out.push(
       assert(
         "★소비부가 사유를 로그·에러로 올린다(빈 응답 경로로 안 흘린다)",
         consumer.ok,
-        consumer.ok ? "3개 확인" : `누락 ${consumer.missing.join(" ")}`,
+        consumer.ok ? "5개 확인" : `누락 ${consumer.missing.join(" ")}`,
       ),
     );
 
-    // ★부작용 가드 — 도구가 이미 돌았으면 throw 금지. throw 하면 폴백 모델이 턴을
-    //  처음부터 재실행해 memory/todo/schedule 이 **중복 실행**된다(기존 sideEffectExecuted
-    //  가드와 같은 이유). 사유를 얻었다고 이 가드를 깨면 새 사고가 난다.
-    const guard = await sourceHas(
+    // ★부작용 판단은 **함수 바깥 catch(§4.4)에 위임**한다 — 안쪽에서 중복 구현하면
+    //  (a) 기준이 두 곳으로 갈리고 (b) 실제로 `break` 가 `for(;;)` 스톨 루프만 빠져나가
+    //  sseResult 미할당 지점으로 떨어졌다(tsc 가 잡음). 재시도 소진 시엔 그냥 throw 한다.
+    const delegate = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
-      [/sseResult\.toolCalls\.length === 0 &&\s*\n\s*!sideEffectExecuted/],
+      [/재시도 소진 → \*\*그냥 throw\*\*/],
     );
     out.push(
       assert(
-        "★부작용 도구가 돌았으면 throw 하지 않는다(폴백 재실행 중복 방지)",
-        guard.ok,
-        guard.ok ? "가드 확인" : "부작용 가드 없음 — 폴백이 도구를 중복 실행한다",
+        "★재시도 소진 시 부작용 판단을 바깥 catch 에 위임한다(중복 구현 금지)",
+        delegate.ok,
+        delegate.ok ? "위임 확인" : "안쪽에서 부작용 분기를 재구현하고 있다",
       ),
     );
     return out;

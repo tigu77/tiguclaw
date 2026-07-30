@@ -144,6 +144,22 @@ export const resolveCodexModel = (explicit?: string): string =>
 // fetch 전송 견고성 parity — claude/openai 어댑터는 SDK 내장 retry 가 있으나
 // codex 는 raw fetch → transient 전송 실패(undici throw)·일시 backend 에러를
 // 흡수해 불필요한 풀 폴백을 줄인다. transient 만 재시도(4xx 429 제외는 즉시 throw).
+/**
+ * ★백엔드가 200 스트림 안에서 보고한 실패 (2026-07-30).
+ *
+ * HTTP 5xx 와 **같은 부류**다 — 요청은 도달했고 백엔드가 처리에 실패했다. 다만 이 백엔드는
+ * 상태코드가 아니라 `error`/`response.failed` 이벤트로 알려서 기존 transient 게이트를
+ * 비껴갔고, 그 결과 "모델이 침묵" 으로 오진돼 nudge 3회를 태운 뒤 턴이 죽었다.
+ * 같은 요청 재전송은 **부작용이 없다** — 도구는 로컬에서 이미 실행됐고 inputArray 에
+ * 결과가 들어 있어, 재전송은 "다음 스텝을 다시 물어보는 것" 일 뿐이다.
+ */
+class CodexBackendFailureError extends Error {
+  constructor(readonly why: string) {
+    super(`codex 백엔드가 요청 실패를 보고했습니다 — ${why}`);
+    this.name = "CodexBackendFailureError";
+  }
+}
+
 const CODEX_FETCH_MAX_RETRIES = 2;
 const CODEX_FETCH_BACKOFF_MS = [500, 1500];
 const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -1040,6 +1056,8 @@ export const runOpenAiCodex = async (
    * 불변식을 확정하고, 그때 재시도 배선을 판단한다. **확인 전에 고치지 않는다.**
    */
   const sseEndTally = new Map<string, number>();
+  /** 백엔드 보고 실패로 같은 body 를 재전송한 횟수(전송 재시도와 같은 cap 공유). */
+  let backendFailAttempt = 0;
 
   try {
     while (iteration < CODEX_MAX_TOOL_ITERATIONS_HARD) {
@@ -1303,18 +1321,18 @@ export const runOpenAiCodex = async (
             const why =
               `${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
               `${f.message !== undefined ? `: ${f.message}` : ""}` +
-              `${f.param !== undefined ? ` (param=${f.param})` : ""}`;
+              `${f.param !== undefined ? ` (param=${f.param})` : ""}` +
+              // 문서 형상과 실물이 다를 수 있어 원문을 함께 남긴다(실패 경로에서만).
+              `${f.code === undefined && f.message === undefined && f.raw !== undefined ? ` raw=${f.raw}` : ""}`;
             console.error(
               `[codex-backend-failure] ${why} — iteration=${iteration} ` +
                 `text=${sseResult.text.length} toolCalls=${sseResult.toolCalls.length} ` +
                 `sideEffect=${sideEffectExecuted} thread=${input.threadKey}`,
             );
-            if (
-              sseResult.text === "" &&
-              sseResult.toolCalls.length === 0 &&
-              !sideEffectExecuted
-            ) {
-              throw new Error(`codex 백엔드가 요청 실패를 보고했습니다 — ${why}`);
+            // 건진 게 없으면(텍스트·도구 0) 재전송 가치가 있다 → typed throw 로 올려
+            // 바깥 catch 가 **같은 body 로 재시도**한다(부작용 판단도 거기서 한 번에).
+            if (sseResult.text === "" && sseResult.toolCalls.length === 0) {
+              throw new CodexBackendFailureError(why);
             }
           }
           if (endKey === "none") {
@@ -1337,6 +1355,32 @@ export const runOpenAiCodex = async (
         // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
         // sideEffectExecuted 시 throw 대신 fallback 텍스트는 함수 바깥 catch (§4.4)에서.
         const reason = effectiveAc.signal.reason;
+        // ★백엔드 보고 실패 — HTTP 5xx 와 같은 부류라 **같은 body 로 재전송**한다.
+        //  종전엔 이 실패가 "모델 빈 응답" 경로로 흘러 nudge 3회(17.8초)를 태우고 턴이
+        //  죽었다(실측: 사용자가 하던 작업이 중간에 멈춤). 재전송은 부작용이 없다 —
+        //  도구는 이미 로컬 실행됐고 inputArray 에 결과가 있어 "다음 스텝 재요청"일 뿐.
+        //  전송 재시도와 같은 cap·같은 백오프를 쓴다(무한루프 0).
+        if (e instanceof CodexBackendFailureError) {
+          if (
+            backendFailAttempt < CODEX_FETCH_MAX_RETRIES &&
+            input.abortSignal?.aborted !== true
+          ) {
+            const wait = CODEX_FETCH_BACKOFF_MS[backendFailAttempt] ?? 1500;
+            backendFailAttempt += 1;
+            console.warn(
+              `[codex-backend-retry] ${backendFailAttempt}/${CODEX_FETCH_MAX_RETRIES} ` +
+                `${wait}ms 뒤 같은 요청 재전송 — ${e.why} thread=${input.threadKey}`,
+            );
+            await sleep(wait);
+            continue; // 같은 body 로 재전송.
+          }
+          // 재시도 소진 → **그냥 throw**. 부작용 유무 판단은 함수 바깥 catch(§4.4)가
+          // 이미 한다 — sideEffectExecuted 면 throw 대신 정직한 fallback 텍스트를 내고,
+          // 아니면 풀 폴백으로 안전 재실행. 여기서 중복 구현하지 않는다.
+          // (안쪽에서 break 하면 `for(;;)` 스톨 루프만 빠져나가 sseResult 미할당 지점으로
+          //  떨어진다 — tsc 가 잡았다.)
+          throw e;
+        }
         // 무진전(IdleTimeoutError = no-progress 타이머)이고 워커/턴 예산이 아직 살아있고
         // 재시도 여유가 있으면 → turn 을 죽이지 말고 *같은 body(같은 대화 컨텍스트)로* 스텝
         // 재개(모델 폴백 아님). 계측을 로그·이벤트로 남겨 dead(chunks=0) vs spinning(chunks>0,

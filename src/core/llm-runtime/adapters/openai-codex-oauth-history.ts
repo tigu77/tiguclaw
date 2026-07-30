@@ -8,7 +8,10 @@
 import type { ChannelName } from "../../../channels/types.js";
 import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
-import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
+import {
+  redactSecrets,
+  stripInternalRuntimeScaffolding,
+} from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
 // ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
 //  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
@@ -164,7 +167,21 @@ export interface CodexSseResult {
    * 종전엔 이 세 이벤트를 파서가 아예 안 읽어 사유가 사라졌고, 호출부는 빈 텍스트만 보고
    * "모델이 침묵" 으로 오진해 nudge 3회를 태운 뒤 틀린 에러를 냈다.
    */
-  failure?: { source: string; code?: string; message?: string; param?: string };
+  failure?: {
+    source: string;
+    code?: string;
+    message?: string;
+    param?: string;
+    /**
+     * ★터미널 실패 이벤트의 **원문**(잘라내고 시크릿 제거, 2026-07-30 2차).
+     *
+     * 1차에서 공식 SDK 형상(`code`/`message`)대로 읽었는데 이 백엔드의 `error` 이벤트는
+     * **그 형상이 아니었다** — 실측 로그가 `[codex-backend-failure] error —` 로 사유 없이
+     * 찍혔다(두 필드 다 부재). 문서와 실물이 다르므로 **실물을 한 번 봐야** 한다.
+     * 실패 경로에서만·1건만 남으므로 소음 0.
+     */
+    raw?: string;
+  };
   /**
    * ★이 스트림이 흘린 이벤트 타입별 개수 (2026-07-30, 관측 전용).
    *
@@ -326,31 +343,54 @@ export const parseCodexSse = async (
             });
             currentToolCall = null;
           }
+          // ★형상 비종속 사유 추출 (2026-07-30 3차) — 문서(SDK 타입)와 이 백엔드의 실물이
+          //  **다르다**. 1차에서 문서대로 top-level code/message 를 읽었더니 실물이 빈
+          //  `error` 였다(실측 `[codex-backend-failure] error —`). 그래서 특정 경로를 더
+          //  추측하는 대신, 터미널 이벤트 payload 안을 **깊이 제한으로 훑어** code/message/
+          //  param/reason 을 찾는다. 내려갈 키를 손목록으로 정하지 않으므로 형상이 바뀌어도
+          //  따라간다. 터미널 이벤트에만 적용 — payload 가 작고 실패 전용이라 오추출 위험 낮음.
+          const digFailure = (
+            root: unknown,
+          ): { code?: string; message?: string; param?: string } => {
+            const found: { code?: string; message?: string; param?: string } = {};
+            const visit = (o: unknown, depth: number): void => {
+              if (depth > 3 || o === null || typeof o !== "object") return;
+              for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+                if (typeof v === "string") {
+                  if (k === "code" && found.code === undefined) found.code = v;
+                  else if (k === "reason" && found.code === undefined) found.code = v;
+                  else if (k === "message" && found.message === undefined) found.message = v;
+                  else if (k === "param" && found.param === undefined) found.param = v;
+                } else if (v !== null && typeof v === "object") {
+                  visit(v, depth + 1);
+                }
+              }
+            };
+            visit(root, 0);
+            return found;
+          };
           // ★터미널 실패 3종 — 공식 SDK 이벤트(ResponseErrorEvent / ResponseFailedEvent /
           //  ResponseIncompleteEvent). 이 백엔드는 **HTTP 200 으로 스트림을 열어놓고 그 안에서
           //  실패를 통보**한다. 종전엔 어느 분기에도 안 걸려 조용히 버려졌고(예외가 아니라
           //  무관심), 호출부는 빈 텍스트만 보고 "모델이 침묵" 으로 오진했다.
           //  첫 실패만 보존한다 — 뒤따르는 이벤트가 사유를 덮어쓰지 않게.
-          if (failure === undefined) {
-            if (event.type === "error") {
+          // ★"첫 실패만 보존" 은 틀렸다 (2026-07-30 2차) — 이 백엔드는 `error`(사유 없음)를
+          //  먼저 보내고 `response.failed`(사유 있음)를 뒤에 보낸다. 먼저 온 걸 붙들면
+          //  정작 사유를 버린다. **내용이 있는 쪽으로 승격**한다.
+          const hasDetail = (
+            f: CodexSseResult["failure"],
+          ): boolean => f !== undefined && (f.code !== undefined || f.message !== undefined);
+          if (!hasDetail(failure)) {
+            const terminal =
+              event.type === "error" ||
+              event.type === "response.failed" ||
+              event.type === "response.incomplete";
+            if (terminal) {
+              const dug = digFailure(event);
               failure = {
-                source: "error",
-                ...(typeof event.code === "string" ? { code: event.code } : {}),
-                ...(typeof event.message === "string" ? { message: event.message } : {}),
-                ...(typeof event.param === "string" ? { param: event.param } : {}),
-              };
-            } else if (event.type === "response.failed") {
-              const e = event.response?.error;
-              failure = {
-                source: "response.failed",
-                ...(typeof e?.code === "string" ? { code: e.code } : {}),
-                ...(typeof e?.message === "string" ? { message: e.message } : {}),
-              };
-            } else if (event.type === "response.incomplete") {
-              const r = event.response?.incomplete_details?.reason;
-              failure = {
-                source: "response.incomplete",
-                ...(typeof r === "string" ? { code: r } : {}),
+                source: event.type as string,
+                raw: redactSecrets(data).slice(0, 400),
+                ...dug,
               };
             }
           }

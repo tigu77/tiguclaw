@@ -26,12 +26,16 @@ export const check: RegressionCheck = {
     // 판정 본체 — dist 진입점 mtime vs HEAD 커밋 시각.
     const impl = await sourceHas("../../core/version.ts", [
       /export const staleBuildWarning = \(\): string =>/,
-      // built 런타임에서만 의미 — source 는 dist 를 안 쓴다(오탐 0).
-      /process\.env\.TIGUCLAW_RUNTIME === "source"\) return "";/,
+      // ★dist 에서 로드됐을 때만 판정한다. 종전엔 `TIGUCLAW_RUNTIME === "source"` 를 봤는데
+      //  그 변수는 built 에서만 세팅돼, tsx·npm run dev(변수 없음)에서 옛 dist 를 재고
+      //  거짓 경고를 냈다. 이름 열거 대신 자명한 사실(내가 어디서 로드됐나)을 본다.
+      /import\.meta\.url\.includes\("\/dist\/"\)/,
+      // /status 한 번에 두 번 불린다 — git 자식 프로세스가 매번 두 번 뜨지 않게 캐시.
+      /STALE_CACHE_MS/,
       // 실행 산출물의 시각을 실제로 잰다(선언만 하고 안 재는 것 방지).
       /statSync\(distEntry\)\.mtimeMs/,
       /\["log", "-1", "--format=%cI"\]/,
-      /distMs >= headMs\) return ""/,
+      /distMs >= headMs\) return answer\(""\)/,
       // dist 자체가 없으면 그것도 말한다.
       /dist 산출물이 없습니다/,
     ]);
@@ -39,7 +43,7 @@ export const check: RegressionCheck = {
       assert(
         "★dist mtime 과 HEAD 커밋 시각을 비교해 판정한다",
         impl.ok,
-        impl.ok ? "6개 확인" : `누락 ${impl.missing.join(" ")}`,
+        impl.ok ? "7개 확인" : `누락 ${impl.missing.join(" ")}`,
       ),
     );
 

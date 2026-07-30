@@ -15,6 +15,7 @@
  */
 import {
   composeSystemChannel,
+  contextSlotKeys,
   splitSystemContext,
 } from "../../core/prompt-assembly.js";
 import { formatSkillIndex } from "../../core/llm-runtime/capabilities/skill-registry.js";
@@ -123,6 +124,22 @@ export const check: RegressionCheck = {
       ),
     ];
 
+    // ★타입 강제만으론 뚫린다 — 새 슬롯이 **optional** 이면 위 리터럴에 없어도 컴파일이
+    //  통과해 그물 밖으로 조용히 빠진다(modelProfiles·foreignDelta 가 이미 optional).
+    //  정의점에서 키를 뽑아 대조한다: 이름을 손으로 열거하지 않으므로 드리프트가 없다.
+    //  (agentPathHint 는 입력 필드가 아니라 슬롯 테이블이 직접 만드는 조각.)
+    const covered = new Set([...Object.keys(full), "agentPathHint"]);
+    const uncovered = contextSlotKeys().filter((k) => !covered.has(k));
+    out.push(
+      assert(
+        "★슬롯이 하나도 그물 밖에 없다(optional 슬롯이 조용히 빠지지 않는다)",
+        uncovered.length === 0,
+        uncovered.length === 0
+          ? `슬롯 ${contextSlotKeys().length}개 전부 검사 대상`
+          : `검사 안 되는 슬롯: ${uncovered.join(", ")}`,
+      ),
+    );
+
     // ★블록 *안*의 순서도 캐시 성질이다 — 프리픽스는 앞에서만 매칭하므로 "가장 안 변하는
     //  것이 앞". 특히 AGENT.md(비서가 수시로 Edit)가 스킬·에이전트 인덱스보다 앞에 오면
     //  한 줄 수정이 뒤따르는 28KB 를 통째로 무효화한다. 소속만 검사하면 재배열이 그냥 통과한다.
@@ -186,7 +203,11 @@ export const check: RegressionCheck = {
         "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
         [
           /splitSystemContext\(\{/,
-          /composeSystemChannel\(/,
+          // ★인자까지 못박는다. 종전엔 `composeSystemChannel\(` 만 봐서 **두 번째 인자를
+          //  `""` 로 바꿔도 초록**이었다 — 이 기능 전체(안정 36.9KB 를 시스템 채널로)를
+          //  통째로 무력화해도 그물이 안 울렸다. claude·openai 는 인자를 박고 있었는데
+          //  codex 만 여러 줄 호출이라 느슨하게 두고 넘어갔다.
+          /composeSystemChannel\(\s*`\$\{SYSTEM_PROMPT\}\\n\$\{CODEX_PERSISTENCE_PROMPT\}`,\s*stableContext,/,
           /^\s+instructions,$/m,
           /assembleUserPrompt\(volatileParts, userTurnParts\)/,
           ...OVERRIDE_GUARDS,

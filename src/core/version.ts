@@ -68,16 +68,33 @@ export const appBuildId = (): string => {
  * 판정: `dist/src/index.js` mtime < HEAD 커밋 시각 → 재빌드 안 됨.
  * git 부재·tarball·source 런타임이면 ""(판정 불가는 침묵 — 없는 걸 있는 척하지 않는다).
  */
+let staleCache: { at: number; text: string } | null = null;
+const STALE_CACHE_MS = 60_000;
+
 export const staleBuildWarning = (): string => {
-  // source 런타임은 dist 를 안 쓴다 — 판정 대상 아님.
-  if (process.env.TIGUCLAW_RUNTIME === "source") return "";
+  // ★캐시 — /status 한 번이 이 함수를 두 번 부른다(경고 유무 판정 + 출력). 캐시가 없으면
+  //  `git log` 자식 프로세스를 매번 두 번 띄운다. 경고를 없애려면 어차피 재빌드+재시작이
+  //  필요하니 60초 창은 오탐을 만들지 않는다.
+  const now = Date.now();
+  if (staleCache !== null && now - staleCache.at < STALE_CACHE_MS) return staleCache.text;
+  const answer = (text: string): string => {
+    staleCache = { at: now, text };
+    return text;
+  };
+  // ★"dist 를 돌고 있나" 는 **실행 중인 파일 경로로 판정**한다. 종전엔 `TIGUCLAW_RUNTIME`
+  //  이 "source" 인지만 봤는데, 그 변수는 **built 런타임에서만 세팅**된다 — tsx·npm run dev
+  //  처럼 변수가 아예 없는 실행에서는 미매칭 → 남아 있는 옛 dist 를 재고 **거짓 경고**를
+  //  띄웠다. 이름을 열거하는 대신 자명한 사실(내가 dist 에서 로드됐나)을 본다.
+  if (!import.meta.url.includes("/dist/")) return answer("");
   try {
     const distEntry = path.join(process.cwd(), "dist", "src", "index.js");
     let distMs: number;
     try {
       distMs = statSync(distEntry).mtimeMs;
     } catch {
-      return "⚠️ dist 산출물이 없습니다 — `npm run build:prod` 후 재시작이 필요합니다.";
+      return answer(
+        "⚠️ dist 산출물이 없습니다 — `npm run build:prod` 후 재시작이 필요합니다.",
+      );
     }
     const headIso = execFileSync("git", ["log", "-1", "--format=%cI"], {
       cwd: process.cwd(),
@@ -86,14 +103,14 @@ export const staleBuildWarning = (): string => {
       timeout: 3000,
     }).trim();
     const headMs = Date.parse(headIso);
-    if (!Number.isFinite(headMs) || distMs >= headMs) return "";
+    if (!Number.isFinite(headMs) || distMs >= headMs) return answer("");
     const mins = Math.round((headMs - distMs) / 60000);
     const ago = mins >= 1440 ? `${Math.floor(mins / 1440)}일` : mins >= 60 ? `${Math.floor(mins / 60)}시간` : `${mins}분`;
-    return (
+    return answer(
       `⚠️ **실행 중인 코드가 소스보다 ${ago} 오래됐습니다** — 업데이트는 받았는데 빌드가 ` +
-      "반영되지 않았습니다. `npm run build:prod` 후 재시작하세요."
+        "반영되지 않았습니다. `npm run build:prod` 후 재시작하세요.",
     );
   } catch {
-    return ""; // git 부재·tarball — 판정 불가.
+    return answer(""); // git 부재·tarball — 판정 불가.
   }
 };

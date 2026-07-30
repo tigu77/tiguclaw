@@ -321,6 +321,26 @@ interface ContextSlot {
  *
  *  새 조각을 추가할 땐 `channel` 을 반드시 고른다(타입이 강제) — "안 변하면 system".
  */
+/**
+ * 슬롯 키 전체 — 회귀 그물이 "빠진 슬롯이 있나" 를 **파생값으로** 판정하게 한다.
+ *
+ * ★타입 강제만으로는 안 됐다: 새 슬롯이 **optional**(`foo?: string`)이면 검사의 객체
+ *  리터럴에 없어도 컴파일이 통과해, 그물 밖으로 조용히 빠진다(modelProfiles·foreignDelta
+ *  가 이미 optional). 이름을 손으로 열거하는 대신 정의점에서 뽑는다.
+ */
+export const contextSlotKeys = (): string[] =>
+  buildContextSlots({
+    system: "",
+    env: "",
+    agent: "",
+    agentWarn: "",
+    convoContext: "",
+    memoryIndex: "",
+    memorySnippet: "",
+    skillIndex: "",
+    agentIndex: "",
+  }).map((s) => s.key);
+
 const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   { key: "system", text: input.system, channel: "system" },
   // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면

@@ -396,7 +396,11 @@ export const parseCodexSse = async (
           }
           // 터미널 이벤트는 lastEvent 에도 남긴다 — "무엇으로 끝났나" 가 completed 여부만이
           // 아니라 실패 종류까지 보이게(종전엔 completed 분기에서만 대입해 전부 "(없음)").
+          // ★`error` 를 빠뜨렸었다 — 2026-07-30 반나절 사고에서 실제로 온 이벤트가
+          //  바로 `error/server_is_overloaded` 인데 그 턴들의 lastEvent 는 전부 "(없음)"
+          //  이었다. 진단하려고 만든 필드가 정작 그 사고에서만 침묵했다.
           if (
+            event.type === "error" ||
             event.type === "response.failed" ||
             event.type === "response.incomplete"
           ) {

@@ -33,6 +33,8 @@ const LEAN_INSTRUCTIONS = "You are a helpful assistant. Answer in one short line
 /** 실제 어댑터와 같은 무게로 맞춘다 — 그래야 A/B 가 성립한다. */
 const HEAVY_INSTRUCTION_CHARS = 23_000;
 const HEAVY_TOOL_COUNT = 44;
+/** 한 발당 시한 — 4발 순차라 최악 2분. 진단이 진단 대상 증상에 매달리지 않게. */
+const PROBE_TIMEOUT_MS = 30_000;
 
 const buildHeavyInstructions = (): string => {
   const unit =
@@ -99,6 +101,11 @@ const send = async (
   };
   if (accountId) headers["chatgpt-account-id"] = accountId;
 
+  // ★시한 필수 (2026-07-31 검토 지적) — 종전엔 fetch·SSE 둘 다 무한이라, 과부하 백엔드가
+  //  200 으로 열어놓고 방치하면 4발 순차 × undici 기본(300s) = 최대 20분을 매달렸다.
+  //  진단 도구가 진단 대상 증상(무응답)에 그대로 걸리면 안 된다.
+  const ac = new AbortController();
+  const killer = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
   const t0 = Date.now();
   let res: Response;
   try {
@@ -106,19 +113,28 @@ const send = async (
       method: "POST",
       headers,
       body: json,
+      signal: ac.signal,
     });
   } catch (e) {
+    clearTimeout(killer);
+    const aborted = ac.signal.aborted;
     return {
       ok: false,
-      detail: `전송 실패: ${e instanceof Error ? e.message : String(e)}`,
+      detail: aborted
+        ? `시한 초과(${PROBE_TIMEOUT_MS / 1000}s) — 백엔드가 응답을 안 끝냄`
+        : `전송 실패: ${e instanceof Error ? e.message : String(e)}`,
       ms: Date.now() - t0,
     };
   }
   if (!res.ok) {
+    clearTimeout(killer);
     const txt = await res.text().catch(() => "");
     return { ok: false, detail: `HTTP ${res.status} ${txt.slice(0, 160)}`, ms: Date.now() - t0 };
   }
-  if (res.body === null) return { ok: false, detail: "body 없음", ms: Date.now() - t0 };
+  if (res.body === null) {
+    clearTimeout(killer);
+    return { ok: false, detail: "body 없음", ms: Date.now() - t0 };
+  }
 
   // SSE 를 읽어 completed / error 중 무엇으로 끝나는지만 본다(어댑터와 동일 판정 축).
   const reader = res.body.getReader();
@@ -128,6 +144,14 @@ const send = async (
   let completed = false;
   let text = "";
   while (true) {
+    if (ac.signal.aborted) {
+      clearTimeout(killer);
+      return {
+        ok: false,
+        detail: `시한 초과(${PROBE_TIMEOUT_MS / 1000}s) — 스트림이 안 끝남`,
+        ms: Date.now() - t0,
+      };
+    }
     const { value, done } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -155,6 +179,7 @@ const send = async (
       }
     }
   }
+  clearTimeout(killer);
   const ms = Date.now() - t0;
   if (failure !== "") return { ok: false, detail: failure, ms };
   if (!completed) return { ok: false, detail: "completed 없이 스트림 종료", ms };

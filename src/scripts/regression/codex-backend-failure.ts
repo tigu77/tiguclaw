@@ -65,10 +65,12 @@ export const check: RegressionCheck = {
         //  같은 초에 agent 스레드 234K 성공 / 메인 96K 실패가 찍혔는데도 못 갈랐다.
         /`model=\$\{model\} sideEffect=/,
         /sseResult\.failure !== undefined/,
-        /throw new CodexBackendFailureError\(why\)/,
+        // (why=로그용 · userWhy=사용자용 · retryable=결정적 실패 구분 — 2026-07-31 분리)
+        /throw new CodexBackendFailureError\(\s*why,/,
         // ★같은 body 재전송 — 백엔드 보고 실패는 HTTP 5xx 와 같은 부류다. 종전엔 모델
         //  nudge 경로로 흘러 17.8초를 태우고 턴이 죽었다(사용자: "중간에 멈춤").
-        /\[codex-backend-retry\]/,
+        // 모델명을 못박는다 — 재시도 줄만 보고도 "어느 모델이 몇 번째냐" 가 갈려야 한다.
+        /\[codex-backend-retry\] \$\{model\} /,
         /backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS\.length/,
         /continue; \/\/ 같은 body 로 재전송\./,
       ],

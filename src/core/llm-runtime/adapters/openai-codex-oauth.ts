@@ -154,8 +154,20 @@ export const resolveCodexModel = (explicit?: string): string =>
  * 결과가 들어 있어, 재전송은 "다음 스텝을 다시 물어보는 것" 일 뿐이다.
  */
 class CodexBackendFailureError extends Error {
-  constructor(readonly why: string) {
-    super(`codex 백엔드가 요청 실패를 보고했습니다 — ${why}`);
+  /**
+   * @param why      사람이 읽는 사유(내부 로그용 — 원문 raw 를 포함할 수 있다).
+   * @param userWhy  사용자 대면 사유. raw 원문을 뺀 판. 이 둘을 나누지 않았을 때
+   *                 백엔드 JSON 400자가 그대로 텔레그램 답장에 실렸다.
+   * @param retryable `response.incomplete`(max_output_tokens·content_filter)처럼
+   *                 **같은 body 를 다시 보내면 같은 결과**인 실패는 false. 재전송이
+   *                 27초를 태우고 같은 곳에 도착할 뿐이라, 즉시 올려 복구 경로에 맡긴다.
+   */
+  constructor(
+    readonly why: string,
+    readonly userWhy: string,
+    readonly retryable: boolean,
+  ) {
+    super(`codex 백엔드가 요청 실패를 보고했습니다 — ${userWhy}`);
     this.name = "CodexBackendFailureError";
   }
 }
@@ -1254,7 +1266,7 @@ export const runOpenAiCodex = async (
               throw reason;
             }
             if (attempt < CODEX_FETCH_MAX_RETRIES) {
-              await sleep(CODEX_FETCH_BACKOFF_MS[attempt]);
+              await sleep(CODEX_FETCH_BACKOFF_MS[attempt], effectiveAc.signal);
               attempt += 1;
               continue;
             }
@@ -1265,7 +1277,7 @@ export const runOpenAiCodex = async (
             RETRIABLE_STATUS.has(res.status) &&
             attempt < CODEX_FETCH_MAX_RETRIES
           ) {
-            await sleep(CODEX_FETCH_BACKOFF_MS[attempt]);
+            await sleep(CODEX_FETCH_BACKOFF_MS[attempt], effectiveAc.signal);
             attempt += 1;
             continue;
           }
@@ -1343,13 +1355,32 @@ export const runOpenAiCodex = async (
           //  이제: 사유를 그대로 올린다. 부작용 도구가 이미 돌았으면 throw 하지 않는다
           //  (폴백 모델이 턴을 재실행해 memory/todo/schedule 을 중복 실행하는 것 방지 —
           //   기존 sideEffectExecuted 가드와 같은 이유·같은 기준).
+          // ★히스토그램을 실패 판정보다 **먼저** 찍는다. 종전엔 아래 throw 가 이 블록보다
+          //  앞서서, 정작 실패한 스트림(= 히스토그램이 필요한 유일한 경우)에서는 한 줄도
+          //  안 남았다 — 성공적으로 끝난 스트림에서만 찍히는 진단이었다.
+          if (endKey === "none") {
+            const hist = Object.entries(sseResult.eventCounts ?? {})
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 8)
+              .map(([k, v]) => `${k}×${v}`)
+              .join(",");
+            console.warn(
+              `[codex-sse-incomplete] response.completed 없이 스트림 종료 — ` +
+                `iteration=${iteration} text=${sseResult.text.length} ` +
+                `toolCalls=${sseResult.toolCalls.length} usage=${sseResult.usage ? "있음" : "없음"} ` +
+                `thread=${input.threadKey} events=[${hist || "없음"}]`,
+            );
+          }
           if (sseResult.failure !== undefined) {
             const f = sseResult.failure;
-            const why =
+            // 사용자에게 갈 판 — 백엔드 원문(raw)은 빼고 사유만.
+            const userWhy =
               `${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
               `${f.message !== undefined ? `: ${f.message}` : ""}` +
-              `${f.param !== undefined ? ` (param=${f.param})` : ""}` +
-              // 문서 형상과 실물이 다를 수 있어 원문을 함께 남긴다(실패 경로에서만).
+              `${f.param !== undefined ? ` (param=${f.param})` : ""}`;
+            // 로그용 판 — 문서 형상과 실물이 다를 수 있어 원문을 함께 남긴다(실패 경로에서만).
+            const why =
+              userWhy +
               `${f.code === undefined && f.message === undefined && f.raw !== undefined ? ` raw=${f.raw}` : ""}`;
             console.error(
               `[codex-backend-failure] ${why} — iteration=${iteration} ` +
@@ -1364,21 +1395,15 @@ export const runOpenAiCodex = async (
             // 건진 게 없으면(텍스트·도구 0) 재전송 가치가 있다 → typed throw 로 올려
             // 바깥 catch 가 **같은 body 로 재시도**한다(부작용 판단도 거기서 한 번에).
             if (sseResult.text === "" && sseResult.toolCalls.length === 0) {
-              throw new CodexBackendFailureError(why);
+              // ★`response.incomplete` 는 **결정적 실패**다 — 사유가 max_output_tokens
+              //  이든 content_filter 든 같은 body 를 다시 보내면 같은 벽에 부딪힌다.
+              //  transient 로 취급하면 27초를 태우고 같은 자리에 온다.
+              throw new CodexBackendFailureError(
+                why,
+                userWhy,
+                f.source !== "response.incomplete",
+              );
             }
-          }
-          if (endKey === "none") {
-            const hist = Object.entries(sseResult.eventCounts ?? {})
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 8)
-              .map(([k, v]) => `${k}×${v}`)
-              .join(",");
-            console.warn(
-              `[codex-sse-incomplete] response.completed 없이 스트림 종료 — ` +
-                `iteration=${iteration} text=${sseResult.text.length} ` +
-                `toolCalls=${sseResult.toolCalls.length} usage=${sseResult.usage ? "있음" : "없음"} ` +
-                `thread=${input.threadKey} events=[${hist || "없음"}]`,
-            );
           }
         }
         break; // 스트림 소비 완료 → 전송 재시도 루프 탈출.
@@ -1394,8 +1419,10 @@ export const runOpenAiCodex = async (
         //  전송 재시도와 같은 cap·같은 백오프를 쓴다(무한루프 0).
         if (e instanceof CodexBackendFailureError) {
           if (
+            e.retryable &&
             backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS.length &&
-            input.abortSignal?.aborted !== true
+            input.abortSignal?.aborted !== true &&
+            !effectiveAc.signal.aborted
           ) {
             const wait = CODEX_BACKEND_FAIL_BACKOFF_MS[backendFailAttempt] ?? 8000;
             backendFailAttempt += 1;
@@ -1403,7 +1430,8 @@ export const runOpenAiCodex = async (
               `[codex-backend-retry] ${model} ${backendFailAttempt}/${CODEX_BACKEND_FAIL_BACKOFF_MS.length} ` +
                 `${wait}ms 뒤 같은 요청 재전송 — ${e.why} thread=${input.threadKey}`,
             );
-            await sleep(wait);
+            await sleep(wait, effectiveAc.signal); // /stop·턴 타임아웃이면 즉시 깬다.
+            if (effectiveAc.signal.aborted) throw e;
             continue; // 같은 body 로 재전송.
           }
           // 재시도 소진 → **그냥 throw**. 부작용 유무 판단은 함수 바깥 catch(§4.4)가
@@ -1473,7 +1501,7 @@ export const runOpenAiCodex = async (
             /* 관측 발행 실패는 재개를 막지 않는다. */
           }
           // progressTimer.done()·deltaStream.flush() 는 아래 finally 가 continue 시에도 수행.
-          await sleep(CODEX_STALL_BACKOFF_MS);
+          await sleep(CODEX_STALL_BACKOFF_MS, effectiveAc.signal);
           continue; // 같은 body 로 iteration 재시도.
         }
         if (
@@ -1966,7 +1994,8 @@ export const runOpenAiCodex = async (
           : "";
       finalText =
         e instanceof CodexBackendFailureError
-          ? `백엔드가 요청을 처리하지 못했습니다 — ${e.why}${ranList}\n\n잠시 후 다시 시도해 주세요.`
+          ? // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
+            `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n잠시 후 다시 시도해 주세요.`
           : `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
     } else {
       throw e; // 부작용 없음 or 일반 에러 → 정직 throw (풀 폴백 / 정직 에러).

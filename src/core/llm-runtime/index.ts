@@ -431,8 +431,18 @@ const coldStreak = new Map<string, number>();
  * 분모는 **턴 합계**(Total 우선)다: "이 하네스가 실제로 태운 입력 중 얼마가 캐시였나"가
  * 알고 싶은 값이라, 마지막 호출 1회가 아니라 턴 전체가 맞다.
  */
-const ROLLUP_EVERY_TURNS = 50;
-const ROLLUP_MAX_WINDOW_MS = 6 * 60 * 60 * 1000; // 조용한 인스턴스도 하루 몇 줄은 남게.
+/**
+ * ★임계는 **프로세스 수명**보다 짧아야 한다 (2026-07-31 실측 교정).
+ *
+ * 처음엔 50턴/6시간으로 잡았는데 **하루 한 줄도 안 나왔다.** 집계 상태가 인메모리라
+ * 프로세스가 죽으면 통째로 사라지는데, dev 데몬은 07-29 에 **32번 재부팅**했다
+ * (턴 114 ÷ 부팅 32 = **부팅당 3.6턴**, 평균 수명 45분). 50턴에도 6시간에도 닿을 수가
+ * 없었다 — "N턴마다 한 줄" 이라 써놓고 분모를 프로세스 수명과 비교해보지 않았다.
+ * 임계를 낮추는 것만으론 부족하다(3.6턴 < 어떤 합리적 N). **종료 시 flush 가 본체**고,
+ * 아래 두 수치는 오래 사는 인스턴스(prod)용 상한이다.
+ */
+const ROLLUP_EVERY_TURNS = 20;
+const ROLLUP_MAX_WINDOW_MS = 60 * 60 * 1000;
 
 interface RollupBucket {
   turns: number;
@@ -495,6 +505,14 @@ const accumulatePrefixCacheRollup = (
     flushPrefixCacheRollup(now);
   }
 };
+
+// ★종료 flush — 이게 짧게 사는 인스턴스의 **주 배출 경로**다(위 임계는 상한).
+//  소유자가 자기 훅을 등록한다(index.ts 의 자식 정리 컨벤션과 같은 규약).
+//  `beforeExit` 가 아니라 `exit` 인 이유: shutdown() 이 `process.exit(0)` 로 끝내므로
+//  beforeExit 는 발화하지 않는다. exit 훅은 동기만 허용 — console.log 뿐이라 충족.
+process.on("exit", () => {
+  if (rollupTurns > 0) flushPrefixCacheRollup(Date.now());
+});
 
 const warnIfPrefixCacheCold = (
   spec: ModelSpec,
@@ -1080,7 +1098,11 @@ const runPool = async (
       if (input.internal !== true) {
         publishTurnError(
           spec,
-          specIndex < effectivePool.length - 1,
+          // ★"다음 후보가 남아있나" 가 아니라 **"실제로 다음 후보를 시도하나"** 여야 한다.
+          //  바로 아래 TurnTimeoutError 는 폴백을 명시 단락하므로, 후보가 남아 있어도
+          //  시도되지 않는다 — 그런데도 "다른 모델로 이어서 시도합니다" 를 띄우면
+          //  단일 모델 세션에서 잡았던 것과 **같은 거짓말**이 타임아웃 경로로 되살아난다.
+          specIndex < effectivePool.length - 1 && !(e instanceof TurnTimeoutError),
           input,
           e,
           Date.now() - startedAt,

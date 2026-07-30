@@ -48,7 +48,10 @@ export const check: RegressionCheck = {
     const w = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [
-        /\[codex-turn-end\]/,
+        // ★`model=` 를 못박는다 — 어제 반나절의 결정적 증거가 "같은 초에 어느 모델이
+        //  실패했나" 였는데, 그때 로그엔 모델명이 없어 "서브에이전트는 다른 모델일 것"
+        //  이라는 **추정**으로 갔다. 이름이 빠지면 그 진단이 다시 불가능해진다.
+        /\[codex-turn-end\] model=\$\{model\}/,
         /closing=\$\{closing \? "재요청" : "종료"\}/, // 가드 판정 결과
         /text=\$\{text\.length\} finalText=\$\{finalText\.length\}/, // 첫 줄 분기 판별
         /toolsSinceText=\$\{toolCallsSinceText\}/, // 두 번째 분기 판별
@@ -59,7 +62,7 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "★판정 재료 7종이 턴 종료 한 줄에 전부 실린다",
+        "★판정 재료 7종이 턴 종료 한 줄에 전부 실린다(모델명 포함)",
         w.ok,
         w.ok ? "7개 확인" : `누락 ${w.missing.join(" ")}`,
       ),

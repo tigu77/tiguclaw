@@ -496,6 +496,63 @@ const formatRegionAError = (detail: string): string => {
 // 도 발행**한다. 그래야 대시보드 '작업 중' 표시가 꺼지고(활성=channel.message.in↔완료=out/turn_done),
 // 명령 답도 대시보드 채팅/이력에 보인다. (2026-07-10: /status 등이 out 미발행이라 in 만 떠서 대시보드가
 // 계속 '작업 중'이던 갭 — [[project_active_send_dashboard_visibility]] 동일 패턴.) 관측 발행 실패는 격리.
+/**
+ * `/logs` 본문 — 오늘 데몬 로그의 **마지막 N줄** (2026-07-31, 검토 지적 반영).
+ *
+ * ★세 가지를 동시에 지킨다.
+ *  ①**전체를 메모리에 안 올린다.** 종전엔 `readFileSync` 로 파일 전량을 읽었다. dev 에 이미
+ *   5.8MB 짜리가 있고 stream-trace·turn-end 는 턴마다 쌓인다 — 커지면 이벤트 루프가 멈추고
+ *   V8 문자열 상한을 넘으면 throw 한다(**로그가 가장 필요한 순간에만 실패**). 끝에서
+ *   청크 단위로 역방향으로 읽는다.
+ *  ②**대화 본문을 안 내보낸다.** 로그엔 다른 세션·다른 프로젝트의 응답 조각(`tail:` 서술,
+ *   `userText=…`)과 chatId·절대경로가 들어간다. `redactSecrets` 는 env 값·토큰 패턴만
+ *   지우므로 부족하다. 채널로 나가는 건 **진단 수치**지 대화가 아니다 — 캐리어를 지운다.
+ *  ③**그래도 `replyCommand` 로 발행한다.** 발행을 끊었더니 대시보드에 아무것도 안 보였다
+ *   — 발행이 곧 화면이다(대시보드는 `channel.message.out` 만 본다). ② 로 캐리어를 지운
+ *   뒤라 chat_log·events 에 적재돼도 안전하다.
+ */
+const LOG_TAIL_MAX_LINES = 200;
+const LOG_TAIL_READ_BYTES = 512 * 1024; // 끝에서 이만큼만 본다(200줄에 차고도 남음).
+const LOG_TAIL_REPLY_CHARS = 3500; // 채널 길이 한도.
+
+const buildLogTail = async (argRaw: string): Promise<string> => {
+  try {
+    const n = Math.min(Math.max(parseInt(argRaw.trim(), 10) || 40, 1), LOG_TAIL_MAX_LINES);
+    const { open, stat } = await import("node:fs/promises");
+    const pathMod = await import("node:path");
+    const d = new Date();
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const file = pathMod.join(getPaths().home, "logs", `daemon-${ymd}.log`);
+    const size = (await stat(file)).size;
+    const readFrom = Math.max(0, size - LOG_TAIL_READ_BYTES);
+    const len = size - readFrom;
+    const fh = await open(file, "r");
+    let chunk: string;
+    try {
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, readFrom);
+      chunk = buf.toString("utf8");
+    } finally {
+      await fh.close();
+    }
+    // 앞이 잘린 첫 줄은 버린다(파일 처음부터 읽은 게 아니면).
+    const all = chunk.split(/\r?\n/).filter((l) => l !== "");
+    const lines = (readFrom > 0 ? all.slice(1) : all).slice(-n);
+    const { redactSecrets } = await import("./core/outbound-sanitize.js");
+    const { stripLogPayloads } = await import("./core/log-sanitize.js");
+    const body = redactSecrets(lines.map(stripLogPayloads).join("\n")).slice(
+      -LOG_TAIL_REPLY_CHARS,
+    );
+    return (
+      `📜 ${ymd} 마지막 ${lines.length}줄 (파일 ${Math.round(size / 1024)}KB` +
+      `${readFrom > 0 ? ", 끝부분만 읽음" : ""})\n` +
+      `대화 본문은 생략됩니다 — 진단 수치만 표시.\n\n\`\`\`\n${body}\n\`\`\``
+    );
+  } catch (e) {
+    return `로그 읽기 실패: ${e instanceof Error ? e.message : String(e)}`;
+  }
+};
+
 const replyCommand = async (
   msg: { reply: (t: string) => Promise<unknown>; channel: string; threadKey: string },
   text: string,
@@ -1250,63 +1307,6 @@ const handler: MessageHandler = async (msg) => {
       return;
     }
 
-    // ─── `/logs [n]` — 오늘 데몬 로그 tail (LLM 미경유) ──────────────────────
-    //  ★왜 있나 (2026-07-30 실사고): 회사 인스턴스가 codex 단일 구성인데 그 백엔드가
-    //   죽자 **비서 자신이 대답을 못 해** 로그조차 못 받았다. 사용자가 로그 파일을 손으로
-    //   옮겨야 했다. 폴백 모델을 두면 되지만 그건 자격증명이 필요하고(그 머신엔 없었다),
-    //   무엇보다 **진단 수단이 진단 대상에 의존하면 안 된다.** 그래서 LLM 미경유.
-    //  시크릿은 redactSecrets 통과 — 로그에 토큰이 섞여 있어도 채널로 안 나간다.
-    if (cmd === "/logs") {
-      try {
-        const n = Math.min(
-          Math.max(parseInt(args.trim(), 10) || 40, 1),
-          200,
-        );
-        const { readFileSync } = await import("node:fs");
-        const pathMod = await import("node:path");
-        const d = new Date();
-        const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-        const file = pathMod.join(getPaths().home, "logs", `daemon-${ymd}.log`);
-        const raw = readFileSync(file, "utf8");
-        const lines = raw.split(/\r?\n/).filter((l) => l !== "");
-        const tail = lines.slice(-n).join("\n");
-        const { redactSecrets } = await import("./core/outbound-sanitize.js");
-        // 채널 길이 한도(텔레그램 ~4096) — 뒤에서부터 자른다(최신이 중요).
-        const body = redactSecrets(tail).slice(-3500);
-        await replyCommand(
-          msg,
-          `📜 ${ymd} 로그 마지막 ${n}줄 (전체 ${lines.length}줄)\n\n\`\`\`\n${body}\n\`\`\``,
-        );
-      } catch (e) {
-        await replyCommand(
-          msg,
-          `로그 읽기 실패: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-      return;
-    }
-
-    // ─── `/diagnose` — codex 요청 무게 A/B (LLM 미경유) ──────────────────────
-    //  같은 계정·같은 순간에 가벼운 요청과 실제 무게의 요청을 번갈아 보내, 백엔드 거절이
-    //  **요청 무게** 때문인지 **계정/클라이언트** 때문인지 가른다. 셸을 못 쓰는 원격
-    //  인스턴스(텔레그램만 연결)에서 사용자가 직접 돌릴 수 있어야 하므로 명령으로 노출.
-    if (cmd === "/diagnose") {
-      await replyCommand(msg, "🔬 codex 요청 무게 A/B 진단 중… (최대 1분)");
-      try {
-        const { runCodexWeightProbe } = await import(
-          "./core/llm-runtime/codex-weight-probe.js"
-        );
-        const r = await runCodexWeightProbe();
-        await replyCommand(msg, `${r.lines.join("\n")}\n\n→ ${r.verdict}`);
-      } catch (e) {
-        await replyCommand(
-          msg,
-          `진단 실패: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-      return;
-    }
-
     if (cmd === "/status") {
       // 라우터 우회 — 데몬 현재 상태 직접 조회. 전부 DB/env/상수 읽기 (LLM 호출 0, route 미경유).
       try {
@@ -1861,6 +1861,47 @@ const serializedHandler: MessageHandler = (msg) => {
       });
     return Promise.resolve();
   }
+  // ─── 아웃오브밴드 `/logs` · `/diagnose` — 진단은 큐를 타면 안 된다 ─────────────
+  //  ★검토 지적(2026-07-31): 이 둘을 in-band 로 뒀더니 **직렬 큐 뒤에 섰다.** 턴이 멈춰
+  //   있을 때 쓰라고 만든 도구가 정확히 그때 같이 막힌다 — "진단 수단이 진단 대상에
+  //   의존하면 안 된다" 를 커밋 메시지에 써놓고 배관을 안 봤다. /restart·/stop 과 동형으로
+  //   큐를 건너뛴다.
+  //  ★노출 가드: 로그에는 **다른 세션의 대화 조각**(`tail:` 서술)·chatId·절대경로가 들어간다.
+  //   redactSecrets 는 env 값·토큰 패턴만 지우므로 그것만으론 부족하다. 대화 본문 캐리어를
+  //   따로 지우고, 관측 발행(chat_log·events 영구 적재)도 하지 않는다.
+  if (msg.text.trim().split(/\s+/)[0] === "/logs") {
+    publishInboundEcho(msg);
+    void (async (): Promise<void> => {
+      const text = await buildLogTail(msg.text.trim().slice(5));
+      // ★replyCommand 로 발행한다 — 발행이 곧 화면이다(대시보드는 channel.message.out 만
+      //  본다). 직접 reply 로 바꿨더니 대시보드에서 아무것도 안 보였다(실측).
+      //  적재해도 안전한 이유: stripLogPayloads 가 대화 본문·chatId·raw 를 이미 지웠고,
+      //  남는 건 시각·모듈·수치뿐이다.
+      await replyCommand(msg, text).catch(() => {});
+    })();
+    return Promise.resolve();
+  }
+  if (msg.text.trim() === "/diagnose") {
+    publishInboundEcho(msg);
+    void (async (): Promise<void> => {
+      await replyCommand(msg, "🔬 codex 요청 무게 A/B 진단 중… (최대 2분)").catch(
+        () => {},
+      );
+      let out: string;
+      try {
+        const { runCodexWeightProbe } = await import(
+          "./core/llm-runtime/codex-weight-probe.js"
+        );
+        const r = await runCodexWeightProbe();
+        out = `${r.lines.join("\n")}\n\n→ ${r.verdict}`;
+      } catch (e) {
+        out = `진단 실패: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      await replyCommand(msg, out).catch(() => {});
+    })();
+    return Promise.resolve();
+  }
+
   // 아웃오브밴드 /stop — 진행 중인 이 thread 의 턴을 프로세스 안 죽이고 abort(클로드코드식 인터럽트,
   // 옵션 c). 직렬 큐를 타면 앞 턴이 끝나야 실행돼 무의미하므로 /restart 동형 out-of-band. 중단 후
   // 이어서 새 메시지를 보내면 그게 새 턴으로 처리(멈추고 방향 틀기). 진행 턴 없으면 안내만.

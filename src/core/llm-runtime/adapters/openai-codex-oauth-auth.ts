@@ -19,8 +19,26 @@ const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const REDIRECT_URI = "http://localhost:1455/auth/callback";
 const SCOPE = "openid profile email offline_access";
 
-export const sleep = (ms: number): Promise<void> =>
-  new Promise((r) => setTimeout(r, ms));
+/**
+ * 취소 가능한 대기. ★signal 을 안 받던 시절 백오프 총합 27초 동안 `/stop`·턴 타임아웃이
+ * 먹히지 않았다 — 사용자가 멈추라고 한 뒤에도 죽은 백엔드에 계속 재전송했다.
+ * abort 시 **reject 하지 않고 조기 resolve** 한다 — 호출부는 곧바로 자기 abort 검사에
+ * 걸려 정상 경로로 빠져나간다(대기 지점마다 try/catch 를 심을 필요가 없다).
+ */
+export const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted === true) {
+      resolve();
+      return;
+    }
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 
 export interface PKCEPair {
   verifier: string;

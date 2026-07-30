@@ -1024,6 +1024,13 @@ export const runOpenAiCodex = async (
     "update_todos",
   ]);
 
+  // ★턴 종료 판정을 로그만으로 재구성하기 위한 재료 (2026-07-30).
+  //  실사고: "검증한다더니 가만히 있다" 신고를 받았는데, 로그에 남은 건 stream-trace tail 뿐이라
+  //  가드(needsClosingReport)가 **왜 통과시켰는지** 알 수 없었다 — toolCallsSinceText 도,
+  //  스티어링이 몇 번 끼어들었는지도 로그에 없어 추론밖에 못 했다. 원격 인스턴스(회사돌쇠)는
+  //  DB 조회도 불가라 로그가 유일한 진단면이다.
+  let steeredTotal = 0;
+
   try {
     while (iteration < CODEX_MAX_TOOL_ITERATIONS_HARD) {
       // 2층 도구 루프 가드 (TT-I6, §4.4 #1) — iteration 진입(다음 LLM 호출) 직전 체크.
@@ -1049,8 +1056,11 @@ export const runOpenAiCodex = async (
         inputArray.push(await buildSteeringInputItem(s));
       }
       if (steered.length > 0) {
-        console.error(
-          `[codex-oauth steering] injected ${steered.length} mid-turn message(s) at iteration=${iteration} threadKey=${input.threadKey}`,
+        steeredTotal += steered.length;
+        // ★[log] 로 낮춘다 (2026-07-30) — 정상 기능이 [error] 로 찍혀 로그를 훑을 때
+        //  진짜 에러와 섞였다(실측: 회사 로그의 error 3건이 전부 이것).
+        console.log(
+          `[codex-oauth steering] injected ${steered.length} mid-turn message(s) at iteration=${iteration} (턴 누적 ${steeredTotal}) threadKey=${input.threadKey}`,
         );
       }
 
@@ -1485,12 +1495,29 @@ break; // 스트림 소비 성공 → 재시도 루프 탈출.
         // "끝났으면 답을, 아니면 계속" nudge. 텍스트가 조금이라도 있으면(중간 보고)
         // nudge 0 — 정상 종료로 취급(과도 재요청 회피).
         // 판정은 `_turn-completion.ts` 단일 규칙 — 왜 예고문이 정상 종료가 아닌지는 거기 주석.
-        if (needsClosingReport({
+        const closing = needsClosingReport({
           text,
           finalText,
           toolCallsSinceText,
           toolNamesSinceText,
-        })) {
+        });
+        // ★판정 재료를 한 줄로 남긴다 (2026-07-30) — "왜 이 턴이 여기서 끝났나"를 **로그만으로**
+        //  재구성할 수 있어야 한다. 종전엔 stream-trace tail 뿐이라, 사용자가 "검증한다더니
+        //  가만히 있다"고 신고했을 때 가드가 어느 조건에서 빠져나갔는지 추론밖에 못 했다
+        //  (needsClosingReport 첫 줄 `text !== ""` 인지, toolCallsSinceText 0 인지 구분 불가).
+        //  tail 은 예고형("~하겠습니다")인지 보고형인지 사람이 판단할 최소 재료.
+        const tail = finalText.replace(/\s+/g, " ").slice(-100);
+        console.log(
+          `[codex-turn-end] iter=${iteration} steered=${steeredTotal} ` +
+            `closing=${closing ? "재요청" : "종료"} ` +
+            `text=${text.length} finalText=${finalText.length} ` +
+            `toolsSinceText=${toolCallsSinceText}${
+              toolNamesSinceText.length > 0 ? `(${toolNamesSinceText.join(",")})` : ""
+            } ` +
+            `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
+            `thread=${input.threadKey} tail: ${tail}`,
+        );
+        if (closing) {
           if (emptyBreakRetries < MAX_EMPTY_BREAK_RETRIES) {
             emptyBreakRetries += 1;
             // 2026-06-05/06-11 — nudge 에 실행 도구 목록 + 사용자 원 입력 재주입.

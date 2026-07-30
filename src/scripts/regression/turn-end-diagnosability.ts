@@ -54,13 +54,14 @@ export const check: RegressionCheck = {
         /toolsSinceText=\$\{toolCallsSinceText\}/, // 두 번째 분기 판별
         /steered=\$\{steeredTotal\}/, // 스티어링 개입 횟수(턴 누적)
         /tail: \$\{tail\}/, // 예고형/보고형 사람 판단용
+        /sseEnd=\$\{\[\.\.\.sseEndTally/, // 스트림이 어떻게 끝났는지(completed 유무) 집계
       ],
     );
     out.push(
       assert(
-        "★판정 재료 6종이 턴 종료 한 줄에 전부 실린다",
+        "★판정 재료 7종이 턴 종료 한 줄에 전부 실린다",
         w.ok,
-        w.ok ? "6개 확인" : `누락 ${w.missing.join(" ")}`,
+        w.ok ? "7개 확인" : `누락 ${w.missing.join(" ")}`,
       ),
     );
 
@@ -75,6 +76,20 @@ export const check: RegressionCheck = {
         "스티어링 주입은 [error] 가 아니라 [log] 로 찍는다",
         lvl.ok,
         lvl.ok ? "log 레벨 확인" : "여전히 console.error — 진짜 에러와 섞인다",
+      ),
+    );
+    // ★completed 없이 끝난 스트림은 **무엇이 왔는지**까지 남겨야 판단 재료가 된다.
+    //  실사고에서 chunks=266 만 알고 그 266조각의 정체를 몰라 "모델 침묵"인지
+    //  "전송 절단"인지 못 갈랐다. 드문 경로라 상세 1줄이 소음이 되지 않는다.
+    const inc = await sourceHas(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
+      [/\[codex-sse-incomplete\]/, /events=\[\$\{hist \|\| "없음"\}\]/],
+    );
+    out.push(
+      assert(
+        "★completed 없이 끝난 스트림은 이벤트 히스토그램과 함께 남는다",
+        inc.ok,
+        inc.ok ? "상세 로그 확인" : `누락 ${inc.missing.join(" ")}`,
       ),
     );
     return out;

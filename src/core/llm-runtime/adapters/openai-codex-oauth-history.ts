@@ -144,6 +144,15 @@ export interface CodexSseResult {
   };
   /** 마지막으로 본 SSE 이벤트 타입(빈 응답 진단 — completed 없이 끊겼는지). */
   lastEvent?: string;
+  /**
+   * ★이 스트림이 흘린 이벤트 타입별 개수 (2026-07-30, 관측 전용).
+   *
+   * `response.completed` 없이 끝난 스트림에서 **무엇이 왔는지** 를 남기기 위한 것.
+   * 실사고: chunks=266 인데 텍스트도 도구도 usage 도 없이 끝났는데, 그 266조각이
+   * 무슨 이벤트였는지 알 방법이 없어 "모델이 침묵" 인지 "전송이 끊김" 인지 못 갈랐다.
+   * 정상 종료 스트림에서는 호출부가 쓰지 않는다(로그 폭증 방지).
+   */
+  eventCounts?: Record<string, number>;
 }
 
 /**
@@ -183,6 +192,8 @@ export const parseCodexSse = async (
 ): Promise<CodexSseResult> => {
   /** 마지막으로 본 SSE 이벤트 타입 — 빈 응답이 completed 없이 끊겼는지 판별용. */
   let lastEvent = "(없음)";
+  /** 이벤트 타입별 개수 — completed 없이 끝났을 때만 호출부가 읽는다(관측 전용). */
+  const eventCounts: Record<string, number> = {};
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -212,6 +223,9 @@ export const parseCodexSse = async (
         if (data === "" || data === "[DONE]") continue;
         try {
           const event = JSON.parse(data) as CodexSseEvent;
+          if (typeof event.type === "string") {
+            eventCounts[event.type] = (eventCounts[event.type] ?? 0) + 1;
+          }
           // 진단(gated) — codex 백엔드가 흘리는 SSE event.type 실측용. "생각 중"에 어떤
           // 이벤트(reasoning delta vs 무이벤트 keep-alive)가 오는지 = progress-aware 가드
           // 가능성 판별. 기본 off (CODEX_DEBUG_TOOLS/INPUT 동형 gated 진단 인프라).
@@ -335,7 +349,7 @@ export const parseCodexSse = async (
   }
 
   // lastEvent — 빈 응답 진단용(2026-07-30). `response.completed` 가 안 왔는지 로그로 가른다.
-  return { text, responseId, toolCalls, usage, lastEvent };
+  return { text, responseId, toolCalls, usage, lastEvent, eventCounts };
 };
 
 /**

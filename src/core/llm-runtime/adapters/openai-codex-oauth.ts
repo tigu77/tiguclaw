@@ -1030,6 +1030,16 @@ export const runOpenAiCodex = async (
   //  스티어링이 몇 번 끼어들었는지도 로그에 없어 추론밖에 못 했다. 원격 인스턴스(회사돌쇠)는
   //  DB 조회도 불가라 로그가 유일한 진단면이다.
   let steeredTotal = 0;
+  /**
+   * ★스트림이 어떻게 끝났는지 이터레이션별 집계 (2026-07-30, **판단 근거 수집용**).
+   *
+   * 미해결 질문: "정상 턴에서 `response.completed` 가 항상 오는가?" — 지금은 실패 로그에만
+   * lastEvent 가 찍혀 **성공 턴 표본이 0** 이라 답을 모른다. 그래서 completed 없이 끝난
+   * 스트림을 전송 실패로 재시도해도 되는지 판단할 수 없다(오탐 위험).
+   * 턴당 한 줄에 `completed×3,none×1` 형태로 남겨 그 표본을 만든다. 표본이 쌓이면
+   * 불변식을 확정하고, 그때 재시도 배선을 판단한다. **확인 전에 고치지 않는다.**
+   */
+  const sseEndTally = new Map<string, number>();
 
   try {
     while (iteration < CODEX_MAX_TOOL_ITERATIONS_HARD) {
@@ -1273,8 +1283,30 @@ export const runOpenAiCodex = async (
                 }
               },
         );
-                if (typeof sseResult.lastEvent === "string") lastSseEvent = sseResult.lastEvent;
-break; // 스트림 소비 성공 → 재시도 루프 탈출.
+        if (typeof sseResult.lastEvent === "string") lastSseEvent = sseResult.lastEvent;
+        {
+          // 이 스트림이 어떻게 끝났는지 집계(턴 종료 줄에 요약해 남긴다).
+          const endKey =
+            sseResult.lastEvent === "response.completed" ? "completed" : "none";
+          sseEndTally.set(endKey, (sseEndTally.get(endKey) ?? 0) + 1);
+          // ★completed 없이 끝난 스트림만 상세 1줄 — 정의상 드물어 소음 0. 무엇이 왔는지
+          //  (reasoning 만? in_progress 만? 아예 조기 절단?) 를 이벤트 히스토그램으로 남긴다.
+          //  이 표본이 "전송 실패로 재시도해도 되는가" 판단의 재료다.
+          if (endKey === "none") {
+            const hist = Object.entries(sseResult.eventCounts ?? {})
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 8)
+              .map(([k, v]) => `${k}×${v}`)
+              .join(",");
+            console.warn(
+              `[codex-sse-incomplete] response.completed 없이 스트림 종료 — ` +
+                `iteration=${iteration} text=${sseResult.text.length} ` +
+                `toolCalls=${sseResult.toolCalls.length} usage=${sseResult.usage ? "있음" : "없음"} ` +
+                `thread=${input.threadKey} events=[${hist || "없음"}]`,
+            );
+          }
+        }
+        break; // 스트림 소비 완료 → 전송 재시도 루프 탈출.
       } catch (e) {
         // abort 가 유휴(1층)·턴(2층) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
         // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
@@ -1515,6 +1547,7 @@ break; // 스트림 소비 성공 → 재시도 루프 탈출.
               toolNamesSinceText.length > 0 ? `(${toolNamesSinceText.join(",")})` : ""
             } ` +
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
+            `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
             `thread=${input.threadKey} tail: ${tail}`,
         );
         if (closing) {

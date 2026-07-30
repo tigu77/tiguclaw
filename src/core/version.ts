@@ -2,7 +2,7 @@
 // 앱 버전 단일 소스 = 레포 루트 package.json 의 "version". 데몬은 유닛 WorkingDirectory
 // (=repoRoot)로 돌고 bin/tiguclaw.mjs 도 cwd 를 repoRoot 로 고정하므로 process.cwd() 기준.
 // built(dist/src/index.js)여도 cwd 는 repoRoot 라 동일. 1회 읽고 캐시. 실패 시 "unknown".
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 
@@ -53,4 +53,47 @@ export const appBuildId = (): string => {
     cachedBuild = "";
   }
   return cachedBuild;
+};
+
+/**
+ * **실행 중인 산출물이 소스보다 오래됐나** — 빌드 실패가 조용히 지나가는 것을 막는다 (2026-07-30).
+ *
+ * ★왜 필요한가 (오늘 실제로 반나절 헷갈린 것): `appBuildId()` 는 `git log` 로 **소스 HEAD**
+ *  를 보고한다. 그런데 built 런타임은 `dist/` 를 돈다. `git pull` 은 됐는데 재빌드가 실패하면
+ *  /status 는 "최신" 이라 하고 실제로는 옛 코드가 돈다. 오늘 로그 분석은 "옛 버전" 이라 하고
+ *  사용자는 "이미 최신 빌드였어" 라고 했는데 — **둘 다 맞았을 수 있다**(git 최신·실행 옛것).
+ *  같은 부류가 메모리에 두 건 더 있다: 윈도우 /update tsc 미설치로 재빌드 실패,
+ *  built /update 의 appRoot=dist 함정. **빌드 실패가 조용한 게 반복 패턴**이다.
+ *
+ * 판정: `dist/src/index.js` mtime < HEAD 커밋 시각 → 재빌드 안 됨.
+ * git 부재·tarball·source 런타임이면 ""(판정 불가는 침묵 — 없는 걸 있는 척하지 않는다).
+ */
+export const staleBuildWarning = (): string => {
+  // source 런타임은 dist 를 안 쓴다 — 판정 대상 아님.
+  if (process.env.TIGUCLAW_RUNTIME === "source") return "";
+  try {
+    const distEntry = path.join(process.cwd(), "dist", "src", "index.js");
+    let distMs: number;
+    try {
+      distMs = statSync(distEntry).mtimeMs;
+    } catch {
+      return "⚠️ dist 산출물이 없습니다 — `npm run build:prod` 후 재시작이 필요합니다.";
+    }
+    const headIso = execFileSync("git", ["log", "-1", "--format=%cI"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+    const headMs = Date.parse(headIso);
+    if (!Number.isFinite(headMs) || distMs >= headMs) return "";
+    const mins = Math.round((headMs - distMs) / 60000);
+    const ago = mins >= 1440 ? `${Math.floor(mins / 1440)}일` : mins >= 60 ? `${Math.floor(mins / 60)}시간` : `${mins}분`;
+    return (
+      `⚠️ **실행 중인 코드가 소스보다 ${ago} 오래됐습니다** — 업데이트는 받았는데 빌드가 ` +
+      "반영되지 않았습니다. `npm run build:prod` 후 재시작하세요."
+    );
+  } catch {
+    return ""; // git 부재·tarball — 판정 불가.
+  }
 };

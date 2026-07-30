@@ -1354,7 +1354,7 @@ export const runOpenAiCodex = async (
             console.error(
               `[codex-backend-failure] ${why} — iteration=${iteration} ` +
                 `text=${sseResult.text.length} toolCalls=${sseResult.toolCalls.length} ` +
-                `sideEffect=${sideEffectExecuted} ` +
+                `model=${model} sideEffect=${sideEffectExecuted} ` +
                 `req=${lastReqBytes.total.toLocaleString()}자` +
                 `(instructions ${lastReqBytes.instructions.toLocaleString()}` +
                 ` + input ${lastReqBytes.input.toLocaleString()}/${lastReqBytes.items}건` +
@@ -1400,7 +1400,7 @@ export const runOpenAiCodex = async (
             const wait = CODEX_BACKEND_FAIL_BACKOFF_MS[backendFailAttempt] ?? 8000;
             backendFailAttempt += 1;
             console.warn(
-              `[codex-backend-retry] ${backendFailAttempt}/${CODEX_BACKEND_FAIL_BACKOFF_MS.length} ` +
+              `[codex-backend-retry] ${model} ${backendFailAttempt}/${CODEX_BACKEND_FAIL_BACKOFF_MS.length} ` +
                 `${wait}ms 뒤 같은 요청 재전송 — ${e.why} thread=${input.threadKey}`,
             );
             await sleep(wait);
@@ -1641,7 +1641,7 @@ export const runOpenAiCodex = async (
         //  tail 은 예고형("~하겠습니다")인지 보고형인지 사람이 판단할 최소 재료.
         const tail = finalText.replace(/\s+/g, " ").slice(-100);
         console.log(
-          `[codex-turn-end] iter=${iteration} steered=${steeredTotal} ` +
+          `[codex-turn-end] model=${model} iter=${iteration} steered=${steeredTotal} ` +
             `closing=${closing ? "재요청" : "종료"} ` +
             `text=${text.length} finalText=${finalText.length} ` +
             `toolsSinceText=${toolCallsSinceText}${

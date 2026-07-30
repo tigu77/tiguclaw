@@ -60,6 +60,10 @@ export const check: RegressionCheck = {
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [
         /\[codex-backend-failure\]/,
+        // ★모델명 — 2026-07-30 실사고: 특정 모델(gpt-5.6-sol) 하나만 막혔는데 로그에
+        //  모델이 없어 "서브에이전트는 다른 모델일 것" 이라는 **추정**으로 반나절을 갔다.
+        //  같은 초에 agent 스레드 234K 성공 / 메인 96K 실패가 찍혔는데도 못 갈랐다.
+        /`model=\$\{model\} sideEffect=/,
         /sseResult\.failure !== undefined/,
         /throw new CodexBackendFailureError\(why\)/,
         // ★같은 body 재전송 — 백엔드 보고 실패는 HTTP 5xx 와 같은 부류다. 종전엔 모델
@@ -73,7 +77,7 @@ export const check: RegressionCheck = {
       assert(
         "★소비부가 사유를 로그·에러로 올린다(빈 응답 경로로 안 흘린다)",
         consumer.ok,
-        consumer.ok ? "5개 확인" : `누락 ${consumer.missing.join(" ")}`,
+        consumer.ok ? "6개 확인" : `누락 ${consumer.missing.join(" ")}`,
       ),
     );
 

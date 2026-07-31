@@ -80,13 +80,24 @@ export const check: RegressionCheck = {
       /const isStaleInbound = \(dateSec: number \| undefined\): boolean =>/,
       // 창 밖이라도 **조용히 버리지 않는다**(원래 사고가 그것이다).
       /const noteStaleInbound = \(ctx: Context\): void =>/,
+      // ★게이트는 **미들웨어 한 곳**에 있어야 한다. 텍스트 핸들러에만 달았더니
+      //  사진·음성·문서·영상이 그대로 통과해, 24시간치 미디어가 부팅 시 턴을 발사했다
+      //  (검토 실측). 핸들러마다 다는 건 손으로 관리하는 목록이다.
+      /bot\.use\(async \(ctx, next\) => \{\s*if \(ctx\.message !== undefined && isStaleInbound\(ctx\.message\.date\)\)/,
+    ]);
+    // 개별 핸들러에 흩어져 있으면 안 된다(미들웨어로 승격됐는지 확인).
+    const perHandler = await sourceHas("../../../plugins/telegram-channel/index.ts", [
       /if \(isStaleInbound\(ctx\.message\.date\)\) \{\s*noteStaleInbound\(ctx\);/,
     ]);
     out.push(
       assert(
-        "★재시작 창(1~5초)의 메시지를 처리하고, 오래된 것은 버리되 알린다",
-        inbound.ok,
-        inbound.ok ? "4개 확인" : `누락 ${inbound.missing.join(" ")}`,
+        "★재시작 창 메시지를 처리하고, 오래된 것은 **모든 종류**(사진·음성 포함) 거르되 알린다",
+        inbound.ok && !perHandler.ok,
+        inbound.ok && !perHandler.ok
+          ? "미들웨어 1곳 확인"
+          : perHandler.ok
+            ? "핸들러별로 흩어졌다 — 첨부 경로가 게이트를 안 탄다"
+            : `누락 ${inbound.missing.join(" ")}`,
       ),
     );
 

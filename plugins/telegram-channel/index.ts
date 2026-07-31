@@ -560,12 +560,22 @@ export default class TelegramChannel implements Channel {
         .catch(() => {});
     };
 
+    // ★게이트를 **미들웨어 한 곳**에 둔다. 핸들러마다 달면 손으로 관리하는 목록이 되고,
+    //  실제로 그렇게 됐다: 텍스트에만 걸어서 **사진·음성·문서·영상은 그대로 통과**했다
+    //  (검토 실측 — 24시간 전 photo/voice 가 부팅 시 턴을 발사). `drop_pending_updates`
+    //  를 false 로 바꾸면서 새로 열린 구멍이라, 그 수정이 스스로 만든 부작용이었다.
+    //  여기 두면 지금·앞으로의 모든 메시지 핸들러가 자동으로 덮인다.
+    //  콜백(버튼)은 대상이 아니다 — 오래된 메시지의 버튼을 **지금** 누른 것이라 정상 행위다.
+    bot.use(async (ctx, next) => {
+      if (ctx.message !== undefined && isStaleInbound(ctx.message.date)) {
+        if (isAllowed(ctx)) noteStaleInbound(ctx);
+        return; // 턴을 발사하지 않는다.
+      }
+      await next();
+    });
+
     bot.on("message:text", async (ctx) => {
       if (!isAllowed(ctx)) return;
-      if (isStaleInbound(ctx.message.date)) {
-        noteStaleInbound(ctx);
-        return;
-      }
       const text = ctx.message.text.trim();
       if (text.length === 0) return;
       // 답글(reply) 원문 회수 — telegram 이 주는 reply_to_message 의 텍스트/캡션을

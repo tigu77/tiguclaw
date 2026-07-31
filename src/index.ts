@@ -553,7 +553,7 @@ const buildLogTail = async (argRaw: string): Promise<string> => {
     const shownLines = shown === "" ? 0 : shown.split("\n").length;
     return (
       `📜 ${ymd} ${shownLines}줄 표시` +
-      `${shownLines < lines.length ? ` (요청 ${n} · 길이 한도로 ${lines.length - shownLines}줄 잘림)` : ""}` +
+      `${truncated ? ` (요청 ${n} · 길이 한도로 ${out.length - shownLines}줄 잘림)` : ""}` +
       ` — 파일 ${Math.round(size / 1024)}KB${readFrom > 0 ? ", 끝부분만 읽음" : ""}\n` +
       `대화 본문은 생략됩니다 — 진단 수치만 표시` +
       `${dropped > 0 ? ` (본문 ${dropped}줄 제외)` : ""}.\n\n\`\`\`\n${shown}\n\`\`\``

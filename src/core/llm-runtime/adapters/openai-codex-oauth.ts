@@ -1078,15 +1078,34 @@ export const runOpenAiCodex = async (
   //    Bash 는 명령에 따라 무해할 수 있으나 (ls/git status) git commit·rm 류 재실행 중복
   //    위험이 더 크므로 보수적 분류 (부작용).
   //  화이트리스트 외 도구는 부작용으로 간주 (외부 플러그인 도구·미등록·신규 능력 안전).
-  const HARMLESS_TOOLS = new Set<string>([
+  /**
+   * 이 도구가 **되돌릴 수 없는 부작용**을 내나 — 이름 열거가 아니라 **판정**이다.
+   *
+   * ★종전엔 무해 도구 7개를 열거했는데, 실제 등록 도구 중 **읽기 전용인데 목록 밖**인 게
+   *  12개였다(`read_memory`·`search_memory`·`list_*`·`find_*`). 종전엔 그 오분류가 무해했다
+   *  — plain Error 는 어차피 throw 돼 폴백이 돌았으니까. 그런데 2026-07-31 에 가드를
+   *  `if (sideEffectExecuted)` 로 뒤집으면서 **오분류의 대가가 "폴백 상실"로 바뀌었다**:
+   *  메모리를 한 번이라도 읽은 턴은 502 에서 claude 안전망 없이 죽는다(검토 실측).
+   *
+   * 판정 = 우리 도구 이름 규약. 조회 동사로 시작하면 읽기 전용, **그 밖은 전부 부작용**으로
+   * 본다(모르는 도구는 안전한 쪽 = 중복 실행을 막는 쪽으로). 규약을 따르는 새 도구는
+   * 자동으로 옳게 분류되고, 안 따르면 보수적으로 분류된다 — 어느 쪽도 조용히 틀리지 않는다.
+   */
+  const READ_ONLY_VERB = /^(?:read|list|find|search|get|describe|show)_/;
+  const READ_ONLY_EXACT = new Set<string>([
+    // 이름 규약 밖의 SDK/빌트인 도구(대문자 시작) — 규약이 없으니 여기 명시.
     "Read",
     "Glob",
     "Grep",
     "WebFetch",
     "WebSearch",
+    "NotebookRead",
+    // 부작용이 있지만 **재실행이 무해**한 것들(멱등·표시 전용).
     "reply_to_current_message",
     "update_todos",
   ]);
+  const isSideEffectTool = (name: string): boolean =>
+    !READ_ONLY_EXACT.has(name) && !READ_ONLY_VERB.test(name);
 
   // ★턴 종료 판정을 로그만으로 재구성하기 위한 재료 (2026-07-30).
   //  실사고: "검증한다더니 가만히 있다" 신고를 받았는데, 로그에 남은 건 stream-trace tail 뿐이라
@@ -1876,10 +1895,9 @@ export const runOpenAiCodex = async (
                 if (bridge === undefined) {
                   throw new Error(`unknown tool: ${tc.name}`);
                 }
-                // 2026-06-07 — 도구 이름 화이트리스트 기반 정밀 분류. HARMLESS_TOOLS 에 없으면
-                //  부작용 가능성 → claude 폴백 차단 set. (이전엔 bridge 객체 비교라 false
-                //  positive·negative 양쪽 다 났음 — 위 HARMLESS_TOOLS 정의 참조.)
-                if (!HARMLESS_TOOLS.has(tc.name)) sideEffectExecuted = true;
+                // 부작용 도구가 돌았으면 표시 — 아래 catch 가 이걸 보고 throw 여부를 정한다.
+                //  판정 근거는 위 `isSideEffectTool` 주석 참조(열거 아님).
+                if (isSideEffectTool(tc.name)) sideEffectExecuted = true;
                 // ★어댑터 층 per-tool wall-clock **폐기** (2026-07-28, 근본 수정).
                 //  왜 있었나: hung 도구가 턴을 영영 얼리는 것을 막으려고 8분 시계를 뒀다.
                 //  왜 틀렸나: 경계가 **역전**돼 있었다 —
@@ -2029,6 +2047,18 @@ export const runOpenAiCodex = async (
     //  → 이름 목록을 늘리는 대신 조건을 뒤집는다: **부작용이 났으면 throw 하지 않는다.**
     //   에러 종류는 *문구를 고르는 데*만 쓴다. 취소류(Turn/Worker/User)는 위에서 이미
     //   단락했으므로 여기 안 온다.
+    // ★취소류는 **부작용과 무관하게** 그대로 올린다 (2026-07-31 검토, 재현됨).
+    //  바로 위 주석이 "취소류는 이미 단락됐으니 여기 안 온다" 고 단언했는데 **거짓이었다** —
+    //  단락되는 건 TurnTimeoutError 하나뿐이고, UserCancelled/WorkerCancelled/WorkerTimeout
+    //  은 `throw input.abortSignal.reason` 으로 이 catch 에 **도달한다**.
+    //  삼킨 결과: ①`/stop` 후 가짜 에러 답장이 한 통 더 가고 취소된 턴이 **성공으로**
+    //  히스토리·self-growth 에 적재 ②**워커 타임아웃이 "완료" 로 보고**(markFailed 를 건너뛰어
+    //  onWorkerComplete 가 markDone) ③서브에이전트 취소가 부모에게 성공으로 보고.
+    //  판정은 이름 목록이 아니라 **동일성**이다: 이 에러가 곧 abort 사유면 취소다.
+    const abortReason: unknown = input.abortSignal?.reason;
+    if (input.abortSignal?.aborted === true && e === abortReason) {
+      throw e;
+    }
     if (sideEffectExecuted) {
       const ranList =
         executedToolNames.size > 0

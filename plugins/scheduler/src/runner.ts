@@ -175,14 +175,36 @@ export const runScheduleFiring = async (
         deps.recordFiring(schedule.id, { ok: false, error: "직송 문구가 비어있음" });
         return;
       }
-      await (deps.dispatch ?? dispatch)({
-        scheduleId: schedule.id,
-        destChannel: schedule.destChannel,
-        destTarget: schedule.destTarget,
-        text,
-        bus,
-        sessionThreadKey: DEFAULT_SESSION_ID, // LLM 경유와 동일 귀속(아래 호출부와 정합).
-      });
+      // ★catch 필수 — 이 경로는 `void runScheduleFiring(...)` 로 불린다(index.ts:185,223).
+      //  `dispatch` 가 미배달에 throw 하도록 바꾼 뒤(2026-07-31), 여기 catch 가 없어서
+      //  **unhandledRejection → crash-fast → launchd respawn → 부팅마다 재발** 이 됐다.
+      //  하필 라이브에 `trigger_type=reboot` + `!say` 스케줄이 있어 **부팅 크래시 루프**다.
+      //  게다가 recordFiring 이 아예 안 불려 DB 에 실패 기록조차 안 남았다 — 이 수정이
+      //  노린 것의 정반대. LLM 경유 경로엔 원래 catch 가 있었는데 이 갈래만 없었다.
+      try {
+        await (deps.dispatch ?? dispatch)({
+          scheduleId: schedule.id,
+          destChannel: schedule.destChannel,
+          destTarget: schedule.destTarget,
+          text,
+          bus,
+          sessionThreadKey: DEFAULT_SESSION_ID, // LLM 경유와 동일 귀속(아래 호출부와 정합).
+        });
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        deps.recordFiring(schedule.id, { ok: false, error: reason });
+        console.error(`[scheduler:${schedule.id}] '${schedule.label}' 직송 실패 — ${reason}`);
+        try {
+          bus.publish({
+            type: "scheduler.error",
+            ts: Date.now(),
+            payload: { scheduleId: schedule.id, label: schedule.label, error: reason },
+          });
+        } catch {
+          /* 관측 실패가 스케줄러를 죽이지 않는다 */
+        }
+        return;
+      }
       deps.recordFiring(schedule.id, { ok: true });
       console.log(
         `[scheduler:${schedule.id}] '${schedule.label}' 직송(LLM 미경유) — ${text.length}자.`,

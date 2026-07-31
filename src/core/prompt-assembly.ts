@@ -204,7 +204,15 @@ const liveChildJobsLine = (threadKey: string): string => {
 //  - codex: 현재 turn 이미지를 input_image(data URI)로 inline 전달 → 직접 봄
 //    (실측: /responses HTTP 200 + 로고 정확 인식. 구 "codex vision 불확실" 가정 폐기).
 //  - claude: SDK 내장 Read 가 이미지를 vision 으로 반환 → 경로 Read 로 봄 (실측 확인).
-//  안내는 중립 — "직접 보이면 그걸로, 안 보이면 경로 Read" (어댑터 분기 0, LLM-agnostic).
+//  안내는 중립 — "직접 보이면 그걸로, 안 보이면 경로 Read, 그래도 아니면 정직 보고".
+//  ★2026-07-31 교정: 07-28(421d067)에 이 문장을 "Read 는 텍스트만 읽는다" 로 뒤집었다.
+//   근거는 codex/openai 의 file-ops Read(`fs.readFile(utf8)`)였는데, **claude 는 그 Read 를
+//   안 쓴다** — SDK 내장 Read 가 이미지를 vision 으로 반환하고, claude 어댑터엔 inline
+//   이미지 주입 경로가 아예 없어 **Read 가 유일한 통로**다. 그래서 claude 가 사진을 못 보게
+//   됐다. 실측 A/B(실 SDK 8회): 뒤집은 문구 Read 호출 1/4 · 오답/환각 3건("초록 배경 위
+//   빨간 하트" ← 실제는 노란 배경 위 파란 삼각형), 이전 문구 4/4 정답.
+//   어느 한쪽 문구도 양쪽에 참이 아니었다 → **행동 지시**로 쓴다("열어보고, 그림이 아니면
+//   정직 보고"). 어댑터 분기 0을 유지하면서 양쪽에서 옳게 동작한다.
 //
 // 미지정/빈 배열 → "" (prefixParts 에 아무것도 안 붙음 → text-only 회귀 0).
 export const formatAttachments = (
@@ -235,7 +243,7 @@ export const formatAttachments = (
     // 양 어댑터 vision parity (2026-05-28 실측). 중립 안내 — 어댑터 분기 없음.
     out.push(
       "",
-      "첨부 이미지가 직접 보이면 그 내용으로 답하세요. 보이지 않으면 **보이지 않는다고 말하고** 사용자에게 다시 보내달라고 하세요 — `Read` 는 텍스트 파일만 읽습니다(이미지는 첨부로 전달된 것만 볼 수 있습니다). 정말 해석이 안 될 때만 그 사실을 사용자에게 알리세요.",
+      "첨부 이미지가 직접 보이면 그 내용으로 답하세요. 직접 보이지 않으면 **먼저 그 경로를 `Read` 로 열어보세요** — 어댑터에 따라 `Read` 가 이미지를 그림으로 돌려줍니다. `Read` 결과가 그림이 아니라 텍스트/바이너리면 그때 **보이지 않는다고 말하고** 다시 보내달라고 하세요. ★추측으로 이미지 내용을 지어내지 마세요.",
     );
   }
   return out.join("\n");

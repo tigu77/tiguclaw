@@ -481,6 +481,34 @@ export const runSelfUpdate = async (
     // throw 0 — best-effort 로 정직 보고(rolledBack 플래그가 성공 여부 반영).
     const rollback = async (): Promise<boolean> => {
       try {
+        // ★미커밋 작업물을 지우지 않는다 (2026-07-31 검토, 재현됨).
+        //  `git pull --ff-only`(위)는 **업데이트가 건드리지 않은 파일의 dirty 상태와
+        //  공존한다** — 그래서 pull 이 성공한 뒤 게이트가 실패하면, 여기 `reset --hard` 가
+        //  사용자의 미커밋 편집을 **비가역으로** 지웠다. `/update` 한 번에 작업이 증발한다.
+        //  재현: tracked 파일 수정 → 다른 파일만 바뀐 커밋 pull(성공) → reset → 수정분 소실.
+        //
+        //  더티면 reset 대신 **되돌리지 않고 정직 보고**한다. 코드는 새 커밋 상태로 남지만
+        //  그건 되돌릴 수 있고(사용자가 직접 reset), 지워진 작업은 못 되돌린다.
+        //  선택 기준은 "확신" 이 아니라 **어느 쪽이 비가역인가** 다.
+        const dirty = (
+          await run("git", ["status", "--porcelain"], cwd).catch(() => ({
+            stdout: "",
+            stderr: "",
+          }))
+        ).stdout.trim();
+        if (dirty !== "") {
+          const lines = dirty.split("\n");
+          const files = lines
+            .slice(0, 8)
+            .map((l: string) => l.slice(3))
+            .join(", ");
+          console.error(
+            `self-update: ★롤백 생략 — 미커밋 변경이 있습니다(${lines.length}개: ${files}). ` +
+              `\`git reset --hard\` 는 그걸 지웁니다. 코드는 ${prevSha.slice(0, 8)} 이 아니라 ` +
+              `업데이트된 상태로 남아 있으니, 직접 확인 후 필요하면 되돌리세요.`,
+          );
+          return false;
+        }
         await run("git", ["reset", "--hard", prevSha], cwd);
         if (depsChanged) {
           // deps 도 prev 상태로 되돌림 — 게이트 실패가 새 deps 였을 수도.

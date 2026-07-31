@@ -51,7 +51,15 @@ export const check: RegressionCheck = {
         // ★`model=` 를 못박는다 — 어제 반나절의 결정적 증거가 "같은 초에 어느 모델이
         //  실패했나" 였는데, 그때 로그엔 모델명이 없어 "서브에이전트는 다른 모델일 것"
         //  이라는 **추정**으로 갔다. 이름이 빠지면 그 진단이 다시 불가능해진다.
-        /\[codex-turn-end\] model=\$\{model\}/,
+        // ★`console.log(` 까지 붙여 **무조건 출력**임을 못박는다. 태그만 보면
+        //  `if (process.env.X === "1") console.log(...)` 로 감싸도 초록이라, 평시 로그에서
+        //  판정 재료 7종이 통째로 사라진다(검토 변이 확인).
+        //  ★줄 시작 앵커(`^\s*console\.log\($`)로 **무조건 출력**임을 못박는다. 앵커가
+        //   없으면 `if (process.env.X) console.log(` 로 감싸도 매칭돼 초록이었다.
+        //  ★두 줄을 **한 패턴**으로 묶어야 한다. `/^\s*console\.log\($/m` 만 따로 두면
+        //   같은 파일의 **다른** console.log 를 맞혀서, 이 호출만 env 게이트 뒤로 숨겨도
+        //   초록이었다(실제로 변이 잔재가 작업 트리에 남았는데 스위트가 통과했다).
+        /^\s*console\.log\(\s*`\[codex-turn-end\] model=\$\{model\}/m,
         /closing=\$\{closing \? "재요청" : "종료"\}/, // 가드 판정 결과
         /text=\$\{text\.length\} finalText=\$\{finalText\.length\}/, // 첫 줄 분기 판별
         /toolsSinceText=\$\{toolCallsSinceText\}/, // 두 번째 분기 판별

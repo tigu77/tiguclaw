@@ -30,12 +30,17 @@ export const check: RegressionCheck = {
       //  그 변수는 built 에서만 세팅돼, tsx·npm run dev(변수 없음)에서 옛 dist 를 재고
       //  거짓 경고를 냈다. 이름 열거 대신 자명한 사실(내가 어디서 로드됐나)을 본다.
       /import\.meta\.url\.includes\("\/dist\/"\)/,
+      // ★가드의 **부호**까지 못박는다. 뒤집으면(`if (isBuiltRuntime())`) dist 에서 경고가
+      //  영원히 안 나오는데, 순수 판정 함수는 멀쩡해서 동작 검사만으론 안 걸린다.
+      /if \(!isBuiltRuntime\(\)\) return answer\(""\);/,
       // /status 한 번에 두 번 불린다 — git 자식 프로세스가 매번 두 번 뜨지 않게 캐시.
       /STALE_CACHE_MS/,
       // 실행 산출물의 시각을 실제로 잰다(선언만 하고 안 재는 것 방지).
       /statSync\(distEntry\)\.mtimeMs/,
+      // 판정을 실제로 호출한다(순수 함수만 있고 안 부르면 무의미).
+      /return answer\(staleBuildVerdict\(\{ distMs, headIso \}\)\)/,
       /\["log", "-1", "--format=%cI"\]/,
-      /distMs >= headMs\) return answer\(""\)/,
+      /probe\.distMs >= headMs\) return ""/,
       // dist 자체가 없으면 그것도 말한다.
       /dist 산출물이 없습니다/,
     ]);
@@ -43,7 +48,48 @@ export const check: RegressionCheck = {
       assert(
         "★dist mtime 과 HEAD 커밋 시각을 비교해 판정한다",
         impl.ok,
-        impl.ok ? "7개 확인" : `누락 ${impl.missing.join(" ")}`,
+        impl.ok ? "9개 확인" : `누락 ${impl.missing.join(" ")}`,
+      ),
+    );
+
+    // ★동작 — 판정 본체가 순수 함수라 **양쪽 분기를 실제로 태운다**. 종전엔 소스 문자열만
+    //  봐서, 조건을 뒤집어(`if (isBuiltRuntime())`) dist 에서 경고가 **영원히** 안 나오게
+    //  만들어도 초록이었다(검토 변이 확인).
+    const { staleBuildVerdict, staleBuildWarning, isBuiltRuntime } = await import(
+      "../../core/version.js"
+    );
+    const HEAD = "2026-07-31T09:00:00+09:00";
+    const headMs = Date.parse(HEAD);
+    const cases: Array<[string, string, boolean]> = [
+      // [이름, 판정 결과, 경고가 나와야 하나]
+      ["dist 없음", staleBuildVerdict({ distMs: null, headIso: HEAD }), true],
+      ["dist 가 8시간 낡음", staleBuildVerdict({ distMs: headMs - 8 * 3600_000, headIso: HEAD }), true],
+      ["dist 가 최신", staleBuildVerdict({ distMs: headMs + 1000, headIso: HEAD }), false],
+      ["git 없음(tarball)", staleBuildVerdict({ distMs: headMs - 8 * 3600_000, headIso: null }), false],
+    ];
+    const wrong = cases.filter(([, verdict, shouldWarn]) => (verdict !== "") !== shouldWarn);
+    out.push(
+      assert(
+        "★판정 본체가 4가지 상황을 옳게 가른다(부르는 검사 — grep 아님)",
+        wrong.length === 0,
+        wrong.length === 0
+          ? "dist없음·낡음·최신·git없음 4종 정상"
+          : `오판 ${wrong.map(([n]) => n).join(", ")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "낡은 정도를 사람이 읽는 단위로 말한다",
+        staleBuildVerdict({ distMs: headMs - 8 * 3600_000, headIso: HEAD }).includes("8시간") &&
+          staleBuildVerdict({ distMs: headMs - 3 * 86400_000, headIso: HEAD }).includes("3일"),
+        staleBuildVerdict({ distMs: headMs - 8 * 3600_000, headIso: HEAD }).slice(0, 40),
+      ),
+    );
+    out.push(
+      assert(
+        "source 런타임에선 아예 판정하지 않는다",
+        isBuiltRuntime() === false && staleBuildWarning() === "",
+        `isBuiltRuntime=${isBuiltRuntime()} warning=${JSON.stringify(staleBuildWarning())}`,
       ),
     );
 

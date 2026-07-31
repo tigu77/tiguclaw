@@ -32,9 +32,10 @@ export const check: RegressionCheck = {
     const parser = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth-history.ts",
       [
-        /event\.type === "error"/,
-        /event\.type === "response\.failed"/,
-        /event\.type === "response\.incomplete"/,
+        // ★`terminal` 판정을 통째로 겨냥한다. 세 줄을 따로 보면 **같은 파일의 lastEvent
+        //  블록**이 대신 매칭돼(각 2회 등장), `const terminal = false` 로 사유를 통째로
+        //  버려도 초록이었다 — 이 검사가 존재하는 이유 자체가 무력화됐다(검토 변이 확인).
+        /const terminal =\s*event\.type === "error" \|\|\s*event\.type === "response\.failed" \|\|\s*event\.type === "response\.incomplete";/,
         // ★형상 비종속 추출 — 문서(SDK 타입)와 이 백엔드 실물이 다르다(1차 실측: 문서대로
         //  top-level code/message 를 읽었더니 빈 error 였다). 특정 경로를 더 추측하는 대신
         //  payload 안을 깊이 제한으로 훑는다. 내려갈 키를 손목록으로 정하지 않는다.
@@ -51,7 +52,7 @@ export const check: RegressionCheck = {
       assert(
         "★파서가 error·response.failed·response.incomplete 를 읽고 사유를 보존한다",
         parser.ok,
-        parser.ok ? "8개 확인" : `누락 ${parser.missing.join(" ")}`,
+        parser.ok ? "6개 확인" : `누락 ${parser.missing.join(" ")}`,
       ),
     );
 
@@ -119,7 +120,7 @@ export const check: RegressionCheck = {
     //  7회 전부 후보 0). 코어가 hasFallback 을 싣고 UI 가 분기해야 성립한다 — 양쪽 다 본다.
     const honest = await sourceHas("../../core/llm-runtime/index.ts", [
       /hasFallback,/,
-      /specIndex < effectivePool\.length - 1/,
+      /specIndex < effectivePool\.length - 1 && !\(e instanceof TurnTimeoutError\)/,
     ]);
     out.push(
       assert(

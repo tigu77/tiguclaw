@@ -43,7 +43,7 @@ import {
   type SteeringInput,
 } from "./core/steering.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
-import { appVersion, appBuildId, staleBuildWarning } from "./core/version.js";
+import { appVersion, appBuildId, isBuiltRuntime, staleBuildWarning } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
   addMemory,
@@ -503,13 +503,16 @@ const formatRegionAError = (detail: string): string => {
  *  ①**전체를 메모리에 안 올린다.** 종전엔 `readFileSync` 로 파일 전량을 읽었다. dev 에 이미
  *   5.8MB 짜리가 있고 stream-trace·turn-end 는 턴마다 쌓인다 — 커지면 이벤트 루프가 멈추고
  *   V8 문자열 상한을 넘으면 throw 한다(**로그가 가장 필요한 순간에만 실패**). 끝에서
- *   청크 단위로 역방향으로 읽는다.
- *  ②**대화 본문을 안 내보낸다.** 로그엔 다른 세션·다른 프로젝트의 응답 조각(`tail:` 서술,
- *   `userText=…`)과 chatId·절대경로가 들어간다. `redactSecrets` 는 env 값·토큰 패턴만
- *   지우므로 부족하다. 채널로 나가는 건 **진단 수치**지 대화가 아니다 — 캐리어를 지운다.
+ *   512KB 한 번만 읽는다.
+ *  ②**대화 본문을 안 내보낸다.** `sanitizeLogTail` 이 담당한다 — 판정 기준은 캐리어 이름이
+ *   아니라 **로그 접두사 유무**다(그 모듈 주석 참조). 캐리어를 열거했다가 실로그의 주력
+ *   형상(다중 줄 객체 덤프)을 통째로 놓친 적이 있다.
  *  ③**그래도 `replyCommand` 로 발행한다.** 발행을 끊었더니 대시보드에 아무것도 안 보였다
- *   — 발행이 곧 화면이다(대시보드는 `channel.message.out` 만 본다). ② 로 캐리어를 지운
- *   뒤라 chat_log·events 에 적재돼도 안전하다.
+ *   — 발행이 곧 화면이다(대시보드는 `channel.message.out` 만 본다). ② 로 소독한 뒤라
+ *   chat_log·events 에 적재돼도 안전하다.
+ *  ④**헤더가 거짓말하지 않는다.** 종전엔 자르기 *전* 줄 수를 단언해 `/logs 200` 이 "200줄"
+ *   이라 답하고 실제로는 36줄만 보였다(3500자 한도). 진단 도구가 표본 크기를 속이면
+ *   "200줄 봤는데 아무 일도 없었다" 는 **틀린 결론**을 만든다 — 실제로 표시된 수를 센다.
  */
 const LOG_TAIL_MAX_LINES = 200;
 const LOG_TAIL_READ_BYTES = 512 * 1024; // 끝에서 이만큼만 본다(200줄에 차고도 남음).
@@ -539,14 +542,21 @@ const buildLogTail = async (argRaw: string): Promise<string> => {
     const all = chunk.split(/\r?\n/).filter((l) => l !== "");
     const lines = (readFrom > 0 ? all.slice(1) : all).slice(-n);
     const { redactSecrets } = await import("./core/outbound-sanitize.js");
-    const { stripLogPayloads } = await import("./core/log-sanitize.js");
-    const body = redactSecrets(lines.map(stripLogPayloads).join("\n")).slice(
-      -LOG_TAIL_REPLY_CHARS,
-    );
+    const { sanitizeLogTail } = await import("./core/log-sanitize.js");
+    const { out, dropped } = sanitizeLogTail(lines);
+    const full = redactSecrets(out.join("\n"));
+    // 3500자 한도로 앞에서 자른다 — 자른 뒤 **실제로 남은 줄 수**를 세서 헤더에 쓴다.
+    const body = full.length > LOG_TAIL_REPLY_CHARS ? full.slice(-LOG_TAIL_REPLY_CHARS) : full;
+    const truncated = body.length < full.length;
+    // 잘린 첫 줄은 파편이라 버린다(헤더의 줄 수와 화면이 어긋나지 않게).
+    const shown = truncated ? body.slice(body.indexOf("\n") + 1) : body;
+    const shownLines = shown === "" ? 0 : shown.split("\n").length;
     return (
-      `📜 ${ymd} 마지막 ${lines.length}줄 (파일 ${Math.round(size / 1024)}KB` +
-      `${readFrom > 0 ? ", 끝부분만 읽음" : ""})\n` +
-      `대화 본문은 생략됩니다 — 진단 수치만 표시.\n\n\`\`\`\n${body}\n\`\`\``
+      `📜 ${ymd} ${shownLines}줄 표시` +
+      `${shownLines < lines.length ? ` (요청 ${n} · 길이 한도로 ${lines.length - shownLines}줄 잘림)` : ""}` +
+      ` — 파일 ${Math.round(size / 1024)}KB${readFrom > 0 ? ", 끝부분만 읽음" : ""}\n` +
+      `대화 본문은 생략됩니다 — 진단 수치만 표시` +
+      `${dropped > 0 ? ` (본문 ${dropped}줄 제외)` : ""}.\n\n\`\`\`\n${shown}\n\`\`\``
     );
   } catch (e) {
     return `로그 읽기 실패: ${e instanceof Error ? e.message : String(e)}`;
@@ -1353,8 +1363,10 @@ const handler: MessageHandler = async (msg) => {
           }
         }
 
-        const runtimeMode =
-          process.env.TIGUCLAW_RUNTIME === "source" ? "source" : "built";
+        // ★env 가 아니라 실제 로드 경로로 판정한다. `TIGUCLAW_RUNTIME` 은 built 에서만
+        //  세팅돼서 tsx·npm run dev 에선 미매칭 → "built" 로 표시됐고, 바로 아래
+        //  낡음 경고(같은 사실을 로드 경로로 판정)와 **한 줄 안에서 모순**됐다.
+        const runtimeMode = isBuiltRuntime() ? "built" : "source";
         const lines = [
           "🐂 tiguclaw 상태",
           // 빌드 식별자 — "업데이트를 받았나" 를 한 줄로 가르는 유일한 수단(버전은 마일스톤
@@ -1871,15 +1883,20 @@ const serializedHandler: MessageHandler = (msg) => {
   //   따로 지우고, 관측 발행(chat_log·events 영구 적재)도 하지 않는다.
   if (msg.text.trim().split(/\s+/)[0] === "/logs") {
     publishInboundEcho(msg);
-    void (async (): Promise<void> => {
+    return (async (): Promise<void> => {
       const text = await buildLogTail(msg.text.trim().slice(5));
-      // ★replyCommand 로 발행한다 — 발행이 곧 화면이다(대시보드는 channel.message.out 만
-      //  본다). 직접 reply 로 바꿨더니 대시보드에서 아무것도 안 보였다(실측).
-      //  적재해도 안전한 이유: stripLogPayloads 가 대화 본문·chatId·raw 를 이미 지웠고,
-      //  남는 건 시각·모듈·수치뿐이다.
+    // ★replyCommand 로 발행한다 — 발행이 곧 화면이다(대시보드는 channel.message.out 만
+    //  본다). 직접 reply 로 바꿨더니 대시보드에서 아무것도 안 보였다(실측).
+    //  적재해도 안전한 이유: sanitizeLogTail 이 대화 본문·chatId·raw 를 이미 지웠고,
+    //  남는 건 시각·모듈·수치뿐이다.
+    //
+    // ★**await 한다**(fire-and-forget 금지). `void (async …)()` 로 띄우고 즉시 return
+    //  했더니 http-bridge 의 동기 요청/응답이 답보다 먼저 끝나 **`replyText: ""`** 였다
+    //  (실측 — 배포 직후 라이브에서 발각). out-of-band 의 목적은 *직렬 큐를 안 타는 것*
+    //  이지 *답을 안 기다리는 것*이 아니다. 이 작업은 512KB 상한 파일 읽기라 짧다.
+    //  (`/diagnose` 는 최대 2분이라 fire-and-forget 이 맞다 — 먼저 "진단 중" 을 보낸다.)
       await replyCommand(msg, text).catch(() => {});
     })();
-    return Promise.resolve();
   }
   if (msg.text.trim() === "/diagnose") {
     publishInboundEcho(msg);

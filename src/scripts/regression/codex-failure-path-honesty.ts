@@ -19,7 +19,7 @@
  *   TurnTimeoutError 경로로 되살아나 있었다 — 그 경로는 폴백을 명시 단락한다.
  */
 import { sourceHas, sourceOrder } from "./_wiring.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CODEX = "../../core/llm-runtime/adapters/openai-codex-oauth.ts";
 
@@ -31,8 +31,12 @@ export const check: RegressionCheck = {
     const out: Assertion[] = [];
 
     // ① 순서 — 히스토그램이 throw 보다 **먼저**. 순서가 뒤집히면 실패 때 침묵으로 되돌아간다.
+    // ★겨냥을 좁힌다: `codex-sse-incomplete` 만 보면 **주석**이 먼저 매칭되고(이 레포는
+    //  주석에 로그 태그를 관례적으로 인용한다), 조건을 `endKey === "completed"` 로 뒤집는
+    //  변이도 통과한다 — 둘 다 원래 증상("성공한 스트림에서만 찍힘")을 그대로 만든다.
     const order = await sourceOrder(CODEX, [
-      /codex-sse-incomplete/,
+      /if \(endKey === "none"\) \{/,
+      /console\.warn\(\s*`\[codex-sse-incomplete\]/,
       /throw new CodexBackendFailureError\(/,
     ]);
     out.push(
@@ -61,39 +65,148 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ③ response.incomplete = 비재시도. ④ sleep 취소 가능. ⑤ 사용자 대면 사유 분리.
-    const failure = await sourceHas(CODEX, [
-      // 결정적 실패는 retryable=false 로 태워 보낸다.
-      /f\.source !== "response\.incomplete"/,
-      /e\.retryable &&/,
-      // 백오프가 signal 을 받고, 깨면 재전송하지 않는다.
-      /await sleep\(wait, effectiveAc\.signal\)/,
-      /if \(effectiveAc\.signal\.aborted\) throw e;/,
-      // 사용자 답장엔 raw 를 뺀 판.
-      /\$\{e\.userWhy\}/,
-    ]);
+    // ★③④⑤ — **동작으로** 본다. 종전엔 소스 문자열만 봐서, `sleep` 을 abort 에서 안 깨게
+    //  바꿔도·`retryable` 을 항상 true 로 만들어도·`userWhy` 를 `why` 로 바꿔도 전부 초록
+    //  이었다(검토 변이 확인). `sleep` 은 10ms 안에 결판나는 순수 함수인데 grep 을 했다.
+    const { sleep } = await import(
+      "../../core/llm-runtime/adapters/openai-codex-oauth-auth.js"
+    );
+    const ac = new AbortController();
+    const t0 = Date.now();
+    const pending = sleep(5_000, ac.signal);
+    ac.abort();
+    // ★`within` 으로 감싼다 — sleep 이 abort 에서 **안 깨는** 변이를 넣으면 이 await 가
+    //  영영 안 끝나 **스위트가 통째로 멈춘다**(빨간불보다 나쁘다 — _framework.ts 주석).
+    //  실제로 그렇게 만들어봤고, 그래서 시한을 들려 보낸다.
+    const woke = await within(1_000, "abort 후 sleep 반환", pending);
+    const wokeMs = Date.now() - t0;
     out.push(
       assert(
-        "★결정적 실패는 재시도 안 하고, 백오프는 취소되고, 답장엔 백엔드 원문이 안 실린다",
-        failure.ok,
-        failure.ok ? "5개 확인" : `누락 ${failure.missing.join(" ")}`,
+        "★sleep 이 abort 에서 **실제로** 깬다(/stop 이 27초 백오프를 못 뚫던 것)",
+        "value" in woke && wokeMs < 500,
+        "timedOut" in woke ? woke.timedOut : `abort 후 ${wokeMs}ms 만에 반환(기대 <500)`,
+      ),
+    );
+    const t1 = Date.now();
+    await sleep(120);
+    const normalMs = Date.now() - t1;
+    out.push(
+      assert(
+        "signal 없이도 정상 대기한다(조기 resolve 로 백오프가 죽지 않는다)",
+        normalMs >= 100,
+        `${normalMs}ms 대기(기대 ≥100)`,
       ),
     );
 
-    // sleep 자체가 signal 을 실제로 소비하는지 — 시그니처만 받고 무시하면 무의미.
-    const sleepImpl = await sourceHas(
-      "../../core/llm-runtime/adapters/openai-codex-oauth-auth.ts",
-      [
-        /export const sleep = \(ms: number, signal\?: AbortSignal\)/,
-        /signal\?\.addEventListener\("abort", finish, \{ once: true \}\)/,
-        /clearTimeout\(timer\)/,
-      ],
+    // ★스톨 백오프가 **실제로 기다리는지** — 어댑터 제어흐름 그대로 재현한다.
+    //  이 분기는 `reason instanceof IdleTimeoutError` 일 때만 들어오고, signal 이 reason 을
+    //  가지려면 **이미 aborted** 여야 한다. 그래서 iteration signal 을 주면 항상 0ms 가 되어
+    //  문서화된 knob(CODEX_STALL_BACKOFF_MS, ADR 2026-07-02)이 말없이 죽는다.
+    const iterAc = new AbortController();
+    iterAc.abort(new Error("idle"));
+    const t2 = Date.now();
+    await sleep(150, iterAc.signal);
+    const deadMs = Date.now() - t2;
+    const turnAc = new AbortController(); // 턴 예산은 아직 살아있다
+    const t3 = Date.now();
+    await sleep(150, turnAc.signal);
+    const aliveMs = Date.now() - t3;
+    out.push(
+      assert(
+        "★스톨 백오프는 **턴 예산** signal 을 봐야 한다(iteration signal 이면 항상 0ms)",
+        deadMs < 50 && aliveMs >= 120,
+        `iteration signal=${deadMs}ms(죽음) / 턴 signal=${aliveMs}ms(살아있음)`,
+      ),
+    );
+    const stallWiring = await sourceHas(CODEX, [
+      /await sleep\(CODEX_STALL_BACKOFF_MS, input\.abortSignal\)/,
+    ]);
+    out.push(
+      assert(
+        "★그 signal 이 실제로 배선돼 있다",
+        stallWiring.ok,
+        stallWiring.ok ? "input.abortSignal 확인" : `누락 ${stallWiring.missing.join(" ")}`,
+      ),
+    );
+
+    // ③⑤ 배선 — 동작으로 못 보는 부분(throw 인자)은 **겨냥을 좁혀** 못박는다.
+    const failure = await sourceHas(CODEX, [
+      // 결정적 실패는 retryable=false 로. 생성 지점을 통째로 겨냥한다.
+      /throw new CodexBackendFailureError\(\s*why,\s*userWhy,\s*f\.source !== "response\.incomplete",\s*\);/,
+      // 클래스가 그 값을 **저장**한다(생성자에서 무시하면 위 겨냥이 무의미).
+      /readonly retryable: boolean,/,
+      /if \(\s*e\.retryable &&/,
+      // 백오프가 취소되고, 깨면 재전송하지 않는다.
+      /await sleep\(wait, effectiveAc\.signal\)/,
+      /if \(effectiveAc\.signal\.aborted\) throw e;/,
+      // 사용자 답장엔 raw 를 뺀 판 + retryable 별 실효 대책.
+      /\$\{e\.userWhy\}\$\{ranList\}\\n\\n\$\{codexFailureAdvice\(e\)\}/,
+    ]);
+    out.push(
+      assert(
+        "★결정적 실패는 재시도 안 하고, 답장엔 백엔드 원문이 안 실린다",
+        failure.ok,
+        failure.ok ? "6개 확인" : `누락 ${failure.missing.join(" ")}`,
+      ),
+    );
+
+    // ★안내가 자기모순이 아니다 — retryable=false 인데 "잠시 후 다시 시도" 를 권하던 것.
+    const { codexFailureAdviceForTest } = await import(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.js"
+    );
+    const adviceDeterministic = codexFailureAdviceForTest(
+      "response.incomplete/max_output_tokens",
+      false,
+    );
+    const adviceTransient = codexFailureAdviceForTest(
+      "response.failed/server_is_overloaded",
+      true,
     );
     out.push(
       assert(
-        "★sleep 이 abort 에서 실제로 깨고 타이머를 정리한다",
-        sleepImpl.ok,
-        sleepImpl.ok ? "3개 확인" : `누락 ${sleepImpl.missing.join(" ")}`,
+        "★재시도 무의미한 실패에 '잠시 후 다시 시도' 를 권하지 않는다",
+        !adviceDeterministic.includes("잠시 후 다시") &&
+          adviceDeterministic.includes("나눠") &&
+          adviceTransient.includes("잠시 후 다시"),
+        `결정적="${adviceDeterministic.slice(0, 40)}…" / 일시적="${adviceTransient.slice(0, 20)}…"`,
+      ),
+    );
+
+    // ★/diagnose 시한 — `PROBE_TIMEOUT_MS` 만 보면 이 파일에 4번 나와서(선언·메시지 2곳)
+    //  `setTimeout(() => {}, …)` 로 abort 를 떼어내도 초록이었다(검토 변이 확인).
+    //  ①실제로 abort 를 걸고 ②fetch 에 물리고 ③read 가 reject 될 때 결과로 돌려주는지.
+    const probe = await sourceHas("../../core/llm-runtime/codex-weight-probe.ts", [
+      /const killer = setTimeout\(\(\) => ac\.abort\(\), PROBE_TIMEOUT_MS\);/,
+      /signal: ac\.signal,/,
+      // ★abort 는 `reader.read()` 를 reject 시킨다 — try 로 감싸지 않으면 **이미 모은
+      //  진단 결과를 통째로 버린다**(LEAN 성공/HEAVY 무응답 이라는 유일한 신호).
+      /\} catch \(e\) \{\s*clearTimeout\(killer\);\s*\/\/ 시한이면 그 사실을 \*\*결과로\*\* 돌려준다/,
+    ]);
+    out.push(
+      assert(
+        "★/diagnose 시한이 실제로 abort 를 걸고, 끊겨도 부분 결과를 살린다",
+        probe.ok,
+        probe.ok ? "3개 확인" : `누락 ${probe.missing.join(" ")}`,
+      ),
+    );
+
+    // ★진단 코드가 두 벌이 아니다 — 셸 스크립트가 자기 send() 사본을 갖고 있어서
+    //  `/diagnose` 에만 시한을 넣었을 때 `npm run diagnose:codex` 는 20분 매달림이
+    //  그대로였다. 커밋 메시지엔 이미 "사본 0" 이라 적혀 있었다(거짓).
+    const shellThin = await sourceHas("../../scripts/diagnose-codex.ts", [
+      /import \{ runCodexWeightProbe \}/,
+      /await runCodexWeightProbe\(\)/,
+    ]);
+    const shellDup = await sourceHas("../../scripts/diagnose-codex.ts", [/CODEX_BASE_URL/]);
+    out.push(
+      assert(
+        "★셸 진단이 본체 함수를 쓴다(자기 HTTP 사본을 갖지 않는다)",
+        shellThin.ok && !shellDup.ok,
+        shellThin.ok && !shellDup.ok
+          ? "껍데기 확인"
+          : shellDup.ok
+            ? "자기 요청 사본이 되살아났다"
+            : `누락 ${shellThin.missing.join(" ")}`,
       ),
     );
 

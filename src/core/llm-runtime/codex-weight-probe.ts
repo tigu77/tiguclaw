@@ -143,41 +143,57 @@ const send = async (
   let failure = "";
   let completed = false;
   let text = "";
-  while (true) {
-    if (ac.signal.aborted) {
-      clearTimeout(killer);
-      return {
-        ok: false,
-        detail: `시한 초과(${PROBE_TIMEOUT_MS / 1000}s) — 스트림이 안 끝남`,
-        ms: Date.now() - t0,
-      };
-    }
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const parts = buf.split("\n\n");
-    buf = parts.pop() ?? "";
-    for (const block of parts) {
-      for (const line of block.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const d = line.slice(5).trim();
-        if (d === "" || d === "[DONE]") continue;
-        let ev: Record<string, unknown>;
-        try {
-          ev = JSON.parse(d) as Record<string, unknown>;
-        } catch {
-          continue;
-        }
-        const t = typeof ev.type === "string" ? ev.type : "";
-        if (t === "response.output_text.delta" && typeof ev.delta === "string") {
-          text += ev.delta;
-        }
-        if (t === "response.completed") completed = true;
-        if ((t === "error" || t === "response.failed") && failure === "") {
-          failure = JSON.stringify(ev).slice(0, 220);
+  // ★abort 는 `reader.read()` 를 **reject** 시킨다 — 루프 상단의 `ac.signal.aborted` 검사만
+  //  두면 그 자리에 영영 못 온다(도달 불가). 실측으로 확인했다: 200 으로 열고 침묵하는
+  //  서버 + 1s 시한 → `reader.read() 가 throw: AbortError`.
+  //  그래서 try 로 감싼다. 감싸지 않으면 예외가 프로브 밖으로 나가 **이미 모은 결과를
+  //  통째로 버린다** — LEAN #1 ✅ 5s / HEAVY #1 무응답 이라는 판정의 **유일한 신호**를
+  //  정확히 그 순간에 잃는다(20분 매달리는 대신 30초 만에 아무것도 없이 죽는 것).
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const block of parts) {
+        for (const line of block.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const d = line.slice(5).trim();
+          if (d === "" || d === "[DONE]") continue;
+          let ev: Record<string, unknown>;
+          try {
+            ev = JSON.parse(d) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          const t = typeof ev.type === "string" ? ev.type : "";
+          if (t === "response.output_text.delta" && typeof ev.delta === "string") {
+            text += ev.delta;
+          }
+          if (t === "response.completed") completed = true;
+          if ((t === "error" || t === "response.failed") && failure === "") {
+            failure = JSON.stringify(ev).slice(0, 220);
+          }
         }
       }
     }
+  } catch (e) {
+    clearTimeout(killer);
+    // 시한이면 그 사실을 **결과로** 돌려준다(throw 하지 않는다 — 위 주석 참조).
+    if (ac.signal.aborted) {
+      return {
+        ok: false,
+        detail: `시한 초과(${PROBE_TIMEOUT_MS / 1000}s) — 스트림이 안 끝남` +
+          `${text !== "" ? `, 그때까지 받은 텍스트 ${text.length}자` : ", 텍스트 0자"}`,
+        ms: Date.now() - t0,
+      };
+    }
+    return {
+      ok: false,
+      detail: `스트림 읽기 실패: ${e instanceof Error ? e.message : String(e)}`,
+      ms: Date.now() - t0,
+    };
   }
   clearTimeout(killer);
   const ms = Date.now() - t0;
@@ -192,7 +208,12 @@ export interface WeightProbeReport {
   verdict: string;
 }
 
-/** A/B 본체 — 셸 스크립트와 슬래시 명령이 같은 함수를 쓴다(판정 기준 사본 0). */
+/**
+ * A/B 본체. ★주석이 거짓이었다(2026-07-31 검토): "셸 스크립트와 슬래시 명령이 같은 함수를
+ * 쓴다(판정 기준 사본 0)" 라고 적혀 있었지만, `src/scripts/diagnose-codex.ts` 는 자기
+ * `send()` 사본을 갖고 있었고 이 함수를 부르지 않았다 — 그래서 시한을 여기만 넣었을 때
+ * 셸 경로는 20분 매달림이 그대로였다. 지금은 **정말로** 이 함수 하나다.
+ */
 export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   const { getPaths } = await import("../paths.js");
   const home = getPaths().home;

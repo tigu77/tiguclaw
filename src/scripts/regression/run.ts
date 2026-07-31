@@ -69,6 +69,18 @@ const main = async (): Promise<void> => {
     checks.push(mod.check);
   }
   console.log(`  (검사 파일 ${checks.length}개 자동 발견 — 등록 누락 구조적 불가)`);
+  // ★하한 — **그물이 통째로 사라져도 초록이던 것**(2026-07-31 검토 지적).
+  //  glob 은 `*.ts` 를 찾는데 `dist/` 엔 `.js` 만 있다 → 배포본에서 돌리면 검사 0개로
+  //  `✅ 통과 — 0건`, exit 0. "CI 가 돈다" 는 말이 "아무것도 안 본다" 와 구분이 안 됐다.
+  //  개수를 손으로 적으면 그게 또 드리프트하므로 **"0 이면 안 된다"** 만 못박는다.
+  if (checks.length === 0) {
+    console.error(
+      "🔴 검사 파일을 하나도 못 찾았다 — 스위트가 안 돈 것이지 통과한 게 아니다.\n" +
+        `   (탐색 위치: ${dir.pathname})  ★소스에서 실행하세요: npm run test:regression`,
+    );
+    process.exitCode = 1;
+    return;
+  }
 
 
 

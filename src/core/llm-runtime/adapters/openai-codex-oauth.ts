@@ -184,6 +184,30 @@ class CodexBackendFailureError extends Error {
  */
 const CODEX_BACKEND_FAIL_BACKOFF_MS = [1_000, 3_000, 8_000, 15_000];
 
+/**
+ * 백엔드 실패별 **실효 대책**. 재시도가 무의미한 실패에 "다시 시도" 를 권하지 않는다.
+ * `max_output_tokens` = 모델 내장 출력 상한을 reasoning 이 다 태운 것 → 요청을 쪼개는 게
+ * 유일한 대책인데 종전엔 그 말이 어디에도 안 나갔다(검토 지적 2026-07-31).
+ */
+/** 회귀 검사용 — 안내 문구를 **동작으로** 볼 수 있게(에러 객체 없이 두 축만 준다). */
+export const codexFailureAdviceForTest = (userWhy: string, retryable: boolean): string =>
+  codexFailureAdvice({ userWhy, retryable } as CodexBackendFailureError);
+
+const codexFailureAdvice = (e: CodexBackendFailureError): string => {
+  if (e.retryable) return "잠시 후 다시 시도해 주세요.";
+  if (e.userWhy.includes("max_output_tokens")) {
+    return (
+      "모델이 출력 한도를 다 써서 끊겼습니다 — 같은 요청을 다시 보내도 같은 지점에서 멈춥니다. " +
+      "작업을 더 작은 단위로 나눠 요청해 주세요."
+    );
+  }
+  if (e.userWhy.includes("content_filter")) {
+    return "콘텐츠 필터에 걸렸습니다 — 같은 요청은 계속 막히므로 표현을 바꿔 다시 물어봐 주세요.";
+  }
+  return "같은 요청은 다시 보내도 같은 결과라, 요청을 바꿔서 시도해 주세요.";
+};
+
+
 const CODEX_FETCH_MAX_RETRIES = 2;
 const CODEX_FETCH_BACKOFF_MS = [500, 1500];
 const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -1501,7 +1525,17 @@ export const runOpenAiCodex = async (
             /* 관측 발행 실패는 재개를 막지 않는다. */
           }
           // progressTimer.done()·deltaStream.flush() 는 아래 finally 가 continue 시에도 수행.
-          await sleep(CODEX_STALL_BACKOFF_MS, effectiveAc.signal);
+          // ★signal 은 `input.abortSignal`(턴 예산)이다. `effectiveAc.signal` 을 주면
+          //  **항상 0ms** 가 된다 — 이 분기는 `reason instanceof IdleTimeoutError` 일 때만
+          //  들어오는데, signal 이 reason 을 가지려면 이미 aborted 여야 하기 때문이다.
+          //  그래서 문서화된 knob(`CODEX_STALL_BACKOFF_MS`, ADR 2026-07-02)이 말없이
+          //  no-op 이 됐었다 — 과부하 경로의 유일한 회복 유예가 사라진 채로.
+          await sleep(CODEX_STALL_BACKOFF_MS, input.abortSignal);
+          // 대기 중 /stop·턴 타임아웃이 왔으면 재개하지 않는다. (지역 변수로 읽는 이유:
+          //  위쪽 게이트가 이 값을 좁혀놔서 tsc 가 await 뒤 재확인을 죽은 코드로 본다 —
+          //  narrowing 은 await 를 건너 유효하지 않은데 컴파일러는 그걸 모른다.)
+          const turnSignal: AbortSignal | undefined = input.abortSignal;
+          if (turnSignal?.aborted === true) throw reason ?? turnSignal.reason;
           continue; // 같은 body 로 iteration 재시도.
         }
         if (
@@ -1995,7 +2029,10 @@ export const runOpenAiCodex = async (
       finalText =
         e instanceof CodexBackendFailureError
           ? // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
-            `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n잠시 후 다시 시도해 주세요.`
+            //  ★안내는 retryable 로 갈린다. 종전엔 무조건 "잠시 후 다시 시도" 였는데,
+            //   `retryable=false` 의 근거가 바로 "같은 요청은 같은 벽" 이라 **자기모순**이었다
+            //   (방금 무의미하다고 판정한 행동을 사용자에게 권함).
+            `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`
           : `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
     } else {
       throw e; // 부작용 없음 or 일반 에러 → 정직 throw (풀 폴백 / 정직 에러).

@@ -20,7 +20,7 @@ import {
 } from "../../core/prompt-assembly.js";
 import { formatSkillIndex } from "../../core/llm-runtime/capabilities/skill-registry.js";
 import { recordSkillInvocation } from "../../store/skill-usage.js";
-import { sourceHas } from "./_wiring.js";
+import { sourceHas, sourceHasCount } from "./_wiring.js";
 import {
   assert,
   assertIsolated,
@@ -230,12 +230,35 @@ export const check: RegressionCheck = {
         [
           /splitSystemContext\(\{/,
           /composeSystemChannel\(SYSTEM_PROMPT, stableContext\)/,
-          /^\s+instructions,$/m,
+          // ★`/^\s+instructions,$/m` 만 보면 이 파일에서 **2회 매칭**된다(주 Agent +
+          //  도구 미지원 폴백 Agent). 주 Agent 를 `instructions: SYSTEM_PROMPT` 로 죽여도
+          //  폴백이 패턴을 채워 초록이었다 — codex·claude 는 같은 변이에 빨간불인데
+          //  **openai 만 뚫려 있었다**(3어댑터 비대칭, 검토 변이 확인).
+          // (주/폴백 Agent 두 자리는 **완전히 같은 세 줄**이라 정규식으로 못 가른다.
+          //  아래 openaiAgentSites 가 개수로 못박는다.)
           /assembleUserPrompt\(volatileParts, userTurnParts\)/,
           ...OVERRIDE_GUARDS,
         ],
       ],
     ];
+    // ★openai 어댑터는 Agent 를 **두 번** 만든다(주 + 도구 미지원 폴백). 두 자리가 글자
+    //  그대로 같아서 정규식으로 못 가르고, 그래서 주 Agent 를 `instructions: SYSTEM_PROMPT`
+    //  로 죽여도 폴백이 패턴을 채워 **초록**이었다 — codex·claude 는 같은 변이에 빨간불인데
+    //  openai 만 뚫려 있었다(3어댑터 비대칭, 검토 변이 확인). 개수로 못박는다:
+    //  둘 중 어느 쪽을 죽여도 2 미만이 되어 걸린다.
+    const openaiAgentSites = await sourceHasCount(
+      "../../core/llm-runtime/adapters/openai-agents-sdk.ts",
+      /name: "tiguclaw-spike",\s*instructions,\s*model: modelArg,/,
+      2,
+    );
+    out.push(
+      assert(
+        "★openai 의 Agent 두 자리 **모두** 시스템 채널을 받는다(폴백만 남아도 걸린다)",
+        openaiAgentSites.ok,
+        `${openaiAgentSites.found}자리 (기대 2 — 주 Agent + 도구 미지원 폴백)`,
+      ),
+    );
+
     for (const [name, rel, patterns] of wirings) {
       const { ok, missing } = await sourceHas(rel, patterns);
       out.push(

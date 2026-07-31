@@ -20,7 +20,12 @@ export interface DispatchInput {
 }
 
 export const dispatch = async (input: DispatchInput): Promise<void> => {
-  await deliverOutbound({
+  // ★미배달이면 **throw 한다** — 호출자(runner)가 성공으로 기록하지 않게.
+  //  종전엔 deliverOutbound 가 조용히 return 해서 `recordFiring(ok:true)` 가 찍혔다:
+  //  매일 아침 LLM 을 태워 리포트를 만들고, 아무 데도 안 보내고, DB 엔 ok, 자가 점검은
+  //  `last_status='error'` 만 보므로 **영영 안 잡혔다**(2026-07-31 전체검토 P1).
+  //  여기서 throw 해도 안전하다 — runner 가 try/catch 로 감싸 `ok:false` 로 기록한다.
+  const r = await deliverOutbound({
     channel: input.destChannel,
     target: input.destTarget,
     text: input.text,
@@ -28,4 +33,7 @@ export const dispatch = async (input: DispatchInput): Promise<void> => {
     label: `scheduler:${input.scheduleId}`,
     observeThreadKey: input.sessionThreadKey,
   });
+  if (!r.delivered) {
+    throw new Error(`스케줄 발송 실패 — ${r.reason ?? "미배달"}`);
+  }
 };

@@ -208,7 +208,14 @@ const AUDIO_EXT_BY_MIME: Record<string, string> = {
 // 서빙용 확장자→content-type (인바운드 첨부 파일 렌더). 미지 확장자는 octet-stream.
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
-  webp: "image/webp", svg: "image/svg+xml", pdf: "application/pdf",
+  webp: "image/webp", pdf: "application/pdf",
+  // ★svg 는 **의도적으로 뺐다** (2026-07-31 전체검토 P0). SVG 는 스크립트를 담을 수 있고,
+  //  `image/svg+xml` 로 inline 서빙하면 top-level 이동 시 **같은 오리진에서 실행**된다
+  //  (실증: `<svg><script>fetch('/pwned')</script></svg>` 가 서버 요청을 냈다).
+  //  첨부 URL 은 인증을 `?token=` 으로 싣기 때문에, 실행되는 순간 `location.search` 로
+  //  브리지 토큰을 읽어 API 전부를 부를 수 있다. 심는 경로는 write 토큰뿐 아니라
+  //  **프롬프트 인젝션으로 비서가 send_file 한 경우·텔레그램 인바운드 첨부**도 같다.
+  //  → 미지 확장자로 떨어져 `application/octet-stream` + 아래 nosniff/attachment 로 닫힌다.
   txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8",
   json: "application/json; charset=utf-8", csv: "text/csv; charset=utf-8",
 };
@@ -1950,8 +1957,19 @@ class HttpBridge implements Channel, Observer {
           return;
         }
         const ext = path.extname(abs).replace(/^\./, "").toLowerCase();
+        const ctype = CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream";
+        // ★inline 실행 차단 3종 (2026-07-31 전체검토 P0):
+        //  ①nosniff — 브라우저가 내용을 보고 타입을 추측(sniff)해 HTML/SVG 로 실행하는 것 차단.
+        //  ②알려진 안전 타입이 아니면 `attachment` — 다운로드로만 열리고 렌더되지 않는다.
+        //  ③CSP sandbox — 혹시 렌더돼도 스크립트·같은 오리진 권한이 없다.
+        const inlineSafe = CONTENT_TYPE_BY_EXT[ext] !== undefined;
         res.writeHead(200, {
-          "Content-Type": CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream",
+          "Content-Type": ctype,
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:",
+          ...(inlineSafe
+            ? {}
+            : { "Content-Disposition": `attachment; filename="${sanitizeFilename(path.basename(abs))}"` }),
           "Cache-Control": "private, max-age=86400",
           "Content-Length": buf.length,
         });

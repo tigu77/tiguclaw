@@ -240,7 +240,39 @@ export const findEndpoint = async (
  *  - `$BODY`/`$ARGUMENTS`(alias) → raw body 문자열, `$QUERY` → query string 치환(§3).
  *    단순 문자열 replaceAll — JSON path 추출·타입 강제 0(E-I3, 후속 YAGNI).
  *  - read 실패 시 undefined.
+ *
+ * ★`$QUERY` 에서 **인증 파라미터는 잘라낸다** (2026-07-31 전체검토 P0, 실증됨).
+ *  이 배포는 EventSource 가 헤더를 못 실어서 `?token=` 을 1급 인증 수단으로 쓴다. 그런데
+ *  `$QUERY` 가 `url.search` 를 통째로 넘겨서, 엔드포인트를 호출한 사용자의 **write 토큰**이
+ *  ①프롬프트로 들어가 외부 LLM 제공자에게 송신되고 ②`endpoint.call` 이벤트에 실려
+ *  **read 토큰 청취자**에게 흘러가고 ③`transcripts` 에 평문으로 영구 적재됐다(FTS 색인까지).
+ *  실증: read 토큰만으로 SSE 를 듣다가 write 토큰을 획득해 `POST /messages` 200 성공.
+ *  `redactSecrets` 로는 못 막는다 — 그건 **env 값 매칭**인데 이 토큰은 `bridge_tokens` DB
+ *  발급본이라 env 에 없다(즉 role 계층이 스스로 찍어낸 자격증명만 열려 있었다).
+ *  → 프롬프트에 인증 값이 **애초에 안 들어가게** 한다(사후 redact 가 아니라 미생성).
  */
+const AUTH_QUERY_PARAMS = new Set(["token", "access_token", "api_key", "apikey", "key"]);
+
+/** 인증 파라미터를 뺀 query string. 나머지 파라미터·순서는 보존한다. */
+export const stripAuthParams = (query: string): string => {
+  const q = query.startsWith("?") ? query.slice(1) : query;
+  if (q === "") return query;
+  const kept: string[] = [];
+  let removed = 0;
+  for (const pair of q.split("&")) {
+    if (pair === "") continue;
+    const name = decodeURIComponent(pair.split("=")[0] ?? "").toLowerCase();
+    if (AUTH_QUERY_PARAMS.has(name)) {
+      removed += 1;
+      continue;
+    }
+    kept.push(pair);
+  }
+  // 잘렸다는 사실은 남긴다 — 조용히 지우면 "왜 파라미터가 없지" 로 오진한다.
+  const suffix = removed > 0 ? `${kept.length > 0 ? "&" : ""}__auth_removed=${removed}` : "";
+  const body = kept.join("&") + suffix;
+  return body === "" ? "" : `?${body}`;
+};
 export const expandEndpoint = async (
   ep: Endpoint,
   params: { body: string; query: string },
@@ -255,7 +287,7 @@ export const expandEndpoint = async (
   return body
     .replaceAll("$BODY", params.body)
     .replaceAll("$ARGUMENTS", params.body)
-    .replaceAll("$QUERY", params.query);
+    .replaceAll("$QUERY", stripAuthParams(params.query));
 };
 
 /**

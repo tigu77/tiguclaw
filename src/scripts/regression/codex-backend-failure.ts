@@ -91,14 +91,20 @@ export const check: RegressionCheck = {
     const guard = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [
-        /\(e instanceof IdleTimeoutError \|\| e instanceof CodexBackendFailureError\) &&\s*\n\s*sideEffectExecuted/,
+        // ★진입 조건이 **부작용 유무**여야 한다 — 에러 이름 열거가 아니라.
+        //  두 번 같은 방식으로 틀렸다: IdleTimeoutError 만 → 07-30 에 손으로 하나 추가 →
+        //  형제인 HTTP-status 실패(502·body null·전송 소진, 전부 plain Error)는 여전히
+        //  비껴갔다(2026-07-31 검토 확인). 이름을 늘리지 말고 조건을 뒤집는다.
+        /if \(sideEffectExecuted\) \{/,
       ],
     );
     out.push(
       assert(
-        "★백엔드 실패도 부작용 가드에 걸린다(폴백 재실행 중복 방지)",
+        "★부작용이 났으면 **에러 종류 무관** throw 하지 않는다(폴백 재실행 중복 방지)",
         guard.ok,
-        guard.ok ? "가드 확인" : "IdleTimeout 에만 걸려 있다 — 폴백이 도구를 중복 실행한다",
+        guard.ok
+          ? "부작용 유무로 진입 판정"
+          : "에러 이름 열거로 되돌아갔다 — 목록에 없는 실패가 폴백을 타 도구를 중복 실행한다",
       ),
     );
 

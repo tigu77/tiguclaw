@@ -712,6 +712,47 @@ export const createJobAbort = (
  *
  * @returns true=취소 신호 발사(running 잡 존재), false=대상이 없거나 이미 종료.
  */
+/**
+ * 이 잡의 **직계 자식**들 — threadKey 규약(`worker:<부모jobId>` / `agent:<부모jobId>`)이
+ * 곧 부모 좌표다(resolveOwnerThreadKey 와 같은 규칙, 이름 열거 0).
+ */
+const directChildJobs = (parentJobId: string): WorkerJobRecord[] => {
+  const out: WorkerJobRecord[] = [];
+  for (const j of jobs.values()) {
+    const m = /^(?:worker|agent):(.+)$/.exec(j.threadKey);
+    if (m !== null && m[1] === parentJobId) out.push(j);
+  }
+  return out;
+};
+
+/**
+ * 취소를 **자손 전체로** 전파한다 (2026-07-31 전체검토 P1).
+ *
+ * ★사고: `cancelJob` 이 그 jobId 의 훅 **하나만** 불렀다. 실측 재현 —
+ *   `cancelJob(parent)=true / parent=cancelled / child=running / child abort 훅 호출 false`
+ *  매니저를 중지시켜도 그 밑 서브에이전트가 자기 상한(기본 2시간)까지 모델을 계속 태우고,
+ *  결과는 부모가 이미 abort 돼 폐기된다(돈만 나감). 더 나쁜 건 프롬프트의
+ *  "진행 중인 백그라운드 작업" 줄이 **취소된 작업을 계속 진행 중이라고 메인에게 보고**한 것.
+ *  `listLiveChildJobs`·`jobBelongsToSession` 라는 소속 판정이 이미 있는데 취소만 안 썼다.
+ *
+ * 깊이 우선으로 자식부터 취소한다(부모가 먼저 죽으면 자식이 고아가 된다). `seen` 으로
+ * 순환을 닫는다 — threadKey 가 손상돼 자기참조가 생겨도 무한 재귀하지 않는다.
+ */
+const cancelDescendants = (parentJobId: string, seen: Set<string>): number => {
+  let n = 0;
+  for (const child of directChildJobs(parentJobId)) {
+    if (seen.has(child.jobId)) continue;
+    seen.add(child.jobId);
+    n += cancelDescendants(child.jobId, seen);
+    if (child.status !== "running") continue;
+    markCancelled(child.jobId, "상위 작업이 취소됨");
+    const h = cancelHooks.get(child.jobId);
+    if (h !== undefined) h();
+    n += 1;
+  }
+  return n;
+};
+
 export const cancelJob = (jobId: string): boolean => {
   const job = jobs.get(jobId);
   if (job === undefined || job.status !== "running") return false;
@@ -726,9 +767,16 @@ export const cancelJob = (jobId: string): boolean => {
   // 취소 상태를 먼저 마킹 — 이후 abort 가 runRegionA 를 reject 시키면 runner 의 catch 가
   // onWorkerComplete(error) 를 부르는데, 그 시점엔 이미 status="cancelled" 라 통지 문구가
   // 취소로 나간다(타임아웃과 구분). markCancelled 는 멱등(재호출 무해).
+  // ★자식부터(깊이 우선) — 부모를 먼저 죽이면 자식이 고아가 된다.
+  const cancelledChildren = cancelDescendants(jobId, new Set([jobId]));
   markCancelled(jobId, "사용자 요청으로 취소됨");
   const hook = cancelHooks.get(jobId);
   if (hook !== undefined) hook();
+  if (cancelledChildren > 0) {
+    console.log(
+      `worker-jobs: '${job.label}' 취소 — 하위 작업 ${cancelledChildren}건 함께 중단(전파)`,
+    );
+  }
   return true;
 };
 

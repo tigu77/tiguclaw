@@ -2013,29 +2013,43 @@ export const runOpenAiCodex = async (
     if (e instanceof TurnTimeoutError) {
       throw e;
     }
-    if (
-      (e instanceof IdleTimeoutError || e instanceof CodexBackendFailureError) &&
-      sideEffectExecuted
-    ) {
-      // ★CodexBackendFailureError 도 같은 가드가 필요하다 (2026-07-30 — 내가 "바깥 catch 가
-      //  이미 부작용 판단을 한다"고 단언했는데 **틀렸다**. 이 분기는 IdleTimeoutError 에만
-      //  걸려 있었고, 그래서 백엔드 실패는 sideEffect=true 여도 throw 되어 폴백 모델이 턴을
-      //  재실행 → 이미 실행된 memory/todo/schedule 이 **중복 적용**될 수 있었다.
-      //  실측(회사 17:59)에선 체인에 codex 하나뿐이라 드러나지 않았을 뿐이다.)
+    // ★진입 조건은 **부작용 유무**다 — 에러 종류가 아니다 (2026-07-31 전체검토 P0).
+    //
+    //  두 번 같은 방식으로 틀렸다. 처음엔 `IdleTimeoutError` 만 열거했고, 07-30 에
+    //  `CodexBackendFailureError` 를 **손으로 하나 더 추가**했다. 그런데 형제인
+    //  **HTTP-status 실패**(`Codex backend 호출 실패: 502`·`response.body 가 null`·
+    //  전송 재시도 소진)는 전부 plain `Error` 라 여전히 비껴갔다 — 같은 파일 주석이
+    //  스스로 "백엔드 200-스트림 실패는 HTTP 5xx 와 **같은 부류**" 라고 적어놓고도.
+    //
+    //  실패 시나리오(검토자 확인): 일정 3건 + 메모를 이미 등록한 뒤 iteration 4 의 POST 가
+    //  502 → plain Error throw → `isModelRejected` 비매칭이지만 `runPool` 은 취소류만
+    //  단락하므로 **다음 spec(claude)이 턴 전체를 재실행** → 일정·메모가 **한 번 더** 등록.
+    //  사용자에겐 정상 응답으로 보인다.
+    //
+    //  → 이름 목록을 늘리는 대신 조건을 뒤집는다: **부작용이 났으면 throw 하지 않는다.**
+    //   에러 종류는 *문구를 고르는 데*만 쓴다. 취소류(Turn/Worker/User)는 위에서 이미
+    //   단락했으므로 여기 안 온다.
+    if (sideEffectExecuted) {
       const ranList =
         executedToolNames.size > 0
           ? `\n\n이번 턴에 실행한 도구: ${[...executedToolNames].join(", ")}.`
           : "";
-      finalText =
-        e instanceof CodexBackendFailureError
-          ? // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
-            //  ★안내는 retryable 로 갈린다. 종전엔 무조건 "잠시 후 다시 시도" 였는데,
-            //   `retryable=false` 의 근거가 바로 "같은 요청은 같은 벽" 이라 **자기모순**이었다
-            //   (방금 무의미하다고 판정한 행동을 사용자에게 권함).
-            `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`
-          : `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+      // 문구만 에러 종류로 고른다(진입 판정에는 안 쓴다).
+      if (e instanceof CodexBackendFailureError) {
+        // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
+        //  안내는 retryable 로 갈린다 — `retryable=false` 의 근거가 "같은 요청은 같은 벽"
+        //  이라, 거기에 "잠시 후 다시 시도" 를 권하면 자기모순이다.
+        finalText = `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`;
+      } else if (e instanceof IdleTimeoutError) {
+        finalText = `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+      } else {
+        // HTTP 실패·전송 실패·그 밖의 일반 에러. 종전엔 이 갈래가 통째로 throw 로 빠져
+        // 폴백이 부작용을 중복 실행했다.
+        const detail = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+        finalText = `요청 처리 중 오류가 발생했습니다 — ${detail}${ranList}\n\n잠시 후 다시 시도해 주세요.`;
+      }
     } else {
-      throw e; // 부작용 없음 or 일반 에러 → 정직 throw (풀 폴백 / 정직 에러).
+      throw e; // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).
     }
   } finally {
     // 생성한 모든 bridge 일괄 close (in-memory transport 누수 0). 개별 try 로 격리 —

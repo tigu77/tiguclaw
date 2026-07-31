@@ -210,9 +210,38 @@ export const killExternalMcpChildrenSync = (): number => {
   return killed;
 };
 
+/**
+ * 외부 MCP 자식에게 넘길 env (2026-07-31 전체검토 P0).
+ *
+ * ★종전엔 `process.env` 를 **통째로** 넘겼다. MCP SDK 는 이 필드를 주면 자기 안전
+ *  기본값을 **통째로 대체**한다(`stdio.js`: `{...getDefaultEnvironment(), ...serverParams.env}`,
+ *  기본값은 HOME·LOGNAME·PATH·SHELL·TERM·USER 6개뿐이고 주석에 "deemed safe to inherit").
+ *  즉 SDK 가 일부러 막아둔 걸 우리가 되돌렸다. 실측(실제 자식 spawn 후 env 덤프):
+ *  ANTHROPIC_API_KEY · CLAUDE_CODE_OAUTH_TOKEN · OPENAI_API_KEY ·
+ *  OPENAI_CODEX_OAUTH_TOKEN · OPENAI_CODEX_OAUTH_REFRESH · TELEGRAM_BOT_TOKEN ·
+ *  HTTP_BRIDGE_TOKEN · GOOGLE_GENERATIVE_AI_API_KEY — 8종이 그대로 상속됐다.
+ *
+ *  `add_mcp_server` 는 **비서가 스스로 쓰라고 만든 도구**다. 사용자가 검토하지 않은 npm
+ *  패키지가 그 자리에 오는 게 정상 경로이고, 악성/침해 패키지 하나면 계정 3종이 넘어간다.
+ *
+ * 정책: **allowlist 가 아니라 판정**이다 — 시크릿으로 보이는 키를 뺀다(이름 열거는
+ * 드리프트한다). 서버가 **명시적으로 요구한** env(`config.env`)는 그대로 넘긴다 —
+ * 그건 사용자가 mcp.json 에 직접 적은 것이라 의도된 위임이다.
+ */
+/**
+ * 시크릿 판정 — `outbound-sanitize` 의 `SECRET_KEY_NAME_RE` 와 같은 기준(이름 열거 금지).
+ * 두 곳에 같은 판정이 생기지 않게 의미를 맞춰 둔다.
+ */
+const SECRET_ENV_KEY_RE = /KEY|TOKEN|SECRET|REFRESH|PASSWORD|OAUTH|CREDENTIAL/i;
+
 const buildEnv = (extra?: Record<string, string>): Record<string, string> => {
   const base: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) base[k] = v;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (SECRET_ENV_KEY_RE.test(k)) continue; // 시크릿류는 상속시키지 않는다.
+    base[k] = v;
+  }
+  // 명시 지정분은 그대로(사용자가 mcp.json 에 적은 의도된 위임 — 시크릿이어도 통과).
   return { ...base, ...(extra ?? {}) };
 };
 

@@ -234,7 +234,7 @@
         if (countEl) countEl.textContent = String(projectsCache.length);
         grid.innerHTML = "";
         if (projectsCache.length === 0) {
-          grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. ' + assistantName + ' 에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
+          grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. ' + escHtml(assistantName) + ' 에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
           return;
         }
         // 모듈/능력 뷰와 동형 master-detail 리스트(provider-item) — 카드 그리드 폐기(2026-07-18

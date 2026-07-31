@@ -270,12 +270,12 @@
         for (const [label, value, hint] of metricData) {
           const card = document.createElement("div");
           card.className = "summary-card";
-          card.innerHTML = '<div class="summary-label">' + label + '</div><div class="summary-value">' + value + '</div><div class="summary-hint">' + hint + '</div>';
+          card.innerHTML = '<div class="summary-label">' + escHtml(label) + '</div><div class="summary-value">' + escHtml(value) + '</div><div class="summary-hint">' + escHtml(hint) + '</div>';
           summaryGrid.appendChild(card);
         }
         const head = document.createElement("div");
         head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent ' + status + '"></div><div><div class="detail-name">' + (provider.name || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + (provider.summary || "모듈 상태") + '</div></div><span class="detail-kind">' + kindLabel(provider.kind) + '</span><span class="detail-status ' + status + '">' + statusLabel(status) + '</span>';
+        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(provider.name || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(provider.summary || "모듈 상태") + '</div></div><span class="detail-kind">' + escHtml(kindLabel(provider.kind)) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(statusLabel(status)) + '</span>';
         shell.appendChild(head);
         // 모듈 활성/비활성 토글(P4a-2) — moduleName 이 해석된(=인벤토리에서 이름이 발견된) 항목만.
         // 코어 프로바이더(daemon/memory/schedule/plugin-registry)는 moduleName 이 없어 토글이

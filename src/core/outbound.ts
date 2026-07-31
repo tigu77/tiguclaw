@@ -17,6 +17,7 @@ import type { EventBus } from "./eventbus.js";
 import { getEventBus } from "./eventbus.js";
 import {
   getChannelOutbound,
+  listOutboundChannels,
   threadKeyForObservation,
 } from "./channel-outbound.js";
 
@@ -91,7 +92,20 @@ const publishOut = (
  * 전송 실패(예: telegram target 없음)는 채널 `deliver` 가 throw — 호출자가 판단(부팅 통지
  * 등은 best-effort catch, 스케줄러는 last_status 에 반영). 관측 발행만 실패하는 건 삼켜진다.
  */
-export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
+/**
+ * 배달 결과 — 호출자가 성공/실패를 **알 수 있어야** 한다 (2026-07-31 전체검토 P1).
+ * throw 대신 반환값인 이유: 호출부 5곳이 `void deliverOutbound(...)` 로 띄우고 있어
+ * throw 로 바꾸면 unhandled rejection → crash-fast 가 된다(고치려던 것보다 큰 사고).
+ */
+export interface OutboundResult {
+  readonly delivered: boolean;
+  /** 미배달 사유(사람이 읽는 한 줄). delivered=true 면 undefined. */
+  readonly reason?: string;
+}
+
+export const deliverOutbound = async (
+  input: OutboundInput,
+): Promise<OutboundResult> => {
   const { channel, target, text, label } = input;
   const bus = input.bus ?? getEventBus();
   const observe = input.observe !== false; // 기본 true; false 만 관측 억제(물리 발송 불변).
@@ -99,13 +113,21 @@ export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
 
   const o = getChannelOutbound(channel);
   if (o === undefined) {
-    // 미등록 채널 — 사일런트 실패 회피(정직 경고). 실제 전달 수단 없음(현행 switch default).
+    // ★미등록 채널 = **배달 실패**다. 종전엔 warn 만 찍고 조용히 return 했고, 호출한
+    //  스케줄러는 그걸 성공으로 보고 `recordFiring(ok:true)` + `scheduler.fired{ok:true}`
+    //  를 남겼다 — 매일 아침 LLM 을 태워 리포트를 만들고, 아무 데도 안 보내고, DB 엔 ok,
+    //  대시보드엔 아무것도, 자가 점검은 `last_status='error'` 만 보므로 **영영 안 잡힘**.
+    //  실경로: TELEGRAM_BOT_TOKEN 부재 → 채널이 outbound 미등록 → 여기로 온다.
+    const known = listOutboundChannels();
+    const reason =
+      `발송 채널 "${channel}" 이 등록돼 있지 않습니다` +
+      `${known.length > 0 ? ` (사용 가능: ${known.join(", ")})` : " (등록된 채널 없음)"}`;
     console.warn(
-      `deliverOutbound: unsupported channel "${channel}" (target=${
-        target ?? "—"
-      }) — no delivery:\n${tag}${text}`,
+      `deliverOutbound: ${reason} (target=${target ?? "—"}) — 미배달 ${text.length}자${
+        label !== undefined ? ` [${label}]` : ""
+      }`,
     );
-    return;
+    return { delivered: false, reason };
   }
 
   // target 해석: 명시 target 우선, 없으면 채널의 기본 좌표(defaultOutboundTarget).
@@ -130,4 +152,5 @@ export const deliverOutbound = async (input: OutboundInput): Promise<void> => {
       input.notice === true,
     );
   }
+  return { delivered: true };
 };

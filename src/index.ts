@@ -100,7 +100,7 @@ import {
   spawnDetachedRestart,
   cleanupSelfRestartTask,
 } from "./core/restart.js";
-import { initFileLogging } from "./core/logging.js";
+import { initFileLogging, logFatal } from "./core/logging.js";
 import { startEventPersistence } from "./core/event-persist.js";
 import {
   enqueueThreadTurn,
@@ -1727,7 +1727,8 @@ const restartDaemon = (source: string): void => {
   // POST /messages)을 기다리며 지연될 수 있으므로, 열린 연결과 무관하게 종료를 보장한다.
   // unref() — 정상 graceful 종료가 더 빠르면 이 타이머는 프로세스를 붙잡지 않는다.
   setTimeout(() => {
-    console.log("daemon: graceful shutdown 지연 — force exit");
+    // 동기 기록 — 바로 아래 exit(0)이 비동기 큐를 버린다(위 crash 핸들러와 같은 이유).
+    logFatal("daemon: graceful shutdown 지연 — force exit");
     process.exit(0);
   }, 1500).unref();
 };
@@ -2076,18 +2077,15 @@ process.on("SIGTERM", () => {
 // KeepAlive)의 respawn* 이 보장하는 것이지 코어가 모든 예외를 삼켜서가 아니다.
 // 손상된 상태로 계속 도느니 crash-fast — 로그를 남기고 exit(1) → 깨끗이 재기동.
 // (정상 경로의 턴 에러는 채널 입구 핸들러가 이미 catch·redact 해 데몬을 보존한다.)
+// ★`logFatal` 을 쓴다(`console.error` 아님) — 그 미러는 **비동기 큐잉**이라 곧바로
+// `process.exit(1)` 하면 큐가 통째로 버려진다. 실측: 직전 줄은 남고 **크래시 줄만 사라짐**.
+// 데몬이 재기동됐는데 로그에 원인이 없으면 `/logs` 로도 못 본다(2026-07-31 전체검토 P0).
 process.on("unhandledRejection", (reason) => {
-  console.error(
-    "daemon: unhandledRejection — crash-fast for supervisor respawn:",
-    reason,
-  );
+  logFatal("daemon: unhandledRejection — crash-fast for supervisor respawn:", reason);
   process.exit(1);
 });
 process.on("uncaughtException", (err) => {
-  console.error(
-    "daemon: uncaughtException — crash-fast for supervisor respawn:",
-    err,
-  );
+  logFatal("daemon: uncaughtException — crash-fast for supervisor respawn:", err);
   process.exit(1);
 });
 

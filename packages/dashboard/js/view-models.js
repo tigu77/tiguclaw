@@ -112,7 +112,7 @@
         } catch (e) {
           const root = document.getElementById("models");
           if (root) root.innerHTML =
-            '<div class="empty" style="font-size:11px;padding:10px">모델 프로파일 불러오기 실패: ' + e.message + "</div>";
+            '<div class="empty" style="font-size:11px;padding:10px">모델 프로파일 불러오기 실패: ' + escHtml(e.message) + "</div>";
         }
       };
 

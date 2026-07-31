@@ -172,13 +172,13 @@
         for (const [label, value, hint] of metricData) {
           const card = document.createElement("div");
           card.className = "summary-card";
-          card.innerHTML = '<div class="summary-label">' + label + '</div><div class="summary-value">' + value + '</div><div class="summary-hint">' + hint + '</div>';
+          card.innerHTML = '<div class="summary-label">' + escHtml(label) + '</div><div class="summary-value">' + escHtml(value) + '</div><div class="summary-hint">' + escHtml(hint) + '</div>';
           summaryGrid.appendChild(card);
         }
         const desc = capabilityDescription(entry);
         const head = document.createElement("div");
         head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent ' + status + '"></div><div><div class="detail-name">' + (entry.name || "?") + '</div><div class="detail-summary" style="margin:4px 0 0">' + (desc || "설명 없음") + '</div></div><span class="detail-kind">' + group.label + '</span><span class="detail-status ' + status + '">' + (enabled ? "활성" : "비활성") + '</span>';
+        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(entry.name || "?") + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(desc || "설명 없음") + '</div></div><span class="detail-kind">' + escHtml(group.label) + '</span><span class="detail-status ' + escHtml(status) + '">' + (enabled ? "활성" : "비활성") + '</span>';
         shell.appendChild(head);
         shell.appendChild(summaryGrid);
         // 메타(경로+metadata 원문) — 모듈 상세와 같은 kv 그리드로.
@@ -353,6 +353,6 @@
         } catch (e) {
           const list = document.getElementById("capabilities-list");
           if (list) list.innerHTML =
-            '<div class="empty" style="font-size:11px;padding:10px">능력 목록 불러오기 실패: ' + e.message + "</div>";
+            '<div class="empty" style="font-size:11px;padding:10px">능력 목록 불러오기 실패: ' + escHtml(e.message) + "</div>";
         }
       };

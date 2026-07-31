@@ -35,6 +35,13 @@ export const registerChannelOutbound = (
  * 등록된 채널 아웃바운드 조회. `undefined` = 미등록(현행 switch default = "unsupported" warn).
  * *등록됐지만 `deliver` 없음* 은 관측-전용(http-bridge) — "미등록" 과 레지스트리 존재로 구분.
  */
+/**
+ * 지금 발송 가능한 채널 이름들 — **오타를 만들 때 잡기 위해** (2026-07-31 전체검토 P1).
+ * `add_schedule` 의 `dest_channel` 이 `z.string().max(64)` 뿐이라 한 글자만 틀려도
+ * 영구 무발신이 됐고, 그마저 `ok` 로 기록돼 자가 점검도 못 잡았다.
+ */
+export const listOutboundChannels = (): string[] => [...registry.keys()].sort();
+
 export const getChannelOutbound = (
   name: string,
 ): ChannelOutbound | undefined => registry.get(name);

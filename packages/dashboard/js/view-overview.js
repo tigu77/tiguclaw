@@ -49,7 +49,7 @@
         for (const [label, value, hint] of metrics) {
           const card = document.createElement("div");
           card.className = "quick-card";
-          card.innerHTML = '<div class="quick-label">' + label + '</div><div class="quick-value">' + value + '</div><div class="quick-hint">' + hint + '</div>';
+          card.innerHTML = '<div class="quick-label">' + escHtml(label) + '</div><div class="quick-value">' + escHtml(value) + '</div><div class="quick-hint">' + escHtml(hint) + '</div>';
           quick.appendChild(card);
         }
         wrap.appendChild(quick);
@@ -58,7 +58,7 @@
         layout.className = "overview-layout";
         const statusPanel = document.createElement("section");
         statusPanel.className = "subpanel";
-        statusPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상태 요약</h2><p class="subpanel-desc">지금 확인해야 할 운영 신호입니다.</p></div><span class="health-pill ' + healthClass + '">' + healthText + '</span></div>';
+        statusPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상태 요약</h2><p class="subpanel-desc">지금 확인해야 할 운영 신호입니다.</p></div><span class="health-pill ' + escHtml(healthClass) + '">' + escHtml(healthText) + '</span></div>';
         const statusList = document.createElement("div");
         statusList.className = "status-list";
         const rows = [
@@ -69,7 +69,7 @@
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
           row.className = "status-row";
-          row.innerHTML = '<span class="status-dot ' + tone + '"></span><div class="status-main"><div class="status-title">' + title + '</div><div class="status-desc">' + desc + '</div></div><span class="health-pill ' + tone + '">' + meta + '</span>';
+          row.innerHTML = '<span class="status-dot ' + escHtml(tone) + '"></span><div class="status-main"><div class="status-title">' + escHtml(title) + '</div><div class="status-desc">' + escHtml(desc) + '</div></div><span class="health-pill ' + escHtml(tone) + '">' + escHtml(meta) + '</span>';
           statusList.appendChild(row);
         }
         statusPanel.appendChild(statusList);
@@ -91,7 +91,7 @@
           btn.type = "button";
           btn.className = "home-action" + (view === "restart" ? " danger" : "");
           const iconCls = view === "restart" ? "ic warn" : "ic";
-          btn.innerHTML = '<span class="' + iconCls + '">' + icon + '</span><span><strong>' + title + '</strong><span>' + desc + '</span></span>';
+          btn.innerHTML = '<span class="' + escHtml(iconCls) + '">' + escHtml(icon) + '</span><span><strong>' + escHtml(title) + '</strong><span>' + escHtml(desc) + '</span></span>';
           btn.addEventListener("click", () => {
             if (view === "providers") showProviders();
             else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); focusChatInput(); }

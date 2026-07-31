@@ -87,7 +87,59 @@ const isRetriableSendError = (e: unknown): boolean => {
 const TRANSPORT_RETRY_DELAYS_MS = [500, 1500, 3000];
 const OUTBOUND_RETRY_DELAYS_MS = [500, 1500, 3000, 15_000, 60_000];
 
-export const sendWithTransportRetry = async (
+export /**
+ * 텔레그램 에러를 **진단 수치만** 남는 한 줄로. 에러 객체를 `console.*` 에 그대로 넘기면
+ * util.inspect 가 `payload` 를 통째로 펼친다 (2026-07-31 전체검토 P0-2).
+ *
+ * 실측: 502 한 건이 `payload.chat_id`(실 텔레그램 id) + `payload.text`(발신 본문 전문)를
+ * **77줄 / 8,335자**로 로그에 적재했고, 아웃바운드 재시도가 5회라 같은 본문이 최대 6번
+ * 쌓였다. `/logs` 출구는 커밋 4d4a18c 로 막았지만 **입구가 열려 있었다.**
+ *
+ * 남기는 것: 에러 종류 · API 오류코드 · 서버 설명 · 메서드 · 본문 길이(크기 축 진단용).
+ * 안 남기는 것: chat_id · 본문 · 토큰 · 스택(스택은 grammy 내부라 진단가치 낮음).
+ */
+/**
+ * **재시작 창의 메시지를 버리지 않는다** (2026-07-31 전체검토 P1).
+ *
+ * ★사고: `drop_pending_updates: true` 였다. 그런데 이 데몬은 하루 **23~49회** 재시작하고
+ *  (실측 07-28 49회 / 07-29 32 / 07-30 23), 종료→부팅 창이 **1~5초**다. 그 창에 온
+ *  메시지는 텔레그램 서버에 쌓였다가 부팅 시 offset 으로 **통째로 버려졌다** — 사용자에겐
+ *  "보냈는데 씹혔다" 로만 보이고 로그·DB 어디에도 흔적이 없다. `shutdown()` 도 in-flight
+ *  턴이나 큐 대기분을 기다리지 않으므로 창은 더 넓어진다.
+ *
+ * 그렇다고 무조건 받으면(텔레그램은 24시간 보관) 오래 꺼져 있던 인스턴스가 부팅하면서
+ * 하루치 메시지에 전부 답한다 — `true` 였던 이유가 그거다. 그래서 **시간으로 가른다**:
+ *  - 창 안(기본 10분): 정상 처리 — 재시작 케이스가 여기 전부 들어온다.
+ *  - 창 밖: 턴을 돌리지 않되 **말한다**(조용히 버리는 게 원래 사고였다). 부팅당 1회 집계.
+ */
+/** 재시작 창(실측 1~5초)을 넉넉히 덮되, 하루치 밀린 메시지엔 안 답하는 값. */
+const INBOUND_STALE_MS = 10 * 60_000;
+const BOOT_TS = Date.now();
+/** 창 밖이라 처리하지 않은 메시지 — 부팅당 1회만 집계 통지한다(스팸 방지). */
+let staleInboundCount = 0;
+let staleInboundNotified = false;
+
+const describeTelegramError = (e: unknown): string => {
+  if (e instanceof GrammyError) {
+    const method = typeof e.method === "string" ? e.method : "?";
+    const len =
+      typeof (e.payload as { text?: unknown } | undefined)?.text === "string"
+        ? `, text ${((e.payload as { text: string }).text).length}자`
+        : "";
+    return `GrammyError ${e.error_code} ${e.description} (method=${method}${len})`;
+  }
+  if (e instanceof HttpError) {
+    // 내부 FetchError 의 message 에 `.../bot<TOKEN>/...` 가 들어 있다 — message 를 쓰지 않고
+    // 종류만 남긴다(로거의 redactSecrets 가 2차 그물이지만 여기서 애초에 안 만든다).
+    const inner = (e as { error?: unknown }).error;
+    const code = (inner as { code?: unknown } | undefined)?.code;
+    return `HttpError(transport)${typeof code === "string" ? ` ${code}` : ""}`;
+  }
+  if (e instanceof Error) return `${e.name}: ${e.message.slice(0, 200)}`;
+  return String(e).slice(0, 200);
+};
+
+const sendWithTransportRetry = async (
   send: TgSend,
   chunk: string,
   extra: TgSendExtra,
@@ -102,8 +154,7 @@ export const sendWithTransportRetry = async (
       const delay = delays[attempt]!;
       console.warn(
         `telegram send failed (일시적 — ${e instanceof GrammyError ? `API ${e.error_code}` : "transport"}), ` +
-          `retry ${attempt + 1}/${delays.length} in ${delay}ms:`,
-        e,
+          `retry ${attempt + 1}/${delays.length} in ${delay}ms — ${describeTelegramError(e)}`,
       );
       await new Promise((r) => setTimeout(r, delay));
     }
@@ -134,9 +185,9 @@ export const sendFormatted = async (
       // HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML
       // 그대로 보내면 <b> 등이 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미
       // 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
-      console.error("telegram formatted send failed, falling back to plain:", e);
+      console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
       await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}, TRANSPORT_RETRY_DELAYS_MS).catch((e2) => {
-        console.error("telegram plain fallback also failed:", e2);
+        console.error(`telegram plain fallback also failed — ${describeTelegramError(e2)}`);
         if (opts?.throwOnFail === true) throw e2;
       });
     }
@@ -380,7 +431,7 @@ const acquireAttachment = async (
     };
     return { attachment };
   } catch (e) {
-    console.error("telegram attachment download failed:", e);
+    console.error(`telegram attachment download failed — ${describeTelegramError(e)}`);
     return { note: `[첨부 다운로드 실패: ${displayName}]` };
   }
 };
@@ -482,8 +533,39 @@ export default class TelegramChannel implements Channel {
       return false;
     };
 
+    /**
+     * 부팅 전에 보내진 오래된 메시지인가. `ctx.message.date` 는 텔레그램이 준 **초** 단위
+     * 발신 시각이다. 창 밖이면 턴을 안 돌리되 개수를 세어 1회 통지한다.
+     */
+    const isStaleInbound = (dateSec: number | undefined): boolean => {
+      if (typeof dateSec !== "number") return false;
+      const sentMs = dateSec * 1000;
+      if (sentMs >= BOOT_TS) return false; // 부팅 후 도착 = 정상.
+      return BOOT_TS - sentMs > INBOUND_STALE_MS;
+    };
+    const noteStaleInbound = (ctx: Context): void => {
+      staleInboundCount += 1;
+      console.warn(
+        `telegram: 오래된 메시지 ${staleInboundCount}건 미처리 ` +
+          `(부팅 ${Math.round((BOOT_TS - (ctx.message?.date ?? 0) * 1000) / 60000)}분 전 발신, ` +
+          `임계 ${Math.round(INBOUND_STALE_MS / 60000)}분)`,
+      );
+      if (staleInboundNotified) return;
+      staleInboundNotified = true;
+      void ctx
+        .reply(
+          `⏸️ 제가 꺼져 있는 동안 받은 메시지가 있습니다(${Math.round(INBOUND_STALE_MS / 60000)}분 이상 지난 것). ` +
+            "오래된 내용이라 자동으로 처리하지 않았어요 — 필요하면 다시 보내주세요.",
+        )
+        .catch(() => {});
+    };
+
     bot.on("message:text", async (ctx) => {
       if (!isAllowed(ctx)) return;
+      if (isStaleInbound(ctx.message.date)) {
+        noteStaleInbound(ctx);
+        return;
+      }
       const text = ctx.message.text.trim();
       if (text.length === 0) return;
       // 답글(reply) 원문 회수 — telegram 이 주는 reply_to_message 의 텍스트/캡션을
@@ -564,7 +646,7 @@ export default class TelegramChannel implements Channel {
       // 허용(사용자 원칙: turn-abandon ≫ daemon-freeze), heartbeat clear 만 보장.
       void handler(msg)
         .catch((e) => {
-          console.error("telegram handler error:", e);
+          console.error(`telegram handler error — ${describeTelegramError(e)}`);
         })
         .finally(() => {
           clearInterval(heartbeat);
@@ -664,7 +746,7 @@ export default class TelegramChannel implements Channel {
           // handler 에러는 .catch 로 흡수 — 폴러 루프(unhandled rejection) 안 죽게.
           void handler(msg)
             .catch((e) => {
-              console.error("telegram attachment handler error:", e);
+              console.error(`telegram attachment handler error — ${describeTelegramError(e)}`);
             })
             .finally(() => {
               clearInterval(heartbeat);
@@ -674,7 +756,7 @@ export default class TelegramChannel implements Channel {
           // 이후엔 turn 에러가 위 .catch 로 흡수되므로 이 catch 로 오지 않는다. 발사 전
           // throw 면 heartbeat 가 아직 도는 상태라 여기서 명시 clear 필요(위 early-return
           // 가드와 동일 이유 — finally 제거로 인한 누수 차단).
-          console.error("telegram attachment acquire error:", e);
+          console.error(`telegram attachment acquire error — ${describeTelegramError(e)}`);
           clearInterval(heartbeat);
         }
       },
@@ -745,7 +827,7 @@ export default class TelegramChannel implements Channel {
       // 비차단 발사 — 폴러를 막지 않는다(message:text 동형). thread별 순서는 serializedHandler.
       void handler(msg)
         .catch((e) => {
-          console.error("telegram callback handler error:", e);
+          console.error(`telegram callback handler error — ${describeTelegramError(e)}`);
         })
         .finally(() => {
           clearInterval(heartbeat);
@@ -753,7 +835,7 @@ export default class TelegramChannel implements Channel {
     });
 
     bot.catch((err) => {
-      console.error("telegram polling error:", err.error);
+      console.error(`telegram polling error — ${describeTelegramError(err.error)}`);
     });
 
     // bot.start() 는 polling 동안 resolve 되지 않으므로 await 하지 않는다.
@@ -792,7 +874,9 @@ export default class TelegramChannel implements Channel {
     // 특히 409 Conflict = 같은 봇을 다른 인스턴스가 폴링 중 — 명확히 경고하되
     // 데몬은 계속 가동(http-bridge·기타 채널 유지). grammy 는 일시적 네트워크
     // 에러는 내부 재시도하고, 여기 도달하는 건 폴링이 멈춘 치명적 에러다.
-    bot.start({ drop_pending_updates: true }).catch((err: unknown) => {
+    // ★false — 재시작 창(1~5초)의 메시지를 살린다. 오래된 것은 아래 handler 의
+    //  시간 게이트가 거르되 **조용히 버리지 않고 알린다**.
+    bot.start({ drop_pending_updates: false }).catch((err: unknown) => {
       const e = err as { error_code?: number; description?: string } & Error;
       if (e?.error_code === 409) {
         console.error(
@@ -839,7 +923,7 @@ export default class TelegramChannel implements Channel {
       if (menuCommands.length >= 100) break; // 텔레그램 최대 100개.
     }
     await bot.api.setMyCommands(menuCommands).catch((e) => {
-      console.error("telegram setMyCommands failed:", e);
+      console.error(`telegram setMyCommands failed — ${describeTelegramError(e)}`);
     });
   }
 

@@ -1,3 +1,23 @@
+      /**
+       * HTML 텍스트 이스케이프 (2026-07-31 전체검토 P0).
+       *
+       * ★왜: 서버 문자열을 문자열 연결로 `innerHTML` 에 넣던 자리 9곳에서 XSS 가 실증됐다
+       *  (스킬·에이전트·MCP 의 name/description, 프로바이더 name/summary/status,
+       *   AGENT.md 의 `이름:`). 셋 다 **비서가 스스로 쓰는 값**이라 프롬프트 인젝션 한 번이면
+       *  영속 XSS 가 되고, 같은 오리진의 `/api/messages`(=비서에게 임의 지시 = 도구 실행)·
+       *  `/api/restart`·`/api/open-path` 를 전부 부를 수 있었다.
+       *
+       * 속성 위치(`class="..."`)에도 쓰이므로 따옴표 둘 다 이스케이프한다.
+       * 마크다운 본문은 이 함수가 아니라 `renderMarkdown`(sanitize 통과)이 담당한다.
+       */
+      const escHtml = (v) =>
+        String(v == null ? "" : v)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+
       // 입력창(chat-input) 자동 포커스 = 중앙 정책 한 곳. ★현재 비활성(사용자 결정 2026-07-24):
       //   새 탭·뷰 전환·전송·슬래시·마이크·답글 어디서도 입력창으로 자동 포커스하지 않는다
       //   (모바일 가상키보드 팝업 방지 + 데스크톱서도 포커스 뺏기 방지). 포커스는 사용자가

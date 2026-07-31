@@ -27,10 +27,11 @@
  * 보안: 로그는 운영자 로컬(`<home>/logs`, .gitignore 의 `*.log`+홈 디렉터리로 비추적).
  *   console 과 동일 신뢰 경계 → 별도 redact 안 함(진단 fidelity 보존, 채널 발송만 redact).
  */
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
+import { appendFileSync, createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import path from "node:path";
 import { format } from "node:util";
 import { resolveHome } from "./paths.js";
+import { redactSecrets } from "./outbound-sanitize.js";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -41,6 +42,40 @@ const localStamp = (d: Date): string =>
   `${localDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 
 let initialized = false;
+
+/** 지금 열려 있는 로그 파일 — `logFatal` 의 동기 append 대상(롤오버 시 갱신). */
+let currentLogPath: string | null = null;
+
+/**
+ * **치명 종료 직전 로그 — 반드시 파일에 착지시킨다** (2026-07-31 전체검토 P0).
+ *
+ * ★왜 별도 경로인가: `console.*` 미러는 `createWriteStream` 에 **비동기 큐잉**된다.
+ *  크래시 핸들러는 한 줄 찍고 곧바로 `process.exit(1)` 하므로, 앞선 write 가 하나라도
+ *  in-flight 면 큐가 통째로 버려진다. 실측: 연속 20줄 중 **1줄만** 착지, 실제
+ *  `initFileLogging()` 재현에서 **직전 줄은 남고 크래시 줄만 사라졌다**.
+ *  결과: 데몬이 crash-fast 로 재기동됐는데 `<home>/logs/daemon-<날짜>.log` 에 원인이 없다.
+ *  `/logs` 도 그 파일만 읽으므로 비서·사용자 모두 이유를 못 본다.
+ *  macOS 는 launchd stderr 가 동기라 `launchd.err.log` 에 남지만 아무도 그걸 안 보고,
+ *  **윈도우는 리디렉션 자체가 없어 어디에도 안 남는다**(원격 접속 불가 인스턴스).
+ *
+ * `appendFileSync` 는 반환 시점에 fd 에 쓰인 게 보장된다. 크래시 경로는 드물어(7월 0건)
+ * 동기 비용이 문제되지 않는다 — 평시 경로는 그대로 비동기 스트림을 쓴다.
+ */
+export const logFatal = (...args: unknown[]): void => {
+  const line = `[${localStamp(new Date())}] [fatal] ${redactSecrets(format(...args))}\n`;
+  // stderr 먼저 — 파일 쓰기가 실패해도 최소한 콘솔·launchd 에는 남는다.
+  try {
+    process.stderr.write(line);
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (currentLogPath !== null) appendFileSync(currentLogPath, line);
+  } catch {
+    /* 파일 쓰기 실패는 종료를 막지 않는다 */
+  }
+};
+
 
 /**
  * console.* 를 파일 미러링으로 패치. 부팅 최상단(첫 console.log 전)에서 1회 호출.
@@ -58,6 +93,7 @@ export const initFileLogging = (): string | null => {
   let streamDate!: string;
   const openStream = (date: string): void => {
     logFile = path.join(logsDir, `daemon-${date}.log`);
+    currentLogPath = logFile; // logFatal(동기 append)의 대상 — 롤오버도 따라간다.
     stream = createWriteStream(logFile, { flags: "a" });
     streamDate = date;
     // 스트림 비동기 에러(디스크 풀 등)가 unhandled 로 데몬을 죽이지 않게 흡수.
@@ -104,6 +140,7 @@ export const initFileLogging = (): string | null => {
     /* ignore */
   }
 
+
   const levels: Array<["log" | "info" | "warn" | "error" | "debug", typeof console.log]> = [
     ["log", console.log],
     ["info", console.info],
@@ -118,7 +155,19 @@ export const initFileLogging = (): string | null => {
       original(...args);
       try {
         const now = new Date();
-        currentStream(now).write(`[${localStamp(now)}] [${level}] ${format(...args)}\n`);
+        // ★파일에 쓰기 **직전**에 소독한다 (2026-07-31 전체검토 P0).
+        //  왜 여기냐: 모든 `console.*` 이 디스크로 가는 **단일 관문**이다. 호출부를 열거해
+        //  고치면 새 호출부가 생길 때마다 또 샌다(손으로 관리하는 목록). 관문에서 걸면
+        //  현재·미래의 모든 모듈이 자동으로 덮인다.
+        //  실사고: grammy `HttpError` 의 own property `error`(내부 FetchError)의 message 가
+        //  `request to https://api.telegram.org/bot<TOKEN>/... failed` 라서,
+        //  `console.error("...", e)` 의 util.inspect 가 **현재 유효한 봇 토큰**을 평문으로
+        //  찍었다 — 실측 234회 이상(launchd.err.log 포함). 로그는 이 프로젝트의 1차
+        //  진단면이라 사람이 복사·붙여넣는 게 정상 절차이고, 그 순간 봇 전권이 넘어간다.
+        //  비용 실측: 줄당 50µs(길이 무관). 하루 ~1.3만 줄 = 0.65s/일 — 수용 가능.
+        currentStream(now).write(
+          `[${localStamp(now)}] [${level}] ${redactSecrets(format(...args))}\n`,
+        );
       } catch {
         /* 미러 실패 — 무시 (원래 출력은 이미 됨) */
       }

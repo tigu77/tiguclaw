@@ -14,6 +14,7 @@
  * 본 모듈은 *등록·조회·삭제* + 새 schedule 활성 시 cron 등록 trigger 만.
  */
 import { z } from "zod";
+import { listOutboundChannels } from "../../../src/core/channel-outbound.js";
 import {
   createSdkMcpServer,
   tool,
@@ -79,6 +80,26 @@ const addScheduleTool = tool(
   async (args) => {
     const triggerType = args.trigger_type ?? "cron";
     const tz = args.timezone ?? "Asia/Seoul";
+
+    // ★발송 채널을 **등록 시점에** 검증한다 (2026-07-31 전체검토 P1). 종전엔
+    //  `z.string().max(64)` 뿐이라 한 글자만 틀려도 영구 무발신이 됐고, 그마저
+    //  `ok` 로 기록돼(발송 실패가 성공으로 보고됐다) 자가 점검도 못 잡았다.
+    //  이름을 하드코딩하지 않고 **레지스트리에서 뽑아** 비교한다(드리프트 0).
+    const known = listOutboundChannels();
+    if (known.length > 0 && !known.includes(args.dest_channel)) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `🔴 발송 채널 "${args.dest_channel}" 은 지금 등록돼 있지 않습니다 — ` +
+              `등록하면 알림이 **아무 데도 안 갑니다**.\n` +
+              `사용 가능: ${known.join(", ")}`,
+          },
+        ],
+        isError: true,
+      };
+    }
 
     let nextRunIso: string | null;
     let cronExpr: string;

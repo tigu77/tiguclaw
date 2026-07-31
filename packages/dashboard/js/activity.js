@@ -202,7 +202,11 @@
         //  (KEY_CACHE_MAX) append 는 무조건이라, 키가 빠진 옛 이벤트가 replay 로 오면 바닥에
         //  재삽입된다. 채팅(vtIsStaleForAppend)·워커(단조)에 넣은 가드가 이 뷰만 빠져 있었다.
         //  이 뷰는 자체 리스트라 마지막 노드의 ts 와 비교한다(임계는 채팅과 동일 5초).
-        if (activityStaleForAppend(a)) return;
+        // ★인자를 넘긴다. 종전엔 자유변수 `a` 를 참조해 **ReferenceError** 였고,
+        //  loadAllActivity 의 try{}catch{} 와 SSE 의 catch 가 삼켜 콘솔 에러조차 0 —
+        //  「전체 활동」 뷰가 07-29(fc51022) 부터 **한 줄도 안 그렸다**(완전 백지, 무증상).
+        //  가드를 넣으면서 뷰 전체를 죽인 것. 판정 함수는 ts 만 쓰므로 ts 를 넘긴다.
+        if (activityStaleForAppend({ ts })) return;
         if (!activityStreamEl || !node) return;
         const empty = document.getElementById("activity-empty"); if (empty) empty.remove();
         const nearBottom = activityStreamEl.scrollTop + activityStreamEl.clientHeight >= activityStreamEl.scrollHeight - 60;

@@ -12,13 +12,17 @@
 import {
   cooldownRemainingMs,
   clearCooldowns,
+  registerCooldownIfRateLimited,
   parseModelSpec,
+  COOLDOWN_PROBE_INTERVAL_MS as PROBE_MS,
 } from "../../core/llm-runtime/index.js";
 import { saveCooldown, markCooldownProbe } from "../../store/cooldowns.js";
 import { getDb } from "../../store/sessions.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const PROBE_MS = 2 * 60 * 60_000; // 기본 탐침 간격(구현 기본값과 동일 가정 — 어긋나면 아래가 잡는다).
+// ★탐침 간격은 **구현에서 가져온다** — 사본을 두면 상수를 바꿀 때마다 어긋나고, 그
+//  어긋남을 이 검사가 "회귀" 로 보고한다(2026-08-01 2h→4h 에서 실제로 그랬다).
+//  검사가 지켜야 할 것은 "구현이 자기 간격을 지키는가" 지 "그 값이 2시간인가" 가 아니다.
 
 export const check: RegressionCheck = {
   name: "cooldown-probe",
@@ -63,6 +67,47 @@ export const check: RegressionCheck = {
     );
 
     clearCooldowns(key);
+    // ★신규 진입과 재등록을 가른다 (2026-08-01) — 통지는 **상태가 바뀐 순간**에만.
+    //  쿨다운 중에도 4시간마다 탐침이 돌고, 실패하면 429 로 재등록된다. 그걸 전부
+    //  "진입" 으로 치면 4일 한도에 24통이 나간다(배경 소음 = 진짜 신호를 덮는다).
+    clearCooldowns(key);
+    const err = new Error('429 {"error":{"type":"usage_limit_reached"},"resets_in_seconds":360000}');
+    const first = registerCooldownIfRateLimited(spec, err);
+    out.push(
+      assert(
+        "★첫 한도는 '신규 진입' 으로 보고된다(통지 대상)",
+        first !== null && first.untilTs > Date.now(),
+        first === null ? "null — 통지가 안 나간다" : `해제 ${new Date(first.untilTs).toLocaleString("ko-KR")}`,
+      ),
+    );
+    const reEntry = registerCooldownIfRateLimited(spec, err);
+    out.push(
+      assert(
+        "★쿨다운 중 재등록(탐침 실패)은 진입으로 안 친다(4시간마다 같은 통지 0)",
+        reEntry === null,
+        reEntry === null ? "null — 조용함" : "★재통지됨 — 스팸",
+      ),
+    );
+    // 대조군 — 쿨다운이 풀린 뒤 다시 걸리면 그건 진짜 신규 진입이다(통지 살아 있어야).
+    clearCooldowns(key);
+    const afterClear = registerCooldownIfRateLimited(spec, err);
+    out.push(
+      assert(
+        "대조군 — 해제 후 다시 걸리면 신규 진입으로 통지한다(과잉 억제 0)",
+        afterClear !== null,
+        afterClear === null ? "★영영 조용 — 억제가 과했다" : "신규 진입 인식",
+      ),
+    );
+    // 한도가 아닌 에러는 쿨다운 대상이 아니다(오발사 0).
+    clearCooldowns(key);
+    out.push(
+      assert(
+        "한도 아닌 에러는 쿨다운·통지 대상이 아니다",
+        registerCooldownIfRateLimited(spec, new Error("보통 실패")) === null,
+        "null",
+      ),
+    );
+
     return out;
   },
 };

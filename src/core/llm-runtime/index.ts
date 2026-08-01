@@ -21,6 +21,7 @@
  *     - 없음 (codex-oauth·openai) → appendTranscript user + assistant 직접 INSERT
  */
 import { runClaude } from "./adapters/claude-agent-sdk.js";
+import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { saveSession } from "../../store/sessions.js";
@@ -660,11 +661,19 @@ const publishTurnError = (
 // 429/사용량한도만 대상 — 일반 에러·모델거부·네트워크는 미등록(기존 폴백 로직 그대로).
 const cooldownUntil = new Map<string, number>();
 
-/** 긴 쿨다운을 실제로 찔러보는 간격(ms). env `COOLDOWN_PROBE_INTERVAL_MS`. 기본 2시간. */
-const COOLDOWN_PROBE_INTERVAL_MS = ((): number => {
+/**
+ * 긴 쿨다운을 실제로 찔러보는 간격(ms). env `COOLDOWN_PROBE_INTERVAL_MS`. **기본 4시간.**
+ *
+ * ★2시간 → 4시간 (2026-08-01, 사용자 결정). 탐침은 공짜가 아니다 — 실패하면 그 턴이
+ *  `llm.turn_error` 로 기록되고(실측: 4일 한도 중 하루 12건), 폴백까지 한 박자 늦어진다.
+ *  조기 회복을 놓치는 최대 지연이 2h→4h 로 늘지만, 실측 한도는 수일 단위라 그 비율에서
+ *  4시간은 여전히 촘촘하다. **탐침 빈도는 "얼마나 빨리 알고 싶은가" 와 "얼마나 자주
+ *  헛치는가" 의 교환**이고, 수일짜리 한도에선 후자가 크다.
+ */
+export const COOLDOWN_PROBE_INTERVAL_MS = ((): number => {
   const raw = process.env.COOLDOWN_PROBE_INTERVAL_MS;
   const n = raw === undefined || raw === "" ? NaN : Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : 2 * 60 * 60_000;
+  return Number.isInteger(n) && n > 0 ? n : 4 * 60 * 60_000;
 })();
 
 // 명시 값(resets_in_seconds/retry-after) 없을 때 기본. 상한은 오파싱·비정상 값 방어일 뿐
@@ -853,12 +862,31 @@ export const restoreCooldowns = (): void => {
 
 export { isRateLimited, parseCooldownMs };
 
-export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void => {
+/**
+ * @returns 이번 호출로 **새로 쿨다운에 들어갔으면** 그 정보, 아니면 null.
+ *
+ * ★"새로" 를 구분하는 이유 (2026-08-01): 쿨다운 중에도 4시간마다 탐침이 돈다. 탐침이
+ *  실패하면 429 로 여기 다시 들어와 쿨다운을 재등록하는데, 그걸 전부 "진입" 으로 치면
+ *  사용자에게 **4시간마다 같은 통지**가 간다(4일 한도면 24통). 상태가 바뀐 순간에만
+ *  알려야 한다 — 알림의 기준은 "실패했다" 가 아니라 **"상태가 바뀌었다"** 다.
+ */
+export const registerCooldownIfRateLimited = (
+  spec: ModelSpec,
+  e: unknown,
+): { key: string; untilTs: number } | null => {
   const detail = errorDetail(e);
-  if (!isRateLimited(detail)) return;
+  if (!isRateLimited(detail)) return null;
   const parsed = parseCooldownMs(detail);
   const ms = parsed ?? DEFAULT_COOLDOWN_MS;
   const key = cooldownKey(spec);
+  // 이미 쿨다운 중이었나 — 재등록(탐침 실패)과 신규 진입을 가른다. 만료분은 0 이라 신규.
+  const wasCoolingDown = (() => {
+    try {
+      return getCooldownRow(key, Date.now()) !== null;
+    } catch {
+      return false; // 조회 실패 시 신규로 본다(알리는 쪽이 안전 — 조용한 누락보다 낫다).
+    }
+  })();
   const untilTs = Date.now() + ms;
   cooldownUntil.set(key, untilTs);
   saveCooldown(key, untilTs); // 영속 — 재시작해도 죽은 백엔드를 다시 두드리지 않게.
@@ -871,6 +899,7 @@ export const registerCooldownIfRateLimited = (spec: ModelSpec, e: unknown): void
       `해제 ${new Date(untilTs).toLocaleString("ko-KR")}).`,
   );
   publishCooldownEvent("enter", key, ms);
+  return wasCoolingDown ? null : { key, untilTs };
 };
 
 // 성공 시 조기 회복 — 만료 전이라도 실제 성공하면 즉시 해제(재탐 낭비 축소). 엔트리
@@ -1104,7 +1133,36 @@ const runPool = async (
       //  그래서 사용자에게 "언제 풀리는지" 를 못 알려줬다(429 원문은 200자 컷에 `resets_at`
       //  바로 앞에서 잘려 사람이 읽을 수도 없었다). 등록은 순수 장부라 앞당겨도 안전하고,
       //  앞당기면 **아는 것을 말할 수 있게** 된다.
-      registerCooldownIfRateLimited(spec, e);
+      const entered = registerCooldownIfRateLimited(spec, e);
+      // ★채널 무관 통지 (2026-08-01, 사용자 지적: "텔레그램으로 작업하는 상황에서도
+      //  알아야 하는 정보"). 종전엔 대시보드 SSE 렌더에만 있어 폰에서는 모델이 왜
+      //  바뀌었는지 알 길이 없었다 — 기능이 채널에 묶이면 안 된다.
+      //  ★상태 전이에만 보낸다: 탐침 실패로 인한 **재등록은 통지하지 않는다**
+      //   (4시간마다 같은 말 = 배경 소음). 내부 분류 호출도 제외.
+      //  LLM 무경유 raw 통지 — 한도가 걸린 상황에서 알리려고 모델을 또 태울 수는 없다.
+      if (entered !== null && input.internal !== true) {
+        const mins = Math.round((entered.untilTs - Date.now()) / 60000);
+        const when = new Date(entered.untilTs).toLocaleString("ko-KR", {
+          month: "numeric",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        const dur =
+          mins >= 1440
+            ? `약 ${Math.round(mins / 1440)}일 뒤`
+            : mins >= 60
+              ? `약 ${Math.round(mins / 60)}시간 뒤`
+              : `${mins}분 뒤`;
+        void deliverOutbound({
+          channel: input.channel,
+          target: input.channelAddress ?? null,
+          text:
+            `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
+            `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`,
+          label: "cooldown",
+        }).catch(() => undefined); // 통지 실패가 턴을 무르지 않는다.
+      }
       if (input.internal !== true) {
         publishTurnError(
           spec,

@@ -26,10 +26,24 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { appRoot } from "../../src/core/paths.js";
+import { probeLocalPort } from "../../src/core/local-port-probe.js";
 import type { EventBus } from "../../src/core/eventbus.js";
 
 const DEFAULT_DASHBOARD_PORT = "7010";
 const HEALTH_TIMEOUT_MS = 800;
+
+/**
+ * 우리 대시보드임을 식별하는 마커 — 서빙되는 `index.html` 의 `<title>`.
+ *
+ * ★왜 `/api/health` 가 아닌가: 그건 **bridge 로 프록시**된다. 브리지가 죽어 있으면 우리
+ *  대시보드가 멀쩡히 떠 있어도 실패해서 "남의 것" 으로 오판한다. 대시보드 **자신이** 답하는
+ *  것으로 판정해야 한다.
+ * ★왜 전용 endpoint 를 안 만드는가: 이 판정이 필요한 주된 상대가 **구버전 orphan**(데몬이
+ *  죽으며 남긴 자식)이라, 새 endpoint 는 그쪽에 없다. 이 마커는 대시보드 외부화(2026-05-15)
+ *  이래 안 바뀌었다 — 어느 세대의 orphan 이든 식별된다.
+ * ★마커가 바뀌면 조용히 오판하므로 회귀(`dashboard-port-identity`)가 `index.html` 과 대조한다.
+ */
+const DASHBOARD_MARKER = "티구클로 대시보드";
 
 class DashboardService {
   readonly name = "dashboard";
@@ -42,9 +56,19 @@ class DashboardService {
     const port = process.env.DASHBOARD_PORT?.trim() || DEFAULT_DASHBOARD_PORT;
 
     // 중복 기동 방지 — 이미 무언가 포트를 점유 중이면(우리 대시보드 orphan 포함) skip.
-    if (await isPortAlive(port)) {
-      console.log(
-        `dashboard: already up on http://127.0.0.1:${port} — spawn skipped`,
+    // ★포트 점유 판정은 **세 갈래**다. 종전엔 "누가 듣고 있으면 우리겠지" 로 뭉뚱그려,
+    //  다른 앱(3000 은 Next.js·Rails 의 기본값이다)이 물고 있으면 **대시보드가 안 뜬 채
+    //  로그는 "already up" 이라 말했다**. 사용자는 대시보드 대신 남의 앱을 보게 된다.
+    const state = await probeLocalPort(port, DASHBOARD_MARKER, HEALTH_TIMEOUT_MS);
+    if (state === "ours") {
+      console.log(`dashboard: already up on http://127.0.0.1:${port} — spawn skipped`);
+      return;
+    }
+    if (state === "foreign") {
+      console.warn(
+        `dashboard: port ${port} is held by another app (GET / has no tiguclaw marker) — ` +
+          `spawn skipped. Set DASHBOARD_PORT in .env to a free port, or stop that app. ` +
+          `Check with: lsof -nP -iTCP:${port} -sTCP:LISTEN`,
       );
       return;
     }
@@ -154,16 +178,6 @@ class DashboardService {
 }
 
 /** 포트에 HTTP 응답이 있으면 true(점유 중). 연결 거부면 false. */
-const isPortAlive = async (port: string): Promise<boolean> => {
-  try {
-    await fetch(`http://127.0.0.1:${port}/`, {
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    return true; // 어떤 HTTP status 든 응답 = 리스너 존재.
-  } catch {
-    return false; // ECONNREFUSED / timeout = 비어있음.
-  }
-};
 
 /** child stdout/stderr 를 줄 단위로 `[prefix]` 붙여 데몬 콘솔로 포워드. */
 const pipePrefixed = (child: ChildProcess, prefix: string): void => {

@@ -27,9 +27,13 @@ const SKIP_TYPES = new Set<string>([
   "llm.tool_call_delta",
   "channel.message.in",
   "channel.message.out",
-  // 엔드포인트 호출 관측(요청+응답 전문) — 라이브 SSE 로만 대시보드에 전달. 영속 시 sanitize 가
-  // 전문을 300자 절단 + events 테이블 비대 → SKIP. 전체 기록은 transcripts 에 이미 영속.
-  "endpoint.call",
+  // ★`endpoint.call` 은 2026-08-01 에 SKIP 에서 **뺐다**(= 영속한다).
+  //  종전 사유: "라이브 SSE 로만 전달 / 영속 시 300자 절단 + events 비대 / 전문은
+  //  transcripts 에 이미 영속". 전문이 transcripts 에 있는 건 사실이지만 **엔드포인트 뷰가
+  //  transcripts 를 읽지 않는다** — 브라우저 메모리(`endpointLog`, 캡 60)에만 쌓아서
+  //  새로고침·재시작이면 전멸했다(사용자 신고: "엔드포인트 기록들이 다 사라졌어").
+  //  저장은 되는데 소비처가 없던 것. 절단 우려도 낡았다 — 실측 페이로드 ≈8.3KB 로
+  //  `MAX_PAYLOAD_CHARS`(10,000) 이내이고, 볼륨은 ~37건/일이라 기존 프루닝으로 바운드된다.
 ]);
 
 // 페이로드 비대 가드. 리치 도구 카드(diff ≤~7.5KB / output ≤~4.5KB, ADR 2026-07-09)를

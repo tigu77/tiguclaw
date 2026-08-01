@@ -52,6 +52,10 @@ const PORTS = [
 const isRecord = (f: string): boolean =>
   f.startsWith("docs/decisions/") ||
   f === "README.md" ||
+  // ★기억(`.claude/memory/`)도 기록물이다 — **각 기계·각 사고의 당시 사실**을 적는다
+  //  (예: 윈도우 인스턴스는 .env 에 3010/3011 을 명시해 쓴다). 현재 기본값으로 고치면
+  //  그 기록이 거짓이 된다. 2026-08-01 기억을 레포로 옮기며 이 범위가 처음 겹쳤다.
+  f.startsWith(".claude/memory/") ||
   (f.startsWith("_workspace/") && !f.startsWith("_workspace/public-overlay/"));
 
 export const check: RegressionCheck = {

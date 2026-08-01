@@ -63,15 +63,18 @@ export const check: RegressionCheck = {
 
     // ★② shutdown 이 **채널을 닫기 전에** 통지한다 — 순서가 뒤집히면 발송 경로가 이미 없다.
     //  (이건 순서 계약이라 소스 순서로 본다. 아래 ③ 이 실제 발송을 동작으로 확인한다.)
+    //  ★앵커는 **행위**로 잡는다 — 종전엔 `if (inflightTurns.size > 0)` 라는 *구현 형태*를
+    //   앵커로 써서, 엔드포인트 턴을 합치느라 조건식만 바꿔도 검사가 깨졌다(2026-08-01).
+    //   지켜야 할 계약은 "기록·통지가 채널 stop 보다 앞" 이지 조건식의 생김새가 아니다.
     const order = await sourceOrder("../../index.ts", [
       /const shutdown = async \(signal: string\): Promise<void> => \{/,
-      /if \(inflightTurns\.size > 0\) \{/,
+      /type: "llm\.turn_error"/,
       /await notifyInterruptedTurns\(/,
       /for \(const ch of channels\) \{/,
     ]);
     out.push(
       assert(
-        "★중단 통지가 채널 stop() 보다 **먼저** 있다(닫힌 채널로는 못 보낸다)",
+        "★중단 기록·통지가 채널 stop() 보다 **먼저** 있다(닫힌 채널로는 못 보낸다)",
         order.ok,
         order.detail,
       ),

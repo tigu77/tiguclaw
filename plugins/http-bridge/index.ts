@@ -26,6 +26,10 @@ import type {
   MessageHandler,
 } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
+import {
+  registerExternalTurn,
+  unregisterExternalTurn,
+} from "../../src/core/inflight-turns.js";
 import { getPaths } from "../../src/core/paths.js";
 import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
@@ -1156,6 +1160,8 @@ class HttpBridge implements Channel, Observer {
               ? "read"
               : pathname === "/all-activity" && method === "GET"
                 ? "read"
+              : pathname === "/endpoint-calls" && method === "GET"
+                ? "read"
               : pathname === "/sessions" && method === "GET"
               ? "read"
               : pathname === "/projects" && method === "GET"
@@ -1871,6 +1877,65 @@ class HttpBridge implements Channel, Observer {
     // scopeThreadKey 생략 호출로 전 스레드 활동을 병합(L355 분기가 undefined 면 통과 — 이미
     // 준비됨). store·historyActivities 시그니처 변경 없음. assistantName 등 세션특화 필드는
     // 이 뷰에 불필요(읽기전용 모니터). read 게이트(위 role 표).
+    // 엔드포인트 호출 이력 (2026-08-01) — 종전엔 대시보드가 **라이브 SSE 로만** 채워서
+    // 새로고침·데몬 재시작이면 전멸했다("엔드포인트 기록들이 다 사라졌어"). `endpoint.call`
+    // 을 영속으로 돌리고(event-persist SKIP 해제) 여기서 되읽는다 — 채팅의 `/chat-history`
+    // 와 같은 자리. 라이브 SSE 는 그대로 두고, **열 때 과거를 채우는** 용도다.
+    if (pathname === "/endpoint-calls" && method === "GET") {
+      try {
+        const raw = url.searchParams.get("limit");
+        const n = raw !== null ? parseInt(raw, 10) : NaN;
+        const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 60;
+        // 한 호출이 start/done 2건이므로 넉넉히 읽어 callId 로 접는다(done 이 start 를 대체).
+        const rows = listEvents({ types: ["endpoint.call"], limit: limit * 3 });
+        const byCall = new Map<string, { ts: number; payload: Record<string, unknown> }>();
+        for (const r of rows) {
+          // ★`PersistedEvent.payload` 는 **JSON 문자열**이다(객체 아님). 캐스팅으로 넘기면
+          //  조용히 빈 값이 나간다 — tsc 가 잡아줬다.
+          let pl: Record<string, unknown>;
+          try {
+            const parsed: unknown = JSON.parse(r.payload);
+            pl =
+              parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+                ? (parsed as Record<string, unknown>)
+                : {};
+          } catch {
+            continue; // 깨진 행은 건너뛴다(한 행이 이력 전체를 막지 않게).
+          }
+          const id = String(pl.callId ?? r.ts);
+          const prev = byCall.get(id);
+          // done(phase!=="start") 이 start 를 이긴다. 같은 phase 면 나중 것.
+          if (prev === undefined || pl.phase !== "start" || prev.payload.phase === "start") {
+            byCall.set(id, { ts: r.ts, payload: pl });
+          }
+        }
+        // ★start 만 있고 done 이 없는 호출 = **끝을 못 본 호출**(데몬 재시작 등).
+        //  그대로 두면 화면에 영원히 "진행 중" 으로 보인다 — 오늘 고친 "실패했는데 아무것도
+        //  안 보이는" 것의 화면판이다. 진행 중일 수 없는 시간이 지났으면 미완으로 못 박는다.
+        const STALE_MS = 10 * 60_000;
+        const now = Date.now();
+        const calls = [...byCall.values()]
+          .sort((a, b) => a.ts - b.ts)
+          .slice(-limit)
+          .map((c) =>
+            c.payload.phase === "start" && now - c.ts > STALE_MS
+              ? {
+                  ts: c.ts,
+                  ...c.payload,
+                  phase: "done",
+                  ok: false,
+                  response:
+                    "(완료 기록 없음 — 데몬 재시작 등으로 중단된 호출입니다. 생성 중이던 응답은 남지 않았습니다.)",
+                }
+              : { ts: c.ts, ...c.payload },
+          );
+        writeJson(res, 200, { calls, generatedAt: new Date().toISOString() });
+      } catch (e) {
+        writeJson(res, 500, { error: String(e) });
+      }
+      return;
+    }
+
     if (pathname === "/all-activity" && method === "GET") {
       try {
         const limitRaw = url.searchParams.get("limit");
@@ -2703,6 +2768,16 @@ class HttpBridge implements Channel, Observer {
         //  요청 접수 시점에 먼저 알리고(진행 중), 끝나면 같은 callId 로 갱신한다.
         //  callId = threadKey nonce 재사용(이미 호출마다 고유 — 새 식별자 만들 필요 0).
         const epStartedAt = Date.now();
+        // ★진행 중 등록 (2026-08-01 실사고) — 엔드포인트는 직렬화 핸들러를 우회하므로
+        //  거기 매달린 in-flight 등록도 건너뛰었다. 그래서 `/health` 가 0 이라 답했고
+        //  배포 재시작이 4,610자를 만들던 응답을 죽였다. 직렬화는 그대로 우회하고
+        //  **등록만** 한다 — 재시작 판단과 중단 통지가 이 호출을 볼 수 있게.
+        const epAc = new AbortController();
+        registerExternalTurn(epMsg.threadKey, {
+          ac: epAc,
+          channel: this.name,
+          target: null, // HTTP 응답으로 돌아가므로 채널 발송 대상 없음(통지는 로그·기록으로).
+        });
         this.bus?.publish({
           type: "endpoint.call",
           ts: epStartedAt,
@@ -2715,6 +2790,7 @@ class HttpBridge implements Channel, Observer {
         });
         /** 완료(성공·실패 공통) 관측 — 같은 callId 로 진행 중 항목을 대체한다. */
         const publishEndpointDone = (ok: boolean, response: string): void => {
+          unregisterExternalTurn(epMsg.threadKey); // 성공·실패 공통 해제(누수 0).
           this.bus?.publish({
             type: "endpoint.call",
             ts: Date.now(),

@@ -118,7 +118,7 @@
         head.innerHTML = '<div class="detail-accent"></div><div class="detail-name">엔드포인트 호출</div><span class="detail-kind">API 활동</span>';
         wrap.appendChild(head);
         const desc = document.createElement("p"); desc.className = "ep-view-desc";
-        desc.textContent = "외부 앱이 커스텀 HTTP 엔드포인트로 호출한 기록입니다(채팅과 분리, 읽기 전용). 헤더를 누르면 요청·응답 전문이 펼쳐집니다. 전체 기록은 DB 에 영속됩니다.";
+        desc.textContent = "외부 앱이 커스텀 HTTP 엔드포인트로 호출한 기록입니다(채팅과 분리, 읽기 전용). 헤더를 누르면 요청·응답 전문이 펼쳐집니다. 기록은 DB 에 영속되어 새로고침·재시작 후에도 남습니다.";
         wrap.appendChild(desc);
         if (endpointLog.length === 0) {
           const empty = document.createElement("div"); empty.className = "ep-empty";
@@ -180,8 +180,26 @@
         }
         root.appendChild(wrap);
       };
+      // ★열 때 서버 이력을 채운다 (2026-08-01) — 종전엔 라이브 SSE 로만 쌓아서
+      //  **새로고침·데몬 재시작이면 전멸**했다(사용자 신고: "엔드포인트 기록들이 다 사라졌어").
+      //  자료는 서버에 있었는데 읽는 쪽이 없었다. 채팅의 /chat-history 와 같은 자리.
+      let epHistoryLoaded = false;
+      const loadEndpointHistory = async () => {
+        if (epHistoryLoaded) return;
+        epHistoryLoaded = true;
+        try {
+          const r = await fetch("/api/endpoint-calls?limit=60");
+          const d = await r.json();
+          for (const c of (d && d.calls) || []) captureEndpointCall(c);
+          renderEndpointsView();
+        } catch {
+          epHistoryLoaded = false; // 실패하면 다음에 다시 시도(한 번 실패로 영구 빈 화면 금지).
+        }
+      };
+
       const showEndpoints = () => {
         setActiveNav("endpoints");
+        loadEndpointHistory();
         document.getElementById("workbench").classList.remove("show-providers"); // detail-panel 노출(다른 뷰와 동형).
         document.getElementById("workbench").classList.remove("show-capabilities");
         renderEndpointsView();

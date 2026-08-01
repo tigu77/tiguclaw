@@ -349,6 +349,12 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/worker-jobs");
       return;
     }
+    // 엔드포인트 호출 이력 (2026-08-01) — 뷰가 열릴 때 과거를 채운다. 종전엔 라이브 SSE
+    // 로만 쌓아 새로고침·재시작이면 전멸했다. 쿼리(limit)를 그대로 넘긴다.
+    if (pathname === "/api/endpoint-calls" && method === "GET") {
+      await proxyJson(res, `/endpoint-calls${url.search}`);
+      return;
+    }
     // 컨텍스트메뉴 외부 기여 — bridge GET /context-menu-items (read 토큰 server-side 주입).
     // `_workspace/context-menu_architect_contract.md` §2.3. /api/inventory 와 동형 패턴.
     if (pathname === "/api/context-menu-items" && method === "GET") {

@@ -126,6 +126,7 @@ import { deliverOutbound } from "./core/outbound.js";
 import {
   setInflightTurnReporter,
   notifyInterruptedTurns,
+  listExternalTurns,
 } from "./core/inflight-turns.js";
 import {
   registerChannelOutbound,
@@ -621,9 +622,11 @@ interface InflightTurn {
 const inflightTurns = new Map<string, InflightTurn>();
 
 // 관측 심에 **Map 자신을 보는 getter** 를 꽂는다(사본 0 — inflight-turns.ts 주석 참조).
+// ★직렬화 밖 턴(엔드포인트 등)까지 **합쳐서** 답한다 — 둘 중 하나만 세면 `/health` 가
+//  "지금 재시작해도 안전" 이라고 거짓말한다(2026-08-01 엔드포인트 응답 유실).
 setInflightTurnReporter({
-  count: () => inflightTurns.size,
-  keys: () => [...inflightTurns.keys()],
+  count: () => inflightTurns.size + listExternalTurns().length,
+  keys: () => [...inflightTurns.keys(), ...listExternalTurns().map(([k]) => k)],
 });
 
 // mid-turn steering (ADR 2026-07-16-midturn-steering §5) — 진행 중 턴에 새 사용자 메시지를
@@ -2052,7 +2055,7 @@ const shutdown = async (signal: string): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(
-    `tiguclaw daemon: received ${signal}, shutting down (진행 중 턴 ${inflightTurns.size}건)`,
+    `tiguclaw daemon: received ${signal}, shutting down (진행 중 턴 ${inflightTurns.size + listExternalTurns().length}건)`,
   );
   // ★진행 중이던 메인 턴에 **정직 통지** (2026-08-01 A5, 실사고).
   //  종전엔 레지스트리 주석만 "재시작 정직" 이라고 적혀 있었고 알리는 코드는 없었다. 그래서
@@ -2062,15 +2065,41 @@ const shutdown = async (signal: string): Promise<void> => {
   //  메인 턴만 없었다 — 그 비대칭을 없앤다.
   //  ★채널 stop() **전에** 해야 한다(아래에서 채널이 닫히면 발송 경로가 사라진다).
   //  발송 실패는 삼킨다 — 통지 실패가 종료를 막으면 안 된다(force-exit 백스톱 1500ms).
-  if (inflightTurns.size > 0) {
-    const keys = [...inflightTurns.keys()];
+  const allInflight = [
+    ...[...inflightTurns.entries()].map(([k, v]) => [k, v] as const),
+    ...listExternalTurns().map(([k, v]) => [k, v] as const),
+  ];
+  if (allInflight.length > 0) {
+    const keys = allInflight.map(([k]) => k);
     console.log(`daemon: 진행 중 턴 ${keys.length}건 중단 통지 — ${keys.join(", ")}`);
+    // ★통지보다 먼저 **기록**을 남긴다 (2026-08-01 두 번째 실사고).
+    //  통지는 채널이 있어야 닿는다 — 엔드포인트·게이트웨이 호출은 이미 죽은 HTTP 연결이라
+    //  아무도 못 받는다. 그런데 그 호출들은 **경계(iteration close·turn_done) 전에** 죽으면
+    //  이벤트가 하나도 발행되지 않아 DB 에 흔적이 0 이었다 — 나중에 "왜 답이 없었나" 를
+    //  DB 로도 못 밝혔다. 실패했는데 *아무것도* 안 보이는 형상. 통지가 닿든 안 닿든
+    //  `llm.turn_error` 는 남긴다(SKIP_TYPES 밖이라 영속된다).
+    for (const [key, t] of allInflight) {
+      try {
+        bus.publish({
+          type: "llm.turn_error",
+          ts: Date.now(),
+          payload: {
+            threadKey: key,
+            channel: t.channel,
+            error: `데몬 재시작(${signal})으로 중단 — 생성 중이던 응답은 남지 않았습니다.`,
+            reason: "daemon-restart",
+          },
+        });
+      } catch (e) {
+        console.error(`daemon: 중단 기록 실패(${key}): ${String(e)}`);
+      }
+    }
     const n = await notifyInterruptedTurns(
-      [...inflightTurns.values()],
+      allInflight.map(([, v]) => v),
       deliverOutbound,
       (channel, reason) => console.error(`daemon: 중단 통지 실패(${channel}): ${reason}`),
     );
-    console.log(`daemon: 중단 통지 ${n}/${keys.length}건 성공.`);
+    console.log(`daemon: 중단 기록 ${keys.length}건 · 통지 ${n}/${keys.length}건 성공.`);
   }
   // ★자식 프로세스 정리를 **맨 앞으로** (2026-07-28). 종전엔 채널·서비스 정지가 끝난 뒤에야
   //  외부 MCP·백그라운드 셸을 정리했는데, 그 앞단이 1500ms force-exit 백스톱을 넘기면

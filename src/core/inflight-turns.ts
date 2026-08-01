@@ -19,8 +19,12 @@ interface InflightReporter {
 
 let reporter: InflightReporter | null = null;
 
-/** index.ts 부팅 시 1회 등록. 미등록이면 관측은 "모름"(0 이 아니라)으로 답한다. */
-export const setInflightTurnReporter = (r: InflightReporter): void => {
+/**
+ * index.ts 부팅 시 1회 등록. 미등록이면 관측은 "모름"(0 이 아니라)으로 답한다.
+ * `null` 을 넘기면 미등록으로 되돌린다 — 세터가 비대칭이면 검사끼리 전역 상태를 오염시킨다
+ * (2026-08-01 실제로 그랬다: 한 검사가 세팅한 리포터가 다음 검사의 "미등록" 전제를 깼다).
+ */
+export const setInflightTurnReporter = (r: InflightReporter | null): void => {
   reporter = r;
 };
 
@@ -31,6 +35,30 @@ export const setInflightTurnReporter = (r: InflightReporter): void => {
  */
 export const getInflightTurns = (): { count: number; keys: string[] } | null =>
   reporter === null ? null : { count: reporter.count(), keys: reporter.keys() };
+
+/**
+ * ★직렬화 핸들러를 **우회하는** 턴의 등록처 (2026-08-01 실사고 2건째).
+ *
+ * 엔드포인트 호출은 동시 호출 race 를 없애려고 직렬화 핸들러를 의도적으로 우회한다
+ * (`http-bridge`: "각 호출 = 별 thread, 직렬화 우회 무해"). 설계는 맞다 — 그런데
+ * **진행 중 등록도 같이 건너뛰었다.** 그래서 `/health` 가 `active_turns: 0` 이라 답했고,
+ * 그걸 믿고 배포 재시작을 했다가 4,610자를 만들던 엔드포인트 응답을 죽였다. 로그에는
+ * `shutting down (진행 중 턴 0건)` 이라고 **정직하게 거짓**이 찍혔다.
+ *
+ * ★사본을 만드는 게 아니다 — 리포터가 이 Map 과 index.ts 의 Map 을 **합쳐서** 답한다.
+ *  "진행 중인 턴" 이라는 사실은 계속 하나로 읽힌다.
+ */
+const externalTurns = new Map<string, InterruptedTurn>();
+
+/** 직렬화 밖 턴 시작. `finally` 에서 반드시 `unregisterExternalTurn` 로 닫아라. */
+export const registerExternalTurn = (key: string, turn: InterruptedTurn): void => {
+  externalTurns.set(key, turn);
+};
+export const unregisterExternalTurn = (key: string): void => {
+  externalTurns.delete(key);
+};
+/** 리포터가 합칠 때 쓴다(index.ts). 이 모듈 밖에서 직접 순회하지 않는다. */
+export const listExternalTurns = (): Array<[string, InterruptedTurn]> => [...externalTurns];
 
 /** 통지 문구 — 무엇이 일어났고 무엇이 남지 않았고 무엇을 하면 되는지. */
 export const RESTART_INTERRUPT_TEXT =

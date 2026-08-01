@@ -266,6 +266,23 @@ const server = http.createServer((req, res) => {
     }
 
     // 정적 vendored 마크다운 파서 (marked, 단일파일·외부 의존 0).
+    // 브랜드 아이콘 — favicon + apple-touch(폰 홈 화면). 내용이 고정이라 vendored 자산과
+    // 같은 캐시 정책(앱 CSS/JS 의 no-store 와 다르다 — 매 요청 재전송할 이유가 없다).
+    if (pathname === "/icon.png" && method === "GET") {
+      try {
+        const buf = await fs.readFile(path.join(__dirname, "icon.png"));
+        res.writeHead(200, {
+          "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=86400",
+        });
+        res.end(buf);
+      } catch {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("icon.png not found");
+      }
+      return;
+    }
+
     if (pathname === "/marked.min.js" && method === "GET") {
       try {
         const js = await fs.readFile(

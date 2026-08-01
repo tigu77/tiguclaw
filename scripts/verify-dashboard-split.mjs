@@ -32,7 +32,11 @@ const ok = (msg) => console.log(`[verify-dashboard-split] OK: ${msg}`);
 const currentHtml = fs.readFileSync(path.join(dashDir, "index.html"), "utf8");
 
 // ---- 1) CSS 는 app.css 로 외부화 ----
-if (/<style[\s>]/.test(currentHtml)) {
+// ★주석은 빼고 본다 — index.html 의 헤더 주석이 규칙을 설명하며 `<style>` 를 언급하는데,
+//  그걸 실제 태그로 세서 이 게이트가 **상시 빨간불**이었다(그래서 아무도 안 봤다).
+//  검사 대상은 마크업이지 마크업을 설명하는 글이 아니다.
+const markupOnly = currentHtml.replace(/<!--[\s\S]*?-->/g, "");
+if (/<style[\s>]/.test(markupOnly)) {
   fail("index.html 에 인라인 <style> 잔존 — 모든 CSS 는 app.css 로 가야 함");
 }
 if (!/<link\s+rel="stylesheet"\s+href="\/app\.css"\s*\/?>/.test(currentHtml)) {
@@ -44,7 +48,7 @@ ok("CSS: 인라인 <style> 0 · <link href=/app.css> · app.css 존재");
 // ---- 2) 앱 JS 는 전부 js/ 모듈(비-vendored 인라인 <script> 본문 0) + 3) 태그 순서 수집 ----
 const scriptTagRe = /<script([^>]*)>([\s\S]*?)<\/script>/g;
 const jsSrcOrder = [];
-for (const m of currentHtml.matchAll(scriptTagRe)) {
+for (const m of markupOnly.matchAll(scriptTagRe)) {
   const srcMatch = m[1].match(/\ssrc="([^"]+)"/);
   if (srcMatch) {
     const src = srcMatch[1];

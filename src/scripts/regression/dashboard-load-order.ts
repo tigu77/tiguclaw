@@ -102,6 +102,26 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★세 번째 변 — **디스크**의 `js/*.js` 집합. 종전엔 태그↔매니페스트 두 변만 봤다.
+    //  그래서 "디스크에 있는데 아무 데서도 안 부르는" 파일이 조용히 남았다(실제로
+    //  `view-channels.js` 가 UI 개편 뒤 몇 주를 그렇게 있었다). 그 변을 보는 검사는
+    //  수동 스크립트(`verify-dashboard-split.mjs`)에만 있었고, 그게 **상시 빨간불**이라
+    //  아무도 안 돌렸다. 세 변을 다 여기서 본다 — 자동으로 도는 자리에.
+    const diskJs = (await import("node:fs")).readdirSync(path.join(root, "js"))
+      .filter((f) => f.endsWith(".js"))
+      .sort();
+    const orphan = diskJs.filter((f) => !manifest.includes(f));
+    const missing = manifest.filter((f) => !diskJs.includes(f));
+    out.push(
+      assert(
+        "★디스크의 js 파일 집합 == 매니페스트(고아 파일·유령 항목 0)",
+        orphan.length === 0 && missing.length === 0,
+        orphan.length === 0 && missing.length === 0
+          ? `${diskJs.length}개 일치`
+          : `★디스크만(=죽은 파일): ${orphan.join(",") || "-"} / 매니페스트만(=파일 없음): ${missing.join(",") || "-"}`,
+      ),
+    );
+
     // 대조군 — 이 검사가 실제로 뭔가를 보고 있다는 증거(정의 지도가 비면 위 단언은 공짜다).
     out.push(
       assert(

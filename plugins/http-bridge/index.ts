@@ -2829,6 +2829,15 @@ class HttpBridge implements Channel, Observer {
           route(epMsg, {
             // restricted(기본) → 도구 0. full(소유자 명시) → undefined = 전체 도구.
             toolPolicy: ep.mode === "restricted" ? { mode: "none" } : undefined,
+            // ★restricted = **순수 백엔드** (2026-08-02) — 도구뿐 아니라 비서 인격·정책도 뺀다.
+            //  종전엔 도구는 0인데 SYSTEM.md 25KB 가 그대로 실렸다. 도구가 없으니 그 대부분
+            //  (도구 사용법·승인 게이트·채널 발신·스킬 라우팅)은 **적용 대상이 아예 없고**,
+            //  남는 건 말투·보고 지시뿐인데 그게 역할과 충돌했다 — 정의 파일이 "순수 JSON 하나만
+            //  반환하세요 / 설명 문장 금지" 같은 **방어 문장**을 쓰고 있었다(역할이 두 번 주어짐).
+            //  LLM 게이트웨이가 이미 같은 이유로 systemPromptOverride 를 쓴다(동형).
+            //  full 은 도구를 쥐므로 헌법(파괴적 작업 승인·권한)을 **유지**한다 — 도구를 주면서
+            //  안전 규칙만 빼는 조합은 만들지 않는다.
+            ...(ep.mode === "restricted" ? { systemPromptOverride: prompt } : {}),
             // 엔드포인트 정의의 실행 프로파일(2026-08-01) — 미지정("")이면 미전달 = 기본 풀.
             //  toolPolicy 운반과 동형: 여기선 정의값을 옮기기만 하고 해석은 코어가 한다.
             ...(ep.model !== "" ? { modelProfile: ep.model } : {}),

@@ -129,7 +129,7 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
     "데이터 기반 커스텀 HTTP 엔드포인트를 만듭니다(슬래시 명령의 HTTP 판). " +
       "<home>/endpoints/<name>.md 정의 파일을 작성하면 http-bridge 가 매-요청 발견해 서빙합니다(재시작 불요). " +
       "prompt 는 엔드포인트가 호출될 때 실행할 프롬프트 템플릿이며, 본문에 $BODY(POST 본문)·$QUERY(쿼리스트링)·$ARGUMENTS($BODY alias) placeholder 를 쓸 수 있습니다. " +
-      "mode 는 기본 restricted(도구 0 — 조회·요약·생성만, 안전). 외부 송신·파일쓰기 같은 전체 도구가 필요하면 사용자가 명시 동의했을 때만 full 로 지정하세요. " +
+      "★mode 가 프롬프트의 성격을 정합니다 — **restricted(기본) 은 순수 백엔드**입니다: 도구 0 + 비서 인격·정책 없음. 이때 prompt 본문이 **그대로 시스템 프롬프트가 되므로 자기완결로 쓰세요** — 역할('당신은 …의 백엔드입니다')·입력 형식·**출력 형식**을 본문 안에 다 적습니다. 반대로 '설명 문장 금지'·'인사말 붙이지 마라' 같은 **방어 문장은 쓰지 마세요**(맞설 인격이 없습니다). **full 은 비서로서 실행**됩니다 — 전체 도구 + 헌법(승인 게이트 포함). 외부 송신·파일쓰기가 필요할 때만, 사용자가 명시 동의했을 때 씁니다. " +
       "호출하려면 bridge 토큰이 필요합니다. 위험할 수 있는 프롬프트(삭제·외부 송신·자동 실행)는 등록 전 사용자 확인을 거치세요.",
     {
       path: z
@@ -139,7 +139,7 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
       prompt: z
         .string()
         .min(1)
-        .describe("엔드포인트 호출 시 실행할 프롬프트 템플릿(본문). $BODY·$QUERY·$ARGUMENTS placeholder 사용 가능."),
+        .describe("엔드포인트 호출 시 실행할 프롬프트 템플릿(본문). $BODY(POST 본문)·$QUERY·$ARGUMENTS placeholder 사용 가능. ★restricted 면 이 본문이 **그대로 시스템 프롬프트**가 된다 — 역할·입력·출력 형식을 자기완결로 담아라."),
       method: z
         .enum(["GET", "POST"])
         .optional()
@@ -151,7 +151,7 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
       mode: z
         .enum(["restricted", "full"])
         .optional()
-        .describe("실행 제한. 기본 restricted(도구 0, 안전). full 은 전체 도구 — 사용자 명시 동의 시에만."),
+        .describe("실행 제한. 기본 restricted = 순수 백엔드(도구 0 + 인격 없음 → prompt 본문이 곧 시스템 프롬프트, 자기완결로 작성). full = 비서로서 실행(전체 도구 + 헌법) — 사용자 명시 동의 시에만."),
       label: z
         .string()
         .optional()
@@ -227,10 +227,12 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
         await fs.mkdir(endpointsDir, { recursive: true });
         await fs.writeFile(filePath, fileBody, "utf8");
 
+        // ★두 갈래를 **같은 말로** 설명한다 — 도구만 말하고 인격을 빼면, 등록한 사람이
+        //  본문을 자기완결로 써야 한다는 걸 모른 채 방어 문장을 계속 쓴다(2026-08-02).
         const modeNote =
           mode === "restricted"
-            ? "실행 모드 restricted(도구 0 — 조회·요약·생성만). 전체 도구가 필요하면 mode: full 로 다시 등록하세요."
-            : "실행 모드 full(전체 도구 — 사용자 동의 하에). 위험 작업에 주의하세요.";
+            ? "실행 모드 restricted = 순수 백엔드(도구 0 + 비서 인격 없음). 위 prompt 본문이 그대로 시스템 프롬프트가 되므로 역할·입력·출력 형식을 본문 안에 자기완결로 두세요. 전체 도구가 필요하면 mode: full 로 다시 등록하세요."
+            : "실행 모드 full = 비서로서 실행(전체 도구 + 헌법·승인 게이트). 위험 작업에 주의하세요.";
         return okText(
           `엔드포인트 '${name}' 를 등록했습니다.\n` +
             `- 경로: ${method} ${routePath}\n` +

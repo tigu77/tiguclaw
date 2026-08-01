@@ -21,7 +21,7 @@ tiguclaw 데몬 외부 dashboard. http-bridge endpoint 통해서만 데몬과 �
 ## 사용
 
 **보통은 아무것도 안 해도 된다** — 데몬이 부팅하면서 `plugins/dashboard`(service capability)가
-이 프로세스를 자동으로 띄운다. 브라우저로 **http://127.0.0.1:3101** 을 열면 끝.
+이 프로세스를 자동으로 띄운다. 브라우저로 **http://127.0.0.1:3000** 을 열면 끝.
 
 따로(수동으로) 띄울 때만:
 
@@ -37,7 +37,7 @@ dashboard 는 두 개의 포트를 다룬다 — 혼동 금지:
 
 | 역할 | env | 기본값 |
 |---|---|---|
-| dashboard 가 **서빙**하는 UI(브라우저로 여는 곳) | `DASHBOARD_PORT` | `3101` |
+| dashboard 가 **서빙**하는 UI(브라우저로 여는 곳) | `DASHBOARD_PORT` | `3000` |
 | dashboard 가 **연결**하는 http-bridge | `HTTP_BRIDGE_PORT` | `3001` |
 
 ★**기본값을 `.env` 에 적어두지 마라.** 적어두는 순간 두 번째 정본이 되고 코드와 갈라진다
@@ -50,14 +50,14 @@ dashboard 는 두 개의 포트를 다룬다 — 혼동 금지:
 것 자체가 곧 접근 권한**이다. 그래서 기본이 로컬 바인딩이다.
 
 폰 등 다른 기기에서 쓰려면 **포트를 열지 말고** Tailscale 같은 사설 네트워크로 터널링하라
-(예: `tailscale serve 3101`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
+(예: `tailscale serve 3000`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
 
 ## 환경변수
 
 - `HTTP_BRIDGE_TOKEN` (필수, read role 이상)
 - `HTTP_BRIDGE_HOST` (기본 `localhost`)
 - `HTTP_BRIDGE_PORT` (연결 대상 bridge 포트, 기본 `3001`)
-- `DASHBOARD_PORT` (UI 서빙 포트, 기본 `3101`)
+- `DASHBOARD_PORT` (UI 서빙 포트, 기본 `3000`)
 - `DASHBOARD_HOST` (바인딩 주소, 기본 `127.0.0.1`)
 
 ## 외부 작성자 — 자기 dashboard 만들기

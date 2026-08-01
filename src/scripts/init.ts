@@ -406,10 +406,10 @@ HTTP_BRIDGE_TOKEN=${a.httpBridgeToken}
 # HTTP_BRIDGE_PORT=3001
 
 # ── 대시보드 ────────────────────────────────────────────────────
-# 브라우저로 http://127.0.0.1:3101 을 열면 웹 대시보드입니다.
+# 브라우저로 http://127.0.0.1:3000 을 열면 웹 대시보드입니다.
 # 127.0.0.1 에만 바인딩됩니다 — 다른 기기에서 쓰려면 포트를 열지 말고 사설 네트워크로
-# 터널링하세요(예: tailscale serve 3101).
-# DASHBOARD_PORT=3101
+# 터널링하세요(예: tailscale serve 3000).
+# DASHBOARD_PORT=3000
 
 # ── LLM 게이트웨이 (선택) ───────────────────────────────────────
 # 다른 로컬 앱이 tiguclaw 멀티LLM 백엔드를 OpenAI 호환으로 씀: POST /v1/chat/completions
@@ -459,7 +459,7 @@ const main = async (): Promise<void> => {
   const telegram = await collectTelegram();
 
   console.log("");
-  console.log("[4/4] 포트 = 코드 기본값 사용 (브리지 3001 · 대시보드 3101).");
+  console.log("[4/4] 포트 = 코드 기본값 사용 (브리지 3001 · 대시보드 3000).");
   console.log("  ℹ️  바꾸려면 .env 의 해당 주석을 푸세요(적어두지 않는 게 기본 — 갈라집니다).");
 
   const tier = TIER_DEFAULTS[provider];
@@ -499,7 +499,7 @@ const main = async (): Promise<void> => {
   console.log("  ③ `npm run daemon:install` (상시 데몬) 또는 `npm run dev` (개발)로 실행하세요.");
   console.log("  ④ `npm run doctor` 로 설정을 검증하세요.");
   console.log("  ⑤ 텔레그램에서 봇에게 메시지를 보내 응답을 확인하세요.");
-  console.log("  ⑥ 브라우저로 http://127.0.0.1:3101 — 웹 대시보드(채팅·진행 상황·백그라운드 작업).");
+  console.log("  ⑥ 브라우저로 http://127.0.0.1:3000 — 웹 대시보드(채팅·진행 상황·백그라운드 작업).");
   console.log("");
   console.log("  ★ .env 는 절대 커밋·공유하지 마세요 (실 토큰 포함).");
   console.log("");

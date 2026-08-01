@@ -86,6 +86,18 @@ npm run onboard   # interactive setup → .env → (codex) login → service →
 
 That's it. `onboard` walks you through everything: pick your LLM, paste a key (or drop in a Telegram bot token), and it writes the `.env`, registers the always-on service, and runs a health check. Then just **message your Telegram bot** and it replies. (Only the owner ID you entered is allowed — an empty allowlist keeps the bot locked.)
 
+### Open the dashboard
+
+The daemon starts the web dashboard for you — there is no separate command. Once it's running:
+
+**http://127.0.0.1:3101**
+
+That's the full chat UI: live tool steps, streaming replies, session tabs, the background-jobs panel. Change the port with `DASHBOARD_PORT` in your `.env` if 3101 is taken.
+
+> **It's local-only on purpose.** The dashboard binds to `127.0.0.1`, and there's no browser login — the bridge token is injected server-side and never reaches the page, so *reaching the port is the permission*. To use it from your phone, don't open the port: tunnel it over a private network (e.g. `tailscale serve 3101`). Set `DASHBOARD_HOST=0.0.0.0` only if you know what that costs.
+
+If the dashboard isn't there, the usual cause is a missing `HTTP_BRIDGE_TOKEN` — the daemon logs `dashboard: HTTP_BRIDGE_TOKEN not set … spawn skipped`. `npm run onboard` generates one; `npm run doctor` checks it.
+
 ### Pick a provider
 
 | Provider | How |

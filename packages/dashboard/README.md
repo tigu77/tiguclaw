@@ -20,28 +20,45 @@ tiguclaw 데몬 외부 dashboard. http-bridge endpoint 통해서만 데몬과 �
 
 ## 사용
 
-1. 데몬 부팅: `npm run dev` (다른 터미널). dev http-bridge 는 `.env HTTP_BRIDGE_PORT`(현재 `3000`) 에서 서빙.
-2. http-bridge token 확인 — 데몬 부팅 로그의 ephemeral token 또는 `.env HTTP_BRIDGE_TOKEN` 설정. read 토큰이면 충분(`npm run bridge:grant -- --label dash --role read`).
-3. `npm run dashboard` (이 터미널). `--env-file=.env` 라 `.env` 의 `DASHBOARD_PORT`·`HTTP_BRIDGE_PORT`·`HTTP_BRIDGE_TOKEN` 을 자동 공유.
-4. 브라우저: `http://localhost:3002` (현재 `.env DASHBOARD_PORT=3002`).
+**보통은 아무것도 안 해도 된다** — 데몬이 부팅하면서 `plugins/dashboard`(service capability)가
+이 프로세스를 자동으로 띄운다. 브라우저로 **http://127.0.0.1:3101** 을 열면 끝.
 
-## 포트 분리 (충돌 회피)
+따로(수동으로) 띄울 때만:
+
+1. 데몬 부팅: `npm run dev` 또는 `npm run daemon:install` (다른 터미널).
+2. `HTTP_BRIDGE_TOKEN` 이 `.env` 에 있어야 한다(`npm run onboard` 가 자동 생성). 없으면
+   플러그인이 spawn 을 건너뛴다. 직접 발급하려면 read 토큰이면 충분 —
+   `npm run bridge:grant -- --label dash --role read`.
+3. `npm run dashboard` (이 터미널). `--env-file=.env` 라 `.env` 의 포트·토큰을 자동 공유.
+
+## 포트 (충돌 회피)
 
 dashboard 는 두 개의 포트를 다룬다 — 혼동 금지:
 
-| 역할 | env | 현재 dev 값 |
+| 역할 | env | 기본값 |
 |---|---|---|
-| dashboard 가 **연결**하는 http-bridge | `HTTP_BRIDGE_PORT` | `3000` (dev 데몬) |
-| dashboard 가 **서빙**하는 UI | `DASHBOARD_PORT` | `3002` |
+| dashboard 가 **서빙**하는 UI(브라우저로 여는 곳) | `DASHBOARD_PORT` | `3101` |
+| dashboard 가 **연결**하는 http-bridge | `HTTP_BRIDGE_PORT` | `3001` |
 
-설치본 bridge `3001` / dev bridge `3000` / dashboard UI `3002` — 셋 분리.
+★**기본값을 `.env` 에 적어두지 마라.** 적어두는 순간 두 번째 정본이 되고 코드와 갈라진다
+(그렇게 갈라진 적이 있다). 바꿀 때만 적는다 — 회귀 `dashboard-port-truth` 가 이걸 지킨다.
+
+## 바인딩 — 로컬 전용이 기본
+
+`DASHBOARD_HOST` 기본값은 `127.0.0.1` 이라 **같은 기계에서만** 열린다. 브라우저에는 로그인이
+없다 — bridge 토큰은 서버 쪽에서 주입되고 브라우저엔 노출되지 않으므로, **이 포트에 닿는
+것 자체가 곧 접근 권한**이다. 그래서 기본이 로컬 바인딩이다.
+
+폰 등 다른 기기에서 쓰려면 **포트를 열지 말고** Tailscale 같은 사설 네트워크로 터널링하라
+(예: `tailscale serve 3101`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
 
 ## 환경변수
 
 - `HTTP_BRIDGE_TOKEN` (필수, read role 이상)
-- `HTTP_BRIDGE_HOST` (디폴트 `localhost`)
-- `HTTP_BRIDGE_PORT` (연결 대상 bridge 포트, 코드 디폴트 `3001` / dev `.env`=`3000`)
-- `DASHBOARD_PORT` (UI 서빙 포트, 코드 디폴트 `3000` / dev `.env`=`3002`)
+- `HTTP_BRIDGE_HOST` (기본 `localhost`)
+- `HTTP_BRIDGE_PORT` (연결 대상 bridge 포트, 기본 `3001`)
+- `DASHBOARD_PORT` (UI 서빙 포트, 기본 `3101`)
+- `DASHBOARD_HOST` (바인딩 주소, 기본 `127.0.0.1`)
 
 ## 외부 작성자 — 자기 dashboard 만들기
 

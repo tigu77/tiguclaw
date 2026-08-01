@@ -599,6 +599,8 @@
       .act-diff-pre .dl { white-space:pre; display:block; padding:0 2px; border-radius:2px; color:var(--text-mute); }
       .act-diff-pre .dl-add { background:rgba(63,185,80,.15); }
       .act-diff-pre .dl-del { background:rgba(248,81,73,.15); }
+      /* 줄 번호 거터 — 코드보다 흐리게(위치 참조지 내용이 아니다) + 선택 불가(복사에 안 섞이게). */
+      .act-diff-pre .dl-no { user-select:none; color:var(--text-dim); opacity:.55; margin-right:6px; }
       /* op 접두(+/-)만 초록/빨강으로 +/- 신호 유지, 코드부(.dl-code)는 hljs 토큰 색이 오버라이드. */
       .act-diff-pre .dl-op { user-select:none; }
       .act-diff-pre .dl-add .dl-op { color:#7ee787; }

@@ -451,6 +451,13 @@ export interface ActivityDiff {
   lines: ActivityDiffLine[];
   /** `lines` 가 크기 캡으로 잘렸나. added/removed 카운트는 총계 유지. */
   truncated?: boolean;
+  /**
+   * 이 diff 가 **파일의 몇 번째 줄에서 시작**하는가(1-based). 구할 수 없으면 생략.
+   *
+   * ★못 구하면 **생략한다** — 지어내지 않는다. 파일이 없거나(도구 실행 후 관측), 너무 크거나,
+   *  `old_string` 이 안 맞으면 없는 채로 간다. 화면은 번호 없이 그리면 그만이다.
+   */
+  startLine?: number;
 }
 
 /** diff 한 줄 — op(+추가/-삭제/공백=context) + 텍스트(개행 제외). */

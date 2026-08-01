@@ -12,6 +12,7 @@
  */
 
 import { diffLines } from "diff";
+import fs from "node:fs";
 import type { ActivityDiff, ActivityDiffLine } from "../types.js";
 
 /** 렌더용 줄 수 상한 — 초과 시 컷 + truncated. 스트림 위생. */
@@ -20,6 +21,52 @@ const MAX_LINES = 60;
 const MAX_CHARS = 6000;
 /** 한 줄 폭 상한 — 초과 시 컷(diff 줄 하나가 미니파이 파일 전체인 경우). */
 const LINE_MAX = 400;
+
+/**
+ * 파일을 읽어 위치를 구할 때의 크기 상한. 초과하면 **번호를 포기**한다.
+ *
+ * ★실측(2026-08-01): 15KB 0.07ms · 131KB 0.64ms · 1MB 4.0ms · **4MB 18.9ms**.
+ *  선형이고 상한이 없으면 오늘 고친 jsonl 전량 재읽기(47ms 정지)와 같은 병이 된다.
+ *  화면 표시용 편의 기능이 상시 데몬을 멎게 할 수는 없다 — 2MB 에서 끊는다(최악 ~9ms).
+ */
+const LINE_LOOKUP_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * `needle` 이 `content` 의 **몇 번째 줄에서 시작**하는가(1-based). 없으면 null — 순수 함수.
+ *
+ * ★두 어댑터가 각자 계산하지 않게 여기 하나만 둔다. claude 는 SDK 네이티브 Edit,
+ *  codex 는 file-ops Edit 이라 실행 경로는 다르지만 **diff 는 이 빌더가 공유**한다.
+ */
+export function lineOfMatch(content: string, needle: string): number | null {
+  if (needle === "") return null;
+  const i = content.indexOf(needle);
+  if (i < 0) return null;
+  let line = 1;
+  for (let k = 0; k < i; k += 1) if (content.charCodeAt(k) === 10) line += 1;
+  return line;
+}
+
+/**
+ * 편집 대상 파일에서 시작 줄을 구한다. **못 구하면 undefined**(지어내지 않는다).
+ *
+ * ★타이밍: 관측(diff 생성)은 도구 **실행 전**에 일어난다 — 라이브 이벤트로 확인했다
+ *  (diff 이벤트 → +27ms → tool end). 그래서 이 시점 파일엔 아직 `old_string` 이 있다.
+ *  실행 후였다면 못 찾고 undefined 로 떨어질 뿐, 틀린 번호를 만들지는 않는다.
+ *
+ * ★`replace_all` 처럼 매칭이 여럿이면 **첫 번째**다. diff 카드가 보여주는 게 한 덩어리이므로
+ *  "이 diff 가 시작하는 곳" 으로는 맞다. 나머지 위치까지 표시하려면 diff 구조 자체가
+ *  덩어리(hunk) 목록이어야 하는데, 그건 지금 필요한 게 아니다.
+ */
+function startLineOf(path: unknown, oldStr: string): number | undefined {
+  if (typeof path !== "string" || path === "" || oldStr === "") return undefined;
+  try {
+    const st = fs.statSync(path);
+    if (!st.isFile() || st.size > LINE_LOOKUP_MAX_BYTES) return undefined;
+    return lineOfMatch(fs.readFileSync(path, "utf8"), oldStr) ?? undefined;
+  } catch {
+    return undefined; // 파일 없음·권한·바이너리 — 번호 없이 간다.
+  }
+}
 
 function clipLine(s: string): string {
   return s.length > LINE_MAX ? s.slice(0, LINE_MAX - 1) + "…" : s;
@@ -38,6 +85,7 @@ function capped(
   added: number,
   removed: number,
   path: string | undefined,
+  startLine?: number,
 ): ActivityDiff {
   let truncated = false;
   const out: ActivityDiffLine[] = [];
@@ -53,6 +101,7 @@ function capped(
   }
   return {
     ...(path !== undefined ? { path } : {}),
+    ...(startLine !== undefined ? { startLine } : {}),
     added,
     removed,
     lines: out,
@@ -84,7 +133,7 @@ function editDiff(input: Record<string, unknown>): ActivityDiff | undefined {
     }
   }
   if (rows.length === 0) return undefined;
-  return capped(rows, added, removed, path);
+  return capped(rows, added, removed, path, startLineOf(path, oldStr));
 }
 
 /** Write: 쓴 내용 전부 추가(before 는 관측 시점에 없음 — I/O 결합 회피). */
@@ -100,7 +149,8 @@ function writeDiff(input: Record<string, unknown>): ActivityDiff | undefined {
   const lines = toLines(content);
   if (lines.length === 0) return undefined;
   const rows: ActivityDiffLine[] = lines.map((text) => ({ op: "+" as const, text }));
-  return capped(rows, lines.length, 0, path);
+  // 파일 전체를 새로 쓰는 것이므로 **1번 줄부터**다 — 읽을 필요 없이 확정이다.
+  return capped(rows, lines.length, 0, path, 1);
 }
 
 /**

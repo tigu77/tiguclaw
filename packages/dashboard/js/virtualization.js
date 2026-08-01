@@ -520,6 +520,40 @@
 
       // 리치 diff 블록(Edit/Write, ADR 2026-07-09) — 접이식 초록·빨강 diff. 라이브 스텝·
       // 이력 줄 공용. 캡처(런타임)가 구조화한 diff 를 여기선 *렌더*만(초록/빨강 뷰=채널 몫).
+      /**
+       * diff 각 줄의 **파일 내 줄 번호** — 순수 함수(DOM 안 봄. 그래서 검사 가능하다).
+       *
+       * ★한 칸에 두 체계를 섞지 않는다. 편집 후 파일 기준 번호만 쓰고, **지워진 줄은
+       *  번호가 없다**(결과 파일에 그 줄이 없으므로 — 있는 척하면 클릭해 가 봤을 때 딴 줄이다).
+       *  삭제 위치는 앞뒤 문맥 줄 번호와 헤더의 시작 줄로 읽힌다.
+       *
+       * @param lines ActivityDiffLine[] — {op,text}
+       * @param startLine 이 diff 가 시작하는 파일 줄(1-based). 없으면 전부 null.
+       * @returns lines 와 같은 길이의 (번호|null) 배열
+       */
+      const diffLineNos = (lines, startLine) => {
+        const rows = Array.isArray(lines) ? lines : [];
+        if (typeof startLine !== "number" || !(startLine >= 1)) return rows.map(() => null);
+        let n = Math.floor(startLine);
+        return rows.map((ln) => {
+          const op = ln && ln.op;
+          if (op === "-") return null;   // 결과 파일엔 없는 줄
+          const cur = n; n += 1;
+          return cur;
+        });
+      };
+
+      /**
+       * 번호 칸의 폭 — 번호가 **하나도 없으면 0**(칸 자체를 만들지 않는다).
+       *
+       * ★`Math.max(0, ...)` 로 뭉뚱그리면 번호가 없어도 폭 1 이 나와 빈 칸이 생긴다
+       *  (실제로 그랬다 — 헤드리스 실측에서 잡았다). 없음과 0 은 다른 것이다.
+       */
+      const diffNoWidth = (nos) => {
+        const known = (nos || []).filter((x) => typeof x === "number");
+        return known.length === 0 ? 0 : String(Math.max.apply(null, known)).length;
+      };
+
       const buildDiffBlock = (diff) => {
         const wrap = document.createElement("div");
         wrap.className = "act-diff";
@@ -530,7 +564,9 @@
         head.appendChild(caret);
         if (diff.path) {
           const ps = document.createElement("span");
-          ps.className = "act-diff-path"; ps.textContent = diff.path;
+          ps.className = "act-diff-path";
+          // 경로 옆에 시작 줄 — 에디터에서 `파일:줄` 로 바로 찾아가는 관습 그대로.
+          ps.textContent = diff.path + (typeof diff.startLine === "number" ? ":" + diff.startLine : "");
           head.appendChild(ps);
         }
         const stat = document.createElement("span");
@@ -546,12 +582,24 @@
         const pre = document.createElement("pre");
         pre.className = "act-diff-pre";
         const lang = hlLangFromPath(diff.path); // 경로 확장자로 언어 판별(있으면 코드부 하이라이트).
+        const nos = diffLineNos(diff.lines, diff.startLine);
+        // 번호 폭은 가장 큰 번호에 맞춘다(줄마다 들쭉날쭉하면 코드가 계단처럼 흔들린다).
+        const noW = diffNoWidth(nos);
+        let li = -1;
         for (const ln of (diff.lines || [])) {
+          li += 1;
           const row = document.createElement("div");
           const op = ln.op === "+" ? "add" : ln.op === "-" ? "del" : "ctx";
           row.className = "dl dl-" + op;
           const text = ln.text != null ? ln.text : "";
           // op 접두(+/-/공백)는 색 신호로 유지, 코드부는 hljs 로 언어별 하이라이트(줄 단위).
+          // 번호가 없으면(파일을 못 읽음·상한 초과) 거터 자체를 안 만든다 — 빈 칸만 남기지 않는다.
+          if (noW > 0) {
+            const noSpan = document.createElement("span");
+            noSpan.className = "dl-no";
+            noSpan.textContent = String(nos[li] == null ? "" : nos[li]).padStart(noW, "\u00a0");
+            row.appendChild(noSpan);
+          }
           const opSpan = document.createElement("span");
           opSpan.className = "dl-op"; opSpan.textContent = (ln.op || " ") + " ";
           const codeSpan = document.createElement("span");

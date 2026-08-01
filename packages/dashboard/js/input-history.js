@@ -48,10 +48,45 @@
       let histCursor = null;   // null = 히스토리 밖
       let histDraft = "";      // 히스토리 진입 시 쓰고 있던 텍스트
       let histThread = null;   // 커서가 속한 탭 — 바뀌면 리셋(탭마다 독립)
+      let histApplying = false; // 우리가 값을 넣는 중 — 아래 input 리스너가 자기 이벤트에 반응 금지
 
       // 커서를 놓는다 — 사용자가 직접 입력하거나 전송하면 히스토리 밖으로.
-      const histReset = () => { histCursor = null; histDraft = ""; };
+      // 위치 표시 — 탐색 중에만. 클로드코드 웹과 같은 자리·같은 뜻("몇 번째 / 전체").
+      //  1-based, 오래된 것이 1. 밖으로 나오면 숨긴다(상시 노출은 소음이다).
+      const histRender = (total, cursor) => {
+        const el = document.getElementById("chat-histind");
+        if (!el) return;
+        if (cursor === null || total === 0) { el.hidden = true; el.textContent = ""; return; }
+        el.textContent = `히스토리 ${cursor + 1}/${total}`;
+        el.hidden = false;
+      };
+      const histReset = () => { histCursor = null; histDraft = ""; histRender(0, null); };
       window.histReset = histReset; // 전송 후 chat-send 가 호출.
+
+      /**
+       * **개입할 것인가** — 순수 판정(DOM 안 봄. 그래서 검사 가능하다).
+       *
+       * 이 기능의 어려운 부분은 "불러오기" 가 아니라 **언제 손대지 않는가** 다.
+       * @param k        키 이름
+       * @param composing IME 조합 중인가(한글) — 조합을 깨면 안 된다
+       * @param selStart/selEnd 선택 영역(다르면 사용자가 고르는 중)
+       * @param value    현재 입력값
+       * @param cursor   현재 히스토리 커서(null=밖)
+       * @returns -1(위) / +1(아래) / 0(개입 안 함)
+       */
+      const historyIntent = (k, composing, selStart, selEnd, value, cursor) => {
+        if (k !== "ArrowUp" && k !== "ArrowDown") return 0;
+        if (composing) return 0;                 // IME 조합 중
+        if (selStart !== selEnd) return 0;       // 선택 중
+        const up = k === "ArrowUp";
+        // 여러 줄 편집: 커서가 첫 줄(↑)·마지막 줄(↓)이 아니면 커서 이동이 우선.
+        if (up && value.slice(0, selStart).includes("\n")) return 0;
+        if (!up && value.slice(selStart).includes("\n")) return 0;
+        // ★쓰고 있는 입력이 있으면 진입하지 않는다. 단 **이미 탐색 중이면** 계속한다 —
+        //  "비어 있을 때만" 으로 쓰면 불러온 값 때문에 두 번째 ↑ 부터 막힌다.
+        if (cursor === null && value !== "") return 0;
+        return up ? -1 : 1;
+      };
 
       /**
        * ↑/↓ 처리. 가로챘으면 true(호출부가 그대로 return).
@@ -64,35 +99,41 @@
        *  (슬래시 팝업이 ↑/↓ 를 쓰는 경우는 호출부가 먼저 가로챈다 — perf.js 참조.)
        */
       const historyKeydown = (e, input) => {
-        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return false;
-        if (e.isComposing) return false;
-        if (input.selectionStart !== input.selectionEnd) return false;
-        const pos = input.selectionStart;
-        const val = input.value;
-        const up = e.key === "ArrowUp";
-        if (up && val.slice(0, pos).includes("\n")) return false;   // 첫 줄이 아니다.
-        if (!up && val.slice(pos).includes("\n")) return false;     // 마지막 줄이 아니다.
-
         if (histThread !== activeThreadKey) { histReset(); histThread = activeThreadKey; }
-        if (histCursor === null) histDraft = val; // 진입 순간의 입력을 보관(돌아올 자리).
-
-        const r = historyStep(sessionInputs(), histCursor, up ? -1 : 1, histDraft);
+        const dir = historyIntent(
+          e.key, e.isComposing, input.selectionStart, input.selectionEnd, input.value, histCursor,
+        );
+        if (dir === 0) return false;
+        const up = dir < 0;
+        const entries = sessionInputs();
+        const r = historyStep(entries, histCursor, dir, histDraft);
         if (r.text === null) {
           histCursor = r.cursor;
+          histRender(entries.length, r.cursor);
           return r.cursor !== null || !up; // 기록 0 인데 ↑ 면 기본 동작 유지(커서 이동).
         }
         e.preventDefault();
         histCursor = r.cursor;
         input.value = r.text;
+        histRender(entries.length, r.cursor);
         // 커서를 끝으로 — 셸과 같다(바로 이어 쓰거나 지울 수 있게).
         input.selectionStart = input.selectionEnd = r.text.length;
         // 높이 재계산 + 슬래시 등 동기 — mic-input 의 삽입 경로와 **같은 방식**을 쓴다
         //  (grow-wrap ::after 복제 갱신, 레이아웃 읽기 없음). 두 곳이 다르면 한쪽만 어긋난다.
+        histApplying = true;
         try {
           if (input.parentElement && input.parentElement.dataset) {
             input.parentElement.dataset.replicatedValue = input.value;
           }
           input.dispatchEvent(new Event("input", { bubbles: true }));
-        } catch { /* noop */ }
+        } catch { /* noop */ } finally { histApplying = false; }
         return true;
       };
+
+      // 사용자가 직접 타이핑하면 탐색에서 나온다 — 표시기도 같이 사라져야 한다.
+      //  ★우리가 값을 넣으며 발생시킨 input 이벤트에는 반응하지 않는다(histApplying).
+      //   구분 안 하면 불러오자마자 스스로 리셋해 표시기가 한 번도 안 보인다.
+      (() => {
+        const el = document.getElementById("chat-input");
+        if (el) el.addEventListener("input", () => { if (!histApplying && histCursor !== null) histReset(); });
+      })();

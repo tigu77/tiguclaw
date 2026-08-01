@@ -1055,6 +1055,10 @@
       .chat-bg-active { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:6px 11px; border:1px solid rgba(52,211,153,.4); background:rgba(52,211,153,.10); border-radius:999px; font-size:11px; font-weight:700; color:var(--good); cursor:pointer; align-self:flex-start; }
       .chat-bg-active:hover { border-color:var(--good); background:rgba(52,211,153,.16); }
       .chat-bg-active[hidden] { display:none; }
+      /* 입력 히스토리 위치(↑/↓ 탐색 중). 워커 스트립과 같은 레인·같은 pill 이되 중립색 —
+         상태 알림이 아니라 위치 표시라 시선을 끌면 안 된다. */
+      .chat-histind { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:5px 10px; border:1px solid var(--border); background:var(--card); border-radius:999px; font-size:11px; font-weight:700; color:var(--text-mute); font-variant-numeric:tabular-nums; align-self:flex-start; }
+      .chat-histind[hidden] { display:none; }
       /* 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) — 워커 스트립(위 .chat-bg-active
          초록)과 별도 레인·별도 색(청록, .act-shell-chip 과 동일 팔레트로 "이건 셸" 일관 신호). */
       .chat-shell-active { border-color:rgba(45,212,191,.4); background:rgba(45,212,191,.10); color:var(--teal); }

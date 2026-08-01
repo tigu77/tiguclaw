@@ -46,6 +46,7 @@ export const check: RegressionCheck = {
     // 순수 함수만 잘라 평가한다(나머지는 DOM 전역을 만진다). 잘라내기가 실패하면
     // 아래 단언들이 전부 빨간불이 되므로 조용히 통과하지 않는다.
     const m = /const historyStep = \([\s\S]*?\n {6}\};/.exec(src);
+    const mi = /const historyIntent = \([\s\S]*?\n {6}\};/.exec(src);
     out.push(
       assert(
         "판정 함수를 실제 배포 파일에서 꺼낸다(문자열 확인 아님)",
@@ -58,6 +59,19 @@ export const check: RegressionCheck = {
     vm.createContext(ctx);
     vm.runInContext(`${m[0]}\nthis.historyStep = historyStep;`, ctx);
     const step = ctx.historyStep as HistoryStep;
+    const ctx2: { historyIntent?: (...a: unknown[]) => number } = {};
+    vm.createContext(ctx2);
+    if (mi !== null) vm.runInContext(`${mi[0]}\nthis.historyIntent = historyIntent;`, ctx2);
+    const intent = ctx2.historyIntent as (
+      k: string, composing: boolean, s0: number, s1: number, v: string, c: number | null,
+    ) => number;
+    out.push(
+      assert(
+        "개입 판정 함수도 배포 파일에서 꺼낸다",
+        mi !== null && typeof intent === "function",
+        mi === null ? "★historyIntent 못 찾음" : "확보",
+      ),
+    );
 
     const E = ["첫 질문", "두번째", "세번째"]; // 오래된→최신
 
@@ -130,6 +144,31 @@ export const check: RegressionCheck = {
         `cursor=${String(empty.cursor)} text=${String(empty.text)}`,
       ),
     );
+
+    // ★⑤ **언제 손대지 않는가** — 이 기능의 어려운 절반. 하나라도 틀리면 입력이 망가진다.
+    if (typeof intent === "function") {
+      const cases: Array<[string, number, string]> = [
+        // [설명, 기대값, 실제]
+        ["빈 칸에서 ↑ 는 진입한다", -1, String(intent("ArrowUp", false, 0, 0, "", null))],
+        ["★쓰던 입력이 있으면 ↑ 가 진입하지 않는다", 0, String(intent("ArrowUp", false, 3, 3, "쓰는중", null))],
+        ["★이미 탐색 중이면 값이 있어도 계속 탐색한다", -1, String(intent("ArrowUp", false, 3, 3, "세번째", 2))],
+        ["★IME 조합 중엔 개입하지 않는다", 0, String(intent("ArrowUp", true, 0, 0, "", null))],
+        ["★선택 영역이 있으면 개입하지 않는다", 0, String(intent("ArrowUp", false, 0, 2, "", null))],
+        ["★여러 줄에서 커서가 첫 줄이 아니면 ↑ 는 커서 이동", 0, String(intent("ArrowUp", false, 6, 6, "첫줄\n둘째", 1))],
+        ["★여러 줄에서 커서가 마지막 줄이 아니면 ↓ 는 커서 이동", 0, String(intent("ArrowDown", false, 1, 1, "첫줄\n둘째", 1))],
+        ["다른 키는 무관", 0, String(intent("Enter", false, 0, 0, "", null))],
+      ];
+      const bad = cases.filter(([, want, got]) => String(want) !== got);
+      out.push(
+        assert(
+          `★개입 판정 ${cases.length}종이 옳다(손대지 말아야 할 때 안 댄다)`,
+          bad.length === 0,
+          bad.length === 0
+            ? `${cases.length}종 전부 정확`
+            : bad.map(([d, w, g]) => `${d}: 기대 ${w} 실제 ${g}`).join(" / "),
+        ),
+      );
+    }
 
     // ★④ 배선 — 슬래시 팝업보다 **뒤**여야 한다. 순서가 뒤집히면 슬래시 목록 탐색이 죽는다.
     const { sourceOrder } = await import("./_wiring.js");

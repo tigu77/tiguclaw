@@ -130,6 +130,8 @@
                러닝 카운트, 누르면 백그라운드 드로어를 열고 셸 섹션으로 포커스(view-shells.js
                showShells → openBg). background-drawer.js refreshShellStrip 이 갱신. -->
           <button id="chat-shell-active" class="chat-bg-active chat-shell-active" type="button" hidden title="셸 보기"></button>
+          <!-- 입력 히스토리 위치 표시(↑/↓ 탐색 중에만). 클로드코드 웹과 같은 자리·같은 뜻. -->
+          <div id="chat-histind" class="chat-histind" hidden aria-live="polite"></div>
           <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
             <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>

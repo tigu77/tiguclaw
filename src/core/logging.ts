@@ -151,8 +151,22 @@ export const initFileLogging = (): string | null => {
 
   for (const [level, original] of levels) {
     console[level] = (...args: unknown[]): void => {
+      // ★소독을 **터미널 경로에도** 건다 (2026-07-31 3차 검토, A4d).
+      //  이전에는 `original(...args)` 로 원문을 그대로 흘렸다. 그런데 데몬의 stdout/stderr 는
+      //  launchd 가 받아 같은 `logs/` 폴더의 `launchd.out.log`·`launchd.err.log` 로 **파일에
+      //  쌓인다** — 즉 "파일 미러만 소독" 은 소독이 아니었다(실측: 과거 234건을 손으로 스크럽).
+      //  아래 주석이 "모든 모듈이 자동으로 덮인다" 고 말하는데 절반만 참이었다.
+      //  한 번 만들어 두 경로가 같은 문자열을 쓴다 — 두 번 포맷하지 않는다.
+      const line = ((): string => {
+        try {
+          return redactSecrets(format(...args));
+        } catch {
+          // 소독이 실패하면 원문을 흘리지 않는다 — 유출은 비가역, 로그 한 줄은 아니다.
+          return "[logging] 소독 실패 — 원문 생략(시크릿 유출 방지)";
+        }
+      })();
       // 원래 동작(터미널) 먼저 — 미러 실패가 정상 출력을 막지 않게.
-      original(...args);
+      original(line);
       try {
         const now = new Date();
         // ★파일에 쓰기 **직전**에 소독한다 (2026-07-31 전체검토 P0).
@@ -165,14 +179,34 @@ export const initFileLogging = (): string | null => {
         //  찍었다 — 실측 234회 이상(launchd.err.log 포함). 로그는 이 프로젝트의 1차
         //  진단면이라 사람이 복사·붙여넣는 게 정상 절차이고, 그 순간 봇 전권이 넘어간다.
         //  비용 실측: 줄당 50µs(길이 무관). 하루 ~1.3만 줄 = 0.65s/일 — 수용 가능.
-        currentStream(now).write(
-          `[${localStamp(now)}] [${level}] ${redactSecrets(format(...args))}\n`,
-        );
+        //  남은 갭(정직하게): node 가 uncaughtException 스택을 **console 을 거치지 않고**
+        //  직접 stderr 로 찍는 경로는 여기로 안 온다 — 그건 `logFatal` 이 따로 받는다.
+        currentStream(now).write(`[${localStamp(now)}] [${level}] ${line}\n`);
       } catch {
         /* 미러 실패 — 무시 (원래 출력은 이미 됨) */
       }
     };
   }
+
+  // ★node 프로세스 경고를 `[error]` 에서 끌어낸다 (2026-08-01 A4c 형제).
+  //  node 기본 리스너는 `process.emitWarning` 을 stderr 로 보내고, 그게 우리 미러에서
+  //  `[error]` 로 찍혔다 — 12일치 실측 **527줄**(에러 로그의 두 번째 큰 덩어리)이
+  //  전부 전이 의존성의 `punycode` DeprecationWarning 하나였다. 경고는 경고지 에러가 아니고,
+  //  같은 경고가 매 부팅 반복되면 배경 소음이 돼 **진짜 사고를 덮는다**.
+  //  버리지는 않는다 — `MaxListenersExceededWarning` 처럼 진짜 신호인 경고가 있다.
+  //  레벨을 `warn` 으로 내리고, **부팅당 같은 경고는 한 번만** 남긴다(반복은 센다).
+  const warnSeen = new Map<string, number>();
+  process.removeAllListeners("warning"); // 기본(stderr 직행) 리스너 교체.
+  process.on("warning", (w: Error) => {
+    const key = `${w.name}: ${w.message}`;
+    const n = (warnSeen.get(key) ?? 0) + 1;
+    warnSeen.set(key, n);
+    if (n === 1) console.warn(`[node-warning] ${key}`);
+    else if (n === 10 || n % 100 === 0) {
+      // 반복 자체가 신호일 때만 다시 말한다(누수 의심 등) — 수치를 실어서.
+      console.warn(`[node-warning] ${w.name} 반복 ${n}회 — ${w.message.slice(0, 80)}`);
+    }
+  });
 
   return logFile;
 };

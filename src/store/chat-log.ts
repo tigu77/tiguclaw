@@ -51,6 +51,13 @@ export interface ChatLogEntry {
   notice?: boolean;
   /** 이 답변에 **실제로 응답한 모델**(어댑터가 보고하면). 사용자 메시지·통지엔 없음. */
   model?: string;
+  /**
+   * 대화 가시 이벤트의 종류(예 `prompt.options`). 미지정 = 일반 메시지(종전 동작).
+   * 프런트가 이 값으로 **라이브와 같은 렌더러**를 고른다 — 문구를 서버가 다시 짓지 않는다.
+   */
+  kind?: string;
+  /** 그 이벤트의 원본 payload. kind 가 있을 때만. */
+  data?: Record<string, unknown>;
 }
 
 interface ChatLogRow {
@@ -62,6 +69,8 @@ interface ChatLogRow {
   attachments: string | null;
   notice: number | null;
   model: string | null;
+  kind: string | null;
+  data: string | null;
 }
 
 /**
@@ -72,12 +81,15 @@ interface ChatLogRow {
  */
 export const recordChatMessage = (row: ChatLogEntry): void => {
   const hasAtt = row.attachments !== undefined && row.attachments.length > 0;
-  if (row.text === "" && !hasAtt) return; // 빈 text·첨부無 = 무의미 로그 스킵(이미지-only 는 통과).
+  const hasKind = typeof row.kind === "string" && row.kind !== "";
+  // 빈 text·첨부無 = 무의미 로그 스킵. 단 **대화 가시 이벤트(kind)는 통과** — 선택지처럼
+  // 본문이 payload 에 있고 text 는 빈 것이 정상인 종류가 있다(이미지-only 메시지와 동형).
+  if (row.text === "" && !hasAtt && !hasKind) return;
   try {
     getDb()
       .prepare(
-        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model, kind, data)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.ts,
@@ -88,6 +100,8 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
         hasAtt ? JSON.stringify(row.attachments) : null,
         row.notice === true ? 1 : null, // null = 종전 행과 동일(비서 발화).
         typeof row.model === "string" && row.model !== "" ? row.model : null,
+        hasKind ? (row.kind as string) : null,
+        row.data !== undefined ? JSON.stringify(row.data) : null,
       );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -133,7 +147,7 @@ export const getRecentChatLog = (opts?: {
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
   const rows = getDb()
     .prepare(
-      `SELECT ts, thread_key, channel, role, text, attachments, notice, model
+      `SELECT ts, thread_key, channel, role, text, attachments, notice, model, kind, data
          FROM chat_log
          ${whereClause}
         ORDER BY ts DESC, id DESC
@@ -150,7 +164,19 @@ export const getRecentChatLog = (opts?: {
       text: r.text,
       ...(r.notice === 1 ? { notice: true } : {}), // 구 행(NULL) = 비서 발화(종전 동작).
       ...(typeof r.model === "string" && r.model !== "" ? { model: r.model } : {}),
+      ...(typeof r.kind === "string" && r.kind !== "" ? { kind: r.kind } : {}),
     };
+    // 손상 JSON 은 조용히 무시 — data 없이라도 나머지는 렌더된다(첨부와 같은 정책).
+    if (r.data !== null && r.data !== "") {
+      try {
+        const parsed: unknown = JSON.parse(r.data);
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          entry.data = parsed as Record<string, unknown>;
+        }
+      } catch {
+        /* 무시 */
+      }
+    }
     if (r.attachments !== null && r.attachments !== "") {
       // 파싱 실패(손상 JSON)는 조용히 무시 — 첨부 없이라도 메시지는 렌더(견고성).
       try {

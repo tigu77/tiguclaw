@@ -18,7 +18,10 @@
  *   **비밀 아닌 PII** 는 원리적으로 못 잡는다. payload 를 애초에 안 만든다.
  *   (실측: 885자 → 45자 / 646자 → 94자, 세 축 전부 ✅)
  */
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";
 
 /**
@@ -76,16 +79,47 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★② 로거가 그 소독을 **실제로 호출한다**(규칙만 있고 안 부르면 무의미).
-    const wired = await sourceHas("../../core/logging.ts", [
-      /import \{ redactSecrets \} from "\.\/outbound-sanitize\.js";/,
-      /\$\{redactSecrets\(format\(\.\.\.args\)\)\}/,
-    ]);
+    // ★② 로거 관문이 **두 출구 모두** 소독한다 — 자식을 띄워 실제 출력을 읽는다.
+    //  (2026-07-31 3차: 여기 있던 정규식은 "redactSecrets 호출이 있다" 만 봤다. 호출은
+    //   있었지만 **파일 미러에만** 걸려 있었고 터미널 경로는 원문을 흘렸다. launchd 가
+    //   그 stdout/stderr 를 같은 logs/ 폴더에 평문 파일로 쌓는다 — 소독이 아니었다.)
+    const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "_log-leak-child.ts");
+    const captured = await within(
+      60_000,
+      "로거 자식 출력 캡처",
+      new Promise<{ out: string; err: string; file: string }>((resolve) => {
+        const p = spawn(process.execPath, ["--import", "tsx", child, SYNTHETIC_TOKEN], {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: process.env,
+        });
+        let so = "";
+        let se = "";
+        p.stdout.on("data", (d: Buffer) => (so += d.toString()));
+        p.stderr.on("data", (d: Buffer) => (se += d.toString()));
+        p.on("close", () => resolve({ out: so, err: se, file: "" }));
+        p.on("error", () => resolve({ out: "", err: "", file: "" }));
+      }),
+    );
+    const cap = "value" in captured ? captured.value : { out: "", err: "", file: "" };
+    const streams = `${cap.out}\n${cap.err}`;
+    const sawOutput = streams.trim() !== "";
     out.push(
       assert(
-        "★로거가 파일에 쓰기 직전 redactSecrets 를 통과시킨다",
-        wired.ok,
-        wired.ok ? "관문 배선 확인" : `누락 ${wired.missing.join(" ")}`,
+        "★터미널 출구(stdout/stderr)에도 시크릿이 안 나간다 — launchd 가 그걸 파일로 쌓는다",
+        sawOutput && !streams.includes(SYNTHETIC_TOKEN),
+        !sawOutput
+          ? "자식이 아무것도 안 찍음 — 검사 불가(하네스 고장)"
+          : streams.includes(SYNTHETIC_TOKEN)
+            ? `★유출: 터미널 출력 ${streams.length}자에 토큰 원문 존재`
+            : `출력 ${streams.length}자 · 토큰 0회 · [REDACTED 표시 ${(streams.match(/\[REDACTED/g) ?? []).length}회`,
+      ),
+    );
+    // 대조군 — 소독이 출력 자체를 삼켜버리면 진단면이 죽는다(과잉 방어 금지).
+    out.push(
+      assert(
+        "대조군 — 소독해도 진단 문구는 남는다(로그를 통째로 죽이지 않는다)",
+        streams.includes("telegram: 발송 실패") && streams.includes("HttpError"),
+        streams.slice(0, 120).replace(/\n/g, "⏎"),
       ),
     );
 

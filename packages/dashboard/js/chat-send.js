@@ -4,8 +4,7 @@
       const attachEl = document.getElementById("chat-attach");
       const fileInput = document.getElementById("chat-file");
       const attachBtn = document.getElementById("chat-attach-btn");
-      const fmtBytes = (b) =>
-        b < 1024 ? b + "B" : b < 1048576 ? Math.round(b / 1024) + "KB" : (b / 1048576).toFixed(1) + "MB";
+      // fmtBytes 는 util.js 로 옮겼다 — history-render.js 가 더 먼저 로드돼 쓴다(2026-07-31).
       const renderAttachChips = () => {
         attachEl.innerHTML = "";
         pendingAttachments.forEach((a, i) => {

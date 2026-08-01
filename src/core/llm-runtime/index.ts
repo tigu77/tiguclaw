@@ -618,10 +618,14 @@ const publishTurnError = (
 ): void => {
   try {
     const detail = errorDetail(e);
+    // 해제 시각 — **등록된 쿨다운을 조회**한다(문자열을 여기서 다시 파싱하지 않는다:
+    //  같은 판단이 두 곳에 생기면 반드시 갈린다). 0 이면 한도 실패가 아니거나 미등록.
+    const remainMs = cooldownRemainingMs(spec);
     const payload: RegionATurnErrorPayload = {
       channel: input.channel,
       threadKey: input.threadKey,
       adapter: adapterLabel(spec.adapter),
+      ...(remainMs > 0 ? { cooldownUntilTs: Date.now() + remainMs } : {}),
       durationMs,
       ok: false,
       errorKind: classifyTurnError(e),
@@ -1095,6 +1099,12 @@ const runPool = async (
       // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
       // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
       // sentinel("uncertain")로 받아 강등하지, self-growth 의 실패 학습 입력이 되면 안 된다.
+      // ★쿨다운 등록을 **발행보다 먼저** 한다 (2026-08-01, 사용자 지적).
+      //  종전엔 발행이 먼저라, 알림을 만드는 시점에 우리도 해제 시각을 **아직 몰랐다** —
+      //  그래서 사용자에게 "언제 풀리는지" 를 못 알려줬다(429 원문은 200자 컷에 `resets_at`
+      //  바로 앞에서 잘려 사람이 읽을 수도 없었다). 등록은 순수 장부라 앞당겨도 안전하고,
+      //  앞당기면 **아는 것을 말할 수 있게** 된다.
+      registerCooldownIfRateLimited(spec, e);
       if (input.internal !== true) {
         publishTurnError(
           spec,
@@ -1113,8 +1123,7 @@ const runPool = async (
       // TurnTimeoutError 는 isModelRejected 비매칭(TT-I3)이라 runRegionA 의 override
       // 자동폴백도 안 타고 핸들러로 직행 → "⏱️ 중단" 정직 보고. 여기서 명시 단락해 깔끔히.
       if (e instanceof TurnTimeoutError) throw e;
-      // rate-limit/사용량한도면 쿨다운 등록(문자열 미매칭 → no-op, 폴백 로직 그대로).
-      registerCooldownIfRateLimited(spec, e);
+      // (쿨다운 등록은 위 turn_error 발행 **전에** 끝났다 — 발행이 해제 시각을 실어야 해서.)
       lastError = e;
       if (effectivePool.length > 1) {
         // ★진단 수치 병기 (2026-07-30) — 종전엔 "무엇이 실패했다"만 있어 **어느 대화가

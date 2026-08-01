@@ -1,5 +1,5 @@
 import { isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
-import "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
+import { flushEnvLoadLog } from "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -17,7 +17,12 @@ import {
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
-import type { Channel, IncomingMessage, MessageHandler } from "./channels/types.js";
+import type {
+  Channel,
+  ChannelName,
+  IncomingMessage,
+  MessageHandler,
+} from "./channels/types.js";
 import { initEventBus, type EventBus } from "./core/eventbus.js";
 import {
   setChannelPresence,
@@ -119,6 +124,10 @@ import {
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
 import {
+  setInflightTurnReporter,
+  notifyInterruptedTurns,
+} from "./core/inflight-turns.js";
+import {
   registerChannelOutbound,
   getChannelOutbound,
   type ChannelOutbound,
@@ -159,6 +168,11 @@ export const modelSpecSanityWarning = (args: string): string | null => {
 // 파일 로깅 최우선 활성화 — 이후 모든 console.*(부팅·plugin·route·handler 스택)가
 // <home>/logs/daemon-<날짜>.log 에 미러됨 (터미널 전용 한계 해소 → 영구 파일, 사후 진단).
 const logFile = initFileLogging();
+
+// ★env 로드 요약을 **여기서** 찍는다 (2026-08-01 A4b). load-env 는 import 부작용이라
+//  위 initFileLogging 보다 먼저 돌아, 종전엔 이 줄이 데몬 로그에 영원히 안 남았다
+//  (부팅 206회 중 0건). "어느 .env 를 쓰는가" 는 409 봇 충돌 사고의 전제였다.
+flushEnvLoadLog();
 
 console.log("tiguclaw daemon: starting");
 
@@ -594,7 +608,23 @@ class UserCancelledError extends Error {
 // 진행 중 메인 채널 턴의 AbortController 레지스트리 (threadKey → turnAc). enqueueThreadTurn 이
 // thread 별 직렬화하므로 thread 당 최대 1개. /stop(아웃오브밴드)이 여기서 turnAc 를 찾아 abort =
 // 클로드코드식 인터럽트(옵션 c). 재시작 정직(메모리 레지스트리, 영속 0). 어댑터 분기 0(LLM-agnostic).
-const inflightTurns = new Map<string, AbortController>();
+// ★2026-08-01: 값이 AbortController 하나였는데, 그러면 **누구에게 알려야 하는지**를 모른다.
+//  위 "재시작 정직" 은 주석에만 있었고 실제로는 아무도 안 알렸다 — 실사고(A5): 배포 재시작이
+//  진행 중이던 claude 턴을 죽였고 사용자는 그냥 답이 안 오는 걸로 겪었다(7분 무응답 신고).
+//  통지 좌표를 같이 들고 다녀야 shutdown 이 정직해질 수 있다. 자매 레지스트리를 하나 더 만들면
+//  둘이 어긋나므로(손목록 병) 값에 담는다.
+interface InflightTurn {
+  readonly ac: AbortController;
+  readonly channel: ChannelName;
+  readonly target: string | null;
+}
+const inflightTurns = new Map<string, InflightTurn>();
+
+// 관측 심에 **Map 자신을 보는 getter** 를 꽂는다(사본 0 — inflight-turns.ts 주석 참조).
+setInflightTurnReporter({
+  count: () => inflightTurns.size,
+  keys: () => [...inflightTurns.keys()],
+});
 
 // mid-turn steering (ADR 2026-07-16-midturn-steering §5) — 진행 중 턴에 새 사용자 메시지를
 // "다음 model-call 경계에서 append"(손실 0)하기 위한 turn 별 SteeringChannel 레지스트리
@@ -1485,7 +1515,13 @@ const handler: MessageHandler = async (msg) => {
   // 존재 이유(채널-동결 회피)가 사라졌고, 정상 긴 작업을 자르던 부작용도 제거된다.
   // turnAc 는 idle·외부 cancel 로만 abort, wall-clock 으로는 abort 안 한다.
   const turnAc = new AbortController();
-  inflightTurns.set(msg.threadKey, turnAc); // /stop 이 찾아 abort 할 수 있게 등록.
+  // /stop 이 찾아 abort 하고, shutdown 이 중단 통지를 보낼 수 있게 등록(좌표 포함).
+  const turnEntry: InflightTurn = {
+    ac: turnAc,
+    channel: msg.channel,
+    target: msg.channelAddress ?? null,
+  };
+  inflightTurns.set(msg.threadKey, turnEntry);
   // mid-turn steering 채널 등록(ADR 2026-07-16 §5) — flag on 일 때만 생성·등록·주입한다.
   // ★flag off = steeringCh 미생성 + steering 필드 미주입 = route input 현행 동일(회귀 0).
   // 개입점(serializedHandler)이 진행 턴을 감지하면 steeringChannels.get(threadKey).push 로 이
@@ -1633,7 +1669,7 @@ const handler: MessageHandler = async (msg) => {
     await replyCommand(msg, formatRegionAError(detail));
   } finally {
     // 등록 해제 — 단, 그 사이 새 턴이 덮어썼으면(직렬 큐라 이론상 없지만 방어) 건드리지 않음.
-    if (inflightTurns.get(msg.threadKey) === turnAc) {
+    if (inflightTurns.get(msg.threadKey) === turnEntry) {
       inflightTurns.delete(msg.threadKey);
     }
     // steering 채널 종료(ADR 2026-07-16 §5) — 턴 종료 시 close(멱등 — pending stream 대기자
@@ -1930,9 +1966,9 @@ const serializedHandler: MessageHandler = (msg) => {
     // js/sse.js 가 correlationId 매칭으로 버블을 정상 유저 버블로 승격하게 한다.
     publishInboundEcho(msg);
     void (async (): Promise<void> => {
-      const ac = inflightTurns.get(msg.threadKey);
-      if (ac !== undefined && !ac.signal.aborted) {
-        ac.abort(new UserCancelledError());
+      const entry = inflightTurns.get(msg.threadKey);
+      if (entry !== undefined && !entry.ac.signal.aborted) {
+        entry.ac.abort(new UserCancelledError());
         await replyCommand(
           msg,
           "⏹️ 진행 중이던 작업을 중단했습니다. 이어서 새로 말씀하시면 그걸로 진행할게요.",
@@ -2015,7 +2051,27 @@ let shuttingDown = false;
 const shutdown = async (signal: string): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`tiguclaw daemon: received ${signal}, shutting down`);
+  console.log(
+    `tiguclaw daemon: received ${signal}, shutting down (진행 중 턴 ${inflightTurns.size}건)`,
+  );
+  // ★진행 중이던 메인 턴에 **정직 통지** (2026-08-01 A5, 실사고).
+  //  종전엔 레지스트리 주석만 "재시작 정직" 이라고 적혀 있었고 알리는 코드는 없었다. 그래서
+  //  배포 재시작이 사용자 턴을 죽였을 때 사용자는 **그냥 답이 안 오는 것**으로 겪었다
+  //  (00:10:42 질문 → 00:13:22 재시작 → 7분 뒤 "응답이 없다" 신고).
+  //  워커 잡은 이미 부팅 복구가 "데몬 재시작으로 중단" 을 통지한다(recoverInterruptedJobs).
+  //  메인 턴만 없었다 — 그 비대칭을 없앤다.
+  //  ★채널 stop() **전에** 해야 한다(아래에서 채널이 닫히면 발송 경로가 사라진다).
+  //  발송 실패는 삼킨다 — 통지 실패가 종료를 막으면 안 된다(force-exit 백스톱 1500ms).
+  if (inflightTurns.size > 0) {
+    const keys = [...inflightTurns.keys()];
+    console.log(`daemon: 진행 중 턴 ${keys.length}건 중단 통지 — ${keys.join(", ")}`);
+    const n = await notifyInterruptedTurns(
+      [...inflightTurns.values()],
+      deliverOutbound,
+      (channel, reason) => console.error(`daemon: 중단 통지 실패(${channel}): ${reason}`),
+    );
+    console.log(`daemon: 중단 통지 ${n}/${keys.length}건 성공.`);
+  }
   // ★자식 프로세스 정리를 **맨 앞으로** (2026-07-28). 종전엔 채널·서비스 정지가 끝난 뒤에야
   //  외부 MCP·백그라운드 셸을 정리했는데, 그 앞단이 1500ms force-exit 백스톱을 넘기면
   //  자식 정리에 **도달하지 못했다**(실측 2건: 종료 시작 2초 뒤 force exit, 사이에 자식

@@ -17,9 +17,23 @@
         const next = p.hasFallback
           ? "\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다)."
           : "\n재시도할 다른 모델이 없습니다 — 잠시 후 다시 시도해 주세요.";
+        // ★사용량 한도면 **언제 풀리는지** 말한다 (2026-08-01, 사용자 지적).
+        //  429 원문에 resets_at 이 오는데 위 `why` 가 140자에서 잘라 **그 값 바로 앞에서**
+        //  끊겼다. 서버는 그걸 파싱해 쿨다운까지 걸어놓고 있었으니 — 아는데 말을 안 한 것.
+        //  이제 서버가 해제 시각을 payload 로 실어 준다(문구를 프런트가 다시 조립하지 않는다).
+        let until = "";
+        if (typeof p.cooldownUntilTs === "number" && p.cooldownUntilTs > Date.now()) {
+          const d = new Date(p.cooldownUntilTs);
+          const mins = Math.round((p.cooldownUntilTs - Date.now()) / 60000);
+          const when = mins >= 1440
+            ? `${d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })} ${d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`
+            : d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+          const dur = mins >= 1440 ? `약 ${Math.round(mins / 1440)}일 뒤` : mins >= 60 ? `약 ${Math.round(mins / 60)}시간 뒤` : `${mins}분 뒤`;
+          until = `\n사용량 한도 — ${when} 해제 예정(${dur}). 그때까지 이 모델은 건너뜁니다.`;
+        }
         renderLocalChat(
           "error",
-          `⚠️ ${who} 턴 실패${why}${next}`,
+          `⚠️ ${who} 턴 실패${why}${until}${next}`,
           { ts: evTs, key: "turn-failure|" + (tk || "") },
         );
       };

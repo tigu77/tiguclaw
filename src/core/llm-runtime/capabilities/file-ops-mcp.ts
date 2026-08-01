@@ -130,6 +130,33 @@ const errText = (
 // ─── 공용 상수 ───────────────────────────────────────────────────────────
 const DEFAULT_READ_LIMIT = 2000;
 const READ_BODY_HARD_CAP = 1_000_000; // 1MB — payload 폭주 방어.
+/** 비전 채널로 인라인할 이미지 최대 크기. 넘으면 읽지 않고 사실을 말한다. */
+const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+/**
+ * **매직 바이트로** 이미지를 판정한다 (2026-08-01).
+ *
+ * ★확장자가 아니라 내용으로 보는 이유: 확장자는 이름 열거고 틀릴 수 있다. 우리가 답을
+ *  바꾸는 근거는 "이 바이트가 이미지인가" 지 "이름이 .jpg 로 끝나는가" 가 아니다.
+ */
+const sniffImageMime = (head: Buffer): string | null => {
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (head.length >= 8 && head.subarray(0, 8).toString("hex") === "89504e470d0a1a0a") {
+    return "image/png";
+  }
+  if (head.length >= 6 && head.subarray(0, 6).toString("latin1").startsWith("GIF8")) {
+    return "image/gif";
+  }
+  if (
+    head.length >= 12 &&
+    head.subarray(0, 4).toString("latin1") === "RIFF" &&
+    head.subarray(8, 12).toString("latin1") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return null;
+};
 const GLOB_MAX_RESULTS = 1000;
 const GLOB_MAX_BUFFER = 10 * 1024 * 1024;
 const GREP_MAX_LINES = 1000;
@@ -902,6 +929,42 @@ const makeFileOpsTools = (
               `path=${abs}${args.offset !== undefined ? `, offset=${args.offset}` : ""} · ${hit.lines}줄\n` +
               `앞서 이 턴에서 반환한 내용을 그대로 사용하세요. 다시 확인이 꼭 필요하면 한 번 더 호출하면 본문을 줍니다.`,
           );
+        }
+        // ★이미지는 **비전 채널로** 답한다 (2026-08-01, 라이브 사고).
+        //  종전엔 무조건 `readFile(utf8)` 이라 JPEG 이 깨진 텍스트로 나갔고, 그게
+        //  **성공으로** 반환됐다. 모델은 "판독 불가" 라 답하는데 호출한 앱은 정상 응답으로
+        //  받아 캐시에 저장했다 — 사흘간 캐시 오염·workspace 초기화로 세 번 오진했다.
+        //  claude 는 네이티브 Read 가 비전으로 처리하는데 codex 만 이랬다(어댑터 비대칭 =
+        //  "모든 기능 LLM 무관" 위반). 어댑터가 이 블록을 input_image 로 옮긴다.
+        //  ★실패를 성공으로 답하지 않는 것이 핵심이다 — 비전 미지원보다 미지원을
+        //   성공이라 답하는 것이 훨씬 해롭다.
+        const headBuf = Buffer.alloc(Math.min(16, stat.size));
+        if (headBuf.length > 0) {
+          const fh = await fs.open(abs, "r");
+          try {
+            await fh.read(headBuf, 0, headBuf.length, 0);
+          } finally {
+            await fh.close();
+          }
+        }
+        const imageMime = sniffImageMime(headBuf);
+        if (imageMime !== null) {
+          if (stat.size > MAX_INLINE_IMAGE_BYTES) {
+            return errText(
+              `이미지가 너무 큽니다(${Math.round(stat.size / 1024)}KB > ${MAX_INLINE_IMAGE_BYTES / 1024 / 1024}MB) — ` +
+                `비전 채널로 실을 수 없습니다. path=${abs}`,
+            );
+          }
+          const b64 = (await fs.readFile(abs)).toString("base64");
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `이미지를 비전 채널로 첨부했습니다(${imageMime}, ${Math.round(stat.size / 1024)}KB). path=${abs}`,
+              },
+              { type: "image" as const, data: b64, mimeType: imageMime },
+            ],
+          };
         }
         const raw = await fs.readFile(abs, "utf8");
         const lines = raw.split("\n");

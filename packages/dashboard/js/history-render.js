@@ -4,6 +4,18 @@
       // 사용자=평문·비서=마크다운(setChatBody) 으로 라이브 버블과 동일 모양.
       // 버블 div 생성만(가상화 삽입은 renderHistoryBatch 가 vtAppend/vtPrependOlder 로 수행).
       const buildHistoryDiv = (entry) => {
+        // ★대화 가시 이벤트(선택지·통지) 복원 — **라이브와 같은 빌더**를 레지스트리에서
+        //  찾아 쓴다(2026-08-01). 종전엔 이런 것들이 DB 에 없어서 탭 이동에서만 사라졌다.
+        //  문구를 여기서 다시 짓지 않는 이유: 같은 문장이 두 곳에서 조립되면 반드시 갈린다.
+        //  라이브가 이미 그린 건이면 dedup 키가 막는다(아래 renderedPromptOptionKeys 등과 공유).
+        if (typeof entry.kind === "string" && entry.kind !== "") {
+          const build = chatKindBuilders.get(entry.kind);
+          if (!build) return null; // 모르는 종류는 조용히 건너뛴다(구버전 프런트 안전).
+          const okey = `${entry.ts}|${entry.threadKey || ""}`;
+          if (renderedPromptOptionKeys.has(okey)) return null;
+          renderedPromptOptionKeys.add(okey);
+          return build(entry.data || {}, fmtTime(entry.ts), entry.ts) || null;
+        }
         const isOut = entry.role === "assistant";
         // 시스템 통지 — 라이브(renderChannelMessage) 파리티. 새로고침해도 구분이 유지돼야
         //  한다(chat_log.notice 컬럼 → /chat-history entries 로 그대로 따라온다).
@@ -127,6 +139,10 @@
 
       // 메시지 유닛 → element(+dedup 키 등록). 이미 렌더됐으면 null(SSE/다른 페이지 중복 방지).
       const buildHistoryMsgEl = (entry) => {
+        // ★대화 가시 이벤트(kind)는 **메시지 dedup 키를 쓰지 않는다** (2026-08-01).
+        //  msgKey 는 ts|role 이라, 같은 ts 의 비서 답변과 충돌해 한쪽이 조용히 사라진다.
+        //  자기 키(ts|threadKey)는 buildHistoryDiv 안에서 건다.
+        if (typeof entry.kind === "string" && entry.kind !== "") return buildHistoryDiv(entry);
         const role = entry.role === "assistant" ? "assistant" : "user";
         const key = msgKey(entry.ts, role);
         if (renderedMsgKeys.has(key)) return null;

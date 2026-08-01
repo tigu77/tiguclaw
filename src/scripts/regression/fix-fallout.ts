@@ -24,7 +24,11 @@
  *   `LOG_LINE_PREFIX` 가 레벨을 **열거**해서 크래시 원인 줄이 통째로 접혔다 —
  *   두 수정이 서로를 무력화했고, `logFatal` 의 존재 이유가 정확히 안 닫혔다.
  */
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { spawn } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";
 
 const CODEX = "../../core/llm-runtime/adapters/openai-codex-oauth.ts";
@@ -36,70 +40,176 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
-    // ★① 직송 경로에 catch — 없으면 unhandledRejection → crash-fast.
-    const sched = await sourceHas("../../../plugins/scheduler/src/runner.ts", [
-      /try \{\s*await \(deps\.dispatch \?\? dispatch\)\(\{/,
-      /\} catch \(e\) \{[\s\S]{0,200}?recordFiring\(schedule\.id, \{ ok: false, error: reason \}\)/,
-    ]);
-    out.push(
-      assert(
-        "★!say 직송이 발송 실패를 catch 한다(void 호출부 → 크래시 루프 방지)",
-        sched.ok,
-        sched.ok ? "catch + ok:false 확인" : `누락 ${sched.missing.join(" ")}`,
-      ),
-    );
+    // ★① 부팅 크래시 루프(직송 경로 catch 누락)는 **동작 검사로 이관**했다 —
+    //  `silent-loss` 가 실제로 `runScheduleFiring` 을 전달 실패로 돌려, reject 가 새지
+    //  않고 ok:false 로 기록되는지 본다. 여기 있던 정규식은 catch 블록의 **모양**만 봐서,
+    //  에러 문자열 한 글자만 바뀌어도 빨간불이 되면서 정작 동작은 안 봤다.
 
     // ★② 부작용 판정이 **열거가 아니라 판정** — 읽기전용 12개가 옳게 분류돼야 한다.
     const criterion = await sourceHas(CODEX, [
-      /const READ_ONLY_VERB = \/\^\(\?:read\|list\|find\|search\|get\|describe\|show\)_\//,
-      /const isSideEffectTool = \(name: string\): boolean =>/,
       /if \(isSideEffectTool\(tc\.name\)\) sideEffectExecuted = true;/,
     ]);
     out.push(
       assert(
-        "★부작용 판정이 이름 열거가 아니라 조회동사 판정이다",
+        "부작용 판정이 도구 실행 지점에 배선돼 있다",
         criterion.ok,
-        criterion.ok ? "3개 확인" : `누락 ${criterion.missing.join(" ")}`,
-      ),
-    );
-    // 판정 자체를 **동작으로** 검증 — 검토가 지목한 12개 + 진짜 부작용.
-    const READ_ONLY_VERB = /^(?:read|list|find|search|get|describe|show)_/;
-    const EXACT = new Set([
-      "Read", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookRead",
-      "reply_to_current_message", "update_todos",
-    ]);
-    const isSide = (n: string): boolean => !EXACT.has(n) && !READ_ONLY_VERB.test(n);
-    const readOnly = [
-      "read_memory", "search_memory", "list_schedules", "list_workers", "list_all_workers",
-      "list_watches", "list_commands", "list_endpoints", "list_installed_plugins",
-      "find_skills", "find_agents", "find_capabilities", "Read", "Grep",
-    ];
-    const mutating = [
-      "add_memory", "add_schedule", "delete_schedule", "spawn_agent", "spawn_worker",
-      "Write", "Edit", "Bash", "update_self", "send_file", "unknown_future_tool",
-    ];
-    const wrong = [
-      ...readOnly.filter((n) => isSide(n)).map((n) => `읽기전용→부작용:${n}`),
-      ...mutating.filter((n) => !isSide(n)).map((n) => `부작용→무해:${n}`),
-    ];
-    out.push(
-      assert(
-        "★읽기전용 14개·부작용 11개(미지 포함)가 옳게 갈린다",
-        wrong.length === 0,
-        wrong.length === 0 ? "25개 전부 정확" : wrong.join(" "),
+        criterion.ok ? "배선 확인" : `누락 ${criterion.missing.join(" ")}`,
       ),
     );
 
-    // ★③ 취소는 부작용과 무관하게 rethrow — 동일성 판정(이름 목록 아님).
-    const cancel = await sourceHas(CODEX, [
-      /const abortReason: unknown = input\.abortSignal\?\.reason;/,
-      /if \(input\.abortSignal\?\.aborted === true && e === abortReason\) \{\s*throw e;/,
+    // ★판정을 **프로덕션 함수로, 실제 등록 도구 전수에** 돌린다 (2026-07-31 3차 검토).
+    //  종전엔 이 검사가 판정 로직을 **복사**해서 손으로 적은 25개에 돌렸다. 그래서
+    //  ①프로덕션이 바뀌어도 사본은 안 바뀌고 ②목록에 없는 도구는 아예 안 보였다.
+    //  실제로 `project_capabilities`(라이브 124회)·`project_list`·`maintenance_status`
+    //  세 개가 그 목록 밖이라 오분류가 통째로 숨었다 — 25개 전부 정확이라고 초록이었다.
+    //  이제 소스에서 도구를 긁어와 분류표와 대조한다. **새 도구가 표에 없으면 실패**한다
+    //  — 조용히 빠지는 대신 요란하게 결정을 요구하는 것이 이 검사의 요점이다.
+    const { isReadOnlyTool } = await import(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.js"
+    );
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+    const registered = new Set<string>();
+    const walk = async (dir: string): Promise<void> => {
+      for (const e of await readdir(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (!/node_modules|dist/.test(p)) await walk(p);
+          continue;
+        }
+        if (!e.name.endsWith(".ts")) continue;
+        const src = await readFile(p, "utf8");
+        for (const m of src.matchAll(/\btool\(\s*\n?\s*"([a-zA-Z][\w]*)"/g)) {
+          registered.add(m[1]);
+        }
+      }
+    };
+    await walk(path.join(repoRoot, "src/core"));
+    await walk(path.join(repoRoot, "plugins"));
+
+    /** 읽기 전용 = 폴백이 다시 실행해도 무해한 것. 그 밖은 전부 부작용(보수적). */
+    const EXPECT_READ_ONLY = new Set([
+      "Glob", "Grep", "Read", "WebFetch", "WebSearch",
+      "find_agents", "find_capabilities", "find_skills",
+      "list_all_workers", "list_commands", "list_endpoints", "list_installed_plugins",
+      "list_mcp_servers", "list_schedules", "list_watches", "list_workers",
+      "maintenance_status", "project_capabilities", "project_list",
+      "read_memory", "search_memory",
+      // 부작용이 있으나 재실행이 무해(멱등·표시 전용).
+      "reply_to_current_message", "update_todos",
     ]);
+    const EXPECT_SIDE_EFFECT = new Set([
+      "Bash", "Edit", "KillShell", "Write",
+      // ★BashOutput 은 읽기처럼 보이지만 **증분 커서를 전진**시킨다 — 폴백이 다시 부르면
+      //  이미 소비한 출력이 사라진다. 멱등이 아니므로 부작용으로 둔다.
+      "BashOutput",
+      // 사용자에게 선택지를 다시 띄운다 — 표시 중복.
+      "prompt_options",
+      "add_mcp_server", "add_memory", "add_schedule", "add_watch",
+      "cancel_worker", "delete_command", "delete_endpoint", "delete_memory",
+      "delete_schedule", "delete_watch", "invoke_skill",
+      "project_forget", "project_register", "project_update",
+      "register_command", "register_endpoint", "remove_mcp_server",
+      "run_in_background", "send_file", "spawn_agent", "steer_worker",
+      "update_memory", "update_schedule", "update_self",
+    ]);
+
+    const unclassified = [...registered].filter(
+      (n) => !EXPECT_READ_ONLY.has(n) && !EXPECT_SIDE_EFFECT.has(n),
+    );
     out.push(
       assert(
-        "★취소류는 삼키지 않고 그대로 올린다(워커 타임아웃이 '완료' 로 보고되던 것)",
-        cancel.ok,
-        cancel.ok ? "동일성 판정 확인" : `누락 ${cancel.missing.join(" ")}`,
+        "★등록된 도구가 전부 분류표에 있다(새 도구가 조용히 빠지지 않는다)",
+        unclassified.length === 0,
+        unclassified.length === 0
+          ? `등록 ${registered.size}개 전부 분류됨`
+          : `★분류표에 없는 도구 ${unclassified.length}개: ${unclassified.join(" ")} — 읽기전용/부작용을 결정해 표에 넣어라`,
+      ),
+    );
+    const wrong = [...registered]
+      .map((n) => {
+        const ro = isReadOnlyTool(n);
+        if (EXPECT_READ_ONLY.has(n) && !ro) return `읽기전용→부작용:${n}(폴백 상실)`;
+        if (EXPECT_SIDE_EFFECT.has(n) && ro) return `부작용→읽기전용:${n}(중복 실행)`;
+        return "";
+      })
+      .filter((s) => s !== "");
+    out.push(
+      assert(
+        `★등록 도구 ${registered.size}개가 프로덕션 판정으로 옳게 갈린다`,
+        wrong.length === 0,
+        wrong.length === 0
+          ? `읽기전용 ${[...registered].filter(isReadOnlyTool).length} / 부작용 ${[...registered].filter((n) => !isReadOnlyTool(n)).length}`
+          : wrong.join(" "),
+      ),
+    );
+    // 모르는 도구는 안전한 쪽(부작용) — 외부 플러그인·신규 능력이 조용히 무해로 새지 않는다.
+    out.push(
+      assert(
+        "미지의 도구는 부작용으로 간주한다(보수적 기본값)",
+        !isReadOnlyTool("unknown_future_tool") && !isReadOnlyTool("frobnicate"),
+        "미지 2종 → 부작용",
+      ),
+    );
+    // ★접미 규약의 안전 가드 — 지금 레지스트리엔 이 형상이 **없어서** 위 전수 대조로는
+    //  이 가드가 지워져도 초록이다(실측: 변이 M2 가 통과했다). 합성 이름으로 직접 건다.
+    //  방향이 중요하다: 읽기전용을 부작용으로 오판하면 폴백을 잃을 뿐이지만, 그 반대는
+    //  폴백이 **부작용을 중복 실행**한다. 비싼 쪽을 막는 가드다.
+    const hazards = ["update_status", "delete_list", "set_info", "remove_capabilities"];
+    const leaked = hazards.filter((n) => isReadOnlyTool(n));
+    out.push(
+      assert(
+        "★변형 동사로 시작하면 읽기 접미사여도 부작용이다(중복 실행 차단)",
+        leaked.length === 0,
+        leaked.length === 0
+          ? `위험 형상 ${hazards.length}종 전부 부작용 · 대조군 project_status=${isReadOnlyTool("project_status") ? "읽기전용(정상)" : "부작용(과잉)"}`
+          : `★읽기전용으로 샘: ${leaked.join(" ")}`,
+      ),
+    );
+
+    // ★③ 취소는 부작용과 무관하게 rethrow — **동작으로** 본다.
+    //  (2026-07-31: 여기 있던 정규식은 "동일성 판정 코드가 소스에 있다" 만 봤다. 그 코드는
+    //   멀쩡히 있는 채로 상류(`:1557`)가 IdleTimeoutError 를 던져 판정을 비껴갔고, 정규식은
+    //   그대로 통과시켰다. 코드의 존재가 아니라 취소가 실제로 올라오는지를 본다.)
+    const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "_codex-cancel-child.ts");
+    const drive = async (mode: "read" | "stall"): Promise<string> =>
+      new Promise((resolve) => {
+        const p = spawn(process.execPath, ["--import", "tsx", child, mode], {
+          stdio: ["ignore", "pipe", "ignore"],
+          env: process.env,
+        });
+        let buf = "";
+        p.stdout.on("data", (d: Buffer) => (buf += d.toString()));
+        p.on("close", () => resolve(buf));
+        p.on("error", () => resolve(""));
+      });
+    const parse = (raw: string): { outcome?: string; identical?: boolean; name?: string } => {
+      const line = raw.trim().split("\n").filter((l) => l.startsWith("{")).pop() ?? "";
+      try {
+        return JSON.parse(line) as { outcome?: string; identical?: boolean; name?: string };
+      } catch {
+        return {};
+      }
+    };
+    // 대조군 먼저 — 이 경로는 원래도 전파됐다. 여기가 빨간불이면 하네스가 고장난 것이지
+    //  회귀가 아니다(둘을 구분 못 하면 검사가 거짓말을 한다).
+    const readR = await within(60_000, "취소 e2e(SSE 읽는 중)", drive("read"));
+    const readJ = "value" in readR ? parse(readR.value) : {};
+    out.push(
+      assert(
+        "대조군 — SSE 읽는 중 취소는 그대로 올라온다",
+        readJ.outcome === "threw" && readJ.identical === true,
+        `outcome=${String(readJ.outcome)} 동일성=${String(readJ.identical)} name=${String(readJ.name)}`,
+      ),
+    );
+    const stallR = await within(60_000, "취소 e2e(스톨 백오프 중)", drive("stall"));
+    const stallJ = "value" in stallR ? parse(stallR.value) : {};
+    out.push(
+      assert(
+        "★스톨 백오프 중 취소도 삼키지 않는다(워커 타임아웃이 '완료' 로 보고되던 것)",
+        stallJ.outcome === "threw" && stallJ.identical === true,
+        stallJ.outcome === "returned"
+          ? "★정상 반환 = 취소가 삼켜졌다(가짜 답장 + 성공 적재)"
+          : `outcome=${String(stallJ.outcome)} 동일성=${String(stallJ.identical)} name=${String(stallJ.name)}`,
       ),
     );
 

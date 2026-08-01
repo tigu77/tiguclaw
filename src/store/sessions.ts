@@ -393,6 +393,19 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── transcript_index: 바이트 오프셋 (idempotent ALTER, 2026-08-01 A4a) ────
+  // 종전엔 줄 수(lines_indexed)만 기억해서, 새 줄 몇 개를 얻으려고 **매 claude 턴마다
+  // jsonl 전체를 동기로 읽었다**. 라이브 19.7MB 파일 실측 47ms 이벤트루프 정지 +
+  // 270MB 피크 RSS(꼬리만 읽으면 0.7ms/42MB — 67배). 세션이 길수록 선형 증가, 상한 없음.
+  // 바이트 위치를 같이 기억하면 그 지점부터만 읽으면 된다. NULL = 레거시 행(첫 1회
+  // 전체 읽기로 채운다). 파일이 줄면(회전·절단) 역시 전체 재읽기로 안전 복귀.
+  const txCols = handle
+    .prepare(`PRAGMA table_info(transcript_index)`)
+    .all() as ColumnInfoRow[];
+  if (!txCols.some((c) => c.name === "bytes_indexed")) {
+    handle.exec(`ALTER TABLE transcript_index ADD COLUMN bytes_indexed INTEGER`);
+  }
+
   // ─── Memory V2.5: trigram tokenizer migration (contract §3.3) ───────────
   // FTS5 가상 테이블의 tokenizer 는 ALTER 불가 → DROP/RECREATE.
   // idempotency: sqlite_master.sql 에 tokenize='trigram' 포함 시 스킵.
@@ -688,6 +701,21 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_chat_log_ts ON chat_log(ts);
     CREATE INDEX IF NOT EXISTS idx_chat_log_thread_ts ON chat_log(thread_key, ts);
   `);
+
+  // ─── chat_log: 대화 가시 이벤트 (idempotent ALTER, 2026-08-01) ──────────────
+  // 종전엔 chat_log 가 **메시지만** 담았다. 그래서 선택지·통지처럼 채팅에 버블로 보이는
+  // 것들이 DB 에 없어, 탭 이동(=/chat-history 로 복원)에서만 사라졌다. 복원 소스를 하나로
+  // 모으려면 그것들도 여기 남아야 한다. kind=NULL 은 종전과 같은 일반 메시지.
+  // data = 원본 payload JSON — 프런트가 **라이브와 같은 렌더러**로 그린다(문구를 서버가
+  // 다시 짓지 않는다 — 같은 문장이 두 곳에서 조립되면 반드시 갈린다).
+  const chatCols = handle.prepare(`PRAGMA table_info(chat_log)`).all() as ColumnInfoRow[];
+  if (!chatCols.some((c) => c.name === "kind")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN kind TEXT`);
+  }
+  if (!chatCols.some((c) => c.name === "data")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN data TEXT`);
+  }
+
   // 첨부 참조 메타(JSON, nullable) — 기존 DB 마이그레이션. 첨부 이미지/파일이 새로고침·과거
   // 이력에도 남게(base64 아닌 rel 경로 참조만). SQLite 는 ADD COLUMN IF NOT EXISTS 미지원 →
   // pragma 로 존재 확인 후 추가(threads 마이그레이션과 동형).

@@ -176,6 +176,33 @@ const run = (
     );
   });
 
+/**
+ * `git reset --hard` 가 **실제로 파괴할** 미커밋 변경 목록(경로만). 없으면 빈 배열.
+ *
+ * ★`--untracked-files=no` 인 이유(2026-07-31): 원래 `git status --porcelain` 이라
+ *  **untracked 까지 셌다.** 그런데 `reset --hard` 는 untracked 를 지우지 않는다 — 위험과
+ *  무관한 것을 세는 바람에, untracked 가 하나라도 있는 작업트리(이 레포는 352개)에서는
+ *  가드가 **항상** 발동해 롤백이 통째로 꺼져 있었다. 안전장치가 기능을 죽인 것이다.
+ *
+ * ★export 인 이유: 이걸 지킨다는 회귀 검사가 소스 정규식이었고, 그래서 위 결함을
+ *  통째로 놓쳤다(코드 문구는 멀쩡했으니까). 임시 레포에 실제 git 을 돌려 볼 수 있게 연다.
+ */
+export const listDestructiveUncommitted = async (cwd: string): Promise<string[]> => {
+  const { stdout } = await run(
+    "git",
+    ["status", "--porcelain", "--untracked-files=no"],
+    cwd,
+  ).catch(() => ({ stdout: "", stderr: "" }));
+  // ★줄 단위로 자른 뒤에 다듬는다 — 전체 `trim()` 은 **첫 줄의 상태 칸 앞 공백**을 먹어
+  //  (` M path` → `M path`) 이어지는 `slice(3)` 을 한 칸 밀어 경로 첫 글자를 잘랐다
+  //  (`tracked.txt` → `racked.txt`). 옛 검사는 `.slice(3)` 이 소스에 있는지만 봐서 못 봤다.
+  return stdout
+    .split("\n")
+    .map((l) => l.replace(/\r$/, "")) // 윈도우 CRLF
+    .filter((l) => l.trim() !== "")
+    .map((l) => l.slice(3));
+};
+
 /** git rev-parse HEAD → short SHA. */
 const headSha = async (cwd: string): Promise<string> => {
   const { stdout } = await run("git", ["rev-parse", "--short", "HEAD"], cwd);
@@ -490,20 +517,11 @@ export const runSelfUpdate = async (
         //  더티면 reset 대신 **되돌리지 않고 정직 보고**한다. 코드는 새 커밋 상태로 남지만
         //  그건 되돌릴 수 있고(사용자가 직접 reset), 지워진 작업은 못 되돌린다.
         //  선택 기준은 "확신" 이 아니라 **어느 쪽이 비가역인가** 다.
-        const dirty = (
-          await run("git", ["status", "--porcelain"], cwd).catch(() => ({
-            stdout: "",
-            stderr: "",
-          }))
-        ).stdout.trim();
-        if (dirty !== "") {
-          const lines = dirty.split("\n");
-          const files = lines
-            .slice(0, 8)
-            .map((l: string) => l.slice(3))
-            .join(", ");
+        const lines = await listDestructiveUncommitted(cwd);
+        if (lines.length > 0) {
+          const files = lines.slice(0, 8).join(", ");
           console.error(
-            `self-update: ★롤백 생략 — 미커밋 변경이 있습니다(${lines.length}개: ${files}). ` +
+            `self-update: ★롤백 생략 — 추적 중인 파일에 미커밋 변경이 있습니다(${lines.length}개: ${files}). ` +
               `\`git reset --hard\` 는 그걸 지웁니다. 코드는 ${prevSha.slice(0, 8)} 이 아니라 ` +
               `업데이트된 상태로 남아 있으니, 직접 확인 후 필요하면 되돌리세요.`,
           );

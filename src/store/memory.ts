@@ -541,44 +541,106 @@ export const indexJsonlIfNeeded = (input: {
 
   const idxRow = db
     .prepare(
-      `SELECT lines_indexed FROM transcript_index
+      `SELECT lines_indexed, bytes_indexed FROM transcript_index
        WHERE channel = ? AND thread_key = ? AND claude_session_id = ?`,
     )
     .get(channel, threadKey, claudeSessionId) as
-    | { lines_indexed: number }
+    | { lines_indexed: number; bytes_indexed: number | null }
     | undefined;
   const offset = idxRow?.lines_indexed ?? 0;
 
-  // Read whole file, take lines after offset. Catch-up safe if daemon was down
-  // for many turns — we always reconcile against current file length.
-  const raw = fs.readFileSync(jsonlPath, "utf8");
-  const allLines = raw.split(/\r?\n/);
-  // Trim trailing empty line from final \n.
-  const total = allLines[allLines.length - 1] === "" ? allLines.length - 1 : allLines.length;
-  if (total <= offset) return { lines: 0 };
+  // ★꼬리만 읽는다 (2026-08-01 A4a). 종전엔 새 줄 몇 개를 얻으려고 **매 claude 턴마다
+  //  파일 전체**를 동기로 읽었다 — 라이브 19.7MB 실측 47ms 이벤트루프 정지 + 270MB 피크
+  //  RSS(꼬리만 = 0.7ms/42MB, 67배). 상시 데몬이 매 턴 그만큼 멎으면 텔레그램·SSE·
+  //  스케줄러가 같이 멎는다. 세션이 길수록 선형으로 나빠지고 상한이 없었다.
+  //
+  //  bytes_indexed = "여기까지 읽었다"는 바이트 위치. 전체 재읽기로 되돌아가는 경우:
+  //   ①레거시 행(NULL) ②파일이 그 위치보다 **작아졌을 때**(회전·절단·다른 세션 재사용).
+  //  둘 다 한 번만 비싸고, 그 뒤로는 꼬리만 읽는다.
+  const size = fs.statSync(jsonlPath).size;
+  const from = idxRow?.bytes_indexed ?? null;
+  // 파일이 기억한 위치보다 **작아졌다** = 절단·회전·세션 id 재사용. 이때 줄 오프셋도
+  // 의미를 잃는다(다른 내용 스트림이다) → 통째로 다시 색인한다. 중복 행이 생길 수는
+  // 있어도 **유실은 없다**(보존 > 정리 — 중복은 보이지만 유실은 안 보인다).
+  const shrank = from !== null && from > size;
+  const tailOnly = from !== null && !shrank;
+  let raw: string;
+  let baseBytes: number;
+  if (tailOnly) {
+    if (from === size) return { lines: 0 }; // 자란 게 없다 — 파일을 열지도 않는다.
+    const fd = fs.openSync(jsonlPath, "r");
+    try {
+      const buf = Buffer.allocUnsafe(size - from);
+      fs.readSync(fd, buf, 0, buf.length, from);
+      raw = buf.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+    baseBytes = from;
+  } else {
+    raw = fs.readFileSync(jsonlPath, "utf8");
+    baseBytes = 0;
+  }
+
+  // ★마지막 개행까지만 소비한다 — 그 뒤는 아직 쓰는 중일 수 있는 조각이다(부분 줄을
+  //  파싱하면 조용히 버려지고, 바이트 위치를 그 너머로 옮기면 그 줄이 **영영 유실**된다).
+  const lastNl = raw.lastIndexOf("\n");
+  const consumable = lastNl >= 0 ? raw.slice(0, lastNl + 1) : "";
+  const consumedBytes = baseBytes + Buffer.byteLength(consumable, "utf8");
+  const newLines = consumable === "" ? [] : consumable.split(/\r?\n/).slice(0, -1);
+
+  // 전체 읽기였다면 앞부분(이미 색인된 offset 줄)을 건너뛴다. 꼬리 읽기면 전부 새 줄이다.
+  const effectiveOffset = shrank ? 0 : offset; // 절단이면 처음부터.
+  const pending = tailOnly ? newLines : newLines.slice(effectiveOffset);
+  const totalLines = tailOnly ? offset + newLines.length : newLines.length;
+  if (pending.length === 0) {
+    // 색인할 줄은 없어도 **바이트 위치는 전진**시킨다 — 안 그러면 다음 턴이 같은 구간을
+    // 다시 읽는다(전체 읽기 경로에서 특히 비싸다).
+    if (consumedBytes !== from) {
+      db.prepare(
+        `INSERT INTO transcript_index (channel, thread_key, claude_session_id, jsonl_path, indexed_at, lines_indexed, bytes_indexed)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (channel, thread_key, claude_session_id) DO UPDATE SET
+           jsonl_path = excluded.jsonl_path,
+           indexed_at = excluded.indexed_at,
+           lines_indexed = excluded.lines_indexed,
+           bytes_indexed = excluded.bytes_indexed`,
+      ).run(channel, threadKey, claudeSessionId, jsonlPath, Date.now(), totalLines, consumedBytes);
+    }
+    return { lines: 0 };
+  }
 
   const insert = db.prepare(
     `INSERT INTO transcripts (claude_session_id, ts, role, content)
      VALUES (?, ?, ?, ?)`,
   );
   const upsertIndex = db.prepare(
-    `INSERT INTO transcript_index (channel, thread_key, claude_session_id, jsonl_path, indexed_at, lines_indexed)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO transcript_index (channel, thread_key, claude_session_id, jsonl_path, indexed_at, lines_indexed, bytes_indexed)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (channel, thread_key, claude_session_id) DO UPDATE SET
        jsonl_path = excluded.jsonl_path,
        indexed_at = excluded.indexed_at,
-       lines_indexed = excluded.lines_indexed`,
+       lines_indexed = excluded.lines_indexed,
+       bytes_indexed = excluded.bytes_indexed`,
   );
 
   let inserted = 0;
   const tx = db.transaction(() => {
-    for (let i = offset; i < total; i++) {
-      const parsed = parseJsonlLine(allLines[i]!);
+    for (const line of pending) {
+      const parsed = parseJsonlLine(line);
       if (parsed === undefined) continue;
       insert.run(claudeSessionId, parsed.ts, parsed.role, parsed.content);
       inserted++;
     }
-    upsertIndex.run(channel, threadKey, claudeSessionId, jsonlPath, Date.now(), total);
+    upsertIndex.run(
+      channel,
+      threadKey,
+      claudeSessionId,
+      jsonlPath,
+      Date.now(),
+      totalLines,
+      consumedBytes,
+    );
   });
   tx();
 

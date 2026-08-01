@@ -161,7 +161,21 @@ const summarizeMcpToolResult = (result: unknown): string => {
     )
     .map((c) => String((c as { text?: unknown }).text ?? ""))
     .join("");
-  return text !== "" ? text : JSON.stringify(result ?? {});
+  if (text !== "") return text;
+  // ★비-텍스트 블록(이미지 등)을 통째로 stringify 하지 않는다 (2026-08-01).
+  //  file-ops Read 가 이미지를 image 블록으로 돌려주기 시작했는데, 여기서 stringify 하면
+  //  **base64 가 텍스트 토큰으로 쏟아진다**(codex 에서 겪은 입력 토큰 4~5만 폭증의 정체).
+  //  ⚠parity 갭(정직하게): 이 어댑터는 아직 이미지를 **비전 채널로 옮기지 않는다** —
+  //   codex 는 옮긴다. 실사용 0건이라 미룬 것이고, 옮길 때까지는 "못 본다" 고 말한다.
+  //   조용히 못 보는 것보다 못 본다고 말하는 게 낫다.
+  const nonText = arr.filter(
+    (c) => c !== null && typeof c === "object" && (c as { type?: string }).type !== "text",
+  );
+  if (nonText.length > 0) {
+    const kinds = [...new Set(nonText.map((c) => String((c as { type?: string }).type)))];
+    return `(이 어댑터는 ${kinds.join("·")} 결과를 읽을 수 없습니다 — 이미지 판독이 필요하면 claude 로 전환하세요.)`;
+  }
+  return JSON.stringify(result ?? {});
 };
 
 export const runOpenAi = async (

@@ -13,6 +13,7 @@ import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
 import { pruneInternalThreads } from "../store/sessions.js";
 import { recordChatMessage } from "../store/chat-log.js";
+import { isChatVisibleEvent } from "./chat-visible-events.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 import type { ChatAttachmentMeta } from "../store/chat-log.js";
 
@@ -243,6 +244,34 @@ const startStreamTracePersistence = (bus: EventBus): void => {
  */
 const startChatLogPersistence = (bus: EventBus): void => {
   bus.subscribe((event) => {
+    // ★대화 가시 이벤트(선택지·통지 등)도 여기서 대화 기록에 남긴다 (2026-08-01).
+    //  종전엔 메시지 2종만 남겨서, 채팅에 버블로 보이는 나머지는 DB 에 없었다 →
+    //  탭 이동(=/chat-history 복원)에서만 사라졌다. 판정은 chat-visible-events 단일 정본.
+    if (isChatVisibleEvent(event.type)) {
+      try {
+        const p = event.payload ?? {};
+        const threadKey = typeof p.threadKey === "string" ? p.threadKey : "";
+        const channel = typeof p.channel === "string" ? p.channel : "";
+        // 좌표 없는 이벤트는 어느 대화에 붙일지 모른다 — 남기지 않는다(엉뚱한 탭 오염 방지).
+        if (threadKey === "") return;
+        recordChatMessage({
+          ts: event.ts, // ★event.ts 그대로 — 라이브 렌더와 같은 dedup 키.
+          threadKey,
+          channel: channel !== "" ? channel : "http-bridge",
+          role: "assistant",
+          text: "", // 본문은 payload 에 있다. 문구는 프런트 렌더러가 짓는다(서버 재조립 금지).
+          notice: true,
+          kind: event.type,
+          data: p,
+        });
+      } catch (e) {
+        console.error(
+          "event-persist: 대화 가시 이벤트 적재 실패:",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+      return;
+    }
     if (
       event.type !== "channel.message.in" &&
       event.type !== "channel.message.out"

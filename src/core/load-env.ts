@@ -60,11 +60,33 @@ export const loadHomeEnv = (): void => {
   const parts: string[] = [];
   if (home_ok) parts.push(`home(${homeEnv})`);
   if (repo_ok) parts.push(`repo-fallback(${repoEnv})`);
-  console.log(
+  envLoadSummary =
     parts.length > 0
       ? `[env] loaded ${parts.join(" + ")}`
-      : `[env] no .env (${homeEnv} / ${repoEnv}) — using process environment only`,
-  );
+      : `[env] no .env (${homeEnv} / ${repoEnv}) — using process environment only`;
+  // ★즉시 찍지 않는다 (2026-08-01 A4b). 이 모듈은 **import 부작용**이라 진입점의
+  //  `initFileLogging()` 보다 **먼저** 돈다 — 그래서 이 줄은 데몬 로그 파일에 영원히
+  //  안 남았다(부팅 206회 중 0건, launchd.out 에만 373건). 하필 "어느 .env 를 쓰는가" 는
+  //  409 봇 충돌 사고의 전제였고, 윈도우·회사 PC 는 launchd.out 자체가 없어 어디에도 안 남는다.
+  //  로그가 1차 진단면이므로 **로깅이 준비된 뒤** 찍는다.
+  //  microtask = 진입점이 명시 flush 를 안 하는 CLI·스크립트용 폴백. 데몬은
+  //  initFileLogging 직후 명시 호출로 **결정적으로** 찍는다(top-level await 유무 무관).
+  queueMicrotask(() => flushEnvLoadLog());
+};
+
+// 로드 요약 — flush 가 소비한다. (읽기 전용 export 는 두지 않는다: 소비처 0인 표면은
+//  틀린 채로 늙는다. 필요해지면 그때 연다.)
+let envLoadSummary: string | null = null;
+
+let envLogFlushed = false;
+/**
+ * env 로드 요약을 **한 번만** 찍는다. 진입점이 로깅을 켠 직후 부르면 데몬 로그 파일에 남는다.
+ * 멱등 — 명시 호출과 microtask 폴백이 겹쳐도 한 줄이다.
+ */
+export const flushEnvLoadLog = (): void => {
+  if (envLogFlushed || envLoadSummary === null) return;
+  envLogFlushed = true;
+  console.log(envLoadSummary);
 };
 
 // 부작용 실행 — 진입점이 `import "./core/load-env.js"` 를 **가장 먼저** 두면 이 시점에 로드된다

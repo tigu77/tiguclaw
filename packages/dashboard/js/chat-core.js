@@ -33,6 +33,16 @@
       // 도구 스텝 dedup(기능 B) — chat-history 로 그린 영속 스텝과 SSE replay(같은 활동) 가
       // 겹치지 않게. 키 = ts|threadKey|seq (라이브 activity·영속 activity 동일).
       const renderedActivityKeys = new Set();
+      // ── 대화 가시 이벤트 렌더러 레지스트리 (2026-08-01) ───────────────────
+      // ★왜 레지스트리인가: 이력 복원(history-render.js #18)이 선택지 렌더러
+      //  (prompt-options.js #22)를 **직접 부르면 전방 참조**가 된다 — 부팅 async 가
+      //  #22 실행 전에 이력을 그리면 TDZ ReferenceError 로 채팅이 통째로 백지가 된다
+      //  (2026-07-31 fmtBytes 사고와 같은 형상). Map 은 여기(#11)에 있고 각 렌더러가
+      //  자기 파일에서 등록하므로, 이력은 **호출 시점에** 찾는다 = 순서 결합 0.
+      //  새 종류가 생겨도 자기 파일에서 한 줄 등록하면 라이브·복원 양쪽에 자동으로 붙는다.
+      const chatKindBuilders = new Map();
+      const registerChatKindBuilder = (kind, build) => { chatKindBuilders.set(kind, build); };
+
       /** prompt.options dedup — 키 = 이벤트ts|세션. replay 가 같은 선택지를 다시 그리지 않게. */
       const renderedPromptOptionKeys = new Set();
       /** 로컬 통지 dedup — 키 = 종류|이벤트ts. 탭 전환 시 함께 비운다(tabs.js resetStreamState). */

@@ -121,6 +121,7 @@ import {
   parsePosIntEnv,
   parseCodexSse,
   buildMediaContentItems,
+  type ResponseMediaItem,
   buildTurnHistory,
   buildSteeringInputItem,
   capToolOutputForEntry,
@@ -239,6 +240,39 @@ const CODEX_MAX_TOOL_ITERATIONS_HARD = parsePosIntEnv(
 // blunt 시간 cap(정상 긴 작업도 자름)의 위험을 없앤 정밀 가드. 모델 폴백 아님(codex 안에서
 // 닫음). 남는 한계: 답 전 *순수 reasoning* 이 N분 초과면 컷(codex 가 생각을 content 로 안 흘림
 // = 근본 한계) — N 넉넉+env 튜닝으로 극단만.
+const READ_ONLY_VERB = /^(?:read|list|find|search|get|describe|show)_/;
+/**
+ * ★우리 도구 이름 규약은 **하나가 아니다** (2026-07-31 3차 검토, 재현됨).
+ *  `list_projects`(동사_명사)와 `project_list`(명사_동사)가 공존하는데 위 정규식은
+ *  앞쪽만 안다. 그래서 순수 읽기 전용인 `project_capabilities`(라이브 124회)·
+ *  `project_list`·`maintenance_status` 가 부작용으로 분류돼 **502 에서 claude 폴백을
+ *  잃었다**. 부작용이 0인 도구라 순손실이었다.
+ *
+ *  뒤쪽 규약도 판정한다. 단 **변형 동사로 시작하면 제외**한다 — `update_status` 같은
+ *  이름이 생겼을 때 읽기 전용으로 오판하면 폴백이 부작용을 **중복 실행**하기 때문이다.
+ *  두 오판의 대가가 비대칭이라(폴백 상실 < 중복 실행) 이쪽만 보수적으로 막는다.
+ */
+const READ_ONLY_SUFFIX = /_(?:list|status|capabilities|info)$/;
+const MUTATION_VERB =
+  /^(?:add|create|write|edit|update|set|delete|remove|register|unregister|cancel|kill|stop|start|restart|run|send|spawn|steer|invoke|install|uninstall|move|rename|approve|reject)_/;
+const READ_ONLY_EXACT = new Set<string>([
+  // 이름 규약 밖의 SDK/빌트인 도구(대문자 시작) — 규약이 없으니 여기 명시.
+  "Read",
+  "Glob",
+  "Grep",
+  "WebFetch",
+  "WebSearch",
+  "NotebookRead",
+  // 부작용이 있지만 **재실행이 무해**한 것들(멱등·표시 전용).
+  "reply_to_current_message",
+  "update_todos",
+]);
+export const isReadOnlyTool = (name: string): boolean =>
+  READ_ONLY_EXACT.has(name) ||
+  READ_ONLY_VERB.test(name) ||
+  (READ_ONLY_SUFFIX.test(name) && !MUTATION_VERB.test(name));
+const isSideEffectTool = (name: string): boolean => !isReadOnlyTool(name);
+
 /** codex 무진전(output/tool 무수신) 한계(ms). first/idle 공통. env override. */
 const CODEX_NO_PROGRESS_MS = parsePosIntEnv(
   process.env.CODEX_NO_PROGRESS_MS,
@@ -1091,21 +1125,6 @@ export const runOpenAiCodex = async (
    * 본다(모르는 도구는 안전한 쪽 = 중복 실행을 막는 쪽으로). 규약을 따르는 새 도구는
    * 자동으로 옳게 분류되고, 안 따르면 보수적으로 분류된다 — 어느 쪽도 조용히 틀리지 않는다.
    */
-  const READ_ONLY_VERB = /^(?:read|list|find|search|get|describe|show)_/;
-  const READ_ONLY_EXACT = new Set<string>([
-    // 이름 규약 밖의 SDK/빌트인 도구(대문자 시작) — 규약이 없으니 여기 명시.
-    "Read",
-    "Glob",
-    "Grep",
-    "WebFetch",
-    "WebSearch",
-    "NotebookRead",
-    // 부작용이 있지만 **재실행이 무해**한 것들(멱등·표시 전용).
-    "reply_to_current_message",
-    "update_todos",
-  ]);
-  const isSideEffectTool = (name: string): boolean =>
-    !READ_ONLY_EXACT.has(name) && !READ_ONLY_VERB.test(name);
 
   // ★턴 종료 판정을 로그만으로 재구성하기 위한 재료 (2026-07-30).
   //  실사고: "검증한다더니 가만히 있다" 신고를 받았는데, 로그에 남은 건 stream-trace tail 뿐이라
@@ -1554,7 +1573,13 @@ export const runOpenAiCodex = async (
           //  위쪽 게이트가 이 값을 좁혀놔서 tsc 가 await 뒤 재확인을 죽은 코드로 본다 —
           //  narrowing 은 await 를 건너 유효하지 않은데 컴파일러는 그걸 모른다.)
           const turnSignal: AbortSignal | undefined = input.abortSignal;
-          if (turnSignal?.aborted === true) throw reason ?? turnSignal.reason;
+          // ★abort 사유를 **그대로** 올린다(2026-07-31 검토, 재현됨). 아래 catch 의 취소
+          //  판정은 이름 목록이 아니라 **동일성**(`e === input.abortSignal.reason`)이라,
+          //  여기서 `reason`(이 분기의 진입 조건상 항상 IdleTimeoutError)을 던지면 그
+          //  판정을 **원리적으로 통과할 수 없다** → `sideEffectExecuted` 가 취소를 삼켜
+          //  `/stop` 후 답장이 한 통 더 가고 취소된 턴이 성공으로 적재된다.
+          //  `?? reason` 은 안전망일 뿐이다(aborted 면 spec 상 reason 이 항상 있다).
+          if (turnSignal?.aborted === true) throw turnSignal.reason ?? reason;
           continue; // 같은 body 로 iteration 재시도.
         }
         if (
@@ -1858,8 +1883,9 @@ export const runOpenAiCodex = async (
       }
       const toolOutputs = await Promise.all(
         toolCalls.map(
-          async (tc): Promise<{ callId: string; output: string }> => {
+          async (tc): Promise<{ callId: string; output: string; media: ResponseMediaItem[] }> => {
             let output: string;
+            const toolMedia: ResponseMediaItem[] = [];
             let toolErr = false; // 리치 출력 프리뷰 isError 표기용.
             let blocked = false; // PreToolUse 차단 여부 — 차단 시 Post 스킵(계약 §3.1).
             let args: Record<string, unknown> = {}; // try 밖(catch 이후 Post) 에서도 참조.
@@ -1936,7 +1962,30 @@ export const runOpenAiCodex = async (
                   )
                   .map((c) => String((c as { text?: unknown }).text ?? ""))
                   .join("");
-                if (output === "") output = JSON.stringify(result ?? {});
+                // ★이미지 블록은 **비전 채널로** 옮긴다 (2026-08-01). function_call_output 은
+                //  문자열 전용이라 이미지를 실을 수 없다 — 도구 결과 옆에 input_image 를
+                //  나란히 push 해야 모델이 실제로 본다(첨부 경로가 이미 하는 일과 동형).
+                //  종전엔 text 아닌 블록을 통째로 버렸고, 그래서 file-ops 가 이미지를
+                //  줘도 모델에겐 아무것도 안 갔다.
+                for (const c of arr) {
+                  if (c === null || typeof c !== "object") continue;
+                  const b = c as { type?: string; data?: unknown; mimeType?: unknown };
+                  if (b.type !== "image" || typeof b.data !== "string") continue;
+                  const mime = typeof b.mimeType === "string" ? b.mimeType : "image/png";
+                  toolMedia.push({
+                    type: "input_image",
+                    image_url: `data:${mime};base64,${b.data}`,
+                  });
+                }
+                // ★비었을 때 result 를 통째로 stringify 하면 **base64 가 텍스트로 쏟아진다**
+                //  (이미지 블록이 오는 순간 입력 토큰이 폭증한다 — 원래 사고의 형상 그대로).
+                //  미디어가 있으면 그 사실만 말한다.
+                if (output === "") {
+                  output =
+                    toolMedia.length > 0
+                      ? `(이미지 ${toolMedia.length}개를 비전 채널로 첨부했습니다.)`
+                      : JSON.stringify(result ?? {});
+                }
               }
             } catch (e) {
               output = `Error: ${e instanceof Error ? e.message : String(e)}`;
@@ -1987,7 +2036,7 @@ export const runOpenAiCodex = async (
                 /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
               }
             }
-            return { callId: tc.callId, output };
+            return { callId: tc.callId, output, media: toolMedia };
           },
         ),
       );
@@ -1997,12 +2046,24 @@ export const runOpenAiCodex = async (
       // 지배하므로, 진입 시점에 머리+꼬리만 남긴다. 도구 자체 cap 과 별개. 에러
       // 문자열("Error: …")은 보통 짧아 자연히 cap 미달 → 무영향. function_call_output 은
       // 결과 배열 순서대로 push → call_id 매칭(병렬이라도 순서·매칭 보존, canonical shape).
-      for (const { callId, output } of toolOutputs) {
+      const pendingMedia: ResponseMediaItem[] = [];
+      for (const { callId, output, media } of toolOutputs) {
         inputArray.push({
           type: "function_call_output",
           call_id: callId,
           output: capToolOutputForEntry(output),
         });
+        pendingMedia.push(...media);
+      }
+      // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 (2026-08-01). function_call_output
+      //  바로 뒤에 user 메시지로 붙여야 모델이 "그 도구 결과의 이미지" 로 읽는다.
+      //  이게 없으면 file-ops 가 이미지를 줘도 모델에겐 아무것도 안 간다(원래 사고).
+      if (pendingMedia.length > 0) {
+        inputArray.push({
+          type: "message",
+          role: "user",
+          content: pendingMedia,
+        } as (typeof inputArray)[number]);
       }
 
       // C1 (compaction, architect §C1) — 매 iteration 새 output push 후, 다음 전송

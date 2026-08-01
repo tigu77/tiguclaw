@@ -12,7 +12,7 @@
           if (keys.length > PO_KEY_CAP) { keys.sort(); for (let i = 0; i < keys.length - PO_KEY_CAP; i++) localStorage.removeItem(keys[i]); }
         } catch {}
       };
-      const renderPromptOptions = (payload, ts, rawTs) => {
+      const buildPromptOptions = (payload, ts, rawTs) => {
         const options = Array.isArray(payload.options) ? payload.options : [];
         // ★조용히 삼키지 않는다 (2026-07-28). 여기서 그냥 return 하면 "선택지를 띄웠습니다"
         //  라는 답변만 남고 화면엔 아무것도 안 뜬다 — 사용자는 무엇이 잘못됐는지 알 길이
@@ -112,6 +112,13 @@
         // ★재시작/리로드 복원 — 이미 고른 질문이면 그 버튼(또는 기타 칸)을 picked+비활성으로.
         const saved = poLoad(poKey);
         if (saved != null) applyPick(saved);
-        vtAppend(div);
+        return div;
       };
+      // 라이브 경로 — 빌드해서 스트림에 붙인다(종전 동작 그대로).
+      const renderPromptOptions = (payload, ts, evTs) => {
+        const div = buildPromptOptions(payload, ts, evTs);
+        if (div) vtAppend(div);
+      };
+      // 이력 복원 경로 — 같은 빌더를 쓴다(문구·버튼·선택상태가 라이브와 갈릴 수 없다).
+      registerChatKindBuilder("prompt.options", buildPromptOptions);
 

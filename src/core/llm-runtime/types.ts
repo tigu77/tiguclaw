@@ -651,6 +651,15 @@ export interface RegionATurnErrorPayload {
   /** 항상 false. turn_done(ok:true)과 대칭 — 분류 가독용. */
   ok: false;
   /**
+   * 사용량 한도로 이 백엔드가 쉬는 **해제 시각**(epoch ms). 한도 실패일 때만.
+   *
+   * ★왜 페이로드에 싣나(2026-08-01, 사용자 지적): 429 원문에 `resets_at` 이 오는데
+   *  사용자 대면 문구는 원문을 200자에서 잘라 **그 값 바로 앞에서 끊겼다**. 정작 우리는
+   *  파싱해서 쿨다운까지 걸어 놓고 있었다 — **아는데 말을 안 한 것**이다.
+   *  채널마다 문구를 다시 조립하지 않게 값으로 싣는다(대시보드·텔레그램 공용).
+   */
+  cooldownUntilTs?: number;
+  /**
    * 실패 분류 (facade 단일 휴리스틱 — 어댑터별 분기 0).
    *  - "timeout": 1층 유휴 또는 2층 턴 타임아웃(Idle/TurnTimeoutError).
    *  - "model_rejected": 모델 부재·거부(isModelRejected 매칭) — 폴백 트리거 류.

@@ -1,6 +1,5 @@
 import {
   addMemory,
-  deleteMemory,
   listMemories,
   archiveMemory,
   listColdMemoriesForArchive,
@@ -135,7 +134,20 @@ export const generateWeeklyReview = (
   };
 };
 
-export const cleanupStaleReflections = (
+/**
+ * TTL 초과 회고 메모를 **아카이브**한다(삭제 아님·가역·검색 유지).
+ *
+ * ★2026-07-31: 원래 `deleteMemory` 로 물리 삭제였다(ADR 2026-05-23). 그 결정은
+ * 유지보수 철학(2026-07-12 — **정리 ≠ 삭제**, 핫 워킹셋만 바운드하고 콜드 레코드는
+ * 보존)보다 앞선 것이라 뒤집는다. 바로 아래 `archiveColdObservations` 가 이미 같은
+ * 문제를 아카이브로 풀고 있었다(형제가 답을 들고 있었다).
+ *
+ * 멱등: `listMemories` 기본이 `archived_at IS NULL` 이라 아카이브분은 다음 실행에서
+ * 재매칭되지 않는다 → 반환 카운트가 매 주기 반복되지 않는다.
+ *
+ * @returns 이번 실행에서 아카이브한 메모 수.
+ */
+export const archiveStaleReflections = (
   thresholdDays: number = REFLECTION_TTL_DAYS,
 ): number => {
   const cutoffMs = Date.now() - thresholdDays * 24 * 60 * 60 * 1000;
@@ -145,14 +157,15 @@ export const cleanupStaleReflections = (
       m.name.startsWith(`feedback_${SELF_NAMESPACE}_`) &&
       m.updatedAt <= cutoffMs,
   );
+  let archived = 0;
   for (const m of targets) {
     try {
-      deleteMemory(m.name);
+      if (archiveMemory(m.name) !== undefined) archived++;
     } catch {
-      // 무시 — 다른 프로세스가 동시 삭제했을 수 있음.
+      // 무시 — 다른 프로세스가 동시에 처리했을 수 있음.
     }
   }
-  return targets.length;
+  return archived;
 };
 
 /**

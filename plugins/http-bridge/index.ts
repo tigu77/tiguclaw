@@ -104,6 +104,7 @@ import {
 import { promises as fsp } from "node:fs";
 import nodePath from "node:path";
 import { redactSecrets } from "../../src/core/outbound-sanitize.js";
+import { getInflightTurns } from "../../src/core/inflight-turns.js";
 
 /**
  * in-process MCP 서버 팩토리 — `/mcp-tools` 가 **실제 인스턴스에 물어보기** 위한 유일한 맵.
@@ -866,12 +867,18 @@ class HttpBridge implements Channel, Observer {
     // /health — 인증 무.
     if (pathname === "/health" && method === "GET") {
       const buffer_size = this.bus ? this.bus.history().length : 0;
+      // ★진행 중 메인 턴 — "살아있나" 가 아니라 "지금 누구를 위해 일하나" (2026-08-01 A5).
+      //  재시작 전 확인용. 미등록이면 null 로 답한다(0 과 구분 — 모르는 걸 안전으로 읽으면
+      //  그게 사고의 형상이었다).
+      const inflight = getInflightTurns();
       writeJson(res, 200, {
         ok: true,
         version: VERSION,
         buffer_size,
         subscribers: this.sseClients.size,
         channel_handler: this.channelHandler !== null,
+        active_turns: inflight === null ? null : inflight.count,
+        active_turn_threads: inflight === null ? null : inflight.keys,
       });
       return;
     }

@@ -192,13 +192,29 @@ export const runScheduleFiring = async (
         });
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
-        deps.recordFiring(schedule.id, { ok: false, error: reason });
-        console.error(`[scheduler:${schedule.id}] '${schedule.label}' 직송 실패 — ${reason}`);
+        deps.recordFiring(schedule.id, { ok: false, error: `dispatch: ${reason}` });
+        console.error(
+          `[scheduler:${schedule.id}] '${schedule.label}' → ${schedule.destChannel}:${schedule.destTarget} 직송 실패(전달만 실패): ${reason}`,
+        );
+        // ★자동 재전송을 여기도 건다 (2026-08-01 A4e). LLM 경유 갈래는 이미 걸고 있었고
+        //  이 갈래만 빠져 있었다 — **같은 전달 실패인데 프롬프트 접두사 하나로 결과가
+        //  갈렸다**(LLM 경유는 5분 뒤 되살아나고 직송은 그냥 유실). 재전송이 필요한 이유는
+        //  "무엇으로 문구를 만들었나" 와 무관하다. 직송은 오히려 더 안전하다 — 문구가
+        //  고정이라 재전송이 원문 그대로다(LLM 재실행처럼 내용이 달라질 여지가 없다).
+        const willRetry = loadSchedulerRetryEnabled(deps.cwd);
+        if (willRetry) scheduleDispatchRetry(schedule, text, bus, deps);
         try {
           bus.publish({
             type: "scheduler.error",
             ts: Date.now(),
-            payload: { scheduleId: schedule.id, label: schedule.label, error: reason },
+            payload: {
+              scheduleId: schedule.id,
+              label: schedule.label,
+              error: reason,
+              // 재전송을 예약했으면 이 실패는 **아직 확정이 아니다** — 관측자가 성급히
+              // "유실됐다" 고 알리지 않게 한다(LLM 경유 갈래와 같은 계약).
+              willRetry,
+            },
           });
         } catch {
           /* 관측 실패가 스케줄러를 죽이지 않는다 */

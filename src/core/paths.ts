@@ -343,7 +343,12 @@ export const migrateLegacyAgent = async (
     homeBody = undefined; // 부재 — 덮어쓰기 대상.
   }
   if (homeBody !== undefined && homeBody.trim() !== AGENT_TEMPLATE.trim()) {
-    console.error(
+    // ★`log` 레벨이다 (2026-08-01 A4c). 이건 **정상 상태**다 — 이미 마이그레이션됐거나
+    //  사용자가 편집한 것이고, 그때 건드리지 않는 게 이 함수의 옳은 동작이다.
+    //  종전엔 `error` 라 부팅마다 1건씩 쌓였고(부팅 206회 ↔ 206건), 12일치 `[error]`
+    //  515줄 중 **40%** 가 이 한 줄이었다. 정상 상태가 에러 로그의 절반을 차지하면
+    //  진짜 사고가 배경 소음에 묻힌다.
+    console.log(
       `[paths] migrateLegacyAgent skip: home AGENT.md is not the untouched seed (already migrated or user-edited) at ${p.agentMd} — leaving untouched.`,
     );
     return;
@@ -356,7 +361,8 @@ export const migrateLegacyAgent = async (
     if (verify !== legacyBody) {
       throw new Error("copy verification failed — home AGENT.md mismatch after write");
     }
-    console.error(
+    // 성공도 에러 레벨로 찍고 있었다 — 성공은 성공으로 남긴다(A4c).
+    console.log(
       `[paths] migrateLegacyAgent: copied ${legacy} → ${p.agentMd} (legacy preserved).`,
     );
   } catch (err) {

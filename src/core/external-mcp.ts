@@ -21,6 +21,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { MCPServer } from "@openai/agents-core";
+// ★시크릿 판정은 `outbound-sanitize` 가 유일 정본이다 — 여기 사본을 두면 어긋난다
+//  (2026-08-01 감사: 실제로 어긋나 있었다. 사본 쪽에만 CREDENTIAL 이 있었다).
+import { SECRET_KEY_NAME_RE } from "./outbound-sanitize.js";
 import { getPaths } from "./paths.js";
 
 /** stdio 서버 config (claude McpStdioServerConfig 동형). */
@@ -228,17 +231,29 @@ export const killExternalMcpChildrenSync = (): number => {
  * 드리프트한다). 서버가 **명시적으로 요구한** env(`config.env`)는 그대로 넘긴다 —
  * 그건 사용자가 mcp.json 에 직접 적은 것이라 의도된 위임이다.
  */
-/**
- * 시크릿 판정 — `outbound-sanitize` 의 `SECRET_KEY_NAME_RE` 와 같은 기준(이름 열거 금지).
- * 두 곳에 같은 판정이 생기지 않게 의미를 맞춰 둔다.
- */
-const SECRET_ENV_KEY_RE = /KEY|TOKEN|SECRET|REFRESH|PASSWORD|OAUTH|CREDENTIAL/i;
 
-const buildEnv = (extra?: Record<string, string>): Record<string, string> => {
+/**
+ * 자식 프로세스에 물려줄 env — 시크릿류는 빼고, `mcp.json` 에 사용자가 직접 적은
+ * `env` 만 의도된 위임으로 통과시킨다.
+ *
+ * ★export 인 이유(2026-07-31): 이게 모듈 안에 숨어 있던 탓에 이걸 지킨다는 회귀 검사가
+ *  **grep 과 항등식**으로 쓰였고, 경계를 통째로 되돌려도 스위트가 초록이었다.
+ *  `parentEnv` 를 주입받는 것도 같은 이유다 — `process.env` 를 흔들지 않고 판정만 볼 수 있다.
+ *
+ * ⚠**이 함수는 경계 전체가 아니다.** 유일한 호출부는 아래 `connectOne`(codex/openai
+ *  브리지 경로)이고, claude 어댑터는 config 를 SDK 에 그대로 넘겨 **자기가 spawn** 한다
+ *  (`claude-agent-sdk.ts` 의 `options.mcpServers`) — 그 경로는 여기를 지나지 않는다.
+ *  claude CLI 는 `env` 를 줘도 부모 env 를 **대체가 아니라 병합**하므로 config 로는 못 막는다.
+ *  미해결 갭 = `docs/decisions/2026-07-31-review-round3.md` A1/C1.
+ */
+export const buildChildEnv = (
+  extra?: Record<string, string>,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> => {
   const base: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
+  for (const [k, v] of Object.entries(parentEnv)) {
     if (v === undefined) continue;
-    if (SECRET_ENV_KEY_RE.test(k)) continue; // 시크릿류는 상속시키지 않는다.
+    if (SECRET_KEY_NAME_RE.test(k)) continue; // 시크릿류는 상속시키지 않는다.
     base[k] = v;
   }
   // 명시 지정분은 그대로(사용자가 mcp.json 에 적은 의도된 위임 — 시크릿이어도 통과).
@@ -259,7 +274,7 @@ const connectOne = async (
       : new StdioClientTransport({
           command: (config as StdioMcpConfig).command,
           args: (config as StdioMcpConfig).args,
-          env: buildEnv((config as StdioMcpConfig).env),
+          env: buildChildEnv((config as StdioMcpConfig).env),
         });
   await client.connect(transport); // 실제 프로세스 spawn(stdio) 또는 SSE 연결.
   // 자식 pid 등록 — 동기 리퍼(killExternalMcpChildrenSync)의 대상. SSE 전송은 자식이

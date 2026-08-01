@@ -67,9 +67,24 @@ export const stripInternalRuntimeScaffolding = (text: string): string => {
 // 순수 함수 — 입력 string in, string out, 부작용 0. 무매칭이면 원본 그대로.
 // ───────────────────────────────────────────────────────────────────────────
 
-// env 키 선별 — 키명이 시크릿스러우면 자동 수집(화이트리스트 아님 → 신규 시크릿 env
-// 추가 시 헬퍼 수정 불필요). *_PORT·*_ALLOWED_USER_IDS·REGION_A_MODELS 등은 미매칭.
-const SECRET_KEY_NAME_RE = /KEY|TOKEN|SECRET|REFRESH|PASSWORD|OAUTH/i;
+/**
+ * **env 키 이름이 비밀을 담는가** — 이 판정의 유일한 정본.
+ *
+ * 화이트리스트가 아니라 판정이다(신규 시크릿 env 가 생겨도 수정 불필요).
+ * `*_PORT`·`*_ALLOWED_USER_IDS`·`REGION_A_MODELS` 등은 미매칭.
+ *
+ * ★export 인 이유(2026-08-01 감사): 같은 판정이 `external-mcp.ts` 에 **사본**으로 있었고,
+ *  그 사본에만 `CREDENTIAL` 이 추가돼 **이미 어긋나 있었다** — 외부 MCP 자식에게는 안
+ *  넘어가는데 로그에는 평문으로 남는 상태였다. 더 얄궂은 건 사본 쪽 주석이 "두 곳에 같은
+ *  판정이 생기지 않게 의미를 맞춰 둔다" 고 **동기화를 주장**하고 있었다는 것이다.
+ *  말이 실제를 보증하지 못하므로, 사본을 없애고 여기 하나만 남긴다.
+ *
+ *  통일 방향은 **엄격한 쪽**이다. `GOOGLE_APPLICATION_CREDENTIALS` 처럼 값이 파일 경로인
+ *  것까지 로그에서 가려지는 불편이 생기지만, 지금 막고 있는 것을 푸는 쪽으로 맞출 수는 없다.
+ *  이 모듈은 아무것도 import 하지 않는 말단이라 순환 참조 없이 어디서든 가져다 쓸 수 있다.
+ */
+export const SECRET_KEY_NAME_RE =
+  /KEY|TOKEN|SECRET|REFRESH|PASSWORD|OAUTH|CREDENTIAL/i;
 // 값 길이 가드 — 짧은 값(빈/타임스탬프 아닌 짧은 값)이 본문을 광범위 오염시키는
 // 오탐 방지. 오탐<누락 우선이나 8자 미만은 의미있는 비밀 아님으로 판정.
 const SECRET_MIN_VALUE_LEN = 8;

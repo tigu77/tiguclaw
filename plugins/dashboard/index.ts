@@ -17,7 +17,7 @@
  *   둘 다 부재 시에만 graceful skip + 안내 로그. (이전엔 built 에서 소스·tsx 부재로 항상 skip →
  *   신규 설치자가 대시보드를 못 썼다. build:prod 가 dist/packages/dashboard 로 컴파일+정적복사.)
  *
- * 포트: DASHBOARD_PORT(기본 3000)·HTTP_BRIDGE_PORT 는 child 가 env 에서 직접 읽음(상속).
+ * 포트: DASHBOARD_PORT(기본 7010)·HTTP_BRIDGE_PORT 는 child 가 env 에서 직접 읽음(상속).
  *   HTTP_BRIDGE_TOKEN 부재 시 child 가 즉시 exit(1) → 미리 감지해 안내 후 skip.
  *
  * 격리: spawn/health-check 실패가 데몬 부팅을 죽이지 않음(loader 가 try/catch + plugin.error).
@@ -28,7 +28,7 @@ import path from "node:path";
 import { appRoot } from "../../src/core/paths.js";
 import type { EventBus } from "../../src/core/eventbus.js";
 
-const DEFAULT_DASHBOARD_PORT = "3000";
+const DEFAULT_DASHBOARD_PORT = "7010";
 const HEALTH_TIMEOUT_MS = 800;
 
 class DashboardService {
@@ -86,7 +86,7 @@ class DashboardService {
     }
 
     // child 는 부모(데몬) env 를 그대로 상속 — DASHBOARD_PORT/HTTP_BRIDGE_PORT/TOKEN 전파.
-    // DASHBOARD_PORT 미설정 시에만 기본 3000 주입(설정돼 있으면 .env 값 존중).
+    // DASHBOARD_PORT 미설정 시에만 기본 7010 주입(설정돼 있으면 .env 값 존중).
     const childEnv = { ...process.env };
     if (childEnv.DASHBOARD_PORT === undefined || childEnv.DASHBOARD_PORT.trim() === "") {
       childEnv.DASHBOARD_PORT = DEFAULT_DASHBOARD_PORT;

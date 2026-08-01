@@ -90,11 +90,11 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 
 웹 대시보드는 데몬이 알아서 같이 띄웁니다 — 따로 실행할 명령이 없어요. 데몬이 떠 있으면:
 
-**http://127.0.0.1:3000**
+**http://127.0.0.1:7010**
 
-여기가 본격 채팅 UI 입니다 — 도구 실행이 한 스텝씩 실시간으로, 답은 흐르듯, 세션 탭, 백그라운드 작업 패널까지. 3000 이 이미 쓰이고 있으면 `.env` 의 `DASHBOARD_PORT` 로 바꾸세요.
+여기가 본격 채팅 UI 입니다 — 도구 실행이 한 스텝씩 실시간으로, 답은 흐르듯, 세션 탭, 백그라운드 작업 패널까지. 7010 이 이미 쓰이고 있으면 `.env` 의 `DASHBOARD_PORT` 로 바꾸세요.
 
-> **일부러 로컬 전용입니다.** 대시보드는 `127.0.0.1` 에만 바인딩되고 브라우저 로그인이 없습니다 — bridge 토큰은 서버 쪽에서 주입돼 페이지엔 안 닿으니, **이 포트에 닿는 것 자체가 곧 권한**이에요. 폰에서 쓰고 싶으면 포트를 열지 말고 사설 네트워크로 터널링하세요(예: `tailscale serve 3000`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
+> **일부러 로컬 전용입니다.** 대시보드는 `127.0.0.1` 에만 바인딩되고 브라우저 로그인이 없습니다 — bridge 토큰은 서버 쪽에서 주입돼 페이지엔 안 닿으니, **이 포트에 닿는 것 자체가 곧 권한**이에요. 폰에서 쓰고 싶으면 포트를 열지 말고 사설 네트워크로 터널링하세요(예: `tailscale serve 7010`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
 
 대시보드가 안 보이면 십중팔구 `HTTP_BRIDGE_TOKEN` 이 없는 겁니다 — 데몬 로그에 `dashboard: HTTP_BRIDGE_TOKEN not set … spawn skipped` 가 찍혀요. `npm run onboard` 가 자동 생성하고, `npm run doctor` 가 확인해 줍니다.
 
@@ -272,10 +272,10 @@ esac
 LLM_GATEWAY_TOKEN=<충분히 긴 랜덤 문자열>
 ```
 
-그다음 OpenAI 클라이언트를 http-bridge 포트(기본 `3001`, `127.0.0.1` 바인드)로 향하게 한다:
+그다음 OpenAI 클라이언트를 http-bridge 포트(기본 `7011`, `127.0.0.1` 바인드)로 향하게 한다:
 
 ```bash
-curl http://127.0.0.1:3001/v1/chat/completions \
+curl http://127.0.0.1:7011/v1/chat/completions \
   -H "Authorization: Bearer $LLM_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

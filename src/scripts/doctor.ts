@@ -342,7 +342,7 @@ const main = async (): Promise<void> => {
   // [daemon] — ★ "작동하나" 핵심. 이미 떠있는 데몬에 read-only health 핑.
   console.log("[daemon]");
   const bridgePort =
-    (process.env.HTTP_BRIDGE_PORT ?? "3001").trim() || "3001";
+    (process.env.HTTP_BRIDGE_PORT ?? "7011").trim() || "7011";
   const health = await daemonHealth(bridgePort);
   if (health.up) {
     console.log(

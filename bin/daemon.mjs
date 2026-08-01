@@ -453,7 +453,7 @@ const winPort = (c) => {
   } catch {
     /* .env 없음 — 기본값 */
   }
-  return process.env.HTTP_BRIDGE_PORT?.trim() || "3001";
+  return process.env.HTTP_BRIDGE_PORT?.trim() || "7011";
 };
 
 // 숨김(0)·비대기(False) 로 데몬을 띄우는 VBS. cwd=repoRoot, TIGUCLAW_HOME 주입.

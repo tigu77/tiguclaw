@@ -60,10 +60,10 @@ try {
   jsWhitelist = new Set();
 }
 
-const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "3001", 10);
+const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
 const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST ?? "localhost";
 const BRIDGE_TOKEN = process.env.HTTP_BRIDGE_TOKEN;
-const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "3000", 10);
+const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "7010", 10);
 // loopback 바인딩 기본 — 원격 노출은 tailscale serve(→127.0.0.1:<port> 프록시)가 담당.
 // 와일드카드(::)로 바인딩하면 tailscaled 가 잡은 tailnet-IP:<port> 와 EADDRINUSE 충돌 →
 // 대시보드가 못 떠 tailscale 프록시가 502 를 낸다. LAN 직접노출 필요 시 env 로 override.

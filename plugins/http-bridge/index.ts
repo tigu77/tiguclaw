@@ -771,7 +771,7 @@ class HttpBridge implements Channel, Observer {
         `HTTP_BRIDGE_TOKEN not set, using ephemeral token: ${this.ephemeralToken}`,
       );
     }
-    this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "3001", 10);
+    this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
     this.host = process.env.HTTP_BRIDGE_HOST?.trim() || "127.0.0.1";
   }
 

@@ -90,11 +90,11 @@ That's it. `onboard` walks you through everything: pick your LLM, paste a key (o
 
 The daemon starts the web dashboard for you — there is no separate command. Once it's running:
 
-**http://127.0.0.1:3000**
+**http://127.0.0.1:7010**
 
-That's the full chat UI: live tool steps, streaming replies, session tabs, the background-jobs panel. Change the port with `DASHBOARD_PORT` in your `.env` if 3000 is taken.
+That's the full chat UI: live tool steps, streaming replies, session tabs, the background-jobs panel. Change the port with `DASHBOARD_PORT` in your `.env` if 7010 is taken.
 
-> **It's local-only on purpose.** The dashboard binds to `127.0.0.1`, and there's no browser login — the bridge token is injected server-side and never reaches the page, so *reaching the port is the permission*. To use it from your phone, don't open the port: tunnel it over a private network (e.g. `tailscale serve 3000`). Set `DASHBOARD_HOST=0.0.0.0` only if you know what that costs.
+> **It's local-only on purpose.** The dashboard binds to `127.0.0.1`, and there's no browser login — the bridge token is injected server-side and never reaches the page, so *reaching the port is the permission*. To use it from your phone, don't open the port: tunnel it over a private network (e.g. `tailscale serve 7010`). Set `DASHBOARD_HOST=0.0.0.0` only if you know what that costs.
 
 If the dashboard isn't there, the usual cause is a missing `HTTP_BRIDGE_TOKEN` — the daemon logs `dashboard: HTTP_BRIDGE_TOKEN not set … spawn skipped`. `npm run onboard` generates one; `npm run doctor` checks it.
 
@@ -272,10 +272,10 @@ It's **off until you give it a token**. Add one to `<home>/.env`:
 LLM_GATEWAY_TOKEN=<a long random string>
 ```
 
-Then point any OpenAI client at the http-bridge port (`3001` by default, bound to `127.0.0.1`):
+Then point any OpenAI client at the http-bridge port (`7011` by default, bound to `127.0.0.1`):
 
 ```bash
-curl http://127.0.0.1:3001/v1/chat/completions \
+curl http://127.0.0.1:7011/v1/chat/completions \
   -H "Authorization: Bearer $LLM_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

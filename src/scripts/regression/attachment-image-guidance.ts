@@ -17,6 +17,13 @@
  *  텍스트 전용 / claude 는 inline 이 없고 Read 가 vision). 사실을 단언하는 대신 **행동을
  *  지시**해서 양쪽에서 옳게 동작하게 한다 — "열어보고, 그림이 아니면 정직 보고".
  *  어댑터 분기 0(LLM-agnostic)을 유지하면서.
+ *
+ * ★2026-08-01 — 이 검사는 그 사고의 **절반만** 지키고 있었다. 문구만 보고 **배달은 안 봤다**:
+ *  첨부 블록을 프롬프트에서 통째로 빼거나 라우터에서 첨부를 드롭해도 스위트가 초록이었다
+ *  (검토 실측). 사용자에게 보이는 증상은 문구 사고와 **똑같다** — 모델이 사진을 못 본다.
+ *  문구가 옳아도 **경로가 안 가면** 열 대상을 모른다. 두 어댑터의 배달 경로를 함께 본다.
+ *  배달 형상은 어댑터마다 달라도(claude=경로 텍스트+네이티브 Read / codex=텍스트+input_image)
+ *  불변식은 하나다 — **첨부가 있으면 모델이 그 사실과 경로를 알게 된다.**
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -57,6 +64,63 @@ export const check: RegressionCheck = {
         "★행동 지시 3요소가 다 있다(시도 → 정직 보고 → 추측 금지)",
         missing.length === 0,
         missing.length === 0 ? "3요소 확인" : `누락: ${missing.join(" / ")}`,
+      ),
+    );
+
+    // ── 배달(2026-08-01 신설): 경로가 실제로 모델에게 간다 ────────────────
+    //  ★종전에 비어 있던 절반. 문구가 아무리 옳아도 경로가 안 가면 모델은 열 파일을 모른다.
+    const IMG_PATH = "/tmp/x.png";
+    out.push(
+      assert(
+        "★첨부 블록에 **실제 경로**가 실린다(모델이 열 대상을 안다)",
+        text.includes(IMG_PATH),
+        text.includes(IMG_PATH) ? "경로 포함" : "★경로 없음 — 모델이 열 수 없다",
+      ),
+    );
+    // claude 배달 — 사용자 턴 조립에서 첨부 블록이 살아남는가(드롭되면 여기서 잡힌다).
+    const { assembleUserPrompt } = await import("../../core/prompt-assembly.js");
+    const claudePrompt = assembleUserPrompt(["시스템 컨텍스트"], [text, "이 사진 좀 봐줘"]);
+    out.push(
+      assert(
+        "★claude: 조립된 사용자 턴에 첨부 경로가 남는다(드롭 0)",
+        claudePrompt.includes(IMG_PATH) && claudePrompt.includes("이 사진 좀 봐줘"),
+        claudePrompt.includes(IMG_PATH) ? "경로+본문 동시 전달" : "★첨부가 조립에서 사라졌다",
+      ),
+    );
+    // codex 배달 — 같은 텍스트 블록 **더하기** 네이티브 비전 아이템.
+    //  ★실파일이 필요하다(인코더가 읽는다). 없으면 조용히 빈 배열이 돼 **검사가 스스로
+    //   초록/빨강을 오판한다** — 픽스처를 진짜로 만든다.
+    const { buildMediaContentItems } = await import(
+      "../../core/llm-runtime/adapters/openai-codex-oauth-history.js"
+    );
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const pathMod = await import("node:path");
+    const tmp = await mkdtemp(pathMod.join(os.tmpdir(), "tiguclaw-att-"));
+    const realPng = pathMod.join(tmp, "x.png");
+    // 최소 유효 PNG(1x1).
+    await writeFile(
+      realPng,
+      Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    );
+    let media: Array<{ type?: string }> = [];
+    try {
+      media = await buildMediaContentItems([
+        { kind: "image", path: realPng, mimeType: "image/png", filename: "x.png", bytes: 70 },
+      ] as never);
+    } finally {
+      await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    }
+    out.push(
+      assert(
+        "★codex: 이미지가 네이티브 비전 아이템으로도 실린다",
+        media.length === 1 && media[0]?.type === "input_image",
+        media.length === 0
+          ? "★비전 아이템 0 — 이미지가 텍스트로만 간다"
+          : `${media.length}개 · ${String(media[0]?.type)}`,
       ),
     );
 

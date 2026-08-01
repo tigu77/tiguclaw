@@ -172,6 +172,64 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★④ 능력 이름 판정이 **세상에 하나**다 (2026-08-01 P2 정리).
+    //  `command-tools-mcp` 와 `endpoint-tools-mcp` 에 같은 정규식이 사본으로 있었고, 사본 쪽
+    //  주석은 "동일 규칙(복제 1개)" 이라고 **자백**하고 있었다 — 같은 날 시크릿 판정에서
+    //  똑같은 자백이 붙은 사본이 **이미 어긋난 채** 발견됐다. 자백은 동기화를 보장하지 않는다.
+    //  이름이 곧 파일명이 되므로 이 판정이 갈리면 **한쪽만 디렉터리 탈출을 막는다**.
+    const { isSafeCapabilityName } = await import(
+      "../../core/llm-runtime/capabilities/_names.js"
+    );
+    const nameCases: Array<[string, boolean]> = [
+      ["my-cmd", true],
+      ["a1_b2", true],
+      ["", false],
+      ["-leading", false], // 첫 글자는 영숫자여야
+      ["UPPER", false],
+      ["has space", false],
+      ["../escape", false], // ★디렉터리 탈출
+      ["a/b", false],
+      ["dot.name", false],
+    ];
+    const wrongNames = nameCases
+      .filter(([n, want]) => isSafeCapabilityName(n) !== want)
+      .map(([n]) => JSON.stringify(n));
+    out.push(
+      assert(
+        "★능력 이름 판정이 경로 탈출·대문자·공백을 막는다(단일 정본)",
+        wrongNames.length === 0,
+        wrongNames.length === 0 ? `${nameCases.length}종 전부 정확` : `틀림: ${wrongNames.join(" ")}`,
+      ),
+    );
+    // ★사본 부활 탐지는 **배선**으로 본다. 글자 그대로 같은 정규식만 찾으면
+    //  살짝 바꾼 사본(`a-zA-Z` 등)을 놓치는데, **드리프트한 사본이 정확히 더 위험하다**
+    //  (변이로 실측 — 리터럴 비교판은 그걸 통과시켰다). "자기 정의를 두지 않는가" 를 본다.
+    const ownDefs = await (async (): Promise<string[]> => {
+      const { readdir, readFile } = await import("node:fs/promises");
+      const p2 = await import("node:path");
+      const { fileURLToPath: f2 } = await import("node:url");
+      const dir = p2.resolve(
+        p2.dirname(f2(import.meta.url)),
+        "../../core/llm-runtime/capabilities",
+      );
+      const hits: string[] = [];
+      for (const f of await readdir(dir)) {
+        if (!f.endsWith(".ts") || f === "_names.ts") continue;
+        const src = await readFile(p2.join(dir, f), "utf8");
+        // 자기 함수 본문을 정의하면(= `(name...` 로 시작) 사본이다. 공유 정본을 가리키는
+        // 별칭 대입(`= isSafeCapabilityName;`)은 정상.
+        if (/const isSafeName\s*=\s*\(/.test(src)) hits.push(f);
+      }
+      return hits;
+    })();
+    out.push(
+      assert(
+        "★이름 판정을 자기 파일에서 다시 정의하지 않는다(사본 부활 0)",
+        ownDefs.length === 0,
+        ownDefs.length === 0 ? "전 파일이 공유 정본 사용" : `★자기 정의 발견: ${ownDefs.join(" ")}`,
+      ),
+    );
+
     // ★그 판정이 **실제 spawn 에 배선**돼 있다 — 진짜 자식을 띄워 자식이 받은 env 를 읽는다.
     //  grep 이 아니라 자식 프로세스가 남긴 파일이 증거다. 호출부가 buildChildEnv 를
     //  건너뛰면(= A1 이 claude 경로에서 하는 일) 이 단언이 빨간불이 된다.

@@ -29,6 +29,7 @@
  *  등록 — endpoint/worker 도구와 *동일* 가드. lean(toolsNone) 턴엔 미노출.
  */
 import { promises as fs } from "node:fs";
+import { isSafeCapabilityName } from "./_names.js";
 import path from "node:path";
 import {
   createSdkMcpServer,
@@ -76,10 +77,10 @@ const normalizeName = (raw: string): string =>
 
 /**
  * name 안전성 — 디렉터리 탈출/숨김파일 방지. 영문 소문자·숫자·하이픈·언더스코어만.
- * endpoint-tools 의 isSafeName 과 *동일 규칙*(module-private 라 복제 1개).
+ * 이름 판정은 `_names.ts` 가 소유한다(사본 제거 2026-08-01).
  */
-const isSafeName = (name: string): boolean =>
-  name !== "" && /^[a-z0-9][a-z0-9_-]*$/.test(name);
+// 이름 판정은 `_names.ts` 단일 정본 — 사본을 두면 조용히 갈린다(2026-08-01).
+const isSafeName = isSafeCapabilityName;
 
 /** frontmatter 값 escape — 줄바꿈 제거(파서 라인 단위) + 따옴표 래핑(콜론 안전). */
 const fmValue = (raw: string): string => {

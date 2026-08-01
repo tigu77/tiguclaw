@@ -28,6 +28,7 @@
  *  이면 미등록 → 엔드포인트가 또 엔드포인트를 만드는 재귀가 자연 차단된다.
  */
 import { promises as fs } from "node:fs";
+import { isSafeCapabilityName } from "./_names.js";
 import path from "node:path";
 import {
   createSdkMcpServer,
@@ -112,8 +113,8 @@ const deriveName = (routePath: string): string =>
  * name 안전성 — 디렉터리 탈출/숨김파일 방지. 영문 소문자·숫자·하이픈·언더스코어만.
  * (path 파생이라 정상 입력은 통과. 방어적 가드.)
  */
-const isSafeName = (name: string): boolean =>
-  name !== "" && /^[a-z0-9][a-z0-9_-]*$/.test(name);
+// 이름 판정은 `_names.ts` 단일 정본 — 사본을 두면 조용히 갈린다(2026-08-01).
+const isSafeName = isSafeCapabilityName;
 
 /** frontmatter 값 escape — 줄바꿈 제거(파서가 라인 단위라 멀티라인 불가) + 따옴표 래핑. */
 const fmValue = (raw: string): string => {

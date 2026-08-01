@@ -37,6 +37,12 @@ export interface Endpoint {
   role: EndpointRole;
   /** 실행 제한. restricted(기본) = toolPolicy none, full = 전체 도구(소유자 명시만). */
   mode: EndpointMode;
+  /**
+   * 실행 **모델 프로파일 이름**(settings.json `models.profiles` 키, 예 `high`).
+   * 빈 문자열 = 미지정 = 기본 풀(현행). 프로파일 이름만 받는다 — 벤더 모델명을 데이터
+   * 파일에 박으면 모델 교체 때 같이 썩는다(에이전트 `model:` 과 같은 취지).
+   */
+  model: string;
   /** frontmatter `label`(인덱스 표시용). 없으면 "". */
   label: string;
   /** frontmatter `desc`(인덱스 표시용). 없으면 "". */
@@ -207,6 +213,12 @@ const loadSingleEndpoint = async (
     method: normalizeMethod(frontmatter?.method),
     role: normalizeRole(frontmatter?.role),
     mode: normalizeMode(frontmatter?.mode),
+    // ★실행 프로파일 (2026-08-01) — 엔드포인트도 에이전트·스킬과 같은 **데이터**이고,
+    //  에이전트는 이미 자기 정의에 `model` 을 선언한다. 같은 부류인데 하나만 못 하는 건
+    //  비대칭이다(능력은 데이터). **프로파일 이름만** 받는다 — 데이터 파일에 벤더 모델명을
+    //  박으면 모델이 바뀔 때 같이 썩는다. 프로파일은 의도("high")를 선언하므로 따라온다.
+    //  미지정 = 현행(기본 풀) — 회귀 0.
+    model: (frontmatter?.model ?? "").trim(),
     label: (frontmatter?.label ?? "").trim(),
     desc: (frontmatter?.desc ?? "").trim(),
     filePath: path.resolve(filePath),

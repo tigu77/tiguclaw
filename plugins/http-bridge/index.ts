@@ -2753,6 +2753,9 @@ class HttpBridge implements Channel, Observer {
           route(epMsg, {
             // restricted(기본) → 도구 0. full(소유자 명시) → undefined = 전체 도구.
             toolPolicy: ep.mode === "restricted" ? { mode: "none" } : undefined,
+            // 엔드포인트 정의의 실행 프로파일(2026-08-01) — 미지정("")이면 미전달 = 기본 풀.
+            //  toolPolicy 운반과 동형: 여기선 정의값을 옮기기만 하고 해석은 코어가 한다.
+            ...(ep.model !== "" ? { modelProfile: ep.model } : {}),
           });
 
         if (wantStream) {

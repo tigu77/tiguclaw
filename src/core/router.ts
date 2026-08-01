@@ -16,7 +16,7 @@ import {
 } from "../store/sessions.js";
 import { resolveSessionId } from "./threadkey.js";
 import { runClaude } from "./claude.js";
-import { parseModelSpecList } from "./llm-runtime/index.js";
+import { parseModelSpecList, resolveModelChain } from "./llm-runtime/index.js";
 import { resolveProfileChain } from "./settings.js";
 import { getRegisteredMcpServers } from "./mcp-registry.js";
 
@@ -59,6 +59,14 @@ export const route = async (
     // 순수성 — 소비/해석 0, abortSignal·toolPolicy 운반과 동형). 미전달(STEERING_ENABLED off·
     // 스케줄러·워커 등) = undefined = 어댑터 미주입 = 현행 동작(회귀 0).
     steering?: SteeringChannel;
+    /**
+     * 이 턴을 돌릴 **모델 프로파일 이름**(additive, 2026-08-01). 커스텀 엔드포인트가
+     * 자기 정의(`model:`)로 주입한다 — 엔드포인트도 에이전트·스킬과 같은 데이터이고,
+     * 에이전트는 이미 자기 정의로 모델을 고른다(같은 부류의 비대칭 제거).
+     * `toolPolicy` 운반과 완전 동형 — router 는 **소비/해석하지 않고 그대로 운반만** 한다.
+     * 미전달(채널·스케줄러 등 기존 호출자) = undefined = 기본 풀 = 현행 동작(회귀 0).
+     */
+    modelProfile?: string;
     // ── 채널/세션 분리 (ADR 2026-07-15 §D1/§D2/§D3) — 웨이브2b(daemon 채널)가 채운다 ──
     // 채널이 자기 정체성을 threadKey 에 인코딩하던 것을 코어 resolver 단일 정의점으로 대체.
     //
@@ -112,6 +120,13 @@ export const route = async (
   // 구버전 무효 문자열이 남아있을 가능성 대비 빈 풀 가드 유지(env 폴백).
   // 세션-정체성 키 = (sessionChannel, sessionId) — override 조회도 canonical 키로.
   const overrideRaw = getSessionModelOverride(sessionChannel, sessionId);
+  // 엔드포인트가 선언한 프로파일 → 폴백 체인. **해석은 llm-runtime 의 단일 정본에 위임**
+  //  (여기서 프로파일 규칙을 다시 구현하면 같은 판정이 두 곳이 된다). 미지정/미인식이면
+  //  빈 배열 → 기본 풀(현행). router 는 값을 만들지 않고 **운반**만 하는 규약을 지킨다.
+  const endpointChain =
+    opts?.modelProfile !== undefined && opts.modelProfile !== ""
+      ? resolveModelChain(opts.modelProfile, process.cwd()) // 프로파일 조회 기준 = 데몬 cwd(위 resolveProfileChain 과 동일).
+      : [];
   let overridePool =
     overrideRaw !== null ? parseModelSpecList(overrideRaw) : [];
   // ── 세션 모델 *프로파일* override (대시보드 드롭다운, 2026-07-19, ADR
@@ -163,7 +178,18 @@ export const route = async (
       // 미주입 = 현행(회귀 0). P0 = 운반만; 어댑터 소비는 P1.
       steering: opts?.steering,
     },
-    overridePool.length > 0 ? { specs: overridePool } : undefined,
+    // 모델 선택 우선순위 (2026-08-01):
+    //  ①세션 override(`/model`) — 사람이 런타임에 명시한 지시라 가장 세다.
+    //  ②엔드포인트 정의의 `model:` 프로파일 — 그 엔드포인트의 기본값(에이전트 `model:` 과 동형).
+    //  ③미지정 = 기본 풀(현행).
+    //  ★엔드포인트 턴은 세션 override 를 미리 심을 수 없으므로(키가 nonce 를 포함) 실질적으로
+    //   ②가 적용된다. 그래도 순서를 명시해 둔다 — 나중에 override 가 도달 가능해져도
+    //   "사람의 명시 지시가 데이터 기본값을 이긴다" 가 유지되게.
+    overridePool.length > 0
+      ? { specs: overridePool }
+      : endpointChain.length > 0
+        ? { chain: endpointChain }
+        : undefined,
   );
 
   // 세션의 마지막 인입 채널+주소 캡처(§D3) — 비동기 outbound(워커 완료·능동발신) 기본 목적지.

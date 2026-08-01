@@ -38,6 +38,9 @@
         typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
       input.addEventListener("keydown", (e) => {
         if (slashKeydown(e)) return; // 슬래시 팝업 열림 → ↑/↓·Enter/Tab·Esc 가로챔(전송 안 함).
+        // ↑/↓ 입력 히스토리(셸 동작) — **슬래시 팝업 다음**이다. 팝업이 열려 있으면 위에서
+        //  이미 가로챘고, 그 순서가 뒤집히면 슬래시 목록 탐색이 죽는다.
+        if (historyKeydown(e, input)) return;
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isTouchPrimary()) {
           e.preventDefault();
           form.requestSubmit();

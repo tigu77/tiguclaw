@@ -47,6 +47,12 @@
         const msg = document.createElement("div");
         msg.className = "chat-message";
         setChatBody(msg, entry.text, isOut); // 비서=마크다운, 사용자=평문.
+        // ★내 입력 원문 보관 — ↑/↓ 히스토리가 읽는다(input-history.js). 표시 DOM 을 긁으면
+        //  시각·첨부 칩 같은 주변 텍스트가 섞인다. 표시와 원문은 다른 것이라 원문을 남긴다.
+        //  생성 지점이 여기 하나뿐이라(이력·라이브 낙관 버블 모두 이 함수) 한 번만 실으면 된다.
+        if (!isOut && typeof entry.text === "string" && entry.text !== "") {
+          div.dataset.raw = entry.text;
+        }
         // 영속 첨부(rel 메타) → 이력·새로고침에도 이미지/파일 미리보기(서빙 엔드포인트 경유).
         // 아웃바운드(비서 send_file) 이면 받기 버튼·캡션·텍스트 프리뷰 포함(인바운드는 무회귀).
         if (entry.attachments && entry.attachments.length) {

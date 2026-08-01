@@ -82,6 +82,26 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ★서빙 화이트리스트(`js/_manifest.json`) ↔ `index.html` script 태그가 **정확히 같은가**.
+    //  둘은 별개 목록이라 어긋날 수 있고, 실제로 **양방향으로** 어긋나 있었다(2026-08-01):
+    //   - 태그엔 있는데 manifest 에 없음 → 그 파일이 **404**(스크립트가 통째로 안 뜬다).
+    //   - manifest 엔 있는데 태그가 없음 → 서빙되지만 **아무도 안 부르는 죽은 파일**.
+    //  전자는 새 파일을 추가한 사람이 즉시 겪고(내가 겪었다), 후자는 **아무도 안 겪어서**
+    //  조용히 남는다. 그래서 양방향으로 본다.
+    const manifestRaw = await readFile(path.join(root, "js", "_manifest.json"), "utf8");
+    const manifest: string[] = JSON.parse(manifestRaw) as string[];
+    const tagOnly = order.filter((f) => !manifest.includes(f));
+    const manifestOnly = manifest.filter((f) => !order.includes(f));
+    out.push(
+      assert(
+        "★서빙 화이트리스트와 로드 목록이 정확히 일치한다(404·죽은 파일 0)",
+        tagOnly.length === 0 && manifestOnly.length === 0,
+        tagOnly.length === 0 && manifestOnly.length === 0
+          ? `${manifest.length}개 일치`
+          : `★태그만(=404): ${tagOnly.join(",") || "-"} / manifest만(=죽은 파일): ${manifestOnly.join(",") || "-"}`,
+      ),
+    );
+
     // 대조군 — 이 검사가 실제로 뭔가를 보고 있다는 증거(정의 지도가 비면 위 단언은 공짜다).
     out.push(
       assert(

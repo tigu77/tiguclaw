@@ -67,7 +67,8 @@
       .hdr-btn:hover { border-color:rgba(125,211,252,.55); }
       #menu-toggle { position:relative; }
       #menu-backdrop { display:none; }
-      header .brand .emoji { display:grid; place-items:center; width:32px; height:32px; border-radius: 11px; background: linear-gradient(135deg, rgba(125,211,252,.22), rgba(167,139,250,.2)); border: 1px solid var(--border); }
+      /* 아이콘 자체가 둥근 판(투명 모서리)을 갖고 있어 배경·테두리를 얹지 않는다 — 얹으면 액자가 두 겹이 된다. */
+      header .brand .brand-icon { width:32px; height:32px; display:block; flex:none; }
       header .sub { color: var(--text-mute); font-size: 12px; }
       header .spacer { flex: 1; }
       header .live { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-mute); }
@@ -1271,7 +1272,7 @@
            탭바 제거, 네비는 ☰ 드로어. 콘텐츠는 헤더 아래로 깔끔히 시작(플로팅 ☰ 가리는 문제 해소). */
         header { position:sticky; top:0; z-index:20; height:46px; padding:0 10px; } header .sub, header .meter { display:none; }
         header .brand { font-size:15px; }
-        header .brand .emoji { width:28px; height:28px; }
+        header .brand .brand-icon { width:28px; height:28px; }
         /* 백그라운드 버튼(mobile-nav.js 가 헤더로 이동) — 컴팩트. */
         header #bg-toggle { font-size:10.5px; padding:5px 8px; gap:5px; flex:none; white-space:nowrap; }
         #tab-bar { display:none; }

@@ -24,6 +24,7 @@ import { runClaude } from "./adapters/claude-agent-sdk.js";
 import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
+import { setSummarizerCooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
 import { formatAttachments } from "../prompt-assembly.js";
 import { enrichTranscripts } from "./transcription/index.js";
@@ -870,6 +871,35 @@ export { isRateLimited, parseCooldownMs };
  *  사용자에게 **4시간마다 같은 통지**가 간다(4일 한도면 24통). 상태가 바뀐 순간에만
  *  알려야 한다 — 알림의 기준은 "실패했다" 가 아니라 **"상태가 바뀌었다"** 다.
  */
+// ★요약 호출도 같은 쿨다운 규칙을 지키게 한다 (2026-08-01).
+//  히스토리 압축은 codex 어댑터 **안**에서 일어나 이 판정에 닿을 수 없었다(어댑터→index 는
+//  순환). 그래서 메인 턴이 쿨다운으로 건너뛰는 동안에도 요약만 계속 때려 실패했고, 그때마다
+//  oldest-drop 으로 맥락이 잘렸다. 판정은 여기 하나로 두고 **포트로 내려보낸다**
+//  (index→history 는 순환이 아니다 — history 는 index 를 import 하지 않는다).
+setSummarizerCooldownPort({
+  remainingMs: (key) => {
+    const now = Date.now();
+    try {
+      const row = getCooldownRow(key, now);
+      return row === null ? 0 : Math.max(0, row.untilTs - now);
+    } catch {
+      return 0; // 조회 실패가 요약을 막지 않는다(관측 심이 기능을 죽이면 안 된다).
+    }
+  },
+  register: (key, detail) => {
+    if (!isRateLimited(detail)) return; // 한도 아닌 실패는 쿨다운 대상이 아니다.
+    const ms = parseCooldownMs(detail) ?? DEFAULT_COOLDOWN_MS;
+    const untilTs = Date.now() + ms;
+    cooldownUntil.set(key, untilTs);
+    saveCooldown(key, untilTs);
+    console.warn(
+      `llm-runtime: '${key}' rate-limited(요약 경로) — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
+        `(해제 ${new Date(untilTs).toLocaleString("ko-KR")}).`,
+    );
+    publishCooldownEvent("enter", key, ms);
+  },
+});
+
 export const registerCooldownIfRateLimited = (
   spec: ModelSpec,
   e: unknown,

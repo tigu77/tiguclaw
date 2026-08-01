@@ -31,22 +31,41 @@ export const check: RegressionCheck = {
   guards: "거대한 히스토리를 한 번에 요약하려다 매 턴 실패하고 맥락을 잃던 것",
   run: async (): Promise<Assertion[]> => {
     // 실사고 재현 규모: 696턴 · 턴당 ~4천자 → 접기 후보만 2.6M 자.
+    // ★임계가 턴 수 → **글자 수**로 바뀌었다 (2026-08-01). 턴 수는 크기를 대변하지 못했다:
+    //  실측으로 같은 52턴이 8.2만~25.9만 자였고, "턴은 적은데 무거운" 스레드가 안 잡혔다.
     const huge = planHistoryCompaction(turns(696, 4000), 0, {
-      triggerTurns: 100,
+      triggerChars: 150_000,
       keepRecent: 30,
     });
+    // 트리거는 됐지만 예산 안에 드는 경우 — **잘라내지 않고 전량 접어야** 한다(원 단언 보존).
     const small = planHistoryCompaction(turns(120, 100), 0, {
-      triggerTurns: 100,
+      triggerChars: 5_000, // 1.2만 자 > 5천 → 트리거. 접기 후보 9천 자 < 예산 4만.
+      keepRecent: 30,
+    });
+    // ★턴은 많지만(120) 가벼운 대화(1.2만 자)는 **기본 임계에서 아예 안 걸린다**.
+    //  종전 턴 기준(100턴)이면 걸렸다 — 접을 이유가 없는데 요약 LLM 을 태우던 것.
+    const lightButMany = planHistoryCompaction(turns(120, 100), 0, {
+      triggerChars: 150_000,
+      keepRecent: 30,
+    });
+    // ★턴은 적은데(52) 무거운 경우(26만 자) — 종전 기준이 놓치던 실제 스레드 형상.
+    const fewButHeavy = planHistoryCompaction(turns(52, 5_000), 0, {
+      triggerChars: 150_000,
       keepRecent: 30,
     });
     // 단일 턴이 예산을 넘어도 진행해야 한다(무진행 = 영구 실패).
     const oversize = planHistoryCompaction(turns(140, 500_000), 0, {
-      triggerTurns: 100,
+      triggerChars: 150_000,
       keepRecent: 30,
       maxFoldChars: 1000,
     });
     return [
       assert("압축이 필요한 상황을 잡는다", huge.needed, String(huge.needed)),
+      assert(
+        "★턴은 적어도 무거우면 잡는다(52턴 26만 자 — 턴 기준이 놓치던 것)",
+        fewButHeavy.needed,
+        `needed=${String(fewButHeavy.needed)}`,
+      ),
       assert(
         "★한 번에 접는 양이 예산 안(실사고 2,838,563자 → 상한 이하)",
         foldedChars(huge.toFold) <= 40_000,
@@ -71,9 +90,14 @@ export const check: RegressionCheck = {
         `${foldedChars(huge.toFold)}자`,
       ),
       assert(
-        "작은 스레드는 종전대로 전량 접는다(회귀 0)",
+        "예산 안에 들면 잘라내지 않고 전량 접는다(과잉 절단 0)",
         small.toFold.length === 90 && foldedChars(small.toFold) === 9000,
         `${small.toFold.length}턴 / ${foldedChars(small.toFold)}자`,
+      ),
+      assert(
+        "★가벼운 대화는 턴이 많아도 트리거되지 않는다(불필요한 요약 호출 0)",
+        !lightButMany.needed,
+        `120턴 1.2만 자 → needed=${String(lightButMany.needed)}`,
       ),
     ];
   },

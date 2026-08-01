@@ -689,16 +689,69 @@ export interface HistoryCompactionPlan {
   nextWatermark: number;
 }
 
+/**
+ * **이걸 요약이라 볼 수 있는가** — 순수 판정(2026-08-01 라이브 유실).
+ *
+ * 사고: 47턴 40,121자를 접었는데 모델이 **5자**를 돌려줬고, 가드가 `!== ""` 뿐이라
+ * 그것을 **성공으로 확정**했다. `compactedThrough` 가 전진해 그 47턴은 **영구히** 컨텍스트
+ * 밖으로 나갔다(로그·사용자 통지는 "압축 성공"·"요약으로 압축했습니다" 라고 말했다).
+ *
+ * ★임계는 직감이 아니라 실측이다. 기록된 압축 6건:
+ *   정상 = 377·485·257·355·354자 (입력 2만~6만 자와 **무관하게** 수백 자에 몰린다)
+ *   실패 = 5자
+ *  그 사이가 비어 있으므로 **절대 하한**이 맞다(비율은 입력 크기에 흔들린다).
+ *  50자 = 관측 실패의 10배, 관측 최소 정상의 1/5 — 양쪽에서 5배씩 떨어져 있다.
+ *
+ * ★거부의 대가가 수용보다 싸다: 거부하면 watermark 가 안 움직여 원문이 `transcripts` 에
+ *  남고 **다음 턴에 다시 시도**한다(그 턴만 oldest-drop 으로 전송분이 잘린다 = 일시적).
+ *  수용하면 되돌릴 수 없다. 애매하면 거부가 안전한 쪽이다.
+ */
+/**
+ * **쿨다운 포트** — 요약 호출이 codex 를 부를 때의 규칙을 지키게 하는 주입점 (2026-08-01).
+ *
+ * ★왜 주입인가(구조): 쿨다운 판정은 `llm-runtime/index.ts` 에 있는데, 이 모듈은 어댑터가
+ *  import 하고 그 어댑터를 index 가 import 한다 — **어댑터→index 는 순환**이라 닿을 수 없다.
+ *  그래서 메인 턴은 index 가 부르기 전에 걸러지는데 **요약 호출만 규칙 밖**에 있었다:
+ *  한도 중에도 때리고, 실패해도 쿨다운을 등록하지 않아 배운 게 안 남았다.
+ *  실측(2026-08-01): 압축 시도 5회 중 3회 실패 — 그 뒤 oldest-drop 으로 맥락이 잘렸다.
+ *
+ * ★미등록이면 **막지 않는다**(0 반환). 관측용 심이 본 기능을 죽이면 안 된다 —
+ *  등록 여부는 회귀가 따로 지킨다.
+ */
+interface CooldownPort {
+  remainingMs: (key: string) => number;
+  register: (key: string, detail: string) => void;
+}
+let cooldownPort: CooldownPort | null = null;
+export const setSummarizerCooldownPort = (p: CooldownPort): void => {
+  cooldownPort = p;
+};
+
+export const MIN_USABLE_SUMMARY_CHARS = 50;
+export const isUsableSummary = (summary: string): boolean =>
+  summary.trim().length >= MIN_USABLE_SUMMARY_CHARS;
+
 export const planHistoryCompaction = (
   unsummarizedTurns: CodexTurnWithId[],
   currentWatermark: number,
-  opts?: { triggerTurns?: number; keepRecent?: number; maxFoldChars?: number },
+  opts?: { triggerChars?: number; keepRecent?: number; maxFoldChars?: number },
 ): HistoryCompactionPlan => {
-  const triggerTurns = opts?.triggerTurns ?? CODEX_HISTORY_COMPACT_TRIGGER_TURNS;
+  const triggerChars = opts?.triggerChars ?? CODEX_HISTORY_COMPACT_TRIGGER_CHARS;
   const keepRecent = opts?.keepRecent ?? CODEX_HISTORY_COMPACT_KEEP_RECENT;
 
-  // 미요약 턴이 임계 이하 → 압축 불요 (현행 = 요약 호출 0, 회귀 0).
-  if (unsummarizedTurns.length <= triggerTurns) {
+  // ★임계를 **글자 수**로 본다 (2026-08-01, 실측 근거).
+  //  종전엔 턴 개수(100)뿐이었는데, 턴 수는 크기를 전혀 대변하지 못했다 —
+  //  실측: 51~52턴인 스레드 셋이 각각 8.2만 / 18.3만 / **25.9만** 자였다(3배 차이).
+  //  단일 턴이 5~6만 자인 경우도 흔하다. 모델이 부담을 느끼는 건 턴 개수가 아니라 크기이고,
+  //  그래서 "턴은 적은데 무거운" 스레드(52턴 25.9만 자)가 **트리거되지 않았다**.
+  //  글자로 통일하면 접는 예산(maxFoldChars)과 **같은 단위**가 돼 "따라잡는가" 를 계산할 수 있다.
+  //  ★턴 수 하한은 따로 두지 않는다 — 아래 keepRecent 가 이미 그 역할을 한다
+  //   (턴이 keepRecent 이하면 접을 게 없어 트리거가 무의미해진다).
+  const totalChars = unsummarizedTurns.reduce(
+    (n, t) => n + String(t.content ?? "").length,
+    0,
+  );
+  if (totalChars <= triggerChars) {
     return { needed: false, toFold: [], nextWatermark: currentWatermark };
   }
   // 최근 keepRecent 는 원문 유지, 그 이전만 접는다.
@@ -896,8 +949,8 @@ export const compactThreadNow = async (
   const watermark = existing?.compactedThrough ?? 0;
   const prior = existing?.summary ?? "";
   const unsummarized = allTurns.filter((t) => t.id > watermark);
-  // triggerTurns 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
-  const plan = planHistoryCompaction(unsummarized, watermark, { triggerTurns: 0 });
+  // triggerChars 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
+  const plan = planHistoryCompaction(unsummarized, watermark, { triggerChars: 0 });
   if (!plan.needed || plan.toFold.length === 0) {
     return { ok: false, reason: "압축할 만큼 오래된 대화가 없습니다(최근 대화는 원문 유지)." };
   }
@@ -908,9 +961,16 @@ export const compactThreadNow = async (
     prior === "" ? folded : `[기존 요약]\n${prior}\n\n[이어지는 대화]\n${folded}`;
   try {
     const fresh = await summarizeViaCodex(prompt, accessToken, accountId, model);
-    if (fresh.trim() === "") {
-      noteCompactionOutcome(threadKey, false, "빈 결과(수동)", prompt.length);
-      return { ok: false, reason: "요약 결과가 비어 압축하지 못했습니다." };
+    // ★자동 경로와 **같은 판정**을 쓴다 (2026-08-01). 종전엔 여기도 `=== ""` 뿐이라
+    //  5자짜리를 통과시켜 compactedThrough 를 확정했다 — 자동 경로만 고쳤으면 반쪽이다.
+    //  (회귀의 배선 단언이 이 두 번째 쓰기 경로를 잡아냈다.)
+    if (!isUsableSummary(fresh)) {
+      const got = fresh.trim().length;
+      noteCompactionOutcome(threadKey, false, `요약 ${got}자(수동)`, prompt.length);
+      return {
+        ok: false,
+        reason: `요약이 ${got}자로 너무 짧아 압축하지 않았습니다(하한 ${MIN_USABLE_SUMMARY_CHARS}자). 원문은 그대로 보존됩니다.`,
+      };
     }
     upsertThreadSummary({
       threadKey,
@@ -981,9 +1041,21 @@ export const buildTurnHistory = async (
       summary === ""
         ? foldedText
         : `[기존 요약]\n${summary}\n\n[이어지는 대화]\n${foldedText}`;
+    // ★한도 중이면 **때리지 않는다** (2026-08-01). 종전엔 메인 턴이 쿨다운으로 건너뛰는
+    //  동안에도 요약만 계속 호출해 실패했고, 실패할 때마다 oldest-drop 으로 맥락이 잘렸다.
+    //  키는 메인 턴과 같은 규칙(provider ?? adapter) — 같은 백엔드를 같은 이름으로 센다.
+    const cdKey = input.provider ?? "codex-oauth";
+    const cdLeft = cooldownPort?.remainingMs(cdKey) ?? 0;
+    if (cdLeft > 0) {
+      console.warn(
+        `[codex 6b] 요약 건너뜀 — '${cdKey}' 쿨다운 ${Math.ceil(cdLeft / 60000)}분 남음 ` +
+          `(oldest-drop 폴백, watermark 유지 → 해제 후 재시도)`,
+      );
+      noteCompactionOutcome(input.threadKey, false, "쿨다운", prompt.length);
+    } else
     try {
       const fresh = await summarizeViaCodex(prompt, accessToken, accountId, model);
-      if (fresh.trim() !== "") {
+      if (isUsableSummary(fresh)) {
         summary = fresh.trim();
         watermark = plan.nextWatermark;
         upsertThreadSummary({
@@ -1015,17 +1087,24 @@ export const buildTurnHistory = async (
           /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
         }
       } else {
-        // 빈 요약 = 무의미 → 폴백(요약 미반영, 기존 watermark 유지). 조용히 X.
+        // 빈/토막 요약 = 무의미 → 폴백(요약 미반영, watermark 유지). 조용히 X.
+        //  ★수치를 실어야 로그만으로 잡힌다 — "빈 결과" 만으로는 5자가 온 건지 0자가 온
+        //   건지 구분이 안 돼, 실제로 5자짜리가 성공으로 지나갔다.
+        const got = fresh.trim().length;
         console.warn(
-          `[codex 6b] 요약 호출이 빈 결과 — oldest-drop 폴백 ` +
-            `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
+          `[codex 6b] 요약이 쓸 수 없는 크기 — oldest-drop 폴백 ` +
+            `(요약 ${got}자 < 하한 ${MIN_USABLE_SUMMARY_CHARS}자, ` +
+            `${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
             `→ 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`,
         );
-        noteCompactionOutcome(input.threadKey, false, "빈 결과", prompt.length);
+        noteCompactionOutcome(input.threadKey, false, `요약 ${got}자`, prompt.length);
       }
     } catch (e) {
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
       const msg = e instanceof Error ? e.message : String(e);
+      // ★한도로 실패했으면 **등록한다** — 안 하면 메인 턴은 멀쩡한 줄 알고 계속 때리고,
+      //  다음 턴 요약도 같은 벽에 부딪힌다(배운 게 안 남는다).
+      cooldownPort?.register(input.provider ?? "codex-oauth", msg);
       console.warn(
         `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 ` +
           `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}` +
@@ -1195,9 +1274,21 @@ const growFoldBudget = (threadKey: string): void => {
   );
 };
 
-const CODEX_HISTORY_COMPACT_TRIGGER_TURNS = parsePosIntEnv(
-  process.env.CODEX_COMPACT_TRIGGER_TURNS,
-  100,
+/**
+ * 압축 시작 임계 — **미요약 대화 글자 수**. env `CODEX_COMPACT_TRIGGER_CHARS`.
+ *
+ * ★15만 자 (2026-08-01, 실측):
+ *  - 라이브 codex 턴 실제 입력 = **4.8만~8.0만 토큰**(시스템·도구 정의 포함).
+ *  - 스레드별 미요약 글자: 8.2만(scheduler:3) · 9.7만(dashboard:default) ·
+ *    18.3만(scheduler:18) · **25.9만**(scheduler:7) · 231만(장기 스레드).
+ *  15만이면 앞의 둘은 안 걸리고(여유), 뒤의 무거운 것들은 걸린다.
+ *  컨텍스트 한도(400K 추정)에는 한참 못 미쳐 **넉넉한 쪽**이다(사용자 결정 2026-08-01).
+ *
+ * ★종전 값은 "100턴" 이었다. 턴 수는 크기를 대변하지 못한다 — 같은 52턴이 8.2만~25.9만 자.
+ */
+const CODEX_HISTORY_COMPACT_TRIGGER_CHARS = parsePosIntEnv(
+  process.env.CODEX_COMPACT_TRIGGER_CHARS,
+  150_000,
 );
 // 항상 원문 유지할 최근 턴 수 — 최신 맥락 손상 0 (요약은 이보다 오래된 턴만 대상).
 const CODEX_HISTORY_COMPACT_KEEP_RECENT = parsePosIntEnv(

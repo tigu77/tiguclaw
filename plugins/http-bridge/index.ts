@@ -119,6 +119,7 @@ const IN_PROCESS_MCP_FACTORIES: Record<string, () => ReturnType<typeof createMem
   memory: createMemoryMcpServer,
 };
 import { readFileSync } from "node:fs";
+import * as nodeFs from "node:fs";
 import { execFile } from "node:child_process";
 
 // 앱 버전 = 레포 루트 package.json(데몬 cwd=repoRoot). 하드코딩 stale 방지 — /health 가 이걸
@@ -2677,16 +2678,57 @@ class HttpBridge implements Channel, Observer {
         writeJson(res, 400, { error: "path required" });
         return;
       }
+      // ★파일 열기 확장 (2026-08-02) — 종전엔 **정확일치(등록 프로젝트 폴더)** 만 허용했다.
+      //  편집 카드의 파일도 열려면 "등록 프로젝트 **루트 하위**" 로 넓혀야 한다. 넓히는
+      //  만큼 두 가지를 닫는다:
+      //   ①**심링크 탈출** — resolve 만으론 `<proj>/link → /etc` 를 못 막는다. realpath 로
+      //     실제 대상까지 풀고 **다시** 루트 하위인지 본다(존재하지 않으면 애초에 못 연다).
+      //   ②**실행** — macOS `open` 은 `.app`·실행권한 파일을 **실행**한다. 우리는 소스를
+      //     *보려는* 것이지 실행하려는 게 아니므로 실행권한이 있으면 거부한다. 디렉터리는
+      //     종전대로 허용(폴더 열기가 원래 용도).
       const abs = nodePath.resolve(pathIn);
-      const match = listProjects().find(
-        (p) => nodePath.resolve(p.path) === abs,
+      let real: string;
+      try {
+        real = nodeFs.realpathSync(abs);
+      } catch {
+        writeJson(res, 404, { error: "경로가 존재하지 않습니다" });
+        return;
+      }
+      const roots = listProjects().map((p) => {
+        const r = nodePath.resolve(p.path);
+        try {
+          return nodeFs.realpathSync(r); // 루트도 실제 경로로 — 양쪽을 같은 기준에 놓는다.
+        } catch {
+          return r; // 루트가 사라졌으면 원경로로 비교(어차피 하위도 존재 안 함).
+        }
+      });
+      const inRoot = roots.some(
+        (r) => real === r || real.startsWith(r + nodePath.sep),
       );
-      if (match === undefined) {
+      if (!inRoot) {
         writeJson(res, 403, {
           error: "등록된 프로젝트 경로가 아닙니다(허용된 경로만 열 수 있음)",
         });
         return;
       }
+      let st: import("node:fs").Stats;
+      try {
+        st = nodeFs.statSync(real);
+      } catch {
+        writeJson(res, 404, { error: "경로가 존재하지 않습니다" });
+        return;
+      }
+      if (st.isFile() && (st.mode & 0o111) !== 0) {
+        writeJson(res, 403, {
+          error: "실행 권한이 있는 파일은 열지 않습니다(실행 위험) — 편집기에서 직접 여세요",
+        });
+        return;
+      }
+      if (!st.isFile() && !st.isDirectory()) {
+        writeJson(res, 403, { error: "일반 파일·디렉터리만 열 수 있습니다" });
+        return;
+      }
+      const match = { path: real };
       // darwin=open · win32=explorer · 그 외=xdg-open. 폴더 열기는 fire-and-forget(즉시 200).
       // Windows explorer 는 성공해도 exit 1 을 내는 알려진 quirk → win32 는 에러를 무시한다.
       const opener =

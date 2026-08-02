@@ -199,6 +199,37 @@ const server = http.createServer((req, res) => {
     const pathname = url.pathname;
     const method = req.method ?? "GET";
 
+    // ★CSRF 가드 (2026-08-02, 실증으로 확인된 결함) ─────────────────────────────
+    //  이 프록시는 `/api/*` 요청에 **브리지 토큰을 서버 쪽에서 붙여** 대신 보낸다.
+    //  토큰이 브라우저에 노출되지 않는 건 맞지만, **프록시가 대신 붙여주므로** 사용자가
+    //  방문한 아무 웹페이지나 `127.0.0.1:<port>/api/...` 로 POST 하면 그 부작용이 그대로
+    //  일어난다. `Content-Type: text/plain` 이면 CORS 프리플라이트도 안 걸린다(단순 요청) —
+    //  응답을 못 읽을 뿐 **부작용은 이미 났다**. 실측: `Origin: https://evil.example` 로
+    //  `/api/open-path` 를 쏘니 그대로 처리됐다(403 은 경로 화이트리스트 덕이지 CSRF 가 아님).
+    //
+    //  ★이름을 열거하지 않는다 — **부작용이 있는 메서드 전부**(GET·HEAD 외)를 same-origin
+    //   으로 제한한다. 새 POST 엔드포인트가 생겨도 저절로 덮인다.
+    //  판정: `Sec-Fetch-Site`(현대 브라우저가 항상 보냄) 우선, 없으면 `Origin` 을 본다.
+    //   둘 다 없으면 브라우저가 아니다(curl·스크립트) → 통과시킨다. 로컬 셸에서 쓰는
+    //   진단·자동화를 막을 이유가 없고, 막아도 CSRF 방어에 보탬이 안 된다(공격면은 브라우저다).
+    if (method !== "GET" && method !== "HEAD") {
+      const site = String(req.headers["sec-fetch-site"] ?? "");
+      const origin = String(req.headers["origin"] ?? "");
+      const sameOrigin =
+        site === ""
+          ? origin === "" || origin === `http://${req.headers.host ?? ""}`
+          : site === "same-origin" || site === "none";
+      if (!sameOrigin) {
+        res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(
+          JSON.stringify({
+            error: "cross-site 요청 차단(CSRF) — 대시보드 화면에서만 호출할 수 있습니다.",
+          }),
+        );
+        return;
+      }
+    }
+
     // 정적 HTML.
     if ((pathname === "/" || pathname === "/index.html") && method === "GET") {
       try {

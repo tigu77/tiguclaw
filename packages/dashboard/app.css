@@ -568,7 +568,16 @@
       /* 펼침 상태 = 스텝(라이브 act-step·이력 hist-tool) 단위 sticky 토글. 클릭으로만 열림
          (hover 무관). 접힘=한 줄(헤더만), 펼침=전체 diff/출력. */
       .act-step.expanded .act-diff-caret, .hist-tool.expanded .act-diff-caret, .hist-step.expanded .act-diff-caret, .bg-step.expanded .act-diff-caret { transform:rotate(90deg); }
-      .act-diff-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
+      /* ★경로는 끝까지 보인다 (2026-08-02 요청) — 종전엔 max-width 280px + ellipsis 라
+         긴 경로가 중간에서 잘렸다. 파일 경로는 **뒤쪽이 정보**(파일명·줄)라 앞만 보이면
+         쓸모가 적다. 줄바꿈을 허용하고(헤더가 두 줄이 되어도 낫다) 단어 중간에서도 끊는다. */
+      .act-diff-path { font-family:ui-monospace,"SF Mono",Menlo,monospace; color:var(--text-mute); white-space:normal; overflow-wrap:anywhere; word-break:break-all; min-width:0; }
+      .act-diff-head { flex-wrap:wrap; }
+      /* 클릭 = 경로 복사. 눌리는 것이라는 신호만 최소로(밑줄은 링크로 오해되니 안 쓴다). */
+      .act-diff-path-copy { cursor:pointer; }
+      .act-diff-open { background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:11px; padding:0 2px; line-height:1; flex:none; }
+      .act-diff-open:hover { color:var(--text); }
+      .act-diff-path-copy:hover { color:var(--text); }
       .act-diff-stat .dadd { color:#3fb950; font-weight:700; }
       .act-diff-stat .ddel { color:#f85149; font-weight:700; }
       .act-diff-body { display:none; }

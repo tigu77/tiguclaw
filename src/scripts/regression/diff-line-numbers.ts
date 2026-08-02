@@ -237,6 +237,28 @@ export const check: RegressionCheck = {
         wired.ok ? "배선 확인" : `누락 ${wired.missing.join(" ")}`,
       ),
     );
+    // ★경로 클릭 = 복사 (2026-08-02) — 에디터 직접 열기는 **의도적으로 안 한다**:
+    //  브라우저는 file:// 를 못 열고, 데몬이 OS `open` 을 대신 실행하면 대시보드에
+    //  로그인이 없다(포트에 닿는 것이 곧 권한). 폰에서 누르면 **데몬 기계에서** 창이 떠
+    //  누른 사람은 보지도 못한다 — 복사는 전 환경에서 되고 위험 0이라 여기부터 간다.
+    //  ★단 "서버가 OS 로 여는 건 무조건 위험" 은 **틀린 단언**이다: 이미 `/open-path`(폴더
+    //   열기)가 있고 **등록된 프로젝트 경로 화이트리스트 + execFile(no shell)** 로 닫혀
+    //   있다. 나중에 파일 열기를 붙인다면 그 선례를 따르면 된다(임의 경로 금지가 핵심).
+    //  ★핸들러 **한 덩어리**로 본다 — `stopPropagation` 은 파일 곳곳에 있어서 따로 찾으면
+    //   내 핸들러에서 빠져도 딴 데 걸린다(변이에서 실제로 빠져나갔다).
+    // 위에서 이미 읽은 vsrc 재사용(같은 파일을 두 번 읽지 않는다).
+    const copyHandler =
+      /ps\.addEventListener\("click", \(e\) => \{[\s\S]{0,400}e\.stopPropagation\(\);[\s\S]{0,400}navigator\.clipboard\.writeText\(pathText\)/.test(
+        vsrc,
+      );
+    const wiredCopy = { ok: copyHandler, missing: copyHandler ? [] : ["핸들러 한 덩어리"] };
+    out.push(
+      assert(
+        "★경로를 클릭하면 `경로:줄` 을 복사한다(부모 토글은 안 뺏는다)",
+        wiredCopy.ok,
+        wiredCopy.ok ? "복사 배선 확인" : `누락 ${wiredCopy.missing.join(" ")}`,
+      ),
+    );
     const css = await readFile(
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../packages/dashboard/app.css"),
       "utf8",

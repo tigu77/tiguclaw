@@ -566,8 +566,62 @@
           const ps = document.createElement("span");
           ps.className = "act-diff-path";
           // 경로 옆에 시작 줄 — 에디터에서 `파일:줄` 로 바로 찾아가는 관습 그대로.
-          ps.textContent = diff.path + (typeof diff.startLine === "number" ? ":" + diff.startLine : "");
+          const pathText =
+            diff.path + (typeof diff.startLine === "number" ? ":" + diff.startLine : "");
+          ps.textContent = pathText;
+          // ★클릭 = `경로:줄` 복사 (2026-08-02). 에디터로 *직접 열기*는 안 한다 —
+          //  브라우저는 file:// 를 못 열고, 데몬이 OS `open` 을 대신 실행하는 방식은
+          //  대시보드에 로그인이 없어(포트에 닿는 것이 곧 권한) 임의 실행 통로가 되며,
+          //  폰에서 누르면 **데몬 기계에서** 창이 떠 누른 사람은 못 본다.
+          //  복사는 폰 포함 모든 환경에서 동작하고 위험이 0이다.
+          ps.title = "클릭하면 경로 복사";
+          ps.classList.add("act-diff-path-copy");
+          ps.addEventListener("click", (e) => {
+            e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다(헤더는 원래 토글 대상).
+            if (!navigator.clipboard) return;
+            navigator.clipboard.writeText(pathText).then(
+              () => {
+                try {
+                  if (typeof showToast === "function") showToast("경로를 복사했습니다", "ok");
+                } catch { /* noop */ }
+              },
+              () => { /* 권한 거부 등 — 조용히 무시(복사는 보조 기능) */ },
+            );
+          });
           head.appendChild(ps);
+          // ★편집기로 열기 — 서버가 OS 기본앱으로 연다(`/api/open-path`). 안전은 서버가
+          //  진다: 등록 프로젝트 **루트 하위**만 + realpath 로 심링크 탈출 차단 +
+          //  **실행권한 파일 거부**(macOS `open` 은 .app·스크립트를 실행한다). 프록시엔
+          //  same-origin(CSRF) 가드가 걸려 있어 외부 페이지가 이 부작용을 못 쏜다.
+          const ob = document.createElement("button");
+          ob.type = "button";
+          ob.className = "act-diff-open";
+          ob.textContent = "↗";
+          ob.title = "기본 앱으로 열기(등록된 프로젝트 안의 파일만)";
+          ob.addEventListener("click", (e) => {
+            e.stopPropagation();
+            fetch("/api/open-path", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ path: diff.path }),
+            })
+              .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+              .then(({ ok, d }) => {
+                if (ok) return;
+                // 실패 사유를 그대로 보여준다 — "안 열렸다" 만으론 왜인지 모른다.
+                try {
+                  if (typeof showToast === "function") {
+                    showToast((d && d.error) || "열기 실패", "warn");
+                  }
+                } catch { /* noop */ }
+              })
+              .catch(() => {
+                try {
+                  if (typeof showToast === "function") showToast("열기 요청 실패", "bad");
+                } catch { /* noop */ }
+              });
+          });
+          head.appendChild(ob);
         }
         const stat = document.createElement("span");
         stat.className = "act-diff-stat";

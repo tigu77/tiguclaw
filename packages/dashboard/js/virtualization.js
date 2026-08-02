@@ -597,7 +597,10 @@
           ob.type = "button";
           ob.className = "act-diff-open";
           ob.textContent = "↗";
-          ob.title = "기본 앱으로 열기(등록된 프로젝트 안의 파일만)";
+          // 제약(프로젝트 하위·실행권한 등)은 **여기 안 적는다** — 실패하면 서버가 준
+          //  사유를 토스트로 그대로 보여준다. 누르기 전엔 어차피 할 수 있는 게 없고,
+          //  제약을 적기 시작하면 전부 적어야 해서 툴팁이 아니게 된다.
+          ob.title = "기본 앱으로 열기";
           ob.addEventListener("click", (e) => {
             e.stopPropagation();
             fetch("/api/open-path", {

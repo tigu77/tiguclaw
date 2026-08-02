@@ -1,6 +1,7 @@
 import {
   addMemory,
   getMemory,
+  updateMemory,
   listMemories,
 } from "../../../src/store/memory.js";
 import {
@@ -60,6 +61,39 @@ export const parseSegment = (name: string): string | null => {
  * `feedback_growth_*` / `feedback-growth-*` / segment==="growth" 모두 차단.
  * plugin 자기 reflection 이 입력으로 재분석되는 메타-재귀를 막는다.
  */
+
+/**
+ * 이전 관측보다 **신호가 세졌는가** — 재발 갱신의 단일 판정 (2026-08-02).
+ *
+ * 같은 창을 다시 스캔한 경우까지 갱신하면 만료 시계만 헛돈다(영원히 안 걷힘). 카운트가
+ * 실제로 늘었을 때만 갱신한다. 파싱 실패는 "모름" 이므로 갱신하지 않는다(보수적).
+ */
+export const isStrongerSignal = (
+  priorBody: string | undefined,
+  countField: string,
+  next: number,
+): boolean => {
+  try {
+    const prior = Number(JSON.parse(priorBody ?? "{}")[countField] ?? 0);
+    return Number.isFinite(prior) && next > prior;
+  } catch {
+    return false;
+  }
+};
+
+/** 신규 박기 또는 재발 갱신 — 두 경로가 갈리지 않게 한 곳에서. */
+export const upsertReflection = (input: {
+  name: string;
+  description: string;
+  body: string;
+}): void => {
+  if (getMemory(input.name) !== undefined) {
+    updateMemory(input.name, { description: input.description, body: input.body });
+    return;
+  }
+  addMemory({ type: "feedback", name: input.name, description: input.description, body: input.body });
+};
+
 export const isSelfNamespace = (name: string): boolean => {
   return parseSegment(name) === SELF_NAMESPACE;
 };
@@ -87,7 +121,15 @@ export const analyzeRepeatedSegment = (
   if (members.length < threshold) return null;
 
   const reflectionName = `feedback_${SELF_NAMESPACE}_reflection_segment_${segment}`;
-  if (getMemory(reflectionName) !== undefined) return null;
+  // ★재발은 무시가 아니라 **갱신**이다 (2026-08-02) — 같은 이유가 세 곳에 있었다.
+  //  옛 코드는 `이미 있으면 return null` 이라 카운트도 `updated_at` 도 얼었다. 그러면
+  //  ①메모리 인덱스(`ORDER BY updated_at DESC` + 캡)에서 밀려 **컨텍스트 밖**이 되고
+  //  ②만료 기계(`archiveStaleReflections`, updatedAt 기준)의 **시계가 안 간다**.
+  //  갱신하면 재발분은 위로 올라오고, 재발이 끊긴 것은 90일 뒤 스스로 아카이브된다.
+  const priorSeg = getMemory(reflectionName);
+  if (priorSeg !== undefined && !isStrongerSignal(priorSeg.body, "evidence_count", members.length)) {
+    return null;
+  }
 
   const body = JSON.stringify(
     {
@@ -105,8 +147,7 @@ export const analyzeRepeatedSegment = (
     2,
   );
 
-  addMemory({
-    type: "feedback",
+  upsertReflection({
     name: reflectionName,
     description: `'${segment}' segment 반복 (${members.length}건) — suggester only, 비서가 사용자 확인 후 결정`,
     body,
@@ -131,7 +172,15 @@ export const analyzeDriftPattern = (
   if (isSelfNamespace(memoryName)) return null;
 
   const reflectionName = `feedback_${SELF_NAMESPACE}_drift_${memoryName}`;
-  if (getMemory(reflectionName) !== undefined) return null;
+  // ★재발은 무시가 아니라 **갱신**이다 (2026-08-02) — 같은 이유가 세 곳에 있었다.
+  //  옛 코드는 `이미 있으면 return null` 이라 카운트도 `updated_at` 도 얼었다. 그러면
+  //  ①메모리 인덱스(`ORDER BY updated_at DESC` + 캡)에서 밀려 **컨텍스트 밖**이 되고
+  //  ②만료 기계(`archiveStaleReflections`, updatedAt 기준)의 **시계가 안 간다**.
+  //  갱신하면 재발분은 위로 올라오고, 재발이 끊긴 것은 90일 뒤 스스로 아카이브된다.
+  const priorDrift = getMemory(reflectionName);
+  if (priorDrift !== undefined && !isStrongerSignal(priorDrift.body, "update_count", updateCount)) {
+    return null;
+  }
 
   const body = JSON.stringify(
     {
@@ -148,8 +197,7 @@ export const analyzeDriftPattern = (
     2,
   );
 
-  addMemory({
-    type: "feedback",
+  upsertReflection({
     name: reflectionName,
     description: `'${memoryName}' 메모 ${updateCount}회 update — drift 의심, 사용자 확인 필요`,
     body,

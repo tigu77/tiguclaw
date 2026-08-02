@@ -16,6 +16,7 @@
 import {
   composeSystemChannel,
   contextSlotKeys,
+  buildContextSlots,
   splitSystemContext,
 } from "../../core/prompt-assembly.js";
 import { formatSkillIndex } from "../../core/llm-runtime/capabilities/skill-registry.js";
@@ -128,7 +129,27 @@ export const check: RegressionCheck = {
     //  통과해 그물 밖으로 조용히 빠진다(modelProfiles·foreignDelta 가 이미 optional).
     //  정의점에서 키를 뽑아 대조한다: 이름을 손으로 열거하지 않으므로 드리프트가 없다.
     //  (agentPathHint 는 입력 필드가 아니라 슬롯 테이블이 직접 만드는 조각.)
-    const covered = new Set([...Object.keys(full), "agentPathHint"]);
+    // ★계산형 슬롯(입력이 아니라 함수가 텍스트를 만드는 것)은 마커를 못 심으므로 위
+    //  배치 검사로 덮을 수 없다. **이름만 예외로 적으면 그물이 헐거워지므로**, 예외로 빼는
+    //  대신 바로 아래에서 **채널 배치를 따로 단언**한다(빼는 게 아니라 갚는다).
+    const COMPUTED_SLOTS = ["agentPathHint", "selfGrowth"] as const;
+    const slotChannel = new Map(
+      buildContextSlots({
+        system: "", env: "", agent: "", agentWarn: "", convoContext: "",
+        memoryIndex: "", memorySnippet: "", skillIndex: "", agentIndex: "",
+      }).map((sl) => [sl.key, sl.channel]),
+    );
+    const wrongChannel = COMPUTED_SLOTS.filter((k) => slotChannel.get(k) !== "system");
+    out.push(
+      assert(
+        `★계산형 슬롯 ${COMPUTED_SLOTS.length}종이 안정(system) 채널에 있다`,
+        wrongChannel.length === 0,
+        wrongChannel.length === 0
+          ? COMPUTED_SLOTS.join(" · ")
+          : `★user 채널로 샘: ${wrongChannel.join(",")} — 매 턴 캐시가 깨진다`,
+      ),
+    );
+    const covered = new Set([...Object.keys(full), ...COMPUTED_SLOTS]);
     const uncovered = contextSlotKeys().filter((k) => !covered.has(k));
     out.push(
       assert(

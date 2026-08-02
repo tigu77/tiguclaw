@@ -1,4 +1,5 @@
 import { addMemory, getMemory } from "../../../src/store/memory.js";
+import { isStrongerSignal, upsertReflection } from "./analysis.js";
 import { getRecentActivities } from "../../../src/store/events.js";
 import {
   getRecentSkillInvocations,
@@ -223,8 +224,19 @@ export const analyzeSkillProposal = (
   const reflectionName = `${SKILL_PROPOSAL_PREFIX}${slug}`;
 
   // growth namespace skip(§6-1) — reflectionName 자체가 growth 라 자기분석 안 됨.
-  // 멱등(§2·§6-3) — 이미 박힌 후보 재박 금지.
-  if (getMemory(reflectionName) !== undefined) return null;
+  //
+  // ★재발은 **무시가 아니라 갱신**이다 (2026-08-02).
+  //  종전엔 `이미 있으면 return null` 이라, 같은 패턴이 또 나와도 카운트도 `updated_at` 도
+  //  안 움직였다. 그 결과 제안이 **두 방향으로 죽었다**:
+  //   ①메모리 인덱스가 `ORDER BY updated_at DESC` 라 시간이 갈수록 밀려남 → 5주 뒤엔
+  //     8건 중 5건이 **캡(8KB) 밖**이라 비서 컨텍스트에 아예 안 실렸다(실측).
+  //   ②만료 기계(`archiveStaleReflections`, updatedAt 90일)가 **시계가 안 가서** 한 번도
+  //     안 돌았다 — 재발 안 하는 제안조차 영원히 남았다.
+  //  갱신 한 줄이면 둘 다 제 기능을 한다: 재발하면 위로 올라오고(배달), 재발이 끊기면
+  //  90일 뒤 스스로 아카이브된다(가역·검색 유지). **새 기계를 만들지 않는다.**
+  //
+  //  ★자동 채택은 여전히 안 한다 — 스킬 작성은 능력 표면 변경이라 human-gated
+  //   (`execution_boundary` 참조). 여기서 하는 건 *신호의 세기와 수명*을 바로잡는 것뿐이다.
 
   const description =
     `반복 작업 감지: '${evidence.human}' 패턴이 ${count}회 — 스킬화하면 반복 절약 가능. ` +
@@ -249,12 +261,11 @@ export const analyzeSkillProposal = (
     2,
   );
 
-  addMemory({
-    type: "feedback",
-    name: reflectionName,
-    description,
-    body,
-  });
+  const priorProp = getMemory(reflectionName);
+  if (priorProp !== undefined && !isStrongerSignal(priorProp.body, "evidence_count", count)) {
+    return null; // 같은 창 재스캔 — 갱신하면 만료 시계만 헛돈다.
+  }
+  upsertReflection({ name: reflectionName, description, body });
 
   return { reflectionName };
 };
@@ -423,7 +434,12 @@ export const analyzeSkillImprove = (usage: {
   const reflectionName = `${SKILL_IMPROVE_PREFIX}${slug}`;
 
   // 2. 멱등(§3-1) — 미해결 제안 메모 있으면 재제안 0. growth namespace 라 자기분석도 skip.
-  if (getMemory(reflectionName) !== undefined) return null;
+  // 재발 갱신 — analysis.ts 와 같은 판정(신호가 세졌을 때만). 옛 `있으면 skip` 은
+  //  인덱스 밀림 + 만료 시계 정지 둘 다를 낳았다(2026-08-02).
+  const priorImp = getMemory(reflectionName);
+  if (priorImp !== undefined && !isStrongerSignal(priorImp.body, "fail_count", usage.failCount)) {
+    return null; // 실패가 더 안 늘었다 — 갱신하면 만료 시계만 헛돈다.
+  }
 
   // 3. 가드 스냅샷(있으면 델타·쿨다운, 없으면 누적) → 순수 평가(store §7).
   const guard = readGuardSnapshot(usage.skillName);
@@ -473,12 +489,7 @@ export const analyzeSkillImprove = (usage: {
     2,
   );
 
-  addMemory({
-    type: "feedback",
-    name: reflectionName,
-    description,
-    body,
-  });
+  upsertReflection({ name: reflectionName, description, body });
 
   // 가드 메모 스냅샷 upsert(§3-2·§5-2) — 제안 메모를 사용자가 지워도 이게 남아 쿨다운 유효.
   upsertGuardSnapshot(usage.skillName, {

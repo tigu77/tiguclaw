@@ -455,3 +455,6 @@
       // 부팅 하이드레이션 — 드로어 셸 섹션·컴포저 스트립(표면 B)이 드로어를 한 번도 안 열어도
       // 최신이게. hydrateActiveJobs(background-drawer.js) 동형.
       fetchShellsSeed();
+      // ★부팅 외 트리거에서도 재동기할 수 있게 노출 — 잡(reconcileBgJobs)과 대칭.
+      //  "화면을 다시 볼 때" 정확해야 하는 건 잡·셸이 같다.
+      window.resyncShells = fetchShellsSeed;

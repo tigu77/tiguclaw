@@ -454,10 +454,32 @@
       }, 15_000);
       // 탭 복귀 즉시 점검 — 절전/백그라운드 복귀가 가장 흔한 조용한 죽음 케이스라, 다음 주기를
       // 기다리지 않고 바로 회복시킨다(모바일 사파리 포함).
+      /**
+       * ★백그라운드 상태 재동기 — **한 곳** (2026-08-02 사용자 제보).
+       *
+       * 증상: 다른 세션 탭이나 다른 화면을 보다가 돌아오면 끝난 잡이 계속 "진행 중".
+       * 새로고침하면 정상 → 서버는 멀쩡하고 **클라가 안 맞춘 것**.
+       *
+       * 근본: 대조(reconcileBgJobs)가 **부팅 1회 + SSE 재연결(onopen)** 에만 걸려 있었다.
+       * 화면 전환은 둘 다 아니다 — SSE 는 계속 붙어 있으니 onopen 이 안 뜬다. 그 사이
+       * 끝난 잡의 `worker.done` 은 화면이 없을 때 지나가고 **다시 오지 않는다**
+       * (hydrateActiveJobs 주석이 그 경우를 이미 설명하고 있었다 — 트리거만 없었다).
+       *
+       * 그래서 "보는 순간"마다 맞춘다. 비용은 GET 두 번이고 둘 다 멱등이다
+       * (같은 jobId=같은 카드). 트리거를 늘리는 대신 **판정을 여기 하나로** 둔다.
+       */
+      const resyncBackground = () => {
+        try { if (typeof window.reconcileBgJobs === "function") window.reconcileBgJobs(); } catch { /* noop */ }
+        try { if (typeof window.resyncShells === "function") window.resyncShells(); } catch { /* noop */ }
+      };
+      window.resyncBackground = resyncBackground;
+
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && Date.now() - lastRecvAt > STREAM_STALE_MS) {
-          forceReconnect();
-        }
+        if (document.visibilityState !== "visible") return;
+        // 연결이 죽었으면 재연결(그 onopen 이 대조를 부른다). 살아 있어도 **맞추긴 해야
+        // 한다** — 탭이 숨은 동안 끝난 잡은 이벤트가 이미 지나갔다.
+        if (Date.now() - lastRecvAt > STREAM_STALE_MS) forceReconnect();
+        else resyncBackground();
       });
       // ══ 멀티세션 탭(ADR 2026-07-15 Phase 2) ══════════════════════════════════
       // 각 탭 = 독립 대화 세션(dashboard:<uuid> threadKey). 기본 = dashboard:default(연속성).

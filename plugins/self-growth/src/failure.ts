@@ -5,6 +5,7 @@ import {
   searchMemories,
 } from "../../../src/store/memory.js";
 import { listSkillUsage } from "../../../src/store/skill-usage.js";
+import { isStrongerSignal, upsertReflection } from "./analysis.js";
 import {
   getDirective,
   upsertDirective,
@@ -490,12 +491,14 @@ export const routeFailureReflection = (input: {
   // ── core → core_flag reflection only(자동 확정 절대 0 — 개발자만 코드 수정) ──
   if (cause === "core") {
     const name = `feedback_${SELF_NAMESPACE}_core_flag_${slug}`;
-    if (getMemory(name) !== undefined) return null; // 멱등
-    addMemory({
-      type: "feedback",
-      name,
-      description: `[코어 플래그] '${(input.task ?? "").slice(0, 80)}' 작업 반복 실패(${input.count}회) — self-growth 원인분석: 코어 코드/구조 의심. 개발자 확인 필요(자율수정 대상 아님).`,
-      body: buildFailureReflectionBody({
+    // 재발 갱신 — 실패가 더 쌓이면 신호가 세진 것이다(그게 FAILURE_THRESHOLD 의 전제).
+    //  옛 `있으면 skip` 은 카운트·updated_at 을 얼려 인덱스 밀림 + 만료 정지를 낳았다.
+    //  ★자동 확정은 여전히 0 — 코어 수정은 개발자 몫이다. 신호의 세기만 바로잡는다.
+    const priorFlag = getMemory(name);
+    if (priorFlag !== undefined && !isStrongerSignal(priorFlag.body, "evidence_count", input.count)) {
+      return null;
+    }
+    upsertReflection({ name, description: `[코어 플래그] '${(input.task ?? "").slice(0, 80)}' 작업 반복 실패(${input.count}회) — self-growth 원인분석: 코어 코드/구조 의심. 개발자 확인 필요(자율수정 대상 아님).`, body: buildFailureReflectionBody({
         cause,
         reflection: input.reflection,
         task: input.task,
@@ -505,19 +508,17 @@ export const routeFailureReflection = (input: {
         relatedSkills: input.relatedSkills,
         guidance:
           "이건 개발자가 코드로 봐야 하는 코어 이슈일 수 있습니다(자율수정 대상 아님). harness/개발자가 관찰된 증상·재현 맥락을 읽고 판단하세요. self-growth 는 코어를 수정하지 않으며 이 메모를 코어가 읽지도 않습니다(단방향).",
-      }),
-    });
+      }) });
     return { target: "core_flag", name };
   }
 
   // ── prompt_config / task_design / uncertain(+ skill 강등분) → 일반 reflection ──
   const name = `feedback_${SELF_NAMESPACE}_failure_${slug}`;
-  if (getMemory(name) !== undefined) return null; // 멱등
-  addMemory({
-    type: "feedback",
-    name,
-    description: `반복 매니저 실패 '${(input.task ?? "").slice(0, 80)}' (${input.errorKind}·${input.adapter}, ${input.count}회) — 원인분석=${cause}, suggester only, 사용자/harness 확인 후 결정`,
-    body: buildFailureReflectionBody({
+  const priorFail = getMemory(name);
+  if (priorFail !== undefined && !isStrongerSignal(priorFail.body, "evidence_count", input.count)) {
+    return null; // 실패가 더 안 늘었다 — 갱신하면 만료 시계만 헛돈다.
+  }
+  upsertReflection({ name, description: `반복 매니저 실패 '${(input.task ?? "").slice(0, 80)}' (${input.errorKind}·${input.adapter}, ${input.count}회) — 원인분석=${cause}, suggester only, 사용자/harness 확인 후 결정`, body: buildFailureReflectionBody({
       cause,
       reflection: input.reflection,
       task: input.task,
@@ -531,8 +532,7 @@ export const routeFailureReflection = (input: {
           : cause === "prompt_config"
             ? "설정·프롬프트·타임아웃 값 조정 후보. 비서가 사용자에게 확인하거나 사용자가 직접 교정하세요. self-growth 는 제안만."
             : "원인 불확실(보수 강등) 또는 관련 스킬 미상 — 비서가 사용자에게 이 반복 실패 대응 의향을 명시 확인하세요. self-growth 는 제안만.",
-    }),
-  });
+    }) });
   return { target: "reflection", name };
 };
 

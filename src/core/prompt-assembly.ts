@@ -15,6 +15,9 @@ import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
 import { loadModelProfiles, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs } from "./worker-jobs.js";
+import { readFileSync } from "node:fs";
+import { getPaths } from "./paths.js";
+import { parseFile } from "../store/self-growth-md.js";
 
 // ─── formatMemorySnippet — user prompt prepend 본문 ──────────────────────
 const SNIPPET_HARD_CAP = 1500;
@@ -74,6 +77,59 @@ export const formatMemoryIndex = (
     out.push(
       `… ${truncated}건 더 (인덱스 캡 — 소실 아님: 관련 대화 시 자동 검색으로 도달, 이름 알면 read_memory 로 직접 fetch)`,
     );
+  }
+  return out.join("\n");
+};
+
+// ─── 확정 지침(SELF_GROWTH.md) — 자가성장 루프의 마지막 칸 ─────────────────
+/**
+ * **확정된 지침이 실제 행동으로 돌아오게 한다** (2026-08-02).
+ *
+ * ★왜 필요했나: self-growth 는 관측→제안→(저위험)자동 확정까지 만들어 놓고, 확정분을
+ *  `<home>/SELF_GROWTH.md` 에 적재했다. 그런데 **코어가 그 파일을 프롬프트에 싣지 않았다** —
+ *  포인터 메모리가 "작업 착수 전 Read 하라" 고 말할 뿐이었고, 그 포인터조차 메모리 인덱스
+ *  캡(8KB / 실제 18.7KB) 안에서 밀려날 수 있었다. 즉 **지침을 읽으라는 지침이 배달 위험에
+ *  노출**돼 있었다. 루프의 마지막 칸이 비어 있으면 앞의 관측·확정이 전부 무의미하다.
+ *
+ * ★안정 조각(system 채널)으로 싣는다 — 확정 지침은 턴마다 바뀌지 않으므로 프리픽스 캐시에
+ *  함께 실린다(AGENT.md 와 같은 성질). 비어 있으면 "" 라 비용 0(현재 지침 0건 = 0바이트).
+ *
+ * ★캡: 지침은 `DIRECTIVE_HARD_CAP`(50) + TTL 로 이미 바운드돼 있지만, 프롬프트에 싣는 쪽도
+ *  독립 상한을 둔다 — 한 계층의 상한을 다른 계층이 믿지 않는다(오늘 여러 번 나온 부류).
+ */
+const DIRECTIVE_INDEX_CAP_BYTES = 4096;
+
+export const formatSelfGrowthDirectives = (): string => {
+  let body: string;
+  try {
+    body = readFileSync(getPaths().selfGrowthMd, "utf8");
+  } catch {
+    return ""; // 파일 없음 = 확정 0 = 실을 것 없음(정상).
+  }
+  let directives: ReturnType<typeof parseFile>;
+  try {
+    directives = parseFile(body);
+  } catch {
+    return ""; // 손상 파일이 턴을 무르지 않는다.
+  }
+  if (directives.length === 0) return "";
+  // user 확정을 먼저(영구·사용자 의사) — auto 는 TTL 대상이라 뒤로.
+  const sorted = [...directives].sort((a, b) =>
+    a.source !== b.source ? (a.source === "user" ? -1 : 1) : b.updatedAt - a.updatedAt,
+  );
+  const out: string[] = ["## 확정 지침 (self-growth)"];
+  let bytes = 0;
+  let shown = 0;
+  for (const d of sorted) {
+    const line = `- [${d.source}] ${d.text.split("\n")[0]}`;
+    const n = Buffer.byteLength(line) + 1;
+    if (bytes + n > DIRECTIVE_INDEX_CAP_BYTES) break;
+    out.push(line);
+    bytes += n;
+    shown += 1;
+  }
+  if (shown < sorted.length) {
+    out.push(`… ${sorted.length - shown}건 더 (상한 — 전문은 SELF_GROWTH.md)`);
   }
   return out.join("\n");
 };
@@ -349,7 +405,8 @@ export const contextSlotKeys = (): string[] =>
     agentIndex: "",
   }).map((s) => s.key);
 
-const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
+// 회귀가 계산형 슬롯의 **채널 배치**를 직접 단언할 수 있게 export (이름 예외 목록 대신).
+export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   { key: "system", text: input.system, channel: "system" },
   // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면
   // 자정마다 시스템 채널 전체(30KB)의 캐시를 깨뜨린다. user 채널이 정답.
@@ -368,6 +425,7 @@ const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
   //  에이전트 인덱스·프로파일)의 캐시까지 통째로 무효화한다. 꼬리에 두면 무효화가
   //  자기 자신으로 국한된다. "프리픽스는 앞에서만 매칭한다"를 블록 *안*에도 적용한 것.
+  { key: "selfGrowth", text: formatSelfGrowthDirectives(), channel: "system" },
   { key: "agentPathHint", text: agentPathHint(), channel: "system" },
   { key: "agent", text: input.agent, channel: "system" },
   { key: "agentWarn", text: input.agentWarn, channel: "system" },

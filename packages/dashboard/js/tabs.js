@@ -279,6 +279,9 @@
         clearReply();          // 답글 인용은 세션 스코프 — 전환 시 초기화.
         renderTabBar();
         persistTabs();
+        // 세션을 옮기면 배경 상태도 맞춘다 — 옮겨 다니는 동안 끝난 잡이 "진행 중" 으로
+        // 굳는 것이 사용자 제보의 주 경로였다(2026-08-02).
+        if (typeof window.resyncBackground === "function") window.resyncBackground();
         void loadThreadHistory(tk);
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         if (window.hydrateModelSelect) window.hydrateModelSelect(); // 모델 프로파일 드롭다운 = 이 탭 상태로.

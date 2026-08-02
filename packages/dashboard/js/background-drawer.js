@@ -352,7 +352,15 @@
         }
       };
 
-      const openBg = () => { document.body.classList.add("bg-open"); bgPanel.setAttribute("aria-hidden", "false"); updateBgJump(); };
+      // ★드로어를 여는 순간 서버와 맞춘다 (2026-08-02) — **보는 순간이 정확해야 할 순간**이다.
+      //  종전엔 대조가 부팅·SSE재연결에만 걸려 있어, 닫아둔 사이 끝난 잡이 "진행 중" 으로
+      //  굳은 채 열렸다(그 worker.done 은 이미 지나갔고 다시 오지 않는다).
+      const openBg = () => {
+        document.body.classList.add("bg-open");
+        bgPanel.setAttribute("aria-hidden", "false");
+        updateBgJump();
+        if (typeof window.resyncBackground === "function") window.resyncBackground();
+      };
       const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
       // 프로젝트 상세의 compact 카드 클릭 → bg 패널 열고 그 잡으로 스크롤·펼침(자세히는 여기서).
       //   best-effort: 잡이 현재 bg 스코프 필터에 안 걸려 미렌더면 패널만 열림(스코프는 존중).

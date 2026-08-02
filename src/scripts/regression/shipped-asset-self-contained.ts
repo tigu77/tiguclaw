@@ -53,6 +53,22 @@ export const check: RegressionCheck = {
       .filter((n) => !shipped.has(n))
       .sort();
 
+    // ★이 검사는 **개발 레포 전용**이다 — 비교 대상(`.claude/skills`·`.tiguclaw/skills`)이
+    //  배포 EXCLUDE 라 배포 레포엔 아예 없다. 종전엔 그걸 모르고 "전제 실패" 로 빨간불을
+    //  냈다(2026-08-02 CI). **이 검사가 잡으려던 병을 이 검사 자신이 앓고 있었다** —
+    //  개발 레포 가정이 배포본으로 새는 것. 없으면 대상 아님으로 **명시하고** 넘어간다
+    //  (조용히 통과시키지 않는다 — 왜 안 돌았는지가 보여야 한다).
+    const devTreesPresent = dirs(".claude/skills").length + dirs(".tiguclaw/skills").length > 0;
+    if (!devTreesPresent) {
+      out.push(
+        assert(
+          "개발 레포 전용 검사 — 배포 레포에는 비교 대상이 없어 대상 아님",
+          true,
+          ".claude/skills·.tiguclaw/skills 부재(배포 EXCLUDE) → 개발 레포에서만 유효",
+        ),
+      );
+      return out;
+    }
     out.push(
       assert(
         "개발 전용 스킬 목록을 파생한다(검사 전제 — 0이면 공짜 통과)",

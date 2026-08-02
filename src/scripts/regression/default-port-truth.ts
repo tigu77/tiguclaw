@@ -106,7 +106,15 @@ export const check: RegressionCheck = {
     // ★env 이름을 **말하는 모든 추적 파일**에서, 같은 줄의 4자리 숫자는 정본과 같아야 한다.
     for (const p of PORTS) {
       const want = truth.get(p.env) as string;
-      const files = execFileSync("git", ["grep", "-l", p.env], { cwd: REPO, encoding: "utf8" })
+      // git grep 은 **매치 0 이면 exit 1** 로 던진다(레포가 아닐 때도). 검사가 통째로
+      //  죽지 않게 감싼다 — 파일이 0개면 아래 전제 단언이 그 사실을 말한다.
+      let grepOut = "";
+      try {
+        grepOut = execFileSync("git", ["grep", "-l", p.env], { cwd: REPO, encoding: "utf8" });
+      } catch {
+        grepOut = "";
+      }
+      const files = grepOut
         .split("\n")
         .filter((f) => f !== "" && !isRecord(f))
         // 이 검사 자신은 제외(사고 이력의 옛 숫자를 본문에 적고 있다).
@@ -164,11 +172,29 @@ export const check: RegressionCheck = {
     // ★사용자가 실제로 신고한 것 — **여는 법이 공개 README 에 적혀 있는가**.
     //  포트가 하나로 정리돼도 URL 을 안 적어두면 신고는 그대로다. 영/한 양쪽을 본다.
     const dash = truth.get("DASHBOARD_PORT") as string;
-    for (const f of [
-      "_workspace/public-overlay/README.md",
-      "_workspace/public-overlay/README.ko.md",
-    ]) {
-      const src = read(f);
+    // ★공개 README 는 **레포마다 자리가 다르다** — dev 는 오버레이(`_workspace/public-overlay/`)가
+    //  정본이고 배포 레포엔 그게 루트 `README.md` 로 복사돼 있다(오버레이 자체는 EXCLUDE).
+    //  종전엔 오버레이 경로만 읽어 **배포 레포 CI 에서 ENOENT 로 검사가 통째로 던졌다**
+    //  (2026-08-02, 하루 8번 push 하도록 CI 를 안 봐서 몰랐다). 있는 쪽을 읽는다.
+    const readEither = (overlay: string, shipped: string): string | null => {
+      for (const f of [overlay, shipped]) {
+        try {
+          return readFileSync(path.join(REPO, f), "utf8");
+        } catch {
+          /* 다음 후보 */
+        }
+      }
+      return null;
+    };
+    for (const [f, shipped] of [
+      ["_workspace/public-overlay/README.md", "README.md"],
+      ["_workspace/public-overlay/README.ko.md", "README.ko.md"],
+    ] as const) {
+      const src = readEither(f, shipped);
+      if (src === null) {
+        out.push(assert(`${path.basename(f)} 를 찾는다`, false, "★양쪽 경로 모두 없음"));
+        continue;
+      }
       const hasUrl = src.includes(`http://127.0.0.1:${dash}`);
       // 로컬 바인딩이라는 사실도 같이 있어야 한다 — 없으면 포트를 열어버린다(보안).
       const hasBind = /127\.0\.0\.1/.test(src) && /DASHBOARD_HOST/.test(src);

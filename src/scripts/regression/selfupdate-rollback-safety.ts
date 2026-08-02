@@ -113,6 +113,33 @@ export const check: RegressionCheck = {
         honest.ok ? "2개 확인" : `누락 ${honest.missing.join(" ")}`,
       ),
     );
+    // ★"빌드 실패가 조용히 지나가지 않는다" — 2026-08-02 에 `/status` 의 낡은-빌드 경고를
+    //  뺐다(독자가 행동할 수 없는 말이라서). 그때 **대신 기대기로 한 그물이 이것**이므로
+    //  여기서 못 박는다. 이게 없으면 경고를 뺀 근거가 사라진다.
+    const { readFileSync } = await import("node:fs");
+    const pathMod = await import("node:path");
+    const { fileURLToPath: f2u } = await import("node:url");
+    const repoRoot2 = pathMod.resolve(pathMod.dirname(f2u(import.meta.url)), "../../..");
+    const rd = (rel: string): string => readFileSync(pathMod.join(repoRoot2, rel), "utf8");
+    const tool = rd("src/core/llm-runtime/capabilities/update-self-mcp.ts");
+    out.push(
+      assert(
+        "★업데이트 실패는 호출자에게 실패로 반환된다(성공으로 위장 0)",
+        /업데이트 실패:/.test(tool),
+        /업데이트 실패:/.test(tool) ? "실패 반환 확인" : "★실패가 조용히 성공처럼 나간다",
+      ),
+    );
+    // 위임 CLI 실행(telegram /update)은 stdio 가 버려져 실패가 사라진다 — 마커파일로
+    // 재가동 뒤 통지하는 경로가 그 구멍을 막는다.
+    const idx = rd("src/index.ts");
+    out.push(
+      assert(
+        "★위임 실행 실패도 재가동 후 사용자에게 통지된다(조용한 소실 0)",
+        /업데이트 실패 \(단계: \$\{stage\}\)/.test(idx),
+        /업데이트 실패 \(단계:/.test(idx) ? "마커 기반 통지 확인" : "★위임 실패가 조용히 사라진다",
+      ),
+    );
+
     return out;
   },
 };

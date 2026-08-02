@@ -48,7 +48,7 @@ import {
   type SteeringInput,
 } from "./core/steering.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
-import { appVersion, appBuildId, isBuiltRuntime, staleBuildWarning } from "./core/version.js";
+import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
   addMemory,
@@ -1396,17 +1396,17 @@ const handler: MessageHandler = async (msg) => {
           }
         }
 
-        // ★env 가 아니라 실제 로드 경로로 판정한다. `TIGUCLAW_RUNTIME` 은 built 에서만
-        //  세팅돼서 tsx·npm run dev 에선 미매칭 → "built" 로 표시됐고, 바로 아래
-        //  낡음 경고(같은 사실을 로드 경로로 판정)와 **한 줄 안에서 모순**됐다.
-        const runtimeMode = isBuiltRuntime() ? "built" : "source";
         const lines = [
           "🐂 tiguclaw 상태",
           // 빌드 식별자 — "업데이트를 받았나" 를 한 줄로 가르는 유일한 수단(버전은 마일스톤
           // 에서만 오르므로 같은 v0.15.0 이 30커밋 차이일 수 있다).
-          `─ 버전: v${appVersion()} (${runtimeMode})${appBuildId() !== "" ? ` · 빌드 ${appBuildId()}` : ""}` +
-            // ★소스 HEAD 는 최신인데 dist 가 옛것이면 여기서 잡는다(빌드 실패는 조용하다).
-            (staleBuildWarning() !== "" ? `\n  ${staleBuildWarning()}` : ""),
+          // ★낡은 빌드 경고는 뺐다 (2026-08-02 사용자 판단) — **독자가 행동할 수 없는 말**이라서다.
+          //  이 데몬은 개발 대상이면서 동시에 사용자의 실사용 비서라, 소스를 고치는 동안 격차가
+          //  상시 생긴다. 사용자에겐 할 일이 없는 경고가 매번 뜬다(배경소음). 원래 막던 사고
+          //  ("업데이트가 조용히 반영 안 됨")는 `/update` 쪽에 그물이 있다 — typecheck 게이트 →
+          //  자동 롤백 → 실패 통지(위임 실행은 마커파일로 재가동 후 통지, selfupdate-rollback-safety).
+          //  해시는 남긴다: 평소엔 조용하고 **사고 때** "어느 코드가 도는가" 에 답하는 유일한 값이다.
+          `─ 버전: v${appVersion()}${appBuildId() !== "" ? ` · 빌드 ${appBuildId()}` : ""}`,
           `─ 업타임: ${uptime}`,
           `─ 이번 대화: ${convo}`,
         ];

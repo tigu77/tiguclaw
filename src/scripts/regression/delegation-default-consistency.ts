@@ -27,12 +27,24 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
 
-/** 위임 기본값을 말하는 자리 — 하나라도 빠지면 그 자리가 딴소리를 하게 된다. */
+/** 위임 기본값을 말하는 자리 — 하나라도 딴소리를 하면 그 자리가 이길 수 있다. */
 const SOURCES = [
   { rel: "src/core/llm-runtime/adapters/_shared-sysprompt.ts", what: "매 턴 주입 넛지(3어댑터)" },
   { rel: "SYSTEM.md", what: "작동 헌법" },
   { rel: "skills/harness/SKILL.md", what: "하네스 스킬" },
 ] as const;
+
+/**
+ * **조건 정의**를 드는 자리 (2026-08-05 개정) — 넛지는 제외한다.
+ *
+ * ★왜 바꿨나: 이 검사는 원래 "공통 기준을 **세 자리에 다** 두라"고 했다. 그런데 그 수단이
+ *  정확히 **헌법 두 벌** 문제를 만들었다 — 같은 판단이 여러 곳에 있으면 한쪽만 고쳐져
+ *  갈린다(실제로 앱 소스·홈 밖 규칙이 그렇게 갈려 정반대 지시가 됐다,
+ *  `constitution-single-source` 참조). 사고의 형상은 **모순**이었지 *부재*가 아니었다.
+ *  그래서 목적(넛지가 반대 기본값을 밀지 않는다)은 그대로 두고, 수단만 바꾼다:
+ *  **넛지 = 기본값 + 정본 포인터 / 조건 정의 = 헌법·하네스 스킬**.
+ */
+const CONDITION_SOURCES = SOURCES.filter((s) => !s.rel.endsWith("_shared-sysprompt.ts"));
 
 /** 되살아나면 안 되는 **반대 기본값** 문구 — 옛 사고의 형상 그대로. */
 const OPPOSITE = [
@@ -48,17 +60,17 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
-    // ★① 공통 판정 기준이 세 자리에 **다** 있는가. 한 곳이라도 없으면 거기선 다른 기준이 쓰인다.
-    const missing = SOURCES.filter((s) => {
+    // ★① 조건 정의가 **정의처(헌법·하네스 스킬)** 에 있는가. 없으면 그 자리에서 다른 기준이 쓰인다.
+    const missing = CONDITION_SOURCES.filter((s) => {
       const src = read(s.rel);
       return !(src.includes("독립·비중첩") && src.includes("3개 이상"));
     });
     out.push(
       assert(
-        `★위임 게이트(독립·비중첩 3개 이상)가 ${SOURCES.length}자리에 모두 있다`,
+        `★위임 게이트(독립·비중첩 3개 이상)가 정의처 ${CONDITION_SOURCES.length}곳에 있다`,
         missing.length === 0,
         missing.length === 0
-          ? SOURCES.map((s) => s.what).join(" · ")
+          ? CONDITION_SOURCES.map((s) => s.what).join(" · ")
           : `★누락: ${missing.map((s) => `${s.what}(${s.rel})`).join(" / ")}`,
       ),
     );
@@ -87,12 +99,22 @@ export const check: RegressionCheck = {
         /기본은 \*\*직접\*\*/.test(nudge) ? "확인" : "★넛지가 기본값을 말하지 않는다",
       ),
     );
-    // 애매할 때 **내려간다**(팀→1명→직접)는 방향도 같이 — 올라가면 잘못 쪼갠 팀이 나온다.
+    // 애매할 때 **내려간다**(팀→1명→직접)는 방향 — 조건의 일부이므로 정본(헌법)에서 본다.
+    const constitution = read("SYSTEM.md");
     out.push(
       assert(
-        "애매하면 아래 갈래로 내려간다(위로 올리지 않는다)",
-        /애매하면 아래 갈래로 내려가/.test(nudge),
-        /애매하면 아래 갈래로 내려가/.test(nudge) ? "확인" : "★방향 문구 없음",
+        "애매하면 아래 갈래로 내려간다(위로 올리지 않는다) — 정본에 있다",
+        /애매하면 아래 갈래로 내려가/.test(constitution),
+        /애매하면 아래 갈래로 내려가/.test(constitution) ? "헌법에 있음" : "★방향 문구 없음",
+      ),
+    );
+    // ★넛지는 조건을 재진술하는 대신 **정본을 가리켜야** 한다 — 가리키지 않으면 옮긴 규칙이
+    //  미아가 되어(모델이 헌법을 안 찾는다) 넛지의 기본값만 남는다.
+    out.push(
+      assert(
+        "★매 턴 넛지가 조건의 정본(SYSTEM.md)을 가리킨다",
+        /SYSTEM\.md §1 이 정본/.test(nudge),
+        /SYSTEM\.md §1 이 정본/.test(nudge) ? "정본 포인터 있음" : "★포인터 없음",
       ),
     );
 

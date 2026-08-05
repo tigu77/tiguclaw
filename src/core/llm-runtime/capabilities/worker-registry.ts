@@ -49,6 +49,7 @@ import {
   clearSteerChannel,
   notifyJobOwner,
   steerJob,
+  publishSteerAttempt,
 }
 from "../../worker-jobs.js";
 import { getLastWorkerActivity } from "../../../store/events.js";
@@ -463,6 +464,13 @@ export const createWorkerMcpServer = (
               (j) => j.kind === "worker" && j.label === args.label,
             );
             if (elsewhere !== undefined) {
+              // 거절도 관측면에 남긴다 — 사용자 입장에선 "보냈는데 안 갔다"라 유실과 같다.
+              publishSteerAttempt({
+                jobId: elsewhere.jobId,
+                label: args.label,
+                message: args.message,
+                outcome: "other-session",
+              });
               return okText(
                 `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
               );
@@ -474,6 +482,14 @@ export const createWorkerMcpServer = (
           if (j !== undefined && j.kind === "worker") target = j;
         }
         if (target === undefined) {
+          // ★가장 흔한 유실이 여기다 — "스티어했는데 이미 끝난 매니저였다". steerJob 에
+          //  도달하지 못하는 경로라 여기서 직접 발행해야 사후에 셀 수 있다(ADR 2026-08-03 §4).
+          publishSteerAttempt({
+            ...(args.job_id !== undefined && args.job_id !== "" ? { jobId: args.job_id } : {}),
+            ...(args.label !== undefined && args.label !== "" ? { label: args.label } : {}),
+            message: args.message,
+            outcome: "no-target",
+          });
           return okText(
             `지정하신 매니저를 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
           );

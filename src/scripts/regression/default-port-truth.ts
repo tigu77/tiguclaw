@@ -118,7 +118,11 @@ export const check: RegressionCheck = {
         .split("\n")
         .filter((f) => f !== "" && !isRecord(f))
         // 이 검사 자신은 제외(사고 이력의 옛 숫자를 본문에 적고 있다).
-        .filter((f) => !f.endsWith("default-port-truth.ts"));
+        // ★회귀 검사들은 통째로 제외 — 사고 이력을 본문에 적는 게 그 파일들의 일이라
+        //  **옛 숫자가 남아 있는 게 정상**이다(현재값으로 고치면 기록이 거짓이 된다).
+        //  docs/decisions 를 빼는 것과 같은 이유: 검사 대상은 "지금 동작을 말하는 곳" 이지
+        //  "그때를 적은 곳" 이 아니다.
+        .filter((f) => !f.startsWith("src/scripts/regression/"));
       out.push(
         assert(
           `${p.env} 를 말하는 파일을 찾는다(검사 전제 — 0이면 공짜 통과)`,
@@ -131,17 +135,29 @@ export const check: RegressionCheck = {
         read(f)
           .split("\n")
           .forEach((l, i) => {
-            if (!l.includes(p.env)) return;
+            // ★같은 줄에 env 이름이 없어도 **URL 형태의 포트**는 본다 — 실제로 놓쳤다:
+            //  `app-ai-wiring` 은 `HTTP_BRIDGE_PORT` 를 두 번 언급하는데, 예제 줄은
+            //  `OPENAI_BASE_URL=http://127.0.0.1:3000/v1` 이라 env 이름이 없어 스캔 밖이었다
+            //  (그래서 배포 스킬이 사용자에게 틀린 포트를 알려주고 있었다, 2026-08-02).
+            //  `127.0.0.1:<4자리>` 는 다른 뜻일 수 없으므로 오탐 위험이 낮다.
+            const urlPort = /(?:127\.0\.0\.1|localhost):(\d{4})\b/.exec(l);
+            if (!l.includes(p.env) && urlPort === null) return;
             // ★한 줄이 **두 포트를 같이** 말하는 경우가 있다(예: "DASHBOARD_PORT(기본 X)·
             //  HTTP_BRIDGE_PORT 는 …"). 그 줄의 숫자를 한쪽에 귀속시킬 수 없으므로, 그때는
             //  **아는 기본값 중 하나이기만** 하면 통과시킨다. 낡은 숫자(3000·3101·3002)는
             //  어느 쪽도 아니라 그대로 걸린다 — 잡아야 할 것은 여전히 잡힌다.
             const both = PORTS.filter((q) => l.includes(q.env)).length > 1;
-            const ok = both ? [...truth.values()] : [want];
-            for (const n of l.match(/\b\d{4}\b/g) ?? []) {
+            //  ★env 이름이 없는 URL 줄은 **어느 포트인지 귀속할 수 없다**(브리지 URL 이
+            //   대시보드 문서에 나오는 건 정상). 그때는 "아는 기본값 중 하나이기만" 하면
+            //   통과 — 낡은 숫자(3000·3101·3002)는 어느 쪽도 아니라 그대로 걸린다.
+            //   첫 판에서 이걸 안 해 정상 문서 6건을 오탐했다.
+            const named = l.includes(p.env);
+            const nums = named ? (l.match(/\b\d{4}\b/g) ?? []) : urlPort !== null ? [urlPort[1]] : [];
+            const allowed = named && !both ? [want] : [...truth.values()];
+            for (const n of nums) {
               // 연도(2026 …)는 포트가 아니다 — 같은 줄에 날짜가 섞이면 오탐이 된다.
               if (/^(19|20)\d\d$/.test(n)) continue;
-              if (!ok.includes(n)) wrong.push(`${f}:${i + 1} ${n}`);
+              if (!allowed.includes(n)) wrong.push(`${f}:${i + 1} ${n}`);
             }
           });
       }

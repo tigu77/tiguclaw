@@ -21,8 +21,40 @@
       //    대시보드/채널 레이어의 UI 컨벤션이라 채널명→라벨 매핑 허용(generic 폴백 유지).
       const CHANNEL_LABELS = { telegram: { short: "TG", full: "텔레그램" }, cli: { short: "CLI", full: "CLI" } };
       const OWN_CHANNELS = new Set(["http-bridge", "dashboard"]);
+      // ★배지는 **실재하는 채널**에만 단다 (2026-08-03 사용자 제보).
+      //  종전엔 `xxx:` 접두면 무엇이든 채널로 보고 `앞 6글자 대문자` 배지를 만들었다.
+      //  그래서 검증 스크립트가 남긴 `verify:…` 스레드가 탭에 **VERIFY** 배지를 달고
+      //  툴팁까지 "verify 세션" 이라고 말했다 — **없는 사실을 자신 있게 표시**한 것이다.
+      //  정본은 서버 `/api/channels`(살아 있는 채널 presence). 손으로 유지하는 목록이
+      //  아니라 실제 목록이므로 새 채널(slack 등)이 붙으면 저절로 배지가 생긴다.
+      //  초기값은 보수적으로 라벨을 가진 둘만 — 목록이 오기 전에 가짜 배지가 뜨지 않게.
+      let knownChannels = new Set(Object.keys(CHANNEL_LABELS));
+      const loadKnownChannels = async () => {
+        try {
+          const r = await fetch("/api/channels");
+          if (!r.ok) return;
+          const d = await r.json();
+          const names = (Array.isArray(d.channels) ? d.channels : [])
+            .map((c) => (c && typeof c.name === "string" ? c.name : null))
+            .filter((n) => n !== null && !OWN_CHANNELS.has(n));
+          // 빈 응답으로 목록을 비우지 않는다(부팅 순간·실패를 "채널 없음" 으로 오독 금지).
+          if (names.length === 0) return;
+          const before = [...knownChannels].sort().join(",");
+          knownChannels = new Set(names);
+          // 목록이 달라졌으면 이미 그려진 배지를 다시 판정한다(늦게 온 진짜 채널 반영).
+          // 모듈들은 스코프를 공유한다(tabs.js 가 여기 channelMeta 를 그냥 부르는 것과 같은
+          // 관행). 이 콜백은 tabs.js 가 실행된 뒤에 돌므로 참조가 안전하고, 실패해도 아래
+          // catch 가 받는다 — 배지 재판정 실패가 화면을 막지 않는다.
+          if (before !== names.slice().sort().join(",")) renderTabBar();
+        } catch (e) {
+          console.warn("채널 목록 로드 실패 — 배지는 알려진 채널만:", e && e.message ? e.message : e);
+        }
+      };
+      void loadKnownChannels();
       const channelMeta = (ch) => {
         if (!ch || typeof ch !== "string" || OWN_CHANNELS.has(ch)) return null;
+        // ★없는 채널을 지어내지 않는다. 키 접두는 채널이 아니다.
+        if (!knownChannels.has(ch)) return null;
         return CHANNEL_LABELS[ch] || { short: ch.slice(0, 6).toUpperCase(), full: ch };
       };
       // threadKey 접두에서 채널 추론(서버가 channel 메타 미제공 시 폴백). tg:/cli:/dashboard:.

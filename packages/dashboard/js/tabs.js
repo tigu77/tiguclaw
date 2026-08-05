@@ -296,7 +296,9 @@
         const tk = "dashboard:" + uuid;
         sessionSeq += 1;
         if (window.saveChatDraft) window.saveChatDraft(activeThreadKey); // 떠나는 탭 draft 저장.
-        openTabs.push({ threadKey: tk, name: deriveTabFallbackName(tk), modelProfile: null }); // 번호식 세션명(공백없는 "세션N", 영속 번호). 커스텀은 더블클릭 편집. 새 세션 = 프로파일 미선택(상속).
+        // pending — 아직 서버 행이 없다(첫 전송에 lazy 생성). 아래 고아 정리가
+        // 이걸 "서버가 모르는 탭" 으로 오인해 지우지 않게 한다.
+        openTabs.push({ threadKey: tk, name: deriveTabFallbackName(tk), modelProfile: null, pending: true }); // 번호식 세션명(공백없는 "세션N", 영속 번호). 커스텀은 더블클릭 편집. 새 세션 = 프로파일 미선택(상속).
         activeThreadKey = tk;   // 백엔드 행은 첫 전송에 lazy 생성(빈 탭 = 무흔적, D3).
         if (window.restoreChatDraft) window.restoreChatDraft(tk);        // 새 탭 = 빈 draft(입력 클리어).
         clearReply();
@@ -349,13 +351,19 @@
           for (const s of sessions) {
             const t = openByKey.get(s.threadKey);
             if (!t) continue;
+            if (t.pending) { delete t.pending; changed = true; } // 서버가 알게 됨 = 더는 신규 아님.
             if (s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }
             const ch = s.channel || s.lastChannel || channelFromThreadKey(s.threadKey);
             if (ch && t.channel !== ch) { t.channel = ch; changed = true; }
             const serverName = (typeof s.name === "string" && s.name) ? s.name : null;
-            if (serverName !== (t.customName || null)) {
+            // ★표시명은 서버가 준 displayName 을 쓴다(커스텀 > 첫 대화 발췌 > 폴백).
+            //  종전엔 커스텀이 없으면 로컬 "세션N" 으로 되돌아가, **같은 세션이 텔레그램
+            //  에선 생키·여기선 세션N** 으로 갈렸다(단일 인격 위반).
+            const shown = (typeof s.displayName === "string" && s.displayName)
+              ? s.displayName : (serverName || deriveTabFallbackName(t.threadKey));
+            if (serverName !== (t.customName || null) || t.name !== shown) {
               t.customName = serverName;
-              t.name = serverName || deriveTabFallbackName(t.threadKey);
+              t.name = shown;
               changed = true;
             }
             // 세션 모델 프로파일(드롭다운 상태 복원, ADR model-dropdown §3-c) — 서버가 진실.
@@ -374,13 +382,43 @@
             const ch = s.channel || s.lastChannel || channelFromThreadKey(tk);
             const cm = channelMeta(ch);
             const serverName = (typeof s.name === "string" && s.name) ? s.name : null;
-            const derived = (s.preview && s.preview.trim()) ? s.preview.trim().slice(0, 16) : (cm ? cm.full : "세션");
-            const name = serverName || derived;
+            // 파생은 서버 규칙 하나(sessionDisplayName). 채널 라벨은 그것도 비었을 때만.
+            const name = (typeof s.displayName === "string" && s.displayName)
+              ? s.displayName : (serverName || (cm ? cm.full : "세션"));
             const sp = (typeof s.modelProfile === "string" && s.modelProfile) ? s.modelProfile : null;
             const tab = { threadKey: tk, name, modelProfile: sp, ...(serverName ? { customName: serverName } : {}), ...(s.preview ? { preview: s.preview } : {}), ...(ch ? { channel: ch } : {}) };
             openTabs.push(tab);
             openByKey.set(tk, tab);
             surfaced += 1; changed = true;
+          }
+          // ★고아 탭 정리 (2026-08-03 사용자 제보 "Verify 세션탭 떠있는건 뭐지?").
+          //  `openTabs` 는 **줄어드는 경로가 없었다** — 드래그 재정렬과 명시적 닫기뿐.
+          //  그래서 서버 세션이 사라져도(프루닝·다른 기기에서 보관·다른 홈) 탭은 그때
+          //  캐시된 이름을 단 채 **영원히** 남았다. 눌러도 빈 대화만 나온다.
+          //  ★닫기를 서버 정본으로 바꾸면서(같은 날) 이게 더 커졌다 — A 기기에서 닫으면
+          //   B 기기엔 좀비 탭이 남는다. 되살리는 쪽만 서버를 보고 지우는 쪽은 안 봤다.
+          //  안전장치 셋: 목록이 비면(로드 실패·부팅 순간) 아무것도 안 지운다 / 기본 세션은
+          //  대상 아님 / `pending`(첫 전송 전이라 서버 행이 아직 없음)은 건드리지 않는다.
+          if (sessions.length > 0) {
+            const known = new Set(sessions.map((s) => s.threadKey));
+            const orphan = (t) =>
+              t.threadKey !== DEFAULT_DASH_THREAD && !t.pending && !known.has(t.threadKey);
+            // ★활성 탭이 고아면 **먼저 기본 세션으로 옮기고** 지운다 (2026-08-03 2차).
+            //  1차 수정은 "보고 있는 탭은 안 뺀다" 로 활성 탭을 면제했는데, 사용자가 신고한
+            //  바로 그 탭(`verify:…`)이 **활성**이라 영구 면제가 됐다 — 새로고침해도
+            //  activeThreadKey 가 localStorage 에서 그 탭으로 복원돼 다시 면제된다.
+            //  고아는 서버가 모르는 세션이라 **내용이 없다**(화면에도 "아직 대화가 없습니다").
+            //  옮겨도 잃을 게 없다. 새로 만든 탭은 `pending` 이라 여기 안 걸린다.
+            if (openTabs.some((t) => t.threadKey === activeThreadKey && orphan(t))) {
+              switchToThread(DEFAULT_DASH_THREAD);
+            }
+            for (let i = openTabs.length - 1; i >= 0; i--) {
+              const t = openTabs[i];
+              if (!orphan(t) || t.threadKey === activeThreadKey) continue;
+              openTabs.splice(i, 1);
+              changed = true;
+              console.debug("[tabs] 서버에 없는 세션 탭 정리:", t.threadKey, t.name);
+            }
           }
           // 편집 중엔 렌더를 미룬다(진행 중인 contenteditable DOM 보존) — 데이터는 반영, 다음
           // renderTabBar(편집 종료 시 호출)가 자연히 최신 상태로 그림.

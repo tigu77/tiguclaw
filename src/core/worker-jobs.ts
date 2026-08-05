@@ -641,6 +641,71 @@ export const clearSteerChannel = (jobId: string): void => {
 };
 
 /**
+ * 스티어 **시도**의 결과 — 전달된 것과 유실된 것을 같은 어휘로 센다.
+ *  - delivered : 적재 성공(다음 model-call 경계에서 반영)
+ *  - closed    : 매니저 턴이 막 닫힘(간발의 차 유실)
+ *  - absent    : 그런 매니저 없음·스티어 비활성
+ *  - no-target : 호출부가 대상을 못 고름(이미 끝난 매니저·이름 오타 — steerJob 도달 전)
+ *  - other-session: 대상이 **다른 대화**의 매니저라 의도적으로 거절(오주입 방지)
+ */
+export type SteerOutcome =
+  | "delivered"
+  | "closed"
+  | "absent"
+  | "no-target"
+  | "other-session";
+
+/**
+ * 스티어 시도를 관측면에 남긴다 (2026-08-05, ADR `docs/decisions/2026-08-03-steer-observability.md`).
+ *
+ * ★종전엔 스티어가 **어디에도 안 남았다** — 이벤트 0건·DB 0건·대시보드 표시 없음. 그 턴의 도구
+ *  반환값이 유일한 흔적이라 사용자는 전달 여부를 확인할 수단이 없었고, 사후에 "이 매니저가 왜
+ *  저렇게 했지" 를 볼 때 **스티어가 있었다는 사실 자체를 몰랐다**(로그가 1차 진단면이라는 원칙
+ *  정면 위반). 이름(label)을 덮어쓰는 대신 타임라인에 쌓는 이유도 같다 — 원래 의도(label·task)와
+ *  변경(스티어)이 **둘 다** 보존된다.
+ *
+ * 발행자가 여기 하나인 이유: 잡 좌표가 있는 결과(delivered/closed/absent)는 steerJob 이 직접
+ * 부르고, 대상을 못 고른 결과(no-target/other-session)는 **steerJob 에 도달조차 못 하므로**
+ * 호출부(steer_worker 도구)가 같은 함수를 부른다 — 경로는 둘, 발행 지점은 하나(중복 판단 0).
+ *
+ * best-effort: publishWorkerLifecycle 동형으로, 관측 발행 실패가 스티어를 무르지 않는다.
+ */
+export const publishSteerAttempt = (info: {
+  /** 사용자 원문(framing 없는 raw) — 무엇을 얹으려 했는지. */
+  message: string;
+  outcome: SteerOutcome;
+  /** 대상 잡 — 못 고른 경우(no-target) 생략. */
+  jobId?: string;
+  /** 호출부가 지목에 쓴 이름. 생략 시 잡 레코드의 label 로 채운다. */
+  label?: string;
+}): void => {
+  try {
+    const job = info.jobId !== undefined && info.jobId !== "" ? getJob(info.jobId) : undefined;
+    getEventBus().publish({
+      type: "worker.steered",
+      ts: Date.now(),
+      payload: {
+        jobId: info.jobId ?? "",
+        label: info.label ?? job?.label ?? "",
+        outcome: info.outcome,
+        // 지시 원문 — 길이 컷(이벤트/버퍼 바운드, worker.* 의 task/result 컷과 동형).
+        message: info.message.slice(0, 500),
+        ...(job !== undefined
+          ? {
+              threadKey: job.threadKey,
+              // 원 세션 — 대시보드 세션 스코프 필터가 worker.* 와 같은 근거로 판정.
+              ownerThreadKey: resolveOwnerThreadKey(job.threadKey),
+              kind: job.kind ?? "worker",
+            }
+          : {}),
+      },
+    });
+  } catch {
+    /* noop — 관측 발행 실패가 스티어를 무르지 않는다. */
+  }
+};
+
+/**
  * 돌고 있는 워커에 지시를 얹는다.
  *
  * @returns "delivered"=적재 성공(다음 model-call 경계에서 반영) /
@@ -649,15 +714,22 @@ export const clearSteerChannel = (jobId: string): void => {
  * ★반영 시점은 **다음 model-call 경계**다 — 워커가 10분짜리 Bash 안이면 그때까지 대기한다
  *  (선점 없음). 호출부가 이 사실을 사용자에게 정직하게 고지해야 한다(cancel_worker 가
  *  "즉시는 아닐 수 있음" 을 고지하는 것과 같은 이유).
+ *
+ * 결과와 무관하게 `worker.steered` 를 발행한다 — 유실(closed/absent)이야말로 사후에 세어야
+ * 하는 값이다(publishSteerAttempt 주석 참조).
  */
 export const steerJob = (
   jobId: string,
   msg: SteeringInput,
 ): "delivered" | "closed" | "absent" => {
-  if (!WORKER_STEERING_ENABLED) return "absent";
-  const ch = steerChannels.get(jobId);
-  if (ch === undefined) return "absent";
-  return ch.push(msg) ? "delivered" : "closed";
+  const outcome = ((): "delivered" | "closed" | "absent" => {
+    if (!WORKER_STEERING_ENABLED) return "absent";
+    const ch = steerChannels.get(jobId);
+    if (ch === undefined) return "absent";
+    return ch.push(msg) ? "delivered" : "closed";
+  })();
+  publishSteerAttempt({ jobId, message: msg.raw, outcome });
+  return outcome;
 };
 
 export interface WorkerAbort {

@@ -76,7 +76,9 @@ import {
   listThreads,
   setThreadName,
   setThreadArchived,
+  sessionDisplayName,
 } from "./store/sessions.js";
+import { getFirstUserText } from "./store/chat-log.js";
 // codex/openai 컨텍스트 리셋 — `/reset`·`/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
 // 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
 // 이전 턴은 재전송 안 함(getContextBoundary 는 codex/openai 어댑터가 소비). clearThreadSummary
@@ -94,6 +96,7 @@ import {
   clearCooldowns,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
+import { readSystem } from "./core/identity.js";
 import {
   diagnoseModelProfiles,
   loadModelProfiles,
@@ -208,6 +211,22 @@ console.log(`tiguclaw home: ${getPaths().home}`);
 // V9.4 — readAgent 경로가 홈으로 전환되므로, 레포 ./AGENT.md(사용자 인격)를 홈으로 1회
 // 마이그레이션 (홈이 untouched 시드일 때만 — 멱등·비클로버, 원본 보존). ensureHome 직후 필수.
 await migrateLegacyAgent(process.cwd());
+
+// ★빈 헌법을 조용히 두지 않는다 (2026-08-05, 프롬프트 P2 정리와 한 쌍).
+//  `readSystem()` 은 미러 실패·경로 오설정이면 **조용히 ""** 를 반환한다(turn 생존 우선).
+//  종전엔 sysprompt 가 같은 규칙을 중복 진술해 헌법이 비어도 안전 규칙이 남았는데, 판단을
+//  SYSTEM.md 한 곳으로 모은 지금은 **부재 = 위임·동사·확인 규칙 0** 이다. 그런데 그 상태가
+//  에러 하나 없이 조용하다 — 그래서 부팅에서 한 번 소리내고 `/status` 가 계속 들고 있는다.
+//  (syncSystemMd 는 *미러 쓰기* 실패만 경고한다 — 읽는 쪽이 비었는지는 여기서 본다.)
+const constitutionBytes = Buffer.byteLength(readSystem(), "utf8");
+if (constitutionBytes === 0) {
+  console.error(
+    `[boot] ★작동 헌법이 비었습니다 — ${getPaths().systemMd} 를 읽지 못했습니다. ` +
+      `비서가 위임·동사·확인 규칙 없이 돕니다(/status 에 표시). 앱 정본 SYSTEM.md 배포·홈 경로를 확인하세요.`,
+  );
+} else {
+  console.log(`작동 헌법 로드: ${constitutionBytes.toLocaleString()}B`);
+}
 
 initStore();
 // 채널→세션 바인딩 조회 등록 (2026-07-28) — 코어(threadkey)가 store 를 직접 import 하지
@@ -1074,12 +1093,12 @@ const handler: MessageHandler = async (msg) => {
         }
       })();
       const nameOf = (id: string): string => {
-        if (id === DEFAULT_SESSION_ID) return "기본 세션";
         const t = listThreads({ excludeInternal: true, excludeProbes: true }).find(
           (x: { threadKey: string; name?: string | null }) => x.threadKey === id,
         );
-        const nm = t?.name?.trim();
-        return nm !== undefined && nm !== "" ? nm : id;
+        // ★키 원문을 뱉지 않는다 — 종전엔 이름이 없으면 `dashboard:1784104932394-f791d2b408d6`
+        //  가 그대로 목록에 떴다("이름 없는 세션" 의 정체). 파생 규칙은 대시보드와 공용.
+        return sessionDisplayName(id, t?.name, getFirstUserText(id));
       };
 
       // /sessions archive [id] — 목록에서 숨긴다. ★삭제가 아니다(대화 기록 보존, 복원 가능).
@@ -1420,6 +1439,15 @@ const handler: MessageHandler = async (msg) => {
         if (statusOverride !== null) {
           lines.push(
             `─ 세션 모델 override: \`${statusOverride}\` (다음 turn 부터 — 풀 무시, \`/model reset\` 해제)`,
+          );
+        }
+
+        // ★작동 헌법 부재 — 있을 때만 표시(0이면 생략, 배경소음 금지). 판단 규칙을 SYSTEM.md
+        //  한 곳으로 모은 뒤로 **부재 = 위임·동사·확인 규칙 0** 인데 그 상태가 조용해서,
+        //  부팅 로그와 함께 여기에도 든다(사용자가 조치할 수 있는 사실이다).
+        if (Buffer.byteLength(readSystem(), "utf8") === 0) {
+          lines.push(
+            `─ ⚠️ 작동 헌법을 읽지 못했습니다 (${getPaths().systemMd}) — 판단 규칙 없이 도는 중입니다`,
           );
         }
 

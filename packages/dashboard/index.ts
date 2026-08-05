@@ -518,6 +518,17 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
+    // 세션 보관/복원 — bridge POST /session-archive. 탭 "닫기" 의 서버 정본(비파괴 — 대화
+    // 기록은 그대로, 목록에서만 숨김). 로컬 localStorage 만 쓰던 종전엔 기기마다 갈렸다.
+    if (pathname === "/api/session-archive" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/session-archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
     // 데몬 재시작 — bridge POST /restart (admin 토큰 server-side 주입, browser 미노출).
     if (pathname === "/api/restart" && method === "POST") {
       await proxyJson(res, "/restart", { method: "POST" });

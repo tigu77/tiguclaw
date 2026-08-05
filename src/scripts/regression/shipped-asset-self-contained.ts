@@ -44,7 +44,7 @@ const walkMd = (rel: string): string[] => {
 export const check: RegressionCheck = {
   name: "shipped-asset-self-contained",
   guards:
-    "배포 빌트인 스킬이 개발 레포에만 있는 스킬(principle-check 등)을 가리켜 사용자 설치본에서 존재하지 않던 것",
+    "배포 빌트인 스킬이 개발 전용 스킬을 가리켜 설치본에 없던 것 + .claude/ 와 .tiguclaw/ 사본이 말없이 갈라져 데몬이 낡은 규칙으로 돌던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
@@ -115,6 +115,29 @@ export const check: RegressionCheck = {
         "배포 스킬끼리의 참조는 정상이다(skill-creator)",
         harness.includes("skill-creator") && shipped.has("skill-creator"),
         `skill-creator 배포=${shipped.has("skill-creator")} 참조=${harness.includes("skill-creator")}`,
+      ),
+    );
+
+    // ★같은 스킬이 `.claude/`(내가 읽음)와 `.tiguclaw/`(데몬이 읽음) 두 벌로 있다. 손으로
+    //  맞추는 사본이라 **말없이 갈라진다** — 2026-08-02 감사에서 실제로 둘이 뒤처져 있었고,
+    //  하필 빠진 게 principle-check 의 **Q0**(전날 2차결함 5건으로 추가한 가장 중요한 칸)과
+    //  sync-public 의 **§8 CI 확인**이었다. 즉 내가 쓴 규칙이 **데몬한텐 없는 상태로** 며칠
+    //  돌았다(데몬은 그 사이 principle-check 를 실제로 2번 불렀다).
+    //  ★이름을 열거하지 않는다 — 양쪽에 다 있는 스킬 전부가 대상이다(세 번째가 갈려도 걸린다).
+    const both = dirs(".claude/skills").filter((n) => dirs(".tiguclaw/skills").includes(n));
+    const drift = both.filter((n) => {
+      const a = path.join(REPO, ".claude/skills", n, "SKILL.md");
+      const b = path.join(REPO, ".tiguclaw/skills", n, "SKILL.md");
+      if (!existsSync(a) || !existsSync(b)) return true;
+      return readFileSync(a, "utf8") !== readFileSync(b, "utf8");
+    });
+    out.push(
+      assert(
+        `★.claude/ 와 .tiguclaw/ 의 같은 스킬이 한 글자도 안 다르다(${both.length}개)`,
+        both.length >= 5 && drift.length === 0,
+        drift.length === 0
+          ? `대조 ${both.length}개 · 드리프트 0`
+          : `★드리프트 ${drift.length}건: ${drift.join(", ")} — 데몬이 낡은 규칙으로 돈다`,
       ),
     );
     return out;

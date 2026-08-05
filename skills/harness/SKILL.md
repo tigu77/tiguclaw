@@ -178,7 +178,7 @@ SKILL.md 규격·description 원칙·progressive disclosure 는 거기를 따르
 - 서브에이전트 설계 패턴(실행 모델·아키텍처·정의 구조·모델 등급): `references/agent-design-patterns.md`
 - 오케스트레이션 템플릿(컨텍스트 확인·데이터 전달·에러 핸들링): `references/orchestrator-template.md`
 - QA 에이전트 가이드(경계면 교차 비교·incremental QA·정의 템플릿): `references/qa-agent-guide.md`
-- 개별 스킬 작성 규격: `skill-creator` 스킬(`references/skill-format.md`)
+- 개별 스킬 작성 규격: `skill-creator` 스킬 — 규격 본문은 그 스킬의 `references/skill-format.md`
 
 ## 출처 / Attribution
 

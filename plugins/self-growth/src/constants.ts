@@ -85,9 +85,6 @@ export const GOVERNANCE_TOKENS: readonly string[] = [
   "sync-public",
   "code-review",
   "daemon-health-check",
-  "claude-code-parity-audit",
-  "integration-qa",
-  "schedule-safety-check",
   "self-growth",
   "skill_proposal",
 ];

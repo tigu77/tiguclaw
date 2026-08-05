@@ -766,7 +766,9 @@ const runUpdate = (c) => {
   //   콘솔 + 모든 하위프로세스(git/npm/tsc) 출력을 <home>/logs/update-<stamp>.log 로 캡처한다.
   //   터미널 직접 실행(env 없음)은 종전대로 stdio 상속(라이브 출력)이라 회귀 0.
   const delegated = !!process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
+  /** @type {number | null} */
   let logFd = null;
+  /** @type {string | null} */
   let updateLogPath = null;
   if (delegated) {
     try {
@@ -775,9 +777,10 @@ const runUpdate = (c) => {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       updateLogPath = path.join(logsDir, `update-${stamp}.log`);
       logFd = openSync(updateLogPath, "a");
+      /** @type {(orig: (...args: unknown[]) => void, level: string) => (...a: unknown[]) => void} */
       const tee = (orig, level) => (...a) => {
         try {
-          writeSync(logFd, `[${new Date().toISOString()}] [${level}] ${a.join(" ")}\n`);
+          writeSync(logFd ?? 2, `[${new Date().toISOString()}] [${level}] ${a.join(" ")}\n`);
         } catch {
           /* 파일 기록 실패해도 콘솔은 낸다 */
         }
@@ -793,6 +796,7 @@ const runUpdate = (c) => {
   // 실패 마커 — 롤백 전에 써서, 재가동한 데몬이 부팅 시 소비해 요청자에게 "❌ 실패" 통지.
   //   notify env 없으면(터미널 직접) 안 씀(오탐 0). UPDATE_FAILED_MARKER=".update-failed" 리터럴
   //   (dep-free 라 import 불가 — self-update.ts 상수와 동기).
+  /** @type {(stage: string, detail: string) => void} */
   const writeFailedMarker = (stage, detail) => {
     if (!delegated) return;
     try {

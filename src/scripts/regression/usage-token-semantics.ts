@@ -37,6 +37,14 @@ export const check: RegressionCheck = {
         // inputTokens 는 **호출 단위**, Total 은 누적 — 두 축을 섞지 않는다.
         /inputTokens: perCall\?\.input \?\? cumInput,/,
         /inputTokensTotal: cumInput,/,
+        // ★출력량의 최종값은 `message_delta` 에서 온다 (2026-08-05, SDK 0.3 부작용).
+        //  0.3 부터 `assistant` 메시지 usage 는 **message_start 스냅샷**이라
+        //  `output_tokens: 1` 플레이스홀더다. 그걸 쓰면 **모든 턴의 outputTokens 가 1 로
+        //  붕괴**한다(실측: 라이브 turn_done=1·벤치 중앙값 1, 업그레이드 전 같은 태스크는
+        //  1,221). 타입 이름이 그대로라 타입체크·회귀·한 턴 성공이 전부 통과했다 —
+        //  잡은 건 벤치 A/B 뿐이었다. 배선을 여기 박아 다음 업그레이드에 다시 안 흘리게.
+        /=== "message_delta"/,
+        /output: u\.output_tokens,/,
       ],
     );
     const runtime = await sourceHas("../../core/llm-runtime/index.ts", [

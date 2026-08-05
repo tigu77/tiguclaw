@@ -189,3 +189,22 @@ export const getRecentChatLog = (opts?: {
     return entry;
   });
 };
+
+/**
+ * 세션의 **첫 사용자 발화** — 표시명 파생의 재료(2026-08-03).
+ *
+ * ★처음엔 *최근* 메시지(`preview`)로 파생했다가 라이브에서 바로 틀린 게 보였다:
+ *  기본 세션이 `돌쇠 재시작 완료! ✅` 로 뜨고 **매 턴 이름이 바뀌었다.** 이름은
+ *  정체성이라 안정적이어야 한다 — 그래서 대화의 **처음**을 쓴다(그 세션이 무슨
+ *  얘기로 시작했나 = 안 변한다). 인덱스 `(thread_key, ts)` 를 그대로 탄다.
+ */
+export const getFirstUserText = (threadKey: string): string => {
+  const row = getDb()
+    .prepare(
+      `SELECT text FROM chat_log
+        WHERE thread_key = ? AND role = 'user' AND text IS NOT NULL AND TRIM(text) <> ''
+        ORDER BY ts ASC LIMIT 1`,
+    )
+    .get(threadKey) as { text?: string } | undefined;
+  return typeof row?.text === "string" ? row.text : "";
+};

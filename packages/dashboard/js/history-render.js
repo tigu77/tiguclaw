@@ -267,6 +267,19 @@
         for (const it of merged) {
           if (it.m) {
             flush();
+            // ★대화 가시 이벤트(kind 행: 선택지 등)는 **텍스트의 중복이 아니다** (2026-08-02).
+            //  사고: "선택지가 한 번 뜬 뒤 새로고침하면 다시 안 뜬다". 생산(chat_log kind 행)·
+            //  저장·읽기·빌더·dedup 이 **전부 있었는데** 여기서 버려졌다 — 아래 가드가
+            //  `role==="assistant"` 행을 *텍스트 세그먼트의 중복*으로 보고 드롭하는데,
+            //  선택지 행도 assistant 라 같이 걸렸다. 실측: 19:57:33 텍스트 세그먼트 **바로 뒤
+            //  같은 초**에 선택지가 온다(모델이 말한 뒤 선택지를 띄우므로 늘 이 순서다).
+            //  ★`kind` 행은 2026-08-01 에 생긴 **새 값**인데 그 값을 분기·열거하는 이 자리를
+            //   같이 안 봤다. 첨부(`mHasAtt`)가 이미 같은 이유로 예외인데 한 번 더 놓쳤다.
+            //  `sawTextThread` 는 건드리지 않는다 — 선택지는 텍스트 세그먼트를 끝내지 않는다.
+            if (typeof it.m.kind === "string" && it.m.kind !== "") {
+              units.push({ kind: "msg", entry: it.m });
+              continue;
+            }
             // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 가졌으면 뒤의 flat assistant
             // chat_log 행은 세그먼트의 중복 → 드롭(단 msgKey 등록해 SSE out replay 도 재렌더 안 함).
             // ★단 첨부(send_file) 를 실은 assistant 행은 텍스트 세그먼트의 중복이 아니므로 절대 드롭

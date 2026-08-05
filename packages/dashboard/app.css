@@ -841,6 +841,10 @@
       .bg-step-icon { flex:none; font-size:10px; }
       .bg-step-label { font-weight:700; color:var(--text); flex:none; }
       .bg-step-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:10px; word-break:break-all; }
+      /* 매니저 스티어 스텝(💬 지시 추가) — 스킬 배지(bg-skill)와 같은 형태·다른 색으로
+         "모델 활동이 아니라 사람이 얹은 지시" 임을 구분. 전달 못 된 시도는 사유를 흐리게. */
+      .bg-steer { color:#fef3c7; background:rgba(245,158,11,.20); border-radius:5px; padding:0 6px; box-shadow:inset 0 0 0 1px rgba(245,158,11,.45); }
+      .bg-steer-miss { color:var(--text-mute); font-style:italic; }
       /* ── 에이전트 뷰(메인 nav destination) — 진행 중 워커+서브를 크게. 오른쪽 드로어와 동일
          jobCards 데이터를 읽어 렌더(중복 데이터 모델 없음). 필터 토글·경과·마지막 스텝 재사용. */
       /* flex 컬럼 — .page-view min-height:100% + grid align-content:stretch 가 행을 늘려

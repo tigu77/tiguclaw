@@ -57,7 +57,7 @@ import {
   findEndpoint,
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
-import { getRecentChatLog } from "../../src/store/chat-log.js";
+import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
 import {
   listThreads,
   setThreadName,
@@ -65,8 +65,10 @@ import {
   setSessionModelProfile,
   clearSessionModelProfile,
   SESSION_STORAGE_CHANNEL,
+  sessionDisplayName,
+  setThreadArchived,
 } from "../../src/store/sessions.js";
-import { resolveSessionId } from "../../src/core/threadkey.js";
+import { DEFAULT_SESSION_ID, resolveSessionId } from "../../src/core/threadkey.js";
 import { getAssistantName } from "../../src/core/identity.js";
 import { listProjects, forgetProject, upsertProject } from "../../src/store/projects.js";
 import { listSchedules } from "../../src/store/schedules.js";
@@ -1181,6 +1183,8 @@ class HttpBridge implements Channel, Observer {
               ? "write"
               : pathname === "/session-name" && method === "POST"
                 ? "write"
+              : pathname === "/session-archive" && method === "POST"
+                ? "write"
               : pathname === "/set-default-profile" && method === "POST"
                 ? "write"
               : pathname === "/set-session-profile" && method === "POST"
@@ -1997,6 +2001,14 @@ class HttpBridge implements Channel, Observer {
             ...(t.model !== null ? { model: t.model } : {}),
             ...(preview !== undefined ? { preview } : {}),
             ...(t.name !== null ? { name: t.name } : {}),
+            // ★표시명은 **서버가 정한다** — 클라가 각자 파생하면 같은 세션이 채널마다
+            //  다른 이름으로 보인다(실제로 그랬다: 대시보드 `세션3` vs 텔레그램 생키).
+            displayName: sessionDisplayName(
+              t.threadKey,
+              t.name,
+              // ★*첫* 발화다(최근 아님) — 최근으로 파생하면 이름이 매 턴 바뀐다.
+              getFirstUserText(t.threadKey),
+            ),
             modelProfile: modelProfile ?? null,
           };
         });
@@ -2549,6 +2561,45 @@ class HttpBridge implements Channel, Observer {
             ? null
             : nameIn.trim().slice(0, 60);
         writeJson(res, 200, { ok: true, threadKey, name: normName });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /session-archive — 세션 보관/복원. ★비파괴(archived_at 만 세팅, 대화 기록 보존).
+    //
+    // ★왜 필요했나 (2026-08-03): 대시보드의 "탭 닫기" 는 **브라우저 localStorage**
+    //  (`dash.closedTabs.v1`)에만 기록됐다. 그런데 탭바는 서버 세션 목록에서 안 열린 것을
+    //  자동으로 되살리므로(`refreshSessionPreviews`), 다른 브라우저·기기·캐시 정리 뒤엔
+    //  **닫은 세션이 그대로 다시 올라왔다** — 사용자가 본 "세션이 계속 생긴다".
+    //  서버엔 이미 `archived_at` 과 `/sessions archive` 명령이 있었는데, 대시보드가 같은
+    //  판단을 로컬로 **따로** 구현하고 있었다(같은 판단이 두 곳 = 반드시 갈린다).
+    //  body { threadKey, archived: boolean }. 기본 세션은 보관 불가(닫을 수 없는 홈).
+    if (pathname === "/session-archive" && method === "POST") {
+      let abody: Record<string, unknown>;
+      try {
+        abody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const threadKey =
+        typeof abody.threadKey === "string" ? abody.threadKey.trim() : "";
+      if (threadKey === "") {
+        writeJson(res, 400, { error: "threadKey required" });
+        return;
+      }
+      if (threadKey === DEFAULT_SESSION_ID) {
+        writeJson(res, 400, { error: "기본 세션은 보관할 수 없습니다" });
+        return;
+      }
+      const archived = abody.archived !== false; // 미지정 = 보관.
+      try {
+        setThreadArchived(threadKey, archived ? Date.now() : null);
+        writeJson(res, 200, { ok: true, threadKey, archived });
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });

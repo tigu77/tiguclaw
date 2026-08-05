@@ -888,6 +888,67 @@
         return { name: name || "?" }; // 파싱 실패해도 스킬 스텝임은 배지로 확실히.
       }
 
+      // 스텝 한 줄 append 공통 — 최신 스텝 팔로우 + 개수 + 셰브런. bounded(.bg-job-steps
+      // max-height) 영역이라 append 전 바닥 근처였으면 append 후 바닥으로(최신 스텝 노출).
+      // 위로 올려 과거 스텝을 읽는 중이면 존중(yank 금지) = 채팅 stickBottom 과 동형. 임계 24px.
+      const appendJobStep = (entry, line) => {
+        const stepsEl = entry.stepsEl;
+        const nearBot = stepsEl.scrollHeight - stepsEl.scrollTop - stepsEl.clientHeight < 24;
+        stepsEl.appendChild(line);
+        entry.stepCount += 1;
+        if (nearBot) stepsEl.scrollTop = stepsEl.scrollHeight;
+        updateChev(entry);
+      };
+
+      // ── 매니저 스티어 스텝 (2026-08-05, ADR 2026-08-03-steer-observability) ──────────
+      // 돌고 있는 매니저에 얹은 추가 지시를 그 잡 카드 타임라인에 쌓는다. ★이름(label)은
+      // 건드리지 않는다 — 덮어쓰면 원래 의도가 사라진다. "무엇이 바뀌었나"는 타임라인이
+      // 답할 일이고, 그래야 원래 의도와 변경이 **둘 다** 남는다.
+      // 전달 못 된 시도(closed/absent)도 같은 자리에 남긴다 — 유실이야말로 사후에 봐야 할 값.
+      const STEER_OUTCOME_NOTE = {
+        closed: "매니저가 막 끝나 반영 안 됨",
+        absent: "전달 실패 — 이미 종료되었거나 스티어 비활성",
+        "other-session": "다른 대화의 매니저라 전달하지 않음",
+        "no-target": "대상 매니저를 찾지 못함",
+      };
+      const handleWorkerSteered = (p, ts) => {
+        // 대상을 못 고른 시도(no-target)는 붙일 카드가 없다 — events 기록으로만 남는다
+        // (사후 집계용). 카드를 지어내지 않는다(없는 잡을 만들면 그게 유령이다).
+        if (!p.jobId) return;
+        // 카드도 없고 라벨도 없으면 = 서버도 그 잡을 더는 모른다(프루닝된 옛 jobId 로의 스티어).
+        // 여기서 카드를 만들면 "(작업)" 유령이 하나 생긴다 — 지어낼 근거가 없으면 그리지 않는다.
+        if (!jobCards.has(p.jobId) && !p.label) return;
+        const entry = ensureJobCard(p.jobId, {
+          ts, label: p.label, threadKey: p.threadKey, ownerThreadKey: p.ownerThreadKey, kind: p.kind,
+        });
+        // dedup — SSE replay 가 같은 스티어를 재전송해도 한 줄만(활동 스텝 dedup 과 동형).
+        // 스티어엔 어댑터 seq 가 없으므로 시각+원문으로 판정.
+        const key = "steer␟" + (p.ts || ts || "") + "␟" + (p.message || "");
+        if (entry.seenSteps.has(key)) return;
+        entry.seenSteps.add(key);
+        const line = document.createElement("div");
+        line.className = "bg-step";
+        const icon = document.createElement("span");
+        icon.className = "bg-step-icon"; icon.textContent = "💬";
+        const lab = document.createElement("span");
+        lab.className = "bg-step-label bg-steer"; lab.textContent = "지시 추가";
+        line.appendChild(icon); line.appendChild(lab);
+        if (p.message) {
+          const d = document.createElement("span");
+          d.className = "bg-step-detail"; d.textContent = p.message;
+          line.appendChild(d);
+        }
+        const note = STEER_OUTCOME_NOTE[p.outcome];
+        if (note) {
+          const n = document.createElement("span");
+          n.className = "bg-step-detail bg-steer-miss"; n.textContent = "(" + note + ")";
+          line.appendChild(n);
+        }
+        appendJobStep(entry, line);
+        scheduleAgentsRender(); // 에이전트 뷰가 열려 있으면 거기 단계 목록에도 반영(throttle).
+        scheduleProjectAgentsRender();
+      };
+
       const handleWorkerActivity = (p, ts) => {
         const tk = typeof p.threadKey === "string" ? p.threadKey : "";
         let jobId = null;
@@ -926,14 +987,7 @@
         // 리치 diff(Edit/Write)가 스텝 시작 payload 에 실려 오면 보관 + 펼침 affordance 배선.
         // 자동 펼치지 않음(기본 접힘) — 클릭 시에만 buildDiffBlock 으로 렌더.
         if (p.diff && Array.isArray(p.diff.lines)) { line._diff = p.diff; ensureStepExpandable(line); }
-        // 최신 스텝 팔로우 — bounded(.bg-job-steps max-height) 영역이라 append 전 바닥 근처였으면
-        // append 후 바닥으로(최신 스텝 노출). 위로 올려 과거 스텝을 읽는 중이면 존중(yank 금지) =
-        // 채팅 stickBottom 과 동형. 임계 24px.
-        const _stepsEl = entry.stepsEl;
-        const _stepsNearBot = _stepsEl.scrollHeight - _stepsEl.scrollTop - _stepsEl.clientHeight < 24;
-        _stepsEl.appendChild(line);
-        entry.stepCount += 1;
-        if (_stepsNearBot) _stepsEl.scrollTop = _stepsEl.scrollHeight;
+        appendJobStep(entry, line);
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
           const lbl = skill ? "🛠 스킬: " + skill.name : (p.label || p.kind || "활동");

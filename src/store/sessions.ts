@@ -1085,6 +1085,47 @@ export interface ThreadSummary {
 /** 이 개수 이하의 메시지만 있는 무명 스레드 = 대화가 아닌 흔적(프로브·헬스체크). */
 const PROBE_MESSAGE_MAX = 2;
 
+/** 발췌 파생 길이 — 대시보드가 쓰던 16자와 같게(양쪽이 같은 이름을 보여야 한다). */
+export const SESSION_NAME_DERIVE_MAX = 16;
+
+/**
+ * 세션 표시명 — **채널 무관 단일 규칙**(2026-08-02).
+ *
+ * 종전엔 같은 세션이 채널마다 다른 이름으로 보였다: 대시보드는 `세션3`(브라우저
+ * localStorage 번호), 텔레그램 `/sessions` 는 `dashboard:1784104932394-f791d2b408d6`
+ * (키 원문 — `nameOf` 가 `이름 ?? id` 였다). **세션 정체성이 채널 로컬 상태**에 있었던 것
+ * 이라 원칙 4(다채널 단일 인격) 위반이었고, 사용자 눈엔 "이름 없는 세션" 으로 보였다.
+ *
+ * 규칙 하나: **기본 세션 > 사용자가 붙인 이름 > 첫 대화 발췌 > 폴백(대화 없음)**.
+ * 새 상태를 만들지 않는다 — 대시보드가 *남의* 세션을 탭으로 띄울 때 쓰던 파생과 같은
+ * 규칙이라, 흩어져 있던 판정을 여기로 올린 것뿐이다.
+ *
+ * ★발췌는 **첫** 발화다(최근 아님). 처음엔 `preview`(최근 1건)로 넣었다가 배포 직후
+ *  라이브에서 틀린 게 보였다 — 기본 세션이 `돌쇠 재시작 완료! ✅` 로 뜨고 **매 턴 이름이
+ *  바뀌었다.** 이름은 정체성이라 안정적이어야 한다.
+ *
+ * @param fallback 대화가 하나도 없을 때 쓸 라벨(대시보드의 `세션N` 등). 없으면 키.
+ */
+export const sessionDisplayName = (
+  threadKey: string,
+  name: string | null | undefined,
+  preview: string | null | undefined,
+  fallback?: string,
+): string => {
+  // 기본 세션은 고정 라벨 — 여기 없으면 소비자마다 따로 특수처리하게 되고(실제로
+  // `/sessions` 만 갖고 있었다), 대시보드에선 첫 발화로 파생돼 서로 달라진다.
+  if (threadKey === DEFAULT_SESSION_ID) return "기본 세션";
+  const custom = name?.trim();
+  if (custom !== undefined && custom !== "") return custom;
+  const from = preview?.replace(/\s+/g, " ").trim();
+  if (from !== undefined && from !== "") {
+    return from.length > SESSION_NAME_DERIVE_MAX
+      ? `${from.slice(0, SESSION_NAME_DERIVE_MAX)}…`
+      : from;
+  }
+  return fallback !== undefined && fallback !== "" ? fallback : threadKey;
+};
+
 export const listThreads = (opts?: {
   prefix?: string;
   excludeInternal?: boolean;

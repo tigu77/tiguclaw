@@ -507,8 +507,19 @@
         try { const a = JSON.parse(localStorage.getItem(CLOSED_LS) || "[]"); return new Set(Array.isArray(a) ? a : []); }
         catch { return new Set(); }
       };
+      // ★닫기는 **서버가 정본**이다 (2026-08-03). 종전엔 localStorage 에만 기록해서, 탭바가
+      //  서버 목록에서 안 열린 세션을 되살릴 때 **다른 브라우저·기기·캐시 정리 뒤엔 닫은
+      //  세션이 그대로 다시 올라왔다**(사용자 증상: "세션이 계속 생긴다"). 서버엔 이미
+      //  `archived_at` 과 `/sessions archive` 가 있었는데 같은 판단을 여기서 또 하고 있었다.
+      //  로컬 기록은 **낙관적 반영**으로만 남긴다 — 요청이 실패해도 이 탭에선 닫힌 채로
+      //  보이고(체감 즉시), 다음 폴에서 서버 상태로 수렴한다.
       const markClosed = (tk) => {
         try { const s = loadClosedSet(); s.add(tk); localStorage.setItem(CLOSED_LS, JSON.stringify([...s])); } catch {}
+        fetch("/api/session-archive", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ threadKey: tk, archived: true }),
+        }).catch((e) => console.warn("session-archive 실패(로컬만 반영):", e && e.message ? e.message : e));
       };
       let openTabs = [];       // [{ threadKey, name, preview?, channel? }]
       let sessionSeq = 0;

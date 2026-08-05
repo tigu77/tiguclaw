@@ -141,7 +141,7 @@ embeddings · `response_format` 스키마 강제.
 두 모드 다 OpenAI 호환이라 **코드 수정 0**으로 전환된다. 앱엔 항상 env 두 벌을 준비:
 ```bash
 # dev — tiguclaw 게이트웨이(무료·로컬)
-OPENAI_BASE_URL=http://127.0.0.1:3000/v1
+OPENAI_BASE_URL=http://127.0.0.1:7011/v1   # HTTP_BRIDGE_PORT (기본 7011)
 OPENAI_API_KEY=<LLM_GATEWAY_TOKEN>
 OPENAI_MODEL=codex:gpt-5.5
 

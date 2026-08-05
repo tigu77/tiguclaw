@@ -1167,6 +1167,34 @@ export const runClaude = async (
           : undefined;
       if (nestedEntry === undefined) {
         const event = msg.event;
+        // ★호출 단위 usage 의 **최종값**은 여기 있다 (2026-08-05, SDK 0.3 업그레이드 부작용).
+        //  0.1.77 에선 `assistant` 메시지 usage 가 완료 시점 값이었는데, 0.3 은 그 자리에
+        //  **`message_start` 스냅샷**을 싣는다 — `output_tokens: 1`(플레이스홀더)이다.
+        //  그걸 그대로 쓰던 아래 assistant 분기 때문에 **모든 턴의 outputTokens 가 1 로
+        //  붕괴**했다(실측: 라이브 turn_done outputTokens=1, 벤치 중앙값 1 — 업그레이드 전
+        //  같은 태스크는 1,221). 비용·/status·프리픽스 캐시 관측이 동시에 죽는 값이다.
+        //  최종값은 `message_delta.usage`(output_tokens=215 실측) — 호출마다 한 번 온다.
+        //  타입 이름은 그대로인데 **의미가 바뀐** 경우라 타입체크·회귀·한 턴 성공이 전부
+        //  통과했다(ADR 2026-08-03-sdk-drift §3 이 경고한 바로 그 부류).
+        if (
+          event &&
+          typeof event === "object" &&
+          (event as { type?: unknown }).type === "message_delta"
+        ) {
+          const u = (event as { usage?: Record<string, unknown> }).usage;
+          if (u !== undefined && typeof u.output_tokens === "number") {
+            const num = (k: string): number =>
+              typeof u[k] === "number" ? (u[k] as number) : 0;
+            lastCallUsage = {
+              input:
+                num("input_tokens") +
+                num("cache_read_input_tokens") +
+                num("cache_creation_input_tokens"),
+              cacheRead: num("cache_read_input_tokens"),
+              output: u.output_tokens,
+            };
+          }
+        }
         if (
           event &&
           typeof event === "object" &&
@@ -1336,15 +1364,20 @@ export const runClaude = async (
             };
           }
         )?.usage;
+        // ★**폴백 전용**이다 (2026-08-05) — SDK 0.3 에선 이 usage 가 `message_start`
+        //  스냅샷(`output_tokens: 1`)이라 최종값이 아니다. 최종값은 위 stream_event
+        //  `message_delta` 가 채운다. 여기선 output 을 **덮지 않고**, message_delta 를
+        //  못 본 경우(부분 스트리밍 미사용 경로)에만 입력 축을 채운다.
         if (u !== undefined && typeof u.input_tokens === "number") {
+          const input =
+            u.input_tokens +
+            (u.cache_read_input_tokens ?? 0) +
+            (u.cache_creation_input_tokens ?? 0);
           lastCallUsage = {
-            // 이 호출이 실제로 먹은 입력 = 비캐시 증분 + 캐시 읽기 + 캐시 생성.
-            input:
-              u.input_tokens +
-              (u.cache_read_input_tokens ?? 0) +
-              (u.cache_creation_input_tokens ?? 0),
+            input,
             cacheRead: u.cache_read_input_tokens ?? 0,
-            output: u.output_tokens ?? 0,
+            // 이미 message_delta 가 실제 출력량을 넣었으면 그걸 지키고, 없을 때만 스냅샷.
+            output: lastCallUsage?.output ?? u.output_tokens ?? 0,
           };
         }
       }

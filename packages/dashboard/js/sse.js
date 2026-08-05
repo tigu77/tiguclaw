@@ -309,6 +309,15 @@
           renderCompacted(ev.payload || {}, ev.ts);
           return;
         }
+        // 매니저 스티어(2026-08-05) — worker.* 접두사지만 **상태 전이가 아니다**(잡은 계속
+        // running). 아래 generic 분기로 흘리면 status 없는 payload 가 "running" 으로 해석돼
+        // 잡 상태를 건드리므로, 그 앞에서 타임라인 스텝으로 가로챈다.
+        if (ev.type === "worker.steered") {
+          const p = ev.payload || {};
+          if (p.ts == null) p.ts = ev.ts; // 숫자 ts — dedup 키(llm.activity 동형).
+          handleWorkerSteered(p, ts);
+          return;
+        }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {
           handleWorkerEvent(ev.payload || {}, ts);
           return;

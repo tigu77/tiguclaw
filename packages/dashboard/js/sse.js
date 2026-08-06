@@ -335,6 +335,21 @@
           handleWorkerSteered(p, ts);
           return;
         }
+        // ★서브에이전트가 도구를 한 번도 안 쓰고 끝났다 — 품질 신호(생애주기 아님).
+        //  실측(2026-08-07): 파일을 읽으라 시켰는데 5초/도구 0회로 값을 지어냈다. 정상 건은
+        //  9~30회 쓴다. 단정하지 않고 **보고 있는 세션에만** 한 줄 남긴다(사람이 결과를
+        //  의심해야만 알던 것을 표면으로).
+        if (ev.type === "llm.agent_no_tools") {
+          const p = ev.payload || {};
+          if (isActiveThread(p.threadKey)) {
+            renderLocalChat(
+              "info",
+              `⚠️ 서브에이전트 '${p.agentName || "agent"}' 가 도구를 한 번도 쓰지 않고 끝났습니다` +
+                ` (반환 ${p.resultChars ?? "?"}자). 파일·명령 실행이 필요한 지시였다면 결과를 확인해 주세요.`,
+            );
+          }
+          return;
+        }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {
           handleWorkerEvent(ev.payload || {}, ts);
           return;

@@ -854,9 +854,12 @@
         // `mcp__workers__run_in_background`(접미사 매칭으로 흡수). 클릭 시 드로어를 열고, jobId 가
         // 있으면(claude native Task) 그 잡카드로 스크롤·하이라이트(그 외는 graceful = 드로어 열기만).
         const spawnLabel = p.label || "";
+        // ★서브에이전트 도구 이름은 상류 SDK 가 바꾼다(0.3 에서 Task→Agent). 구 이름만 보면
+        //  잡카드 점프가 조용히 죽는다 — 실제로 그랬다(2026-08-07). 둘 다 받는다.
         if (
           p.jobId ||
           spawnLabel === "Task" ||
+          spawnLabel === "Agent" ||
           spawnLabel.endsWith("spawn_agent") ||
           spawnLabel.endsWith("run_in_background")
         ) {

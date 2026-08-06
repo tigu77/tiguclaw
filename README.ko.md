@@ -13,7 +13,7 @@
 ## 뭘 하나
 
 - **Claude Code 의 모든 것** — 파일 읽기 / 쓰기 / 편집, 쉘 실행, 웹 검색, 스킬, 서브에이전트, 훅, 슬래시 명령, 영구 메모리… 그 위에 더.
-- **여러 LLM, 하나의 비서** — `anthropic`·`openai`·`codex`(ChatGPT)·`ollama`(로컬)·`google`(Gemini)을 `provider:model` 한 줄로 섞어 쓴다. 바꿔도 능력은 그대로.
+- **여러 LLM, 하나의 비서** — `anthropic`·`openai`·`codex`(ChatGPT)·`ollama`(로컬)·`google`(Gemini)이 기본으로 들어 있고, **OpenAI 호환 엔드포인트라면 무엇이든**(OpenRouter·Groq·vLLM·직접 띄운 것) 설정 세 줄로 붙는다. `provider:model` 한 줄로 섞어 쓰고, 바꿔도 능력은 그대로.
 - **항상 켜짐** — 백그라운드 서비스로 상시 실행, 죽으면 스스로 재시작.
 - **부탁하면 스스로 업데이트** — "업데이트해줘" 한마디(또는 `/update`)면 최신 코드를 받아 재시작하고, 다 되면 알려준다. 손으로 `git pull` 할 필요 없음. 기억·세션은 그대로 이어지고, 새 코드가 실행 가능하게 빌드되지 않으면 이전 버전으로 롤백해 계속 돌아간다.
 - **텍스트 말고 버튼으로 묻는다** — 고르라고 할 때 누를 수 있는 보기를 띄운다(텔레그램·대시보드는 버튼, CLI는 번호). 어느 채널이든 똑같이.
@@ -107,6 +107,35 @@ npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스
 | **Claude 구독** | Claude Pro/Max 구독 사용 — `claude setup-token` 실행 (API 키 불필요, 종량 과금 없음). |
 | **OpenAI API 키** | platform.openai.com — 종량제. |
 | **codex (ChatGPT 구독)** | 설치 후 `npm run codex-auth` 로 로그인. |
+| **OpenAI 호환이면 무엇이든** | OpenRouter·Groq·Together·vLLM·직접 띄운 엔드포인트 — 코드 없이 `settings.json` 에 적으면 된다. 아래 참고. |
+
+#### OpenAI 호환 provider 붙이기
+
+OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 된다. 어댑터를 짜는 게 아니라
+세 줄을 적는다. `<home>/settings.json` 에 이렇게 넣는다:
+
+```json
+{
+  "models": {
+    "providers": {
+      "openrouter": {
+        "adapter": "openai",
+        "baseURL": "https://openrouter.ai/api/v1",
+        "apiKeyEnv": "OPENROUTER_API_KEY"
+      }
+    }
+  }
+}
+```
+
+`.env` 에 `OPENROUTER_API_KEY` 를 넣으면, 모델 이름을 쓰는 자리 어디서나 쓸 수 있다 —
+`openrouter:anthropic/claude-sonnet-5` 처럼 직접 지정하거나, 모델 프로파일 풀에 넣거나,
+폴백 대상으로 두거나. OpenRouter 하나만 붙여도 수백 개 모델이 한 줄 거리에 들어온다.
+
+몇 가지: 키는 환경변수에 있고 파일에는 안 들어간다(`apiKeyEnv` 는 변수 *이름*이다).
+빌트인 provider 이름은 덮어쓸 수 없다 — 여기에 `anthropic` 을 적어도 무시되므로, 설정 하나가
+믿고 쓰던 이름을 조용히 다른 데로 돌리는 일이 없다. `adapter` 가 `openai`·`claude`·
+`codex-oauth` 가 아니면 어중간하게 도는 대신 거부된다.
 
 ### 키·토큰 발급 가이드
 

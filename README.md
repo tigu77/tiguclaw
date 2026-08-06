@@ -13,7 +13,7 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 ## What it does
 
 - **Everything Claude Code can do** — read / write / edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory… and more on top.
-- **Many LLMs, one assistant** — mix `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) with a single `provider:model` line. Switch freely; same abilities everywhere.
+- **Many LLMs, one assistant** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) ship built in, and **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM, your own) drops in with three lines of config. Mix them with a single `provider:model` line; switch freely, same abilities everywhere.
 - **Always on** — runs as a background service and restarts itself if it ever dies.
 - **Updates itself on request** — just ask it to update (or send `/update`). It pulls the latest, restarts, and pings you when it's back — no manual `git pull`. Your memory and sessions carry over, and if an update can't produce runnable code it rolls back and keeps running the previous version.
 - **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
@@ -107,6 +107,35 @@ If the dashboard isn't there, the usual cause is a missing `HTTP_BRIDGE_TOKEN` �
 | **Claude subscription** | Use your Claude Pro/Max plan — run `claude setup-token` (no API key, no per-token billing). |
 | **OpenAI API key** | platform.openai.com — pay-as-you-go. |
 | **codex (ChatGPT subscription)** | After install, run `npm run codex-auth` to log in. |
+| **Anything OpenAI-compatible** | OpenRouter, Groq, Together, vLLM, your own endpoint — add it in `settings.json`, no code. See below. |
+
+#### Adding an OpenAI-compatible provider
+
+Any endpoint that speaks the OpenAI API works as a first-class provider — you don't
+write an adapter, you write three lines. Put this in `<home>/settings.json`:
+
+```json
+{
+  "models": {
+    "providers": {
+      "openrouter": {
+        "adapter": "openai",
+        "baseURL": "https://openrouter.ai/api/v1",
+        "apiKeyEnv": "OPENROUTER_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Then set `OPENROUTER_API_KEY` in your `.env` and use it anywhere a model is named:
+`openrouter:anthropic/claude-sonnet-5`, in a model profile pool, as a fallback target.
+OpenRouter alone puts a few hundred models one line away.
+
+Notes: the key lives in your environment, never in the file (`apiKeyEnv` is the variable
+*name*). Built-in provider names can't be redefined — writing `anthropic` here is ignored,
+so a stray config can't quietly reroute a trusted name somewhere else. An `adapter` other
+than `openai`, `claude`, or `codex-oauth` is rejected rather than half-working.
 
 ### Getting your keys & tokens
 

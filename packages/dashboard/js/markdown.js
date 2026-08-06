@@ -66,6 +66,67 @@
         } catch {}
       };
 
+      // ★코드블록 복사 버튼 (2026-08-06 사용자 요청) — 명령어를 손으로 긁어 옮기던 것.
+      //  클릭 핸들러는 **위임 하나**로 끝낸다(아래 installCodeCopy). 블록마다 리스너를 달면
+      //  채팅 가상화가 DOM 을 끊임없이 만들고 지우므로 그만큼 누수한다.
+      //  대상은 `pre > code` 뿐 — 인라인 `code` 에는 안 붙인다(문장 중간에 버튼이 뜬다).
+      const decorateCodeBlocks = (root) => {
+        try {
+          root.querySelectorAll("pre").forEach((pre) => {
+            if (!pre.querySelector("code")) return;
+            if (pre.querySelector(":scope > .code-copy")) return; // 멱등(재렌더 안전).
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "code-copy";
+            btn.title = "복사";
+            btn.textContent = "복사";
+            pre.appendChild(btn);
+            pre.classList.add("has-copy");
+          });
+        } catch {}
+      };
+      // 위임 클릭 — 문서에 1회만 설치. 클립보드 API 는 보안 컨텍스트에서만 있으므로
+      // (127.0.0.1·https 는 OK, 평문 LAN IP 접속은 아님) 실패 시 textarea 폴백으로 내려간다.
+      // ★조용히 실패하지 않는다 — 못 하면 버튼이 "실패" 를 말한다.
+      let codeCopyInstalled = false;
+      const installCodeCopy = () => {
+        if (codeCopyInstalled) return;
+        codeCopyInstalled = true;
+        document.addEventListener("click", (e) => {
+          const btn = e.target && e.target.closest && e.target.closest(".code-copy");
+          if (!btn) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const pre = btn.closest("pre");
+          const code = pre && pre.querySelector("code");
+          if (!code) return;
+          const text = code.textContent || "";
+          const done = (ok) => {
+            btn.textContent = ok ? "복사됨" : "실패";
+            btn.classList.toggle("ok", ok);
+            setTimeout(() => { btn.textContent = "복사"; btn.classList.remove("ok"); }, 1400);
+          };
+          const fallback = () => {
+            try {
+              const ta = document.createElement("textarea");
+              ta.value = text;
+              ta.setAttribute("readonly", "");
+              ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+              document.body.appendChild(ta);
+              ta.select();
+              const ok = document.execCommand("copy");
+              document.body.removeChild(ta);
+              done(ok);
+            } catch { done(false); }
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => done(true), fallback);
+          } else {
+            fallback();
+          }
+        });
+      };
+
       const renderMarkdown = (src) => {
         // marked·sanitize 실패 시 평문 폴백(happy-path 금지).
         return sanitizeMarkdownHtml(
@@ -80,6 +141,10 @@
             msgEl.innerHTML = renderMarkdown(src);
             msgEl.classList.add("md");
             highlightCodeBlocks(msgEl); // 코드블록 언어별 하이라이팅.
+            // ★하이라이팅 **뒤에** 붙인다 — hljs.highlightElement 는 code 안만 건드리지만,
+            //  버튼을 code 밖(pre 직속)에 두므로 순서가 뒤바뀌어도 안전하게 하려는 것도 겸한다.
+            decorateCodeBlocks(msgEl);
+            installCodeCopy();
             return;
           } catch (e) {
             // 폴백: 평문.

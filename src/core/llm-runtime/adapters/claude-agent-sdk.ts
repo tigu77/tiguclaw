@@ -119,6 +119,7 @@ import {
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
+import { isSubagentTool } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 
 // ★claude 도구 천장 (2026-07-29 검토) — SDK 는 `MCP_TOOL_TIMEOUT` 미설정 시 1e8ms
@@ -1082,6 +1083,40 @@ export const runClaude = async (
     const entry = taskJobs.get(taskId);
     if (entry === undefined) return;
     taskJobs.delete(taskId);
+    // ★**도구 한 번 안 쓰고 끝난 서브에이전트**를 표시한다 (2026-08-07 실측 3건).
+    //  실측: 파일을 읽으라고 시켰는데 5초 만에 도구 0회로 그럴듯한 값을 지어냈고(실제
+    //  0.18.0 인데 "0.5.5"), 40초 대기를 시키자 17초에 백그라운드로 던지고 "완료되면
+    //  알려드리겠습니다" 로 끝냈다. 07-30 news-researcher 도 84초/0회로 같은 모양이다.
+    //  정상 건은 내부 도구를 9~30회 쓴다 — `seq === 0` 은 "일을 안 했다" 의 좋은 대리 지표다.
+    //  ★단정하지 않는다: 요약·판단만 시키면 도구 0회가 정상이다. 그래서 실패로 닫지 않고
+    //   **신호만** 남긴다(사람이 결과를 읽고 의심해야만 알던 것을 표면으로 올린다).
+    //  비용 0 — 이미 세고 있는 값이다.
+    if (entry.seq === 0 && !isError) {
+      console.warn(
+        `[agent-no-tools] ${input.threadKey} 서브에이전트 '${entry.agentName}' 가 ` +
+          `도구를 **한 번도 쓰지 않고** 끝났습니다(내부 스텝 0). 지시가 파일·명령 실행을 ` +
+          `요구했다면 결과가 지어낸 것일 수 있습니다 — 반환 ${resultText.length}자.`,
+      );
+      try {
+        bus.publish({
+          // ★`worker.` 접두를 **쓰지 않는다** — sse.js 는 worker.* 를 타입 없이
+          //  handleWorkerEvent(payload) 로 넘기는 블라인드 라우팅이라, 상태 없는 페이로드가
+          //  카드 상태를 건드릴 수 있다. 이건 잡 생애주기가 아니라 *품질 신호*다.
+          type: "llm.agent_no_tools",
+          ts: Date.now(),
+          payload: {
+            channel: input.channel,
+            threadKey: input.threadKey,
+            jobId: entry.jobId,
+            agentName: entry.agentName,
+            task: entry.task.slice(0, 200),
+            resultChars: resultText.length,
+          },
+        });
+      } catch {
+        /* best-effort — 관측 실패가 완료 처리를 무르지 않는다 */
+      }
+    }
     clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — 종료된 Task 를 취소하려는 늦은 시도 무효화.
     try {
       if (isError) {
@@ -1491,13 +1526,16 @@ export const runClaude = async (
               // 서브 내부 도구 — agent:<jobId> 좌표 activity(codex 서브 per-step 동형).
               publishAgentToolActivity(nestedEntry, toolName, detail, diff);
             } else {
-              // 부모 top-level tool_use. name==="Task" 면 서브에이전트 spawn → 관측 잡 등록.
+              // 부모 top-level tool_use. 서브에이전트 spawn 이면 관측 잡 등록.
+              // ★도구 이름을 여기 박지 않는다 — SDK 0.3 이 `Task`→`Agent` 로 개명했는데
+              //  하드코딩이라 **잡 등록이 통째로 죽어** 백그라운드 패널이 항상 0이었다
+              //  (실측 24h: Agent 14회 / Task 0회). 판정은 subagent-tools 한 곳.
               // (nested 는 위에서 이미 분기되므로 여기 도달 = parent_tool_use_id===null 부모.)
               // 이 도구 앞까지 누적된 연속 텍스트가 있으면 kind:"text" 로 먼저 닫는다
               // (인터리브 순서 보존 — 텍스트 세그먼트가 이 도구보다 낮은 seq 를 받게).
               closeTextSegment();
               const toolUseId = (block as { id?: unknown }).id;
-              if (toolName === "Task" && typeof toolUseId === "string") {
+              if (isSubagentTool(toolName) && typeof toolUseId === "string") {
                 registerTaskJob(toolUseId, toolInput);
               }
               // claude 백그라운드 셸 관측 등록(Phase 4, best-effort) — 이 tool_use 자체는
@@ -1535,7 +1573,7 @@ export const runClaude = async (
               // 인라인 스폰 스텝 ↔ 드로어 잡 링크(2026-07-13) — Task 로 등록된 관측 잡 jobId 를
               // 이 활동에 실어 대시보드가 클릭→드로어 점프·상태 표시. (등록 실패 시 undefined.)
               const spawnJobId =
-                toolName === "Task" && typeof toolUseId === "string"
+                isSubagentTool(toolName) && typeof toolUseId === "string"
                   ? taskJobs.get(toolUseId)?.jobId
                   : undefined;
               // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).

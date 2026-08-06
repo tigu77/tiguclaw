@@ -28,6 +28,7 @@ import {
   pruneTerminalWorkerJobs,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
+import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
 import { runSubagentStopHooks } from "./entry/hook-runner.js";
 
@@ -1135,7 +1136,7 @@ export const shouldNotifyToolSlow = (tool: string): boolean =>
   // ★서브에이전트류는 푸시하지 않는다 — 오래 걸리는 게 정상이고 드로어에 스텝이 보인다.
   //  `Task`(claude 의 서브에이전트 도구)가 빠져 있어 claude 경로만 노이즈가 살아났다
   //  (2026-07-29 검토). 임계는 tool-watchdog 이 이미 같은 계층으로 묶고 있다.
-  tool !== "spawn_agent" && tool !== "Task";
+  !isSubagentTool(tool);
 
 const toolSlowNotified = new Set<string>();
 /** 메인 턴 지연 통지 — threadKey 당 1회. 턴이 끝나면 아래 구독이 지운다(다음 턴엔 다시 알림). */

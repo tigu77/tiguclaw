@@ -12,6 +12,9 @@
  * 도구 시작만 찍히고 완료 신호가 없어 "느림 vs 막힘" 구분이 안 돼 30분+ 헤맸다.
  */
 import { getEventBus } from "../eventbus.js";
+// ★도구 이름을 여기 열거하지 않는다 — 상류 SDK 가 개명하면(0.3 의 Task→Agent) 조용히
+//  죽는다. 판정은 subagent-tools 한 곳(2026-08-07 사고).
+import { isLongRunningByDesign } from "./subagent-tools.js";
 
 const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
   const n = raw === undefined || raw === "" ? NaN : Number(raw);
@@ -39,13 +42,10 @@ const toolSlowWarnDefaultMs = (): number =>
  * 실시간으로 보여 이 경고가 시키는 "확인해봐"를 사용자가 이미 다른 수단으로 한다.
  * 반대로 Bash·외부 MCP 는 그런 관측 수단이 없어 짧은 임계가 그대로 유효하다.
  */
-const OVERRIDE_MS: Readonly<Record<string, number>> = {
-  spawn_agent: 300_000,
-  Task: 300_000, // claude SDK 의 서브에이전트 도구 — spawn_agent 와 같은 계층.
-};
+const LONG_RUNNING_WARN_MS = 300_000;
 
 export const toolSlowWarnMs = (tool: string): number =>
-  OVERRIDE_MS[tool] ?? toolSlowWarnDefaultMs();
+  isLongRunningByDesign(tool) ? LONG_RUNNING_WARN_MS : toolSlowWarnDefaultMs();
 
 /**
  * ★**하드 상한 — 여기서는 끊는다** (2026-08-06, 회사 PC 로그 실측).
@@ -71,10 +71,10 @@ const toolHardMs = (): number =>
  * 하드 상한에서 **제외**되는 도구 — 자기 상한을 이미 가진 것들.
  * 서브에이전트는 `SUBAGENT_TIMEOUT_MS`(기본 2시간)로 스스로 끊는다. 여기서 13분에 자르면
  * **정상적인 장시간 위임을 죽인다**(실측: 완료 서브 138건 평균 124초·최대 627초지만 상한은
- * 시간 단위). 위 `OVERRIDE_MS`(느림 경고 완화 대상)와 같은 명단인 것은 우연이 아니다 —
+ * 시간 단위). 느림 경고 완화와 같은 판정을 쓰는 것은 우연이 아니다 —
  * "오래 걸리는 게 정상" 이라는 같은 사실의 두 얼굴이다.
  */
-const hardExempt = (tool: string): boolean => tool in OVERRIDE_MS;
+const hardExempt = (tool: string): boolean => isLongRunningByDesign(tool);
 
 export interface ToolWatchInput {
   readonly channel: string;

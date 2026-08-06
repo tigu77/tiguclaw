@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-07
+### Added
+- **코드 블록에 복사 버튼.** 비서가 알려준 명령어를 마우스로 긁을 필요 없이 한 번에 복사합니다.
+- **일하지 않은 서브에이전트를 알려줍니다.** 위임한 작업이 파일도 안 읽고 명령도 안 돌린 채 끝나면 화면에 표시합니다 — 그럴듯한 답이 사실은 지어낸 것일 수 있어서입니다. 실패로 단정하지는 않습니다(요약처럼 도구가 필요 없는 일도 있으니까요).
+
+### Fixed
+- **백그라운드 작업 패널이 늘 비어 있던 것을 고쳤습니다.** 서브에이전트를 띄워도 "진행 중 0" 이었습니다 — 코어 SDK 가 그 도구의 이름을 바꿨는데 우리가 옛 이름을 찾고 있었습니다. 같은 이름이 네 곳에 흩어져 있어서 진행 표시·경고 임계·**작업 강제 종료 면제**·화면 링크가 한꺼번에 죽어 있었고, 특히 면제가 빠져 **정상적인 긴 위임이 13분에 끊길 수 있었습니다**.
+- **윈도우에서 데몬 중지·재시작이 거짓 성공을 보고하던 것을 고쳤습니다.** `중지 완료` 라고 하고선 실제로는 살아 있어, 이어지는 업데이트가 파일 잠금으로 실패했습니다. 포트 대신 프로세스 자체로 찾고, 종료를 확인한 뒤에만 성공이라고 말합니다.
+
 ## [0.18.0] - 2026-08-06
 ### Added
 - **도구가 멈추면 알려줍니다.** 종전에는 도구 호출이 응답 없이 멈춰도 화면에 "작업 중" 만 계속 돌아, 느린 건지 멈춘 건지 알 수단이 없었습니다(실측: 39분 동안 아무 신호 없음). 이제 3분 넘게 응답이 없으면 대시보드에 표시되고, 텔레그램으로 대화 중이었다면 그쪽으로도 알립니다.
@@ -931,7 +940,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/tigu77/tiguclaw/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tigu77/tiguclaw/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/tigu77/tiguclaw/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/tigu77/tiguclaw/compare/v0.15.0...v0.16.0

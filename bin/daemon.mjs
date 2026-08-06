@@ -503,10 +503,62 @@ const winListeningPids = (c) => {
   return [...pids];
 };
 
-/** @param {Ctx} c */
+/**
+ * 명령줄로 이 인스턴스의 데몬 PID 를 찾는다 — **포트 탐지의 보완**.
+ *
+ * ★왜 필요한가 (2026-08-06, 두 기계에서 각각 실측): 포트로만 찾으면 (a) 다른 앱이 그 포트를
+ *  선점했거나(실제로 Steam 이 3000 을 가져갔다) (b) 데몬이 반쯤 죽어 LISTEN 을 놓았을 때
+ *  **살아 있는 프로세스를 못 찾는다**. 그런데도 stop/restart 는 `✅` 를 찍었다 — 회사 PC 에선
+ *  좀비 3개가 남아 `npm ci` 가 EPERM 으로 계속 실패했고, 집 PC 에선 restart 가 아무것도 안 한
+ *  채 성공을 보고했다. 포트는 데몬의 *증상*이지 정체가 아니다.
+ *
+ * TIGUCLAW_HOME 으로 인스턴스를 가른다 — 한 기계에 여러 인스턴스가 있어도 남의 것을 안 죽인다.
+ * @param {Ctx} c
+ * @returns {string[]}
+ */
+const winDaemonPids = (c) => {
+  const q = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
+        "Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
+    ],
+    { encoding: "utf8" },
+  );
+  /** @type {Set<string>} */
+  const pids = new Set();
+  const home = String(c.homeRaw ?? "").toLowerCase();
+  for (const l of (q.stdout ?? "").split(/\r?\n/)) {
+    const low = l.toLowerCase();
+    if (!low.includes("index.js")) continue;
+    // 이 인스턴스인지 — 홈 경로가 명령줄(VBS 가 set 으로 박는다)에 있는지로 가른다.
+    if (home !== "" && !low.includes(home)) continue;
+    const m = /^"?(\d+)"?,/.exec(l.trim());
+    if (m) pids.add(m[1]);
+  }
+  return [...pids];
+};
+
+/**
+ * 실행 중 데몬 종료 — 포트 PID + 명령줄 PID **합집합**. 반환값 = 죽인 뒤에도 남은 PID.
+ * ★호출부는 이 반환을 보고 보고해야 한다(빈 배열이어야 `✅`). 종전엔 결과를 안 보고
+ *  무조건 성공을 찍었다.
+ * @param {Ctx} c
+ * @returns {string[]}
+ */
 const winKillRunning = (c) => {
-  for (const pid of winListeningPids(c))
+  const targets = new Set([...winListeningPids(c), ...winDaemonPids(c)]);
+  for (const pid of targets)
     spawnSync("taskkill", ["/PID", pid, "/F", "/T"], { stdio: "ignore" });
+  if (targets.size === 0) return [];
+  // 종료는 비동기다 — 잠깐 기다렸다가 실제로 사라졌는지 다시 센다(거짓 성공 차단).
+  spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 900"], {
+    stdio: "ignore",
+  });
+  const still = new Set([...winListeningPids(c), ...winDaemonPids(c)]);
+  return [...still].filter((p) => targets.has(p));
 };
 
 /** @param {Ctx} c */
@@ -552,7 +604,15 @@ const winUninstall = (c) => {
 
 /** @param {Ctx} c */
 const winRestart = (c) => {
-  winKillRunning(c); // 실행 중이면 종료(bridge 포트 PID).
+  const survived = winKillRunning(c); // 포트 + 명령줄 양쪽으로 찾아 종료.
+  if (survived.length > 0) {
+    console.error(
+      `🔴 restart 실패 — 기존 데몬이 안 죽었습니다 (PID ${survived.join(", ")}). ` +
+        `새로 띄우지 않습니다(중복 기동 방지). 작업 관리자에서 그 PID 를 종료하거나 재부팅 후 다시 시도하세요.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   winLaunch(c); // 숨김 재가동.
   console.log("✅ restarted");
 };
@@ -561,7 +621,15 @@ const winRestart = (c) => {
 // 포트 미LISTEN 시 대상 못 찾을 수 있음(기존 status/restart 와 동일 한계 — ADR U3).
 /** @param {Ctx} c */
 const winStop = (c) => {
-  winKillRunning(c);
+  const survived = winKillRunning(c);
+  if (survived.length > 0) {
+    console.error(
+      `🔴 stop 실패 — 아직 살아 있습니다 (PID ${survived.join(", ")}). ` +
+        `이 상태로 npm ci·업데이트를 돌리면 파일 잠금(EPERM)으로 실패합니다.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
 };
 

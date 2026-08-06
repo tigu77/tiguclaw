@@ -423,6 +423,15 @@
       .chat-message.md code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:rgba(255,255,255,.07); padding:1px 5px; border-radius:5px; }
       .chat-message.md pre { margin:7px 0; padding:10px 12px; background:rgba(0,0,0,.32); border:1px solid var(--border); border-radius:10px; overflow-x:auto; }
       .chat-message.md pre code { display:block; background:none; padding:0; white-space:pre; line-height:1.5; }
+      /* 코드블록 복사 버튼 — 평소엔 숨고 hover/포커스에만. 스크롤(overflow-x)과 무관하게
+         블록 오른쪽 위에 고정되도록 pre 를 position:relative 로 잡는다. */
+      .chat-message.md pre.has-copy { position:relative; }
+      .code-copy { position:absolute; top:6px; right:6px; padding:2px 8px; font-size:11px; line-height:1.6;
+        color:var(--text-dim); background:var(--panel); border:1px solid var(--border); border-radius:6px;
+        cursor:pointer; opacity:0; transition:opacity .12s ease, color .12s ease; z-index:2; }
+      pre.has-copy:hover .code-copy, .code-copy:focus-visible { opacity:1; }
+      .code-copy:hover { color:var(--text); }
+      .code-copy.ok { opacity:1; color:var(--good); }
       /* highlight.js 테마 (다크, One-Dark/GitHub-dark 계열). vendored hljs 가 다는 .hljs-* 클래스 매핑. */
       .md pre code.hljs { color:var(--text); background:none; }
       .hljs-comment, .hljs-quote { color:#7d8590; font-style:italic; }

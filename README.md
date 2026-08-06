@@ -154,6 +154,13 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 - **Pause vs remove** — `daemon:stop` stops the process but keeps it registered (it still auto-starts at next login); `daemon:start` resumes it. `daemon:uninstall` removes the registration entirely.
 - **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
 
+**Teaching it your rules.** Say *"from now on, always X"* and it writes that into `AGENT.md` in your
+runtime home — its identity file, and the one place your standing instructions live. Anything there
+is loaded on **every** turn, so it can't quietly fall out of scope. Facts you only need occasionally
+(schedules, links, numbers) go to memory instead, and details about one project belong in that
+project's own folder. The rule of thumb it follows: *does this need to be there every single turn?*
+— if not, it moves the detail down and keeps a pointer.
+
 A few notes:
 
 - Your `.env` holds the bot token & LLM keys — **never commit or share it** (it's already gitignored).

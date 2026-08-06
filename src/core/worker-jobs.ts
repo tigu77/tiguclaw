@@ -1138,18 +1138,53 @@ export const shouldNotifyToolSlow = (tool: string): boolean =>
   tool !== "spawn_agent" && tool !== "Task";
 
 const toolSlowNotified = new Set<string>();
+/** 메인 턴 지연 통지 — threadKey 당 1회. 턴이 끝나면 아래 구독이 지운다(다음 턴엔 다시 알림). */
+const mainTurnSlowNotified = new Set<string>();
 let toolSlowNotifySubscribed = false;
 const subscribeWorkerToolSlowNotify = (): void => {
   if (toolSlowNotifySubscribed) return;
   toolSlowNotifySubscribed = true;
   getEventBus().subscribe((event) => {
+    // 턴이 끝나면 그 세션의 1회 마커를 푼다 — 다음 턴에서 또 멈추면 다시 알려야 한다.
+    if (event.type === "llm.turn_done" || event.type === "llm.turn_error") {
+      const doneTk =
+        typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
+      if (doneTk !== "") mainTurnSlowNotified.delete(doneTk);
+      return;
+    }
     if (event.type !== "llm.tool_slow") return;
     const tk =
       typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
-    if (!tk.startsWith("worker:")) return;
-    const jobId = tk.slice("worker:".length);
     const tool =
       typeof event.payload.tool === "string" ? event.payload.tool : "도구";
+    // ★메인 턴도 알린다 (2026-08-06) — 종전엔 워커만이라, 대화 중 도구가 멈추면 사용자에게
+    //  **아무 신호도 안 갔다**(경고는 로그에만). 회사 PC 실측: 39분 동안 화면엔 "작업 중"
+    //  만 돌고 있었고, 느린 건지 멈춘 건지 알 방법이 없었다. 대시보드는 SSE 로 이 이벤트를
+    //  직접 받아 그리므로(js/sse.js), 여기선 **화면을 안 보고 있는 채널**(텔레그램)만 민다.
+    //  턴당 1회(스팸 방지) — 잡당 1회 규칙과 동형.
+    if (!tk.startsWith("worker:")) {
+      if (!shouldNotifyToolSlow(tool)) return;
+      if (mainTurnSlowNotified.has(tk)) return;
+      const chatId = extractTelegramChatId(tk);
+      if (chatId === null) return; // 대시보드·CLI 는 화면에서 보므로 푸시 안 함(중복 방지).
+      if (mainTurnSlowNotified.size > 500) mainTurnSlowNotified.clear();
+      mainTurnSlowNotified.add(tk);
+      const secs = Math.round(
+        (typeof event.payload.ms === "number" ? event.payload.ms : 180_000) / 1000,
+      );
+      void deliverOutbound({
+        channel: "telegram",
+        target: chatId,
+        text: `⏳ 도구 '${tool}' 이(가) ${secs}초+ 응답이 없어요. 느린 것일 수도, 멈춘 것일 수도 있습니다 — 기다리시거나 \`/stop\` 으로 중단하실 수 있어요(오래 지나면 자동으로 끊깁니다).`,
+        label: "tool-slow",
+        notice: true, // 인프라 통지 — 비서 발화 아님.
+        observeThreadKey: tk,
+      }).catch(() => {
+        /* 통지 실패는 턴에 영향 0 */
+      });
+      return;
+    }
+    const jobId = tk.slice("worker:".length);
     // ★게이트는 "잡당 1회" 마커보다 **앞** — 뒤에 두면 서브에이전트 지연이 그 잡의 1회
     //  슬롯을 먹어치워, 뒤이어 진짜 막힌 Bash 가 영영 통지되지 않는다.
     if (!shouldNotifyToolSlow(tool)) return;

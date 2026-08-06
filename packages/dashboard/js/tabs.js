@@ -346,6 +346,20 @@
           const openByKey = new Map(openTabs.map((t) => [t.threadKey, t]));
           const closed = loadClosedSet();
           let changed = false;
+          // ★세션 표시명 공유 지도 갱신 (2026-08-06) — **열린 탭 여부와 무관하게 전 세션**.
+          //  여기가 유일한 채우는 곳이다(util.js sessionDisplayNames 주석 참조). 백그라운드
+          //  잡 카드가 "이 잡이 어느 세션 것인가" 를 사람이 읽는 이름으로 보여주려면 안 연
+          //  세션의 이름도 필요한데, 이 응답이 이미 그걸 들고 있으므로 추가 요청 0.
+          for (const s of sessions) {
+            if (typeof s.threadKey !== "string" || s.threadKey === "") continue;
+            const nm = (typeof s.displayName === "string" && s.displayName)
+              ? s.displayName
+              : (typeof s.name === "string" && s.name ? s.name : "");
+            if (nm !== "") sessionDisplayNames.set(s.threadKey, nm);
+          }
+          // 이름이 새로 생겼을 수 있으니 잡 카드 배지를 한 번 훑는다(끝난 잡은 이벤트가
+          // 더 안 와서 스스로 갱신되지 않는다). 드로어가 없으면 no-op.
+          if (typeof window.refreshBgSessionBadges === "function") window.refreshBgSessionBadges();
           // (1) 이미 열린 탭 — 프리뷰·채널 메타 갱신 + 이름 우선순위(§4-2): 서버 커스텀(s.name) >
           // 로컬 파생 라벨. 서버 커스텀이 사라지면(다른 클라가 지움 등) 로컬도 파생 폴백으로 복귀.
           for (const s of sessions) {

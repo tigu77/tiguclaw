@@ -585,6 +585,21 @@
       // 워커 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
       const WORKER_LABEL_PREFIX = "📦 ";
       // 잡 카드 확보(없으면 생성). label/task 는 worker.started, result 는 worker.done 이 채운다.
+      // 소속 세션 배지 갱신 — 이름을 **알 때만** 단다(멱등). ownerTk 는 lifecycle/하이드레이션이
+      // 뒤늦게 채울 수 있고, 세션 이름도 `/api/sessions` 폴 뒤에야 알려질 수 있으므로 여러 번
+      // 불린다. ★모르면 숨긴다 — 원시 좌표(`dashboard:1784…`)를 대신 보여주지 않는다(사용자에게
+      // 의미 없는 문자열이고, 그걸 이름처럼 두면 "없는 것을 지어낸" 배지가 된다).
+      const updateSessionBadge = (entry) => {
+        const el = entry && entry.sessBadgeEl;
+        if (!el) return;
+        const tk = entry.ownerTk || "";
+        const name = tk ? sessionNameFor(tk) : "";
+        if (name === "") { el.style.display = "none"; return; }
+        el.textContent = "↪ " + name;
+        el.title = "이 작업을 띄운 세션 — 눌러서 이동 (" + tk + ")";
+        el.style.display = "";
+      };
+
       const ensureJobCard = (jobId, opts) => {
         let entry = jobCards.get(jobId);
         if (!entry) {
@@ -621,6 +636,25 @@
           top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
+          // ★소속 세션 배지 (2026-08-06) — "이 잡을 어느 대화가 띄웠나". 종전엔 원시 좌표
+          //  (`dashboard:1784…`)만 있어 사람이 읽을 수 없었고, 스코프 필터로 거를 수는 있어도
+          //  전체를 볼 땐 구분이 안 됐다. 이름은 공유 해석기(서버 정본)에서 가져오고,
+          //  ★모르면 **달지 않는다** — 없는 이름을 지어내지 않는다(채널 배지 사고와 같은 규칙).
+          //  누르면 그 세션으로 이동(기존 job.jumpSession 재사용 — 우클릭 메뉴에만 있던 동작).
+          const sessBadge = document.createElement("span");
+          sessBadge.className = "bg-job-session"; sessBadge.style.display = "none";
+          sessBadge.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const tk = entry && entry.ownerTk;
+            if (tk && typeof switchToThread === "function") {
+              if (typeof openTabs !== "undefined" && !openTabs.some((t) => t.threadKey === tk)) {
+                openTabs.push({ threadKey: tk, name: sessionNameFor(tk) || deriveTabFallbackName(tk) });
+              }
+              if (typeof setActiveNav === "function") setActiveNav("chat");
+              switchToThread(tk);
+            }
+          });
+          meta.appendChild(sessBadge);
           // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개도 구분되게.
           // 전문은 펼침 영역(bg-job-task)에. task 없으면 숨김.
           const summary = document.createElement("div"); summary.className = "bg-job-summary"; summary.style.display = "none";
@@ -649,6 +683,7 @@
           updateBgJump(); // 새 카드가 위에 쌓임 — 내려본 상태면 "↑ 최신" 노출 갱신.
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
+            sessBadgeEl: sessBadge,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
@@ -667,6 +702,7 @@
             _cancelRequested: false, // 낙관 취소 요청 중(재클릭 방지) — cancelled:false/실패 시 되돌림.
           };
           entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, entry.ownerTk));
+          updateSessionBadge(entry);
           jobCards.set(jobId, entry);
           updateStopBtn(entry); // 신규 카드 기본 running → 중지 버튼 노출(worker·agent 무관).
           // 컨텍스트메뉴 트리거 — kebab(top 우측) + 우클릭 + 롱프레스(카드류, 3경로 동일 메뉴).
@@ -741,6 +777,9 @@
             entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, ownTk));
           }
         }
+        // 소속 세션 배지 — ownerTk 가 방금 왔거나, 세션 이름을 그동안 알게 됐을 수 있다
+        // (`/api/sessions` 폴은 카드 생성과 무관하게 돈다). 멱등이라 매번 불러도 무해.
+        updateSessionBadge(entry);
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
         if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
@@ -872,6 +911,11 @@
       hydrateActiveJobs();
       // 재연결마다 다시 대조 — 끊겨 있는 동안 끝난 잡이 유령으로 남지 않게(활동.js 가 부름).
       window.reconcileBgJobs = hydrateActiveJobs;
+      // 세션 이름은 `/api/sessions` 폴이 뒤늦게 알려준다(카드 생성과 무관한 주기). 그때
+      // 한 번 훑어 배지를 채운다 — 끝난 잡은 더 이상 이벤트가 안 와서 스스로는 갱신되지 않는다.
+      window.refreshBgSessionBadges = () => {
+        for (const e of jobCards.values()) updateSessionBadge(e);
+      };
 
       // 🛠 스킬 스텝 인식 (2026-07-14) — invoke_skill 도구 호출을 스킬 배지로 승격한다.
       // 스킬명은 공유 detail 빌더(_activity-detail.ts)가 "name=<skill>"(path 지정 시

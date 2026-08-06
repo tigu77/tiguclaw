@@ -88,6 +88,76 @@ export const check: RegressionCheck = {
       else process.env.TOOL_SLOW_WARN_MS = prevEnv;
     }
 
+    // ★④ 하드 상한 — **경고가 아니라 실제로 끊는다** (2026-08-06 회사 PC 먹통).
+    //  실측: `add_schedule`·`list_schedules`·`Task` 가 경고 뒤 완료 기록 없이 멈췄고,
+    //  마지막 건은 로그 끝(39분 뒤)까지 조용했다. 세션은 직렬 큐라 그 턴이 안 끝나면
+    //  **다음 메시지도 처리되지 않는다** = 사용자가 겪은 "먹통". 경고만으로는 안 끊긴다.
+    const prevHard = process.env.TOOL_HARD_TIMEOUT_MS;
+    process.env.TOOL_HARD_TIMEOUT_MS = "80";
+    const aborted: string[] = [];
+    try {
+      // 안 끝나는 도구 → onHard 가 불려야 한다.
+      watchToolStart({
+        channel: "test",
+        threadKey: "regression",
+        tool: "Bash",
+        onHard: (tool) => aborted.push(tool),
+      });
+      // 제때 끝난 도구 → 불리면 안 된다(정상 도구를 죽이면 그게 더 큰 사고).
+      const okStop = watchToolStart({
+        channel: "test",
+        threadKey: "regression",
+        tool: "Read",
+        onHard: (tool) => aborted.push("★오발화:" + tool),
+      });
+      okStop();
+      // ★서브에이전트는 제외 — 자체 상한(SUBAGENT_TIMEOUT_MS, 기본 시간 단위)이 있고,
+      //  여기서 자르면 정상적인 장시간 위임을 죽인다.
+      watchToolStart({
+        channel: "test",
+        threadKey: "regression",
+        tool: "Task",
+        onHard: (tool) => aborted.push("★제외위반:" + tool),
+      });
+      await sleep(220);
+      out.push(
+        assert(
+          "★안 끝나는 도구는 하드 상한에서 턴을 끊는다(경고만으로는 먹통이 안 풀린다)",
+          aborted.includes("Bash"),
+          JSON.stringify(aborted),
+        ),
+      );
+      out.push(
+        assert(
+          "제때 끝난 도구는 안 끊는다(오발화 0)",
+          !aborted.some((a) => a.startsWith("★오발화")),
+          JSON.stringify(aborted),
+        ),
+      );
+      out.push(
+        assert(
+          "서브에이전트(Task)는 제외 — 자체 상한이 있고 장시간이 정상",
+          !aborted.some((a) => a.startsWith("★제외위반")),
+          JSON.stringify(aborted),
+        ),
+      );
+      out.push(
+        assert(
+          "레버(onHard)를 안 넘긴 호출부는 종전대로 경고만(회귀 0)",
+          (() => {
+            let called = false;
+            const s2 = watchToolStart({ channel: "t", threadKey: "r", tool: "Bash" });
+            s2();
+            return !called;
+          })(),
+          "레버 없음 = 중단 없음",
+        ),
+      );
+    } finally {
+      if (prevHard === undefined) delete process.env.TOOL_HARD_TIMEOUT_MS;
+      else process.env.TOOL_HARD_TIMEOUT_MS = prevHard;
+    }
+
     const missing = await adapterWiring();
     out.push(
       assert(

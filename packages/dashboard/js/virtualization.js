@@ -947,7 +947,15 @@
         badge.className = "act-badge act-" + adapter;
         badge.textContent = p.adapter || "?";
         const th = document.createElement("span");
-        th.className = "turn-thread"; th.textContent = thread;
+        // ★세션은 **이름으로** 보여준다 (2026-08-06 사용자 지적) — 종전엔 원시 좌표
+        //  (`dashboard:2d749d5b-7…`)가 그대로 떠서 어느 대화인지 사람이 읽을 수 없었다.
+        //  이름은 공유 해석기(서버 정본 표시명)에서 오고, **모르면 좌표로 폴백**한다 —
+        //  여긴 아예 비우면 "어느 세션인지 모름" 이 되므로, 못 읽는 값이라도 있는 게 낫다
+        //  (잡 카드 배지와 정책이 다른 이유: 거기는 카드에 다른 식별자가 이미 있다).
+        th.className = "turn-thread";
+        const thName = typeof sessionNameFor === "function" ? sessionNameFor(thread) : "";
+        th.textContent = thName || thread;
+        th.title = thread;
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
         const lastEl = document.createElement("span");

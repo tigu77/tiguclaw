@@ -18,19 +18,19 @@
       // stale 임계 — 어떤 실제 턴도 이보다 오래 못 감(codex 턴 캡 ~10분 + 여유). 초과 진행표시는
       // turn_done 을 놓친 유령(SSE 재연결·replay·데몬 재시작 중)으로 보고 해제(영구 '작업 중' 방지).
       const STALE_TURN_MS = 15 * 60 * 1000;
-      // 경과시간 기준 시작시각 — 내 대화(activeThreadKey) 우선, 없으면 가장 이른 턴.
-      const earliestStart = () => {
-        if (activeTurns.has(activeThreadKey)) return activeTurns.get(activeThreadKey);
-        let best = Infinity;
-        for (const t of activeTurns.values()) if (t < best) best = t;
-        return best === Infinity ? Date.now() : best;
-      };
       const paintWorking = (s) => {
         // ★다채널 단일 인격 — 텔레그램·CLI·대시보드 어디서 온 턴이든 대시보드 발신과 똑같이
         // "<비서> 작업 중" 으로 통일(채널 라벨 없음). 동시에 여럿이면 "(+N)".
         const extra = activeTurns.size > 1 ? " (+" + (activeTurns.size - 1) + ")" : "";
-        const lab = s.querySelector(".chat-work-label"); if (lab) lab.textContent = assistantName + " 작업 중" + extra + " ·";
-        const el = s.querySelector(".chat-elapsed"); if (el) el.textContent = fmtElapsed(Date.now() - earliestStart());
+        // ★경과시간은 **이 대화의 것만** 판다 (2026-08-06). 종전엔 내 세션에 진행 턴이 없으면
+        //  `가장 이른 턴`으로 폴백해 **남의 세션 경과시간이 내 화면에 떴다** — 이 줄은 입력창
+        //  바로 위라 누구나 "내 요청이 N분째" 로 읽는다. 다른 세션이 도는 사실은 그 세션 탭의
+        //  진행 점(st-dot)이 이미 알려주므로, 여기서 숫자를 지어내지 않는다(모르면 안 쓴다).
+        const mineStart = activeTurns.get(activeThreadKey);
+        const lab = s.querySelector(".chat-work-label");
+        if (lab) lab.textContent = assistantName + " 작업 중" + extra + (mineStart ? " ·" : "");
+        const el = s.querySelector(".chat-elapsed");
+        if (el) el.textContent = mineStart ? fmtElapsed(Date.now() - mineStart) : "";
       };
       const refreshWorking = () => {
         if (onTurnsChanged) onTurnsChanged(); // 세션 탭 진행 뱃지 갱신(모든 세션 추적, active 대표).

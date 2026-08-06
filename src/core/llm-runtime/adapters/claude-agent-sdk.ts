@@ -906,6 +906,27 @@ export const runClaude = async (
     | { input: number; cacheRead: number; output: number }
     | undefined;
   let succeeded = false;
+  /**
+   * ★**턴 경계 가드** — 첫 `result` 이후 도착분은 *이 턴의 답이 아니다* (2026-08-06 실사고).
+   *
+   * SDK 0.3 은 한 스트림에 **여러 턴**을 실을 수 있다. 블로킹 도구를 백그라운드로 돌리면
+   * 턴이 즉시 이어지고(`backgroundTasks()`), 그 작업이 끝나면 `system/task_notification`
+   * (status: completed|failed|**stopped**)을 내는데 **그 알림이 새 턴을 시작시킨다**
+   * (`system/init` 재발화). 0.1 엔 없던 동작이라 우리 루프는 그걸 같은 턴으로 먹었다.
+   *
+   * 실측(2026-08-06 14:59, 회사 PC 대시보드 세션): 사용자 입력은 14:36 이 마지막인데
+   *  - 14:59:44 result/success  ← 진짜 답변(작업 요약)
+   *  - 14:59:45 task_notification → system/init  ← 알림이 새 턴 개시
+   *  - 14:59:56 result/success  ← "알겠습니다. 멈추겠습니다"(알림에 대한 대답)
+   * 결과 ①두 턴 텍스트가 한 답변으로 이어붙어 화면에 나갔고(`…알려드리겠습니다.Unity MCP는…`)
+   *      ②`resultText` 가 **대입**이라 첫 result 본문이 마지막 것으로 덮였다 —
+   *        스트림 1,646자 / 확정 답변 279자. 즉 **사용자가 시키지도 않은 문장만 기록에 남았다**.
+   *
+   * 그래서 첫 result 에서 답을 **확정**하고, 이후 도착분은 이 답변에 섞지 않는다. 버리되
+   * 조용히 버리지 않는다 — 로그·이벤트에 판정 수치와 함께 남긴다(대응은 후속 결정).
+   */
+  let turnResultSeen = false;
+  let postResultMsgs = 0;
   // 이중발행 방지 가드(2026-07-17, delta 파리티) — depth-0 부모 turn 에서 부분 델타
   // (stream_event/content_block_delta)를 한 번이라도 push 했으면, 뒤따르는 완성
   // assistant 텍스트 블록에서는 deltaStream.push 를 다시 하지 않는다(같은 텍스트 2번
@@ -1129,7 +1150,15 @@ export const runClaude = async (
       }
     } else {
       const sub = (msg as { subtype?: unknown }).subtype;
-      console.log(`[claude-complete] ${input.threadKey} recv=${msg.type}${sub ? "/" + String(sub) : ""}`);
+      // ★백그라운드 Task 알림은 **status 까지** 찍는다 (2026-08-06). 종전엔 type/subtype 만
+      //  남아, 모델이 왜 갑자기 "멈추겠습니다" 라고 했는지를 로그만으로는 못 갈랐다
+      //  (status: completed|failed|stopped 중 무엇인지가 그 답인데 안 보였다).
+      const note =
+        sub === "task_notification"
+          ? ` status=${String((msg as { status?: unknown }).status)}` +
+            ` summary=${JSON.stringify(String((msg as { summary?: unknown }).summary ?? "").slice(0, 80))}`
+          : "";
+      console.log(`[claude-complete] ${input.threadKey} recv=${msg.type}${sub ? "/" + String(sub) : ""}${note}`);
     }
     // 관측 publish — for-await 흐름 영향 0 (publish 동기 + EventBus 격리).
     // payload 핵심 필드만, 큰 객체는 truncate.
@@ -1147,6 +1176,24 @@ export const runClaude = async (
 
     const maybeSid = (msg as { session_id?: unknown }).session_id;
     if (typeof maybeSid === "string") lastSessionId = maybeSid;
+
+    // ★턴 경계 — 첫 result 이후는 이 턴이 아니다(위 turnResultSeen 주석의 사고).
+    //  관측 발행(llm.sdk_message)은 **위에서 이미** 했으므로 기록은 남고, 답변 조립에서만
+    //  뺀다. 스트림 소비는 계속한다 — 여기서 break 하면 steering 채널 close → stdin close
+    //  → 스트림 종료로 이어지는 기존 teardown 순서가 바뀐다(완료 데드락 수정의 전제).
+    if (turnResultSeen) {
+      postResultMsgs += 1;
+      if (postResultMsgs === 1) {
+        const sub = (msg as { subtype?: unknown }).subtype;
+        console.warn(
+          `[claude-turn-boundary] ${input.threadKey} 첫 result 이후 메시지 도착 ` +
+            `(${msg.type}${sub !== undefined ? "/" + String(sub) : ""}) — SDK 가 새 턴을 ` +
+            `시작한 것으로 보고 **이 답변에는 섞지 않습니다**. 백그라운드 Task 알림이 ` +
+            `자동으로 턴을 여는 0.3 동작(task_notification → system/init).`,
+        );
+      }
+      continue;
+    }
 
     if (msg.type === "system" && msg.subtype === "init") {
       if (typeof msg.model === "string") {
@@ -1231,6 +1278,8 @@ export const runClaude = async (
       // 턴 finally 의 steeringCh.close()(index.ts, 멱등)는 2차 안전망으로 그대로 유지
       // (abort·에러로 result 미도달 시 여전히 닫음).
       input.steering?.close();
+      // ★여기가 이 턴의 끝이다 — 이후 도착분은 위 가드가 답변에서 제외한다.
+      turnResultSeen = true;
       if (msg.subtype === "success") {
         // 실측 (probe 2026-06-02): 모델 거부(미존재 model)는 SDK 가 result.subtype
         // "success" + is_error=true + result 본문에 API 에러를 실어 보낸다 (errors[]
@@ -1501,12 +1550,25 @@ export const runClaude = async (
                   label: toolName,
                   // ★도구 지연 감시 (2026-07-28, D) — 종전엔 codex 에만 있어, claude 로 도는
                   //  워커는 도구가 권한 다이얼로그에 막혀도 사용자에게 신호가 없었다.
-                  //  판정은 공통 엔진이 하고 여기선 시작/종료만 건다. 죽이지 않고 경고만
-                  //  (실행 취소는 SDK 소관 — 경계 침범 금지).
+                  //  판정은 공통 엔진이 하고 여기선 시작/종료만 건다.
+                  // ★2026-08-06 — 경고에 더해 **중단 레버**를 넘긴다. 종전엔 "경고만" 이라
+                  //  아무도 안 끊었고, 회사 PC 로그에서 도구가 멈춘 뒤 39분간 그 세션이
+                  //  통째로 먹통이었다(직렬 큐라 다음 메시지도 처리 안 됨). codex·openai 는
+                  //  `_mcp-bridge` 의 11분 상한이 있었지만 claude 는 MCP 를 SDK 에 직접 넘겨
+                  //  그 그물 밖이었다 — 어댑터별로 안전망이 달랐던 것(원칙 #2).
                   stopSlow: watchToolStart({
                     channel: input.channel,
                     threadKey: input.threadKey,
                     tool: toolName,
+                    onHard: (tool, ms) => {
+                      if (!effectiveAc.signal.aborted) {
+                        effectiveAc.abort(
+                          new Error(
+                            `도구 '${tool}' 이(가) ${Math.round(ms / 1000)}초 안에 응답하지 않아 턴을 중단했습니다.`,
+                          ),
+                        );
+                      }
+                    },
                   }),
                 });
               }

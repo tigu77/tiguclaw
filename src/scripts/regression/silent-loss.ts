@@ -19,6 +19,11 @@
  *   서브에이전트가 상한(2시간)까지 모델을 태우고, 결과는 부모가 abort 돼 폐기된다.
  *   더 나쁜 건 프롬프트의 "진행 중인 백그라운드 작업" 줄이 **취소된 작업을 진행 중이라고
  *   메인에게 보고**한 것 — 소속 판정(`jobBelongsToSession`)이 이미 있는데 취소만 안 썼다.
+ *
+ *  ④**비채널 트리거 턴의 통지가 목적지 없이 나갔다.** 스케줄 턴은 `channel="scheduler"`
+ *   (발송 채널이 아니라 트리거 이름)로 도는데, 한도 쿨다운 알림이 그걸 그대로 목적지로 써서
+ *   `미배달 87자 [cooldown]` 으로 끝났다. 스케줄러는 실제 목적지를 `notifyDest` 로 이미
+ *   주입하고 있었고 워커 완료 통지는 그걸 썼다 — 이 알림만 안 봤다.
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";
@@ -169,6 +174,34 @@ export const check: RegressionCheck = {
         "★add_schedule 이 dest_channel 을 레지스트리와 대조한다(오타 = 영구 무발신)",
         createGate.ok,
         createGate.ok ? "3개 확인" : `누락 ${createGate.missing.join(" ")}`,
+      ),
+    );
+
+    // ★④ **비채널 트리거 턴의 통지가 사람에게 닿는다** (2026-08-06 로그 실측).
+    //  스케줄 턴은 `channel="scheduler"` 로 돈다 — 발송 채널이 아니라 *트리거 이름*이다.
+    //  한도 쿨다운 알림이 그걸 그대로 목적지로 써서 `미배달 87자 [cooldown]` 로 끝났다.
+    //  ①과 같은 병의 다른 얼굴이다: 보낼 곳이 없는데 보낸 척.
+    const cooldownWired = await sourceHas("../../core/llm-runtime/index.ts", [
+      // 주입된 목적지(scheduler 가 이미 채워 주던 것)를 **먼저** 본다.
+      /const notifyAt =\s*\n\s*input\.notifyDest \?\?/,
+      /channel: notifyAt\.channel,/,
+      /target: notifyAt\.target,/,
+    ]);
+    out.push(
+      assert(
+        "★쿨다운 알림이 notifyDest 우선으로 나간다(스케줄 턴에서 미배달이던 것)",
+        cooldownWired.ok,
+        cooldownWired.ok ? "llm-runtime/index.ts" : `누락 ${cooldownWired.missing.join(" ")}`,
+      ),
+    );
+    // 좌표 판정 자체는 **동작으로** 본다 — 새로 만들지 않고 기존 단일 함수를 쓰는지까지.
+    const { notifyDestFromCoords } = await import("../../core/self-update.js");
+    const viaCoords = notifyDestFromCoords("telegram", "tg:12345");
+    out.push(
+      assert(
+        "좌표 도출이 단일 함수 하나(캡처 좌표 없으면 threadKey 파싱 폴백)",
+        viaCoords.channel === "telegram" && viaCoords.target === "12345",
+        `${viaCoords.channel}/${String(viaCoords.target)}`,
       ),
     );
 

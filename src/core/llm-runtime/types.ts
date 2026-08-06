@@ -179,12 +179,18 @@ export interface RegionASdkInput {
    * 미지정(undefined) — 그 경우 워커는 job.channel/threadKey 폴백으로 통지(회귀 0).
    *
    * 읽는 주체: ★어댑터는 이 필드를 읽지 않는다(LLM-agnostic — 통지 라우팅은 daemon 경계,
-   * 모델 무관·claude/codex/openai 동일 동작·어댑터 분기 0). 오직 워커 발사 도구
-   * (run_in_background, worker-registry.ts)만 parentInput.notifyDest 를 읽어 startWorkerJob
-   * 으로 잡에 박는다 → onWorkerComplete 가 이 generic dest 로 dispatch.
+   * 모델 무관·claude/codex/openai 동일 동작·어댑터 분기 0). 코어·도구 쪽 둘:
+   *  ①워커 발사 도구(run_in_background, worker-registry.ts)가 parentInput.notifyDest 를 읽어
+   *   startWorkerJob 으로 잡에 박는다 → onWorkerComplete 가 이 generic dest 로 dispatch.
+   *  ②코어의 **턴 밖 통지**(쿨다운 알림, llm-runtime/index.ts)가 좌표로 쓴다.
+   *
+   * ★이름은 "워커 통지" 지만 실제 의미는 **이 턴의 사람 도달 좌표**다 (2026-08-06 확장).
+   *  ②를 안 쓰던 동안 스케줄 턴의 한도 알림이 `channel="scheduler"`(발송 채널이 아니라
+   *  트리거 이름)로 나가 조용히 미배달됐다. 비채널 트리거 턴에서 사람에게 뭔가 보낼 일이
+   *  생기면 `input.channel` 이 아니라 **이 필드부터** 봐라.
    *
    * 멀티모달 attachments(텍스트 prepend)·sendAttachment(아웃바운드 클로저)와 직교 —
-   * 이건 *워커 완료 통지의 라우팅 좌표* 일 뿐 prompt·전송 클로저와 무관.
+   * 이건 *통지의 라우팅 좌표* 일 뿐 prompt·전송 클로저와 무관.
    */
   notifyDest?: WorkerNotifyDest;
   /**

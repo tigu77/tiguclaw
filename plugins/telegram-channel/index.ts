@@ -73,10 +73,32 @@ const formatForTelegram = (text: string): { chunks: string[]; parseMode?: "HTML"
 //     동일 실패 → 재시도 무의미. 즉시 전파해서 호출부의 HTML→plain 폴백이 처리하게 둔다.
 // sendMessage 는 멱등이 아니라 재시도 시 드문 중복 가능하나, 알림은 "드문 중복 > 유실"
 // 이므로 재시도 채택. 추가 dedup 장치는 두지 않는다(과설계 회피 — 중복은 감수).
+/**
+ * ★**429 는 4xx 지만 재시도한다** (2026-08-06 — "간혹 텔레그램 메시지가 안 온다").
+ *
+ * 위 주석의 근거("4xx = 같은 요청 재전송해도 동일 실패")가 **429 에는 성립하지 않는다.**
+ * 429 는 논리 오류가 아니라 **흐름 제어**다 — 텔레그램이 `retry_after` 초 뒤에 다시 보내라고
+ * 알려주는 것이고, 그때 보내면 성공한다. 그런데 코드가 4xx 를 한 덩어리로 묶어 **버렸다**.
+ *
+ * 언제 터지나: 같은 챗에 발송이 몰릴 때 — 긴 답변이 4096자로 쪼개져 여러 청크로 나갈 때,
+ * 아침 스케줄 알림이 겹칠 때, 워커 완료 통지가 몰릴 때. 평소엔 안 나고 **몰릴 때만** 난다
+ * ("간혹" 이라는 증상과 정확히 맞는다). 502 유실 때와 같은 부류 — 다른 에러 코드일 뿐.
+ */
+const retryAfterMs = (e: unknown): number | null => {
+  if (!(e instanceof GrammyError) || e.error_code !== 429) return null;
+  const ra = (e.parameters as { retry_after?: unknown } | undefined)?.retry_after;
+  // 서버가 준 값이 진실 — 우리 백오프보다 우선한다(짧게 재시도하면 또 429 를 받는다).
+  // 상한을 둔다: 비정상적으로 큰 값이 오면 재시도 예산을 통째로 잡아먹는다.
+  if (typeof ra === "number" && ra > 0) return Math.min(ra * 1000, 120_000);
+  return 3_000; // retry_after 미제공(드묾) — 보수적 기본값.
+};
+
 const isRetriableSendError = (e: unknown): boolean => {
   if (e instanceof HttpError) return true;
-  // 5xx = 서버측 일시 장애(502/503/504…). 4xx(논리 오류)는 재시도 안 함.
-  if (e instanceof GrammyError) return e.error_code >= 500;
+  if (e instanceof GrammyError) {
+    if (e.error_code === 429) return true; // 흐름 제어 — 위 주석.
+    return e.error_code >= 500; // 5xx = 서버측 일시 장애. 그 외 4xx 는 논리 오류.
+  }
   return false;
 };
 
@@ -151,7 +173,9 @@ const sendWithTransportRetry = async (
     } catch (e) {
       // 일시적 실패만, 그리고 바운드 내에서만 재시도. 그 외는 즉시 전파.
       if (!isRetriableSendError(e) || attempt >= delays.length) throw e;
-      const delay = delays[attempt]!;
+      // ★429 는 **서버가 알려준 대기 시간**을 쓴다 — 우리 백오프(0.5s…)로 먼저 때리면
+      //  또 429 를 받아 재시도 예산만 태운다. 그 외 실패는 기존 백오프 그대로.
+      const delay = retryAfterMs(e) ?? delays[attempt]!;
       console.warn(
         `telegram send failed (일시적 — ${e instanceof GrammyError ? `API ${e.error_code}` : "transport"}), ` +
           `retry ${attempt + 1}/${delays.length} in ${delay}ms — ${describeTelegramError(e)}`,
@@ -187,7 +211,13 @@ export const sendFormatted = async (
       // 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
       console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
       await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}, TRANSPORT_RETRY_DELAYS_MS).catch((e2) => {
-        console.error(`telegram plain fallback also failed — ${describeTelegramError(e2)}`);
+        // ★유실을 **판정 수치와 함께** 남긴다 (2026-08-06) — 종전엔 종류만 적혀 있어,
+        //  원격 인스턴스(회사 PC 는 접속 불가)에서 "안 왔다" 를 로그로 확인할 수 없었다.
+        //  몇 번째 청크가·전체 몇 개 중·얼마짜리가 못 갔는지가 진단의 재료다.
+        console.error(
+          `★telegram 발송 유실 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)가 ` +
+            `HTML·plain 양쪽 다 실패해 **사용자에게 도달하지 않았습니다**. ${describeTelegramError(e2)}`,
+        );
         if (opts?.throwOnFail === true) throw e2;
       });
     }

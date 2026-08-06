@@ -47,12 +47,46 @@ const OVERRIDE_MS: Readonly<Record<string, number>> = {
 export const toolSlowWarnMs = (tool: string): number =>
   OVERRIDE_MS[tool] ?? toolSlowWarnDefaultMs();
 
+/**
+ * ★**하드 상한 — 여기서는 끊는다** (2026-08-06, 회사 PC 로그 실측).
+ *
+ * 위 경고는 알려주기만 하고 아무도 안 끊었다. 실측(2026-08-05 회사 PC): `add_schedule`·
+ * `list_schedules`·`Task` 가 경고 후 **완료 기록이 하나도 없이** 멈췄고, 마지막 건은 로그가
+ * 끝나는 39분 뒤까지 조용했다. 세션은 직렬 큐라 그 턴이 안 끝나면 **다음 메시지도 처리되지
+ * 않는다** — 사용자가 겪은 "먹통" 이 이것이다.
+ *
+ * ★왜 어댑터가 아니라 여기인가: 도구 상한(`MCP_CALL_TIMEOUT_MS` 11분)은 `_mcp-bridge` 에만
+ *  있고 그건 **codex·openai 전용**이다. claude 는 MCP 서버를 SDK 에 직접 넘겨 그 상한을 안
+ *  탄다 — 즉 **어댑터별로 그물이 달랐다**(원칙 #2 위반). 판정은 순수 시간 문제이므로 공통층에
+ *  두고, 실제 중단 레버(AbortController)만 어댑터가 넘긴다.
+ *
+ * ★경계 순서: 안쪽이 먼저 끝나야 "무엇이 왜 끝났는지" 가 정확히 남는다. 기본 13분은 브리지
+ *  11분보다 **바깥**이라, codex·openai 는 종전대로 브리지가 먼저 자르고 이 상한은 안 닿는다.
+ *  claude 에만 실질 효력이 있다(그쪽에만 그물이 없었으므로 정확히 그게 목적).
+ */
+const toolHardMs = (): number =>
+  parsePosIntEnv(process.env.TOOL_HARD_TIMEOUT_MS, 780_000);
+
+/**
+ * 하드 상한에서 **제외**되는 도구 — 자기 상한을 이미 가진 것들.
+ * 서브에이전트는 `SUBAGENT_TIMEOUT_MS`(기본 2시간)로 스스로 끊는다. 여기서 13분에 자르면
+ * **정상적인 장시간 위임을 죽인다**(실측: 완료 서브 138건 평균 124초·최대 627초지만 상한은
+ * 시간 단위). 위 `OVERRIDE_MS`(느림 경고 완화 대상)와 같은 명단인 것은 우연이 아니다 —
+ * "오래 걸리는 게 정상" 이라는 같은 사실의 두 얼굴이다.
+ */
+const hardExempt = (tool: string): boolean => tool in OVERRIDE_MS;
+
 export interface ToolWatchInput {
   readonly channel: string;
   readonly threadKey: string;
   readonly tool: string;
   /** 어댑터가 아는 추가 맥락(예: "8분에 타임아웃") — 경고 문구 끝에 붙는다. 없으면 생략. */
   readonly note?: string;
+  /**
+   * 하드 상한 도달 시 **실제로 끊는** 레버(어댑터의 AbortController 등). 넘기지 않으면
+   * 종전대로 경고만 한다 — 판정은 공통층, 중단 수단은 어댑터 소유(경계 분리 유지).
+   */
+  readonly onHard?: (tool: string, ms: number) => void;
 }
 
 /**
@@ -85,10 +119,47 @@ export const watchToolStart = (input: ToolWatchInput): (() => void) => {
     }
   }, ms);
   timer.unref?.();
+
+  // ★하드 상한 — 여기서 끊는다(위 경고와 달리 실효). 어댑터가 `onHard` 로 자기 중단 레버를
+  //  넘겼을 때만 동작한다(레버 없는 호출부는 종전대로 경고만 = 회귀 0).
+  const hardMs = toolHardMs();
+  const hardTimer =
+    input.onHard !== undefined && !hardExempt(input.tool)
+      ? setTimeout(() => {
+          const secs = Math.round(hardMs / 1000);
+          console.error(
+            `[tool-hang] ${input.threadKey} 도구 ${input.tool} 이(가) ${secs}s 안에 안 끝나 ` +
+              `**턴을 중단**합니다 — 도구 결과가 영영 안 오면 이 세션의 다음 메시지도 처리되지 ` +
+              `않습니다(직렬 큐). 상한은 TOOL_HARD_TIMEOUT_MS 로 조정.`,
+          );
+          try {
+            getEventBus().publish({
+              type: "llm.tool_hang",
+              ts: Date.now(),
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                tool: input.tool,
+                ms: hardMs,
+              },
+            });
+          } catch {
+            /* best-effort */
+          }
+          try {
+            input.onHard?.(input.tool, hardMs);
+          } catch {
+            /* 중단 레버 실패가 감시자를 죽이지 않는다 */
+          }
+        }, hardMs)
+      : null;
+  hardTimer?.unref?.();
+
   let stopped = false;
   return (): void => {
     if (stopped) return; // 멱등 — 어댑터가 중복 호출해도 안전.
     stopped = true;
     clearTimeout(timer);
+    if (hardTimer !== null) clearTimeout(hardTimer);
   };
 };

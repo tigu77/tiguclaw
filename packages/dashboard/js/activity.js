@@ -16,11 +16,11 @@
       // 신규 fetch 없음. openTabs 항목의 name 은 이미 서버 커스텀>파생 우선순위가 반영돼 있다
       // (refreshSessionPreviews). 못 찾으면(전체활동엔 안 연 세션도 나옴) deriveTabFallbackName
       // 이 채널 파생 폴백까지 처리(이미 존재하는 경로, 추가 로직 불필요).
-      const activitySessionName = (tk) => {
-        const t = openTabs.find((o) => o.threadKey === tk);
-        if (t && t.name) return t.name;
-        return deriveTabFallbackName(tk);
-      };
+      // ★해석은 공유 `sessionNameFor`(util.js)에 위임한다 (2026-08-06) — 잡 카드가 같은
+      //  질문("이 좌표가 어느 세션인가")을 하게 되면서, 각자 파생하면 화면마다 이름이
+      //  갈린다. 폴백(파생 "세션N")을 쓸지는 **여기서** 정한다 — 전체활동은 빈칸보다
+      //  파생 이름이 낫고, 잡 카드는 지어내지 않고 배지를 생략한다(정책이 다르다).
+      const activitySessionName = (tk) => sessionNameFor(tk) || deriveTabFallbackName(tk);
 
       const buildActivitySessionBadge = (tk) => {
         const b = document.createElement("span");

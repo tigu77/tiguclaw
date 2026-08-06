@@ -317,3 +317,34 @@
         return `${dateKey(ms)} (${w})`;
       };
 
+
+      // ── 세션 표시명 공유 지도 (2026-08-06) ──────────────────────────────────
+      // threadKey → 서버가 정한 표시명. **채우는 곳은 한 군데**(tabs.js
+      // refreshSessionPreviews — 서버 `/api/sessions` 의 전 세션을 이미 순회한다)이고,
+      // 읽는 곳은 전체활동 배지와 백그라운드 잡 카드다.
+      //
+      // ★왜 공유인가: 소비처가 각자 이름을 파생하면 **같은 세션이 화면마다 다른 이름**으로
+      //  보인다 — 대시보드 `세션3` vs 텔레그램 생키로 갈렸던 그 사고와 같은 뿌리다. 이름의
+      //  정본은 서버이고(커스텀 > 첫 발화 > 폴백), 여기는 그 값을 나르는 자리일 뿐이다.
+      // ★열린 탭에 없는 세션(닫은 세션·다른 채널)도 담긴다 — 백그라운드 잡은 대개
+      //  "다른 세션에서 띄워놓고 잊은 것" 이라, 정작 이름이 필요한 순간이 안 보고 있는 세션이다.
+      const sessionDisplayNames = new Map();
+
+      /**
+       * 서버가 아는 표시명. **모르면 빈 문자열** — 폴백을 쓸지는 호출부가 정한다.
+       * (전체활동은 파생 폴백을 쓰고, 잡 카드는 지어내지 않고 배지를 생략한다.)
+       */
+      const sessionNameFor = (tk) => {
+        if (!tk) return "";
+        const fromServer = sessionDisplayNames.get(tk);
+        if (fromServer) return fromServer;
+        try {
+          if (typeof openTabs !== "undefined") {
+            const t = openTabs.find((o) => o.threadKey === tk);
+            if (t && t.name) return t.name;
+          }
+        } catch {
+          /* openTabs 미초기화(부팅 순간) — 이름 없음으로 취급 */
+        }
+        return "";
+      };

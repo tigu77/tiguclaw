@@ -812,6 +812,13 @@
       }
       .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
+      /* 소속 세션 배지 — 전체활동의 .aav-session-badge 와 같은 색 언어(같은 뜻이니 같은 모양).
+         클릭 가능하므로 hover 를 준다. 이름을 모르면 JS 가 아예 숨긴다(지어내지 않음). */
+      .bg-job-session { display:inline-block; margin-left:6px; font-family:var(--font); font-size:9.5px; font-weight:800;
+        padding:1px 7px; border-radius:999px; background:rgba(125,211,252,.12); border:1px solid rgba(125,211,252,.28);
+        color:var(--text); white-space:nowrap; max-width:150px; overflow:hidden; text-overflow:ellipsis;
+        vertical-align:middle; cursor:pointer; }
+      .bg-job-session:hover { background:rgba(125,211,252,.22); border-color:rgba(125,211,252,.45); }
       .bg-job-err { font-size:11px; color:#fca5a5; word-break:break-word; }
       /* 중지 버튼 — running+worker 카드에만(updateStopBtn). danger 톤(cm-danger 과 정합, var(--bad)),
          기존 배지들과 같은 줄에 자연스럽게 얹히도록 컴팩트. 모바일 터치타깃 확보(min 28px). */

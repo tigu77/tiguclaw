@@ -49,6 +49,8 @@ import {
   markCooldownProbe,
 } from "../../store/cooldowns.js";
 import { getEventBus } from "../eventbus.js";
+// 통지 좌표 도출 — 어댑터 3종·update_self 와 **같은 함수**를 쓴다(좌표 판정 단일 진실).
+import { notifyDestFromCoords } from "../self-update.js";
 import {
   DEFAULT_COOLDOWN_MS,
   MAX_COOLDOWN_MS,
@@ -1184,9 +1186,24 @@ const runPool = async (
             : mins >= 60
               ? `약 ${Math.round(mins / 60)}시간 뒤`
               : `${mins}분 뒤`;
+        // ★통지 좌표는 **`notifyDest` 가 있으면 그것**이다 (2026-08-06, 로그 실측 유실).
+        //  스케줄 턴은 `channel="scheduler"` 로 돈다 — 그건 발송 채널이 아니라 *트리거
+        //  이름*이라, 이 알림이 `deliverOutbound: 발송 채널 "scheduler" 이 등록돼 있지
+        //  않습니다 — 미배달 87자 [cooldown]` 로 끝났다. 즉 위 주석이 "채널 무관 통지"라고
+        //  선언한 바로 그 경로가 **비채널 트리거에서만 조용히 안 갔다**.
+        //  스케줄러는 자기 목적지를 이미 `notifyDest`(destChannel/destTarget)로 주입하고
+        //  있었다 — 워커 완료 통지는 그걸 쓰고 이것만 안 썼다. 좌표 도출은 새로 만들지
+        //  않고 기존 단일 판정(`notifyDestFromCoords`: 캡처 좌표 → threadKey 파싱)에 맡긴다.
+        const notifyAt =
+          input.notifyDest ??
+          notifyDestFromCoords(
+            input.channel,
+            input.threadKey,
+            input.channelAddress,
+          );
         void deliverOutbound({
-          channel: input.channel,
-          target: input.channelAddress ?? null,
+          channel: notifyAt.channel,
+          target: notifyAt.target,
           text:
             `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
             `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`,

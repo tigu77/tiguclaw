@@ -46,7 +46,7 @@ const runRefresh = async (
   tabs: Tab[],
   serverKeys: string[],
   activeThreadKey = "dashboard:default",
-): Promise<{ tabs: Tab[]; active: string }> => {
+): Promise<{ tabs: Tab[]; active: string; names: Map<string, string> }> => {
   const src = readFileSync(path.join(REPO, "packages/dashboard/js/tabs.js"), "utf8");
   const m = /const refreshSessionPreviews = async \(\) => \{[\s\S]*?\n {6}\};/.exec(src);
   if (m === null) throw new Error("refreshSessionPreviews 를 못 찾음");
@@ -79,12 +79,20 @@ const runRefresh = async (
     clearReply: () => {},
     loadThreadHistory: () => Promise.resolve(),
     refreshBgScope: () => {},
+    // 세션 표시명 공유 지도(util.js) — 잡 카드 배지가 닫힌 세션 이름까지 알려면 이 폴이
+    // 채워야 한다(2026-08-06). 여기 스텁이 없으면 refreshSessionPreviews 가 ReferenceError
+    // 로 죽어 **정리 로직이 통째로 안 돈다** — 실제로 이 검사가 그렇게 잡았다.
+    sessionDisplayNames: new Map<string, string>(),
     window: {},
   };
   vm.createContext(ctx);
   vm.runInContext(`${sw[0]}\n${m[0]}\nthis.__run = refreshSessionPreviews;\nthis.__active = () => activeThreadKey;`, ctx);
   await (ctx.__run as () => Promise<void>)();
-  return { tabs: openTabs, active: (ctx.__active as () => string)() };
+  return {
+    tabs: openTabs,
+    active: (ctx.__active as () => string)(),
+    names: ctx.sessionDisplayNames as Map<string, string>,
+  };
 };
 
 export const check: RegressionCheck = {
@@ -156,6 +164,20 @@ export const check: RegressionCheck = {
         "서버가 알게 되면 pending 이 풀린다(영구 면제 방지)",
         d.tabs.find((t) => t.threadKey === "dashboard:brandnew")?.pending === undefined,
         JSON.stringify(d.tabs.find((t) => t.threadKey === "dashboard:brandnew")),
+      ),
+    );
+
+    // ★⑥ 세션 표시명이 **열린 탭 여부와 무관하게** 공유 지도에 담긴다 (2026-08-06).
+    //  백그라운드 잡 카드가 "이 잡이 어느 세션 것인가" 를 사람 이름으로 보여주려면 **안 연
+    //  세션**의 이름이 필요하다(잡은 대개 다른 세션에서 띄워놓고 잊은 것이다). 이 폴이
+    //  유일한 채우는 곳이라, 여기서 빠지면 배지는 영영 비어 있고 아무도 모른다.
+    const nm = await runRefresh([{ threadKey: D }], [D, "dashboard:notopen"]);
+    out.push(
+      assert(
+        "★세션 표시명이 열지 않은 세션까지 공유 지도에 담긴다(잡 카드 배지의 유일한 소스)",
+        nm.names.get("dashboard:notopen") === "이름:dashboard:notopen" &&
+          nm.names.get(D) === `이름:${D}`,
+        `${nm.names.size}건: ${[...nm.names.keys()].join(", ")}`,
       ),
     );
 

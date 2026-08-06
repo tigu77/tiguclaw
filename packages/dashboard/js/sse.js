@@ -309,6 +309,23 @@
           renderCompacted(ev.payload || {}, ev.ts);
           return;
         }
+        // ★도구 지연 고지 (2026-08-06) — 종전엔 이 이벤트를 **아무도 안 그렸다**. 그래서
+        //  도구가 멈춰도 화면엔 "작업 중 · 39분" 만 돌았고 사용자는 느린 건지 멈춘 건지
+        //  구분할 수 없었다(회사 PC 실측). 경고가 로그에만 있으면 없는 것과 같다 —
+        //  `llm.compaction_stuck` 때 고친 것과 같은 부류(발행은 했는데 소비처가 없음).
+        if (ev.type === "llm.tool_slow") {
+          const p = ev.payload || {};
+          if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
+            const secs = Math.round((Number(p.ms) || 180000) / 1000);
+            renderLocalChat(
+              "info",
+              `⏳ 도구 \`${p.tool || "?"}\` 이(가) ${secs}초+ 응답이 없습니다 — 느린 것일 수도, 멈춘 것일 수도 있습니다.\n` +
+                `기다리시거나 \`/stop\` 으로 중단할 수 있어요(오래 지나면 자동으로 끊깁니다).`,
+              { ts: ev.ts, key: "tool-slow|" + (p.threadKey || "") + "|" + (p.tool || "") },
+            );
+          }
+          return;
+        }
         // 매니저 스티어(2026-08-05) — worker.* 접두사지만 **상태 전이가 아니다**(잡은 계속
         // running). 아래 generic 분기로 흘리면 status 없는 payload 가 "running" 으로 해석돼
         // 잡 상태를 건드리므로, 그 앞에서 타임라인 스텝으로 가로챈다.

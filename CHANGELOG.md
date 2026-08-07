@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-07
+### Changed
+- **라이선스가 Apache License 2.0 으로 바뀌었습니다.** 이전에는 MIT 였습니다. 플러그인·어댑터를 붙여 쓰는 프로젝트라, MIT 에는 없는 **특허 허여**와 **기여 조항**이 명시된 Apache-2.0 이 더 맞다고 판단했습니다. 쓰는 데 드는 제약은 사실상 그대로입니다 — 여전히 마음대로 쓰고, 고치고, 팔 수 있습니다.
+  - **v0.21.1 까지 받아 간 버전은 계속 MIT 조건**으로 쓸 수 있습니다. Apache-2.0 은 이 버전부터 적용됩니다.
+
+### Added
+- **훅을 프로젝트별로 걸 수 있다는 걸 문서에 적었습니다.** 원래 되던 기능인데 README 에 없었습니다. `<프로젝트>/.tiguclaw/settings.json` 에 쓰면 그 프로젝트에서만 돌고, Claude Code 를 쓰던 프로젝트라면 `.claude/settings.json` 의 훅도 그대로 읽습니다. 전역 훅과 프로젝트 훅은 **함께 돕니다** — 프로젝트 설정이 전역 안전 훅을 조용히 끄지 못합니다.
+
 ## [0.21.1] - 2026-08-07
 ### Fixed
 - **훅 문서가 실물보다 뒤처져 있던 것**을 고쳤습니다. 배선된 훅이 다섯 가지인데 넷이라고 적혀 있었고(`SubagentStop` 누락), 이미 되는 기능(훅이 출력한 내용을 비서가 맥락으로 읽는 것)을 "다음 단계로 계획"이라고 적어 뒀습니다. 쓸 수 있는 걸 예정이라고 두면 아무도 안 씁니다.
@@ -967,7 +975,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.21.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/tigu77/tiguclaw/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/tigu77/tiguclaw/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/tigu77/tiguclaw/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/tigu77/tiguclaw/compare/v0.19.0...v0.20.0

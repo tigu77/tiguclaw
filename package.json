@@ -1,6 +1,6 @@
 {
   "name": "tiguclaw",
-  "version": "0.21.1",
+  "version": "0.22.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -18,7 +18,7 @@
     "codex"
   ],
   "author": "tigu77",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tigu77/tiguclaw.git"

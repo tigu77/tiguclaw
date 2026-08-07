@@ -299,6 +299,10 @@ A few things worth knowing:
 - **Per-project hooks.** Put a `hooks` block in `<project>/.tiguclaw/settings.json` and it *merges with* your home hooks whenever the assistant works in that folder — project rules and global rules both fire, no override.
 - **You can watch them.** Hook runs show up in the dashboard's activity monitor (a blocked call is tinted red), and every registered hook is listed under the **🪝 Hooks** category in the dashboard inventory.
 
+Hooks can also be **per project**. Instead of the global `<home>/settings.json`, put the same block in `<project>/.tiguclaw/settings.json` and it only fires while you work in that project. If the project already has Claude Code hooks in `<project>/.claude/settings.json`, those are read as-is — nothing to copy over.
+
+★The two layers **stack; they don't override.** A safety hook set globally can't be silently switched off by a project's settings.
+
 Hooks **observe and block** tool calls. On top of that, whatever a `UserPromptSubmit` or `PreToolUse` hook writes to stdout becomes **context the assistant reads** before deciding. One thing is still missing: **rewriting a tool's input**. That comes later.
 
 ## LLM gateway
@@ -381,4 +385,6 @@ Huge thanks to all of them.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Apache License 2.0 — see [`LICENSE`](LICENSE).
+
+> Releases up to v0.21.1 were MIT. Anything you took under those terms stays MIT; Apache-2.0 applies from the next release on.

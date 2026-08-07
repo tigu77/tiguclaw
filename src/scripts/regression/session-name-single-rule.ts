@@ -72,10 +72,22 @@ export const check: RegressionCheck = {
     const { DEFAULT_SESSION_ID } = await import("../../core/threadkey.js");
     out.push(
       assert(
-        "★기본 세션은 어느 채널에서나 고정 라벨이다(대화 내용으로 안 바뀐다)",
-        sessionDisplayName(DEFAULT_SESSION_ID, null, "돌쇠 재시작 완료! ✅") === "기본 세션" &&
-          sessionDisplayName(DEFAULT_SESSION_ID, "내가 붙인 이름", "") === "기본 세션",
+        "★기본 세션은 대화 내용으로 이름이 바뀌지 않는다(파생 금지)",
+        sessionDisplayName(DEFAULT_SESSION_ID, null, "돌쇠 재시작 완료! ✅") === "기본 세션",
         "고정 라벨 확인",
+      ),
+    );
+    // ★2026-08-07 정정 — 이 검사는 원래 `사용자가 붙인 이름도` 무시하고 "기본 세션" 이어야
+    //  한다고 못 박고 있었다. **그게 사용자 신고의 정체였다**: 기본 세션은 이름을 바꿔도
+    //  새로고침하면 되돌아갔다(실측: DB·`/sessions` 의 name 은 저장돼 있는데 displayName 만
+    //  "기본 세션"). 고정 라벨의 의도는 *첫 발화로 파생되는 것*을 막는 것이었지 사용자
+    //  지정을 막는 게 아니었다 — 검사가 그 둘을 뭉뚱그려 버그를 고정하고 있었다.
+    out.push(
+      assert(
+        "★그러나 사용자가 붙인 이름은 기본 세션에서도 이긴다(저장만 되고 안 보이던 것)",
+        sessionDisplayName(DEFAULT_SESSION_ID, "내가 붙인 이름", "") === "내가 붙인 이름" &&
+          sessionDisplayName(DEFAULT_SESSION_ID, "  ", "") === "기본 세션",
+        `지정=${sessionDisplayName(DEFAULT_SESSION_ID, "내가 붙인 이름", "")} · 공백=${sessionDisplayName(DEFAULT_SESSION_ID, "  ", "")}`,
       ),
     );
     const first = "크롤러가 자꾸 죽는데 봐줘";

@@ -1112,11 +1112,17 @@ export const sessionDisplayName = (
   preview: string | null | undefined,
   fallback?: string,
 ): string => {
+  // ★사용자가 붙인 이름이 **가장 먼저**다 (2026-08-07 사용자 신고).
+  //  종전엔 기본 세션 분기가 이 검사보다 앞에 있어서, 기본 세션은 이름을 바꿔도 저장만
+  //  되고 화면엔 영영 "기본 세션" 으로 나왔다 — 새로고침하면 되돌아가는 것처럼 보였다
+  //  (실측: DB·`/sessions` 의 `name` 은 "이름테스트" 인데 `displayName` 만 "기본 세션").
+  //  고정 라벨의 의도는 *첫 발화로 파생되는 것*을 막는 것이었지 사용자 지정을 막는 게
+  //  아니었다 — 그래서 파생보다는 앞에, 사용자 지정보다는 뒤에 둔다.
+  const custom = name?.trim();
+  if (custom !== undefined && custom !== "") return custom;
   // 기본 세션은 고정 라벨 — 여기 없으면 소비자마다 따로 특수처리하게 되고(실제로
   // `/sessions` 만 갖고 있었다), 대시보드에선 첫 발화로 파생돼 서로 달라진다.
   if (threadKey === DEFAULT_SESSION_ID) return "기본 세션";
-  const custom = name?.trim();
-  if (custom !== undefined && custom !== "") return custom;
   const from = preview?.replace(/\s+/g, " ").trim();
   if (from !== undefined && from !== "") {
     return from.length > SESSION_NAME_DERIVE_MAX

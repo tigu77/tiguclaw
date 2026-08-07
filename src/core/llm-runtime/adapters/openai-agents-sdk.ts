@@ -56,6 +56,7 @@ import { getPaths } from "../../paths.js";
 import { resolveProviderConn } from "../provider-registry.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
+import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -300,6 +301,11 @@ export const runOpenAi = async (
           "file-ops",
         ),
         await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),
+        // 세션 이름 도구(2026-08-07) — claude/codex 와 동일 의미 등록(#2).
+        await adaptClaudeMcpServer(
+          createSessionToolsMcpServer(input.threadKey),
+          "session-tools",
+        ),
         await adaptClaudeMcpServer(createProjectRegistryMcpServer(), "projects"),
         // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =
         // memory/projects/skills 와 동일 무조건 등록(claude/codex 와 parity, 계약서 §3.1).

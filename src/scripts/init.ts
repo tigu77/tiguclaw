@@ -485,7 +485,7 @@ const main = async (): Promise<void> => {
   // 승격(ADR model-profiles). 기존 settings.json 의 hooks 등은 보존, models.profiles 만 병합.
   seedModelProfiles(buildSeedProfiles(answers));
   console.log(
-    `✅ settings.json 모델 프로파일 seed 완료: ${SETTINGS_PATH}  (default/high/mid/low/nano)`,
+    `✅ settings.json 모델 프로파일 seed 완료: ${SETTINGS_PATH}  (default/high/mid/low)`,
   );
 
   console.log("");

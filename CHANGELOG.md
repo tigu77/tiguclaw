@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-07
+### Added
+- **대화 이름을 말로 바꿉니다.** "이 대화 이름 '핫딜 리팩터링'으로 바꿔줘" 처럼 부탁하면 됩니다. 세션 목록도 물어볼 수 있습니다. 삭제·보관은 일부러 넣지 않았습니다 — 되돌릴 수 없거나 사용자 판단이 필요한 일은 사람이 합니다.
+
+### Fixed
+- **기본 세션은 이름을 바꿔도 새로고침하면 되돌아가던 것**을 고쳤습니다. 저장은 되고 있었는데 화면이 늘 고정 라벨을 보여줬습니다. 이제 직접 붙인 이름이 이깁니다(이름을 지우면 다시 "기본 세션"으로 돌아갑니다).
+- **"서브에이전트가 도구를 한 번도 쓰지 않았다" 는 경고가 잘못 뜨던 것**을 고쳤습니다. 위임한 작업이 제대로 일했는데도 경고가 나왔습니다 — 직전 버전에서 들어간 오탐입니다.
+
+### Removed
+- **`nano-simple` 서브에이전트를 걷었습니다.** 매 턴 실리는 목록에서 자리만 차지하고 실제로 쓰이지 않았습니다. 가벼운 모델 등급 자체는 그대로 있습니다.
+
 ## [0.19.0] - 2026-08-07
 ### Added
 - **코드 블록에 복사 버튼.** 비서가 알려준 명령어를 마우스로 긁을 필요 없이 한 번에 복사합니다.
@@ -940,7 +951,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/tigu77/tiguclaw/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tigu77/tiguclaw/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tigu77/tiguclaw/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/tigu77/tiguclaw/compare/v0.16.0...v0.17.0

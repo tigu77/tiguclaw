@@ -27,7 +27,7 @@ export const check: RegressionCheck = {
   guards:
     "SDK 가 서브에이전트 도구를 개명(Task→Agent)하자 잡 등록·경고완화·하드컷면제·잡카드링크가 한꺼번에 죽던 것",
   run: async (): Promise<Assertion[]> => {
-    const { isSubagentTool, isLongRunningByDesign } = await import(
+    const { isSubagentTool, isLongRunningByDesign, isSdkSubagentTool } = await import(
       "../../core/llm-runtime/subagent-tools.js"
     );
     const { toolSlowWarnMs } = await import("../../core/llm-runtime/tool-watchdog.js");
@@ -72,7 +72,7 @@ export const check: RegressionCheck = {
 
     const adapter = await sourceHas(
       "../../core/llm-runtime/adapters/claude-agent-sdk.ts",
-      [/isSubagentTool\(toolName\)/],
+      [/isSdkSubagentTool\(toolName\)/],
     );
     const watchdog = await sourceHas("../../core/llm-runtime/tool-watchdog.ts", [
       /isLongRunningByDesign\(tool\)/,
@@ -111,6 +111,24 @@ export const check: RegressionCheck = {
         "★소비처가 도구 이름을 직접 열거하지 않는다(다섯 번째 곳이 생기지 않게)",
         literalIn.length === 0,
         literalIn.length === 0 ? "리터럴 0" : `리터럴 부활: ${literalIn.join(", ")}`,
+      ),
+      assert(
+        "★`spawn_agent` 은 **SDK 빌트인이 아니다** — 어댑터 관측 잡 등록에서 빠져야 한다",
+        !isSdkSubagentTool("spawn_agent") &&
+          isSdkSubagentTool("Agent") &&
+          isSdkSubagentTool("Task") &&
+          isSubagentTool("spawn_agent"),
+        `sdk(spawn_agent)=${isSdkSubagentTool("spawn_agent")} sdk(Agent)=${isSdkSubagentTool("Agent")} long(spawn_agent)=${isSubagentTool("spawn_agent")}`,
+      ),
+      assert(
+        "★어댑터의 잡 등록은 SDK 판정을 쓴다(넓은 판정을 쓰면 우리 spawn_agent 이 스텝 0으로 오인된다)",
+        (await sourceHas("../../core/llm-runtime/adapters/claude-agent-sdk.ts", [
+          /isSdkSubagentTool\(toolName\)/,
+        ])).ok &&
+          !(await sourceHas("../../core/llm-runtime/adapters/claude-agent-sdk.ts", [
+            /[^d]isSubagentTool\(toolName\)/,
+          ])).ok,
+        "claude-agent-sdk.ts",
       ),
       assert(
         "대시보드 잡카드 링크도 새 이름을 받는다",

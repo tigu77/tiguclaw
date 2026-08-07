@@ -23,13 +23,26 @@
 const OURS = "spawn_agent";
 
 /**
- * 이 도구 호출이 **서브에이전트를 띄우는가**.
+ * **SDK 빌트인** 서브에이전트 도구인가 — `Agent`(0.3+) / `Task`(0.1~0.2, 구 설치본 호환).
+ *
+ * ★우리 `spawn_agent` 과 **반드시 구분**해야 한다 (2026-08-07 거짓 경고로 실증).
+ *  SDK 빌트인은 서브가 **같은 스트림 안**에서 돌아 내부 스텝이 `parent_tool_use_id` 로
+ *  올라온다 — 그래서 어댑터가 관측 잡을 등록하고 스텝을 셀 수 있다.
+ *  `spawn_agent` 은 **우리 런타임**(별도 `agent:<jobId>` 좌표, 자체 잡 등록)에서 돌아
+ *  그 스텝이 어댑터 스트림에 안 온다. 여기에 섞으면 어댑터가 "스텝 0" 으로 보고
+ *  **일을 다 한 에이전트를 안 했다고 경고**한다(실측: codex 에서 4회 순회한 잡).
+ */
+export const isSdkSubagentTool = (tool: string): boolean =>
+  tool === "Agent" || tool === "Task";
+
+/**
+ * 이 도구 호출이 **서브에이전트를 띄우는가**(주인이 누구든).
  *  - `spawn_agent` — 우리 MCP 도구(claude·codex·openai 공통)
- *  - `Agent` — Claude SDK 0.3+ 빌트인
- *  - `Task` — Claude SDK 0.1~0.2 빌트인(구 설치본 호환)
+ *  - `Agent`/`Task` — Claude SDK 빌트인
+ * 시간 정책(느림 경고 완화·하드컷 면제·푸시 억제)은 주인과 무관하므로 이쪽을 쓴다.
  */
 export const isSubagentTool = (tool: string): boolean =>
-  tool === OURS || tool === "Agent" || tool === "Task";
+  tool === OURS || isSdkSubagentTool(tool);
 
 /** 오래 걸리는 게 **정상**인 도구인가 — 느림 경고 완화·하드컷 면제의 공통 기준. */
 export const isLongRunningByDesign = (tool: string): boolean =>

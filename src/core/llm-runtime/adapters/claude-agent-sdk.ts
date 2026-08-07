@@ -103,6 +103,7 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
+import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -119,7 +120,7 @@ import {
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
-import { isSubagentTool } from "../subagent-tools.js";
+import { isSdkSubagentTool } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 
 // ★claude 도구 천장 (2026-07-29 검토) — SDK 는 `MCP_TOOL_TIMEOUT` 미설정 시 1e8ms
@@ -499,6 +500,8 @@ export const runClaude = async (
         }),
         // reply-intent — 이 turn 응답을 트리거 메시지 직접 답글로 마킹 (codex 와 parity).
         "reply-intent": replyIntentServer,
+        // 세션 이름 도구(2026-08-07) — rename_session·list_sessions. 3어댑터 동일 등록(#2).
+        "session-tools": createSessionToolsMcpServer(input.threadKey),
         // send-file — 네이티브 멱등 아웃바운드 전송. 채널 전송 클로저가 있을 때만 등록
         // (스케줄러 등 비채널 turn 은 미등록 = 도구 노출 0). codex 와 parity.
         ...(input.sendAttachment !== undefined
@@ -1535,7 +1538,7 @@ export const runClaude = async (
               // (인터리브 순서 보존 — 텍스트 세그먼트가 이 도구보다 낮은 seq 를 받게).
               closeTextSegment();
               const toolUseId = (block as { id?: unknown }).id;
-              if (isSubagentTool(toolName) && typeof toolUseId === "string") {
+              if (isSdkSubagentTool(toolName) && typeof toolUseId === "string") {
                 registerTaskJob(toolUseId, toolInput);
               }
               // claude 백그라운드 셸 관측 등록(Phase 4, best-effort) — 이 tool_use 자체는
@@ -1573,7 +1576,7 @@ export const runClaude = async (
               // 인라인 스폰 스텝 ↔ 드로어 잡 링크(2026-07-13) — Task 로 등록된 관측 잡 jobId 를
               // 이 활동에 실어 대시보드가 클릭→드로어 점프·상태 표시. (등록 실패 시 undefined.)
               const spawnJobId =
-                isSubagentTool(toolName) && typeof toolUseId === "string"
+                isSdkSubagentTool(toolName) && typeof toolUseId === "string"
                   ? taskJobs.get(toolUseId)?.jobId
                   : undefined;
               // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).

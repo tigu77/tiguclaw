@@ -96,6 +96,8 @@ export const check: RegressionCheck = {
       "read_memory", "search_memory",
       // 부작용이 있으나 재실행이 무해(멱등·표시 전용).
       "reply_to_current_message", "update_todos",
+      // 세션 목록 조회 — 순수 읽기.
+      "list_sessions",
     ]);
     const EXPECT_SIDE_EFFECT = new Set([
       "Bash", "Edit", "KillShell", "Write",
@@ -111,6 +113,8 @@ export const check: RegressionCheck = {
       "register_command", "register_endpoint", "remove_mcp_server",
       "run_in_background", "send_file", "spawn_agent", "steer_worker",
       "update_memory", "update_schedule", "update_self",
+      // 세션 이름 변경 — 되돌릴 수 있지만 상태를 바꾼다(읽기전용 폴백 대상 아님).
+      "rename_session",
     ]);
 
     const unclassified = [...registered].filter(

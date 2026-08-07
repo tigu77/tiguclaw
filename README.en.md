@@ -2,7 +2,7 @@
 
 [한국어](README.md) · **English**
 
-Your always-on AI assistant. Everything Claude Code can do — plus several LLMs at once, reachable from Telegram, a built-in web dashboard, the CLI, or HTTP as a single assistant. You run it on your own machine, with your own keys and your own bot.
+Your always-on AI assistant. It does everything Claude Code does, and runs several LLMs at once. Telegram, the web dashboard, the CLI, HTTP — every door leads to the same assistant. It runs on your machine, with your keys and your bot.
 
 > Think of it as a Claude Code that never sleeps, chats with you on Telegram, and can switch between Claude, GPT, Gemini, or a free local model — all with the same skills.
 
@@ -23,6 +23,8 @@ Your always-on AI assistant. Everything Claude Code can do — plus several LLMs
 - **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
 - **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Always a proposal you approve — it never rewrites itself silently.
 - **Notices its own trouble** — it sweeps its own recent history for things that went wrong quietly (a scheduled message that never arrived, a job that died) and tells you first. Where the fix is safe and reversible — resending that one message, say — it just does it and says so; anything else it brings to you.
+- **When it stalls, it says so** — if a tool hangs with no response, it tells you on screen, and pings your Telegram if that's where you were talking. If nothing comes back it cuts the turn. No more wondering whether it's working or stuck.
+- **Rename a conversation by asking** — "call this one 'billing refactor'" is enough. Handy once several conversations are running at once.
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.
 
 ## Highlights
@@ -241,13 +243,14 @@ The mode is pinned when you install, so it never changes on its own — updates 
 
 Hooks are shell commands the assistant runs at defined moments — to observe what it's doing, or to block an action before it happens. They use the **same `hooks` format as Claude Code's `settings.json`**, so if you already write Claude Code hooks, they carry straight over.
 
-Four events are wired up:
+Five events are wired up:
 
 | Event | When it fires | Typical use |
 |---|---|---|
 | `UserPromptSubmit` | before a turn starts | log or gate incoming prompts |
 | `PreToolUse` | before a tool runs | **block** a tool call (e.g. deny writes to a path) |
 | `PostToolUse` | after a tool returns | observe / audit tool results |
+| `SubagentStop` | after a sub-agent finishes | review or record delegated work |
 | `Stop` | after a turn finishes | post-turn notifications or logging |
 | `SubagentStop` | after a delegated subagent finishes | react to background/subagent completion |
 
@@ -296,7 +299,7 @@ A few things worth knowing:
 - **Per-project hooks.** Put a `hooks` block in `<project>/.tiguclaw/settings.json` and it *merges with* your home hooks whenever the assistant works in that folder — project rules and global rules both fire, no override.
 - **You can watch them.** Hook runs show up in the dashboard's activity monitor (a blocked call is tinted red), and every registered hook is listed under the **🪝 Hooks** category in the dashboard inventory.
 
-Today hooks cover **observing and blocking** tool calls. Finer control — rewriting a tool's input, or injecting extra context — is planned for a later phase.
+Hooks **observe and block** tool calls. On top of that, whatever a `UserPromptSubmit` or `PreToolUse` hook writes to stdout becomes **context the assistant reads** before deciding. One thing is still missing: **rewriting a tool's input**. That comes later.
 
 ## LLM gateway
 

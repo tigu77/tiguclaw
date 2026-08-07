@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-08-07
+### Fixed
+- **훅 문서가 실물보다 뒤처져 있던 것**을 고쳤습니다. 배선된 훅이 다섯 가지인데 넷이라고 적혀 있었고(`SubagentStop` 누락), 이미 되는 기능(훅이 출력한 내용을 비서가 맥락으로 읽는 것)을 "다음 단계로 계획"이라고 적어 뒀습니다. 쓸 수 있는 걸 예정이라고 두면 아무도 안 씁니다.
+- **README 첫 문단과 몇몇 문장**을 한국어로 자연스럽게 다듬었습니다.
+
 ## [0.21.0] - 2026-08-07
 ### Added
 - **프로젝트 전용 스킬·에이전트를 눌러 내용을 봅니다.** 프로젝트 상세에서 항목을 누르면 그 자리에서 본문이 펼쳐집니다 — 어떤 지침으로 도는지 확인하려고 파일을 찾아갈 필요가 없습니다. 목록을 열 때는 이름만 가져오고, 본문은 누를 때만 받아옵니다.
@@ -962,7 +967,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.21.1...HEAD
+[0.21.1]: https://github.com/tigu77/tiguclaw/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/tigu77/tiguclaw/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/tigu77/tiguclaw/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tigu77/tiguclaw/compare/v0.18.0...v0.19.0

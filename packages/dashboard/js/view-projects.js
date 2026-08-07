@@ -451,7 +451,33 @@
         bodySec.appendChild(bodyInner);
         panel.appendChild(bodySec);
 
-        const listSection = (title, items) => {
+        // ★항목을 눌러 본문을 그 자리에서 펼친다 (2026-08-07 사용자 요청).
+        //  프로젝트 전용 능력은 **프로젝트 레벨에서만** 관리한다 — 전역 인벤토리로 보내지
+        //  않는다(거기 없는 것들이고, 섞으면 "메인 대화에서도 쓸 수 있다" 는 오해가 난다).
+        //  본문은 **누를 때만** 가져오고(목록 로드 비대화 0) 한 번 받으면 DOM 에 남긴다.
+        const loadCapabilityBody = async (kind, name, box) => {
+          box.textContent = "불러오는 중…";
+          try {
+            const r = await fetch(
+              "/api/projects/capability?path=" + encodeURIComponent(projectPath) +
+              "&kind=" + encodeURIComponent(kind) + "&name=" + encodeURIComponent(name),
+            );
+            const d = await r.json();
+            if (!r.ok || !d || typeof d.body !== "string") {
+              box.textContent = (d && d.error) || "본문을 불러오지 못했습니다.";
+              return;
+            }
+            box.innerHTML = "";
+            const md = document.createElement("div");
+            md.className = "chat-message md";
+            setChatBody(md, d.body, true);
+            box.appendChild(md);
+          } catch (e) {
+            box.textContent = "본문을 불러오지 못했습니다: " + (e && e.message ? e.message : e);
+          }
+        };
+
+        const listSection = (title, items, kind) => {
           const sec = document.createElement("div");
           sec.className = "pd-section";
           const t = document.createElement("div");
@@ -486,6 +512,25 @@
                 d.textContent = it.description;
                 row.appendChild(d);
               }
+              // 스킬·에이전트만 펼침(MCP 는 파일 본문이 없다 — 설정 한 줄이라 이미 다 보인다).
+              if (kind === "skill" || kind === "agent") {
+                row.classList.add("pd-item-open");
+                row.title = "눌러서 본문 보기";
+                const body = document.createElement("div");
+                body.className = "pd-item-body";
+                body.style.display = "none";
+                let loaded = false;
+                row.addEventListener("click", () => {
+                  const showing = body.style.display !== "none";
+                  body.style.display = showing ? "none" : "";
+                  row.classList.toggle("expanded", !showing);
+                  if (!showing && !loaded) {
+                    loaded = true;
+                    void loadCapabilityBody(kind, it.name, body);
+                  }
+                });
+                row.appendChild(body);
+              }
               list.appendChild(row);
             }
             sec.appendChild(list);
@@ -493,11 +538,11 @@
           panel.appendChild(sec);
         };
 
-        listSection("전용 스킬", detail.skills);
-        listSection("전용 에이전트", detail.agents);
+        listSection("🛠️ 전용 스킬", detail.skills, "skill");
+        listSection("🤖 전용 에이전트", detail.agents, "agent");
         // 전용 MCP — 이 프로젝트로 위임할 때만 노출되는 프로젝트 스코프 MCP(<project>/.mcp.json).
         listSection(
-          "전용 MCP",
+          "🧩 전용 MCP",
           (detail.mcp || []).map((m) => ({ name: m.name, description: m.desc })),
         );
 

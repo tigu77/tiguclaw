@@ -66,7 +66,7 @@ export const check: RegressionCheck = {
     //  (문서만 고치고 코드를 안 고치는 쪽도, 그 반대도 같은 검사에 걸린다.)
     const { readFile } = await import("node:fs/promises");
     const docHits: string[] = [];
-    for (const rel of ["README.md", "README.ko.md"]) {
+    for (const rel of ["README.md", "README.en.md"]) {
       const url = new URL(`../../../_workspace/public-overlay/${rel}`, import.meta.url);
       let doc: string;
       try {

@@ -1177,6 +1177,8 @@ class HttpBridge implements Channel, Observer {
                   ? "read"
                 : pathname === "/shell-output" && method === "GET"
                   ? "read"
+                : pathname === "/projects/capability" && method === "GET"
+                  ? "read"
                 : pathname === "/projects/detail" && method === "GET"
                   ? "read"
                   : pathname === "/messages" && method === "POST"
@@ -2084,6 +2086,51 @@ class HttpBridge implements Channel, Observer {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: msg });
+      }
+      return;
+    }
+
+    // /projects/capability?path=<abs>&kind=skill|agent&name=<name> — 프로젝트 **전용** 능력의
+    // 본문(markdown). 대시보드 프로젝트 상세에서 항목을 **눌렀을 때만** 부른다.
+    //
+    // ★본문을 `/projects/detail` 에 싣지 않는 이유: 스킬 하나가 10KB 를 넘는다. 프로젝트를
+    //  열 때마다 전부 실으면 목록 한 번 보는 데 수십 KB 를 옮기게 된다 — 게으른 조회가 맞다.
+    // ★임의 파일 읽기가 아니다: 경로를 받지 않고 **프로젝트+종류+이름으로 해소**한 뒤 그
+    //  discover 결과의 filePath 만 읽는다. `source === "project"` 로 한 번 더 좁혀 전역 자산도
+    //  이 통로로는 안 나간다(프로젝트 것은 프로젝트 레벨에서만 — 2026-08-07 사용자 확정).
+    if (pathname === "/projects/capability" && method === "GET") {
+      const projectPath = url.searchParams.get("path") ?? "";
+      const kind = url.searchParams.get("kind") ?? "";
+      const name = url.searchParams.get("name") ?? "";
+      if (projectPath.trim() === "" || name.trim() === "") {
+        writeJson(res, 400, { error: "path·name required" });
+        return;
+      }
+      if (kind !== "skill" && kind !== "agent") {
+        writeJson(res, 400, { error: "kind 는 skill 또는 agent" });
+        return;
+      }
+      try {
+        const found =
+          kind === "skill"
+            ? (await discoverSkills(projectPath).catch(() => [])).find(
+                (x) => x.source === "project" && x.name === name,
+              )
+            : (await discoverAgents(projectPath).catch(() => [])).find(
+                (x) => x.source === "project" && x.name === name,
+              );
+        if (found === undefined) {
+          writeJson(res, 404, { error: `이 프로젝트의 ${kind} '${name}' 을 찾을 수 없습니다.` });
+          return;
+        }
+        const raw = await fs.readFile(found.filePath, "utf8");
+        // 상한 — 브라우저 DOM 에 통째로 붓지 않는다(비대화 방지). 넘으면 잘렸다고 말한다.
+        const CAP = 64 * 1024;
+        const body = raw.length > CAP ? `${raw.slice(0, CAP)}\n\n…(${raw.length - CAP}자 생략 — 전문은 ${found.filePath})` : raw;
+        writeJson(res, 200, { name: found.name, kind, body });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
       }
       return;
     }

@@ -594,10 +594,17 @@
         if (!el) return;
         const tk = entry.ownerTk || "";
         const name = tk ? sessionNameFor(tk) : "";
-        if (name === "") { el.style.display = "none"; return; }
+        const raw = entry.rawTkEl;
+        if (name === "") {
+          el.style.display = "none";
+          // 이름을 모르면 좌표라도 보여야 한다 — 둘 다 없으면 어느 대화 것인지 알 길이 없다.
+          if (raw) raw.style.display = "";
+          return;
+        }
         el.textContent = "↪ " + name;
         el.title = "이 작업을 띄운 세션 — 눌러서 이동 (" + tk + ")";
         el.style.display = "";
+        if (raw) raw.style.display = "none"; // 이름이 있으면 좌표는 툴팁에만.
       };
 
       const ensureJobCard = (jobId, opts) => {
@@ -635,7 +642,18 @@
           modelBadge.className = "bg-job-model"; modelBadge.style.display = "none";
           top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
-          meta.textContent = ((opts && opts.ts) || "") + (opts && opts.threadKey ? " · " + opts.threadKey : "");
+          meta.textContent = (opts && opts.ts) || "";
+          // ★원시 좌표는 **이름 배지가 없을 때만** 보인다 (2026-08-07 사용자 지적).
+          //  이름이 붙었는데 `dashboard:05f08ea8-…` 를 나란히 두면 같은 정보를 두 번 말하면서
+          //  긴 쪽이 카드를 밀어낸다. 좌표는 버리는 게 아니라 **툴팁으로** 내린다 — 진단할 땐
+          //  여전히 필요하고(잡↔세션 대조), 평소엔 읽을 일이 없다.
+          const rawTk = document.createElement("span");
+          rawTk.className = "bg-job-rawtk";
+          if (opts && opts.threadKey) {
+            rawTk.textContent = " · " + opts.threadKey;
+            rawTk.title = opts.threadKey;
+          }
+          meta.appendChild(rawTk);
           // ★소속 세션 배지 (2026-08-06) — "이 잡을 어느 대화가 띄웠나". 종전엔 원시 좌표
           //  (`dashboard:1784…`)만 있어 사람이 읽을 수 없었고, 스코프 필터로 거를 수는 있어도
           //  전체를 볼 땐 구분이 안 됐다. 이름은 공유 해석기(서버 정본)에서 가져오고,
@@ -683,7 +701,7 @@
           updateBgJump(); // 새 카드가 위에 쌓임 — 내려본 상태면 "↑ 최신" 노출 갱신.
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
-            sessBadgeEl: sessBadge,
+            sessBadgeEl: sessBadge, rawTkEl: rawTk,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).

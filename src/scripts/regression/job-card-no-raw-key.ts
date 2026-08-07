@@ -1,0 +1,85 @@
+/**
+ * 회귀: **잡 카드에 세션 이름과 원시 좌표를 나란히 두지 않는다** (2026-08-07 사용자 지적).
+ *
+ * 세션 이름 배지가 붙은 뒤로 카드 한 줄이 `12:03:43 · dashboard:05f08ea8-61dc-4e62-…
+ * ↪ 매지프로젝트2` 가 됐다 — **같은 것을 두 번 말하면서** 읽을 수 없는 쪽이 카드를 밀어냈다.
+ * 좌표는 버리지 않고 **툴팁으로** 내린다(진단할 땐 여전히 잡↔세션 대조에 필요하다).
+ *
+ * ★대칭이 핵심이다: 이름을 **모르면 좌표를 되살려야** 한다. 둘 다 숨기면 그 잡이 어느
+ *  대화 것인지 알 길이 없어진다 — "모르는 값을 지어내지 않는다" 의 짝은 "아는 값을 숨기지
+ *  않는다" 다(없는 채널 배지를 지어내던 사고의 반대편).
+ *
+ * 실물 `updateSessionBadge` 를 vm 에 올려 **동작으로** 본다 — 문자열 검사면 토글을 지워도
+ * 초록일 수 있다.
+ */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+interface Painted {
+  badgeShown: boolean;
+  badgeText: string;
+  rawShown: boolean;
+  tipHasKey: boolean;
+}
+
+const paint = (name: string, tk: string): Painted => {
+  const src = readFileSync(
+    path.join(REPO, "packages/dashboard/js/background-drawer.js"),
+    "utf8",
+  );
+  const m = /const updateSessionBadge = \(entry\) => \{[\s\S]*?\n {6}\};/.exec(src);
+  if (m === null) throw new Error("updateSessionBadge 를 못 찾음");
+  const mk = (): Record<string, unknown> => ({
+    style: { display: "?" },
+    textContent: "",
+    title: "",
+  });
+  const ctx: Record<string, unknown> = { sessionNameFor: () => name };
+  vm.createContext(ctx);
+  vm.runInContext(`${m[0]}\nthis.__f = updateSessionBadge;`, ctx);
+  const badge = mk();
+  const raw = mk();
+  (ctx.__f as (e: unknown) => void)({ ownerTk: tk, sessBadgeEl: badge, rawTkEl: raw });
+  const disp = (el: Record<string, unknown>): string =>
+    String((el.style as { display: string }).display);
+  return {
+    badgeShown: disp(badge) !== "none",
+    badgeText: String(badge.textContent),
+    rawShown: disp(raw) !== "none",
+    tipHasKey: String(badge.title).includes(tk),
+  };
+};
+
+export const check: RegressionCheck = {
+  name: "job-card-no-raw-key",
+  guards:
+    "잡 카드가 세션 이름과 원시 좌표를 나란히 보여 같은 말을 두 번 하고 카드를 밀어내던 것",
+  run: async (): Promise<Assertion[]> => {
+    const TK = "dashboard:05f08ea8-61dc-4e62-ae2d-980a0a07d0c7";
+    const named = paint("매지프로젝트2", TK);
+    const unnamed = paint("", TK);
+
+    return [
+      assert(
+        "★이름을 알면 배지만 보이고 원시 좌표는 숨는다(중복 표기 0)",
+        named.badgeShown && !named.rawShown && named.badgeText.includes("매지프로젝트2"),
+        `배지=${named.badgeShown} 좌표=${named.rawShown} "${named.badgeText}"`,
+      ),
+      assert(
+        "숨긴 좌표는 툴팁으로 남는다(진단 시 잡↔세션 대조에 필요)",
+        named.tipHasKey,
+        named.tipHasKey ? "툴팁에 좌표 포함" : "툴팁에서 좌표 유실",
+      ),
+      assert(
+        "★이름을 모르면 좌표를 되살린다(둘 다 숨기면 소속을 알 길이 없다)",
+        !unnamed.badgeShown && unnamed.rawShown,
+        `배지=${unnamed.badgeShown} 좌표=${unnamed.rawShown}`,
+      ),
+    ];
+  },
+};

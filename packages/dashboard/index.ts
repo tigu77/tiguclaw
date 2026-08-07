@@ -24,6 +24,7 @@
  *  - GET  /api/sessions  → bridge GET  /sessions        (JSON pass, 멀티세션 탭 목록+프리뷰)
  *  - GET  /api/projects  → bridge GET  /projects        (JSON pass, 프로젝트 목록)
  *  - GET  /api/projects/detail → bridge GET /projects/detail (JSON pass, 프로젝트 상세)
+ *  - GET  /api/projects/capability → bridge GET /projects/capability (JSON pass, 프로젝트 전용 스킬·에이전트 본문)
  *  - GET  /api/events    → bridge GET  /events          (SSE pipe)
  *  - POST /api/messages  → bridge POST /messages        (body forward)
  *  - POST /api/session-name → bridge POST /session-name (write, 세션 커스텀 이름 설정)
@@ -468,6 +469,13 @@ const server = http.createServer((req, res) => {
     // 프로젝트 목록 — bridge GET /projects (read 토큰 server-side 주입). 대시보드 그리드.
     if (pathname === "/api/projects" && method === "GET") {
       await proxyJson(res, "/projects");
+      return;
+    }
+    // 프로젝트 전용 능력 본문 — bridge GET /projects/capability?path=&kind=&name= (read).
+    // 프로젝트 상세에서 스킬·에이전트 행을 **누를 때만** 부른다(목록엔 본문을 안 싣는다).
+    if (pathname === "/api/projects/capability" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/projects/capability" + qs);
       return;
     }
     // 프로젝트 상세 — bridge GET /projects/detail?path= (read). path 쿼리 그대로 전달.

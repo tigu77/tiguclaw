@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-08-07
+### Added
+- **프로젝트 전용 스킬·에이전트를 눌러 내용을 봅니다.** 프로젝트 상세에서 항목을 누르면 그 자리에서 본문이 펼쳐집니다 — 어떤 지침으로 도는지 확인하려고 파일을 찾아갈 필요가 없습니다. 목록을 열 때는 이름만 가져오고, 본문은 누를 때만 받아옵니다.
+
+### Changed
+- **문서 기본 언어가 한국어가 됐습니다.** `README.md`·`docs/security.md` 가 한국어, 영어판은 `README.en.md`·`docs/security.en.md` 로 나란히 있습니다. 상단 링크로 오갈 수 있습니다.
+
+### Fixed
+- **프로젝트 전용 MCP 서버가 전역으로 등록되던 것**을 막았습니다. 특정 프로젝트에서만 쓰는 서버가 전역에 들어가면 무관한 대화에도 도구가 실리고, 그 앱이 없는 컴퓨터에서는 켤 때마다 연결 실패가 납니다. 이제 프로젝트 폴더를 가리키는 서버를 전역으로 등록하려 하면 막고 올바른 방법을 알려줍니다.
+- **작업 카드에 대화 이름과 내부 식별자가 같이 뜨던 것**을 정리했습니다. 이름이 있으면 이름만 보이고, 식별자는 마우스를 올리면 나옵니다.
+
 ## [0.20.0] - 2026-08-07
 ### Added
 - **대화 이름을 말로 바꿉니다.** "이 대화 이름 '핫딜 리팩터링'으로 바꿔줘" 처럼 부탁하면 됩니다. 세션 목록도 물어볼 수 있습니다. 삭제·보관은 일부러 넣지 않았습니다 — 되돌릴 수 없거나 사용자 판단이 필요한 일은 사람이 합니다.
@@ -951,7 +962,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/tigu77/tiguclaw/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/tigu77/tiguclaw/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/tigu77/tiguclaw/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/tigu77/tiguclaw/compare/v0.17.0...v0.18.0

@@ -204,7 +204,7 @@ export const check: RegressionCheck = {
     };
     for (const [f, shipped] of [
       ["_workspace/public-overlay/README.md", "README.md"],
-      ["_workspace/public-overlay/README.ko.md", "README.ko.md"],
+      ["_workspace/public-overlay/README.en.md", "README.en.md"],
     ] as const) {
       const src = readEither(f, shipped);
       if (src === null) {

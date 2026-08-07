@@ -991,6 +991,13 @@
       .pd-body.md :first-child { margin-top:0; } .pd-body.md :last-child { margin-bottom:0; }
       .pd-list { display:flex; flex-direction:column; gap:7px; }
       .pd-agents-grid { display:flex; flex-direction:column; gap:8px; }
+      /* 프로젝트 전용 능력 — 눌러서 본문 펼치기(2026-08-07). 전역 인벤토리로 안 보낸다. */
+      .pd-item.pd-item-open { cursor:pointer; }
+      .pd-item.pd-item-open:hover { background:var(--card-hover); }
+      .pd-item.pd-item-open .pd-item-name::after { content:"▸"; margin-left:6px; color:var(--text-dim); font-size:10px; }
+      .pd-item.pd-item-open.expanded .pd-item-name::after { content:"▾"; }
+      .pd-item-body { margin-top:8px; padding:10px 12px; background:rgba(0,0,0,.24);
+        border:1px solid var(--border); border-radius:8px; max-height:420px; overflow:auto; cursor:default; }
       .pd-item { padding:9px 11px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.02); }
       .pd-item-name { font-size:12px; font-weight:800; color:var(--text); word-break:break-word; }
       .pd-item-model { display:inline-block; margin-left:6px; font-size:9px; font-weight:800; letter-spacing:.03em; color:var(--accent-2); background:rgba(167,139,250,.12); border:1px solid var(--border); border-radius:6px; padding:1px 5px; vertical-align:middle; font-family:ui-monospace,"SF Mono",Menlo,monospace; }

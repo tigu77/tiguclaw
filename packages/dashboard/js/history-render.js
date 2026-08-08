@@ -255,7 +255,28 @@
 
       // 메시지+활동 → 시간순 병합 후 연속된 같은 턴(threadKey·seq 증가)의 활동을 turn 으로 묶은
       // ASC 유닛 배열. 라이브 turn-card 파리티. 메시지·threadKey 변경·seq 리셋이 경계.
+      /**
+       * 세그먼트 자리에 그릴 **본문**을 고른다 — 정본(chat_log) 우선, 위치는 세그먼트.
+       *
+       * events 의 텍스트 세그먼트는 페이로드 상한에 걸려 **잘린 채 저장될 수 있다**
+       * (실측 2026-08-08: 12,650자 답변이 301자). chat_log 는 대화 정본이라 무손실이다.
+       * 판정: 세그먼트가 정본의 **앞부분**이면(= 잘린 전체 답변) 정본으로 올린다.
+       * 한 턴에 세그먼트가 여럿이면(도구와 교차) 뒤쪽 것은 정본의 *뒷부분*이라 안 걸린다
+       * — 그래야 앞 세그먼트 내용이 중복되지 않는다.
+       *
+       * @returns 올릴 본문(문자열) 또는 null(그대로 둔다).
+       */
+      const canonicalBodyFor = (segText, entryText) => {
+        if (typeof entryText !== "string" || entryText === "") return null;
+        const segRaw = String(segText || "");
+        if (segRaw === "") return null;
+        const seg = segRaw.endsWith("…") ? segRaw.slice(0, -1) : segRaw;
+        if (seg === "" || entryText.length <= segRaw.length) return null;
+        return entryText.startsWith(seg) ? entryText : null;
+      };
+
       const groupMergedItems = (entries, activities) => {
+        let lastTextUnit = null; // 마지막 텍스트 세그먼트 유닛(정본 본문으로 올릴 대상).
         const merged = [
           ...entries.map((e) => ({ ts: e.ts, m: e })),
           ...activities.map((a) => ({ ts: a.ts, a })),
@@ -286,18 +307,34 @@
             // 하지 않는다(아웃바운드 첨부 카드 보존, #2). 순수 텍스트 행만 세그먼트 중복으로 간주.
             const mHasAtt = it.m.attachments && it.m.attachments.length;
             if (it.m.role === "assistant" && !mHasAtt && sawTextThread && it.m.threadKey === sawTextThread) {
+              // ★버리기 전에 **본문을 정본으로 올린다** (2026-08-08 사용자 신고).
+              //  세그먼트(`llm.activity kind:"text"`)는 events 에 있고 그 테이블엔 페이로드
+              //  상한이 있어 **긴 답변이 잘린 채 저장될 수 있다**(실측: 12,650자 답변이 301자).
+              //  chat_log 는 대화 **정본**이라 무손실이다. 종전엔 세그먼트를 그리고 정본을
+              //  통째로 버려서, 화면이 잘린 사본을 보여주고 **새로고침해도 그대로**였다.
+              //  ★역할을 나눈다: 세그먼트는 **위치**(도구와의 인터리브 순서), 정본은 **내용**.
+              //  판정은 "세그먼트가 정본의 앞부분인가" — 한 턴에 세그먼트가 여럿이면(도구와
+              //  교차) 마지막 것은 정본의 *뒷부분*이라 이 검사에 안 걸린다(중복 방지).
+              if (lastTextUnit) {
+                const body = canonicalBodyFor(lastTextUnit.act.text, it.m.text);
+                if (body !== null) lastTextUnit.act = { ...lastTextUnit.act, text: body };
+              }
               renderedMsgKeys.add(msgKey(it.m.ts, "assistant"));
               sawTextThread = null;
+              lastTextUnit = null;
               continue;
             }
             sawTextThread = null;
+            lastTextUnit = null;
             units.push({ kind: "msg", entry: it.m });
           } else {
             const a = it.a; const seq = typeof a.seq === "number" ? a.seq : 0;
             if (a.kind === "text") {
               flush();                                  // 텍스트 앞의 도구 런 마감(seq 순 교차).
-              units.push({ kind: "text", act: a });     // 항상 보이는 마크다운 버블(도구 런과 교차).
+              const tu = { kind: "text", act: a };       // 항상 보이는 마크다운 버블(도구 런과 교차).
+              units.push(tu);
               sawTextThread = a.threadKey;
+              lastTextUnit = tu;                          // 정본 승격 대상(위 참조).
             } else if (cur && cur.threadKey === a.threadKey && seq > cur.lastSeq) {
               cur.acts.push(a); cur.lastSeq = seq;
             } else {

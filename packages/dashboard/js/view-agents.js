@@ -46,7 +46,9 @@
         }
         const meta = document.createElement("div"); meta.className = "agent-card-meta";
         const el = document.createElement("span"); el.className = "agent-card-elapsed";
-        el.textContent = fmtElapsed(now - (e.startTs || now));
+        // 로드 순서 가드 — 정의(background-drawer.js)가 이 파일보다 뒤다.
+        el.textContent =
+          typeof fmtElapsed === "function" ? fmtElapsed(now - (e.startTs || now)) : "";
         if (e.status === "running" && elapsedRegistry) elapsedRegistry.set(jobId, el);
         meta.appendChild(el);
         const hasDetail = !!(e.task || e.result || e.errorText || e.stepCount > 0);

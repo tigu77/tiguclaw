@@ -277,7 +277,13 @@
         }
         const meta = document.createElement("div"); meta.className = "agent-card-meta";
         const el = document.createElement("span"); el.className = "agent-card-elapsed";
-        el.textContent = fmtElapsed(now - (entry.startedAt || now));
+        // ★로드 순서 경합 가드 (2026-08-08, 헤드리스 실측). `fmtElapsed` 는
+        //  `background-drawer.js`(로드 13번)에 있는데 이 파일은 7번이다 — 그 사이에 셸
+        //  이벤트가 도착하면 `ReferenceError: fmtElapsed is not defined` 로 렌더가 **통째로
+        //  죽는다**(콘솔에 실제로 2건 찍혔다). 정의 전이면 빈 값으로 두고, 다음 갱신 틱이
+        //  채운다(`shellElapsedEls` 에 등록되므로 1초 뒤 정상 표시).
+        el.textContent =
+          typeof fmtElapsed === "function" ? fmtElapsed(now - (entry.startedAt || now)) : "";
         if (entry.status === "running") shellElapsedEls.set(entry.shellId, el);
         meta.appendChild(el);
         if (entry.status !== "running" && entry.exitCode != null) {

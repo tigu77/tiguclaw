@@ -56,6 +56,11 @@ export const check: RegressionCheck = {
     // 브라우저 IIFE 라 import 가 안 된다 → 함수 본문만 떼어 vm 에서 **실제로 돌린다**
     // (문자열 존재 검사로는 이 결함이 안 잡힌다 — 모든 부품이 "있었으니까").
     const m = /const groupMergedItems = \([\s\S]*?\n {6}\};/.exec(src);
+    // ★`groupMergedItems` 가 쓰는 형제 헬퍼도 같이 떼어낸다 (2026-08-08). 안 그러면 본문에
+    //  헬퍼 호출이 추가되는 순간 이 검사가 `ReferenceError` 로 **던진다** — 올바른 수정을
+    //  처벌하는 자리다(오늘 실제로 그렇게 걸렸다). 스텁이 아니라 **진짜 헬퍼**를 넣어야
+    //  병합 동작을 그대로 본다.
+    const helper = /const canonicalBodyFor = \([\s\S]*?\n {6}\};/.exec(src);
     out.push(
       assert("groupMergedItems 를 떼어낸다(검사 전제)", m !== null, m === null ? "★못 찾음" : "OK"),
     );
@@ -66,6 +71,7 @@ export const check: RegressionCheck = {
     vm.runInContext(
       `const renderedMsgKeys = new Set();
        const msgKey = (ts, role) => ts + "|" + role;
+       ${helper === null ? "const canonicalBodyFor = () => null;" : helper[0]}
        ${m[0]}
        this.groupMergedItems = groupMergedItems;`,
       ctx,

@@ -94,7 +94,11 @@ export const check: RegressionCheck = {
       "utf8",
     );
     const writes = (src.match(/upsertThreadSummary\(\{/g) ?? []).length;
-    const gates = (src.match(/isUsableSummary\(fresh\)/g) ?? []).length;
+    // ★인자 **이름**이 아니라 **판정 호출**을 센다 (2026-08-09). 종전엔
+    //  `isUsableSummary(fresh)` 로 변수명까지 박아, 같은 판정을 다른 이름의 값에 적용한
+    //  세 번째 쓰기 경로(누적 요약 재압축)를 "가드 없음" 으로 오탐했다 — 손으로 적은
+    //  이름이 판정을 가로챈 것이다([[feedback_hand_maintained_lists]]).
+    const gates = (src.match(/isUsableSummary\([A-Za-z_$][\w$]*\)/g) ?? []).length;
     out.push(
       assert(
         "★요약 저장 지점 수 = 품질 판정 지점 수(가드 없는 쓰기 경로 0)",

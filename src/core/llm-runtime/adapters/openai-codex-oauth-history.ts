@@ -561,10 +561,55 @@ export type ResponseInputItem =
  *
  * 실패/타임아웃은 throw — 호출자(buildTurnHistory)가 catch 해 oldest-drop 폴백.
  */
-const SUMMARIZE_INSTRUCTIONS =
-  "당신은 간결한 대화 요약기입니다. 주어진 대화 조각을 한국어 3~6문장으로 요약하세요. " +
-  "핵심 결정·사실·미해결 항목·사용자 의도를 보존하고, 인사·잡담은 생략하세요. " +
-  "요약 텍스트만 출력하고 머리말/메타설명은 붙이지 마세요.";
+/**
+ * 요약 지침 — **분량을 입력 크기에 비례**시킨다 (2026-08-09).
+ *
+ * ★종전엔 `"한국어 3~6문장으로 요약하세요"` 로 **입력과 무관하게 고정**이었다. 그래서 4만 자를
+ *  접든 2만 자를 접든 결과가 늘 300~700자였다 — 실측: 한 스레드가 하루에 **623,045자**를 접었는데
+ *  남은 요약이 **589자**(1,000:1), 62턴 40,542자를 **90자**로 만든 것도 있다. 전 스레드 5개가
+ *  273~695자로 **똑같이** 몰려 있었다(분량이 내용이 아니라 지침을 따랐다는 증거).
+ *
+ * ★이건 압축이 아니라 **망각**이다. 그리고 매 압축마다 다시 일어나 지수적으로 증발했다.
+ *  같은 뿌리의 형제 사고가 [[project_codex_history_compaction]] 이다.
+ */
+export const summarizeInstructions = (targetChars: number): string =>
+  "당신은 대화 요약기입니다. 주어진 대화 조각을 한국어로 요약하세요. " +
+  `분량은 **${targetChars}자 내외**입니다 — 짧게 줄이려 하지 마세요. 그 분량을 다 쓰십시오. ` +
+  // ★첫 문장은 **좌표**다 (2026-08-09, 실측에서 발견). 라이브 대화로 검증했더니 사실·수치·
+  //  파일명은 지어낸 것 없이 정확히 보존했는데(주장 21개 전수 원문 확인), 원문 첫 발화의
+  //  프로젝트 태그(`#핫딜숏폼커머스엔진`, 원문 6회)가 요약엔 **0회**였다. 나머지가 다 맞아도
+  //  **어느 프로젝트 일인지 모르는 요약**은 이어서 할 수가 없다. 지침에 그 축이 없었을 뿐,
+  //  모델은 지침을 충실히 따랐다.
+  "★첫 문장에 **무엇에 관한 작업인지**를 밝히세요 — 프로젝트·레포·대상 시스템의 이름과 " +
+  "대화에 나온 `#태그`를 **그대로** 옮깁니다(좌표 없는 요약은 이어서 할 수 없습니다). " +
+  "이어서 핵심 결정·사실·수치·파일명·미해결 항목·사용자 의도를 **구체적으로** 보존하고, " +
+  "인사·잡담·중복은 생략하세요. 요약 텍스트만 출력하고 머리말/메타설명은 붙이지 마세요.";
+
+/**
+ * 접은 원문 대비 요약 분량 비율. env `CODEX_SUMMARY_RATIO`.
+ * 4%면 4만 자 폴드 → 1,600자. 종전 고정 300자의 5배 이상이고, 프롬프트에 실리는 비용은
+ * 접어서 없앤 양에 비하면 미미하다(4만 자를 지우고 1,600자를 남기는 거래).
+ */
+const CODEX_SUMMARY_RATIO = (() => {
+  const raw = Number(process.env.CODEX_SUMMARY_RATIO);
+  return Number.isFinite(raw) && raw > 0 && raw <= 0.5 ? raw : 0.04;
+})();
+/** 한 조각 요약의 하한·상한 — 비율이 극단 입력에서 튀지 않게. */
+const SUMMARY_TARGET_MIN = 400;
+const SUMMARY_TARGET_MAX = 4_000;
+export const summaryTargetFor = (foldedChars: number): number =>
+  Math.min(
+    SUMMARY_TARGET_MAX,
+    Math.max(SUMMARY_TARGET_MIN, Math.round(foldedChars * CODEX_SUMMARY_RATIO)),
+  );
+
+/**
+ * 누적 요약의 상한 — 여기 닿을 때만 **옛 구간을 재압축**한다. env `CODEX_SUMMARY_MAX_CHARS`.
+ *
+ * ★핵심: 재요약을 **횟수 기반에서 크기 기반으로** 옮긴다. 종전엔 압축할 때마다 옛 요약을
+ *  통째로 다시 요약해(= 매번 재압축) 세대가 무한히 쌓였다. 이제 새 조각 요약은 **덧붙이고**,
+ *  누적본이 상한을 넘을 때만 앞쪽 구간을 한 번 접는다 — 드물게, 그리고 요약만 입력으로.
+ */
 
 /**
  * **압축 연속 실패 추적** (2026-07-29).
@@ -615,6 +660,7 @@ async function summarizeViaCodex(
   accessToken: string,
   accountId: string | undefined,
   model: string,
+  targetChars: number,
 ): Promise<string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -629,7 +675,7 @@ async function summarizeViaCodex(
   // store:false, stream:true. reasoning 최소화로 요약 텍스트 슬롯 확보(finalFlush 동형).
   const body = JSON.stringify({
     model,
-    instructions: SUMMARIZE_INSTRUCTIONS,
+    instructions: summarizeInstructions(targetChars),
     input: [
       {
         type: "message",
@@ -726,6 +772,134 @@ let cooldownPort: CooldownPort | null = null;
 export const setSummarizerCooldownPort = (p: CooldownPort): void => {
   cooldownPort = p;
 };
+
+/** 누적 요약의 구간 구분자 — 재압축 때 "앞쪽 구간"을 잘라내는 경계다. */
+// ★모델이 **낼 수 없는** 문자열이어야 한다 (2026-08-09 적대 검토). 종전 `\n\n---\n\n` 는
+//  마크다운 수평선과 같은 글자라, 요약 본문에 `---` 가 나오면 재압축 경계가 **한 요약의
+//  한복판**에 떨어져 앞 절반만 접히고 뒤가 남는 조각 요약이 생겼다(데이터 유실은 없다).
+//  HTML 주석은 요약 지침이 요구하는 산문에 나올 이유가 없다.
+export const SUMMARY_SECTION_SEP = "\n\n<!--§-->\n\n";
+
+/**
+ * 새 조각 요약을 **덧붙인다** — 옛 요약은 건드리지 않는다 (2026-08-09).
+ *
+ * ★종전엔 `[기존 요약] + [새 원문]` 을 통째로 다시 요약해 옛 요약을 **덮어썼다**. 압축이
+ *  돌 때마다 옛 내용이 한 세대씩 더 뭉개져, 623,045자가 589자로 남았다. 덧붙이면 재요약
+ *  세대가 **0**이 된다 — 옛 구간은 처음 요약된 그 문장 그대로 남는다.
+ *  ★프리픽스 캐시에도 맞다: 앞부분이 안 바뀌므로 캐시가 살아 있다
+ *  ([[project_prompt_prefix_cache_position]]).
+ */
+export const appendSummarySection = (prior: string, fresh: string): string => {
+  const f = fresh.trim();
+  if (f === "") return prior;
+  return prior === "" ? f : `${prior}${SUMMARY_SECTION_SEP}${f}`;
+};
+
+/**
+ * 누적 요약이 상한을 넘었나 — **넘을 때만** 앞쪽 구간을 한 번 접는다.
+ *
+ * 재요약을 *횟수 기반*(매 압축마다)에서 **크기 기반**(상한에 닿을 때만)으로 옮기는 판정이다.
+ * 최근 구간이 원문에 가까우므로 **앞에서부터** 접는다.
+ */
+export const planSummaryRecompaction = (
+  summary: string,
+  cap: number,
+): { needed: boolean; oldPart: string; keepPart: string } => {
+  if (summary.length <= cap) return { needed: false, oldPart: "", keepPart: summary };
+  const sections = summary.split(SUMMARY_SECTION_SEP);
+  // 구간이 하나뿐이면 접을 경계가 없다 — 그냥 둔다(길어도 손실은 없다).
+  if (sections.length < 2) return { needed: false, oldPart: "", keepPart: summary };
+  const half = summary.length / 2;
+  let acc = 0;
+  let cut = 1;
+  for (let i = 0; i < sections.length - 1; i++) {
+    acc += (sections[i] as string).length;
+    cut = i + 1;
+    if (acc >= half) break;
+  }
+  return {
+    needed: true,
+    oldPart: sections.slice(0, cut).join(SUMMARY_SECTION_SEP),
+    keepPart: sections.slice(cut).join(SUMMARY_SECTION_SEP),
+  };
+};
+
+/**
+ * 압축 저수위 — 임계의 몇 %까지 내려갈 것인가 (2026-08-09).
+ *
+ * ★함수로 뽑은 이유: 종전엔 드라이버 안 지역변수라 **검사가 값을 볼 수 없었고**, 곱하기를
+ *  나누기로 바꾸는 오타형 변이(`trigger/ratio` = 250,000)가 회귀를 통과했다 — 저수위가
+ *  임계보다 커져 2패스 이후가 절대 안 돌고 진동이 조용히 복원된다.
+ */
+export const lowWaterMark = (
+  trigger: number = CODEX_HISTORY_COMPACT_TRIGGER_CHARS,
+  ratio: number = CODEX_COMPACT_LOW_WATER_RATIO,
+): number => Math.max(1, Math.floor(trigger * ratio));
+
+/** 이번 패스의 계획 옵션 — 1회차는 고수위(기본 임계), 2회차부터는 저수위로 판정한다. */
+export const nextPassOpts = (
+  pass: number,
+  foldBudget: number,
+  low: number,
+): { maxFoldChars: number; triggerChars?: number } =>
+  pass === 0 ? { maxFoldChars: foldBudget } : { maxFoldChars: foldBudget, triggerChars: low };
+
+/**
+ * 한 패스의 결과를 상태에 반영한다 — **성공했을 때만** watermark 를 전진시킨다.
+ *
+ * ★이 함수가 없을 때 통과한 변이: `watermark = plan.nextWatermark` 를 성공 분기 **밖으로**
+ *  옮기면, 쓸모없는 요약이 나와도 워터마크가 전진해 그 턴들이 **영영 프롬프트에 안 실린다**
+ *  (2026-08-01 사고 47턴 40,121자 유실과 동일 형상). 판정을 순수 함수로 두면 검사가
+ *  **실행해서** 확인한다([[feedback_gate_must_actually_run]]).
+ */
+export interface CompactionAccum {
+  summary: string;
+  watermark: number;
+  foldedTurns: number;
+  foldedChars: number;
+}
+export const applyFoldResult = (
+  prev: CompactionAccum,
+  fresh: string,
+  plan: { toFold: unknown[]; nextWatermark: number },
+  foldedChars: number,
+): { next: CompactionAccum; accepted: boolean } => {
+  if (!isUsableSummary(fresh)) return { next: prev, accepted: false };
+  return {
+    accepted: true,
+    next: {
+      summary: appendSummarySection(prev.summary, fresh),
+      watermark: plan.nextWatermark,
+      foldedTurns: prev.foldedTurns + plan.toFold.length,
+      foldedChars: prev.foldedChars + foldedChars,
+    },
+  };
+};
+
+/** 누적 요약 재압축을 한 턴에 시도하는 최대 횟수 — 상한 아래로 수렴시키되 바운드한다. */
+export const CODEX_SUMMARY_RECOMPACT_MAX_PASSES = 2;
+
+/**
+ * 재압축 결과를 받아들일지 판정한다 — **줄어들 때만** 받는다 (2026-08-09 적대 검토).
+ *
+ * ★`recompactTargetFor` 는 모델에 주는 *부탁*이지 절단이 아니다. 목표를 넘겨 돌려주면
+ *  누적본이 오히려 커져 상한이 무의미해지고, 그 요약은 매 턴 프롬프트에 실려
+ *  `CODEX_TURN_HISTORY_CHAR_CAP` 예산에서 **최근 원문 턴을 조용히 밀어낸다**.
+ *  받아들일 수 없으면 `null` — 호출부는 원본을 유지하고 로그를 남긴다.
+ */
+export const applyRecompaction = (
+  summary: string,
+  folded: string,
+  rec: { oldPart: string; keepPart: string },
+): string | null => {
+  if (!isUsableSummary(folded)) return null;
+  const next = appendSummarySection(folded.trim(), rec.keepPart);
+  return next.length < summary.length ? next : null;
+};
+
+/** 요약을 요약할 때의 분량 — 원문 요약(4%)과 달리 이미 압축된 글이라 훨씬 완만하게 줄인다. */
+export const recompactTargetFor = (chars: number): number =>
+  Math.min(SUMMARY_TARGET_MAX * 2, Math.max(SUMMARY_TARGET_MIN, Math.round(chars * 0.4)));
 
 export const MIN_USABLE_SUMMARY_CHARS = 50;
 export const isUsableSummary = (summary: string): boolean =>
@@ -957,10 +1131,17 @@ export const compactThreadNow = async (
   const folded = plan.toFold
     .map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`)
     .join("\n");
-  const prompt =
-    prior === "" ? folded : `[기존 요약]\n${prior}\n\n[이어지는 대화]\n${folded}`;
+  // ★새 조각만 요약하고 **덧붙인다** — 옛 요약을 다시 요약하지 않는다(2026-08-09).
+  //  자동 경로와 **같은 판정**을 쓴다. 한쪽만 고치면 반쪽이다(2026-08-01 에 그렇게 데였다).
+  const prompt = folded;
   try {
-    const fresh = await summarizeViaCodex(prompt, accessToken, accountId, model);
+    const fresh = await summarizeViaCodex(
+      prompt,
+      accessToken,
+      accountId,
+      model,
+      summaryTargetFor(folded.length),
+    );
     // ★자동 경로와 **같은 판정**을 쓴다 (2026-08-01). 종전엔 여기도 `=== ""` 뿐이라
     //  5자짜리를 통과시켜 compactedThrough 를 확정했다 — 자동 경로만 고쳤으면 반쪽이다.
     //  (회귀의 배선 단언이 이 두 번째 쓰기 경로를 잡아냈다.)
@@ -974,7 +1155,7 @@ export const compactThreadNow = async (
     }
     upsertThreadSummary({
       threadKey,
-      summary: fresh.trim(),
+      summary: appendSummarySection(prior, fresh),
       compactedThrough: plan.nextWatermark,
     });
     noteCompactionOutcome(threadKey, true, "", prompt.length);
@@ -1028,19 +1209,30 @@ export const buildTurnHistory = async (
 
   // watermark 이후(미요약) 턴만 추려 압축 트리거 판정.
   const unsummarized = allTurns.filter((t) => t.id > watermark);
-  const plan = planHistoryCompaction(unsummarized, watermark, {
-    maxFoldChars: currentFoldBudget(input.threadKey),
-  });
+  // ★저수위까지 **여러 번** 접는다 (2026-08-09). 1회차는 고수위(임계)로 판정하고, 2회차부터는
+  //  저수위를 임계로 삼아 그 아래로 내려갈 때까지 반복한다. 각 패스의 크기는 적응 예산 그대로라
+  //  요약 호출은 안전하고, 한 번 정리하면 한동안 안 돌아온다(진동 제거).
+  const lowWater = lowWaterMark();
+  let plan = planHistoryCompaction(
+    unsummarized,
+    watermark,
+    nextPassOpts(0, currentFoldBudget(input.threadKey), lowWater),
+  );
+  let compactPass = 0;
+  // ★알림은 **턴에 한 번**이다 (2026-08-09). 저수위까지 여러 번 접게 되자 알림도 패스마다
+  //  나가 사용자에게 "3번에 걸쳐" 보였다 — 사용자에겐 한 번의 정리인데 **내부 패스 수가
+  //  새어 나온 것**이다. 관측은 사용자가 겪는 단위로 묶는다.
+  let foldedTurnsTotal = 0;
+  let foldedCharsTotal = 0;
 
-  if (plan.needed) {
+  while (plan.needed && compactPass < CODEX_COMPACT_MAX_PASSES) {
+    compactPass += 1;
     // 오래된 턴 + 기존 요약 → 요약 LLM 호출 1회 (isolated, 재귀 없음).
     const foldedText = plan.toFold
       .map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`)
       .join("\n");
-    const prompt =
-      summary === ""
-        ? foldedText
-        : `[기존 요약]\n${summary}\n\n[이어지는 대화]\n${foldedText}`;
+    // ★새로 접는 조각**만** 요약한다 — 옛 요약은 손대지 않고 아래에서 덧붙인다.
+    const prompt = foldedText;
     // ★한도 중이면 **때리지 않는다** (2026-08-01). 종전엔 메인 턴이 쿨다운으로 건너뛰는
     //  동안에도 요약만 계속 호출해 실패했고, 실패할 때마다 oldest-drop 으로 맥락이 잘렸다.
     //  키는 메인 턴과 같은 규칙(provider ?? adapter) — 같은 백엔드를 같은 이름으로 센다.
@@ -1052,12 +1244,27 @@ export const buildTurnHistory = async (
           `(oldest-drop 폴백, watermark 유지 → 해제 후 재시도)`,
       );
       noteCompactionOutcome(input.threadKey, false, "쿨다운", prompt.length);
+      break; // 쿨다운 중엔 더 시도하지 않는다.
     } else
     try {
-      const fresh = await summarizeViaCodex(prompt, accessToken, accountId, model);
-      if (isUsableSummary(fresh)) {
-        summary = fresh.trim();
-        watermark = plan.nextWatermark;
+      const fresh = await summarizeViaCodex(
+        prompt,
+        accessToken,
+        accountId,
+        model,
+        summaryTargetFor(foldedText.length),
+      );
+      const applied = applyFoldResult(
+        { summary, watermark, foldedTurns: foldedTurnsTotal, foldedChars: foldedCharsTotal },
+        fresh,
+        plan,
+        foldedText.length,
+      );
+      if (applied.accepted) {
+        summary = applied.next.summary;
+        watermark = applied.next.watermark;
+        foldedTurnsTotal = applied.next.foldedTurns;
+        foldedCharsTotal = applied.next.foldedChars;
         upsertThreadSummary({
           threadKey: input.threadKey,
           summary,
@@ -1068,24 +1275,20 @@ export const buildTurnHistory = async (
         );
         growFoldBudget(input.threadKey);
         noteCompactionOutcome(input.threadKey, true, "", prompt.length);
-        // ★압축 사실을 알린다 (2026-07-29). 종전엔 **성공해도 아무도 몰랐다** — 실패만
-        //  로그에 남았다. 대화가 길어져 옛 내용이 요약으로 바뀌는 건 사용자가 알아야 할
-        //  상태 변화다(클로드코드가 압축을 표시하는 것과 같은 이유). 임계 초과 시에만
-        //  일어나므로 매 턴 뜨지 않는다.
-        try {
-          getEventBus().publish({
-            type: "llm.compacted",
-            ts: Date.now(),
-            payload: {
-              threadKey: input.threadKey,
-              foldedTurns: plan.toFold.length,
-              foldedChars: prompt.length,
-              summaryChars: summary.length,
-            },
-          });
-        } catch {
-          /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+        // ★목표에 한참 못 미치면 남긴다 — 하한(50자)은 통과하지만 **내용이 증발한** 경우다.
+        //  실제로 40,542자를 90자로 만든 요약이 성공으로 지나갔고 아무 데도 안 남았다.
+        //  판정 수치를 실어야 로그만으로 잡힌다([[feedback_logs_must_stand_alone]]).
+        const want = summaryTargetFor(foldedText.length);
+        const got = fresh.trim().length;
+        if (got < want * 0.3) {
+          console.warn(
+            `[codex 6b] 요약이 목표에 크게 못 미침 — ${foldedText.length}자 → ${got}자 ` +
+              `(목표 ${want}자의 ${Math.round((got / want) * 100)}%). 압축은 진행하지만 맥락 손실 가능.`,
+          );
         }
+        // 알림은 루프가 끝난 뒤 **합계로 한 번** 나간다(아래). 여기선 세기만 한다.
+        //  ★자 수는 `foldedText` 를 센다 — `prompt` 는 패스마다 **직전 요약을 앞에 달아**
+        //   보내므로 그걸 합치면 요약이 중복 계상된다.
       } else {
         // 빈/토막 요약 = 무의미 → 폴백(요약 미반영, watermark 유지). 조용히 X.
         //  ★수치를 실어야 로그만으로 잡힌다 — "빈 결과" 만으로는 5자가 온 건지 0자가 온
@@ -1116,6 +1319,82 @@ export const buildTurnHistory = async (
               : ` → 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`),
       );
       noteCompactionOutcome(input.threadKey, false, msg, prompt.length);
+      break; // 실패하면 같은 턴에서 더 시도하지 않는다(같은 벽을 연달아 때리지 않게).
+    }
+    // 다음 패스 — **저수위**를 임계로 재판정. 아래로 내려갔으면 needed=false 로 루프 종료.
+    plan = planHistoryCompaction(
+      allTurns.filter((t) => t.id > watermark),
+      watermark,
+      nextPassOpts(compactPass, currentFoldBudget(input.threadKey), lowWater),
+    );
+  }
+
+  // ★누적 요약이 상한을 넘으면 **그때만** 앞 구간을 한 번 접는다 (2026-08-09).
+  //  재요약을 *횟수 기반*에서 **크기 기반**으로 옮기는 자리다. 실패해도 그냥 둔다 —
+  //  요약이 좀 긴 것뿐이고 손실은 0이다(원문을 버리는 결정이 아니다).
+  // ★상한 아래로 **내려갈 때까지** 돈다(바운드). 종전엔 턴당 1회라 수렴 보장이 없었다 —
+  //  누적 요약은 매 턴 프롬프트에 실리고 `charSum` 시드로 들어가므로, 안 줄면 **최근 원문
+  //  턴을 조용히 밀어낸다**(사용자 증상: "최근 대화를 못 따라온다", 로그엔 아무것도 없음).
+  for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
+    const rec = planSummaryRecompaction(summary, CODEX_SUMMARY_MAX_CHARS);
+    if (!rec.needed) break;
+    if ((cooldownPort?.remainingMs(input.provider ?? "codex-oauth") ?? 0) !== 0) break;
+    let folded: string;
+    try {
+      folded = await summarizeViaCodex(
+        rec.oldPart, accessToken, accountId, model,
+        recompactTargetFor(rec.oldPart.length),
+      );
+    } catch (e) {
+      console.warn(
+        `[codex 6b] 누적 요약 재압축 실패 — 그대로 둔다(손실 0, 누적 ${summary.length}자): ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+      break;
+    }
+    // ★**줄어들 때만** 받아들인다. `recompactTargetFor` 는 모델에 주는 *부탁*이지 절단이
+    //  아니다 — 목표를 넘겨 돌려주면 누적본이 오히려 커져 상한이 무의미해진다.
+    const next = applyRecompaction(summary, folded, rec);
+    if (next === null) {
+      console.warn(
+        `[codex 6b] 재압축 결과가 안 줄어 버린다 — 앞 구간 ${rec.oldPart.length}자 → ` +
+          `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length)}자). 누적 ${summary.length}자 유지.`,
+      );
+      break;
+    }
+    summary = next;
+    upsertThreadSummary({ threadKey: input.threadKey, summary, compactedThrough: watermark });
+    console.log(
+      `[codex 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
+        `${folded.trim().length}자 (상한 ${CODEX_SUMMARY_MAX_CHARS}자, 최종 ${summary.length}자)`,
+    );
+  }
+  if (summary.length > CODEX_SUMMARY_MAX_CHARS) {
+    // 수렴 못 했으면 **남긴다** — 조용히 지나가면 최근 턴이 밀려나는 걸 아무도 모른다.
+    console.warn(
+      `[codex 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${CODEX_SUMMARY_MAX_CHARS}자 ` +
+        `(구간 ${summary.split(SUMMARY_SECTION_SEP).length}개). 프롬프트 예산에서 최근 원문 턴이 밀릴 수 있다.`,
+    );
+  }
+
+  // ★압축 사실을 알린다 (2026-07-29). 종전엔 **성공해도 아무도 몰랐다** — 실패만 로그에
+  //  남았다. 대화가 길어져 옛 내용이 요약으로 바뀌는 건 사용자가 알아야 할 상태 변화다
+  //  (클로드코드가 압축을 표시하는 것과 같은 이유). 임계 초과 시에만 일어나므로 매 턴
+  //  뜨지 않고, 여러 번 접었어도 **한 번**만 뜬다.
+  if (foldedTurnsTotal > 0) {
+    try {
+      getEventBus().publish({
+        type: "llm.compacted",
+        ts: Date.now(),
+        payload: {
+          threadKey: input.threadKey,
+          foldedTurns: foldedTurnsTotal,
+          foldedChars: foldedCharsTotal,
+          summaryChars: summary.length,
+        },
+      });
+    } catch {
+      /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
     }
   }
 
@@ -1233,7 +1512,7 @@ const CODEX_COMPACTED_MARKER = "\u0000__codex_compacted__\u0000";
  *  먹는 언어(한국어)로 실측하고 그보다 낮게** 잡는다.
  *  실측(2026-07-29, 한국어): 12만 글자 정상 요약 / 280만 글자 빈 응답 → 예산 10만.
  */
-const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
+export const CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS = parsePosIntEnv(
   process.env.CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS,
   40_000,
 );
@@ -1286,7 +1565,37 @@ const growFoldBudget = (threadKey: string): void => {
  *
  * ★종전 값은 "100턴" 이었다. 턴 수는 크기를 대변하지 못한다 — 같은 52턴이 8.2만~25.9만 자.
  */
-const CODEX_HISTORY_COMPACT_TRIGGER_CHARS = parsePosIntEnv(
+/**
+ * **저수위(low-water)** — 압축이 한 번 돌면 여기까지 내려간다. env `CODEX_COMPACT_LOW_WATER_RATIO`.
+ *
+ * ★왜 필요한가 (2026-08-09 사용자 신고 "압축이 너무 자주 일어난다"):
+ *  종전엔 고수위(trigger)만 있고 저수위가 없어 **임계에 딱 붙어 진동**했다. 실측 — 임계
+ *  15만인데 스레드가 23.8만이면, 한 번에 접는 예산(4만)으로는 19.8만 → 여전히 임계 위 →
+ *  **다음 턴에 또** 압축. 임계 아래로 내려가려면 3회 넘게 접어야 하는데 그 사이 새 턴이 쌓인다.
+ *  라이브 로그가 그대로 보여준다: 18:48·19:08·21:46·22:13·23:59 — 사실상 매 턴.
+ *
+ *  ★임계와 접는 양은 **서로 모르는 숫자**였다. "넘었나?"는 15만으로 묻고 "얼마나 접나?"는
+ *   4만으로 답한다 — 따라잡을 수 없는 조합이다. 저수위를 두면 한 번 정리하고 **한동안 조용**해진다.
+ *
+ *  ★접는 **한 번의 크기는 그대로 둔다**(적응 예산). 요약 호출은 큰 입력에서 깨진다
+ *   (실측: 87,387자 실패 / 60,650자 성공) — 그래서 "크게 한 번" 이 아니라 "안전한 크기로 여러 번".
+ */
+export const CODEX_COMPACT_LOW_WATER_RATIO = (() => {
+  const raw = Number(process.env.CODEX_COMPACT_LOW_WATER_RATIO);
+  return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : 0.6;
+})();
+/** 한 턴에 접는 최대 횟수 — 요약 호출이 그만큼 늘어나므로 바운드가 필요하다. */
+export const CODEX_SUMMARY_MAX_CHARS = parsePosIntEnv(
+  process.env.CODEX_SUMMARY_MAX_CHARS,
+  20_000,
+);
+
+export const CODEX_COMPACT_MAX_PASSES = parsePosIntEnv(
+  process.env.CODEX_COMPACT_MAX_PASSES,
+  3,
+);
+
+export const CODEX_HISTORY_COMPACT_TRIGGER_CHARS = parsePosIntEnv(
   process.env.CODEX_COMPACT_TRIGGER_CHARS,
   150_000,
 );

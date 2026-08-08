@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-08-08
+### Changed
+- **서브에이전트 위임이 어느 모델에서나 똑같이 동작합니다.** 지금까지 Claude 로 돌 때는 SDK 가 제공하는 위임 도구를 썼는데, 그 경로는 **대시보드에 보이지 않았고**(잡 카드가 0초 만에 사라졌습니다) 중간에 지시를 추가하거나 개별 취소를 할 수 없었습니다. 모델 프로파일도 무시돼서 Claude 등급으로 납작해졌습니다. 이제 세 어댑터가 **같은 경로**를 씁니다 — 위임이 잡으로 보이고, 스티어·취소가 되고, 설정한 모델 풀과 폴백이 그대로 적용됩니다.
+  - **서브에이전트가 다시 서브에이전트를 띄우는 것**이 실제로 막혔습니다. 문서엔 금지라고 적혀 있었는데 Claude 경로에서만 뚫려 있었습니다.
+- **오래 걸리는 작업을 매니저에게 넘기는 기준이 생겼습니다.** "서브에이전트가 2명 이상 필요하면 매니저에게 통째로" — 그전엔 메인 대화가 위임 결과를 기다리느라 **몇 분씩 멈추는** 일이 있었습니다(실측 8분 37초). 매니저에게 넘기면 대화는 계속 쓸 수 있고 결과는 끝났을 때 옵니다.
+
+### Added
+- **`explore` 서브에이전트.** "어디 있는지 모를 때" 넓게 훑는 읽기 전용 탐색 담당입니다. 대상이 이미 정해졌으면 `quick`, 설계·근본원인 판단은 `deep` 이 맡습니다.
+
+### Fixed
+- **작업이 중간에 끊겼을 때 그 사실이 화면에 보입니다.** 그전에는 모델이 하던 말이 잘린 채로 끝나서 **정상 완료처럼** 보였습니다 — 에러는 저장만 되고 화면엔 안 떴고, 데몬 로그에도 아무것도 안 남아 원인을 찾을 수 없었습니다. 이제 끊긴 지점 뒤에 사유와 함께 **"이어서 진행해줘" 안내**가 붙고, 로그에도 판정 수치(사유·순회·도구 수)가 남습니다.
+- **서브에이전트를 고를 때 난이도가 기준이 됩니다.** `general`(중간 티어) 설명이 "명세 없이 아무 작업"이라 되어 있어, 설계·분석 같은 **고난도 작업까지 중간 티어로 몰렸습니다**. 이제 각 티어가 위·아래로 넘길 곳을 명시합니다.
+- 대소문자가 달라 서브에이전트를 못 찾던 것, 그리고 못 찾았을 때 **사용 가능한 이름을 알려주지 않던 것**을 고쳤습니다.
+
 ## [0.22.0] - 2026-08-07
 ### Changed
 - **라이선스가 Apache License 2.0 으로 바뀌었습니다.** 이전에는 MIT 였습니다. 플러그인·어댑터를 붙여 쓰는 프로젝트라, MIT 에는 없는 **특허 허여**와 **기여 조항**이 명시된 Apache-2.0 이 더 맞다고 판단했습니다. 쓰는 데 드는 제약은 사실상 그대로입니다 — 여전히 마음대로 쓰고, 고치고, 팔 수 있습니다.
@@ -975,7 +989,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/tigu77/tiguclaw/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/tigu77/tiguclaw/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/tigu77/tiguclaw/compare/v0.21.0...v0.21.1
 [0.21.0]: https://github.com/tigu77/tiguclaw/compare/v0.20.0...v0.21.0

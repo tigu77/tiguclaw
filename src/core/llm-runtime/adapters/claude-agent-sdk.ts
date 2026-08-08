@@ -723,15 +723,15 @@ export const runClaude = async (
   const skills = await discoverSkills(cwd);
   const skillIndex = formatSkillIndex(skills);
 
-  // 서브에이전트 인덱스 — codex 와 동일 노출 (LLM 이 에이전트 존재를 알게).
-  // depth 0 turn 만 (위 discoveredAgents 재사용 — 중복 fs walk 0). SDK options.agents
-  // 주입과 병행: 인덱스는 "존재 인지", agents 주입은 Task 발견·실행 경로.
-  // claude 는 spawn_agent 도구가 없으므로(codex 전용) Task 도구로 위임하도록 힌트 주입
-  // — 없는 도구로 오도 방지 (options.agents 의 subagent_type 으로 실행).
-  const agentIndex = formatAgentIndex(
-    discoveredAgents,
-    "`Task` 도구로 위임하세요 (subagent_type 에 에이전트 이름, prompt 에 작업 지시)",
-  );
+  // 서브에이전트 인덱스 — 세 어댑터 동일 노출(LLM 이 에이전트 존재를 알게).
+  // depth 0 turn 만 (위 discoveredAgents 재사용 — 중복 fs walk 0).
+  // ★어댑터 전용 힌트를 제거했다 (2026-08-08). 종전엔 claude 에만 "`Task` 도구로 위임하세요
+  //  (subagent_type 에 …)" 를 주입했다 — 그 근거였던 "claude 는 spawn_agent 이 없다(codex
+  //  전용)" 가 **더는 참이 아니고**(depth 0 에 등록된다), 무엇보다 그 도구를 이제 차단한다.
+  //  즉 **우리 프롬프트가 막아놓은 도구를 가리키고** 있었다 — 라이브 실측에서 첫 위임이
+  //  `subagent_type:"Explore"` 로 와 검증 에러가 난 게 모델 습관이 아니라 **이 문장 탓**이다.
+  //  기본 힌트(`spawn_agent({name, prompt})`)로 되돌리면 셋이 같은 문장을 쓴다(분기 0).
+  const agentIndex = formatAgentIndex(discoveredAgents);
 
   // 모델 프로파일 인지 — depth 0 turn 만 (agentIndex 와 동일 게이트: 서브에이전트/워커를
   // 구성하는 최상위 turn 에서만 필요). settings.json 프로파일 부재/오류 시 ""(graceful).

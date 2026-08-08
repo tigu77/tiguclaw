@@ -1033,9 +1033,9 @@ export const runOpenAiCodex = async (
   // 실전 트래픽은 사실상 완전 충실도). seq 는 도구와 같은 activitySeq 카운터.
   // ★stall 재시도가 도는 finally(위 progressTimer.done() 옆)에는 넣지 않는다 — 재시도
   // 중간에 닫으면 진행 중 텍스트가 유실/중복될 위험(감사 §3 명시 경고).
-  const closeTextSegment = (): void => {
+  const closeTextSegment = (): string | undefined => {
     const text = deltaStream.closeSegment();
-    if (text === undefined) return; // 빈 세그먼트 — no-op.
+    if (text === undefined) return undefined; // 빈 세그먼트 — no-op.
     const segSeq = activitySeq++;
     try {
       bus.publish({
@@ -1055,6 +1055,7 @@ export const runOpenAiCodex = async (
     } catch {
       /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
     }
+    return text;
   };
   // ★워커/서브에이전트 서술 트레이스 (2026-07-03) — deltaStream(대시보드 fan-out)은 depth-0
   // 전용이라 워커(workerDepth>0)·서브에이전트(depth>0) 서술이 그간 어디에도 안 남아 사후
@@ -2167,7 +2168,12 @@ export const runOpenAiCodex = async (
       //  "네, M6-a 부터 시작하겠습니다…" 90자만 남았다. 조기 종료와 구분이 안 된다).
       //  ★그래서 delta 로도 밀어 넣는다 — 저장본만 고치면 **화면은 그대로**다. 사용자가
       //   끊긴 걸 알아야 "이어서 해줘" 라고 말할 수 있다.
-      const streamedSoFar = deltaStream.closeSegment() ?? "";
+      // ★`deltaStream.closeSegment()` 를 직접 부르면 **세그먼트를 훔친다** (2026-08-08 실측).
+      //  대시보드 턴 뷰는 텍스트를 `llm.activity kind:"text"` **세그먼트**로 그리는데,
+      //  원시 함수는 버퍼만 비우고 그 활동을 발행하지 않는다. 그래서 이 경로로 끝난 턴은
+      //  **도구 카드만 남고 텍스트가 통째로 사라졌다**(사용자: "도구가 마지막이야, 에러 없어").
+      //  레이어가 준 `closeTextSegment()` 를 쓴다 — 뽑기와 발행이 한 몸이다.
+      const streamedSoFar = closeTextSegment() ?? "";
       const shown = finalText !== "" ? finalText : streamedSoFar;
       console.error(
         `[codex-swallowed] ${input.threadKey} ${e instanceof Error ? e.name : "unknown"}: ` +
@@ -2176,6 +2182,7 @@ export const runOpenAiCodex = async (
       );
       deltaStream.push((shown !== "" ? "\n\n" : "") + notice);
       deltaStream.flush();
+      closeTextSegment(); // ★안내도 세그먼트로 — 턴 뷰에서 도구 뒤에 실제로 보이게.
       finalText = shown !== "" ? `${shown}\n\n${notice}` : notice;
     } else {
       throw e; // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).

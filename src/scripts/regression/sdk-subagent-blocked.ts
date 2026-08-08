@@ -84,6 +84,15 @@ export const check: RegressionCheck = {
         "동의어 수용",
       ),
       assert(
+        "★프롬프트가 **차단한 도구를 가리키지 않는다** — 어댑터 전용 위임 힌트 0",
+        // 종전엔 claude 인덱스에만 "`Task` 도구로 위임하세요(subagent_type 에 …)" 를 주입했다.
+        // 그 도구를 막아놓고 프롬프트가 계속 가리키면 **매 위임의 첫 호출이 깨진다**(실측).
+        // 셋이 같은 기본 힌트(`spawn_agent({name, prompt})`)를 쓰면 분기 자체가 없다.
+        !/formatAgentIndex\([\s\S]{0,200}Task` 도구로/.test(adapter) &&
+          !/formatAgentIndex\([\s\S]{0,200}subagent_type 에/.test(adapter),
+        "어댑터 전용 힌트 없음",
+      ),
+      assert(
         "★alias 는 그 도구가 실제로 있는 조건에서만 걸린다(depth 0 + 비-lean)",
         /depth === 0 && !toolsNone[\s\S]{0,120}toolAliases: sdkSubagentAliases\(\)/.test(adapter),
         "조건부 spread",

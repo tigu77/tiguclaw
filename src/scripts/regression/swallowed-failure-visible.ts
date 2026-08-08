@@ -30,7 +30,11 @@ export const check: RegressionCheck = {
     );
     // 삼킴 분기 본문만 잘라서 본다 — 파일 어딘가에 있는 게 아니라 **이 분기 안에** 있어야 한다.
     const start = src.indexOf("if (sideEffectExecuted) {");
-    const body = start === -1 ? "" : src.slice(start, start + 3500);
+    const raw = start === -1 ? "" : src.slice(start, start + 4200);
+    // ★주석을 걷어내고 본다 (2026-08-08). "이걸 쓰지 마라" 를 설명하는 **주석**이 그 이름을
+    //  포함해 금지 검사가 자기 설명문에 걸렸다 — 이 레포가 이미 겪은 부류(주석 안 `<style>`
+    //  를 태그로 세어 게이트가 상시 FAIL). **검사 대상은 코드이지 그걸 설명하는 글이 아니다.**
+    const body = raw.replace(/\/\/[^\n]*/g, "");
 
     return [
       assert(
@@ -49,6 +53,21 @@ export const check: RegressionCheck = {
           /tools=\$\{executedToolNames\.size\}/.test(body) &&
           /shown=\$\{shown\.length\}/.test(body),
         "iter·tools·shown",
+      ),
+      assert(
+        "★세그먼트를 **훔치지 않는다** — 원시 closeSegment 직접 호출 금지(턴 뷰 텍스트 소실)",
+        // 대시보드 턴 뷰는 텍스트를 `llm.activity kind:"text"` 세그먼트로 그린다. 원시
+        // `deltaStream.closeSegment()` 는 버퍼만 비우고 그 활동을 **발행하지 않아**, 이 경로로
+        // 끝난 턴이 **도구 카드만 남고 텍스트가 통째로 사라졌다**(2026-08-08 실측·사용자 신고).
+        // 뽑기와 발행이 한 몸인 `closeTextSegment()` 를 써야 한다.
+        !/deltaStream\.closeSegment\(\)/.test(body) &&
+          /closeTextSegment\(\)/.test(body),
+        "closeTextSegment 사용",
+      ),
+      assert(
+        "★안내도 세그먼트로 닫는다 — delta 만 보내면 턴 뷰(인터리브)엔 안 뜬다",
+        /deltaStream\.flush\(\);[\s\S]{0,120}closeTextSegment\(\)/.test(body),
+        "flush 뒤 세그먼트 마감",
       ),
       assert(
         "★실패 문구가 **화면(delta)** 으로도 나간다 — 저장본만 고치면 화면은 그대로다",

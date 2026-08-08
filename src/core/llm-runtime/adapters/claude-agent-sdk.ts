@@ -121,9 +121,8 @@ import {
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
 import {
-  isSdkSubagentTool,
   SDK_SUBAGENT_TOOLS,
-  sdkSubagentAliases,
+  withSdkSubagentsBlocked,
 } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 
@@ -186,23 +185,6 @@ const SYSTEM_PROMPT_HASH = createHash("sha256")
 // best-effort: 관측 로직 throw 가 부모 turn 을 무르면 안 됨(원칙 3) → 아래 전 경로 try/catch.
 
 /** Task tool_use input 에서 서브에이전트 이름·작업지시를 방어적으로 추출. */
-const parseTaskInput = (
-  input: unknown,
-): { agentName: string; task: string; label: string } => {
-  const o =
-    input && typeof input === "object" ? (input as Record<string, unknown>) : {};
-  const subagentType =
-    typeof o.subagent_type === "string" && o.subagent_type.trim() !== ""
-      ? o.subagent_type.trim()
-      : "subagent"; // 없으면 방어적 폴백(임무 제약).
-  const prompt = typeof o.prompt === "string" ? o.prompt : "";
-  const description = typeof o.description === "string" ? o.description : "";
-  return {
-    agentName: subagentType,
-    label: subagentType,
-    task: prompt !== "" ? prompt : description,
-  };
-};
 
 /**
  * user 메시지 content 에서 tool_result 블록들을 (tool_use_id, resultText) 로 추출.
@@ -315,38 +297,6 @@ const formatForeignDelta = (delta: CodexTurn[]): string => {
   ].join("\n");
 };
 
-// agent frontmatter `model` → SDK `AgentDefinition.model`.
-// SDK 는 anthropic 3종 등급(`sonnet|opus|haiku`)과 `inherit` 만 받는다
-// (`coreTypes.d.ts` AgentDefinition.model). 우리 레지스트리 `model` 은
-// 티어(high/mid/low) 또는 `provider:model` 직접 지정.
-//  - 티어: codex spawn 의 resolveTier(MODEL_TIER_*)는 임의 provider:model 풀이지만,
-//    claude SDK 는 대표 모델 1개만 받으므로 high→opus / mid→sonnet / low→haiku 로
-//    대표 매핑(능력 경계 — claude 어댑터는 anthropic 모델만 실행, contract §3.2).
-//  - sonnet/opus/haiku 직접 지정도 그대로 통과.
-//  - 그 외(provider:model 직접·미지정·미인식) → undefined → SDK 가 main model 상속
-//    (`inherit` 동등). undefined 면 키 자체를 안 박아 SDK 디폴트.
-const mapTierToSdkModel = (
-  model: string | undefined,
-): AgentDefinition["model"] | undefined => {
-  const s = (model ?? "").trim().toLowerCase();
-  if (s === "") return undefined;
-  switch (s) {
-    case "high":
-    case "opus":
-      return "opus";
-    case "mid":
-    case "sonnet":
-      return "sonnet";
-    case "low":
-    case "haiku":
-      return "haiku";
-    case "inherit":
-      return "inherit";
-    default:
-      // provider:model 직접 지정 등 — SDK 등급 밖. 미지정 처리 → main model 상속.
-      return undefined;
-  }
-};
 
 export const runClaude = async (
   input: RegionASdkInput,
@@ -427,47 +377,10 @@ export const runClaude = async (
   const sentFiles = new Set<string>();
   // prompt-options(축1) — per-turn dedup Set(같은 질문 재호출 시 중복 렌더 차단). send-file 동형.
   const askedQuestions = new Set<string>();
+  // 중첩 메시지 경고 1회용(배경 소음 방지).
+  let warnedNested = false;
 
   const discoveredAgents: Agent[] = depth === 0 ? await discoverAgents(cwd) : [];
-  let agents: Record<string, AgentDefinition> | undefined;
-  if (discoveredAgents.length > 0) {
-    const entries = await Promise.all(
-      discoveredAgents.map(async (a): Promise<[string, AgentDefinition]> => {
-        let prompt = a.description;
-        try {
-          // .md raw 본문(frontmatter 포함) = agent 의 system prompt (전략 A).
-          prompt = await fs.readFile(a.filePath, "utf8");
-        } catch {
-          // read 실패 시 description 으로 폴백 (drop 보다 노출 우선).
-        }
-        const sdkModel = mapTierToSdkModel(a.model);
-        // lean 도구 정책 (2026-06-15, architect §4 — claude SDK Task 경로 parity).
-        // agent.md `tools` 를 중립 신호(deriveToolPolicy)로 정규화해 적용.
-        //  - {mode:"none"}: tools: [] = 도구 0 (SDK "[] = disable all"). lean child.
-        //  - {mode:"allow"}/undefined: tools 키 미설정 = 전체 도구. allow 정밀 allowlist 는
-        //    codex/openai 가 아직 미지원(MCP 도구명 단위 필터 필요)이라, claude 만 native
-        //    allowlist 를 켜면 어댑터 간 동작이 갈려 LLM-agnostic 하드게이트 위반.
-        //    → 3어댑터 동시 구현 전까지 allow=전체도구로 *일관 degrade* (2026-06-15 결정).
-        // 메모리 lean: claude child 는 SDK Task 가 AgentDefinition.prompt(=.md 본문)로
-        // 독립 실행 → 부모 turn 의 retrieveContext/memoryIndex 가 child prompt 에 애초
-        // 주입되지 않는다(부모 프롬프트 전용). 즉 메모리 생략은 이 경로에서 *구조적으로*
-        // 보장 — leanMemory 별도 처리 불요(parity 갭 없음, 보고 참조).
-        const policy = deriveToolPolicy(a.tools);
-        const toolsField =
-          policy?.mode === "none" ? { tools: [] as string[] } : {};
-        return [
-          a.name,
-          {
-            description: a.description,
-            prompt,
-            ...(sdkModel !== undefined ? { model: sdkModel } : {}),
-            ...toolsField,
-          },
-        ];
-      }),
-    );
-    agents = Object.fromEntries(entries);
-  }
 
   // ⚠ settingSources 미설정 = SDK 격리 모드 (sdk runtimeTypes.d.ts L504).
   //   .claude/{skills,agents,commands} 자동 발견 안 됨 → 아래 수동 스킬 인덱스 prepend
@@ -803,20 +716,10 @@ export const runClaude = async (
     //     금지는 하드" 가 claude 경로에서만 소프트였다(프로브로 실측: 자식이 Agent 호출 성공).
     //  실측(프로브 6케이스): disallow 는 빌트인에 확실히 먹고, 모델은 **스스로 spawn_agent 을
     //  찾아 썼다**("막으면 인라인으로 도망간다"는 걱정은 일어나지 않았다).
-    disallowedTools: [
+    disallowedTools: withSdkSubagentsBlocked([
       ...DISALLOWED_TOOLS,
       "AskUserQuestion",
-      ...SDK_SUBAGENT_TOOLS,
-    ],
-    // ★습관적 호출 회수(depth 0 + 비-lean 에서만) — 스킬 문서·사용자 프롬프트가 "Agent 도구로"
-    //  라고 지시하면 모델이 그 이름을 emit 할 수 있다(SDK 문서가 든 예시가 정확히 그 경우).
-    //  그때 unknown 으로 죽는 대신 우리 도구로 데려온다. alias 는 이름만 바꾸고 스키마는 우리
-    //  것이 노출되므로 인자 어댑팅이 필요 없다(실측 확인).
-    //  ★조건이 붙는 이유: `agents` MCP 서버는 `depth === 0` + 비-lean 에만 등록된다. 조건 없이
-    //   걸면 자식·lean 턴에서 **없는 도구를 가리키는 alias** 가 되어 그 자체가 새 구멍이다.
-    ...(depth === 0 && !toolsNone
-      ? { toolAliases: sdkSubagentAliases() }
-      : {}),
+    ]),
     // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
     // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
     // SDKPartialAssistantMessage(type:"stream_event")가 함께 오고, 아래 메시지 루프가
@@ -838,14 +741,11 @@ export const runClaude = async (
         : {
             "find-capabilities": createFindCapabilitiesMcpServer(
               capabilityActiveNames,
-              "`Task` 도구로 위임하세요 (subagent_type 에 에이전트 이름, prompt 에 작업 지시). 다른 프로젝트/병렬 위임엔 spawn_agent 도 사용 가능",
+              "`spawn_agent({name, prompt})` 도구로 실행하세요 (다른 프로젝트/병렬 위임은 `path` 로)",
               input.extraMcpServers,
             ),
           }),
     },
-    // 커스텀 서브에이전트 (격리라 SDK 가 .claude/agents 못 봄 → 수동 주입).
-    // SDK native Task tool 이 이 정의를 발견·실행 (codex spawn_agent 브리지 불요).
-    ...(agents !== undefined ? { agents } : {}),
     ...(resumable ? { resume: prior.claudeSessionId } : {}),
   };
 
@@ -983,10 +883,6 @@ export const runClaude = async (
   // Task tool_use id → 관측 jobId 매핑. 한 턴에 Task 여러 개 가능 → Map.
   // 서브 내부 스텝(parent_tool_use_id === taskId)은 부모 좌표가 아니라 agent:<jobId>
   // 좌표의 llm.activity 로 발행(codex 서브 per-step 과 동형). agentSeq 는 잡별 단조 시퀀스.
-  const taskJobs = new Map<
-    string,
-    { jobId: string; agentName: string; task: string; seq: number }
-  >();
 
   // ─── claude 백그라운드 셸 관측 브리지 (ADR `2026-07-17-background-shell-observability.md`
   // §6, Phase 4) ────────────────────────────────────────────────────────────────────
@@ -1039,128 +935,11 @@ export const runClaude = async (
     }
   };
 
-  // 서브 내부 도구 스텝을 agent:<jobId> 좌표로 발행 (best-effort — throw 격리).
-  // kind 는 "tool" 만 — llm.activity 스키마(RegionAActivityPayload.kind: "tool"|"turn")가
-  // 이산 도구 스텝 단위라, 서브 내부 텍스트는 별도 activity 로 만들지 않는다(codex 서브도
-  // 도구만 per-step 관측 — parity). 코어 타입 무편집(임무 제약) 하에 동형 유지.
-  const publishAgentToolActivity = (
-    entry: { jobId: string; agentName: string; seq: number },
-    label: string,
-    detail: string | undefined,
-    diff: ReturnType<typeof buildActivityDiff>,
-  ): void => {
-    try {
-      bus.publish({
-        type: "llm.activity",
-        ts: Date.now(),
-        payload: {
-          channel: input.channel,
-          threadKey: `agent:${entry.jobId}`, // 워커 worker:<jobId> 와 동형 — 대시보드 서브 카드 귀속.
-          adapter: "claude",
-          model: lastModel ?? undefined,
-          seq: entry.seq++,
-          kind: "tool",
-          label,
-          ...(detail !== undefined ? { detail } : {}),
-          ...(diff !== undefined ? { diff } : {}),
-        } satisfies RegionAActivityPayload,
-      });
-    } catch {
-      /* 관측 발행 실패가 부모 turn 을 무르지 않는다(원칙 3). */
-    }
-  };
 
   // Task tool_use 감지 시 관측 잡 등록 (best-effort). 등록 실패해도 부모 turn 무영향.
-  const registerTaskJob = (taskId: string, rawInput: unknown): void => {
-    if (taskJobs.has(taskId)) return; // 중복 감지 방어(같은 tool_use id 재관측).
-    try {
-      const { agentName, label, task } = parseTaskInput(rawInput);
-      // 모델 티어 관측 — 발견된 에이전트 정의의 model(티어) 을 잡에 기록(대시보드·/agents).
-      // codex(agent.model)와 동일 정보. 미발견/미지정이면 "default".
-      const modelTier =
-        discoveredAgents.find((a) => a.name === agentName)?.model ?? "default";
-      const jobId = registerJob({
-        kind: "agent",
-        agentName,
-        modelTier,
-        label,
-        task,
-        threadKey: input.threadKey, // 어느 대화가 띄운 서브인지 상관(codex 와 동일).
-        channel: input.channel,
-        channelUserId: "", // agent 잡은 재주입/통지 안 함(U-I1).
-      });
-      taskJobs.set(taskId, { jobId, agentName, task, seq: 0 });
-      // U-I4 개정(2026-07-17) — native Task 실 취소 훅. SDK 는 per-Task abort 를 안 주므로
-      // cancelJob(jobId)이 **부모 턴 전체**(effectiveAc)를 abort 한다 = coarse(턴 단위) 취소:
-      // 형제 Task·부모 답변까지 함께 멈춘다(SDK 한계상 정당 — "stop 이 실제 stop"이 우선).
-      // 이 훅이 없으면 cancelJob 은 카드만 cancelled 로 바꾸고 Task 는 SDK 안에서 계속 도는
-      // cosmetic 취소가 된다(#2 위반). 새 AbortController 를 만들지 않고 effectiveAc 재사용.
-      // completeTaskJob(정상/실패)·턴 종료 고아 정리·resume 폴백에서 clearCancelHook 로 해제.
-      setCancelHook(jobId, () => {
-        if (!effectiveAc.signal.aborted) {
-          effectiveAc.abort(new WorkerCancelledError());
-        }
-      });
-    } catch {
-      /* registerJob 실패해도 부모 turn 진행(원칙 3). 이 Task 는 관측 누락으로 degrade. */
-    }
-  };
 
   // Task 완료 마킹 — tool_result 도착 시. best-effort. isError=true(서브 실패)면 markFailed
   // 로 닫아 실패 lifecycle 이 codex(spawn_agent throw→markFailed)와 parity(#2 하드게이트).
-  const completeTaskJob = (
-    taskId: string,
-    resultText: string,
-    isError: boolean,
-  ): void => {
-    const entry = taskJobs.get(taskId);
-    if (entry === undefined) return;
-    taskJobs.delete(taskId);
-    // ★**도구 한 번 안 쓰고 끝난 서브에이전트**를 표시한다 (2026-08-07 실측 3건).
-    //  실측: 파일을 읽으라고 시켰는데 5초 만에 도구 0회로 그럴듯한 값을 지어냈고(실제
-    //  0.18.0 인데 "0.5.5"), 40초 대기를 시키자 17초에 백그라운드로 던지고 "완료되면
-    //  알려드리겠습니다" 로 끝냈다. 07-30 news-researcher 도 84초/0회로 같은 모양이다.
-    //  정상 건은 내부 도구를 9~30회 쓴다 — `seq === 0` 은 "일을 안 했다" 의 좋은 대리 지표다.
-    //  ★단정하지 않는다: 요약·판단만 시키면 도구 0회가 정상이다. 그래서 실패로 닫지 않고
-    //   **신호만** 남긴다(사람이 결과를 읽고 의심해야만 알던 것을 표면으로 올린다).
-    //  비용 0 — 이미 세고 있는 값이다.
-    if (entry.seq === 0 && !isError) {
-      console.warn(
-        `[agent-no-tools] ${input.threadKey} 서브에이전트 '${entry.agentName}' 가 ` +
-          `도구를 **한 번도 쓰지 않고** 끝났습니다(내부 스텝 0). 지시가 파일·명령 실행을 ` +
-          `요구했다면 결과가 지어낸 것일 수 있습니다 — 반환 ${resultText.length}자.`,
-      );
-      try {
-        bus.publish({
-          // ★`worker.` 접두를 **쓰지 않는다** — sse.js 는 worker.* 를 타입 없이
-          //  handleWorkerEvent(payload) 로 넘기는 블라인드 라우팅이라, 상태 없는 페이로드가
-          //  카드 상태를 건드릴 수 있다. 이건 잡 생애주기가 아니라 *품질 신호*다.
-          type: "llm.agent_no_tools",
-          ts: Date.now(),
-          payload: {
-            channel: input.channel,
-            threadKey: input.threadKey,
-            jobId: entry.jobId,
-            agentName: entry.agentName,
-            task: entry.task.slice(0, 200),
-            resultChars: resultText.length,
-          },
-        });
-      } catch {
-        /* best-effort — 관측 실패가 완료 처리를 무르지 않는다 */
-      }
-    }
-    clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — 종료된 Task 를 취소하려는 늦은 시도 무효화.
-    try {
-      if (isError) {
-        markFailed(entry.jobId, resultText || "서브에이전트 실행 실패");
-      } else {
-        markDone(entry.jobId, resultText);
-      }
-    } catch {
-      /* 완료 마킹 실패 무해 — 아래 finally 정리가 고아 방지 백업 아님(이미 delete). */
-    }
-  };
 
   // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
   // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
@@ -1276,11 +1055,20 @@ export const runClaude = async (
       // parent_tool_use_id 로 depth 게이트(부모 답변/델타 버블에 섞이면 안 됨 — 회귀 0).
       const parentToolUseId = (msg as { parent_tool_use_id?: unknown })
         .parent_tool_use_id;
-      const nestedEntry =
-        typeof parentToolUseId === "string"
-          ? taskJobs.get(parentToolUseId)
-          : undefined;
-      if (nestedEntry === undefined) {
+      // ★"더 엄격하고 동치" 라고 적었는데 **동치가 아니었다**(레드팀 적발, 2026-08-08).
+      //  종전 판정(`taskJobs.get(id)`)은 **모르는** parent id 를 부모로 취급해 텍스트를
+      //  **보존**했다. 존재만으로 중첩 처리하면 그 텍스트가 답변에서도 delta 에서도 조용히
+      //  사라진다. 그리고 `DISALLOWED_TOOLS` 는 빈 배열이라 SDK 의 다른 도구가 중첩 메시지를
+      //  올릴 창이 남아 있다 — 그때 답변이 통째로 증발한다(종전엔 오염이지만 **보였다**).
+      //  ★조용한 소실보다 보이는 오염이 낫다. 보존하되 **한 번 로그**로 남긴다.
+      if (typeof parentToolUseId === "string" && !warnedNested) {
+        warnedNested = true;
+        console.warn(
+          `[claude-nested] ${input.threadKey} parent_tool_use_id 가 붙은 메시지가 도착했다 ` +
+            `— SDK 서브에이전트는 차단돼 있으므로 예상 밖이다(텍스트는 보존한다).`,
+        );
+      }
+      {
         const event = msg.event;
         // ★호출 단위 usage 의 **최종값**은 여기 있다 (2026-08-05, SDK 0.3 업그레이드 부작용).
         //  0.1.77 에선 `assistant` 메시지 usage 가 완료 시점 값이었는데, 0.3 은 그 자리에
@@ -1465,10 +1253,6 @@ export const runClaude = async (
       // 분기. null(부모 자신)이면 기존 부모 좌표 발행 그대로(회귀 0).
       const parentToolUseId = (msg as { parent_tool_use_id?: unknown })
         .parent_tool_use_id;
-      const nestedEntry =
-        typeof parentToolUseId === "string"
-          ? taskJobs.get(parentToolUseId)
-          : undefined;
       // 호출 단위 usage 캡처 — 부모 자신의 호출만(서브 내부 호출은 부모 컨텍스트가 아님).
       if (typeof parentToolUseId !== "string") {
         const u = (
@@ -1512,7 +1296,7 @@ export const runClaude = async (
               // 부모 회귀 0 핵심(서브 텍스트가 사용자 답변으로 새거나 부모 델타 버블에
               // 섞이면 안 됨). 관측은 도구 스텝(아래) 단위라 서브 텍스트는 activity 화 안 함
               // (스키마상 이산 도구 step 만, codex 서브도 도구만 per-step — parity).
-              if (nestedEntry === undefined) {
+              if (typeof parentToolUseId !== "string") {
                 assistantTextChunks.push(t); // 권위 전체본(resultText 폴백) — 항상 적재.
                 // llm.delta — assistant 텍스트 청크 fan-out(sdk_message firehose 와 별개
                 // 레이어, 순수 텍스트 증분). coalescer 가 ~80ms∥120자로 묶어 발행.
@@ -1555,10 +1339,7 @@ export const runClaude = async (
               typeof normInput.plan === "string"
                 ? normInput.plan.slice(0, PLAN_FIELD_CAP)
                 : undefined;
-            if (nestedEntry !== undefined) {
-              // 서브 내부 도구 — agent:<jobId> 좌표 activity(codex 서브 per-step 동형).
-              publishAgentToolActivity(nestedEntry, toolName, detail, diff);
-            } else {
+            {
               // 부모 top-level tool_use. 서브에이전트 spawn 이면 관측 잡 등록.
               // ★도구 이름을 여기 박지 않는다 — SDK 0.3 이 `Task`→`Agent` 로 개명했는데
               //  하드코딩이라 **잡 등록이 통째로 죽어** 백그라운드 패널이 항상 0이었다
@@ -1568,9 +1349,6 @@ export const runClaude = async (
               // (인터리브 순서 보존 — 텍스트 세그먼트가 이 도구보다 낮은 seq 를 받게).
               closeTextSegment();
               const toolUseId = (block as { id?: unknown }).id;
-              if (isSdkSubagentTool(toolName) && typeof toolUseId === "string") {
-                registerTaskJob(toolUseId, toolInput);
-              }
               // claude 백그라운드 셸 관측 등록(Phase 4, best-effort) — 이 tool_use 자체는
               // 아직 shellId 를 모른다(Bash 는 tool_result 에서, TaskOutput/KillShell 은
               // *우리가 이미 관측 중인* shellId 를 요청할 때만 상관— 서브에이전트 백그라운드
@@ -1605,10 +1383,6 @@ export const runClaude = async (
               }
               // 인라인 스폰 스텝 ↔ 드로어 잡 링크(2026-07-13) — Task 로 등록된 관측 잡 jobId 를
               // 이 활동에 실어 대시보드가 클릭→드로어 점프·상태 표시. (등록 실패 시 undefined.)
-              const spawnJobId =
-                isSdkSubagentTool(toolName) && typeof toolUseId === "string"
-                  ? taskJobs.get(toolUseId)?.jobId
-                  : undefined;
               // llm.activity — 도구당 1 activity (sdk_message firehose 와 별개 레이어).
               // detail — tool_use 블록의 input 객체에서 중립 인자 요약(축3 사이드바).
               // Task 도구 자체도 부모 좌표 activity 로 남긴다(부모가 '서브를 띄웠다' 스텝).
@@ -1657,7 +1431,14 @@ export const runClaude = async (
                   detail,
                   ...(diff !== undefined ? { diff } : {}),
                   ...(plan !== undefined ? { plan } : {}),
-                  ...(spawnJobId ? { jobId: spawnJobId } : {}),
+                  // ★알려진 회귀 (2026-08-08, 레드팀 F2): 스텝→잡카드 점프가 죽었다.
+                  //  종전엔 SDK Task 등록 시점의 jobId 를 여기 실어 대시보드가 칩 클릭으로
+                  //  해당 잡카드로 스크롤·하이라이트했다. `spawn_agent` 은 **MCP 도구가
+                  //  실행돼야** jobId 가 생겨서, 부모가 이 스텝을 낼 때는 아직 없다 —
+                  //  복원하려면 별도 연결 기제(등록 시 부모 좌표로 링크 이벤트)가 필요하다.
+                  //  지금은 `RegionAActivityPayload.jobId` 의 생산자가 0이다(그 필드는 죽은
+                  //  스키마). 고치기 전까지 **없는 걸 없다고 적어둔다** — 빈 객체를 조용히
+                  //  넣어두면 다음 사람이 "있는데 안 되네" 로 시간을 태운다.
                 } satisfies RegionAActivityPayload,
               });
             }
@@ -1670,14 +1451,12 @@ export const runClaude = async (
       // 추적 중인 Task id 면 그 서브 완료 → markDone(agent 잡 종료 = 대시보드 카드 완료).
       // best-effort — extractToolResults·completeTaskJob 은 throw 없음(순수/try 내장).
       if (
-        taskJobs.size > 0 ||
         toolTiming.size > 0 ||
         pendingBgBash.size > 0 ||
         pendingTaskOutput.size > 0 ||
         pendingKillShellCalls.size > 0
       ) {
         for (const { toolUseId, text, isError } of extractToolResults(msg)) {
-          if (taskJobs.size > 0) completeTaskJob(toolUseId, text, isError);
           // 실행시간(#3) — 이 tool_result 에 대응하는 top-level 도구가 있으면 phase:"end"
           // +durationMs 로 발행(같은 seq → 대시보드가 시작 스텝에 실행시간 주석). best-effort.
           const timing = toolTiming.get(toolUseId);
@@ -1812,18 +1591,6 @@ export const runClaude = async (
       deltaStream.closeSegment(); // 세그먼트 버퍼 드레인(발행 안 함) — 실패한 첫 시도의 잔여
       // 텍스트가 fresh 세션의 첫 세그먼트로 새지 않게(activitySeq=0 리셋과 동형 취지).
       toolTiming.clear(); // 실행시간(#3) 매핑도 리셋 — fresh 세션엔 이전 tool_use id 안 옴.
-      // 서브에이전트 관측 리셋 — 첫 시도서 등록된 Task 잡을 닫고(고아 running 방지) 매핑
-      // 초기화. fresh 세션엔 그 Task id 가 안 오므로 tool_result 로 닫힐 길 없음 → 여기서
-      // markFailed 로 명시 종료(best-effort). taskJobs.clear() 로 재실행 매핑 청결.
-      for (const entry of taskJobs.values()) {
-        clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — fresh 세션엔 이 Task id 안 옴.
-        try {
-          markFailed(entry.jobId, "resume 폴백 재실행으로 서브에이전트 관측 중단");
-        } catch {
-          /* 마킹 실패 무해. */
-        }
-      }
-      taskJobs.clear();
       const freshOptions: Options = { ...options };
       delete (freshOptions as { resume?: unknown }).resume;
       q = buildQuery(freshOptions);
@@ -1878,19 +1645,6 @@ export const runClaude = async (
     // 전혀 없었던) 턴 종료 시점까지 누적된 텍스트를 kind:"text" 로 발행. flush() 다음(델타
     // 코얼레스 버퍼와 무관한 별개 버퍼) — 순서·타이밍 상관없이 항상 이 자리 1회.
     closeTextSegment();
-    // 서브에이전트 관측 고아 정리 — 턴 종료(성공·throw·abort)까지 tool_result 로 안 닫힌
-    // Task 잡(SDK abort·에러로 서브 미완, 또는 완료 메시지 유실)을 running 고아로 남기지
-    // 않는다. 정상 완료는 completeTaskJob 이 이미 delete 했으므로 여기 남은 건 미완만 →
-    // markFailed 로 명시 종료(대시보드 카드가 running 에 영영 머물지 않게). best-effort.
-    for (const entry of taskJobs.values()) {
-      clearCancelHook(entry.jobId); // 취소 훅 해제(누수 0) — 턴 종료 후 늦은 취소 시도 무효화.
-      try {
-        markFailed(entry.jobId, "턴 종료까지 서브에이전트 완료 신호 미도착");
-      } catch {
-        /* 마킹 실패 무해 — 데몬 생존 우선(원칙 3). */
-      }
-    }
-    taskJobs.clear();
   }
 
   // 유휴/턴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를

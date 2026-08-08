@@ -18,6 +18,16 @@
  *
  * 그래서 검사는 두 가지를 못 박는다: (a) 판정이 두 이름을 다 받는다 (b) **소비처가 이름을
  * 직접 열거하지 않는다** — (b) 가 없으면 다섯 번째 곳이 또 생긴다.
+
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ★등급: **배선 린트** (2026-08-08 레드팀 결과 표시)
+ *  이 파일의 단언 상당수는 **소스를 훑는다** — 코드가 그렇게 *쓰여 있는지*는 보지만
+ *  그렇게 *동작하는지*는 못 본다. `if (false)`·env 게이트·조건 강화·동의어 치환으로
+ *  전부 우회된다(레드팀이 13개 변이로 실증했고 7개를 동시에 넣어도 전 스위트 초록이었다).
+ *  ★그러니 **우연한 드리프트는 잡지만 적은 못 막는다.** 행동을 지켜야 하는 축은 판정을
+ *   순수 함수로 뽑아 **실행**해야 한다(`swallowed-failure.ts` 가 그 예).
+ *  등급을 적어 두는 이유: 지키지도 못하면서 지킨다고 적어둔 검사가 가장 나쁘다 —
+ *  다음 사람이 "여긴 그물이 있다" 고 믿고 지나간다.
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";
@@ -27,7 +37,12 @@ export const check: RegressionCheck = {
   guards:
     "SDK 가 서브에이전트 도구를 개명(Task→Agent)하자 잡 등록·경고완화·하드컷면제·잡카드링크가 한꺼번에 죽던 것",
   run: async (): Promise<Assertion[]> => {
-    const { isSubagentTool, isLongRunningByDesign, isSdkSubagentTool } = await import(
+    const {
+      isSubagentTool,
+      isLongRunningByDesign,
+      isSdkSubagentTool,
+      withSdkSubagentsBlocked,
+    } = await import(
       "../../core/llm-runtime/subagent-tools.js"
     );
     const { toolSlowWarnMs } = await import("../../core/llm-runtime/tool-watchdog.js");
@@ -81,6 +96,11 @@ export const check: RegressionCheck = {
       /!isSubagentTool\(tool\)/,
     ]);
 
+    const adapterSrc = await readFile(
+      new URL("../../core/llm-runtime/adapters/claude-agent-sdk.ts", import.meta.url),
+      "utf8",
+    );
+
     return [
       assert(
         "★판정이 신·구 이름을 다 받는다(설치본마다 SDK 버전이 다르다)",
@@ -88,9 +108,12 @@ export const check: RegressionCheck = {
         `accepts=${accepts} rejects=${rejects}`,
       ),
       assert(
-        "★잡 등록이 판정을 쓴다(이 한 줄이 죽어 패널이 항상 0이었다)",
-        adapter.ok,
-        adapter.ok ? "claude-agent-sdk.ts" : `누락: ${adapter.missing.join(" / ")}`,
+        "★어댑터가 그 이름들로 **차단**한다(2026-08-08 이후 이 이름의 쓰임은 차단 하나다)",
+        // 종전엔 "잡 등록이 판정을 쓴다" 였다. SDK 빌트인 서브에이전트를 모든 깊이에서
+        // 차단하면서 그 등록 경로가 통째로 사라졌고, 이름의 유일한 소비처가 차단이 됐다.
+        // 검사가 **없어진 코드**를 계속 요구하면 올바른 삭제를 처벌한다(적대 검토 지적).
+        /withSdkSubagentsBlocked\(/.test(adapterSrc),
+        /withSdkSubagentsBlocked\(/.test(adapterSrc) ? "차단 배선" : "★차단 배선 없음",
       ),
       assert(
         "★하드 타임아웃 면제가 새 이름에도 걸린다(13분 컷이 정상 위임을 죽이던 창)",
@@ -121,14 +144,12 @@ export const check: RegressionCheck = {
         `sdk(spawn_agent)=${isSdkSubagentTool("spawn_agent")} sdk(Agent)=${isSdkSubagentTool("Agent")} long(spawn_agent)=${isSubagentTool("spawn_agent")}`,
       ),
       assert(
-        "★어댑터의 잡 등록은 SDK 판정을 쓴다(넓은 판정을 쓰면 우리 spawn_agent 이 스텝 0으로 오인된다)",
-        (await sourceHas("../../core/llm-runtime/adapters/claude-agent-sdk.ts", [
-          /isSdkSubagentTool\(toolName\)/,
-        ])).ok &&
-          !(await sourceHas("../../core/llm-runtime/adapters/claude-agent-sdk.ts", [
-            /[^d]isSubagentTool\(toolName\)/,
-          ])).ok,
-        "claude-agent-sdk.ts",
+        "★어댑터가 **넓은 판정**으로 차단하지 않는다(그러면 우리 spawn_agent 까지 막힌다)",
+        // 종전엔 "잡 등록이 좁은 판정을 쓴다" 였는데 그 등록이 사라졌다(차단으로 대체).
+        // 남는 위험은 반대 방향이다 — 차단에 넓은 판정(`isSubagentTool`)을 쓰면 우리
+        // 도구까지 목록에 들어가 위임 경로가 통째로 막힌다. 그건 실행으로 확인한다.
+        !withSdkSubagentsBlocked([]).includes("spawn_agent"),
+        withSdkSubagentsBlocked([]).join(","),
       ),
       assert(
         "대시보드 잡카드 링크도 새 이름을 받는다",

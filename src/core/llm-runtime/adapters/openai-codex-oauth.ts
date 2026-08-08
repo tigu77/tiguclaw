@@ -105,6 +105,7 @@ import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
+import { composeSwallowedFailure } from "../swallowed-failure.js";
 import { watchToolStart } from "../tool-watchdog.js";
 import { needsClosingReport } from "./_turn-completion.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
@@ -2173,17 +2174,22 @@ export const runOpenAiCodex = async (
       //  원시 함수는 버퍼만 비우고 그 활동을 발행하지 않는다. 그래서 이 경로로 끝난 턴은
       //  **도구 카드만 남고 텍스트가 통째로 사라졌다**(사용자: "도구가 마지막이야, 에러 없어").
       //  레이어가 준 `closeTextSegment()` 를 쓴다 — 뽑기와 발행이 한 몸이다.
+      // ★판정은 `composeSwallowedFailure`(순수)로 뽑았다 — 여기 인라인으로 두면 "무엇이
+      //  화면에 가고 무엇이 저장되나" 를 **실행으로 물어볼 수가 없어** 회귀가 소스 정규식이
+      //  되고, 그래서 이 자리에서 하루에 사용자 대면 결함이 세 번 났다.
+      //  `closeTextSegment()` 를 쓰는 이유: 원시 `closeSegment()` 는 버퍼만 비우고 대시보드
+      //  턴 뷰가 읽는 `llm.activity kind:"text"` 세그먼트를 **발행하지 않는다**(실측 사고).
       const streamedSoFar = closeTextSegment() ?? "";
-      const shown = finalText !== "" ? finalText : streamedSoFar;
+      const view = composeSwallowedFailure(finalText, streamedSoFar, notice);
       console.error(
         `[codex-swallowed] ${input.threadKey} ${e instanceof Error ? e.name : "unknown"}: ` +
           `${e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200)} ` +
-          `iter=${iteration} tools=${executedToolNames.size} shown=${shown.length}자`,
+          `iter=${iteration} tools=${executedToolNames.size} shown=${view.shown.length}자`,
       );
-      deltaStream.push((shown !== "" ? "\n\n" : "") + notice);
+      deltaStream.push(view.deltaText);
       deltaStream.flush();
-      closeTextSegment(); // ★안내도 세그먼트로 — 턴 뷰에서 도구 뒤에 실제로 보이게.
-      finalText = shown !== "" ? `${shown}\n\n${notice}` : notice;
+      closeTextSegment(); // 안내도 세그먼트로 — 턴 뷰에서 도구 뒤에 실제로 보이게.
+      finalText = view.saved;
     } else {
       throw e; // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).
     }

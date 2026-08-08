@@ -25,6 +25,7 @@
  *    `discoverAgents(cwd)` 결과를 SDK `options.agents` 로 주입 → native Task tool
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
+import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -260,7 +261,7 @@ export const deriveLeanMemory = (agent: Agent): boolean => {
  * 비어 있으면 빈 문자열 — 호출자가 prepend skip.
  *
  * `invocationHint` — 어댑터별 위임 도구가 달라 파라미터화 (LLM-agnostic).
- *  codex 는 `spawn_agent` MCP 도구(기본값), claude 는 SDK native Task 도구
+ *  세 어댑터 공통 `spawn_agent` MCP 도구 (claude 의 SDK native Task/Agent 는 차단됨)
  *  (`options.agents` 주입분을 subagent_type 으로 위임). 도구명을 어댑터가 주입해
  *  없는 도구로 오도되는 것을 방지.
  */
@@ -306,7 +307,11 @@ export const getAgentDefinition = async (
   cwd: string = process.cwd(),
 ): Promise<string | undefined> => {
   const agents = await discoverAgents(cwd);
-  const candidates = agents.filter((a) => a.name === name);
+  // ★대소문자를 구분하지 않는다 (2026-08-08 검토). 모델이 SDK 어휘를 습관으로 쓰면
+  //  `Explore`(대문자)로 오는데 우리 정의는 `explore` 다 — 한 글자 차이로 미발견이었다.
+  //  이름은 파일명에서 오고 관례상 소문자라, 대소문자 무시가 충돌을 만들지 않는다.
+  const lower = name.toLowerCase();
+  const candidates = agents.filter((a) => a.name.toLowerCase() === lower);
   if (candidates.length === 0) return undefined;
   const project = candidates.find((a) => a.source === "project");
   const plugin = candidates.find((a) => a.source === "plugin");
@@ -353,7 +358,7 @@ export const createSpawnAgentMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const spawnTool = tool(
     "spawn_agent",
-    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약됩니다. 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. **선택 기준**: 결과를 *이번 답변 안에서* 써서 다음 판단을 해야 할 때 이 도구를 쓰세요 — 부모 턴을 붙잡고 기다립니다. 수십 분 이상 걸릴 규모 있는 작업은 대신 run_in_background 로 보내세요(매니저가 지휘자가 되어 스스로 팬아웃하고, 대화는 막히지 않습니다).",
+    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. **선택 기준**: 결과를 *이번 답변 안에서* 써서 다음 판단을 해야 할 때 이 도구를 쓰세요 — 부모 턴을 붙잡고 기다립니다. 수십 분 이상 걸릴 규모 있는 작업은 대신 run_in_background 로 보내세요(매니저가 지휘자가 되어 스스로 팬아웃하고, 대화는 막히지 않습니다).",
     {
       // ★`subagent_type` 은 SDK 빌트인 `Agent` 의 인자 이름이다 (2026-08-08).
       //  그 도구를 차단한 뒤에도 모델은 **습관으로** 그 이름을 부르고(그래서 toolAliases 로
@@ -403,9 +408,22 @@ export const createSpawnAgentMcpServer = (
         // agent 정의 회수 (model 등급 포함). 우선순위 project > plugin > user.
         // targetCwd 로 발견 → project 지정 시 그 프로젝트의 에이전트 명세를 집는다.
         const agents = await discoverAgents(targetCwd);
-        const cands = agents.filter((a) => a.name === args.name);
+        // ★대소문자를 구분하지 않는다 (2026-08-08). 모델이 SDK 어휘를 습관으로 쓰면
+        //  `Explore`(대문자)로 오는데 우리 정의는 `explore` 다 — 한 글자 차이로 미발견이었다.
+        //  이름은 파일명에서 오고 전부 소문자-하이픈이라(전수 확인) 폴딩 충돌이 없다.
+        //  ★앞 라운드엔 이 수정을 `getAgentDefinition` 에 넣었는데 **그 함수는 호출자가
+        //   0개**였다(레드팀 적발). 고치는 자리를 확인하지 않으면 고친 게 아니다.
+        const wanted = args.name.toLowerCase();
+        const cands = agents.filter((a) => a.name.toLowerCase() === wanted);
         if (cands.length === 0) {
-          return errText(`서브에이전트 '${args.name}' 미발견.`);
+          // ★후보를 **알려준다**. 종전엔 막다른 문자열이라 모델이 턴 하나를 더 태웠다 —
+          //  같은 스코프에 목록이 있는데 안 쓰고 있었다.
+          const names = agents.map((a) => a.name).sort();
+          const shown = names.slice(0, 20).join(", ");
+          return errText(
+            `서브에이전트 '${args.name}' 미발견. 사용 가능: ${shown}` +
+              (names.length > 20 ? ` 외 ${names.length - 20}개(find_agents 로 검색)` : ""),
+          );
         }
         const agent =
           cands.find((a) => a.source === "project") ??
@@ -467,6 +485,29 @@ export const createSpawnAgentMcpServer = (
         //  운반(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 빈 체인 = 어댑터 디폴트.
         const { runRegionA, resolveModelChain } = await import("../index.js");
         const chain = resolveModelChain(agent.model, targetCwd);
+        // ★도구 0회 신호 (2026-08-08 이관) — 종전엔 claude 어댑터의 SDK Task 경로에만 있었다.
+        //  그 경로를 막으면서 신호가 **통째로 죽었다**(정리하다 발견). 위임이 우리 루프로
+        //  일원화됐으니 판정도 여기로 온다 — 그리고 여기 오면서 **세 어댑터 공통**이 된다.
+        //  실측 근거: 파일을 읽으라고 시켰는데 도구 0회로 값을 지어냈고(실제 0.18.0 인데
+        //  "0.5.5"), 40초 대기를 17초에 백그라운드로 던지고 끝냈다. 정상 건은 9~30회 쓴다.
+        //  ★단정하지 않는다 — 요약·판단만 시키면 0회가 정상이다. 실패로 닫지 않고 신호만.
+        const childKey = `agent:${jobId}`;
+        let childToolSteps = 0;
+        const busRef = getEventBus();
+        const unsub = busRef.subscribe((ev) => {
+          if (ev.type !== "llm.activity") return;
+          if (ev.payload?.threadKey !== childKey) return;
+          // ★allowlist 다 (검토 지적, 2026-08-08). 처음엔 `kind !== "text"` 로 썼는데
+          //  그건 **denylist** 라 새 kind 가 생기면 조용히 열린다. ★정직하게: 유니온의
+          //  `"turn"` 은 **현재 어디서도 발행되지 않는다**(레드팀 실측) — 즉 그 위험은
+          //  가정이었고 좁혀서 잃은 것도 없다. 그래도 allowlist 가 맞다(방향이 안전하다).
+          //  ★단위 주의: 도구 1개당 `phase` start+end **2건**이 온다 — 이 카운터는 실제
+          //   도구 수의 2배다. `=== 0` 판정에만 쓰므로 무해하지만, 0 아닌 임계를 넣거나
+          //   숫자를 노출하려면 `phase` 를 봐야 한다. 원본(어댑터 `entry.seq`)도 구조적으로
+          //  도구만 셌다 — 그 의미를 그대로 옮기려면 도구를 **명시적으로** 세야 한다.
+          if (ev.payload?.kind !== "tool") return;
+          childToolSteps += 1;
+        });
         let out: RegionASdkOutput;
         try {
           out = await runRegionA(
@@ -476,6 +517,30 @@ export const createSpawnAgentMcpServer = (
         } finally {
           // 정상·throw·취소 모두 해제 — cancelHooks 누수 0(worker-registry.ts 동형 패턴).
           abort.done();
+          try { unsub(); } catch { /* best-effort */ }
+        }
+        if (childToolSteps === 0) {
+          console.warn(
+            `[agent-no-tools] ${parentInput.threadKey} 서브에이전트 '${args.name}' 가 ` +
+              `도구를 **한 번도 쓰지 않고** 끝났습니다(내부 스텝 0). 지시가 파일·명령 실행을 ` +
+              `요구했다면 결과가 지어낸 것일 수 있습니다 — 반환 ${out.text.length}자.`,
+          );
+          try {
+            busRef.publish({
+              // ★`worker.` 접두 금지 — sse.js 가 worker.* 를 타입 없이 블라인드 라우팅해
+              //  상태 없는 페이로드가 카드 상태를 건드린다. 이건 잡 생애주기가 아니라 품질 신호다.
+              type: "llm.agent_no_tools",
+              ts: Date.now(),
+              payload: {
+                channel: parentInput.channel,
+                threadKey: parentInput.threadKey,
+                jobId,
+                agentName: args.name,
+                task: args.prompt.slice(0, 200),
+                resultChars: out.text.length,
+              },
+            });
+          } catch { /* best-effort — 관측 실패가 완료를 무르지 않는다 */ }
         }
         markDone(jobId, out.text); // 관측 완료 — 재주입 없음(결과는 아래 return 으로 부모 회수).
         return okText(out.text);

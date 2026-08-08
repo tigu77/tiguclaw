@@ -24,7 +24,7 @@ tiguclaw 의 유일한 실행 모델은 **서브에이전트 위임**이다.
 ```
 [비서] ── invoke_skill("팀이름") ──→ 오케스트레이션 스킬 로드
    │
-   ├── Task(name, prompt)        (claude 어댑터: SDK native Task 도구)
+   ├── spawn_agent(name, prompt) (세 어댑터 공통 MCP 도구)
    ├── spawn_agent({name, prompt}) (codex 어댑터: spawn_agent MCP 도구)
    │
    └── 서브에이전트가 산출물을 `_workspace/{phase}_{agent}_{artifact}.md` 에 기록
@@ -32,7 +32,7 @@ tiguclaw 의 유일한 실행 모델은 **서브에이전트 위임**이다.
 ```
 
 **핵심 도구 (어댑터별 위임 — 동작 동등):**
-- claude 어댑터 → `Task` (SDK native, `options.agents` 로 주입된 서브에이전트를 발견·실행)
+- 세 어댑터 공통 → `spawn_agent` (우리 루프에서 실행 — 관측·스티어·취소 가능)
 - codex 어댑터 → `spawn_agent({name, prompt})` (MCP 도구)
 
 비서는 매 턴 작동 컨텍스트에 자동으로 실리는 「## 사용 가능 서브에이전트」 인덱스에서
@@ -79,7 +79,7 @@ tiguclaw 의 유일한 실행 모델은 **서브에이전트 위임**이다.
 [비서] → ├→ [전문가B] → 02_B.md ─┼→ [통합: Read 후 종합]
          └→ [전문가C] → 02_C.md ─┘
 ```
-병렬 위임은 단일 메시지에서 여러 위임 도구를 동시 호출(claude `Task` 다중 /
+병렬 위임은 단일 메시지에서 `spawn_agent` 을 여러 개 동시 호출(
 codex `spawn_agent` 다중). 각 서브에이전트는 독립 산출물을 `_workspace/` 에 기록.
 주의: 통합 단계의 품질이 전체 품질을 결정.
 
@@ -251,7 +251,7 @@ tools:               # 콤마 구분. 생략 시 전체 도구. "none" 이면 �
 |------|-------------|-----------------|
 | 정의 | 절차적 지식 (워크플로우) | 전문가 페르소나 + 행동 원칙 |
 | 위치 | `<TIGUCLAW_HOME>/skills/<name>/SKILL.md` | `<TIGUCLAW_HOME>/agents/<name>.md` |
-| 트리거 | description 키워드 매칭 (자동 발견) | 비서가 `Task`/`spawn_agent` 로 명시 위임 |
+| 트리거 | description 키워드 매칭 (자동 발견) | 비서가 `spawn_agent` 으로 명시 위임 |
 | 용도 | "어떻게 하는가" | "누가 하는가" |
 
 스킬은 절차적 가이드, 에이전트는 그 가이드를 수행하는 전문가 역할 정의다.

@@ -64,7 +64,7 @@ Claude Code 스킬/에이전트는 프로젝트 `CLAUDE.md`(+ 하위 `**/CLAUDE.
 - 에이전트/스킬 `tools`·`allowed-tools`: Claude Code 도구명(Read/Edit/Bash/Grep/Glob/WebFetch…)은
   tiguclaw file-ops 와 동일. tiguclaw 에 없는 도구(특정 MCP 등)는 tiguclaw 가 무시 → 그대로 두거나
   주석. **어댑터별 특수분기 금지**(#2) — 도구 목록은 의도만, 실제 가용은 런타임이 결정.
-- 스킬 본문이 `Task`(claude 전용) 언급 시: tiguclaw 는 `spawn_agent`(codex/openai)도 동형 —
+- 스킬 본문이 `Task`/`Agent`(claude SDK 빌트인) 언급 시: tiguclaw 는 그걸 **차단**하고 `spawn_agent` 으로 일원화 —
   본문은 그대로 둬도 되나, 순수 claude 표현이면 "Task/ spawn_agent" 병기 권장(LLM-agnostic).
 
 ## 5) 보고

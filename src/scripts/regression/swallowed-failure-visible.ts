@@ -1,17 +1,21 @@
 /**
- * 회귀: **삼킨 실패는 화면과 로그 양쪽에 남는다** (2026-08-08).
+ * 회귀: **삼킨 실패가 화면과 저장본 양쪽에 온전히 남는다** — ★행동 게이트 (2026-08-08).
  *
- * 실측(윈도우): 도구 8종을 5분 쓰던 턴이 codex SSE `terminated` 로 끊겼다. 사용자 화면엔
- * **"네, M6-a 부터 시작하겠습니다…" 90자만** 남았고 — 조기 종료와 구분이 안 된다 — 실패
- * 문구는 저장 경로로만 갔다. 그날 데몬 로그 61줄 중 관련 줄은 **0**이었다.
+ * 이 자리에서 하루에 **사용자 대면 결함이 세 번** 났고, 세 번 다 회귀는 초록이었다:
+ *  ①`finalText` 덮어쓰기 → 화면엔 **잘린 문장만**(조기 종료와 구분 불가)
+ *  ②원시 `closeSegment()` 로 **세그먼트를 훔침** → 그 턴 텍스트가 통째로 사라지고 도구만 남음
+ *  ③택일→결합으로 바꾸며 stall 재시도의 **중복 문단**을 저장본에 들여놓음
  *
- * 뿌리는 `sideEffectExecuted` 분기다. 부작용(도구 실행)이 이미 났으면 throw 하지 않고
- * **에러를 답장 텍스트로 바꿔** 정상 종료시킨다 — 폴백이 도구를 중복 실행하는 걸 막는
- * **옳은 설계**다. 문제는 바꾸면서 ①로그를 안 남기고 ②`finalText` 를 **덮어써서** 이미
- * 스트리밍된 텍스트가 화면에 그대로 남는다는 것이었다.
+ * ★검사가 매번 초록이었던 이유는 하나다 — **소스 정규식이었다.** 어댑터 한복판의 인라인
+ *  로직은 "무엇이 화면에 가고 무엇이 저장되나" 를 **실행으로 물어볼 수가 없다.** 레드팀이
+ *  `if (process.env.X === "1") { …발행… }` 한 줄로 8개 단언을 전부 통과시켜 증명했다.
  *
- * ★사용자가 끊긴 걸 알아야 "이어서 해줘" 라고 말할 수 있다. 그게 이 검사의 목적이다.
- * 3주간 삼킴이 13건(전체 발화의 2.3%)이었고 12건은 사유조차 답장 문구를 긁어야 알았다.
+ * 그래서 판정을 `composeSwallowedFailure`(순수)로 뽑고, 여기서 **실제 입력을 넣어 결과를
+ * 본다**. 위 세 결함은 전부 이 함수의 입출력으로 표현되므로 재발하면 빨간불이 된다.
+ *
+ * ★남은 한계(정직하게): 어댑터가 그 판정을 **실제로 쓰는지**는 여전히 소스 검사다. 닫으려면
+ *  어댑터를 실행해야 하고 그건 SDK·네트워크가 필요하다. 아래 `[린트]` 표시가 붙은 단언은
+ *  **우연한 드리프트는 잡지만 적은 못 막는다** — 등급을 적어 다음 사람이 속지 않게 한다.
  */
 import { readFile } from "node:fs/promises";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -19,71 +23,75 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 export const check: RegressionCheck = {
   name: "swallowed-failure-visible",
   guards:
-    "부작용 뒤 삼킨 실패가 화면(delta)과 로그 양쪽에 드러난다 — 조기 종료로 오인되지 않게",
+    "삼킨 실패의 화면·저장본 구성 — 잘린 문장만 남거나, 텍스트가 사라지거나, 중복되지 않게",
   run: async (): Promise<Assertion[]> => {
+    const { composeSwallowedFailure } = await import(
+      "../../core/llm-runtime/swallowed-failure.js"
+    );
+    const N = "요청 처리 중 오류가 발생했습니다 — terminated";
+
+    // ①덮어쓰기 금지 — 화면에 있던 것이 저장본에도 있어야 한다.
+    const cut = composeSwallowedFailure("", "네. M6-a 부터 시작하겠습니다", N);
+    // ②다중 iteration — 앞 조각이 버려지면 안 된다(택일 시절의 결함).
+    const multi = composeSwallowedFailure("T1 결과 정리", "T2 진행 중", N);
+    // ③stall 재시도 중복 — 재전송이 앞부분을 다시 냈다. 한 번만 남아야 한다.
+    const dup = composeSwallowedFailure("앞부분", "앞부분 그리고 뒷부분", N);
+    // ④빈 턴 — 안내만.
+    const empty = composeSwallowedFailure("", "", N);
+
     const src = await readFile(
-      new URL(
-        "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
-        import.meta.url,
-      ),
+      new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url),
       "utf8",
     );
-    // 삼킴 분기 본문만 잘라서 본다 — 파일 어딘가에 있는 게 아니라 **이 분기 안에** 있어야 한다.
-    const start = src.indexOf("if (sideEffectExecuted) {");
-    const raw = start === -1 ? "" : src.slice(start, start + 4200);
-    // ★주석을 걷어내고 본다 (2026-08-08). "이걸 쓰지 마라" 를 설명하는 **주석**이 그 이름을
-    //  포함해 금지 검사가 자기 설명문에 걸렸다 — 이 레포가 이미 겪은 부류(주석 안 `<style>`
-    //  를 태그로 세어 게이트가 상시 FAIL). **검사 대상은 코드이지 그걸 설명하는 글이 아니다.**
-    const body = raw.replace(/\/\/[^\n]*/g, "");
+    // ★창을 쓰지 않는다. 고정 바이트 창은 본문이 자라면 뒷부분을 조용히 놓치고(방금 그렇게
+    //  걸렸다), 중괄호 균형은 본문 안 정규식 리터럴에 부서진다(레드팀 실증). **행동은 위
+    //  순수 함수가 지키므로** 아래 린트는 파일 전체에서 공존만 본다 — 창 관리가 필요 없다.
+    const body = src.replace(/\/\/[^\n]*/g, "");
 
     return [
       assert(
-        "삼킴 분기가 존재한다(검사가 빈손으로 통과하지 않는다)",
-        start !== -1,
-        start === -1 ? "★분기 없음" : `offset ${start}`,
+        "★화면에 나간 텍스트가 저장본에 **남는다**(덮어쓰기 금지 — 잘린 문장만 남던 사고)",
+        cut.saved.startsWith("네. M6-a 부터 시작하겠습니다") && cut.saved.includes(N),
+        cut.saved.slice(0, 40),
       ),
       assert(
-        "★삼키기 전에 로그를 남긴다 — 사용자만 알고 운영자는 모르는 실패를 없앤다",
-        /console\.error\([\s\S]{0,200}codex-swallowed/.test(body),
-        /codex-swallowed/.test(body) ? "로그 있음" : "★로그 없음",
+        "★이미 나간 조각은 **다시 안 보낸다**(중복 렌더 0) — delta 엔 안내만",
+        cut.deltaText.trim() === N && !cut.deltaText.includes("M6-a"),
+        JSON.stringify(cut.deltaText).slice(0, 40),
       ),
       assert(
-        "★로그에 판정 수치가 실린다(증상만 적힌 로그는 두 번째로 볼 때 쓸모없다)",
-        /iter=\$\{iteration\}/.test(body) &&
-          /tools=\$\{executedToolNames\.size\}/.test(body) &&
-          /shown=\$\{shown\.length\}/.test(body),
+        "★다중 iteration 에서 앞 조각이 안 버려진다(택일 시절 결함)",
+        multi.saved.includes("T1 결과 정리") && multi.saved.includes("T2 진행 중"),
+        multi.saved.slice(0, 40),
+      ),
+      assert(
+        "★stall 재시도 중복이 저장본에 안 들어간다(결합으로 바꾸며 새로 연 창)",
+        (dup.saved.match(/앞부분/g) ?? []).length === 1 && dup.saved.includes("뒷부분"),
+        `앞부분 ${(dup.saved.match(/앞부분/g) ?? []).length}회`,
+      ),
+      assert(
+        "빈 턴이면 안내만(구분선 없이)",
+        empty.saved === N && empty.deltaText === N && empty.shown === "",
+        empty.saved.slice(0, 30),
+      ),
+      assert(
+        "[린트] 어댑터가 그 판정을 쓴다(직접 조립으로 되돌아가지 않게)",
+        /composeSwallowedFailure\(/.test(body) && /finalText = view\.saved/.test(body),
+        "판정 경유",
+      ),
+      assert(
+        "[린트] 원시 closeSegment 는 **헬퍼 안에서만**(세그먼트 훔치기 금지)",
+        // 정상 호출은 `closeTextSegment()` 정의 안 **딱 1회**다(뽑기와 발행이 한 몸).
+        // 그 밖에서 부르면 버퍼만 비워 대시보드 턴 뷰의 텍스트가 사라진다(실측 사고).
+        (body.match(/deltaStream\.closeSegment\(\)/g) ?? []).length === 1,
+        `원시 호출 ${(body.match(/deltaStream\.closeSegment\(\)/g) ?? []).length}회`,
+      ),
+      assert(
+        "[린트] 삼키기 전에 판정 수치와 함께 로그를 남긴다",
+        /codex-swallowed/.test(body) &&
+          /iter=\$\{iteration\}/.test(body) &&
+          /shown=\$\{view\.shown\.length\}/.test(body),
         "iter·tools·shown",
-      ),
-      assert(
-        "★세그먼트를 **훔치지 않는다** — 원시 closeSegment 직접 호출 금지(턴 뷰 텍스트 소실)",
-        // 대시보드 턴 뷰는 텍스트를 `llm.activity kind:"text"` 세그먼트로 그린다. 원시
-        // `deltaStream.closeSegment()` 는 버퍼만 비우고 그 활동을 **발행하지 않아**, 이 경로로
-        // 끝난 턴이 **도구 카드만 남고 텍스트가 통째로 사라졌다**(2026-08-08 실측·사용자 신고).
-        // 뽑기와 발행이 한 몸인 `closeTextSegment()` 를 써야 한다.
-        !/deltaStream\.closeSegment\(\)/.test(body) &&
-          /closeTextSegment\(\)/.test(body),
-        "closeTextSegment 사용",
-      ),
-      assert(
-        "★안내도 세그먼트로 닫는다 — delta 만 보내면 턴 뷰(인터리브)엔 안 뜬다",
-        /deltaStream\.flush\(\);[\s\S]{0,120}closeTextSegment\(\)/.test(body),
-        "flush 뒤 세그먼트 마감",
-      ),
-      assert(
-        "★실패 문구가 **화면(delta)** 으로도 나간다 — 저장본만 고치면 화면은 그대로다",
-        /deltaStream\.push\([\s\S]{0,80}notice\)/.test(body) &&
-          /deltaStream\.flush\(\)/.test(body),
-        "delta push+flush",
-      ),
-      assert(
-        "★이미 스트리밍된 텍스트를 **덮어쓰지 않고 뒤에 붙인다**(잘린 문장만 남지 않게)",
-        /finalText = shown !== ""/.test(body) && /\$\{shown\}/.test(body),
-        "append",
-      ),
-      assert(
-        "일반 실패 안내가 **이어가는 법**을 알려준다(사용자가 다음 행동을 알 수 있게)",
-        /이어서 진행해줘/.test(body),
-        "이어가기 안내",
       ),
     ];
   },

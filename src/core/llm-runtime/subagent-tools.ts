@@ -38,26 +38,19 @@ export const isSdkSubagentTool = (tool: string): boolean =>
   (SDK_SUBAGENT_TOOLS as readonly string[]).includes(tool);
 
 /**
- * 우리 `spawn_agent` 이 SDK 에 노출되는 이름 — MCP 서버 `agents`(agent-registry.ts) 안의 도구.
- * alias 의 **대상**이라 서버 이름이 바뀌면 여기도 같이 바뀌어야 한다(회귀가 대조한다).
- */
-export const OURS_MCP_TOOL = `mcp__agents__${OURS}`;
-
-/**
- * **습관적 SDK 이름 호출을 우리 도구로 회수**하는 alias 맵 (2026-08-08).
+ * ★alias 를 두지 않는다 (2026-08-08 검토 결과 철회).
  *
- * 차단(`disallowedTools`)만으로도 모델은 스스로 `spawn_agent` 을 찾는다(실측). 이건 그 위의
- * 얇은 안전망 — 스킬 문서·사용자 프롬프트가 "Agent 도구로 …" 라고 **이름을 지시**하면 모델이
- * 그걸 emit 할 수 있고(SDK 문서가 든 예시가 정확히 그 경우), 그때 unknown 으로 죽는 대신
- * 우리 것으로 간다. alias 는 이름만 바꾸고 **스키마는 우리 것이 노출**되므로 인자 어댑팅이
- * 필요 없다(프로브로 확인: `{prompt}` 만 왔고 `subagent_type` 은 안 왔다).
+ * 한때 `toolAliases: {Agent: "mcp__agents__spawn_agent"}` 로 습관적 호출을 회수했다.
+ * 실측 결과 **그림자 잡**이 생겼다 — SDK 는 alias 이전 이름(`Agent`)을 그대로 assistant
+ * `tool_use` 로 스트림에 올리므로 어댑터가 그걸 SDK 서브에이전트로 오인해 잡을 등록하고,
+ * alias 는 실행을 우리 도구로 보내 **진짜 잡이 또** 등록된다. 실증(devbot DB):
+ *   18:37:41 Explore failed 0초(그림자)  /  18:37:54 explore done 20초(진짜)
+ * 결과는 카드 2장·거짓 "도구 0회" 경고·취소 의미 2개.
  *
- * ★차단 목록과 **같은 출처**(SDK_SUBAGENT_TOOLS)에서 파생한다 — 한쪽만 늘어나는 드리프트가
- *  구조적으로 불가능하게. 상류가 또 개명하면 배열 한 줄만 고치면 셋(판정·차단·alias)이 따라온다.
+ * ★그리고 alias 가 필요했던 이유는 **우리 프롬프트가 차단한 도구를 가리키고 있었기**
+ *  때문이다(헌법·find_capabilities·harness 스킬·도구 설명 네 곳). 그 원인을 고쳤으므로
+ *  그물 자체가 불필요하다 — 원인을 고칠 수 있으면 그물을 만들지 않는다.
  */
-export const sdkSubagentAliases = (): Record<string, string> =>
-  Object.fromEntries(SDK_SUBAGENT_TOOLS.map((t) => [t, OURS_MCP_TOOL]));
-
 /**
  * 이 도구 호출이 **서브에이전트를 띄우는가**(주인이 누구든).
  *  - `spawn_agent` — 우리 MCP 도구(claude·codex·openai 공통)
@@ -70,3 +63,19 @@ export const isSubagentTool = (tool: string): boolean =>
 /** 오래 걸리는 게 **정상**인 도구인가 — 느림 경고 완화·하드컷 면제의 공통 기준. */
 export const isLongRunningByDesign = (tool: string): boolean =>
   isSubagentTool(tool);
+
+/**
+ * SDK 빌트인 서브에이전트 차단을 **깊이와 무관하게** 적용한다.
+ *
+ * ★함수로 뽑은 이유는 편의가 아니라 **검사 가능성**이다 (2026-08-08 적대 검토).
+ *  종전엔 어댑터가 배열을 직접 펼쳤고, 회귀는 "`depth` 라는 글자가 근처에 없다" 는
+ *  **철자**로 깊이 무관을 검사했다. 검토자가 `...SDK_SUBAGENT_TOOLS.filter(() => depth === 0)`
+ *  로 변이하니 **그대로 통과**했다 — 손자 구멍이 다시 열리는데 게이트는 초록이었다.
+ *  여기엔 `depth` 를 받을 자리가 없다. 조건을 걸려면 이 함수를 고쳐야 하고, 그러면
+ *  아래 회귀가 두 인자로 직접 호출해 결과를 대조하므로 즉시 드러난다.
+ *  ★검사를 세게 쓰는 게 아니라, **틀리게 쓸 수 없게** 만드는 쪽이 맞다.
+ */
+export const withSdkSubagentsBlocked = (base: readonly string[]): string[] => [
+  ...base,
+  ...SDK_SUBAGENT_TOOLS,
+];

@@ -655,6 +655,17 @@ export const noteCompactionOutcome = (
   }
 };
 
+const runSummarizer = async (
+  text: string,
+  targetChars: number,
+  accessToken: string,
+  accountId: string | undefined,
+  model: string,
+): Promise<string> =>
+  summarizePort !== null
+    ? await summarizePort(text, targetChars)
+    : await summarizeViaCodex(text, accessToken, accountId, model, targetChars);
+
 async function summarizeViaCodex(
   text: string,
   accessToken: string,
@@ -807,15 +818,23 @@ export const planSummaryRecompaction = (
 ): { needed: boolean; oldPart: string; keepPart: string } => {
   if (summary.length <= cap) return { needed: false, oldPart: "", keepPart: summary };
   const sections = summary.split(SUMMARY_SECTION_SEP);
-  // 구간이 하나뿐이면 접을 경계가 없다 — 그냥 둔다(길어도 손실은 없다).
-  if (sections.length < 2) return { needed: false, oldPart: "", keepPart: summary };
+  // ★구간이 하나뿐이어도 **상한을 넘었으면 접는다** (2026-08-09 적대 검토 2R).
+  //  종전엔 `needed:false` 로 그냥 뒀는데, 한 폴드 요약의 크기엔 상한이 없다
+  //  (`summaryTargetFor` 는 모델에 주는 *부탁*이다). 모델이 첫 폴드에 상한 초과 요약을
+  //  내면 그 스레드는 **영원히** 상한 위에 머물며 매 턴 프롬프트 예산을 먹는다.
+  //  레거시 구분자(`---`)로 저장된 요약도 여기서 1구간으로 보이므로 같은 함정이었다.
+  if (sections.length < 2) {
+    return { needed: true, oldPart: summary, keepPart: "" };
+  }
   const half = summary.length / 2;
   let acc = 0;
   let cut = 1;
   for (let i = 0; i < sections.length - 1; i++) {
     acc += (sections[i] as string).length;
     cut = i + 1;
-    if (acc >= half) break;
+    // ★크기 예산 — 폴드 경로엔 있고 재압축 경로엔 **없었다**. 너무 큰 입력은 요약 호출을
+    //  깨뜨린다(실측 87,387자 실패 / 60,650자 성공). 예산을 넘기려 하면 거기서 끊는다.
+    if (acc >= half || acc >= CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS) break;
   }
   return {
     needed: true,
@@ -900,6 +919,24 @@ export const applyRecompaction = (
 /** 요약을 요약할 때의 분량 — 원문 요약(4%)과 달리 이미 압축된 글이라 훨씬 완만하게 줄인다. */
 export const recompactTargetFor = (chars: number): number =>
   Math.min(SUMMARY_TARGET_MAX * 2, Math.max(SUMMARY_TARGET_MIN, Math.round(chars * 0.4)));
+
+/**
+ * 요약기 포트 (2026-08-09 적대 검토 2R).
+ *
+ * ★왜: 두 라운드가 통과시킨 변이 35개의 뿌리가 하나였다 — **드라이버가 한 번도 실행되지
+ *  않는다.** 검사는 순수 함수를 격리 호출하고 루프는 테스트가 자기 안에서 재구현했다.
+ *  그래서 "함수는 맞는데 드라이버가 틀린 인자로 부른다"(`nextPassOpts(0,…)`)·"결과를 틀린
+ *  인자로 저장한다"가 전부 초록이었다. 정규식을 더 붙이는 건 같은 병이다
+ *  ([[feedback_hand_maintained_lists]]).
+ *
+ *  쿨다운 포트(`setSummarizerCooldownPort`)와 **같은 모양**이다 — 이 파일이 이미 쓰는
+ *  이음매지 새로 만든 확장 포인트가 아니다.
+ */
+type SummarizePort = (text: string, targetChars: number) => Promise<string>;
+let summarizePort: SummarizePort | null = null;
+export const setSummarizerPort = (p: SummarizePort | null): void => {
+  summarizePort = p;
+};
 
 export const MIN_USABLE_SUMMARY_CHARS = 50;
 export const isUsableSummary = (summary: string): boolean =>
@@ -1135,12 +1172,12 @@ export const compactThreadNow = async (
   //  자동 경로와 **같은 판정**을 쓴다. 한쪽만 고치면 반쪽이다(2026-08-01 에 그렇게 데였다).
   const prompt = folded;
   try {
-    const fresh = await summarizeViaCodex(
+    const fresh = await runSummarizer(
       prompt,
+      summaryTargetFor(folded.length),
       accessToken,
       accountId,
       model,
-      summaryTargetFor(folded.length),
     );
     // ★자동 경로와 **같은 판정**을 쓴다 (2026-08-01). 종전엔 여기도 `=== ""` 뿐이라
     //  5자짜리를 통과시켜 compactedThrough 를 확정했다 — 자동 경로만 고쳤으면 반쪽이다.
@@ -1247,12 +1284,12 @@ export const buildTurnHistory = async (
       break; // 쿨다운 중엔 더 시도하지 않는다.
     } else
     try {
-      const fresh = await summarizeViaCodex(
+      const fresh = await runSummarizer(
         prompt,
+        summaryTargetFor(foldedText.length),
         accessToken,
         accountId,
         model,
-        summaryTargetFor(foldedText.length),
       );
       const applied = applyFoldResult(
         { summary, watermark, foldedTurns: foldedTurnsTotal, foldedChars: foldedCharsTotal },
@@ -1271,7 +1308,12 @@ export const buildTurnHistory = async (
           compactedThrough: watermark,
         });
         console.log(
-          `[codex 6b] 압축 성공 — ${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} 요약=${summary.length}자`,
+          // ★패스 번호와 **이번 패스의** 워터마크를 싣는다 (2026-08-09). 종전엔 진단이 늘
+          //  턴 시작 워터마크를 찍어, 여러 번 접게 된 뒤로 2·3회차가 전부 `0→…` 로 보여
+          //  패스별 진행이 로그만으로 안 보였다([[feedback_logs_must_stand_alone]]).
+          `[codex 6b] 압축 성공 ${compactPass}/${CODEX_COMPACT_MAX_PASSES}패스 — ` +
+            `${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} ` +
+            `이번 패스 watermark→${watermark} 누적 요약=${summary.length}자`,
         );
         growFoldBudget(input.threadKey);
         noteCompactionOutcome(input.threadKey, true, "", prompt.length);
@@ -1341,9 +1383,12 @@ export const buildTurnHistory = async (
     if ((cooldownPort?.remainingMs(input.provider ?? "codex-oauth") ?? 0) !== 0) break;
     let folded: string;
     try {
-      folded = await summarizeViaCodex(
-        rec.oldPart, accessToken, accountId, model,
+      folded = await runSummarizer(
+        rec.oldPart,
         recompactTargetFor(rec.oldPart.length),
+        accessToken,
+        accountId,
+        model,
       );
     } catch (e) {
       console.warn(

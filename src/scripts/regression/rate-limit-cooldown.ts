@@ -13,7 +13,16 @@ import { isRateLimited, parseCooldownMs } from "../../core/llm-runtime/index.js"
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const CLAUDE = "claude-agent-sdk error: You've hit your limit · resets 2:20am (Asia/Seoul)";
+// ★해제 시각은 **지금 기준 40분 뒤**로 만든다 (2026-08-09). 종전엔 `2:20am` 고정이라
+//  실제로 그 시각을 지난 새벽에 돌리면 파서가 null 을 내 **하루 23시간만 초록**인 검사였다
+//  (이날 02:4x 에 걸렸다). 시각에 따라 색이 바뀌는 게이트는 신뢰를 갉아먹는다 —
+//  같은 부류의 반대편이 상시 빨간 게이트다([[feedback_gate_must_actually_run]]).
+const resetAt = new Date(Date.now() + 40 * 60 * 1000);
+const h12 = resetAt.getHours() % 12 === 0 ? 12 : resetAt.getHours() % 12;
+const CLAUDE =
+  `claude-agent-sdk error: You've hit your limit · resets ${h12}:` +
+  `${String(resetAt.getMinutes()).padStart(2, "0")}` +
+  `${resetAt.getHours() < 12 ? "am" : "pm"} (Asia/Seoul)`;
 
 export const check: RegressionCheck = {
   name: "rate-limit-cooldown",
@@ -30,7 +39,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★벽시계 해제 시각을 ms 로 환산한다(초 단위가 아니어도)",
-        ms !== null && ms > 0 && ms <= 24 * 60 * 60 * 1000,
+        // 40분 뒤로 만들었으니 30~50분 사이여야 한다(고정 상한 24h 보다 촘촘하다).
+        ms !== null && ms >= 30 * 60 * 1000 && ms <= 50 * 60 * 1000,
         `${ms === null ? "null" : Math.round(ms / 60000) + "분"}`,
       ),
       assert(

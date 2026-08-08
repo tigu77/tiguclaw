@@ -140,12 +140,9 @@ export const check: RegressionCheck = {
     // ★인자까지 본다. 종전엔 호출 **수**만 세서 `summaryTargetFor(plan.toFold.length)`
     //  (글자수→턴수)로 바꿔도 통과했고, 그러면 목표가 항상 하한 400자로 클램프돼
     //  이 커밋의 핵심 수정이 통째로 무력화된다(A2).
-    //  ★그리고 **요약기 호출 안**에서 봐야 한다. 처음엔 파일 어디든 그 문자열이 있으면
-    //   통과하게 썼는데, 진단 로그에 같은 호출이 하나 더 있어 **다른 자리가 검사를
-    //   만족시켰다**(변이로 확인 — 레드팀이 지적한 그 부류를 수정에서 또 밟았다).
-    const targetWired =
-      /summarizeViaCodex\([\s\S]{0,200}summaryTargetFor\(foldedText\.length\)/.test(src) &&
-      /summarizeViaCodex\([\s\S]{0,200}summaryTargetFor\(folded\.length\)/.test(src);
+    // ★분량 목표가 요약기까지 닿는지는 이제 `compaction-driver` 가 **드라이버를 돌려**
+    //  확인한다(목표가 접은 글자 수에 비례하는가). 여기서 소스 문자열을 보던 두 단언은
+    //  요약기 호출이 포트 경유로 바뀌자 곧바로 깨졌다 — 이름에 매달린 검사의 수명이다.
     // 재압축이 최근 구간을 **실제로 이어붙이는가** — 인자를 `""` 로 죽이면 뒤 절반 영구 폐기(A12).
     const keepsRecentWired = /appendSummarySection\(folded\.trim\(\), rec\.keepPart\)/.test(src);
     // 수동 경로의 인자 순서 — 뒤집으면 시간순이 역전된다(A13).
@@ -218,11 +215,6 @@ export const check: RegressionCheck = {
         `하한 ${summaryTargetFor(1)} · 상한 ${summaryTargetFor(10_000_000)} · 재압축 ${recompactTargetFor(20_000)}`,
       ),
       assert(
-        "★[배선] 분량 목표에 **글자 수**가 들어간다(턴 수로 바꾸면 항상 하한으로 클램프)",
-        targetWired,
-        targetWired ? "foldedText.length · folded.length" : "★인자가 바뀌었다",
-      ),
-      assert(
         "★[배선] 재압축이 **최근 구간을 이어붙인다**(인자를 죽이면 뒤 절반 영구 폐기)",
         keepsRecentWired && manualOrder,
         `keepPart=${String(keepsRecentWired)} · 수동 순서=${String(manualOrder)}`,
@@ -236,11 +228,6 @@ export const check: RegressionCheck = {
         "[배선 린트] 자동·수동 **두 쓰기 경로 모두** 덧붙인다(한쪽만 고치면 반쪽)",
         appends,
         `appendSummarySection 호출 ${(src.match(/appendSummarySection\(/g) ?? []).length}곳`,
-      ),
-      assert(
-        "[배선 린트] 분량 목표가 요약기까지 전달된다",
-        targetWired,
-        `summaryTargetFor 호출 ${(src.match(/summaryTargetFor\(/g) ?? []).length}곳`,
       ),
     ];
   },

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-08-09
+### Fixed
+- **긴 답변이 대화 기록에서 끝까지 보입니다.** 12,000자가 넘는 답변이 **300자쯤에서 끊긴 채** 보였고, 새로고침해도 같았고, 펼칠 방법도 없었습니다. 원인은 두 겹이었습니다 — 이벤트 저장의 크기 상한이 답변 본문까지 잘랐고(그 상한은 원래 *조회 키*를 살리려던 값이었습니다), 기록을 다시 그릴 때 **잘린 사본을 남기고 무손실 원본을 버렸습니다**. 상한을 올리고, 본문은 항상 원본에서 가져오게 했습니다.
+- **대화가 길어져도 요약이 내용을 지키게 했습니다.** Codex 로 돌 때 오래된 대화를 요약으로 접는데, 그 요약이 **접은 양과 무관하게 늘 3~6문장**이었습니다. 실측하니 하루에 **623,045자를 접고 남은 요약이 589자**였고, 62턴 40,542자를 90자로 만든 회차도 있었습니다. 게다가 접을 때마다 **옛 요약을 다시 요약해서** 예전 내용이 압축을 거듭할수록 사라졌습니다. 이제 요약 분량이 접은 양에 비례하고, 새 요약은 **덧붙습니다** — 옛 구간은 처음 요약된 문장 그대로 남습니다. 요약 첫 문장에는 어느 프로젝트 일인지도 남깁니다(그게 없으면 이어서 할 수가 없습니다).
+- **요약이 너무 자주 돌던 것**을 고쳤습니다. 한 번 접어도 임계 바로 위에 머물러 **사실상 매 턴** 요약이 돌았습니다. 이제 한 번 걸리면 여유가 생길 때까지 접고, 한동안 돌아오지 않습니다. 여러 번 접어도 안내는 **한 번**만 뜹니다(그전엔 한 턴에 세 번 떴습니다).
+- **대시보드가 통째로 안 그려지던 경우**를 고쳤습니다. 스크립트 로드 순서 경합으로 렌더가 죽었는데, 화면엔 "그냥 안 나옴"으로만 보이고 콘솔에만 흔적이 남았습니다.
+
 ## [0.23.0] - 2026-08-08
 ### Changed
 - **서브에이전트 위임이 어느 모델에서나 똑같이 동작합니다.** 지금까지 Claude 로 돌 때는 SDK 가 제공하는 위임 도구를 썼는데, 그 경로는 **대시보드에 보이지 않았고**(잡 카드가 0초 만에 사라졌습니다) 중간에 지시를 추가하거나 개별 취소를 할 수 없었습니다. 모델 프로파일도 무시돼서 Claude 등급으로 납작해졌습니다. 이제 세 어댑터가 **같은 경로**를 씁니다 — 위임이 잡으로 보이고, 스티어·취소가 되고, 설정한 모델 풀과 폴백이 그대로 적용됩니다.
@@ -989,7 +996,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/tigu77/tiguclaw/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/tigu77/tiguclaw/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/tigu77/tiguclaw/compare/v0.21.1...v0.22.0
 [0.21.1]: https://github.com/tigu77/tiguclaw/compare/v0.21.0...v0.21.1

@@ -2137,20 +2137,46 @@ export const runOpenAiCodex = async (
         executedToolNames.size > 0
           ? `\n\n이번 턴에 실행한 도구: ${[...executedToolNames].join(", ")}.`
           : "";
+      // ★삼키기 전에 남긴다 (2026-08-08). 이 분기는 에러를 **답장 텍스트로 바꿔** 정상 종료
+      //  시킨다(폴백 중복 실행 방지 = 옳은 설계). 그런데 바꾸면서 **아무것도 안 남겨서**,
+      //  사용자에겐 실패가 보이는데 운영자 로그는 깨끗했다. 실측(윈도우 2026-08-08):
+      //  5분간 도구 8종을 쓴 턴이 `terminated` 로 끊겼는데 그날 로그 61줄 중 관련 0줄 —
+      //  "왜 끊겼나" 를 **원격에서 답할 수 없었다**(로그가 1차 진단면이라는 우리 규칙 위반).
+      //  3주간 이런 삼킴이 13건이었고 12건은 사유조차 답장 문구를 긁어야 알 수 있었다.
+      //  ★판정 수치를 같이 싣는다 — 증상만 적힌 로그는 두 번째로 볼 때 쓸모가 없다.
       // 문구만 에러 종류로 고른다(진입 판정에는 안 쓴다).
+      let notice: string;
       if (e instanceof CodexBackendFailureError) {
         // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
         //  안내는 retryable 로 갈린다 — `retryable=false` 의 근거가 "같은 요청은 같은 벽"
         //  이라, 거기에 "잠시 후 다시 시도" 를 권하면 자기모순이다.
-        finalText = `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`;
+        notice = `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`;
       } else if (e instanceof IdleTimeoutError) {
-        finalText = `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+        notice = `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
       } else {
         // HTTP 실패·전송 실패·그 밖의 일반 에러. 종전엔 이 갈래가 통째로 throw 로 빠져
         // 폴백이 부작용을 중복 실행했다.
         const detail = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
-        finalText = `요청 처리 중 오류가 발생했습니다 — ${detail}${ranList}\n\n잠시 후 다시 시도해 주세요.`;
+        notice = `요청 처리 중 오류가 발생했습니다 — ${detail}${ranList}\n\n이어서 하려면 "이어서 진행해줘" 라고 말씀해 주세요.`;
       }
+
+      // ★이미 화면에 흘러간 텍스트 **뒤에 붙인다** (2026-08-08).
+      //  종전엔 `finalText` 를 **덮어썼다.** 그런데 그때까지 스트리밍된 부분 텍스트는 이미
+      //  화면에 있고, 덮어쓴 문구는 저장 경로로만 갔다 — 그래서 사용자는 **잘린 문장**만
+      //  보고 끝난 줄 알았다(실측 윈도우 2026-08-08: 도구 8종을 5분 쓰다 끊겼는데 화면엔
+      //  "네, M6-a 부터 시작하겠습니다…" 90자만 남았다. 조기 종료와 구분이 안 된다).
+      //  ★그래서 delta 로도 밀어 넣는다 — 저장본만 고치면 **화면은 그대로**다. 사용자가
+      //   끊긴 걸 알아야 "이어서 해줘" 라고 말할 수 있다.
+      const streamedSoFar = deltaStream.closeSegment() ?? "";
+      const shown = finalText !== "" ? finalText : streamedSoFar;
+      console.error(
+        `[codex-swallowed] ${input.threadKey} ${e instanceof Error ? e.name : "unknown"}: ` +
+          `${e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200)} ` +
+          `iter=${iteration} tools=${executedToolNames.size} shown=${shown.length}자`,
+      );
+      deltaStream.push((shown !== "" ? "\n\n" : "") + notice);
+      deltaStream.flush();
+      finalText = shown !== "" ? `${shown}\n\n${notice}` : notice;
     } else {
       throw e; // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).
     }

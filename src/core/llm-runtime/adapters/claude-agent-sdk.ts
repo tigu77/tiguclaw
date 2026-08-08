@@ -120,7 +120,11 @@ import {
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
-import { isSdkSubagentTool } from "../subagent-tools.js";
+import {
+  isSdkSubagentTool,
+  SDK_SUBAGENT_TOOLS,
+  sdkSubagentAliases,
+} from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 
 // ★claude 도구 천장 (2026-07-29 검토) — SDK 는 `MCP_TOOL_TIMEOUT` 미설정 시 1e8ms
@@ -786,7 +790,33 @@ export const runClaude = async (
     // 새면 대시보드/텔레그램이 옵션을 못 그려 질문만 뜨고 응답 불가(대기 고아). 어댑터-지역
     // 차단(codex/openai 는 이 도구 자체가 없어 무영향 = #2 parity, 공유 DISALLOWED_TOOLS 정책은
     // 무편집). SDK 문서 도구명 정확 매칭(coreTypes.d.ts 네이티브 도구 목록).
-    disallowedTools: [...DISALLOWED_TOOLS, "AskUserQuestion"],
+    // ★SDK 네이티브 서브에이전트 차단(2026-08-08) — 팬아웃을 우리 루프(spawn_agent)로 일원화.
+    //  같은 능력에 길이 둘이었고 SDK 쪽은 우리 계약을 **하나도** 못 지켰다:
+    //   ①관측 0 — 0.3 의 Agent 는 "Async agent launched successfully" 라는 **발사 확인증**을
+    //     tool_result 로 즉시 준다. 우리는 그걸 최종 결과로 받아 잡을 0초에 닫았다(실측
+    //     10건 중 9건 0초·1건은 확인증 미도착으로 6분 뒤 실패). 대시보드엔 스쳐 지나는
+    //     카드만 남고, 진짜 완료(`system/task_notification`)는 로그로만 흘렀다.
+    //   ②스티어·취소 불가 — per-Task abort 가 없어 취소가 **부모 턴 전체**를 끊는다.
+    //   ③claude 전용 — codex/openai 엔 이 도구가 없다(원칙 2 위반). 게다가 이 경로는
+    //     모델 프로파일을 opus/sonnet/haiku 로 **납작하게 투영**해 풀·폴백을 잃는다.
+    //   ④손자가 열린다 — 이 배열은 **깊이 무관**이라 자식도 Agent 를 들고 있었다. "손자
+    //     금지는 하드" 가 claude 경로에서만 소프트였다(프로브로 실측: 자식이 Agent 호출 성공).
+    //  실측(프로브 6케이스): disallow 는 빌트인에 확실히 먹고, 모델은 **스스로 spawn_agent 을
+    //  찾아 썼다**("막으면 인라인으로 도망간다"는 걱정은 일어나지 않았다).
+    disallowedTools: [
+      ...DISALLOWED_TOOLS,
+      "AskUserQuestion",
+      ...SDK_SUBAGENT_TOOLS,
+    ],
+    // ★습관적 호출 회수(depth 0 + 비-lean 에서만) — 스킬 문서·사용자 프롬프트가 "Agent 도구로"
+    //  라고 지시하면 모델이 그 이름을 emit 할 수 있다(SDK 문서가 든 예시가 정확히 그 경우).
+    //  그때 unknown 으로 죽는 대신 우리 도구로 데려온다. alias 는 이름만 바꾸고 스키마는 우리
+    //  것이 노출되므로 인자 어댑팅이 필요 없다(실측 확인).
+    //  ★조건이 붙는 이유: `agents` MCP 서버는 `depth === 0` + 비-lean 에만 등록된다. 조건 없이
+    //   걸면 자식·lean 턴에서 **없는 도구를 가리키는 alias** 가 되어 그 자체가 새 구멍이다.
+    ...(depth === 0 && !toolsNone
+      ? { toolAliases: sdkSubagentAliases() }
+      : {}),
     // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
     // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
     // SDKPartialAssistantMessage(type:"stream_event")가 함께 오고, 아래 메시지 루프가

@@ -32,8 +32,31 @@ const OURS = "spawn_agent";
  *  그 스텝이 어댑터 스트림에 안 온다. 여기에 섞으면 어댑터가 "스텝 0" 으로 보고
  *  **일을 다 한 에이전트를 안 했다고 경고**한다(실측: codex 에서 4회 순회한 잡).
  */
+export const SDK_SUBAGENT_TOOLS = ["Agent", "Task"] as const;
+
 export const isSdkSubagentTool = (tool: string): boolean =>
-  tool === "Agent" || tool === "Task";
+  (SDK_SUBAGENT_TOOLS as readonly string[]).includes(tool);
+
+/**
+ * 우리 `spawn_agent` 이 SDK 에 노출되는 이름 — MCP 서버 `agents`(agent-registry.ts) 안의 도구.
+ * alias 의 **대상**이라 서버 이름이 바뀌면 여기도 같이 바뀌어야 한다(회귀가 대조한다).
+ */
+export const OURS_MCP_TOOL = `mcp__agents__${OURS}`;
+
+/**
+ * **습관적 SDK 이름 호출을 우리 도구로 회수**하는 alias 맵 (2026-08-08).
+ *
+ * 차단(`disallowedTools`)만으로도 모델은 스스로 `spawn_agent` 을 찾는다(실측). 이건 그 위의
+ * 얇은 안전망 — 스킬 문서·사용자 프롬프트가 "Agent 도구로 …" 라고 **이름을 지시**하면 모델이
+ * 그걸 emit 할 수 있고(SDK 문서가 든 예시가 정확히 그 경우), 그때 unknown 으로 죽는 대신
+ * 우리 것으로 간다. alias 는 이름만 바꾸고 **스키마는 우리 것이 노출**되므로 인자 어댑팅이
+ * 필요 없다(프로브로 확인: `{prompt}` 만 왔고 `subagent_type` 은 안 왔다).
+ *
+ * ★차단 목록과 **같은 출처**(SDK_SUBAGENT_TOOLS)에서 파생한다 — 한쪽만 늘어나는 드리프트가
+ *  구조적으로 불가능하게. 상류가 또 개명하면 배열 한 줄만 고치면 셋(판정·차단·alias)이 따라온다.
+ */
+export const sdkSubagentAliases = (): Record<string, string> =>
+  Object.fromEntries(SDK_SUBAGENT_TOOLS.map((t) => [t, OURS_MCP_TOOL]));
 
 /**
  * 이 도구 호출이 **서브에이전트를 띄우는가**(주인이 누구든).

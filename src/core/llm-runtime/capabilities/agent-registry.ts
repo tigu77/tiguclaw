@@ -355,11 +355,31 @@ export const createSpawnAgentMcpServer = (
     "spawn_agent",
     "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약됩니다. 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. **선택 기준**: 결과를 *이번 답변 안에서* 써서 다음 판단을 해야 할 때 이 도구를 쓰세요 — 부모 턴을 붙잡고 기다립니다. 수십 분 이상 걸릴 규모 있는 작업은 대신 run_in_background 로 보내세요(매니저가 지휘자가 되어 스스로 팬아웃하고, 대화는 막히지 않습니다).",
     {
-      name: z.string().min(1),
+      // ★`subagent_type` 은 SDK 빌트인 `Agent` 의 인자 이름이다 (2026-08-08).
+      //  그 도구를 차단한 뒤에도 모델은 **습관으로** 그 이름을 부르고(그래서 toolAliases 로
+      //  여기로 회수한다), 그때 인자는 **기억 속 SDK 스키마**로 온다 — 차단 상태에선 우리
+      //  스키마가 컨텍스트에 없으니까. 실측: 첫 호출이 `subagent_type:"Explore"` 로 와서
+      //  검증 에러 → 모델이 스키마를 다시 읽고 재호출(자가 교정은 됐지만 실패 카드가 남았다).
+      //  둘 다 받아 그 왕복을 없앤다. 정본은 `name` — 설명·인덱스가 쓰는 이름이다.
+      name: z.string().min(1).optional(),
+      subagent_type: z.string().min(1).optional(),
       prompt: z.string().min(1),
       path: z.string().optional(),
     },
-    async (args) => {
+    async (rawArgs) => {
+      const agentName = rawArgs.name ?? rawArgs.subagent_type;
+      if (agentName === undefined) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "name(서브에이전트 이름)이 필요합니다. 사용 가능 목록은 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 있습니다.",
+            },
+          ],
+          isError: true,
+        };
+      }
+      const args = { ...rawArgs, name: agentName };
       // 관측 잡 (kind:'agent') — 서브에이전트를 워커와 동일한 대시보드 잡으로 노출
       // (ADR 2026-07-03 subagent-worker-unify, Phase A). 실행 모델은 불변(블로킹 await).
       // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=워커만) 자동 충족.

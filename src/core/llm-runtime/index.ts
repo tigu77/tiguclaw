@@ -587,6 +587,10 @@ const publishTurnDone = (
         ? {
             iterations: output.usage.iterations,
             inputTokensTotal: output.usage.inputTokensTotal,
+            // ★출력 합계도 함께 (2026-08-09). 어댑터에만 넣고 여기를 안 봐서 이벤트에
+            //  안 실렸다 — 페이로드가 **필드별 명시 복사**라 새 필드는 여기도 고쳐야 한다.
+            //  "계약 바꿨으면 소비처 전수" 를 오늘만 세 번째로 밟았다.
+            outputTokensTotal: output.usage.outputTokensTotal,
             cachedTokensTotal: output.usage.cachedTokensTotal,
           }
         : {}),

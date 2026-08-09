@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed
+- **토큰·비용 수치가 실제보다 크게 낮게 나오던 것.** 도구를 여러 번 쓰는 긴 작업에서 출력 토큰이 **마지막 한 번만** 집계돼, 대시보드 카드와 비용 추정이 실제의 몇 분의 일로 보였습니다(실측: 314 vs 5,101 — 16배). 이제 작업 전체 합계를 씁니다.
 
 ## [0.24.0] - 2026-08-09
 ### Changed

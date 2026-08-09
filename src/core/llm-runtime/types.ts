@@ -275,6 +275,8 @@ export interface RegionASdkOutput {
      */
     iterations?: number;
     inputTokensTotal?: number;
+    /** 턴 전체 출력 합계 — inputTokensTotal 과 대칭(2026-08-09). */
+    outputTokensTotal?: number;
     cachedTokensTotal?: number;
   };
   /**
@@ -638,6 +640,14 @@ export interface RegionATurnDonePayload {
   iterations?: number;
   /** 턴 전체 입력 합계 — 진짜 비용(위 inputTokens 는 **마지막 호출 1회** 값). */
   inputTokensTotal?: number;
+  /**
+   * ★턴 전체 **출력** 합계 (2026-08-09). `outputTokens` 는 `inputTokens` 와 같은 규칙이라
+   * **마지막 호출 1회**다 — 도구 루프가 긴 턴은 iteration 수만큼 과소계상된다.
+   * 벤치가 그걸로 claude-code(세션 누적)와 비교해 **11배 유리하게** 나왔다(2026-08-09 실측:
+   * 387 vs 4,338. 같은 모델·같은 수렴 스텝 11 vs 11인데 그럴 수 없다).
+   * 입력엔 합계가 있었는데 출력만 없어서, 소비처가 대칭을 맞출 수가 없었다.
+   */
+  outputTokensTotal?: number;
   /** 턴 전체 캐시 적중 합계 — 진짜 적중률 = cachedTokensTotal / inputTokensTotal. */
   cachedTokensTotal?: number;
   /**

@@ -862,6 +862,7 @@ export const runClaude = async (
         cachedTokens?: number;
         iterations?: number;
         inputTokensTotal?: number;
+        outputTokensTotal?: number;
         cachedTokensTotal?: number;
       }
     | undefined;
@@ -1259,6 +1260,11 @@ export const runClaude = async (
               (usageEntry?.inputTokens ?? 0) +
               (cumCached ?? 0) +
               (cumCreate ?? 0);
+            // ★출력도 **턴 합계**를 싣는다 (2026-08-09). `outputTokens` 는 입력과 같은 규칙이라
+            //  마지막 호출 1회다 — 도구 루프가 긴 턴을 iteration 수만큼 과소계상한다.
+            //  입력엔 합계가 있었는데 출력만 없어서 벤치가 claude-code(세션 누적)와
+            //  비대칭 비교를 했다(실측: 387 vs 4,338 — 같은 수렴 스텝 11 vs 11인데).
+            const cumOutput = usageEntry?.outputTokens ?? 0;
             // 호출 단위가 없으면(비정상 종료 등) 누적값으로 폴백 — 없는 것보단 낫다.
             const perCall = lastCallUsage;
             lastUsage = {
@@ -1276,6 +1282,7 @@ export const runClaude = async (
                     iterations:
                       typeof msg.num_turns === "number" ? msg.num_turns : 2,
                     inputTokensTotal: cumInput,
+                    ...(cumOutput > 0 ? { outputTokensTotal: cumOutput } : {}),
                     ...(typeof cumCached === "number"
                       ? { cachedTokensTotal: cumCached }
                       : {}),

@@ -418,6 +418,7 @@ const withTurnTotals = (
       cachedTokens?: number;
       iterations?: number;
       inputTokensTotal?: number;
+      outputTokensTotal?: number;
       cachedTokensTotal?: number;
     }
   | undefined => {
@@ -427,6 +428,7 @@ const withTurnTotals = (
     ...last,
     iterations: totals.iterations,
     inputTokensTotal: totals.inputTokens,
+    outputTokensTotal: totals.outputTokens,
     cachedTokensTotal: totals.cachedTokens,
   };
 };

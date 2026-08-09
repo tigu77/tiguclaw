@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-09
+### Changed
+- **셸과 검색이 어느 모델에서나 똑같이 동작합니다.** 지금까지는 Claude 로 돌 때와 Codex 로 돌 때 도구가 달라서, 같은 질문에 다른 결과가 나왔습니다. 이제 셋이 같은 도구를 씁니다.
+  - **실행 중인 셸의 출력이 백그라운드 잡 카드에 실시간으로 보입니다.** Claude 로 돌 때는 카드는 뜨는데 **출력이 비어 있었습니다** — 셸이 SDK 안쪽에서 돌아 데몬이 화면에 보낼 내용을 쥘 수 없었기 때문입니다.
+  - **검색이 훨씬 정교해졌습니다.** 매칭 줄만 받던 `Grep` 에 결과 형식(줄·파일 목록·개수 선택)·앞뒤 문맥 줄·대소문자 무시·파일 종류 필터·개수 상한이 생겼습니다. **결과가 잘리면 잘렸다고 알려줍니다** — 그전엔 조용히 잘려서 "그게 전부"로 읽혔습니다.
+  - **파일 찾기가 최근 수정 순으로 나옵니다.** "방금 건드린 파일"이 위로 옵니다.
+  - Jupyter 노트북(`.ipynb`)을 셀 단위로 읽습니다.
+
+### Added
+- **검색에 필요한 ripgrep 을 자동으로 준비합니다.** 없으면 온보드·`npm run doctor`·`/update` 가 알아서 받아 둡니다.
+  - ★그전에는 **기계에 우연히 깔려 있어야만** 검색이 됐습니다. 실측 결과 Windows 인스턴스는 검색이 **통째로 죽어 있었고**, 사용자는 "왜 못 찾지"만 겪었습니다(에러도 안 났습니다). 설치 여부는 이제 부팅 로그 한 줄로 확인됩니다.
+
+### Fixed
+- **답변이 통째로 비어 나오던 것.** 백그라운드 알림이 대화 중간에 끼면 그 뒤 수십 초간 만들어진 진짜 답변이 버려지고 **빈 말풍선**만 남았습니다. 그런데 기록에는 "정상 완료"로 찍혀서 아무도 몰랐습니다.
+- **새로고침하면 "작업 중" 표시와 세션 탭의 진행 배지가 사라지던 것.** 비서가 실제로 일하고 있는데 화면상 놀고 있는 것처럼 보였습니다.
+- **짧은 대화가 세션 목록에서 사라지던 것.** 갓 시작한 대화나 비서가 만든 세션이 목록에 없어서, 어디서 무슨 일이 벌어지는지 볼 수 없었습니다. 이제 길이와 무관하게 전부 보이고, 정리는 보관(archive)으로 합니다.
+
 ## [0.23.1] - 2026-08-09
 ### Fixed
 - **긴 답변이 대화 기록에서 끝까지 보입니다.** 12,000자가 넘는 답변이 **300자쯤에서 끊긴 채** 보였고, 새로고침해도 같았고, 펼칠 방법도 없었습니다. 원인은 두 겹이었습니다 — 이벤트 저장의 크기 상한이 답변 본문까지 잘랐고(그 상한은 원래 *조회 키*를 살리려던 값이었습니다), 기록을 다시 그릴 때 **잘린 사본을 남기고 무손실 원본을 버렸습니다**. 상한을 올리고, 본문은 항상 원본에서 가져오게 했습니다.
@@ -996,7 +1013,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/tigu77/tiguclaw/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/tigu77/tiguclaw/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/tigu77/tiguclaw/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/tigu77/tiguclaw/compare/v0.21.1...v0.22.0

@@ -22,6 +22,7 @@
  *  `tick-1…tick-6` 을 서빙, `shell.started` 1건(이중 발행 없음), 활동 라벨 `Bash`(정규화됨).
  */
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const ADAPTER = "../../../src/core/llm-runtime/adapters/claude-agent-sdk.ts";
@@ -56,9 +57,56 @@ export const check: RegressionCheck = {
       /\.\.\.SHELL_TOOL_NAMES,/.test(src) &&
       /\.\.\.SEARCH_TOOL_NAMES,/.test(src) &&
       SEARCH_TOOL_NAMES.length === 2;
-    const attaches = /"file-ops": createFileOpsMcpServer\(input\.cwd, input\.threadKey, \{[\s\S]{0,80}shellsOnly: true/.test(src);
+    // ★부착 조건까지 본다 (적대 검토 A). 조건을 `toolsNone || depth > 0` 로 좁히면
+    //  **서브에이전트가 셸도 검색도 전부 잃는다** — 차단은 깊이 무관인데 대체만 안 붙는다.
+    //  바로 옆 externalMcpServers 가 depth 게이트라 "일관성" 명목으로 충분히 일어날 변경이다.
+    const attachBlock = /\.\.\.\(([\s\S]{0,60}?)\n?\s*\?\s*\{\}\s*\n?\s*:\s*\{\s*\n\s*"file-ops": createFileOpsMcpServer/.exec(src);
+    const attaches =
+      /"file-ops": createFileOpsMcpServer\(input\.cwd, input\.threadKey, \{[\s\S]{0,80}shellsOnly: true/.test(src) &&
+      attachBlock !== null &&
+      attachBlock[1]!.trim() === "toolsNone";
     // 이름을 어댑터가 **다시 적지 않는다**(손 목록 금지 — 정의점에서 가져온다).
     const noRespell = !/disallowedTools[\s\S]{0,400}"Bash"/.test(src);
+
+    // ★도구를 **실행해서** 반환 계약을 본다 (적대 검토 E·D). 스키마 키만 보면
+    //  "잘려도 배열만 반환"(조용한 절단)·"정렬 삭제" 가 그대로 통과한다.
+    const tools = (
+      full as unknown as {
+        instance?: { _registeredTools?: Record<string, { handler?: (a: unknown, x: unknown) => Promise<{ content: Array<{ text?: string }> }> }> };
+      }
+    ).instance?._registeredTools;
+    const callTool = async (name: string, args: unknown): Promise<unknown> => {
+      const h = tools?.[name]?.handler;
+      if (h === undefined) return null;
+      const r = await h(args, {});
+      try { return JSON.parse(r.content[0]?.text ?? "null"); } catch { return null; }
+    };
+    const repoSrc = new URL("../../../src", import.meta.url).pathname;
+    const cut = (await callTool("Grep", {
+      pattern: "export const", path: repoSrc, head_limit: 2,
+    })) as { truncated?: boolean; total?: number; results?: unknown[] } | null;
+    // ★정렬을 **만들어서** 확인한다. 종전 단언은 `(async()=>true)() !== null` 이라 항상 참인
+    //  가짜였다 — 내가 쓴 검사가 아무것도 안 지키고 있었다(오늘 여러 번 나온 그 부류).
+    const { mkdtempSync, writeFileSync, utimesSync, rmSync } = await import("node:fs");
+    const os = await import("node:os");
+    const gdir = mkdtempSync(path.join(os.tmpdir(), "regr-glob-"));
+    const stamp = (name: string, minutesAgo: number): void => {
+      const f = path.join(gdir, name);
+      writeFileSync(f, "x");
+      const t = new Date(Date.now() - minutesAgo * 60_000);
+      utimesSync(f, t, t);
+    };
+    stamp("old.ts", 300);
+    stamp("mid.ts", 60);
+    stamp("newest.ts", 1);
+    const globRaw = (await callTool("Glob", { pattern: "*.ts", cwd: gdir })) as
+      | { truncated?: boolean; results?: string[] }
+      | string[]
+      | null;
+    const globList = (Array.isArray(globRaw) ? globRaw : (globRaw?.results ?? [])).map((f) =>
+      path.basename(f),
+    );
+    rmSync(gdir, { recursive: true, force: true });
 
     return [
       assert(
@@ -74,6 +122,16 @@ export const check: RegressionCheck = {
         "전체 부착은 그대로다(codex·openai 회귀 0)",
         all.length > only.length && all.includes("Read") && all.includes("Bash"),
         `${all.length}종`,
+      ),
+      assert(
+        "★잘리면 **잘렸다고 말한다**(조용한 절단은 모델이 '그게 전부'로 읽는다)",
+        cut !== null && cut.truncated === true && (cut.total ?? 0) > 2 && cut.results?.length === 2,
+        cut === null ? "★호출 실패" : `truncated=${String(cut.truncated)} total=${String(cut.total)}`,
+      ),
+      assert(
+        "★Glob 이 **최근 수정 순**이다(어댑터마다 다른 순서가 나오던 것)",
+        globList.join(",") === "newest.ts,mid.ts,old.ts",
+        globList.join(",") || "★0개(호출 실패)",
       ),
       assert(
         "★파일 도구(Read/Write/Edit)는 **넘기지 않는다** — 우리 Read 가 PDF 를 못 준다(MCP 계약)",

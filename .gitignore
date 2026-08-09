@@ -11,7 +11,15 @@ dist/
 *.db-journal
 *.db-wal
 *.db-shm
-data/
+# 런타임 데이터 디렉터리(홈·인스턴스). ★루트 기준으로만 — 종전엔 `data/` 라 하위 어디든
+# 걸려 **벤치 픽스처(bench/tasks/*/workspace/data/)까지 삼켰다**(2026-08-09 발견).
+# 그래서 그 회귀가 내 기계에서만 초록이고 깨끗한 체크아웃·CI 에선 빨강이었다.
+/data/
+# ★인스턴스 홈 규칙은 **두지 않는다** (2026-08-09 적대 검토 4R). 레포 안 홈은
+#  `tiguclaw-dev/` 하나뿐이고 아래에서 이미 통째로 무시된다. 나머지 홈은 `~/.tiguclaw*` =
+#  레포 밖이라 애초에 무관하다. `**/data/attachments/` 같은 규칙은 **보호하는 게 0인데**
+#  벤치 픽스처(bench/tasks/*/workspace/data/)에는 도달한다 — 바로 위 주석이 경고하는
+#  "data/ 가 픽스처를 삼켜 내 기계에서만 초록이었다" 와 같은 기제를 이름만 좁혀 반복하는 것.
 AGENT.md
 .DS_Store
 Thumbs.db
@@ -23,3 +31,9 @@ tiguclaw-dev/
 # bench harness — results + throwaway homes are not tracked (tasks/ IS tracked = data/fixture)
 bench/results/
 bench/.home*
+
+# ★적대 검토 에이전트의 격리 워크트리 (2026-08-09). 같은 트리에서 변이를 돌리면 내 편집을
+#  덮어써 HEAD 가 깨진다(실제로 그랬다) — 그래서 워크트리로 격리하는데, 그러면 이번엔
+#  `git add -A` 가 **워크트리를 통째로 커밋에 싣는다**(embedded git repository 경고).
+#  둘 다 겪었으니 규칙으로 막는다.
+.claude/worktrees/

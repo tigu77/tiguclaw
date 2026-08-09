@@ -22,6 +22,7 @@ import { extractTelegramChatId } from "./threadkey.js";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { sourceRoot, getPaths } from "./paths.js";
+import { ensureRipgrep } from "./ripgrep.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 
 /** 마커파일 — 부팅 시 1회 소비되는 "업데이트 완료" 통지 좌표 (architect §4). */
@@ -621,6 +622,42 @@ export const runSelfUpdate = async (
         };
       }
       console.log("self-update: built 재빌드 + dist 원자 교체 완료.");
+    }
+
+    // ── 단계 6c: 검색 도구(ripgrep) 확보 — best-effort ────────────────────────
+    // ★기존 설치본은 **`/update` 로 올라오지 doctor 를 안 돌린다** (2026-08-09 사용자 지적).
+    //  doctor 에만 두면 윈도우·회사PC 처럼 rg 없는 기계는 업데이트를 받아도 검색이 계속
+    //  죽어 있다 — 이 변경이 겨냥한 바로 그 인스턴스들이다.
+    //  ★실패해도 업데이트를 막지 않는다(견고성 불변식). 네트워크 없는 환경에서 업데이트가
+    //   이것 때문에 멈추면 그게 더 나쁘다 — 못 받으면 로그에 남기고 넘어간다.
+    try {
+      // ★업데이트 경로에선 **전체에 상한**을 건다 (2026-08-09 적대 검토 3R).
+      //  `ensureRipgrep` 안의 타임아웃(fetch 60s + 해제 120s)은 각 단계용이라 합치면
+      //  3분이다. `/update` 응답은 이 함수가 **반환한 뒤에** 나가므로, rg 없는 기계
+      //  (= 사내 프록시 뒤 윈도우·회사PC = 정확히 이 기능의 대상)에서 사용자가 3분간
+      //  무응답을 겪는다. try/catch 는 throw 만 막지 hang 은 안 막는다 —
+      //  ripgrep.ts 주석이 기록한 그 실수를 한 커밋 뒤에 되풀이했다.
+      //  못 받으면 다음 doctor·다음 업데이트가 다시 시도한다(손실 없음).
+      const rg = await Promise.race([
+        ensureRipgrep(getPaths().home),
+        new Promise<{ ok: false; detail: string; installed: false; path: null }>((resolve) =>
+          setTimeout(
+            () => resolve({ ok: false, detail: "45초 내 미완료 — 업데이트를 계속합니다", installed: false, path: null }),
+            45_000,
+          ),
+        ),
+      ]);
+      console.log(
+        rg.ok
+          ? `self-update: ripgrep ${rg.installed ? "설치함" : "확인"} — ${rg.detail}`
+          : `self-update: ★ripgrep 확보 실패 — ${rg.detail} (Grep/Glob 이 실패합니다)`,
+      );
+    } catch (e) {
+      console.warn(
+        `self-update: ripgrep 확보 중 예외 — 업데이트는 계속합니다: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
     }
 
     // ── 단계 7: 완료 마커 작성 (부팅 통지용, best-effort) ───────────────────────

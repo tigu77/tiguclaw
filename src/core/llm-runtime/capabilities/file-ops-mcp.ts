@@ -52,8 +52,7 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
-import { findRipgrep, rgBinName } from "../../ripgrep.js";
-import { createRequire } from "node:module";
+import { findRipgrep, forgetRipgrep, rgBinName } from "../../ripgrep.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
@@ -88,24 +87,12 @@ const execFileP = promisify(execFile);
 const SHELL = detectShell();
 
 // ─── ripgrep 해소 ────────────────────────────────────────────────────────
-// 판정은 `core/ripgrep.ts` 가 소유한다(온보드·닥터·런타임이 **같은 순서**를 본다 — 여기서
-// 또 뒤지면 "닥터는 찾았다는데 데몬은 못 찾는" 상태가 생긴다).
-const RG_PATH = ((): string => {
-  const found = findRipgrep(getPaths().home);
-  if (found === null) {
-    console.warn(
-      `[file-ops] ★ripgrep 을 못 찾았습니다 — Grep/Glob 이 실패합니다. ` +
-        `\`npm run doctor\` 가 자동 설치를 제안합니다(수동: ${
-          process.platform === "win32"
-            ? "winget install BurntSushi.ripgrep.MSVC"
-            : "brew install ripgrep"
-        }).`,
-    );
-    return rgBinName(); // PATH 재시도 — 런타임에 생겼을 수도 있다.
-  }
-  console.log(`[file-ops] ripgrep: ${found}`);
-  return found;
-})();
+// ★해소도 기억도 **`core/ripgrep.ts` 가 전부 소유한다** (2026-08-09 적대 검토 4R).
+//  종전엔 여기에도 memo(`rgResolved`)가 있었는데, **층이 둘이면 위층에 캐시를 얹는 것만으로
+//  아래층 검사가 통째로 무의미해진다**(실제 변이가 그렇게 통과했다: ENOENT 뒤 "없는 게
+//  확인됐으니 재탐색 생략" 이라는 그럴듯한 최적화 한 줄). 소유자를 하나로 두면 그 층이 없다.
+//  비용: 캐시 적중은 Set 조회 + `existsSync` 한 번(실측 0.21ms/호출) — 무시 가능.
+const rgPath = (): string => findRipgrep(getPaths().home) ?? rgBinName();
 
 const okText = (
   text: string,
@@ -997,7 +984,7 @@ const makeFileOpsTools = (
         const cwd = args.cwd !== undefined ? resolvePath(args.cwd) : base;
         // rg `--files` = cwd 내 모든 파일 나열 (.gitignore 존중), `-g <pattern>` 으로 필터.
         const { stdout } = await execFileP(
-          RG_PATH,
+          rgPath(),
           ["--files", "-g", args.pattern, cwd],
           { maxBuffer: GLOB_MAX_BUFFER },
         ).catch(
@@ -1011,8 +998,11 @@ const makeFileOpsTools = (
         //  실제로 유용하다 — "방금 건드린 파일" 이 위로 온다. rg 는 파일시스템 순서라
         //  같은 질문에 어댑터마다 다른 순서가 나왔다(일원화하려면 순서도 같아야 한다).
         //  stat 실패(경합 중 삭제 등)는 0 으로 떨어뜨려 뒤로 보낸다 — 목록이 통째로 죽지 않게.
+        // ★**전체를 정렬한 뒤** 자른다 (2026-08-09 적대 검토 ③). 종전엔 rg 의 파일시스템
+        //  순서로 앞 1000개를 뽑고 그 안에서만 정렬해서, 매칭이 1000개를 넘으면
+        //  "방금 건드린 파일이 위로 온다" 가 **거짓**이었다(claude 빌트인은 전체 최신순).
         const withMtime = await Promise.all(
-          lines.slice(0, GLOB_MAX_RESULTS).map(async (f) => {
+          lines.map(async (f) => {
             try {
               return { f, m: (await fs.stat(f)).mtimeMs };
             } catch {
@@ -1021,12 +1011,22 @@ const makeFileOpsTools = (
           }),
         );
         withMtime.sort((a, b) => b.m - a.m);
-        return okText(JSON.stringify(withMtime.map((x) => x.f)));
+        const files = withMtime.slice(0, GLOB_MAX_RESULTS).map((x) => x.f);
+        // ★잘렸으면 **말한다** — Grep 은 말하는데 Glob 만 침묵하면 같은 커밋 안에서
+        //  원칙이 갈린다. 조용한 절단은 모델이 "그게 전부" 로 읽는다.
+        return okText(
+          JSON.stringify(
+            withMtime.length > files.length
+              ? { results: files, truncated: true, total: withMtime.length }
+              : files,
+          ),
+        );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes("ENOENT")) {
+          forgetRipgrep(rgPath()); // 죽었다 — 기억을 지워 다음 호출이 다시 찾는다.
           return errText(
-            `ripgrep(rg) 가 PATH 에 없습니다. brew install ripgrep 후 재시도. (원본: ${msg})`,
+            `ripgrep(rg) 을 못 찾았습니다 — \`npm run doctor\` 를 돌리면 자동으로 받아 둡니다. (원본: ${msg})`,
           );
         }
         return errText(msg);
@@ -1125,7 +1125,9 @@ const makeFileOpsTools = (
         if (args.multiline === true) rgArgs.push("-U", "--multiline-dotall");
         if (args.glob !== undefined) rgArgs.push("--glob", args.glob);
         if (args.type !== undefined) rgArgs.push("--type", args.type);
-        // 컨텍스트 줄은 content 모드에서만 의미가 있다(-l/-c 와 함께 주면 rg 가 무시하거나 에러).
+        // 컨텍스트 줄은 content 모드에서만 의미가 있다 — `-l`/`-c` 와 함께 주면 rg 가
+        // **조용히 무시한다**(에러가 아니다, rg 15.1.0 실측). 조용한 무시는 "왜 컨텍스트가
+        // 없지" 로 돌아오므로 여기서 아예 안 넘긴다.
         if (mode === "content") {
           if (args["-C"] !== undefined) rgArgs.push("-C", String(args["-C"]));
           else {
@@ -1134,7 +1136,7 @@ const makeFileOpsTools = (
           }
         }
         rgArgs.push("-e", args.pattern, searchPath);
-        const { stdout } = await execFileP(RG_PATH, rgArgs, {
+        const { stdout } = await execFileP(rgPath(), rgArgs, {
           maxBuffer: GREP_MAX_BUFFER,
         }).catch(
           (e: NodeJS.ErrnoException & { stdout?: string; code?: number }) => {
@@ -1162,8 +1164,9 @@ const makeFileOpsTools = (
         const msg = e instanceof Error ? e.message : String(e);
         // ripgrep 부재 케이스 별도 hint.
         if (msg.includes("ENOENT")) {
+          forgetRipgrep(rgPath()); // 죽었다 — 기억을 지워 다음 호출이 다시 찾는다.
           return errText(
-            `ripgrep(rg) 가 PATH 에 없습니다. brew install ripgrep 후 재시도. (원본: ${msg})`,
+            `ripgrep(rg) 을 못 찾았습니다 — \`npm run doctor\` 를 돌리면 자동으로 받아 둡니다. (원본: ${msg})`,
           );
         }
         return errText(msg);

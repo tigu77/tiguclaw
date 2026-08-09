@@ -1,5 +1,6 @@
 import { isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
 import { flushEnvLoadLog } from "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
+import { findRipgrep } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -177,6 +178,19 @@ const logFile = initFileLogging();
 //  위 initFileLogging 보다 먼저 돌아, 종전엔 이 줄이 데몬 로그에 영원히 안 남았다
 //  (부팅 206회 중 0건). "어느 .env 를 쓰는가" 는 409 봇 충돌 사고의 전제였다.
 flushEnvLoadLog();
+// ★검색 도구(ripgrep) 해소 결과 — 같은 이유로 여기서 흘린다. 없으면 codex 계열 검색이
+//  통째로 죽는데, 그 사실이 로그에 없으면 사용자는 "왜 못 찾지" 만 겪는다(윈도우 실측).
+(() => {
+  // ★부팅 시점 **진단만** 한다 — 값을 굳히지 않는다(런타임은 첫 사용 때 다시 푼다).
+  //  없으면 codex 계열 검색이 통째로 죽는데, 그 사실이 로그에 없으면 사용자는
+  //  "왜 못 찾지" 만 겪는다(윈도우 실측). 가장 먼저 봐야 할 줄이라 부팅에 남긴다.
+  const rg = findRipgrep(getPaths().home);
+  console.log(
+    rg === null
+      ? "[file-ops] ★ripgrep 없음 — Grep/Glob 이 실패합니다. `npm run doctor` 가 자동으로 받아 둡니다."
+      : `[file-ops] ripgrep: ${rg}`,
+  );
+})();
 
 console.log("tiguclaw daemon: starting");
 

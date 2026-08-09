@@ -10,10 +10,12 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
   <img src="assets/banner.jpg" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
+**Just want to install it? → [Quick start](#quick-start)** (`npm ci`, then `npm run onboard`). Everything below is what it can do.
+
 ## What it does
 
 - **Everything Claude Code can do** — read / write / edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory… and more on top.
-- **Many LLMs, one assistant** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) ship built in, and **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM, your own) drops in with three lines of config. Mix them with a single `provider:model` line; switch freely, same abilities everywhere.
+- **Many LLMs, one assistant** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) ship built in, and **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM, your own) drops in with three lines of config. Mix them with a single `provider:model` line. Switch freely and the abilities come along — shell, search, files, delegation all run on **the same tools whatever the model is**, so swapping models doesn't change the answer you get.
 - **Always on** — runs as a background service and restarts itself if it ever dies.
 - **Updates itself on request** — just ask it to update (or send `/update`). It pulls the latest, restarts, and pings you when it's back — no manual `git pull`. Your memory and sessions carry over, and if an update can't produce runnable code it rolls back and keeps running the previous version.
 - **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
@@ -58,7 +60,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 
 **Long jobs, without the wait**
 - "Scrape these 40 pages and build a table." → it hands the heavy work to a background worker and keeps chatting, then pings you when it's done.
-- Routine, bulk, or simple tasks can be delegated to a free local model.
+- Routine, bulk, or simple tasks can go to a free local model — point a lower tier at `ollama` in your model profiles and that's where they land.
 
 **Remember & schedule**
 - "Remember that I prefer TypeScript and 2-space indents." → it persists across every chat.
@@ -250,9 +252,8 @@ Five events are wired up:
 | `UserPromptSubmit` | before a turn starts | log or gate incoming prompts |
 | `PreToolUse` | before a tool runs | **block** a tool call (e.g. deny writes to a path) |
 | `PostToolUse` | after a tool returns | observe / audit tool results |
-| `SubagentStop` | after a sub-agent finishes | review or record delegated work |
+| `SubagentStop` | after a delegated sub-agent finishes | review or record delegated work |
 | `Stop` | after a turn finishes | post-turn notifications or logging |
-| `SubagentStop` | after a delegated subagent finishes | react to background/subagent completion |
 
 Each hook receives a small JSON payload on stdin (`tool_name`, `tool_input`, `cwd`, and so on). For `PreToolUse`, exit code `2` blocks the tool — the assistant sees your reason (on stderr) in place of the tool result and moves on. Any other non-zero exit is isolated and logged, so a broken hook never takes the daemon down.
 
@@ -296,12 +297,8 @@ esac
 A few things worth knowing:
 
 - **The same config runs on every LLM.** One `settings.json` `hooks` block behaves identically whether the turn runs on `anthropic`, `codex`, or `openai` — a single hook engine drives all three, so there's nothing provider-specific to learn or maintain.
-- **Per-project hooks.** Put a `hooks` block in `<project>/.tiguclaw/settings.json` and it *merges with* your home hooks whenever the assistant works in that folder — project rules and global rules both fire, no override.
+- **Per-project hooks.** Put the same block in `<project>/.tiguclaw/settings.json` and it fires only while the assistant works in that folder. If the project already has Claude Code hooks in `<project>/.claude/settings.json`, those are read as-is — nothing to copy over. The two layers **stack; they don't override** — a safety hook set globally can't be silently switched off by a project's settings.
 - **You can watch them.** Hook runs show up in the dashboard's activity monitor (a blocked call is tinted red), and every registered hook is listed under the **🪝 Hooks** category in the dashboard inventory.
-
-Hooks can also be **per project**. Instead of the global `<home>/settings.json`, put the same block in `<project>/.tiguclaw/settings.json` and it only fires while you work in that project. If the project already has Claude Code hooks in `<project>/.claude/settings.json`, those are read as-is — nothing to copy over.
-
-★The two layers **stack; they don't override.** A safety hook set globally can't be silently switched off by a project's settings.
 
 Hooks **observe and block** tool calls. On top of that, whatever a `UserPromptSubmit` or `PreToolUse` hook writes to stdout becomes **context the assistant reads** before deciding. One thing is still missing: **rewriting a tool's input**. That comes later.
 
@@ -335,7 +332,7 @@ curl http://127.0.0.1:7011/v1/chat/completions \
 | `POST /v1/chat/completions` | Streaming with `"stream": true` (SSE chunks), images via `image_url`, and any `tools` you define passed straight through to the model. |
 | `GET /v1/models` | The ids you can put in `model` — your named profiles as `tier:<name>`, plus the configured `provider:model` entries. |
 
-`model` takes `provider:model` (`anthropic:claude-sonnet-4-6`), `tier:<profile>` for one of your named pools, or anything else to fall back to the gateway's default pool.
+`model` takes `provider:model` (`anthropic:claude-sonnet-5`), `tier:<profile>` for one of your named pools, or anything else to fall back to the gateway's default pool.
 
 Tune it live in `<home>/settings.json` — re-read on every request, so nothing needs a restart:
 
@@ -343,7 +340,7 @@ Tune it live in `<home>/settings.json` — re-read on every request, so nothing 
 {
   "gateway": {
     "enabled": true,        // kill switch — turns it off without removing the token
-    "models": ["tier:high", "openai:gpt-5.5"],
+    "models": ["tier:high", "anthropic:claude-sonnet-5"],
     "maxConcurrency": 4     // beyond this the gateway returns 429, so a busy app can't starve the assistant
   }
 }

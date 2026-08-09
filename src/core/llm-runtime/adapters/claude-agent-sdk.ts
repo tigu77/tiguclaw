@@ -130,6 +130,13 @@ import {
   withSdkSubagentsBlocked,
 } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
+import {
+  collectExternalToolCalls,
+  createExternalToolsMcpServer,
+  EXTERNAL_TOOLS_SERVER,
+  neutralCwd,
+  type ExternalToolCall,
+} from "../capabilities/external-tools.js";
 
 // ★claude 도구 천장 (2026-07-29 검토) — SDK 는 `MCP_TOOL_TIMEOUT` 미설정 시 1e8ms
 //  (27.8시간, SDK 주석도 "effectively infinite")를 쓴다. codex/openai 는 브리지에서
@@ -323,15 +330,20 @@ export const isOwnTurnEnd = (seen: { chunks: number; deltas: number }): boolean 
 export const runClaude = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
-  // externalTools/externalToolChoice(LLM 게이트웨이 함수콜 패스스루) — ★스코프아웃(ADR
-  // `docs/decisions/2026-07-25-llm-gateway-openrouter-scope.md` §Decision-3). Claude Agent
-  // SDK 구독 로그인 경로는 agent loop 를 서브프로세스로 통째 소유해 "실행 말고 tool_calls
-  // 만 반환하고 멈춤" 원시기능이 없다(개입점은 allow/deny 뿐) — abort-후-재개는 resume jsonl
-  // 오염 위험(project_bad_image_poisons_claude_resume 동급). "Claude 모델 + 툴"은 prod
-  // 모드(openai 어댑터, Anthropic OpenAI-호환 엔드포인트)가 이미 커버해 능력 공백 0(ADR
-  // §Decision-2/§Decision-4). 이 어댑터는 `input.externalTools`/`externalToolChoice` 를
-  // **의도적으로 읽지 않는다** — 값이 있어도 무시하고 기존 텍스트/비전 경로 그대로 동작
-  // (방어적 no-op, 회귀 0). 재검토는 실 수요 발생 시 별도 스파이크(ADR 본문 "추후 재검토").
+  // externalTools/externalToolChoice(LLM 게이트웨이 함수콜 패스스루) — **지원한다**
+  // (2026-08-09). ADR `2026-07-25-llm-gateway-openrouter-scope.md` §Decision-3 은 이걸
+  // 스코프아웃했었다. 그 두 근거가 실사용 사고로 무너져 뒤집었다 — 상세는
+  // `capabilities/external-tools.ts` 헤더. 요약: ①앱 스키마를 우리 in-process MCP 로 등록하면
+  // 개입점이 allow/deny 뿐이라는 전제가 깨지고 ②resume 오염 우려는 게이트웨이 스레드
+  // (`gateway:<uuid>`, internal, 영속 0)에 해당 없다.
+  // ★ADR 이 "능력 공백 0" 의 근거로 든 prod 모드(openai 어댑터 + Anthropic OpenAI-호환)는
+  //  **API 키를 전제**한다. 구독 OAuth 만 있는 설치본(README 가 정식으로 파는 구성)에선 그
+  //  전제가 성립하지 않아 공백이 실재했다 — 윈도우 인스턴스에서 앱이 tools 를 보냈는데
+  //  경고 한 줄 없이 버려지고 평범한 텍스트가 돌아갔다(조용한 실패).
+  const externalToolSpecs = input.externalTools ?? [];
+  const externalToolNames: ReadonlySet<string> = new Set(externalToolSpecs.map((t) => t.name));
+  // 이 턴에서 모델이 호출을 선택한 앱 도구들(tiguclaw 는 실행하지 않는다). 스트림에서 채운다.
+  const pendingExternalToolCalls: ExternalToolCall[] = [];
   if (
     !process.env.ANTHROPIC_API_KEY &&
     !process.env.CLAUDE_CODE_OAUTH_TOKEN
@@ -373,7 +385,13 @@ export const runClaude = async (
   //  input.cwd 우선순위 유지 (미래 프로젝트 cwd 수요 시 라우터가 넘기면 존중) — 현재
   //  라우터 미전달이라 home 폴백. claude 는 bypassPermissions 라 cwd 와 무관하게
   //  절대경로 접근이 이미 가능 (무벽) → additionalDirectories 미설정 (무벽이라 무의미).
-  const cwd = input.cwd ?? getPaths().home;
+  // ★중립 턴(게이트웨이·restricted 엔드포인트)은 **격리 폴더**에서 돈다. SDK 가 cwd 의
+  //  AGENT.md·SYSTEM.md 를 스스로 주워가서, 프롬프트를 비워도 홈에서 돌면 소유자 컨텍스트가
+  //  샌다(실측 2026-08-09: "내 이름이 뭐야?" 에 **소유자 이름을 그대로** 답했다).
+  //  상세는 neutralCwd 주석.
+  //  호출자가 cwd 를 명시했으면 그 뜻을 존중한다(프로젝트 위임 등).
+  const neutralTurn = input.systemPromptOverride !== undefined;
+  const cwd = input.cwd ?? (neutralTurn ? neutralCwd() : getPaths().home);
   const depth = input.subagentDepth ?? 0;
 
   // 커스텀 서브에이전트 → SDK `options.agents` 주입 (codex spawn_agent 브리지의
@@ -418,9 +436,19 @@ export const runClaude = async (
   //  - {mode:"allow"}: 정밀 allowlist 후속(YAGNI §2a) — 안전 degrade = 전체 유지.
   //  - undefined: 현행 전체 도구 (회귀 0). codex/openai 와 동형 규칙(I-2).
   const toolsNone = input.toolPolicy?.mode === "none";
+  // ★앱 도구는 `toolsNone` 게이팅 **밖**에서 붙인다 — codex 와 같은 규칙
+  // (openai-codex-oauth.ts "externalTools 는 toolsNone/webSearchEnabled 게이팅 밖에서
+  // concat"). 게이트웨이는 `toolPolicy:none` 으로 tiguclaw 도구를 0으로 만드는데, 앱 함수까지
+  // 같이 꺼지면 이 기능이 성립하지 않는다. 두 축은 직교다: tiguclaw 도구 = 우리가 실행,
+  // 앱 도구 = 우리가 **실행하지 않고 의도만 반환**.
+  const externalToolsMcp: Options["mcpServers"] =
+    externalToolSpecs.length > 0
+      ? { [EXTERNAL_TOOLS_SERVER]: createExternalToolsMcpServer(externalToolSpecs) }
+      : {};
   const leanMcpServers: Options["mcpServers"] = toolsNone
-    ? {}
+    ? { ...externalToolsMcp }
     : {
+        ...externalToolsMcp,
         memory: createMemoryMcpServer(),
         // 프로젝트 레지스트리 (register/list/update/forget) — codex 와 parity(#2). 진실은
         // 폴더 PROJECT.md, 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
@@ -1329,6 +1357,26 @@ export const runClaude = async (
         throw new Error(`claude-agent-sdk error: ${errs}`);
       }
     } else if (msg.type === "assistant") {
+      // ★앱 도구 호출 캡처 (externalTools, 2026-08-09) — 이 assistant 메시지에 든 tool_use
+      //  블록을 **통째로** 읽는다. 모델은 한 메시지에 여러 도구를 병렬로 부르므로, MCP
+      //  핸들러에서 하나씩 잡고 abort 하면 형제 호출을 잃는다(그래서 스트림에서 잡는다).
+      //  실행은 하지 않는다 — 의도만 모아 caller(게이트웨이 클라이언트)에게 돌려준다.
+      if (externalToolNames.size > 0 && pendingExternalToolCalls.length === 0) {
+        const captured = collectExternalToolCalls(
+          (msg.message as unknown as { content?: unknown })?.content,
+          externalToolNames,
+        );
+        if (captured.length > 0) {
+          pendingExternalToolCalls.push(...captured);
+          console.log(
+            `[claude-complete] ${input.threadKey} externalTools 캡처 ${captured.length}건` +
+              ` (${captured.map((c) => c.name).join(", ")}) → 턴 중단(실행 안 함)`,
+          );
+          // SDK 가 우리 no-op 핸들러를 돌려 루프를 이어가기 전에 끊는다. 게이트웨이 스레드는
+          // 재개 대상이 아니라(위 §Decision-3 반박 ②) abort 로 인한 jsonl 오염이 없다.
+          if (!effectiveAc.signal.aborted) effectiveAc.abort();
+        }
+      }
       // 서브에이전트(Task) 관측 라우팅 (ADR 2026-07-03 Phase A). parent_tool_use_id 가
       // 추적 중인 Task id 면 이 assistant 메시지는 *서브 내부* 스텝 → agent:<jobId> 좌표로
       // 분기. null(부모 자신)이면 기존 부모 좌표 발행 그대로(회귀 0).
@@ -1651,6 +1699,13 @@ export const runClaude = async (
     console.log(`[claude-complete] ${input.threadKey} LOOP-EXIT (스트림 정상 종료) resultText=${resultText !== undefined} chunks=${assistantTextChunks.length} streamDeltas=${diagStreamCount}`);
     break; // 스트림 정상 소비 — 재시도 루프 종료.
   } catch (e) {
+    // ★앱 도구를 캡처하고 **우리가** 끊은 abort — 에러가 아니라 정상 종료다(2026-08-09).
+    //  SDK 는 abort 시 AbortError 를 던질 수도, 스트림을 그냥 끝낼 수도 있다. 두 경로 모두
+    //  아래 마감으로 가야 하므로 여기서 흡수한다. 이 가드가 없으면 성공한 함수콜 턴이
+    //  타임아웃/실패로 승격돼 폴백 풀을 태운다(다음 모델이 같은 일을 다시 한다).
+    if (pendingExternalToolCalls.length > 0 && effectiveAc.signal.aborted) {
+      break;
+    }
     // resume 세션 부재/손상("process exited with code 1") → resume 제거 후 fresh
     // 세션으로 1회만 재시도. resumable(애초 resume 시도) + 미재시도 + 비-abort 한정.
     if (
@@ -1754,6 +1809,39 @@ export const runClaude = async (
     `[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${text.length} ` +
       `succeeded=${succeeded} (result=${resultText === undefined ? "없음" : String(resultText.length) + "자"} chunks=${chunkText.length}자)`,
   );
+  // ★함수콜 턴은 **텍스트가 없어도 성공**이다 (externalTools, 2026-08-09). 모델이 도구만
+  //  부르고 말을 안 하는 건 정상이고, 그게 caller 가 원한 결과다. 이 한 줄이 없으면 오늘
+  //  아침 고친 "빈 응답" 경로가 정상 함수콜을 실패로 찍는다(같은 부류의 반대 방향 사고).
+  const externalCallsCaptured = pendingExternalToolCalls.length > 0;
+  if (externalCallsCaptured) {
+    console.log(
+      `[claude-complete] ${input.threadKey} RETURN externalToolCalls=${pendingExternalToolCalls.length}건` +
+        ` textLen=${text.length} (실행 안 함 — 의도만 caller 반환)`,
+    );
+    // ★usage 는 `lastCallUsage`(assistant 메시지 단위)에서 만든다 — `lastUsage` 는 `result`
+    //  메시지에서만 채워지는데 함수콜 턴은 **거기 도달하기 전에 우리가 끊는다**. 그대로 두면
+    //  게이트웨이가 caller 에게 `prompt_tokens:0` 을 내보낸다(실측으로 확인). 제3자에게 나가는
+    //  숫자라 우리 화면처럼 나중에 눈으로 걸러지지 않는다 — 0 은 정직하지 않다.
+    //  함수콜 턴은 모델 호출 1회라 호출값 == 턴 합계다(계약: `*Total`=턴 합계).
+    const callUsage = lastCallUsage;
+    const toolCallUsage =
+      lastUsage ??
+      (callUsage !== undefined
+        ? {
+            inputTokens: callUsage.input,
+            outputTokens: callUsage.output,
+            cachedTokens: callUsage.cacheRead,
+            inputTokensTotal: callUsage.input,
+            outputTokensTotal: callUsage.output,
+          }
+        : undefined);
+    return {
+      text,
+      replyToTrigger,
+      externalToolCalls: pendingExternalToolCalls,
+      ...(toolCallUsage !== undefined ? { usage: toolCallUsage } : {}),
+    };
+  }
   const effectiveSuccess = succeeded || text.length > 0;
   console.log(`[claude-complete] ${input.threadKey} RETURN (어댑터 반환 — 이후 turn_done/전달은 facade) len=${text.length}`);
   if (effectiveSuccess && lastSessionId !== undefined) {

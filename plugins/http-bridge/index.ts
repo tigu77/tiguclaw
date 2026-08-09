@@ -554,6 +554,10 @@ const parseGatewayTools = (
 } => {
   const rawTools = body.tools;
   if (!Array.isArray(rawTools) || rawTools.length === 0) return {};
+  // ★`tool_choice:"none"` = **절대 부르지 마라**(OpenAI 계약). 스키마를 아예 안 넘기는 게
+  //  가장 확실한 집행이다 — 모델에게 "부르지 마"라고 부탁하는 것보다 부를 수단을 안 주는 게
+  //  낫다. 실측(2026-08-09): 넘겨만 두면 `none` 인데도 tool_calls 가 나왔다(계약 위반).
+  if (body.tool_choice === "none") return {};
   const externalTools: Array<{ name: string; description?: string; parameters: unknown }> = [];
   for (const t of rawTools) {
     if (t === null || typeof t !== "object") continue;
@@ -1094,9 +1098,38 @@ class HttpBridge implements Channel, Observer {
         //  클라이언트 비용·예산 회계가 실제의 일부만 본다. 제3자에게 나가는 값이라
         //  우리 화면처럼 나중에 눈으로 걸러지지 않는다 — 합계가 정직하다.
         const inTok = out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0;
-        const outTok = out.usage?.outputTokens ?? 0;
+        // ★출력도 **턴 합계**다 — 바로 위 주석이 입력에 대해 말한 이유가 출력에도 그대로
+        //  적용된다. 한쪽만 합계면 클라이언트 회계가 비대칭으로 틀린다(2026-08-09 벤치에서
+        //  같은 비대칭이 "우리가 11배 효율적"이라는 거짓 결론을 만들었다).
+        const outTok = out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0;
         const toolCalls = out.externalToolCalls ?? [];
         const hasToolCalls = toolCalls.length > 0;
+        const bodyText = out.text ?? "";
+        // ★★게이트웨이는 **반드시 결과를 준다**: tool_calls · 텍스트 · 명시적 에러 셋 중 하나.
+        //  침묵도 빈 200 도 없다. 앱 입장에서 제일 나쁜 건 "아무 일도 안 일어난 것처럼 보이는
+        //  성공 응답"이다 — 어디를 고쳐야 할지 알 수가 없다(2026-08-09 실사용 사고의 본체).
+        if (!hasToolCalls && bodyText.trim() === "") {
+          writeJson(res, 502, {
+            error: {
+              message:
+                "모델이 빈 응답을 반환했습니다(텍스트도 함수콜도 없음). 요청은 정상 처리됐으나 결과가 비었습니다 — 모델/풀 상태를 확인하세요.",
+              type: "empty_completion",
+            },
+          });
+          return;
+        }
+        // ★`tool_choice:"required"` = 반드시 도구를 부른다(OpenAI 계약). 못 지켰으면 텍스트를
+        //  성공인 척 돌려주지 않는다 — 앱은 tool_calls 를 기다리고 있고, 조용히 텍스트를 받으면
+        //  '모델이 도구를 안 쓴다'로만 보인다(그 진단에 하루가 들었다).
+        if (!hasToolCalls && gatewayTools.externalToolChoice === "required") {
+          writeJson(res, 502, {
+            error: {
+              message: `tool_choice:"required" 인데 모델이 함수를 호출하지 않았습니다(텍스트만 반환). 모델을 바꾸거나 tool_choice 를 "auto" 로 낮추세요.`,
+              type: "tool_choice_unsatisfied",
+            },
+          });
+          return;
+        }
         writeJson(res, 200, {
           id: cid,
           object: "chat.completion",

@@ -111,7 +111,7 @@ const client = new OpenAI({
 ```
 
 ### 모델 이름 규약 (★OpenRouter 슬러그와 다름)
-- `provider:model` — `codex:gpt-5.5`, `anthropic:claude-opus-4-7`, `openai:gpt-4o-mini`, `ollama:qwen2.5:7b`
+- `provider:model` — `anthropic:claude-sonnet-5`, `codex:gpt-5.6-terra`, `openai:gpt-4o-mini`, `ollama:qwen2.5:7b`
 - `tier:<프로파일>` — settings.json `models.profiles` 의 명명 프로파일(`tier:high`·`tier:default` 등)
 - 목록은 `GET /v1/models` 로 확인(거기 나온 id 를 그대로 쓰면 왕복 보장)
 - ⚠️ **목록에 없는 이름을 보내면 400 이 아니라 조용히 기본 풀로 폴백**한다(알려진 갭) —
@@ -123,6 +123,14 @@ const client = new OpenAI({
 **함수호출(tools/tool_calls)** · **비전(이미지 입력)** · `usage` 토큰 · `/v1/models`
 - 함수호출: 앱이 `tools` 를 주면 모델이 **실행하지 않고** `tool_calls` 를 반환
   (`finish_reason:"tool_calls"`) → **앱이 실행**하고 `role:"tool"` 로 결과를 돌려주면 이어감.
+  ★**세 어댑터 전부**(claude·codex·openai)에서 되고, **구독 인증만으로도 된다**(API 키 불요).
+  2026-08-09 이전엔 claude 경로에서 `tools` 가 **조용히 버려졌다** — 앱은 평범한 텍스트를
+  200 으로 받아 "모델이 도구를 안 쓴다"로만 보였다. 그때 배운 것: **되는지 물어보지 말고
+  §5 검증을 돌려라.**
+- `tool_choice` — `"none"` 은 스키마를 아예 안 넘겨 집행하고, `"required"` 를 못 지키면
+  **에러**(`tool_choice_unsatisfied`)로 알린다. 텍스트를 성공인 척 주지 않는다.
+- ★**빈 응답은 없다.** 텍스트도 함수콜도 없으면 200 이 아니라 `empty_completion` 에러다
+  (응답은 셋 중 하나: `tool_calls` · 텍스트 · 명시적 에러).
 - 비전: `image_url` 의 **`data:` URI(base64)만** 지원. `http(s)` URL 은 미지원(SSRF 방지).
 
 **안 되는 것**: 이미지·음성 **생성**(`/v1/images`·`/v1/audio`) · `/v1/completions`(legacy) ·
@@ -151,6 +159,13 @@ OPENAI_API_KEY=sk-or-...
 OPENAI_MODEL=anthropic/claude-sonnet-4.6
 ```
 모델 이름이 규약별로 다르므로 **모델명도 env 로** 뽑아둘 것.
+
+### 비서 인격·기억은 실리지 않는다
+게이트웨이 턴은 **격리 작업폴더**에서 돌아 tiguclaw 의 `AGENT.md`·`SYSTEM.md`·메모리가 안
+실린다. 앱이 준 `system` 이 곧 시스템 프롬프트다(안 주면 빈 값).
+- ★잔여(막을 수 없음): **구독 OAuth 계정 이메일**은 SDK 가 스스로 싣는다(`~/.claude.json`
+  `oauthAccount`). 우리 프롬프트·설정엔 없다. 완전 차단은 상용 API 키 경로뿐 — 아래 약관
+  가드와 같은 결론으로 이어진다.
 
 ### ★약관 가드 (중요)
 tiguclaw 는 **개인 구독 인증**(Claude Code OAuth·ChatGPT)으로 돌 수 있다. 이 백엔드를

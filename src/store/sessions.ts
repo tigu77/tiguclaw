@@ -1132,7 +1132,6 @@ export const sessionDisplayName = (
 export const listThreads = (opts?: {
   prefix?: string;
   excludeInternal?: boolean;
-  /** 프로브·검증 흔적(무명 + 왕복 1회 이하) 제외 — 사용자에게 보이는 세션 목록용. */
   /** 보관된 세션만 (기본: 보관 안 된 것만). 복원 UI 용. */
   onlyArchived?: boolean;
   /** 보관 포함(진단용). onlyArchived 가 우선. */

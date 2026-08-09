@@ -52,6 +52,7 @@
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
+import { findRipgrep, rgBinName } from "../../ripgrep.js";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -86,33 +87,24 @@ const execFileP = promisify(execFile);
 // 아래 fg/bg 배선이 기존 하드코딩과 인자 바이트 동일(회귀 0).
 const SHELL = detectShell();
 
-// ─── ripgrep 바이너리 해소 (크로스플랫폼) ────────────────────────────────
-// Glob/Grep 는 ripgrep 에 의존한다. claude 는 SDK 내장 도구가 알아서 번들 rg 를
-// 쓰지만, codex 등 SDK 내장도구가 없는 어댑터는 이 file-ops 가 직접 rg 를 부른다.
-// system PATH 의 `rg` 는 mac(brew 미설치·데몬 PATH 누락)·Windows(rg 부재)에서 깨짐.
-// 그런데 하드의존인 @anthropic-ai/claude-agent-sdk 가 *모든 플랫폼* rg 를 vendor 로
-// 동봉한다(npm tarball 동봉 — postinstall 다운로드 아님, files 미지정=전체배포).
-// 그 바이너리를 직접 가리켜 PATH 의존을 제거 → mac·Windows·로컬LLM 사용자 모두
-// 무설치 동작. claude(SDK 내장)는 이 경로를 안 거치므로 영향 0 — codex 결함을
-// codex 어댑터 안에서 닫는 수정. 못 찾으면 PATH 의 "rg" 폴백(절대 현행보다 안 나빠짐).
+// ─── ripgrep 해소 ────────────────────────────────────────────────────────
+// 판정은 `core/ripgrep.ts` 가 소유한다(온보드·닥터·런타임이 **같은 순서**를 본다 — 여기서
+// 또 뒤지면 "닥터는 찾았다는데 데몬은 못 찾는" 상태가 생긴다).
 const RG_PATH = ((): string => {
-  try {
-    const require = createRequire(import.meta.url);
-    const sdkPkg = require.resolve(
-      "@anthropic-ai/claude-agent-sdk/package.json",
+  const found = findRipgrep(getPaths().home);
+  if (found === null) {
+    console.warn(
+      `[file-ops] ★ripgrep 을 못 찾았습니다 — Grep/Glob 이 실패합니다. ` +
+        `\`npm run doctor\` 가 자동 설치를 제안합니다(수동: ${
+          process.platform === "win32"
+            ? "winget install BurntSushi.ripgrep.MSVC"
+            : "brew install ripgrep"
+        }).`,
     );
-    const bin = process.platform === "win32" ? "rg.exe" : "rg";
-    const vendored = path.join(
-      path.dirname(sdkPkg),
-      "vendor",
-      "ripgrep",
-      `${process.arch}-${process.platform}`,
-      bin,
-    );
-    return existsSync(vendored) ? vendored : "rg";
-  } catch {
-    return "rg";
+    return rgBinName(); // PATH 재시도 — 런타임에 생겼을 수도 있다.
   }
+  console.log(`[file-ops] ripgrep: ${found}`);
+  return found;
 })();
 
 const okText = (
@@ -967,7 +959,13 @@ const makeFileOpsTools = (
           };
         }
         const raw = await fs.readFile(abs, "utf8");
-        const lines = raw.split("\n");
+        // ★노트북(.ipynb)은 **셀 단위로 편다** (2026-08-09). 원본 JSON 은 base64 이미지·
+        //  실행 메타로 부풀어 있어 그대로 읽으면 컨텍스트만 태우고 코드가 안 보인다.
+        //  claude 빌트인 Read 가 하던 일이라, 우리 도구로 일원화하려면 여기 있어야 한다
+        //  (없으면 원칙 1 "슈퍼셋 — 누락은 버그" 위반).
+        const lines = abs.endsWith(".ipynb")
+          ? flattenNotebook(raw).split("\n")
+          : raw.split("\n");
         const start = (args.offset ?? 1) - 1;
         const limit = args.limit ?? DEFAULT_READ_LIMIT;
         const slice = lines.slice(start, start + limit);
@@ -989,7 +987,7 @@ const makeFileOpsTools = (
   // ripgrep `--files -g <pattern>` 위임. 매칭 파일 경로 string[] 반환. cwd 미지정 시 base.
   const globTool = tool(
     "Glob",
-    "글로브 패턴으로 파일 경로를 찾습니다. cwd 미지정 시 현재 작업폴더(프로젝트/홈). 최대 1000개 반환.",
+    "글로브 패턴으로 파일 경로를 찾습니다. cwd 미지정 시 현재 작업폴더(프로젝트/홈). **최근 수정 순**, 최대 1000개.",
     {
       pattern: z.string().min(1),
       cwd: z.string().optional(),
@@ -1009,8 +1007,21 @@ const makeFileOpsTools = (
           },
         );
         const lines = stdout.split("\n").filter((l) => l.length > 0);
-        const sliced = lines.slice(0, GLOB_MAX_RESULTS);
-        return okText(JSON.stringify(sliced));
+        // ★**최근 수정 순**으로 준다 (2026-08-09). claude 빌트인 Glob 이 그렇게 주고, 그게
+        //  실제로 유용하다 — "방금 건드린 파일" 이 위로 온다. rg 는 파일시스템 순서라
+        //  같은 질문에 어댑터마다 다른 순서가 나왔다(일원화하려면 순서도 같아야 한다).
+        //  stat 실패(경합 중 삭제 등)는 0 으로 떨어뜨려 뒤로 보낸다 — 목록이 통째로 죽지 않게.
+        const withMtime = await Promise.all(
+          lines.slice(0, GLOB_MAX_RESULTS).map(async (f) => {
+            try {
+              return { f, m: (await fs.stat(f)).mtimeMs };
+            } catch {
+              return { f, m: 0 };
+            }
+          }),
+        );
+        withMtime.sort((a, b) => b.m - a.m);
+        return okText(JSON.stringify(withMtime.map((x) => x.f)));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes("ENOENT")) {
@@ -1023,23 +1034,104 @@ const makeFileOpsTools = (
     },
   );
 
+  // ─── 노트북 평탄화 ────────────────────────────────────────────────────
+  /**
+   * `.ipynb` 를 사람이 읽는 형태로 편다 — 셀 번호·종류·소스, 그리고 **출력 요약**.
+   *
+   * 원본 JSON 을 그대로 주면 셀 하나가 base64 이미지 수십 KB 일 수 있고 `execution_count`
+   * 같은 메타가 코드보다 많다. 파싱 실패는 **원문으로 폴백**한다 — 읽기가 실패하는 것보다
+   * 원본이라도 보이는 게 낫다(깨진 노트북도 고쳐야 할 대상이다).
+   */
+  const flattenNotebook = (raw: string): string => {
+    try {
+      const nb = JSON.parse(raw) as {
+        cells?: Array<{
+          cell_type?: string;
+          source?: string[] | string;
+          outputs?: Array<Record<string, unknown>>;
+        }>;
+      };
+      if (!Array.isArray(nb.cells)) return raw;
+      const out: string[] = [];
+      nb.cells.forEach((c, i) => {
+        const src = Array.isArray(c.source) ? c.source.join("") : (c.source ?? "");
+        out.push(`# ── cell ${i + 1} [${c.cell_type ?? "?"}] ──`);
+        out.push(src.replace(/\n$/, ""));
+        for (const o of c.outputs ?? []) {
+          const text = o["text"];
+          const data = o["data"] as Record<string, unknown> | undefined;
+          const asText = Array.isArray(text)
+            ? (text as string[]).join("")
+            : typeof text === "string"
+              ? text
+              : typeof data?.["text/plain"] === "string"
+                ? (data["text/plain"] as string)
+                : Array.isArray(data?.["text/plain"])
+                  ? (data["text/plain"] as string[]).join("")
+                  : undefined;
+          if (asText !== undefined && asText.trim() !== "") {
+            out.push(`#   out: ${asText.trim().slice(0, 2000)}`);
+          } else if (data !== undefined && Object.keys(data).length > 0) {
+            // 이미지 등 — 있다는 사실만 남기고 본문은 싣지 않는다(컨텍스트 보호).
+            out.push(`#   out: <${Object.keys(data).join(", ")}>`);
+          }
+          const err = o["ename"];
+          if (typeof err === "string") out.push(`#   error: ${err}: ${String(o["evalue"] ?? "")}`);
+        }
+      });
+      return out.join("\n");
+    } catch {
+      return raw;
+    }
+  };
+
   // ─── Grep 도구 ─────────────────────────────────────────────────────────
   // ripgrep 직접 호출. path 미지정 시 base. glob 으로 파일 필터.
   const grepTool = tool(
     "Grep",
-    "ripgrep 으로 패턴 매칭 라인을 찾습니다. path 미지정 시 현재 작업폴더(프로젝트/홈). glob 으로 파일 필터링.",
+    "ripgrep 으로 코드/파일을 검색합니다. path 미지정 시 현재 작업폴더(프로젝트/홈). " +
+      "output_mode: content(매칭 라인, 기본) · files_with_matches(파일 경로만) · count(파일별 개수). " +
+      "-A/-B/-C 는 content 에서만 의미가 있습니다. head_limit 로 결과를 잘라 컨텍스트를 아끼세요.",
     {
       pattern: z.string().min(1),
       path: z.string().optional(),
       glob: z.string().optional(),
+      /** 파일 종류 필터(ripgrep --type) — 예: ts, py, rust. glob 보다 빠르다. */
+      type: z.string().optional(),
+      output_mode: z.enum(["content", "files_with_matches", "count"]).optional(),
+      /** 대소문자 무시. */
+      "-i": z.boolean().optional(),
+      /** content 모드에서 줄 번호 표시(기본 켬 — 끄려면 false). */
+      "-n": z.boolean().optional(),
+      /** 매칭 뒤/앞/양쪽 컨텍스트 줄 수(content 모드 전용). */
+      "-A": z.number().int().min(0).max(50).optional(),
+      "-B": z.number().int().min(0).max(50).optional(),
+      "-C": z.number().int().min(0).max(50).optional(),
+      /** 여러 줄에 걸친 패턴 매칭(. 이 개행에도 매칭). */
+      multiline: z.boolean().optional(),
+      /** 앞에서 N 개만 반환 — 넓은 검색의 컨텍스트 폭주를 모델이 직접 막을 수 있게. */
+      head_limit: z.number().int().min(1).max(10_000).optional(),
     },
     async (args) => {
       try {
         const searchPath =
           args.path !== undefined ? resolvePath(args.path) : base;
-        const rgArgs = ["-n", "--no-heading", "--color=never"];
-        if (args.glob !== undefined) {
-          rgArgs.push("--glob", args.glob);
+        const mode = args.output_mode ?? "content";
+        const rgArgs = ["--no-heading", "--color=never"];
+        if (mode === "files_with_matches") rgArgs.push("-l");
+        else if (mode === "count") rgArgs.push("-c");
+        else if (args["-n"] !== false) rgArgs.push("-n");
+        if (args["-i"] === true) rgArgs.push("-i");
+        if (args.multiline === true) rgArgs.push("-U", "--multiline-dotall");
+        if (args.glob !== undefined) rgArgs.push("--glob", args.glob);
+        if (args.type !== undefined) rgArgs.push("--type", args.type);
+        // 컨텍스트 줄은 content 모드에서만 의미가 있다(-l/-c 와 함께 주면 rg 가 무시하거나 에러).
+        if (mode === "content") {
+          if (args["-C"] !== undefined) rgArgs.push("-C", String(args["-C"]));
+          else {
+            if (args["-A"] !== undefined) rgArgs.push("-A", String(args["-A"]));
+            if (args["-B"] !== undefined) rgArgs.push("-B", String(args["-B"]));
+          }
         }
         rgArgs.push("-e", args.pattern, searchPath);
         const { stdout } = await execFileP(RG_PATH, rgArgs, {
@@ -1054,8 +1146,18 @@ const makeFileOpsTools = (
           },
         );
         const lines = stdout.split("\n").filter((l) => l.length > 0);
-        const sliced = lines.slice(0, GREP_MAX_LINES);
-        return okText(JSON.stringify(sliced));
+        // ★상한이 둘이다: 모델이 지정한 head_limit(의도)과 우리 안전망(GREP_MAX_LINES).
+        //  둘 중 작은 쪽을 쓰고, **잘렸으면 말한다** — 조용히 자르면 모델이 "그게 전부" 로 읽는다.
+        const cap = Math.min(args.head_limit ?? GREP_MAX_LINES, GREP_MAX_LINES);
+        const sliced = lines.slice(0, cap);
+        const truncated = lines.length > sliced.length;
+        return okText(
+          JSON.stringify(
+            truncated
+              ? { mode, results: sliced, truncated: true, total: lines.length }
+              : sliced,
+          ),
+        );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         // ripgrep 부재 케이스 별도 hint.
@@ -1481,20 +1583,57 @@ const makeFileOpsTools = (
  * run_in_background Bash 가 그 값을 `shell.started.threadKey` 로 발행(대시보드 상관용).
  * 미전달 시 `""` 폴백 — 기존 호출부(baseCwd 만 주입) 전부 회귀 0.
  */
+/**
+ * 셸 도구 이름 — **여기가 정의점**이다. 어댑터가 이름을 다시 적지 않는다.
+ *
+ * ★claude 는 SDK 빌트인 Bash 를 쓰는데, 그건 SDK 서브프로세스 안에서 돌아 데몬이 파이프를
+ *  못 쥔다 → `BG_SHELLS` 에 아무것도 안 쌓이고 대시보드 tail(`/api/shell-output`)이 404 다.
+ *  카드는 뜨는데 **출력만 안 보인다**(2026-08-09 사용자 신고). codex·openai 는 이 MCP 를 써서
+ *  잘 보인다 — 같은 기능이 어댑터마다 다른 것은 "모든 기능 LLM 무관" 위반이다.
+ *  그래서 셋을 **한 경로로** 모은다(`Agent` → `spawn_agent` 와 같은 수법·같은 이유).
+ */
+export const SHELL_TOOL_NAMES = ["Bash", "BashOutput", "KillShell"] as const;
+
+/**
+ * 검색 도구 이름 — claude 빌트인을 대체할 수 있게 **동등 이상**으로 올린 것들(2026-08-09).
+ *
+ * - `Grep`: output_mode(content|files_with_matches|count)·`-i`·`-n`·`-A/-B/-C`·type·
+ *   multiline·head_limit 을 갖췄고, **잘리면 잘렸다고 말한다**(조용한 절단 금지).
+ * - `Glob`: **최근 수정 순** 정렬(claude 빌트인과 같은 순서 — 같은 질문에 같은 답).
+ *
+ * 파일 도구(Read/Write/Edit)는 **아직 아니다**: 우리 Read 는 PDF 를 못 준다 — MCP 도구 결과
+ * 콘텐츠 타입에 문서가 없어서(text·image·resource 뿐) 프로토콜 한계다. 노력 문제가 아니라
+ * 계약 문제라, 여기서 막으면 원칙 1(슈퍼셋 — 누락은 버그) 위반이 된다.
+ */
+export const SEARCH_TOOL_NAMES = ["Grep", "Glob"] as const;
+
 export const createFileOpsMcpServer = (
   baseCwd?: string,
   threadKey?: string,
-  opts?: { includeWebSearch?: boolean; abortSignal?: AbortSignal },
+  opts?: {
+    includeWebSearch?: boolean;
+    abortSignal?: AbortSignal;
+    /**
+     * claude 용 부분 노출 — **우리 것이 동등 이상인 도구만** 넘긴다(셸 3종 + 검색 2종).
+     * 파일 도구(Read/Write/Edit)는 SDK 빌트인을 유지한다(위 SEARCH_TOOL_NAMES 주석의 PDF 한계).
+     */
+    shellsOnly?: boolean;
+  },
 ): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "file-ops",
-    version: "1.8.0",
-    tools: makeFileOpsTools(
-      baseCwd ?? getPaths().home,
-      threadKey ?? "",
-      // 기본 false — 자체 검색 수단이 있는 어댑터(codex)에 중복 부착하지 않는다.
-      // 검색이 없는 어댑터(openai)만 명시적으로 켠다.
-      opts?.includeWebSearch === true,
-      opts?.abortSignal,
-    ),
+    version: "1.9.0",
+    tools: (() => {
+      const all = makeFileOpsTools(
+        baseCwd ?? getPaths().home,
+        threadKey ?? "",
+        // 기본 false — 자체 검색 수단이 있는 어댑터(codex)에 중복 부착하지 않는다.
+        // 검색이 없는 어댑터(openai)만 명시적으로 켠다.
+        opts?.includeWebSearch === true,
+        opts?.abortSignal,
+      );
+      if (opts?.shellsOnly !== true) return all;
+      const want = new Set<string>([...SHELL_TOOL_NAMES, ...SEARCH_TOOL_NAMES]);
+      return all.filter((t) => want.has((t as { name?: string }).name ?? ""));
+    })(),
   });

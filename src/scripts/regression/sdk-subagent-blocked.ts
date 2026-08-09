@@ -128,9 +128,18 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★어댑터가 그 헬퍼를 **거쳐서만** 차단한다(뒤에 필터를 붙일 수 없게)",
-        /disallowedTools: withSdkSubagentsBlocked\(\[[\s\S]{0,120}\]\),/.test(adapter) &&
-          !/withSdkSubagentsBlocked\([\s\S]{0,140}\)\s*\./.test(adapter),
-        "헬퍼 단독 호출",
+        // ★판정은 "체이닝이 없는가" 지 "배열이 짧은가" 가 아니다. 종전엔 글자 수 창(120자)에
+        //  묶여 있어, 차단 목록에 항목을 더하자(2026-08-09 셸 3종) 그것만으로 빨간불이 됐고
+        //  같은 이유로 체이닝 검사도 **사정거리를 잃어** 무력해졌다. 표현식을 통째로 떠서 본다.
+        (() => {
+          const at = adapter.indexOf("disallowedTools: withSdkSubagentsBlocked([");
+          if (at === -1) return false;
+          const end = adapter.indexOf("]),", at);
+          if (end === -1) return false;
+          // 닫는 `])` 바로 뒤가 `,` 여야 한다 — `.filter(...)` 등이 붙으면 다른 글자가 온다.
+          return /^\]\),/.test(adapter.slice(end));
+        })(),
+        "헬퍼 단독 호출(체이닝 없음)",
       ),
       assert(
         "★모델이 읽는 텍스트 어디에도 차단된 도구를 시키는 문장이 없다(전수 — 창 아님)",

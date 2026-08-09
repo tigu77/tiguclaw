@@ -13,6 +13,8 @@ import process from "node:process";
 import path from "node:path";
 import { initStore, getDb, resolveDataDir } from "../store/sessions.js";
 import { DISALLOWED_TOOLS } from "../auth/permissions.js";
+import { ensureRipgrep } from "../core/ripgrep.js";
+import { getPaths } from "../core/paths.js";
 import { listActive } from "../store/bridge-tokens.js";
 import type { BridgeTokenRole } from "../store/bridge-tokens.js";
 import { listSchedules } from "../store/schedules.js";
@@ -537,6 +539,15 @@ const main = async (): Promise<void> => {
   }
   console.log("══════════════════════════════════════════");
 
+  // ─── 검색 도구(ripgrep) ────────────────────────────────────────────────
+  // ★Grep/Glob 이 이것 위에 선다. 없으면 **codex 계열이 검색을 통째로 잃는다**(claude 는 SDK
+  //  내장이라 혼자 멀쩡해서, 같은 질문에 어댑터마다 다른 답이 나온다). 없으면 여기서 받는다.
+  console.log("── 검색(ripgrep)");
+  const rg = await ensureRipgrep(getPaths().home);
+  console.log(
+    `${"ripgrep".padEnd(PAD)}${rg.ok ? (rg.installed ? "설치함" : "OK") : "★없음"}  ${rg.detail}`,
+  );
+  if (!rg.ok) issues.push("ripgrep 없음 — Grep/Glob 실패(codex 계열 검색 불가)");
   console.log("");
 
   // 「다음 단계」 — 우선순위 사다리, 첫 번째 결손만

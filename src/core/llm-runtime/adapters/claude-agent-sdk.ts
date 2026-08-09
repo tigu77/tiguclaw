@@ -47,6 +47,11 @@ import { buildActivityDiff } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { DISALLOWED_TOOLS } from "../../../auth/permissions.js";
+import {
+  createFileOpsMcpServer,
+  SEARCH_TOOL_NAMES,
+  SHELL_TOOL_NAMES,
+} from "../capabilities/file-ops-mcp.js";
 import { getEventBus } from "../../eventbus.js";
 import {
   agentSizeWarning,
@@ -736,6 +741,11 @@ export const runClaude = async (
     disallowedTools: withSdkSubagentsBlocked([
       ...DISALLOWED_TOOLS,
       "AskUserQuestion",
+      // ★SDK 빌트인 셸·검색 차단 — 위 file-ops 가 대체한다. 이름을 여기 다시 적지 않고
+      //  **정의점에서 가져온다**(손으로 관리하는 목록 금지). 파일 도구는 안 막는다 —
+      //  우리 Read 가 PDF 를 못 줘서(MCP 콘텐츠 타입 한계) 막으면 능력 손실이다.
+      ...SHELL_TOOL_NAMES,
+      ...SEARCH_TOOL_NAMES,
     ]),
     // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
     // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
@@ -753,6 +763,17 @@ export const runClaude = async (
     mcpServers: {
       ...leanMcpServers,
       ...externalMcpServers,
+      // ★셸을 우리 도구로 일원화 (2026-08-09). SDK 빌트인 Bash 는 서브프로세스 안에서 돌아
+      //  데몬이 출력을 못 쥔다 → 대시보드 잡카드에 **출력이 안 뜬다**(카드는 뜬다).
+      //  우리 MCP Bash 는 `BG_SHELLS` 에 적재하고 `shell.*` 를 발행하므로 비소비 tail·kill·
+      //  관측이 codex 와 **같은 경로**가 된다. 파일 도구는 안 건드린다(위 shellsOnly 주석).
+      ...(toolsNone
+        ? {}
+        : {
+            "file-ops": createFileOpsMcpServer(input.cwd, input.threadKey, {
+              shellsOnly: true,
+            }),
+          }),
       ...(toolsNone
         ? {}
         : {

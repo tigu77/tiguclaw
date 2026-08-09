@@ -582,6 +582,17 @@ const parseGatewayTools = (
     const fnName = (rawChoice as { function?: { name?: unknown } }).function?.name;
     if (typeof fnName === "string" && fnName !== "") externalToolChoice = { name: fnName };
   }
+  // ★특정 함수 강제(`tool_choice:{type:"function",function:{name}}`) — 어댑터에 "그것만
+  //  불러라" 를 시킬 수단이 없으므로 **노출을 그 하나로 좁혀서** 집행한다(`none` 과 같은
+  //  방식: 부탁이 아니라 수단 제한). 그 위에 아래 응답부가 required 판정을 얹어, 안 부르면
+  //  에러가 된다. 실측(2026-08-09): 그전엔 조용히 무시돼 **다른 함수가 호출됐다**
+  //  (set_voxel_layers 를 강제했는데 clear_scene 이 왔다).
+  if (externalToolChoice !== undefined && typeof externalToolChoice === "object") {
+    const only = externalTools.filter((t) => t.name === externalToolChoice.name);
+    // 목록에 없는 이름을 강제하면 조용히 무시하지 않고 그대로 알린다(클라 실수를 숨기지 않는다).
+    if (only.length === 0) return { externalTools, externalToolChoice };
+    return { externalTools: only, externalToolChoice: "required" as const };
+  }
   return { externalTools, ...(externalToolChoice !== undefined ? { externalToolChoice } : {}) };
 };
 
@@ -959,6 +970,21 @@ class HttpBridge implements Channel, Observer {
       } catch (e) {
         writeJson(res, 400, {
           error: { message: `image parse failed: ${e instanceof Error ? e.message : String(e)}` },
+        });
+        return;
+      }
+      // 강제 지정한 함수가 tools 목록에 없다 = 클라이언트 실수. 조용히 auto 로 돌지 않는다.
+      const forced =
+        gatewayTools.externalToolChoice !== undefined &&
+        typeof gatewayTools.externalToolChoice === "object"
+          ? gatewayTools.externalToolChoice.name
+          : undefined;
+      if (forced !== undefined && !(gatewayTools.externalTools ?? []).some((t) => t.name === forced)) {
+        writeJson(res, 400, {
+          error: {
+            message: `tool_choice 가 지정한 함수 "${forced}" 가 tools 목록에 없습니다.`,
+            type: "invalid_tool_choice",
+          },
         });
         return;
       }

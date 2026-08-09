@@ -47,7 +47,13 @@ export const check: RegressionCheck = {
     //   — 2026-08-09 벤치에서 같은 비대칭이 "우리가 11배 효율적" 이라는 거짓을 만들었다.
     const inTotal = /inputTokensTotal \?\? out\.usage\?\.inputTokens/.test(bridge);
     const outTotal = /outputTokensTotal \?\? out\.usage\?\.outputTokens/.test(bridge);
-    // ⑤에러 응답이 OpenAI 규격(`error.message`)이어야 클라가 읽는다.
+    // ⑤★특정 함수 강제(`tool_choice:{function:{name}}`)를 **노출 축소**로 집행한다.
+    //   실측(2026-08-09): 그전엔 조용히 무시돼 강제한 것과 **다른 함수가 호출됐다**
+    //   (set_voxel_layers 를 강제했는데 clear_scene). 목록에 없는 이름은 400 으로 알린다.
+    const forcedEnforced =
+      /externalTools: only, externalToolChoice: "required"/.test(bridge) &&
+      /invalid_tool_choice/.test(bridge);
+    // ⑥에러 응답이 OpenAI 규격(`error.message`)이어야 클라가 읽는다.
     const openAiShape = (bridge.match(/error: \{\s*message:/g) ?? []).length >= 2;
 
     return [
@@ -70,6 +76,11 @@ export const check: RegressionCheck = {
         "★토큰 입력·출력이 **같은 규칙**(Total ?? 단건)을 쓴다",
         inTotal && outTotal,
         `input=${String(inTotal)} output=${String(outTotal)}`,
+      ),
+      assert(
+        "★특정 함수 강제를 노출 축소로 집행한다(조용히 다른 함수가 불리던 것) + 없는 이름은 400",
+        forcedEnforced,
+        forcedEnforced ? "축소 + invalid_tool_choice" : "★tool_choice 객체형이 무시된다",
       ),
       assert(
         "에러가 OpenAI 규격(error.message)이라 클라이언트가 읽는다",

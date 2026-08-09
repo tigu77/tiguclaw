@@ -42,7 +42,21 @@ export const check: RegressionCheck = {
     const selfUpdate = await readFile(new URL(SELFUPDATE, import.meta.url), "utf8");
     const entry = await readFile(new URL(ENTRY, import.meta.url), "utf8");
 
+    const { statSync } = await import("node:fs");
     // ── 판정을 실제로 실행한다 ──
+    const sysRg = (() => {
+      for (const d of (process.env["PATH"] ?? "").split(path.delimiter)) {
+        if (d === "") continue;
+        const c = path.join(d, rgBinName());
+        try {
+          if (statSync(c).isFile()) return c;
+        } catch {
+          /* 없음 */
+        }
+      }
+      return null;
+    })();
+
     const bin = rgBinName();
     const managed = managedRgPath("/tmp/regr-home");
     // 우리가 받아두는 자리는 **홈 아래**여야 한다 — 레포/node_modules 는 /update·npm ci 로 날아간다.
@@ -57,7 +71,7 @@ export const check: RegressionCheck = {
     //  `existsSync` 만 보면 디렉터리·부분 파일·12바이트 텍스트도 통과했다. 그게 1순위
     //  자리(`<home>/bin/rg`)에 있으면 정상 rg 를 **영원히 가린다** — 닥터는 "OK" 를 찍고
     //  Grep/Glob 은 계속 죽고 재실행으로 자가치유가 안 된다.
-    const { mkdirSync, writeFileSync, rmSync, chmodSync, statSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync, rmSync, chmodSync } = await import("node:fs");
     const trapBase = "/tmp/regr-rgtrap";
     rmSync(trapBase, { recursive: true, force: true });
     const mk = (name: string): string => {
@@ -84,18 +98,6 @@ export const check: RegressionCheck = {
     //  제품 호출부가 **하나도 없어서**(전부 home 을 넘긴다) 아무도 고정해 주지 못했다.
     //  거기에 조기 return 을 넣으면 신설 긍정 단언 둘이 통째로 무력화됐다. 검사가 쓰는
     //  탐지는 검사가 소유한다 — PATH 를 직접 훑는다.
-    const sysRg = (() => {
-      for (const d of (process.env["PATH"] ?? "").split(path.delimiter)) {
-        if (d === "") continue;
-        const c = path.join(d, rgBinName());
-        try {
-          if (statSync(c).isFile()) return c;
-        } catch {
-          /* 없음 */
-        }
-      }
-      return null;
-    })();
     if (sysRg !== null) {
       const { copyFileSync, chmodSync } = await import("node:fs");
       copyFileSync(sysRg, path.join(hGood, "bin", rgBinName()));
@@ -211,8 +213,12 @@ export const check: RegressionCheck = {
       ),
       assert(
         "해소가 시스템 설치본도 찾는다(사용자가 직접 깐 것을 무시하지 않는다)",
-        found !== null && found.endsWith(bin),
-        found ?? "★못 찾음(이 기계엔 rg 가 있어야 한다)",
+        // ★**rg 가 있는 기계에서만** 의미가 있다. CI(리눅스)엔 rg 가 없어서 이 단언이
+        //  빨간불이었다 — 검사가 **환경을 가정**한 것이지 제품 결함이 아니다.
+        //  없으면 "대상 없음" 으로 통과시키되 **그 사실을 적는다**(조용한 통과 금지 —
+        //  안 본 것과 본 것이 구분돼야 한다).
+        sysRg === null || (found !== null && found.endsWith(bin)),
+        sysRg === null ? "이 기계엔 rg 없음 — 대상 없음(CI 리눅스 등)" : (found ?? "★못 찾음"),
       ),
       assert(
         "★`download:false` 면 네트워크를 안 탄다(회귀가 외부에 의존하지 않게)",

@@ -121,7 +121,9 @@ export const check: RegressionCheck = {
     // ── 배선: 어댑터가 판정을 실제로 부르고, 게이팅 밖에서 등록하고, 마감에서 실어 보낸다 ──
     const callsCollector = /collectExternalToolCalls\(/.test(adapter);
     // toolsNone 이어도 앱 도구는 붙어야 한다(게이트웨이는 toolPolicy:none 으로 온다).
-    const outsideGate = /toolsNone\s*\?\s*\{\s*\.\.\.externalToolsMcp\s*\}/.test(adapter);
+    // toolsNone 분기 안에 externalToolsMcp 가 **들어 있는가**만 본다 — 그 분기에 다른 것이
+    // 함께 들어와도(예: 첨부용 Read) 판정은 그대로여야 한다. 모양이 아니라 사실을 검사한다.
+    const outsideGate = /toolsNone\s*\?\s*\{[^}]*\.\.\.externalToolsMcp/.test(adapter);
     // abort 를 에러로 승격하지 않는다(성공한 함수콜 턴이 폴백 풀을 태우면 안 된다).
     const abortAbsorbed =
       /pendingExternalToolCalls\.length > 0 && effectiveAc\.signal\.aborted/.test(adapter);

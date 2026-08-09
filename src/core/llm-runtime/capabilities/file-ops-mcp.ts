@@ -1627,6 +1627,17 @@ export const createFileOpsMcpServer = (
      * 파일 도구(Read/Write/Edit)는 SDK 빌트인을 유지한다(위 SEARCH_TOOL_NAMES 주석의 PDF 한계).
      */
     shellsOnly?: boolean;
+    /**
+     * ★중립 턴(게이트웨이) 전용 — **`Read` 하나만** 노출한다.
+     *
+     * claude 의 비전은 "첨부를 경로로 주고 모델이 `Read` 로 연다" 방식이다(prompt-assembly
+     * formatAttachments). 게이트웨이는 `toolPolicy:none` 이라 도구가 0인데, 그동안은 SDK
+     * 빌트인 `Read` 가 남아 있고 cwd 가 홈이라 우연히 열렸다. 소유자 컨텍스트 누수를 막으려
+     * cwd 를 홈 밖으로 옮기자 **첨부가 cwd 밖이 되어 비전이 죽었다**(2026-08-09 실측:
+     * 모델이 Read 를 부르려다 실패). 그래서 첨부가 있는 중립 턴에만 Read 를 되돌려준다 —
+     * 셸·검색·쓰기는 없다.
+     */
+    readsOnly?: boolean;
   },
 ): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
@@ -1641,6 +1652,9 @@ export const createFileOpsMcpServer = (
         opts?.includeWebSearch === true,
         opts?.abortSignal,
       );
+      if (opts?.readsOnly === true) {
+        return all.filter((t) => ((t as { name?: string }).name ?? "") === "Read");
+      }
       if (opts?.shellsOnly !== true) return all;
       const want = new Set<string>([...SHELL_TOOL_NAMES, ...SEARCH_TOOL_NAMES]);
       return all.filter((t) => want.has((t as { name?: string }).name ?? ""));

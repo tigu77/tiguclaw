@@ -445,8 +445,15 @@ export const runClaude = async (
     externalToolSpecs.length > 0
       ? { [EXTERNAL_TOOLS_SERVER]: createExternalToolsMcpServer(externalToolSpecs) }
       : {};
+  // ★중립 턴에 첨부가 있으면 `Read` 하나를 되돌려준다 — claude 비전이 "경로를 Read 로 연다"
+  //  방식이라, 도구 0 이면 이미지가 안 보인다. cwd 를 홈 밖으로 옮긴 뒤 실제로 죽었다
+  //  (2026-08-09). 셸·검색·쓰기는 없고 읽기 하나뿐이라 누수 표면은 안 넓어진다.
+  const neutralReadMcp: Options["mcpServers"] =
+    neutralTurn && (input.attachments?.length ?? 0) > 0
+      ? { "file-read": createFileOpsMcpServer(cwd, input.threadKey, { readsOnly: true }) }
+      : {};
   const leanMcpServers: Options["mcpServers"] = toolsNone
-    ? { ...externalToolsMcp }
+    ? { ...externalToolsMcp, ...neutralReadMcp }
     : {
         ...externalToolsMcp,
         memory: createMemoryMcpServer(),

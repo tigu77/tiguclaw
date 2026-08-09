@@ -6,8 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.25.0] - 2026-08-10
+
+### Added
+- **내 앱이 tiguclaw 에게 도구를 맡길 수 있습니다 — 구독만으로도.** OpenAI 호환 게이트웨이에 `tools` 를 실으면 모델이 **실행하지 않고** `tool_calls` 로 돌려주고, 앱이 실행한 결과를 `role:"tool"` 로 되돌려주면 대화가 이어집니다. 지금까지 이 경로는 일부 백엔드에서만 됐고, 안 되는 백엔드에서는 **아무 말 없이 무시**돼서 앱 입장에선 "AI 가 도구를 안 쓴다"로만 보였습니다. 이제 어느 모델로 돌든 똑같이 동작하며, **API 키 없이 구독 로그인만으로도** 됩니다.
+- **`tool_choice` 가 실제로 지켜집니다.** `"none"`(부르지 마)·`"required"`(반드시 불러)·특정 함수 지정 셋 다 집행합니다. 그전에는 조용히 무시돼서, 특정 함수를 지정해도 **다른 함수가 호출**되곤 했습니다.
+
 ### Fixed
+- **게이트웨이 응답에 비서의 기억이 섞여 나오던 것.** 앱이 자기 `system` 메시지를 안 보내면, 응답에 **이 컴퓨터 주인의 이름이나 진행 중인 프로젝트** 같은 정보가 딸려 나올 수 있었습니다. 게이트웨이 호출은 이제 완전히 격리된 자리에서 실행돼 비서의 인격·기억·설정이 실리지 않습니다. (백엔드 로그인 계정 정보처럼 LLM 제공사가 직접 싣는 항목은 tiguclaw 가 제어할 수 없습니다 — 완전 차단이 필요하면 API 키 방식을 쓰세요.)
+- **빈 응답이 성공처럼 보이던 것.** 텍스트도 함수 호출도 없는 응답을 정상(200)으로 돌려줘서, 앱은 무엇이 잘못됐는지 알 수 없었습니다. 이제 응답은 **셋 중 하나**입니다 — 함수 호출 · 텍스트 · **명확한 에러**.
 - **토큰·비용 수치가 실제보다 크게 낮게 나오던 것.** 도구를 여러 번 쓰는 긴 작업에서 출력 토큰이 **마지막 한 번만** 집계돼, 대시보드 카드와 비용 추정이 실제의 몇 분의 일로 보였습니다(실측: 314 vs 5,101 — 16배). 이제 작업 전체 합계를 씁니다.
+- **첨부 이미지가 게이트웨이 응답에서 안 보이던 것**(0.25.0 개발 중 발생·수정). 위 격리 작업의 부작용으로 이미지가 모델에 도달하지 않았습니다.
+
+### Changed
+- 한국어 README 의 문체를 경어체로 통일하고, 사실과 어긋난 설명(훅 이벤트 목록·예시 모델명)을 바로잡았습니다.
 
 ## [0.24.0] - 2026-08-09
 ### Changed
@@ -1015,7 +1028,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/tigu77/tiguclaw/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tigu77/tiguclaw/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/tigu77/tiguclaw/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/tigu77/tiguclaw/compare/v0.22.0...v0.23.0

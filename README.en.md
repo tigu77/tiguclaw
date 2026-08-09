@@ -348,7 +348,9 @@ Tune it live in `<home>/settings.json` — re-read on every request, so nothing 
 
 Worth knowing:
 
-- **It answers as your app, not as the assistant.** Your `system` message is used as-is — no tiguclaw persona, no tools, no skills, no memory — and gateway calls never show up in your conversations or dashboard.
+- **It answers as your app, not as the assistant.** Your `system` message is used as-is — no tiguclaw persona, no tools, no skills, no memory — and gateway calls never show up in your conversations or dashboard. Calls run in an isolated working directory, so nothing leaks even if you send no `system` message. (Account details the LLM provider itself injects are outside tiguclaw's control.)
+- **Function calling works on a subscription.** Send `tools` and the model returns `tool_calls` without executing them — whichever adapter runs the turn, no API key required. `tool_choice` (`"none"`, `"required"`, or a named function) is enforced.
+- **Every response is one of three things** — a tool call, text, or an explicit error. Never an empty success.
 - **Call it from your app's server**, not from a browser: the token is a shared secret and the port listens on localhost only.
 - **Prefer a different backend than your assistant's.** If your app hammers the same subscription the assistant lives on, you'll feel it in both.
 

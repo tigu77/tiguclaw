@@ -161,6 +161,12 @@ export const check: RegressionCheck = {
     //  rg 없는 기계는 업데이트를 받아도 검색이 계속 죽어 있다. 이 변경이 겨냥한 그 인스턴스다.
     const suBody = selfUpdate.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
     const updateEnsures = /ensureRipgrep\(getPaths\(\)\.home\)/.test(suBody);
+    // ★**변경 0 경로에도** 있어야 한다 (2026-08-09 윈도우 실측). self-update 변경은 다음
+    //  업데이트부터 듣는데(수행 주체가 옛 코드다) 그때는 pull 할 게 없어 조기 반환으로 간다
+    //  — 거기 없으면 이미 최신인 인스턴스는 영영 못 받는다. 그게 정확히 "검색이 죽은 채
+    //  오래 살던" 기계들이다.
+    const upToDatePath =
+      /await ensureRipgrepBestEffort\(\);[\s\S]{0,120}return \{ status: "up-to-date"/.test(suBody);
     // ★실패해도 업데이트를 막지 않는다(견고성 불변식) — try/catch 로 감싸야 한다.
     // ★업데이트 전체에 상한이 있는가 — 안쪽 타임아웃(60+120초)을 합치면 3분이고
     //  `/update` 응답은 그 뒤에 나간다(사용자 무응답). throw 만 막는 건 부족하다.
@@ -274,9 +280,9 @@ export const check: RegressionCheck = {
         lazyOk ? "findRipgrep 위임 · 무상태" : "★file-ops 에 상태가 생겼다",
       ),
       assert(
-        "★**업데이트 경로**에도 확보가 있다(기존 설치본은 doctor 를 안 돌린다)",
-        updateEnsures,
-        updateEnsures ? "self-update 단계 6c" : "★/update 로는 안 받는다",
+        "★**업데이트 경로**에도 확보가 있다 — 정상 경로 **와** 변경 0 조기 반환 둘 다",
+        updateEnsures && upToDatePath,
+        `정상=${String(updateEnsures)} · 변경0=${String(upToDatePath)}`,
       ),
       assert(
         "★업데이트가 그것 때문에 멈추지 않는다 — 예외도, **지연도** 막는다",

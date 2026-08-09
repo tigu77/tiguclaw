@@ -365,6 +365,39 @@ const rebuildBuiltDist = async (
 };
 
 /**
+ * ripgrep 확보 — **업데이트 경로 공용** (2026-08-09).
+ *
+ * 두 자리에서 부른다: ①재빌드 뒤(정상 업데이트) ②변경 0 조기 반환 직전. ②가 필요한 이유는
+ * self-update 변경이 **다음 업데이트부터** 듣기 때문이다(수행 주체가 돌고 있던 옛 코드다) —
+ * 그 다음 호출엔 pull 할 게 없어 조기 반환으로 가고, 그러면 영영 못 받는다. 실측(윈도우):
+ * 6c 를 넣고 `/update` 를 돌렸더니 코드는 갱신됐는데 rg 는 안 받아졌다.
+ *
+ * ★실패도 지연도 업데이트를 막지 않는다 — 예외는 catch, 시간은 상한으로.
+ */
+const ensureRipgrepBestEffort = async (): Promise<void> => {
+  try {
+    const rg = await Promise.race([
+      ensureRipgrep(getPaths().home),
+      new Promise<{ ok: false; detail: string; installed: false; path: null }>((resolve) =>
+        setTimeout(
+          () => resolve({ ok: false, detail: "45초 내 미완료 — 계속합니다", installed: false, path: null }),
+          45_000,
+        ).unref(),
+      ),
+    ]);
+    console.log(
+      rg.ok
+        ? `self-update: ripgrep ${rg.installed ? "설치함" : "확인"} — ${rg.detail}`
+        : `self-update: ★ripgrep 확보 실패 — ${rg.detail} (Grep/Glob 이 실패합니다)`,
+    );
+  } catch (e) {
+    console.warn(
+      `self-update: ripgrep 확보 중 예외 — 계속합니다: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+};
+
+/**
  * 단일 결정론 자가 업데이트 루틴 — architect §2 9단계.
  *
  * 어떤 단계도 throw 로 데몬을 죽이지 않는다(견고성 불변식). 모든 외부 호출은 execFile.
@@ -435,6 +468,12 @@ export const runSelfUpdate = async (
       };
     }
     if (newSha === prevSha) {
+      // ★코드가 최신이어도 **환경은 아닐 수 있다** (2026-08-09 윈도우 실측). 여기서 조기
+      //  반환하면 이미 최신인 인스턴스는 ripgrep 을 영영 못 받는다 — 그리고 그게 정확히
+      //  "검색이 죽은 채 오래 살던" 기계들이다. self-update 변경은 원래 **다음 업데이트부터**
+      //  듣는데(수행 주체가 돌고 있던 옛 코드다), 그 뒤엔 pull 할 게 없어 여기로 온다.
+      //  best-effort + 짧은 상한 — 업데이트 응답을 잡아두지 않는다.
+      await ensureRipgrepBestEffort();
       return { status: "up-to-date", from: prevSha, to: prevSha };
     }
 
@@ -630,35 +669,7 @@ export const runSelfUpdate = async (
     //  죽어 있다 — 이 변경이 겨냥한 바로 그 인스턴스들이다.
     //  ★실패해도 업데이트를 막지 않는다(견고성 불변식). 네트워크 없는 환경에서 업데이트가
     //   이것 때문에 멈추면 그게 더 나쁘다 — 못 받으면 로그에 남기고 넘어간다.
-    try {
-      // ★업데이트 경로에선 **전체에 상한**을 건다 (2026-08-09 적대 검토 3R).
-      //  `ensureRipgrep` 안의 타임아웃(fetch 60s + 해제 120s)은 각 단계용이라 합치면
-      //  3분이다. `/update` 응답은 이 함수가 **반환한 뒤에** 나가므로, rg 없는 기계
-      //  (= 사내 프록시 뒤 윈도우·회사PC = 정확히 이 기능의 대상)에서 사용자가 3분간
-      //  무응답을 겪는다. try/catch 는 throw 만 막지 hang 은 안 막는다 —
-      //  ripgrep.ts 주석이 기록한 그 실수를 한 커밋 뒤에 되풀이했다.
-      //  못 받으면 다음 doctor·다음 업데이트가 다시 시도한다(손실 없음).
-      const rg = await Promise.race([
-        ensureRipgrep(getPaths().home),
-        new Promise<{ ok: false; detail: string; installed: false; path: null }>((resolve) =>
-          setTimeout(
-            () => resolve({ ok: false, detail: "45초 내 미완료 — 업데이트를 계속합니다", installed: false, path: null }),
-            45_000,
-          ),
-        ),
-      ]);
-      console.log(
-        rg.ok
-          ? `self-update: ripgrep ${rg.installed ? "설치함" : "확인"} — ${rg.detail}`
-          : `self-update: ★ripgrep 확보 실패 — ${rg.detail} (Grep/Glob 이 실패합니다)`,
-      );
-    } catch (e) {
-      console.warn(
-        `self-update: ripgrep 확보 중 예외 — 업데이트는 계속합니다: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
-    }
+    await ensureRipgrepBestEffort();
 
     // ── 단계 7: 완료 마커 작성 (부팅 통지용, best-effort) ───────────────────────
     try {

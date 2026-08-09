@@ -81,6 +81,10 @@ export const check: RegressionCheck = {
       const r = await h(args, {});
       try { return JSON.parse(r.content[0]?.text ?? "null"); } catch { return null; }
     };
+    // ★Grep/Glob 은 **ripgrep 을 실제로 실행**한다 — 없는 기계(CI 리눅스)에선 대상이 없다.
+    //  조용히 통과시키지 않고 **그 사실을 적는다**(안 본 것과 본 것이 구분돼야 한다).
+    const { findRipgrep } = await import("../../core/ripgrep.js");
+    const hasRg = findRipgrep() !== null;
     const repoSrc = new URL("../../../src", import.meta.url).pathname;
     const cut = (await callTool("Grep", {
       pattern: "export const", path: repoSrc, head_limit: 2,
@@ -125,13 +129,18 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★잘리면 **잘렸다고 말한다**(조용한 절단은 모델이 '그게 전부'로 읽는다)",
-        cut !== null && cut.truncated === true && (cut.total ?? 0) > 2 && cut.results?.length === 2,
-        cut === null ? "★호출 실패" : `truncated=${String(cut.truncated)} total=${String(cut.total)}`,
+        !hasRg ||
+          (cut !== null && cut.truncated === true && (cut.total ?? 0) > 2 && cut.results?.length === 2),
+        !hasRg
+          ? "ripgrep 없음 — 대상 없음(CI 리눅스 등)"
+          : cut === null
+            ? "★호출 실패"
+            : `truncated=${String(cut.truncated)} total=${String(cut.total)}`,
       ),
       assert(
         "★Glob 이 **최근 수정 순**이다(어댑터마다 다른 순서가 나오던 것)",
-        globList.join(",") === "newest.ts,mid.ts,old.ts",
-        globList.join(",") || "★0개(호출 실패)",
+        !hasRg || globList.join(",") === "newest.ts,mid.ts,old.ts",
+        !hasRg ? "ripgrep 없음 — 대상 없음(CI 리눅스 등)" : (globList.join(",") || "★0개(호출 실패)"),
       ),
       assert(
         "★파일 도구(Read/Write/Edit)는 **넘기지 않는다** — 우리 Read 가 PDF 를 못 준다(MCP 계약)",

@@ -103,6 +103,20 @@ export const check: RegressionCheck = {
     stamp("old.ts", 300);
     stamp("mid.ts", 60);
     stamp("newest.ts", 1);
+    // ★모델이 선택적 인자를 **빈 문자열**로 채우는 건 흔하다 — 그걸 그대로 `rg --type ""`
+    //  로 넘기면 rg 가 에러를 내고 검색이 통째로 실패한다(2026-08-09 윈도우 실측:
+    //  "빈 type 인자를 전달해 오류"). 스키마가 optional 이라고 빈 값이 안 온다는 뜻은 아니다.
+    const emptyArgsOk = hasRg
+      ? (
+          await Promise.all(
+            [{ type: "" }, { glob: "" }, { type: "  " }].map(async (extra) => {
+              const r = await callTool("Grep", { pattern: "export const", path: repoSrc, head_limit: 2, ...extra });
+              return r !== null;
+            }),
+          )
+        ).every(Boolean)
+      : true;
+
     const globRaw = (await callTool("Glob", { pattern: "*.ts", cwd: gdir })) as
       | { truncated?: boolean; results?: string[] }
       | string[]
@@ -141,6 +155,11 @@ export const check: RegressionCheck = {
         "★Glob 이 **최근 수정 순**이다(어댑터마다 다른 순서가 나오던 것)",
         !hasRg || globList.join(",") === "newest.ts,mid.ts,old.ts",
         !hasRg ? "ripgrep 없음 — 대상 없음(CI 리눅스 등)" : (globList.join(",") || "★0개(호출 실패)"),
+      ),
+      assert(
+        "★선택 인자가 **빈 문자열**이어도 검색이 죽지 않는다(모델이 흔히 그렇게 채운다)",
+        emptyArgsOk,
+        hasRg ? "type:'' · glob:'' · 공백 전부 정상" : "ripgrep 없음 — 대상 없음",
       ),
       assert(
         "★파일 도구(Read/Write/Edit)는 **넘기지 않는다** — 우리 Read 가 PDF 를 못 준다(MCP 계약)",

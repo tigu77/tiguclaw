@@ -1123,8 +1123,14 @@ const makeFileOpsTools = (
         else if (args["-n"] !== false) rgArgs.push("-n");
         if (args["-i"] === true) rgArgs.push("-i");
         if (args.multiline === true) rgArgs.push("-U", "--multiline-dotall");
-        if (args.glob !== undefined) rgArgs.push("--glob", args.glob);
-        if (args.type !== undefined) rgArgs.push("--type", args.type);
+        // ★**빈 문자열도 걸러야 한다** (2026-08-09 윈도우 실측). 모델은 선택적 인자를
+        //  `""` 로 채우는 일이 흔한데, 그걸 그대로 `rg --type ""` 로 넘기면 rg 가 에러를
+        //  내고 검색이 통째로 실패한다. `undefined` 만 보던 것이 원인 — 스키마가 optional
+        //  이라고 해서 빈 값이 안 온다는 뜻은 아니다.
+        const glob = args.glob?.trim();
+        const type = args.type?.trim();
+        if (glob !== undefined && glob !== "") rgArgs.push("--glob", glob);
+        if (type !== undefined && type !== "") rgArgs.push("--type", type);
         // 컨텍스트 줄은 content 모드에서만 의미가 있다 — `-l`/`-c` 와 함께 주면 rg 가
         // **조용히 무시한다**(에러가 아니다, rg 15.1.0 실측). 조용한 무시는 "왜 컨텍스트가
         // 없지" 로 돌아오므로 여기서 아예 안 넘긴다.

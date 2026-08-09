@@ -1082,9 +1082,6 @@ export interface ThreadSummary {
   name: string | null;
 }
 
-/** 이 개수 이하의 메시지만 있는 무명 스레드 = 대화가 아닌 흔적(프로브·헬스체크). */
-const PROBE_MESSAGE_MAX = 2;
-
 /** 발췌 파생 길이 — 대시보드가 쓰던 16자와 같게(양쪽이 같은 이름을 보여야 한다). */
 export const SESSION_NAME_DERIVE_MAX = 16;
 
@@ -1136,7 +1133,6 @@ export const listThreads = (opts?: {
   prefix?: string;
   excludeInternal?: boolean;
   /** 프로브·검증 흔적(무명 + 왕복 1회 이하) 제외 — 사용자에게 보이는 세션 목록용. */
-  excludeProbes?: boolean;
   /** 보관된 세션만 (기본: 보관 안 된 것만). 복원 UI 용. */
   onlyArchived?: boolean;
   /** 보관 포함(진단용). onlyArchived 가 우선. */
@@ -1164,19 +1160,22 @@ export const listThreads = (opts?: {
   } else if (opts?.includeArchived !== true) {
     conds.push("archived_at IS NULL");
   }
-  // ★프로브·검증 흔적 제외 (2026-07-28) — "대화가 아닌 것" 을 거른다.
-  //  실측(dev 12건): 찌꺼기는 전부 **이름 없음 + 메시지 2건**(왕복 1회) 이었다
-  //  (test:healthcheck·cr-e2e-high·검증 프로브 등). 진짜 대화는 14~1842건.
-  //  판별을 키 패턴(`test:` 등)으로 하지 않는 이유: 그건 우리 내부 관습이라 새 프로브가
-  //  다른 접두를 쓰면 또 샌다(실제로 오늘 `dashboard:` 접두 프로브가 목록에 올라왔다).
-  //  "이름을 붙였다" = 사용자가 쓰는 세션이라는 확실한 증거이므로 이름 있으면 무조건 통과.
-  if (opts?.excludeProbes === true) {
-    conds.push(
-      `(name IS NOT NULL AND TRIM(name) <> ''
-        OR (SELECT COUNT(*) FROM chat_log c WHERE c.thread_key = threads.channel_thread_id) > ?)`,
-    );
-    params.push(PROBE_MESSAGE_MAX);
-  }
+  // ★프로브 필터 **폐지** (2026-08-09 사용자 결정).
+  //
+  //  2026-07-28 에 "무명 + 왕복 1회 이하" 를 검증 흔적으로 보고 목록에서 뺐다. 근거는 실측
+  //  이었지만(dev 12건이 전부 그 모양) **그 12건이 전부 우리 테스트 산물**이었다 —
+  //  `test:healthcheck` · `cr-e2e-high` · `verify:*`. 실사용자 인스턴스엔 애초에 없는 것을
+  //  막으려고 제품 전체에 "짧은 대화는 안 보인다" 는 규칙을 넣은 것이다
+  //  ([[feedback_dev_machine_config_leak]] — 내 기계 사정이 제품 기본값으로 승격되는 그 부류).
+  //
+  //  ★게다가 재는 것과 잡으려는 것이 달랐다. 잡으려는 건 "사람이 안 쓰는 자동 흔적" 인데
+  //   실제로 재는 건 **짧다** 였다. 갓 시작한 진짜 대화와 찌꺼기가 같은 모양이라, 비서가
+  //   만든 세션이 통째로 사라졌다(2026-08-09 실측: `dashboard:demo` 가 목록에 없어 사용자가
+  //   자기 비서가 어디서 대화 중인지 못 봤다). 관측성 원칙에 정면으로 어긋난다.
+  //
+  //  숨김이 필요하면 **보관(archive)** 이 이미 있다 — 판단을 코드가 가로채지 말고 사용자가
+  //  하게 둔다([[feedback_capability_not_routing]]). 내부 파생 스레드(`excludeInternal`)는
+  //  세션이 아니라 잡이므로 계속 배제한다(dev 실측 310건 중 285건).
   params.push(limit);
 
   const rows = handle

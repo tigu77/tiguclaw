@@ -84,7 +84,7 @@ export const createSessionToolsMcpServer = (
       limit: z.number().int().min(1).max(50).optional().describe("최대 개수(기본 20)."),
     },
     async (args) => {
-      const rows = listThreads({ excludeInternal: true, excludeProbes: true })
+      const rows = listThreads({ excludeInternal: true })
         .slice(0, args.limit ?? 20)
         .map((t) => {
           const shown = sessionDisplayName(

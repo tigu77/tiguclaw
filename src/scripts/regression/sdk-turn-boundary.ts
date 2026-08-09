@@ -21,6 +21,7 @@
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas, sourceOrder } from "./_wiring.js";
+import { isOwnTurnEnd } from "../../core/llm-runtime/adapters/claude-agent-sdk.js";
 
 const ADAPTER = "../../core/llm-runtime/adapters/claude-agent-sdk.ts";
 
@@ -29,6 +30,31 @@ export const check: RegressionCheck = {
   guards:
     "SDK 가 알림으로 새 턴을 열면 그 텍스트가 사용자 답변에 섞이고 진짜 답변을 덮던 것",
   run: async (): Promise<Assertion[]> => {
+
+    // ★행동 게이트 (2026-08-09 2차 사고). 종전엔 첫 result 를 **무조건** 이 턴의 끝으로 봤고,
+    //  알림이 연 합성 턴의 result 가 먼저 오자 그 뒤 24초간 스트리밍된 진짜 답변 49조각을
+    //  통째로 버렸다(화면엔 빈 말풍선, turn_done 은 ok:true). 두 사고를 구분하는 판정을
+    //  **실행해서** 확인한다 — 소스에 문자열이 있는지 보는 것과 다르다.
+    const latchAfterAnswer = isOwnTurnEnd({ chunks: 3, deltas: 120 });   // 08-06 사고
+    const latchOnEmpty = isOwnTurnEnd({ chunks: 0, deltas: 0 });         // 08-09 사고
+    const latchDeltasOnly = isOwnTurnEnd({ chunks: 0, deltas: 49 });     // 실측 조각 수
+    // ★판정이 맞아도 **호출부가 안 쓰면** 무의미하다(변이로 확인 — 판정을 `true` 로 굳혀도
+    //  행동 단언 셋은 전부 통과했다). 실제 인자까지 묶어서 본다.
+    const wired = await sourceHas(ADAPTER, [
+      /const hasOwnAnswer = isOwnTurnEnd\(\{[\s\S]{0,140}chunks: assistantTextChunks\.length/,
+      // ★`diagStreamCount`(진단용, 모든 stream_event)가 아니라 **우리 답변의 텍스트 델타**를
+      //  세야 한다. 백그라운드 Task 가 도는 중이면 우리가 한 글자도 안 냈는데 참이 돼
+      //  고치려던 조건 그대로 경계를 잡았다(적대 검토 C).
+      /const hasOwnAnswer = isOwnTurnEnd\(\{[\s\S]{0,160}deltas: ownTextDeltas/,
+      // 집행 — 판정이 거짓이면 **경계를 안 잡고 계속 수집**해야 한다. `continue` 가 사라지면
+      // 08-06 사고(알림 턴 텍스트 혼입)가 전면 복귀한다(적대 검토 M3).
+      /if \(turnResultSeen\) \{[\s\S]{0,600}\n\s{6}continue;\n\s{4}\}/,
+      // ★`steering.close()` 는 **첫 result 에 그대로**(데드락 수정 유지) — 조건 안으로 들어가면
+      //  내용 없는 턴에서 stdin 이 안 닫힌다(적대 검토 M4b).
+      /input\.steering\?\.close\(\);[\s\S]{0,1200}const hasOwnAnswer = isOwnTurnEnd/,
+      // 마감이 **빈 result 에도 조각으로 폴백**한다(적대 검토 A — `??` 는 ""에 폴백 안 한다).
+      /resultText !== undefined && resultText !== "" \? resultText : chunkText/,
+    ]);
     // ★순서가 곧 정확성이다: 가드가 **타입 분기보다 앞**에 있어야 새 턴의 assistant·
     //  stream_event·result 가 전부 걸린다. 뒤에 두면 텍스트는 이미 조립된 뒤다.
     const order = await sourceOrder(ADAPTER, [
@@ -50,6 +76,27 @@ export const check: RegressionCheck = {
     ]);
 
     return [
+      assert(
+        "★답변이 이미 있으면 첫 result 로 경계를 잡는다(알림 텍스트 혼입 차단 — 08-06 사고)",
+        latchAfterAnswer === true,
+        `chunks=3 deltas=120 → ${String(latchAfterAnswer)}`,
+      ),
+      assert(
+        "★답변이 **비어 있으면** 경계를 잡지 않는다(알림이 연 합성 턴 — 08-09 사고)",
+        latchOnEmpty === false,
+        `chunks=0 deltas=0 → ${String(latchOnEmpty)}`,
+      ),
+      assert(
+        "★스트리밍 조각만 있어도 우리 답변이다(실측 49조각을 버리던 자리)",
+        latchDeltasOnly === true,
+        `deltas=49 → ${String(latchDeltasOnly)}`,
+      ),
+      assert(
+        "★[배선] 어댑터가 그 판정을 **실제 인자로** 쓴다(판정만 맞고 호출부가 굳으면 무의미)",
+        wired.ok,
+        wired.ok ? "isOwnTurnEnd(chunks,deltas) → turnResultSeen" : `★누락: ${wired.missing.join(" · ")}`,
+      ),
+
       assert(
         "★첫 result 이후 도착분이 답변 조립 **이전에** 걸러진다(순서까지)",
         order.ok,

@@ -395,10 +395,29 @@
       setInterval(fetchModelProfiles, 30000);
 
       // 앱 버전 — /api/health(bridge)의 version 을 헤더 부제에 1회 반영(하드코딩 stale 방지).
-      fetch("/api/health").then((r) => r.json()).then((h) => {
-        const sub = document.getElementById("app-sub");
-        if (sub && h && typeof h.version === "string") sub.textContent = "대시보드 · v" + h.version;
-      }).catch(() => { /* health 미도달 — 부제 기본 유지 */ });
+      // ★같은 응답의 `active_turn_threads` 로 **진행 중 턴을 복원**한다 (2026-08-09 사용자 신고).
+      //  종전엔 작업중 표시가 SSE `llm.turn_start` 로**만** 켜졌다. `activeTurns` 는 브라우저
+      //  메모리라 새로고침하면 비고, 이미 시작된 턴의 turn_start 는 **다시 오지 않는다**(SSE 는
+      //  그 시점 이후만 흘린다). 그래서 새로고침 순간 "작업 중"도 세션 탭 진행 배지도 통째로
+      //  사라졌고, 사용자는 비서가 놀고 있는 줄 알았다.
+      //  ★서버는 원래부터 알고 있었다(`getInflightTurns().keys`) — 부품이 다 있고 **배선만**
+      //   없었다. 바로 위 히스토리 상한 사고와 정반대 짝이다(그땐 소비처는 있고 재료가 없었다).
+      // ★판정만 뽑아 검사 가능하게 (2026-08-09). `null`(모름)과 `[]`(없음)은 **다르다** —
+      //  서버가 미등록이면 null 을 준다(0 과 구분하려고 그렇게 설계돼 있다). 모를 때 켜면
+      //  가짜 "작업 중"이 영원히 남고, 없을 때 켜도 같다. 둘 다 빈 목록으로 떨어뜨린다.
+      const activeThreadsFromHealth = (h) => {
+        const keys = h && Array.isArray(h.active_turn_threads) ? h.active_turn_threads : [];
+        return keys.filter((k) => typeof k === "string" && k !== "");
+      };
+      restoreActiveTurns();
+      function restoreActiveTurns() {
+        fetch("/api/health").then((r) => r.json()).then((h) => {
+          const sub = document.getElementById("app-sub");
+          if (sub && h && typeof h.version === "string") sub.textContent = "대시보드 · v" + h.version;
+          // 시작시각은 서버가 안 준다 → 모른다고 표시한다(경과시간 미표시).
+          for (const k of activeThreadsFromHealth(h)) markTurnActive(k, { startUnknown: true });
+        }).catch(() => { /* health 미도달 — 부제 기본 유지, 복원은 SSE 가 이어받는다 */ });
+      }
 
       const connDot = document.getElementById("conn-dot");
       const connText = document.getElementById("conn-text");
@@ -503,6 +522,22 @@
         for (const p of NON_CONVO_PREFIXES) if (tk.indexOf(p) === 0) return false;
         return true;
       };
+      /**
+       * **탭을 자동으로 열지** 판정한다 — 목록에 보이는 것과 **다른 질문**이다 (2026-08-09).
+       *
+       * 목록은 "존재하나", 탭바는 "지금 내 화면 한 자리를 줄 만한가" 다. 세션 목록의 프로브
+       * 필터를 폐지하자(a431a4e) 그 둘이 붙어 있어서 **검증 흔적이 탭으로 자동 개설**됐다 —
+       * 실측(돌쇠): 자동 개설 후보 12개 중 6개가 `verify:*`·`cr-e2e-high`·`regr-flush`.
+       * 2026-08-03 사용자 신고("Verify 세션탭 떠있는건 뭐지?")가 그대로 재발하는 형상이다.
+       *
+       * ★접두 목록(`NON_CONVO_PREFIXES`)에 `verify:` 를 더 적는 건 같은 병이다 — 새 접두가
+       *  생기면 또 샌다([[feedback_hand_maintained_lists]]). 대신 **사용자 행동**을 본다:
+       *  이름을 붙였으면 쓰는 세션이다. 안 붙였으면 목록엔 보이되 탭은 **사용자가 눌러서**
+       *  연다. 판단을 코드가 가로채지 않는다([[feedback_capability_not_routing]]).
+       */
+      const shouldAutoOpenTab = (s) =>
+        isSurfaceableSession(s && s.threadKey) &&
+        typeof s.name === "string" && s.name.trim() !== "";
       const loadClosedSet = () => {
         try { const a = JSON.parse(localStorage.getItem(CLOSED_LS) || "[]"); return new Set(Array.isArray(a) ? a : []); }
         catch { return new Set(); }

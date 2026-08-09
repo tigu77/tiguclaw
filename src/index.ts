@@ -1093,7 +1093,7 @@ const handler: MessageHandler = async (msg) => {
         }
       })();
       const nameOf = (id: string): string => {
-        const t = listThreads({ excludeInternal: true, excludeProbes: true }).find(
+        const t = listThreads({ excludeInternal: true }).find(
           (x: { threadKey: string; name?: string | null }) => x.threadKey === id,
         );
         // ★키 원문을 뱉지 않는다 — 종전엔 이름이 없으면 `dashboard:1784104932394-f791d2b408d6`
@@ -1136,7 +1136,7 @@ const handler: MessageHandler = async (msg) => {
         }
         const pool = restoring
           ? listThreads({ excludeInternal: true, onlyArchived: true, limit: 20 })
-          : listThreads({ excludeInternal: true, excludeProbes: true, limit: 20 }).filter(
+          : listThreads({ excludeInternal: true, limit: 20 }).filter(
               (t: { threadKey: string }) => t.threadKey !== DEFAULT_SESSION_ID,
             );
         if (pool.length === 0) {
@@ -1201,10 +1201,10 @@ const handler: MessageHandler = async (msg) => {
           await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.");
           return;
         }
-        // ★존재 판정에 **목록용 필터를 쓰지 않는다** (2026-07-29 검토). excludeProbes 는
-        //  "보여줄 가치가 있나"(무명 + 왕복 1회 이하 = 프로브)를 거르는 표시 정책이지
-        //  존재 여부가 아니다. 그걸로 존재를 판정하면 방금 만든 세션(당연히 무명·대화 0건)이
-        //  "그런 세션이 없습니다" 가 된다 — 내 필터가 내 기능을 막았다(3개 축이 독립 지적).
+        // ★존재 판정에 **목록용 필터를 쓰지 않는다** (2026-07-29 검토). 표시 정책과 존재
+        //  여부는 다른 질문이다 — 표시 필터로 존재를 판정하면 방금 만든 세션이 "그런 세션이
+        //  없습니다" 가 된다(내 필터가 내 기능을 막았다). 그 표시 필터(excludeProbes)는
+        //  2026-08-09 에 폐지됐지만, **판단 분리 자체는 유효하다**(보관은 아직 숨긴다).
         //  보관된 세션도 존재는 한다(복원 대상) → includeArchived.
         const exists = listThreads({ excludeInternal: true, includeArchived: true, limit: 500 }).some(
           (x: { threadKey: string }) => x.threadKey === target,
@@ -1253,7 +1253,7 @@ const handler: MessageHandler = async (msg) => {
       }
 
       // 인자 없음 — 현재 세션 + 선택지. 선택 UI 가 없는 채널(값 미지원)엔 목록 텍스트로 폴백.
-      const threads = listThreads({ excludeInternal: true, excludeProbes: true }).slice(0, 20);
+      const threads = listThreads({ excludeInternal: true }).slice(0, 20);
       const options = [
         { label: `기본 세션${current === DEFAULT_SESSION_ID ? " ✅" : ""}`, value: `/sessions use ${DEFAULT_SESSION_ID}` },
         ...threads

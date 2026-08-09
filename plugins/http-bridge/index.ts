@@ -1981,7 +1981,7 @@ class HttpBridge implements Channel, Observer {
     if (pathname === "/sessions" && method === "GET") {
       try {
         // 사용자에게 보이는 목록 — 프로브·검증 흔적 제외(대시보드 세션 목록과 /sessions 공통 기준).
-        const threads = listThreads({ excludeInternal: true, excludeProbes: true });
+        const threads = listThreads({ excludeInternal: true });
         const sessions = threads.map((t) => {
           // 프리뷰 — 그 스레드 최근 1건 text 요약(80자 슬라이스). 첨부-only(text="")는
           // 스킵되어 빈 프리뷰(undefined)로 graceful.

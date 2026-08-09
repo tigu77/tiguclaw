@@ -298,6 +298,23 @@ const formatForeignDelta = (delta: CodexTurn[]): string => {
 };
 
 
+/**
+ * **첫 `result` 가 이 턴의 끝인가** — 답변 경계 판정 (2026-08-09).
+ *
+ * SDK 0.3 은 백그라운드 알림(`task_notification`)이 오면 **합성 턴**을 연다. 그 턴의
+ * `result` 가 우리 답변보다 **먼저** 올 수 있다(실측: 턴 시작 1초 만에).
+ *
+ * 두 사고를 **구분**해야 한다:
+ *  - 2026-08-06: 답변이 **이미 있는데** 알림 턴 텍스트가 뒤에 붙어 섞였다 → 경계를 잡아야 한다.
+ *  - 2026-08-09: 답변이 **아직 없는데** 알림 턴의 result 가 먼저 왔다 → 잡으면 진짜 답변
+ *    49조각을 버린다(실제로 버렸고 화면엔 빈 말풍선, `ok:true`).
+ *
+ * 판별은 하나다 — **우리 답변에 내용이 생겼는가.** 생겼으면 그 뒤는 남의 턴이고,
+ * 안 생겼으면 그 result 는 우리 것이 아니다.
+ */
+export const isOwnTurnEnd = (seen: { chunks: number; deltas: number }): boolean =>
+  seen.chunks > 0 || seen.deltas > 0;
+
 export const runClaude = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
@@ -860,6 +877,7 @@ export const runClaude = async (
    * 조용히 버리지 않는다 — 로그·이벤트에 판정 수치와 함께 남긴다(대응은 후속 결정).
    */
   let turnResultSeen = false;
+  let emptyResultNoted = false;
   let postResultMsgs = 0;
   // 이중발행 방지 가드(2026-07-17, delta 파리티) — depth-0 부모 turn 에서 부분 델타
   // (stream_event/content_block_delta)를 한 번이라도 push 했으면, 뒤따르는 완성
@@ -987,6 +1005,16 @@ export const runClaude = async (
   // 어디서 멈추는지 *로그*(영속)로 남긴다. stream_event(토큰)는 flood 라 200개마다만, 그 외
   // 메시지·loop-exit·return 은 매번. hang 재현 시 로그 마지막 [claude-complete] 줄이 멈춘 지점.
   let diagStreamCount = 0;
+  /**
+   * ★**우리 답변의 텍스트 델타** 수 (2026-08-09 적대 검토 C).
+   *
+   * 종전엔 경계 판정에 `diagStreamCount` 를 썼는데 그건 진단용이라 **모든 stream_event** 를
+   * 센다 — 텍스트 없는 `message_start`·`content_block_start|stop` 과 서브에이전트 내부
+   * 델타까지. 백그라운드 Task 가 도는 중이면 우리 답변이 한 글자도 없어도 참이 되어
+   * **고치려던 조건 그대로** 첫 result 에서 경계를 잡았다.
+   * ★"재는 것과 잡으려는 것이 다르다" — 같은 날 세션 필터에서 쓴 그 문장이다.
+   */
+  let ownTextDeltas = 0;
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
     idleTimer.beat();
@@ -1112,6 +1140,7 @@ export const runClaude = async (
             const t = (delta as { text?: unknown }).text;
             if (typeof t === "string" && t.length > 0) {
               receivedPartialText = true; // 완성 블록 재push 방지 가드(위 "assistant" 분기).
+              ownTextDeltas += 1; // ★경계 판정용 — 진단 카운터(모든 stream_event)와 구분한다.
               // 부분델타 = deltaStream.push (llm.delta 실시간 스트리밍 + segBuf 겸용 적재
               // — closeSegment 인터리브(2026-07-13)는 push() 를 그대로 재사용하므로 별도
               // 처리 불요, 도구 경계/턴종료 시 기존 closeTextSegment() 가 자연히 커버).
@@ -1134,8 +1163,32 @@ export const runClaude = async (
       // 턴 finally 의 steeringCh.close()(index.ts, 멱등)는 2차 안전망으로 그대로 유지
       // (abort·에러로 result 미도달 시 여전히 닫음).
       input.steering?.close();
-      // ★여기가 이 턴의 끝이다 — 이후 도착분은 위 가드가 답변에서 제외한다.
-      turnResultSeen = true;
+      // ★경계 확정은 **우리 답변에 내용이 생긴 뒤에만** 한다 (2026-08-09 라이브 사고).
+      //
+      //  종전엔 첫 result 를 무조건 이 턴의 끝으로 봤다. 그런데 백그라운드 알림이 턴 **시작**에
+      //  도착하면 SDK 가 합성 턴을 열고 그 턴의 result 가 **1초 만에** 먼저 온다. 그러면 가드가
+      //  거기에 걸려, 그 뒤 24초간 스트리밍된 **진짜 답변을 통째로 버렸다**.
+      //  실측(devbot 10:34): `task_notification` → `result/success`(1초) → assistant × 다수 →
+      //  `LOOP-EXIT streamDeltas=49` → `FINALIZE textLen=0 succeeded=true`.
+      //  사용자 화면엔 **빈 말풍선**만 남았고 `ok:true` 라 아무도 이상을 몰랐다.
+      //
+      //  ★두 관심사를 분리한다: `steering.close()`(데드락 수정)는 **첫 result 에 그대로**,
+      //   답변 경계만 내용 유무로 판정한다. 이 가드가 원래 막던 사고(알림 텍스트가 답변에
+      //   섞임)는 그때 **이미 답변이 있었으므로** 여전히 잡힌다 — 두 사고가 구분된다.
+      const hasOwnAnswer = isOwnTurnEnd({
+        chunks: assistantTextChunks.length,
+        deltas: ownTextDeltas,
+      });
+      if (hasOwnAnswer) {
+        turnResultSeen = true;
+      } else if (!emptyResultNoted) {
+        emptyResultNoted = true;
+        console.warn(
+          `[claude-turn-boundary] ${input.threadKey} 첫 result 가 **내용 없이** 도착 — ` +
+            `백그라운드 알림이 연 합성 턴으로 보고 경계를 확정하지 않습니다(계속 수집). ` +
+            `chunks=${assistantTextChunks.length} deltas=${diagStreamCount}`,
+        );
+      }
       if (msg.subtype === "success") {
         // 실측 (probe 2026-06-02): 모델 거부(미존재 model)는 SDK 가 result.subtype
         // "success" + is_error=true + result 본문에 API 에러를 실어 보낸다 (errors[]
@@ -1663,8 +1716,16 @@ export const runClaude = async (
     }
   }
 
-  console.log(`[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${(resultText ?? assistantTextChunks.join("")).length} succeeded=${succeeded}`);
-  const text = resultText ?? assistantTextChunks.join("");
+  // ★`??` 는 **빈 문자열에 폴백하지 않는다** (2026-08-09 적대 검토 A). 합성 턴(백그라운드
+  //  알림)의 result 본문이 `""` 로 오면 `resultText = ""` 가 대입되고, 그 뒤 우리가 조각
+  //  49개를 모아도 마감이 `""` 를 골라 **빈 말풍선 + ok:true** 가 그대로 재현된다.
+  //  경계를 늦게 잡는 것만으론 반쪽이었다 — 마감도 "내용 있는 쪽"을 골라야 닫힌다.
+  const chunkText = assistantTextChunks.join("");
+  const text = resultText !== undefined && resultText !== "" ? resultText : chunkText;
+  console.log(
+    `[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${text.length} ` +
+      `succeeded=${succeeded} (result=${resultText === undefined ? "없음" : String(resultText.length) + "자"} chunks=${chunkText.length}자)`,
+  );
   const effectiveSuccess = succeeded || text.length > 0;
   console.log(`[claude-complete] ${input.threadKey} RETURN (어댑터 반환 — 이후 turn_done/전달은 facade) len=${text.length}`);
   if (effectiveSuccess && lastSessionId !== undefined) {

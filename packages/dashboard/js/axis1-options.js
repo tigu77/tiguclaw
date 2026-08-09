@@ -47,17 +47,32 @@
         if (!chatWorkingTimer) chatWorkingTimer = setInterval(() => {
           // stale 스윕 — 유령 진행표시(놓친 turn_done)가 영영 안 꺼지는 것 방지. 비면 해제.
           const now = Date.now(); let swept = false;
-          for (const [k, start] of activeTurns) if (now - start > STALE_TURN_MS) { activeTurns.delete(k); swept = true; }
+          // ★`start` 가 null(복원분)이면 `now - null === now` 라 **즉시 스윕**된다 — 복원 시각을
+          //  대신 쓴다. 표시(경과시간)와 수명(스윕)은 다른 질문이고, 모르는 건 표시만 안 한다.
+          for (const [k, start] of activeTurns) {
+            const since = start === null ? (restoredAt.get(k) || now) : start;
+            if (now - since > STALE_TURN_MS) { activeTurns.delete(k); restoredAt.delete(k); swept = true; }
+          }
           if (swept && activeTurns.size === 0) { refreshWorking(); return; }
           const el = document.getElementById("chat-status"); if (el) paintWorking(el);
         }, 1000);
       };
-      const markTurnActive = (tk) => {
+      // ★새로고침 복원분은 **시작시각을 모른다** (2026-08-09 적대 검토 E). 서버(`/health`)는
+      //  진행 중 스레드 키만 주고 시작시각은 안 준다. 그런데 복원하며 `Date.now()` 를 넣으면
+      //  10분째 도는 턴이 "0초" 부터 다시 세어 **모르는 값을 지어낸다** — 바로 위 주석이
+      //  2026-08-06 에 그 이유로 고친 그 자리다. 그래서 복원분은 시각을 `null` 로 표시하고
+      //  경과시간을 **안 쓴다**("작업 중" 만). stale 스윕은 별도 필드로 계속 돈다.
+      const restoredAt = new Map(); // threadKey -> 복원 시각(스윕 전용, 표시 금지)
+      const markTurnActive = (tk, opts) => {
         const k = tk || activeThreadKey;
-        if (!activeTurns.has(k)) activeTurns.set(k, Date.now());
+        if (!activeTurns.has(k)) {
+          const unknownStart = opts && opts.startUnknown === true;
+          activeTurns.set(k, unknownStart ? null : Date.now());
+          if (unknownStart) restoredAt.set(k, Date.now());
+        }
         refreshWorking();
       };
-      const markTurnDone = (tk) => { const k = tk || activeThreadKey; if (activeTurns.delete(k)) refreshWorking(); };
+      const markTurnDone = (tk) => { const k = tk || activeThreadKey; restoredAt.delete(k); if (activeTurns.delete(k)) refreshWorking(); };
       // ★codex-우선 + claude-폴백 처리 — 한 사용자 턴이 여러 어댑터 시도로 나뉘면(codex 429 →
       // claude 폴백) codex 의 turn_error 가 *턴 중간*에 온다. 그때 작업표시를 즉시 끄면 폴백 claude
       // 가 도는 동안 표시가 사라진다(실측 버그). → turn_error 는 즉시 끄지 않고 *유예* 클리어:

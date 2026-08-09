@@ -96,27 +96,43 @@ export const check: RegressionCheck = {
     msg.run("probe:regression-junk", now + 1);
     ins.run("probe:regression-named", now, now, "이름있는세션"); // 이름 있으면 메시지 적어도 통과
     msg.run("probe:regression-named", now);
-    const listed = listThreads({ excludeInternal: true, excludeProbes: true, limit: 200 }).map(
+    const listed = listThreads({ excludeInternal: true, limit: 200 }).map(
       (t) => t.threadKey,
     );
+    // ★2026-08-09 뒤집힘 — 종전엔 "무명 + 왕복1회는 제외" 를 지켰다. 그 규칙이 실제로 막던 건
+    //  **우리 테스트 산물**이었고(dev 12건 전부 `test:`·`verify:`·`cr-e2e-*`), 대신 갓 시작한
+    //  진짜 대화를 같이 삼켰다 — 비서가 만든 세션이 목록에 없어 사용자가 못 봤다.
+    //  이제 사용자 대면 세션은 **길이와 무관하게 전부** 보인다. 숨김은 보관(archive)이 한다.
     out.push(
       assert(
-        "무명 + 왕복1회는 목록에서 제외",
-        !listed.includes("probe:regression-junk"),
+        "★짧고 무명이어도 목록에 나온다(갓 시작한 대화가 사라지지 않게)",
+        listed.includes("probe:regression-junk"),
         `${listed.length}건 중 포함=${listed.includes("probe:regression-junk")}`,
       ),
     );
     out.push(
       assert(
-        "이름 있으면 메시지가 적어도 표시(실사용 증거)",
+        "이름 있는 세션도 그대로 표시",
         listed.includes("probe:regression-named"),
         `포함=${listed.includes("probe:regression-named")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★내부 파생 스레드는 **여전히** 배제(세션이 아니라 잡 — dev 실측 310건 중 285건)",
+        // ★**제품이 쓰는 호출 형태**로도 확인한다(limit 미지정). 종전엔 `limit: 200` 으로만
+        //  검사해서, 배제를 limit 유무와 결합시키는 변이가 통과했다(적대 검토 M42).
+        !listed.some((k) => /^(worker|agent|endpoint|gateway|scheduler):/.test(k)) &&
+          !listThreads({ excludeInternal: true })
+            .map((x) => x.threadKey)
+            .some((k) => /^(worker|agent|endpoint|gateway|scheduler):/.test(k)),
+        `파생 혼입=${listed.filter((k) => /^(worker|agent|endpoint|gateway|scheduler):/.test(k)).length}건`,
       ),
     );
     // ── 세션 보관 (2026-07-29) — 삭제가 아니라 숨김. 기록은 남아야 한다.
     const AK = "probe:regression-named";
     setThreadArchived(AK, Date.now());
-    const afterArchive = listThreads({ excludeInternal: true, excludeProbes: true, limit: 200 })
+    const afterArchive = listThreads({ excludeInternal: true, limit: 200 })
       .map((t) => t.threadKey);
     const msgsKept = (
       getDb().prepare(`SELECT count(*) n FROM chat_log WHERE thread_key = ?`).get(AK) as { n: number }
@@ -127,7 +143,7 @@ export const check: RegressionCheck = {
       .map((t) => t.threadKey);
     out.push(assert("보관 목록에서는 보인다(복원 가능)", archivedOnly.includes(AK), `${archivedOnly.length}건`));
     setThreadArchived(AK, null);
-    const afterRestore = listThreads({ excludeInternal: true, excludeProbes: true, limit: 200 })
+    const afterRestore = listThreads({ excludeInternal: true, limit: 200 })
       .map((t) => t.threadKey);
     out.push(assert("복원하면 목록에 다시 나온다", afterRestore.includes(AK), `포함=${afterRestore.includes(AK)}`));
 
@@ -163,6 +179,29 @@ export const check: RegressionCheck = {
     db.prepare(`DELETE FROM threads WHERE channel_thread_id LIKE 'probe:regression-%'`).run();
     db.prepare(`DELETE FROM channel_session_binding WHERE channel='telegram' AND channel_address IN ('roomA','roomB','roomC')`).run();
     db.prepare(`DELETE FROM chat_log WHERE thread_key LIKE 'probe:regression-%'`).run();
+    // ★소비처 전수 — 회귀는 `listThreads` 를 **직접** 부르므로, 제품 호출부가 옵션을 잃어도
+    //  못 본다(적대 검토 M11: `/sessions` 에서 excludeInternal 유실 → worker:/agent: 잡이
+    //  사용자 세션 목록·탭바로 쏟아짐). 사용자 대면 목록을 만드는 자리 전수를 본다.
+    {
+      const { readFile } = await import("node:fs/promises");
+      const files: Array<[string, RegExp]> = [
+        ["../../../plugins/http-bridge/index.ts", /pathname === "\/sessions"[\s\S]{0,900}listThreads\(\{ excludeInternal: true/],
+        ["../../../src/core/llm-runtime/capabilities/session-tools-mcp.ts", /listThreads\(\{ excludeInternal: true/],
+        ["../../../src/index.ts", /listThreads\(\{ excludeInternal: true/],
+      ];
+      const missing: string[] = [];
+      for (const [rel, re] of files) {
+        const body = await readFile(new URL(rel, import.meta.url), "utf8");
+        if (!re.test(body)) missing.push(rel.split("/").pop() ?? rel);
+      }
+      out.push(
+        assert(
+          "★사용자 대면 목록을 만드는 **모든 호출부**가 내부 파생을 배제한다",
+          missing.length === 0,
+          missing.length === 0 ? "http-bridge · session-tools-mcp · index" : `★누락: ${missing.join(" · ")}`,
+        ),
+      );
+    }
     return out;
   },
 };

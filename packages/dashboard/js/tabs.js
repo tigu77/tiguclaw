@@ -336,7 +336,8 @@
       // /sessions 가 이제 전 대화 세션(내부 파생 제외)을 반환 → 열린 탭 프리뷰/채널 메타를 채우고,
       // 아직 탭으로 안 열린 대화 세션(레거시 tg:·cli: 등)을 채널 힌트와 함께 목록에 노출한다.
       // 텔레그램은 기본 세션(dashboard:default)에 합류하므로 별 탭 아님(같은 id = 중복 0). 닫은 세션·
-      // dev 노이즈(test:·bridge:)는 제외, recency 순 상한(MAX_SURFACED_TABS)으로 탭바 바운드.
+      // ★자동 개설은 **이름 붙인 세션만**(shouldAutoOpenTab) — 목록 가시성과 탭 점유는 다른
+      // 질문이다. 무명 세션도 목록엔 보이고 눌러서 열 수 있다. recency 순 상한으로 탭바 바운드.
       const refreshSessionPreviews = async () => {
         try {
           const r = await fetch("/api/sessions");
@@ -392,7 +393,7 @@
             if (surfaced >= MAX_SURFACED_TABS) break;
             const tk = s.threadKey;
             if (openByKey.has(tk) || tk === DEFAULT_DASH_THREAD) continue;
-            if (!isSurfaceableSession(tk) || closed.has(tk)) continue;
+            if (!shouldAutoOpenTab(s) || closed.has(tk)) continue;
             const ch = s.channel || s.lastChannel || channelFromThreadKey(tk);
             const cm = channelMeta(ch);
             const serverName = (typeof s.name === "string" && s.name) ? s.name : null;

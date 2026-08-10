@@ -98,7 +98,7 @@ import type {
   RegionAToolCallDeltaPayload,
 } from "../types.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
-import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
+import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
@@ -874,8 +874,12 @@ export const runOpenAiCodex = async (
     // plugin MCP (scheduler/file-watch 의 add_schedule 등, getRegisteredMcpServers())
     // 를 전달하는데 codex 어댑터가 그간 무시 → plugin 생태가 codex 모드에서 끊김.
     // claude 어댑터 mcpServers spread 와 동등 (LLM-agnostic parity).
+    // ★공유 브리지 — 이 서버들은 부팅 때 만들어진 *프로세스 싱글턴*이라 턴마다
+    //  붙였다 떼면 안 된다(2026-08-10: 세션 두 개가 겹치자 "Already connected to a
+    //  transport" 로 턴 전체가 죽었다). close()=no-op 이라 아래 allBridges push 는
+    //  무해하고, 누수도 없다(연결이 프로세스 수명 = 서버 수명).
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
-      const extraBridge = await adaptClaudeMcpServer(server, name);
+      const extraBridge = await adaptSharedClaudeMcpServer(server, name);
       allBridges.push(extraBridge);
       const extraToolsRaw = await extraBridge.listTools();
       for (const t of extraToolsRaw) {

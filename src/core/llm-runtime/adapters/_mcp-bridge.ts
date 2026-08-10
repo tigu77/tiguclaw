@@ -71,13 +71,29 @@ export const adaptClaudeMcpServer = async (
   let connected = false;
   let inFlight = 0; // 이 브리지의 동시 in-flight callTool 수 (트레이스용).
 
+  // ★in-flight 연결을 memo 한다 (2026-08-10). 이전엔 `if (connected) return` 뒤에
+  //  await 하고 나서야 `connected = true` 라, **연결이 끝나기 전에** 들어온 두 번째
+  //  호출이 그 가드를 그대로 통과해 `connect()` 를 또 불렀다(check-then-act). MCP
+  //  Protocol 은 두 번째 connect 를 "Already connected to a transport" 로 던진다.
+  //  한 턴 안에서도 listTools/callTool 이 겹치면 성립하는 잠복 경합이었다.
+  //  실패 시 promise 를 버려 다음 호출이 다시 시도하게 한다(영구 고장 방지).
+  let connecting: Promise<void> | null = null;
   const ensureConnected = async (): Promise<void> => {
     if (connected) return;
-    await Promise.all([
-      config.instance.connect(serverTransport),
-      client.connect(clientTransport),
-    ]);
-    connected = true;
+    if (connecting === null) {
+      connecting = Promise.all([
+        config.instance.connect(serverTransport),
+        client.connect(clientTransport),
+      ])
+        .then(() => {
+          connected = true;
+        })
+        .catch((e: unknown) => {
+          connecting = null;
+          throw e;
+        });
+    }
+    await connecting;
   };
 
   return {
@@ -93,6 +109,7 @@ export const adaptClaudeMcpServer = async (
       await client.close();
       await config.instance.close();
       connected = false;
+      connecting = null; // 다음 ensureConnected 가 다시 연결하도록.
     },
     async listTools(): Promise<MCPTool[]> {
       await ensureConnected();
@@ -145,4 +162,63 @@ export const adaptClaudeMcpServer = async (
       // 본 bridge 는 cache 미사용 — listTools 매 호출 client 위임.
     },
   };
+};
+
+// ─── 프로세스 수명 인스턴스용 공유 브리지 (2026-08-10) ────────────────────────
+//
+// 사고: 두 세션의 턴이 겹치자 뒤 턴이 **모든 어댑터 실패 — Already connected to a
+//  transport** 로 즉시(33ms) 죽었다. 뿌리는 경합이 아니라 **수명 불일치**다 —
+//  플러그인 MCP 서버는 부팅 때 한 번 만들어 registry 에 박히는 *프로세스 싱글턴*
+//  (`src/index.ts` registerMcpServer ← `schedulerMcpServer` 같은 모듈 상수)인데,
+//  브리지는 *턴 단위*로 그 싱글턴을 자기 transport 에 연결하고 finally 에서 닫았다.
+//  턴이 겹치면 ①뒤 턴의 connect 가 던지고 ②앞 턴의 close 가 뒤 턴이 쓰는 서버를 닫는다.
+//
+// 고침: 인스턴스당 브리지를 **하나만** 만들어 턴을 가로질러 재사용한다. per-turn
+//  close 대상이 아니므로 `close()` 는 no-op — 외부 MCP 브리지(`external-mcp.ts`)가
+//  이미 쓰는 관용구 그대로다(거기 주석: "bridge.close()=no-op → 어댑터의 per-turn
+//  일괄 close 가 외부 연결을 끊지 않게(핵심)"). 실제 종료는 프로세스 종료가 맡는다.
+//  ★그래서 호출부가 allBridges 에 넣어도 무해하다 — 넣고 빼는 걸 기억해야 하는 규칙
+//  대신, 잘못 닫힐 수 없는 객체를 준다.
+//
+// 키는 이름이 아니라 **인스턴스**다(WeakMap): 같은 서버가 다른 이름으로 와도 한 번만
+//  연결되고, registry 에서 빠지면 GC 된다.
+const SHARED_BRIDGES = new WeakMap<object, Promise<MCPServer>>();
+
+/**
+ * `adaptClaudeMcpServer` 와 같지만, **인스턴스당 한 번만** 만들고 재사용한다.
+ * 프로세스 수명 서버(플러그인 registry 의 `extraMcpServers`)에만 쓴다 — 턴마다 새로
+ * 만드는 capability 서버(`createMemoryMcpServer()` 등)는 기존 함수를 그대로 쓴다.
+ */
+export const adaptSharedClaudeMcpServer = async (
+  config: McpSdkServerConfigWithInstance,
+  name: string,
+  callTimeoutMs?: number,
+): Promise<MCPServer> => {
+  const key = config.instance as unknown as object;
+  const cached = SHARED_BRIDGES.get(key);
+  if (cached !== undefined) return cached;
+
+  const created = adaptClaudeMcpServer(config, name, callTimeoutMs)
+    .then(
+      (inner): MCPServer => ({
+        cacheToolsList: inner.cacheToolsList,
+        get name() {
+          return inner.name;
+        },
+        connect: () => inner.connect(),
+        // ★no-op — 이 브리지는 턴이 아니라 프로세스가 소유한다(위 주석).
+        close: async () => {},
+        listTools: () => inner.listTools(),
+        callTool: (toolName, args) => inner.callTool(toolName, args),
+        invalidateToolsCache: () => inner.invalidateToolsCache(),
+      }),
+    )
+    .catch((e: unknown) => {
+      // 실패한 브리지를 캐시에 남기면 그 서버가 프로세스 내내 죽는다 — 버리고
+      // 다음 턴이 다시 시도하게 한다(일시적 실패가 영구 고장이 되지 않게).
+      SHARED_BRIDGES.delete(key);
+      throw e;
+    });
+  SHARED_BRIDGES.set(key, created);
+  return created;
 };

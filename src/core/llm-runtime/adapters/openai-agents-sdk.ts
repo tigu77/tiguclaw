@@ -80,7 +80,7 @@ import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
-import { adaptClaudeMcpServer } from "./_mcp-bridge.js";
+import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
@@ -437,8 +437,10 @@ export const runOpenAi = async (
   // extraMcpServers — router 가 facade 통해 전달하는 plugin MCP(scheduler add_schedule 등).
   // codex L946-953 / claude mcpServers spread 와 동등(LLM-agnostic parity). lean 은 생략.
   if (!toolsNone) {
+    // ★공유 브리지 — 프로세스 싱글턴이라 턴마다 연결/close 하면 동시 턴에서
+    //  "Already connected to a transport" 로 죽는다(codex 와 동일 수정, 2026-08-10).
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
-      mcpServers.push(await adaptClaudeMcpServer(server, name));
+      mcpServers.push(await adaptSharedClaudeMcpServer(server, name));
     }
   }
 

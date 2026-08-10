@@ -106,9 +106,22 @@ export const publishSuggestion = (
   }
 };
 
-/** 프롬프트에 실을 최근 대화 턴 수·턴당 길이 — 여기가 이 기능의 **비용 상한**이다. */
-export const SUGGESTION_CONTEXT_TURNS = 6;
-export const SUGGESTION_CONTEXT_CHARS_PER_TURN = 600;
+/**
+ * 프롬프트에 실을 최근 대화 — 여기가 이 기능의 **비용 상한**이다.
+ *
+ * ★값은 직감이 아니라 실측이다 (2026-08-10, 최근 7일 각 200턴):
+ *   비서 발화 중앙값 129자 · p75 1,386 · p90 2,812 · p95 5,712 · 최대 45,064
+ *   사용자 발화 중앙값 7,595자(대부분 로그·코드 붙여넣기) · p90 44,575
+ *  종전 600자는 **비서 턴 넷 중 셋을 잘랐고**, 그것도 앞을 남겨 물음이 있는 끝을 버렸다.
+ *  그 결과 "비서가 물으면 답하라" 는 규칙이 볼 재료가 없었다(실증: 18:50 제안이 되묻기).
+ *
+ *  역할별로 예산이 다른 이유: 사용자 턴은 길어도 대개 붙여넣기라 맥락 밀도가 낮다.
+ *  마지막 비서 발화만 크게 주는 이유: **물음이 거기 있다**(p95 를 덮는다).
+ */
+export const SUGGESTION_CONTEXT_TURNS = 8;
+export const SUGGESTION_CHARS_ASSISTANT = 3_000; // p90(2,812) 덮음
+export const SUGGESTION_CHARS_USER = 1_200;
+export const SUGGESTION_CHARS_LAST_ASSISTANT = 6_000; // p95(5,712) 덮음
 
 /**
  * 최근 대화를 **프롬프트에 인라인으로** 담는다 — 스레드 히스토리를 로드시키지 않는다.
@@ -120,29 +133,39 @@ export const SUGGESTION_CONTEXT_CHARS_PER_TURN = 600;
  */
 export const buildRecentContext = (
   turns: { role: "user" | "assistant"; content: string }[],
-): string =>
-  turns
-    .slice(-SUGGESTION_CONTEXT_TURNS)
-    .map((t) => {
+): string => {
+  const window = turns.slice(-SUGGESTION_CONTEXT_TURNS);
+  const lastAssistantIdx = (() => {
+    for (let i = window.length - 1; i >= 0; i--) {
+      if (window[i]?.role === "assistant") return i;
+    }
+    return -1;
+  })();
+  return window
+    .map((t, i) => {
       const who = t.role === "assistant" ? "비서" : "사용자";
       const body = String(t.content ?? "").trim();
-      const cut =
-        body.length > SUGGESTION_CONTEXT_CHARS_PER_TURN
-          ? `${body.slice(0, SUGGESTION_CONTEXT_CHARS_PER_TURN)}…`
-          : body;
+      const budget =
+        i === lastAssistantIdx
+          ? SUGGESTION_CHARS_LAST_ASSISTANT
+          : t.role === "assistant"
+            ? SUGGESTION_CHARS_ASSISTANT
+            : SUGGESTION_CHARS_USER;
+      // ★자를 땐 **뒤를 남긴다**. 발화의 값은 끝에 있다 — 질문·요청·결론이 거기 있고,
+      //  이 기능이 가장 먼저 봐야 하는 것이 "비서가 방금 뭘 물었나" 다. 앞을 남기면
+      //  서론만 오고 물음이 사라진다(종전 동작 · 실증 18:50).
+      const cut = body.length > budget ? `…${body.slice(-budget)}` : body;
       return `${who}: ${cut}`;
     })
     .filter((line) => line.length > 4)
     .join("\n");
+};
 
 /**
  * 시스템 프롬프트 override — tiguclaw 헌법·페르소나·메모리·스킬 인덱스를 **전부 뺀다**.
  * 이 호출은 비서가 말하는 자리가 아니라 한 줄짜리 유틸이라, 25KB 짜리 인격을 실을 이유가
  * 없다(`systemPromptOverride` 계약: 지정 시 모든 tiguclaw context prefix 미주입).
  */
-export const SUGGESTION_SYSTEM_PROMPT =
-  "너는 대화를 보고 사용자가 다음에 보낼 만한 메시지 한 줄을 만드는 도구다. 설명하지 말고 그 한 줄만 출력한다.";
-
 /** 생성 프롬프트 — 짧게, 그리고 **사용자 목소리로**. */
 export const buildSuggestionPrompt = (): string =>
   [
@@ -160,3 +183,15 @@ export const buildSuggestionPrompt = (): string =>
     "- 설명·따옴표·머리말 없이 그 문장만 출력한다.",
     "- 확신이 안 서면 빈 줄을 출력해라(억지 제안보다 없는 게 낫다).",
   ].join("\n");
+
+const SUGGESTION_ROLE =
+  "너는 대화를 보고 사용자가 다음에 보낼 만한 메시지 한 줄을 만드는 도구다. 설명하지 말고 그 한 줄만 출력한다.";
+
+/**
+ * ★안정 조각은 **시스템 채널**에 둔다 (프리픽스 캐시 원칙, 2026-07-30 정착).
+ *  종전엔 `text` 에 `컨텍스트 + 지시문` 순으로 실었다 — **휘발이 앞, 안정이 뒤**라
+ *  지시문이 영원히 캐시 프리픽스가 못 됐다. 규칙은 매 호출 동일하니 여기로 옮긴다.
+ *  (claude 는 이미 적중률 99%라 이득 여지가 거의 없다 — 이득은 codex 쪽이고, 어느 쪽이든
+ *   순서를 바로잡는 건 공짜다. 절감 수치는 재보기 전엔 주장하지 않는다.)
+ */
+export const SUGGESTION_SYSTEM_PROMPT = `${SUGGESTION_ROLE}\n\n${buildSuggestionPrompt()}`;

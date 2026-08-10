@@ -133,7 +133,6 @@ import {
   shouldSuggestForThread,
   readSuggestionSettings,
   buildRecentContext,
-  buildSuggestionPrompt,
   normalizeSuggestion,
   publishSuggestion,
   SUGGESTION_CONTEXT_TURNS,
@@ -823,7 +822,9 @@ const maybeSuggestNextMessage = async (msg: IncomingMessage): Promise<void> => {
     );
     if (context.trim() === "") return; // 첫 턴 등 — 이어쓸 흐름이 없다.
     const out = await runRegionA({
-      text: `${context}\n\n---\n${buildSuggestionPrompt()}`,
+      // ★컨텍스트만 싣는다 — 생성 규칙은 systemPromptOverride(안정·앞)로 갔다.
+      //  휘발을 앞에 두면 그 뒤는 영원히 캐시 프리픽스가 못 된다(2026-07-30 원칙).
+      text: context,
       channel: msg.channel,
       // 이 호출만의 임시 좌표 — internal 이라 저장되지 않지만, 실 세션 키와 섞지 않는다.
       threadKey: `suggest:${msg.threadKey}`,

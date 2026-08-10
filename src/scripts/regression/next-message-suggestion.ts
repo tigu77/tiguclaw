@@ -17,8 +17,10 @@ import {
   normalizeSuggestion,
   buildRecentContext,
   SUGGESTION_CONTEXT_TURNS,
-  SUGGESTION_CONTEXT_CHARS_PER_TURN,
+  SUGGESTION_CHARS_ASSISTANT,
+  SUGGESTION_CHARS_LAST_ASSISTANT,
   SUGGESTION_MAX_CHARS,
+  SUGGESTION_SYSTEM_PROMPT,
 } from "../../core/next-message-suggestion.js";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -68,12 +70,15 @@ const run = async (): Promise<Assertion[]> => {
       content: "가".repeat(5_000),
     }));
     const ctx = buildRecentContext(many);
+    // 최악: 마지막 비서 턴만 큰 예산, 나머지는 비서 예산(사용자는 더 작다) + 라벨 여유.
     const cap =
-      SUGGESTION_CONTEXT_TURNS * (SUGGESTION_CONTEXT_CHARS_PER_TURN + 20);
+      SUGGESTION_CHARS_LAST_ASSISTANT +
+      (SUGGESTION_CONTEXT_TURNS - 1) * SUGGESTION_CHARS_ASSISTANT +
+      SUGGESTION_CONTEXT_TURNS * 20;
     out.push({
       name: "★200턴 × 5,000자를 줘도 프롬프트는 상한 안이다(비용이 안 커진다)",
       ok: ctx.length <= cap,
-      got: `조립=${ctx.length}자 (상한 ≈${cap}자 = ${SUGGESTION_CONTEXT_TURNS}턴 × ${SUGGESTION_CONTEXT_CHARS_PER_TURN}자)`,
+      got: `조립=${ctx.length}자 (상한 ≈${cap}자)`,
     });
     out.push({
       name: "최근 턴만 담는다(오래된 것은 빠진다)",
@@ -82,7 +87,43 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
-  // ── ④ 출력 정리 — 고스트는 한 줄이다 ───────────────────────────────────────
+  // ── ④ ★긴 발화는 **끝**이 남는다 — 물음이 거기 있다 ────────────────────────
+  //  실사고(2026-08-10): 비서가 "② tigu check 갈까요?" 로 끝냈는데 제안이 "다음은 뭐
+  //  하지?" 로 되물었다. 프롬프트엔 "물으면 답하라" 가 있었지만, 조립이 발화의 **앞**
+  //  600자만 남겨 물음이 통째로 잘려나갔다 — 규칙이 볼 재료가 없었다.
+  {
+    const question = "그럼 ①부터 갈까요?";
+    const longAssistant = "서론".repeat(5_000) + "\n\n" + question;
+    const ctx = buildRecentContext([
+      { role: "user", content: "진행 상황 알려줘" },
+      { role: "assistant", content: longAssistant },
+    ]);
+    out.push({
+      name: "★긴 비서 발화를 잘라도 마지막 물음이 남는다",
+      ok: ctx.includes(question),
+      got: ctx.includes(question)
+        ? `물음 보존됨(조립 ${ctx.length}자)`
+        : `★물음 유실 — 조립 끝부분: ${JSON.stringify(ctx.slice(-60))}`,
+    });
+    out.push({
+      name: "잘린 표시(…)가 앞에 붙는다(뒤를 남겼다는 증거)",
+      ok: /비서: …/.test(ctx),
+      got: /비서: …/.test(ctx) ? "뒤 남김 확인" : "앞을 남긴 형태",
+    });
+  }
+
+  // ── ⑤ 안정 조각은 시스템 채널에 — 프리픽스 캐시 ────────────────────────────
+  {
+    out.push({
+      name: "생성 규칙이 시스템 프롬프트에 있다(휘발 뒤에 놓이지 않는다)",
+      ok:
+        SUGGESTION_SYSTEM_PROMPT.includes("물었으면") &&
+        SUGGESTION_SYSTEM_PROMPT.length > 200,
+      got: `시스템 프롬프트 ${SUGGESTION_SYSTEM_PROMPT.length}자, 규칙 포함=${SUGGESTION_SYSTEM_PROMPT.includes("물었으면")}`,
+    });
+  }
+
+  // ── ⑥ 출력 정리 — 고스트는 한 줄이다 ───────────────────────────────────────
   {
     const cases: [string, string | null][] = [
       ['"이거 배포해줘"', "이거 배포해줘"],

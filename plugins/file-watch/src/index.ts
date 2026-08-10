@@ -31,7 +31,7 @@ import {
   type WatchRow,
 } from "../../../src/store/watches.js";
 import { registerWatcher, unregisterWatcher, type WatcherDeps } from "./watcher.js";
-import { setFileWatchLifecycleHooks, fileWatchMcpServer } from "./mcp.js";
+import { setFileWatchLifecycleHooks, createFileWatchMcpServer } from "./mcp.js";
 
 export interface FileWatchPluginDeps {
   /** spike 시 runClaude mock 주입 — 데몬 정상 부팅 시 undefined. */
@@ -50,8 +50,9 @@ class FileWatchPlugin {
   private deps: FileWatchPluginDeps = {};
 
   /** daemon-engineer 합의 — capability 무관 옵셔널 instance method. */
-  getMcpServer(): typeof fileWatchMcpServer {
-    return fileWatchMcpServer;
+  // ★매 호출 새 인스턴스 — 데몬이 턴마다 부른다(싱글턴이면 동시 턴에서 깨진다).
+  getMcpServer(): ReturnType<typeof createFileWatchMcpServer> {
+    return createFileWatchMcpServer();
   }
 
   /** trigger capability — loader 가 startTrigger(bus, deps) 호출. */

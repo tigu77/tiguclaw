@@ -157,6 +157,8 @@ event type = string (literal union 강제 0) — 외부 plugin 자유 type 가�
 `createSdkMcpServer({ name:"your-trigger", tools: [...] })` 노출. 옵셔널 instance method `getMcpServer()` 추가 시 데몬이 자동 발견 → 영역 A 에 등록. SDK 외부 이름: `mcp__your-trigger__{tool}`.
 
 ```ts
+// ★부를 때마다 새 인스턴스를 돌려줘야 한다 — 데몬이 턴마다 부른다. 상수 하나를
+// 돌려주면 동시 턴에서 MCP transport 가 충돌한다(Already connected to a transport).
 getMcpServer(): McpSdkServerConfigWithInstance {
   return yourMcpServer;
 }

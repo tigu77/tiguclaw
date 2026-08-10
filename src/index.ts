@@ -336,9 +336,21 @@ try {
     // registry 에 박는다. router 가 영역 A 호출 시 extraMcpServers 로 전달.
     if (typeof inst.getMcpServer === "function") {
       try {
+        // ★부팅 땐 "있는지"만 확인하고, 실제 인스턴스는 **턴마다** 팩토리로 만든다
+        //  (2026-08-10). 여기서 만든 하나를 registry 에 담아두면 프로세스 싱글턴이
+        //  되고, 동시 턴에서 MCP transport 가 충돌한다 — mcp-registry.ts 주석 참조.
         const server = inst.getMcpServer();
         if (server !== undefined) {
-          registerMcpServer(lp.manifest.name, server);
+          const getMcpServer = inst.getMcpServer.bind(inst);
+          registerMcpServer(lp.manifest.name, () => {
+            const fresh = getMcpServer();
+            if (fresh === undefined) {
+              throw new Error(
+                `plugin '${lp.manifest.name}' getMcpServer() 가 이번엔 undefined 를 돌려줬습니다`,
+              );
+            }
+            return fresh;
+          });
           console.log(
             `registered mcp server from plugin: ${lp.manifest.name} (from ${relDir})`,
           );

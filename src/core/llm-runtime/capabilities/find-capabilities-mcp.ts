@@ -48,7 +48,7 @@ import {
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
-import { adaptClaudeMcpServer } from "../adapters/_mcp-bridge.js";
+import { adaptSharedClaudeMcpServer } from "../adapters/_mcp-bridge.js";
 
 /** 정규형 반환 shape (contract §3a) — 어댑터 무관 동일. */
 export interface CapabilityHit {
@@ -269,26 +269,29 @@ export const createFindCapabilitiesMcpServer = (
               };
             }
             try {
-              const bridge = await adaptClaudeMcpServer(cfg, name);
-              try {
-                const toolsRaw = await bridge.listTools();
-                const toolNames = toolsRaw.map((t) => (t as { name: string }).name);
-                const descs = toolsRaw
-                  .map((t) => (t as { description?: string }).description)
-                  .filter((d): d is string => d !== undefined && d !== "");
-                return {
-                  name,
-                  summary:
-                    descs.length > 0
-                      ? descs.join(" / ")
-                      : `플러그인 능력(${name}) — 이번 턴 활성.`,
-                  tools: toolNames,
-                  available: true,
-                  source: "plugin",
-                };
-              } finally {
-                await bridge.close().catch(() => {});
-              }
+              // ★공유 브리지 — 어댑터가 이 인스턴스로 이미 브리지를 만들었다. 여기서
+              //  또 만들면 두 번째 connect 가 `Already connected to a transport` 로
+              //  던지고, 아래 catch 가 삼켜 **늘** "상세 조회 실패"로 degrade 했다
+              //  (도구 이름 빈 배열, 2026-07-11 이후 조용히). 같은 인스턴스면 같은
+              //  브리지를 받아 그대로 조회한다.
+              // ★닫지 않는다 — 이 브리지는 턴(어댑터)이 소유한다. 여기서 닫으면
+              //  같은 인스턴스를 쓰는 그 턴의 도구 호출이 남은 동안 죽는다.
+              const bridge = await adaptSharedClaudeMcpServer(cfg, name);
+              const toolsRaw = await bridge.listTools();
+              const toolNames = toolsRaw.map((t) => (t as { name: string }).name);
+              const descs = toolsRaw
+                .map((t) => (t as { description?: string }).description)
+                .filter((d): d is string => d !== undefined && d !== "");
+              return {
+                name,
+                summary:
+                  descs.length > 0
+                    ? descs.join(" / ")
+                    : `플러그인 능력(${name}) — 이번 턴 활성.`,
+                tools: toolNames,
+                available: true,
+                source: "plugin",
+              };
             } catch {
               // listTools 실패 — throw 0, 최소 정보로 degrade(존재는 알림).
               return {

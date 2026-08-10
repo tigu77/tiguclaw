@@ -437,8 +437,8 @@ export const runOpenAi = async (
   // extraMcpServers — router 가 facade 통해 전달하는 plugin MCP(scheduler add_schedule 등).
   // codex L946-953 / claude mcpServers spread 와 동등(LLM-agnostic parity). lean 은 생략.
   if (!toolsNone) {
-    // ★공유 브리지 — 프로세스 싱글턴이라 턴마다 연결/close 하면 동시 턴에서
-    //  "Already connected to a transport" 로 죽는다(codex 와 동일 수정, 2026-08-10).
+    // ★공유 브리지 — 인스턴스당 하나(codex 와 동일). MCP 인스턴스는 transport 를
+    //  하나만 갖고, 같은 인스턴스를 find_capabilities 가 또 어댑팅한다.
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
       mcpServers.push(await adaptSharedClaudeMcpServer(server, name));
     }

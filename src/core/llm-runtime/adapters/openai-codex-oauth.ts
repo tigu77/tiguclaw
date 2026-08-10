@@ -874,10 +874,9 @@ export const runOpenAiCodex = async (
     // plugin MCP (scheduler/file-watch 의 add_schedule 등, getRegisteredMcpServers())
     // 를 전달하는데 codex 어댑터가 그간 무시 → plugin 생태가 codex 모드에서 끊김.
     // claude 어댑터 mcpServers spread 와 동등 (LLM-agnostic parity).
-    // ★공유 브리지 — 이 서버들은 부팅 때 만들어진 *프로세스 싱글턴*이라 턴마다
-    //  붙였다 떼면 안 된다(2026-08-10: 세션 두 개가 겹치자 "Already connected to a
-    //  transport" 로 턴 전체가 죽었다). close()=no-op 이라 아래 allBridges push 는
-    //  무해하고, 누수도 없다(연결이 프로세스 수명 = 서버 수명).
+    // ★공유 브리지 — 같은 인스턴스를 `find_capabilities` 가 아래서 또 어댑팅한다.
+    //  MCP 인스턴스는 transport 를 하나만 갖는다("Already connected to a transport")
+    //  → 인스턴스에 묶어 하나만 만든다. 인스턴스 자체는 registry 가 턴마다 새로 준다.
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
       const extraBridge = await adaptSharedClaudeMcpServer(server, name);
       allBridges.push(extraBridge);

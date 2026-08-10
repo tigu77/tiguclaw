@@ -14,7 +14,7 @@
  *
  * MCP server 노출 — daemon-engineer 합의: capability 무관 옵셔널 instance method `getMcpServer()`.
  *   src/index.ts 가 plugin 발견 후 `inst.getMcpServer?.()` 호출 → 정적 import 회피.
- *   named export `schedulerMcpServer` 도 외부 alt-plugin 재사용 위해 보존.
+ *   named export `createSchedulerMcpServer`(팩토리) 도 외부 alt-plugin 재사용 위해 보존.
  *
  * named export `startSchedule(id)`/`stopSchedule(id)` 는 외부 호환을 위해 그대로 둡니다
  *   (V2 외부 trigger plugin / alt-frontend 가 직접 호출하는 경우). daemon-engineer 의 슬래시
@@ -37,7 +37,7 @@ import {
 } from "../../../src/store/schedules.js";
 import { runClaude } from "../../../src/core/claude.js";
 import { runScheduleFiring, type RunnerDeps } from "./runner.js";
-import { setSchedulerLifecycleHooks, schedulerMcpServer } from "./mcp.js";
+import { setSchedulerLifecycleHooks, createSchedulerMcpServer } from "./mcp.js";
 
 export interface SchedulerPluginDeps {
   /** spike 시 runClaude/recordFiring mock 주입 — 데몬 정상 부팅 시 undefined. */
@@ -56,8 +56,9 @@ class SchedulerPlugin {
   private readonly crons = new Map<number, Cron>();
 
   /** daemon-engineer 합의 — capability 무관 옵셔널 instance method. */
-  getMcpServer(): typeof schedulerMcpServer {
-    return schedulerMcpServer;
+  // ★매 호출 새 인스턴스 — 데몬이 턴마다 부른다(싱글턴이면 동시 턴에서 깨진다).
+  getMcpServer(): ReturnType<typeof createSchedulerMcpServer> {
+    return createSchedulerMcpServer();
   }
 
   /** trigger capability — loader 가 startTrigger(bus, deps) 호출. */

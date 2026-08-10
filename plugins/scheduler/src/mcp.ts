@@ -294,8 +294,17 @@ const deleteScheduleTool = tool(
   },
 );
 
-/** SDK in-process MCP server. src/index.ts 가 부팅 시 import → extraMcpServers 에 박는다. */
-export const schedulerMcpServer: McpSdkServerConfigWithInstance =
+/**
+ * SDK in-process MCP server **팩토리** — 부를 때마다 새 인스턴스.
+ *
+ * ★모듈 상수(프로세스 싱글턴)였다가 팩토리로 바뀌었다 (2026-08-10). MCP `Protocol` 은
+ *  인스턴스당 transport 를 **하나만** 허용하는데, 어댑터는 턴마다 자기 transport 에
+ *  연결한다. 싱글턴이면 두 세션의 턴이 겹치는 순간 뒤 턴이
+ *  `Already connected to a transport` 로 죽었다(codex) 또는 이 플러그인의 도구만
+ *  조용히 사라졌다(claude — SDK 가 그 실패를 삼키고 로그만 남긴다).
+ *  도구 정의는 상태 없는 서술자라 매 턴 새로 만들어도 싸다(핸들러가 store 를 부른다).
+ */
+export const createSchedulerMcpServer = (): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "scheduler",
     version: "0.1.0",

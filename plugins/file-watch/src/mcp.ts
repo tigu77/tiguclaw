@@ -147,8 +147,11 @@ const deleteWatchTool = tool(
   },
 );
 
-/** SDK in-process MCP server. src/index.ts 가 부팅 시 import → extraMcpServers 에 박는다. */
-export const fileWatchMcpServer: McpSdkServerConfigWithInstance =
+/**
+ * SDK in-process MCP server **팩토리** — 부를 때마다 새 인스턴스.
+ * (scheduler 와 동일한 이유 — 프로세스 싱글턴이면 동시 턴에서 깨진다. 2026-08-10.)
+ */
+export const createFileWatchMcpServer = (): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "file-watch",
     version: "0.1.0",

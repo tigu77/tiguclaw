@@ -72,11 +72,9 @@
         applyInset();
       }
 
-      // 모바일 — 빈 입력창 안내문(placeholder)을 짧게(긴 안내는 화면 좁은 폰에서 과함).
-      const mnInput = document.getElementById("chat-input");
-      if (mnInput && window.matchMedia("(max-width: 900px)").matches) {
-        mnInput.setAttribute("placeholder", "메시지 입력…");
-      }
+      // 안내문(placeholder)은 여기서 정하지 않는다 — 폭·입력장치·고스트 상태를 한 곳
+      // (util.js computeChatPlaceholder)에서 조합한다. 종전엔 여기와 perf.js 가 서로를
+      // 덮어써 **로드 순서가 승자를 정했다**(perf.js 문구는 폰에서 한 번도 안 보였다).
 
       // 모바일 — 백그라운드 버튼을 sticky 헤더로 이동(원래 #stream-bar 안이라 페이지스크롤로 사라져
       // 접근 불가였다). ID 기반 클릭핸들러·배지 갱신은 이동해도 유지. 데스크탑은 chat-head 그대로.

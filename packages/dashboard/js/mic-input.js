@@ -111,7 +111,8 @@
             input.dispatchEvent(new Event("input", { bubbles: true }));
           } catch { /* noop */ }
           try {
-            focusChatInput();
+            // 전사 텍스트를 막 채운 직후 — 사용자가 이어서 손볼 자리다.
+            focusChatInput({ userIntendsToType: true });
             input.setSelectionRange(input.value.length, input.value.length);
           } catch { /* noop */ }
         };

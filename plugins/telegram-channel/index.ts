@@ -16,6 +16,7 @@ import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { getEventBus } from "../../src/core/eventbus.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { getMostRecentTelegramChatId } from "../../src/store/sessions.js";
+import { findSessionForOutboundMessage } from "../../src/store/outbound-messages.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -190,12 +191,23 @@ const sendWithTransportRetry = async (
 // 호출자가 알아야 하는 sendOutgoing 용); 아니면 로그만(답글은 부수 UX).
 // send 는 sendWithTransportRetry 로 감싸므로 여기 하나로 4곳(reply·attachment·edited·
 // sendOutgoing) 발송 경로 전부가 transport 재시도를 얻는다.
+/**
+ * 보낸 메시지의 `message_id` 회수 — 답장 라우팅의 재료 (2026-08-10).
+ * 응답 shape 를 못 읽어도 발송은 성공이므로 조용히 건너뛴다(편의 기능의 재료일 뿐).
+ */
+const extractMessageId = (r: unknown): number | null => {
+  const id = (r as { message_id?: unknown } | null | undefined)?.message_id;
+  return typeof id === "number" ? id : null;
+};
+
 export const sendFormatted = async (
   send: TgSend,
   text: string,
   opts?: { replyToMessageId?: number; throwOnFail?: boolean; retryDelays?: readonly number[] },
-): Promise<void> => {
+): Promise<number[]> => {
   const { chunks, parseMode } = formatForTelegram(text);
+  // ★청크 **전부**의 id 를 모은다 — 사용자는 어느 청크에든 답장할 수 있다.
+  const messageIds: number[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const extra: TgSendExtra = {
       ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
@@ -204,13 +216,18 @@ export const sendFormatted = async (
         : {}),
     };
     try {
-      await sendWithTransportRetry(send, chunks[i]!, extra, opts?.retryDelays);
+      const sent = await sendWithTransportRetry(send, chunks[i]!, extra, opts?.retryDelays);
+      const mid = extractMessageId(sent);
+      if (mid !== null) messageIds.push(mid);
     } catch (e) {
       // HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML
       // 그대로 보내면 <b> 등이 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미
       // 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
       console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
-      await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}, TRANSPORT_RETRY_DELAYS_MS).catch((e2) => {
+      await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}, TRANSPORT_RETRY_DELAYS_MS).then((sent2) => {
+        const mid2 = extractMessageId(sent2);
+        if (mid2 !== null) messageIds.push(mid2);
+      }).catch((e2) => {
         // ★유실을 **판정 수치와 함께** 남긴다 (2026-08-06) — 종전엔 종류만 적혀 있어,
         //  원격 인스턴스(회사 PC 는 접속 불가)에서 "안 왔다" 를 로그로 확인할 수 없었다.
         //  몇 번째 청크가·전체 몇 개 중·얼마짜리가 못 갔는지가 진단의 재료다.
@@ -222,6 +239,7 @@ export const sendFormatted = async (
       });
     }
   }
+  return messageIds;
 };
 
 // ─── 축1 선택지(inline keyboard) callback_data 맵 ─────────────────────────
@@ -520,15 +538,28 @@ export default class TelegramChannel implements Channel {
     this.bot = new Bot(token);
     cachedBot = this.bot;
     this.outbound = {
-      deliver: async (target: string | null, text: string): Promise<void> => {
+      // ★보낸 message_id 를 돌려준다 (2026-08-10) — `deliverOutbound` 가 "이 메시지는
+      //  어느 세션 것" 을 기록해, 나중에 그 메시지에 **답장하면 그 세션으로** 가게 한다.
+      //  종전엔 이 값을 그냥 버렸다(반환 void).
+      deliver: async (
+        target: string | null,
+        text: string,
+      ): Promise<{ messageIds: number[] }> => {
         if (target === null || target.trim() === "") {
           throw new Error("telegram target required (chatId)");
         }
-        await sendOutgoing(target, text);
+        return { messageIds: await sendOutgoing(target, text) };
       },
       defaultOutboundTarget: (): string | null => {
         const owner = [...parseAllowedTelegramIds()][0];
         return owner ?? getMostRecentTelegramChatId();
+      },
+      // 활동 표시 1회 — 주기·상한·좌표별 refcount 는 코어(channel-activity.ts) 몫.
+      // 인바운드 경로가 쓰는 `ctx.replyWithChatAction` 과 같은 API 지만, ctx 없이
+      // chat 좌표만으로 부른다(대시보드에서 시작한 턴도 이 대화에 신호를 줄 수 있게).
+      signalActivity: async (target: string | null): Promise<void> => {
+        if (target === null || target.trim() === "") return;
+        await this.bot?.api.sendChatAction(target, "typing");
       },
     };
   }
@@ -629,13 +660,35 @@ export default class TelegramChannel implements Channel {
       // 한다 → 텔레그램 대화가 대시보드 기본 세션과 한 대화로 합류. 즉시 답글(reply)은 여전히
       // ctx 클로저로 텔레그램 직접(세션 무관).
       const chatId = String(ctx.chat.id);
-      const sessionId = resolveSessionId("telegram", chatId);
+      // ★답장 → 발원 세션 라우팅 (2026-08-10). egress 로 **한 대화방에 여러 세션의 답이
+      //  섞여** 오게 되면서, "어느 답에 대한 얘기인지" 를 가를 수단이 필요해졌다. 답장이
+      //  그 자연스러운 UI 다 — 답장 대상 message_id 로 발원 세션을 찾아 그리로 보낸다.
+      //  ★매핑이 없으면(오래된 메시지·기록 이전 발신·다른 경로) 조용히 현재 세션으로
+      //   간다 = 기존 동작 그대로. 답장은 인용 목적으로도 쓰므로 못 찾았다고 알리지 않는다
+      //   (위 replyToText 인용 주입은 그대로 — 이건 라우팅만 얹는다).
+      const repliedMsgId = ctx.message.reply_to_message?.message_id;
+      const repliedSession =
+        repliedMsgId === undefined
+          ? null
+          : findSessionForOutboundMessage("telegram", chatId, repliedMsgId);
+      const sessionId = repliedSession ?? resolveSessionId("telegram", chatId);
+      if (repliedSession !== null) {
+        console.log(
+          `telegram: 답장 → 발원 세션으로 라우팅 (message_id=${repliedMsgId} session=${repliedSession})`,
+        );
+      }
       const msg: IncomingMessage = {
         channel: "telegram",
         channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
         threadKey: sessionId,
         channelAddress: chatId,
-        session: { channelAddress: chatId },
+        session: {
+          channelAddress: chatId,
+          // 발원 세션을 찾았으면 **명시 지정** — route 가 그 세션으로 정규화한다.
+          ...(repliedSession !== null
+            ? { explicitSessionId: repliedSession }
+            : {}),
+        },
         text,
         ...(replyToText !== undefined ? { replyToText } : {}),
         receivedAt: ctx.message.date * 1000,
@@ -991,12 +1044,12 @@ export default class TelegramChannel implements Channel {
 export const sendOutgoing = async (
   chatId: string | number,
   text: string,
-): Promise<void> => {
+): Promise<number[]> => {
   const bot = cachedBot;
   if (bot === null) {
     throw new Error("telegram channel not initialized");
   }
-  await sendFormatted(
+  return await sendFormatted(
     (chunk, extra) => bot.api.sendMessage(chatId, chunk, extra),
     text,
     // fire-and-forget 알림 = 긴 재시도 예산(위 OUTBOUND_RETRY_DELAYS_MS 주석) — 유실 > 지연.

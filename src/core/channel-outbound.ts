@@ -10,8 +10,17 @@
  */
 
 export interface ChannelOutbound {
-  /** 물리 발송. 없으면(=undefined) 관측-전용 채널(http-bridge/대시보드처럼 SSE 가 배달). */
-  deliver?: (target: string | null, text: string) => Promise<void>;
+  /**
+   * 물리 발송. 없으면(=undefined) 관측-전용 채널(http-bridge/대시보드처럼 SSE 가 배달).
+   *
+   * 반환의 `messageIds` 는 **선택**이다 — 채널이 발신 메시지 id 를 알려주면
+   * `deliverOutbound` 가 "이 메시지는 어느 세션 것" 을 기록해, 그 메시지에 **답장하면
+   * 그 세션으로** 라우팅한다(2026-08-10). 안 돌려줘도 배달은 그대로 동작한다.
+   */
+  deliver?: (
+    target: string | null,
+    text: string,
+  ) => Promise<void | { messageIds?: (string | number)[] }>;
   /**
    * 채널이 아는 기본 배달 좌표(target 미지정 시). telegram=owner chatId, slack=기본 채널.
    * null = 기본 좌표 없음(호출자가 명시 target 필수). 셀렉터 노출 판단 재료.
@@ -19,6 +28,15 @@ export interface ChannelOutbound {
   defaultOutboundTarget?: () => (string | null) | Promise<string | null>;
   /** (선택·YAGNI) 다중 좌표 열거 — 슬랙 채널 목록 등. 지금은 미구현(ADR §7 U5). */
   listTargets?: () => Promise<{ id: string; label: string }[]>;
+  /**
+   * 활동 표시 **1회 갱신** (텔레그램 "입력 중…" = sendChatAction). 없으면 그 채널은
+   * 표시 능력이 없는 것 — 호출부는 조회만 하고 채널 이름을 모른다(`deliver` 와 동형).
+   *
+   * ★여기 있는 건 "한 번 표시"뿐이다. 언제 시작할지·주기·언제 멈출지는 코어
+   * (`channel-activity.ts`)가 정한다 — 채널마다 그 판단을 복제하면 같은 판단이 여러
+   * 곳에 생기고, 좌표 단위 refcount 를 채널이 각자 다시 만들게 된다.
+   */
+  signalActivity?: (target: string | null) => Promise<void>;
 }
 
 const registry = new Map<string, ChannelOutbound>();

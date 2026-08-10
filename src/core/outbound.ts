@@ -15,6 +15,7 @@
  */
 import type { EventBus } from "./eventbus.js";
 import { getEventBus } from "./eventbus.js";
+import { recordOutboundMessage } from "../store/outbound-messages.js";
 import {
   getChannelOutbound,
   listOutboundChannels,
@@ -138,7 +139,21 @@ export const deliverOutbound = async (
       : null);
 
   // 물리 발송(deliver 있는 채널만) — telegram=sendOutgoing. 관측-전용(http-bridge)은 스킵.
-  if (o.deliver !== undefined) await o.deliver(resolved, text);
+  const sent = o.deliver !== undefined ? await o.deliver(resolved, text) : undefined;
+
+  // ★"이 메시지는 어느 세션 것" 기록 (2026-08-10) — 그 메시지에 **답장하면 그 세션으로**
+  //  라우팅하기 위한 재료. egress 로 한 대화방에 여러 세션의 답이 섞여 오면서 필요해졌다.
+  //  채널이 id 를 안 주거나(계약상 선택) 세션을 모르면 그냥 건너뛴다 = 기존 동작.
+  const sentIds =
+    sent !== undefined && sent !== null && Array.isArray(sent.messageIds)
+      ? sent.messageIds
+      : [];
+  if (sentIds.length > 0 && resolved !== null && input.observeThreadKey !== undefined) {
+    const now = Date.now();
+    for (const mid of sentIds) {
+      recordOutboundMessage(channel, resolved, mid, input.observeThreadKey, now);
+    }
+  }
 
   // 관측은 항상(채널무관) — 대시보드 chat_log·라이브 SSE(원칙 #4). observe:false 만 억제.
   // 관측 threadKey = caller 가 준 세션 id(observeThreadKey) 우선, 없으면 물리 채널 키 폴백

@@ -130,13 +130,75 @@
         if (modelProfilesCache) renderModelProfiles(modelProfilesCache);
       };
 
-      const showSettings = () => {
+      // ── 설정 뷰 (2026-08-10) ────────────────────────────────────────────────
+      // 항목 **하나**로 시작한다. 미래 설정을 위한 틀을 미리 세우지 않는다 — 항목이 늘 때
+      // 늘리는 게 이 레포 방식이고, 지금 프레임워크부터 만들면 그게 곧 "미래 가능성 위해
+      // 만든 구조" 다. 값은 서버(settings.json)에 있고 저장 즉시 다음 턴부터 반영된다.
+      const renderSettingsRow = (root, enabled) => {
+        root.innerHTML = "";
+        const page = document.createElement("div");
+        page.className = "page-view";
+        page.innerHTML =
+          '<div class="detail-head"><div class="detail-accent"></div>' +
+          '<div class="detail-name">설정</div></div>';
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = "다음 메시지 제안";
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        desc.textContent =
+          "턴이 끝나면 이어서 보낼 만한 말을 입력창에 회색으로 제안합니다. Tab 이면 입력창에 채워집니다(전송은 직접). 매 턴 토큰을 조금 씁니다.";
+        meta.appendChild(name);
+        meta.appendChild(desc);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "settings-toggle" + (enabled ? " on" : "");
+        btn.textContent = enabled ? "켜짐" : "꺼짐";
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const next = !enabled;
+          try {
+            const r = await fetch("/api/set-suggestion", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ enabled: next }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+            showToast("다음 메시지 제안: " + (next ? "켜짐" : "꺼짐"), "good");
+            renderSettingsRow(root, next); // 서버가 확인해 준 값으로 다시 그린다.
+          } catch (e) {
+            showToast("설정 저장 실패: " + e.message, "bad");
+            btn.disabled = false;
+          }
+        });
+        row.appendChild(meta);
+        row.appendChild(btn);
+        page.appendChild(row);
+        root.appendChild(page);
+      };
+
+      const showSettings = async () => {
         setActiveNav("settings");
         setChatPanel("chat");
         document.getElementById("workbench").classList.remove("show-providers");
         document.getElementById("workbench").classList.remove("show-capabilities");
         const root = document.getElementById("detail-panel");
-        root.innerHTML = '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div><div class="detail-name">설정</div><span class="detail-kind">준비 중</span></div><div class="empty">설정 화면은 다음 단계에서 연결합니다.</div></div>';
+        root.innerHTML =
+          '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div><div class="detail-name">설정</div></div><div class="empty">불러오는 중…</div></div>';
+        let enabled = false;
+        try {
+          const r = await fetch("/api/suggestion");
+          if (r.ok) {
+            const d = await r.json();
+            enabled = d && d.enabled === true;
+          }
+        } catch { /* 조회 실패 = 꺼짐으로 그린다(값은 서버가 정본) */ }
+        renderSettingsRow(root, enabled);
       };
 
       // ── 에이전트 뷰(왼쪽 nav 1급 destination) ──────────────────────────────

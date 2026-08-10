@@ -46,8 +46,10 @@ import {
   loadGatewayConfig,
   getDefaultProfileName,
   setDefaultProfile,
+  setSuggestionEnabled,
   setModuleDisabled,
 } from "../../src/core/settings.js";
+import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import {
   verifyToken,
   type BridgeTokenRole,
@@ -1250,6 +1252,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write"
               : pathname === "/set-session-profile" && method === "POST"
                 ? "write" // ★누락돼 있었다(2026-07-28) — required=null 로 게이트를 통과해 **read 토큰이 세션 프로파일을 변경**할 수 있었다.
+              : pathname === "/set-suggestion" && method === "POST"
+                ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
               : pathname === "/set-module-enabled" && method === "POST"
                 ? "write"
               : pathname === "/transcribe" && method === "POST"
@@ -1685,6 +1689,39 @@ class HttpBridge implements Channel, Observer {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });
       }
+      return;
+    }
+
+    // /set-suggestion — 다음 메시지 제안 on/off. write 게이트(위 role 표).
+    // body { enabled: boolean }. settings.json 의 suggestions.nextMessage.enabled **한 키만**
+    // read-modify-write(다른 키 보존) → 재시작 없이 fresh read 로 다음 턴 반영.
+    // /set-default-profile 과 동일 패턴 — 설정 쓰기 경로를 새로 만들지 않고 형제로 둔다.
+    if (pathname === "/set-suggestion" && method === "POST") {
+      let sbody: Record<string, unknown>;
+      try {
+        sbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      if (typeof sbody.enabled !== "boolean") {
+        writeJson(res, 400, { error: "enabled(boolean) required" });
+        return;
+      }
+      try {
+        setSuggestionEnabled(sbody.enabled);
+        writeJson(res, 200, { ok: true, enabled: sbody.enabled });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /suggestion — 현재 값 조회(설정 화면 초기 렌더용). read 게이트 기본.
+    if (pathname === "/suggestion" && method === "GET") {
+      writeJson(res, 200, { enabled: readSuggestionSettings().enabled });
       return;
     }
 

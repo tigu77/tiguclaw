@@ -26,6 +26,7 @@
   "tabs.js",
   "model-select.js",
   "slash.js",
+  "ghost-suggest.js",
   "input-history.js",
   "perf.js",
   "chat-send.js",

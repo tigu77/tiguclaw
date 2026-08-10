@@ -1262,6 +1262,30 @@ export const buildTurnHistory = async (
   let foldedTurnsTotal = 0;
   let foldedCharsTotal = 0;
 
+  // ★압축 **직전** 알림 (2026-08-10). 종전엔 사후(`llm.compacted`)만 있어서 사용자는
+  //  이미 접힌 뒤에야 알았다. 접기 전에 알면 남길 것을 저장하거나 `/compact` 로 직접
+  //  통제할 수 있다 — 요약 LLM 호출 전에 낸다(그래서 "직전"이다).
+  //  ★루프 **밖**에서 한 번 — 위 주석과 같은 이유다(사용자에겐 한 번의 정리인데 내부
+  //   패스 수가 새어 나가면 안 된다). 접을 게 없으면(needed=false) 아예 안 뜬다.
+  // 소요 시간 — 종전엔 턴 수·글자 수만 남기고 **얼마나 걸렸는지는 아무도 안 쟀다**.
+  // "압축이 오래 걸리는데 뭘 하는지 모르겠다" 를 진단하려던 순간 그 숫자가 없었다.
+  const compactStartedAt = Date.now();
+  if (plan.needed && plan.toFold.length > 0) {
+    try {
+      getEventBus().publish({
+        type: "llm.compacting",
+        ts: Date.now(),
+        payload: {
+          threadKey: input.threadKey,
+          pendingTurns: plan.toFold.length,
+          adapter: "codex",
+        },
+      });
+    } catch {
+      /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+    }
+  }
+
   while (plan.needed && compactPass < CODEX_COMPACT_MAX_PASSES) {
     compactPass += 1;
     // 오래된 턴 + 기존 요약 → 요약 LLM 호출 1회 (isolated, 재귀 없음).
@@ -1313,7 +1337,9 @@ export const buildTurnHistory = async (
           //  패스별 진행이 로그만으로 안 보였다([[feedback_logs_must_stand_alone]]).
           `[codex 6b] 압축 성공 ${compactPass}/${CODEX_COMPACT_MAX_PASSES}패스 — ` +
             `${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} ` +
-            `이번 패스 watermark→${watermark} 누적 요약=${summary.length}자`,
+            `이번 패스 watermark→${watermark} 누적 요약=${summary.length}자 ` +
+            // ★경과 — 사용자가 체감하는 건 턴 수가 아니라 이 시간이다(그런데 안 재고 있었다).
+            `경과=${((Date.now() - compactStartedAt) / 1000).toFixed(1)}초`,
         );
         growFoldBudget(input.threadKey);
         noteCompactionOutcome(input.threadKey, true, "", prompt.length);
@@ -1436,6 +1462,7 @@ export const buildTurnHistory = async (
           foldedTurns: foldedTurnsTotal,
           foldedChars: foldedCharsTotal,
           summaryChars: summary.length,
+          elapsedMs: Date.now() - compactStartedAt,
         },
       });
     } catch {

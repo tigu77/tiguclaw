@@ -653,6 +653,46 @@ export const setDefaultProfile = (name: string): void => {
 };
 
 /**
+ * 다음 메시지 제안 on/off — `suggestions.nextMessage.enabled` **한 키만** 병합 수정.
+ *
+ * `setDefaultProfile` 과 같은 패턴이다(read-modify-write + 원자적 rename): 손으로 넣은
+ * 다른 키(모델 프로파일·게이트웨이·selfDevelopment…)를 통째로 덮어쓰면 안 된다.
+ * 저장 즉시 다음 턴부터 반영된다 — 설정은 매 턴 fresh 로 읽힌다(재시작 불요).
+ */
+export const setSuggestionEnabled = (enabled: boolean): void => {
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음) — setDefaultProfile 동형.
+  }
+  const existing = root.suggestions;
+  const suggestions: Record<string, unknown> =
+    existing !== null && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  const existingNext = suggestions.nextMessage;
+  const nextMessage: Record<string, unknown> =
+    existingNext !== null &&
+    typeof existingNext === "object" &&
+    !Array.isArray(existingNext)
+      ? (existingNext as Record<string, unknown>)
+      : {};
+  // enabled 만 건드린다 — 같은 블록의 `profile` 등 사용자가 넣은 값은 보존.
+  nextMessage.enabled = enabled;
+  suggestions.nextMessage = nextMessage;
+  root.suggestions = suggestions;
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+};
+
+/**
  * 모듈(kind:plugin) 비활성 목록 — `modules.disabled` 문자열 배열을 레이어(홈→프로젝트)
  * 전체에서 합집합(union)으로 읽는다. hooks(concat) 와 같은 "추가적" 병합 의미 — 어느
  * 레이어든 그 이름을 disabled 로 올리면 전체에서 비활성(로컬이 홈 설정을 몰래 되살리지

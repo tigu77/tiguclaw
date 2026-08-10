@@ -49,6 +49,7 @@ import {
   type SteeringInput,
 } from "./core/steering.js";
 import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
+import { runRegionA } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
@@ -56,6 +57,7 @@ import {
   countMemories,
   deleteMemory,
   listMemories,
+  loadThreadHistory,
 } from "./store/memory.js";
 import {
   deleteSchedule,
@@ -128,6 +130,16 @@ import {
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
 import {
+  shouldSuggestForThread,
+  readSuggestionSettings,
+  buildRecentContext,
+  buildSuggestionPrompt,
+  normalizeSuggestion,
+  publishSuggestion,
+  SUGGESTION_CONTEXT_TURNS,
+  SUGGESTION_SYSTEM_PROMPT,
+} from "./core/next-message-suggestion.js";
+import {
   setInflightTurnReporter,
   notifyInterruptedTurns,
   listExternalTurns,
@@ -137,6 +149,15 @@ import {
   getChannelOutbound,
   type ChannelOutbound,
 } from "./core/channel-outbound.js";
+import {
+  beginChannelActivity,
+  stopAllChannelActivity,
+  DEFAULT_ACTIVITY_OPTIONS,
+} from "./core/channel-activity.js";
+import {
+  resolveEgressTargets,
+  type EgressTarget,
+} from "./core/egress-targets.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -740,6 +761,91 @@ const publishInboundEcho = (msg: {
         : {}),
     },
   });
+};
+
+/**
+ * egress fan-out — 해석된 좌표로 배달. 한 채널 실패가 다른 채널·인입 응답을 무르지 않게 격리.
+ *
+ * ★성공 경로와 실패 경로가 **둘 다** 부른다. 종전엔 성공 경로에만 있어서, 턴이 실패하면
+ *  텔레그램 쪽엔 "입력 중이더니 아무 말 없음"만 남았다(인바운드는 에러 메시지가 가는데
+ *  egress 는 안 갔다 — 활동 표시가 붙으면 그 비대칭이 유령 신호가 된다).
+ */
+const fanOutEgress = async (
+  targets: EgressTarget[],
+  text: string,
+  bus: EventBus,
+): Promise<void> => {
+  for (const t of targets) {
+    try {
+      await deliverOutbound({
+        channel: t.channel,
+        // 좌표는 턴 시작에 이미 해석됐다(기본 좌표까지) — 표시와 배달이 같은 값을 쓴다.
+        // null 이면(해석 실패) deliverOutbound 가 한 번 더 시도한다.
+        target: t.target,
+        text,
+        bus,
+      });
+    } catch (e) {
+      console.error(
+        `egress fan-out to "${t.channel}" failed (인입 응답은 정상):`,
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+};
+
+/**
+ * 다음 메시지 제안 발사 — 성공한 턴 뒤에 **비차단**으로. (2026-08-10)
+ *
+ * 게이트가 셋이다: ①이 세션에서 켜져 있나(세션>전역) ②사람이 보는 세션인가(스케줄러·
+ * 워커·엔드포인트 제외) ③쓸 만한 한 줄이 나왔나. 하나라도 아니면 조용히 아무것도 안 한다.
+ *
+ * ★`internal: true` — facade 가 turn 이벤트 발행과 persistOutput 을 **둘 다 건너뛴다**.
+ *  그래서 이 호출은 대화 기록(transcripts/sessions)을 오염시키지 않고, self-growth 같은
+ *  관측 소비자에게 되먹임되지도 않는다. 어댑터는 이 플래그를 모른다(LLM-agnostic).
+ * ★`systemPromptOverride` — 헌법·페르소나·메모리·스킬 인덱스를 전부 뺀다. 한 줄 만드는
+ *  유틸에 25KB 인격을 실을 이유가 없다.
+ * ★비용은 상수 둘로 **완전히 결정된다**(최근 6턴 × 600자). 대화가 길어져도 안 커진다.
+ */
+const maybeSuggestNextMessage = async (msg: IncomingMessage): Promise<void> => {
+  try {
+    if (!shouldSuggestForThread(msg.threadKey)) return;
+    if (!readSuggestionSettings().enabled) return;
+    const started = Date.now();
+    const turns = loadThreadHistory(SESSION_STORAGE_CHANNEL, msg.threadKey, {
+      limitTurns: SUGGESTION_CONTEXT_TURNS,
+    });
+    const context = buildRecentContext(
+      turns.map((t: { role: string; content: string }) => ({
+        role: t.role === "assistant" ? ("assistant" as const) : ("user" as const),
+        content: String(t.content ?? ""),
+      })),
+    );
+    if (context.trim() === "") return; // 첫 턴 등 — 이어쓸 흐름이 없다.
+    const out = await runRegionA({
+      text: `${context}\n\n---\n${buildSuggestionPrompt()}`,
+      channel: msg.channel,
+      // 이 호출만의 임시 좌표 — internal 이라 저장되지 않지만, 실 세션 키와 섞지 않는다.
+      threadKey: `suggest:${msg.threadKey}`,
+      cwd: process.cwd(),
+      internal: true,
+      systemPromptOverride: SUGGESTION_SYSTEM_PROMPT,
+      leanMemory: true,
+    });
+    const text = normalizeSuggestion(out.text ?? "");
+    if (text === null) return; // 모델이 확신 없으면 빈 줄 — 억지 제안보다 없는 게 낫다.
+    publishSuggestion(msg.threadKey, text, {
+      elapsedMs: Date.now() - started,
+      ...(typeof out.model === "string" && out.model !== ""
+        ? { adapter: out.model }
+        : {}),
+    });
+  } catch (e) {
+    // 제안 실패가 턴에 영향을 주면 안 된다 — 이미 답은 나갔다. 로그만(조용한 실패 금지).
+    console.warn(
+      `next-message-suggestion 실패(무해): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 };
 
 const handler: MessageHandler = async (msg) => {
@@ -1579,6 +1685,32 @@ const handler: MessageHandler = async (msg) => {
     target: msg.channelAddress ?? null,
   };
   inflightTurns.set(msg.threadKey, turnEntry);
+  // ── egress 활동 표시 (2026-08-10) ──────────────────────────────────────────
+  // "이 답도 함께 보낼" 채널에, 답이 나가기 전부터 "작업 중" 신호를 준다(텔레그램
+  // "입력 중…"). 좌표는 여기서 한 번 풀어 fan-out 까지 그대로 쓴다.
+  // ★표시 정책(지연 시작·주기·좌표별 refcount·상한)은 전부 core/channel-activity.ts —
+  //  여기선 "켠다/끈다"만. egressChannels 없으면 배열이 비어 전부 no-op(회귀 0).
+  const egressTargets = await resolveEgressTargets(msg, {
+    getOutbound: getChannelOutbound,
+    getSessionMeta: (threadKey) =>
+      getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey),
+  });
+  const activityReleases = egressTargets
+    // 좌표를 못 푼 채널은 표시하지 않는다 — 어디에 띄울지 모르는데 띄울 수 없다.
+    .filter((t) => t.outbound.signalActivity !== undefined && t.target !== null)
+    .map((t) =>
+      beginChannelActivity(
+        `${t.channel}:${t.target ?? ""}`,
+        () => {
+          // 표시 실패는 삼킨다 — 신호일 뿐이고, 여기서 던지면 턴이 죽는다.
+          void t.outbound.signalActivity?.(t.target).catch(() => {});
+        },
+        DEFAULT_ACTIVITY_OPTIONS,
+      ),
+    );
+  const releaseActivity = (): void => {
+    for (const release of activityReleases) release();
+  };
   // mid-turn steering 채널 등록(ADR 2026-07-16 §5) — flag on 일 때만 생성·등록·주입한다.
   // ★flag off = steeringCh 미생성 + steering 필드 미주입 = route input 현행 동일(회귀 0).
   // 개입점(serializedHandler)이 진행 턴을 감지하면 steeringChannels.get(threadKey).push 로 이
@@ -1646,48 +1778,10 @@ const handler: MessageHandler = async (msg) => {
         ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
       },
     });
-    // ── egress fan-out (ADR 2026-07-16 §D4 Phase B2 / D2) ──────────────────────
-    // "이 답도 함께 보낼" 추가 채널들(msg.egressChannels, 컴포저 체크박스). swap 아님 — 인입
-    // 응답은 위에서 항상. 각 채널이 인입과 다르고 outbound-capable(레지스트리 등록 +
-    // defaultOutboundTarget 표명)이면 deliverOutbound 로 추가 배달(채널별 분기 0, 레지스트리
-    // 조회 — deliverOutbound 가 물리 발송 + 채널별 관측 발행). push-to-telegram = telegram 체크
-    // 인스턴스. ★egressChannels 미지정/빈 배열이면 이 루프는 0회 = 현행 비트 동일(회귀 0).
-    for (const ch of msg.egressChannels ?? []) {
-      if (ch === msg.channel) continue; // 인입은 이미 위에서 응답.
-      const o = getChannelOutbound(ch);
-      if (o === undefined || o.defaultOutboundTarget === undefined) continue; // outbound-capable 만.
-      // D2 target 체인: 명시 target 없음(컴포저 좌표 미전달) → 세션 last_channel_target(단
-      // last_channel === ch 일 때만 — 타 채널 좌표 오용 방지, notifyDestFromMessage §2 가드
-      // 동형) → deliverOutbound 가 null 이면 채널 defaultOutboundTarget() 로 폴백.
-      let egressTarget: string | null = null;
-      try {
-        const meta = getSessionChannelMeta(SESSION_STORAGE_CHANNEL, msg.threadKey);
-        if (
-          meta !== null &&
-          meta.lastChannel === ch &&
-          meta.lastChannelTarget !== null &&
-          meta.lastChannelTarget !== ""
-        ) {
-          egressTarget = meta.lastChannelTarget;
-        }
-      } catch {
-        /* 세션 메타 조회 실패 — defaultOutboundTarget() 폴백(무해) */
-      }
-      // 한 채널 배달 실패가 다른 채널·인입 응답을 무르지 않게 격리(fan-out best-effort).
-      try {
-        await deliverOutbound({
-          channel: ch,
-          target: egressTarget, // null → deliverOutbound 가 defaultOutboundTarget() 로 해석.
-          text: replyText,
-          bus,
-        });
-      } catch (e) {
-        console.error(
-          `egress fan-out to "${ch}" failed (인입 응답은 정상):`,
-          e instanceof Error ? e.message : String(e),
-        );
-      }
-    }
+    // egress fan-out — 해석해 둔 좌표로(위 턴 시작). 실패 경로도 같은 헬퍼를 쓴다.
+    await fanOutEgress(egressTargets, replyText, bus);
+    // 다음 메시지 제안 — 답을 보낸 **뒤** 발사하고 기다리지 않는다(턴을 늦추지 않는다).
+    void maybeSuggestNextMessage(msg);
   } catch (e) {
     // 사용자 /stop 으로 중단된 턴 — 에러 아님. /stop 이 이미 안내·out 발행했으므로 조용히 종료
     // (에러 메시지 이중 발신 방지). turnAc.signal.reason 으로 판별(어댑터가 뭘 throw 하든 무관).
@@ -1695,6 +1789,8 @@ const handler: MessageHandler = async (msg) => {
       turnAc.signal.aborted &&
       turnAc.signal.reason instanceof UserCancelledError
     ) {
+      // egress 에도 알린다 — 활동 표시만 떴다 사라지고 아무 말이 없으면 유령이다.
+      await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus);
       return;
     }
     // 잡 취소(WorkerCancelledError, U-I4 개정) — 대시보드 잡 카드에서 native Task 를 ⏹️ 중지하면
@@ -1705,6 +1801,7 @@ const handler: MessageHandler = async (msg) => {
     // 이 out 으로 꺼짐). 내부 토큰("모델 거부 아님") 노출 없이 깔끔히.
     if (e instanceof Error && e.name === "WorkerCancelledError") {
       await replyCommand(msg, "🛑 진행 중이던 작업을 중지했어요.");
+      await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus);
       return;
     }
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
@@ -1724,7 +1821,11 @@ const handler: MessageHandler = async (msg) => {
     // 에러 응답도 replyCommand 로 — 실패 턴에서도 대시보드 '작업 중'이 꺼지고(out 발행) 에러가
     // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
     await replyCommand(msg, formatRegionAError(detail));
+    // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조).
+    await fanOutEgress(egressTargets, formatRegionAError(detail), bus);
   } finally {
+    // 활동 표시 해제 — 마지막 참조일 때만 실제로 멈춘다(좌표 단위 refcount).
+    releaseActivity();
     // 등록 해제 — 단, 그 사이 새 턴이 덮어썼으면(직렬 큐라 이론상 없지만 방어) 건드리지 않음.
     if (inflightTurns.get(msg.threadKey) === turnEntry) {
       inflightTurns.delete(msg.threadKey);
@@ -2161,6 +2262,9 @@ const shutdown = async (signal: string): Promise<void> => {
   //  정리 로그 없음). 채널·서비스는 소켓이라 프로세스가 죽으면 OS 가 회수하지만, 자식
   //  프로세스는 우리가 안 죽이면 영구 고아다(외부 MCP 는 부팅 reaper 도 없음).
   //  → 되돌릴 수 없는 것(고아)을 먼저, 저절로 회수되는 것(소켓)을 나중에.
+  // 활동 표시 타이머 정리 — 소켓과 달리 OS 가 회수해 주지 않고, 남으면 graceful
+  // shutdown 의 이벤트 루프가 안 비어 force exit 로 밀린다. 동기·무해.
+  stopAllChannelActivity();
   try {
     const { closeAllExternalMcp } = await import("./core/external-mcp.js");
     await closeAllExternalMcp();

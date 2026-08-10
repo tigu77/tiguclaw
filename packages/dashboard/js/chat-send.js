@@ -90,6 +90,8 @@
         try { if (window.histReset) window.histReset(); } catch {} // 전송했으니 히스토리 커서도 밖으로.
         slashClose(); // 전송 시 슬래시 팝업 닫음(value 비움은 input 이벤트를 안 쏘므로 명시적으로).
         focusChatInput();
+        // 전송했으면 이번 제안은 수명이 끝났다 — 다음 턴에 새로 온다.
+        if (typeof window.clearChatSuggestion === "function") window.clearChatSuggestion();
         // 전송 = 최신을 보겠다는 의도 → 현재 스크롤 위치와 무관하게 하단으로 고정하고 이후
         // 응답도 따라가게 한다(stickBottom 재활성). 요구: "메시지 보내면 자동으로 끝까지 스크롤".
         stickBottom = true;
@@ -133,12 +135,14 @@
         }
         persistDraftText();
       };
+      // 입력 상태를 복원하는 이 지점이 고스트 제안도 같이 되살린다(탭 전환·새 창).
       window.restoreChatDraft = (tk) => {
         const d = (tk && chatDrafts.get(tk)) || { text: "", attachments: [] };
         input.value = d.text;
         if (growWrap) growWrap.dataset.replicatedValue = d.text; // autogrow 높이 복원.
         pendingAttachments = d.attachments.slice();
         renderAttachChips();
+        if (typeof window.refreshChatSuggestion === "function") window.refreshChatSuggestion();
       };
       window.clearChatDraft = (tk) => {
         if (!tk) return;

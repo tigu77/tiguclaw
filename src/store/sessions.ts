@@ -597,6 +597,7 @@ export const initStore = (): void => {
       updated_at   INTEGER NOT NULL,
       PRIMARY KEY (channel, thread_key)
     );
+
     -- ─── 채널→세션 바인딩 (2026-07-28, ADR channel-session-decoupling §D5 확장점 (b)) ──
     -- 세션 셀렉터가 없는 채널(텔레그램·CLI)이 "이 대화방은 이 세션" 을 **영속**으로 기억한다.
     -- 대시보드 탭은 브라우저 localStorage 라 그 브라우저에서만 유지되는데, 이쪽은 서버라
@@ -610,6 +611,22 @@ export const initStore = (): void => {
       updated_at      INTEGER NOT NULL,
       PRIMARY KEY (channel, channel_address)
     );
+
+    -- ─── 발신 메시지 → 발원 세션 (2026-08-10) ───────────────────────────────
+    -- "답장하면 그 답이 나온 세션으로 보낸다" 를 위한 매핑. egress 로 한 텔레그램
+    -- 대화에 **여러 세션의 답이 섞여** 오게 되면서 필요해졌다 — 답장이 그걸 가르는
+    -- 자연스러운 UI 인데, 종전엔 message_id 를 그냥 버려서(sendOutgoing 이 void)
+    -- "이 메시지가 어느 세션 것인지" 를 알 방법이 아예 없었다.
+    -- 행이 없으면 = 매핑 없음 = 현재 세션(기존 동작 그대로, 회귀 0).
+    CREATE TABLE IF NOT EXISTS outbound_message_session (
+      channel         TEXT NOT NULL,
+      channel_address TEXT NOT NULL,
+      message_id      TEXT NOT NULL,
+      session_id      TEXT NOT NULL,
+      ts              INTEGER NOT NULL,
+      PRIMARY KEY (channel, channel_address, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_outbound_msg_ts ON outbound_message_session (ts);
   `);
 
   // ─── 스킬 사용 텔레메트리 (self-growth Phase 1.5, 2026-06-24) ────────────────

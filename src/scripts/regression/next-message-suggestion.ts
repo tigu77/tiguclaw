@@ -1,0 +1,119 @@
+/**
+ * 회귀: 다음 메시지 제안 — **꺼져 있고, 안 새고, 비용이 상수로 묶여 있다.**
+ *
+ * 배경 (2026-08-10): 턴이 끝나면 "사용자가 이어서 할 만한 말" 한 줄을 만들어 대시보드
+ *  입력창에 회색 고스트로 띄운다. Tab 이면 입력창에 채워진다(전송 아님).
+ *
+ * ★이 기능은 **매 턴 토큰을 쓴다.** 그래서 위험은 "안 뜬다" 가 아니라 **조용히 켜져 있고
+ *  조용히 커지는 것**이다. 이 검사는 그 셋을 지킨다:
+ *   ① 기본 꺼짐(설정 부재·형식오류 = 꺼짐)
+ *   ② 사람이 안 보는 턴(스케줄러·워커·엔드포인트·게이트웨이)엔 아예 안 만든다
+ *   ③ 프롬프트 크기가 **상수 둘로 결정**된다 — 대화가 길어져도 안 커진다
+ *  거기에 출력 정리(고스트는 한 줄)를 더한다.
+ */
+import {
+  readSuggestionSettings,
+  shouldSuggestForThread,
+  normalizeSuggestion,
+  buildRecentContext,
+  SUGGESTION_CONTEXT_TURNS,
+  SUGGESTION_CONTEXT_CHARS_PER_TURN,
+  SUGGESTION_MAX_CHARS,
+} from "../../core/next-message-suggestion.js";
+import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
+
+const run = async (): Promise<Assertion[]> => {
+  assertIsolated();
+  const out: Assertion[] = [];
+  // ── ① 기본 꺼짐 ────────────────────────────────────────────────────────────
+  //  토큰을 쓰는 기능은 명시적으로만 켜진다. 설정이 없는 임시 홈에서 켜져 있으면
+  //  "기본값이 뒤집힌 것" 이고, 그건 조용히 과금된다.
+  {
+    const s = readSuggestionSettings();
+    out.push({
+      name: "★설정 부재 = 꺼짐(토큰 쓰는 기능의 안전 기본값)",
+      ok: s.enabled === false,
+      got: `enabled=${String(s.enabled)} (기대 false)`,
+    });
+  }
+
+  // ── ② 사람이 안 보는 턴엔 안 만든다 ────────────────────────────────────────
+  //  고스트는 대시보드 입력창에만 뜬다. 파생 턴에도 만들면 **아무도 안 보는 제안에**
+  //  매번 토큰을 쓴다.
+  {
+    const skip = ["scheduler:3", "worker:abc", "endpoint:x:y", "agent:sub", "gateway:z"];
+    const keep = ["dashboard:default", "dashboard:1784-abc", "tg:12345"];
+    out.push({
+      name: "★파생 턴(스케줄러·워커·엔드포인트·에이전트·게이트웨이)엔 안 만든다",
+      ok: skip.every((t) => !shouldSuggestForThread(t)),
+      got: skip.map((t) => `${t}=${String(shouldSuggestForThread(t))}`).join(" "),
+    });
+    out.push({
+      name: "사람이 보는 세션엔 만든다",
+      ok: keep.every((t) => shouldSuggestForThread(t)),
+      got: keep.map((t) => `${t}=${String(shouldSuggestForThread(t))}`).join(" "),
+    });
+    out.push({
+      name: "빈 threadKey 는 안 만든다",
+      ok: !shouldSuggestForThread(""),
+      got: `""=${String(shouldSuggestForThread(""))} (기대 false)`,
+    });
+  }
+
+  // ── ③ 프롬프트 크기가 상수로 묶인다 ────────────────────────────────────────
+  //  대화가 길어질수록 제안 호출도 비싸지면, 그게 조용히 커지는 축이다.
+  {
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      content: "가".repeat(5_000),
+    }));
+    const ctx = buildRecentContext(many);
+    const cap =
+      SUGGESTION_CONTEXT_TURNS * (SUGGESTION_CONTEXT_CHARS_PER_TURN + 20);
+    out.push({
+      name: "★200턴 × 5,000자를 줘도 프롬프트는 상한 안이다(비용이 안 커진다)",
+      ok: ctx.length <= cap,
+      got: `조립=${ctx.length}자 (상한 ≈${cap}자 = ${SUGGESTION_CONTEXT_TURNS}턴 × ${SUGGESTION_CONTEXT_CHARS_PER_TURN}자)`,
+    });
+    out.push({
+      name: "최근 턴만 담는다(오래된 것은 빠진다)",
+      ok: ctx.split("\n").length <= SUGGESTION_CONTEXT_TURNS,
+      got: `줄 수=${ctx.split("\n").length} (기대 ≤${SUGGESTION_CONTEXT_TURNS})`,
+    });
+  }
+
+  // ── ④ 출력 정리 — 고스트는 한 줄이다 ───────────────────────────────────────
+  {
+    const cases: [string, string | null][] = [
+      ['"이거 배포해줘"', "이거 배포해줘"],
+      ["제안: 다음 단계 알려줘", "다음 단계 알려줘"],
+      ["첫 줄이다\n둘째 줄은 버린다", "첫 줄이다"],
+      ["   ", null],
+      ["", null],
+    ];
+    const bad = cases.filter(([raw, want]) => normalizeSuggestion(raw) !== want);
+    out.push({
+      name: "따옴표·머리말·여러 줄을 정리해 한 줄로 만든다",
+      ok: bad.length === 0,
+      got:
+        bad.length === 0
+          ? `${cases.length}건 전부 기대대로`
+          : bad.map(([r]) => `실패:${JSON.stringify(r)}→${String(normalizeSuggestion(r))}`).join(" "),
+    });
+    const long = normalizeSuggestion("나".repeat(SUGGESTION_MAX_CHARS + 80)) ?? "";
+    out.push({
+      name: "긴 제안은 잘린다(고스트가 입력창을 덮지 않게)",
+      ok: long.length === SUGGESTION_MAX_CHARS,
+      got: `길이=${long.length} (기대 ${SUGGESTION_MAX_CHARS})`,
+    });
+  }
+
+  return out;
+};
+
+export const check: RegressionCheck = {
+  name: "next-message-suggestion",
+  guards:
+    "매 턴 토큰을 쓰는 제안 기능이 조용히 켜져 있거나(기본 꺼짐), 아무도 안 보는 파생 턴에도 돌거나, 대화가 길어질수록 프롬프트가 같이 커지는 것",
+  run,
+};

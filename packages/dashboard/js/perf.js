@@ -34,8 +34,8 @@
       // 전송은 '전송' 버튼으로 — 소프트키보드에서 Enter 로 오전송되는 일이 없게. 판별은 화면폭이 아니라
       // 주 포인터가 터치인지(pointer:coarse) — 좁은 데스크톱 창은 물리 키보드라 Enter=전송 유지.
       // IME 조합 중(한글)에는 데스크톱에서도 전송 금지(Enter=조합 확정용).
-      const isTouchPrimary = () =>
-        typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+      // ★판정은 util.js 의 `isTouchPrimary` 하나다 — 안내문이 이 동작을 설명하므로 둘이
+      //  갈리면 화면이 거짓말을 한다(실제로 그랬다, 2026-08-10).
       input.addEventListener("keydown", (e) => {
         if (slashKeydown(e)) return; // 슬래시 팝업 열림 → ↑/↓·Enter/Tab·Esc 가로챔(전송 안 함).
         // ↑/↓ 입력 히스토리(셸 동작) — **슬래시 팝업 다음**이다. 팝업이 열려 있으면 위에서
@@ -46,11 +46,6 @@
           form.requestSubmit();
         }
       });
-      // 모바일이면 안내문도 버튼 전송으로 — Enter 전송 문구는 오해 소지.
-      if (isTouchPrimary()) {
-        input.setAttribute(
-          "placeholder",
-          "대시보드 채팅 — 전송 버튼으로 전송, Enter 줄바꿈 · 파일 붙여넣기/드롭",
-        );
-      }
+      // 안내문은 여기서 정하지 않는다 — util.js 의 computeChatPlaceholder 단일 판정.
+      refreshChatPlaceholder();
 

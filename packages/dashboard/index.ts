@@ -16,6 +16,8 @@
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
  *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
+ *  - POST /api/set-suggestion → bridge POST /set-suggestion (write, 다음 메시지 제안 on/off)
+ *  - GET  /api/suggestion → bridge GET /suggestion (read, 현재 값)
  *  - POST /api/set-session-profile → bridge POST /set-session-profile (write, 이 세션(탭)만 sticky 프로파일)
  *  - POST /api/set-module-enabled → bridge POST /set-module-enabled (write, 모듈 활성/비활성 — P4a-2)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
@@ -416,6 +418,22 @@ const server = http.createServer((req, res) => {
         headers: { "Content-Type": "application/json" },
         body,
       });
+      return;
+    }
+    // 다음 메시지 제안 on/off — bridge (write 토큰 server-side 주입, browser 미노출).
+    // /set-default-profile 과 동형: 설정 화면 토글이 부르고, settings.json 한 키만 바뀐다.
+    if (pathname === "/api/set-suggestion" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-suggestion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 현재 값 조회 — 설정 화면 초기 렌더용(읽기).
+    if (pathname === "/api/suggestion" && method === "GET") {
+      await proxyJson(res, "/suggestion", { method: "GET" });
       return;
     }
     // 세션(탭) 모델 프로파일 설정 — bridge POST /set-session-profile (write 토큰 server-side

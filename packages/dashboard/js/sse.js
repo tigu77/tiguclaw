@@ -47,10 +47,32 @@
         const turns = Number(p.foldedTurns) || 0;
         const from = Number(p.foldedChars) || 0;
         const to = Number(p.summaryChars) || 0;
+        // 경과 — 기다린 시간이 얼마였는지 사후에도 보이게(진단의 1차 수치).
+        const ms = Number(p.elapsedMs) || 0;
+        const took = ms > 0 ? ` · ${(ms / 1000).toFixed(1)}초 걸렸습니다` : "";
         renderLocalChat(
           "info",
-          `🗜 대화가 길어져 이전 ${turns}턴을 요약으로 압축했습니다 (${from.toLocaleString()}자 → ${to.toLocaleString()}자). 최근 대화는 원문 그대로 유지됩니다.`,
+          `🗜 대화가 길어져 이전 ${turns}턴을 요약으로 압축했습니다 (${from.toLocaleString()}자 → ${to.toLocaleString()}자)${took}. 최근 대화는 원문 그대로 유지됩니다.`,
           { ts: evTs, key: "compacted|" + (tk || "") + "|" + evTs },
+        );
+      };
+
+      // ★압축 **직전** 표시 (2026-08-10) — 출발점은 "압축이 오래 걸리는데 뭘 하는지
+      //  모르겠다" 였다. 종전엔 사후(`llm.compacted`)만 그려서, 정작 기다리는 동안엔
+      //  스피너만 돌고 이유가 없었다. 요약은 6~8만 자를 LLM 에 넣는 호출이라 길다.
+      //  codex(폴드 직전)·claude(SDK PreCompact 훅) 둘 다 같은 이벤트를 낸다.
+      const renderCompacting = (p, evTs) => {
+        const tk = p.threadKey;
+        if (isEndpointThread(tk)) return;
+        if (!isActiveThread(tk)) return;
+        const turns = Number(p.pendingTurns) || 0;
+        renderLocalChat(
+          "info",
+          turns > 0
+            ? `🗜 대화가 길어져 이전 ${turns}턴을 요약하는 중입니다… (끝나면 결과를 알려드립니다)`
+            : "🗜 대화가 길어져 요약하는 중입니다… (끝나면 결과를 알려드립니다)",
+          // key 에 ts 를 넣어 같은 스레드의 다음 압축과 안 겹치게(사후 렌더와 동형).
+          { ts: evTs, key: "compacting|" + (tk || "") + "|" + evTs },
         );
       };
 
@@ -303,6 +325,17 @@
               { ts: ev.ts, key: "compaction-stuck|" + (p.threadKey || "") },
             );
           }
+          return;
+        }
+        // 다음 메시지 제안 — 고스트 모듈로 넘긴다(그 모듈이 표시 조건을 판단한다).
+        if (ev.type === "chat.suggestion") {
+          if (typeof window.applyChatSuggestion === "function") {
+            window.applyChatSuggestion(ev.payload || {}, ev.ts);
+          }
+          return;
+        }
+        if (ev.type === "llm.compacting") {
+          renderCompacting(ev.payload || {}, ev.ts);
           return;
         }
         if (ev.type === "llm.compacted") {

@@ -659,6 +659,30 @@ export const runClaude = async (
         ],
       },
     ] satisfies HookCallbackMatcher[],
+    // ★압축 직전 알림 (2026-08-10) — "압축이 오래 걸리는데 뭘 하는지 모르겠다" 가 출발점.
+    //  claude 는 SDK 가 자체 압축해서 우리 코드에 압축 로직이 없고, 그동안 사용자는
+    //  스피너만 보며 기다렸다. SDK 훅 `PreCompact` 가 정확히 그 시점을 준다.
+    //  codex(`openai-codex-oauth-history.ts` 폴드 직전)와 **같은 이벤트**를 내므로
+    //  소비처(대시보드)는 하나뿐이다 — 어댑터별 분기 0(#2 멀티 LLM 대칭).
+    //  관찰 전용: 빈 객체를 돌려줘 압축을 막지도 바꾸지도 않는다.
+    PreCompact: [
+      {
+        hooks: [
+          async () => {
+            try {
+              getEventBus().publish({
+                type: "llm.compacting",
+                ts: Date.now(),
+                payload: { threadKey: input.threadKey, adapter: "claude" },
+              });
+            } catch {
+              /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+            }
+            return {};
+          },
+        ],
+      },
+    ] satisfies HookCallbackMatcher[],
   };
 
   // 컨텍스트 조립 — 안정 조각은 시스템 프롬프트(캐시 대상), 휘발 조각은 user

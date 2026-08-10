@@ -38,11 +38,82 @@
             ? Math.round(b / 1024) + "KB"
             : (b / 1048576).toFixed(1) + "MB";
 
-      // 입력창(chat-input) 자동 포커스 = 중앙 정책 한 곳. ★현재 비활성(사용자 결정 2026-07-24):
-      //   새 탭·뷰 전환·전송·슬래시·마이크·답글 어디서도 입력창으로 자동 포커스하지 않는다
-      //   (모바일 가상키보드 팝업 방지 + 데스크톱서도 포커스 뺏기 방지). 포커스는 사용자가
-      //   직접 클릭. 다시 켜려면 이 함수 한 곳만 고친다(흩어진 호출부는 이미 전부 여기로 모음).
-      const focusChatInput = () => {};
+      // 입력창(chat-input) 자동 포커스 = 중앙 정책 한 곳.
+      //
+      // 2026-07-24: 전면 비활성이었다(모바일 가상키보드 팝업 + 데스크톱 포커스 뺏기).
+      //   그 판단은 **탭·뷰 전환·전송·슬래시** 에는 지금도 유효하다 — 사용자가 입력을
+      //   원한 적이 없는데 커서가 끌려간다.
+      // 2026-08-10: **답글·마이크만** 켠다(사용자 결정). 이 둘은 사용자가 방금
+      //   "이제 입력하겠다" 는 행동을 한 자리라, 껐던 이유에 해당하지 않는다.
+      //
+      // ★허용 **이름 목록**을 두지 않는다 — 호출부가 늘 때 목록은 조용히 뒤처진다.
+      //  대신 호출부가 *의도*를 밝히고 여기선 그 의도만 본다. 인자 없이 부르면(기존
+      //  호출부 전부) 종전과 같이 아무것도 안 한다 = 회귀 0.
+      const focusChatInput = (opts) => {
+        if (!opts || opts.userIntendsToType !== true) return;
+        // 모바일은 의도가 명시적이어도 안 켠다 — 껐던 이유의 한 축(가상키보드가 화면을
+        // 절반 덮는 것)은 의도와 무관하게 그대로다.
+        try {
+          if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) return;
+        } catch { /* matchMedia 미지원 — 계속 진행 */ }
+        const el = document.getElementById("chat-input");
+        if (!el) return;
+        // preventScroll — 포커스 때문에 채팅이 튀지 않게(가상화 스크롤과 경합 회피).
+        try { el.focus({ preventScroll: true }); } catch { try { el.focus(); } catch { /* noop */ } }
+      };
+
+      // ── 채팅 입력창 안내문(placeholder) = 판정 한 곳 (2026-08-10) ──────────────
+      //
+      // ★종전엔 네 곳이 같은 값을 썼다: index.html(기본) · perf.js(터치면 버튼 전송 문구) ·
+      //  mobile-nav.js(좁으면 짧게) · ghost-suggest.js(고스트 중엔 비움). 판정 기준도 서로
+      //  달랐고(입력 장치 vs 화면 폭) **승자가 로드 순서로** 정해졌다. 실제 결과:
+      //   - 폰: mobile-nav 가 나중이라 perf.js 문구는 **한 번도 안 보였다**(죽은 문자열).
+      //   - 좁은 데스크톱 창: "메시지 입력…" 만 떠 Enter 전송인지 알 수 없었다.
+      //   - 고스트가 떴다 사라지면 초기값으로 되돌아가 모바일 문구가 PC 것으로 바뀌었다.
+      //
+      // 두 축은 **다른 것을 결정**한다 — *무엇을 안내하나*(전송 방식)는 입력 장치가,
+      // *얼마나 길게*는 화면 폭이 정한다. 한 함수에서 조합하면 순서 의존이 사라진다.
+      const CHAT_PLACEHOLDER_ENTER =
+        "대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭";
+      const CHAT_PLACEHOLDER_BUTTON =
+        "대시보드 채팅 — 전송 버튼으로 전송, Enter 줄바꿈 · 파일 붙여넣기/드롭";
+      const CHAT_PLACEHOLDER_SHORT = "메시지 입력…";
+
+      // 주 포인터가 터치인가 — **전송 동작 판정과 같은 기준**이어야 한다(안내문이 그
+      // 동작을 설명하므로). perf.js 의 Enter 전송 분기가 이 함수를 쓴다.
+      const isTouchPrimary = () =>
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(pointer: coarse)").matches;
+      // 좁은 화면인가 — 긴 안내문이 과한 폭. 전송 동작과는 무관하다.
+      const isNarrowScreen = () =>
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(max-width: 900px)").matches;
+
+      let chatGhostShowing = false;
+      const computeChatPlaceholder = () => {
+        // 고스트가 같은 자리를 쓴다 — 둘 다 그리면 글자가 겹쳐 못 읽는다.
+        if (chatGhostShowing) return "";
+        if (isNarrowScreen()) return CHAT_PLACEHOLDER_SHORT;
+        return isTouchPrimary() ? CHAT_PLACEHOLDER_BUTTON : CHAT_PLACEHOLDER_ENTER;
+      };
+      const refreshChatPlaceholder = () => {
+        const el = document.getElementById("chat-input");
+        if (el) el.setAttribute("placeholder", computeChatPlaceholder());
+      };
+      /** 고스트 표시 상태 전달 — 값 자체는 여기서만 정한다(호출부는 사실만 알린다). */
+      const setChatGhostShowing = (on) => {
+        chatGhostShowing = on === true;
+        refreshChatPlaceholder();
+      };
+      // 회전·창 크기 변경에도 따라간다 — 종전엔 로드 시 1회라 그대로 굳었다.
+      try {
+        for (const q of ["(pointer: coarse)", "(max-width: 900px)"]) {
+          const mq = window.matchMedia(q);
+          if (typeof mq.addEventListener === "function") {
+            mq.addEventListener("change", refreshChatPlaceholder);
+          }
+        }
+      } catch { /* matchMedia 미지원 — 초기 1회로 충분 */ }
 
       let toastTimer = null;
       const showToast = (msg, tone) => {

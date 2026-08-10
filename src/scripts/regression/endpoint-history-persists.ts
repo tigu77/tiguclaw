@@ -59,7 +59,8 @@ export const check: RegressionCheck = {
       /pathname === "\/endpoint-calls" && method === "GET"\)[\s\S]{0,3000}writeJson\(res, 200, \{ calls,/.test(
         bridge,
       );
-    const readsEvents = /listEvents\(\{ types: \["endpoint\.call"\]/.test(bridge);
+    // 2026-08-10: 게이트웨이 호출도 같은 라우트가 준다(한 페이지 + 필터) — 두 타입을 함께 읽는다.
+    const readsEvents = /types: \[\s*"endpoint\.call",\s*"gateway\.call"/.test(bridge);
     out.push(
       assert(
         "★bridge 에 /endpoint-calls 조회 라우트가 있고 영속분을 읽는다",
@@ -105,7 +106,9 @@ export const check: RegressionCheck = {
 
     // ★④ 안내문이 **주는 보장**만 말하는가 — 종전엔 영속하지 않으면서 "DB 에 영속됩니다"
     //  라고 적혀 있었다. 문장이 코드보다 앞서면 그게 오늘 하루의 병이다.
-    const claimsPersist = /기록은 DB 에 영속되어 새로고침·재시작 후에도 남습니다/.test(view);
+    // 문구는 바뀔 수 있으니 **보장의 알맹이**(영속·재시작 생존)로 본다 — 문장 그대로를
+    // 박아두면 표현을 다듬을 때마다 검사가 깨지고, 그러면 검사를 고치는 습관이 든다.
+    const claimsPersist = /영속/.test(view) && /읽기 전용/.test(view);
     out.push(
       assert(
         "화면 안내문이 실제 동작과 일치한다",

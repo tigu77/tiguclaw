@@ -109,7 +109,9 @@
             renderTurnFailure(ev.payload || {}, ev.ts);
           }
         }
-        if (ev.type === "endpoint.call") { captureEndpointCall(ev.payload || {}); return; } // 엔드포인트 뷰 데이터.
+        // 엔드포인트·게이트웨이 = 같은 뷰(외부 호출 기록). kind 로 구분·필터한다.
+        if (ev.type === "endpoint.call") { captureEndpointCall({ ...(ev.payload || {}), kind: "endpoint", ts: ev.ts }); return; }
+        if (ev.type === "gateway.call") { captureEndpointCall({ ...(ev.payload || {}), kind: "gateway", ts: ev.ts }); return; }
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
           const tk = ev.payload && ev.payload.threadKey;
           // 엔드포인트 turn(기계 API 호출)은 채팅서 제외 — 방어적(보통 endpoint 는 channel.message

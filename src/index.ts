@@ -157,6 +157,7 @@ import {
   resolveEgressTargets,
   type EgressTarget,
 } from "./core/egress-targets.js";
+import { readEgressChannels } from "./core/settings.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -1691,7 +1692,17 @@ const handler: MessageHandler = async (msg) => {
   // "입력 중…"). 좌표는 여기서 한 번 풀어 fan-out 까지 그대로 쓴다.
   // ★표시 정책(지연 시작·주기·좌표별 refcount·상한)은 전부 core/channel-activity.ts —
   //  여기선 "켠다/끈다"만. egressChannels 없으면 배열이 비어 전부 no-op(회귀 0).
-  const egressTargets = await resolveEgressTargets(msg, {
+  // ★egress 채널 = **서버 설정**(전역) ∪ 이 메시지가 실어온 것.
+  //  종전엔 브라우저가 매 전송에 실어보내는 것뿐이라, 서버가 스스로 만드는 발화
+  //  (워커 완료 재주입·스케줄·파일감시)는 사용자가 켠 걸 몰라 fan-out 을 못 탔다.
+  //  실사고(2026-08-10): 몇 시간짜리 매니저 완료가 텔레그램으로 안 왔다 — 정작 그
+  //  자리에 없을 확률이 가장 높은 경우다. 설정을 서버에 두니 **모든 발화가 같은 규칙**
+  //  을 얻는다(합성 메시지에 플래그를 일일이 실어 나르는 배관이 아니라).
+  const egressFromSettings = readEgressChannels();
+  const egressUnion = [
+    ...new Set([...(msg.egressChannels ?? []), ...egressFromSettings]),
+  ];
+  const egressTargets = await resolveEgressTargets({ ...msg, egressChannels: egressUnion }, {
     getOutbound: getChannelOutbound,
     getSessionMeta: (threadKey) =>
       getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey),

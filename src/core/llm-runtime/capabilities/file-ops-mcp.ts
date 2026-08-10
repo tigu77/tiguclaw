@@ -136,6 +136,43 @@ const sniffImageMime = (head: Buffer): string | null => {
   }
   return null;
 };
+/**
+ * **텍스트가 아닌가**를 내용으로 판정한다 (2026-08-10).
+ *
+ * ★왜 필요한가: 이미지 분기를 뺀 나머지는 전부 `readFile(utf8)` 이었다. APK·실행파일·
+ *  zip·폰트 무엇이든 **깨진 글자 덩어리를 "성공"으로** 돌려줬다. 그게 이 레포가 이미
+ *  한 번 크게 데인 모양이다 — 2026-08-01 JPEG 사고 주석이 바로 위에 있다("모델은 판독
+ *  불가라 답하는데 호출한 앱은 정상 응답으로 받아 캐시에 저장했다 — 사흘간 캐시 오염").
+ *  그때는 **이미지만** 고쳤고 나머지 바이너리는 구멍이 그대로였다.
+ *
+ * ★문제는 "못 다룬다" 가 아니라 **"막혔다는 걸 모른다"** 다. Bash 라는 만능 우회로가
+ *  있어서 능력은 충분한데, 판독 실패가 실패로 보고되지 않으면 그 우회로로 갈 계기가
+ *  안 생긴다. 그래서 여기서 하는 일은 **사실을 말하는 것**이 전부다.
+ *
+ * 판정 = ①NUL 바이트가 있으면 텍스트가 아니다(UTF-8 텍스트엔 안 나온다) ②U+FFFD
+ *  (디코딩 실패 대체문자) 비율이 높으면 아니다. 확장자는 보지 않는다 — 위 sniffImage 와
+ *  같은 이유다(우리가 답을 바꾸는 근거는 내용이지 이름이 아니다).
+ */
+const BINARY_SNIFF_BYTES = 8192;
+const BINARY_REPLACEMENT_RATIO = 0.1;
+export const looksBinary = (head: Buffer): boolean => {
+  if (head.length === 0) return false; // 빈 파일은 텍스트로 본다(기존 동작).
+  if (head.includes(0)) return true;
+  const decoded = head.toString("utf8");
+  if (decoded.length === 0) return false;
+  let bad = 0;
+  for (const ch of decoded) if (ch === "\uFFFD") bad += 1;
+  return bad / decoded.length > BINARY_REPLACEMENT_RATIO;
+};
+
+/** 사람이 읽는 크기 — 진단 수치는 항상 같이 남긴다. */
+const humanBytes = (n: number): string =>
+  n >= 1024 * 1024
+    ? `${(n / 1024 / 1024).toFixed(1)}MB`
+    : n >= 1024
+      ? `${Math.round(n / 1024)}KB`
+      : `${n}B`;
+
 const GLOB_MAX_RESULTS = 1000;
 const GLOB_MAX_BUFFER = 10 * 1024 * 1024;
 const GREP_MAX_LINES = 1000;
@@ -681,6 +718,38 @@ export const killShellById = async (shellId: string): Promise<boolean> => {
  *
  * never-throw at boot — 최상위 + 행별 try/catch 이중 격리. 실패는 로그만(데몬 생존).
  */
+/**
+ * 리퍼가 정리한 셸을 **화면에도 알린다** (2026-08-10).
+ *
+ * ★사고: 셸이 끝났는데 대시보드가 계속 "실행 중" 으로 보였고, 새로고침하면 사라졌다.
+ *  `shell.exited` 는 `child.on("close")` 에서만 발행되는데 그건 **데몬이 그 자식을 들고
+ *  있을 때만** 온다. 데몬이 재시작하면 연결이 끊겨 영영 안 오고, 부팅 리퍼는 DB 행만
+ *  고치고 **아무에게도 안 알렸다.** 그래서 열려 있던 화면은 죽은 셸을 계속 그렸다
+ *  (실측: shell.started 116건 vs shell.exited 106건).
+ *
+ * ★이 레포가 세 번째 겪는 부류다 — `llm.tool_slow`·`llm.compaction_stuck` 도 "발행은
+ *  했는데 소비처가 없음" 이었고, 이번엔 반대로 **소비처는 있는데 발행이 없었다.**
+ *  상태를 바꾸는 자리는 그 사실을 말하는 자리이기도 해야 한다.
+ *
+ * 페이로드는 자연 종료 경로와 **같은 모양**이다 — 소비처(view-shells.js handleShellExited)
+ * 가 분기 없이 그대로 처리한다.
+ */
+const announceReaped = (
+  row: { bashId: string; command: string; cwd: string; startedAt: number },
+  status: "exited" | "killed",
+): void => {
+  publishShellEventSafe("shell.exited", {
+    shellId: row.bashId,
+    command: row.command,
+    cwd: row.cwd,
+    status,
+    exitCode: null,
+    startedAt: row.startedAt,
+    threadKey: "",
+    ownerThreadKey: "",
+  });
+};
+
 export const reapPreviousGeneration = async (): Promise<void> => {
   let rows: ReturnType<typeof listRunningBgShellsDb>;
   try {
@@ -709,12 +778,14 @@ export const reapPreviousGeneration = async (): Promise<void> => {
         console.log(
           `bg-shells reaper: 이전 세대 고아 killTree(bashId=${row.bashId}, pgid=${row.pgid}).`,
         );
+        announceReaped(row, "killed");
       } else {
         // 프로세스 부재 / 신원 불일치(PID 재사용) / label 미보유 — 전부 안전측 stale.
         markBgShellStatusDb(row.bashId, "stale", {
           finishedAt: Date.now(),
           exitCode: null,
         });
+        announceReaped(row, "exited");
       }
     } catch (e) {
       console.error(
@@ -917,7 +988,9 @@ const makeFileOpsTools = (
         //  "모든 기능 LLM 무관" 위반). 어댑터가 이 블록을 input_image 로 옮긴다.
         //  ★실패를 성공으로 답하지 않는 것이 핵심이다 — 비전 미지원보다 미지원을
         //   성공이라 답하는 것이 훨씬 해롭다.
-        const headBuf = Buffer.alloc(Math.min(16, stat.size));
+        // 이미지 판정엔 16B 면 되지만, 아래 텍스트 여부 판정은 표본이 더 필요하다
+        // (앞부분만 우연히 ASCII 인 바이너리가 있다). 한 번만 읽어 둘 다 쓴다.
+        const headBuf = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, stat.size));
         if (headBuf.length > 0) {
           const fh = await fs.open(abs, "r");
           try {
@@ -944,6 +1017,17 @@ const makeFileOpsTools = (
               { type: "image" as const, data: b64, mimeType: imageMime },
             ],
           };
+        }
+        // ★텍스트가 아니면 **본문 대신 사실을 준다** (2026-08-10). 깨진 UTF-8 을 성공으로
+        //  돌려주면 비서가 그걸 재료로 헛다리를 짚는다(2026-08-01 이미지 사고와 같은 부류).
+        //  도구 이름을 열거해 주지는 않는다 — 파일 종류마다 맞는 도구가 다르고 그 판단은
+        //  모델이 하는 게 맞다(목록을 박으면 그게 또 손으로 관리하는 목록이 된다).
+        if (looksBinary(headBuf)) {
+          return okText(
+            `이 파일은 텍스트가 아닙니다 — 본문을 싣지 않았습니다.\n` +
+              `path=${abs} · ${humanBytes(stat.size)}\n` +
+              `내용을 확인하려면 Bash 로 그 형식에 맞는 도구를 쓰세요(예: 무엇인지부터 알아보려면 \`file\`).`,
+          );
         }
         const raw = await fs.readFile(abs, "utf8");
         // ★노트북(.ipynb)은 **셀 단위로 편다** (2026-08-09). 원본 JSON 은 base64 이미지·

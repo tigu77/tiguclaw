@@ -357,29 +357,44 @@ export const initStore = (): void => {
       claude_session_id TEXT NOT NULL,
       ts                INTEGER NOT NULL,
       role              TEXT NOT NULL,
-      content           TEXT NOT NULL
+      content           TEXT NOT NULL,
+      -- 색인용 텍스트 — 조립 프리픽스가 **있을 때만** 채운다(없으면 NULL = 원문 사용).
+      -- 아래 transcripts_fts_src 뷰 주석 참조. 원문(content)은 절대 안 건드린다.
+      content_indexed   TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_transcripts_sid_ts
       ON transcripts(claude_session_id, ts);
 
+    -- ★FTS 는 **조립 프리픽스를 뺀 텍스트**를 색인한다 (2026-08-10).
+    --  claude 어댑터는 SDK jsonl 을 색인하는데 그 "user 메시지" 는 우리가 넘긴 조립 프롬프트
+    --  전문(헌법+메모리+스킬 인덱스)이라, 사용자가 한 줄을 쳐도 25KB 가 저장된다. 원문은
+    --  **그대로 보존한다**("정리 ≠ 삭제") — 대신 파생물인 **색인**만 정상화한다.
+    --  실측: FTS 101.3MB → 47.0MB(−54MB), 검색 "게이트웨이" 154건 → 16건(138건이 헌법 오탐).
+    --
+    --  content_indexed 는 프리픽스가 **있을 때만** 채운다(없으면 NULL → 아래 뷰의
+    --  COALESCE 가 원문을 쓴다). 그래서 본문이 두 벌 저장되는 일이 없다.
+    --  ★뷰가 필요한 이유: FTS 의 rebuild 는 content= 소스를 **다시 읽는다**. 트리거에서만
+    --   걸러내면 rebuild 한 번에 조용히 되돌아간다(이 파일 아래쪽이 실제로 rebuild 를 부른다).
+    CREATE VIEW IF NOT EXISTS transcripts_fts_src AS
+      SELECT id, COALESCE(content_indexed, content) AS content_indexed, role FROM transcripts;
     CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
-      content, role,
-      content='transcripts', content_rowid='id',
+      content_indexed, role,
+      content='transcripts_fts_src', content_rowid='id',
       tokenize='trigram'
     );
     CREATE TRIGGER IF NOT EXISTS transcripts_ai AFTER INSERT ON transcripts BEGIN
-      INSERT INTO transcripts_fts(rowid, content, role)
-      VALUES (new.id, new.content, new.role);
+      INSERT INTO transcripts_fts(rowid, content_indexed, role)
+      VALUES (new.id, COALESCE(new.content_indexed, new.content), new.role);
     END;
     CREATE TRIGGER IF NOT EXISTS transcripts_ad AFTER DELETE ON transcripts BEGIN
-      INSERT INTO transcripts_fts(transcripts_fts, rowid, content, role)
-      VALUES ('delete', old.id, old.content, old.role);
+      INSERT INTO transcripts_fts(transcripts_fts, rowid, content_indexed, role)
+      VALUES ('delete', old.id, COALESCE(old.content_indexed, old.content), old.role);
     END;
     CREATE TRIGGER IF NOT EXISTS transcripts_au AFTER UPDATE ON transcripts BEGIN
-      INSERT INTO transcripts_fts(transcripts_fts, rowid, content, role)
-      VALUES ('delete', old.id, old.content, old.role);
-      INSERT INTO transcripts_fts(rowid, content, role)
-      VALUES (new.id, new.content, new.role);
+      INSERT INTO transcripts_fts(transcripts_fts, rowid, content_indexed, role)
+      VALUES ('delete', old.id, COALESCE(old.content_indexed, old.content), old.role);
+      INSERT INTO transcripts_fts(rowid, content_indexed, role)
+      VALUES (new.id, COALESCE(new.content_indexed, new.content), new.role);
     END;
 
     CREATE TABLE IF NOT EXISTS transcript_index (
@@ -882,13 +897,105 @@ const migrateFtsToTrigram = (handle: Database.Database): void => {
     handle.exec(`
       DROP TABLE transcripts_fts;
       CREATE VIRTUAL TABLE transcripts_fts USING fts5(
-        content, role,
-        content='transcripts', content_rowid='id',
+        content_indexed, role,
+        content='transcripts_fts_src', content_rowid='id',
         tokenize='trigram'
       );
       INSERT INTO transcripts_fts(transcripts_fts) VALUES('rebuild');
     `);
   }
+
+  // ── FTS 색인 대상 정상화 (2026-08-10) ────────────────────────────────────
+  // 조립 프리픽스(헌법+메모리+스킬 인덱스)가 원문과 함께 색인돼 있었다. 실측 178MB DB 에서
+  // FTS 가 101MB(원문의 2.76배)였고, 그중 대부분이 852행에 852벌 복제된 헌법이었다.
+  // 검색 품질도 같이 깎였다("게이트웨이" 154건 중 138건이 헌법 오탐).
+  // ★원문은 안 건드린다 — 바꾸는 건 파생물인 색인뿐이다("정리 ≠ 삭제").
+  // 판정 = FTS 정의가 새 소스를 가리키는가. 멱등(이미 마이그레이션됐으면 no-op).
+  const ftsSql = (
+    handle
+      .prepare(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='transcripts_fts'`,
+      )
+      .get() as { sql?: string } | undefined
+  )?.sql;
+  if (ftsSql !== undefined && !ftsSql.includes("transcripts_fts_src")) {
+    const hasCol = (
+      handle.prepare(`SELECT name FROM pragma_table_info('transcripts')`).all() as {
+        name: string;
+      }[]
+    ).some((c) => c.name === "content_indexed");
+    if (!hasCol) {
+      handle.exec(`ALTER TABLE transcripts ADD COLUMN content_indexed TEXT`);
+    }
+    // 트리거·FTS 를 먼저 걷어낸다 — 백필 UPDATE 가 트리거를 타면 헛돈다(곧 rebuild 한다).
+    handle.exec(`
+      DROP TRIGGER IF EXISTS transcripts_ai;
+      DROP TRIGGER IF EXISTS transcripts_ad;
+      DROP TRIGGER IF EXISTS transcripts_au;
+      DROP TABLE IF EXISTS transcripts_fts;
+    `);
+    const rows = handle
+      .prepare(
+        `SELECT id, content FROM transcripts WHERE content LIKE '<system-reminder>%'`,
+      )
+      .all() as { id: number; content: string }[];
+    const upd = handle.prepare(
+      `UPDATE transcripts SET content_indexed = ? WHERE id = ?`,
+    );
+    let changed = 0;
+    handle.transaction(() => {
+      for (const r of rows) {
+        const stripped = stripAssembledPrefixSql(r.content);
+        if (stripped !== r.content) {
+          upd.run(stripped, r.id);
+          changed += 1;
+        }
+      }
+    })();
+    handle.exec(`
+      DROP VIEW IF EXISTS transcripts_fts_src;
+      CREATE VIEW transcripts_fts_src AS
+        SELECT id, COALESCE(content_indexed, content) AS content_indexed, role FROM transcripts;
+      CREATE VIRTUAL TABLE transcripts_fts USING fts5(
+        content_indexed, role,
+        content='transcripts_fts_src', content_rowid='id',
+        tokenize='trigram'
+      );
+      CREATE TRIGGER transcripts_ai AFTER INSERT ON transcripts BEGIN
+        INSERT INTO transcripts_fts(rowid, content_indexed, role)
+        VALUES (new.id, COALESCE(new.content_indexed, new.content), new.role);
+      END;
+      CREATE TRIGGER transcripts_ad AFTER DELETE ON transcripts BEGIN
+        INSERT INTO transcripts_fts(transcripts_fts, rowid, content_indexed, role)
+        VALUES ('delete', old.id, COALESCE(old.content_indexed, old.content), old.role);
+      END;
+      CREATE TRIGGER transcripts_au AFTER UPDATE ON transcripts BEGIN
+        INSERT INTO transcripts_fts(transcripts_fts, rowid, content_indexed, role)
+        VALUES ('delete', old.id, COALESCE(old.content_indexed, old.content), old.role);
+        INSERT INTO transcripts_fts(rowid, content_indexed, role)
+        VALUES (new.id, COALESCE(new.content_indexed, new.content), new.role);
+      END;
+      INSERT INTO transcripts_fts(transcripts_fts) VALUES('rebuild');
+    `);
+    console.log(
+      `store: FTS 색인 정상화 — 조립 프리픽스 ${changed}행 분리(원문 보존), 색인 재구축 완료.`,
+    );
+  }
+};
+
+/**
+ * `stripAssembledPrefix`(memory.ts)와 **같은 판정**. 여기 복제본을 두는 이유는 마이그레이션이
+ * store 초기화 중에 돌아 memory.ts 를 import 하면 순환이 되기 때문이다. 판정이 갈리지 않도록
+ * 회귀(`fts-indexes-stripped-content`)가 두 구현의 결과를 대조한다.
+ */
+const stripAssembledPrefixSql = (content: string): string => {
+  if (typeof content !== "string") return "";
+  if (!content.startsWith("<system-reminder>")) return content;
+  const close = "</system-reminder>";
+  const i = content.lastIndexOf(close);
+  if (i === -1) return content;
+  const rest = content.slice(i + close.length).trim();
+  return rest === "" ? content : rest;
 };
 
 export const getSession = (

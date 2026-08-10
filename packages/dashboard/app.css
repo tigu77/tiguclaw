@@ -1420,3 +1420,12 @@
         font-size:11px; font-weight:800; cursor:pointer; }
       .settings-toggle.on { border-color:var(--accent-2); color:var(--accent-2); background:rgba(167,139,250,.12); }
       .settings-toggle:disabled { opacity:.5; cursor:default; }
+
+      /* ── 외부 호출 뷰 필터·종류 배지 (2026-08-10) ── */
+      .ep-filter-bar { display:flex; gap:6px; margin:8px 0 4px; }
+      .ep-filter { padding:4px 10px; border-radius:999px; border:1px solid var(--border);
+        background:transparent; color:var(--text-mute); font-size:11px; font-weight:700; cursor:pointer; }
+      .ep-filter.active { border-color:var(--accent-2); color:var(--accent-2); background:rgba(167,139,250,.12); }
+      .ep-kind { flex:none; padding:1px 6px; border-radius:6px; font-size:10px; font-weight:800; letter-spacing:.3px; }
+      .ep-kind-ep { background:rgba(125,211,252,.16); color:#7dd3fc; }
+      .ep-kind-gw { background:rgba(167,139,250,.16); color:#a78bfa; }

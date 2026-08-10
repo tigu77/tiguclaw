@@ -363,18 +363,47 @@
         // 이 뷰 범위 밖(§9 후속) → 조용히 무시.
       };
 
+      // ── 마지막 본 페이지 복원 (2026-08-10) ────────────────────────────────
+      // 종전엔 새로고침하면 무조건 채팅으로 갔다(아래 부팅 경로). 탭·초안은 이미
+      // 복원되는데 **어느 화면을 보고 있었는지**만 저장하는 키가 없었다.
+      // ★잘못된 값은 채팅으로 폴백한다 — 사라진 뷰로 복원하면 새로고침할 때마다 빈
+      //  화면에 갇힌다(탭 복원이 openTabs 에 없으면 기본 탭으로 가는 것과 같은 이유).
+      const VIEW_LS = "dash.activeView.v1";
+      const applyView = (view, opts) => {
+        if (view === "overview") showOverview();
+        else if (view === "providers") showProviders();
+        else if (view === "models") showModels();
+        else if (view === "inventory") showInventory();
+        else if (view === "projects") showProjects();
+        else if (view === "endpoints") showEndpoints();
+        else if (view === "activity") showActivityView();
+        else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); focusChatInput(); }
+        else if (view === "settings") showSettings();
+        else return false; // 모르는 뷰 — 호출부가 폴백한다.
+        // 모바일은 뷰를 열면 본문 탭으로(종전 동작 유지).
+        if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
+        if (opts && opts.persist === false) return true;
+        try { localStorage.setItem(VIEW_LS, view); } catch { /* quota·프라이빗 모드 */ }
+        return true;
+      };
+      // 부팅 복원 — 저장값이 없거나 못 그리면 채팅(기존 동작). 다른 모듈이 다 로드된
+      // 뒤에 돌도록 마이크로태스크 뒤로 미룬다(showX 들이 이 파일보다 뒤에 정의된다).
+      window.restoreLastView = () => {
+        let saved = null;
+        try { saved = localStorage.getItem(VIEW_LS); } catch { /* noop */ }
+        if (!saved || saved === "chat") return false;
+        try {
+          return applyView(saved, { persist: false }) === true;
+        } catch {
+          return false; // 렌더 실패 = 폴백(채팅). 갇히지 않는 게 우선.
+        }
+      };
+
       for (const btn of document.querySelectorAll(".nav-button")) {
         btn.addEventListener("click", () => {
           const view = btn.dataset.view;
-          if (view === "overview") showOverview();
-          else if (view === "providers") showProviders();
-          else if (view === "models") showModels();
-          else if (view === "inventory") showInventory();
-          else if (view === "projects") showProjects();
-          else if (view === "endpoints") showEndpoints();
-          else if (view === "activity") showActivityView();
-          else if (view === "chat") { setActiveNav("chat"); setChatPanel("chat"); setActiveTab("chat"); scrollChatToNewest(); focusChatInput(); }
-          else if (view === "settings") showSettings();
+          applyView(view);
+
           // 채널·에이전트 top-nav 제거(ADR 2026-07-17 §5 오픈이슈#1, Phase 3b-1) — 채널은 모듈 뷰
           // (data-view="providers")에 흡수, 실행 중 에이전트는 백그라운드 드로어 잡카드 소관.
           // 🖥️ 셸 top-nav 제거(ADR §5, Phase 3b-2) — 백그라운드 드로어 안 별도 섹션으로 이식

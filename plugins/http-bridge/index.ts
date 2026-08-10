@@ -26,6 +26,7 @@ import type {
   MessageHandler,
 } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
+import { listOutboundChannels } from "../../src/core/channel-outbound.js";
 import {
   registerExternalTurn,
   unregisterExternalTurn,
@@ -47,6 +48,8 @@ import {
   getDefaultProfileName,
   setDefaultProfile,
   setSuggestionEnabled,
+  setEgressChannels,
+  readEgressChannels,
   setModuleDisabled,
 } from "../../src/core/settings.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
@@ -1001,6 +1004,36 @@ class HttpBridge implements Channel, Observer {
         ...(gatewayAttachments.length > 0 ? { attachments: gatewayAttachments } : {}), // 비전.
         ...gatewayTools, // 함수콜 패스스루(externalTools/externalToolChoice, 없으면 미주입).
       };
+      // ── 게이트웨이 호출 기록 (2026-08-10) ────────────────────────────────
+      // ★게이트웨이는 **외부에 열린 표면**인데 정태님이 볼 자리가 없었다: transcripts 0건
+      //  (internal:true 라 의도적으로 안 남긴다 — 앱 데이터를 우리 DB 에 쌓을 이유가 없다),
+      //  events 는 llm.activity 뿐. "누가·언제·뭘·얼마나 썼나" 조차 남지 않았다.
+      //  엔드포인트가 2026-08-01 에 같은 병을 앓고 고쳤다(endpoint.call 을 SKIP 에서 뺌).
+      //  **본문은 안 남긴다** — 외부 앱 데이터라 PII 위험만 늘고, 필요한 건 회계·건강이다.
+      const gwCallId = crypto.randomUUID();
+      const gwStartedAt = Date.now();
+      const publishGatewayCall = (
+        phase: "start" | "done",
+        extra: Record<string, unknown> = {},
+      ): void => {
+        try {
+          this.bus?.publish({
+            type: "gateway.call",
+            ts: phase === "start" ? gwStartedAt : Date.now(),
+            payload: {
+              callId: gwCallId,
+              phase,
+              model: typeof body.model === "string" ? body.model : "(기본)",
+              stream: body.stream === true,
+              messages: messages.length,
+              ...extra,
+            },
+          });
+        } catch {
+          /* 관측 발행 실패가 응답을 무르지 않는다(원칙 3). */
+        }
+      };
+      publishGatewayCall("start");
       const specOpt = specs.length > 0 ? { specs } : undefined;
       const cid = `chatcmpl-${crypto.randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
@@ -1103,10 +1136,19 @@ class HttpBridge implements Channel, Observer {
             chunk({}, "stop");
           }
           res.write("data: [DONE]\n\n");
+          publishGatewayCall("done", {
+            ok: true,
+            inputTokens: out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0,
+            outputTokens: out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0,
+            toolCalls: (out.externalToolCalls ?? []).length,
+            elapsedMs: Date.now() - gwStartedAt,
+            ...(typeof out.model === "string" && out.model !== "" ? { servedBy: out.model } : {}),
+          });
         } catch (e) {
-          res.write(
-            `data: ${JSON.stringify({ error: { message: e instanceof Error ? e.message : String(e) } })}\n\n`,
-          );
+          const reason = e instanceof Error ? e.message : String(e);
+          res.write(`data: ${JSON.stringify({ error: { message: reason } })}\n\n`);
+          // 실패도 남긴다 — 스트리밍은 200 으로 시작해 중간에 깨지므로 상태코드로는 안 보인다.
+          publishGatewayCall("done", { ok: false, error: reason.slice(0, 300), elapsedMs: Date.now() - gwStartedAt });
         } finally {
           if (unsub !== null) safeUnsubscribe(unsub);
           if (unsubTool !== null) safeUnsubscribe(unsubTool);
@@ -1182,8 +1224,19 @@ class HttpBridge implements Channel, Observer {
           ],
           usage: { prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok },
         });
+        publishGatewayCall("done", {
+          ok: true,
+          inputTokens: inTok,
+          outputTokens: outTok,
+          toolCalls: toolCalls.length,
+          elapsedMs: Date.now() - gwStartedAt,
+          ...(typeof out.model === "string" && out.model !== "" ? { servedBy: out.model } : {}),
+        });
       } catch (e) {
-        writeJson(res, 502, { error: { message: e instanceof Error ? e.message : String(e) } });
+        const reason = e instanceof Error ? e.message : String(e);
+        writeJson(res, 502, { error: { message: reason } });
+        // 실패도 남긴다 — 외부 표면의 건강은 성공만 봐선 안 보인다.
+        publishGatewayCall("done", { ok: false, error: reason.slice(0, 300), elapsedMs: Date.now() - gwStartedAt });
       } finally {
         gatewayInflight -= 1;
       }
@@ -1252,6 +1305,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write"
               : pathname === "/set-session-profile" && method === "POST"
                 ? "write" // ★누락돼 있었다(2026-07-28) — required=null 로 게이트를 통과해 **read 토큰이 세션 프로파일을 변경**할 수 있었다.
+              : pathname === "/set-egress" && method === "POST"
+                ? "write" // 설정 파일을 쓴다(위 set-session-profile 누락 전례 참조).
               : pathname === "/set-suggestion" && method === "POST"
                 ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
               : pathname === "/set-module-enabled" && method === "POST"
@@ -1719,6 +1774,48 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
+    // /set-egress — "이 답도 함께 보낼" 추가 채널(전역). write 게이트(위 role 표).
+    // body { channels: string[] }. settings.json 의 egress.channels 한 키만
+    // read-modify-write. ★서버에 두는 이유: 브라우저에만 있으면 서버가 스스로 만드는
+    // 발화(워커 완료·스케줄·파일감시)가 사용자가 켠 걸 몰라 fan-out 을 못 탄다.
+    if (pathname === "/set-egress" && method === "POST") {
+      let ebody: Record<string, unknown>;
+      try {
+        ebody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      if (!Array.isArray(ebody.channels)) {
+        writeJson(res, 400, { error: "channels(string[]) required" });
+        return;
+      }
+      const known = new Set(listOutboundChannels());
+      const channels = ebody.channels.filter(
+        (c): c is string => typeof c === "string" && known.has(c),
+      );
+      // 오타·사라진 채널은 조용히 버린다 — 댕글링 좌표를 저장하면 영구 무발신이 된다
+      // (add_schedule dest_channel 이 그렇게 당했다).
+      try {
+        setEgressChannels(channels);
+        writeJson(res, 200, { ok: true, channels, available: [...known] });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
+    // /egress — 현재 값 + 지금 가능한 채널. 대시보드 셀렉터가 이걸로 그린다.
+    if (pathname === "/egress" && method === "GET") {
+      writeJson(res, 200, {
+        channels: readEgressChannels(),
+        available: listOutboundChannels(),
+      });
+      return;
+    }
+
     // /suggestion — 현재 값 조회(설정 화면 초기 렌더용). read 게이트 기본.
     if (pathname === "/suggestion" && method === "GET") {
       writeJson(res, 200, { enabled: readSuggestionSettings().enabled });
@@ -1990,8 +2087,18 @@ class HttpBridge implements Channel, Observer {
         const n = raw !== null ? parseInt(raw, 10) : NaN;
         const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 60;
         // 한 호출이 start/done 2건이므로 넉넉히 읽어 callId 로 접는다(done 이 start 를 대체).
-        const rows = listEvents({ types: ["endpoint.call"], limit: limit * 3 });
-        const byCall = new Map<string, { ts: number; payload: Record<string, unknown> }>();
+        // ★엔드포인트와 게이트웨이를 **한 목록으로** 준다 (2026-08-10). 둘 다 "외부가
+        //  나를 호출한 기록" 이라 사용자가 보는 질문이 같다("누가·언제·뭘·얼마나").
+        //  화면을 둘로 나누면 같은 판단이 두 곳에 생기고, 어느 쪽을 봐야 할지도 매번
+        //  고민거리가 된다. 구분은 `kind` 필드로 주고 필터는 뷰가 한다.
+        const rows = listEvents({
+          types: ["endpoint.call", "gateway.call"],
+          limit: limit * 3,
+        });
+        const byCall = new Map<
+          string,
+          { ts: number; kind: string; payload: Record<string, unknown> }
+        >();
         for (const r of rows) {
           // ★`PersistedEvent.payload` 는 **JSON 문자열**이다(객체 아님). 캐스팅으로 넘기면
           //  조용히 빈 값이 나간다 — tsc 가 잡아줬다.
@@ -2005,11 +2112,13 @@ class HttpBridge implements Channel, Observer {
           } catch {
             continue; // 깨진 행은 건너뛴다(한 행이 이력 전체를 막지 않게).
           }
-          const id = String(pl.callId ?? r.ts);
+          const kind = r.type === "gateway.call" ? "gateway" : "endpoint";
+          // callId 는 각 축에서만 유일하므로 kind 를 섞어 키를 만든다(충돌 0).
+          const id = `${kind}:${String(pl.callId ?? r.ts)}`;
           const prev = byCall.get(id);
           // done(phase!=="start") 이 start 를 이긴다. 같은 phase 면 나중 것.
           if (prev === undefined || pl.phase !== "start" || prev.payload.phase === "start") {
-            byCall.set(id, { ts: r.ts, payload: pl });
+            byCall.set(id, { ts: r.ts, kind, payload: pl });
           }
         }
         // ★start 만 있고 done 이 없는 호출 = **끝을 못 본 호출**(데몬 재시작 등).
@@ -2024,13 +2133,14 @@ class HttpBridge implements Channel, Observer {
             c.payload.phase === "start" && now - c.ts > STALE_MS
               ? {
                   ts: c.ts,
+                  kind: c.kind,
                   ...c.payload,
                   phase: "done",
                   ok: false,
                   response:
                     "(완료 기록 없음 — 데몬 재시작 등으로 중단된 호출입니다. 생성 중이던 응답은 남지 않았습니다.)",
                 }
-              : { ts: c.ts, ...c.payload },
+              : { ts: c.ts, kind: c.kind, ...c.payload },
           );
         writeJson(res, 200, { calls, generatedAt: new Date().toISOString() });
       } catch (e) {

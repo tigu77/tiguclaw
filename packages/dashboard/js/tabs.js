@@ -200,6 +200,17 @@
         plus.title = "새 세션";
         plus.addEventListener("click", newTab);
         sessionTabsEl.appendChild(plus);
+        // ★활성 탭이 보이는 자리로 스크롤 (2026-08-10 사용자 지적). 탭이 늘면 활성 탭이
+        //  스트립 밖으로 나가는데, 종전엔 따라가는 코드가 **한 곳도 없어** 채팅에 들어와도
+        //  지금 어느 탭인지 눈으로 못 찾았다(특히 새로고침 직후 마지막 탭 복원 시).
+        //  ★block:"nearest" — 이미 보이면 안 움직인다(불필요한 스크롤 튐 0). inline 만
+        //   가로 스트립 기준으로 맞춘다. 세로 페이지 스크롤을 건드리지 않는 게 중요하다.
+        try {
+          const activeEl = sessionTabsEl.querySelector(".session-tab.active");
+          if (activeEl && activeEl.scrollIntoView) {
+            activeEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        } catch { /* 구형 브라우저 — 스크롤만 안 따라갈 뿐 무해 */ }
       };
       onTurnsChanged = renderTabBar; // activeTurns 변경 시 진행 뱃지 갱신(refreshWorking 훅).
 

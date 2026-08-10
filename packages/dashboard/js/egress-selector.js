@@ -8,21 +8,34 @@
       // 공유 상태 egressChecked(체크된 채널명 Set) — 전송 시 배열로 읽힌다.
       // §0/채널레이어: 채널명→라벨은 대시보드 UI 컨벤션(generic 폴백, channel-hints 동형).
       const egressChecked = new Set(); // 체크된 추가 발신 채널명.
-      // ★영속 (2026-07-26) — 종전엔 메모리에만 있어 새로고침·데몬 재시작마다 꺼졌다("재시작하면
-      //   꺼지는거같더라고"). 열린 탭 목록과 같은 부류의 **클라이언트 UI 선호**라 localStorage.
-      //   서버에 안 두는 이유: 기기·브라우저마다 다를 수 있고, 발신 좌표가 아니라 화면 설정이다.
-      const EGRESS_LS = "dash.egressChannels.v1";
-      const loadEgressSaved = () => {
+      // ★2026-08-10: localStorage → **서버(settings.json)**. 종전 주석은 이걸 "발신 좌표가
+      //   아니라 화면 설정" 이라 적어놨는데 **틀렸다** — 메시지를 어디로 보낼지 정하는
+      //   동작 설정이다. 브라우저에만 있으니 **서버는 사용자가 켠 걸 몰랐고**, 그래서
+      //   서버가 스스로 만드는 발화(워커 완료 재주입·스케줄·파일감시)는 fan-out 을 못 탔다.
+      //   실사고: 몇 시간짜리 매니저가 끝났는데 텔레그램으로 안 왔다.
+      //   전역인 성질은 그대로다(탭 구분 없음) — 기기를 바꿔도 따라온다는 점만 늘었다.
+      // 서버가 정본. 렌더는 동기라 **캐시를 읽고**, 갱신은 비동기로 따로 돈다.
+      let egressSavedCache = new Set();
+      const loadEgressSaved = () => egressSavedCache;
+      const fetchEgressSaved = async () => {
         try {
-          const a = JSON.parse(localStorage.getItem(EGRESS_LS) || "[]");
-          return new Set(Array.isArray(a) ? a.filter((x) => typeof x === "string") : []);
-        } catch { return new Set(); } // 프라이빗 모드·손상 값 → 기본(꺼짐).
+          const r = await fetch("/api/egress");
+          if (!r.ok) return;
+          const d = await r.json();
+          egressSavedCache = new Set(
+            Array.isArray(d.channels) ? d.channels.filter((x) => typeof x === "string") : [],
+          );
+        } catch { /* 조회 실패 = 기본(꺼짐). 서버가 정본이라 다음 갱신에 맞춰진다. */ }
       };
       // ★사용자가 직접 바꿀 때만 저장한다. 후보 정리(stale prune)로는 저장하지 않는다 —
       //   텔레그램이 잠깐 down 이면 후보에서 빠지는데 그때 저장해 버리면 선택이 **영구 소실**
-      //   된다(사용자는 끈 적이 없다). 저장본은 남기고 이번 세션 메모리만 정리한다.
+      //   된다(사용자는 끈 적이 없다). 저장본은 남기고 이번 화면 메모리만 정리한다.
       const saveEgressChoice = () => {
-        try { localStorage.setItem(EGRESS_LS, JSON.stringify([...egressChecked])); } catch { /* quota·프라이빗 모드 */ }
+        fetch("/api/set-egress", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channels: [...egressChecked] }),
+        }).catch(() => { /* 저장 실패 — 다음 토글에 다시 시도(서버가 정본) */ });
       };
       const egressBoxEl = document.getElementById("chat-egress");        // 옵션 팝오버(체크박스 목록).
       const egressBtnEl = document.getElementById("chat-egress-btn");    // 📤 도구 버튼(팝오버 토글).
@@ -42,6 +55,7 @@
         if (egressBtnEl) egressBtnEl.setAttribute("aria-expanded", "false");
       };
       const populateEgressChannels = async () => {
+        await fetchEgressSaved(); // 서버 정본 먼저 — 아래 복원이 그 값을 쓴다.
         if (!egressBoxEl) return;
         let channels = [];
         try {

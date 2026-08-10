@@ -18,6 +18,8 @@
  *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
  *  - POST /api/set-suggestion → bridge POST /set-suggestion (write, 다음 메시지 제안 on/off)
  *  - GET  /api/suggestion → bridge GET /suggestion (read, 현재 값)
+ *  - POST /api/set-egress → bridge POST /set-egress (write, 함께 보낼 채널)
+ *  - GET  /api/egress → bridge GET /egress (read, 현재 값 + 가능 채널)
  *  - POST /api/set-session-profile → bridge POST /set-session-profile (write, 이 세션(탭)만 sticky 프로파일)
  *  - POST /api/set-module-enabled → bridge POST /set-module-enabled (write, 모듈 활성/비활성 — P4a-2)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
@@ -429,6 +431,20 @@ const server = http.createServer((req, res) => {
         headers: { "Content-Type": "application/json" },
         body,
       });
+      return;
+    }
+    // egress 채널(전역) — 컴포저 셀렉터가 읽고 쓴다. write 토큰은 server-side 주입.
+    if (pathname === "/api/set-egress" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-egress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    if (pathname === "/api/egress" && method === "GET") {
+      await proxyJson(res, "/egress", { method: "GET" });
       return;
     }
     // 현재 값 조회 — 설정 화면 초기 렌더용(읽기).

@@ -355,13 +355,28 @@
       // ★드로어를 여는 순간 서버와 맞춘다 (2026-08-02) — **보는 순간이 정확해야 할 순간**이다.
       //  종전엔 대조가 부팅·SSE재연결에만 걸려 있어, 닫아둔 사이 끝난 잡이 "진행 중" 으로
       //  굳은 채 열렸다(그 worker.done 은 이미 지나갔고 다시 오지 않는다).
+      // ★열림 여부도 기억한다 (2026-08-10). 폭(tc:bgPanelWidth)은 이미 저장되고 있었는데
+      //  **열려 있었는지**만 없어서, 새로고침하면 늘 닫힌 채로 시작했다. 진행 중인 작업을
+      //  보려고 열어둔 사람에겐 그게 매번 다시 여는 일이 된다.
+      const BG_OPEN_LS = "dash.bgOpen.v1";
+      const rememberBgOpen = (on) => {
+        try { localStorage.setItem(BG_OPEN_LS, on ? "1" : "0"); } catch { /* quota·프라이빗 */ }
+      };
       const openBg = () => {
         document.body.classList.add("bg-open");
         bgPanel.setAttribute("aria-hidden", "false");
         updateBgJump();
+        rememberBgOpen(true);
         if (typeof window.resyncBackground === "function") window.resyncBackground();
       };
-      const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); };
+      // 부팅 복원 — 모바일은 제외한다. 좁은 화면에서 드로어는 전면을 덮어서, 켜둔 채
+      // 새로고침하면 채팅이 가려진 채로 시작한다(PC 는 옆으로 밀어 공존한다).
+      try {
+        const wasOpen = localStorage.getItem(BG_OPEN_LS) === "1";
+        const narrow = window.matchMedia("(max-width: 900px)").matches;
+        if (wasOpen && !narrow) openBg();
+      } catch { /* 조회 실패 = 닫힌 채 시작(기존 동작) */ }
+      const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); rememberBgOpen(false); };
       // 프로젝트 상세의 compact 카드 클릭 → bg 패널 열고 그 잡으로 스크롤·펼침(자세히는 여기서).
       //   best-effort: 잡이 현재 bg 스코프 필터에 안 걸려 미렌더면 패널만 열림(스코프는 존중).
       window.focusBgJob = (jobId) => {

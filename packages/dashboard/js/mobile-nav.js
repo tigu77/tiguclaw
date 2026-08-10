@@ -101,3 +101,10 @@
       if (mnDetailBack) mnDetailBack.addEventListener("click", () => mnSetDetail(false));
       // 뷰 전환(data-view 변경) 시 상세 초기화 — 새 뷰는 리스트부터.
       new MutationObserver(() => mnSetDetail(false)).observe(mnBody, { attributes: true, attributeFilter: ["data-view"] });
+
+      // ── 마지막 본 페이지 복원 (2026-08-10) ────────────────────────────────
+      // 모든 뷰 모듈(showX)이 정의된 **뒤**여야 하므로 로드 순서상 마지막인 여기서 부른다.
+      // 실패·미저장이면 아무것도 안 하고 기존 동작(채팅)으로 남는다 — 갇히지 않는 게 우선.
+      try {
+        if (typeof window.restoreLastView === "function") window.restoreLastView();
+      } catch { /* 복원 실패 = 채팅 유지 */ }

@@ -522,10 +522,19 @@ export const appendTranscript = (input: {
 }): void => {
   if (input.content === "") return;
   const db = requireDb("appendTranscript");
+  // content_indexed — 조립 프리픽스가 있을 때만 채운다(없으면 NULL = 원문을 색인).
+  // 원문(content)은 그대로 저장한다: 바꾸는 건 파생물인 색인뿐이다("정리 ≠ 삭제").
+  const indexed = stripAssembledPrefix(input.content);
   db.prepare(
-    `INSERT INTO transcripts (claude_session_id, ts, role, content)
-     VALUES (?, ?, ?, ?)`,
-  ).run(input.claudeSessionId, input.ts ?? Date.now(), input.role, input.content);
+    `INSERT INTO transcripts (claude_session_id, ts, role, content, content_indexed)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    input.claudeSessionId,
+    input.ts ?? Date.now(),
+    input.role,
+    input.content,
+    indexed === input.content ? null : indexed,
+  );
 };
 
 export const indexJsonlIfNeeded = (input: {
@@ -611,8 +620,8 @@ export const indexJsonlIfNeeded = (input: {
   }
 
   const insert = db.prepare(
-    `INSERT INTO transcripts (claude_session_id, ts, role, content)
-     VALUES (?, ?, ?, ?)`,
+    `INSERT INTO transcripts (claude_session_id, ts, role, content, content_indexed)
+     VALUES (?, ?, ?, ?, ?)`,
   );
   const upsertIndex = db.prepare(
     `INSERT INTO transcript_index (channel, thread_key, claude_session_id, jsonl_path, indexed_at, lines_indexed, bytes_indexed)
@@ -629,7 +638,17 @@ export const indexJsonlIfNeeded = (input: {
     for (const line of pending) {
       const parsed = parseJsonlLine(line);
       if (parsed === undefined) continue;
-      insert.run(claudeSessionId, parsed.ts, parsed.role, parsed.content);
+      // ★여기가 부풀던 자리다 — jsonl 의 user 메시지는 우리가 넘긴 **조립 프롬프트 전문**
+      //  (헌법+메모리+스킬 인덱스)이라 한 줄 입력이 25KB 로 들어온다. 원문은 그대로 넣고,
+      //  색인용만 프리픽스를 뺀다(같을 땐 NULL — 본문 이중 저장 0).
+      const idx = stripAssembledPrefix(parsed.content);
+      insert.run(
+        claudeSessionId,
+        parsed.ts,
+        parsed.role,
+        parsed.content,
+        idx === parsed.content ? null : idx,
+      );
       inserted++;
     }
     upsertIndex.run(

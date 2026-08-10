@@ -77,6 +77,7 @@
       //   **같은 callId** 로 보낸다. 종전엔 완료 이벤트 하나뿐이라 20초~5분 도는 동안 화면에
       //   아무것도 없었다("멈춘 것처럼 보인다" — 실제 엔드포인트가 20초+ 걸림).
       //   start 를 못 받은 옛 이벤트(callId 없음)는 그대로 완료 1건으로 취급(회귀 0).
+      let epFilter = "all"; // 뷰 필터(전체/엔드포인트/게이트웨이) — 화면 상태라 메모리로 충분.
       const captureEndpointCall = (p) => {
         const ts = Number(p && p.ts) || Date.now();
         const phase = (p && p.phase) || "done";
@@ -89,21 +90,38 @@
             prev.pending = false;
             prev.ok = (p && p.ok) !== false;
             prev.response = String((p && p.response) || "");
-            prev.durationMs = Number(p && p.durationMs) || (ts - prev.ts);
+            prev.durationMs =
+              Number(p && p.durationMs) || Number(p && p.elapsedMs) || (ts - prev.ts);
+            if (p && p.inputTokens != null) prev.inputTokens = Number(p.inputTokens) || 0;
+            if (p && p.outputTokens != null) prev.outputTokens = Number(p.outputTokens) || 0;
+            if (p && p.toolCalls != null) prev.toolCalls = Number(p.toolCalls) || 0;
+            if (p && p.servedBy) prev.servedBy = String(p.servedBy);
+            if (p && p.error) prev.error = String(p.error);
             renderEndpointsView();
             return;
           }
         }
         if (epSeenTs.has(ts)) return;
         epSeenTs.add(ts);
+        // ★게이트웨이 호출도 같은 목록에 담는다 (2026-08-10). 둘 다 "외부가 나를 호출한
+        //  기록" 이라 사용자가 던지는 질문이 같다 — 화면을 둘로 나눌 이유가 없다.
+        //  게이트웨이는 본문을 안 남기고(외부 앱 데이터) **회계·건강 축**만 온다.
+        const kind = (p && p.kind) === "gateway" ? "gateway" : "endpoint";
         endpointLog.push({
-          ts, callId,
+          ts, callId, kind,
           pending: phase === "start",
-          name: String((p && p.name) || "endpoint"),
+          name: kind === "gateway"
+            ? String((p && p.model) || "(기본)")
+            : String((p && p.name) || "endpoint"),
           ok: (p && p.ok) !== false,
           request: String((p && p.request) || ""),
           response: String((p && p.response) || ""),
-          durationMs: Number(p && p.durationMs) || 0,
+          durationMs: Number(p && p.durationMs) || Number(p && p.elapsedMs) || 0,
+          inputTokens: Number(p && p.inputTokens) || 0,
+          outputTokens: Number(p && p.outputTokens) || 0,
+          toolCalls: Number(p && p.toolCalls) || 0,
+          servedBy: String((p && p.servedBy) || ""),
+          error: String((p && p.error) || ""),
         });
         endpointLog.sort((x, y) => x.ts - y.ts);
         if (endpointLog.length > EP_MAX) { for (const d of endpointLog.splice(0, endpointLog.length - EP_MAX)) epOpen.delete(d.ts); }
@@ -147,19 +165,38 @@
         root.innerHTML = "";
         const wrap = document.createElement("div"); wrap.className = "page-view";
         const head = document.createElement("div"); head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent"></div><div class="detail-name">엔드포인트 호출</div><span class="detail-kind">API 활동</span>';
+        head.innerHTML = '<div class="detail-accent"></div><div class="detail-name">외부 호출</div><span class="detail-kind">API 활동</span>';
         wrap.appendChild(head);
         const desc = document.createElement("p"); desc.className = "ep-view-desc";
-        desc.textContent = "외부 앱이 커스텀 HTTP 엔드포인트로 호출한 기록입니다(채팅과 분리, 읽기 전용). 헤더를 누르면 요청·응답 전문이 펼쳐집니다. 기록은 DB 에 영속되어 새로고침·재시작 후에도 남습니다.";
+        desc.textContent = "외부가 나를 호출한 기록입니다 — 커스텀 엔드포인트와 LLM 게이트웨이(OpenAI 호환). 읽기 전용이고 DB 에 영속됩니다. 게이트웨이는 앱 데이터를 남기지 않아 본문 없이 회계·건강만 기록합니다.";
         wrap.appendChild(desc);
-        if (endpointLog.length === 0) {
+        // ── 필터 (2026-08-10) — 한 페이지에서 축을 나눠 본다(사용자 결정). ──────
+        const bar = document.createElement("div"); bar.className = "ep-filter-bar";
+        const counts = {
+          all: endpointLog.length,
+          endpoint: endpointLog.filter((d) => d.kind !== "gateway").length,
+          gateway: endpointLog.filter((d) => d.kind === "gateway").length,
+        };
+        for (const [key, label] of [["all","전체"],["endpoint","엔드포인트"],["gateway","게이트웨이"]]) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "ep-filter" + (epFilter === key ? " active" : "");
+          b.textContent = `${label} ${counts[key]}`;
+          b.addEventListener("click", () => { epFilter = key; renderEndpointsView(); });
+          bar.appendChild(b);
+        }
+        wrap.appendChild(bar);
+        const shown = endpointLog.filter(
+          (d) => epFilter === "all" || (epFilter === "gateway" ? d.kind === "gateway" : d.kind !== "gateway"),
+        );
+        if (shown.length === 0) {
           const empty = document.createElement("div"); empty.className = "ep-empty";
           empty.textContent = "아직 엔드포인트 호출이 없습니다.";
           wrap.appendChild(empty);
         } else {
           const list = document.createElement("div"); list.className = "ep-view-list";
-          for (let i = endpointLog.length - 1; i >= 0; i--) { // 최신 먼저.
-            const e = endpointLog[i];
+          for (let i = shown.length - 1; i >= 0; i--) { // 최신 먼저(필터 적용분).
+            const e = shown[i];
             const open = epOpen.has(e.ts);
             // 상태 3종: ⏳ 진행 중(경과시간 실시간) → ✅ 완료 / ⚠ 실패(소요시간).
             const state = e.pending ? " ep-pending" : e.ok ? " ep-out" : " ep-err";
@@ -168,9 +205,12 @@
             const car = document.createElement("span"); car.className = "ep-caret"; car.textContent = "▶";
             const st = document.createElement("span"); st.className = "ep-item-state";
             st.textContent = e.pending ? "⏳ 진행 중" : e.ok ? "✅ 완료" : "⚠ 실패";
+            const kb = document.createElement("span");
+            kb.className = "ep-kind " + (e.kind === "gateway" ? "ep-kind-gw" : "ep-kind-ep");
+            kb.textContent = e.kind === "gateway" ? "GW" : "EP";
             const nm = document.createElement("span"); nm.className = "ep-item-name"; nm.textContent = e.name;
             const tm = document.createElement("span"); tm.className = "ep-item-time"; tm.textContent = fmtTime(e.ts);
-            h.appendChild(car); h.appendChild(st); h.appendChild(nm);
+            h.appendChild(car); h.appendChild(st); h.appendChild(kb); h.appendChild(nm);
             if (e.pending) { // 살아 있다는 신호 — 1초마다 갱신(전체 재렌더 없이 텍스트만).
               const el = document.createElement("span"); el.className = "ep-item-elapsed";
               el.dataset.ts = String(e.ts); el.textContent = fmtElapsed(Date.now() - e.ts);

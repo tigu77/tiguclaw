@@ -653,6 +653,63 @@ export const setDefaultProfile = (name: string): void => {
 };
 
 /**
+ * egress 채널 — "이 답도 함께 보낼" 추가 채널 목록. `egress.channels` (문자열 배열).
+ *
+ * ★브라우저 localStorage 에 있던 것을 서버로 올렸다 (2026-08-10). 종전 주석은
+ *  *"발신 좌표가 아니라 화면 설정"* 이라 적어놨는데 **틀렸다** — 이건 메시지를 어디로
+ *  보낼지 정하는 값이라 동작 설정이다. 브라우저에만 있으니 **서버는 사용자가 켠 걸
+ *  아예 몰랐고**, 그래서 서버가 스스로 만드는 발화(워커 완료 재주입·스케줄·파일감시)는
+ *  구조적으로 fan-out 을 못 탔다. 실사고: 몇 시간짜리 매니저가 끝났는데 텔레그램으로
+ *  안 왔다 — 정작 그 자리에 없을 확률이 가장 높은 경우다.
+ *
+ * ★전역이다(세션별 아님). 컴포저 토글이 원래 탭 구분 없는 단일 집합이었고, 그걸
+ *  세션별로 쪼개면 한 번 켠 게 새 탭마다 꺼져 사용자 기대와 어긋난다.
+ */
+export const readEgressChannels = (cwd?: string): string[] => {
+  try {
+    for (const layer of loadSettingsLayers(cwd)) {
+      const e = (layer as { egress?: unknown }).egress;
+      if (typeof e !== "object" || e === null) continue;
+      const raw = (e as { channels?: unknown }).channels;
+      if (!Array.isArray(raw)) continue;
+      return raw.filter(
+        (x): x is string => typeof x === "string" && x.trim() !== "",
+      );
+    }
+  } catch {
+    /* 읽기·파싱 실패 = 없음(never throw) */
+  }
+  return [];
+};
+
+/** `egress.channels` **한 키만** 병합 수정 — setDefaultProfile 동형(다른 키 보존). */
+export const setEgressChannels = (channels: string[]): void => {
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* 부재/파싱 실패 → 최소 {} 신설 */
+  }
+  const existing = root.egress;
+  const egress: Record<string, unknown> =
+    existing !== null && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  egress.channels = channels.filter(
+    (c) => typeof c === "string" && c.trim() !== "",
+  );
+  root.egress = egress;
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+};
+
+/**
  * 다음 메시지 제안 on/off — `suggestions.nextMessage.enabled` **한 키만** 병합 수정.
  *
  * `setDefaultProfile` 과 같은 패턴이다(read-modify-write + 원자적 rename): 손으로 넣은

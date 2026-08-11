@@ -159,12 +159,21 @@ export const listMemoriesForIndex = (
   const db = requireDb("listMemoriesForIndex");
   // 인덱스 티어링(계약 §3.2): archived_at IS NULL — 아카이브분은 always-on 핫셋에서
   // 제외(FTS/searchMemories 로는 여전히 도달, §3.3 무변경).
+  // ★hot-first 정렬 (2026-08-11). 종전엔 `updated_at DESC` — **최근에 고친 것**이 남고
+  //  오래 안 건드린 것이 잘렸다. 그런데 남아야 할 것은 *최근에 고친 것*이 아니라
+  //  **자주 쓰이는 것**이다. 실측: 82회 읽힌 리포트 시각 선호와 69회 읽힌 뉴스 선호가
+  //  6월 갱신이라는 이유로 잘려 나갔고, 0회짜리 사실들이 더 최근이라 실렸다.
+  //  (위 bumpAccess 주석이 예고한 "미래 hot-first 정렬" 이 여기다 — 그때는 전량 0이라
+  //   미뤘고, 지금은 169건 중 163건이 읽힌 기록을 갖는다.)
+  //
+  //  동률·미사용분은 `updated_at DESC` 로 갈라 종전 동작을 유지한다(신규 메모리가
+  //  0회라고 맨 뒤로 밀리지 않게 — 방금 적은 것은 곧 쓰인다).
   const rows = db
     .prepare(
       `SELECT type, name, description
        FROM memories
        WHERE archived_at IS NULL
-       ORDER BY updated_at DESC`,
+       ORDER BY access_count DESC, updated_at DESC`,
     )
     .all() as Pick<MemoryRow, "type" | "name" | "description">[];
 

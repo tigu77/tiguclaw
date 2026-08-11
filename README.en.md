@@ -182,7 +182,7 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 
 ### Day to day
 
-- **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | stop | start | logs | doctor | uninstall` work from any folder, like a real app. *(Inside the repo, `npm run daemon:*` works too.)*
+- **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | stop | start | update | logs | doctor | uninstall` work from any folder, like a real app. **`update` doubles as the repair command** — see [Updating](#updating). *(Inside the repo, `npm run daemon:*` works too.)*
 - **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:stop | daemon:start | daemon:logs`.
 - **Pause vs remove** — `daemon:stop` stops the process but keeps it registered (it still auto-starts at next login); `daemon:start` resumes it. `daemon:uninstall` removes the registration entirely.
 - **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
@@ -204,13 +204,16 @@ A few notes:
   - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
   - **Windows** → registry Run key (HKCU — **no admin needed**; starts at logon, runs hidden). No crash-restart; for full KeepAlive run under **WSL2**.
   - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
-- **Lifecycle always works, even if deps break** — install / uninstall / restart / stop / start run on plain Node (no build step, no `tsx`), so you can still stop or remove the service even when `node_modules` is broken or missing. If `npm ci` ever fails with a file-lock error (`EPERM` on a native module), it's because the running daemon is holding the file — just `tiguclaw stop` (or `npm run daemon:stop`), then `npm ci`, then `tiguclaw start`.
+- **Lifecycle always works, even if deps break** — install / uninstall / restart / stop / start / **update** run on plain Node (no build step, no `tsx`), so you can stop, remove, or **repair with `tiguclaw update`** even when `node_modules` is broken or missing.
+- **If something is broken, `tiguclaw update` is the one command.** It stops the daemon, runs `npm ci`, rebuilds, and starts again — rolling back if any step fails. ★Don't run `npm ci` yourself: while the daemon is running it holds the native module file (`EPERM`), so the install silently leaves you without it. That's how a working setup gets broken. Stopping first is exactly why `update` exists.
 
 ### Updating
 
 Just **ask it** — "update yourself" (or send `/update`). It pulls the latest code, restarts, and pings you when it's back. Your memory, sessions, and settings carry over — updates only touch the code, never your data. If an update can't produce runnable code, it rolls back and keeps running the previous version (you're never left with a dead daemon).
 
-Prefer to do it by hand? From the repo: `git pull && npm run daemon:restart`. *(In built mode, add `npm run build:prod` before the restart — the in-app update does this for you.)*
+Prefer the terminal? Run **`tiguclaw update`** — it does the same thing (stop → pull → `npm ci` → rebuild → start, rolling back on failure), and it still works when the daemon won't even boot.
+
+★Don't run `git pull` or `npm ci` by hand. Miss one step — especially `npm ci` without stopping first — and the native module won't install, leaving the daemon unable to start. `update` knows the order.
 
 ### Reinstalling & runtime mode
 

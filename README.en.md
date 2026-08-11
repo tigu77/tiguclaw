@@ -10,6 +10,11 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
   <img src="assets/banner.jpg" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
+<p align="center">
+  <img src="assets/dashboard.png" alt="tiguclaw dashboard — chat, tool steps, background jobs panel" width="900">
+  <br><sub>The web dashboard — every step as it happens, with managers and sub-agents running live in the side panel.</sub>
+</p>
+
 **Just want to install it? → [Quick start](#quick-start)** (`npm ci`, then `npm run onboard`). Everything below is what it can do.
 
 ## What it does
@@ -22,12 +27,16 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
 - **Talk, don't type** — send a voice note on Telegram or press-and-hold the mic in the dashboard; it transcribes and gets to work. Transcription is config-driven like everything else — a local model or a cloud one, your call.
 - **Say something mid-task** — send a message while it's already working and it folds it into the turn in progress, instead of making you wait for the end or start over.
 - **One personality, many channels** — Telegram, CLI, HTTP, and a built-in web dashboard all reach the same assistant, sharing one conversation memory. The dashboard is a full chat: live step-by-step progress as it works (each step shows what it touched), replies that stream in, and scrollback that survives restarts. A side panel tracks background jobs — their status, steps, and results — so you can watch long work without leaving the conversation.
-- **Delegates the heavy & the trivial** — hands long tasks to a background worker (so it stays chatty), and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
+- **Delegates the heavy & the trivial** — hands long tasks to a background **manager** (so it stays chatty), and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
 - **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Always a proposal you approve — it never rewrites itself silently.
 - **Notices its own trouble** — it sweeps its own recent history for things that went wrong quietly (a scheduled message that never arrived, a job that died) and tells you first. Where the fix is safe and reversible — resending that one message, say — it just does it and says so; anything else it brings to you.
 - **When it stalls, it says so** — if a tool hangs with no response, it tells you on screen, and pings your Telegram if that's where you were talking. If nothing comes back it cuts the turn. No more wondering whether it's working or stuck.
 - **Rename a conversation by asking** — "call this one 'billing refactor'" is enough. Handy once several conversations are running at once.
 - **Your data stays home** — sessions, memory, and the database all live locally under `~/.tiguclaw`.
+- **Ask from the dashboard, get pinged on Telegram** — flip 📤 in the composer to mirror replies to another channel, so long jobs that finish while you're away still reach your phone. **Reply to that message and it lands back in the conversation that produced it** — even when several conversations share one chat.
+- **It suggests your next message** *(off by default)* — after a turn, a grey draft sits in the composer; Tab (or tap the input on mobile) fills it in. Sending is still yours. It costs a few tokens per turn, so you turn it on in **Settings**.
+- **Outbound calls are logged too** — HTTP endpoints you opened and LLM gateway calls share one view. Not the content: just which model handled how many messages, with tokens, duration, and success.
+- **Refresh without losing your place** — the view you were on, your session tabs, and the background panel all come back.
 
 ## Highlights
 
@@ -37,8 +46,8 @@ A few things that set it apart from a plain chatbot:
 - **It fits in your pocket.** The dashboard is a real mobile UI, not a squeezed desktop one — drawer navigation, master-detail panels, a chat input that behaves on a phone keyboard. Check a long-running job or kick off a task from the couch, then finish it at your desk in the same conversation.
 - **Projects.** Point it at a folder with a `PROJECT.md` and it picks up that project's own skills, sub-agents, and MCP tools — delegate work per-project, each with exactly the right capabilities.
 - **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core. Full Claude Code MCP parity, and then some.
-- **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and workers run another; edit them just by asking, or list them with `/models`.
-- **Watch the work happen.** Sub-agents and long-running workers run as tracked jobs you follow in the dashboard — status, steps, results. It's Claude Code's Task tool, made observable.
+- **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and managers run another; edit them just by asking, or list them with `/models`.
+- **Watch the work happen.** Sub-agents and long-running managers run as tracked jobs you follow in the dashboard — status, steps, results. It's Claude Code's Task tool, made observable.
 - **Extend it by asking.** New slash commands, HTTP endpoints, scheduled jobs, reusable skills — it adds them as *data* under your home, never by patching the core (so updates stay clean).
 - **Use it as your apps' LLM backend.** Point any OpenAI-compatible client at the built-in gateway (`POST /v1/chat/completions`, `GET /v1/models`) and your own app inherits the whole pool — cross-provider fallback, images in, tool calls passed straight through, streaming if you ask for it. One endpoint instead of one SDK per provider. Off until you set a gateway token, and it answers as *your app*, never as the assistant.
 - **See what a turn costs — and what actually answered.** Every turn shows tokens in / out and the cache-hit rate right in the chat, so waste is visible instead of theoretical. Each reply, tool run, and background job is labelled with the model that *actually* produced it — which is not always the tier you asked for, once a rate limit sends work to a fallback. `/status` names any model that's cooling down.
@@ -59,7 +68,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 - "Compare two libraries for my use case and recommend one."
 
 **Long jobs, without the wait**
-- "Scrape these 40 pages and build a table." → it hands the heavy work to a background worker and keeps chatting, then pings you when it's done.
+- "Scrape these 40 pages and build a table." → it hands the heavy work to a background manager and keeps chatting, then pings you when it's done.
 - Routine, bulk, or simple tasks can go to a free local model — point a lower tier at `ollama` in your model profiles and that's where they land.
 
 **Remember & schedule**
@@ -369,7 +378,7 @@ Tune it live in `<home>/settings.json` — re-read on every request, so nothing 
 
 Worth knowing:
 
-- **It answers as your app, not as the assistant.** Your `system` message is used as-is — no tiguclaw persona, no tools, no skills, no memory — and gateway calls never show up in your conversations or dashboard. Calls run in an isolated working directory, so nothing leaks even if you send no `system` message. (Account details the LLM provider itself injects are outside tiguclaw's control.)
+- **It answers as your app, not as the assistant.** Your `system` message is used as-is — no tiguclaw persona, no tools, no skills, no memory — and gateway calls never mix into your conversations. They **do** leave a trace in the dashboard's **external call log** — not the content, only which model handled how many messages, with tokens, duration, and success (all on your own machine). Calls run in an isolated working directory, so nothing leaks even if you send no `system` message. (Account details the LLM provider itself injects are outside tiguclaw's control.)
 - **Function calling works on a subscription.** Send `tools` and the model returns `tool_calls` without executing them — whichever adapter runs the turn, no API key required. `tool_choice` (`"none"`, `"required"`, or a named function) is enforced.
 - **Every response is one of three things** — a tool call, text, or an explicit error. Never an empty success.
 - **Call it from your app's server**, not from a browser: the token is a shared secret and the port listens on localhost only.

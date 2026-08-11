@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-11
+
+### Added
+- **한 줄로 설치합니다.** macOS·Linux 는 `curl -fsSL .../install.sh | sh`, 윈도우는 `irm .../install.ps1 | iex`. 받고, 설치하고, 설정 마법사까지 이어집니다. 이미 깔려 있으면 덮지 않고 알려줍니다.
+- **공백이 들어간 이름도 태그로 걸 수 있습니다.** `#[Tigu Engine]` 처럼 대괄호로 감쌉니다 — 그동안 이름에 띄어쓰기가 있는 프로젝트는 태그를 **아예 걸 수 없었습니다**(`#Tigu` 에서 끊겼습니다). 칩을 누르면 알아서 맞는 모양으로 들어가고, 컨텍스트 바의 **＋ 새 태그** 로 커서 어디서든 새 태그를 만들 수 있습니다.
+- **데몬이 안 뜰 때 로그가 원인과 다음 행동을 알려줍니다.** 그동안은 조용히 죽어서 아무것도 안 남았습니다. 이제 왜 죽었는지와 함께 `tiguclaw update` 로 고치라고 안내합니다.
+
+### Fixed
+- **비서가 마지막 답을 쓰는 중에 보낸 메시지가 통째로 사라지던 것.** 답도 대기 표시도 없이 증발했습니다. 이제 그 메시지는 다음 턴으로 넘어갑니다.
+- **텔레그램에서 답장하면 원래 대화가 아니라 공통 대화로 가던 것.** "텔레그램에도 보내기" 로 받은 답에 답장할 때 그랬습니다.
+- **ChatGPT 로그인이 끝났는데 터미널이 안 넘어가던 것.** 이제 브라우저에 「터미널로 다시 보내기」 버튼이 뜨고, 안 되면 주소창을 붙여넣어 진행할 수 있습니다. 그냥 멈춰 있지 않습니다.
+- **새로고침하면 보던 화면과 세션 탭 위치가 그대로 돌아옵니다.** 홈 화면 카드로 들어간 페이지도 기억합니다.
+- **채팅에서 보낸 파일을 눌러도 빈 화면이 뜨던 것.** 방금 보낸 파일이 특히 그랬습니다. 문서 파일도 이제 눌러서 열립니다.
+- **로그를 붙여넣으면 그 안의 `#` 이 전부 컨텍스트 태그로 등록되던 것.** `#` 은 여러 언어의 주석 문자라 로그·설정 파일을 붙여넣을 때마다 태그 목록이 쓰레기로 찼습니다.
+- **세션 탭을 훑다가 대화가 딸려 스크롤되거나 새로고침되던 것.**
+- 백그라운드 작업 카드의 편집 도구에 줄 번호가 안 보이던 것.
+- 자주 쓰는 기억이 밀려나던 것 — 매 턴 실리는 기억 목록이 "최근에 고친 것" 대신 **자주 쓰이는 것** 순으로 남습니다.
+
+### Changed
+- **뭔가 깨졌을 때는 `tiguclaw update` 한 줄입니다.** 데몬 정지 → 재설치 → 재빌드 → 기동을 순서대로 하고 실패하면 되돌립니다. `git pull` 이나 `npm ci` 를 직접 돌리면 오히려 멀쩡한 설치가 깨질 수 있어(파일 잠금), 문서에서 그 안내를 뺐습니다.
+- **비서가 확인한 것과 추정한 것을 구분해서 말합니다.** 직접 보지 않은 것을 본 것처럼 단언하지 않습니다.
+
+
 ## [0.26.0] - 2026-08-10
 
 ### Added
@@ -1050,7 +1073,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/tigu77/tiguclaw/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/tigu77/tiguclaw/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/tigu77/tiguclaw/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/tigu77/tiguclaw/compare/v0.23.1...v0.24.0

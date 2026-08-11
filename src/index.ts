@@ -797,6 +797,7 @@ const fanOutEgress = async (
   targets: EgressTarget[],
   text: string,
   bus: EventBus,
+  originThreadKey?: string,
 ): Promise<void> => {
   for (const t of targets) {
     try {
@@ -807,6 +808,10 @@ const fanOutEgress = async (
         target: t.target,
         text,
         bus,
+        // ★이 복사본도 **어느 세션이 낸 말인지**는 안다 (2026-08-11 실사고). 표시
+        //  (observeThreadKey)는 그대로 두고 귀속만 싣는다 — 안 실으면 사용자가 텔레그램에서
+        //  이 답에 답장했을 때 원래 세션을 못 찾아 공통 세션으로 떨어진다.
+        originThreadKey,
       });
     } catch (e) {
       console.error(
@@ -1814,7 +1819,7 @@ const handler: MessageHandler = async (msg) => {
       },
     });
     // egress fan-out — 해석해 둔 좌표로(위 턴 시작). 실패 경로도 같은 헬퍼를 쓴다.
-    await fanOutEgress(egressTargets, replyText, bus);
+    await fanOutEgress(egressTargets, replyText, bus, msg.threadKey);
     // 다음 메시지 제안 — 답을 보낸 **뒤** 발사하고 기다리지 않는다(턴을 늦추지 않는다).
     void maybeSuggestNextMessage(msg);
   } catch (e) {
@@ -1825,7 +1830,7 @@ const handler: MessageHandler = async (msg) => {
       turnAc.signal.reason instanceof UserCancelledError
     ) {
       // egress 에도 알린다 — 활동 표시만 떴다 사라지고 아무 말이 없으면 유령이다.
-      await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus);
+      await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus, msg.threadKey);
       return;
     }
     // 잡 취소(WorkerCancelledError, U-I4 개정) — 대시보드 잡 카드에서 native Task 를 ⏹️ 중지하면
@@ -1836,7 +1841,7 @@ const handler: MessageHandler = async (msg) => {
     // 이 out 으로 꺼짐). 내부 토큰("모델 거부 아님") 노출 없이 깔끔히.
     if (e instanceof Error && e.name === "WorkerCancelledError") {
       await replyCommand(msg, "🛑 진행 중이던 작업을 중지했어요.");
-      await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus);
+      await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus, msg.threadKey);
       return;
     }
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
@@ -1857,7 +1862,7 @@ const handler: MessageHandler = async (msg) => {
     // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
     await replyCommand(msg, formatRegionAError(detail));
     // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조).
-    await fanOutEgress(egressTargets, formatRegionAError(detail), bus);
+    await fanOutEgress(egressTargets, formatRegionAError(detail), bus, msg.threadKey);
   } finally {
     // 활동 표시 해제 — 마지막 참조일 때만 실제로 멈춘다(좌표 단위 refcount).
     releaseActivity();

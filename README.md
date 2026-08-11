@@ -82,11 +82,29 @@
 
 > ⚠️ 먼저 [`docs/security.md`](docs/security.md) 를 읽어주세요 — 비서는 *내* 컴퓨터의 쉘·파일에 접근할 수 있습니다(Claude Code 와 같은 자기-선택 모델).
 
+**한 줄로:**
+
+```bash
+# macOS · Linux
+curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell — 관리자 권한 불요)
+irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
+```
+
+받고, 설치하고, 설정 마법사까지 이어집니다. 기본 위치는 홈 아래 `tiguclaw/` — 바꾸려면 `TIGUCLAW_DIR` 를 지정하세요(`TIGUCLAW_DIR=D:\tiguclaw`). 필요한 건 **Node.js 20 이상 + git** 뿐이고, 이미 설치돼 있으면 덮지 않고 알려줍니다.
+
+<details>
+<summary><b>직접 하고 싶다면</b> (같은 일을 손으로)</summary>
+
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw
 npm ci            # lockfile 그대로 깨끗·재현 설치 (또는: npm install)
 npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스 등록 → 검증
 ```
+</details>
 
 끝입니다. `onboard` 하나가 전부 안내해줘요: LLM 고르고, 키 붙여넣고(또는 텔레그램 봇 토큰 인식), `.env`·상시 서비스·검증까지 한 번에. 그다음 **텔레그램 봇에게 메시지**를 보내면 답합니다. (입력한 소유자 ID 만 허용 — allowlist 가 비면 봇은 잠깁니다.)
 

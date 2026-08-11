@@ -80,12 +80,70 @@ const run = async (): Promise<Assertion[]> => {
       got: `최신 조회=${String(findSessionForOutboundMessage("telegram", "chat-bulk", 5_000_000 + over - 1))} (기대 s)`,
     });
   }
+  // ── ★egress 로 복사된 답에도 귀속이 실린다 (2026-08-11 실사고) ──────────
+  //  사용자 신고: 대시보드 세션에서 나온 답이 텔레그램으로도 갔는데, 거기에 답장하니
+  //  원래 세션이 아니라 **공통 세션**으로 들어갔다. 뿌리는 한 필드가 두 질문을 겸한 것 —
+  //  `observeThreadKey` 는 *"어디에 표시할까"* 인데 답장 매핑은 *"누가 한 말인가"* 다.
+  //  fan-out 은 표시 중복을 피하려 그 필드를 비웠고, 그 순간 **매핑까지 사라졌다.**
+  //  그래서 `originThreadKey` 를 갈라놓았다. 여기선 그 분리를 **실행해서** 확인한다.
+  {
+    const { registerChannelOutbound } = await import("../../core/channel-outbound.js");
+    const { deliverOutbound } = await import("../../core/outbound.js");
+    registerChannelOutbound("regr-egress", {
+      deliver: async () => ({ messageIds: [777_001] }),
+      defaultOutboundTarget: async () => "chat-egress",
+    });
+    // 표시용 키는 **주지 않고** 귀속만 준다 = fan-out 이 하는 그대로.
+    await deliverOutbound({
+      channel: "regr-egress",
+      target: "chat-egress",
+      text: "egress 복사본",
+      originThreadKey: "dashboard:origin-session",
+    });
+    out.push({
+      name: "★표시 키 없이 귀속만 실어도 답장 매핑이 남는다(egress 경로)",
+      ok:
+        findSessionForOutboundMessage("regr-egress", "chat-egress", 777_001) ===
+        "dashboard:origin-session",
+      got: `조회=${String(findSessionForOutboundMessage("regr-egress", "chat-egress", 777_001))} (기대 dashboard:origin-session)`,
+    });
+
+    // 폴백 — 기존 호출부(observeThreadKey 만 주는 곳)는 그대로 동작해야 한다.
+    await deliverOutbound({
+      channel: "regr-egress",
+      target: "chat-egress",
+      text: "기존 경로",
+      observeThreadKey: "dashboard:legacy",
+    });
+    out.push({
+      name: "기존 호출부(표시 키만)는 그대로 귀속된다(회귀 0)",
+      ok:
+        findSessionForOutboundMessage("regr-egress", "chat-egress", 777_001) ===
+        "dashboard:legacy",
+      got: `조회=${String(findSessionForOutboundMessage("regr-egress", "chat-egress", 777_001))} (기대 dashboard:legacy)`,
+    });
+  }
+
+  // ── 배선 — fan-out 이 실제로 그 값을 넘기는가 ────────────────────────────
+  {
+    const { sourceHas } = await import("./_wiring.js");
+    const has = await sourceHas("../../index.ts", [
+      /fanOutEgress = async \(\s*\n?\s*targets[\s\S]{0,220}?originThreadKey\?: string,/,
+      /fanOutEgress\(egressTargets, replyText, bus, msg\.threadKey\)/,
+    ]);
+    out.push({
+      name: "★egress fan-out 이 발원 세션을 싣는다(안 실으면 공통 세션으로 떨어진다)",
+      ok: has.ok,
+      got: has.ok ? "fan-out 배선 확인" : `누락: ${has.missing.join(" / ")}`,
+    });
+  }
+
   return out;
 };
 
 export const check: RegressionCheck = {
   name: "reply-routes-to-origin-session",
   guards:
-    "답장이 발원 세션으로 못 가던 것(발신 message_id 를 버려 매핑 자체가 없었다) + 매핑 테이블이 무한히 쌓이는 것 + 다른 대화방의 같은 message_id 가 섞이는 것",
+    "답장이 발원 세션으로 못 가던 것(발신 message_id 를 버려 매핑 자체가 없었다 / egress 복사본은 표시 키를 안 실어 귀속까지 같이 사라졌다) + 매핑 테이블이 무한히 쌓이는 것 + 다른 대화방의 같은 message_id 가 섞이는 것",
   run,
 };

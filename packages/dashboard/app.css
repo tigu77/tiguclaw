@@ -341,7 +341,14 @@
          + 콘텐츠 톤 배경(var(--panel))으로 "아래로 뚫려 콘텐츠와 이어지는" 실루엣을 만든다(비활성 탭은
          자기 하단 테두리가 콘텐츠와의 경계선 역할 = 별도 컨테이너 라인 불필요, overflow-x 스크롤과 무충돌).
          단일 행(nowrap)+가로 스크롤로 Chrome 룩 전제. */
-      .session-tabs { display:flex; align-items:flex-end; gap:5px; padding:6px 2px 0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; }
+      /* ★세로 제스처는 이 스트립에서 끝난다 (2026-08-11). 탭을 훑다가 대화가 딸려
+         스크롤되거나 새로고침이 걸리면 안 된다. 종전엔 이 성질을 **두 곳이** 정했다 —
+         모바일 CSS 는 pan-x 로 "세로 없음" 을 선언하는데 mobile-nav.js 의 커스텀
+         pull-to-refresh 핸들러가 세로 당김을 잡아 그 선언을 뒤집었다. 핸들러를 지우고
+         성질은 여기 한 곳에만 둔다(데스크탑·모바일 공통).
+         touch-action:pan-x = 터치 세로 팬 무시 / overscroll-behavior:contain = 가로 끝에서
+         브라우저 뒤로가기·상위 스크롤로 전파 안 됨. 휠(데스크탑)은 CSS 로 못 막아 tabs.js. */
+      .session-tabs { display:flex; align-items:flex-end; gap:5px; padding:6px 2px 0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; overscroll-behavior:contain; }
       /* 세션탭이 #right 직접 자식(2026-07-19) — 헤더 밖으로 나왔으니 양옆 패딩으로 콘텐츠와 정렬. */
       #right > #session-tabs { padding-left:14px; padding-right:14px; }
       .session-tabs::-webkit-scrollbar { height:5px; }
@@ -1135,6 +1142,9 @@
       .ctx-chip { display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px; cursor:pointer; user-select:none;
         background:rgba(125,211,252,.10); color:var(--accent); border:1px solid rgba(125,211,252,.28); }
       .ctx-chip:hover { background:rgba(125,211,252,.20); border-color:rgba(125,211,252,.55); }
+      /* ＋ 새 태그 — 커서 자리에 #[] 를 넣는 어포던스. 점선으로 '이건 값이 아니라 행동' 임을 표시. */
+      .ctx-chip.ctx-add { border-style:dashed; opacity:.8; }
+      .ctx-chip.ctx-add:hover { opacity:1; }
       .ctx-chip .ctx-hash { opacity:.6; }
       .ctx-chip.s-paused { background:rgba(255,255,255,.05); color:var(--text-mute); border-color:var(--border); }
       .ctx-chip.s-done { opacity:.6; }
@@ -1375,7 +1385,6 @@
            문서(채팅)가 스크롤되던 것 차단(2026-07-19). touch-action 으로 세로 스크롤 제스처를 가둔다:
            헤더=none, 세션탭=가로만(탭 스크롤·pull-to-refresh 유지), 입력=none(textarea 만 세로 허용). */
         header { touch-action:none; }
-        body[data-tab="chat"] #session-tabs { touch-action:pan-x; }
         body[data-tab="chat"] #chat { touch-action:none; }
         body[data-tab="chat"] #chat-input { touch-action:pan-y; }
         /* 세션탭만 상단 sticky(헤더 46 아래) — 제목(#stream-bar)은 스크롤로 사라지고 탭은 남는다
@@ -1390,11 +1399,6 @@
         /* 하단 여백 = fixed 입력창 실제 높이(--chat-inset, JS ResizeObserver 갱신) — 입력이 2행/
            멀티라인으로 커져도 마지막 메시지가 안 가리게. 미측정 폴백 96px. */
         body[data-tab="chat"] #right { padding-bottom:var(--chat-inset, 96px); backdrop-filter:none; -webkit-backdrop-filter:none; }
-        /* 세션탭 pull-to-refresh 인디케이터(당김 임계 초과 시 상단 중앙 노출). */
-        .ptr-pill { position:fixed; top:54px; left:50%; transform:translateX(-50%); z-index:45;
-          padding:6px 14px; border-radius:999px; background:rgba(13,17,24,.96); border:1px solid var(--border-strong);
-          box-shadow:var(--shadow); color:var(--accent); font-size:12px; font-weight:700; pointer-events:none; }
-        .ptr-pill[hidden] { display:none; }
         /* 모바일 진행표시("작업 중") — 입력창 아래에 두면 전송 후 input.focus()로 뜬 키보드가
            화면 최하단(컴포저 바닥)을 덮어 가려진다(iOS는 포커스된 입력창만 키보드 위로 노출).
            그래서 모바일에서만 진행표시를 입력창 위로 올려(order) 키보드가 떠도 늘 보이게 한다.

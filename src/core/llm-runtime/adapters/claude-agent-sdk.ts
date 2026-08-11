@@ -1544,7 +1544,7 @@ export const runClaude = async (
                 ? (toolInput as Record<string, unknown>)
                 : undefined;
             const detail = buildActivityDetail(normInput);
-            const diff = buildActivityDiff(toolName, normInput);
+            const diff = buildActivityDiff(toolName, normInput, cwd);
             // ExitPlanMode(plan 모드 계획 승인) — 전체 계획을 잘리지 않게 실어 대시보드가
             // 전체 렌더(detail 1줄로는 계획이 잘려 안 보이던 갭, A안). 과대 payload 방지 캡.
             const plan =

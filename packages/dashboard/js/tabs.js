@@ -119,6 +119,50 @@
         return items;
       });
 
+      // ── 활성 세션탭을 보이는 자리로 (2026-08-10, ★근본 수정 08-11) ─────────
+      //
+      // 탭이 늘면 활성 탭이 스트립 밖으로 나간다. 종전엔 `renderTabBar` 끝에서 한 번만
+      // 스크롤했는데, **부팅에선 그게 아무 일도 안 했다**: 부팅 순서가
+      //   ①탭 렌더(이때 채팅 패널은 아직 안 보임 → 스트립 폭 0 → scrollIntoView 무효)
+      //   ②마지막 뷰 복원으로 채팅이 보이게 됨 (렌더는 다시 안 돎)
+      // 이라, 새로고침 직후엔 활성 탭이 화면 밖에 있었다. 헤드리스 실측:
+      // 탭 클릭 시 scrollLeft=95(보임) / 새로고침 후 scrollLeft=0, 활성탭 left=485(안 보임).
+      //
+      // ★고침은 "한 번 더 부르기"가 아니라 **불변식을 다시 세우는 자리를 만드는 것**이다.
+      //  "활성 탭은 보여야 한다" 는 렌더 1회의 성질이 아니라 스트립의 성질이다. 그래서
+      //  크기가 바뀔 때(숨김→보임, 창 크기 변경, 모바일 탭 전환) 스스로 다시 확인한다.
+      const ensureActiveTabVisible = () => {
+        try {
+          if (!sessionTabsEl || sessionTabsEl.clientWidth === 0) return false; // 아직 레이아웃 전.
+          const activeEl = sessionTabsEl.querySelector(".session-tab.active");
+          if (!activeEl || !activeEl.scrollIntoView) return false;
+          // block:"nearest" — 이미 보이면 안 움직인다(스크롤 튐 0). 세로 페이지 스크롤도 안 건드린다.
+          activeEl.scrollIntoView({ block: "nearest", inline: "nearest" });
+          return true;
+        } catch {
+          return false; // 구형 브라우저 — 스크롤만 안 따라갈 뿐 무해.
+        }
+      };
+      // 폭 0 → N (채팅이 보이게 되는 순간)에 다시 확인. 타이머로 짐작하지 않는다.
+      if (sessionTabsEl && typeof ResizeObserver === "function") {
+        new ResizeObserver(() => ensureActiveTabVisible()).observe(sessionTabsEl);
+      }
+
+      // ★세로 휠은 이 스트립에서 끝난다 (2026-08-11 사용자 지시) — 탭을 훑다가 대화가
+      //  딸려 스크롤되지 않게. 터치는 CSS `touch-action:pan-x` 가 막는데(app.css
+      //  `.session-tabs`) **휠은 CSS 로 못 막아** 여기 한 줄이 필요하다. 성질의 정본은
+      //  CSS 쪽이고 이건 같은 성질의 플랫폼 보충이다 — 판단이 갈리지 않게 주석으로 묶어 둔다.
+      //  ★가로 성분이 우세하면 건드리지 않는다(트랙패드 가로 스와이프 = 탭 넘기기, 정상 동작).
+      if (sessionTabsEl) {
+        sessionTabsEl.addEventListener(
+          "wheel",
+          (e) => {
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.preventDefault();
+          },
+          { passive: false },
+        );
+      }
+
       const renderTabBar = () => {
         if (!sessionTabsEl) return;
         sessionTabsEl.innerHTML = "";
@@ -205,12 +249,7 @@
         //  지금 어느 탭인지 눈으로 못 찾았다(특히 새로고침 직후 마지막 탭 복원 시).
         //  ★block:"nearest" — 이미 보이면 안 움직인다(불필요한 스크롤 튐 0). inline 만
         //   가로 스트립 기준으로 맞춘다. 세로 페이지 스크롤을 건드리지 않는 게 중요하다.
-        try {
-          const activeEl = sessionTabsEl.querySelector(".session-tab.active");
-          if (activeEl && activeEl.scrollIntoView) {
-            activeEl.scrollIntoView({ block: "nearest", inline: "nearest" });
-          }
-        } catch { /* 구형 브라우저 — 스크롤만 안 따라갈 뿐 무해 */ }
+        ensureActiveTabVisible();
       };
       onTurnsChanged = renderTabBar; // activeTurns 변경 시 진행 뱃지 갱신(refreshWorking 훅).
 

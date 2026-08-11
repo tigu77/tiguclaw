@@ -49,6 +49,18 @@ export interface OutboundInput {
    */
   observeThreadKey?: string;
   /**
+   * **이 말을 낸 세션** — 답장 라우팅(그 메시지에 답하면 그 세션으로)의 재료.
+   *
+   * ★`observeThreadKey` 와 갈라놓은 이유 (2026-08-11 실사고): 그 필드는 *"어디에 표시할까"*
+   *  를 정하는데, 답장 매핑은 *"누가 한 말인가"* 를 묻는다. **질문이 다르다.** 한 필드가
+   *  둘을 겸하니 egress fan-out(대화방에 복사로 보내는 경로)이 표시 중복을 피하려고 그 필드를
+   *  비웠고, 그 순간 **답장 매핑까지 같이 사라졌다** — 사용자가 텔레그램에서 그 답에
+   *  답장했더니 원래 세션이 아니라 공통 세션으로 들어갔다.
+   *
+   *  미전달 시 `observeThreadKey` 폴백 = 기존 호출부 전부 회귀 0.
+   */
+  originThreadKey?: string;
+  /**
    * **시스템 통지**인가(기본 false = 비서 발화).
    *
    * ★사용자 신고(2026-07-27): 작업 중 메시지를 보냈더니 "⏳ 도구에서 멈춰 있어요" 가 도착해
@@ -148,10 +160,12 @@ export const deliverOutbound = async (
     sent !== undefined && sent !== null && Array.isArray(sent.messageIds)
       ? sent.messageIds
       : [];
-  if (sentIds.length > 0 && resolved !== null && input.observeThreadKey !== undefined) {
+  // 귀속은 originThreadKey 가 정본이고, 없으면 observeThreadKey 로 폴백한다(회귀 0).
+  const originKey = input.originThreadKey ?? input.observeThreadKey;
+  if (sentIds.length > 0 && resolved !== null && originKey !== undefined) {
     const now = Date.now();
     for (const mid of sentIds) {
-      recordOutboundMessage(channel, resolved, mid, input.observeThreadKey, now);
+      recordOutboundMessage(channel, resolved, mid, originKey, now);
     }
   }
 

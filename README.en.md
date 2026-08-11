@@ -82,11 +82,29 @@ You'll need **Node 20+**, **git**, one **LLM provider** (pick one below), and op
 
 > ⚠️ Please read [`docs/security.en.md`](docs/security.en.md) first — the assistant gets shell & file access to *your* machine (the same self-chosen model as Claude Code).
 
+**One line:**
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell — no admin rights needed)
+irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
+```
+
+It clones, installs, and hands you straight to the setup wizard. Default location is `tiguclaw/` under your home — override it with `TIGUCLAW_DIR`. All you need is **Node.js 20+ and git**, and if it's already installed the script tells you instead of overwriting.
+
+<details>
+<summary><b>Prefer to do it yourself?</b> (same steps, by hand)</summary>
+
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw
 npm ci            # clean, reproducible install from the lockfile (or: npm install)
 npm run onboard   # interactive setup → .env → (codex) login → service → health check
 ```
+</details>
 
 That's it. `onboard` walks you through everything: pick your LLM, paste a key (or drop in a Telegram bot token), and it writes the `.env`, registers the always-on service, and runs a health check. Then just **message your Telegram bot** and it replies. (Only the owner ID you entered is allowed — an empty allowlist keeps the bot locked.)
 

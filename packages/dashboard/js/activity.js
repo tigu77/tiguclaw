@@ -368,7 +368,9 @@
       // 복원되는데 **어느 화면을 보고 있었는지**만 저장하는 키가 없었다.
       // ★잘못된 값은 채팅으로 폴백한다 — 사라진 뷰로 복원하면 새로고침할 때마다 빈
       //  화면에 갇힌다(탭 복원이 openTabs 에 없으면 기본 탭으로 가는 것과 같은 이유).
-      const VIEW_LS = "dash.activeView.v1";
+      // ★저장은 여기가 아니라 `setActiveNav`(view-overview.js)에서 한다 — 뷰로 들어가는
+      //  문이 여럿이라(홈 카드·컨텍스트 메뉴·뷰 내부 링크) 이 한 문에만 붙이면 나머지로
+      //  간 페이지는 새로고침에 사라진다. 여기선 **적용만** 한다.
       const applyView = (view, opts) => {
         if (view === "overview") showOverview();
         else if (view === "providers") showProviders();
@@ -382,18 +384,21 @@
         else return false; // 모르는 뷰 — 호출부가 폴백한다.
         // 모바일은 뷰를 열면 본문 탭으로(종전 동작 유지).
         if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
-        if (opts && opts.persist === false) return true;
-        try { localStorage.setItem(VIEW_LS, view); } catch { /* quota·프라이빗 모드 */ }
         return true;
       };
       // 부팅 복원 — 저장값이 없거나 못 그리면 채팅(기존 동작). 다른 모듈이 다 로드된
       // 뒤에 돌도록 마이크로태스크 뒤로 미룬다(showX 들이 이 파일보다 뒤에 정의된다).
       window.restoreLastView = () => {
-        let saved = null;
-        try { saved = localStorage.getItem(VIEW_LS); } catch { /* noop */ }
-        if (!saved || saved === "chat") return false;
+        // ★**부팅 시점에 얼린 값**을 본다(view-overview.js). 지금 localStorage 를 다시
+        //  읽으면 부팅의 showOverview() 가 이미 "overview" 로 덮어쓴 뒤라 항상 무효다.
+        const saved = window.__dashBootView;
+        // ★"chat" 도 복원한다 (2026-08-11). 종전엔 `saved === "chat"` 이면 건너뛰었는데,
+        //  그건 **부팅 기본값이 채팅이라는 낡은 가정**이었다 — 실제 부팅은
+        //  `showOverview()` 다. 그래서 채팅을 보다가 새로고침하면 overview 로 튀었다
+        //  (헤드리스 실측). 저장값이 곧 사용자가 보던 화면이므로 그대로 되돌린다.
+        if (!saved) return false;
         try {
-          return applyView(saved, { persist: false }) === true;
+          return applyView(saved) === true;
         } catch {
           return false; // 렌더 실패 = 폴백(채팅). 갇히지 않는 게 우선.
         }

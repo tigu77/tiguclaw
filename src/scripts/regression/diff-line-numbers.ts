@@ -88,15 +88,68 @@ export const check: RegressionCheck = {
       const nomatch = buildActivityDiff("Edit", {
         file_path: f,
         old_string: "파일에 없는 문자열",
-        new_string: "X",
+        new_string: "이것도 파일에 없다",
       });
       out.push(
         assert(
-          "이미 편집된 뒤라 old_string 이 없으면 생략한다(틀린 번호 0)",
+          "old·new 둘 다 파일에 없으면 생략한다(틀린 번호 0)",
           nomatch?.startLine === undefined,
           `startLine=${String(nomatch?.startLine)}`,
         ),
       );
+
+      // ★④ **이미 적용된 뒤**에도 번호가 나온다 (2026-08-11).
+      //  관측이 도구 실행 *전* 이라는 전제는 부모 턴에서만 안정적이다 — 서브에이전트
+      //  스트림은 메시지가 늦게 와서 파일에 이미 new_string 이 들어 있는 경우가 있다.
+      //  같은 자리이므로 줄 번호는 동일하다. 언제 보느냐에 안 기대는 게 요점.
+      {
+        const applied = path.join(dir, "applied.ts");
+        writeFileSync(applied, "a1\na2\nREPLACED\na4\n", "utf8");
+        const d2 = buildActivityDiff("Edit", {
+          file_path: applied,
+          old_string: "TARGET", // 이미 사라짐
+          new_string: "REPLACED", // 지금 파일에 있는 쪽
+        });
+        out.push(
+          assert(
+            "★이미 적용된 뒤에도 new_string 으로 같은 줄을 찾는다(3번째 줄)",
+            d2?.startLine === 3,
+            `startLine=${String(d2?.startLine)} (기대 3)`,
+          ),
+        );
+      }
+
+      // ★⑤ **상대 경로는 그 턴의 cwd 기준** (2026-08-11 실사고).
+      //  종전엔 데몬 프로세스의 cwd 로 풀려, 프로젝트 워크스페이스에서 도는 매니저·
+      //  에이전트의 Edit 은 조회가 **항상** 실패했다(잡 카드에만 번호가 없던 이유).
+      //  실측 events: 번호 없는 Edit 5건 중 3건이 `src/types.ts`·`vite.config.ts`.
+      {
+        const rel = "sample.ts"; // dir 기준 상대
+        const withCwd = buildActivityDiff(
+          "Edit",
+          { file_path: rel, old_string: "TARGET", new_string: "REPLACED" },
+          dir,
+        );
+        out.push(
+          assert(
+            "★상대 경로 + cwd → 실제 줄을 찾는다(4번째 줄)",
+            withCwd?.startLine === 4,
+            `startLine=${String(withCwd?.startLine)} (기대 4)`,
+          ),
+        );
+        const noCwd = buildActivityDiff("Edit", {
+          file_path: path.join("존재하지-않는-하위", rel),
+          old_string: "TARGET",
+          new_string: "REPLACED",
+        });
+        out.push(
+          assert(
+            "cwd 를 모르고 상대 경로면 생략한다(엉뚱한 파일을 읽지 않는다)",
+            noCwd?.startLine === undefined,
+            `startLine=${String(noCwd?.startLine)}`,
+          ),
+        );
+      }
 
       // ★④ 크기 상한 — 표시용 기능이 데몬을 멎게 하지 않는다.
       //  상한 바로 아래는 되고, 위는 포기해야 한다. 둘 다 안 보면 상한이 있으나 마나다.

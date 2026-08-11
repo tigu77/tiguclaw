@@ -1655,7 +1655,11 @@ export const runOpenAiCodex = async (
             label: tc.name || "tool",
             detail: buildActivityDetailFromJson(tc.partialJson),
             ...(() => {
-              const diff = buildActivityDiffFromJson(tc.name || "tool", tc.partialJson);
+              const diff = buildActivityDiffFromJson(
+                tc.name || "tool",
+                tc.partialJson,
+                input.cwd,
+              );
               return diff !== undefined ? { diff } : {};
             })(),
           } satisfies RegionAActivityPayload,

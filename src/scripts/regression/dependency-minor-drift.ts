@@ -35,6 +35,38 @@ import { promisify } from "node:util";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+/**
+ * ★**기한 있는 유예** — 상시 빨간불을 막되, 조용히 덮지는 않는다 (2026-08-11).
+ *
+ * 이 검사는 성격상 "당장 올릴 수 없는 릴리스"에서 빨간불이 된다(막 나온 것·큰 변경).
+ * 그대로 두면 며칠간 빨갛고, 그러면 **아무도 안 보는 게이트**가 된다 — 이 레포가 이미
+ * 겪은 형상이다(상시 FAIL 게이트가 죽어 고아 파일이 몇 주 살아남았다).
+ *
+ * 그래서 allowlist 가 아니라 **스누즈**다. 셋을 강제한다:
+ *  ①**버전 고정** — 유예한 그 버전에만 적용된다. 더 새 릴리스가 나오면 다시 빨간불.
+ *  ②**기한** — 지나면 자동으로 다시 빨간불. 잊혀지지 않는다.
+ *  ③**이유** — 왜 미뤘는지 남는다(다음 사람이 판단을 이어받는다).
+ * 그리고 유예가 만료·무효(버전 안 맞음)가 되면 **그 자체를 실패로** 잡아 죽은 항목이
+ * 쌓이지 않게 한다.
+ */
+interface Deferral {
+  readonly pkg: string;
+  /** 이 latest 에만 적용 — 더 새 게 나오면 유예는 자동으로 무효다. */
+  readonly latest: string;
+  /** YYYY-MM-DD. 이 날이 지나면 다시 실패한다. */
+  readonly until: string;
+  readonly why: string;
+}
+const DEFERRED: readonly Deferral[] = [
+  {
+    pkg: "@openai/agents",
+    latest: "0.15.0",
+    until: "2026-08-18",
+    why: "릴리스 당일(2026-08-11 14:40 KST). MCP v2 협상 전환 + `openai` 7.2 요구 + 기본 모델 변경이 한 번에 왔다. openai 어댑터 핫경로라 며칠 묵혀 패치가 몇 개 나온 뒤 본다(사용자 결정).",
+  },
+];
+const today = (): string => new Date().toISOString().slice(0, 10);
 const execFileAsync = promisify(execFile);
 
 interface OutdatedEntry {
@@ -116,6 +148,20 @@ export const check: RegressionCheck = {
         return v !== null && v.major === 0 && v.minor > d.minor;
       });
 
+    // 유예 적용 — 버전이 정확히 같고 기한 안이어야 한다(둘 중 하나만 어긋나도 무효).
+    const now = today();
+    const deferralFor = (name: string, latest: string | undefined): Deferral | undefined =>
+      DEFERRED.find((d) => d.pkg === name && d.latest === latest && d.until >= now);
+    const snoozed = drifted.filter((d) => deferralFor(d.name, d.latest) !== undefined);
+    const live = drifted.filter((d) => deferralFor(d.name, d.latest) === undefined);
+
+    // 죽은 유예 = 기한이 지났거나, 그 버전이 더 이상 latest 가 아니거나, 이미 올라간 것.
+    const stale = DEFERRED.filter(
+      (d) =>
+        d.until < now ||
+        !drifted.some((x) => x.name === d.pkg && x.latest === d.latest),
+    );
+
     return [
       assert(
         "0.x 캐럿 고정 의존성을 판정으로 뽑는다(검사 전제 — 0이면 공짜 통과)",
@@ -124,11 +170,28 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★캐럿이 0.x 마이너를 잠근 채 상류가 그 너머로 가 있지 않다",
-        drifted.length === 0,
-        drifted.length === 0
-          ? `확인 ${locked.length}개 · 드리프트 0`
-          : drifted
+        live.length === 0,
+        live.length === 0
+          ? `확인 ${locked.length}개 · 드리프트 0` +
+            (snoozed.length > 0
+              ? ` · ★유예 ${snoozed.length}건: ${snoozed
+                  .map((d) => `${d.name}→${d.latest}(~${deferralFor(d.name, d.latest)?.until})`)
+                  .join(", ")}`
+              : "")
+          : live
               .map((d) => `${d.name} ${d.range}(설치 ${d.current}) → latest ${d.latest}`)
+              .join(" · "),
+      ),
+      assert(
+        "★유예는 살아 있는 것만 남는다(만료·무효 항목이 쌓이지 않는다)",
+        stale.length === 0,
+        stale.length === 0
+          ? `유예 ${DEFERRED.length}건 전부 유효`
+          : stale
+              .map(
+                (d) =>
+                  `${d.pkg}@${d.latest} — ${d.until < now ? `기한 만료(${d.until})` : "그 버전이 더 이상 대상 아님"} → 이제 판단하거나 항목을 지워라`,
+              )
               .join(" · "),
       ),
     ];

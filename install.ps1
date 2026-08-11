@@ -1,0 +1,66 @@
+# tiguclaw 한 줄 설치 (Windows / PowerShell)
+#
+#   irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
+#
+# 하는 일: 전제 확인 → clone → npm ci → onboard 로 넘김.
+# 하지 않는 일: 설정을 대신 정하지 않는다(대화형 onboard 가 그 자리다).
+#
+# ★`irm | iex` 는 현재 콘솔에서 실행되므로 stdin 은 살아 있다(sh 판과 다른 점).
+#  대신 여기선 **관리자 권한을 요구하지 않는다** — 데몬 등록이 HKCU Run 키라서다.
+
+$ErrorActionPreference = 'Stop'
+
+$RepoUrl  = 'https://github.com/tigu77/tiguclaw.git'
+$Dir      = if ($env:TIGUCLAW_DIR) { $env:TIGUCLAW_DIR } else { Join-Path $env:USERPROFILE 'tiguclaw' }
+$MinNode  = 20
+
+function Die($msg) { Write-Host "`n[X] $msg" -ForegroundColor Red; exit 1 }
+
+Write-Host ""
+Write-Host "=== tiguclaw 설치 ===" -ForegroundColor Cyan
+Write-Host "설치 위치: $Dir   (바꾸려면: `$env:TIGUCLAW_DIR='D:\tiguclaw')"
+Write-Host ""
+
+# ── 전제 ────────────────────────────────────────────────────────────────────
+if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git 이 없습니다. 먼저 설치하세요: winget install Git.Git" }
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Die "Node.js 가 없습니다 — $MinNode 이상이 필요합니다: winget install OpenJS.NodeJS.LTS" }
+if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { Die "npm 이 없습니다. Node.js 설치를 확인하세요." }
+
+$nodeMajor = [int](node -p 'process.versions.node.split(".")[0]')
+if ($nodeMajor -lt $MinNode) { Die "Node.js $MinNode 이상이 필요합니다 (지금 $(node -v))." }
+Write-Host "[v] node $(node -v)"
+
+# ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
+if (Test-Path $Dir) {
+  if (Test-Path (Join-Path $Dir '.git')) {
+    Die @"
+$Dir 에 이미 설치돼 있습니다.
+   업데이트는:  cd $Dir; npx tiguclaw update
+   (그 명령이 정지 -> 의존성 -> 재빌드 -> 기동을 순서대로 합니다.
+    ★npm ci 를 직접 돌리지 마세요 — 데몬이 파일을 잡고 있으면 설치가 깨집니다.)
+"@
+  }
+  Die "$Dir 이 이미 있는데 tiguclaw 설치본이 아닙니다. 다른 경로를 쓰세요: `$env:TIGUCLAW_DIR='D:\tiguclaw'"
+}
+
+# ── 받기 · 설치 ─────────────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "-> 코드 받는 중..."
+git clone --quiet $RepoUrl $Dir
+if ($LASTEXITCODE -ne 0) { Die "clone 실패 — 네트워크나 접근 권한을 확인하세요." }
+Set-Location $Dir
+
+Write-Host "-> 의존성 설치 중... (네이티브 모듈 빌드로 1~2분 걸릴 수 있습니다)"
+npm ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) {
+  Die @"
+의존성 설치 실패.
+   C++ 빌드 도구가 필요할 수 있습니다:
+     winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
+   설치 후 다시:  cd $Dir; npm ci
+"@
+}
+
+# ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
+Write-Host ""
+npm run onboard

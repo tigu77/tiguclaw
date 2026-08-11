@@ -134,7 +134,7 @@
       const insertContextTag = (name) => {
         const ta = document.getElementById("chat-input");
         if (!ta) return;
-        const core = "#" + name;
+        const core = formatTagToken(name); // 공백 이름이면 #[...] — 모양은 util.js 한 곳.
         if (ta.value.includes(core)) {
           // 제거 — "#name " 우선, 없으면 "#name". 이중 공백 정리.
           ta.value = ta.value.split(core + " ").join("").split(core).join("").replace(/[ \t]{2,}/g, " ").replace(/^\s+/, "");
@@ -150,15 +150,70 @@
         ta.dispatchEvent(new Event("input", { bubbles: true })); // autogrow.
         renderContextTags();
       };
-      // 타이핑한 태그 학습 — 보낸 메시지에서 `#태그` 를 뽑아 recent 에 기록(다음부터 칩으로 뜸).
-      const recordTypedTags = (text) => {
-        if (typeof text !== "string" || text.indexOf("#") === -1) return;
-        let t = text;
-        for (const p of (Array.isArray(projectsCache) ? projectsCache : [])) {
-          if (p && p.name && t.includes("#" + p.name)) { ctxBumpRecent(p.name); t = t.split("#" + p.name).join(" "); }
+      // 태그 학습 — 판정은 util.js `learnableTagNames` 하나. 여기선 재료(아는 이름)만 준다.
+      {
+        const ta = document.getElementById("chat-input");
+        if (ta) {
+          // ── `#` 스캐폴드 (2026-08-11 사용자 제안) ────────────────────────
+          //
+          // `#` 를 치면 `#[]` 를 깔고 커서를 안에 둔다 — 공백 있는 이름을 쓸 수 있다는 걸
+          // **문법을 외우지 않아도** 알게 된다. `#단어` 와 `#[단어]` 는 같은 뜻이라
+          // 의미가 달라지지 않는다.
+          //
+          // ★함정과 그 대응(자동 삽입은 잘못 쓰면 글쓰기를 방해한다):
+          //  ·단어 경계에서만 — 문장 중간 `issue #123`·`C#` 은 안 건드린다(util 판정).
+          //  ·`]` 를 치면 **건너뛴다** — 닫는 괄호가 두 개가 되지 않게.
+          //  ·빈 `#[|]` 에서 Backspace 면 **괄호째** 지운다(한 번에 되돌리기).
+          //  ·Escape 면 괄호를 벗겨 `#` 만 남긴다 — 스캐폴드에 갇히지 않는다.
+          //  ·IME 조합 중(한글)에는 개입하지 않는다.
+          let composing = false;
+          ta.addEventListener("compositionstart", () => { composing = true; });
+          ta.addEventListener("compositionend", () => { composing = false; });
+          ta.addEventListener("beforeinput", (e) => {
+            if (composing || e.inputType !== "insertText" || e.data !== "#") return;
+            const v = ta.value, a = ta.selectionStart, b = ta.selectionEnd;
+            if (a !== b || !shouldScaffoldTag(v.slice(0, a))) return;
+            e.preventDefault();
+            ta.value = v.slice(0, a) + "#[]" + v.slice(b);
+            ta.setSelectionRange(a + 2, a + 2);
+            ta.dispatchEvent(new Event("input", { bubbles: true })); // autogrow·활성칩 갱신.
+          });
+          ta.addEventListener("keydown", (e) => {
+            if (composing) return;
+            const v = ta.value, a = ta.selectionStart, b = ta.selectionEnd;
+            if (a !== b) return;
+            const inEmpty = v.slice(a - 2, a) === "#[" && v[a] === "]";
+            if (e.key === "]" && v[a] === "]") {              // 건너뛰기.
+              e.preventDefault(); ta.setSelectionRange(a + 1, a + 1); return;
+            }
+            if (e.key === "Backspace" && inEmpty) {            // 괄호째 되돌리기.
+              e.preventDefault();
+              ta.value = v.slice(0, a - 1) + v.slice(a + 1);   // "[" 와 "]" 제거 → "#" 만.
+              ta.setSelectionRange(a - 1, a - 1);
+              ta.dispatchEvent(new Event("input", { bubbles: true }));
+              return;
+            }
+            if (e.key === "Escape" && v.lastIndexOf("#[", a) !== -1 && v.indexOf("]", a) !== -1) {
+              const open = v.lastIndexOf("#[", a), close = v.indexOf("]", a);
+              if (v.slice(open + 2, close).indexOf("\n") !== -1) return; // 여러 줄 = 내 것 아님.
+              e.preventDefault();
+              ta.value = v.slice(0, open + 1) + v.slice(open + 2, close) + v.slice(close + 1);
+              const pos = a - 1; ta.setSelectionRange(pos, pos);
+              ta.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+          });
         }
-        const m = t.match(/#([^\s#]{1,40})/g) || [];
-        for (const tag of m) ctxBumpRecent(tag.slice(1));
+      }
+
+      // 보낸 메시지에서 **배울 태그**를 뽑아 recent 에 기록(다음부터 칩으로 뜸).
+      // ★판정은 util.js 한 곳 — 여기선 "아는 이름" 집합만 만들어 넘긴다.
+      //  아는 이름 = 등록 프로젝트 ∪ 인벤토리 스킬·에이전트 ∪ 이미 배운 칩.
+      const recordTypedTags = (text) => {
+        const known = resolvableNames();
+        for (const n of ctxRecent()) known.add(n);
+        const learned = learnableTagNames(text, known);
+        if (learned.length === 0) return;
+        for (const n of learned) ctxBumpRecent(n);
         renderContextTags();
       };
       // 입력창의 현재 값 기준으로 각 칩의 활성(걸림) 표시만 갱신(재렌더 없이 저비용).
@@ -167,7 +222,7 @@
         const val = ta ? ta.value : "";
         document.querySelectorAll("#chat-context .ctx-chip").forEach((chip) => {
           const n = chip.dataset.tag;
-          chip.classList.toggle("active", !!n && val.includes("#" + n));
+          chip.classList.toggle("active", !!n && val.includes(formatTagToken(n)));
         });
       };
       const CTX_EXPANDED_KEY = "tgctx_expanded";
@@ -223,6 +278,34 @@
           }
           chipWrap.appendChild(chip);
         }
+        // ── ＋ 새 태그 (2026-08-11 사용자 요청: "첫머리 말고도 가능하게") ──────
+        //
+        // `#` 자동 스캐폴드는 **줄 첫머리에서만** 돈다. 넓히면 `issue #123` 이
+        // `issue #[123]` 이 되는데, 대괄호는 명시형이라 **무조건 태그로 배운다** — 예전엔
+        // 그냥 글자였던 것이 진짜 태그가 된다. 그리고 문장 중간의 `#` 이 태그인지 아닌지는
+        // **모양으로 못 가린다**(`#` 은 여러 언어의 주석 문자다).
+        //
+        // ★그래서 추측을 넓히지 않고 **의도를 받는다.** 새 태그를 만드는 건 의도적인
+        //  행동이므로 키 입력을 짐작하는 대신 버튼을 준다 — 커서가 어디 있든 그 자리에
+        //  `#[]` 를 넣고 안으로 들어간다. 오탐 0, 예외 0.
+        const addChip = document.createElement("button");
+        addChip.type = "button";
+        addChip.className = "ctx-chip ctx-generic ctx-add";
+        addChip.textContent = "＋ 새 태그";
+        addChip.title = "커서 자리에 #[] 를 넣습니다 (공백 있는 이름도 가능)";
+        addChip.addEventListener("click", () => {
+          const ta = document.getElementById("chat-input");
+          if (!ta) return;
+          const v = ta.value, a = ta.selectionStart, b = ta.selectionEnd;
+          // 앞이 공백이 아니면 한 칸 띄운다 — 앞 단어에 붙어버리지 않게.
+          const pad = a > 0 && !/\s$/.test(v.slice(0, a)) ? " " : "";
+          ta.value = v.slice(0, a) + pad + "#[]" + v.slice(b);
+          const pos = a + pad.length + 2;
+          ta.focus();
+          ta.setSelectionRange(pos, pos);
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        chipWrap.appendChild(addChip);
         bar.appendChild(chipWrap);
         updateActiveChips();
       };

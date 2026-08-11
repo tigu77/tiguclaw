@@ -896,7 +896,7 @@ export const runOpenAi = async (
                 ...(() => {
                   const diff =
                     typeof raw.arguments === "string"
-                      ? buildActivityDiffFromJson(raw.name || "tool", raw.arguments)
+                      ? buildActivityDiffFromJson(raw.name || "tool", raw.arguments, input.cwd)
                       : undefined;
                   return diff !== undefined ? { diff } : {};
                 })(),

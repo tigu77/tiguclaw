@@ -29,36 +29,13 @@
         updateBack();
       }
 
-      // ── 세션탭 pull-to-refresh (모바일, 2026-07-19) — sticky 세션탭 스트립을 아래로 당기면 새로고침 ──
-      // 채팅은 하단고정·무한스크롤이라 네이티브 pull-to-refresh 가 안 걸린다(상단 scrollTop=0 에
-      // 못 머묾 — 위로 가면 과거 로드). 그래서 세션탭 위 *세로 당김*을 커스텀으로 잡아 reload().
-      // 가로 탭 스크롤(overflow-x)과는 dx/dy 비교로 구분 — 세로 우세 + 임계 초과만 발동.
-      const ptrTabs = document.getElementById("session-tabs");
-      if (ptrTabs) {
-        const ptrPill = document.createElement("div");
-        ptrPill.className = "ptr-pill"; ptrPill.textContent = "↻ 놓으면 새로고침"; ptrPill.hidden = true;
-        mnBody.appendChild(ptrPill);
-        let ptrY0 = null, ptrX0 = null, ptrArmed = false;
-        const PTR_THRESH = 72;
-        ptrTabs.addEventListener("touchstart", (e) => {
-          if (e.touches.length !== 1) { ptrY0 = null; return; }
-          ptrY0 = e.touches[0].clientY; ptrX0 = e.touches[0].clientX; ptrArmed = false;
-        }, { passive: true });
-        ptrTabs.addEventListener("touchmove", (e) => {
-          if (ptrY0 == null) return;
-          const dy = e.touches[0].clientY - ptrY0;
-          const dx = e.touches[0].clientX - ptrX0;
-          ptrArmed = dy > PTR_THRESH && dy > Math.abs(dx) * 1.4; // 세로 우세 + 임계.
-          ptrPill.hidden = !ptrArmed;
-        }, { passive: true });
-        const ptrEnd = () => {
-          if (ptrArmed) { ptrPill.textContent = "↻ 새로고침 중…"; location.reload(); }
-          else ptrPill.hidden = true;
-          ptrY0 = null; ptrArmed = false;
-        };
-        ptrTabs.addEventListener("touchend", ptrEnd, { passive: true });
-        ptrTabs.addEventListener("touchcancel", ptrEnd, { passive: true });
-      }
+      // ── 세션탭 pull-to-refresh 제거 (2026-08-11 사용자 지시) ─────────────────
+      // 2026-07-19 에 넣었던 커스텀 당겨서-새로고침을 뺀다. 탭을 훑으려고 스트립을
+      // 만질 때마다 새로고침 위험이 있었고, 무엇보다 **같은 것을 두 곳이 정하고**
+      // 있었다 — CSS 는 `touch-action:pan-x` 로 "여기서 세로 제스처는 없다" 고
+      // 선언하는데, 이 핸들러가 세로 당김을 잡아 그 선언을 뒤집었다.
+      // 스트립의 스크롤 성질은 CSS 에 산다(app.css `.session-tabs`). 새로고침은
+      // 브라우저 기본 제스처와 `tiguclaw restart`/버튼이 이미 맡는다.
 
       // ── fixed 입력창 높이 → --chat-inset (모바일, 2026-07-19) — 하단 여백을 입력창 실제 높이에
       // 맞춰 마지막 메시지가 안 가리게. 입력이 2행/멀티라인으로 커지거나 컨텍스트 태그가 붙어

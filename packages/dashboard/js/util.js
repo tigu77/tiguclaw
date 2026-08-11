@@ -419,3 +419,96 @@
         }
         return "";
       };
+
+      /**
+       * 첨부를 **열 때** 무엇을 쓸지 정한다 — *표시*와 다른 질문이다.
+       *
+       * 사고 (2026-08-11 사용자 신고): 방금 보낸 파일을 채팅 카드에서 누르면 **빈 화면**.
+       *  뿌리는 한 변수가 두 질문을 겸한 것이다 — 썸네일 `src` 는 낙관적 버블에서 `data:`
+       *  URI 인데, 브라우저는 **`data:` 최상위 이동을 차단**한다(새 탭이 그냥 빈 화면).
+       *  서빙 주소(`rel`)가 있으면 그걸 쓰고, 없으면 base64 를 blob 으로 바꿔 연다
+       *  (blob 은 최상위 이동이 허용된다). 둘 다 없으면 **열지 않는다** — 빈 탭 0.
+       *
+       * ★순수 함수로 뽑은 이유: 이 판정이 렌더 클로저 안에 있으면 검사가 브라우저를
+       *  띄워 옛 첨부를 화면에 올려야만 확인된다(실제로 그러다 막혔다). 판정만 분리하면
+       *  실행해서 지킬 수 있다 — 수행(blob 생성)은 호출부 몫으로 남긴다.
+       *
+       * @returns {{kind:"served",url:string}|{kind:"blob"}|{kind:"none"}}
+       */
+      const attachmentOpenTarget = (a) => {
+        if (!a || typeof a !== "object") return { kind: "none" };
+        if (typeof a.rel === "string" && a.rel !== "") {
+          return { kind: "served", url: "/api/attachments/" + a.rel };
+        }
+        if (typeof a.dataBase64 === "string" && a.dataBase64 !== "") {
+          return { kind: "blob" }; // ★data: 그대로 열지 않는다 — 차단당해 빈 화면이 된다.
+        }
+        return { kind: "none" };
+      };
+
+      /**
+       * 태그를 **글로 쓸 때의 모양** — 이름에 공백이 있으면 대괄호로 감싼다.
+       *
+       * 근거는 실물이다 (2026-08-11): 등록 프로젝트에 `Tigu Engine` 이 있는데 맨 태그
+       *  문법(`#` + 공백 아닌 것)으로는 `#Tigu` 까지만 잡혀 **그 프로젝트를 태그로 쓸 수가
+       *  없었다**. 삽입·토글·활성 표시·감지가 전부 이 함수를 쓴다 — 모양을 두 곳에서 짓지 않는다.
+       */
+      const formatTagToken = (name) => {
+        if (typeof name !== "string" || name === "") return "";
+        return /[\s\[\]]/.test(name) ? "#[" + name + "]" : "#" + name;
+      };
+
+      /**
+       * **칩으로 배울 태그**를 고른다 — 이게 태그 시스템의 유일한 판정이다.
+       *
+       *   배운다 = `#[이름]`(명시) ∪ `#이름` 중 **아는 이름**(프로젝트·스킬·에이전트·기존 칩)
+       *
+       * 사고 (2026-08-11): 로그를 붙여넣으면 그 안의 `#` 이 전부 칩으로 학습됐다. 처음엔
+       *  모양으로 막으려 했다 — 구두점 시작 제외, 줄 첫머리만, 붙여넣기 추적, 여러 줄 제외.
+       *  ★사용자 지적: **"예외가 너무 많은 게 별로다."** 맞다. `#` 은 sh·python·yaml·toml·
+       *  Makefile 의 **주석 문자**라 모양으로는 원리적으로 못 가린다. 예외가 쌓인다는 건
+       *  판정 기준이 없다는 신호였다.
+       *
+       * 기준을 바꾸니 예외가 **전부 사라진다** — `#!/bin/sh`·`# 목표`·`#1234`·`# TODO` 는
+       * 아는 이름이 아니라서 안 걸린다. 별도 규칙이 하나도 필요 없다. 새 태그는 `#[...]`
+       * 로 **의도해서** 태어난다.
+       *
+       * ★배우는 것만 이 기준을 탄다. 본문의 `#뭐든` 은 그냥 글자다(표시·활성은 종전 그대로).
+       */
+      const learnableTagNames = (text, knownNames) => {
+        if (typeof text !== "string" || text.indexOf("#") === -1) return [];
+        const known = knownNames instanceof Set ? knownNames : new Set(knownNames || []);
+        const seen = new Set();
+        const out = [];
+        const add = (n) => {
+          const v = String(n).trim();
+          if (v !== "" && !seen.has(v)) { seen.add(v); out.push(v); }
+        };
+        // ①명시형 `#[이름]` — 사용자가 태그라고 말한 것. 줄바꿈은 안 넘는다(문법 경계).
+        const bracket = /#\[([^\]\n]{1,60})\]/g;
+        let m;
+        while ((m = bracket.exec(text)) !== null) add(m[1]);
+        // ②맨 태그 `#이름` — **아는 이름일 때만**. 여기가 로그 소음이 죽는 자리다.
+        for (const raw of text.replace(bracket, " ").match(/#([^\s#\[\]]{1,40})/g) || []) {
+          const n = raw.slice(1);
+          if (known.has(n)) add(n);
+        }
+        return out;
+      };
+
+      /**
+       * `#` 를 쳤을 때 `#[]` 스캐폴드를 깔아줄 자리인가 — **줄 첫머리에서만**.
+       *
+       * ★처음엔 "단어 경계(공백 뒤 포함)" 로 했는데 **거짓이었다** (2026-08-11, 헤드리스로
+       *  실제 타이핑해보고 잡음): `issue #123` 도 "공백 뒤" 라 똑같이 걸린다. 즉 그 규칙은
+       *  문장 중간을 전혀 못 걸러내면서 걸러낸다고 주석에 적혀 있었다.
+       *
+       * 기준을 바꾼 근거: **대괄호는 공백 있는 이름을 위한 것이고, 그런 태그는 의도적으로
+       *  「쓰기 시작할 때」 붙인다.** 문장 끝에 툭 붙이는 태그(`… 확인해줘 #핫딜알리미`)는
+       *  거의 한 단어라 대괄호가 필요 없다. 그래서 줄 첫머리에만 깔면 필요한 자리는 덮고
+       *  글쓰기는 안 방해한다(`issue #123`·`C#`·`key=#1` 전부 무개입).
+       */
+      const shouldScaffoldTag = (textBefore) => {
+        if (typeof textBefore !== "string") return false;
+        return textBefore === "" || /\n$/.test(textBefore);
+      };

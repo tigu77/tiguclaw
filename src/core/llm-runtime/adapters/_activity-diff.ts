@@ -13,6 +13,7 @@
 
 import { diffLines } from "diff";
 import fs from "node:fs";
+import nodePath from "node:path";
 import type { ActivityDiff, ActivityDiffLine } from "../types.js";
 
 /** 렌더용 줄 수 상한 — 초과 시 컷 + truncated. 스트림 위생. */
@@ -57,15 +58,43 @@ export function lineOfMatch(content: string, needle: string): number | null {
  *  "이 diff 가 시작하는 곳" 으로는 맞다. 나머지 위치까지 표시하려면 diff 구조 자체가
  *  덩어리(hunk) 목록이어야 하는데, 그건 지금 필요한 게 아니다.
  */
-function startLineOf(path: unknown, oldStr: string): number | undefined {
-  if (typeof path !== "string" || path === "" || oldStr === "") return undefined;
+function startLineOf(
+  path: unknown,
+  oldStr: string,
+  newStr: string,
+  cwd?: string,
+): number | undefined {
+  if (typeof path !== "string" || path === "") return undefined;
+  // ★상대 경로는 **그 턴의 cwd** 기준으로 푼다 (2026-08-11 실사고).
+  //  종전엔 그냥 `fs.statSync(path)` 라 **데몬 프로세스의 cwd** 기준으로 풀렸다. 메인 채팅은
+  //  모델이 절대경로를 주로 써서 우연히 맞았지만, 매니저·에이전트는 프로젝트 워크스페이스
+  //  안에서 돌며 상대경로를 쓴다 → 조회가 **항상** 실패하고 잡 카드 Edit 에만 번호가 없었다.
+  //  실측(events): 번호 없는 Edit 5건 중 3건이 `src/types.ts`·`vite.config.ts` 같은 상대경로.
+  const target =
+    nodePath.isAbsolute(path) || cwd === undefined || cwd === ""
+      ? path
+      : nodePath.resolve(cwd, path);
+  let content: string;
   try {
-    const st = fs.statSync(path);
+    const st = fs.statSync(target);
     if (!st.isFile() || st.size > LINE_LOOKUP_MAX_BYTES) return undefined;
-    return lineOfMatch(fs.readFileSync(path, "utf8"), oldStr) ?? undefined;
+    content = fs.readFileSync(target, "utf8");
   } catch {
     return undefined; // 파일 없음·권한·바이너리 — 번호 없이 간다.
   }
+  // ★찾는 순서: old_string → new_string. **언제 보느냐에 안 기대기 위해서**다.
+  //  관측은 보통 도구 실행 *전*이라 파일엔 아직 old 가 있지만, 서브에이전트 스트림처럼
+  //  메시지가 늦게 오면 이미 적용된 뒤라 old 가 없다. 그땐 같은 자리에 new 가 있으므로
+  //  **줄 번호는 동일하다.** 둘 다 없으면 undefined — 지어내지 않는다.
+  if (oldStr !== "") {
+    const byOld = lineOfMatch(content, oldStr);
+    if (byOld !== null) return byOld;
+  }
+  if (newStr !== "") {
+    const byNew = lineOfMatch(content, newStr);
+    if (byNew !== null) return byNew;
+  }
+  return undefined;
 }
 
 function clipLine(s: string): string {
@@ -110,7 +139,10 @@ function capped(
 }
 
 /** Edit: old_string↔new_string 줄 diff. */
-function editDiff(input: Record<string, unknown>): ActivityDiff | undefined {
+function editDiff(
+  input: Record<string, unknown>,
+  cwd?: string,
+): ActivityDiff | undefined {
   const oldStr = input.old_string;
   const newStr = input.new_string;
   if (typeof oldStr !== "string" || typeof newStr !== "string") return undefined;
@@ -133,7 +165,7 @@ function editDiff(input: Record<string, unknown>): ActivityDiff | undefined {
     }
   }
   if (rows.length === 0) return undefined;
-  return capped(rows, added, removed, path, startLineOf(path, oldStr));
+  return capped(rows, added, removed, path, startLineOf(path, oldStr, newStr, cwd));
 }
 
 /** Write: 쓴 내용 전부 추가(before 는 관측 시점에 없음 — I/O 결합 회피). */
@@ -160,10 +192,11 @@ function writeDiff(input: Record<string, unknown>): ActivityDiff | undefined {
 export function buildActivityDiff(
   toolName: string,
   input: Record<string, unknown> | undefined | null,
+  cwd?: string,
 ): ActivityDiff | undefined {
   if (!input || typeof input !== "object") return undefined;
   try {
-    if (toolName === "Edit") return editDiff(input);
+    if (toolName === "Edit") return editDiff(input, cwd);
     if (toolName === "Write") return writeDiff(input);
   } catch {
     /* diff 생성 실패가 관측/턴을 무르지 않는다. */
@@ -178,13 +211,14 @@ export function buildActivityDiff(
 export function buildActivityDiffFromJson(
   toolName: string,
   argsJson: string | undefined | null,
+  cwd?: string,
 ): ActivityDiff | undefined {
   if (toolName !== "Edit" && toolName !== "Write") return undefined;
   if (!argsJson || argsJson.trim() === "" || argsJson.trim() === "{}") return undefined;
   try {
     const parsed = JSON.parse(argsJson) as unknown;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return buildActivityDiff(toolName, parsed as Record<string, unknown>);
+      return buildActivityDiff(toolName, parsed as Record<string, unknown>, cwd);
     }
   } catch {
     /* 부분 JSON — diff 생략(detail 은 원문 요약으로 별도 확보). */

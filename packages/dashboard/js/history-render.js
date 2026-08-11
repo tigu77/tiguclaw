@@ -89,6 +89,24 @@
               : null;
           // 받기 대상 — 서빙 rel 우선(파일 저장), 없으면 data URI(낙관적 버블).
           const dlHref = a.rel ? "/api/attachments/" + a.rel : src;
+          // ★**여는 주소는 표시 주소와 다르다** (2026-08-11 사용자 신고: 방금 보낸 파일을
+          //  누르면 빈 화면). `src` 는 *표시*용이라 낙관적 버블에선 `data:` URI 인데,
+          //  브라우저는 **`data:` 최상위 이동을 차단**한다 — 새 탭이 그냥 빈 화면이 된다.
+          //  서빙 rel 이 있으면 그걸 쓰고, 없으면 base64 를 **blob URL** 로 바꿔 연다
+          //  (blob 은 최상위 이동이 허용된다). 둘 다 없으면 열지 않는다(빈 탭 0).
+          const openHref = () => {
+            const t = attachmentOpenTarget(a); // 판정은 util.js(순수) — 여기선 수행만.
+            if (t.kind === "served") return t.url;
+            if (t.kind === "none") return null;
+            try {
+              const bin = atob(a.dataBase64);
+              const buf = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+              return URL.createObjectURL(new Blob([buf], { type: mime || "application/octet-stream" }));
+            } catch {
+              return null; // 손상된 base64 — 조용히 열기만 포기(표시는 그대로).
+            }
+          };
           const cell = document.createElement("div");
           cell.className = "att-cell";
           const chip = document.createElement("div");
@@ -100,14 +118,20 @@
             img.src = src;
             img.alt = name;
             chip.appendChild(img);
-            // 미리보기 — 클릭 시 원본 새 탭(경량, 의존 0).
-            chip.dataset.zoom = "1";
-            chip.addEventListener("click", () => window.open(src, "_blank", "noopener"));
           } else {
             const ic = document.createElement("div"); ic.className = "att-fileicon";
             ic.textContent = ((String(name).split(".").pop() || "FILE").slice(0, 4)).toUpperCase();
             const nm = document.createElement("div"); nm.className = "att-fname"; nm.textContent = name;
             chip.appendChild(ic); chip.appendChild(nm);
+          }
+          // 열기 — 이미지든 문서든 **열 주소가 있으면** 연다. 종전엔 이미지에만 붙어 있어
+          //  파일 칩은 눌러도 아무 일이 없었고, 이미지는 위 이유로 빈 화면이었다.
+          {
+            const href = openHref();
+            if (href) {
+              chip.dataset.zoom = "1";
+              chip.addEventListener("click", () => window.open(href, "_blank", "noopener"));
+            }
           }
           // 받기 버튼(다운로드) — 아웃바운드 카드에서만(인바운드 무회귀). download 속성으로 저장.
           if (download && dlHref) {

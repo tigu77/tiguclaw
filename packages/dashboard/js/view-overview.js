@@ -1,6 +1,33 @@
+      // ── 마지막 본 페이지 (2026-08-10, ★근본 수정 08-11) ──────────────────
+      //
+      // 종전엔 `applyView`(상단 nav 버튼 핸들러) 안에서 저장했다. 그런데 뷰로 들어가는
+      // **문이 여럿**이다 — 홈 화면 액션 카드 · 컨텍스트 메뉴 · 뷰 안의 링크 · 뒤로가기.
+      // 그 문들은 `showX()` 를 직접 부르므로 저장을 건너뛰었고, 그렇게 도달한 페이지는
+      // 새로고침하면 **overview 로 돌아갔다**(사용자 신고, 헤드리스 실측으로 재현:
+      // 홈 카드→인벤토리 이동 시 저장값 null).
+      //
+      // ★고침은 문마다 저장을 붙이는 게 아니다(문은 또 생긴다 — 손으로 관리하는 목록).
+      //  `setActiveNav` 가 `document.body.dataset.view` 를 쓰는 **유일한 자리**이고
+      //  모든 뷰가 여기로 모인다. 정의점에서 저장하면 새 문이 생겨도 자동으로 덮인다.
+      //
+      // ★부팅 순서 함정: 부팅은 `showOverview()` 로 시작하므로, 그때 이 저장이 돌면
+      //  복원이 읽기도 전에 값이 "overview" 로 덮인다. 그래서 **모듈 로드 시점에** 값을
+      //  얼려 두고(아래) 복원은 그 얼린 값을 본다. 읽는 시점이 쓰는 시점보다 먼저다.
+      const VIEW_LS = "dash.activeView.v1";
+      try {
+        window.__dashBootView = localStorage.getItem(VIEW_LS);
+      } catch {
+        window.__dashBootView = null; // 프라이빗 모드·quota — 복원 없이 기존 동작.
+      }
+
       const setActiveNav = (view) => {
         currentView = view;
         document.body.dataset.view = view;
+        try {
+          localStorage.setItem(VIEW_LS, view);
+        } catch {
+          /* quota·프라이빗 모드 — 복원만 안 될 뿐 이동은 정상 */
+        }
         document.body.dataset.main = view === "chat" ? "stream" : view === "activity" ? "activity" : "workbench";
         // 워크벤치 3패널 모드 클래스 중앙 초기화 — 각 뷰가 setActiveNav 후 자기 모드만 add.
         // (모듈=show-providers / 능력=show-capabilities / 프로젝트=show-projects. 나머지=없음).

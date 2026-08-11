@@ -4,29 +4,22 @@
 
 Your always-on AI assistant. It does everything Claude Code does, and runs several LLMs at once. Telegram, the web dashboard, the CLI, HTTP — every door leads to the same assistant. It runs on your machine, with your keys and your bot.
 
-> Think of it as a Claude Code that never sleeps, chats with you on Telegram, and can switch between Claude, GPT, Gemini, or a free local model — all with the same skills.
-
 <p align="center">
   <img src="assets/banner.jpg" alt="tiguclaw — Personal AI Agent OS" width="720">
-</p>
-
-<p align="center">
-  <img src="assets/dashboard.png" alt="tiguclaw dashboard — chat, tool steps, background jobs panel" width="900">
-  <br><sub>The web dashboard — every step as it happens, with managers and sub-agents running live in the side panel.</sub>
 </p>
 
 **Just want to install it? → [Quick start](#quick-start)** (`npm ci`, then `npm run onboard`). Everything below is what it can do.
 
 ## What it does
 
-- **Everything Claude Code can do** — read / write / edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory… and more on top.
+- **Claude Code's tools, as they are** — read/write/edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory.
 - **Many LLMs, one assistant** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) ship built in, and **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM, your own) drops in with three lines of config. Mix them with a single `provider:model` line. Switch freely and the abilities come along — shell, search, files, delegation all run on **the same tools whatever the model is**, so swapping models doesn't change the answer you get.
 - **Always on** — runs as a background service and restarts itself if it ever dies.
 - **Updates itself on request** — just ask it to update (or send `/update`). It pulls the latest, restarts, and pings you when it's back — no manual `git pull`. Your memory and sessions carry over, and if an update can't produce runnable code it rolls back and keeps running the previous version.
 - **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
 - **Talk, don't type** — send a voice note on Telegram or press-and-hold the mic in the dashboard; it transcribes and gets to work. Transcription is config-driven like everything else — a local model or a cloud one, your call.
 - **Say something mid-task** — send a message while it's already working and it folds it into the turn in progress, instead of making you wait for the end or start over.
-- **One personality, many channels** — Telegram, CLI, HTTP, and a built-in web dashboard all reach the same assistant, sharing one conversation memory. The dashboard is a full chat: live step-by-step progress as it works (each step shows what it touched), replies that stream in, and scrollback that survives restarts. A side panel tracks background jobs — their status, steps, and results — so you can watch long work without leaving the conversation.
+- **One personality, many channels** — Telegram, CLI, HTTP, and the web dashboard all reach the same assistant and share one conversation memory. Start on your phone, finish at your desk.
 - **Delegates the heavy & the trivial** — hands long tasks to a background **manager** (so it stays chatty), and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
 - **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Always a proposal you approve — it never rewrites itself silently.
 - **Notices its own trouble** — it sweeps its own recent history for things that went wrong quietly (a scheduled message that never arrived, a job that died) and tells you first. Where the fix is safe and reversible — resending that one message, say — it just does it and says so; anything else it brings to you.
@@ -38,16 +31,22 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
 - **Outbound calls are logged too** — HTTP endpoints you opened and LLM gateway calls share one view. Not the content: just which model handled how many messages, with tokens, duration, and success.
 - **Refresh without losing your place** — the view you were on, your session tabs, and the background panel all come back.
 
-## Highlights
+## What's different
 
-A few things that set it apart from a plain chatbot:
+Where it diverges from similar tools.
 
-- **A real web dashboard, not just a log.** Open it in your browser and watch the assistant think and act in real time — reasoning and tool steps interleaved in the order they happen (like Claude Code's web app), rich tool cards with diffs and output (edits show the actual file line numbers), and scrollback that survives restarts. The chat input has shell-style ↑/↓ history, per session tab. Parallel conversations live in session tabs (reorder them, drafts kept per tab). A side panel tracks background jobs with per-step timelines; tap to answer multiple-choice prompts, reply to a specific message, or steer with `#tags`.
-- **It fits in your pocket.** The dashboard is a real mobile UI, not a squeezed desktop one — drawer navigation, master-detail panels, a chat input that behaves on a phone keyboard. Check a long-running job or kick off a task from the couch, then finish it at your desk in the same conversation.
+- **A web dashboard.** Watch the work happen step by step — reasoning and tool calls in the order they occur, edits with diffs and real file line numbers. Session tabs hold parallel conversations; a side panel tracks background jobs. Scrollback survives restarts, and the composer has shell-style ↑/↓ history and `#tags` for context.
+
+<p align="center">
+  <img src="assets/dashboard.png" alt="tiguclaw dashboard — chat, tool steps, background jobs panel" width="900">
+  <br><sub>The web dashboard — every step as it happens, with managers and sub-agents running live in the side panel.</sub>
+</p>
+
+- **Works on a phone.** The dashboard has its own mobile layout rather than a shrunken desktop one — drawer navigation, master-detail panels, a chat input built for a phone keyboard. Check a long-running job or kick off a task from the couch, then finish it at your desk in the same conversation.
 - **Projects.** Point it at a folder with a `PROJECT.md` and it picks up that project's own skills, sub-agents, and MCP tools — delegate work per-project, each with exactly the right capabilities.
-- **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core. Full Claude Code MCP parity, and then some.
+- **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core.
 - **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and managers run another; edit them just by asking, or list them with `/models`.
-- **Watch the work happen.** Sub-agents and long-running managers run as tracked jobs you follow in the dashboard — status, steps, results. It's Claude Code's Task tool, made observable.
+- **Watch the work happen.** Sub-agents and long-running managers run as tracked jobs you follow in the dashboard — status, steps, results.
 - **Extend it by asking.** New slash commands, HTTP endpoints, scheduled jobs, reusable skills — it adds them as *data* under your home, never by patching the core (so updates stay clean).
 - **Use it as your apps' LLM backend.** Point any OpenAI-compatible client at the built-in gateway (`POST /v1/chat/completions`, `GET /v1/models`) and your own app inherits the whole pool — cross-provider fallback, images in, tool calls passed straight through, streaming if you ask for it. One endpoint instead of one SDK per provider. Off until you set a gateway token, and it answers as *your app*, never as the assistant.
 - **See what a turn costs — and what actually answered.** Every turn shows tokens in / out and the cache-hit rate right in the chat, so waste is visible instead of theoretical. Each reply, tool run, and background job is labelled with the model that *actually* produced it — which is not always the tier you asked for, once a rate limit sends work to a fallback. `/status` names any model that's cooling down.
@@ -131,138 +130,9 @@ If the dashboard isn't there, the usual cause is a missing `HTTP_BRIDGE_TOKEN` �
 
 ### Pick a provider
 
-| Provider | How |
-|---|---|
-| **Ollama (local)** | No key, free, offline. Just install Ollama. (Smaller models, lower quality.) |
-| **Anthropic API key** | Grab one at console.anthropic.com — easiest, pay-as-you-go. |
-| **Claude subscription** | Use your Claude Pro/Max plan — run `claude setup-token` (no API key, no per-token billing). |
-| **OpenAI API key** | platform.openai.com — pay-as-you-go. |
-| **codex (ChatGPT subscription)** | After install, run `npm run codex-auth` to log in. |
-| **Anything OpenAI-compatible** | OpenRouter, Groq, Together, vLLM, your own endpoint — add it in `settings.json`, no code. See below. |
+You need one LLM. **Ollama** (free, local, no key), **Anthropic / OpenAI API keys**, a **Claude or ChatGPT subscription**, or **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM…). `onboard` walks you through it, and switching later doesn't change what the assistant can do.
 
-#### Adding an OpenAI-compatible provider
-
-Any endpoint that speaks the OpenAI API works as a first-class provider — you don't
-write an adapter, you write three lines. Put this in `<home>/settings.json`:
-
-```json
-{
-  "models": {
-    "providers": {
-      "openrouter": {
-        "adapter": "openai",
-        "baseURL": "https://openrouter.ai/api/v1",
-        "apiKeyEnv": "OPENROUTER_API_KEY"
-      }
-    }
-  }
-}
-```
-
-Then set `OPENROUTER_API_KEY` in your `.env` and use it anywhere a model is named:
-`openrouter:anthropic/claude-sonnet-5`, in a model profile pool, as a fallback target.
-OpenRouter alone puts a few hundred models one line away.
-
-Notes: the key lives in your environment, never in the file (`apiKeyEnv` is the variable
-*name*). Built-in provider names can't be redefined — writing `anthropic` here is ignored,
-so a stray config can't quietly reroute a trusted name somewhere else. An `adapter` other
-than `openai`, `claude`, or `codex-oauth` is rejected rather than half-working.
-
-### Getting your keys & tokens
-
-Step-by-step — you only need the provider you picked (+ a Telegram bot if you want chat). `onboard` prompts you for each and shows these hints inline.
-
-**Telegram bot token** (the chat interface)
-1. In Telegram, open **[@BotFather](https://t.me/BotFather)** → send `/newbot`.
-2. Give it a display name, then a username ending in `bot` (e.g. `my_assistant_bot`).
-3. BotFather replies with a token like `123456:ABC-DEF…` — copy it.
-4. *(Recommended — lock to 1:1)* send `/setjoingroups` → **Disable**, and `/setprivacy` → **Enable**.
-
-**Your Telegram user ID** (the owner allowlist)
-- Easiest: during `onboard`, just send your bot one message — it auto-detects your ID.
-- Manual: message **[@userinfobot](https://t.me/userinfobot)** — it replies with your numeric `Id`.
-
-**Anthropic API key** (`sk-ant-…`)
-1. Sign in at **console.anthropic.com**.
-2. **Settings → API Keys → Create Key** → name it → copy (shown only once).
-3. Add credit under **Plans & Billing** (pay-as-you-go).
-
-**Claude subscription** (use your Claude Pro/Max plan instead of an API key)
-1. Install the Claude Code CLI, then run **`claude setup-token`**.
-2. Log in in the browser — it prints a long-lived token; copy it.
-3. Paste it as `CLAUDE_CODE_OAUTH_TOKEN` (the wizard's **claude-sub** option, or in `.env`). No per-token billing — it runs on your subscription.
-
-**OpenAI API key** (`sk-…`)
-1. Sign in at **platform.openai.com**.
-2. **API keys → Create new secret key** → copy.
-3. Add credit under **Billing**.
-
-**Google Gemini key** (optional)
-1. Go to **aistudio.google.com** → **Get API key → Create API key** → copy. (Generous free tier.)
-
-**codex (ChatGPT subscription)** — *no key to paste*
-- After install, run `npm run codex-auth`: it opens a login URL → sign in to ChatGPT → approve. The token is saved and auto-refreshed. (Needs a ChatGPT Plus/Pro subscription.)
-
-**Ollama (local)** — *no key*
-1. Install from **ollama.com** (`brew install ollama` on macOS).
-2. Pull a model: `ollama pull llama3.2` (or `ollama pull qwen2.5:7b` for better quality).
-
-### Day to day
-
-- **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | stop | start | update | logs | doctor | uninstall` work from any folder, like a real app. **`update` doubles as the repair command** — see [Updating](#updating). *(Inside the repo, `npm run daemon:*` works too.)*
-- **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:stop | daemon:start | daemon:logs`.
-- **Pause vs remove** — `daemon:stop` stops the process but keeps it registered (it still auto-starts at next login); `daemon:start` resumes it. `daemon:uninstall` removes the registration entirely.
-- **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
-
-**Teaching it your rules.** Say *"from now on, always X"* and it writes that into `AGENT.md` in your
-runtime home — its identity file, and the one place your standing instructions live. Anything there
-is loaded on **every** turn, so it can't quietly fall out of scope. Facts you only need occasionally
-(schedules, links, numbers) go to memory instead, and details about one project belong in that
-project's own folder. The rule of thumb it follows: *does this need to be there every single turn?*
-— if not, it moves the detail down and keeps a pointer.
-
-A few notes:
-
-- Your `.env` holds the bot token & LLM keys — **never commit or share it** (it's already gitignored).
-- LLM usage is **billed to you** (your keys / subscription).
-- Install with **`npm ci`** for a clean, reproducible setup — it installs exactly from `package-lock.json` and won't modify it. `npm install` works too but may tweak the lockfile locally; no need to commit those changes.
-- `npm run daemon:install` registers the always-on service per OS:
-  - **macOS** → launchd (auto-restart on crash, starts at login).
-  - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
-  - **Windows** → registry Run key (HKCU — **no admin needed**; starts at logon, runs hidden). No crash-restart; for full KeepAlive run under **WSL2**.
-  - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
-- **Lifecycle always works, even if deps break** — install / uninstall / restart / stop / start / **update** run on plain Node (no build step, no `tsx`), so you can stop, remove, or **repair with `tiguclaw update`** even when `node_modules` is broken or missing.
-- **If something is broken, `tiguclaw update` is the one command.** It stops the daemon, runs `npm ci`, rebuilds, and starts again — rolling back if any step fails. ★Don't run `npm ci` yourself: while the daemon is running it holds the native module file (`EPERM`), so the install silently leaves you without it. That's how a working setup gets broken. Stopping first is exactly why `update` exists.
-
-### Updating
-
-Just **ask it** — "update yourself" (or send `/update`). It pulls the latest code, restarts, and pings you when it's back. Your memory, sessions, and settings carry over — updates only touch the code, never your data. If an update can't produce runnable code, it rolls back and keeps running the previous version (you're never left with a dead daemon).
-
-Prefer the terminal? Run **`tiguclaw update`** — it does the same thing (stop → pull → `npm ci` → rebuild → start, rolling back on failure), and it still works when the daemon won't even boot.
-
-★Don't run `git pull` or `npm ci` by hand. Miss one step — especially `npm ci` without stopping first — and the native module won't install, leaving the daemon unable to start. `update` knows the order.
-
-### Reinstalling & runtime mode
-
-**Reinstall / repair** — just re-run `npm run onboard` (or `npm run daemon:install`); it overwrites the service registration in place. Handy after moving the repo folder or if the service ever gets into a bad state — it's safe and leaves your data untouched.
-
-**Runtime mode** — `npm run onboard` installs the **compiled build** by default: it compiles to `dist/` for you and runs `node dist/src/index.js` — fast startup, no on-the-fly transpile. Nothing extra to do.
-
-If you'd rather run straight from **TypeScript source** — no build step, and updates apply the instant they're pulled (handy while developing) — install with `TIGUCLAW_RUNTIME=source`:
-
-```bash
-TIGUCLAW_RUNTIME=source npm run onboard
-```
-
-The mode is pinned when you install, so it never changes on its own — updates keep whichever mode you chose (a built install recompiles automatically, a few extra seconds per update). To switch later, set `TIGUCLAW_RUNTIME` and re-run the install.
-
-### Uninstall
-
-1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows registry Run).
-2. **Delete your data** — ⚠️ irreversible (sessions, memory, DB, agents, skills): `rm -rf ~/.tiguclaw` (or whatever `TIGUCLAW_HOME` points to).
-3. **Remove the global command** (only if you ran `npm link`) — `npm rm -g tiguclaw`.
-4. **Delete the project folder** — `rm -rf tiguclaw`.
-5. *(Optional)* Revoke externals — delete the bot in **@BotFather** (`/deletebot`), revoke API keys in their consoles, and `ollama rm <model>` for any local models you pulled.
+→ How to get each key, config examples, day-to-day commands, updating, and uninstalling all live in **[Setup & operations](docs/setup.en.md)**.
 
 ## How it's built
 
@@ -378,7 +248,8 @@ Tune it live in `<home>/settings.json` — re-read on every request, so nothing 
 
 Worth knowing:
 
-- **It answers as your app, not as the assistant.** Your `system` message is used as-is — no tiguclaw persona, no tools, no skills, no memory — and gateway calls never mix into your conversations. They **do** leave a trace in the dashboard's **external call log** — not the content, only which model handled how many messages, with tokens, duration, and success (all on your own machine). Calls run in an isolated working directory, so nothing leaks even if you send no `system` message. (Account details the LLM provider itself injects are outside tiguclaw's control.)
+- **It answers as your app, not as the assistant.** Your `system` message is used as-is; no tiguclaw persona, tools, skills, or memory ride along. Calls run in an isolated working directory, so nothing leaks even with no `system` message. (Account details the provider itself injects are outside tiguclaw's control.)
+- **The call is logged; the content isn't.** Gateway calls never mix into your conversations, but they do appear in the dashboard's **external call log** — not what was said, just which model handled how many messages, with tokens, duration, and success, all on your machine.
 - **Function calling works on a subscription.** Send `tools` and the model returns `tool_calls` without executing them — whichever adapter runs the turn, no API key required. `tool_choice` (`"none"`, `"required"`, or a named function) is enforced.
 - **Every response is one of three things** — a tool call, text, or an explicit error. Never an empty success.
 - **Call it from your app's server**, not from a browser: the token is a shared secret and the port listens on localhost only.

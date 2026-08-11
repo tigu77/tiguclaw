@@ -66,24 +66,38 @@ export const check: RegressionCheck = {
     //  (문서만 고치고 코드를 안 고치는 쪽도, 그 반대도 같은 검사에 걸린다.)
     const { readFile } = await import("node:fs/promises");
     const docHits: string[] = [];
-    for (const rel of ["README.md", "README.en.md"]) {
-      const url = new URL(`../../../_workspace/public-overlay/${rel}`, import.meta.url);
+    // ★"README" 가 아니라 **사용자가 읽는 문서 묶음**을 본다 (2026-08-11). 설정 예시가
+    //  README 에서 `docs/setup.md` 로 옮겨가자 이 검사가 울었다 — 내용이 사라진 게 아니라
+    //  자리가 바뀐 것이었다. 대상을 한 파일로 박아두면 문서를 정리할 때마다 게이트가 운다.
+    for (const rel of [
+      "_workspace/public-overlay/README.md",
+      "_workspace/public-overlay/README.en.md",
+      "docs/setup.md",
+      "docs/setup.en.md",
+    ]) {
+      const url = new URL(`../../../${rel}`, import.meta.url);
       let doc: string;
       try {
         doc = await readFile(url, "utf8");
       } catch {
         // ★배포 레포엔 `_workspace/` 가 없다(매니페스트 EXCLUDE) — 거기선 이 축이 대상 아님.
         //  조용한 통과 금지: 무엇을 못 봤는지 아래 detail 에 남긴다.
-        docHits.push(`${rel}:없음(배포레포)`);
+        docHits.push(`${rel}:없음`);
         continue;
       }
       const ok =
         doc.includes('"baseURL": "https://openrouter.ai/api/v1"') &&
         doc.includes('"apiKeyEnv": "OPENROUTER_API_KEY"') &&
         doc.includes('"adapter": "openai"');
-      docHits.push(`${rel}:${ok ? "일치" : "★불일치"}`);
+      docHits.push(`${rel}:${ok ? "일치" : "—"}`);
     }
-    const docsAgree = !docHits.some((h) => h.includes("불일치"));
+    // ★판정은 **언어별로 한 곳 이상**이다. 예시가 README 에 있든 setup 문서에 있든
+    //  사용자가 읽는 자리에 있으면 된다 — 파일을 지목하면 문서 정리를 막는 게이트가 된다.
+    const langHas = (suffix: string): boolean =>
+      docHits.some((h) => h.includes(suffix) && h.endsWith("일치"));
+    const docsAgree = langHas(".en.md") && docHits.some(
+      (h) => !h.includes(".en.md") && h.endsWith("일치"),
+    );
 
     return [
       assert(

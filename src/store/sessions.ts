@@ -166,6 +166,65 @@ const migrateLegacyData = (newDir: string): void => {
   }
 };
 
+/**
+ * 네이티브 모듈(better-sqlite3) 적재 실패를 **사람이 읽고 조치할 수 있는 문장**으로 바꾼다.
+ *
+ * 사고 (2026-08-11, 윈도우 신규 설치): 데몬이 부팅마다 죽었는데 남은 건 bindings 탐색 경로
+ *  13줄과 스택뿐이었다. 원인은 명확했지만(네이티브 바인딩 부재) **사용자가 무엇을 해야
+ *  하는지는 어디에도 없었다** — 로그를 개발자에게 보내야만 앞으로 나갈 수 있었다.
+ *  ★"로그가 1차 진단면" 은 원인이 적히는 것까지가 아니라 **다음 행동이 적히는 것**까지다.
+ *
+ * ★왜 여기냐: 이 의존성을 실제로 여는 **유일한 자리**다. 부팅 상위에서 통으로 감싸면
+ *  무관한 실패까지 같은 안내를 달게 된다(진단이 아니라 소음이 된다).
+ */
+export const describeNativeLoadFailure = (
+  message: string,
+  platform: string = process.platform,
+): string | null => {
+  const isBindings =
+    /Could not locate the bindings file/i.test(message) ||
+    /ERR_DLOPEN_FAILED/i.test(message) ||
+    /was compiled against a different Node\.js version/i.test(message);
+  if (!isBindings) return null;
+  const rebuild =
+    platform === "win32"
+      ? "tiguclaw daemon stop  →  npm rebuild better-sqlite3  →  tiguclaw daemon restart"
+      : "npm rebuild better-sqlite3  →  tiguclaw daemon restart";
+  return (
+    "SQLite 네이티브 모듈(better-sqlite3)을 열 수 없습니다 — 설치가 덜 끝났거나 " +
+    `node 버전(${process.version})에 맞게 빌드되지 않았습니다.\n` +
+    `  조치: ${rebuild}\n` +
+    (platform === "win32"
+      ? "  ★데몬을 멈추지 않고 npm ci 를 돌리면 파일 잠금으로 네이티브 모듈이 안 깔립니다(돌던 설치가 깨집니다).\n"
+      : "") +
+    "  그래도 안 되면 빌드 도구가 필요합니다 — 윈도우: Visual Studio Build Tools(C++), " +
+    "리눅스: build-essential + python3."
+  );
+};
+
+/**
+ * DB 열기 실패를 밖으로 내보낼 형태로 만든다. ★판정을 **순수 함수로** 뽑은 이유: try/catch
+ *  안에 두면 검사가 "안내가 실제로 붙는가" 를 못 돌린다 — 실제로 변이 테스트에서 안내를
+ *  통째로 빼도 검사가 초록이었다(순수 함수만 보고 쓰는 자리를 안 봤다).
+ */
+export const explainDbOpenFailure = (e: unknown): Error => {
+  const msg = e instanceof Error ? e.message : String(e);
+  const hint = describeNativeLoadFailure(msg);
+  if (hint === null) return e instanceof Error ? e : new Error(msg);
+  // 원문을 버리지 않는다 — 안내를 **앞에** 붙여 사람이 먼저 읽게 한다.
+  const wrapped = new Error(`${hint}\n\n원문: ${msg}`);
+  wrapped.stack = e instanceof Error ? e.stack : undefined;
+  return wrapped;
+};
+
+const openDatabaseOrExplain = (file: string): Database.Database => {
+  try {
+    return new Database(file);
+  } catch (e) {
+    throw explainDbOpenFailure(e);
+  }
+};
+
 export const initStore = (): void => {
   if (db !== null) return;
 
@@ -175,7 +234,7 @@ export const initStore = (): void => {
   fs.mkdirSync(path.join(resolvedDir, "brain"), { recursive: true });
 
   const file = path.join(resolvedDir, "tiguclaw.db");
-  const handle = new Database(file);
+  const handle = openDatabaseOrExplain(file);
   handle.pragma("journal_mode = WAL");
 
   handle.exec(`

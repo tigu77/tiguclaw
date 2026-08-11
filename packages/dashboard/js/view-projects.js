@@ -317,7 +317,17 @@
         if (countEl) countEl.textContent = String(projectsCache.length);
         grid.innerHTML = "";
         if (projectsCache.length === 0) {
-          grid.innerHTML = '<div class="empty">등록된 프로젝트가 없습니다. ' + escHtml(assistantName) + ' 에게 "이거 프로젝트로 만들어줘"라고 말해보세요.</div>';
+          // ★등록하는 **두 경로**를 다 적는다 (2026-08-11). 종전엔 "이거 프로젝트로
+          //  만들어줘" 하나뿐이라, 폴더 없이 새로 시작하는 길은 어디에도 안 적혀
+          //  있었다(비서는 하는데 아무도 모름). 화면에 등록 버튼을 만드는 대신
+          //  여기 한 줄로 — 등록은 평생 몇 번이고, 판단은 비서가 한다.
+          grid.innerHTML =
+            '<div class="empty"><b>등록된 프로젝트가 없습니다.</b><br>' +
+            escHtml(assistantName) + ' 에게 이렇게 말해보세요 —<br>' +
+            '· <i>"<code>~/work/myapp</code> 프로젝트로 등록해줘"</i> (있는 폴더를)<br>' +
+            '· <i>"이런 프로젝트 하나 해보자"</i> (폴더까지 새로 만들어 등록합니다)<br>' +
+            '<small>설명을 담은 <code>PROJECT.md</code> 는 ' + escHtml(assistantName) +
+            ' 가 씁니다. 등록하면 <code>#이름</code> 으로 그 프로젝트 얘기를 할 수 있어요.</small></div>';
           return;
         }
         // 모듈/능력 뷰와 동형 master-detail 리스트(provider-item) — 카드 그리드 폐기(2026-07-18

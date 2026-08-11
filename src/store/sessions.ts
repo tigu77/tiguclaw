@@ -186,17 +186,19 @@ export const describeNativeLoadFailure = (
     /ERR_DLOPEN_FAILED/i.test(message) ||
     /was compiled against a different Node\.js version/i.test(message);
   if (!isBindings) return null;
-  const rebuild =
-    platform === "win32"
-      ? "tiguclaw daemon stop  →  npm rebuild better-sqlite3  →  tiguclaw daemon restart"
-      : "npm rebuild better-sqlite3  →  tiguclaw daemon restart";
+  // ★조치는 **이미 있는 도구 하나**를 가리킨다 — 손 절차를 늘어놓지 않는다.
+  //  `tiguclaw update` 는 (돌고 있으면) stop → npm ci → build → start 를 하고 실패 시
+  //  롤백한다(bin/daemon.mjs 단계 5~7). 이 부류 복구가 정확히 그 순서다.
+  //  ★2026-08-11 에 나는 여기에 `npm rebuild` 손 절차를 적었다가 사용자에게 지적받았다 —
+  //   같은 날 사용자에게도 `npm ci` 를 손으로 시켜 **돌던 설치를 깨뜨렸다**(데몬이
+  //   better_sqlite3.node 를 잠가 EPERM). 도구가 이미 아는 순서를 사람이 다시 적으면
+  //   그 사본이 먼저 낡는다.
   return (
     "SQLite 네이티브 모듈(better-sqlite3)을 열 수 없습니다 — 설치가 덜 끝났거나 " +
     `node 버전(${process.version})에 맞게 빌드되지 않았습니다.\n` +
-    `  조치: ${rebuild}\n` +
-    (platform === "win32"
-      ? "  ★데몬을 멈추지 않고 npm ci 를 돌리면 파일 잠금으로 네이티브 모듈이 안 깔립니다(돌던 설치가 깨집니다).\n"
-      : "") +
+    "  조치: 터미널에서 `tiguclaw update` (데몬 정지 → 의존성 재설치 → 재빌드 → 기동, 실패 시 롤백)\n" +
+    "  ★`npm ci` 를 직접 돌리지 마세요 — 데몬이 떠 있으면 파일 잠금으로 네이티브 모듈이 " +
+    "안 깔려 오히려 멀쩡하던 설치가 깨집니다.\n" +
     "  그래도 안 되면 빌드 도구가 필요합니다 — 윈도우: Visual Studio Build Tools(C++), " +
     "리눅스: build-essential + python3."
   );

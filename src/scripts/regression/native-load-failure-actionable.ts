@@ -53,37 +53,45 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
-  // ── ③ ★조치가 들어 있다 — 이게 이 검사의 존재 이유다 ─────────────────────
+  // ── ③ ★조치가 **이미 있는 도구**를 가리킨다 — 손 절차 재작성 금지 ────────
+  //  이 검사의 존재 이유. 2026-08-11 에 나는 여기에 `npm rebuild` 손 절차를 적었다가
+  //  사용자에게 지적받았다("매번 저렇게 해줘야 하는거야? tiguclaw update 로 다 되는 거
+  //  아니야?"). `tiguclaw update` 가 stop→npm ci→build→start+롤백을 이미 한다 —
+  //  도구가 아는 순서를 사람이 다시 적으면 그 사본이 먼저 낡는다.
   {
-    const linux = describeNativeLoadFailure(real, "linux") ?? "";
+    const msg = describeNativeLoadFailure(real, "linux") ?? "";
     out.push({
-      name: "★다음 행동(rebuild 명령)이 문장 안에 있다",
-      ok: linux.includes("npm rebuild better-sqlite3") && linux.includes("조치:"),
-      got: linux.includes("npm rebuild better-sqlite3")
-        ? "rebuild 명령 포함"
-        : `🔴 조치 없음 — ${linux.slice(0, 70)}`,
+      name: "★조치가 `tiguclaw update` 한 줄이다(있는 도구를 가리킨다)",
+      ok: msg.includes("tiguclaw update") && msg.includes("조치:"),
+      got: msg.includes("tiguclaw update")
+        ? "update 안내 포함"
+        : `🔴 조치 없음 — ${msg.slice(0, 70)}`,
+    });
+    out.push({
+      name: "★손 절차(npm rebuild)를 다시 적지 않는다 — 사본은 먼저 낡는다",
+      ok: !/npm rebuild/.test(msg),
+      got: /npm rebuild/.test(msg) ? "🔴 손 절차가 되살아났다" : "손 절차 없음",
     });
     out.push({
       name: "빌드 도구가 필요할 수 있다는 다음 단계까지 있다",
-      ok: /Build Tools|build-essential/.test(linux),
-      got: /Build Tools|build-essential/.test(linux) ? "후속 안내 포함" : "🔴 막다른 길",
+      ok: /Build Tools|build-essential/.test(msg),
+      got: /Build Tools|build-essential/.test(msg) ? "후속 안내 포함" : "🔴 막다른 길",
     });
   }
 
-  // ── ④ ★윈도우엔 "데몬 멈추고" 가 붙는다 — 사용자가 자기 설치를 깨는 경로 ─
+  // ── ④ ★`npm ci` 직접 실행을 말린다 — 사용자가 자기 설치를 깨는 경로 ──────
+  //  실측: 정상 부팅(11:38) → (손으로) npm ci → 사망(11:42~). 데몬이 떠 있으면
+  //  better_sqlite3.node 가 잠겨 설치가 깨진다. 플랫폼 무관하게 같은 말을 한다 —
+  //  종전엔 win32 에만 붙였는데, 안내를 플랫폼으로 가를 이유가 없었다(도구가 알아서 한다).
   {
-    const win = describeNativeLoadFailure(real, "win32") ?? "";
-    const linux = describeNativeLoadFailure(real, "linux") ?? "";
-    out.push({
-      name: "★윈도우는 daemon stop 을 먼저 안내한다(파일 잠금으로 설치가 깨진다)",
-      ok: win.includes("daemon stop") && win.includes("npm ci"),
-      got: win.includes("daemon stop") ? "stop 선행 안내 포함" : `🔴 누락 — ${win.slice(0, 70)}`,
-    });
-    out.push({
-      name: "리눅스·맥엔 그 문구가 안 붙는다(플랫폼별로 맞는 말만)",
-      ok: !linux.includes("daemon stop"),
-      got: linux.includes("daemon stop") ? "🔴 무관한 안내가 붙음" : "플랫폼 분기 정상",
-    });
+    for (const p of ["win32", "linux", "darwin"]) {
+      const m = describeNativeLoadFailure(real, p) ?? "";
+      out.push({
+        name: `${p}: npm ci 를 직접 돌리지 말라고 말린다`,
+        ok: m.includes("npm ci") && /직접 돌리지 마세요|말립/.test(m),
+        got: m.includes("npm ci") ? "경고 포함" : `🔴 누락 — ${m.slice(0, 60)}`,
+      });
+    }
   }
 
   // ── ⑤ ★쓰는 자리가 실제로 붙이는가 ──────────────────────────────────────
@@ -95,7 +103,7 @@ const run = async (): Promise<Assertion[]> => {
     out.push({
       name: "★DB 열기 실패에 안내가 실제로 붙는다(원문도 보존)",
       ok:
-        wrapped.message.includes("npm rebuild better-sqlite3") &&
+        wrapped.message.includes("tiguclaw update") &&
         wrapped.message.includes("원문:") &&
         wrapped.message.includes("Could not locate the bindings file"),
       got: `메시지 앞머리=${JSON.stringify(wrapped.message.slice(0, 60))}`,

@@ -43,7 +43,7 @@ Where it diverges from similar tools.
 </p>
 
 - **Works on a phone.** The dashboard has its own mobile layout rather than a shrunken desktop one — drawer navigation, master-detail panels, a chat input built for a phone keyboard. Check a long-running job or kick off a task from the couch, then finish it at your desk in the same conversation.
-- **Projects.** Ask it to register a folder as a project and it writes the `PROJECT.md` (description, status) and registers it — nothing to prepare up front. Inside a registered folder it picks up that project's own skills, sub-agents, and MCP tools.
+- **Projects.** Point at a folder and say "register this as a project", or skip the folder entirely — "let's start a project for X" and it creates the working folder for you. Either way it writes the `PROJECT.md` (description, status) and registers it; an existing one is used as-is. After that, `#name` is enough to mean that project, and its own skills, sub-agents, and MCP tools come along.
 - **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core.
 - **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and managers run another; edit them just by asking, or list them with `/models`.
 - **Watch the work happen.** Sub-agents and long-running managers run as tracked jobs you follow in the dashboard — status, steps, results.

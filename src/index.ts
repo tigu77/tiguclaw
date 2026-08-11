@@ -195,6 +195,29 @@ export const modelSpecSanityWarning = (args: string): string | null => {
 // <home>/logs/daemon-<날짜>.log 에 미러됨 (터미널 전용 한계 해소 → 영구 파일, 사후 진단).
 const logFile = initFileLogging();
 
+// ★최후 그물은 **로그가 열리자마자** 건다 (2026-08-11 윈도우 신규 설치 실사고).
+//  종전엔 이 파일 맨 아래(≈2,350행)에 등록했다 — `initStore()` 를 비롯한 **부팅 전체가
+//  그물 밖**이었다. 실측: 신규 설치 기계에서 데몬이 8번 연속으로 `작동 헌법 로드` 직후
+//  죽었는데 로그에 **에러가 한 줄도 없었다**. 핸들러가 없으니 node 가 스택을 console 을
+//  거치지 않고 raw stderr 로 찍고, 윈도우 런처는 창을 숨겨(`sh.Run …, 0, False`) 그걸
+//  버린다 → 사용자에게도 우리에게도 아무것도 안 남는다.
+//  ★부류: **그물이 있다 ≠ 필요한 창에 쳐져 있다.** 가장 깨지기 쉬운 구간(부팅·첫 설치)이
+//   하필 그물 밖이었다 — 잘 도는 기계에선 영영 안 보이는 종류의 구멍이다.
+//
+// "항상 떠있다"는 *수퍼바이저 respawn* 이 보장하는 것이지 코어가 모든 예외를 삼켜서가
+// 아니다. 손상된 상태로 계속 도느니 crash-fast — 로그를 남기고 exit(1) → 깨끗이 재기동.
+// (정상 경로의 턴 에러는 채널 입구 핸들러가 이미 catch·redact 해 데몬을 보존한다.)
+// ★`logFatal` 을 쓴다(`console.error` 아님) — 그 미러는 **비동기 큐잉**이라 곧바로
+// `process.exit(1)` 하면 큐가 통째로 버려진다. 실측: 직전 줄은 남고 **크래시 줄만 사라짐**.
+process.on("unhandledRejection", (reason) => {
+  logFatal("daemon: unhandledRejection — crash-fast for supervisor respawn:", reason);
+  process.exit(1);
+});
+process.on("uncaughtException", (err) => {
+  logFatal("daemon: uncaughtException — crash-fast for supervisor respawn:", err);
+  process.exit(1);
+});
+
 // ★env 로드 요약을 **여기서** 찍는다 (2026-08-01 A4b). load-env 는 import 부작용이라
 //  위 initFileLogging 보다 먼저 돌아, 종전엔 이 줄이 데몬 로그에 영원히 안 남았다
 //  (부팅 206회 중 0건). "어느 .env 를 쓰는가" 는 409 봇 충돌 사고의 전제였다.
@@ -1857,6 +1880,14 @@ const handler: MessageHandler = async (msg) => {
       // 만들었다 → 그대로 두면 사용자 메시지가 대기도 처리도 아닌 채 조용히 스킵된다. close
       // *후* 남은 buffer 를 drain 해 새 턴으로 재주입한다. ★원자성: close 전 push=버퍼(여기서
       // drain 회수) / close 후 push=false(개입점이 새 턴) → 두 경로 어디로도 손실 0.
+      //
+      // ★단, 그 "손실 0" 은 **어댑터가 안 쓴 입력을 buffer 에 남겨줄 때만** 참이다
+      //  (2026-08-11 실사고). codex·openai 는 `drain()` 으로 당겨 쓰니 저절로 성립하지만,
+      //  claude 는 `stream()` 이 도착 즉시 **꺼내간다** — 그래서 마지막 model-call 이후
+      //  도착분이 SDK 새 턴으로 들어갔다가 턴 경계 가드에 버려지고, 여기 drain 은 빈 배열
+      //  이라 재주입도 안 돼 **사용자 메시지가 통째로 증발**했다. 지금은 claude 쪽
+      //  `steeringContents` 가 턴 종료 후 받은 입력을 push 로 되돌려 놓아 전제를 복원한다.
+      //  ★새 stream 소비형 어댑터를 붙일 때 같은 책임을 진다(회귀 steering-leftover-recovered).
       const leftover = steeringCh.drain();
       if (leftover.length > 0) {
         // ★원문(raw)으로 재주입한다 (2026-07-27 라이브 버그 수정). 종전엔 framing 으로 감싼
@@ -2328,21 +2359,8 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
-// 최후 그물 — 어디서도 안 잡힌 예외/거부. "항상 떠있다"는 *수퍼바이저(launchd
-// KeepAlive)의 respawn* 이 보장하는 것이지 코어가 모든 예외를 삼켜서가 아니다.
-// 손상된 상태로 계속 도느니 crash-fast — 로그를 남기고 exit(1) → 깨끗이 재기동.
-// (정상 경로의 턴 에러는 채널 입구 핸들러가 이미 catch·redact 해 데몬을 보존한다.)
-// ★`logFatal` 을 쓴다(`console.error` 아님) — 그 미러는 **비동기 큐잉**이라 곧바로
-// `process.exit(1)` 하면 큐가 통째로 버려진다. 실측: 직전 줄은 남고 **크래시 줄만 사라짐**.
-// 데몬이 재기동됐는데 로그에 원인이 없으면 `/logs` 로도 못 본다(2026-07-31 전체검토 P0).
-process.on("unhandledRejection", (reason) => {
-  logFatal("daemon: unhandledRejection — crash-fast for supervisor respawn:", reason);
-  process.exit(1);
-});
-process.on("uncaughtException", (err) => {
-  logFatal("daemon: uncaughtException — crash-fast for supervisor respawn:", err);
-  process.exit(1);
-});
+// 최후 그물은 **파일 로깅 직후**(≈200행)로 옮겼다 — 부팅 구간이 그물 밖이던 것을 닫는다
+// (2026-08-11). 데몬이 재기동됐는데 로그에 원인이 없으면 `/logs` 로도 못 본다.
 
 for (const ch of channels) {
   // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — 코어 채널(cli/telegram)이 `outbound` 를

@@ -38,7 +38,7 @@ import {
   type PreToolUseHookInput,
   type PostToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { SteeringChannel } from "../../steering.js";
+import type { SteeringChannel, SteeringInput } from "../../steering.js";
 import { getSession, invalidateResume } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
@@ -326,6 +326,43 @@ const formatForeignDelta = (delta: CodexTurn[]): string => {
  */
 export const isOwnTurnEnd = (seen: { chunks: number; deltas: number }): boolean =>
   seen.chunks > 0 || seen.deltas > 0;
+
+/**
+ * ★턴이 끝난 뒤 도착한 steering 입력은 **소비하지 않고 되돌려 놓는다** (2026-08-11 실사고).
+ *
+ * 사고: 비서가 마지막 답을 쓰는 중에 보낸 메시지에 반응이 **영영 없었다**(대기 표시도 없음).
+ *
+ * 근본은 소비 방식이 어댑터마다 다른데 코어가 한쪽만 가정한 것이다 — codex·openai 는
+ * `drain()` 으로 당겨 써서 안 쓴 것이 buffer 에 **남지만**, claude 는 `stream()` 이 도착
+ * 즉시 **꺼내간다**. 코어(index.ts)의 재주입은 "턴 끝에 buffer 에 남아 있으면 회수"이고
+ * 그 주석은 손실 0 을 단언했는데 **claude 에선 거짓**이었다: ①stream 이 꺼내 SDK stdin 에
+ * 넣고 ②SDK 가 새 턴을 열고(`system/init`) ③턴 경계 가드가 그 턴의 답을 버리고
+ * ④`drain()` 이 빈 배열이라 재주입도 안 됐다.
+ *
+ * 고침은 보정을 얹지 않는다 — **코어의 전제를 참으로 만든다.** 되돌려 놓고 제너레이터를
+ * 끝내면 buffer 에 남아 기존 `drain()`→재주입 경로가 그대로 회수한다(새 복구 경로 0개).
+ * `push` 가 false 면 close 와 경합한 것이고, 그땐 코어의 "close 후 push=false → 새 턴"
+ * 경로가 받는다 — **양쪽 어디로도 손실 0.**
+ *
+ * ★모듈 스코프에 있는 이유: 이 판정은 **실행해서** 지켜야 한다. 어댑터 함수 안 클로저로
+ *  두면 검사가 소스 대조밖에 못 해 `if (false)` 하나로 뚫린다(이 레포가 반복해 데인 형상).
+ */
+export const steeringContents = async function* (args: {
+  steering: SteeringChannel;
+  signal: AbortSignal;
+  /** 첫 result 를 봤는가 — 클로저로 읽어 최신값을 본다. */
+  turnEnded: () => boolean;
+  render: (s: SteeringInput) => string;
+  onReturned?: (s: SteeringInput, requeued: boolean) => void;
+}): AsyncGenerator<string> {
+  for await (const s of args.steering.stream(args.signal)) {
+    if (args.turnEnded()) {
+      args.onReturned?.(s, args.steering.push(s));
+      return; // 제너레이터 종료 → stdin close → 단일 result 유지(SP-1).
+    }
+    yield args.render(s);
+  }
+};
 
 export const runClaude = async (
   input: RegionASdkInput,
@@ -860,6 +897,31 @@ export const runClaude = async (
     /API Error: 400/i.test(e.message) &&
     /invalid_request_error/i.test(e.message) &&
     /\bimage\b/i.test(e.message);
+  /**
+   * ★**턴 경계 가드** — 첫 `result` 이후 도착분은 *이 턴의 답이 아니다* (2026-08-06 실사고).
+   *
+   * SDK 0.3 은 한 스트림에 **여러 턴**을 실을 수 있다. 블로킹 도구를 백그라운드로 돌리면
+   * 턴이 즉시 이어지고(`backgroundTasks()`), 그 작업이 끝나면 `system/task_notification`
+   * (status: completed|failed|**stopped**)을 내는데 **그 알림이 새 턴을 시작시킨다**
+   * (`system/init` 재발화). 0.1 엔 없던 동작이라 우리 루프는 그걸 같은 턴으로 먹었다.
+   *
+   * 실측(2026-08-06 14:59, 회사 PC 대시보드 세션): 사용자 입력은 14:36 이 마지막인데
+   *  - 14:59:44 result/success  ← 진짜 답변(작업 요약)
+   *  - 14:59:45 task_notification → system/init  ← 알림이 새 턴 개시
+   *  - 14:59:56 result/success  ← "알겠습니다. 멈추겠습니다"(알림에 대한 대답)
+   * 결과 ①두 턴 텍스트가 한 답변으로 이어붙어 화면에 나갔고(`…알려드리겠습니다.Unity MCP는…`)
+   *      ②`resultText` 가 **대입**이라 첫 result 본문이 마지막 것으로 덮였다 —
+   *        스트림 1,646자 / 확정 답변 279자. 즉 **사용자가 시키지도 않은 문장만 기록에 남았다**.
+   *
+   * 그래서 첫 result 에서 답을 **확정**하고, 이후 도착분은 이 답변에 섞지 않는다. 버리되
+   * 조용히 버리지 않는다 — 로그·이벤트에 판정 수치와 함께 남긴다.
+   *
+   * ★선언이 여기 있는 이유(2026-08-11) — **아래 steering 제너레이터가 이 값을 읽어야** 한다.
+   *  종전엔 한참 아래에 있었고, 제너레이터 본문이 늦게 실행된다는 *SDK 내부 동작 가정*
+   *  덕분에 우연히 TDZ 를 면했다. 그 가정에 기대지 않는다.
+   */
+  let turnResultSeen = false;
+
   // ── P1c mid-turn steering (ADR `2026-07-16-midturn-steering.md` §claude, Phase P1c) ──
   //
   // steering 미주입(STEERING_ENABLED off·스케줄러·워커·서브에이전트·비대화 turn) =
@@ -889,12 +951,24 @@ export const runClaude = async (
   ): AsyncGenerator<SDKUserMessage> =>
     (async function* () {
       yield toUserMessage(promptWithMemory); // 초기 유저 메시지 — 현행 string 동일 텍스트.
-      for await (const s of steering.stream(signal)) {
+      for await (const content of steeringContents({
+        steering,
+        signal,
+        turnEnded: () => turnResultSeen,
         // 첨부 placeholder(있으면) + steer 텍스트 = 초기 turn(userTurnParts)과 동형 조립.
-        const parts = [formatAttachments(s.attachments), s.text].filter(
-          (p) => p.trim() !== "",
-        );
-        yield toUserMessage(parts.join("\n\n"));
+        render: (s) =>
+          [formatAttachments(s.attachments), s.text]
+            .filter((p) => p.trim() !== "")
+            .join("\n\n"),
+        onReturned: (s, requeued) => {
+          console.warn(
+            `[claude-turn-boundary] ${input.threadKey} 첫 result 이후 도착한 사용자 입력을 ` +
+              `이 턴에 넣지 않고 **되돌려 놓습니다**(${requeued ? "buffer 회수 → 재주입" : "close 경합 → 새 턴"}) — ` +
+              `chars=${s.raw?.length ?? s.text.length} attachments=${s.attachments?.length ?? 0}`,
+          );
+        },
+      })) {
+        yield toUserMessage(content);
       }
       // stream 종료(close/abort) → 제너레이터 return → stdin close → 단일 result(발산 0).
     })();
@@ -938,26 +1012,6 @@ export const runClaude = async (
     | { input: number; cacheRead: number; output: number }
     | undefined;
   let succeeded = false;
-  /**
-   * ★**턴 경계 가드** — 첫 `result` 이후 도착분은 *이 턴의 답이 아니다* (2026-08-06 실사고).
-   *
-   * SDK 0.3 은 한 스트림에 **여러 턴**을 실을 수 있다. 블로킹 도구를 백그라운드로 돌리면
-   * 턴이 즉시 이어지고(`backgroundTasks()`), 그 작업이 끝나면 `system/task_notification`
-   * (status: completed|failed|**stopped**)을 내는데 **그 알림이 새 턴을 시작시킨다**
-   * (`system/init` 재발화). 0.1 엔 없던 동작이라 우리 루프는 그걸 같은 턴으로 먹었다.
-   *
-   * 실측(2026-08-06 14:59, 회사 PC 대시보드 세션): 사용자 입력은 14:36 이 마지막인데
-   *  - 14:59:44 result/success  ← 진짜 답변(작업 요약)
-   *  - 14:59:45 task_notification → system/init  ← 알림이 새 턴 개시
-   *  - 14:59:56 result/success  ← "알겠습니다. 멈추겠습니다"(알림에 대한 대답)
-   * 결과 ①두 턴 텍스트가 한 답변으로 이어붙어 화면에 나갔고(`…알려드리겠습니다.Unity MCP는…`)
-   *      ②`resultText` 가 **대입**이라 첫 result 본문이 마지막 것으로 덮였다 —
-   *        스트림 1,646자 / 확정 답변 279자. 즉 **사용자가 시키지도 않은 문장만 기록에 남았다**.
-   *
-   * 그래서 첫 result 에서 답을 **확정**하고, 이후 도착분은 이 답변에 섞지 않는다. 버리되
-   * 조용히 버리지 않는다 — 로그·이벤트에 판정 수치와 함께 남긴다(대응은 후속 결정).
-   */
-  let turnResultSeen = false;
   let emptyResultNoted = false;
   let postResultMsgs = 0;
   // 이중발행 방지 가드(2026-07-17, delta 파리티) — depth-0 부모 turn 에서 부분 델타

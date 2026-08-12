@@ -153,6 +153,25 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ⑥ 끄는 수단이 있고, 기본은 켜짐 ────────────────────────────────────
+  //  ★기본 켜짐인 이유: 안 하고 있다가 필요할 때 없으면 끝나는 종류다. 그래도 사용자가
+  //   끌 수 있어야 한다(자동 조치의 조건: 통보 + 끌 수단).
+  {
+    const { readFile } = await import("node:fs/promises");
+    const bk = await readFile(new URL("../../store/backup.ts", import.meta.url), "utf8");
+    const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    out.push({
+      name: "★끌 수 있다(backup.enabled) — 명시 false 일 때만 꺼진다",
+      ok: /backup\b[\s\S]{0,200}?enabled/.test(bk) && /!== false/.test(bk),
+      got: `설정 읽기=${/backupEnabled/.test(bk)} · 기본 켜짐(명시 false 만)=${/!== false/.test(bk)}`,
+    });
+    out.push({
+      name: "★상태는 밀지 않고 /status 에서 본다(알림은 놓치면 끝이다)",
+      ok: /backupInfo\(\)/.test(idx) && /백업:/.test(idx),
+      got: `/status 줄=${/백업:/.test(idx)}`,
+    });
+  }
+
   return out;
 };
 

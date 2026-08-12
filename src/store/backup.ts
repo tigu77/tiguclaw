@@ -18,6 +18,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import { getPaths } from "../core/paths.js";
 import { getDb } from "./sessions.js";
 
@@ -90,10 +91,31 @@ export const backupNotice = (r: BackupResult): string | null => {
   return null; // ★성공 = 침묵.
 };
 
+/**
+ * 백업을 켤 것인가 — `settings.json` 의 `backup.enabled`. **기본 켜짐.**
+ *
+ * ★기본을 켬으로 둔 이유: 이건 안 하고 있다가 필요할 때 없으면 끝나는 종류다.
+ *  파일 하나 추가라 되돌리기 쉽고 최악이 디스크 몇십 MB — 사용자가 세운 자가조치 기준
+ *  ("되돌릴 수 있거나 최악이 사소하면 자동")에 정확히 든다. 끄고 싶으면 이 키로 끈다.
+ *  ★매 턴 fresh 로 읽으므로 재시작이 필요 없다.
+ */
+export const backupEnabled = (): boolean => {
+  try {
+    const raw = JSON.parse(readFileSync(getPaths().settings, "utf8")) as unknown;
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return true;
+    const b = (raw as Record<string, unknown>).backup;
+    if (b === null || typeof b !== "object" || Array.isArray(b)) return true;
+    return (b as Record<string, unknown>).enabled !== false; // 명시 false 만 끔.
+  } catch {
+    return true; // 설정 없음·파싱 실패 = 기본 동작(켬).
+  }
+};
+
 export const runBackupIfDue = (
   now: number = Date.now(),
 ): BackupResult => {
   try {
+    if (!backupEnabled()) return { ran: false };
     const existing = listBackups();
     if (existing[0] !== undefined && now - existing[0].mtime < MIN_INTERVAL_MS) {
       return { ran: false };

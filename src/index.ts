@@ -112,6 +112,7 @@ import {
   cleanupSelfRestartTask,
 } from "./core/restart.js";
 import { initFileLogging, logFatal } from "./core/logging.js";
+import { backupInfo } from "./store/backup.js";
 import { startEventPersistence } from "./core/event-persist.js";
 import {
   enqueueThreadTurn,
@@ -1651,6 +1652,24 @@ const handler: MessageHandler = async (msg) => {
           `─ 채널: ${channels.map((c) => c.name).join(", ")} (${channels.length})`,
         );
         lines.push(`─ 스케줄: ${sched.length}개 (활성 ${enabled})`);
+
+        // ★백업은 **밀지 않고 여기서 보여준다** (2026-08-11 사용자 결정) — 매일 성공
+        //  알림은 배경 소음이 되고 그러면 진짜 신호가 묻힌다. 알림은 놓치면 끝이지만
+        //  `/status` 는 궁금할 때 언제나 있다.
+        try {
+          const b = backupInfo();
+          if (b.latestAt === null) {
+            lines.push("─ ⚠️ 백업: 아직 없음");
+          } else {
+            const mins = Math.floor((Date.now() - b.latestAt) / 60_000);
+            const ago = mins < 60 ? `${mins}분 전` : `${Math.floor(mins / 60)}시간 전`;
+            const mb = (b.totalBytes / 1_048_576).toFixed(0);
+            const stale = mins > 48 * 60 ? "⚠️ " : "";
+            lines.push(`─ ${stale}백업: ${ago} · ${b.count}벌 (${mb}MB)`);
+          }
+        } catch {
+          /* 이 줄만 생략 — 상태 조회 전체를 무르지 않는다 */
+        }
 
         await replyCommand(msg,lines.join("\n"));
       } catch (e) {

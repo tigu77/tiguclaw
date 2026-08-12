@@ -250,12 +250,21 @@ export const sendFormatted = async (
 //
 // 누수 방지: 전역 LRU(삽입순 Map) 로 총 항목 수를 cap. cap 초과 시 가장 오래된 항목부터
 // 제거(per-chat 격리 대신 단순 전역 cap — 작고 견고). id 는 단조 증가 카운터로 충돌 0.
+//
+// ★값과 **함께 물어본 세션**을 들고 있는다 (2026-08-12) — 대시보드에서 시작한 턴이
+//  텔레그램에 물었을 때, 사용자가 누른 답이 *일하던 세션*으로 돌아가게. 없으면(인바운드
+//  텔레그램 턴이 물은 경우) 종전대로 이 대화가 묶인 세션으로 간다 — 그 경우엔 둘이 같다.
 const PROMPT_OPTION_CAP = 500;
-const promptOptionMap = new Map<string, string>();
+interface PromptOptionEntry {
+  value: string;
+  /** 물어본 세션(egress 로 물었을 때만). undefined = 이 대화의 기본 세션(현행). */
+  session?: string;
+}
+const promptOptionMap = new Map<string, PromptOptionEntry>();
 let promptOptionSeq = 0;
-const storePromptOption = (value: string): string => {
+const storePromptOption = (value: string, session?: string): string => {
   const id = `o${(promptOptionSeq++).toString(36)}`;
-  promptOptionMap.set(id, value);
+  promptOptionMap.set(id, session === undefined ? { value } : { value, session });
   while (promptOptionMap.size > PROMPT_OPTION_CAP) {
     const oldest = promptOptionMap.keys().next().value;
     if (oldest === undefined) break;
@@ -293,21 +302,42 @@ const pickExt = (mime: string | undefined, filePath: string | undefined): string
 // 실패(텔레그램 API 등)는 {ok:false,error} — MCP 도구가 재시도/텍스트 폴백 판단.
 const buildPresentOptions =
   (ctx: Context): NonNullable<IncomingMessage["presentOptions"]> =>
-  async (question, options, opts) => {
-    try {
-      const inline_keyboard = options.map((o) => [
-        { text: o.label, callback_data: storePromptOption(o.value) },
-      ]);
-      const prompt =
-        opts?.note !== undefined && opts.note.trim() !== ""
-          ? `${question}\n\n${opts.note}`
-          : question;
-      await ctx.reply(prompt, { reply_markup: { inline_keyboard } });
-      return { ok: true as const };
-    } catch (e) {
-      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
-    }
-  };
+  async (question, options, opts) =>
+    renderOptions(
+      (text, extra) => ctx.reply(text, extra),
+      question,
+      options,
+      opts,
+    );
+
+/**
+ * 선택지 렌더 본체 — **보내는 방법만** 주입받는다(ctx.reply / api.sendMessage).
+ * 인입(ctx 있는 턴)과 egress(좌표만 아는 턴)가 같은 판단을 두 벌 갖지 않게 하는 자리다.
+ */
+const renderOptions = async (
+  send: (
+    text: string,
+    extra: { reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } },
+  ) => Promise<unknown>,
+  question: string,
+  options: { label: string; value: string }[],
+  opts?: { note?: string; replyToSession?: string },
+): Promise<{ ok: true } | { ok: false; error: string }> => {
+  try {
+    const inline_keyboard = options.map((o) => [
+      // 값과 함께 **물어본 세션**을 들고 있는다(있을 때만) — 클릭이 그 세션으로 돌아가게.
+      { text: o.label, callback_data: storePromptOption(o.value, opts?.replyToSession) },
+    ]);
+    const prompt =
+      opts?.note !== undefined && opts.note.trim() !== ""
+        ? `${question}\n\n${opts.note}`
+        : question;
+    await send(prompt, { reply_markup: { inline_keyboard } });
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+};
 
 const yyyymmdd = (epochSeconds: number): string => {
   const d = new Date(epochSeconds * 1000);
@@ -553,6 +583,29 @@ export default class TelegramChannel implements Channel {
       defaultOutboundTarget: (): string | null => {
         const owner = [...parseAllowedTelegramIds()][0];
         return owner ?? getMostRecentTelegramChatId();
+      },
+      // 선택지 1회 렌더 — 인바운드 ctx 없이 **좌표만으로**(대시보드에서 시작한 턴이
+      // 이 대화에 물을 수 있게). 렌더 판단은 renderOptions 한 곳, 여기선 보내는 방법만 준다.
+      // 사용자가 버튼을 누르면 기존 callback_query 핸들러가 그대로 받는다(경로 신설 0).
+      presentOptionsTo: async (
+        target: string | null,
+        question: string,
+        options: { label: string; value: string }[],
+        opts?: { note?: string },
+      ): Promise<{ ok: true } | { ok: false; error: string }> => {
+        if (target === null || target.trim() === "") {
+          return { ok: false as const, error: "telegram target required (chatId)" };
+        }
+        const api = this.bot?.api;
+        if (api === undefined) {
+          return { ok: false as const, error: "telegram bot not started" };
+        }
+        return renderOptions(
+          (text, extra) => api.sendMessage(target, text, extra),
+          question,
+          options,
+          opts,
+        );
       },
       // 활동 표시 1회 — 주기·상한·좌표별 refcount 는 코어(channel-activity.ts) 몫.
       // 인바운드 경로가 쓰는 `ctx.replyWithChatAction` 과 같은 API 지만, ctx 없이
@@ -866,7 +919,8 @@ export default class TelegramChannel implements Channel {
         return;
       }
       const id = ctx.callbackQuery.data;
-      const value = promptOptionMap.get(id);
+      const entry = promptOptionMap.get(id);
+      const value = entry?.value;
       // 로딩 해제(선택값 미복원이어도 먼저). 만료/재시작으로 맵에 없으면 안내 후 종료.
       await ctx.answerCallbackQuery().catch(() => {});
       if (value === undefined) {
@@ -881,16 +935,25 @@ export default class TelegramChannel implements Channel {
       if (chat === undefined) return; // 채팅 컨텍스트 없는 콜백(이론상) — 안전 종료.
       // 선택값을 사용자 발화로 에코(텍스트 흐름과 시각 정합). 부수 UX라 실패해도 무시.
       await ctx.reply(value).catch(() => {});
-      // 채널/세션 분리(ADR 2026-07-15) — message:text 동형(parity). 선택지 클릭도 같은
-      // 기본 세션으로 흘려보낸다(같은 chat=같은 세션·인격). chatId=배달 좌표.
+      // 채널/세션 분리(ADR 2026-07-15) — message:text 동형(parity). chatId=배달 좌표.
+      //
+      // ★답은 **물어본 세션**으로 돌아간다 (2026-08-12). 대시보드 세션이 egress 로 물었으면
+      //  그 세션 id 를 보기와 함께 들고 있다가 여기서 실어준다 — 안 그러면 질문은 도착하는데
+      //  답이 이 대화의 기본 세션으로 새서, 일하던 쪽은 영영 답을 못 받는다(실측).
+      //  ★그 클릭 한 번만이다 — 채널↔세션 **바인딩은 안 건드린다**(explicitSessionId 는
+      //  resolveSessionId 를 우회할 뿐 아무것도 저장하지 않는다). 다음 일반 메시지는 원래대로.
+      //  없으면(인바운드 텔레그램 턴이 물은 경우) 종전 그대로 — 그땐 두 값이 같다.
       const chatId = String(chat.id);
-      const sessionId = resolveSessionId("telegram", chatId);
+      const sessionId = resolveSessionId("telegram", chatId, entry?.session);
       const msg: IncomingMessage = {
         channel: "telegram",
         channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
         threadKey: sessionId,
         channelAddress: chatId,
-        session: { channelAddress: chatId },
+        session: {
+          channelAddress: chatId,
+          ...(entry?.session !== undefined ? { explicitSessionId: entry.session } : {}),
+        },
         text: value,
         receivedAt: Date.now(),
         // 답글 송신 — 공통 흐름(이 경로는 답글 대상 미부착).

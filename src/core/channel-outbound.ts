@@ -29,6 +29,30 @@ export interface ChannelOutbound {
   /** (선택·YAGNI) 다중 좌표 열거 — 슬랙 채널 목록 등. 지금은 미구현(ADR §7 U5). */
   listTargets?: () => Promise<{ id: string; label: string }[]>;
   /**
+   * 선택지 **1회 렌더** — 인입이 아닌 좌표로(대시보드에서 시작한 턴이 텔레그램에 묻기).
+   * `deliver`(텍스트)의 선택지 판(版)이다. 없으면 그 채널은 선택지 UI 가 없는 것 —
+   * 호출부(`prompt-options-egress.ts`)가 텍스트(번호 목록)로 폴백한다.
+   *
+   * ★인입 `IncomingMessage.presentOptions` 와 **같은 추상 의도**(question + label/value)만
+   *  받는다. inline keyboard 같은 채널 raw 는 채널 안에만 — 코어는 채널 이름을 모른다.
+   */
+  presentOptionsTo?: (
+    target: string | null,
+    question: string,
+    options: { label: string; value: string }[],
+    opts?: {
+      note?: string;
+      /**
+       * ★**물어본 세션** — 사용자가 고른 값이 돌아가야 할 자리(2026-08-12).
+       *  이게 없으면 답은 그 대화가 묶인 세션으로 가고, **일하던 세션은 답을 영영 못 받는다**
+       *  (질문은 도착했는데 답이 딴 데로 가면 반쪽이다 — 실측: 대시보드 세션이 물었는데
+       *  텔레그램 클릭이 `dashboard:default` 로 들어갔다). 채널은 이 값을 **선택값과 함께
+       *  들고 있다가** 다음 인바운드에 실어주기만 한다(바인딩 변경 0 — 그 클릭 한 번만).
+       */
+      replyToSession?: string;
+    },
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
    * 활동 표시 **1회 갱신** (텔레그램 "입력 중…" = sendChatAction). 없으면 그 채널은
    * 표시 능력이 없는 것 — 호출부는 조회만 하고 채널 이름을 모른다(`deliver` 와 동형).
    *

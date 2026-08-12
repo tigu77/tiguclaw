@@ -158,6 +158,7 @@ import {
   resolveEgressTargets,
   type EgressTarget,
 } from "./core/egress-targets.js";
+import { withEgressPromptOptions } from "./core/prompt-options-egress.js";
 import { readEgressChannels } from "./core/settings.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
@@ -1770,6 +1771,27 @@ const handler: MessageHandler = async (msg) => {
   const releaseActivity = (): void => {
     for (const release of activityReleases) release();
   };
+  // ── mid-turn 질문도 egress 를 탄다 (2026-08-12) ────────────────────────────
+  // 답이 가는 곳이면 질문도 간다. 종전엔 선택지가 **인입 채널 클로저 하나**뿐이라,
+  // 대시보드에서 시킨 작업 도중 뜬 질문이 텔레그램엔 영영 안 갔다(사용자 보고).
+  // 정책·폴백은 전부 core/prompt-options-egress.ts — 여기선 좌표와 배달 통로만 준다.
+  const presentOptionsForTurn = withEgressPromptOptions(
+    msg.presentOptions,
+    egressTargets,
+    {
+      deliverText: async (t, text) => {
+        await deliverOutbound({
+          channel: t.channel,
+          target: t.target,
+          text,
+          bus,
+          originThreadKey: msg.threadKey,
+        });
+      },
+      // 답이 돌아와야 할 자리 = 물어본 세션. 채널이 보기와 함께 들고 있다가 실어준다.
+      originThreadKey: msg.threadKey,
+    },
+  );
   // mid-turn steering 채널 등록(ADR 2026-07-16 §5) — flag on 일 때만 생성·등록·주입한다.
   // ★flag off = steeringCh 미생성 + steering 필드 미주입 = route input 현행 동일(회귀 0).
   // 개입점(serializedHandler)이 진행 턴을 감지하면 steeringChannels.get(threadKey).push 로 이
@@ -1783,7 +1805,16 @@ const handler: MessageHandler = async (msg) => {
   // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·워커 재주입·
   // 서브에이전트·엔드포인트 등 내부 파생 turn)이면 forward 안 함 = 현행 passthrough(회귀 0).
   const routeP = route(
-    effectiveText === msg.text ? msg : { ...msg, text: effectiveText },
+    {
+      ...msg,
+      ...(effectiveText === msg.text ? {} : { text: effectiveText }),
+      // egress 가 없으면 이 값은 msg.presentOptions **그 자체**다(래핑 0 = 회귀 0).
+      ...(presentOptionsForTurn !== undefined
+        ? { presentOptions: presentOptionsForTurn }
+        : {}),
+      // egress 가 없으면 이 값은 msg.presentOptions **그 자체**다(래핑 0 = 회귀 0).
+
+    },
     {
       abortSignal: turnAc.signal,
       ...(msg.session !== undefined ? { session: msg.session } : {}),

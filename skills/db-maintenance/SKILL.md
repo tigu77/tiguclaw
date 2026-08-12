@@ -8,23 +8,35 @@ description: tiguclaw 데이터베이스(대화·기억·세션)의 백업·용�
 `<home>/data/tiguclaw.db` 한 파일에 **기억·세션·대화 기록이 전부** 있다. 그래서 이 문서의
 순서는 백업 → 용량 → 아카이브다. 크기는 나중에 문제가 되지만 **백업은 처음부터 문제다.**
 
-## 0. 먼저 잰다 (추측 금지)
+## 0. 먼저 잰다 — **숫자를 여기서 읽지 말고 지금 재라**
+
+★이 문서에 "현재 몇 MB · 몇 년 뒤 1GB" 같은 **기준선을 적어두지 않는다.** 그런 값은 적는
+순간부터 늙고, 다음 사람이 그걸 사실로 믿는다(실제로 이 문서가 두 번 틀린 수치를 들고
+있었다 — 한 번은 증가율을, 한 번은 그 근거를). **재는 법만 둔다.**
 
 ```bash
 DB="<home>/data/tiguclaw.db"
-ls -lh "$DB" "$DB"-wal
-sqlite3 "$DB" "SELECT name, printf('%7.1f MB', SUM(pgsize)/1048576.0) FROM dbstat GROUP BY name ORDER BY SUM(pgsize) DESC LIMIT 6;"
+sqlite3 "$DB" "
+WITH sz AS (SELECT
+    (SELECT SUM(pgsize) FROM dbstat WHERE name='transcripts') t,
+    (SELECT SUM(pgsize) FROM dbstat WHERE name LIKE 'transcripts_fts%') f,
+    (SELECT page_count*page_size FROM pragma_page_count(), pragma_page_size()) total),
+ grow AS (SELECT sum(length(content))*1.0 c, (max(ts)-min(ts))/86400000.0 days
+    FROM transcripts WHERE ts > (strftime('%s','now')-30*86400)*1000)
+SELECT
+ '현재 '||round(total/1048576.0)||'MB (대화 '||round(t/1048576.0)||' + 색인 '||round(f/1048576.0)||' = '||round(100.0*(t+f)/total)||'%)',
+ '월 증가 ~'||round((c/nullif(days,0))*30*(1.0+f*1.0/nullif(t,0))/1048576.0)||'MB',
+ '1GB 까지 '||round((1073741824.0-total)/nullif((c/nullif(days,0))*30*(1.0+f*1.0/nullif(t,0)),0)/12.0,1)||'년'
+FROM sz, grow;"
 ```
 
-**보통 `transcripts`(대화 원문) + `transcripts_fts`(그 검색 색인)가 대부분을 차지한다** — 둘 다
-설계상 무한 증가다(대화는 계속 쌓인다). `events` 는 상한이 있어 안 는다.
+★**증가는 대화 원문만 세면 틀린다** — 검색 색인이 원문에 비례해 따라 붙는다(그 비율도 위
+쿼리가 현재 값으로 잰다). 원문만 세서 증가율을 절반으로 잡은 적이 있다.
 
-★**"크다"는 숫자를 대고 하는 말이다.** 참고 눈금(개발 인스턴스 실측, 2026-08-12): 135MB —
-`transcripts` 71.7 + 색인 46.7 = 87%.
-**증가는 월 35~40MB — 이 속도면 1GB 까지 약 2년.**
-★처음엔 "월 17MB / 4년" 이라고 적었는데 **틀렸다**: 대화 원문 유입만 세고 **검색 색인이
-원문의 약 65% 만큼 따라 붙는 것**을 빼먹었다. 증가를 잴 땐 `transcripts` 만 보지 말고
-색인까지 더해라. SQLite 는 수 GB 도 잘 다루니 수백 MB 에서 구조를 바꾸는 건 여전히 이르다.
+**판정:** `transcripts`(대화 원문) + `transcripts_fts`(그 색인)가 대부분이면 정상이다 —
+둘 다 설계상 무한 증가고 대화가 쌓이는 만큼 는다. `events` 는 상한이 있어 안 는다.
+**1GB 까지 몇 년이 남았는지**가 구조를 바꿀 때인지 아닌지의 눈금이고, SQLite 는 수 GB 도
+잘 다루므로 **수백 MB 에서 손대는 건 이르다.**
 
 ## 1. 백업 — **이미 자동으로 돈다**
 
@@ -88,8 +100,8 @@ sqlite3 "$DB" "PRAGMA wal_checkpoint(PASSIVE);"   # → busy | log | checkpointe
 
 ★**설계 전에 재료부터 확인하라.** 세션 마지막 사용 시각(`threads.last_used_at`)은 있지만,
 `transcripts` 행이 그 세션과 **이어지지 않는 경우가 많다**(서브에이전트·백그라운드 작업 등이
-남긴 기록으로 **추정** — 확인된 바 아님). 개발 인스턴스 실측에선 **88%가 그랬다.**
-이걸 모르고 "마지막 사용 시각으로 자르면 된다"고 설계하면 **대부분을 못 건드리거나, 못
+남긴 기록으로 **추정** — 확인된 바 아님). 한 인스턴스에선 대부분이 그랬다. 비율은 인스턴스마다
+다르니 **아래 쿼리로 지금 재라.** 이걸 모르고 "마지막 사용 시각으로 자르면 된다"고 설계하면 **대부분을 못 건드리거나, 못
 건드리는 것을 오래됐다고 지운다.** 먼저 그 비율부터 세라:
 
 ```bash

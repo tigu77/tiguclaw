@@ -228,6 +228,18 @@
           if (activeTurns.has(tab.threadKey) || hasBgWork) {
             const dot = document.createElement("span"); dot.className = "st-dot"; b.appendChild(dot);
           }
+          // ★안 본 메시지 배지 (2026-08-12, 사용자 제안) — 진행 점과 **따로** 붙인다.
+          //  "지금 도는가" 와 "내가 못 본 게 있나" 는 다른 사실이라, 한 턴이 끝나 진행 점이
+          //  사라지는 순간이 곧 **읽어야 할 게 생긴** 순간이다. 같은 자리에 겹쳐 쓰면 그 신호가
+          //  사라진다. 둘 다 참이면 둘 다 보인다(도는 중 + 이미 온 답 N개).
+          const unread = typeof unreadCount === "function" ? unreadCount(tab.threadKey) : 0;
+          if (unread > 0) {
+            const u = document.createElement("span");
+            u.className = "st-unread";
+            u.textContent = unread > 99 ? "99+" : String(unread);
+            u.title = `안 읽은 답변 ${unread}개`;
+            b.appendChild(u);
+          }
           b.addEventListener("click", () => switchToThread(tab.threadKey));
           // 닫기는 ⋯ 메뉴의 "탭 닫기"로만(붙은 × 버튼 폐지 — 사용자 요청). 기본 세션은 메뉴에도
           // 닫기 항목 없음(registerMenuItems 조건). 대화는 보존(deleteSession 호출 X, D3) = 재열기 복원.
@@ -332,6 +344,8 @@
         // 세션을 옮기면 배경 상태도 맞춘다 — 옮겨 다니는 동안 끝난 잡이 "진행 중" 으로
         // 굳는 것이 사용자 제보의 주 경로였다(2026-08-02).
         if (typeof window.resyncBackground === "function") window.resyncBackground();
+        // 그 탭을 열었으면 읽은 것 — 배지 해제. (renderTabBar 재호출은 clearUnread 안에서.)
+        if (typeof clearUnread === "function") clearUnread(tk);
         void loadThreadHistory(tk);
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         if (window.hydrateModelSelect) window.hydrateModelSelect(); // 모델 프로파일 드롭다운 = 이 탭 상태로.

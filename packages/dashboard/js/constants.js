@@ -34,6 +34,27 @@
       let activeThreadKey = DEFAULT_DASH_THREAD;
       // 이벤트 threadKey 가 지금 활성 세션인가(미지정 = 활성으로 취급 — 구 `|| activeThreadKey` 폴백 동형).
       const isActiveThread = (tk) => !tk || tk === activeThreadKey;
+      // ── 안 본 메시지 (2026-08-12, 사용자 제안) ─────────────────────────────
+      // ★진행 점(`st-dot`)과 **다른 질문**이라 배지를 따로 둔다:
+      //   진행 점 = "지금 도는가"(곧 저절로 사라짐) / 여기 = "내가 못 본 게 있나"(사람이 볼 일).
+      //   한 배지로 합치면 둘 중 하나는 반드시 거짓말이 된다.
+      // ★세는 것은 **비서 답변·시스템 통지(out)만**이다. 인바운드(in)는 내가 다른 채널에서
+      //   직접 친 말이라 "안 본" 이 아니다 — 세면 텔레그램에서 말할 때마다 내 탭이 빨개진다.
+      // ★활성 탭은 애초에 안 센다(보고 있는 중). 판정을 여기 한 곳에 둬서 sse(적재)와
+      //   tabs(표시)가 같은 기준을 쓴다.
+      // 휘발성(메모리) — 새로고침하면 0. 그때는 이력이 통째로 다시 그려지므로 "안 본" 이
+      // 아니게 된다. 영속시키면 오히려 유령 배지가 남는다.
+      const unreadByThread = new Map();
+      const unreadCount = (tk) => unreadByThread.get(tk) || 0;
+      const bumpUnread = (tk) => {
+        if (!tk || isActiveThread(tk)) return;
+        unreadByThread.set(tk, unreadCount(tk) + 1);
+        if (typeof renderTabBar === "function") renderTabBar();
+      };
+      const clearUnread = (tk) => {
+        if (!unreadByThread.delete(tk)) return;
+        if (typeof renderTabBar === "function") renderTabBar();
+      };
       // 채널 접두 표시명 — 탭으로 안 열려 있는 세션(텔레그램·CLI 등)의 폴백 라벨.
       const CHANNEL_LABEL = { dashboard: "대시보드", telegram: "텔레그램", cli: "CLI", http: "HTTP" };
       /**

@@ -41,6 +41,10 @@ import {
   formatInventoryForUser,
 } from "./core/plugins/inventory.js";
 import { loadPlugins } from "./core/plugins/loader.js";
+import {
+  startSelfMaintenance,
+  stopSelfMaintenance,
+} from "./core/self-maintenance.js";
 import { stripInternalRuntimeScaffolding, redactSecrets } from "./core/outbound-sanitize.js";
 import { route } from "./core/router.js";
 import {
@@ -559,6 +563,12 @@ try {
 } catch (e) {
   console.error("loadPlugins failed:", e);
 }
+
+// ★자기 보전 — DB 백업 + 자가 진단 (2026-08-12, 사용자: "기본적인 부분은 코어에").
+//  **loadPlugins 의 try 바깥**이 자리다. 종전엔 이 둘의 시계가 self-growth 플러그인에
+//  있어서, 플러그인 로드가 실패하면(로더는 조용히 skip 한다) 백업과 진단이 함께 멎었다 —
+//  데이터 안전이 부가 기능에 얹혀 있었다. 위 catch 가 삼킨 뒤에도 여기는 반드시 돈다.
+startSelfMaintenance(bus);
 
 // channel.message.in/out 관측 이벤트의 본문 상한 — 실채팅엔 사실상 무제한(긴 답변·
 // 보고서 전체 보존: 대시보드 표시·chat_log 영속·스트리밍 치환 모두 전체본). 천장은
@@ -2354,6 +2364,8 @@ const shutdown = async (signal: string): Promise<void> => {
     );
     console.log(`daemon: 중단 기록 ${keys.length}건 · 통지 ${n}/${keys.length}건 성공.`);
   }
+  // 자기 보전 시계 정지 — 종료 중에 백업·진단이 새로 시작되지 않게(타이머·구독 누수 0).
+  stopSelfMaintenance();
   // ★자식 프로세스 정리를 **맨 앞으로** (2026-07-28). 종전엔 채널·서비스 정지가 끝난 뒤에야
   //  외부 MCP·백그라운드 셸을 정리했는데, 그 앞단이 1500ms force-exit 백스톱을 넘기면
   //  자식 정리에 **도달하지 못했다**(실측 2건: 종료 시작 2초 뒤 force exit, 사이에 자식

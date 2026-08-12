@@ -306,6 +306,25 @@ export const markDone = (jobId: string, result: string): void => {
   dispatchSubagentStopHook(job, "done", result); // Phase 1.1 — agent kind 만(no-op for worker).
 };
 
+/**
+ * 실패 분류 — **통지와 로그가 같은 판정을 쓴다** (2026-08-12). 두 곳이 각자 정규식을
+ * 가지면 화면과 로그가 다른 말을 하고, 그러면 원격 진단이 다시 추론이 된다.
+ */
+export const classifyFailure = (raw: string): string =>
+  /wall-clock 상한|매니저 처리 시간 초과/i.test(raw)
+    ? "wall-clock상한"
+    : /도구 .*안 끝나|tool-hang/i.test(raw)
+      ? "도구상한"
+      : /유휴 타임아웃|idle timeout|first timeout/i.test(raw)
+        ? "유휴(무응답)"
+        : isRateLimited(raw)
+          ? "사용량한도"
+          : /server_is_overloaded|overloaded/i.test(raw)
+            ? "백엔드과부하"
+            : /취소|cancel/i.test(raw)
+              ? "취소"
+              : "기타";
+
 /** 워커 실패/타임아웃 — 원인 기록. */
 export const markFailed = (jobId: string, error: string): void => {
   const job = jobs.get(jobId);
@@ -317,6 +336,14 @@ export const markFailed = (jobId: string, error: string): void => {
   job.status = "failed";
   job.error = error;
   job.finishedAt = Date.now();
+  // ★실패를 **로그만으로 진단할 수 있게** (2026-08-12, 사용자: "확실하게 로그를 심어보자").
+  //  종전엔 실패가 이벤트·DB 로만 남아, 원격 기계(회사 PC 는 접속 불가)에서 신고가 오면
+  //  "무슨 에러였나" 를 추론으로 다뤄야 했다. 한 줄에 **판정 재료**를 싣는다.
+  console.error(
+    `[job-failed] '${job.label}' (${job.kind}:${jobId}) — ${Math.round(
+      (job.finishedAt - job.startedAt) / 1000,
+    )}s 실행 후 실패 · 분류=${classifyFailure(error)} · thread=${job.threadKey} · 원인=${error.slice(0, 300)}`,
+  );
   persistSafe("markFailed", () =>
     updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
   );
@@ -1241,9 +1268,32 @@ const humanizeWorkerError = (raw: string): string => {
     }
     return "LLM 사용량 한도 도달(429) — 잠시 후 한도가 리셋되면 다시 시켜주세요.";
   }
-  // 유휴/턴 타임아웃 — 모델이 응답을 멈춤(거부 아님). 더 작게 쪼개 재시도 권장.
-  if (/유휴 타임아웃|idle|시간 초과|timeout/i.test(raw)) {
-    return "LLM 응답이 멈춰(타임아웃) 완료하지 못했습니다. 작업을 더 작게 쪼개 다시 시켜주세요.";
+  // ── 시간 관련 종료 — **원인을 뭉치지 않는다** (2026-08-12, 사용자: "무슨 에러가 난 건지
+  //    정확하게 알려주는 게 중요하지"). 종전엔 아래 셋을 한 정규식으로 묶어 전부
+  //    **"LLM 응답이 멈춰(타임아웃)"** 라고 말했다. 그런데 실제로는 서로 다른 사건이다:
+  //     · wall-clock 상한 = 작업이 **돌고 있었는데** 시계에 잘린 것(멈춘 게 아니다)
+  //     · 도구 상한      = 도구 하나가 오래 걸린 것(모델은 멀쩡했다)
+  //     · 유휴/첫토큰    = 진짜로 **아무것도 안 온** 것 — 이것만 "멈췄다" 가 맞다
+  //    "멈췄다" 고 들으면 모델·백엔드를 의심하게 되는데, 앞의 둘은 그쪽이 아니다.
+  //    ★1층 유휴는 현재 전 턴 면제(idleConfigExempt)라 사실상 안 온다 — 그래도 분류는 남긴다.
+  if (/wall-clock 상한|매니저 처리 시간 초과/i.test(raw)) {
+    const ms = /\((\d+)ms/.exec(raw);
+    const hours = ms === null ? null : Math.round((Number(ms[1]) / 3_600_000) * 10) / 10;
+    return (
+      `작업이 ${hours === null ? "설정된" : `${hours}시간`} wall-clock 상한에 도달해 중단됐습니다 — ` +
+      `**모델이 멈춘 게 아니라 진행 중이었을 수 있습니다.** 이어서 하거나 더 작은 단위로 나눠 시키면 상한에 안 걸립니다.`
+    );
+  }
+  if (/도구 .*안 끝나|tool-hang/i.test(raw)) {
+    return `도구 실행이 상한을 넘겨 턴이 중단됐습니다(${raw.slice(0, 160)}). 모델 문제가 아니라 그 도구가 오래 걸린 것입니다.`;
+  }
+  if (/유휴 타임아웃|idle timeout|first timeout/i.test(raw)) {
+    return "모델이 정해진 시간 동안 **아무 응답도 보내지 않아** 중단됐습니다(유휴 타임아웃). 백엔드 상태를 의심할 자리입니다.";
+  }
+  if (/timeout|시간 초과/i.test(raw)) {
+    // 분류 못 한 타임아웃 — **원문을 그대로 실어 보낸다.** 뭉뚱그린 문구로 덮으면
+    // 사용자가 엉뚱한 곳을 뒤진다(그게 이 수정의 이유다).
+    return `시간 관련 중단이 발생했습니다 — 원문: ${raw.slice(0, 200)}`;
   }
   // 풀 전체 소진 — 모든 어댑터가 동시에 실패(단일 provider 풀 흔들림 등). 원문 일부 보존.
   if (/모든 어댑터 실패|모델 풀이 비어/i.test(raw)) {

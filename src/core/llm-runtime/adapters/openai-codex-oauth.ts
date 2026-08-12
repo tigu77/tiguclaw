@@ -53,6 +53,8 @@ import {
   formatModelProfiles,
   splitSystemContext,
 } from "../../prompt-assembly.js";
+// 실패 분류는 리프 모듈 하나에서만 — 어댑터가 자기 정규식을 또 만들면 판정이 갈린다.
+import { isModelOverloaded } from "../rate-limit.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
@@ -186,6 +188,21 @@ class CodexBackendFailureError extends Error {
  * (조르는 게 아니라 같은 요청 재전송이라 토큰도 안 태운다).
  */
 const CODEX_BACKEND_FAIL_BACKOFF_MS = [1_000, 3_000, 8_000, 15_000];
+
+/**
+ * ★**모델 과부하엔 이 사다리를 다 오르지 않는다** (2026-08-12, 사용자 실측).
+ *
+ * 위 주석의 비용 계산("총 대기 27초")은 **대기 시간만** 셌다. 실제로는 시도 하나가
+ * 스트리밍으로 수 분씩 걸려서, 실측은 한 턴에 **11분**이었다(회사 PC 08-11:
+ * 14:53:05 실패 → 4번 재전송 → 15:04:04 포기, 에러 5줄).
+ *
+ * 그리고 그 5줄은 **고칠 수 없는 것을 반복한 기록**이다 — `server_is_overloaded` 는 그
+ * 모델이 죽었다는 뜻이라 같은 모델에 같은 요청을 다시 보내도 결과가 같다. 효과가 있는
+ * 대책은 **풀의 다음 모델로 옮기는 것**이고, 그건 이 함수 바깥(runPool)이 한다.
+ * 그래서 여기서는 순간 스파이크만 흡수할 만큼 **1회**만 재전송하고 곧장 던진다.
+ * (일반 5xx·전송 실패는 종전대로 4회 — 그건 같은 곳에 다시 보내면 실제로 낫는다.)
+ */
+const CODEX_OVERLOAD_MAX_RESEND = 1;
 
 /**
  * 백엔드 실패별 **실효 대책**. 재시도가 무의미한 실패에 "다시 시도" 를 권하지 않는다.
@@ -1499,16 +1516,20 @@ export const runOpenAiCodex = async (
         //  도구는 이미 로컬 실행됐고 inputArray 에 결과가 있어 "다음 스텝 재요청"일 뿐.
         //  전송 재시도와 같은 cap·같은 백오프를 쓴다(무한루프 0).
         if (e instanceof CodexBackendFailureError) {
+          // 모델 축 실패(과부하)면 재전송 상한을 1회로 — 나머지는 회전이 푼다(위 주석).
+          const resendCap = isModelOverloaded(e.why ?? "")
+            ? CODEX_OVERLOAD_MAX_RESEND
+            : CODEX_BACKEND_FAIL_BACKOFF_MS.length;
           if (
             e.retryable &&
-            backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS.length &&
+            backendFailAttempt < resendCap &&
             input.abortSignal?.aborted !== true &&
             !effectiveAc.signal.aborted
           ) {
             const wait = CODEX_BACKEND_FAIL_BACKOFF_MS[backendFailAttempt] ?? 8000;
             backendFailAttempt += 1;
             console.warn(
-              `[codex-backend-retry] ${model} ${backendFailAttempt}/${CODEX_BACKEND_FAIL_BACKOFF_MS.length} ` +
+              `[codex-backend-retry] ${model} ${backendFailAttempt}/${resendCap} ` +
                 `${wait}ms 뒤 같은 요청 재전송 — ${e.why} thread=${input.threadKey}`,
             );
             await sleep(wait, effectiveAc.signal); // /stop·턴 타임아웃이면 즉시 깬다.

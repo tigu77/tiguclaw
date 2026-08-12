@@ -179,6 +179,35 @@
         if (shownIn >= 200000) target.classList.add("heavy");
       };
 
+      /**
+       * ★사용자가 진행 중 턴에 끼어들었다 — **그 자리에서 턴 그룹을 닫는다** (2026-08-12).
+       *
+       * 사고(사용자 실측, 회사돌쇠): 16:57 에 보낸 메시지 **위에** 17:02 답변이 떴다.
+       *  뿌리는 **자리와 시각을 서로 다른 시계가 정한 것**이다 —
+       *   · 답변 말풍선의 *자리*: 턴이 시작될 때 만들어진 그룹(≈16:52)이 정한다
+       *     (`renderChannelMessage` 의 out 경로가 `completeTurnGroup` 그룹에 append).
+       *   · 그 말풍선의 *표시 시각*: 답변이 나온 때(17:02)로 찍힌다.
+       *  그 사이(작업 중)에 온 사용자 메시지는 스트림 맨 아래로 가므로, 구조적으로
+       *  **끼어든 메시지는 답변보다 위에 올 수 없었다.** 새로고침하면 정상으로 보이는 게
+       *  증거다 — 이력은 `ts` 로 정렬하니까(기록은 멀쩡, 라이브 렌더만 어긋남).
+       *
+       * 그래서 끼어든 순간 그룹을 닫아, **이후 출력이 새 그룹**(=그 메시지 아래)으로 가게 한다.
+       * 진행 중 평문 버블은 버린다 — 부분 텍스트라 권위가 없고(최종 out 이 전체본을 가져온다),
+       * 남겨두면 끼어든 메시지 위에 조각이 남아 같은 말이 두 번 보인다.
+       */
+      const interruptOpenTurn = (thread) => {
+        const card = cardByThread.get(thread);
+        if (!card || !vtIndex.has(card.group) || card.closed) return false;
+        if (card.replyBubble && card.replyBubble.parentNode) {
+          card.replyBubble.parentNode.removeChild(card.replyBubble);
+        }
+        card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
+        card.closed = true;      // 이후 델타·활동 = 새 그룹(끼어든 메시지 아래).
+        card.interrupted = true; // 최종 out 이 이 옛 그룹으로 되돌아오지 않게(렌더 분기).
+        scheduleRelayout();
+        return true;
+      };
+
       const completeTurnGroup = (thread) => {
         const card = cardByThread.get(thread);
         if (!card || !vtIndex.has(card.group) || card.closed) return null;

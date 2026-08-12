@@ -362,6 +362,13 @@
          살짝 넓혀(:has, 미지원 브라우저는 180px 유지 = graceful) 긴 이름 입력이 인접 탭을 덜 침범. */
       .session-tab .st-name.editing { overflow:visible; cursor:text; outline:1px solid rgba(125,211,252,.55); border-radius:4px; padding:0 2px; margin:0 -2px; background:rgba(0,0,0,.25); user-select:text; }
       .session-tab:has(.st-name.editing) { max-width:260px; }
+      /* 안 본 메시지 배지 — 진행 점(맥동하는 점)과 **다른 모양**이어야 한다(다른 사실이므로).
+         점은 상태, 이건 개수. 숫자 칩으로 두어 "몇 개 밀렸나" 가 한눈에 보이게 한다. */
+      .session-tab .st-unread {
+        min-width:16px; height:16px; padding:0 4px; border-radius:8px; flex:none;
+        background:var(--accent); color:#fff; font-size:10px; line-height:16px;
+        text-align:center; font-weight:600;
+      }
       .session-tab .st-dot { width:6px; height:6px; border-radius:50%; background:var(--accent-2); flex:none; animation:tc-pulse 1.5s ease-in-out infinite; }
       .session-tab.session-add { justify-content:center; font-size:15px; font-weight:800; padding:6px 11px; color:var(--accent); max-width:none; }
       /* 채널 힌트 — 세션 탭/메시지가 어느 전송로(텔레그램·CLI 등)에서 왔는지. 대시보드 자기 채널은 배지 없음. */

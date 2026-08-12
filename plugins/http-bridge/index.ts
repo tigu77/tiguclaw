@@ -998,7 +998,15 @@ class HttpBridge implements Channel, Observer {
         text: text !== "" ? text : " ",
         threadKey: `gateway:${crypto.randomUUID()}`,
         channel: this.name,
-        internal: true as const, // persist·이벤트 스킵(대시보드·트랜스크립트 무오염).
+        // ★`internal` 을 뗀다 (2026-08-12, 사용자 결정: "게이트웨이도 같이 남기는 게 맞지
+        //  않을까"). 종전엔 persist·turn 이벤트를 통째로 스킵해서, 이벤트 미리보기(4,000자)를
+        //  넘는 요청은 **어디에도 남지 않았다** — 유일한 기록이 잘린 사본이었다.
+        //  엔드포인트(`endpoint:<name>:<nonce>`)는 원래 이렇게 돈다: transcripts 에 전문이
+        //  남고, 화면 오염은 **threadKey 접두 필터**가 막는다(세션 목록은 이미 `gateway:` 를
+        //  배제한다 — store/sessions.ts excludeInternal). 같은 표면이니 같은 규칙을 쓴다.
+        //  ★부수효과도 대칭이다: 이제 게이트웨이 턴도 llm.turn_done/turn_error 를 낸다 —
+        //   외부에 열린 표면의 건강이 자가 진단에 잡히는 건 옳다(대신 그 실패는 '내 대화'가
+        //   아니라 외부 호출로 분류된다 — core/health-sweep.ts).
         toolPolicy: { mode: "none" as const }, // 도구 0.
         systemPromptOverride: system, // 앱 system(빈 문자열도 override — 비서 페르소나 스킵).
         ...(gatewayAttachments.length > 0 ? { attachments: gatewayAttachments } : {}), // 비전.
@@ -1009,7 +1017,13 @@ class HttpBridge implements Channel, Observer {
       //  (internal:true 라 의도적으로 안 남긴다 — 앱 데이터를 우리 DB 에 쌓을 이유가 없다),
       //  events 는 llm.activity 뿐. "누가·언제·뭘·얼마나 썼나" 조차 남지 않았다.
       //  엔드포인트가 2026-08-01 에 같은 병을 앓고 고쳤다(endpoint.call 을 SKIP 에서 뺌).
-      //  **본문은 안 남긴다** — 외부 앱 데이터라 PII 위험만 늘고, 필요한 건 회계·건강이다.
+      //  ★**본문도 남긴다** (2026-08-12, 사용자 결정: "요청·결과 다 남는 게 맞지 않나?
+      //   그걸 알고 싶어서 저기에 기록이 남는 건데"). 종전 주석은 "앱 데이터라 회계·건강만"
+      //   이라고 적었는데 그건 **내 판단이었고 사용자 것이 아니었다.** 티구클로에 연결해 쓰는
+      //   내 앱이라면 무슨 요청이 오갔는지가 곧 이 기록의 목적이다.
+      //  ★단, 게이트웨이 턴은 `internal:true` 라 transcripts 에 안 남는다 — 즉 **이 이벤트가
+      //   유일한 기록**이다. 그래서 엔드포인트와 같은 미리보기 상한을 쓰되(핫경로 바운드),
+      //   잘렸으면 얼마나 잘렸는지 본문에 명시한다(조용한 절단 금지).
       const gwCallId = crypto.randomUUID();
       const gwStartedAt = Date.now();
       const publishGatewayCall = (
@@ -1033,7 +1047,7 @@ class HttpBridge implements Channel, Observer {
           /* 관측 발행 실패가 응답을 무르지 않는다(원칙 3). */
         }
       };
-      publishGatewayCall("start");
+      publishGatewayCall("start", { request: endpointPreview(runInput.text) });
       const specOpt = specs.length > 0 ? { specs } : undefined;
       const cid = `chatcmpl-${crypto.randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
@@ -1138,6 +1152,12 @@ class HttpBridge implements Channel, Observer {
           res.write("data: [DONE]\n\n");
           publishGatewayCall("done", {
             ok: true,
+            request: endpointPreview(runInput.text),
+            response: endpointPreview(
+              out.text !== undefined && out.text !== ""
+                ? out.text
+                : `(텍스트 없음 — 도구 호출 ${(out.externalToolCalls ?? []).length}건)`,
+            ),
             inputTokens: out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0,
             outputTokens: out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0,
             toolCalls: (out.externalToolCalls ?? []).length,
@@ -1148,7 +1168,12 @@ class HttpBridge implements Channel, Observer {
           const reason = e instanceof Error ? e.message : String(e);
           res.write(`data: ${JSON.stringify({ error: { message: reason } })}\n\n`);
           // 실패도 남긴다 — 스트리밍은 200 으로 시작해 중간에 깨지므로 상태코드로는 안 보인다.
-          publishGatewayCall("done", { ok: false, error: reason.slice(0, 300), elapsedMs: Date.now() - gwStartedAt });
+          publishGatewayCall("done", {
+            ok: false,
+            request: endpointPreview(runInput.text),
+            error: reason.slice(0, 300),
+            elapsedMs: Date.now() - gwStartedAt,
+          });
         } finally {
           if (unsub !== null) safeUnsubscribe(unsub);
           if (unsubTool !== null) safeUnsubscribe(unsubTool);
@@ -1226,6 +1251,12 @@ class HttpBridge implements Channel, Observer {
         });
         publishGatewayCall("done", {
           ok: true,
+          request: endpointPreview(runInput.text),
+          response: endpointPreview(
+            out.text !== undefined && out.text !== ""
+              ? out.text
+              : `(텍스트 없음 — 도구 호출 ${toolCalls.length}건)`,
+          ),
           inputTokens: inTok,
           outputTokens: outTok,
           toolCalls: toolCalls.length,
@@ -1236,7 +1267,12 @@ class HttpBridge implements Channel, Observer {
         const reason = e instanceof Error ? e.message : String(e);
         writeJson(res, 502, { error: { message: reason } });
         // 실패도 남긴다 — 외부 표면의 건강은 성공만 봐선 안 보인다.
-        publishGatewayCall("done", { ok: false, error: reason.slice(0, 300), elapsedMs: Date.now() - gwStartedAt });
+        publishGatewayCall("done", {
+          ok: false,
+          request: endpointPreview(runInput.text),
+          error: reason.slice(0, 300),
+          elapsedMs: Date.now() - gwStartedAt,
+        });
       } finally {
         gatewayInflight -= 1;
       }

@@ -162,6 +162,12 @@
               }
             }
           } else { cancelErrClear(tk); markTurnDone(tk); } // out = 성공 종결(즉시).
+          // ★안 본 메시지 적재 (2026-08-12) — **활성 세션 가드보다 먼저** 해야 한다.
+          //  아래 `!isActiveThread → return` 이 비활성 세션을 여기서 끊으므로, 그 뒤에 두면
+          //  정작 세려던 경우(다른 탭에 온 답)에 한 번도 안 불린다. 실제로 그렇게 뒀다가
+          //  헤드리스 검증에서 배지가 안 떠서 잡았다 — 가드 위/아래는 의미가 정반대다.
+          //  세는 건 비서 답변(out)만: 인바운드는 내가 다른 채널에서 친 말이라 "안 본" 이 아니다.
+          if (ev.type === "channel.message.out") bumpUnread(tk);
           // ★멀티세션(B계층) — 채팅 스트림 DOM 은 active 세션만. 비active 는 워킹표시만 갱신하고
           // 스트림 미출력(원본은 chat_log/SSE 보존 = 전환 시 fetch 재빌드, §3.4).
           if (!isActiveThread(tk)) return;

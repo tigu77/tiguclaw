@@ -71,16 +71,23 @@ const run = async (): Promise<Assertion[]> => {
     rmSync(dir, { recursive: true, force: true });
   }
 
-  // ── ④ 배선 — 실행은 store 가, 시계는 self-growth 가 (관측자≠행위자) ──────
+  // ── ④ 배선 — 실행은 store 가, 시계는 **코어**가 (관측자≠행위자) ─────────
+  //  ★2026-08-12: 시계를 self-growth 플러그인에서 코어로 옮겼다. 플러그인 로더는 로드
+  //   실패를 조용히 skip 하므로, 성장 기능이 안 뜨면 백업까지 함께 멎던 구조였다.
   {
     const { readFile } = await import("node:fs/promises");
     const bk = await readFile(new URL("../../store/backup.ts", import.meta.url), "utf8");
     const sg = await readFile(
-      new URL("../../../plugins/self-growth/src/index.ts", import.meta.url),
+      new URL("../../core/self-maintenance.ts", import.meta.url),
       "utf8",
     );
     const hl = await readFile(
-      new URL("../../../plugins/self-growth/src/health.ts", import.meta.url),
+      new URL("../../core/health-sweep.ts", import.meta.url),
+      "utf8",
+    );
+    const daemon = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    const plugin = await readFile(
+      new URL("../../../plugins/self-growth/src/index.ts", import.meta.url),
       "utf8",
     );
     // ★주석을 빼고 본다 — 이 파일의 주석에 "cp 가 아니라 VACUUM INTO 인 이유" 가 적혀
@@ -106,8 +113,21 @@ const run = async (): Promise<Assertion[]> => {
     });
     out.push({
       name: "유지보수 시계가 백업을 부른다",
-      ok: /runBackupIfDue\(\)/.test(sg) && /this\.runBackup\(\)/.test(sg),
+      ok: /runBackupIfDue\(\)/.test(sg) && /runBackup\(bus\)/.test(sg),
       got: `호출=${/runBackupIfDue\(\)/.test(sg)}`,
+    });
+    // ★핵심 — 백업·진단이 **플러그인과 무관하게** 돈다. 이게 이 이관의 이유다.
+    out.push({
+      name: "★시계가 코어에 있고 데몬이 직접 건다(플러그인이 안 떠도 백업은 돈다)",
+      ok: /startSelfMaintenance\(bus\)/.test(daemon),
+      got: /startSelfMaintenance\(bus\)/.test(daemon)
+        ? "데몬이 직접 시작"
+        : "★데몬이 안 걸었다 — 아무도 백업을 부르지 않는다",
+    });
+    out.push({
+      name: "★성장 플러그인엔 백업 시계가 남아 있지 않다(두 곳에서 돌면 안 된다)",
+      ok: !/runBackupIfDue/.test(plugin) && !/runHealthSweep/.test(plugin),
+      got: `plugin 잔여: backup=${/runBackupIfDue/.test(plugin)} sweep=${/runHealthSweep/.test(plugin)}`,
     });
     out.push({
       name: "호출부는 알림 여부를 스스로 정하지 않는다(판정은 store)",
@@ -160,8 +180,43 @@ const run = async (): Promise<Assertion[]> => {
     const { readFile } = await import("node:fs/promises");
     const bk = await readFile(new URL("../../store/backup.ts", import.meta.url), "utf8");
     const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    // ★설정을 **실제로 돌려서** 확인한다 (2026-08-12, 사용자: "자동 백업 할 건지는
+    //  설정에 두자 · 기본은 켜있는걸로"). 종전엔 소스 정규식뿐이라 동의어 하나로 뚫렸다.
+    {
+      const { backupEnabled } = await import("../../store/backup.js");
+      const { getPaths } = await import("../../core/paths.js");
+      const settings = getPaths().settings;
+      const { writeFileSync, readFileSync, existsSync: exists, rmSync: rm } = await import(
+        "node:fs"
+      );
+      const had = exists(settings);
+      const before = had ? readFileSync(settings, "utf8") : null;
+      try {
+        if (had) rm(settings, { force: true });
+        const onByDefault = backupEnabled(); // 설정 파일 자체가 없을 때.
+        writeFileSync(settings, JSON.stringify({ backup: {} }), "utf8");
+        const onWhenUnset = backupEnabled(); // 키만 없을 때.
+        writeFileSync(settings, JSON.stringify({ backup: { enabled: false } }), "utf8");
+        const offWhenFalse = backupEnabled();
+        writeFileSync(settings, JSON.stringify({ backup: { enabled: true } }), "utf8");
+        const onWhenTrue = backupEnabled();
+        out.push({
+          name: "★기본은 켜짐 — 설정이 없어도, 키가 없어도 백업한다",
+          ok: onByDefault && onWhenUnset,
+          got: `설정없음=${onByDefault} 키없음=${onWhenUnset} (둘 다 true 여야)`,
+        });
+        out.push({
+          name: "★설정으로 끌 수 있다 — 명시 false 일 때만 꺼진다",
+          ok: !offWhenFalse && onWhenTrue,
+          got: `enabled:false=${offWhenFalse} enabled:true=${onWhenTrue}`,
+        });
+      } finally {
+        if (before !== null) writeFileSync(settings, before, "utf8");
+        else rm(settings, { force: true });
+      }
+    }
     out.push({
-      name: "★끌 수 있다(backup.enabled) — 명시 false 일 때만 꺼진다",
+      name: "끄는 설정이 store(소유자)에 산다 — 시계가 자기 판단을 갖지 않는다",
       ok: /backup\b[\s\S]{0,200}?enabled/.test(bk) && /!== false/.test(bk),
       got: `설정 읽기=${/backupEnabled/.test(bk)} · 기본 켜짐(명시 false 만)=${/!== false/.test(bk)}`,
     });

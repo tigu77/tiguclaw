@@ -14,7 +14,11 @@
       //   본문 DOM 은 펼칠 때 만든다(lazy) — 3중으로 핫 경로를 바운드.
       //   사용자가 직접 펼친 건 그대로 두고 *자동으로* 펼쳤던 직전 것만 접는다.
       let epAutoOpenTs = null;
-      const isEndpointThread = (tk) => typeof tk === "string" && tk.indexOf("endpoint:") === 0;
+      // 외부 호출 스레드(엔드포인트·게이트웨이) — 채팅이 아니라 "외부 호출" 뷰 소관이다.
+      // ★게이트웨이 추가 (2026-08-12): 이제 게이트웨이 턴도 transcripts 에 남으므로,
+      //  이 필터가 없으면 앱 요청이 대화 이력에 섞여 보인다.
+      const isEndpointThread = (tk) =>
+        typeof tk === "string" && (tk.indexOf("endpoint:") === 0 || tk.indexOf("gateway:") === 0);
       // ── 채널 힌트(ADR 2026-07-15 §D6) — 메시지/세션이 어느 전송로에서 들어왔나. 세션은
       //    채널 무관이라(텔레그램도 기본 세션에 합류) "텔레그램 경유"를 가시화한다. 대시보드
       //    자기 채널(http-bridge/dashboard)은 자명하므로 배지 없음. §0 단방향: 코어 아닌
@@ -96,6 +100,8 @@
             if (p && p.outputTokens != null) prev.outputTokens = Number(p.outputTokens) || 0;
             if (p && p.toolCalls != null) prev.toolCalls = Number(p.toolCalls) || 0;
             if (p && p.servedBy) prev.servedBy = String(p.servedBy);
+            if (p && p.stream != null) prev.stream = p.stream === true;
+            if (p && p.messages != null) prev.messages = Number(p.messages) || 0;
             if (p && p.error) prev.error = String(p.error);
             renderEndpointsView();
             return;
@@ -122,6 +128,12 @@
           toolCalls: Number(p && p.toolCalls) || 0,
           servedBy: String((p && p.servedBy) || ""),
           error: String((p && p.error) || ""),
+          // ★게이트웨이 고유 축 (2026-08-12) — 종전엔 담지도 그리지도 않아, 펼치면
+          //  "요청 (없음) / 응답 (없음)" 두 칸만 나왔다("내용물이 싹 비어있네").
+          //  본문을 안 남기는 건 의도(외부 앱 데이터)지만, 남기기로 한 회계·건강까지
+          //  화면에서 사라진 건 의도가 아니다 — 자료는 있었고 읽는 쪽이 없었다.
+          stream: (p && p.stream) === true,
+          messages: Number(p && p.messages) || 0,
         });
         endpointLog.sort((x, y) => x.ts - y.ts);
         if (endpointLog.length > EP_MAX) { for (const d of endpointLog.splice(0, endpointLog.length - EP_MAX)) epOpen.delete(d.ts); }
@@ -233,6 +245,30 @@
             const fillDetail = () => {
               if (detail.dataset.filled === "1") return;
               detail.dataset.filled = "1";
+              // ★게이트웨이는 축이 다르다 — 본문 대신 회계·건강을 그린다 (2026-08-12).
+              //  요청/응답 두 칸만 그리면 "(없음)(없음)" 이라 아무것도 없는 것처럼 보인다.
+              if (e.kind === "gateway") {
+                const rows = [
+                  ["요청 모델", e.name || "(기본)"],
+                  ["실제 처리", e.servedBy || "(미기록)"],
+                  ["토큰", `입력 ${(e.inputTokens || 0).toLocaleString()} · 출력 ${(e.outputTokens || 0).toLocaleString()}`],
+                  ["도구 호출", String(e.toolCalls || 0)],
+                  ["메시지", `${e.messages || 0}개${e.stream ? " · 스트리밍" : ""}`],
+                  ["소요", e.durationMs > 0 ? fmtElapsed(e.durationMs) : "(진행 중)"],
+                ];
+                if (e.error) rows.push(["오류", e.error]);
+                detail.appendChild(buildEpSection("회계·건강", rows.map(([k, v]) => `${k}: ${v}`).join("\n")));
+                // ★본문도 보여준다 (2026-08-12, 사용자 결정) — 무슨 요청이 오갔는지가 이
+                //  기록의 목적이다. 게이트웨이 턴은 transcripts 에 안 남으므로(internal)
+                //  여기가 유일한 기록이고, 길면 앞부분 + 잘린 사실이 본문에 명시돼 온다.
+                detail.appendChild(buildEpSection("요청", e.request));
+                detail.appendChild(
+                  e.pending
+                    ? buildEpSection("응답", "아직 처리 중입니다 — 완료되면 여기에 표시됩니다.")
+                    : buildEpSection("응답", e.response),
+                );
+                return;
+              }
               detail.appendChild(buildEpSection("요청", e.request));
               // 진행 중이면 응답이 아직 없다 — "(없음)" 은 실패로 읽히므로 상태를 그대로 쓴다.
               detail.appendChild(
@@ -325,7 +361,7 @@
           const card = cardByThread.get(thread);
           // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 냈으면 마지막 텍스트는 이미
           // 세그먼트 버블이 소유 → 최종 답변 버블을 따로 만들거나 승격하지 않는다(중복 방지). 턴만 마감.
-          if (card && card.sawTextSegment && vtIndex.has(card.group)) {
+          if (card && !card.interrupted && card.sawTextSegment && vtIndex.has(card.group)) {
             if (card.replyMsg) card.replyMsg.classList.remove("streaming"); // 혹시 남은 커서 정리.
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
             completeTurnGroup(thread);
@@ -335,7 +371,7 @@
             scheduleRelayout();
             return;
           }
-          if (card && card.replyBubble && vtIndex.has(card.group)) {
+          if (card && !card.interrupted && card.replyBubble && vtIndex.has(card.group)) {
             setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
             card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
@@ -380,6 +416,9 @@
         div.appendChild(msg);
         // 봇 답변(out)이면 같은 턴의 스텝 그룹을 마무리하고 그 그룹 안(스텝 아래)에 버블 배치.
         // 진행 중 그룹이 없으면(또는 사용자 입력) 기존처럼 stream 최상단에 단독 삽입.
+        // ★사용자 메시지가 진행 중 턴에 끼어들면 그 자리에서 그룹을 닫는다 (2026-08-12).
+        //  안 닫으면 이후 답변이 **이 메시지보다 위**(턴 시작 때 잡힌 자리)에 그려진다.
+        if (!isOut) interruptOpenTurn(thread);
         const group = isOut ? completeTurnGroup(thread) : null;
         if (group) {
           group.appendChild(div); // 그룹 내 스텝 카드 다음 = 답변 말풍선(서브트리 변형 → RO 반영).

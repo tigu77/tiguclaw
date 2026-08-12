@@ -24,6 +24,7 @@ import {
   type EventBus,
   type EventBusEvent,
 } from "../../../src/core/eventbus.js";
+import { deliverOutbound } from "../../../src/core/outbound.js";
 import { getMemory } from "../../../src/store/memory.js";
 import { recordSkillInvocation } from "../../../src/store/skill-usage.js";
 import {
@@ -38,7 +39,6 @@ import {
   PATTERN_MAP_CAP,
   SELF_NAMESPACE,
   TTL_CLEANUP_INTERVAL_MS,
-  EVENT_SWEEP_MIN_INTERVAL_MS,
 } from "./constants.js";
 import {
   analyzeDriftPattern,
@@ -51,9 +51,6 @@ import {
   type TurnDonePayload,
   type TurnErrorPayload,
 } from "./analysis.js";
-import { deliverOutbound } from "../../../src/core/outbound.js";
-import { runHealthSweep, type HealthFinding } from "./health.js";
-import { runBackupIfDue, backupNotice } from "../../../src/store/backup.js";
 import {
   analyzeFailurePattern,
   deriveWorkerAdapter,
@@ -88,8 +85,6 @@ class SelfGrowthPlugin {
   private cleanupInterval: NodeJS.Timeout | null = null;
   // V3 — 실패 패턴 누적 카운트 (부팅 이후 in-memory, 영구성 불필요). cap 으로 누수 방지.
   private failureCounts: Map<string, number> = new Map();
-  /** 자가 진단 스윕 증분 기준(마지막 스윕 시각). 부팅 시각으로 시작 = 과거분 재보고 0. */
-  private lastHealthSweepTs = Date.now();
   // V3 — 효율 관측 누적 ((adapter,model) 별). 관측 신호까지만 — 라우팅 분기 0.
   private efficiency: Map<string, EfficiencyAccumulator> = new Map();
 
@@ -111,96 +106,21 @@ class SelfGrowthPlugin {
       this.runMaintenance();
     }, TTL_CLEANUP_INTERVAL_MS);
     console.log(
-      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked, scheduler.error] + health sweep(주기+이벤트) + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
+      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
     );
   }
 
+  // ★백업·자가 진단은 **코어(`core/self-maintenance.ts`)로 이관**했다 (2026-08-12).
+  //  로직은 원래 코어(`store/backup.ts`·`core/health-sweep.ts`)에 있었는데 **시계만**
+  //  여기 있었다. 그래서 이 플러그인이 안 뜨면(로더는 로드 실패를 조용히 skip 한다)
+  //  DB 백업과 자기 진단이 함께 조용히 멎었다 — 데이터 안전이 "성장" 의 부수효과였다.
+  //  여기 남는 것은 성장 고유의 일뿐이다.
   private runMaintenance(): void {
-    this.runBackup();
-    this.runHealthSweep();
     this.runCleanup();
     this.runWeeklyReview();
     this.runDirectiveCleanup();
     this.runSkillProposals();
     this.runSkillImproveProposals();
-  }
-
-  /**
-   * DB 백업 — **시계만 빌려준다.** 실제로 뜨는 건 DB 를 소유한 `store/backup.ts` 다
-   * (health.ts 설계 원칙: 관측자가 조용히 행위자가 되면 안 된다).
-   *
-   * 통보(사용자 확정 2026-08-11): **성공은 침묵**(로그만) · 실패만 보고 · 첫 벌은 1회 안내.
-   *  매일 성공 알림은 배경 소음이 되고, 그러면 진짜 신호가 묻힌다(이 레포 실사고).
-   */
-  private runBackup(): void {
-    try {
-      const r = runBackupIfDue();
-      if (!r.ran) return;
-      if ("error" in r) console.error(`self-growth: DB 백업 실패 — ${r.error}`);
-      else console.log(`self-growth: DB 백업 ${r.file} (${(r.bytes / 1048576).toFixed(1)}MB)`);
-      // ★알릴지 말지는 store 의 `backupNotice` 가 정한다(순수 함수 = 회귀가 실행해 지킴).
-      const notice = backupNotice(r);
-      if (notice !== null) this.reportFindings([{ kind: "backup_stale", summary: notice }]);
-    } catch (e) {
-      console.error(
-        `self-growth: backup step failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-  }
-
-  // ★자가 진단 스윕 (2026-07-26) — 기존 maintenance interval 에 합류(새 interval 0).
-  // "티구클로가 자기 이상을 스스로 알아채고 먼저 보고한다" — 종전엔 codex 22문단 반복도,
-  // 아침 알림 502 유실도 **사용자가** 발견했다(자기관측 맹점). 읽기 전용 진단만 하고 조치는
-  // 사용자 몫. **증분**(마지막 스윕 이후 발생분만)이라 같은 문제를 매 시간 재보고하지 않고,
-  // 정상이면 아무것도 안 보낸다(침묵이 기본 — 통보가 잦으면 무시하게 된다).
-  // 보고 경로는 2겹: EventBus(대시보드 표시) + 기본 outbound 채널(텔레그램 등). 텔레그램이
-  // 죽어 생긴 이상이면 발송도 실패하지만, 대시보드 이벤트는 남아 나중에 확인된다.
-  /**
-   * 이벤트로 깨우는 스윕 — 짧은 창에 실패가 몰려도 스윕은 한 번만(디바운스). 스윕 자체가
-   * 증분이라 중복 보고는 안 되지만, 장애 시 실패 이벤트가 연달아 터지면 DB 조회가 그만큼
-   * 반복되므로 최소 간격을 둔다. 주기 스윕(1시간)은 그대로 백스톱으로 남는다.
-   */
-  private runHealthSweepDebounced(): void {
-    const now = Date.now();
-    if (now - this.lastHealthSweepTs < EVENT_SWEEP_MIN_INTERVAL_MS) return;
-    this.runHealthSweep();
-  }
-
-  /** 발견을 2겹으로 보고(EventBus + 기본 채널). 빈 배열이면 침묵. 백업 경로도 이걸 쓴다. */
-  private reportFindings(findings: HealthFinding[]): void {
-    if (findings.length === 0) return; // 정상 = 침묵.
-    for (const f of findings) {
-      console.log(`self-growth: health — ${f.kind}: ${f.summary}`);
-    }
-    if (this.bus !== null) {
-      this.bus.publish({
-        type: "self_growth.health.finding",
-        ts: Date.now(),
-        payload: { findings },
-      });
-    }
-    const lines = findings.map((f) => `• ${f.summary}`).join("\n");
-    void deliverOutbound({
-      channel: "telegram",
-      target: null, // 채널 기본 대상(소유자)으로 — 좌표 하드코딩 0.
-      text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
-      label: "self-growth:health",
-      notice: true, // 인프라 통지(자가 점검) — 비서 발화 아님.
-    }).catch(() => {
-      /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
-    });
-  }
-
-  private runHealthSweep(): void {
-    try {
-      const since = this.lastHealthSweepTs;
-      this.lastHealthSweepTs = Date.now();
-      this.reportFindings(runHealthSweep(since));
-    } catch (e) {
-      console.error(
-        `self-growth: health sweep failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
   }
 
   // Phase 2 (2026-06-24) — 스킬 *개선* 제안 배치 스캔. 기존 maintenance interval 에
@@ -362,19 +282,10 @@ class SelfGrowthPlugin {
       case "llm.turn_done":
         this.handleTurnDone(event.payload as TurnDonePayload);
         return;
-      case "scheduler.error": {
-        // ★즉시 감지 (2026-07-26) — 주기 스윕(1시간)만으론 유실 알림을 최대 한 시간 뒤에야
-        // 보고한다. 전달 실패는 사용자가 **받았어야 할 것을 못 받은** 상태라 지연이 그대로
-        // 손해다. 실패 이벤트가 오면 그 자리에서 스윕을 돌린다(지표·임계는 동일 — 트리거만 추가).
-        //
-        // ★단 `willRetry` 면 무시한다. 스케줄러가 자동 재전송을 예약해 둔 상태라 아직 확정된
-        //  유실이 아니다. 여기서 알리면 5분 뒤 복구될 건을 "실패했다" 고 먼저 떠드는 꼴
-        //  (자동 조치와 통보가 서로를 밟는 전형적 중복).
-        const p = event.payload as { willRetry?: unknown } | null;
-        if (p !== null && typeof p === "object" && p.willRetry === true) return;
-        this.runHealthSweepDebounced();
+      case "scheduler.error":
+        // 스케줄 실패로 자가 진단을 깨우는 일은 **코어**가 한다(core/self-maintenance.ts).
+        // 여기서 또 들으면 같은 스윕이 두 곳에서 돈다.
         return;
-      }
       case "skill.invoked":
         // 텔레메트리(2026-06-24) — upsert *만*. self-growth 입력축(repeated/failure/
         // drift/skill_proposal)을 *재트리거하지 않음*(메타재귀 차단, 계약 §4·§10-4).

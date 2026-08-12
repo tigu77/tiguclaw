@@ -1,6 +1,13 @@
 /**
  * 자가 진단 스윕 (2026-07-26) — "티구클로가 자기 이상을 스스로 알아채고 먼저 보고한다".
  *
+ * ★코어로 이관 (2026-08-12, 사용자: "기본적인 부분은 코어에 들어가는게 맞아").
+ *  종전엔 `plugins/self-growth/` 에 살았다. 소유는 갈라놨지만 **시동이 플러그인에** 있어서,
+ *  그 플러그인이 안 뜨면(로더는 로드 실패를 **조용히 skip** 한다) 자기 진단도 DB 백업도
+ *  같이 멎고 아무도 그 사실을 모른다 — 데이터 안전이 "성장" 기능의 부수효과였다.
+ *  자기 상태를 보는 것은 성장이 아니라 **운영**이므로 코어가 소유한다.
+ *  덤: 회귀가 `src/` 에서 `plugins/` 를 넘겨다보던 역방향 참조도 같이 사라진다.
+ *
  * ★동기(실사고): 오늘 발견한 문제들은 **전부 데이터가 이미 있었는데 아무도 안 봐서** 방치됐다.
  *  - codex 가 한 답변에 같은 서두를 22번 반복 — 몇 주간, **사용자가** 발견
  *  - 아침 스케줄 알림 2건이 502 로 미도달 — 8시간, 헬스체크하다 발견
@@ -19,12 +26,14 @@
  *  - **보수적 임계**: 오탐이 잦으면 사용자가 무시하게 돼 없느니만 못하다. 확실한 것만.
  *  - never-throw: 한 지표가 깨져도 나머지는 나온다(데몬·maintenance 무영향).
  */
-import { listSchedules } from "../../../src/store/schedules.js";
-import { listEvents } from "../../../src/store/events.js";
-import { getRecentChatLog } from "../../../src/store/chat-log.js";
-import { backupInfo } from "../../../src/store/backup.js";
-import { listMemoriesForIndex } from "../../../src/store/memory.js";
-import { MEMORY_INDEX_CAP_BYTES } from "../../../src/core/prompt-assembly.js";
+import { listSchedules } from "../store/schedules.js";
+import { listEvents } from "../store/events.js";
+import { getRecentChatLog } from "../store/chat-log.js";
+import { backupInfo } from "../store/backup.js";
+import { listMemoriesForIndex } from "../store/memory.js";
+// 실패 분류는 런타임과 **같은 판정**을 쓴다 — 여기서 정규식을 또 만들면 두 곳이 갈린다.
+import { isModelOverloaded, isRateLimited } from "./llm-runtime/rate-limit.js";
+import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
 
 /** 스윕 1건 — 사람이 읽는 한 줄 요약 + 필요 시 상세. */
 export interface HealthFinding {
@@ -84,6 +93,83 @@ export const maxParagraphRepeat = (text: string): number => {
     if (n > max) max = n;
   }
   return max;
+};
+
+/** turn_error payload(JSON 문자열) → 객체. 파싱 실패는 빈 객체(never-throw 원칙). */
+const parseTurnError = (raw: string): Record<string, unknown> => {
+  try {
+    const v: unknown = JSON.parse(raw);
+    return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+};
+
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/**
+ * **이미 제 손으로 처리된 실패인가** — 세지 않을 것들. (2026-08-12)
+ *
+ * ① 데몬 재시작 중단: 실패가 아니라 재시작이고, 중단 통지가 이미 따로 나간다.
+ * ② 사용량 한도: 쿨다운 **진입 시점에** 채널 통지가 이미 나간다(상태 전이 1회). 여기서
+ *    또 세면 같은 일을 두 번 말하고, 그 두 번째는 원인도 안 적혀 있어 소음만 된다.
+ *
+ * 순수 함수 — 회귀가 그대로 실행해 지킨다(소스 훑기 아님).
+ */
+export const isSelfHandled = (rawPayload: string): boolean => {
+  const p = parseTurnError(rawPayload);
+  if (str(p.reason) === "daemon-restart") return true;
+  const detail = `${str(p.message)} ${str(p.error)}`;
+  return isRateLimited(detail);
+};
+
+/**
+ * 실패들을 **원인·모델·스레드 종류**로 접어 한 줄로. (2026-08-12)
+ *
+ * ★알림에 근거를 싣는 이유: 종전 문구("어댑터·백엔드 이상일 수 있습니다")는 받는 사람이
+ *  로그를 받아 분류해야만 뜻을 알 수 있었다 — 알림이 일을 만들었다. 어느 모델이 무슨
+ *  이유로 몇 번인지가 있으면 대개 그 한 줄에서 판단이 끝난다.
+ * ★배경 스레드(서브에이전트·워커)를 따로 표시한다: 내 대화가 멀쩡한데 뒤에서 도는 잡이
+ *  흔들린 것과, 내 대화가 죽은 것은 **다른 사건**이다(실측 08-11: 39건 중 34건이 서브에이전트).
+ */
+export const describeTurnErrors = (rawPayloads: string[]): string => {
+  const byCause = new Map<string, number>();
+  let background = 0;
+  for (const raw of rawPayloads) {
+    const p = parseTurnError(raw);
+    const thread = str(p.threadKey);
+    // ★외부 호출(엔드포인트·게이트웨이)도 '내 대화'가 아니다 (2026-08-12) — 게이트웨이 턴이
+    //  이제 turn 이벤트를 내므로, 안 가르면 앱 호출 실패가 "내 대화가 죽었다"로 보고된다.
+    if (
+      thread.startsWith("agent:") ||
+      thread.startsWith("worker:") ||
+      thread.startsWith("endpoint:") ||
+      thread.startsWith("gateway:")
+    ) {
+      background += 1;
+    }
+    const detail = `${str(p.message)} ${str(p.error)}`;
+    const cause = isModelOverloaded(detail)
+      ? "과부하"
+      : /timeout|시간|abort/i.test(detail)
+        ? "중단·타임아웃"
+        : "실패";
+    const who = str(p.model) !== "" ? `${str(p.adapter)}/${str(p.model)}` : str(p.adapter);
+    const label = `${who === "" ? "미상" : who} ${cause}`;
+    byCause.set(label, (byCause.get(label) ?? 0) + 1);
+  }
+  const top = [...byCause.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([label, n]) => `${label} ${n}건`)
+    .join(" · ");
+  const where =
+    background === 0
+      ? "내 대화"
+      : background === rawPayloads.length
+        ? "전부 배경·외부 호출(서브에이전트·워커·엔드포인트·게이트웨이)"
+        : `배경·외부 호출 ${background}건 포함`;
+  return `${top} (${where}).`;
 };
 
 /**
@@ -154,12 +240,24 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
   }
 
   // ② 턴 실패 급증 — 평소 0~1건이라 3건 이상이면 어댑터·백엔드 이상 신호.
+  //
+  // ★세는 대상을 골라내고, 근거를 실어 보낸다 (2026-08-12, 사용자 지적: "이상한 소음").
+  //  종전엔 `llm.turn_error` 를 **평평하게** 세어 "턴 실패 N건 — 어댑터·백엔드 이상일 수
+  //  있습니다" 만 보냈다. 그래서 세 가지가 한꺼번에 틀어졌다:
+  //   ①데몬 재시작으로 중단된 턴이 "어댑터 이상"으로 둔갑(라벨이 틀림 — 그건 재시작이고
+  //     자기 통지 경로가 따로 있다)
+  //   ②사용량 한도가 이상으로 집계(실측 돌쇠 78건 중 67건) — 한도는 진입 시점에 이미
+  //     쿨다운 통지가 나가므로 여기서 또 말하면 같은 일을 두 번 말하는 것이다
+  //   ③어느 어댑터·어느 모델·무슨 오류인지가 없어서, 알림을 받을 때마다 사람이 로그를
+  //     받아 분류해야 했다(실제로 그렇게 진단했다 — 알림이 일을 만들었다)
+  //  ★"오래 걸림" 은 여기 없다 — 실패로 세는 것은 백엔드가 실패라고 말한 것뿐이다.
   try {
     const errs = listEvents({ types: ["llm.turn_error"], sinceTs, limit: 200 });
-    if (errs.length >= TURN_ERROR_THRESHOLD) {
+    const actionable = errs.filter((e) => !isSelfHandled(e.payload));
+    if (actionable.length >= TURN_ERROR_THRESHOLD) {
       out.push({
         kind: "turn_errors",
-        summary: `턴 실패가 ${errs.length}건 발생했습니다(최근). 어댑터·백엔드 이상일 수 있습니다.`,
+        summary: `턴 실패 ${actionable.length}건 — ${describeTurnErrors(actionable.map((e) => e.payload))}`,
       });
     }
   } catch {

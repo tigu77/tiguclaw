@@ -24,6 +24,29 @@ export const isRateLimited = (errStr: string): boolean =>
     errStr,
   );
 
+/**
+ * **모델 과부하 판정** (2026-08-12) — 한도(계정 축)와 **다른 축**의 실패다.
+ *
+ * ★왜 나누나: 같은 "실패"라도 **누가 죽었는지**가 다르고, 그래서 대책이 다르다.
+ *  - 한도(`isRateLimited`) = **계정**이 막혔다 → 그 provider 전체를 쉬어야 한다.
+ *  - 과부하(여기)        = **그 모델**이 막혔다 → 풀의 **다른 모델**로 옮기면 즉시 산다.
+ *  실측(2026-08-11 회사 PC): `server_is_overloaded` 39건이 전부 `model=gpt-5.6-sol`
+ *  하나였고, 어댑터는 **같은 모델에 같은 요청을 4번 더** 보내 한 턴에 11분(14:53:05→
+ *  15:04:04)을 태웠다. 고칠 수 없는 것을 반복한 것이다 — 2026-07-30 에도 모델만 바꾸니
+ *  즉시 해결된 같은 부류다.
+ *
+ * ★"오래 걸린다"는 여기 안 들어온다 (사용자 2026-08-12): 판정 근거는 **백엔드가 실패라고
+ *  말한 응답**뿐이고, 경과 시간은 재료가 아니다. 느린 것은 실패가 아니다.
+ */
+export const isModelOverloaded = (errStr: string): boolean =>
+  /server_is_overloaded|servers are currently overloaded|overloaded_error/i.test(errStr);
+
+/**
+ * 과부하 쿨다운 길이 — **짧게**. 과부하는 초~분 단위로 풀리므로 길게 잡으면 멀쩡해진
+ * 모델을 놀린다. 회전만 시켜 주면 되고, 만료 후엔 자연히 돌아온다(성공하면 즉시 해제).
+ */
+export const OVERLOAD_COOLDOWN_MS = 5 * 60 * 1000; // 5분
+
 export const parseCooldownMs = (errStr: string): number | null => {
   const m =
     errStr.match(/"resets_in_seconds"\s*:\s*(\d+)/) ||

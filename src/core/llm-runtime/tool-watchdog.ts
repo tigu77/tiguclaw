@@ -64,8 +64,27 @@ export const toolSlowWarnMs = (tool: string): number =>
  *  11분보다 **바깥**이라, codex·openai 는 종전대로 브리지가 먼저 자르고 이 상한은 안 닿는다.
  *  claude 에만 실질 효력이 있다(그쪽에만 그물이 없었으므로 정확히 그게 목적).
  */
-const toolHardMs = (): number =>
-  parsePosIntEnv(process.env.TOOL_HARD_TIMEOUT_MS, 780_000);
+/**
+ * ★**기본은 끊지 않는다** (2026-08-12, 사용자 확정: "오래 걸리는 건 그냥 냅두는 게 맞는 거고,
+ *  에러는 확실히 알려주는 게 맞는 거고, 무슨 에러가 난 건지 정확하게 알려주는 게 중요하지").
+ *
+ * 종전 기본 13분은 **경과 시간으로 진행 중인 작업을 죽이는** 유일한 자리였다. 빌드·테스트·
+ * 대형 마이그레이션은 13분을 예사로 넘기고, 그때 잘리면 사용자에겐 "LLM 응답이 멈춰
+ * (타임아웃)" 로 전달됐다 — **원인도 틀리고 결과도 잘못된 죽음**이었다.
+ *
+ * 그럼 2026-08-06 에 이 상한을 넣게 만든 사고(도구가 진짜 멈춰 세션 직렬 큐가 얼어붙음)는?
+ * 그건 **끊어서** 가 아니라 **몰라서** 나쁜 사고였다 — 아무 신호가 없어 39분을 헤맸다.
+ * 그래서 신호는 남기고(`[tool-slow]` 경고 + `llm.tool_slow` 이벤트 → 워커 핑) 칼만 뺀다.
+ * 진짜 멈춘 도구의 회복 경로는 그대로다: `/stop`(턴 중단) · `cancel_worker` · `/restart`.
+ *
+ * 끊고 싶으면 `TOOL_HARD_TIMEOUT_MS` 에 ms 를 명시한다(미설정 = 안 끊음).
+ */
+const toolHardMs = (): number | null => {
+  const raw = process.env.TOOL_HARD_TIMEOUT_MS;
+  if (raw === undefined || raw.trim() === "") return null; // 기본 = 상한 없음.
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
 
 /**
  * 하드 상한에서 **제외**되는 도구 — 자기 상한을 이미 가진 것들.
@@ -96,10 +115,15 @@ export interface ToolWatchInput {
 export const watchToolStart = (input: ToolWatchInput): (() => void) => {
   const ms = toolSlowWarnMs(input.tool);
   const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+    // ★문구에서 "의심" 을 뺀다 (2026-08-12, 사용자: "오래 걸리는 건 실패가 아니야").
+    //  이건 **경과 시간 보고**지 판정이 아니다. 종전 문구는 5분 넘게 도는 정상 서브에이전트
+    //  까지 매번 hung 의심으로 적어(실측 08-11 하루 27회) 로그를 읽는 사람에게 잘못된
+    //  선입견을 심었다. 진짜 멈춤은 결과가 **영영 안 오는 것**이지 오래 걸리는 게 아니다.
     console.warn(
       `[tool-slow] ${input.threadKey} 도구 ${input.tool} 이(가) ${Math.round(ms / 1000)}s+ ` +
-        `실행 중 — 권한 다이얼로그(OS) 대기·외부 MCP 백엔드 부재(서버는 연결됐어도 대상 앱/` +
-        `에디터 미실행)·hung·느림 의심.${input.note !== undefined ? ` ${input.note}` : ""}`,
+        `실행 중입니다(진행 중일 수 있음 — 오래 걸리는 것 자체는 실패가 아닙니다). ` +
+        `안 끝나는 것으로 보이면 권한 다이얼로그(OS) 대기·외부 MCP 대상 앱 미실행을 먼저 확인하세요.` +
+        `${input.note !== undefined ? ` ${input.note}` : ""}`,
     );
     // 관측 이벤트 — worker-jobs 가 구독해 워커면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
     // 채널 무결합(어댑터는 event 만, dest 라우팅은 워커 계층). best-effort.
@@ -124,7 +148,7 @@ export const watchToolStart = (input: ToolWatchInput): (() => void) => {
   //  넘겼을 때만 동작한다(레버 없는 호출부는 종전대로 경고만 = 회귀 0).
   const hardMs = toolHardMs();
   const hardTimer =
-    input.onHard !== undefined && !hardExempt(input.tool)
+    hardMs !== null && input.onHard !== undefined && !hardExempt(input.tool)
       ? setTimeout(() => {
           const secs = Math.round(hardMs / 1000);
           console.error(

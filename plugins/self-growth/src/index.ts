@@ -52,7 +52,8 @@ import {
   type TurnErrorPayload,
 } from "./analysis.js";
 import { deliverOutbound } from "../../../src/core/outbound.js";
-import { runHealthSweep } from "./health.js";
+import { runHealthSweep, type HealthFinding } from "./health.js";
+import { runBackupIfDue, backupNotice } from "../../../src/store/backup.js";
 import {
   analyzeFailurePattern,
   deriveWorkerAdapter,
@@ -115,12 +116,36 @@ class SelfGrowthPlugin {
   }
 
   private runMaintenance(): void {
+    this.runBackup();
     this.runHealthSweep();
     this.runCleanup();
     this.runWeeklyReview();
     this.runDirectiveCleanup();
     this.runSkillProposals();
     this.runSkillImproveProposals();
+  }
+
+  /**
+   * DB 백업 — **시계만 빌려준다.** 실제로 뜨는 건 DB 를 소유한 `store/backup.ts` 다
+   * (health.ts 설계 원칙: 관측자가 조용히 행위자가 되면 안 된다).
+   *
+   * 통보(사용자 확정 2026-08-11): **성공은 침묵**(로그만) · 실패만 보고 · 첫 벌은 1회 안내.
+   *  매일 성공 알림은 배경 소음이 되고, 그러면 진짜 신호가 묻힌다(이 레포 실사고).
+   */
+  private runBackup(): void {
+    try {
+      const r = runBackupIfDue();
+      if (!r.ran) return;
+      if ("error" in r) console.error(`self-growth: DB 백업 실패 — ${r.error}`);
+      else console.log(`self-growth: DB 백업 ${r.file} (${(r.bytes / 1048576).toFixed(1)}MB)`);
+      // ★알릴지 말지는 store 의 `backupNotice` 가 정한다(순수 함수 = 회귀가 실행해 지킴).
+      const notice = backupNotice(r);
+      if (notice !== null) this.reportFindings([{ kind: "backup_stale", summary: notice }]);
+    } catch (e) {
+      console.error(
+        `self-growth: backup step failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   // ★자가 진단 스윕 (2026-07-26) — 기존 maintenance interval 에 합류(새 interval 0).
@@ -141,32 +166,36 @@ class SelfGrowthPlugin {
     this.runHealthSweep();
   }
 
+  /** 발견을 2겹으로 보고(EventBus + 기본 채널). 빈 배열이면 침묵. 백업 경로도 이걸 쓴다. */
+  private reportFindings(findings: HealthFinding[]): void {
+    if (findings.length === 0) return; // 정상 = 침묵.
+    for (const f of findings) {
+      console.log(`self-growth: health — ${f.kind}: ${f.summary}`);
+    }
+    if (this.bus !== null) {
+      this.bus.publish({
+        type: "self_growth.health.finding",
+        ts: Date.now(),
+        payload: { findings },
+      });
+    }
+    const lines = findings.map((f) => `• ${f.summary}`).join("\n");
+    void deliverOutbound({
+      channel: "telegram",
+      target: null, // 채널 기본 대상(소유자)으로 — 좌표 하드코딩 0.
+      text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
+      label: "self-growth:health",
+      notice: true, // 인프라 통지(자가 점검) — 비서 발화 아님.
+    }).catch(() => {
+      /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
+    });
+  }
+
   private runHealthSweep(): void {
     try {
       const since = this.lastHealthSweepTs;
       this.lastHealthSweepTs = Date.now();
-      const findings = runHealthSweep(since);
-      if (findings.length === 0) return; // 정상 = 침묵.
-      for (const f of findings) {
-        console.log(`self-growth: health — ${f.kind}: ${f.summary}`);
-      }
-      if (this.bus !== null) {
-        this.bus.publish({
-          type: "self_growth.health.finding",
-          ts: Date.now(),
-          payload: { findings },
-        });
-      }
-      const lines = findings.map((f) => `• ${f.summary}`).join("\n");
-      void deliverOutbound({
-        channel: "telegram",
-        target: null, // 채널 기본 대상(소유자)으로 — 좌표 하드코딩 0.
-        text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
-        label: "self-growth:health",
-        notice: true, // 인프라 통지(자가 점검) — 비서 발화 아님.
-      }).catch(() => {
-        /* 발송 실패해도 위 EventBus 통보는 남는다(2겹 보고) */
-      });
+      this.reportFindings(runHealthSweep(since));
     } catch (e) {
       console.error(
         `self-growth: health sweep failed: ${e instanceof Error ? e.message : String(e)}`,

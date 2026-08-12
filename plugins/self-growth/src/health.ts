@@ -22,14 +22,26 @@
 import { listSchedules } from "../../../src/store/schedules.js";
 import { listEvents } from "../../../src/store/events.js";
 import { getRecentChatLog } from "../../../src/store/chat-log.js";
+import { backupInfo } from "../../../src/store/backup.js";
+import { listMemoriesForIndex } from "../../../src/store/memory.js";
+import { MEMORY_INDEX_CAP_BYTES } from "../../../src/core/prompt-assembly.js";
 
 /** 스윕 1건 — 사람이 읽는 한 줄 요약 + 필요 시 상세. */
 export interface HealthFinding {
   /** 지표 종류(로그·이벤트 분류용). */
-  kind: "schedule_failure" | "turn_errors" | "repetition";
+  kind: "schedule_failure" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated";
   /** 사용자에게 그대로 보여줄 한 줄. */
   summary: string;
 }
+
+/**
+ * ★자원 축 보고 간격 — 상태형 지표는 **증분이 아니다.**
+ *  다른 검사는 `sinceTs` 이후 *발생분* 만 봐서 자동으로 중복이 없는데, "백업이 없다"·
+ *  "인덱스가 잘린다"는 **고쳐질 때까지 계속 참**이라 매 스윕(시간당) 뜬다. 그러면 정확히
+ *  이 스윕이 피하려던 배경 소음이 된다. 그래서 여기만 하루 1회로 묶는다.
+ */
+const RESOURCE_REPORT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let lastResourceReportTs = 0;
 
 // 보수적 임계 — 넘으면 "확실히 이상"인 값만.
 const TURN_ERROR_THRESHOLD = 3; // 창 안 턴 실패 3건 이상 = 이상(평소 0~1건)
@@ -95,6 +107,50 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     }
   } catch {
     /* 이 지표만 스킵 */
+  }
+
+  // ★자원·데이터 축 (2026-08-11) — 종전엔 **행동 이상만** 봤다(턴 실패·반복·스케줄).
+  //  DB 가 커지든 백업이 없든 기억 절반이 안 실리든 **아무도 안 알려줬다.** 조용히 썩는
+  //  것을 안 조용하게 만드는 게 이 스윕의 일이므로 여기가 제자리다.
+  //  ★읽기 전용 원칙 유지 — 백업을 **뜨는** 건 DB 를 소유한 store/backup.ts 다.
+
+  if (Date.now() - lastResourceReportTs >= RESOURCE_REPORT_INTERVAL_MS) {
+  lastResourceReportTs = Date.now();
+
+  // ③ 백업이 없거나 오래됐다 — 크기·성능과 무관하게 가장 급하다(복구 불가 축).
+  try {
+    const b = backupInfo();
+    const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+    if (b.latestAt === null) {
+      out.push({
+        kind: "backup_stale",
+        summary:
+          "데이터 백업이 한 번도 없습니다. 기억·세션·대화가 이 DB 한 파일에 있어, 없어지면 되돌릴 방법이 없습니다.",
+      });
+    } else if (Date.now() - b.latestAt > STALE_MS) {
+      const days = Math.floor((Date.now() - b.latestAt) / 86_400_000);
+      out.push({
+        kind: "backup_stale",
+        summary: `백업이 ${days}일째 갱신되지 않았습니다(자동 백업이 멈춘 것 같습니다).`,
+      });
+    }
+  } catch {
+    /* 이 지표만 스킵 */
+  }
+
+  // ④ 매 턴 실리는 기억 인덱스가 잘린다 — 잘린 만큼은 **그 턴에 없는 것**이다.
+  //  ★조용한 실패의 전형: 문장은 멀쩡한데 안 실려서 안 지켜진다(2026-08-10 실사고).
+  try {
+    const r = listMemoriesForIndex(MEMORY_INDEX_CAP_BYTES);
+    if (r.truncated > 0) {
+      out.push({
+        kind: "memory_index_truncated",
+        summary: `기억 ${r.total}건 중 ${r.truncated}건이 매 턴 프롬프트에 안 실립니다(상한 초과). 덜 쓰이는 것부터 잘리지만, 상한을 올리거나 안 쓰는 기억을 정리할 때입니다.`,
+      });
+    }
+  } catch {
+    /* 이 지표만 스킵 */
+  }
   }
 
   // ② 턴 실패 급증 — 평소 0~1건이라 3건 이상이면 어댑터·백엔드 이상 신호.

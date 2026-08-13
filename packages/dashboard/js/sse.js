@@ -117,6 +117,16 @@
           // 엔드포인트 turn(기계 API 호출)은 채팅서 제외 — 방어적(보통 endpoint 는 channel.message
           // 미발생, llm.delta/turn 만; 캡처는 delta 누적 경로가 담당). 진행표시도 스킵.
           if (isEndpointThread(tk)) return;
+          // ★합성 인바운드(워커·에이전트 완료 재주입) — **그리지 말고 켜기만** (2026-08-13).
+          //  이 턴은 사용자가 친 말이 아니라 메인이 결과를 맥락 입혀 정리하는 구간이다.
+          //  버블로 그리면 스캐폴딩이 "나" 로 새고, 안 그리면 종전처럼 화면이 통째로 빈다
+          //  (사용자: "딱 빈공간인 느낌"). 둘 다 아니게 — 진행 표시만 켠다.
+          //  ★안 본 배지도 안 올린다: 내가 못 본 **답변**이 생긴 게 아니라 일이 시작된 것이다.
+          if (ev.type === "channel.message.in" && ev.payload && ev.payload.synthetic) {
+            cancelErrClear(tk);
+            if (Date.now() - (ev.ts || 0) < 120000) markTurnActive(tk, { reason: ev.payload.reason });
+            return;
+          }
           // 아웃바운드 첨부(send_file, #2) = 턴 *중간* 산출물 — 최종 답변이 아니므로 턴 종료
           // (markTurnDone)·진행표시 해제를 하지 않는다(최종 text-out 이 마감). dedup 은 고유 ts 라
           // 최종 text-out(같은 role assistant, 다른 ts)과 키 충돌 없음. chat-history 로 이미 그렸으면 스킵.

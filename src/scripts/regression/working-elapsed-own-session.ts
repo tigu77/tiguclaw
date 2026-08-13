@@ -24,6 +24,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const paint = (
   turns: Array<[string, number]>,
   activeThreadKey: string,
+  reasons: Array<[string, string]> = [],
 ): { label: string; elapsed: string } => {
   const src = readFileSync(
     path.join(REPO, "packages/dashboard/js/axis1-options.js"),
@@ -34,6 +35,8 @@ const paint = (
   const out: Record<string, string> = { label: "", elapsed: "" };
   const ctx: Record<string, unknown> = {
     activeTurns: new Map(turns),
+    // ★사유 맵 (2026-08-13) — 내가 안 시킨 턴(워커·에이전트 정리)에만 "왜 도는지" 가 붙는다.
+    turnReason: new Map(reasons),
     activeThreadKey,
     assistantName: "돌쇠",
     fmtElapsed: (ms: number) => `${Math.round(ms / 1000)}초`,
@@ -93,6 +96,50 @@ export const check: RegressionCheck = {
         c.label.includes("(+1)") && c.label.includes("작업 중"),
         `label=${JSON.stringify(c.label)}`,
       ),
+      // ── ★내가 안 시킨 턴은 "왜 도는지" 를 말한다 (2026-08-13) ──
+      // 사용자: "매니저나 에이전트가 일을 끝내고 메인비서가 정리하는 시점에 뭘 하는지
+      //  알기가 어렵다 · 작업중도 안 뜬다 · 딱 빈공간인 느낌".
+      // ★그 구간은 종전에 **아무 표시도 없었다**: 워커 완료 재주입이 `channel.message.in`
+      //  발행을 통째로 스킵했고(스캐폴딩이 "나" 버블로 새는 걸 막으려고), 대시보드의
+      //  작업중은 오직 그 이벤트로만 켜졌다 — 한 이벤트가 ①버블 그리기 ②표시 켜기
+      //  두 일을 하고 있어서, 버블을 막으니 표시까지 같이 꺼졌다.
+      assert(
+        "★내가 안 시킨 턴은 사유를 같이 보여준다",
+        paint([[MINE, now - 30_000]], MINE, [[MINE, "매니저·에이전트 결과 정리"]])
+          .label.includes("매니저·에이전트 결과 정리"),
+        paint([[MINE, now - 30_000]], MINE, [[MINE, "매니저·에이전트 결과 정리"]]).label,
+      ),
+      // 사용자가 직접 친 턴엔 안 붙는다 — 자기가 뭘 시켰는지 아는 사람에겐 군더더기다.
+      assert(
+        "사유가 없으면 라벨은 종전 그대로",
+        paint([[MINE, now - 30_000]], MINE).label.startsWith("돌쇠 작업 중 ·"),
+        paint([[MINE, now - 30_000]], MINE).label,
+      ),
+      // ★코어가 그 신호를 **내는가** — 위 두 검사는 화면 쪽이라, 코어가 종전처럼 발행을
+      //  통째로 스킵해도 초록이다(변이로 확인했다: 실제로 안 걸렸다). 두 짝을 다 봐야 한다.
+      //  ★등급: 배선 린트. index.ts 는 import 만으로 데몬이 뜨므로 실행할 수 없다.
+      //   그래서 **구조**를 본다 — 합성 분기 안에서 `return` **앞에** publish 가 있는가
+      //   (`if (…synthetic…) return;` 로 되돌리면 즉시 걸린다).
+      (() => {
+        const src = readFileSync(path.join(REPO, "src/index.ts"), "utf8");
+        const i = src.indexOf("if (msg.synthetic === true) {");
+        const block = i < 0 ? "" : src.slice(i, i + 700);
+        const pubAt = block.indexOf("bus.publish");
+        const retAt = block.indexOf("return;");
+        const ok =
+          i >= 0 &&
+          pubAt >= 0 &&
+          retAt > pubAt &&
+          /synthetic: true,/.test(block) &&
+          !/\btext:/.test(block.slice(0, retAt)); // 스캐폴딩 텍스트는 실으면 안 된다.
+        return assert(
+          "★코어가 합성 턴에도 진행 신호를 낸다(텍스트 없이)",
+          ok,
+          ok
+            ? "publish → return · text 없음"
+            : "★발행을 스킵했거나 텍스트를 실었다 — 빈 공간이 돌아온다",
+        );
+      })(),
     ];
   },
 };

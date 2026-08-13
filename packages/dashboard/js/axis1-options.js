@@ -28,7 +28,12 @@
         //  진행 점(st-dot)이 이미 알려주므로, 여기서 숫자를 지어내지 않는다(모르면 안 쓴다).
         const mineStart = activeTurns.get(activeThreadKey);
         const lab = s.querySelector(".chat-work-label");
-        if (lab) lab.textContent = assistantName + " 작업 중" + extra + (mineStart ? " ·" : "");
+        // 사유가 있으면 같이 — 내가 안 시킨 턴은 "왜 도는지" 가 정보의 전부다.
+        const why = turnReason.get(activeThreadKey);
+        if (lab) {
+          lab.textContent =
+            assistantName + " 작업 중" + (why ? " · " + why : "") + extra + (mineStart ? " ·" : "");
+        }
         const el = s.querySelector(".chat-elapsed");
         if (el) el.textContent = mineStart ? fmtElapsed(Date.now() - mineStart) : "";
       };
@@ -63,6 +68,10 @@
       //  2026-08-06 에 그 이유로 고친 그 자리다. 그래서 복원분은 시각을 `null` 로 표시하고
       //  경과시간을 **안 쓴다**("작업 중" 만). stale 스윕은 별도 필드로 계속 돈다.
       const restoredAt = new Map(); // threadKey -> 복원 시각(스윕 전용, 표시 금지)
+      // ★"무엇 때문에 도는가" (2026-08-13) — 사용자: "뭘 하고 있는지 알기가 어렵다".
+      //  사용자가 직접 친 턴은 자기가 뭘 시켰는지 안다. 모르는 건 **자기가 안 시킨 턴**
+      //  (워커·에이전트 완료 후 메인이 정리하는 구간)이라, 그때만 이유를 같이 적는다.
+      const turnReason = new Map(); // threadKey -> 사유(있을 때만)
       const markTurnActive = (tk, opts) => {
         const k = tk || activeThreadKey;
         if (!activeTurns.has(k)) {
@@ -70,9 +79,12 @@
           activeTurns.set(k, unknownStart ? null : Date.now());
           if (unknownStart) restoredAt.set(k, Date.now());
         }
+        // 사유는 있을 때만 세운다 — 없으면 **지운다**(옛 사유가 다음 턴에 눌러붙지 않게).
+        if (opts && typeof opts.reason === "string" && opts.reason) turnReason.set(k, opts.reason);
+        else if (!(opts && opts.keepReason)) turnReason.delete(k);
         refreshWorking();
       };
-      const markTurnDone = (tk) => { const k = tk || activeThreadKey; restoredAt.delete(k); if (activeTurns.delete(k)) refreshWorking(); };
+      const markTurnDone = (tk) => { const k = tk || activeThreadKey; restoredAt.delete(k); turnReason.delete(k); if (activeTurns.delete(k)) refreshWorking(); };
       // ★codex-우선 + claude-폴백 처리 — 한 사용자 턴이 여러 어댑터 시도로 나뉘면(codex 429 →
       // claude 폴백) codex 의 turn_error 가 *턴 중간*에 온다. 그때 작업표시를 즉시 끄면 폴백 claude
       // 가 도는 동안 표시가 사라진다(실측 버그). → turn_error 는 즉시 끄지 않고 *유예* 클리어:

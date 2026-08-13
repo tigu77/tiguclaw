@@ -782,8 +782,34 @@ const publishInboundEcho = (msg: {
   attachments?: IncomingMessage["attachments"];
   correlationId?: string;
 }): void => {
-  if (msg.synthetic === true) return;
+  // ★합성 턴도 **발행은 한다 — 텍스트 없이** (2026-08-13, 사용자: "매니저가 일을 끝내고
+  //  메인이 정리하는 시점이 딱 빈 공간인 느낌"). 종전엔 통째로 `return` 이었다.
+  //
+  //  스킵의 의도는 옳았다(스캐폴딩 텍스트가 "나(user)" 버블로 새면 안 된다). 문제는 그
+  //  하나의 이벤트가 **두 가지 일**을 하고 있었다는 것 — ①버블을 그린다 ②진행 표시를 켠다.
+  //  버블을 막으려고 이벤트를 통째로 끄니 진행 표시까지 같이 꺼졌고, 워커가 끝나고 메인이
+  //  결과를 맥락 입혀 정리하는 **가장 긴 구간**이 화면상 완전한 공백이 됐다(사용자 버블도
+  //  없고 작업중도 없고, 결과가 뜰 때까지 아무것도 안 바뀜).
+  //
+  //  그래서 신호를 가른다: `synthetic: true` + **text 미포함**으로 발행한다. 텍스트가 아예
+  //  없으므로 순진한 소비자도 스캐폴딩을 흘릴 수 없고(막는 방식이 표식이 아니라 **부재**다
+  //  — 표식은 안 보는 소비자가 뚫지만 없는 값은 못 그린다), 대시보드는 이 표식으로
+  //  "그리지 말고 켜기만" 을 안다.
   const inAttachments = attachmentsMeta(msg.attachments);
+  if (msg.synthetic === true) {
+    bus.publish({
+      type: "channel.message.in",
+      ts: Date.now(),
+      payload: {
+        channel: msg.channel,
+        threadKey: msg.threadKey,
+        synthetic: true,
+        // 무엇 때문에 도는지 한 마디 — 진행 표시가 "왜" 를 같이 말할 수 있게.
+        reason: "매니저·에이전트 결과 정리",
+      },
+    });
+    return;
+  }
   bus.publish({
     type: "channel.message.in",
     ts: Date.now(),

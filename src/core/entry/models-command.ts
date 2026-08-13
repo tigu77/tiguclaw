@@ -102,8 +102,18 @@ export const renderModelProfiles = (
   sessionOverride: string | null,
   defaultName = "default",
   env: NodeJS.ProcessEnv = process.env,
+  builtin = false,
 ): string => {
   const blocks: string[] = ["🧩 모델 프로파일"];
+  // ★출처를 밝힌다 (2026-08-13) — 프로파일이 settings.json 에 없으면 인증된 provider 로
+  //  자동 조립한 값을 보여주는데, 그걸 사용자가 적어둔 것과 구분 못 하면 "내가 언제
+  //  이걸 설정했지" 가 된다. 자동값은 자동이라고 말하고, 어디를 고치면 되는지 같이 준다.
+  if (builtin) {
+    blocks.push(
+      "출처: **빌트인 자동값** — `settings.json` 에 프로파일이 없어 " +
+        "지금 인증된 provider 로 조립했습니다. 하나라도 직접 적으면 그쪽이 이깁니다.",
+    );
+  }
 
   // 세션 override 는 프로파일보다 우선(그 대화의 메인 turn 을 고정) — 있으면 맨 위에 명시.
   if (sessionOverride !== null && sessionOverride.trim() !== "") {

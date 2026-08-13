@@ -11,6 +11,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { codexProviderFromEnvBody } from "./core/onboard-provider.js";
 import process from "node:process";
 
 // 설정(.env)은 런타임 홈에 있다(레포 무오염, 2026-07-09). 홈 = TIGUCLAW_HOME / 기본 ~/.tiguclaw.
@@ -42,12 +43,18 @@ const runDaemon = (cmd: string): number => {
   return r.status ?? 1;
 };
 
-/** .env 의 REGION_A_MODELS 가 codex 로 시작하면 OAuth 발급이 필요. */
-const providerIsCodex = (): boolean => {
-  if (!existsSync(ENV_PATH)) return false;
-  const m = readFileSync(ENV_PATH, "utf8").match(/^REGION_A_MODELS=(.*)$/m);
-  return m !== null && m[1]!.trim().startsWith("codex");
-};
+/**
+ * codex OAuth 발급이 필요한 설치인가.
+ *
+ * ★진실 소스는 `TIGUCLAW_PROVIDER`(init 이 명시로 남긴다, 2026-08-13). 종전엔
+ *  `REGION_A_MODELS` 접두로 **유추**했는데, 모델을 자동으로 두면(프로파일·env 를 일부러
+ *  비우는 모드) 그 값이 비어 codex 를 골라도 인증 단계를 통째로 건너뛰었다 —
+ *  무인증으로 데몬이 뜨고 자동 카탈로그도 codex 를 못 본다.
+ * ★옛 설치 호환으로 REGION_A_MODELS 폴백은 남긴다(그때 쓴 .env 엔 새 키가 없다).
+ */
+// 판정은 리프(core/onboard-provider.ts) — 여기 두면 회귀가 실행할 수 없다(import 가 CLI 를 돈다).
+const providerIsCodex = (): boolean =>
+  existsSync(ENV_PATH) && codexProviderFromEnvBody(readFileSync(ENV_PATH, "utf8"));
 
 /** 전역 PATH 에서 명령 위치 해석 (unix: which / win: where). 없으면 null. */
 const resolveCmd = (name: string): string | null => {

@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import type { ModelProfile } from "../core/settings.js";
+import { builtinTierModel } from "../core/llm-runtime/builtin-profiles.js";
 
 // 설정(.env)은 **런타임 홈**에 둔다(공개 레포 checkout 무오염, 2026-07-09). 홈 =
 // TIGUCLAW_HOME env(있으면) / 기본 ~/.tiguclaw — load-env.ts·daemon.ts 와 동일 규칙.
@@ -48,19 +49,28 @@ interface Answers {
 // tier 가 anthropic 을 가리키면(과거 하드코딩) 그 provider 키가 없어 서브에이전트가 실패했다.
 // (런타임 폴백 안전망이 있어도 근본은 tier 를 provider 에 맞추는 것.) anthropic/claude-sub 는
 // opus/sonnet/haiku 스프레드, openai/codex 는 알려진 기본 모델(사용자가 .env 로 세분화 가능).
-const TIER_DEFAULTS: Record<Provider, { high: string; mid: string; low: string }> = {
-  anthropic: {
-    high: "anthropic:claude-opus-4-8",
-    mid: "anthropic:claude-sonnet-4-6",
-    low: "anthropic:claude-haiku-4-5",
-  },
-  "claude-sub": {
-    high: "anthropic:claude-opus-4-8",
-    mid: "anthropic:claude-sonnet-4-6",
-    low: "anthropic:claude-haiku-4-5",
-  },
-  openai: { high: "openai:gpt-5.5", mid: "openai:gpt-5.5", low: "openai:gpt-5.5" },
-  codex: { high: "codex:gpt-5.5", mid: "codex:gpt-5.5", low: "codex:gpt-5.5" },
+// ★모델 이름은 **코어의 빌트인 표 하나**에서 온다 (2026-08-13). 종전엔 여기 사본이 따로
+//  있었고, 그래서 `claude-opus-4-8`/`claude-sonnet-4-6` 로 굳은 채 두 세대를 지났다
+//  (실사용은 이미 `claude-opus-5`·`claude-sonnet-5` 였다 — context-windows.ts 실측 표).
+//  같은 표를 런타임(프로파일 미설정 시 자동 조립)과 온보딩이 공유하면 갈릴 수가 없다.
+//  ★init 의 provider 이름은 **인증 수단**(claude-sub = 구독 OAuth)이고 모델 provider 는
+//   `anthropic` 하나다 — 그 사상만 여기서 한다.
+const TIER_PROVIDER: Record<Provider, string> = {
+  anthropic: "anthropic",
+  "claude-sub": "anthropic",
+  openai: "openai",
+  codex: "codex",
+};
+
+const tierDefaults = (provider: Provider): { high: string; mid: string; low: string } => {
+  const p = TIER_PROVIDER[provider];
+  const pick = (tier: "high" | "mid" | "low"): string => {
+    // ★빌트인은 "인증된 provider" 만 담는다(런타임 기준). 온보딩은 **지금 막 고른**
+    //  provider 를 물어야 하므로 인증 여부를 무시하고 이름만 뽑는다.
+    const raw = builtinTierModel(p, tier);
+    return raw === undefined ? "" : `${p}:${raw}`;
+  };
+  return { high: pick("high"), mid: pick("mid"), low: pick("low") };
 };
 
 /** 콤마 문자열 → provider:model 배열 (빈/공백 제거). init 값은 보통 단일이나 방어적. */
@@ -71,31 +81,33 @@ const toPool = (raw: string): string[] =>
     .filter((s) => s.length > 0);
 
 /**
- * seed 모델 프로파일 (ADR model-profiles 잔여 — TIER_DEFAULTS 2026-07-08 을 프로파일로 승격).
- *  - default = 메인 턴 암묵 풀(REGION_A_MODELS 대응, 코어 예약 이름).
- *  - high/mid/low = 서브에이전트/워커 등급(MODEL_TIER_* 대응) → 구조적 실패 시 default 로 폴백.
- * 값은 선택 provider(TIER_DEFAULTS + regionAModels) 기준 — 사용자가 settings.json 으로 세분화.
+ * seed 모델 프로파일 — **high/mid/low 셋뿐이고 기본은 high** (사용자 결정 2026-08-13).
+ *
+ * ★왜 `default` 프로파일을 뺐나: 이름이 넷이면 "메인 턴은 어느 것인가" 가 두 곳(프로파일
+ *  `default` · 포인터 `models.default`)에 적히고, 그 둘은 갈릴 수 있다. 등급은 하나의 축
+ *  (high↔low)이면 충분하고, "그중 무엇이 기본인가" 는 포인터 하나로 답한다
+ *  (`models.default = "high"`, seedModelProfiles 가 같이 쓴다).
+ *
+ * ★`fallback` 을 안 적는 이유: `resolveProfileChain` 이 모든 체인 말미에 **기본 프로파일**을
+ *  자동으로 덧붙인다. 즉 low → (실패) → high 는 이미 성립한다. 손으로 `fallback: "default"`
+ *  를 적으면 기본이 바뀔 때 같이 안 바뀌는 두 번째 진실 소스가 된다.
+ *
  * (nano 는 시드하지 않는다 — 사용자 요청 2026-07-18. 필요하면 사용자가 직접 추가.)
  */
 const buildSeedProfiles = (a: Answers): Record<string, ModelProfile> => ({
-  default: {
-    description: "기본 마스터 모델 풀 (메인 턴)",
-    pool: toPool(a.regionAModels),
-  },
+  // ★high 가 첫 키 — `models.default` 포인터가 지워져도 `getDefaultProfileName` 의
+  //  "첫 프로파일" 폴백이 여기로 떨어진다(기본이 조용히 low 로 내려가지 않게).
   high: {
-    description: "설계·분석 등 고난도 작업",
+    description: "기본 — 메인 턴 · 설계·분석 등 고난도 작업",
     pool: toPool(a.tierHigh),
-    fallback: "default",
   },
   mid: {
     description: "일반 작업",
     pool: toPool(a.tierMid),
-    fallback: "default",
   },
   low: {
     description: "단순·대량 작업",
     pool: toPool(a.tierLow),
-    fallback: "default",
   },
 });
 
@@ -105,7 +117,10 @@ const buildSeedProfiles = (a: Answers): Record<string, ModelProfile> => ({
  * 0개(부재/빈 객체)일 때만 seed 를 통째로 깐다. 다른 키(hooks·models.default 등)는 보존.
  * 파싱 실패 시 새 객체로 안전 강등(throw 0).
  */
-const seedModelProfiles = (profiles: Record<string, ModelProfile>): void => {
+const seedModelProfiles = (
+  profiles: Record<string, ModelProfile>,
+  defaultName: string,
+): void => {
   let root: Record<string, unknown> = {};
   if (existsSync(SETTINGS_PATH)) {
     try {
@@ -119,7 +134,7 @@ const seedModelProfiles = (profiles: Record<string, ModelProfile>): void => {
   }
   const models =
     root.models !== null && typeof root.models === "object"
-      ? (root.models as { profiles?: Record<string, unknown> })
+      ? (root.models as { profiles?: Record<string, unknown>; default?: unknown })
       : {};
   const existing = models.profiles;
   const existingCount =
@@ -129,6 +144,10 @@ const seedModelProfiles = (profiles: Record<string, ModelProfile>): void => {
   // ★기존 프로파일이 하나라도 있으면 시드 스킵 — 사용자 설정 존중.
   if (existingCount > 0) return;
   models.profiles = { ...profiles };
+  // ★기본 포인터를 프로파일과 **같이** 쓴다 — 시드에는 `default` 라는 이름의 프로파일이
+  //  없으므로, 포인터를 안 쓰면 `getDefaultProfileName` 이 "첫 프로파일" 폴백으로 넘어간다.
+  //  그건 키 순서에 기대는 암묵 규칙이라 명시한다(사용자가 나중에 바꾸면 그 값이 이긴다).
+  models.default = defaultName;
   root.models = models;
   writeFileSync(SETTINGS_PATH, `${JSON.stringify(root, null, 2)}\n`, {
     encoding: "utf8",
@@ -170,7 +189,7 @@ const askProvider = async (): Promise<Provider> => {
 const collectProviderConfig = async (
   provider: Provider,
 ): Promise<
-  Pick<Answers, "anthropicKey" | "claudeOauthToken" | "openaiKey" | "regionAModels">
+  Pick<Answers, "anthropicKey" | "claudeOauthToken" | "openaiKey">
 > => {
   if (provider === "anthropic") {
     console.log("");
@@ -183,7 +202,6 @@ const collectProviderConfig = async (
       anthropicKey,
       claudeOauthToken: "",
       openaiKey: "",
-      regionAModels: "anthropic:claude-sonnet-4-6",
     };
   }
   if (provider === "claude-sub") {
@@ -199,7 +217,6 @@ const collectProviderConfig = async (
       anthropicKey: "",
       claudeOauthToken,
       openaiKey: "",
-      regionAModels: "anthropic:claude-sonnet-4-6",
     };
   }
   if (provider === "openai") {
@@ -215,7 +232,6 @@ const collectProviderConfig = async (
       anthropicKey: "",
       claudeOauthToken: "",
       openaiKey,
-      regionAModels: "openai:gpt-5.5",
     };
   }
   // codex
@@ -227,7 +243,49 @@ const collectProviderConfig = async (
     anthropicKey: "",
     claudeOauthToken: "",
     openaiKey: "",
-    regionAModels: "codex:gpt-5.5",
+  };
+};
+
+/**
+ * 초기 모델 셋팅 — **자동이 기본, 고정은 선택** (2026-08-13, 2차 수정).
+ *
+ * ★1차(같은 날 오전)엔 "표를 보여주고 수락/수정" 이었는데, 그건 **자동 최신을 꺼버렸다.**
+ *  카탈로그 경로(`builtin-profiles` → `model-catalog`)는 **프로파일이 0개일 때만** 돈다.
+ *  그런데 init 이 그 값을 `settings.json` 에 박고 `.env` 의 `REGION_A_MODELS` 에도 써서,
+ *  init 을 거친 설치는 **영영 그 시점 값에 고정**됐다. 같은 날 만든 두 기능이 서로를
+ *  막고 있었다 — 사용자 질문("온보딩에서 인증 태우면 모델도 알아서 셋팅되냐")이 드러냈다.
+ *
+ * ★그래서 기본을 뒤집는다: **아무것도 안 적는 게 기본**이다. 안 적으면 런타임이 매 턴
+ *  인증된 provider 의 최신으로 구성한다. 적는 건 재현성이 필요할 때의 **선택**이다.
+ *  ("설정이 없다" 가 결함이 아니라 기능인 드문 자리 — 그래서 화면에 그렇게 적는다.)
+ */
+/** "auto" = 아무것도 고정하지 않는다(런타임이 매번 최신을 고름). 아니면 고정할 세 값. */
+type ModelMode = "auto" | { high: string; mid: string; low: string };
+
+const chooseModelMode = async (tier: {
+  high: string;
+  mid: string;
+  low: string;
+}): Promise<ModelMode> => {
+  console.log("");
+  console.log("  ── 모델 셋팅 ─────────────────────────────────────");
+  console.log("  1) 자동 (권장) — 아무것도 적지 않습니다. 데몬이 백엔드에 물어");
+  console.log("     인증된 provider 의 **최신** 모델로 high/mid/low 를 매번 구성합니다.");
+  console.log("     새 모델이 나오면 따라갑니다. 등급은 패밀리 안에서만 움직여");
+  console.log("     (opus→opus) 비용 등급이 조용히 올라가지 않습니다.");
+  console.log("  2) 고정 — 지금 아는 값을 settings.json 에 박습니다. 재현성이 필요하거나");
+  console.log("     특정 모델을 써야 할 때. 나중에 바꾸려면 그 파일을 고쳐야 합니다.");
+  console.log(`     (현재 아는 값: high=${tier.high} · mid=${tier.mid} · low=${tier.low})`);
+  const v = await ask("  선택 [1/2] (기본 1): ");
+  if (v === "" || v === "1") return "auto";
+  const pick = async (label: string, cur: string): Promise<string> => {
+    const raw = await ask(`  ${label} (Enter=${cur}): `);
+    return raw === "" ? cur : raw;
+  };
+  return {
+    high: await pick("high", tier.high),
+    mid: await pick("mid", tier.mid),
+    low: await pick("low", tier.low),
   };
 };
 
@@ -363,7 +421,11 @@ const renderEnv = (a: Answers): string => {
 TIGUCLAW_HOME=
 
 # ── LLM provider 키 ─────────────────────────────────────────────
-# 선택한 provider = ${a.provider}. 미선택 provider 키는 빈 값으로 남겨둡니다.
+# ★온보딩이 고른 provider — tiguclaw onboard 가 이 값으로 codex OAuth 단계를 켠다
+#  (2026-08-13). 종전엔 REGION_A_MODELS 접두로 유추했는데, 모델을 **자동**으로 두면
+#  그 값이 비어서 codex 를 골라도 인증 단계를 통째로 건너뛰었다(무인증 부팅).
+TIGUCLAW_PROVIDER=${a.provider}
+# 미선택 provider 키는 빈 값으로 남겨둡니다.
 # (다른 provider 로 바꾸려면 해당 키를 채우고 REGION_A_MODELS 를 편집하세요.)
 ANTHROPIC_API_KEY=${a.anthropicKey}
 # Claude 구독 OAuth (claude-sub provider). \`claude setup-token\` 으로 발급, claude 어댑터가
@@ -450,6 +512,8 @@ const main = async (): Promise<void> => {
 
   const provider = await askProvider();
   const providerCfg = await collectProviderConfig(provider);
+  const modelMode = await chooseModelMode(tierDefaults(provider));
+  const tier = modelMode === "auto" ? { high: "", mid: "", low: "" } : modelMode;
 
   console.log("");
   console.log("[2/4] HTTP 브리지 인증 토큰 자동 생성 중...");
@@ -462,10 +526,14 @@ const main = async (): Promise<void> => {
   console.log("[4/4] 포트 = 코드 기본값 사용 (브리지 7011 · 대시보드 7010).");
   console.log("  ℹ️  바꾸려면 .env 의 해당 주석을 푸세요(적어두지 않는 게 기본 — 갈라집니다).");
 
-  const tier = TIER_DEFAULTS[provider];
   const answers: Answers = {
     provider,
     ...providerCfg,
+    // ★메인 턴 풀(.env 레거시 경로)을 high 와 **같은 값**으로 맞춘다 (2026-08-13).
+    //  종전엔 REGION_A_MODELS 가 sonnet, high 가 opus 로 갈려 있었다 — 기본이 high 가 된
+    //  지금 그대로 두면 "profiles 를 지우면 갑자기 다른 모델로 답한다" 가 된다.
+    //  같은 질문("메인 턴은 무엇으로")에 두 답이 있으면 안 된다.
+    regionAModels: tier.high,
     tierHigh: tier.high,
     tierMid: tier.mid,
     tierLow: tier.low,
@@ -483,10 +551,18 @@ const main = async (): Promise<void> => {
 
   // 모델 프로파일 seed (settings.json) — .env 의 REGION_A_MODELS/MODEL_TIER_* 를 명명 프로파일로
   // 승격(ADR model-profiles). 기존 settings.json 의 hooks 등은 보존, models.profiles 만 병합.
-  seedModelProfiles(buildSeedProfiles(answers));
-  console.log(
-    `✅ settings.json 모델 프로파일 seed 완료: ${SETTINGS_PATH}  (default/high/mid/low)`,
-  );
+  // ★자동이면 **아무것도 안 쓴다** — 쓰는 순간 그 값에 고정되고 자동 최신이 죽는다.
+  if (modelMode === "auto") {
+    console.log(
+      "✅ 모델 = 자동. settings.json 에 프로파일을 만들지 않았습니다 — 데몬이 매번 " +
+        "인증된 provider 의 최신으로 high/mid/low 를 구성합니다(`/models` 로 확인).",
+    );
+  } else {
+    seedModelProfiles(buildSeedProfiles(answers), "high");
+    console.log(
+      `✅ settings.json 모델 프로파일 seed 완료: ${SETTINGS_PATH}  (high/mid/low · 기본=high)`,
+    );
+  }
 
   console.log("");
   console.log("── 다음 단계 ──────────────────────────────────────");

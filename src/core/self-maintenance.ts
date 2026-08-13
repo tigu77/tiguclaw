@@ -23,6 +23,7 @@ import { getEventBus, type EventBus, type EventBusEvent } from "./eventbus.js";
 import { deliverOutbound } from "./outbound.js";
 import { runBackupIfDue, backupNotice } from "../store/backup.js";
 import { runHealthSweep, type HealthFinding } from "./health-sweep.js";
+import { refreshModelCatalog } from "./llm-runtime/model-catalog.js";
 
 /** 주기 — 백스톱. 이벤트가 없어도 이 간격으로 한 번은 본다. */
 const TICK_INTERVAL_MS = 60 * 60 * 1000; // 1시간
@@ -104,6 +105,15 @@ export const runSelfMaintenanceTick = (bus: EventBus | null = null): void => {
       `self-maintenance: 진단 스윕 실패 — ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  // ★모델 카탈로그 갱신 (2026-08-13) — **새 타이머를 만들지 않는다.** 이미 도는 시계에
+  //  얹는다(부팅 즉시 + 매시). 조회는 비동기지만 틱은 동기 계약이라 **기다리지 않는다** —
+  //  결과는 캐시로 들어가고, 그 전까지는 정적 표가 답한다(회귀 0).
+  //  never-throw: 여기서 던지면 백업·진단이 아니라 **모델 이름 하나** 때문에 시계가 죽는다.
+  void refreshModelCatalog().catch((e: unknown) => {
+    console.warn(
+      `self-maintenance: 모델 카탈로그 갱신 실패 — ${e instanceof Error ? e.message : String(e)}`,
+    );
+  });
 };
 
 /** 이벤트로 깨우기 — 디바운스. 주기 틱은 백스톱으로 남는다. */

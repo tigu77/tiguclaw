@@ -39,6 +39,7 @@ import type {
   RegionATurnDonePayload,
   RegionATurnErrorPayload,
 } from "./types.js";
+import { builtinTierPool, builtinTierFor } from "./builtin-profiles.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import {
@@ -250,6 +251,15 @@ export const resolveModelSpecs = (
     const parsed = parseModelSpecList(env, cwd);
     if (parsed.length > 0) return parsed;
   }
+  // ★설정이 하나도 없으면 **인증된 provider 로 조립한다** (2026-08-13, 사용자 요청).
+  //  종전엔 여기서 곧장 DEFAULT_MODEL_SPEC(claude, 모델 미지정)로 떨어져 codex 만 인증한
+  //  설치도 claude 로 흘렀다. 사용자 설정(프로파일·env)이 먼저고 여기는 그 뒤다 — 즉
+  //  "적어둔 게 있으면 그게 이긴다" 는 불변.
+  const builtin = parseModelSpecList(
+    builtinTierPool(builtinTierFor(getDefaultProfileName(cwd)), cwd).join(","),
+    cwd,
+  );
+  if (builtin.length > 0) return builtin;
   return [DEFAULT_MODEL_SPEC];
 };
 
@@ -302,7 +312,10 @@ export const resolveTier = (
     if (env !== undefined && env !== "") {
       return parseModelSpecList(env);
     }
-    return [];
+    // ★프로파일도 env 도 없을 때 — 빌트인(인증된 provider 조립)으로. 종전엔 여기서 []
+    //  이라 등급 이름(high/mid/low)이 **아무 의미도 없었다**: 서브에이전트·워커가 등급을
+    //  선언해도 전부 같은 어댑터 디폴트로 흘렀다. `nano` 는 빌트인이 모르므로 그대로 [].
+    return parseModelSpecList(builtinTierPool(s, cwd).join(","), cwd);
   }
   // provider:model 직접 (티어 아님) — 단일 spec.
   const direct = parseModelSpec(raw);

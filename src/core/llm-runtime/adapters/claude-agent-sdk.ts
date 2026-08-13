@@ -27,6 +27,7 @@
  *  — AGENT.md 편집·스킬 추가로 resume 이 끊기지 않게. 상세는 조립부 주석.
  */
 import { createHash } from "node:crypto";
+import { claudeAuthAvailable } from "../provider-availability.js";
 import { promises as fs } from "node:fs";
 import {
   query,
@@ -381,10 +382,10 @@ export const runClaude = async (
   const externalToolNames: ReadonlySet<string> = new Set(externalToolSpecs.map((t) => t.name));
   // 이 턴에서 모델이 호출을 선택한 앱 도구들(tiguclaw 는 실행하지 않는다). 스트림에서 채운다.
   const pendingExternalToolCalls: ExternalToolCall[] = [];
-  if (
-    !process.env.ANTHROPIC_API_KEY &&
-    !process.env.CLAUDE_CODE_OAUTH_TOKEN
-  ) {
+  // ★판정은 `claudeAuthAvailable` 한 곳 (2026-08-13) — 빌트인 프로파일이 "claude 를 풀에
+  //  넣을까" 를 물을 때 여기와 **같은 답**이어야 한다. 두 벌이면 구독 사용자(키 없이
+  //  CLAUDE_CODE_OAUTH_TOKEN)가 한쪽에서만 조용히 빠진다.
+  if (!claudeAuthAvailable()) {
     throw new Error(
       "Claude 인증 없음. ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN 이 필요합니다.",
     );

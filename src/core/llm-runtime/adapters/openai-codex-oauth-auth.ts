@@ -277,6 +277,22 @@ const isExpiringSoon = (expiresEnv: string | undefined): boolean => {
   return Date.now() >= expires - REFRESH_BUFFER_MS;
 };
 
+/**
+ * **codex 인증돼 있나 — 네트워크 없이 동기 판정** (2026-08-13).
+ *
+ * ★access 토큰 하나만 보면 안 된다: 이 어댑터는 access 가 비었거나 만료돼도
+ *  **refresh 토큰만 있으면 살아난다**(아래 `ensureFreshAccessToken` 이 새로 받아온다).
+ *  그래서 인증 여부는 `access || refresh` 다 — access 만 보는 판정은 refresh 로 오래
+ *  굴러온 설치를 "인증 없음" 으로 오판하고, 그 사용자에게만 codex 가 조용히 빠진다.
+ *  (claude 구독 사용자가 `ANTHROPIC_API_KEY` 만 보는 판정에서 빠지던 것과 같은 부류.)
+ *
+ * ★`ensureFreshAccessToken` 의 throw 조건이 **이 함수의 부정**이다 — 두 벌이 되지 않게
+ *  거기서도 이걸 부른다. "가용" 이라 해놓고 실행이 던지면 풀에 넣은 의미가 없다.
+ */
+export const codexAuthAvailable = (): boolean =>
+  (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "" ||
+  (process.env.OPENAI_CODEX_OAUTH_REFRESH ?? "") !== "";
+
 export const ensureFreshAccessToken = async (): Promise<string> => {
   const currentAccess = process.env.OPENAI_CODEX_OAUTH_TOKEN;
   const expiresEnv = process.env.OPENAI_CODEX_OAUTH_EXPIRES;
@@ -285,13 +301,15 @@ export const ensureFreshAccessToken = async (): Promise<string> => {
     return currentAccess;
   }
 
-  const refresh = process.env.OPENAI_CODEX_OAUTH_REFRESH;
-  if (refresh === undefined || refresh === "") {
-    // refresh token 0 + access 만료 — 사용자 재인증 필요.
-    if (currentAccess !== undefined && currentAccess !== "") return currentAccess;
+  if (!codexAuthAvailable()) {
     throw new Error(
       "OpenAI Codex OAuth 토큰 없음. `npm run codex-auth` 로 발급 필요.",
     );
+  }
+  const refresh = process.env.OPENAI_CODEX_OAUTH_REFRESH;
+  if (refresh === undefined || refresh === "") {
+    // access 는 있는데 refresh 가 없다 — 갱신은 못 하지만 지금 것으로는 돈다.
+    return currentAccess as string;
   }
 
   const refreshed = await refreshAccessToken(refresh);
@@ -306,4 +324,7 @@ export const ensureFreshAccessToken = async (): Promise<string> => {
 export const codexAuthProvider: AuthProvider = {
   provider: "codex",
   getAccessToken: ensureFreshAccessToken,
+  // ★"쓸 수 있나" 를 provider 가 직접 답한다 — 호출자가 env 이름을 조합하면 그 판정이
+  //  두 벌이 되고, refresh 만 남은 설치가 한쪽에서만 빠진다(auth-registry 헤더 참조).
+  isAuthenticated: codexAuthAvailable,
 };

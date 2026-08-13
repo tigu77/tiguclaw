@@ -8,7 +8,7 @@
   <img src="assets/banner.jpg" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
-**바로 깔아보려면 → [빠른 시작](#빠른-시작)** (`npm ci` 하고 `npm run onboard`, 끝입니다). 아래는 뭘 할 수 있는지입니다.
+**바로 깔아보려면 → [빠른 시작](#빠른-시작)** (받아서 `onboard` 한 번, 끝입니다). 아래는 뭘 할 수 있는지입니다.
 
 ## 뭘 하나
 
@@ -109,9 +109,12 @@ irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw
-npm ci            # lockfile 그대로 깨끗·재현 설치 (또는: npm install)
-npm run onboard   # 대화형 설정 → .env → (codex)로그인 → 서비스 등록 → 검증
+node bin/tiguclaw.mjs onboard   # 의존성 설치까지 알아서 — 이 한 줄이 전부
 ```
+
+의존성이 없으면 `onboard` 가 먼저 깔고 진행합니다(`npm ci` 를 따로 칠 필요 없음).
+설치가 끝나면 전역 `tiguclaw` 명령이 생기고, 그다음부터는 **`tiguclaw update`** 하나로
+받고·설치하고·빌드하고·재시작까지 됩니다.
 </details>
 
 끝입니다. `onboard` 하나가 전부 안내해줘요: LLM 고르고, 키 붙여넣고(또는 텔레그램 봇 토큰 인식), `.env`·상시 서비스·검증까지 한 번에. 그다음 **텔레그램 봇에게 메시지**를 보내면 답합니다. (입력한 소유자 ID 만 허용 — allowlist 가 비면 봇은 잠깁니다.)

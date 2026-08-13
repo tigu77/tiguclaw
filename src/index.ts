@@ -92,6 +92,10 @@ import { getFirstUserText } from "./store/chat-log.js";
 // = codex 롤링 요약 드롭. 둘 다 store-auth contract 대로 (channel, threadKey[, ts]).
 import { clearThreadSummary } from "./store/thread-summaries.js";
 import {
+  builtinModelProfiles,
+  BUILTIN_DEFAULT_TIER,
+} from "./core/llm-runtime/builtin-profiles.js";
+import {
   parseModelSpec,
   parseModelSpecList,
   specLabel,
@@ -983,8 +987,8 @@ const handler: MessageHandler = async (msg) => {
         "  `/model reset` — 세션 override 해제 (env 폴백)",
         "",
         "예시:",
-        "  `/model anthropic:claude-sonnet-4-6`",
-        "  `/model anthropic:claude-opus-4-7`",
+        "  `/model anthropic:claude-sonnet-5`",
+        "  `/model anthropic:claude-opus-5`",
         "  `/model codex:gpt-5-codex`",
         "",
         "참고: provider 는 `anthropic` / `codex` / `openai`. `/reset` 시 override 도 같이 초기화.",
@@ -1014,7 +1018,7 @@ const handler: MessageHandler = async (msg) => {
       await replyCommand(msg,
         `형식 오류: \`${args}\` — \`provider:model\` 형식으로 입력하세요. ` +
           "콤마로 풀(폴백 순서)도 가능합니다. provider 는 anthropic / codex / openai. " +
-          "예: `anthropic:claude-sonnet-4-6` 또는 `codex:gpt-5-codex,anthropic:claude-sonnet-4-6`",
+          "예: `anthropic:claude-sonnet-5` 또는 `codex:gpt-5-codex,anthropic:claude-sonnet-5`",
       );
       return;
     }
@@ -1048,11 +1052,17 @@ const handler: MessageHandler = async (msg) => {
   // loadModelProfiles 가 getPaths().settings 로 자동 사용, cwd(기본)는 프로젝트 스코프 병합.
   // 렌더는 순수 함수(models-command)로 위임 — 격리 테스트 가능. args 는 무시(정보 조회).
   if (trimmed === "/models" || trimmed.startsWith("/models ")) {
-    const profiles = loadModelProfiles();
+    const userProfiles = loadModelProfiles();
+    // ★설정이 0개면 런타임이 실제로 쓰는 것(빌트인 자동 조립)을 보여준다 (2026-08-13).
+    //  종전엔 "프로파일 없음 + 레거시 env 안내"만 나와, 정작 그 순간 답하고 있는 모델을
+    //  `/models` 로는 알 수 없었다(화면과 실행이 갈림).
+    const builtin = Object.keys(userProfiles).length === 0;
+    const profiles = builtin ? builtinModelProfiles() : userProfiles;
+    const defaultName = builtin ? BUILTIN_DEFAULT_TIER : getDefaultProfileName();
     const sessionOverride = getSessionModelOverride(sidChannel, msg.threadKey);
     await replyCommand(
       msg,
-      renderModelProfiles(profiles, sessionOverride, getDefaultProfileName()),
+      renderModelProfiles(profiles, sessionOverride, defaultName, process.env, builtin),
     );
     return;
   }

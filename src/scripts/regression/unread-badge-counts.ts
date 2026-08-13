@@ -69,6 +69,19 @@ const run = async (): Promise<Assertion[]> => {
     got: separate ? "st-dot · st-unread 공존 + CSS 있음" : "★한 배지에 겹쳐 썼다",
   });
 
+  // ★코너 알림 배지 (2026-08-13 사용자 제안) — 탭 우상단에 얹힌다. 얹으면 ⋯ 케밥 위를
+  //  스치는데, **탭 닫기가 케밥 하나뿐**이라 클릭을 삼키면 탭을 못 닫는다.
+  //  `pointer-events:none` 이 그 유일한 보증이므로 여기서 못 박는다.
+  //  (기하 — 안 잘리는가·케밥이 여전히 눌리는가 — 는 실측: `_workspace/_unread_badge_style_cdp.mjs`.)
+  const overlay = /\.session-tab \.st-unread \{[^}]*position:absolute[^}]*pointer-events:none/s.test(
+    css,
+  );
+  out.push({
+    name: "★코너 배지는 클릭을 삼키지 않는다(케밥=탭 닫기 유일 경로)",
+    ok: overlay,
+    got: overlay ? "absolute + pointer-events:none" : "★흐름 안으로 돌아갔거나 클릭을 먹는다",
+  });
+
   return out;
 };
 

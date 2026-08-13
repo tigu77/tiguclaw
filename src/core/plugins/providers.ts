@@ -7,6 +7,7 @@ import { listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
 import { resolveEntry } from "./loader.js";
 import { listProviderNames, resolveProviderConn } from "../llm-runtime/provider-registry.js";
+import { providerAuthAvailable } from "../llm-runtime/provider-availability.js";
 
 export type ModuleKind = "core" | "plugin" | "llm-adapter";
 export type ModuleStatus = "active" | "inactive" | "degraded" | "missing" | "error";
@@ -271,7 +272,10 @@ const LLM_ADAPTER_DISPLAY_NAME: Record<string, string> = {
 
 const llmAdapterModule = (provider: string): Module => {
   const conn = resolveProviderConn(provider);
-  const authenticated = conn?.apiKey !== undefined;
+  // ★판정은 `providerAuthAvailable` 한 곳 (2026-08-13) — 종전엔 `conn.apiKey` 유무만 봐서
+  //  claude 구독(키 없이 OAuth 토큰)과 codex refresh-only 설치를 **인증 안 됨**으로 표시했다.
+  //  카드가 "미설정" 이라 말하는데 실제로는 그 백엔드로 답하고 있는 상태 = 진단을 망친다.
+  const authenticated = providerAuthAvailable(provider);
   const adapter = conn?.adapter ?? "unknown";
   const name = LLM_ADAPTER_DISPLAY_NAME[provider] ?? provider;
   const summary = authenticated

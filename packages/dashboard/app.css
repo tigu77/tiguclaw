@@ -348,7 +348,7 @@
          성질은 여기 한 곳에만 둔다(데스크탑·모바일 공통).
          touch-action:pan-x = 터치 세로 팬 무시 / overscroll-behavior:contain = 가로 끝에서
          브라우저 뒤로가기·상위 스크롤로 전파 안 됨. 휠(데스크탑)은 CSS 로 못 막아 tabs.js. */
-      .session-tabs { display:flex; align-items:flex-end; gap:5px; padding:6px 2px 0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; overscroll-behavior:contain; }
+      .session-tabs { display:flex; align-items:flex-end; gap:5px; padding:9px 2px 0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; overscroll-behavior:contain; }
       /* 세션탭이 #right 직접 자식(2026-07-19) — 헤더 밖으로 나왔으니 양옆 패딩으로 콘텐츠와 정렬. */
       #right > #session-tabs { padding-left:14px; padding-right:14px; }
       .session-tabs::-webkit-scrollbar { height:5px; }
@@ -363,11 +363,21 @@
       .session-tab .st-name.editing { overflow:visible; cursor:text; outline:1px solid rgba(125,211,252,.55); border-radius:4px; padding:0 2px; margin:0 -2px; background:rgba(0,0,0,.25); user-select:text; }
       .session-tab:has(.st-name.editing) { max-width:260px; }
       /* 안 본 메시지 배지 — 진행 점(맥동하는 점)과 **다른 모양**이어야 한다(다른 사실이므로).
-         점은 상태, 이건 개수. 숫자 칩으로 두어 "몇 개 밀렸나" 가 한눈에 보이게 한다. */
+         점은 상태, 이건 개수.
+         ★알림 배지로 (2026-08-13 사용자 제안, 앱 아이콘 코너 배지 느낌). 종전엔 탭 흐름
+          안의 accent(하늘색) 칩이라 ①"정보"처럼 읽혔고 ②배지가 생길 때 이름을 밀어 탭 폭이
+          흔들렸다. 코너로 띄우면 흐름 밖이라 폭이 안 변하고, 빨강+원형이 "볼 게 밀렸다"로 읽힌다.
+         ★pointer-events:none — 배지가 ⋯ 케밥 위를 지나가도 클릭을 절대 안 삼킨다(탭 닫기가
+          유일하게 케밥에 걸려 있다). 모양이 겹쳐도 조작은 안 막힌다.
+         ★ring(box-shadow 2px)은 탭 테두리에서 배지를 떼어내는 용도 — 스트립 배경색으로 둘러
+          어느 탭 위에 얹혀도 경계가 산다. */
+      .session-tab { position:relative; }
       .session-tab .st-unread {
-        min-width:16px; height:16px; padding:0 4px; border-radius:8px; flex:none;
-        background:var(--accent); color:#fff; font-size:10px; line-height:16px;
-        text-align:center; font-weight:600;
+        position:absolute; top:-6px; right:-6px; z-index:2; pointer-events:none;
+        min-width:17px; height:17px; padding:0 4px; border-radius:9px;
+        background:#e5484d; color:#fff; font-size:10px; line-height:17px;
+        text-align:center; font-weight:800; letter-spacing:-.2px;
+        box-shadow:0 0 0 2px var(--bg), 0 1px 3px rgba(0,0,0,.5);
       }
       .session-tab .st-dot { width:6px; height:6px; border-radius:50%; background:var(--accent-2); flex:none; animation:tc-pulse 1.5s ease-in-out infinite; }
       .session-tab.session-add { justify-content:center; font-size:15px; font-weight:800; padding:6px 11px; color:var(--accent); max-width:none; }
@@ -1396,7 +1406,7 @@
         body[data-tab="chat"] #chat-input { touch-action:pan-y; }
         /* 세션탭만 상단 sticky(헤더 46 아래) — 제목(#stream-bar)은 스크롤로 사라지고 탭은 남는다
            (클로드코드 앱식). #right 자식이라 대화 전체 범위에서 붙는다. */
-        body[data-tab="chat"] #session-tabs { position:sticky; top:46px; z-index:11; background:var(--bg); padding:6px 12px 5px; }
+        body[data-tab="chat"] #session-tabs { position:sticky; top:46px; z-index:11; background:var(--bg); padding:9px 12px 5px; }
         /* 입력창 뷰포트 하단 고정 — position:fixed(sticky 는 마지막 자식이라 뷰포트 하단에 안 붙음).
            문서가 스크롤해도 항상 하단 노출. 콘텐츠는 #chat 높이만큼 하단 패딩으로 가림 방지. */
         body[data-tab="chat"] #chat { position:fixed; left:0; right:0; bottom:0; z-index:12; background:var(--bg); border-top:1px solid var(--border); }

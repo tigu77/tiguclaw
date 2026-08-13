@@ -8,7 +8,7 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
   <img src="assets/banner.jpg" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
-**Just want to install it? → [Quick start](#quick-start)** (`npm ci`, then `npm run onboard`). Everything below is what it can do.
+**Just want to install it? → [Quick start](#quick-start)** (clone, then one `onboard`). Everything below is what it can do.
 
 ## What it does
 
@@ -109,9 +109,12 @@ It clones, installs, and hands you straight to the setup wizard. Default locatio
 
 ```bash
 git clone https://github.com/tigu77/tiguclaw.git && cd tiguclaw
-npm ci            # clean, reproducible install from the lockfile (or: npm install)
-npm run onboard   # interactive setup → .env → (codex) login → service → health check
+node bin/tiguclaw.mjs onboard   # installs dependencies for you — this one line is all
 ```
+
+If dependencies are missing, `onboard` installs them first, so there is no separate
+`npm ci` step. Once it finishes you get a global `tiguclaw` command, and from then on
+**`tiguclaw update`** pulls, installs, builds and restarts in one go.
 </details>
 
 That's it. `onboard` walks you through everything: pick your LLM, paste a key (or drop in a Telegram bot token), and it writes the `.env`, registers the always-on service, and runs a health check. Then just **message your Telegram bot** and it replies. (Only the owner ID you entered is allowed — an empty allowlist keeps the bot locked.)

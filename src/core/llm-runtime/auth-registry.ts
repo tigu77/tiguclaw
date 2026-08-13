@@ -26,6 +26,22 @@ export interface AuthProvider {
    * 호출자(백엔드)는 이를 폴백 신호로 취급한다.
    */
   getAccessToken(): Promise<string>;
+  /**
+   * **지금 인증돼 있나 — 네트워크 없이, 동기로** (2026-08-13).
+   *
+   * ★왜 `getAccessToken` 으로 대신할 수 없나: 그건 async 이고 **부작용이 있다**(만료가
+   *  가까우면 refresh 를 때려 토큰을 갱신하고 홈 `.env` 를 다시 쓴다). "풀에 이 provider 를
+   *  넣을까" 를 묻는 자리(모델 프로파일 조립·모듈 카드)에서 그걸 부르면 화면 한 번 여는
+   *  것이 토큰 갱신을 일으킨다. 판정은 판정이어야 한다.
+   *
+   * ★왜 provider 가 직접 답해야 하나: "무엇이 있으면 인증인가" 는 provider 마다 다르다
+   *  (codex 는 access **또는** refresh 만 있어도 살아난다 — refresh 로 새 access 를 받는다).
+   *  호출자가 env 이름을 알아서 조합하면 그 판정이 두 벌이 되고, 한쪽만 갱신되는 순간
+   *  특정 인증 형태의 사용자가 조용히 빠진다(claude 구독 사용자에게 실제로 그랬다).
+   *
+   * 미구현(undefined)이면 호출자가 자기 기본 판정으로 강등한다 — 기존 provider 무회귀.
+   */
+  isAuthenticated?(): boolean;
 }
 
 /** provider-id 키 코어 레지스트리. */

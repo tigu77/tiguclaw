@@ -39,7 +39,7 @@
     "typecheck:bin": "tsc -p tsconfig.bin.json",
     "typecheck:plugins": "tsc -p tsconfig.plugins.json",
     "init": "tsx src/scripts/init.ts",
-    "onboard": "tsx src/cli.ts onboard",
+    "onboard": "node bin/tiguclaw.mjs onboard",
     "doctor": "tsx src/scripts/doctor.ts",
     "dashboard": "tsx --env-file=.env packages/dashboard/index.ts",
     "bridge:grant": "tsx src/scripts/bridge-grant.ts",

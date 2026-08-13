@@ -72,12 +72,13 @@ export const check: RegressionCheck = {
         //  nudge 경로로 흘러 17.8초를 태우고 턴이 죽었다(사용자: "중간에 멈춤").
         // 모델명을 못박는다 — 재시도 줄만 보고도 "어느 모델이 몇 번째냐" 가 갈려야 한다.
         /\[codex-backend-retry\] \$\{model\} /,
-        /backendFailAttempt < resendCap/,
+        /backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS\.length/,
         // ★모델 축 실패엔 사다리를 다 오르지 않는다 (2026-08-12) — `server_is_overloaded`
         //  는 **그 모델**이 죽었다는 뜻이라 같은 모델 재전송으로는 못 고친다. 실측(회사 PC
         //  08-11): 4회 재전송이 한 턴에 11분을 태우고 에러 5줄을 남겼고, 그게 자가 점검
         //  임계를 넘겨 사용자에게 소음이 됐다. 효과 있는 대책은 풀의 다음 모델로 회전.
-        /isModelOverloaded\(e\.why \?\? ""\)\s*\?\s*CODEX_OVERLOAD_MAX_RESEND/,
+        // ★2026-08-13: 회전을 뺐으므로 단축도 뺐다(사용자 결정) — 조건 없이 사다리 끝까지.
+        //  근거는 회귀 model-outage-rotates 헤더.
         /continue; \/\/ 같은 body 로 재전송\./,
       ],
     );

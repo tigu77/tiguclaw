@@ -54,8 +54,6 @@ import { notifyDestFromCoords } from "../self-update.js";
 import {
   DEFAULT_COOLDOWN_MS,
   MAX_COOLDOWN_MS,
-  OVERLOAD_COOLDOWN_MS,
-  isModelOverloaded,
   isRateLimited,
   parseCooldownMs,
 } from "./rate-limit.js";
@@ -698,28 +696,21 @@ export const COOLDOWN_PROBE_INTERVAL_MS = ((): number => {
 // 없으면 adapter(레거시 spec). specLabel/poolDiversityWarning 과 동일 관용구.
 const cooldownKey = (spec: ModelSpec): string => spec.provider ?? spec.adapter;
 
-/**
- * **모델 축 쿨다운 키** (2026-08-12) — `provider:model`. provider 키와 문자열이 겹치지
- * 않으므로 두 축이 한 테이블에 공존한다(계정이 막힌 것 ≠ 그 모델이 막힌 것).
- * `specLabel` 과 같은 모양이지만 그건 표시용이라 여기서 다시 만들지 않고 그대로 쓴다.
- */
-const modelCooldownKey = (spec: ModelSpec): string => specLabel(spec);
-
 // 남은 쿨다운(ms). 만료됐으면 엔트리 정리하고 0 반환(다음 조회부터 쿨다운 아님).
 // export — 격리 검증(_workspace)이 등록/해제 결과를 직접 조회.
 //
-// ★두 축을 **함께** 본다 (2026-08-12): 계정이 막혔거나(provider) 그 모델이 막혔거나
-//  (provider:model) 둘 중 하나라도 걸려 있으면 이 spec 은 지금 못 쓴다. 더 긴 쪽을
-//  돌려주고, 어느 축이 막았는지도 같이 준다(로그·표시가 사람에게 이유를 말할 수 있게).
+// ★**모델 축은 두지 않는다** (2026-08-13, 사용자 결정: "모델 돌리는 거 빼는 게 낫겠어").
+//  하루 전엔 과부하난 모델을 쉬게 해 다음 턴부터 **다른 모델로 회전**시켰는데, 그러면
+//  사용자가 모르는 사이에 답하는 모델이 바뀐다 — "이 모델을 쓸 때 어떤가" 가 흐려진다.
+//  이제 매 턴은 **항상 선호 모델에서 시작**하고, 그 턴이 실패하면 그 턴 안에서만 풀의
+//  다음 spec 으로 넘어간다(원래 있던 동작 · 사용자에게 폴백 통지가 나간다).
+//  한도(계정 축)는 그대로 provider 단위로 쉰다 — 같은 계정의 다른 모델로 옮겨봐야 소용없다.
 export const cooldownStatus = (
   spec: ModelSpec,
-): { key: string; remainingMs: number } => {
-  const byProvider = remainingForKey(cooldownKey(spec));
-  const byModel = remainingForKey(modelCooldownKey(spec));
-  return byModel > byProvider
-    ? { key: modelCooldownKey(spec), remainingMs: byModel }
-    : { key: cooldownKey(spec), remainingMs: byProvider };
-};
+): { key: string; remainingMs: number } => ({
+  key: cooldownKey(spec),
+  remainingMs: remainingForKey(cooldownKey(spec)),
+});
 
 export const cooldownRemainingMs = (spec: ModelSpec): number =>
   cooldownStatus(spec).remainingMs;
@@ -962,71 +953,14 @@ export const registerCooldownIfRateLimited = (
   return wasCoolingDown ? null : { key, untilTs };
 };
 
-/**
- * **모델 과부하 쿨다운 등록** (2026-08-12) — 한도(계정 축)와 **다른 축**이라 함수도 따로다.
- *
- * ★왜 필요한가 (실측 2026-08-11 회사 PC): `server_is_overloaded` 39건이 전부 한 모델
- *  (`gpt-5.6-sol`)이었는데 이 축이 아예 등록 대상 밖이라, **매 턴 죽은 모델부터 다시**
- *  두드렸다. 한 턴이 11분·에러 5줄을 만들고 그게 자가 점검 임계(3건)를 넘겨 알림이 됐다.
- *  즉 사용자에게 간 소음의 뿌리는 점검 로직이 아니라 **회전하지 않는 라우팅**이었다.
- *
- * ★키가 모델까지인 이유: 죽은 건 계정이 아니라 그 모델이다. provider 를 통째로 쉬면
- *  멀쩡한 형제 모델까지 못 쓴다 — 부분 장애를 전면 장애로 키우는 짓이다.
- *
- * ★짧게(5분) 거는 이유: 과부하는 초~분 단위로 풀린다. 회전만 시켜 주면 되고, 만료되면
- *  자연히 돌아온다(성공하면 `clearCooldownOnSuccess` 가 즉시 해제).
- *
- * ★마지막 남은 모델은 여기서 막지 않는다 — `selectEligiblePool` 이 "전부 쿨다운이면 원본
- *  풀 그대로"(last-resort)라 이미 성립한다. 쿨다운은 하드 차단이 아니라 **선호 순서**다.
- */
-export const registerCooldownIfModelOverloaded = (
-  spec: ModelSpec,
-  e: unknown,
-): { key: string; untilTs: number } | null => {
-  const detail = errorDetail(e);
-  if (!isModelOverloaded(detail)) return null;
-  // 한도는 계정 축에서 이미 처리한다 — 같은 실패를 두 축에 등록하지 않는다.
-  if (isRateLimited(detail)) return null;
-  const key = modelCooldownKey(spec);
-  const wasCoolingDown = (() => {
-    try {
-      return getCooldownRow(key, Date.now()) !== null;
-    } catch {
-      return false;
-    }
-  })();
-  const untilTs = Date.now() + OVERLOAD_COOLDOWN_MS;
-  cooldownUntil.set(key, untilTs);
-  saveCooldown(key, untilTs);
-  console.warn(
-    `llm-runtime: '${key}' 모델 과부하 — ${Math.round(OVERLOAD_COOLDOWN_MS / 60000)}분 쿨다운 등록, ` +
-      `풀의 다음 모델로 회전합니다(계정 한도 아님 — 그 모델만 쉽니다).`,
-  );
-  publishCooldownEvent("enter", key, OVERLOAD_COOLDOWN_MS);
-  return wasCoolingDown ? null : { key, untilTs };
-};
-
 // 성공 시 조기 회복 — 만료 전이라도 실제 성공하면 즉시 해제(재탐 낭비 축소). 엔트리
 // 없으면 no-op(쿨다운 아니었던 정상 어댑터 — 매 턴 no-op 오버헤드 0에 가까움).
 // export — 격리 검증(_workspace)이 직접 호출.
-// ★두 축 모두 해제 (2026-08-12) — 성공은 "계정도 모델도 지금 살아 있다"는 증거다.
-//  한쪽만 지우면 남은 쪽이 살아난 모델을 계속 스킵시킨다(자기 잠금 재발 경로).
 export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
-  for (const key of [cooldownKey(spec), modelCooldownKey(spec)]) {
-    if (cooldownUntil.delete(key)) {
-      deleteCooldown(key);
-      publishCooldownEvent("clear", key, 0);
-    } else {
-      // 메모리에 없어도 DB 엔 있을 수 있다(다른 프로세스·재시작 전 등록).
-      try {
-        if (getCooldownRow(key, Date.now()) !== null) {
-          deleteCooldown(key);
-          publishCooldownEvent("clear", key, 0);
-        }
-      } catch {
-        /* 조회 실패 — 해제는 최적화라 다음 성공에서 다시 시도된다 */
-      }
-    }
+  const key = cooldownKey(spec);
+  if (cooldownUntil.delete(key)) {
+    deleteCooldown(key);
+    publishCooldownEvent("clear", key, 0);
   }
 };
 
@@ -1251,12 +1185,6 @@ const runPool = async (
       //  바로 앞에서 잘려 사람이 읽을 수도 없었다). 등록은 순수 장부라 앞당겨도 안전하고,
       //  앞당기면 **아는 것을 말할 수 있게** 된다.
       const entered = registerCooldownIfRateLimited(spec, e);
-      // ★모델 축 (2026-08-12) — 계정 한도가 아니면 "그 모델이 죽었나" 를 따로 본다.
-      //  등록되면 다음 턴부터 selectEligiblePool 이 그 모델을 건너뛰고 풀의 다음 모델로
-      //  회전한다. 통지는 안 한다 — 회전으로 서비스가 이어지므로 사용자가 할 일이 없고,
-      //  알림의 기준은 "실패했다" 가 아니라 "사람이 해야 할 일이 생겼다" 이기 때문이다
-      //  (/status·`llm.cooldown` 이벤트로는 보인다).
-      registerCooldownIfModelOverloaded(spec, e);
       // ★채널 무관 통지 (2026-08-01, 사용자 지적: "텔레그램으로 작업하는 상황에서도
       //  알아야 하는 정보"). 종전엔 대시보드 SSE 렌더에만 있어 폰에서는 모델이 왜
       //  바뀌었는지 알 길이 없었다 — 기능이 채널에 묶이면 안 된다.

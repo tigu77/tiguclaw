@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-13
+
+### Added
+
+- **자동 DB 백업** — 하루 한 벌, 최근 7벌 보관(`<home>/data/backup/`). `VACUUM INTO` 로 떠서
+  돌고 있는 데몬을 멈추지 않고 WAL 까지 일관된 사본을 만든다. 기본 켜짐이며
+  `settings.json` 의 `backup.enabled: false` 로 끌 수 있다. 성공은 조용히, 실패만 알린다.
+  상태는 `/status` 한 줄로 보인다.
+- **자가 진단에 자원 축 추가** — 백업이 없거나 오래됐을 때, 그리고 기억 인덱스가 상한에
+  걸려 일부가 매 턴 프롬프트에 안 실릴 때 알린다(하루 1회로 묶어 배경 소음 방지).
+- **턴 중간 질문이 함께 보낼 채널로도 간다** — 작업 도중 비서가 선택지를 띄우면, 답변과
+  같은 규칙으로 텔레그램 등에도 전달된다. 버튼을 누르면 그 답이 **질문을 던진 세션**으로
+  돌아온다(채널↔세션 바인딩은 그대로 유지).
+- **LLM 게이트웨이 호출 기록** — 외부 호출 뷰에서 게이트웨이 항목을 펼치면 요청 모델·실제
+  처리 모델·토큰·소요와 함께 **요청·응답 본문**이 보인다. 전문은 대화 기록에 보존되고
+  화면에는 앞부분 미리보기(잘린 양 명시)가 뜬다.
+- **세션 탭 '안 본 메시지' 배지** — 다른 탭에 답이 도착하면 개수가 뜨고, 그 탭을 열면
+  사라진다. 진행 중 표시(점)와 별개다 — 둘은 다른 사실이다.
+
+### Changed
+
+- **백업·자가 진단이 코어에서 돈다** — 종전에는 시계가 self-growth 플러그인에 있어서, 그
+  플러그인이 안 뜨면 백업과 자가 진단이 함께 조용히 멎었다. 이제 플러그인과 무관하게 돈다.
+- **기억 인덱스 상한 8KB → 40KB** — 종전 상한에서는 기억의 73% 가 매 턴 프롬프트에 실리지
+  못하고 조용히 접혔다.
+- **오래 걸리는 작업을 시간으로 끊지 않는다** — 도구 하드컷이 기본 해제됐다(필요하면
+  `TOOL_HARD_TIMEOUT_MS` 로 명시 설정). 느린 것은 실패가 아니다.
+
+### Fixed
+
+- **실패 원인을 정확히 말한다** — 종전에는 wall-clock 상한·도구 상한·무응답을 모두
+  "LLM 응답이 멈춰(타임아웃)" 한 문구로 보고해, 진행 중이던 작업이 상한에 잘린 경우까지
+  모델 탓으로 읽혔다. 이제 원인별로 구분해 말하고 분류 못 한 경우엔 원문을 그대로 싣는다.
+  실패 시 `[job-failed]` 로그에 경과·분류·스레드·원문이 남는다.
+- **모델 과부하를 원인으로 지목한다** — 특정 모델만 과부하로 막히는 상황을 사용량 한도와
+  구분해 보고한다(대책은 사용자가 모델을 바꾸는 것 — 답하는 모델을 시스템이 조용히
+  바꾸지는 않는다).
+- **대시보드 메시지 순서** — 작업 중에 보낸 메시지 위로 나중 답변이 올라오던 것.
+- **대시보드 게이트웨이 항목이 비어 보이던 것** — 기록은 있는데 화면이 그리지 않았다.
+
 ## [0.27.0] - 2026-08-11
 
 ### Added
@@ -1073,7 +1113,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/tigu77/tiguclaw/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/tigu77/tiguclaw/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/tigu77/tiguclaw/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/tigu77/tiguclaw/compare/v0.24.0...v0.25.0

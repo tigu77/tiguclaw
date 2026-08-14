@@ -237,7 +237,12 @@ const darwinRestart = (c) => {
   execFileSync("launchctl", ["kickstart", "-k", `${domain}/${c.label}`], {
     stdio: "inherit",
   });
-  console.log("✅ restarted");
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "restarted",
+    `  확인: launchctl print ${domain}/${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+  );
 };
 
 // stop = 실행만 중지, plist(등록) 유지 (D3). bootout 은 KeepAlive respawn 도 멈춘다.
@@ -274,7 +279,12 @@ const darwinStart = (c) => {
     // 이미 적재돼 있거나 세션 이슈 — 레거시 load 폴백.
     execFileSync("launchctl", ["load", "-w", plistPath], { stdio: "inherit" });
   }
-  console.log("✅ started");
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "started",
+    `  확인: launchctl print ${launchdDomain()}/${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+  );
 };
 
 /** @param {Ctx} c */
@@ -384,7 +394,12 @@ const linuxUninstall = (c) => {
 /** @param {Ctx} c */
 const linuxRestart = (c) => {
   systemctlUser(["restart", c.label]);
-  console.log("✅ restarted");
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "restarted",
+    `  확인: systemctl --user status ${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+  );
 };
 
 // stop = 실행만 중지, 유닛 enable(등록) 유지 (D3).
@@ -398,7 +413,12 @@ const linuxStop = (c) => {
 /** @param {Ctx} c */
 const linuxStart = (c) => {
   systemctlUser(["start", c.label]);
-  console.log("✅ started");
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "started",
+    `  확인: systemctl --user status ${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+  );
 };
 
 /** @param {Ctx} c */
@@ -434,10 +454,107 @@ const linuxPrint = (c) => {
 
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 /**
+ * ★"떴다" 의 **증거는 브리지 포트가 LISTEN 하는 것**이다 (2026-08-15).
+ *
+ * 사고: 윈도우 돌쇠가 `tiguclaw update` 후 **93분간 죽어 있었다**. 그런데 CLI 는
+ * `✅ started` 를 찍었다 — `winStart` 가 `wscript` 로 VBS 를 쏘고 **결과를 안 봤기**
+ * 때문이다(`spawnSync(..., {stdio:"ignore"})` 라 실패도 조용하다).
+ *
+ * ★증거의 등급: `wscript` 실행 성공 = 런처를 **쏜 것**뿐 · PID 존재 = 떴다가 죽는 중일 수
+ *  있음 · **포트 LISTEN = 실제로 서비스 중**. 그래서 포트로 판정한다.
+ *
+ * ★윈도우에서 특히 치명적인 이유: 등록이 `HKCU Run`(로그온 시 1회)이라 **supervisor 가
+ *  없다.** 맥 launchd `KeepAlive`·리눅스 systemd `Restart=` 는 죽으면 되살리지만 윈도우는
+ *  한 번 죽으면 그대로다 — 거짓 성공이 곧 무기한 먹통이 된다(회사 인스턴스는 원격 확인도
+ *  안 된다).
+ *
+ * 동기 스크립트라 `net` 비동기를 못 쓴다. dep-free 원칙(깨진 node_modules 에서도 도는 것)
+ * 도 지켜야 하므로 **빌트인만** 쓴다: `Atomics.wait` 로 자고, 플랫폼 명령으로 포트를 본다.
+ * @param {number} ms
+ */
+const sleepSync = (ms) => {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    /* SharedArrayBuffer 불가 환경 — 확인만 못 할 뿐 기동은 영향 없음 */
+  }
+};
+
+/**
+ * 포트가 LISTEN 할 때까지 기다린다. 뜨면 PID 목록, 시한 내 못 뜨면 빈 배열.
+ * @param {Ctx} c
+ * @param {(c: Ctx) => string[]} probe
+ * @param {number} timeoutMs
+ * @returns {string[]}
+ */
+const waitForListening = (c, probe, timeoutMs = 20000) => {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const pids = probe(c);
+    if (pids.length > 0) return pids;
+    if (Date.now() >= until) return [];
+    sleepSync(700);
+  }
+};
+
+/**
+ * 기동 결과를 **정직하게** 보고한다. 못 떴으면 ✅ 를 찍지 않고 exit 1.
+ * @param {Ctx} c
+ * @param {string[]} pids
+ * @param {string} verb
+ * @param {string} hint
+ */
+const reportLaunch = (c, pids, verb, hint) => {
+  if (pids.length > 0) {
+    console.log(pids[0] === "listening" ? `✅ ${verb}` : `✅ ${verb} (pid ${pids.join(", ")})`);
+    return;
+  }
+  console.error(
+    `🔴 ${verb} 실패 — 기동 명령은 보냈지만 브리지 포트가 안 열렸습니다. ` +
+      `데몬이 안 떴거나 뜨자마자 죽었습니다.\n${hint}`,
+  );
+  process.exitCode = 1;
+};
+
+/**
  * @param {Ctx} c
  * @returns {string}
  */
 const winVbsPath = (c) => path.join(c.homeAbs, "win-launch.vbs");
+
+/**
+ * 브리지 포트를 LISTEN 하는 PID(윈도우) 또는 표식(맥·리눅스).
+ * ★`netstat` 는 세 OS 에 다 있고 dep-free 다. 맥·리눅스는 PID 를 안 주는 형식이라
+ *  "떴다" 표식(`listening`)만 돌려준다 — 판정에 필요한 건 그것뿐이다.
+ * @param {Ctx} c
+ * @returns {string[]}
+ */
+const listeningOnBridge = (c) => {
+  const port = winPort(c); // .env 우선 — 플랫폼 무관 동일 규칙.
+  const r = spawnSync("netstat", process.platform === "win32" ? ["-ano"] : ["-an"], {
+    encoding: "utf8",
+  });
+  const out = r.stdout ?? "";
+  /** @type {Set<string>} */
+  const pids = new Set();
+  // ★주소 구분자가 OS 마다 다르다 — macOS/BSD 는 `127.0.0.1.<포트>`(점), 리눅스·윈도우는
+  //  `127.0.0.1:<포트>`(콜론). 콜론만 보다가 맥에서 **살아 있는 데몬을 못 찾아** 거짓 실패를
+  //  냈다(이 헬퍼를 넣자마자 첫 시험에서 걸렸다). 뒤 경계도 본다 — 짧은 포트가 긴 포트를
+  //  맞히면 안 된다.
+  const portRe = new RegExp(`[.:]${port}(?:\\s|$)`);
+  for (const l of out.split(/\r?\n/)) {
+    if (!portRe.test(l)) continue;
+    if (!/LISTEN/i.test(l)) continue;
+    if (process.platform === "win32") {
+      const pid = l.trim().split(/\s+/).pop();
+      if (pid !== undefined && pid !== "0") pids.add(pid);
+    } else {
+      pids.add("listening");
+    }
+  }
+  return [...pids];
+};
+
 
 // bridge 포트(.env 우선 → env → 3001). status/restart 의 실행 PID 추정용.
 /**
@@ -614,7 +731,14 @@ const winRestart = (c) => {
     return;
   }
   winLaunch(c); // 숨김 재가동.
-  console.log("✅ restarted");
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "restarted",
+    `  런처를 직접 돌려보세요: wscript ${winVbsPath(c)}\n` +
+      `  ★윈도우는 HKCU Run(로그온 1회)이라 supervisor 가 없습니다 — 안 뜨면 그대로 멈춥니다.\n` +
+      `  로그: ${path.join(c.homeAbs, "logs")}`,
+  );
 };
 
 // stop = 실행만 중지(bridge 포트 PID kill), Run 키·VBS(등록) 유지 (D3).
@@ -644,7 +768,14 @@ const winStart = (c) => {
     return;
   }
   winLaunch(c);
-  console.log("✅ started");
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "started",
+    `  런처를 직접 돌려보세요: wscript ${winVbsPath(c)}\n` +
+      `  ★윈도우는 HKCU Run(로그온 1회)이라 supervisor 가 없습니다 — 안 뜨면 그대로 멈춥니다.\n` +
+      `  로그: ${path.join(c.homeAbs, "logs")}`,
+  );
 };
 
 /** @param {Ctx} c */

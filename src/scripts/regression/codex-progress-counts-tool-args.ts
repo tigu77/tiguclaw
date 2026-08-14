@@ -107,6 +107,37 @@ const run = async (): Promise<Assertion[]> => {
     out.push(assert("텍스트 델타는 진전이다(기존 축 보존)", progress >= 2, `beat ${progress}회`));
   }
 
+  // ── ④ ★어댑터가 그 beat 를 **실제로 넘긴다** (2026-08-14 적대 검토 ⑧ — 4점) ────
+  //  파서는 위에서 행동으로 검사된다. 그런데 어댑터가 `parseCodexSse` 의 4번째 인자에
+  //  타이머 beat 를 넘기는지는 **아무 검사도 안 봤다**. 변이 시험에서 그 인자를
+  //  `undefined` 로 바꾸자 992건 전부 초록이었고, 그때 죽는 것은 인자 델타뿐이 아니다 —
+  //  **텍스트 델타 beat 까지 죽어** 정상 스트리밍 답변이 5분 상한에 잘린다(오늘 고친
+  //  사고보다 넓다). 사용자에겐 "느려졌다/잘렸다" 로만 보이는 조용한 결함이다.
+  //
+  //  ★배선은 소스로 볼 수밖에 없다(그 호출은 실 네트워크 안에 있다). 대신 **인자 위치**를
+  //   못 박는다 — 앞 세 인자를 함께 매칭해 4번째 자리가 beat 인지를 본다. 위치가 밀리면
+  //   깨지고, 그건 이 검사가 잡아야 할 바로 그 변화다.
+  {
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(
+      new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url),
+      "utf8",
+    );
+    const wired =
+      /iterLastChunkAt = Date\.now\(\);[\s\S]{0,400}?\(delta\) => \{[\s\S]{0,400}?\},\s*\n\s*\(\) => progressTimer\.beat\(\),/.test(
+        src,
+      );
+    out.push(
+      assert(
+        "★어댑터가 parseCodexSse 4번째 인자로 progressTimer.beat 을 넘긴다",
+        wired,
+        wired
+          ? "배선 확인"
+          : "★onProgress 미전달 — 인자 델타뿐 아니라 텍스트 델타 beat 도 죽어 정상 답변이 5분에 잘린다",
+      ),
+    );
+  }
+
   return out;
 };
 

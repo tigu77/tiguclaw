@@ -1205,7 +1205,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
       void deliverOutbound({
         channel: "telegram",
         target: chatId,
-        text: formatToolSlowNotice({ tool, ms: secs * 1000 }),
+        text: formatToolSlowNotice({ tool, secs }),
         label: "tool-slow",
         notice: true, // 인프라 통지 — 비서 발화 아님.
         observeThreadKey: tk,
@@ -1230,7 +1230,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
     void deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
-      text: formatToolSlowNotice({ tool, ms: sec * 1000, jobLabel: job.label }),
+      text: formatToolSlowNotice({ tool, secs: sec, jobLabel: job.label }),
       label: "worker",
       notice: true, // 인프라 통지 — 비서 발화 아님(렌더 구분).
       observeThreadKey: notifySessionThreadKey(job.threadKey),

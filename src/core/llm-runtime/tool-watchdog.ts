@@ -106,6 +106,11 @@ const hardExempt = (tool: string): boolean => isLongRunningByDesign(tool);
  *  채널 푸시(worker-jobs.ts)를 안 봤다. 같은 판단이 두 곳에 있으면 한쪽만 늙는다 —
  *  그리고 늙은 쪽이 하필 **사용자가 실제로 읽는 쪽**이었다. 판정도 로그도 통지도 한 자리.
  *
+ * ★인자는 **초**다(ms 아님) — 2026-08-14 적대 검토. 종전엔 ms 를 받아 두 호출부가
+ *  `secs * 1000` 으로 되돌려 넘겼고, 변이 시험에서 `ms: secs` 로 바꾸자 180초 지연이
+ *  **"0초째 실행 중입니다"** 로 나갔는데 검사는 초록이었다. 순수 함수는 잘 검사됐지만
+ *  **호출부가 옳게 부르는지**는 아무도 안 봤다. 단위를 왕복시키지 않으면 그 부류가 사라진다.
+ *
  * 문구 규칙 셋:
  *  ① **경과 보고지 판정이 아니다** — "멈췄다" 고 단정하지 않는다.
  *  ② **정상이 먼저** — 흔한 쪽(그냥 오래 걸림)을 앞에, 드문 원인(권한 다이얼로그)을 뒤에.
@@ -114,11 +119,12 @@ const hardExempt = (tool: string): boolean => isLongRunningByDesign(tool);
  */
 export const formatToolSlowNotice = (input: {
   readonly tool: string;
-  readonly ms: number;
+  /** 경과 **초**. ms 를 넘기지 마라 — 호출부는 이미 초를 갖고 있다. */
+  readonly secs: number;
   /** 워커 통지면 잡 라벨. 없으면 메인 턴 통지. */
   readonly jobLabel?: string;
 }): string => {
-  const secs = Math.round(input.ms / 1000);
+  const secs = Math.max(1, Math.round(input.secs));
   const subject =
     input.jobLabel === undefined
       ? `도구 '${input.tool}' 이(가)`

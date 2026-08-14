@@ -110,6 +110,74 @@ export const check: RegressionCheck = {
     //  걸린다"는 신고를 `[codex-turn-end]` 의 iter 값으로 역추론할 수밖에 없었다.
     //  ★수치가 같이 실려야 한다 — 몇/몇 회인지(임계 대비 위치)와 무슨 도구를 반복했는지가
     //   없으면 "정당하게 긴 작업" 과 "루프" 를 못 가른다(그게 유일하게 중요한 판단이다).
+    // ★변이가 뚫은 두 수법을 막는다 (2026-08-14 적대 검토 ⑨·⑩):
+    //  ①줄-시작 앵커는 **같은 줄** 게이트만 막는다 — 앞 **줄**에 `if (env)` 를 두면 통과했다.
+    //  ②필드 단언이 같은 파일의 **다른 로그 줄**에 기생한다 — ext-tools 에서 thread 를
+    //    지워도 tool-cap 줄이 대신 만족시켰다. 그래서 **블록 단위**로 자른 뒤 그 안에서 본다.
+    //  ★`blockOf` 는 태그부터 그 호출의 닫는 `);` 까지 = 한 로그 문장. 판정 대상이 마크업이
+    //   아니라 그 문장이라는 것을 코드로 못 박는다.
+    const codexSrc = await (async () => {
+      const { readFile } = await import("node:fs/promises");
+      return readFile(
+        new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url),
+        "utf8",
+      );
+    })();
+    /** 로그 태그가 있는 **한 문장**(console.*( … );)만 잘라낸다. */
+    const blockOf = (tag: string): string => {
+      const at = codexSrc.indexOf(tag);
+      if (at < 0) return "";
+      const start = codexSrc.lastIndexOf("console.", at);
+      const end = codexSrc.indexOf("\n        );", at);
+      return start < 0 || end < 0 ? codexSrc.slice(Math.max(0, at - 200), at + 600) : codexSrc.slice(start, end);
+    };
+    /** 그 문장이 **조건 없이** 실행되는가 — 바로 앞 줄이 `if (`/`&&` 로 끝나면 게이트된 것. */
+    const unconditional = (tag: string): boolean => {
+      const at = codexSrc.indexOf(tag);
+      if (at < 0) return false;
+      const lineStart = codexSrc.lastIndexOf("\n", codexSrc.lastIndexOf("console.", at));
+      const prev = codexSrc.slice(codexSrc.lastIndexOf("\n", lineStart - 1) + 1, lineStart).trim();
+      return !/^if\s*\(|&&\s*$|\?\s*$/.test(prev);
+    };
+    const capBlock = blockOf("[codex-tool-cap]");
+    out.push(
+      assert(
+        "★도구 상한 로그가 **조건 없이** 찍히고 판정 수치를 자기 문장 안에 담는다",
+        unconditional("[codex-tool-cap]") &&
+          /iter=\$\{iteration\}\/\$\{CODEX_MAX_TOOL_ITERATIONS_HARD\}/.test(capBlock) &&
+          /thread=\$\{input\.threadKey\}/.test(capBlock) &&
+          /상위\(\$\{top\}\)/.test(capBlock) &&
+          // `top` 이 항상 빈 문자열이 되면 수치가 사라진다 — 실제로 뚫린 변이(.slice(0,0)).
+          /\.slice\(0,\s*5\)/.test(codexSrc),
+        `무조건=${unconditional("[codex-tool-cap]")} 블록=${capBlock.length}자`,
+      ),
+    );
+    const extBlock = blockOf("[codex-ext-tools]");
+    out.push(
+      assert(
+        "★게이트웨이 패스스루 로그도 무조건 + thread 좌표를 **자기 문장 안에** 담는다",
+        unconditional("[codex-ext-tools]") &&
+          /thread=\$\{input\.threadKey\}/.test(extBlock) &&
+          /호출\(\$\{externalMatched\.map\(/.test(extBlock),
+        `무조건=${unconditional("[codex-ext-tools]")} 블록=${extBlock.length}자`,
+      ),
+    );
+    out.push(
+      assert(
+        "진행 로그(25·50·75…)도 무조건 찍힌다",
+        unconditional("[codex-tool-progress]"),
+        `무조건=${unconditional("[codex-tool-progress]")}`,
+      ),
+    );
+    // ★추론 강도 전달도 같은 부류 — env 블록으로 감싸면 기능이 조용히 꺼진다(적대 검토 ③).
+    out.push(
+      assert(
+        "★추론 강도 전달이 env 게이트 뒤로 숨지 않는다",
+        /\} else \{\n(?:.*\n)*?\s*const effort = resolveReasoningEffort\("codex", model, input\.cwd\);/.test(codexSrc) &&
+          !/process\.env\.[A-Z_]+[^\n]*\n\s*const effort = resolveReasoningEffort/.test(codexSrc),
+        "미게이트 확인",
+      ),
+    );
     const cap = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [

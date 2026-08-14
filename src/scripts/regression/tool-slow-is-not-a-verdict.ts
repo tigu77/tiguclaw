@@ -25,10 +25,10 @@ const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const worker = formatToolSlowNotice({
     tool: "Bash",
-    ms: 180_000,
+    secs: 180,
     jobLabel: "VoxelBuilder G3 멀티모달 품질 마감",
   });
-  const main = formatToolSlowNotice({ tool: "Bash", ms: 180_000 });
+  const main = formatToolSlowNotice({ tool: "Bash", secs: 180 });
 
   // ── ① 단정하지 않는다 ────────────────────────────────────────────────────
   //  "멈춰 있어요" 가 사용자를 "한도에 걸렸다" 로 오독하게 만든 문장이다.
@@ -86,6 +86,59 @@ const run = async (): Promise<Assertion[]> => {
       `formatToolSlowNotice 호출 ${calls}회 · 자체문구잔존=${src.includes("멈춰 있어요")}`,
     ),
   );
+
+  // ── ⑥ ★호출부가 **초**를 넘긴다 (2026-08-14 적대 검토 ⑪) ───────────────────
+  //  순수 함수는 잘 검사됐는데 **호출부가 옳게 부르는지**는 아무도 안 봤다. 변이 시험에서
+  //  `ms: secs` 로 바꾸자 180초가 "0초째 실행 중" 으로 나갔고 992건 전부 초록이었다.
+  //  단위 왕복 자체를 없앴으니(초를 받는다) 남은 건 "다시 ms 를 만들지 않는가" 다.
+  {
+    const src = await readFile(
+      new URL("../../core/worker-jobs.ts", import.meta.url),
+      "utf8",
+    );
+    const calls = [...src.matchAll(/formatToolSlowNotice\(\{([^}]*)\}\)/g)].map((m) => m[1] ?? "");
+    out.push(
+      assert(
+        "★호출부 2곳이 secs 를 넘긴다(ms 왕복 금지)",
+        calls.length === 2 && calls.every((a) => /\bsecs\b/.test(a) && !/\bms\b/.test(a) && !/\* 1000/.test(a)),
+        `호출 ${calls.length}곳: ${calls.map((a) => a.replace(/\s+/g, " ").trim()).join(" | ")}`,
+      ),
+    );
+    // ⑪ 곁가지 — 워커 통지는 jobLabel 을 넘겨야 `cancel_worker` 안내가 나간다.
+    out.push(
+      assert(
+        "워커 호출부는 jobLabel 을 넘긴다(없으면 있지도 않은 /stop 을 안내한다)",
+        calls.some((a) => /jobLabel/.test(a)),
+        calls.join(" | "),
+      ),
+    );
+  }
+
+  // ── ⑦ ★구독이 실제로 걸린다 (적대 검토 ⑫ — 4점) ────────────────────────────
+  //  종전 검사는 함수 **본문**만 봤다. `subscribeWorkerToolSlowNotify()` 호출 한 줄을
+  //  지우면 워커·메인 턴 통지가 **전부** 사라지는데 992건이 초록이었다 —
+  //  이 검사군이 태어난 사고(39분 무통지)가 그대로 재현되는데 그물이 없었다.
+  {
+    const src = await readFile(
+      new URL("../../core/worker-jobs.ts", import.meta.url),
+      "utf8",
+    );
+    const i = src.indexOf("export const registerWorkerHandler");
+    const body = i < 0 ? "" : src.slice(i, i + 600);
+    // ★주석 처리된 줄은 안 센다 — 첫 판은 문자열 포함만 봐서 `// subscribe…()` 로 주석
+    //  처리하면 그대로 통과했다(재시험에서 걸렸다). "있다" 가 아니라 "**실행된다**" 를
+    //  물어야 한다 — 이 검사가 태어난 이유가 정확히 그것이다.
+    const live = body
+      .split("\n")
+      .some((l) => l.includes("subscribeWorkerToolSlowNotify()") && !l.trim().startsWith("//"));
+    out.push(
+      assert(
+        "★registerWorkerHandler 가 도구-느림 구독을 건다(구독 없으면 통지 전멸)",
+        live,
+        i < 0 ? "registerWorkerHandler 없음" : live ? "구독 확인" : "★호출이 없거나 주석 처리됨",
+      ),
+    );
+  }
 
   return out;
 };

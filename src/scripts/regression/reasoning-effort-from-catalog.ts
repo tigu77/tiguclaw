@@ -20,6 +20,8 @@
  *  ④ claude 는 대상이 아니다 — 등급 개념이 없다(adaptive thinking).
  */
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadModelReasoning } from "../../core/settings.js";
@@ -87,6 +89,68 @@ const run = async (): Promise<Assertion[]> => {
         "숫자·빈문자·null 은 무시한다(부팅·턴 생존)",
         m.size === 0,
         `남은 항목 ${m.size}개`,
+      ),
+    );
+  }
+
+  // ── ★우선순위를 **실행해서** 확인한다 (2026-08-14 적대 검토 ①·④ — 각 4점) ──
+  //  종전엔 소스에 `const override = …; if (override !== undefined) return override;`
+  //  **두 줄이 있는지**만 봤다. 변이 시험에서 순서를 뒤집자(카탈로그 먼저 조회) 그대로
+  //  통과했고, 실측하면 `models.reasoning="high"` 인데 카탈로그의 `low` 가 나갔다 —
+  //  사용자가 적은 설정이 **조용히 무시**된다. 정규식은 "그 줄이 있나" 를 볼 뿐
+  //  "어느 쪽이 이기나" 를 못 본다. 그래서 진짜 캐시 파일·진짜 설정을 깔고 **부른다**.
+  //  ★자식 프로세스인 이유: `getPaths()` 가 홈을 캐시해서 부모 안에서 바꿔봐야 안 먹는다.
+  {
+    const home = mkdtempSync(path.join(tmpdir(), "reasoning-home-"));
+    writeFileSync(
+      path.join(home, "model-catalog.json"),
+      JSON.stringify({
+        fetchedAt: Date.now(),
+        models: { codex: ["gpt-5.6-sol"] },
+        reasoning: { "codex:gpt-5.6-sol": "low" },
+      }),
+      "utf8",
+    );
+    const proj = projectWith({ models: { reasoning: { "codex:gpt-5.6-sol": "high" } } });
+    const plain = mkdtempSync(path.join(tmpdir(), "reasoning-plain-"));
+    const child = new URL("./_reasoning-effort-child.ts", import.meta.url);
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", fileURLToPath(child), proj, plain],
+      { encoding: "utf8", env: { ...process.env, TIGUCLAW_HOME: home } },
+    );
+    let got: Record<string, string | null> = {};
+    try {
+      got = JSON.parse(r.stdout.trim()) as Record<string, string | null>;
+    } catch {
+      /* 아래 단언이 실패로 드러낸다 */
+    }
+    out.push(
+      assert(
+        "★카탈로그 기본이 실제로 적용된다(저장·조회가 이어져 있다)",
+        got.catalogOnly === "low",
+        `sol → ${String(got.catalogOnly)} (기대 low) ${r.stdout.slice(0, 80)}${r.stderr.slice(0, 120)}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★사용자 덮어쓰기가 카탈로그를 이긴다(적어둔 설정이 조용히 무시되지 않는다)",
+        got.overridden === "high",
+        `override=high · catalog=low → ${String(got.overridden)}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★anthropic 은 기본값이 없다(정품 Claude Code 와 같은 상태 = 미전송)",
+        got.anthropic === null,
+        String(got.anthropic),
+      ),
+    );
+    out.push(
+      assert(
+        "모르는 모델은 미전송(추측값 금지)",
+        got.unknown === null,
+        String(got.unknown),
       ),
     );
   }

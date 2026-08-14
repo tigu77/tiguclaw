@@ -537,3 +537,27 @@ export const createSkillInvokeMcpServer = (
     tools: [skillInvokeTool, findSkillsTool],
   });
 };
+
+/**
+ * SDK 빌트인 스킬 도구 이름 — **여기가 정의점**이다(어댑터가 다시 적지 않는다).
+ * `SHELL_TOOL_NAMES`·`SDK_TODO_TOOL_NAMES` 와 같은 수법.
+ *
+ * ★왜 막는가 (2026-08-15, 사용자 확정): SDK `Skill` 은 우리 스킬 인덱스가 아니라 **claude
+ *  자기 자산**(`.claude/skills` + SDK 번들)을 본다. 그런데 tiguclaw 의 스킬 범위는 **의도적으로
+ *  Claude 영역을 포함하지 않는다** — 가져오고 싶으면 `claude-wrapper-sync` 스킬로 래핑하는
+ *  것이 정식 경로다. 그 스킬 §0 이 이유를 적어놨다: Claude Code 스킬은 `CLAUDE.md` 컨텍스트를
+ *  전제하므로 **그냥 복사하면 겉돈다**. 래핑은 복사가 아니라 `PROJECT.md` 로의 **맥락 이전**이고,
+ *  그래야 codex·openai 에서도 같은 맥락이 선다.
+ *
+ * ★즉 `Skill` 을 열어두면 claude 만 그 경계를 우회한다(실측 6건 중 5건). 같은 요청이 어댑터에
+ *  따라 다르게 도는 것이고(#2 위반), 래퍼가 하는 맥락 이전도 건너뛴다. 게다가 claude 의 스킬
+ *  사용이 `skill_usage` 통계에서 통째로 빠진다(실측: `invoke_skill` 33건이 전부 codex).
+ *  덤으로 두 경로 공존이 만든 오호출도 있었다 — `Skill(skill=mcp__file-ops__Grep)`.
+ *
+ * ★잃는 것은 **SDK 번들 스킬**뿐이고 오늘 기준 `claude-api` 하나다(924KB·65파일, Anthropic 이
+ *  SDK 버전마다 갱신하는 "Claude API 로 앱 만들기" 레퍼런스). 우리가 사본을 들면 벤더 문서를
+ *  재구현하는 것이고(원칙 5) 그 사본은 늙는다 — 그 스킬 자체가 "네 사전 지식은 낡았다" 를
+ *  경고하는 문서다. 그래서 **tiguclaw 능력이 아니라 Claude Code 제품 지식**으로 보고 경계 밖에
+ *  둔다. 되돌리기는 이 배열에서 한 줄 빼면 된다.
+ */
+export const SDK_SKILL_TOOL_NAMES = ["Skill"] as const;

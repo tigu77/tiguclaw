@@ -1,5 +1,7 @@
 /**
- * 회귀: 할일 도구가 **세 어댑터에서 하나** — claude 도 우리 것을 쓴다 (2026-08-14).
+ * 회귀: SDK 빌트인을 우리 것으로 **일원화한 축들**이 한 쌍(막기+주기)을 지킨다.
+ *
+ * 현재 대상: **할일**(2026-08-14) · **스킬**(2026-08-15). 기준은 아키텍처 §9.
  *
  * 배경: `update_todos` 는 codex·openai 에만 등록돼 있었고 claude 는 SDK 빌트인을 썼다.
  * 그래서 같은 기능인데 **할일 카드가 claude 에서만 안 떴다**(원칙 #2 위반). 그리고
@@ -24,6 +26,7 @@
  */
 import { readFile } from "node:fs/promises";
 import { createTodoMcpServer, SDK_TODO_TOOL_NAMES } from "../../core/llm-runtime/capabilities/todo-mcp.js";
+import { SDK_SKILL_TOOL_NAMES } from "../../core/llm-runtime/capabilities/skill-registry.js";
 import { adaptClaudeMcpServer } from "../../core/llm-runtime/adapters/_mcp-bridge.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -98,12 +101,37 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
+  // ── ★스킬도 같은 규칙 — 막았으면 줬는가 (2026-08-15) ──────────────────────
+  //  SDK `Skill` 은 `.claude/skills`+번들을 보는데, tiguclaw 의 스킬 범위는 **의도적으로**
+  //  Claude 영역을 포함하지 않는다(가져오려면 `claude-wrapper-sync` 로 래핑 = 맥락 이전).
+  //  열어두면 claude 만 그 경계를 우회하고(실측 6건 중 5건) 통계에서도 빠진다.
+  //  ★막기와 주기는 한 쌍 — `invoke_skill` 은 **lean 이 아닌 일반 경로**에 등록돼야 한다.
+  {
+    const blocksSkill = /\.\.\.SDK_SKILL_TOOL_NAMES,/.test(claude);
+    const givesSkill = /skills: createSkillInvokeMcpServer\(cwd, \{/.test(claude);
+    out.push(
+      assert(
+        "★SDK Skill 을 막고 invoke_skill 을 준다(경계 복원 + 대체 제공)",
+        blocksSkill && givesSkill,
+        `차단=${blocksSkill} 대체제공=${givesSkill}`,
+      ),
+    );
+    const relistedSkill = SDK_SKILL_TOOL_NAMES.filter((n) => claude.includes(`"${n}"`));
+    out.push(
+      assert(
+        "스킬 도구 이름도 정의점에서만 온다",
+        relistedSkill.length === 0,
+        relistedSkill.length === 0 ? "재기재 0" : `재기재: ${relistedSkill.join(",")}`,
+      ),
+    );
+  }
+
   return out;
 };
 
 export const check: RegressionCheck = {
-  name: "todo-tool-unified",
+  name: "sdk-tool-unified",
   guards:
-    "할일 도구가 claude 에서만 SDK 빌트인이라 카드가 안 뜨던 것 + 상류가 TodoWrite→Task* 로 개명했는데 6일 1,304건 중 0건인 걸 아무도 모르던 것",
+    "할일·스킬이 claude 에서만 SDK 빌트인이라 카드가 안 뜨고 통계에서 빠지던 것 + 막기와 주기가 한 쌍이 아니면 능력이 조용히 주는 것",
   run,
 };

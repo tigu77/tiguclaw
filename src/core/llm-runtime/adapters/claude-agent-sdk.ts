@@ -133,6 +133,7 @@ import {
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 import { resolveReasoningEffort } from "../model-catalog.js";
 import { createTodoMcpServer, SDK_TODO_TOOL_NAMES } from "../capabilities/todo-mcp.js";
+import { SDK_SKILL_TOOL_NAMES } from "../capabilities/skill-registry.js";
 import {
   collectExternalToolCalls,
   createExternalToolsMcpServer,
@@ -848,6 +849,9 @@ export const runClaude = async (
       // ★할일도 우리 도구로 일원화 (2026-08-14) — 이름은 정의점(todo-mcp)에서 가져온다.
       //  근거·실측은 그 상수 주석에. 막지 않으면 두 도구가 공존해 계획이 갈린다.
       ...SDK_TODO_TOOL_NAMES,
+      ...SDK_SKILL_TOOL_NAMES,
+      // ★스킬도 우리 것으로 일원화 — 이름은 정의점(skill-registry)에서. 근거는 그 상수 주석에.
+      //  대체 제공은 위 `skills: createSkillInvokeMcpServer(...)`(일반 경로 등록) 이다.
     ]),
     // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
     // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면

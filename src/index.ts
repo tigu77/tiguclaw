@@ -1,4 +1,4 @@
-import { isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
+import { formatResetAt, isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
 import { flushEnvLoadLog } from "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import { findRipgrep } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
@@ -601,11 +601,10 @@ const formatRegionAError = (detail: string): string => {
   if (!isLimit) return `⚠️ 요청 처리 중 오류가 발생했습니다:\n${detail}`;
   const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);
   const prov = provMatch ? provMatch[0].toLowerCase() : "LLM";
-  const secMatch =
-    d.match(/"resets_in_seconds"\s*:\s*(\d+)/) || d.match(/retry[-_ ]?after["'\s:=]+(\d+)/i);
-  const when = secMatch
-    ? ` 약 ${Math.max(1, Math.round(Number(secMatch[1]) / 60))}분 후 리셋됩니다.`
-    : "";
+  // ★리셋 시점 문구는 `formatResetAt` 한 곳에서 만든다 (2026-08-14) — 종전엔 여기와
+  //  worker-jobs 가 각자 "N분 후" 를 만들어, 5.6일 한도가 `약 8118분 후` 로 나갔다.
+  const cooldownMs = parseCooldownMs(d);
+  const when = cooldownMs !== null ? ` ${formatResetAt(cooldownMs)}에 풀립니다.` : "";
   return (
     `⚠️ ${prov} 백엔드 사용 한도(rate limit)에 도달했습니다.${when}\n` +
     `지금 바로 쓰려면 다른 백엔드로 모델을 바꾸거나, 여러 모델 풀(예: codex + claude)로 두면 한도·장애 시 자동 폴백됩니다.`

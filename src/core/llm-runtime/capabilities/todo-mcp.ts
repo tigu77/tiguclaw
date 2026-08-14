@@ -114,3 +114,31 @@ export const createTodoMcpServer = (
     version: "1.0.0",
     tools: [makeUpdateTodosTool(threadKey)],
   });
+
+/**
+ * SDK 빌트인 할일 도구 이름 — **여기가 정의점**이다. 어댑터가 이름을 다시 적지 않는다
+ * (`SHELL_TOOL_NAMES`·`SEARCH_TOOL_NAMES` 와 같은 수법·같은 이유).
+ *
+ * ★왜 막는가 (2026-08-14, A/B 실측): claude 는 이 도구들을 쓰는데 그 활동이 우리 이벤트로
+ *  안 와서 **할일 카드가 claude 에서만 안 떴다**(codex·openai 는 뜬다 = 원칙 #2 위반).
+ *  그리고 대체가 손해가 아니었다 — 같은 6단계 과제에서
+ *    SDK: `TaskCreate×6 + TaskUpdate×12` = **18 호출** / 우리: `update_todos×6` = **6 호출**
+ *  (소요 54초 동일·산출 동일). SDK 는 항목별이라 "이전 완료 + 다음 시작" 에 2번이 드는데
+ *  우리는 배열 통째라 한 번에 둘 다 한다. 표현력이 낮은 설계가 이 패턴에선 더 싸다.
+ *
+ * ★안 쓰는 표현력은 안 만들었다: `TaskGet`·`TaskList`(읽기) **실사용 0건**,
+ *  `blocks`/`blockedBy`(의존성) **0건**, `metadata` **0건** — 윈도우 인스턴스 6일치 실측.
+ *  그래서 CRUD 한 벌을 새로 만들지 않고 기존 도구로 대체했다("3번 반복된 후 추상화").
+ *  ★단서: 항목이 아주 많아지면(수십 개) 매번 전체를 다시 뱉는 비용이 커져 교환이 뒤집힐
+ *   수 있다. 실측은 6개 규모다.
+ *
+ * ★`TodoWrite` 도 넣는다 — 실사용 0건(1,304건 중)이지만 상류가 되살릴 수 있고, 그때
+ *  조용히 두 도구가 공존하면 계획이 두 군데로 갈린다.
+ */
+export const SDK_TODO_TOOL_NAMES = [
+  "TodoWrite",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+] as const;

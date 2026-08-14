@@ -17,7 +17,7 @@
  *
  * MVP = 메모리 레지스트리(영속 0, W-I7 재시작 정직). scheduler `inFlight` Set 동형.
  */
-import { isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
+import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
 import { randomUUID } from "node:crypto";
 import { extractTelegramChatId } from "./threadkey.js";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
@@ -1265,8 +1265,8 @@ const humanizeWorkerError = (raw: string): string => {
   if (isRateLimited(raw)) {
     const ms = parseCooldownMs(raw);
     if (ms !== null) {
-      const min = Math.max(1, Math.round(ms / 60000));
-      return `LLM 사용량 한도 도달(429) — 약 ${min}분 후 한도가 리셋됩니다. 그 뒤 다시 시켜주세요.`;
+      // 문구는 `formatResetAt` 한 곳에서 — 여기서 다시 만들면 한쪽만 늙는다.
+      return `LLM 사용량 한도 도달(429) — ${formatResetAt(ms)}에 풀립니다. 그 뒤 다시 시켜주세요.`;
     }
     return "LLM 사용량 한도 도달(429) — 잠시 후 한도가 리셋되면 다시 시켜주세요.";
   }

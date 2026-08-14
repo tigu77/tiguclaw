@@ -89,3 +89,38 @@ const parseResetsAtMs = (errStr: string): number | null => {
   const ms = at.getTime() - now.getTime();
   return ms > 0 ? Math.min(ms, MAX_COOLDOWN_MS) : null;
 };
+
+/**
+ * 한도 리셋 시점을 **사람이 읽는 문장**으로 — 여기가 정의점이다 (2026-08-14).
+ *
+ * ★사고: 윈도우 인스턴스가 `약 8118분 후 리셋됩니다` 를 출력했다(사용자 신고).
+ *  **읽을 수 없는 숫자**다 — 8,118분이 5.6일이라는 걸 암산하라는 뜻이고, 그러면
+ *  "언제 다시 시도하나" 라는 이 문장의 유일한 목적이 무너진다. 분은 한 시간 안쪽에서만
+ *  쓸모 있다.
+ *
+ * ★그리고 같은 판단이 **두 곳**에 각자 적혀 있었다(`index.ts` 의 채널 응답, `worker-jobs`
+ *  의 워커 통지) — 한쪽만 고치면 다른 쪽이 늙는다. 오늘만 같은 부류로 두 번 겪었다.
+ *
+ * 규칙: 한 시간 안이면 분, 하루 안이면 시각, 그 밖이면 **날짜+시각**. 어느 쪽이든
+ * **절대 시각을 먼저** 말하고 상대 시간을 괄호로 보탠다("언제" 가 묻는 것이므로).
+ */
+export const formatResetAt = (
+  ms: number,
+  now: number = Date.now(),
+): string => {
+  const at = new Date(now + ms);
+  const min = Math.max(1, Math.round(ms / 60_000));
+  if (min < 60) return `약 ${min}분 후`;
+  // ★로케일 API 를 안 쓴다 — 같은 코드가 맥·윈도우·리눅스에서 도는데 `toLocaleTimeString`
+  //  은 ICU 에 따라 "오전 3:14"·"AM 3:14"·"3:14 AM" 로 갈린다(실측: 맥에서 "AM 3:14").
+  //  사용자에게 나가는 문장이 플랫폼마다 다르면 그 자체가 결함이다. 직접 조립한다.
+  const h24 = at.getHours();
+  const ampm = h24 < 12 ? "오전" : "오후";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const hhmm = `${ampm} ${h12}시 ${String(at.getMinutes()).padStart(2, "0")}분`;
+  const sameDay = at.toDateString() === new Date(now).toDateString();
+  if (sameDay) return `오늘 ${hhmm}쯤 (약 ${Math.round(min / 60)}시간 후)`;
+  const days = ms / 86_400_000;
+  const rel = days < 2 ? `약 ${Math.round(min / 60)}시간 후` : `약 ${days.toFixed(1)}일 후`;
+  return `${at.getMonth() + 1}월 ${at.getDate()}일 ${hhmm}쯤 (${rel})`;
+};

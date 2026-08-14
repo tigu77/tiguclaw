@@ -132,6 +132,7 @@ import {
 } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 import { resolveReasoningEffort } from "../model-catalog.js";
+import { createTodoMcpServer, SDK_TODO_TOOL_NAMES } from "../capabilities/todo-mcp.js";
 import {
   collectExternalToolCalls,
   createExternalToolsMcpServer,
@@ -844,6 +845,9 @@ export const runClaude = async (
       //  우리 Read 가 PDF 를 못 줘서(MCP 콘텐츠 타입 한계) 막으면 능력 손실이다.
       ...SHELL_TOOL_NAMES,
       ...SEARCH_TOOL_NAMES,
+      // ★할일도 우리 도구로 일원화 (2026-08-14) — 이름은 정의점(todo-mcp)에서 가져온다.
+      //  근거·실측은 그 상수 주석에. 막지 않으면 두 도구가 공존해 계획이 갈린다.
+      ...SDK_TODO_TOOL_NAMES,
     ]),
     // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
     // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
@@ -893,6 +897,11 @@ export const runClaude = async (
             "file-ops": createFileOpsMcpServer(input.cwd, input.threadKey, {
               shellsOnly: true,
             }),
+            // 할일 — codex·openai 와 **같은 도구**(같은 이벤트·같은 카드). 위 disallow 와 한 쌍:
+            // 빌트인을 막았으면 대체를 반드시 줘야 능력이 준다(원칙 1 슈퍼셋).
+            todo: createTodoMcpServer(input.threadKey),
+            // 할일 — codex·openai 와 **같은 도구**(같은 이벤트·같은 카드). 위 disallow 와 한 쌍:
+            // 빌트인을 막았으면 대체를 반드시 줘야 능력이 준다(원칙 1 슈퍼셋).
           }),
       ...(toolsNone
         ? {}

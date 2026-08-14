@@ -28,7 +28,10 @@ import type { ActivityOutput } from "../types.js";
  *  - Edit/Write — 정보는 diff 쪽. 결과는 "Wrote N chars" 류 노이즈.
  *  - ExitPlanMode — 계획 블록이 전문을 이미 보여준다.
  *  - prompt_options — 선택지 카드가 따로 렌더된다.
- *  - TodoWrite/update_todos — detail 이 곧 내용(확인성 에코).
+ *  - (2026-08-14 해제) TodoWrite/update_todos — **detail 이 곧 내용**이라 뺐었는데, 그날
+ *    detail 을 `할일 2/5 · 지금: …` **요약**으로 바꾸면서 그 근거가 사라졌다. 이제 접힌 줄은
+ *    요약이고 펼친 줄이 전체 목록이다(사용자 설계: "펼쳐서 보여주고 접히면 요약"). 제외
+ *    사유가 없어졌는데 목록에 남아 있으면 **펼쳐도 아무것도 안 나온다** — 실제로 그랬다.
  *  - KillShell — "killed" 류 단답.
  * 출력은 모델 컨텍스트로 재주입되지 않으므로(표시 전용) 토큰 비용은 0, 캡(40줄·4000자)이
  * 페이로드를 묶는다.
@@ -38,8 +41,6 @@ const OUTPUT_EXCLUDED_TOOLS = new Set([
   "Write",
   "ExitPlanMode",
   "prompt_options",
-  "TodoWrite",
-  "update_todos",
   "KillShell",
 ]);
 

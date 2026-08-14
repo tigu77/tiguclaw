@@ -51,12 +51,28 @@ export const check: RegressionCheck = {
     );
 
     // ★② 세 트리거가 다 있는가 — 하나라도 없으면 그 경로에서 유령이 남는다.
-    const triggers: Array<[string, string, RegExp]> = [
-      ["드로어 열기", "background-drawer.js", /const openBg = \(\) => \{[\s\S]{0,300}resyncBackground\(\)/],
-      ["세션 탭 전환", "tabs.js", /const switchToThread[\s\S]{0,600}resyncBackground\(\)/],
-      ["탭 복귀(visibility)", "activity.js", /visibilitychange[\s\S]{0,400}resyncBackground\(\)/],
+    //
+    // ★거리(N자 창)가 아니라 **블록**으로 본다 (2026-08-14). 종전엔 `[\s\S]{0,600}` 처럼
+    //  앵커에서 몇 자 안에 있나로 판정했는데, 그건 "같은 함수 안" 의 **엉성한 대역**이라
+    //  그 함수에 정당한 두 줄이 늘자 곧바로 빨간불이 났다(할일 패널 배선). 이런 검사는
+    //  거짓 실패를 내고, 거짓 실패를 내는 게이트는 결국 아무도 안 본다
+    //  ([[feedback_gate_must_actually_run]]). 앵커부터 **같은 들여쓰기의 다음 선언 전까지**
+    //  를 그 블록으로 잘라 그 안에서 찾는다 — 숫자를 손으로 관리하지 않아도 된다.
+    const blockAfter = (src: string, anchor: string): string => {
+      const i = src.indexOf(anchor);
+      if (i < 0) return "";
+      const indent = /^[ \t]*/.exec(src.slice(src.lastIndexOf("\n", i) + 1))?.[0] ?? "";
+      const next = src.indexOf(`\n${indent}const `, i + anchor.length);
+      return src.slice(i, next < 0 ? src.length : next);
+    };
+    const triggers: Array<[string, string, string]> = [
+      ["드로어 열기", "background-drawer.js", "const openBg = () =>"],
+      ["세션 탭 전환", "tabs.js", "const switchToThread"],
+      ["탭 복귀(visibility)", "activity.js", "visibilitychange"],
     ];
-    const missing = triggers.filter(([, f, re]) => !re.test(read(f)));
+    const missing = triggers.filter(
+      ([, f, anchor]) => !blockAfter(read(f), anchor).includes("resyncBackground()"),
+    );
     out.push(
       assert(
         `★"보는 순간" 트리거 ${triggers.length}종이 모두 배선됐다`,

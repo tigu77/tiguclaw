@@ -56,6 +56,37 @@ export function buildActivityDetail(
   const entries = Object.entries(input).filter(([, v]) => v !== undefined && v !== null);
   if (entries.length === 0) return undefined;
 
+  // ★할일 목록은 **세어서** 요약한다 (2026-08-14, 사용자 제안). 일반 규칙(`key=value` 2개)을
+  //  타면 `todos=[{"content":"명세와 스텁, frozen…` 처럼 **JSON 조각**이 접힌 줄에 뜬다 —
+  //  카드를 펼치지 않으면 몇 개 중 몇 개인지도, 지금 뭘 하는지도 안 보인다.
+  //
+  //  ★왜 여기냐: 이 함수 하나가 codex·openai 양쪽 어댑터의 detail 을 만들고, 그 detail 이
+  //   메인 채팅 카드·워커/에이전트 잡 카드 스텝에 **똑같이** 실린다. 즉 한 곳을 고치면
+  //   누가 세운 계획이든(메인·매니저·에이전트) 각자 자리에서 같은 요약으로 보인다.
+  //   따로 화면을 만들면 그 커버리지를 잃는다(메인 세션만 보이던 패널을 그래서 뺐다).
+  const todos = input.todos;
+  if (Array.isArray(todos) && todos.length > 0) {
+    const rows = todos.filter(
+      (t): t is Record<string, unknown> => t !== null && typeof t === "object",
+    );
+    if (rows.length > 0) {
+      const done = rows.filter((t) => t.status === "completed").length;
+      const cur = rows.find((t) => t.status === "in_progress");
+      // 진행 중 항목은 진행형(activeForm)이 있으면 그걸 — "지금 뭘 하나" 가 이 줄의 질문이다.
+      const curText =
+        cur === undefined
+          ? ""
+          : String(
+              (typeof cur.activeForm === "string" && cur.activeForm !== ""
+                ? cur.activeForm
+                : cur.content) ?? "",
+            );
+      return clip(
+        `할일 ${done}/${rows.length}${curText !== "" ? ` · 지금: ${curText}` : ""}`,
+      );
+    }
+  }
+
   const fmt = (k: string, v: unknown): string => {
     let val: string;
     if (typeof v === "string") val = v;

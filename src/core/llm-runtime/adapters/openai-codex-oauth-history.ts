@@ -211,8 +211,12 @@ export const parseCodexSse = async (
   // llm.delta fan-out — output_text.delta 누적 시점마다 증분 텍스트 호출(onChunk 선례).
   // 미지정 = no-op(회귀 0). coalesce·publish 는 호출부 책임(파서 순수성 보존).
   onTextDelta?: (delta: string) => void,
-  // 진전(progress) heartbeat — *실제 진전* 이벤트(output_text.delta·function_call 시작)
-  // 에만 호출. no-progress 타이머 reset 용(in_progress heartbeat 는 진전 아님 → 미호출).
+  // 진전(progress) heartbeat — *실제 진전* 이벤트에만 호출. no-progress 타이머 reset 용
+  // (in_progress heartbeat 는 진전 아님 → 미호출).
+  // 진전으로 세는 것: output_text.delta · function_call 시작 · **function_call 인자 델타**.
+  // ★인자 델타를 뺐다가 사고가 났다(2026-08-14) — 큰 인자를 만드는 도구(파일 여러 개를
+  //  히어독으로 쓰는 Bash, 큰 Write 등)가 5분 상한에 걸려 생성 중이던 5분을 통째로 버렸다.
+  //  모델이 뭘 내놓고 있으면 진전이다.
   // 미지정 = no-op(회귀 0).
   onProgress?: () => void,
   // externalTools 패스스루 스트리밍(2026-07-26, additive) — function_call lifecycle 의
@@ -318,6 +322,19 @@ export const parseCodexSse = async (
             typeof event.delta === "string"
           ) {
             currentToolCall.partialJson += event.delta;
+            // ★도구 인자 스트리밍도 **진전**이다 (2026-08-14). 종전엔 `output_item.added`
+            //  (도구 호출 *시작*)에서 한 번만 beat 하고, 그 뒤 인자가 아무리 길게 흘러도
+            //  타이머를 안 건드렸다. 그래서 **한 번에 큰 인자를 만드는 도구**가 5분
+            //  무진전 상한에 걸린다 — 모델은 열심히 생성하고 있는데 가드가 "죽었다" 고
+            //  판정해 컷하고, 같은 컨텍스트로 재개해 **그 5분을 통째로 버린다**.
+            //  실측(XL 벤치): chunks=14,555 · 마지막 청크 0초 전 · iter=306s 에서 발동 →
+            //  wall 178초가 434초가 됐다. 청크가 초당 48개씩 오는데 "무수신" 이었다.
+            //  ★이 모양은 흔하다. 파일 여러 개를 히어독 한 번으로 쓰는 `Bash`(모델이 실제로
+            //   가장 자주 고르는 방식), 큰 파일 하나의 `Write`, 긴 패치의 `Edit` — 전부
+            //   "beat 한 번 뒤 인자만 수천 토큰" 이다. 처음 드러난 계기는 하루만 살았던
+            //   EditFiles(여러 파일 한 호출)였지만, 그 도구를 되돌린 뒤에도 결함은 남는다.
+            //   ★도구가 바뀌면 스트림 모양이 바뀐다 — 그 스트림을 지켜보는 가드도 같이 봐야 한다.
+            onProgress?.();
             onToolCallDelta?.({
               index: currentToolCallIndex,
               argumentsDelta: event.delta,

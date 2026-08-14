@@ -28,11 +28,24 @@ import { getPaths } from "../paths.js";
 import { claudeAuthAvailable, providerAuthAvailable } from "./provider-availability.js";
 import { getAuthProvider } from "./auth-registry.js";
 import { CODEX_BASE_URL } from "./adapters/openai-codex-oauth-history.js";
+import { loadModelReasoning } from "../settings.js";
 
 /** provider → 최신순 모델 이름들(접두사 없음). 빈 배열 = 조회 실패/미인증. */
 export interface ModelCatalog {
   fetchedAt: number;
   models: Record<string, string[]>;
+  /**
+   * `provider:model` → 그 모델이 **설계된 추론 강도**(백엔드가 목록에 실어 내려주는
+   * `default_reasoning_level`). 2026-08-14 신설.
+   *
+   * ★이미 받고 있던 값을 버리고 있었다. codex `/models` 응답은 모델마다 이 필드를 주고
+   *  (실측: sol=low · terra/luna/5.5=medium) 정품 CLI 는 그 값을 명시해 보낸다. 우리는
+   *  아무것도 안 보내 백엔드 기본을 받았고 그건 카탈로그 기본과 달랐다 — "빠르라고 만든
+   *  모델"을 고른 적 없이 무겁게 굴리고 있었다(실측: 명시 low 로 바꾸니 출력 −37%).
+   *
+   * 옛 캐시 파일엔 이 키가 없다 — 부재는 "모른다"이고, 모르면 아무것도 안 보낸다(종전 동작).
+   */
+  reasoning?: Record<string, string>;
 }
 
 /**
@@ -82,7 +95,13 @@ const ensureLoaded = (): void => {
     if (typeof o.fetchedAt !== "number" || o.models === null || typeof o.models !== "object") {
       return;
     }
-    cache = { fetchedAt: o.fetchedAt, models: o.models };
+    cache = {
+      fetchedAt: o.fetchedAt,
+      models: o.models,
+      ...(o.reasoning !== null && typeof o.reasoning === "object"
+        ? { reasoning: o.reasoning }
+        : {}),
+    };
   } catch {
     // 캐시는 편의다 — 못 읽으면 정적 표로 간다(throw 0).
   }
@@ -146,8 +165,8 @@ export const catalogTierModel = (
 };
 
 /** anthropic `/v1/models` — 키 또는 구독 OAuth 토큰. 실패는 빈 배열(throw 0). */
-const discoverAnthropic = async (): Promise<string[]> => {
-  if (!claudeAuthAvailable()) return [];
+const discoverAnthropic = async (): Promise<DiscoverResult> => {
+  if (!claudeAuthAvailable()) return { slugs: [] };
   const key = (process.env.ANTHROPIC_API_KEY ?? "").trim();
   const oauth = (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim();
   const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
@@ -161,17 +180,23 @@ const discoverAnthropic = async (): Promise<string[]> => {
   if (!res.ok) throw new Error(`anthropic /v1/models ${res.status}`);
   const json = (await res.json()) as { data?: Array<{ id?: unknown; created_at?: unknown }> };
   const rows = Array.isArray(json.data) ? json.data : [];
-  return rows
-    .filter((r): r is { id: string; created_at?: string } => typeof r.id === "string")
-    // 응답이 이미 최신순이지만 순서에 기대지 않는다 — created_at 으로 직접 정렬.
-    .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
-    .map((r) => r.id);
+  // ★anthropic 은 추론 강도 등급 개념이 없다(adaptive thinking) → reasoning 없음.
+  //  "안 준 것" 과 "0" 을 구분한다 — 없으면 아무것도 안 보낸다.
+  return {
+    slugs: rows
+      .filter((r): r is { id: string; created_at?: string } => typeof r.id === "string")
+      // 응답이 이미 최신순이지만 순서에 기대지 않는다 — created_at 으로 직접 정렬.
+      .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+      .map((r) => r.id),
+  };
 };
 
 /** codex `<base>/models` — 구독 OAuth. 실패는 throw(호출자가 provider 별로 격리). */
-const codexModelsAt = async (clientVersion: string): Promise<string[]> => {
+const codexModelsAt = async (
+  clientVersion: string,
+): Promise<{ slugs: string[]; reasoning: Record<string, string> }> => {
   const auth = getAuthProvider("codex");
-  if (auth === undefined) return [];
+  if (auth === undefined) return { slugs: [], reasoning: {} };
   const token = await auth.getAccessToken();
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
@@ -190,11 +215,22 @@ const codexModelsAt = async (clientVersion: string): Promise<string[]> => {
   const url = `${CODEX_BASE_URL}/models?client_version=${encodeURIComponent(clientVersion)}`;
   const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`codex /models ${res.status}`);
-  const json = (await res.json()) as { models?: Array<{ slug?: unknown }> };
+  const json = (await res.json()) as {
+    models?: Array<{ slug?: unknown; default_reasoning_level?: unknown }>;
+  };
   const rows = Array.isArray(json.models) ? json.models : [];
-  return rows
-    .map((r) => (typeof r.slug === "string" ? r.slug : ""))
-    .filter((s) => s !== "");
+  const slugs: string[] = [];
+  const reasoning: Record<string, string> = {};
+  for (const r of rows) {
+    if (typeof r.slug !== "string" || r.slug === "") continue;
+    slugs.push(r.slug);
+    // ★백엔드가 말한 그대로 담는다 — 유효값 목록을 우리가 흉내 내지 않는다(모델마다 다르다:
+    //  sol 은 max·ultra 까지, 5.5 는 xhigh 까지). 이상한 값이면 백엔드가 400 으로 말한다.
+    if (typeof r.default_reasoning_level === "string" && r.default_reasoning_level !== "") {
+      reasoning[`codex:${r.slug}`] = r.default_reasoning_level;
+    }
+  }
+  return { slugs, reasoning };
   // ★여기서 거르지 않는다 — 캐시는 백엔드가 말한 그대로 둔다(레코드 보존).
   //  등급 후보에서 빼는 판단은 `catalogTierModel`(선택) 몫이다.
 };
@@ -206,12 +242,12 @@ const codexModelsAt = async (clientVersion: string): Promise<string[]> => {
  *
  * 탐침이 실패하면 조용히 넘어간다 — 감지 못 한 것이지 조회가 깨진 게 아니다.
  */
-const discoverCodex = async (): Promise<string[]> => {
+const discoverCodex = async (): Promise<DiscoverResult> => {
   const ours = await codexModelsAt(CODEX_CLIENT_VERSION());
   try {
     const probe = await codexModelsAt(CODEX_PROBE_VERSION);
-    const mine = new Set(ours);
-    codexHiddenByVersion = probe.filter((s) => !mine.has(s));
+    const mine = new Set(ours.slugs);
+    codexHiddenByVersion = probe.slugs.filter((s) => !mine.has(s));
     if (codexHiddenByVersion.length > 0) {
       console.warn(
         `[model-catalog] ⚠️ codex client_version=${CODEX_CLIENT_VERSION()} 이 낡았습니다 — ` +
@@ -226,6 +262,12 @@ const discoverCodex = async (): Promise<string[]> => {
   return ours;
 };
 
+/** provider 조회 결과 — 모델 목록 + (있으면) 모델별 설계 기본 추론 강도. */
+interface DiscoverResult {
+  slugs: string[];
+  reasoning?: Record<string, string>;
+}
+
 /**
  * 카탈로그 갱신 — **인증된 provider 만** 조회하고, 실패는 provider 단위로 격리한다.
  * 절대 throw 하지 않는다(시계가 이걸 부른다). 성공한 provider 만 캐시에 반영하고
@@ -234,15 +276,19 @@ const discoverCodex = async (): Promise<string[]> => {
 export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
   ensureLoaded();
   const next: Record<string, string[]> = { ...(cache?.models ?? {}) };
+  // ★reasoning 은 provider 실패 시에도 **직전 값을 잃지 않는다** — 목록과 같은 규칙
+  //  ("한 번 흔들렸다고 아는 것을 잃지 않는다").
+  const nextReasoning: Record<string, string> = { ...(cache?.reasoning ?? {}) };
   let changed = false;
-  const jobs: Array<[string, () => Promise<string[]>]> = [
+  const jobs: Array<[string, () => Promise<DiscoverResult>]> = [
     ["anthropic", discoverAnthropic],
     ["codex", discoverCodex],
   ];
   for (const [provider, fn] of jobs) {
     if (!providerAuthAvailable(provider)) continue;
     try {
-      const list = await fn();
+      const res = await fn();
+      const list = res.slugs;
       if (list.length === 0) continue;
       const before = (next[provider] ?? []).join(",");
       if (before !== list.join(",")) {
@@ -253,6 +299,10 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
         changed = true;
       }
       next[provider] = list;
+      for (const [k, v] of Object.entries(res.reasoning ?? {})) {
+        if (nextReasoning[k] !== v) changed = true;
+        nextReasoning[k] = v;
+      }
     } catch (e) {
       console.warn(
         `[model-catalog] ${provider} 조회 실패 — ${e instanceof Error ? e.message : String(e)} ` +
@@ -261,7 +311,11 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
     }
   }
   if (Object.keys(next).length === 0) return null;
-  cache = { fetchedAt: Date.now(), models: next };
+  cache = {
+    fetchedAt: Date.now(),
+    models: next,
+    ...(Object.keys(nextReasoning).length > 0 ? { reasoning: nextReasoning } : {}),
+  };
   if (changed || !existsSync(CATALOG_FILE())) {
     try {
       writeFileSync(CATALOG_FILE(), `${JSON.stringify(cache, null, 2)}\n`, "utf8");
@@ -283,4 +337,31 @@ export const __setCodexHiddenForTest = (slugs: string[]): void => {
 export const __setCatalogForTest = (c: ModelCatalog | null): void => {
   cache = c;
   loadedFromDisk = true;
+};
+
+/**
+ * 이 모델을 **얼마나 생각하게 할 것인가** — `provider:model` → reasoning effort.
+ *
+ * 우선순위: `settings.json models.reasoning` 덮어쓰기 → 카탈로그가 말한 설계 기본 →
+ * **없으면 undefined**(= 아무것도 안 보냄, 종전 동작).
+ *
+ * ★모르는 것에 추측값을 씌우지 않는다. 카탈로그가 없거나(미인증·조회 실패·옛 캐시) 그
+ *  모델에 값이 없으면 종전처럼 필드를 생략한다 — 백엔드 기본으로 가는 게, 우리가 지어낸
+ *  값으로 가는 것보다 낫다.
+ *
+ * ★anthropic 은 여기 안 들어온다(등급 개념 없음, adaptive thinking). 사용자가 굳이 적어도
+ *  claude 어댑터가 안 읽는다 — 그 어댑터의 축이 아니다.
+ */
+export const resolveReasoningEffort = (
+  provider: string,
+  model: string,
+  cwd: string = process.cwd(),
+): string | undefined => {
+  const key = `${provider}:${model}`;
+  const override = loadModelReasoning(cwd).get(key);
+  if (override !== undefined) return override;
+  ensureLoaded();
+  // ★신선도(MAX_AGE_MS)를 요구하지 않는다 — 모델의 설계 강도는 목록처럼 늙는 값이 아니고,
+  //  낡았다고 안 쓰면 오프라인에서 조용히 종전 동작(백엔드 기본)으로 되돌아간다.
+  return cache?.reasoning?.[key];
 };

@@ -103,6 +103,51 @@ export const check: RegressionCheck = {
         inc.ok ? "상세 로그 확인" : `누락 ${inc.missing.join(" ")}`,
       ),
     );
+
+    // ★도구 반복 상한(HARD)이 **조용히** 발동하던 것 (2026-08-14).
+    //  모델은 사용자에게 "도구 호출 한도에 도달했습니다" 라고 말한다 — 우리가 그 문구를
+    //  nudge 로 넣기 때문이다. 그런데 로그엔 그 사건이 한 줄도 없어서, "자꾸 한도에
+    //  걸린다"는 신고를 `[codex-turn-end]` 의 iter 값으로 역추론할 수밖에 없었다.
+    //  ★수치가 같이 실려야 한다 — 몇/몇 회인지(임계 대비 위치)와 무슨 도구를 반복했는지가
+    //   없으면 "정당하게 긴 작업" 과 "루프" 를 못 가른다(그게 유일하게 중요한 판단이다).
+    const cap = await sourceHas(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
+      [
+        /^\s*console\.warn\(\s*`\[codex-tool-cap\]/m, // 무조건 출력 + warn 레벨(드문 사건)
+        /iter=\$\{iteration\}\/\$\{CODEX_MAX_TOOL_ITERATIONS_HARD\}/, // 임계 대비 위치
+        /thread=\$\{input\.threadKey\}/, // 어느 대화인가(원격 진단의 유일한 좌표)
+        /상위\(\$\{top\}\)/, // 무엇을 반복했나 — 루프 판별
+        /^\s*console\.log\(\s*`\[codex-tool-progress\]/m, // 부딪히기 전에 커지는 게 보인다
+      ],
+    );
+    out.push(
+      assert(
+        "★도구 반복 상한은 수치와 함께 로그에 남는다(조용히 발동 금지)",
+        cap.ok,
+        cap.ok ? "cap 로그 5요소 확인" : `누락 ${cap.missing.join(" ")}`,
+      ),
+    );
+
+    // ★외부 도구 패스스루 종료도 남아야 한다 (2026-08-14). `[codex-turn-end]` 는
+    //  `toolCalls.length === 0` 분기 **안에서만** 찍히는데, 패스스루 break 는 그 앞이다 —
+    //  그래서 게이트웨이 로그의 turn-end 는 전부 "도구 0회" 턴뿐이었고, 도구를 돌려준
+    //  라운드는 한 줄도 안 남았다. 클라이언트가 "도구 호출 한도에 걸린다" 고 신고해도
+    //  우리 로그로는 라운드가 몇 번이었는지 **원리적으로 확인 불가**였다.
+    const ext = await sourceHas(
+      "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
+      [
+        /^\s*console\.log\(\s*`\[codex-ext-tools\]/m,
+        /thread=\$\{input\.threadKey\}/,
+        /호출\(\$\{externalMatched\.map\(/, // 무슨 도구를 돌려줬나
+      ],
+    );
+    out.push(
+      assert(
+        "★외부 도구 패스스루로 끝난 턴도 로그에 남는다(게이트웨이 라운드가 보인다)",
+        ext.ok,
+        ext.ok ? "패스스루 로그 확인" : `누락 ${ext.missing.join(" ")}`,
+      ),
+    );
     return out;
   },
 };

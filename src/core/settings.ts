@@ -64,6 +64,8 @@ export interface LoadedSettings {
     providers?: Record<string, unknown>;
     /** `models.limits` = 모델별 입력 크기 상한(관측값, 2026-07-26). loadModelInputLimits 참조. */
     limits?: Record<string, unknown>;
+    /** `models.reasoning` = 모델별 추론 강도 덮어쓰기(2026-08-14). loadModelReasoning 참조. */
+    reasoning?: Record<string, unknown>;
   };
   /**
    * `modules.disabled` = 사용자가 끈 `kind:plugin` 모듈 이름 목록(ADR
@@ -527,6 +529,49 @@ export const loadModelInputLimits = (
       if (val === null || typeof val !== "object" || Array.isArray(val)) continue;
       const n = (val as Record<string, unknown>).maxInputChars;
       if (typeof n === "number" && Number.isInteger(n) && n > 0) out.set(key, n);
+    }
+  }
+  return out;
+};
+
+/**
+ * 모델별 **추론 강도**(reasoning effort) 덮어쓰기 — settings.json `models.reasoning`.
+ *
+ * ```json
+ * { "models": { "reasoning": { "codex:gpt-5.6-sol": "medium" } } }
+ * ```
+ *
+ * ★기본값은 여기 없다 — **모델 카탈로그가 말해준다**(`default_reasoning_level`). codex
+ *  백엔드는 모델마다 설계된 기본을 목록에 실어 내려주고(실측: sol=low · terra/luna/5.5=
+ *  medium), 정품 CLI 는 그 값을 그대로 명시해 보낸다. 우리는 종전에 **아무것도 안 보내서**
+ *  백엔드 기본을 받았고, 그건 카탈로그 기본과 달랐다(실측: 명시 low 로 바꾸니 출력 −37%).
+ *  즉 우리는 "빠르게 쓰라고 만든 모델"을 더 무겁게 굴리고 있었다 — 고른 적 없이.
+ *
+ * ★그래서 모델별 표를 코드에 박지 않는다. sol=low·terra=medium 처럼 **이미 갈려 있고**
+ *  모델이 늘 때마다 손으로 따라가야 하는 목록이 된다([[feedback_hand_maintained_lists]]).
+ *  벤더가 내려주는 값을 쓰면 새 모델이 나와도 저절로 맞는다. 이 설정은 그 값을 **덮고
+ *  싶을 때만** 쓰는 손잡이다(부재 = 카탈로그 기본).
+ *
+ * ★키는 `adapter:model`(풀 표기 그대로) — `models.limits` 와 같은 모양이다. 값은 문자열
+ *  하나. **유효값 목록을 여기 박지 않는다**: 지원 강도도 모델마다 다르고(sol 은 max·ultra
+ *  까지, 5.5 는 xhigh 까지) 카탈로그가 알려준다. 코어는 "문자열이면 전달" 만 하고, 안 되는
+ *  값은 백엔드가 400 으로 말한다 — 우리가 흉내 낸 목록으로 멀쩡한 값을 막는 것보다 낫다.
+ *
+ * ★claude 는 대상이 아니다(사용자 지적, 2026-08-14). Anthropic 은 effort 등급이 아니라
+ *  adaptive thinking 이라 대응 개념이 없다. 여기 적어도 claude 어댑터는 안 읽는다 —
+ *  **조용히 무시되는 게 아니라 애초에 그 어댑터의 축이 아니다.** 원칙 #2("모든 기능 LLM
+ *  무관")와 어긋나지 않는다: 무관해야 하는 것은 *의도*(이 작업을 얼마나 깊이 생각할까)이지
+ *  *배선*(reasoning.effort 라는 필드)이 아니다. 의도 축은 이미 모델 프로파일이 들고 있다.
+ */
+export const loadModelReasoning = (
+  cwd: string = process.cwd(),
+): Map<string, string> => {
+  const out = new Map<string, string>();
+  for (const layer of loadSettingsLayers(cwd)) {
+    const r = layer.models?.reasoning;
+    if (r === null || typeof r !== "object" || Array.isArray(r)) continue;
+    for (const [key, val] of Object.entries(r as Record<string, unknown>)) {
+      if (typeof val === "string" && val.trim() !== "") out.set(key, val.trim());
     }
   }
   return out;

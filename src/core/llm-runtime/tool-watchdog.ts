@@ -95,6 +95,44 @@ const toolHardMs = (): number | null => {
  */
 const hardExempt = (tool: string): boolean => isLongRunningByDesign(tool);
 
+/**
+ * 사용자에게 나가는 "도구가 오래 걸린다" 통지 문구 — **로그와 같은 자리에서 만든다**.
+ *
+ * ★2026-08-14 사용자 신고: "도구호출 한도는 자꾸 왜 걸리는거지". 실제로 걸린 한도는
+ *  하나도 없었다(전 기간 상한 이벤트 0건). 사용자가 본 것은 이 경고였고, 문구가
+ *  **"멈춰 있어요 … 확인해주세요"** 라 한도에 걸려 중단된 것처럼 읽혔다.
+ *
+ * ★왜 여기냐: 2026-08-12 에 "오래 걸리는 건 실패가 아니다" 로 **로그 문구만** 고치고
+ *  채널 푸시(worker-jobs.ts)를 안 봤다. 같은 판단이 두 곳에 있으면 한쪽만 늙는다 —
+ *  그리고 늙은 쪽이 하필 **사용자가 실제로 읽는 쪽**이었다. 판정도 로그도 통지도 한 자리.
+ *
+ * 문구 규칙 셋:
+ *  ① **경과 보고지 판정이 아니다** — "멈췄다" 고 단정하지 않는다.
+ *  ② **정상이 먼저** — 흔한 쪽(그냥 오래 걸림)을 앞에, 드문 원인(권한 다이얼로그)을 뒤에.
+ *     드문 원인을 앞세우면 그게 진단으로 읽힌다(이번 신고의 기전).
+ *  ③ **되돌릴 수단을 준다** — 기다릴지 끊을지는 사용자가 정한다.
+ */
+export const formatToolSlowNotice = (input: {
+  readonly tool: string;
+  readonly ms: number;
+  /** 워커 통지면 잡 라벨. 없으면 메인 턴 통지. */
+  readonly jobLabel?: string;
+}): string => {
+  const secs = Math.round(input.ms / 1000);
+  const subject =
+    input.jobLabel === undefined
+      ? `도구 '${input.tool}' 이(가)`
+      : `백그라운드 작업 '${input.jobLabel}' 의 도구 '${input.tool}' 이(가)`;
+  // 조사는 레버마다 박는다 — "cancel_worker 으로" 는 틀린 한국어다(받침 ㄹ → "로").
+  const stop = input.jobLabel === undefined ? "`/stop` 으로" : "`cancel_worker` 로";
+  return (
+    `⏳ ${subject} ${secs}초째 실행 중입니다. ` +
+    `오래 걸리는 작업이면 정상이니 그대로 두셔도 됩니다 — 끝나면 알려드려요. ` +
+    `안 끝나는 것 같으면 OS 권한 요청 다이얼로그가 떠 있는지, 외부 MCP 도구면 대상 앱이 켜져 있는지 확인해 보시고, ` +
+    `${stop} 중단하실 수 있어요.`
+  );
+};
+
 export interface ToolWatchInput {
   readonly channel: string;
   readonly threadKey: string;

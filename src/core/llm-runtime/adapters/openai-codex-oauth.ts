@@ -85,6 +85,7 @@ import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabiliti
 import { getPaths } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
 import { loadModelInputLimits } from "../../settings.js";
+import { resolveReasoningEffort } from "../model-catalog.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -583,7 +584,7 @@ export const runOpenAiCodex = async (
     "file-ops",
   );
   // V7.7 — 태스크 관리 (TodoWrite 동등). claude 는 SDK builtin, codex 만 등록.
-  const todoBridge = await adaptClaudeMcpServer(createTodoMcpServer(), "todo");
+  const todoBridge = await adaptClaudeMcpServer(createTodoMcpServer(input.threadKey), "todo");
   // 세션 이름 도구(2026-08-07) — claude/openai 와 동일 의미 등록(#2).
   const sessionToolsBridge = await adaptClaudeMcpServer(
     createSessionToolsMcpServer(input.threadKey),
@@ -1014,6 +1015,19 @@ export const runOpenAiCodex = async (
   //  ★이벤트를 iteration 마다 쏘지 않고 턴 안에서 합산한다 — 관측이 스스로 낭비가 되면
   //   안 된다(SYSTEM.md §1). 턴당 정확히 1건.
   const usageTotals = { iterations: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
+  /** 캐시 적중 20% 미만 iteration 수 — 붕괴는 합계 평균에 묻힌다(위 주석). */
+  let cacheCollapses = 0;
+  /** 턴 끝 한 줄 — 붕괴가 있었을 때만 말한다(정상은 침묵). */
+  const logCacheCollapses = (): void => {
+    if (cacheCollapses === 0 || usageTotals.iterations === 0) return;
+    const missed = usageTotals.inputTokens - usageTotals.cachedTokens;
+    console.warn(
+      `[cache-collapse] ${model} ${cacheCollapses}/${usageTotals.iterations} iteration 이 ` +
+        `캐시를 못 탔습니다(적중<20%) — 정가 지불 ${missed.toLocaleString()}토큰. ` +
+        `우리 프리픽스(instructions·tools)는 바이트 동일이므로 백엔드 축출 쪽. ` +
+        `원시 곡선: CODEX_CACHE_CURVE=1`,
+    );
+  };
   let iteration = 0;
   // llm.activity — 어댑터 로컬 단조 시퀀스 (iteration 가로질러 누적). nonce 아님.
   let activitySeq = 0;
@@ -1233,6 +1247,17 @@ export const runOpenAiCodex = async (
       //   0 → 텍스트 슬롯 최대)와도 'none' 이 정확히 일치. 지원값: none/low/medium/high/xhigh.
       if (finalFlushRequested) {
         body.reasoning = { effort: "none" };
+      } else {
+        // ★일반 턴의 추론 강도 — **모델이 설계된 값**을 명시해 보낸다 (2026-08-14).
+        //  종전엔 이 필드를 아예 안 보내 백엔드 기본을 받았는데, 그건 모델 카탈로그가
+        //  말하는 기본과 **달랐다**: codex `/models` 는 모델마다 `default_reasoning_level`
+        //  을 주고(실측 sol=low · terra/luna/5.5=medium) 정품 CLI 는 그걸 그대로 보낸다.
+        //  그래서 우리는 "빠르라고 만든 모델"(sol)을 더 무겁게 굴리고 있었다 — 고른 적
+        //  없이. 실측(XL): 명시 low 로 바꾸니 출력 7,229 → 4,567(−37%).
+        //  ★값이 없으면(미인증·조회 실패·옛 캐시·모르는 모델) **여전히 안 보낸다** —
+        //   모르는 것에 추측값을 씌우는 것보다 종전 동작이 낫다.
+        const effort = resolveReasoningEffort("codex", model, input.cwd);
+        if (effort !== undefined) body.reasoning = { effort };
       }
 
       if (process.env.CODEX_DEBUG_INPUT === "1") {
@@ -1631,6 +1656,27 @@ export const runOpenAiCodex = async (
         usageTotals.inputTokens += usage.inputTokens;
         usageTotals.outputTokens += usage.outputTokens;
         usageTotals.cachedTokens += usage.cachedTokens ?? 0;
+        // ★캐시 붕괴 계수 (2026-08-13) — 턴 합계(84%)만 보면 "왜 낮은지" 를 못 가른다.
+        //  실측 곡선(XL 15 iteration): 96·14·94·92·13·81·89·82·10·79·10·9·98·94·62%.
+        //  낮은 회차의 `cached` 는 **매번 정확히 3,456** 이었다 — 맨 앞 최소 조각만 걸린 것.
+        //  같은 턴의 `instructions`(24,800자)·`tools`(21,689자)는 **바이트 동일**했으므로
+        //  우리 프리픽스는 안정적이다 → 원인은 백엔드 쪽(축출/파티션)이지 우리 payload 가
+        //  아니다. `prompt_cache_key`(threadKey)를 고정해 보내는데도 1/3 이 못 탄다.
+        //  ★관측이 스스로 낭비가 되면 안 되므로(SYSTEM.md §1) iteration 마다 찍지 않고
+        //   **턴당 한 줄**로 센다. 원시 곡선이 필요하면 CODEX_CACHE_CURVE=1.
+        const hitPct =
+          usage.inputTokens > 0
+            ? ((usage.cachedTokens ?? 0) / usage.inputTokens) * 100
+            : 0;
+        if (hitPct < 20) cacheCollapses += 1;
+        if (process.env.CODEX_CACHE_CURVE === "1") {
+          console.log(
+            `[cache-curve] ${model} i${usageTotals.iterations} ` +
+              `in=${usage.inputTokens.toLocaleString()} cached=${(usage.cachedTokens ?? 0).toLocaleString()} ` +
+              `적중=${Math.round(hitPct)}% req=${lastReqBytes.total.toLocaleString()}자` +
+              `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()})`,
+          );
+        }
       }
       // 이 iteration 이 흘린 텍스트를 kind:"text" 로 닫는다 — "iteration 확정 완료"
       // 시점(재시도 루프 아님, 여기 도달 = SSE 완전 소비·결과 확정)에서, 이번 iteration
@@ -1718,6 +1764,18 @@ export const runOpenAiCodex = async (
               argumentsJson: tc.partialJson === "" ? "{}" : tc.partialJson,
             });
           }
+          // ★이 종료는 로그에 남아야 한다 (2026-08-14). `[codex-turn-end]` 는 **아래
+          //  `toolCalls.length === 0` 분기 안에서만** 찍힌다 — 이 break 는 그 앞이라
+          //  패스스루로 끝난 턴은 **로그에 한 줄도 안 남았다.** 그 결과 게이트웨이 로그에
+          //  보이는 turn-end 는 전부 "도구 0회" 턴뿐이고, 정작 도구를 돌려준 라운드는
+          //  통째로 안 보였다 — 클라이언트가 도구 호출 한도에 걸린다는 신고를 우리 로그로는
+          //  **원리적으로 확인할 수 없었다**(게이트웨이 사용자는 원격이라 로그가 유일한 면).
+          console.log(
+            `[codex-ext-tools] 외부 도구 ${externalMatched.length}건 반환(실행 안 함) — ` +
+              `thread=${input.threadKey} model=${model} iter=${iteration} ` +
+              `호출(${externalMatched.map((tc) => tc.name).join(",")}) ` +
+              `선행텍스트=${text.length}자 — 루프는 호출자(게이트웨이 클라이언트) 몫입니다.`,
+          );
           break;
         }
       }
@@ -1842,6 +1900,24 @@ export const runOpenAiCodex = async (
       // 가 종료를 보장 → 무한 루프 0.
       if (iteration === CODEX_MAX_TOOL_ITERATIONS_HARD - 1) {
         finalFlushRequested = true;
+        // ★로그를 남긴다 (2026-08-14). 종전엔 이 백스톱이 **아무 줄도 안 찍고** 발동했다 —
+        //  모델은 사용자에게 "도구 호출 한도에 도달했습니다" 라고 말하는데(이 nudge 문구를
+        //  그대로 옮겨 적는다) 로그엔 그 사건이 없어서, "자꾸 한도에 걸린다"는 신고를
+        //  `[codex-turn-end]` 의 iter 값으로 **역추론**할 수밖에 없었다. 판정 수치를 싣는다:
+        //  어느 스레드가 · 몇 회에 · 무슨 도구를 반복하다 걸렸는지(상위 5종).
+        const freq = new Map<string, number>();
+        for (const n of toolNamesSinceText) freq.set(n, (freq.get(n) ?? 0) + 1);
+        const top = [...freq.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([n, c]) => `${n}×${c}`)
+          .join(",");
+        console.warn(
+          `[codex-tool-cap] 도구 반복 상한 도달 — iter=${iteration}/${CODEX_MAX_TOOL_ITERATIONS_HARD} ` +
+            `thread=${input.threadKey} model=${model} 마지막텍스트이후=${toolCallsSinceText}회` +
+            `${top !== "" ? ` 상위(${top})` : ""} — 다음 턴은 tools:[] 로 마무리만 시킵니다. ` +
+            `정당하게 긴 작업이면 CODEX_MAX_TOOL_ITERATIONS_HARD 를 올리세요(기본 150).`,
+        );
         // 2026-06-11 (Fix 2) — flush nudge 에도 사용자 원 입력 재주입.
         inputArray.push({
           type: "message",
@@ -1869,6 +1945,12 @@ export const runOpenAiCodex = async (
         lastCheckpointIteration !== iteration
       ) {
         lastCheckpointIteration = iteration;
+        // 25·50·75… 마다 한 줄. 상한(150)에 부딪히기 **전에** 커지는 턴이 보여야 한다 —
+        // 이 줄이 없으면 진단 재료가 "걸렸다/안 걸렸다" 둘뿐이다. 25회 간격이라 소음 아님.
+        console.log(
+          `[codex-tool-progress] iter=${iteration}/${CODEX_MAX_TOOL_ITERATIONS_HARD} ` +
+            `thread=${input.threadKey} model=${model} — 계속 진행 nudge.`,
+        );
         inputArray.push({
           type: "message",
           role: "user",
@@ -2232,7 +2314,7 @@ export const runOpenAiCodex = async (
           : `codex-${randomBytes(16).toString("hex")}`,
       model,
       replyToTrigger,
-      usage: withTurnTotals(finalUsage, usageTotals),
+      usage: (logCacheCollapses(), withTurnTotals(finalUsage, usageTotals)),
       externalToolCalls: pendingExternalToolCalls,
     };
   }
@@ -2309,6 +2391,6 @@ export const runOpenAiCodex = async (
         : `codex-${randomBytes(16).toString("hex")}`,
     model,
     replyToTrigger,
-    usage: withTurnTotals(finalUsage, usageTotals),
+    usage: (logCacheCollapses(), withTurnTotals(finalUsage, usageTotals)),
   };
 };

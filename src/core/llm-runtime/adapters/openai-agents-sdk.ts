@@ -300,7 +300,7 @@ export const runOpenAi = async (
           }),
           "file-ops",
         ),
-        await adaptClaudeMcpServer(createTodoMcpServer(), "todo"),
+        await adaptClaudeMcpServer(createTodoMcpServer(input.threadKey), "todo"),
         // 세션 이름 도구(2026-08-07) — claude/codex 와 동일 의미 등록(#2).
         await adaptClaudeMcpServer(
           createSessionToolsMcpServer(input.threadKey),

@@ -1033,6 +1033,8 @@ import {
   canonicalSessionChannel,
   notifySessionThreadKey,
 } from "../store/sessions.js";
+// 통지 문구는 판정과 같은 자리(tool-watchdog)에서 만든다 — 두 곳에 두면 한쪽만 늙는다.
+import { formatToolSlowNotice } from "./llm-runtime/tool-watchdog.js";
 
 /**
  * notifyDest 없는 워커(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
@@ -1203,7 +1205,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
       void deliverOutbound({
         channel: "telegram",
         target: chatId,
-        text: `⏳ 도구 '${tool}' 이(가) ${secs}초+ 응답이 없어요. 느린 것일 수도, 멈춘 것일 수도 있습니다 — 기다리시거나 \`/stop\` 으로 중단하실 수 있어요(오래 지나면 자동으로 끊깁니다).`,
+        text: formatToolSlowNotice({ tool, ms: secs * 1000 }),
         label: "tool-slow",
         notice: true, // 인프라 통지 — 비서 발화 아님.
         observeThreadKey: tk,
@@ -1228,7 +1230,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
     void deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
-      text: `⏳ 백그라운드 작업 '${job.label}' 이(가) 도구 '${tool}'에서 ${sec}초+ 멈춰 있어요. OS 권한 요청 다이얼로그가 떠 있는지, 또는 외부 MCP 도구면 대상 앱(예: 에디터)이 실행 중인지 확인해주세요 (아니면 도구가 느리거나 멈춘 것일 수 있어요).`,
+      text: formatToolSlowNotice({ tool, ms: sec * 1000, jobLabel: job.label }),
       label: "worker",
       notice: true, // 인프라 통지 — 비서 발화 아님(렌더 구분).
       observeThreadKey: notifySessionThreadKey(job.threadKey),

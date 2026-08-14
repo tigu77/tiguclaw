@@ -131,6 +131,7 @@ import {
   withSdkSubagentsBlocked,
 } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
+import { resolveReasoningEffort } from "../model-catalog.js";
 import {
   collectExternalToolCalls,
   createExternalToolsMcpServer,
@@ -857,6 +858,28 @@ export const runClaude = async (
     ...(toolsNone ? { tools: [] as string[] } : {}),
     // facade 가 provider:model 에서 추출해 주입. 미지정 시 SDK 디폴트.
     ...(input.model !== undefined ? { model: input.model } : {}),
+    // ★추론 강도 — **사용자가 명시했을 때만** 보낸다 (2026-08-14).
+    //
+    //  기준은 "정품 클라이언트와 같은가" 다(사용자 정리). codex 는 정품 CLI 가 카탈로그의
+    //  `default_reasoning_level` 을 **명시해서** 보내는데 우리는 안 보내 백엔드 기본으로
+    //  갈렸다 — 그래서 맞춰야 했다. claude 는 정품(Claude Code)도 이 SDK 를 쓰고 그냥
+    //  기본으로 도니, **안 보내는 것이 이미 같은 것**이다. 그래서 기본값을 만들지 않는다.
+    //
+    //  그럼에도 손잡이는 양쪽에 있어야 한다 — `models.reasoning` 이 codex 에만 먹히면
+    //  "설정을 적었는데 어댑터를 바꾸니 무시된다" 가 되고, 그건 원칙 #2("모든 기능 LLM
+    //  무관") 위반이다. 무관해야 하는 건 *의도*(얼마나 깊이 생각할까)지 배선이 아니다.
+    //
+    //  ★codex 와 **같은 함수**를 쓴다(resolveReasoningEffort): 카탈로그에 anthropic
+    //   기본값이 없으므로 자연히 "덮어쓰기가 있을 때만" 이 된다 — 같은 판단을 두 곳에
+    //   따로 적지 않는다. SDK 유효값은 low|medium|high|xhigh|max.
+    ...(((): Record<string, unknown> => {
+      const e = resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
+      // ★유효값 목록을 우리가 들고 있지 않다(codex 와 같은 규칙) — 지원 등급은 벤더가
+      //  모델마다 늘리고(xhigh·max 가 그렇게 왔다), 우리가 흉내 낸 목록은 **새 등급이
+      //  나올 때 멀쩡한 값을 막는다**. 문자열 그대로 넘기고 판정은 API 에 맡긴다.
+      //  그래서 SDK 의 좁은 union 대신 느슨한 형태로 펼친다.
+      return e === undefined ? {} : { effort: e };
+    })()),
     mcpServers: {
       ...leanMcpServers,
       ...externalMcpServers,

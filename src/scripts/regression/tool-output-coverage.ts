@@ -23,7 +23,11 @@ const MCP_TOOLS = [
   "list_workers",
 ];
 /** 결과가 다른 블록과 중복이라 일부러 뺀 것들. */
-const EXCLUDED = ["Edit", "Write", "ExitPlanMode", "prompt_options", "update_todos", "KillShell"];
+// ★update_todos 는 2026-08-14 에 제외에서 풀렸다 — detail 이 요약이 되면서 "중복" 근거가
+//  사라졌다(접힌 줄=요약 / 펼친 줄=전체 목록). 여기 남겨두면 펼쳐도 빈 카드가 된다.
+const EXCLUDED = ["Edit", "Write", "ExitPlanMode", "prompt_options", "KillShell"];
+/** 반대 방향도 지킨다 — 요약이 있는 도구는 **펼칠 내용이 있어야** 한다. */
+const MUST_HAVE_OUTPUT = ["update_todos", "TodoWrite"];
 
 export const check: RegressionCheck = {
   name: "tool-output-coverage",
@@ -40,6 +44,11 @@ export const check: RegressionCheck = {
       assert("★MCP 도구에 출력이 붙는다(펼칠 내용이 생긴다)", missing.length === 0, `누락=[${missing.join(",")}]`),
       assert("처음 보는 도구도 기본 포함(목록 관리 불필요)", buildActivityOutput("brand_new_tool_xyz", "결과") !== undefined, "기본 포함"),
       assert("중복 블록을 가진 도구는 제외 유지", leaked.length === 0, `누출=[${leaked.join(",")}]`),
+      assert(
+        "★할일 도구는 펼칠 내용이 있다(접힌 줄=요약이므로 중복 아님)",
+        MUST_HAVE_OUTPUT.every((n) => buildActivityOutput(n, "할일 1/3 완료:\n[x] a") !== undefined),
+        MUST_HAVE_OUTPUT.map((n) => `${n}=${buildActivityOutput(n, "x") !== undefined}`).join(" "),
+      ),
       assert("빈 결과는 출력 없음(빈 카드 방지)", buildActivityOutput("read_memory", "") === undefined, "빈 결과"),
       assert(
         "긴 출력은 캡으로 묶인다(페이로드 폭주 0)",

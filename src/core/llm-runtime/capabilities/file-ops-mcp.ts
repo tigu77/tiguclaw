@@ -1291,7 +1291,7 @@ const makeFileOpsTools = (
   // 부분 교체. old_string 0/다수 매칭 시 명확 에러 (replace_all=false 디폴트).
   const editTool = tool(
     "Edit",
-    "파일 내 부분 문자열 교체. old_string 이 0 또는 다수 매칭이면 (replace_all=false 디폴트 시) reject.",
+    "파일 안의 부분 문자열 교체. old_string 이 0 또는 다수 매칭이면 (replace_all=false 디폴트 시) reject.",
     {
       path: z.string().min(1),
       old_string: z.string().min(1),

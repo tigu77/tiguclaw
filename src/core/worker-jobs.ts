@@ -1340,6 +1340,29 @@ const buildRawNotice = (job: WorkerJobRecord): string => {
  * 이 함수는 done 에만 쓰인다(호출 전 status==="done" 보장). 방어로 비-done 도 일반 문구 반환.
  */
 const buildCompletionPrompt = (job: WorkerJobRecord): string => {
+  // ★취소도 메인을 거친다 (2026-08-15, 사용자 확정: "티구클로에서는 메인 비서가 아는 게 맞다").
+  //
+  //  종전엔 `failed` 와 한 분기로 묶여 LLM 무경유 raw 통지로 직행했다. 그 분기의 근거 셋 중
+  //  결정적인 것은 **모델 풀 소진**(codex 429 + claude idle)이었다 — 같은 죽은 풀로 재주입
+  //  turn 을 돌리면 통지마저 침묵한다. 그런데 **취소엔 그 전제가 안 걸린다**: 사용자가 방금
+  //  스스로 한 행동이고 그 순간 대화가 살아 있다. 나머지 근거도 안 맞는다 — 실패는 원인
+  //  문자열이 전부지만 취소는 비서가 보탤 게 있다(대안 제시·계획 수정).
+  //
+  //  ★그래서 `failed` 와 묶은 것이 **과잉 일반화**였다. 취소를 메인이 모르면 이후 턴에서
+  //   "그 작업 진행 중" 이라 말하거나 그 결과를 전제로 얘기를 잇는다.
+  //
+  //  ★raw 안전망은 그대로다 — `done` 과 같은 delivered 추적을 타므로 재주입이 침묵해도
+  //   `buildRawNotice` 가 도착한다(그게 원래 근거가 지키던 것). 통지 미도착 0 유지.
+  if (job.status === "cancelled") {
+    return (
+      `〔백그라운드 작업 취소 알림 — 사용자에게 짧게 확인해 주세요〕\n` +
+      `작업: "${job.label}"\n` +
+      `사용자가 이 작업을 취소했습니다(실패가 아닙니다).\n` +
+      `〔/알림〕\n\n` +
+      `취소됐음을 한 줄로 알리고, 이 작업에 걸려 있던 후속이 있으면 어떻게 할지 물어보세요. ` +
+      `이미 한 일을 되돌리거나 새로 시작하지 마세요.`
+    );
+  }
   if (job.status !== "done") {
     // 도달 불가(호출자 가드) — 방어. raw 통지로 가야 할 케이스가 새면 가시화되게 명시 문구.
     return (
@@ -1361,11 +1384,14 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
  *
  * 흐름 (status 분기 — 통지 미도착 0 보장):
  *  1) result/error 로 레지스트리 마킹 (markDone/markFailed/cancelled 보존).
- *  2-failed/cancelled) LLM *무경유* raw 아웃바운드 직행(reacquireReply + buildRawNotice).
+ *  2-failed) LLM *무경유* raw 아웃바운드 직행(reacquireReply + buildRawNotice).
  *     워커 실패의 흔한 원인이 모델 풀 소진(429+idle)이라, 같은 죽은 풀로 통지 turn 을 돌리면
  *     통지마저 침묵하기 때문(2026-06-22 실측). humanizeWorkerError 로 actionable. 메인 thread/
  *     직렬 큐 미경유(폴러 차단 0). recoverInterruptedJobs 의 raw 통지와 동형.
- *  2-done) 합성 user-turn 으로 메인 핸들러 재주입(W-I1 — 결과는 맥락 입혀 보고). 재주입을
+ *  2-done/cancelled) 합성 user-turn 으로 메인 핸들러 재주입(W-I1 — 결과는 맥락 입혀 보고).
+ *     ★취소가 여기 있는 이유(2026-08-15): raw 직행의 근거는 "모델 풀이 죽어 통지마저 침묵"
+ *     인데 취소엔 그 전제가 없다(사용자가 방금 한 행동). 메인이 모르면 이후 턴에서 "진행 중"
+ *     이라 말한다. 안전망은 delivered 추적으로 그대로 붙는다. 재주입을
  *     await 해 delivered(실제 send 성공) 추적 → 미도달 시 raw 안전망(buildRawNotice)으로
  *     결과를 결정 전달. mainHandler(serializedHandler)가 *자체* enqueueThreadTurn 단일 직렬화
  *     하므로 직접 호출(이중 enqueue deadlock 0, 60d1777 유지).
@@ -1413,8 +1439,8 @@ export const onWorkerComplete = async (
     sessionThreadKey: notifySessionThreadKey(job.threadKey),
   });
 
-  // ─── 실패/취소 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
-  // failed/cancelled 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
+  // ─── 실패 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
+  // failed 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
   // 원인에 보탤 material 이 없으며(원인 문자열이 곧 전부), (c) 워커 실패의 흔한 원인이 모델 풀
   // 소진(codex 429 + claude idle, 2026-06-22 실측)이라 *같은 죽은 풀로 재주입 turn 을 돌리면
   // 통지마저 침묵* 한다. → recoverInterruptedJobs 와 동형으로 raw 아웃바운드 직행해 모델
@@ -1422,7 +1448,9 @@ export const onWorkerComplete = async (
   // 가 "왜·언제 다시"(예 429 → ~N분 후 리셋)를 담아 actionable(임무 §2). 채널 직행이라 메인
   // thread/직렬 큐를 안 타 폴러·메인루프 차단 0(fire-and-forget 격리 유지). 본 함수는 워커의
   // 분리된 promise 안에서 await 되므로 데몬 메인루프와 무관.
-  if (job.status !== "done") {
+  // ★`failed` 만 raw 직행이다 (2026-08-15). `cancelled` 는 아래 재주입 경로로 간다 —
+  //  근거는 buildCompletionPrompt 의 취소 분기 주석에.
+  if (job.status !== "done" && job.status !== "cancelled") {
     try {
       await baseReply(buildRawNotice(job));
     } catch (e) {
@@ -1434,7 +1462,7 @@ export const onWorkerComplete = async (
     return;
   }
 
-  // ─── 성공(done) — 메인 인격 재주입 + raw 안전망 ─────────────────────────────────
+  // ─── 성공(done)·취소(cancelled) — 메인 인격 재주입 + raw 안전망 ──────────────────
   // 성공 결과는 메인(같은 SYSTEM/AGENT 인격 + thread history)이 맥락 입혀 보고해야 가치가
   // 산다(W-I1). 단 재주입 turn 도 모델 풀 소진 시 침묵할 수 있으므로 delivered 추적 + raw
   // 안전망으로 "결과는 무조건 전달" 을 보장한다(통지 미도착 0).

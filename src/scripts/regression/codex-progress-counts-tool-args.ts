@@ -44,9 +44,14 @@ const run = async (): Promise<Assertion[]> => {
     const deltas = 200;
     const events: unknown[] = [
       { type: "response.output_item.added", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "Bash", arguments: "" } },
-      ...Array.from({ length: deltas }, () => ({
+      // ★길이를 섞는다 (2026-08-15, 적대 검토 B3). 40자 균일이면
+      //  `if (delta.length >= 40) onProgress?.()` 같은 **크기 문턱**이 살아남는다.
+      //  실제 인자 델타는 토큰 단위라 짧은 조각이 흔하고, 문턱이 있으면 사고가 그대로 재발한다.
+      //  ★"실제 델타가 몇 자인지" 는 실측 안 했다 — 그래서 길이를 특정하지 않고 **섞는다**
+      //   (1자부터 40자까지). 모르는 값을 픽스처에 못 박지 않는다.
+      ...Array.from({ length: deltas }, (_, i) => ({
         type: "response.function_call_arguments.delta",
-        delta: "x".repeat(40),
+        delta: "x".repeat((i % 40) + 1),
       })),
       { type: "response.output_item.done", item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "Bash", arguments: "{}" } },
       { type: "response.completed", response: { id: "resp_1" } },

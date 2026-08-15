@@ -20,5 +20,16 @@ process.stdout.write(
     anthropic: resolveReasoningEffort("anthropic", "claude-opus-5", home) ?? null,
     // 모르는 모델
     unknown: resolveReasoningEffort("codex", "gpt-9-future", home) ?? null,
+    // ★캐시에 든 **쓰레기 값**(숫자·객체·null)이 새어 나오나 (적대 검토 B1).
+    //  settings 쪽은 문자열만 통과시키는데 디스크 캐시는 무검증이었다.
+    junkNum: resolveReasoningEffort("codex", "junk-num", home) ?? null,
+    junkObj: resolveReasoningEffort("codex", "junk-obj", home) ?? null,
+    junkNull: resolveReasoningEffort("codex", "junk-null", home) ?? null,
+    // ★빈 문자열·공백 (적대 검토 F8) — settings 픽스처엔 `""` 가 있는데 카탈로그엔 없어서,
+    //  "같은 판정으로 통일했다" 는 말이 절반만 참이었다. 같은 입력을 양쪽에 넣는다.
+    junkEmpty: resolveReasoningEffort("codex", "junk-empty", home) ?? null,
+    junkBlank: resolveReasoningEffort("codex", "junk-blank", home) ?? null,
+    // ★홈 vs 프로젝트 우선순위 (적대 검토 B2) — 같은 키를 양쪽에 두면 프로젝트가 이겨야 한다.
+    layered: resolveReasoningEffort("codex", "gpt-5.6-terra", proj) ?? null,
   }),
 );

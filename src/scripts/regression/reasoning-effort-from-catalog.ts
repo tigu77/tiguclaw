@@ -24,7 +24,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { loadModelReasoning } from "../../core/settings.js";
+import { mergeReasoning } from "../../core/llm-runtime/model-catalog.js";
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -107,11 +109,28 @@ const run = async (): Promise<Assertion[]> => {
       JSON.stringify({
         fetchedAt: Date.now(),
         models: { codex: ["gpt-5.6-sol"] },
-        reasoning: { "codex:gpt-5.6-sol": "low" },
+        reasoning: {
+          "codex:gpt-5.6-sol": "low",
+          "codex:gpt-5.6-terra": "medium",
+          // ★쓰레기 값 — 손편집·부분기록된 캐시를 흉내 낸다(적대 검토 B1).
+          "codex:junk-num": 3,
+          "codex:junk-obj": { nested: 1 },
+          "codex:junk-null": null,
+          "codex:junk-empty": "",
+          "codex:junk-blank": "   ",
+        },
       }),
       "utf8",
     );
-    const proj = projectWith({ models: { reasoning: { "codex:gpt-5.6-sol": "high" } } });
+    const proj = projectWith({
+      models: { reasoning: { "codex:gpt-5.6-sol": "high", "codex:gpt-5.6-terra": "xhigh" } },
+    });
+    // ★홈 레이어에도 같은 키를 둔다 — 순회를 뒤집으면(홈이 이김) 여기서 죽는다(B2).
+    writeFileSync(
+      path.join(home, "settings.json"),
+      JSON.stringify({ models: { reasoning: { "codex:gpt-5.6-terra": "low" } } }),
+      "utf8",
+    );
     const plain = mkdtempSync(path.join(tmpdir(), "reasoning-plain-"));
     const child = new URL("./_reasoning-effort-child.ts", import.meta.url);
     const r = spawnSync(
@@ -144,6 +163,25 @@ const run = async (): Promise<Assertion[]> => {
         "★anthropic 은 기본값이 없다(정품 Claude Code 와 같은 상태 = 미전송)",
         got.anthropic === null,
         String(got.anthropic),
+      ),
+    );
+    out.push(
+      assert(
+        "★캐시의 쓰레기 값(숫자·객체·null)이 wire 로 안 샌다",
+        got.junkNum === null &&
+          got.junkObj === null &&
+          got.junkNull === null &&
+          got.junkEmpty === null &&
+          got.junkBlank === null,
+        `num=${String(got.junkNum)} obj=${String(got.junkObj)} null=${String(got.junkNull)}` +
+          ` empty=${JSON.stringify(got.junkEmpty)} blank=${JSON.stringify(got.junkBlank)}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★프로젝트 설정이 홈 설정을 이긴다(레이어 순서)",
+        got.layered === "xhigh",
+        `프로젝트=xhigh 홈=low → ${String(got.layered)}`,
       ),
     );
     out.push(
@@ -215,6 +253,72 @@ const run = async (): Promise<Assertion[]> => {
         "카탈로그 기본은 codex 만 채운다(claude 기본값을 지어내지 않는다)",
         noDefault.ok,
         noDefault.ok ? "codex 스코프 확인" : `누락 ${noDefault.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ★조회 결과가 **사라진 키를 지운다** (적대 검토 F9) ──────────────────────
+  //  종전엔 이 경로에 검사가 하나도 없어서(`refreshModelCatalog` 는 네트워크·인증 뒤라
+  //  검사가 못 닿는다) 삭제 로직을 통째로 되돌려도 초록이었다. 판정만 순수 함수로
+  //  꺼냈으므로 이제 **실행해서** 본다.
+  {
+    const t: Record<string, string> = {
+      "codex:a": "low",
+      "codex:b": "high", // 벤더가 없앤 모델
+      "anthropic:x": "medium", // 다른 provider — 건드리면 안 된다
+    };
+    const changed = mergeReasoning(t, "codex", { "codex:a": "low", "codex:c": "xhigh" });
+    out.push(
+      assert(
+        "★벤더가 없앤 강도는 캐시에서도 사라진다(병합만 하면 옛 값이 영구히 이긴다)",
+        !("codex:b" in t) && t["codex:c"] === "xhigh" && t["codex:a"] === "low",
+        JSON.stringify(t),
+      ),
+    );
+    out.push(
+      assert(
+        "★한 provider 조회가 다른 provider 값을 지우지 않는다",
+        t["anthropic:x"] === "medium",
+        `anthropic:x=${String(t["anthropic:x"])}`,
+      ),
+    );
+    const same = mergeReasoning({ ...t }, "codex", { "codex:a": "low", "codex:c": "xhigh" });
+    out.push(
+      assert(
+        "바뀐 게 없으면 changed=false(같은 값에 디스크를 쓰지 않는다)",
+        changed && !same,
+        `첫 병합=${changed} 재병합=${same}`,
+      ),
+    );
+  }
+
+  // ── ★어댑터를 **손으로 열거하지 않는다** (적대 검토 F10) ────────────────────
+  //  openai 어댑터만 이 설정 키를 안 읽어서, `openai:<모델>` 로 적으면 아무 신호 없이
+  //  무시됐다. 원인은 검사가 "claude 도 읽는다" 처럼 **이름을 손으로 적어** 세 번째
+  //  어댑터에 같은 질문을 안 한 것이다. 목록을 **디스패치 지점에서 파생**시킨다 —
+  //  네 번째 어댑터가 생기면 그 순간 이 검사가 묻는다.
+  {
+    const idx = await readFile(
+      new URL("../../core/llm-runtime/index.ts", import.meta.url),
+      "utf8",
+    );
+    const files = [
+      ...idx.matchAll(/import \{ run\w+ \} from "\.\/adapters\/([\w-]+)\.js";/g),
+    ].map((m) => m[1] ?? "");
+    const missing: string[] = [];
+    for (const f of files) {
+      const r = await sourceHas(`../../core/llm-runtime/adapters/${f}.ts`, [
+        /resolveReasoningEffort\(/,
+      ]);
+      if (!r.ok) missing.push(f);
+    }
+    out.push(
+      assert(
+        "★디스패치되는 모든 어댑터가 같은 설정 키를 읽는다(어댑터를 바꿔도 무시 0)",
+        files.length >= 3 && missing.length === 0,
+        missing.length === 0
+          ? `어댑터 ${files.length}개 확인: ${files.join(", ")}`
+          : `★안 읽는 어댑터: ${missing.join(", ")}`,
       ),
     );
   }

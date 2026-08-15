@@ -26,6 +26,9 @@ import {
   buildActivityDetailFromJson,
 } from "../../core/llm-runtime/adapters/_activity-detail.js";
 import { buildActivityOutput } from "../../core/llm-runtime/adapters/_activity-output.js";
+import { getEventBus, initEventBus } from "../../core/eventbus.js";
+import { createTodoMcpServer } from "../../core/llm-runtime/capabilities/todo-mcp.js";
+import { adaptClaudeMcpServer } from "../../core/llm-runtime/adapters/_mcp-bridge.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const TODOS = [
@@ -64,6 +67,17 @@ const run = async (): Promise<Assertion[]> => {
     ),
   );
 
+  // ── ★목록이 1개여도 요약이다 (2026-08-15, 적대 검토 B4) ────────────────────
+  //  픽스처가 3개짜리 하나뿐이라 진입 조건을 `> 2` 로 바꿔도 초록이었다 — 1~2개 목록은
+  //  JSON 덤프로 되돌아간다(사용자가 보는 화면이 지저분해진다).
+  out.push(
+    assert(
+      "★항목이 1개여도 요약으로 나온다(개수 문턱 금지)",
+      buildActivityDetail({ todos: [TODOS[1]] }) === "할일 0/1 · 지금: evaluate 구현 중",
+      String(buildActivityDetail({ todos: [TODOS[1]] })),
+    ),
+  );
+
   // ── ② 펼치면 내용이 있다 (빈 카드 금지) ────────────────────────────────────
   const expanded = buildActivityOutput("update_todos", "할일 1/3 완료:\n[x] 명세 확인");
   out.push(
@@ -82,6 +96,29 @@ const run = async (): Promise<Assertion[]> => {
       String(buildActivityDetail({ command: "node --test" })),
     ),
   );
+
+  // ── ★todo.update 에 threadKey 가 실린다 (2026-08-15, 적대 검토 B5) ──────────
+  //  양 어댑터에서 `input.threadKey` 를 빼도 초록이었다. 지금 이 이벤트를 읽는 곳은 없지만
+  //  (카드는 `llm.activity` 로 그린다) — **쓰이지 않는 인터페이스는 틀린 채로 늙는다**.
+  //  소비처가 생기는 순간 워커·서브에이전트 할일이 메인 대화에 뜨는 오염이 되고, 그때
+  //  이 값을 지키는 그물이 없으면 그 사고를 처음부터 다시 겪는다.
+  {
+    initEventBus();
+    const seen: Array<{ threadKey?: string }> = [];
+    const unsub = getEventBus().subscribe((ev) => {
+      if (ev.type === "todo.update") seen.push(ev.payload as { threadKey?: string });
+    });
+    const srv = await adaptClaudeMcpServer(createTodoMcpServer("dashboard:default"), "todo");
+    await srv.callTool("update_todos", { todos: [TODOS[1]] });
+    unsub();
+    out.push(
+      assert(
+        "★todo.update 에 threadKey 가 실린다(어느 대화의 할일인지)",
+        seen.length === 1 && seen[0]?.threadKey === "dashboard:default",
+        `발행 ${seen.length}건 · threadKey=${String(seen[0]?.threadKey)}`,
+      ),
+    );
+  }
 
   return out;
 };

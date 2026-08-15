@@ -180,7 +180,10 @@ export const check: RegressionCheck = {
       /signal: ac\.signal,/,
       // ★abort 는 `reader.read()` 를 reject 시킨다 — try 로 감싸지 않으면 **이미 모은
       //  진단 결과를 통째로 버린다**(LEAN 성공/HEAVY 무응답 이라는 유일한 신호).
-      /\} catch \(e\) \{\s*clearTimeout\(killer\);\s*\/\/ 시한이면 그 사실을 \*\*결과로\*\* 돌려준다/,
+      // ★앵커는 **코드**다 (2026-08-15) — 종전엔 주석 문구로 이 catch 를 특정했다.
+      //  `clearTimeout` 은 이 파일에 5번 나오지만 그 뒤가 `if (ac.signal.aborted) { return {`
+      //  인 건 스트림 읽기 catch 뿐이다(전송 catch 는 `const aborted =` 로 갈린다).
+      /\} catch \(e\) \{\s*clearTimeout\(killer\);\s*if \(ac\.signal\.aborted\) \{\s*return \{/,
     ]);
     out.push(
       assert(

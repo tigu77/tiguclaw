@@ -46,6 +46,7 @@ import {
   formatModelProfiles,
   splitSystemContext,
 } from "../../prompt-assembly.js";
+import { resolveReasoningEffort } from "../model-catalog.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
@@ -611,11 +612,27 @@ export const runOpenAi = async (
   const instructions =
     input.systemPromptOverride ??
     composeSystemChannel(SYSTEM_PROMPT, stableContext);
+  // ★추론 강도 — codex·claude 와 **같은 함수**를 쓴다 (2026-08-15, 적대 검토 F10).
+  //  종전엔 이 어댑터만 `models.reasoning` 을 안 읽어서, 사용자가 `openai:<모델>` 로 적으면
+  //  **아무 신호 없이 무시**됐다. 회귀 파일이 claude 를 배선할 때 적어둔 근거가 그대로
+  //  걸린다 — "설정을 적었는데 어댑터를 바꾸니 무시된다" 는 원칙 #2(모든 기능 LLM 무관)
+  //  위반이다. 그때 세 번째 어댑터엔 같은 질문을 안 했다(손으로 어댑터를 열거한 대가).
+  //  카탈로그엔 openai 기본값이 없으므로 자연히 "덮어쓰기가 있을 때만" 이 된다.
+  const reasoningEffort = resolveReasoningEffort(
+    input.provider ?? "openai",
+    input.model ?? "",
+    input.cwd,
+  );
   const agent = new Agent({
     name: "tiguclaw-spike",
     instructions,
     model: modelArg,
     mcpServers,
+    // 유효값 판정은 API 에 맡긴다(codex·claude 와 같은 규칙) — 우리가 흉내 낸 목록은
+    // 벤더가 새 등급을 내놓을 때 멀쩡한 값을 막는다.
+    ...(reasoningEffort === undefined
+      ? {}
+      : { modelSettings: { reasoning: { effort: reasoningEffort as "low" } } }),
     // externalTools 패스스루(§2.3) — 미지정/빈 배열이면 두 필드 모두 생략(스프레드 {} =
     // 현행과 바이트 동일 Agent 구성, 회귀 0). toolsNone 게이팅과 무관 — mcpServers 축과
     // 별개 필드라 tiguclaw 도구가 꺼져도 앱 함수는 그대로 노출된다(ADR §Decision-1 3항).

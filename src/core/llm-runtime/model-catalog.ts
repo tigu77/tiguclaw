@@ -273,6 +273,40 @@ interface DiscoverResult {
  * 절대 throw 하지 않는다(시계가 이걸 부른다). 성공한 provider 만 캐시에 반영하고
  * 실패한 쪽은 **직전 값을 유지**한다(한 번 흔들렸다고 아는 것을 잃지 않는다).
  */
+/**
+ * 한 provider 의 추론 강도 맵을 **조회 결과로 교체**한다(제자리 변경, 바뀌었으면 true).
+ *
+ * ★병합만 하면 벤더가 어떤 모델의 `default_reasoning_level` 을 없애도 우리 옛 값이 영구히
+ *  이긴다 — `resolveReasoningEffort` 가 신선도를 요구하지 않는 것(오프라인에서 조용히 옛
+ *  동작으로 돌아가는 걸 막으려는 의도)과 겹쳐 **되돌릴 방법이 없어진다**. 조회가 성공했을
+ *  때만 부르므로 "실패 시 직전 값 보존" 은 그대로다.
+ *
+ * ★다른 provider 의 키는 **안 건드린다** — codex 조회 성공이 anthropic 값을 지우면 안 된다.
+ *
+ * ★`refreshModelCatalog` 안에 두면 네트워크·인증 뒤라 검사가 못 닿는다(적대 검토 F9:
+ *  이 경로 커버리지가 0이었고, 삭제 로직을 통째로 되돌려도 초록이었다). 판정만 순수
+ *  함수로 꺼내 실행으로 지킨다.
+ */
+export const mergeReasoning = (
+  target: Record<string, string>,
+  provider: string,
+  incoming: Record<string, string>,
+): boolean => {
+  let changed = false;
+  const prefix = `${provider}:`;
+  for (const k of Object.keys(target)) {
+    if (k.startsWith(prefix) && !(k in incoming)) {
+      delete target[k];
+      changed = true;
+    }
+  }
+  for (const [k, v] of Object.entries(incoming)) {
+    if (target[k] !== v) changed = true;
+    target[k] = v;
+  }
+  return changed;
+};
+
 export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
   ensureLoaded();
   const next: Record<string, string[]> = { ...(cache?.models ?? {}) };
@@ -299,9 +333,12 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
         changed = true;
       }
       next[provider] = list;
-      for (const [k, v] of Object.entries(res.reasoning ?? {})) {
-        if (nextReasoning[k] !== v) changed = true;
-        nextReasoning[k] = v;
+      // ★그 provider 의 키를 **통째로 교체**한다 (적대 검토 B1 곁가지). 병합만 하면 벤더가
+      //  어떤 모델의 `default_reasoning_level` 을 없애도 우리 옛 값이 영구히 이긴다 —
+      //  신선도 미요구와 겹쳐 되돌릴 방법이 없어진다. 조회가 **성공했을 때만** 교체하므로
+      //  실패 시 직전 값 보존이라는 원칙은 그대로다.
+      if (res.reasoning !== undefined) {
+        if (mergeReasoning(nextReasoning, provider, res.reasoning)) changed = true;
       }
     } catch (e) {
       console.warn(
@@ -363,5 +400,15 @@ export const resolveReasoningEffort = (
   ensureLoaded();
   // ★신선도(MAX_AGE_MS)를 요구하지 않는다 — 모델의 설계 강도는 목록처럼 늙는 값이 아니고,
   //  낡았다고 안 쓰면 오프라인에서 조용히 종전 동작(백엔드 기본)으로 되돌아간다.
-  return cache?.reasoning?.[key];
+  const v = cache?.reasoning?.[key];
+  // ★값 검증을 settings 와 **같은 판정**으로 (2026-08-15, 적대 검토 B1). 종전엔
+  //  `typeof o.reasoning === "object"` 만 보고 값은 무검증이라, 손편집·부분기록된 캐시의
+  //  숫자·객체·null 이 그대로 새어 wire 로 갔다(`{"effort":3}` → 400 → 그 모델 전 턴 폴백).
+  //  `undefined` 만 보던 가드가 `null` 을 통과시킨 것이 본질이다 — 두 자리가 같은 판단을
+  //  다르게 하고 있었다.
+  if (typeof v !== "string") return undefined;
+  // settings 쪽(loadModelReasoning)이 trim 해서 저장하므로 **여기서도 trim** 한다 —
+  // '같은 판정으로 통일' 이 절반만 참이면 두 자리는 언젠가 다시 갈린다(적대 검토 지적).
+  const t = v.trim();
+  return t === "" ? undefined : t;
 };

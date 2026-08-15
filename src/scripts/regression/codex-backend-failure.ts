@@ -79,7 +79,11 @@ export const check: RegressionCheck = {
         //  임계를 넘겨 사용자에게 소음이 됐다. 효과 있는 대책은 풀의 다음 모델로 회전.
         // ★2026-08-13: 회전을 뺐으므로 단축도 뺐다(사용자 결정) — 조건 없이 사다리 끝까지.
         //  근거는 회귀 model-outage-rotates 헤더.
-        /continue; \/\/ 같은 body 로 재전송\./,
+        // ★앵커는 **코드**다 (2026-08-15). 종전엔 뒤에 붙은 주석(`// 같은 body 로 재전송.`)
+        //  으로 이 `continue` 를 특정했는데, 그러면 코드를 주석 처리해도 초록이다(적대 검토
+        //  F2 가 같은 수법으로 배선 하나를 통째로 통과시켰다). 대기→중단확인→재전송이라는
+        //  **연속된 코드**로 특정한다 — 파일에 `continue` 는 여럿이지만 이 셋은 여기뿐이다.
+        /await sleep\(wait, effectiveAc\.signal\);\s*if \(effectiveAc\.signal\.aborted\) throw e;\s*continue;/,
       ],
     );
     out.push(

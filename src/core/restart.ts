@@ -31,7 +31,6 @@
  */
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { writeFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
 
 /**
@@ -96,40 +95,21 @@ export const shouldExitForRestart = (input: {
     ? true // supervisor 가 되살린다 — 종료가 곧 재기동.
     : input.respawnArranged;
 
-/**
- * 재기동 헬퍼 `.cmd` 본문 — **순수 함수**(검사 가능).
- *
- * ★종전엔 `/tr` 에 `cmd /c ping … >nul & wscript "<vbs>"` 를 통째로 넘겼다. 그 한 줄에
- *  `&`·`>`·**중첩 따옴표**가 다 들어 있는데, `schtasks /tr` 은 그 조합에서 악명 높게 깨진다
- *  (그리고 깨지면 이유를 안 알려준다 — 우리가 받은 게 `status=null` 이다).
- *  스크립트 파일로 빼면 `/tr` 인자는 **경로 하나**가 되어 그 지뢰밭이 통째로 사라진다.
- */
-export const buildRestartCmdScript = (vbsPath: string): string =>
-  [
-    "@echo off",
-    "rem tiguclaw self-restart helper — schtasks 가 소유하므로 데몬이 죽어도 살아남는다.",
-    "rem ping = 지연(데몬 graceful 종료 + 포트 해제 시간 확보). timeout 은 콘솔이 없으면 실패한다.",
-    "ping 127.0.0.1 -n 5 >nul",
-    `wscript "${vbsPath}"`,
-    "",
-  ].join("\r\n");
 
 export const spawnDetachedRestart = (source: string): boolean => {
   const vbsPath = path.join(getPaths().home, "win-launch.vbs");
   const taskName = selfRestartTaskName();
-  // ★액션을 **파일로** 뺀다 — `/tr` 인자는 경로 하나뿐이라 `&`·`>`·중첩 따옴표가 없다.
-  const cmdPath = path.join(getPaths().home, "win-selfrestart.cmd");
+  // ping 127.0.0.1 -n 5 ≈ 4s 지연(데몬 graceful 종료+포트해제 시간 확보) → wscript 숨김 VBS.
+  //
+  // ★2026-08-15: 이 액션 문자열의 `&`·`>`·중첩 따옴표가 schtasks 를 깨뜨린다고 보고 `.cmd`
+  //  파일로 뺐다가 **되돌렸다**. 로그 전수를 세보니 이 형태는 06-27~08-06 에 **19번 요청
+  //  19번 성공, 실패 0** 이었다 — 즉 그 가설은 "왜 갑자기 08-15 에만 실패했나" 를 설명하지
+  //  못한다. 게다가 그날 받은 건 `status=null`(= schtasks 프로세스가 **아예 안 떴다**)이라
+  //  인자 거부(status=1)와 형상이 다르다. 증거가 지지하지 않는 변경으로 19/19 로 돌던
+  //  코드를 바꾸지 않는다. 진짜 원인은 아래 로깅이 다음 재발 때 알려준다.
+  const action = `cmd /c ping 127.0.0.1 -n 5 >nul & wscript "${vbsPath}"`;
 
   try {
-    try {
-      writeFileSync(cmdPath, buildRestartCmdScript(vbsPath), "utf8");
-    } catch (e) {
-      console.error(
-        `daemon: 재기동 헬퍼 스크립트 기록 실패 (${source}, ${cmdPath}): ` +
-          `${e instanceof Error ? e.message : String(e)}`,
-      );
-      return false;
-    }
     // 1) 1회성 작업 생성 — /sc once /st 00:00 (즉시 /run 으로 발화하므로 시각은 형식상).
     //    /f = 기존 동명 작업 덮어쓰기(누적·생성충돌 0).
     const create = spawnSync(
@@ -139,7 +119,7 @@ export const spawnDetachedRestart = (source: string): boolean => {
         "/tn",
         taskName,
         "/tr",
-        cmdPath,
+        action,
         "/sc",
         "once",
         "/st",
@@ -156,7 +136,7 @@ export const spawnDetachedRestart = (source: string): boolean => {
         `daemon: schtasks /create 실패 (${source}, status=${String(create.status)}` +
           `${create.error === undefined ? "" : `, error=${create.error.message}`}` +
           `${create.signal === null || create.signal === undefined ? "" : `, signal=${create.signal}`}` +
-          `) — task=${taskName} tr=${cmdPath} · 재시작을 **중단**한다(윈도우엔 supervisor 가 없다)`,
+          `) — task=${taskName} · 재시작을 **중단**한다(윈도우엔 supervisor 가 없다)`,
       );
       return false;
     }

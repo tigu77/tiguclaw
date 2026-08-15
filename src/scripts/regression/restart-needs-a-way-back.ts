@@ -20,11 +20,7 @@
  *  그래서 순수 함수로 뽑았다 — "검사가 껄끄러우면 코드가 잘못 놓인 것".
  */
 import { readFile } from "node:fs/promises";
-import {
-  buildRestartCmdScript,
-  hasSupervisorRespawn,
-  shouldExitForRestart,
-} from "../../core/restart.js";
+import { hasSupervisorRespawn, shouldExitForRestart } from "../../core/restart.js";
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -71,61 +67,22 @@ const run = async (): Promise<Assertion[]> => {
     ),
   );
 
-  // ── ③ ★`/tr` 에 지뢰(메타문자·중첩 따옴표)를 넣지 않는다 ────────────────────
-  //  종전 액션: `cmd /c ping 127.0.0.1 -n 5 >nul & wscript "<vbs>"` — `&`·`>`·중첩 따옴표가
-  //  한 줄에 다 있었고 schtasks 는 그 조합에서 깨진다(그리고 이유를 안 알려준다 —
-  //  우리가 받은 게 `status=null` 이다). 스크립트 파일로 빼서 인자는 경로 하나만.
+  // ── ③ ★**돌던 형태를 지킨다** — 액션 문자열을 함부로 바꾸지 않는다 ────────────
+  //  2026-08-15 에 나는 이 액션의 `&`·`>`·중첩 따옴표가 schtasks 를 깨뜨린다고 보고 `.cmd`
+  //  파일로 뺐다가 **되돌렸다**. 로그 전수: 06-27~08-06 **19번 요청 19번 성공, 실패 0**.
+  //  그 가설은 "왜 08-15 에만" 을 설명하지 못하고, 그날 받은 `status=null` 은 인자 거부
+  //  (status=1)가 아니라 **프로세스가 안 떴다**는 뜻이라 형상도 반대다.
+  //  ★증거가 지지하지 않는 변경으로 돌던 코드를 바꾸지 않는다 — 이 검사는 그 결정을 지킨다.
   {
     const wiring = await sourceHas("../../core/restart.ts", [
-      /writeFileSync\(cmdPath, buildRestartCmdScript\(vbsPath\), "utf8"\)/,
-      /"\/tr",\s*cmdPath,/,
+      /const action = `cmd \/c ping 127\.0\.0\.1 -n 5 >nul & wscript "\$\{vbsPath\}"`;/,
+      /"\/tr",\s*action,/,
     ]);
     out.push(
       assert(
-        "★schtasks /tr 인자는 **경로 하나**다(메타문자·중첩 따옴표 0)",
+        "★19/19 로 돌던 액션 형태가 유지된다(가설로 바꾸지 않는다)",
         wiring.ok,
-        wiring.ok ? "파일 액션 확인" : `누락 ${wiring.missing.join(" ")}`,
-      ),
-    );
-    const src = await readFile(
-      new URL("../../core/restart.ts", import.meta.url),
-      "utf8",
-    );
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    out.push(
-      assert(
-        "옛 인라인 액션(cmd /c … & wscript)이 남아 있지 않다",
-        !/cmd \/c ping[^`]*& wscript/.test(code),
-        "인라인 액션 0",
-      ),
-    );
-  }
-
-  // ── ④ 헬퍼 스크립트 자체 — 지연 후 VBS, CRLF ────────────────────────────────
-  {
-    const script = buildRestartCmdScript("C:\\Users\\x\\.tiguclaw\\win-launch.vbs");
-    out.push(
-      assert(
-        "헬퍼가 지연 후 VBS 를 띄운다(데몬 종료·포트 해제 시간 확보)",
-        /ping 127\.0\.0\.1 -n 5/.test(script) &&
-          script.indexOf("ping") < script.indexOf("wscript"),
-        script.split("\r\n").filter((l) => !l.startsWith("rem")).join(" | "),
-      ),
-    );
-    out.push(
-      assert(
-        "★줄바꿈이 CRLF 다(윈도우 배치는 LF 만 오면 마지막 줄을 흘린다)",
-        script.includes("\r\n") && !/[^\r]\n/.test(script),
-        `CRLF ${(script.match(/\r\n/g) ?? []).length}개 · 맨 LF ${(script.match(/[^\r]\n/g) ?? []).length}개`,
-      ),
-    );
-    // ★`timeout` 대신 `ping` — `timeout` 은 콘솔 입력 핸들이 없으면 실패한다(예약작업이
-    //  정확히 그 환경이다). 이건 취향이 아니라 제약이다.
-    out.push(
-      assert(
-        "지연에 timeout 을 쓰지 않는다(콘솔 없는 예약작업에서 실패한다)",
-        !/^\s*timeout\s/m.test(script),
-        "ping 사용 확인",
+        wiring.ok ? "액션 유지 확인" : `누락 ${wiring.missing.join(" ")}`,
       ),
     );
   }

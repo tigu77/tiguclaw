@@ -116,6 +116,7 @@ import {
 import { renderModelProfiles } from "./core/entry/models-command.js";
 import {
   hasSupervisorRespawn,
+  shouldExitForRestart,
   spawnDetachedRestart,
   cleanupSelfRestartTask,
 } from "./core/restart.js";
@@ -2045,11 +2046,21 @@ const handler: MessageHandler = async (msg) => {
 //     동형으로 graceful exit(자식·http 서버 정리 = 포트 해제)하고, 분리된 헬퍼가 대기 후
 //     respawn 담당. 헬퍼 spawn 실패해도 graceful exit 는 진행(최소 종료 보장 — 견고성).
 // 재시작 완료 알림은 reboot 스케줄(id=3)이 부팅 후 자동 발화.
-const restartDaemon = (source: string): void => {
-  if (!hasSupervisorRespawn()) {
-    // supervisor 없는 OS — graceful exit 전에 분리 헬퍼로 respawn 을 보장(taskkill 무사용).
-    // spawn 실패해도 아래 graceful exit 는 그대로 진행(최소한 종료는 보장).
-    spawnDetachedRestart(source);
+const restartDaemon = (source: string): boolean => {
+  // ★재기동이 보장될 때만 죽는다 (2026-08-15). 종전 근거는 "spawn 실패해도 graceful exit 는
+  //  진행(최소한 종료는 보장 — 견고성)" 이었는데 그 문장이 **거꾸로**다: supervisor 가 있는
+  //  OS 에서 확실한 종료는 곧 확실한 재기동이지만, 없는 OS 에서는 **확실한 사망**이다.
+  //  실제로 윈도우 돌쇠가 그렇게 사라졌다(사용자 신고: "재시작을 해도 재시작이 안 되네").
+  const respawnArranged = hasSupervisorRespawn()
+    ? true
+    : spawnDetachedRestart(source);
+  if (!shouldExitForRestart({ platform: process.platform, respawnArranged })) {
+    // 안 죽는다. 재시작이 안 된 건 눈에 보이지만, 사라진 건 안 보인다.
+    console.error(
+      `daemon: 재시작 **중단** (${source}) — 재기동 수단을 확보하지 못했고 이 OS(${process.platform})엔 ` +
+        `supervisor 가 없다. 지금 종료하면 자동으로 다시 뜨지 않는다. 데몬은 그대로 유지한다.`,
+    );
+    return false;
   }
   console.log(
     `daemon: restart requested (${source}) — graceful exit (` +
@@ -2068,6 +2079,7 @@ const restartDaemon = (source: string): void => {
     logFatal("daemon: graceful shutdown 지연 — force exit");
     process.exit(0);
   }, 1500).unref();
+  return true;
 };
 
 // 자가 업데이트 도구(update_self) 경로용 전역 restart 콜백 등록 (index→core 단방향, 1회).
@@ -2207,7 +2219,16 @@ const serializedHandler: MessageHandler = (msg) => {
       )
       .catch(() => {})
       .finally(() => {
-        restartDaemon(`telegram:${msg.channel}`);
+        if (restartDaemon(`telegram:${msg.channel}`)) return;
+        // ★재시작을 중단했으면 **말한다**. 안 그러면 "곧 재시작합니다" 만 남고 아무 일도
+        //  안 일어나 사용자가 먹통으로 오해한다(이번 사고의 사용자 체감이 정확히 그것).
+        void msg
+          .reply(
+            "🔴 재시작을 중단했습니다 — 재기동 수단(예약작업)을 확보하지 못했어요.\n" +
+              "이 OS 엔 자동 재기동(supervisor)이 없어서, 지금 껐다면 다시 안 떴을 겁니다. " +
+              "데몬은 그대로 살아 있으니 하던 대화는 이어서 하시면 됩니다. 로그(`/logs`)에 원인이 남아 있어요.",
+          )
+          .catch(() => {});
       });
     return Promise.resolve();
   }

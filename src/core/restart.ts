@@ -31,6 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { writeFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
 
 /**
@@ -67,13 +68,68 @@ export const selfRestartTaskName = (): string => {
  * VBS 경로 = getPaths().home/win-launch.vbs — daemon.ts winVbsPath 와 동일 위치(둘 다
  *  TIGUCLAW_HOME 기준).
  */
+
+/**
+ * 재시작 요청을 받았을 때 **정말 죽어도 되는가** (2026-08-15).
+ *
+ * 사고(사용자 신고): 윈도우 돌쇠가 "업데이트해도 시작이 안 되고 재시작을 해도 재시작이
+ * 안 된다". 로그에 원인이 그대로 있었다 —
+ *   `schtasks /create 실패 (telegram:telegram, status=null) — graceful exit 만 진행`
+ *   `restart requested … graceful exit` → `force exit`
+ * **재기동 수단을 못 잡았는데 그대로 죽었다.** 윈도우는 supervisor 가 없어(HKCU Run =
+ * 로그온 1회) 그 길로 무기한 먹통이다. 사용자는 재시작을 눌렀을 뿐인데 비서가 사라진다.
+ *
+ * ★종전 근거는 *"spawn 실패해도 graceful exit 는 진행(최소한 종료는 보장 — 견고성)"* 였다.
+ *  그 문장이 **거꾸로**다. supervisor 가 있는 OS 에서 "확실히 종료" 는 곧 "확실히 재기동"
+ *  이지만, 없는 OS 에서는 **"확실히 사망"** 이다. 같은 행동이 두 환경에서 정반대 결과를
+ *  낸다 — 그러면 그건 하나의 규칙일 수 없다.
+ *
+ * 그래서 판정을 뒤집는다: **재기동이 보장될 때만 죽는다.** 못 잡았으면 살아 있는 게
+ * 사용자에게 이롭다(재시작이 안 된 건 눈에 보이지만, 사라진 건 안 보인다).
+ */
+export const shouldExitForRestart = (input: {
+  platform: string;
+  /** supervisor 없는 OS 에서 detached respawn 을 실제로 잡았는가. */
+  respawnArranged: boolean;
+}): boolean =>
+  input.platform === "darwin" || input.platform === "linux"
+    ? true // supervisor 가 되살린다 — 종료가 곧 재기동.
+    : input.respawnArranged;
+
+/**
+ * 재기동 헬퍼 `.cmd` 본문 — **순수 함수**(검사 가능).
+ *
+ * ★종전엔 `/tr` 에 `cmd /c ping … >nul & wscript "<vbs>"` 를 통째로 넘겼다. 그 한 줄에
+ *  `&`·`>`·**중첩 따옴표**가 다 들어 있는데, `schtasks /tr` 은 그 조합에서 악명 높게 깨진다
+ *  (그리고 깨지면 이유를 안 알려준다 — 우리가 받은 게 `status=null` 이다).
+ *  스크립트 파일로 빼면 `/tr` 인자는 **경로 하나**가 되어 그 지뢰밭이 통째로 사라진다.
+ */
+export const buildRestartCmdScript = (vbsPath: string): string =>
+  [
+    "@echo off",
+    "rem tiguclaw self-restart helper — schtasks 가 소유하므로 데몬이 죽어도 살아남는다.",
+    "rem ping = 지연(데몬 graceful 종료 + 포트 해제 시간 확보). timeout 은 콘솔이 없으면 실패한다.",
+    "ping 127.0.0.1 -n 5 >nul",
+    `wscript "${vbsPath}"`,
+    "",
+  ].join("\r\n");
+
 export const spawnDetachedRestart = (source: string): boolean => {
   const vbsPath = path.join(getPaths().home, "win-launch.vbs");
   const taskName = selfRestartTaskName();
-  // ping 127.0.0.1 -n 5 ≈ 4s 지연(데몬 graceful 종료+포트해제 시간 확보) → wscript 숨김 VBS.
-  const action = `cmd /c ping 127.0.0.1 -n 5 >nul & wscript "${vbsPath}"`;
+  // ★액션을 **파일로** 뺀다 — `/tr` 인자는 경로 하나뿐이라 `&`·`>`·중첩 따옴표가 없다.
+  const cmdPath = path.join(getPaths().home, "win-selfrestart.cmd");
 
   try {
+    try {
+      writeFileSync(cmdPath, buildRestartCmdScript(vbsPath), "utf8");
+    } catch (e) {
+      console.error(
+        `daemon: 재기동 헬퍼 스크립트 기록 실패 (${source}, ${cmdPath}): ` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+      return false;
+    }
     // 1) 1회성 작업 생성 — /sc once /st 00:00 (즉시 /run 으로 발화하므로 시각은 형식상).
     //    /f = 기존 동명 작업 덮어쓰기(누적·생성충돌 0).
     const create = spawnSync(
@@ -83,7 +139,7 @@ export const spawnDetachedRestart = (source: string): boolean => {
         "/tn",
         taskName,
         "/tr",
-        action,
+        cmdPath,
         "/sc",
         "once",
         "/st",
@@ -93,8 +149,14 @@ export const spawnDetachedRestart = (source: string): boolean => {
       { stdio: "ignore", windowsHide: true },
     );
     if (create.status !== 0) {
+      // ★`status` 만 찍으면 아무것도 모른다 — 실제로 받은 게 `status=null` 이었고(=프로세스가
+      //  아예 안 떴다는 뜻) 거기서 진단이 멈췄다. 윈도우는 원격 접속이 늘 되는 게 아니라
+      //  **로그 한 줄이 1차 진단면**이다. spawn 자체 오류·stderr 를 같이 남긴다.
       console.error(
-        `daemon: schtasks /create 실패 (${source}, status=${String(create.status)}) — graceful exit 만 진행`,
+        `daemon: schtasks /create 실패 (${source}, status=${String(create.status)}` +
+          `${create.error === undefined ? "" : `, error=${create.error.message}`}` +
+          `${create.signal === null || create.signal === undefined ? "" : `, signal=${create.signal}`}` +
+          `) — task=${taskName} tr=${cmdPath} · 재시작을 **중단**한다(윈도우엔 supervisor 가 없다)`,
       );
       return false;
     }
@@ -105,7 +167,9 @@ export const spawnDetachedRestart = (source: string): boolean => {
     });
     if (run.status !== 0) {
       console.error(
-        `daemon: schtasks /run 실패 (${source}, status=${String(run.status)}) — graceful exit 만 진행`,
+        `daemon: schtasks /run 실패 (${source}, status=${String(run.status)}` +
+          `${run.error === undefined ? "" : `, error=${run.error.message}`}` +
+          `) — task=${taskName} · 재시작을 **중단**한다`,
       );
       return false;
     }

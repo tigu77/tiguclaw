@@ -38,11 +38,15 @@ export interface JudgeContradictionInput {
 }
 
 /**
- * 분류 tier 풀 해석 — nano → low → undefined(facade 디폴트). 어댑터 무관.
+ * **내부 단발 호출**의 싼 tier 풀 해석 — nano → low → undefined(facade 디폴트). 어댑터 무관.
+ *
+ * ★2026-08-15: `WebFetch(prompt)` 추출도 같은 판단이 필요해져 **export** 했다. 복사하면
+ *  "가장 싼 tier 고르기" 라는 같은 판단이 두 곳에 생기고, 한쪽만 늙는다. 이름도
+ *  classify 전용에서 중립으로 바꿨다(정의점은 여기 하나).
  * self-growth 가 모델을 고르지 않음: env(MODEL_TIER_NANO/LOW)가 정의한 풀을 쓰고,
  * 미정의면 undefined 로 일반 디폴트(REGION_A_MODELS/anthropic)에 안전 degrade.
  */
-const classifyTierSpecs = (): ModelSpec[] | undefined => {
+export const cheapInternalTierSpecs = (): ModelSpec[] | undefined => {
   const nano = resolveTier("nano");
   if (nano.length > 0) return nano;
   const low = resolveTier("low");
@@ -114,7 +118,7 @@ export const judgeContradiction = async (
         toolPolicy: { mode: "none" }, // 도구 0 (분류엔 불필요 + 미지원 모델 graceful)
         abortSignal: ac.signal, // 짧은 타임아웃
       },
-      { specs: classifyTierSpecs() }, // nano/low tier(있으면) — LLM-agnostic 가벼운 풀
+      { specs: cheapInternalTierSpecs() }, // nano/low tier(있으면) — LLM-agnostic 가벼운 풀
     );
     return parseVerdict(output.text);
   } catch {

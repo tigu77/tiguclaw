@@ -1506,10 +1506,15 @@ const makeFileOpsTools = (
   // ─── WebFetch 도구 (V5.9 — cwd 무관) ───────────────────────────────────
   const webFetchTool = tool(
     "WebFetch",
-    "URL 의 본문을 받아 markdown 변환 후 반환합니다. http(s):// 만 허용. HTML 은 script/style 제거 + tag strip. timeout 디폴트 30s / max 60s. body 5MB cap.",
+    "URL 의 본문을 받아 markdown 변환 후 반환합니다. `prompt` 를 주면 본문에 그 지시를 돌려 **답만** 돌려줍니다. http(s):// 만 허용. HTML 은 script/style 제거 + tag strip. timeout 디폴트 30s / max 60s. body 5MB cap.",
     {
       url: z.string().min(1),
-      prompt: z.string().optional(),
+      prompt: z
+        .string()
+        .optional()
+        .describe(
+          "선택 — 받아온 본문에 **돌릴 지시**(예: '가격표만 뽑아줘'). 주면 본문 대신 그 답이 옵니다(토큰 절약). 없으면 본문 전체.",
+        ),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 30, 최대 60)"),
     },
     async (args) => {
@@ -1577,6 +1582,34 @@ const makeFileOpsTools = (
         if (truncated) payload = `${payload}${WEBFETCH_TRUNCATE_MARKER}`;
 
         const header = `HTTP ${res.status} ${res.statusText} (content-type: ${rawContentType})\n\n`;
+
+        // ★prompt 가 오면 **본문에 실제로 돌린다** (2026-08-15). 종전엔 이 파라미터를
+        //  선언만 하고 안 썼다 — codex 가 "이게 진짜 AAD 페이지인지 확인해줘" 라고 물으면
+        //  답 대신 페이지 전문이 돌아왔고, 에러도 로그도 없었다(20일간 22건 전부).
+        //  claude 는 SDK 것이라 정상 처리돼서 **어댑터 간 비대칭**이기도 했다.
+        const wantPrompt = (args.prompt ?? "").trim();
+        if (wantPrompt !== "") {
+          const { extractFromContent } = await import("../webfetch-extract.js");
+          const ex = await extractFromContent({
+            url: args.url,
+            prompt: wantPrompt,
+            content: payload,
+            // ★호출자가 시한을 줬으면 **추출까지 그 안에** 끝낸다. 안 그러면 `timeout: 5`
+            //  라고 적은 쪽이 30초를 기다린다 — 시한을 준 이유가 사라진다.
+            ...(args.timeout !== undefined ? { timeoutMs: timeout } : {}),
+          });
+          if (ex.ok) {
+            const note = ex.truncated
+              ? "\n\n(문서가 길어 앞부분만 읽었습니다 — 전문이 필요하면 prompt 없이 다시 부르세요.)"
+              : "";
+            return okText(`${header}${ex.text}${note}`);
+          }
+          // ★실패는 **말한다**. 이 결함의 본질이 "조용한 무시" 였으므로 같은 병을 다른
+          //  모양으로 다시 만들지 않는다 — 본문은 그대로 주되 왜 못 돌렸는지 한 줄.
+          return okText(
+            `${header}⚠️ prompt 를 본문에 돌리지 못했습니다(${ex.reason}) — 아래는 본문 원문입니다.\n\n${payload}`,
+          );
+        }
         return okText(`${header}${payload}`);
       } catch (e) {
         const err = e as Error & { name?: string };

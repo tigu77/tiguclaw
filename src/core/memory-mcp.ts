@@ -6,9 +6,9 @@
  *  - `memoryMcpServer`: SDK in-process MCP server 의 도구(read/add/update/delete +
  *    list_installed_plugins).
  */
+import { createOurMcpServer } from "./llm-runtime/capabilities/_our-mcp.js";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -201,7 +201,7 @@ const listInstalledPluginsTool = tool(
  * 클로저(모듈/DB 상태 참조)라 재생성 비용 0. 형제 서버 9종과 동일한 팩토리 패턴.
  */
 export const createMemoryMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  createOurMcpServer({
     name: "memory",
     version: "1.0.0",
     tools: [

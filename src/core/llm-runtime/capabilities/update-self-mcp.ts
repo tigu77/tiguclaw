@@ -25,9 +25,9 @@
  *  - 도구 description·렌더 문안은 어댑터 분기 0. 한쪽 어댑터만 등록 = #2 차단이라
  *    send_file 과 1:1 동형으로 3 어댑터 동일 등록.
  */
+import { createOurMcpServer } from "./_our-mcp.js";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -98,7 +98,7 @@ const renderResult = (r: SelfUpdateResult): string => {
 export const createUpdateSelfMcpServer = (
   notify?: SelfUpdateNotifyDest,
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  createOurMcpServer({
     name: "update-self",
     version: "1.0.0",
     tools: [

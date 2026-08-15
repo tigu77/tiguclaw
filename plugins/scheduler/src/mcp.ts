@@ -13,10 +13,10 @@
  * cron 객체 생성·취소는 plugin entry (index.ts) 의 startSchedule/stopSchedule 가 담당.
  * 본 모듈은 *등록·조회·삭제* + 새 schedule 활성 시 cron 등록 trigger 만.
  */
+import { createOurMcpServer } from "../../../src/core/llm-runtime/capabilities/_our-mcp.js";
 import { z } from "zod";
 import { listOutboundChannels } from "../../../src/core/channel-outbound.js";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -305,7 +305,7 @@ const deleteScheduleTool = tool(
  *  도구 정의는 상태 없는 서술자라 매 턴 새로 만들어도 싸다(핸들러가 store 를 부른다).
  */
 export const createSchedulerMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  createOurMcpServer({
     name: "scheduler",
     version: "0.1.0",
     tools: [

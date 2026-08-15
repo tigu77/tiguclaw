@@ -12,11 +12,11 @@
  * watcher 객체 생성·취소는 plugin entry (index.ts) 의 register/unregister.
  * 본 모듈은 *등록·조회·삭제* + 새 watch 활성 시 lifecycle hook 호출만.
  */
+import { createOurMcpServer } from "../../../src/core/llm-runtime/capabilities/_our-mcp.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -152,7 +152,7 @@ const deleteWatchTool = tool(
  * (scheduler 와 동일한 이유 — 프로세스 싱글턴이면 동시 턴에서 깨진다. 2026-08-10.)
  */
 export const createFileWatchMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  createOurMcpServer({
     name: "file-watch",
     version: "0.1.0",
     tools: [addWatchTool, listWatchesTool, deleteWatchTool],

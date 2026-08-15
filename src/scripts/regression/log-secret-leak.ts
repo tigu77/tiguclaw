@@ -19,6 +19,7 @@
  *   (실측: 885자 → 45자 / 646자 → 94자, 세 축 전부 ✅)
  */
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -146,6 +147,80 @@ export const check: RegressionCheck = {
             : `누락 ${summarized.missing.join(" ")}`,
       ),
     );
+  // ── ★가리는 것이 **뒤를 먹지 않는다** (2026-08-15) ──────────────────────────
+  //  사고: `Bearer\s+\S+` 의 `\S+` 가 "공백 아닌 것"을 끝까지 삼켜 **토큰 뒤에 붙은
+  //  것까지 지웠다**. 직렬화된 JSON 에선 토큰 다음이 `\"}` 라 공백이 없어 **JSON 꼬리째**
+  //  사라졌고, 윈도우 DB 에 파싱 불가 payload 3건이 그렇게 생겼다(len=318, `Bearer
+  //  [REDACTED]` 에서 끊긴 채 끝난다). 다른 패턴은 전부 클래스가 닫혀 있었고 이것만 열려 있었다.
+  //
+  //  ★DB 보다 채널 출력이 더 위험하다 — 이건 **아웃바운드 살균기**다. 답변에 `Bearer …`
+  //   가 섞이면 그 뒤 문장이 조용히 사라진다. 가리는 일이 지우는 일이 되면 안 된다.
+  {
+    const { redactSecrets } = await import("../../core/outbound-sanitize.js");
+
+    // ① 사고 재현 — 직렬화된 JSON 이 살균 후에도 **파싱된다**.
+    //  ★픽스처는 **실물 그대로** 만든다: 실제 깨진 행은 detail 이 `… Bearer <토큰>` 으로
+    //   **끝났다**(길이 캡에 잘려서). 그래야 토큰 뒤가 `","seq":132}` 뿐이라 공백이 없고,
+    //   열린 `\S+` 가 JSON 의 꼬리를 통째로 먹는다.
+    //   ★처음엔 토큰 뒤에 ` -X POST` 를 붙인 픽스처를 썼는데 **변이가 통과했다** — 따옴표
+    //    하나만 먹혀도 남은 문자열이 우연히 유효 JSON 이었다. 사고를 재현하지 못하는
+    //    픽스처는 검사가 아니라 장식이다(변이 검증이 잡아냈다).
+    const payload = JSON.stringify({
+      label: "Bash",
+      detail: 'curl -X POST http://x/v1/chat -H "Authorization: Bearer sk-livetoken123456',
+      seq: 132,
+    });
+    const cleaned = redactSecrets(payload);
+    let parsed: { seq?: number; detail?: string } | null = null;
+    try {
+      parsed = JSON.parse(cleaned) as { seq?: number; detail?: string };
+    } catch {
+      parsed = null;
+    }
+    out.push(
+      assert(
+        "★살균한 JSON 이 여전히 파싱된다(가리는 게 꼬리를 먹지 않는다)",
+        parsed !== null && parsed.seq === 132,
+        parsed === null ? `★파싱 실패 — 끝: ...${cleaned.slice(-42)}` : "파싱 OK",
+      ),
+    );
+
+    // ② 토큰은 확실히 사라진다 — 위 완화가 마스킹을 약화시키지 않았다.
+    out.push(
+      assert(
+        "그래도 토큰 자체는 남지 않는다",
+        !cleaned.includes("sk-livetoken123456") && cleaned.includes("[REDACTED]"),
+        cleaned.includes("sk-livetoken") ? "★토큰 잔존" : "마스킹 확인",
+      ),
+    );
+
+    // ③ 문장 뒤가 살아남는다 — 채널 출력에서 답변이 잘리던 축.
+    const sentence = redactSecrets(
+      "Authorization: Bearer eyJhbG.ciOiJz.9abc 로 호출했고 결과는 정상입니다.",
+    );
+    out.push(
+      assert(
+        "★토큰 뒤 문장이 살아남는다(답변이 조용히 잘리지 않는다)",
+        sentence.includes("결과는 정상입니다"),
+        sentence,
+      ),
+    );
+
+    // ④ 클래스가 닫혀 있다 — `\S+` 같은 열린 수량자를 다시 들이지 않는다.
+    const src = await readFile(
+      new URL("../../core/outbound-sanitize.ts", import.meta.url),
+      "utf8",
+    );
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    out.push(
+      assert(
+        "★마스킹 패턴에 열린 `\\S+` 가 없다(뒤를 먹는 형태 금지)",
+        !/\\S\+/.test(code),
+        /\\S\+/.test(code) ? "★열린 수량자 재도입" : "닫힌 클래스 확인",
+      ),
+    );
+  }
+
     return out;
   },
 };

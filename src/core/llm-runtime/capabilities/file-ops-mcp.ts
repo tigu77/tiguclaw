@@ -49,6 +49,7 @@
  *  - 위험 명령·위험 경로 차단은 *LLM 측 정책* (sysprompt prompt-gated). MCP server
  *    본체는 DISALLOWED_TOOLS/DISALLOWED_URLS 만 차단 (정책 진실 소스 hook) — 경로 벽 0.
  */
+import { createOurMcpServer } from "./_our-mcp.js";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
@@ -57,7 +58,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -1757,7 +1757,7 @@ export const createFileOpsMcpServer = (
     readsOnly?: boolean;
   },
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  createOurMcpServer({
     name: "file-ops",
     version: "1.9.0",
     tools: (() => {

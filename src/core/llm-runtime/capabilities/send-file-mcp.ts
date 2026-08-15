@@ -23,9 +23,9 @@
  *  - sendAttachment === undefined → 전송 시도 없이 "이 채널 미지원, 경로 텍스트
  *    안내" graceful 반환. 양 어댑터(claude/codex) 동일 동작 (LLM-agnostic parity).
  */
+import { createOurMcpServer } from "./_our-mcp.js";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -47,7 +47,7 @@ export const createSendFileMcpServer = (
   sendAttachment: IncomingMessage["sendAttachment"],
   sentPaths: Set<string>,
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  createOurMcpServer({
     name: "send-file",
     version: "1.0.0",
     tools: [

@@ -104,7 +104,16 @@ const TOKEN_PATTERNS: { re: RegExp; replace: string }[] = [
   // Telegram bot 토큰 — 123456:AAaa...
   { re: /\d{6,}:[A-Za-z0-9_-]{30,}/g, replace: "[REDACTED]" },
   // Authorization: Bearer <token> — 토큰 부분만 마스킹, Bearer 라벨 보존(진단성).
-  { re: /Bearer\s+\S+/g, replace: "Bearer [REDACTED]" },
+  //
+  // ★문자 클래스를 **닫는다** (2026-08-15). 종전 `\S+` 는 "공백 아닌 것"을 끝까지 삼켜서
+  //  토큰 **뒤에 붙은 것까지 지웠다**. 직렬화된 JSON 에선 토큰 다음이 `\"}` 라 공백이
+  //  없고, 그래서 **JSON 의 꼬리째** 사라졌다 — 윈도우 DB 에 파싱 불가 payload 3건이
+  //  그렇게 생겼다(`Bearer [REDACTED]` 에서 문자열이 끊긴 채 끝난다).
+  //  ★DB 보다 채널 출력이 더 위험하다: 이건 아웃바운드 살균기라, 답변에 `Bearer …` 가
+  //  섞이면 **그 뒤 문장이 조용히 사라진다.** 다른 패턴들은 전부 클래스가 닫혀 있었고
+  //  이것 하나만 열려 있었다.
+  //  토큰에 쓰이는 문자만 받는다(base64url + JWT 점 + 흔한 패딩). `"`·`\`·`}`·`,` 에서 멈춘다.
+  { re: /Bearer\s+[A-Za-z0-9._~+/=-]+/g, replace: "Bearer [REDACTED]" },
 ];
 
 export const redactSecrets = (text: string): string => {

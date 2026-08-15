@@ -14,8 +14,8 @@
  *
  * context 위생: on-demand 호출만 — 매 턴 프롬프트 주입 0(도구 설명만 카탈로그에 상주).
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -76,7 +76,7 @@ const renderReport = (r: MaintenanceReport): string => {
  * 위험 로직 0 — 아무것도 바꾸지 않는다(파괴적 삭제 도구는 P1 에 없음).
  */
 export const createMaintenanceMcpServer = (): McpSdkServerConfigWithInstance =>
-  createOurMcpServer({
+  createSdkMcpServer({
     name: "maintenance",
     version: "1.0.0",
     tools: [

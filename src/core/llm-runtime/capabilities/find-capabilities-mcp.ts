@@ -42,9 +42,9 @@
  * activeNames 는 각 어댑터가 자신의 MCP 맵/배열 빌드를 마친 뒤 파생해 주입하고,
  * find_capabilities 자신은 그 목록에 없다(스스로 이미 쓰는 중이라 자기 언급 불요).
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import { z } from "zod";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -337,7 +337,7 @@ export const createFindCapabilitiesMcpServer = (
     },
   );
 
-  return createOurMcpServer({
+  return createSdkMcpServer({
     name: "find-capabilities",
     version: "1.0.0",
     tools: [findCapabilitiesTool],

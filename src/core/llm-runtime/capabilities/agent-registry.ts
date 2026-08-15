@@ -25,12 +25,12 @@
  *    `discoverAgents(cwd)` 결과를 SDK `options.agents` 로 주입 → native Task tool
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -594,7 +594,7 @@ export const createSpawnAgentMcpServer = (
     },
   );
 
-  return createOurMcpServer({
+  return createSdkMcpServer({
     name: "agents",
     version: "1.1.0",
     tools: [spawnTool, findAgentsTool],

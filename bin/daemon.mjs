@@ -239,7 +239,7 @@ const darwinRestart = (c) => {
   });
   reportLaunch(
     c,
-    waitForListening(c, listeningOnBridge),
+    waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
     `  확인: launchctl print ${domain}/${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
   );
@@ -396,7 +396,7 @@ const linuxRestart = (c) => {
   systemctlUser(["restart", c.label]);
   reportLaunch(
     c,
-    waitForListening(c, listeningOnBridge),
+    waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
     `  확인: systemctl --user status ${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
   );
@@ -487,11 +487,45 @@ const sleepSync = (ms) => {
  * @param {number} timeoutMs
  * @returns {string[]}
  */
-const waitForListening = (c, probe, timeoutMs = 20000) => {
+/**
+ * 포트를 잡은 게 **우리 데몬인지** 확인한다 — `/health` 는 인증 밖이라 빌트인 http 로 물어본다.
+ *
+ * ★적대 검토 P7: 포트 LISTEN 만으로는 "우리 데몬" 이 아니다. 실증 — 아무 http 서버가 그
+ *  포트를 잡아도 `waitForListening` 이 성공으로 읽었다(mac/linux 는 `netstat -an` 이라 PID 도
+ *  없다). 증거 등급을 정해 둔 주석이 정작 mac/linux 에선 성립하지 않았다.
+ * ★한계는 정직하게 적는다: **옛 데몬도 `/health` 에 답한다.** 그래서 이건 "엉뚱한 프로세스"
+ *  만 걸러내고, 재시작의 "죽어가는 소켓" 은 아래 `settleMs` 가 맡는다.
+ * @param {Ctx} c
+ * @returns {boolean}
+ */
+const healthSaysOurs = (c) => {
+  const port = winPort(c);
+  const r = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const http=require("http");const q=http.get({host:"127.0.0.1",port:${port},path:"/health",timeout:1500},(s)=>{let b="";s.on("data",(d)=>{b+=d});s.on("end",()=>{process.stdout.write(b.slice(0,200))})});q.on("error",()=>process.exit(1));q.on("timeout",()=>{q.destroy();process.exit(1)});`,
+    ],
+    { encoding: "utf8" },
+  );
+  return r.status === 0 && /"ok"\s*:\s*true/.test(r.stdout ?? "");
+};
+
+/**
+ * @param {Ctx} c
+ * @param {(c: Ctx) => string[]} probe
+ * @param {number} [timeoutMs]
+ * @param {number} [settleMs] 첫 프로브 전 대기 — **재시작 전용**. 옛 데몬이 graceful 종료
+ *  중 수백 ms 동안 포트를 물고 있으면 그 소켓으로 ✅ 가 찍힌다(적대 검토 P7). 기동(start)은
+ *  옛 프로세스가 없으므로 0.
+ */
+const waitForListening = (c, probe, timeoutMs = 20000, settleMs = 0) => {
+  if (settleMs > 0) sleepSync(settleMs);
   const until = Date.now() + timeoutMs;
   for (;;) {
     const pids = probe(c);
-    if (pids.length > 0) return pids;
+    // 포트가 잡혔으면 **우리 것인지** 한 번 더 묻는다(엉뚱한 프로세스 배제).
+    if (pids.length > 0 && healthSaysOurs(c)) return pids;
     if (Date.now() >= until) return [];
     sleepSync(700);
   }
@@ -733,7 +767,7 @@ const winRestart = (c) => {
   winLaunch(c); // 숨김 재가동.
   reportLaunch(
     c,
-    waitForListening(c, listeningOnBridge),
+    waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
     `  런처를 직접 돌려보세요: wscript ${winVbsPath(c)}\n` +
       `  ★윈도우는 HKCU Run(로그온 1회)이라 supervisor 가 없습니다 — 안 뜨면 그대로 멈춥니다.\n` +
@@ -1189,7 +1223,20 @@ const runUpdate = (c) => {
     console.log("   데몬이 실행 중이 아니었습니다 — 'tiguclaw start' 로 가동하세요.");
   }
 
-  // ── 단계 9: 성공 요약 ───────────────────────────────────────────────────────
+  // ── 단계 9: 결과 요약 ───────────────────────────────────────────────────────
+  // ★기동 실패를 받고도 ✅ 를 찍지 않는다 (2026-08-15 2차, 적대 검토 P11). `reportLaunch`
+  //  를 정직하게 만든 커밋의 이득이 **바로 이 호출부에서 상쇄되고 있었다** — 화면 마지막
+  //  줄이 "가동 재개" 라 그게 결론으로 읽힌다. 윈도우 93분 사망 사고의 사용자 체감이
+  //  (성공 메시지 + 죽은 데몬) 문자 그대로 재현 가능했다. `start` 가 exitCode 1 을 세웠으면
+  //  코드는 적용됐어도 **재가동은 실패**라고 말한다.
+  if (process.exitCode === 1) {
+    console.error(
+      `🔴 update 는 적용됐지만 **재가동에 실패**했습니다: ` +
+        `${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
+        `   위 실패 원인을 보고 수동으로 기동하세요 — 자동으로 다시 뜨지 않습니다.`,
+    );
+    return;
+  }
   console.log(
     `✅ update 완료: ${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
       `(runtime=${c.runtime}). 가동 재개.`,

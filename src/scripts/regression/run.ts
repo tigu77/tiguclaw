@@ -32,7 +32,17 @@ for (const k of Object.keys(process.env)) {
     /^MCP_/.test(k) ||
     /^LLM_/.test(k) ||
     /^REGION_A_/.test(k) ||
-    /^STEERING_/.test(k)
+    /^STEERING_/.test(k) ||
+    // ★**모델 선택 env** 도 봉인한다 (2026-08-15 2차, 적대 검토 [10]). 이게 빠져 있어서
+    //  dev `.env` 의 `MODEL_TIER_NANO=ollama:…` 로 **내부 단발 호출이 실제로 성공**했고,
+    //  같은 변이가 이 기계에선 빨강 / CI(모델 0)에선 **초록**이었다(실증). 검사의 초록이
+    //  기계에 달려 있으면 그건 검사가 아니다 — 봉인 취지("검사가 읽는 상수는 전부
+    //  기본값으로 고정")대로면 모델 선택이야말로 1순위다.
+    /^MODEL_TIER_/.test(k) ||
+    /^MODELS_/.test(k) ||
+    /^OLLAMA_/.test(k) ||
+    /^OPENAI_/.test(k) ||
+    /^ANTHROPIC_/.test(k)
   ) {
     delete process.env[k];
   }

@@ -20,6 +20,7 @@
  */
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { stripComments } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -206,12 +207,37 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ⑤ ★**가리는 힘** — Bearer 패턴을 실제로 태운다 (적대 검토 P8).
+    //  종전 픽스처 셋은 토큰이 전부 앞선 패턴(`sk-`·JWT)에 **먼저** 잡혀서, Bearer 규칙을
+    //  밟는 단언이 **0건**이었다. 그래서 그 규칙을 통째로 지워도, 문자 클래스를 좁혀도
+    //  스위트가 초록이었다("꼬리를 안 먹는가" 만 재고 "가리는가" 는 못 쟀다).
+    //  ★어느 앞선 패턴에도 안 걸리는 **불투명 토큰**을 쓴다. 그리고 종전 `\S+` 가 가리던
+    //   두 형상(`id:secret` · URL 인코딩)이 **계속** 가려지는지도 같이 본다 — 그게
+    //   2026-08-15 에 조용히 좁아졌던 자리다.
+    for (const [label, raw, secret] of [
+      ["불투명", "Authorization: Bearer ghp_16C7e42F292c6912E7710c838347Ae178B4a", "ghp_16C7e42F292c6912E7710c838347Ae178B4a"],
+      ["id:secret", "Authorization: Bearer 12345:aBcDeFgHiJkLmNoPqRsTuV", "aBcDeFgHiJkLmNoPqRsTuV"],
+      ["URL 인코딩", "Authorization: Bearer abc123%2Fdef456%3Dghi789JKL", "%2Fdef456%3D"],
+    ] as const) {
+      const masked = redactSecrets(raw);
+      out.push(
+        assert(
+          `★Bearer 토큰이 실제로 가려진다(${label})`,
+          !masked.includes(secret) && masked.includes("[REDACTED]"),
+          masked,
+        ),
+      );
+    }
+
     // ④ 클래스가 닫혀 있다 — `\S+` 같은 열린 수량자를 다시 들이지 않는다.
     const src = await readFile(
       new URL("../../core/outbound-sanitize.ts", import.meta.url),
       "utf8",
     );
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // ★주석 제거는 `_wiring.stripComments` 를 **공유**한다 (적대 검토 P13). 여기 있던
+    //  자체 구현은 줄 첫머리 `//` 만 걷어서, 코드 **뒤에 붙은** 설명 주석에 빨간불이 났다
+    //  (같은 판정이 세 벌이었고 그중 둘이 약했다 — 이 레포가 반복해서 데인 부류).
+    const code = stripComments(src);
     out.push(
       assert(
         "★마스킹 패턴에 열린 `\\S+` 가 없다(뒤를 먹는 형태 금지)",

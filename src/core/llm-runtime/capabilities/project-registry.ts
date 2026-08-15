@@ -8,11 +8,11 @@
  * 양 어댑터(codex·claude) 동일 등록 = LLM-agnostic(#2, 어댑터 분기 0). send-file/todo 동형
  * in-process MCP factory. enter_project(진입=cwd)은 P2 항목이라 여기 미포함(register 계열만).
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -129,7 +129,7 @@ const registerFromDisk = async (
 // ─── MCP factory ─────────────────────────────────────────────────────────────
 export const createProjectRegistryMcpServer =
   (): McpSdkServerConfigWithInstance =>
-    createOurMcpServer({
+    createSdkMcpServer({
       name: "projects",
       version: "1.0.0",
       tools: [

@@ -19,6 +19,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripComments } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -26,8 +27,10 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const src = await readFile(path.join(REPO, "bin/daemon.mjs"), "utf8");
-  // 주석은 뺀다 — "왜 이렇게 했는지" 설명하는 글이 판정을 흔들면 안 된다(같은 오탐을 오늘 겪었다).
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  // ★주석 제거는 `_wiring.stripComments` 를 **공유**한다 (적대 검토 P13). 여기 있던 자체
+  //  구현은 줄 첫머리 `//` 만 걷어서 **줄 끝 주석**에 오탐했다(같은 판정이 세 벌이었고
+  //  그중 둘이 약했다).
+  const code = stripComments(src);
 
   // ── ① 확인 없이 성공을 찍지 않는다 — 세 플랫폼 여섯 자리 ────────────────────
   const bare = [...code.matchAll(/console\.log\(\s*["'`]✅ (started|restarted)["'`]\s*\)/g)];
@@ -77,6 +80,30 @@ const run = async (): Promise<Assertion[]> => {
       "경계 확인",
     ),
   );
+
+  // ── ④-b ★포트를 잡은 게 **우리 데몬인지** 확인한다 (적대 검토 P7) ────────────
+  //  실증: 아무 http 서버가 그 포트를 잡아도 성공으로 읽혔다(mac/linux 는 `netstat -an`
+  //  이라 PID 도 없다). "PID 존재 = 죽는 중일 수 있음 · 포트 LISTEN = 서비스 중" 이라고
+  //  등급을 적어놨는데 정작 mac/linux 에선 성립하지 않았다. `/health`(인증 밖)로 묻는다.
+  out.push(
+    assert(
+      "★포트만 보지 않고 /health 로 우리 데몬임을 확인한다",
+      /healthSaysOurs\(c\)/.test(code) && /"\/health"/.test(code),
+      /healthSaysOurs/.test(code) ? "신원 확인 확인" : "★포트만 보고 성공 판정",
+    ),
+  );
+  // ★재시작은 **정착 대기** 후에 잰다 — 옛 데몬이 종료 중 포트를 물고 있으면 그 소켓으로
+  //  ✅ 가 찍힌다(옛 데몬도 /health 에 답하므로 신원 확인으로는 못 거른다).
+  {
+    const settled = (code.match(/waitForListening\(c, listeningOnBridge, 20000, \d+\)/g) ?? []).length;
+    out.push(
+      assert(
+        "★restart 3자리는 정착 대기 후에 잰다(죽어가는 소켓을 성공으로 읽지 않게)",
+        settled === 3,
+        `정착 대기 있는 자리 ${settled}곳 (기대 3 — darwin·linux·win restart)`,
+      ),
+    );
+  }
 
   // ── ⑤ 의존성-프리 유지 — 확인 때문에 import 가 늘면 최후 복구가 깨진다 ──────
   const imports = [...src.matchAll(/^import .* from "([^"]+)";$/gm)].map((m) => m[1] ?? "");

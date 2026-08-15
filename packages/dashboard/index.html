@@ -142,7 +142,7 @@
             <button id="chat-mic-btn" type="button" title="길게 눌러 음성 입력 (텔레그램식)" aria-label="음성 입력 (길게 누르기)">🎤<span id="chat-mic-timer" class="mic-timer" hidden></span></button>
             <!-- 채널 fan-out 버튼 — 추가 발신 채널 있을 때만 노출(egress-selector.js). 누르면 위 팝오버 열림. -->
             <button id="chat-egress-btn" type="button" title="추가 채널로 함께 보내기" aria-label="추가 발신 채널" hidden aria-haspopup="true" aria-expanded="false">📤<span id="egress-dot" class="egress-dot" hidden></span></button>
-            <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea><!-- 다음 메시지 제안 고스트 — 입력창이 비어 있을 때만. Tab 이면 입력창에 채워진다(전송 아님). --><div id="chat-ghost" class="chat-ghost" hidden aria-hidden="true"></div></div>
+            <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea><!-- 다음 메시지 제안 고스트 — 입력창이 비어 있을 때만. Tab 이면 입력창에 채워진다(전송 아님). --><div id="chat-ghost" class="chat-ghost" hidden aria-hidden="true"></div><!-- 제안 수락 버튼 — 클릭하면 입력창에 **채워진다**(전송 아님). type="button" 필수: 폼 안이라 기본 submit 이면 전송 버튼이 된다. --><button id="chat-ghost-accept" type="button" hidden title="제안을 입력창에 채우기 (Tab)" aria-label="제안을 입력창에 채우기">→</button></div>
             <div id="chat-egress" class="chat-egress" title="이 답을 함께 보낼 추가 채널 (fan-out)" role="group" aria-label="추가 발신 채널" hidden></div>
             <!-- 모델 프로파일 빠른선택 (탭별 sticky, ADR model-dropdown §3). 이름만 표시(제약3),
                  model-select.js 가 GET /api/model-profiles 로 채우고 선택 시 POST /api/set-session-profile. -->

@@ -133,12 +133,12 @@ let registeredRestart: (() => void) | undefined;
  * 부팅 시 1회 호출 — 전역 restart 콜백 등록(index→core 단방향). 이후 `runSelfUpdate`
  * 가 deps.restart 미지정 시 이 콜백으로 분리 재시작한다(도구 경로 핵심).
  */
-export const setSelfUpdateRestart = (fn: () => void): void => {
+export const setSelfUpdateRestart = (fn: () => boolean | void): void => {
   registeredRestart = fn;
 };
 
 /** 재시작 콜백 해석 — 명시 deps.restart > 레지스트리 > noop(안전 기본값). */
-const resolveRestart = (deps: SelfUpdateDeps): (() => void) =>
+const resolveRestart = (deps: SelfUpdateDeps): (() => boolean | void) =>
   deps.restart ?? registeredRestart ?? ((): void => {});
 
 // Windows 는 npm 이 실행파일이 아니라 `npm.cmd`(배치 스크립트)라 `execFile("npm")` 이
@@ -699,7 +699,36 @@ export const runSelfUpdate = async (
     try {
       setTimeout(() => {
         try {
-          restart();
+          // ★재시작이 **중단**되면 사용자에게 말한다 (2026-08-15, 적대 검토 P10).
+          //  종전엔 반환값을 버렸다 — 윈도우에서 재기동 수단을 못 잡으면 새 코드는 디스크에
+          //  있고 데몬은 **옛 코드를 물고 계속 살아** 있는데, 사용자는 방금 "약 5초 후
+          //  재시작합니다 — 잠시 후 완료 알림이 옵니다" 를 받았고 **그 알림은 영영 안 온다**
+          //  (마커는 다음 부팅에만 소비된다). 사용자 신고 "업데이트해도 시작이 안 되고" 의
+          //  절반이 이 형태였다.
+          if (restart() === false) {
+            console.error(
+              "self-update: 재시작이 중단됐습니다 — 새 코드는 받았지만 **옛 코드로 계속 돕니다**.",
+            );
+            const dest = deps.notify;
+            if (dest !== undefined) {
+              void (async () => {
+                try {
+                  const { deliverOutbound } = await import("./outbound.js");
+                  await deliverOutbound({
+                    channel: dest.channel,
+                    target: dest.target,
+                    label: "self-update",
+                    text:
+                      "🔴 업데이트는 받았는데 **재시작을 못 했습니다** — 재기동 수단을 확보하지 못했어요.\n" +
+                      "지금 도는 건 **옛 코드**입니다(데몬은 살아 있습니다). 새 코드는 다음 기동 때 적용됩니다.\n" +
+                      "완료 알림은 오지 않습니다 — 로그(`/logs`)에 원인이 남아 있어요.",
+                  });
+                } catch {
+                  // 통지 실패는 치명 아님 — 위 console.error 가 이미 남겼다.
+                }
+              })();
+            }
+          }
         } catch (e) {
           console.error(
             `self-update: 재시작 트리거 실패: ${

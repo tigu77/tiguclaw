@@ -28,11 +28,11 @@
  * 어댑터 등록 가드: 각 어댑터가 `!toolsNone && depth === 0 && workerDepth === 0` turn 에만
  *  등록 — endpoint/worker 도구와 *동일* 가드. lean(toolsNone) 턴엔 미노출.
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import { promises as fs } from "node:fs";
 import { isSafeCapabilityName } from "./_names.js";
 import path from "node:path";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -246,7 +246,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
     },
   );
 
-  return createOurMcpServer({
+  return createSdkMcpServer({
     name: "commands",
     version: "1.0.0",
     tools: [registerCommand, listCommands, deleteCommand],

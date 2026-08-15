@@ -31,6 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { getPaths } from "./paths.js";
 
 /**
@@ -40,8 +41,18 @@ import { getPaths } from "./paths.js";
  *  - win32  = HKCU Run(로그온 전용) → respawn X ← graceful exit 만으론 안 살아남
  *  - 기타   = 알 수 없음 → 보수적으로 detached 재기동 시도(있으면 이득, 없어도 exit 진행)
  */
+/**
+ * ★**플랫폼별 판정을 인자로 받는다** (2026-08-15 2차, 적대 검토 P3). 종전엔 이 함수가
+ *  `process.platform` 을 직접 읽어, 검사가 **도는 기계의 플랫폼만** 볼 수 있었다. 그래서
+ *  `|| process.platform === "win32"` 를 넣어도(윈도우가 supervisor 있음으로 오판되면
+ *  detached respawn 을 아예 안 부르고 즉시 죽는다) mac/CI 에서는 **원리적으로 안 보였다**.
+ *  윈도우에서 도는 CI 는 없다. 표로 검사할 수 있게 인자를 받는 형태를 정의점으로 둔다.
+ */
+export const hasSupervisorRespawnOn = (platform: string): boolean =>
+  platform === "darwin" || platform === "linux";
+
 export const hasSupervisorRespawn = (): boolean =>
-  process.platform === "darwin" || process.platform === "linux";
+  hasSupervisorRespawnOn(process.platform);
 
 /**
  * 인스턴스별 self-restart 예약작업명. TIGUCLAW_SERVICE_LABEL(없으면 기본)에서 파생 —
@@ -99,6 +110,22 @@ export const shouldExitForRestart = (input: {
 export const spawnDetachedRestart = (source: string): boolean => {
   const vbsPath = path.join(getPaths().home, "win-launch.vbs");
   const taskName = selfRestartTaskName();
+
+  // ★**런처가 실재하는지 먼저 본다** (2026-08-15 2차, 적대 검토 P4). 종전엔 `schtasks` 가
+  //  명령 두 개를 받았다는 것만으로 "재기동 확보" 로 쳤다 — 그런데 작업이 실행할 VBS 가
+  //  없으면 schtasks 는 **정상 성공**하고(등록·발화 다 됨) 데몬은 그 말을 믿고 죽은 뒤
+  //  wscript 가 없는 파일을 연다 = **무기한 먹통**. 판정을 뒤집은 이 커밋이 막으려던 바로
+  //  그 결말이다.
+  //  ★같은 VBS 를 띄우는 CLI 쪽(`bin/daemon.mjs` winStart)은 이미 `existsSync` 로 먼저
+  //   확인하고 실패를 보고한다. **죽을지 말지를 정하는 쪽이 더 느슨했다** — 엄격도를 맞춘다.
+  //   (`daemon:uninstall` 은 데몬이 도는 중에도 VBS 를 지운다. 홈을 옮긴 경우도 마찬가지.)
+  if (!existsSync(vbsPath)) {
+    console.error(
+      `daemon: 재기동 런처가 없다 (${source}, ${vbsPath}) — 재시작을 **중단**한다. ` +
+        `\`tiguclaw install\` 로 런처를 복구하세요(윈도우엔 supervisor 가 없습니다).`,
+    );
+    return false;
+  }
   // ping 127.0.0.1 -n 5 ≈ 4s 지연(데몬 graceful 종료+포트해제 시간 확보) → wscript 숨김 VBS.
   //
   // ★2026-08-15: 이 액션 문자열의 `&`·`>`·중첩 따옴표가 schtasks 를 깨뜨린다고 보고 `.cmd`

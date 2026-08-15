@@ -30,11 +30,11 @@
  * 충돌 0. claude·codex 양 어댑터가 본 모듈을 호출한다 (claude 는 SDK 격리 모드라
  * `.claude` 자동발견 0 → discoverSkills 로 전체 인덱스 직접 구성, codex 도 동일).
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -531,7 +531,7 @@ export const createSkillInvokeMcpServer = (
     },
   );
 
-  return createOurMcpServer({
+  return createSdkMcpServer({
     name: "skills",
     version: "1.1.0",
     tools: [skillInvokeTool, findSkillsTool],

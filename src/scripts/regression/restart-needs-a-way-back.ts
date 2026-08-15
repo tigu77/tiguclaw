@@ -20,7 +20,11 @@
  *  그래서 순수 함수로 뽑았다 — "검사가 껄끄러우면 코드가 잘못 놓인 것".
  */
 import { readFile } from "node:fs/promises";
-import { hasSupervisorRespawn, shouldExitForRestart } from "../../core/restart.js";
+import {
+  hasSupervisorRespawn,
+  hasSupervisorRespawnOn,
+  shouldExitForRestart,
+} from "../../core/restart.js";
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -44,6 +48,25 @@ const run = async (): Promise<Assertion[]> => {
       "정상 경로 확인",
     ),
   );
+
+  // ── ①-b ★**세 플랫폼을 표로 고정한다** (적대 검토 P3) ───────────────────────
+  //  종전 ④는 `process.platform` 을 써서, **mac 에서 돌면 늘 초록**이었다. 그래서
+  //  `hasSupervisorRespawn()` 에 `|| win32` 를 넣어도(윈도우가 "supervisor 있음" 으로
+  //  오판 → spawnDetachedRestart 를 아예 안 부르고 즉시 죽음) 아무도 못 봤다. 윈도우에서
+  //  도는 CI 는 없으므로 **원리적으로 안 보이는 구멍**이었다. 리터럴 표로 본다.
+  for (const [platform, hasSupervisor] of [
+    ["darwin", true],
+    ["linux", true],
+    ["win32", false],
+  ] as const) {
+    out.push(
+      assert(
+        `${platform} 의 supervisor 판정이 고정돼 있다(기대 ${hasSupervisor})`,
+        hasSupervisorRespawnOn(platform) === hasSupervisor,
+        `실제 ${hasSupervisorRespawnOn(platform)}`,
+      ),
+    );
+  }
 
   // ── ② supervisor 있는 OS 는 **영향 없음** — 이 수정이 mac/linux 를 안 건드린다 ─
   //  종료가 곧 재기동이므로 respawn 인자와 무관하게 죽어야 한다. 여기서 조건이 섞이면
@@ -99,6 +122,103 @@ const run = async (): Promise<Assertion[]> => {
         "★schtasks 실패 시 원인(error)·작업명을 같이 남긴다",
         diag.ok,
         diag.ok ? "진단 필드 확인" : `누락 ${diag.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑥ ★**배선** — 판정 함수를 만들어놓고 호출부가 반환값을 버리면 사고가 되살아난다 ─
+  //  (적대 검토 P1) `_wiring.ts` 헤더가 이미 적어둔 부류인데 정작 이 검사가 restart.ts 만
+  //  보고 index.ts 는 한 줄도 안 봤다. 호출부를 `if (!hasSupervisorRespawn()) spawn(...)`
+  //  + `respawnArranged = true` 로 되돌리면 **한 줄로** 사고가 복귀하고 7건이 전부 초록이었다.
+  //  판정과 배선은 **같은 검사**에서 본다.
+  {
+    const wiring = await sourceHas("../../index.ts", [
+      /const respawnArranged = hasSupervisorRespawn\(\)\s*\?\s*true\s*:\s*spawnDetachedRestart\(source\);/,
+      /if \(!shouldExitForRestart\(\{ platform: process\.platform, respawnArranged \}\)\)/,
+      /return false;/,
+    ]);
+    out.push(
+      assert(
+        "★index.ts 배선이 판정 결과를 실제로 쓴다(반환값을 버리지 않는다)",
+        wiring.ok,
+        wiring.ok ? "배선 확인" : `누락 ${wiring.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑦ ★실패는 **false 로 취급**된다 (적대 검토 P2) ──────────────────────────
+  //  종전엔 로그 문자열만 봐서 "실패를 말하는가" 는 보고 "실패로 취급하는가" 는 안 봤다.
+  //  `return false` 를 `return true` 로 바꾸면 로그는 "재시작을 중단한다" 라고 찍으면서
+  //  실제로는 죽는다 — 이번 사고와 **똑같은 형상**(로그와 행동의 불일치)이다.
+  {
+    // ★각 실패 분기를 **문맥과 함께** 묶는다. `sourceOrder` 로 `/return false;/` 를 세 번
+    //  나열하면 같은 첫 위치만 봐서 성립하지 않는다(첫 판이 그렇게 틀렸다).
+    const branches = await sourceHas("../../core/restart.ts", [
+      /if \(!existsSync\(vbsPath\)\)[\s\S]{0,400}?return false;/,
+      /create\.status !== 0[\s\S]{0,700}?return false;/,
+      /run\.status !== 0[\s\S]{0,500}?return false;/,
+    ]);
+    out.push(
+      assert(
+        "★런처 부재·create 실패·run 실패는 전부 false 로 끝난다(로그만 찍고 살아나가지 않는다)",
+        branches.ok,
+        branches.ok ? "세 분기 확인" : `누락 ${branches.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑧ ★2단계 프로토콜(create→run) — /run 을 지우면 **자정에** 뜬다 (P5) ──────
+  //  작업은 `/sc once /st 00:00` 이라 즉시 실행(`/run`)이 없으면 최대 24시간 먹통이다.
+  {
+    const two = await sourceHas("../../core/restart.ts", [
+      /"\/create",/,
+      /"\/run",\s*"\/tn",/,
+    ]);
+    out.push(
+      assert(
+        "★예약작업을 만들고 **즉시 실행**한다(/run 없으면 자정까지 먹통)",
+        two.ok,
+        two.ok ? "create+run 확인" : `누락 ${two.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑨ ★런처 존재 확인 — schtasks 성공 ≠ 재기동 보장 (P4) ────────────────────
+  //  같은 VBS 를 띄우는 CLI(`winStart`)는 이미 확인한다. 죽을지 정하는 쪽이 더 느슨하면 안 된다.
+  {
+    const guard = await sourceHas("../../core/restart.ts", [/existsSync\(vbsPath\)/]);
+    out.push(
+      assert(
+        "★런처(VBS)가 없으면 재기동을 확보했다고 하지 않는다",
+        guard.ok,
+        guard.ok ? "존재 확인" : "★schtasks 성공만으로 죽는다",
+      ),
+    );
+  }
+
+  // ── ⑩ ★재시작 중단을 **한 채널만** 알지 않는다 (적대 검토 P10) ──────────────
+  //  종전엔 텔레그램 `/restart` 만 실패를 말했다. 대시보드 버튼(`control.restart`)과
+  //  `/update` 는 반환값을 **버렸다** — 특히 업데이트는 사용자가 "약 5초 후 재시작합니다,
+  //  잠시 후 완료 알림이 옵니다" 를 받은 뒤 **그 알림이 영영 안 오는** 형태였다(마커는
+  //  다음 부팅에만 소비된다). 사용자 신고 "업데이트해도 시작이 안 되고" 의 절반이 이것.
+  {
+    const su = await sourceHas("../../core/self-update.ts", [
+      /if \(restart\(\) === false\)/,
+      /재시작을 못 했습니다/,
+    ]);
+    out.push(
+      assert(
+        "★self-update 가 재시작 중단을 사용자에게 알린다(옛 코드로 돈다고 말한다)",
+        su.ok,
+        su.ok ? "통지 확인" : `누락 ${su.missing.join(" ")}`,
+      ),
+    );
+    const tg = await sourceHas("../../index.ts", [/if \(restartDaemon\(`telegram:\$\{msg\.channel\}`\)\) return;/]);
+    out.push(
+      assert(
+        "텔레그램 /restart 도 중단을 말한다",
+        tg.ok,
+        tg.ok ? "통지 확인" : `누락 ${tg.missing.join(" ")}`,
       ),
     );
   }

@@ -1086,6 +1086,19 @@
         white-space:pre-wrap; overflow-wrap:anywhere; overflow:hidden;
         color:var(--text-mute); opacity:.62; pointer-events:none; user-select:none; }
       .grow-wrap > #chat-ghost[hidden] { display:none; }
+      /* 제안 수락 버튼 — 입력창 오른쪽 끝. 고스트(pointer-events:none)와 달리 **누를 수
+         있어야** 하므로 별도 노드다. ★모바일에서 "입력창을 탭하면 자동 수락" 을 대체한다:
+         그냥 쓰려고 눌렀는데 제안이 들어오던 것이 사라지고, 수락은 명시적 행동 하나가 된다.
+         입력창 터치는 브라우저 기본 그대로라 iOS 키보드 문제(2026-08-10)가 재발하지 않는다. */
+      .grow-wrap > #chat-ghost-accept {
+        grid-area:1 / 1 / 2 / 2; justify-self:end; align-self:start; margin:5px 6px 0 0;
+        width:26px; height:26px; padding:0; border-radius:8px; cursor:pointer;
+        display:flex; align-items:center; justify-content:center;
+        background:var(--panel-solid); color:var(--text);
+        border:1px solid rgba(125,211,252,.45); font-size:14px; line-height:1; font-family:inherit;
+        opacity:.85; }
+      .grow-wrap > #chat-ghost-accept:hover { opacity:1; border-color:rgba(125,211,252,.85); }
+      .grow-wrap > #chat-ghost-accept[hidden] { display:none; }
       /* 모델 프로파일 드롭다운(탭별 sticky, ADR model-dropdown §3) — 컴포저 버튼과 동형 톤. */
       /* 모델 프로파일 빠른선택 — 솔리드 다크 bg(네이티브 팝업이 밝게 렌더돼 밝은 글자가
          안 보이던 것 fix, 2026-07-19) + 액센트 테두리(디스커버빌리티). */

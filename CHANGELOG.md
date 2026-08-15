@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-15
+
+### Added
+
+- **다음 메시지 제안에 수락 버튼** — 제안 옆 `→` 를 누르면 입력창에 채워집니다(전송은 여전히
+  직접). 모바일에서 입력창을 탭하는 것만으로 제안이 들어오던 동작을 대체했습니다.
+- **`WebFetch(prompt)` 가 실제로 동작** — 받아온 문서에 지시를 돌려 답만 돌려줍니다(토큰 절약).
+  그 답에는 **출처 표시**가 붙습니다 — 외부 문서에서 나온 내용이라 검증된 사실이 아닙니다.
+- **모델별 추론 강도**(`models.reasoning`) — 세 어댑터 모두에서 같은 설정이 먹습니다.
+  지정하지 않으면 백엔드가 말한 기본값을 그대로 씁니다.
+- **할일 카드** — 접히면 진행 상황 한 줄, 펼치면 목록. 어느 모델로 돌든 같은 모양입니다.
+
+### Changed
+
+- **도구를 접지 않습니다** — 도구 목록을 매번 전부 싣습니다. 이름을 이미 아는 도구의 스키마를
+  열려고 추가 왕복을 하던 것이 사라졌습니다. 외부 MCP 서버 설정의 `alwaysLoad` 는 무시합니다
+  (켜면 매 턴 연결까지 기다리게 됩니다).
+- **백그라운드 작업을 취소하면 비서가 압니다** — 실패가 아니라 취소로 보고하고, 되돌리거나
+  다시 시작하지 않습니다.
+- **한도 리셋 안내가 시각으로** — `약 8118분 후` 대신 `8월 20일 오후 2시 31분쯤 (약 5.1일 후)`.
+- 오래 걸리는 도구 통지가 "멈춰 있어요" 로 단정하지 않습니다(정상일 수 있다고 먼저 말합니다).
+
+### Fixed
+
+- **재시작이 보장될 때만 종료합니다** — 재기동 수단을 확보하지 못하면 데몬을 유지하고 알립니다.
+  자동 재기동이 없는 환경(Windows)에서 재시작 한 번에 무기한 멈추던 문제를 막습니다.
+- **기동 결과를 확인하고 보고합니다** — 포트가 열렸는지, 그게 우리 데몬인지 확인한 뒤에만
+  성공을 표시합니다. 업데이트가 재가동에 실패하면 성공으로 요약하지 않습니다.
+- **마스킹이 토큰 뒤를 지우지 않습니다** — `Bearer …` 뒤 문장이 조용히 사라지던 문제와,
+  `id:secret`·URL 인코딩 토큰이 절반만 가려지던 문제를 함께 고쳤습니다.
+- 큰 인자를 만드는 도구가 "무진전" 으로 잘못 중단되던 문제.
+- 도구 반복 상한이 아무 기록 없이 발동하던 문제.
+
+
 ## [0.28.0] - 2026-08-13
 
 ### Added
@@ -1113,7 +1147,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/tigu77/tiguclaw/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/tigu77/tiguclaw/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/tigu77/tiguclaw/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/tigu77/tiguclaw/compare/v0.25.0...v0.26.0

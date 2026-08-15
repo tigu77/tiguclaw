@@ -1,139 +1,135 @@
 /**
- * 회귀: **우리 도구는 접히지 않는다** — claude 만 `ToolSearch` 왕복을 하던 것 (2026-08-15).
+ * 회귀: **우리 도구는 접히지 않고, 외부 서버는 매 턴을 막지 않는다** (2026-08-15).
  *
- * 사고: SDK 기본값은 MCP 도구를 **접고**(`defer_loading`) `ToolSearch` 로 열게 한다.
- * 실측한 `ToolSearch` 호출이 **전부 `select:` 형태**였다 —
- *   `select:mcp__file-ops__Bash` · `select:mcp__skills__invoke_skill` · `select:mcp__memory__read_memory`
- * 즉 "뭐가 있지?" 를 묻는 **탐색이 아니라**, 이름을 이미 아는 도구의 스키마를 여는 **왕복**
- * 이다. 그것도 우리 최다 사용 도구(`Bash` 450회)에 대해.
+ * 사고: SDK 기본값은 MCP 도구를 접고(`defer_loading`) `ToolSearch` 로 열게 한다. 관측된
+ * `ToolSearch` 호출이 **전부 `select:` 형태**였다 — `select:mcp__file-ops__Bash`,
+ * `select:mcp__skills__invoke_skill`. 이름을 이미 아는 도구의 스키마를 여는 **왕복**이지
+ * 탐색이 아니다. 그것도 최다 사용 도구(`Bash` 450회)에 대해.
  *
- * ★결정적 근거는 **어댑터 비대칭**이다(사용자 지적): `ToolSearch` 는 claude(SDK)에만 있고
- *  codex·openai 엔 없다. 그런데 codex 는 같은 48개를 **전부 펼친 채로 잘 돈다**(실측:
- *  매 호출 `tools 22,525자` 고정, 전체 요청의 10~16%, 매번 동일해 프리픽스 캐시 대상).
- *  같은 도구 집합인데 한쪽만 접고 있고 **안 접는 쪽이 멀쩡하다** — 접는 게 필요한 능력이라는
- *  근거가 없다. 필요했다면 세 어댑터 공통으로 만들었어야 하고, 아니면 claude 도 안 쓰는 게
- *  맞다. 후자를 택했다.
+ * ★근거는 **어댑터 비대칭**이다(사용자 지적): `ToolSearch` 는 claude 에만 있고 codex·openai
+ *  엔 없다. 그런데 codex 는 같은 48개를 전부 펼친 채 잘 돈다(실측 `tools 22,525자` 고정,
+ *  매 호출 동일 = 프리픽스 캐시 대상). 같은 집합인데 한쪽만 접고 안 접는 쪽이 멀쩡하면
+ *  접는 게 필요한 능력이라는 근거가 없다.
  *
- * ★스킬은 이 축이 아니다 — 스킬은 도구가 아니라 **인덱스**(`SKILL_INDEX_CAP=40`)로 실리고
- *  본문은 `invoke_skill` 로 부를 때 온다. 그 접기 규칙은 우리가 만들었고 3어댑터 공통이다.
+ * ★**정책을 소비 경계로 옮긴 이유**(적대 검토 지적). 처음엔 우리 서버 20곳을 감싸는
+ *  헬퍼로 생성 때 표식을 붙였다. 그건 "손으로 관리하는 목록" 의 변형이었다 —
+ *    ①`createSdkMcpServer` 를 **별칭으로 import** 하면 정의점 검사(문자열 grep)가 못 봤고
+ *      (실증: `as makeMcpServer` 로 바꾸니 1,063건 전부 초록인데 표식은 전멸)
+ *    ②레포 **밖** 생산자(`<home>/plugins` 사용자 플러그인)는 원리적으로 못 닫으며
+ *    ③`mcp.json` 의 `alwaysLoad` 는 검증 없이 SDK 로 들어가 **매 턴 최대 5초** 연결 대기.
+ *  소비 경계 한 곳에서 처리하니 셋이 동시에 닫히고, **문자열 검사 두 개를 폐기**했다.
+ *  이 파일도 그래서 소스 grep 이 아니라 **정책 함수를 실제로 돌린다**.
  */
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import { readFile, readdir } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { createOurMcpServer } from "../../core/llm-runtime/capabilities/_our-mcp.js";
+import { applyToolLoadPolicy } from "../../core/llm-runtime/tool-load-policy.js";
 import { createFileOpsMcpServer } from "../../core/llm-runtime/capabilities/file-ops-mcp.js";
+import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const ALWAYS_LOAD_META = "anthropic/alwaysLoad";
 
 /** 등록된 도구들의 `_meta` — SDK 내부 구조지만 이게 유일한 관측면이다. */
-const toolMetas = (srv: unknown): Record<string, unknown>[] => {
+const metas = (srv: unknown): Record<string, unknown>[] => {
   const inst = (srv as Record<string, unknown>).instance as Record<string, unknown>;
   const reg = (inst?._registeredTools ?? {}) as Record<string, Record<string, unknown>>;
   return Object.values(reg).map((t) => (t._meta ?? {}) as Record<string, unknown>);
 };
+const allStamped = (srv: unknown): boolean => {
+  const m = metas(srv);
+  return m.length > 0 && m.every((x) => x[ALWAYS_LOAD_META] === true);
+};
 
-const probeTool = tool(
-  "t",
-  "d",
-  { a: z.string() },
-  async () => ({ content: [{ type: "text" as const, text: "x" }] }),
-);
+const mkServer = (name: string): unknown =>
+  createSdkMcpServer({
+    name,
+    version: "1.0.0",
+    tools: [
+      tool("t", "d", { a: z.string() }, async () => ({
+        content: [{ type: "text" as const, text: "x" }],
+      })),
+    ],
+  });
 
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
 
-  // ── ① 우리 헬퍼는 실제로 표식을 붙인다 — SDK 기본과 **다르다** ────────────────
-  //  대조군이 없으면 "원래 그런 것" 과 구분이 안 된다.
-  const ours = createOurMcpServer({ name: "probe", version: "1.0.0", tools: [probeTool] });
-  const plain = createSdkMcpServer({ name: "probe", version: "1.0.0", tools: [probeTool] });
+  // ── ① SDK 기본은 안 붙는다 — 대조군(우리가 뭔가 하고 있다는 증거) ────────────
   out.push(
     assert(
-      "★우리 서버의 도구엔 alwaysLoad 표식이 붙는다",
-      toolMetas(ours).every((m) => m[ALWAYS_LOAD_META] === true),
-      JSON.stringify(toolMetas(ours)[0]),
-    ),
-  );
-  out.push(
-    assert(
-      "SDK 기본은 안 붙는다(대조군 — 우리가 뭔가 하고 있다는 증거)",
-      toolMetas(plain).every((m) => m[ALWAYS_LOAD_META] === undefined),
-      JSON.stringify(toolMetas(plain)[0] ?? {}),
+      "SDK 기본 서버는 표식이 없다(대조군)",
+      !allStamped(mkServer("plain")),
+      JSON.stringify(metas(mkServer("plain"))[0] ?? {}),
     ),
   );
 
-  // ── ② ★실제 서버에도 붙는다 — 헬퍼만 고치고 호출부를 안 바꾼 상태 방지 ───────
-  const fileOps = createFileOpsMcpServer(REPO);
-  const metas = toolMetas(fileOps);
-  out.push(
-    assert(
-      "★실제 file-ops 서버의 도구 전부가 안 접힌다(호출부까지 전환됐다)",
-      metas.length > 0 && metas.every((m) => m[ALWAYS_LOAD_META] === true),
-      `도구 ${metas.length}개 · 표식 ${metas.filter((m) => m[ALWAYS_LOAD_META] === true).length}개`,
-    ),
-  );
-
-  // ── ③ ★정의점이 하나다 — 새 서버가 정책을 우회하지 못한다 ────────────────────
-  //  20곳에 손으로 `alwaysLoad: true` 를 붙였다면 21번째에서 빠진다(손으로 관리하는
-  //  목록 = 드리프트 신호). 그래서 **직접 호출 금지**를 판정으로 검사한다.
+  // ── ② ★정책을 지나면 표식이 붙는다 — **생성 방법과 무관하게** ────────────────
+  //  이게 핵심이다: 사용자 플러그인이 SDK 문서대로 `createSdkMcpServer` 를 써도,
+  //  별칭으로 import 해도, 소비 경계를 지나므로 똑같이 펼쳐진다.
   {
-    const offenders: string[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      for (const e of await readdir(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          if (!/node_modules|dist|\.git/.test(p)) await walk(p);
-          continue;
-        }
-        if (!p.endsWith(".ts")) continue;
-        if (p.endsWith("_our-mcp.ts") || p.includes("scripts/regression")) continue;
-        const src = (await readFile(p, "utf8"))
-          .replace(/\/\*[\s\S]*?\*\//g, "")
-          .replace(/^\s*\/\/.*$/gm, "");
-        if (/\bcreateSdkMcpServer\s*\(/.test(src)) offenders.push(path.relative(REPO, p));
-      }
-    };
-    await walk(path.join(REPO, "src"));
-    await walk(path.join(REPO, "plugins"));
+    const applied = applyToolLoadPolicy({ mine: mkServer("mine"), plugin: mkServer("plugin") });
     out.push(
       assert(
-        "★우리 서버는 전부 정의점(createOurMcpServer)을 지난다",
-        offenders.length === 0,
-        offenders.length === 0 ? "직접 호출 0곳" : `★우회: ${offenders.join(", ")}`,
+        "★정책을 지난 in-process 서버는 전부 펼쳐진다(생성 방법 무관)",
+        allStamped(applied.mine) && allStamped(applied.plugin),
+        `mine=${allStamped(applied.mine)} plugin=${allStamped(applied.plugin)}`,
       ),
     );
   }
 
-  // ── ④ ★외부 MCP 서버엔 켜지 않는다 — 부팅이 연결까지 블로킹된다 ─────────────
-  //  SDK 문서 명시: 켜면 turn-1 프롬프트에 도구가 있어야 해서 서버 연결까지 **부팅이
-  //  막힌다**(최대 5초). 우리 in-process 서버는 연결이 즉시라 그 대가가 없지만, 사용자가
-  //  등록한 stdio/http 서버에 켜면 그 대가를 그대로 문다.
+  // ── ③ ★실제 서버(file-ops)도 정책을 지나면 전부 펼쳐진다 ─────────────────────
   {
-    const hits: string[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      for (const e of await readdir(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) {
-          if (!/node_modules|dist|\.git/.test(p)) await walk(p);
-          continue;
-        }
-        if (!p.endsWith(".ts") || p.includes("scripts/regression")) continue;
-        const src = (await readFile(p, "utf8"))
-          .replace(/\/\*[\s\S]*?\*\//g, "")
-          .replace(/^\s*\/\/.*$/gm, "");
-        if (/alwaysLoad/.test(src)) hits.push(path.relative(REPO, p));
-      }
-    };
-    await walk(path.join(REPO, "src"));
-    await walk(path.join(REPO, "plugins"));
+    const applied = applyToolLoadPolicy({ "file-ops": createFileOpsMcpServer(process.cwd()) });
+    const m = metas(applied["file-ops"]);
     out.push(
       assert(
-        "★alwaysLoad 는 우리 정의점 한 곳에만 있다(외부 MCP 로 새지 않는다)",
-        hits.length === 1 && hits[0]?.endsWith("_our-mcp.ts") === true,
-        hits.join(", "),
+        "★실제 file-ops 도구 전부가 안 접힌다",
+        m.length > 0 && m.every((x) => x[ALWAYS_LOAD_META] === true),
+        `도구 ${m.length}개 · 표식 ${m.filter((x) => x[ALWAYS_LOAD_META] === true).length}개`,
+      ),
+    );
+  }
+
+  // ── ④ ★외부 서버의 alwaysLoad 는 **떼어낸다** — 매 턴 5초 대기 방지 ──────────
+  //  `mcp.json`/`.mcp.json` 은 우리가 안 쓴 파일일 수 있다(남의 레포 것). 검증 없이
+  //  SDK 로 넘기면 turn-1 프롬프트를 만들 때 서버 연결까지 막힌다. 옵션을 매 턴 새로
+  //  조립하므로 부팅 1회가 아니라 **매 턴**이다.
+  {
+    const applied = applyToolLoadPolicy({
+      unity: { command: "npx", args: ["-y", "mcp-unity"], alwaysLoad: true },
+      plain: { command: "npx", args: ["-y", "other"] },
+    });
+    out.push(
+      assert(
+        "★외부 stdio 서버의 alwaysLoad 가 제거된다(매 턴 연결 대기 방지)",
+        !("alwaysLoad" in (applied.unity as Record<string, unknown>)),
+        JSON.stringify(applied.unity),
+      ),
+    );
+    out.push(
+      assert(
+        "그 외 필드는 그대로 둔다(우리가 남의 설정을 재구성하지 않는다)",
+        (applied.unity as { command?: string }).command === "npx" &&
+          JSON.stringify(applied.plain) === JSON.stringify({ command: "npx", args: ["-y", "other"] }),
+        JSON.stringify(applied.plain),
+      ),
+    );
+  }
+
+  // ── ⑤ ★SDK 내부 구조가 바뀌면 **여기가 먼저 빨간불**이다 ────────────────────
+  //  표식은 SDK 내부(`_registeredTools[*]._meta`)를 만져서 찍는다. 그 구조가 바뀌면
+  //  정책이 조용히 무력화되므로, 그 사실을 이 검사가 알린다(②③이 곧바로 실패한다).
+  //  여기서는 **한 곳에서만 정책을 건다**는 것을 고정한다 — 호출이 흩어지면 다시
+  //  "손으로 관리하는 목록" 이 된다.
+  {
+    const wiring = await sourceHas("../../core/llm-runtime/adapters/claude-agent-sdk.ts", [
+      /mcpServers: applyToolLoadPolicy\(\{/,
+    ]);
+    out.push(
+      assert(
+        "★정책이 어댑터의 mcpServers 조립 지점에 걸린다",
+        wiring.ok,
+        wiring.ok ? "소비 경계 확인" : `누락 ${wiring.missing.join(" ")}`,
       ),
     );
   }
@@ -144,6 +140,6 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "tools-are-not-deferred",
   guards:
-    "claude 만 SDK 규칙으로 도구를 접어, 이름을 이미 아는 도구(Bash·invoke_skill·read_memory)의 스키마를 ToolSearch 왕복으로 열던 것 — codex 는 같은 48개를 전부 펼친 채 멀쩡히 돈다",
+    "claude 만 SDK 규칙으로 도구를 접어 이름을 이미 아는 도구(Bash·invoke_skill)의 스키마를 ToolSearch 왕복으로 열던 것 + 외부 mcp.json 의 alwaysLoad 가 매 턴 최대 5초 연결 대기를 만들던 것",
   run,
 };

@@ -11,9 +11,9 @@
  *
  * LLM-agnostic: claude·codex·openai 세 어댑터에 **같은 의미**로 등록된다(어댑터 분기 0).
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import { z } from "zod";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -101,7 +101,7 @@ export const createSessionToolsMcpServer = (
     },
   );
 
-  return createOurMcpServer({
+  return createSdkMcpServer({
     name: "session-tools",
     version: "1.0.0",
     tools: [renameTool, listTool],

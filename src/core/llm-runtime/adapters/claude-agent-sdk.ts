@@ -132,6 +132,7 @@ import {
 } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
 import { resolveReasoningEffort } from "../model-catalog.js";
+import { applyToolLoadPolicy } from "../tool-load-policy.js";
 import { createTodoMcpServer, SDK_TODO_TOOL_NAMES } from "../capabilities/todo-mcp.js";
 import { SDK_SKILL_TOOL_NAMES } from "../capabilities/skill-registry.js";
 import {
@@ -888,7 +889,11 @@ export const runClaude = async (
       //  그래서 SDK 의 좁은 union 대신 느슨한 형태로 펼친다.
       return e === undefined ? {} : { effort: e };
     })()),
-    mcpServers: {
+    // ★도구 노출 정책은 **여기 한 곳**에서 건다 (2026-08-15) — 우리 것·사용자 플러그인은
+    //  펼치고(접히면 ToolSearch 왕복이 생긴다), 외부 stdio/http 서버의 `alwaysLoad` 는
+    //  떼어낸다(켜면 매 턴 연결까지 최대 5초 막힌다). 생성부 20곳에 손으로 붙이던 것을
+    //  소비 경계로 옮겨, 레포 밖 생산자까지 자동으로 덮는다.
+    mcpServers: applyToolLoadPolicy({
       ...leanMcpServers,
       ...externalMcpServers,
       // ★셸을 우리 도구로 일원화 (2026-08-09). SDK 빌트인 Bash 는 서브프로세스 안에서 돌아
@@ -916,7 +921,7 @@ export const runClaude = async (
               input.extraMcpServers,
             ),
           }),
-    },
+    }),
     ...(resumable ? { resume: prior.claudeSessionId } : {}),
   };
 

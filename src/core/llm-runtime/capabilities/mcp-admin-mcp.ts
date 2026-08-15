@@ -9,11 +9,11 @@
  * 명시하고, 비서는 SYSTEM.md(파괴적=명시승인) 대로 add 전 사용자 확인해야 한다(soft-gate,
  * 하드 훅 아님). 3어댑터 동일 등록(#2) — depth0 게이트는 어댑터가.
  */
-import { createOurMcpServer } from "./_our-mcp.js";
 import path from "node:path";
 import { listProjects } from "../../../store/projects.js";
 import { z } from "zod";
 import {
+  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -32,7 +32,7 @@ const errText = (text: string) => ({
 });
 
 export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
-  createOurMcpServer({
+  createSdkMcpServer({
     name: "mcp-admin",
     version: "1.0.0",
     tools: [

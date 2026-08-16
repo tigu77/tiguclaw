@@ -1432,17 +1432,38 @@ export const runClaude = async (
                   : {}),
               // 턴 합계는 누적값 그대로. num_turns 를 iterations 로 실어야 소비처
               // (대시보드 카드·벤치)가 "여러 호출짜리 턴" 임을 알고 Total 을 쓴다.
-              ...(usageEntry !== undefined && cumInput > 0
-                ? {
-                    iterations:
-                      typeof msg.num_turns === "number" ? msg.num_turns : 2,
-                    inputTokensTotal: cumInput,
-                    ...(cumOutput > 0 ? { outputTokensTotal: cumOutput } : {}),
-                    ...(typeof cumCached === "number"
-                      ? { cachedTokensTotal: cumCached }
-                      : {}),
-                  }
-                : {}),
+              // ★`usageEntry` 가 없어도 **합계를 비워두지 않는다** (2026-08-16).
+              //  종전엔 `usageEntry !== undefined && cumInput > 0` 일 때만 `*Total` 을 달았다.
+              //  그런데 게이트웨이 턴은 `result.modelUsage` 가 비는 경우가 있어(실측: 24시간
+              //  200턴 중 **172턴**이 `*Total` 없이 기록됨) 세는 쪽이 그 턴을 **통째로 0으로**
+              //  읽었다. 사용량을 물었을 때 답이 틀리는데 **에러도 로그도 없다** — 오늘
+              //  그것 때문에 같은 질문에 두 번 틀린 답을 했다.
+              //  ★한 번 호출로 끝난 턴은 **호출값이 곧 턴 합계**다(이 파일의 함수콜 경로가
+              //   이미 같은 판단을 쓴다). 누적값이 있으면 그걸, 없으면 호출값으로 채운다.
+              //   "모르면 비워둔다" 는 여기서 틀린 선택이다 — 소비처가 0으로 읽기 때문이다.
+              ...((): Record<string, number> => {
+                const haveCum = usageEntry !== undefined && cumInput > 0;
+                const inTot = haveCum ? cumInput : perCall?.input;
+                if (inTot === undefined) return {};
+                const outTot = haveCum ? cumOutput : perCall?.output;
+                const caTot = haveCum
+                  ? typeof cumCached === "number"
+                    ? cumCached
+                    : undefined
+                  : perCall?.cacheRead;
+                return {
+                  iterations: haveCum
+                    ? typeof msg.num_turns === "number"
+                      ? msg.num_turns
+                      : 2
+                    : 1,
+                  inputTokensTotal: inTot,
+                  ...(outTot !== undefined && outTot > 0
+                    ? { outputTokensTotal: outTot }
+                    : {}),
+                  ...(caTot !== undefined ? { cachedTokensTotal: caTot } : {}),
+                };
+              })(),
             };
           }
         }

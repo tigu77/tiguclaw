@@ -26,6 +26,15 @@ export const check: RegressionCheck = {
   guards:
     "claude 가 inputTokens 에 턴 누적합을 실어 /status 컨텍스트 %가 0% 또는 3293% 로 틀리던 것(두 방향 모두)",
   run: async (): Promise<Assertion[]> => {
+    // 옛 형태 재도입 감시용 — 주석은 벗긴다(설명하는 글이 판정을 흔들면 안 된다).
+    const { readFile } = await import("node:fs/promises");
+    const { stripComments } = await import("./_wiring.js");
+    const claudeCode = stripComments(
+      await readFile(
+        new URL("../../core/llm-runtime/adapters/claude-agent-sdk.ts", import.meta.url),
+        "utf8",
+      ),
+    );
     const claude = await sourceHas(
       "../../core/llm-runtime/adapters/claude-agent-sdk.ts",
       [
@@ -36,7 +45,15 @@ export const check: RegressionCheck = {
         /if \(typeof parentToolUseId !== "string"\) \{/,
         // inputTokens 는 **호출 단위**, Total 은 누적 — 두 축을 섞지 않는다.
         /inputTokens: perCall\?\.input \?\? cumInput,/,
-        /inputTokensTotal: cumInput,/,
+        // ★2026-08-16: 합계를 **비워두지 않는다**. 종전엔 `usageEntry` 가 없으면 `*Total`
+        //  을 통째로 생략했는데, 게이트웨이 턴은 그게 비는 경우가 있어 24시간 200턴 중
+        //  **172턴**이 합계 없이 기록됐고 세는 쪽이 **0으로** 읽었다. 사용량을 물었을 때
+        //  답이 틀리는데 에러도 로그도 없다("조용한" 부류). 한 번 호출로 끝난 턴은
+        //  **호출값이 곧 턴 합계**다 — 이 어댑터의 함수콜 경로가 이미 같은 판단을 쓴다.
+        /const inTot = haveCum \? cumInput : perCall\?\.input;/,
+        /inputTokensTotal: inTot,/,
+        // 단발 호출 턴은 iterations=1 로 정직하게(2 로 지어내지 않는다).
+        /iterations: haveCum[\s\S]{0,200}?: 1,/,
         // ★출력량의 최종값은 `message_delta` 에서 온다 (2026-08-05, SDK 0.3 부작용).
         //  0.3 부터 `assistant` 메시지 usage 는 **message_start 스냅샷**이라
         //  `output_tokens: 1` 플레이스홀더다. 그걸 쓰면 **모든 턴의 outputTokens 가 1 로
@@ -56,6 +73,11 @@ export const check: RegressionCheck = {
         "★claude 가 호출 단위(inputTokens)와 턴 합계(*Total)를 분리해 싣는다",
         claude.ok,
         claude.ok ? "5개 배선 확인" : `누락 ${claude.missing.join(" ")}`,
+      ),
+      assert(
+        "★합계를 비워두지 않는다(집계가 조용히 0이 되던 것 — 24h 172턴)",
+        !/\.\.\.\(usageEntry !== undefined && cumInput > 0\s*\?\s*\{/.test(claudeCode),
+        "옛 조건(합계 통째 생략) 0곳",
       ),
       assert(
         "★캐시 적중률 판정이 어댑터 무관 한 곳에서 실제로 호출된다",

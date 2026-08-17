@@ -106,8 +106,28 @@ const run = async (): Promise<Assertion[]> => {
   }
 
   // ── ⑤ 의존성-프리 유지 — 확인 때문에 import 가 늘면 최후 복구가 깨진다 ──────
-  const imports = [...src.matchAll(/^import .* from "([^"]+)";$/gm)].map((m) => m[1] ?? "");
+  // ★**표기를 세지 않고 참조를 센다** (2026-08-17, 전체검토 D). 종전 정규식
+  //  `/^import .* from "([^"]+)";$/gm` 은 **한 줄 + 쌍따옴표 + 줄 끝 `";`** 만 봤다.
+  //  실물의 `node:fs` import 가 여러 줄이라 **원래도 안 세지고 있었다** — detail 이
+  //  "import 4개" 라고 실제(5개)보다 적게 보고했다. 게이트가 자기 눈이 좁은 걸 숫자로
+  //  드러내고 있었는데 아무도 안 봤다. 그리고 여러 줄 import 로 croner 를 넣으면
+  //  8단언이 전부 초록인 채 `bin/daemon.mjs` 가 **실행 불가**가 됐다(실측).
+  //  ★`from "…"`·`from '…'`·`await import("…")` 를 전부 훑는다(표기 무관). 주석은 이미
+  //   `code` 에서 벗겨져 있으므로 "왜 안 쓰는지" 설명하는 글이 판정을 흔들지 않는다.
+  const imports = [
+    ...[...code.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1] ?? ""),
+    ...[...code.matchAll(/import\(\s*["']([^"']+)["']/g)].map((m) => m[1] ?? ""),
+  ];
   const nonBuiltin = imports.filter((m) => !m.startsWith("node:"));
+  // ★**0을 세면 그것도 실패다** — 정규식이 낡아 아무것도 못 세면 "비빌트인 0" 이 되어
+  //  조용히 통과한다(반대편 오탐). 실물엔 최소 5개가 있으므로 하한을 둔다.
+  out.push(
+    assert(
+      "★import 를 실제로 세고 있다(정규식이 낡아 0을 세면 그것도 실패)",
+      imports.length >= 5,
+      `${imports.length}개 발견: ${imports.join(", ")}`,
+    ),
+  );
   out.push(
     assert(
       "★빌트인만 쓴다(깨진 node_modules 에서도 도는 최후 복구 경로)",

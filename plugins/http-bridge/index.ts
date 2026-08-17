@@ -2276,16 +2276,39 @@ class HttpBridge implements Channel, Observer {
         const rel = decodeURIComponent(pathname.slice("/attachments/".length));
         const dir = getPaths().attachmentsDir;
         const abs = path.resolve(dir, rel);
-        if (!(abs === dir || abs.startsWith(dir + path.sep))) {
+        // ★**심링크를 풀고 다시 검사한다** (2026-08-17, 전체검토 C-L1 실증).
+        //  `path.resolve` + 접두 비교는 `..` 는 막지만 **심링크는 못 막는다** — 첨부
+        //  디렉터리 안의 링크 하나로 홈 밖 파일이 200 으로 나갔다(실측:
+        //  `GET /attachments/link.txt` → 홈 밖 파일 내용, 로그 0줄).
+        //  ★같은 파일의 `/open-path` 는 이미 `realpathSync` 로 풀고 다시 검사하며 회귀가
+        //   그걸 강제한다(`open-path-safety`). 두 경로가 같은 파일 안에서 비대칭이었고
+        //   하필 **파일 내용을 밖으로 내보내는 쪽**이 약했다 — 엄격도를 맞춘다.
+        //  ★없는 파일은 realpath 가 throw 한다 → 404 로(존재 여부를 403/404 로 흘리지 않게
+        //   기존 흐름 유지: 아래 readFile 이 null 이면 404).
+        let real: string;
+        try {
+          real = nodeFs.realpathSync(abs);
+        } catch {
+          writeJson(res, 404, { error: "not found" });
+          return;
+        }
+        const realDir = ((): string => {
+          try {
+            return nodeFs.realpathSync(dir);
+          } catch {
+            return dir;
+          }
+        })();
+        if (!(real === realDir || real.startsWith(realDir + path.sep))) {
           writeJson(res, 403, { error: "forbidden" });
           return;
         }
-        const buf = await fs.readFile(abs).catch(() => null);
+        const buf = await fs.readFile(real).catch(() => null);
         if (buf === null) {
           writeJson(res, 404, { error: "not found" });
           return;
         }
-        const ext = path.extname(abs).replace(/^\./, "").toLowerCase();
+        const ext = path.extname(real).replace(/^\./, "").toLowerCase();
         const ctype = CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream";
         // ★inline 실행 차단 3종 (2026-07-31 전체검토 P0):
         //  ①nosniff — 브라우저가 내용을 보고 타입을 추측(sniff)해 HTML/SVG 로 실행하는 것 차단.

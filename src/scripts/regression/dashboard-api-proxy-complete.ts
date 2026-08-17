@@ -36,7 +36,17 @@ export const check: RegressionCheck = {
     const called = new Set<string>();
     for (const f of readdirSync(path.join(DASH, "js")).filter((n) => n.endsWith(".js"))) {
       const src = readFileSync(path.join(DASH, "js", f), "utf8");
-      for (const m of src.matchAll(/["'`](\/api\/[a-z0-9-]+)/gi)) called.add(m[1]);
+      // ★**다중 세그먼트를 본다** (2026-08-17, 전체검토 C-4). 종전엔 `[a-z0-9-]+` 라
+      //  한 세그먼트만 잡아 `/api/projects/detail` 이 `/api/projects` 로 **축약**됐고,
+      //  그건 프록시에 있으니 초록이었다 — 사각지대에 `/api/projects/detail`,
+      //  `/api/projects/capability`, `/api/attachments/...` 셋이 들어 있었다.
+      //  (템플릿 보간 `${…}` 이 오면 그 앞까지만 잡힌다 — 접두 매칭 쪽에서 커버된다.)
+      //  ★끝 슬래시는 떼고 모은다 — `"/api/attachments/" + a.rel` 처럼 **이어붙이는** 호출은
+      //   슬래시로 끝나는데, 배선 판정이 `startsWith("<경로>/")` 라 그대로 두면 `//` 가 되어
+      //   있는 배선을 못 맞춘다(이 정규식을 넓히자마자 그 오탐이 나왔다).
+      for (const m of src.matchAll(/["'`](\/api\/[a-z0-9\-/]+)/gi)) {
+        called.add((m[1] ?? "").replace(/\/+$/, ""));
+      }
     }
     out.push(
       assert(
@@ -67,8 +77,8 @@ export const check: RegressionCheck = {
     // 반대 방향 — 프록시에만 있고 아무도 안 부르는 경로는 **죽은 코드**다. 치명적이지 않아
     //  경고 대신 세어만 두면 다음 사람이 "이건 뭐지"에 시간을 쓴다. 목록으로 남긴다.
     const proxied = new Set([
-      ...[...proxy.matchAll(/pathname === "(\/api\/[a-z0-9-]+)"/gi)].map((m) => m[1]),
-      ...[...proxy.matchAll(/pathname\.startsWith\("(\/api\/[a-z0-9-]+)\//gi)].map((m) => m[1]),
+      ...[...proxy.matchAll(/pathname === "(\/api\/[a-z0-9\-/]+)"/gi)].map((m) => m[1]),
+      ...[...proxy.matchAll(/pathname\.startsWith\("(\/api\/[a-z0-9\-/]+)\//gi)].map((m) => m[1]),
     ]);
     const unused = [...proxied].filter((p) => !called.has(p));
     out.push(

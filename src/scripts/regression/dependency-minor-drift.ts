@@ -44,7 +44,9 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
  * 겪은 형상이다(상시 FAIL 게이트가 죽어 고아 파일이 몇 주 살아남았다).
  *
  * 그래서 allowlist 가 아니라 **스누즈**다. 셋을 강제한다:
- *  ①**버전 고정** — 유예한 그 버전에만 적용된다. 더 새 릴리스가 나오면 다시 빨간불.
+ *  ①**마이너 라인 고정** — 유예한 마이너에만 적용된다. 새 **마이너**가 오면 다시 빨간불.
+ *   (2026-08-16 정정: 종전엔 정확한 패치까지 고정해서, 상류 패치 하나에 판단이 안 바뀌었는데도
+ *    게이트가 빨개졌다 — 하루에 두 번. 상시 빨간 게이트는 아무도 안 본다.)
  *  ②**기한** — 지나면 자동으로 다시 빨간불. 잊혀지지 않는다.
  *  ③**이유** — 왜 미뤘는지 남는다(다음 사람이 판단을 이어받는다).
  * 그리고 유예가 만료·무효(버전 안 맞음)가 되면 **그 자체를 실패로** 잡아 죽은 항목이
@@ -61,11 +63,25 @@ interface Deferral {
 const DEFERRED: readonly Deferral[] = [
   {
     pkg: "@openai/agents",
-    latest: "0.16.0",
+    latest: "0.16", // 마이너 라인 — 0.16.x 패치는 같은 판단이다(새 마이너면 다시 묻는다)
     until: "2026-08-22",
     why: "0.15.0 유예(2026-08-11) 중에 0.16.0 이 나와 유예가 무효화됐다 — 즉 **두 마이너를 한 번에** 건너야 한다(0.14.2 → 0.16.0). 이 검사 헤더가 스스로 적어둔 대로 0.1→0.3 업그레이드가 이틀 사이 사고 두 건(usage 스냅샷·result 횟수)을 냈고, 그 부류는 여기서도 sdk-contract-surface 에서도 안 걸리며 **실제 왕복 1회로만** 보인다. 그 왕복 검증을 지금은 못 한다 — codex 한도 소진(8/20까지)이라 폴백 경로가 평소와 다르고, 같은 날 openai 어댑터에 추론강도 배선이 막 들어갔다(변수 둘을 겹쳐 재면 원인을 못 가른다). 8/22 까지 단독 작업으로 올린다.",
   },
 ];
+/**
+ * 유예가 이 버전에 적용되는가 — **마이너 라인**이 같으면 같은 판단이다.
+ *
+ * ★모듈 스코프로 둔 이유: 이 판정이 `stale`·`snoozed` 둘의 **유일한 지렛대**인데, 안에
+ *  숨겨두면 검사할 수가 없다(항상 true 로 바꿔도 그물이 안 잡혔다 — 변이로 확인).
+ *  B 검토가 짚은 패턴 그대로다: **실행하는 검사만 잡는다.**
+ */
+export const sameMinorLine = (deferred: string, actual: string): boolean => {
+  const a = parseVersion(deferred);
+  const b = parseVersion(actual);
+  if (a === null || b === null) return deferred === actual;
+  return a.major === b.major && a.minor === b.minor;
+};
+
 const today = (): string => new Date().toISOString().slice(0, 10);
 const execFileAsync = promisify(execFile);
 
@@ -83,7 +99,8 @@ const lockedZeroMinor = (range: string): number | null => {
 
 /** "0.3.222" → {major:0, minor:3} */
 const parseVersion = (v: string): { major: number; minor: number } | null => {
-  const m = /^(\d+)\.(\d+)\./.exec(v.trim());
+  // ★패치 없는 표기(`"0.16"`)도 받는다 — 유예를 **마이너 라인**으로 적을 수 있어야 한다.
+  const m = /^(\d+)\.(\d+)(?:\.|$)/.exec(v.trim());
   return m === null ? null : { major: Number(m[1]), minor: Number(m[2]) };
 };
 
@@ -148,21 +165,58 @@ export const check: RegressionCheck = {
         return v !== null && v.major === 0 && v.minor > d.minor;
       });
 
-    // 유예 적용 — 버전이 정확히 같고 기한 안이어야 한다(둘 중 하나만 어긋나도 무효).
+    // 유예 적용 — **마이너 라인**이 같고 기한 안이어야 한다(둘 중 하나만 어긋나도 무효).
+    //
+    // ★종전엔 **정확한 패치 버전**에 고정했다. 의도는 "더 새 릴리스가 나오면 다시 물어라"
+    //  였는데, 그게 **마이너와 패치를 구분하지 않았다**: 상류가 0.16.0 → 0.16.1 처럼 패치를
+    //  내면 판단이 하나도 바뀌지 않았는데 유예가 무효화돼 게이트가 빨개진다. 실제로
+    //  2026-08-16 하루에 **두 번**(0.15.0→0.16.0→0.16.1) 그렇게 됐다.
+    //  ★상시 빨간 게이트는 아무도 안 본다 — 이 레포가 이미 그 대가를 치렀다
+    //   (`feedback_gate_must_actually_run`: 오탐으로 상시 FAIL 이던 게이트가 죽어 고아 파일이
+    //    몇 주 살았다). 오탐을 남겨두는 건 검사를 지우는 것과 같다.
+    //  그래서 `latest` 를 **마이너 라인**으로 읽는다(`"0.16"` = 0.16.x 전부). 새 **마이너**
+    //  (0.17)가 오면 판단이 실제로 달라지므로 그때는 다시 묻는다 — 원래 의도 그대로다.
     const now = today();
     const deferralFor = (name: string, latest: string | undefined): Deferral | undefined =>
-      DEFERRED.find((d) => d.pkg === name && d.latest === latest && d.until >= now);
+      DEFERRED.find(
+        (d) =>
+          d.pkg === name &&
+          latest !== undefined &&
+          sameMinorLine(d.latest, latest) &&
+          d.until >= now,
+      );
     const snoozed = drifted.filter((d) => deferralFor(d.name, d.latest) !== undefined);
     const live = drifted.filter((d) => deferralFor(d.name, d.latest) === undefined);
 
     // 죽은 유예 = 기한이 지났거나, 그 버전이 더 이상 latest 가 아니거나, 이미 올라간 것.
+    // 죽은 유예 = 기한이 지났거나, 그 **마이너 라인**이 더 이상 대상이 아니거나(=이미 올라감).
     const stale = DEFERRED.filter(
       (d) =>
         d.until < now ||
-        !drifted.some((x) => x.name === d.pkg && x.latest === d.latest),
+        !drifted.some(
+          (x) => x.name === d.pkg && x.latest !== undefined && sameMinorLine(d.latest, x.latest),
+        ),
     );
 
+    // ★판정 자체를 **실행해서** 본다 — 이게 유예의 유일한 지렛대다(변이로 확인: 항상 true 로
+    //  바꿔도 나머지 단언들이 안 잡았다). 패치는 같은 판단, 새 마이너는 다시 묻기.
+    const lineCases: Array<[string, string, boolean]> = [
+      ["0.16", "0.16.1", true],
+      ["0.16", "0.16.99", true],
+      ["0.16", "0.17.0", false],
+      ["0.16", "1.16.0", false],
+      ["0.16.0", "0.16.5", true],
+    ];
+    const lineBad = lineCases.filter(([a, b, want]) => sameMinorLine(a, b) !== want);
+
     return [
+      assert(
+        "★유예 판정이 마이너 라인만 본다(패치는 같은 판단 · 새 마이너는 다시 묻기)",
+        lineBad.length === 0,
+        lineBad.length === 0
+          ? `${lineCases.length}케이스 확인`
+          : `★틀린 케이스: ${lineBad.map(([a, b, w]) => `${a}vs${b}→기대${w}`).join(", ")}`,
+      ),
       assert(
         "0.x 캐럿 고정 의존성을 판정으로 뽑는다(검사 전제 — 0이면 공짜 통과)",
         locked.length > 0,

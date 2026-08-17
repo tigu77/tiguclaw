@@ -126,6 +126,32 @@ export const check: RegressionCheck = {
         "전체 표시 확인",
       ),
     );
+  // ── ★첨부 서빙도 **심링크를 푼다** (2026-08-17, 전체검토 C-L1 실증) ─────────────
+  //  사고: `/attachments/` 는 `path.resolve` + 접두 비교만 해서 `..` 는 막았지만
+  //  **심링크는 못 막았다**. 첨부 디렉터리 안의 링크 하나로 홈 밖 파일이 **200 으로**
+  //  나갔다(실측: `GET /attachments/link.txt` → 홈 밖 내용, 로그 0줄).
+  //  ★같은 파일의 `/open-path` 는 이미 realpath 로 풀고 이 검사가 그걸 강제한다 —
+  //   두 경로가 같은 파일 안에서 비대칭이었고 하필 **파일 내용을 밖으로 내보내는 쪽**이
+  //   약했다. 강한 쪽만 지키는 검사는 반쪽이다.
+  {
+    const pats: [string, RegExp][] = [
+      // 첨부 분기 안에서 realpath 로 풀고,
+      ["realpath 로 푼다", /pathname\.startsWith\("\/attachments\/"\)[\s\S]{0,1200}?real = nodeFs\.realpathSync\(abs\)/],
+      // **푼 값으로** 경계를 비교하고,
+      ["푼 값으로 경계 비교", /real === realDir \|\| real\.startsWith\(realDir \+ path\.sep\)/],
+      // **푼 경로로 읽는다**(원래 경로로 읽으면 위 검사가 무의미하다).
+      ["푼 경로로 읽는다", /fs\.readFile\(real\)/],
+    ];
+    const missingAttach = pats.filter(([, re]) => !re.test(bridge)).map(([n]) => n);
+    out.push(
+      assert(
+        "★첨부 서빙이 심링크를 풀고 경계를 다시 검사한다(홈 밖 유출 차단)",
+        missingAttach.length === 0,
+        missingAttach.length === 0 ? "realpath 배선 3개 확인" : `누락: ${missingAttach.join(", ")}`,
+      ),
+    );
+  }
+
     return out;
   },
 };

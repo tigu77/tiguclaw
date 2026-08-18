@@ -22,6 +22,7 @@ import {
   SUGGESTION_MAX_CHARS,
   SUGGESTION_SYSTEM_PROMPT,
 } from "../../core/next-message-suggestion.js";
+import { readFile } from "node:fs/promises";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const run = async (): Promise<Assertion[]> => {
@@ -146,6 +147,45 @@ const run = async (): Promise<Assertion[]> => {
       name: "긴 제안은 잘린다(고스트가 입력창을 덮지 않게)",
       ok: long.length === SUGGESTION_MAX_CHARS,
       got: `길이=${long.length} (기대 ${SUGGESTION_MAX_CHARS})`,
+    });
+  }
+
+  // ── ★**늦게 온 제안이 버려지지 않는다** (2026-08-18, 사용자 신고) ─────────────
+  //  사고: "가끔 제안이 안 나온다". 서버는 멀쩡했다 — 5일 창에서 대시보드 턴 36건 **전부**
+  //  60초 안에 제안이 붙었다(100%). 버린 건 **프런트**였다.
+  //
+  //  종전엔 `vtIsStaleForAppend` 를 빌려 썼다("중복을 피하려고 채팅·워커가 쓰는 기준을
+  //  그대로 쓴다"). 그런데 **그 판정은 다른 질문에 답한다** — *"이 메시지를 리스트 바닥에
+  //  붙이면 순서가 깨지는가"*(기준 = 리스트의 최신 ts). 제안은 리스트에 안 붙는다(입력창
+  //  위 고스트라 "순서" 가 없다). 그래서 답변 버블이 먼저 리스트에 실리고(= newest) 제안이
+  //  그보다 5초 넘게 늦으면 **정상 제안이 버려졌다**.
+  //  실측: 턴→제안 간격 중앙 **3.9초**, 최대 11.9초, **10%가 5초 초과** — "가끔" 의 정체.
+  //  ★통합은 이름이 같아서가 아니라 **질문이 같을 때** 한다(architecture §Q8).
+  //
+  //  판정은 프런트에 있어 여기서 실행할 수 없다 → **배선을 고정**한다: 빌려온 순서 판정을
+  //  다시 쓰지 않고, 세션별 마지막 제안 ts 와만 비교한다(= 최신성).
+  {
+    const ghost = await readFile(
+      new URL("../../../packages/dashboard/js/ghost-suggest.js", import.meta.url),
+      "utf8",
+    );
+    const code = ghost.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    out.push({
+      name: "★제안 수신에 리스트 **순서** 판정을 쓰지 않는다(늦게 온 제안이 버려지던 것)",
+      ok: !/vtIsStaleForAppend/.test(code),
+      got: /vtIsStaleForAppend/.test(code)
+        ? "★순서 판정(vtIsStaleForAppend) 재사용 — 5초 넘게 걸린 제안이 버려진다"
+        : "순서 판정 미사용",
+    });
+    out.push({
+      name: "★대신 세션별 **최신성**으로 판정한다(replay 만 막고 늦은 제안은 통과)",
+      ok:
+        /const prev = tk === null \? null : lsAll\(\)\[tk\];/.test(code) &&
+        /ts <= prevTs\) return;/.test(code),
+      got:
+        /ts <= prevTs\) return;/.test(code)
+          ? "세션별 ts 비교 확인"
+          : "★최신성 판정 없음 — replay 가드가 통째로 사라졌을 수 있다",
     });
   }
 

@@ -169,13 +169,30 @@
           const p = payload || {};
           const text = typeof p.text === "string" ? p.text.trim() : "";
           if (text === "") return;
+          const tk = typeof p.threadKey === "string" ? p.threadKey : null;
+          const ts = typeof evTs === "number" && Number.isFinite(evTs) ? evTs : 0;
           // ★재접속 replay 가드 — /events 는 붙을 때 최근 50개를 **과거분까지** 재생한다.
           //  가드가 없으면 한참 전 턴의 제안이 되살아나 지금 흐름과 안 맞는 문장이 뜬다.
-          //  판정은 이 파일에서 새로 만들지 않고 채팅·워커가 쓰는 기준을 그대로 쓴다.
-          if (typeof vtIsStaleForAppend === "function" && vtIsStaleForAppend(evTs)) return;
+          //
+          // ★2026-08-18 판정 교체(사용자 신고: "가끔 제안이 안 나온다").
+          //  종전엔 `vtIsStaleForAppend` 를 빌려 썼다 — "중복을 피하려고 채팅·워커가 쓰는
+          //  기준을 그대로 쓴다" 는 의도였는데, **그 판정은 다른 질문에 답한다**:
+          //  *"이 메시지를 리스트 바닥에 붙이면 순서가 깨지는가"* (기준 = 리스트의 최신 ts).
+          //  제안은 리스트에 안 붙는다 — 입력창 위 고스트라 "순서" 라는 개념이 없다.
+          //  그래서 턴 답변 버블이 먼저 리스트에 실리고(그게 newest 가 된다) 제안이 그보다
+          //  5초 넘게 늦게 오면 **정상 제안이 버려졌다**. 실측: 턴→제안 간격 중앙 3.9초,
+          //  최대 11.9초, **10%가 5초 초과** — 사용자가 겪은 "가끔" 이 이 비율이다.
+          //  ★통합은 이름이 같아서가 아니라 **질문이 같을 때** 한다(architecture §Q8).
+          //
+          //  제안에 맞는 질문은 "이게 이 세션의 **최신** 제안인가" 다 — 순서가 아니라 최신성.
+          //  세션별 마지막 제안 ts 는 이미 localStorage 에 있으므로 그것과만 비교한다.
+          //  replay 는 분 단위로 과거라 여전히 걸리고, 늦게 온 새 제안은 안 버려진다.
+          const prev = tk === null ? null : lsAll()[tk];
+          const prevTs = prev && typeof prev.ts === "number" ? prev.ts : 0;
+          if (ts > 0 && prevTs > 0 && ts <= prevTs) return; // 같거나 더 오래된 것 = replay
           suggestion = text;
-          suggestionThread = typeof p.threadKey === "string" ? p.threadKey : null;
-          lsSave(suggestionThread, text, typeof evTs === "number" ? evTs : 0);
+          suggestionThread = tk;
+          lsSave(tk, text, ts);
           sync();
         };
 

@@ -21,6 +21,7 @@
  *  안에 두면 검사가 문자열 grep 밖에 못 하고, 그러면 지키는 게 없다
  *  ([[feedback_simple_composable_no_duplication]] — "검사가 껄끄러우면 코드가 잘못 놓인 것").
  */
+import path from "node:path";
 import { z } from "zod";
 import {
   createSdkMcpServer,
@@ -141,6 +142,14 @@ export const applyModelReasoning = (args: {
   setModelReasoning(key, want);
   const after = resolveReasoningEffort(provider, model, cwd);
 
+  // ★쓴 뒤에도 **덮어쓰기 층이 남아 있나.** 홈은 방금 우리가 썼으므로, 남아 있다면 그건
+  //  프로젝트 층(`<cwd>/.tiguclaw/settings.json`)이다. 이 한 줄이 "카탈로그 기본으로
+  //  돌아갔다" 와 "프로젝트가 덮어서 안 먹었다" 를 가른다 — 종전엔 `after !== want` 하나로
+  //  둘을 뭉쳐서, ①정상 해제에도 **매번** 경고가 떴고(want=undefined vs 카탈로그 기본은
+  //  항상 다르다 = 배경소음) ②정작 프로젝트가 덮은 진짜 경우엔 "…이거나 …이거나" 라고
+  //  구분 못 하는 척했다. 구분할 수 있는데 안 하고 있었다(적대 검토 F2).
+  const stillOverridden = loadModelReasoning(cwd).get(key);
+
   const notes: string[] = [];
   if (!keys.includes(key)) {
     notes.push(
@@ -148,17 +157,25 @@ export const applyModelReasoning = (args: {
     );
   }
   // ★프로젝트 층이 이기는 경우 — 쓰긴 썼는데 효과가 없다. 조용히 넘기면 안 된다.
-  if (after !== want) {
+  if (stillOverridden !== undefined && stillOverridden !== want) {
     notes.push(
       want === undefined
-        ? `참고: 해제했지만 유효값은 '${after ?? "(없음)"}' 입니다 — 카탈로그 기본이거나, 프로젝트 설정(.tiguclaw/settings.json)이 같은 키를 들고 있습니다.`
-        : `⚠️ 홈 설정에 '${want}' 를 썼지만 실제 유효값은 '${after ?? "(없음)"}' 입니다 — 프로젝트 설정(.tiguclaw/settings.json)이 같은 키로 덮고 있습니다. 그쪽을 고쳐야 합니다.`,
+        ? `⚠️ 해제했지만 유효값은 여전히 '${after ?? "(없음)"}' 입니다 — 프로젝트 설정(${path.join(cwd, ".tiguclaw/settings.json")})이 같은 키를 들고 있습니다. 거기서 지워야 실제로 풀립니다.`
+        : `⚠️ 홈 설정에 '${want}' 를 썼지만 실제 유효값은 '${after ?? "(없음)"}' 입니다 — 프로젝트 설정(${path.join(cwd, ".tiguclaw/settings.json")})이 같은 키로 덮고 있습니다. 그쪽을 고쳐야 합니다.`,
     );
   }
 
+  // ★머리말은 **실제로 된 것**만 말한다. 종전엔 해제 시 무조건 "이제 카탈로그 기본을
+  //  따릅니다" 라고 했는데, 프로젝트 층이 덮고 있으면 그건 거짓이었다 — 모델은 머리말을
+  //  요약해 "해제했습니다" 라고 보고하고 사용자는 다음 턴에도 옛 강도로 돌게 된다.
   const head =
     want === undefined
-      ? `${key} 추론 강도 **해제** (${before ?? "(없음)"} → ${after ?? "(없음)"} · 이제 카탈로그 기본을 따릅니다)`
+      ? `${key} 추론 강도 **해제** (${before ?? "(없음)"} → ${after ?? "(없음)"}` +
+        (stillOverridden !== undefined
+          ? " · ★프로젝트 설정이 덮고 있어 아직 안 풀렸습니다)"
+          : after === undefined
+            ? " · 이제 백엔드 기본을 따릅니다)"
+            : " · 이제 카탈로그 기본을 따릅니다)")
       : `${key} 추론 강도 **${want}** (이전: ${before ?? "(없음)"})`;
   return {
     ok: true,

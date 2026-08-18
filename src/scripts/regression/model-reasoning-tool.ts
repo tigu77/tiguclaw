@@ -53,8 +53,8 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "설정 쓰기 프로브가 실제로 돌았다(빈손 통과 금지)",
-      Object.keys(got).length >= 22,
-      Object.keys(got).length >= 22
+      Object.keys(got).length >= 33,
+      Object.keys(got).length >= 33
         ? `${Object.keys(got).length}개 판정 회수`
         : `★프로브 실패: ${tail}`,
     ),
@@ -147,7 +147,47 @@ const run = async (): Promise<Assertion[]> => {
     ),
   );
 
-  // ── ⑥ ★MCP 표면 — 모델이 실제로 부를 수 있는 도구인가 ───────────────────────
+  // ── ⑥ ★적대 검토(2026-08-18)가 뚫은 축들 ────────────────────────────────────
+  //  아래 넷은 전부 "지킨다고 적어놓고 안 지키던" 것들이다. 변이가 통과했다는 게 증거다.
+  out.push(
+    assert(
+      "★해제가 그 키 하나만 지운다(옆 모델 설정을 통째로 날리지 않는다)",
+      got.siblingsKeptOnClear === true,
+      `해제 후 남은 것: ${String(got.siblingsAfterClear)}`,
+    ),
+  );
+  out.push(
+    assert(
+      "★완전일치가 애매해도 되묻는다(커스텀 provider 가 같은 모델명을 가질 때)",
+      got.exactAmbiguousRejected === true &&
+        got.exactAmbiguousListsBoth === true &&
+        got.exactAmbiguousNoWrite === true,
+      `거절=${String(got.exactAmbiguousRejected)} 양쪽나열=${String(got.exactAmbiguousListsBoth)} 무쓰기=${String(got.exactAmbiguousNoWrite)}`,
+    ),
+  );
+  out.push(
+    assert(
+      "★프로젝트 층이 덮으면 경고한다 — 홈에 썼는데 안 먹은 것을 성공이라 말하지 않는다",
+      got.projSetWarned === true && got.projSetEffective === "max",
+      `경고=${String(got.projSetWarned)} 유효값=${String(got.projSetEffective)}`,
+    ),
+  );
+  out.push(
+    assert(
+      "★해제도 마찬가지 — '이제 카탈로그 기본을 따릅니다' 라고 거짓말하지 않는다",
+      got.projClearNoFalseClaim === true && got.projClearWarned === true,
+      `거짓주장없음=${String(got.projClearNoFalseClaim)} 경고=${String(got.projClearWarned)}`,
+    ),
+  );
+  out.push(
+    assert(
+      "★그리고 정상 해제엔 그 경고가 안 뜬다(매번 뜨면 배경소음이라 아무도 안 본다)",
+      got.plainClearNoWarning === true && got.plainClearSaysCatalog === true,
+      `무경고=${String(got.plainClearNoWarning)} 기본복귀문구=${String(got.plainClearSaysCatalog)}`,
+    ),
+  );
+
+  // ── ⑦ ★MCP 표면 — 모델이 실제로 부를 수 있는 도구인가 ───────────────────────
   //  위까지는 전부 순수 함수를 부른다. 등록을 빠뜨리거나 스키마가 깨지면 그것들은 전부
   //  초록인 채로 **도구가 없다**. 그래서 서버를 만들어 등록된 핸들러를 그대로 부른다.
   out.push(

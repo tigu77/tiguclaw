@@ -134,6 +134,74 @@ const out: Record<string, unknown> = {};
   out.modelsSectionAlive = s.models?.profiles?.high !== undefined;
 }
 
+// ── ⑨ ★옆 **모델**을 안 날린다 — 해제가 그 키 하나만 지우나 ───────────────────
+//  종전 검사는 `models` 하위 **섹션**(profiles·limits)만 봤고 `reasoning` 안의 형제 키는
+//  안 봤다. "reasoning 을 통째로 지운다" 변이가 초록이었다(적대 검토 F4). 세 모델 설정이
+//  전부 사라지는데 도구는 성공을 보고한다 — **비가역 + 조용함**이 겹치는 자리다.
+{
+  applyModelReasoning({ model: "codex:gpt-5.6-sol", effort: "high", cwd });
+  applyModelReasoning({ model: "codex:gpt-5.6-terra", effort: "xhigh", cwd });
+  applyModelReasoning({ model: "anthropic:claude-opus-5", effort: "max", cwd });
+  applyModelReasoning({ model: "codex:gpt-5.6-sol", cwd }); // 하나만 해제
+  const rs = readSettings().models?.reasoning ?? {};
+  out.siblingsKeptOnClear =
+    rs["codex:gpt-5.6-sol"] === undefined &&
+    rs["codex:gpt-5.6-terra"] === "xhigh" &&
+    rs["anthropic:claude-opus-5"] === "max";
+  out.siblingsAfterClear = JSON.stringify(rs);
+  // 정리 — 뒤 판정에 영향 없게 되돌린다.
+  applyModelReasoning({ model: "codex:gpt-5.6-terra", cwd });
+  applyModelReasoning({ model: "anthropic:claude-opus-5", cwd });
+}
+
+// ── ⑩ ★완전일치가 애매한 경우 — 커스텀 provider 가 같은 모델명을 가질 때 ──────
+//  종전엔 **부분일치** 애매만 검사했다(적대 검토 F5). 이 레포는 config-driven provider 를
+//  지원하므로(`models.providers`) `codex:gpt-5.6-sol` 과 `myrouter:gpt-5.6-sol` 이 공존할 수
+//  있고, 그때 "gpt-5.6-sol" 은 되물어야 한다 — 첫 번째를 고르면 엉뚱한 모델이 무거워진다.
+{
+  const s = readSettings();
+  s.models.profiles.alt = { pool: ["myrouter:gpt-5.6-sol"] };
+  writeFileSync(settingsFile, JSON.stringify(s, null, 2), "utf8");
+  const before = JSON.stringify(readSettings());
+  const r = applyModelReasoning({ model: "gpt-5.6-sol", effort: "max", cwd });
+  out.exactAmbiguousRejected = !r.ok;
+  out.exactAmbiguousListsBoth =
+    r.text.includes("codex:gpt-5.6-sol") && r.text.includes("myrouter:gpt-5.6-sol");
+  out.exactAmbiguousNoWrite = JSON.stringify(readSettings()) === before;
+  const s2 = readSettings();
+  delete s2.models.profiles.alt;
+  writeFileSync(settingsFile, JSON.stringify(s2, null, 2), "utf8");
+}
+
+// ── ⑪ ★프로젝트 층이 덮을 때 — 쓴 뒤 되읽어 **거짓 성공을 막나** ──────────────
+//  이 커밋이 닫으려던 실패("설정했습니다 라고 말해놓고 아무 일도 안 일어난다")를 재현한다.
+//  종전엔 이걸 지키는 assertion 이 하나도 없어, 되읽기 블록을 통째로 지워도 초록이었다
+//  (적대 검토 F3 — 헤더 표에 "지킨다" 고 적어놓고 안 지키던 축).
+{
+  const projCwd = path.join(home, "proj");
+  mkdirSync(path.join(projCwd, ".tiguclaw"), { recursive: true });
+  writeFileSync(
+    path.join(projCwd, ".tiguclaw", "settings.json"),
+    JSON.stringify({ models: { reasoning: { "codex:gpt-5.6-luna": "max" } } }),
+    "utf8",
+  );
+  // 설정 — 홈에 써도 프로젝트가 이긴다.
+  const rSet = applyModelReasoning({ model: "codex:gpt-5.6-luna", effort: "low", cwd: projCwd });
+  out.projSetWarned = rSet.text.includes("⚠️") && rSet.text.includes("프로젝트 설정");
+  out.projSetEffective = resolveReasoningEffort("codex", "gpt-5.6-luna", projCwd);
+  // 해제 — "이제 카탈로그 기본을 따릅니다" 라고 **거짓말하면 안 된다**.
+  const rClear = applyModelReasoning({ model: "codex:gpt-5.6-luna", cwd: projCwd });
+  out.projClearNoFalseClaim = !rClear.text.includes("이제 카탈로그 기본을 따릅니다");
+  out.projClearWarned = rClear.text.includes("⚠️") && rClear.text.includes("아직 안 풀렸");
+
+  // ★대조군 — 프로젝트 층이 **없을 때**는 그 경고가 뜨면 안 된다(정상 해제에 매번 뜨면
+  //  배경소음이 되고, 그러면 진짜 경고를 아무도 안 본다). 종전 코드가 정확히 그랬다.
+  applyModelReasoning({ model: "codex:gpt-5.6-sol", effort: "high", cwd });
+  const rPlain = applyModelReasoning({ model: "codex:gpt-5.6-sol", cwd });
+  out.plainClearNoWarning = !rPlain.text.includes("⚠️");
+  out.plainClearSaysCatalog = rPlain.text.includes("이제 카탈로그 기본을 따릅니다");
+}
+
 // ── ⑧ ★MCP 표면까지 — **도구로서 실제로 불린다** ──────────────────────────────
 //  위 ①~⑦ 은 순수 함수를 부른다. 그건 판정을 지키지만 "모델이 이걸 도구로 쓸 수 있나" 는
 //  안 지킨다 — 등록을 빠뜨리거나 스키마가 깨지면 전부 초록인 채로 도구가 없다.

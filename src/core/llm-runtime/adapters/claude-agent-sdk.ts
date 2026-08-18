@@ -104,6 +104,7 @@ import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.j
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
+import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
 import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
@@ -584,6 +585,11 @@ export const runClaude = async (
         // 파일(<home>/mcp.json)만 다룸. codex/openai 와 parity(#2 — 어댑터 분기 0).
         ...(depth === 0 && (input.workerDepth ?? 0) === 0
           ? { "mcp-admin": createMcpAdminMcpServer() }
+          : {}),
+        // 모델 추론 강도 손잡이(set_model_reasoning) — 홈 settings.json 의
+        // models.reasoning 한 키만. 3어댑터 동일(#2 — 키가 provider:model 이라 어댑터 무관).
+        ...(depth === 0 && (input.workerDepth ?? 0) === 0
+          ? { "model-settings": createModelSettingsMcpServer(cwd) }
           : {}),
         ...(input.extraMcpServers ?? {}),
       };

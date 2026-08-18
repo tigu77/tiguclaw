@@ -557,11 +557,13 @@ export const loadModelInputLimits = (
  *  까지, 5.5 는 xhigh 까지) 카탈로그가 알려준다. 코어는 "문자열이면 전달" 만 하고, 안 되는
  *  값은 백엔드가 400 으로 말한다 — 우리가 흉내 낸 목록으로 멀쩡한 값을 막는 것보다 낫다.
  *
- * ★claude 는 대상이 아니다(사용자 지적, 2026-08-14). Anthropic 은 effort 등급이 아니라
- *  adaptive thinking 이라 대응 개념이 없다. 여기 적어도 claude 어댑터는 안 읽는다 —
- *  **조용히 무시되는 게 아니라 애초에 그 어댑터의 축이 아니다.** 원칙 #2("모든 기능 LLM
- *  무관")와 어긋나지 않는다: 무관해야 하는 것은 *의도*(이 작업을 얼마나 깊이 생각할까)이지
- *  *배선*(reasoning.effort 라는 필드)이 아니다. 의도 축은 이미 모델 프로파일이 들고 있다.
+ * ★**claude 도 읽는다**(2026-08-14 22:15, cb67a55). 이 문단은 같은 날 12:20 에 "claude 는
+ *  대상이 아니다 · 여기 적어도 claude 어댑터는 안 읽는다" 라고 적혔는데 열 시간 뒤에
+ *  거짓이 됐다 — 손잡이가 한쪽에만 있으면 "설정을 적었는데 어댑터를 바꾸니 무시된다" 가
+ *  되고 그게 원칙 #2 위반이라, claude 도 같은 함수(`resolveReasoningEffort`)를 쓰게 했다.
+ *  차이는 **기본값**뿐이다: 카탈로그에 anthropic 기본이 없으므로 claude 는 자연히
+ *  "덮어쓰기가 있을 때만" 이 된다(정품 Claude Code 도 안 보내니 그게 이미 같은 동작).
+ *  SDK 유효값은 low|medium|high|xhigh|max.
  */
 export const loadModelReasoning = (
   cwd: string = process.cwd(),
@@ -575,6 +577,61 @@ export const loadModelReasoning = (
     }
   }
   return out;
+};
+
+/**
+ * `models.reasoning.<provider:model>` **한 키만** 병합 수정 — `setDefaultProfile` 동형
+ * (read-modify-write + 원자적 rename). 손으로 넣은 다른 키를 절대 안 건드린다.
+ *
+ * ★`effort === undefined` 는 **해제**다(그 키를 지운다 = 카탈로그 기본으로 복귀). 켜는 길만
+ *  있고 끄는 길이 없으면 손잡이가 아니라 덫이다 — 한 번 적은 값이 영영 남는다.
+ *
+ * ★비면 섹션을 지운다(`reasoning: {}` · `models: {}` 를 남기지 않음). 빈 껍데기는 "여기
+ *  뭔가 설정돼 있다" 는 거짓 신호를 준다 — 다음에 파일을 읽는 사람(사람이든 나든)이 잘못
+ *  읽는다.
+ *
+ * 값 검증은 **여기 없다**(위 loadModelReasoning 주석과 같은 규칙): 지원 등급은 벤더가
+ * 모델마다 늘리고, 우리가 흉내 낸 목록은 새 등급이 나올 때 멀쩡한 값을 막는다. 저장 즉시
+ * 다음 턴부터 반영된다(설정은 매 턴 fresh — 재시작 불요).
+ */
+export const setModelReasoning = (
+  key: string,
+  effort: string | undefined,
+): void => {
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음) — setDefaultProfile 동형.
+  }
+  const existingModels = root.models;
+  const models: Record<string, unknown> =
+    existingModels !== null &&
+    typeof existingModels === "object" &&
+    !Array.isArray(existingModels)
+      ? (existingModels as Record<string, unknown>)
+      : {};
+  const existingReasoning = models.reasoning;
+  const reasoning: Record<string, unknown> =
+    existingReasoning !== null &&
+    typeof existingReasoning === "object" &&
+    !Array.isArray(existingReasoning)
+      ? (existingReasoning as Record<string, unknown>)
+      : {};
+  if (effort === undefined) delete reasoning[key];
+  else reasoning[key] = effort;
+  if (Object.keys(reasoning).length === 0) delete models.reasoning;
+  else models.reasoning = reasoning;
+  if (Object.keys(models).length === 0) delete root.models;
+  else root.models = models;
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
 };
 
 /**

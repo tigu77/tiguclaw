@@ -71,6 +71,7 @@ import {
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
+import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -400,6 +401,16 @@ export const runOpenAi = async (
   if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
     mcpServers.push(
       await adaptClaudeMcpServer(createMcpAdminMcpServer(), "mcp-admin"),
+    );
+    // 모델 추론 강도 손잡이(set_model_reasoning) — claude/codex 와 parity(#2).
+    // ★cwd 는 위 resolveReasoningEffort 호출과 **같은 값**을 준다(input.cwd, 미지정 시
+    //  process.cwd()) — 도구가 쓰고 나서 되읽는 유효값이 어댑터가 실제로 볼 값과 갈리면,
+    //  "프로젝트 층이 덮고 있다" 경고가 거짓말을 한다.
+    mcpServers.push(
+      await adaptClaudeMcpServer(
+        createModelSettingsMcpServer(input.cwd ?? process.cwd()),
+        "model-settings",
+      ),
     );
   }
 

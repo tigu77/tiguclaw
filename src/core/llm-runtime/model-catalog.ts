@@ -164,6 +164,22 @@ export const catalogTierModel = (
   return list[0];
 };
 
+/**
+ * 카탈로그가 아는 모든 `provider:model` — **이름 해석용**(set_model_reasoning 이 "sol" 을
+ * `codex:gpt-5.6-sol` 로 푼다). 목록을 코드에 박지 않기 위한 조회면이다.
+ *
+ * ★신선도(MAX_AGE_MS)를 요구하지 않는다 — `resolveReasoningEffort` 와 같은 이유다. 모델
+ *  **이름**은 목록처럼 늙지 않고, 낡았다고 안 쓰면 오프라인·조회실패 상태에서 이름 해석이
+ *  조용히 실패한다(그때 사용자는 "sol 로 설정해줘" 가 왜 안 되는지 알 길이 없다).
+ */
+export const catalogModelKeys = (): string[] => {
+  ensureLoaded();
+  if (cache === null) return [];
+  return Object.entries(cache.models).flatMap(([provider, list]) =>
+    list.map((m) => `${provider}:${m}`),
+  );
+};
+
 /** anthropic `/v1/models` — 키 또는 구독 OAuth 토큰. 실패는 빈 배열(throw 0). */
 const discoverAnthropic = async (): Promise<DiscoverResult> => {
   if (!claudeAuthAvailable()) return { slugs: [] };
@@ -386,8 +402,10 @@ export const __setCatalogForTest = (c: ModelCatalog | null): void => {
  *  모델에 값이 없으면 종전처럼 필드를 생략한다 — 백엔드 기본으로 가는 게, 우리가 지어낸
  *  값으로 가는 것보다 낫다.
  *
- * ★anthropic 은 여기 안 들어온다(등급 개념 없음, adaptive thinking). 사용자가 굳이 적어도
- *  claude 어댑터가 안 읽는다 — 그 어댑터의 축이 아니다.
+ * ★anthropic 도 **이 함수를 지난다**(claude-agent-sdk.ts, 2026-08-14 22:15). 카탈로그에
+ *  anthropic 기본이 없을 뿐이라, 결과적으로 "덮어쓰기가 있을 때만" 이 된다 — 손잡이는
+ *  양쪽에 있고 기본값만 한쪽에 없다. (이 주석은 같은 날 12:20 에 "anthropic 은 여기 안
+ *  들어온다" 였는데 열 시간 뒤 거짓이 됐다.)
  */
 export const resolveReasoningEffort = (
   provider: string,

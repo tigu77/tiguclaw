@@ -115,6 +115,10 @@ export const check: RegressionCheck = {
       "update_memory", "update_schedule", "update_self",
       // 세션 이름 변경 — 되돌릴 수 있지만 상태를 바꾼다(읽기전용 폴백 대상 아님).
       "rename_session",
+      // 추론 강도 설정 — settings.json 을 쓴다. 같은 값으로 다시 부르면 결과는 같지만
+      // (멱등), 폴백이 되부르는 상황은 보통 **앞 시도가 어디까지 갔는지 모르는** 때다.
+      // 설정 파일 쓰기를 재실행 무해로 분류할 이유가 없다(보수적 기본).
+      "set_model_reasoning",
     ]);
 
     const unclassified = [...registered].filter(

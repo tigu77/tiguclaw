@@ -73,6 +73,7 @@ import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
+import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
@@ -831,6 +832,20 @@ export const runOpenAiCodex = async (
         toolBridgeMap.set((t as { name: string }).name, mcpAdminBridge);
       }
       mcpTools.push(...mcpAdminToolsRaw);
+
+      // 모델 추론 강도 손잡이(set_model_reasoning) — claude/openai 와 parity(#2).
+      // ★cwd 는 아래 resolveReasoningEffort 호출과 **같은 값**(input.cwd, 미지정 시
+      //  process.cwd()) — 도구가 되읽는 유효값이 어댑터가 볼 값과 갈리면 경고가 거짓이 된다.
+      const modelSettingsBridge = await adaptClaudeMcpServer(
+        createModelSettingsMcpServer(input.cwd ?? process.cwd()),
+        "model-settings",
+      );
+      allBridges.push(modelSettingsBridge);
+      const modelSettingsToolsRaw = await modelSettingsBridge.listTools();
+      for (const t of modelSettingsToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, modelSettingsBridge);
+      }
+      mcpTools.push(...modelSettingsToolsRaw);
     }
 
     // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 서버를 @mcp/sdk 클라이언트로 연결한

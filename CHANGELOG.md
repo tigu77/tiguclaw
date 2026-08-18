@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-08-18
+
+### Security
+
+- **첨부 파일 서빙이 홈 밖 파일을 내보낼 수 있던 것을 막았습니다.** 첨부 폴더 안에 홈 바깥을
+  가리키는 심링크가 있으면 그 파일이 그대로 나갔습니다. 이제 실제 경로를 확인한 뒤 첨부
+  폴더 안에 있을 때만 서빙합니다.
+
+### Added
+
+- **추론 강도를 말로 바꿉니다** — "솔 추론 강도 중간으로" 라고 하면 됩니다. 짧은 이름도
+  풀어주고(`sol` → `codex:gpt-5.6-sol`), 여러 모델에 맞으면 되묻습니다. 비우면 해제되어
+  그 모델의 기본값으로 돌아갑니다. 지금까지는 설정 파일을 직접 고쳐야 했습니다.
+
+### Changed
+
+- **막혔을 때 「없어서 못 합니다」로 끝내지 않습니다.** 필요한 프로그램·라이브러리가 없으면
+  갖추는 방법을 찾아 제시합니다(예: "PDF 를 읽을 도구가 없습니다 → `brew install poppler`
+  로 갖출 수 있습니다. 할까요?"). 기계를 바꾸는 일은 전과 같이 **승인을 받고** 합니다 —
+  달라진 것은 *제안조차 하지 않던 것*입니다.
+- **코드 리뷰가 「무엇을 바꿨나」에서 「무엇을 다시 봐야 하나」를 끌어냅니다.** 계약을 바꿨으면
+  호출부 전부, 조건을 뒤집었으면 그 조건에 도달하는 입력 전부 — 2차 결함이 나는 자리를
+  체크리스트로 훑습니다.
+
+### Fixed
+
+- **늦게 온 메시지 제안이 버려지던 것** — 응답이 도착 순서와 다르게 오면 제안이 조용히
+  사라졌습니다(약 10%). 순서가 아니라 최신성으로 판정하도록 고쳤습니다.
+- **토큰 사용량 집계에서 일부 대화가 0으로 세어지던 것** — `/status` 의 컨텍스트·사용량
+  수치가 실제보다 작게 나왔습니다.
+
 ## [0.29.0] - 2026-08-15
 
 ### Added
@@ -1147,7 +1178,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/tigu77/tiguclaw/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/tigu77/tiguclaw/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/tigu77/tiguclaw/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/tigu77/tiguclaw/compare/v0.26.0...v0.27.0

@@ -5,9 +5,21 @@
  * 잘못 붙은 이름(첫 발화가 `/status` 같은 명령이면 그게 그대로 이름이 된다)을 발견해도
  * "더블클릭해서 바꾸세요" 밖에 할 수 없었다. 실제로 그 상황이 났다.
  *
- * ★범위를 좁게 잡는다 — **이름 변경만**. 세션 삭제·보관은 넣지 않는다: 그건 비가역이거나
- *  사용자 판단이 필요한 부류라, 도구로 주면 비서가 지울 수 있게 된다(파괴적 행위는 명시
- *  승인). 이름 변경은 되돌릴 수 있고 최악이 사소하다 = 자동 조치 판단 기준을 통과한다.
+ * ★범위: **이름 변경 + 보관**. 삭제는 여전히 안 넣는다(비가역).
+ *
+ * ★보관을 뒤늦게 넣은 이유 (2026-08-19). 이 헤더는 원래 *"삭제·보관은 넣지 않는다 — 그건
+ *  **비가역이거나** 사용자 판단이 필요한 부류"* 라고 둘을 한 묶음으로 뺐다. 그런데 보관은
+ *  비가역이 아니다: `unarchive` 로 그대로 돌아오고 대화 레코드(`transcripts`·`chat_log`)는
+ *  손도 안 댄다. 즉 rename 을 통과시킨 그 기준("되돌릴 수 있고 최악이 사소하다")을 보관도
+ *  통과한다 — 삭제와 함께 묶은 게 과했다.
+ *
+ *  실제로 그 대가가 나왔다: 사용자의 다른 인스턴스에서 `/sessions` 목록이 말조각 이름으로
+ *  가득 찼는데(무명 세션 누적), **비서에게 치울 수단이 없어** 사용자가 하나씩 명령을 쳐야
+ *  했다. 대시보드·`/sessions archive` 엔 있는 능력이 말로는 안 되던 것 — 같은 날 아침
+ *  `set_model_reasoning` 과 정확히 같은 모양이다.
+ *
+ * ★그래도 자율로 하지 않는다. 보관은 사용자 목록에서 세션을 **치우는** 행위라, 도구 설명이
+ *  "요청받았을 때만, 그리고 무엇을 치울지 먼저 보여주고" 를 명시한다(소프트 강제).
  *
  * LLM-agnostic: claude·codex·openai 세 어댑터에 **같은 의미**로 등록된다(어댑터 분기 0).
  */
@@ -20,8 +32,11 @@ import {
 import {
   listThreads,
   sessionDisplayName,
+  setThreadArchived,
   setThreadName,
 } from "../../../store/sessions.js";
+import { clearBindingsForSession } from "../../../store/channel-session.js";
+import { DEFAULT_SESSION_ID } from "../../threadkey.js";
 import { getFirstUserText } from "../../../store/chat-log.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -101,9 +116,43 @@ export const createSessionToolsMcpServer = (
     },
   );
 
+  const archiveTool = tool(
+    "archive_session",
+    "대화(세션)를 **목록에서 숨긴다**(보관). 삭제가 아니다 — 대화 기록은 그대로 남고 " +
+      "restore:true 로 언제든 되돌린다. 이름 없이 쌓인 세션이 목록을 어지럽힐 때 쓴다. " +
+      "★사용자가 정리를 요청했을 때만 쓰고, **무엇을 보관할지 목록으로 먼저 보여준 뒤** 실행해라 " +
+      "(list_sessions 로 확인). 지금 쓰고 있는 대화나 이름이 붙은 세션을 임의로 치우지 마라. " +
+      "★보관하면 그 세션에 묶여 있던 대화방들이 **기본 세션으로 돌아간다** — 그 사실도 함께 알려라.",
+    {
+      threadKey: z.string().min(1).describe("대상 세션 id(list_sessions 의 id). 생략 불가 — 실수로 지금 대화를 숨기지 않게."),
+      restore: z.boolean().optional().describe("true 면 보관 해제(목록에 다시 보이게)."),
+    },
+    async (args) => {
+      const target = args.threadKey.trim();
+      const restoring = args.restore === true;
+      if (target === DEFAULT_SESSION_ID) {
+        return okText("기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).");
+      }
+      const changed = setThreadArchived(target, restoring ? null : Date.now());
+      if (changed === 0) return okText(`그런 세션이 없습니다: ${target}`);
+      // ★명령 경로(`/sessions archive`)와 **같은 부수효과**를 낸다 — 그쪽만 바인딩을 풀면
+      //  같은 판단이 두 곳에서 갈린다. 보관된 세션에 묶인 방은 목록에 없는 곳에 계속 쌓인다.
+      let note = "";
+      if (!restoring) {
+        const freed = clearBindingsForSession(target);
+        if (freed > 0) note = ` 그 세션에 묶여 있던 대화방 ${freed}곳을 기본 세션으로 되돌렸습니다.`;
+      }
+      return okText(
+        restoring
+          ? `세션을 목록에 다시 표시했습니다: ${target}`
+          : `세션을 보관했습니다(삭제 아님 — 기록은 그대로): ${target}.${note} 되돌리려면 restore:true.`,
+      );
+    },
+  );
+
   return createSdkMcpServer({
     name: "session-tools",
     version: "1.0.0",
-    tools: [renameTool, listTool],
+    tools: [renameTool, listTool, archiveTool],
   });
 };

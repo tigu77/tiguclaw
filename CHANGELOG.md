@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-08-19
+
+비서가 여러 작업을 **동시에** 맡길 수 있게 된 판입니다. 종전엔 서브에이전트에게
+일을 시키면 그 답이 올 때까지 대화가 멈췄는데, 이제 맡겨두고 계속 이야기할 수
+있습니다. 맡긴 일은 **잊히지 않습니다** — 끝나면 결과가 돌아옵니다.
+
+### Added
+
+- **백그라운드 서브에이전트.** 비서가 서브에이전트를 띄우고 기다리지 않을 수
+  있습니다. 여러 명을 동시에 돌리고, 끝나는 대로 결과를 받아 마무리합니다.
+  기다릴지 말지는 비서가 일의 성격을 보고 정합니다(짧으면 그 자리에서 기다립니다).
+- 백그라운드로 도는 서브에이전트도 **중지**할 수 있고, 진행 중에 **지시를 얹을** 수
+  있습니다(매니저와 동일).
+
+### Changed
+
+- 일을 맡긴 쪽은 **결과를 받기 전엔 끝나지 않습니다.** 맡겨놓고 먼저 종료해 결과가
+  갈 곳을 잃는 일이 없습니다.
+- 작업을 중지하면 그 아래 작업들도 함께 멈추고, 알림은 **한 번**만 옵니다
+  (종전엔 하위 작업 수만큼 왔습니다).
+- 하위 작업만 중지하면 위로 번지지 않습니다. 그 사실이 "실패"가 아니라 **"중지됨"**
+  으로 전해져, 비서가 방금 멈춘 일을 다시 시작하지 않습니다.
+
+### Fixed
+
+- 외부 MCP 서버(대상 앱)를 껐다 켜면 그 뒤 **모든 작업 위임이 즉시 실패**하던 것.
+  이제 그 서버만 건너뛰고, 앱을 다시 켜면 자동 복구됩니다.
+- `/stop` 이 그 대화에서 돌던 백그라운드 작업을 안 끊던 것. 이제 함께 멈추고 몇 건을
+  멈췄는지 알려줍니다.
+- 데몬이 재시작으로 백그라운드 작업을 잃었을 때 **알림이 안 오던 것**.
+- 작업 카드의 시각 자리에 숫자 원값(`1787121377393`)이 뜨던 것.
+- 실행 정책이 잠긴 윈도우에서 한 줄 설치가 멈추던 것 — `npm.cmd` 로 호출합니다.
+- Claude 구독으로 쓰려는 분께 온보딩 안내가 한 걸음 앞에서 끊기던 것.
+
 ## [0.31.0] - 2026-08-19
 
 설치·업데이트가 조용히 실패하던 것들을 잡은 판입니다. 여러 대에 깔아 쓰신다면
@@ -1216,7 +1250,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/tigu77/tiguclaw/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/tigu77/tiguclaw/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/tigu77/tiguclaw/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/tigu77/tiguclaw/compare/v0.28.0...v0.29.0

@@ -62,8 +62,8 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "훅 프로브가 실제로 돌았다(빈손 통과 금지)",
-      Object.keys(got).length >= 20,
-      Object.keys(got).length >= 20
+      Object.keys(got).length >= 22,
+      Object.keys(got).length >= 22
         ? `${Object.keys(got).length}개 판정 회수`
         : `★프로브 실패: ${tail}`,
     ),
@@ -117,6 +117,14 @@ const run = async (): Promise<Assertion[]> => {
       "★손자가 파이프를 물어도 턴이 안 멈춘다(백스톱 — 안 풀리면 그 턴은 영영 멈춘다)",
       got.hangResolved === true && got.hangDoesNotBlock === true,
       `${String(got.hangResolvedMs)}ms 에 풀림 · 무차단=${String(got.hangDoesNotBlock)}`,
+    ),
+  );
+
+  out.push(
+    assert(
+      "★즉시 끝나는 훅에 stdin 을 쓰다 EPIPE 가 나도 데몬이 안 죽는다(CI 리눅스가 잡은 실결함)",
+      got.fastExitSurvived === true && got.fastExitDoesNotBlock === true,
+      `생존=${String(got.fastExitSurvived)} 무차단=${String(got.fastExitDoesNotBlock)}`,
     ),
   );
 

@@ -58,6 +58,14 @@ writeFileSync(
               { type: "command", command: `sleep 8 &`, timeout: 1 },
             ],
           },
+          // ⑤★stdin 을 안 읽고 **즉시 끝나는** 훅 — 파이프가 닫힌 뒤 우리가 쓰게 되고
+          //  `EPIPE` 가 비동기 'error' 이벤트로 온다. 리스너가 없으면 Node 가 프로세스를
+          //  죽인다(= 훅 하나가 데몬을 내린다). 2026-08-19 CI 리눅스가 실제로 이걸로 죽었다.
+          //  ★macOS 에선 재현이 안 된다(파이프 타이밍) — 이 케이스의 진짜 채점은 CI 다.
+          {
+            matcher: "^FastExit$",
+            hooks: [{ type: "command", command: `exit 0` }],
+          },
         ],
         PostToolUse: [
           { hooks: [{ type: "command", command: `touch '${mark("post")}'` }] },
@@ -125,6 +133,20 @@ const base = { cwd, channel: "regr", threadKey: "regr:hooks" };
   out.hangResolvedMs = ms;
   out.hangResolved = ms < 7_500; // 손자(8초)가 끝나기 전에 풀렸나 = 백스톱이 풀어준 것
   out.hangDoesNotBlock = r.block === false;
+}
+
+// ── ④-2 ★즉시 끝나는 훅에 stdin 을 쓰다 EPIPE — **데몬이 죽으면 안 된다** ────
+//  훅에 넘기는 stdin 은 이벤트 JSON 이라 toolInput 이 크면 같이 커진다. 파이프가 이미
+//  닫혔으면 그 쓰기가 비동기 'error'(EPIPE)로 돌아오고, 리스너가 없으면 Node 가
+//  **프로세스를 죽인다**. 여기까지 왔다는 것 자체가 살아남았다는 증거다.
+{
+  const r = await H.runPreToolUseHooks({
+    toolName: "FastExit",
+    toolInput: { blob: "x".repeat(300_000) },
+    ...base,
+  });
+  out.fastExitSurvived = true;
+  out.fastExitDoesNotBlock = r.block === false;
 }
 
 // ── ⑤ stdout 이 컨텍스트로 주입된다 ──────────────────────────────────────────

@@ -308,11 +308,25 @@ const runShellHook = (
       // spawn 실패 (sh 부재 등) — 에러 격리 (데몬 보호).
       done({ stdout, stderr, code: -1 });
     });
+    // ★stdio 스트림 에러를 **반드시** 받는다 (2026-08-19, CI 리눅스가 잡음).
+    //  훅이 stdin 을 안 읽고 즉시 끝나면(`exit 0`·`sleep N &` 처럼 sh 가 바로 반환) 파이프가
+    //  닫힌 뒤 우리가 쓰게 되고, 그때 `EPIPE` 가 **비동기 'error' 이벤트**로 온다. 아래
+    //  try/catch 는 동기 throw 만 잡으므로 이건 못 잡고, 리스너가 없으면 Node 가
+    //  **프로세스를 죽인다**(unhandled 'error' event on Socket). 즉 훅 하나가 데몬을 내린다.
+    //  ★macOS 에선 재현되지 않았다(파이프 타이밍) — CI 리눅스에서만 터졌다. 그래서 이건
+    //   "로컬 초록 ≠ CI 초록" 의 실례이기도 하다.
+    //  ★done() 을 부르지 않는다: 파이프가 닫힌 것은 훅 실행 실패가 아니다(그 명령은 잘 돌고
+    //   있을 수 있다). 종료 판정은 close·timeout·백스톱이 그대로 맡는다.
+    for (const s of [child.stdin, child.stdout, child.stderr]) {
+      s.on("error", () => {
+        /* EPIPE 등 — 격리(데몬 보호). 판정은 close/backstop 이 낸다. */
+      });
+    }
     try {
       child.stdin.write(stdinData);
       child.stdin.end();
     } catch {
-      // stdin write 실패 격리.
+      // stdin write 실패 격리(동기 throw 경로).
     }
   });
 

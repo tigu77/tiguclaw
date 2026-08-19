@@ -18,6 +18,7 @@ import { listLiveChildJobs } from "./worker-jobs.js";
 import { readFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
 import { parseFile } from "../store/self-growth-md.js";
+import { resolveModelProfiles } from "./llm-runtime/builtin-profiles.js";
 
 // ─── formatMemorySnippet — user prompt prepend 본문 ──────────────────────
 const SNIPPET_HARD_CAP = 1500;
@@ -175,7 +176,11 @@ export const formatModelProfiles = (
 ): string => {
   let profiles: Record<string, ModelProfile>;
   try {
-    profiles = loadModelProfiles(cwd);
+    // ★설정이 0개면 빌트인 조립을 쓴다 (2026-08-19). 종전엔 새 설치에서 이 섹션이 통째로
+    //  비어, 비서가 **자기가 쓸 수 있는 모델 등급을 모르는 채** 서브에이전트를 구성했다.
+    //  런타임은 빌트인으로 도는데 인벤토리만 비어 있던 것 — 같은 폴백을 `/models` 에만
+    //  적었던 대가다. 이제 `resolveModelProfiles` 한 곳이 판정한다.
+    profiles = resolveModelProfiles(cwd).profiles as Record<string, ModelProfile>;
   } catch {
     // never-throw — 프로파일 렌더 실패가 턴을 죽이지 않게(원칙 3, settings.ts 동형).
     return "";

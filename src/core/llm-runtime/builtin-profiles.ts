@@ -22,6 +22,7 @@
 import { providerAuthAvailable } from "./provider-availability.js";
 import { catalogTierModel } from "./model-catalog.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
+import { loadModelProfiles } from "../settings.js";
 
 /** 빌트인이 아는 세 등급. 사용자 프로파일 이름은 자유지만 빌트인은 이 셋뿐이다. */
 export const BUILTIN_TIERS = ["high", "mid", "low"] as const;
@@ -129,3 +130,33 @@ export const builtinTierFor = (name: string): BuiltinTier =>
   (BUILTIN_TIERS as readonly string[]).includes(name.toLowerCase())
     ? (name.toLowerCase() as BuiltinTier)
     : BUILTIN_DEFAULT_TIER;
+
+/**
+ * **지금 이 설치가 실제로 쓰는 프로파일** — 설정이 있으면 그것, 없으면 빌트인 조립.
+ *
+ * ★소비처마다 폴백을 적지 않기 위해 만든다 (2026-08-19 사용자 신고: "설치하면 기본 모델
+ *  프로파일들이 생기지가 않아 — 대시보드에 비어 있는 상태"). 2026-08-13 에 같은 문제를
+ *  `/models` 에서 고쳤는데(*"화면과 실행이 갈림"*), 그 폴백을 **그 자리에만** 적었다.
+ *  결과: 세 소비처 중 하나만 고쳐졌다.
+ *
+ *  | 소비처 | 종전 |
+ *  |---|---|
+ *  | `/models`(채팅) | 빌트인 폴백 있음 ✅ |
+ *  | 대시보드 `/model-profiles` | **없음** — 새 설치에서 드롭다운이 빈다 |
+ *  | 비서 프롬프트 인벤토리 | **없음** — 모델을 고를 근거가 없다 |
+ *
+ * ★런타임은 원래 빌트인으로 잘 돈다(설정 0 이어도 인증된 provider 로 조립). 즉 제품은
+ *  멀쩡한데 **보여주는 곳만** 비어 있었다 — 사용자에겐 "설치가 덜 된 것" 으로 보인다.
+ *
+ * @returns `builtin` 은 지금 보여주는 것이 자동 조립인지(화면이 그렇게 표시할 수 있게).
+ */
+export const resolveModelProfiles = (
+  cwd?: string,
+): {
+  profiles: Record<string, { description?: string; pool: string[]; fallback?: string }>;
+  builtin: boolean;
+} => {
+  const user = loadModelProfiles(cwd);
+  if (Object.keys(user).length > 0) return { profiles: user, builtin: false };
+  return { profiles: builtinModelProfiles(cwd), builtin: true };
+};

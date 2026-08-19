@@ -401,6 +401,39 @@ export const check: RegressionCheck = {
         shared ? "claudeAuthAvailable 공유" : "★어댑터가 env 를 직접 다시 읽는다",
       ),
     );
+
+    // ── ★보여주는 곳이 **실행되는 것과 같은 답**을 준다 (2026-08-19 사용자 신고) ──────
+    //  "설치하면 기본 모델 프로파일들이 생기지가 않아 — 대시보드에 비어 있는 상태."
+    //  런타임은 원래 빌트인으로 잘 돈다(위 검사들이 그걸 지킨다). 문제는 **화면과 프롬프트**
+    //  였다: 폴백을 2026-08-13 에 `/models` 에**만** 적어서, 대시보드 엔드포인트와 비서
+    //  프롬프트 인벤토리는 `settings.json` 만 보고 빈 목록을 냈다. 사용자에겐 "설치가 덜
+    //  된 것" 으로 보이고, 비서는 자기가 쓸 등급을 모르는 채 서브에이전트를 구성한다.
+    //  ★그래서 폴백을 소비처마다 적지 않고 `resolveModelProfiles` 하나로 모았다 —
+    //   이 검사는 **셋이 그 하나를 쓰는지**만 본다(규칙을 감시하는 대신 부를 것을 하나로).
+    {
+      const consumers: Array<[string, string]> = [
+        ["대시보드(/model-profiles)", await readFile(new URL("../../../plugins/http-bridge/index.ts", import.meta.url), "utf8")],
+        ["프롬프트 인벤토리", await readFile(new URL("../../core/prompt-assembly.ts", import.meta.url), "utf8")],
+      ];
+      const missing = consumers.filter(([, src]) => !/resolveModelProfiles\(/.test(src)).map(([n]) => n);
+      out.push(
+        assert(
+          "★보여주는 소비처가 빌트인 폴백을 쓴다(설정 0인 새 설치에서 빈 목록 금지)",
+          missing.length === 0,
+          missing.length === 0 ? "대시보드 · 프롬프트" : `★settings 만 보는 곳: ${missing.join(", ")}`,
+        ),
+      );
+      // 판정 자체도 실행으로 — 설정이 없으면 빌트인, 있으면 설정.
+      const { resolveModelProfiles } = await import("../../core/llm-runtime/builtin-profiles.js");
+      const r = resolveModelProfiles();
+      out.push(
+        assert(
+          "resolveModelProfiles 가 어느 쪽을 쓰는지 말해준다(화면이 구분해 표시할 수 있게)",
+          typeof r.builtin === "boolean" && typeof r.profiles === "object",
+          `builtin=${r.builtin} · ${Object.keys(r.profiles).length}개`,
+        ),
+      );
+    }
     return out;
   },
 };

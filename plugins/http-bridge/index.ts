@@ -65,6 +65,10 @@ import {
 import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
 import { setSessionArchived } from "../../src/store/channel-session.js";
 import {
+  resolveModelProfiles,
+  BUILTIN_DEFAULT_TIER,
+} from "../../src/core/llm-runtime/builtin-profiles.js";
+import {
   listThreads,
   setThreadName,
   getSessionModelProfile,
@@ -1720,8 +1724,14 @@ class HttpBridge implements Channel, Observer {
     // 프로파일 부재 시 profiles:[] graceful(400/500 아님). 편집 아님 — 표시만(설정은 대화·POST /set-default-profile).
     if (pathname === "/model-profiles" && method === "GET") {
       try {
-        const map = loadModelProfiles();
-        const defaultName = getDefaultProfileName();
+        // ★설정이 0개면 **런타임이 실제로 쓰는 것**(빌트인 자동 조립)을 보여준다
+        //  (2026-08-19 사용자 신고: "설치하면 기본 모델 프로파일들이 생기지가 않아 —
+        //  대시보드에 비어 있는 상태"). 런타임은 원래 빌트인으로 잘 도는데 **화면만**
+        //  비어 있어서 설치가 덜 된 것처럼 보였다. 같은 폴백을 2026-08-13 에 `/models`
+        //  에는 넣었는데 여기와 프롬프트 인벤토리는 빠졌다 — 그래서 폴백을 소비처마다
+        //  적지 않고 `resolveModelProfiles` 한 곳으로 모았다.
+        const { profiles: map, builtin } = resolveModelProfiles();
+        const defaultName = builtin ? BUILTIN_DEFAULT_TIER : getDefaultProfileName();
         const names = Object.keys(map);
         const rest = names.filter((n) => n !== defaultName);
         const ordered = names.includes(defaultName)
@@ -1740,6 +1750,8 @@ class HttpBridge implements Channel, Observer {
         writeJson(res, 200, {
           profiles,
           count: profiles.length,
+          // 화면이 "자동 조립본" 임을 말할 수 있게(설정으로 고정한 것과 구분).
+          builtin,
           generatedAt: new Date().toISOString(),
         });
       } catch (e) {

@@ -30,6 +30,13 @@ export const check: RegressionCheck = {
       /renderLocalChat\(/,
       // 자기 세션에만 — 남의 세션 지연이 내 대화에 끼어들면 오독.
       /isActiveThread\(p\.threadKey\)/,
+      // ★서브에이전트류는 **안 그린다** (2026-08-19 사용자 신고: "경고가 너무 자주 떠서
+      //  혼란"). 오래 걸리는 게 정상이고 진행 스텝이 드로어에 실시간으로 보인다.
+      //  텔레그램 푸시는 같은 이유로 이미 빠져 있었는데(shouldNotifyToolSlow) **화면에만
+      //  게이트가 없어** 여기로 새고 있었다 — 같은 판단이 한쪽에만 있던 것.
+      //  ★변수 **선언**이 아니라 **조건**을 본다: 첫 판이 `/isSubagent/` 였는데, 조건에서만
+      //   떼어내는 변이(`if (!isSubagent && …)` → `if (…)`)가 선언은 남기므로 통과했다.
+      /if \(!isSubagent &&/,
     ]);
     const notify = await sourceHas("../../core/worker-jobs.ts", [
       // ★메인 턴 분기 — `worker:` 가 아니어도 처리한다(종전엔 즉시 return).

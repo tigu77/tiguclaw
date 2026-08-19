@@ -49,9 +49,16 @@ export const check: RegressionCheck = {
     // ① 임계는 도구 이름만 본다 — 어댑터별 분기가 없다(있었다면 인자가 필요했다).
     out.push(
       assert(
-        "서브에이전트류는 완화된 임계(오탐 방지)",
-        toolSlowWarnMs("spawn_agent") === toolSlowWarnMs("Task") &&
-          toolSlowWarnMs("spawn_agent") > toolSlowWarnMs("Bash"),
+        // ★임계는 **하나**다 (2026-08-19 사용자 확정). 종전엔 서브에이전트류만 완화된
+        //  임계를 따로 뒀는데, 그건 경고가 사용자에게 가던 시절의 완화책이다 — 이제
+        //  서브에이전트 지연은 푸시·화면 양쪽에서 빠졌으므로 이유가 사라졌다.
+        //  ★두 상수는 실제로 갈렸다: 기본을 10분으로 올리자 고정 300초였던 쪽이 더 짧아져
+        //   "원래 오래 걸리는" 도구가 먼저 경고하는 역전이 났다.
+        //  ★그리고 **10분 이상**이어야 한다 — 3분은 정상 작업이 흔히 넘어 배경 소음이 됐다.
+        "임계는 하나이고 10분 이상이다(도구 종류·MCP 접두사와 무관)",
+        toolSlowWarnMs("spawn_agent") === toolSlowWarnMs("Bash") &&
+          toolSlowWarnMs("mcp__agents__spawn_agent") === toolSlowWarnMs("Bash") &&
+          toolSlowWarnMs("Bash") >= 600_000,
         `spawn_agent=${toolSlowWarnMs("spawn_agent")} Task=${toolSlowWarnMs("Task")} Bash=${toolSlowWarnMs("Bash")}`,
       ),
     );

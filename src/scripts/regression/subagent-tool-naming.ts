@@ -55,14 +55,24 @@ export const check: RegressionCheck = {
     );
 
     // (b) 소비처가 판정을 **실제로** 쓰는가 — 동작으로 본다.
-    const warnSame =
-      toolSlowWarnMs("Agent") === toolSlowWarnMs("spawn_agent") &&
-      toolSlowWarnMs("Agent") > toolSlowWarnMs("Bash");
+    // ★임계 완화는 **없앴다** (2026-08-19 사용자 확정: "서브에이전트가 오래 걸리는 건
+    //  당연한 거라 경고를 할 필요가 없지 — 이미 백그라운드 잡에서 뭘 하는지 보이잖아").
+    //  종전 계약은 "서브에이전트는 더 늦게 경고" 였는데, 그건 경고가 **사용자에게 가던
+    //  시절**의 완화책이다. 이제 서브에이전트 지연은 채널 푸시·화면 렌더 양쪽에서 빠졌으니
+    //  임계로 달랠 대상이 없다. 그래서 지키는 것을 **임계에서 억제로** 옮긴다.
+    const warnSingle =
+      toolSlowWarnMs("Agent") === toolSlowWarnMs("Bash") &&
+      toolSlowWarnMs("spawn_agent") === toolSlowWarnMs("Bash");
+    // ★MCP 접두사가 붙어 와도 같아야 한다 — claude 만 벗겨 넘기고 codex·openai 는 원문을
+    //  넘겨서, 접두사가 붙으면 억제·면제가 조용히 풀렸다(어댑터별 그물 차이 = 원칙 #2).
     const pushSuppressed =
       !shouldNotifyToolSlow("Agent") &&
       !shouldNotifyToolSlow("spawn_agent") &&
-      shouldNotifyToolSlow("Bash");
-    const hardExempt = isLongRunningByDesign("Agent");
+      !shouldNotifyToolSlow("mcp__agents__spawn_agent") &&
+      shouldNotifyToolSlow("Bash") &&
+      shouldNotifyToolSlow("mcp__file-ops__Bash");
+    const hardExempt =
+      isLongRunningByDesign("Agent") && isLongRunningByDesign("mcp__agents__spawn_agent");
 
     // (c) ★이름을 다시 열거하지 않는다 — 소비처에 리터럴이 **되살아나는 것 자체**를 막는다.
     //  존재 검사(sourceHas)만으로는 약하다: 판정 호출이 한 군데라도 남아 있으면 다른 곳이
@@ -121,8 +131,8 @@ export const check: RegressionCheck = {
         `exempt=${hardExempt} 배선=${watchdog.ok}`,
       ),
       assert(
-        "느림 경고 임계가 서브에이전트에 완화된다(Bash 보다 큼)",
-        warnSame,
+        "★느림 경고 임계는 하나다(도구별 완화 없음 — 억제는 푸시·렌더에서 한다)",
+        warnSingle,
         `Agent=${toolSlowWarnMs("Agent")} spawn_agent=${toolSlowWarnMs("spawn_agent")} Bash=${toolSlowWarnMs("Bash")}`,
       ),
       assert(

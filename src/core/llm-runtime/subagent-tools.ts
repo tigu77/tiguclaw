@@ -23,6 +23,18 @@
 const OURS = "spawn_agent";
 
 /**
+ * MCP 접두사를 벗긴 이름 — `mcp__agents__spawn_agent` → `spawn_agent` (2026-08-19).
+ *
+ * ★판정이 **스스로** 벗긴다. 종전엔 claude 어댑터만 `normalizeToolName` 으로 벗겨서
+ *  넘겼고 codex·openai 는 원문(`tc.name`·`raw.name`)을 넘겼다 — 즉 **어댑터별로 판정
+ *  결과가 달랐다**(원칙 #2 위반). 접두사가 붙은 채로 오면 서브에이전트로 안 보여서
+ *  ①느림 임계 완화(300초→180초) ②채널 푸시 억제 ③하드컷 면제가 **셋 다** 풀린다.
+ *  호출부마다 "벗겨서 부르기" 를 지키게 하는 대신, 틀리게 부를 수 없게 만든다.
+ */
+const bare = (tool: string): string =>
+  tool.startsWith("mcp__") ? (tool.split("__").pop() ?? tool) : tool;
+
+/**
  * **SDK 빌트인** 서브에이전트 도구인가 — `Agent`(0.3+) / `Task`(0.1~0.2, 구 설치본 호환).
  *
  * ★우리 `spawn_agent` 과 **반드시 구분**해야 한다 (2026-08-07 거짓 경고로 실증).
@@ -35,7 +47,7 @@ const OURS = "spawn_agent";
 export const SDK_SUBAGENT_TOOLS = ["Agent", "Task"] as const;
 
 export const isSdkSubagentTool = (tool: string): boolean =>
-  (SDK_SUBAGENT_TOOLS as readonly string[]).includes(tool);
+  (SDK_SUBAGENT_TOOLS as readonly string[]).includes(bare(tool));
 
 /**
  * ★alias 를 두지 않는다 (2026-08-08 검토 결과 철회).
@@ -58,7 +70,7 @@ export const isSdkSubagentTool = (tool: string): boolean =>
  * 시간 정책(느림 경고 완화·하드컷 면제·푸시 억제)은 주인과 무관하므로 이쪽을 쓴다.
  */
 export const isSubagentTool = (tool: string): boolean =>
-  tool === OURS || isSdkSubagentTool(tool);
+  bare(tool) === OURS || isSdkSubagentTool(tool);
 
 /** 오래 걸리는 게 **정상**인 도구인가 — 느림 경고 완화·하드컷 면제의 공통 기준. */
 export const isLongRunningByDesign = (tool: string): boolean =>

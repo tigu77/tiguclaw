@@ -366,7 +366,18 @@
         //  `llm.compaction_stuck` 때 고친 것과 같은 부류(발행은 했는데 소비처가 없음).
         if (ev.type === "llm.tool_slow") {
           const p = ev.payload || {};
-          if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
+          // ★서브에이전트류는 그리지 않는다 (2026-08-19 사용자 신고: "경고가 너무 자주 떠서
+          //  혼란"). 오래 걸리는 게 정상이고(실측 평균 124초·최대 627초), 진행 스텝은
+          //  **백그라운드 드로어에 실시간으로** 보인다 — 이 경고가 시키는 "확인해봐" 를
+          //  사용자가 이미 다른 수단으로 하고 있다. 텔레그램 푸시는 같은 이유로 이미
+          //  빼놨는데(shouldNotifyToolSlow) **화면에만 게이트가 없어** 여기로 새고 있었다.
+          //  ★이름은 접두사가 붙어 올 수 있다(mcp__agents__spawn_agent) — 서버 판정과
+          //   같은 규칙으로 벗겨서 본다.
+          const bareTool = String(p.tool || "").startsWith("mcp__")
+            ? String(p.tool).split("__").pop()
+            : String(p.tool || "");
+          const isSubagent = bareTool === "spawn_agent" || bareTool === "Agent" || bareTool === "Task";
+          if (!isSubagent && !isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
             const secs = Math.round((Number(p.ms) || 180000) / 1000);
             renderLocalChat(
               "info",

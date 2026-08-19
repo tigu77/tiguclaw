@@ -41,7 +41,63 @@ export interface SteeringInput {
   attachments?: Attachment[];
   /** 도착 시각(관측·정렬용). 개입점이 Date.now() 로 채운다. */
   ts: number;
+  /**
+   * **누가 넣었나** (2026-08-19, ADR background-subagents 위험 목록).
+   *
+   * ★같은 큐에 두 종류가 들어온다: 사용자 개입과 **백그라운드 자식의 결과**.
+   *  출처 표식이 없으면 소비처가 둘을 구분할 수 없고, 실제로 두 군데서 틀린다 —
+   *   ① 턴 끝 잔여 통지가 자식 결과를 "방금 보내신 지시" 로 사용자에게 되읽어준다
+   *   ② 모델이 자식 결과를 "사용자가 말했다" 로 읽는다
+   *  미지정 = `"user"`(종전 호출부 전부가 그 의미였다 — 회귀 0).
+   *
+   * ★순서는 출처와 무관하게 **도착 순** 그대로다. 사용자의 "그만" 이 자식 결과보다
+   *  먼저 반영돼야 하므로 출처로 재정렬하지 않는다.
+   */
+  source?: "user" | "job";
 }
+
+/**
+ * 큐에서 걷은 것을 **출처로 가른다** (2026-08-19).
+ *
+ * ★두 소비처가 서로 다른 걸 원한다:
+ *  - 매니저의 거두기 루프 → 자식 결과(`job`)만. 그걸로 턴을 이어 마무리한다.
+ *  - 턴 끝 잔여 통지 → 사용자 지시(`user`)만. 자식 결과를 "방금 보내신 지시" 로
+ *    되읽어주면 사용자는 **자기가 안 보낸 문장**을 자기 것으로 통보받는다.
+ *
+ * 미지정은 `user` 로 본다 — 이 필드가 생기기 전 호출부가 전부 사용자 개입이었다.
+ */
+export const partitionSteering = (
+  msgs: readonly SteeringInput[],
+): { jobResults: SteeringInput[]; userMessages: SteeringInput[] } => {
+  const jobResults: SteeringInput[] = [];
+  const userMessages: SteeringInput[] = [];
+  for (const m of msgs) {
+    if (m.source === "job") jobResults.push(m);
+    else userMessages.push(m);
+  }
+  return { jobResults, userMessages };
+};
+
+/**
+ * 매니저가 **턴을 더 끌어야 하나** — "소환자는 거두고 끝난다" 의 판정 한 줄.
+ *
+ * ★프롬프트로 부탁하지 않고 여기서 정하는 이유: 모델이 안 지키는 날이 오고 그날은
+ *  조용하다(자식 결과가 아무에게도 안 간다). 사용자 확정 사항이다 —
+ *  *"시스템적으로 안 거둘 수 없게 해야지"*.
+ *
+ * 종료 보장: `aborted`(상한·취소)면 무조건 false → 무한 루프 0. 자식은 스스로 또
+ * 자식을 못 띄우므로(depth 게이트) 남은 수는 단조 감소하거나 매니저가 새로 띄운다.
+ */
+export const shouldKeepReaping = (o: {
+  aborted: boolean;
+  /** 아직 안 먹인 자식 결과 수. */
+  pendingResults: number;
+  /** 아직 도는 직계 자식 수. */
+  liveChildren: number;
+}): boolean => {
+  if (o.aborted) return false;
+  return o.pendingResults > 0 || o.liveChildren > 0;
+};
 
 export interface SteeringChannel {
   /**

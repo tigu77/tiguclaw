@@ -24,7 +24,12 @@
  */
 import path from "node:path";
 import { z } from "zod";
-import { createSteeringChannel, type SteeringInput } from "../../steering.js";
+import {
+  createSteeringChannel,
+  partitionSteering,
+  shouldKeepReaping,
+  type SteeringInput,
+} from "../../steering.js";
 import {
   createSdkMcpServer,
   tool,
@@ -42,9 +47,15 @@ import {
   WORKER_TIMEOUT_MS,
   WORKER_HARD_GRACE_MS,
   type WorkerJobRecord,
+  listLiveChildJobs,
+  findTargetableJob,
   resolveOwnerThreadKey,
   jobBelongsToSession,
   WORKER_STEERING_ENABLED,
+  getSteerChannel,
+  rotateSteerChannel,
+  setJobResultChannel,
+  clearJobResultChannel,
   setSteerChannel,
   clearSteerChannel,
   notifyJobOwner,
@@ -90,8 +101,15 @@ const runner = (job: WorkerJobRecord): void => {
   // 소비층(3어댑터)은 `input.steering` 하나만 보므로 어댑터 변경 0 — 여기서 넘기기만 하면 된다.
   // 비활성(WORKER_STEERING_ENABLED=0)이면 채널 자체를 만들지 않는다: steering 주입 여부가
   // claude 의 실행 경로(string-prompt ↔ streaming-input)를 바꾸므로, 끄면 종전 경로 그대로다.
-  const steerCh = WORKER_STEERING_ENABLED ? createSteeringChannel() : undefined;
+  // ★`let` 이다 — 거두기 라운드마다 **새 채널로 교체**한다. 어댑터가 턴 끝에 닫기 때문
+  //  (claude 데드락 수정). 자세한 근거는 rotateSteerChannel 주석.
+  let steerCh = WORKER_STEERING_ENABLED ? createSteeringChannel() : undefined;
   if (steerCh !== undefined) setSteerChannel(job.jobId, steerCh);
+  // ★자식 결과 전용 수신함 — 어댑터에 **넘기지 않는다**. 넘기면 진행 중 턴에 섞여
+  //  SDK 가 새 턴을 열고, 어댑터의 턴 경계 가드가 그 답을 버린다(라이브 실측).
+  //  이건 거두기 루프만 읽는다. steering 과 달리 어댑터가 닫지 않으므로 교체도 불필요.
+  const resultBox = createSteeringChannel();
+  setJobResultChannel(job.jobId, resultBox);
 
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
@@ -142,7 +160,82 @@ const runner = (job: WorkerJobRecord): void => {
       });
       void runRegionAP.catch(() => {});
 
-      const out = await Promise.race([runRegionAP, hardDeadline]);
+      let out = await Promise.race([runRegionAP, hardDeadline]);
+
+      // ─── ★소환자는 **거두고** 끝난다 (ADR 2026-08-19, 사용자 확정 §b) ──────────────
+      //  "소환해놓고 끝날 수는 없지. 당장은 안 기다리더라도 결과를 받고 마무리해야지."
+      //  그리고 그건 **시스템적으로 안 거둘 수 없게** 해야 한다 — 프롬프트로 부탁하면
+      //  모델이 안 지키는 날이 오고, 그날은 조용하다(결과가 아무에게도 안 간다).
+      //
+      //  그래서 매니저가 `wait:false` 로 띄운 자식이 아직 돌면 **턴을 안 닫는다.**
+      //  자식 결과는 deliverToSummoner 가 이 잡의 steering 큐로 넣으므로, 그걸 기다렸다가
+      //  이어지는 턴에 실어 매니저가 실제로 **쓰게** 한다(받아만 두고 못 쓰면 거둔 게 아니다).
+      //
+      //  ★메인 비서엔 이걸 못 한다 — 메인은 이미 사용자에게 말을 끝내고 전송한 뒤라
+      //   루프를 이으면 한 턴이 두 번 발화한다. 매니저는 사용자에게 스트리밍하지 않아서
+      //   안전하다. 이 비대칭이 설계의 핵심이다.
+      //
+      //  종료 보장: ①자식이 다 끝나면 루프 탈출 ②abort(WORKER_TIMEOUT_MS·취소)면 즉시 탈출
+      //  ③채널이 닫히면 탈출. 자식은 스스로 또 자식을 못 띄운다(depth 게이트).
+      if (steerCh !== undefined) {
+        let rounds = 0;
+        // ★턴이 끝나는 **순간** 자식이 끝난 경우 — 자식은 이미 done 이라 아래 live 조건이
+        //  0이지만 결과는 큐에 남아 있다. 그대로 두면 finally 가 그걸 *사용자 지시*로 오해해
+        //  "⚠️ 방금 보내신 지시는 반영되지 않았어요" 를 보낸다(자식 결과인데). 먼저 걷는다.
+        let arrived: SteeringInput[] = resultBox.drain();
+        while (
+          shouldKeepReaping({
+            aborted: abort.signal.aborted,
+            pendingResults: arrived.length,
+            liveChildren: listLiveChildJobs(`worker:${job.jobId}`).length,
+          })
+        ) {
+          // ★다음 턴을 위해 **개입** 채널만 갈아끼운다 — 어댑터가 턴 끝에 닫기 때문
+          //  (claude 데드락 수정). 결과 수신함은 어댑터가 안 건드리므로 그대로 쓴다.
+          const rot = rotateSteerChannel(job.jobId);
+          steerCh = rot.channel;
+          for (const m of rot.leftover) steerCh.push(m); // 미소비 사용자 지시 보존.
+          if (arrived.length === 0) {
+            const live = listLiveChildJobs(`worker:${job.jobId}`);
+            console.log(
+              `worker-registry: '${job.label}' 턴이 끝났지만 백그라운드 자식 ${live.length}건이 ` +
+                `아직 진행 중 — 거두고 마무리합니다 (${live.map((j: { label: string }) => j.label).join(", ")})`,
+            );
+            // 다음 결과를 **이벤트로** 기다린다(폴링 아님) — deliverToSummoner 가 큐에 넣으면
+            // stream 이 깨어난다. close/abort 면 제너레이터가 끝나 arrived 가 비고 탈출한다.
+            for await (const m of resultBox.stream(abort.signal)) {
+              arrived.push(m);
+              break; // 첫 도착으로 깨어난 뒤, 같은 순간 도착분은 아래 drain 으로 합류.
+            }
+            arrived.push(...resultBox.drain());
+          }
+          if (arrived.length === 0) break; // 채널 종료·취소 — 안전망(유령좌표 환원)이 받는다.
+          rounds += 1;
+          const { runRegionA: rerun } = await import("../index.js");
+          out = await rerun(
+            {
+              text:
+                `[백그라운드 작업 결과 도착 — 아래를 반영해 작업을 마무리하세요]\n\n` +
+                arrived.map((m) => m.raw).join("\n\n"),
+              threadKey: `worker:${job.jobId}`,
+              channel: job.channel,
+              cwd: job.cwd,
+              workerDepth: 1,
+              abortSignal: abort.signal,
+              steering: steerCh,
+            },
+            workerChain.length > 0 ? { chain: workerChain } : undefined,
+          );
+          // 이번 라운드 소비분 비우고, 그 사이 또 도착한 자식 결과가 있으면 이어서 돈다.
+          arrived = resultBox.drain();
+        }
+        if (rounds > 0) {
+          console.log(
+            `worker-registry: '${job.label}' 자식 결과 ${rounds}회 이어받아 마무리 — ` +
+              `남은 자식 ${listLiveChildJobs(`worker:${job.jobId}`).length}건`,
+          );
+        }
+      }
       outcome = { result: out.text };
     } catch (e) {
       outcome = { error: e instanceof Error ? e.message : String(e) };
@@ -157,7 +250,11 @@ const runner = (job: WorkerJobRecord): void => {
       if (steerCh !== undefined) {
         clearSteerChannel(job.jobId);
         steerCh.close();
-        const leftover = steerCh.drain();
+        // ★**사용자 지시만** 통지한다 (2026-08-19). 같은 큐에 백그라운드 자식의 결과도
+        //  들어오는데, 그걸 "방금 보내신 지시" 로 되읽어주면 사용자는 자기가 안 보낸 문장을
+        //  자기 것으로 통보받는다. 자식 결과는 위 거두기 루프가 소비하고, 거기서 놓친
+        //  잔여는 완료 보고에 이미 담긴다(소환자가 거둔다는 계약).
+        const leftover = partitionSteering(steerCh.drain()).userMessages;
         if (leftover.length > 0) {
           pendingSteerNotice = leftover.map((m: SteeringInput) => m.raw).filter((t: string) => t !== "");
         }
@@ -452,34 +549,31 @@ export const createWorkerMcpServer = (
           return errText("label 또는 job_id 중 하나로 대상 매니저를 지정하세요.");
         }
         const scope = resolveOwnerThreadKey(parentInput.threadKey);
-        const running = listJobs({
-          runningOnly: true,
-          ...(scope !== "" ? { ownerThreadKey: scope } : {}),
+        let target = findTargetableJob({
+          ...(args.label !== undefined ? { label: args.label } : {}),
+          ...(args.job_id !== undefined ? { jobId: args.job_id } : {}),
+          scope,
         });
-        let target: WorkerJobRecord | undefined;
-        if (args.label !== undefined && args.label !== "") {
-          target = running.find((j) => j.kind === "worker" && j.label === args.label);
-          if (target === undefined && scope !== "") {
-            const elsewhere = listJobs({ runningOnly: true }).find(
-              (j) => j.kind === "worker" && j.label === args.label,
+        if (
+          target === undefined &&
+          args.label !== undefined &&
+          args.label !== "" &&
+          scope !== ""
+        ) {
+          // 다른 대화에 같은 이름이 있으면 조용히 넘기지 말고 사실을 알린다.
+          const elsewhere = findTargetableJob({ label: args.label });
+          if (elsewhere !== undefined) {
+            // 거절도 관측면에 남긴다 — 사용자 입장에선 "보냈는데 안 갔다"라 유실과 같다.
+            publishSteerAttempt({
+              jobId: elsewhere.jobId,
+              label: args.label,
+              message: args.message,
+              outcome: "other-session",
+            });
+            return okText(
+              `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
             );
-            if (elsewhere !== undefined) {
-              // 거절도 관측면에 남긴다 — 사용자 입장에선 "보냈는데 안 갔다"라 유실과 같다.
-              publishSteerAttempt({
-                jobId: elsewhere.jobId,
-                label: args.label,
-                message: args.message,
-                outcome: "other-session",
-              });
-              return okText(
-                `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
-              );
-            }
           }
-        }
-        if (target === undefined && args.job_id !== undefined && args.job_id !== "") {
-          const j = getJob(args.job_id);
-          if (j !== undefined && j.kind === "worker") target = j;
         }
         if (target === undefined) {
           // ★가장 흔한 유실이 여기다 — "스티어했는데 이미 끝난 매니저였다". steerJob 에
@@ -553,38 +647,36 @@ export const createWorkerMcpServer = (
         //  사용자가 의도하지 않은 **남의 대화 작업을 취소**할 수 있다 — 되돌릴 수 없는 행위라
         //  범위를 좁히는 쪽이 옳다. 소속 미상이면 종전대로 전역(부모 잡이 정리된 예외).
         const cancelScope = resolveOwnerThreadKey(parentInput.threadKey);
-        const runningForCancel = listJobs({
-          runningOnly: true,
-          ...(cancelScope !== "" ? { ownerThreadKey: cancelScope } : {}),
+        target = findTargetableJob({
+          ...(args.label !== undefined ? { label: args.label } : {}),
+          ...(args.job_id !== undefined ? { jobId: args.job_id } : {}),
+          scope: cancelScope,
         });
-        if (args.label !== undefined && args.label !== "") {
-          target = runningForCancel.find(
-            (j) => j.kind === "worker" && j.label === args.label,
-          );
-          if (target === undefined && cancelScope !== "") {
-            // 다른 대화에 같은 이름이 있으면 조용히 넘기지 말고 사실을 알린다.
-            const elsewhere = listJobs({ runningOnly: true }).find(
-              (j) => j.kind === "worker" && j.label === args.label,
+        if (
+          target === undefined &&
+          args.label !== undefined &&
+          args.label !== "" &&
+          cancelScope !== ""
+        ) {
+          // 다른 대화에 같은 이름이 있으면 조용히 넘기지 말고 사실을 알린다.
+          const elsewhere = findTargetableJob({ label: args.label });
+          if (elsewhere !== undefined) {
+            return okText(
+              `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
+                `그 대화에서 멈추거나, 대시보드 작업 카드에서 직접 중지해 주세요.`,
             );
-            if (elsewhere !== undefined) {
-              return okText(
-                `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
-                  `그 대화에서 멈추거나, 대시보드 작업 카드에서 직접 중지해 주세요.`,
-              );
-            }
           }
         }
-        if (target === undefined && args.job_id !== undefined && args.job_id !== "") {
-          const j = getJob(args.job_id);
-          // job_id 는 사용자가 카드에서 직접 집은 정확한 좌표 — 세션 밖이라도 존중한다
-          // (label 과 달리 오인 여지가 없다). 다만 워커만(agent 는 아래 안내 분기).
-          if (j !== undefined && j.kind === "worker") target = j;
-        }
         if (target === undefined) {
-          // 워커는 없지만 같은 식별자의 *서브에이전트* 잡이 있으면 취지를 안내(오해 방지).
+          // 대상은 없지만 같은 식별자의 **awaited** 서브에이전트가 있으면 취지를 안내.
+          // ★`!j.detached` 다 (2026-08-19). 종전엔 `kind === "agent"` 여서 백그라운드
+          //  서브(`wait:false`)까지 이 분기로 떨어졌고, 아래 문구가 **거짓 안내**를 했다:
+          //  "부모 작업을 멈추면 함께 정리됩니다" — detached 엔 멈출 부모 턴이 없다.
+          //  detached 서브는 위 target 선택에서 정상적으로 잡혀 실제로 취소된다.
           const agentMatch = listJobs({ runningOnly: true }).find(
             (j) =>
               j.kind === "agent" &&
+              !j.detached &&
               (j.label === args.label || j.jobId === args.job_id),
           );
           if (agentMatch !== undefined) {

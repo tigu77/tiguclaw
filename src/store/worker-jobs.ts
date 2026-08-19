@@ -27,7 +27,11 @@ export interface WorkerNotifyDest {
   target: string | null;
 }
 
-/** 잡 종류 — 'worker'(detached) | 'agent'(awaited 서브에이전트). ADR subagent-worker-unify. */
+/**
+ * 잡 종류 — **표시 축**이다(에이전트냐 매니저냐). ★2026-08-19 이전엔 실행 축(기다리나)도
+ * 겸했는데, `spawn_agent(wait:false)` 가 그 조합을 깼다(agent 인데 detached).
+ * 기다렸는지는 `detached` 가 진다.
+ */
 export type PersistedJobKind = "worker" | "agent";
 
 export interface PersistedWorkerJob {
@@ -43,6 +47,12 @@ export interface PersistedWorkerJob {
   kind: PersistedJobKind;
   /** 서브에이전트 정의 이름(kind==='agent' 만). 대시보드 라벨용. */
   agentName?: string;
+  /**
+   * **실행 축** — 소환자가 기다리지 않는 잡인가(워커 전부 + `spawn_agent(wait:false)`).
+   * 재시작 복구가 "통지할 소환자가 있나" 를 이걸로 가른다: awaited 서브는 부모 턴이
+   * 같이 사라져 통지 대상이 없지만, detached 는 소환자가 살아 있어 **말해줘야 한다**.
+   */
+  detached: boolean;
   /**
    * 영속된 통지 목적지. notify_channel 이 있으면 {channel, target} 로 복원,
    * 미지정(NULL)이면 undefined → core 가 job.channel/threadKey 폴백(회귀 0).
@@ -63,6 +73,7 @@ interface DbRow {
   notify_target: string | null;
   kind: string | null;
   agent_name: string | null;
+  detached: number | null;
 }
 
 const toJob = (r: DbRow): PersistedWorkerJob => ({
@@ -83,6 +94,8 @@ const toJob = (r: DbRow): PersistedWorkerJob => ({
   // kind 미존재(구 레코드)·비정상값이면 'worker'(회귀 안전).
   kind: r.kind === "agent" ? "agent" : "worker",
   agentName: r.agent_name ?? undefined,
+  // 구 레코드(컬럼 부재/NULL)는 0 → awaited. 워커는 등록 시 항상 1을 쓴다.
+  detached: r.detached === 1,
   // 채널이 영속돼 있을 때만 dest 복원(미지정 = 기존 워커 → undefined → core 폴백).
   notifyDest:
     r.notify_channel !== null
@@ -104,14 +117,16 @@ export const upsertWorkerJob = (job: {
   /** 잡 종류(미지정=worker, 회귀 안전). */
   kind?: PersistedJobKind;
   agentName?: string;
+  /** 소환자가 안 기다리는 잡인가. 미지정=false(회귀 안전 — 기존 호출부는 전부 awaited 의미). */
+  detached?: boolean;
 }): void => {
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO worker_jobs
          (job_id, label, thread_key, channel, channel_user_id, status,
-          started_at, finished_at, notify_channel, notify_target, kind, agent_name)
+          started_at, finished_at, notify_channel, notify_target, kind, agent_name, detached)
        VALUES (@jobId, @label, @threadKey, @channel, @channelUserId, @status,
-          @startedAt, @finishedAt, @notifyChannel, @notifyTarget, @kind, @agentName)`,
+          @startedAt, @finishedAt, @notifyChannel, @notifyTarget, @kind, @agentName, @detached)`,
     )
     .run({
       jobId: job.jobId,
@@ -126,6 +141,7 @@ export const upsertWorkerJob = (job: {
       notifyTarget: job.notifyDest?.target ?? null,
       kind: job.kind ?? "worker",
       agentName: job.agentName ?? null,
+      detached: job.detached === true ? 1 : 0,
     });
 };
 

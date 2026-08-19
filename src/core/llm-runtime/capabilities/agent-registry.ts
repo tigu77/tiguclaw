@@ -26,6 +26,7 @@
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
 import { getEventBus } from "../../eventbus.js";
+import type { SteeringChannel } from "../../steering.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -344,6 +345,158 @@ const errText = (text: string) => ({
 });
 
 /**
+ * 에이전트 정의 → 자식 turn 입력. **awaited(`wait:true`)·detached(`wait:false`) 공용.**
+ *
+ * ★함수로 뽑은 이유(ADR 2026-08-19 Q7 조건): 종전엔 이 변환이 spawn_agent 핸들러에
+ *  인라인이라, 백그라운드 경로가 생기면 **복사**될 수밖에 없었다. 복사하면 갈린다 —
+ *  그리고 갈린 쪽은 조용하다(자식이 도구를 못 쓰거나 선택지를 못 내는데 에러가 없다).
+ *  둘 중 하나만 고치는 일이 반드시 생기므로, 애초에 소유자를 하나로 둔다.
+ *
+ * 여기 담기는 판단 넷 — 어느 것도 경로마다 달라선 안 된다:
+ *  - 프롬프트 조립(`정의 + [Subagent Task]`)
+ *  - `toolPolicy`: `tools: none` → {mode:"none"} / 콤마 리스트 → allow / 미지정 → undefined
+ *  - `leanMemory`: `tools: none` 에이전트는 메모리 생략(단순작업 child)
+ *  - `presentOptions` 전파: 없으면 자식이 선택지를 못 낸다(부모와 동일 능력이 원칙)
+ */
+const buildAgentChildInput = (o: {
+  jobId: string;
+  agent: Agent;
+  def: string;
+  prompt: string;
+  targetCwd: string;
+  parentInput: RegionASdkInput;
+  abortSignal: AbortSignal;
+  /** detached 경로만 넘긴다 — 돌고 있는 서브에 지시를 얹는 채널(ADR §2). */
+  steering?: SteeringChannel;
+}): RegionASdkInput => {
+  const toolPolicy = deriveToolPolicy(o.agent.tools);
+  const leanMemory = deriveLeanMemory(o.agent);
+  return {
+    text: `${o.def}\n\n[Subagent Task]: ${o.prompt}`,
+    threadKey: `agent:${o.jobId}`,
+    channel: o.parentInput.channel,
+    cwd: o.targetCwd,
+    subagentDepth: 1,
+    abortSignal: o.abortSignal,
+    ...(toolPolicy !== undefined ? { toolPolicy } : {}),
+    ...(leanMemory ? { leanMemory: true } : {}),
+    // presentOptions 전파(2026-07-17, AskUserQuestion 차단 파리티) — 부모 채널의
+    // 인터랙티브 선택지 렌더 클로저를 자식에도 상속. 이게 없으면 prompt-options MCP 가
+    // 자식 turn 에 미등록(claude-agent-sdk.ts 게이트 = presentOptions!==undefined) →
+    // 자식이 "선택지 제시 불가"로 저하한다.
+    ...(o.parentInput.presentOptions !== undefined
+      ? { presentOptions: o.parentInput.presentOptions }
+      : {}),
+    ...(o.steering !== undefined ? { steering: o.steering } : {}),
+  };
+};
+
+/**
+ * **백그라운드 서브에이전트 실행** — `spawn_agent(wait:false)` (ADR 2026-08-19).
+ *
+ * 동기 반환한다(자식은 detached promise). throw 금지 — 모든 종료는 `onWorkerComplete`
+ * 로 닫는다. 형태는 `worker-registry.ts` 의 runner 와 같다: 그쪽이 이미 스티어 채널·
+ * 잔여 회수·자원 해제·통지를 다 갖고 있어서, 새 프리미티브가 **0개**다.
+ *
+ * ★워커 runner 와 **다른 점 하나**: 하드 백스톱(Promise.race)을 두지 않는다. 워커는
+ *  `WORKER_TIMEOUT_MS` 를 갖지만 서브는 `createJobAbort(timeoutMs: SUBAGENT_TIMEOUT_MS)`
+ *  가 이미 자체 상한이고, 그 위에 두 번째 상한을 얹으면 어느 쪽이 끊었는지 로그가
+ *  갈린다(경계 순서 불변식은 *중첩*을 요구하지 중복을 요구하지 않는다).
+ */
+const startDetachedAgent = (o: {
+  jobId: string;
+  agent: Agent;
+  def: string;
+  prompt: string;
+  targetCwd: string;
+  parentInput: RegionASdkInput;
+  abort: { signal: AbortSignal; done: () => void };
+}): void => {
+  void (async () => {
+    const {
+      onWorkerComplete,
+      setSteerChannel,
+      clearSteerChannel,
+      WORKER_STEERING_ENABLED,
+      notifyJobOwner,
+      getJob,
+    } = await import("../../worker-jobs.js");
+    const { createSteeringChannel } = await import("../../steering.js");
+
+    // ★서브에도 스티어 채널 (ADR §2). 오래 도는 게 기본이 되면 개입 수단이 있어야 한다.
+    //  `setSteerChannel` 은 jobId 기준이라 kind 를 안 본다 — 매니저용으로 만든 배관이
+    //  그대로 맞는다(중복 구현 0). 끄면(WORKER_STEERING_ENABLED=0) 채널 자체를 안 만든다:
+    //  steering 유무가 claude 실행 경로(string-prompt ↔ streaming-input)를 바꾸므로.
+    const steerCh = WORKER_STEERING_ENABLED ? createSteeringChannel() : undefined;
+    if (steerCh !== undefined) setSteerChannel(o.jobId, steerCh);
+
+    let outcome: { result: string } | { error: string };
+    /** 서브가 끝나는 순간 도착해 반영 못 한 지시(원문). 결과 보고 뒤에 정직 통지. */
+    let pendingSteerNotice: string[] = [];
+    try {
+      const { runRegionA, resolveModelChain } = await import("../index.js");
+      const chain = resolveModelChain(o.agent.model, o.targetCwd);
+      const childInput = buildAgentChildInput({
+        jobId: o.jobId,
+        agent: o.agent,
+        def: o.def,
+        prompt: o.prompt,
+        targetCwd: o.targetCwd,
+        parentInput: o.parentInput,
+        abortSignal: o.abort.signal,
+        ...(steerCh !== undefined ? { steering: steerCh } : {}),
+      });
+      const out = await runRegionA(
+        childInput,
+        chain.length > 0 ? { chain } : undefined,
+      );
+      outcome = { result: out.text };
+    } catch (e) {
+      outcome = { error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      o.abort.done();
+      // 스티어 채널 종료 + 잔여 회수. 서브에겐 다음 턴이 없으므로 그냥 close 하면 막
+      // 도착한 지시가 조용히 사라진다(워커와 같은 손실창 — 같은 처리로 닫는다).
+      if (steerCh !== undefined) {
+        clearSteerChannel(o.jobId);
+        steerCh.close();
+        pendingSteerNotice = steerCh
+          .drain()
+          .map((m) => m.raw)
+          .filter((t) => t !== "");
+      }
+    }
+
+    // 결과를 소환자에게 — 매니저면 그 턴의 steering 큐, 세션이면 새 턴(deliverToSummoner).
+    try {
+      await onWorkerComplete(o.jobId, outcome);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(
+        `agent-registry: 백그라운드 서브 완료 통지 예외 흡수 (job=${o.jobId}): ${reason}`,
+      );
+    }
+
+    if (pendingSteerNotice.length > 0) {
+      const job = getJob(o.jobId);
+      if (job !== undefined) {
+        try {
+          await notifyJobOwner(
+            job,
+            `⚠️ 방금 보내신 지시는 '${job.label}' 서브에이전트가 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
+              pendingSteerNotice.map((t) => `· ${t}`).join("\n") +
+              `\n필요하면 위 결과를 보고 다시 시켜주세요.`,
+          );
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          console.error(`agent-registry: 잔여 steer 통지 실패 (job=${o.jobId}): ${reason}`);
+        }
+      }
+    }
+  })();
+};
+
+/**
  * codex 어댑터 mcpServers 등록용 spawn_agent server 팩토리.
  *  - parentInput: 현재 turn input — child 의 channel/cwd 상속 + threadKey 파생.
  *
@@ -358,7 +511,7 @@ export const createSpawnAgentMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const spawnTool = tool(
     "spawn_agent",
-    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. **선택 기준**: 결과를 *이번 답변 안에서* 써서 다음 판단을 해야 할 때 이 도구를 쓰세요 — 부모 턴을 붙잡고 기다립니다. 수십 분 이상 걸릴 규모 있는 작업은 대신 run_in_background 로 보내세요(매니저가 지휘자가 되어 스스로 팬아웃하고, 대화는 막히지 않습니다).",
+    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. **선택 기준**: 결과를 *이번 답변 안에서* 써서 다음 판단을 해야 할 때는 그대로 부르세요(기본 `wait:true` — 부모 턴을 붙잡고 기다립니다). 오래 걸리거나 여러 개를 동시에 돌리고 싶으면 **`wait:false`** 로 부르세요 — 즉시 jobId 를 받고 계속 진행할 수 있으며, **끝나면 결과가 당신에게 돌아옵니다**(당신이 매니저면 진행 중인 턴에 이어지고, 메인 대화면 새 답변으로 옵니다). 소환해놓고 잊는 게 아니라 *지금 안 기다릴 뿐* 입니다. 규모가 크고 스스로 팬아웃까지 해야 하는 작업은 run_in_background(매니저) 가 더 맞습니다.",
     {
       // ★`subagent_type` 은 SDK 빌트인 `Agent` 의 인자 이름이다 (2026-08-08).
       //  그 도구를 차단한 뒤에도 모델은 **습관으로** 그 이름을 부르고(그래서 toolAliases 로
@@ -370,6 +523,13 @@ export const createSpawnAgentMcpServer = (
       subagent_type: z.string().min(1).optional(),
       prompt: z.string().min(1),
       path: z.string().optional(),
+      // ★기본 true = 현행 동작 (Q1 슈퍼셋 — 능력 추가만, 제거 0).
+      wait: z
+        .boolean()
+        .optional()
+        .describe(
+          "결과를 이 답변 안에서 기다릴지. 기본 true(기다림). false 면 즉시 jobId 를 반환하고 계속 진행할 수 있으며, 끝나면 결과가 당신에게 돌아옵니다 — 오래 걸릴 작업이나 여러 개를 동시에 돌릴 때 씁니다.",
+        ),
     },
     async (rawArgs) => {
       const agentName = rawArgs.name ?? rawArgs.subagent_type;
@@ -444,7 +604,14 @@ export const createSpawnAgentMcpServer = (
           task: args.prompt,
           threadKey: parentInput.threadKey,
           channel: parentInput.channel,
-          channelUserId: "",
+          // ★종전엔 `""` 였고 주석이 "agent 잡은 재주입·통지를 둘 다 안 하므로" 라고
+          //  단언했다. `wait:false` 가 생기면서 **그 단언이 거짓이 됐다** — detached 서브는
+          //  onWorkerComplete 를 타고 소환자에게 결과를 돌려준다. 워커와 같은 근거로
+          //  같은 값을 쓴다(재주입 reply 는 threadKey 로 좌표를 잡는다, worker-registry 동형).
+          //  awaited 경로는 이 필드를 안 읽으므로 값이 생겨도 회귀 0.
+          channelUserId: parentInput.threadKey,
+          // 실행 축 — 재시작 복구가 "통지할 소환자가 있나" 를 이걸로 가른다(ADR Q0).
+          detached: rawArgs.wait === false,
         });
 
         // 취소용 abort 핸들 (U-I4 개정, 2026-07-17) — 백그라운드 잡 카드 중지 버튼이 이
@@ -455,30 +622,38 @@ export const createSpawnAgentMcpServer = (
         //  끝나야 "무엇이 왜 끝났는지" 가 정확히 남는다 — 경계 순서 불변식의 안쪽 축.
         abort = createJobAbort(jobId, { timeoutMs: SUBAGENT_TIMEOUT_MS });
 
-        // lean 신호 — agent.md frontmatter 정규화 (2026-06-15). 어댑터 무관 중립 신호.
-        //  - toolPolicy: tools: none → {mode:"none"} / 콤마 리스트 → allow / 미지정 → undefined.
-        //  - leanMemory: tools: none agent 는 메모리 생략(단순작업 child). 둘 다 additive.
-        const toolPolicy = deriveToolPolicy(agent.tools);
-        const leanMemory = deriveLeanMemory(agent);
-        const childInput: RegionASdkInput = {
-          text: `${def}\n\n[Subagent Task]: ${args.prompt}`,
-          threadKey: `agent:${jobId}`,
-          channel: parentInput.channel,
-          cwd: targetCwd,
-          subagentDepth: 1,
+        // ─── wait:false — 소환하고 **턴을 놓는다**. 책임은 안 놓는다 (ADR 2026-08-19) ───
+        //  결과는 `deliverToSummoner` 가 소환자에게 되돌린다: 매니저면 그 턴의 steering
+        //  큐로, 세션이면 새 턴으로. 즉 "안 기다리지만 반드시 거둔다".
+        //  ★abort 는 여기서 done() 하면 안 된다 — 자식이 아직 돌고 있고, 중지 버튼·
+        //   부모 취소 캐스케이드가 이 핸들로 자식을 끊는다. detached runner 가 해제한다.
+        if (rawArgs.wait === false) {
+          startDetachedAgent({
+            jobId,
+            agent,
+            def,
+            prompt: args.prompt,
+            targetCwd,
+            parentInput,
+            abort,
+          });
+          abort = undefined; // 아래 공통 finally 가 조기 해제하지 않도록 소유권 이전.
+          return okText(
+            `'${args.name}' 를 백그라운드로 시작했습니다 (jobId=${jobId}).\n` +
+              `기다리지 않고 계속 진행하세요 — 끝나면 결과가 당신에게 돌아옵니다.\n` +
+              `진행 상황은 list_workers, 중지는 cancel_worker 로 볼 수 있습니다.`,
+          );
+        }
+
+        const childInput = buildAgentChildInput({
+          jobId,
+          agent,
+          def,
+          prompt: args.prompt,
+          targetCwd,
+          parentInput,
           abortSignal: abort.signal,
-          ...(toolPolicy !== undefined ? { toolPolicy } : {}),
-          ...(leanMemory ? { leanMemory: true } : {}),
-          // presentOptions 전파(2026-07-17, AskUserQuestion 차단 파리티) — 부모 채널의
-          // 인터랙티브 선택지 렌더 클로저를 자식에도 상속. 이게 없으면 prompt-options MCP
-          // 가 자식 turn 에 미등록(claude-agent-sdk.ts createPromptOptionsMcpServer 게이트
-          // = input.presentOptions!==undefined) → 자식이 네이티브 AskUserQuestion 으로
-          // 새는 유일한 남은 경로였다(그 도구는 이제 disallowedTools 로도 차단되지만,
-          // 상속 없인 자식이 "선택지 제시 불가"로 저하 — 부모와 동일 능력이 원칙).
-          ...(parentInput.presentOptions !== undefined
-            ? { presentOptions: parentInput.presentOptions }
-            : {}),
-        };
+        });
 
         // lazy import — capabilities → llm-runtime/index circular 회피.
         // resolveModelChain(2026-07-14) — agent.model 이 프로파일이면 .fallback 체인까지

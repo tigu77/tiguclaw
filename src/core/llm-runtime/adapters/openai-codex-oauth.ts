@@ -133,6 +133,12 @@ import {
   type CodexSseResult,
   type ResponseInputItem,
 } from "./openai-codex-oauth-history.js";
+import {
+  addUsage,
+  describeTally,
+  hitPct,
+  newTally,
+} from "../cache-collapse.js";
 
 // ★순수 구조 분해 (2026-07-16) — 공개 export 표면 100% 보존용 배럴 re-export.
 // 외부 importer(index.ts·llm-runtime/index.ts·scripts/{doctor,codex-auth,e2e-compaction})
@@ -1048,20 +1054,23 @@ export const runOpenAiCodex = async (
   //  정답은 **합계**이고, 캐시 적중률도 합계 기준이어야 의미가 있다.
   //  ★이벤트를 iteration 마다 쏘지 않고 턴 안에서 합산한다 — 관측이 스스로 낭비가 되면
   //   안 된다(SYSTEM.md §1). 턴당 정확히 1건.
-  const usageTotals = { iterations: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0 };
-  /** 캐시 적중 20% 미만 iteration 수 — 붕괴는 합계 평균에 묻힌다(위 주석). */
-  let cacheCollapses = 0;
+  //  ★캐시 붕괴 판정·집계는 `cache-collapse.ts` 순수 모듈에 있다 — 여기 인라인이면
+  //   검사하려고 데몬을 띄워야 하고, 실제로 그래서 검사가 없는 채로 로그가 잘못된
+  //   수치를 찍고 있었다(2026-08-19). outputTokens 만 여기서 센다(캐시와 무관).
+  const usageTotals = newTally();
+  let outputTokensTotal = 0;
   /** 턴 끝 한 줄 — 붕괴가 있었을 때만 말한다(정상은 침묵). */
   const logCacheCollapses = (): void => {
-    if (cacheCollapses === 0 || usageTotals.iterations === 0) return;
-    const missed = usageTotals.inputTokens - usageTotals.cachedTokens;
-    console.warn(
-      `[cache-collapse] ${model} ${cacheCollapses}/${usageTotals.iterations} iteration 이 ` +
-        `캐시를 못 탔습니다(적중<20%) — 정가 지불 ${missed.toLocaleString()}토큰. ` +
-        `우리 프리픽스(instructions·tools)는 바이트 동일이므로 백엔드 축출 쪽. ` +
-        `원시 곡선: CODEX_CACHE_CURVE=1`,
-    );
+    const line = describeTally(usageTotals, model);
+    if (line !== null) console.warn(line);
   };
+  /** usage 이벤트용 턴 합계 — CacheTally(캐시 전용) + output 을 합쳐 종전 모양을 유지한다. */
+  const turnTotals = (): {
+    iterations: number;
+    inputTokens: number;
+    outputTokens: number;
+    cachedTokens: number;
+  } => ({ ...usageTotals, outputTokens: outputTokensTotal });
   let iteration = 0;
   // llm.activity — 어댑터 로컬 단조 시퀀스 (iteration 가로질러 누적). nonce 아님.
   let activitySeq = 0;
@@ -1686,10 +1695,8 @@ export const runOpenAiCodex = async (
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) {
         finalUsage = usage;
-        usageTotals.iterations += 1;
-        usageTotals.inputTokens += usage.inputTokens;
-        usageTotals.outputTokens += usage.outputTokens;
-        usageTotals.cachedTokens += usage.cachedTokens ?? 0;
+        addUsage(usageTotals, usage);
+        outputTokensTotal += usage.outputTokens;
         // ★캐시 붕괴 계수 (2026-08-13) — 턴 합계(84%)만 보면 "왜 낮은지" 를 못 가른다.
         //  실측 곡선(XL 15 iteration): 96·14·94·92·13·81·89·82·10·79·10·9·98·94·62%.
         //  낮은 회차의 `cached` 는 **매번 정확히 3,456** 이었다 — 맨 앞 최소 조각만 걸린 것.
@@ -1698,16 +1705,12 @@ export const runOpenAiCodex = async (
         //  아니다. `prompt_cache_key`(threadKey)를 고정해 보내는데도 1/3 이 못 탄다.
         //  ★관측이 스스로 낭비가 되면 안 되므로(SYSTEM.md §1) iteration 마다 찍지 않고
         //   **턴당 한 줄**로 센다. 원시 곡선이 필요하면 CODEX_CACHE_CURVE=1.
-        const hitPct =
-          usage.inputTokens > 0
-            ? ((usage.cachedTokens ?? 0) / usage.inputTokens) * 100
-            : 0;
-        if (hitPct < 20) cacheCollapses += 1;
+        //  (판정·집계는 위 addUsage — cache-collapse.ts. 여기선 곡선만 찍는다.)
         if (process.env.CODEX_CACHE_CURVE === "1") {
           console.log(
             `[cache-curve] ${model} i${usageTotals.iterations} ` +
               `in=${usage.inputTokens.toLocaleString()} cached=${(usage.cachedTokens ?? 0).toLocaleString()} ` +
-              `적중=${Math.round(hitPct)}% req=${lastReqBytes.total.toLocaleString()}자` +
+              `적중=${Math.round(hitPct(usage))}% req=${lastReqBytes.total.toLocaleString()}자` +
               `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()})`,
           );
         }
@@ -2348,7 +2351,7 @@ export const runOpenAiCodex = async (
           : `codex-${randomBytes(16).toString("hex")}`,
       model,
       replyToTrigger,
-      usage: (logCacheCollapses(), withTurnTotals(finalUsage, usageTotals)),
+      usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals())),
       externalToolCalls: pendingExternalToolCalls,
     };
   }
@@ -2425,6 +2428,6 @@ export const runOpenAiCodex = async (
         : `codex-${randomBytes(16).toString("hex")}`,
     model,
     replyToTrigger,
-    usage: (logCacheCollapses(), withTurnTotals(finalUsage, usageTotals)),
+    usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals())),
   };
 };

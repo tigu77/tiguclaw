@@ -621,6 +621,21 @@ export const initStore = (): void => {
   if (!wjCols.some((c) => c.name === "agent_name")) {
     handle.exec(`ALTER TABLE worker_jobs ADD COLUMN agent_name TEXT`);
   }
+  // ─── 실행 축 분리: worker_jobs.detached (2026-08-19, ADR background-subagents Q0) ──
+  // ★위 줄의 "awaited 는 별 컬럼 아닌 kind==='agent' 파생" 은 `spawn_agent(wait:false)` 가
+  //  생기면서 **거짓이 됐다**. `kind` 는 두 가지를 겸하고 있었다 —
+  //    실행 의미(기다리나) + 표시 의미(에이전트냐 매니저냐)
+  //  백그라운드 서브는 그 조합에 자리가 없다(agent 인데 detached). 겸직을 풀어 표시는
+  //  `kind`, 실행은 이 컬럼이 진다.
+  //  ★파생이 아니라 **컬럼**인 이유: parentJobId 는 threadKey 규약에 이미 적혀 있어서
+  //   파생이 맞았지만, "기다렸나" 는 어디에도 안 적힌 사실이다. 없는 것을 짜내려고
+  //   다른 필드(channelUserId 등)에 의미를 얹으면 그게 우연한 인코딩이 된다.
+  //  DEFAULT 0 = 기존 레코드는 전부 awaited/워커 취급 → 재시작 복구 회귀 0.
+  if (!wjCols.some((c) => c.name === "detached")) {
+    handle.exec(
+      `ALTER TABLE worker_jobs ADD COLUMN detached INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
 
   // ─── 프로젝트 레지스트리 인덱스 (2026-07-06, ADR projects-feature) ──────────────
   // 등록된 프로젝트 경로 조회 캐시. ★진실은 각 폴더 <path>/PROJECT.md — 이 테이블은

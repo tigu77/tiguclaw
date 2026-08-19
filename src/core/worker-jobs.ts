@@ -29,6 +29,7 @@ import {
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
+import { createSteeringChannel } from "./steering.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
 import { runSubagentStopHooks } from "./entry/hook-runner.js";
 
@@ -134,16 +135,34 @@ export interface WorkerNotifyDest {
 export type WorkerJobStatus = "running" | "done" | "failed" | "cancelled";
 
 /**
- * 잡 종류 — 'worker'(detached, run_in_background) | 'agent'(awaited 서브에이전트).
- * ADR 2026-07-03 subagent-worker-unify. awaited 는 별 필드 아닌 kind==='agent' 파생.
- * 배타 불변식(U-I1~U-I5): 재주입·워커타임아웃·cancel_worker·재시작 복구 통지는 'worker'만.
+ * 잡 종류 — **표시 축**: 'worker'(매니저) | 'agent'(서브에이전트).
+ * ADR 2026-07-03 subagent-worker-unify.
+ *
+ * ★2026-08-19 개정 — 이 타입은 **실행 의미를 더는 안 진다.**
+ *  종전 문장: *"awaited 는 별 필드 아닌 kind==='agent' 파생. 배타 불변식(U-I1~U-I5):
+ *  재주입·워커타임아웃·cancel_worker·재시작 복구 통지는 'worker'만."*
+ *  `spawn_agent(wait:false)` 가 그 등식을 깼다 — agent 인데 detached 인 잡이 생겼다.
+ *  그 잡은 소환자가 손을 뗐으므로 재주입·취소·재시작 통지가 **전부 필요하다.**
+ *
+ *  그래서 U-I1~U-I5 의 판정 기준은 `kind === "worker"` 가 아니라 **`detached`** 다.
+ *  (실측 위험: kind 로 두면 재시작 시 백그라운드 서브의 결과가 아무에게도 안 가고,
+ *   cancel_worker 는 "부모 대화를 멈추면 정리됩니다" 라는 **거짓 안내**를 한다 —
+ *   detached 엔 멈출 부모 턴이 없다.)
+ *
+ *  ★이 주석이 늙으면 판단이 늙는다. 같은 날 ADR 하나가 코드보다 늙어 있어서 설계
+ *   선택지 하나를 잘못 차단했다 — 근거로 쓸 문장은 코드와 같이 고친다.
  */
 export type WorkerJobKind = "worker" | "agent";
 
 export interface WorkerJobRecord {
   jobId: string;
-  /** 잡 종류 — 관측은 공용, 실행 의미(재주입·타임아웃 등)는 kind 로 분기. */
+  /**
+   * 잡 종류 — **표시 축**(에이전트냐 매니저냐). ★2026-08-19 이전엔 실행 의미도 겸했는데
+   * `spawn_agent(wait:false)` 가 그 조합을 깼다(agent 인데 안 기다림). 실행 축은 `detached`.
+   */
   kind: WorkerJobKind;
+  /** **실행 축** — 소환자가 안 기다리는가. 워커=항상 true, 서브=`wait:false` 일 때만. */
+  detached: boolean;
   /** 서브에이전트 정의 이름(kind==='agent' 만) — 대시보드 라벨. */
   agentName?: string;
   /** 서브에이전트 모델 티어(high/mid/low/nano 또는 provider:model). 관측용(대시보드·/agents). */
@@ -190,8 +209,14 @@ export interface RegisterJobInput {
   channelUserId: string;
   /** 완료/실패 통지 generic 목적지 (additive). 미지정 = channel/threadKey 폴백. */
   notifyDest?: WorkerNotifyDest;
-  /** 잡 종류 — 미지정=worker(회귀 안전). 'agent'=awaited 서브에이전트. */
+  /** 잡 종류(**표시 축**) — 미지정=worker(회귀 안전). 'agent'=서브에이전트. */
   kind?: WorkerJobKind;
+  /**
+   * **실행 축** — 소환자가 안 기다리는 잡인가 (ADR 2026-08-19 Q0).
+   * 워커는 항상 true. 서브는 `spawn_agent(wait:false)` 일 때만 true.
+   * 미지정 = false(awaited) — 종전 호출부 전부가 그 의미였다(회귀 0).
+   */
+  detached?: boolean;
   /** 서브에이전트 이름(kind==='agent' 만) — 대시보드 라벨. */
   agentName?: string;
   /** 서브에이전트 모델 티어(관측용). */
@@ -208,9 +233,12 @@ export const registerJob = (input: RegisterJobInput): string => {
   const jobId = randomUUID();
   const startedAt = Date.now();
   const kind: WorkerJobKind = input.kind ?? "worker";
+  // 워커는 정의상 detached — 호출부가 매번 적게 하지 않는다(적는 자리가 늘면 빠뜨린다).
+  const detached = input.detached ?? kind === "worker";
   jobs.set(jobId, {
     jobId,
     kind,
+    detached,
     agentName: input.agentName,
     modelTier: input.modelTier,
     cwd: input.cwd,
@@ -235,6 +263,7 @@ export const registerJob = (input: RegisterJobInput): string => {
       startedAt,
       kind,
       agentName: input.agentName,
+      detached,
     }),
   );
   publishWorkerLifecycle(
@@ -401,14 +430,27 @@ export interface ListJobsOpts {
  * 부모 체인을 따라 올라가며(서브에이전트가 서브에이전트를 띄운 경우) 자기참조·순환은 끊는다.
  * 못 찾으면 ""(미상) — 호출자가 정책을 정한다. jobs 는 수십 개 규모라 조회 비용 무시.
  */
+/**
+ * **직속 소환자**의 jobId — 이 좌표에서 도는 것을 누가 띄웠나. 세션이 띄웠으면 `undefined`.
+ *
+ * ★필드가 아니라 **파생**이다. 잡이 실행되는 좌표(`worker:<부모>` / `agent:<부모>`)가 곧
+ *  부모 기록이므로, `parentJobId` 컬럼을 따로 두면 같은 사실의 두 번째 소유자가 생겨
+ *  갈릴 수 있다(손으로 관리하는 목록과 같은 부류). 규약을 읽는 자리를 하나로 모은다 —
+ *  종전엔 `resolveOwnerThreadKey`·`directChildJobs` 가 **같은 정규식을 각자** 갖고 있었다.
+ */
+export const parentJobIdOf = (threadKey: string): string | undefined => {
+  if (typeof threadKey !== "string") return undefined;
+  const m = /^(?:worker|agent):(.+)$/.exec(threadKey);
+  return m === null ? undefined : m[1];
+};
+
 export const resolveOwnerThreadKey = (
   threadKey: string,
   seen?: Set<string>,
 ): string => {
   if (typeof threadKey !== "string" || threadKey === "") return "";
-  const m = /^(?:worker|agent):(.+)$/.exec(threadKey);
-  if (m === null) return threadKey; // 세션 키 — 환원 끝.
-  const id = m[1] ?? "";
+  const id = parentJobIdOf(threadKey);
+  if (id === undefined) return threadKey; // 세션 키 — 환원 끝.
   const s = seen ?? new Set<string>();
   if (s.has(id)) return ""; // 자기참조/순환 — 미상으로 닫는다.
   s.add(id);
@@ -420,6 +462,43 @@ export const resolveOwnerThreadKey = (
  * 잡 목록 — list_workers 도구(region)가 사용. startedAt 내림차순(최신 먼저).
  * 레코드 복사본 반환(외부 변조 방지, 레지스트리 단일 진실).
  */
+/**
+ * `cancel_worker` / `steer_worker` 의 **대상 선택** — 지금 돌고 있는 detached 잡 중 하나.
+ *
+ * ★함수로 뽑은 이유: 이 판정이 두 도구에 **6번 복제**돼 있었다(label 조회 · 다른 세션
+ *  확인 · job_id 조회 × 2도구). 복제된 판정은 갈린다 — 실제로 `detached` 축을 도입하면서
+ *  6곳을 전부 고쳐야 했고, 하나라도 빠졌으면 "취소는 되는데 스티어는 안 되는" 식으로
+ *  조용히 어긋났을 것이다. 겸해서 **검사 가능**해진다: 종전엔 판정이 MCP 핸들러 안에만
+ *  있어서 회귀가 필터를 스스로 재구현할 수밖에 없었고, 그 검사는 진짜 코드를 안 지켰다
+ *  (변이 검사에서 그대로 생존했다).
+ *
+ * @param scope 소환자 세션 — 지정 시 그 세션 소속만. `""` = 전역(다른 세션 확인용).
+ */
+export const findTargetableJob = (q: {
+  label?: string;
+  jobId?: string;
+  scope?: string;
+}): WorkerJobRecord | undefined => {
+  const running = listJobs({
+    runningOnly: true,
+    ...(q.scope !== undefined && q.scope !== "" ? { ownerThreadKey: q.scope } : {}),
+  });
+  // ★`detached` 로 고른다(`kind === "worker"` 아님). 근거는 "독립 백그라운드 잡인가" 이고,
+  //  백그라운드 서브에이전트가 바로 그것이다 — 부모 턴이 없으니 직접 멈춰야 한다.
+  //  awaited 서브는 제외가 맞다: 진행 중인 대화를 멈추는 게 그쪽의 정상 경로다.
+  if (q.label !== undefined && q.label !== "") {
+    const byLabel = running.find((j) => j.detached && j.label === q.label);
+    if (byLabel !== undefined) return byLabel;
+  }
+  if (q.jobId !== undefined && q.jobId !== "") {
+    // job_id 는 사용자가 카드에서 직접 집은 정확한 좌표 — 세션 밖이라도 존중한다
+    // (label 과 달리 오인 여지가 없다). 그래서 scope 필터를 안 탄 전역 조회를 쓴다.
+    const j = jobs.get(q.jobId);
+    if (j !== undefined && j.detached && j.status === "running") return { ...j };
+  }
+  return undefined;
+};
+
 export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
   let all = [...jobs.values()];
   if (opts?.runningOnly === true) {
@@ -664,6 +743,59 @@ export const setSteerChannel = (jobId: string, ch: SteeringChannel): void => {
 };
 
 /** 해제 — 잡 종료 시(정상·실패 무관) 반드시. 멱등. */
+/**
+ * 이 잡의 **다음 턴용 스티어 채널**로 교체한다 (2026-08-19).
+ *
+ * ★왜 필요한가 — 라이브에서만 드러난 것: 채널의 수명은 **턴 단위**다.
+ *  claude 어댑터는 첫 result 에서 `input.steering.close()` 를 부른다(스트리밍 입력
+ *  데드락 수정). 그런데 잡의 스티어 **정체성**은 턴을 가로지른다 — 매니저가 자식을
+ *  거두려고 턴을 이어 돌 때, 닫힌 채널을 재사용하면 `stream()` 이 즉시 끝나
+ *  "기다렸다" 고 착각하고 그냥 빠져나온다(실측: 거두기 루프가 로그만 찍고 0초 만에
+ *  탈출, 매니저가 자식보다 먼저 done). 그래서 라운드마다 **새 채널**로 간다.
+ *
+ *  이전 채널의 잔여는 **버리지 않고 반환**한다 — 교체 순간 도착한 결과가 조용히
+ *  사라지면 거두기의 의미가 없다.
+ *
+ * @returns 새 채널과, 이전 채널에 남아 있던 메시지(호출자가 이어받아야 한다).
+ */
+export const rotateSteerChannel = (
+  jobId: string,
+): { channel: SteeringChannel; leftover: SteeringInput[] } => {
+  const prev = steerChannels.get(jobId);
+  const channel = createSteeringChannel();
+  // ★새 채널을 **먼저** 등록한다 — 등록 전에 drain 하면 그 사이 도착분이 닫힌 채널로 간다.
+  steerChannels.set(jobId, channel);
+  const leftover = prev !== undefined ? prev.drain() : [];
+  return { channel, leftover };
+};
+
+/**
+ * 잡의 **결과 수신함** — 자식이 돌려주는 결과 전용. 사용자 개입(steering)과 **다른 큐**다.
+ *
+ * ★왜 갈랐나 (라이브 3차 실측, 2026-08-19): 같은 큐에 넣으면 결과가 매니저의 *진행 중인*
+ *  턴으로 들어가고, claude 어댑터가 그걸 SDK 에 먹여 **새 턴**이 열린다. 그런데 어댑터의
+ *  턴 경계 가드는 "첫 result 이후 메시지 = 남의 턴" 으로 보고 그 답을 버린다(그 가드는
+ *  2026-08-09 실사고 — 빈 말풍선 — 에서 태어난 것이라 옳다). 결과: 매니저가 합계를
+ *  **계산했는데 그 답이 버려졌다**(로그: turn-boundary 경고 뒤 assistant 2건, FINALIZE 31자).
+ *
+ *  두 큐는 소비자도 목적도 다르다:
+ *   - 개입(steering) → 어댑터가 진행 중 턴에 끼워넣는다. "그만해" 는 즉시 닿아야 한다.
+ *   - 결과(result)  → **거두기 루프**만 읽고, 이어지는 턴의 입력이 된다.
+ *  갈라두면 경합이 사라진다 — 결과가 언제 도착하든 항상 같은 경로로 처리된다.
+ */
+const jobResultChannels = new Map<string, SteeringChannel>();
+
+export const setJobResultChannel = (jobId: string, ch: SteeringChannel): void => {
+  jobResultChannels.set(jobId, ch);
+};
+export const clearJobResultChannel = (jobId: string): void => {
+  jobResultChannels.delete(jobId);
+};
+
+/** 이 잡의 **현재** 스티어 채널 — 소유자(러너)가 stale 참조를 들지 않게 레지스트리를 본다. */
+export const getSteerChannel = (jobId: string): SteeringChannel | undefined =>
+  steerChannels.get(jobId);
+
 export const clearSteerChannel = (jobId: string): void => {
   steerChannels.delete(jobId);
 };
@@ -754,7 +886,18 @@ export const steerJob = (
     if (!WORKER_STEERING_ENABLED) return "absent";
     const ch = steerChannels.get(jobId);
     if (ch === undefined) return "absent";
-    return ch.push(msg) ? "delivered" : "closed";
+    if (ch.push(msg)) return "delivered";
+    // ★채널이 닫혔다 — 그런데 **잡이 아직 돌면** 그건 "못 받는다" 가 아니라 *이 턴의*
+    //  채널이 닫혔을 뿐이다. claude 어댑터는 첫 result 에서 steering 을 닫는데(스트리밍
+    //  데드락 수정), 그 뒤로도 잡은 살아서 다음 턴을 돌 수 있다. 그 창에 도착한 것을
+    //  "closed" 로 처리하면 조용히 갈라진다 — 실측(2026-08-19): 매니저가 띄운 자식 셋 중
+    //  **하나만** 그 창에 끝나서 매니저를 못 만나고 세션으로 새어, 지휘자의 합계가 틀렸다.
+    //  채널 수명은 턴 단위지만 잡의 스티어 **정체성**은 턴을 가로지른다 — 갈아끼우고 넣는다.
+    const job = jobs.get(jobId);
+    if (job === undefined || job.status !== "running") return "closed";
+    const rot = rotateSteerChannel(jobId);
+    for (const m of rot.leftover) rot.channel.push(m); // 이전 잔여 보존(순서 유지).
+    return rot.channel.push(msg) ? "delivered" : "closed";
   })();
   publishSteerAttempt({ jobId, message: msg.raw, outcome });
   return outcome;
@@ -819,8 +962,7 @@ export const createJobAbort = (
 const directChildJobs = (parentJobId: string): WorkerJobRecord[] => {
   const out: WorkerJobRecord[] = [];
   for (const j of jobs.values()) {
-    const m = /^(?:worker|agent):(.+)$/.exec(j.threadKey);
-    if (m !== null && m[1] === parentJobId) out.push(j);
+    if (parentJobIdOf(j.threadKey) === parentJobId) out.push(j);
   }
   return out;
 };
@@ -1432,6 +1574,50 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
  * @param outcome 성공이면 {result}, 실패면 {error}. error 는 호출자가 redact 후 전달 권장
  *                (방어로 본 모듈도 한 번 더 redact 통과시킨다).
  */
+/**
+ * 백그라운드 잡의 결과를 **소환자에게** 돌려준다 (ADR 2026-08-19 §4).
+ *
+ * 소환자가 둘이라 자리도 둘인데, **같은 기제를 쓰면 안 된다**:
+ *
+ * | 소환자 | 어디로 | 왜 |
+ * |---|---|---|
+ * | 돌고 있는 매니저 | 그 잡의 **steering 큐** | 매니저는 사용자에게 스트리밍하지 않으므로 "루프 계속" 이 안전하다. 다음 model-call 경계에서 이어받는다 |
+ * | 세션(메인 비서) | **새 턴**(`onWorkerComplete`) | 메인은 이미 말을 끝내고 전송한 뒤다. 같은 턴에 이어붙이면 한 턴이 두 번 발화한다(U-I1 이 막으려던 것) |
+ *
+ * ★"돌고 있는" 이 조건이다 — 매니저가 이미 끝났으면 steering 채널이 없거나 닫혀 있고,
+ *  그때는 새 턴 경로로 떨어져야 결과가 사라지지 않는다. `steerJob` 이 그 셋을
+ *  (`delivered`/`closed`/`absent`) 구분해 주므로 판정을 여기서 다시 하지 않는다.
+ *
+ * @returns 매니저 큐로 전달했으면 true(호출자는 새 턴을 열지 않는다).
+ */
+const deliverToSummoner = (
+  job: WorkerJobRecord,
+  outcome: { result: string } | { error: string },
+): boolean => {
+  const parentId = parentJobIdOf(job.threadKey);
+  if (parentId === undefined) return false; // 소환자가 세션 — 새 턴 경로.
+  const parent = jobs.get(parentId);
+  if (parent === undefined || parent.status !== "running") return false;
+  const what =
+    "result" in outcome
+      ? `결과:\n${outcome.result}`
+      : `실패했습니다: ${outcome.error}`;
+  // raw 는 **사용자 원문** 자리다(steering.ts 주석) — 여기엔 사용자가 친 게 없으므로
+  // 둘을 같은 값으로 둔다. 서로 다른 문구를 넣으면 미소비 재주입 때 사용자 화면에
+  // 우리 framing 이 "사용자가 보낸 메시지" 로 노출된다(2026-07-27 실사고와 같은 창).
+  const text = `[백그라운드 서브에이전트 '${job.label}' 완료] ${what}`;
+  // ★개입 큐가 아니라 **결과 수신함**으로 (위 jobResultChannels 주석의 실측 근거).
+  const box = jobResultChannels.get(parentId);
+  if (box === undefined) return false;
+  const ok = box.push({ text, raw: text, ts: Date.now(), source: "job" });
+  publishSteerAttempt({
+    jobId: parentId,
+    message: text,
+    outcome: ok ? "delivered" : "closed",
+  });
+  return ok;
+};
+
 export const onWorkerComplete = async (
   jobId: string,
   outcome: { result: string } | { error: string },
@@ -1450,11 +1636,51 @@ export const onWorkerComplete = async (
     markFailed(jobId, redactSecrets(outcome.error));
   }
 
-  const job = jobs.get(jobId);
-  if (job === undefined) {
+  const found = jobs.get(jobId);
+  if (found === undefined) {
     console.error(`worker-jobs: onWorkerComplete unknown jobId=${jobId}`);
     return;
   }
+  // ─── ① 소환자가 **돌고 있는 매니저**면 그 턴의 steering 큐로 (ADR 2026-08-19 §4) ────
+  // 새 턴을 여는 아래 경로보다 **먼저** 본다: 매니저 좌표(`worker:<id>`)로 합성 유저턴을
+  // 열면 그 턴은 돌고 있는 매니저에게 안 닿고(매니저는 핸들러가 아니라 runRegionA 안이다)
+  // 별개 턴으로 새 나간다. 소환자가 세션이거나 매니저가 이미 끝났으면 false 로 떨어져
+  // 아래 종전 경로로 간다(회귀 0).
+  if (deliverToSummoner(found, outcome)) {
+    console.log(
+      `worker-jobs: '${found.label}'(${jobId}) 결과를 소환자 매니저 ` +
+        `${parentJobIdOf(found.threadKey) ?? "?"} 의 steering 큐로 전달 — 다음 model-call 경계에서 반영`,
+    );
+    return;
+  }
+
+  // ─── ② 보고 좌표 환원 — 소환자가 **잡인데 이미 끝난** 경우 (2026-08-19) ───────────
+  //
+  //  백그라운드 서브의 `threadKey` 는 소환자 좌표다. 소환자가 매니저면 `worker:<id>` 인데,
+  //  그 매니저가 자식보다 **먼저 끝나면** 아래 재주입이 그 좌표로 합성 턴을 연다.
+  //  `worker:<id>` 는 사용자 세션이 아니다 — 실측하면 발송 대상이 없어 "미배달 45자" 로
+  //  떨어지고 결과는 **아무도 못 본다**(조용한 손실). 지휘자가 연주자보다 먼저 끝나는 건
+  //  드문 일이 아니다: 매니저가 여럿을 `wait:false` 로 띄우고 자기 할 말을 끝내면 바로 이
+  //  상황이다. `wait:false` 를 만들면서 내가 낸 구멍이라 여기서 닫는다.
+  //
+  //  `resolveOwnerThreadKey` 가 자식→부모→…→세션으로 환원한다(이미 있던 함수 — 대시보드
+  //  세션 귀속이 같은 문제를 이미 풀어놨다). 소환자가 처음부터 세션이면 그대로다(회귀 0).
+  //  ★반드시 ① **뒤**에 온다 — 먼저 하면 좌표가 세션으로 바뀌어 "돌고 있는 매니저" 를
+  //   못 찾고 매니저 라우팅이 통째로 죽는다.
+  const owner = resolveOwnerThreadKey(found.threadKey);
+  const job =
+    parentJobIdOf(found.threadKey) !== undefined &&
+    owner !== "" &&
+    owner !== found.threadKey
+      ? ((): WorkerJobRecord => {
+          console.log(
+            `worker-jobs: '${found.label}'(${jobId}) 의 소환자(${found.threadKey})가 이미 끝나 ` +
+              `보고 좌표를 소유 세션 ${owner} 로 환원`,
+          );
+          return { ...found, threadKey: owner };
+        })()
+      : found;
+
   if (mainHandler === undefined) {
     console.error(
       `worker-jobs: 메인 핸들러 미등록 — 매니저 '${job.label}'(${jobId}) 완료 보고 불가`,
@@ -1641,10 +1867,15 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
     return;
   }
   for (const job of interrupted) {
-    // U-I5: awaited 서브에이전트(kind='agent')는 부모 turn 에 종속 — 재시작 시 부모도 사라져
-    // 통지 대상이 없다(고아 통지 방지). status='interrupted' 마킹만 하고 통지는 생략.
-    // (detached 워커만 사용자에게 "중단됐어요" 정직 통지 — 그건 부모와 무관하게 돌던 잡.)
-    if (job.kind === "agent") {
+    // U-I5: **awaited** 서브에이전트는 부모 turn 에 종속 — 재시작 시 부모도 사라져 통지
+    // 대상이 없다(고아 통지 방지). status='interrupted' 마킹만 하고 통지는 생략.
+    //
+    // ★판정을 `kind === "agent"` 에서 `!detached` 로 바꿨다 (2026-08-19). 종전 판정의
+    //  근거는 "부모 turn 에 종속" 인데, `spawn_agent(wait:false)` 로 띄운 서브는 부모 턴을
+    //  이미 놓았고 **소환자(세션·매니저)는 재시작 후에도 살아 있다.** 그런데도 kind 로
+    //  거르면 그 결과는 아무에게도 안 가고 사용자는 시킨 일이 사라진 걸 모른다 —
+    //  조용한 손실이라 신고조차 안 들어온다. 근거가 실행 축이었으니 판정도 실행 축으로 한다.
+    if (!job.detached) {
       persistSafe("recover-agent", () =>
         updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
       );

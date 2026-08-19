@@ -177,7 +177,12 @@ const runner = (job: WorkerJobRecord): void => {
       //
       //  종료 보장: ①자식이 다 끝나면 루프 탈출 ②abort(WORKER_TIMEOUT_MS·취소)면 즉시 탈출
       //  ③채널이 닫히면 탈출. 자식은 스스로 또 자식을 못 띄운다(depth 게이트).
-      if (steerCh !== undefined) {
+      // ★게이트는 **결과 수신함**이다 (2026-08-19 적대 검토 F2). 종전엔 `steerCh` 였는데,
+      //  수신함은 무조건 만들면서 루프만 steering 플래그에 묶여 있어 `WORKER_STEERING_ENABLED=0`
+      //  이면 **읽는 사람이 없는 함**에 결과가 쌓이고, deliverToSummoner 는 push 성공을
+      //  "전달됨"으로 보고해 새 턴 폴백까지 막았다 → 결과 완전 유실인데 로그엔 성공 문장만.
+      //  개입(steering)은 꺼도 되지만 **결과 거두기는 끌 수 있는 기능이 아니다.**
+      {
         let rounds = 0;
         // ★턴이 끝나는 **순간** 자식이 끝난 경우 — 자식은 이미 done 이라 아래 live 조건이
         //  0이지만 결과는 큐에 남아 있다. 그대로 두면 finally 가 그걸 *사용자 지시*로 오해해
@@ -192,9 +197,11 @@ const runner = (job: WorkerJobRecord): void => {
         ) {
           // ★다음 턴을 위해 **개입** 채널만 갈아끼운다 — 어댑터가 턴 끝에 닫기 때문
           //  (claude 데드락 수정). 결과 수신함은 어댑터가 안 건드리므로 그대로 쓴다.
-          const rot = rotateSteerChannel(job.jobId);
-          steerCh = rot.channel;
-          for (const m of rot.leftover) steerCh.push(m); // 미소비 사용자 지시 보존.
+          if (steerCh !== undefined) {
+            const rot = rotateSteerChannel(job.jobId);
+            steerCh = rot.channel;
+            for (const m of rot.leftover) steerCh.push(m); // 미소비 사용자 지시 보존.
+          }
           if (arrived.length === 0) {
             const live = listLiveChildJobs(`worker:${job.jobId}`);
             console.log(
@@ -222,7 +229,7 @@ const runner = (job: WorkerJobRecord): void => {
               cwd: job.cwd,
               workerDepth: 1,
               abortSignal: abort.signal,
-              steering: steerCh,
+              ...(steerCh !== undefined ? { steering: steerCh } : {}),
             },
             workerChain.length > 0 ? { chain: workerChain } : undefined,
           );
@@ -247,6 +254,10 @@ const runner = (job: WorkerJobRecord): void => {
       // (index.ts) 워커엔 다음 턴이 없다 — 그냥 close 하면 막 도착한 지시가 조용히 사라진다
       // (project_steering_endturn_skip 과 같은 손실창). 사용자 확정(2026-07-29): **소유 세션에
       // 정직 통지**. 원문(raw)을 쓴다 — framing 문구가 사용자 화면에 노출된 실사고가 있었다.
+      // 수신함은 steering 플래그와 무관하게 항상 만들었으므로 항상 해제한다
+      //  (적대 검토 F3 — clearJobResultChannel 이 import 만 되고 호출 0회였다 = 맵 누수).
+      clearJobResultChannel(job.jobId);
+      resultBox.close();
       if (steerCh !== undefined) {
         clearSteerChannel(job.jobId);
         steerCh.close();

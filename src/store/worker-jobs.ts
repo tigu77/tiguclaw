@@ -163,8 +163,13 @@ export const listInterruptedWorkerJobs = (): PersistedWorkerJob[] =>
   (
     getDb()
       .prepare(
+        // ★`detached` 를 반드시 싣는다 (2026-08-19 적대 검토 F1). 빠지면 toJob 이
+        //  `undefined === 1` → **항상 false** 로 읽어, 재시작 복구의 `!job.detached`
+        //  게이트가 모든 잡에 참이 된다 → **매니저 중단 통지까지 죽는다**(원래 돌던 기능).
+        //  컬럼을 추가하면서 이 SELECT 를 안 고친 전형적인 "열거를 손으로 관리하는" 사고다.
         `SELECT job_id, label, thread_key, channel, channel_user_id, status,
-                started_at, finished_at, notify_channel, notify_target, kind, agent_name
+                started_at, finished_at, notify_channel, notify_target, kind, agent_name,
+                detached
            FROM worker_jobs WHERE status = 'running' ORDER BY started_at ASC`,
       )
       .all() as DbRow[]

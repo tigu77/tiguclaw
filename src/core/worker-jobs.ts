@@ -385,6 +385,29 @@ export const markFailed = (jobId: string, error: string): void => {
  * 워커 취소 마킹 — 사용자 명시 취소(타임아웃과 구분, 별도 status). worker_jobs DB
  * status 는 TEXT 라 자유. 통지 문구는 onWorkerComplete 가 status 로 분기.
  */
+/**
+ * **연쇄 취소** 사유 — 사용자가 이 잡을 직접 고른 게 아니라, 위가 끊겨서 같이 끊긴 것.
+ *
+ * ★알림 판정에 쓴다. 사용자는 매니저 **하나**를 중지했는데 그 밑 자식 수만큼 알림이 오면
+ *  안 된다(실측: 자식 2 → 알림 3번). `wait:false` 이전엔 서브가 완료 통지를 안 타서
+ *  1번이었으므로 이건 회귀다. 부모의 알림 하나가 그 사건 전체를 설명한다.
+ *
+ * ★문자열을 손으로 비교하지 않게 상수로 둔다 — 사유 문구를 고치면 알림이 조용히 늘어난다.
+ */
+export const CASCADE_CANCEL_REASONS = [
+  "상위 작업이 취소됨",
+  "상위 대화가 중단됨",
+] as const;
+
+/** 이 잡이 **연쇄로** 취소됐나(사용자가 직접 고른 게 아니라). */
+export const isCascadeCancelled = (job: {
+  status: WorkerJobStatus;
+  error?: string;
+}): boolean =>
+  job.status === "cancelled" &&
+  job.error !== undefined &&
+  (CASCADE_CANCEL_REASONS as readonly string[]).includes(job.error);
+
 export const markCancelled = (jobId: string, reason: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
@@ -987,7 +1010,7 @@ const cancelDescendants = (parentJobId: string, seen: Set<string>): number => {
     seen.add(child.jobId);
     n += cancelDescendants(child.jobId, seen);
     if (child.status !== "running") continue;
-    markCancelled(child.jobId, "상위 작업이 취소됨");
+    markCancelled(child.jobId, CASCADE_CANCEL_REASONS[0]);
     const h = cancelHooks.get(child.jobId);
     if (h !== undefined) h();
     n += 1;
@@ -1017,7 +1040,7 @@ export const cancelJobsForThread = (threadKey: string): number => {
     if (job.threadKey !== threadKey || job.status !== "running") continue;
     // 자손부터 — 부모를 먼저 죽이면 손자가 고아가 된다(cancelJob 과 같은 순서).
     n += cancelDescendants(job.jobId, new Set([job.jobId]));
-    markCancelled(job.jobId, "상위 대화가 중단됨");
+    markCancelled(job.jobId, CASCADE_CANCEL_REASONS[1]);
     const h = cancelHooks.get(job.jobId);
     if (h !== undefined) h();
     n += 1;
@@ -1598,14 +1621,23 @@ const deliverToSummoner = (
   if (parentId === undefined) return false; // 소환자가 세션 — 새 턴 경로.
   const parent = jobs.get(parentId);
   if (parent === undefined || parent.status !== "running") return false;
-  const what =
-    "result" in outcome
-      ? `결과:\n${outcome.result}`
-      : `실패했습니다: ${outcome.error}`;
+  // ★세 가지를 **구분**한다 (ADR 위험 목록 "취소 결과의 의미"). 종전엔 취소도
+  //  `[… 완료] 실패했습니다: 사용자 요청으로 취소되었습니다.` 로 나갔다 — 한 문장에
+  //  거짓이 둘이다(완료도 실패도 아니다). 매니저가 그걸 고장으로 읽으면 **사용자가 방금
+  //  멈춘 작업을 다시 띄운다** — 명시적 사용자 행위를 모델이 되돌리는 셈이라, 사용자는
+  //  멈췄는데 계속 도는 걸 보게 된다.
+  const head =
+    job.status === "cancelled"
+      ? `[백그라운드 서브에이전트 '${job.label}' **중지됨**] 사용자가 이 작업을 멈췄습니다 — ` +
+        `고장이 아닙니다. **다시 띄우지 마세요.** 남은 작업만 이어가고, 이 몫이 꼭 필요하면 ` +
+        `사용자에게 먼저 물어보세요.`
+      : "result" in outcome
+        ? `[백그라운드 서브에이전트 '${job.label}' 완료] 결과:\n${outcome.result}`
+        : `[백그라운드 서브에이전트 '${job.label}' 실패] ${outcome.error}`;
   // raw 는 **사용자 원문** 자리다(steering.ts 주석) — 여기엔 사용자가 친 게 없으므로
   // 둘을 같은 값으로 둔다. 서로 다른 문구를 넣으면 미소비 재주입 때 사용자 화면에
   // 우리 framing 이 "사용자가 보낸 메시지" 로 노출된다(2026-07-27 실사고와 같은 창).
-  const text = `[백그라운드 서브에이전트 '${job.label}' 완료] ${what}`;
+  const text = head;
   // ★개입 큐가 아니라 **결과 수신함**으로 (위 jobResultChannels 주석의 실측 근거).
   const box = jobResultChannels.get(parentId);
   if (box === undefined) return false;
@@ -1650,6 +1682,19 @@ export const onWorkerComplete = async (
     console.log(
       `worker-jobs: '${found.label}'(${jobId}) 결과를 소환자 매니저 ` +
         `${parentJobIdOf(found.threadKey) ?? "?"} 의 steering 큐로 전달 — 다음 model-call 경계에서 반영`,
+    );
+    return;
+  }
+
+  // ─── ①-b 연쇄 취소는 **부모 알림 하나로** 닫는다 (2026-08-19) ───────────────────
+  //  사용자가 매니저를 중지하면 그 밑 자식이 전부 같이 끊긴다(cancelDescendants). 그런데
+  //  자식마다 완료 통지가 나가면 **한 번 누른 중지에 알림이 잡 수만큼** 온다(실측: 자식 2 →
+  //  알림 3번). `wait:false` 이전엔 서브가 이 경로를 안 타서 1번이었으니 내가 만든 회귀다.
+  //  ★잡 기록·대시보드 이벤트는 그대로 남는다(publishWorkerLifecycle 은 markCancelled 안).
+  //   지우는 게 아니라 **말하지 않는** 것이다 — 사용자가 이미 아는 사실이라서.
+  if (isCascadeCancelled(found)) {
+    console.log(
+      `worker-jobs: '${found.label}'(${jobId}) 연쇄 취소 — 상위 알림으로 갈음(개별 통지 생략)`,
     );
     return;
   }

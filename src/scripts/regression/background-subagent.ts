@@ -18,6 +18,7 @@ import {
   getJob,
   markDone,
   findTargetableJob,
+  isCascadeCancelled,
   parentJobIdOf,
   registerJob,
   registerWorkerHandler,
@@ -35,6 +36,10 @@ import {
 import { readFile } from "node:fs/promises";
 import type { Assertion, RegressionCheck } from "./_framework.js";
 import { assert, assertIsolated } from "./_framework.js";
+
+/** 주석을 뺀 소스 — 배선 린트가 "그걸 설명하는 글" 을 세지 않게. */
+const stripSrcComments = (s: string): string =>
+  s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 export const check: RegressionCheck = {
   name: "background-subagent",
@@ -339,20 +344,215 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ★자식 하나만 중지 — 위로 안 번지고, 소환자가 "고장" 으로 오해하지 않는다 ────
+    //  ADR 위험 목록의 "취소 결과의 의미". 종전엔 취소가
+    //  `[… 완료] 실패했습니다: 사용자 요청으로 취소되었습니다.` 로 갔다 — 한 문장에 거짓이
+    //  둘이다. 매니저가 고장으로 읽으면 **사용자가 방금 멈춘 작업을 다시 띄운다**.
+    __resetJobsForTest();
+    {
+      const cond = registerJob({ ...base, kind: "worker", label: "지휘자", threadKey: "dashboard:S" });
+      const box = createSteeringChannel();
+      setJobResultChannel(cond, box);
+      const kidA = registerJob({ ...base, kind: "agent", label: "A", threadKey: `worker:${cond}`, detached: true });
+      const kidB = registerJob({ ...base, kind: "agent", label: "B", threadKey: `worker:${cond}`, detached: true });
+
+      cancelJob(kidA);
+      out.push(
+        assert(
+          "★자식 취소가 **위로 안 번진다** — 형제도 매니저도 계속 돈다",
+          getJob(kidB)?.status === "running" && getJob(cond)?.status === "running",
+          `형제=${getJob(kidB)?.status} 매니저=${getJob(cond)?.status}`,
+        ),
+        assert(
+          "자식 직접 취소는 연쇄 취소가 아니다(부모 알림으로 갈음되면 안 된다)",
+          !isCascadeCancelled(getJob(kidA)!),
+          `${getJob(kidA)?.error}`,
+        ),
+      );
+
+      await onWorkerComplete(kidA, { error: "사용자 요청으로 취소되었습니다." });
+      await onWorkerComplete(kidB, { result: "55" });
+      const msgs = box.drain().map((m) => m.raw);
+      const cancelMsg = msgs.find((t) => t.includes("'A'")) ?? "";
+      const doneMsg = msgs.find((t) => t.includes("'B'")) ?? "";
+      out.push(
+        assert(
+          "매니저는 취소 사실을 **통보받는다**(모르면 영영 기다린다)",
+          msgs.length === 2,
+          `${msgs.length}건`,
+        ),
+        assert(
+          "★취소를 '실패' 라고 하지 않는다",
+          !cancelMsg.includes("실패"),
+          cancelMsg.slice(0, 60),
+        ),
+        assert(
+          "★취소를 '완료' 라고도 하지 않는다",
+          !cancelMsg.includes("완료"),
+          cancelMsg.slice(0, 60),
+        ),
+        assert(
+          "★다시 띄우지 말라고 명시한다(사용자가 멈춘 걸 모델이 되돌리지 않게)",
+          cancelMsg.includes("다시 띄우지 마세요"),
+          cancelMsg.slice(0, 80),
+        ),
+        assert(
+          "정상 완료는 종전대로 '완료 … 결과' 로 온다(회귀 0)",
+          doneMsg.includes("완료") && doneMsg.includes("55"),
+          doneMsg.slice(0, 60),
+        ),
+      );
+    }
+
+    // ── ★매니저를 중지하면 자식도 끊기고, 알림은 **한 번만** 온다 ──────────────────
+    //  실측(2026-08-19): 자식 2 → 알림 3번. 사용자는 매니저 **하나**를 눌렀는데 잡 수만큼
+    //  통보받는다. `wait:false` 이전엔 서브가 완료 통지를 안 타서 1번이었으니 회귀다.
+    //  ★잡 기록·대시보드 이벤트는 남는다 — 지우는 게 아니라 **말하지 않는** 것이다.
+    __resetJobsForTest();
+    {
+      const turns: string[] = [];
+      registerWorkerHandler((async (m: { threadKey: string; text: string }) => {
+        turns.push(m.text);
+        return { text: "" };
+      }) as never);
+      const conductor = registerJob({ ...base, kind: "worker", label: "지휘자", threadKey: "dashboard:S" });
+      const kidIds = ["연주자A", "연주자B"].map((label) =>
+        registerJob({ ...base, kind: "agent", label, threadKey: `worker:${conductor}`, detached: true }),
+      );
+      const n = cancelJob(conductor);
+      out.push(
+        assert("매니저 취소가 자식까지 전파된다", n === true, `${n}`),
+        assert(
+          "★자식이 실제로 cancelled 로 끊긴다(고아로 계속 돌지 않는다)",
+          kidIds.every((id) => getJob(id)?.status === "cancelled"),
+          kidIds.map((id) => getJob(id)?.status).join(","),
+        ),
+        assert(
+          "연쇄 취소 판정이 사유로 구분된다(사용자가 직접 고른 취소와)",
+          kidIds.every((id) => isCascadeCancelled(getJob(id)!)) &&
+            !isCascadeCancelled({ status: "cancelled", error: "사용자 요청" }),
+          kidIds.map((id) => getJob(id)?.error).join(","),
+        ),
+      );
+      // 자식들의 runRegionA 가 취소로 reject → detached runner 가 완료를 알린다
+      for (const id of kidIds) await onWorkerComplete(id, { error: "aborted" });
+      await onWorkerComplete(conductor, { error: "aborted" });
+      out.push(
+        assert(
+          "★알림은 **한 번**만 — 내가 누른 그 작업 것만(자식 수만큼 오지 않는다)",
+          turns.length === 1 && turns[0]?.includes("지휘자") === true,
+          `${turns.length}건: ` + turns.map((t) => (t.match(/"([^"]+)"/) ?? [])[1] ?? "?").join(","),
+        ),
+      );
+    }
+
+    // ── ★store 왕복 — `detached` 가 재시작 복구까지 살아 오는가 (적대 검토 F1) ────────
+    //  실사고: 컬럼을 추가하면서 `listInterruptedWorkerJobs` 의 SELECT 를 안 고쳤다.
+    //  `toJob` 이 `undefined === 1` → **항상 false** 로 읽어, `!job.detached` 게이트가 모든
+    //  잡에 참이 되어 **매니저의 재시작 중단 통지까지 죽었다**(원래 돌던 기능). 조용했다.
+    //  ★필드를 실어 나르는 경로는 **왕복으로** 재야 한다 — 쓰는 쪽만 보면 이걸 못 잡는다.
+    {
+      const { upsertWorkerJob, listInterruptedWorkerJobs } = await import(
+        "../../store/worker-jobs.js"
+      );
+      const now = Date.now();
+      upsertWorkerJob({
+        jobId: "rt-det-1", label: "det-worker", threadKey: "dashboard:s1",
+        channel: "dashboard", channelUserId: "u", status: "running",
+        startedAt: now, kind: "worker", detached: true,
+      });
+      upsertWorkerJob({
+        jobId: "rt-det-2", label: "awaited-agent", threadKey: "dashboard:s1",
+        channel: "dashboard", channelUserId: "u", status: "running",
+        startedAt: now, kind: "agent", detached: false,
+      });
+      const back = listInterruptedWorkerJobs();
+      const w = back.find((j) => j.jobId === "rt-det-1");
+      const a = back.find((j) => j.jobId === "rt-det-2");
+      out.push(
+        assert(
+          "★detached=true 가 재시작 복구 조회까지 살아 온다(SELECT 누락 = 통지 전멸)",
+          w?.detached === true,
+          `worker.detached=${String(w?.detached)}`,
+        ),
+        assert(
+          "detached=false 도 그대로 온다",
+          a?.detached === false,
+          `agent.detached=${String(a?.detached)}`,
+        ),
+      );
+    }
+
+    // ── ★거두기는 **끌 수 있는 기능이 아니다** (적대 검토 F2) ──────────────────────
+    //  종전엔 거두기 루프가 `WORKER_STEERING_ENABLED` 에 묶여 있었다. 끄면 수신함은
+    //  만들어지는데 읽는 사람이 없고, deliverToSummoner 는 push 성공을 "전달됨" 으로
+    //  보고해 **새 턴 폴백까지 막았다** → 결과 완전 유실인데 로그엔 성공 문장만 남는다.
+    //  개입(steering)은 꺼도 되지만 결과 거두기는 제품의 계약이다.
+    {
+      const src = await readFile(
+        new URL("../../core/llm-runtime/capabilities/worker-registry.ts", import.meta.url),
+        "utf8",
+      );
+      const body = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const loopIdx = body.indexOf("shouldKeepReaping({");
+      const gateIdx = body.lastIndexOf("if (steerCh !== undefined) {", loopIdx);
+      const drainIdx = body.lastIndexOf("resultBox.drain()", loopIdx);
+      out.push(
+        assert(
+          "★거두기 루프가 steering 플래그에 묶여 있지 않다",
+          loopIdx > 0 && (gateIdx < 0 || gateIdx < drainIdx - 4000),
+          loopIdx < 0 ? "루프 없음" : gateIdx < 0 ? "게이트 없음(정답)" : `게이트가 루프 직전에 있음(idx ${gateIdx})`,
+        ),
+        assert(
+          "수신함 해제(clearJobResultChannel)가 실제로 불린다 — import 만 있고 호출 0회였다",
+          /clearJobResultChannel\(job\.jobId\)/.test(body),
+          /clearJobResultChannel/.test(body) ? "호출 있음" : "★미호출 — 맵 누수",
+        ),
+      );
+    }
+
     // ── 배선 검사 (등급: **소스 린트** — 위 동작 검사보다 약하다) ────────────────
     //  왜 여기만 약한가: 이 판정을 쓰는 자리(worker-registry 의 러너)는 `runRegionA` 를
     //  부른다 = 실제 모델 호출. 회귀 스위트에 못 넣는다(싸고·결정적이어야 한다).
     //  그래서 **판정 함수는 실행**해 지키고(위), **그 함수를 실제로 쓰는지**만 소스로 본다.
     //  ★정직하게: 이 줄은 동의어·우회로 뚫린다. 그래도 없는 것보단 낫다 —
     //   실제로 변이 검사에서 "잔여 통지가 자식 결과까지 싣는" 회귀가 여기로만 잡혔다.
+    const agentSrc = stripSrcComments(
+      await readFile(
+        new URL("../../core/llm-runtime/capabilities/agent-registry.ts", import.meta.url),
+        "utf8",
+      ),
+    );
+    out.push(
+      assert(
+        "★spawn_agent 가 wait:false 를 실행 축(detached)으로 배선한다(M6)",
+        /detached:\s*rawArgs\.wait === false/.test(agentSrc),
+        /detached:/.test(agentSrc) ? "배선 있음" : "★미배선 — 재시작 통지·취소가 다 틀어진다",
+      ),
+      // ★`if (…)` 에 앵커한다. 종전엔 `rawArgs.wait === false` 만 찾았는데 그 문자열은
+      //  `detached:` 대입에도 있어서, 분기 조건을 `if (false)` 로 죽여도 통과했다
+      //  (적대 검토 M7 이 그렇게 뚫었고, 내 재검증에서도 한 번 더 살아남았다).
+      assert(
+        "★wait:false **분기**가 살아 있고 detached 실행으로 간다(M7)",
+        /if\s*\(\s*rawArgs\.wait === false\s*\)/.test(agentSrc) &&
+          /startDetachedAgent\(\{/.test(agentSrc),
+        /if\s*\(\s*rawArgs\.wait === false\s*\)/.test(agentSrc)
+          ? "분기 있음"
+          : "★분기가 죽었다 — wait 인자가 무시된다",
+      ),
+    );
+
     const runnerSrc = await readFile(
       new URL("../../core/llm-runtime/capabilities/worker-registry.ts", import.meta.url),
       "utf8",
     );
-    const stripComments = (s: string): string =>
-      s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    const code = stripComments(runnerSrc);
+    const code = stripSrcComments(runnerSrc);
     out.push(
+      assert(
+        "★러너가 결과 수신함을 등록한다 — 안 하면 자식 결과가 갈 곳이 없다(M5)",
+        /setJobResultChannel\(job\.jobId/.test(code),
+        /setJobResultChannel/.test(code) ? "등록 있음" : "★미등록",
+      ),
       assert(
         "★러너가 라운드마다 채널을 교체한다(닫힌 채널 재사용 = 거두기가 조용히 안 돎)",
         code.includes("rotateSteerChannel(job.jobId"),

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-08-19
+
+설치·업데이트가 조용히 실패하던 것들을 잡은 판입니다. 여러 대에 깔아 쓰신다면
+이 버전 이상으로 올리시길 권합니다.
+
+### Fixed
+
+- **훅이 데몬을 죽이던 것** — `PreToolUse` 훅이 stdin 을 읽지 않고 즉시 끝나면(`exit 0` 류)
+  파이프가 닫힌 뒤의 쓰기가 처리되지 않은 오류가 되어 **데몬이 통째로 종료**됐습니다.
+  리눅스에서 재현되고 macOS 에선 안 나던 종류라 조용했습니다.
+- **설치가 "성공" 했는데 못 쓰던 것** — npm 설정 `ignore-scripts=true`(회사 보안 정책 등)가
+  켜져 있으면 설치는 정상 종료하는데 네이티브 모듈이 빌드되지 않아, 데몬이 **부팅할 때마다
+  죽었습니다.** 이제 설치·업데이트가 모듈을 실제로 열어보고, 안 열리면 **스스로 다시
+  빌드**합니다. 그래도 안 되면 무엇을 설치해야 하는지 알려주고 멈춥니다(반쯤 설치된 채로
+  끝나지 않습니다).
+- **윈도우 설치가 "Node.js 20 이상이 필요합니다 (지금 v24.x)" 로 멈추던 것** — 자기모순
+  메시지였습니다. PowerShell 이 명령 인자의 따옴표를 넘기지 않아 버전 확인이 깨진 것이고,
+  Node 는 문제가 없었습니다.
+- **첨부 파일이 안 보내지던 경우** — 대화방을 세션에 묶어 쓰실 때, 세션을 보관하면 그 방이
+  사라진 세션에 계속 묶여 있었습니다(대시보드에서 탭을 닫는 경우).
+- **같은 자가 점검 알림이 재시작마다 반복되던 것** — 하루 1회로 묶여 있었지만 그 시계가
+  재시작마다 초기화됐습니다.
+- **모델 프로파일이 비어 보이던 것** — 설정 파일에 프로파일이 없는 새 설치에서는
+  인증한 provider 로 자동 구성된 목록(high·mid·low)이 **대시보드와 비서에게 안 보였습니다.**
+- **기본 세션 이름을 바꿔도 `/sessions` 목록에서만 예전 이름으로 나오던 것.**
+- **대시보드에서 만든 세션이 목록에 첫 문장으로 뜨던 것** — 이제 이름이 붙습니다.
+
+### Added
+
+- **세션 정리를 말로** — "이름 없는 세션들 정리해줘" 처럼 부탁하면 목록을 보여주고 보관합니다.
+  삭제가 아니라 숨김이라 대화 기록은 그대로 남고 되돌릴 수 있습니다.
+
+### Changed
+
+- **도구가 오래 걸린다는 알림이 훨씬 덜 뜹니다** — 기준을 3분에서 10분으로 늘렸고,
+  서브에이전트처럼 **원래 오래 걸리는 작업**은 알리지 않습니다(진행 상황은 백그라운드
+  작업 패널에서 계속 보입니다).
+
 ## [0.30.0] - 2026-08-18
 
 ### Security
@@ -1178,7 +1216,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/tigu77/tiguclaw/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/tigu77/tiguclaw/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/tigu77/tiguclaw/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/tigu77/tiguclaw/compare/v0.27.0...v0.28.0

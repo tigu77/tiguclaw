@@ -184,6 +184,86 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    // ★⑤ **"+"로 만든 세션이 서버에 이름을 남기나** (2026-08-19 사용자 신고 — 같은 병의 재발).
+    //  사용자: *"이상한 세션들이 많이 보여 /sessions 에서."* 목록에 "회사돌쇠야?"·"그냥"·
+    //  "단검 하나만 그러서 보내줘…" 같은 **말조각**이 세션 이름으로 떴고, 같은 말로 시작한
+    //  세션 셋은 구분이 아예 안 됐다.
+    //
+    //  원인은 세션이 잘못 생긴 게 아니라 **이름이 없는 것**이었다 — 대시보드 "+"는 이름을
+    //  localStorage 에만 두고 서버 행엔 안 남긴다. 이름이 없으면 위 ①의 규칙대로 표시명이
+    //  **첫 발화**에서 파생된다. 즉 ①이 고친 "키 원문 노출"이 "말조각 노출"로 모양만 바뀐 것.
+    //
+    //  ★비대칭이 뿌리다: 텔레그램 `/sessions new` 는 이름을 안 줘도 서버에 기본명을 저장한다
+    //   (2026-07-29). **같은 일을 하는 두 입구가 다르게 동작**했다.
+    //  ★소스 문자열로 검사하지 않는다 — 위 markClosed 와 같은 이유로 판정을 함수로 뽑아
+    //   (`commitPendingName`) vm 에서 **실제로 돌린다**.
+    {
+      const cp = /const commitPendingName = \(threadKey, serverName\) => \{[\s\S]*?\n {6}\};/.exec(tabs);
+      out.push(assert("commitPendingName 을 떼어낸다(검사 전제)", cp !== null, cp === null ? "★못 찾음" : "OK"));
+      if (cp !== null) {
+        const named: Array<{ tk: string; name: string }> = [];
+        const ctx: Record<string, unknown> = {
+          DEFAULT_DASH_THREAD: DEFAULT_SESSION_ID,
+          deriveTabFallbackName: (tk: string) => `세션${tk.length % 7}`,
+          commitTabName: (tk: string, name: string) => void named.push({ tk, name }),
+        };
+        vm.createContext(ctx);
+        vm.runInContext(`${cp[0]}\nthis.commitPendingName = commitPendingName;`, ctx);
+        const fn = ctx.commitPendingName as (tk: string, sn: unknown) => boolean;
+
+        const fresh = fn("dashboard:new-one", null);
+        out.push(
+          assert(
+            "★이름 없이 서버에 나타난 새 세션에 이름을 남긴다(말조각이 이름 자리에 오는 걸 막는다)",
+            fresh === true && named.length === 1 && named[0]!.tk === "dashboard:new-one" &&
+              named[0]!.name.trim() !== "",
+            named.length === 1 ? `저장 "${named[0]!.name}"` : "★저장 호출 0",
+          ),
+        );
+        // ★호출 순서가 판정에 걸린다 — `before` 를 잰 뒤 **덮어쓰면 안 되는 호출 하나만**
+        //  하고 즉시 센다. 처음엔 여기서 공백 케이스까지 부르고 나서 셌다가, 그게 정상적으로
+        //  하나 늘려서 검사가 스스로 빨간불을 냈다(제품이 아니라 검사의 순서 실수였다).
+        const before = named.length;
+        const hadName = fn("dashboard:has-name", "핫딜알리미");
+        out.push(
+          assert(
+            "이미 이름이 있으면 덮지 않는다(사용자가 붙인 이름을 뺏지 않는다)",
+            hadName === false && named.length === before,
+            `덮어쓰기 ${named.length - before}건`,
+          ),
+        );
+        const blank = fn("dashboard:blank-name", "   ");
+        out.push(
+          assert(
+            "공백뿐인 이름은 없는 것으로 본다(서버 정규화와 같은 판정)",
+            blank === true && named.length === before + 1,
+            `${String(blank)} · 저장 ${named.length - before}건`,
+          ),
+        );
+        const beforeDef = named.length;
+        const def = fn(DEFAULT_SESSION_ID, null);
+        out.push(
+          assert(
+            "★기본 세션엔 이름을 붙이지 않는다(고정 라벨 — ②와 같은 규칙)",
+            def === false && named.length === beforeDef,
+            String(def),
+          ),
+        );
+      }
+      // ★배선 — 판정이 옳아도 **아무도 안 부르면** 아무 일도 안 일어난다. 변이 테스트에서
+      //  실제로 드러났다(함수는 남기고 호출만 지우면 위 넷이 전부 초록이었다).
+      //  ★등급을 정직하게: 이건 **소스 검사**다. 판정은 위에서 실행으로 지키지만, 호출이
+      //   `pending` 해제 자리에 실제로 걸리는지는 브라우저를 띄워야 확정된다
+      //   (실증은 `_workspace/_session_name_cdp.mjs` — 헤드리스로 "+"→서버등장→저장 확인).
+      out.push(
+        assert(
+          "그 판정이 pending 해제 지점에서 호출된다(배선 — 소스 검사)",
+          /if \(t\.pending\) \{[\s\S]{0,600}?commitPendingName\(t\.threadKey, s\.name\)/.test(tabs),
+          /commitPendingName\(/.test(tabs) ? "호출 확인" : "★판정만 있고 호출이 없다",
+        ),
+      );
+    }
+
     const dash = read("packages/dashboard/index.ts");
     const bridge2 = read("plugins/http-bridge/index.ts");
     out.push(

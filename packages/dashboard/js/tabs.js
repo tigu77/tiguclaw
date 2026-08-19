@@ -59,6 +59,22 @@
         }
       };
 
+      // ★"+"로 만든 세션이 서버에 처음 나타난 순간, 이름이 없으면 지금 보이는 이름을 고정한다.
+      //  (2026-08-19 사용자 신고: `/sessions` 목록에 "회사돌쇠야?"·"그냥" 같은 **말조각**이
+      //   세션 이름으로 떴다. 원인은 세션이 잘못 생긴 게 아니라 **이름이 없어서** 표시명이
+      //   첫 발화에서 파생된 것 — 대시보드 "+"는 이름을 localStorage 에만 두고 서버엔 안 남겼다.
+      //   같은 말로 시작한 세션이 셋이면 목록에서 구분이 아예 안 된다.)
+      //  ★텔레그램 `/sessions new` 는 이름을 안 줘도 서버에 기본명을 저장한다(2026-07-29).
+      //   같은 일을 하는 두 입구가 다르게 동작하던 것을 맞춘다.
+      //  ★판정을 함수로 뽑아 둔다 — 갱신 루프 안에 두면 검사가 문자열 grep 밖에 못 하고,
+      //   그러면 `if (false)` 한 줄로 조용히 죽는다(이 파일의 markClosed 가 같은 이유로 뽑혀 있다).
+      const commitPendingName = (threadKey, serverName) => {
+        if (threadKey === DEFAULT_DASH_THREAD) return false;   // 기본 세션은 고정 라벨.
+        if (typeof serverName === "string" && serverName.trim() !== "") return false; // 이미 이름 있음.
+        void commitTabName(threadKey, deriveTabFallbackName(threadKey));
+        return true;
+      };
+
       // st-name 을 contenteditable 로 전환해 편집 진입. Enter/blur=저장, Esc=취소(원래 이름 복원).
       const startEditingTab = (tk) => {
         if (editingTabKey || !sessionTabsEl) return;
@@ -430,7 +446,13 @@
           for (const s of sessions) {
             const t = openByKey.get(s.threadKey);
             if (!t) continue;
-            if (t.pending) { delete t.pending; changed = true; } // 서버가 알게 됨 = 더는 신규 아님.
+            if (t.pending) {
+              delete t.pending; // 서버가 알게 됨 = 더는 신규 아님.
+              changed = true;
+              // ★이 순간이 **첫 전송으로 서버 행이 막 생긴 시점**이다(그 전엔 행이 없다 =
+              //  "빈 탭 = 흔적 0" 성질은 그대로). 그 행엔 이름이 없으므로 여기서 고정한다.
+              commitPendingName(t.threadKey, s.name);
+            }
             if (s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }
             const ch = s.channel || s.lastChannel || channelFromThreadKey(s.threadKey);
             if (ch && t.channel !== ch) { t.channel = ch; changed = true; }

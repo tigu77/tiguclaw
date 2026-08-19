@@ -1571,6 +1571,11 @@ class HttpBridge implements Channel, Observer {
         // SSE·하이드레이션 어느 경로로 카드를 만들든 같은 근거로 판정하게 한다.
         ownerThreadKey: resolveOwnerThreadKey(j.threadKey),
         status: j.status,
+        // ★시작 시각 (2026-08-19 사용자 지적: 카드에 `1787121377393` 같은 숫자가 뜬다).
+        //  종전엔 이 필드가 없어서 하이드레이션이 `Date.now()` 를 시각 자리에 넣었고,
+        //  그것도 **포맷 안 된 epoch** 라 카드에 원값이 그대로 보였다. 시각은 서버가 아는
+        //  사실이므로 여기서 준다 — 클라가 "지금"으로 지어내면 그건 다른 값이다.
+        ...(typeof j.startedAt === "number" ? { startedAt: j.startedAt } : {}),
         ...(j.agentName !== undefined ? { agentName: j.agentName } : {}),
         ...(j.modelTier !== undefined && j.modelTier !== ""
           ? { modelTier: j.modelTier }

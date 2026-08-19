@@ -80,6 +80,48 @@ export const check: RegressionCheck = {
         !unnamed.badgeShown && unnamed.rawShown,
         `배지=${unnamed.badgeShown} 좌표=${unnamed.rawShown}`,
       ),
+      // ★시각 자리에 **원값(epoch)** 이 오지 않는다 (2026-08-19 사용자 지적: 카드에
+      //  `1787121377393` 이라는 숫자가 떠 있었다). SSE 경로는 `fmtTime(ev.ts)` 를 넘기는데
+      //  하이드레이션(새로고침 복원)만 `Date.now()` 를 그대로 넘겼다 — **같은 인자에 두
+      //  경로가 다른 타입**을 넣고 있었고, 새로고침한 사람에게만 보였다.
+      //  그리고 "지금" 이 아니라 그 잡이 **시작한 시각**이어야 한다(서버가 startedAt 을 준다).
+      (() => {
+        const src = readFileSync(
+          new URL("../../../packages/dashboard/js/background-drawer.js", import.meta.url),
+          "utf8",
+        );
+        const hyd = /const hydrateActiveJobs[\s\S]*?\n {6}\};/.exec(src)?.[0] ?? "";
+        const rawNow = /handleWorkerEvent\([^)]*\}, Date\.now\(\)\)/.test(hyd);
+        return assert(
+          "★하이드레이션이 시각을 포맷해서 넘긴다(카드에 epoch 원값이 안 뜬다)",
+          hyd !== "" && !rawNow && /fmtTime\(/.test(hyd) && /j\.startedAt/.test(hyd),
+          hyd === ""
+            ? "★hydrateActiveJobs 를 못 찾음(검사 전제)"
+            : rawNow
+              ? "★Date.now() 원값을 그대로 넘긴다"
+              : "fmtTime + startedAt 확인",
+        );
+      })(),
+      (() => {
+        const bridge = readFileSync(
+          new URL("../../../plugins/http-bridge/index.ts", import.meta.url),
+          "utf8",
+        );
+        // ★**응답을 조립하는 지점**을 앵커로 잡는다. 경로 문자열(`pathname === "/worker-jobs"
+        //  && method === "GET"`)은 이 파일에 **두 번** 나온다 — 위쪽 라우트 게이트 표와 실제
+        //  핸들러. 첫 일치를 쓰면 게이트 표를 물어서, 응답에 필드가 있어도 없다고 판정한다
+        //  (실제로 그렇게 옳은 코드가 빨간불이었다). 같은 문자열이 여러 번 나오는 파일에서
+        //  "첫 일치" 는 앵커가 아니다.
+        const block = /listJobs\(\{ runningOnly: true[\s\S]{0,900}/.exec(bridge)?.[0] ?? "";
+        return assert(
+          "서버가 startedAt 을 실어 보낸다(클라가 '지금' 으로 지어내지 않게)",
+          // ★조건부 스프레드(`...(typeof j.startedAt === "number" ? { startedAt: … } : {})`)도
+          //  받는다 — 첫 판이 `startedAt: j.startedAt` 한 형태만 봐서 **옳은 코드를 빨간불**로
+          //  만들었다. 검사가 한 표기에 묶이면 코드를 검사에 맞추게 된다(꼬리가 개를 흔든다).
+          /startedAt[^\n]{0,60}j\.startedAt/.test(block),
+          /startedAt/.test(block) ? "startedAt 전달" : "★서버가 시작 시각을 안 준다",
+        );
+      })(),
     ];
   },
 };

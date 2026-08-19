@@ -931,13 +931,20 @@
           for (const j of d.jobs) {
             if (!j || !j.jobId) continue;
             live.add(j.jobId);
-            handleWorkerEvent({ ...j, status: j.status || "running" }, Date.now());
+            // ★시각은 **포맷해서** 넘긴다 (2026-08-19). SSE 경로는 `fmtTime(ev.ts)` 를 주는데
+            //  여기만 `Date.now()`(원값)를 줘서, 새로고침하면 그 카드만 `1787121377393` 같은
+            //  숫자가 시각 자리에 떴다 — 같은 인자에 두 경로가 다른 타입을 넣고 있었다.
+            //  그리고 "지금" 이 아니라 **그 잡이 시작한 시각**을 쓴다(서버가 준다).
+            handleWorkerEvent(
+              { ...j, status: j.status || "running" },
+              fmtTime(typeof j.startedAt === "number" ? j.startedAt : Date.now()),
+            );
           }
           for (const [jobId, e] of jobCards) {
             if (e.status !== "running" || live.has(jobId)) continue;
             // 이 fetch 이후에 생긴 카드는 대조 대상이 아니다(응답이 그 잡을 알 리 없다) — race 방지.
             if ((e.startTs || 0) > startedAt) continue;
-            handleWorkerEvent({ jobId, status: "interrupted" }, Date.now());
+            handleWorkerEvent({ jobId, status: "interrupted" }, fmtTime(Date.now()));
           }
         }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
       };

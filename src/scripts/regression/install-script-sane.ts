@@ -135,6 +135,32 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ④-3 ★"설치됐다" 를 **종료코드로만** 판단하지 않는다 (2026-08-19 실사고) ────────
+  //  사용자 머신에서 `npm ci` 가 **성공했는데**(added 177 packages, ERR 0) 데몬이 부팅마다
+  //  죽었다. 원인은 사내 정책 `ignore-scripts=true` — 네이티브 빌드 스크립트가 아예 안 돌아
+  //  `better_sqlite3.node` 가 안 생겼다. 설치는 끝난 것처럼 보이고 데몬은 6회 연속 크래시했다.
+  //  ★종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — **열어봐야 안다.**
+  //  ★우리 클린룸 검증(sync 스킬 §7)은 이미 `require('better-sqlite3')` 로 실제 로드를
+  //   확인하고 있었다. 정작 **사용자가 돌리는 스크립트**에만 없었다 — 우리 설치는 검증하고
+  //   사용자 설치는 안 하고 있었던 셈이다(같은 판단이 한쪽에만 있던 것, 오늘 여러 번 본 형상).
+  for (const [name, src] of [
+    ["install.sh", codeOnly(sh)],
+    ["install.ps1", codeOnly(ps)],
+  ] as const) {
+    out.push({
+      name: `${name}: 설치 후 네이티브 모듈을 **실제로 열어** 확인한다`,
+      ok: /require\(['"]better-sqlite3['"]\)/.test(src),
+      got: /require\(['"]better-sqlite3['"]\)/.test(src)
+        ? "로드 확인 있음"
+        : "🔴 종료코드만 보고 '설치 완료' 라고 한다",
+    });
+    out.push({
+      name: `${name}: 못 열리면 ignore-scripts 를 원인 후보로 짚는다`,
+      ok: /ignore-scripts/.test(src),
+      got: /ignore-scripts/.test(src) ? "원인 안내 있음" : "🔴 '빌드 도구' 만 말한다",
+    });
+  }
+
   // ── ⑤ 배포 URL 을 가리킨다(개발 기계 경로가 새지 않는다) ─────────────────
   for (const [name, src] of [
     ["install.sh", sh],

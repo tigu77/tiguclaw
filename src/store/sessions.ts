@@ -215,7 +215,18 @@ export const explainDbOpenFailure = (e: unknown): Error => {
   if (hint === null) return e instanceof Error ? e : new Error(msg);
   // 원문을 버리지 않는다 — 안내를 **앞에** 붙여 사람이 먼저 읽게 한다.
   const wrapped = new Error(`${hint}\n\n원문: ${msg}`);
-  wrapped.stack = e instanceof Error ? e.stack : undefined;
+  // ★`stack` 을 **원본으로 덮지 않는다** (2026-08-19, SANTO 머신 로그로 실증).
+  //  종전엔 `wrapped.stack = e.stack` 이었다. 그런데 크래시 핸들러(`logFatal(..., err)`)는
+  //  Error 객체를 통째로 넘기고 콘솔은 그럴 때 `message` 가 아니라 **`stack` 을 찍는다** —
+  //  그 문자열은 `Error: Could not locate the bindings file…` 로 시작하므로 **안내가 통째로
+  //  가려졌다.** 사용자 로그엔 탐색 경로 13줄만 남았고, 정확히 그걸 없애려고 만든 안내가
+  //  한 줄도 안 보였다(이 파일이 고치려던 바로 그 증상이 그대로 재현됐다).
+  //  ★원본 스택은 **뒤에 붙인다** — 진단 정보는 유지하되 사람이 먼저 읽을 것을 앞에 둔다.
+  const originStack = e instanceof Error ? e.stack : undefined;
+  wrapped.stack =
+    originStack === undefined
+      ? wrapped.stack
+      : `${wrapped.message}\n--- 원본 스택 ---\n${originStack}`;
   return wrapped;
 };
 

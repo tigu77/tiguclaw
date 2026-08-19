@@ -70,6 +70,38 @@ if ($LASTEXITCODE -ne 0) {
 "@
 }
 
+# ★설치가 "성공" 해도 **쓸 수 있는지는 별개다** (2026-08-19 실사고).
+#  사내 정책으로 `ignore-scripts=true` 가 켜진 머신에서 `npm ci` 는 멀쩡히 성공하는데
+#  네이티브 빌드 스크립트가 아예 안 돌아 `better_sqlite3.node` 가 안 생긴다. 그러면
+#  설치는 끝난 것처럼 보이고 데몬은 **부팅할 때마다 죽는다**(실측: 6회 연속 크래시).
+#  종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
+#  ★우리 클린룸 검증(sync 스킬 §7)은 이미 이 확인을 하고 있었다. 정작 **사용자가 돌리는
+#   스크립트**에만 없었다 — 우리 설치는 검증하고 사용자 설치는 안 하고 있었던 셈이다.
+Write-Host "-> 네이티브 모듈 확인 중..."
+node -e "require('better-sqlite3')" 2>$null
+if ($LASTEXITCODE -ne 0) {
+  $ig = "$(npm config get ignore-scripts 2>$null)".Trim()
+  if ($ig -eq "true") {
+    Die @"
+설치는 됐지만 SQLite 네이티브 모듈을 열 수 없습니다 - 이 상태로는 데몬이 부팅마다 죽습니다.
+
+   [원인] npm 설정 ignore-scripts=true 가 켜져 있어(사내 정책일 수 있습니다) 네이티브
+     빌드가 아예 안 돌았습니다. 이 폴더에만 풀어 주세요(전역 정책은 그대로 둡니다):
+       cd $Dir
+       "ignore-scripts=false" | Out-File -FilePath .npmrc -Encoding ascii -Append
+       npm rebuild better-sqlite3 --ignore-scripts=false
+"@
+  }
+  Die @"
+설치는 됐지만 SQLite 네이티브 모듈을 열 수 없습니다 - 이 상태로는 데몬이 부팅마다 죽습니다.
+
+   C++ 빌드 도구가 필요할 수 있습니다:
+     winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
+   그 뒤:  cd $Dir; npm rebuild better-sqlite3
+"@
+}
+
+
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
 Write-Host ""
 npm run onboard

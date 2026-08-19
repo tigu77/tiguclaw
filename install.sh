@@ -56,6 +56,24 @@ if ! npm ci --no-audit --no-fund; then
    설치 후 다시:  cd $DIR && npm ci"
 fi
 
+# ★설치가 "성공" 해도 **쓸 수 있는지는 별개다** (2026-08-19 실사고 — 윈도우).
+#  `ignore-scripts=true`(사내 정책 등)면 `npm ci` 는 성공하는데 네이티브 빌드가 안 돌아
+#  바인딩이 안 생긴다. 설치는 끝난 것처럼 보이고 데몬은 부팅마다 죽는다(실측 6회 연속).
+#  종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
+say "→ 네이티브 모듈 확인 중…"
+if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+  ig=$(npm config get ignore-scripts 2>/dev/null || echo "")
+  if [ "$ig" = "true" ]; then
+    die "설치는 됐지만 SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.
+   ★원인이 보입니다: npm 설정 ignore-scripts=true 가 켜져 있어 네이티브 빌드가 안 돌았습니다.
+     이 폴더에만 풀어 주세요:
+       cd $DIR && echo 'ignore-scripts=false' >> .npmrc && npm rebuild better-sqlite3 --ignore-scripts=false"
+  fi
+  die "설치는 됐지만 SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.
+   빌드 도구가 필요할 수 있습니다 — Linux: build-essential + python3 / macOS: xcode-select --install
+   그 뒤:  cd $DIR && npm rebuild better-sqlite3"
+fi
+
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
 #
 # ★터미널이 **있는지**가 아니라 **열리는지**로 판정한다 (실측 2026-08-11).

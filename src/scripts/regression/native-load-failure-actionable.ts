@@ -109,6 +109,25 @@ const run = async (): Promise<Assertion[]> => {
       got: `메시지 앞머리=${JSON.stringify(wrapped.message.slice(0, 60))}`,
     });
 
+    // ★**로그에 실제로 찍히는 것**은 message 가 아니라 stack 이다 (2026-08-19, SANTO 머신
+    //  실증). 크래시 핸들러가 `logFatal(..., err)` 로 Error 객체를 통째로 넘기고 콘솔은
+    //  그럴 때 `stack` 을 찍는다. 종전엔 `wrapped.stack = e.stack` 으로 **원본 스택을
+    //  덮어써서**, 그 문자열이 `Error: Could not locate the bindings file…` 로 시작해
+    //  **안내가 통째로 가려졌다** — 사용자 로그엔 탐색 경로 13줄만 남았고, 이 파일이
+    //  없애려던 바로 그 증상이 그대로 재현됐다. 안내를 만드는 것과 **도달하는 것**은 다르다.
+    out.push({
+      name: "★안내가 stack 에도 먼저 온다(크래시 로그가 찍는 건 message 가 아니라 stack)",
+      ok:
+        String(wrapped.stack).startsWith("SQLite 네이티브 모듈") &&
+        !String(wrapped.stack).startsWith("Error: Could not locate"),
+      got: `stack 앞머리=${JSON.stringify(String(wrapped.stack).slice(0, 40))}`,
+    });
+    out.push({
+      name: "그러면서 원본 스택을 잃지 않는다(진단 정보 보존)",
+      ok: String(wrapped.stack).includes("--- 원본 스택 ---"),
+      got: String(wrapped.stack).includes("--- 원본 스택 ---") ? "원본 첨부됨" : "🔴 원본 스택 소실",
+    });
+
     const untouched = new Error("SQLITE_CANTOPEN: unable to open database file");
     out.push({
       name: "무관한 실패는 **원본 그대로** 통과한다(감싸서 스택을 흐리지 않는다)",

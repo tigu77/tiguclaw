@@ -1,8 +1,11 @@
 # 코드 지도 — 어디에 무엇이 있는가
 
+> 짝 문서: [`core-boundaries.md`](core-boundaries.md) — 부팅·라우팅·권한의 **흐름**.
+
 > **기준 커밋**: `9acfe6e` (2026-08-08) · **작성**: 개발돌쇠, 소스 독해 기반
 >
-> 설계의 **정본은 `README.md` · `docs/architecture.md` · `docs/decisions/`** 이고, 이 문서는
+> 설계의 **정본은 `README.md`** 이고(개발 저장소에선 `docs/architecture.md` ·
+> `docs/decisions/` 도 — ★그 둘은 **배포본에 없다**), 이 문서는
 > 그것을 대체하지 않는다. 여기 담는 것은 **좌표**뿐이다 — "무엇이 어느 파일에 있고, 어디를
 > 건드리면 무엇이 조용히 깨지는가".
 >

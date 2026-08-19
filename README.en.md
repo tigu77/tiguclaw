@@ -103,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | s
 irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 ```
 
-It clones, installs, and hands you straight to the setup wizard. Default location is `tiguclaw/` under your home — override it with `TIGUCLAW_DIR`. All you need is **Node.js 20+ and git**, and if it's already installed the script tells you instead of overwriting.
+It clones, installs, and hands you straight to the setup wizard. Default location is `tiguclaw/` under your home — override it with `TIGUCLAW_DIR`. All you need is **Node.js 20+ and git** (stick to an LTS — **20, 22, or 24**; prebuilt native binaries track LTS, so an odd non-LTS release may need C++ build tools), and if it's already installed the script tells you instead of overwriting.
 
 <details>
 <summary><b>Prefer to do it yourself?</b> (same steps, by hand)</summary>
@@ -137,6 +137,10 @@ If the dashboard isn't there, the usual cause is a missing `HTTP_BRIDGE_TOKEN` �
 You need one LLM. **Ollama** (free, local, no key), **Anthropic / OpenAI API keys**, a **Claude or ChatGPT subscription**, or **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM…). `onboard` walks you through it, and switching later doesn't change what the assistant can do.
 
 → How to get each key, config examples, day-to-day commands, updating, and uninstalling all live in **[Setup & operations](docs/setup.en.md)**.
+
+**If something's off**, run `tiguclaw doctor` first — it checks keys, home, service, the native module, and whether the global command resolves, then tells you what to do about whatever it found. Still stuck? [Open an issue](https://github.com/tigu77/tiguclaw/issues/new/choose) — the templates ask for exactly what's needed. For security problems, don't use a public issue: see [SECURITY](.github/SECURITY.md).
+
+**Reading the code?** — [Code map](docs/code-map.md) (what lives where) · [Core boundaries](docs/core-boundaries.md) (how boot, routing, and permissions fit together) · [Contributing](CONTRIBUTING.md).
 
 ## How it's built
 

@@ -103,7 +103,7 @@ curl -fsSL https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.sh | s
 irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 ```
 
-받고, 설치하고, 설정 마법사까지 이어집니다. 기본 위치는 홈 아래 `tiguclaw/` — 바꾸려면 `TIGUCLAW_DIR` 를 지정하세요(`TIGUCLAW_DIR=D:\tiguclaw`). 필요한 건 **Node.js 20 이상 + git** 뿐이고, 이미 설치돼 있으면 덮지 않고 알려줍니다.
+받고, 설치하고, 설정 마법사까지 이어집니다. 기본 위치는 홈 아래 `tiguclaw/` — 바꾸려면 `TIGUCLAW_DIR` 를 지정하세요(`TIGUCLAW_DIR=D:\tiguclaw`). 필요한 건 **Node.js 20 이상 + git** 뿐이고, 이미 설치돼 있으면 덮지 않고 알려줍니다. (LTS — **20 · 22 · 24** — 를 권합니다. 네이티브 모듈 미리 빌드된 바이너리가 LTS 기준이라, 비-LTS 홀수 버전에서는 C++ 빌드 도구가 필요할 수 있습니다.)
 
 <details>
 <summary><b>직접 하고 싶다면</b> (같은 일을 손으로)</summary>
@@ -137,6 +137,10 @@ node bin/tiguclaw.mjs onboard   # 의존성 설치까지 알아서 — 이 한 �
 LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부터 **Anthropic·OpenAI API 키**, **Claude/ChatGPT 구독**, 그리고 **OpenAI 호환 엔드포인트라면 무엇이든**(OpenRouter·Groq·vLLM…) 됩니다. `onboard` 가 물어보며 안내하고, 나중에 바꿔도 능력은 그대로입니다.
 
 → 키 발급 방법·설정 예시·평소 쓰는 명령·업데이트·삭제는 **[설치와 운영](docs/setup.md)** 에 모아뒀습니다.
+
+**잘 안 되면** 먼저 `tiguclaw doctor` 를 돌려보세요 — 키·홈·서비스·네이티브 모듈·전역 명령까지 한 번에 점검하고, 막힌 자리에 맞는 조치를 알려줍니다. 그래도 안 되면 [이슈](https://github.com/tigu77/tiguclaw/issues/new/choose)로 알려주세요(템플릿이 필요한 값만 정확히 묻습니다). 보안 문제는 공개 이슈 말고 [SECURITY](.github/SECURITY.md) 를 봐주세요.
+
+**코드를 읽으실 거면** — [코드 지도](docs/code-map.md)(무엇이 어느 파일에) · [코어 경계 지도](docs/core-boundaries.md)(부팅·라우팅·권한의 흐름) · [기여 안내](CONTRIBUTING.md).
 
 ## 어떻게 만들어졌나
 

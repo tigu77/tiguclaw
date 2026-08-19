@@ -1,0 +1,39 @@
+name: 설치·업데이트가 안 됩니다 / Install or update fails
+description: 설치·`tiguclaw update`·부팅이 실패할 때
+labels: [install]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        설치 실패는 **환경이 원인인 경우가 대부분**이라(사내 npm 설정, 실행 정책,
+        Node 버전, 빌드 도구) 아래 값들이 곧 진단입니다.
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 어디서 멈췄나 / Where it stopped
+      options:
+        - 한 줄 설치 스크립트 실행 중
+        - onboard(설정 마법사)
+        - 첫 부팅 — 데몬이 안 뜬다
+        - tiguclaw update
+        - 설치는 됐는데 `tiguclaw` 명령이 없다
+    validations: { required: true }
+  - type: textarea
+    id: output
+    attributes:
+      label: 화면에 나온 것 / Output
+      description: 에러 메시지 전문. **경로에 개인정보가 있으면 가려주세요.**
+      render: text
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes:
+      label: 환경 / Environment
+      placeholder: "Windows 11 · Node 24.12.0 · PowerShell 5.1"
+    validations: { required: true }
+  - type: textarea
+    id: npmcfg
+    attributes:
+      label: npm 설정 (설치 실패 시 필수)
+      description: "`npm config get ignore-scripts` · `npm config get registry` 결과"
+      render: text

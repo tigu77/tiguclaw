@@ -5,7 +5,7 @@ tiguclaw 데몬 외부 dashboard. http-bridge endpoint 통해서만 데몬과 �
 ## 파일 레이아웃 (2026-07-16 분해)
 
 원래 `index.html` 한 파일(5,931줄, CSS+JS+마크업 전부)이었으나 단순+견고(특히 AI 협업 시
-검증가능성)를 위해 관심사별로 분해했다. ADR: [`docs/decisions/2026-07-16-dashboard-decomposition.md`](../../docs/decisions/2026-07-16-dashboard-decomposition.md).
+검증가능성)를 위해 관심사별로 분해했다. (설계 근거 ADR 은 개발 저장소에 있다 — 배포본에 없다).
 
 - `index.html` — 마크업 + `<link href=/app.css>` + `<script src=/js/*.js>` 나열(≈150줄).
 - `app.css` — 전체 스타일.

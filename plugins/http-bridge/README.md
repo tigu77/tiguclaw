@@ -53,4 +53,4 @@ npm run bridge:tokens                       # 활성 토큰 목록 (hash·role·
 npm run bridge:tokens -- --revoke 3         # id=3 revoke
 ```
 
-자세한 토큰 모델은 `docs/decisions/2026-05-16-dashboard-v2-tokens.md` §1.Q1/Q3 참조.
+자세한 토큰 모델은 개발 저장소의 ADR `2026-05-16-dashboard-v2-tokens` §1.Q1/Q3 — 배포본에 없다.

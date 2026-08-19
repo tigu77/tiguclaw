@@ -1,4 +1,7 @@
-# 티구클로 코어·라우터·채널·권한 지도 (신규 합류자용)
+# 코어 경계 지도 — 라우터·채널·권한 (신규 합류자용)
+
+> 짝 문서: [`code-map.md`](code-map.md) 는 **무엇이 어느 파일에 있는지**(좌표),
+> 이 문서는 **부팅·라우팅·권한이 어떤 순서로 엮이는지**(흐름)를 다룬다.
 
 범위: `src/core/*.ts`(llm-runtime 제외), `src/core/entry|plugins|observers`,
 `src/channels/`, `src/auth/`, `src/index.ts`, `src/cli.ts`, `bin/`.

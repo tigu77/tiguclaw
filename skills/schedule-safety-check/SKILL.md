@@ -11,7 +11,7 @@ tiguclaw trigger plugin (scheduler 의 `add_schedule`, file-watch 의 `add_watch
 
 **`register_endpoint` (http-bridge 커스텀 엔드포인트) 도 동일 회색지대 — 외부 토큰 보유자가 무인으로 비서 턴을 트리거.** 단 엔드포인트는 **기본 `mode: restricted`(도구 0 = 읽기·요약만) → 그 자체로 Layer A safe**(위험 도구 물리적 불가). 평가 대상은 **`mode: full` 로 명시 등록할 때만** — 그땐 본문 prompt 를 아래 3-layer 로 self-check 하고 gray/danger 면 사용자 명시 확인. 추가로 **공개 노출 차원**: full 엔드포인트는 토큰만 있으면 외부에서 반복 호출 가능하므로, "외부 송신·파일 변경·삭제·재귀" 류 prompt 면 restricted 유지를 우선 권하고 full 은 danger 로 취급.
 
-`docs/decisions/2026-05-16-scheduler-v1.md` §11 V2 후속 + `_workspace/file_watch_architect_contract.md` §7 보강 실현.
+개발 저장소의 ADR `2026-05-16-scheduler-v1`(배포본에 없다) §11 V2 후속 + `_workspace/file_watch_architect_contract.md` §7 보강 실현.
 
 ## §1. 위험 카테고리 3 layer
 

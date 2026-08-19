@@ -1,0 +1,47 @@
+name: 버그 신고 / Bug report
+description: 안 되는 것을 알려주세요 / Something doesn't work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **먼저 `tiguclaw doctor` 를 한 번 돌려주세요** — 아래에 붙일 값이 거기 다 나옵니다.
+        설치·부팅 문제는 환경 정보 없이는 원인이 갈리지 않습니다(실제로 같은 증상이
+        서로 다른 원인 셋이었던 적이 있습니다).
+
+        *Run `tiguclaw doctor` first — it prints everything asked for below.*
+  - type: textarea
+    id: what
+    attributes:
+      label: 무슨 일이 있었나 / What happened
+      description: 무엇을 했고, 무엇을 기대했고, 대신 무엇이 일어났는지.
+    validations: { required: true }
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`tiguclaw doctor` 출력"
+      description: 안 돌면 그 실패 자체를 붙여주세요. **API 키·봇 토큰은 지우고.**
+      render: text
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes:
+      label: 환경 / Environment
+      description: "OS · Node 버전 · 설치 방법"
+      placeholder: "Windows 11 · Node 24.12.0 · install.ps1 한 줄 설치"
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: 로그 / Logs
+      description: |
+        `<home>/logs/daemon-<날짜>.log` 의 관련 줄. **비밀값은 지우고.**
+        데몬이 안 뜨면 그 부팅 시도 부분이 가장 중요합니다.
+      render: text
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: 확인
+      options:
+        - label: 비밀값(API 키·봇 토큰·chat id)을 지웠습니다
+          required: true

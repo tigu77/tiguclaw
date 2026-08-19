@@ -26,7 +26,16 @@ if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git 이 없습
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Die "Node.js 가 없습니다 — $MinNode 이상이 필요합니다: winget install OpenJS.NodeJS.LTS" }
 if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { Die "npm 이 없습니다. Node.js 설치를 확인하세요." }
 
-$nodeMajor = [int](node -p 'process.versions.node.split(".")[0]')
+# 버전 판정은 PowerShell 안에서 한다 — node 에 **표현식을 넘기지 않는다**.
+#  ★종전: `node -p 'process.versions.node.split(".")[0]'`. Windows PowerShell(5.1 계열)은
+#   네이티브 명령에 인자를 넘길 때 **큰따옴표를 이스케이프하지 않는다.** 그래서 node.exe 가
+#   `"` 를 인자 구분자로 먹고 `process.versions.node.split(.)[0]` 을 받아 SyntaxError 를 낸다.
+#   그러면 이 줄이 빈 값이 되고 `[int]` 가 0 이 돼, **Node 24 를 깔아둔 사람에게**
+#   "Node.js 20 이상이 필요합니다 (지금 v24.19.0)" 라는 **자기모순 메시지**로 설치가 멈춘다
+#   (2026-08-19 실제 신고). PowerShell 7.3+ 는 동작이 바뀌어 안 터진다 = 기계마다 갈린다.
+#  ★install.sh 의 같은 줄은 멀쩡하다 — bash 는 argv 를 그대로 넘겨 재파싱이 없다. 같은
+#   코드가 셸에 따라 다르게 깨지는 자리라, 여기만 고친다.
+$nodeMajor = [int]((((node --version) -replace '^v', '') -split '\.')[0])
 if ($nodeMajor -lt $MinNode) { Die "Node.js $MinNode 이상이 필요합니다 (지금 $(node -v))." }
 Write-Host "[v] node $(node -v)"
 

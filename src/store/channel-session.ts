@@ -11,7 +11,7 @@
  * 키 = (채널, 채널주소). 같은 사람이라도 DM 과 그룹은 다른 대화방이므로 각각 따로 묶인다
  * (사용자 확정 2026-07-28). 행이 없으면 바인딩 없음 = 기본 세션(기존 동작, 회귀 0).
  */
-import { getDb } from "./sessions.js";
+import { getDb, setThreadArchived } from "./sessions.js";
 
 export interface ChannelSessionBinding {
   readonly channel: string;
@@ -96,4 +96,33 @@ export const clearBindingsForSession = (sessionId: string): number => {
   return getDb()
     .prepare(`DELETE FROM channel_session_binding WHERE session_id = ?`)
     .run(sid).changes;
+};
+
+/**
+ * 세션 보관/복원 — **보관은 곧 바인딩 해제다** (2026-08-19).
+ *
+ * ★같은 판단이 세 곳에 흩어져 있었다: `/sessions archive`(명령)·`archive_session`(도구)·
+ *  `/session-archive`(엔드포인트, **대시보드 탭 닫기가 오는 주 경로**). 그리고 실제로
+ *  갈려 있었다 — 명령만 바인딩을 풀고 엔드포인트는 안 풀었다. 그러면 텔레그램 방이
+ *  **목록에 없는 세션**(보관돼서 `/sessions` 에도 안 뜬다)에 계속 묶인 채 쌓인다.
+ *  ★2026-07-29 주석이 *"대시보드에서 보관하면(주 경로) 명령자의 방이 없어 아무것도 안
+ *   풀렸다"* 라고 원인을 정확히 적어놓고도, 정작 그 주 경로엔 코드가 안 들어갔다.
+ *
+ * 그래서 셋이 **이 함수 하나**를 부른다 — 규칙을 지키라고 검사로 감시하는 대신 부를 것을
+ * 하나로 만든다([[feedback_hand_maintained_lists]] 의 같은 뿌리: 열거 대신 정의점).
+ *
+ * ★삭제가 아니다: `threads.archived_at` 만 세우고 대화 레코드(`transcripts`·`chat_log`)는
+ *  건드리지 않는다. 복원(`archived=false`)은 바인딩을 되돌리지 않는다 — 어느 방을 다시
+ *  묶을지는 사람이 정할 일이다(추측해서 되묶으면 엉뚱한 방이 되살아난다).
+ *
+ * @returns `{ changed, unboundRooms }` — changed 0 이면 그런 세션이 없다.
+ */
+export const setSessionArchived = (
+  threadKey: string,
+  archived: boolean,
+): { changed: number; unboundRooms: number } => {
+  const changed = setThreadArchived(threadKey, archived ? Date.now() : null);
+  if (changed === 0) return { changed: 0, unboundRooms: 0 };
+  const unboundRooms = archived ? clearBindingsForSession(threadKey) : 0;
+  return { changed, unboundRooms };
 };

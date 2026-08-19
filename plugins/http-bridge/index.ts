@@ -63,6 +63,7 @@ import {
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
 import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
+import { setSessionArchived } from "../../src/store/channel-session.js";
 import {
   listThreads,
   setThreadName,
@@ -2910,8 +2911,10 @@ class HttpBridge implements Channel, Observer {
       }
       const archived = abody.archived !== false; // 미지정 = 보관.
       try {
-        setThreadArchived(threadKey, archived ? Date.now() : null);
-        writeJson(res, 200, { ok: true, threadKey, archived });
+        // 보관 = 바인딩 해제까지 한 동작(setSessionArchived). 대시보드 탭 닫기가 오는
+        // **주 경로**인데 종전엔 여기만 바인딩을 안 풀어, 방이 목록에 없는 세션에 계속 묶였다.
+        const { unboundRooms } = setSessionArchived(threadKey, archived);
+        writeJson(res, 200, { ok: true, threadKey, archived, ...(unboundRooms > 0 ? { unboundRooms } : {}) });
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
         writeJson(res, 500, { error: m });

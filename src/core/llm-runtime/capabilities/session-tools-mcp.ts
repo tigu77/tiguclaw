@@ -32,10 +32,9 @@ import {
 import {
   listThreads,
   sessionDisplayName,
-  setThreadArchived,
   setThreadName,
 } from "../../../store/sessions.js";
-import { clearBindingsForSession } from "../../../store/channel-session.js";
+import { setSessionArchived } from "../../../store/channel-session.js";
 import { DEFAULT_SESSION_ID } from "../../threadkey.js";
 import { getFirstUserText } from "../../../store/chat-log.js";
 
@@ -133,15 +132,14 @@ export const createSessionToolsMcpServer = (
       if (target === DEFAULT_SESSION_ID) {
         return okText("기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).");
       }
-      const changed = setThreadArchived(target, restoring ? null : Date.now());
+      // 명령·엔드포인트와 **같은 함수**를 부른다(setSessionArchived) — 보관은 바인딩
+      // 해제까지가 한 동작이고, 세 입구가 그걸 각자 하면 갈린다(실제로 갈려 있었다).
+      const { changed, unboundRooms } = setSessionArchived(target, !restoring);
       if (changed === 0) return okText(`그런 세션이 없습니다: ${target}`);
-      // ★명령 경로(`/sessions archive`)와 **같은 부수효과**를 낸다 — 그쪽만 바인딩을 풀면
-      //  같은 판단이 두 곳에서 갈린다. 보관된 세션에 묶인 방은 목록에 없는 곳에 계속 쌓인다.
-      let note = "";
-      if (!restoring) {
-        const freed = clearBindingsForSession(target);
-        if (freed > 0) note = ` 그 세션에 묶여 있던 대화방 ${freed}곳을 기본 세션으로 되돌렸습니다.`;
-      }
+      const note =
+        unboundRooms > 0
+          ? ` 그 세션에 묶여 있던 대화방 ${unboundRooms}곳을 기본 세션으로 되돌렸습니다.`
+          : "";
       return okText(
         restoring
           ? `세션을 목록에 다시 표시했습니다: ${target}`

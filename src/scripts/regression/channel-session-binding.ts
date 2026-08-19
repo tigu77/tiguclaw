@@ -19,6 +19,7 @@ import {
   setChannelSessionBinding,
   clearChannelSessionBinding,
   clearBindingsForSession,
+  setSessionArchived,
 } from "../../store/channel-session.js";
 import { listThreads, getDb, setThreadArchived, deleteSession } from "../../store/sessions.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -153,15 +154,29 @@ export const check: RegressionCheck = {
     ins.run(R1, now, now, "여러방세션");
     setChannelSessionBinding("telegram", "roomA", R1);
     setChannelSessionBinding("telegram", "roomB", R1);
-    setThreadArchived(R1, Date.now());
-    const freed = clearBindingsForSession(R1);
+    // ★**제품 함수를 부른다** (2026-08-19). 종전엔 이 검사가 `setThreadArchived` 와
+    //  `clearBindingsForSession` 을 **자기 손으로 조립**해서 봤다 — 그래서 제품 경로가
+    //  그 조립을 빠뜨려도 초록이었고, 실제로 엔드포인트(대시보드 탭 닫기가 오는 주 경로)가
+    //  바인딩을 안 풀고 있었다. 부품이 옳은지가 아니라 **제품이 옳은지**를 봐야 한다.
+    const { changed, unboundRooms: freed } = setSessionArchived(R1, true);
     out.push(
       assert(
-        "보관 시 그 세션을 가리키던 모든 방이 풀린다",
-        freed === 2 && resolveSessionId("telegram", "roomB") === DEFAULT_SESSION_ID,
-        `해제 ${freed}곳 / roomB=${resolveSessionId("telegram", "roomB")}`,
+        "★보관 시 그 세션을 가리키던 모든 방이 풀린다(제품 함수 실행)",
+        changed === 1 &&
+          freed === 2 &&
+          resolveSessionId("telegram", "roomB") === DEFAULT_SESSION_ID,
+        `변경 ${changed} · 해제 ${freed}곳 / roomB=${resolveSessionId("telegram", "roomB")}`,
       ),
     );
+    out.push(
+      assert(
+        "보관은 비파괴 — 복원하면 목록에 돌아온다(대화는 그대로)",
+        setSessionArchived(R1, false).changed === 1 &&
+          listThreads({ excludeInternal: true }).some((t) => t.threadKey === R1),
+        "복원 확인",
+      ),
+    );
+    setSessionArchived(R1, true); // 뒤 판정에 영향 없게 다시 숨김.
 
     // ② 세션 삭제(/reset)도 바인딩을 지워야 한다 — 안 지우면 삭제된 id 로 계속 인입된다.
     const R2 = "probe:regression-deleted";

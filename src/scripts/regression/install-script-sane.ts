@@ -100,6 +100,41 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ④-2 ★ps1 이 네이티브 명령에 **따옴표 든 인자**를 넘기지 않는다 (2026-08-19 실사고) ──
+  //  신고: 설치가 *"Node.js 20 이상이 필요합니다 (지금 v24.19.0)"* 로 멈췄다 — 자기모순이다.
+  //  원인은 Node 가 아니라 이 줄이었다:
+  //      $nodeMajor = [int](node -p 'process.versions.node.split(".")[0]')
+  //  **Windows PowerShell(5.1 계열)은 네이티브 명령 인자의 큰따옴표를 이스케이프하지 않는다.**
+  //  그래서 node.exe 가 `"` 를 먹고 `split(.)` 을 받아 SyntaxError → 빈 출력 → `[int]` 가 0 →
+  //  "버전 부족" 으로 오판. PowerShell 7.3+ 는 동작이 바뀌어 안 터진다 = **기계마다 갈린다**.
+  //  같은 코드가 `install.sh` 엔 있어도 멀쩡하다(bash 는 argv 를 그대로 넘긴다).
+  //
+  //  ★등급: **소스 판정**이다. 이 기계엔 pwsh 가 없고(위 헤더), 있어도 macOS 의 pwsh 7 은
+  //   **고쳐진 동작**이라 재현이 안 된다. 그래서 "따옴표를 넘기지 않는다" 는 구조를 본다 —
+  //   문법 오류가 아니라 *전달 방식*이 원인이므로 구문 검사로는 원래 못 잡는 부류다.
+  {
+    // ★주석을 걷어내고 본다 — 위 codeOnly 를 **그대로 쓴다**(같은 판단을 두 벌 두지 않는다).
+    //  첫 판이 그걸 안 해서 **이 검사를 설명하는 내 주석**(옛 코드를 인용한 문장)을 잡아
+    //  빨간불을 냈다. 이 파일 헤더가 이미 같은 사고를 적어뒀는데 또 밟았다.
+    const psCode = codeOnly(ps);
+    const risky = [...psCode.matchAll(/^.*\b(node|npm|git)\b[^\r\n]*'[^'\r\n]*"[^'\r\n]*'[^\r\n]*$/gm)].map(
+      (m) => m[0].trim(),
+    );
+    out.push({
+      name: "install.ps1: 네이티브 명령에 큰따옴표 든 인자를 넘기지 않는다(PowerShell 이 안 이스케이프한다)",
+      ok: risky.length === 0,
+      got:
+        risky.length === 0
+          ? "따옴표 전달 0"
+          : `🔴 ${risky.length}곳: ${risky.join(" / ").slice(0, 160)}`,
+    });
+    out.push({
+      name: "install.ps1: node 버전을 PowerShell 안에서 판정한다(node 에 표현식을 안 넘긴다)",
+      ok: /node --version/.test(psCode) && !/node -p/.test(psCode),
+      got: /node -p/.test(psCode) ? "🔴 node -p 가 남아 있다" : "node --version 파싱",
+    });
+  }
+
   // ── ⑤ 배포 URL 을 가리킨다(개발 기계 경로가 새지 않는다) ─────────────────
   for (const [name, src] of [
     ["install.sh", sh],

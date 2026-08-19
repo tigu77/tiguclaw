@@ -14,6 +14,7 @@ import {
   setChannelSessionBinding,
   clearChannelSessionBinding,
   clearBindingsForSession,
+  setSessionArchived,
 } from "./store/channel-session.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
@@ -1321,21 +1322,20 @@ const handler: MessageHandler = async (msg) => {
             await replyCommand(msg, "기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).");
             return;
           }
-          const changed = setThreadArchived(id, restoring ? null : Date.now());
+          // ★보관 = 그 세션을 가리키는 **모든 방**의 바인딩 해제까지가 한 동작이다
+          //  (2026-07-29 검토). 종전엔 명령을 보낸 방 하나만 봐서 다른 방은 목록에 없는
+          //  세션에 계속 쌓았다. ★그 판단을 세 입구(명령·도구·엔드포인트)가 각자 갖고
+          //  있다가 실제로 갈렸으므로(대시보드 탭 닫기 경로엔 아예 없었다) 이제 셋이
+          //  `setSessionArchived` 하나를 부른다.
+          const { changed, unboundRooms } = setSessionArchived(id, !restoring);
           if (changed === 0) {
             await replyCommand(msg, `그런 세션이 없습니다: ${id}`);
             return;
           }
-          // ★그 세션을 가리키는 **모든 방**의 바인딩을 푼다 (2026-07-29 검토).
-          //  종전엔 명령을 보낸 방 하나만 봐서, 다른 방은 목록에 없는 세션에 계속 쌓았고
-          //  대시보드에서 보관하면(주 경로) 명령자의 방이 없어 **아무것도 안 풀렸다**.
-          let note = "";
-          if (!restoring) {
-            const freed = clearBindingsForSession(id);
-            if (freed > 0) {
-              note = `\n그 세션에 묶여 있던 대화방 ${freed}곳을 **기본 세션**으로 되돌렸습니다.`;
-            }
-          }
+          const note =
+            unboundRooms > 0
+              ? `\n그 세션에 묶여 있던 대화방 ${unboundRooms}곳을 **기본 세션**으로 되돌렸습니다.`
+              : "";
           await replyCommand(
             msg,
             restoring

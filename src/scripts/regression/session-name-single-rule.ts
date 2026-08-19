@@ -269,12 +269,39 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "보관은 비파괴이고 기본 세션은 막는다(닫을 수 없는 홈)",
-        /setThreadArchived\(threadKey, archived \? Date\.now\(\) : null\)/.test(bridge2) &&
+        /setSessionArchived\(/.test(bridge2) &&
+          !/DELETE FROM (transcripts|chat_log)/.test(bridge2) &&
           /threadKey === DEFAULT_SESSION_ID/.test(bridge2) &&
           /pathname === "\/api\/session-archive"/.test(dash),
         "비파괴 + 기본세션 가드 + 프록시 확인",
       ),
     );
+    // ★보관의 세 입구가 **한 함수**를 쓴다 (2026-08-19). 종전엔 명령·도구·엔드포인트가
+    //  각자 `setThreadArchived` + 바인딩 해제를 조립했고, 그래서 **갈렸다** — 엔드포인트
+    //  (대시보드 탭 닫기가 오는 주 경로)만 바인딩을 안 풀어, 방이 목록에 없는 세션에
+    //  계속 묶였다. 규칙을 지키라고 감시하는 대신 **부를 것을 하나로** 만든 것이라,
+    //  이 검사는 그 하나가 도로 흩어지지 않는지만 본다.
+    {
+      const sites: Array<[string, string]> = [
+        ["명령(/sessions archive)", read("src/index.ts")],
+        ["엔드포인트(/session-archive)", bridge2],
+        [
+          "도구(archive_session)",
+          read("src/core/llm-runtime/capabilities/session-tools-mcp.ts"),
+        ],
+      ];
+      const strays = sites.filter(([, src]) => /setThreadArchived\(/.test(src)).map(([n]) => n);
+      const unified = sites.filter(([, src]) => /setSessionArchived\(/.test(src)).map(([n]) => n);
+      out.push(
+        assert(
+          "★보관의 세 입구가 같은 함수를 쓴다(각자 조립하면 또 갈린다)",
+          unified.length === 3 && strays.length === 0,
+          strays.length === 0
+            ? `통일 ${unified.length}/3`
+            : `★직접 조립이 남아 있다: ${strays.join(", ")}`,
+        ),
+      );
+    }
 
     // ★⑤ 대화 아님 판정이 **클라에서 더 좁아지지 않는가.** 서버(`INTERNAL_THREAD_PREFIXES`)와
     //  클라(`NON_CONVO_PREFIXES`)가 같은 목록을 손으로 두 벌 갖고 있다. 클라가 서버보다

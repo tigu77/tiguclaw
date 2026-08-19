@@ -26,6 +26,14 @@ if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git 이 없습
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Die "Node.js 가 없습니다 — $MinNode 이상이 필요합니다: winget install OpenJS.NodeJS.LTS" }
 if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { Die "npm 이 없습니다. Node.js 설치를 확인하세요." }
 
+# ★npm 은 **npm.cmd** 로 부른다 (2026-08-19 실사고).
+#  PowerShell 에서 `npm` 을 부르면 `npm.ps1` 이 잡히는데, 실행 정책이 기본 잠금인 윈도우에서는
+#  그 파일을 **로드하지 못해** 설치가 통째로 멈춘다("이 시스템에서 스크립트를 실행할 수
+#  없으므로 npm.ps1 파일을 로드할 수 없습니다"). `npm.cmd` 는 배치 파일이라 정책 대상이 아니다.
+#  ★사용자에게 `Set-ExecutionPolicy` 를 시키지 않는다 — 설치 하나 하려고 시스템 보안 설정을
+#   바꾸게 하는 건 우리가 할 말이 아니고, 우리가 부르는 방식만 바꾸면 되는 일이다.
+$Npm = if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
+
 # 버전 판정은 PowerShell 안에서 한다 — node 에 **표현식을 넘기지 않는다**.
 #  ★종전: `node -p 'process.versions.node.split(".")[0]'`. Windows PowerShell(5.1 계열)은
 #   네이티브 명령에 인자를 넘길 때 **큰따옴표를 이스케이프하지 않는다.** 그래서 node.exe 가
@@ -64,7 +72,7 @@ Write-Host "-> 의존성 설치 중... (네이티브 모듈 빌드로 1~2분 걸
 #  ignore-scripts=true 가 켜져 있으면 `npm ci` 는 **성공하는데** 네이티브 빌드가 아예 안 돌아
 #  better_sqlite3.node 가 안 생긴다 -> 데몬이 부팅마다 죽는다. 전역 정책은 안 건드리고
 #  이 호출에만 붙인다(사용자가 설치를 직접 시작했고, 이 제품은 네이티브 없이는 못 뜬다).
-npm ci --no-audit --no-fund --ignore-scripts=false
+& $Npm ci --no-audit --no-fund --ignore-scripts=false
 if ($LASTEXITCODE -ne 0) {
   Die @"
 의존성 설치 실패.
@@ -86,7 +94,7 @@ node -e "require('better-sqlite3')" 2>$null
 if ($LASTEXITCODE -ne 0) {
   # ★알려주고 끝내지 않는다 - **스스로 한 번 고쳐본다**(사용자가 명령을 외우게 하지 않는다).
   Write-Host "   네이티브 모듈이 안 열립니다 - 다시 빌드합니다..."
-  npm rebuild better-sqlite3 --ignore-scripts=false 2>$null | Out-Null
+  & $Npm rebuild better-sqlite3 --ignore-scripts=false 2>$null | Out-Null
   node -e "require('better-sqlite3')" 2>$null
   if ($LASTEXITCODE -ne 0) {
     Die @"
@@ -102,4 +110,4 @@ SQLite 네이티브 모듈을 열 수 없습니다 - 이 상태로는 데몬이 
 
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
 Write-Host ""
-npm run onboard
+& $Npm run onboard

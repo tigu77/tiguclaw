@@ -166,8 +166,11 @@ const run = async (): Promise<Assertion[]> => {
       // ★"파일 어딘가에 그 문자열이 있나" 로는 부족하다 — 안내문·주석에도 같은 명령이
       //  적혀 있어서, 정작 실행되는 줄에서 빼도 초록이었다(변이로 확인). 설치 명령에
       //  **붙어 있는지**를 본다. 셸(`npm ci …`)과 배열 인자(`"ci", …`) 둘 다 받는다.
-      ok: /(npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src),
-      got: /(npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src)
+      // ★표기를 셋 다 받는다: `npm ci`(sh) · `& $Npm ci`(ps1, npm.cmd 경유) · `"ci"`(배열 인자).
+      //  같은 판단이 셸마다 다른 모양으로 쓰인다 — 한 표기에 묶으면 **옳은 코드가 빨간불**이
+      //  되고, 그러면 코드를 검사에 맞추게 된다(오늘 세 번째다).
+      ok: /(npm ci|\$Npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src),
+      got: /(npm ci|\$Npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src)
         ? "설치 명령에 명시됨"
         : "🔴 정책이 켜지면 조용히 못 쓰게 된다",
     });
@@ -182,6 +185,32 @@ const run = async (): Promise<Assertion[]> => {
       got: /rebuild[^\n]{0,60}better-sqlite3[^\n]{0,60}--ignore-scripts=false/.test(src)
         ? "자가 복구 있음"
         : "🔴 사용자에게 떠넘긴다",
+    });
+  }
+
+  // ── ④-4 ★ps1 이 npm 을 **npm.cmd** 로 부른다 (2026-08-19 실사고, 다른 윈도우 머신) ──
+  //  증상: 한 줄 설치가 *"이 시스템에서 스크립트를 실행할 수 없으므로 npm.ps1 파일을 로드할
+  //  수 없습니다"* 로 멈췄다. PowerShell 에서 `npm` 을 부르면 **`npm.ps1`** 이 잡히는데,
+  //  실행 정책이 기본 잠금인 윈도우에서는 그 파일을 못 읽는다. `npm.cmd` 는 배치라 정책
+  //  대상이 아니다.
+  //  ★사용자에게 `Set-ExecutionPolicy` 를 시키지 않는다 — 설치 하나 하려고 시스템 보안
+  //   설정을 바꾸게 하는 건 우리가 할 말이 아니다. 우리가 부르는 방식만 바꾸면 되는 일이다.
+  //  ★업데이터(bin/daemon.mjs)는 `shell: isWin` → cmd.exe 라 이 문제가 없다(확인함).
+  {
+    const psCode2 = codeOnly(ps);
+    // 실행되는 줄에서 **맨 앞의 `npm `** 호출(= npm.ps1 이 잡히는 형태)이 남아 있나.
+    const bare = [...psCode2.matchAll(/^\s*npm\s+(ci|run|rebuild|install)\b[^\n]*/gm)].map((m) =>
+      m[0].trim(),
+    );
+    out.push({
+      name: "install.ps1: npm 을 npm.cmd 로 부른다(실행 정책이 잠긴 윈도우에서도 설치된다)",
+      ok: bare.length === 0 && /npm\.cmd/.test(psCode2),
+      got:
+        bare.length > 0
+          ? `🔴 정책에 막히는 호출 ${bare.length}곳: ${bare.join(" / ").slice(0, 120)}`
+          : /npm\.cmd/.test(psCode2)
+            ? "npm.cmd 사용"
+            : "🔴 npm.cmd 폴백이 없다",
     });
   }
 

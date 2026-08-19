@@ -1138,7 +1138,7 @@ const runUpdate = (c) => {
   const rollback = () => {
     try {
       run("git", ["reset", "--hard", prevSha]);
-      run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev"], { shell: isWin });
+      run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin });
       if (wasRunning) table?.start?.(c);
     } catch {
       /* 롤백 자체 실패도 삼켜 데몬 생존(best-effort) */
@@ -1156,13 +1156,47 @@ const runUpdate = (c) => {
   //   데몬 env 에 NODE_ENV=production(init.ts 가 .env 에 기록) 이 실려 이 CLI 로 상속되면
   //   기본 npm ci 가 devDeps 를 스킵 → tsc 미설치 → build:prod 가 "'tsc' 없음"으로 실패한다
   //   (Windows /update 실사고). self-update.ts 롤백이 이미 쓰는 --include=dev 와 정합.
-  if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev"], { shell: isWin }) !== 0) {
+  // ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에
+  //  `ignore-scripts=true` 가 켜진 머신에서는 `npm ci` 가 **성공하는데** 네이티브 빌드
+  //  스크립트가 아예 안 돌아 `better_sqlite3.node` 가 안 생긴다 → 데몬이 부팅마다 죽는다
+  //  (실측 6회 연속). 종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다.
+  //  ★전역 정책은 안 건드린다 — 이 한 번의 호출에만 붙는 플래그다. 사용자가 `tiguclaw
+  //   update` 를 직접 부른 것이고, 이 제품은 네이티브 모듈 없이는 아예 못 뜬다.
+  if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) !== 0) {
     console.error("update: npm ci 실패 — 롤백합니다.");
     writeFailedMarker("npm ci", "npm ci 실패(의존성 설치)");
     rollback();
     console.error("update: 롤백 완료, 데몬 원복. exit 1.");
     process.exitCode = 1;
     return;
+  }
+
+  // ── 단계 6b: ★네이티브 모듈이 **실제로 열리는지** ──────────────────────────
+  //  npm ci 종료코드 0 이어도 못 쓰는 경우가 있다(위 ignore-scripts). 여기서 열어보고,
+  //  안 되면 **한 번은 스스로 고쳐본다** — 사용자가 명령 세 줄을 외우게 하지 않는다.
+  //  ★자동 조치의 기준(되돌릴 수 있나 · 최악이 사소한가)을 통과한다: `npm rebuild` 는
+  //   그 폴더의 네이티브 모듈만 다시 만들고, 실패해도 아래 롤백이 그대로 돈다.
+  const nativeOk = () =>
+    run(process.execPath, ["-e", "require('better-sqlite3')"]) === 0;
+  if (!nativeOk()) {
+    console.log("   네이티브 모듈이 안 열립니다 — 다시 빌드합니다(npm rebuild).");
+    run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false"], { shell: isWin });
+    if (!nativeOk()) {
+      console.error(
+        [
+          "update: SQLite 네이티브 모듈을 열 수 없어 롤백합니다.",
+          "   이 상태로 두면 데몬이 부팅마다 죽습니다.",
+          "   빌드 도구가 필요할 수 있습니다 — 윈도우: Visual Studio Build Tools(C++ 워크로드),",
+          "   리눅스: build-essential + python3, macOS: xcode-select --install",
+        ].join("\n"),
+      );
+      writeFailedMarker("native", "better-sqlite3 네이티브 모듈 적재 실패");
+      rollback();
+      console.error("update: 롤백 완료, 데몬 원복. exit 1.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("   네이티브 모듈 복구 완료.");
   }
 
   // ── 단계 7: 빌드(built 런타임만) ───────────────────────────────────────────

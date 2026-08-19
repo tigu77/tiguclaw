@@ -50,7 +50,11 @@ git clone --quiet "$REPO_URL" "$DIR" || die "clone 실패 — 네트워크나 �
 cd "$DIR"
 
 say "→ 의존성 설치 중… (네이티브 모듈 빌드로 1~2분 걸릴 수 있습니다)"
-if ! npm ci --no-audit --no-fund; then
+# ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에
+#  ignore-scripts=true 가 켜져 있으면 `npm ci` 는 **성공하는데** 네이티브 빌드가 아예 안 돌아
+#  better_sqlite3.node 가 안 생긴다 → 데몬이 부팅마다 죽는다. 전역 정책은 안 건드리고
+#  이 호출에만 붙인다(사용자가 설치를 직접 시작했고, 이 제품은 네이티브 없이는 못 뜬다).
+if ! npm ci --no-audit --no-fund --ignore-scripts=false; then
   die "의존성 설치 실패.
    빌드 도구가 필요할 수 있습니다 — Linux: build-essential + python3 / macOS: xcode-select --install
    설치 후 다시:  cd $DIR && npm ci"
@@ -62,15 +66,13 @@ fi
 #  종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
 say "→ 네이티브 모듈 확인 중…"
 if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
-  ig=$(npm config get ignore-scripts 2>/dev/null || echo "")
-  if [ "$ig" = "true" ]; then
-    die "설치는 됐지만 SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.
-   ★원인이 보입니다: npm 설정 ignore-scripts=true 가 켜져 있어 네이티브 빌드가 안 돌았습니다.
-     이 폴더에만 풀어 주세요:
-       cd $DIR && echo 'ignore-scripts=false' >> .npmrc && npm rebuild better-sqlite3 --ignore-scripts=false"
-  fi
-  die "설치는 됐지만 SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.
-   빌드 도구가 필요할 수 있습니다 — Linux: build-essential + python3 / macOS: xcode-select --install
+  # ★알려주고 끝내지 않는다 — **스스로 한 번 고쳐본다**(사용자가 명령을 외우게 하지 않는다).
+  say "   네이티브 모듈이 안 열립니다 — 다시 빌드합니다…"
+  npm rebuild better-sqlite3 --ignore-scripts=false >/dev/null 2>&1 || true
+fi
+if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+  die "SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.
+   빌드 도구가 필요합니다 — Linux: build-essential + python3 / macOS: xcode-select --install
    그 뒤:  cd $DIR && npm rebuild better-sqlite3"
 fi
 

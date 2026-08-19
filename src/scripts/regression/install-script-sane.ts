@@ -143,9 +143,16 @@ const run = async (): Promise<Assertion[]> => {
   //  ★우리 클린룸 검증(sync 스킬 §7)은 이미 `require('better-sqlite3')` 로 실제 로드를
   //   확인하고 있었다. 정작 **사용자가 돌리는 스크립트**에만 없었다 — 우리 설치는 검증하고
   //   사용자 설치는 안 하고 있었던 셈이다(같은 판단이 한쪽에만 있던 것, 오늘 여러 번 본 형상).
+  //  ★사용자 지정 (2026-08-19): "한 줄 설치나 업데이트나 다 동일하게 잘 설치되도록 하자."
+  //   그래서 **세 경로**(한 줄 설치 sh/ps1 · `tiguclaw update`)를 같은 잣대로 본다 —
+  //   하나만 고치면 또 갈린다(오늘 하루에 이 형상을 다섯 번 봤다).
+  //  ★그리고 감지에서 멈추지 않는다: **스스로 한 번 고쳐본다**(npm rebuild). 사용자가
+  //   명령 세 줄을 외워야 하면 그건 도구가 일을 안 한 것이다.
+  const updater = codeOnly(read("bin/daemon.mjs"));
   for (const [name, src] of [
     ["install.sh", codeOnly(sh)],
     ["install.ps1", codeOnly(ps)],
+    ["tiguclaw update", updater],
   ] as const) {
     out.push({
       name: `${name}: 설치 후 네이티브 모듈을 **실제로 열어** 확인한다`,
@@ -155,9 +162,26 @@ const run = async (): Promise<Assertion[]> => {
         : "🔴 종료코드만 보고 '설치 완료' 라고 한다",
     });
     out.push({
-      name: `${name}: 못 열리면 ignore-scripts 를 원인 후보로 짚는다`,
-      ok: /ignore-scripts/.test(src),
-      got: /ignore-scripts/.test(src) ? "원인 안내 있음" : "🔴 '빌드 도구' 만 말한다",
+      name: `${name}: **설치 명령 자체**에 --ignore-scripts=false 가 붙는다(사내 정책에도 성립)`,
+      // ★"파일 어딘가에 그 문자열이 있나" 로는 부족하다 — 안내문·주석에도 같은 명령이
+      //  적혀 있어서, 정작 실행되는 줄에서 빼도 초록이었다(변이로 확인). 설치 명령에
+      //  **붙어 있는지**를 본다. 셸(`npm ci …`)과 배열 인자(`"ci", …`) 둘 다 받는다.
+      ok: /(npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src),
+      got: /(npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src)
+        ? "설치 명령에 명시됨"
+        : "🔴 정책이 켜지면 조용히 못 쓰게 된다",
+    });
+    out.push({
+      name: `${name}: 안 열리면 **스스로 rebuild 를 시도**한다(알려주고 끝내지 않는다)`,
+      // ★셸(`npm rebuild better-sqlite3`)과 배열 인자(`["rebuild","better-sqlite3",…]`)가
+      //  같은 일을 다른 모양으로 쓴다. 검사를 한 문법에 묶으면 **옳은 코드가 빨간불**이 되고,
+      //  그러면 검사를 느슨하게 고치는 게 아니라 코드를 검사에 맞추게 된다(꼬리가 개를 흔든다).
+      // ★안내문에도 `npm rebuild better-sqlite3` 가 적혀 있다 — 그래서 **플래그까지** 봐야
+      //  실행되는 복구와 사람에게 시키는 문장이 갈린다(변이로 확인: 실행부만 지워도 초록이었다).
+      ok: /rebuild[^\n]{0,60}better-sqlite3[^\n]{0,60}--ignore-scripts=false/.test(src),
+      got: /rebuild[^\n]{0,60}better-sqlite3[^\n]{0,60}--ignore-scripts=false/.test(src)
+        ? "자가 복구 있음"
+        : "🔴 사용자에게 떠넘긴다",
     });
   }
 

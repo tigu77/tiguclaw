@@ -103,6 +103,34 @@ export const check: RegressionCheck = {
         writesNothing ? "auto 분기가 시드 앞" : "★자동인데도 시드한다 — 그 시점 값에 고정",
       ),
     );
+
+    // ★안내가 **다음 행동을 남기는가** (2026-08-19 사용자 지적: "구독으로 쓰고 싶으면
+    //  토큰 받아오는 방법 안내가 있나?"). 종전 문구는 *"Claude Code CLI 에서
+    //  `claude setup-token` 실행"* 이었는데, **처음 설치하는 사람에게 그 CLI 가 깔려
+    //  있을 이유가 없다.** 없으면 "그런 명령이 없습니다" 에서 막히고, 어디서 구하는지는
+    //  우리 문서 어디에도 없었다(README 포함 0건).
+    //  ★install.sh 헤더가 적어둔 것과 같은 규칙이다 — **어느 경로로 끝나든 다음 행동이
+    //   남아야 한다.** 반쯤 설치된 상태로 사람을 버리지 않는다.
+    {
+      const sub = /if \(provider === "claude-sub"\) \{[\s\S]{0,1200}?\n {2}\}/.exec(init)?.[0] ?? "";
+      out.push(
+        assert(
+          "★구독 안내가 CLI 설치까지 알려준다(없는 명령을 시키지 않는다)",
+          // ★**출력되는 안내**(console.log)에서 본다. 첫 판은 "블록 어딘가에 그 문자열이
+          //  있나" 였는데, 재시도 힌트(빈 입력 시에만 뜨는 문장)에도 같은 명령이 있어서
+          //  **정작 화면에 먼저 나오는 안내를 지워도 초록**이었다. 오늘 네 번째 같은 실수다.
+          sub !== "" &&
+            /console\.log\([^)]*@anthropic-ai\/claude-code/.test(sub) &&
+            /console\.log\([^)]*claude setup-token/.test(sub),
+          sub === ""
+            ? "★claude-sub 분기를 못 찾음(검사 전제)"
+            : /console\.log\([^)]*@anthropic-ai\/claude-code/.test(sub)
+              ? "설치 → 발급 → 붙여넣기"
+              : "★`claude setup-token` 만 있고 그 CLI 를 어디서 받는지가 없다",
+        ),
+      );
+    }
+
     return out;
   },
 };

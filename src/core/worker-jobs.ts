@@ -853,6 +853,36 @@ const cancelDescendants = (parentJobId: string, seen: Set<string>): number => {
   return n;
 };
 
+/**
+ * **세션 턴이 끊길 때** 그 턴이 띄운 잡들을 같이 끊는다 (2026-08-19).
+ *
+ * ★잡↔잡 전파는 이미 있었다(`cancelDescendants`, 2026-07-31). 빠진 건 **세션 → 잡** 방향이다:
+ *  `/stop` 은 `inflightTurns` 의 AbortController 만 abort 하고, 그 턴이 띄운 서브에이전트·
+ *  매니저 잡은 **계속 돈다**. awaited 서브라면 부모는 이미 손을 뗐는데 자식은 자기 상한
+ *  (기본 2시간)까지 살아서, 사용자는 "중단했습니다" 를 받고도 모델 호출이 계속 나간다.
+ *  ★고아 잡은 조용하다 — 부모가 없으니 결과를 보고할 곳도 없고, 사용자는 끝난 줄 안다.
+ *
+ * 자식 판정은 `directChildJobs` 와 **같은 근거**(잡이 기록한 소환자 좌표 = `job.threadKey`)를
+ * 쓴다. 세션 키는 접두사가 없으므로 정확히 일치하는 것만 고른다 — 다른 세션 잡을 건드리지
+ * 않는다. 손자는 `cancelDescendants` 가 이어서 처리한다(같은 재귀 재사용, 중복 구현 0).
+ *
+ * @returns 끊은 잡 수(0 = 그 세션이 띄운 실행 중 잡 없음).
+ */
+export const cancelJobsForThread = (threadKey: string): number => {
+  if (typeof threadKey !== "string" || threadKey === "") return 0;
+  let n = 0;
+  for (const job of [...jobs.values()]) {
+    if (job.threadKey !== threadKey || job.status !== "running") continue;
+    // 자손부터 — 부모를 먼저 죽이면 손자가 고아가 된다(cancelJob 과 같은 순서).
+    n += cancelDescendants(job.jobId, new Set([job.jobId]));
+    markCancelled(job.jobId, "상위 대화가 중단됨");
+    const h = cancelHooks.get(job.jobId);
+    if (h !== undefined) h();
+    n += 1;
+  }
+  return n;
+};
+
 export const cancelJob = (jobId: string): boolean => {
   const job = jobs.get(jobId);
   if (job === undefined || job.status !== "running") return false;

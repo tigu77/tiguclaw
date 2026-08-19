@@ -854,7 +854,26 @@ export const runOpenAiCodex = async (
     // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
     if ((depth === 0 && (input.workerDepth ?? 0) === 0) || isProjectMcpCwd(input.cwd)) {
       for (const extBridge of await getConnectedExternalMcpBridges(input.cwd)) {
-        const extToolsRaw = await extBridge.listTools();
+        // ★죽은 브리지 하나가 **턴 전체를 무너뜨리지 않게** 한다 (2026-08-19 실사고).
+        //  외부 브리지는 persistent 캐시라, 연결된 뒤 대상 앱이 꺼지면(Unity Editor 종료,
+        //  stdio 프로세스 사망) 캐시엔 **죽은 클라이언트**가 남는다. 그 상태에서 여기
+        //  `listTools()` 가 MCP SDK 의 `Not connected` 를 던졌고, try/catch 가 없어서
+        //  **턴 조립이 통째로 실패**했다 — 실측: 매니저 소환이 50ms 만에
+        //  `모든 어댑터 실패 — Not connected` 로 죽었다(회사 인스턴스, 재부팅 뒤).
+        //  ★`external-mcp` 는 **연결 실패**는 이미 skip 으로 잘 처리한다("연결 실패 — skip").
+        //   빠져 있던 건 **연결된 뒤 죽는 경우**다. 같은 규칙을 여기서도 적용한다.
+        //  ★매니저에서 두드러진 이유: 이 블록의 조건이 `depth 0` **또는**
+        //   `isProjectMcpCwd(cwd)` 인데, 매니저는 프로젝트 cwd 로 돌아 두 번째로 들어온다.
+        let extToolsRaw: Awaited<ReturnType<typeof extBridge.listTools>>;
+        try {
+          extToolsRaw = await extBridge.listTools();
+        } catch (e) {
+          console.warn(
+            `external-mcp: 브리지 도구 조회 실패 — 이 턴에서 skip (${e instanceof Error ? e.message : String(e)}). ` +
+              `대상 앱이 꺼졌을 수 있습니다 — 다시 켜면 다음 턴에 복구됩니다.`,
+          );
+          continue;
+        }
         for (const t of extToolsRaw) {
           toolBridgeMap.set((t as { name: string }).name, extBridge);
         }

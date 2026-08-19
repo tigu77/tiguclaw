@@ -272,6 +272,49 @@ export const check: RegressionCheck = {
         `${wj.listLiveChildJobs("regr:cancel").length}건`,
       ),
     );
+
+    // ★③-2 **세션 → 잡** 방향 (2026-08-19). 위(잡↔잡)는 2026-07-31 에 닫혔는데, `/stop` 은
+    //  턴의 AbortController 만 abort 하고 **그 턴이 띄운 잡은 안 끊었다.** 사용자는
+    //  "중단했습니다" 를 받는데 서브에이전트는 자기 상한(기본 2시간)까지 모델을 계속 호출한다.
+    //  ★그 고아 잡은 **조용하다** — 부모가 없어 결과를 보고할 곳도 없고, 사용자는 끝난 줄 안다.
+    {
+      const SESS = "regr:stop-cascade";
+      const M = reg(SESS, "매니저", "worker");
+      const S = reg(`worker:${M}`, "서브", "agent");
+      const GC = reg(`agent:${S}`, "손자", "agent");
+      const OTHER = reg("regr:other-session", "남의 잡", "worker");
+      const stopped = wj.cancelJobsForThread(SESS);
+      out.push(
+        assert(
+          "★세션 턴이 끊기면 그 턴이 띄운 잡·자손이 함께 끊긴다(/stop 고아 방지)",
+          stopped === 3 && [M, S, GC].every((id) => status(id) === "cancelled"),
+          `끊음 ${stopped}건 · 상태 ${[M, S, GC].map(status).join("/")}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★다른 세션의 잡은 건드리지 않는다(좌표 정확 일치)",
+          status(OTHER) === "running",
+          status(OTHER),
+        ),
+      );
+      // ★배선 — 판정이 옳아도 **`/stop` 이 안 부르면** 아무 일도 안 일어난다. 변이로
+      //  실제로 드러났다(호출을 `0` 으로 바꿔도 위 셋이 전부 초록이었다).
+      //  ★등급: **소스 검사**다. `/stop` 은 채널 핸들러 안이라 실행으로 재려면 데몬을
+      //   띄워야 한다 — 그 자체가 "검사를 약하게 쓰고 싶어지는" 신호지만, 이 한 줄을
+      //   모듈로 뽑는 건 과설계라 등급을 적고 소스로 본다.
+      const { readFile } = await import("node:fs/promises");
+      const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+      out.push(
+        assert(
+          "★/stop 이 그 세션의 잡을 함께 끊는다(배선 — 소스 검사)",
+          /entry\.ac\.abort\(new UserCancelledError\(\)\);[\s\S]{0,600}?cancelJobsForThread\(msg\.threadKey\)/.test(
+            idx,
+          ),
+          /cancelJobsForThread\(/.test(idx) ? "배선 확인" : "★판정만 있고 /stop 이 안 부른다",
+        ),
+      );
+    }
     return out;
   },
 };

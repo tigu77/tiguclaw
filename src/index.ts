@@ -130,6 +130,7 @@ import {
   recoverInterruptedJobs,
   listJobs,
   STEERED_TURN_RESULT,
+  cancelJobsForThread,
 } from "./core/worker-jobs.js";
 import {
   runSelfUpdate,
@@ -2301,9 +2302,17 @@ const serializedHandler: MessageHandler = (msg) => {
       const entry = inflightTurns.get(msg.threadKey);
       if (entry !== undefined && !entry.ac.signal.aborted) {
         entry.ac.abort(new UserCancelledError());
+        // ★그 턴이 띄운 잡도 같이 끊는다 (2026-08-19). 종전엔 턴의 AbortController 만
+        //  abort 해서, 서브에이전트·매니저 잡은 **계속 돌았다** — 사용자는 "중단했습니다" 를
+        //  받는데 모델 호출은 자기 상한(기본 2시간)까지 이어진다. 잡↔잡 전파는 이미 있었고
+        //  (cancelDescendants) **세션 → 잡** 방향만 비어 있었다.
+        //  ★몇 개를 끊었는지 말한다 — 조용한 조치는 사용자가 확인할 방법이 없다.
+        const stopped = cancelJobsForThread(msg.threadKey);
         await replyCommand(
           msg,
-          "⏹️ 진행 중이던 작업을 중단했습니다. 이어서 새로 말씀하시면 그걸로 진행할게요.",
+          stopped > 0
+            ? `⏹️ 진행 중이던 작업을 중단했습니다(백그라운드 작업 ${stopped}건 포함). 이어서 새로 말씀하시면 그걸로 진행할게요.`
+            : "⏹️ 진행 중이던 작업을 중단했습니다. 이어서 새로 말씀하시면 그걸로 진행할게요.",
         ).catch(() => {});
       } else {
         await replyCommand(msg, "지금 진행 중인 작업이 없어요.").catch(() => {});

@@ -156,6 +156,45 @@ const run = async (): Promise<Assertion[]> => {
     await bridge.close();
   }
 
+  // ── ★죽은 외부 브리지가 **턴 전체를 죽이지 않는다** (2026-08-19 실사고) ────────
+  //  증상: 매니저 소환이 **50ms 만에** `모든 어댑터 실패 — Not connected` 로 죽었다.
+  //  2026-08-10 의 `Already connected to a transport`(33ms) 와 **같은 자리·다른 문구**다.
+  //
+  //  뿌리: 외부 MCP 브리지는 persistent 캐시라, 연결된 뒤 대상 앱이 꺼지면(Unity Editor
+  //  종료·stdio 프로세스 사망) **죽은 클라이언트가 캐시에 남는다.** codex 어댑터가 턴 조립
+  //  중 `listTools()` 를 try/catch 없이 불러 그 예외가 조립 전체를 무너뜨렸다.
+  //  ★`external-mcp` 는 **연결 실패**를 이미 skip 으로 처리한다("연결 실패 — skip").
+  //   빠진 건 **연결된 뒤 죽는 경우** — 같은 규칙이 소비처엔 없었다.
+  //  ★매니저에서 두드러진 이유: 그 블록 조건이 `depth 0` **또는** `isProjectMcpCwd(cwd)` 인데
+  //   매니저는 프로젝트 cwd 로 돌아 두 번째 조건으로 들어온다.
+  //
+  //  ★등급: **소스 검사**다. 실제 죽은 외부 서버를 여기서 만들려면 stdio 프로세스를 띄웠다
+  //   죽여야 하고, 그건 이 스위트의 격리 규칙(라이브 무접촉) 밖이다. 대신 **가드의 모양**을
+  //   본다 — `listTools` 가 try 안에 있고 실패가 `continue` 로 끝나는가.
+  {
+    const { readFile } = await import("node:fs/promises");
+    const codex = await readFile(
+      new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url),
+      "utf8",
+    );
+    const block =
+      /getConnectedExternalMcpBridges\(input\.cwd\)\)\s*\{[\s\S]{0,1600}?\n {6}\}/.exec(codex)?.[0] ?? "";
+    const guarded =
+      block !== "" &&
+      /try \{[\s\S]{0,200}?await extBridge\.listTools\(\)/.test(block) &&
+      /catch[\s\S]{0,400}?continue;/.test(block);
+    out.push({
+      name: "★죽은 외부 MCP 브리지는 그 턴에서 skip 된다(하나가 죽어도 턴은 산다)",
+      ok: guarded,
+      got:
+        block === ""
+          ? "★외부 브리지 루프를 못 찾음(검사 전제)"
+          : guarded
+            ? "listTools try + skip 확인"
+            : "🔴 가드 없음 — Not connected 하나가 턴 조립을 무너뜨린다",
+    });
+  }
+
   return out;
 };
 

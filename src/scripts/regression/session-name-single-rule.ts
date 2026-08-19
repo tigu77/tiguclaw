@@ -118,6 +118,30 @@ export const check: RegressionCheck = {
         /sessionDisplayName\(id/.test(idx) ? "공용 파생 확인" : "★키 원문 폴백이 남아 있다",
       ),
     );
+    // ★기본 세션 라벨을 **손으로 적지 않는다** (2026-08-19 사용자 신고 — 이 부류 두 번째).
+    //  사용자: *"기본세션은 텔레그램에서 바뀐 이름이 안 나오고 계속 기본 세션으로 나온다."*
+    //  `/sessions` 선택지의 **첫 항목만** 문자열이 박혀 있었다. 같은 화면의 헤더는
+    //  `nameOf(current)` 로 "공통" 을 보여주는데 버튼만 "기본 세션" — 한 목록에서 두 규칙이
+    //  돌았다. 2026-08-07 에 고친 것(②)은 파생 **순서**였고, 이건 아예 규칙을 **안 부른**
+    //  자리다. 규칙이 옳아도 부르지 않으면 소용없다.
+    {
+      const opts = /const options = \[[\s\S]{0,900}?\n {6}\];/.exec(idx)?.[0] ?? "";
+      const code = opts.replace(/^\s*\/\/.*$/gm, ""); // 이 검사를 설명하는 주석은 대상이 아니다.
+      out.push(
+        assert(
+          "★/sessions 선택지가 기본 세션 라벨도 공용 파생으로 만든다(문자열 박기 금지)",
+          opts !== "" &&
+            /nameOf\(DEFAULT_SESSION_ID\)/.test(code) &&
+            !/label: `기본 세션/.test(code),
+          opts === ""
+            ? "★options 배열을 못 찾음(검사 전제)"
+            : /nameOf\(DEFAULT_SESSION_ID\)/.test(code)
+              ? "공용 파생 사용"
+              : "★라벨이 박혀 있다",
+        ),
+      );
+    }
+
     const bridge = read("plugins/http-bridge/index.ts");
     out.push(
       assert(

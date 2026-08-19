@@ -1465,7 +1465,17 @@ const handler: MessageHandler = async (msg) => {
       // 인자 없음 — 현재 세션 + 선택지. 선택 UI 가 없는 채널(값 미지원)엔 목록 텍스트로 폴백.
       const threads = listThreads({ excludeInternal: true }).slice(0, 20);
       const options = [
-        { label: `기본 세션${current === DEFAULT_SESSION_ID ? " ✅" : ""}`, value: `/sessions use ${DEFAULT_SESSION_ID}` },
+        // ★기본 세션도 **이름 규칙을 그대로 탄다**(2026-08-19 사용자 신고: "기본세션은
+        //  텔레그램에서 바뀐 이름이 안 나오고 계속 기본 세션으로 나온다").
+        //  여기만 문자열이 박혀 있어서, 같은 화면의 헤더는 `nameOf(current)` 로 "공통" 을
+        //  보여주는데 **첫 버튼만 "기본 세션"** 이었다 — 한 목록에서 두 규칙이 돌았다.
+        //  `sessionDisplayName` 은 이미 "사용자 지정 > 고정 라벨" 순서라(2026-08-07 에 바로
+        //  이 부류로 한 번 고쳤다), 규칙을 부르기만 하면 이름을 안 붙였을 때 "기본 세션" 도
+        //  그대로 나온다. 라벨을 손으로 적는 순간 규칙 밖으로 나간다.
+        {
+          label: `${nameOf(DEFAULT_SESSION_ID)}${current === DEFAULT_SESSION_ID ? " ✅" : ""}`,
+          value: `/sessions use ${DEFAULT_SESSION_ID}`,
+        },
         ...threads
           .filter((t: { threadKey: string }) => t.threadKey !== DEFAULT_SESSION_ID)
           .map((t: { threadKey: string }) => ({

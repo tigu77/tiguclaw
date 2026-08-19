@@ -50,7 +50,39 @@ export interface HealthFinding {
  *  이 스윕이 피하려던 배경 소음이 된다. 그래서 여기만 하루 1회로 묶는다.
  */
 const RESOURCE_REPORT_INTERVAL_MS = 24 * 60 * 60 * 1000;
-let lastResourceReportTs = 0;
+
+/** 상태형 지표 — 고쳐질 때까지 계속 참이라 하루 1회로 묶는 대상. */
+const RESOURCE_KINDS = new Set(["backup_stale", "memory_index_truncated"]);
+
+/**
+ * 마지막으로 **상태형 지표를 보고한 시각** — 재시작을 넘어서 기억한다.
+ *
+ * ★종전엔 모듈 변수(`let lastResourceReportTs = 0`)였다. 그러면 **재시작마다 0 으로
+ *  되돌아가** 하루 1회 억제가 통째로 풀린다. 실측(2026-08-19 사용자 로그): 부팅 5회에
+ *  같은 통지 5회 — 사용자가 "재시작할 때마다 계속 나오는 게 맞아?" 라고 물어봤다.
+ *  억제 장치는 **있었는데 돌지 않았다**(이 레포가 반복해서 겪은 형상).
+ *
+ * ★새 저장소를 만들지 않는다 — `self-maintenance` 가 이미 발견마다
+ *  `self_growth.health.finding` 이벤트를 남기므로 **그게 곧 기록**이다. 쿨다운 테이블은
+ *  쓰지 않는다: 거긴 어댑터 전용이고(`/status` 가 "쿨다운 중인 모델" 로 보여준다) 건강
+ *  통지를 섞으면 그 화면이 오염된다.
+ *
+ * ★한계(정직하게): `events` 는 바운드 테이블이라 이 이벤트가 잘리면 억제도 풀린다.
+ *  그때의 실패 방향은 **한 번 더 알리는 것**이지 침묵이 아니다 — 이 지표에선 그쪽이 맞다.
+ */
+const lastResourceReportTs = (): number => {
+  try {
+    for (const e of listEvents({ types: ["self_growth.health.finding"], limit: 50 })) {
+      const p = JSON.parse(e.payload) as { findings?: Array<{ kind?: string }> };
+      if ((p.findings ?? []).some((f) => f.kind !== undefined && RESOURCE_KINDS.has(f.kind))) {
+        return e.ts;
+      }
+    }
+  } catch {
+    /* 조회 실패 = 기록 없음으로 본다(한 번 더 알린다) */
+  }
+  return 0;
+};
 
 // 보수적 임계 — 넘으면 "확실히 이상"인 값만.
 const TURN_ERROR_THRESHOLD = 3; // 창 안 턴 실패 3건 이상 = 이상(평소 0~1건)
@@ -200,8 +232,10 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
   //  것을 안 조용하게 만드는 게 이 스윕의 일이므로 여기가 제자리다.
   //  ★읽기 전용 원칙 유지 — 백업을 **뜨는** 건 DB 를 소유한 store/backup.ts 다.
 
-  if (Date.now() - lastResourceReportTs >= RESOURCE_REPORT_INTERVAL_MS) {
-  lastResourceReportTs = Date.now();
+  // ★기록(이벤트)을 시계로 쓴다 — 재시작해도 억제가 유지된다. 보고 시각은 여기서
+  //  따로 안 적는다: 실제로 보고가 나가면 self-maintenance 가 이벤트를 남기고, 그게
+  //  다음 판정의 기준이 된다(같은 사실을 두 곳에 적지 않는다).
+  if (Date.now() - lastResourceReportTs() >= RESOURCE_REPORT_INTERVAL_MS) {
 
   // ③ 백업이 없거나 오래됐다 — 크기·성능과 무관하게 가장 급하다(복구 불가 축).
   try {

@@ -134,11 +134,49 @@ const run = async (): Promise<Assertion[]> => {
       ok: /backupNotice\(r\)/.test(sg),
       got: `backupNotice 위임=${/backupNotice\(r\)/.test(sg)}`,
     });
-    out.push({
-      name: "★상태형 지표는 하루 1회로 묶인다(매 스윕 뜨면 배경 소음)",
-      ok: /RESOURCE_REPORT_INTERVAL_MS/.test(hl) && /lastResourceReportTs/.test(hl),
-      got: `게이트=${/RESOURCE_REPORT_INTERVAL_MS/.test(hl)}`,
-    });
+    // ★종전엔 여기서 **상수 이름만 grep** 했다(`RESOURCE_REPORT_INTERVAL_MS` 가 있나).
+    //  그래서 억제가 **모듈 변수**라 재시작마다 리셋되는데도 계속 초록이었다 — 실측
+    //  (2026-08-19 사용자 로그): 부팅 5회에 같은 통지 5회. 사용자가 "재시작할 때마다
+    //  계속 나오는 게 맞아?" 라고 물어서야 드러났다. **있다가 아니라 도는가**를 본다.
+    {
+      const { runHealthSweep } = await import("../../core/health-sweep.js");
+      const { insertEvent } = await import("../../store/events.js");
+      const { getDb } = await import("../../store/sessions.js");
+      const RES = new Set(["backup_stale", "memory_index_truncated"]);
+      const resourceKinds = (fs: Array<{ kind: string }>): string[] =>
+        fs.map((f) => f.kind).filter((k) => RES.has(k));
+      const since = Date.now() - 3_600_000;
+
+      const first = resourceKinds(runHealthSweep(since));
+      out.push({
+        name: "상태형 지표가 스윕에 잡힌다(검사 전제 — 이게 0이면 아래가 무의미)",
+        ok: first.length > 0,
+        got: first.length > 0 ? first.join(",") : "★잡힌 게 없다",
+      });
+      if (first.length > 0) {
+        // 보고가 나갔다는 기록 — 프로덕션에서 self-maintenance 가 남기는 그 이벤트다.
+        insertEvent(Date.now(), "self_growth.health.finding", JSON.stringify({
+          findings: first.map((k) => ({ kind: k, summary: "x" })),
+        }));
+        const after = resourceKinds(runHealthSweep(since));
+        out.push({
+          name: "★한 번 보고했으면 다시 안 알린다 — **재시작을 넘어서**(기록이 시계다)",
+          ok: after.length === 0,
+          got: after.length === 0 ? "억제 확인" : `★또 알린다: ${after.join(",")}`,
+        });
+        // 하루가 지나면 다시 알려야 한다 — 영원히 침묵하면 그것도 결함이다.
+        getDb()
+          .prepare(`UPDATE events SET ts = ? WHERE type = 'self_growth.health.finding'`)
+          .run(Date.now() - 25 * 3_600_000);
+        const aged = resourceKinds(runHealthSweep(since));
+        out.push({
+          name: "하루가 지나면 다시 알린다(영구 침묵 아님)",
+          ok: aged.length > 0,
+          got: aged.length > 0 ? aged.join(",") : "★24시간 뒤에도 침묵",
+        });
+        getDb().prepare(`DELETE FROM events WHERE type = 'self_growth.health.finding'`).run();
+      }
+    }
   }
 
   // ── ⑤ ★알림 판정을 **실행해서** 지킨다 ──────────────────────────────────

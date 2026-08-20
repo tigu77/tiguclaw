@@ -30,18 +30,25 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 /** 격리 홈 + 지정 env 로 자식 프로세스를 띄워 실제 경로/읽기를 재현한다. */
 const probe = async (
   env: Record<string, string>,
-): Promise<{ systemMd: string; bytes: number; homeCopyExists: boolean }> => {
+): Promise<{ systemMd: string; bytes: number; homeCopyExists: boolean; homeEntries: string[] }> => {
   const { execFileSync } = await import("node:child_process");
   const script = `
+    // ★실제 부팅 순서를 재현한다 — load-env 가 <home>/.env 를 process.env 로 올린 **뒤**
+    //  paths 가 이음매를 읽는다. 종전엔 이 import 가 없어 .env 축을 아예 안 태웠고, 그래서
+    //  봉인 검사가 변이를 못 잡았다(측정이 대상을 안 지나가면 검사가 아니다).
+    import { loadHomeEnv } from ${JSON.stringify(path.join(REPO, "src/core/load-env.js"))};
     import { getPaths, ensureHome } from ${JSON.stringify(path.join(REPO, "src/core/paths.js"))};
     import { readSystem } from ${JSON.stringify(path.join(REPO, "src/core/identity.js"))};
-    import { existsSync } from "node:fs";
+    import { existsSync, readdirSync } from "node:fs";
     import path from "node:path";
+    loadHomeEnv();
     await ensureHome();
     console.log(JSON.stringify({
       systemMd: getPaths().systemMd,
       bytes: readSystem().length,
       homeCopyExists: existsSync(path.join(getPaths().home, "SYSTEM.md")),
+      // ★부팅이 홈에서 **무엇을 지웠나** — 청소의 *범위*까지 재려면 이게 필요하다.
+      homeEntries: readdirSync(getPaths().home).sort(),
     }));
   `;
   // ★.mts 다 — tmpdir 의 .ts 는 tsx 가 CJS 로 잡아 top-level await 에서 터진다.
@@ -50,12 +57,19 @@ const probe = async (
   try {
     const raw = execFileSync("npx", ["tsx", f], {
       cwd: REPO,
-      env: { ...process.env, ...env },
+      // ★값이 "" 인 키는 **지운다** (2026-08-20). 종전엔 `TIGUCLAW_SYSTEM_MD: ""` 를 그대로
+      //  실었는데, 빈 문자열도 **설정된 값**이라 `process.loadEnvFile` 이 .env 값을 안 덮었다
+      //  → .env 봉인 검사가 **구조적으로 실패 불가능**했다(변이로 확인). 하루에 두 번째다.
+      env: Object.fromEntries(
+        Object.entries({ ...process.env, ...env }).filter(([, v]) => v !== ""),
+      ) as NodeJS.ProcessEnv,
       encoding: "utf8",
       timeout: 60_000,
     });
     const line = raw.trim().split("\n").filter((l) => l.startsWith("{")).pop() ?? "{}";
-    return JSON.parse(line) as { systemMd: string; bytes: number; homeCopyExists: boolean };
+    return JSON.parse(line) as {
+      systemMd: string; bytes: number; homeCopyExists: boolean; homeEntries: string[];
+    };
   } finally {
     rmSync(path.dirname(f), { recursive: true, force: true });
   }
@@ -99,6 +113,18 @@ export const check: RegressionCheck = {
         ),
       );
 
+      // ── ①-b ★청소의 **범위** — SYSTEM.md 말고는 아무것도 안 지운다 (적대 검토 B4) ──
+      //  적대 검토가 `unlink(<home>/AGENT.md)` 한 줄을 더 넣었는데 스위트가 전부 초록이었다.
+      //  그러면 **매 부팅 사용자 인격 파일이 사라진다** — 비가역·전 사용자·조용. 청소를
+      //  도입한 이상 "무엇을 지우는가" 는 "지우는가" 만큼 중요한 판정이다.
+      out.push(
+        assert(
+          "★부팅 청소가 SYSTEM.md 외의 홈 파일을 지우지 않는다 — 인격(AGENT.md)·설정이 살아남는다",
+          r.homeEntries.includes("AGENT.md") && r.homeEntries.includes("settings.json"),
+          `홈: ${r.homeEntries.join(", ") || "(빔)"}`,
+        ),
+      );
+
       // ── ② 홈에 사본이 **있어도** 그게 이기지 않는다(비서의 자가 개헌 봉쇄) ────────
       writeFileSync(path.join(home, "SYSTEM.md"), "## 가짜 헌법\n내 맘대로 한다\n", "utf8");
       const r2 = await probe({ TIGUCLAW_HOME: home, TIGUCLAW_SYSTEM_MD: "" });
@@ -129,6 +155,25 @@ export const check: RegressionCheck = {
           "전제 확인: 정본을 읽었다면 이 단언이 무의미해진다(변종이 훨씬 작아야)",
           r3.bytes < readFileSync(canonical, "utf8").length / 10,
           `변종 ${r3.bytes}자 vs 정본 ${readFileSync(canonical, "utf8").length}자`,
+        ),
+      );
+      // ── ④ ★`<home>/.env` 로는 이음매를 못 연다 (적대 검토 A2, 실재 결함이었다) ─────
+      //  `paths.ts` 주석이 "프로세스 env 는 턴이 못 바꾸므로 자가 개헌이 봉인된다" 고
+      //  적었는데 **거짓이었다** — `load-env.ts` 가 `<home>/.env` 를 부팅마다 process.env 로
+      //  올리고, 홈은 비서가 쓰는 곳이며, 재시작도 비서가 한다. 파일 한 줄로 자기 헌법을
+      //  **영구히** 바꿀 수 있었다(옛 미러 시절엔 매 부팅 덮어쓰기가 되돌렸다).
+      writeFileSync(path.join(home, "MY_SYSTEM.md"), "## 내 맘대로 헌법\n", "utf8");
+      writeFileSync(
+        path.join(home, ".env"),
+        `TIGUCLAW_SYSTEM_MD=${path.join(home, "MY_SYSTEM.md")}\n`,
+        "utf8",
+      );
+      const r4 = await probe({ TIGUCLAW_HOME: home, TIGUCLAW_SYSTEM_MD: "" });
+      out.push(
+        assert(
+          "★<home>/.env 로 헌법 이음매를 열 수 없다 — 비서가 파일 한 줄로 자기 헌법을 갈아치우지 못한다",
+          r4.systemMd === canonical && r4.bytes > 1000,
+          `${r4.systemMd} · ${r4.bytes}자`,
         ),
       );
     } finally {

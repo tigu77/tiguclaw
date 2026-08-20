@@ -14,18 +14,45 @@
  * ★모델은 논리보다 표면을 읽는다. 같은 결정을 두 곳이 반대로 말하면 어느 쪽이 이길지는
  *  그때그때 달라진다 — 정합은 취향이 아니라 동작이다.
  *
- * ★이 검사는 문구를 베끼는지 보는 게 아니라 **판정이 하나인지** 본다:
- *  ①공통 기준(독립·비중첩 3개 이상)이 세 자리에 다 있는가
- *  ②반대 기본값을 미는 옛 문구가 되살아나지 않았는가
- *  ③매 턴 실리는 자리가 "기본은 직접"을 말하는가(여기가 실제로 행동을 정한다)
+ * ★★**등급: 배선 린트** (2026-08-20 적대 검토 F6 — 정직하게 적는다).
+ *  여기 있던 "문구를 베끼는지가 아니라 **판정이 하나인지** 본다" 는 **거짓이었다.**
+ *  실측: 레드팀이 「매니저 소환」→「소환하지 마라」, 「기본은 직접」→「직접이 아니다」,
+ *  「아래로 내려가라」→「위로 올려라」, 「2명↑ 매니저」→「2명↑여도 전경에서 지휘」,
+ *  「3개 이상」→「3개 이상이 아니어도」로 **의미를 뒤집은 변이 6건이 전부 초록**이었다.
+ *  부분문자열 린트는 원리적으로 의미를 못 본다.
+ *
+ *  그래서 **이 검사가 지키는 것**은 이렇게 좁다:
+ *   - 옛 반대 기본값 **문구의 부활**(정확한 형태)
+ *   - **가격표의 존재**(비용 주장이 주입면에 있는가 — 표기 회피는 계속 가능)
+ *   - 핵심 문장·포인터의 **부재**(조립된 프롬프트 기준, F1 이후)
+ *  지키지 **못하는** 것: 의미 반전·동의어 치환·논지 훼손. 그건 사람이 본다.
+ *  ★"지키지도 못하면서 지킨다고 적어둔 검사가 가장 나쁘다" — 그래서 이 문단이 있다.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { REGION_A_SYSTEM_PROMPT } from "../../core/llm-runtime/adapters/_shared-sysprompt.js";
+import { discoverAgents, formatAgentIndex } from "../../core/llm-runtime/capabilities/agent-registry.js";
+import { discoverSkills, formatSkillIndex } from "../../core/llm-runtime/capabilities/skill-registry.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+
+/**
+ * ★**넛지는 파일이 아니라 조립된 문자열로 읽는다** (2026-08-20 적대 검토 F1).
+ *
+ * 종전엔 `_shared-sysprompt.ts` 를 `readFileSync` 로 읽었다. 그 파일은 배열이라 **주석
+ * 한 줄**로 항목을 빼도 바이트엔 그대로 남는다 — 레드팀이 라우팅 줄을 주석 처리하자
+ * 런타임 프롬프트가 6,854→6,619자로 줄고 「기본은 직접」·「매니저 소환」·「§1 이 정본」
+ * **세 문구가 전부 사라졌는데 단언 셋이 모두 초록**이었다. 반대 방향도 틀렸다: 절대
+ * 안 실리는 TS 주석에 "5배" 를 적으면 FAIL 이라, **이 결정의 근거를 그 파일에 적는
+ * 행위 자체가 스위트를 깼다**(가짜 빨강).
+ *
+ * 형제 `constitution-single-source.ts` 는 이미 이 export 를 import 해서 문자열로 본다 —
+ * 옳은 패턴이 옆에 있었는데 이 파일만 파일을 읽고 있었다.
+ */
+const nudgeText = (): string => REGION_A_SYSTEM_PROMPT;
 
 /** 위임 기본값을 말하는 자리 — 하나라도 딴소리를 하면 그 자리가 이길 수 있다. */
 const SOURCES = [
@@ -33,6 +60,22 @@ const SOURCES = [
   { rel: "SYSTEM.md", what: "작동 헌법" },
   { rel: "skills/harness/SKILL.md", what: "하네스 스킬" },
 ] as const;
+
+/**
+ * 가격표를 훑을 **실제 주입면** — 파일 목록이 아니라 *조립 결과*다 (적대 검토 F3).
+ *
+ * ★손으로 3파일을 세던 종전 판은, 매 턴 실리는 다른 자리 넷(스킬 인덱스·에이전트 인덱스·
+ *  도구 설명 둘)에 가격표를 심으면 그냥 통과했다. 파일을 더 열거하는 건 같은 병의 연장이라
+ *  (`feedback_hand_maintained_lists`) **조립 함수를 부른다** — 스킬이 늘어도 자동으로 따라온다.
+ */
+const injectedSurfaces = async (): Promise<Array<{ what: string; text: string }>> => [
+  { what: "매 턴 주입 넛지(조립본)", text: nudgeText() },
+  { what: "작동 헌법", text: read("SYSTEM.md") },
+  { what: "하네스 스킬", text: read("skills/harness/SKILL.md") },
+  // 스킬·에이전트 인덱스 = 전 항목의 description 이 매 턴 실린다(개수 무관·자동 추종).
+  { what: "스킬 인덱스(전 스킬 description)", text: formatSkillIndex(await discoverSkills(REPO)) },
+  { what: "에이전트 인덱스(전 에이전트 description)", text: formatAgentIndex(await discoverAgents(REPO)) },
+];
 
 /**
  * **조건 정의**를 드는 자리 (2026-08-05 개정) — 넛지는 제외한다.
@@ -79,11 +122,21 @@ const OPPOSITE = [
  *  `docs/decisions/2026-07-11-worker-model-tier.md` 에 창(어느 기간을 쟀나)·한계와 함께.
  *  "그때 잰 값" 의 집은 거기다. 프롬프트는 **판정**을 말하는 자리지 측정을 싣는 자리가 아니다.
  */
-const COST_CLAIM = /(\d+(?:\.\d+)?)\s*배/g;
-/** 배수 언급이 **위임 비용**에 관한 것인지 가르는 창(주변 문맥). */
-const DELEGATION_CTX = /위임|서브에이전트|매니저|팀/;
+/**
+ * 비용 주장 표기 — 적대 검토(F4)가 뚫은 것을 전부 넣었다: `5배` 말고도 `5x`·`×5`·`500%`·
+ * `다섯 배`·`다섯 곱절`·`N배`·`0.6 수준`, 그리고 **`1+0.6N배`**(직전 커밋에서 지운 원문
+ * 표기인데 정규식이 `배` 직전 숫자를 요구해 빠져나갔다). 토큰 절대량(`12~18만 토큰`)도
+ * 가격표다 — 배수가 아니라서 안 걸리던 살아 있는 위반이 실제로 하나 있었다(F2).
+ */
+const COST_CLAIM =
+  /(?:\d+(?:\.\d+)?\s*(?:배|곱절|%)|[Nn]\s*배|[0-9.]+\s*[x×]\b|[x×]\s*[0-9.]+|[한두세네다섯여섯일곱여덟아홉열]\s*(?:배|곱절)|\d+(?:\.\d+)?\s*수준|\d+\s*[~-]\s*\d+\s*만\s*토큰|\d+만\s*토큰)/g;
+/**
+ * 배수 언급이 **위임 비용**에 관한 것인지 가르는 창.
+ * ★어휘를 넓혔다(F5) — `에이전트`·`팬아웃`·`병렬` 만 쓰면 빠져나갔다.
+ */
+const DELEGATION_CTX = /위임|서브에이전트|에이전트|매니저|팀|팬아웃|병렬/;
 
-/** 위임 비용 배수 주장을 ±160자 창째로 걷어온다. */
+/** 위임 비용 주장을 ±160자 창째로 걷어온다. */
 const costClaims = (src: string): string[] => {
   const out: string[] = [];
   for (const m of src.matchAll(COST_CLAIM)) {
@@ -117,11 +170,10 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★② 반대 기본값을 미는 옛 문구가 되살아나지 않았는가.
+    // ★② 반대 기본값을 미는 옛 문구가 되살아나지 않았는가. (넛지는 조립본으로 — F1)
     const revived: string[] = [];
-    for (const s of SOURCES) {
-      const src = read(s.rel);
-      for (const re of OPPOSITE) if (re.test(src)) revived.push(`${s.rel}: ${re.source}`);
+    for (const s of await injectedSurfaces()) {
+      for (const re of OPPOSITE) if (re.test(s.text)) revived.push(`${s.what}: ${re.source}`);
     }
     out.push(
       assert(
@@ -131,35 +183,38 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★②-b **프롬프트 어디에도** 위임 비용 배수를 두지 않는다 — 측정은 결정 문서에.
+    // ★②-b **주입면 어디에도** 위임 가격표를 두지 않는다 — 측정은 결정 문서에.
+    //  대상은 파일 목록이 아니라 **조립 결과**다(F1·F3): 넛지는 조립 문자열, 스킬은
+    //  인덱스 전량. 스킬이 늘어도 목록을 고칠 일이 없다.
+    const surfaces = await injectedSurfaces();
     const priced: string[] = [];
-    for (const s of SOURCES) {
-      for (const w of costClaims(read(s.rel))) priced.push(`${s.rel} ${w}`);
+    for (const s of surfaces) {
+      for (const w of costClaims(s.text)) priced.push(`${s.what} ${w}`);
     }
     out.push(
       assert(
-        "★프롬프트에 위임 비용 배수가 없다(스킬 포함) — 가격표가 아니라 판정을 말한다",
+        "★주입면 어디에도 위임 가격표가 없다(넛지 조립본·헌법·하네스·스킬 인덱스 전량)",
         priced.length === 0,
         priced.length === 0
-          ? `${SOURCES.map((s) => s.what).join(" · ")} — 배수 0건`
+          ? `${surfaces.map((s) => s.what).join(" · ")} — 가격표 0건`
           : `★가격표 잔존: ${priced.join(" / ")}`,
       ),
     );
 
     // ★②-c 넛지가 **팀 규모 → 매니저 소환** 라우팅을 말하는가. 가격표를 뺀 자리를 채우는
     //  것이 이 문장이다 — 없으면 "기본은 직접" 만 남아 팬아웃 자체가 사라진다.
-    const nudgeSrc = read(SOURCES[0].rel);
+    // ★파일이 아니라 **조립본**을 본다(F1) — 주석 한 줄로 빼도 파일 바이트엔 남는다.
+    const nudge = nudgeText();
     out.push(
       assert(
         "★매 턴 넛지가 '팀 규모면 매니저 소환'을 말한다(전경에서 여러 명을 지휘하지 않는다)",
-        /매니저\(`run_in_background`\)를 소환/.test(nudgeSrc),
-        /매니저\(`run_in_background`\)를 소환/.test(nudgeSrc) ? "라우팅 문장 있음" : "★라우팅 문장 없음",
+        /매니저\(`run_in_background`\)를 소환/.test(nudge),
+        /매니저\(`run_in_background`\)를 소환/.test(nudge) ? "라우팅 문장 있음" : "★라우팅 문장 없음",
       ),
     );
 
     // ★③ **매 턴 실리는 자리**가 "기본은 직접"을 말하는가.
     //  여기가 실제로 행동을 정한다 — 스킬은 호출돼야 읽히지만 이건 항상 읽힌다.
-    const nudge = read(SOURCES[0].rel);
     out.push(
       assert(
         "★매 턴 넛지가 기본값을 '직접'으로 말한다",
@@ -189,9 +244,11 @@ export const check: RegressionCheck = {
     // ★④ 하네스 스킬에서 **게이트가 구축 절차보다 앞에** 있는가.
     //  뒤에 있으면 문서가 "먼저 감사/설계하라"고 시켜 게이트가 사후 적용된다(옛 Phase 0 형상).
     const skill = read("skills/harness/SKILL.md");
-    // ★단어가 아니라 **섹션 제목**의 위치를 본다. 본문 어디서나 "게이트" 를 언급할 수 있으므로
-    //  단어로 재면 제목을 바꿔치기해도 통과한다(변이에서 실제로 빠져나갔다).
-    const gateAt = skill.search(/^##[^\n]*게이트/m);
+    // ★제목이 아니라 **게이트 본문**(갈래 표)의 위치를 본다 (적대 검토 F7).
+    //  종전엔 `^##.*게이트` 제목 위치만 봐서, 앞에 껍데기 제목("## ① 게이트 — 뒤쪽을 보라")만
+    //  남기고 실제 표를 구축 절차 뒤로 옮겨도 초록이었다 = 옛 Phase 0(사후 게이트) 복원.
+    //  판정의 실체는 세 갈래 표이므로 그 표의 헤더 행을 기준으로 잰다.
+    const gateAt = skill.search(/^\|\s*갈래\s*\|/m);
     const buildAt = Math.min(
       ...["에이전트 정의", "오케스트레이션 스킬"].map((k) => {
         const i = skill.indexOf(k, skill.indexOf("\n## "));

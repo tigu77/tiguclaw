@@ -579,6 +579,8 @@ export const createSpawnAgentMcpServer = (
       // 대시보드가 워커(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
       const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS } =
         await import("../../worker-jobs.js");
+      // 중복 스폰 판정 — LLM 무관 공용(어댑터 3종에 흩어지지 않게 코어에 둔다).
+      const { findDuplicateSpawn, rememberSpawn, spawnKey } = await import("../../spawn-dedupe.js");
       let jobId: string | undefined;
       let abort: ReturnType<typeof createJobAbort> | undefined;
       try {
@@ -618,6 +620,27 @@ export const createSpawnAgentMcpServer = (
           cands[0]!;
         const def = await fs.readFile(agent.filePath, "utf8");
 
+        // ★같은 창에 **같은 인자**로 또 왔으면 다시 안 띄운다 (2026-08-20 사용자 신고).
+        //  모델이 한 응답에 동일 `spawn_agent` 을 두 번 발행해 에이전트가 둘 떴다(토큰 2배).
+        //  병렬 팬아웃은 이 기능의 목적이라 막지 않는다 — 막는 건 **동일 인자**뿐이다.
+        //  조용히 삼키지 않고 로그를 남긴 뒤, 모델에겐 **이미 띄웠다는 사실**을 돌려준다.
+        {
+          const key = spawnKey({
+            tool: "spawn_agent", name: args.name, prompt: args.prompt, path: targetCwd,
+          });
+          const dup = findDuplicateSpawn(parentInput.threadKey, key, Date.now());
+          if (dup !== undefined) {
+            console.warn(
+              `[spawn-dedupe] '${args.name}' 를 같은 인자로 다시 소환하려 했습니다 — ` +
+                `기존 jobId=${dup} 를 그대로 씁니다 (thread=${parentInput.threadKey}).`,
+            );
+            return okText(
+              `'${args.name}' 는 **이미 방금 띄웠습니다** (jobId=${dup}). 같은 인자라 새로 띄우지 않았습니다.\n` +
+                `그 작업이 끝나면 결과가 돌아옵니다 — 다시 부르지 말고 계속 진행하세요.`,
+            );
+          }
+        }
+
         // 관측 잡 등록 — threadKey=부모(어느 대화가 띄웠나 상관), 실행은 agent:<jobId>.
         // channelUserId 는 재주입/통지용인데 agent 잡은 둘 다 안 하므로 빈 문자열.
         jobId = registerJob({
@@ -640,6 +663,12 @@ export const createSpawnAgentMcpServer = (
           // 실행 축 — 재시작 복구가 "통지할 소환자가 있나" 를 이걸로 가른다(ADR Q0).
           detached: rawArgs.wait === false,
         });
+        rememberSpawn(
+          parentInput.threadKey,
+          spawnKey({ tool: "spawn_agent", name: args.name, prompt: args.prompt, path: targetCwd }),
+          jobId,
+          Date.now(),
+        );
 
         // 취소용 abort 핸들 (U-I4 개정, 2026-07-17) — 백그라운드 잡 카드 중지 버튼이 이
         // jobId 로 cancelJob() 을 부르면 signal 이 abort 돼 runRegionA 가 reject 한다.

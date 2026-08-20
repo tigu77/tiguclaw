@@ -65,6 +65,7 @@ import {
 from "../../worker-jobs.js";
 import { getLastWorkerActivity } from "../../../store/events.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
+import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
 
 // ─── 워커 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
 // runRegionA 로 메인 동급 full capability. await 하지 않고 fire-and-forget — runner 는
@@ -231,7 +232,11 @@ export const runWorkerJob = (
           }
           if (arrived.length === 0) break; // 채널 종료·취소 — 안전망(유령좌표 환원)이 받는다.
           rounds += 1;
-          const { runRegionA: rerun } = await import("../index.js");
+          // ★재주입 턴도 **같은 이음매**를 쓴다 (2026-08-20). 종전엔 여기서 진짜
+          //  `runRegionA` 를 다시 import 해서, 주입은 첫 호출만 갈아끼우고 **거두기 라운드는
+          //  실제 모델로 나갔다** — 그래서 이 루프의 행동을 검사할 방법이 아예 없었고,
+          //  적대 검토가 지적한 "재주입 턴의 workerDepth 를 아무도 안 잰다" 도 이것 때문이다.
+          const rerun = __runForTest ?? (await import("../index.js")).runRegionA;
           out = await rerun(
             {
               text:
@@ -272,13 +277,27 @@ export const runWorkerJob = (
       clearJobResultChannel(job.jobId);
       resultBox.close();
       if (steerCh !== undefined) {
+        // ★**레지스트리의 현재 채널**을 거둔다 (2026-08-20 적대 검토 A1). 형제
+        //  (`startDetachedAgent`)엔 어제 이 수정이 들어갔는데 **이 레인은 그대로였다** —
+        //  게다가 그 커밋의 주석은 "워커는 회전하니까 안전" 이라는 뜻으로 읽히게 적혀
+        //  있었다. 틀렸다: 회전은 **거두기 루프 안**에서만 일어나므로, 백그라운드 자식이
+        //  없는 **평범한 매니저**는 루프를 한 번도 안 돌아 똑같이 노출돼 있었다.
+        //  증상: 돌고 있는 매니저에 지시를 보내면 `steerJob` 이 닫힌 채널을 갈아끼우고
+        //  사용자에겐 "전달했습니다" 가 뜨는데, 여기서 **지역 변수**를 drain 하면 그 새
+        //  채널은 아무도 안 읽는다 — 반영도 0, "못 받았어요" 통지도 0.
+        const current = getSteerChannel(job.jobId) ?? steerCh;
         clearSteerChannel(job.jobId);
-        steerCh.close();
+        current.close();
         // ★**사용자 지시만** 통지한다 (2026-08-19). 같은 큐에 백그라운드 자식의 결과도
         //  들어오는데, 그걸 "방금 보내신 지시" 로 되읽어주면 사용자는 자기가 안 보낸 문장을
         //  자기 것으로 통보받는다. 자식 결과는 위 거두기 루프가 소비하고, 거기서 놓친
         //  잔여는 완료 보고에 이미 담긴다(소환자가 거둔다는 계약).
-        const leftover = partitionSteering(steerCh.drain()).userMessages;
+        const leftover = partitionSteering(current.drain()).userMessages;
+        // 지역 참조가 다른 객체면 그쪽 잔여도 함께 회수한다(교체 순간 갇힌 것).
+        if (current !== steerCh) {
+          steerCh.close();
+          leftover.push(...partitionSteering(steerCh.drain()).userMessages);
+        }
         if (leftover.length > 0) {
           pendingSteerNotice = leftover.map((m: SteeringInput) => m.raw).filter((t: string) => t !== "");
         }
@@ -388,6 +407,25 @@ export const createWorkerMcpServer = (
         // 비차단 발사 — startWorkerJob 이 registerJob 후 workerRunner 를 fire-and-forget
         // 호출하고 jobId 를 *즉시* 반환(블로킹 0, W-I2). 워커 결과는 절대 여기로 안 옴 —
         // daemon 의 onWorkerComplete 가 메인 thread 로 재주입한다(W-I1).
+        // ★같은 창에 **같은 인자**로 또 왔으면 다시 안 띄운다 (2026-08-20 사용자 신고 —
+        //  "매니저도 마찬가지"). 근거·범위는 spawn-dedupe.ts 참조. 병렬은 그대로 되고,
+        //  막는 건 동일 (label·task·path) 뿐이다.
+        {
+          const key = spawnKey({
+            tool: "run_in_background", name: args.label, prompt: args.task, path: workerCwd,
+          });
+          const dup = findDuplicateSpawn(parentInput.threadKey, key, Date.now());
+          if (dup !== undefined) {
+            console.warn(
+              `[spawn-dedupe] 매니저 '${args.label}' 를 같은 인자로 다시 띄우려 했습니다 — ` +
+                `기존 jobId=${dup} 를 그대로 씁니다 (thread=${parentInput.threadKey}).`,
+            );
+            return okText(
+              `'${args.label}' 는 **이미 방금 띄웠습니다** (jobId=${dup}). 같은 인자라 새로 띄우지 않았습니다.\n` +
+                `끝나면 결과가 돌아옵니다 — 다시 부르지 말고 계속 진행하세요.`,
+            );
+          }
+        }
         const jobId = startWorkerJob({
           label: args.label,
           task: args.task,
@@ -418,6 +456,14 @@ export const createWorkerMcpServer = (
                 }
               : undefined),
         });
+        rememberSpawn(
+          parentInput.threadKey,
+          spawnKey({
+            tool: "run_in_background", name: args.label, prompt: args.task, path: workerCwd,
+          }),
+          jobId,
+          Date.now(),
+        );
         return okText(
           `🛠️ '${args.label}' 백그라운드 작업을 시작했습니다 (jobId: ${jobId}). ` +
             `끝나면 결과를 알려드릴게요.`,

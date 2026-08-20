@@ -20,7 +20,25 @@ const DETAIL_MAX = 160;
  * 도구 인자 중 사람이 가장 알고 싶어 하는 키 우선순위(중립).
  * 어느 어댑터든 동일 도구는 동일 인자명을 쓰므로(MCP 도구 정의 공유) parity 성립.
  */
-const PREFERRED_KEYS = [
+/**
+ * ★1줄 요약의 답은 **"무엇을/누구를"** 이다 — 그래서 **식별자가 먼저**다 (2026-08-20).
+ *
+ * 사고: `spawn_agent(name, path, prompt)` 의 요약이 `path=…, prompt=…` 로 나와
+ * **누구를 소환했는지가 안 보였다**(사용자 신고). 원인은 두 규칙이 겹친 것 —
+ *  ①이 목록이 손으로 관리되는데 `name` 이 `path`·`prompt` 뒤였고,
+ *  ②아래 요약이 **2개에서 끊는다**. 그래서 `name` 이 조용히 접혔다.
+ * 배경 서브에이전트가 들어와 인자 조합이 바뀌자 드러났다 — 목록은 그대로인데
+ * 지나가는 것이 바뀐 것이라, 아무도 이 목록을 다시 안 봤다.
+ *
+ * ★그래서 순위를 **질문 종류**로 나눈다:
+ *  - IDENTITY: 무엇을 부르나 — 짧고 정보밀도가 가장 높다. 항상 먼저.
+ *  - TARGET:   무엇에 하나 — 경로·명령·패턴.
+ *  - CONTENT:  본문 — 길어서 잘리면 남는 정보가 거의 없다. 그래서 **맨 뒤**.
+ *   (종전엔 `prompt` 가 `name` 보다 앞이었다. 잘린 프롬프트 한 조각이 에이전트
+ *    이름을 밀어낸 셈이라, 정보량 순서가 정확히 거꾸로였다.)
+ */
+const IDENTITY_KEYS = ["name", "agent", "skill", "label"];
+const TARGET_KEYS = [
   "path",
   "file_path",
   "filePath",
@@ -29,11 +47,11 @@ const PREFERRED_KEYS = [
   "pattern",
   "query",
   "url",
-  "prompt",
-  "description",
-  "name",
-  "question",
 ];
+// 본문 안에서도 **짧은 것 먼저** — claude `Task` 의 `description`(한 줄)이 `prompt`(본문)
+// 보다 답에 가깝다. 종전 순서는 긴 것이 앞이라 짧은 요약을 밀어냈다.
+const CONTENT_KEYS = ["description", "question", "prompt"];
+const PREFERRED_KEYS = [...IDENTITY_KEYS, ...TARGET_KEYS, ...CONTENT_KEYS];
 
 function clip(s: string): string {
   const t = s.replace(/\s+/g, " ").trim();
@@ -112,8 +130,11 @@ export function buildActivityDetail(
 
   const parts: string[] = [];
   for (const [k, v] of ordered) {
+    // ★본문(CONTENT)은 **자리가 남을 때만** 실린다 — 길어서 한 줄을 통째로 먹는다.
+    //  식별자·대상이 이미 둘 있으면 본문은 아예 넣지 않는다(요약의 답은 이미 나왔다).
+    if (parts.length >= 2 && CONTENT_KEYS.includes(k)) break;
     parts.push(fmt(k, v));
-    if (parts.length >= 2) break; // 최대 2개 인자 — 1줄 요약 유지.
+    if (parts.length >= 3) break; // 상한 — 1줄 유지.
   }
   if (parts.length === 0) return undefined;
   return clip(parts.join(", "));

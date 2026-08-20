@@ -808,6 +808,14 @@ export const rotateSteerChannel = (
  */
 const jobResultChannels = new Map<string, SteeringChannel>();
 
+/**
+ * 결과 수신함 조회 — **배선 검사용**. 적대 검토(2026-08-20 B2)에서 러너가 자기 것이 아닌
+ * 채널을 등록해도 초록이었다(린트가 호출 *문자열*만 봤다). 그러면 자식 결과가 고아 채널로
+ * 가고 매니저는 상한까지 매달린다.
+ */
+export const getJobResultChannel = (jobId: string): SteeringChannel | undefined =>
+  jobResultChannels.get(jobId);
+
 export const setJobResultChannel = (jobId: string, ch: SteeringChannel): void => {
   jobResultChannels.set(jobId, ch);
 };
@@ -1992,6 +2000,14 @@ let workerRunner: WorkerRunner | undefined;
 export const registerWorkerRunner = (runner: WorkerRunner): void => {
   workerRunner = runner;
 };
+
+/**
+ * 등록된 러너 조회 — **배선 검사용**. 적대 검토(2026-08-20 B3)에서
+ * `registerWorkerRunner(runWorkerJob)` 을 `registerWorkerRunner(() => {})` 로 바꿔도
+ * 스위트가 초록이었다(검사들이 러너를 *직접* 부르기 때문). 그러면 `run_in_background` 가
+ * jobId 만 주고 아무것도 안 돌며 잡은 영원히 running 이다 — 조용히, 전 사용자에게.
+ */
+export const getRegisteredWorkerRunner = (): WorkerRunner | undefined => workerRunner;
 
 export interface StartWorkerJobInput {
   label: string;

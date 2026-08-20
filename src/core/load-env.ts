@@ -54,8 +54,28 @@ export const loadHomeEnv = (): void => {
     }
   };
 
+  // ★**테스트 이음매 키는 .env 로 안 받는다** (2026-08-20 적대 검토 A2).
+  //  `TIGUCLAW_SYSTEM_MD` 는 작동 헌법 정본을 갈아끼우는 이음매다(벤치의 헌법 변종 측정용).
+  //  `paths.ts` 주석은 "프로세스 env 는 턴이 못 바꾸므로 자가 개헌이 봉인된다" 고 적었는데
+  //  **그게 거짓이었다** — 홈은 비서가 자유롭게 쓰는 곳이고, 여기가 `<home>/.env` 를 부팅마다
+  //  process.env 로 올리며, 재시작은 비서가 스스로 한다(`/update`·supervisor). 즉 비서가
+  //  파일 한 줄을 써두면 다음 부팅부터 **자기 헌법을 영구히** 바꿀 수 있었다. 종전 홈 미러
+  //  시절엔 매 부팅 덮어쓰기가 되돌렸는데, 미러를 없애면서 되돌리는 것도 같이 사라졌다.
+  //  ★봉인은 소프트 강제가 아니라 여기서 닫는다 — .env 가 준 값만 걷어내고, 진짜 프로세스
+  //   env(벤치가 in-process 로 심는 것·셸이 준 것)는 그대로 둔다.
+  const seamBefore = process.env.TIGUCLAW_SYSTEM_MD;
+
   const home_ok = tryLoad(homeEnv); // 홈 우선.
   const repo_ok = homeEnv !== repoEnv ? tryLoad(repoEnv) : false; // 레포 폴백/보완.
+
+  if (process.env.TIGUCLAW_SYSTEM_MD !== seamBefore) {
+    console.warn(
+      `[env] TIGUCLAW_SYSTEM_MD 는 .env 로 설정할 수 없습니다 — 무시합니다(작동 헌법은 앱 정본만). ` +
+        `받은 값: ${process.env.TIGUCLAW_SYSTEM_MD ?? ""}`,
+    );
+    if (seamBefore === undefined) delete process.env.TIGUCLAW_SYSTEM_MD;
+    else process.env.TIGUCLAW_SYSTEM_MD = seamBefore;
+  }
 
   const parts: string[] = [];
   if (home_ok) parts.push(`home(${homeEnv})`);

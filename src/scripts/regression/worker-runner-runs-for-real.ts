@@ -22,7 +22,12 @@ import {
   registerJob,
   registerWorkerHandler,
   getSteerChannel,
+  getJobResultChannel,
+  getRegisteredWorkerRunner,
+  markDone,
+  steerJob,
 } from "../../core/worker-jobs.js";
+import { createSteeringChannel } from "../../core/steering.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../../core/llm-runtime/types.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -118,6 +123,97 @@ export const check: RegressionCheck = {
         ),
       );
     }
+
+    // ── ④ ★러너는 **레지스트리의 현재 채널**을 거둔다 (A1, 실재 결함이었다) ────────
+    //  `steerJob` 은 채널이 닫혔어도 잡이 살아 있으면 갈아끼우고 `"delivered"` 를 준다.
+    //  러너가 **자기 지역 변수**를 drain 하면 그 새 채널을 아무도 안 읽는다 — 지시가
+    //  사라지는데 사용자에겐 "전달했어요" 가 뜨고 잔여 통지조차 안 나간다.
+    //  형제 레인엔 어제 이 검사가 들어갔고, 이쪽은 오늘 적대 검토가 찾았다.
+    __resetJobsForTest();
+    {
+      const jid = registerJob({ ...base, kind: "worker", label: "회전", threadKey: "dashboard:s1" });
+      let rotated: ReturnType<typeof createSteeringChannel> | undefined;
+      runWorkerJob(getJob(jid) as never, async (): Promise<RegionASdkOutput> => {
+        getSteerChannel(jid)?.close(); // 어댑터가 턴 끝에 닫는 상황
+        steerJob(jid, { text: "늦은 지시", raw: "늦은 지시", ts: 1 });
+        rotated = getSteerChannel(jid);
+        return { text: "ok" } as RegionASdkOutput;
+      });
+      await until(() => getJob(jid)?.status !== "running");
+      out.push(
+        assert("steerJob 이 닫힌 채널을 갈아끼웠다(전제 확인)", rotated !== undefined,
+          rotated === undefined ? "★교체 없음" : "교체됨"),
+        assert(
+          "★러너가 **갈아끼운 채널**을 거둔다 — 지역 참조만 보면 지시가 조용히 사라진다",
+          (rotated?.drain().length ?? 1) === 0,
+          `${rotated?.drain().length ?? "?"}건 남음(0이어야)`,
+        ),
+      );
+    }
+
+    // ── ⑤ ★거두기 루프의 **입력**을 잰다 (B1·B2) ──────────────────────────────────
+    //  적대 검토: `liveChildren: 0` 으로 고정해도, 결과 수신함을 **다른 채널**로 등록해도
+    //  1,362건이 전부 초록이었다. 앞은 매니저가 자식이 도는데 턴을 닫게 하고(2026-08-19
+    //  라이브 사고 재현), 뒤는 자식 결과가 고아 채널로 가 매니저가 상한까지 매달린다.
+    //  둘 다 **조용하다**. 그래서 자식을 실제로 하나 띄워 루프가 도는지 본다.
+    __resetJobsForTest();
+    reinjected.length = 0;
+    {
+      const jid = registerJob({ ...base, kind: "worker", label: "거두기", threadKey: "dashboard:s1" });
+      const child = registerJob({
+        ...base, kind: "agent", label: "자식", threadKey: `worker:${jid}`, detached: true,
+      });
+      let turns = 0;
+      const texts: string[] = [];
+      const depths: Array<number | undefined> = [];
+      runWorkerJob(getJob(jid) as never, async (input): Promise<RegionASdkOutput> => {
+        turns += 1;
+        texts.push(input.text);
+        depths.push(input.workerDepth);
+        // 첫 턴이 끝나는 시점에 자식이 아직 돈다 → 루프가 기다려야 한다.
+        if (turns === 1) {
+          setTimeout(() => {
+            const box = getJobResultChannel(jid);
+            markDone(child, "자식 결과");
+            box?.push({ text: "자식 결과", raw: "[자식] 자식 결과", ts: 2, source: "job" });
+          }, 30);
+        }
+        return { text: `턴${turns}` } as RegionASdkOutput;
+      });
+      await until(() => getJob(jid)?.status !== "running", 6000);
+      out.push(
+        assert(
+          "★자식이 살아 있으면 매니저가 턴을 안 닫는다 — 거두기 루프가 실제로 한 바퀴 더 돈다",
+          turns >= 2,
+          `모델 호출 ${turns}회(2 이상이어야)`,
+        ),
+        assert(
+          "★자식 결과가 **러너가 읽는 그 수신함**으로 들어온다 — 다른 채널이면 매니저가 상한까지 매달린다",
+          texts.some((t) => t.includes("자식 결과")),
+          texts.map((t) => t.slice(0, 20)).join(" | ") || "★안 실림",
+        ),
+        // ★손자 금지는 **이어받는 턴에도** 걸려야 한다 (적대 검토 B6). 종전엔 첫 호출
+        //  입력만 봤고, 재주입 턴은 애초에 이음매 밖이라 검사가 닿지도 않았다. 여기서
+        //  0이면 그 턴에 `run_in_background` 가 다시 열려 매니저가 매니저를 띄운다.
+        assert(
+          "★거두기 재주입 턴도 workerDepth=1 — 이어받는 턴에 팬아웃이 다시 열리면 안 된다",
+          depths.length >= 2 && depths.every((d) => d === 1),
+          `깊이=${depths.join(",")}`,
+        ),
+      );
+    }
+
+    // ── ⑥ ★배선: 데몬이 발사하는 러너가 **이 함수**다 (B3) ────────────────────────
+    //  적대 검토: `registerWorkerRunner(runWorkerJob)` → `registerWorkerRunner(() => {})` 로
+    //  바꿔도 초록이었다. 위 검사들이 `runWorkerJob` 을 **직접** 부르기 때문 — 판정은
+    //  실행하는데 배선은 안 지키던 그 부류다. 등록된 러너를 꺼내 동일성을 본다.
+    out.push(
+      assert(
+        "★데몬이 발사하는 워커 러너가 runWorkerJob 이다 — 아니면 run_in_background 가 아무것도 안 한다",
+        getRegisteredWorkerRunner() === runWorkerJob,
+        getRegisteredWorkerRunner() === runWorkerJob ? "동일" : "★다른 함수가 등록돼 있다",
+      ),
+    );
 
     __resetJobsForTest();
     return out;

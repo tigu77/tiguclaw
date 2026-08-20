@@ -856,13 +856,9 @@
         const spawnLabel = p.label || "";
         // ★서브에이전트 도구 이름은 상류 SDK 가 바꾼다(0.3 에서 Task→Agent). 구 이름만 보면
         //  잡카드 점프가 조용히 죽는다 — 실제로 그랬다(2026-08-07). 둘 다 받는다.
-        if (
-          p.jobId ||
-          spawnLabel === "Task" ||
-          spawnLabel === "Agent" ||
-          spawnLabel.endsWith("spawn_agent") ||
-          spawnLabel.endsWith("run_in_background")
-        ) {
+        // ★판정은 util 의 `isSpawnStep` 한 곳 — 이력 렌더러(history-render.js)와 **같은 것**을
+        //  쓴다. 종전엔 이 조건이 여기에만 있어서 이력에선 칩이 사라졌다(2026-08-20 신고).
+        if (isSpawnStep(spawnLabel, p.jobId)) {
           const bg = document.createElement("span");
           bg.className = "act-bg-link";
           const job = p.jobId ? jobCards.get(p.jobId) : null;

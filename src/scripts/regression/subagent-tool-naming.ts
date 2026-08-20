@@ -161,12 +161,18 @@ export const check: RegressionCheck = {
         !withSdkSubagentsBlocked([]).includes("spawn_agent"),
         withSdkSubagentsBlocked([]).join(","),
       ),
+      // ★판정이 옮겨졌다 (2026-08-20) — 종전엔 이 조건이 `virtualization.js` 안에만 있어서
+      //  이력 렌더러엔 없었고, 그래서 턴이 끝나면 배지가 사라졌다(사용자 신고). 지금은
+      //  `util.js:isSpawnStep` 한 곳이 정본이고 두 렌더러가 그걸 부른다.
+      //  ★그래서 여기서도 **새 자리**를 본다 — 판정을 옮기면 그걸 지키던 검사도 같이 옮겨야
+      //   한다(안 그러면 검사가 빈 자리를 보며 초록이거나, 오늘처럼 빨개진다).
+      //  이름 축(`Agent`)의 실제 행동은 `spawn-badge-parity` 가 판정을 **실행**해서 지킨다.
       assert(
-        "대시보드 잡카드 링크도 새 이름을 받는다",
-        (await sourceHas("../../../packages/dashboard/js/virtualization.js", [
-          /spawnLabel === "Agent"/,
+        "대시보드 잡카드 링크도 새 이름을 받는다(공용 판정 isSpawnStep)",
+        (await sourceHas("../../../packages/dashboard/js/util.js", [
+          /l === "Agent"/,
         ])).ok,
-        "virtualization.js",
+        "util.js:isSpawnStep",
       ),
     ];
   },

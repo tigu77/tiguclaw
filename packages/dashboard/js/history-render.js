@@ -209,6 +209,31 @@
           d.className = "hist-tool-detail"; d.textContent = a.detail;
           line.appendChild(d);
         }
+        // ★모델·시퀀스 메타 + 배경 스폰 칩 — 라이브(buildActivityLine)와 **같은 판정**으로
+        //  붙인다 (2026-08-20 사용자 신고 "누구를 소환했다 정보와 배지가 없어졌다").
+        //  종전엔 이 빌더에 둘 다 없어서, 턴이 끝나 이력으로 다시 그려지는 순간 사라졌다 —
+        //  위 주석이 "라이브와 동형" 이라고 적어둔 채로. 같은 판단이 두 곳이면 한쪽이 늙는다.
+        if (a.model || a.seq != null) {
+          const meta = document.createElement("span");
+          meta.className = "hist-tool-meta";
+          meta.textContent = (a.model ? a.model + " · " : "") + "#" + (a.seq ?? "");
+          line.appendChild(meta);
+        }
+        if (typeof isSpawnStep === "function" && isSpawnStep(a.label, a.jobId)) {
+          const bg = document.createElement("span");
+          bg.className = "act-bg-link";
+          const dot = document.createElement("span");
+          dot.className = "act-bg-dot";
+          const txt = document.createElement("span");
+          txt.textContent = "🤖 백그라운드 ↗";
+          bg.appendChild(dot); bg.appendChild(txt);
+          bg.title = "백그라운드 작업 열기";
+          bg.addEventListener("click", (e) => {
+            e.stopPropagation(); // 스텝 펼침·턴 접힘과 분리(라이브 동형).
+            if (typeof openBg === "function") openBg();
+          });
+          line.appendChild(bg);
+        }
         if (hasDiff) line.appendChild(buildDiffBlock(a.diff));
         if (a.output && typeof a.output.text === "string") line.appendChild(buildOutputBlock(a.output));
         if (a.plan) line.appendChild(buildPlanBlock(a.plan)); // ExitPlanMode 계획 — 항상 보이게.

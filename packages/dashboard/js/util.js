@@ -512,3 +512,26 @@
         if (typeof textBefore !== "string") return false;
         return textBefore === "" || /\n$/.test(textBefore);
       };
+
+      /**
+       * 이 스텝이 **배경 작업을 띄운 스텝**인가 (2026-08-20 사용자 신고: "배지가 없어졌다").
+       *
+       * ★판정을 여기 한 곳에 둔다. 종전엔 같은 조건이 `virtualization.js`(라이브)에만 있었고
+       *  `history-render.js`(이력)엔 없었다 — 그런데 그 함수 주석은 *"라이브 buildActivityLine
+       *  과 **동형**"* 이라고 적혀 있었다. 그래서 턴이 끝나 이력으로 다시 그려지는 순간
+       *  `🤖 백그라운드 ↗` 칩이 조용히 사라졌다(같은 판단이 두 곳 → 한쪽이 늙음).
+       *
+       * 어댑터 불문(원칙 #2): claude native `Task`/`Agent`(=jobId 동반), codex/openai 의
+       * bare `spawn_agent`/`run_in_background`, 그리고 claude 가 크로스프로젝트 위임에 쓰는
+       * MCP 라벨 `mcp__agents__spawn_agent` 류(접미사 매칭으로 흡수).
+       */
+      const isSpawnStep = (label, jobId) => {
+        if (jobId) return true;
+        const l = typeof label === "string" ? label : "";
+        return (
+          l === "Task" ||
+          l === "Agent" ||
+          l.endsWith("spawn_agent") ||
+          l.endsWith("run_in_background")
+        );
+      };

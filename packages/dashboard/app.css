@@ -535,6 +535,8 @@
       .hist-tool-icon { font-size:12px; flex:none; }
       .hist-tool-label { color:var(--text); font-weight:700; flex:none; }
       .hist-tool-detail { color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 이력 스텝 메타 — 라이브 .act-meta 와 같은 역할(2026-08-20 파리티 복구). */
+      .hist-tool-meta { color:var(--text-dim); font-size:10px; margin-left:auto; white-space:nowrap; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; }
       .turn-card { padding:0; overflow:hidden; }
       .turn-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
       .turn-head:hover { background:rgba(255,255,255,.04); }

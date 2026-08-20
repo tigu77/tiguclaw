@@ -581,6 +581,7 @@ export const createSpawnAgentMcpServer = (
         await import("../../worker-jobs.js");
       // 중복 스폰 판정 — LLM 무관 공용(어댑터 3종에 흩어지지 않게 코어에 둔다).
       const { findDuplicateSpawn, rememberSpawn, spawnKey } = await import("../../spawn-dedupe.js");
+      const { toolsWereExpected } = await import("./tools-expected.js");
       let jobId: string | undefined;
       let abort: ReturnType<typeof createJobAbort> | undefined;
       try {
@@ -750,7 +751,10 @@ export const createSpawnAgentMcpServer = (
           abort.done();
           try { unsub(); } catch { /* best-effort */ }
         }
-        if (childToolSteps === 0) {
+        // ★"도구 0회" 만으로 경고하지 않는다 (2026-08-20 사용자 신고). 핑·질의·판단을
+        //  시키는 스폰이 정상 용법이 되면서, 시킨 대로 한 에이전트에게 "지어냈을 수 있다"
+        //  고 말하고 있었다. 판정은 `toolsWereExpected` 한 곳 — 근거는 그 파일에.
+        if (childToolSteps === 0 && toolsWereExpected(args.prompt)) {
           console.warn(
             `[agent-no-tools] ${parentInput.threadKey} 서브에이전트 '${args.name}' 가 ` +
               `도구를 **한 번도 쓰지 않고** 끝났습니다(내부 스텝 0). 지시가 파일·명령 실행을 ` +

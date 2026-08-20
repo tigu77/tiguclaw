@@ -53,6 +53,48 @@ const OPPOSITE = [
   /인라인은 좁은 예외/,
 ];
 
+/**
+ * **매 턴 실리는 자리는 가격표가 아니라 라우팅을 말한다** (2026-08-20, 사용자 결정).
+ *
+ * ★1차 사고: `docs/decisions/2026-07-11-worker-model-tier.md` 가 인용한 "멀티에이전트 ≈
+ *  5배(Anthropic)" 를 `df12fa8`(08-01)이 세 자리로 옮기면서 **위임 전체**의 가격표로 붙였다.
+ *  실측하면 서브 1명은 메인 턴의 0.60배라 1명 위임은 1.6배인데, 모델은 "1명한테 넘길까" 를
+ *  판단하는 자리에서 5배를 봤다 — 3배 부풀린 값이다. 실제로 185턴 동안 서브에이전트 스폰이
+ *  0건인 구간이 두 번 있었다.
+ *
+ * ★그런데 **숫자를 고치는 건 절반짜리 수정이었다**(사용자 지적). 계수는 어댑터·모델이
+ *  바뀌면 다시 재야 하고, 재면 또 세 자리가 갈린다. 그리고 매 턴 실리는 자리에 가격표를
+ *  두면 모델은 **아끼려 든다** — 그게 애초 증상이었다. 그 자리가 말해야 할 것은 "얼마 드는가"
+ *  가 아니라 **"어디로 보내는가"** 다: 작은 일은 서브에이전트를 직접, 팀 규모면 매니저를
+ *  소환해 팬아웃을 맡긴다.
+ *
+ * ★**프롬프트 어디에도 두지 않는다** — 온디맨드 스킬도 포함이다(사용자 지적, 2차).
+ *  처음엔 자리를 갈라 "매 턴 자리엔 없이 / 스킬엔 단가로" 로 했는데, 그 검사가 곧
+ *  **늙을 숫자를 그 자리에 계속 있으라고 강제하는 게이트**가 된다(`feedback_hand_maintained_lists`
+ *  의 형상 그대로). 게다가 단가는 스킬의 판정을 바꾸지 않는다 — 게이트는 「독립·비중첩
+ *  3개 이상 + 면적」이라는 **구조** 기준이고, 계수는 그 위의 장식이다. 이유("에이전트마다
+ *  컨텍스트를 새로 싣는다")는 숫자 없이 그대로 선다.
+ *
+ * ★실측치는 **없애는 게 아니라 결정 문서로 내린다** —
+ *  `docs/decisions/2026-07-11-worker-model-tier.md` 에 창(어느 기간을 쟀나)·한계와 함께.
+ *  "그때 잰 값" 의 집은 거기다. 프롬프트는 **판정**을 말하는 자리지 측정을 싣는 자리가 아니다.
+ */
+const COST_CLAIM = /(\d+(?:\.\d+)?)\s*배/g;
+/** 배수 언급이 **위임 비용**에 관한 것인지 가르는 창(주변 문맥). */
+const DELEGATION_CTX = /위임|서브에이전트|매니저|팀/;
+
+/** 위임 비용 배수 주장을 ±160자 창째로 걷어온다. */
+const costClaims = (src: string): string[] => {
+  const out: string[] = [];
+  for (const m of src.matchAll(COST_CLAIM)) {
+    const i = m.index ?? 0;
+    const win = src.slice(Math.max(0, i - 160), i + 160);
+    if (!DELEGATION_CTX.test(win)) continue; // 위임 비용 얘기가 아니면 대상 아님
+    out.push(`«${win.replace(/\s+/g, " ").trim()}»`);
+  }
+  return out;
+};
+
 export const check: RegressionCheck = {
   name: "delegation-default-consistency",
   guards:
@@ -86,6 +128,32 @@ export const check: RegressionCheck = {
         "★반대 기본값(‘기본은 substantial’·‘애매하면 substantial’)이 없다",
         revived.length === 0,
         revived.length === 0 ? "잔존 0" : `★부활: ${revived.join(" / ")}`,
+      ),
+    );
+
+    // ★②-b **프롬프트 어디에도** 위임 비용 배수를 두지 않는다 — 측정은 결정 문서에.
+    const priced: string[] = [];
+    for (const s of SOURCES) {
+      for (const w of costClaims(read(s.rel))) priced.push(`${s.rel} ${w}`);
+    }
+    out.push(
+      assert(
+        "★프롬프트에 위임 비용 배수가 없다(스킬 포함) — 가격표가 아니라 판정을 말한다",
+        priced.length === 0,
+        priced.length === 0
+          ? `${SOURCES.map((s) => s.what).join(" · ")} — 배수 0건`
+          : `★가격표 잔존: ${priced.join(" / ")}`,
+      ),
+    );
+
+    // ★②-c 넛지가 **팀 규모 → 매니저 소환** 라우팅을 말하는가. 가격표를 뺀 자리를 채우는
+    //  것이 이 문장이다 — 없으면 "기본은 직접" 만 남아 팬아웃 자체가 사라진다.
+    const nudgeSrc = read(SOURCES[0].rel);
+    out.push(
+      assert(
+        "★매 턴 넛지가 '팀 규모면 매니저 소환'을 말한다(전경에서 여러 명을 지휘하지 않는다)",
+        /매니저\(`run_in_background`\)를 소환/.test(nudgeSrc),
+        /매니저\(`run_in_background`\)를 소환/.test(nudgeSrc) ? "라우팅 문장 있음" : "★라우팅 문장 없음",
       ),
     );
 

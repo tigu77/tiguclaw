@@ -64,9 +64,10 @@ export const getAssistantName = (): string => {
 // ─── SYSTEM.md (작동 헌법) — 언제나 로드 (2026-05-27) ──────────────────────
 // 사용자 결정: SYSTEM.md 는 on-demand Read 가 아니라 *매 turn 항상* 실리는 소스다
 // (AGENT.md 와 동급 상시 컨텍스트). 자리는 어댑터 **시스템 채널**(2026-07-30 이후 —
-// prompt-assembly splitSystemContext). 부팅 시 syncSystemMd 가 앱 정본을
-// `<home>/SYSTEM.md` 로 미러하므로 그 미러를 읽는다. 세 어댑터가 동일하게 실어 LLM
-// parity 유지. 부재 시 빈 문자열 (헌법 미러 실패해도 turn 생존).
+// prompt-assembly splitSystemContext). ★**앱 정본을 직접 읽는다** (2026-08-20) —
+// 종전엔 부팅마다 `<home>/SYSTEM.md` 로 복사한 뒤 그 사본을 읽었는데, 복사가 실패하면
+// 비서가 **헌법 없이** 돌았다. 정본은 `appRoot()` 탐지의 마커라 존재가 보장된다.
+// 세 어댑터가 동일하게 실어 LLM parity 유지. 부재 시 빈 문자열(turn 생존 — index.ts 가 경고).
 export const readSystem = (): string => {
   try {
     return fs.readFileSync(getPaths().systemMd, "utf8");

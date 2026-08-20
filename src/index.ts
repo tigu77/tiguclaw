@@ -72,7 +72,7 @@ import {
 import {
   canonicalSessionChannel,
   clearSessionModelOverride,
-  deleteSession,
+  clearSessionContext,
   getMostRecentTelegramChatId,
   getSession,
   getSessionChannelMeta,
@@ -87,7 +87,7 @@ import {
   sessionDisplayName,
 } from "./store/sessions.js";
 import { getFirstUserText } from "./store/chat-log.js";
-// codex/openai 컨텍스트 리셋 — `/reset`·`/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
+// codex/openai 컨텍스트 리셋 — `/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
 // 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
 // 이전 턴은 재전송 안 함(getContextBoundary 는 codex/openai 어댑터가 소비). clearThreadSummary
 // = codex 롤링 요약 드롭. 둘 다 store-auth contract 대로 (channel, threadKey[, ts]).
@@ -288,12 +288,14 @@ await migrateLegacyAgent(process.cwd());
 //  종전엔 sysprompt 가 같은 규칙을 중복 진술해 헌법이 비어도 안전 규칙이 남았는데, 판단을
 //  SYSTEM.md 한 곳으로 모은 지금은 **부재 = 위임·동사·확인 규칙 0** 이다. 그런데 그 상태가
 //  에러 하나 없이 조용하다 — 그래서 부팅에서 한 번 소리내고 `/status` 가 계속 들고 있는다.
-//  (syncSystemMd 는 *미러 쓰기* 실패만 경고한다 — 읽는 쪽이 비었는지는 여기서 본다.)
+//  ★홈 미러를 없앤 뒤(2026-08-20) 이 경로가 실제로 밟히긴 훨씬 어렵다 — 정본은 appRoot
+//   마커라 존재가 보장된다. 그래도 남긴다: 배포 누락·권한으로 못 읽는 경우가 남고, 그건
+//   여전히 **조용하다**. 게이트를 없앨 이유가 아니라 덜 밟힐 이유일 뿐이다.
 const constitutionBytes = Buffer.byteLength(readSystem(), "utf8");
 if (constitutionBytes === 0) {
   console.error(
     `[boot] ★작동 헌법이 비었습니다 — ${getPaths().systemMd} 를 읽지 못했습니다. ` +
-      `비서가 위임·동사·확인 규칙 없이 돕니다(/status 에 표시). 앱 정본 SYSTEM.md 배포·홈 경로를 확인하세요.`,
+      `비서가 위임·동사·확인 규칙 없이 돕니다(/status 에 표시). 앱 정본 SYSTEM.md 배포를 확인하세요.`,
   );
 } else {
   console.log(`작동 헌법 로드: ${constitutionBytes.toLocaleString()}B`);
@@ -938,18 +940,29 @@ const handler: MessageHandler = async (msg) => {
   // V7.3 — 영역 A(LLM) 로 넘길 실효 텍스트. 사용자 정의 슬래시 매크로 매치 시
   // 확장된 prompt 로 교체 (기본 = 원본). 채널 입구 단일 지점 = LLM-agnostic.
   let effectiveText = msg.text;
-  // `/reset` (+ 별칭 `/clear`) — 컨텍스트 전면 초기화. LLM-agnostic 이어야 하므로 세 어댑터를
-  // 모두 끊는다: deleteSession(claude 세션) → setContextBoundary(codex/openai 는 세션 대신 매 턴
+  // `/clear` — 컨텍스트 초기화. LLM-agnostic 이어야 하므로 세 어댑터를 모두 끊는다:
+  // clearSessionContext(claude resume 끊기) → setContextBoundary(codex/openai 는 세션 대신 매 턴
   // 히스토리 재전송 → 이 ts 이전 턴 컷) → clearThreadSummary(codex 롤링 요약 드롭). 순서 고정.
   // 채널 무관 단일 지점(원칙 4). command-registry expandCommand(파일 매크로) 앞이라 커스텀
-  // 매크로가 이 별칭을 가릴 수 없다. `/clear` 는 별도 로직 복제 없이 동일 경로.
-  if (trimmed === "/reset" || trimmed === "/clear") {
-    const had = deleteSession(sidChannel, msg.threadKey);
+  // 매크로가 이 이름을 가릴 수 없다.
+  //
+  // ★사고와 그 뒤 (2026-08-20). 사용자 신고: "/clear 하니까 세션이 날아간다". 원인은 `/clear`
+  //  가 `deleteSession` 을 불러 `threads` 행을 통째로 지운 것 — **대화 이름과 탭까지** 없앴다.
+  //  근거 주석은 "이 세션의 모든 상태 초기화(사용자 결정 2026-05-28)" 였는데, 그때는 세션이
+  //  하나뿐이라 지울 이름도 탭도 없었다. 멀티세션(2026-07-15)이 들어오며 같은 코드의 의미가
+  //  조용히 바뀌었다 — **결정이 아니라 전제가 늙었다.**
+  //  1차 수정은 `/clear`(맥락만)와 `/reset`(세션까지)로 갈랐는데, 사용자 판정은 **`/reset` 을
+  //  빼자** 였다("/reset 도 /clear 랑 같은데"). 맞다 — 맥락이 다 지워지고 나면 남는 차이는
+  //  이름·모델 override·탭뿐이고, 그걸 **명령 한 줄로 되돌릴 수 없게 지우는 것**은 이 레포의
+  //  유지 철학(정리≠삭제)과 반대다. 대화를 치우고 싶으면 **보관**(archive)이 있다.
+  if (trimmed === "/clear") {
+    const had = clearSessionContext(sidChannel, msg.threadKey);
     setContextBoundary(sidChannel, msg.threadKey, Date.now());
     clearThreadSummary(sidChannel, msg.threadKey);
-    await replyCommand(msg,
+    await replyCommand(
+      msg,
       had
-        ? "컨텍스트 초기화됨. 새 대화로 시작합니다."
+        ? "컨텍스트 초기화됨. 새 대화로 시작합니다 (이 대화의 이름·설정은 그대로예요)."
         : "초기화할 컨텍스트가 없습니다.",
     );
     return;
@@ -994,7 +1007,7 @@ const handler: MessageHandler = async (msg) => {
   // 처리된다(멈춘 턴에 막히지 않게). 여기 in-band 핸들러까지 도달하는 일은 없다(serialized
   // 분기가 선점). 단일 재시작 진실 소스 = restartDaemon() (아래 정의).
   // `/model` — Claude Code 슈퍼셋: 세션별 메인 모델 override. 채널 입구에서 처리
-  // (원칙 4: 모델 슬래시 처리 안 시킴). `/reset` 시 함께 클리어(deleteSession 통합).
+  // (원칙 4: 모델 슬래시 처리 안 시킴).
   // 결정노트 2026-05-27-region-unification §gap "메인 모델 동적 전환"의 사용자-driven 갈래.
   if (trimmed === "/model" || trimmed.startsWith("/model ")) {
     const args = trimmed === "/model" ? "" : trimmed.slice("/model ".length).trim();
@@ -1019,7 +1032,7 @@ const handler: MessageHandler = async (msg) => {
         "  `/model anthropic:claude-opus-5`",
         "  `/model codex:gpt-5-codex`",
         "",
-        "참고: provider 는 `anthropic` / `codex` / `openai`. `/reset` 시 override 도 같이 초기화.",
+        "참고: provider 는 `anthropic` / `codex` / `openai`. override 는 `/model reset` 으로 되돌립니다.",
       ];
       await replyCommand(msg,lines.join("\n"));
       return;
@@ -1504,7 +1517,7 @@ const handler: MessageHandler = async (msg) => {
     // ── /cooldown — 백엔드 쿨다운 조회·해제 (2026-07-28) ─────────────────────────
     // 쿨다운은 "호출 성공 시" 풀리는데 쿨다운 중엔 그 백엔드를 안 부르므로 스스로는 안 풀린다.
     // 재인증·요금제 변경처럼 **전제가 바뀐 경우**를 위한 명시적 해제 수단(LLM 미경유).
-    // 수동 압축 (2026-07-29) — /reset 이 "다 버림"이면 이건 "요약해서 보존".
+    // 수동 압축 (2026-07-29) — /clear 가 "다 버림"이면 이건 "요약해서 보존".
     // 자동 압축과 같은 경로·같은 규칙(최근 턴은 안 접는다). codex 히스토리 전용 —
     // claude/openai 는 SDK 가 자기 컨텍스트를 관리하므로 대상이 아니다(정직 고지).
     if (cmd === "/compact") {
@@ -1623,10 +1636,10 @@ const handler: MessageHandler = async (msg) => {
           const win = lookupContextWindow(session.model);
           if (win !== undefined) {
             const pct = Math.round((inTok / win) * 100);
-            // 컨텍스트 압박 경고 — 윈도우 근접 시 /reset 유도(어댑터 무관).
+            // 컨텍스트 압박 경고 — 윈도우 근접 시 /clear 유도(어댑터 무관).
             const warn =
               pct >= 85
-                ? " ⚠️ 거의 참 — `/reset` 고려"
+                ? " ⚠️ 거의 참 — `/clear` 고려"
                 : pct >= 70
                   ? " ⚠️ 여유 줄어듦"
                   : "";
@@ -2191,7 +2204,7 @@ bus.subscribe((event) => {
 
 // mid-turn steering 개입 판정(ADR 2026-07-16 §5) — steer 대상 = 일반 사용자 대화 메시지만.
 //  - 슬래시(`/…`)는 제어 명령(out-of-band /stop·/restart·/update 는 위에서 이미 처리, in-band
-//    /reset·/model 등은 큐로) → steering 대상 아님.
+//    /clear·/model 등은 큐로) → steering 대상 아님.
 //  - 합성(synthetic) turn(워커 완료 재주입 등)은 사용자 메시지가 아니고 자체 프롬프트를 turn 으로
 //    처리해야 하므로 제외(steering 으로 새면 완료 통지 유실) — publishInboundEcho 스킵 대상과 정합.
 const steerable = (msg: IncomingMessage): boolean =>
@@ -2218,7 +2231,7 @@ const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
 const serializedHandler: MessageHandler = (msg) => {
   // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
-  // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /reset 등은 in-band 유지).
+  // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /clear 등은 in-band 유지).
   if (msg.text.trim() === "/restart") {
     // handler(in-band) 를 우회하므로 대시보드 낙관적 "대기 중" 버블을 클리어할 echo 를
     // 여기서 직접 낸다(2026-07-16 /stop 스턱 버블 픽스와 동형 — handler 는 절대 호출되지
@@ -2351,7 +2364,7 @@ const serializedHandler: MessageHandler = (msg) => {
   // 아님)를 새 별도 턴으로 큐잉하는 대신 그 SteeringChannel 로 push 해 "다음 model-call 경계에서
   // append"(손실 0, 진행 작업 유지)한다. 사용자 메시지 landed 는 publishInboundEcho 로 표시
   // (별도 턴 X — 대시보드 낙관적 버블 승격). 슬래시(/stop·/restart·/update 등 제어)는 위에서
-  // 이미 out-of-band 처리됐고, 여기 도달한 슬래시(예 /reset·/model 등 in-band 명령)는 steerable
+  // 이미 out-of-band 처리됐고, 여기 도달한 슬래시(예 /clear·/model 등 in-band 명령)는 steerable
   // =false 로 걸러 현행 큐 경로 유지 — 제어 명령은 steering 대상 아님.
   // ★flag off(기본) → 이 분기 통째 skip → 아래 enqueueThreadTurn = **현행 바이트 동일**(회귀 0).
   // ★Part B — push 반환값이 진짜 게이트(채널 존재+open). 종전 `inflightTurns.has` 게이트는

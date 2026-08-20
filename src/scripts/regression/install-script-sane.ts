@@ -148,12 +148,49 @@ const run = async (): Promise<Assertion[]> => {
   //   하나만 고치면 또 갈린다(오늘 하루에 이 형상을 다섯 번 봤다).
   //  ★그리고 감지에서 멈추지 않는다: **스스로 한 번 고쳐본다**(npm rebuild). 사용자가
   //   명령 세 줄을 외워야 하면 그건 도구가 일을 안 한 것이다.
-  const updater = codeOnly(read("bin/daemon.mjs"));
-  for (const [name, src] of [
-    ["install.sh", codeOnly(sh)],
-    ["install.ps1", codeOnly(ps)],
-    ["tiguclaw update", updater],
-  ] as const) {
+  // ★대상을 **손으로 적지 않는다** (2026-08-20 적대 검토 B-F1). 종전엔 이 목록이
+  //  `install.sh`·`install.ps1`·`bin/daemon.mjs` 세 줄이었는데, 실제 설치 경로는 **다섯**이고
+  //  빠진 둘이 하필 `bin/tiguclaw.mjs`(clone 후 onboard)와 `src/core/self-update.ts`
+  //  (**unix 의 `/update` 본체**)였다. 그 둘엔 보호가 하나도 없었고 검사는 초록이었다.
+  //  ★목록을 판정으로 바꾼다: "npm 으로 의존성을 설치하는 파일" 이면 대상이다.
+  //   새 설치 경로가 생기면 저절로 걸린다 — 그게 이 사고의 재발 조건이었다.
+  // ★후보를 **레포에서 발견한다** (2026-08-20 재검토 F4). 종전엔 바로 위 주석이
+  //  "목록을 판정으로 바꾼다" 고 적어놓고 정작 후보 여섯 줄을 **손으로 적고** 있었다 —
+  //  판정으로 바뀐 건 *필터*뿐이고 *후보 집합*은 그대로 손 목록이었다. 그리고 단언 이름은
+  //  "손으로 열거하지 않는다" 라고 말하고 있었으니, **검사가 자기에 대해 거짓을 말한** 셈이다.
+  //  (이 목록을 만든 게 바로 "손 목록이 빠뜨려서 사고가 났다" 를 고치는 커밋이었다.)
+  //  진실 소스는 `git ls-files` — `shipped-repo-complete.ts` 와 같은 근거로 파일시스템이
+  //  아니라 추적 파일이다(빌드 산출물·미추적물이 섞이면 판정이 흐려진다).
+  const INSTALL_CANDIDATES = execFileSync("git", ["ls-files"], { cwd: REPO, encoding: "utf8" })
+    .split("\n")
+    .filter((f) => /\.(sh|ps1|mjs|ts)$/.test(f))
+    // 회귀 자신과 작업 스크래치는 제외 — 검사 픽스처가 자기를 대상으로 세면 순환이다.
+    .filter((f) => !f.startsWith("src/scripts/regression/") && !f.startsWith("_workspace/"));
+  const installers: Array<readonly [string, string]> = [];
+  for (const f of INSTALL_CANDIDATES) {
+    const body = codeOnly(read(f));
+    // 의존성을 **설치하는** 파일만(안내문에 명령을 적기만 한 파일은 제외).
+    // ★`npm` 을 **실제로 부르는** 것만. 종전 판은 `"install"` 문자열만 봐서
+    //  `case "install": runDaemon("install")`(데몬 supervisor 등록)까지 설치자로 오탐했다 —
+    //  검사가 켜지자마자 그 오탐을 냈다. 셸 호출(`npm ci …`)과 argv 호출(`"npm", ["ci"…]`) 둘 다.
+    if (
+      // ★셸 형태(`npm ci …`)는 **셸 스크립트에서만** 인정한다. `.ts`/`.mjs` 는 그 문자열이
+      //  보통 **도움말 문구**다(`src/cli.ts` 가 "복구 순서: … npm ci …" 를 출력한다) —
+      //  `codeOnly` 는 주석을 걷지만 문자열 리터럴은 안 걷으므로 그걸로는 안 갈린다.
+      //  코드에서 실제로 부르는 형태는 argv 배열이다.
+      (/\.(sh|ps1)$/.test(f) && /npm\s+(ci|install)\b/.test(body)) ||
+      /["'`]npm["'`]\s*,\s*\[\s*["'`](ci|install)["'`]/.test(body) ||
+      /\[\s*useCi \? ["'`]ci["'`] : ["'`]install["'`]/.test(body)
+    ) {
+      installers.push([f, body] as const);
+    }
+  }
+  out.push({
+    name: "★설치 경로를 손으로 열거하지 않는다 — 실제 설치자를 찾아 전수 검사한다",
+    ok: installers.length >= 5,
+    got: `${installers.length}곳: ${installers.map(([n]) => n).join(", ")}`,
+  });
+  for (const [name, src] of installers) {
     out.push({
       name: `${name}: 설치 후 네이티브 모듈을 **실제로 열어** 확인한다`,
       ok: /require\(['"]better-sqlite3['"]\)/.test(src),
@@ -169,8 +206,10 @@ const run = async (): Promise<Assertion[]> => {
       // ★표기를 셋 다 받는다: `npm ci`(sh) · `& $Npm ci`(ps1, npm.cmd 경유) · `"ci"`(배열 인자).
       //  같은 판단이 셸마다 다른 모양으로 쓰인다 — 한 표기에 묶으면 **옳은 코드가 빨간불**이
       //  되고, 그러면 코드를 검사에 맞추게 된다(오늘 세 번째다).
-      ok: /(npm ci|\$Npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src),
-      got: /(npm ci|\$Npm ci|"ci")[^\n]{0,90}--ignore-scripts=false/.test(src)
+      // ★`install` 도 받는다 (2026-08-20). 종전엔 `ci` 만 봐서 `npm install` 을 쓰는
+      //  `self-update.ts`(unix `/update` 본체)가 **플래그가 붙어 있는데도** 빨간불이었다.
+      ok: /(npm (ci|install)|\$Npm ci|["'`](ci|install)["'`])[^\n]{0,140}--ignore-scripts=false/.test(src),
+      got: /(npm (ci|install)|\$Npm ci|["'`](ci|install)["'`])[^\n]{0,140}--ignore-scripts=false/.test(src)
         ? "설치 명령에 명시됨"
         : "🔴 정책이 켜지면 조용히 못 쓰게 된다",
     });

@@ -51,8 +51,9 @@ export interface BuiltinCommand {
  * 신규 빌트인 슬래시를 `src/index.ts` 에 추가하면 반드시 여기에도 한 줄 추가할 것.
  */
 export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
-  { name: "reset", description: "대화 컨텍스트 초기화" },
-  { name: "clear", description: "대화 컨텍스트 초기화 (/reset 별칭)" },
+  // ★`/reset` 은 뺐다 (2026-08-20 사용자 결정) — `/clear` 와 거의 같은데 되돌릴 수 없이
+  //  대화 이름·모델 설정·탭까지 지웠다. 치우고 싶으면 **보관**(archive)이 있다.
+  { name: "clear", description: "대화 컨텍스트 초기화 (이름·설정은 유지)" },
   { name: "compact", description: "대화 압축 — 오래된 대화를 요약으로 접는다(최근 대화는 원문 유지)" },
   { name: "memo", description: "메모리 추가" },
   { name: "forget", description: "메모리 삭제" },

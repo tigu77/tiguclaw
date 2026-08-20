@@ -47,7 +47,21 @@ export interface TiguclawPaths {
   agentMd: string;
   /** <home>/settings.json — 런타임 훅 등. */
   settings: string;
-  /** <home>/SYSTEM.md — α: 앱 정본(appRoot/SYSTEM.md)의 sync-on-boot 미러 (작동 헌법). */
+  /**
+   * 작동 헌법 SYSTEM.md 의 **정본 경로** = `appRoot()/SYSTEM.md`.
+   *
+   * ★2026-08-20 까지는 `<home>/SYSTEM.md` 로 **매 부팅 복사**했다(sync-on-boot 미러).
+   *  없앤 이유: ①읽는 곳이 `identity.ts` 한 곳뿐인데 ②사본이 **없던 실패 모드를 만들었다** —
+   *  미러가 실패하면 `readSystem()` 이 빈 문자열을 주고 비서가 **헌법 없이 돈다**(경고는
+   *  뜨지만 턴은 계속된다). 반면 정본은 **없을 수가 없다**: `appRoot()` 탐지 자체가
+   *  "`plugins/` 와 `SYSTEM.md` 를 함께 가진 디렉터리" 를 마커로 쓰므로, appRoot 가 풀렸다는
+   *  건 거기 SYSTEM.md 가 있다는 뜻이다. ③덤으로 사용자 홈에 "이게 왜 여기 있지" 가 사라진다.
+   *
+   * 오버라이드는 **파일이 아니라 env**(`TIGUCLAW_SYSTEM_MD`)다 — 벤치가 헌법 변종
+   *  (`--prompt none|minus:<절>`)으로 재려면 정본 아닌 걸 읽혀야 하는데, 그걸 *홈 파일* 로
+   *  두면 비서가 자기 헌법을 스스로 갈아치울 수 있게 된다(미러의 매일 덮어쓰기가 그걸
+   *  막고 있었다). 프로세스 env 는 턴이 못 바꾸므로 그 봉인이 유지된다.
+   */
   systemMd: string;
   /**
    * <home>/SELF_GROWTH.md — self-growth V4 확정 지침 층 (2026-06-22).
@@ -173,7 +187,10 @@ export const getPaths = (): TiguclawPaths => {
     attachmentsDir: path.join(home, "data", "attachments"),
     agentMd: path.join(home, "AGENT.md"),
     settings: path.join(home, "settings.json"),
-    systemMd: path.join(home, "SYSTEM.md"),
+    systemMd:
+      process.env.TIGUCLAW_SYSTEM_MD !== undefined && process.env.TIGUCLAW_SYSTEM_MD !== ""
+        ? process.env.TIGUCLAW_SYSTEM_MD
+        : path.join(appRoot(), "SYSTEM.md"),
     selfGrowthMd: path.join(home, "SELF_GROWTH.md"),
     commonSkills: path.join(home, "skills"),
     commonAgents: path.join(home, "agents"),
@@ -255,50 +272,25 @@ export const ensureHome = async (): Promise<void> => {
   } catch {
     await fs.writeFile(p.settings, `${JSON.stringify({ hooks: {} }, null, 2)}\n`);
   }
-  // α — SYSTEM.md(작동 헌법) sync-on-boot 미러. AGENT.md(사용자 인격, 부재 시만 시드)
-  //  와 정책이 다르다 — 헌법은 읽기전용 정본이라 매 부팅 무조건 덮어써 drift 0 보장.
-  await syncSystemMd();
+  // ★옛 홈 미러 청소 (2026-08-20). 이제 헌법은 앱 정본을 직접 읽는다 — 홈에 남은 사본은
+  //  아무도 안 읽으면서 **헌법처럼 보이는** 파일이라, 두면 다음에 볼 사람이 그걸 고친다.
+  //  우리가 쓴 파일이고 사용자 내용이 0이며(매 부팅 통째로 덮어써 왔다) 정본이 그대로
+  //  있으므로 되돌릴 수 있다. 한 번 지우면 다시 안 생긴다.
+  await removeLegacyHomeSystemMd();
 };
 
-/**
- * α (2026-05-25) — 앱 정본 `appRoot()/SYSTEM.md` → `<home>/SYSTEM.md` sync-on-boot
- *  미러 (결정 D = 무조건 덮어쓰기, copy+verify).
- *
- * 정책: SYSTEM.md = 작동 헌법 = 읽기전용 정본. AGENT.md(사용자 인격, 부재 시만 시드,
- *  사용자 편집 보존) 와 정반대 — 매 부팅 정본을 home 으로 무조건 복사한다. 그래야 정본이
- *  PR 로 갱신돼도 home 미러가 항상 최신 (drift 불가). 비서의 home SYSTEM.md 직접 편집은
- *  sysprompt 가 금지하고, 부팅 미러가 되돌린다 (헌법은 명시 PR 로만 = 정합).
- *
- * dev: appRoot=레포 → 레포 SYSTEM.md 를 home(=dev home) 으로 복사 (바이트 동치 확인 가능).
- * prod: appRoot=설치dir → 배포된 정본을 home 으로. cwd≠레포여도 비서가 home 에서 Read 성공.
- *
- * 정본 부재(이론상 배포 누락) 시 console.warn 후 no-op — 부팅 생존 우선 (throw 0).
- *  migrateLegacyAgent 의 copy-verify 패턴 답습.
- */
-export const syncSystemMd = async (): Promise<void> => {
-  const p = getPaths();
-  const canonical = path.join(appRoot(), "SYSTEM.md");
-  let body: string;
+/** 옛 `<home>/SYSTEM.md` 미러 제거 — 실패는 부팅에 영향 0 (경고만). */
+const removeLegacyHomeSystemMd = async (): Promise<void> => {
+  const legacy = path.join(getPaths().home, "SYSTEM.md");
+  if (legacy === getPaths().systemMd) return; // 오버라이드로 홈을 겨눈 경우 — 건드리지 않는다.
   try {
-    body = await fs.readFile(canonical, "utf8");
+    await fs.unlink(legacy);
+    console.log(`[paths] 옛 홈 SYSTEM.md 미러 제거 (${legacy}) — 헌법은 앱 정본을 직접 읽습니다.`);
   } catch {
-    console.warn(
-      `[paths] syncSystemMd: 앱 정본 SYSTEM.md 부재 (${canonical}) — home 미러 skip. 비서 헌법 Read 가 실패할 수 있습니다.`,
-    );
-    return;
-  }
-  try {
-    await fs.writeFile(p.systemMd, body);
-    const verify = await fs.readFile(p.systemMd, "utf8");
-    if (verify !== body) {
-      throw new Error("copy verification failed — home SYSTEM.md mismatch after write");
-    }
-  } catch (err) {
-    console.error(
-      `[paths] syncSystemMd failed (${String(err)}) — home SYSTEM.md at ${p.systemMd} may be stale.`,
-    );
+    /* 없으면 정상(대부분) */
   }
 };
+
 
 /**
  * V9.4 — 레거시 레포 `./AGENT.md`(사용자 인격, 예: "내비서") → 홈 `getPaths().agentMd`

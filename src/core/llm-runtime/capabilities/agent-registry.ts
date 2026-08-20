@@ -403,7 +403,7 @@ const buildAgentChildInput = (o: {
  *  가 이미 자체 상한이고, 그 위에 두 번째 상한을 얹으면 어느 쪽이 끊었는지 로그가
  *  갈린다(경계 순서 불변식은 *중첩*을 요구하지 중복을 요구하지 않는다).
  */
-const startDetachedAgent = (o: {
+export const startDetachedAgent = (o: {
   jobId: string;
   agent: Agent;
   def: string;
@@ -411,12 +411,24 @@ const startDetachedAgent = (o: {
   targetCwd: string;
   parentInput: RegionASdkInput;
   abort: { signal: AbortSignal; done: () => void };
+  /**
+   * 자식 실행 주입 — **검사 전용**. 기본은 진짜 `runRegionA`.
+   *
+   * ★왜 이음매가 필요한가 (2026-08-20 전체 검토 A-F1, 위험도 5): 이 함수 안의
+   *  `onWorkerComplete` 호출을 **지워도 1,299건 스위트가 전부 초록**이었다. 결과가
+   *  아무에게도 안 가고, `markDone/markFailed` 가 그 안이라 잡이 영원히 running 으로
+   *  굳고, 매니저는 2시간 상한까지 그 자식을 거둔다 — 헤드라인 기능이 통째로 무음 사망.
+   *  회귀가 `onWorkerComplete` 를 **직접** 부르고 실행 경로는 문자열로만 봤기 때문이다.
+   *  모델 호출만 갈아끼우면 나머지 배선은 **진짜로** 돌릴 수 있다.
+   */
+  __runForTest?: (input: RegionASdkInput) => Promise<RegionASdkOutput>;
 }): void => {
   void (async () => {
     const {
       onWorkerComplete,
       setSteerChannel,
       clearSteerChannel,
+      getSteerChannel,
       WORKER_STEERING_ENABLED,
       notifyJobOwner,
       getJob,
@@ -434,7 +446,10 @@ const startDetachedAgent = (o: {
     /** 서브가 끝나는 순간 도착해 반영 못 한 지시(원문). 결과 보고 뒤에 정직 통지. */
     let pendingSteerNotice: string[] = [];
     try {
-      const { runRegionA, resolveModelChain } = await import("../index.js");
+      const inject = o.__runForTest;
+      const { runRegionA, resolveModelChain } = inject
+        ? { runRegionA: null as never, resolveModelChain: (() => []) as unknown as typeof import("../index.js").resolveModelChain }
+        : await import("../index.js");
       const chain = resolveModelChain(o.agent.model, o.targetCwd);
       const childInput = buildAgentChildInput({
         jobId: o.jobId,
@@ -446,10 +461,9 @@ const startDetachedAgent = (o: {
         abortSignal: o.abort.signal,
         ...(steerCh !== undefined ? { steering: steerCh } : {}),
       });
-      const out = await runRegionA(
-        childInput,
-        chain.length > 0 ? { chain } : undefined,
-      );
+      const out = inject
+        ? await inject(childInput)
+        : await runRegionA(childInput, chain.length > 0 ? { chain } : undefined);
       outcome = { result: out.text };
     } catch (e) {
       outcome = { error: e instanceof Error ? e.message : String(e) };
@@ -458,12 +472,25 @@ const startDetachedAgent = (o: {
       // 스티어 채널 종료 + 잔여 회수. 서브에겐 다음 턴이 없으므로 그냥 close 하면 막
       // 도착한 지시가 조용히 사라진다(워커와 같은 손실창 — 같은 처리로 닫는다).
       if (steerCh !== undefined) {
+        // ★**레지스트리에서 현재 채널을 다시 읽는다** (2026-08-20 적대 검토 A-F5).
+        //  `steerJob` 은 채널이 닫혔어도 잡이 살아 있으면 갈아끼우고 `"delivered"` 를 준다.
+        //  그런데 여기서 **자기 지역 변수**를 drain 하면 그 새 채널을 아무도 안 읽는다 —
+        //  지시가 사라지는데 사용자에겐 "전달했어요" 가 뜨고, 잔여 통지조차 안 나간다.
+        //  (`startDetachedAgent` 는 회전을 안 하므로 항상 이 창에 노출돼 있었다.)
+        const current = getSteerChannel(o.jobId) ?? steerCh;
         clearSteerChannel(o.jobId);
-        steerCh.close();
-        pendingSteerNotice = steerCh
+        current.close();
+        pendingSteerNotice = current
           .drain()
           .map((m) => m.raw)
           .filter((t) => t !== "");
+        // 지역 참조가 다른 객체면 그쪽 잔여도 함께 회수한다(교체 순간 갇힌 것).
+        if (current !== steerCh) {
+          steerCh.close();
+          pendingSteerNotice.push(
+            ...steerCh.drain().map((m) => m.raw).filter((t) => t !== ""),
+          );
+        }
       }
     }
 

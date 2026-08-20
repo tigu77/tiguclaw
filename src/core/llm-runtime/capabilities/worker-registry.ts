@@ -64,7 +64,7 @@ import {
 }
 from "../../worker-jobs.js";
 import { getLastWorkerActivity } from "../../../store/events.js";
-import type { RegionASdkInput } from "../types.js";
+import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 
 // ─── 워커 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
 // runRegionA 로 메인 동급 full capability. await 하지 않고 fire-and-forget — runner 는
@@ -92,7 +92,17 @@ const errText = (text: string) => ({
  * 본 함수는 *동기 반환* (워커는 백그라운드 Promise). throw 금지 — 모든 종료는
  * onWorkerComplete 로 닫고 항상 abort 타이머를 done() 으로 해제(누수 0).
  */
-const runner = (job: WorkerJobRecord): void => {
+export const runWorkerJob = (
+  job: WorkerJobRecord,
+  /**
+   * ★모델 호출만 갈아끼우는 이음매 (2026-08-20 재검토 F2) — `startDetachedAgent` 와 **대칭**.
+   *  형제(에이전트) 러너엔 이게 있어서 `onWorkerComplete` 를 지우면 회귀가 빨개지는데,
+   *  이쪽엔 없어서 **같은 줄을 지워도 1,343건이 전부 초록**이었다. 그러면 매니저의 결과가
+   *  아무에게도 안 가고 잡이 영원히 running 으로 굳는다 — 조용히, 전 사용자에게.
+   *  프로덕션 경로는 이 인자를 안 받으므로 동작 변화 0(테스트만 넘긴다).
+   */
+  __runForTest?: (input: RegionASdkInput) => Promise<RegionASdkOutput>,
+): void => {
   // 워커 전용 상한 — timeoutMs 만료 시 WorkerTimeoutError 로 abort (무한 워커 봉쇄, W-I6).
   // jobId 등록 → cancel_worker·대시보드 중지 버튼이 외부에서 이 워커의 abort 를 부를 수 있다.
   const abort = createJobAbort(job.jobId, { timeoutMs: WORKER_TIMEOUT_MS });
@@ -122,7 +132,10 @@ const runner = (job: WorkerJobRecord): void => {
     /** 워커가 끝나는 순간 도착해 반영 못 한 지시(원문). 완료 통지 뒤 소유 세션에 알린다. */
     let pendingSteerNotice: string[] = [];
     try {
-      const { runRegionA, resolveModelChain } = await import("../index.js");
+      const { runRegionA, resolveModelChain } =
+        __runForTest === undefined
+          ? await import("../index.js")
+          : { runRegionA: __runForTest, resolveModelChain: () => [] };
       // 잡에 modelTier 가 있으면 그 풀 체인을 넘긴다(서브에이전트 동형) — 프로파일이면
       // .fallback 체인까지(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 미지정·빈 체인
       // 이면 undefined → runRegionA 가 기본 모델 풀 사용.
@@ -306,7 +319,7 @@ const runner = (job: WorkerJobRecord): void => {
 
 // 모듈 import 시 self-register — daemon 이 startWorkerJob 에서 이 runner 를 발사.
 // (index.ts 가 부팅 시 본 모듈을 import 하면 등록 — region/daemon 경계 명확.)
-registerWorkerRunner(runner);
+registerWorkerRunner(runWorkerJob);
 
 // ─── 발사 도구 MCP 서버 (architect §2 — spawn_agent 팩토리 동형) ──────────────
 // run_in_background: 비차단 발사(즉시 jobId). list_workers: 상태 조회(MVP 포함, §6·§12-2).

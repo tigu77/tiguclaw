@@ -40,7 +40,7 @@ export const probeNativeModule = async (
   }
 };
 
-/** 전역 `tiguclaw` 가 PATH 에서 풀리나. 못 풀면 `null`. */
+/** 전역 `tiguclaw` 가 PATH 에서 풀리나(**존재 여부**). 못 풀면 `null`. */
 export const resolveGlobalCommand = (
   platform: string = process.platform,
 ): string | null => {
@@ -56,10 +56,39 @@ export const resolveGlobalCommand = (
   }
 };
 
+/**
+ * 전역 `tiguclaw` 가 **실제로 어느 설치를 서빙하나** — `npm root -g/tiguclaw` 의 실체.
+ *
+ * ★PATH 상의 파일 경로로는 못 판정한다 (2026-08-20 적대 검토 B-F3). 유닉스에선 그게
+ *  심링크라 `realpath` 로 풀리지만, **윈도우에선 `cmd-shim` 이 만든 일반 파일**
+ *  (`tiguclaw`·`.cmd`·`.ps1`)이라 풀 것이 없다 — 결과가 영원히 `%APPDATA%\npm\…` 이고
+ *  설치 루트 밖이라, **모든 윈도우 사용자가 매번 "다른 설치본" 오경보**를 받는다.
+ *  안내대로 재onboard 해도 판정이 안 바뀌니 보장된 무효 처방이다.
+ *
+ * ★그래서 `src/cli.ts globalTiguclawIsOurs()` 가 쓰는 것과 **같은 근거**로 본다:
+ *  npm 이 링크한 패키지 디렉터리의 realpath. 양 플랫폼에서 같은 답을 준다.
+ *  (같은 판단을 세 번째로 다시 구현하지 않으려고 여기 한 번만 두고 판정은 순수 함수로 뺀다.)
+ */
+export const resolveLinkedInstallRoot = (): string | null => {
+  try {
+    const rootOut = execFileSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      shell: process.platform === "win32",
+    });
+    const pkg = path.join(rootOut.trim(), "tiguclaw");
+    return path.resolve(realpathSync(pkg));
+  } catch {
+    return null; // 전역 설치가 없거나 링크가 끊겼다.
+  }
+};
+
 export type GlobalCommandVerdict =
   | { kind: "ok"; detail: string }
   | { kind: "missing"; detail: string; fix: string }
-  | { kind: "elsewhere"; detail: string; fix: string };
+  | { kind: "elsewhere"; detail: string; fix: string }
+  // ★"모른다" 를 분리한다 — 밖에 있다고 **다른 설치라고 단정하면** 윈도우에서 전원 오경보다.
+  | { kind: "unknown"; detail: string; fix: string };
 
 /**
  * 전역 명령 상태 판정 — **순수**. 조회(위 함수)와 판정을 가른다.
@@ -71,42 +100,53 @@ export type GlobalCommandVerdict =
 export const judgeGlobalCommand = (
   resolved: string | null,
   repoRoot: string,
+  /** `npm root -g/tiguclaw` 실체(있으면 이게 **1순위 근거**). 미지정=조회 실패. */
+  linkedRoot?: string | null,
 ): GlobalCommandVerdict => {
   if (resolved === null) {
     return {
       kind: "missing",
       detail: "PATH 에서 못 찾음",
-      // ★조치는 **이미 있는 것 하나**를 가리킨다 — onboard 가 npm link 를 한다.
       fix: "설치 폴더에서 `npm run onboard` (전역 명령 등록을 다시 겁니다). 그 전까진 `node bin/tiguclaw.mjs <명령>` 으로 대신할 수 있습니다.",
     };
   }
-  // ★**심링크를 푼 뒤** 비교하고, 경계에 구분자를 붙인다 (2026-08-20 적대 검토).
-  //  첫 판은 `path.resolve` 접두 비교였고 **양방향으로 틀렸다**:
-  //   (a) `npm link` 가 만든 전역 bin 은 **심링크**다. 안 풀면 정상 설치가 전부
-  //       "다른 설치본" 으로 경고받고, 안내대로 재onboard 하면 재빌드·재등록까지 돈다.
-  //   (b) 구분자 없는 접두라 **형제 경로**가 통과했다 — `~/.tiguclaw-install` 이
-  //       `~/.tiguclaw` 안이라고 판정된다. 이 머신 지형이 정확히 그 모양이라
-  //       "조용한 오답" 이 실제로 났다(이 함수 주석이 경고한 바로 그 경우).
-  //  ★같은 판단이 이미 `src/cli.ts` 의 `globalTiguclawIsOurs()` 에 있다(realpath 정확 비교).
-  //   거긴 `npm root -g` 기준이고 여긴 사용자가 실제로 치는 `which` 기준이라 질문이 다르지만,
-  //   **비교 방식은 같아야 한다** — 내가 그걸 문자열 접두로 다시 구현하다 틀렸다.
-  const real = (p: string): string => {
+  const norm = (p: string): string => {
+    let r: string;
     try {
-      return path.resolve(realpathSync(p));
+      r = path.resolve(realpathSync(p));
     } catch {
-      return path.resolve(p);
+      r = path.resolve(p);
     }
+    return r.replace(/\\/g, "/").toLowerCase();
   };
-  const norm = (p: string): string => real(p).replace(/\\/g, "/").toLowerCase();
-  // `path.resolve` 가 트레일링 슬래시를 이미 뗀다 — 따로 지우지 않는다(죽은 코드였다).
   const rootNorm = norm(repoRoot);
-  const cmdNorm = norm(resolved);
-  if (cmdNorm === rootNorm || cmdNorm.startsWith(rootNorm + "/")) {
-    return { kind: "ok", detail: resolved };
+  const inside = (p: string): boolean => {
+    const n = norm(p);
+    return n === rootNorm || n.startsWith(rootNorm + "/");
+  };
+  // ★1순위: **직접 관측**. PATH 가 준 실행 파일 자체가 이 설치 안에 있으면, `tiguclaw` 를
+  //  쳤을 때 도는 건 이 설치다 — 그보다 강한 근거는 없다.
+  //  ★2026-08-20 재검토 F5 로 순서를 바꿨다. 종전엔 `linkedRoot`(npm 전역 링크)가 1순위라,
+  //   명령 경로가 **이 설치 안이라고 이미 증명됐는데도** 링크가 딴 데를 가리키면
+  //   "이 설치가 아닙니다" 로 뒤집었다. 그건 **증명된 답을 추정으로 덮은 것**이다.
+  //   실제로 갈리는 상황: 설치가 여럿이라 npm 전역 링크는 B 를 가리키는데 사용자의 PATH 는
+  //   A 안의 실행 파일을 먼저 잡는 경우 — 도는 건 A 인데 doctor 는 "A 가 아니다" 라고 했다.
+  //   `linkedRoot` 는 **명령이 이 설치 밖일 때** 그게 어디로 가는지를 설명하는 근거다.
+  if (inside(resolved)) return { kind: "ok", detail: resolved };
+  // 2순위: 명령이 밖이면(윈도우 shim 이 대표적) npm 이 링크한 실체로 판정한다.
+  if (linkedRoot !== undefined && linkedRoot !== null) {
+    if (inside(linkedRoot)) return { kind: "ok", detail: `${resolved} → ${linkedRoot}` };
+    return {
+      kind: "elsewhere",
+      detail: `${resolved} → ${linkedRoot} (이 설치가 아닙니다)`,
+      fix: "다른 tiguclaw 설치본이 전역 명령을 잡고 있습니다. 이 설치를 쓰려면 여기서 `npm run onboard` 를 다시 돌리거나, 명령마다 `node bin/tiguclaw.mjs <명령>` 을 쓰세요.",
+    };
   }
+  // 3순위(링크 조회 실패 + 명령도 밖): **단정하지 않는다** — 모른다고 말한다.
   return {
-    kind: "elsewhere",
-    detail: `${resolved} — 이 설치(${repoRoot})가 아닙니다`,
-    fix: "다른 tiguclaw 설치본이 전역 명령을 잡고 있습니다. 이 설치를 쓰려면 여기서 `npm run onboard` 를 다시 돌리거나, 명령마다 `node bin/tiguclaw.mjs <명령>` 을 쓰세요.",
+    kind: "unknown",
+    detail: `${resolved} — 어느 설치를 가리키는지 확인 못 했습니다(npm 전역 조회 실패)`,
+    fix: "판정 불가입니다. 이 설치를 확실히 쓰려면 `node bin/tiguclaw.mjs <명령>` 을 쓰세요.",
   };
 };
+

@@ -47,7 +47,11 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
     console.log("[tiguclaw] 의존성이 없습니다 — npm ci 로 설치합니다 (최초 1회)…");
     // ci 는 lockfile 이 있어야 한다. 없으면(개발 중 체크아웃) install 로 강등.
     const useCi = existsSync(path.join(root, "package-lock.json"));
-    const boot = spawnSync("npm", [useCi ? "ci" : "install"], {
+    // ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-20 적대 검토 B-F1).
+    //  install.sh·install.ps1·daemon.mjs 셋엔 있었는데 **이 경로엔 없었다** — `git clone` 후
+    //  `tiguclaw onboard` 를 치는 사용자의 유일한 설치 지점이다. 사내 정책으로
+    //  `ignore-scripts=true` 면 npm 은 **성공하는데** 네이티브가 안 깔려 데몬이 부팅마다 죽는다.
+    const boot = spawnSync("npm", [useCi ? "ci" : "install", "--ignore-scripts=false"], {
       stdio: "inherit",
       cwd: root,
       shell: process.platform === "win32",
@@ -57,6 +61,31 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
         "[tiguclaw] 의존성 설치 실패 — 레포 루트에서 `npm ci` 를 직접 돌린 뒤 다시 시도하세요.",
       );
       process.exit(1);
+    }
+    // ★종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
+    //  네이티브가 안 열리면 이 뒤 모든 단계가 부팅마다 죽는다(실측: 6회 연속 크래시).
+    const probe = spawnSync(process.execPath, ["-e", "require('better-sqlite3')"], {
+      cwd: root,
+      stdio: "ignore",
+    });
+    if ((probe.status ?? 1) !== 0) {
+      const heal = spawnSync("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false"], {
+        cwd: root,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
+      const again = spawnSync(process.execPath, ["-e", "require('better-sqlite3')"], {
+        cwd: root,
+        stdio: "ignore",
+      });
+      if ((heal.status ?? 1) !== 0 || (again.status ?? 1) !== 0) {
+        console.error(
+          "[tiguclaw] SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.\n" +
+            "   빌드 도구가 필요할 수 있습니다 — 윈도우: Visual Studio Build Tools(C++),\n" +
+            "   리눅스: build-essential + python3. 그 뒤 `npm rebuild better-sqlite3`.",
+        );
+        process.exit(1);
+      }
     }
   }
   argv = [tsxEntry, path.join(root, "src", "cli.ts"), ...process.argv.slice(2)];

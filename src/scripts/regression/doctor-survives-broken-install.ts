@@ -15,6 +15,7 @@
  * 않는지는 소스로 본다(그건 import 그래프라 실행으로 재려면 프로세스를 띄워야 한다).
  */
 import { readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import {
   judgeGlobalCommand,
   probeNativeModule,
@@ -129,13 +130,30 @@ export const check: RegressionCheck = {
       ),
       assert(
         "이 설치를 가리키면 정상",
-        judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw").kind === "ok",
+        judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw", "/opt/tiguclaw").kind === "ok",
         "ok 여야",
+      ),
+      // ★직접 관측이 간접 근거를 이긴다 (2026-08-20 재검토 F5). 종전엔 `linkedRoot` 가
+      //  1순위라, 명령 경로가 **이 설치 안이라고 이미 증명됐는데도** 링크가 딴 데를 가리키면
+      //  "이 설치가 아닙니다" 로 뒤집었다. 설치가 여럿일 때 실제로 갈린다 — 전역 링크는 B 인데
+      //  PATH 는 A 안의 실행 파일을 먼저 잡으면, 도는 건 A 인데 doctor 가 "A 가 아니다" 라고 했다.
+      //  ★사용자 지정(2026-08-19): "어떤 홈으로 설치하든 여러 개를 설치하든 문제가 생기면 안 된다."
+      assert(
+        "★명령이 이 설치 안이면 전역 링크가 딴 데여도 정상 — 증명된 답을 추정으로 덮지 않는다",
+        judgeGlobalCommand(
+          "/opt/tiguclaw/node_modules/.bin/tiguclaw",
+          "/opt/tiguclaw",
+          "/opt/other",
+        ).kind === "ok",
+        JSON.stringify(
+          judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw", "/opt/other"),
+        ).slice(0, 100),
       ),
       assert(
         "★다른 설치를 가리키면 그걸 말한다 — '명령 없음' 보다 나쁜 조용한 오답이다",
-        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw").kind === "elsewhere",
-        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw").kind,
+        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", "/opt/other").kind ===
+          "elsewhere",
+        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", "/opt/other").kind,
       ),
       // ★심링크·형제경로 (2026-08-20 적대 검토) — 첫 판은 `path.resolve` 접두 비교라
       //  **양방향으로** 틀렸다: `npm link` 심링크를 안 풀어 정상 설치를 "다른 설치" 라 했고,
@@ -144,9 +162,16 @@ export const check: RegressionCheck = {
       //   그걸 문자열 비교로 다시 구현하다 틀린 것이라, 이 검사는 그 재발을 막는다.
       assert(
         "★형제 경로를 같은 설치로 보지 않는다(~/.tiguclaw-install ≠ ~/.tiguclaw)",
-        judgeGlobalCommand("/Users/x/.tiguclaw-install/bin/tiguclaw", "/Users/x/.tiguclaw").kind ===
-          "elsewhere",
-        judgeGlobalCommand("/Users/x/.tiguclaw-install/bin/tiguclaw", "/Users/x/.tiguclaw").kind,
+        judgeGlobalCommand(
+          "/Users/x/.tiguclaw-install/bin/tiguclaw",
+          "/Users/x/.tiguclaw",
+          "/Users/x/.tiguclaw-install",
+        ).kind === "elsewhere",
+        judgeGlobalCommand(
+          "/Users/x/.tiguclaw-install/bin/tiguclaw",
+          "/Users/x/.tiguclaw",
+          "/Users/x/.tiguclaw-install",
+        ).kind,
       ),
       assert(
         "★심링크를 풀고 비교한다(npm link 로 건 정상 설치를 '다른 설치' 라 하지 않게)",
@@ -171,8 +196,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "경로 대소문자·구분자 차이를 흡수한다(윈도우)",
-        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw").kind === "ok",
-        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw").kind,
+        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw", "C:/Apps/Tiguclaw").kind === "ok",
+        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw", "C:/Apps/Tiguclaw").kind,
       ),
     );
 
@@ -208,6 +233,14 @@ export const check: RegressionCheck = {
         mkdirSync(P.join(T, "gb"), { recursive: true });
         const link = P.join(T, "gb/tiguclaw");
         symlinkSync(P.join(one, "bin/tiguclaw.mjs"), link);
+        // 심링크면 실체를, 아니면 그 경로가 속한 설치 루트를 링크 실체로 본다(테스트 헬퍼).
+        const linkedOf = (cmd: string): string => {
+          try {
+            return P.dirname(P.dirname(P.resolve(realpathSync(cmd))));
+          } catch {
+            return P.dirname(P.dirname(P.resolve(cmd)));
+          }
+        };
         const cases: Array<[string, string | null, string, string]> = [
           ["설치 1개 · 직접 경로", P.join(one, "bin/tiguclaw.mjs"), one, "ok"],
           ["설치 1개 · npm link 심링크", link, one, "ok"],
@@ -219,13 +252,65 @@ export const check: RegressionCheck = {
           ["명령 없음", null, one, "missing"],
         ];
         for (const [name, cmd, root, want] of cases) {
-          const got = judgeGlobalCommand(cmd, root).kind;
+          // ★`linkedRoot`(npm 이 링크한 실체)를 넘긴다 — 실제 doctor 도 그렇게 부른다.
+          //  안 넘기면 판정이 `unknown`(모른다)이고 그건 **옳은 보수적 답**이다:
+          //  윈도우 shim 은 원래 설치 루트 밖이라 "밖=다른 설치" 로 단정하면 전원 오경보다.
+          const got = judgeGlobalCommand(cmd, root, cmd === null ? null : linkedOf(cmd)).kind;
           out.push(
             assert(`지형: ${name}`, got === want, got === want ? got : `${got} (기대 ${want})`),
           );
         }
       } finally {
         rmSync(T, { recursive: true, force: true });
+      }
+    }
+
+    // ── ★종료코드가 화면 판정과 같은가 — **진짜로 돌려서** 본다 (B-F2) ────────────
+    //  종전엔 `fatal` 카운터와 `issues` 배열이 **두 벌의 손 관리 목록**이었고 9곳 중 4곳이
+    //  어긋났다(데몬 미응답 · 채널 핸들러 미연결 · **텔레그램 allowlist 빈값=봇 완전 잠김** ·
+    //  ripgrep 없음). 그 상태에서 화면은 "🔴 문제 N개" 인데 종료코드는 **0**(정상)이었다 —
+    //  기계가 읽는 답과 사람이 읽는 답이 갈리면 자동화(CI·설치 스크립트·이슈 템플릿)가 속는다.
+    //  ★소스로 보면 동의어로 뚫린다. 프로세스를 띄워 **결과**를 본다(임시 홈, 라이브 무접촉).
+    {
+      const { spawnSync } = await import("node:child_process");
+      const { mkdtempSync, rmSync } = await import("node:fs");
+      const os = await import("node:os");
+      const P = await import("node:path");
+      const REPO = P.resolve(P.dirname(new URL(import.meta.url).pathname), "../../..");
+      const home = mkdtempSync(P.join(os.tmpdir(), "tgc-doc-"));
+      try {
+        const r = spawnSync(
+          process.execPath,
+          ["--import", "tsx", P.join(REPO, "src/scripts/doctor.ts")],
+          {
+            cwd: REPO,
+            encoding: "utf8",
+            timeout: 60_000,
+            env: {
+              ...process.env,
+              TIGUCLAW_HOME: home,
+              DATA_DIR: home,
+              TELEGRAM_BOT_TOKEN: "",
+              HTTP_BRIDGE_PORT: "39997", // 아무도 안 듣는 포트 = 데몬 미응답 유도
+            },
+          },
+        );
+        const outText = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+        const sawProblem = /🔴 문제 \d+개/.test(outText);
+        out.push(
+          assert(
+            "doctor 가 그 환경에서 문제를 보고한다(전제 확인)",
+            sawProblem,
+            sawProblem ? "문제 보고함" : outText.slice(-160),
+          ),
+          assert(
+            "★문제를 보고했으면 **종료코드도 실패**다 — 화면과 기계 판정이 갈리면 안 된다",
+            !sawProblem || r.status === 1,
+            `exit=${String(r.status)} · 화면=${sawProblem ? "문제 있음" : "정상"}`,
+          ),
+        );
+      } finally {
+        rmSync(home, { recursive: true, force: true });
       }
     }
 

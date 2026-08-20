@@ -1463,6 +1463,46 @@ export const setThreadName = (threadKey: string, name: string | null): number =>
 };
 
 /**
+ * **맥락만** 초기화한다 — 세션 자체(이름·탭·바인딩)는 남긴다. `/clear` 가 쓴다.
+ *
+ * ★왜 `deleteSession` 과 갈랐나 (2026-08-20 사용자 신고: "/clear 하니까 세션이 날아간다"):
+ *  `/clear` 는 `deleteSession` 을 불러 **`threads` 행을 통째로 지웠다.** 그러면 대화 이름과
+ *  탭이 같이 사라진다. 그 동작의 근거 주석은 *"`/reset` 의미 = 이 세션의 모든 상태 초기화
+ *  (사용자 결정 2026-05-28)"* 인데, 그때는 **세션이 하나뿐**이었다 — 지울 이름도 탭도
+ *  없었으니 "전부 지움" 이 곧 "맥락 지움" 이었다. 멀티세션(2026-07-15)이 들어오면서
+ *  같은 코드의 의미가 조용히 바뀌었다. 결정은 안 늙었는데 **전제가 늙었다.**
+ *
+ * ★단 행을 그냥 두면 안 된다 — `claude_session_id` 가 어댑터의 **대화 이어가기 id** 라,
+ *  남겨두면 `/clear` 해도 옛 맥락을 그대로 resume 한다(초기화가 거짓말이 된다).
+ *  그래서 **맥락 열만** 비운다: 이어가기 id · 프롬프트 해시 · 마지막 토큰.
+ *  남기는 것: `name`(탭 이름) · `archived_at` · 채널 좌표 · 생성 시각.
+ *
+ * @returns 초기화할 세션이 있었나.
+ */
+export const clearSessionContext = (
+  channel: ChannelName,
+  threadKey: string,
+): boolean => {
+  const handle = requireDb("clearSessionContext");
+  const r = handle
+    .prepare(
+      // ★`claude_session_id` 는 스키마상 NOT NULL 이라 빈 문자열로 둔다. 실제 이어가기
+      //  게이트는 `system_prompt_hash` 다 — 어댑터가 `prior.systemPromptHash ===
+      //  SYSTEM_PROMPT_HASH` 일 때만 `resume` 을 건다(claude-agent-sdk.ts). 그러니
+      //  해시를 비우면 이어가기가 확실히 끊긴다. id 는 흔적일 뿐 판정에 안 쓰인다.
+      `UPDATE threads
+          SET claude_session_id = '',
+              system_prompt_hash = NULL,
+              last_input_tokens = NULL,
+              last_output_tokens = NULL,
+              last_used_at = ?
+        WHERE channel = ? AND channel_thread_id = ?`,
+    )
+    .run(Date.now(), channel, threadKey);
+  return r.changes > 0;
+};
+
+/**
  * 가장 최근에 봇과 대화한 텔레그램 chatId — 매 부팅 "재시작 완료" 통지의 대상.
  * `tg:<chatId>` 형태의 primary thread 만(worker:/::sub:: 파생 제외). 없으면 null
  * (설치 직후·아무도 말 안 검 → 콘솔 통지). config·seed 불필요 — DB 의 활성 대화가 진실.

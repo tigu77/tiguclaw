@@ -47,7 +47,7 @@ Channel.start(serializedHandler)
   → handler(msg)  [index.ts:719]
       1. publishInboundEcho (대시보드 낙관 버블용 관측 이벤트)
       2. 세션 정규화: canonicalSessionChannel(threadKey, channel)
-      3. 하드코딩 슬래시 fast-path: /reset,/clear,/agents,/memo,/forget,/model,/models,
+      3. 하드코딩 슬래시 fast-path: /clear,/agents,/memo,/forget,/model,/models,
          /status 등 → 여기서 끝나면 route() 안 탐 (LLM 턴 0)
       4. expandCommand()  [core/entry/command-registry.ts] — 사용자 정의 슬래시 매크로
          (.claude/commands/, plugins/<name>/commands/) → effectiveText 치환

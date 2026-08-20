@@ -15,6 +15,7 @@
  *
  * ★초기화 ≠ 삭제: 원문 `transcripts` 는 그대로 남는다(보존 원칙). 컨텍스트에서 내릴 뿐이다.
  */
+import { readFile } from "node:fs/promises";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CH = "http-bridge" as const;
@@ -26,7 +27,15 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
     const out: Assertion[] = [];
-    const { initStore, saveSession, deleteSession, setContextBoundary, getDb } =
+    const {
+      initStore,
+      saveSession,
+      deleteSession,
+      clearSessionContext,
+      setThreadName,
+      setContextBoundary,
+      getDb,
+    } =
       await import("../../store/sessions.js");
     const { loadThreadHistoryWithIds } = await import("../../store/memory.js");
     const { upsertThreadSummary, getThreadSummary, clearThreadSummary } = await import(
@@ -140,12 +149,48 @@ export const check: RegressionCheck = {
 
     // ★③ 배선 — 핸들러가 실제로 셋을 **이 순서로** 부르는가(요약 드롭이 빠지면 위 ②가 현실이 된다).
     const { sourceOrder } = await import("./_wiring.js");
-    const wired = await sourceOrder("../../index.ts", [
-      /if \(trimmed === "\/reset" \|\| trimmed === "\/clear"\) \{/,
-      /deleteSession\(sidChannel, msg\.threadKey\)/,
-      /setContextBoundary\(sidChannel, msg\.threadKey, Date\.now\(\)\)/,
-      /clearThreadSummary\(sidChannel, msg\.threadKey\)/,
-    ]);
+    // ★2026-08-20: `/clear` 와 `/reset` 이 갈렸다 — 각각 **자기 블록**을 잘라서 본다.
+    //  `sourceOrder` 로 파일 전체를 훑으면 이웃 블록의 줄에 매칭된다(실제로 그렇게 오탐이
+    //  났다). 블록을 먼저 자르는 게 판정의 전제다.
+    //  ★그 뒤 `/reset` 은 아예 없앴다(사용자 결정) — 아래가 되살아남을 지킨다.
+    const idxSrc = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    const blockOf = (head: string): string => {
+      const at = idxSrc.indexOf(head);
+      if (at < 0) return "";
+      // 다음 `if (trimmed === ` 까지가 그 블록.
+      const next = idxSrc.indexOf('if (trimmed === "', at + head.length);
+      return idxSrc.slice(at, next < 0 ? at + 1200 : next);
+    };
+    const clearBlock = blockOf('if (trimmed === "/clear") {');
+    const wired = {
+      ok:
+        clearBlock !== "" &&
+        /clearSessionContext\(sidChannel, msg\.threadKey\)/.test(clearBlock) &&
+        /setContextBoundary\(sidChannel, msg\.threadKey, Date\.now\(\)\)/.test(clearBlock) &&
+        /clearThreadSummary\(sidChannel, msg\.threadKey\)/.test(clearBlock),
+      detail: clearBlock === "" ? "★/clear 블록 미발견" : "세 단계 모두 호출",
+    };
+    out.push(
+      assert(
+        "★`/reset` 은 없다 (2026-08-20 사용자 결정) — 되돌릴 수 없이 이름·설정·탭까지 지우는 명령을 두지 않는다",
+        !idxSrc.includes('trimmed === "/reset"'),
+        idxSrc.includes('trimmed === "/reset"') ? "★되살아났다" : "없음",
+      ),
+      assert(
+        "★대화를 지우는 명령이 **아무것도** 없다 — 치우는 수단은 보관(archive)이다",
+        !/deleteSession\(/.test(idxSrc),
+        /deleteSession\(/.test(idxSrc) ? "★세션 삭제 경로가 생겼다" : "삭제 경로 0",
+      ),
+      assert(
+        "★/clear 블록이 deleteSession 을 부르지 않는다 — 그게 세션을 날린 원인이었다",
+        clearBlock !== "" && !/deleteSession\(/.test(clearBlock),
+        clearBlock === ""
+          ? "★블록 미발견"
+          : /deleteSession\(/.test(clearBlock)
+            ? "★여전히 호출 — 세션이 날아간다"
+            : "미호출",
+      ),
+    );
     out.push(
       assert(
         "★/clear 핸들러가 세 단계를 모두 부른다(어댑터 하나만 끊기는 일 0)",
@@ -153,6 +198,110 @@ export const check: RegressionCheck = {
         wired.detail,
       ),
     );
+    // ── ★`/clear` 는 **맥락만** 지운다 — 세션(이름·탭)은 남는다 (2026-08-20 사용자 신고) ──
+    //  신고: "/clear 로 세션 컨텍스트 초기화 하니까 세션이 날아간다 · 두 세션 다 탭에서
+    //  없어졌다". 원인: `/clear` 가 `deleteSession` 을 불러 `threads` 행을 통째로 지웠다.
+    //  ★근거 주석은 *"이 세션의 모든 상태 초기화(사용자 결정 2026-05-28)"* 였는데, 그때는
+    //   **세션이 하나뿐**이라 지울 이름도 탭도 없었다 — "전부 지움" 이 곧 "맥락 지움" 이었다.
+    //   멀티세션(2026-07-15)이 들어오며 같은 코드의 의미가 조용히 바뀌었다.
+    //   **결정이 늙은 게 아니라 전제가 늙었다.**
+    //  ★이 회귀 자신도 `deleteSession` 을 직접 불러서 이 결함을 못 봤다 — 검사가 제품과
+    //   같은 함수를 부르는 게 아니라 **같은 가정**을 복제하고 있었다.
+    {
+      const tk = "clear:keeps-identity";
+      seed(tk, "sid-keep");
+      setThreadName(tk, "가시피버 재구성");
+      // ★이어가기 게이트(`system_prompt_hash`)를 **실제로 채워** 둔다. 안 채우면 처음부터
+      //  NULL 이라 "지웠는지" 를 잴 수 없다 — 그 상태에선 지우는 줄을 없애도 검사가 통과한다
+      //  (변이로 확인했다). 픽스처가 비어 있으면 검사도 비어 있다.
+      getDb()
+        .prepare(`UPDATE threads SET system_prompt_hash = ? WHERE channel_thread_id = ?`)
+        .run("hash-of-current-prompt", tk);
+      const nameOf = (): string | null => {
+        const r = getDb()
+          .prepare(`SELECT name, claude_session_id AS sid FROM threads WHERE channel_thread_id = ?`)
+          .get(tk) as { name: string | null; sid: string | null } | undefined;
+        return r === undefined ? null : r.name;
+      };
+      const hashOf = (): string | null => {
+        const r = getDb()
+          .prepare(`SELECT system_prompt_hash AS h FROM threads WHERE channel_thread_id = ?`)
+          .get(tk) as { h: string | null } | undefined;
+        return r === undefined ? null : r.h;
+      };
+      const sidOf = (): string | null => {
+        const r = getDb()
+          .prepare(`SELECT claude_session_id AS sid FROM threads WHERE channel_thread_id = ?`)
+          .get(tk) as { sid: string | null } | undefined;
+        return r === undefined ? null : r.sid;
+      };
+      const rowsBefore = (getDb()
+        .prepare(`SELECT COUNT(*) AS c FROM threads WHERE channel_thread_id = ?`)
+        .get(tk) as { c: number }).c;
+
+      const had = clearSessionContext(CH, tk);
+      setContextBoundary(CH, tk, Date.now());
+      clearThreadSummary(CH, tk);
+
+      const rowsAfter = (getDb()
+        .prepare(`SELECT COUNT(*) AS c FROM threads WHERE channel_thread_id = ?`)
+        .get(tk) as { c: number }).c;
+
+      out.push(
+        assert("전제: 세션이 있었다", rowsBefore === 1 && had, `rows=${rowsBefore} had=${had}`),
+        assert(
+          "★/clear 후에도 **세션 행이 남는다** — 탭이 사라지면 안 된다",
+          rowsAfter === 1,
+          `rows=${rowsAfter}`,
+        ),
+        assert(
+          "★대화 이름이 보존된다 — 사용자가 붙인 이름은 맥락이 아니다",
+          nameOf() === "가시피버 재구성",
+          `${nameOf() ?? "(사라짐)"}`,
+        ),
+        // ★두 축을 **따로** 본다. 묶어서 보면 하나만 지워도 통과한다(실제로 그랬다).
+        //  실제 이어가기 게이트는 **해시**다 — 어댑터가
+        //  `prior.systemPromptHash === SYSTEM_PROMPT_HASH` 일 때만 resume 을 건다.
+        //  그러니 해시를 안 지우면 `/clear` 해도 옛 대화를 그대로 이어간다.
+        assert(
+          "★이어가기 **해시**가 지워진다 — 이게 실제 resume 게이트다",
+          hashOf() === null,
+          `system_prompt_hash=${hashOf() ?? "null"}`,
+        ),
+        assert(
+          "이어가기 id 도 비워진다(흔적 제거 — NOT NULL 이라 빈 문자열)",
+          (sidOf() ?? "") === "",
+          `claude_session_id="${sidOf() ?? ""}"`,
+        ),
+        assert(
+          "히스토리도 경계 뒤로 끊긴다",
+          loadThreadHistoryWithIds(CH, tk).length === 0,
+          `${loadThreadHistoryWithIds(CH, tk).length}턴`,
+        ),
+        assert(
+          "요약도 지워진다",
+          (getThreadSummary(tk)?.summary ?? "") === "",
+          `${(getThreadSummary(tk)?.summary ?? "").length}자`,
+        ),
+      );
+
+      // `/reset` 은 종전대로 **세션까지** 지운다 — 두 명령의 의미가 갈려 있어야 한다.
+      const tk2 = "clear:reset-still-deletes";
+      seed(tk2, "sid-reset");
+      setThreadName(tk2, "지워질 이름");
+      deleteSession(CH, tk2);
+      const rows2 = (getDb()
+        .prepare(`SELECT COUNT(*) AS c FROM threads WHERE channel_thread_id = ?`)
+        .get(tk2) as { c: number }).c;
+      out.push(
+        assert(
+          "/reset 은 여전히 세션까지 지운다(두 명령이 같은 일을 하면 이름이 거짓말이다)",
+          rows2 === 0,
+          `rows=${rows2}`,
+        ),
+      );
+    }
+
     return out;
   },
 };

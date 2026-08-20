@@ -21,7 +21,12 @@ import { DISALLOWED_TOOLS } from "../auth/permissions.js";
 import { ensureRipgrep } from "../core/ripgrep.js";
 import { getPaths } from "../core/paths.js";
 import type { BridgeTokenRole } from "../store/bridge-tokens.js";
-import { judgeGlobalCommand, probeNativeModule, resolveGlobalCommand } from "./doctor-install.js";
+import {
+  judgeGlobalCommand,
+  probeNativeModule,
+  resolveGlobalCommand,
+  resolveLinkedInstallRoot,
+} from "./doctor-install.js";
 // codex OAuth 토큰 키 상수 + 만료 파서를 어댑터에서 재사용 (하드코딩 중복 금지).
 // 해당 모듈은 top-level side-effect 0 (순수 const + 함수 정의) — env 미설정에서도
 // 안전히 로드됨 (POOLS 평가 throw 와 무관: pool 레지스트리를 import 하지 않음).
@@ -140,7 +145,11 @@ const main = async (): Promise<void> => {
   // ★기준은 **이 doctor 가 속한 설치**다(cwd 가 아니라). `tiguclaw doctor` 는 아무 폴더에서나
   //  실행되므로 cwd 를 쓰면 "다른 설치" 오탐이 난다 — 첫 판이 그랬다.
   const installRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  const cmd = judgeGlobalCommand(resolveGlobalCommand(), installRoot);
+  const cmd = judgeGlobalCommand(
+    resolveGlobalCommand(),
+    installRoot,
+    resolveLinkedInstallRoot(),
+  );
   console.log(line("tiguclaw 명령", cmd.kind === "ok" ? `${cmd.detail} ✅` : `⚠️  ${cmd.detail}`));
   if (cmd.kind !== "ok") {
     console.log(`  ${cmd.fix}`);
@@ -650,7 +659,19 @@ const main = async (): Promise<void> => {
   }
   console.log(nextStep);
 
-  process.exit(fatal > 0 ? 1 : 0);
+  // ★종료코드는 **화면에 찍은 판정과 같아야 한다** (2026-08-20 적대 검토 B-F2).
+  //  종전엔 `fatal` 카운터와 `issues` 배열이 **두 벌의 손 관리 목록**이었고 9곳 중 4곳이
+  //  어긋났다 — 데몬 미응답 / 채널 핸들러 미연결 / **텔레그램 allowlist 빈값(봇 완전 잠김)** /
+  //  ripgrep 없음. 그 상태에서 화면은 "🔴 문제 1개" 를 찍는데 종료코드는 **0**(정상)이었다.
+  //  기계가 읽는 답과 사람이 읽는 답이 갈리면 자동화(CI·설치 스크립트·이슈 템플릿)가 속는다.
+  //  ★숫자를 맞추는 게 아니라 **목록을 하나로** 한다 — 화면에 문제로 적은 것이 곧 실패다.
+  //  (`fatal` 은 아래 참고용으로만 남긴다 — 안 맞으면 그 자체가 신호다.)
+  if (fatal > 0 && issues.length === 0) {
+    console.log(
+      `⚠️ 내부 불일치: fatal=${fatal} 인데 문제 목록이 비어 있습니다 — 판정 누락일 수 있습니다.`,
+    );
+  }
+  process.exit(issues.length > 0 || fatal > 0 ? 1 : 0);
 };
 
 main().catch((e) => {

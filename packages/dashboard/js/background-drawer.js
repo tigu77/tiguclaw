@@ -531,9 +531,17 @@
         const visible = bgFilter === "running" ? dispRunning : dispDone;
         if (bgEmpty) {
           bgEmpty.style.display = visible === 0 ? "" : "none";
-          bgEmpty.textContent = bgFilter === "running"
-            ? "진행 중인 작업이 없습니다."
-            : "완료된 작업이 없습니다.";
+          // ★"없습니다" 로 **단정하지 않는다** (2026-08-20 재검토 F3). 헤더 배지는 전역이고
+          //  이 목록은 세션 스코프라 **둘이 다른 건 설계**인데, 종전 문구는 그 차이를 안 말해서
+          //  사용자가 "숫자는 2인데 카드가 없다" 를 신고했다(그리고 나는 그걸 결함으로 쫓았다).
+          //  숫자가 갈릴 땐 **어디에 있는지**를 말한다 — 스코프 토글이 바로 옆에 있다.
+          const kindWord = bgFilter === "running" ? "진행 중인" : "완료된";
+          const elsewhere = bgSessionScope === "session"
+            ? (bgFilter === "running" ? running - runningScoped : (total - running) - (totalScoped - runningScoped))
+            : 0;
+          bgEmpty.textContent = elsewhere > 0
+            ? "이 대화엔 " + kindWord + " 작업이 없습니다 — 다른 대화에 " + elsewhere + "개 있어요(위 범위를 '전체'로 바꿔보세요)."
+            : kindWord + " 작업이 없습니다.";
         }
         // 컴포저 인디케이터 — 현재 세션(runningScoped)에 도는 작업이 있으면 입력창 위에 표시.
         if (chatBgActiveEl) {
@@ -720,7 +728,19 @@
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
-            startTs: Date.now(), // 경과시간 기준(카드 최초 관측 시각 — lifecycle/activity 어느 쪽이 먼저든).
+            // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).
+            //  종전엔 무조건 `Date.now()`(카드가 생긴 시각)라, 2시간째 자식을 기다리는
+            //  매니저도 **새로고침하면 "0s"** 로 보였다. 서버는 `/worker-jobs` 로 `startedAt`
+            //  을 이미 주고 있었는데 그 값을 **시각 표기에만** 쓰고 경과시간엔 안 썼다 —
+            //  어제 같은 줄에서 시각 표기(epoch 원값)는 고치고 바로 옆 필드는 놓쳤다.
+            //  ★옆 레인(`view-shells.js`)은 처음부터 `s.startedAt || Date.now()` 로 맞다.
+            startTs:
+              opts && typeof opts.startedAt === "number" ? opts.startedAt : Date.now(),
+            // ★경합 가드용 **카드 생성 시각** — `startTs` 와 축이 다르다.
+            //  하이드레이션 대조는 "이 fetch 이후에 생긴 카드는 대상이 아니다" 를 판정하는데,
+            //  `startTs` 가 이제 (더 오래된) 잡 시작 시각이라 그걸 쓰면 fetch 뒤에 생긴 카드도
+            //  대조 대상이 되어 **엉뚱하게 interrupted** 로 찍힌다. 두 질문이 다르므로 값도 둘이다.
+            createdTs: Date.now(),
             lastStep: "", // 마지막 활동 라벨(문자열) — DOM 과 별개로 보관, 에이전트 뷰가 DOM 결합 없이 읽음.
             modelTier: "", // 서브에이전트 모델 티어(low/mid/high 등) — lifecycle payload.modelTier. 에이전트 뷰도 읽음.
             cwd: "", // 실행 폴더(cwd) — worker.started payload.cwd. 프로젝트 상세가 이걸로 필터/귀속.
@@ -857,7 +877,12 @@
         const status = p.status || "running";
         // ownerThreadKey = 서버가 환원한 원 세션(worker.* payload / GET /api/worker-jobs).
         // 세션 스코프 판정의 1순위 근거라 반드시 함께 넘긴다(빠뜨리면 프런트 추측으로 폴백).
-        const entry = ensureJobCard(p.jobId, { label: p.label, task: p.task, ts, threadKey: p.threadKey, ownerThreadKey: p.ownerThreadKey, kind: p.kind, agentName: p.agentName, modelTier: p.modelTier, cwd: p.cwd });
+        // ★페이로드를 **통째로** 넘긴다 (2026-08-20 재검토 F1). 종전엔 필드를 손으로
+        //  골라 적었고, 그래서 서버가 보낸 `startedAt` 이 **여기서 조용히 버려졌다** —
+        //  카드 생성 쪽을 "서버값을 쓰도록" 고쳐놓고도 값이 도착을 안 해 픽스가 통째로
+        //  무동작이었다(소비자만 고치고 생산자를 안 봄). `ensureJobCard` 는 아는 키만
+        //  읽으므로 여분 필드는 무해하고, 새 필드가 생기면 **저절로** 흘러간다.
+        const entry = ensureJobCard(p.jobId, { ...p, ts });
         // ★잡 상태는 **단조**다 — running → 종료, 되돌아가지 않는다 (2026-07-28).
         //  종전엔 마지막 이벤트가 무조건 이겨서, 재연결 replay 가 흘린 옛 worker.started 가
         //  이미 끝난 카드를 **다시 "진행 중"으로 되돌렸고** 그 뒤로 갱신할 이벤트가 없어
@@ -979,7 +1004,7 @@
           for (const [jobId, e] of jobCards) {
             if (e.status !== "running" || live.has(jobId)) continue;
             // 이 fetch 이후에 생긴 카드는 대조 대상이 아니다(응답이 그 잡을 알 리 없다) — race 방지.
-            if ((e.startTs || 0) > startedAt) continue;
+            if ((e.createdTs || e.startTs || 0) > startedAt) continue;
             handleWorkerEvent({ jobId, status: "interrupted" }, fmtTime(Date.now()));
           }
         }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
@@ -1038,9 +1063,7 @@
         // 카드도 없고 라벨도 없으면 = 서버도 그 잡을 더는 모른다(프루닝된 옛 jobId 로의 스티어).
         // 여기서 카드를 만들면 "(작업)" 유령이 하나 생긴다 — 지어낼 근거가 없으면 그리지 않는다.
         if (!jobCards.has(p.jobId) && !p.label) return;
-        const entry = ensureJobCard(p.jobId, {
-          ts, label: p.label, threadKey: p.threadKey, ownerThreadKey: p.ownerThreadKey, kind: p.kind,
-        });
+        const entry = ensureJobCard(p.jobId, { ...p, ts }); // 위와 같은 이유로 통째 전달.
         // dedup — SSE replay 가 같은 스티어를 재전송해도 한 줄만(활동 스텝 dedup 과 동형).
         // 스티어엔 어댑터 seq 가 없으므로 시각+원문으로 판정.
         const key = "steer␟" + (p.ts || ts || "") + "␟" + (p.message || "");

@@ -570,7 +570,7 @@ export const runSelfUpdate = async (
         await run("git", ["reset", "--hard", prevSha], cwd);
         if (depsChanged) {
           // deps 도 prev 상태로 되돌림 — 게이트 실패가 새 deps 였을 수도.
-          await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev"], cwd, {
+          await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], cwd, {
             shell: isWindows,
           }).catch(
             (e) => {
@@ -597,9 +597,45 @@ export const runSelfUpdate = async (
     let ranNpmInstall = false;
     if (depsChanged) {
       try {
-        await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev"], cwd, {
+        // ★`--ignore-scripts=false` 명시 (2026-08-20 적대 검토 B-F1). install.sh·install.ps1·
+        //  daemon.mjs 셋엔 있었는데 **여기엔 없었다** — 그런데 여기가 unix 의 `/update` 본체다
+        //  (win32 만 daemon.mjs 로 위임). 사내 정책이 켜져 있거나 Node 메이저를 올린 뒤면
+        //  npm 은 성공하는데 네이티브가 안 붙고, `/update` 는 "완료" 를 답하며 재시작한다 —
+        //  그 다음부터 데몬이 부팅마다 죽는다. 조용하고, 되돌리는 법도 안 알려준다.
+        await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], cwd, {
           shell: isWindows,
         });
+        // ★설치 성공 ≠ 사용 가능. 열어보고, 안 되면 한 번 자가 복구하고, 그래도 안 되면
+        //  **롤백**한다(옛 버전은 최소한 돌고 있었다). 종료코드만 보면 이 상태를 통과시킨다.
+        try {
+          await run(process.execPath, ["-e", "require('better-sqlite3')"], cwd, {
+            shell: false,
+          });
+        } catch {
+          try {
+            await run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false"], cwd, {
+              shell: isWindows,
+            });
+            await run(process.execPath, ["-e", "require('better-sqlite3')"], cwd, {
+              shell: false,
+            });
+          } catch (e2) {
+            const rolledBack = await rollback();
+            return {
+              status: "failed",
+              from: prevSha,
+              to: newSha,
+              changedFiles: changed.length,
+              rolledBack,
+              error: redactSecrets(
+                "네이티브 모듈(better-sqlite3)이 새 버전에서 안 열립니다 — 이 상태로 재시작하면 " +
+                  "데몬이 부팅마다 죽습니다. 이전 버전으로 되돌렸습니다. " +
+                  "빌드 도구가 필요할 수 있습니다(윈도우: VS Build Tools C++, 리눅스: build-essential+python3). " +
+                  `원문: ${e2 instanceof Error ? e2.message : String(e2)}`,
+              ),
+            };
+          }
+        }
         ranNpmInstall = true;
       } catch (e) {
         const rolledBack = await rollback();

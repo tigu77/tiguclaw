@@ -35,13 +35,24 @@ export const check: RegressionCheck = {
     //  침묵한다 — 그리고 그 침묵은 우리 쪽 로그에 안 남으므로 아무도 모른다.
     const src = await readFile(new URL("../doctor.ts", import.meta.url), "utf8");
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    const staticStoreImports = [...code.matchAll(/^import\s[^;]*?from\s+"\.\.\/store\/[^"]+"/gm)]
-      .map((m) => m[0].replace(/\s+/g, " "))
-      // `import type` 은 런타임에 사라지므로 무해하다.
-      .filter((l) => !/^import type /.test(l));
+    // ★정적 import 뿐 아니라 **모듈 최상위 `await import`** 도 잡는다 (2026-08-20 적대 검토).
+    //  둘은 행동이 같다 — 모듈 로드 단계에서 죽어 `main()` 이 시작조차 못 한다. 종전 정규식은
+    //  `^import …` 만 봐서, 최상위로 끌어올린 `const x = await import("../store/…")` 가 통과했다
+    //  (원래 사고가 린트 초록인 채 그대로 재현됐다).
+    const topLevelAwaitImports = code
+      .split("\n")
+      .filter((l) => /^(?:const|let|var)\s[^=]*=\s*await import\("\.\.\/store\//.test(l))
+      .map((l) => l.trim());
+    const staticStoreImports = [
+      ...[...code.matchAll(/^import\s[^;]*?from\s+"\.\.\/store\/[^"]+"/gm)]
+        .map((m) => m[0].replace(/\s+/g, " "))
+        // `import type` 은 런타임에 사라지므로 무해하다.
+        .filter((l) => !/^import type /.test(l)),
+      ...topLevelAwaitImports,
+    ];
     out.push(
       assert(
-        "★doctor 가 store 를 정적 import 하지 않는다(네이티브 깨지면 로드 단계에서 같이 죽는다)",
+        "★doctor 가 store 를 **모듈 최상위**에서 끌지 않는다(정적 import·최상위 await import 둘 다)",
         staticStoreImports.length === 0,
         staticStoreImports.length === 0 ? "0건(동적)" : staticStoreImports.join(" | "),
       ),
@@ -126,6 +137,38 @@ export const check: RegressionCheck = {
         judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw").kind === "elsewhere",
         judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw").kind,
       ),
+      // ★심링크·형제경로 (2026-08-20 적대 검토) — 첫 판은 `path.resolve` 접두 비교라
+      //  **양방향으로** 틀렸다: `npm link` 심링크를 안 풀어 정상 설치를 "다른 설치" 라 했고,
+      //  구분자 없는 접두라 형제 경로(`~/.tiguclaw-install` vs `~/.tiguclaw`)를 같다고 했다.
+      //  ★같은 판단이 `src/cli.ts globalTiguclawIsOurs()` 에 realpath 정확 비교로 이미 있었다 —
+      //   그걸 문자열 비교로 다시 구현하다 틀린 것이라, 이 검사는 그 재발을 막는다.
+      assert(
+        "★형제 경로를 같은 설치로 보지 않는다(~/.tiguclaw-install ≠ ~/.tiguclaw)",
+        judgeGlobalCommand("/Users/x/.tiguclaw-install/bin/tiguclaw", "/Users/x/.tiguclaw").kind ===
+          "elsewhere",
+        judgeGlobalCommand("/Users/x/.tiguclaw-install/bin/tiguclaw", "/Users/x/.tiguclaw").kind,
+      ),
+      assert(
+        "★심링크를 풀고 비교한다(npm link 로 건 정상 설치를 '다른 설치' 라 하지 않게)",
+        await (async () => {
+          const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } = await import("node:fs");
+          const os = await import("node:os");
+          const pathMod = await import("node:path");
+          const T = mkdtempSync(pathMod.join(os.tmpdir(), "tgc-link-"));
+          try {
+            mkdirSync(pathMod.join(T, "install/bin"), { recursive: true });
+            mkdirSync(pathMod.join(T, "gb"), { recursive: true });
+            writeFileSync(pathMod.join(T, "install/bin/tiguclaw.mjs"), "");
+            symlinkSync(pathMod.join(T, "install/bin/tiguclaw.mjs"), pathMod.join(T, "gb/tiguclaw"));
+            return (
+              judgeGlobalCommand(pathMod.join(T, "gb/tiguclaw"), pathMod.join(T, "install")).kind === "ok"
+            );
+          } finally {
+            rmSync(T, { recursive: true, force: true });
+          }
+        })(),
+        "ok 여야 — 심링크 실체가 그 설치 안이다",
+      ),
       assert(
         "경로 대소문자·구분자 차이를 흡수한다(윈도우)",
         judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw").kind === "ok",
@@ -141,6 +184,50 @@ export const check: RegressionCheck = {
       threw = true;
     }
     out.push(assert("전역 명령 조회가 없는 환경에서도 안 던진다", !threw, threw ? "throw" : "안전"));
+
+    // ★**지형 매트릭스** — 홈이 어디든, 몇 개를 깔든 맞아야 한다 (2026-08-20 사용자 지적).
+    //  "그건 그 머신 지형이라 일반 사용자 영향 없다" 는 면피다. 설치 개수·경로 배치는
+    //  사용자가 정하는 것이고 제품 판정이 거기 의존하면 안 된다. 케이스를 산문으로
+    //  늘어놓지 않고 **표로** 두고 전수 확인한다 — 새 지형이 생기면 줄 하나만 는다.
+    {
+      const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } = await import("node:fs");
+      const os = await import("node:os");
+      const P = await import("node:path");
+      const T = mkdtempSync(P.join(os.tmpdir(), "tgc-topo-"));
+      try {
+        const mk = (rel: string): string => {
+          const d = P.join(T, rel, "bin");
+          mkdirSync(d, { recursive: true });
+          writeFileSync(P.join(d, "tiguclaw.mjs"), "");
+          return P.join(T, rel);
+        };
+        const one = mk("home/tiguclaw");
+        const sib = mk("home/tiguclaw-install");
+        const nest = mk("home/tiguclaw/nested");
+        const other = mk("opt/tiguclaw");
+        mkdirSync(P.join(T, "gb"), { recursive: true });
+        const link = P.join(T, "gb/tiguclaw");
+        symlinkSync(P.join(one, "bin/tiguclaw.mjs"), link);
+        const cases: Array<[string, string | null, string, string]> = [
+          ["설치 1개 · 직접 경로", P.join(one, "bin/tiguclaw.mjs"), one, "ok"],
+          ["설치 1개 · npm link 심링크", link, one, "ok"],
+          ["형제 설치(접두 겹침)", P.join(sib, "bin/tiguclaw.mjs"), one, "elsewhere"],
+          ["형제의 반대 방향", link, sib, "elsewhere"],
+          ["중첩 설치(안쪽이 대상)", P.join(nest, "bin/tiguclaw.mjs"), nest, "ok"],
+          ["완전히 다른 홈", P.join(other, "bin/tiguclaw.mjs"), one, "elsewhere"],
+          ["루트에 트레일링 슬래시", P.join(one, "bin/tiguclaw.mjs"), one + "/", "ok"],
+          ["명령 없음", null, one, "missing"],
+        ];
+        for (const [name, cmd, root, want] of cases) {
+          const got = judgeGlobalCommand(cmd, root).kind;
+          out.push(
+            assert(`지형: ${name}`, got === want, got === want ? got : `${got} (기대 ${want})`),
+          );
+        }
+      } finally {
+        rmSync(T, { recursive: true, force: true });
+      }
+    }
 
     return out;
   },

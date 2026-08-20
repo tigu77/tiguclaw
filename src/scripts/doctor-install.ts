@@ -11,6 +11,7 @@
  *  검사가 "문구가 있나" 를 grep 하는 수준으로 약해진다.
  */
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 export type NativeCtor = new (p: string) => { close(): void };
@@ -79,9 +80,28 @@ export const judgeGlobalCommand = (
       fix: "설치 폴더에서 `npm run onboard` (전역 명령 등록을 다시 겁니다). 그 전까진 `node bin/tiguclaw.mjs <명령>` 으로 대신할 수 있습니다.",
     };
   }
-  // 심링크 실체가 이 설치 안을 가리키는지 — 경로 비교는 대소문자·구분자 차이를 흡수한다.
-  const norm = (p: string): string => path.resolve(p).replace(/\\/g, "/").toLowerCase();
-  if (norm(resolved).startsWith(norm(repoRoot))) {
+  // ★**심링크를 푼 뒤** 비교하고, 경계에 구분자를 붙인다 (2026-08-20 적대 검토).
+  //  첫 판은 `path.resolve` 접두 비교였고 **양방향으로 틀렸다**:
+  //   (a) `npm link` 가 만든 전역 bin 은 **심링크**다. 안 풀면 정상 설치가 전부
+  //       "다른 설치본" 으로 경고받고, 안내대로 재onboard 하면 재빌드·재등록까지 돈다.
+  //   (b) 구분자 없는 접두라 **형제 경로**가 통과했다 — `~/.tiguclaw-install` 이
+  //       `~/.tiguclaw` 안이라고 판정된다. 이 머신 지형이 정확히 그 모양이라
+  //       "조용한 오답" 이 실제로 났다(이 함수 주석이 경고한 바로 그 경우).
+  //  ★같은 판단이 이미 `src/cli.ts` 의 `globalTiguclawIsOurs()` 에 있다(realpath 정확 비교).
+  //   거긴 `npm root -g` 기준이고 여긴 사용자가 실제로 치는 `which` 기준이라 질문이 다르지만,
+  //   **비교 방식은 같아야 한다** — 내가 그걸 문자열 접두로 다시 구현하다 틀렸다.
+  const real = (p: string): string => {
+    try {
+      return path.resolve(realpathSync(p));
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const norm = (p: string): string => real(p).replace(/\\/g, "/").toLowerCase();
+  // `path.resolve` 가 트레일링 슬래시를 이미 뗀다 — 따로 지우지 않는다(죽은 코드였다).
+  const rootNorm = norm(repoRoot);
+  const cmdNorm = norm(resolved);
+  if (cmdNorm === rootNorm || cmdNorm.startsWith(rootNorm + "/")) {
     return { kind: "ok", detail: resolved };
   }
   return {

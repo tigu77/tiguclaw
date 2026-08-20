@@ -77,7 +77,15 @@ export const check: RegressionCheck = {
         const norm = t.startsWith("docs/") ? t : path.posix.normalize(path.posix.join(path.posix.dirname(rel), t));
         // ★"배포본엔 없다" 고 **명시한** 문장은 통과시킨다 — 그건 독자를 속이지 않는다.
         if (NOT_SHIPPED.some((n) => norm === n || norm.startsWith(n))) {
-          const line = body.split("\n").find((l) => l.includes(t)) ?? "";
+          // ★면제는 **그 참조가 실제로 있는 줄**에서만 인정한다 (2026-08-20 적대 검토).
+          //  종전엔 `body.split("\n").find(l => l.includes(t))` 로 **파일 전체의 첫 매칭 줄**을
+          //  봤다. 그래서 어느 한 줄에 면제 문구를 달아두면 그 파일의 **같은 경로 참조 전부**가
+          //  면제됐다 — 이 게이트가 잡은 결함을 고친 그 편집이, 같은 파일의 미래 재발을
+          //  영구 면제한 셈이었다. 이제 매칭 위치의 줄만 본다.
+          const at = (m.index ?? 0);
+          const lineStart = body.lastIndexOf("\n", at) + 1;
+          const lineEnd = body.indexOf("\n", at);
+          const line = body.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
           if (!/배포본에 없|not shipped|개발 저장소/.test(line)) dangling.push(`${rel} → ${t}`);
         }
       }
@@ -119,6 +127,38 @@ export const check: RegressionCheck = {
           found ?? `없음 (찾은 자리: ${PUBLIC_ROOT.replace(REPO, ".")}/{${r.paths.join(", ")}})`,
         ),
       );
+    }
+
+    // ── ②-b ★오버레이가 **통째로** 배포되는가 (2026-08-20 적대 검토 발견) ──────────
+    //  위 ② 는 "오버레이 디스크에 있나" 만 본다. 그런데 sync 절차가 오버레이 파일을
+    //  **손으로 열거**하고 있으면, 목록에 없는 파일은 배포에 **도달하지 않는다** —
+    //  §1 이 PUB 추적파일을 전량 지우고 manifest 가 `_workspace/` 를 EXCLUDE 하기 때문이다.
+    //  실제로 오늘 추가한 SECURITY·이슈템플릿·CONTRIBUTING 이 그 목록 밖이라, 다음 sync 에
+    //  **조용히 사라질 상태**였고 dev 게이트는 계속 초록이었다.
+    //  ★이 검사가 ② 를 의미 있게 만든다: 오버레이 ⊆ 배포 가 성립해야 "디스크에 있다"가
+    //   "배포된다"를 뜻한다.
+    {
+      const skill = path.join(REPO, ".claude/skills/sync-public/SKILL.md");
+      if (existsSync(skill)) {
+        const body = readFileSync(skill, "utf8");
+        const perFileCopies = [...body.matchAll(/^\s*cp .*public-overlay\/[^\s"]+/gm)].map(
+          (m) => m[0].trim(),
+        );
+        out.push(
+          assert(
+            "★sync 가 오버레이를 통째로 복사한다(파일 열거 금지 — 열거하면 새 파일이 조용히 안 나간다)",
+            /rsync -a "\$DEV\/_workspace\/public-overlay\/" "\$PUB\/"/.test(body),
+            /rsync -a "\$DEV\/_workspace\/public-overlay/.test(body)
+              ? "통째 복사"
+              : "★손 열거 — 목록 밖 파일은 배포 안 됨",
+          ),
+          assert(
+            "오버레이 파일을 하나씩 cp 하는 줄이 남아 있지 않다",
+            perFileCopies.length === 0,
+            perFileCopies.length === 0 ? "0건" : perFileCopies.join(" · ").slice(0, 160),
+          ),
+        );
+      }
     }
 
     // ── ③ 고아 문서 — 링크되지 않은 문서는 없는 것과 같다 ────────────────────────

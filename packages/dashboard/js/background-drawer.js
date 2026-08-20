@@ -737,6 +737,15 @@
           entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, entry.ownerTk));
           updateSessionBadge(entry);
           jobCards.set(jobId, entry);
+          // ★원 세션을 **모르는 채로 태어난 카드는 서버에 묻는다** (2026-08-20 사용자 신고:
+          //  "매니저가 사라졌는데 백그라운드 숫자는 2개").
+          //  활동(llm.activity)이 lifecycle 보다 먼저 오면 카드는 잡 좌표(worker:<id>)만 들고
+          //  태어난다. 그러면 스코프 판정이 프런트 추측으로 떨어지는데, 매니저는 자기 좌표가
+          //  곧 자기 jobId 라 그 추측이 세션까지 못 간다 → **스코프 밖으로 숨는다.** 반면 헤더
+          //  배지는 전역 집계라 계속 세므로 "숫자는 있는데 카드가 없다" 가 된다.
+          //  하이드레이션은 로드·재연결 때만 돌아 그 사이 생긴 카드는 계속 미상으로 남았다.
+          //  ★추측을 정교하게 만들지 않는다 — 서버가 아는 사실(ownerThreadKey)을 가져온다.
+          if (entry.ownerTk === "") scheduleOwnerBackfill();
           updateStopBtn(entry); // 신규 카드 기본 running → 중지 버튼 노출(worker·agent 무관).
           // 컨텍스트메뉴 트리거 — kebab(top 우측) + 우클릭 + 롱프레스(카드류, 3경로 동일 메뉴).
           // ctxFn 은 매 호출 시 최신 entry 를 다시 읽어(jobCards.get) label/threadKey 드리프트 없음.
@@ -854,10 +863,25 @@
         //  이미 끝난 카드를 **다시 "진행 중"으로 되돌렸고** 그 뒤로 갱신할 이벤트가 없어
         //  영원히 진행 중으로 남았다(사용자 신고). 오늘 채팅 순서에서 고친 것과 같은 뿌리 —
         //  replay 를 최신 사실로 착각하는 것. 종료는 되돌릴 수 없는 사실이므로 sticky 로 둔다.
-        if (TERMINAL_JOB_STATUS.has(entry.status) && status === "running") return entry;
+        //  ★단, `interrupted` 는 예외다 (2026-08-20 사용자 신고: "매니저가 에이전트보다 먼저
+        //   사라졌다"). 그건 **서버가 관측한 사실이 아니라 클라이언트의 추측**이다 —
+        //   하이드레이션 응답에 그 잡이 안 보이더라는 것뿐이고, 그 부재는 경합·지연으로도
+        //   생긴다. 추측을 sticky 로 두면 **그 뒤 서버가 "running" 이라 해도 거부**하게 되어
+        //   카드가 영영 안 돌아온다(진행중 필터에 숨고, 상한 축출 대상이 되어 아예 사라진다).
+        //   서버가 준 사실(`fromServer`)은 추측을 덮을 수 있어야 한다 — 권위가 이긴다.
+        const clientGuess = entry.status === "interrupted";
+        if (
+          TERMINAL_JOB_STATUS.has(entry.status) &&
+          status === "running" &&
+          !(clientGuess && p && p.fromServer === true)
+        ) {
+          return entry;
+        }
         const wasRunning = entry.status === "running";
         entry.status = status;
-        entry.el.classList.remove("running", "done", "failed", "cancelled");
+        // ★상태 클래스는 **정의점에서 파생**한다 — 손으로 적으면 빠진다(실제로 `interrupted`
+        //  가 빠져 있어, 되살아난 카드에 `interrupted running` 이 함께 남았다).
+        entry.el.classList.remove("running", ...TERMINAL_JOB_STATUS);
         entry.el.classList.add(status); // open/has-detail 보존.
         if (status !== "running") entry._cancelRequested = false; // 종료됐으면 낙관 플래그 리셋(멱등).
         entry.statusEl.textContent = BG_STATUS[status] || status;
@@ -918,6 +942,16 @@
       // 받아 카드 복원. 긴 워커의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시
       // activity-only 카드라 라벨이 "(작업)"으로 뜨던 문제를 label·kind·task 복원으로 해소.
       // handleWorkerEvent 재사용(멱등 ensureJobCard — SSE 와 중복돼도 같은 jobId=같은 카드).
+      // 원 세션 미상 카드를 위한 **디바운스 백필** — 카드가 연달아 생겨도 fetch 는 1회.
+      //  하이드레이션과 같은 경로를 쓴다(서버 진실 단일 소스, 중복 구현 0).
+      let ownerBackfillTimer = null;
+      const scheduleOwnerBackfill = () => {
+        if (ownerBackfillTimer !== null) return;
+        ownerBackfillTimer = setTimeout(() => {
+          ownerBackfillTimer = null;
+          hydrateActiveJobs();
+        }, 1200);
+      };
       const hydrateActiveJobs = () => {
         // ★서버가 주는 건 "지금 도는 잡" 전량이므로, 하이드레이션은 **복원 + 대조** 두 일을 한다.
         //  대조가 없으면: 잡이 끝났는데 그 worker.done 이 replay 창 밖으로 밀린 경우(긴 잡·
@@ -936,7 +970,9 @@
             //  숫자가 시각 자리에 떴다 — 같은 인자에 두 경로가 다른 타입을 넣고 있었다.
             //  그리고 "지금" 이 아니라 **그 잡이 시작한 시각**을 쓴다(서버가 준다).
             handleWorkerEvent(
-              { ...j, status: j.status || "running" },
+              // ★`fromServer` — 이건 replay 가 아니라 **지금 서버가 아는 사실**이다.
+              //  클라이언트가 추측으로 찍어둔 `interrupted` 를 덮을 자격이 있다.
+              { ...j, status: j.status || "running", fromServer: true },
               fmtTime(typeof j.startedAt === "number" ? j.startedAt : Date.now()),
             );
           }

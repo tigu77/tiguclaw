@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-08-20
+
+v0.32.0 직후에 나온 것들을 잡은 핫픽스입니다. 백그라운드 작업을 쓰신다면 올려주세요.
+
+### Fixed
+
+- **대시보드에서 진행 중인 작업 카드가 사라지던 것.** 매니저가 하위 에이전트를 기다리는
+  동안 카드가 목록에서 없어지고, 새로고침해도 돌아오지 않았습니다(헤더의 개수는 그대로라
+  숫자와 화면이 어긋났습니다). 두 원인이 겹쳐 있었습니다 — 화면이 "서버 응답에 없으니
+  끝난 작업" 이라고 **추측**한 뒤 그 추측을 서버 사실보다 우선했고, 원 대화를 모르는 채
+  만들어진 카드가 세션 필터에서 빠졌습니다. 이제 서버가 아는 사실이 이깁니다.
+- **`doctor` 가 정작 필요할 때 아무 말도 못 하던 것.** 네이티브 모듈(SQLite)이 안 열리면
+  진단 명령 자체가 같이 죽어, 원인도 조치도 안 보였습니다. 데몬이 부팅마다 죽는 바로 그
+  상황입니다. 이제 `[install]` 항목이 먼저 나오고, 무엇이 문제인지와 **무엇을 하면
+  되는지**를 알려준 뒤 멈춥니다.
+- `doctor` 가 전역 `tiguclaw` 명령을 점검합니다 — 없거나, **다른 설치본**을 가리키는
+  경우까지. 후자는 `tiguclaw update` 가 엉뚱한 설치를 고치면서도 에러가 안 나서
+  알아채기 어려웠습니다.
+
+### Added
+
+- **보안 취약점 신고 경로**(비공개) · **이슈 템플릿**(버그 / 설치·업데이트 실패) ·
+  **기여 안내**. 설치 문제는 OS·Node 버전·npm 설정·로그가 있어야 원인이 갈려서,
+  템플릿이 그 값들을 먼저 묻습니다. 무언가 이상하면 `tiguclaw doctor` 를 돌리고 그
+  출력을 붙여주세요.
+- 문서 안내를 README 에 정리했습니다 — 잘 안 될 때 어디로 갈지, 코드를 읽을 때 무엇부터
+  볼지.
+
 ## [0.32.0] - 2026-08-19
 
 비서가 여러 작업을 **동시에** 맡길 수 있게 된 판입니다. 종전엔 서브에이전트에게
@@ -1250,7 +1278,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.32.1...HEAD
+[0.32.1]: https://github.com/tigu77/tiguclaw/compare/v0.32.0...v0.32.1
 [0.32.0]: https://github.com/tigu77/tiguclaw/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/tigu77/tiguclaw/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/tigu77/tiguclaw/compare/v0.29.0...v0.30.0

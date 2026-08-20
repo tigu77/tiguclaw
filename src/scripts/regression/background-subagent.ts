@@ -397,6 +397,17 @@ export const check: RegressionCheck = {
           cancelMsg.slice(0, 80),
         ),
         assert(
+          "★취소된 잡이 **결과와 함께** 와도 '완료' 가 아니다 — 취소 직후 마지막 도구가 값을 낸 경우",
+          await (async () => {
+            const c2 = registerJob({ ...base, kind: "agent", label: "C", threadKey: `worker:${cond}`, detached: true });
+            cancelJob(c2);
+            await onWorkerComplete(c2, { result: "마지막 도구가 낸 값" });
+            const m = box.drain().map((x) => x.raw).find((t) => t.includes("'C'")) ?? "";
+            return m.includes("중지됨") && !m.includes("완료") && !m.includes("실패");
+          })(),
+          "중지됨 이어야 — 순서를 뒤집으면 '완료 · 결과' 로 나간다",
+        ),
+        assert(
           "정상 완료는 종전대로 '완료 … 결과' 로 온다(회귀 0)",
           doneMsg.includes("완료") && doneMsg.includes("55"),
           doneMsg.slice(0, 60),

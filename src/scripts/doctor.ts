@@ -11,14 +11,17 @@
 import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import process from "node:process";
 import path from "node:path";
-import { initStore, getDb, resolveDataDir } from "../store/sessions.js";
+import { fileURLToPath } from "node:url";
+// ★store 계열은 **동적** import 다 (2026-08-20). 정적으로 두면 `better-sqlite3` 가 안 열릴 때
+//  이 파일이 **로드 단계에서** 죽어 `main()` 이 시작조차 못 한다 — 진단 도구가 가장 필요한
+//  순간(데몬이 부팅마다 죽는 그 머신)에 아무것도 안 찍는다. 아래 [install] 섹션이 네이티브를
+//  먼저 확인하고, 통과했을 때만 이것들을 부른다.
+//  (`initStore`·`getDb`·`resolveDataDir`·`listActive`·`listSchedules`·`listWatches`)
 import { DISALLOWED_TOOLS } from "../auth/permissions.js";
 import { ensureRipgrep } from "../core/ripgrep.js";
 import { getPaths } from "../core/paths.js";
-import { listActive } from "../store/bridge-tokens.js";
 import type { BridgeTokenRole } from "../store/bridge-tokens.js";
-import { listSchedules } from "../store/schedules.js";
-import { listWatches } from "../store/watches.js";
+import { judgeGlobalCommand, probeNativeModule, resolveGlobalCommand } from "./doctor-install.js";
 // codex OAuth 토큰 키 상수 + 만료 파서를 어댑터에서 재사용 (하드코딩 중복 금지).
 // 해당 모듈은 top-level side-effect 0 (순수 const + 함수 정의) — env 미설정에서도
 // 안전히 로드됨 (POOLS 평가 throw 와 무관: pool 레지스트리를 import 하지 않음).
@@ -108,6 +111,58 @@ const main = async (): Promise<void> => {
   let fatal = 0;
   const issues: string[] = [];
   const warnings: string[] = []; // 곧 문제될 수 있는 주의(비차단).
+
+  // ─── [install] — 여기가 **가장 먼저**다 ────────────────────────────────────────
+  //  네이티브 모듈이 안 열리면 아래 전부가 무의미하고, 실제로 그 상태에서 데몬은 부팅마다
+  //  죽는다(실측: 6회 연속). 종전엔 이 진단 자체가 모듈 로드 단계에서 같이 죽어 **한 줄도
+  //  안 찍혔다** — 그래서 사용자가 로그를 손으로 보내야 했다.
+  console.log("[install]");
+  const native = await probeNativeModule();
+  if (native.ok) {
+    console.log(line("better-sqlite3", "load ✅"));
+  } else {
+    const { describeNativeLoadFailure } = await import("../store/sessions.js").catch(
+      () => ({ describeNativeLoadFailure: () => null }) as never,
+    );
+    const hint = describeNativeLoadFailure(native.message) as string | null;
+    console.log(line("better-sqlite3", "❌ 열 수 없음"));
+    console.log(
+      hint ??
+        "  SQLite 네이티브 모듈을 열 수 없습니다 — 조치: `tiguclaw update`\n  원문: " +
+          native.message,
+    );
+    fatal += 1;
+    issues.push(
+      "네이티브 모듈(better-sqlite3)이 안 열립니다 — 이 상태로는 데몬이 부팅마다 죽습니다. 조치: `tiguclaw update`",
+    );
+  }
+
+  // ★기준은 **이 doctor 가 속한 설치**다(cwd 가 아니라). `tiguclaw doctor` 는 아무 폴더에서나
+  //  실행되므로 cwd 를 쓰면 "다른 설치" 오탐이 난다 — 첫 판이 그랬다.
+  const installRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const cmd = judgeGlobalCommand(resolveGlobalCommand(), installRoot);
+  console.log(line("tiguclaw 명령", cmd.kind === "ok" ? `${cmd.detail} ✅` : `⚠️  ${cmd.detail}`));
+  if (cmd.kind !== "ok") {
+    console.log(`  ${cmd.fix}`);
+    warnings.push(`전역 \`tiguclaw\` 명령: ${cmd.detail}`);
+  }
+  console.log("");
+
+  // ★네이티브가 죽었으면 여기서 멈춘다 — 아래는 전부 DB 를 만지므로 같은 에러를 반복할
+  //  뿐이고, 진짜 원인이 그 소음에 묻힌다(로그가 1차 진단면이라는 원칙).
+  if (!native.ok) {
+    console.log("══════════════════════════════════════════");
+    console.log("🔴 네이티브 모듈부터 고쳐야 합니다 — 나머지 진단은 그 뒤에 의미가 있습니다.");
+    console.log("   " + issues[0]);
+    console.log("══════════════════════════════════════════");
+    process.exitCode = 1;
+    return;
+  }
+
+  const { initStore, getDb, resolveDataDir } = await import("../store/sessions.js");
+  const { listActive } = await import("../store/bridge-tokens.js");
+  const { listSchedules } = await import("../store/schedules.js");
+  const { listWatches } = await import("../store/watches.js");
 
   // [env]
   console.log("[env]");

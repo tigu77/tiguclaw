@@ -646,6 +646,9 @@
           kindBadge.textContent = AGENT_KIND_BADGE.worker;
           // 모델 티어 칩 — kind==="agent" 이고 modelTier 있을 때만(default 제외). kindBadge 옆에.
           const tierBadge = document.createElement("span"); tierBadge.className = "bg-job-tier"; tierBadge.style.display = "none";
+          // 상대시간 — 머리줄 우측. "언제 일어났나"(경과시간과 다른 질문이라 같이 둔다).
+          //  값은 tickElapsed 가 startTs 를 알게 된 뒤 채운다(카드 생성 시점엔 아직 모를 수 있다).
+          const ago = document.createElement("span"); ago.className = "bg-job-ago";
           const st = document.createElement("span"); st.className = "bg-job-status";
           // 기본 상태 텍스트 — 활동(activity)으로만 생성된 카드(대시보드가 worker.started 를
           // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
@@ -663,7 +666,7 @@
           //  목적이라 티어 바로 옆에 둔다 — "high 로 보냈는데 뭐가 답했나"가 한 줄에 보인다.
           const modelBadge = document.createElement("span");
           modelBadge.className = "bg-job-model"; modelBadge.style.display = "none";
-          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
+          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(ago); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = (opts && opts.ts) || "";
           // ★원시 좌표는 **이름 배지가 없을 때만** 보인다 (2026-08-07 사용자 지적).
@@ -726,7 +729,7 @@
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             sessBadgeEl: sessBadge, rawTkEl: rawTk,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
-            liveEl: live, elapsedEl: elapsed, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
+            liveEl: live, elapsedEl: elapsed, agoEl: ago, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).
             //  종전엔 무조건 `Date.now()`(카드가 생긴 시각)라, 2시간째 자식을 기다리는
@@ -1144,17 +1147,17 @@
       };
 
       // 경과시간 라이브 틱 — running 카드만 갱신(끝난 잡은 고정). 1s 주기, 저렴(카드 ≤ BG_MAX).
-      const fmtElapsed = (ms) => {
-        const s = Math.max(0, Math.floor(ms / 1000));
-        if (s < 60) return s + "s";
-        const m = Math.floor(s / 60), rs = s % 60;
-        if (m < 60) return m + "m " + rs + "s";
-        const h = Math.floor(m / 60), rm = m % 60;
-        return h + "h " + rm + "m";
-      };
+      // ★`fmtElapsed` 는 util.js 정본을 쓴다 (2026-08-21). 여기 사본이 있던 동안 다른 카드는
+      //  이 포맷을 못 썼고, 그래서 상대시간을 붙일 때 두 번째 사본이 생길 뻔했다.
       const tickElapsed = () => {
         const now = Date.now();
         for (const e of jobCards.values()) {
+          // 상대시간은 **끝난 카드도 늙는다** — running 만 갱신하는 경과시간과 다른 축이라
+          //  같은 틱에서 따로 돌린다(분 단위라 1s 틱 안에서 대부분 no-op).
+          if (e.agoEl && e.startTs) {
+            const ago = fmtAgo(e.startTs);
+            if (e.agoEl.textContent !== ago) e.agoEl.textContent = ago;
+          }
           if (e.status !== "running" || !e.elapsedEl) continue;
           e.elapsedEl.textContent = fmtElapsed(now - (e.startTs || now));
         }

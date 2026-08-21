@@ -1338,6 +1338,10 @@ class HttpBridge implements Channel, Observer {
                   ? "read"
                 : pathname === "/update-availability" && method === "GET"
                   ? "read" // 조회만 — 상태를 읽을 뿐 아무것도 바꾸지 않는다.
+                : pathname === "/log-status" && method === "GET"
+                  ? "read"
+                : pathname === "/log-clear" && method === "POST"
+                  ? "admin" // 진단면을 지운다 — 되돌릴 수 없으므로 read/write 가 아니다.
                 : pathname === "/self-update" && method === "POST"
                   ? "admin" // 데몬을 재시작한다 → /restart 와 동급(위 표 참조).
                   : pathname === "/messages" && method === "POST"
@@ -2766,6 +2770,25 @@ class HttpBridge implements Channel, Observer {
     // 127.0.0.1 바인드(기본). 메시지 큐(enqueueThreadTurn) 를 타지 않고 control.restart 이벤트를
     // EventBus 에 publish → index.ts 가 구독해 shutdown("RESTART"). 멈춘 턴에도 동작. 빌트인
     // 경로라 register_endpoint 로는 등록·shadow 불가(코드 순서 = 우선순위, 커스텀 폴백 위에서 선점).
+    // /log-status · /log-clear — 오늘 로그 파일 조회/비우기. 판정·수행은 코어
+    // `log-file-admin` 한 곳(브리지는 배관만). ★비우기는 truncate 다 — 지우거나 옮기면
+    // 데몬 fd 가 옛 파일을 따라가 로그가 조용히 사라진다(그 사고 때문에 만든 기능이다).
+    if (pathname === "/log-status" && method === "GET") {
+      const { readLogFileStatus } = await import("../../src/core/log-file-admin.js");
+      writeJson(res, 200, readLogFileStatus());
+      return;
+    }
+    if (pathname === "/log-clear" && method === "POST") {
+      const { clearTodayLog, readLogFileStatus } = await import(
+        "../../src/core/log-file-admin.js"
+      );
+      const result = clearTodayLog();
+      // 비운 뒤 상태를 같이 준다 — 화면이 다시 조회하지 않아도 되고, "정말 비워졌나" 를
+      // 결과가 스스로 증명한다(성공을 말만 하지 않는다).
+      writeJson(res, result.ok ? 200 : 500, { ...result, status: readLogFileStatus() });
+      return;
+    }
+
     // /update-availability — "받을 업데이트가 있나". 조회만(read 게이트).
     // §0 단방향: 판정은 코어 `checkUpdateAvailability` 한 곳 — 브리지는 배관만 하고
     // **아무것도 판단하지 않는다**(가장자리는 판단하지 않는다, principle-check Q7).

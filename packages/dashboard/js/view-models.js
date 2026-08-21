@@ -179,7 +179,95 @@
         row.appendChild(meta);
         row.appendChild(btn);
         page.appendChild(row);
+        page.appendChild(buildLogRow());
         root.appendChild(page);
+      };
+
+      /**
+       * 「오늘 로그」 항목 — **크기·마지막 기록을 보여준 뒤** 비우기를 제공한다.
+       *
+       * ★볼 수 없는 것을 지우는 버튼은 만들지 않는다. 대시보드엔 로그 뷰가 없으므로,
+       *  최소한 "얼마나 쌓였고 언제 마지막으로 찍혔나"는 같은 자리에서 답해야 한다
+       *  (그게 대개 비우려는 이유이기도 하다 — 용량).
+       * ★버튼은 **비우기(truncate)** 다. 지우기·옮기기는 제공하지 않는다 — 손으로 옮기면
+       *  데몬이 옛 파일에 계속 써서 로그가 조용히 사라지는데, 그 사고 때문에 만든 기능이
+       *  같은 일을 하면 안 된다.
+       */
+      const buildLogRow = () => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = "오늘 로그";
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        desc.textContent = "불러오는 중…";
+        meta.appendChild(name);
+        meta.appendChild(desc);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "settings-toggle";
+        btn.textContent = "비우기";
+        btn.disabled = true;
+
+        const fmtBytes = (n) =>
+          n < 1024 ? n + "B"
+          : n < 1024 * 1024 ? (n / 1024).toFixed(1) + "KB"
+          : (n / 1024 / 1024).toFixed(1) + "MB";
+
+        const paint = (s) => {
+          if (!s || s.exists !== true) {
+            desc.textContent = "오늘 기록된 로그가 아직 없습니다.";
+            btn.disabled = true;
+            return;
+          }
+          const ago = s.lastWriteTs ? fmtAgo(s.lastWriteTs) : "";
+          const others = s.otherDays > 0 ? ` · 다른 날짜 ${s.otherDays}개는 그대로 둡니다` : "";
+          desc.textContent =
+            `${fmtBytes(s.bytes)}${ago ? " · 마지막 기록 " + ago : ""}${others}. ` +
+            "비우면 파일은 남고 내용만 지워집니다(데몬은 계속 같은 파일에 씁니다).";
+          btn.disabled = s.bytes === 0;
+        };
+
+        const load = async () => {
+          try {
+            const r = await fetch("/api/log-status");
+            paint(r.ok ? await r.json() : null);
+          } catch {
+            desc.textContent = "로그 상태를 읽지 못했습니다.";
+            btn.disabled = true;
+          }
+        };
+
+        btn.addEventListener("click", async () => {
+          if (!window.confirm(
+            "오늘 로그를 비울까요?\n\n" +
+            "되돌릴 수 없습니다. 로그는 문제가 생겼을 때 원인을 찾는 1차 자료입니다 — " +
+            "지금 이상이 있는 상태라면 비우기 전에 확인하세요."
+          )) return;
+          btn.disabled = true;
+          try {
+            const r = await fetch("/api/log-clear", { method: "POST" });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok === true) {
+              showToast(fmtBytes(d.clearedBytes || 0) + " 비웠습니다.", "good");
+              paint(d.status); // 서버가 준 사후 상태로 그린다(스스로 증명한 값).
+            } else {
+              showToast("로그 비우기 실패: " + (d.error || "HTTP " + r.status), "bad");
+              await load();
+            }
+          } catch (e) {
+            showToast("로그 비우기 실패: " + e.message, "bad");
+            await load();
+          }
+        });
+
+        row.appendChild(meta);
+        row.appendChild(btn);
+        load();
+        return row;
       };
 
       const showSettings = async () => {

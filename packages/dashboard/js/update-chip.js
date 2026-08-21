@@ -29,8 +29,12 @@
             return;
           }
           chip.className = "hdr-btn update-chip ready";
-          chip.textContent = "업데이트 " + a.behind + "건";
-          chip.title = "새 커밋 " + a.behind + "건을 받을 수 있습니다. 눌러서 업데이트합니다.";
+          // ★건수를 표시하지 않는다 (2026-08-21 사용자 지적). `behind` 는 **원격 레포의
+          //  커밋 수**라, 그중 하나가 상류 커밋 수십 개를 묶은 sync 일 수 있다 — 사용자가
+          //  받는 변화의 양과 무관하다. 정확해 보이는데 뜻이 다른 숫자는 없는 것보다 나쁘다.
+          //  (`behind` 는 응답에 그대로 남는다 — 진단에는 쓰이고 화면에만 안 쓴다.)
+          chip.textContent = "업데이트";
+          chip.title = "받을 업데이트가 있습니다. 눌러서 업데이트합니다.";
         };
 
         const refresh = async () => {
@@ -74,7 +78,7 @@
             return;
           }
           if (!window.confirm(
-            "새 커밋 " + current.behind + "건을 받아 업데이트할까요?\n\n" +
+            "최신 버전으로 업데이트할까요?\n\n" +
             "진행 중인 작업이 중단되고, 데몬이 재시작된 뒤 이 화면은 자동으로 새로고침됩니다."
           )) return;
 

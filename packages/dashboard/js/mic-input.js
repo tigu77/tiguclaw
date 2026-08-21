@@ -36,7 +36,10 @@
           try { if (typeof showToast === "function") showToast(msg, tone); } catch { /* noop */ }
         };
 
-        const fmtElapsed = (ms) => {
+        // ★녹음 스톱워치 — `util.js` 의 `fmtElapsed`(소요시간, "3m 40s")와 **다른 질문**이다.
+        //  이건 돌아가는 시계(`1:23`)라 자릿수가 고정이어야 눈이 안 흔들린다. 이름이 같아서
+        //  합치려 들면 둘 다 나빠진다(통합은 이름이 아니라 질문이 같을 때 한다).
+        const fmtRecClock = (ms) => {
           const s = Math.floor(ms / 1000);
           return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
         };
@@ -56,7 +59,7 @@
           stopTimer();
           timerInt = setInterval(() => {
             const el = Date.now() - startAt;
-            if (timerEl) timerEl.textContent = fmtElapsed(el);
+            if (timerEl) timerEl.textContent = fmtRecClock(el);
           }, 250);
         };
         const stopTimer = () => {
@@ -253,7 +256,7 @@
             micBtn.classList.toggle("cancel-armed", armed);
             if (timerEl) timerEl.textContent = armed
               ? "← 놓으면 취소"
-              : fmtElapsed(Date.now() - startAt);
+              : fmtRecClock(Date.now() - startAt);
           }
         };
 

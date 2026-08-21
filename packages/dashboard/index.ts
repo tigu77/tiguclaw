@@ -361,6 +361,20 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/inventory");
       return;
     }
+    // 오늘 로그 상태·비우기 — bridge GET /log-status(read) · POST /log-clear(admin).
+    // 설정 뷰의 「로그」 항목이 소비. 비우기는 truncate 로만(지우기·옮기기 없음).
+    if (pathname === "/api/log-status" && method === "GET") {
+      await proxyJson(res, "/log-status");
+      return;
+    }
+    if (pathname === "/api/log-clear" && method === "POST") {
+      await proxyJson(res, "/log-clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      return;
+    }
     // 업데이트 가용성 — bridge GET /update-availability (read). 헤더 칩이 소비.
     // ★이 경로 목록은 화이트리스트가 맞다(드리프트 신호 아님) — 브라우저가 브리지의
     //  아무 엔드포인트나 부르지 못하게 막는 게 목적이라, 한 줄이 곧 한 번의 허용 결정이다.

@@ -854,6 +854,10 @@
         flex-basis:100%; min-width:0; font-weight:800; font-size:12px; color:var(--text);
         word-break:break-word; overflow-wrap:anywhere;
       }
+      /* 상대시간 — 머리줄 우측으로 밀어 붙인다(margin-left:auto). 부차 정보라 톤을 낮춘다:
+         경과시간(accent-2)과 색을 맞추면 둘이 경쟁한다. 빈 값이면 gap 이 안 벌어지게 :empty 숨김. */
+      .bg-job-ago { margin-left:auto; font-size:10px; color:var(--text-dim); white-space:nowrap; }
+      .bg-job-ago:empty { display:none; }
       .bg-job-status { font-size:10px; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:10px; color:var(--text-dim); font-family:ui-monospace,"SF Mono",Menlo,monospace; }
       /* 소속 세션 배지 — 전체활동의 .aav-session-badge 와 같은 색 언어(같은 뜻이니 같은 모양).

@@ -38,6 +38,45 @@
             ? Math.round(b / 1024) + "KB"
             : (b / 1048576).toFixed(1) + "MB";
 
+      /**
+       * 시간 표기 두 축 — **답하는 질문이 다르다.** (2026-08-21)
+       *
+       *  - `fmtAgo(ts)`   "언제 일어났나"  → `방금` · `3분 전` · `2시간 전` · `3일 전`
+       *  - `fmtElapsed(ms)` "얼마나 걸렸나" → `12s` · `3m 40s` · `1h 20m`
+       *
+       * ★**정본을 여기 둔다.** 상대시간은 대시보드에 아예 없었고(grep 히트는 전부 주석이었다),
+       *  경과시간은 `background-drawer.js` 안에 갇혀 있어 다른 카드가 못 썼다. 카드마다
+       *  인라인으로 넣으면 곧 네 벌이 되고, 그러면 "3분 전" 의 기준이 파일마다 갈린다.
+       *  순수 함수라 회귀가 **실행으로** 지킬 수 있다.
+       *
+       * ★미래 시각은 `방금` 으로 접는다 — 시계 어긋남(서버/브라우저)으로 음수가 나와도
+       *  "-3분 전" 같은 걸 보여주지 않는다. 판정 불가를 사용자에게 떠넘기지 않는다.
+       */
+      const fmtAgo = (ts) => {
+        const t = Number(ts);
+        if (!Number.isFinite(t) || t <= 0) return "";
+        const sec = Math.floor((Date.now() - t) / 1000);
+        if (sec < 60) return "방금";
+        const min = Math.floor(sec / 60);
+        if (min < 60) return min + "분 전";
+        const hr = Math.floor(min / 60);
+        if (hr < 24) return hr + "시간 전";
+        const day = Math.floor(hr / 24);
+        if (day < 30) return day + "일 전";
+        const mon = Math.floor(day / 30);
+        return mon < 12 ? mon + "개월 전" : Math.floor(mon / 12) + "년 전";
+      };
+
+      const fmtElapsed = (ms) => {
+        const s = Math.max(0, Math.floor(Number(ms) / 1000));
+        if (!Number.isFinite(s)) return "";
+        if (s < 60) return s + "s";
+        const m = Math.floor(s / 60), rs = s % 60;
+        if (m < 60) return m + "m " + rs + "s";
+        const h = Math.floor(m / 60), rm = m % 60;
+        return h + "h " + rm + "m";
+      };
+
       // 입력창(chat-input) 자동 포커스 = 중앙 정책 한 곳.
       //
       // 2026-07-24: 전면 비활성이었다(모바일 가상키보드 팝업 + 데스크톱 포커스 뺏기).

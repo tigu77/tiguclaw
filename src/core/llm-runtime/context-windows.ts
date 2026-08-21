@@ -7,10 +7,19 @@
  * (claude SDK 가 "claude-opus-4-7-20xxxxxx" 같은 dated id 를 보고할 수 있음).
  *
  * 불확실 명시 (정직):
- *  - claude-* = 200K 는 표준 윈도우. 1M 컨텍스트 베타를 모델 id 동일하게 쓰면
- *    % 가 과대 표시될 수 있음 (보수적으로 200K 고정).
  *  - gpt-5.x 윈도우(400K)는 추정. 실측 불가 → 보수값. 틀려도 graceful
  *    (토큰은 정확, %만 근사). 값 조정 시 이 상수 1곳만 수정.
+ *
+ * ★**"보수적으로 200K" 가 안전한 쪽이 아니었다** (2026-08-21).
+ *  여기 원래 이렇게 적혀 있었다: *"1M 컨텍스트 베타를 모델 id 동일하게 쓰면 % 가 과대
+ *  표시될 수 있음 (보수적으로 200K 고정)"*. 그 함정을 예견해놓고 **방향을 잘못 골랐다.**
+ *  claude-5 세대는 1M 이 베타가 아니라 표준이라, 200K 로 잡으면 정상 턴이 100% 를 넘겨
+ *  `/status` 가 **상시** "거의 참 — /clear 고려" 를 띄운다. 그 경보는 무해하지 않다 —
+ *  사용자가 그걸 보고 `/clear` 를 눌러 **멀쩡한 맥락을 날린다.**
+ *  실측(회사돌쇠, 2026-08-21): claude-opus-5 턴들이 input 241,088 / 228,306 / 213,948 을
+ *  `ok=true` 로 성공. 200K 창이면 물리적으로 불가능한 값이다.
+ *  ★교훈: 윈도우를 **과소** 잡는 것은 보수적이 아니다. 모르면 `undefined`(=% 생략)가
+ *  보수적이고, 아는 값은 정확히 적는다.
  *
  * 어댑터 무관 상수 — types.ts(타입 전용)·index.ts(facade 전용) 와 분리.
  */
@@ -28,13 +37,21 @@
  *  회귀 `context-window-coverage` 가 "settings.json 풀의 모든 모델이 해석되는가"를 지킨다.
  */
 export const CONTEXT_WINDOWS: Record<string, number> = {
-  // Anthropic (claude). 표준 윈도우 200K.
-  "claude-opus-5": 200_000,
-  "claude-sonnet-5": 200_000,
+  // ── Anthropic (claude) ────────────────────────────────────────────────
+  // 1M 세대 — claude-5 계열과 4.6 이상. 여기서 1M 은 베타가 아니라 표준이다.
+  "claude-opus-5": 1_000_000,
+  "claude-sonnet-5": 1_000_000,
+  "claude-opus-4-8": 1_000_000,
+  "claude-opus-4-7": 1_000_000,
+  "claude-opus-4-6": 1_000_000,
+  "claude-sonnet-4-6": 1_000_000,
+  // 200K 세대 — haiku 전 세대, 그리고 4.5 이하의 opus/sonnet.
+  //  ★아래 셋은 **세대 접두 폴백**이다. 위의 구체 키(`claude-opus-4-8` 등)가
+  //   같은 접두를 공유하므로, lookup 은 **가장 긴 접두**를 골라야 한다(아래 함수).
   "claude-haiku-5": 200_000,
+  "claude-haiku-4": 200_000,
   "claude-opus-4": 200_000,
   "claude-sonnet-4": 200_000,
-  "claude-haiku-4": 200_000,
   // OpenAI / codex. gpt-5.x 계열 — 공개 추정. 불확실 → 보수값.
   "gpt-5.6": 400_000,
   "gpt-5.5": 400_000,
@@ -43,16 +60,40 @@ export const CONTEXT_WINDOWS: Record<string, number> = {
 };
 
 /**
- * raw model id 로 윈도우 회수. 정확 일치 우선, 없으면 prefix(앞 토큰) 매칭,
- * 그래도 없으면 undefined.
+ * raw model id 로 윈도우 회수. 정확 일치 우선, 없으면 **가장 긴 접두** 매칭,
+ * 그래도 없으면 undefined(= `/status` 가 % 를 생략하고 토큰만 표시 — 안전한 실패).
+ *
+ * ★**가장 긴 접두**여야 한다 (2026-08-21). 종전엔 `Object.keys` 순서대로 훑어
+ *  **먼저 나온** 접두를 반환했다. 그 상태에서 `claude-opus-4-8`(1M) 을 추가해도
+ *  `claude-opus-4`(200K, 폴백)가 목록에서 앞이면 그쪽이 이겨 **새 값이 영영 안 쓰인다** —
+ *  키를 고쳐도 동작이 안 바뀌는, 가장 알아채기 힘든 종류의 죽은 설정이다.
+ *  세대 폴백과 구체 키가 같은 접두를 공유하는 이상 이건 구조적 요구다.
  */
 export const lookupContextWindow = (
   model: string | null | undefined,
 ): number | undefined => {
   if (model === null || model === undefined || model === "") return undefined;
   if (CONTEXT_WINDOWS[model] !== undefined) return CONTEXT_WINDOWS[model];
+  let best: string | undefined;
   for (const key of Object.keys(CONTEXT_WINDOWS)) {
-    if (model.startsWith(key)) return CONTEXT_WINDOWS[key];
+    if (!model.startsWith(key)) continue;
+    if (best === undefined || key.length > best.length) best = key;
   }
-  return undefined;
+  return best === undefined ? undefined : CONTEXT_WINDOWS[best];
 };
+
+/**
+ * 컨텍스트 압박 라벨. `/status` 가 쓰는 판정 — **index.ts 안이 아니라 여기 산다.**
+ *
+ * ★자리를 옮긴 이유: 이 판정이 인라인이던 동안 회귀가 grep 으로밖에 못 봤고, 그래서
+ *  "106% 인데 「거의 참」" 이라는 거짓말이 아무에게도 안 걸렸다. 이 레포의 상수다 —
+ *  **검사가 껄끄러우면 코드가 잘못 놓인 것.** 순수 함수로 빼면 변이 테스트가 된다.
+ */
+export const contextPressureLabel = (pct: number): string =>
+  pct > 100
+    ? " ⚠️ 한도 초과로 계산됨 — 이 모델의 윈도우 값이 틀렸을 수 있습니다(`/clear` 불필요)"
+    : pct >= 85
+      ? " ⚠️ 거의 참 — `/clear` 고려"
+      : pct >= 70
+        ? " ⚠️ 여유 줄어듦"
+        : "";

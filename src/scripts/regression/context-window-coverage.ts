@@ -10,8 +10,25 @@
  *  존재하지 않았다**(원칙 검토가 잡음). 없는 주석보다 나쁘다 — 다음 사람이 믿는다. 이 파일이
  *  그 문장을 사실로 만든다.
  */
-import { lookupContextWindow } from "../../core/llm-runtime/context-windows.js";
+import {
+  CONTEXT_WINDOWS,
+  contextPressureLabel,
+  lookupContextWindow,
+} from "../../core/llm-runtime/context-windows.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+
+/**
+ * ★**관측 증거 앵커** (2026-08-21). 종전 검사는 "해석되는가" 만 봤고, 표가 200K 로 **틀린**
+ *  동안에도 멀쩡히 초록이었다 — 틀린 값도 해석은 되니까.
+ *
+ *  여기 적는 건 추정이 아니라 **성공한 호출의 실측**이다: 이 크기의 입력이 `ok=true` 로
+ *  끝났으므로 그 모델의 윈도우는 **최소한** 이만큼이다. 추측을 박아두는 게 아니라
+ *  반증 불가능한 하한을 박아둔다 — 그래서 이 목록은 올라가기만 하고 내려가지 않는다.
+ *  (출처: 회사돌쇠 `llm.turn_done`, 2026-08-21. 200K 창이면 물리적으로 불가능한 값들.)
+ */
+const OBSERVED_MIN: ReadonlyArray<{ model: string; input: number; when: string }> = [
+  { model: "claude-opus-5", input: 241_088, when: "2026-08-21 회사돌쇠" },
+];
 
 /** 실사용 모델(llm.turn_done 실측 2026-07-30) + 프로파일 풀에 등장하는 형태. */
 const IN_USE = [
@@ -75,6 +92,45 @@ export const check: RegressionCheck = {
         "빈 값 방어",
         lookupContextWindow("") === undefined && lookupContextWindow(null) === undefined,
         "null·빈문자",
+      ),
+      // ★① 실측이 표를 반증하지 않는가 — 성공한 호출보다 윈도우가 작으면 표가 틀렸다.
+      ...OBSERVED_MIN.map(({ model, input, when }) => {
+        const win = lookupContextWindow(model);
+        return assert(
+          `★${model} 윈도우가 실측 성공 입력(${input.toLocaleString()})보다 크다 — 작으면 표가 틀린 것`,
+          win !== undefined && win >= input,
+          win === undefined
+            ? `★미해석(${when})`
+            : `${win.toLocaleString()} ≥ ${input.toLocaleString()} (${when})`,
+        );
+      }),
+      // ★② 구체 키가 세대 폴백을 이긴다 — 지면 새 값이 영영 안 쓰인다(죽은 설정).
+      ...(() => {
+        const keys = Object.keys(CONTEXT_WINDOWS);
+        const shadowed = keys.filter((k) =>
+          keys.some((other) => other !== k && k.startsWith(other)) &&
+          lookupContextWindow(`${k}-20260101`) !== CONTEXT_WINDOWS[k],
+        );
+        return [
+          assert(
+            "★더 구체적인 키가 세대 폴백보다 우선한다(가장 긴 접두 매칭)",
+            shadowed.length === 0,
+            shadowed.length === 0
+              ? "폴백에 가려진 키 0개"
+              : `★가려짐: ${shadowed.join(", ")}`,
+          ),
+        ];
+      })(),
+      // ★③ 100% 를 넘겼는데 "거의 참"이라고 말하지 않는가 — 그건 /clear 를 유도해
+      //  멀쩡한 맥락을 지우게 만든다. 초과는 컨텍스트가 아니라 **우리 표**의 문제다.
+      assert(
+        "★100% 초과를 '거의 참'으로 말하지 않는다(사용자에게 /clear 를 시키지 않는다)",
+        !contextPressureLabel(106).includes("거의 참") &&
+          !contextPressureLabel(106).includes("`/clear` 고려") &&
+          contextPressureLabel(90).includes("거의 참") &&
+          contextPressureLabel(75).includes("여유") &&
+          contextPressureLabel(20) === "",
+        `106%→"${contextPressureLabel(106).trim()}"`,
       ),
     ];
   },

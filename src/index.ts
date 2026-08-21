@@ -53,7 +53,10 @@ import {
   type SteeringChannel,
   type SteeringInput,
 } from "./core/steering.js";
-import { lookupContextWindow } from "./core/llm-runtime/context-windows.js";
+import {
+  contextPressureLabel,
+  lookupContextWindow,
+} from "./core/llm-runtime/context-windows.js";
 import { runRegionA } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
@@ -1636,13 +1639,8 @@ const handler: MessageHandler = async (msg) => {
           const win = lookupContextWindow(session.model);
           if (win !== undefined) {
             const pct = Math.round((inTok / win) * 100);
-            // 컨텍스트 압박 경고 — 윈도우 근접 시 /clear 유도(어댑터 무관).
-            const warn =
-              pct >= 85
-                ? " ⚠️ 거의 참 — `/clear` 고려"
-                : pct >= 70
-                  ? " ⚠️ 여유 줄어듦"
-                  : "";
+            // 컨텍스트 압박 경고 — 판정은 `context-windows.ts` 가 소유한다(회귀 대상).
+            const warn = contextPressureLabel(pct);
             convo = `${session.model} · 컨텍스트 ~${pct}%${warn} (입력 ${fmtTok(inTok)} / ${fmtTok(win)})`;
           } else {
             convo = `${session.model} · 컨텍스트 입력 ${fmtTok(inTok)} (윈도우 미상)`;

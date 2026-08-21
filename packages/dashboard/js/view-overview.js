@@ -130,6 +130,7 @@
         //  만든 행이 모바일에서만 안 보이면 고친 게 아니다. 나머지 둘은 개수라 밀려도 된다.
         const ver = versionStatusRow(appVersion, updateChip.state());
         rows.splice(1, 0, [ver.tone, "버전", ver.desc, ver.meta]);
+        // (업데이트 판정이 **늦게** 도착하면 아래 onChange 등록이 이 화면을 다시 그린다.)
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
           row.className = "status-row";
@@ -179,3 +180,14 @@
       // ── 모델 프로파일 뷰(표시 전용) ──────────────────────────────────────────
       // settings.json models.profiles 를 카드로 렌더. /models 슬래시와 동일 정보(이름·설명·
       // 풀·폴백)를 시각적으로. 편집 없음 — 설정은 대화로(비서가 settings.json 편집). LLM/채널 무관.
+
+      // ── 업데이트 판정 도착 시 홈 갱신 (2026-08-21 적대 검토 F1) ──────────────
+      // ★**여기서 등록한다** — `update-chip.js` 는 이 파일보다 먼저 로드되므로 거기서
+      //  `showOverview` 를 이름으로 부르면 전방 참조이고, fetch 가 스크립트 배달보다 빠른
+      //  순간 ReferenceError 로 **받을 업데이트가 조용히 사라졌다**(실측 재현). 늦게 로드되는
+      //  쪽이 자기 파일에서 등록하면 순서에 무관하다.
+      // 첫 렌더가 이 등록보다 빨라도 손실 없다 — 그때는 showOverview 가 updateChip.state() 를
+      // 직접 읽는다(밀어주기와 당겨오기 둘 다 있고, 늦은 쪽이 이긴다).
+      updateChip.onChange(() => {
+        if (currentView === "overview") setTimeout(showOverview, 0);
+      });

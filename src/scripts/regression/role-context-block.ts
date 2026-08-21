@@ -12,12 +12,17 @@
  *  ③자리는 **시스템 채널의 맨 끝** — 앞에 두면 뒤따르는 전부가 역할별로 갈린다
  *  ④매니저 안의 서브에이전트는 **서브**다(둘 다 >0 일 때 정체는 서브)
  */
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildContextSlots,
   roleContextBlock,
   splitSystemContext,
 } from "../../core/prompt-assembly.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const base = {
   system: "SYS",
@@ -44,13 +49,37 @@ export const check: RegressionCheck = {
     const subInManager = roleContextBlock({ workerDepth: 1, subagentDepth: 1 });
 
     // ① 메인은 빈 값 — 슬롯이 걸러져 기존 바이트가 그대로다.
-    const mainStable = splitSystemContext({ ...base }).stable;
-    const mainStableExplicitEmpty = splitSystemContext({ ...base, role: "" }).stable;
+    //
+    // ★종전 단언은 **공회전이었다** (2026-08-21 적대 검토 A-F7): `role` 미전달 vs `role:""`
+    //  을 비교했는데 둘이 같은 슬롯 테이블을 타므로, 슬롯이 바이트를 더하면 **양쪽이 똑같이**
+    //  늘어 단언이 안 울었다(실제로 "빈 슬롯도 개행을 덧붙인다" 변이를 못 잡았다).
+    //  → 역할 슬롯을 **빼고 다시 조립한 것**과 대조한다. 이건 "빈 역할이 바이트를 안 더한다"
+    //    를 진짜로 재고, 통과하려면 실제로 그래야 한다.
+    const mainStable = splitSystemContext({ ...base, roleSource: {} }).stable;
+    const withoutRoleSlot = buildContextSlots({ ...base, roleSource: {} })
+      .filter((s) => s.key !== "role" && s.text.length > 0 && s.channel === "system")
+      .map((s) => s.text);
+    const mainHasNoRoleBytes =
+      withoutRoleSlot.every((t) => mainStable.includes(t)) &&
+      mainStable.length ===
+        splitSystemContext({ ...base, roleSource: { subagentDepth: 0, workerDepth: 0 } })
+          .stable.length;
     out.push(
       assert(
         "★메인은 역할 문구가 없다 — 기존 시스템 채널 바이트가 그대로(캐시 무영향)",
-        main === "" && mainStable === mainStableExplicitEmpty,
-        `main="${main}" 동일=${mainStable === mainStableExplicitEmpty}`,
+        main === "" && mainHasNoRoleBytes,
+        `main="${main}" · 메인 stable=${mainStable.length}B`,
+      ),
+    );
+
+    // ★캐시 프리픽스가 실제로 보존되는가 — 매니저 = 메인 + 꼬리.
+    //  이게 "꼬리에 둔다"의 **동작 판정**이다(자리 판정 ③은 슬롯 이름만 본다).
+    const mgrStable = splitSystemContext({ ...base, roleSource: { workerDepth: 1 } }).stable;
+    out.push(
+      assert(
+        "★매니저의 시스템 채널은 '메인 그대로 + 꼬리' 다(앞부분 캐시가 안 깨진다)",
+        mgrStable.startsWith(mainStable) && mgrStable.length > mainStable.length,
+        `메인 ${mainStable.length}B → 매니저 ${mgrStable.length}B · 접두 일치=${mgrStable.startsWith(mainStable)}`,
       ),
     );
 
@@ -84,7 +113,7 @@ export const check: RegressionCheck = {
     );
 
     // ③ 자리 — 시스템 채널의 **맨 끝**.
-    const slots = buildContextSlots({ ...base, role: "ROLE" });
+    const slots = buildContextSlots({ ...base, roleSource: { workerDepth: 1 } });
     const sys = slots.filter((s) => s.channel === "system");
     const last = sys[sys.length - 1];
     out.push(
@@ -101,6 +130,28 @@ export const check: RegressionCheck = {
         `channel=${slots.find((s) => s.key === "role")?.channel}`,
       ),
     );
+
+    // ★어댑터 **전수**가 재료를 넘긴다 (2026-08-21 적대 검토 A-F1).
+    //  종전엔 이 검사가 순수 함수만 부르고 배선은 아무도 안 봐서, 세 어댑터에서 통째로
+    //  지워도 1,461건이 초록이었다. 한 어댑터만 빠지면 그 어댑터의 매니저만 자기를 메인으로
+    //  알고 없는 도구를 찾는다 — 조용한 LLM-agnostic 위반이다.
+    //  ★대상 목록을 손으로 적지 않는다: `splitSystemContext` 를 부르는 어댑터를 **디스크에서
+    //   찾아** 전수로 건다. 네 번째 어댑터가 생겨도 이 검사가 자동으로 따라간다.
+    {
+      const dir = path.join(REPO, "src/core/llm-runtime/adapters");
+      const users = readdirSync(dir)
+        .filter((f) => f.endsWith(".ts"))
+        .map((f) => [f, readFileSync(path.join(dir, f), "utf8")] as const)
+        .filter(([, src]) => src.includes("splitSystemContext("));
+      const missing = users.filter(([, src]) => !/roleSource:\s*input\b/.test(src));
+      out.push(
+        assert(
+          "★splitSystemContext 를 쓰는 어댑터 전수가 roleSource 를 넘긴다(한 곳만 빠져도 그 어댑터만 역할을 모른다)",
+          users.length >= 3 && missing.length === 0,
+          `어댑터 ${users.map(([f]) => f).join(", ")} · 누락 ${missing.map(([f]) => f).join(", ") || "없음"}`,
+        ),
+      );
+    }
 
     // 역할 문구가 헌법을 재진술하지 않는다 — 그러면 그게 곧 "헌법 세 벌"이다.
     const restated = ["안전선", "승인", "정직", "검증"].filter(

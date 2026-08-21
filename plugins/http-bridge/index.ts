@@ -906,6 +906,9 @@ class HttpBridge implements Channel, Observer {
       writeJson(res, 200, {
         ok: true,
         version: VERSION,
+        // ★프로세스 가동시간 — "이게 **새 프로세스인가**" 의 유일한 답 (2026-08-21 검토 F5).
+        //  업데이트 후 복귀 판정에 쓴다. version 으로는 안 된다(sync 는 대개 버전을 안 올린다).
+        uptime_ms: Math.round(process.uptime() * 1000),
         buffer_size,
         subscribers: this.sseClients.size,
         channel_handler: this.channelHandler !== null,

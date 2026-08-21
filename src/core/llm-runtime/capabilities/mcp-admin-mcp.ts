@@ -1,7 +1,20 @@
 /**
  * 외부 MCP 서버 등록 도구 — add_mcp_server / list_mcp_servers / remove_mcp_server.
- * `<home>/mcp.json` 에 표준 MCP config 를 upsert/제거(external-mcp.ts). 연결은 어댑터가
- * 재시작 시 수행(claude=SDK 네이티브 / codex·openai=클라이언트 브리지). 이 도구는 파일만.
+ * `<home>/mcp.json` 에 표준 MCP config 를 upsert/제거(external-mcp.ts). 이 도구는 파일만.
+ *
+ * ★**연결 시점은 하나가 아니다** (2026-08-21 사용자 지적 — 설명이 "무조건 재시작"이라고
+ *  가르치고 있었다). 코드로 확인한 실제:
+ *   - claude: 매 턴 `readExternalMcpServers(cwd)` 를 다시 읽어 SDK `options.mcpServers` 로
+ *     넘긴다 → **전역·프로젝트 둘 다 재시작 불필요**(다음 턴에 붙는다).
+ *   - codex·openai 전역: `connectPromise` 가 **프로세스당 1회**(external-mcp.ts) → 재시작 필요.
+ *   - codex·openai 프로젝트: `projectConnect` 가 **그 프로젝트 첫 위임 턴**에 지연연결 →
+ *     아직 안 쓴 프로젝트면 재시작 불필요, 이미 쓴 뒤면 재시작 필요.
+ *  라이브 재연결 경로는 없다(`closeAllExternalMcp` 는 데몬 shutdown 에서만 불린다).
+ *  ★위 넷은 **실행으로 확인**했다(`_workspace/_mcp_reconnect_probe.ts` — 없는 명령을 쥐여
+ *   주고 "연결 실패 — skip" 이 뜨는지로 *다시 읽었는가*를 관측). 다만 claude 는 "새 config 를
+ *   **받는다**"까지가 실증이고, SDK 가 그걸로 실제 spawn 하는 구간은 SDK 계약에 기댄 추정이다.
+ *  ★그래서 모델에게 주는 규칙은 표가 아니라 **"써 보고 안 보이면 그때 재시작"** 이다 —
+ *   경우를 외우게 하면 갈리고, 표는 낡는다.
  *
  * 진실 소스 ADR: docs/decisions/2026-07-07-external-mcp-dynamic-connect.md §1b.
  *
@@ -38,7 +51,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
     tools: [
       tool(
         "add_mcp_server",
-        "외부 MCP 서버를 등록합니다. path 미지정=전역(<home>/mcp.json, 어디서나) / path 지정=그 프로젝트 폴더 전용(<path>/.mcp.json, 그 프로젝트에 위임할 때만 도구 노출). stdio 는 command(+args,env), sse 는 url. **등록 후 재시작해야 실제로 연결됩니다.** ★**특정 프로젝트에서만 의미 있는 서버는 반드시 path 를 지정하세요 — 전역에 넣지 마세요.** 판정: 그 서버가 특정 폴더·앱·저장소를 전제하면(예: 에디터 연동, 그 레포의 코드 색인) 프로젝트 전용입니다. 전역은 *어느 대화에서나 쓸 수 있는 것*만(예: 범용 검색). 전역에 잘못 넣으면 무관한 대화에도 도구가 실려 판단이 흐려지고, 그 앱이 안 떠 있는 기계에서는 **매 부팅 연결 실패**가 납니다(실사례 있음). 애매하면 사용자에게 물어보고, 기본은 프로젝트 전용입니다. ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
+        "외부 MCP 서버를 등록합니다. path 미지정=전역(<home>/mcp.json, 어디서나) / path 지정=그 프로젝트 폴더 전용(<path>/.mcp.json, 그 프로젝트에 위임할 때만 도구 노출). stdio 는 command(+args,env), sse 는 url. **등록 후 바로 붙는 경우가 많습니다 — 먼저 써 보고, 그 서버의 도구가 안 보일 때만 재시작을 제안하세요**(프로젝트 전용은 그 프로젝트에 처음 위임하는 턴에 연결되고, 어댑터에 따라 전역도 다음 턴에 붙습니다). ★**특정 프로젝트에서만 의미 있는 서버는 반드시 path 를 지정하세요 — 전역에 넣지 마세요.** 판정: 그 서버가 특정 폴더·앱·저장소를 전제하면(예: 에디터 연동, 그 레포의 코드 색인) 프로젝트 전용입니다. 전역은 *어느 대화에서나 쓸 수 있는 것*만(예: 범용 검색). 전역에 잘못 넣으면 무관한 대화에도 도구가 실려 판단이 흐려지고, 그 앱이 안 떠 있는 기계에서는 **매 부팅 연결 실패**가 납니다(실사례 있음). 애매하면 사용자에게 물어보고, 기본은 프로젝트 전용입니다. ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
         {
           name: z.string().min(1),
           command: z.string().optional(),
@@ -100,7 +113,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
             return okText(
               `외부 MCP 서버 '${args.name}' 등록됨 (${describeExternalMcpConfig(args.name, config)}) — ` +
                 `${projectPath ? `프로젝트 전용 (${projectPath}/.mcp.json)` : "전역 (<home>/mcp.json)"}. ` +
-                `★재시작해야 연결됩니다 — 사용자에게 재시작할지 물어보세요.`,
+                `★바로 써 보세요 — 그 서버의 도구가 안 보일 때만 재시작을 제안하면 됩니다.`,
             );
           } catch (e) {
             return errText(e instanceof Error ? e.message : String(e));
@@ -109,7 +122,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
       ),
       tool(
         "list_mcp_servers",
-        "등록된 외부 MCP 서버 목록을 반환합니다. path 미지정=전역(<home>/mcp.json)만 / path 지정=전역+그 프로젝트(<path>/.mcp.json) 병합. 실제 연결 여부는 재시작 후 로그로 확인.",
+        "등록된 외부 MCP 서버 목록을 반환합니다. path 미지정=전역(<home>/mcp.json)만 / path 지정=전역+그 프로젝트(<path>/.mcp.json) 병합. 이건 **등록 목록**이지 연결 상태가 아닙니다 — 실제 연결은 데몬 로그에서 확인합니다.",
         { path: z.string().optional() },
         async (args) => {
           try {
@@ -135,7 +148,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
       ),
       tool(
         "remove_mcp_server",
-        "등록된 외부 MCP 서버를 제거합니다. path 미지정=전역(<home>/mcp.json) / path 지정=그 프로젝트(<path>/.mcp.json)에서 삭제. 재시작하면 연결이 끊깁니다.",
+        "등록된 외부 MCP 서버를 제거합니다. path 미지정=전역(<home>/mcp.json) / path 지정=그 프로젝트(<path>/.mcp.json)에서 삭제. 이미 붙어 있는 연결은 어댑터에 따라 다음 턴 또는 재시작 때 끊깁니다.",
         { name: z.string().min(1), path: z.string().optional() },
         async (args) => {
           try {
@@ -146,7 +159,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
             const had = await removeExternalMcpServer(args.name, projectPath);
             return okText(
               had
-                ? `외부 MCP 서버 '${args.name}' 제거됨. 재시작하면 연결이 끊깁니다.`
+                ? `외부 MCP 서버 '${args.name}' 제거됨(등록 해제). 이미 붙어 있던 연결은 다음 턴 또는 재시작 때 끊깁니다.`
                 : `'${args.name}' 은(는) 등록돼 있지 않습니다.`,
             );
           } catch (e) {

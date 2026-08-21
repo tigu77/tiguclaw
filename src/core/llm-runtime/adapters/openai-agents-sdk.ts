@@ -45,7 +45,6 @@ import {
   formatMemorySnippet,
   formatModelProfiles,
   splitSystemContext,
-  roleContextBlock,
 } from "../../prompt-assembly.js";
 import { resolveReasoningEffort } from "../model-catalog.js";
 import { formatEnvContext } from "../../runtime-env.js";
@@ -607,11 +606,9 @@ export const runOpenAi = async (
           skillIndex,
           agentIndex,
           modelProfiles,
-          // 역할 표시 — 판정은 코어(`roleContextBlock`) 한 곳. 어댑터는 값만 넘긴다.
-          role: roleContextBlock({
-            ...(input.subagentDepth !== undefined ? { subagentDepth: input.subagentDepth } : {}),
-            ...(input.workerDepth !== undefined ? { workerDepth: input.workerDepth } : {}),
-          }),
+          // 역할 판정의 재료만 넘긴다 — 문구는 코어가 만든다. 넘기는 값이 **하나**라
+          // 뒤바꿀 수 없고, 필수 필드라 지우면 타입체크가 막는다(적대 검토 A-F1).
+          roleSource: input,
         });
   const userTurnParts = [attachmentBlock, input.text];
   const promptWithMemory = assembleUserPrompt(volatileParts, userTurnParts);

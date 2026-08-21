@@ -50,6 +50,7 @@ import {
   markCooldownProbe,
 } from "../../store/cooldowns.js";
 import { getEventBus } from "../eventbus.js";
+import { contextWindowContradiction } from "./context-windows.js";
 // 통지 좌표 도출 — 어댑터 3종·update_self 와 **같은 함수**를 쓴다(좌표 판정 단일 진실).
 import { notifyDestFromCoords } from "../self-update.js";
 import {
@@ -614,6 +615,15 @@ const publishTurnDone = (
         ? { workerDepth: input.workerDepth }
         : {}),
     };
+    // ★표 반증 탐지 — 성공한 호출의 입력이 표의 상한을 넘으면 그 칸은 확실히 틀렸다.
+    //  손으로 관리하는 앵커 목록 없이 **모든 모델**이 덮인다(적대 검토 B-F4).
+    {
+      const inTok = (payload as { inputTokens?: unknown }).inputTokens;
+      if (typeof inTok === "number" && Number.isFinite(inTok)) {
+        const msg = contextWindowContradiction(spec.model, inTok);
+        if (msg !== null) console.warn(msg);
+      }
+    }
     getEventBus().publish({
       type: "llm.turn_done",
       ts: Date.now(),

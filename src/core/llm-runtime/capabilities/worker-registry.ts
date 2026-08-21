@@ -429,6 +429,10 @@ export const createWorkerMcpServer = (
         const jobId = startWorkerJob({
           label: args.label,
           task: args.task,
+          // ★W-I5 코어 가드의 재료 — 매니저 안이면 코어가 던진다(적대 검토 A-F2).
+          //  어댑터가 이 도구를 미등록하는 것과 **이중**이다: 어댑터 게이트는 "보이지 않게",
+          //  코어 가드는 "그래도 부르면 막게". 한쪽이 풀려도 다른 쪽이 선다.
+          callerWorkerDepth: parentInput.workerDepth ?? 0,
           threadKey: parentInput.threadKey,
           channel: parentInput.channel,
           cwd: workerCwd,

@@ -13,6 +13,7 @@
 import {
   CONTEXT_WINDOWS,
   contextPressureLabel,
+  contextWindowContradiction,
   lookupContextWindow,
 } from "../../core/llm-runtime/context-windows.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -26,6 +27,10 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
  *  반증 불가능한 하한을 박아둔다 — 그래서 이 목록은 올라가기만 하고 내려가지 않는다.
  *  (출처: 회사돌쇠 `llm.turn_done`, 2026-08-21. 200K 창이면 물리적으로 불가능한 값들.)
  */
+//  ★앵커를 **손으로 늘리지 않는다** (2026-08-21 적대 검토 B-F4): 적힌 칸만 지켜져서,
+//   sonnet-5 를 200K 로 바꾸는 변이(= 고친 사고를 글자 그대로 재현)가 초록으로 통과했다.
+//   대신 `contextWindowContradiction` 이 **런타임에 모든 칸을 반증**한다(아래에서 검사).
+//   여기 남은 항목은 그 기제가 없던 시절의 기록이자, 반증기 자체의 회귀 재료다.
 const OBSERVED_MIN: ReadonlyArray<{ model: string; input: number; when: string }> = [
   { model: "claude-opus-5", input: 241_088, when: "2026-08-21 회사돌쇠" },
 ];
@@ -63,6 +68,52 @@ const poolModels = async (): Promise<string[]> => {
     }
   }
   return []; // 설정 없음(격리 홈) — 아래 IN_USE 단언이 본체를 지킨다.
+};
+
+/**
+ * 표가 틀렸을 때 **스스로 말하는가** — 손 관리 앵커 대신 이게 모든 칸을 덮는다.
+ */
+const contradictionAssertions = (
+  contradiction: (m: string, n: number) => string | null,
+  lookup: (m: string) => number | undefined,
+): Assertion[] => {
+  const asserts: Assertion[] = [];
+  // 표에 있는 **모든** 모델을 상한 +1 로 때린다 — 하나라도 조용하면 그 칸은 무방비다.
+  const models = Object.keys(CONTEXT_WINDOWS);
+  const silent = models.filter((m) => {
+    const w = lookup(m);
+    return w === undefined || contradiction(m, w + 1) === null;
+  });
+  asserts.push(
+    assert(
+      "★표의 모든 칸이 반증 가능하다 — 상한을 넘는 성공 호출이 오면 그 칸이 틀렸다고 말한다",
+      models.length > 0 && silent.length === 0,
+      silent.length === 0
+        ? `${models.length}칸 전부 반증됨`
+        : `★조용한 칸: ${silent.join(", ")}`,
+    ),
+  );
+  // 정상은 조용하다 — 상한 이하는 아무 말도 안 한다(배경소음 금지).
+  const noisy = models.filter((m) => contradiction(m, Math.floor((lookup(m) ?? 1) / 2)) !== null);
+  asserts.push(
+    assert(
+      "정상 범위에서는 조용하다(매 턴 경고 = 배경소음)",
+      noisy.length === 0,
+      noisy.length === 0 ? "조용" : `★떠듦: ${noisy.join(", ")}`,
+    ),
+  );
+  // 경고에 **판정 수치**가 실린다 — 로그만으로 잡을 수 있어야 한다.
+  const sample = contradiction("claude-opus-5", 2_000_000) ?? "";
+  asserts.push(
+    assert(
+      "★경고가 판정 수치를 싣는다(모델·관측치·표값) — 로그만으로 어느 칸인지 안다",
+      sample.includes("claude-opus-5") &&
+        sample.includes("2,000,000") &&
+        sample.includes("1,000,000"),
+      `"${sample.slice(0, 90)}…"`,
+    ),
+  );
+  return asserts;
 };
 
 export const check: RegressionCheck = {
@@ -132,6 +183,7 @@ export const check: RegressionCheck = {
           contextPressureLabel(20) === "",
         `106%→"${contextPressureLabel(106).trim()}"`,
       ),
+      ...contradictionAssertions(contextWindowContradiction, lookupContextWindow),
     ];
   },
 };

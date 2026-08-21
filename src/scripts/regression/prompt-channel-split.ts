@@ -14,6 +14,7 @@
  *    호출부를 지워도 초록이다(_wiring.ts 참조).
  */
 import {
+  roleContextBlock,
   composeSystemChannel,
   contextSlotKeys,
   buildContextSlots,
@@ -42,11 +43,17 @@ const MARK = {
   agentIndex: "@@AGENTS@@",
   modelProfiles: "@@PROFILES@@",
   foreignDelta: "@@FOREIGN@@",
-  role: "@@ROLE@@",
 } as const;
 
 /** 입력 필드가 아니라 슬롯 테이블이 직접 만드는 조각 — 마커도 실제 본문에서 딴다. */
 const PATH_HINT_MARK = "당신의 AGENT.md 실제 경로";
+
+/**
+ * 역할 표시 마커 — **정의점에서 딴다**. 종전엔 가짜 토큰(`@@ROLE@@`)을 넣어 줬는데, 이제
+ * 슬롯이 `roleSource` 로 **직접 만들어** 쓰므로 주입할 자리가 없다. 실제 본문의 첫 줄을
+ * 쓰면 문구가 바뀌어도 마커가 같이 따라간다(손으로 관리하는 목록이 안 생긴다).
+ */
+const ROLE_MARK = roleContextBlock({ workerDepth: 1 }).split("\n")[0]!;
 
 /** 시스템 채널에 있어야 하는 것 = 턴 사이에 안 변하는 것. */
 const STABLE = [
@@ -57,7 +64,7 @@ const STABLE = [
   MARK.skillIndex,
   MARK.agentIndex,
   MARK.modelProfiles,
-  MARK.role, // 역할 표시 — 대화 내내 안 변한다(user 채널이면 매 턴 재전송).
+  ROLE_MARK, // 역할 표시 — 대화 내내 안 변한다(user 채널이면 매 턴 재전송).
 ];
 /** user `<system-reminder>` 에 남아야 하는 것 = 턴마다 변하는 것. */
 const VOLATILE = [
@@ -87,7 +94,7 @@ export const check: RegressionCheck = {
       agentIndex: MARK.agentIndex,
       modelProfiles: MARK.modelProfiles,
       foreignDelta: MARK.foreignDelta,
-      role: MARK.role,
+      roleSource: { workerDepth: 1 },
     };
     const { stable, volatileParts } = splitSystemContext(full);
     const volatile = volatileParts.join("\n\n");
@@ -135,11 +142,15 @@ export const check: RegressionCheck = {
     // ★계산형 슬롯(입력이 아니라 함수가 텍스트를 만드는 것)은 마커를 못 심으므로 위
     //  배치 검사로 덮을 수 없다. **이름만 예외로 적으면 그물이 헐거워지므로**, 예외로 빼는
     //  대신 바로 아래에서 **채널 배치를 따로 단언**한다(빼는 게 아니라 갚는다).
-    const COMPUTED_SLOTS = ["agentPathHint", "selfGrowth"] as const;
+    // (`role` 도 계산형이다 — 입력 키는 `roleSource` 고 텍스트는 `roleContextBlock` 이 만든다.
+    //  갚는 곳은 아래 채널 단언 + `role-context-block` 회귀 전체다 — 거기서 값·자리·어댑터
+    //  **전수 배선**까지 본다. 2026-08-21 적대 검토 A-F1 로 배선 그물이 생겼다.)
+    const COMPUTED_SLOTS = ["agentPathHint", "selfGrowth", "role"] as const;
     const slotChannel = new Map(
       buildContextSlots({
         system: "", env: "", agent: "", agentWarn: "", convoContext: "",
         memoryIndex: "", memorySnippet: "", skillIndex: "", agentIndex: "",
+        roleSource: {},
       }).map((sl) => [sl.key, sl.channel]),
     );
     const wrongChannel = COMPUTED_SLOTS.filter((k) => slotChannel.get(k) !== "system");
@@ -182,6 +193,7 @@ export const check: RegressionCheck = {
 
     // 빈 슬롯(depth≥1 의 agentIndex/modelProfiles, leanMemory 의 메모리 등)은 양쪽에서 제거.
     const lean = splitSystemContext({
+      roleSource: {},
       system: MARK.system,
       env: "",
       agent: MARK.agent,

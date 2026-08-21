@@ -89,6 +89,34 @@ export const lookupContextWindow = (
  *  "106% 인데 「거의 참」" 이라는 거짓말이 아무에게도 안 걸렸다. 이 레포의 상수다 —
  *  **검사가 껄끄러우면 코드가 잘못 놓인 것.** 순수 함수로 빼면 변이 테스트가 된다.
  */
+/**
+ * **표가 틀렸으면 스스로 말하게 한다** (2026-08-21 적대 검토 B-F4).
+ *
+ * ★사고의 구조: 표의 한 칸이 틀리면(opus-5 를 200K 로 적었던 것) `/status` 가 상시 거짓
+ *  경보를 내고 사용자가 멀쩡한 맥락을 `/clear` 로 날린다. 그걸 고쳤는데, 그물은 **사고가 난
+ *  칸 하나**만 막았다 — 실측 앵커가 opus-5 뿐이라 sonnet-5 를 200K 로 바꿔도 스위트가 초록이다.
+ *
+ * ★앵커를 손으로 늘리는 건 답이 아니다: 새 모델이 나올 때마다 누군가 적어야 하고, 안 적으면
+ *  조용히 무방비다(이 레포가 손 관리 목록으로 반복해서 당한 자리). 대신 **반증을 자동화**한다 —
+ *  성공한 호출의 입력이 표의 값을 넘었다면 그 칸은 **확실히 틀렸다**(반증 불가능한 하한).
+ *  그 순간 로그에 판정 수치를 실어 남긴다. 목록이 없어도 **모든 칸**이 덮이고, 조용한
+ *  결함이 시끄러운 결함이 된다 — 이 레포에서 그 차이가 12일과 그날의 차이였다.
+ *
+ * @returns 표가 반증됐으면 그 사실을 적은 한 줄, 아니면 null(정상은 조용하다).
+ */
+export const contextWindowContradiction = (
+  model: string,
+  observedInputTokens: number,
+): string | null => {
+  const win = lookupContextWindow(model);
+  if (win === undefined || observedInputTokens <= win) return null;
+  return (
+    `context-window: '${model}' 표가 틀렸습니다 — 성공한 호출의 입력 ${observedInputTokens.toLocaleString()} 토큰이 ` +
+    `표의 상한 ${win.toLocaleString()} 을 넘었습니다. context-windows.ts 의 그 칸을 올리세요 ` +
+    `(그때까지 /status 컨텍스트 %가 과대 보고되고 거짓 경보가 납니다).`
+  );
+};
+
 export const contextPressureLabel = (pct: number): string =>
   pct > 100
     ? " ⚠️ 한도 초과로 계산됨 — 이 모델의 윈도우 값이 틀렸을 수 있습니다(`/clear` 불필요)"

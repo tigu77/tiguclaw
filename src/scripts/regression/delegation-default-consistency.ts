@@ -68,6 +68,22 @@ const SOURCES = [
  *  도구 설명 둘)에 가격표를 심으면 그냥 통과했다. 파일을 더 열거하는 건 같은 병의 연장이라
  *  (`feedback_hand_maintained_lists`) **조립 함수를 부른다** — 스킬이 늘어도 자동으로 따라온다.
  */
+/**
+ * 능력 파일에서 **모델에게 실제로 가는 문자열**만 뽑는다 — 도구 설명(`tool(name, desc, …)`)과
+ * 인자 설명(`.describe("…")`). 코드·주석은 모델이 안 본다.
+ *
+ * ★SDK 의 호출 모양에서 파생한다 — 어떤 문구를 볼지 목록으로 적지 않는다(새 도구가 생기면
+ *  자동으로 따라온다).
+ */
+const modelFacingStrings = (src: string): string => {
+  const parts: string[] = [];
+  for (const m of src.matchAll(/\btool\(\s*"(?:[^"\\]|\\.)*",\s*"((?:[^"\\]|\\.)*)"/g)) {
+    parts.push(m[1]!);
+  }
+  for (const m of src.matchAll(/\.describe\(\s*"((?:[^"\\]|\\.)*)"/g)) parts.push(m[1]!);
+  return parts.join("\n");
+};
+
 const injectedSurfaces = async (): Promise<Array<{ what: string; text: string }>> => [
   { what: "매 턴 주입 넛지(조립본)", text: nudgeText() },
   { what: "작동 헌법", text: read("SYSTEM.md") },
@@ -75,6 +91,14 @@ const injectedSurfaces = async (): Promise<Array<{ what: string; text: string }>
   // 스킬·에이전트 인덱스 = 전 항목의 description 이 매 턴 실린다(개수 무관·자동 추종).
   { what: "스킬 인덱스(전 스킬 description)", text: formatSkillIndex(await discoverSkills(REPO)) },
   { what: "에이전트 인덱스(전 에이전트 description)", text: formatAgentIndex(await discoverAgents(REPO)) },
+  // ★**도구 설명도 매 턴 실린다** (2026-08-21 적대 검토 A-F4). 바로 위 주석이 "매 턴 실리는
+  //  다른 자리 넷" 이라고 **넷을 알면서 둘만** 넣어 뒀고, 그래서 `run_in_background`·
+  //  `spawn_agent` 설명에 가격표를 심는 변이가 그대로 통과했다 — 검사가 자기 커버리지에
+  //  대해 거짓을 말한 것이고, 다음 사람은 그 이름("주입면 어디에도")을 믿는다.
+  //  ★파일 전체가 아니라 **모델에게 가는 문자열만** 뜬다(첫 시도에서 파일 전체를 넣었더니
+  //   코드·주석의 "토큰 2배" 같은 말이 가격표로 잡혔다 — 검사가 우는 것과 맞는 것은 다르다).
+  { what: "위임 도구 설명(run_in_background)", text: modelFacingStrings(read("src/core/llm-runtime/capabilities/worker-registry.ts")) },
+  { what: "위임 도구 설명(spawn_agent)", text: modelFacingStrings(read("src/core/llm-runtime/capabilities/agent-registry.ts")) },
 ];
 
 /**
@@ -174,6 +198,34 @@ export const check: RegressionCheck = {
     const revived: string[] = [];
     for (const s of await injectedSurfaces()) {
       for (const re of OPPOSITE) if (re.test(s.text)) revived.push(`${s.what}: ${re.source}`);
+    }
+
+    // ★하네스의 **팀 갈래가 매니저로 라우팅**되는가 (2026-08-21 적대 검토 A-F3).
+    //  넛지와 헌법은 "서브에이전트 2명 이상이면 매니저에게 통째로 넘겨라" 인데, 정작 팀
+    //  갈래에서 **실제로 읽히는** 하네스 스킬은 비서가 전경에서 2~5명을 지휘하는 그림을
+    //  그리고 매니저 위임을 한 번도 지시하지 않았다. 팀 갈래는 정의상 항상 그 조건이라,
+    //  이건 세 자리 중 하나가 반대 방향을 가리키고 있었다는 뜻이다 — 사용자가 겪은 형태는
+    //  헌법이 인용한 실사고 그대로다("직접을 고른 뒤 전경에서 10명을 뿌렸다").
+    //
+    //  ★한계(정직하게): 산문의 **의미**는 실행으로 못 잰다. 여기서 지키는 건 "팀 규모를
+    //   정하는 그 자리에 매니저 라우팅이 **있는가**" 하나다. 문장을 반대로 뒤집으면서
+    //   `run_in_background` 라는 단어를 남기면 이 검사는 통과한다(같은 파일 상단이 부분문자열
+    //   린트의 한계를 이미 적어 뒀다). 그래도 **통째로 사라지는 것**은 막는다 — 그게 실제로
+    //   일어났던 일이다.
+    {
+      const skill = read("skills/harness/SKILL.md");
+      const start = skill.indexOf("## ② 규모");
+      const next = start < 0 ? -1 : skill.indexOf("\n## ", start + 5);
+      const scale = start < 0 ? "" : skill.slice(start, next < 0 ? undefined : next);
+      out.push(
+        assert(
+          "★하네스의 팀 규모 절이 매니저 라우팅을 지시한다(팀 갈래 = 항상 '2명 이상' 조건)",
+          scale.includes("run_in_background") && scale.includes("메인 턴"),
+          scale === ""
+            ? "★'## ② 규모' 절을 못 찾음"
+            : `run_in_background=${scale.includes("run_in_background")} · 메인 턴 분기=${scale.includes("메인 턴")}`,
+        ),
+      );
     }
     out.push(
       assert(

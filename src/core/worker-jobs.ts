@@ -2012,6 +2012,19 @@ export const getRegisteredWorkerRunner = (): WorkerRunner | undefined => workerR
 export interface StartWorkerJobInput {
   label: string;
   task: string;
+  /**
+   * **부르는 쪽**의 workerDepth — 0=메인, ≥1=매니저 안 (2026-08-21 적대 검토 A-F2).
+   *
+   * ★W-I5("매니저는 새 매니저를 못 띄운다")의 집행점이 종전엔 **어댑터 게이트 셋뿐**이었다.
+   *  셋 다 풀어도 회귀 1,461건이 초록이었고 코어엔 재발사 가드가 아예 없었다 — 무한 백그라운드
+   *  팬아웃이 조용히 가능했다는 뜻이다. 형제 불변식인 손자 금지(subagentDepth)는 코어가 막는데
+   *  이쪽만 비대칭으로 비어 있었다.
+   *  게다가 이 배치가 매니저에게 "새 매니저는 띄울 수 없습니다" 라고 **문장으로 단언**하기
+   *  시작해서, 게이트가 풀리면 역할 문구가 거짓말을 하는 경로까지 생겼다.
+   *
+   * ★필수 필드다 — 빼면 타입체크가 막는다(이미 도는 게이트를 그물로 쓴다).
+   */
+  callerWorkerDepth: number;
   /** 완료 재주입이 합류할 원 thread (메인 turn 의 threadKey). */
   threadKey: string;
   channel: ChannelName;
@@ -2046,6 +2059,14 @@ export interface StartWorkerJobInput {
  * (도구가 정직 보고하도록 — 단 보통은 등록 보장됨).
  */
 export const startWorkerJob = (input: StartWorkerJobInput): string => {
+  // ★코어 가드 (W-I5) — 어댑터 게이트가 풀려도 여기서 막힌다. 조용히 무시하지 않고 **던진다**:
+  //  부른 쪽(도구 핸들러)이 잡아서 모델에게 이유를 돌려줘야, 모델이 다른 길을 고른다.
+  if (input.callerWorkerDepth > 0) {
+    throw new Error(
+      "매니저 안에서는 새 매니저를 띄울 수 없습니다(W-I5). " +
+        "필요한 병렬 작업은 spawn_agent 로 서브에이전트를 띄우거나 직접 처리하세요.",
+    );
+  }
   const jobId = registerJob(input);
   if (workerRunner === undefined) {
     markFailed(jobId, "매니저 실행기 미등록(부팅 순서 이상)");

@@ -347,7 +347,12 @@
         } finally {
           endHistoryLoad(); // 조기 return(토큰 무효·!ok·빈 세션) 포함 — 보류분 유실 0.
           // ★"loading" 으로 굳는 경로 0 — 초기 로드(history-render)와 같은 형태로 닫는다.
-          if (historyLoadState === "loading") setHistoryLoadState("ready");
+          // ★단 **자기 배치일 때만** 닫는다 (2026-08-21 적대 검토 F3). A→B 를 빠르게 누르면
+          //  버려진 A 배치가 `myToken !== switchToken` 으로 조기 return 하는데, 그래도 이
+          //  finally 는 돌아서 **아직 로딩 중인 B 의 상태를 ready 로 닫았다** — 그 순간 B 의
+          //  리스트는 비어 있으므로 화면이 다시 "아직 대화가 없습니다" 라고 단언했다. 바로
+          //  이 배치가 없애려던 그 문장이다.
+          if (myToken === switchToken && historyLoadState === "loading") setHistoryLoadState("ready");
         }
       };
 

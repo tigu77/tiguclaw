@@ -66,6 +66,29 @@ const UNKNOWN: UpdateAvailability = { state: "unknown", behind: 0, dirty: [] };
  *  `unknown` 으로 수렴하고, `unknown` 은 화면에 아무것도 안 띄우는 상태다 —
  *  **모르면 조용한 것이 기본값**이다. 없는 업데이트를 있다고 하는 것보다 낫다.
  */
+/**
+ * `git status --porcelain -z` 파싱.
+ *
+ * ★rename/copy 는 **조각이 둘**이다(`XY 새경로\0원래경로\0`). 순진하게 NUL 로 쪼개
+ *  전부 `slice(3)` 하면 두 번째 조각의 앞 세 글자가 잘려 나가 **엉뚱한 이름**이 된다 —
+ *  비ASCII 경로가 8진 이스케이프로 나가던 것을 고치면서 그 자리에 같은 부류를 새로
+ *  만들 뻔했다. 상태 코드가 R/C 면 다음 한 조각을 건너뛴다.
+ *
+ * @returns 상태 코드를 뗀 경로들(사용자에게 그대로 보여줄 수 있는 형태).
+ */
+export const parsePorcelainZ = (out: string): string[] => {
+  const chunks = out.split("\0").filter((c) => c !== "");
+  const paths: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const c = chunks[i]!;
+    if (c.length < 4) continue; // 상태 2글자 + 공백 + 경로
+    const xy = c.slice(0, 2);
+    paths.push(c.slice(3));
+    if (xy.includes("R") || xy.includes("C")) i++; // 원래 경로 조각을 건너뛴다.
+  }
+  return paths;
+};
+
 export const checkUpdateAvailability = async (
   cwd: string,
   opts: { timeoutMs?: number } = {},
@@ -94,22 +117,41 @@ export const checkUpdateAvailability = async (
   if (!Number.isFinite(behind)) return UNKNOWN;
   if (behind === 0) return { state: "up-to-date", behind: 0, dirty: [] };
 
+  // ★**갈라졌나** (2026-08-21 적대 검토 B-F2). 이 모듈의 헤더는 *"'받을 게 있다'만 보고
+  //  원클릭을 권하면 누르는 순간 그 벽에 부딪힌다"* 고 선언해 놓고, 실제로는 **미커밋
+  //  변경만** 봤다. 로컬이 앞서 있으면(설치본 소스를 고치고 **커밋까지** 한 상태 —
+  //  `selfDevelopment` 를 켠 사람이 정확히 그 상태다) `pull --ff-only` 가
+  //  "Diverging branches can't be fast-forwarded" 로 실패한다. 실측으로 재현됐다.
+  //  → 커밋 안 된 것과 **같은 등급**으로 막고, 이유를 그대로 말한다.
+  const aheadRes = await git(["rev-list", "--count", "@{u}..HEAD"], cwd, timeoutMs);
+  if (!aheadRes.ok) return UNKNOWN;
+  const ahead = Number.parseInt(aheadRes.out.trim(), 10);
+  if (!Number.isFinite(ahead)) return UNKNOWN;
+  if (ahead > 0) {
+    return {
+      state: "blocked",
+      behind,
+      blockedReason:
+        `로컬 커밋 ${ahead}개가 원격에 없어 갈라졌습니다 — fast-forward 로는 못 받습니다. ` +
+        `그 커밋을 올리거나 되돌린 뒤 다시 시도하세요.`,
+      dirty: [],
+    };
+  }
+
   // 받을 게 있다 — 이제 **받을 수 있나**. 여기가 이 모듈의 존재 이유다.
   //  ★`--untracked-files=no`: `reset --hard` 는 untracked 를 안 지운다. untracked 를 세면
   //   이 레포처럼 untracked 가 수백 개인 작업트리에서 항상 blocked 가 돼 기능이 죽는다
   //   (self-update.ts 의 `listDestructiveUncommitted` 가 정확히 그 사고를 겪었다).
+  //  ★`-z`: 기본 `--porcelain` 은 비ASCII·공백 경로를 C-따옴표로 감싸 **8진 이스케이프**한다
+  //   (`"\\355\\225\\234..."`). 그 문자열이 그대로 `blockedReason` 에 실려 사용자에게
+  //   `window.alert` 로 뜬다 — 한국어 사용자는 **무엇을 정리해야 하는지 알 수 없다**
+  //   (2026-08-21 적대 검토 B-F11, 실측 재현). `-z` 는 NUL 로 구분하고 따옴표를 안 쓴다.
   const status = await git(
-    ["status", "--porcelain", "--untracked-files=no"],
+    ["status", "--porcelain", "-z", "--untracked-files=no"],
     cwd,
     timeoutMs,
   );
-  const dirty = status.ok
-    ? status.out
-        .split("\n")
-        .map((l) => l.replace(/\r$/, ""))
-        .filter((l) => l.trim() !== "")
-        .map((l) => l.slice(3))
-    : [];
+  const dirty = status.ok ? parsePorcelainZ(status.out) : [];
 
   // ★`package-lock.json` 은 제외한다 — self-update 가 pull 직전에 `git checkout --` 로
   //  되돌리는 파일이라 ff-only 를 막지 않는다. 그걸 blocked 로 세면 npm install 을 한 번만

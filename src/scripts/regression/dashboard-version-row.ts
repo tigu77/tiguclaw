@@ -45,6 +45,22 @@ const sliceFn = (src: string, name: string): string | null => {
 
 type Row = { tone: string; desc: string; meta: string };
 
+/** index.html 의 `<script src="/js/X.js">` 순서 = 실제 로드 순서(매니페스트는 서빙용). */
+const SCRIPT_ORDER: string[] = [
+  ...readFileSync(path.join(REPO, "packages/dashboard/index.html"), "utf8").matchAll(
+    /<script src="\/js\/([^"]+)"/g,
+  ),
+].map((m) => m[1]!);
+
+/** 주석·문자열 제거 — 설명글에 적힌 심볼 이름을 참조로 세지 않는다. */
+const stripJs = (src: string): string =>
+  src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\/[^\n]*/g, " ")
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+
 export const check: RegressionCheck = {
   name: "dashboard-version-row",
   guards:
@@ -151,21 +167,77 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ⑤ 늦게 도착한 값이 홈에 반영된다 — 둘 다 같은 관용구를 쓴다.
-    const RERENDER = /currentView === "overview"[\s\S]{0,40}showOverview/;
+    // ⑤ 늦게 도착한 값이 홈에 반영된다 — **단 방향이 중요하다**.
+    //
+    // ★`update-chip.js` 는 index.html 에서 `view-overview.js` 보다 **먼저** 로드된다. 거기서
+    //  `showOverview` 를 이름으로 부르면 전방 참조이고, fetch 가 스크립트 배달보다 빠른 순간
+    //  ReferenceError 가 난다 — 그런데 `refresh` 의 catch 가 그걸 삼키고 `render(null)` 이 또
+    //  던져서 **받을 업데이트가 있는데 칩도 홈도 조용해진다**(적대 검토 F1, 실측 재현).
+    //  그래서 그물은 "다시 그리나"가 아니라 **"늦게 로드되는 쪽이 등록하나"** 를 본다.
+    const chipOrder = SCRIPT_ORDER.indexOf("update-chip.js");
+    const overviewOrder = SCRIPT_ORDER.indexOf("view-overview.js");
     out.push(
       assert(
-        "★업데이트 판정이 도착하면 홈을 다시 그린다(안 그리면 첫 렌더 값으로 굳는다)",
-        RERENDER.test(chip) && chip.includes("state: () => current"),
-        `재렌더=${RERENDER.test(chip)} · state() 노출=${chip.includes("state: () => current")}`,
+        "★칩은 나중 파일의 심볼을 이름으로 부르지 않는다(전방 참조 = 조용한 업데이트 상실)",
+        chipOrder < overviewOrder && !stripJs(chip).includes("showOverview"),
+        `로드 순서 칩=${chipOrder} 홈=${overviewOrder} · 칩이 showOverview 참조=${stripJs(chip).includes("showOverview")}`,
       ),
     );
+    out.push(
+      assert(
+        "★대신 홈이 자기 파일에서 등록한다(onChange) — 순서에 무관하고 새 소비자도 여기를 안 고친다",
+        /updateChip\.onChange\(/.test(overview) &&
+          chip.includes("onChange:") &&
+          chip.includes("state: () => current"),
+        `홈 등록=${/updateChip\.onChange\(/.test(overview)} · 칩 onChange 제공=${chip.includes("onChange:")}`,
+      ),
+    );
+
+    // ★칩과 홈이 **같은 값에 반대로 행동하지 않는다** (적대 검토 F4).
+    //  종전 칩은 "unknown·up-to-date·falsy 가 아니면 전부 available" 이라 모르는 state 에
+    //  업데이트 버튼을 띄우고 클릭 시 self-update 를 쐈다 — 홈은 정반대로 조용했다.
+    //  둘 다 순수 함수라 **실행으로** 대조한다(말로 적는 것과 지키는 것의 차이).
+    const chipViewSrc = sliceFn(chip, "updateChipView");
+    out.push(
+      assert(
+        "★칩 표시 판정도 순수 함수다(렌더 안이면 홈과 대조할 방법이 없다)",
+        chipViewSrc !== null,
+        chipViewSrc === null ? "★updateChipView 없음" : `${chipViewSrc.length}자`,
+      ),
+    );
+    if (chipViewSrc !== null) {
+      const chipView = new Function(`${chipViewSrc}return updateChipView;`)() as (
+        a: unknown,
+      ) => { show: boolean };
+      const cases: unknown[] = [
+        { state: "available" },
+        { state: "blocked", blockedReason: "x" },
+        { state: "up-to-date" },
+        { state: "unknown" },
+        { state: "some-future-state" },
+        {},
+        null,
+      ];
+      const disagree = cases.filter(
+        (c) => chipView(c).show !== (row("1.0.0", c).tone === "warn"),
+      );
+      out.push(
+        assert(
+          "★칩과 홈이 '지금 할 일이 있나'에 같은 답을 낸다(모르는 state 포함)",
+          disagree.length === 0,
+          disagree.length === 0
+            ? `${cases.length}경우 전부 일치`
+            : `★갈림 ${disagree.length}건: ${JSON.stringify(disagree)}`,
+        ),
+      );
+    }
     const activity = DASH("js/activity.js");
     out.push(
       assert(
         "★버전이 도착하면 appVersion 에 담고 홈을 다시 그린다('확인 중' 으로 굳지 않는다)",
-        /appVersion = h\.version/.test(activity) && RERENDER.test(activity),
-        `저장=${/appVersion = h\.version/.test(activity)} · 재렌더=${RERENDER.test(activity)}`,
+        /appVersion = h\.version/.test(activity) &&
+          /currentView === "overview"[\s\S]{0,40}showOverview/.test(activity),
+        `저장=${/appVersion = h\.version/.test(activity)} · 재렌더=${/currentView === "overview"[\s\S]{0,40}showOverview/.test(activity)}`,
       ),
     );
     return out;

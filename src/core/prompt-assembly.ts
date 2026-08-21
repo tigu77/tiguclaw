@@ -375,10 +375,18 @@ interface SystemContextInput {
   /** claude 전용 — cross-adapter foreign(codex) delta 블록. 다른 어댑터는 미전달. */
   foreignDelta?: string;
   /**
-   * 역할 표시(매니저·서브에이전트). **메인은 빈 문자열**이라 슬롯이 걸러지고
-   * 기존 바이트가 그대로다(메인 캐시 무영향). 값은 `roleContextBlock()` 이 만든다.
+   * 역할 판정의 **재료** — 어댑터가 문구를 조립하지 않는다 (2026-08-21 적대 검토 A-F1).
+   *
+   * ★종전엔 `role?: string` 이라 어댑터 셋이 각자 `roleContextBlock({subagentDepth…})` 를
+   *  불러 넘겼다. 그래서 ①배선이 **세 벌**이고 ②`optional` 이라 통째로 지워도 컴파일이
+   *  통과했다 — 실제로 셋 다 지우고 회귀 1,461건이 초록이었다. 한 어댑터만 빠지면 그
+   *  어댑터의 매니저만 자기를 메인으로 알고 없는 도구를 찾는다(LLM-agnostic 위반, 무소음).
+   *
+   * ★고침 둘: **필수**로 만들어 지우면 타입체크가 막고(게이트가 이미 돈다), **객체 하나**를
+   *  받아 어댑터가 `roleSource: input` 만 쓰게 한다 — 넘길 값이 하나면 **뒤바꿀 수가 없다**
+   *  (depth 두 개를 교차시키는 변이가 정규식 린트로는 안 잡혔다).
    */
-  role?: string;
+  roleSource: { subagentDepth?: number; workerDepth?: number };
 }
 
 /**
@@ -474,6 +482,7 @@ export const contextSlotKeys = (): string[] =>
     memorySnippet: "",
     skillIndex: "",
     agentIndex: "",
+    roleSource: {},
   }).map((s) => s.key);
 
 // 회귀가 계산형 슬롯의 **채널 배치**를 직접 단언할 수 있게 export (이름 예외 목록 대신).
@@ -516,7 +525,7 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   //   ★메인은 **빈 문자열**이라 기존 바이트가 그대로다 — 메인 캐시는 전혀 안 건드린다.
   //   서브에이전트는 실측상 모델 티어가 달라(claude-opus-5 0건) 이미 별도 캐시다.
   //  ★왜 user 채널이 아닌가: 역할은 대화 내내 안 변한다. 캐시 밖에 두면 매 턴 재전송이다.
-  { key: "role", text: input.role ?? "", channel: "system" },
+  { key: "role", text: roleContextBlock(input.roleSource), channel: "system" },
 ];
 
 /**

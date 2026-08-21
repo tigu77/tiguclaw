@@ -18,31 +18,99 @@
       // stale 임계 — 어떤 실제 턴도 이보다 오래 못 감(codex 턴 캡 ~10분 + 여유). 초과 진행표시는
       // turn_done 을 놓친 유령(SSE 재연결·replay·데몬 재시작 중)으로 보고 해제(영구 '작업 중' 방지).
       const STALE_TURN_MS = 15 * 60 * 1000;
-      const paintWorking = (s) => {
-        // ★다채널 단일 인격 — 텔레그램·CLI·대시보드 어디서 온 턴이든 대시보드 발신과 똑같이
-        // "<비서> 작업 중" 으로 통일(채널 라벨 없음). 동시에 여럿이면 "(+N)".
-        const extra = activeTurns.size > 1 ? " (+" + (activeTurns.size - 1) + ")" : "";
-        // ★경과시간은 **이 대화의 것만** 판다 (2026-08-06). 종전엔 내 세션에 진행 턴이 없으면
-        //  `가장 이른 턴`으로 폴백해 **남의 세션 경과시간이 내 화면에 떴다** — 이 줄은 입력창
-        //  바로 위라 누구나 "내 요청이 N분째" 로 읽는다. 다른 세션이 도는 사실은 그 세션 탭의
-        //  진행 점(st-dot)이 이미 알려주므로, 여기서 숫자를 지어내지 않는다(모르면 안 쓴다).
-        const mineStart = activeTurns.get(activeThreadKey);
-        const lab = s.querySelector(".chat-work-label");
-        // 사유가 있으면 같이 — 내가 안 시킨 턴은 "왜 도는지" 가 정보의 전부다.
-        const why = turnReason.get(activeThreadKey);
-        if (lab) {
-          lab.textContent =
-            assistantName + " 작업 중" + (why ? " · " + why : "") + extra + (mineStart ? " ·" : "");
+      /**
+       * 이 턴이 **지금 무엇을 하고 있나** — threadKey → {kind,label} (2026-08-21 사용자 요청).
+       * `llm.activity` 가 올 때마다 갱신되고 턴이 끝나면 지워진다. 없으면 "생각 중".
+       */
+      const turnPhase = new Map();
+      const setTurnPhase = (tk, kind, label) => {
+        const k = tk || activeThreadKey;
+        if (!activeTurns.has(k)) return; // 안 도는 턴의 단계를 기억하지 않는다.
+        turnPhase.set(k, { kind: kind || "", label: label || "" });
+        if (k === activeThreadKey) refreshWorking();
+      };
+
+      /**
+       * 입력창 위 진행 표시가 **무엇을 말할지** — 순수 판정 (2026-08-21 사용자 요청).
+       *
+       * ★사고: 이 줄은 **내 입력창 바로 위**라 누구나 "내 요청 상태" 로 읽는다. 그런데 판정이
+       *  `activeTurns.size > 0` 이었다 — 내 대화가 놀고 있어도 **다른 세션의 턴**이나
+       *  **백그라운드 잡**이 하나 있으면 "돌쇠 작업 중" 이 떴다(둘 다 헤드리스로 재현).
+       *  2026-08-06 에 같은 이유로 *경과시간*은 고쳤는데, **깃발 자체**는 그대로였다 —
+       *  고쳐진 축과 안 고쳐진 축이 나란히 있던 자리다.
+       *
+       * ★세 상태를 가른다: 내가 일을 시킨 중(작업 중) / 메인은 비었고 백그라운드만 도는 중
+       *  (대기 중) / 아무것도 없음(숨김). "대기 중" 을 따로 두는 이유는 그때 **말을 걸어도
+       *  된다**는 뜻이기 때문이다 — 사용자가 알아야 하는 건 그거다.
+       *
+       * @returns {{show:boolean, label:string, elapsed:string, idle:boolean}}
+       */
+      const workingBannerView = (v) => {
+        const name = v.assistantName || "비서";
+        if (v.mineActive) {
+          const doing = doingText(v.phase); // 잡 카드와 **같은 판정**(util.js 정의점).
+          const why = v.reason ? " · " + v.reason : "";
+          // 다른 세션도 도는 사실은 세션 탭의 진행 점이 이미 알려준다 — 여기선 개수만.
+          const extra = v.otherCount > 0 ? " (+" + v.otherCount + ")" : "";
+          return {
+            show: true,
+            idle: false,
+            label: name + " · " + doing + why + extra + (v.mineStart ? " ·" : ""),
+            elapsed: v.mineStart ? fmtElapsed(v.now - v.mineStart) : "",
+          };
         }
+        if (v.bgRunning > 0) {
+          return {
+            show: true,
+            idle: true,
+            label: name + " 대기 중 · 백그라운드 " + v.bgRunning + "건 진행",
+            elapsed: "",
+          };
+        }
+        return { show: false, idle: false, label: "", elapsed: "" };
+      };
+
+      /** 내 세션이 띄운, 지금 도는 백그라운드 잡 수. 없으면 0(모르면 0 — 지어내지 않는다). */
+      const myRunningBgJobs = () => {
+        if (typeof jobCards === "undefined" || typeof isBgInScope !== "function") return 0;
+        let n = 0;
+        for (const e of jobCards.values()) {
+          if (e.status === "running" && isBgInScope(e.threadKey, e.ownerTk)) n += 1;
+        }
+        return n;
+      };
+
+      /** 지금 화면에 그릴 값 — 판정은 위 순수 함수가 하고 여기선 재료만 모은다. */
+      const currentBannerView = () =>
+        workingBannerView({
+          assistantName,
+          mineActive: activeTurns.has(activeThreadKey),
+          // ★`get` 은 복원분에서 null 이다(시작시각을 모른다) — 그대로 넘긴다.
+          mineStart: activeTurns.get(activeThreadKey) ?? null,
+          otherCount: activeTurns.size - (activeTurns.has(activeThreadKey) ? 1 : 0),
+          phase: turnPhase.get(activeThreadKey) ?? null,
+          reason: turnReason.get(activeThreadKey) ?? "",
+          bgRunning: myRunningBgJobs(),
+          now: Date.now(),
+        });
+
+      const paintWorking = (s) => {
+        const v = currentBannerView();
+        const lab = s.querySelector(".chat-work-label");
+        if (lab) lab.textContent = v.label;
         const el = s.querySelector(".chat-elapsed");
-        if (el) el.textContent = mineStart ? fmtElapsed(Date.now() - mineStart) : "";
+        if (el) el.textContent = v.elapsed;
+        const sp = s.querySelector(".chat-spinner");
+        // 대기 중엔 스피너를 돌리지 않는다 — 도는 그림은 "내 일이 진행 중" 이라는 뜻이다.
+        if (sp) sp.textContent = v.idle ? "💤" : "✳️";
+        s.classList.toggle("idle", v.idle);
       };
       const refreshWorking = () => {
         if (onTurnsChanged) onTurnsChanged(); // 세션 탭 진행 뱃지 갱신(모든 세션 추적, active 대표).
         const s = document.getElementById("chat-status"); if (!s) return;
-        if (activeTurns.size === 0) {
+        if (!currentBannerView().show) {
           if (chatWorkingTimer) { clearInterval(chatWorkingTimer); chatWorkingTimer = null; }
-          s.classList.remove("working"); s.textContent = ""; return;
+          s.classList.remove("working"); s.classList.remove("idle"); s.textContent = ""; return;
         }
         if (!s.classList.contains("working")) {
           s.classList.add("working");
@@ -58,7 +126,7 @@
             const since = start === null ? (restoredAt.get(k) || now) : start;
             if (now - since > STALE_TURN_MS) { activeTurns.delete(k); restoredAt.delete(k); swept = true; }
           }
-          if (swept && activeTurns.size === 0) { refreshWorking(); return; }
+          if (swept) { refreshWorking(); return; }
           const el = document.getElementById("chat-status"); if (el) paintWorking(el);
         }, 1000);
       };
@@ -78,13 +146,14 @@
           const unknownStart = opts && opts.startUnknown === true;
           activeTurns.set(k, unknownStart ? null : Date.now());
           if (unknownStart) restoredAt.set(k, Date.now());
+          turnPhase.delete(k); // 옛 턴의 단계가 새 턴에 눌러붙지 않게(사유와 같은 규칙).
         }
         // 사유는 있을 때만 세운다 — 없으면 **지운다**(옛 사유가 다음 턴에 눌러붙지 않게).
         if (opts && typeof opts.reason === "string" && opts.reason) turnReason.set(k, opts.reason);
         else if (!(opts && opts.keepReason)) turnReason.delete(k);
         refreshWorking();
       };
-      const markTurnDone = (tk) => { const k = tk || activeThreadKey; restoredAt.delete(k); turnReason.delete(k); if (activeTurns.delete(k)) refreshWorking(); };
+      const markTurnDone = (tk) => { const k = tk || activeThreadKey; restoredAt.delete(k); turnReason.delete(k); turnPhase.delete(k); if (activeTurns.delete(k)) refreshWorking(); };
       // ★codex-우선 + claude-폴백 처리 — 한 사용자 턴이 여러 어댑터 시도로 나뉘면(codex 429 →
       // claude 폴백) codex 의 turn_error 가 *턴 중간*에 온다. 그때 작업표시를 즉시 끄면 폴백 claude
       // 가 도는 동안 표시가 사라진다(실측 버그). → turn_error 는 즉시 끄지 않고 *유예* 클리어:

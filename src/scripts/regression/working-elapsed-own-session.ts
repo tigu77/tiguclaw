@@ -30,23 +30,45 @@ const paint = (
     path.join(REPO, "packages/dashboard/js/axis1-options.js"),
     "utf8",
   );
-  const m = /const paintWorking = \(s\) => \{[\s\S]*?\n {6}\};/.exec(src);
-  if (m === null) throw new Error("paintWorking 을 못 찾음");
+  // ★판정이 순수 함수(`workingBannerView`)로 빠진 뒤에도 **렌더 경로 전체**를 올린다
+  //  (2026-08-21). 판정만 검사하면 "판정은 맞는데 렌더가 안 쓴다" 가 안 잡힌다 —
+  //  형제 검사(`working-banner-is-mine`)가 판정을, 여기가 배선을 본다.
+  //  넷은 파일에서 **연속**이라 한 덩이로 뜬다: workingBannerView → myRunningBgJobs →
+  //  currentBannerView → paintWorking.
+  const from = src.indexOf("const workingBannerView = (v) => {");
+  const toM = /const paintWorking = \(s\) => \{[\s\S]*?\n {6}\};/.exec(src);
+  if (from < 0 || toM === null) throw new Error("진행 표시 렌더 경로를 못 찾음");
+  //  ★`doingText`(util.js 정의점)도 **실물로** 올린다 — 이 배치에서 문구 판정이 공유
+  //   유틸로 빠졌다. 스텁으로 대신하면 렌더가 진짜 판정을 쓰는지 확인이 안 된다.
+  const utilSrc = readFileSync(
+    path.join(REPO, "packages/dashboard/js/util.js"),
+    "utf8",
+  );
+  const dIdx = utilSrc.indexOf("const doingText = (phase) => {");
+  const dEnd = dIdx < 0 ? -1 : utilSrc.indexOf("\n      };", dIdx);
+  if (dIdx < 0 || dEnd < 0) throw new Error("doingText 를 못 찾음");
+  const block =
+    utilSrc.slice(dIdx, dEnd + "\n      };".length) +
+    "\n" +
+    src.slice(from, toM.index + toM[0].length);
   const out: Record<string, string> = { label: "", elapsed: "" };
   const ctx: Record<string, unknown> = {
     activeTurns: new Map(turns),
     // ★사유 맵 (2026-08-13) — 내가 안 시킨 턴(워커·에이전트 정리)에만 "왜 도는지" 가 붙는다.
     turnReason: new Map(reasons),
+    turnPhase: new Map(),
     activeThreadKey,
     assistantName: "돌쇠",
     fmtElapsed: (ms: number) => `${Math.round(ms / 1000)}초`,
   };
   vm.createContext(ctx);
-  vm.runInContext(`${m[0]}\nthis.__paint = paintWorking;`, ctx);
+  vm.runInContext(`${block}\nthis.__paint = paintWorking;`, ctx);
   (ctx.__paint as (s: unknown) => void)({
+    classList: { toggle: () => {} },
     querySelector: (sel: string) => ({
       set textContent(v: string) {
-        out[sel === ".chat-work-label" ? "label" : "elapsed"] = v;
+        if (sel === ".chat-work-label") out.label = v;
+        else if (sel === ".chat-elapsed") out.elapsed = v;
       },
     }),
   });
@@ -86,6 +108,17 @@ export const check: RegressionCheck = {
         b.elapsed === "",
         `elapsed=${JSON.stringify(b.elapsed)} label=${JSON.stringify(b.label)}`,
       ),
+      // ★**라벨도 비어야 한다** (2026-08-21). 경과만 보면 부족하다는 게 변이로 드러났다:
+      //  `mineActive` 를 옛 판정(`activeTurns.size > 0`)으로 되돌려도 경과는 여전히 빈
+      //  문자열(내 시작시각이 없으니)이라 위 단언이 **초록으로 통과**했다. 실제로 사용자가
+      //  본 증상은 "내 대화가 노는데 **돌쇠 작업 중이 떠 있다**" 였고, 그건 라벨이다.
+      //  형제 검사(`working-banner-is-mine`)는 판정을 보고, 여기가 **그 값을 어떻게 구하는지**
+      //  를 본다 — 순수 함수만 검사하면 배선이 뒤집혀도 안 걸린다.
+      assert(
+        "★남의 세션만 돌면 **라벨도 안 뜬다**(내 대화는 놀고 있다)",
+        b.label === "",
+        `label=${JSON.stringify(b.label)}`,
+      ),
       assert(
         "★둘 다 돌면 **내 것**을 판다(가장 이른 턴 폴백 금지)",
         c.elapsed === "5초",
@@ -93,7 +126,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "다른 세션이 도는 사실은 (+N) 으로 남는다(정보 손실 0)",
-        c.label.includes("(+1)") && c.label.includes("작업 중"),
+        c.label.includes("(+1)") && c.label.includes("돌쇠"),
         `label=${JSON.stringify(c.label)}`,
       ),
       // ── ★내가 안 시킨 턴은 "왜 도는지" 를 말한다 (2026-08-13) ──
@@ -110,9 +143,13 @@ export const check: RegressionCheck = {
         paint([[MINE, now - 30_000]], MINE, [[MINE, "매니저·에이전트 결과 정리"]]).label,
       ),
       // 사용자가 직접 친 턴엔 안 붙는다 — 자기가 뭘 시켰는지 아는 사람에겐 군더더기다.
+      // ★2026-08-21: 라벨이 "돌쇠 작업 중" → "돌쇠 · <무엇을 하는 중>" 으로 바뀌었다
+      //  (사용자: "뭐하는 중인지 구분해서 알 수 있을까"). 사유가 없을 때 **군더더기가 안 붙는
+      //  다**는 것이 이 단언의 뜻이므로, 고정 문구가 아니라 그 성질을 본다.
       assert(
-        "사유가 없으면 라벨은 종전 그대로",
-        paint([[MINE, now - 30_000]], MINE).label.startsWith("돌쇠 작업 중 ·"),
+        "사유가 없으면 군더더기가 안 붙는다(자기가 시킨 턴엔 이유를 안 적는다)",
+        !paint([[MINE, now - 30_000]], MINE).label.includes("·  ·") &&
+          paint([[MINE, now - 30_000]], MINE).label.startsWith("돌쇠 · "),
         paint([[MINE, now - 30_000]], MINE).label,
       ),
       // ★코어가 그 신호를 **내는가** — 위 두 검사는 화면 쪽이라, 코어가 종전처럼 발행을

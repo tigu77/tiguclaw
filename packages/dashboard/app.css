@@ -1243,6 +1243,9 @@
       #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
       #chat-status { color:var(--text-mute); font-size:10px; margin-top:6px; min-height:12px; }
       #chat-status.working { color:var(--accent-2); font-weight:700; animation:chat-working-pulse 1.4s ease-in-out infinite; }
+      /* 대기 중(메인은 비었고 백그라운드만 도는 상태) — 강조도 펄스도 없다. "지금 말 걸어도
+         된다" 는 뜻이라 시선을 끌 이유가 없고, 펄스는 "내 일이 진행 중" 으로 읽힌다. */
+      #chat-status.working.idle { color:var(--text-mute); font-weight:400; animation:none; }
       @keyframes chat-working-pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
       /* 진행 중 스피너(회전) + 경과시간. 답변 도착까지 깜빡이며 카운트업. */
       .chat-spinner { display:inline-block; animation:chat-spin 1.1s linear infinite; }

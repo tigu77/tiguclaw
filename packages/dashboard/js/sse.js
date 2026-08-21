@@ -210,6 +210,10 @@
           // 워커 활동(threadKey=worker:<jobId>|agent:<jobId>)은 백그라운드 잡 카드 스텝으로 —
           // 모든 세션 무조건 처리(잡 카드=글로벌 드로어, 채팅 스트림 아님). 채팅 누수 차단.
           if (handleWorkerActivity(ap, ts)) return;
+          // ★여기부터는 **메인 턴의 활동**이다 — 진행 표시에 "지금 무엇을 하는 중" 을 싣는다
+          //  (2026-08-21 사용자 요청: "뭐하는 중인지 구분해서 알 수 있을까"). 위 줄에서 워커·
+          //  에이전트가 걸러졌으므로 백그라운드 잡이 메인 상태로 새지 않는다.
+          setTurnPhase(ap.threadKey, ap.kind, ap.label);
           // ★§3.4 마스터 데이터 보존 — 전 스레드 활동 원본을 activityByStep 에 무필터 저장(후속
           // 전체 활동 뷰 인에이블러). 렌더 게이트(B계층)는 아래 activeThreadKey 필터에서만 건다.
           activityByStep.set(stepKey(ap.threadKey || "?", ap.seq), ap);

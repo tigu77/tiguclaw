@@ -412,6 +412,19 @@
       // 본다. 모바일 헤더는 폭이 없어 부제를 숨기므로(app.css @media), 홈이 유일한 노출 자리다.
       let appVersion = "";
 
+      /**
+       * **지금 무엇을 하는 중인가** — `llm.activity` 의 {kind,label} → 사람 말 (2026-08-21).
+       *
+       * ★한 곳에 둔다. 메인 진행 표시(입력창 위)와 백그라운드 잡 카드가 **같은 질문**에
+       *  답하므로, 각자 문구를 만들면 같은 상태를 두 이름으로 부르게 된다. 여기가 정의점이다.
+       *  (`kind` 는 어댑터가 내는 값 — "text" = 답을 쓰는 중, 그 외 = 도구.)
+       */
+      const doingText = (phase) => {
+        if (!phase || !phase.kind) return "생각 중";
+        if (phase.kind === "text") return "답변 쓰는 중";
+        return phase.label ? phase.label + " 실행 중" : "도구 실행 중";
+      };
+
       // 타임스탬프 — 로컬. 기존 toISOString().slice 는 UTC(한국이면 9h 어긋남)+밀리초였다.
       const tsPad = (n) => String(n).padStart(2, "0");
       // 메시지 버블 = 시각만(HH:MM:SS). 날짜는 날짜 구분선(date-divider)이 담당.

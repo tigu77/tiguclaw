@@ -502,6 +502,9 @@
       };
 
       const refreshBgBadge = () => {
+        // 잡 상태가 바뀌면 입력창 위 표시도 다시 판정한다 — 메인이 비었는데 백그라운드가
+        // 도는 구간을 "대기 중" 으로 보여주는 게 그 표시의 일이다(2026-08-21).
+        if (typeof refreshWorking === "function") setTimeout(refreshWorking, 0);
         let running = 0, runningScoped = 0, totalScoped = 0;
         for (const e of jobCards.values()) {
           if (e.status === "running") running += 1;
@@ -1108,6 +1111,13 @@
           return false;
         }
         const entry = ensureJobCard(jobId, cardOpts);
+        // ★이 매니저·에이전트가 **지금** 무엇을 하는 중인지 카드 머리에 (2026-08-21 사용자 제안).
+        //  스텝 목록은 접혀 있을 수 있어서, 펼치지 않고도 보이는 자리가 필요하다. 문구는
+        //  메인 진행 표시와 **같은 판정**(util.js `doingText`)을 쓴다 — 두 벌이면 같은 상태를
+        //  두 이름으로 부르게 된다. 끝난 잡은 안 건드린다(lifecycle 이 최종 상태를 쓴다).
+        if (entry.statusEl && entry.status === "running" && !entry._cancelRequested) {
+          entry.statusEl.textContent = BG_STATUS.running + " · " + doingText({ kind: p.kind, label: p.label });
+        }
         // 실제 모델 — dedup(아래) *앞*에서 반영한다. 재전송된 스텝이라도 모델 정보는 유효하고,
         //  폴백이 늦은 스텝에서 일어나면 그 스텝이 dedup 에 걸려도 전환은 남아야 한다.
         setJobModel(entry, p.model);

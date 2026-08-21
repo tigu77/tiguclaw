@@ -42,6 +42,7 @@ const MARK = {
   agentIndex: "@@AGENTS@@",
   modelProfiles: "@@PROFILES@@",
   foreignDelta: "@@FOREIGN@@",
+  role: "@@ROLE@@",
 } as const;
 
 /** 입력 필드가 아니라 슬롯 테이블이 직접 만드는 조각 — 마커도 실제 본문에서 딴다. */
@@ -56,6 +57,7 @@ const STABLE = [
   MARK.skillIndex,
   MARK.agentIndex,
   MARK.modelProfiles,
+  MARK.role, // 역할 표시 — 대화 내내 안 변한다(user 채널이면 매 턴 재전송).
 ];
 /** user `<system-reminder>` 에 남아야 하는 것 = 턴마다 변하는 것. */
 const VOLATILE = [
@@ -85,6 +87,7 @@ export const check: RegressionCheck = {
       agentIndex: MARK.agentIndex,
       modelProfiles: MARK.modelProfiles,
       foreignDelta: MARK.foreignDelta,
+      role: MARK.role,
     };
     const { stable, volatileParts } = splitSystemContext(full);
     const volatile = volatileParts.join("\n\n");

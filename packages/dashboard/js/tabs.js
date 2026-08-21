@@ -306,7 +306,7 @@
       // 경합 방어(빠른 연속 전환 시 stale 배치가 다른 탭에 안 들어가게).
       const loadThreadHistory = async (tk) => {
         resetStreamState();
-        refreshChatEmpty();
+        setHistoryLoadState("loading"); // 전환 직후 빈 리스트에 "대화가 없습니다"를 띄우지 않는다.
         const myToken = ++switchToken;
         // ★리스트를 비운 직후부터 이력 렌더까지의 창 — 이 사이 SSE 메시지는 보류한다.
         //  안 그러면 빈 리스트 때문에 stale 가드가 꺼져 옛 메시지가 바닥에 붙고, 그 위로
@@ -315,12 +315,12 @@
         try {
           const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(tk));
           if (myToken !== switchToken) return; // 그 사이 또 전환됨 — 이 배치는 버림.
-          if (!r.ok) { refreshChatEmpty(); return; }
+          if (!r.ok) { setHistoryLoadState("error"); return; } // 실패와 빈 세션은 다른 상태다.
           const data = await r.json().catch(() => ({}));
           if (myToken !== switchToken) return;
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
-          if (entries.length === 0 && activities.length === 0) { refreshChatEmpty(); return; } // 빈(새) 세션.
+          if (entries.length === 0 && activities.length === 0) return; // 빈(새) 세션 — finally 가 ready 로 닫는다.
           // ★진행 중 턴 seamless 재개(멀티세션 도구폭주 픽스) — 이 스레드에 활성 턴(activeTurns)
           // 이 있으면, 이력 활동의 마지막 seq-run(=진행 중 턴)을 정적 hist-turn 이 아니라 라이브
           // 경로(renderActivity)로 재구성한다. 그래야 cardByThread 가 세팅돼 뒤이어 SSE 로
@@ -342,10 +342,12 @@
           scrollChatToNewest();
           if (currentView === "overview") setTimeout(showOverview, 0);
         } catch (err) {
-          refreshChatEmpty();
+          setHistoryLoadState("error");
           console.warn("thread history load failed:", err && err.message ? err.message : err);
         } finally {
           endHistoryLoad(); // 조기 return(토큰 무효·!ok·빈 세션) 포함 — 보류분 유실 0.
+          // ★"loading" 으로 굳는 경로 0 — 초기 로드(history-render)와 같은 형태로 닫는다.
+          if (historyLoadState === "loading") setHistoryLoadState("ready");
         }
       };
 

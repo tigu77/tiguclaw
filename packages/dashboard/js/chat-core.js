@@ -87,9 +87,58 @@
         return true;
       };
 
+      /**
+       * 빈 채팅 자리에 **무엇을 말할지** — 순수 판정 (2026-08-21).
+       *
+       * ★사고: `#chat-empty` 는 HTML 에 처음부터 보이는 상태로 박혀 있고 이력 로드는
+       *  비동기라, fetch 가 도는 동안 화면이 **"아직 대화가 없습니다"** 를 띄웠다.
+       *  아직 안 받아봤을 뿐인데 "없다"고 단언한 것이고, 대화가 많은 세션일수록 그
+       *  거짓말이 오래 보였다. 실패(`!r.ok`)도 같은 문구로 삼켜졌다 — 실패와 빈 대화는
+       *  다른 상태다.
+       *
+       * ★순수 함수로 뽑은 이유: 이 판정이 렌더 안에 있으면 검사가 브라우저를 띄워야만
+       *  확인된다. 뽑으면 실행해서 지킬 수 있다(이 레포의 상수 — 검사가 껄끄러우면
+       *  코드가 잘못 놓인 것).
+       *
+       * @returns {{show:boolean, title:string, body:string}}
+       */
+      const chatEmptyView = (state, count) => {
+        if (count > 0) return { show: false, title: "", body: "" };
+        if (state === "loading")
+          return { show: true, title: "대화를 불러오는 중…", body: "" };
+        if (state === "error")
+          return {
+            show: true,
+            title: "대화를 불러오지 못했습니다",
+            body: "새로고침하거나 잠시 뒤 다시 시도해 주세요.",
+          };
+        return {
+          show: true,
+          title: "아직 대화가 없습니다",
+          body: "아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다.",
+        };
+      };
+
+      // 이력 로드 상태 — 로드 경로가 **둘**이라(첫 진입·세션 탭 전환) 플래그는 여기 한 곳에
+      // 두고 두 경로는 올리기만 한다. 세 번째 경로가 생겨도 판정이 안 갈린다.
+      let historyLoadState = "loading"; // "loading" | "ready" | "error"
+      const setHistoryLoadState = (s) => {
+        historyLoadState = s;
+        refreshChatEmpty();
+      };
+
       const refreshChatEmpty = () => {
         const chatEmpty = document.getElementById("chat-empty");
-        if (chatEmpty) chatEmpty.style.display = localChatCount === 0 ? "" : "none";
+        if (!chatEmpty) return;
+        const v = chatEmptyView(historyLoadState, localChatCount);
+        chatEmpty.style.display = v.show ? "" : "none";
+        if (!v.show) return;
+        // 정적 문구지만 DOM 으로 구성한다(문자열 연결 innerHTML 을 이 레포에서 금지).
+        chatEmpty.textContent = "";
+        const strong = document.createElement("strong");
+        strong.textContent = v.title;
+        chatEmpty.appendChild(strong);
+        if (v.body !== "") chatEmpty.appendChild(document.createTextNode(v.body));
       };
 
       filterEl.addEventListener("input", () => {

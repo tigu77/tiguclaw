@@ -445,7 +445,7 @@
             "/api/chat-history?limit=" + HISTORY_PAGE + "&beforeTs=" + oldestLoadedTs +
               "&threadKey=" + encodeURIComponent(activeThreadKey), // 멀티세션 — active 세션만 더보기.
           );
-          if (!r.ok) return;
+          if (!r.ok) return; // ★더보기 실패는 전체 상태를 안 바꾼다(이미 내용이 있다).
           const data = await r.json().catch(() => ({}));
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
@@ -475,11 +475,12 @@
 
       const loadChatHistory = async () => {
         beginHistoryLoad(); // 이 창의 SSE 메시지는 보류 — 빈 리스트에 붙으면 순서가 깨진다.
+        setHistoryLoadState("loading"); // 받아보기 전엔 "없다"고 말하지 않는다.
         try {
           // 멀티세션(ADR 2026-07-15) — 초기 로드도 active 세션(기본=dashboard:default)만. 미지정이면
           // 전 스레드 병합이라 텔레그램/워커가 섞임(D4 위배). threadKey 로 스코프.
           const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(activeThreadKey));
-          if (!r.ok) return;
+          if (!r.ok) { setHistoryLoadState("error"); return; } // 실패와 빈 대화는 다른 상태다.
           const data = await r.json().catch(() => ({}));
           // 비서 표시 이름(AGENT.md 이름, 폴백 tiguclaw) — 라벨/문구에 반영. 빈 이력이어도 세팅.
           if (typeof data.assistantName === "string" && data.assistantName.trim() !== "") {
@@ -488,7 +489,7 @@
           }
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
-          if (entries.length === 0 && activities.length === 0) return; // 빈 이력.
+          if (entries.length === 0 && activities.length === 0) return; // 빈 이력(아래 finally 가 ready 로 닫는다).
           // 메시지 + 도구 스텝(기능 B)을 병합·묶음 렌더(초기=prepend). 각 dedup 키 등록 →
           // 곧 연결될 SSE replay 가 같은 메시지/스텝을 중복 렌더 안 하게.
           renderHistoryBatch(entries, activities, false);
@@ -503,8 +504,12 @@
         } catch (err) {
           // 무해 — 라이브 경로 무손상. 콘솔만.
           console.warn("chat-history load failed:", err && err.message ? err.message : err);
+          setHistoryLoadState("error");
         } finally {
           endHistoryLoad(); // 실패·조기 return 경로 포함 — 보류분을 반드시 흘린다(유실 0).
+          // ★"loading" 으로 굳는 경로가 없게 — 성공·빈이력·조기 return 전부 여기서 닫힌다.
+          //  이미 error 로 확정된 건 덮지 않는다(실패를 성공처럼 말하지 않는다).
+          if (historyLoadState === "loading") setHistoryLoadState("ready");
         }
       };
 

@@ -10,13 +10,15 @@
        */
       const updateChip = (() => {
         const chip = document.getElementById("update-chip");
-        if (!chip) return { refresh: () => {} };
+        if (!chip) return { refresh: () => {}, state: () => null };
 
         let inFlight = false;
         let current = null;
 
         const render = (a) => {
           current = a;
+          // 홈 「상태 요약」의 버전 행이 같은 판정을 문장으로 읽는다 — 늦게 도착하므로 다시 그린다.
+          if (currentView === "overview") setTimeout(showOverview, 0);
           if (!a || a.state === "unknown" || a.state === "up-to-date") {
             chip.hidden = true;
             return;
@@ -111,7 +113,7 @@
           }
         });
 
-        return { refresh };
+        return { refresh, state: () => current };
       })();
 
       // 최초 1회 + 30분마다. ★주기를 설정으로 빼지 않는다 — 필요해지면 그때 뺀다

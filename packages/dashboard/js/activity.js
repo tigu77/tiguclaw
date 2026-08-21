@@ -447,7 +447,11 @@
       function restoreActiveTurns() {
         fetch("/api/health").then((r) => r.json()).then((h) => {
           const sub = document.getElementById("app-sub");
-          if (sub && h && typeof h.version === "string") sub.textContent = "대시보드 · v" + h.version;
+          if (h && typeof h.version === "string") {
+            appVersion = h.version;
+            if (sub) sub.textContent = "대시보드 · v" + h.version;
+            if (currentView === "overview") setTimeout(showOverview, 0);
+          }
           // 시작시각은 서버가 안 준다 → 모른다고 표시한다(경과시간 미표시).
           for (const k of activeThreadsFromHealth(h)) markTurnActive(k, { startUnknown: true });
         }).catch(() => { /* health 미도달 — 부제 기본 유지, 복원은 SSE 가 이어받는다 */ });

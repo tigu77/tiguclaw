@@ -408,6 +408,9 @@
       let assistantName = "tiguclaw"; // 비서 표시 이름(AGENT.md 이름 → chat-history 응답, 폴백 tiguclaw).
       let selectedProviderId = null;
       let currentView = "overview";
+      // 앱 버전 — `/api/health` 가 채운다(activity.js). 헤더 부제와 홈 「상태 요약」이 **같은 값**을
+      // 본다. 모바일 헤더는 폭이 없어 부제를 숨기므로(app.css @media), 홈이 유일한 노출 자리다.
+      let appVersion = "";
 
       // 타임스탬프 — 로컬. 기존 toISOString().slice 는 UTC(한국이면 9h 어긋남)+밀리초였다.
       const tsPad = (n) => String(n).padStart(2, "0");

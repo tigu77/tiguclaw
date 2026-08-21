@@ -20,6 +20,38 @@
         window.__dashBootView = null; // 프라이빗 모드·quota — 복원 없이 기존 동작.
       }
 
+      /**
+       * 홈 「상태 요약」의 **버전 행** — 순수 판정 (2026-08-21, 사용자 신고).
+       *
+       * ★왜 생겼나: 모바일 헤더는 46px 라 부제(`대시보드 · vX.Y.Z`)를 숨긴다(app.css @media).
+       *  그래서 **모바일엔 버전을 볼 자리가 아예 없었다.** 헤더를 되살리는 대신 홈에 둔 이유는
+       *  그 패널이 이미 *"지금 확인해야 할 운영 신호"* 이고, "어떤 빌드로 도는가" 가 정확히
+       *  그것이기 때문이다.
+       *
+       * ★**여기서 업데이트 여부를 다시 판정하지 않는다.** `behind`·`dirty` 를 보는 순간
+       *  칩(update-chip.js)과 판단이 **두 벌**이 되고 두 벌은 갈린다. 코어가 낸 `state` 를
+       *  **문장으로 바꾸기만** 한다(가장자리는 표현만 한다).
+       *
+       * ★모르면 아무 말도 하지 않는다 — `unknown`·미도착·새 state 는 버전만 보여준다.
+       *  칩이 `unknown` 에 조용한 것과 같은 규칙이고, 없는 업데이트를 있다고 하는 것보다 낫다.
+       *
+       * @returns {{tone:string, desc:string, meta:string}}
+       */
+      const versionStatusRow = (version, availability) => {
+        const meta = version ? "v" + version : "확인 중";
+        const state = availability && availability.state;
+        if (state === "available")
+          return { tone: "warn", desc: "받을 업데이트가 있습니다 — 상단 [업데이트] 버튼으로 적용합니다.", meta };
+        if (state === "blocked")
+          return {
+            tone: "warn",
+            desc: availability.blockedReason || "지금은 업데이트할 수 없습니다.",
+            meta,
+          };
+        if (state === "up-to-date") return { tone: "good", desc: "최신입니다.", meta };
+        return { tone: "good", desc: "현재 실행 중인 버전입니다.", meta };
+      };
+
       const setActiveNav = (view) => {
         currentView = view;
         document.body.dataset.view = view;
@@ -93,6 +125,11 @@
           [localChatCount > 0 ? "good" : "warn", "대화", localChatCount > 0 ? "최근 대화가 대화 탭에 표시됩니다." : "아직 대화가 없습니다.", localChatCount + "개"],
           [inventoryCache ? "good" : "warn", "인벤토리", inventoryCache ? "스킬·에이전트·MCP 등 능력을 불러왔습니다." : "인벤토리를 불러오는 중입니다.", String(invTotal)],
         ];
+        // ★자리: `모듈 상태`(지금 도는가) 바로 다음 = **둘째 줄**. 맨 끝에 뒀더니 390×780
+        //  화면에서 top=811px 로 **뷰포트 밖**이었다(헤드리스 실측) — 모바일에서 보이게 하려고
+        //  만든 행이 모바일에서만 안 보이면 고친 게 아니다. 나머지 둘은 개수라 밀려도 된다.
+        const ver = versionStatusRow(appVersion, updateChip.state());
+        rows.splice(1, 0, [ver.tone, "버전", ver.desc, ver.meta]);
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
           row.className = "status-row";

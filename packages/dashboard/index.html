@@ -33,6 +33,10 @@
         <span id="conn-text">연결 중…</span>
       </div>
       <div class="meter" id="ev-count">0개 이벤트</div>
+      <!-- 업데이트 칩 — 받을 게 있을 때만 노출(평소 hidden). 상태 구역(연결·이벤트) 옆에
+           두는 이유: "더 새 빌드가 있다" 는 연결 상태와 같은 종류의 인스턴스 사실이고,
+           업데이트 중 끊김→재연결을 바로 옆 conn-dot 이 이미 표현하기 때문. -->
+      <button id="update-chip" class="hdr-btn update-chip" type="button" hidden></button>
     </header>
     <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
     <div id="menu-backdrop"></div>
@@ -213,6 +217,7 @@
     </aside>
     <script src="/js/constants.js"></script>
     <script src="/js/util.js"></script>
+    <script src="/js/update-chip.js"></script>
     <script src="/js/context-menu.js"></script>
     <script src="/js/view-overview.js"></script>
     <script src="/js/view-models.js"></script>

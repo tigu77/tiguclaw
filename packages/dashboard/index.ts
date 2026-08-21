@@ -361,6 +361,22 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/inventory");
       return;
     }
+    // 업데이트 가용성 — bridge GET /update-availability (read). 헤더 칩이 소비.
+    // ★이 경로 목록은 화이트리스트가 맞다(드리프트 신호 아님) — 브라우저가 브리지의
+    //  아무 엔드포인트나 부르지 못하게 막는 게 목적이라, 한 줄이 곧 한 번의 허용 결정이다.
+    if (pathname === "/api/update-availability" && method === "GET") {
+      await proxyJson(res, "/update-availability");
+      return;
+    }
+    // 자가 업데이트 실행 — bridge POST /self-update (admin). 헤더 칩의 확인 팝업이 소비.
+    if (pathname === "/api/self-update" && method === "POST") {
+      await proxyJson(res, "/self-update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      return;
+    }
     // 인벤토리 항목 정의 본문 — bridge GET /inventory-item?source= (read). source 쿼리 그대로
     // 전달(bridge 가 allowlist 검사 후 파일 재-Read). 능력 상세뷰 본문 섹션이 소비.
     if (pathname === "/api/inventory-item" && method === "GET") {

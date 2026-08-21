@@ -1336,6 +1336,10 @@ class HttpBridge implements Channel, Observer {
                   ? "read"
                 : pathname === "/projects/detail" && method === "GET"
                   ? "read"
+                : pathname === "/update-availability" && method === "GET"
+                  ? "read" // 조회만 — 상태를 읽을 뿐 아무것도 바꾸지 않는다.
+                : pathname === "/self-update" && method === "POST"
+                  ? "admin" // 데몬을 재시작한다 → /restart 와 동급(위 표 참조).
                   : pathname === "/messages" && method === "POST"
               ? "write"
               : pathname === "/session-name" && method === "POST"
@@ -2762,6 +2766,35 @@ class HttpBridge implements Channel, Observer {
     // 127.0.0.1 바인드(기본). 메시지 큐(enqueueThreadTurn) 를 타지 않고 control.restart 이벤트를
     // EventBus 에 publish → index.ts 가 구독해 shutdown("RESTART"). 멈춘 턴에도 동작. 빌트인
     // 경로라 register_endpoint 로는 등록·shadow 불가(코드 순서 = 우선순위, 커스텀 폴백 위에서 선점).
+    // /update-availability — "받을 업데이트가 있나". 조회만(read 게이트).
+    // §0 단방향: 판정은 코어 `checkUpdateAvailability` 한 곳 — 브리지는 배관만 하고
+    // **아무것도 판단하지 않는다**(가장자리는 판단하지 않는다, principle-check Q7).
+    // 실패는 전부 코어가 `unknown` 으로 수렴시키므로 여기서 try/catch 를 덧대지 않는다
+    // (가짜 견고함 금지 — 내부 호출에 방어를 겹치지 않는다).
+    if (pathname === "/update-availability" && method === "GET") {
+      const { checkUpdateAvailability } = await import(
+        "../../src/core/update-availability.js"
+      );
+      const { sourceRoot } = await import("../../src/core/paths.js");
+      writeJson(res, 200, await checkUpdateAvailability(sourceRoot()));
+      return;
+    }
+
+    // /self-update — 대시보드에서 자가 업데이트 실행. admin 게이트(데몬을 재시작하므로
+    // /restart 와 동급). §0 단방향: 코어 `runSelfUpdate` 를 그대로 부른다 — git/npm/
+    // typecheck 게이트/롤백/재시작 판단은 전부 거기 닫혀 있고 여기서 재구현하지 않는다
+    // (채널이 넷째 진입점이 될 뿐 다섯째 판단이 되지 않는다).
+    // 동시 실행 가드는 코어에 이미 있다(`updating` 락 → status:"busy") — 화면은 그 상태를
+    // 그대로 받아 표시한다.
+    if (pathname === "/self-update" && method === "POST") {
+      const { runSelfUpdate } = await import("../../src/core/self-update.js");
+      // restart 는 부팅 시 박힌 전역 레지스트리(setSelfUpdateRestart)가 처리한다 —
+      // 도구(update_self) 경로와 같은 배선.
+      const result = await runSelfUpdate({});
+      writeJson(res, 200, result);
+      return;
+    }
+
     if (pathname === "/restart" && method === "POST") {
       if (this.bus === null) {
         // observer 미연결 = 재시작 트리거 경로 없음. 거짓 200 금지.

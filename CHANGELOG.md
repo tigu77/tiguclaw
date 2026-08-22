@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-22
+
+**윈도우에서도 비서가 죽으면 스스로 되살아납니다.** 종전엔 윈도우만 자동 재시작이
+없어서(로그온 시 1회 가동) 한 번 멈추면 그대로였고, 재시작을 스스로 해보려던 방식이
+Windows Defender 에 **악성 프로그램으로 차단**되기까지 했습니다. 재기동 책임을
+"죽는 쪽"에서 "살아 있는 쪽(감독자)"으로 옮겨 세 OS 가 같은 방식으로 돕니다.
+
+### Added
+
+- **윈도우 자동 재기동(KeepAlive)** — 데몬이 죽으면 감독자가 즉시 다시 띄웁니다.
+  감독자까지 멈추면 1분 반복 트리거가 잡아, 되살릴 수단이 하나로 몰려 있지 않습니다.
+  macOS `launchd` · Linux `systemd` 와 같은 성질이고 **관리자 권한이 필요 없습니다.**
+
+### Changed
+
+- **윈도우 자동시작이 예약작업으로 바뀝니다**(종전 레지스트리 Run 키 + 숨김 VBS).
+  업데이트하면 **자동으로 이관**되며 옛 등록은 정리됩니다 — 따로 하실 일은 없습니다.
+- `설치`·`시작`·`재시작`이 **데몬이 실제로 떴는지 확인한 뒤에** 성공을 알립니다.
+  종전엔 세 OS 모두 설치가 등록만 하고 성공을 알려, 데몬이 안 떠도 알 수 없었습니다.
+
+### Fixed
+
+- **Windows Defender 가 재시작을 차단하던 것** — 재시작 방식이 악성 프로그램의 수법과
+  구분되지 않아 `Trojan:Win32/Commando.A!ml` 로 분류됐습니다. 그 방식 자체를 없앴습니다.
+- **윈도우에서 `중지`가 듣지 않던 것** — 멈춘 뒤 1분 안에 다시 살아났습니다.
+- **macOS 에서 재설치가 돌고 있던 데몬을 멈춘 채 "완료"라고 하던 것** — 등록 해제와
+  재등록이 겹쳐 실패했는데도 성공으로 보고했습니다.
+- **업데이트만 받은 기존 윈도우 설치가 멈춰 있던 것** — 새 방식으로 이관되지 않아
+  시작에 실패하거나, 재시작 후 되살아나지 못했습니다.
+
 ## [0.34.0] - 2026-08-21
 
 진행 표시가 **내 대화의 상태**만 말하도록 고쳤습니다 — 다른 세션이나 백그라운드
@@ -1367,7 +1397,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/tigu77/tiguclaw/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/tigu77/tiguclaw/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/tigu77/tiguclaw/compare/v0.32.1...v0.33.0
 [0.32.1]: https://github.com/tigu77/tiguclaw/compare/v0.32.0...v0.32.1

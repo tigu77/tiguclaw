@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-08-22
+
+**윈도우에서 검은 터미널이 계속 떠 있던 것을 없앴습니다.** 0.35.0 이 자동 재기동을
+가져오면서 데몬을 콘솔 창으로 띄우게 됐는데, 그 창이 화면에 그대로 남았습니다.
+업데이트가 도중에 실패하던 문제, 그리고 예약작업을 만들 수 없는 환경(회사 PC 등)에서
+자동시작을 아예 못 걸던 문제도 함께 고쳤습니다. **0.35.0 을 쓰신다면 업데이트를
+권합니다.**
+
+### Fixed
+
+- **검은 터미널이 계속 떠 있던 것** — 이제 창 없이 조용히 돕니다.
+- **업데이트가 실패하고 되돌아가던 것** — 멈춰야 할 것을 다 안 멈춰서 파일이 잠긴 채
+  의존성 설치가 실패했습니다(`EPERM`). 업데이트가 끝까지 갑니다.
+- **업데이트가 되돌아갈 때 이전 상태로 못 돌아가던 것** — 되돌릴 기준점을 잘못 잡고
+  있었습니다. 이제 업데이트 직전 상태로 정확히 복구합니다.
+- **`중지` 후에도 1분 뒤 다시 살아나던 것.**
+- **업데이트만으로는 자동시작 설정이 갱신되지 않던 것** — 예전 방식으로 설치한 경우
+  업데이트해도 그대로였습니다. 이제 알아서 새 방식으로 옮겨집니다.
+- 업데이트 실패 원인이 로그에 안 남던 것(경고가 통째로 사라지거나 알아볼 수 없는
+  형식으로 기록되던 문제).
+
+### Added
+
+- **자동시작 등록이 막힌 환경을 위한 대비책** — 회사 PC 처럼 정책으로 예약작업을 만들
+  수 없으면 시작프로그램 폴더로 대신 등록합니다. 이 경우 로그온 시 자동 실행은 되지만
+  **죽어도 자동으로 되살아나지는 않으며, 설치 중에 그 사실을 알려드립니다.**
+- 윈도우 명령이 응답하지 않을 때 30초 후 포기 — 설치가 무한정 멈춰 있지 않습니다.
+
 ## [0.35.0] - 2026-08-22
 
 **윈도우에서도 비서가 죽으면 스스로 되살아납니다.** 종전엔 윈도우만 자동 재시작이
@@ -1397,7 +1425,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.35.1...HEAD
+[0.35.1]: https://github.com/tigu77/tiguclaw/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/tigu77/tiguclaw/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/tigu77/tiguclaw/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/tigu77/tiguclaw/compare/v0.32.1...v0.33.0

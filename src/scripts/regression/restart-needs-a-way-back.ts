@@ -170,7 +170,11 @@ const run = async (): Promise<Assertion[]> => {
     const banned: Array<[RegExp, string]> = [
       [/"\/create"/, "런타임 예약작업 생성(schtasks /create)"],
       [/ping 127\.0\.0\.1/, "ping 지연(샌드박스 회피 수법과 동형)"],
-      [/wscript/, "숨김 스크립트 실행"],
+      // ★`wscript` 자체가 악성이라서가 아니다 — **데몬이 죽기 직전에** 런타임 작업을 만들어
+      //  숨김 스크립트를 지연 실행하는 **조합**이 드로퍼 수법이었다. 설치가 등록해 둔 작업이
+      //  런처를 실행하는 건(bin/daemon.mjs) 정상이고 Defender 도 안 막는다(실측).
+      //  그래서 금지는 이 두 파일(데몬의 재시작 경로)에만 건다.
+      [/wscript/, "데몬 재시작 경로의 숨김 스크립트 실행"],
     ];
     for (const rel of ["../../core/restart.ts", "../../index.ts"]) {
       const src = await readFile(new URL(rel, import.meta.url), "utf8");
@@ -195,12 +199,17 @@ const run = async (): Promise<Assertion[]> => {
       /RepetitionInterval/, // 감독자까지 죽었을 때의 바닥 그물
       /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/, // 없으면 기본 3일 후 강제 종료
       /"supervise"/, // 작업이 실행하는 것 = 감독자
-      // ★S4U — 창 없이 세션 0 에서 돈다. `Interactive` 면 사용자 화면에 **검은 터미널이
-      //  계속 떠 있는다**(2026-08-22 사용자 신고). 내가 "창이 안 뜬다" 고 두 번 말했는데
-      //  둘 다 SSH 세션에서 `EnumWindows` 로 잰 값이었고, 그 자리에선 사용자 데스크톱의
-      //  창을 원리적으로 볼 수 없다 — **"안 보인다" 를 "없다" 로 읽은 것**이다.
-      //  판정은 `Win32_Process.SessionId`(S4U=0)로 한다. 여기선 등록 문자열을 지킨다.
-      /-LogonType S4U/,
+      // ★창을 없애는 수단 = **숨김 런처(VBS)** 지 principal 이 아니다 (2026-08-22).
+      //  경위: node 직접 실행(창 뜸) → S4U(내 SSH 에선 됐지만 실사용 경로에서 `액세스가
+      //  거부되었습니다`) → wscript 런처. 액션이 wscript 여야 하고,
+      //  런처는 `sh.Run(cmd, 0, True)` 여야 한다 — `0`=숨김, **`True`=대기**.
+      //  대기를 빼면 wscript 가 즉시 끝나 작업 인스턴스도 끝나고, `IgnoreNew` 가 무효가 돼
+      //  **1분마다 감독자가 하나씩 더 뜬다**(같은 홈·같은 포트 = 사고).
+      /New-ScheduledTaskAction -Execute 'wscript\.exe'/,
+      /-LogonType Interactive/,
+      /sh\.Run "\$\{cmd\.replace\(\/"\/g, '""'\)\}", 0, True/,
+      // 런처를 **등록 전에** 쓴다 — 없으면 등록은 성공하고 실행만 조용히 실패한다.
+      /writeFileSync\(winVbsPath\(c\), buildWinVbs\(c\), "utf8"\);[\s\S]{0,400}?buildWinTaskScript\(c\)/,
     ]);
     out.push(
       assert(

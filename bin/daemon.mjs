@@ -641,11 +641,41 @@ const winPort = (c) => {
   return process.env.HTTP_BRIDGE_PORT?.trim() || "7011";
 };
 
-// ★숨김 VBS 런처(`buildWinVbs`)와 그 실행기(`winLaunch`)는 **삭제됐다** (2026-08-22).
-//  존재 이유가 둘이었는데 둘 다 사라졌다: (1) 콘솔 창 숨김 — 예약작업이 `node` 를 직접
-//  띄우면 창이 안 뜬다(그 기계에서 최상위 창 전수 열거 0개로 확인). (2) 환경변수 주입 —
-//  이제 `supervise --home/--runtime` 인자로 넘긴다. 남은 `winVbsPath` 는 옛 설치의
-//  잔재를 지우는 데만 쓴다(마이그레이션).
+/**
+ * 숨김 런처 VBS — 예약작업이 이걸 실행하고, 이게 **감독자**를 창 없이 띄운다.
+ *
+ * ★두 인자가 핵심이다: `sh.Run(cmd, 0, True)`
+ *   - `0` = 창 숨김. 예약작업이 `node` 를 직접 띄우면 콘솔 창이 뜬다(사용자 화면으로 확인).
+ *   - `True` = **기다린다**. 안 기다리면 wscript 가 즉시 끝나 작업 인스턴스도 끝나고,
+ *     그러면 `IgnoreNew` 가 무효가 돼 **1분마다 감독자가 하나씩 더 뜬다**. 기다리면
+ *     wscript 가 감독자만큼 살아 중복 방지가 그대로 성립한다 — 감독자에 별도 중복 가드를
+ *     만들지 않아도 되는 이유다(부품을 안 늘린다).
+ *
+ * ★환경변수는 안 심는다 — `supervise --home/--runtime` **인자**로 넘긴다. 종전 VBS 는
+ *  `cmd /c set VAR=... && ...` 체인을 썼는데, 그 체인 모양이 Defender 오탐의 재료였다.
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const buildWinVbs = (c) => {
+  const cmd = [
+    c.nodePath,
+    path.join(c.repoRoot, "bin", "daemon.mjs"),
+    "supervise",
+    "--home",
+    c.homeRaw,
+    "--runtime",
+    c.runtime,
+  ]
+    .map((s) => `"${s}"`)
+    .join(" ");
+  return [
+    'Set sh = CreateObject("WScript.Shell")',
+    `sh.CurrentDirectory = "${c.repoRoot.replace(/"/g, '""')}"`,
+    // 0 = 숨김, True = 감독자가 끝날 때까지 대기(작업 인스턴스 유지 → IgnoreNew 성립).
+    `sh.Run "${cmd.replace(/"/g, '""')}", 0, True`,
+    "",
+  ].join("\r\n");
+};
 
 /** @param {string[]} args */
 const winReg = (args) =>
@@ -695,16 +725,23 @@ const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
  *  - 1분 반복 트리거가 무기한 유지된다(`Interval=PT1M`, Duration 무제한).
  *  - `MultipleInstances=IgnoreNew` 가 중복 기동을 막는다 — 작업 인스턴스가 감독자
  *    프로세스만큼 살기 때문이다(2분간 반복 발화, 기동 1회).
- *  - ★**콘솔 창은 `-LogonType S4U` 로 없앤다** (2026-08-22, 사용자 신고로 정정).
- *    처음엔 `Interactive` 로 두고 "액션이 node 직접 실행이면 창이 안 뜬다(최상위 창 전수
- *    열거 0개)" 고 적었는데 **거짓이었다.** SSH 세션에서 `EnumWindows` 를 돌려 확인했는데,
- *    그 자리에선 사용자 데스크톱의 창을 **원리적으로 볼 수 없다**(윈도우 스테이션이 다르다).
- *    실제로는 검은 터미널이 계속 떠 있었고 사용자가 보고 알려줬다.
- *    S4U = 대화형 로그온 없이(암호 불요) 실행 → **세션 0** 이라 창 자체가 생기지 않는다.
- *    ★판정은 `Win32_Process.SessionId` 로 한다 — SSH 에서도 보이고 거짓말하지 않는다
- *    (Interactive = 사용자 세션 번호 · S4U = 0). "안 보인다" 를 "없다" 로 읽지 마라.
- *  - Defender 가 이 등록을 막지 않는다. 오탐의 원인은 예약작업 자체가 아니라
- *    **런타임 생성 + `ping` 지연 + 숨김 스크립트** 조합이었다.
+ *  - ★**콘솔 창은 숨김 런처(VBS)로 없앤다** (2026-08-22, 사용자 신고 → S4U 시도 → 철회).
+ *    경위를 남긴다. 처음엔 액션을 `node` 직접 실행으로 두고 "창이 안 뜬다(최상위 창 전수
+ *    열거 0개)" 고 적었는데 **거짓이었다** — SSH 세션에서 `EnumWindows` 를 돌렸고, 그
+ *    자리에선 사용자 데스크톱의 창을 **원리적으로 볼 수 없다**(윈도우 스테이션이 다르다).
+ *    실제로는 검은 터미널이 계속 떠 있었다.
+ *    다음으로 `-LogonType S4U`(세션 0 → 창 없음)로 바꿨고 내 SSH 에선 잘 됐다. 그런데
+ *    **실사용 경로에서 `액세스가 거부되었습니다`** 로 실패했다. 이분으로 원인을 좁혔다:
+ *    인자 조합 7종 전부 제한 토큰에서 OK · 실제 작업 이름도 OK · 그런데 `daemon.mjs` 가
+ *    중첩 spawn(task→powershell→node→powershell)으로 부르면 거부. 내 SSH 는 **관리자
+ *    토큰**이라 계속 성공해서, 검증 환경이 실사용자보다 권한이 높다는 걸 늦게 알았다.
+ *    → S4U 는 우리 호출 경로에서 신뢰할 수 없으므로 접는다.
+ *  - ★그래서 `Interactive`(어디서나 성공·관리자 불요) + **`wscript` 숨김 런처**다.
+ *    ★런처는 `sh.Run(cmd, 0, True)` 로 **기다린다** — 이게 핵심이다. 안 기다리면 wscript 가
+ *    즉시 끝나 작업 인스턴스도 끝나고, 그러면 `IgnoreNew` 가 무효가 돼 1분마다 감독자가
+ *    하나씩 더 뜬다. 기다리면 wscript 가 감독자만큼 살아 중복 방지가 그대로 성립한다.
+ *  - Defender 가 이 등록을 막지 않는다. 오탐의 원인은 VBS 자체가 아니라 **런타임 작업
+ *    생성 + `ping` 지연** 조합이었다(그건 이미 없앴다).
  *
  * 로그온 트리거 + 반복 트리거 둘 다 단다: 로그온하면 뜨고, 감독자까지 죽어도 1분 안에
  *  잡힌다. `-ExecutionTimeLimit 0` 이 없으면 기본 3일 후 작업이 강제 종료된다.
@@ -712,17 +749,9 @@ const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
  * @returns {string}
  */
 const buildWinTaskScript = (c) => {
-  const args = [
-    path.join(c.repoRoot, "bin", "daemon.mjs"),
-    "supervise",
-    "--home",
-    c.homeRaw,
-    "--runtime",
-    c.runtime,
-  ]
-    // 작업 액션의 인자 문자열 — 공백 있는 경로를 위해 각 인자를 큰따옴표로 감싼다.
-    .map((a) => `"${a}"`)
-    .join(" ");
+  // 액션 = `wscript //B //Nologo <vbs>` — VBS 가 감독자를 **숨김으로** 띄우고 기다린다.
+  //  `//B`(batch) = 스크립트 오류 대화상자 억제. 창은 VBS 안의 windowStyle 0 이 없앤다.
+  const args = [`"${winVbsPath(c)}"`].join(" ");
   // ★실패 이유를 **stdout 으로** 낸다 (2026-08-22). `$ErrorActionPreference='Stop'` 만 두면
   //  예외가 stderr 로 가는데, powershell.exe 는 stderr 가 리다이렉트되면 오류를 **CLIXML 로
   //  직렬화**한다 — 실측 로그에 `(#< CLIXML` 만 남아 왜 실패했는지 알 수 없었다. 진단면이
@@ -730,13 +759,14 @@ const buildWinTaskScript = (c) => {
   return [
     `$ErrorActionPreference = 'Stop'`,
     `try {`,
-    `$action = New-ScheduledTaskAction -Execute ${psq(c.nodePath)} -Argument ${psq(args)} -WorkingDirectory ${psq(c.repoRoot)}`,
+    `$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ${psq(`//B //Nologo ${args}`)} -WorkingDirectory ${psq(c.repoRoot)}`,
     `$atLogon = New-ScheduledTaskTrigger -AtLogOn -User ${psq(process.env.USERNAME ?? os.userInfo().username)}`,
     // 반복 트리거 = 바닥 그물. StartBoundary 를 과거로 둬서 등록 즉시 유효해진다.
     `$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1) -RepetitionInterval (New-TimeSpan -Minutes 1)`,
     `$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)`,
-    // ★S4U — 창 없이 세션 0 에서 돈다(위 주석). `Interactive` 면 검은 터미널이 떠 있는다.
-    `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType S4U -RunLevel Limited`,
+    // ★`Interactive` — 어디서나 등록되고 관리자 권한이 필요 없다(위 주석). 창은 principal 이
+    //  아니라 **VBS 런처**가 없앤다. S4U 는 우리 호출 경로에서 거부돼 철회했다.
+    `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType Interactive -RunLevel Limited`,
     `Register-ScheduledTask -TaskName ${psq(winTaskName(c))} -Action $action -Trigger $atLogon,$repeat -Settings $settings -Principal $principal -Force | Out-Null`,
     `'TASK_REGISTERED'`,
     `} catch { 'TASK_ERR: ' + $_.Exception.Message }`,
@@ -833,10 +863,9 @@ const winRemoveLegacyAutostart = (c) => {
     winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
     console.log(`   옛 자동시작 제거 — HKCU Run\\${c.label} (예약작업으로 대체)`);
   }
-  if (existsSync(winVbsPath(c))) {
-    rmSync(winVbsPath(c), { force: true });
-    console.log(`   옛 런처 제거 — ${winVbsPath(c)} (창 숨김이 더는 필요 없습니다)`);
-  }
+  // ★VBS 는 **지우지 않는다** — 예약작업의 액션이 이걸 실행한다(창 숨김). 한때 지웠는데
+  //  (액션을 node 직접 실행으로 바꿨을 때) 그 구성은 콘솔 창이 떠서 철회했다. 내용은
+  //  `winEnsureTask` 가 매번 다시 쓴다(경로·런타임이 바뀌어도 수렴).
   // 옛 self-restart 1회성 작업(Defender 가 악성으로 본 그것)도 남아 있으면 정리.
   spawnSync("schtasks", ["/delete", "/tn", `${c.label}-selfrestart`, "/f"], {
     stdio: "ignore",
@@ -860,6 +889,11 @@ const winRemoveLegacyAutostart = (c) => {
  */
 const winEnsureTask = (c) => {
   winRemoveLegacyAutostart(c);
+  // ★런처를 **먼저** 쓴다 — 작업 액션이 이 파일을 가리키므로, 없으면 등록은 성공하고
+  //  실행만 조용히 실패한다(2026-08-15 에 겪은 바로 그 형상: "런처가 없는데 성공 보고").
+  //  매번 다시 써서 경로·런타임 변경에도 수렴시킨다.
+  mkdirSync(c.homeAbs, { recursive: true });
+  writeFileSync(winVbsPath(c), buildWinVbs(c), "utf8");
   // ★**돌고 있으면 먼저 멈춘다** (2026-08-22, /update 실측으로 잡음). 작업이 실행 중이면
   //  `Register-ScheduledTask -Force` 가 실패해 수렴이 조용히 건너뛰어진다. 실제로 갱신
   //  도중 **1분 반복 트리거가 데몬을 되살려** 작업이 돌고 있었고, 그래서 등록이 옛
@@ -876,13 +910,17 @@ const winEnsureTask = (c) => {
       stdio: "ignore",
       windowsHide: true,
     }).status === 0;
+  // ★이유는 **양쪽 갈래에서 다 찍는다** (2026-08-22). 종전엔 "기존 등록이 있을 때" 만
+  //  찍어서, 작업이 아예 없는 첫 등록이 실패하면 `🔴 등록 실패` 만 남고 **왜인지가 사라졌다**
+  //  (실측: 제한 토큰 install 이 그렇게 실패했고 이유를 못 봤다). 실패를 말하면서 원인을
+  //  안 주는 로그는 진단면이 아니다. stdout 우선 — 스크립트가 `TASK_ERR: …` 평문을 낸다
+  //  (stderr 는 powershell 이 CLIXML 로 감싼다).
+  const why = r.stdout || r.stderr || "출력 없음";
   if (exists) {
-    // stdout 우선 — 실패 이유는 스크립트가 `TASK_ERR: …` 로 평문 출력한다(stderr 는 CLIXML).
-    console.warn(
-      `   ⚠ 예약작업 재등록 실패 — 기존 등록으로 진행합니다 (${r.stdout || r.stderr || "출력 없음"}).`,
-    );
+    console.warn(`   ⚠ 예약작업 재등록 실패 — 기존 등록으로 진행합니다 (${why}).`);
     return true;
   }
+  console.error(`   예약작업 등록 실패 이유: ${why}`);
   return false;
 };
 
@@ -1066,10 +1104,12 @@ const winPrint = (c) => {
     "# Windows: 예약작업 KeepAlive (관리자 권한 불요) — 로그온 트리거 + 1분 반복(바닥 그물)",
   );
   console.log(`# 작업명: ${winTaskName(c)}`);
-  console.log(
-    `#   액션 = "${c.nodePath}" "${path.join(c.repoRoot, "bin", "daemon.mjs")}" supervise --home "${c.homeRaw}" --runtime ${c.runtime}`,
-  );
-  console.log(`#   감독자가 데몬을 띄우고 죽으면 되살립니다(launchd KeepAlive 동형).`);
+  console.log(`#   액션 = wscript.exe //B //Nologo "${winVbsPath(c)}"`);
+  console.log(`#   런처(VBS)가 감독자를 **창 없이** 띄우고 기다립니다 — 기다려야 작업`);
+  console.log(`#   인스턴스가 유지돼 IgnoreNew(중복 방지)가 성립합니다.`);
+  console.log(`#   감독자는 데몬을 띄우고 죽으면 되살립니다(launchd KeepAlive 동형).`);
+  console.log("# --- 런처 VBS ---");
+  console.log(buildWinVbs(c));
   console.log("# --- 등록 스크립트 ---");
   console.log(buildWinTaskScript(c));
 };

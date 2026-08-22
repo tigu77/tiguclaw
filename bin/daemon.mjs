@@ -695,8 +695,14 @@ const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
  *  - 1분 반복 트리거가 무기한 유지된다(`Interval=PT1M`, Duration 무제한).
  *  - `MultipleInstances=IgnoreNew` 가 중복 기동을 막는다 — 작업 인스턴스가 감독자
  *    프로세스만큼 살기 때문이다(2분간 반복 발화, 기동 1회).
- *  - 액션이 `node` 직접 실행이면 **콘솔 창이 안 뜬다**(최상위 창 전수 열거 0개).
- *    그래서 창 숨김용 VBS 가 더는 필요 없다.
+ *  - ★**콘솔 창은 `-LogonType S4U` 로 없앤다** (2026-08-22, 사용자 신고로 정정).
+ *    처음엔 `Interactive` 로 두고 "액션이 node 직접 실행이면 창이 안 뜬다(최상위 창 전수
+ *    열거 0개)" 고 적었는데 **거짓이었다.** SSH 세션에서 `EnumWindows` 를 돌려 확인했는데,
+ *    그 자리에선 사용자 데스크톱의 창을 **원리적으로 볼 수 없다**(윈도우 스테이션이 다르다).
+ *    실제로는 검은 터미널이 계속 떠 있었고 사용자가 보고 알려줬다.
+ *    S4U = 대화형 로그온 없이(암호 불요) 실행 → **세션 0** 이라 창 자체가 생기지 않는다.
+ *    ★판정은 `Win32_Process.SessionId` 로 한다 — SSH 에서도 보이고 거짓말하지 않는다
+ *    (Interactive = 사용자 세션 번호 · S4U = 0). "안 보인다" 를 "없다" 로 읽지 마라.
  *  - Defender 가 이 등록을 막지 않는다. 오탐의 원인은 예약작업 자체가 아니라
  *    **런타임 생성 + `ping` 지연 + 숨김 스크립트** 조합이었다.
  *
@@ -724,7 +730,8 @@ const buildWinTaskScript = (c) => {
     // 반복 트리거 = 바닥 그물. StartBoundary 를 과거로 둬서 등록 즉시 유효해진다.
     `$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1) -RepetitionInterval (New-TimeSpan -Minutes 1)`,
     `$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)`,
-    `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType Interactive -RunLevel Limited`,
+    // ★S4U — 창 없이 세션 0 에서 돈다(위 주석). `Interactive` 면 검은 터미널이 떠 있는다.
+    `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType S4U -RunLevel Limited`,
     `Register-ScheduledTask -TaskName ${psq(winTaskName(c))} -Action $action -Trigger $atLogon,$repeat -Settings $settings -Principal $principal -Force | Out-Null`,
     `'TASK_REGISTERED'`,
   ].join("\n");
@@ -830,14 +837,44 @@ const winRemoveLegacyAutostart = (c) => {
   });
 };
 
+/**
+ * 예약작업 등록을 **코드가 말하는 모양으로 수렴**시킨다 — 멱등(`-Force`).
+ *
+ * ★왜 "없으면 만든다" 로는 부족한가 (2026-08-22, 두 번째 같은 실수): 등록 내용은 Task
+ *  Scheduler 에 저장돼 있어서 **코드를 고쳐도 안 바뀐다.** `/update` 는 install 을 다시
+ *  돌리지 않고(stop→ci→build→start), start 가 *부재*만 고치면 **낡은 등록은 영원히 남는다.**
+ *  실제로 그래서 터미널이 계속 떴다 — 부재는 고쳤는데 **낡음**은 안 봤다.
+ *  ★설정을 하나씩 비교하지 않는다(그건 손으로 관리하는 목록이라 반드시 늙는다). 그냥 매번
+ *   다시 등록해 **정의점 하나**로 수렴시킨다.
+ *
+ * 견고성: 재등록이 실패해도 **기존 등록이 있으면 진행**한다(경고만). 일시 실패로 이미 되던
+ *  기동을 막지 않는다 — 견고함 > 단순함.
+ * @param {Ctx} c
+ * @returns {boolean} 진행해도 되는가
+ */
+const winEnsureTask = (c) => {
+  winRemoveLegacyAutostart(c);
+  const r = winPs(buildWinTaskScript(c));
+  if (r.status === 0 && r.stdout.includes("TASK_REGISTERED")) return true;
+  const exists =
+    spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
+      stdio: "ignore",
+      windowsHide: true,
+    }).status === 0;
+  if (exists) {
+    console.warn(
+      `   ⚠ 예약작업 재등록 실패 — 기존 등록으로 진행합니다 (${r.stderr || r.stdout || "출력 없음"}).`,
+    );
+    return true;
+  }
+  return false;
+};
+
 /** @param {Ctx} c */
 const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
-  winRemoveLegacyAutostart(c);
-  const r = winPs(buildWinTaskScript(c));
-  if (r.status !== 0 || !r.stdout.includes("TASK_REGISTERED")) {
-    console.error(`🔴 예약작업 등록 실패 (status=${String(r.status)}).`);
-    console.error((r.stderr || r.stdout || "(출력 없음)").trim());
+  if (!winEnsureTask(c)) {
+    console.error(`🔴 예약작업 등록 실패 (${winTaskName(c)}).`);
     console.error(
       "   그룹정책으로 예약작업 생성이 막힌 환경일 수 있습니다 — 관리자에게 확인하거나 WSL2 를 쓰세요.",
     );
@@ -950,32 +987,20 @@ const winStop = (c) => {
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
 /** @param {Ctx} c */
 const winStart = (c) => {
-  // ★**예약작업이 없으면 여기서 만든다** (2026-08-22, 릴리즈 직전에 잡음).
-  //  종전엔 "먼저 install 하세요" 로 실패했는데, 그러면 **옛 HKCU Run 으로 깔린 기존
-  //  사용자가 `/update` 한 순간 데몬이 안 뜬다** — `runUpdate` 는 install 을 다시 돌리지
-  //  않고 stop→ci→build→**start** 만 하기 때문이다. 새 설치만 보면 영원히 안 보이는 갈래고,
-  //  하필 그 사용자는 "업데이트했더니 비서가 사라졌다" 를 겪는다.
-  //  → start 는 등록의 **부재를 고칠 수 있다**. 같은 등록 스크립트를 쓰므로 install 과
-  //   갈릴 일이 없고, 옛 자동시작 정리도 같이 한다(중복 기동 방지).
-  if (
-    spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
-      stdio: "ignore",
-      windowsHide: true,
-    }).status !== 0
-  ) {
-    console.log(
-      `   예약작업이 없어 지금 등록합니다 (옛 방식에서 이관 — ${winTaskName(c)}).`,
+  // ★**start 가 등록을 수렴시킨다** (2026-08-22). `runUpdate` 는 install 을 다시 돌리지
+  //  않고 stop→ci→build→**start** 만 한다. 그래서 기존 사용자에게 등록 변경을 배달하는
+  //  **유일한 길이 여기**다. 두 부류를 다 고쳐야 한다:
+  //   ① 부재 — 옛 HKCU Run 설치는 예약작업이 아예 없다("업데이트했더니 비서가 사라졌다")
+  //   ② 낡음 — 등록 내용은 Task Scheduler 에 있어 코드를 고쳐도 안 바뀐다(창이 계속 떴다)
+  //  ①만 고치고 ②를 안 봐서 같은 실수를 두 번 했다. `winEnsureTask` 는 매번 `-Force` 로
+  //  다시 등록해 **정의점 하나**로 수렴시킨다(설정을 하나씩 비교하지 않는다 — 그건 손으로
+  //  관리하는 목록이라 반드시 늙는다).
+  if (!winEnsureTask(c)) {
+    console.error(
+      `daemon start: 예약작업 등록 실패 (${winTaskName(c)}) — \`tiguclaw install\` 로 복구하세요.`,
     );
-    winRemoveLegacyAutostart(c);
-    const reg = winPs(buildWinTaskScript(c));
-    if (reg.status !== 0 || !reg.stdout.includes("TASK_REGISTERED")) {
-      console.error(
-        `daemon start: 예약작업 등록 실패 — ${reg.stderr || reg.stdout}. ` +
-          `\`tiguclaw install\` 로 복구하세요.`,
-      );
-      process.exitCode = 1;
-      return;
-    }
+    process.exitCode = 1;
+    return;
   }
   // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
   const r = winPs(

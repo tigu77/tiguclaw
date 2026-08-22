@@ -114,17 +114,28 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
-  // ── ①-e ★`start` 가 등록 부재를 **스스로 고친다**(이관) ──────────────────────
-  //  안 고치면 옛 설치의 `/update` 가 start 단계에서 실패해 데몬이 안 뜬다.
+  // ── ①-e ★`start` 가 등록을 **수렴**시킨다(부재 + 낡음) ───────────────────────
+  //  `/update` 는 install 을 다시 돌리지 않으므로(stop→ci→build→start) 기존 사용자에게
+  //  등록 변경을 배달하는 **유일한 길이 start** 다. 두 부류를 다 고쳐야 한다:
+  //   ① 부재 — 옛 HKCU Run 설치엔 예약작업이 없다("업데이트했더니 비서가 사라졌다")
+  //   ② 낡음 — 등록은 Task Scheduler 에 있어 코드를 고쳐도 안 바뀐다(창이 계속 떴다)
+  //  ★①만 고치고 ②를 안 봐서 같은 실수를 두 번 했다. 그래서 "부재 시 등록" 이 아니라
+  //   **매번 재등록(수렴)** 인지를 본다 — 설정을 하나씩 비교하는 검사는 손으로 관리하는
+  //   목록이라 반드시 늙는다.
   {
-    const mig = await sourceHas("../../../bin/daemon.mjs", [
-      /const winStart = \(c\) => \{[\s\S]{0,1200}?winRemoveLegacyAutostart\(c\);[\s\S]{0,200}?buildWinTaskScript\(c\)/,
+    const conv = await sourceHas("../../../bin/daemon.mjs", [
+      // 정의점 하나 — install·start 가 같은 함수로 수렴한다.
+      /const winEnsureTask = \(c\) => \{[\s\S]{0,600}?winRemoveLegacyAutostart\(c\);[\s\S]{0,200}?buildWinTaskScript\(c\)/,
+      /const winInstall = \(c\) => \{[\s\S]{0,300}?winEnsureTask\(c\)/,
+      /const winStart = \(c\) => \{[\s\S]{0,900}?winEnsureTask\(c\)/,
+      // 재등록 실패해도 기존 등록이 있으면 진행 — 일시 실패가 기동을 막지 않는다.
+      /if \(exists\) \{[\s\S]{0,300}?return true;/,
     ]);
     out.push(
       assert(
-        "★start 가 예약작업 부재 시 직접 등록한다(옛 설치의 /update 가 start 에서 죽지 않게)",
-        mig.ok,
-        mig.ok ? "이관 경로 확인" : `누락 ${mig.missing.join(" ")}`,
+        "★install·start 가 같은 함수로 등록을 수렴시킨다(부재만이 아니라 낡음도 고친다)",
+        conv.ok,
+        conv.ok ? "수렴 경로 확인" : `누락 ${conv.missing.join(" ")}`,
       ),
     );
   }
@@ -182,6 +193,12 @@ const run = async (): Promise<Assertion[]> => {
       /RepetitionInterval/, // 감독자까지 죽었을 때의 바닥 그물
       /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/, // 없으면 기본 3일 후 강제 종료
       /"supervise"/, // 작업이 실행하는 것 = 감독자
+      // ★S4U — 창 없이 세션 0 에서 돈다. `Interactive` 면 사용자 화면에 **검은 터미널이
+      //  계속 떠 있는다**(2026-08-22 사용자 신고). 내가 "창이 안 뜬다" 고 두 번 말했는데
+      //  둘 다 SSH 세션에서 `EnumWindows` 로 잰 값이었고, 그 자리에선 사용자 데스크톱의
+      //  창을 원리적으로 볼 수 없다 — **"안 보인다" 를 "없다" 로 읽은 것**이다.
+      //  판정은 `Win32_Process.SessionId`(S4U=0)로 한다. 여기선 등록 문자열을 지킨다.
+      /-LogonType S4U/,
     ]);
     out.push(
       assert(

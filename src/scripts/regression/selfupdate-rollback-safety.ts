@@ -165,6 +165,25 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★위임 실행의 로그 tee 는 **warn 도** 가로챈다 (2026-08-22) ───────────────
+    //  위임 CLI 는 stdio 가 버려지므로 tee 가 유일한 진단면이다. 종전엔 `log`·`error` 만
+    //  대고 `warn` 이 빠져 있어, "예약작업 재등록 실패 — 기존 등록으로 진행합니다" 같은
+    //  경고가 **통째로 증발**했다. 그래서 등록이 왜 안 바뀌는지 로그만으로는 알 수 없었고,
+    //  사용자 화면(터미널이 떠 있음)으로만 드러났다.
+    //  ★진단면에 구멍이 있으면 그 경로는 없는 것과 같다.
+    const teed = ["log", "error", "warn"].filter((lv) =>
+      new RegExp(`console\\.${lv} = tee\\(console\\.${lv}\\.bind\\(console\\)`).test(dm),
+    );
+    out.push(
+      assert(
+        "★위임 업데이트 로그가 log·error·warn 을 모두 남긴다(경고 증발 0)",
+        teed.length === 3,
+        teed.length === 3
+          ? "3레벨 tee 확인"
+          : `★빠진 레벨: ${["log", "error", "warn"].filter((l) => !teed.includes(l)).join(", ")}`,
+      ),
+    );
+
     return out;
   },
 };

@@ -854,6 +854,15 @@ const winRemoveLegacyAutostart = (c) => {
  */
 const winEnsureTask = (c) => {
   winRemoveLegacyAutostart(c);
+  // ★**돌고 있으면 먼저 멈춘다** (2026-08-22, /update 실측으로 잡음). 작업이 실행 중이면
+  //  `Register-ScheduledTask -Force` 가 실패해 수렴이 조용히 건너뛰어진다. 실제로 갱신
+  //  도중 **1분 반복 트리거가 데몬을 되살려** 작업이 돌고 있었고, 그래서 등록이 옛
+  //  `Interactive` 그대로 남아 터미널이 계속 떴다(사용자 화면으로 확인).
+  //  멈춤은 멱등이고, 호출부가 곧바로 Enable+Start 하므로 여기서 멈춰도 손해가 없다.
+  winPs(
+    `Disable-ScheduledTask -TaskName ${psq(winTaskName(c))} -EA SilentlyContinue | Out-Null; ` +
+      `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -EA SilentlyContinue`,
+  );
   const r = winPs(buildWinTaskScript(c));
   if (r.status === 0 && r.stdout.includes("TASK_REGISTERED")) return true;
   const exists =
@@ -1359,6 +1368,11 @@ const runUpdate = (c) => {
       };
       console.log = tee(console.log.bind(console), "log");
       console.error = tee(console.error.bind(console), "err");
+      // ★`warn` 도 가로챈다 (2026-08-22). 종전엔 log·error 만 대고 warn 은 빠져 있었는데,
+      //  위임 실행은 stdio 가 버려지므로 **경고가 통째로 증발**했다. 실제로 "예약작업
+      //  재등록 실패 — 기존 등록으로 진행합니다" 가 어디에도 안 남아, 등록이 왜 안 바뀌는지
+      //  로그만으로는 알 수 없었다. 진단면에 구멍이 있으면 그 경로는 없는 것과 같다.
+      console.warn = tee(console.warn.bind(console), "warn");
     } catch {
       logFd = null; /* 로그 셋업 실패해도 업데이트는 계속 */
     }

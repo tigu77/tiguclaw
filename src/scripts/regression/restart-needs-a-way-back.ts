@@ -125,7 +125,9 @@ const run = async (): Promise<Assertion[]> => {
   {
     const conv = await sourceHas("../../../bin/daemon.mjs", [
       // 정의점 하나 — install·start 가 같은 함수로 수렴한다.
-      /const winEnsureTask = \(c\) => \{[\s\S]{0,600}?winRemoveLegacyAutostart\(c\);[\s\S]{0,200}?buildWinTaskScript\(c\)/,
+      //  ★등록 **전에 멈춘다**: 작업이 돌고 있으면 `Register -Force` 가 실패해 수렴이
+      //   조용히 건너뛰어진다(실측: 갱신 중 반복 트리거가 되살려 등록이 안 바뀌었다).
+      /const winEnsureTask = \(c\) => \{[\s\S]{0,900}?Stop-ScheduledTask[\s\S]{0,300}?buildWinTaskScript\(c\)/,
       /const winInstall = \(c\) => \{[\s\S]{0,300}?winEnsureTask\(c\)/,
       /const winStart = \(c\) => \{[\s\S]{0,900}?winEnsureTask\(c\)/,
       // 재등록 실패해도 기존 등록이 있으면 진행 — 일시 실패가 기동을 막지 않는다.

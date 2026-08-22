@@ -511,6 +511,12 @@ export const runSelfUpdate = async (
             cwd: sourceRoot(),
             env: {
               ...process.env,
+              // ★**pull 이전 SHA 를 넘긴다** (2026-08-22). 여기까지 오는 동안 이미
+              //  `git pull` 을 했으므로(단계 3), CLI 가 스스로 읽는 HEAD 는 *갱신된* SHA 다.
+              //  그걸 롤백 앵커로 쓰면 `git reset --hard <새 SHA>` = 아무것도 안 되돌린다 —
+              //  빌드가 깨졌을 때 되돌아갈 곳이 사라진다. 롤백은 그때만 쓰이므로 이 결함은
+              //  **조용했다**(실측 로그가 `X → X · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
+              TIGUCLAW_UPDATE_PREV_SHA: prevSha,
               ...(deps.notify !== undefined
                 ? {
                     TIGUCLAW_UPDATE_NOTIFY_CHANNEL: deps.notify.channel,

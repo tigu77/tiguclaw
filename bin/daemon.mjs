@@ -1406,7 +1406,18 @@ const runUpdate = (c) => {
     process.exitCode = 1;
     return;
   }
-  const prevSha = prev.stdout.trim();
+  // ★**위임된 경우 앵커는 호출자가 준다** (2026-08-22).
+  //  윈도우+built 의 `/update` 는 `self-update.ts` 가 **먼저 pull 한 뒤** 이 CLI 로 위임한다
+  //  (dist 를 실행 중 데몬이 잠가 in-process 교체가 EBUSY 라서). 그러면 여기서 읽는 HEAD 는
+  //  **이미 갱신된 SHA** 라, 롤백이 `git reset --hard <새 SHA>` = **아무것도 안 되돌린다.**
+  //  빌드가 깨졌을 때 되돌아갈 곳이 사라지는 건데, 롤백은 그때만 쓰이므로 **조용히** 죽어
+  //  있었다(실측: 로그가 `2af6ee0 → 2af6ee0 · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
+  //  → 호출자가 pull *이전* SHA 를 넘기면 그걸 앵커로 쓴다. 없으면 종전대로 HEAD.
+  const handoffSha = process.env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
+  const prevSha =
+    handoffSha !== undefined && /^[0-9a-f]{7,40}$/i.test(handoffSha)
+      ? handoffSha
+      : prev.stdout.trim();
 
   // ── 단계 3: lock 드리프트 선폐기(생성물 한 파일만) ──────────────────────────
   // package-lock.json 은 npm 이 재생성하는 *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게

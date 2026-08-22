@@ -140,6 +140,31 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★위임 경로의 **롤백 앵커** (2026-08-22) ────────────────────────────────
+    //  윈도우+built 의 `/update` 는 self-update 가 **먼저 pull 한 뒤** CLI 로 위임한다
+    //  (실행 중 데몬이 dist 를 잠가 in-process 교체가 EBUSY 라서). 그래서 CLI 가 스스로
+    //  읽는 HEAD 는 *이미 갱신된* SHA 이고, 그걸 앵커로 쓰면
+    //  `git reset --hard <새 SHA>` = **아무것도 안 되돌린다.**
+    //  ★롤백은 업데이트가 실패할 때만 쓰이므로 이 결함은 평소에 **완전히 조용하다** —
+    //   "안전망이 있다" 와 "안전망이 돈다" 가 갈리는 전형적인 자리라 검사로 박는다.
+    //  두 쪽을 **같이** 본다: 넘기는 쪽(self-update)과 쓰는 쪽(daemon.mjs). 한쪽만 있으면
+    //  죽은 배선이다.
+    const su2 = rd("src/core/self-update.ts");
+    const dm = rd("bin/daemon.mjs");
+    const handoff =
+      /TIGUCLAW_UPDATE_PREV_SHA: prevSha/.test(su2) &&
+      /process\.env\.TIGUCLAW_UPDATE_PREV_SHA/.test(dm) &&
+      /handoffSha[\s\S]{0,200}?prev\.stdout\.trim\(\)/.test(dm);
+    out.push(
+      assert(
+        "★위임 업데이트의 롤백 앵커는 **pull 이전** SHA 다(넘기는 쪽·쓰는 쪽 둘 다)",
+        handoff,
+        handoff
+          ? "앵커 인계 확인"
+          : "★앵커가 pull 이후 SHA — 빌드 실패 시 롤백이 아무것도 안 되돌린다(조용함)",
+      ),
+    );
+
     return out;
   },
 };

@@ -950,19 +950,38 @@ const winStop = (c) => {
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
 /** @param {Ctx} c */
 const winStart = (c) => {
+  // ★**예약작업이 없으면 여기서 만든다** (2026-08-22, 릴리즈 직전에 잡음).
+  //  종전엔 "먼저 install 하세요" 로 실패했는데, 그러면 **옛 HKCU Run 으로 깔린 기존
+  //  사용자가 `/update` 한 순간 데몬이 안 뜬다** — `runUpdate` 는 install 을 다시 돌리지
+  //  않고 stop→ci→build→**start** 만 하기 때문이다. 새 설치만 보면 영원히 안 보이는 갈래고,
+  //  하필 그 사용자는 "업데이트했더니 비서가 사라졌다" 를 겪는다.
+  //  → start 는 등록의 **부재를 고칠 수 있다**. 같은 등록 스크립트를 쓰므로 install 과
+  //   갈릴 일이 없고, 옛 자동시작 정리도 같이 한다(중복 기동 방지).
+  if (
+    spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
+      stdio: "ignore",
+      windowsHide: true,
+    }).status !== 0
+  ) {
+    console.log(
+      `   예약작업이 없어 지금 등록합니다 (옛 방식에서 이관 — ${winTaskName(c)}).`,
+    );
+    winRemoveLegacyAutostart(c);
+    const reg = winPs(buildWinTaskScript(c));
+    if (reg.status !== 0 || !reg.stdout.includes("TASK_REGISTERED")) {
+      console.error(
+        `daemon start: 예약작업 등록 실패 — ${reg.stderr || reg.stdout}. ` +
+          `\`tiguclaw install\` 로 복구하세요.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
   // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
   const r = winPs(
-    `if (Get-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue) ` +
-      `{ Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
-      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK' } else { 'NO_TASK' }`,
+    `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
+      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`,
   );
-  if (r.stdout.includes("NO_TASK")) {
-    console.error(
-      `daemon start: 예약작업이 없습니다 (${winTaskName(c)}). 먼저 install 하세요.`,
-    );
-    process.exitCode = 1;
-    return;
-  }
   if (r.status !== 0) {
     console.error(`daemon start: 예약작업 시작 실패 — ${r.stderr || r.stdout}`);
     process.exitCode = 1;

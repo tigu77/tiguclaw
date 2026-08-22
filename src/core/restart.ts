@@ -25,24 +25,53 @@
 import { spawnSync } from "node:child_process";
 
 /**
- * 현 OS 가 supervisor(자동 respawn) 위에서 도는가.
+ * 그 플랫폼이 **무조건** supervisor 위에서 도는가 (등록을 확인할 필요조차 없이).
  *  - darwin = launchd `KeepAlive=true`
  *  - linux  = systemd `Restart=always`
- *  - win32  = 예약작업 KeepAlive(감독자 프로세스 + 1분 반복 트리거) ← 2026-08-22 추가
- *  - 기타   = 알 수 없음 → 죽지 않는다.
+ *  - 그 외  = 무조건은 아니다 → **실제로 확인**해야 한다(win32 = `winSupervisorTaskExists`).
  *
  * ★**플랫폼을 인자로 받는다** (2026-08-15, 적대 검토 P3). 종전엔 `process.platform` 을
  *  직접 읽어 검사가 **도는 기계의 플랫폼만** 볼 수 있었다 — 윈도우에서 도는 CI 는 없으므로
  *  윈도우 분기의 오판은 mac/CI 에서 원리적으로 안 보인다. 표로 검사할 수 있게 둔다.
  *
- * ★전제: 이 판정이 참이려면 **설치가 supervisor 를 등록해야** 한다(`tiguclaw install`).
- *  세 OS 다 마찬가지고, 설치 없이 직접 띄운 경우(`npm run dev`)는 어디서도 안 살아난다.
+ * ★**win32 를 여기 넣지 마라** (2026-08-22, 릴리즈 직전에 잡음). 감독자를 도입하면서 잠깐
+ *  `|| platform === "win32"` 로 적었는데, 그건 **설치가 예약작업을 등록했을 때만** 참이다.
+ *  그런데 `/update` 는 install 을 다시 돌리지 않는다(stop→ci→build→start 뿐) — 옛 HKCU Run
+ *  으로 깔린 기존 사용자는 예약작업이 **없는 채로** 새 코드를 받는다. 그때 이 함수가 true 를
+ *  주면 데몬은 "누가 되살려주겠지" 하고 죽고 **아무도 안 살린다.** 조건을 뒤집으면서 *그
+ *  조건에 도달하는 기존 입력*을 안 본 2차결함이다 — 새 설치만 보면 영원히 안 보인다.
+ *  → win32 는 **선언이 아니라 측정**으로 판정한다.
  */
 export const hasSupervisorRespawnOn = (platform: string): boolean =>
-  platform === "darwin" || platform === "linux" || platform === "win32";
+  platform === "darwin" || platform === "linux";
+
+/** 인스턴스 라벨 — `bin/daemon.mjs` 의 LABEL 과 같은 소스(TIGUCLAW_SERVICE_LABEL). */
+const serviceLabel = (): string =>
+  process.env.TIGUCLAW_SERVICE_LABEL?.trim() || "com.tiguclaw.daemon";
+
+/**
+ * 윈도우 KeepAlive 예약작업이 **실재하는가** — 죽어도 되는지의 유일한 근거.
+ *
+ * ★"있다고 선언" 이 아니라 **물어본다.** 08-15 교훈("재기동이 보장될 때만 죽는다")을
+ *  감독자 방식에서도 그대로 지키는 자리다. 등록이 없으면 false → 데몬은 살아남는다.
+ * 조회 실패(schtasks 부재·권한·예외)도 false — **모르면 죽지 않는다.**
+ */
+export const winSupervisorTaskExists = (): boolean => {
+  if (process.platform !== "win32") return false;
+  try {
+    return (
+      spawnSync("schtasks", ["/query", "/tn", serviceLabel()], {
+        stdio: "ignore",
+        windowsHide: true,
+      }).status === 0
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const hasSupervisorRespawn = (): boolean =>
-  hasSupervisorRespawnOn(process.platform);
+  hasSupervisorRespawnOn(process.platform) || winSupervisorTaskExists();
 
 /**
  * 재시작 요청을 받았을 때 정말 죽어도 되는가.
@@ -52,12 +81,14 @@ export const hasSupervisorRespawn = (): boolean =>
  *  보장될 때만 죽는다**로 뒤집었고, 그 가드가 08-22 Defender 차단 때 데몬을 살렸다
  *  (`schtasks EPERM` → 재시작 중단 → 데몬 생존, 업데이트만 미적용).
  *
- * 지금은 윈도우에도 supervisor 가 있으므로 세 OS 가 같은 답을 낸다. 판정 자체는 남긴다 —
- *  supervisor 없는 환경(미설치·기타 플랫폼)에서 사라지지 않기 위해서다.
+ * ★win32 는 **여기서 무조건 true 가 되면 안 된다.** 감독자(예약작업)가 실재할 때만
+ *  참이고, 그 측정은 호출부가 `hasSupervisorRespawn()` 으로 해서 `respawnArranged` 에
+ *  실어 준다. 옛 HKCU Run 설치가 `/update` 로 새 코드만 받은 경우가 정확히 이 갈래다 —
+ *  등록이 없으므로 false → 죽지 않는다.
  */
 export const shouldExitForRestart = (input: {
   platform: string;
-  /** supervisor 를 모르는 플랫폼에서 재기동을 실제로 잡았는가. */
+  /** 무조건 supervisor 인 플랫폼이 아닐 때, 재기동을 실제로 확보했는가. */
   respawnArranged: boolean;
 }): boolean =>
   hasSupervisorRespawnOn(input.platform) ? true : input.respawnArranged;

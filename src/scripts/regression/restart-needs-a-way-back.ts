@@ -57,9 +57,12 @@ const run = async (): Promise<Assertion[]> => {
   //  ★win32 가 false→true 로 바뀐 것은 **설계 변경의 결과**다(감독자 도입). 이 표를 그냥
   //   고쳐 초록을 만들면 안 되고, ②의 등록 검사와 **같이** 참이어야 의미가 있다.
   for (const [platform, hasSupervisor] of [
-    ["darwin", true], // launchd KeepAlive
-    ["linux", true], // systemd Restart=always
-    ["win32", true], // 예약작업 KeepAlive (감독자 + 1분 반복) — 2026-08-22
+    ["darwin", true], // launchd KeepAlive — 등록 확인 불요
+    ["linux", true], // systemd Restart=always — 등록 확인 불요
+    // ★win32 는 **false 여야 한다.** 감독자는 예약작업이 *실재할 때만* 있는 것이라
+    //  무조건 참으로 두면 옛 HKCU Run 설치가 `/update` 로 새 코드만 받았을 때
+    //  "누가 살려주겠지" 하고 죽는다(2026-08-22 릴리즈 직전 적발). 측정은 ③-b 참조.
+    ["win32", false],
     ["freebsd", false], // 모르는 곳 = 죽지 않는다
   ] as const) {
     out.push(
@@ -71,8 +74,63 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
-  // ── ② supervisor 있는 OS 는 respawn 인자와 무관하게 종료한다 ────────────────
-  for (const p of ["darwin", "linux", "win32"]) {
+  // ── ①-c ★**옛 설치가 업데이트만 받은 갈래** — 등록이 없으면 죽지 않는다 ──────
+  //  `/update` 는 install 을 다시 돌리지 않는다(stop→ci→build→start). 그래서 HKCU Run 으로
+  //  깔린 기존 윈도우 사용자는 **예약작업 없이** 새 코드를 받는다. 이때 죽으면 아무도 안
+  //  살린다 = "업데이트했더니 비서가 사라졌다". 신규 설치만 보면 영원히 안 보이는 갈래다.
+  out.push(
+    assert(
+      "★win32 + 예약작업 없음 = 종료하지 않는다(옛 설치가 업데이트만 받은 경우)",
+      !shouldExitForRestart({ platform: "win32", respawnArranged: false }),
+      shouldExitForRestart({ platform: "win32", respawnArranged: false })
+        ? "★죽는다 — 등록이 없는데 supervisor 를 단정했다(무기한 먹통)"
+        : "유지 확인",
+    ),
+  );
+  out.push(
+    assert(
+      "win32 + 예약작업 있음 = 종료한다(정상 재시작)",
+      shouldExitForRestart({ platform: "win32", respawnArranged: true }),
+      "정상 경로 확인",
+    ),
+  );
+
+  // ── ①-d ★win32 판정은 **선언이 아니라 측정**이어야 한다 ──────────────────────
+  //  `hasSupervisorRespawn()` 이 `winSupervisorTaskExists()`(schtasks 조회)를 실제로
+  //  부르는지 본다. 여기를 `|| platform === "win32"` 로 되돌리면 ①-c 가 무의미해진다.
+  {
+    const measured = await sourceHas("../../core/restart.ts", [
+      /export const winSupervisorTaskExists[\s\S]{0,400}?schtasks[\s\S]{0,200}?"\/query"/,
+      /hasSupervisorRespawnOn\(process\.platform\) \|\| winSupervisorTaskExists\(\)/,
+      // 조회 실패도 false — "모르면 죽지 않는다".
+      /catch \{\s*return false;/,
+    ]);
+    out.push(
+      assert(
+        "★win32 supervisor 는 schtasks 로 **측정**한다(선언 금지·조회 실패는 false)",
+        measured.ok,
+        measured.ok ? "측정 경로 확인" : `누락 ${measured.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ①-e ★`start` 가 등록 부재를 **스스로 고친다**(이관) ──────────────────────
+  //  안 고치면 옛 설치의 `/update` 가 start 단계에서 실패해 데몬이 안 뜬다.
+  {
+    const mig = await sourceHas("../../../bin/daemon.mjs", [
+      /const winStart = \(c\) => \{[\s\S]{0,1200}?winRemoveLegacyAutostart\(c\);[\s\S]{0,200}?buildWinTaskScript\(c\)/,
+    ]);
+    out.push(
+      assert(
+        "★start 가 예약작업 부재 시 직접 등록한다(옛 설치의 /update 가 start 에서 죽지 않게)",
+        mig.ok,
+        mig.ok ? "이관 경로 확인" : `누락 ${mig.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ② 무조건 supervisor 인 OS 는 respawn 인자와 무관하게 종료한다 ────────────
+  for (const p of ["darwin", "linux"]) {
     out.push(
       assert(
         `${p} 는 respawn 인자와 무관하게 종료한다(supervisor 가 되살린다)`,

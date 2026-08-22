@@ -677,6 +677,12 @@ const buildWinVbs = (c) => {
   ].join("\r\n");
 };
 
+/**
+ * 윈도우 외부 명령(PowerShell·schtasks) 상한 — 먹통이면 매달리지 말고 포기한다.
+ * ★실패보다 **조용한 무한 대기**가 나쁘다: 설치가 안 끝나면 사용자는 뭘 기다리는지도 모른다.
+ */
+const WIN_PS_TIMEOUT_MS = 30_000;
+
 /** @param {string[]} args */
 const winReg = (args) =>
   spawnSync("reg", args, { stdio: "pipe", encoding: "utf8" });
@@ -704,13 +710,90 @@ const winPs = (script) => {
       "-EncodedCommand",
       Buffer.from(script, "utf16le").toString("base64"),
     ],
-    { encoding: "utf8" },
+    // ★**타임아웃을 건다** (2026-08-22, OpenClaw 참고). 종전엔 무제한이라 `schtasks`/
+    //  PowerShell 이 먹통이 되면 **설치가 영원히 매달린다**. OpenClaw 가 그걸 겪고 조기
+    //  포기 + 폴백을 넣었다("if schtasks itself wedges … aborts that path quickly").
+    //  우리도 같은 부류를 오늘만 여러 번 봤다 — 실패보다 **조용한 무한 대기**가 나쁘다.
+    { encoding: "utf8", timeout: WIN_PS_TIMEOUT_MS, killSignal: "SIGKILL" },
   );
+  // 타임아웃이면 status 가 null 이라 성공 판정(=== 0)에 안 걸리지만, 이유가 안 보이면
+  // 위쪽에서 "출력 없음" 으로만 남는다. 여기서 평문으로 만들어 준다.
+  const timedOut = r.error !== undefined && /ETIMEDOUT|timed? ?out/i.test(String(r.error.message));
   return {
     status: r.status,
     stdout: (r.stdout ?? "").trim(),
-    stderr: (r.stderr ?? "").trim(),
+    stderr: timedOut
+      ? `PowerShell 응답 없음 — ${WIN_PS_TIMEOUT_MS / 1000}초 후 포기`
+      : (r.stderr ?? "").trim() || (r.error === undefined ? "" : r.error.message),
   };
+};
+
+/**
+ * 시작프로그램 폴더 폴백 경로 — 예약작업 생성이 **막힌 환경**(그룹정책)에서 쓴다.
+ *
+ * ★왜 필요한가 (2026-08-22, OpenClaw 참고): 회사 PC 처럼 예약작업 생성이 정책으로 막힌
+ *  기계가 있다. 종전엔 거기서 install 이 실패하고 끝났다 — 자동시작이 **아예 없는** 상태.
+ *  OpenClaw 는 같은 상황에서 시작프로그램 폴더로 폴백한다. KeepAlive(죽으면 부활)는
+ *  포기하지만 **로그온 자동시작은 살아남는다** — 없는 것보다 훨씬 낫다.
+ *
+ * ★`.vbs` 를 둔다(`.cmd` 아님): 시작프로그램의 `.cmd` 는 콘솔 창을 띄운다. `.vbs` 는
+ *  wscript 가 조용히 실행하고, 내용은 **정본 런처를 가리키기만** 한다(정의점 하나).
+ * @param {Ctx} c
+ * @returns {string | null} APPDATA 를 못 찾으면 null
+ */
+const winStartupVbsPath = (c) => {
+  const appData = process.env.APPDATA?.trim();
+  if (!appData) return null;
+  return path.join(
+    appData,
+    "Microsoft",
+    "Windows",
+    "Start Menu",
+    "Programs",
+    "Startup",
+    `${c.label}.vbs`,
+  );
+};
+
+/** 폴백 설치(멱등). 성공하면 경로, 실패하면 null. @param {Ctx} c */
+const winWriteStartupFallback = (c) => {
+  const p = winStartupVbsPath(c);
+  if (p === null) return null;
+  try {
+    mkdirSync(path.dirname(p), { recursive: true });
+    // 정본 런처(win-launch.vbs)를 그대로 부른다 — 내용 복제 금지(두 벌은 반드시 갈린다).
+    writeFileSync(
+      p,
+      [
+        'Set sh = CreateObject("WScript.Shell")',
+        `sh.Run "wscript.exe //B //Nologo ""${winVbsPath(c).replace(/"/g, '""')}""", 0, True`,
+        "",
+      ].join("\r\n"),
+      "utf8",
+    );
+    return p;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * 런처를 직접 띄운다 — 폴백 모드(예약작업 없음)에서 "지금 가동" 에 쓴다.
+ * 숨김은 런처(VBS) 안의 windowStyle 0 이 책임진다.
+ * @param {Ctx} c
+ */
+const winLaunchVbs = (c) =>
+  spawnSync("wscript", ["//B", "//Nologo", winVbsPath(c)], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+
+/** 폴백 제거(멱등) — 예약작업이 살아나면 **반드시** 지운다(둘 다 있으면 두 개 뜬다). @param {Ctx} c */
+const winRemoveStartupFallback = (c) => {
+  const p = winStartupVbsPath(c);
+  if (p === null || !existsSync(p)) return false;
+  rmSync(p, { force: true });
+  return true;
 };
 
 /** PowerShell 작은따옴표 문자열 리터럴로 안전하게 감싼다(내부 `'` 는 `''`). */
@@ -891,7 +974,7 @@ const winRemoveLegacyAutostart = (c) => {
  * 견고성: 재등록이 실패해도 **기존 등록이 있으면 진행**한다(경고만). 일시 실패로 이미 되던
  *  기동을 막지 않는다 — 견고함 > 단순함.
  * @param {Ctx} c
- * @returns {boolean} 진행해도 되는가
+ * @returns {true | "fallback" | false} true=예약작업 정상 · "fallback"=시작프로그램(KeepAlive 없음) · false=둘 다 실패
  */
 const winEnsureTask = (c) => {
   winRemoveLegacyAutostart(c);
@@ -910,7 +993,14 @@ const winEnsureTask = (c) => {
       `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -EA SilentlyContinue`,
   );
   const r = winPs(buildWinTaskScript(c));
-  if (r.status === 0 && r.stdout.includes("TASK_REGISTERED")) return true;
+  if (r.status === 0 && r.stdout.includes("TASK_REGISTERED")) {
+    // ★예약작업이 살아났으면 폴백은 **반드시 걷는다** — 둘 다 있으면 로그온 때 두 개 뜬다
+    //  (HKCU Run 잔재와 같은 부류의 사고). 정상 경로가 복구되면 안전망은 치운다.
+    if (winRemoveStartupFallback(c)) {
+      console.log(`   시작프로그램 폴백 제거 — 예약작업이 정상이라 더는 필요 없습니다.`);
+    }
+    return true;
+  }
   const exists =
     spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
       stdio: "ignore",
@@ -927,31 +1017,49 @@ const winEnsureTask = (c) => {
     return true;
   }
   console.error(`   예약작업 등록 실패 이유: ${why}`);
+  // ★**폴백** — 예약작업이 막힌 환경(그룹정책)에서 자동시작까지 잃지 않는다.
+  //  KeepAlive 는 포기하지만 로그온 자동시작은 살아남는다. 그 대가를 **말한다** —
+  //  조용히 열등한 모드로 돌면 사용자는 죽어도 모른다.
+  const fb = winWriteStartupFallback(c);
+  if (fb !== null) {
+    console.warn(
+      `   ↪ 시작프로그램 폴백으로 전환합니다 — ${fb}\n` +
+        `     로그온 시 자동 가동은 되지만 **죽어도 자동으로 되살아나지 않습니다**\n` +
+        `     (예약작업을 못 만들어 KeepAlive 를 걸 수 없습니다). 정책이 풀리면 install 을 다시 돌리세요.`,
+    );
+    return "fallback";
+  }
   return false;
 };
 
 /** @param {Ctx} c */
 const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
-  if (!winEnsureTask(c)) {
-    console.error(`🔴 예약작업 등록 실패 (${winTaskName(c)}).`);
+  const mode = winEnsureTask(c);
+  if (mode === false) {
+    console.error(`🔴 자동시작 등록 실패 (${winTaskName(c)}).`);
     console.error(
-      "   그룹정책으로 예약작업 생성이 막힌 환경일 수 있습니다 — 관리자에게 확인하거나 WSL2 를 쓰세요.",
+      "   예약작업도 시작프로그램 폴더도 쓸 수 없습니다 — 관리자에게 확인하거나 WSL2 를 쓰세요.",
     );
     process.exitCode = 1;
     return;
   }
-  console.log(
-    `예약작업 KeepAlive 등록 (관리자 권한 불요). TIGUCLAW_HOME=${c.homeRaw}`,
-  );
-  console.log(
-    "   죽으면 감독자가 즉시 되살리고, 감독자까지 죽으면 1분 반복 트리거가 잡습니다(2중).",
-  );
-  const run = winPs(
-    `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'STARTED'`,
-  );
-  if (run.status !== 0) {
-    console.error(`   ⚠ 즉시 가동 실패 — ${run.stderr || run.stdout}`);
+  if (mode === "fallback") {
+    console.log(`시작프로그램 자동시작 등록 (폴백). TIGUCLAW_HOME=${c.homeRaw}`);
+    winLaunchVbs(c); // 예약작업이 없으니 런처를 직접 띄운다.
+  } else {
+    console.log(
+      `예약작업 KeepAlive 등록 (관리자 권한 불요). TIGUCLAW_HOME=${c.homeRaw}`,
+    );
+    console.log(
+      "   죽으면 감독자가 즉시 되살리고, 감독자까지 죽으면 1분 반복 트리거가 잡습니다(2중).",
+    );
+    const run = winPs(
+      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'STARTED'`,
+    );
+    if (run.status !== 0) {
+      console.error(`   ⚠ 즉시 가동 실패 — ${run.stderr || run.stdout}`);
+    }
   }
   reportLaunch(
     c,
@@ -970,7 +1078,10 @@ const winUninstall = (c) => {
   );
   winKillRunning(c);
   winRemoveLegacyAutostart(c);
-  console.log(`✅ 등록 해제 (예약작업 제거, ${c.label}).`);
+  // 폴백도 함께 걷는다 — 안 지우면 uninstall 후에도 로그온마다 되살아난다.
+  if (winRemoveStartupFallback(c)) console.log(`   시작프로그램 폴백 제거.`);
+  rmSync(winVbsPath(c), { force: true });
+  console.log(`✅ 등록 해제 (예약작업·런처 제거, ${c.label}).`);
 };
 
 /**
@@ -1055,22 +1166,27 @@ const winStart = (c) => {
   //  ①만 고치고 ②를 안 봐서 같은 실수를 두 번 했다. `winEnsureTask` 는 매번 `-Force` 로
   //  다시 등록해 **정의점 하나**로 수렴시킨다(설정을 하나씩 비교하지 않는다 — 그건 손으로
   //  관리하는 목록이라 반드시 늙는다).
-  if (!winEnsureTask(c)) {
+  const mode = winEnsureTask(c);
+  if (mode === false) {
     console.error(
-      `daemon start: 예약작업 등록 실패 (${winTaskName(c)}) — \`tiguclaw install\` 로 복구하세요.`,
+      `daemon start: 자동시작 등록 실패 (${winTaskName(c)}) — \`tiguclaw install\` 로 복구하세요.`,
     );
     process.exitCode = 1;
     return;
   }
-  // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
-  const r = winPs(
-    `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
-      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`,
-  );
-  if (r.status !== 0) {
-    console.error(`daemon start: 예약작업 시작 실패 — ${r.stderr || r.stdout}`);
-    process.exitCode = 1;
-    return;
+  if (mode === "fallback") {
+    winLaunchVbs(c); // 예약작업이 없는 환경 — 런처를 직접 띄운다.
+  } else {
+    // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
+    const r = winPs(
+      `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
+        `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`,
+    );
+    if (r.status !== 0) {
+      console.error(`daemon start: 예약작업 시작 실패 — ${r.stderr || r.stdout}`);
+      process.exitCode = 1;
+      return;
+    }
   }
   reportLaunch(
     c,

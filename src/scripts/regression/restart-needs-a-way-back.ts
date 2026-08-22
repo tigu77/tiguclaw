@@ -142,6 +142,32 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
+  // ── ①-f ★등록이 **막힌 환경**에서도 자동시작을 잃지 않는다 (2026-08-22) ───────
+  //  회사 PC 처럼 그룹정책이 예약작업 생성을 막는 기계가 있다(그 기계는 원격 접속도 안 돼
+  //  실측이 불가능하다 — 그래서 검사로 지킨다). 종전엔 거기서 install 이 실패하고 끝나
+  //  자동시작이 **아예 없었다**. 시작프로그램 폴더 폴백이 그걸 살린다(KeepAlive 는 포기).
+  //  ★셋을 같이 본다: ①폴백을 쓰고 ②예약작업이 살아나면 **걷고**(둘 다 있으면 두 개 뜬다)
+  //   ③대가를 **말한다**(조용히 열등한 모드로 돌면 죽어도 모른다).
+  {
+    const fb = await sourceHas("../../../bin/daemon.mjs", [
+      /const winWriteStartupFallback = \(c\) => \{[\s\S]{0,900}?Startup/,
+      // ★정의만 보면 안 된다 — **호출부**가 없으면 죽은 코드다(오늘 반복된 부류).
+      /const fb = winWriteStartupFallback\(c\);/,
+      /if \(fb !== null\)/,
+      /winRemoveStartupFallback\(c\)[\s\S]{0,300}?예약작업이 정상이라/,
+      /되살아나지 않습니다/,
+      // 타임아웃 — 먹통이면 매달리지 말고 포기한다(설치가 영원히 안 끝나는 것 차단).
+      /timeout: WIN_PS_TIMEOUT_MS/,
+    ]);
+    out.push(
+      assert(
+        "★예약작업이 막히면 시작프로그램으로 폴백하고, 복구되면 걷고, 대가를 말한다",
+        fb.ok,
+        fb.ok ? "폴백 3요소 + 타임아웃 확인" : `누락 ${fb.missing.join(" ")}`,
+      ),
+    );
+  }
+
   // ── ② 무조건 supervisor 인 OS 는 respawn 인자와 무관하게 종료한다 ────────────
   for (const p of ["darwin", "linux"]) {
     out.push(

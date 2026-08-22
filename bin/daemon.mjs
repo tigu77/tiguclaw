@@ -821,8 +821,14 @@ const winDaemonPids = (c) => {
   const home = String(c.homeRaw ?? "").toLowerCase();
   for (const l of (q.stdout ?? "").split(/\r?\n/)) {
     const low = l.toLowerCase();
-    if (!low.includes("index.js")) continue;
-    // 이 인스턴스인지 — 홈 경로가 명령줄(VBS 가 set 으로 박는다)에 있는지로 가른다.
+    // ★**감독자도 센다** (2026-08-22). 종전엔 `index.js`(데몬)만 봐서 감독자가 살아남았고,
+    //  그게 곧바로 데몬을 되살려 `npm ci` 가 네이티브 모듈을 못 지웠다 —
+    //  `EPERM: unlink better_sqlite3.node` → 업데이트 실패 → 롤백(실측 로그).
+    //  오늘 본 세 증상(빌드 중 감독자 부활 · 감독자 중복 · 업데이트 EPERM)이 전부
+    //  이 한 구멍이었다. 멈춘다는 건 **되살릴 것까지 멈추는 것**이다.
+    if (!low.includes("index.js") && !low.includes("supervise")) continue;
+    // 이 인스턴스인지 — 홈 경로가 명령줄에 있는지로 가른다(데몬은 supervise 가 넘긴 env,
+    // 감독자는 `--home` 인자에 들어 있다).
     if (home !== "" && !low.includes(home)) continue;
     const m = /^"?(\d+)"?,/.exec(l.trim());
     if (m) pids.add(m[1]);

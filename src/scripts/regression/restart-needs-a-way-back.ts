@@ -261,6 +261,9 @@ const run = async (): Promise<Assertion[]> => {
       /const winStopTask = \(c\) => \{[\s\S]{0,900}?Stop-ScheduledTask/,
       /const winStop = \(c\) => \{\s*const survived = winStopTask\(c\);/,
       /const winRestart = \(c\) => \{\s*const survived = winStopTask\(c\);/,
+      // ★멈춤 대상에 **감독자**가 포함돼야 한다. 데몬만 죽이면 감독자가 곧바로 되살려
+      //  `npm ci` 가 네이티브 모듈을 못 지운다(EPERM → 업데이트 실패, 실측).
+      /!low\.includes\("index\.js"\) && !low\.includes\("supervise"\)/,
     ]);
     out.push(
       assert(

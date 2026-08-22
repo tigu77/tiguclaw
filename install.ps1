@@ -6,7 +6,9 @@
 # 하지 않는 일: 설정을 대신 정하지 않는다(대화형 onboard 가 그 자리다).
 #
 # ★`irm | iex` 는 현재 콘솔에서 실행되므로 stdin 은 살아 있다(sh 판과 다른 점).
-#  대신 여기선 **관리자 권한을 요구하지 않는다** — 데몬 등록이 HKCU Run 키라서다.
+#  대신 여기선 **관리자 권한을 요구하지 않는다** — 데몬 등록이 *사용자 수준* 예약작업
+#  (`Register-ScheduledTask … -RunLevel Limited`)이라서다. 2026-08-22 이전엔 HKCU Run
+#  키였는데, 그건 로그온 1회라 supervisor 가 없었다(죽으면 그대로 멈춤).
 
 $ErrorActionPreference = 'Stop'
 

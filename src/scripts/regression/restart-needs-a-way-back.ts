@@ -1,22 +1,22 @@
 /**
- * 회귀: **재기동이 보장될 때만 죽는다** (2026-08-15).
+ * 회귀: **데몬에게는 돌아올 길이 있어야 한다** (2026-08-15 → 2026-08-22 재설계).
  *
- * 사고(사용자 신고): 윈도우 돌쇠가 *"업데이트해도 시작이 안 되고 재시작을 해도 재시작이
- * 안 되네"*. 로그에 원인이 통째로 있었다 —
+ * 사고 1 (08-15, 사용자 신고): *"업데이트해도 시작이 안 되고 재시작을 해도 재시작이 안 되네"*.
+ *   로그에 통째로 있었다 — `schtasks /create 실패 … graceful exit 만 진행` → `force exit`.
+ *   **재기동 수단을 못 잡았다고 적어놓고 그대로 죽었다.** 종전 근거 *"spawn 실패해도 최소한
+ *   종료는 보장(견고성)"* 이 정확히 뒤집혀 있었다: supervisor 가 있으면 확실한 종료가 곧
+ *   확실한 재기동이지만, 없으면 **확실한 사망**이다.
  *
- *   [error] daemon: schtasks /create 실패 (telegram:telegram, status=null) — graceful exit 만 진행
- *   [log]   daemon: restart requested (telegram:telegram) — graceful exit
- *   [fatal] daemon: graceful shutdown 지연 — force exit
+ * 사고 2 (08-22): Windows Defender 가 그 재기동 명령줄을 `Trojan:Win32/Commando.A!ml` 로
+ *   분류하고 `schtasks` 실행을 EPERM 으로 **차단**했다. 오탐이지만 틀린 탐지는 아니다 —
+ *   런타임 예약작업 생성 + `ping 127.0.0.1` 지연 + 숨김 스크립트 실행은 드로퍼의 표준
+ *   수법이라 행위만으로는 구분할 수 없다. (사고 1의 가드가 이때 데몬을 살렸다.)
  *
- * **재기동 수단을 못 잡았다고 로그에 적어놓고 그대로 죽었다.** 윈도우는 supervisor 가 없어
- * (HKCU Run = 로그온 1회) 그 길로 무기한 먹통이고, 사용자는 재시작 버튼을 눌렀을 뿐이다.
+ * ★같은 자리가 세 번 다른 이유로 터진 뒤에야 원인이 보였다: **윈도우만 데몬이 자기 부활을
+ *  스스로 책임졌다.** 그래서 고친 건 호출 방식이 아니라 책임의 위치다 — 재기동은 죽는 쪽이
+ *  아니라 살아 있는 쪽(감독자)이 한다. 이 검사는 그 구조가 되돌아가지 않게 지킨다.
  *
- * ★종전 근거가 정확히 뒤집혀 있었다: *"spawn 실패해도 graceful exit 는 진행(최소한 종료는
- *  보장 — 견고성)"*. supervisor 가 있는 OS 에서 "확실한 종료" 는 곧 "확실한 재기동" 이지만,
- *  없는 OS 에서는 **"확실한 사망"** 이다. 같은 행동이 두 환경에서 정반대 결과를 내면
- *  그건 하나의 규칙일 수 없다.
- *
- * ★이 판정을 `index.ts` 에 두면 검사하려고 **데몬을 띄워야 한다**(import 만으로 부팅한다).
+ * ★판정을 `index.ts` 에 두면 검사하려고 **데몬을 띄워야 한다**(import 만으로 부팅한다).
  *  그래서 순수 함수로 뽑았다 — "검사가 껄끄러우면 코드가 잘못 놓인 것".
  */
 import { readFile } from "node:fs/promises";
@@ -31,33 +31,36 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
 
-  // ── ① 사고 재현 — supervisor 없는 OS + 재기동 미확보 = **죽지 않는다** ───────
+  // ── ① 사고 1 재현 — supervisor 를 **모르는** OS + 재기동 미확보 = 죽지 않는다 ──
+  //  win32 는 이제 supervisor 를 갖지만(②), 그 판정이 참인 유일한 근거는 install 이
+  //  감독자를 등록한다는 것이다. 규칙 자체는 남는다 — 모르는 곳에서는 사라지지 않는다.
   out.push(
     assert(
-      "★win32 에서 재기동을 못 잡으면 종료하지 않는다(사고 재현)",
-      !shouldExitForRestart({ platform: "win32", respawnArranged: false }),
-      shouldExitForRestart({ platform: "win32", respawnArranged: false })
-        ? "★죽는다 — 윈도우엔 되살릴 것이 없다(무기한 먹통)"
+      "★supervisor 를 모르는 OS 에서 재기동을 못 잡으면 종료하지 않는다(사고 1 재현)",
+      !shouldExitForRestart({ platform: "freebsd", respawnArranged: false }),
+      shouldExitForRestart({ platform: "freebsd", respawnArranged: false })
+        ? "★죽는다 — 되살릴 것이 없는데 종료한다(무기한 먹통)"
         : "유지 확인",
     ),
   );
   out.push(
     assert(
-      "win32 에서 재기동을 잡았으면 종료한다(정상 재시작은 그대로)",
-      shouldExitForRestart({ platform: "win32", respawnArranged: true }),
+      "재기동을 잡았으면 종료한다(정상 재시작은 그대로)",
+      shouldExitForRestart({ platform: "freebsd", respawnArranged: true }),
       "정상 경로 확인",
     ),
   );
 
   // ── ①-b ★**세 플랫폼을 표로 고정한다** (적대 검토 P3) ───────────────────────
-  //  종전 ④는 `process.platform` 을 써서, **mac 에서 돌면 늘 초록**이었다. 그래서
-  //  `hasSupervisorRespawn()` 에 `|| win32` 를 넣어도(윈도우가 "supervisor 있음" 으로
-  //  오판 → spawnDetachedRestart 를 아예 안 부르고 즉시 죽음) 아무도 못 봤다. 윈도우에서
-  //  도는 CI 는 없으므로 **원리적으로 안 보이는 구멍**이었다. 리터럴 표로 본다.
+  //  종전엔 `process.platform` 을 써서 **mac 에서 돌면 늘 초록**이었다. 윈도우에서 도는
+  //  CI 는 없으므로 윈도우 분기의 오판은 원리적으로 안 보인다. 리터럴 표로 본다.
+  //  ★win32 가 false→true 로 바뀐 것은 **설계 변경의 결과**다(감독자 도입). 이 표를 그냥
+  //   고쳐 초록을 만들면 안 되고, ②의 등록 검사와 **같이** 참이어야 의미가 있다.
   for (const [platform, hasSupervisor] of [
-    ["darwin", true],
-    ["linux", true],
-    ["win32", false],
+    ["darwin", true], // launchd KeepAlive
+    ["linux", true], // systemd Restart=always
+    ["win32", true], // 예약작업 KeepAlive (감독자 + 1분 반복) — 2026-08-22
+    ["freebsd", false], // 모르는 곳 = 죽지 않는다
   ] as const) {
     out.push(
       assert(
@@ -68,10 +71,8 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
-  // ── ② supervisor 있는 OS 는 **영향 없음** — 이 수정이 mac/linux 를 안 건드린다 ─
-  //  종료가 곧 재기동이므로 respawn 인자와 무관하게 죽어야 한다. 여기서 조건이 섞이면
-  //  mac 데몬이 재시작을 거부하는 정반대 사고가 된다.
-  for (const p of ["darwin", "linux"]) {
+  // ── ② supervisor 있는 OS 는 respawn 인자와 무관하게 종료한다 ────────────────
+  for (const p of ["darwin", "linux", "win32"]) {
     out.push(
       assert(
         `${p} 는 respawn 인자와 무관하게 종료한다(supervisor 가 되살린다)`,
@@ -90,50 +91,128 @@ const run = async (): Promise<Assertion[]> => {
     ),
   );
 
-  // ── ③ ★**돌던 형태를 지킨다** — 액션 문자열을 함부로 바꾸지 않는다 ────────────
-  //  2026-08-15 에 나는 이 액션의 `&`·`>`·중첩 따옴표가 schtasks 를 깨뜨린다고 보고 `.cmd`
-  //  파일로 뺐다가 **되돌렸다**. 로그 전수: 06-27~08-06 **19번 요청 19번 성공, 실패 0**.
-  //  그 가설은 "왜 08-15 에만" 을 설명하지 못하고, 그날 받은 `status=null` 은 인자 거부
-  //  (status=1)가 아니라 **프로세스가 안 떴다**는 뜻이라 형상도 반대다.
-  //  ★증거가 지지하지 않는 변경으로 돌던 코드를 바꾸지 않는다 — 이 검사는 그 결정을 지킨다.
+  // ── ③ ★사고 2 직격 — 데몬은 **런타임에 예약작업을 만들지 않는다** ────────────
+  //  Defender 가 악성으로 분류한 조합이 바로 이것이다(런타임 생성 + ping 지연 + 숨김
+  //  스크립트). 편의상 되살리기 쉬운 코드라 소스에서 형태 자체를 막는다.
   {
-    const wiring = await sourceHas("../../core/restart.ts", [
-      /const action = `cmd \/c ping 127\.0\.0\.1 -n 5 >nul & wscript "\$\{vbsPath\}"`;/,
-      /"\/tr",\s*action,/,
+    // ★"없어야 통과" 라 `sourceHas`(있으면 ok)를 못 쓴다 — 직접 읽는다.
+    const banned: Array<[RegExp, string]> = [
+      [/"\/create"/, "런타임 예약작업 생성(schtasks /create)"],
+      [/ping 127\.0\.0\.1/, "ping 지연(샌드박스 회피 수법과 동형)"],
+      [/wscript/, "숨김 스크립트 실행"],
+    ];
+    for (const rel of ["../../core/restart.ts", "../../index.ts"]) {
+      const src = await readFile(new URL(rel, import.meta.url), "utf8");
+      const hit = banned.filter(([re]) => re.test(src)).map(([, why]) => why);
+      out.push(
+        assert(
+          `★${rel.split("/").pop()} 에 Defender 가 악성으로 본 형태가 없다`,
+          hit.length === 0,
+          hit.length === 0 ? "금지 형태 0" : `★되살아났다 — ${hit.join(" · ")}`,
+        ),
+      );
+    }
+  }
+
+  // ── ④ ★win32=true 의 **근거** — install 이 KeepAlive 감독자를 등록한다 ────────
+  //  ①-b 의 win32=true 는 이 등록이 있을 때만 참이다. 등록이 사라지면 데몬은 "되살아난다"
+  //  고 믿고 죽는데 아무도 안 살린다 = 사고 1 의 재발이다. **판정과 근거를 같이 본다.**
+  {
+    const reg = await sourceHas("../../../bin/daemon.mjs", [
+      /Register-ScheduledTask/,
+      /MultipleInstances IgnoreNew/, // 중복 데몬 방지(작업 인스턴스 == 감독자 수명)
+      /RepetitionInterval/, // 감독자까지 죽었을 때의 바닥 그물
+      /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/, // 없으면 기본 3일 후 강제 종료
+      /"supervise"/, // 작업이 실행하는 것 = 감독자
     ]);
     out.push(
       assert(
-        "★19/19 로 돌던 액션 형태가 유지된다(가설로 바꾸지 않는다)",
-        wiring.ok,
-        wiring.ok ? "액션 유지 확인" : `누락 ${wiring.missing.join(" ")}`,
+        "★install 이 KeepAlive 예약작업을 등록한다(win32 supervisor 판정의 근거)",
+        reg.ok,
+        reg.ok ? "등록 4요소 확인" : `누락 ${reg.missing.join(" ")}`,
       ),
     );
   }
 
-  // ── ⑤ 실패 이유가 로그에 남는다 — 윈도우는 로그가 1차 진단면이다 ────────────
-  //  종전엔 `status=null` 만 찍혀서 "프로세스가 아예 안 떴다" 이상을 알 수 없었다.
+  // ── ⑤ ★감독자가 실제로 **되살린다** — 한 번 띄우고 끝나면 supervisor 가 아니다 ─
   {
-    const diag = await sourceHas("../../core/restart.ts", [
-      /error=\$\{create\.error\.message\}/,
-      /task=\$\{taskName\}/,
+    const sup = await sourceHas("../../../bin/daemon.mjs", [
+      /child\.on\("exit"/,
+      /setTimeout\(spawnOnce, THROTTLE_MS\)/, // 크래시 루프 스로틀(launchd 동형)
+      /spawnOnce\(\);\s*\}\);/, // 정상 종료 → 즉시 재기동
     ]);
     out.push(
       assert(
-        "★schtasks 실패 시 원인(error)·작업명을 같이 남긴다",
-        diag.ok,
-        diag.ok ? "진단 필드 확인" : `누락 ${diag.missing.join(" ")}`,
+        "★감독자가 자식 종료를 감지해 다시 띄운다(스로틀 포함)",
+        sup.ok,
+        sup.ok ? "재기동 루프 확인" : `누락 ${sup.missing.join(" ")}`,
       ),
     );
   }
 
-  // ── ⑥ ★**배선** — 판정 함수를 만들어놓고 호출부가 반환값을 버리면 사고가 되살아난다 ─
-  //  (적대 검토 P1) `_wiring.ts` 헤더가 이미 적어둔 부류인데 정작 이 검사가 restart.ts 만
-  //  보고 index.ts 는 한 줄도 안 봤다. 호출부를 `if (!hasSupervisorRespawn()) spawn(...)`
-  //  + `respawnArranged = true` 로 되돌리면 **한 줄로** 사고가 복귀하고 7건이 전부 초록이었다.
-  //  판정과 배선은 **같은 검사**에서 본다.
+  // ── ⑥ ★마이그레이션 — 옛 자동시작을 지운다(안 지우면 데몬이 **두 개** 뜬다) ────
+  //  HKCU Run 과 예약작업이 둘 다 살아 있으면 로그온 시 같은 홈·같은 포트로 두 인스턴스가
+  //  뜬다. 조용한 데이터 사고라 install 경로에서 반드시 정리해야 한다.
+  {
+    const mig = await sourceHas("../../../bin/daemon.mjs", [
+      /winRemoveLegacyAutostart\(c\);[\s\S]{0,400}?buildWinTaskScript/,
+      /"delete",\s*RUN_KEY/,
+    ]);
+    out.push(
+      assert(
+        "★install 이 옛 HKCU Run 등록을 먼저 지운다(중복 기동 방지)",
+        mig.ok,
+        mig.ok ? "마이그레이션 확인" : `누락 ${mig.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑦ ★stop/restart 는 **작업을 멈춘다** — 데몬만 죽이면 감독자가 되살린다 ────
+  //  감독자가 생긴 뒤로 `taskkill` 만으로는 멈출 수 없다(즉시 부활 → "stop 이 안 먹는다").
+  //  launchd 에서 프로세스를 kill 하지 않고 `bootout` 하는 것과 같은 이유다.
+  {
+    const stop = await sourceHas("../../../bin/daemon.mjs", [
+      /const winStopTask = \(c\) => \{[\s\S]{0,900}?Stop-ScheduledTask/,
+      /const winStop = \(c\) => \{\s*const survived = winStopTask\(c\);/,
+      /const winRestart = \(c\) => \{\s*const survived = winStopTask\(c\);/,
+    ]);
+    out.push(
+      assert(
+        "★stop·restart 가 작업 인스턴스를 멈춘다(데몬만 죽이면 감독자가 되살린다)",
+        stop.ok,
+        stop.ok ? "작업 종료 경로 확인" : `누락 ${stop.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑦-b ★`stop` 은 **비활성화까지** 해야 멈춘다 (2026-08-22, 실측으로 잡힘) ────
+  //  `Stop-ScheduledTask` 는 지금 도는 인스턴스만 끝낸다. 1분 반복 트리거가 그대로면
+  //  90초 안에 되살아나 **stop 이 안 먹는다**(그 기계에서 실제로 그랬다: pid 35108 부활).
+  //  Disable/Enable 이 짝이라 한쪽만 지우면 조용히 깨진다 — 둘을 같이 본다.
+  //  ★이 결함은 **1분을 기다려야** 보인다. 즉시 확인으로는 초록이라 검사로 못 박으면
+  //   다음 사람이 못 본다.
+  {
+    const gate = await sourceHas("../../../bin/daemon.mjs", [
+      /const winStopTask = \(c\) => \{[\s\S]{0,900}?Disable-ScheduledTask/,
+      /const winStart = \(c\) => \{[\s\S]{0,900}?Enable-ScheduledTask/,
+      /const winRestart = \(c\) => \{[\s\S]{0,900}?Enable-ScheduledTask/,
+    ]);
+    out.push(
+      assert(
+        "★stop 은 작업을 비활성화하고, start·restart 는 다시 활성화한다(반복 트리거 부활 차단)",
+        gate.ok,
+        gate.ok
+          ? "Disable/Enable 쌍 확인"
+          : `★stop 이 안 먹는다(1분 뒤 부활) — 누락 ${gate.missing.join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑧ ★**배선** — 판정을 만들어놓고 호출부가 반환값을 버리면 사고가 되살아난다 ─
+  //  (적대 검토 P1) 종전엔 이 검사가 restart.ts 만 보고 index.ts 는 한 줄도 안 봤다.
   {
     const wiring = await sourceHas("../../index.ts", [
-      /const respawnArranged = hasSupervisorRespawn\(\)\s*\?\s*true\s*:\s*spawnDetachedRestart\(source\);/,
+      /const respawnArranged = hasSupervisorRespawn\(\);/,
       /if \(!shouldExitForRestart\(\{ platform: process\.platform, respawnArranged \}\)\)/,
       /return false;/,
     ]);
@@ -146,61 +225,9 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
-  // ── ⑦ ★실패는 **false 로 취급**된다 (적대 검토 P2) ──────────────────────────
-  //  종전엔 로그 문자열만 봐서 "실패를 말하는가" 는 보고 "실패로 취급하는가" 는 안 봤다.
-  //  `return false` 를 `return true` 로 바꾸면 로그는 "재시작을 중단한다" 라고 찍으면서
-  //  실제로는 죽는다 — 이번 사고와 **똑같은 형상**(로그와 행동의 불일치)이다.
-  {
-    // ★각 실패 분기를 **문맥과 함께** 묶는다. `sourceOrder` 로 `/return false;/` 를 세 번
-    //  나열하면 같은 첫 위치만 봐서 성립하지 않는다(첫 판이 그렇게 틀렸다).
-    const branches = await sourceHas("../../core/restart.ts", [
-      /if \(!existsSync\(vbsPath\)\)[\s\S]{0,400}?return false;/,
-      /create\.status !== 0[\s\S]{0,700}?return false;/,
-      /run\.status !== 0[\s\S]{0,500}?return false;/,
-    ]);
-    out.push(
-      assert(
-        "★런처 부재·create 실패·run 실패는 전부 false 로 끝난다(로그만 찍고 살아나가지 않는다)",
-        branches.ok,
-        branches.ok ? "세 분기 확인" : `누락 ${branches.missing.join(" ")}`,
-      ),
-    );
-  }
-
-  // ── ⑧ ★2단계 프로토콜(create→run) — /run 을 지우면 **자정에** 뜬다 (P5) ──────
-  //  작업은 `/sc once /st 00:00` 이라 즉시 실행(`/run`)이 없으면 최대 24시간 먹통이다.
-  {
-    const two = await sourceHas("../../core/restart.ts", [
-      /"\/create",/,
-      /"\/run",\s*"\/tn",/,
-    ]);
-    out.push(
-      assert(
-        "★예약작업을 만들고 **즉시 실행**한다(/run 없으면 자정까지 먹통)",
-        two.ok,
-        two.ok ? "create+run 확인" : `누락 ${two.missing.join(" ")}`,
-      ),
-    );
-  }
-
-  // ── ⑨ ★런처 존재 확인 — schtasks 성공 ≠ 재기동 보장 (P4) ────────────────────
-  //  같은 VBS 를 띄우는 CLI(`winStart`)는 이미 확인한다. 죽을지 정하는 쪽이 더 느슨하면 안 된다.
-  {
-    const guard = await sourceHas("../../core/restart.ts", [/existsSync\(vbsPath\)/]);
-    out.push(
-      assert(
-        "★런처(VBS)가 없으면 재기동을 확보했다고 하지 않는다",
-        guard.ok,
-        guard.ok ? "존재 확인" : "★schtasks 성공만으로 죽는다",
-      ),
-    );
-  }
-
-  // ── ⑩ ★재시작 중단을 **한 채널만** 알지 않는다 (적대 검토 P10) ──────────────
-  //  종전엔 텔레그램 `/restart` 만 실패를 말했다. 대시보드 버튼(`control.restart`)과
-  //  `/update` 는 반환값을 **버렸다** — 특히 업데이트는 사용자가 "약 5초 후 재시작합니다,
-  //  잠시 후 완료 알림이 옵니다" 를 받은 뒤 **그 알림이 영영 안 오는** 형태였다(마커는
-  //  다음 부팅에만 소비된다). 사용자 신고 "업데이트해도 시작이 안 되고" 의 절반이 이것.
+  // ── ⑨ ★재시작 중단을 **한 채널만** 알지 않는다 (적대 검토 P10) ──────────────
+  //  종전엔 텔레그램 `/restart` 만 실패를 말했다. 대시보드 버튼과 `/update` 는 반환값을
+  //  버려서, 사용자는 "곧 완료 알림이 옵니다" 를 받고 **그 알림이 영영 안 왔다**.
   {
     const su = await sourceHas("../../core/self-update.ts", [
       /if \(restart\(\) === false\)/,
@@ -213,7 +240,9 @@ const run = async (): Promise<Assertion[]> => {
         su.ok ? "통지 확인" : `누락 ${su.missing.join(" ")}`,
       ),
     );
-    const tg = await sourceHas("../../index.ts", [/if \(restartDaemon\(`telegram:\$\{msg\.channel\}`\)\) return;/]);
+    const tg = await sourceHas("../../index.ts", [
+      /if \(restartDaemon\(`telegram:\$\{msg\.channel\}`\)\) return;/,
+    ]);
     out.push(
       assert(
         "텔레그램 /restart 도 중단을 말한다",
@@ -229,6 +258,6 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "restart-needs-a-way-back",
   guards:
-    "재기동 수단(schtasks 예약작업)을 못 잡았는데도 데몬이 그대로 죽어, 윈도우가 재시작 한 번에 무기한 먹통이 되던 것 — supervisor 없는 OS 에서 '확실한 종료' 는 '확실한 사망' 이다",
+    "재기동 수단을 못 잡았는데도 데몬이 그대로 죽어 윈도우가 재시작 한 번에 무기한 먹통이 되던 것 + 그 재기동 수단(런타임 schtasks 생성·ping 지연·숨김 스크립트)이 Defender 에 악성으로 차단되던 것 — 재기동은 죽는 쪽이 아니라 살아 있는 쪽(감독자)이 한다",
   run,
 };

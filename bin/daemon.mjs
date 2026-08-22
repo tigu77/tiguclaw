@@ -47,8 +47,9 @@
  * KeepAlive 강도(솔직히): macOS(launchd KeepAlive) > Linux(systemd Restart=always)
  *   > Windows(HKCU Run ONLOGON — crash 자동재시작 약함). 완전 parity 는 WSL2 권장.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -202,6 +203,28 @@ const darwinInstall = (c) => {
   } catch {
     /* 미등록 — 무시 */
   }
+  // ★**bootout 이 끝나기를 기다린다** (2026-08-22, install 검증을 붙이자마자 첫 실행에 잡힘).
+  //  `bootout` 은 비동기다 — 곧바로 `bootstrap` 하면 옛 서비스가 아직 정리 중이라
+  //  `Bootstrap failed: 5: Input/output error` 가 나고, 레거시 `load -w` 폴백도 같은 이유로
+  //  실패한다. 결과는 **부팅되지 않은 채 등록도 사라진 상태**인데, 종전엔 그 위에
+  //  `✅ launchd 등록 완료` 를 찍었다(install 이 확인을 안 했으므로). 실측: 즉시 bootstrap =
+  //  실패, ~1분 뒤 같은 명령 = 성공. 고정 sleep 이 아니라 **사라졌는지 물어서** 기다린다.
+  {
+    const until = Date.now() + 10_000;
+    for (;;) {
+      const still = spawnSync("launchctl", ["print", `${domain}/${c.label}`], {
+        stdio: "ignore",
+      });
+      if (still.status !== 0) break; // 정리 완료.
+      if (Date.now() >= until) {
+        console.warn(
+          `# ⚠ bootout 이 10초 안에 안 끝났습니다 (${domain}/${c.label}) — 그대로 bootstrap 을 시도합니다.`,
+        );
+        break;
+      }
+      sleepSync(300);
+    }
+  }
   try {
     execFileSync("launchctl", ["bootstrap", domain, plistPath], {
       stdio: "inherit",
@@ -210,9 +233,16 @@ const darwinInstall = (c) => {
     // 일부 macOS/세션에서 bootstrap 실패 시 레거시 load 폴백.
     execFileSync("launchctl", ["load", "-w", plistPath], { stdio: "inherit" });
   }
-  console.log(`✅ launchd 등록 완료 (KeepAlive). TIGUCLAW_HOME=${c.homeRaw}`);
-  console.log(
-    `   상태: npm run daemon:status · 로그: npm run daemon:logs (${path.join(c.logsDir, "daemon-<날짜>.log")})`,
+  console.log(`launchd 등록 (KeepAlive). TIGUCLAW_HOME=${c.homeRaw}`);
+  // ★install 도 **확인 후** 말한다 (2026-08-22). 종전엔 등록만 하고 `✅ 등록 완료` 를
+  //  찍어, 데몬이 안 떠도 설치가 성공으로 보였다 — start/restart 에서 93분 먹통을 만든
+  //  바로 그 거짓 성공이 install 에는 그대로 남아 있었다(세 플랫폼 전부).
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "installed",
+    `  확인: launchctl print ${domain}/${c.label}\n` +
+      `  로그: ${path.join(c.logsDir, "daemon-<날짜>.log")}`,
   );
 };
 
@@ -364,14 +394,18 @@ const linuxInstall = (c) => {
 
   systemctlUser(["daemon-reload"]);
   systemctlUser(["enable", "--now", c.label]);
-  console.log(`✅ systemd user 서비스 등록 완료 (Restart=always). TIGUCLAW_HOME=${c.homeRaw}`);
+  console.log(`systemd user 서비스 등록 (Restart=always). TIGUCLAW_HOME=${c.homeRaw}`);
   const user = os.userInfo().username;
   console.log(
     `   로그인 없이 부팅 가동하려면: loginctl enable-linger ${user}`,
   );
-  console.log(
-    "   상태: npm run daemon:status · 로그: npm run daemon:logs (journal 도 가능: journalctl --user -u " +
-      `${c.label} -f)`,
+  // ★install 도 확인 후 말한다 (2026-08-22) — darwinInstall 주석 참조.
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "installed",
+    `  확인: systemctl --user status ${c.label}\n` +
+      `  로그: npm run daemon:logs (journalctl --user -u ${c.label} -f)`,
   );
 };
 
@@ -607,33 +641,94 @@ const winPort = (c) => {
   return process.env.HTTP_BRIDGE_PORT?.trim() || "7011";
 };
 
-// 숨김(0)·비대기(False) 로 데몬을 띄우는 VBS. cwd=repoRoot, TIGUCLAW_HOME 주입.
-/**
- * @param {Ctx} c
- * @returns {string}
- */
-const buildWinVbs = (c) => {
-  const inner =
-    `cmd /c cd /d "${c.repoRoot}" && set "TIGUCLAW_HOME=${c.homeRaw}" && ` +
-    `set "TIGUCLAW_RUNTIME=${c.runtime}" && ` +
-    execStrings(c)
-      .map((s) => `"${s}"`)
-      .join(" ");
-  return [
-    'Set sh = CreateObject("WScript.Shell")',
-    `sh.Run "${inner.replace(/"/g, '""')}", 0, False`,
-    "",
-  ].join("\r\n");
-};
+// ★숨김 VBS 런처(`buildWinVbs`)와 그 실행기(`winLaunch`)는 **삭제됐다** (2026-08-22).
+//  존재 이유가 둘이었는데 둘 다 사라졌다: (1) 콘솔 창 숨김 — 예약작업이 `node` 를 직접
+//  띄우면 창이 안 뜬다(그 기계에서 최상위 창 전수 열거 0개로 확인). (2) 환경변수 주입 —
+//  이제 `supervise --home/--runtime` 인자로 넘긴다. 남은 `winVbsPath` 는 옛 설치의
+//  잔재를 지우는 데만 쓴다(마이그레이션).
 
 /** @param {string[]} args */
 const winReg = (args) =>
   spawnSync("reg", args, { stdio: "pipe", encoding: "utf8" });
 
-// 지금 즉시 1회 가동(숨김 VBS 실행).
-/** @param {Ctx} c */
-const winLaunch = (c) =>
-  spawnSync("wscript", [winVbsPath(c)], { stdio: "ignore" });
+/**
+ * KeepAlive 예약작업명 — 인스턴스 라벨에서 파생(한 기계의 여러 인스턴스가 안 겹친다).
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const winTaskName = (c) => c.label;
+
+/**
+ * PowerShell 스크립트를 **인용 지옥 없이** 실행한다 — `-EncodedCommand`(UTF-16LE base64).
+ * ★셸을 안 거치므로 경로의 공백·따옴표·`&` 가 인자를 깨뜨리지 않는다. 종전 윈도우 코드가
+ *  겪은 사고 다수가 이 계열이었다(액션 문자열의 `&`·중첩 따옴표).
+ * @param {string} script
+ * @returns {{status: number | null, stdout: string, stderr: string}}
+ */
+const winPs = (script) => {
+  const r = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    { encoding: "utf8" },
+  );
+  return {
+    status: r.status,
+    stdout: (r.stdout ?? "").trim(),
+    stderr: (r.stderr ?? "").trim(),
+  };
+};
+
+/** PowerShell 작은따옴표 문자열 리터럴로 안전하게 감싼다(내부 `'` 는 `''`). */
+const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
+
+/**
+ * KeepAlive 예약작업 등록 스크립트.
+ *
+ * ★설계 근거 — 전부 그 기계에서 **실행으로 확인**했다(2026-08-22):
+ *  - 사용자 수준 등록이 관리자 권한 없이 된다(`RunLevel=Limited`). 종전 주석은
+ *    "schtasks 는 Access denied 가 난다" 며 HKCU Run 을 골랐는데, 그 전제가 틀렸다.
+ *  - 1분 반복 트리거가 무기한 유지된다(`Interval=PT1M`, Duration 무제한).
+ *  - `MultipleInstances=IgnoreNew` 가 중복 기동을 막는다 — 작업 인스턴스가 감독자
+ *    프로세스만큼 살기 때문이다(2분간 반복 발화, 기동 1회).
+ *  - 액션이 `node` 직접 실행이면 **콘솔 창이 안 뜬다**(최상위 창 전수 열거 0개).
+ *    그래서 창 숨김용 VBS 가 더는 필요 없다.
+ *  - Defender 가 이 등록을 막지 않는다. 오탐의 원인은 예약작업 자체가 아니라
+ *    **런타임 생성 + `ping` 지연 + 숨김 스크립트** 조합이었다.
+ *
+ * 로그온 트리거 + 반복 트리거 둘 다 단다: 로그온하면 뜨고, 감독자까지 죽어도 1분 안에
+ *  잡힌다. `-ExecutionTimeLimit 0` 이 없으면 기본 3일 후 작업이 강제 종료된다.
+ * @param {Ctx} c
+ * @returns {string}
+ */
+const buildWinTaskScript = (c) => {
+  const args = [
+    path.join(c.repoRoot, "bin", "daemon.mjs"),
+    "supervise",
+    "--home",
+    c.homeRaw,
+    "--runtime",
+    c.runtime,
+  ]
+    // 작업 액션의 인자 문자열 — 공백 있는 경로를 위해 각 인자를 큰따옴표로 감싼다.
+    .map((a) => `"${a}"`)
+    .join(" ");
+  return [
+    `$ErrorActionPreference = 'Stop'`,
+    `$action = New-ScheduledTaskAction -Execute ${psq(c.nodePath)} -Argument ${psq(args)} -WorkingDirectory ${psq(c.repoRoot)}`,
+    `$atLogon = New-ScheduledTaskTrigger -AtLogOn -User ${psq(process.env.USERNAME ?? os.userInfo().username)}`,
+    // 반복 트리거 = 바닥 그물. StartBoundary 를 과거로 둬서 등록 즉시 유효해진다.
+    `$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1) -RepetitionInterval (New-TimeSpan -Minutes 1)`,
+    `$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)`,
+    `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType Interactive -RunLevel Limited`,
+    `Register-ScheduledTask -TaskName ${psq(winTaskName(c))} -Action $action -Trigger $atLogon,$repeat -Settings $settings -Principal $principal -Force | Out-Null`,
+    `'TASK_REGISTERED'`,
+  ].join("\n");
+};
 
 // bridge 포트를 LISTEN 중인 PID(실행 중 데몬 추정).
 /**
@@ -712,50 +807,100 @@ const winKillRunning = (c) => {
   return [...still].filter((p) => targets.has(p));
 };
 
+/**
+ * 옛 방식(HKCU Run + 숨김 VBS) 잔재 제거 — **멱등**.
+ * ★install 이 반드시 먼저 불러야 한다: 안 지우면 로그온 시 Run 키와 예약작업이 **둘 다**
+ *  데몬을 띄워 인스턴스가 두 개 뜬다(같은 SQLite·같은 포트 = 즉시 사고). 마이그레이션에서
+ *  가장 위험한 지점이라 조용히 처리하지 않고 무엇을 지웠는지 찍는다.
+ * @param {Ctx} c
+ */
+const winRemoveLegacyAutostart = (c) => {
+  const q = winReg(["query", RUN_KEY, "/v", c.label]);
+  if (q.status === 0) {
+    winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
+    console.log(`   옛 자동시작 제거 — HKCU Run\\${c.label} (예약작업으로 대체)`);
+  }
+  if (existsSync(winVbsPath(c))) {
+    rmSync(winVbsPath(c), { force: true });
+    console.log(`   옛 런처 제거 — ${winVbsPath(c)} (창 숨김이 더는 필요 없습니다)`);
+  }
+  // 옛 self-restart 1회성 작업(Defender 가 악성으로 본 그것)도 남아 있으면 정리.
+  spawnSync("schtasks", ["/delete", "/tn", `${c.label}-selfrestart`, "/f"], {
+    stdio: "ignore",
+  });
+};
+
 /** @param {Ctx} c */
 const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
-  writeFileSync(winVbsPath(c), buildWinVbs(c), "utf8");
-  // Run 값명 = 라벨(다중 인스턴스 분리). 값 = wscript 가 숨김 VBS 실행.
-  const r = winReg([
-    "add",
-    RUN_KEY,
-    "/v",
-    c.label,
-    "/t",
-    "REG_SZ",
-    "/d",
-    `wscript "${winVbsPath(c)}"`,
-    "/f",
-  ]);
-  if (r.status !== 0) {
-    console.error(`레지스트리 Run 등록 실패 (${r.status}).`);
-    console.error((r.stderr || r.stdout || "").trim());
+  winRemoveLegacyAutostart(c);
+  const r = winPs(buildWinTaskScript(c));
+  if (r.status !== 0 || !r.stdout.includes("TASK_REGISTERED")) {
+    console.error(`🔴 예약작업 등록 실패 (status=${String(r.status)}).`);
+    console.error((r.stderr || r.stdout || "(출력 없음)").trim());
+    console.error(
+      "   그룹정책으로 예약작업 생성이 막힌 환경일 수 있습니다 — 관리자에게 확인하거나 WSL2 를 쓰세요.",
+    );
+    process.exitCode = 1;
     return;
   }
   console.log(
-    `✅ 등록 완료 — 로그온 시 자동 가동 (HKCU Run, 관리자 권한 불요). TIGUCLAW_HOME=${c.homeRaw}`,
+    `예약작업 KeepAlive 등록 (관리자 권한 불요). TIGUCLAW_HOME=${c.homeRaw}`,
   );
   console.log(
-    "   주의: crash 자동재시작은 없습니다(로그온 가동). 완전한 KeepAlive 는 WSL2/NSSM.",
+    "   죽으면 감독자가 즉시 되살리고, 감독자까지 죽으면 1분 반복 트리거가 잡습니다(2중).",
   );
-  winLaunch(c); // 지금 바로 1회 가동.
-  console.log(
-    "   지금 가동 시작 — 상태: npm run daemon:status · 로그: npm run daemon:logs",
+  const run = winPs(
+    `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'STARTED'`,
+  );
+  if (run.status !== 0) {
+    console.error(`   ⚠ 즉시 가동 실패 — ${run.stderr || run.stdout}`);
+  }
+  reportLaunch(
+    c,
+    waitForListening(c, listeningOnBridge),
+    "installed",
+    `  작업 확인: schtasks /query /tn "${winTaskName(c)}"\n` +
+      `  로그: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
 /** @param {Ctx} c */
 const winUninstall = (c) => {
+  winPs(
+    `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue; ` +
+      `Unregister-ScheduledTask -TaskName ${psq(winTaskName(c))} -Confirm:$false -ErrorAction SilentlyContinue`,
+  );
   winKillRunning(c);
-  winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
-  rmSync(winVbsPath(c), { force: true });
-  console.log(`✅ 등록 해제 (Run 키 + VBS 제거, ${c.label}).`);
+  winRemoveLegacyAutostart(c);
+  console.log(`✅ 등록 해제 (예약작업 제거, ${c.label}).`);
+};
+
+/**
+ * 작업 인스턴스를 멈춘다 = 감독자와 그 자식(데몬)을 함께 끝낸다.
+ * ★감독자가 생긴 뒤로는 **데몬만 죽이면 안 된다** — 감독자가 곧바로 되살려서 stop/restart
+ *  가 "안 먹는" 것처럼 보인다. launchd 에서 `launchctl bootout` 을 쓰지 프로세스를 kill
+ *  하지 않는 것과 같은 이유다. 남은 좀비는 그 뒤에 정리한다(포트+명령줄 합집합).
+ * @param {Ctx} c
+ * @returns {string[]} 종료 후에도 살아남은 PID
+ */
+const winStopTask = (c) => {
+  // ★**멈추려면 비활성화까지 해야 한다** (2026-08-22, 그 기계에서 실측으로 잡음).
+  //  `Stop-ScheduledTask` 는 *지금 도는 인스턴스*만 끝낸다 — 1분 반복 트리거는 그대로라
+  //  90초 안에 데몬이 되살아났다. 즉 `stop` 이 안 먹었다. mac 은 `launchctl bootout`,
+  //  리눅스는 `systemctl stop` 이라 `start` 전까진 안 돌아오는데 윈도우만 달랐다.
+  //  계약(= "실행만 중지, 등록은 유지")을 지키려면 Disable 이 짝이다 — 등록은 남고
+  //  트리거만 멎는다. `winStart` 의 Enable 과 쌍으로 읽어라.
+  winPs(
+    `Disable-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue | Out-Null; ` +
+      `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue`,
+  );
+  return winKillRunning(c);
 };
 
 /** @param {Ctx} c */
 const winRestart = (c) => {
-  const survived = winKillRunning(c); // 포트 + 명령줄 양쪽으로 찾아 종료.
+  const survived = winStopTask(c);
   if (survived.length > 0) {
     console.error(
       `🔴 restart 실패 — 기존 데몬이 안 죽었습니다 (PID ${survived.join(", ")}). ` +
@@ -764,13 +909,24 @@ const winRestart = (c) => {
     process.exitCode = 1;
     return;
   }
-  winLaunch(c); // 숨김 재가동.
+  // Enable 이 먼저다 — winStopTask 가 비활성화했으므로 그대로 Start 하면 안 뜬다.
+  const r = winPs(
+    `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
+      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`,
+  );
+  if (r.status !== 0) {
+    console.error(
+      `🔴 restart 실패 — 예약작업 시작 실패: ${r.stderr || r.stdout}. ` +
+        `등록이 살아 있는지 확인: schtasks /query /tn "${winTaskName(c)}"`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   reportLaunch(
     c,
     waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
-    `  런처를 직접 돌려보세요: wscript ${winVbsPath(c)}\n` +
-      `  ★윈도우는 HKCU Run(로그온 1회)이라 supervisor 가 없습니다 — 안 뜨면 그대로 멈춥니다.\n` +
+    `  작업 확인: schtasks /query /tn "${winTaskName(c)}"\n` +
       `  로그: ${path.join(c.homeAbs, "logs")}`,
   );
 };
@@ -779,7 +935,7 @@ const winRestart = (c) => {
 // 포트 미LISTEN 시 대상 못 찾을 수 있음(기존 status/restart 와 동일 한계 — ADR U3).
 /** @param {Ctx} c */
 const winStop = (c) => {
-  const survived = winKillRunning(c);
+  const survived = winStopTask(c);
   if (survived.length > 0) {
     console.error(
       `🔴 stop 실패 — 아직 살아 있습니다 (PID ${survived.join(", ")}). ` +
@@ -794,28 +950,46 @@ const winStop = (c) => {
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
 /** @param {Ctx} c */
 const winStart = (c) => {
-  if (!existsSync(winVbsPath(c))) {
+  // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
+  const r = winPs(
+    `if (Get-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue) ` +
+      `{ Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
+      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK' } else { 'NO_TASK' }`,
+  );
+  if (r.stdout.includes("NO_TASK")) {
     console.error(
-      `daemon start: 런처 VBS 가 없습니다 (${winVbsPath(c)}). 먼저 install 하세요.`,
+      `daemon start: 예약작업이 없습니다 (${winTaskName(c)}). 먼저 install 하세요.`,
     );
     process.exitCode = 1;
     return;
   }
-  winLaunch(c);
+  if (r.status !== 0) {
+    console.error(`daemon start: 예약작업 시작 실패 — ${r.stderr || r.stdout}`);
+    process.exitCode = 1;
+    return;
+  }
   reportLaunch(
     c,
     waitForListening(c, listeningOnBridge),
     "started",
-    `  런처를 직접 돌려보세요: wscript ${winVbsPath(c)}\n` +
-      `  ★윈도우는 HKCU Run(로그온 1회)이라 supervisor 가 없습니다 — 안 뜨면 그대로 멈춥니다.\n` +
+    `  작업 확인: schtasks /query /tn "${winTaskName(c)}"\n` +
       `  로그: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
 /** @param {Ctx} c */
 const winStatus = (c) => {
-  const reg = winReg(["query", RUN_KEY, "/v", c.label]);
-  console.log(`registered (HKCU Run): ${reg.status === 0 ? "yes" : "no"}`);
+  const t = winPs(
+    `$t = Get-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue; ` +
+      `if ($t) { 'task=' + $t.State } else { 'task=none' }`,
+  );
+  console.log(`registered (예약작업 ${winTaskName(c)}): ${t.stdout || "unknown"}`);
+  // 마이그레이션 잔재가 남아 있으면 **중복 기동 위험**이라 눈에 띄게 알린다.
+  if (winReg(["query", RUN_KEY, "/v", c.label]).status === 0) {
+    console.log(
+      `⚠ 옛 HKCU Run 등록이 남아 있습니다 — 로그온 시 데몬이 두 개 뜹니다. 'install' 을 다시 돌리면 정리됩니다.`,
+    );
+  }
   const pids = winListeningPids(c);
   if (pids.length > 0) {
     console.log(`running: yes (pid ${pids.join(", ")}, port ${winPort(c)})`);
@@ -829,13 +1003,15 @@ const winStatus = (c) => {
 /** @param {Ctx} c */
 const winPrint = (c) => {
   console.log(
-    "# Windows: HKCU Run 키 + 숨김 VBS 런처 (관리자 권한 불요, 로그온 가동)",
+    "# Windows: 예약작업 KeepAlive (관리자 권한 불요) — 로그온 트리거 + 1분 반복(바닥 그물)",
   );
-  console.log(`# Run 키: ${RUN_KEY}  값명=${c.label}`);
-  console.log(`#   값 = wscript "${winVbsPath(c)}"`);
-  console.log(`# VBS: ${winVbsPath(c)}`);
-  console.log("# --- VBS 내용 ---");
-  console.log(buildWinVbs(c));
+  console.log(`# 작업명: ${winTaskName(c)}`);
+  console.log(
+    `#   액션 = "${c.nodePath}" "${path.join(c.repoRoot, "bin", "daemon.mjs")}" supervise --home "${c.homeRaw}" --runtime ${c.runtime}`,
+  );
+  console.log(`#   감독자가 데몬을 띄우고 죽으면 되살립니다(launchd KeepAlive 동형).`);
+  console.log("# --- 등록 스크립트 ---");
+  console.log(buildWinTaskScript(c));
 };
 
 // ───────────────────────────── logs (전 OS 공통) ────────────────────────────
@@ -897,9 +1073,117 @@ const tailLogs = (c) => {
   });
 };
 
+// ───────────────────────────── supervise (윈도우 KeepAlive) ─────────────────
+/**
+ * 데몬을 띄우고 **죽으면 다시 띄운다** — mac launchd `KeepAlive`, 리눅스 systemd
+ * `Restart=always` 가 해주는 그 일을 윈도우에서 우리가 한다.
+ *
+ * ★왜 이게 필요한가 (2026-08-22): 윈도우만 **데몬이 자기 부활을 스스로 책임졌다.**
+ *  종료 직전에 `schtasks` 로 1회성 예약작업을 만들어 자기를 다시 띄우는 구조였는데,
+ *  같은 자리가 세 번 다른 이유로 터졌다 — 헬퍼가 job object 에 휩쓸려 죽고(#2·#3),
+ *  런처 VBS 가 없는데 성공을 보고하고, 끝내 Defender 가 그 패턴을 악성으로 보고
+ *  `schtasks` 생성을 EPERM 으로 막았다(`ping` 지연 + 숨김 스크립트 = 드로퍼 수법과
+ *  구분 불가). 매번 "그 하나가 막히면 무기한 먹통" 이었다.
+ *
+ * ★그래서 고친 건 호출 방식이 아니라 **책임의 위치**다. 재기동은 죽는 쪽이 아니라
+ *  **살아 있는 쪽**이 한다. 데몬은 mac 과 똑같이 그냥 종료하고, 감독자가 되살린다.
+ *  예약작업은 설치 때 한 번 등록되고(런타임 생성 0), 그 작업이 실행하는 게 이 함수다.
+ *
+ * 2중 안전망: 감독자 자신이 죽으면 예약작업의 **1분 반복 트리거**가 다시 띄운다
+ *  (`MultipleInstances=IgnoreNew` 라 살아 있는 동안의 반복 발화는 무시된다 — 실측
+ *  확인). 단일 실패점이 없다는 게 이 설계의 핵심이다.
+ *
+ * 스로틀: 자식이 `MIN_UPTIME_MS` 안에 죽으면 크래시 루프로 보고 대기 후 재기동한다
+ *  (launchd 가 10초 스로틀을 두는 것과 같은 이유 — 즉시 재기동은 CPU 만 태운다).
+ * @param {Ctx} c
+ */
+const runSupervise = (c) => {
+  const MIN_UPTIME_MS = 10_000; // 이보다 빨리 죽으면 크래시로 본다(launchd 스로틀 동형).
+  const THROTTLE_MS = 10_000;
+  mkdirSync(c.logsDir, { recursive: true });
+  const [exe, ...rest] = execStrings(c);
+  let consecutiveCrashes = 0;
+  let stopping = false;
+
+  /** 감독자 자신이 받은 종료 신호 = 사용자가 멈춘 것 → 되살리지 않는다. */
+  const onSignal = () => {
+    stopping = true;
+    if (child !== null) child.kill();
+  };
+  /** @type {import("node:child_process").ChildProcess | null} */
+  let child = null;
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+
+  // ★감독자 로그는 **파일로** 남긴다 (2026-08-22). 예약작업에는 콘솔이 없어서
+  //  `console.log` 는 어디에도 안 남는다 — 크래시 루프 판정(몇 초 살았나·연속 몇 회)이
+  //  통째로 사라지는 자리다. 윈도우는 원격 접속이 늘 되는 게 아니라 **로그가 1차 진단면**
+  //  이므로, 데몬과 **같은 파일**에 써서 하나의 시간축으로 읽히게 한다(둘 다 append).
+  /** @param {string} msg */
+  const log = (msg) => {
+    const line = `[${new Date().toISOString()}] [supervise] ${msg}\n`;
+    try {
+      const d = new Date();
+      const p = (/** @type {number} */ n) => String(n).padStart(2, "0");
+      appendFileSync(
+        path.join(
+          c.logsDir,
+          `daemon-${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.log`,
+        ),
+        line,
+      );
+    } catch {
+      /* 파일 기록 실패해도 감독은 계속한다 */
+    }
+    process.stdout.write(line); // 포그라운드로 직접 돌릴 때를 위해.
+  };
+
+  const spawnOnce = () => {
+    const startedAt = Date.now();
+    child = spawn(exe, rest, {
+      cwd: c.repoRoot,
+      env: {
+        ...process.env,
+        TIGUCLAW_HOME: c.homeRaw,
+        TIGUCLAW_RUNTIME: c.runtime,
+      },
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    log(`데몬 기동 pid=${child.pid} runtime=${c.runtime} home=${c.homeRaw}`);
+    child.on("exit", (code, signal) => {
+      const uptimeMs = Date.now() - startedAt;
+      child = null;
+      if (stopping) {
+        log(`감독자 종료 요청 — 재기동하지 않습니다 (code=${code} signal=${signal})`);
+        process.exit(0);
+      }
+      // ★수치를 싣는다 — 로그가 1차 진단면이라 "얼마나 살았나" 가 크래시루프 판정의
+      //  근거다. 증상만 적으면 원격 기계(회사 PC·윈도우)에서 추론에 의존하게 된다.
+      if (uptimeMs < MIN_UPTIME_MS) {
+        consecutiveCrashes += 1;
+        log(
+          `데몬이 ${Math.round(uptimeMs / 1000)}초 만에 종료 (code=${code} signal=${signal}) — ` +
+            `연속 ${consecutiveCrashes}회 · ${THROTTLE_MS / 1000}초 후 재기동(스로틀)`,
+        );
+        setTimeout(spawnOnce, THROTTLE_MS);
+        return;
+      }
+      consecutiveCrashes = 0;
+      log(
+        `데몬 종료 (code=${code} signal=${signal}, ${Math.round(uptimeMs / 1000)}초 가동) — 즉시 재기동`,
+      );
+      spawnOnce();
+    });
+  };
+
+  log(`감독 시작 — label=${c.label}`);
+  spawnOnce();
+};
+
 // ───────────────────────────── dispatch ─────────────────────────────────────
 
-/** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update"} Cmd */
+/** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update" | "supervise"} Cmd */
 
 /**
  * @type {Record<string, Record<string, (c: Ctx) => void> | undefined>}
@@ -976,7 +1260,17 @@ const isRegistered = (c) => {
   try {
     if (process.platform === "darwin") return existsSync(launchdPlistPath(c));
     if (process.platform === "linux") return existsSync(systemdUnitPath(c));
-    if (process.platform === "win32") return existsSync(winVbsPath(c));
+    // ★윈도우는 **예약작업 존재**로 판정한다 (2026-08-22). 종전엔 `win-launch.vbs` 파일을
+    //  봤는데, 감독자 방식으로 옮기며 그 VBS 를 지우므로 그대로 뒀다면 설치된 기계가
+    //  전부 "미설치" 로 보여 update 가 매번 install 을 안내했을 것이다.
+    if (process.platform === "win32") {
+      return (
+        spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
+          stdio: "ignore",
+          windowsHide: true,
+        }).status === 0
+      );
+    }
   } catch {
     /* 감지 실패 — 무시 */
   }
@@ -1304,6 +1598,15 @@ export const runDaemonCommand = (cmd) => {
     return;
   }
 
+  // supervise = 이 프로세스가 **감독자**가 되어 데몬을 띄우고, 죽으면 다시 띄운다.
+  //   launchd `KeepAlive` · systemd `Restart=always` 와 같은 역할이고, 그 두 OS 에선
+  //   OS 가 해주므로 **윈도우 전용 진입점**이다(다른 OS 에서 부를 일은 없지만 막지도
+  //   않는다 — 플랫폼 분기를 늘리지 않는다). handlers 테이블 밖 = logs·update 와 동형.
+  if (cmd === "supervise") {
+    runSupervise(c);
+    return;
+  }
+
   // update = dep-free 자가 갱신(stop→npm ci→build→start). known-check *앞*에 분기 — logs 처럼
   //   OS handlers 테이블과 무관한 자체 루틴이다.
   if (cmd === "update") {
@@ -1374,9 +1677,18 @@ const invokedDirectly =
   process.argv[1] && path.resolve(process.argv[1]).endsWith("daemon.mjs");
 if (invokedDirectly) {
   const cmd = process.argv[2];
+  // ★`--home`/`--runtime` 플래그 → env (2026-08-22). 윈도우 예약작업의 액션은 **환경변수를
+  //  실을 수 없다** — 종전 VBS 는 `cmd /c set VAR=... && ...` 체인으로 넣었는데, 그 체인
+  //  모양이 Defender 오탐의 재료였다. 인자로 받아 여기서 env 로 올리면 buildCtx 아래는
+  //  전부 종전과 같은 경로로 돈다(분기 0). 셸을 안 거치므로 인용 문제도 없다.
+  for (let i = 3; i < process.argv.length - 1; i += 1) {
+    const v = process.argv[i + 1];
+    if (process.argv[i] === "--home" && v) process.env.TIGUCLAW_HOME = v;
+    if (process.argv[i] === "--runtime" && v) process.env.TIGUCLAW_RUNTIME = v;
+  }
   if (!cmd) {
     console.error(
-      "사용: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print|update>",
+      "사용: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print|update|supervise>",
     );
     process.exitCode = 1;
   } else {

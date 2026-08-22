@@ -121,7 +121,6 @@ import { renderModelProfiles } from "./core/entry/models-command.js";
 import {
   hasSupervisorRespawn,
   shouldExitForRestart,
-  spawnDetachedRestart,
   cleanupSelfRestartTask,
 } from "./core/restart.js";
 import { initFileLogging, logFatal } from "./core/logging.js";
@@ -2058,24 +2057,21 @@ const handler: MessageHandler = async (msg) => {
 // 텔레그램 /restart(B)·대시보드 버튼(A, control.restart)·자가업데이트(/update·도구) 모두
 // 이 한 곳으로 수렴 — 한 곳을 고치면 일괄 적용. 파괴적 작업이라 명시 트리거로만 호출.
 //
-// 재시작 보장은 OS 의 supervisor 유무에 따라 두 갈래 — 단, 두 갈래 모두 **graceful exit**
-// 로 수렴한다(모든 OS 에서 *반드시* 새 데몬이 뜸):
-//  1. mac/linux (supervisor O): graceful exit → launchd KeepAlive / systemd Restart=always
-//     가 respawn. (실측 정상 — 깨지 말 것. 이중 재시작 금지.)
-//  2. win32 등 (supervisor X): graceful exit 전에 **detached 헬퍼**(ping 지연 → wscript 로
-//     win-launch.vbs 재기동, taskkill 미사용)를 spawn 해 새 데몬을 보장한다. taskkill /T 는
-//     데몬의 *자식*인 헬퍼까지 죽여 respawn 을 깨므로(버그 #2) 쓰지 않는다 — 데몬은 mac 과
-//     동형으로 graceful exit(자식·http 서버 정리 = 포트 해제)하고, 분리된 헬퍼가 대기 후
-//     respawn 담당. 헬퍼 spawn 실패해도 graceful exit 는 진행(최소 종료 보장 — 견고성).
+// 재시작은 **graceful exit 하나**로 끝난다 — 세 OS 다 supervisor 가 되살린다:
+//  mac = launchd KeepAlive · linux = systemd Restart=always ·
+//  win32 = 예약작업 KeepAlive(감독자 프로세스 + 1분 반복 트리거, 2026-08-22).
+//
+// ★종전엔 윈도우만 갈래가 따로 있었다 — 죽기 직전에 자기를 되살릴 예약작업을 **그 자리에서
+//  만들어야** 했고, 그 자리가 세 번 다른 이유로 터진 끝에 Defender 가 그 패턴(런타임 작업
+//  생성 + ping 지연 + 숨김 스크립트)을 악성으로 막았다. 재기동 책임을 죽는 쪽에서 **살아
+//  있는 쪽**(감독자)으로 옮기자 그 갈래가 통째로 사라졌다. 여기서 코드가 줄어든 게 그 결과다.
 // 재시작 완료 알림은 reboot 스케줄(id=3)이 부팅 후 자동 발화.
 const restartDaemon = (source: string): boolean => {
-  // ★재기동이 보장될 때만 죽는다 (2026-08-15). 종전 근거는 "spawn 실패해도 graceful exit 는
-  //  진행(최소한 종료는 보장 — 견고성)" 이었는데 그 문장이 **거꾸로**다: supervisor 가 있는
-  //  OS 에서 확실한 종료는 곧 확실한 재기동이지만, 없는 OS 에서는 **확실한 사망**이다.
-  //  실제로 윈도우 돌쇠가 그렇게 사라졌다(사용자 신고: "재시작을 해도 재시작이 안 되네").
-  const respawnArranged = hasSupervisorRespawn()
-    ? true
-    : spawnDetachedRestart(source);
+  // ★재기동이 보장될 때만 죽는다 (2026-08-15). "spawn 실패해도 최소한 종료는 보장" 이라는
+  //  종전 근거가 **거꾸로**였다: supervisor 가 있으면 확실한 종료가 곧 확실한 재기동이지만,
+  //  없으면 **확실한 사망**이다. 이 가드가 08-22 Defender 차단 때 데몬을 살렸다.
+  //  supervisor 를 아는 플랫폼(mac·linux·win)에선 참 — 모르는 플랫폼에서만 죽지 않는다.
+  const respawnArranged = hasSupervisorRespawn();
   if (!shouldExitForRestart({ platform: process.platform, respawnArranged })) {
     // 안 죽는다. 재시작이 안 된 건 눈에 보이지만, 사라진 건 안 보인다.
     console.error(

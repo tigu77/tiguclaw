@@ -42,14 +42,39 @@ const run = async (): Promise<Assertion[]> => {
     ),
   );
 
-  // ── ② 여섯 자리가 전부 검증 경로를 탄다 ────────────────────────────────────
-  //  darwin/linux/win × start/restart. 하나라도 빠지면 그 플랫폼에서 사고가 되돌아온다.
-  const reports = (code.match(/reportLaunch\(/g) ?? []).length;
+  // ── ② 데몬을 띄우는 **모든** 자리가 검증 경로를 탄다 ───────────────────────
+  //  darwin/linux/win × install/start/restart. 하나라도 빠지면 그 플랫폼에서 사고가
+  //  되돌아온다(install 은 2026-08-22 에 합류 — 종전엔 등록만 하고 성공을 찍었다).
+  //
+  // ★종전엔 `reportLaunch(` **개수 == 6** 으로 검사했다. 그건 손으로 관리하는 숫자라
+  //  정당한 추가(install 검증)에도 빨간불이 됐고, 반대로 자리를 옮기기만 해도 통과했다.
+  //  숫자 대신 **각 함수 본문에 검증이 있는가**를 본다 — 판정 기준이 곧 검사다.
+  const launchSites = [
+    "darwinInstall",
+    "darwinStart",
+    "darwinRestart",
+    "linuxInstall",
+    "linuxStart",
+    "linuxRestart",
+    "winInstall",
+    "winStart",
+    "winRestart",
+  ];
+  const missing = launchSites.filter((name) => {
+    // `const <name> = (c) => {` 부터 같은 들여쓰기의 `};` 까지가 본문.
+    const start = code.indexOf(`const ${name} = (c) => {`);
+    if (start === -1) return true; // 함수 자체가 사라졌다 = 검사 대상 유실.
+    const end = code.indexOf("\n};", start);
+    const body = code.slice(start, end === -1 ? undefined : end);
+    return !body.includes("reportLaunch(");
+  });
   out.push(
     assert(
-      "★start·restart 6자리가 모두 검증 후 보고한다(3 플랫폼 × 2)",
-      reports === 6,
-      `reportLaunch 호출 ${reports}곳 (기대 6)`,
+      "★데몬을 띄우는 9자리가 모두 검증 후 보고한다(3 플랫폼 × install/start/restart)",
+      missing.length === 0,
+      missing.length === 0
+        ? `검증 누락 0곳 (${launchSites.length}자리 전부)`
+        : `★검증 없이 보고하는 자리: ${missing.join(", ")}`,
     ),
   );
 

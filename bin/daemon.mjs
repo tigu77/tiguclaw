@@ -723,8 +723,13 @@ const buildWinTaskScript = (c) => {
     // 작업 액션의 인자 문자열 — 공백 있는 경로를 위해 각 인자를 큰따옴표로 감싼다.
     .map((a) => `"${a}"`)
     .join(" ");
+  // ★실패 이유를 **stdout 으로** 낸다 (2026-08-22). `$ErrorActionPreference='Stop'` 만 두면
+  //  예외가 stderr 로 가는데, powershell.exe 는 stderr 가 리다이렉트되면 오류를 **CLIXML 로
+  //  직렬화**한다 — 실측 로그에 `(#< CLIXML` 만 남아 왜 실패했는지 알 수 없었다. 진단면이
+  //  반쯤 막혀 있으면 없는 것과 같다. try/catch 로 잡아 한 줄 평문으로 내보낸다.
   return [
     `$ErrorActionPreference = 'Stop'`,
+    `try {`,
     `$action = New-ScheduledTaskAction -Execute ${psq(c.nodePath)} -Argument ${psq(args)} -WorkingDirectory ${psq(c.repoRoot)}`,
     `$atLogon = New-ScheduledTaskTrigger -AtLogOn -User ${psq(process.env.USERNAME ?? os.userInfo().username)}`,
     // 반복 트리거 = 바닥 그물. StartBoundary 를 과거로 둬서 등록 즉시 유효해진다.
@@ -734,6 +739,7 @@ const buildWinTaskScript = (c) => {
     `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType S4U -RunLevel Limited`,
     `Register-ScheduledTask -TaskName ${psq(winTaskName(c))} -Action $action -Trigger $atLogon,$repeat -Settings $settings -Principal $principal -Force | Out-Null`,
     `'TASK_REGISTERED'`,
+    `} catch { 'TASK_ERR: ' + $_.Exception.Message }`,
   ].join("\n");
 };
 
@@ -871,8 +877,9 @@ const winEnsureTask = (c) => {
       windowsHide: true,
     }).status === 0;
   if (exists) {
+    // stdout 우선 — 실패 이유는 스크립트가 `TASK_ERR: …` 로 평문 출력한다(stderr 는 CLIXML).
     console.warn(
-      `   ⚠ 예약작업 재등록 실패 — 기존 등록으로 진행합니다 (${r.stderr || r.stdout || "출력 없음"}).`,
+      `   ⚠ 예약작업 재등록 실패 — 기존 등록으로 진행합니다 (${r.stdout || r.stderr || "출력 없음"}).`,
     );
     return true;
   }

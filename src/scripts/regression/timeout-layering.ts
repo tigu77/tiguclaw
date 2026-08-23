@@ -39,23 +39,46 @@ export const check: RegressionCheck = {
         `mcp=${mcp} bash=${BASH_MAX_TIMEOUT_MS}`,
       ),
       assert(
-        "잡 소유 도구의 천장 > 잡 상한(잡이 먼저 끝나게)",
-        jobOwning > WORKER_TIMEOUT_MS,
-        `천장=${jobOwning} 잡상한=${WORKER_TIMEOUT_MS}`,
+        "잡 소유 도구의 천장이 잡 상한보다 느슨하다(잡이 먼저 끝나게)",
+        outerIsLooser(jobOwning, WORKER_TIMEOUT_MS),
+        `천장=${fmt(jobOwning)} 잡상한=${fmt(WORKER_TIMEOUT_MS)}`,
       ),
       assert(
         "잡 소유 도구의 천장 > 기본 MCP 천장(기본값을 쓰면 잡이 잘린다)",
         jobOwning > mcp,
-        `천장=${jobOwning} 기본=${mcp}`,
+        `천장=${fmt(jobOwning)} 기본=${mcp}`,
       ),
       assert(
         // ★안쪽 축이 **실제로 존재**하는가 (2026-07-29). 숫자 관계만 보면, 안쪽 경계가
         //  아예 없는데도(서브에이전트가 cancel-only 였다) 부등식은 전부 참이라 통과한다.
         //  그 구멍으로 "멈춘 서브가 부모를 125분 잡는" 상태가 검사를 통과했다.
-        "서브에이전트에 자체 상한이 있다(안쪽 축 존재)",
-        SUBAGENT_TIMEOUT_MS > 0 && jobOwning > SUBAGENT_TIMEOUT_MS,
-        `서브상한=${SUBAGENT_TIMEOUT_MS} 천장=${jobOwning}`,
+        //  ★2026-08-22 상한 무한화 이후엔 "값이 있는가" 로는 못 본다(Infinity > 0 은 참).
+        //   축의 존재는 **배선**으로 판정한다 — 아래 두 검사가 그 몫이다.
+        "서브에이전트 상한이 잡 천장보다 느슨하지 않다",
+        outerIsLooser(jobOwning, SUBAGENT_TIMEOUT_MS),
+        `서브상한=${fmt(SUBAGENT_TIMEOUT_MS)} 천장=${fmt(jobOwning)}`,
       ),
+      assert(
+        // ★두 레인이 **대칭**인가 (2026-08-22). `startDetachedAgent` 엔 하드 백스톱이
+        //  없어서, abort 를 안 듣는 자식(hung MCP)이면 잡이 영원히 running 으로 굳고
+        //  통지가 0건이었다(워커 레인은 1건). 실측으로 확인한 실사고 —
+        //  사용자 신고 "타임아웃 이후 아무런 응답이 없어".
+        "★두 잡 레인 모두 하드 백스톱이 있다(abort 를 안 듣는 자식도 닫힌다)",
+        await bothLanesHaveHardBackstop(),
+        "worker-registry.ts · agent-registry.ts",
+      ),
+      ...(await (async () => {
+        // ★`setTimeout(fn, Infinity)` 은 Node 가 **1ms 로 클램프**한다 = 상한 없음이
+        //  상한 1ms 로 뒤집혀 모든 잡이 즉시 죽는다. 무한을 허용하는 한 이 가드는 필수.
+        const g = await timerGuardsAgainstInfinity();
+        return [
+          assert(
+            "★무한 상한에 타이머를 걸지 않는다(Infinity → 1ms 클램프 방지)",
+            g.ok,
+            g.detail,
+          ),
+        ];
+      })()),
       assert(
         "서브에이전트 잡이 timeoutMs 로 abort 를 만든다(배선 확인)",
         await subagentAbortHasTimeout(),
@@ -70,6 +93,101 @@ export const check: RegressionCheck = {
     ];
   },
 };
+
+/** 표시용 — Infinity 를 사람이 읽는 말로. */
+const fmt = (ms: number): string => (Number.isFinite(ms) ? String(ms) : "무한(상한 없음)");
+
+/**
+ * 바깥 경계가 안쪽보다 **느슨한가.**
+ *
+ * ★단순 `>` 로 쓰면 안 된다 (2026-08-22 상한 무한화). 안쪽이 무한이면 `Infinity > Infinity`
+ *  가 거짓이라 **정상 배치가 실패로 뜬다.** 불변식의 뜻은 "안쪽이 먼저 발화한다" 이고,
+ *  둘 다 무한이면 어느 쪽도 발화하지 않으므로 위반이 아니다. 반대로 안쪽만 무한인데 바깥이
+ *  유한이면 바깥이 가장 조이는 것 = 정확히 이 회귀가 막으려는 그 배치다.
+ */
+const outerIsLooser = (outer: number, inner: number): boolean =>
+  Number.isFinite(inner) ? outer > inner : !Number.isFinite(outer);
+
+/** 두 잡 레인(워커·서브에이전트)이 **모두** 하드 백스톱 race 를 갖는지. */
+const bothLanesHaveHardBackstop = async (): Promise<boolean> => {
+  const { readFile } = await import("node:fs/promises");
+  const read = async (rel: string): Promise<string | null> => {
+    try {
+      return await readFile(new URL(rel, import.meta.url), "utf8");
+    } catch {
+      return null;
+    }
+  };
+  const worker = await read("../../core/llm-runtime/capabilities/worker-registry.ts");
+  const agent = await read("../../core/llm-runtime/capabilities/agent-registry.ts");
+  if (worker === null || agent === null) return true; // 배포본(.ts 미포함) — 오탐 0.
+  const hasRace = (src: string): boolean =>
+    /Promise\.race\(\[/.test(src) && /new WorkerTimeoutError\(/.test(src);
+  return hasRace(worker) && hasRace(agent);
+};
+
+/**
+ * 타이머 상한 가드 — 없으면 무한 상한이 **1ms 상한**으로 뒤집혀 모든 잡이 즉시 죽는다.
+ *
+ * ★종전엔 세 파일에 문자열 `Number.isFinite(` 가 **있는지만** 봤다 — 클램프를 세 곳 다
+ *  지워도 초록이었다(2026-08-23 2라운드 F3, 변이 M8 로 실증). 있다/없다를 세는 검사는
+ *  동의어 하나·다른 용도 한 줄로 뚫린다. [[feedback_gate_must_actually_run]] 의 반대편
+ *  (항상 초록인 가짜 검사)이다.
+ *
+ * 그래서 둘로 바꾼다: ①**순수 함수를 실행**해 접힘 방지를 직접 확인 ②타이머 호출의
+ * 지연 인자가 `_MS` 값을 쓰면서 래퍼를 안 거치는 자리가 있는지 **구문으로** 판정.
+ */
+const timerGuardsAgainstInfinity = async (): Promise<{
+  ok: boolean;
+  detail: string;
+}> => {
+  const MAX = 2_147_483_647;
+  // ① 실행 — 이게 본질이다(구현이 무엇이든 결과가 판정한다).
+  const { asFiniteTimeoutMs } = await import("../../core/worker-jobs.js");
+  const rows: Array<[string, number, boolean]> = [
+    ["Infinity", asFiniteTimeoutMs(Number.POSITIVE_INFINITY), true],
+    ["1e10(2^31 초과)", asFiniteTimeoutMs(1e10), true],
+    ["NaN", asFiniteTimeoutMs(Number.NaN), true],
+    ["5000(정상)", asFiniteTimeoutMs(5_000), false],
+  ];
+  const bad = rows.filter(([, got, clamp]) =>
+    clamp ? !(got > 0 && got <= MAX) : got !== 5_000,
+  );
+  if (bad.length > 0) {
+    return {
+      ok: false,
+      detail: `★asFiniteTimeoutMs 가 접힘을 못 막는다: ${bad
+        .map(([n, g]) => `${n}→${g}`)
+        .join(", ")}`,
+    };
+  }
+  // ② ★타이머를 **실제로 건다**. 구문 검사로는 부족했다 — 첫 판은 `_MS` 식별자만 봤는데
+  //  진짜 위험한 자리(`createJobAbort`)는 지연이 지역변수 `ms` 라 그물 밖이었고, 클램프를
+  //  떼는 변이가 그대로 통과했다. 여기선 큰 유한값·무한을 넣고 **안 터지는지** 본다.
+  const { createJobAbort } = await import("../../core/worker-jobs.js");
+  const fires = async (timeoutMs: number): Promise<boolean> => {
+    const a = createJobAbort(`regr-clamp-${timeoutMs}`, { timeoutMs });
+    await new Promise((r) => setTimeout(r, 120));
+    const aborted = a.signal.aborted;
+    a.done();
+    return aborted;
+  };
+  const overflowFired = await fires(2_147_483_647 * 3); // 2^31-1 초과 = 접힘 위험
+  const infiniteFired = await fires(Number.POSITIVE_INFINITY);
+  if (overflowFired || infiniteFired) {
+    return {
+      ok: false,
+      detail:
+        `★타이머가 즉시 발화했다 — 상한이 1ms 로 뒤집혔다(모든 잡 즉사): ` +
+        `2^31-1×3→${overflowFired ? "발화" : "정상"} · Infinity→${infiniteFired ? "발화" : "정상"}`,
+    };
+  }
+  return {
+    ok: true,
+    detail: "클램프 4종 + 실제 타이머 2종(2^31-1×3 · Infinity) 120ms 내 미발화",
+  };
+};
+
 
 /** 서브에이전트 abort 가 timeoutMs 를 받는지(배선이 빠지면 안쪽 축이 사라진다). */
 const subagentAbortHasTimeout = async (): Promise<boolean> => {

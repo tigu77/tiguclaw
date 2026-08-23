@@ -45,6 +45,7 @@ import {
   startWorkerJob,
   WorkerTimeoutError,
   WORKER_TIMEOUT_MS,
+  asFiniteTimeoutMs,
   WORKER_HARD_GRACE_MS,
   type WorkerJobRecord,
   listLiveChildJobs,
@@ -165,16 +166,26 @@ export const runWorkerJob = (
       // 미settle 시 WorkerTimeoutError 로 *강제* 종료 → onWorkerComplete 가 정시 발화(통지 옴).
       // 버려진 runRegionAP 의 늦은 reject 는 흡수(unhandledRejection→crash-fast 오발 방지,
       // 어제 채널 fix 와 동일 패턴). 정상 워커는 상한 전 settle 이라 영향 0.
-      const hardDeadline = new Promise<never>((_resolve, reject) => {
-        hardTimer = setTimeout(
-          () => reject(new WorkerTimeoutError(WORKER_TIMEOUT_MS)),
-          WORKER_TIMEOUT_MS + WORKER_HARD_GRACE_MS,
-        );
-        (hardTimer as { unref?: () => void }).unref?.();
-      });
+      // ★상한이 무한이면 **타이머를 아예 안 건다** (2026-08-22). `setTimeout(fn, Infinity)` 은
+      //  Node 가 1ms 로 클램프해서 *모든* 워커가 시작 즉시 타임아웃으로 죽는다 — "상한 없음"
+      //  이 "상한 1ms" 로 뒤집히는 자리다. 무한일 땐 race 자체를 안 건다(불필요한 Promise 0).
+      const bounded = Number.isFinite(WORKER_TIMEOUT_MS);
+      const hardDeadline = bounded
+        ? new Promise<never>((_resolve, reject) => {
+            hardTimer = setTimeout(
+              () => reject(new WorkerTimeoutError(WORKER_TIMEOUT_MS)),
+              // ★클램프 필수 — 큰 유한값은 setTimeout 오버플로로 즉시 발화한다(검토 F2).
+              asFiniteTimeoutMs(WORKER_TIMEOUT_MS + WORKER_HARD_GRACE_MS),
+            );
+            (hardTimer as { unref?: () => void }).unref?.();
+          })
+        : undefined;
       void runRegionAP.catch(() => {});
 
-      let out = await Promise.race([runRegionAP, hardDeadline]);
+      let out =
+        hardDeadline === undefined
+          ? await runRegionAP
+          : await Promise.race([runRegionAP, hardDeadline]);
 
       // ─── ★소환자는 **거두고** 끝난다 (ADR 2026-08-19, 사용자 확정 §b) ──────────────
       //  "소환해놓고 끝날 수는 없지. 당장은 안 기다리더라도 결과를 받고 마무리해야지."

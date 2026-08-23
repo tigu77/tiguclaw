@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# 같은 브랜치에 연달아 push 하면 앞 잡을 취소한다 — 종전엔 중복 잡이 러너를 물고
+# 앉아 있었다(2026-08-23 4R F11).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   typecheck:
     runs-on: ubuntu-latest
@@ -21,5 +30,12 @@ jobs:
       # (종전엔 typecheck 하나뿐이라, 검증 하네스를 아무리 만들어도 재실행되지 않았다.)
       # 격리: 러너가 TIGUCLAW_HOME 을 임시 디렉터리로 잡아 실제 홈·DB 를 안 건드린다.
       # timeout: 검사들이 자체 시한을 갖지만, 러너가 매달리는 최악의 경우를 막는 바깥 그물.
+      # ★바깥 그물은 **안쪽 시한의 합보다 커야** 한다 (2026-08-23 4R F5). 데몬을 띄우는
+      #  검사 둘이 각각 90초 시한을 갖는데 예산이 5분이면, 둘 다 걸릴 때 스텝이 통째로
+      #  잘려 **1,559건 신호가 전부 사라진다**(= 게이트 사망). 로컬 실측 59초.
       - run: npm run test:regression
-        timeout-minutes: 5
+        timeout-minutes: 15
+      # ★배포 산출물 빌드까지 본다 (4R F11). `build:prod` 는 `copy-dist-assets.mjs` 를
+      #  돌려 dist/plugins·dist/packages 를 채우는데, 그게 깨지면 built 런타임이 플러그인
+      #  0개로 뜬다(2026-07-14 실사고). typecheck·build 로는 안 보인다.
+      - run: npm run build:prod

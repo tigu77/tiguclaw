@@ -277,7 +277,14 @@
       // ★<span role="button">(<button> 아님) — 세션 탭처럼 hostEl 자체가 <button> 인 경우가 있어
       // (nested <button> 은 무효 HTML·클릭 버블 꼬임) 기존 .st-x(탭 닫기) 컨벤션과 동일하게 span
       // 으로 클릭·키보드(Enter/Space) 를 직접 배선한다.
-      const attachKebab = (hostEl, type, ctxFn) => {
+      /**
+       * ⋯ 메뉴 버튼을 카드에 붙인다.
+       *
+       * ★`opts.first` = 흐름 **맨 앞**에 넣는다. sticky+float 로 우상단에 띄우려면 흐름의
+       *  처음에 있어야 한다(뒤에 있으면 그 위치부터 떠서 본문 아래로 내려간다).
+       *  절대배치 시절엔 순서가 무관했다 — 그래서 append 였다.
+       */
+      const attachKebab = (hostEl, type, ctxFn, opts) => {
         if (!hostEl) return null;
         const btn = document.createElement("span");
         btn.className = "cm-kebab"; btn.textContent = "⋯"; btn.title = "메뉴";
@@ -290,7 +297,8 @@
         };
         btn.addEventListener("click", trigger);
         btn.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") trigger(ev); });
-        hostEl.appendChild(btn);
+        if (opts && opts.first === true && hostEl.firstChild) hostEl.insertBefore(btn, hostEl.firstChild);
+        else hostEl.appendChild(btn);
         return btn;
       };
 

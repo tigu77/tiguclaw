@@ -113,7 +113,6 @@
       .nav-brand { padding:4px 6px 8px; }
       .nav-kicker { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.13em; font-weight:850; margin-bottom:6px; }
       .nav-title { color:var(--text); font-size:18px; font-weight:880; letter-spacing:-.04em; }
-      .nav-sub { margin-top:3px; color:var(--text-mute); font-size:11px; }
       .nav-section { display:grid; gap:5px; }
       .nav-button { width:100%; display:flex; align-items:center; gap:10px; padding:10px 11px; border:1px solid transparent; border-radius:13px; background:transparent; color:var(--text-mute); cursor:pointer; text-align:left; }
       .nav-button:hover { background:var(--card-hover); color:var(--text); }
@@ -445,20 +444,26 @@
       .ev.local .type { text-transform:none; }
       .chat-message { margin-top:7px; white-space:pre-wrap; color:var(--text); font-size:13px; line-height:1.55; font-family:inherit; }
       /* 마크다운 렌더(봇 답변만). 평문 버블은 white-space:pre-wrap 유지, 마크다운 버블은 normal 로 흐름. */
-      .chat-message.md { white-space:normal; }
-      .chat-message.md > :first-child { margin-top:0; }
-      .chat-message.md > :last-child { margin-bottom:0; }
-      .chat-message.md p { margin:0 0 7px; }
-      .chat-message.md ul, .chat-message.md ol { margin:4px 0 7px; padding-left:20px; }
-      .chat-message.md li { margin:2px 0; }
-      .chat-message.md blockquote { margin:6px 0; padding:2px 10px; border-left:3px solid var(--border-strong); color:var(--text-mute); }
-      .chat-message.md a { color:var(--info); text-decoration:underline; }
-      .chat-message.md code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:rgba(255,255,255,.07); padding:1px 5px; border-radius:5px; }
-      .chat-message.md pre { margin:7px 0; padding:10px 12px; background:rgba(0,0,0,.32); border:1px solid var(--border); border-radius:10px; overflow-x:auto; }
-      .chat-message.md pre code { display:block; background:none; padding:0; white-space:pre; line-height:1.5; }
+      /* ★선택자를 `.md` → `.md` 로 내렸다 (2026-08-23 적대 검토 D1).
+         `md` 는 `setChatBody` 가 렌더한 그릇에 붙이는 **표준 마커**인데, 규칙이 채팅 버블
+         클래스에 묶여 있어 **전체 활동(`.aav-md`)엔 하나도 안 걸렸다.** 실측: 코드블록
+         배경·테두리 0, 인라인 code 배경 없음, 표 테두리 0 — 그리고 `pre.has-copy` 가
+         `position:static` 이라 **복사 버튼이 코드블록에서 119px 위에 떠 있었다**(절대배치가
+         containing block 을 잃음). 렌더된 마크다운은 어디에 있든 같게 보여야 한다. */
+      .md { white-space:normal; }
+      .md > :first-child { margin-top:0; }
+      .md > :last-child { margin-bottom:0; }
+      .md p { margin:0 0 7px; }
+      .md ul, .md ol { margin:4px 0 7px; padding-left:20px; }
+      .md li { margin:2px 0; }
+      .md blockquote { margin:6px 0; padding:2px 10px; border-left:3px solid var(--border-strong); color:var(--text-mute); }
+      .md a { color:var(--info); text-decoration:underline; }
+      .md code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; background:rgba(255,255,255,.07); padding:1px 5px; border-radius:5px; }
+      .md pre { margin:7px 0; padding:10px 12px; background:rgba(0,0,0,.32); border:1px solid var(--border); border-radius:10px; overflow-x:auto; }
+      .md pre code { display:block; background:none; padding:0; white-space:pre; line-height:1.5; }
       /* 코드블록 복사 버튼 — 평소엔 숨고 hover/포커스에만. 스크롤(overflow-x)과 무관하게
          블록 오른쪽 위에 고정되도록 pre 를 position:relative 로 잡는다. */
-      .chat-message.md pre.has-copy { position:relative; }
+      .md pre.has-copy { position:relative; }
       .code-copy { position:absolute; top:6px; right:6px; padding:2px 8px; font-size:11px; line-height:1.6;
         color:var(--text-dim); background:var(--panel); border:1px solid var(--border); border-radius:6px;
         cursor:pointer; opacity:0; transition:opacity .12s ease, color .12s ease; z-index:2; }
@@ -476,9 +481,9 @@
       .hljs-attribute, .hljs-property, .hljs-symbol, .hljs-bullet, .hljs-subst, .hljs-link { color:#e6edf3; }
       .hljs-deletion { color:#ffa198; }
       .hljs-emphasis { font-style:italic; } .hljs-strong { font-weight:700; }
-      .chat-message.md table { border-collapse:collapse; margin:7px 0; font-size:12px; }
-      .chat-message.md th, .chat-message.md td { border:1px solid var(--border); padding:4px 8px; }
-      .chat-message.md hr { border:none; border-top:1px solid var(--border); margin:9px 0; }
+      .md table { border-collapse:collapse; margin:7px 0; font-size:12px; }
+      .md th, .md td { border:1px solid var(--border); padding:4px 8px; }
+      .md hr { border:none; border-top:1px solid var(--border); margin:9px 0; }
       .chat-empty { margin:10px; padding:22px; border:1px dashed var(--border); border-radius:16px; background:rgba(255,255,255,.03); color:var(--text-mute); text-align:center; }
       .chat-empty strong { display:block; color:var(--text); font-size:14px; margin-bottom:5px; }
       .t-channel { border-left-color:var(--info); } .t-channel .type { color:var(--info); }
@@ -696,6 +701,72 @@
          PC=우측 고정폭 드로어(웹앱식, 백드롭 없음·채팅 계속 보임), 모바일=넓게 슬라이드인+백드롭. */
       #bg-toggle { position:relative; border:1px solid var(--border); border-radius:11px; padding:7px 11px; background:rgba(255,255,255,.035); color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:800; display:flex; align-items:center; gap:7px; white-space:nowrap; }
       #bg-toggle:hover { color:var(--text); background:var(--card-hover); }
+
+      /* ── 대화 검색 (2026-08-23) — 버튼 → **드로어**. ─────────────────────────────
+         ★인라인 패널이었다가 옮겼다: 채팅 위에 붙으니 열릴 때마다 대화가 아래로 밀려
+          채팅 공간을 먹었다(사용자: "상단에 검색창이 계속 떠 있는 건 채팅 공간이 너무
+          줄어들어서 별로"). 백그라운드 패널과 **같은 부류**라 같은 형태로 둔다.
+         ★단 백그라운드와 달리 **레이아웃을 밀지 않는다**(사용자: "사이즈 연동은 아니고").
+          검색은 잠깐 열고 결과를 고르면 닫는 흐름이라, 채팅 폭을 바꿨다 되돌리는 게 더
+          성가시다. 그래서 `body.cs-open` 은 패널만 슬라이드하고 main 여백은 안 건드린다. */
+      .chat-head-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+      #chat-search-btn { border:1px solid var(--border); border-radius:11px; padding:7px 11px; background:rgba(255,255,255,.035); color:var(--text-mute); cursor:pointer; font-size:11px; font-weight:800; white-space:nowrap; }
+      #chat-search-btn:hover { color:var(--text); background:var(--card-hover); }
+      #cs-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:20; display:none; }
+      body.cs-open #cs-backdrop { display:block; }
+      #cs-panel {
+        position:fixed; top:0; right:0; bottom:0; width:420px; max-width:92vw;
+        display:flex; flex-direction:column; gap:9px; padding:12px; background:var(--panel);
+        border-left:1px solid var(--border-strong); box-shadow:-14px 0 36px rgba(0,0,0,.4);
+        transform:translateX(100%); transition:transform .2s ease; z-index:21;
+        pointer-events:none; visibility:hidden;
+      }
+      body.cs-open #cs-panel { transform:translateX(0); pointer-events:auto; visibility:visible; }
+      /* 폭 드래그 핸들(왼쪽 가장자리) — 백그라운드 패널과 **같은 몸짓**(같은 부류는 같게).
+         ★단 여기선 레이아웃을 안 민다: 폭이 바뀌어도 채팅은 그대로다(사용자 확정). */
+      .cs-resize { position:absolute; left:0; top:0; bottom:0; width:8px; cursor:ew-resize; z-index:3; }
+      .cs-resize::before { content:""; position:absolute; left:2px; top:50%; transform:translateY(-50%); width:3px; height:36px; border-radius:2px; background:var(--border-strong); opacity:0; transition:opacity .12s; }
+      .cs-resize:hover::before, .cs-resize.dragging::before { opacity:1; background:var(--accent-2); }
+      body.cs-resizing { user-select:none; cursor:ew-resize; }
+      @media (max-width:900px) { .cs-resize { display:none; } }
+      #cs-panel .sd-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+      #cs-panel .cs-row { display:flex; gap:8px; align-items:center; }
+      #chat-search-input { flex:1; min-width:0; border:1px solid var(--border); border-radius:9px; padding:9px 11px; background:rgba(0,0,0,.18); color:var(--text); font-size:12px; }
+      .cs-count { font-size:11px; color:var(--text-mute); font-variant-numeric:tabular-nums; white-space:nowrap; min-width:34px; text-align:right; }
+      .cs-nav { border:1px solid var(--border); border-radius:8px; width:26px; height:30px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:14px; line-height:1; }
+      .cs-nav:hover:not(:disabled) { color:var(--text); background:var(--card-hover); }
+      .cs-nav:disabled { opacity:.35; cursor:default; }
+      /* 지금 보고 있는 결과 — 목록에서 어디쯤인지 잃지 않게. */
+      .cs-hit.cs-active { border-color:var(--accent-2); background:rgba(125,211,252,.10); }
+      .cs-status { font-size:11px; color:var(--text-mute); }
+      .cs-status:empty { display:none; }
+      /* 결과는 남은 높이를 다 쓰고 **자기 안에서** 스크롤한다 — 패널 밖으로 안 넘친다. */
+      .cs-results { flex:1; min-height:0; display:flex; flex-direction:column; gap:6px; overflow-y:auto; }
+      .cs-hit { text-align:left; border:1px solid var(--border); border-radius:10px; padding:8px 10px; background:rgba(255,255,255,.025); color:var(--text); cursor:pointer; display:flex; flex-direction:column; gap:4px; }
+      .cs-hit:hover { background:var(--card-hover); }
+      .cs-hit-head { display:flex; gap:8px; align-items:center; font-size:10px; color:var(--text-mute); }
+      .cs-hit-role { font-weight:900; }
+      .cs-hit-session { padding:1px 6px; border-radius:7px; background:rgba(125,211,252,.14); color:#7dd3fc; font-weight:800; }
+      .cs-hit-when { margin-left:auto; }
+      .cs-hit-body { font-size:12px; line-height:1.5; color:var(--text); word-break:break-word; }
+      /* ★일치 구간은 **확실히** 눈에 띄어야 한다 (2026-08-23 사용자 요청). 종전엔 28%
+         반투명이라 어두운 카드 배경에 묻혔다 — 불투명 앰버 + 어두운 글자로 대비를 준다
+         (밝은 배경 위 어두운 글자 = 다크 테마에서 가장 강한 대비). */
+      /* ★글자는 흰색 그대로, **바탕만** 진하게 (사용자 확정). 흰 글자를 유지하려면 바탕이
+         밝으면 안 되므로 밝은 노랑이 아니라 **채도 높은 진한 앰버**를 쓴다. */
+      .cs-hit-body mark {
+        background:rgba(217,119,6,.85); color:var(--text); font-weight:800;
+        border-radius:3px; padding:0 3px; box-shadow:0 0 0 1px rgba(251,191,36,.6);
+      }
+      /* 지금 보고 있는 결과의 일치는 한 단계 더 — 목록에서 "여기" 를 즉시 찾게. */
+      .cs-hit.cs-active .cs-hit-body mark { background:rgba(234,88,12,.95); box-shadow:0 0 0 2px rgba(251,191,36,.75); }
+      /* 검색 결과에서 점프해 온 메시지 — 잠깐 강조해서 **어디에 내렸는지** 보이게 한다.
+         강조가 없으면 스크롤만 되고 사용자는 어느 줄이 그건지 다시 찾아야 한다. */
+      .msg-jump-hit { animation:jumpFlash 2.2s ease-out; border-radius:10px; }
+      @keyframes jumpFlash {
+        0%,55% { background:rgba(250,204,21,.20); box-shadow:0 0 0 2px rgba(250,204,21,.35) inset; }
+        100%   { background:transparent; box-shadow:none; }
+      }
       #bg-toggle .bg-badge { min-width:17px; height:17px; padding:0 5px; border-radius:9px; background:var(--accent-2); color:#04121f; font-size:10px; font-weight:900; display:none; align-items:center; justify-content:center; line-height:1; }
       #bg-toggle .bg-badge.show { display:inline-flex; }
       #bg-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:18; display:none; }
@@ -1168,11 +1239,18 @@
       /* ⋯ 메뉴 kebab — 채팅 카드 맨 윗라인 우측(답글 버튼 폐지, 답글은 메뉴 안). hover 시 노출.
          단순 버블(.ev.local)=head 우측 절대배치 / 턴그룹=turn-head flex 끝(margin-left:auto). */
       .ev.local { position:relative; }
+      /* ★긴 카드에서도 메뉴 버튼이 **보이는 영역을 따라다닌다** (2026-08-23 사용자 요청).
+         종전엔 카드 우상단 고정이라 카드가 화면보다 길면 위로 밀려 나가 안 보였다.
+         ★CSS `sticky` 는 **여기선 안 먹는다** — 가상화가 창을 `translateY` 로 옮기는데
+          변환된 조상이 sticky 의 기준을 깨뜨린다(실측: 버튼이 카드 끝에 남고 재배치 때
+          노드도 갈렸다). 그래서 `top` 을 JS 가 스크롤에 맞춰 갱신한다(reply.js followKebab).
+          절대배치는 변환 안에서도 예측 가능하게 동작한다. */
       .ev.local > .cm-kebab { position:absolute; top:7px; right:9px; opacity:0; z-index:3; transition:opacity .12s;
         border:1px solid var(--border-strong); background:var(--card); border-radius:8px; padding:0 6px; }
-      .ev.local:hover > .cm-kebab { opacity:1; }
+      .ev.local:hover > .cm-kebab, .ev.local:focus-within > .cm-kebab { opacity:1; }
+      .turn-group { position:relative; }
       .turn-head > .cm-kebab { margin-left:auto; flex:none; opacity:0; transition:opacity .12s; }
-      .turn-group:hover .turn-head > .cm-kebab { opacity:1; }
+      .turn-group:hover .turn-head > .cm-kebab, .turn-group:focus-within .turn-head > .cm-kebab { opacity:1; }
       /* 컨텍스트 태그 바 — 클릭하면 #<프로젝트> 태그를 입력창에 껴넣어 그 프로젝트 얘기임을 알림. */
       .chat-context { display:flex; align-items:flex-start; gap:8px; margin-bottom:8px; }
       .chat-context:empty { display:none; }
@@ -1324,7 +1402,21 @@
       .aav-line.expanded { flex-wrap:wrap; align-items:flex-start; }
       /* 펼침 = 전문 표시: pre-wrap 로 개행·공백 보존, 1줄 클램프(nowrap/ellipsis) 해제.
          긴 본문은 max-height + overflow:auto 로 세로 점유를 바운드(과도한 스크롤 점프 방지). */
-      .aav-line.expanded .aav-body { flex:1 1 100%; white-space:pre-wrap; word-break:break-word; overflow:auto; text-overflow:clip; margin-top:2px; max-height:min(340px, 50vh); }
+      .aav-line.expanded .aav-body { flex:1 1 100%; white-space:normal; overflow:auto; text-overflow:clip; margin-top:2px; max-height:min(340px, 50vh); }
+      /* 접힘=플레인 한 줄 / 펼침=마크다운. 두 겹을 CSS 로만 바꾼다(재렌더 0). */
+      .aav-md { display:none; }
+      .aav-line.expanded .aav-preview { display:none; }
+      .aav-line.expanded .aav-md { display:block; }
+      /* ★긴 줄은 **카드 폭에 맞춰 접는다** (2026-08-23 사용자 요청). 종전엔 긴 URL·경로처럼
+         띄어쓰기 없는 토큰이 카드를 옆으로 밀어 가로 스크롤이 생겼다. `anywhere` 는 단어
+         중간도 끊는다 — 로그·경로가 많은 화면이라 읽기보다 **안 넘치는 것**이 우선이다. */
+      .aav-md, .aav-preview { overflow-wrap:anywhere; word-break:break-word; }
+      /* 코드블록만 예외 — 코드는 끊으면 뜻이 바뀐다. 자기 안에서 가로 스크롤한다. */
+      .aav-md pre { max-width:100%; overflow-x:auto; white-space:pre; }
+      .aav-md pre code { white-space:pre; overflow-wrap:normal; word-break:normal; }
+      .aav-md img, .aav-md table { max-width:100%; }
+      .aav-md > :first-child { margin-top:0; }
+      .aav-md > :last-child { margin-bottom:0; }
       .aav-att-hint { color:var(--text-mute); font-size:11px; margin-left:4px; }
 
       /* ── 확장 가능 컨텍스트메뉴(js/context-menu.js) — 계약: _workspace/

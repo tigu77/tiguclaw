@@ -28,6 +28,7 @@ import {
   pruneTerminalWorkerJobs,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
+import { formatDurationKo } from "./format-duration.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import { createSteeringChannel } from "./steering.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
@@ -192,6 +193,13 @@ export interface WorkerJobRecord {
   status: WorkerJobStatus;
   startedAt: number;
   finishedAt?: number;
+  /**
+   * 이 잡 좌표(`worker:<id>`/`agent:<id>`)에서 마지막으로 관측된 활동 시각 (ms).
+   * 점검(check-in)이 "돌고 있나 멈췄나" 를 판정하는 **유일한 근거**. 미기록이면 startedAt.
+   */
+  lastActivityAt?: number;
+  /** 정체 보고를 몇 번 했나 — 반복을 세서 "배경소음" 이 되지 않게(로그·문구에 싣는다). */
+  stallReports?: number;
   /** status==="done" 시 워커 출력 (재주입 전 — 채널 직행 절대 X, W-I1). */
   result?: string;
   /** status==="failed" 시 redact 된 원인 문자열. */
@@ -250,7 +258,13 @@ export const registerJob = (input: RegisterJobInput): string => {
     notifyDest: input.notifyDest,
     status: "running",
     startedAt,
+    lastActivityAt: startedAt,
   });
+  // ★증거 레코드를 **여기서** 연다 (2026-08-22). 첫 틱에서 지연 생성하면 첫 점검이
+  //  "시작 후 1주기" 가 아니라 "첫 틱 후 1주기" 에 와서, 잡마다 점검 시점이 제각각
+  //  밀린다(실측: 400ms 주기에서 첫 점검이 1.1초). 기준 시각은 잡의 시작이어야 한다.
+  seedCheckinEvidence(jobId, startedAt);
+  startCheckinScanner(); // 점검 시계 기동(멱등 — 이미 돌면 no-op).
   persistSafe("registerJob", () =>
     upsertWorkerJob({
       jobId,
@@ -330,6 +344,7 @@ export const markDone = (jobId: string, result: string): void => {
   persistSafe("markDone", () =>
     updateWorkerJobStatus(jobId, "done", job.finishedAt!),
   );
+  dropCheckinEvidence(jobId);
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1, running 은 위 UPDATE 대상 아님).
   publishWorkerLifecycle("worker.done", job, { task: job.task, result });
   dispatchSubagentStopHook(job, "done", result); // Phase 1.1 — agent kind 만(no-op for worker).
@@ -376,6 +391,7 @@ export const markFailed = (jobId: string, error: string): void => {
   persistSafe("markFailed", () =>
     updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
   );
+  dropCheckinEvidence(jobId);
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
   publishWorkerLifecycle("worker.failed", job, { error, task: job.task });
   dispatchSubagentStopHook(job, "failed", error); // Phase 1.1 — agent kind 만(no-op for worker).
@@ -394,9 +410,20 @@ export const markFailed = (jobId: string, error: string): void => {
  *
  * ★문자열을 손으로 비교하지 않게 상수로 둔다 — 사유 문구를 고치면 알림이 조용히 늘어난다.
  */
+/**
+ * 정체 판정으로 점검이 끊은 잡의 사유.
+ *
+ * ★`CASCADE_CANCEL_REASONS` 에 **같이 넣는다** — 그 목록의 뜻은 "연쇄" 가 아니라
+ *  *"완료 경로가 따로 통지하지 말 것"* 이다(사용자가 이미 아는 사실이라서). 정체 중단도
+ *  같다: 점검이 **자기 손으로 보고**하고, 그 보고엔 완료 경로가 못 담는 것(왜 끊었는지 ·
+ *  재개할지 소환자가 고르라는 안내)이 들어간다. 두 곳이 각자 말하면 한 사건에 알림이 둘이다.
+ */
+export const STALL_CANCEL_REASON = "점검에서 정체로 판정돼 중단됨";
+
 export const CASCADE_CANCEL_REASONS = [
   "상위 작업이 취소됨",
   "상위 대화가 중단됨",
+  STALL_CANCEL_REASON,
 ] as const;
 
 /** 이 잡이 **연쇄로** 취소됐나(사용자가 직접 고른 게 아니라). */
@@ -417,6 +444,7 @@ export const markCancelled = (jobId: string, reason: string): void => {
   persistSafe("markCancelled", () =>
     updateWorkerJobStatus(jobId, "cancelled", job.finishedAt!),
   );
+  dropCheckinEvidence(jobId);
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
   publishWorkerLifecycle("worker.cancelled", job, { error: reason, task: job.task });
 };
@@ -466,6 +494,433 @@ export const parentJobIdOf = (threadKey: string): string | undefined => {
   const m = /^(?:worker|agent):(.+)$/.exec(threadKey);
   return m === null ? undefined : m[1];
 };
+
+// ─── 잡 점검(check-in) — **증거를 모아 소환자에게 넘긴다** (2026-08-22) ─────────────
+//
+// ★두 번 뒤집힌 자리다. ①원래는 wall-clock **kill** 이었다(2시간이면 죽인다). ②그걸
+//  "죽이지 않고 침묵을 보고" 로 바꿨다. ③그런데 그것도 여전히 **코어가 판정**하고 있었다 —
+//  `침묵 2회 = 죽인다` 는 정적 규칙을 내가 새로 만든 것이고, 그건 사용자가 소환자에게
+//  맡기라고 한 판단을 코드가 가로챈 것이다([[feedback_capability_not_routing]]).
+//
+//  사용자: *"시간제한을 걸으라는 건 소환자가 소환 대상이 별문제가 없는지 확인해보는
+//  시간이면 어떨까"* · *"재개는 소환자가 선택"* · *"감사 주체는 언제나 소환자"*.
+//
+// ★그리고 **침묵은 '잘 돌고 있는지'의 답이 아니다.** 그건 기계가 움직이는지만 본다:
+//   · 3시간짜리 정상 도구 → 조용하다 → 정체로 **오판**
+//   · 같은 일을 반복하는 런어웨이 → 시끄럽다 → 건강하다고 **오판**(이 레포가 겪은 사고다)
+//  그래서 여기서는 판정하지 않는다. **증거를 모아서 넘긴다** — 무슨 도구를 몇 번 썼나,
+//  지금 진행 중인 도구가 있나(있으면 몇 분째), 마지막 산출물이 뭔가, 얼마나 조용한가.
+//  긴 도구 오판도 휴리스틱 면제 없이 사라진다: 증거에 "Bash 3시간째 진행 중" 이 실리면
+//  소환자가 읽고 "정상, 계속" 이라고 판단한다. 추측하던 것을 **보여주고 판단시킨다**.
+//
+// ★자동 종료가 남는 자리는 하나다: **판단할 소환자가 아무도 없을 때.** 매니저도 없고
+//  (배달 실패) 완전 침묵인 채로 두 주기가 지나면 그건 "애매" 가 아니라 "아무도 안 거두는
+//  잡" 이라 근거가 선다. 그 외에 죽이는 수단은 소환자에게 있다(`cancel_worker`).
+
+/** 한 주기 동안 그 잡이 무엇을 했나 — 점검이 넘기는 **증거**. */
+interface CheckinEvidence {
+  /** 이번 주기의 도구 활동 건수(phase start+end 각각 1건이라 실제 도구 수의 ~2배). */
+  toolEvents: number;
+  /** 이번 주기의 텍스트 산출 건수. */
+  textEvents: number;
+  /** 마지막으로 본 도구 이름. */
+  lastTool?: string;
+  /**
+   * 아직 안 끝난 도구 — **호출 단위** 키(`seq`, 없으면 이름 폴백) → `{tool, at}`.
+   *
+   * ★종전엔 **도구 이름**으로 키잉했다. 그러면 같은 도구를 병렬로 부를 때(흔하다) 하나만
+   *  끝나도 항목이 통째로 지워져 `inFlight` 가 빈다 — 실측: `Bash` 2개 중 1개 종료 →
+   *  `inFlight=[]`. 그 결과 점검 증거에 **"이번 주기에 아무 활동도 없었습니다"** 가 실려
+   *  소환자에게 가고, 소환자는 **돌고 있는 자식을 취소한다.**
+   *  이 릴리스의 전제가 "판정 말고 증거를 넘긴다" 인데 그 증거가 조용히 거짓이었다.
+   *  `seq` 는 어댑터가 도구 start/end 를 잇는 호출 식별자다(claude `timing.seq`,
+   *  codex `callIdToSeq`) — 그게 곧 호출의 정체다.
+   */
+  inFlight: Map<string, { tool: string; at: number }>;
+  /** 마지막 활동 시각. */
+  lastActivityAt: number;
+  /** 다음 점검까지 미룬 시각(주기 계산 기준). */
+  lastCheckinAt: number;
+  /** 점검 회차. */
+  rounds: number;
+}
+
+const evidence = new Map<string, CheckinEvidence>();
+
+/**
+ * 잡이 터미널(done/failed/cancelled)로 가면 증거를 버린다.
+ *
+ * ★없으면 샌다 (2026-08-23 발견). 종전엔 지우는 곳이 자동 종료 경로 하나뿐이었고, 틱은
+ *  `running` 잡만 훑으니 끝난 잡의 항목을 다시 볼 일이 없었다. 유일한 정리 시점이
+ *  `stopCheckinScanner` 의 `clear()` 인데 그건 **돌고 있는 잡이 0** 이어야 온다 — 잡이
+ *  끊이지 않는 인스턴스에선 영영 안 온다. `jobs` 맵엔 `pruneTerminalJobsSafe` 캡이 있는데
+ *  이쪽만 없었다([[project_hotpath_bound_preserve_record]] — 바운드 없는 자리는 결국 샌다).
+ *  dev 는 잡이 띄엄띄엄이라 자주 clear 돼 안 드러났고, 회귀 프로브도 짧아 못 잡았다.
+ *
+ * ★터미널 전이 **단일 지점**(`pruneTerminalJobsSafe` 옆)에 붙인다 — 마킹 함수마다 따로
+ *  적으면 넷째가 생길 때 빠진다.
+ */
+const dropCheckinEvidence = (jobId: string): void => {
+  evidence.delete(jobId);
+};
+
+/** 잡 등록 시 증거 레코드를 연다 — 점검 기준 시각 = 잡 시작. */
+const seedCheckinEvidence = (jobId: string, startedAt: number): void => {
+  evidence.set(jobId, freshEvidence(startedAt));
+};
+
+const freshEvidence = (now: number): CheckinEvidence => ({
+  toolEvents: 0,
+  textEvents: 0,
+  inFlight: new Map(),
+  lastActivityAt: now,
+  lastCheckinAt: now,
+  rounds: 0,
+});
+
+/** 점검 시계 — 잡이 하나라도 돌 때만 산다(유휴 타이머 0). */
+let checkinTimer: ReturnType<typeof setInterval> | undefined;
+/** 활동 구독 해제자 — 시계와 생명주기를 같이 한다. */
+let activityUnsub: (() => void) | undefined;
+
+/**
+ * 점검 틱 간격 — 주기의 1/4(최소 1s, 최대 60s). 주기 자체로 틱하면 최대 2배까지 늦게
+ * 발견하므로 잘게 본다. unref 라 프로세스 종료를 막지 않는다.
+ */
+const checkinTickMs = (): number =>
+  Math.max(1_000, Math.min(60_000, Math.floor(asFiniteTimeoutMs(JOB_CHECKIN_INTERVAL_MS) / 4)));
+
+/** 증거를 사람이·모델이 읽는 한 문단으로. 판정 문장은 **넣지 않는다**(그건 소환자 몫). */
+const describeEvidence = (job: WorkerJobRecord, ev: CheckinEvidence, now: number): string => {
+  const lines: string[] = [];
+  lines.push(`· 시작 이후: ${formatDurationKo(now - job.startedAt)}`);
+  lines.push(
+    `· 마지막 활동 이후: **${formatDurationKo(now - ev.lastActivityAt)}** (점검 주기 ${formatDurationKo(JOB_CHECKIN_INTERVAL_MS)})`,
+  );
+  lines.push(
+    `· 직전 주기 활동: 도구 이벤트 ${ev.toolEvents}건 · 텍스트 ${ev.textEvents}건`,
+  );
+  if (ev.lastTool !== undefined) lines.push(`· 마지막 도구: \`${ev.lastTool}\``);
+  if (ev.inFlight.size > 0) {
+    const items = [...ev.inFlight.values()]
+      .map((f) => `\`${f.tool}\`(${formatDurationKo(now - f.at)}째)`)
+      .join(", ");
+    lines.push(`· **진행 중인 도구**: ${items} — 안 끝났을 뿐 멈춘 게 아닐 수 있습니다`);
+  } else if (ev.toolEvents === 0 && ev.textEvents === 0) {
+    lines.push(`· **이번 주기에 아무 활동도 없었습니다**`);
+  }
+  return lines.join("\n");
+};
+
+/**
+ * 점검 한 건을 **소환자에게** 넘긴다 — 직속 소환자가 먼저, 없으면 위로.
+ *
+ * ★사용자 지적: *"1회차 무활동을 측정했다는 건 그 측정한 주체가 소환자인 거잖아."* 그래서
+ *  배달도 소환 관계를 탄다. 처음엔 전역 스캐너가 사용자에게 직접 쐈는데, 그러면 `worker:<id>`
+ *  좌표가 미배달로 떨어지거나 남의 집 사정이 사용자에게 간다.
+ *
+ * @returns **판단할 소환자**(도는 매니저 또는 메인 비서)가 받았으면 true.
+ *          아무도 못 받으면(핸들러 부재·재주입 실패 → raw 직행) false.
+ *
+ * ★이 값의 뜻을 오해하면 안 된다 (2026-08-23 적대 검토 F3). false 는 "아무도 판단할 수
+ *  없다" 가 **아니다** — 사용자가 직접 시킨 백그라운드 작업은 부모가 세션이라 **항상**
+ *  false 이고(가장 흔한 경로), 그건 사람이 보고를 받았다는 뜻이다. 종전엔 이 값을 그대로
+ *  자동 종료 조건으로 써서, 사용자에게 "판단해 주세요" 라고 물어놓고 두 주기 뒤
+ *  **"판단을 넘길 소환자도 없었습니다"** 라며 죽였다 — 방금 물어본 상대에게 하는 거짓말이다.
+ */
+const deliverCheckin = async (
+  job: WorkerJobRecord,
+  body: string,
+): Promise<boolean> => {
+  const parentId = parentJobIdOf(job.threadKey);
+  if (parentId !== undefined) {
+    const parent = jobs.get(parentId);
+    if (parent !== undefined && parent.status === "running") {
+      // ★`resetStallClock: false` — 이건 **개입이 아니라 시스템 독백**이다 (2026-08-23
+      //  2라운드 F2). 종전엔 배달 성공이 곧 부모의 `stallReports=0` + 앵커 리셋이라,
+      //  자식이 하나라도 붙어 있으면 **부모의 무활동 시계가 영구히 0에 고정**됐다(실측:
+      //  자식 있으면 5주기 내내 parent stall=0 / 없으면 2주기에 정리). 굳은 매니저 +
+      //  굳은 자식 조합이 그물을 통째로 빠져나갔다. 시계를 미룰 권리는 **판단을 준 쪽**
+      //  (`steer_worker` 도구)에만 있다.
+      const r = steerJob(
+        parentId,
+        { text: body, raw: body, ts: Date.now() },
+        { resetStallClock: false },
+      );
+      if (r === "delivered") {
+        console.log(
+          `worker-jobs: '${job.label}' 점검을 소환자 매니저 ${parentId} 에게 전달 — 다음 model-call 경계에서 판단`,
+        );
+        return true;
+      }
+      console.warn(
+        `worker-jobs: '${job.label}' 점검을 소환자 ${parentId} 에게 못 넣음(${r}) — 상위로 올린다`,
+      );
+    }
+  }
+  // ② 소환자가 **메인 비서**면 메인 비서에게 (2026-08-23 사용자 지적으로 고침).
+  //
+  //  ★"세션이 띄운 잡은 말 그대로 메인 비서가 소환자 아니야?" — 맞다. `run_in_background`
+  //   를 부른 게 그 비서다. 그런데 종전엔 이 경로가 `notifyJobOwner`(LLM 미경유 raw)로
+  //   **사용자에게 직행**해서, 자기가 띄운 잡의 점검을 정작 소환자가 보지 못했다.
+  //   "감사 주체는 언제나 소환자" 라는 원칙이 이 자리에서만 깨져 있었다.
+  //  완료 통지(`onWorkerComplete`)가 이미 같은 판단을 한다 — done 은 메인 재주입, 실패는
+  //  raw 직행. 점검도 그 배관을 그대로 쓴다(새 경로 0).
+  const owner = resolveOwnerThreadKey(job.threadKey);
+  const reportJob =
+    owner !== "" && owner !== job.threadKey ? { ...job, threadKey: owner } : job;
+  //  ★그런데 "그 배관을 쓴다" 고 적어놓고 **실제로는 안 썼다** (2026-08-23 2라운드 F1).
+  //   종전엔 `{channel, channelUserId, threadKey, text}` 넉 장만 넘기고 `as never` 로
+  //   컴파일러를 눌렀다. 라이브 귀결을 프로브로 재현하면 이렇다:
+  //     ⓐ `synthetic` 이 없어 점검 전문이 `channel.message.in` 으로 발행 → chat_log 에
+  //        **사용자가 친 말**로 영속(대시보드에 "나" 버블로 남는다)
+  //     ⓑ LLM 턴이 실제로 돌고(비용·도구), 끝에서 `msg.reply` 가 없어 TypeError →
+  //        **모델의 판단이 통째로 버려진다**
+  //     ⓒ 그 throw 를 여기서 잡아 raw 로 직행하며 `false` 를 반환 → 자동 종료가 여전히
+  //        무장 → 두 주기 뒤 "중단했습니다". 사용자에겐 같은 일로 알림이 **세 번** 간다
+  //   `as never` 를 떼면 `tsc` 가 즉시 `receivedAt`·`reply` 누락을 짚는다 — 그게 이 결함을
+  //   처음부터 막았을 검사다. 계약을 눌러 끄지 말고 **채운다**.
+  const dest = destForJob(reportJob);
+  // ★완료 통지는 여기서 `delivered` 를 추적해 **raw 안전망**을 건다. 점검엔 그게 없다 —
+  //  일부러다. 점검은 "계속 둘 만하면 아무 말도 안 해도 된다" 가 설계이므로 침묵이 정상
+  //  이고, 안전망을 걸면 소환자가 침묵을 택할 때마다 사용자에게 raw 가 나간다.
+  //  종전엔 `delivered` 플래그와 래퍼가 있었지만 **읽는 곳이 없었다**(2026-08-23 3라운드)
+  //  — 안전망이 있는 것처럼 읽히는 죽은 코드다. 없앤다. 없는 것은 없다고 적는다.
+  const reinjectReply = reacquireReply(dest, { observe: false });
+  // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙. 없으면 telegram發 잡의
+  // 점검 턴이 사용자 실세션과 다른 정체성으로 돌아 resume/transcript 가 갈린다.
+  const idChannel = canonicalSessionChannel(reportJob.threadKey, reportJob.channel);
+  const handler = mainHandler;
+  if (handler !== undefined) {
+    try {
+      await handler({
+        channel: reportJob.channel,
+        channelUserId: reportJob.channelUserId,
+        threadKey: reportJob.threadKey,
+        ...(idChannel !== reportJob.channel
+          ? {
+              session: {
+                explicitSessionId: reportJob.threadKey,
+                ...(dest.target !== null ? { channelAddress: dest.target } : {}),
+              },
+            }
+          : {}),
+        // ★`synthetic: true` 가 두 가지를 동시에 닫는다: ①관측 발행 스킵(가짜 "나" 버블)
+        //  ②`steerable(msg)` 가 false — 없으면 점검이 사용자의 **진행 중 턴에 끼어드는**
+        //  steering 메시지가 된다(F1b). 같은 커밋 주석이 매니저 경로에서 금지한 그 동작을
+        //  세션 경로에서 새로 만들 뻔했다. 게다가 "사용자가 마침 턴 중인가" 로 갈려
+        //  비결정적이었다.
+        synthetic: true,
+        receivedAt: Date.now(),
+        reply: reinjectReply,
+        text:
+          `[백그라운드 작업 점검] 당신이 띄운 작업의 상태입니다. 그대로 옮기지 말고, 맥락을 ` +
+          `아는 당신이 판단해 **필요할 때만** 당신 인격으로 알리세요 — 계속 둘 만하면 아무 말도 ` +
+          `안 해도 됩니다. 그만둘 값이면 \`cancel_worker\`, 방향을 바꿀 거면 \`steer_worker\` ` +
+          `(지시를 주면 점검 시계가 초기화됩니다).\n\n${body}`,
+      });
+      return true; // 메인 비서가 판단 중 — 코어는 안 죽인다.
+    } catch (e) {
+      console.error(
+        `worker-jobs: 점검 재주입 실패 (job='${job.label}' ${job.jobId}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+  // ③ 메인 핸들러조차 없다(부팅 전·재주입 실패) → raw 안전망. 여기까지 오면 판단할 상대가
+  //    **실제로** 없다는 뜻이라, 자동 종료 판정의 입력이 된다.
+  await notifyJobOwner(reportJob, body);
+  return false;
+};
+
+/**
+ * 한 틱 — 주기가 된 잡마다 **증거를 모아 소환자에게 넘긴다.** 잡이 없으면 시계를 끈다.
+ *
+ * 여기서 하는 판정은 딱 하나뿐이고 그것도 좁다: 완전 침묵 + 판단할 소환자 없음 + 2주기 →
+ * 종료. 나머지는 전부 소환자가 정한다.
+ */
+const checkinTick = (): void => {
+  const now = Date.now();
+  const running = [...jobs.values()].filter((j) => j.status === "running");
+  if (running.length === 0) {
+    stopCheckinScanner();
+    return;
+  }
+  if (!Number.isFinite(JOB_CHECKIN_INTERVAL_MS)) return; // 점검 꺼짐(env=off).
+  for (const job of running) {
+    let ev = evidence.get(job.jobId);
+    if (ev === undefined) {
+      // 재시작 복구 등으로 레코드가 없으면 지금부터 센다(오탐 0 — 곧바로 점검하지 않는다).
+      ev = freshEvidence(now);
+      evidence.set(job.jobId, ev);
+      continue;
+    }
+    // ★마감의 기준은 **마지막 활동**이지 마지막 점검이 아니다 (2026-08-23 사용자 결정).
+    //  점검 시점으로 잡으면 잘 돌고 있는 잡도 주기마다 깨운다 — 그리고 소환자가 매니저면
+    //  그 보고가 steering 큐로 들어가 **하던 일을 끊는다**(알림이 아니라 개입이 된다).
+    //  정상 작업을 시계로 죽이는 걸 없앴는데 정상 작업의 흐름을 시계로 끊으면 같은 부류다.
+    //  활동이 있으면 마감이 계속 밀리므로 **건강한 잡은 점검에 아예 안 걸린다.**
+    //  사용자: *"잘 돌고 있는 상황을 이상하게 판단하면 안 되잖아 … 문제가 없으면 마지막
+    //  시간 기준으로 다시 잡을 수 있는 거 아니야?"*
+    if (now - ev.lastActivityAt < JOB_CHECKIN_INTERVAL_MS) continue;
+
+    ev.rounds += 1;
+    const silent = ev.toolEvents === 0 && ev.textEvents === 0 && ev.inFlight.size === 0;
+    const detail = describeEvidence(job, ev, now);
+    const kindLabel = job.kind === "agent" ? "서브에이전트" : "매니저";
+    const name = job.kind === "agent" ? (job.agentName ?? job.label) : job.label;
+
+    const idleMs = now - ev.lastActivityAt;
+    job.lastActivityAt = ev.lastActivityAt;
+    job.stallReports = silent ? (job.stallReports ?? 0) + 1 : 0;
+    // 다음 주기 시작 — 카운터만 접고 진행 중 도구는 **이월**한다(아직 안 끝났으므로).
+    // ★앵커(`lastActivityAt`)는 **now 로 민다**. 안 그러면 조용한 잡이 매 틱마다 조건을
+    //  다시 만족해 같은 보고를 60초마다 쏟는다(배경소음). 실제 활동이 오면 구독이
+    //  다시 갱신하므로 정보를 잃지도 않는다.
+    const carried = new Map(ev.inFlight);
+    const next = freshEvidence(now);
+    next.inFlight = carried;
+    next.rounds = ev.rounds;
+    next.lastTool = ev.lastTool;
+    evidence.set(job.jobId, next);
+
+    console.log(
+      `[job-checkin] '${job.label}' (${job.kind}:${job.jobId}) ${ev.rounds}회차 · ` +
+        `도구 ${ev.toolEvents} 텍스트 ${ev.textEvents} 진행중 ${ev.inFlight.size} · ` +
+        `무활동 ${formatDurationKo(now - ev.lastActivityAt)} · thread=${job.threadKey}`,
+    );
+
+    void (async (): Promise<void> => {
+      const body =
+        `🔎 **점검** — ${kindLabel} \`${name}\` 가 ${formatDurationKo(now - job.startedAt)} 돌고 있습니다 (${ev.rounds}회차).\n` +
+        `작업: ${job.task.slice(0, 200)}\n${detail}\n` +
+        `계속 둘지, 지시를 더 줄지, 그만둘지(\`cancel_worker\`) 판단해 주세요.\n` +
+        `그대로 두고 계속 조용하면 다음 점검에서 중단합니다 — **지시를 한 번 주면 그 시계가 초기화됩니다.**`;
+      const summonerJudging = await deliverCheckin(job, body);
+
+      // ★자동 종료 조건 (2026-08-23 적대 검토 F3 으로 고침).
+      //  ①완전 침묵 ②**돌고 있는 매니저가 판단 중이 아님** ③N주기.
+      //
+      //  ★②의 뜻이 바뀌었다. 종전엔 "소환자 없음" 으로 읽고 사람에게 올라간 경우까지
+      //   포함시켰는데, 사용자가 직접 시킨 작업은 부모가 세션이라 **항상** 그 경우다 —
+      //   즉 가장 흔한 경로에서 자동 종료가 무장돼 있었고, "판단을 넘길 소환자도
+      //   없었습니다" 라는 **거짓 문구**까지 나갔다(방금 그 사람에게 물어봤으면서).
+      //   이제 매니저가 자기 턴에서 판단 중이면 코어는 안 죽이고, 그 외엔 죽이되
+      //   **사실대로 말한다**(누가 없어서가 아니라 그동안 아무 일도 없어서).
+      //  ★사용자가 개입하면(`steer_worker`) 카운터가 리셋된다 — 아래 `steerJob` 참조.
+      //   종전엔 "계속 둬" 라고 답해도 되돌릴 수단이 없었다.
+      if (
+        !summonerJudging &&
+        silent &&
+        (job.stallReports ?? 0) >= STALL_KILL_AFTER_CHECKINS &&
+        job.status === "running"
+      ) {
+        const quiet = formatDurationKo((job.stallReports ?? 0) * JOB_CHECKIN_INTERVAL_MS);
+        console.warn(
+          `[job-checkin] '${job.label}' (${job.jobId}) — 완전 침묵 ${job.stallReports}주기(${quiet}) → **자동 종료**`,
+        );
+        cancelDescendants(job.jobId, new Set([job.jobId]));
+        markCancelled(job.jobId, STALL_CANCEL_REASON);
+        const hook = cancelHooks.get(job.jobId);
+        if (hook !== undefined) hook();
+        evidence.delete(job.jobId);
+        await notifyJobOwner(
+          job,
+          `🛑 ${kindLabel} \`${name}\` 를 **중단했습니다** — ${quiet} 동안 아무 활동이 없었습니다.\n` +
+            `작업: ${job.task.slice(0, 200)}\n` +
+            `이어서 할지, 처음부터 다시 할지 알려주시면 그대로 하겠습니다.`,
+        );
+      }
+    })().catch((e: unknown) => {
+      console.error(
+        `worker-jobs: 점검 처리 실패 (job='${job.label}' ${job.jobId}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    });
+  }
+};
+
+/** 점검 시계 기동 — 멱등. 첫 잡 등록 때 불린다. */
+const startCheckinScanner = (): void => {
+  if (checkinTimer !== undefined) return;
+  if (!Number.isFinite(JOB_CHECKIN_INTERVAL_MS)) return; // 점검 꺼짐 — 시계 자체를 안 만든다.
+  activityUnsub = getEventBus().subscribe((ev) => {
+    if (ev.type !== "llm.activity") return;
+    const p = ev.payload as
+      | { threadKey?: unknown; kind?: unknown; phase?: unknown; label?: unknown; seq?: unknown }
+      | undefined;
+    if (typeof p?.threadKey !== "string") return;
+    const id = parentJobIdOf(p.threadKey);
+    if (id === undefined) return;
+    const job = jobs.get(id);
+    if (job === undefined || job.status !== "running") return;
+    const now = Date.now();
+    job.lastActivityAt = now;
+    let rec = evidence.get(id);
+    if (rec === undefined) {
+      rec = freshEvidence(now);
+      evidence.set(id, rec);
+    }
+    rec.lastActivityAt = now;
+    if (p.kind === "tool") {
+      rec.toolEvents += 1;
+      const label = typeof p.label === "string" ? p.label : "(이름 없음)";
+      rec.lastTool = label;
+      // ★진행 중 도구를 센다 — 이게 "조용한데 정상" 을 구별해 주는 유일한 신호다.
+      //  start 만 오고 end 가 안 오면 그 도구를 **하는 중**이다(멈춘 게 아니다).
+      //  ★키는 **호출 식별자**(`seq`)다 — 이름이면 병렬 동일 도구가 서로를 지운다.
+      const callKey = typeof p.seq === "number" ? `#${p.seq}` : `name:${label}`;
+      if (p.phase === "start") rec.inFlight.set(callKey, { tool: label, at: now });
+      else if (p.phase === "end") rec.inFlight.delete(callKey);
+    } else if (p.kind === "text") {
+      rec.textEvents += 1;
+    }
+  });
+  checkinTimer = setInterval(checkinTick, checkinTickMs());
+  (checkinTimer as { unref?: () => void }).unref?.();
+};
+
+/** 점검 시계 정지 — 돌고 있는 잡이 0이 되면 스스로 끈다(유휴 타이머·구독 누수 0). */
+const stopCheckinScanner = (): void => {
+  if (checkinTimer !== undefined) clearInterval(checkinTimer);
+  checkinTimer = undefined;
+  if (activityUnsub !== undefined) {
+    try {
+      activityUnsub();
+    } catch {
+      /* best-effort */
+    }
+  }
+  activityUnsub = undefined;
+  evidence.clear();
+};
+
+/**
+ * 이 잡이 지금 무엇을 하고 있나 — **사용자가 물어볼 때** 답할 재료.
+ *
+ * ★점검(check-in)은 이제 조용한 잡에만 나간다(마감이 마지막 활동 기준). 그래서 "잘 돌고
+ *  있나?" 를 사용자가 궁금해하는 순간엔 아무 통지도 없다 — 그때 답할 것이 필요하다.
+ *  점검이 쓰는 것과 **같은 증거**를 읽는다(두 번째 계측을 만들지 않는다).
+ */
+export const getJobActivity = (
+  jobId: string,
+): { lastActivityAt: number; inFlight: { tool: string; since: number }[] } | undefined => {
+  const ev = evidence.get(jobId);
+  if (ev === undefined) return undefined;
+  return {
+    lastActivityAt: ev.lastActivityAt,
+    // 호출 단위 키는 내부 사정이라 밖으로 안 낸다 — 소비처가 원하는 건 "무슨 도구가 언제부터".
+    inFlight: [...ev.inFlight.values()].map((f) => ({ tool: f.tool, since: f.at })),
+  };
+};
+
+/** 검사 전용 — 증거 맵 크기(누수 검사). */
+export const __checkinEvidenceSizeForTest = (): number => evidence.size;
+
+/** 검사 전용 — 틱을 즉시 한 번 돌린다(시계를 기다리지 않게). */
+export const __checkinTickForTest = (): void => checkinTick();
 
 export const resolveOwnerThreadKey = (
   threadKey: string,
@@ -546,7 +1001,7 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
  *  시계만 보고 끊으면, 자식은 계속 돌면서(부모 abort 가 자식에 전파되지 않는다) 결과만
  *  버려진다. 실측: 서브에이전트 138건 중 5건이 8분을 넘겼고 **전부 done** 이었다
  *  (627·582·563·499·496초). 일은 다 하고 돈도 쓰고 결과만 잃은 셈.
- *  자식은 자기 상한(WORKER_TIMEOUT_MS 2시간)·자기 타임아웃·사용자 취소를 이미 갖고 있으므로
+ *  자식은 자기 상한(WORKER_TIMEOUT_MS)·자기 타임아웃·사용자 취소를 이미 갖고 있으므로
  *  부모가 이중으로 감시할 이유가 없다(경계 중복 제거).
  *
  * jobs 는 in-memory 레지스트리 — 조회 비용 무시(수십 개 규모).
@@ -632,20 +1087,38 @@ export const __resetJobsForTest = (): void => {
 // 무이벤트 구간이 정상이라 idle 오살이 없다. 워커의 hung 방어는 이 워커 전용 상한이 담당.
 // 값은 상수+env override (매직넘버 금지, turn-timeout.ts 정책 답습).
 
-const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
+/**
+ * 양의 정수 env 파서 — 미지정이면 fallback.
+ *
+ * ★`"0"`·`"off"`·`"infinite"` = **상한 없음**(`Infinity`). 잡 상한이 무한이 될 수 있게
+ *  되면서(아래) 그걸 env 로도 표현할 수 있어야 한다. 반대로 유한값을 주면 그 값이 산다.
+ */
+const parseTimeoutEnv = (raw: string | undefined, fallback: number): number => {
   if (raw === undefined || raw === "") return fallback;
+  if (/^(0|off|none|infinite|infinity)$/i.test(raw.trim())) return Number.POSITIVE_INFINITY;
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : fallback;
 };
 
 /**
- * 기본 워커 상한 (ms) — 2시간. 2층 turn(8분)보다 훨씬 김(워커는 오래 도는 게 정상).
- * 수동 취소(cancel_worker 도구 · POST /cancel-worker) 가 신설돼 사용자가 언제든 자리비운
- * 워커를 직접 끊을 수 있으므로, 이 자동 상한은 이제 "잊혀진 hung 워커" 최종 백스톱 역할만
- * 한다 — 넉넉하게 잡아 정상 장시간 작업을 오살하지 않는다(2026-07-16, 기존 dev override 값과
- * 동일해짐). env `WORKER_TIMEOUT_MS` 로 여전히 override 가능.
+ * 기본 잡 상한 (ms) — **없음(무한)**. 2026-08-22 사용자 결정.
+ *
+ * 연혁: 2시간 → 4시간 → **무한**. 이 값은 성능 튜닝이 아니라 **오살 비용 vs 방치 비용**의
+ * 저울이었고, 실측이 한쪽으로 기울었다 — dev 이력상 역대 최장 잡 54.9분, 2시간 상한이
+ * 발화한 적 **0회**. 즉 이 시계는 정상 작업을 자를 위험만 지고 실효는 0이었다. 상한에 걸린
+ * 작업은 "멈춘 것"이 아니라 **돌고 있었는데 잘린 것**이라(humanizeWorkerError 참조) 되돌릴
+ * 수 없다.
+ *
+ * ★대신 잃은 것을 정확히 알아야 한다: 이건 "잊혀진 hung 잡" 의 **유일한 자동 종료 경로**
+ *  였다. 이제 굳은 잡을 닫는 것은 **사용자의 명시적 취소**(`cancel_worker` · 대시보드 중지
+ *  버튼 · `POST /cancel-worker`)뿐이다. 그래서 같은 커밋에서 **침묵**을 닫았다 —
+ *  `startDetachedAgent` 에 없던 하드 백스톱(worker-registry 와 대칭)이 그것이다. 상한이
+ *  무한이면 그 백스톱도 안 걸리므로, 굳은 잡은 **카드에 계속 진행 중으로 보인다**(관측은
+ *  살아 있다 = 조용한 죽음 아님).
+ *
+ * env `WORKER_TIMEOUT_MS`(=`"0"`/`"off"` 도 무한) 로 유한값 복원 가능.
  */
-const DEFAULT_WORKER_TIMEOUT_MS = 2 * 60 * 60_000;
+const DEFAULT_WORKER_TIMEOUT_MS = Number.POSITIVE_INFINITY;
 
 /**
  * 잡을 소유하는 도구(spawn_agent 등)의 **바깥 경계** — 잡 상한보다 넉넉해야 한다.
@@ -653,12 +1126,73 @@ const DEFAULT_WORKER_TIMEOUT_MS = 2 * 60 * 60_000;
  * ★경계 순서 불변식 (2026-07-28): 안쪽(잡 자신의 상한·취소) → 바깥(MCP callTool) 순으로
  *  느슨해져야, 진짜 경계인 안쪽이 먼저 발화한다. 반대로 바깥이 더 조이면 정상 진행 중인
  *  작업이 "무응답"으로 잘리고, 모델은 그 에러를 보고 같은 일을 다시 띄운다(작업 충돌).
- *  실제로 그랬다 — 어댑터 8분 시계 · MCP 11분 천장 < 잡 상한 2시간.
+ *  실제로 그랬다 — 어댑터 8분 시계 · MCP 11분 천장 < 잡 상한(WORKER_TIMEOUT_MS).
+ *
+ * ★잡 상한이 무한이면 이 천장도 무한이다(`Infinity + n === Infinity`) — 불변식이 자동으로
+ *  유지된다. 유한 천장을 남기면 그게 **가장 안쪽**이 되어 정확히 위 사고가 재발한다.
  */
 export const JOB_OWNING_TOOL_CALL_TIMEOUT_MS = (): number => WORKER_TIMEOUT_MS + 5 * 60_000;
 
+/**
+ * `setTimeout` 이 표현할 수 있는 최대 지연 (2^31-1 ms ≈ 24.8일). 이보다 크면 32-bit 오버플로로
+ * **즉시 발화**한다 — `Infinity` 도 같은 함정(Node 가 1ms 로 클램프).
+ */
+export const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * 무한 상한을 **유한 수를 요구하는 자리**에 넘길 때 환산한다(무한 → 24.8일).
+ *
+ * ★왜 그냥 `Infinity` 를 못 넘기나 (2026-08-22 전수 확인): 소비처마다 무한이 **정반대로**
+ *  뒤집힌다.
+ *   · `setTimeout(fn, Infinity)` → Node 가 1ms 로 클램프 = 즉시 타임아웃
+ *   · `_mcp-bridge` 의 `Number.isFinite` 가드 → 폴백 **11분** = 바깥이 가장 조이는 경계가
+ *     되어 2026-07-28 사고(정상 작업을 바깥이 자름)가 그대로 재현
+ *   · `String(Infinity)` = `"Infinity"` → SDK env 파싱에서 NaN
+ *  그래서 "무한" 은 **경로**로 표현하고(타이머를 아예 안 건다), 유한 수가 강제되는 자리에만
+ *  이걸 쓴다.
+ */
+export const asFiniteTimeoutMs = (ms: number): number =>
+  Number.isFinite(ms) ? Math.min(ms, MAX_TIMER_MS) : MAX_TIMER_MS;
+
+/**
+ * 잡 **점검(check-in) 주기** (ms) — 기본 2시간. env `JOB_CHECKIN_INTERVAL_MS`.
+ *
+ * ★시계의 역할을 뒤집은 자리다 (2026-08-22 사용자 결정): 종전 `WORKER_TIMEOUT_MS` 는 이
+ *  시간이 되면 잡을 **죽였다**. 그런데 상한에 걸린 작업은 "멈춘 것" 이 아니라 **돌고
+ *  있었는데 잘린 것**이라(humanizeWorkerError) 되돌릴 수 없다 — dev 실측상 정당하게
+ *  발화한 적도 0회였다(역대 최장 잡 54.9분). 사용자 말: *"소환자가 소환 대상이 별문제가
+ *  없는지 확인해보는 시간이면 어떨까? 이걸 그냥 냅다 끊는 건 좀 아닌 것 같아서."*
+ *
+ *  그래서 이제 이 주기는 **확인하는 시간**이다: 주기가 되면 그 잡이 무엇을 했는지
+ *  **증거를 모아 소환자에게 넘기고**, 계속 둘지·지시를 더 줄지·그만둘지는 소환자가 정한다.
+ *  코어는 판정하지 않는다 — 침묵 몇 회 같은 정적 규칙을 여기 두면 그게 곧 소환자의 판단을
+ *  가로채는 분기다([[feedback_capability_not_routing]]).
+ *
+ *  [[project_self_observation_sweep]] 의 기준 그대로다 — 자동으로 하는 건 **되돌릴 수
+ *  있거나 최악이 사소한 것**뿐이고, 죽이기는 둘 다 아니다. 관측·보고는 둘 다 맞다.
+ *
+ *  강제 종료가 필요하면 `WORKER_TIMEOUT_MS` 에 유한값을 주면 종전 동작이 살아난다(기본 무한).
+ */
+export const JOB_CHECKIN_INTERVAL_MS = parseTimeoutEnv(
+  process.env.JOB_CHECKIN_INTERVAL_MS,
+  2 * 60 * 60_000,
+);
+
+/**
+ * **아무도 판단할 수 없는** 잡을 자동 종료하기까지의 연속 침묵 주기. 기본 2.
+ *
+ * ★이건 "정체하면 죽인다" 가 아니다. 종료 조건은 셋이 **동시에** 참일 때뿐이다:
+ *   ① 그 주기에 활동이 완전히 0(진행 중 도구도 없음)
+ *   ② 점검을 넘길 **소환자가 없다**(도는 매니저가 없어 상위로 올라갔다)
+ *   ③ 그 상태로 이만큼의 주기가 지났다
+ *  ①만으로는 안 죽인다 — 오래 걸리는 정상 도구와 구별되지 않기 때문이고, 그래서 그 판단은
+ *  증거를 실어 소환자에게 넘긴다. ②가 핵심이다: 판단할 사람이 있으면 코드가 정하지 않는다
+ *  ([[feedback_capability_not_routing]]). 아무도 없을 때만 "안 거두는 잡" 으로 닫는다.
+ */
+export const STALL_KILL_AFTER_CHECKINS = 2;
+
 /** 워커 1잡 전체 wall-clock 상한 (ms). env `WORKER_TIMEOUT_MS` override. */
-export const WORKER_TIMEOUT_MS = parsePosIntEnv(
+export const WORKER_TIMEOUT_MS = parseTimeoutEnv(
   process.env.WORKER_TIMEOUT_MS,
   DEFAULT_WORKER_TIMEOUT_MS,
 );
@@ -682,12 +1216,12 @@ const DEFAULT_WORKER_HARD_GRACE_MS = 60_000;
  *  경계 순서가 서브에이전트에선 성립하지 않았다(내가 그렇다고 단정하고 시계를 없앴다).
  *  이제 안쪽(이 상한) < 바깥(브리지 천장 = 상한+5분)이 실제로 성립한다.
  */
-export const SUBAGENT_TIMEOUT_MS = parsePosIntEnv(
+export const SUBAGENT_TIMEOUT_MS = parseTimeoutEnv(
   process.env.SUBAGENT_TIMEOUT_MS,
   WORKER_TIMEOUT_MS,
 );
 
-export const WORKER_HARD_GRACE_MS = parsePosIntEnv(
+export const WORKER_HARD_GRACE_MS = parseTimeoutEnv(
   process.env.WORKER_HARD_GRACE_MS,
   DEFAULT_WORKER_HARD_GRACE_MS,
 );
@@ -912,6 +1446,12 @@ export const publishSteerAttempt = (info: {
 export const steerJob = (
   jobId: string,
   msg: SteeringInput,
+  /**
+   * `resetStallClock: false` = 이 배달은 **판단이 아니다**. 기본은 true(사람·모델의 개입).
+   * 시스템이 자기 점검 보고를 부모에게 넣는 경로만 false 를 준다 — 안 그러면 시스템이
+   * 자기 시계를 스스로 미루고 굳은 잡이 영원히 안 죽는다(2026-08-23 2라운드 F2 실측).
+   */
+  opts?: { resetStallClock?: boolean },
 ): "delivered" | "closed" | "absent" => {
   const outcome = ((): "delivered" | "closed" | "absent" => {
     if (!WORKER_STEERING_ENABLED) return "absent";
@@ -930,6 +1470,20 @@ export const steerJob = (
     for (const m of rot.leftover) rot.channel.push(m); // 이전 잔여 보존(순서 유지).
     return rot.channel.push(msg) ? "delivered" : "closed";
   })();
+  // ★개입은 곧 "이 잡을 계속 두겠다" 는 판단이다 — 점검 시계를 되돌린다 (2026-08-23).
+  //  종전엔 사용자가 "계속 둬" 라고 답해도 되돌릴 수단이 없었다: 진짜 굳은 잡은 활동이
+  //  안 나므로 앵커가 안 밀리고, `stallReports` 는 `checkinTick` 만 쓰기 때문에 카운터가
+  //  계속 올라가 결국 죽었다. 점검 문구가 "지시를 한 번 주면 초기화됩니다" 라고 말하므로
+  //  **여기서 그 말을 참으로 만든다**(문구만 고치면 거짓말이 된다).
+  if (outcome === "delivered" && opts?.resetStallClock !== false) {
+    const job = jobs.get(jobId);
+    if (job !== undefined && job.status === "running") {
+      job.stallReports = 0;
+      job.lastActivityAt = Date.now();
+      const ev = evidence.get(jobId);
+      if (ev !== undefined) ev.lastActivityAt = Date.now();
+    }
+  }
   publishSteerAttempt({ jobId, message: msg.raw, outcome });
   return outcome;
 };
@@ -950,6 +1504,11 @@ export interface WorkerAbort {
  * W-I6). 생략 시(서브에이전트): **타이머 없음 = cancel-only** — 서브는 부모 턴에 종속(awaited)
  * 되어 부모 턴 타임아웃/생명주기를 이미 따르므로 별도 상한이 부적절(이중·불일치 자동종료 방지).
  *
+ * ★`timeoutMs` 가 **유한하지 않으면 타이머를 안 건다** (2026-08-22, 상한 무한화). 이 가드가
+ *  없으면 정반대로 동작한다: `setTimeout(fn, Infinity)` 은 Node 가 **1ms 로 클램프**해서
+ *  모든 잡이 시작하자마자 타임아웃으로 죽는다. "상한을 없앴다" 가 "상한을 1ms 로 만들었다"
+ *  가 되는 부류라, 값이 아니라 **경로**를 나눈다.
+ *
  * 어느 경우든 jobId 의 취소 훅을 setCancelHook 로 등록 → cancelJob(jobId) 이 WorkerCancelledError
  * 로 abort 가능(외부 취소). done() 이 타이머(있으면)+취소 훅을 clearCancelHook 로 해제한다.
  */
@@ -960,10 +1519,14 @@ export const createJobAbort = (
   const ac = new AbortController();
   const ms = opts?.timeoutMs;
   let handle: ReturnType<typeof setTimeout> | undefined;
-  if (ms !== undefined) {
+  if (ms !== undefined && Number.isFinite(ms)) {
+    // ★`setTimeout` 은 2^31-1 을 넘으면 32-bit 오버플로로 **즉시 발화**한다. 무한만 막고
+    //  큰 유한값을 그대로 넘기면 같은 함정에 빠진다 — 실측: `WORKER_TIMEOUT_MS=2147483647`
+    //  (코드가 "안전한 최대치" 로 정의한 그 값!)을 주면 **모든 워커가 11ms 에 실패**하고
+    //  에러엔 "24.8일 상한 초과" 가 찍혀 원인 추적이 사실상 불가능했다(2026-08-23 검토 F2).
     handle = setTimeout(() => {
       if (!ac.signal.aborted) ac.abort(new WorkerTimeoutError(ms));
-    }, ms);
+    }, asFiniteTimeoutMs(ms));
     (handle as { unref?: () => void }).unref?.();
   }
   setCancelHook(jobId, () => {
@@ -1003,7 +1566,7 @@ const directChildJobs = (parentJobId: string): WorkerJobRecord[] => {
  *
  * ★사고: `cancelJob` 이 그 jobId 의 훅 **하나만** 불렀다. 실측 재현 —
  *   `cancelJob(parent)=true / parent=cancelled / child=running / child abort 훅 호출 false`
- *  매니저를 중지시켜도 그 밑 서브에이전트가 자기 상한(기본 2시간)까지 모델을 계속 태우고,
+ *  매니저를 중지시켜도 그 밑 서브에이전트가 자기 상한(SUBAGENT_TIMEOUT_MS)까지 모델을 계속 태우고,
  *  결과는 부모가 이미 abort 돼 폐기된다(돈만 나감). 더 나쁜 건 프롬프트의
  *  "진행 중인 백그라운드 작업" 줄이 **취소된 작업을 계속 진행 중이라고 메인에게 보고**한 것.
  *  `listLiveChildJobs`·`jobBelongsToSession` 라는 소속 판정이 이미 있는데 취소만 안 썼다.
@@ -1032,7 +1595,7 @@ const cancelDescendants = (parentJobId: string, seen: Set<string>): number => {
  * ★잡↔잡 전파는 이미 있었다(`cancelDescendants`, 2026-07-31). 빠진 건 **세션 → 잡** 방향이다:
  *  `/stop` 은 `inflightTurns` 의 AbortController 만 abort 하고, 그 턴이 띄운 서브에이전트·
  *  매니저 잡은 **계속 돈다**. awaited 서브라면 부모는 이미 손을 뗐는데 자식은 자기 상한
- *  (기본 2시간)까지 살아서, 사용자는 "중단했습니다" 를 받고도 모델 호출이 계속 나간다.
+ *  (SUBAGENT_TIMEOUT_MS)까지 살아서, 사용자는 "중단했습니다" 를 받고도 모델 호출이 계속 나간다.
  *  ★고아 잡은 조용하다 — 부모가 없으니 결과를 보고할 곳도 없고, 사용자는 끝난 줄 안다.
  *
  * 자식 판정은 `directChildJobs` 와 **같은 근거**(잡이 기록한 소환자 좌표 = `job.threadKey`)를

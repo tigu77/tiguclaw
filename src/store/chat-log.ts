@@ -12,7 +12,7 @@
  *
  * 기존 store 모듈(skill-usage.ts·worker-jobs.ts) 의 prepared statement·getDb 접근 동형.
  */
-import { getDb } from "./sessions.js";
+import { getDb, sessionDisplayName, visibleSessionSql } from "./sessions.js";
 
 export type ChatRole = "user" | "assistant";
 
@@ -37,6 +37,11 @@ export interface ChatAttachmentMeta {
 }
 
 export interface ChatLogEntry {
+  /**
+   * 행 id — **복합 커서**의 두 번째 축. 조회 결과에만 실린다(쓰기 시엔 없다).
+   * 같은 `ts` 가 여럿일 때 페이지 경계에서 행이 유실되는 것을 막는다(검토 D-1).
+   */
+  id?: number;
   ts: number;
   threadKey: string;
   channel: string;
@@ -61,6 +66,7 @@ export interface ChatLogEntry {
 }
 
 interface ChatLogRow {
+  id: number;
   ts: number;
   thread_key: string;
   channel: string;
@@ -122,6 +128,8 @@ export const getRecentChatLog = (opts?: {
   limit?: number;
   sinceTs?: number;
   beforeTs?: number;
+  /** 복합 커서의 두 번째 축 — 같은 `ts` 안에서 이 id 보다 과거만(동률 유실 방지). */
+  beforeId?: number;
   /**
    * threadKey 스코프(멀티세션 탭 — ADR 2026-07-15 D5.3). 지정 시 `WHERE thread_key = ?`
    * 를 기존 sinceTs/beforeTs 와 AND 결합 → per-thread 이력. **미지정 = 현행(전 스레드
@@ -141,13 +149,26 @@ export const getRecentChatLog = (opts?: {
     params.push(opts.sinceTs);
   }
   if (opts?.beforeTs !== undefined) {
-    where.push(`ts < ?`);
-    params.push(opts.beforeTs);
+    // ★복합 커서 `(ts, id)` — `ts <` 만 쓰면 **경계에 걸린 동률 ts 행이 영영 안 온다**
+    //  (2026-08-23 적대 검토 D-1, 실측: 8건 중 4건만 수집). 라이브 DB 에 동률 그룹이
+    //  18개 있고 대부분 **user+assistant 쌍**이라, 질문이 사라지고 답만 남는 모양이었다.
+    //  정렬이 `ts DESC, id DESC` 이므로 커서도 같은 두 축이어야 짝이 맞는다.
+    //  ★행-값 비교 `(ts, id) < (?, ?)` 를 쓴다 — `(ts < ? OR (ts = ? AND id < ?))` 와
+    //   **결과는 같지만** OR 은 SQLite 플래너가 인덱스 범위 탐색으로 못 접는다(EXPLAIN 에
+    //   `thread_key=?` 만 남고 나머지는 전수 스캔). 실측 6만행·1,500페이지: OR 875ms →
+    //   행-값 17.9ms. 게다가 분기가 사라져 코드도 한 줄 짧다.
+    if (opts.beforeId !== undefined) {
+      where.push(`(ts, id) < (?, ?)`);
+      params.push(opts.beforeTs, opts.beforeId);
+    } else {
+      where.push(`ts < ?`);
+      params.push(opts.beforeTs);
+    }
   }
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
   const rows = getDb()
     .prepare(
-      `SELECT ts, thread_key, channel, role, text, attachments, notice, model, kind, data
+      `SELECT id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data
          FROM chat_log
          ${whereClause}
         ORDER BY ts DESC, id DESC
@@ -157,6 +178,7 @@ export const getRecentChatLog = (opts?: {
   // ts DESC 로 최신 N 건을 잡고 ASC(오래된→최신)로 뒤집어 렌더 순서로 반환.
   return rows.reverse().map((r) => {
     const entry: ChatLogEntry = {
+      id: r.id, // 복합 커서용 — 클라가 다음 페이지 요청에 실어 보낸다.
       ts: r.ts,
       threadKey: r.thread_key,
       channel: r.channel,
@@ -207,4 +229,126 @@ export const getFirstUserText = (threadKey: string): string => {
     )
     .get(threadKey) as { text?: string } | undefined;
   return typeof row?.text === "string" ? row.text : "";
+};
+
+/** 검색 결과 한 건 — 어느 세션의 언제/누가/무엇인지가 다 실려야 한다. */
+export interface ChatSearchHit {
+  ts: number;
+  threadKey: string;
+  channel: string;
+  role: string;
+  /** 일치 지점 주변 조각(코어 `makeSnippet` 가 만든다). */
+  snippet: string;
+  /** `snippet` 안에서의 일치 위치·길이 — 프런트가 하이라이트한다(문자열 재검색 금지). */
+  matchStart: number;
+  matchLen: number;
+  /** 세션 표시명 — `sessionDisplayName` 단일 판단에서 온다(클라가 파생하지 않는다). */
+  sessionLabel: string;
+}
+
+/**
+ * **전 세션 가로질러** 채팅 검색 (2026-08-22, 사용자 확정).
+ *
+ * ★세션 구분이 결과에 실린다 — 가로질러 찾는 순간 "이게 어느 대화였나" 가 첫 질문이 된다.
+ *  표시명은 `sessionDisplayName`(서버 단일 판단)에서 온다. 클라가 threadKey 로 파생하면
+ *  같은 세션이 화면마다 다른 이름으로 보인다(`/sessions` 가 이미 겪고 서버로 옮긴 문제).
+ *
+ * LIKE 부분일치 — 한국어 조사 어절 때문에 FTS 보다 정확하다(core/chat-search.ts 주석).
+ * `ESCAPE '\'` 로 사용자가 친 `%`·`_` 를 글자 그대로 찾는다.
+ */
+/**
+ * 검색 조건 조립 — **목록과 개수가 같은 판정을 쓰게** 한 곳에서 만든다.
+ *
+ * ★따로 적으면 갈린다: "1,438건 중 50건" 이라고 말해 놓고 그 1,438이 다른 규칙으로 센
+ *  숫자면 안내가 거짓이 된다. 조건이 바뀔 때 한 곳만 고치면 되게 묶는다.
+ */
+const searchWhere = (
+  like: string,
+  opts?: { threadKey?: string; beforeTs?: number; beforeId?: number },
+): { sql: string; params: unknown[] } => {
+  const visible = visibleSessionSql("t");
+  const where = [`c.text LIKE '%' || ? || '%' ESCAPE '\\'`];
+  const params: unknown[] = [like];
+  if (opts?.threadKey !== undefined) {
+    where.push(`c.thread_key = ?`);
+    params.push(opts.threadKey);
+  }
+  // ★더보기 커서 — `ts <` 로 이어 받는다(OFFSET 아님). 목록이 `ts DESC` 인데 그 사이 새
+  //  메시지가 오면 OFFSET 은 한 건을 건너뛰거나 두 번 보여준다. 커서는 그 창에 안 걸린다
+  //  (`/chat-history` 의 `beforeTs` 와 같은 셈법 — 같은 문제엔 같은 해법).
+  if (opts?.beforeTs !== undefined) {
+    // 복합 커서 — 위 `getRecentChatLog` 와 같은 이유·같은 모양(동률 ts 유실 방지).
+    if (opts.beforeId !== undefined) {
+      where.push(`(c.ts, c.id) < (?, ?)`); // 행-값 비교 — 위와 같은 이유(인덱스 범위 탐색 보존).
+      params.push(opts.beforeTs, opts.beforeId);
+    } else {
+      where.push(`c.ts < ?`);
+      params.push(opts.beforeTs);
+    }
+  }
+  return {
+    sql:
+      `FROM chat_log c\n         JOIN threads t ON t.channel_thread_id = c.thread_key\n` +
+      `        WHERE ${[...visible.conds, ...where].join("\n          AND ")}`,
+    params: [...visible.params, ...params],
+  };
+};
+
+/**
+ * 이 질의에 **실제로 몇 건**이 걸리나 — 목록은 상한이 있으므로 잘린 사실을 말하려면 필요하다.
+ *
+ * ★없을 때 UI 는 "'는' — 50건" 이라고 말했다. 실제로는 **1,438건**이었다(실측). 캡이 있는
+ *  자리에서 캡을 안 말하면 그건 조용한 절삭이다([[project_hotpath_bound_preserve_record]]).
+ *  비용 실측 8ms(3,977행) — 말해줄 수 있는 값이라 말한다.
+ */
+export const countChatLogMatches = (
+  like: string,
+  opts?: { threadKey?: string },
+): number => {
+  const w = searchWhere(like, opts);
+  const row = getDb()
+    .prepare(`SELECT COUNT(*) AS n\n         ${w.sql}`)
+    .get(...w.params) as { n: number } | undefined;
+  return row?.n ?? 0;
+};
+
+export const searchChatLog = (
+  like: string,
+  opts?: { limit?: number; threadKey?: string; beforeTs?: number; beforeId?: number },
+): Array<Omit<ChatSearchHit, "snippet" | "matchStart" | "matchLen"> & { text: string }> => {
+  const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 50;
+  const w = searchWhere(like, {
+    ...(opts?.threadKey !== undefined ? { threadKey: opts.threadKey } : {}),
+    ...(opts?.beforeTs !== undefined ? { beforeTs: opts.beforeTs } : {}),
+    ...(opts?.beforeId !== undefined ? { beforeId: opts.beforeId } : {}),
+  });
+  const rows = getDb()
+    .prepare(
+      `SELECT c.id, c.ts, c.thread_key, c.channel, c.role, c.text, t.name AS thread_name
+         ${w.sql}
+        ORDER BY c.ts DESC, c.id DESC
+        LIMIT ?`,
+    )
+    .all(...w.params, limit) as Array<{
+    id: number;
+    ts: number;
+    thread_key: string;
+    channel: string;
+    role: string;
+    text: string;
+    thread_name: string | null;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    ts: r.ts,
+    threadKey: r.thread_key,
+    channel: r.channel,
+    role: r.role,
+    text: r.text,
+    sessionLabel: sessionDisplayName(
+      r.thread_key,
+      r.thread_name,
+      getFirstUserText(r.thread_key),
+    ),
+  }));
 };

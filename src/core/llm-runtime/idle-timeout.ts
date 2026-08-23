@@ -31,15 +31,31 @@ const MIN_IDLE_MS = 10_000;
 /** first 타임아웃 하한(ms) — idle 보다 넉넉해야 하므로 동일 하한 이상이면 통과. */
 const MIN_FIRST_MS = 10_000;
 
+/**
+ * `setTimeout` 상한 — 넘으면 32비트로 접혀 **1ms 에 즉시 발화**한다(즉, "아주 긴 대기" 로
+ * 설정한 값이 "대기 없음" 이 된다). 잡 타이머 세 곳에서 같은 함정을 닫았는데(2026-08-23)
+ * env 경로만 열려 있었다. `IDLE_DISABLED_MS` 를 일부러 2^31-1 밑에 잡아둔 것이 이 자리가
+ * 함정을 안다는 증거다.
+ *
+ * ★도달 범위는 좁다 — 정직하게 적는다(2026-08-23 3라운드 ⑦: 처음엔 "모든 턴이 1ms 에
+ *  죽는다" 고 썼는데 **틀렸다**). 세 어댑터는 턴 타이머를 `idleConfigExempt(...)` 로 감싸
+ *  env 값이 거기까지 안 간다. 실제 도달처는 `openai-codex-oauth-history.ts` 의
+ *  `createIdleTimer(ac)`(기본 cfg) 하나 — codex 히스토리 압축 요약 호출이다. 그래서
+ *  오설정 시 증상은 "모든 턴 사망" 이 아니라 **압축 영구 실패**(조용하다)다.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
 const resolveIdleMs = (): number => {
   const v = parsePosIntEnv(process.env.LLM_IDLE_TIMEOUT_MS, 90_000);
   // 하한 가드 — 환경변수가 비상식적으로 작으면 기본값으로 방어(설정 파싱 boundary).
-  return v < MIN_IDLE_MS ? 90_000 : v;
+  if (v < MIN_IDLE_MS) return 90_000;
+  return Math.min(v, MAX_TIMER_MS); // 상한 — 32비트 접힘 = 즉시 발화 방지.
 };
 
 const resolveFirstMs = (): number => {
   const v = parsePosIntEnv(process.env.LLM_FIRST_TIMEOUT_MS, 120_000);
-  return v < MIN_FIRST_MS ? 120_000 : v;
+  if (v < MIN_FIRST_MS) return 120_000;
+  return Math.min(v, MAX_TIMER_MS);
 };
 
 /** 마지막 이벤트 이후 무수신 한계 (ms). env `LLM_IDLE_TIMEOUT_MS` override. */

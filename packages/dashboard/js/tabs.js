@@ -296,7 +296,7 @@
         cardByThread.clear();          // 진행 카드 참조(제거된 DOM) — 새 세션서 재빌드.
         pendingQueued.length = 0;      // 낙관적 대기 버블(active DOM 참조) — 승격 대상 초기화.
         localChatCount = 0;
-        oldestLoadedTs = null;
+        setOldestCursor([], null); // 두 축 함께 리셋(안 하면 옛 세션 id 가 샌다).
         reachedOldest = false;
         loadingOlder = false;
       };
@@ -336,7 +336,7 @@
           }
           renderHistoryBatch(entries, histActivities, false);
           for (const a of liveResume) { try { renderActivity(a, fmtTime(a.ts)); } catch { /* best-effort 재개 */ } }
-          oldestLoadedTs = entries.length > 0 ? entries[0].ts : (activities.length > 0 ? activities[0].ts : null);
+          setOldestCursor(entries, activities.length > 0 ? activities[0].ts : null);
           if (entries.length < HISTORY_PAGE) reachedOldest = true;
           refreshChatEmpty();
           scrollChatToNewest();
@@ -356,6 +356,10 @@
         }
       };
 
+      // 마지막 이력 로드 promise — 점프(검색 결과 클릭)가 렌더 완료를 기다리는 데 쓴다.
+      // `switchToThread` 는 동기 API 라 반환값을 못 바꾼다(호출부 다수). 여기 담아 둔다.
+      let lastHistoryLoad = Promise.resolve();
+
       const switchToThread = (tk) => {
         if (tk === activeThreadKey || !openTabs.some((t) => t.threadKey === tk)) return;
         if (window.saveChatDraft) window.saveChatDraft(activeThreadKey); // 떠나는 탭 draft 저장.
@@ -369,11 +373,42 @@
         if (typeof window.resyncBackground === "function") window.resyncBackground();
         // 그 탭을 열었으면 읽은 것 — 배지 해제. (renderTabBar 재호출은 clearUnread 안에서.)
         if (typeof clearUnread === "function") clearUnread(tk);
-        void loadThreadHistory(tk);
+        lastHistoryLoad = loadThreadHistory(tk);
+        void lastHistoryLoad;
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         if (window.hydrateModelSelect) window.hydrateModelSelect(); // 모델 프로파일 드롭다운 = 이 탭 상태로.
         // 세션탭 *이동* 시엔 입력 포커스 안 줌 — 모바일에서 전환 때마다 가상키보드가 올라오는 문제.
         // (새 탭 생성 newTab 은 타이핑 의도라 포커스 유지.)
+      };
+
+      // ★검색 결과에서 세션으로 점프하는 **유일한 진입점** (2026-08-23).
+      //  `switchToThread` 는 "이미 열린 탭" 만 받는다 — 검색은 안 열린 세션도 가리키므로
+      //  없으면 탭을 만들어 준다. 탭 생성 규칙(이름 파생·채널 메타)은 위 refreshSessionPreviews
+      //  와 **같은 것**을 쓴다(두 번째 규칙을 만들면 같은 세션이 화면마다 다른 이름이 된다).
+      window.openSessionByKey = (tk, meta) => {
+        if (typeof tk !== "string" || tk === "") return false;
+        if (!openTabs.some((t) => t.threadKey === tk)) {
+          const ch = (meta && meta.channel) || channelFromThreadKey(tk);
+          const cm = channelMeta(ch);
+          const name = (meta && meta.label) || (cm ? cm.full : deriveTabFallbackName(tk));
+          openTabs.push({ threadKey: tk, name, ...(ch ? { channel: ch } : {}) });
+          renderTabBar();
+          persistTabs();
+        }
+        const already = tk === activeThreadKey;
+        switchToThread(tk);
+        // ★점프는 **이력이 그려진 뒤**에 한다. 전환은 동기지만 이력 로드는 비동기라,
+        //  바로 스크롤하면 아직 빈 리스트라 목적지가 없다.
+        if (meta && typeof meta.jumpTs === "number") {
+          const ts = meta.jumpTs;
+          void (already ? Promise.resolve() : lastHistoryLoad)
+            .then(() => (window.jumpToMessageTs ? window.jumpToMessageTs(ts) : "no-api"))
+            .then((r) => {
+              if (r !== "ok" && typeof window.notifyJumpMiss === "function") window.notifyJumpMiss(r);
+            })
+            .catch(() => {});
+        }
+        return true;
       };
 
       const newTab = () => {

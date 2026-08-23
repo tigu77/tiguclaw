@@ -24,6 +24,10 @@ import type { MCPServer } from "@openai/agents-core";
 type MCPTool = Awaited<ReturnType<MCPServer["listTools"]>>[number];
 type CallToolResultContent = Awaited<ReturnType<MCPServer["callTool"]>>;
 
+// 무한 상한을 유한 수로 환산하는 **단일 판단** — 여기서 다시 만들면 한쪽만 늙는다.
+// (`worker-jobs` 는 어댑터를 정적 import 하지 않으므로 순환 없음.)
+import { asFiniteTimeoutMs } from "../../worker-jobs.js";
+
 // MCP callTool 타임아웃 (2026-06-20, 본질 수정) — in-process bridge 라 네트워크 0,
 // 도구 *자체* 타임아웃(Bash execFile 120s/max 600s 등)이 진짜 경계다. MCP SDK 기본
 // 60s 를 그대로 두면 60s 넘는 정상 도구(예: `npx quartz build`)가 매번 false "MCP
@@ -52,14 +56,19 @@ export const adaptClaudeMcpServer = async (
    * ★불변식: **바깥 경계는 안쪽 경계보다 넉넉해야 한다.** 위 상수 주석의 근거 그대로다
    *  (2026-06-19 위키 11h outage = MCP 60s 가 정상 도구를 잘라 재시도 폭주). 그런데 그
    *  불변식이 도구마다 다르다 — 백그라운드 잡을 소유하는 도구(spawn_agent)의 **진짜
-   *  경계는 잡의 상한(WORKER_TIMEOUT_MS 2시간)** 이라, 11분 천장은 다시 "바깥이 더 조임"
+   *  경계는 잡의 상한(WORKER_TIMEOUT_MS)** 이라, 11분 천장은 다시 "바깥이 더 조임"
    *  이 된다. 그런 브리지는 자기 안쪽 경계에 맞춰 여기로 넉넉한 값을 넘긴다.
    */
   callTimeoutMs?: number,
 ): Promise<MCPServer> => {
+  // ★`Infinity` 를 **폴백으로 떨어뜨리면 안 된다** (2026-08-22 상한 무한화). 종전 가드는
+  //  `Number.isFinite` 라 무한 천장이 들어오면 조용히 `MCP_CALL_TIMEOUT_MS`(11분)로 내려갔다.
+  //  그러면 잡 상한이 무한인데 **바깥 MCP 천장이 11분** = 가장 바깥이 가장 조이는 배치가 되어
+  //  2026-07-28 사고(정상 진행 중인 작업을 바깥이 자르고 모델이 재실행)가 그대로 재현된다.
+  //  무한은 "값이 없다" 가 아니라 "가장 느슨하다" 이므로 실질-무한 유한값으로 환산한다.
   const callTimeout =
-    typeof callTimeoutMs === "number" && Number.isFinite(callTimeoutMs) && callTimeoutMs > 0
-      ? callTimeoutMs
+    typeof callTimeoutMs === "number" && callTimeoutMs > 0
+      ? asFiniteTimeoutMs(callTimeoutMs)
       : MCP_CALL_TIMEOUT_MS;
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 

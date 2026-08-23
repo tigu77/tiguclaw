@@ -79,10 +79,25 @@ export const check: RegressionCheck = {
     ) as string[];
     // 최상위 선언 = 들여쓰기 6칸(이 레포 대시보드 js 관습). 함수 안은 더 깊다.
     const TOP_DECL = /^ {6}(?:const|let|class)\s+([A-Za-z_$][\w$]*)/;
+    /**
+     * ★**IIFE 로 감싼 모듈은 전역을 안 만든다** — 검사 대상이 아니다 (2026-08-23).
+     *
+     *  들여쓰기 6칸을 최상위로 보는 건 이 레포 관습에 기댄 어림이다. 그 관습을 안 따르는
+     *  파일(예: 2칸 들여쓰기 + 전체 IIFE)에서는 **함수 안 지역변수가 6칸에 걸려** 충돌로
+     *  오인된다 — 실제로 `chat-search.js` 의 `const r`·`const data` 가 그렇게 잡혔다.
+     *  그 파일은 전역을 하나도 안 만들므로 위험이 0인데 빨간불이 났다.
+     *  ★오탐은 게이트를 죽인다(`feedback_gate_must_actually_run` — 상시 FAIL 이면 아무도
+     *   안 본다). 위험이 없는 형태는 대상에서 뺀다.
+     */
+    const isIifeWrapped = (src: string): boolean =>
+      /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*\s*\((?:\(\)|function)/.test(src) &&
+      /\}\)\(\);?\s*$/.test(src.trimEnd());
     const owner = new Map<string, string>();
     const dupes: string[] = [];
+    let skipped = 0;
     for (const f of manifest) {
       const src = await readFile(new URL(f, dir), "utf8");
+      if (isIifeWrapped(src)) { skipped += 1; continue; }
       for (const line of src.split("\n")) {
         const m = TOP_DECL.exec(line);
         if (m === null) continue;
@@ -97,7 +112,7 @@ export const check: RegressionCheck = {
         `★파일 간 최상위 이름 충돌 0(뒤 파일이 통째로 죽는다 · ${manifest.length}개 대조)`,
         dupes.length === 0,
         dupes.length === 0
-          ? `최상위 이름 ${owner.size}개 전부 유일`
+          ? `최상위 이름 ${owner.size}개 전부 유일(IIFE 모듈 ${skipped}개는 전역 0이라 제외)`
           : `★충돌: ${dupes.join(" · ")}`,
       ),
     );

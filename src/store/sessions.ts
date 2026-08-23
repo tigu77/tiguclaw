@@ -1145,6 +1145,37 @@ export const INTERNAL_THREAD_PREFIXES = [
 export const SUBAGENT_THREAD_MARKER = "::sub::";
 
 /**
+ * **사용자에게 보이는 세션**의 SQL 조건 — 대시보드 목록·텔레그램 `/sessions`·대화 검색이
+ * 전부 이걸 쓴다.
+ *
+ * ★같은 질문("이 세션이 사용자에게 보이는가")에 두 곳이 다른 답을 주면 화면이 갈린다.
+ *  2026-08-22 에 그걸 겪었다 — 텔레그램 `/sessions` 에만 뜨는 세션이 있었다. 그 다음날엔
+ *  **검색**이 같은 부류로 갈렸다: 대시보드에 없는 좌표(`tg:` 레거시·`verify:*`·
+ *  `rerun-missed-schedules`)의 대화가 검색 결과로 나왔다(실측 257건).
+ *  그래서 조건을 **한 곳**에 두고 alias 만 받는다([[feedback_hand_maintained_lists]]).
+ *
+ * 뜻: 내부 파생 스레드(worker:/agent:/endpoint:/… + 서브에이전트 마커)가 아니고,
+ * 보관(archive)되지 않은 것.
+ *
+ * @param alias `threads` 테이블의 SQL alias (예: `"t"`). 빈 문자열이면 접두 없이.
+ */
+export const visibleSessionSql = (
+  alias: string,
+): { conds: string[]; params: string[] } => {
+  const col = alias === "" ? "channel_thread_id" : `${alias}.channel_thread_id`;
+  const conds: string[] = [];
+  const params: string[] = [];
+  for (const p of INTERNAL_THREAD_PREFIXES) {
+    conds.push(`${col} NOT LIKE ? ESCAPE '\\'`);
+    params.push(`${escapeLike(p)}%`);
+  }
+  conds.push(`${col} NOT LIKE ? ESCAPE '\\'`);
+  params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
+  conds.push(`${alias === "" ? "archived_at" : `${alias}.archived_at`} IS NULL`);
+  return { conds, params };
+};
+
+/**
  * 프루닝 *대상* 내부 접두 — `INTERNAL_THREAD_PREFIXES` 에서 `scheduler:` 를 뺀 부분집합
  * (효율감사 P3, 2026-07-16). `scheduler:` 는 사용자 뷰에서는 배제 대상(대화 세션 아님)이지만
  * **재사용되는 반복 스레드**(같은 스케줄이 매 발화 같은 threadKey 를 다시 씀 — 스케줄 실행
@@ -1356,13 +1387,14 @@ export const listThreads = (opts?: {
 
   const conds: string[] = ["channel_thread_id LIKE ? ESCAPE '\\'"];
   const params: (string | number)[] = [like];
+  // ★내부 파생 배제는 `visibleSessionSql` 한 곳에서 — 대화 검색도 같은 함수를 쓴다.
+  //  종전엔 이 조건이 여기에만 있어서, 검색이 대시보드에 없는 좌표까지 뒤졌다.
+  //  (보관 필터는 아래에서 별도 — 여기 `onlyArchived`·`includeArchived` 분기가 있다.)
   if (opts?.excludeInternal === true) {
-    for (const p of INTERNAL_THREAD_PREFIXES) {
-      conds.push("channel_thread_id NOT LIKE ? ESCAPE '\\'");
-      params.push(`${escapeLike(p)}%`);
-    }
-    conds.push("channel_thread_id NOT LIKE ? ESCAPE '\\'");
-    params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
+    const v = visibleSessionSql("");
+    // 마지막 항목은 보관 조건이라 뺀다(보관은 아래 분기가 소유).
+    conds.push(...v.conds.slice(0, -1));
+    params.push(...v.params);
   }
   // 보관 필터 — 기본은 "보관 안 된 것만"(사용자 목록). 삭제가 아니라 숨김이므로 행은 남는다.
   if (opts?.onlyArchived === true) {
@@ -1426,6 +1458,26 @@ export const listThreads = (opts?: {
  * @param at null 이면 복원.
  * @returns 바뀐 행 수(0 = 그런 세션 없음).
  */
+/**
+ * 이 세션의 표시 이름 — **키로 한 건만** 읽는다.
+ *
+ * ★목록 API 로 단건을 조회하면 **창 밖으로 밀려 조용히 사라진다** (2026-08-24 6라운드).
+ *  `listThreads` 는 기본 상한 100 · `last_used_at DESC` 인데, 보관은 `archived_at` 만
+ *  바꾸고 `last_used_at` 은 안 건드려서 활성·보관이 한 창을 두고 경쟁한다. 실측: 활성
+ *  120 · 보관 5 → 복원 목록의 이름이 **5/5 유실**(= 방금 고친 그 증상 그대로).
+ *  상한을 키우는 건 답이 아니다 — 500 도 500에서 같은 결함을 낸다. **질문이 "이 키의
+ *  이름" 이면 키로 물어야 한다.** [[feedback_hand_maintained_lists]] 와 같은 부류:
+ *  목록의 표시 정책으로 단건의 존재·속성을 판정하지 마라.
+ */
+export const getThreadName = (threadKey: string): string | null => {
+  const handle = requireDb("getThreadName");
+  const row = handle
+    .prepare(`SELECT name FROM threads WHERE channel_thread_id = ?`)
+    .get(threadKey) as { name?: string | null } | undefined;
+  const n = row?.name;
+  return typeof n === "string" && n.trim() !== "" ? n : null;
+};
+
 export const setThreadArchived = (threadKey: string, at: number | null): number => {
   const handle = requireDb("setThreadArchived");
   return handle

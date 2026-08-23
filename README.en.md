@@ -20,7 +20,7 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
 - **Talk, don't type** — send a voice note on Telegram or press-and-hold the mic in the dashboard; it transcribes and gets to work. Transcription is config-driven like everything else — a local model or a cloud one, your call.
 - **Say something mid-task** — send a message while it's already working and it folds it into the turn in progress, instead of making you wait for the end or start over.
 - **One personality, many channels** — Telegram, CLI, HTTP, and the web dashboard all reach the same assistant and share one conversation memory. Start on your phone, finish at your desk.
-- **Delegates the heavy & the trivial** — hands long tasks to a background **manager** (so it stays chatty), and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
+- **Delegates the heavy & the trivial** — hands a whole goal to a **manager** (which staffs it out as needed) so the chat stays free, and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
 - **Several at once, and nothing forgotten** — it can start a handful of sub-agents and keep talking to you meanwhile. Whoever handed out the work **can't finish until the results are back**, so nothing gets dropped on the floor. Steer them mid-flight, or stop them.
 - **Learns as it works** — it turns its own repeated failures into operational lessons it follows next time, and when it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Always a proposal you approve — it never rewrites itself silently.
 - **Notices its own trouble** — it sweeps its own recent history for things that went wrong quietly (a scheduled message that never arrived, a job that died) and tells you first. Where the fix is safe and reversible — resending that one message, say — it just does it and says so; anything else it brings to you.
@@ -31,6 +31,27 @@ Your always-on AI assistant. It does everything Claude Code does, and runs sever
 - **It suggests your next message** *(off by default)* — after a turn, a grey draft sits in the composer; Tab (or tap the input on mobile) fills it in. Sending is still yours. It costs a few tokens per turn, so you turn it on in **Settings**.
 - **Outbound calls are logged too** — HTTP endpoints you opened and LLM gateway calls share one view. Not the content: just which model handled how many messages, with tokens, duration, and success.
 - **Refresh without losing your place** — the view you were on, your session tabs, and the background panel all come back.
+
+## Who owns what
+
+The better AI tooling gets, the more there is to manage. Create the agents, define their roles, pick who gets which job, pick the models, run them in parallel, re-run the ones that failed, merge the results. At that point the AI isn't doing your work — **you're managing an AI org.**
+
+tiguclaw goes the other way. You talk to **one assistant** and state a goal. The org that forms around it is the assistant's problem, sized to the goal.
+
+```text
+you ──goal──▶ assistant ──┬──▶ manager ──┬──▶ sub-agent
+                          │              ├──▶ sub-agent
+             result ◀─────┤              └──▶ sub-agent
+                          └──▶ sub-agent
+```
+
+- **The assistant owns the relationship.** It's the one you keep talking to — holding context, memory, and your projects, deciding whether to do the work itself or hand it off.
+- **A manager owns the goal.** Not a background worker that runs long jobs: a **field commander**. It breaks the goal down itself, staffs sub-agents onto the pieces, and judges from what comes back whether the goal is actually met. **It cannot finish before collecting its results** — that isn't a prompt asking nicely, the core enforces it.
+- **A sub-agent owns the task.** One thing — research, an implementation, a check — handed back to whoever called it.
+
+**Depth stops here.** A manager cannot spawn another manager, and a sub-agent cannot spawn anything. Wide as needed, never deeper — a deliberate limit against runaway cost, blurred responsibility, and the "when does this end?" problem that unbounded delegation brings.
+
+The default is **watching**, not steering. The dashboard shows who's doing what, and you can add instructions or stop things mid-flight. But finishing the goal shouldn't require it.
 
 ## What's different
 
@@ -264,6 +285,8 @@ Worth knowing:
 - **Prefer a different backend than your assistant's.** If your app hammers the same subscription the assistant lives on, you'll feel it in both.
 
 ## Principles
+
+The first question before building anything: **does this hand the user something new to manage?** If it does, we look again at whether the assistant or a manager could carry it instead. Make agents easier to manage, or make them **something you don't have to manage** — we take the second. Fewer model choices, better automatic ones. No workflow builder if a goal can produce the plan. A sensible default beats another setting.
 
 1. **Superset of Claude Code** — includes every Claude Code ability, then builds on top.
 2. **Multiple LLMs at once** — a different model per task, same abilities regardless of adapter.

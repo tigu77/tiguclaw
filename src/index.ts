@@ -26,12 +26,17 @@ import type {
   MessageHandler,
 } from "./channels/types.js";
 import { initEventBus, type EventBus } from "./core/eventbus.js";
+import { formatDurationKo } from "./core/format-duration.js";
 import {
   setChannelPresence,
   type ChannelPresence,
 } from "./core/channel-registry.js";
 import { registerMcpServer } from "./core/mcp-registry.js";
-import { expandCommand } from "./core/entry/command-registry.js";
+import {
+  expandCommand,
+  isEphemeralCommandText,
+  parseSlashCommand,
+} from "./core/entry/command-registry.js";
 import {
   runStopHooks,
   runUserPromptSubmitHooks,
@@ -85,6 +90,7 @@ import {
   setSessionModelOverride,
   SESSION_STORAGE_CHANNEL,
   listThreads,
+  getThreadName,
   setThreadName,
   setThreadArchived,
   sessionDisplayName,
@@ -131,6 +137,7 @@ import {
   registerWorkerHandler,
   recoverInterruptedJobs,
   listJobs,
+  getJobActivity,
   STEERED_TURN_RESULT,
   cancelJobsForThread,
 } from "./core/worker-jobs.js";
@@ -689,9 +696,25 @@ const buildLogTail = async (argRaw: string): Promise<string> => {
   }
 };
 
+/**
+ * 슬래시 명령 응답 — 그 채널로 보내고 **대화 기록에도 남긴다**(관측 발행 → chat_log·대시보드).
+ *
+ * ★`ephemeral` = **휘발성 안내** (2026-08-23 사용자 확정: "텔레그램 전용 휘발성이라고
+ *  보면 될 것 같은데"). 보낸 채널에 한 번 보이고 **어디에도 안 남는다** — chat_log·
+ *  대시보드·검색·이력 전부.
+ *
+ *  왜 필요한가: "이 대화방을 TE 세션에 묶었습니다" 는 *그 방*의 설정 확인이다. 세션
+ *  기록에 남으면 대시보드엔 자기가 하지도 않은 조작이 대화처럼 끼어들고, 나중에 검색
+ *  결과로도 나온다.
+ *
+ * ★이름 주의: 응답은 원래 한 채널로만 간다 — 특별한 건 "채널 전용" 이 아니라 **안
+ *  남는다**는 것이다(처음엔 `channelOnly` 로 지었다가 고쳤다).
+ * ★남아야 할 것엔 절대 쓰지 마라 — 대화·결과 보고는 기록이 곧 가치다.
+ */
 const replyCommand = async (
   msg: { reply: (t: string) => Promise<unknown>; channel: string; threadKey: string },
   text: string,
+  opts?: { ephemeral?: boolean },
 ): Promise<void> => {
   await Promise.resolve(msg.reply(text)).catch(() => {});
   try {
@@ -702,6 +725,8 @@ const replyCommand = async (
         channel: msg.channel,
         threadKey: msg.threadKey,
         text: text.slice(0, EVENT_TEXT_MAX),
+        // 발행은 한다(라이브 화면엔 보인다) — 적재만 `event-persist` 가 건너뛴다.
+        ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
       },
     });
   } catch {
@@ -780,14 +805,18 @@ const attachmentsMeta = (
 // 이 헬퍼로 **배타적으로** 1회씩만 호출한다(이중발행 0). 합성(synthetic) turn 은 항상 스킵
 // (버그 트레이스 2026-07-16: out-of-band 분기가 이 echo 를 안 내보내 /stop 후 "대기 중"
 // 버블이 클리어 신호를 못 받아 스턱 — [[project_dashboard_multisession]] 인접 갭).
-const publishInboundEcho = (msg: {
-  synthetic?: boolean;
-  channel: string;
-  threadKey: string;
-  text: string;
-  attachments?: IncomingMessage["attachments"];
-  correlationId?: string;
-}): void => {
+const publishInboundEcho = (
+  msg: {
+    synthetic?: boolean;
+    channel: string;
+    threadKey: string;
+    text: string;
+    attachments?: IncomingMessage["attachments"];
+    correlationId?: string;
+  },
+  /** `ephemeral: true` = 발행은 하되 **적재는 안 한다**(event-persist 가 판정). */
+  opts?: { ephemeral?: boolean },
+): void => {
   // ★합성 턴도 **발행은 한다 — 텍스트 없이** (2026-08-13, 사용자: "매니저가 일을 끝내고
   //  메인이 정리하는 시점이 딱 빈 공간인 느낌"). 종전엔 통째로 `return` 이었다.
   //
@@ -823,6 +852,8 @@ const publishInboundEcho = (msg: {
       channel: msg.channel,
       threadKey: msg.threadKey,
       text: msg.text.slice(0, EVENT_TEXT_MAX),
+      // 휘발성 표식 — 발행은 그대로(버블 승격·진행 표시 살아있음), 적재만 안 한다.
+      ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
       ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
       // 큐-취소(ADR 2026-07-15) — echo 에 correlationId 를 실어 대시보드가 낙관적
       // "대기 중" 버블 승격을 텍스트 대신 id 로 정확 매칭(동일 텍스트 오매칭 해소).
@@ -930,7 +961,17 @@ const handler: MessageHandler = async (msg) => {
   // 내부 기원 합성 turn(워커 done 재주입 등)은 인바운드 관측 발행을 스킵 — 합성 텍스트는
   // 내부 스캐폴딩(buildCompletionPrompt)이라 대시보드 chat_log 에 "나(user)"로 새면 안 된다.
   // 라우팅·발송 등 나머지 처리는 실 인바운드와 동일. 아웃바운드 관측은 아래 성공분기 단일 발행.
-  publishInboundEcho(msg);
+  // ★휘발성 명령은 **인바운드도** 안 남긴다 (2026-08-23 적대 검토 D-2). 종전엔 응답만
+  //  건너뛰어 절반만 휘발했다 — 답은 사라지는데 명령은 남아 대화 기록에 *답 없는 명령
+  //  버블*이 됐다. 판정은 `isEphemeralCommandText` 한 곳(command-registry).
+  //
+  // ★그런데 **발행을 끄면 안 된다** (2026-08-23 2라운드 E3). 이 이벤트는 기록만 하는 게
+  //  아니라 대시보드의 낙관 버블 승격(correlationId)·진행 표시·에러 클리어까지 켠다 —
+  //  통째로 끄면 사용자가 친 명령이 "대기 중" 버블로 **영구히 굳는다**(2026-07-16 `/stop`
+  //  사고와 같은 기제, 바로 아래 주석이 그 사고를 적어둔 자리다). 그래서 **발행은 하고,
+  //  표식만 단다** — `event-persist` 가 그 표식을 보고 적재만 건너뛴다. 안 남기는 판단은
+  //  한 곳(저장 계층)에 있고, 여기선 그 성질을 말하기만 한다.
+  publishInboundEcho(msg, { ephemeral: isEphemeralCommandText(msg.text) });
   const trimmed = msg.text.trim();
   // ★세션-정체성 저장 채널(채널/세션 분리 ADR 2026-07-15, QA BLOCKER 후속) — 슬래시 핸들러가
   // route() 정규화와 **동일 키**로 세션-정체성(resume/context boundary/model override/summary)
@@ -963,8 +1004,12 @@ const handler: MessageHandler = async (msg) => {
     clearThreadSummary(sidChannel, msg.threadKey);
     await replyCommand(
       msg,
+      // ★"세션은 그대로" 라고만 하면 **다음에 뭘 해야 하는지**를 안 준다 (2026-08-22 신고).
+      //  실제로 세션을 없애려던 사용자가 `/clear` 를 쓰고, 안 없어지니 같은 이름으로 새로
+      //  만들어 목록에 중복이 남았다. 여기가 그 갈림길이므로 대안을 같은 줄에 둔다.
       had
-        ? "컨텍스트 초기화됨. 새 대화로 시작합니다 (이 대화의 이름·설정은 그대로예요)."
+        ? "컨텍스트 초기화됨. 새 대화로 시작합니다 (이 대화의 이름·설정은 그대로예요).\n" +
+          "세션 자체를 목록에서 없애려면 `/sessions archive` 입니다."
         : "초기화할 컨텍스트가 없습니다.",
     );
     return;
@@ -979,13 +1024,10 @@ const handler: MessageHandler = async (msg) => {
       return;
     }
     const now = Date.now();
-    const fmtElapsed = (startedAt: number): string => {
-      const sec = Math.max(0, Math.round((now - startedAt) / 1000));
-      if (sec < 60) return `${sec}초째`;
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      return s === 0 ? `${m}분째` : `${m}분 ${s}초째`;
-    };
+    // 경과 문구는 `core/format-duration` 한 곳에서 — 종전엔 여기·정체 보고·그 로그가 각자
+    // 분 단위 나눗셈을 했고, 그러면 한 곳만 늙는다(`reset-time-is-readable` 가 잡으려던 바로
+    // 그 부류). 시간 단위도 여기서 같이 얻는다(2시간짜리 잡이 "125분째" 로 보이던 것).
+    const fmtElapsed = (startedAt: number): string => `${formatDurationKo(now - startedAt)}째`;
     // 최신 먼저(listJobs 가 startedAt 내림차순). 워커/서브 구분 라벨.
     const lines = running.map((j) => {
       const icon = j.kind === "agent" ? "🤖" : "📦";
@@ -998,7 +1040,19 @@ const handler: MessageHandler = async (msg) => {
         String(j.modelTier).toLowerCase() !== "default"
           ? ` · ${j.modelTier}`
           : "";
-      return `${icon} ${kindLabel} \`${name}\`${tier} — ${fmtElapsed(j.startedAt)}`;
+      // ★지금 뭘 하고 있는지 한 줄 더 (2026-08-23). 점검은 조용한 잡에만 나가므로
+      //  "잘 돌고 있나?" 가 궁금한 순간엔 통지가 없다 — 그때 답이 여기 있어야 한다.
+      //  점검이 쓰는 것과 **같은 증거**를 읽는다(계측 중복 0).
+      const act = getJobActivity(j.jobId);
+      const doing =
+        act === undefined
+          ? ""
+          : act.inFlight.length > 0
+            ? `\n   └ ${act.inFlight
+                .map((f) => `\`${f.tool}\` ${formatDurationKo(now - f.since)}째`)
+                .join(", ")}`
+            : `\n   └ 마지막 활동 ${formatDurationKo(now - act.lastActivityAt)} 전`;
+      return `${icon} ${kindLabel} \`${name}\`${tier} — ${fmtElapsed(j.startedAt)}${doing}`;
     });
     await replyCommand(msg,
       `🔧 진행 중인 백그라운드 작업 ${running.length}개:\n\n${lines.join("\n")}`,
@@ -1112,9 +1166,9 @@ const handler: MessageHandler = async (msg) => {
   // 슬래시 명령은 채널 입구에서 파싱 (원칙 4 다채널 단일 인격, 원칙: 모델에게
   // 슬래시 처리 시키지 않는다). 첫 토큰 = 명령, 나머지 = args.
   if (trimmed.startsWith("/")) {
-    const sepIdx = trimmed.search(/\s/);
-    const cmd = sepIdx === -1 ? trimmed : trimmed.slice(0, sepIdx);
-    const args = sepIdx === -1 ? "" : trimmed.slice(sepIdx + 1).trim();
+    // ★파서는 하나다 — 휘발성 판정(`isEphemeralCommandText`)이 같은 함수를 쓴다.
+    //  여기서 손으로 가르면 그 판정과 갈리고, 갈리면 명령과 답 중 한쪽만 사라진다.
+    const { cmd, args } = parseSlashCommand(trimmed);
 
     if (cmd === "/memo") {
       if (args === "") {
@@ -1307,10 +1361,16 @@ const handler: MessageHandler = async (msg) => {
     // 모델에게 시키지 않는다는 기존 원칙 그대로.
     // 채널 무관: 텔레그램 전용이 아니라 channelAddress 를 가진 모든 채널에서 동작한다.
     if (cmd === "/sessions") {
+      // ★휘발성 여부는 **하나의 판정**이 정한다 (2026-08-23 2라운드 E1). 인바운드 에코를
+      //  건너뛰는 판단(`handler` 최상단)과 응답을 안 남기는 판단이 갈리면 **반쪽만 휘발**
+      //  한다: 종전엔 `{ephemeral:true}` 가 성공 분기 둘에만 붙어 있어서, 오류 분기와
+      //  대시보드가 늘 타는 선택지 분기에선 **명령은 사라지고 답만 남았다** — 고치려던
+      //  버그의 거울상이다. 여기서 한 번 정하고 이 블록의 모든 응답이 그 값을 쓴다.
+      const ephemeral = isEphemeralCommandText(trimmed);
       // 대화방 주소 — 바인딩(use/new)에만 필요. archive/unarchive 는 채널 무관이라
       // 아래 가드보다 먼저 처리된다(대시보드에서도 세션 정리가 돼야 한다).
       const addr = msg.channelAddress?.trim() ?? "";
-      const sub = args === "" ? "" : (args.split(/\s+/)[0] ?? "").toLowerCase();
+      const sub = parseSlashCommand(trimmed).sub; // 같은 파서 — 판정과 갈릴 수 없다.
       const rest = args === "" ? "" : args.slice(sub.length).trim();
       const current = (() => {
         try {
@@ -1320,12 +1380,16 @@ const handler: MessageHandler = async (msg) => {
         }
       })();
       const nameOf = (id: string): string => {
-        const t = listThreads({ excludeInternal: true }).find(
-          (x: { threadKey: string; name?: string | null }) => x.threadKey === id,
-        );
+        // ★**키로 한 건만 읽는다** (2026-08-24 6라운드). 5라운드엔 `includeArchived: true`
+        //  로 고쳤는데 그게 `listThreads` 의 **기본 상한 100** 과 만나 같은 결함을
+        //  되살렸다 — 실측: 활성 120 · 보관 5 → 복원 목록 이름 **5/5 유실**. 보관은
+        //  `last_used_at` 을 안 건드리므로 활성·보관이 한 창을 두고 경쟁한다.
+        //  상한을 키우는 건 답이 아니다(500 도 500에서 같은 결함을 낸다).
+        //  질문이 "이 키의 이름" 이면 **키로 물어야 한다.**
+        const name = getThreadName(id);
         // ★키 원문을 뱉지 않는다 — 종전엔 이름이 없으면 `dashboard:1784104932394-f791d2b408d6`
         //  가 그대로 목록에 떴다("이름 없는 세션" 의 정체). 파생 규칙은 대시보드와 공용.
-        return sessionDisplayName(id, t?.name, getFirstUserText(id));
+        return sessionDisplayName(id, name, getFirstUserText(id));
       };
 
       // /sessions archive [id] — 목록에서 숨긴다. ★삭제가 아니다(대화 기록 보존, 복원 가능).
@@ -1335,7 +1399,9 @@ const handler: MessageHandler = async (msg) => {
         const id = rest.trim();
         if (id !== "") {
           if (!restoring && id === DEFAULT_SESSION_ID) {
-            await replyCommand(msg, "기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).");
+            await replyCommand(msg, "기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).",
+              { ephemeral },
+            );
             return;
           }
           // ★보관 = 그 세션을 가리키는 **모든 방**의 바인딩 해제까지가 한 동작이다
@@ -1345,7 +1411,9 @@ const handler: MessageHandler = async (msg) => {
           //  `setSessionArchived` 하나를 부른다.
           const { changed, unboundRooms } = setSessionArchived(id, !restoring);
           if (changed === 0) {
-            await replyCommand(msg, `그런 세션이 없습니다: ${id}`);
+            await replyCommand(msg, `그런 세션이 없습니다: ${id}`,
+              { ephemeral },
+            );
             return;
           }
           const note =
@@ -1357,6 +1425,7 @@ const handler: MessageHandler = async (msg) => {
             restoring
               ? `복원했습니다 — 목록에 다시 나옵니다.`
               : `보관했습니다 — 목록에서 숨깁니다. **대화 기록은 그대로 남아 있고** \`/sessions unarchive\` 로 되돌릴 수 있습니다.${note}`,
+            { ephemeral },
           );
           return;
         }
@@ -1366,7 +1435,9 @@ const handler: MessageHandler = async (msg) => {
               (t: { threadKey: string }) => t.threadKey !== DEFAULT_SESSION_ID,
             );
         if (pool.length === 0) {
-          await replyCommand(msg, restoring ? "보관된 세션이 없습니다." : "보관할 세션이 없습니다.");
+          await replyCommand(msg, restoring ? "보관된 세션이 없습니다." : "보관할 세션이 없습니다.",
+            { ephemeral },
+          );
           return;
         }
         const opts2 = pool.map((t: { threadKey: string }) => ({
@@ -1386,6 +1457,7 @@ const handler: MessageHandler = async (msg) => {
         await replyCommand(
           msg,
           `${q}\n${opts2.map((o) => `· ${o.label} — \`${o.value}\``).join("\n")}`,
+          { ephemeral },
         );
         return;
       }
@@ -1409,6 +1481,7 @@ const handler: MessageHandler = async (msg) => {
         await replyCommand(
           msg,
           "이 채널은 이미 세션 셀렉터가 있습니다 — 대시보드 상단 탭에서 세션을 고르세요. `/sessions` 는 셀렉터가 없는 채널(텔레그램·CLI)용입니다.",
+          { ephemeral },
         );
         return;
       }
@@ -1416,6 +1489,7 @@ const handler: MessageHandler = async (msg) => {
         await replyCommand(
           msg,
           "이 채널은 대화방 주소가 없어 세션을 묶을 수 없습니다.",
+          { ephemeral },
         );
         return;
       }
@@ -1424,7 +1498,9 @@ const handler: MessageHandler = async (msg) => {
         const target = rest.trim();
         if (target === DEFAULT_SESSION_ID || target === "default") {
           clearChannelSessionBinding(msg.channel, addr);
-          await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.");
+          await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.",
+            { ephemeral },
+          );
           return;
         }
         // ★존재 판정에 **목록용 필터를 쓰지 않는다** (2026-07-29 검토). 표시 정책과 존재
@@ -1439,13 +1515,16 @@ const handler: MessageHandler = async (msg) => {
           await replyCommand(
             msg,
             `그런 세션이 없습니다: ${target}\n\`/sessions\` 로 목록을 확인하세요.`,
+            { ephemeral },
           );
           return;
         }
         setChannelSessionBinding(msg.channel, addr, target);
+        // 이 방의 설정 확인 — 휘발성(그 채널에 한 번 보이고 안 남는다).
         await replyCommand(
           msg,
           `이 대화방을 **${nameOf(target)}** 세션에 묶었습니다. 앞으로 이 방의 대화는 그 세션에 쌓입니다(재시작해도 유지).`,
+          { ephemeral },
         );
         return;
       }
@@ -1471,15 +1550,37 @@ const handler: MessageHandler = async (msg) => {
             );
           }
         }
+        // 같은 부류 — 바인딩 확인이지 대화가 아니다. 휘발성.
         await replyCommand(
           msg,
           `새 세션 **${finalName}** 을 만들고 이 대화방을 묶었습니다.`,
+          { ephemeral },
         );
         return;
       }
 
       // 인자 없음 — 현재 세션 + 선택지. 선택 UI 가 없는 채널(값 미지원)엔 목록 텍스트로 폴백.
-      const threads = listThreads({ excludeInternal: true }).slice(0, 20);
+      //
+      // ★**이름 붙인 세션만** 뿌린다 (2026-08-22 사용자 신고: "대시보드엔 안 뜨는 애들이
+      //  텔레그램엔 뜬다. 대시보드가 맞다"). 대시보드 탭은 `shouldAutoOpenTab` =
+      //  `name` 이 있는 것만 여는데 여기는 전부 뿌려서, 이름을 안 붙인 세션이 **첫 발화
+      //  파생 라벨**로 끼었다(`#VoxelBuilder 깃풀…` 처럼 태그로 시작하면 아예 무의미하다).
+      //  같은 질문("어느 세션에 묶을까")에 두 화면이 다른 답을 주고 있었다.
+      //
+      // ★2026-08-09 에 폐지한 "짧은 대화 숨기기" 와는 다른 규칙이다. 그건 **길이**로
+      //  추측해서 갓 시작한 진짜 대화를 지웠다. 이건 **사용자가 이름을 붙였는가** — 의도의
+      //  표현이지 추측이 아니다. 대시보드가 이미 그 규칙으로 돌고 사용자가 맞다고 했다.
+      //
+      // ★현재 세션은 이름이 없어도 **항상 남긴다** — 지금 어디 묶여 있는지는 보여야 한다.
+      // ★숨긴 개수는 **말한다**(아래 note). 조용히 접히면 사용자는 없어진 줄 안다.
+      const allThreads = listThreads({ excludeInternal: true });
+      const threads = allThreads
+        .filter(
+          (t: { threadKey: string; name?: string | null }) =>
+            (t.name ?? "").trim() !== "" || t.threadKey === current,
+        )
+        .slice(0, 20);
+      const hiddenCount = allThreads.length - threads.length;
       const options = [
         // ★기본 세션도 **이름 규칙을 그대로 탄다**(2026-08-19 사용자 신고: "기본세션은
         //  텔레그램에서 바뀐 이름이 안 나오고 계속 기본 세션으로 나온다").
@@ -1500,9 +1601,25 @@ const handler: MessageHandler = async (msg) => {
           })),
       ];
       const header = `현재 세션: **${nameOf(current)}**`;
+      // ★잘린 것을 **말한다** — 조용히 접히면 사용자는 세션이 사라진 줄 안다. 되찾는 법도
+      //  같이 준다(이름을 붙이면 목록에 올라온다 = 대시보드 탭 규칙과 동일).
+      //  ★안내는 **실재하는 수단만** 적는다. `/sessions` 하위명령은 `use|new|archive|
+      //   unarchive` 뿐이고 `rename` 은 없다 — 이름 붙이기는 대시보드나 자연어(비서에게
+      //   말하기)로 한다. 없는 명령을 적으면 사용자가 그걸 치고 막힌다.
+      const hiddenNote =
+        hiddenCount > 0
+          ? `\n이름 없는 세션 ${hiddenCount}개는 숨겼어요 — 이름을 붙이면 나옵니다("이 세션 이름 …로 해줘").`
+          : "";
       if (msg.presentOptions !== undefined && options.length > 1) {
+        // ★정리 수단을 **여기서** 알려준다 (2026-08-22 사용자 신고). 종전엔 `new` 만 적혀
+        //  있어서, 안 쓰는 세션을 없애려던 사용자가 `/clear` 로 갔다 — 그건 컨텍스트만
+        //  지우고 세션은 남긴다("이름·설정은 그대로예요"). 그래서 같은 이름을 다시 만들어
+        //  **목록에 같은 이름이 둘** 남았다. 능력(`archive`)은 있었는데 닿을 길이 없었다.
+        //  목록을 보는 그 순간이 정리하고 싶어지는 순간이므로, 안내도 그 자리에 둔다.
         const r = await msg.presentOptions("이 대화방을 어느 세션에 묶을까요?", options, {
-          note: `${header}\n새로 만들려면 \`/sessions new [이름]\``,
+          note:
+            `${header}\n새로 만들기 \`/sessions new [이름]\` · 목록에서 숨기기 \`/sessions archive\`` +
+            hiddenNote,
         });
         if (r.ok) return;
         // 렌더 실패 — 조용히 넘기지 않고 텍스트로 폴백(선택지가 사라지는 사고 방지).
@@ -1511,7 +1628,9 @@ const handler: MessageHandler = async (msg) => {
       const lines = options.map((o) => `· ${o.label} — \`${o.value}\``);
       await replyCommand(
         msg,
-        `${header}\n\n${lines.join("\n")}\n\n새로 만들기: \`/sessions new [이름]\``,
+        `${header}\n\n${lines.join("\n")}\n\n새로 만들기: \`/sessions new [이름]\`` +
+          ` · 목록에서 숨기기: \`/sessions archive\`${hiddenNote}`,
+        { ephemeral },
       );
       return;
     }
@@ -2311,7 +2430,7 @@ const serializedHandler: MessageHandler = (msg) => {
         entry.ac.abort(new UserCancelledError());
         // ★그 턴이 띄운 잡도 같이 끊는다 (2026-08-19). 종전엔 턴의 AbortController 만
         //  abort 해서, 서브에이전트·매니저 잡은 **계속 돌았다** — 사용자는 "중단했습니다" 를
-        //  받는데 모델 호출은 자기 상한(기본 2시간)까지 이어진다. 잡↔잡 전파는 이미 있었고
+        //  받는데 모델 호출은 자기 상한(WORKER_TIMEOUT_MS)까지 이어진다. 잡↔잡 전파는 이미 있었고
         //  (cancelDescendants) **세션 → 잡** 방향만 비어 있었다.
         //  ★몇 개를 끊었는지 말한다 — 조용한 조치는 사용자가 확인할 방법이 없다.
         const stopped = cancelJobsForThread(msg.threadKey);

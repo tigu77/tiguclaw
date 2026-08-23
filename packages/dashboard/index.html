@@ -52,7 +52,6 @@
         <div class="nav-brand">
           <div class="nav-kicker">제어 센터</div>
           <div class="nav-title">대시보드</div>
-          <div class="nav-sub">핵심 상태와 작업 진입점만 간결하게.</div>
         </div>
         <div class="nav-section" aria-label="main menu">
           <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">홈</span><span class="hint">요약</span></button>
@@ -64,7 +63,7 @@
           <button class="nav-button" data-view="activity" type="button"><span class="ic">📜</span><span class="label">전체 활동</span><span class="hint">모니터</span></button>
           <div class="nav-divider"></div>
           <button class="nav-button" data-view="inventory" type="button"><span class="ic">📚</span><span class="label">인벤토리</span><span class="hint" id="nav-capability-count">0</span></button>
-          <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span><span class="hint">준비</span></button>
+          <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span></button>
         </div>
       </aside>
       <section id="workbench">
@@ -115,9 +114,14 @@
               <h1 class="chat-title">채팅</h1>
               <p class="chat-desc">tiguclaw와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.</p>
             </div>
-            <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업">
-              백그라운드 <span class="bg-badge" id="bg-badge">0</span>
-            </button>
+            <div class="chat-head-actions">
+              <!-- 검색은 **가끔** 쓴다 — 상시 입력창을 두면 채팅 상단을 늘 먹는다(사용자 결정
+                   2026-08-23: "검색 버튼이 따로 있는 건 어때?"). 버튼 → 패널. -->
+              <button id="chat-search-btn" type="button" aria-label="대화 검색" title="대화 검색 (전 세션)">🔍 검색</button>
+              <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업">
+                백그라운드 <span class="bg-badge" id="bg-badge">0</span>
+              </button>
+            </div>
           </div>
           <div class="log-tools">
             <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" />
@@ -170,6 +174,27 @@
       </section>
     </main>
     <div id="toast" role="status" aria-live="polite"></div>
+    <!-- 대화 검색 드로어 (2026-08-23) — 백그라운드 패널과 **같은 부류**라 같은 자리에 둔다.
+         ★단, 백그라운드와 달리 **레이아웃을 밀지 않는다**(사용자: "사이즈 연동은 아니고").
+         검색은 잠깐 열고 결과를 고르면 닫는 흐름이라, 채팅 폭을 바꿔 되돌리는 게 더 성가시다.
+         인라인 패널이었을 땐 열릴 때마다 대화가 아래로 밀려 채팅 공간을 먹었다. -->
+    <div id="cs-backdrop"></div>
+    <aside id="cs-panel" aria-label="대화 검색" aria-hidden="true">
+      <div class="cs-resize" id="cs-resize" title="드래그로 폭 조절"></div>
+      <div class="sd-head">
+        <strong>대화 검색</strong>
+        <button class="sd-close" id="chat-search-close" type="button" aria-label="닫기" title="닫기">✕</button>
+      </div>
+      <div class="cs-row">
+        <input id="chat-search-input" type="search" placeholder="전 세션에서 검색 (2글자 이상)" autocomplete="off" />
+        <!-- 브라우저 기본 찾기와 같은 몸짓: 개수 표시 + 이전/다음 (2026-08-23 사용자 요청). -->
+        <span id="chat-search-count" class="cs-count"></span>
+        <button id="chat-search-prev" class="cs-nav" type="button" aria-label="이전 결과" title="이전 (↑)" disabled>‹</button>
+        <button id="chat-search-next" class="cs-nav" type="button" aria-label="다음 결과" title="다음 (↓)" disabled>›</button>
+      </div>
+      <div id="chat-search-status" class="cs-status"></div>
+      <div id="chat-search-results" class="cs-results"></div>
+    </aside>
     <div id="bg-backdrop"></div>
     <aside id="bg-panel" aria-label="백그라운드 작업" aria-hidden="true">
       <div class="bg-resize" id="bg-resize" title="드래그로 폭 조절"></div>
@@ -244,6 +269,7 @@
     <script src="/js/sse.js"></script>
     <script src="/js/activity.js"></script>
     <script src="/js/tabs.js"></script>
+    <script src="/js/chat-search.js"></script>
     <script src="/js/model-select.js"></script>
     <script src="/js/slash.js"></script>
     <script src="/js/ghost-suggest.js"></script>

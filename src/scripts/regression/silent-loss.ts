@@ -16,7 +16,7 @@
  *
  *  ③**취소가 자식 잡에 전파되지 않았다.** 실측 재현: `cancelJob(parent)=true /
  *   parent=cancelled / child=running / child abort 훅 호출 false`. 매니저를 중지시켜도
- *   서브에이전트가 상한(2시간)까지 모델을 태우고, 결과는 부모가 abort 돼 폐기된다.
+ *   서브에이전트가 상한(SUBAGENT_TIMEOUT_MS)까지 모델을 태우고, 결과는 부모가 abort 돼 폐기된다.
  *   더 나쁜 건 프롬프트의 "진행 중인 백그라운드 작업" 줄이 **취소된 작업을 진행 중이라고
  *   메인에게 보고**한 것 — 소속 판정(`jobBelongsToSession`)이 이미 있는데 취소만 안 썼다.
  *
@@ -275,7 +275,7 @@ export const check: RegressionCheck = {
 
     // ★③-2 **세션 → 잡** 방향 (2026-08-19). 위(잡↔잡)는 2026-07-31 에 닫혔는데, `/stop` 은
     //  턴의 AbortController 만 abort 하고 **그 턴이 띄운 잡은 안 끊었다.** 사용자는
-    //  "중단했습니다" 를 받는데 서브에이전트는 자기 상한(기본 2시간)까지 모델을 계속 호출한다.
+    //  "중단했습니다" 를 받는데 서브에이전트는 자기 상한(SUBAGENT_TIMEOUT_MS)까지 모델을 계속 호출한다.
     //  ★그 고아 잡은 **조용하다** — 부모가 없어 결과를 보고할 곳도 없고, 사용자는 끝난 줄 안다.
     {
       const SESS = "regr:stop-cascade";

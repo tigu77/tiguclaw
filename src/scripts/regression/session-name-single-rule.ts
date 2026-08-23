@@ -113,11 +113,32 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★/sessions 가 키 원문을 뱉지 않는다(공용 파생 사용)",
-        /sessionDisplayName\(id, t\?\.name, getFirstUserText\(id\)\)/.test(idx) &&
+        // ★변수명에 묶지 않는다 — `t?.name`(목록 조회)에서 `name`(키 조회)으로 바꾼
+        //  2026-08-24 수정에 이 검사가 **제품이 맞는데** 빨간불이 됐다. 지키는 것은
+        //  "공용 파생을 쓴다" 이지 그 인자가 어느 변수에서 왔느냐가 아니다.
+        /sessionDisplayName\(id, [A-Za-z?.]+, getFirstUserText\(id\)\)/.test(idx) &&
           !/return nm !== undefined && nm !== "" \? nm : id;/.test(idx),
         /sessionDisplayName\(id/.test(idx) ? "공용 파생 확인" : "★키 원문 폴백이 남아 있다",
       ),
     );
+    // ★이름은 **키로** 읽는다 — 목록 API 로 단건을 묻지 않는다 (2026-08-24 6라운드).
+    //  `listThreads(...).find(x => x.threadKey === id)` 는 기본 상한 100 창 안에서만
+    //  맞는다. 실측: 활성 120 · 보관 5 → 복원 목록 이름 **5/5 유실**. 상한을 키우는 건
+    //  답이 아니다(500 도 500에서 같은 결함). 스토어 원시함수(`getThreadName`)의 동작은
+    //  `room-notice-is-ephemeral` 이 보고, 여기선 **그걸 쓰는지**(배선)를 본다.
+    {
+      const keyed = /const name = getThreadName\(id\);/.test(idx);
+      const listy = /listThreads\([^)]*\)[\s\S]{0,120}?x\.threadKey === id/.test(idx);
+      out.push(
+        assert(
+          "★세션 이름을 키 조회로 읽는다(목록 창에 안 갇힌다)",
+          keyed && !listy,
+          keyed && !listy
+            ? "getThreadName 확인"
+            : "★목록 API 로 단건을 묻는다 — 상한 밖 세션의 이름이 조용히 사라진다",
+        ),
+      );
+    }
     // ★기본 세션 라벨을 **손으로 적지 않는다** (2026-08-19 사용자 신고 — 이 부류 두 번째).
     //  사용자: *"기본세션은 텔레그램에서 바뀐 이름이 안 나오고 계속 기본 세션으로 나온다."*
     //  `/sessions` 선택지의 **첫 항목만** 문자열이 박혀 있었다. 같은 화면의 헤더는

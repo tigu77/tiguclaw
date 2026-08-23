@@ -1,10 +1,18 @@
-      const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp"];
+      // ★`hook` 추가 (2026-08-23 사용자 제안: "훅 목록은 오히려 인벤토리나 각 프로젝트별로").
+      //  서버는 처음부터 `hook` 을 내보내고 있었는데(`/api/inventory` 응답 키) 이 목록에만
+      //  빠져 **화면에 아예 안 나왔다** — 손으로 관리하는 목록이 서버와 갈린 자리다
+      //  ([[feedback_hand_maintained_lists]]).
+      //  ★훅은 **모델이 안 부르는데 자동으로 도는** 유일한 능력이라 목록에 없으면
+      //   "왜 이게 실행됐지" 를 추적할 데가 없다. 보이는 자리가 곧 진단면이다.
+      //  `endpoint`·`command` 는 각자 전용 화면이 있어 여기 안 넣는다(의도적 제외).
+      const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp", "hook"];
       const CATEGORY_LABEL = {
         channel: "채널",
         external_plugin: "플러그인",
         skill: "스킬",
         agent: "에이전트",
         mcp: "mcp",
+        hook: "훅",
       };
       const CATEGORY_ICON = {
         channel: "📡",
@@ -12,6 +20,7 @@
         skill: "🛠",
         agent: "🤖",
         mcp: "🧩",
+        hook: "🪝",
       };
       const LAYERS = ["meta_infra", "in_tree", "discovered"];
       // (구 MAX_EVENTS/HARD_MAX_EVENTS 는 CC식 가상화 도입으로 제거 — 마운트 노드 수는 뷰포트±버퍼로
@@ -20,6 +29,18 @@
       // 활동/스텝마다 누적돼 세션이 길어지면 무한 증가(정상 사용에서도). DOM 윈도우(≤HARD_MAX)
       // 보다 훨씬 크게 잡아, 초과 시 가장 오래된(삽입순=시간순) 것부터 25% 버린다 — 버려지는 건
       // 이미 DOM 에서 prune 된 활동이라 무해(재도래 시 재렌더될 뿐).
+      /**
+       * 우측 드로어(백그라운드·대화 검색) 폭 제한 — **한 곳**에서 정한다.
+       *
+       * ★두 패널이 같은 자리에 같은 몸짓으로 뜨는데 한계가 다르면, 번갈아 열 때 폭이
+       *  들쭉날쭉해 보인다(사용자 2026-08-23: "검색 목록 패널 최대 사이즈는 백그라운드
+       *  패널 최대 사이즈만큼 똑같이"). 값을 각자 적으면 한쪽만 늙는다.
+       */
+      const DRAWER_MIN_W = 300;
+      const DRAWER_MAX_W = 760;
+      const clampDrawerWidth = (w) =>
+        Math.max(DRAWER_MIN_W, Math.min(Math.min(DRAWER_MAX_W, window.innerWidth * 0.9), w));
+
       const KEY_CACHE_MAX = 5000;
       const capKeyStore = (store) => {
         if (store.size <= KEY_CACHE_MAX) return;

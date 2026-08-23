@@ -131,7 +131,7 @@ import {
   SDK_SUBAGENT_TOOLS,
   withSdkSubagentsBlocked,
 } from "../subagent-tools.js";
-import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
+import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS, asFiniteTimeoutMs } from "../../worker-jobs.js";
 import { resolveReasoningEffort } from "../model-catalog.js";
 import { applyToolLoadPolicy } from "../tool-load-policy.js";
 import { createTodoMcpServer, SDK_TODO_TOOL_NAMES } from "../capabilities/todo-mcp.js";
@@ -156,7 +156,9 @@ if (
   process.env.MCP_TOOL_TIMEOUT === undefined ||
   process.env.MCP_TOOL_TIMEOUT.trim() === ""
 ) {
-  process.env.MCP_TOOL_TIMEOUT = String(JOB_OWNING_TOOL_CALL_TIMEOUT_MS());
+  // ★`String(Infinity)` = `"Infinity"` 는 SDK 파싱에서 NaN 이 된다(상한 무한화 2026-08-22).
+  //  유한 수가 강제되는 자리이므로 실질-무한 값으로 환산해 넘긴다.
+  process.env.MCP_TOOL_TIMEOUT = String(asFiniteTimeoutMs(JOB_OWNING_TOOL_CALL_TIMEOUT_MS()));
 }
 import type {
   RegionAActivityPayload,
@@ -1086,7 +1088,6 @@ export const runClaude = async (
   // ─── 서브에이전트(Task) 관측 상태 (per-turn, 클로저 지역 = 동시 turn 격리) ────────
   // Task tool_use id → 관측 jobId 매핑. 한 턴에 Task 여러 개 가능 → Map.
   // 서브 내부 스텝(parent_tool_use_id === taskId)은 부모 좌표가 아니라 agent:<jobId>
-  // 좌표의 llm.activity 로 발행(codex 서브 per-step 과 동형). agentSeq 는 잡별 단조 시퀀스.
 
   // ─── claude 백그라운드 셸 관측 브리지 (ADR `2026-07-17-background-shell-observability.md`
   // §6, Phase 4) ────────────────────────────────────────────────────────────────────

@@ -417,7 +417,7 @@ export const startDetachedAgent = (o: {
    * ★왜 이음매가 필요한가 (2026-08-20 전체 검토 A-F1, 위험도 5): 이 함수 안의
    *  `onWorkerComplete` 호출을 **지워도 1,299건 스위트가 전부 초록**이었다. 결과가
    *  아무에게도 안 가고, `markDone/markFailed` 가 그 안이라 잡이 영원히 running 으로
-   *  굳고, 매니저는 2시간 상한까지 그 자식을 거둔다 — 헤드라인 기능이 통째로 무음 사망.
+   *  굳고, 매니저는 자기 상한(SUBAGENT_TIMEOUT_MS)까지 그 자식을 거둔다 — 헤드라인 기능이 통째로 무음 사망.
    *  회귀가 `onWorkerComplete` 를 **직접** 부르고 실행 경로는 문자열로만 봤기 때문이다.
    *  모델 호출만 갈아끼우면 나머지 배선은 **진짜로** 돌릴 수 있다.
    */
@@ -432,6 +432,10 @@ export const startDetachedAgent = (o: {
       WORKER_STEERING_ENABLED,
       notifyJobOwner,
       getJob,
+      SUBAGENT_TIMEOUT_MS,
+      WORKER_HARD_GRACE_MS,
+      WorkerTimeoutError,
+      asFiniteTimeoutMs,
     } = await import("../../worker-jobs.js");
     const { createSteeringChannel } = await import("../../steering.js");
 
@@ -461,9 +465,43 @@ export const startDetachedAgent = (o: {
         abortSignal: o.abort.signal,
         ...(steerCh !== undefined ? { steering: steerCh } : {}),
       });
-      const out = inject
-        ? await inject(childInput)
-        : await runRegionA(childInput, chain.length > 0 ? { chain } : undefined);
+      const childP = inject
+        ? inject(childInput)
+        : runRegionA(childInput, chain.length > 0 ? { chain } : undefined);
+
+      // ─── 하드 백스톱 — **형제(worker-registry)와 대칭** (2026-08-22) ──────────────
+      //  ★없었다. `abort.signal` 은 LLM 스트림은 끊지만 hung MCP callTool 은 못 끊는다
+      //   (MCP 한계). 워커 레인엔 2026-06-20 에 이 race 가 들어갔는데 **이 레인은 그대로**
+      //   였다 — 또 "한 쪽만 고치고 옆 레인을 안 봤다".
+      //  실측(2026-08-22, `_workspace/probe_agent_timeout_notice.ts`): abort 를 무시하는
+      //   자식을 상한 400ms 로 띄우면 워커는 실패 통지 1건이 나가는데, 이 레인은 12초
+      //   관측 내내 **잡이 running 으로 굳고 통지 0건**이었다. `onWorkerComplete` 가 영영
+      //   안 불리므로 사용자는 끝났는지조차 모른다 — 사용자 신고 "타임아웃 이후 아무런
+      //   응답이 없어" 의 실체.
+      //  ★상한이 무한이면(현행 기본) 타이머를 안 건다 — `setTimeout(fn, Infinity)` 은 1ms
+      //   로 클램프돼 모든 서브가 즉시 죽는다. 그 경우 종료 경로는 사용자 취소뿐이고,
+      //   잡은 카드에 계속 "진행 중" 으로 **보인다**(조용한 죽음 아님).
+      const bounded = Number.isFinite(SUBAGENT_TIMEOUT_MS);
+      let hardTimer: ReturnType<typeof setTimeout> | undefined;
+      const out = await (async (): Promise<RegionASdkOutput> => {
+        if (!bounded) return childP;
+        const hardDeadline = new Promise<never>((_resolve, reject) => {
+          hardTimer = setTimeout(
+            () => reject(new WorkerTimeoutError(SUBAGENT_TIMEOUT_MS)),
+            // ★클램프 필수 — 워커 레인과 같은 이유(검토 F2).
+            asFiniteTimeoutMs(SUBAGENT_TIMEOUT_MS + WORKER_HARD_GRACE_MS),
+          );
+          (hardTimer as { unref?: () => void }).unref?.();
+        });
+        // 버려진 자식의 늦은 reject 흡수 — unhandledRejection→crash-fast 오발 방지
+        // (worker-registry 동형).
+        void childP.catch(() => {});
+        try {
+          return await Promise.race([childP, hardDeadline]);
+        } finally {
+          if (hardTimer !== undefined) clearTimeout(hardTimer);
+        }
+      })();
       outcome = { result: out.text };
     } catch (e) {
       outcome = { error: e instanceof Error ? e.message : String(e) };

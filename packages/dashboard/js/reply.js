@@ -27,6 +27,44 @@
       // 단순 버블(.ev.local)=head 우측 절대배치 / 턴그룹=turn-head flex 끝(margin-left:auto,
       // turn-count 겹침 회피). 툴 스텝(.act-line)엔 .chat-message 없어 무영향. 카드당 1회(가상화
       // detach 후에도 dataset 이 노드에 유지 = 재주입 0).
+      /**
+       * 긴 카드에서 ⋯ 버튼이 **보이는 영역을 따라다니게** 한다 (2026-08-23 사용자 요청).
+       *
+       * ★CSS `sticky` 로 안 된다 — 가상화가 창을 `translateY` 로 옮기고, 변환된 조상이
+       *  sticky 의 기준을 깨뜨린다(실측: 버튼이 카드 끝에 남았고 재배치 때 노드도 갈렸다).
+       *  그래서 절대배치 그대로 두고 `top` 만 스크롤에 맞춰 옮긴다 — 변환 안에서도
+       *  예측 가능하다.
+       * ★비용: 리스너는 **하나**고, 매 스크롤에 갱신하는 카드는 지금 hover 중인 **하나**뿐.
+       *  카드마다 옵저버를 달면 목록 길이에 비례해 비싸진다(가상화가 그걸 피하려 있는 것).
+       * 카드가 화면 안에 다 들어오면 원래 자리(7px)로 돌아간다 — 짧은 카드는 동작 변화 0.
+       */
+      let followed = null; // { host, btn }
+      const KEBAB_TOP = 7;
+      const syncFollowedKebab = () => {
+        if (followed === null) return;
+        const { host, btn } = followed;
+        if (!host.isConnected || !btn.isConnected) { followed = null; return; }
+        const sr = stream.getBoundingClientRect();
+        const hr = host.getBoundingClientRect();
+        // 카드 상단이 화면 위로 밀린 만큼 내려 보낸다. 카드 아래로는 안 넘어가게 clamp.
+        const pushed = Math.max(0, sr.top - hr.top);
+        const maxTop = Math.max(0, hr.height - btn.offsetHeight - KEBAB_TOP * 2);
+        btn.style.top = `${Math.round(Math.min(pushed + KEBAB_TOP, maxTop))}px`;
+      };
+      const followKebab = (host, btn) => {
+        if (!host || !btn) return;
+        // 턴 그룹은 머리(flex)에 붙어 있어 `top` 이 없다 — 단순 버블(절대배치)만 따라간다.
+        if (!host.classList || !host.classList.contains("local")) return;
+        host.addEventListener("mouseenter", () => { followed = { host, btn }; syncFollowedKebab(); });
+        host.addEventListener("mouseleave", () => {
+          if (followed && followed.host === host) followed = null;
+          btn.style.top = `${KEBAB_TOP}px`;
+        });
+        followed = { host, btn };
+        syncFollowedKebab();
+      };
+      stream.addEventListener("scroll", syncFollowedKebab, { passive: true });
+
       stream.addEventListener("mouseover", (e) => {
         const msg = e.target && e.target.closest ? e.target.closest(".chat-message") : null;
         if (!msg) return;
@@ -35,7 +73,10 @@
         host.dataset.kebabDone = "1";
         const turnHead = host.classList && host.classList.contains("turn-group")
           ? host.querySelector(":scope > .turn-head") : null;
-        attachKebab(turnHead || host, "message", () => messageCtxFromEl(msg));
+        // 턴 머리는 flex 라 기존대로 끝에(margin-left:auto). 단순 버블은 sticky+float 이라
+        // 흐름 **맨 앞**에 넣어야 우상단에 뜬다(app.css `.ev.local > .cm-kebab` 참조).
+        const btn = attachKebab(turnHead || host, "message", () => messageCtxFromEl(msg));
+        followKebab(host, btn);
       });
 
       // ── 컨텍스트메뉴(메시지, context-menu 계약 §2.2) — 답글(기존 startReply 재사용)·복사 ──
@@ -44,12 +85,22 @@
         const typeEl = host ? host.querySelector(".type") : null;
         const label = typeEl && typeEl.textContent ? typeEl.textContent : "메시지";
         const tsAttr = host && host.dataset ? host.dataset.ts : null;
-        return { type: "message", targetId: tsAttr || ("m" + Date.now()), label, text: msg.textContent };
+        // ★`raw` = 마크다운 원문(있으면). 복사는 이걸 쓰고, **답글 인용은 `text`**(렌더된
+        //  글)를 쓴다 — 인용은 입력창에 짧게 보이는 것이라 기호가 붙으면 읽기 나쁘다.
+        //  두 쓰임이 다른 것을 원하므로 필드를 둘로 나눈다(하나로 합치면 한쪽이 손해다).
+        return {
+          type: "message",
+          targetId: tsAttr || ("m" + Date.now()),
+          label,
+          text: msg.textContent,
+          raw: (msg.dataset && msg.dataset.mdSrc) || msg.textContent,
+        };
       };
       registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label); });
       registerBuiltinHandler("message.copy", async (ctx) => {
         if (!navigator.clipboard) return;
-        try { await navigator.clipboard.writeText(ctx.text || ""); } catch {}
+        // 마크다운 원문 우선 — 없으면(사용자 메시지 등 평문) 렌더된 글 그대로.
+        try { await navigator.clipboard.writeText(ctx.raw || ctx.text || ""); } catch {}
       });
       registerMenuItems("message", () => [
         { id: "reply", label: "답글", icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },

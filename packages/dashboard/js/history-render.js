@@ -24,6 +24,9 @@
         div.className = isNotice ? "ev local channel-chat sys-notice" : "ev local channel-chat";
         div.dataset.type = isOut ? "channel.message.out" : "channel.message.in";
         div.dataset.ts = String(entry.ts); // prune 후 oldestLoadedTs 복구용 수치 ts.
+        // 복합 커서의 두 번째 축도 같이 심는다 — 프루닝은 DOM 만 보고 커서를 되살리므로
+        // id 가 없으면 ts 만 새로 당겨지고 id 는 옛 값에 남아 커서가 조용히 퇴행한다.
+        if (typeof entry.id === "number") div.dataset.id = String(entry.id);
         const head = document.createElement("div");
         head.className = "bubble-meta"; // 라이브 답변 버블과 같은 간격(새로고침해도 동일해야 함).
         const tsEl = document.createElement("span");
@@ -175,17 +178,30 @@
         if (typeof entry.kind === "string" && entry.kind !== "") return buildHistoryDiv(entry);
         const role = entry.role === "assistant" ? "assistant" : "user";
         const key = msgKey(entry.ts, role);
-        if (renderedMsgKeys.has(key)) return null;
-        renderedMsgKeys.add(key);
-        // ★notice·model 을 반드시 함께 넘긴다 (2026-07-27). 종전엔 여기서 빠뜨려, chat_log 에
-        //  값이 있어도 **새로고침하면 시스템 통지 구분도 모델 표시도 사라졌다**(사용자 신고
-        //  "안 보이는 애들"의 정체). 필드를 추가할 때 이 전달 지점을 같이 안 고치면 저장은
-        //  되는데 화면엔 없는 상태가 조용히 생긴다.
-        return buildHistoryDiv({
-          ts: entry.ts, role, text: entry.text, attachments: entry.attachments, channel: entry.channel,
-          ...(entry.notice === true ? { notice: true } : {}),
-          ...(typeof entry.model === "string" && entry.model !== "" ? { model: entry.model } : {}),
-        });
+        // ★같은 ms·같은 역할 행이 둘이면 `ts|role` 로는 **한쪽이 조용히 사라진다**
+        //  (2026-08-23 3라운드). 복합 커서가 DB 에서 다 가져와도 여기서 버리면 소용없다 —
+        //  같은 증상의 두 번째 경로다. 라이브 DB 실측 3,997행 중 3행(0.08%)이 해당한다.
+        //  이력 행은 `id` 가 유일하므로 그걸로 가른다. `ts|role` 도 **같이** 등록해
+        //  SSE replay 억제는 그대로 둔다(그쪽은 id 를 모른다 — 버스 이벤트라 적재 전이다).
+        const rowKey = typeof entry.id === "number" ? key + "|#" + entry.id : null;
+        if (rowKey !== null) {
+          if (renderedMsgKeys.has(rowKey)) return null;
+          renderedMsgKeys.add(rowKey);
+          renderedMsgKeys.add(key);
+        } else {
+          if (renderedMsgKeys.has(key)) return null;
+          renderedMsgKeys.add(key);
+        }
+        // ★**열거하지 않고 통째로 넘긴다** (2026-08-23 3라운드). 여기서 필드를 손으로
+        //  옮겨 적다가 **세 번** 빠뜨렸다: notice·model(2026-07-27, 새로고침하면 시스템 통지
+        //  구분도 모델 표시도 사라졌다 — 사용자 신고 "안 보이는 애들") 그리고 `id`
+        //  (2026-08-23, 복합 커서의 두 번째 축을 DOM 에 심는 코드를 넣어놓고 여기서 걸러져
+        //  **한 번도 안 심겼다** — 실측 `[data-ts]` 31개 / `[data-id]` 0개. 프루닝 후 커서
+        //  복구가 통째로 무효였다). 바로 위에 "필드를 추가할 때 이 전달 지점을 같이 안
+        //  고치면 조용히 사라진다" 고 적어두고도 또 그랬다 — 경고를 적는 것으로는 안 된다.
+        //  `buildHistoryDiv` 가 자기가 쓸 것만 골라 읽으므로 남는 필드는 무해하다.
+        //  [[feedback_hand_maintained_lists]] 손으로 관리하는 목록 = 드리프트 신호.
+        return buildHistoryDiv({ ...entry, role });
       };
 
       // 이력 도구 스텝(기능 B) — 영속 llm.activity 복원. 낱줄 element 빌더(카드 크롬 없음).
@@ -432,6 +448,50 @@
       // scrollTop < VT_BUFFER(상단 근처)에서 loadOlderHistory() 를 호출(구 IntersectionObserver 센티넬 대체).
       const HISTORY_PAGE = 20;
       let oldestLoadedTs = null; // 현재 로드된 가장 오래된 메시지 ts(다음 beforeTs).
+      // ★복합 커서의 두 번째 축 — 같은 ts 가 여럿이면 `ts <` 만으로는 경계 행이 유실된다
+      //  (2026-08-23 적대 검토 D-1: 라이브에 동률 그룹 18개, 대부분 질문·답 쌍이라
+      //  **질문이 사라지고 답만 남았다**).
+      let oldestLoadedId = null;
+      // ★두 축을 **함께** 옮긴다. 종전엔 네 곳이 손으로 같은 두 줄을 썼고, 그중 **부팅
+      //  초기 로드 한 곳이 id 를 안 세웠다**(2026-08-23 2라운드 D1 실측: 동률 3행 그룹
+      //  15개에서 첫 "위로 더보기" 가 그룹을 가르면 형제 1건이 영영 안 왔다 — 44/45).
+      //  두 축이 한 곳에서만 움직이면 갈릴 수가 없다. [[feedback_hand_maintained_lists]]
+      // ★판단을 **순수 함수**로 뽑는다 (2026-08-24 5라운드). 종전엔 이 안에서 바로
+      //  모듈 변수를 대입해서, `id` 를 `null` 로 바꾸는 변이(=2라운드 4점 결함 복원)를
+      //  스위트가 못 봤다. "다섯 자리를 한 곳으로 합쳤다" 고 적었지만 **그 한 곳**을
+      //  지키는 검사가 없으면 합친 의미가 없다. 이제 회귀가 이 함수를 직접 돌린다.
+      const cursorFrom = (entries, fallbackTs) => {
+        if (Array.isArray(entries) && entries.length > 0) {
+          return {
+            ts: entries[0].ts, // 배치 最古(ASC[0]) = 다음 beforeTs.
+            id: typeof entries[0].id === "number" ? entries[0].id : null,
+          };
+        }
+        // ts 만 아는 자리에선 두 번째 축을 **비운다**(옛 id 를 남기면
+        // `(ts = T AND id < I_old)` 가 항상 거짓 = 조용한 퇴행).
+        return { ts: fallbackTs, id: null };
+      };
+      const setOldestCursor = (entries, fallbackTs) => {
+        const c = cursorFrom(entries, fallbackTs);
+        oldestLoadedTs = c.ts;
+        oldestLoadedId = c.id;
+      };
+      /**
+       * 이력 페이지 URL — **커서 두 축을 여기 한 곳에서만** 싣는다.
+       *
+       * ★종전엔 "위로 더보기" 와 "점프" 두 곳이 각자 문자열을 이어붙였고, 한쪽에서
+       *  `&beforeId=` 를 빼도 회귀 1,620건이 전부 초록이었다(2026-08-23 4R 실측:
+       *  헤드리스 52행 중 50행 도달 — 동률 2행 영구 유실). 서버 쪽엔 그물을 걸었는데
+       *  **보내는 쪽**은 제품 코드를 한 줄도 안 지나는 검사뿐이었다. 이 사고의 자기
+       *  진단("보내는 쪽을 grep 했으면 30초")이 가리킨 자리가 그대로였다.
+       *  순수 함수로 뽑으면 브라우저 없이 검사할 수 있다 —
+       *  [[feedback_simple_composable_no_duplication]] "검사가 껄끄러우면 코드가 잘못 놓인 것".
+       */
+      const historyPageQuery = (limit, beforeTs, beforeId) =>
+        "/api/chat-history?limit=" + limit +
+        (beforeTs !== null && beforeTs !== undefined ? "&beforeTs=" + beforeTs : "") +
+        (beforeId !== null && beforeId !== undefined ? "&beforeId=" + beforeId : "");
+      window.historyPageQuery = historyPageQuery; // 회귀가 부른다(브라우저 없이 판정).
       let loadingOlder = false; // 동시 로드 가드.
       let reachedOldest = false; // 빈/부분 배치 → 더 없음.
 
@@ -442,7 +502,7 @@
         loadingOlder = true;
         try {
           const r = await fetch(
-            "/api/chat-history?limit=" + HISTORY_PAGE + "&beforeTs=" + oldestLoadedTs +
+            historyPageQuery(HISTORY_PAGE, oldestLoadedTs, oldestLoadedId) +
               "&threadKey=" + encodeURIComponent(activeThreadKey), // 멀티세션 — active 세션만 더보기.
           );
           if (!r.ok) return; // ★더보기 실패는 전체 상태를 안 바꾼다(이미 내용이 있다).
@@ -455,13 +515,59 @@
           }
           // 도구 스텝·diff·출력·묶음도 함께 복원(초기 로드와 동일 로직, older prepend 방향).
           renderHistoryBatch(entries, activities, true);
-          oldestLoadedTs = entries[0].ts; // 배치 最古(ASC[0]) = 다음 beforeTs.
+          setOldestCursor(entries, oldestLoadedTs);
           if (entries.length < HISTORY_PAGE) reachedOldest = true; // 페이지 미만 = 마지막 묶음.
         } catch (err) {
           console.warn("older history load failed:", err && err.message ? err.message : err);
         } finally {
           loadingOlder = false;
         }
+      };
+
+      /**
+       * 그 `ts` 의 메시지가 **로드될 때까지** 과거를 당겨온 뒤 거기로 스크롤한다.
+       * 검색 결과 점프의 착지 절차.
+       *
+       * ★서버에 `aroundTs` 를 새로 만들지 않았다. 그러면 "로드된 창의 맨 아래가 최신이
+       *  아닌" 상태가 생기고, SSE 로 들어오는 라이브 메시지가 그 창 바닥에 붙어 **옛
+       *  대화와 새 대화가 이어진 것처럼** 보인다(2026-07-28 에 같은 부류를 겪었다).
+       *  기존 페이지네이션(`beforeTs`)으로 **과거만 더 당기면** 그 불변식이 안 깨진다 —
+       *  목록은 여전히 "맨 아래가 최신" 이고, 위로 더 길어질 뿐이다. 가상화라 감당된다.
+       *
+       * ★페이지를 크게(200) 쓴다. 평소 더보기는 20인데, 점프는 **한 번에 목적지까지**
+       *  가야 한다 — 20씩이면 2천 건 뒤 메시지에 왕복 100번이다.
+       * ★상한을 둔다(10회 = 2,000건). 못 닿으면 **말한다** — 조용히 아무 일도 안
+       *  일어나면 사용자는 고장으로 읽는다.
+       */
+      const JUMP_PAGE = 200;
+      const JUMP_MAX_PAGES = 10;
+      window.jumpToMessageTs = async (ts) => {
+        if (typeof ts !== "number" || !Number.isFinite(ts)) return "bad-ts";
+        if (window.vtScrollToTs && (await window.vtScrollToTs(ts))) return "ok";
+        for (let i = 0; i < JUMP_MAX_PAGES; i++) {
+          if (reachedOldest || oldestLoadedTs === null) break;
+          if (oldestLoadedTs <= ts) break; // 이미 그 시점보다 과거까지 로드됨.
+          let entries = [];
+          try {
+            const r = await fetch(
+              historyPageQuery(JUMP_PAGE, oldestLoadedTs, oldestLoadedId) +
+                "&threadKey=" + encodeURIComponent(activeThreadKey),
+            );
+            if (!r.ok) break;
+            const data = await r.json().catch(() => ({}));
+            entries = Array.isArray(data.entries) ? data.entries : [];
+            const activities = Array.isArray(data.activities) ? data.activities : [];
+            if (entries.length === 0) { reachedOldest = true; break; }
+            renderHistoryBatch(entries, activities, true);
+            setOldestCursor(entries, oldestLoadedTs);
+            if (entries.length < JUMP_PAGE) reachedOldest = true;
+          } catch (err) {
+            console.warn("jump history load failed:", err && err.message ? err.message : err);
+            break;
+          }
+          if (window.vtScrollToTs && (await window.vtScrollToTs(ts))) return "ok";
+        }
+        return window.vtScrollToTs && (await window.vtScrollToTs(ts)) ? "ok" : "not-found";
       };
 
       // SSE 연결 *전에* 과거 이력을 await 로드해 채팅 흐름을 복원한다. 비어있으면 chat-empty
@@ -494,8 +600,7 @@
           // 곧 연결될 SSE replay 가 같은 메시지/스텝을 중복 렌더 안 하게.
           renderHistoryBatch(entries, activities, false);
           // 가장 오래된 ts = 다음 페이지의 beforeTs (메시지 기준 — 페이지네이션은 메시지 축).
-          oldestLoadedTs =
-            entries.length > 0 ? entries[0].ts : (activities.length > 0 ? activities[0].ts : oldestLoadedTs);
+          setOldestCursor(entries, activities.length > 0 ? activities[0].ts : oldestLoadedTs);
           // 첫 로드가 페이지 미만 = 더 없음. 아니면 상단 스크롤이 loadOlderHistory 를 트리거(스크롤 리스너).
           if (entries.length < HISTORY_PAGE) reachedOldest = true;
           refreshChatEmpty();

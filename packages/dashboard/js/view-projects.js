@@ -639,6 +639,17 @@
           (detail.mcp || []).map((m) => ({ name: m.name, description: m.desc })),
         );
 
+        // 전용 훅 — `<project>/settings.json` 의 hooks(project 스코프). 전역 훅은 인벤토리에.
+        // ★훅은 **모델이 안 부르는데 자동으로 도는** 유일한 능력이라, 목록에 없으면
+        //  "왜 이게 실행됐지" 를 추적할 데가 없다. 이벤트·matcher·명령을 그대로 보여준다.
+        listSection(
+          "🪝 전용 훅",
+          (detail.hooks || []).map((h) => ({
+            name: h.matcher && h.matcher !== "*" ? `${h.event} (${h.matcher})` : h.event,
+            description: h.command,
+          })),
+        );
+
         // 연관 프로젝트 — path 있으면 클릭 이동, 없으면 텍스트 칩.
         const relSec = document.createElement("div");
         relSec.className = "pd-section";

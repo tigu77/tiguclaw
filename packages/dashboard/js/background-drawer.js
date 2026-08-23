@@ -242,7 +242,7 @@
         const handle = document.getElementById("bg-resize");
         if (!bgPanel || !handle) return;
         const KEY = "tc:bgPanelWidth";
-        const clamp = (w) => Math.max(300, Math.min(Math.min(760, window.innerWidth * 0.9), w));
+        const clamp = clampDrawerWidth; // 폭 한계는 constants.js 한 곳 — 검색 드로어와 공유.
         // PC 사이드 패널 푸시(CC 웹식) — 패널 폭을 --bg-panel-w 로 공유해 header/main 이 그만큼
         //   margin-right 로 채팅을 좁힌다(app.css). 드래그 중에도 라이브 추적.
         const apply = (w) => {

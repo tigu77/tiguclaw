@@ -25,6 +25,7 @@
   "sse.js",
   "activity.js",
   "tabs.js",
+  "chat-search.js",
   "model-select.js",
   "slash.js",
   "ghost-suggest.js",

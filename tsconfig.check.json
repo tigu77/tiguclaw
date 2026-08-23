@@ -1,0 +1,21 @@
+{
+  // 타입 게이트 (2026-08-22) — **배포되는 코드 전부**를 검사한다. `npm run typecheck`.
+  //
+  // ★include 를 여기 다시 적지 않는다. `tsconfig.build.json` 을 extends 하므로 파일 목록을
+  //  **상속**한다 = 검사 범위와 빌드 범위가 정의상 같다. 목록을 두 벌 두면 갈린다
+  //  ([[feedback_hand_maintained_lists]] — 손으로 맞추는 목록은 드리프트 신호).
+  //
+  // 사고 (2026-08-22): `plugins/http-bridge` 의 `/chat-search` 가 `void` 핸들러에서
+  //  `return true` 를 했다. `npm run typecheck` 는 `tsconfig.json`(include=`src/**`)을 써서
+  //  못 봤고, 회귀 1526건은 소스 문자열 검사라 통과했다. **커밋은 초록인데 배포가 불가능한
+  //  상태**로 하루를 보냈고, 다음 `deploy:dev` 첫 시도가 TS2322 둘로 죽어서야 드러났다.
+  //  `typecheck:plugins`(tsconfig.plugins.json, 07-18)가 이미 있었지만 **아무도 안 불렀다** —
+  //  그래서 스크립트를 늘리는 대신 기본 게이트의 범위를 넓히고 그 설정은 지웠다
+  //  ([[feedback_gate_must_actually_run]]).
+  //
+  // 검사 전용 = 산출물 0. emit 은 build:prod(tsconfig.build.json) 담당.
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "noEmit": true
+  }
+}

@@ -184,8 +184,8 @@ export class**. `kind` 는 `channel|observer|trigger|service` 중 하나 이상(
 
 | 목적 | 명령 | 비고 |
 |---|---|---|
-| 검증 | `npm run test:regression` | 568건 / 약 12.6초. 부담 없이 자주 |
-| 타입체크 | `typecheck` · `typecheck:plugins` · `typecheck:bin` | **3종 분리** — src 만 도는 게 기본 |
+| 검증 | `npm run test:regression` | 1,551건. 부담 없이 자주 |
+| 타입체크 | `typecheck` · `typecheck:bin` | `typecheck` 가 **배포되는 코드 전부**(src·plugins·packages, 범위는 `tsconfig.build.json` 에서 상속). 2026-08-22 이전엔 src 만 봐서 컴파일 안 되는 코드가 초록으로 커밋됐다 |
 | 배포 | `npm run deploy:dev` | ★**이것만.** `npm run deploy` 는 셸 env 가 새어 엉뚱한 인스턴스를 겨눈다 |
 | 데몬 | `daemon:restart/stop/status/logs` | `bin/daemon.mjs` (의존성 프리) |
 

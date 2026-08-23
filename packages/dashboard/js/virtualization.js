@@ -360,6 +360,20 @@
 
       // 보관 상한 — 하단 고정(라이브) 중일 때만 최古 detached 아이템부터 드롭(보던 이력 보존).
       // dedup 키 정리 + oldestLoadedTs 갱신(구 refreshOldestCursorAfterPrune 대체)을 접어 넣는다.
+      /**
+       * 남은 노드들에서 다음 커서를 고른다 — **최古 노드 하나만** 본다.
+       * id 가 없으면 두 번째 축을 비운다(= `ts <` 로 퇴행: 다시 가져올 뿐 안 건너뛴다).
+       * 건너뛰며 id 있는 노드를 찾으면 커서가 화면보다 미래가 되어 더보기 창이 겹친다.
+       */
+      const vtCursorFromNodes = (nodes) => {
+        for (const n of nodes) {
+          if (n.ts === null || !Number.isFinite(n.ts)) continue;
+          return Number.isFinite(n.id)
+            ? { entries: [{ ts: n.ts, id: n.id }], fallbackTs: n.ts }
+            : { entries: [], fallbackTs: n.ts };
+        }
+        return null;
+      };
       const vtCap = () => {
         if (!stickBottom || vtItems.length <= VT_MAX_ITEMS) return;
         let dropped = 0;
@@ -374,16 +388,38 @@
             const ty = it.node.dataset.type || "";
             if (Number.isFinite(t) && ty.indexOf("channel.message") === 0) {
               const role = ty.endsWith(".out") ? "assistant" : "user";
-              renderedMsgKeys.delete(msgKey(t, role));
+              const k = msgKey(t, role);
+              renderedMsgKeys.delete(k);
+              // 이력 행은 id 로도 등록돼 있다 — 같이 지워야 다시 로드된다(대칭).
+              const rid = it.node.dataset ? it.node.dataset.id : undefined;
+              if (rid !== undefined) renderedMsgKeys.delete(k + "|#" + rid);
             }
           }
           dropped += 1;
         }
         if (dropped) {
-          for (const it of vtItems) {
-            const ts = vtTsOf(it.node);
-            if (ts !== null) { oldestLoadedTs = ts; break; }
-          }
+          // 남은 것 중 最古로 커서를 당긴다 — **두 축 다** (2026-08-23 2라운드 D5).
+          // 종전엔 ts 만 당기고 id 는 옛(더 작은) 값에 남아 복합 커서의 둘째 절이 항상
+          // 거짓이 됐다 = `ts <` 로 조용히 퇴행 → 잘려나간 동률 형제를 다시 못 가져왔다.
+          // ★커서는 **화면 최古보다 미래일 수 없다.** 5차에 "id 있는 최古 메시지를
+          //  찾아간다" 로 바꿨는데, `data-id` 가 없는 노드는 스텝 줄만이 아니다 —
+          //  답변 세그먼트 버블·라이브 버블도 없다. 그래서 흔한 배치
+          //  `[턴카드][세그먼트][사용자메시지(id)]` 에서 커서가 **한 턴 통째로 미래로**
+          //  뛰었다(실측: 화면 최古 1000 → 커서 9000). 그러면 "위로 더보기" 창이 이미
+          //  화면에 있는 구간과 겹치고, 이력 경로엔 활동 중복 억제가 **없어서** 도구
+          //  카드와 답변 버블이 한 벌 더 그려진다(2026-08-24 5라운드).
+          //  퇴행(`ts <`)은 **다시 가져올 뿐** 건너뛰지 않는다 — 건너뛰는 쪽이 나쁘다.
+          //  ★판단은 순수 함수로 뽑는다(회귀가 브라우저 없이 돌린다).
+          const picked = vtCursorFromNodes(
+            vtItems.map((x) => ({
+              ts: vtTsOf(x.node),
+              id:
+                x.node.dataset && x.node.dataset.id !== undefined
+                  ? parseInt(x.node.dataset.id, 10)
+                  : NaN,
+            })),
+          );
+          if (picked !== null) setOldestCursor(picked.entries, picked.fallbackTs);
           if (reachedOldest) reachedOldest = false; // 앞이 더 있을 수 있음 → 재로드 가능.
           vtRecomputeDividers();
         }
@@ -509,6 +545,79 @@
           updateChatJump();
         });
       }
+
+      /**
+       * 그 `ts` 의 메시지로 스크롤하고 잠깐 강조한다 — 검색 결과 점프의 착지점.
+       *
+       * ★가상화 목록이라 화면 밖 노드는 DOM 에 없을 수 있다. 그래서 **`vtItems`(모델)를
+       *  보고 `item.top` 으로 스크롤**한다 — DOM 을 찾으면 아직 안 그려진 것을 못 찾는다.
+       *  스크롤 뒤 relayout 이 그 창을 그리고, 그때 노드가 생기면 강조를 입힌다.
+       * ★`stickBottom` 을 끈다. 안 끄면 다음 relayout 이 바닥으로 도로 당긴다(팔로우 규칙).
+       *
+       * @returns 찾아서 이동했으면 true.
+       */
+      /**
+       * 그 `ts` 의 메시지로 스크롤하고 잠깐 강조한다 — 검색 결과 점프의 착지점.
+       *
+       * ★가상화 목록이라 **한 번에 못 맞춘다.** 창을 그리기 전 아이템 높이는 추정치이고,
+       *  그리면서 실제 높이가 측정돼 위쪽 총합이 바뀌면 목적지가 그만큼 밀린다. 그래서
+       *  "스크롤 → 그리기 → 다시 계산 → 어긋났으면 재조준" 을 몇 번 반복한다(수렴 보정).
+       *  실측: 1회로 끝내면 2,112 항목 목록에서 목표가 창 밖에 남았다.
+       * ★`it.top` 은 `relayout()` 안에서만 갱신되고 그건 rAF 로 미뤄진다 — 프리펜드 직후엔
+       *  stale 이라 그대로 읽으면 맨 위로 간다(실측 scrollTop=0). 매 회 동기로 돌린다.
+       * ★`stickBottom` 을 먼저 끈다. 안 끄면 relayout 이 바닥으로 도로 당긴다.
+       *
+       * @returns Promise<boolean> — 찾아서 안착했으면 true.
+       */
+      const JUMP_PASSES = 14;     // 보정 상한. 대개 3~5회에 수렴하지만 긴 목록은 더 걸린다.
+      const JUMP_TOLERANCE = 6;   // 이 픽셀 안이면 도착으로 본다.
+      window.vtScrollToTs = async (ts) => {
+        if (typeof ts !== "number" || !Number.isFinite(ts)) return false;
+        stickBottom = false;
+        if (typeof updateChatJump === "function") updateChatJump();
+        // ★**가장 가까운** 아이템을 찾는다 — 완전일치가 아니다.
+        //  화면의 `data-ts` 와 `chat_log.ts` 가 항상 같지 않다(실측: 486ms 차이 —
+        //  렌더는 턴/활동 기준 ts 를 쓰는 줄이 있고, 저장은 메시지 기준이다). 완전일치로
+        //  찾으면 **바로 그 줄이 화면에 있는데도** "못 찾음" 이 된다.
+        //  대신 창을 넓게 잡지 않는다 — 멀리 있는 엉뚱한 줄에 내려놓느니 못 찾았다고 말한다.
+        const NEAR_MS = 60_000;
+        const findHit = () => {
+          let best = null;
+          let bestD = Infinity;
+          for (const it of vtItems) {
+            const t = vtTsOf(it.node);
+            if (t === null || !Number.isFinite(t)) continue;
+            const d = Math.abs(t - ts);
+            if (d < bestD) { bestD = d; best = it; }
+          }
+          return bestD <= NEAR_MS ? best : null;
+        };
+        const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+        let hit = null;
+        let lastTop = -1;
+        for (let pass = 0; pass < JUMP_PASSES; pass++) {
+          relayout();                 // top 동기 재계산(추정 → 측정 반영).
+          hit = findHit();
+          if (hit === null) return false;
+          // 화면 상단에서 살짝 내려 앉힌다 — 딱 맨 위면 앞 문맥이 안 보인다.
+          const want = Math.max(0, hit.top - Math.round(getClientH() * 0.3));
+          // ★두 조건이 **함께** 참이어야 도착이다: 스크롤이 목표에 있고, 그 목표가 더
+          //  안 움직인다. 스크롤만 보면 아직 위쪽이 측정 중이라 목표가 계속 밀리는데도
+          //  "도착" 으로 끝난다(실측: 6회에 1,669px 못 미친 채 종료).
+          if (Math.abs(scEl().scrollTop - want) <= JUMP_TOLERANCE &&
+              Math.abs(hit.top - lastTop) <= JUMP_TOLERANCE) break;
+          lastTop = hit.top;
+          setScrollTop(want);         // 프로그램적 이동 가드 포함(사용자 스크롤로 오인 방지).
+          // 두 프레임 — 그리기(1) + ResizeObserver 측정 반영(2). 한 프레임이면 측정 전이라
+          // 다음 회차가 같은 추정치를 다시 읽는다.
+          await frame();
+          await frame();
+        }
+        if (hit === null) return false;
+        hit.node.classList.add("msg-jump-hit");
+        setTimeout(() => hit.node.classList.remove("msg-jump-hit"), 2200);
+        return true;
+      };
 
       // 파일 확장자 → highlight.js 언어. diff 코드 하이라이팅 언어 판별(경로 기반).
       const HL_EXT = { cs:"csharp", ts:"typescript", tsx:"typescript", js:"javascript", jsx:"javascript", mjs:"javascript", cjs:"javascript", py:"python", java:"java", go:"go", rs:"rust", cpp:"cpp", cc:"cpp", cxx:"cpp", hpp:"cpp", h:"cpp", c:"c", rb:"ruby", php:"php", sh:"bash", bash:"bash", zsh:"bash", json:"json", jsonc:"json", yaml:"yaml", yml:"yaml", toml:"ini", ini:"ini", sql:"sql", css:"css", scss:"scss", less:"less", html:"xml", htm:"xml", xml:"xml", vue:"xml", svelte:"xml", md:"markdown", kt:"kotlin", kts:"kotlin", swift:"swift", lua:"lua", dart:"dart", scala:"scala", pl:"perl", r:"r", ps1:"powershell" };

@@ -333,7 +333,7 @@ const CODEX_TURN_MAX_MS = parsePosIntEnv(
 // 경계가 역전돼 있었다 — 도구 자체(Bash 120~600s) < MCP 브리지(11분) 로 설계해 놓고
 // 그보다 바깥인 어댑터가 8분으로 조여, 정상 진행 중인 작업(특히 서브에이전트)을
 // "무응답"으로 잘랐다. 모델은 그 에러를 보고 같은 일을 워커로 다시 띄웠다(작업 충돌).
-// 이제 경계는 각 층이 소유한다: 도구 자체 → 잡 상한(2시간) → MCP callTool 천장 →
+// 이제 경계는 각 층이 소유한다: 도구 자체 → 잡 상한(WORKER_TIMEOUT_MS) → MCP callTool 천장 →
 // 사용자 /stop. 잡을 소유하는 브리지는 JOB_OWNING_TOOL_CALL_TIMEOUT_MS 로 천장을 넘긴다.
 // 이 순서(안쪽이 조이고 바깥이 느슨)는 `scripts/regression/timeout-layering.ts` 가 지킨다.
 // env CODEX_TOOL_TIMEOUT_MS 는 더 이상 읽지 않는다.
@@ -767,7 +767,7 @@ export const runOpenAiCodex = async (
     // 재spawn 물리적 불가. runner = runOpenAiCodex 자기 자신 (circular 회피 인자 주입).
     if (depth === 0) {
       const spawnServer = createSpawnAgentMcpServer(input);
-      // 잡 소유 브리지 — 안쪽 경계(잡 상한 2시간)보다 넉넉한 천장을 넘긴다.
+      // 잡 소유 브리지 — 안쪽 경계(잡 상한 WORKER_TIMEOUT_MS)보다 넉넉한 천장을 넘긴다.
       // 기본 11분을 그대로 쓰면 정상 진행 중인 서브에이전트를 바깥이 먼저 자른다.
       const spawnBridge = await adaptClaudeMcpServer(
         spawnServer,
@@ -2084,7 +2084,7 @@ export const runOpenAiCodex = async (
                 //    2026-06-23 에 메인 턴 wall-clock 을 폐기한 결정과도 어긋난다.
                 //  실측 피해: 서브에이전트가 멀쩡히 일하는데 부모가 끊고, 모델은 그 에러를
                 //    보고 같은 작업을 워커로 다시 띄웠다 = 중복 실행·작업 충돌(사용자 신고 3회).
-                //  이제 경계는 각자 소유한다: 도구 자체 타임아웃 → 잡 상한(2시간, 잡 소유
+                //  이제 경계는 각자 소유한다: 도구 자체 타임아웃 → 잡 상한(WORKER_TIMEOUT_MS, 잡 소유
                 //    브리지는 그보다 넉넉한 천장) → MCP callTool 천장 → 사용자 /stop·취소.
                 //  재무장·자식 관측 같은 보정 장치도 함께 제거한다(그건 역전을 덮던 땜빵이다).
                 // 도구 지연 **경고**는 남긴다 — 끊지 않고 알리기만 하므로 위 폐기와 무관하다.

@@ -24,6 +24,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
+import { createRequire } from "node:module";
+
+/**
+ * 설치 위치와 무관하게 tsx CLI 를 찾는다(워크트리·호이스팅 안전).
+ * `tsx/dist/cli.mjs` 는 package exports 에 없어 직접 resolve 가 막히므로, 패키지의
+ * package.json 을 짚어 그 옆의 CLI 를 찾는다.
+ */
+const tsxCli = (): string =>
+  path.join(
+    path.dirname(createRequire(import.meta.url).resolve("tsx/package.json")),
+    "dist/cli.mjs",
+  );
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 /** 임의 빈 포트 하나 — 잠깐 열었다 닫아서 확실히 비어 있는 번호를 얻는다(추측 금지). */
@@ -65,10 +78,15 @@ export const check: RegressionCheck = {
     );
     if (assets.length < 10) return out;
 
+    // ★`node_modules` 위치를 **박아 넣지 않는다** (2026-08-23 2라운드). 종전엔
+    //  `path.join(REPO, "node_modules/tsx/…")` 라 워크트리(git worktree)에선 항상 빨강이었다
+    //  — 레드팀이 격리 워크트리에서 스위트를 돌 때마다 이 검사만 상시 FAIL 이라, 결국
+    //  "환경 문제" 로 분류돼 아무도 안 보는 게이트가 된다([[feedback_gate_must_actually_run]]).
+    //  resolve 로 찾으면 워크트리·호이스팅·설치 위치와 무관하다.
     const port = await freePort();
     const child = spawn(
       process.execPath,
-      [path.join(REPO, "node_modules/tsx/dist/cli.mjs"), path.join(dash, "index.ts")],
+      [tsxCli(), path.join(dash, "index.ts")],
       {
         env: {
           ...process.env,

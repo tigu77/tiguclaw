@@ -35,13 +35,39 @@
       // 호출은 치명적. 개행은 공백으로 접고 ACTIVITY_TEXT_MAX 로 자른다(전문은 채팅뷰에서 확인).
       const ACTIVITY_TEXT_MAX = 200;
       const activityPlainPreview = (text) => {
-        const s = String(text || "").replace(/\s+/g, " ").trim();
+        const s = stripMarkdownText(text);
         return s.length > ACTIVITY_TEXT_MAX ? s.slice(0, ACTIVITY_TEXT_MAX) + "…" : s;
       };
       // 아코디언 본문에 넣는 *전체* 텍스트(자르지 않음). 접힘=CSS 1줄 클램프(nowrap+ellipsis, 개행은
       // 시각적으로 접힘), 펼침(.expanded)=pre-wrap 로 개행·공백 보존해 전문 표시. 트렁케이트를 렌더
       // 시 baked 하지 않으므로 펼침이 실제로 전문을 드러낸다(재렌더 0). \r\n 정규화 + 양끝 트림만.
       const activityFullText = (text) => String(text || "").replace(/\r\n/g, "\n").trim();
+
+      /**
+       * 아코디언을 펼칠 때 **그때 한 번** 마크다운으로 그린다 (2026-08-23 사용자 요청).
+       *
+       * ★일괄 렌더에서 마크다운을 뺀 판단(위 주석)은 그대로다 — 200라인을 한 번에 만들며
+       *  파서를 200번 부르면 프리즈한다(실측해서 뺐던 것). **펼친 카드 하나**만 파싱하면
+       *  그 비용이 안 든다. 접힘은 지금처럼 플레인 한 줄이다(한 줄 프리뷰에서 마크다운
+       *  기호는 소음이고, 렌더해도 볼 게 없다 — 검색 카드와 같은 이유).
+       * ★렌더는 `setChatBody`(markdown.js) 를 **그대로 쓴다**. 채팅 본문과 같은 규칙·같은
+       *  sanitize·같은 코드 하이라이팅 — 여기서 두 번째 렌더러를 만들면 같은 글이 화면마다
+       *  다르게 보인다.
+       * 한 번 그리면 `dataset.mdDone` 으로 표시해 토글할 때마다 다시 파싱하지 않는다.
+       */
+      const ensureActivityMarkdown = (line) => {
+        if (!line || line.dataset.mdDone === "1") return;
+        const host = line.querySelector(".aav-md");
+        if (!host) return;
+        const src = host.dataset.src || "";
+        if (src === "") return;
+        line.dataset.mdDone = "1";
+        try {
+          setChatBody(host, src, true);
+        } catch {
+          host.textContent = src; // 파서 실패는 카드를 안 죽인다(평문 폴백).
+        }
+      };
 
       // chat_log 행(entries) → 한 줄. 채팅뷰 buildHistoryDiv 와 달리 turn/스킵 dedup·마크다운 없이
       // 단순 flat 플레인 라인(§2.2 단순 우선 + 프리즈 방지).
@@ -89,14 +115,24 @@
         const body = document.createElement("div"); body.className = "aav-body";
         const full = activityFullText(e.text);
         const hasAtt = e.attachments && e.attachments.length;
-        body.textContent = full || (hasAtt ? "" : "(빈 메시지)");
+        // 접힘용 플레인 한 줄 + 펼침용 마크다운 그릇(펼칠 때 채운다 — 위 주석).
+        const prev = document.createElement("span"); prev.className = "aav-preview";
+        // ★한 줄 프리뷰는 기호를 걷어낸다 — 접힌 줄에 `**` 가 그대로 보였다(실측).
+        //  펼치면 아래 `.aav-md` 가 진짜 마크다운으로 그린다.
+        prev.textContent = stripMarkdownText(full) || (hasAtt ? "" : "(빈 메시지)");
+        const md = document.createElement("div"); md.className = "aav-md";
+        md.dataset.src = full;
+        body.appendChild(prev); body.appendChild(md);
         if (hasAtt) {
           const att = document.createElement("span"); att.className = "aav-att-hint";
           att.textContent = "📎×" + e.attachments.length;
-          body.appendChild(att);
+          prev.appendChild(att);
         }
         line.appendChild(meta); line.appendChild(body);
-        line.addEventListener("click", () => line.classList.toggle("expanded"));
+        line.addEventListener("click", () => {
+          line.classList.toggle("expanded");
+          if (line.classList.contains("expanded")) ensureActivityMarkdown(line);
+        });
         // 컨텍스트메뉴 트리거 — kebab(메타 끝) + 우클릭(라인 전체, 클릭 토글과 별개 이벤트).
         const actCtx = () => ({ type: "activity", targetId: "m|" + e.ts, threadKey: e.threadKey, label: full || e.text || "" });
         attachKebab(meta, "activity", actCtx);

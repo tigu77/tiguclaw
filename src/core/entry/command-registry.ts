@@ -71,6 +71,67 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "stop", description: "진행 중 턴 중단" },
 ] as const;
 
+/**
+ * **휘발성 명령** — 그 대화방에만 보이고 기록에 안 남는 슬래시 (2026-08-23).
+ *
+ * ★판정을 여기 한 곳에 둔다. 소비처가 둘이라 각자 적으면 갈린다:
+ *  ①채널 입구가 **인바운드 에코**를 건너뛰고(명령 자체가 안 남게)
+ *  ②`replyCommand(..., {ephemeral:true})` 가 **응답 관측**을 건너뛴다.
+ *  종전엔 ②만 있어서 **절반만 휘발**했다 — 답은 사라지는데 명령은 남아, 대화 기록에
+ *  *답 없는 명령 버블*이 남았다(라이브 DB 실측 140행). 짝이 있을 때보다 오히려 어색하다.
+ *
+ * ★대상 기준: **그 방의 설정을 바꾸는 조작 확인**만. 대화·결과 보고는 기록이 곧 가치라
+ *  절대 넣지 마라(넣으면 이력에서 조용히 사라진다).
+ */
+/**
+ * 슬래시 명령 한 줄을 가른다 — **핸들러와 판정이 같은 문을 쓰게 하는 유일한 파서**.
+ *
+ * ★두 벌이면 갈린다. 실제로 하루에 두 번 갈렸다(2026-08-23):
+ *   ①판정은 원문 접두 매칭인데 핸들러는 `split(/\s+/)` → `/sessions  use x`(공백 2개)가
+ *     핸들러엔 `use` 인데 판정엔 아니었다
+ *   ②그걸 고치며 판정만 명령 토큰을 소문자로 접었는데 핸들러는 `cmd === "/sessions"` 로
+ *     구분 비교 → `/SESSIONS use x` 가 반대 방향으로 갈렸다
+ *   두 번 다 결과는 같다: **명령과 답 중 한쪽만 사라진다.** 검사를 더 짜는 대신 갈릴 수
+ *   있는 구조를 없앤다. [[feedback_hand_maintained_lists]]
+ *
+ * 규칙(핸들러의 기존 동작 그대로): 명령 토큰은 **대소문자 구분**, 하위명령은 소문자로 접는다.
+ */
+export const parseSlashCommand = (
+  text: string,
+): { cmd: string; args: string; sub: string; rest: string } => {
+  const trimmed = (typeof text === "string" ? text : "").trim();
+  const sepIdx = trimmed.search(/\s/);
+  const cmd = sepIdx === -1 ? trimmed : trimmed.slice(0, sepIdx);
+  const args = sepIdx === -1 ? "" : trimmed.slice(sepIdx + 1).trim();
+  const sub = args === "" ? "" : (args.split(/\s+/)[0] ?? "").toLowerCase();
+  const rest = args.slice(sub.length).trim(); // 하위명령 뒤 나머지(대상 id 등).
+  return { cmd, args, sub, rest };
+};
+
+/** 이 입력이 휘발성 명령인가 — 입구(에코 스킵)와 응답(관측 스킵)이 같은 답을 쓰게. */
+export const isEphemeralCommandText = (text: string): boolean => {
+  const { cmd, sub, rest } = parseSlashCommand(text);
+  if (cmd !== "/sessions") return false;
+  // ★**선택지를 띄우는 호출은 휘발**이다 (2026-08-23 4라운드). 인자 없는 `/sessions` 와
+  //  인자 없는 `archive|unarchive` 는 목록/선택 UI 이지 대화가 아니다. 그런데 그 응답은
+  //  **어느 채널에서도 기록되지 않는다** — `presentOptions` 는 cli=stdout, telegram=
+  //  `ctx.reply` 라 버스를 안 타고, `prompt.options` 를 발행하는 http-bridge 는 이 분기에
+  //  오지도 않는다(`hasSelector` 로 조기 반환). 실측: CLI 에서 `/sessions` 를 치면
+  //  chat_log 에 `user:/sessions` 만 남는다 — **답 없는 명령 버블**, 우리가 4점으로
+  //  고쳤다던 그 모양 그대로다. 명령만 남기느니 짝을 맞춰 둘 다 안 남긴다.
+  //  ★선택 결과는 잃지 않는다 — 번호를 고르면 `/sessions archive <id>` 가 다시 들어오고
+  //   **그 쌍은 기록된다**(상태 변경이므로). 조회는 휘발, 변경은 기록.
+  // ★**열거가 아니라 판정이다** (2026-08-24 5라운드). 종전엔 하위명령을 열거하고
+  //  기본값을 `false`(=기록)로 뒀는데, **핸들러의 기본 분기가 곧 선택지 분기**다
+  //  (`/sessions foo`·`/sessions list`·`/sessions rename` 전부 선택지로 답한다).
+  //  두 기본값이 정반대라 미지 하위명령마다 **답 없는 명령 버블**이 남았다 — 실측:
+  //  `user:/sessions foo` 만 남고 답이 없다. 우리가 3점으로 닫았다고 선언한 그 모양이다.
+  //  뒤집는다: **기록되는 것은 id 를 동반한 상태 변경뿐**이고 나머지는 전부 휘발이다
+  //  (핸들러의 분기 구조와 동형이라 새 하위명령이 생겨도 안 갈린다).
+  //  [[feedback_hand_maintained_lists]] 이름 열거를 새로 만들려는 순간 멈춰라.
+  return !((sub === "archive" || sub === "unarchive") && rest !== "");
+};
+
 export interface Command {
   /** 슬래시 이름 = 파일 basename (확장자 제외). `/name` 으로 호출. */
   name: string;

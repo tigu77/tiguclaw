@@ -86,6 +86,8 @@ import { Cron } from "croner";
 import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
 import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../../src/core/llm-runtime/capabilities/agent-registry.js";
+// 프로젝트 상세의 훅 목록 — 인벤토리와 **같은 판정 함수**를 쓴다(scope 로만 가른다).
+import { listHooksForInventory } from "../../src/core/entry/hook-runner.js";
 import {
   readProjectMcpServers,
   describeExternalMcpConfig,
@@ -1319,6 +1321,8 @@ class HttpBridge implements Channel, Observer {
             ? "read"
             : pathname === "/chat-history" && method === "GET"
               ? "read"
+              : pathname === "/chat-search" && method === "GET"
+                ? "read"
               : pathname === "/all-activity" && method === "GET"
                 ? "read"
               : pathname === "/endpoint-calls" && method === "GET"
@@ -2094,6 +2098,55 @@ class HttpBridge implements Channel, Observer {
     // 시간 오름차순으로 반환 → 대시보드가 SSE 연결 *전에* fetch 해 과거 채팅 버블 렌더.
     // read 게이트(위 role 표). ts 는 event.ts(쓰기 훅) 이므로 클라이언트가 SSE history
     // replay 와 ts 로 dedup 한다. ?limit= 허용(기본 200).
+    // /chat-search — **전 세션 가로질러** 채팅 검색(2026-08-22). 조회만(read 게이트).
+    //  ★여기는 **배관만** 한다: 질의 정규화·스니펫은 `core/chat-search.ts` 순수 함수가,
+    //   DB 는 `store/chat-log.ts` 가, 세션 표시명은 `sessionDisplayName` 이 판단한다.
+    //   핸들러에 판단을 두면 검사하려고 데몬을 띄워야 한다(원칙 게이트 Q7).
+    if (pathname === "/chat-search" && method === "GET") {
+      try {
+        const { normalizeChatQuery, makeSnippet } = await import(
+          "../../src/core/chat-search.js"
+        );
+        const { searchChatLog, countChatLogMatches } = await import("../../src/store/chat-log.js");
+        const q = normalizeChatQuery(url.searchParams.get("q") ?? "");
+        if (q === null) {
+          // 너무 짧다 = 오류가 아니라 **아직 검색할 게 아니다**. 빈 결과로 조용히 답한다.
+          writeJson(res, 200, { hits: [], query: "", tooShort: true });
+          return;
+        }
+        const limRaw = parseInt(url.searchParams.get("limit") ?? "", 10);
+        const limit = Number.isFinite(limRaw) && limRaw > 0 ? Math.min(limRaw, 200) : 50;
+        // 더보기 커서 — 이 ts 보다 과거만. 유효 양수만 통과(그 외엔 첫 페이지).
+        const beforeRaw = parseInt(url.searchParams.get("beforeTs") ?? "", 10);
+        const beforeTs = Number.isFinite(beforeRaw) && beforeRaw > 0 ? beforeRaw : undefined;
+        // 복합 커서 두 번째 축 — 같은 ts 안에서 어디까지 봤는지(동률 유실 방지, 검토 D-1).
+        const beforeIdRaw = parseInt(url.searchParams.get("beforeId") ?? "", 10);
+        const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? beforeIdRaw : undefined;
+        const tkRaw = url.searchParams.get("threadKey");
+        const threadKey = tkRaw !== null && tkRaw.trim() !== "" ? tkRaw : undefined;
+        const hits = searchChatLog(q.like, {
+          limit,
+          ...(threadKey !== undefined ? { threadKey } : {}),
+          ...(beforeTs !== undefined ? { beforeTs } : {}),
+          ...(beforeId !== undefined ? { beforeId } : {}),
+        }).map(({ text, ...rest }) => {
+          const s = makeSnippet(text, q);
+          return { ...rest, snippet: s.text, matchStart: s.matchStart, matchLen: s.matchLen };
+        });
+        // ★`total` 을 함께 준다 — 목록엔 상한이 있으므로 **잘렸다는 사실**을 화면이 말할
+        //  수 있어야 한다. 없을 땐 "'는' — 50건" 이라고 했는데 실제로는 1,438건이었다.
+        const total = countChatLogMatches(q.like, {
+          ...(threadKey !== undefined ? { threadKey } : {}),
+        });
+        writeJson(res, 200, { hits, total, limit, query: q.raw, scope: threadKey ?? "all" });
+      } catch (err) {
+        writeJson(res, 500, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return;
+    }
+
     if (pathname === "/chat-history" && method === "GET") {
       try {
         const limitRaw = url.searchParams.get("limit");
@@ -2115,9 +2168,20 @@ class HttpBridge implements Channel, Observer {
           threadKeyRaw !== null && threadKeyRaw.trim() !== ""
             ? threadKeyRaw
             : undefined;
+        // 복합 커서의 두 번째 축 — 같은 ts 가 여럿일 때 경계 행이 유실되는 것을 막는다.
+        // ★2026-08-23 3라운드: 이 파싱을 한 번 **잘못 지웠다.** "죽은 코드" 라고 판단한 건
+        //  `/all-activity` 쪽이었는데 일괄 치환이 두 핸들러를 다 잡아서 **살아 있는 이쪽**이
+        //  지워졌고, 주석·커밋 메시지·백로그가 셋 다 반대로 적혔다. 실측 귀결: 동률 3행 ×
+        //  40그룹(120행)을 끝까지 페이징해 **96행만 수집 — 24행(20%) 영구 유실**.
+        //  보내는 쪽은 `history-render.js:468,517`(위로 더보기·점프) 두 곳이다 — 지우기 전에
+        //  **보내는 쪽을 grep** 했으면 30초에 보였다. [[feedback_verify_before_asserting]]
+        const beforeIdRaw2 = parseInt(url.searchParams.get("beforeId") ?? "", 10);
+        const beforeId2 =
+          Number.isFinite(beforeIdRaw2) && beforeIdRaw2 > 0 ? beforeIdRaw2 : undefined;
         const entries = getRecentChatLog({
           limit,
           ...(beforeTs !== undefined ? { beforeTs } : {}),
+          ...(beforeId2 !== undefined ? { beforeId: beforeId2 } : {}),
           ...(threadKey !== undefined ? { threadKey } : {}),
         });
         // 비서 표시 이름(AGENT.md 이름 필드, 없으면 tiguclaw) — 대시보드 채팅 라벨용.
@@ -2226,6 +2290,11 @@ class HttpBridge implements Channel, Observer {
           Number.isFinite(beforeParsed) && beforeParsed > 0
             ? beforeParsed
             : undefined;
+        // ★`/all-activity` 는 복합 커서를 **안 쓴다**. 이 뷰는 chat_log 와 llm.activity 를
+        //  ts 로 병합해 한 축으로 페이징하므로, chat_log 의 id 를 두 번째 축으로 넣으면
+        //  activities 쪽엔 뜻이 없는 값이 된다(반쪽 커서). 제대로 하려면 테이블별 커서가
+        //  필요하다 — 백로그. 보내는 클라이언트도 없다(`activity.js:303` 은 beforeTs 만).
+
         const entries = getRecentChatLog({
           limit,
           ...(beforeTs !== undefined ? { beforeTs } : {}),
@@ -2469,6 +2538,15 @@ class HttpBridge implements Channel, Observer {
             description: a.description,
             model: a.model ?? null, // 모델 티어(high/mid/low 또는 provider:model). 대시보드 표시.
           }));
+        // 프로젝트 전용 훅 — `<path>/settings.json` 의 hooks (project 스코프만).
+        // ★사용자 결정 2026-08-23: "훅 목록은 오히려 인벤토리나 각 프로젝트별로 보여주면".
+        //  훅은 원래 user(런타임 홈) + project 2층이라 분배가 구조를 그대로 따라간다 —
+        //  전역은 인벤토리, 그 폴더에서만 도는 것은 여기. 판정은 `listHooksForInventory`
+        //  한 곳이고 여기선 scope 로 거른다(스킬·에이전트가 `source==="project"` 로 거르는
+        //  것과 같은 꼴 — 새 규칙 0).
+        const hooks = listHooksForInventory(projectPath)
+          .filter((h) => h.scope === "project")
+          .map((h) => ({ event: h.event, matcher: h.matcher, command: h.command }));
         // 프로젝트 전용 MCP — <path>/.mcp.json (프로젝트 스코프). 대시보드 상세에 노출.
         const projectMcp = await readProjectMcpServers(projectPath).catch(() => ({}));
         const mcp = Object.entries(projectMcp).map(([name, cfg]) => ({
@@ -2534,6 +2612,7 @@ class HttpBridge implements Channel, Observer {
           skills,
           agents,
           mcp,
+          hooks,
           related,
           recentJobs,
         });

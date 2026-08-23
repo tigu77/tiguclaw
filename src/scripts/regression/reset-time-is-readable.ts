@@ -78,8 +78,16 @@ const run = async (): Promise<Assertion[]> => {
     const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
     const wj = await readFile(new URL("../../core/worker-jobs.ts", import.meta.url), "utf8");
     const bothUse = idx.includes("formatResetAt(") && wj.includes("formatResetAt(");
+    // ★**주석은 빼고** 본다 (2026-08-22). 이 규칙을 *설명하는 글* 안에 든 코드 예시를
+    //  코드로 세서 상시 FAIL 했다 — `verify-dashboard-split` 이 주석 속 `<style>` 을 태그로
+    //  세던 것과 같은 부류다([[feedback_gate_must_actually_run]]: 검사 대상은 코드이지 그걸
+    //  설명하는 글이 아니다). 오탐이 나면 사람이 검사를 끄거나 무시하게 되고, 그 순간 이
+    //  게이트에만 있던 판정이 죽는다.
+    const stripComments = (s: string): string =>
+      s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+    const ownMathRe = /Math\.round\([^)]*\/\s*60_?000\)[^;]*분/;
     const ownMath =
-      /Math\.round\([^)]*\/\s*60_?000\)[^;]*분/.test(idx) || /Math\.round\([^)]*\/\s*60_?000\)[^;]*분/.test(wj);
+      ownMathRe.test(stripComments(idx)) || ownMathRe.test(stripComments(wj));
     out.push(
       assert(
         "★채널 응답·워커 통지가 같은 문구 함수를 쓴다(자체 계산 금지)",

@@ -24,6 +24,7 @@
  *  - POST /api/set-module-enabled → bridge POST /set-module-enabled (write, 모듈 활성/비활성 — P4a-2)
  *  - GET  /api/health    → bridge GET  /health          (JSON pass)
  *  - GET  /api/chat-history → bridge GET /chat-history  (JSON pass, 대화 이력 복원; threadKey qs 통과)
+ *  - GET  /api/chat-search → bridge GET /chat-search    (JSON pass, 전 세션 가로질러 채팅 검색)
  *  - GET  /api/all-activity → bridge GET /all-activity  (JSON pass, 전체활동 크로스세션 타임라인)
  *  - GET  /api/sessions  → bridge GET  /sessions        (JSON pass, 멀티세션 탭 목록+프리뷰)
  *  - GET  /api/projects  → bridge GET  /projects        (JSON pass, 프로젝트 목록)
@@ -514,6 +515,12 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/chat-history" && method === "GET") {
       const qs = url.search ?? "";
       await proxyJson(res, "/chat-history" + qs);
+      return;
+    }
+    // 채팅 검색(전 세션 가로질러) — bridge GET /chat-search. q/limit/threadKey 그대로 전달.
+    if (pathname === "/api/chat-search" && method === "GET") {
+      const qs = url.search ?? "";
+      await proxyJson(res, "/chat-search" + qs);
       return;
     }
     // 전체활동(크로스세션) — bridge GET /all-activity (read 토큰 server-side 주입).

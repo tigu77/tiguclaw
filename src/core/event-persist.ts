@@ -311,6 +311,12 @@ const startChatLogPersistence = (bus: EventBus): void => {
       // threadKey·channel 누락이면 스킵. text 는 첨부가 있으면 비어도 통과(이미지-only 메시지).
       if (threadKey === "" || channel === "") return;
       if (text === "" && !hasAtt) return;
+      // ★휘발성(`ephemeral`) — **적재만** 건너뛴다 (2026-08-23 2라운드 E1/E3).
+      //  "안 남긴다" 를 구현하는 자리는 여기 하나다. 발행 자체를 막는 방식으로 하면
+      //  같은 이벤트에 얹혀 있는 다른 일들(대시보드 낙관 버블 승격·진행 표시 켜기·
+      //  에러 클리어)까지 같이 꺼진다 — `publishInboundEcho` 주석이 2026-08-13 에 똑같이
+      //  겪고 적어둔 함정이고, 어제 그걸 그대로 반복했다. 발행은 하고, 남기지만 않는다.
+      if (payload.ephemeral === true) return;
       recordChatMessage({
         ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
         threadKey,

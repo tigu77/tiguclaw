@@ -65,7 +65,7 @@
     "better-sqlite3": "^12.9.0",
     "chokidar": "^5.0.0",
     "croner": "^10.0.1",
-    "diff": "^7.0.0",
+    "diff": "^8.0.3",
     "grammy": "^1.30.0",
     "telegram-markdown-formatter": "^0.1.2",
     "tsx": "^4.0.0",

@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   세션 탭의 진행 점이 이미 알려줍니다.
 - **README 를 랜딩 페이지로 다시 짰습니다.** 상세는 `docs/features.md`·`docs/hooks.md`·
   `docs/gateway.md` 로 옮겼습니다(내용 그대로).
+- **GitHub 랜딩이 영어가 됐습니다.** `README.md`=영어, `README.ko.md`=한국어입니다(옛
+  `README.en.md` 는 없어졌습니다). 저장소 설명·토픽이 영어라 첫 화면만 한국어면 입구와
+  내용이 갈렸습니다. **하위 문서(`docs/`)는 한국어가 기본**으로 그대로입니다 — 작업 언어가
+  한국어고 거기가 원본이라서요. 두 README 는 상단 링크로 오갑니다.
 - **구독 토큰 사용에 약관 주의를 명시했습니다.** `claude setup-token`·ChatGPT 구독 로그인은
   제공사 약관이 허용하지 않을 수 있고, 특히 LLM 게이트웨이와 함께 쓰면 개인 구독이 임의 앱의
   API 백엔드가 됩니다. 막지는 않되 [설치와 운영](docs/setup.md#구독-토큰을-쓰기-전에)에

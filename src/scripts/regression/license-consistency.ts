@@ -33,8 +33,10 @@ export const check: RegressionCheck = {
     const [lic, notice, koReadme, enReadme, skill] = await Promise.all([
       read(`${O}LICENSE`),
       read(`${O}NOTICE`),
+      // ★랜딩(`README.md`)이 영어다 (2026-08-24) — 변수 이름과 파일이 어긋나면 다음 사람이
+      //  반대로 읽는다. 한국어 판정은 `README.ko.md` 를 봐야 한다.
+      read(`${O}README.ko.md`),
       read(`${O}README.md`),
-      read(`${O}README.en.md`),
       read("../../../.claude/skills/sync-public/SKILL.md"),
     ]);
 

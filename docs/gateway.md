@@ -62,4 +62,4 @@ curl http://127.0.0.1:7011/v1/chat/completions \
 
 ---
 
-[← README](../README.md) · [English](gateway.en.md)
+[← README](../README.ko.md) · [English](gateway.en.md)

@@ -62,4 +62,4 @@ Worth knowing:
 
 ---
 
-[← README](../README.en.md) · [한국어](gateway.md)
+[← README](../README.md) · [한국어](gateway.md)

@@ -40,10 +40,12 @@ export const check: RegressionCheck = {
     //  같은 스위트의 `cli-commands-documented`·`default-port-truth` 는 이미 양쪽을 본다 —
     //  규칙이 아니라 **적용이 갈려 있었다**.
     const ko =
-      (await read("_workspace/public-overlay/README.md")) || (await read("README.md"));
+      (await read("_workspace/public-overlay/README.ko.md")) || (await read("README.ko.md"));
+    // ★랜딩(`README.md`)이 영어다 (2026-08-24 사용자 결정) — 변수 이름이 파일과 어긋나면
+    //  다음 사람이 반대로 읽는다. 이름을 실제 언어에 맞춘다.
     const en =
-      (await read("_workspace/public-overlay/README.en.md")) ||
-      (await read("README.en.md"));
+      (await read("_workspace/public-overlay/README.md")) ||
+      (await read("README.md"));
     const jobs = await read("src/core/worker-jobs.ts");
     const worker = await read("src/core/llm-runtime/capabilities/worker-registry.ts");
     const prompt = await read("src/core/prompt-assembly.ts");

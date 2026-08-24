@@ -53,7 +53,7 @@ const shippedDocs = (): string[] => {
     (f) =>
       !DEV_ONLY.some((d) => f === d || f.startsWith(d)) &&
       // 개발 레포에선 루트 README 가 dev 판이다(배포본은 오버레이 판) — 대상 아님.
-      !(PUBLIC_ROOT !== REPO && /^README(\.en)?\.md$/.test(f)),
+      !(PUBLIC_ROOT !== REPO && /^README(\.en|\.ko)?\.md$/.test(f)),
   );
 };
 
@@ -165,10 +165,10 @@ export const check: RegressionCheck = {
     //  README(한/영)에서 도달 가능한가만 본다. 표준 이름(LICENSE·CHANGELOG 등)은 제외 —
     //  그건 GitHub UI 가 스스로 보여준다.
     const STANDALONE = new Set([
-      "README.md", "README.en.md", "CHANGELOG.md", "LICENSE.md", "NOTICE.md",
+      "README.md", "README.en.md", "README.ko.md", "CHANGELOG.md", "LICENSE.md", "NOTICE.md",
       "CONTRIBUTING.md", "SECURITY.md", "SYSTEM.md", "CODE_OF_CONDUCT.md",
     ]);
-    const readmes = ["README.md", "README.en.md"]
+    const readmes = ["README.md", "README.en.md", "README.ko.md"]
       .map((f) => path.join(PUBLIC_ROOT, f))
       .filter(existsSync)
       .map((p) => readFileSync(p, "utf8"))

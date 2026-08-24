@@ -63,4 +63,4 @@ esac
 
 ---
 
-[← README](../README.md) · [English](hooks.en.md)
+[← README](../README.ko.md) · [English](hooks.en.md)

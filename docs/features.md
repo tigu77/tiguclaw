@@ -3,7 +3,7 @@
 README 는 **여섯 가지**만 싣습니다 — 이게 없으면 다른 도구를 써도 되는 것들. 나머지는 여기
 전부 있습니다. 하나도 버리지 않았습니다.
 
-[← README](../README.md) · [English](features.en.md)
+[← README](../README.ko.md) · [English](features.en.md)
 
 ## 무엇을 하나
 

@@ -63,4 +63,4 @@ Hooks **observe and block** tool calls. On top of that, whatever a `UserPromptSu
 
 ---
 
-[← README](../README.en.md) · [한국어](hooks.md)
+[← README](../README.md) · [한국어](hooks.md)

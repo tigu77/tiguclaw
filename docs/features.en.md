@@ -3,7 +3,7 @@
 The README carries only **six** — the ones that answer "why not use something else."
 Everything else lives here. Nothing was dropped.
 
-[← README](../README.en.md) · [한국어](features.md)
+[← README](../README.md) · [한국어](features.md)
 
 ## What it does
 

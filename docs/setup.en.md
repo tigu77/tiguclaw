@@ -1,8 +1,8 @@
 # Setup & operations
 
-Back to [README](../README.en.md) · [한국어](setup.md)
+Back to [README](../README.md) · [한국어](setup.md)
 
-For people who just installed tiguclaw — or are about to. For *what it is*, see the [README](../README.en.md).
+For people who just installed tiguclaw — or are about to. For *what it is*, see the [README](../README.md).
 
 ### Pick a provider
 

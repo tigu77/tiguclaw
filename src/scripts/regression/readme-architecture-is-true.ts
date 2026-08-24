@@ -33,8 +33,17 @@ export const check: RegressionCheck = {
   guards:
     "공개 README 가 단언한 구조(매니저 재귀 금지·결과 거두기 강제)의 코어 집행점이 사라져 문서가 거짓이 되는 것",
   run: async (): Promise<Assertion[]> => {
-    const ko = await read("_workspace/public-overlay/README.md");
-    const en = await read("_workspace/public-overlay/README.en.md");
+    // ★**두 레포를 다 본다** (2026-08-24). 종전엔 오버레이(`_workspace/`)만 읽어서,
+    //  **배포 레포에선 이 검사가 통째로 "확인 못 함" 한 줄로 접혔다** — 정작 사용자가 읽는
+    //  README 가 거기 루트에 있는데 그걸 지키는 게 없었다. CI 는 배포 레포에서 돌므로
+    //  README 의 아키텍처 주장은 **어디서도 검증되지 않고** 있었다(백로그 17).
+    //  같은 스위트의 `cli-commands-documented`·`default-port-truth` 는 이미 양쪽을 본다 —
+    //  규칙이 아니라 **적용이 갈려 있었다**.
+    const ko =
+      (await read("_workspace/public-overlay/README.md")) || (await read("README.md"));
+    const en =
+      (await read("_workspace/public-overlay/README.en.md")) ||
+      (await read("README.en.md"));
     const jobs = await read("src/core/worker-jobs.ts");
     const worker = await read("src/core/llm-runtime/capabilities/worker-registry.ts");
     const prompt = await read("src/core/prompt-assembly.ts");

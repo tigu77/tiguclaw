@@ -22,15 +22,62 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { getPaths, projectScope, projectScopeLegacy } from "./paths.js";
 
+/**
+ * 풀 원소 — `provider:model` + **그 프로파일에서만** 쓸 오버라이드 (2026-08-24).
+ *
+ * settings.json 엔 문자열로도, 객체로도 쓴다(둘 다 유효, 여기서 한 모양으로 정규화):
+ * ```json
+ * "pool": ["codex:gpt-5.6-sol", { "model": "anthropic:claude-opus-5", "reasoning": "high" }]
+ * ```
+ *
+ * ★왜 프로파일 레벨 맵(`"reasoning": {"codex:gpt-5.6-sol":"low"}`)이 아니라 **객체**인가:
+ *  맵이면 모델 이름을 **두 번** 적어야 하고, 오타 나면 조용히 아무 일도 안 일어난다 —
+ *  이 레포가 반복해서 데인 부류다. 객체 안에 두면 이름이 한 번만 등장해 그 실패가
+ *  **구조적으로 불가능**하다. 대가는 소비처가 `.spec` 을 거치는 것뿐이다.
+ *
+ * ★`reasoning` 유효값은 **검증하지 않는다** — `models.reasoning`(전역) 과 같은 규칙이다.
+ *  지원 등급은 모델마다 다르고(sol 은 ultra 까지, claude SDK 는 max 까지) 벤더가 늘린다.
+ *  우리가 흉내 낸 목록은 새 등급이 나올 때 멀쩡한 값을 막는다. 판정은 API 가 한다.
+ *
+ * 한계(정직하게): 같은 모델을 한 풀에 **두 번** 다른 강도로 넣는 것은 표현되지만,
+ * 그럴 이유는 아직 없었다(자기 자신으로의 폴백). 필요해지면 그때 본다.
+ */
+export interface PoolEntry {
+  /** `provider:model`. 파싱은 소비자 몫(parseModelSpec). */
+  spec: string;
+  /** 이 프로파일에서 이 모델의 추론 강도. 미지정 = 전역·카탈로그로 내려간다. */
+  reasoning?: string;
+}
+
 /** 명명된 모델 프로파일 — settings.json `models.profiles.<name>` 의 검증된 형태. */
 export interface ModelProfile {
   /** 사람용 설명 (optional). */
   description?: string;
-  /** `provider:model` 배열 — 풀 안 순차 폴백(runPool). 파싱은 소비자 몫(parseModelSpecList). */
-  pool: string[];
+  /** 풀 안 순차 폴백(runPool) 순서. 표시용 문자열이 필요하면 `poolSpecs()`. */
+  pool: PoolEntry[];
   /** 단일 프로파일 참조 — 프로파일 간(inter) 폴백 체인. 리스트 아님(순환·댕글링 차단). */
   fallback?: string;
+  /**
+   * 화면 배지 색 — `#rrggbb` (2026-08-24 사용자 요청).
+   *
+   * ★**형식을 고정하는 이유**: 이 값은 대시보드에서 CSS 로 나간다. 임의 문자열을 그대로
+   *  꽂으면 스타일 주입이 된다. 그래서 경계(여기)에서 `#rrggbb` 만 통과시키고, 아니면
+   *  **무시 + 부팅 경고**(조용히 버리면 사용자는 적었는데 왜 안 되는지 모른다).
+   *
+   * ★미지정 = 화면이 알아서 — `high`·`mid`·`low` 는 종전 색을 유지하고(회귀 0) 그 외
+   *  이름은 중립. 색을 **이름에서 자동 생성하지 않는다**: 지금 필요 없는 부품이고,
+   *  고를 수 없는 색이 예쁘지 않게 나오는 쪽이 더 나쁘다.
+   */
+  color?: string;
 }
+
+/** `#rrggbb` 만 통과 — 대시보드가 이 값을 CSS 로 쓴다(주입 차단은 여기 한 곳). */
+export const isBadgeColor = (v: unknown): v is string =>
+  typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v.trim());
+
+/** 표시·파싱용 spec 문자열만 — 표현을 두 벌 들고 다니지 않기 위한 **파생**(정의점은 pool). */
+export const poolSpecs = (pool: readonly PoolEntry[]): string[] =>
+  pool.map((e) => e.spec);
 
 /**
  * 사용자 정의 LLM provider — settings.json `models.providers.<name>` 의 검증된 형태
@@ -147,19 +194,61 @@ const validateProfile = (
     return undefined;
   }
   const o = val as Record<string, unknown>;
-  const pool = o.pool;
-  if (!Array.isArray(pool) || !pool.every((x) => typeof x === "string")) {
+  const raw = o.pool;
+  if (!Array.isArray(raw)) {
     if (diagnose) {
-      console.warn(
-        `[settings] models.profiles.${name}: pool 이 문자열 배열이 아님 — 무시.`,
-      );
+      console.warn(`[settings] models.profiles.${name}: pool 이 배열이 아님 — 무시.`);
     }
     return undefined;
   }
-  const profile: ModelProfile = { pool: pool as string[] };
+  // ★문자열·객체 둘 다 받아 **여기서** 한 모양으로 만든다(2026-08-24). 경계에서 정규화하면
+  //  하류 전부가 한 모양만 본다 — 각 소비처가 "문자열인가 객체인가" 를 다시 묻지 않는다.
+  const pool: PoolEntry[] = [];
+  for (const x of raw) {
+    if (typeof x === "string") {
+      if (x.trim() !== "") pool.push({ spec: x.trim() });
+      continue;
+    }
+    if (x === null || typeof x !== "object" || Array.isArray(x)) {
+      if (diagnose) {
+        console.warn(
+          `[settings] models.profiles.${name}: pool 원소가 문자열·객체가 아님 — 그 원소만 무시.`,
+        );
+      }
+      continue;
+    }
+    const e = x as Record<string, unknown>;
+    const spec = typeof e.model === "string" ? e.model.trim() : "";
+    if (spec === "") {
+      // ★조용히 넘기지 않는다 — 객체를 썼는데 `model` 이 없으면 그 줄은 의도가 있었다.
+      if (diagnose) {
+        console.warn(
+          `[settings] models.profiles.${name}: pool 객체에 model 이 없음 — 그 원소만 무시.`,
+        );
+      }
+      continue;
+    }
+    const r = typeof e.reasoning === "string" ? e.reasoning.trim() : "";
+    pool.push(r === "" ? { spec } : { spec, reasoning: r });
+  }
+  if (pool.length === 0 && raw.length > 0) {
+    if (diagnose) {
+      console.warn(`[settings] models.profiles.${name}: pool 에 유효 원소가 없음 — 무시.`);
+    }
+    return undefined;
+  }
+  const profile: ModelProfile = { pool };
   if (typeof o.description === "string") profile.description = o.description;
   if (typeof o.fallback === "string" && o.fallback.trim() !== "") {
     profile.fallback = o.fallback.trim();
+  }
+  if (o.color !== undefined) {
+    if (isBadgeColor(o.color)) profile.color = o.color.trim().toLowerCase();
+    else if (diagnose) {
+      console.warn(
+        `[settings] models.profiles.${name}.color: '#rrggbb' 형식이 아님 — 무시(색은 기본값).`,
+      );
+    }
   }
   return profile;
 };
@@ -635,6 +724,73 @@ export const setModelReasoning = (
 };
 
 /**
+ * `models.profiles.<name>.pool` 의 **한 원소**에 추론 강도를 쓴다 (2026-08-24).
+ *
+ * ★`setModelReasoning`(전역)의 형제다. 다른 질문에 답한다 — 저건 *"이 모델은 어디서든"*,
+ *  이건 *"이 프로파일에서 이 모델은"*. 비서가 "high 의 opus 를 중간강도로" 를 받으면
+ *  이쪽이다. 이 길이 없으면 비서는 전역을 고쳐 **다른 프로파일까지 같이 바꾼다.**
+ *
+ * ★문자열 원소를 만나면 **객체로 승격**한다(`"a"` → `{model:"a",reasoning:"…"}`). 해제
+ *  (`effort === undefined`)면 반대로 **문자열로 되돌린다** — 빈 껍데기(`{model:"a"}`)를
+ *  남기지 않는다. 켜는 길만 있고 끄는 길이 없으면 손잡이가 아니라 덫이다(setModelReasoning
+ *  과 같은 규칙).
+ *
+ * @returns 그 프로파일·모델을 못 찾았으면 false(조용히 만들지 않는다 — 없는 프로파일에
+ *          설정을 심으면 사용자는 됐다고 믿는다). 홈 `settings.json` 만 쓴다.
+ */
+export const setProfilePoolReasoning = (
+  profile: string,
+  spec: string,
+  effort: string | undefined,
+): boolean => {
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return false; // 파일이 없으면 고칠 프로파일도 없다.
+  }
+  const models = root.models;
+  if (models === null || typeof models !== "object" || Array.isArray(models)) return false;
+  const profiles = (models as Record<string, unknown>).profiles;
+  if (profiles === null || typeof profiles !== "object" || Array.isArray(profiles)) return false;
+  const prof = (profiles as Record<string, unknown>)[profile];
+  if (prof === null || typeof prof !== "object" || Array.isArray(prof)) return false;
+  const pool = (prof as Record<string, unknown>).pool;
+  if (!Array.isArray(pool)) return false;
+
+  let hit = false;
+  for (let i = 0; i < pool.length; i += 1) {
+    const x = pool[i];
+    const cur =
+      typeof x === "string"
+        ? x.trim()
+        : x !== null && typeof x === "object" && !Array.isArray(x)
+          ? String((x as Record<string, unknown>).model ?? "").trim()
+          : "";
+    if (cur !== spec) continue;
+    hit = true;
+    if (effort === undefined) {
+      pool[i] = cur; // 해제 = 문자열로 환원(빈 객체를 남기지 않는다).
+    } else if (typeof x === "string") {
+      pool[i] = { model: cur, reasoning: effort };
+    } else {
+      (x as Record<string, unknown>).reasoning = effort;
+    }
+  }
+  if (!hit) return false;
+
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+  return true;
+};
+
+/**
  * 스케줄 **전달** 실패 시 자동 재전송 여부 — settings.json `scheduler.retryFailedDispatch`
  * (기본 **켜짐**). 명시 `false` 일 때만 끈다(부재·오타·비-boolean = 기본값 유지, never-throw).
  *
@@ -669,10 +825,10 @@ export const loadSchedulerRetryEnabled = (
 export const resolveProfileChain = (
   name: string,
   cwd: string = process.cwd(),
-): string[][] => {
+): PoolEntry[][] => {
   const profiles = loadModelProfiles(cwd);
   if (profiles[name] === undefined) return [];
-  const chain: string[][] = [];
+  const chain: PoolEntry[][] = [];
   const visited = new Set<string>();
   // 한 프로파일에서 .fallback 링크를 따라가며 풀을 누적(순환·댕글링 절단). visited 공유.
   const follow = (start: string | undefined): void => {

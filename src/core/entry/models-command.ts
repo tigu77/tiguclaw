@@ -10,7 +10,7 @@
  *    (settings.json)·`getSessionModelOverride`(SQLite) 가 호출부에서 조달.
  *  - never-throw 는 상위(replyCommand) 몫 — 여기선 순수 변환만.
  */
-import type { ModelProfile } from "../settings.js";
+import type { ModelProfile, PoolEntry } from "../settings.js";
 
 /** 레거시 티어 env 키 — 프로파일 0개일 때만 폴백 안내에 노출(resolveTier 의 TIER_ENV 와 대응). */
 const LEGACY_TIER_ENV_KEYS = [
@@ -20,11 +20,23 @@ const LEGACY_TIER_ENV_KEYS = [
   "MODEL_TIER_NANO",
 ] as const;
 
-/** 풀(provider:model 배열) 한 줄 포맷 — 폴백 순서를 화살표로. 빈 풀은 명시. */
-const formatPool = (pool: readonly string[]): string => {
-  const parts = pool.map((p) => p.trim()).filter((p) => p !== "");
+/**
+ * 풀 한 줄 포맷 — 폴백 순서를 화살표로. 빈 풀은 명시.
+ *
+ * ★프로파일이 강도를 덮었으면 **그 자리에 같이 적는다** (2026-08-24). 층이 셋이라
+ *  (풀 원소 > models.reasoning > 카탈로그) 어디서 온 값인지 안 보이면, 전역을 바꿔도
+ *  안 먹는 이유를 알 수 없다 — 그게 이 기능의 진짜 위험이다.
+ */
+const formatPool = (pool: readonly PoolEntry[]): string => {
+  const parts = pool.filter((e) => e.spec.trim() !== "");
   if (parts.length === 0) return "(빈 풀 — 어댑터 디폴트로 강등)";
-  return parts.map((p) => `\`${p}\``).join(" → ");
+  return parts
+    .map((e) =>
+      e.reasoning === undefined
+        ? `\`${e.spec.trim()}\``
+        : `\`${e.spec.trim()}\`(강도 ${e.reasoning})`,
+    )
+    .join(" → ");
 };
 
 /** 프로파일 하나를 블록으로. 기본 프로파일(`defaultName` 지목)에는 (기본) 표식. */

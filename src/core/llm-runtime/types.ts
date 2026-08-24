@@ -101,6 +101,13 @@ export interface RegionASdkInput {
    */
   provider?: string;
   /**
+   * 신규(additive, 2026-08-24) — **모델 프로파일이 정한** 추론 강도. 풀 원소
+   * (`{model, reasoning}`)에서 실려 온다. 어댑터는 이 값을 `resolveReasoningEffort`
+   * (전역 `models.reasoning` → 카탈로그 기본)보다 **우선** 쓴다 — 좁은 것이 이긴다.
+   * 미지정 = 종전 동작(회귀 0). 유효값 검증 없음 — 판정은 API 가 한다(codex·claude 동일 규칙).
+   */
+  reasoning?: string;
+  /**
    * 아웃바운드 첨부 전송 클로저 — 채널 원본(IncomingMessage.sendAttachment)을 router가 주입.
    * send_file MCP 도구가 호출. 미지정(스케줄러 등 비채널 turn) 이면 도구가 미지원 안내.
    */

@@ -13,7 +13,7 @@ import { agentPathHint } from "./identity.js";
 import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
-import { loadModelProfiles, type ModelProfile } from "./settings.js";
+import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs } from "./worker-jobs.js";
 import { readFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
@@ -180,7 +180,7 @@ export const formatModelProfiles = (
     //  비어, 비서가 **자기가 쓸 수 있는 모델 등급을 모르는 채** 서브에이전트를 구성했다.
     //  런타임은 빌트인으로 도는데 인벤토리만 비어 있던 것 — 같은 폴백을 `/models` 에만
     //  적었던 대가다. 이제 `resolveModelProfiles` 한 곳이 판정한다.
-    profiles = resolveModelProfiles(cwd).profiles as Record<string, ModelProfile>;
+    profiles = resolveModelProfiles(cwd).profiles;
   } catch {
     // never-throw — 프로파일 렌더 실패가 턴을 죽이지 않게(원칙 3, settings.ts 동형).
     return "";
@@ -194,7 +194,7 @@ export const formatModelProfiles = (
       p.description !== undefined && p.description.trim() !== ""
         ? ` — ${truncate(p.description.replace(/\s+/g, " "), PROFILE_DESC_CAP)}`
         : "";
-    const shown = p.pool.slice(0, PROFILE_POOL_SHOW);
+    const shown = poolSpecs(p.pool).slice(0, PROFILE_POOL_SHOW);
     const more = p.pool.length > PROFILE_POOL_SHOW ? ", …" : "";
     const pool = shown.length > 0 ? ` [${shown.join(", ")}${more}]` : "";
     lines.push(`- \`${name}\`${desc}${pool}`);

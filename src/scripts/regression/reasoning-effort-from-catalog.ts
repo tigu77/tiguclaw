@@ -212,7 +212,9 @@ const run = async (): Promise<Assertion[]> => {
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [
         // ★모르면 **안 보낸다** — 이 가드가 사라지면 undefined 가 wire 로 나간다.
-        /const effort = resolveReasoningEffort\("codex", model, input\.cwd\);\s*\n\s*if \(effort !== undefined\) body\.reasoning = \{ effort \};/,
+        // ★2026-08-24: 앞에 `input.reasoning ??` 가 붙었다(프로파일 풀 원소가 전역·카탈로그를
+        //  이긴다). 그 층까지 같이 지킨다 — `??` 가 빠지면 프로파일 강도가 조용히 무시된다.
+        /const effort = input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\);\s*\n\s*if \(effort !== undefined\) body\.reasoning = \{ effort \};/,
       ],
     );
     out.push(

@@ -311,11 +311,46 @@
 
       const applyDurationBadge = (el, ms) => {
         if (!el) return;
+        // ★진행 표식을 **먼저** 걷는다 (2026-08-24). 순서가 반대면 아래 `.dur-badge` 조회가
+        //  진행 중 뱃지(`dur-badge running`)를 잡아 거기에 실행시간을 쓰고, 그 다음 해제가
+        //  **그 뱃지를 지운다** — 실행시간이 통째로 사라진다(실측으로 걸렸다).
+        clearStepRunning(el);
         let b = el.querySelector(":scope > .dur-badge");
         if (!b) { b = document.createElement("span"); b.className = "dur-badge"; el.appendChild(b); }
         b.textContent = fmtDur(ms);
         if (ms >= 90000) b.classList.add("slow"); // tool-slow 임계 이상 = warn 틴트.
         b.title = "도구 실행시간 " + fmtDur(ms);
+      };
+
+      /**
+       * 스텝 줄의 **진행 중** 표식 (2026-08-24 사용자 요청: "진행중인 도구도 나올 수 있어?").
+       *
+       * ★"뱃지 없는 마지막 스텝 = 실행 중" 으로 **추정하지 않는다.** 끝 이벤트를 못 받는
+       *  경우가 실제로 있고(잡 취소·데몬 재시작·SSE 끊김), 그러면 그 줄이 영원히 카운트업하며
+       *  죽은 잡의 도구가 도는 것처럼 보인다 — 이 레포가 반복해서 고쳐 온 **유령**이다.
+       *  대신 **append 시점에 단다**(그 순간 시작한 건 사실이다) → 뱃지가 오면 끈다
+       *  → **잡이 끝나면 남은 것을 전부 끈다**(아래 handleWorkerEvent). 셋이 다 있어야 한다.
+       */
+      const markStepRunning = (el, startTs) => {
+        if (!el || !startTs) return;
+        el.classList.add("bg-step-running");
+        el.dataset.runsince = String(startTs);
+        const b = document.createElement("span");
+        b.className = "dur-badge running";
+        b.textContent = "⏳ " + fmtElapsed(Date.now() - startTs);
+        el.appendChild(b);
+      };
+      const clearStepRunning = (el) => {
+        if (!el || !el.classList.contains("bg-step-running")) return;
+        el.classList.remove("bg-step-running");
+        delete el.dataset.runsince;
+        const b = el.querySelector(":scope > .dur-badge.running");
+        if (b) b.remove(); // 실제 실행시간 뱃지가 그 자리를 대신한다.
+      };
+      /** 잡이 끝났다 = 그 카드의 어떤 도구도 더는 안 돈다. 남은 표식을 전부 끈다(유령 방지). */
+      const clearAllStepsRunning = (entry) => {
+        if (!entry || !entry.stepsEl) return;
+        for (const el of entry.stepsEl.querySelectorAll(".bg-step-running")) clearStepRunning(el);
       };
       const annotateToolDuration = (ap) => {
         if (ap.seq == null) return;
@@ -851,6 +886,13 @@
             entry.tierBadgeEl.textContent = tier;
             entry.tierBadgeEl.dataset.tier = tier.toLowerCase();
             entry.tierBadgeEl.style.display = show ? "" : "none";
+            // ★프로파일이 정한 색을 입힌다 (2026-08-24). CSS 엔 `low|mid|high` **세 이름만**
+            //  적혀 있어서 사용자가 만든 프로파일(`gpt-high` 등)은 전부 회색이었다 —
+            //  손으로 관리하는 목록의 전형적 결말([[feedback_hand_maintained_lists]]).
+            //  색이 없으면 아무것도 안 한다 = 그 세 이름은 CSS 기본 그대로(회귀 0).
+            if (typeof profileColorByName === "function") {
+              paintProfileBadge(entry.tierBadgeEl, profileColorByName(tier));
+            }
           }
         }
         // 원 세션 threadKey **지연 채움**(2026-07-26) — 활동-선도 카드는 생성 시 잡 좌표
@@ -958,6 +1000,10 @@
         if (wasRunning && status !== "running" && entry.elapsedEl) {
           entry.elapsedEl.textContent = fmtElapsed(Date.now() - (entry.startTs || Date.now()));
         }
+        // ★잡이 끝나면 스텝의 진행 표식도 끈다 — 끝 이벤트를 못 받은 도구(취소·재시작·SSE
+        //  끊김)가 죽은 잡 안에서 영원히 카운트업하는 것을 막는다. 이게 없으면 위 유령이
+        //  그대로 재현된다(잡 상태는 끝났는데 그 안의 줄만 계속 돈다).
+        if (status !== "running") clearAllStepsRunning(entry);
         if ((status === "failed" || status === "cancelled") && p.error) {
           entry.errorText = String(p.error); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
           entry.errEl.textContent = p.error;
@@ -1188,9 +1234,22 @@
           const d = document.createElement("span"); d.className = "bg-step-detail";
           d.textContent = p.detail; line.appendChild(d);
         }
+        // ★상대시간 — "언제" (2026-08-24 사용자 요청: "몇분전·몇시간전이 걸린시간 옆에").
+        //  실행시간(얼마나)만으론 긴 잡의 타임라인에서 그 스텝이 **언제 일** 이었는지 모른다.
+        //  포매터는 잡 카드 머리와 **같은 것**(`fmtAgo`) — 두 벌이면 같은 시각을 다르게 부른다.
+        //  ts 가 없으면 span 을 안 만든다(빈 자리를 지어내지 않는다).
+        const stepTs = typeof p.ts === "number" ? p.ts : 0;
+        if (stepTs > 0) {
+          line.dataset.ts = String(stepTs);
+          const a = document.createElement("span");
+          a.className = "bg-step-ago"; a.textContent = fmtAgo(stepTs);
+          line.appendChild(a);
+        }
         // 리치 diff(Edit/Write)가 스텝 시작 payload 에 실려 오면 보관 + 펼침 affordance 배선.
         // 자동 펼치지 않음(기본 접힘) — 클릭 시에만 buildDiffBlock 으로 렌더.
         if (p.diff && Array.isArray(p.diff.lines)) { line._diff = p.diff; ensureStepExpandable(line); }
+        // 이 스텝은 **방금 시작했다** — 추정이 아니라 관측이다. 끝(뱃지)이나 잡 종료가 끈다.
+        if (p.kind === "tool" && stepTs > 0) markStepRunning(line, stepTs);
         appendJobStep(entry, line);
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
@@ -1215,6 +1274,21 @@
           if (e.agoEl && e.startTs) {
             const ago = fmtAgo(e.startTs);
             if (e.agoEl.textContent !== ago) e.agoEl.textContent = ago;
+          }
+          // ★스텝 시각도 같은 시계에 얹는다(새 타이머 0). 두 축이 다르다:
+          //  - `.bg-step-ago`(언제) — **끝난 카드도 늙는다**. 분 단위라 대부분 no-op(문자열 비교).
+          //  - `.dur-badge.running`(지금 몇 초째) — 도는 도구만. 잡이 끝나면 표식이 걷힌다.
+          if (e.stepsEl) {
+            for (const el of e.stepsEl.querySelectorAll(".bg-step[data-ts]")) {
+              const a = el.querySelector(":scope > .bg-step-ago");
+              if (!a) continue;
+              const t = fmtAgo(Number(el.dataset.ts));
+              if (a.textContent !== t) a.textContent = t;
+            }
+            for (const el of e.stepsEl.querySelectorAll(".bg-step-running[data-runsince]")) {
+              const b = el.querySelector(":scope > .dur-badge.running");
+              if (b) b.textContent = "⏳ " + fmtElapsed(now - Number(el.dataset.runsince));
+            }
           }
           if (e.status !== "running" || !e.elapsedEl) continue;
           e.elapsedEl.textContent = fmtElapsed(now - (e.startTs || now));

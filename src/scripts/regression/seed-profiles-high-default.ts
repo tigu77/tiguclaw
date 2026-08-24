@@ -76,7 +76,7 @@ export const check: RegressionCheck = {
       //  손 폴백이 불필요한 것 — 안 성립하면 저 설계 자체가 틀린 것이다.
       const lowChain = resolveProfileChain("low", dir);
       const lowOk =
-        lowChain.length === 2 && lowChain[0][0] === LOW && lowChain[1][0] === HIGH;
+        lowChain.length === 2 && lowChain[0][0]?.spec === LOW && lowChain[1][0]?.spec === HIGH;
       out.push(
         assert(
           "★low 는 fallback 을 안 적어도 high 로 떨어진다(자동 덧붙임이 실제로 돈다)",

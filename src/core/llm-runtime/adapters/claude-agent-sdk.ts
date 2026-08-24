@@ -893,7 +893,9 @@ export const runClaude = async (
     //   기본값이 없으므로 자연히 "덮어쓰기가 있을 때만" 이 된다 — 같은 판단을 두 곳에
     //   따로 적지 않는다. SDK 유효값은 low|medium|high|xhigh|max.
     ...(((): Record<string, unknown> => {
-      const e = resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
+      // ★프로파일이 정했으면 그것이 이긴다 (2026-08-24) — 좁은 것이 넓은 것을 덮는다.
+      //  순서: 풀 원소(input.reasoning) > models.reasoning(전역) > 카탈로그 기본.
+      const e = input.reasoning ?? resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
       // ★유효값 목록을 우리가 들고 있지 않다(codex 와 같은 규칙) — 지원 등급은 벤더가
       //  모델마다 늘리고(xhigh·max 가 그렇게 왔다), 우리가 흉내 낸 목록은 **새 등급이
       //  나올 때 멀쩡한 값을 막는다**. 문자열 그대로 넘기고 판정은 API 에 맡긴다.

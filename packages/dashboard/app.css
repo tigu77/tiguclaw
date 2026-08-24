@@ -551,6 +551,18 @@
       .dur-badge { color:var(--accent-2); font-size:10px; font-weight:800; font-family:ui-monospace,"SF Mono",Menlo,monospace; flex:none; margin-left:6px; }
       .dur-badge.slow { color:var(--warn); }
       .bg-step .dur-badge { margin-left:auto; }
+      /* 진행 중 도구 (2026-08-24) — 색으로 "아직 안 끝났다" 를 말한다. 끝나면 이 뱃지가
+         실제 실행시간 뱃지로 **교체**된다(둘이 같이 있지 않는다). */
+      .dur-badge.running { color:var(--info); }
+      @media (prefers-reduced-motion: no-preference) {
+        .dur-badge.running { animation:dur-pulse 1.6s ease-in-out infinite; }
+      }
+      @keyframes dur-pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+      /* 상대시간("3분 전") — 실행시간 **다음**에 온다. 얼마나 → 언제 순서.
+         `margin-left:auto` 는 실행시간 뱃지가 이미 쓰므로 여기선 고정 간격만. */
+      .bg-step-ago { color:var(--text-dim); font-size:10px; flex:none; margin-left:6px; }
+      /* 실행시간이 아직 없는 스텝(진행 중)은 상대시간이 오른쪽 끝을 맡는다. */
+      .bg-step:not(:has(> .dur-badge)) > .bg-step-ago { margin-left:auto; }
       /* 이력 도구 스텝(기능 B) — 새로고침 후 복원된 도구 사용 한 줄. */
       .hist-tool { display:flex; align-items:baseline; gap:7px; padding:2px 2px; font-size:11px; color:var(--text-mute); }
       .hist-tool-icon { font-size:12px; flex:none; }
@@ -903,6 +915,9 @@
       .model-pool { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
       .model-pool-label { color:var(--text-dim); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-right:2px; }
       .model-spec { font-size:11px; font-weight:700; font-family:ui-monospace,"SF Mono",Menlo,monospace; padding:2px 8px; border-radius:999px; background:rgba(255,255,255,.06); color:var(--text); border:1px solid var(--border); }
+      /* 프로파일이 덮은 추론 강도 (2026-08-24) — 칩 바로 옆. 덮었을 때만 나온다. */
+      .model-spec-reasoning { margin-left:4px; font-size:9px; font-weight:800; color:var(--accent-2);
+        background:rgba(167,139,250,.12); border:1px solid var(--accent-2); border-radius:999px; padding:1px 6px; }
       .model-spec.tier-low { background:rgba(148,163,184,.16); color:#cbd5e1; border-color:rgba(148,163,184,.4); }
       .model-spec.tier-mid { background:rgba(125,211,252,.16); color:#7dd3fc; border-color:rgba(125,211,252,.4); }
       .model-spec.tier-high { background:rgba(251,191,36,.16); color:#fbbf24; border-color:rgba(251,191,36,.4); }

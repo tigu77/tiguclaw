@@ -1,9 +1,39 @@
-      const KNOWN_TIERS = new Set(["low", "mid", "high", "nano", "default"]);
-      // 풀 원소(provider:model 또는 tier:high 등)에서 티어 힌트 색상 클래스 유추. 미지 = 무색 칩.
-      const specTierClass = (spec) => {
-        const s = String(spec || "").trim().toLowerCase();
-        const t = s.startsWith("tier:") ? s.slice(5) : s;
-        return KNOWN_TIERS.has(t) ? "tier-" + t : "";
+      /**
+       * 프로파일 배지 색 — `settings.json` 의 `models.profiles.<name>.color`(`#rrggbb`).
+       *
+       * ★손목록을 **없애려고** 만들었다 (2026-08-24 사용자 요청). 종전엔 색이 CSS 에
+       *  `[data-tier="low"|"mid"|"high"]` **세 이름만** 적혀 있어서, 사용자가 만든 프로파일
+       *  (`gpt-high` 등)은 전부 회색으로 떨어졌다([[feedback_hand_maintained_lists]]).
+       *  이제 색은 프로파일이 자기가 들고 오고, CSS 세 줄은 **미지정일 때의 기본값**으로만 남는다.
+       * ★형식 검증은 서버 경계(`isBadgeColor`)가 한다 — 여기선 한 번 더 확인만(값이 CSS 로
+       *  나가므로, 경계를 못 믿는 게 아니라 **주입 지점에서 한 번 더** 막는 게 싸다).
+       */
+      const HEX6 = /^#[0-9a-fA-F]{6}$/;
+      const profileColor = (prof) =>
+        prof && typeof prof.color === "string" && HEX6.test(prof.color.trim())
+          ? prof.color.trim().toLowerCase()
+          : "";
+      /** `#rrggbb` → `rgba(r,g,b,a)` — 배지 배경·테두리에 옅게 깔려고. */
+      const hexRgba = (hex, a) => {
+        const n = parseInt(hex.slice(1), 16);
+        return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+      };
+      /** 프로파일 색을 배지 엘리먼트에 입힌다(색이 없으면 아무것도 안 한다 = CSS 기본). */
+      const paintProfileBadge = (el, color) => {
+        if (!el || color === "") return;
+        el.style.color = color;
+        el.style.background = hexRgba(color, 0.16);
+        el.style.borderColor = hexRgba(color, 0.4);
+      };
+      /**
+       * 프로파일 **이름** → 색 — 잡·에이전트 티어 배지가 쓴다.
+       * 정의점은 서버가 준 목록(`modelProfilesCache`)이고, 여기선 조회만 한다 —
+       * 색 표를 화면 쪽에 또 만들면 그게 두 번째 손목록이 된다.
+       */
+      const profileColorByName = (name) => {
+        const list = (modelProfilesCache && modelProfilesCache.profiles) || [];
+        const hit = list.find((p) => p && p.name === name);
+        return profileColor(hit);
       };
       const renderModelProfiles = (data) => {
         modelProfilesCache = data;
@@ -28,6 +58,9 @@
           const name = document.createElement("span");
           name.className = "model-card-name";
           name.textContent = prof.name;
+          // ★프로파일이 색을 들고 왔으면 이름 자체를 그 색으로 — 잡 카드 티어 배지와 같은 색이
+          //  되어 "어느 프로파일로 돈 작업인가" 가 두 화면에서 같은 신호로 보인다.
+          { const c = profileColor(prof); if (c !== "") { name.style.color = c; card.style.borderLeft = "3px solid " + hexRgba(c, 0.55); } }
           head.appendChild(name);
           if (prof.isDefault) {
             const badge = document.createElement("span");
@@ -72,14 +105,21 @@
           plabel.className = "model-pool-label";
           plabel.textContent = "풀";
           pool.appendChild(plabel);
-          const specs = (prof.pool || []).map((s) => String(s).trim()).filter((s) => s !== "");
-          if (specs.length === 0) {
+          // ★풀 원소는 문자열 또는 `{spec, reasoning}` 이다 (2026-08-24). 서버가 정규화해
+          //  보내지만, 옛 배포본과 섞여도 안 깨지게 여기서도 둘 다 받는다(경계 관용).
+          const entries = (prof.pool || [])
+            .map((s) => (typeof s === "string" ? { spec: s.trim() } : {
+              spec: String((s && s.spec) || "").trim(),
+              reasoning: s && typeof s.reasoning === "string" ? s.reasoning : undefined,
+            }))
+            .filter((e) => e.spec !== "");
+          if (entries.length === 0) {
             const empty = document.createElement("span");
             empty.className = "model-pool-empty";
             empty.textContent = "(빈 풀 — 어댑터 디폴트로 강등)";
             pool.appendChild(empty);
           } else {
-            specs.forEach((spec, i) => {
+            entries.forEach((e, i) => {
               if (i > 0) {
                 const arrow = document.createElement("span");
                 arrow.className = "model-pool-arrow";
@@ -87,9 +127,21 @@
                 pool.appendChild(arrow);
               }
               const chip = document.createElement("span");
-              chip.className = "model-spec " + specTierClass(spec);
-              chip.textContent = spec;
+              chip.className = "model-spec";
+              chip.textContent = e.spec;
               pool.appendChild(chip);
+              // ★강도를 **덮은 것만** 칩 옆에 붙인다 (principle-check 가 조건으로 건 가시성).
+              //  층이 셋(풀 원소 > models.reasoning > 카탈로그)이라 어디서 온 값인지 안 보이면,
+              //  전역을 바꿔도 안 먹는 이유를 알 수 없다. 안 덮었으면 아무것도 안 그린다 —
+              //  카탈로그 기본을 여기서 지어내면 그게 거짓 정보다(우리는 그 값을 모른다).
+              if (e.reasoning !== undefined && e.reasoning !== "") {
+                const r = document.createElement("span");
+                r.className = "model-spec-reasoning";
+                r.textContent = "강도 " + e.reasoning;
+                r.title =
+                  "이 프로파일에서만 적용되는 추론 강도 — 전역 models.reasoning 보다 우선합니다.";
+                pool.appendChild(r);
+              }
             });
           }
           card.appendChild(pool);

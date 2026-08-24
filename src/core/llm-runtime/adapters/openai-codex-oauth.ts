@@ -1302,7 +1302,8 @@ export const runOpenAiCodex = async (
         //  없이. 실측(XL): 명시 low 로 바꾸니 출력 7,229 → 4,567(−37%).
         //  ★값이 없으면(미인증·조회 실패·옛 캐시·모르는 모델) **여전히 안 보낸다** —
         //   모르는 것에 추측값을 씌우는 것보다 종전 동작이 낫다.
-        const effort = resolveReasoningEffort("codex", model, input.cwd);
+        // ★프로파일 값이 우선(2026-08-24) — 세 어댑터 같은 순서: 풀 원소 > 전역 > 카탈로그.
+        const effort = input.reasoning ?? resolveReasoningEffort("codex", model, input.cwd);
         if (effort !== undefined) body.reasoning = { effort };
       }
 

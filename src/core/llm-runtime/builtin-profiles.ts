@@ -22,7 +22,7 @@
 import { providerAuthAvailable } from "./provider-availability.js";
 import { catalogTierModel } from "./model-catalog.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
-import { loadModelProfiles } from "../settings.js";
+import { loadModelProfiles, type ModelProfile } from "../settings.js";
 
 /** 빌트인이 아는 세 등급. 사용자 프로파일 이름은 자유지만 빌트인은 이 셋뿐이다. */
 export const BUILTIN_TIERS = ["high", "mid", "low"] as const;
@@ -109,8 +109,8 @@ export const builtinTierPool = (tier: string, cwd?: string): string[] => {
  */
 export const builtinModelProfiles = (
   cwd?: string,
-): Record<string, { description: string; pool: string[] }> => {
-  const out: Record<string, { description: string; pool: string[] }> = {};
+): Record<string, ModelProfile> => {
+  const out: Record<string, ModelProfile> = {};
   for (const tier of BUILTIN_TIERS) {
     const pool = builtinTierPool(tier, cwd);
     if (pool.length === 0) continue;
@@ -119,7 +119,8 @@ export const builtinModelProfiles = (
         tier === BUILTIN_DEFAULT_TIER
           ? "빌트인 기본 — 메인 턴 · 인증된 provider 로 자동 조립"
           : `빌트인 — ${tier === "mid" ? "일반" : "단순·대량"} 작업`,
-      pool,
+      // 빌트인은 강도를 안 정한다 — 카탈로그 기본이 곧 벤더 설계값이다(오버라이드 0).
+      pool: pool.map((spec) => ({ spec })),
     };
   }
   return out;
@@ -153,7 +154,7 @@ export const builtinTierFor = (name: string): BuiltinTier =>
 export const resolveModelProfiles = (
   cwd?: string,
 ): {
-  profiles: Record<string, { description?: string; pool: string[]; fallback?: string }>;
+  profiles: Record<string, ModelProfile>;
   builtin: boolean;
 } => {
   const user = loadModelProfiles(cwd);

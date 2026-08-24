@@ -99,15 +99,15 @@ const buildSeedProfiles = (a: Answers): Record<string, ModelProfile> => ({
   //  "첫 프로파일" 폴백이 여기로 떨어진다(기본이 조용히 low 로 내려가지 않게).
   high: {
     description: "기본 — 메인 턴 · 설계·분석 등 고난도 작업",
-    pool: toPool(a.tierHigh),
+    pool: toPool(a.tierHigh).map((spec) => ({ spec })),
   },
   mid: {
     description: "일반 작업",
-    pool: toPool(a.tierMid),
+    pool: toPool(a.tierMid).map((spec) => ({ spec })),
   },
   low: {
     description: "단순·대량 작업",
-    pool: toPool(a.tierLow),
+    pool: toPool(a.tierLow).map((spec) => ({ spec })),
   },
 });
 

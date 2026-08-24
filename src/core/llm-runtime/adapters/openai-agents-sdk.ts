@@ -632,11 +632,10 @@ export const runOpenAi = async (
   //  걸린다 — "설정을 적었는데 어댑터를 바꾸니 무시된다" 는 원칙 #2(모든 기능 LLM 무관)
   //  위반이다. 그때 세 번째 어댑터엔 같은 질문을 안 했다(손으로 어댑터를 열거한 대가).
   //  카탈로그엔 openai 기본값이 없으므로 자연히 "덮어쓰기가 있을 때만" 이 된다.
-  const reasoningEffort = resolveReasoningEffort(
-    input.provider ?? "openai",
-    input.model ?? "",
-    input.cwd,
-  );
+  // ★프로파일 값이 우선(2026-08-24) — 세 어댑터 같은 순서: 풀 원소 > 전역 > 카탈로그.
+  const reasoningEffort =
+    input.reasoning ??
+    resolveReasoningEffort(input.provider ?? "openai", input.model ?? "", input.cwd);
   const agent = new Agent({
     name: "tiguclaw-spike",
     instructions,

@@ -64,6 +64,7 @@ import {
   getDefaultProfileName,
   loadModelProviders,
   loadModelInputLimits,
+  type PoolEntry,
 } from "../settings.js";
 
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
@@ -142,6 +143,12 @@ export interface ModelSpec {
    * 어댑터는 이 값으로 provider-registry self-lookup → baseURL/apiKey 해석.
    */
   provider?: string;
+  /**
+   * 신규(additive, 2026-08-24) — **이 풀 원소에만** 적용할 추론 강도. 프로파일이 정한 값이
+   * 여기 실려 어댑터까지 간다. 미지정 = 어댑터가 `resolveReasoningEffort`(전역 → 카탈로그)로
+   * 내려간다 = 종전 동작(회귀 0). 유효값 검증은 하지 않는다 — 판정은 API 가 한다.
+   */
+  reasoning?: string;
 }
 
 // provider id → 어댑터(런타임). 다대일 허용 (openai 어댑터 ← openai/ollama/google).
@@ -224,6 +231,26 @@ export const parseModelSpec = (raw: string, cwd?: string): ModelSpec | null => {
 
 // export (2026-06-02) — `/model` 슬래시(daemon)·router 가 콤마 풀 파싱에 사용.
 // 무효 part 는 drop (로직 무변경). 빈/전부무효 → []. cwd = 프로젝트 스코프 user provider 해석용.
+/**
+ * 풀 원소(`{spec, reasoning?}`) 배열 → ModelSpec 배열 (2026-08-24).
+ *
+ * ★종전엔 `pool.join(",")` 으로 **콤마 문자열을 만들어 다시 파싱**했다. 파싱해 둔 것을
+ *  문자열로 되돌려 또 파싱하는 자리였고, 원소가 객체가 되는 순간 `[object Object]` 가 된다.
+ *  즉 이 기능이 그 왕복을 강제로 걷어내게 했다 — 강도는 문자열을 통과할 수 없다.
+ */
+export const poolToSpecs = (
+  pool: readonly PoolEntry[],
+  cwd?: string,
+): ModelSpec[] => {
+  const out: ModelSpec[] = [];
+  for (const e of pool) {
+    const spec = parseModelSpec(e.spec, cwd);
+    if (spec === null) continue; // 무효 원소는 drop(종전 parseModelSpecList 동작 그대로).
+    out.push(e.reasoning === undefined ? spec : { ...spec, reasoning: e.reasoning });
+  }
+  return out;
+};
+
 export const parseModelSpecList = (raw: string, cwd?: string): ModelSpec[] => {
   const out: ModelSpec[] = [];
   for (const part of raw.split(",")) {
@@ -244,7 +271,7 @@ export const resolveModelSpecs = (
   //  기본 풀은 체인의 자기 pool(chain[0])만 사용(메인 턴은 인터-프로파일 폴백 없이 풀 내 폴백만).
   const defaultChain = resolveProfileChain(getDefaultProfileName(cwd), cwd);
   if (defaultChain.length > 0) {
-    const pool = parseModelSpecList(defaultChain[0].join(","), cwd);
+    const pool = poolToSpecs(defaultChain[0], cwd);
     if (pool.length > 0) return pool;
   }
   const env = process.env.REGION_A_MODELS;
@@ -303,7 +330,7 @@ export const resolveTier = (
   //  프로파일 이름은 대소문자 구분(settings 키 그대로) — 티어 소문자화보다 앞에서 원문으로 조회.
   const profileChain = resolveProfileChain(raw, cwd);
   if (profileChain.length > 0) {
-    return parseModelSpecList(profileChain[0].join(","));
+    return poolToSpecs(profileChain[0], cwd);
   }
   // 등급 키워드 → MODEL_TIER_* 콤마 풀 (레거시 폴백).
   const s = raw.toLowerCase();
@@ -343,7 +370,7 @@ export const resolveModelChain = (
   const profileChain = resolveProfileChain(raw, cwd);
   if (profileChain.length > 0) {
     return profileChain
-      .map((pool) => parseModelSpecList(pool.join(",")))
+      .map((pool) => poolToSpecs(pool, cwd))
       .filter((pool) => pool.length > 0); // 빈/전부무효 풀은 체인에서 제거(다음 풀로 흐름).
   }
   // 프로파일 아님 — 레거시 티어/직접 spec 단일 풀. (resolveTier 가 프로파일 재조회하나 무음.)
@@ -1159,6 +1186,8 @@ const runPool = async (
         ...input,
         model: spec.model === "" ? undefined : spec.model,
         provider: spec.provider,
+        // 프로파일이 정한 강도(있으면) — 어댑터가 전역·카탈로그보다 우선한다.
+        ...(spec.reasoning !== undefined ? { reasoning: spec.reasoning } : {}),
       });
       // turn_done — 성공 종료 1회 (parity: 세 어댑터 동일 지점). persist 전에 발행해
       // persist 예외와 무관하게 효율 지표가 남게(persist 는 자체 try/catch 라 throw 0이나

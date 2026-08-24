@@ -26,6 +26,11 @@ import type {
   MessageHandler,
 } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
+import {
+  isAllowedHost,
+  parseAllowedHosts,
+  rebindRejectionMessage,
+} from "../../src/core/net/host-guard.js";
 import { listOutboundChannels } from "../../src/core/channel-outbound.js";
 import {
   registerExternalTurn,
@@ -794,6 +799,8 @@ class HttpBridge implements Channel, Observer {
   // 접근이 필요하면 명시적으로 HTTP_BRIDGE_HOST=0.0.0.0 (토큰 인증은 항상 적용되나
   // 노출면이 늘어나므로 의도적으로만).
   private readonly host: string;
+  /** DNS 리바인딩 방어 — 루프백 외에 받아줄 Host 이름(부팅 1회 파싱). */
+  private readonly allowedHosts: ReadonlySet<string>;
 
   constructor() {
     const envToken = process.env.HTTP_BRIDGE_TOKEN;
@@ -808,6 +815,7 @@ class HttpBridge implements Channel, Observer {
     }
     this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
     this.host = process.env.HTTP_BRIDGE_HOST?.trim() || "127.0.0.1";
+    this.allowedHosts = parseAllowedHosts(process.env.HTTP_BRIDGE_ALLOWED_HOSTS);
   }
 
   private resolveToken(
@@ -898,6 +906,20 @@ class HttpBridge implements Channel, Observer {
     const url = new URL(req.url ?? "/", `http://localhost:${this.port}`);
     const pathname = url.pathname;
     const method = req.method ?? "GET";
+
+    // ★DNS 리바인딩 방어 (2026-08-24) — **인증보다 먼저**, `/health` 보다도 먼저.
+    //  브리지는 토큰 인증이 있어 대시보드보다 노출이 작지만, `/health` 는 무인증이고
+    //  거기서 진행 중 턴·구독자 수가 나간다. 판정은 대시보드와 **같은 함수**를 쓴다 —
+    //  두 서버가 각자 판정하면 한쪽이 늙는다.
+    if (!isAllowedHost(req.headers.host, this.allowedHosts)) {
+      console.warn(
+        `[http-bridge] Host 차단: '${String(req.headers.host ?? "")}' ${method} ${pathname} — DNS 리바인딩 방어`,
+      );
+      writeJson(res, 403, {
+        error: rebindRejectionMessage(req.headers.host, "HTTP_BRIDGE_ALLOWED_HOSTS"),
+      });
+      return;
+    }
 
     // /health — 인증 무.
     if (pathname === "/health" && method === "GET") {
@@ -1801,6 +1823,7 @@ class HttpBridge implements Channel, Observer {
             ...(p.description !== undefined ? { description: p.description } : {}),
             pool: p.pool,
             ...(p.fallback !== undefined ? { fallback: p.fallback } : {}),
+            ...(p.color !== undefined ? { color: p.color } : {}),
           };
         });
         writeJson(res, 200, {

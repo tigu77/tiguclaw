@@ -34,6 +34,7 @@ import {
   setModelReasoning,
 } from "../../settings.js";
 import { catalogModelKeys, resolveReasoningEffort } from "../model-catalog.js";
+import { setProfilePoolReasoning } from "../../settings.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const errText = (text: string) => ({
@@ -54,8 +55,8 @@ export const knownModelKeys = (cwd: string = process.cwd()): string[] => {
   for (const k of catalogModelKeys()) keys.add(k);
   try {
     for (const p of Object.values(loadModelProfiles(cwd))) {
-      for (const spec of p.pool) {
-        const s = spec.trim();
+      for (const entry of p.pool) {
+        const s = entry.spec.trim();
         if (s.includes(":")) keys.add(s);
       }
     }
@@ -104,6 +105,8 @@ export const resolveModelKey = (input: string, keys: string[]): KeyResolution =>
 export const applyModelReasoning = (args: {
   model: string;
   effort?: string;
+  /** 지정하면 **그 프로파일의 풀 원소**에만 쓴다(전역 `models.reasoning` 아님). */
+  profile?: string;
   cwd?: string;
 }): { ok: boolean; text: string } => {
   const cwd = args.cwd ?? process.cwd();
@@ -139,6 +142,41 @@ export const applyModelReasoning = (args: {
   const before = resolveReasoningEffort(provider, model, cwd);
   const raw = args.effort?.trim() ?? "";
   const want = raw === "" ? undefined : raw;
+
+  // ★프로파일을 지정했으면 **거기에만** 쓴다 (2026-08-24). 이 갈래가 없으면 "high 의
+  //  opus 를 중간으로" 가 전역을 고쳐 **다른 프로파일까지 같이 바뀐다** — 사용자는
+  //  한 곳만 바꿨다고 믿는다.
+  const profileName = args.profile?.trim() ?? "";
+  if (profileName !== "") {
+    const wrote = setProfilePoolReasoning(profileName, key, want);
+    if (!wrote) {
+      const names = Object.keys(loadModelProfiles(cwd));
+      return {
+        ok: false,
+        text:
+          `프로파일 '${profileName}' 의 풀에서 '${key}' 를 못 찾았습니다 — 아무것도 쓰지 않았습니다.\n` +
+          (names.length === 0
+            ? "정의된 프로파일이 없습니다(빌트인 조립으로 도는 중 — 먼저 settings.json 에 프로파일을 만드세요)."
+            : `있는 프로파일: ${names.join(", ")}`),
+      };
+    }
+    const global = loadModelReasoning(cwd).get(key);
+    return {
+      ok: true,
+      text: [
+        want === undefined
+          ? `프로파일 \`${profileName}\` 의 ${key} 강도 **해제** — 이제 전역·카탈로그를 따릅니다.`
+          : `프로파일 \`${profileName}\` 의 ${key} 강도 **${want}**.`,
+        "다음 턴부터 반영됩니다(재시작 불요).",
+        // ★어느 층이 이기는지 말한다. 층이 셋이라(풀 > 전역 > 카탈로그) 안 말하면
+        //  사용자가 전역을 바꿔놓고 "왜 안 먹지" 를 겪는다.
+        ...(want !== undefined && global !== undefined && global !== want
+          ? [`ℹ️ 전역 \`models.reasoning\` 에도 '${global}' 이 있지만, **이 프로파일에선 ${want} 가 이깁니다**(좁은 것이 우선).`]
+          : []),
+      ].join("\n"),
+    };
+  }
+
   setModelReasoning(key, want);
   const after = resolveReasoningEffort(provider, model, cwd);
 
@@ -209,12 +247,22 @@ export const createModelSettingsMcpServer = (
             .string()
             .optional()
             .describe("강도 문자열. 비우거나 생략하면 **해제**(기본값 복귀)"),
+          profile: z
+            .string()
+            .optional()
+            .describe(
+              "모델 프로파일 이름(high·mid·low 등). 주면 **그 프로파일에서만** 바뀝니다" +
+                "(models.profiles.<name>.pool 원소). 생략하면 전역(models.reasoning) — " +
+                "그 모델을 쓰는 **모든** 프로파일이 함께 바뀝니다. " +
+                "사용자가 '프로파일 X 의 Y 를' 이라고 하면 반드시 이걸 주세요.",
+            ),
         },
         async (args) => {
           try {
             const r = applyModelReasoning({
               model: args.model,
               ...(args.effort !== undefined ? { effort: args.effort } : {}),
+              ...(args.profile !== undefined ? { profile: args.profile } : {}),
               cwd,
             });
             return r.ok ? okText(r.text) : errText(r.text);

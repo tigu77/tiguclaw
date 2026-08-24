@@ -47,6 +47,11 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  isAllowedHost,
+  parseAllowedHosts,
+  rebindRejectionMessage,
+} from "../../src/core/net/host-guard.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,6 +79,9 @@ const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "7010", 10);
 // 와일드카드(::)로 바인딩하면 tailscaled 가 잡은 tailnet-IP:<port> 와 EADDRINUSE 충돌 →
 // 대시보드가 못 떠 tailscale 프록시가 502 를 낸다. LAN 직접노출 필요 시 env 로 override.
 const DASHBOARD_HOST = process.env.DASHBOARD_HOST ?? "127.0.0.1";
+// DNS 리바인딩 방어 — 루프백은 항상 허용, 그 외는 여기에 적은 이름만(원격 접속용).
+// 부팅 시 1회 파싱(요청마다 env 를 다시 읽을 이유가 없다 — 값이 바뀌면 재시작이 맞다).
+const ALLOWED_HOSTS = parseAllowedHosts(process.env.DASHBOARD_ALLOWED_HOSTS);
 
 if (BRIDGE_TOKEN === undefined || BRIDGE_TOKEN.trim().length === 0) {
   console.error(
@@ -204,6 +212,18 @@ const server = http.createServer((req, res) => {
     );
     const pathname = url.pathname;
     const method = req.method ?? "GET";
+
+    // ★DNS 리바인딩 방어 (2026-08-24) — **CSRF 가드보다 먼저**. 아래 same-origin 검사는
+    //  리바인딩을 못 막는다(브라우저가 same-origin 이라고 믿는다). 다른 축이라 둘 다 있어야
+    //  하고, 이게 먼저 서야 GET(읽기)도 덮인다 — 아래 가드는 쓰기 메서드만 본다.
+    if (!isAllowedHost(req.headers.host, ALLOWED_HOSTS)) {
+      console.warn(
+        `[dashboard] Host 차단: '${String(req.headers.host ?? "")}' ${method} ${pathname} — DNS 리바인딩 방어`,
+      );
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: rebindRejectionMessage(req.headers.host, "DASHBOARD_ALLOWED_HOSTS") }));
+      return;
+    }
 
     // ★CSRF 가드 (2026-08-02, 실증으로 확인된 결함) ─────────────────────────────
     //  이 프록시는 `/api/*` 요청에 **브리지 토큰을 서버 쪽에서 붙여** 대신 보낸다.

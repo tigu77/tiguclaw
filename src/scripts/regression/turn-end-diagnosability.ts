@@ -170,11 +170,13 @@ export const check: RegressionCheck = {
       ),
     );
     // ★추론 강도 전달도 같은 부류 — env 블록으로 감싸면 기능이 조용히 꺼진다(적대 검토 ③).
+    //  ★2026-08-24: 앞에 `input.reasoning ??` 가 붙었다(프로파일 풀 원소 > 전역 > 카탈로그).
+    //   패턴을 그에 맞추되 **의도는 그대로** — env 뒤로 숨지 않는지를 본다.
     out.push(
       assert(
         "★추론 강도 전달이 env 게이트 뒤로 숨지 않는다",
-        /\} else \{\n(?:.*\n)*?\s*const effort = resolveReasoningEffort\("codex", model, input\.cwd\);/.test(codexSrc) &&
-          !/process\.env\.[A-Z_]+[^\n]*\n\s*const effort = resolveReasoningEffort/.test(codexSrc),
+        /\} else \{\n(?:.*\n)*?\s*const effort = input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\);/.test(codexSrc) &&
+          !/process\.env\.[A-Z_]+[^\n]*\n\s*const effort = /.test(codexSrc),
         "미게이트 확인",
       ),
     );

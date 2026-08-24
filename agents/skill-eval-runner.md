@@ -1,6 +1,6 @@
 ---
 name: skill-eval-runner
-description: 스킬 eval 용 실행 러너 — 테스트 프롬프트 1건을 통제 조건에서 완료하고 원본 결과를 반환한다. skill-forge 스킬이 baseline vs 후보 대조 실행에 사용.
+description: 스킬 eval 용 실행 러너 — 테스트 프롬프트 1건을 통제 조건에서 완료하고 원본 결과를 반환한다. skill-creator 스킬이 baseline vs 후보 대조 실행에 사용.
 model: mid
 ---
 

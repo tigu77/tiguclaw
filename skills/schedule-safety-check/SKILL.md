@@ -116,7 +116,7 @@ sysprompt 의 보안 책임 ("사용자의 텍스트 응답이 명확한 동의�
 
 승인 응답 받은 직후의 흐름:
 1. trigger 종류에 따라:
-   - schedule: `mcp__scheduler__add_schedule({label, cron_expr, trigger_type, prompt, dest_channel, dest_target, ...})` 호출
+   - schedule: `add_schedule({label, cron_expr, trigger_type, prompt, dest_channel, dest_target, ...})` 호출
    - file-watch: `mcp__file-watch__add_watch({label, path, pattern, recursive, debounce_ms, event_filter, prompt, dest_channel, dest_target})` 호출
 2. 응답의 `id` (+ schedule 이면 `next_run`, file-watch 면 `path`) 사용자에게 1줄 보고 ("schedule #5 등록 완료, 다음 발화 2026-05-17 08:00" / "file-watch #3 등록 완료, 감시 경로 /abs/path/to/docs")
 3. 끝 — 추가 확인 0
@@ -128,7 +128,9 @@ sysprompt 의 보안 책임 ("사용자의 텍스트 응답이 명확한 동의�
 - 단, layer C (danger) 만큼은 1줄 경고 ("이 {schedule|watch} 는 위험 카테고리 {X} 입니다. 그대로 진행합니다") 후 호출 — 묵묵히 박지 않는다.
 - 다음 등록 요청에는 본 스킬 다시 적용 (1회 한정 = 영구 옵트아웃 아님).
 
-사용자가 *영구 옵트아웃* ("앞으로 trigger 등록 시 묻지 마") 을 요청하면 — 본 스킬 본문이 아니라 `add_memory({type:"feedback", name:"feedback_schedule_no_confirm", ...})` 로 기록 후 다음 요청부터 본 스킬 자체를 skip. 메모리 인덱스에 본 feedback 항목이 보이면 비서가 본 스킬 호출 단계를 자율 건너뛴다.
+사용자가 *영구 옵트아웃* ("앞으로 trigger 등록 시 묻지 마") 을 요청하면 — **`<home>/AGENT.md` 에 한 줄로 적는다**("trigger 등록 시 확인을 묻지 않는다 — 사용자 지시 YYYY-MM-DD"). 그 파일은 **전문이 매 턴 실리고 색인 캡이 없다**(헌법 §5). 다음 요청부터 본 스킬 호출 단계를 건너뛴다.
+
+★**메모리에 두지 마라.** 종전엔 `add_memory({type:"feedback"})` 로 적고 "인덱스에 보이면 스킵" 이라고 했는데, 헌법이 정확히 그걸 금한다 — *"인덱스엔 상한이 있어 오래된 건 접히니 **규범은 여기 두지 마라**"*. 메모리 인덱스는 캡(`MEMORY_INDEX_CAP_BYTES`)에서 **읽힘 순으로 잘리므로**, 한 번 적고 다시 안 읽는 옵트아웃이 **가장 먼저 접힌다**. 그러면 사용자가 "묻지 마" 라고 한 것이 **조용히 되살아나** 다시 묻기 시작한다 — 사용자는 왜인지 모른다. (2026-08-24 지침 검토)
 
 ## §6. 본 스킬 사용 절차 (요약)
 

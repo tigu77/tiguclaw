@@ -58,7 +58,7 @@ spawn_agent({
 })
 ```
 
-## 3. 집계 규칙 (메인 턴이 직접)
+## 3. 집계 규칙 (매니저가 — 메인 턴이면 먼저 `run_in_background` 로 넘긴다)
 
 - 발견별로 회의론자 표 수집. 사망/에러 서브는 표에서 제외(§E degradation).
 - **과반 refuted:true → 발견 폐기.** (예: 2명 중 2 또는 3명 중 2 → 폐기)
@@ -83,7 +83,7 @@ spawn_agent({
 ```
 
 - rank: 심각도 순(correctness·데이터손실·회귀 > 개선 > 테스트공백). 렌더는 §C 리스트/표.
-- solo 리뷰는 이 스키마의 verdict/refuted_votes 를 생략(메인 직접 확신).
+- solo 리뷰는 이 스키마의 verdict/refuted_votes 를 생략(단건이라 팬아웃 없음 — 확신만 싣는다).
 
 ## 5. effort 폭 파라미터 요약
 

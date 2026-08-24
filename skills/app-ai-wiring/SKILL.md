@@ -35,7 +35,7 @@ description: "앱(웹·서버·스크립트 등)에 AI/LLM 을 연결할 때 사
 템플릿)를 http-bridge 가 **매 요청 발견**해 서빙한다. 임의 코드 0 = 데이터만, **재시작 불요**.
 
 ### 배선
-1. `registerEndpoint` 도구로 등록(`listEndpoints`/`deleteEndpoint` 로 조회·삭제).
+1. `register_endpoint` 도구로 등록(`list_endpoints`/`delete_endpoint` 로 조회·삭제).
    - `path` — 라우트(예 `/weather`). 슬래시 시작·소문자 정규화.
    - `method` — `GET`|`POST`(기본 POST).
    - `role` — 인증 게이트(기본 `write`). 앱은 **bridge 토큰**으로 호출.

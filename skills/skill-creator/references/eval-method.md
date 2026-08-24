@@ -62,7 +62,7 @@ grader 산출물들을 run 레코드 배열로 모은다:
 }
 ```
 - `time_ms`/`tokens` 는 알면 넣고 모르면 생략(집계가 "—" 처리). `pass` 는 grader 의 전건통과 여부.
-- config 이름은 자유 — 어댑터 비교 시 `claude`/`codex`/`gemini`.
+- config 이름은 자유 — 어댑터 비교 시 `claude`/`codex`/`openai`.
 
 ## 5. 집계 실행
 
@@ -84,4 +84,4 @@ node <skill-creator>/scripts/aggregate.mjs results.json --baseline baseline --ca
 
 ## 7. 어댑터 비교 (LLM-agnostic, 옵션)
 
-같은 candidate 스킬을 어댑터별로: config=`claude`/`codex`/`gemini`. spawn_agent 는 호출별 model 오버라이드가 없고 model 은 **에이전트 정의**에서 오므로, 어댑터별 **러너 변형 에이전트**를 둔다 — `<home>/agents/skill-eval-runner-<provider>.md` 에 `skill-eval-runner` 와 동일 본문 + `model: "<provider>:<model>"` 핀. 각 config 는 그 변형으로 `spawn_agent` 한다. 집계는 `--baseline claude --candidate codex` 식으로 두 어댑터 delta. skill-creator[CC] 가 못 하는 티구클로 고유 기능.
+같은 candidate 스킬을 어댑터별로: config=`claude`/`codex`/`openai`. spawn_agent 는 호출별 model 오버라이드가 없고 model 은 **에이전트 정의**에서 오므로, 어댑터별 **러너 변형 에이전트**를 둔다 — `<home>/agents/skill-eval-runner-<provider>.md` 에 `skill-eval-runner` 와 동일 본문 + `model: "<provider>:<model>"` 핀. 각 config 는 그 변형으로 `spawn_agent` 한다. 집계는 `--baseline claude --candidate codex` 식으로 두 어댑터 delta. skill-creator[CC] 가 못 하는 티구클로 고유 기능.

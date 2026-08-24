@@ -28,7 +28,9 @@ description: "티구클로 스킬을 제대로 만들고 고치는 메타 스킬
 
 ## 2. 초안 작성
 `references/skill-format.md` 규격대로 `SKILL.md` 를 `Write`:
-- **위치**: 프로젝트 전용 `<project>/.tiguclaw/skills/<name>/`, 공통 `<home>/skills/<name>/`, 빌트인 레포 `skills/`. (매 턴 라이브 발견 → 재시작 불요.)
+- **위치**: 프로젝트 전용 `<project>/.tiguclaw/skills/<name>/`, 공통 `<home>/skills/<name>/`, 빌트인 레포 `skills/` — ★이건 **앱 소스**다. 헌법 §1 의
+  고지·확인 절차를 거쳐야 한다(미커밋 변경이 남아 **`/update` 가 막힌다** — 설치는
+  `git clone` 이고 자가 업데이트는 `git pull --ff-only` 다). 그냥 세 번째 선택지처럼 쓰지 마라.. (매 턴 라이브 발견 → 재시작 불요.)
 - **description**: 트리거 문구를 **적극적으로(pushy)** — "~할 때/~요청 시" 를 사용자 표현으로 여러 개. 구현 아니라 발동 조건. 길이 예산 의식(매 턴 인덱스에 prepend).
 - **본문**: 명령형 절차. 상세는 `references/` 로 분리(본문 슬림).
 
@@ -48,7 +50,7 @@ description: "티구클로 스킬을 제대로 만들고 고치는 메타 스킬
 - 스킬이 중요/논쟁적이라 "정말 값을 더하나"를 데이터로 봐야 할 때
 - 개선을 반복 중인데 어느 버전이 나은지 애매할 때
 - **self-growth 가 "이 개선이 나아졌다"고 주장** → 그 주장을 통제 실험으로 확인할 때
-- 같은 스킬의 **어댑터별 성능**(claude/codex/gemini)을 비교하고 싶을 때 (CC 는 claude 전용이라 못 함)
+- 같은 스킬의 **어댑터별 성능**(claude/codex/claude·codex·openai)을 비교하고 싶을 때 (CC 는 claude 전용이라 못 함)
 
 **절차** (상세·형식·지표 = `references/eval-method.md`):
 1. **테스트셋**: `{id, prompt, assertions}` 2~3개. 스킬이 있을 때만 통과할 assertion(변별력). 실패 유도 1개.

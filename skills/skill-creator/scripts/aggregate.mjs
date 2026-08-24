@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// skill-forge eval 집계 — grader 결과 배치를 config 별로 묶어 정량 지표 + delta 산출.
+// skill-creator eval 집계 — grader 결과 배치를 config 별로 묶어 정량 지표 + delta 산출.
 // provider 중립(어댑터 특수분기 0). 라이브러리 위임 불가한 순수 계산만 직접 구현.
 //
 // 사용법:
@@ -14,7 +14,7 @@
 //       "time_ms": 12000, "tokens": 4500 }, ...
 //   ]
 // }
-// config 는 "baseline"/"candidate" 대조든 "claude"/"codex"/"gemini" 어댑터 비교든 자유.
+// config 는 "baseline"/"candidate" 대조든 "claude"/"codex"/"openai" 어댑터 비교든 자유.
 
 import { readFileSync } from "node:fs";
 

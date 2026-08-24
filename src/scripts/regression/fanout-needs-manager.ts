@@ -52,7 +52,7 @@ export const check: RegressionCheck = {
     );
     const soft = softIdx === -1 ? "" : lines[softIdx]!;
 
-    return [
+    const out: Assertion[] = [
       assert(
         "★팬아웃 판정이 헌법에 있다(서브에이전트 2명 이상 → 매니저)",
         ruleIdx !== -1,
@@ -96,5 +96,53 @@ export const check: RegressionCheck = {
         `산문 '워커' ${sys.replace(/`[^`]*`/g, "").split("워커").length - 1}건`,
       ),
     ];
+
+    // ── ★배포 스킬도 이 규칙을 지킨다 (2026-08-24 지침 검토) ─────────────────────
+    //  이 검사는 `SYSTEM.md` **한 파일만** 읽고 있었다. 그래서 `skills/code-review` 가
+    //  "오케스트레이션은 **메인 턴이 직접** 수행한다"(= 전경 팬아웃)를 시키고 있어도
+    //  초록이었다 — 그 스킬은 규칙이 태어난 사고(2026-08-08, 전경 10명 팬아웃으로 대화가
+    //  8분 37초 멈춘 것) **이전**에 쓰였고, 규칙이 생긴 뒤 아무도 대조하지 않았다.
+    //  ★헌법이 금지한 것을 **배포되는 글이 시키면** 사용자는 그 글을 따른다.
+    //   규칙이 사는 파일만 지키는 게이트는 규칙을 지키는 게 아니다.
+    const { readdir } = await import("node:fs/promises");
+    const offenders: string[] = [];
+    for (const root of ["../../../skills", "../../../agents"]) {
+      let entries: string[] = [];
+      try {
+        entries = (await readdir(new URL(root, import.meta.url), {
+          recursive: true,
+        })) as string[];
+      } catch {
+        continue; // 없으면 대상 아님(배포 레포 차이).
+      }
+      for (const rel of entries) {
+        if (!rel.endsWith(".md")) continue;
+        let body = "";
+        try {
+          body = await readFile(new URL(`${root}/${rel}`, import.meta.url), "utf8");
+        } catch {
+          continue;
+        }
+        for (const line of body.split("\n")) {
+          if (!/메인\s*(턴)?\s*이\s*직접/.test(line)) continue;
+          if (!/팬아웃|spawn|서브에이전트/.test(line)) continue;
+          // 금지를 **설명**하는 줄은 제외(과거형·전환 문구).
+          // solo(팬아웃 0)는 규칙 대상이 아니고, 과거형·전환 서술은 지시가 아니다.
+          if (/팬아웃\s*0|solo/i.test(line)) continue;
+          if (/였|종전|금지|넘긴|넘겨|안 된다|매니저/.test(line)) continue;
+          offenders.push(`${root.split("/").pop()}/${rel}`);
+        }
+      }
+    }
+    out.push(
+      assert(
+        "★배포 스킬·에이전트가 전경 팬아웃을 시키지 않는다(헌법과 반대로 말하지 않는다)",
+        offenders.length === 0,
+        offenders.length === 0
+          ? "skills/·agents/ 전수 — 위반 0"
+          : `★${[...new Set(offenders)].join(" / ")}`,
+      ),
+    );
+    return out;
   },
 };

@@ -1,6 +1,6 @@
 ---
 name: skill-eval-grader
-description: 스킬 eval 용 채점자 — 러너 결과를 assertion 리스트로 채점하고 엄격한 JSON 판정을 반환한다. 채점과 동시에 assertion 품질(변별력) 자체도 비평한다. skill-forge 스킬이 사용.
+description: 스킬 eval 용 채점자 — 러너 결과를 assertion 리스트로 채점하고 엄격한 JSON 판정을 반환한다. 채점과 동시에 assertion 품질(변별력) 자체도 비평한다. skill-creator 스킬이 사용.
 model: high
 ---
 

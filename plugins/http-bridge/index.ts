@@ -31,7 +31,7 @@ import {
   registerExternalTurn,
   unregisterExternalTurn,
 } from "../../src/core/inflight-turns.js";
-import { getPaths } from "../../src/core/paths.js";
+import { getPaths, appRoot } from "../../src/core/paths.js";
 import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
@@ -113,6 +113,7 @@ import {
   cancelJob,
   isCancelledTurnResult,
   isSteeredTurnResult,
+  getJobActivity,
 } from "../../src/core/worker-jobs.js";
 import {
   listShells,
@@ -1307,6 +1308,8 @@ class HttpBridge implements Channel, Observer {
         ? "read"
         : pathname === "/inventory" && method === "GET"
           ? "read"
+          : pathname === "/changelog" && method === "GET"
+            ? "read"
           : pathname === "/inventory-item" && method === "GET"
           ? "read"
           : pathname === "/context-menu-items" && method === "GET"
@@ -1517,6 +1520,26 @@ class HttpBridge implements Channel, Observer {
     // 임의 경로(예: /etc/passwd)는 집합 불일치로 자연 차단(403). in-process:/builtin:/schedule:
     // 등 비파일 source 는 절대경로가 아니라 집합에 애초에 안 들어감 → 403. 파일 부재 404.
     // read 게이트(위 role 표, /inventory·/projects/detail 과 동일 role).
+    // 변경 이력 — 앱과 함께 배포되는 `CHANGELOG.md` 원문을 그대로 준다 (2026-08-24 사용자
+    // 요청: "릴리즈 노트를 대시보드에서 확인"). 설정 뷰가 마크다운으로 렌더한다.
+    // ★섹션 파싱을 **안 한다** — 전문을 보여주는 게 요청이라 자를 이유가 없고, 자르면
+    //  그 판정이 회귀(`release-notes-extractable`)와 두 벌이 된다. 안 만드는 게 제일 싸다.
+    // ★`appRoot()` 기준 — 홈이 아니라 **앱 아티팩트**다(헌법 SYSTEM.md 와 같은 분류).
+    if (pathname === "/changelog" && method === "GET") {
+      // ★경로는 **하나**다 — `appRoot()/CHANGELOG.md`(헌법 SYSTEM.md 와 같은 분류).
+      //  개발 레포엔 루트에 그 파일이 없지만(오버레이가 정본), 그 차이는 **빌드 스크립트**
+      //  (`bin/copy-dist-assets.mjs`)가 흡수한다 — 제품 코드에 dev 사정을 넣지 않는다.
+      let md = "";
+      try {
+        md = await fs.readFile(path.join(appRoot(), "CHANGELOG.md"), "utf8");
+      } catch {
+        /* 없으면 빈 값 — 화면이 "찾지 못했습니다" 를 띄운다 */
+      }
+      // 없으면 빈 값으로 정직하게 — 화면이 "찾지 못했습니다" 를 띄운다(빈 화면 금지).
+      writeJson(res, 200, { markdown: md });
+      return;
+    }
+
     if (pathname === "/inventory-item" && method === "GET") {
       const source = url.searchParams.get("source") ?? "";
       if (source.trim() === "") {
@@ -1597,6 +1620,19 @@ class HttpBridge implements Channel, Observer {
           : {}),
         ...(j.task !== undefined ? { task: j.task } : {}),
         ...(j.cwd !== undefined && j.cwd !== "" ? { cwd: j.cwd } : {}),
+        // ★"지금 무엇을 하는 중인가" 도 같이 준다 (2026-08-24 사용자 신고: "새로고침하면
+        //  백그라운드 매니저·에이전트의 뭘 진행중인지가 사라져"). 종전엔 이 한 줄이 SSE
+        //  스텝으로만 왔는데, replay 창(50) 밖으로 밀린 긴 잡은 새로고침 뒤 영영 안 왔다 —
+        //  카드는 복원되는데 **속이 비었다.**
+        //  ★새로 재지 않는다 — **점검(check-in)이 쓰는 것과 같은 증거**를 읽는다
+        //   (`getJobActivity`). 채팅 `/workers` 도 이미 이걸로 같은 문구를 만든다.
+        //   계측을 또 만들면 같은 사실을 두 곳이 다르게 말하게 된다.
+        //  ★한계(정직하게): `evidence` 는 in-memory 라 **데몬 재시작이면 비어 있다**.
+        //   그땐 카드는 서고 이 줄만 없다(잡 자체도 재시작으로 끊기므로 실질 영향은 작다).
+        ...(() => {
+          const act = getJobActivity(j.jobId);
+          return act === undefined ? {} : { activity: act };
+        })(),
       }));
       writeJson(res, 200, { jobs });
       return;

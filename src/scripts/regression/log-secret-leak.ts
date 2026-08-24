@@ -125,6 +125,57 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★대조군 2 — **낱말 중간의 우연한 일치를 먹지 않는다** (2026-08-24 실사용 신고).
+    //  `disk-cleanup` 스킬 이름이 화면에 `di[REDACTED]` 로 떴다. 패턴 `sk-…`·`eyJ…` 에
+    //  **시작 경계가 없어서** 낱말 중간에 우연히 그 글자가 있으면 통째로 먹었다.
+    //  ★이건 미관이 아니라 **조용한 오염**이다 — 잘린 자리에 표시가 없어 읽는 쪽은 원문이
+    //   그랬다고 믿는다. 오늘은 눈에 띄는 자리라 사용자가 잡았지만 진단 로그 한가운데였다면
+    //   몰랐다. 같은 파일이 기록한 `Bearer \S+` 꼬리 먹기(윈도우 DB payload 3건 파손)의
+    //   **거울상**이다 — 그때는 끝을, 이번엔 시작을 안 닫았다.
+    //  ★가리는 힘은 위 ①② 가 지킨다. 여기는 **반대편**(과잉 방어)을 지켜, 둘이 같이 있어야
+    //   "완화했다" 와 "오탐을 고쳤다" 가 구분된다.
+    {
+      const { redactSecrets } = await import("../../core/outbound-sanitize.js");
+      const keep = [
+        "스킬 disk-cleanup 을 만들었습니다", // sk- 가 낱말 중간
+        "risk-analysis 결과",
+        "my_sk-note 파일", // 밑줄 뒤
+        "keyJson.parse.result 확인", // eyJ 가 낱말 중간
+      ];
+      // ★**가리는 쪽도 여기서 같이 본다** (2026-08-24). 위 ①② 는 env 값 매칭과 텔레그램
+      //  토큰 형상만 보고 있었다 — 실측: `sk-…` 패턴을 **통째로 지워도 스위트 1,649건이
+      //  전부 초록**이었다. 즉 이 축엔 그물이 **없었다**. 오탐만 막고 가리는 힘을 안 지키면,
+      //  다음 사람이 "오탐 또 났네" 하며 패턴을 지워도 아무도 모른다.
+      //  두 방향을 **한 자리에** 둔다 — 그래야 "완화" 와 "오탐 수정" 이 구분된다.
+      const mustMask: [string, string][] = [
+        ["OpenAI", "OPENAI_API_KEY=sk-proj-AbC123_def-456.xyz"],
+        ["Anthropic", `{"key":"sk-ant-api03-AAAA-BBBB_cccc"}`],
+        ["문장 중간", "토큰은 sk-live-9f8e7d6c5b4a3210 입니다"],
+        ["하이픈 뒤(경계에서 뺀 축)", "--api-key=-sk-realkeyvalue123"],
+        ["JWT", "auth eyJhbGciOi.eyJzdWIi.SflKxwRJ 끝"],
+      ];
+      const leaked = mustMask.filter(([, t]) => !redactSecrets(t).includes("[REDACTED]"));
+      out.push(
+        assert(
+          "★진짜 키 형상은 계속 가려진다(경계를 닫아도 마스킹이 안 준다)",
+          leaked.length === 0,
+          leaked.length === 0
+            ? `${mustMask.length}종 전부 가림`
+            : `★${leaked.length}건 샌다: ${leaked.map(([n]) => n).join(", ")}`,
+        ),
+      );
+      const eaten = keep.filter((t) => redactSecrets(t) !== t);
+      out.push(
+        assert(
+          "★대조군 — 낱말 중간의 우연한 `sk-`·`eyJ` 를 먹지 않는다",
+          eaten.length === 0,
+          eaten.length === 0
+            ? `${keep.length}종 무손상`
+            : `★${eaten.length}건 먹힘: ${eaten.map((t) => `${t} → ${redactSecrets(t)}`).join(" / ")}`,
+        ),
+      );
+    }
+
     // ★③ 발생원이 에러 객체를 통째로 넘기지 않는다 — redact 로는 못 잡는 PII 축.
     const summarized = await sourceHas("../../../plugins/telegram-channel/index.ts", [
       /const describeTelegramError = \(e: unknown\): string =>/,

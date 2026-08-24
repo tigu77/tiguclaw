@@ -393,6 +393,11 @@ const server = http.createServer((req, res) => {
       return;
     }
     // 인벤토리 항목 정의 본문 — bridge GET /inventory-item?source= (read). source 쿼리 그대로
+    // 변경 이력 — bridge GET /changelog (read). 설정 뷰가 마크다운으로 렌더한다.
+    if (pathname === "/api/changelog" && method === "GET") {
+      await proxyJson(res, "/changelog");
+      return;
+    }
     // 전달(bridge 가 allowlist 검사 후 파일 재-Read). 능력 상세뷰 본문 섹션이 소비.
     if (pathname === "/api/inventory-item" && method === "GET") {
       const qs = url.search ?? "";

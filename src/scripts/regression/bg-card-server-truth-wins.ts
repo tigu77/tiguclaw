@@ -40,6 +40,11 @@ export const check: RegressionCheck = {
       "utf8",
     );
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const bridge = (
+      await readFile(new URL("../../../plugins/http-bridge/index.ts", import.meta.url), "utf8")
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
     const out: Assertion[] = [];
 
     out.push(
@@ -52,6 +57,21 @@ export const check: RegressionCheck = {
         "★단조성 가드가 **클라이언트 추측(interrupted)** 에는 양보한다",
         /clientGuess[\s\S]{0,200}?fromServer/.test(code),
         /clientGuess/.test(code) ? "예외 있음" : "★없음 — 추측이 서버를 이긴다",
+      ),
+      // ★같은 계약의 다른 축 (2026-08-24 사용자 신고: "새로고침하면 백그라운드 매니저·
+      //  에이전트의 뭘 진행중인지가 사라져"). 서버는 알고 있었다 — 채팅 `/workers` 가
+      //  `getJobActivity` 로 "지금 무슨 도구 몇 분째" 를 이미 보여준다. **대시보드만 못 받고
+      //  있었다**: 그 한 줄이 SSE 스텝으로만 오던 터라, replay 창(50) 밖으로 밀린 긴 잡은
+      //  새로고침 뒤 카드는 서고 속이 비었다.
+      //  이 파일의 주제 그대로다 — **서버가 아는 것이 카드에 닿아야 한다.**
+      assert(
+        "★서버가 아는 '지금 무엇을 하는 중' 이 카드까지 온다(엔드포인트 → 렌더)",
+        /getJobActivity\(/.test(bridge) && /activity/.test(bridge) && /renderDoing\(/.test(code),
+        /getJobActivity\(/.test(bridge)
+          ? /renderDoing\(/.test(code)
+            ? "엔드포인트·렌더 양쪽 확인"
+            : "★서버는 주는데 카드가 안 그린다"
+          : "★엔드포인트가 activity 를 안 싣는다 — 채팅 /workers 만 알고 대시보드는 모른다",
       ),
       assert(
         "서버가 관측한 종료(done/failed/cancelled)는 여전히 sticky — replay 되살림 방지는 유지",

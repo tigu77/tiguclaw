@@ -180,6 +180,7 @@
         row.appendChild(btn);
         page.appendChild(row);
         page.appendChild(buildLogRow());
+        page.appendChild(buildChangelogRow());
         root.appendChild(page);
       };
 
@@ -287,6 +288,78 @@
           }
         } catch { /* 조회 실패 = 꺼짐으로 그린다(값은 서버가 정본) */ }
         renderSettingsRow(root, enabled);
+      };
+
+      // ── 변경 이력 (2026-08-24 사용자 요청: "릴리즈 노트를 대시보드에서 확인") ──────
+      //  ★자리를 여기로 정한 이유(principle-check Q0): `#detail-panel` 은 자유 패널이 아니라
+      //   **nav 목적지 본체**다(뷰별 `currentView` 전환). 홈에서 그걸 가로채면 다른 여덟 뷰와
+      //   규칙이 갈리고, 새 목적지를 만들면 "새 네비 0" 이 거짓이 된다. `설정` 은 이미 nav 에
+      //   있고 주제("이 설치본에 대한 것")도 맞다 — 진짜로 새 화면이 0이다.
+      //  ★**버튼 뒤에 둔다**(사용자 지정). 설정을 열 때마다 140KB·153섹션을 그리던 것을
+      //   누를 때만 그린다 — 설정의 본업은 토글이고, 릴리스 노트는 찾아서 보는 것이다.
+      //   덤으로 안 누르면 fetch 도 0이다(설정 진입 비용이 원래대로 돌아온다).
+      const buildChangelogRow = () => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = "변경 이력";
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        desc.textContent = "이 설치본에 담긴 릴리스 노트입니다.";
+        meta.appendChild(name);
+        meta.appendChild(desc);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "settings-toggle";
+        btn.textContent = "보기";
+        row.appendChild(meta);
+        row.appendChild(btn);
+
+        // 본문은 행 **아래**에 붙는다 — 행 자체가 열림 상태를 들고 있으므로 새 화면이 없다.
+        const wrap = document.createElement("div");
+        wrap.className = "changelog-body";
+        wrap.hidden = true;
+        const body = document.createElement("div");
+        body.className = "md";
+        wrap.appendChild(body);
+
+        let loaded = false;
+        btn.addEventListener("click", async () => {
+          if (!wrap.hidden) { // 접기
+            wrap.hidden = true;
+            btn.textContent = "보기";
+            btn.classList.remove("on");
+            return;
+          }
+          wrap.hidden = false;
+          btn.textContent = "접기";
+          btn.classList.add("on");
+          if (loaded) return; // 한 번만 받는다(파일은 재시작 전까지 안 바뀐다).
+          body.className = "empty";
+          body.textContent = "불러오는 중…";
+          let md = "";
+          try {
+            const r = await fetch("/api/changelog");
+            if (r.ok) md = String((await r.json()).markdown || "");
+          } catch { /* 미도달 — 아래 안내로 떨어진다 */ }
+          // ★없으면 **없다고 말한다** — 빈 화면으로 두면 "로딩 중" 과 구분이 안 된다.
+          if (md.trim() === "") {
+            body.textContent = "변경 이력을 찾지 못했습니다(CHANGELOG.md 부재).";
+            return; // loaded 를 안 세운다 — 다시 눌러 재시도할 수 있게.
+          }
+          loaded = true;
+          body.className = "md";
+          if (typeof renderMarkdown === "function") body.innerHTML = renderMarkdown(md);
+          else body.textContent = md; // 렌더러 부재 시 평문 폴백(내용은 잃지 않는다).
+        });
+
+        const frag = document.createDocumentFragment();
+        frag.appendChild(row);
+        frag.appendChild(wrap);
+        return frag;
       };
 
       // ── 에이전트 뷰(왼쪽 nav 1급 destination) ──────────────────────────────

@@ -450,7 +450,14 @@
          배경·테두리 0, 인라인 code 배경 없음, 표 테두리 0 — 그리고 `pre.has-copy` 가
          `position:static` 이라 **복사 버튼이 코드블록에서 119px 위에 떠 있었다**(절대배치가
          containing block 을 잃음). 렌더된 마크다운은 어디에 있든 같게 보여야 한다. */
-      .md { white-space:normal; }
+      /* ★긴 토큰(URL·경로)을 끊는다. 종전엔 규칙이 **없어서**(=`normal`) 안 끊겼고, 모바일
+         390 에서 변경 이력이 문서를 458 로 밀어냈다 — 넘친 건 한 토큰인데 화면 전체가
+         튀어나간다(2026-08-24 실측, 320 에서도 459).
+         ★`break-word` 가 아니라 `anywhere` 인 이유: 블록 안에선 둘이 같지만 **min-content 폭에
+         반영되는 건 `anywhere` 뿐**이다. `.md` 는 grid/flex 컨테이너 안에도 놓이는데
+         (`.detail-card{display:grid}`), 거기선 `break-word` 로는 트랙이 계속 벌어져 **형제까지
+         같이 밀려난다** — 실제로 그 배치에서 427 로 늘어난 걸 봤다. */
+      .md { white-space:normal; overflow-wrap:anywhere; }
       .md > :first-child { margin-top:0; }
       .md > :last-child { margin-bottom:0; }
       .md p { margin:0 0 7px; }
@@ -1564,6 +1571,11 @@
         font-size:11px; font-weight:800; cursor:pointer; }
       .settings-toggle.on { border-color:var(--accent-2); color:var(--accent-2); background:rgba(167,139,250,.12); }
       .settings-toggle:disabled { opacity:.5; cursor:default; }
+      /* 변경 이력 본문 — 「보기」 를 누른 행 **아래**에 붙는다(새 화면 없음).
+         ★`min-width:0` 이 필요하다: 부모가 flex 는 아니지만 긴 토큰이 들어오면 블록이
+         min-content 로 벌어진다. 끊기는 `.md { overflow-wrap:anywhere }` 가 맡는다. */
+      .changelog-body { margin-top:10px; padding:14px 16px; min-width:0;
+        background:var(--card); border:1px solid var(--border); border-radius:12px; }
 
       /* ── 외부 호출 뷰 필터·종류 배지 (2026-08-10) ── */
       .ep-filter-bar { display:flex; gap:6px; margin:8px 0 4px; }

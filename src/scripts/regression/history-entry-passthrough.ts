@@ -88,6 +88,31 @@ const run = async (): Promise<Assertion[]> => {
   //  같은 것을 더 약하게 보므로 **지웠다** — 두 게이트가 같은 축을 다른 강도로 보면
   //  약한 쪽이 초록이라 강한 쪽을 무디게 만든다.
 
+  // ── ★`activeThreadKey` 를 세우는 자리는 **전부** 백그라운드 스코프를 다시 판정한다 ──
+  //  2026-08-24 사용자 신고: "새로고침하면 백그라운드 패널에 잡이 사라진다 / 세션을 변경하면
+  //  다시 정상". 탭 전환·새 탭·닫기 셋은 `refreshBgScope()` 를 부르는데 **부팅 복원만** 빠져
+  //  있었다. 스크립트가 plain `<script src>` 라 다운로드 대기 중 fetch 콜백이 끼어들면 카드가
+  //  기본 `activeThreadKey` 로 스코프돼 숨는다 — **콜드 로드 × 비기본 세션**에서만 나므로
+  //  간헐적으로 보이고, 그래서 오래 살아남았다. 손으로 맞춘 네 자리 = 드리프트 신호.
+  {
+    const tabs = await read("../../../packages/dashboard/js/tabs.js");
+    const acty = await read("../../../packages/dashboard/js/activity.js");
+    const assigns =
+      (tabs.match(/activeThreadKey\s*=\s*[^=]/g) ?? []).length +
+      (acty.match(/activeThreadKey\s*=\s*[^=]/g) ?? []).length;
+    const refreshes = (tabs.match(/refreshBgScope\(\)/g) ?? []).length;
+    out.push(
+      assert(
+        "★세션을 바꾸는 모든 자리가 백그라운드 스코프를 다시 판정한다",
+        refreshes >= assigns,
+        `activeThreadKey 대입 ${assigns}곳 · refreshBgScope 호출 ${refreshes}곳` +
+          (refreshes >= assigns
+            ? ""
+            : " — ★빠진 자리가 있다: 그 경로로 들어오면 잡 카드가 남의 세션 기준으로 숨는다"),
+      ),
+    );
+  }
+
   // ── ⑤ 질의를 닫는 모든 자리가 seq 를 올린다 ────────────────────────────────────
   {
     // `run()` 의 세 갈래(짧은 질의·정상 질의)가 전부 카운터를 올려야 늦게 온 응답이

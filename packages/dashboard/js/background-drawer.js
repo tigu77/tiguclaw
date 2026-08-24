@@ -266,6 +266,25 @@
 
       // 도구 실행시간(#3) — phase:"end" 활동이 같은 seq 의 시작 스텝에 durationMs 뱃지를 붙인다.
       // 잡 카드 스텝(.bg-step, worker:/agent: 좌표)과 메인 스트림 라인(.act-line) 양쪽 커버.
+      // 활동 한 줄 렌더 — 채팅 `/workers` 와 **같은 사실**을 같은 모양으로 말한다
+      // (진행 중 도구가 있으면 그 도구와 경과, 없으면 마지막 활동 이후). 값이 없으면
+      // **안 그린다**(거짓값 금지 — 이 파일의 modelBadge 규칙과 동형).
+      const renderDoing = (entry, now) => {
+        const el = entry && entry.doingEl;
+        if (!el) return;
+        const act = entry.activity;
+        if (!act) { el.style.display = "none"; return; }
+        const t = typeof now === "number" ? now : Date.now();
+        const txt =
+          Array.isArray(act.inFlight) && act.inFlight.length > 0
+            ? " · " + act.inFlight.map((f) => `${f.tool} ${fmtElapsed(t - f.since)}째`).join(", ")
+            : typeof act.lastActivityAt === "number"
+              ? ` · 마지막 활동 ${fmtElapsed(t - act.lastActivityAt)} 전`
+              : "";
+        if (txt === "") { el.style.display = "none"; return; }
+        el.style.display = "";
+        if (el.textContent !== txt) el.textContent = txt;
+      };
       const fmtDur = (ms) => {
         if (ms == null) return "";
         if (ms < 1000) return Math.round(ms) + "ms";
@@ -683,6 +702,15 @@
             rawTk.title = opts.threadKey;
           }
           meta.appendChild(rawTk);
+          // ★"지금 무엇을 하는 중인가" (2026-08-24 사용자 신고: "새로고침하면 백그라운드
+          //  매니저·에이전트의 뭘 진행중인지가 사라져"). 종전엔 이 정보가 SSE 스텝으로만
+          //  왔는데, replay 창(50) 밖으로 밀린 긴 잡은 새로고침 뒤 영영 안 왔다 — 카드는
+          //  하이드레이션으로 서는데 **속이 비었다.** 서버가 `/api/worker-jobs` 로 같이
+          //  주므로(점검이 쓰는 것과 **같은 증거**) 여기 한 줄로 그린다.
+          const doingEl = document.createElement("span");
+          doingEl.className = "bg-job-doing";
+          doingEl.style.display = "none";
+          meta.appendChild(doingEl);
           // ★소속 세션 배지 (2026-08-06) — "이 잡을 어느 대화가 띄웠나". 종전엔 원시 좌표
           //  (`dashboard:1784…`)만 있어 사람이 읽을 수 없었고, 스코프 필터로 거를 수는 있어도
           //  전체를 볼 땐 구분이 안 됐다. 이름은 공유 해석기(서버 정본)에서 가져오고,
@@ -734,6 +762,8 @@
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, agoEl: ago, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
+            doingEl, // "지금 무엇을 하는 중" 한 줄(서버 activity).
+            activity: null, // { lastActivityAt, inFlight:[{tool,since}] } — /api/worker-jobs.
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).
             //  종전엔 무조건 `Date.now()`(카드가 생긴 시각)라, 2시간째 자식을 기다리는
             //  매니저도 **새로고침하면 "0s"** 로 보였다. 서버는 `/worker-jobs` 로 `startedAt`
@@ -879,6 +909,7 @@
         return entry;
       };
       const handleWorkerEvent = (p, ts) => {
+        // (아래에서 entry 를 얻은 뒤 activity 를 반영한다 — ensureJobCard 가 먼저 필요.)
         if (!p.jobId) return;
         const status = p.status || "running";
         // ownerThreadKey = 서버가 환원한 원 세션(worker.* payload / GET /api/worker-jobs).
@@ -889,6 +920,12 @@
         //  무동작이었다(소비자만 고치고 생산자를 안 봄). `ensureJobCard` 는 아는 키만
         //  읽으므로 여분 필드는 무해하고, 새 필드가 생기면 **저절로** 흘러간다.
         const entry = ensureJobCard(p.jobId, { ...p, ts });
+        // 서버가 실어 준 "지금 무엇을 하는 중" 을 반영한다(하이드레이션 경로). 값이 없으면
+        // **덮지 않는다** — SSE 로 이미 채워진 것을 빈 값으로 지우면 새로고침만 못해진다.
+        if (p.activity && typeof p.activity === "object") {
+          entry.activity = p.activity;
+          renderDoing(entry);
+        }
         // ★잡 상태는 **단조**다 — running → 종료, 되돌아가지 않는다 (2026-07-28).
         //  종전엔 마지막 이벤트가 무조건 이겨서, 재연결 replay 가 흘린 옛 worker.started 가
         //  이미 끝난 카드를 **다시 "진행 중"으로 되돌렸고** 그 뒤로 갱신할 이벤트가 없어
@@ -1170,6 +1207,8 @@
           }
           if (e.status !== "running" || !e.elapsedEl) continue;
           e.elapsedEl.textContent = fmtElapsed(now - (e.startTs || now));
+          // "3분째" 가 굳지 않게 같은 시계에 얹는다(새 타이머 0).
+          if (e.activity) renderDoing(e, now);
         }
         // 에이전트 뷰가 열려 있으면 그쪽 running 카드 경과시간도 라이브로(별도 DOM ref).
         if (currentView === "agents") {

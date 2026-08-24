@@ -574,6 +574,17 @@
       // 라이브 스트림이 붙어 history replay 중복을 막는다. 이력 로드 실패/지연이 SSE 를
       // 막지 않도록 then 으로 잇되, 실패해도 반드시 connectStream 으로 진행(라이브 무손상).
       loadTabs();          // localStorage 에서 열린 탭 + activeThreadKey 복원(없으면 기본 단일 탭).
+      // ★복원 직후 백그라운드 스코프를 **다시 판정**한다 (2026-08-24 사용자 신고: "새로고침하면
+      //  열려있던 백그라운드 패널에 잡이 사라진다 / 세션을 변경하면 다시 정상"). 탭 전환·새 탭·
+      //  닫기 세 자리는 이미 부르는데 **부팅 복원만 빠져 있었다.**
+      //  기제 = 경쟁 상태. 대시보드 스크립트 35개는 전부 plain `<script src>`(defer·async 0)라
+      //  실행은 순차지만 **다운로드 대기 중엔 이벤트 루프가 돈다** — `background-drawer.js`(#14)가
+      //  시작한 `GET /api/worker-jobs` 응답이 `tabs.js`(#26) 실행 **전에** 끼어들 수 있다. 그러면
+      //  카드가 아직 기본값인 `activeThreadKey`("dashboard:default")로 스코프돼 숨는다.
+      //  콜드 로드 × 활성 세션이 기본이 아닐 때만 나므로 **간헐적으로 보인다**(그래서 오래 살았다).
+      //  ★race 를 없애는 게 아니라 **결과를 순서 독립으로** 만든다 — 응답이 먼저 오든 나중에 오든
+      //  복원 직후 한 번 더 판정하면 같은 답이 된다.
+      if (typeof refreshBgScope === "function") refreshBgScope();
       renderTabBar();
       loadChatHistory().finally(() => { connectStream(); refreshSessionPreviews(); });
       setInterval(refreshSessionPreviews, 30000);

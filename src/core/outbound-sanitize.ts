@@ -95,12 +95,24 @@ const escapeRegExp = (s: string): string =>
 
 // 2층 — 알려진 토큰 형태 패턴. 각각 [REDACTED] 치환. (긴 것부터 적용해 부분 잠식 방지)
 const TOKEN_PATTERNS: { re: RegExp; replace: string }[] = [
+  // ★**시작 경계를 닫는다** (2026-08-24). 종전엔 낱말 **중간**에 우연히 `sk-`/`eyJ` 가 있으면
+  //  통째로 먹었다 — 실사용 신고: 스킬 폴더 `disk-cleanup` 이 화면에 `di[REDACTED]` 로 떴다.
+  //  `keyJson.parse.result` → `k[REDACTED]` 도 같은 구멍(실측).
+  //  ★이건 이 파일이 이미 적어둔 사고의 **거울상**이다: 아래 `Bearer` 주석은 `\S+` 가 토큰
+  //   **뒤**를 삼켜 윈도우 DB payload 3건이 깨진 것을 기록한다. 그때 *끝* 은 닫았는데
+  //   *시작* 은 아무도 안 닫았다. 같은 뿌리 — **어디서 시작하고 끝나는지를 정하지 않은 패턴.**
+  //  ★그리고 이건 **완화가 아니다**(실측): 진짜 키 4종(`sk-proj-`·`sk-ant-`·문장 중간·하이픈
+  //   뒤)은 그대로 가려진다. 진짜 키는 낱말 중간에서 시작하지 않으므로 잃는 마스킹이 0이다.
+  //   `Bearer` 때는 꼬리 먹기를 고치자 마스킹이 실제로 좁아져 두 번 고쳤는데, 여기엔 그
+  //   트레이드가 없다.
+  //  ★경계는 **낱말문자만**(`[A-Za-z0-9_]`) — 하이픈은 뺀다. `-sk-실제키` 를 놓치는 쪽이
+  //   `task-sk-1` 을 가리는 쪽보다 나쁘다(가리는 실패 < 새는 실패).
   // Anthropic — sk-ant-... (sk- 보다 먼저, 더 구체적).
-  { re: /sk-ant-[A-Za-z0-9._-]+/g, replace: "[REDACTED]" },
+  { re: /(?<![A-Za-z0-9_])sk-ant-[A-Za-z0-9._-]+/g, replace: "[REDACTED]" },
   // OpenAI/Anthropic 류 — sk-...
-  { re: /sk-[A-Za-z0-9._-]+/g, replace: "[REDACTED]" },
+  { re: /(?<![A-Za-z0-9_])sk-[A-Za-z0-9._-]+/g, replace: "[REDACTED]" },
   // JWT (codex OAuth access/id 토큰) — eyJ...header.payload.sig
-  { re: /eyJ[\w-]+\.[\w-]+\.[\w-]+/g, replace: "[REDACTED]" },
+  { re: /(?<![A-Za-z0-9_])eyJ[\w-]+\.[\w-]+\.[\w-]+/g, replace: "[REDACTED]" },
   // Telegram bot 토큰 — 123456:AAaa...
   { re: /\d{6,}:[A-Za-z0-9_-]{30,}/g, replace: "[REDACTED]" },
   // Authorization: Bearer <token> — 토큰 부분만 마스킹, Bearer 라벨 보존(진단성).

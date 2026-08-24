@@ -26,6 +26,25 @@ const dist = process.argv[2]
 const log = (msg) => console.log(`[copy-dist-assets] ${msg}`);
 
 /** 파일 1개 복사(부모 디렉터리 보장). */
+/** src→dest 이름이 다른 복사(오버레이 → 배포 루트 위치). 이미 있으면 덮지 않는다. */
+const copyFileAs = async (relSrc, relDest) => {
+  const src = path.join(repoRoot, relSrc);
+  const dest = path.join(dist, relDest);
+  try {
+    await fs.access(dest);
+    return; // 루트 실물이 이미 복사됐다(배포본) — 그쪽이 정본.
+  } catch { /* 없으면 오버레이에서 */ }
+  try {
+    await fs.access(src);
+  } catch {
+    log(`skip (absent): ${relSrc}`);
+    return;
+  }
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.cp(src, dest, { recursive: false });
+  log(`file: ${relDest} (from ${relSrc})`);
+};
+
 const copyFile = async (rel) => {
   const src = path.join(repoRoot, rel);
   const dest = path.join(dist, rel);
@@ -69,6 +88,12 @@ const main = async () => {
 
   // 1) appRoot()-상대 헌법/빌트인 자산 → dist/ (marker walk-up 이 dist 를 appRoot 로 잡음).
   await copyFile("SYSTEM.md");
+  // ★CHANGELOG 도 appRoot()-상대 앱 자산이다 (2026-08-24 — 대시보드 「설정 → 변경 이력」).
+  //  배포본은 루트에 실물이 있고, **개발 레포는 오버레이가 정본**이라(manifest 가 루트로
+  //  복사한다) 여기서 그 차이를 흡수한다 — 이 스크립트의 일이 "dist 를 설치본처럼 보이게"
+  //  하는 것이므로, 제품 코드에 dev 사정을 넣는 대신 여기서 맞춘다(오염 0).
+  await copyFile("CHANGELOG.md");
+  await copyFileAs("_workspace/public-overlay/CHANGELOG.md", "CHANGELOG.md");
   await copyTree("skills");
   await copyTree("agents");
 

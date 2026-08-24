@@ -1,0 +1,48 @@
+name: 기능 제안 / Feature request
+description: 있었으면 하는 것을 알려주세요 / Something you wish it did
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **무엇을 하려다 막혔는지**부터 적어주세요. 해결책보다 그게 더 도움이 됩니다 —
+        같은 불편에 더 단순한 답이 있는 경우가 많습니다.
+
+        *Describe the problem before the solution — there's often a simpler answer
+        to the same friction.*
+  - type: textarea
+    id: problem
+    attributes:
+      label: 무엇을 하려다 막혔나요 / What were you trying to do
+      description: 지금은 어떻게 하고 있는지도 같이 알려주시면 좋습니다.
+      placeholder: |
+        예) 텔레그램에서 어제 대화를 찾고 싶은데, 지금은 대시보드를 열어야만 검색이 됩니다.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 어떻게 되면 좋을까요 / What would good look like
+      description: 확정된 설계가 아니어도 됩니다. 떠오른 모양을 적어주세요.
+    validations:
+      required: false
+  - type: dropdown
+    id: surface
+    attributes:
+      label: 어디 이야기인가요 / Which surface
+      options:
+        - 대시보드 / Dashboard
+        - 텔레그램 / Telegram
+        - CLI
+        - 비서의 판단·행동 / Assistant behavior
+        - 설치·업데이트 / Install & update
+        - 그 외 / Other
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: 그 밖에 / Anything else
+      description: 비슷한 걸 하는 다른 도구, 스크린샷, 링크 등.
+    validations:
+      required: false

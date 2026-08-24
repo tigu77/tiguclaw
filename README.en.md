@@ -114,6 +114,10 @@ If 7010 is taken, change `DASHBOARD_PORT` in `.env`.
 > token is injected server-side and never reaches the page, so **reaching this port is the permission**.
 > To use it from your phone, don't open the port; tunnel over a private network (e.g. `tailscale serve 7010`).
 > `DASHBOARD_HOST=0.0.0.0` only if you know the trade.
+>
+> If you reach it remotely by **name** (e.g. MagicDNS `*.ts.net`), add that name to
+> `DASHBOARD_ALLOWED_HOSTS` in `.env` — that's the DNS-rebinding guard. **Reaching it by IP needs
+> no configuration.** If you forget, the 403 tells you exactly what to add.
 
 If the dashboard isn't there, the usual cause is a missing `HTTP_BRIDGE_TOKEN` — the daemon logs
 `dashboard: HTTP_BRIDGE_TOKEN not set … spawn skipped`. `npm run onboard` generates one and

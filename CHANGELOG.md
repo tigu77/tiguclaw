@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-24
+
+### Added
+
+- **모델 프로파일마다 추론 강도를 따로 정합니다.** 풀 원소를 객체로 적으면(`{ "model":
+  "anthropic:claude-opus-5", "reasoning": "high" }`) 같은 모델을 프로파일마다 다른 강도로 씁니다.
+  말로도 됩니다 — "high 프로파일의 opus 를 중간으로" 처럼요. 우선순위는 좁은 것이 이깁니다
+  (풀 원소 > `models.reasoning` 전역 > 모델 카탈로그 기본).
+- **프로파일 배지 색을 고릅니다.** `"color": "#34d399"` 를 적으면 대시보드 카드와 잡 배지가
+  그 색으로 뜹니다. 종전엔 `high`·`mid`·`low` 세 이름만 색이 있어 직접 만든 프로파일은 전부
+  회색이었습니다. 안 적으면 지금 색 그대로입니다.
+- **설정에서 변경 이력을 봅니다.** 설정 → 변경 이력 → 「보기」 로 이 설치본의 릴리스 노트
+  전문을 대시보드에서 읽습니다.
+- **백그라운드 스텝에 시각이 붙습니다.** 도구마다 "3분 전" 이 실행시간 옆에 뜨고, 지금 도는
+  도구는 `⏳ 16s` 로 흘러갑니다. 잡이 끝나면 그 표시는 걷힙니다.
+
+### Changed
+
+- **다음 메시지 제안이 내가 친 턴에만 나갑니다.** 백그라운드 작업이 끝나 비서가 정리 발언을
+  할 때도 제안을 만들던 것을 멈췄습니다. 그리고 `suggestions.nextMessage.profile` 설정이
+  **실제로 동작합니다** — 종전엔 읽기만 하고 늘 기본 프로파일로 돌았습니다. 30초 데드라인도
+  생겨서, 백엔드 과부하 때 턴마다 3분씩 재시도하던 것이 끊깁니다.
+- **입력창 위 진행 표시가 내 대화만 말합니다.** 다른 세션 수 `(+N)` 를 뺐습니다 — 그 사실은
+  세션 탭의 진행 점이 이미 알려줍니다.
+- **README 를 랜딩 페이지로 다시 짰습니다.** 상세는 `docs/features.md`·`docs/hooks.md`·
+  `docs/gateway.md` 로 옮겼습니다(내용 그대로).
+- **구독 토큰 사용에 약관 주의를 명시했습니다.** `claude setup-token`·ChatGPT 구독 로그인은
+  제공사 약관이 허용하지 않을 수 있고, 특히 LLM 게이트웨이와 함께 쓰면 개인 구독이 임의 앱의
+  API 백엔드가 됩니다. 막지는 않되 [설치와 운영](docs/setup.md#구독-토큰을-쓰기-전에)에
+  적었습니다.
+
+### Fixed
+
+- **새로고침하면 백그라운드 패널의 작업이 사라지던 것** — 세션을 바꿨다 돌아와야 보였습니다.
+  "지금 무엇을 하는 중" 도 같이 사라졌는데 이제 남습니다.
+- **살균기가 낱말 중간의 `sk-`·`eyJ` 를 먹던 것** — 스킬 폴더 `disk-cleanup` 이 화면에
+  `di[REDACTED]` 로 떴습니다. 진짜 키는 그대로 가려집니다.
+- **스킬 배지가 `스킬:?` 로 뜨던 것** — 경로를 넘기는 호출(프로젝트 전용 스킬, 매니저·
+  서브에이전트가 쓰는 스킬 대부분)에서 이름이 안 보였습니다.
+- **모바일에서 화면이 옆으로 밀리던 것** — 긴 URL·경로가 안 끊겨 문서 전체가 튀어나갔습니다.
+
+### Security
+
+- **DNS 리바인딩 방어** — 대시보드·브리지가 `Host` 를 검사합니다. 악성 웹페이지를 열기만 해도
+  그 페이지가 자기 도메인을 `127.0.0.1` 로 바꿔치기해 로컬 대시보드에 도달할 수 있었고,
+  브라우저가 same-origin 으로 착각하므로 기존 CSRF 방어로는 막히지 않았습니다. 도달하면 대화
+  전문을 읽고 비서에게 지시까지 넣을 수 있습니다.
+  **로컬·IP 접속은 설정이 필요 없습니다**(리바인딩은 이름이 있어야 성립하므로). MagicDNS 같은
+  **이름**으로 원격 접속할 때만 `DASHBOARD_ALLOWED_HOSTS`·`HTTP_BRIDGE_ALLOWED_HOSTS` 에
+  적어주세요 — 안 적어서 막히면 403 응답이 적을 값을 알려줍니다.
+
 ### Fixed
 
 - **`/code-review` 가 대화를 오래 막던 것** — 넓은 검토를 요청하면 여러 검토자를 **대화 앞에서**
@@ -1497,7 +1548,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/tigu77/tiguclaw/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/tigu77/tiguclaw/compare/v0.35.1...v0.36.0
 [0.35.1]: https://github.com/tigu77/tiguclaw/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/tigu77/tiguclaw/compare/v0.34.0...v0.35.0

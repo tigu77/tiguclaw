@@ -116,6 +116,10 @@ node bin/tiguclaw.mjs onboard   # 의존성 설치까지 알아서 — 이 한 �
 > 없습니다 — bridge 토큰은 서버 쪽에서 주입돼 페이지엔 안 닿으니, **이 포트에 닿는 것 자체가
 > 곧 권한**이에요. 폰에서 쓰고 싶으면 포트를 열지 말고 사설 네트워크로 터널링하세요(예:
 > `tailscale serve 7010`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
+>
+> 원격을 **이름**(예: MagicDNS `*.ts.net`)으로 여실 거면 그 이름을 `.env` 의
+> `DASHBOARD_ALLOWED_HOSTS` 에 적어주세요 — DNS 리바인딩 방어 때문입니다. **IP 로
+> 접속하면 설정이 필요 없습니다.** 안 적어서 막히면 403 응답이 그 방법을 알려줍니다.
 
 대시보드가 안 보이면 십중팔구 `HTTP_BRIDGE_TOKEN` 이 없는 겁니다 — 데몬 로그에
 `dashboard: HTTP_BRIDGE_TOKEN not set … spawn skipped` 가 찍혀요. `npm run onboard` 가 자동

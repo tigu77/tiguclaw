@@ -46,6 +46,13 @@ Tune it live in `<home>/settings.json` — re-read on every request, so nothing 
 
 Worth knowing:
 
+- ⚠️ **Don't put a subscription token behind this.** The gateway is where your own apps use this
+  pool as their backend. With a subscription (Claude Pro/Max, ChatGPT Plus/Pro) token behind it,
+  **a personal subscription becomes an arbitrary app's API backend** — a different thing from
+  interactive personal use, and possibly not permitted by that provider's terms. Point the gateway's
+  profile at **API-key providers** (or local Ollama) via `gateway.models`. Background:
+  [Setup & operations · Before you use a subscription token](setup.en.md#before-you-use-a-subscription-token).
+
 - **It answers as your app, not as the assistant.** Your `system` message is used as-is; no tiguclaw persona, tools, skills, or memory ride along. Calls run in an isolated working directory, so nothing leaks even with no `system` message. (Account details the provider itself injects are outside tiguclaw's control.)
 - **The call is logged; the content isn't.** Gateway calls never mix into your conversations, but they do appear in the dashboard's **external call log** — not what was said, just which model handled how many messages, with tokens, duration, and success, all on your machine.
 - **Function calling works on a subscription.** Send `tools` and the model returns `tool_calls` without executing them — whichever adapter runs the turn, no API key required. `tool_choice` (`"none"`, `"required"`, or a named function) is enforced.

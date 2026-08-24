@@ -10,9 +10,9 @@
 |---|---|
 | **Ollama (로컬)** | 키 불필요·무료·오프라인. Ollama 만 설치하면 끝. (작은 모델 = 품질 낮음.) |
 | **Anthropic API 키** | console.anthropic.com 에서 발급 — 가장 쉬움, 종량제. |
-| **Claude 구독** | Claude Pro/Max 구독 사용 — `claude setup-token` 실행 (API 키 불필요, 종량 과금 없음). |
+| **Claude 구독** ⚠️ | Claude Pro/Max 구독 사용 — `claude setup-token` 실행 (API 키 불필요, 종량 과금 없음). **약관 주의 — [아래](#구독-토큰을-쓰기-전에) 참고.** |
 | **OpenAI API 키** | platform.openai.com — 종량제. |
-| **codex (ChatGPT 구독)** | 설치 후 `npm run codex-auth` 로 로그인. |
+| **codex (ChatGPT 구독)** ⚠️ | 설치 후 `npm run codex-auth` 로 로그인. **약관 주의 — [아래](#구독-토큰을-쓰기-전에) 참고.** |
 | **OpenAI 호환이면 무엇이든** | OpenRouter·Groq·Together·vLLM·직접 띄운 엔드포인트 — 코드 없이 `settings.json` 에 적으면 됩니다. 아래 참고. |
 
 #### OpenAI 호환 provider 붙이기
@@ -62,7 +62,7 @@ OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 
 2. **Settings → API Keys → Create Key** → 이름 입력 → 복사 (한 번만 표시됨).
 3. **Plans & Billing** 에서 크레딧 충전 (종량제).
 
-**Claude 구독** (API 키 대신 Claude Pro/Max 구독 사용)
+**Claude 구독** (API 키 대신 Claude Pro/Max 구독 사용) — ⚠️ [약관 주의](#구독-토큰을-쓰기-전에)
 1. Claude Code CLI 설치 후 **`claude setup-token`** 실행.
 2. 브라우저에서 로그인 → 장기 토큰이 출력됨 → 복사.
 3. `CLAUDE_CODE_OAUTH_TOKEN` 으로 붙여넣기 (마법사의 **claude-sub** 옵션, 또는 `.env`). 종량 과금 없이 구독으로 동작.
@@ -75,12 +75,30 @@ OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 
 **Google Gemini 키** (선택)
 1. **aistudio.google.com** → **Get API key → Create API key** → 복사. (무료 한도 넉넉.)
 
-**codex (ChatGPT 구독)** — *붙여넣을 키 없음*
+**codex (ChatGPT 구독)** — *붙여넣을 키 없음* · ⚠️ [약관 주의](#구독-토큰을-쓰기-전에)
 - 설치 후 `npm run codex-auth` 실행 → 로그인 URL 열림 → ChatGPT 로그인 → 권한 허용. 토큰 자동 저장·갱신. (ChatGPT Plus/Pro 구독 필요.)
 
 **Ollama (로컬)** — *키 없음*
 1. **ollama.com** 에서 설치 (macOS는 `brew install ollama`).
 2. 모델 받기: `ollama pull llama3.2` (품질 원하면 `ollama pull qwen2.5:7b`).
+
+### 구독 토큰을 쓰기 전에
+
+⚠️ **구독(Claude Pro/Max · ChatGPT Plus/Pro)으로 얻은 토큰을 서드파티 도구에서 쓰는 것은 각
+제공사 약관이 허용하지 않을 수 있습니다.** 구독은 대개 **그 회사의 공식 클라이언트**에서 쓰라고
+파는 것이고, 프로그램적 접근에는 API 키(종량제)를 따로 둡니다.
+
+정직하게 말씀드립니다 — 우리는 이 경로를 **막지 않습니다.** 실제로 잘 돌고, 개인이 자기
+계정으로 자기 기계에서 쓰는 건 널리 하는 일입니다. 다만 **결과는 계정 주인에게 갑니다**:
+제한·정지·해지가 일어나면 그건 tiguclaw 가 아니라 제공사와 사용자 사이의 일입니다. 모르고
+고르는 일이 없도록 적어 둡니다.
+
+**특히 LLM 게이트웨이와 같이 쓰지 마세요.** 게이트웨이(`/v1/chat/completions`)를 켜면 내가 만든
+앱이 이 풀을 백엔드로 씁니다. 거기에 구독 토큰이 물려 있으면 **개인 구독이 임의 앱의 API
+백엔드**가 되는데, 그건 대화형 개인 사용과 성격이 다릅니다. 게이트웨이가 쓸 프로파일은
+**API 키 프로바이더로** 따로 두세요 ([LLM 게이트웨이](gateway.md)).
+
+약관이 걸리신다면 — **Ollama(로컬·무료)** 또는 **API 키(종량제)** 는 이 문제에서 자유롭습니다.
 
 ### 평소 사용
 

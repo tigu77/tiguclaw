@@ -10,9 +10,9 @@ For people who just installed tiguclaw — or are about to. For *what it is*, se
 |---|---|
 | **Ollama (local)** | No key, free, offline. Just install Ollama. (Smaller models, lower quality.) |
 | **Anthropic API key** | Grab one at console.anthropic.com — easiest, pay-as-you-go. |
-| **Claude subscription** | Use your Claude Pro/Max plan — run `claude setup-token` (no API key, no per-token billing). |
+| **Claude subscription** ⚠️ | Use your Claude Pro/Max plan — run `claude setup-token` (no API key, no per-token billing). **Terms caveat — see [below](#before-you-use-a-subscription-token).** |
 | **OpenAI API key** | platform.openai.com — pay-as-you-go. |
-| **codex (ChatGPT subscription)** | After install, run `npm run codex-auth` to log in. |
+| **codex (ChatGPT subscription)** ⚠️ | After install, run `npm run codex-auth` to log in. **Terms caveat — see [below](#before-you-use-a-subscription-token).** |
 | **Anything OpenAI-compatible** | OpenRouter, Groq, Together, vLLM, your own endpoint — add it in `settings.json`, no code. See below. |
 
 #### Adding an OpenAI-compatible provider
@@ -62,7 +62,7 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 2. **Settings → API Keys → Create Key** → name it → copy (shown only once).
 3. Add credit under **Plans & Billing** (pay-as-you-go).
 
-**Claude subscription** (use your Claude Pro/Max plan instead of an API key)
+**Claude subscription** (use your Claude Pro/Max plan instead of an API key) — ⚠️ [terms caveat](#before-you-use-a-subscription-token)
 1. Install the Claude Code CLI, then run **`claude setup-token`**.
 2. Log in in the browser — it prints a long-lived token; copy it.
 3. Paste it as `CLAUDE_CODE_OAUTH_TOKEN` (the wizard's **claude-sub** option, or in `.env`). No per-token billing — it runs on your subscription.
@@ -75,12 +75,32 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 **Google Gemini key** (optional)
 1. Go to **aistudio.google.com** → **Get API key → Create API key** → copy. (Generous free tier.)
 
-**codex (ChatGPT subscription)** — *no key to paste*
+**codex (ChatGPT subscription)** — *no key to paste* · ⚠️ [terms caveat](#before-you-use-a-subscription-token)
 - After install, run `npm run codex-auth`: it opens a login URL → sign in to ChatGPT → approve. The token is saved and auto-refreshed. (Needs a ChatGPT Plus/Pro subscription.)
 
 **Ollama (local)** — *no key*
 1. Install from **ollama.com** (`brew install ollama` on macOS).
 2. Pull a model: `ollama pull llama3.2` (or `ollama pull qwen2.5:7b` for better quality).
+
+### Before you use a subscription token
+
+⚠️ **Using a token obtained from a subscription (Claude Pro/Max, ChatGPT Plus/Pro) inside a
+third-party tool may not be permitted by that provider's terms.** Subscriptions are generally sold
+for use in **that company's own client**; programmatic access is what the API keys (pay-as-you-go)
+are for.
+
+To be straight about it — we don't block this path. It works, and using your own account on your own
+machine is common. But **the consequences land on the account holder**: if it leads to a limit,
+suspension or termination, that's between you and the provider, not tiguclaw. We write it down so
+nobody picks it without knowing.
+
+**Especially, don't pair it with the LLM gateway.** Turning the gateway on
+(`/v1/chat/completions`) lets your own apps use this pool as their backend. With a subscription token
+behind it, **a personal subscription becomes an arbitrary app's API backend** — a different thing
+from interactive personal use. Point the gateway's profile at **API-key providers** instead
+(see [LLM gateway](gateway.en.md)).
+
+If the terms are a concern, **Ollama (local, free)** and **API keys (pay-as-you-go)** are clear of it.
 
 ### Day to day
 

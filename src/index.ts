@@ -62,7 +62,7 @@ import {
   contextPressureLabel,
   lookupContextWindow,
 } from "./core/llm-runtime/context-windows.js";
-import { runRegionA } from "./core/llm-runtime/index.js";
+import { runRegionA, resolveModelChain } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
@@ -151,13 +151,16 @@ import {
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
 import {
-  shouldSuggestForThread,
+  shouldSuggestForTurn,
   readSuggestionSettings,
   buildRecentContext,
   normalizeSuggestion,
   publishSuggestion,
   SUGGESTION_CONTEXT_TURNS,
   SUGGESTION_SYSTEM_PROMPT,
+  SUGGESTION_DEADLINE_MS,
+  resolveSuggestionChain,
+  suggestionDeadlineReason,
 } from "./core/next-message-suggestion.js";
 import {
   setInflightTurnReporter,
@@ -914,10 +917,17 @@ const fanOutEgress = async (
  *  유틸에 25KB 인격을 실을 이유가 없다.
  * ★비용은 상수 둘로 **완전히 결정된다**(최근 6턴 × 600자). 대화가 길어져도 안 커진다.
  */
+/**
+ * 이미 경고한 프로파일 이름 — 같은 warn 을 매 턴 찍으면 배경소음이 되고, 배경소음은
+ * 실제로 12일간 묻힌 적이 있다([[feedback_logs_must_stand_alone]]). 이름당 한 번만 말한다.
+ */
+const warnedSuggestionProfiles = new Set<string>();
+
 const maybeSuggestNextMessage = async (msg: IncomingMessage): Promise<void> => {
   try {
-    if (!shouldSuggestForThread(msg.threadKey)) return;
-    if (!readSuggestionSettings().enabled) return;
+    if (!shouldSuggestForTurn(msg)) return;
+    const suggestSettings = readSuggestionSettings();
+    if (!suggestSettings.enabled) return;
     const started = Date.now();
     const turns = loadThreadHistory(SESSION_STORAGE_CHANNEL, msg.threadKey, {
       limitTurns: SUGGESTION_CONTEXT_TURNS,
@@ -929,18 +939,56 @@ const maybeSuggestNextMessage = async (msg: IncomingMessage): Promise<void> => {
       })),
     );
     if (context.trim() === "") return; // 첫 턴 등 — 이어쓸 흐름이 없다.
-    const out = await runRegionA({
-      // ★컨텍스트만 싣는다 — 생성 규칙은 systemPromptOverride(안정·앞)로 갔다.
-      //  휘발을 앞에 두면 그 뒤는 영원히 캐시 프리픽스가 못 된다(2026-07-30 원칙).
-      text: context,
-      channel: msg.channel,
-      // 이 호출만의 임시 좌표 — internal 이라 저장되지 않지만, 실 세션 키와 섞지 않는다.
-      threadKey: `suggest:${msg.threadKey}`,
-      cwd: process.cwd(),
-      internal: true,
-      systemPromptOverride: SUGGESTION_SYSTEM_PROMPT,
-      leanMemory: true,
-    });
+
+    // ★`profile` 을 **실제로 쓴다** (2026-08-24). 설정 타입에 이 필드가 있고 주석이 "작고
+    //  빠른 것을 권장" 이라 적혀 있었는데, 파서만 읽고 **소비처가 0**이었다 — 적어도
+    //  아무 일도 안 일어나는 손잡이였다([[feedback_hand_maintained_lists]] 와 같은 부류:
+    //  있는데 안 도는 것). 그래서 제안은 늘 기본 프로파일(=비서 본체와 같은 무거운 풀)로
+    //  돌았다. 미지정이면 종전 그대로 기본 프로파일이다(회귀 0).
+    const { chain, missing } = resolveSuggestionChain(
+      suggestSettings.profile,
+      (name) => resolveModelChain(name, process.cwd()),
+    );
+    // 이름은 적혔는데 그런 프로파일이 없다 — 조용히 기본으로 떨어지면 위와 같은 병이다.
+    if (missing !== null && !warnedSuggestionProfiles.has(missing)) {
+      warnedSuggestionProfiles.add(missing);
+      console.warn(
+        `next-message-suggestion: 프로파일 '${missing}' 을(를) 못 찾아 기본 프로파일로 ` +
+          `돕니다 (settings.json suggestions.nextMessage.profile 확인).`,
+      );
+    }
+
+    // ★데드라인 — 상수 주석(SUGGESTION_DEADLINE_MS)에 근거가 있다. 사유를
+    //  TurnTimeoutError 로 주는 것이 핵심이다: runPool·runRegionA 가 이 사유를 보면
+    //  폴백을 단락한다. 안 그러면 30초 뒤 다음 모델로 또 200초를 쓴다.
+    const deadlineAc = new AbortController();
+    const deadlineTimer = setTimeout(
+      () => deadlineAc.abort(suggestionDeadlineReason()),
+      SUGGESTION_DEADLINE_MS,
+    );
+    // 데몬 종료를 이 타이머가 붙잡지 않게 — 아래 finally 가 정리하지만 그 사이도 막는다.
+    deadlineTimer.unref?.();
+    let out;
+    try {
+      out = await runRegionA(
+        {
+          // ★컨텍스트만 싣는다 — 생성 규칙은 systemPromptOverride(안정·앞)로 갔다.
+          //  휘발을 앞에 두면 그 뒤는 영원히 캐시 프리픽스가 못 된다(2026-07-30 원칙).
+          text: context,
+          channel: msg.channel,
+          // 이 호출만의 임시 좌표 — internal 이라 저장되지 않지만, 실 세션 키와 섞지 않는다.
+          threadKey: `suggest:${msg.threadKey}`,
+          cwd: process.cwd(),
+          internal: true,
+          systemPromptOverride: SUGGESTION_SYSTEM_PROMPT,
+          leanMemory: true,
+          abortSignal: deadlineAc.signal,
+        },
+        chain.length > 0 ? { chain } : undefined,
+      );
+    } finally {
+      clearTimeout(deadlineTimer);
+    }
     const text = normalizeSuggestion(out.text ?? "");
     if (text === null) return; // 모델이 확신 없으면 빈 줄 — 억지 제안보다 없는 게 낫다.
     publishSuggestion(msg.threadKey, text, {

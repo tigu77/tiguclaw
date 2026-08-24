@@ -17,9 +17,31 @@
  */
 import { getEventBus } from "./eventbus.js";
 import { loadSettingsLayers } from "./settings.js";
+import { TurnTimeoutError } from "./llm-runtime/turn-timeout.js";
 
 /** 제안 1건의 상한 — 한 문장이면 충분하고, 길면 고스트가 입력창을 덮는다. */
 export const SUGGESTION_MAX_CHARS = 120;
+
+/**
+ * 이 호출의 **데드라인** (2026-08-24).
+ *
+ * ★범용 턴 wall-clock 상한의 부활이 **아니다.** 그건 2026-06-23 에 일부러 없앴다 —
+ *  정상적으로 긴 작업을 시계로 자르면 되돌릴 수 없기 때문이다(`turn-timeout.ts` 참조).
+ *  여기엔 그 논리가 안 맞는다: 제안은 **사용자가 입력창을 볼 때 거기 있어야** 값이 있고,
+ *  늦게 도착한 제안은 값이 0이 아니라 **음수**다(이미 다음 말을 친 사람에게 엉뚱한 고스트).
+ *
+ * ★값은 직감이 아니라 실측이다 — 이 기능 자신의 수치다(2026-08-18, `ghost-suggest.js`):
+ *  턴→제안 간격 **중앙 3.9초 · 최대 11.9초**. 30초는 그 최대의 2.5배라 정상 동작은
+ *  하나도 안 자른다. 자르는 건 딱 병리적인 쪽이다 — 2026-08-24 회사 인스턴스 실측:
+ *  529 과부하에서 claude-opus-5 가 SDK 내부 재시도로 **199,146ms · 200,599ms ·
+ *  194,271ms** 를 쓰고 매 턴 반복했다(그러고 codex 로 폴백해 3분 늦은 제안을 냈다).
+ *
+ * ★abort 사유로 `TurnTimeoutError` 를 **재사용**한다(새 타입 안 만든다). 그 타입이
+ *  정확히 이 일을 하도록 남아 있다 — `runPool`·`runRegionA` 둘 다 이 사유를 보면
+ *  폴백을 **명시 단락**한다. 데드라인을 넘긴 뒤 다음 모델로 또 200초를 쓰면 데드라인이
+ *  아니다. `isModelRejected` 비매칭도 그 타입이 보장한다(TT-I3).
+ */
+export const SUGGESTION_DEADLINE_MS = 30_000;
 
 export interface SuggestionSettings {
   enabled: boolean;
@@ -53,6 +75,42 @@ export const readSuggestionSettings = (cwd?: string): SuggestionSettings => {
 };
 
 /**
+ * 이 호출이 쓸 **풀 체인** — 설정의 `profile` 을 실제 체인으로 바꾼다 (2026-08-24).
+ *
+ * ★판정을 여기 둔 이유(Q7): 종전엔 이 결정이 `index.ts` 의 핸들러 안에 있어서 **동작을
+ *  검사하려면 데몬을 띄워야** 했다. 그래서 그물이 소스 grep 밖에 못 됐고, 실제로 이
+ *  기능은 **`profile` 을 읽고도 안 쓰는 채로** 살아 있었다. 순수 함수로 빼면 그물이
+ *  동작을 본다.
+ * ★`resolve` 를 주입받는다 — llm-runtime 을 import 하지 않으려는 것이다(이 모듈은 설정과
+ *  프롬프트만 아는 자리다). 제네릭이라 타입 의존도 없다.
+ *
+ * @returns `chain` 빈 배열 = 기본 프로파일로 돌라는 뜻(미지정이거나 이름이 없거나).
+ *          `missing` 이 non-null = **이름은 적혔는데 그런 프로파일이 없다**(호출자가 말해야 한다).
+ */
+export const resolveSuggestionChain = <T>(
+  profile: string | undefined,
+  resolve: (name: string) => T[],
+): { chain: T[]; missing: string | null } => {
+  if (profile === undefined || profile.trim() === "") {
+    return { chain: [], missing: null };
+  }
+  const chain = resolve(profile);
+  return chain.length > 0
+    ? { chain, missing: null }
+    : { chain: [], missing: profile };
+};
+
+/**
+ * 데드라인 abort 사유 — **타입이 곧 계약**이다.
+ *
+ * ★`runPool`·`runRegionA` 는 `TurnTimeoutError` 를 보면 폴백을 **명시 단락**한다. 평범한
+ *  `Error` 로 바꾸면 abort 는 되지만 폴백이 살아나서, 30초 뒤 다음 모델로 또 200초를
+ *  쓴다 — 데드라인이 데드라인이 아니게 된다. 그래서 이걸 함수로 두고 검사가 본다.
+ */
+export const suggestionDeadlineReason = (): Error =>
+  new TurnTimeoutError(SUGGESTION_DEADLINE_MS);
+
+/**
  * 제안을 만들 자리인가 — **사용자가 실제로 보고 쓸 수 있는 세션**만.
  *
  * 스케줄러·워커·서브에이전트·엔드포인트 턴에도 만들면 아무도 안 보는 제안에 매번
@@ -68,6 +126,26 @@ export const shouldSuggestForThread = (threadKey: string): boolean => {
   }
   return true;
 };
+
+/**
+ * 제안을 만들 **턴**인가 — 자리(위)에 더해 **누가 말했나**를 본다 (2026-08-24).
+ *
+ * ★사용자 지정: *"워커 완료턴에 제안이 나갈 이유가 없지 — 무조건 내 입력에 대한 첫 응답 1회."*
+ *
+ * 종전엔 좌표(threadKey)만 봤다. 그래서 파생 **스레드**(`worker:`·`agent:`…)는 걸렀지만,
+ * 워커가 끝나고 그 결과를 **소환한 세션 좌표로 재주입**하는 합성 턴은 못 걸렀다 —
+ * `dashboard:…` 로 들어오니 접두사 검사를 그냥 통과한다. 사용자는 아무것도 안 쳤는데
+ * 제안 호출이 한 번 더 나갔다(백그라운드 작업이 몰리면 그만큼 더).
+ *
+ * ★이 판정을 **위 함수에 합치지 않고 감싼** 이유: 둘은 다른 질문에 답한다(Q8) —
+ *  위는 *"이 자리가 사람이 보는 세션인가"*, 여기는 *"이번 턴을 사람이 열었나"*.
+ *  합치면 좌표만 아는 호출자가 쓸 수 없게 되고, 나누면 각자 자기 질문에만 답한다.
+ *  대신 **호출부는 이 함수 하나만** 쓴다 — 두 검사를 손으로 나열하면 한쪽이 빠진다.
+ */
+export const shouldSuggestForTurn = (msg: {
+  threadKey: string;
+  synthetic?: boolean;
+}): boolean => shouldSuggestForThread(msg.threadKey) && msg.synthetic !== true;
 
 /** 모델이 뱉은 것을 고스트에 쓸 수 있는 한 줄로 정리. 못 쓰겠으면 `null`. */
 export const normalizeSuggestion = (raw: string): string | null => {

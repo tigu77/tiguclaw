@@ -14,6 +14,7 @@
 import {
   readSuggestionSettings,
   shouldSuggestForThread,
+  shouldSuggestForTurn,
   normalizeSuggestion,
   buildRecentContext,
   SUGGESTION_CONTEXT_TURNS,
@@ -60,6 +61,29 @@ const run = async (): Promise<Assertion[]> => {
       name: "빈 threadKey 는 안 만든다",
       ok: !shouldSuggestForThread(""),
       got: `""=${String(shouldSuggestForThread(""))} (기대 false)`,
+    });
+
+    // ★좌표만으로는 못 거르는 턴이 있다 (2026-08-24 사용자 지정: "워커 완료턴에 제안이
+    //  나갈 이유가 없지 — 무조건 내 입력에 대한 첫 응답 1회").
+    //  워커 완료 재주입은 **소환한 세션 좌표**(`dashboard:…`)로 들어오므로 위 접두사 검사를
+    //  그냥 통과한다 — 사용자는 아무것도 안 쳤는데 제안 호출이 나갔다.
+    const human = { threadKey: "dashboard:default" };
+    out.push({
+      name: "★합성 턴(워커 완료 재주입 등)엔 안 만든다 — 사용자가 친 게 아니다",
+      ok: !shouldSuggestForTurn({ ...human, synthetic: true }),
+      got: `synthetic=true → ${String(shouldSuggestForTurn({ ...human, synthetic: true }))} (기대 false)`,
+    });
+    out.push({
+      name: "사용자가 친 턴엔 만든다(합성 아님)",
+      ok:
+        shouldSuggestForTurn(human) &&
+        shouldSuggestForTurn({ ...human, synthetic: false }),
+      got: `미지정=${String(shouldSuggestForTurn(human))} false=${String(shouldSuggestForTurn({ ...human, synthetic: false }))}`,
+    });
+    out.push({
+      name: "합성이 아니어도 파생 좌표면 여전히 안 만든다(두 축이 함께 걸린다)",
+      ok: !shouldSuggestForTurn({ threadKey: "worker:abc" }),
+      got: `worker:abc → ${String(shouldSuggestForTurn({ threadKey: "worker:abc" }))}`,
     });
   }
 

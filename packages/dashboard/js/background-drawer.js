@@ -1062,16 +1062,27 @@
       };
 
       // 🛠 스킬 스텝 인식 (2026-07-14) — invoke_skill 도구 호출을 스킬 배지로 승격한다.
-      // 스킬명은 공유 detail 빌더(_activity-detail.ts)가 "name=<skill>"(path 지정 시
-      // "path=…, name=<skill>") 로 실어 보낸 p.detail 에서 뽑는다 — 세 어댑터(claude/codex/
-      // openai) 가 같은 빌더를 써 포맷이 동일하므로 LLM-agnostic(원칙 #2). 코어/어댑터는
-      // 스킬 개념을 모르는 채(generic invoke_skill 도구)로 두고, "스킬"이라는 표현은 뷰에서만.
+      // 스킬명은 공유 detail 빌더(_activity-detail.ts)가 `key=value, …` 로 실어 보낸
+      // p.detail 에서 뽑는다 — 세 어댑터(claude/codex/openai) 가 같은 빌더를 써 포맷이
+      // 동일하므로 LLM-agnostic(원칙 #2). 코어/어댑터는 스킬 개념을 모르는 채(generic
+      // invoke_skill 도구)로 두고, "스킬"이라는 표현은 뷰에서만.
+      //
+      // ★**순서를 가정하지 않는다** (2026-08-24 사용자 신고: "프로젝트 전용 스킬이라
+      //  그런가 배지에 물음표로 나올 때가 있네"). 종전엔 `name=([^,]*)$` — **끝 앵커**였고
+      //  주석엔 *"path 지정 시 `path=…, name=<skill>`"* 이라 적혀 있었다. 그런데 빌더가
+      //  2026-08-20 에 **식별자를 앞으로** 옮겼다(`spawn_agent` 요약에서 name 이 접히던 것을
+      //  고치며 IDENTITY_KEYS 를 최우선으로). 그래서 실물은 `name=tech-radar, path=/Users/…`
+      //  가 됐고, 끝 앵커는 **path 가 붙는 순간 전부 실패**했다 — 즉 `path` 를 넘기는
+      //  프로젝트 전용 스킬은 항상 `?`. (실측 DB: `name=tech-radar, path=/Users/…` ·
+      //  `name=news-digest, path=` — 빈 path 도 콤마를 만들어 똑같이 깨졌다.)
+      //  ★부류: A(빌더 순서)를 바꾸고 A에 의존하던 B(이 파서)를 안 본 것. 여기 주석이
+      //   그 낡은 순서를 **사실처럼** 적어두고 있어서 더 안 보였다.
       // 반환: {name} 이면 스킬 스텝, null 이면 일반 도구/활동(기존 렌더 그대로).
       function skillStepInfo(p) {
         if (!p || (p.kind && p.kind !== "tool") || p.label !== "invoke_skill") return null;
         const d = typeof p.detail === "string" ? p.detail : "";
-        // 마지막 name= 세그먼트를 끝 앵커·콤마 비월경으로 잡는다(path 가 앞설 수 있음).
-        const m = d.match(/name=([^,]*)$/);
+        // 세그먼트 경계(문자열 앞 또는 ", ")에 붙은 첫 `name=` — 앞뒤 어디에 있든 잡는다.
+        const m = d.match(/(?:^|,\s*)name=([^,]*)/);
         const name = m && m[1] ? m[1].trim() : "";
         return { name: name || "?" }; // 파싱 실패해도 스킬 스텝임은 배지로 확실히.
       }

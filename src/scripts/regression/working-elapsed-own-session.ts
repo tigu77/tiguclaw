@@ -96,6 +96,8 @@ export const check: RegressionCheck = {
       ],
       MINE,
     );
+    // ④③과 **같은 내 턴**인데 남의 세션만 없다 — ③과 글자 하나도 달라지면 안 된다.
+    const d = paint([[MINE, now - 5_000]], MINE);
 
     return [
       assert(
@@ -124,10 +126,19 @@ export const check: RegressionCheck = {
         c.elapsed === "5초",
         `elapsed=${JSON.stringify(c.elapsed)}`,
       ),
+      // ★2026-08-24 **뒤집혔다.** 종전엔 여기서 `(+N)` 을 **요구**했다 — 2026-08-06 에 남의
+      //  경과시간을 걷어내면서 "그래도 도는 사실은 남기자(정보 손실 0)" 로 정한 흔적이다.
+      //  사용자 판정: *"어차피 세션별로 나오는 부분이라 다른 세션 내용이 들어갈 필요는 없지
+      //  않아?"* — 이 줄은 내 입력창 바로 위라 한 가지만 말해야 하고, 이름도 링크도 없는
+      //  숫자로는 할 수 있는 게 없다. 다른 세션이 도는 사실은 **세션 탭의 진행 점**이 말한다.
+      // ★판정을 "문구에 (+N) 이 없다" 로 쓰지 않는다 — 표기만 바꿔(`외 1건`) 되살릴 수 있다.
+      //  ③(남의 세션 있음)과 ④(없음)의 **출력이 같은지**를 본다.
       assert(
-        "다른 세션이 도는 사실은 (+N) 으로 남는다(정보 손실 0)",
-        c.label.includes("(+1)") && c.label.includes("돌쇠"),
-        `label=${JSON.stringify(c.label)}`,
+        "★남의 세션이 도는지는 내 줄을 **바꾸지 않는다**(한 자리는 한 가지만 말한다)",
+        c.label === d.label && c.elapsed === d.elapsed,
+        c.label === d.label
+          ? `남 1개 있으나 없으나 ${JSON.stringify(c.label)}`
+          : `★남의 세션이 내 줄을 바꿨다: ${JSON.stringify(d.label)} → ${JSON.stringify(c.label)}`,
       ),
       // ── ★내가 안 시킨 턴은 "왜 도는지" 를 말한다 (2026-08-13) ──
       // 사용자: "매니저나 에이전트가 일을 끝내고 메인비서가 정리하는 시점에 뭘 하는지

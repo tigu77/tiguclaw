@@ -50,12 +50,15 @@
         if (v.mineActive) {
           const doing = doingText(v.phase); // 잡 카드와 **같은 판정**(util.js 정의점).
           const why = v.reason ? " · " + v.reason : "";
-          // 다른 세션도 도는 사실은 세션 탭의 진행 점이 이미 알려준다 — 여기선 개수만.
-          const extra = v.otherCount > 0 ? " (+" + v.otherCount + ")" : "";
+          // ★다른 세션 이야기는 **여기 안 쓴다** (2026-08-24 사용자 지정: "어차피 세션별로
+          //  나오는 부분이라 다른 세션 내용이 들어갈 필요는 없지 않아?"). 종전엔 `(+N)` 을
+          //  붙였는데, 이 줄은 **내 입력창 바로 위**라 누구나 자기 요청 상태로 읽는다 —
+          //  거기 남의 세션 수를 얹으면 한 자리가 두 가지를 말한다. 이름도 링크도 없는
+          //  숫자여서 보고 할 수 있는 것도 없었다. 그 사실은 세션 탭의 진행 점이 말한다.
           return {
             show: true,
             idle: false,
-            label: name + " · " + doing + why + extra + (v.mineStart ? " ·" : ""),
+            label: name + " · " + doing + why + (v.mineStart ? " ·" : ""),
             elapsed: v.mineStart ? fmtElapsed(v.now - v.mineStart) : "",
           };
         }
@@ -87,7 +90,6 @@
           mineActive: activeTurns.has(activeThreadKey),
           // ★`get` 은 복원분에서 null 이다(시작시각을 모른다) — 그대로 넘긴다.
           mineStart: activeTurns.get(activeThreadKey) ?? null,
-          otherCount: activeTurns.size - (activeTurns.has(activeThreadKey) ? 1 : 0),
           phase: turnPhase.get(activeThreadKey) ?? null,
           reason: turnReason.get(activeThreadKey) ?? "",
           bgRunning: myRunningBgJobs(),

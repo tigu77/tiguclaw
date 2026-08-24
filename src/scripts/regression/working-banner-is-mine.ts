@@ -102,6 +102,10 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // (남의 세션 수가 내 줄에 안 섞이는지는 **배선 쪽**이 본다 — `working-elapsed-own-session`
+    //  이 실물 `paintWorking` 으로 ③남 있음 / ④남 없음의 출력을 비교한다. 같은 판단을 두
+    //  파일에 적지 않는다.)
+
     // ② 백그라운드만 도는 경우 = 대기 중(다른 상태).
     const bg = view({ ...base, mineActive: false, mineStart: null, otherCount: 0, bgRunning: 2 });
     out.push(

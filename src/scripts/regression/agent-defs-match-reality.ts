@@ -112,19 +112,43 @@ export const check: RegressionCheck = {
 
     // ★④ .claude/(내가 읽음) ↔ .tiguclaw/(데몬이 읽음) 사본이 안 갈렸는가.
     //  스킬에서 실제로 갈렸다(principle-check Q0 누락) — 에이전트도 같은 두 벌 구조다.
+    //
+    // ★2026-08-24: **`model:` 한 줄만 예외**다. 종전엔 "한 글자도 안 다르다" 였는데, 그건
+    //  두 파일의 소비자가 같다고 본 것이다 — 아니다. `.claude/` 는 Claude Code 가 읽어
+    //  **모델 이름**(opus·sonnet)을 요구하고, `.tiguclaw/` 는 데몬이 읽어 **프로파일
+    //  이름**(high·mid)을 요구한다. 같게 두면 한쪽이 반드시 깨지고, 실제로 `.claude/` 쪽이
+    //  깨져 있었다(서브에이전트 기동 2회 실패 → 사용자 지시로 수정). 소비자별 유효성은
+    //  `agent-model-vocabulary` 가 본다. 여기선 **나머지 전부**가 같은지를 본다 — 지침·담당
+    //  파일·손자 금지가 갈리는 게 원래 이 단언의 목적이었다.
     const mirror = path.join(REPO, ".tiguclaw/agents");
+    const withoutModel = (t: string): string => t.replace(/^model:.*$/m, "model:<소비자별>");
     const drift = existsSync(mirror)
       ? names.filter(
           (f) =>
             !existsSync(path.join(mirror, f)) ||
-            readFileSync(path.join(mirror, f), "utf8") !== src.get(f),
+            withoutModel(readFileSync(path.join(mirror, f), "utf8")) !==
+              withoutModel(src.get(f) ?? ""),
         )
       : names;
     out.push(
       assert(
-        "★.claude/agents 와 .tiguclaw/agents 가 한 글자도 안 다르다",
+        "★.claude/agents 와 .tiguclaw/agents 가 `model:` 말고는 한 글자도 안 다르다",
         existsSync(mirror) && drift.length === 0,
         drift.length === 0 ? `대조 ${names.length}개 · 드리프트 0` : `★드리프트: ${drift.join(", ")}`,
+      ),
+      // ★예외가 **예외로만** 남는지 — `model:` 줄이 실제로 갈려 있어야 이 완화가 정당하다.
+      //  둘이 같아졌다면 한쪽 소비자가 깨진 것이니(둘 다 만족하는 값은 없다) 여기서 잡는다.
+      assert(
+        "★그 `model:` 은 실제로 소비자별로 갈려 있다(완화가 빈 예외로 굳지 않게)",
+        !existsSync(mirror) ||
+          names.every((f) => {
+            const a = /^model:\s*(\S+)/m.exec(src.get(f) ?? "")?.[1];
+            const b = /^model:\s*(\S+)/m.exec(
+              existsSync(path.join(mirror, f)) ? readFileSync(path.join(mirror, f), "utf8") : "",
+            )?.[1];
+            return a === undefined && b === undefined ? true : a !== b;
+          }),
+        existsSync(mirror) ? `${names.length}개 대조` : "미러 없음(배포 레포)",
       ),
     );
     return out;

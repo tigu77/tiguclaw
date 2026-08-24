@@ -95,7 +95,29 @@ try {
   const r2 = applyModelReasoning({ model: "opus", effort: "low", profile: "없는프로파일", cwd: home });
   out.toolRefuses = r2.ok === false;
 
-  // ⑥ 프로파일 미지정 = 종전대로 전역.
+  // ⑥ ★프로젝트 층이 같은 이름 프로파일을 들고 있으면 — 우리는 홈에만 쓰는데 유효값은
+  //  프로젝트가 이긴다. 종전엔 그때도 "됐습니다" 라고 답했다(적대 검토 P1, 실측 재현).
+  {
+    const proj = path.join(home, "proj");
+    mkdirSync(path.join(proj, ".tiguclaw"), { recursive: true });
+    writeFileSync(
+      path.join(proj, ".tiguclaw", "settings.json"),
+      JSON.stringify({
+        models: {
+          profiles: {
+            quick: { pool: [{ model: "anthropic:claude-opus-5", reasoning: "low" }] },
+          },
+        },
+      }) + "\n",
+      "utf8",
+    );
+    const r3 = applyModelReasoning({ model: "opus", effort: "max", profile: "quick", cwd: proj });
+    out.projectShadowRefused = r3.ok === false;
+    out.projectShadowText = r3.text;
+    out.projectShadowEffective = loadModelProfiles(proj).quick?.pool[0]?.reasoning ?? null;
+  }
+
+  // ⑦ 프로파일 미지정 = 종전대로 전역.
   applyModelReasoning({ model: "sol", effort: "high", cwd: home });
   out.globalStillWorks = read().models?.reasoning?.["codex:gpt-5.6-sol"] ?? null;
 } catch (e) {

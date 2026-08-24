@@ -9,10 +9,19 @@
  *  우리 루프(`spawn_agent`)로 오면 갈린다 — `resolveModelChain("opus")` 는 프로파일 조회에
  *  실패해 레거시 단일 풀로 떨어지고, **그 에이전트만 멀티 LLM 밖에 남는다**(원칙 2 위반).
  *
- * ★한쪽만 우리 어휘로 바꾸면 안 된다 — `agent-defs-match-reality` 가 두 미러의 **완전 동일**을
- *  요구한다. 그리고 그럴 필요도 없다: Claude Code 는 `high` 를 못 알아듣고 **세션 모델을
- *  상속**하는데, 그게 사용자가 `/model` 로 쥔 값이라 의도대로다. 즉 우리 어휘를 양쪽에 쓰면
- *  데몬은 풀·폴백을 받고 Claude Code 는 상속으로 떨어져 **둘 다 맞는다**.
+ * ★**2026-08-24 정정 — 위 문단의 전제가 틀렸다.** 종전엔 "Claude Code 는 `high` 를 못
+ *  알아듣고 세션 모델을 **상속**하니 양쪽에 우리 어휘를 써도 둘 다 맞는다" 고 적혀 있었다.
+ *  그런데 실제로는 **상속이 아니라 기동 실패**다 — `.claude/agents/*` 가 `model: high|mid`
+ *  인 채로 서브에이전트를 띄우려다 **두 번 연달아 실패**했고(적대 검토 팀), `general-purpose`
+ *  + 명시 `model: opus` 로 우회해야 돌았다. 사용자 판단: **"수정해야지."**
+ *
+ * ★그래서 규칙은 "우리 어휘로 통일" 이 아니라 **소비자별 유효성**이다:
+ *    `agents/`·`.tiguclaw/agents/` (데몬이 읽음)      → 프로파일 이름. SDK 티어명 금지.
+ *    `.claude/agents/`             (Claude Code 가 읽음) → 모델 이름. 프로파일 이름 금지.
+ *  두 디렉터리는 심링크가 아니라 **별개 사본**이라(실측 `ls -la`) 각자 자기 소비자 문법을
+ *  들 수 있다. 미러 동일성은 `agent-defs-match-reality` 가 보되 **`model:` 줄만 예외**다.
+ *  ★이건 "이름이 같으니 묶자" 가 아니라 [[project_manager_agent_naming]] 과 같은 결론이다 —
+ *   **UI·모델 대면만 개명하고 식별자는 그대로**, 즉 자리마다 그 자리의 어휘를 쓴다.
  *
  * ★이름 목록을 만들지 않는다: 금지 어휘(SDK 티어명)는 `mapTierToSdkModel` 이 인식하는 값이고,
  *  대상 디렉터리는 "데몬이 읽는가"로 정한다.
@@ -33,6 +42,14 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** claude SDK 네이티브 티어 어휘 — 데몬 자산이 쓰면 프로파일 풀·폴백을 잃는다. */
 const SDK_TIER_WORDS = new Set(["opus", "sonnet", "haiku"]);
+
+/**
+ * 우리 프로파일 이름 — `.claude/agents/` 가 쓰면 Claude Code 가 **기동에 실패**한다.
+ * ★목록을 손으로 적지 않는다([[feedback_hand_maintained_lists]]): 데몬 자산이 실제로 쓰는
+ *  값에서 뽑는다. 프로파일을 새로 만들어 `agents/` 에 쓰면 `.claude/` 금지어도 같이 는다.
+ */
+const profileWordsFrom = (lists: Array<Array<{ file: string; model: string }>>): Set<string> =>
+  new Set(lists.flat().map((x) => x.model).filter((m) => !SDK_TIER_WORDS.has(m)));
 
 /** `<dir>` 안 .md 의 `model:` 값 목록. 디렉터리 부재는 null(배포 레포엔 없는 경로가 있다). */
 const modelValues = async (
@@ -77,11 +94,15 @@ export const check: RegressionCheck = {
       }
     }
 
-    // ★Claude Code 용 자산에도 같은 규칙 — 사용자 지정(2026-08-08): "opus/sonnet 은 클로드
-    //  개념이고 우리 개념에 맞게 적용해야지". 처음엔 여기만 SDK 어휘를 **유지하라**고 검사했는데,
-    //  그건 남의 어휘를 우리 레포의 불변식으로 박는 것이었다.
+    // ★`.claude/agents/` 는 **다른 소비자**다 — 우리 어휘를 박으면 기동이 깨진다(위 정정).
     const ccList = await modelValues(path.join(root, ".claude/agents"));
-    const ccOk = ccList === null || ccList.every((x) => !SDK_TIER_WORDS.has(x.model));
+    const daemonLists: Array<Array<{ file: string; model: string }>> = [];
+    for (const rel of daemonDirs) {
+      const l = await modelValues(path.join(root, rel));
+      if (l !== null) daemonLists.push(l);
+    }
+    const profileWords = profileWordsFrom(daemonLists);
+    const ccBad = (ccList ?? []).filter((x) => profileWords.has(x.model));
 
     return [
       assert(
@@ -95,13 +116,19 @@ export const check: RegressionCheck = {
         offenders.length === 0 ? notes.join(" · ") : offenders.join(", "),
       ),
       assert(
-        "★Claude Code 용 자산에도 클로드 어휘를 박지 않는다(못 알아들으면 상속 = 의도대로)",
-        ccOk,
+        "★`.claude/agents` 는 **모델 이름**을 쓴다(프로파일 이름이면 서브에이전트가 안 뜬다)",
+        ccBad.length === 0,
         ccList === null
           ? ".claude/agents 없음(배포 레포)"
-          : ccList.length === 0
-            ? "model 지정 0개(상속)"
-            : ccList.map((x) => x.model).join(","),
+          : ccBad.length === 0
+            ? `${ccList.length}개 · ${ccList.map((x) => x.model).join(",")}`
+            : `★프로파일 이름이 박혔다: ${ccBad.map((x) => `${x.file}=${x.model}`).join(", ")}`,
+      ),
+      // ★금지어를 실제로 들고 있는지 — 빈 Set 이면 위 단언이 항상 초록이 된다(가짜 검사).
+      assert(
+        "금지어 목록이 데몬 자산에서 실제로 뽑혔다(빈 목록으로 통과하지 않는다)",
+        profileWords.size > 0 || daemonLists.length === 0,
+        profileWords.size > 0 ? [...profileWords].sort().join(",") : "데몬 자산 없음(배포 레포)",
       ),
     ];
   },

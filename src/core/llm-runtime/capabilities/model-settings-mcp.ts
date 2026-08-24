@@ -102,6 +102,20 @@ export const resolveModelKey = (input: string, keys: string[]): KeyResolution =>
  *  일어난다 — 이 레포가 반복해서 당한 부류다([[feedback_gate_must_actually_run]] 의 반대편:
  *  했다고 말하는 것과 된 것은 다르다).
  */
+/**
+ * **병합본 기준** 그 프로파일의 그 spec 에 실제로 적용될 강도(없으면 undefined).
+ *
+ * ★`loadModelProfiles` 는 홈→프로젝트 병합이고 같은 이름이면 프로젝트가 이긴다. 그래서
+ *  "내가 쓴 값이 실제로 유효한가" 는 이 함수로만 답할 수 있다 — 홈 파일을 되읽는 것으로는
+ *  프로젝트가 덮은 경우를 못 본다.
+ */
+const poolReasoningOf = (
+  profile: string,
+  spec: string,
+  cwd: string,
+): string | undefined =>
+  loadModelProfiles(cwd)[profile]?.pool.find((e) => e.spec === spec)?.reasoning;
+
 export const applyModelReasoning = (args: {
   model: string;
   effort?: string;
@@ -148,6 +162,13 @@ export const applyModelReasoning = (args: {
   //  한 곳만 바꿨다고 믿는다.
   const profileName = args.profile?.trim() ?? "";
   if (profileName !== "") {
+    // ★쓰기 **전에** 그 프로파일이 어느 층에서 오는지 본다 (2026-08-24 적대 검토 P1).
+    //  우리는 **홈**에만 쓰는데(`setProfilePoolReasoning` → `getPaths().settings`) 해석은
+    //  홈+프로젝트 병합이고 **같은 이름이면 프로젝트가 통째로 이긴다**. 그래서 프로젝트에
+    //  같은 이름 프로파일이 있으면 홈에 아무리 써도 유효값이 안 바뀐다 — 그런데 종전엔
+    //  "됐습니다" 라고 답했다. 전역 갈래엔 이미 이 가드가 있는데(`stillOverridden`) **새로
+    //  만든 이 갈래만 그 재측정을 건너뛰었다.** 같은 기능의 두 갈래가 갈린 자리다.
+    const before = poolReasoningOf(profileName, key, cwd);
     const wrote = setProfilePoolReasoning(profileName, key, want);
     if (!wrote) {
       const names = Object.keys(loadModelProfiles(cwd));
@@ -158,6 +179,18 @@ export const applyModelReasoning = (args: {
           (names.length === 0
             ? "정의된 프로파일이 없습니다(빌트인 조립으로 도는 중 — 먼저 settings.json 에 프로파일을 만드세요)."
             : `있는 프로파일: ${names.join(", ")}`),
+      };
+    }
+    // ★쓰고 나서 **되읽는다.** 유효값이 우리가 쓴 값이 아니면 프로젝트 층이 덮은 것이다.
+    const effective = poolReasoningOf(profileName, key, cwd);
+    if (effective !== want) {
+      return {
+        ok: false,
+        text:
+          `홈 설정엔 썼지만 **실제로는 안 바뀝니다** — 프로젝트 설정(${path.join(cwd, ".tiguclaw/settings.json")})에 ` +
+          `같은 이름의 \`${profileName}\` 프로파일이 있어 그쪽이 통째로 이깁니다.\n` +
+          `유효값: ${before ?? "(없음)"} → ${effective ?? "(없음)"} (원한 값: ${want ?? "(해제)"}). ` +
+          `프로젝트 쪽 \`${profileName}\` 의 풀에서 고쳐야 실제로 반영됩니다.`,
       };
     }
     const global = loadModelReasoning(cwd).get(key);

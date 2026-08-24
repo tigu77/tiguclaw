@@ -50,8 +50,8 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "프로브가 실제로 돌았다(빈손 통과 금지)",
-      Object.keys(got).length >= 13 && got.error === undefined,
-      Object.keys(got).length >= 13 && got.error === undefined
+      Object.keys(got).length >= 16 && got.error === undefined,
+      Object.keys(got).length >= 16 && got.error === undefined
         ? `${Object.keys(got).length}개 판정 회수`
         : `★프로브 실패: ${tail}`,
     ),
@@ -108,6 +108,21 @@ const run = async (): Promise<Assertion[]> => {
       "★없는 프로파일·없는 모델엔 쓰지 않고, 도구가 그 사실을 말한다",
       got.noProfileWrite === false && got.noModelWrite === false && got.toolRefuses === true,
       `profile=${String(got.noProfileWrite)} model=${String(got.noModelWrite)} 도구거부=${String(got.toolRefuses)}`,
+    ),
+    assert(
+      "★프로젝트 층이 같은 이름 프로파일로 덮고 있으면 **됐다고 말하지 않는다**",
+      got.projectShadowRefused === true && got.projectShadowEffective === "low",
+      got.projectShadowRefused === true
+        ? `거부 + 유효값 ${String(got.projectShadowEffective)} 유지`
+        : `★"됐습니다" 라고 답함 — 유효값=${String(got.projectShadowEffective)}`,
+    ),
+    assert(
+      "그 거부가 **어디를 고쳐야 하는지** 말한다(조용한 무시 금지)",
+      typeof got.projectShadowText === "string" &&
+        String(got.projectShadowText).includes(".tiguclaw/settings.json"),
+      typeof got.projectShadowText === "string"
+        ? String(got.projectShadowText).split("\n")[0].slice(0, 70)
+        : "-",
     ),
     assert(
       "프로파일 미지정이면 종전대로 전역에 쓴다(회귀 0)",

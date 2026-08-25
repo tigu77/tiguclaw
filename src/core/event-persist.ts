@@ -317,6 +317,11 @@ const startChatLogPersistence = (bus: EventBus): void => {
       //  에러 클리어)까지 같이 꺼진다 — `publishInboundEcho` 주석이 2026-08-13 에 똑같이
       //  겪고 적어둔 함정이고, 어제 그걸 그대로 반복했다. 발행은 하고, 남기지만 않는다.
       if (payload.ephemeral === true) return;
+      // ★사본(egress fan-out) — **적재만** 건너뛴다 (2026-08-25). 대시보드에서 답한 말이
+      //  텔레그램으로도 나가면서 `chat_log` 에 두 줄이 됐다(원본 `dashboard:default` +
+      //  사본 `tg:<id>`). 대화는 한 번 일어난 일이다 — 배달이 는다고 대화가 늘지 않는다.
+      //  `ephemeral` 과 같은 자리에서 같은 방식으로 판정한다(적재를 막는 곳은 여기 하나).
+      if (payload.copyOfRecorded === true) return;
       recordChatMessage({
         ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
         threadKey,

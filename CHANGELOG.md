@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-08-25
+
+### Added
+
+- **모델 프로파일 배지 색을 대시보드에서 고릅니다.** 설정 → 모델 프로파일 카드에 실제
+  배지가 뜨고, 그 옆에서 색을 고르면 고르는 동안 바로 보입니다. 색을 정한 프로파일에만
+  「색 초기화」가 붙습니다. 이 색은 백그라운드 작업 카드·에이전트 카드에도 같이 적용돼,
+  "어느 프로파일로 돈 작업인가"가 화면마다 같은 색으로 보입니다.
+
+### Changed
+
+- **다음 메시지 제안이 답변과 함께 나옵니다.** 종전엔 답을 보낸 뒤 LLM 을 한 번 더 불러
+  제안 한 줄을 만들었습니다(그 호출만 매 턴 최대 39,600자를 다시 읽었고 캐시도 못 탔습니다).
+  이제 비서가 답변을 쓰면서 같이 내놓습니다 — 실측으로 제안에 쓰이던 시간이 2초에서
+  **0** 이 됐습니다. 켜고 끄는 것과 동작은 그대로입니다.
+- **배지에 프로파일 이름이 적은 그대로 뜹니다.** 종전엔 대문자로 바꿔 보여줬는데,
+  프로파일 이름을 직접 지으면(`gpt-high` 등) 그건 지은 이름이 아니게 됩니다.
+
+### Fixed
+
+- **아침 알림이 두 번 오던 것** — 예약 작업이 백그라운드 매니저에게 일을 넘기면, 결과가
+  같은 채널로 두 번 갔습니다. "이미 보낸 곳인가"를 채널 **이름**으로 판단해서, 목적지는
+  같은데 이름이 다른 경우를 못 걸렀습니다. 이제 실제 배달 주소로 판단합니다 — 주소가
+  다르면 종전처럼 그대로 보냅니다(자리를 비웠을 때 완료 알림이 오는 건 그대로입니다).
+- **답변 끝에 내부 표식이 잠깐 보이던 것** — 대시보드는 글자가 타이핑되듯 그려지는데,
+  그 경로에서 제안용 표식이 화면에 잠깐 스쳤습니다.
+
 ## [0.37.0] - 2026-08-24
 
 ### Added
@@ -1552,7 +1579,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.37.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.38.0...HEAD
+[0.38.0]: https://github.com/tigu77/tiguclaw/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/tigu77/tiguclaw/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/tigu77/tiguclaw/compare/v0.35.1...v0.36.0
 [0.35.1]: https://github.com/tigu77/tiguclaw/compare/v0.35.0...v0.35.1

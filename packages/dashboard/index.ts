@@ -15,6 +15,7 @@
  *  - GET  /api/context-menu-items → bridge GET /context-menu-items (JSON pass, 컨텍스트메뉴 외부 기여)
  *  - GET  /api/providers → bridge GET  /providers       (JSON pass)
  *  - GET  /api/model-profiles → bridge GET /model-profiles (JSON pass, 모델 프로파일 표시)
+ *  - POST /api/set-profile-color → bridge POST /set-profile-color (write, 배지 색)
  *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
  *  - POST /api/set-suggestion → bridge POST /set-suggestion (write, 다음 메시지 제안 on/off)
  *  - GET  /api/suggestion → bridge GET /suggestion (read, 현재 값)
@@ -469,6 +470,16 @@ const server = http.createServer((req, res) => {
     }
     // 기본 프로파일 포인터 설정 — bridge POST /set-default-profile (write 토큰 server-side
     // 주입, browser 미노출). body{name} 그대로 전달 — /api/session-name 과 동일 메커니즘.
+    // 프로파일 배지 색 — bridge POST /set-profile-color (write 토큰 server-side 주입).
+    if (pathname === "/api/set-profile-color" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-profile-color", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
     if (pathname === "/api/set-default-profile" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-default-profile", {

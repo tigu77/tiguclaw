@@ -98,30 +98,43 @@ const NOOP: DeltaStream = {
  * ★청크 경계를 넘어 쪼개질 수 있다(`<next-` + `message>`). 그래서 **태그의 접두가 될 수
  *  있는 꼬리는 보류**했다가 다음 청크와 이어 판정한다 — 안 그러면 반쪽 태그가 새어 나간다.
  */
-const NEXT_OPEN = "<next-message>";
-
-/** `buf` 의 꼬리 중 `NEXT_OPEN` 의 접두가 될 수 있는 가장 긴 길이. */
-const heldTailLength = (buf: string): number => {
-  const max = Math.min(buf.length, NEXT_OPEN.length - 1);
-  for (let n = max; n > 0; n -= 1) {
-    if (NEXT_OPEN.startsWith(buf.slice(buf.length - n))) return n;
-  }
-  return 0;
-};
+const OPEN_RE = /<\s*next[-_ ]message\s*[^>]*>/i;
+const CLOSE_RE = /<\s*\/\s*next[-_ ]message\s*>/i;
+/** 아직 태그가 될 **가능성이 있는** 꼬리인가 — `<`, `</n`, `<next-mess` … */
+const PARTIAL_RE = /^<\s*\/?\s*(n(e(x(t([-_ ](m(e(s(s(a(g(e\s*)?)?)?)?)?)?)?)?)?)?)?)?$/i;
 
 /**
- * 스트림 조각을 화면에 내보낼 부분과 보류할 부분으로 가른다. **순수 함수** — 검사가 실행으로 본다.
- *  - `emit`  : 지금 화면에 내보낼 텍스트
- *  - `hold`  : 다음 청크와 이어 볼 보류분(태그 접두 가능성)
- *  - `stop`  : 여는 태그를 만났다 → 이후 이 턴의 스트림은 전부 버린다
+ * 스트림 한 조각을 **상태와 함께** 가른다. 순수 함수 — 검사가 실행으로 본다.
+ *
+ * ★2026-08-25 적대 검토 P2: 종전엔 여는 태그를 보면 그 턴의 나머지를 **영구히** 버렸다
+ *  (되돌릴 수 없는 래치). 그래서 ①태그 뒤에 모델이 이어 쓰면 채팅 버블과 턴 뷰가 **서로
+ *  다른 답**을 보여줬고 ②codex 의 삼킨-실패 안내(`deltaStream.push` 로 화면에 미는 것)가
+ *  통째로 사라졌다 — 2026-08-08 사고("도구 카드만 남고 텍스트가 사라졌다")의 재발 경로다.
+ *  이제 **닫는 태그에서 해제**한다: 억제 구간은 태그 안쪽뿐이다.
  */
-export const splitAtSuggestionTag = (
+export const stepSuggestionStream = (
   pending: string,
-): { emit: string; hold: string; stop: boolean } => {
-  const at = pending.indexOf(NEXT_OPEN);
-  if (at >= 0) return { emit: pending.slice(0, at), hold: "", stop: true };
-  const held = heldTailLength(pending);
-  return { emit: pending.slice(0, pending.length - held), hold: pending.slice(pending.length - held), stop: false };
+  suppressing: boolean,
+): { emit: string; hold: string; suppressing: boolean } => {
+  let out = "";
+  let buf = pending;
+  let sup = suppressing;
+  for (;;) {
+    const re = sup ? CLOSE_RE : OPEN_RE;
+    const m = re.exec(buf);
+    if (m !== null) {
+      if (!sup) out += buf.slice(0, m.index); // 태그 앞은 정상 본문이다.
+      buf = buf.slice(m.index + m[0].length);
+      sup = !sup;
+      continue;
+    }
+    // 태그가 없다 — 꼬리가 **태그의 시작일 수 있으면** 다음 청크와 이어 보려고 보류한다.
+    const at = buf.lastIndexOf("<");
+    const tail = at >= 0 && !buf.slice(at).includes(">") ? buf.slice(at) : "";
+    const hold = tail !== "" && tail.length <= 24 && PARTIAL_RE.test(tail) ? tail : "";
+    if (!sup) out += buf.slice(0, buf.length - hold.length);
+    return { emit: out, hold, suppressing: sup };
+  }
 };
 
 export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
@@ -135,8 +148,8 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   // closeSegment() 전용 누적 버퍼 — coalesce 버퍼(buf)와 완전 별개(타이머 없음,
   // push() 시 동기 적재만). 이래야 setTimeout 지연이 세그먼트 경계 순서를 안 깬다.
   let segBuf = "";
-  // 제안 표식 억제 상태 — 여는 태그를 본 뒤엔 이 턴의 남은 스트림을 화면에 안 보낸다.
-  let tagSeen = false;
+  // 제안 표식 억제 상태 — **태그 안쪽만** 가린다(닫는 태그에서 해제, 적대 검토 P2).
+  let suppressing = false;
   let heldTail = "";
 
   const clearTimer = (): void => {
@@ -173,18 +186,10 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   return {
     push(delta: string): void {
       if (delta.length === 0) return;
-      if (tagSeen) return; // 태그 이후는 화면에 안 낸다(최종 text 는 어댑터가 따로 들고 있다).
-      const split = splitAtSuggestionTag(heldTail + delta);
+      const split = stepSuggestionStream(heldTail + delta, suppressing);
       heldTail = split.hold;
-      if (split.stop) {
-        tagSeen = true;
-        heldTail = "";
-      }
-      if (split.emit.length === 0) {
-        // 전부 보류됐다 — 태그일 수도 있는 꼬리는 다음 청크와 함께 판정한다.
-        if (split.stop) emit();
-        return;
-      }
+      suppressing = split.suppressing;
+      if (split.emit.length === 0) return; // 전부 태그 안쪽이거나 보류 — 화면엔 아직 없다.
       const shown = split.emit;
       segBuf += shown; // closeSegment() 용 — coalesce 타이머와 무관하게 즉시 동기 적재.
       buf += shown;
@@ -198,11 +203,13 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
     },
     flush(): void {
       // 보류분은 태그가 아니었던 것으로 확정 — 내보낸다(안 그러면 마지막 몇 글자가 사라진다).
-      if (!tagSeen && heldTail.length > 0) {
+      // 보류분은 태그가 아니었던 것으로 확정 — 내보낸다(안 그러면 마지막 몇 글자가 사라진다).
+      // 억제 중이면 그 꼬리는 태그 **안쪽**이므로 버린다.
+      if (!suppressing && heldTail.length > 0) {
         segBuf += heldTail;
         buf += heldTail;
-        heldTail = "";
       }
+      heldTail = "";
       emit(); // 잔여 발행 + 타이머 클리어(멱등 — buf 비면 no-op).
     },
     setModel(m: string | undefined): void {
@@ -212,7 +219,7 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
       // ★보류분을 여기서 확정한다 — 세그먼트 경계(도구 호출·턴 종료)를 태그가 가로지를 수는
       //  없다(태그는 답변 끝에 한 덩어리로 나온다). 안 흘려보내면 `<` 로 끝나는 정상 텍스트의
       //  마지막 몇 글자가 조용히 사라진다("본문은 한 글자도 안 깎는다"는 이 기능의 계약이다).
-      if (!tagSeen && heldTail.length > 0) {
+      if (!suppressing && heldTail.length > 0) {
         segBuf += heldTail;
         buf += heldTail;
         heldTail = "";

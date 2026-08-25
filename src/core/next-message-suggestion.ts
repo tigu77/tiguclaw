@@ -86,20 +86,19 @@ export const shouldSuggestForThread = (threadKey: string): boolean => {
   return true;
 };
 
-/**
- * 제안을 만들 **턴**인가 — 자리(위)에 더해 **누가 말했나**를 본다 (2026-08-24).
+/*
+ * ★삭제 기록 — `shouldSuggestForTurn` 은 없앴다 (2026-08-25).
  *
- * ★사용자 지정: *"워커 완료턴에 제안이 나갈 이유가 없지 — 무조건 내 입력에 대한 첫 응답 1회."*
+ * 2026-08-24 사용자 지정: *"워커 완료턴에 제안이 나갈 이유가 없지 — 무조건 내 입력에 대한
+ * 첫 응답 1회."* 그래서 좌표(threadKey)에 더해 `synthetic` 까지 보는 래퍼가 있었다.
  *
- * 종전엔 좌표(threadKey)만 봤다. 그래서 파생 **스레드**(`worker:`·`agent:`…)는 걸렀지만,
- * 워커가 끝나고 그 결과를 **소환한 세션 좌표로 재주입**하는 합성 턴은 못 걸렀다 —
- * `dashboard:…` 로 들어오니 접두사 검사를 그냥 통과한다. 사용자는 아무것도 안 쳤는데
- * 제안 호출이 한 번 더 나갔다(백그라운드 작업이 몰리면 그만큼 더).
+ * **그 지정이 다음 날 뒤집혔다**: *"메인턴이 응답을 보낼 때마다 제안을 받는 게 맞을 것
+ * 같은데"* — 워커 완료 정리 턴도 메인 턴이다. 그리고 제안이 메인 턴 안에서 같이 나오게
+ * 되면서(별도 호출 제거) 걸러야 할 **추가 호출 자체가 없어졌다.**
  *
- * ★이 판정을 **위 함수에 합치지 않고 감싼** 이유: 둘은 다른 질문에 답한다(Q8) —
- *  위는 *"이 자리가 사람이 보는 세션인가"*, 여기는 *"이번 턴을 사람이 열었나"*.
- *  합치면 좌표만 아는 호출자가 쓸 수 없게 되고, 나누면 각자 자기 질문에만 답한다.
- *  대신 **호출부는 이 함수 하나만** 쓴다 — 두 검사를 손으로 나열하면 한쪽이 빠진다.
+ * ★이 자리를 비워두지 않고 적는 이유: 함수만 지우고 설명을 남겼더니 **뒤집힌 지정이
+ *  코드에 살아남아** 다음 사람에게 반대를 가르쳤다(적대 검토 P-4 가 그걸 잡았다).
+ *  결정이 바뀌면 근거도 같이 바꿔야 한다 — 지우는 것도 근거를 남기는 일이다.
  */
 /** 모델이 뱉은 것을 고스트에 쓸 수 있는 한 줄로 정리. 못 쓰겠으면 `null`. */
 export const normalizeSuggestion = (raw: string): string | null => {
@@ -111,9 +110,12 @@ export const normalizeSuggestion = (raw: string): string | null => {
   // 여러 줄이면 첫 줄만 — 고스트는 한 줄짜리 자리다.
   const firstLine = t.split(/\r?\n/)[0]?.trim() ?? "";
   if (firstLine === "") return null;
-  return firstLine.length > SUGGESTION_MAX_CHARS
-    ? firstLine.slice(0, SUGGESTION_MAX_CHARS)
-    : firstLine;
+  if (firstLine.length <= SUGGESTION_MAX_CHARS) return firstLine;
+  let cut = firstLine.slice(0, SUGGESTION_MAX_CHARS);
+  // ★서로게이트 페어를 쪼개면 고스트에 `�` 가 뜬다(적대 검토 P4 실측). 반쪽이면 버린다.
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return cut;
 };
 
 /** 대시보드가 고스트로 그릴 수 있게 발행. 실패는 삼킨다(편의 기능). */
@@ -170,9 +172,26 @@ export const publishSuggestion = (
 //  물음이 유실되던 것(2026-08-10). 이제 그 물음을 쓴 모델이 제안도 쓴다.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NEXT_TAG_OPEN = "<next-message>";
-const NEXT_TAG_CLOSE = "</next-message>";
-const NEXT_TAG_RE = /<next-message>([\s\S]*?)<\/next-message>/g;
+export const NEXT_TAG_OPEN = "<next-message>";
+export const NEXT_TAG_CLOSE = "</next-message>";
+
+/**
+ * 태그 매칭은 **관용적**이다 (2026-08-25 적대 검토 P3).
+ *
+ * 종전엔 `<next-message>` **정확 일치**만 봤다. 실측으로 이런 변종이 전부 안 벗겨졌다:
+ * `<next-message >`(공백) · `<Next-Message>`(대소문자) · `<next_message>`(언더스코어).
+ * 모델은 형식을 미세하게 흔든다 — 그때 원문이 **그대로 사용자에게 간다.** 벗기는 쪽은
+ * 넓게 잡는 게 맞다(막을 것은 유출이지 문법이 아니다).
+ * ★전각(`＜`)은 **일부러 안 받는다**: 그건 사용자가 실제로 쓸 수 있는 문자다.
+ *
+ * ★그런데 넓히는 데도 대가가 있다 (2026-08-25 재검토 P-1). 처음엔 구분자를 **선택**으로
+ *  뒀더니 `<NextMessage />` 같은 **정상 마크업**을 먹었다 — 실측: `"컴포넌트는
+ *  <NextMessage /> 입니다. 그 다음 문장."` 에서 뒤 21자가 삭제됐다. 유출을 막으려다
+ *  **답변을 지우는 쪽이 더 나쁘다.** 그래서 구분자(`-`·`_`·공백)를 **필수**로 좁혔다:
+ *  우리가 실제로 본 변종은 전부 구분자를 갖는다.
+ */
+const NEXT_OPEN_RE_G = /<\s*next[-_ ]message\s*[^>]*>/gi;
+const NEXT_TAG_RE = /<\s*next[-_ ]message\s*[^>]*>([\s\S]*?)<\s*\/\s*next[-_ ]message\s*>/gi;
 
 /**
  * 메인 턴 시스템 프롬프트에 실리는 규칙. 자리 판정(메인인가·켜졌나)은 `prompt-assembly` 의
@@ -202,20 +221,26 @@ export const inlineSuggestionRule = (): string =>
 export const extractInlineSuggestion = (
   raw: string,
 ): { text: string; suggestion: string | null } => {
-  if (typeof raw !== "string" || !raw.includes(NEXT_TAG_OPEN)) {
-    return { text: typeof raw === "string" ? raw : "", suggestion: null };
-  }
+  if (typeof raw !== "string") return { text: "", suggestion: null };
+  NEXT_OPEN_RE_G.lastIndex = 0;
+  if (!NEXT_OPEN_RE_G.test(raw)) return { text: raw, suggestion: null };
   const found: string[] = [];
   const stripped = raw.replace(NEXT_TAG_RE, (_m, inner: string) => {
     found.push(inner);
     return "";
   });
+  // 닫는 태그 없이 잘린 출력 — 여는 태그부터 끝까지가 제안이고, 화면에선 지운다.
   let tail: string | null = null;
   let text = stripped;
-  const openAt = stripped.indexOf(NEXT_TAG_OPEN);
-  if (openAt >= 0) {
-    tail = stripped.slice(openAt + NEXT_TAG_OPEN.length);
-    text = stripped.slice(0, openAt);
+  NEXT_OPEN_RE_G.lastIndex = 0;
+  const m = NEXT_OPEN_RE_G.exec(stripped);
+  // ★**꼬리 근처일 때만** 버린다 (재검토 P-1). 닫는 태그가 없는 건 "스트림이 잘렸다" 는
+  //  뜻이고, 그러면 남은 건 제안 한 줄 정도다. 상한 없이 버리면 오탐 한 번에 답변 전부가
+  //  사라진다 — 유출보다 나쁜 실패다. 제안 상한의 두 배까지만 인정한다.
+  const UNCLOSED_TAIL_MAX = SUGGESTION_MAX_CHARS * 2;
+  if (m !== null && stripped.length - (m.index + m[0].length) <= UNCLOSED_TAIL_MAX) {
+    tail = stripped.slice(m.index + m[0].length);
+    text = stripped.slice(0, m.index);
   }
   const candidates = tail !== null ? [...found, tail] : found;
   let suggestion: string | null = null;
@@ -227,4 +252,21 @@ export const extractInlineSuggestion = (
     }
   }
   return { text: text.trimEnd(), suggestion };
+};
+
+/**
+ * 어댑터 출력에서 표식을 **뜯어 제자리에 반영**한다 (2026-08-25 적대 검토 A2).
+ *
+ * ★왜 함수인가: 종전엔 호출부에 `const picked = extract(...)` 와 `output.text = picked.text`
+ *  **두 문장**이 있었다. 적대 검토가 뒤 문장만 지우자 — 태그가 답변·transcripts·텔레그램·
+ *  이벤트 전부로 새는데 — 스위트가 초록이었다. 검사가 앞 문장의 **존재**만 봤기 때문이다.
+ *  한 함수로 묶으면 반쪽 적용이 불가능해지고, 그 함수는 실행으로 검사된다.
+ */
+export const applyInlineSuggestion = <T extends { text?: string; nextSuggestion?: string }>(
+  output: T,
+): T => {
+  const picked = extractInlineSuggestion(output.text ?? "");
+  output.text = picked.text;
+  if (picked.suggestion !== null) output.nextSuggestion = picked.suggestion;
+  return output;
 };

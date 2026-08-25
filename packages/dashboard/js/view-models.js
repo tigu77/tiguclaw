@@ -62,6 +62,54 @@
           //  되어 "어느 프로파일로 돈 작업인가" 가 두 화면에서 같은 신호로 보인다.
           { const c = profileColor(prof); if (c !== "") { name.style.color = c; card.style.borderLeft = "3px solid " + hexRgba(c, 0.55); } }
           head.appendChild(name);
+          // ★배지를 **여기서 보여준다** (2026-08-25 사용자: "모델프로필에서 배지를 표시해주면
+          //  되지 않을까"). 색은 화면을 보면서 고르는 것이라, 잡 카드에 실제로 뜰 모양을 그대로
+          //  옆에 놓고 그 자리에서 고르게 한다 — 저장하고 다른 화면 가서 확인하는 왕복을 없앤다.
+          //  배지 클래스는 잡 카드와 **같은 것**을 쓴다(`bg-job-tier`) — 미리보기가 실물과
+          //  다르면 그건 미리보기가 아니다.
+          const swatch = document.createElement("span");
+          swatch.className = "bg-job-tier model-color-preview";
+          swatch.textContent = prof.name;
+          paintProfileBadge(swatch, profileColor(prof));
+          head.appendChild(swatch);
+
+          const picker = document.createElement("input");
+          picker.type = "color";
+          picker.className = "model-color-input";
+          picker.value = profileColor(prof) || "#9aa7b7";
+          picker.title = "이 프로파일의 배지 색 — 잡 카드·에이전트 카드에 같은 색으로 뜹니다";
+          const saveColor = async (color) => {
+            picker.disabled = true;
+            try {
+              const r = await fetch("/api/set-profile-color", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: prof.name, color }),
+              });
+              const data = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+              showToast(color === null ? prof.name + " 배지 색 초기화" : prof.name + " 배지 색 변경", "good");
+              await fetchModelProfiles(); // 이름색·좌측선·배지까지 한 번에 재렌더.
+            } catch (e) {
+              showToast("색 변경 실패: " + e.message, "bad");
+              picker.disabled = false;
+            }
+          };
+          // `input` 은 드래그 중 초당 수십 번 온다 — 저장은 `change`(고르기 끝) 한 번만.
+          // 미리보기는 `input` 으로 즉시(저장 없이) — 고르는 동안 결과가 보여야 한다.
+          picker.addEventListener("input", () => paintProfileBadge(swatch, picker.value));
+          picker.addEventListener("change", () => void saveColor(picker.value));
+          head.appendChild(picker);
+
+          if (profileColor(prof) !== "") {
+            const reset = document.createElement("button");
+            reset.type = "button";
+            reset.className = "model-color-reset";
+            reset.textContent = "색 초기화";
+            reset.title = "기본색으로 되돌립니다";
+            reset.addEventListener("click", () => void saveColor(null));
+            head.appendChild(reset);
+          }
           if (prof.isDefault) {
             const badge = document.createElement("span");
             badge.className = "model-default-badge";

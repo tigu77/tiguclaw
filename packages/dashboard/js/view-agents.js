@@ -30,6 +30,13 @@
             tierEl.className = "agent-card-tier";
             tierEl.dataset.tier = tier.toLowerCase();
             tierEl.textContent = tier;
+            // ★잡 카드와 **같은 색**을 입힌다 (2026-08-25). 종전엔 드로어의 잡 배지만
+            //  paintProfileBadge 를 탔고 여기는 빠져 있어서, 같은 프로파일이 두 화면에서
+            //  다른 색으로 보였다 — 색을 "어느 프로파일인가" 의 신호로 쓰는데 한쪽만
+            //  칠하면 그 신호가 깨진다. 색이 없으면 아무것도 안 한다(CSS 기본, 회귀 0).
+            if (typeof paintProfileBadge === "function" && typeof profileColorByName === "function") {
+              paintProfileBadge(tierEl, profileColorByName(tier));
+            }
             top.appendChild(tierEl);
           }
         }

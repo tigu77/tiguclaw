@@ -791,6 +791,49 @@ export const setProfilePoolReasoning = (
 };
 
 /**
+ * 프로파일 **배지 색**을 쓴다 (2026-08-25 사용자 요청 — 대시보드에서 고른다).
+ *
+ * `color === undefined` 면 **지운다**(= 기본색으로 되돌리기). 형식은 `isBadgeColor` 한 곳이
+ * 판정한다 — 이 값은 화면에서 `el.style.color` 로 나가므로 경계가 하나여야 뚫리지 않는다.
+ *
+ * ★`setProfilePoolReasoning` 과 같은 형제 패턴이다: 읽고-고치고-원자 교체(tmp+rename).
+ *  새 쓰기 경로를 만들지 않는다.
+ * ★대비(WCAG) 검사는 **일부러 안 넣었다**(사용자 결정 2026-08-25): 배지 색은 화면을 보면서
+ *  고르는 취향이고, 막는 것보다 고르게 두는 쪽이 맞다는 판단이다.
+ *
+ * @returns 그런 프로파일이 없으면 `false`(조용한 성공 금지 — 호출자가 말해야 한다).
+ */
+export const setProfileColor = (profile: string, color: string | undefined): boolean => {
+  if (color !== undefined && !isBadgeColor(color)) return false;
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return false; // 파일이 없으면 고칠 프로파일도 없다.
+  }
+  const models = root.models;
+  if (models === null || typeof models !== "object" || Array.isArray(models)) return false;
+  const profiles = (models as Record<string, unknown>).profiles;
+  if (profiles === null || typeof profiles !== "object" || Array.isArray(profiles)) return false;
+  const prof = (profiles as Record<string, unknown>)[profile];
+  if (prof === null || typeof prof !== "object" || Array.isArray(prof)) return false;
+
+  const rec = prof as Record<string, unknown>;
+  if (color === undefined) delete rec.color;
+  else rec.color = color.trim().toLowerCase();
+
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+  return true;
+};
+
+/**
  * 스케줄 **전달** 실패 시 자동 재전송 여부 — settings.json `scheduler.retryFailedDispatch`
  * (기본 **켜짐**). 명시 `false` 일 때만 끈다(부재·오타·비-boolean = 기본값 유지, never-throw).
  *

@@ -944,7 +944,12 @@
       .bg-job-kind { flex:none; font-size:0.5625rem; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgb(var(--fg-rgb) / .05); color:var(--text-mute); border:1px solid var(--border); white-space:nowrap; }
       .bg-job.agent .bg-job-kind { background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); border-color:rgb(var(--accent-2-rgb) / .4); }
       /* 모델 티어 칩 — kind 칩과 동형(작은 pill). 티어별 색상 힌트(data-tier). */
-      .bg-job-tier, .agent-card-tier { flex:none; font-size:0.5625rem; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; text-transform:uppercase; white-space:nowrap; background:rgb(var(--fg-rgb) / .06); color:var(--text-mute); border:1px solid var(--border); }
+      /* ★대문자 변환을 뺐다 (2026-08-25 사용자: "배지에도 모델 프로필 이름 그대로 나와도
+         괜찮을거같은데"). 이름이 `low|mid|high` 세 개뿐일 땐 대문자가 라벨처럼 보였는데,
+         프로파일을 사용자가 짓게 되면서 `gpt-high`·`빠른요약` 같은 이름이 온다 — 그걸
+         대문자로 바꾸면 사용자가 지은 이름이 아니게 된다. 카드엔 소문자, 배지엔 대문자로
+         **같은 것이 두 모양**이던 것도 같이 닫힌다. */
+      .bg-job-tier, .agent-card-tier { flex:none; font-size:0.5625rem; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgb(var(--fg-rgb) / .06); color:var(--text-mute); border:1px solid var(--border); }
       .bg-job-tier[data-tier="low"], .agent-card-tier[data-tier="low"] { background:rgb(var(--muted-rgb) / .16); color:var(--tier-low-fg); border-color:rgb(var(--muted-rgb) / .4); }
       .bg-job-tier[data-tier="mid"], .agent-card-tier[data-tier="mid"] { background:rgb(var(--accent-rgb) / .16); color:var(--accent); border-color:rgb(var(--accent-rgb) / .4); }
       .bg-job-tier[data-tier="high"], .agent-card-tier[data-tier="high"] { background:rgb(var(--warn-rgb) / .16); color:var(--warn); border-color:rgb(var(--warn-rgb) / .4); }
@@ -978,6 +983,12 @@
       .model-pool-label { color:var(--text-dim); font-size:0.625rem; text-transform:uppercase; letter-spacing:.06em; margin-right:2px; }
       .model-spec { font-size:0.6875rem; font-weight:700; font-family:var(--font-mono); padding:2px 8px; border-radius:999px; background:rgb(var(--fg-rgb) / .06); color:var(--text); border:1px solid var(--border); }
       /* 프로파일이 덮은 추론 강도 (2026-08-24) — 칩 바로 옆. 덮었을 때만 나온다. */
+      .model-color-preview { margin-left:6px; }
+      .model-color-input { width:22px; height:22px; padding:0; border:1px solid var(--border); border-radius:6px; background:transparent; cursor:pointer; }
+      .model-color-input::-webkit-color-swatch-wrapper { padding:2px; }
+      .model-color-input::-webkit-color-swatch { border:none; border-radius:4px; }
+      .model-color-reset { font-size:0.5625rem; padding:1px 6px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--text-dim); cursor:pointer; }
+      .model-color-reset:hover { color:var(--text); border-color:var(--border-strong); }
       .model-spec-reasoning { margin-left:4px; font-size:0.5625rem; font-weight:800; color:var(--accent-2);
         background:rgb(var(--accent-2-rgb) / .12); border:1px solid var(--accent-2); border-radius:999px; padding:1px 6px; }
       .model-spec.tier-low { background:rgb(var(--muted-rgb) / .16); color:var(--tier-low-fg); border-color:rgb(var(--muted-rgb) / .4); }

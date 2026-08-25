@@ -59,7 +59,7 @@ import {
   isRateLimited,
   parseCooldownMs,
 } from "./rate-limit.js";
-import { extractInlineSuggestion } from "../next-message-suggestion.js";
+import { applyInlineSuggestion } from "../next-message-suggestion.js";
 import {
   resolveProfileChain,
   getDefaultProfileName,
@@ -1195,11 +1195,7 @@ const runPool = async (
       //  channel.message.out·응답이 **전부** 깨끗하다. 아래 한 곳이라도 놓치면 사용자
       //  화면이나 다음 턴 히스토리에 태그가 샌다(그게 이 방식의 유일한 실패 모드다).
       //  모델이 안 붙였으면 no-op — `includes` 한 번으로 끝난다.
-      const picked = extractInlineSuggestion(output.text ?? "");
-      if (picked.suggestion !== null || picked.text !== (output.text ?? "")) {
-        output.text = picked.text;
-        if (picked.suggestion !== null) output.nextSuggestion = picked.suggestion;
-      }
+      applyInlineSuggestion(output);
       // turn_done — 성공 종료 1회 (parity: 세 어댑터 동일 지점). persist 전에 발행해
       // persist 예외와 무관하게 효율 지표가 남게(persist 는 자체 try/catch 라 throw 0이나
       // 안전 우선).

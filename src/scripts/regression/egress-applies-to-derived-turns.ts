@@ -132,6 +132,56 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ⑥ ★fan-out 이 **사본 표식**을 단다 (2026-08-25) ──────────────────────────
+  //  적재 판정(event-persist)은 `room-notice-is-ephemeral` 이 실행으로 본다. 여기서는
+  //  **그 표식이 실제로 실려 나가는가** — 오늘 하루에 같은 부류(판정은 검사되는데 호출부는
+  //  안 검사됨)로 세 번 뚫렸다. 등급: 배선 린트(fan-out 을 실제로 돌리려면 채널이 필요하다).
+  {
+    const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    const fanOut = idx.slice(idx.indexOf("const fanOutEgress"), idx.indexOf("const fanOutEgress") + 1400);
+    out.push({
+      name: "★[배선 린트] fanOutEgress 가 `copyOfRecorded` 를 실어 보낸다",
+      ok: /copyOfRecorded:\s*true/.test(fanOut),
+      got: /copyOfRecorded:\s*true/.test(fanOut)
+        ? "표식 확인"
+        : "★표식 없음 — 같은 답이 대화 기록에 두 줄로 남는다",
+    });
+    // 인입 응답(원본)엔 붙으면 안 된다 — 붙으면 대화가 통째로 기록에서 사라진다.
+    const reply = idx.slice(idx.indexOf("await msg.reply("), idx.indexOf("await msg.reply(") + 400);
+    out.push({
+      name: "★원본 응답 경로엔 그 표식이 없다(대화가 기록에서 사라지지 않게)",
+      ok: !/copyOfRecorded/.test(reply),
+      got: /copyOfRecorded/.test(reply) ? "★원본에 붙었다" : "원본 무표식 확인",
+    });
+  }
+
+  // ── ⑦ ★사슬 **가운데 고리** (재검토 G-2·G-12) ────────────────────────────────
+  //  종전엔 양끝만 봤다: fanOut 이 표식을 담는가(⑥) · event-persist 가 그걸 보고 거르는가
+  //  (room-notice-is-ephemeral). 가운데 `deliverOutbound` 가 payload 에 안 실으면 사슬이
+  //  끊기는데 둘 다 초록이었다. [[feedback_verify_before_asserting]] — 양끝만 보고 가운데를
+  //  가정했다. 등급: 배선 린트.
+  {
+    const ob = await readFile(new URL("../../core/outbound.ts", import.meta.url), "utf8");
+    out.push({
+      name: "★[배선 린트] deliverOutbound 가 `copyOfRecorded` 를 payload 로 실어 보낸다",
+      ok: /copyOfRecorded:\s*true/.test(ob) && /input\.copyOfRecorded/.test(ob),
+      got: /copyOfRecorded:\s*true/.test(ob) && /input\.copyOfRecorded/.test(ob)
+        ? "payload + 입력 배선 확인"
+        : "★가운데 고리가 끊겼다 — 표식이 event-persist 까지 못 간다",
+    });
+    // ★G-12: 오늘 편집이 바로 그 두 줄 옆에 들어갔다. 2026-08-11 실사고(텔레그램 답장이
+    //  원래 세션을 못 찾고 공통 세션으로 떨어짐)를 지키던 줄이다.
+    const idx2 = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    const fan = idx2.slice(idx2.indexOf("const fanOutEgress"), idx2.indexOf("const fanOutEgress") + 1400);
+    out.push({
+      name: "★[배선 린트] fanOutEgress 가 `originThreadKey` 도 여전히 실어 보낸다",
+      ok: /originThreadKey,/.test(fan),
+      got: /originThreadKey,/.test(fan)
+        ? "귀속 확인"
+        : "★귀속이 빠졌다 — 텔레그램 답장이 원래 세션을 못 찾는다(2026-08-11 사고)",
+    });
+  }
+
   return out;
 };
 

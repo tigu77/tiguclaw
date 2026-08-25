@@ -18,6 +18,7 @@ import { resolveSessionId } from "./threadkey.js";
 import { runClaude } from "./claude.js";
 import { parseModelSpecList, resolveModelChain } from "./llm-runtime/index.js";
 import { resolveProfileChain } from "./settings.js";
+import { poolToSpecs } from "./llm-runtime/index.js";
 import { getRegisteredMcpServers } from "./mcp-registry.js";
 
 export interface RouteOutput {
@@ -147,7 +148,13 @@ export const route = async (
     if (profileName !== null) {
       const chain = resolveProfileChain(profileName, process.cwd());
       if (chain.length > 0) {
-        const pool = parseModelSpecList(chain[0].join(","), process.cwd());
+        // ★`chain[0]` 은 **객체 배열**(`PoolEntry[]`)이다 — `.join(",")` 하면
+        //  `"[object Object],[object Object]"` 가 나와 파싱이 빈 배열을 돌려주고,
+        //  오버라이드가 **조용히** 안 걸린다(2026-08-25 실사고: 사용자가 세션에서
+        //  `gpt-high` 를 골랐는데 계속 기본 프로파일로 답했다. 로그의 `model_profile=`
+        //  이 08-24 이후 **0건**이 된 것이 증거다). 08-24 에 이 왕복을 5곳 지웠다고
+        //  적어놓고 이 한 곳을 빠뜨렸다 — 같은 판단이 두 벌이면 하나는 반드시 뒤처진다.
+        const pool = poolToSpecs(chain[0], process.cwd());
         if (pool.length > 0) {
           overridePool = pool;
           appliedProfile = profileName;

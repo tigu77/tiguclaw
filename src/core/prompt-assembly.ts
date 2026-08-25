@@ -22,6 +22,7 @@ import { resolveModelProfiles } from "./llm-runtime/builtin-profiles.js";
 import {
   inlineSuggestionRule,
   readSuggestionSettings,
+  shouldSuggestForThread,
 } from "./next-message-suggestion.js";
 
 // ─── formatMemorySnippet — user prompt prepend 본문 ──────────────────────
@@ -390,7 +391,14 @@ interface SystemContextInput {
    *  받아 어댑터가 `roleSource: input` 만 쓰게 한다 — 넘길 값이 하나면 **뒤바꿀 수가 없다**
    *  (depth 두 개를 교차시키는 변이가 정규식 린트로는 안 잡혔다).
    */
-  roleSource: { subagentDepth?: number; workerDepth?: number };
+  roleSource: {
+    subagentDepth?: number;
+    workerDepth?: number;
+    /** 제안 규칙 자리 판정용 — 어댑터가 `roleSource: input` 으로 이미 넘긴다(추가 배선 0). */
+    threadKey?: string;
+    /** 분류·요약 등 내부 1회 호출. 대화가 아니므로 제안 규칙을 싣지 않는다. */
+    internal?: boolean;
+  };
 }
 
 /**
@@ -508,19 +516,31 @@ export const contextSlotKeys = (): string[] =>
  *  [[feedback_gate_must_actually_run]] 의 반대편 얼굴이다.
  */
 export const inlineSuggestionSlotText = (
-  roleSource: { subagentDepth?: number; workerDepth?: number },
+  roleSource: {
+    subagentDepth?: number;
+    workerDepth?: number;
+    threadKey?: string;
+    internal?: boolean;
+  },
   enabled: boolean,
 ): string => {
   if (!enabled) return "";
   // 서브에이전트·매니저의 결과는 사용자 채팅창이 아니라 **부른 쪽**으로 간다.
   if ((roleSource.subagentDepth ?? 0) > 0 || (roleSource.workerDepth ?? 0) > 0) return "";
+  // ★분류·요약 등 내부 호출엔 안 싣는다 (적대 검토 P5). `self-growth:contradiction`·
+  //  실패 분류·`webfetch:extract` 가 depth 없이 internal 만 달고 오는데, nano 급 모델에게
+  //  "사용자가 다음에 보낼 메시지" 지시가 섞일 이유가 없다.
+  if (roleSource.internal === true) return "";
+  // ★**표시 게이트와 같은 판정을 쓴다** (적대 검토 P1). 종전엔 규칙은 depth 로,
+  //  고스트는 threadKey 접두사로 걸러서 둘이 갈렸다 — `scheduler:`·`endpoint:` 는 depth 0
+  //  이라 규칙이 실리고, 모델이 제안을 만들고, 그 제안은 **버려졌다**(실측: llm.turn_done
+  //  1,012건 중 scheduler 230 + endpoint 110 = 34%). 손으로 관리하는 두 목록이었다.
+  //  좌표를 모르면(옛 호출부) 종전대로 싣는다 — 회귀 0.
+  if (roleSource.threadKey !== undefined && !shouldSuggestForThread(roleSource.threadKey)) {
+    return "";
+  }
   return inlineSuggestionRule();
 };
-
-const inlineSuggestionSlot = (roleSource: {
-  subagentDepth?: number;
-  workerDepth?: number;
-}): string => inlineSuggestionSlotText(roleSource, readSuggestionSettings().enabled);
 
 export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   { key: "system", text: input.system, channel: "system" },
@@ -564,7 +584,7 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   // ★`role` **바로 앞** — 맨 끝은 역할 슬롯 자리다(`role-context-block` 가 지킨다).
   {
     key: "nextSuggestion",
-    text: inlineSuggestionSlot(input.roleSource),
+    text: inlineSuggestionSlotText(input.roleSource, readSuggestionSettings().enabled),
     channel: "system",
   },
   { key: "role", text: roleContextBlock(input.roleSource), channel: "system" },

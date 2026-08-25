@@ -140,6 +140,20 @@ const run = async (): Promise<Assertion[]> => {
       ts: now + 2,
       payload: { ...base, text: "평범한 대화입니다" },
     });
+    // ★egress fan-out 사본 (2026-08-25) — 대시보드에서 답한 말이 텔레그램으로도 나가면서
+    //  `chat_log` 에 **두 줄**이 됐다(원본 `dashboard:*` + 사본 `tg:<id>`). 대화는 한 번
+    //  일어난 일이다 — 배달이 는다고 대화가 늘지 않는다. `ephemeral` 과 **같은 자리**에서
+    //  같은 방식으로 걸러진다(적재를 막는 곳은 event-persist 한 곳).
+    bus.publish({
+      type: "channel.message.out",
+      ts: now + 3,
+      payload: { channel: "telegram", threadKey: "tg:12345", text: "원본과 같은 답", copyOfRecorded: true },
+    });
+    bus.publish({
+      type: "channel.message.out",
+      ts: now + 4,
+      payload: { channel: "telegram", threadKey: "tg:12345", text: "진짜 텔레그램 발화" },
+    });
     await new Promise((r) => setTimeout(r, 150)); // 적재는 비동기 구독자.
 
     const rows = getRecentChatLog({ threadKey, limit: 50 });
@@ -163,6 +177,21 @@ const run = async (): Promise<Assertion[]> => {
         texts.includes("평범한 대화입니다")
           ? "일반 대화 적재 확인"
           : `★일반 대화까지 사라졌다 — 적재된 것: ${JSON.stringify(texts)}`,
+      ),
+    );
+    // ★사본은 안 남고, 진짜 발화는 남는다 — 양방향으로 못박는다(끄기만 하면 배달까지 죽는다).
+    const tgRows = getRecentChatLog({ threadKey: "tg:12345", limit: 50 });
+    const tgTexts = tgRows.map((r) => r.text);
+    out.push(
+      assert(
+        "★egress 사본은 대화 기록에 안 남는다(같은 말이 두 줄이 되지 않게)",
+        !tgTexts.includes("원본과 같은 답"),
+        tgTexts.includes("원본과 같은 답") ? "★사본이 적재됐다" : `${tgRows.length}행`,
+      ),
+      assert(
+        "★표식 없는 진짜 발화는 그대로 남는다(사본 차단이 배달 기록을 통째로 끄지 않게)",
+        tgTexts.includes("진짜 텔레그램 발화"),
+        tgTexts.join(" | ") || "★비었다 — 적재가 통째로 꺼졌다",
       ),
     );
   } finally {

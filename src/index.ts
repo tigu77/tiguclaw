@@ -887,6 +887,8 @@ const fanOutEgress = async (
         //  (observeThreadKey)는 그대로 두고 귀속만 싣는다 — 안 실으면 사용자가 텔레그램에서
         //  이 답에 답장했을 때 원래 세션을 못 찾아 공통 세션으로 떨어진다.
         originThreadKey,
+        // ★이 배달은 **이미 인입 채널에 기록된 말의 사본**이다 — 적재는 원본 한 줄만.
+        copyOfRecorded: true,
       });
     } catch (e) {
       console.error(

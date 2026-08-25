@@ -56,6 +56,7 @@ import {
   setEgressChannels,
   readEgressChannels,
   setModuleDisabled,
+  setProfileColor,
 } from "../../src/core/settings.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import {
@@ -1390,6 +1391,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다(위 set-session-profile 누락 전례 참조).
               : pathname === "/set-suggestion" && method === "POST"
                 ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
+              : pathname === "/set-profile-color" && method === "POST"
+                ? "write" // 설정 파일을 쓴다 — set-default-profile 과 같은 등급.
               : pathname === "/set-module-enabled" && method === "POST"
                 ? "write"
               : pathname === "/transcribe" && method === "POST"
@@ -1879,6 +1882,41 @@ class HttpBridge implements Channel, Observer {
     // body { enabled: boolean }. settings.json 의 suggestions.nextMessage.enabled **한 키만**
     // read-modify-write(다른 키 보존) → 재시작 없이 fresh read 로 다음 턴 반영.
     // /set-default-profile 과 동일 패턴 — 설정 쓰기 경로를 새로 만들지 않고 형제로 둔다.
+    // /set-profile-color — 프로파일 배지 색. write 게이트(위 role 표).
+    // body { name, color }. `color: null` = 지우기(기본색 복귀). 형식 판정은 코어 경계
+    // (`isBadgeColor`) 한 곳 — 여기서 정규식을 또 쓰면 두 곳이 갈린다.
+    if (pathname === "/set-profile-color" && method === "POST") {
+      let cbody: Record<string, unknown>;
+      try {
+        cbody = await readJsonBody(req);
+      } catch (e) {
+        writeJson(res, 400, { error: `invalid body: ${e instanceof Error ? e.message : String(e)}` });
+        return;
+      }
+      const name = typeof cbody.name === "string" ? cbody.name.trim() : "";
+      if (name === "") {
+        writeJson(res, 400, { error: "name(string) required" });
+        return;
+      }
+      const raw = cbody.color;
+      if (raw !== null && typeof raw !== "string") {
+        writeJson(res, 400, { error: "color 는 '#rrggbb' 문자열이거나 null(지우기) 이어야 합니다" });
+        return;
+      }
+      try {
+        const ok = setProfileColor(name, raw === null ? undefined : raw);
+        if (!ok) {
+          writeJson(res, 400, {
+            error: `'${name}' 프로파일을 못 찾았거나 색 형식이 '#rrggbb' 가 아닙니다`,
+          });
+          return;
+        }
+        writeJson(res, 200, { ok: true, name, color: raw });
+      } catch (e) {
+        writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+      }
+      return;
+    }
     if (pathname === "/set-suggestion" && method === "POST") {
       let sbody: Record<string, unknown>;
       try {

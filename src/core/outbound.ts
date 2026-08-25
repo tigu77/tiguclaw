@@ -41,6 +41,15 @@ export interface OutboundInput {
    */
   observe?: boolean;
   /**
+   * 이 배달이 **이미 기록된 말의 사본**인가 (2026-08-25). egress fan-out 전용.
+   *
+   * 사고: 대시보드에서 답한 말이 텔레그램으로도 나가면서 `chat_log` 에 **두 줄**이 됐다
+   * (원본 `dashboard:default` + 사본 `tg:<id>`). 대화는 한 번 일어난 일인데 기록이 둘이면
+   * 검색·이력·컨텍스트에 같은 말이 두 번 잡힌다 — **배달이 는다고 대화가 늘지 않는다.**
+   * 물리 발송·답장 라우팅(`recordOutboundMessage`)은 그대로, **적재만** 건너뛴다.
+   */
+  copyOfRecorded?: boolean;
+  /**
    * 관측(세션 귀속)용 threadKey — 배달 좌표(channel/target)와 **독립**. 세션을 아는 caller 가
    * 채운다(예: 스케줄·워커·통지가 `dashboard:default` 등 세션 id 를 실어보냄). 미전달 시 현행
    * 물리 채널 키(`threadKeyForObservation`) 폴백 = 회귀 0. §D3 정체성/표시 2분리: 관측
@@ -82,13 +91,23 @@ const publishOut = (
   threadKey: string,
   text: string,
   notice: boolean,
+  copy = false,
 ): void => {
   try {
     bus.publish({
       type: "channel.message.out",
       ts: Date.now(),
       // notice = 시스템 통지(비서 발화 아님). false 면 키 자체를 생략해 기존 소비자 회귀 0.
-      payload: { channel, threadKey, text, ...(notice ? { notice: true } : {}) },
+      payload: {
+        channel,
+        threadKey,
+        text,
+        ...(notice ? { notice: true } : {}),
+        // ★사본 표식 — 이미 다른 좌표에 기록된 말의 **복사 배달**이다(egress fan-out).
+        //  발행은 하고(라이브 신호는 살린다) `event-persist` 가 **적재만** 건너뛴다.
+        //  `ephemeral` 과 같은 결이다 — 발행을 끄면 그 이벤트에 얹힌 다른 일까지 꺼진다.
+        ...(copy ? { copyOfRecorded: true } : {}),
+      },
     });
   } catch {
     /* noop — 관측 발행 실패가 전송을 무르지 않는다. */
@@ -179,6 +198,7 @@ export const deliverOutbound = async (
       input.observeThreadKey ?? threadKeyForObservation(channel, resolved),
       text,
       input.notice === true,
+      input.copyOfRecorded === true,
     );
   }
   return { delivered: true };

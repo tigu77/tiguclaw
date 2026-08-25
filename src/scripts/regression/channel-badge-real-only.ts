@@ -44,6 +44,8 @@ const harness = (serverChannels: string[] | null): Harness => {
   if (block === null) throw new Error("배지 판정부를 못 찾음");
   let renders = 0;
   const ctx: Record<string, unknown> = {
+    // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
+    i18n: (v: string) => v,
     console: { warn: () => {} },
     renderTabBar: () => {
       renders += 1;

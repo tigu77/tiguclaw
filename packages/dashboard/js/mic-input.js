@@ -51,8 +51,8 @@
             timerEl.textContent = on ? "0:00" : "";
           }
           micBtn.title = on
-            ? "떼면 전송 · 밖으로 밀면 취소"
-            : "길게 눌러 음성 입력 (텔레그램식)";
+            ? i18n("떼면 전송 · 밖으로 밀면 취소")
+            : i18n("길게 눌러 음성 입력 (텔레그램식)");
         };
 
         const startTimer = () => {
@@ -102,7 +102,7 @@
         // 전사된 텍스트를 입력창에 삽입(기존 텍스트 뒤 append) + autoGrow·커서 갱신.
         const insertText = (text) => {
           const t = (text || "").trim();
-          if (t === "") { toast("전사 결과가 비어 있습니다.", "warn"); return; }
+          if (t === "") { toast(i18n("전사 결과가 비어 있습니다."), "warn"); return; }
           const cur = input.value;
           const sep = cur.length > 0 && !/\s$/.test(cur) ? " " : "";
           input.value = cur + sep + t;
@@ -140,10 +140,10 @@
             } else if (data && typeof data.text === "string") {
               insertText(data.text);
             } else {
-              toast("전사 응답이 비어 있습니다.", "warn");
+              toast(i18n("전사 응답이 비어 있습니다."), "warn");
             }
           } catch (e) {
-            toast("전사 네트워크 오류 — 다시 시도해 주세요.", "bad");
+            toast(i18n("전사 네트워크 오류 — 다시 시도해 주세요."), "bad");
           } finally {
             micBtn.classList.remove("transcribing");
             state = "idle";
@@ -170,7 +170,7 @@
           if (state !== "idle") return; // 재진입 차단(전사 중 등).
           ev.preventDefault(); // 텍스트선택·롱프레스 컨텍스트메뉴·스크롤 억제.
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            toast("이 브라우저/컨텍스트에서 마이크를 쓸 수 없습니다 (HTTPS 또는 localhost 필요).", "warn");
+            toast(i18n("이 브라우저/컨텍스트에서 마이크를 쓸 수 없습니다 (HTTPS 또는 localhost 필요)."), "warn");
             return;
           }
           state = "arming";
@@ -195,7 +195,7 @@
               rec = new MediaRecorder(s);
             } catch (e) {
               try { s.getTracks().forEach((t) => t.stop()); } catch { /* noop */ }
-              toast("이 브라우저가 녹음(MediaRecorder)을 지원하지 않습니다.", "bad");
+              toast(i18n("이 브라우저가 녹음(MediaRecorder)을 지원하지 않습니다."), "bad");
               state = "idle"; resetUi(); return;
             }
             recorder = rec;
@@ -208,18 +208,18 @@
             // 안전 상한 — 너무 길면 자동 정지(전사로). 사용자가 계속 누르고 있어도 종료.
             maxTimer = setTimeout(() => { if (state === "recording") stopRecording(false); }, MAX_MS);
             try { rec.start(); } catch (e) {
-              toast("녹음을 시작하지 못했습니다.", "bad");
+              toast(i18n("녹음을 시작하지 못했습니다."), "bad");
               teardownStream(); resetUi(); state = "idle";
             }
           }).catch((err) => {
             // 권한 거부(NotAllowedError)·장치 없음(NotFoundError) 등 — graceful.
             const name = err && err.name ? err.name : "";
             if (name === "NotAllowedError" || name === "SecurityError") {
-              toast("마이크 권한이 거부되었습니다. 브라우저 설정에서 허용해 주세요.", "warn");
+              toast(i18n("마이크 권한이 거부되었습니다. 브라우저 설정에서 허용해 주세요."), "warn");
             } else if (name === "NotFoundError" || name === "NotReadableError") {
-              toast("사용 가능한 마이크를 찾지 못했습니다.", "warn");
+              toast(i18n("사용 가능한 마이크를 찾지 못했습니다."), "warn");
             } else {
-              toast("마이크를 열 수 없습니다.", "bad");
+              toast(i18n("마이크를 열 수 없습니다."), "bad");
             }
             state = "idle";
             resetUi();
@@ -255,7 +255,7 @@
             cancelPending = armed;
             micBtn.classList.toggle("cancel-armed", armed);
             if (timerEl) timerEl.textContent = armed
-              ? "← 놓으면 취소"
+              ? i18n("← 놓으면 취소")
               : fmtRecClock(Date.now() - startAt);
           }
         };

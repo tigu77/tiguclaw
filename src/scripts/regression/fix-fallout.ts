@@ -94,6 +94,8 @@ export const check: RegressionCheck = {
       "list_mcp_servers", "list_schedules", "list_watches", "list_workers",
       "maintenance_status", "project_capabilities", "project_list",
       "read_memory", "search_memory",
+      // 지난 대화 조회 — 순수 읽기(2026-08-25).
+      "search_conversations",
       // 부작용이 있으나 재실행이 무해(멱등·표시 전용).
       "reply_to_current_message", "update_todos",
       // 세션 목록 조회 — 순수 읽기.

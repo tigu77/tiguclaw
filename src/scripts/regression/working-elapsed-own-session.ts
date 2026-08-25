@@ -53,6 +53,8 @@ const paint = (
     src.slice(from, toM.index + toM[0].length);
   const out: Record<string, string> = { label: "", elapsed: "" };
   const ctx: Record<string, unknown> = {
+    // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
+    i18n: (v: string) => v,
     activeTurns: new Map(turns),
     // ★사유 맵 (2026-08-13) — 내가 안 시킨 턴(워커·에이전트 정리)에만 "왜 도는지" 가 붙는다.
     turnReason: new Map(reasons),

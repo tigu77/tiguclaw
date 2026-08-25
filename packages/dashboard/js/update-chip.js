@@ -28,15 +28,15 @@
           return {
             show: true,
             kind: "ready",
-            label: "업데이트", // ★건수 없음 — `behind` 는 원격 커밋 수라 받는 변화량과 무관하다.
-            title: "받을 업데이트가 있습니다. 눌러서 업데이트합니다.",
+            label: i18n("업데이트"), // ★건수 없음 — `behind` 는 원격 커밋 수라 받는 변화량과 무관하다.
+            title: i18n("받을 업데이트가 있습니다. 눌러서 업데이트합니다."),
           };
         if (state === "blocked")
           return {
             show: true,
             kind: "blocked",
-            label: "업데이트 보류",
-            title: availability.blockedReason || "지금은 업데이트할 수 없습니다.",
+            label: i18n("업데이트 보류"),
+            title: availability.blockedReason || i18n("지금은 업데이트할 수 없습니다."),
           };
         return { show: false, kind: "", label: "", title: "" }; // 모르면 조용하다.
       };
@@ -120,18 +120,18 @@
             // null = 아직 안 떴다. before 가 null 이면(원래 못 읽었다) 응답 복귀만으로 판정한다.
             if (now === null) continue;
             if (before === null || now < before) {
-              showToast("업데이트 완료 — 새로고침합니다.", "good");
+              showToast(i18n("업데이트 완료 — 새로고침합니다."), "good");
               setTimeout(() => window.location.reload(), 600);
               return;
             }
           }
-          showToast("업데이트 후 데몬이 돌아오지 않았습니다. 로그를 확인하세요.", "bad");
+          showToast(i18n("업데이트 후 데몬이 돌아오지 않았습니다. 로그를 확인하세요."), "bad");
         };
 
         chip.addEventListener("click", async () => {
           if (inFlight || !current) return;
           if (current.state === "blocked") {
-            window.alert(current.blockedReason || "지금은 업데이트할 수 없습니다.");
+            window.alert(current.blockedReason || i18n("지금은 업데이트할 수 없습니다."));
             return;
           }
           if (!window.confirm(
@@ -141,18 +141,18 @@
 
           inFlight = true;
           chip.disabled = true;
-          showToast("업데이트 중… 타입체크까지 통과해야 반영됩니다.", "warn");
+          showToast(i18n("업데이트 중… 타입체크까지 통과해야 반영됩니다."), "warn");
           try {
             const r = await fetch("/api/self-update", { method: "POST" });
             const data = await r.json().catch(() => ({}));
             // 코어가 낸 status 를 그대로 해석한다 — 화면이 성패를 재판정하지 않는다.
             if (data.status === "updating") {
-              showToast("업데이트 적용 — 재시작을 기다립니다.", "good");
+              showToast(i18n("업데이트 적용 — 재시작을 기다립니다."), "good");
               await reloadWhenBack();
             } else if (data.status === "busy") {
-              showToast("이미 다른 업데이트가 진행 중입니다.", "warn");
+              showToast(i18n("이미 다른 업데이트가 진행 중입니다."), "warn");
             } else if (data.status === "up-to-date") {
-              showToast("이미 최신입니다.", "good");
+              showToast(i18n("이미 최신입니다."), "good");
               await refresh();
             } else {
               showToast("업데이트 실패: " + (data.error || data.status || ("HTTP " + r.status)), "bad");
@@ -160,7 +160,7 @@
             }
           } catch {
             // 재시작이 응답보다 빠르면 연결이 끊긴다 — 실패가 아니라 정상 흐름이다.
-            showToast("업데이트 진행 중 (응답 끊김) — 복귀를 기다립니다.", "warn");
+            showToast(i18n("업데이트 진행 중 (응답 끊김) — 복귀를 기다립니다."), "warn");
             await reloadWhenBack();
           } finally {
             inFlight = false;

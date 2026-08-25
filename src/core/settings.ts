@@ -18,6 +18,7 @@
  * 시크릿은 여기 없다(D5): API 키·토큰은 `.env`(provider-registry). 프로파일 pool 은
  *  `provider:model` 문자열만 참조.
  */
+import { createRequire } from "node:module";
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { getPaths, projectScope, projectScopeLegacy } from "./paths.js";
@@ -783,6 +784,45 @@ export const setProfilePoolReasoning = (
   }
   if (!hit) return false;
 
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+  return true;
+};
+
+/**
+ * 화면 **언어**를 쓴다 (2026-08-25). `settings.json` 의 `locale` 한 키만 read-modify-write.
+ *
+ * ★설치 안 된 언어는 거절한다 — 조용히 기본으로 떨어지면 사용자는 "바꿨는데 왜 그대로지" 만
+ *  본다. 목록은 `locales/` 파일이 정하므로 여기서 이름을 열거하지 않는다.
+ * ★캐시 무효화는 `i18n` 이 **파일 수정 시각**으로 한다 — 여기서 손으로 비우지 않는다.
+ */
+/**
+ * `i18n` 지연 로드 — `i18n` 이 `settings` 를 import 하므로 최상위에서 맞물면 순환이다.
+ * 쓰기 경로에서만 필요하니 그때 가져온다(부팅 경로 영향 0).
+ */
+const requireI18n = (): { availableLocales: () => string[] } =>
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  createRequire(import.meta.url)("./i18n.js") as { availableLocales: () => string[] };
+
+export const setLocale = (locale: string): boolean => {
+  const want = locale.trim();
+  if (want === "") return false;
+  // 순환 import 를 피해 지연 로드(i18n → settings 를 이미 쓴다).
+  const { availableLocales } = requireI18n();
+  if (!availableLocales().includes(want)) return false;
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* 부재·파싱 실패 → 최소 {} 신설(형제 setter 동형) */
+  }
+  root.locale = want;
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");

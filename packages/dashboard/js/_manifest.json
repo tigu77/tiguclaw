@@ -1,6 +1,6 @@
 [
-  "constants.js",
   "util.js",
+  "constants.js",
   "update-chip.js",
   "context-menu.js",
   "view-overview.js",

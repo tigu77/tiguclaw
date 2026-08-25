@@ -1,9 +1,15 @@
 /**
- * 회귀: **채팅 검색이 한국어를 찾는다** + 결과가 어느 세션인지 말한다 (2026-08-22).
+ * 회귀: **채팅 검색이 단어 안쪽까지 찾는다** + 결과가 어느 세션인지 말한다 (2026-08-22).
+ *
+ * ★이름을 고쳤다 (2026-08-25 사용자: *"chat-search-finds-korean 이건 뭐야 언어특정일 필요
+ *  있나"*). 맞는 지적이다 — 지키는 **성질**은 "단어 경계 안쪽도 찾는다" 이고, 한국어는
+ *  그게 처음 깨진 **사례**일 뿐이다. 같은 성질이 필요한 곳은 더 있다: 영어 `update` 를
+ *  쳐서 `updated` 를 찾는 것, 독일어 합성어, 일본어·터키어 교착. 이름이 사례를 말하면
+ *  다른 언어에서 같은 결함이 나도 "그건 저 검사 밖" 처럼 읽힌다.
  *
  * ★왜 LIKE 인가 — FTS5 기본 토크나이저는 `윈도우에서` 를 한 토큰으로 잘라 `윈도우`
- *  검색에 **안 걸린다**(통제 실험으로 확인). 조사가 붙는 언어에선 부분일치가 곧 사용자의
- *  기대다. 규모도 그걸 허락한다(실측 3,947행·2MB 스캔 14ms). 여기에 FTS 색인을 새로
+ *  검색에 **안 걸린다**(통제 실험으로 확인). 어미·조사가 붙거나 말이 이어 붙는 언어에선
+ *  부분일치가 곧 사용자의 기대다. 규모도 그걸 허락한다(실측 3,947행·2MB 스캔 14ms). 여기에 FTS 색인을 새로
  *  만들면 SQLite 가 이미 주는 것을 재구현하는 것이다(원칙 #5).
  *  → 그래서 이 검사는 **"부분일치가 되는가"** 를 지킨다. 구현이 무엇이든(LIKE 든 trigram
  *    FTS 든) 조사 붙은 어절을 못 찾으면 빨간불이다 — 검사가 지키는 것은 **동작**이지
@@ -146,11 +152,21 @@ const run = async (): Promise<Assertion[]> => {
       ts: Date.now(),
     } as never);
 
+    // ★같은 성질을 **다른 언어로도** 한 번 더 본다 — 한국어만 넣어두면 이 검사가
+    //  "한국어 검사" 로 읽히고, 토크나이저를 갈아 끼울 때 영어 어형변화가 조용히 깨진다.
+    recordChatMessage({
+      threadKey: tk,
+      channel: "dashboard",
+      role: "assistant",
+      text: "The installer updated itself and Zeitverschiebung was logged.",
+      ts: Date.now(),
+    } as never);
+
     const q = normalizeChatQuery("윈도우");
     const hits = q === null ? [] : searchChatLog(q.like, { limit: 20, threadKey: tk });
     out.push(
       assert(
-        "★쿼리가 실제로 돈다 — 조사 붙은 한국어를 부분일치로 찾는다",
+        "★쿼리가 실제로 돈다 — 조사 붙은 어절을 부분일치로 찾는다(한국어 사례)",
         hits.length === 1 && hits[0]!.text.includes("업데이트"),
         `${hits.length}건`,
       ),
@@ -160,6 +176,19 @@ const run = async (): Promise<Assertion[]> => {
         `표시명=${String(hits[0]?.sessionLabel)}`,
       ),
     );
+
+    // 같은 성질 — 영어 어형변화(`update` → `updated`)와 독일어 합성어 안쪽.
+    for (const [term, want] of [["update", "updated"], ["verschiebung", "Zeitverschiebung"]] as const) {
+      const qq = normalizeChatQuery(term);
+      const hh = qq === null ? [] : searchChatLog(qq.like, { limit: 20, threadKey: tk });
+      out.push(
+        assert(
+          `★단어 안쪽도 찾는다 — "${term}" 로 "${want}" (한국어 전용 성질이 아니다)`,
+          hh.some((x) => x.text.includes(want)),
+          `${hh.length}건`,
+        ),
+      );
+    }
 
     // ── ★검색 대상 = 대시보드에 보이는 세션뿐 (2026-08-23 사용자 결정) ────────────
     //  종전엔 `LEFT JOIN` 이라 `threads` 행이 **없는** 좌표도 통과했다 — 레거시 `tg:` ·
@@ -206,19 +235,58 @@ const run = async (): Promise<Assertion[]> => {
 
   }
 
+  // ── ⑥b ★비서도 이 검색에 닿는다 (2026-08-25 사용자 신고) ────────────────────
+  //  *"단검 이미지 만들어 달라고 한 게 언제였더라?"* 에 비서가 검색할 길이 없어 Claude
+  //  Code 의 jsonl 을 grep 하고 **스크립트를 짜서 DB 를 직접 열었다**(29초). 검색은 이미
+  //  있었고 회귀도 있었지만 **화면에만** 붙어 있었다 — 능력이 있는데 도구가 없으면
+  //  비서에겐 없는 것과 같다. 그래서 ①도구로 등록됐는지 ②그 함수가 실제로 찾는지 둘 다 본다.
+  {
+    const { memoryToolNames } = await import("../../core/memory-mcp.js");
+    const names = memoryToolNames();
+    out.push(
+      assert(
+        "★지난 대화 검색이 **비서 도구로** 등록돼 있다(화면에만 있으면 비서에겐 없는 것)",
+        names.includes("search_conversations"),
+        names.join(" "),
+      ),
+    );
+    const { searchConversations } = await import("../../core/chat-search.js");
+    const r = await searchConversations("윈도우", { limit: 1 });
+    out.push(
+      assert(
+        "★도구가 쓰는 조합이 실제로 돈다(정규화→조회→스니펫→총건수)",
+        !r.tooShort && r.hits.length === 1 && r.hits[0]!.snippet.includes("업데이트"),
+        `hits=${r.hits.length} total=${r.total} snippet=${String(r.hits[0]?.snippet).slice(0, 30)}`,
+      ),
+      assert(
+        "★상한에 잘렸으면 그 사실을 말한다(total 이 목록보다 크다)",
+        r.total >= r.hits.length && r.limit === 1,
+        `total=${r.total} hits=${r.hits.length} limit=${r.limit}`,
+      ),
+      assert(
+        "너무 짧은 질의는 오류가 아니라 '아직 검색할 게 아니다'",
+        (await searchConversations("가")).tooShort === true,
+        "tooShort",
+      ),
+    );
+  }
+
   // ── ⑦ ★판단이 핸들러에 없다 — 있으면 검사가 데몬을 띄워야 한다(Q7) ──────────
   {
+    // ★2026-08-25: 조합(정규화→조회→스니펫→총건수)까지 코어로 올라갔다. 비서의
+    //  `search_conversations` 도구가 **같은 함수**를 쓰기 때문이다 — 핸들러에 조합이
+    //  남아 있으면 도구가 그걸 다시 써야 하고, `%` 이스케이프 하나만 갈려도 화면과
+    //  도구가 다른 답을 준다.
     const h = await sourceHas("../../../plugins/http-bridge/index.ts", [
       /pathname === "\/chat-search"/,
-      /normalizeChatQuery/,
-      /makeSnippet/,
+      /searchConversations/,
     ]);
     const bad = await sourceHas("../../../plugins/http-bridge/index.ts", [
-      /ESCAPE|SNIPPET_LEN|toLowerCase\(\)\.indexOf/,
+      /ESCAPE|SNIPPET_LEN|toLowerCase\(\)\.indexOf|normalizeChatQuery|makeSnippet/,
     ]);
     out.push(
       assert(
-        "★브리지는 배관만 한다(질의·스니펫 판단을 코어에서 가져다 쓴다)",
+        "★브리지는 배관만 한다(질의·조회·스니펫 조합을 코어에서 가져다 쓴다)",
         h.ok && !bad.ok,
         h.ok && !bad.ok
           ? "배관 전용 확인"
@@ -231,8 +299,8 @@ const run = async (): Promise<Assertion[]> => {
 };
 
 export const check: RegressionCheck = {
-  name: "chat-search-finds-korean",
+  name: "chat-search-finds-inside-words",
   guards:
-    "채팅 검색이 조사가 붙은 한국어 어절을 못 찾던 것(FTS 토크나이저 증상) + 사용자가 친 `%` 가 와일드카드로 동작하던 것 + 가로질러 찾았는데 어느 세션인지 알 수 없던 것",
+    "채팅 검색이 단어 안쪽(조사·어미가 붙은 어절, 영어 어형변화)을 못 찾던 것(FTS 토크나이저 증상) + 사용자가 친 `%` 가 와일드카드로 동작하던 것 + 가로질러 찾았는데 어느 세션인지 알 수 없던 것",
   run,
 };

@@ -142,15 +142,15 @@
     if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
     const hit = hits[cursor];
     if (typeof window.openSessionByKey !== "function") {
-      setStatus("세션으로 이동할 수 없습니다(탭 모듈 미로드).");
+      setStatus(i18n("세션으로 이동할 수 없습니다(탭 모듈 미로드)."));
       return;
     }
     // 못 닿으면 **말한다** — 조용히 넘어가면 사용자는 클릭이 씹혔다고 읽는다.
     window.notifyJumpMiss = (why) => {
       setStatus(
         why === "not-found"
-          ? "그 대화로 옮겼지만 해당 메시지는 너무 과거라 못 찾았습니다."
-          : "그 메시지 위치로 이동하지 못했습니다.",
+          ? i18n("그 대화로 옮겼지만 해당 메시지는 너무 과거라 못 찾았습니다.")
+          : i18n("그 메시지 위치로 이동하지 못했습니다."),
       );
     };
     const ok = window.openSessionByKey(hit.threadKey, {
@@ -158,7 +158,7 @@
       channel: hit.channel,
       jumpTs: hit.ts,
     });
-    if (!ok) setStatus("그 세션을 열 수 없습니다.");
+    if (!ok) setStatus(i18n("그 세션을 열 수 없습니다."));
   };
 
   const render = (found, query, meta, append) => {
@@ -191,13 +191,13 @@
       const row = document.createElement("button");
       row.type = "button";
       row.className = "cs-hit";
-      row.title = "이 대화로 이동";
+      row.title = i18n("이 대화로 이동");
 
       const head = document.createElement("div");
       head.className = "cs-hit-head";
       const who = document.createElement("span");
       who.className = "cs-hit-role";
-      who.textContent = hit.role === "user" ? "나" : "돌쇠";
+      who.textContent = hit.role === "user" ? i18n("나") : i18n("돌쇠");
       const sess = document.createElement("span");
       sess.className = "cs-hit-session";
       sess.textContent = hit.sessionLabel || hit.threadKey;
@@ -275,7 +275,7 @@
       return;
     }
     const my = ++seq;
-    setStatus("찾는 중…");
+    setStatus(i18n("찾는 중…"));
     try {
       const r = await fetch(`/api/chat-search?q=${encodeURIComponent(q)}&limit=50`);
       if (my !== seq) return; // 더 새 질의가 떴다 — 이 응답은 버린다.

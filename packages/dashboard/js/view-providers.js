@@ -12,12 +12,12 @@
 
       const channelToModuleItem = (c) => {
         const status = CHANNEL_STATUS_TO_MODULE_STATUS[c.status] || "unknown";
-        const bits = [status === "inactive" ? "비활성 채널" : "라이브 채널"];
-        if (c.canDeliver) bits.push("발신 가능");
+        const bits = [status === "inactive" ? i18n("비활성 채널") : i18n("라이브 채널")];
+        if (c.canDeliver) bits.push(i18n("발신 가능"));
         return {
           id: "channel." + (c.name || "unknown"),
           kind: "channel",
-          name: c.name || "(이름 없음)",
+          name: c.name || i18n("(이름 없음)"),
           status,
           summary: bits.join(" · "),
           capabilities: [],
@@ -136,7 +136,7 @@
               kind,
               name: e.name,
               status: e.enabled ? "active" : "inactive",
-              summary: [e.description, kindHint].filter(Boolean).join(" · ") || "번들 플러그인",
+              summary: [e.description, kindHint].filter(Boolean).join(" · ") || i18n("번들 플러그인"),
               capabilities: [],
               views: [],
               actions: [],
@@ -166,7 +166,7 @@
         const nextEnabled = !provider.moduleEnabled;
         if (!nextEnabled && CRITICAL_MODULE_NAMES.has(provider.moduleName)) {
           const proceed = window.confirm(
-            "이 모듈을 끄면 대시보드/브리지 접근을 잃을 수 있습니다. 계속할까요?",
+            i18n("이 모듈을 끄면 대시보드/브리지 접근을 잃을 수 있습니다. 계속할까요?"),
           );
           if (!proceed) return; // 취소 → no-op(파괴적-행위 소프트 게이트).
         }
@@ -174,8 +174,8 @@
         try {
           const data = await setModuleEnabledRequest(provider.moduleName, nextEnabled);
           showToast(
-            (nextEnabled ? "활성화됨: " : "비활성화됨: ") + provider.moduleName +
-              " — 재시작 시 적용됩니다." + (data.warning === "critical" ? " (핵심 모듈)" : ""),
+            (nextEnabled ? i18n("활성화됨: ") : i18n("비활성화됨: ")) + provider.moduleName +
+              " — 재시작 시 적용됩니다." + (data.warning === "critical" ? i18n(" (핵심 모듈)") : ""),
             data.warning === "critical" ? "warn" : "good",
           );
           await fetchProviders(); // 재조회 → 버튼 라벨/배지가 새 enabled 값으로 갱신.
@@ -191,18 +191,18 @@
         if (provider.moduleEnabled === false) {
           const badge = document.createElement("span");
           badge.className = "module-disabled-badge";
-          badge.textContent = "비활성 · 재시작 시 적용";
+          badge.textContent = i18n("비활성 · 재시작 시 적용");
           wrap.appendChild(badge);
         }
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "module-toggle-btn" + (provider.moduleEnabled === false ? " is-off" : "");
-        btn.textContent = provider.moduleEnabled === false ? "활성화" : "비활성화";
+        btn.textContent = provider.moduleEnabled === false ? i18n("활성화") : i18n("비활성화");
         btn.addEventListener("click", () => onModuleToggleClick(provider, btn));
         wrap.appendChild(btn);
         const hint = document.createElement("div");
         hint.className = "module-toggle-hint";
-        hint.textContent = "MVP: 재시작 시 적용됩니다(핫 토글 아님).";
+        hint.textContent = i18n("MVP: 재시작 시 적용됩니다(핫 토글 아님).");
         wrap.appendChild(hint);
         return wrap;
       };
@@ -234,7 +234,7 @@
         if (provider.moduleName && provider.moduleEnabled === false) {
           const badge = document.createElement("span");
           badge.className = "module-disabled-badge module-disabled-badge-sm";
-          badge.textContent = "비활성 · 재시작 시 적용";
+          badge.textContent = i18n("비활성 · 재시작 시 적용");
           item.appendChild(badge);
         }
         item.addEventListener("click", () => selectProvider(provider.id, { userClick: true }));
@@ -263,9 +263,9 @@
         const summaryGrid = document.createElement("div");
         summaryGrid.className = "summary-grid";
         const metricData = [
-          ["상태", statusLabel(status), provider.summary || "모듈 상태"],
-          ["화면", String((provider.views || []).length), "사용 가능한 패널"],
-          ["작업", String((provider.actions || []).length), "호출 가능한 기능"],
+          [i18n("상태"), statusLabel(status), provider.summary || i18n("모듈 상태")],
+          [i18n("화면"), String((provider.views || []).length), i18n("사용 가능한 패널")],
+          [i18n("작업"), String((provider.actions || []).length), i18n("호출 가능한 기능")],
         ];
         for (const [label, value, hint] of metricData) {
           const card = document.createElement("div");
@@ -275,7 +275,7 @@
         }
         const head = document.createElement("div");
         head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(provider.name || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(provider.summary || "모듈 상태") + '</div></div><span class="detail-kind">' + escHtml(kindLabel(provider.kind)) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(statusLabel(status)) + '</span>';
+        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(provider.name || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(provider.summary || i18n("모듈 상태")) + '</div></div><span class="detail-kind">' + escHtml(kindLabel(provider.kind)) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(statusLabel(status)) + '</span>';
         shell.appendChild(head);
         // 모듈 활성/비활성 토글(P4a-2) — moduleName 이 해석된(=인벤토리에서 이름이 발견된) 항목만.
         // 코어 프로바이더(daemon/memory/schedule/plugin-registry)는 moduleName 이 없어 토글이
@@ -298,12 +298,12 @@
         viewsWrap.className = "views";
         for (const view of views) viewsWrap.appendChild(renderProviderView(view));
         if ((provider.actions || []).length > 0) {
-          viewsWrap.appendChild(renderProviderView({ title: "작업", kind: "action-panel", data: { actions: provider.actions } }));
+          viewsWrap.appendChild(renderProviderView({ title: i18n("작업"), kind: "action-panel", data: { actions: provider.actions } }));
         }
         if (views.length === 0 && (provider.actions || []).length === 0) {
           const e = document.createElement("div");
           e.className = "empty";
-          e.textContent = "표시할 세부 패널이 없습니다.";
+          e.textContent = i18n("표시할 세부 패널이 없습니다.");
           viewsWrap.appendChild(e);
         }
         shell.appendChild(viewsWrap);
@@ -363,7 +363,7 @@
           selectedProviderId = null;
           const e = document.createElement("div");
           e.className = "empty"; e.style.margin = "8px";
-          e.textContent = "모듈이 없습니다.";
+          e.textContent = i18n("모듈이 없습니다.");
           list.appendChild(e);
           if (currentView === "providers") renderProviderHub();
           return;

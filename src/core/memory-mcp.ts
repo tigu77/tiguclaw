@@ -22,6 +22,7 @@ import {
   type MemoryType,
 } from "../store/memory.js";
 import { getEventBus } from "./eventbus.js";
+import { searchConversations, MIN_QUERY_LEN } from "./chat-search.js";
 import {
   collectInventory,
   formatInventoryForLlm,
@@ -96,6 +97,55 @@ const searchMemoryTool = tool(
       ok: true,
       count: hits.length,
       memories: hits.map(memoryToJson),
+    });
+  },
+);
+
+/**
+ * 지난 **대화**를 찾는다 — 메모리가 아니라 실제로 오간 말.
+ *
+ * ★왜 필요했나 (2026-08-25 사용자 신고): *"단검 이미지 만들어 달라고 한 게 언제였더라?"*
+ *  에 비서가 **검색할 길이 없어** Claude Code 의 jsonl 을 grep 하고, 스크립트를 짜서 DB 를
+ *  직접 열었다(29초). 대화 검색은 이미 만들어져 있었고 회귀도 있었지만 **화면에만** 붙어
+ *  있었다 — 능력이 있는데 도구가 없으면 비서에겐 없는 것과 같다.
+ * ★`search_memory` 의 형제로 둔다 — 둘은 같은 질문("전에 뭐라고 했지?")에 서로 다른
+ *  저장소로 답한다([[project_capability_self_awareness]]).
+ */
+const searchConversationsTool = tool(
+  "search_conversations",
+  "지난 대화에서 실제로 오간 말을 검색합니다(전 세션·전 채널 가로질러, 최근 순). " +
+    "「언제 ~라고 했지?」·「그때 뭐라고 답했더라?」·「전에 이 얘기 한 적 있나?」에 쓰는 " +
+    "도구. 부분일치라 조사·어미가 붙어도 찾습니다. 반환 = 시각·세션·발화자·일치 주변 조각 " +
+    "+ 전체 일치 수(목록엔 상한이 있으니 잘렸는지 알 수 있습니다). " +
+    "★대화 기록을 찾을 땐 파일 검색이나 DB 접근을 직접 하지 말고 이 도구를 쓰세요.",
+  {
+    query: z.string().min(1),
+    limit: z.number().int().min(1).max(50).optional(),
+    threadKey: z.string().optional(),
+  },
+  async (args) => {
+    const r = await searchConversations(args.query, {
+      limit: args.limit ?? 20,
+      ...(args.threadKey !== undefined ? { threadKey: args.threadKey } : {}),
+    });
+    if (r.tooShort) {
+      return okJson({ ok: false, error: "query_too_short", minLength: MIN_QUERY_LEN });
+    }
+    return okJson({
+      ok: true,
+      query: r.query,
+      count: r.hits.length,
+      total: r.total,
+      truncated: r.total > r.hits.length,
+      scope: r.scope,
+      hits: r.hits.map((h) => ({
+        at: new Date(h.ts).toISOString(),
+        session: h.sessionLabel,
+        threadKey: h.threadKey,
+        channel: h.channel,
+        role: h.role,
+        text: h.snippet,
+      })),
     });
   },
 );
@@ -200,16 +250,24 @@ const listInstalledPluginsTool = tool(
  * 그래서 어댑터는 턴/쿼리마다 이 팩토리로 전용 인스턴스를 만든다. 도구는 무상태
  * 클로저(모듈/DB 상태 참조)라 재생성 비용 0. 형제 서버 9종과 동일한 팩토리 패턴.
  */
+const MEMORY_TOOLS = [
+  readMemoryTool,
+  searchMemoryTool,
+  searchConversationsTool,
+  addMemoryTool,
+  updateMemoryTool,
+  deleteMemoryTool,
+  listInstalledPluginsTool,
+];
+
+/**
+ * 이 서버가 내보내는 도구 이름 — **인벤토리가 이걸 읽는다.**
+ *
+ * ★종전엔 `plugins/inventory.ts` 에 같은 이름 여섯 개가 **손으로** 적혀 있었다. 도구를
+ *  하나 더 붙이면서 그 목록을 안 고치면 인벤토리가 조용히 거짓말을 한다 — 이름을 열거하려는
+ *  순간 정의점에서 파생시킨다([[feedback_hand_maintained_lists]]).
+ */
+export const memoryToolNames = (): string[] => MEMORY_TOOLS.map((t) => t.name);
+
 export const createMemoryMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
-    name: "memory",
-    version: "1.0.0",
-    tools: [
-      readMemoryTool,
-      searchMemoryTool,
-      addMemoryTool,
-      updateMemoryTool,
-      deleteMemoryTool,
-      listInstalledPluginsTool,
-    ],
-  });
+  createSdkMcpServer({ name: "memory", version: "1.0.0", tools: MEMORY_TOOLS });

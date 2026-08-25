@@ -27,7 +27,7 @@
             chip.appendChild(ic); chip.appendChild(nm);
           }
           const x = document.createElement("button");
-          x.type = "button"; x.className = "att-x"; x.textContent = "✕"; x.title = "제거";
+          x.type = "button"; x.className = "att-x"; x.textContent = "✕"; x.title = i18n("제거");
           x.addEventListener("click", () => { pendingAttachments.splice(i, 1); renderAttachChips(); });
           chip.appendChild(x);
           attachEl.appendChild(chip);

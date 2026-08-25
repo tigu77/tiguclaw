@@ -86,6 +86,51 @@ const run = async (): Promise<Assertion[]> => {
     got: sse.includes("elapsedMs") ? "표시함" : "표시 안 함",
   });
 
+  // ── ★경과시간 표식 — 붙이고·오르고·**걷힌다** (2026-08-25 사용자 요청) ──────────
+  //  *"⏳ 16s 이것만 들어가도 괜찮을 것 같은데"* — 요약은 LLM 한 번 호출이라 진행률(%)이
+  //  없다. 아는 건 "몇 초째" 뿐이고, 가짜 진행률 바는 90%에서 멈춰 서서 아무것도 안
+  //  보여주는 것보다 나쁘다.
+  //
+  //  ★이 레포가 **반복해서 고쳐 온 유령**을 같이 막는다: 끝난 뒤에도 도는 `⏳`.
+  //   오늘(08-25) 백그라운드 스텝에서 같은 걸 고쳤다 — 셋이 다 있어야 한다:
+  //   ①시작 때 단다 ②1초마다 갱신한다 ③**끝나면 걷는다**. 하나라도 빠지면 유령이다.
+  //  등급: 배선 린트(위 헤더의 한계가 그대로 적용된다).
+  {
+    const sse = await readFile(
+      new URL("../../../packages/dashboard/js/sse.js", import.meta.url),
+      "utf8",
+    );
+    out.push(
+      {
+        name: "★압축 안내에 경과 뱃지를 **단다**",
+        ok: /compactingTimers\.set\(/.test(sse) && /dur-badge running/.test(sse),
+        got: /dur-badge running/.test(sse) ? "부착 확인" : "★뱃지를 안 단다",
+      },
+      {
+        name: "★1초마다 **갱신한다**(멈춘 숫자는 없는 것보다 나쁘다)",
+        ok: /setInterval\(tickCompacting,\s*1000\)/.test(sse),
+        got: /tickCompacting/.test(sse) ? "틱 확인" : "★틱이 없다 — 숫자가 안 오른다",
+      },
+      {
+        name: "★압축이 끝나면 **걷는다**(끝난 뒤에도 도는 유령 방지)",
+        ok:
+          /stopCompactingTick\(/.test(sse) &&
+          sse.indexOf("stopCompactingTick(") < sse.indexOf("renderCompacted(ev.payload"),
+        got: /stopCompactingTick\(/.test(sse) ? "해제 확인" : "★해제가 없다 — 영원히 카운트업",
+      },
+      {
+        name: "★형식이 공용 `fmtElapsed` 다(같은 시간이 화면마다 다르게 보이지 않게)",
+        ok: /fmtElapsed\(now - e\.startTs\)/.test(sse) && !/tgFmtElapsed/.test(sse),
+        got: /fmtElapsed\(now - e\.startTs\)/.test(sse) ? "공용 함수" : "★자기 형식을 새로 만들었다",
+      },
+      {
+        name: "★렌더가 엘리먼트를 돌려준다(붙일 자리를 다시 찾아오지 않게)",
+        ok: /return div;/.test(sse),
+        got: /return div;/.test(sse) ? "반환 확인" : "★반환이 없다",
+      },
+    );
+  }
+
   return out;
 };
 

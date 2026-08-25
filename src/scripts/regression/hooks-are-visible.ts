@@ -52,7 +52,7 @@ export const check: RegressionCheck = {
         // ★여기가 빠져 있어서 서버가 보내는데도 화면에 안 나왔다.
         "★프런트 카테고리 목록에 hook 이 있다(서버와 안 갈린다)",
         /CATEGORIES = \[[^\]]*"hook"/.test(consts) &&
-          consts.includes("hook: \"훅\""),
+          /hook:\s*(?:i18n\()?"훅"/.test(consts),
         /CATEGORIES = \[[^\]]*"hook"/.test(consts) ? "확인" : "★목록 누락 — 화면에 안 나온다",
       ),
       assert(

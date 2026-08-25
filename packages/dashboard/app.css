@@ -1282,13 +1282,16 @@
       .grow-wrap > #chat-ghost-accept[hidden] { display:none; }
       /* 모델 프로파일 드롭다운(탭별 sticky, ADR model-dropdown §3) — 컴포저 버튼과 동형 톤. */
       /* 모델 프로파일 빠른선택 — 솔리드 다크 bg(네이티브 팝업이 밝게 렌더돼 밝은 글자가
-         안 보이던 것 fix, 2026-07-19) + 액센트 테두리(디스커버빌리티). */
-      #chat-model-select { background:var(--panel-solid); color:var(--text); border:1px solid rgb(var(--accent-rgb) / .45); border-radius:12px; padding:0 10px; height:34px; font-size:0.78125rem; font-weight:500; font-family:inherit; cursor:pointer; flex:none; align-self:stretch; min-width:112px; max-width:184px; }
-      #chat-model-select:hover { border-color:rgb(var(--accent-rgb) / .75); }
+         안 보이던 것 fix, 2026-07-19) + 액센트 테두리(디스커버빌리티).
+         ★id 가 아니라 **클래스**로 잡는다 — 설정 화면의 언어 선택도 같은 셀렉트다
+         (2026-08-25). id 로 두면 두 번째 셀렉트가 브라우저 기본 흰 배경으로 떠서
+         다크 테마에서 혼자 튄다(실제로 그랬다). 스타일 규칙을 복제하지 않는다. */
+      .chat-model-select { background:var(--panel-solid); color:var(--text); border:1px solid rgb(var(--accent-rgb) / .45); border-radius:12px; padding:0 10px; height:34px; font-size:0.78125rem; font-weight:500; font-family:inherit; cursor:pointer; flex:none; align-self:stretch; min-width:112px; max-width:184px; }
+      .chat-model-select:hover { border-color:rgb(var(--accent-rgb) / .75); }
       /* ★네이티브 옵션 팝업 — 솔리드 다크 bg + 밝은 글자 명시. 안 하면 브라우저 기본
          밝은 팝업 bg + var(--text)=near-white 글자 = 옵션이 안 보인다(사용자 리포트). */
-      #chat-model-select option { background:var(--panel-solid); color:var(--text); }
-      #chat-model-select option:checked { background:var(--select-bg); color:var(--select-fg); }
+      .chat-model-select option { background:var(--panel-solid); color:var(--text); }
+      .chat-model-select option:checked { background:var(--select-bg); color:var(--select-fg); }
       #chat-attach-btn { background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:0 11px; font-size:0.9375rem; cursor:pointer; flex:none; align-self:stretch; }
       #chat-attach-btn:hover { border-color:rgb(var(--accent-rgb) / .55); }
       /* 🎤 음성 입력(press-and-hold, 2026-07-18) — 첨부 버튼과 동형 크기. 롱프레스 시 텍스트

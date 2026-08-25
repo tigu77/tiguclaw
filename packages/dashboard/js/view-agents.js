@@ -1,7 +1,7 @@
       // 열려 있으면) 목록을 jobCards 스냅샷으로 다시 그린다. capBgList 로 카드가 정리되면 여기서도 사라진다.
       let agentsFilter = "running"; // "running" | "all" — 오른쪽 드로어 필터와 독립(각자 뷰).
       const agentElapsedEls = new Map(); // jobId -> elapsed span (틱 갱신용, 뷰 재렌더마다 재구성).
-      const AGENT_KIND_BADGE = { agent: "🤖 서브에이전트", worker: "📦 매니저" };
+      const AGENT_KIND_BADGE = { agent: i18n("🤖 서브에이전트"), worker: i18n("📦 매니저") };
       // 카운트/빈상태 동기화 — refreshBgBadge 가 매 이벤트마다 호출(뷰 안 열려도 안전).
       const syncAgentsCounts = (running, total) => {
         const rc = document.getElementById("agents-count-running");
@@ -62,13 +62,13 @@
         let chev = null;
         if (hasDetail) {
           chev = document.createElement("span"); chev.className = "agent-card-chev";
-          chev.textContent = opts.compact ? "자세히 ↗" : (e.expanded ? "▾ 접기" : "▸ 자세히");
+          chev.textContent = opts.compact ? i18n("자세히 ↗") : (e.expanded ? i18n("▾ 접기") : i18n("▸ 자세히"));
           meta.appendChild(chev);
         }
         card.appendChild(meta);
         if (e.lastStep) {
           const step = document.createElement("div"); step.className = "agent-card-step";
-          const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = "지금";
+          const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = i18n("지금");
           const val = document.createElement("span"); val.textContent = e.lastStep;
           step.appendChild(lbl); step.appendChild(val);
           card.appendChild(step);
@@ -81,19 +81,19 @@
           const detail = document.createElement("div"); detail.className = "agent-card-detail";
           if (e.task) {
             const t = document.createElement("div"); t.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "작업";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("작업");
             const b = document.createElement("div"); b.className = "acd-body"; b.textContent = e.task;
             t.appendChild(h); t.appendChild(b); detail.appendChild(t);
           }
           if (e.result) {
             const r = document.createElement("div"); r.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "결과";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("결과");
             const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result;
             r.appendChild(h); r.appendChild(b); detail.appendChild(r);
           }
           if (e.errorText) {
             const er = document.createElement("div"); er.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "에러";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("에러");
             const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText;
             er.appendChild(h); er.appendChild(b); detail.appendChild(er);
           }
@@ -109,7 +109,7 @@
           card.addEventListener("click", () => {
             e.expanded = !e.expanded;
             card.classList.toggle("open", e.expanded);
-            if (chev) chev.textContent = e.expanded ? "▾ 접기" : "▸ 자세히";
+            if (chev) chev.textContent = e.expanded ? i18n("▾ 접기") : i18n("▸ 자세히");
           });
         }
         return card;
@@ -145,8 +145,8 @@
         if (empty) {
           empty.style.display = shown === 0 ? "" : "none";
           empty.textContent = agentsFilter === "running"
-            ? "진행 중인 에이전트가 없습니다."
-            : "실행된 에이전트가 없습니다.";
+            ? i18n("진행 중인 에이전트가 없습니다.")
+            : i18n("실행된 에이전트가 없습니다.");
         }
       };
       // 렌더 throttle — llm.activity/lifecycle 이 초당 여러 개 쏟아질 때 renderAgentsView 가

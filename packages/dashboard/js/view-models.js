@@ -46,7 +46,7 @@
         if (profiles.length === 0) {
           const e = document.createElement("div");
           e.className = "empty";
-          e.textContent = "정의된 모델 프로파일이 없습니다 (settings.json 의 models.profiles 비어 있음).";
+          e.textContent = i18n("정의된 모델 프로파일이 없습니다 (settings.json 의 models.profiles 비어 있음).");
           root.appendChild(e);
           return;
         }
@@ -77,7 +77,7 @@
           picker.type = "color";
           picker.className = "model-color-input";
           picker.value = profileColor(prof) || "#9aa7b7";
-          picker.title = "이 프로파일의 배지 색 — 잡 카드·에이전트 카드에 같은 색으로 뜹니다";
+          picker.title = i18n("이 프로파일의 배지 색 — 잡 카드·에이전트 카드에 같은 색으로 뜹니다");
           const saveColor = async (color) => {
             picker.disabled = true;
             try {
@@ -105,8 +105,8 @@
             const reset = document.createElement("button");
             reset.type = "button";
             reset.className = "model-color-reset";
-            reset.textContent = "색 초기화";
-            reset.title = "기본색으로 되돌립니다";
+            reset.textContent = i18n("색 초기화");
+            reset.title = i18n("기본색으로 되돌립니다");
             reset.addEventListener("click", () => void saveColor(null));
             head.appendChild(reset);
           }
@@ -120,7 +120,7 @@
             const setBtn = document.createElement("button");
             setBtn.type = "button";
             setBtn.className = "model-set-default";
-            setBtn.textContent = "기본으로 설정";
+            setBtn.textContent = i18n("기본으로 설정");
             setBtn.addEventListener("click", async () => {
               setBtn.disabled = true;
               try {
@@ -151,7 +151,7 @@
           pool.className = "model-pool";
           const plabel = document.createElement("span");
           plabel.className = "model-pool-label";
-          plabel.textContent = "풀";
+          plabel.textContent = i18n("풀");
           pool.appendChild(plabel);
           // ★풀 원소는 문자열 또는 `{spec, reasoning}` 이다 (2026-08-24). 서버가 정규화해
           //  보내지만, 옛 배포본과 섞여도 안 깨지게 여기서도 둘 다 받는다(경계 관용).
@@ -164,7 +164,7 @@
           if (entries.length === 0) {
             const empty = document.createElement("span");
             empty.className = "model-pool-empty";
-            empty.textContent = "(빈 풀 — 어댑터 디폴트로 강등)";
+            empty.textContent = i18n("(빈 풀 — 어댑터 디폴트로 강등)");
             pool.appendChild(empty);
           } else {
             entries.forEach((e, i) => {
@@ -187,7 +187,7 @@
                 r.className = "model-spec-reasoning";
                 r.textContent = "강도 " + e.reasoning;
                 r.title =
-                  "이 프로파일에서만 적용되는 추론 강도 — 전역 models.reasoning 보다 우선합니다.";
+                  i18n("이 프로파일에서만 적용되는 추론 강도 — 전역 models.reasoning 보다 우선합니다.");
                 pool.appendChild(r);
               }
             });
@@ -247,17 +247,17 @@
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = "다음 메시지 제안";
+        name.textContent = i18n("다음 메시지 제안");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
         desc.textContent =
-          "턴이 끝나면 이어서 보낼 만한 말을 입력창에 회색으로 제안합니다. Tab 이면 입력창에 채워집니다(전송은 직접). 매 턴 토큰을 조금 씁니다.";
+          i18n("턴이 끝나면 이어서 보낼 만한 말을 입력창에 회색으로 제안합니다. Tab 이면 입력창에 채워집니다(전송은 직접). 매 턴 토큰을 조금 씁니다.");
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "settings-toggle" + (enabled ? " on" : "");
-        btn.textContent = enabled ? "켜짐" : "꺼짐";
+        btn.textContent = enabled ? i18n("켜짐") : i18n("꺼짐");
         btn.addEventListener("click", async () => {
           btn.disabled = true;
           const next = !enabled;
@@ -269,7 +269,7 @@
             });
             const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-            showToast("다음 메시지 제안: " + (next ? "켜짐" : "꺼짐"), "good");
+            showToast("다음 메시지 제안: " + (next ? i18n("켜짐") : i18n("꺼짐")), "good");
             renderSettingsRow(root, next); // 서버가 확인해 준 값으로 다시 그린다.
           } catch (e) {
             showToast("설정 저장 실패: " + e.message, "bad");
@@ -279,9 +279,95 @@
         row.appendChild(meta);
         row.appendChild(btn);
         page.appendChild(row);
+        page.appendChild(buildLocaleRow());
         page.appendChild(buildLogRow());
         page.appendChild(buildChangelogRow());
         root.appendChild(page);
+      };
+
+      /**
+       * 「화면 언어」 항목 (2026-08-25 사용자: "언어선택은 무조건 있어야지").
+       *
+       * ★목록은 **서버가 주입한 카탈로그에서 읽는다**(`__TIGU_I18N__.available`). 조회
+       *  엔드포인트를 새로 만들면 "무슨 언어가 있나" 의 정본이 둘이 되는데, 화면은 이미 그
+       *  값을 받고 있다. 그리고 그 목록의 정본은 **파일**이다 — `<home>/locales/*.json` 을
+       *  놓으면 여기 저절로 나타난다(코드 변경 0).
+       * ★이름은 `Intl.DisplayNames` 가 만든다 — 언어 이름표를 손으로 관리하면 언어를 늘릴
+       *  때마다 코드를 고쳐야 하고, 그러면 "파일 하나로 추가" 가 거짓이 된다.
+       * ★고르면 **새로고침**한다. 카탈로그는 서빙 시점에 index.html 로 주입되므로(첫 렌더가
+       *  깜빡이지 않게 한 선택), 이미 그려진 화면을 부분 갱신하는 길은 없다. 숨기지 않고
+       *  그렇게 말한다.
+       */
+      const buildLocaleRow = () => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = i18n("화면 언어");
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        meta.appendChild(name);
+        meta.appendChild(desc);
+
+        const cur = (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
+        const list = (window.__TIGU_I18N__ && window.__TIGU_I18N__.available) || [cur];
+        desc.textContent = i18n("설치된 언어 {n}개. 새 언어는 홈의 locales 폴더에 <언어>.json 을 넣으면 늘어납니다.")
+          .replace("{n}", String(list.length));
+
+        const sel = document.createElement("select");
+        sel.className = "chat-model-select";
+        sel.title = i18n("화면 언어");
+        for (const code of list) {
+          const o = document.createElement("option");
+          o.value = code;
+          o.textContent = localeDisplayName(code, cur);
+          if (code === cur) o.selected = true;
+          sel.appendChild(o);
+        }
+        sel.addEventListener("change", async () => {
+          const next = sel.value;
+          if (next === cur) return;
+          sel.disabled = true;
+          try {
+            const r = await fetch("/api/set-locale", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ locale: next }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+            showToast(i18n("언어를 바꿉니다 — 새로고침합니다."), "good");
+            setTimeout(() => window.location.reload(), 600);
+          } catch (e) {
+            showToast(i18n("언어 변경 실패: ") + e.message, "bad");
+            sel.value = cur;
+            sel.disabled = false;
+          }
+        });
+
+        row.appendChild(meta);
+        row.appendChild(sel);
+        return row;
+      };
+
+      /**
+       * 언어 코드 → 사람이 읽는 이름. **그 언어 자신의 이름**을 우선한다("English",
+       * "한국어") — 지금 화면 언어를 못 읽는 사람이 자기 언어를 찾는 자리이기 때문이다.
+       * 현재 언어로 부르는 이름이 다르면 괄호로 덧붙인다("English (영어)").
+       */
+      const localeDisplayName = (code, current) => {
+        const of = (inLocale) => {
+          try {
+            const n = new Intl.DisplayNames([inLocale], { type: "language" }).of(code);
+            return typeof n === "string" && n !== code ? n : "";
+          } catch { return ""; }
+        };
+        const own = of(code);
+        const here = of(current);
+        if (own === "") return here === "" ? code : here;
+        return here === "" || here === own ? own : own + " (" + here + ")";
       };
 
       /**
@@ -301,16 +387,16 @@
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = "오늘 로그";
+        name.textContent = i18n("오늘 로그");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
-        desc.textContent = "불러오는 중…";
+        desc.textContent = i18n("불러오는 중…");
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "settings-toggle";
-        btn.textContent = "비우기";
+        btn.textContent = i18n("비우기");
         btn.disabled = true;
 
         const fmtBytes = (n) =>
@@ -320,7 +406,7 @@
 
         const paint = (s) => {
           if (!s || s.exists !== true) {
-            desc.textContent = "오늘 기록된 로그가 아직 없습니다.";
+            desc.textContent = i18n("오늘 기록된 로그가 아직 없습니다.");
             btn.disabled = true;
             return;
           }
@@ -337,7 +423,7 @@
             const r = await fetch("/api/log-status");
             paint(r.ok ? await r.json() : null);
           } catch {
-            desc.textContent = "로그 상태를 읽지 못했습니다.";
+            desc.textContent = i18n("로그 상태를 읽지 못했습니다.");
             btn.disabled = true;
           }
         };
@@ -405,16 +491,16 @@
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = "변경 이력";
+        name.textContent = i18n("변경 이력");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
-        desc.textContent = "이 설치본에 담긴 릴리스 노트입니다.";
+        desc.textContent = i18n("이 설치본에 담긴 릴리스 노트입니다.");
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "settings-toggle";
-        btn.textContent = "보기";
+        btn.textContent = i18n("보기");
         row.appendChild(meta);
         row.appendChild(btn);
 
@@ -430,16 +516,16 @@
         btn.addEventListener("click", async () => {
           if (!wrap.hidden) { // 접기
             wrap.hidden = true;
-            btn.textContent = "보기";
+            btn.textContent = i18n("보기");
             btn.classList.remove("on");
             return;
           }
           wrap.hidden = false;
-          btn.textContent = "접기";
+          btn.textContent = i18n("접기");
           btn.classList.add("on");
           if (loaded) return; // 한 번만 받는다(파일은 재시작 전까지 안 바뀐다).
           body.className = "empty";
-          body.textContent = "불러오는 중…";
+          body.textContent = i18n("불러오는 중…");
           let md = "";
           try {
             const r = await fetch("/api/changelog");
@@ -447,7 +533,7 @@
           } catch { /* 미도달 — 아래 안내로 떨어진다 */ }
           // ★없으면 **없다고 말한다** — 빈 화면으로 두면 "로딩 중" 과 구분이 안 된다.
           if (md.trim() === "") {
-            body.textContent = "변경 이력을 찾지 못했습니다(CHANGELOG.md 부재).";
+            body.textContent = i18n("변경 이력을 찾지 못했습니다(CHANGELOG.md 부재).");
             return; // loaded 를 안 세운다 — 다시 눌러 재시도할 수 있게.
           }
           loaded = true;

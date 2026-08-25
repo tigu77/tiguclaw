@@ -61,11 +61,11 @@
         const otherInput = document.createElement("input");
         otherInput.type = "text";
         otherInput.className = "prompt-other-input";
-        otherInput.placeholder = "기타 — 직접 입력…";
+        otherInput.placeholder = i18n("기타 — 직접 입력…");
         const otherSend = document.createElement("button");
         otherSend.type = "button";
         otherSend.className = "prompt-other-send";
-        otherSend.textContent = "보내기";
+        otherSend.textContent = i18n("보내기");
         otherRow.appendChild(otherInput); otherRow.appendChild(otherSend);
         const applyPick = (value) => {
           if (chosen) return;

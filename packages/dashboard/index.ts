@@ -264,6 +264,23 @@ const server = http.createServer((req, res) => {
           path.join(__dirname, "index.html"),
           "utf8",
         );
+        // ★언어 카탈로그 주입 (2026-08-25) — 첫 렌더 전에 있어야 화면이 안 깜빡인다.
+        //  실패해도 화면은 뜬다(기본 자리표시자가 남고, 폴백이 키를 그대로 보여준다).
+        let withI18n = html;
+        try {
+          const { catalogForClient } = await import("../../src/core/i18n.js");
+          const cat = catalogForClient();
+          const payload = `<script id="tigu-i18n">window.__TIGU_I18N__ = ${JSON.stringify(cat).replace(/</g, "\\u003c")};</script>`;
+          // ★치환자를 **함수로** 넘긴다 (2026-08-25 적대 검토 F2). 문자열로 넘기면 카탈로그
+          //  값 안의 `$&`·`` $` ``·`$'`·`$$` 가 `String.replace` 의 특수문자로 해석돼,
+          //  `<` 이스케이프를 마친 **뒤에** 페이지 자신의 HTML(`</script>` 포함)이 스크립트
+          //  한복판으로 도로 들어간다. 실측: 값 하나에 `` $` `` 만 있어도 DOM 이 +89% 로
+          //  부풀고 `window.__TIGU_I18N__` 가 undefined 가 된다(= 화면 전체가 기본 언어).
+          //  try/catch 는 안 걸린다 — replace 는 "성공" 하기 때문이다.
+          withI18n = html.replace(/<script id="tigu-i18n">[\s\S]*?<\/script>/, () => payload);
+        } catch {
+          /* 카탈로그 실패가 대시보드를 막지 않는다 */
+        }
         // no-store — HTML(대시보드 코드)은 매 로드 최신을 받아야 한다. 캐시 헤더 없으면 브라우저가
         // heuristic 캐싱으로 옛 index.html 을 써서 업데이트(버그 픽스)가 일반 새로고침에 반영 안 됨.
         // (vendored .js 는 내용 고정이라 max-age 캐시 유지 — 코드는 index.html 에만 있음.)
@@ -271,7 +288,7 @@ const server = http.createServer((req, res) => {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store, must-revalidate",
         });
-        res.end(html);
+        res.end(withI18n);
       } catch {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("dashboard html load failed");
@@ -494,6 +511,18 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/set-suggestion" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-suggestion", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 화면 언어 — bridge (write 토큰 server-side 주입). /set-suggestion 과 동형.
+    // ★읽기 엔드포인트는 **안 만든다** — 현재 언어와 설치 목록은 이미 index.html 에 주입되는
+    //  카탈로그(`window.__TIGU_I18N__`)에 실려 있다. 새로 만들면 정본이 둘이 된다.
+    if (pathname === "/api/set-locale" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-locale", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

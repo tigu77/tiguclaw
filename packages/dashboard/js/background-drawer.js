@@ -107,10 +107,10 @@
       if (bgJump) bgJump.addEventListener("click", () => { bgList.scrollTop = 0; updateBgJump(); });
       bgList.addEventListener("scroll", updateBgJump, { passive: true });
       const BG_STATUS = {
-        running: "🟡 진행 중", done: "✅ 완료", failed: "⚠️ 실패", cancelled: "⏹ 취소",
+        running: i18n("🟡 진행 중"), done: i18n("✅ 완료"), failed: i18n("⚠️ 실패"), cancelled: i18n("⏹ 취소"),
         // 종료된 건 확실한데 결과를 못 받은 경우(연결이 끊긴 사이 종료·데몬 재시작).
         // "완료"로 단정하지 않는다 — 성공 여부를 모르는데 성공처럼 보이면 거짓값이다.
-        interrupted: "⏹ 종료됨(결과 미수신)",
+        interrupted: i18n("⏹ 종료됨(결과 미수신)"),
       };
       /** 되돌릴 수 없는 종료 상태 — 이 상태의 카드는 다시 running 이 되지 않는다. */
       const TERMINAL_JOB_STATUS = new Set(["done", "failed", "cancelled", "interrupted"]);
@@ -130,14 +130,14 @@
         const show = canCancelJob(entry);
         entry.stopBtnEl.style.display = show ? "" : "none";
         entry.stopBtnEl.disabled = !!entry._cancelRequested;
-        entry.stopBtnEl.textContent = entry._cancelRequested ? "중지 요청…" : "⏹️ 중지";
+        entry.stopBtnEl.textContent = entry._cancelRequested ? i18n("중지 요청…") : i18n("⏹️ 중지");
       };
       const requestCancelJob = async (jobId) => {
         const entry = jobCards.get(jobId);
         if (!canCancelJob(entry) || entry._cancelRequested) return;
         entry._cancelRequested = true;
         updateStopBtn(entry);
-        if (entry.statusEl) entry.statusEl.textContent = "⏳ 취소 중…";
+        if (entry.statusEl) entry.statusEl.textContent = i18n("⏳ 취소 중…");
         const revert = () => {
           entry._cancelRequested = false;
           updateStopBtn(entry);
@@ -210,25 +210,25 @@
         const items = [];
         // 세션으로 이동 — 원 세션 threadKey 가 있을 때만(worker:/agent: 의사키·미지정 제외).
         if (ctx.threadKey) {
-          items.push({ id: "jump", label: "세션으로 이동", icon: "↪️", action: { kind: "builtin", handler: "job.jumpSession" } });
+          items.push({ id: "jump", label: i18n("세션으로 이동"), icon: "↪️", action: { kind: "builtin", handler: "job.jumpSession" } });
         }
         if (entry && entry.el.classList.contains("has-detail")) {
           items.push({
             id: "detail",
-            label: entry.el.classList.contains("open") ? "상세 접기" : "상세 보기",
+            label: entry.el.classList.contains("open") ? i18n("상세 접기") : i18n("상세 보기"),
             icon: "🔎",
             action: { kind: "builtin", handler: "job.toggleDetail" },
           });
         }
-        items.push({ id: "copy", label: "복사", icon: "📋", action: { kind: "builtin", handler: "job.copy" } });
+        items.push({ id: "copy", label: i18n("복사"), icon: "📋", action: { kind: "builtin", handler: "job.copy" } });
         if (entry && entry.result) {
-          items.push({ id: "copy-result", label: "결과만 복사", icon: "📄", action: { kind: "builtin", handler: "job.copyResult" } });
+          items.push({ id: "copy-result", label: i18n("결과만 복사"), icon: "📄", action: { kind: "builtin", handler: "job.copyResult" } });
         }
-        items.push({ id: "copy-id", label: "작업 ID 복사", icon: "🔖", action: { kind: "builtin", handler: "job.copyId" } });
+        items.push({ id: "copy-id", label: i18n("작업 ID 복사"), icon: "🔖", action: { kind: "builtin", handler: "job.copyId" } });
         if (canCancelJob(entry) && !entry._cancelRequested) {
           items.push({
             id: "cancel",
-            label: "중지",
+            label: i18n("중지"),
             icon: "⏹️",
             danger: true,
             action: { kind: "builtin", handler: "job.cancel" },
@@ -306,7 +306,7 @@
         if (!el) return;
         el.style.display = "";
         el.textContent = m; // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
-        el.title = "이 작업이 실제로 사용한 모델";
+        el.title = i18n("이 작업이 실제로 사용한 모델");
       };
 
       const applyDurationBadge = (el, ms) => {
@@ -592,7 +592,7 @@
           //  이 목록은 세션 스코프라 **둘이 다른 건 설계**인데, 종전 문구는 그 차이를 안 말해서
           //  사용자가 "숫자는 2인데 카드가 없다" 를 신고했다(그리고 나는 그걸 결함으로 쫓았다).
           //  숫자가 갈릴 땐 **어디에 있는지**를 말한다 — 스코프 토글이 바로 옆에 있다.
-          const kindWord = bgFilter === "running" ? "진행 중인" : "완료된";
+          const kindWord = bgFilter === "running" ? i18n("진행 중인") : i18n("완료된");
           const elsewhere = bgSessionScope === "session"
             ? (bgFilter === "running" ? running - runningScoped : (total - running) - (totalScoped - runningScoped))
             : 0;
@@ -633,7 +633,7 @@
         entry.chevEl.style.display = "";
         entry.el.classList.add("has-detail");
         const open = entry.el.classList.contains("open");
-        entry.chevEl.textContent = (open ? "▾ " : "▸ ") + (entry.stepCount > 0 ? entry.stepCount + "단계" : "자세히");
+        entry.chevEl.textContent = (open ? "▾ " : "▸ ") + (entry.stepCount > 0 ? entry.stepCount + "단계" : i18n("자세히"));
       };
       // opts.threadKey 에서 "진짜" 원 세션 threadKey 만 뽑는다 — handleWorkerActivity 는 라우팅용
       // 내부 의사-threadKey("worker:<jobId>"/"agent:<jobId>")를 opts.threadKey 로 넘기기도 하는데,
@@ -714,8 +714,8 @@
           // 중지 버튼 — running 이면 노출(worker·agent 무관, U-I4 개정; updateStopBtn 이 켜고/끔).
           // 클릭은 top 의 펼침 토글로 버블링되지 않게 stopPropagation.
           const stopBtn = document.createElement("button");
-          stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = "작업 중지";
-          stopBtn.textContent = "⏹️ 중지"; stopBtn.style.display = "none";
+          stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = i18n("작업 중지");
+          stopBtn.textContent = i18n("⏹️ 중지"); stopBtn.style.display = "none";
           stopBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestCancelJob(jobId); });
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
           // 실제 응답 모델 (2026-07-27) — tierBadge 는 *요청한* 티어(high/mid/low)이고 이건 그
@@ -1151,10 +1151,10 @@
       // 답할 일이고, 그래야 원래 의도와 변경이 **둘 다** 남는다.
       // 전달 못 된 시도(closed/absent)도 같은 자리에 남긴다 — 유실이야말로 사후에 봐야 할 값.
       const STEER_OUTCOME_NOTE = {
-        closed: "매니저가 막 끝나 반영 안 됨",
-        absent: "전달 실패 — 이미 종료되었거나 스티어 비활성",
-        "other-session": "다른 대화의 매니저라 전달하지 않음",
-        "no-target": "대상 매니저를 찾지 못함",
+        closed: i18n("매니저가 막 끝나 반영 안 됨"),
+        absent: i18n("전달 실패 — 이미 종료되었거나 스티어 비활성"),
+        "other-session": i18n("다른 대화의 매니저라 전달하지 않음"),
+        "no-target": i18n("대상 매니저를 찾지 못함"),
       };
       const handleWorkerSteered = (p, ts) => {
         // 대상을 못 고른 시도(no-target)는 붙일 카드가 없다 — events 기록으로만 남는다
@@ -1174,7 +1174,7 @@
         const icon = document.createElement("span");
         icon.className = "bg-step-icon"; icon.textContent = "💬";
         const lab = document.createElement("span");
-        lab.className = "bg-step-label bg-steer"; lab.textContent = "지시 추가";
+        lab.className = "bg-step-label bg-steer"; lab.textContent = i18n("지시 추가");
         line.appendChild(icon); line.appendChild(lab);
         if (p.message) {
           const d = document.createElement("span");
@@ -1228,7 +1228,7 @@
         const icon = document.createElement("span"); icon.className = "bg-step-icon";
         icon.textContent = skill ? "🛠" : (p.kind === "tool" ? "🔧" : "▶");
         const lab = document.createElement("span"); lab.className = skill ? "bg-step-label bg-skill" : "bg-step-label";
-        lab.textContent = skill ? "스킬: " + skill.name : (p.label || p.kind || "활동");
+        lab.textContent = skill ? "스킬: " + skill.name : (p.label || p.kind || i18n("활동"));
         line.appendChild(icon); line.appendChild(lab);
         if (p.detail && !skill) { // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
           const d = document.createElement("span"); d.className = "bg-step-detail";
@@ -1253,7 +1253,7 @@
         appendJobStep(entry, line);
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
-          const lbl = skill ? "🛠 스킬: " + skill.name : (p.label || p.kind || "활동");
+          const lbl = skill ? "🛠 스킬: " + skill.name : (p.label || p.kind || i18n("활동"));
           entry.lastStep = (!skill && p.detail) ? lbl + " · " + p.detail : lbl;
           if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
         }

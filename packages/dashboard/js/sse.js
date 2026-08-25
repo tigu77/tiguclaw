@@ -9,14 +9,14 @@
         const tk = p.threadKey;
         if (isEndpointThread(tk)) return;   // 기계 API 호출 — 엔드포인트 뷰가 따로 보여준다.
         if (!isActiveThread(tk)) return;    // 멀티세션 — 자기 세션에만.
-        const who = p.adapter ? String(p.adapter) : "모델";
+        const who = p.adapter ? String(p.adapter) : i18n("모델");
         const why = p.message ? ` — ${String(p.message).slice(0, 140)}` : "";
         // ★"다른 모델로 이어서" 는 **다음 후보가 실제로 있을 때만** (2026-07-30).
         //  종전엔 무조건 붙여서, 단일 모델 세션(의도적 설정)에서는 항상 거짓말이었다 —
         //  사용자는 오지 않을 답을 기다렸다(실측: 27분 과부하 중 7회 전부 후보 0).
         const next = p.hasFallback
-          ? "\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다)."
-          : "\n재시도할 다른 모델이 없습니다 — 잠시 후 다시 시도해 주세요.";
+          ? i18n("\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다).")
+          : i18n("\n재시도할 다른 모델이 없습니다 — 잠시 후 다시 시도해 주세요.");
         // ★사용량 한도면 **언제 풀리는지** 말한다 (2026-08-01, 사용자 지적).
         //  429 원문에 resets_at 이 오는데 위 `why` 가 140자에서 잘라 **그 값 바로 앞에서**
         //  끊겼다. 서버는 그걸 파싱해 쿨다운까지 걸어놓고 있었으니 — 아는데 말을 안 한 것.
@@ -61,19 +61,57 @@
       //  모르겠다" 였다. 종전엔 사후(`llm.compacted`)만 그려서, 정작 기다리는 동안엔
       //  스피너만 돌고 이유가 없었다. 요약은 6~8만 자를 LLM 에 넣는 호출이라 길다.
       //  codex(폴드 직전)·claude(SDK PreCompact 훅) 둘 다 같은 이벤트를 낸다.
+      /**
+       * 압축 안내에 **경과시간**을 얹는다 (2026-08-25 사용자 요청: "⏳ 16s 이것만 들어가도").
+       *
+       * ★왜 진행률(%)이 아닌가: 요약은 LLM **한 번 호출**이라 중간 진척이 없다. 아는 건
+       *  "무엇을 하는 중인가" 와 "몇 초째" 뿐이다. 가짜 진행률 바는 90%에서 멈춰 서고,
+       *  그건 아무것도 안 보여주는 것보다 나쁘다.
+       * ★형식은 `util.js` 의 **공용 `fmtElapsed`** 를 쓴다 — 드로어·채널힌트·옵션칩이 이미 쓰는
+       *  그 함수다. 표현을 두 벌 만들면 같은 시간이 화면마다 다르게 보인다(오늘 모델 배지에서
+       *  겪은 부류). 뱃지 클래스(`dur-badge running`)도 드로어와 **같은 것**을 쓴다.
+       */
+      const compactingTimers = new Map(); // threadKey → { el, startTs }
+      const tickCompacting = () => {
+        const now = Date.now();
+        for (const [key, e] of compactingTimers) {
+          if (!e.el || !e.el.isConnected) { compactingTimers.delete(key); continue; }
+          const b = e.el.querySelector(":scope .dur-badge.running");
+          if (b) b.textContent = "⏳ " + fmtElapsed(now - e.startTs);
+        }
+      };
+      setInterval(tickCompacting, 1000);
+      /** 압축이 끝났다 = 더는 안 돈다. 표식을 걷는다(끝난 뒤에도 도는 유령 방지). */
+      const stopCompactingTick = (tk) => {
+        const e = compactingTimers.get(tk || "");
+        if (!e) return;
+        compactingTimers.delete(tk || "");
+        const b = e.el && e.el.querySelector(":scope .dur-badge.running");
+        if (b) b.remove();
+      };
+
       const renderCompacting = (p, evTs) => {
         const tk = p.threadKey;
         if (isEndpointThread(tk)) return;
         if (!isActiveThread(tk)) return;
         const turns = Number(p.pendingTurns) || 0;
-        renderLocalChat(
+        const el = renderLocalChat(
           "info",
           turns > 0
             ? `🗜 대화가 길어져 이전 ${turns}턴을 요약하는 중입니다… (끝나면 결과를 알려드립니다)`
-            : "🗜 대화가 길어져 요약하는 중입니다… (끝나면 결과를 알려드립니다)",
+            : i18n("🗜 대화가 길어져 요약하는 중입니다… (끝나면 결과를 알려드립니다)"),
           // key 에 ts 를 넣어 같은 스레드의 다음 압축과 안 겹치게(사후 렌더와 동형).
           { ts: evTs, key: "compacting|" + (tk || "") + "|" + evTs },
         );
+        // 중복/보류로 안 그려졌으면(renderLocalChat 이 undefined) 틱도 안 건다.
+        if (!el) return;
+        const startTs = typeof evTs === "number" ? evTs : Date.now();
+        const b = document.createElement("span");
+        b.className = "dur-badge running";
+        b.textContent = "⏳ " + fmtElapsed(Date.now() - startTs);
+        const body = el.querySelector(":scope > .chat-message") || el;
+        body.appendChild(b);
+        compactingTimers.set(tk || "", { el, startTs });
       };
 
       const renderEvent = (ev) => {
@@ -285,15 +323,15 @@
           // 무엇이 예정돼 있는지 알린다(결과는 복구/최종실패로 다시 알림). 재전송이 꺼져
           // 있거나 이미 재전송까지 실패한 건은 그대로 확정 실패.
           const tail = p.willRetry === true
-            ? " · 내용은 생성됐습니다. 5분 뒤 자동으로 다시 보냅니다."
+            ? i18n(" · 내용은 생성됐습니다. 5분 뒤 자동으로 다시 보냅니다.")
             : isDelivery
-              ? " · 내용은 생성됐고 대화 기록에 남아 있습니다."
+              ? i18n(" · 내용은 생성됐고 대화 기록에 남아 있습니다.")
               : "";
           const verb = p.phase === "dispatch_retry"
-            ? "전송 최종 실패(자동 재전송도 실패)"
+            ? i18n("전송 최종 실패(자동 재전송도 실패)")
             : isDelivery
-              ? "전송 실패"
-              : "실행 실패";
+              ? i18n("전송 실패")
+              : i18n("실행 실패");
           renderLocalChat(
             p.willRetry === true ? "info" : "error",
             `⚠️ 스케줄 ${verb} — ${what}${where}${why}${tail}`,
@@ -361,6 +399,7 @@
           return;
         }
         if (ev.type === "llm.compacted") {
+          stopCompactingTick((ev.payload || {}).threadKey);
           renderCompacted(ev.payload || {}, ev.ts);
           return;
         }
@@ -496,7 +535,7 @@
         tsEl.textContent = fmtTime(now);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        const chatLabel = { user: "나", reply: assistantName, error: "오류", info: "안내" };
+        const chatLabel = { user: i18n("나"), reply: assistantName, error: i18n("오류"), info: i18n("안내") };
         tyEl.textContent = chatLabel[kind] || kind;
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
@@ -506,5 +545,8 @@
         setChatBody(msg, text, kind === "reply");
         div.appendChild(msg);
         vtAppend(div);
+        // ★엘리먼트를 돌려준다 — 호출부가 여기에 경과시간 표식을 달 수 있게(압축 등).
+        //  종전엔 아무것도 안 돌려줘서 "붙인 뒤 찾아오기" 가 필요했다.
+        return div;
       };
 

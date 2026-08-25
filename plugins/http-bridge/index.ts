@@ -53,6 +53,7 @@ import {
   getDefaultProfileName,
   setDefaultProfile,
   setSuggestionEnabled,
+  setLocale,
   setEgressChannels,
   readEgressChannels,
   setModuleDisabled,
@@ -1391,6 +1392,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다(위 set-session-profile 누락 전례 참조).
               : pathname === "/set-suggestion" && method === "POST"
                 ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
+              : pathname === "/set-locale" && method === "POST"
+                ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-profile-color" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-default-profile 과 같은 등급.
               : pathname === "/set-module-enabled" && method === "POST"
@@ -1940,6 +1943,36 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
+    // /set-locale — 화면 언어. write 게이트(위 role 표). body { locale: string }.
+    // ★설치 안 된 언어는 **거절**한다(판정은 코어 `setLocale` 한 곳 — 여기서 목록을 다시
+    //  들면 두 곳이 갈린다). 카탈로그는 서빙 때 주입되므로 반영은 새로고침에 일어난다.
+    if (pathname === "/set-locale" && method === "POST") {
+      let lbody: Record<string, unknown>;
+      try {
+        lbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      const want = typeof lbody.locale === "string" ? lbody.locale.trim() : "";
+      if (want === "") {
+        writeJson(res, 400, { error: "locale(string) required" });
+        return;
+      }
+      try {
+        if (!setLocale(want)) {
+          writeJson(res, 400, { error: `'${want}' 언어가 설치돼 있지 않습니다` });
+          return;
+        }
+        writeJson(res, 200, { ok: true, locale: want });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
     // /set-egress — "이 답도 함께 보낼" 추가 채널(전역). write 게이트(위 role 표).
     // body { channels: string[] }. settings.json 의 egress.channels 한 키만
     // read-modify-write. ★서버에 두는 이유: 브라우저에만 있으면 서버가 스스로 만드는
@@ -2201,41 +2234,40 @@ class HttpBridge implements Channel, Observer {
     //   핸들러에 판단을 두면 검사하려고 데몬을 띄워야 한다(원칙 게이트 Q7).
     if (pathname === "/chat-search" && method === "GET") {
       try {
-        const { normalizeChatQuery, makeSnippet } = await import(
-          "../../src/core/chat-search.js"
-        );
-        const { searchChatLog, countChatLogMatches } = await import("../../src/store/chat-log.js");
-        const q = normalizeChatQuery(url.searchParams.get("q") ?? "");
-        if (q === null) {
-          // 너무 짧다 = 오류가 아니라 **아직 검색할 게 아니다**. 빈 결과로 조용히 답한다.
+        // ★조합(정규화→조회→스니펫→총건수)은 `core/chat-search.searchConversations` 한 곳이다.
+        //  비서의 `search_conversations` 도구도 **같은 함수**를 쓴다 — 여기서 다시 조합하면
+        //  도구와 화면이 다른 답을 준다.
+        const { searchConversations } = await import("../../src/core/chat-search.js");
+        const n = (v: string | null): number | undefined => {
+          const x = parseInt(v ?? "", 10);
+          return Number.isFinite(x) && x > 0 ? x : undefined;
+        };
+        const tkRaw = url.searchParams.get("threadKey");
+        const threadKey = tkRaw !== null && tkRaw.trim() !== "" ? tkRaw : undefined;
+        const r = await searchConversations(url.searchParams.get("q") ?? "", {
+          ...(n(url.searchParams.get("limit")) !== undefined
+            ? { limit: n(url.searchParams.get("limit"))! }
+            : {}),
+          ...(threadKey !== undefined ? { threadKey } : {}),
+          ...(n(url.searchParams.get("beforeTs")) !== undefined
+            ? { beforeTs: n(url.searchParams.get("beforeTs"))! }
+            : {}),
+          ...(n(url.searchParams.get("beforeId")) !== undefined
+            ? { beforeId: n(url.searchParams.get("beforeId"))! }
+            : {}),
+        });
+        // 너무 짧다 = 오류가 아니라 **아직 검색할 게 아니다**. 빈 결과로 조용히 답한다.
+        if (r.tooShort) {
           writeJson(res, 200, { hits: [], query: "", tooShort: true });
           return;
         }
-        const limRaw = parseInt(url.searchParams.get("limit") ?? "", 10);
-        const limit = Number.isFinite(limRaw) && limRaw > 0 ? Math.min(limRaw, 200) : 50;
-        // 더보기 커서 — 이 ts 보다 과거만. 유효 양수만 통과(그 외엔 첫 페이지).
-        const beforeRaw = parseInt(url.searchParams.get("beforeTs") ?? "", 10);
-        const beforeTs = Number.isFinite(beforeRaw) && beforeRaw > 0 ? beforeRaw : undefined;
-        // 복합 커서 두 번째 축 — 같은 ts 안에서 어디까지 봤는지(동률 유실 방지, 검토 D-1).
-        const beforeIdRaw = parseInt(url.searchParams.get("beforeId") ?? "", 10);
-        const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? beforeIdRaw : undefined;
-        const tkRaw = url.searchParams.get("threadKey");
-        const threadKey = tkRaw !== null && tkRaw.trim() !== "" ? tkRaw : undefined;
-        const hits = searchChatLog(q.like, {
-          limit,
-          ...(threadKey !== undefined ? { threadKey } : {}),
-          ...(beforeTs !== undefined ? { beforeTs } : {}),
-          ...(beforeId !== undefined ? { beforeId } : {}),
-        }).map(({ text, ...rest }) => {
-          const s = makeSnippet(text, q);
-          return { ...rest, snippet: s.text, matchStart: s.matchStart, matchLen: s.matchLen };
+        writeJson(res, 200, {
+          hits: r.hits,
+          total: r.total,
+          limit: r.limit,
+          query: r.query,
+          scope: r.scope,
         });
-        // ★`total` 을 함께 준다 — 목록엔 상한이 있으므로 **잘렸다는 사실**을 화면이 말할
-        //  수 있어야 한다. 없을 땐 "'는' — 50건" 이라고 했는데 실제로는 1,438건이었다.
-        const total = countChatLogMatches(q.like, {
-          ...(threadKey !== undefined ? { threadKey } : {}),
-        });
-        writeJson(res, 200, { hits, total, limit, query: q.raw, scope: threadKey ?? "all" });
       } catch (err) {
         writeJson(res, 500, {
           error: err instanceof Error ? err.message : String(err),

@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const JS = (n: string): string =>
@@ -89,7 +89,7 @@ export const check: RegressionCheck = {
     );
     if (src === null) return out;
 
-    const view = new Function(`${src}return chatEmptyView;`)() as (
+    const view = new Function(`${JS_I18N_STUB}${src}return chatEmptyView;`)() as (
       s: string,
       n: number,
     ) => { show: boolean; title: string; body: string };

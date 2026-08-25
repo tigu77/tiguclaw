@@ -132,6 +132,27 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★디스크 == 매니페스트 (2026-08-25 적대 검토 F5). 이 판정은 종전에
+    //  `scripts/verify-dashboard-split.mjs` **에만** 있었는데, 그 스크립트는 호출부가 0이고
+    //  게다가 상시 FAIL 상태로 다시 돌아가 있었다 — `feedback_gate_must_actually_run` 이
+    //  기록한 사고(고아 js 파일 몇 주 생존)와 **같은 기제로 같은 판정을 두 번 잃었다.**
+    //  그래서 자동으로 도는 자리(이 스위트)로 옮긴다. 손으로 부르는 게이트는 안 돈다.
+    const onDisk = (await readdir(dir))
+      .filter((f) => f.endsWith(".js"))
+      .sort();
+    const inManifest = [...manifest].sort();
+    const orphans = onDisk.filter((f) => !inManifest.includes(f));
+    const missing = inManifest.filter((f) => !onDisk.includes(f));
+    out.push(
+      assert(
+        "★js/ 의 파일 집합 == 매니페스트(고아 파일은 죽은 코드고, 빠진 파일은 404 다)",
+        orphans.length === 0 && missing.length === 0,
+        orphans.length === 0 && missing.length === 0
+          ? `${onDisk.length}개 일치`
+          : `★고아 ${orphans.join(" ")} · 누락 ${missing.join(" ")}`,
+      ),
+    );
+
     return out;
   },
 };

@@ -38,18 +38,18 @@
        * @returns {{tone:string, desc:string, meta:string}}
        */
       const versionStatusRow = (version, availability) => {
-        const meta = version ? "v" + version : "확인 중";
+        const meta = version ? "v" + version : i18n("확인 중");
         const state = availability && availability.state;
         if (state === "available")
-          return { tone: "warn", desc: "받을 업데이트가 있습니다 — 상단 [업데이트] 버튼으로 적용합니다.", meta };
+          return { tone: "warn", desc: i18n("받을 업데이트가 있습니다 — 상단 [업데이트] 버튼으로 적용합니다."), meta };
         if (state === "blocked")
           return {
             tone: "warn",
-            desc: availability.blockedReason || "지금은 업데이트할 수 없습니다.",
+            desc: availability.blockedReason || i18n("지금은 업데이트할 수 없습니다."),
             meta,
           };
-        if (state === "up-to-date") return { tone: "good", desc: "최신입니다.", meta };
-        return { tone: "good", desc: "현재 실행 중인 버전입니다.", meta };
+        if (state === "up-to-date") return { tone: "good", desc: i18n("최신입니다."), meta };
+        return { tone: "good", desc: i18n("현재 실행 중인 버전입니다."), meta };
       };
 
       const setActiveNav = (view) => {
@@ -83,12 +83,12 @@
           ? CATEGORIES.reduce((sum, cat) => sum + ((inventoryCache[cat] || []).length), 0)
           : "…";
         const healthClass = errors > 0 ? "bad" : degraded > 0 ? "warn" : "good";
-        const healthText = errors > 0 ? "오류" : degraded > 0 ? "주의" : "정상";
+        const healthText = errors > 0 ? i18n("오류") : degraded > 0 ? i18n("주의") : i18n("정상");
         const healthDesc = providersCache.length === 0
-          ? "모듈 정보를 불러오는 중입니다."
+          ? i18n("모듈 정보를 불러오는 중입니다.")
           : degraded > 0
             ? "점검이 필요한 모듈이 " + degraded + "개 있습니다."
-            : "모든 모듈이 정상 상태입니다.";
+            : i18n("모든 모듈이 정상 상태입니다.");
         root.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "page-view overview";
@@ -101,9 +101,9 @@
         const quick = document.createElement("div");
         quick.className = "quick-grid";
         const metrics = [
-          ["상태", healthText, healthDesc],
-          ["모듈", String(providersCache.length), active + "개 정상"],
-          ["이벤트", String(evCount), "채팅의 활동 로그에서 확인"],
+          [i18n("상태"), healthText, healthDesc],
+          [i18n("모듈"), String(providersCache.length), active + "개 정상"],
+          [i18n("이벤트"), String(evCount), i18n("채팅의 활동 로그에서 확인")],
         ];
         for (const [label, value, hint] of metrics) {
           const card = document.createElement("div");
@@ -121,15 +121,15 @@
         const statusList = document.createElement("div");
         statusList.className = "status-list";
         const rows = [
-          [healthClass, "모듈 상태", healthDesc, active + "/" + providersCache.length],
-          [localChatCount > 0 ? "good" : "warn", "대화", localChatCount > 0 ? "최근 대화가 대화 탭에 표시됩니다." : "아직 대화가 없습니다.", localChatCount + "개"],
-          [inventoryCache ? "good" : "warn", "인벤토리", inventoryCache ? "스킬·에이전트·MCP 등 능력을 불러왔습니다." : "인벤토리를 불러오는 중입니다.", String(invTotal)],
+          [healthClass, i18n("모듈 상태"), healthDesc, active + "/" + providersCache.length],
+          [localChatCount > 0 ? "good" : "warn", i18n("대화"), localChatCount > 0 ? i18n("최근 대화가 대화 탭에 표시됩니다.") : i18n("아직 대화가 없습니다."), localChatCount + "개"],
+          [inventoryCache ? "good" : "warn", i18n("인벤토리"), inventoryCache ? i18n("스킬·에이전트·MCP 등 능력을 불러왔습니다.") : i18n("인벤토리를 불러오는 중입니다."), String(invTotal)],
         ];
         // ★자리: `모듈 상태`(지금 도는가) 바로 다음 = **둘째 줄**. 맨 끝에 뒀더니 390×780
         //  화면에서 top=811px 로 **뷰포트 밖**이었다(헤드리스 실측) — 모바일에서 보이게 하려고
         //  만든 행이 모바일에서만 안 보이면 고친 게 아니다. 나머지 둘은 개수라 밀려도 된다.
         const ver = versionStatusRow(appVersion, updateChip.state());
-        rows.splice(1, 0, [ver.tone, "버전", ver.desc, ver.meta]);
+        rows.splice(1, 0, [ver.tone, i18n("버전"), ver.desc, ver.meta]);
         // (업데이트 판정이 **늦게** 도착하면 아래 onChange 등록이 이 화면을 다시 그린다.)
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
@@ -146,10 +146,10 @@
         const actions = document.createElement("div");
         actions.className = "home-actions";
         const actionData = [
-          ["providers", "📦", "모듈 보기", "채널·어댑터 등 카테고리별 패널과 상세 상태 확인"],
-          ["chat", "💬", assistantName + "와 대화", "대화와 활동 로그를 한 화면에서 확인"],
-          ["inventory", "📚", "인벤토리", "스킬·에이전트(명세)·MCP·스케줄 등 설치·발견된 capability 점검"],
-          ["restart", "🔄", "데몬 재시작", "멈춘 작업까지 정리하고 자동 복귀"],
+          ["providers", "📦", i18n("모듈 보기"), i18n("채널·어댑터 등 카테고리별 패널과 상세 상태 확인")],
+          ["chat", "💬", assistantName + "와 대화", i18n("대화와 활동 로그를 한 화면에서 확인")],
+          ["inventory", "📚", i18n("인벤토리"), i18n("스킬·에이전트(명세)·MCP·스케줄 등 설치·발견된 capability 점검")],
+          ["restart", "🔄", i18n("데몬 재시작"), i18n("멈춘 작업까지 정리하고 자동 복귀")],
         ];
         for (const [view, icon, title, desc] of actionData) {
           const btn = document.createElement("button");

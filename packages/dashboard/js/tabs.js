@@ -126,11 +126,11 @@
       registerBuiltinHandler("session.new", () => { newTab(); });
       registerMenuItems("session", (ctx) => {
         const items = [
-          { id: "rename", label: "이름 변경", icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },
-          { id: "new", label: "새 세션", icon: "➕", action: { kind: "builtin", handler: "session.new" } },
+          { id: "rename", label: i18n("이름 변경"), icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },
+          { id: "new", label: i18n("새 세션"), icon: "➕", action: { kind: "builtin", handler: "session.new" } },
         ];
         if (ctx.targetId !== DEFAULT_DASH_THREAD) {
-          items.push({ id: "close", label: "탭 닫기", icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });
+          items.push({ id: "close", label: i18n("탭 닫기"), icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });
         }
         return items;
       });
@@ -269,7 +269,7 @@
         }
         const plus = document.createElement("button");
         plus.type = "button"; plus.className = "session-tab session-add"; plus.textContent = "+";
-        plus.title = "새 세션";
+        plus.title = i18n("새 세션");
         plus.addEventListener("click", newTab);
         sessionTabsEl.appendChild(plus);
         // ★활성 탭이 보이는 자리로 스크롤 (2026-08-10 사용자 지적). 탭이 늘면 활성 탭이
@@ -527,7 +527,7 @@
             const serverName = (typeof s.name === "string" && s.name) ? s.name : null;
             // 파생은 서버 규칙 하나(sessionDisplayName). 채널 라벨은 그것도 비었을 때만.
             const name = (typeof s.displayName === "string" && s.displayName)
-              ? s.displayName : (serverName || (cm ? cm.full : "세션"));
+              ? s.displayName : (serverName || (cm ? cm.full : i18n("세션")));
             const sp = (typeof s.modelProfile === "string" && s.modelProfile) ? s.modelProfile : null;
             const tab = { threadKey: tk, name, modelProfile: sp, ...(serverName ? { customName: serverName } : {}), ...(s.preview ? { preview: s.preview } : {}), ...(ch ? { channel: ch } : {}) };
             openTabs.push(tab);

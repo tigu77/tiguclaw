@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const SRC = path.join(REPO, "packages/dashboard/js/background-drawer.js");
@@ -109,6 +109,7 @@ export const check: RegressionCheck = {
         chatBgActiveEl: el(),
         jobOwnerSession: () => "",
         isShellInScope: () => false,
+        i18n: (v: string) => v,
       };
       vm.createContext(ctx);
       try {
@@ -173,7 +174,7 @@ export const check: RegressionCheck = {
       const sites = [...code.matchAll(/ensureJobCard\(\s*[\w.]+\s*,\s*(\{[^;]*?\})\s*\)/g)];
       const carries = sites.map((m) => {
         try {
-          const f = new Function("p", "ts", "cardOpts", `return (${m[1]});`);
+          const f = new Function("p", "ts", "cardOpts", `${JS_I18N_STUB}return (${m[1]});`);
           const probe = { jobId: "j", startedAt: 1_700_000_000_000, label: "l" };
           return (f(probe, "t", probe) as { startedAt?: number }).startedAt === 1_700_000_000_000;
         } catch {

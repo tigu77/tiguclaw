@@ -90,6 +90,8 @@ const renderSteers = (
   }
   const created: string[] = [];
   const ctx: Record<string, unknown> = {
+    // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
+    i18n: (v: string) => v,
     jobCards: cards,
     document: { createElement: (): FakeEl => mkEl() },
     ensureJobCard: (jobId: string, o: { label?: string }): JobCard => {

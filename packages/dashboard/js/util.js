@@ -56,7 +56,7 @@
         const t = Number(ts);
         if (!Number.isFinite(t) || t <= 0) return "";
         const sec = Math.floor((Date.now() - t) / 1000);
-        if (sec < 60) return "방금";
+        if (sec < 60) return i18n("방금");
         const min = Math.floor(sec / 60);
         if (min < 60) return min + "분 전";
         const hr = Math.floor(min / 60);
@@ -65,6 +65,56 @@
         if (day < 30) return day + "일 전";
         const mon = Math.floor(day / 30);
         return mon < 12 ? mon + "개월 전" : Math.floor(mon / 12) + "년 전";
+      };
+
+      /**
+       * 화면 문구 — 키를 문장으로. 서버가 index.html 에 주입한 카탈로그를 본다.
+       *
+       * ★이름이 `t` 가 아닌 이유: 이 코드베이스에서 `t` 는 **지역 변수로 너무 흔하다**
+       *  (`const t = Number(ts)`·`const t = document.createElement("div")` … 실측 13곳).
+       *  그 안에서 부르면 가려져 **라이브에서 TypeError** 가 난다. 관례보다 견고함이 먼저다.
+       *
+       * ★폴백은 코어와 **같은 규칙**이다: 카탈로그에 없으면 **키 자체**를 낸다. 빈 문자열을
+       *  내면 버튼이 사라져 화면이 깨진다 — 반쯤 번역한 파일을 넣어보는 게 가능해야 하고,
+       *  그게 "사용자가 언어를 늘린다" 의 전제다.
+       * ★`{name}` 자리표시자만 채운다. 값이 없으면 자리표시자를 **남긴다**(지우면 문장이
+       *  조용히 이상해진다).
+       */
+      const i18n = (key, params) => {
+        const cat = (window.__TIGU_I18N__ && window.__TIGU_I18N__.strings) || {};
+        const raw = typeof cat[key] === "string" ? cat[key] : key;
+        if (!params) return raw;
+        return raw.replace(/\{(\w+)\}/g, (whole, name) =>
+          params[name] === undefined ? whole : String(params[name]),
+        );
+      };
+      const currentLocale = () =>
+        (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
+
+      /**
+       * `data-i18n="key"` 를 가진 요소를 카탈로그 문구로 채운다.
+       *
+       * ★HTML 은 정적이라 기본 언어 문구를 **그대로 써둔다** — 그러면 카탈로그가 없거나
+       *  주입이 실패해도 화면이 한국어로 멀쩡히 뜬다(빈 화면 0). 채우는 건 덮어쓰기다.
+       * ★키가 카탈로그에 없으면 **손대지 않는다** — `i18n()` 처럼 키를 써넣으면 오히려
+       *  HTML 에 있던 멀쩡한 문구가 `nav.settings` 로 바뀐다(더 나쁘다).
+       */
+      const applyI18n = (root) => {
+        const cat = (window.__TIGU_I18N__ && window.__TIGU_I18N__.strings) || {};
+        for (const el of (root || document).querySelectorAll("[data-i18n]")) {
+          const v = cat[el.dataset.i18n];
+          if (typeof v === "string" && v !== "") el.textContent = v;
+        }
+        // 속성도 같은 규칙으로 — `data-i18n-attrs="placeholder=key;title=key2"`.
+        // 형태를 하나로 두어 속성마다 새 이름을 만들지 않는다(placeholder·title·aria-label…).
+        for (const el of (root || document).querySelectorAll("[data-i18n-attrs]")) {
+          for (const pair of el.dataset.i18nAttrs.split(";")) {
+            const eq = pair.indexOf("=");
+            if (eq < 0) continue;
+            const v = cat[pair.slice(eq + 1).trim()];
+            if (typeof v === "string" && v !== "") el.setAttribute(pair.slice(0, eq).trim(), v);
+          }
+        }
       };
 
       const fmtElapsed = (ms) => {
@@ -112,11 +162,11 @@
       //
       // 두 축은 **다른 것을 결정**한다 — *무엇을 안내하나*(전송 방식)는 입력 장치가,
       // *얼마나 길게*는 화면 폭이 정한다. 한 함수에서 조합하면 순서 의존이 사라진다.
-      const CHAT_PLACEHOLDER_ENTER =
-        "대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭";
-      const CHAT_PLACEHOLDER_BUTTON =
-        "대시보드 채팅 — 전송 버튼으로 전송, Enter 줄바꿈 · 파일 붙여넣기/드롭";
-      const CHAT_PLACEHOLDER_SHORT = "메시지 입력…";
+      // ★문구는 **부를 때** 카탈로그에서 가져온다 — 여기가 판정 한 곳이므로 마크업에
+      //  `data-i18n-attrs` 를 달면 자리가 둘이 된다(달아봤고, JS 가 곧바로 덮었다).
+      const CHAT_PLACEHOLDER_ENTER = () => i18n("chat.ph.enter");
+      const CHAT_PLACEHOLDER_BUTTON = () => i18n("chat.ph.button");
+      const CHAT_PLACEHOLDER_SHORT = () => i18n("chat.ph.short");
 
       // 주 포인터가 터치인가 — **전송 동작 판정과 같은 기준**이어야 한다(안내문이 그
       // 동작을 설명하므로). perf.js 의 Enter 전송 분기가 이 함수를 쓴다.
@@ -132,8 +182,8 @@
       const computeChatPlaceholder = () => {
         // 고스트가 같은 자리를 쓴다 — 둘 다 그리면 글자가 겹쳐 못 읽는다.
         if (chatGhostShowing) return "";
-        if (isNarrowScreen()) return CHAT_PLACEHOLDER_SHORT;
-        return isTouchPrimary() ? CHAT_PLACEHOLDER_BUTTON : CHAT_PLACEHOLDER_ENTER;
+        if (isNarrowScreen()) return CHAT_PLACEHOLDER_SHORT();
+        return isTouchPrimary() ? CHAT_PLACEHOLDER_BUTTON() : CHAT_PLACEHOLDER_ENTER();
       };
       const refreshChatPlaceholder = () => {
         const el = document.getElementById("chat-input");
@@ -169,20 +219,20 @@
       let restartInFlight = false;
       const restartDaemon = async () => {
         if (restartInFlight) return;
-        if (!window.confirm("데몬을 재시작할까요? 진행 중인 작업이 중단되고 잠시 후 자동 복귀합니다.")) return;
+        if (!window.confirm(i18n("데몬을 재시작할까요? 진행 중인 작업이 중단되고 잠시 후 자동 복귀합니다."))) return;
         restartInFlight = true;
-        showToast("재시작 요청 중…", "warn");
+        showToast(i18n("재시작 요청 중…"), "warn");
         try {
           const r = await fetch("/api/restart", { method: "POST" });
           if (r.ok || r.status === 202) {
-            showToast("재시작 중… 잠시 후 복귀합니다.", "good");
+            showToast(i18n("재시작 중… 잠시 후 복귀합니다."), "good");
           } else {
             const data = await r.json().catch(() => ({}));
             showToast("재시작 실패: " + (data.error || ("HTTP " + r.status)), "bad");
           }
         } catch (err) {
           // 데몬이 즉시 종료되면 응답 전에 연결이 끊길 수 있음 — 정상 흐름으로 안내.
-          showToast("재시작 신호 전송됨 (응답 끊김) — 잠시 후 복귀합니다.", "warn");
+          showToast(i18n("재시작 신호 전송됨 (응답 끊김) — 잠시 후 복귀합니다."), "warn");
         } finally {
           setTimeout(() => { restartInFlight = false; }, 6000);
         }
@@ -216,30 +266,30 @@
       // 필드 도입) 이후 실제로 채워질 값 — 지금은 core|plugin|channel 만 실사용.
       const kindLabel = (kind) => {
         const map = {
-          provider: "모듈",
-          core: "코어",
-          plugin: "플러그인",
-          channel: "채널",
-          service: "서비스",
-          trigger: "트리거",
-          observer: "옵저버",
-          runtime: "런타임",
-          system: "시스템",
-          daemon: "데몬",
-          memory: "메모리",
-          schedule: "스케줄",
+          provider: i18n("모듈"),
+          core: i18n("코어"),
+          plugin: i18n("플러그인"),
+          channel: i18n("채널"),
+          service: i18n("서비스"),
+          trigger: i18n("트리거"),
+          observer: i18n("옵저버"),
+          runtime: i18n("런타임"),
+          system: i18n("시스템"),
+          daemon: i18n("데몬"),
+          memory: i18n("메모리"),
+          schedule: i18n("스케줄"),
         };
-        return map[kind] || kind || "모듈";
+        return map[kind] || kind || i18n("모듈");
       };
 
       const statusLabel = (status) => {
-        const map = { active: "정상", degraded: "주의", error: "오류", inactive: "비활성", unknown: "알 수 없음" };
-        return map[status] || status || "알 수 없음";
+        const map = { active: i18n("정상"), degraded: i18n("주의"), error: i18n("오류"), inactive: i18n("비활성"), unknown: i18n("알 수 없음") };
+        return map[status] || status || i18n("알 수 없음");
       };
 
       const dangerLabel = (danger) => {
-        const map = { safe: "안전", gray: "확인 필요", danger: "위험" };
-        return map[danger] || danger || "안전";
+        const map = { safe: i18n("안전"), gray: i18n("확인 필요"), danger: i18n("위험") };
+        return map[danger] || danger || i18n("안전");
       };
 
       const isCoreProvider = (provider) => {
@@ -253,7 +303,7 @@
         div.className = "view";
         const title = document.createElement("div");
         title.className = "view-title";
-        title.textContent = view.title || view.id || "화면";
+        title.textContent = view.title || view.id || i18n("화면");
         div.appendChild(title);
         const data = view.data || {};
         if (view.kind === "table" && Array.isArray(data.rows)) {
@@ -394,7 +444,7 @@
             emptyMsg = document.createElement("div");
             emptyMsg.className = "empty search-empty-msg";
             emptyMsg.style.margin = "8px";
-            emptyMsg.textContent = "검색 결과가 없습니다.";
+            emptyMsg.textContent = i18n("검색 결과가 없습니다.");
             listEl.appendChild(emptyMsg);
           }
         } else if (emptyMsg) {
@@ -420,9 +470,9 @@
        *  (`kind` 는 어댑터가 내는 값 — "text" = 답을 쓰는 중, 그 외 = 도구.)
        */
       const doingText = (phase) => {
-        if (!phase || !phase.kind) return "생각 중";
-        if (phase.kind === "text") return "답변 쓰는 중";
-        return phase.label ? phase.label + " 실행 중" : "도구 실행 중";
+        if (!phase || !phase.kind) return i18n("생각 중");
+        if (phase.kind === "text") return i18n("답변 쓰는 중");
+        return phase.label ? phase.label + " 실행 중" : i18n("도구 실행 중");
       };
 
       // 타임스탬프 — 로컬. 기존 toISOString().slice 는 UTC(한국이면 9h 어긋남)+밀리초였다.
@@ -439,7 +489,7 @@
       };
       const fmtDate = (ms) => {
         const d = new Date(ms);
-        const w = ["일", "월", "화", "수", "목", "금", "토"][d.getDay()];
+        const w = [i18n("일"), i18n("월"), i18n("화"), i18n("수"), i18n("목"), i18n("금"), i18n("토")][d.getDay()];
         return `${dateKey(ms)} (${w})`;
       };
 
@@ -590,3 +640,5 @@
           l.endsWith("run_in_background")
         );
       };
+
+      applyI18n();

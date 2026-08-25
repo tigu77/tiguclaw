@@ -96,6 +96,9 @@ const main = async () => {
   await copyFileAs("_workspace/public-overlay/CHANGELOG.md", "CHANGELOG.md");
   await copyTree("skills");
   await copyTree("agents");
+  // ★언어 카탈로그 (2026-08-25) — appRoot()-상대 자산이라 dist 에 실재해야 배포본에서
+  //  기본 문구가 나온다. 빠지면 카탈로그가 비어 화면이 키(nav.settings)로 뜬다.
+  await copyTree("locales");
 
   // 2) 플러그인 트리의 비-.ts 자산 → dist/plugins (특히 로더 발견의 근거인 package.json).
   //    .ts 는 tsc 가 dist/plugins/**/*.js 로 이미 emit — 여기선 제외하고 나머지만 미러.

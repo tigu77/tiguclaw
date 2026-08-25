@@ -7,12 +7,12 @@
       //  `endpoint`·`command` 는 각자 전용 화면이 있어 여기 안 넣는다(의도적 제외).
       const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp", "hook"];
       const CATEGORY_LABEL = {
-        channel: "채널",
-        external_plugin: "플러그인",
-        skill: "스킬",
-        agent: "에이전트",
+        channel: i18n("채널"),
+        external_plugin: i18n("플러그인"),
+        skill: i18n("스킬"),
+        agent: i18n("에이전트"),
         mcp: "mcp",
-        hook: "훅",
+        hook: i18n("훅"),
       };
       const CATEGORY_ICON = {
         channel: "📡",
@@ -77,7 +77,7 @@
         if (typeof renderTabBar === "function") renderTabBar();
       };
       // 채널 접두 표시명 — 탭으로 안 열려 있는 세션(텔레그램·CLI 등)의 폴백 라벨.
-      const CHANNEL_LABEL = { dashboard: "대시보드", telegram: "텔레그램", cli: "CLI", http: "HTTP" };
+      const CHANNEL_LABEL = { dashboard: i18n("대시보드"), telegram: i18n("텔레그램"), cli: "CLI", http: "HTTP" };
       /**
        * 세션 threadKey → 사람이 읽는 라벨. 탭으로 열려 있으면 그 이름(사용자가 붙인 이름 포함),
        * 아니면 채널 접두로 폴백. 미상("")은 ""를 돌려주고 표시 정책은 호출자가 정한다.

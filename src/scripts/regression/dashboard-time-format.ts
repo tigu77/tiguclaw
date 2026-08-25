@@ -17,7 +17,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const JS_DIR = path.join(REPO, "packages/dashboard/js");
@@ -62,7 +62,7 @@ export const check: RegressionCheck = {
 
     // ★실행한다 — 문자열 존재가 아니라 **값**을 본다.
     const { fmtAgo, fmtElapsed } = new Function(
-      `${agoSrc}${elapsedSrc}return { fmtAgo, fmtElapsed };`,
+      `${JS_I18N_STUB}${agoSrc}${elapsedSrc}return { fmtAgo, fmtElapsed };`,
     )() as { fmtAgo: (ts: number) => string; fmtElapsed: (ms: number) => string };
 
     const now = Date.now();

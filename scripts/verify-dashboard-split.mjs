@@ -58,8 +58,14 @@ for (const m of markupOnly.matchAll(scriptTagRe)) {
     if (!fs.existsSync(path.join(jsDir, base))) fail(`참조하는 js 파일 없음: js/${base}`);
     jsSrcOrder.push(base);
   } else if (m[2].trim() !== "") {
-    // src 없는 <script> 인데 본문 있음 = 앱 JS 인라인 잔여(분해 위반).
-    fail("index.html 에 인라인 <script> 본문 잔존 — 모든 앱 JS 는 js/ 모듈로(src=)");
+    // ★언어 카탈로그 주입 자리는 **설계상 인라인이어야 한다** (2026-08-25). 서버가 서빙할 때
+    //  이 태그를 통째로 바꿔 카탈로그를 심는다 — fetch 로 받으면 첫 렌더가 카탈로그보다
+    //  먼저 돌아 화면이 깜빡인다. 앱 JS 가 아니라 **데이터**다.
+    //  ★예외를 이름(`id`)으로 좁게 판다 — "본문 있는 script 는 다 봐준다" 로 넓히면 이
+    //   게이트가 지키던 것이 사라진다.
+    if (!/\sid="tigu-i18n"/.test(m[1])) {
+      fail("index.html 에 인라인 <script> 본문 잔존 — 모든 앱 JS 는 js/ 모듈로(src=)");
+    }
   }
 }
 if (jsSrcOrder.length === 0) fail("index.html 에 /js/ 스크립트 태그가 하나도 없음");

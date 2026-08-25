@@ -34,7 +34,7 @@
         tsEl.textContent = fmtTime(entry.ts);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isNotice ? "시스템 알림" : (isOut ? assistantName : "나");
+        tyEl.textContent = isNotice ? i18n("시스템 알림") : (isOut ? assistantName : i18n("나"));
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(entry.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         // 실제 응답 모델 — 라이브 답변 버블(ensureReplyBubble) 파리티. 값 없으면 요소를 만들지
@@ -43,7 +43,7 @@
           const mEl = document.createElement("span");
           mEl.className = "turn-model";
           mEl.textContent = entry.model.trim();
-          mEl.title = "이 답변에 실제로 응답한 모델";
+          mEl.title = i18n("이 답변에 실제로 응답한 모델");
           head.appendChild(mEl);
         }
         div.appendChild(head);
@@ -142,7 +142,7 @@
             dl.className = "att-dl";
             dl.href = dlHref;
             dl.setAttribute("download", name);
-            dl.title = "받기";
+            dl.title = i18n("받기");
             dl.textContent = "⬇";
             chip.appendChild(dl);
           }
@@ -241,9 +241,9 @@
           const dot = document.createElement("span");
           dot.className = "act-bg-dot";
           const txt = document.createElement("span");
-          txt.textContent = "🤖 백그라운드 ↗";
+          txt.textContent = i18n("🤖 백그라운드 ↗");
           bg.appendChild(dot); bg.appendChild(txt);
-          bg.title = "백그라운드 작업 열기";
+          bg.title = i18n("백그라운드 작업 열기");
           bg.addEventListener("click", (e) => {
             e.stopPropagation(); // 스텝 펼침·턴 접힘과 분리(라이브 동형).
             if (typeof openBg === "function") openBg();
@@ -287,7 +287,7 @@
         modelEl.className = "turn-model";
         if (mLast) { // 현재(마지막) 모델만 — 전환 표기 없음.
           modelEl.textContent = mLast;
-          modelEl.title = "이 런이 실제로 사용한 모델";
+          modelEl.title = i18n("이 런이 실제로 사용한 모델");
         }
         const count = document.createElement("span");
         count.className = "hist-turn-count"; count.textContent = acts.length + "단계";

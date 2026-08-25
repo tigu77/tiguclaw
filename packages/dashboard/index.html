@@ -23,14 +23,14 @@
   <body data-tab="main" data-main="workbench" data-view="overview" data-chat-panel="chat">
     <header>
       <!-- 모바일 전용 — 헤더 좌측 ☰ 드로어 버튼(얇은 헤더 바 안). 데스크탑 CSS 로 숨김. 뒤로가기는 뺌. -->
-      <button id="menu-toggle" class="hdr-btn" type="button" aria-label="메뉴 열기" title="메뉴">☰</button>
+      <button id="menu-toggle" class="hdr-btn" type="button" aria-label="메뉴 열기" title="메뉴" data-i18n-attrs="aria-label=hdr.menu.aria;title=common.menu">☰</button>
       <!-- 브랜드 마크 — favicon 과 **같은 파일**을 쓴다(브라우저 탭과 헤더가 어긋날 여지 0). -->
-      <div class="brand"><img class="brand-icon" src="/icon.png" alt="" width="32" height="32" />티구클로</div>
-      <div class="sub" id="app-sub">대시보드</div>
+      <div class="brand"><img class="brand-icon" src="/icon.png" alt="" width="32" height="32" /><span data-i18n="app.brand">티구클로</span></div>
+      <div class="sub" id="app-sub" data-i18n="app.sub">대시보드</div>
       <div class="spacer"></div>
       <div class="live">
         <span class="dot" id="conn-dot"></span>
-        <span id="conn-text">연결 중…</span>
+        <span id="conn-text" data-i18n="conn.connecting">연결 중…</span>
       </div>
       <div class="meter" id="ev-count">0개 이벤트</div>
       <!-- 업데이트 칩 — 받을 게 있을 때만 노출(평소 hidden). 상태 구역(연결·이벤트) 옆에
@@ -41,120 +41,120 @@
     <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
     <div id="menu-backdrop"></div>
     <!-- 모바일 마스터-디테일 뒤로 버튼 — 상세(#detail-panel) 볼 때만 노출, 누르면 리스트로. 데스크탑 미표시. -->
-    <button id="wb-detail-back" type="button" hidden>‹ 목록</button>
+    <button id="wb-detail-back" type="button" hidden data-i18n="wb.back">‹ 목록</button>
     <nav id="tab-bar">
-      <button class="tab" data-tab="menu" type="button"><span class="ic">☰</span><span>메뉴</span></button>
-      <button class="tab active" data-tab="main" type="button"><span class="ic">🏠</span><span>화면</span></button>
-      <button class="tab" data-tab="chat" type="button"><span class="ic">💬</span><span>채팅</span></button>
+      <button class="tab" data-tab="menu" type="button"><span class="ic">☰</span><span data-i18n="common.menu">메뉴</span></button>
+      <button class="tab active" data-tab="main" type="button"><span class="ic">🏠</span><span data-i18n="tab.view">화면</span></button>
+      <button class="tab" data-tab="chat" type="button"><span class="ic">💬</span><span data-i18n="nav.chat">채팅</span></button>
     </nav>
     <main>
       <aside id="sidebar">
         <div class="nav-brand">
-          <div class="nav-kicker">제어 센터</div>
-          <div class="nav-title">대시보드</div>
+          <div class="nav-kicker" data-i18n="nav.kicker">제어 센터</div>
+          <div class="nav-title" data-i18n="app.sub">대시보드</div>
         </div>
         <div class="nav-section" aria-label="main menu">
-          <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label">홈</span><span class="hint">요약</span></button>
-          <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label">모듈</span><span class="hint" id="nav-provider-count">0</span></button>
-          <button class="nav-button" data-view="models" type="button"><span class="ic">🧠</span><span class="label">모델 프로파일</span><span class="hint" id="nav-model-count">0</span></button>
-          <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label">채팅</span><span class="hint" id="nav-event-count">0</span></button>
-          <button class="nav-button" data-view="projects" type="button"><span class="ic">📁</span><span class="label">프로젝트</span><span class="hint" id="nav-project-count">0</span></button>
-          <button class="nav-button" data-view="endpoints" type="button"><span class="ic">🔌</span><span class="label">엔드포인트</span><span class="hint" id="nav-endpoint-count">0</span></button>
-          <button class="nav-button" data-view="activity" type="button"><span class="ic">📜</span><span class="label">전체 활동</span><span class="hint">모니터</span></button>
+          <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label" data-i18n="nav.overview">홈</span><span class="hint" data-i18n="nav.overview.hint">요약</span></button>
+          <button class="nav-button" data-view="providers" type="button"><span class="ic">📦</span><span class="label" data-i18n="nav.modules">모듈</span><span class="hint" id="nav-provider-count">0</span></button>
+          <button class="nav-button" data-view="models" type="button"><span class="ic">🧠</span><span class="label" data-i18n="nav.models">모델 프로파일</span><span class="hint" id="nav-model-count">0</span></button>
+          <button class="nav-button" data-view="chat" type="button"><span class="ic">💬</span><span class="label" data-i18n="nav.chat">채팅</span><span class="hint" id="nav-event-count">0</span></button>
+          <button class="nav-button" data-view="projects" type="button"><span class="ic">📁</span><span class="label" data-i18n="nav.projects">프로젝트</span><span class="hint" id="nav-project-count">0</span></button>
+          <button class="nav-button" data-view="endpoints" type="button"><span class="ic">🔌</span><span class="label" data-i18n="nav.endpoints">엔드포인트</span><span class="hint" id="nav-endpoint-count">0</span></button>
+          <button class="nav-button" data-view="activity" type="button"><span class="ic">📜</span><span class="label" data-i18n="nav.activity">전체 활동</span><span class="hint" data-i18n="nav.activity.hint">모니터</span></button>
           <div class="nav-divider"></div>
-          <button class="nav-button" data-view="inventory" type="button"><span class="ic">📚</span><span class="label">인벤토리</span><span class="hint" id="nav-capability-count">0</span></button>
-          <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label">설정</span></button>
+          <button class="nav-button" data-view="inventory" type="button"><span class="ic">📚</span><span class="label" data-i18n="nav.inventory">인벤토리</span><span class="hint" id="nav-capability-count">0</span></button>
+          <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label" data-i18n="nav.settings">설정</span></button>
         </div>
       </aside>
       <section id="workbench">
         <section id="providers-panel">
         <div id="providers-head">
-          <h1>모듈</h1>
+          <h1 data-i18n="nav.modules">모듈</h1>
           <span class="count" id="providers-count"></span>
         </div>
         <!-- 검색+접이식 카테고리(ADR 2026-07-17 §5·§5.5) — 리스트 서브패널 상단, 그룹 위. input 은
              #providers-list 밖이라 30s 폴 재렌더(list.innerHTML 재구성)에도 값이 사라지지 않는다. -->
         <div class="list-search-row">
-          <input type="search" id="providers-search" class="list-search-input" placeholder="모듈 검색 (이름·종류)" />
+          <input type="search" id="providers-search" class="list-search-input" placeholder="모듈 검색 (이름·종류)" data-i18n-attrs="placeholder=panel.modules.search" />
         </div>
-        <div id="providers-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
+        <div id="providers-list"><div class="empty" style="margin:8px" data-i18n="common.loading">불러오는 중…</div></div>
       </section>
         <!-- 능력 뷰(ADR 2026-07-17 §5·§7 P2, ←인벤토리) 리스트 서브패널 — 모듈 뷰(#providers-panel)와
              동형 3패널(사이드바 nav | 리스트 | 디테일). #workbench.show-capabilities 가 그리드를 켠다. -->
         <section id="capabilities-panel">
           <div id="capabilities-head">
-            <h1>인벤토리</h1>
+            <h1 data-i18n="nav.inventory">인벤토리</h1>
             <span class="count" id="capabilities-count"></span>
           </div>
           <div class="list-search-row">
-            <input type="search" id="capabilities-search" class="list-search-input" placeholder="인벤토리 검색 (이름·설명)" />
+            <input type="search" id="capabilities-search" class="list-search-input" placeholder="인벤토리 검색 (이름·설명)" data-i18n-attrs="placeholder=panel.inventory.search" />
           </div>
-          <div id="capabilities-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
+          <div id="capabilities-list"><div class="empty" style="margin:8px" data-i18n="common.loading">불러오는 중…</div></div>
         </section>
         <!-- 프로젝트 뷰 3패널 — 모듈/능력(#providers-panel·#capabilities-panel)과 완전 동형.
              #workbench.show-projects 가 리스트 서브패널을 detail-panel 과 나란히 켠다. -->
         <section id="projects-panel">
           <div id="projects-head">
-            <h1>프로젝트</h1>
+            <h1 data-i18n="nav.projects">프로젝트</h1>
             <span class="count" id="projects-count"></span>
           </div>
           <div class="list-search-row">
-            <input type="search" id="projects-search" class="list-search-input" placeholder="프로젝트 검색 (이름·설명·경로)" />
+            <input type="search" id="projects-search" class="list-search-input" placeholder="프로젝트 검색 (이름·설명·경로)" data-i18n-attrs="placeholder=panel.projects.search" />
           </div>
-          <div id="projects-list"><div class="empty" style="margin:8px">불러오는 중…</div></div>
+          <div id="projects-list"><div class="empty" style="margin:8px" data-i18n="common.loading">불러오는 중…</div></div>
         </section>
         <section id="detail-panel">
-          <div id="detail-empty">홈을 불러오는 중입니다.</div>
+          <div id="detail-empty" data-i18n="detail.loading">홈을 불러오는 중입니다.</div>
         </section>
       </section>
       <section id="right">
         <div id="stream-bar">
           <div class="chat-head">
             <div>
-              <h1 class="chat-title">채팅</h1>
-              <p class="chat-desc">tiguclaw와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.</p>
+              <h1 class="chat-title" data-i18n="nav.chat">채팅</h1>
+              <p class="chat-desc" data-i18n="chat.desc">tiguclaw와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.</p>
             </div>
             <div class="chat-head-actions">
               <!-- 검색은 **가끔** 쓴다 — 상시 입력창을 두면 채팅 상단을 늘 먹는다(사용자 결정
                    2026-08-23: "검색 버튼이 따로 있는 건 어때?"). 버튼 → 패널. -->
-              <button id="chat-search-btn" type="button" aria-label="대화 검색" title="대화 검색 (전 세션)">🔍 검색</button>
-              <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업">
+              <button id="chat-search-btn" type="button" aria-label="대화 검색" title="대화 검색 (전 세션)" data-i18n-attrs="aria-label=search.title;title=search.btn.title" data-i18n="search.btn.text">🔍 검색</button>
+              <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업" data-i18n-attrs="aria-label=bg.title;title=bg.title">
                 백그라운드 <span class="bg-badge" id="bg-badge">0</span>
               </button>
             </div>
           </div>
           <div class="log-tools">
-            <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" />
+            <input id="ev-filter" type="text" placeholder="유형 필터 (region, memory, error…)" data-i18n-attrs="placeholder=activity.filter.ph" />
           </div>
         </div>
         <!-- 세션 탭 = #right 직접 자식(2026-07-19) — 모바일 페이지스크롤에서 상단 sticky 로 남기려면
              부모가 대화 전체를 감싸야 한다(sticky 는 부모 박스 안에서만 붙음). 데스크탑은 위치 동일. -->
-        <div id="session-tabs" class="session-tabs" role="tablist" aria-label="세션 탭"></div>
-        <div id="stream"><div class="chat-empty" id="chat-empty"><strong>대화를 불러오는 중…</strong></div><div class="empty" id="log-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div></div>
+        <div id="session-tabs" class="session-tabs" role="tablist" aria-label="세션 탭" data-i18n-attrs="aria-label=session.tabs.aria"></div>
+        <div id="stream"><div class="chat-empty" id="chat-empty"><strong data-i18n="chat.loading">대화를 불러오는 중…</strong></div><div class="empty" id="log-empty" style="margin:10px;padding:14px" data-i18n="activity.waiting">이벤트를 기다리는 중…</div></div>
         <div id="chat">
-          <button id="chat-jump" class="chat-jump" type="button" hidden aria-label="맨 아래로" title="맨 아래로 (최신)">↓ 최신</button>
+          <button id="chat-jump" class="chat-jump" type="button" hidden aria-label="맨 아래로" title="맨 아래로 (최신)" data-i18n-attrs="aria-label=chat.jump.aria;title=chat.jump.title" data-i18n="chat.jump.text">↓ 최신</button>
           <div id="chat-slash" class="chat-slash" hidden></div>
           <div id="chat-context" class="chat-context"></div>
           <div id="chat-reply" class="chat-reply" hidden></div>
-          <button id="chat-bg-active" class="chat-bg-active" type="button" hidden title="백그라운드 작업 보기"></button>
+          <button id="chat-bg-active" class="chat-bg-active" type="button" hidden title="백그라운드 작업 보기" data-i18n-attrs="title=bg.view.title"></button>
           <!-- 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b → §5 셸 드로어 이식 Phase 3b-2).
                워커 스트립(위)과 물리적으로 분리된 별도 레인(사용자 확정 — 다른 종). 세션 스코프
                러닝 카운트, 누르면 백그라운드 드로어를 열고 셸 섹션으로 포커스(view-shells.js
                showShells → openBg). background-drawer.js refreshShellStrip 이 갱신. -->
-          <button id="chat-shell-active" class="chat-bg-active chat-shell-active" type="button" hidden title="셸 보기"></button>
+          <button id="chat-shell-active" class="chat-bg-active chat-shell-active" type="button" hidden title="셸 보기" data-i18n-attrs="title=shell.view.title"></button>
           <!-- 입력 히스토리 위치 표시(↑/↓ 탐색 중에만). 클로드코드 웹과 같은 자리·같은 뜻. -->
           <div id="chat-histind" class="chat-histind" hidden aria-live="polite"></div>
           <div id="chat-attach"></div>
           <form id="chat-form" autocomplete="off">
-            <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부">📎</button>
-            <button id="chat-mic-btn" type="button" title="길게 눌러 음성 입력 (텔레그램식)" aria-label="음성 입력 (길게 누르기)">🎤<span id="chat-mic-timer" class="mic-timer" hidden></span></button>
+            <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부" data-i18n-attrs="title=chat.attach;aria-label=chat.attach">📎</button>
+            <button id="chat-mic-btn" type="button" title="길게 눌러 음성 입력 (텔레그램식)" aria-label="음성 입력 (길게 누르기)" data-i18n-attrs="title=chat.mic.title;aria-label=chat.mic.aria">🎤<span id="chat-mic-timer" class="mic-timer" hidden></span></button>
             <!-- 채널 fan-out 버튼 — 추가 발신 채널 있을 때만 노출(egress-selector.js). 누르면 위 팝오버 열림. -->
-            <button id="chat-egress-btn" type="button" title="추가 채널로 함께 보내기" aria-label="추가 발신 채널" hidden aria-haspopup="true" aria-expanded="false">📤<span id="egress-dot" class="egress-dot" hidden></span></button>
-            <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea><!-- 다음 메시지 제안 고스트 — 입력창이 비어 있을 때만. Tab 이면 입력창에 채워진다(전송 아님). --><div id="chat-ghost" class="chat-ghost" hidden aria-hidden="true"></div><!-- 제안 수락 버튼 — 클릭하면 입력창에 **채워진다**(전송 아님). type="button" 필수: 폼 안이라 기본 submit 이면 전송 버튼이 된다. --><button id="chat-ghost-accept" type="button" hidden title="제안을 입력창에 채우기 (Tab)" aria-label="제안을 입력창에 채우기">→</button></div>
-            <div id="chat-egress" class="chat-egress" title="이 답을 함께 보낼 추가 채널 (fan-out)" role="group" aria-label="추가 발신 채널" hidden></div>
+            <button id="chat-egress-btn" type="button" title="추가 채널로 함께 보내기" aria-label="추가 발신 채널" data-i18n-attrs="title=chat.egress.btn.title;aria-label=chat.egress.aria" hidden aria-haspopup="true" aria-expanded="false">📤<span id="egress-dot" class="egress-dot" hidden></span></button>
+            <div class="grow-wrap"><textarea id="chat-input" rows="1" placeholder="대시보드 채팅 — Enter 전송, Shift+Enter 줄바꿈 · 파일 붙여넣기/드롭"></textarea><!-- 다음 메시지 제안 고스트 — 입력창이 비어 있을 때만. Tab 이면 입력창에 채워진다(전송 아님). --><div id="chat-ghost" class="chat-ghost" hidden aria-hidden="true"></div><!-- 제안 수락 버튼 — 클릭하면 입력창에 **채워진다**(전송 아님). type="button" 필수: 폼 안이라 기본 submit 이면 전송 버튼이 된다. --><button id="chat-ghost-accept" type="button" hidden title="제안을 입력창에 채우기 (Tab)" aria-label="제안을 입력창에 채우기" data-i18n-attrs="title=chat.suggest.title;aria-label=chat.suggest.aria">→</button></div>
+            <div id="chat-egress" class="chat-egress" title="이 답을 함께 보낼 추가 채널 (fan-out)" data-i18n-attrs="title=chat.egress.title;aria-label=chat.egress.aria" role="group" aria-label="추가 발신 채널" hidden></div>
             <!-- 모델 프로파일 빠른선택 (탭별 sticky, ADR model-dropdown §3). 이름만 표시(제약3),
                  model-select.js 가 GET /api/model-profiles 로 채우고 선택 시 POST /api/set-session-profile. -->
-            <select id="chat-model-select" class="chat-model-select" title="이 세션에 쓸 모델 프로파일 (이 탭만)" aria-label="모델 프로파일"></select>
+            <select id="chat-model-select" class="chat-model-select" title="이 세션에 쓸 모델 프로파일 (이 탭만)" aria-label="모델 프로파일" data-i18n-attrs="title=chat.model.title;aria-label=nav.models"></select>
             <button id="chat-send" type="submit">전송</button>
             <input type="file" id="chat-file" multiple hidden />
           </form>
@@ -165,11 +165,11 @@
            _workspace/all-activity_architect_contract.md). 채팅뷰 #stream/컴포저 미참조·별도 컨테이너. -->
       <section id="activity-view">
         <div id="activity-bar">
-          <h1 class="activity-title">전체 활동</h1>
-          <p class="activity-desc">모든 세션·채널의 메시지와 도구 활동을 시간순으로 모아 보여주는 읽기 전용 모니터입니다.</p>
+          <h1 class="activity-title" data-i18n="nav.activity">전체 활동</h1>
+          <p class="activity-desc" data-i18n="activity.desc">모든 세션·채널의 메시지와 도구 활동을 시간순으로 모아 보여주는 읽기 전용 모니터입니다.</p>
         </div>
         <div id="activity-stream">
-          <div class="empty" id="activity-empty" style="margin:10px;padding:14px">이벤트를 기다리는 중…</div>
+          <div class="empty" id="activity-empty" style="margin:10px;padding:14px" data-i18n="activity.waiting">이벤트를 기다리는 중…</div>
         </div>
       </section>
     </main>
@@ -179,47 +179,47 @@
          검색은 잠깐 열고 결과를 고르면 닫는 흐름이라, 채팅 폭을 바꿔 되돌리는 게 더 성가시다.
          인라인 패널이었을 땐 열릴 때마다 대화가 아래로 밀려 채팅 공간을 먹었다. -->
     <div id="cs-backdrop"></div>
-    <aside id="cs-panel" aria-label="대화 검색" aria-hidden="true">
-      <div class="cs-resize" id="cs-resize" title="드래그로 폭 조절"></div>
+    <aside id="cs-panel" aria-label="대화 검색" data-i18n-attrs="aria-label=search.title" aria-hidden="true">
+      <div class="cs-resize" id="cs-resize" title="드래그로 폭 조절" data-i18n-attrs="title=common.resize"></div>
       <div class="sd-head">
-        <strong>대화 검색</strong>
-        <button class="sd-close" id="chat-search-close" type="button" aria-label="닫기" title="닫기">✕</button>
+        <strong data-i18n="search.title">대화 검색</strong>
+        <button class="sd-close" id="chat-search-close" type="button" aria-label="닫기" title="닫기" data-i18n-attrs="aria-label=common.close;title=common.close">✕</button>
       </div>
       <div class="cs-row">
-        <input id="chat-search-input" type="search" placeholder="전 세션에서 검색 (2글자 이상)" autocomplete="off" />
+        <input id="chat-search-input" type="search" placeholder="전 세션에서 검색 (2글자 이상)" data-i18n-attrs="placeholder=search.input.ph" autocomplete="off" />
         <!-- 브라우저 기본 찾기와 같은 몸짓: 개수 표시 + 이전/다음 (2026-08-23 사용자 요청). -->
         <span id="chat-search-count" class="cs-count"></span>
-        <button id="chat-search-prev" class="cs-nav" type="button" aria-label="이전 결과" title="이전 (↑)" disabled>‹</button>
-        <button id="chat-search-next" class="cs-nav" type="button" aria-label="다음 결과" title="다음 (↓)" disabled>›</button>
+        <button id="chat-search-prev" class="cs-nav" type="button" aria-label="이전 결과" title="이전 (↑)" data-i18n-attrs="aria-label=search.prev.aria;title=search.prev.title" disabled>‹</button>
+        <button id="chat-search-next" class="cs-nav" type="button" aria-label="다음 결과" title="다음 (↓)" data-i18n-attrs="aria-label=search.next.aria;title=search.next.title" disabled>›</button>
       </div>
       <div id="chat-search-status" class="cs-status"></div>
       <div id="chat-search-results" class="cs-results"></div>
     </aside>
     <div id="bg-backdrop"></div>
-    <aside id="bg-panel" aria-label="백그라운드 작업" aria-hidden="true">
-      <div class="bg-resize" id="bg-resize" title="드래그로 폭 조절"></div>
+    <aside id="bg-panel" aria-label="백그라운드 작업" data-i18n-attrs="aria-label=bg.title" aria-hidden="true">
+      <div class="bg-resize" id="bg-resize" title="드래그로 폭 조절" data-i18n-attrs="title=common.resize"></div>
       <div class="bg-head">
-        <h3 class="panel-title">백그라운드 작업</h3>
-        <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기">✕</button>
+        <h3 class="panel-title" data-i18n="bg.title">백그라운드 작업</h3>
+        <button class="sd-close" id="bg-close" type="button" aria-label="닫기" title="닫기" data-i18n-attrs="aria-label=common.close;title=common.close">✕</button>
       </div>
       <!-- 세션 스코프 = 공유 기준(맨 위). 두 카테고리 그룹(작업·셸)의 진행중/완료 카운트가 이 선택을 따른다. 스코프 버튼엔 갯수 없음. -->
       <div class="bg-filter" id="bg-scope-filter">
-        <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true">현재 세션</button>
-        <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false">전체 세션</button>
+        <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true" data-i18n="bg.scope.session">현재 세션</button>
+        <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false" data-i18n="bg.scope.all">전체 세션</button>
       </div>
       <!-- 작업 그룹(워커·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
            kind(워커/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
       <div class="bg-group-head" id="bg-jobs-head" role="button" tabindex="0" aria-expanded="true">
         <span class="bg-group-chevron">▾</span>
-        <span class="bg-group-label">⚙️ 매니저 / 에이전트</span>
+        <span class="bg-group-label" data-i18n="bg.jobs.head">⚙️ 매니저 / 에이전트</span>
       </div>
       <div class="bg-group-body bg-jobs-body" id="bg-jobs-body">
         <div class="bg-filter" id="bg-filter">
-          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="bg-count-running">0</span></button>
-          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false">완료 <span class="bg-fcount" id="bg-count-all">0</span></button>
+          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true"><span data-i18n="bg.filter.running">진행 중</span> <span class="bg-fcount" id="bg-count-running">0</span></button>
+          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false"><span data-i18n="common.done">완료</span> <span class="bg-fcount" id="bg-count-all">0</span></button>
         </div>
         <div class="bg-list filter-running scope-session" id="bg-list">
-          <div class="bg-empty" id="bg-empty">진행 중인 작업이 없습니다.</div>
+          <div class="bg-empty" id="bg-empty" data-i18n="bg.empty">진행 중인 작업이 없습니다.</div>
         </div>
       </div>
       <!-- 셸/프로세스 그룹(ADR 2026-07-17 §5, Phase 3b-2) — 워커·에이전트 잡(위)과 데이터
@@ -227,21 +227,27 @@
            폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 #bg-shells-list. 접이식 헤더 동형. -->
       <div class="bg-group-head" id="bg-shells-head" role="button" tabindex="0" aria-expanded="true">
         <span class="bg-group-chevron">▾</span>
-        <span class="bg-group-label">🖥️ 셸 / 프로세스</span>
+        <span class="bg-group-label" data-i18n="bg.shells.head">🖥️ 셸 / 프로세스</span>
       </div>
       <div class="bg-group-body bg-shells-body" id="bg-shells-body">
         <div class="bg-filter" id="bg-shells-filter">
-          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">실행 중 <span class="bg-fcount" id="bg-shells-count-running">0</span></button>
-          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false">완료 <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
+          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true"><span data-i18n="bg.shells.running">실행 중</span> <span class="bg-fcount" id="bg-shells-count-running">0</span></button>
+          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false"><span data-i18n="common.done">완료</span> <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
         </div>
         <div class="bg-list bg-shells-list filter-running" id="bg-shells-list">
-          <div class="bg-empty" id="bg-shells-empty">실행 중인 셸이 없습니다.</div>
+          <div class="bg-empty" id="bg-shells-empty" data-i18n="bg.shells.empty">실행 중인 셸이 없습니다.</div>
         </div>
       </div>
-      <button id="bg-jump" class="bg-jump" type="button" hidden aria-label="맨 위로 (최신 작업)" title="맨 위로 (최신 작업)">↑ 최신</button>
+      <button id="bg-jump" class="bg-jump" type="button" hidden aria-label="맨 위로 (최신 작업)" title="맨 위로 (최신 작업)" data-i18n-attrs="aria-label=bg.jump.title;title=bg.jump.title" data-i18n="bg.jump.text">↑ 최신</button>
     </aside>
-    <script src="/js/constants.js"></script>
+    <!-- ★언어 카탈로그 주입 자리 — 서버가 서빙할 때 이 줄을 통째로 바꾼다.
+         fetch 로 받으면 **첫 렌더가 카탈로그보다 먼저** 돌아 화면이 한 번 깜빡인다.
+         그래서 다른 스크립트보다 앞에서 동기적으로 실린다. -->
+    <script id="tigu-i18n">window.__TIGU_I18N__ = { locale: "ko", strings: {} };</script>
+    <!-- ★util.js 가 먼저다 — constants.js 의 라벨 맵이 로드 시점에 `t()` 를 부른다.
+         (util.js 는 constants 의 식별자를 하나도 안 쓴다 — 그래서 순서를 바꿔도 안전하다.) -->
     <script src="/js/util.js"></script>
+    <script src="/js/constants.js"></script>
     <script src="/js/update-chip.js"></script>
     <script src="/js/context-menu.js"></script>
     <script src="/js/view-overview.js"></script>

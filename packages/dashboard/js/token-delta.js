@@ -138,7 +138,7 @@
         //  로 남겼는데, 폴백 이력까지 화면에 들고 있을 필요는 없다는 판단. 폴백 사실은 turn_error
         //  통지·로그·events 에 이미 남는다. 표시는 "지금 무엇으로 답했나" 하나만.
         target.textContent = m;
-        target.title = "이 턴에 실제로 응답한 모델";
+        target.title = i18n("이 턴에 실제로 응답한 모델");
       };
 
       const setTurnCost = (thread, payload) => {

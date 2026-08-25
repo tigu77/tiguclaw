@@ -77,3 +77,13 @@ export const within = async <T>(
     if (timer !== undefined) clearTimeout(timer);
   }
 };
+
+/**
+ * 대시보드 js 조각을 node 에서 실제로 돌릴 때 필요한 **화면 문구 함수 대역**.
+ *
+ * ★2026-08-25 화면 문구를 카탈로그로 옮기면서 `i18n("원문")` 이 생겼는데, 그 함수는 브라우저
+ *  전역에만 있다. 실행 기반 검사 7개가 한꺼번에 `ReferenceError: i18n is not defined` 로 터졌다
+ *  — 그물이 제 몫을 한 것이다(소스 린트였으면 조용히 통과했다).
+ *  검사에서 중요한 건 **판정**이지 번역이 아니므로 원문을 그대로 돌려준다.
+ */
+export const JS_I18N_STUB = "const i18n = (s) => s;";

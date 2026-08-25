@@ -41,7 +41,7 @@ const run = async (): Promise<Assertion[]> => {
   });
 
   const renders = /if \(e\.kind === "gateway"\) \{/.test(code) &&
-    /buildEpSection\("회계·건강"/.test(code);
+    /buildEpSection\((?:i18n\()?"회계·건강"/.test(code);
   out.push({
     name: "★게이트웨이는 회계·건강을 그린다(본문 두 칸만 그리면 빈 화면이 된다)",
     ok: renders,
@@ -59,8 +59,8 @@ const run = async (): Promise<Assertion[]> => {
   // ★2026-08-12 사용자 결정으로 **본문도 남긴다** — 회계만 있고 본문이 없으면 반쪽이다.
   //  ("요청·결과 다 남는 게 맞지 않나? 그걸 알고 싶어서 저기에 기록이 남는 건데")
   const showsBody =
-    /detail\.appendChild\(buildEpSection\("요청", e\.request\)\);/.test(code) &&
-    /buildEpSection\("응답", e\.response\)/.test(code);
+    /detail\.appendChild\(buildEpSection\((?:i18n\()?"요청"\)?, e\.request\)\);/.test(code) &&
+    /buildEpSection\((?:i18n\()?"응답"\)?, e\.response\)/.test(code);
   out.push({
     name: "★게이트웨이도 요청·응답 본문을 보여준다(회계만으론 무슨 일이었는지 모른다)",
     ok: showsBody,

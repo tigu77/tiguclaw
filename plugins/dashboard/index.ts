@@ -25,7 +25,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { appRoot } from "../../src/core/paths.js";
+import { appRoot, getPaths } from "../../src/core/paths.js";
 import { probeLocalPort } from "../../src/core/local-port-probe.js";
 import type { EventBus } from "../../src/core/eventbus.js";
 
@@ -112,6 +112,12 @@ class DashboardService {
     // child 는 부모(데몬) env 를 그대로 상속 — DASHBOARD_PORT/HTTP_BRIDGE_PORT/TOKEN 전파.
     // DASHBOARD_PORT 미설정 시에만 기본 7010 주입(설정돼 있으면 .env 값 존중).
     const childEnv = { ...process.env };
+    // ★홈을 **절대경로로** 넘긴다 (2026-08-25). `TIGUCLAW_HOME` 은 상대경로일 수 있고
+    //  (`./tiguclaw-dev`), `resolveHome()` 은 `path.resolve` 라 **cwd 기준**으로 푼다.
+    //  자식의 cwd 는 `dist` 라 같은 값이 `dist/tiguclaw-dev` 로 풀려 **없는 폴더**를 본다.
+    //  지금까지 안 드러난 건 대시보드가 홈을 안 썼기 때문이다 — 언어 카탈로그가 처음
+    //  홈을 읽으면서 드러났다(카탈로그가 비어 화면이 기본 언어로 굳었다).
+    childEnv.TIGUCLAW_HOME = getPaths().home;
     if (childEnv.DASHBOARD_PORT === undefined || childEnv.DASHBOARD_PORT.trim() === "") {
       childEnv.DASHBOARD_PORT = DEFAULT_DASHBOARD_PORT;
     }

@@ -40,7 +40,7 @@
       const egressBoxEl = document.getElementById("chat-egress");        // 옵션 팝오버(체크박스 목록).
       const egressBtnEl = document.getElementById("chat-egress-btn");    // 📤 도구 버튼(팝오버 토글).
       const egressDotEl = document.getElementById("egress-dot");         // 체크됨 표시 점.
-      const EGRESS_LABELS = { telegram: "텔레그램", cli: "CLI", slack: "슬랙", discord: "디스코드" };
+      const EGRESS_LABELS = { telegram: i18n("텔레그램"), cli: "CLI", slack: i18n("슬랙"), discord: i18n("디스코드") };
       const egressLabel = (name) => EGRESS_LABELS[name] || name;
       // 전송 시 reply.js 가 호출 — 체크된 채널 배열(빈 배열 = fan-out 없음 = 현행).
       const getEgressChannels = () => [...egressChecked];
@@ -84,7 +84,7 @@
         egressBoxEl.innerHTML = "";
         const lead = document.createElement("span");
         lead.className = "egress-lead";
-        lead.textContent = "📤 함께:";
+        lead.textContent = i18n("📤 함께:");
         egressBoxEl.appendChild(lead);
         for (const c of candidates) {
           const lbl = document.createElement("label");

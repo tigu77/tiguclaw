@@ -78,8 +78,8 @@
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "code-copy";
-            btn.title = "복사";
-            btn.textContent = "복사";
+            btn.title = i18n("복사");
+            btn.textContent = i18n("복사");
             pre.appendChild(btn);
             pre.classList.add("has-copy");
           });
@@ -102,9 +102,9 @@
           if (!code) return;
           const text = code.textContent || "";
           const done = (ok) => {
-            btn.textContent = ok ? "복사됨" : "실패";
+            btn.textContent = ok ? i18n("복사됨") : i18n("실패");
             btn.classList.toggle("ok", ok);
-            setTimeout(() => { btn.textContent = "복사"; btn.classList.remove("ok"); }, 1400);
+            setTimeout(() => { btn.textContent = i18n("복사"); btn.classList.remove("ok"); }, 1400);
           };
           const fallback = () => {
             try {

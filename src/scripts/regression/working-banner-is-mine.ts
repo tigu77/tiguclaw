@@ -21,7 +21,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const JS = (n: string): string =>
@@ -77,7 +77,7 @@ export const check: RegressionCheck = {
     );
     if (doing === null) return out;
     const view = new Function(
-      `const fmtElapsed = (ms) => "ELAPSED(" + ms + ")";${doing}${fn}return workingBannerView;`,
+      `${JS_I18N_STUB}const fmtElapsed = (ms) => "ELAPSED(" + ms + ")";${doing}${fn}return workingBannerView;`,
     )() as (v: Record<string, unknown>) => View;
 
     const base = { assistantName: "돌쇠", now: 10_000 };

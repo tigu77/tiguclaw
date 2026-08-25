@@ -233,6 +233,14 @@ export const getFirstUserText = (threadKey: string): string => {
 
 /** 검색 결과 한 건 — 어느 세션의 언제/누가/무엇인지가 다 실려야 한다. */
 export interface ChatSearchHit {
+  /**
+   * 행 id — 더보기 커서의 두 번째 축(`beforeId`)이 이 값을 쓴다.
+   *
+   * ★타입에 없었는데 `searchChatLog` 은 **실제로 돌려주고** 있었고, 브리지가 `...rest` 로
+   *  퍼뜨려 클라이언트까지 갔다(2026-08-25 발견). 타입과 런타임이 갈린 자리라 채웠다 —
+   *  이 값이 없으면 같은 `ts` 안에서 동률이 유실된다.
+   */
+  id: number;
   ts: number;
   threadKey: string;
   channel: string;

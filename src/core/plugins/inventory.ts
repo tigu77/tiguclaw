@@ -7,6 +7,7 @@
  * 부재 디렉토리/파일 silent skip — `enabled = true` 디폴트 (외부 plugin 만 cross-ref).
  */
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import os from "node:os";
 import { appRoot, getPaths } from "../paths.js";
@@ -20,6 +21,25 @@ import {
 } from "../entry/command-registry.js";
 import { isModuleDisabled } from "../settings.js";
 import { listHooksForInventory } from "../entry/hook-runner.js";
+
+/**
+ * 메모리 MCP 가 내보내는 도구 이름 — **정의점에서 가져온다.**
+ *
+ * ★지연 로드인 이유: `memory-mcp.ts` 가 이 모듈을 import 한다(위 단방향 규약). 정적으로
+ *  되받으면 순환이다. 이름을 여기 다시 적는 대신 그 방향만 늦춘다
+ *  (`settings.setLocale` 이 i18n 을 가져오는 것과 같은 수법).
+ */
+const memoryToolNames = (): string[] => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = createRequire(import.meta.url)("../memory-mcp.js") as {
+      memoryToolNames: () => string[];
+    };
+    return m.memoryToolNames();
+  } catch {
+    return []; // 못 가져오면 **빈 목록** — 지어내지 않는다(틀린 이름보다 없는 게 낫다).
+  }
+};
 
 export type PluginCategory =
   | "channel"
@@ -610,14 +630,7 @@ const collectMcp = async (repoRoot: string): Promise<PluginEntry[]> => {
       source: "in-process:memory",
       enabled: true,
       metadata: {
-        tools: [
-          "read_memory",
-          "search_memory",
-          "add_memory",
-          "update_memory",
-          "delete_memory",
-          "list_installed_plugins",
-        ],
+        tools: memoryToolNames(),
         inProcess: true,
       },
     });

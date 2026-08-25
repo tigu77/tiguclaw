@@ -91,8 +91,8 @@
       });
       registerMenuItems("activity", (ctx) => {
         const items = [];
-        if (ctx.threadKey) items.push({ id: "jump", label: "세션으로 이동", icon: "↪️", action: { kind: "builtin", handler: "activity.jump" } });
-        items.push({ id: "copy", label: "복사", icon: "📋", action: { kind: "builtin", handler: "activity.copy" } });
+        if (ctx.threadKey) items.push({ id: "jump", label: i18n("세션으로 이동"), icon: "↪️", action: { kind: "builtin", handler: "activity.jump" } });
+        items.push({ id: "copy", label: i18n("복사"), icon: "📋", action: { kind: "builtin", handler: "activity.copy" } });
         return items;
       });
 
@@ -119,7 +119,7 @@
         const prev = document.createElement("span"); prev.className = "aav-preview";
         // ★한 줄 프리뷰는 기호를 걷어낸다 — 접힌 줄에 `**` 가 그대로 보였다(실측).
         //  펼치면 아래 `.aav-md` 가 진짜 마크다운으로 그린다.
-        prev.textContent = stripMarkdownText(full) || (hasAtt ? "" : "(빈 메시지)");
+        prev.textContent = stripMarkdownText(full) || (hasAtt ? "" : i18n("(빈 메시지)"));
         const md = document.createElement("div"); md.className = "aav-md";
         md.dataset.src = full;
         body.appendChild(prev); body.appendChild(md);
@@ -162,13 +162,13 @@
         if (typeof a.model === "string" && a.model.trim() !== "") {
           const mb = document.createElement("span");
           mb.className = "aav-model"; mb.textContent = a.model.trim();
-          mb.title = "실제로 응답한 모델";
+          mb.title = i18n("실제로 응답한 모델");
           meta.appendChild(mb);
         }
         const body = document.createElement("div"); body.className = "aav-body";
         if (a.kind === "text") {
           const full = activityFullText(a.text);
-          body.textContent = full ? "텍스트 응답: " + full : "(텍스트 세그먼트)";
+          body.textContent = full ? "텍스트 응답: " + full : i18n("(텍스트 세그먼트)");
         } else {
           const label = skill ? "스킬: " + skill.name : String(a.label || "tool");
           const detail = (!skill && a.detail) ? " — " + activityFullText(a.detail) : "";
@@ -485,7 +485,7 @@
           const sub = document.getElementById("app-sub");
           if (h && typeof h.version === "string") {
             appVersion = h.version;
-            if (sub) sub.textContent = "대시보드 · v" + h.version;
+            if (sub) sub.textContent = i18n("app.sub") + " · v" + h.version;
             if (currentView === "overview") setTimeout(showOverview, 0);
           }
           // 시작시각은 서버가 안 준다 → 모른다고 표시한다(경과시간 미표시).
@@ -497,7 +497,7 @@
       const connText = document.getElementById("conn-text");
       const setConn = (up) => {
         connDot.className = "dot " + (up ? "up" : "down");
-        connText.textContent = up ? "실시간" : "재연결 중…";
+        connText.textContent = up ? i18n("실시간") : i18n("재연결 중…");
       };
 
       // SSE 연결 — 재연결 가능 클로저. EventSource 는 보통 끊기면 자동 재연결하지만,

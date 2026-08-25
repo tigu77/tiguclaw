@@ -103,3 +103,63 @@ export const makeSnippet = (
     matchLen: q.raw.length,
   };
 };
+
+// ─── 조합: 정규화 → 조회 → 스니펫 → 총 건수 ─────────────────────────────────
+//
+// ★한 곳에 둔다 (2026-08-25). 종전엔 이 네 단계가 **브리지 핸들러 안에만** 있었고, 그래서
+//  비서에게 대화 검색 도구를 붙이려면 같은 조합을 다시 써야 했다 — `%` 이스케이프 하나만
+//  갈려도 도구와 화면이 다른 답을 준다([[feedback_simple_composable_no_duplication]]).
+//  실제 증상: 사용자가 "단검 이미지 만들어 달라고 한 게 언제야?" 라고 물었을 때 비서는
+//  검색할 길이 없어 **Claude Code 의 jsonl 을 grep 하고 스크립트를 짜서 DB 를 직접 열었다.**
+//
+// ★DB 는 **함수 안에서** 동적 import 한다 — 위쪽 순수 함수들이 DB 없이 import 되는 성질을
+//  지킨다(그 성질이 `chat-search-finds-inside-words` 회귀를 데몬 없이 돌게 한다).
+
+export interface ConversationHit {
+  readonly id: number;
+  readonly ts: number;
+  readonly threadKey: string;
+  readonly channel: string;
+  readonly role: string;
+  readonly sessionLabel: string;
+  readonly snippet: string;
+  readonly matchStart: number;
+  readonly matchLen: number;
+}
+
+export interface ConversationSearch {
+  /** 정규화된 질의. 너무 짧아 검색하지 않았으면 빈 문자열. */
+  readonly query: string;
+  /** 질의가 최소 길이에 못 미쳐 **검색을 안 했다**(오류가 아니다). */
+  readonly tooShort: boolean;
+  readonly hits: readonly ConversationHit[];
+  /** 상한과 무관한 **전체** 일치 수 — 잘렸다는 사실을 소비처가 말할 수 있게. */
+  readonly total: number;
+  readonly limit: number;
+  /** 검색 범위 — 특정 세션 키이거나 `"all"`. */
+  readonly scope: string;
+}
+
+export const searchConversations = async (
+  rawQuery: string,
+  opts?: { limit?: number; threadKey?: string; beforeTs?: number; beforeId?: number },
+): Promise<ConversationSearch> => {
+  const limit = opts?.limit !== undefined && opts.limit > 0 ? Math.min(opts.limit, 200) : 50;
+  const scope = opts?.threadKey ?? "all";
+  const q = normalizeChatQuery(rawQuery);
+  if (q === null) return { query: "", tooShort: true, hits: [], total: 0, limit, scope };
+  const { searchChatLog, countChatLogMatches } = await import("../store/chat-log.js");
+  const hits = searchChatLog(q.like, {
+    limit,
+    ...(opts?.threadKey !== undefined ? { threadKey: opts.threadKey } : {}),
+    ...(opts?.beforeTs !== undefined ? { beforeTs: opts.beforeTs } : {}),
+    ...(opts?.beforeId !== undefined ? { beforeId: opts.beforeId } : {}),
+  }).map(({ text, ...rest }) => {
+    const s = makeSnippet(text, q);
+    return { ...rest, snippet: s.text, matchStart: s.matchStart, matchLen: s.matchLen };
+  });
+  const total = countChatLogMatches(q.like, {
+    ...(opts?.threadKey !== undefined ? { threadKey: opts.threadKey } : {}),
+  });
+  return { query: q.raw, tooShort: false, hits, total, limit, scope };
+};

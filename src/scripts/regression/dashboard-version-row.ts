@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DASH = (n: string): string =>
@@ -75,7 +75,7 @@ export const check: RegressionCheck = {
     const hidesSub = /header\s+\.sub[^{]*\{[^}]*display\s*:\s*none/.test(css);
 
     // ① 홈에 버전 행이 있다.
-    const hasRow = /rows\.splice\(1, 0, \[\s*ver\.tone, "버전"/.test(overview);
+    const hasRow = /rows\.splice\(1, 0, \[\s*ver\.tone, (?:i18n\()?"버전"/.test(overview);
     out.push(
       assert(
         "★홈 「상태 요약」에 버전 행이 있다 — 헤더가 숨겨도 도달 경로가 남는다",
@@ -95,7 +95,7 @@ export const check: RegressionCheck = {
     );
     if (src === null || !hasRow) return out;
 
-    const row = new Function(`${src}return versionStatusRow;`)() as (
+    const row = new Function(`${JS_I18N_STUB}${src}return versionStatusRow;`)() as (
       v: string,
       a: unknown,
     ) => Row;
@@ -206,7 +206,7 @@ export const check: RegressionCheck = {
       ),
     );
     if (chipViewSrc !== null) {
-      const chipView = new Function(`${chipViewSrc}return updateChipView;`)() as (
+      const chipView = new Function(`${JS_I18N_STUB}${chipViewSrc}return updateChipView;`)() as (
         a: unknown,
       ) => { show: boolean };
       const cases: unknown[] = [

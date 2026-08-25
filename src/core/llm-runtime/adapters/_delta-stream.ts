@@ -84,6 +84,46 @@ const NOOP: DeltaStream = {
  *
  * setInterval 아님 — push 가 있을 때만 setTimeout 1개. push 없는 구간엔 타이머도 없음.
  */
+
+/**
+ * 인라인 제안 표식 — 화면 스트림에서 **가린다** (2026-08-25).
+ *
+ * 최종 응답에서 태그를 뜯는 건 코어(`callAdapter` 반환 직후)가 한다. 그런데 대시보드는
+ * `llm.delta` 를 **실시간으로 그린다**(`js/sse.js`). 그래서 최종본만 벗기면 사용자는
+ * 답이 끝나는 순간 `<next-message>…` 가 화면에 잠깐 떴다가 사라지는 걸 본다.
+ *
+ * ★여기가 세 어댑터의 **공유 길목**이라 한 곳에서 닫힌다(claude·codex·openai 동일).
+ * ★이 억제는 **화면에만** 적용된다 — 최종 `text` 는 어댑터의 별도 누적(claude=SDK result,
+ *  codex=SSE finalText)에서 오므로 제안 추출은 그대로 동작한다.
+ * ★청크 경계를 넘어 쪼개질 수 있다(`<next-` + `message>`). 그래서 **태그의 접두가 될 수
+ *  있는 꼬리는 보류**했다가 다음 청크와 이어 판정한다 — 안 그러면 반쪽 태그가 새어 나간다.
+ */
+const NEXT_OPEN = "<next-message>";
+
+/** `buf` 의 꼬리 중 `NEXT_OPEN` 의 접두가 될 수 있는 가장 긴 길이. */
+const heldTailLength = (buf: string): number => {
+  const max = Math.min(buf.length, NEXT_OPEN.length - 1);
+  for (let n = max; n > 0; n -= 1) {
+    if (NEXT_OPEN.startsWith(buf.slice(buf.length - n))) return n;
+  }
+  return 0;
+};
+
+/**
+ * 스트림 조각을 화면에 내보낼 부분과 보류할 부분으로 가른다. **순수 함수** — 검사가 실행으로 본다.
+ *  - `emit`  : 지금 화면에 내보낼 텍스트
+ *  - `hold`  : 다음 청크와 이어 볼 보류분(태그 접두 가능성)
+ *  - `stop`  : 여는 태그를 만났다 → 이후 이 턴의 스트림은 전부 버린다
+ */
+export const splitAtSuggestionTag = (
+  pending: string,
+): { emit: string; hold: string; stop: boolean } => {
+  const at = pending.indexOf(NEXT_OPEN);
+  if (at >= 0) return { emit: pending.slice(0, at), hold: "", stop: true };
+  const held = heldTailLength(pending);
+  return { emit: pending.slice(0, pending.length - held), hold: pending.slice(pending.length - held), stop: false };
+};
+
 export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   if (!config.enabled) return NOOP;
 
@@ -95,6 +135,9 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   // closeSegment() 전용 누적 버퍼 — coalesce 버퍼(buf)와 완전 별개(타이머 없음,
   // push() 시 동기 적재만). 이래야 setTimeout 지연이 세그먼트 경계 순서를 안 깬다.
   let segBuf = "";
+  // 제안 표식 억제 상태 — 여는 태그를 본 뒤엔 이 턴의 남은 스트림을 화면에 안 보낸다.
+  let tagSeen = false;
+  let heldTail = "";
 
   const clearTimer = (): void => {
     if (timer !== undefined) {
@@ -130,8 +173,21 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   return {
     push(delta: string): void {
       if (delta.length === 0) return;
-      segBuf += delta; // closeSegment() 용 — coalesce 타이머와 무관하게 즉시 동기 적재.
-      buf += delta;
+      if (tagSeen) return; // 태그 이후는 화면에 안 낸다(최종 text 는 어댑터가 따로 들고 있다).
+      const split = splitAtSuggestionTag(heldTail + delta);
+      heldTail = split.hold;
+      if (split.stop) {
+        tagSeen = true;
+        heldTail = "";
+      }
+      if (split.emit.length === 0) {
+        // 전부 보류됐다 — 태그일 수도 있는 꼬리는 다음 청크와 함께 판정한다.
+        if (split.stop) emit();
+        return;
+      }
+      const shown = split.emit;
+      segBuf += shown; // closeSegment() 용 — coalesce 타이머와 무관하게 즉시 동기 적재.
+      buf += shown;
       if (buf.length >= COALESCE_CHARS) {
         emit(); // 글자 상한 — 즉시 flush(레이턴시 가드).
         return;
@@ -141,12 +197,26 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
       }
     },
     flush(): void {
+      // 보류분은 태그가 아니었던 것으로 확정 — 내보낸다(안 그러면 마지막 몇 글자가 사라진다).
+      if (!tagSeen && heldTail.length > 0) {
+        segBuf += heldTail;
+        buf += heldTail;
+        heldTail = "";
+      }
       emit(); // 잔여 발행 + 타이머 클리어(멱등 — buf 비면 no-op).
     },
     setModel(m: string | undefined): void {
       if (m !== undefined) model = m;
     },
     closeSegment(): string | undefined {
+      // ★보류분을 여기서 확정한다 — 세그먼트 경계(도구 호출·턴 종료)를 태그가 가로지를 수는
+      //  없다(태그는 답변 끝에 한 덩어리로 나온다). 안 흘려보내면 `<` 로 끝나는 정상 텍스트의
+      //  마지막 몇 글자가 조용히 사라진다("본문은 한 글자도 안 깎는다"는 이 기능의 계약이다).
+      if (!tagSeen && heldTail.length > 0) {
+        segBuf += heldTail;
+        buf += heldTail;
+        heldTail = "";
+      }
       if (segBuf.length === 0) return undefined; // 빈 세그먼트 — no-op.
       const text = segBuf;
       segBuf = "";

@@ -32,7 +32,14 @@ const OVERLAY = path.join(REPO, "_workspace/public-overlay");
 /** 개발 레포면 오버레이가, 배포 레포면 루트가 공개 자산의 자리다. */
 const PUBLIC_ROOT = existsSync(OVERLAY) ? OVERLAY : REPO;
 
-const NOT_SHIPPED = ["docs/architecture.md", "docs/decisions/", "docs/distribution-plan.md"];
+const NOT_SHIPPED = [
+  "docs/architecture.md",
+  "docs/decisions/",
+  "docs/distribution-plan.md",
+  // 비전 정본 — 내부 실측(메모리 구성·인스턴스 수치)과 `docs/decisions/` 참조를 담고 있어
+  // 배포본에선 끊긴 링크가 된다. 공개용 비전이 필요하면 **밖을 향해 따로 쓴다**(2026-08-25).
+  "docs/vision.md",
+];
 /** 배포 manifest 가 빼는 개발 전용 문서 — 검사 대상에서도 빠진다. */
 const DEV_ONLY = [...NOT_SHIPPED, "CLAUDE.md", "PROJECT.md", "_workspace/", ".claude/", ".tiguclaw/"];
 

@@ -33,6 +33,11 @@ export interface RouteOutput {
    */
   replyToTrigger?: boolean;
   /**
+   * 인라인 다음-메시지 제안 — 런타임이 답변 꼬리에서 뜯어낸 한 줄(2026-08-25).
+   * `text` 에선 이미 제거돼 있다. 없으면 미지정("확신 없음"이지 실패가 아니다).
+   */
+  nextSuggestion?: string;
+  /**
    * 세션 모델 override 가 런타임에 거부되어 자동 폴백했음을 호출자에게 통과.
    * (고지 문구는 이미 text 에 facade 가 덧붙였음 — 이 필드는 관측/메타 용.)
    */
@@ -234,6 +239,7 @@ export const route = async (
   return {
     text: out.text,
     replyToTrigger: out.replyToTrigger,
+    nextSuggestion: out.nextSuggestion,
     modelOverrideRejected: out.modelOverrideRejected,
     ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
   };

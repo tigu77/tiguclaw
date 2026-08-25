@@ -145,7 +145,14 @@ export const check: RegressionCheck = {
     // (`role` 도 계산형이다 — 입력 키는 `roleSource` 고 텍스트는 `roleContextBlock` 이 만든다.
     //  갚는 곳은 아래 채널 단언 + `role-context-block` 회귀 전체다 — 거기서 값·자리·어댑터
     //  **전수 배선**까지 본다. 2026-08-21 적대 검토 A-F1 로 배선 그물이 생겼다.)
-    const COMPUTED_SLOTS = ["agentPathHint", "selfGrowth", "role"] as const;
+    //  (`nextSuggestion` 도 계산형이다 — 입력이 아니라 설정·역할을 보고 함수가 만든다.
+    //   갚는 곳은 아래 채널 단언 + `inline-next-suggestion` 회귀다.)
+    const COMPUTED_SLOTS = [
+      "agentPathHint",
+      "selfGrowth",
+      "role",
+      "nextSuggestion",
+    ] as const;
     const slotChannel = new Map(
       buildContextSlots({
         system: "", env: "", agent: "", agentWarn: "", convoContext: "",

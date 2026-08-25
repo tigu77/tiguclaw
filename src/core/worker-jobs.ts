@@ -713,6 +713,8 @@ const deliverCheckin = async (
         synthetic: true,
         receivedAt: Date.now(),
         reply: reinjectReply,
+        // ★점검 재주입도 같은 좌표로 나간다 — 중복 차단 대상.
+        replyTarget: { channel: dest.channel, target: dest.target ?? null },
         text:
           `[백그라운드 작업 점검] 당신이 띄운 작업의 상태입니다. 그대로 옮기지 말고, 맥락을 ` +
           `아는 당신이 판단해 **필요할 때만** 당신 인격으로 알리세요 — 계속 둘 만하면 아무 말도 ` +
@@ -2386,6 +2388,8 @@ export const onWorkerComplete = async (
     synthetic: true,
     receivedAt: Date.now(),
     reply: trackedReply,
+    // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.
+    replyTarget: { channel: dest.channel, target: dest.target ?? null },
   };
 
   // 메인 핸들러로 재주입 (유저 interim turn 과 직렬). ★ mainHandler(=serializedHandler)

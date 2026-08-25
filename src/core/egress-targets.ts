@@ -31,6 +31,11 @@ export interface EgressResolveDeps {
 export interface EgressResolveInput {
   /** 인입 채널 — 자기 자신은 egress 대상이 아니다(이미 별도 경로로 응답). */
   channel: string;
+  /**
+   * `reply` 가 실제로 나가는 좌표(있으면). 이름이 달라도 **여기와 같은 좌표면 건너뛴다** —
+   * 워커 완료 재주입처럼 `channel`(scheduler)과 배달지(telegram)가 갈리는 경우가 있다.
+   */
+  replyTarget?: { channel: string; target: string | null } | undefined;
   threadKey: string;
   egressChannels?: string[] | undefined;
 }
@@ -72,6 +77,11 @@ export const resolveEgressTargets = async (
         target = null; // 기본 좌표 해석 실패 — 배달은 deliverOutbound 가 다시 시도한다.
       }
     }
+    // ★좌표가 같으면 건너뛴다 — 이름이 달라도 **같은 곳으로 두 번** 가면 안 된다.
+    //  판정을 여기(좌표가 확정된 뒤)에 두는 이유: 위 이름 비교는 좌표를 풀기 전이라
+    //  `scheduler` vs `telegram` 처럼 이름만 보고는 겹침을 알 수가 없다.
+    const rt = input.replyTarget;
+    if (rt !== undefined && rt.channel === ch && (rt.target ?? null) === target) continue;
     out.push({ channel: ch, target, outbound });
   }
   return out;

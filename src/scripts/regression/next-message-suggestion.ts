@@ -14,14 +14,8 @@
 import {
   readSuggestionSettings,
   shouldSuggestForThread,
-  shouldSuggestForTurn,
   normalizeSuggestion,
-  buildRecentContext,
-  SUGGESTION_CONTEXT_TURNS,
-  SUGGESTION_CHARS_ASSISTANT,
-  SUGGESTION_CHARS_LAST_ASSISTANT,
   SUGGESTION_MAX_CHARS,
-  SUGGESTION_SYSTEM_PROMPT,
 } from "../../core/next-message-suggestion.js";
 import { readFile } from "node:fs/promises";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -63,90 +57,20 @@ const run = async (): Promise<Assertion[]> => {
       got: `""=${String(shouldSuggestForThread(""))} (기대 false)`,
     });
 
-    // ★좌표만으로는 못 거르는 턴이 있다 (2026-08-24 사용자 지정: "워커 완료턴에 제안이
-    //  나갈 이유가 없지 — 무조건 내 입력에 대한 첫 응답 1회").
-    //  워커 완료 재주입은 **소환한 세션 좌표**(`dashboard:…`)로 들어오므로 위 접두사 검사를
-    //  그냥 통과한다 — 사용자는 아무것도 안 쳤는데 제안 호출이 나갔다.
-    const human = { threadKey: "dashboard:default" };
-    out.push({
-      name: "★합성 턴(워커 완료 재주입 등)엔 안 만든다 — 사용자가 친 게 아니다",
-      ok: !shouldSuggestForTurn({ ...human, synthetic: true }),
-      got: `synthetic=true → ${String(shouldSuggestForTurn({ ...human, synthetic: true }))} (기대 false)`,
-    });
-    out.push({
-      name: "사용자가 친 턴엔 만든다(합성 아님)",
-      ok:
-        shouldSuggestForTurn(human) &&
-        shouldSuggestForTurn({ ...human, synthetic: false }),
-      got: `미지정=${String(shouldSuggestForTurn(human))} false=${String(shouldSuggestForTurn({ ...human, synthetic: false }))}`,
-    });
-    out.push({
-      name: "합성이 아니어도 파생 좌표면 여전히 안 만든다(두 축이 함께 걸린다)",
-      ok: !shouldSuggestForTurn({ threadKey: "worker:abc" }),
-      got: `worker:abc → ${String(shouldSuggestForTurn({ threadKey: "worker:abc" }))}`,
-    });
+    // ★2026-08-25 — 합성 턴 검사는 **뺐다.** 사용자 지정이 바뀌었다:
+    //  *"메인턴이 응답을 보낼 때마다"* — 워커 완료 정리 턴도 메인 턴이다. 그리고 제안은
+    //  이제 메인 턴 안에서 같이 나오므로(별도 호출 없음) 걸러야 할 추가 호출 자체가 없다.
+    //  남은 판정은 **보여줄 자리인가** 하나뿐이고, 그건 위 접두사 검사가 본다.
   }
 
-  // ── ③ 프롬프트 크기가 상수로 묶인다 ────────────────────────────────────────
-  //  대화가 길어질수록 제안 호출도 비싸지면, 그게 조용히 커지는 축이다.
-  {
-    const many = Array.from({ length: 200 }, (_, i) => ({
-      role: (i % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
-      content: "가".repeat(5_000),
-    }));
-    const ctx = buildRecentContext(many);
-    // 최악: 마지막 비서 턴만 큰 예산, 나머지는 비서 예산(사용자는 더 작다) + 라벨 여유.
-    const cap =
-      SUGGESTION_CHARS_LAST_ASSISTANT +
-      (SUGGESTION_CONTEXT_TURNS - 1) * SUGGESTION_CHARS_ASSISTANT +
-      SUGGESTION_CONTEXT_TURNS * 20;
-    out.push({
-      name: "★200턴 × 5,000자를 줘도 프롬프트는 상한 안이다(비용이 안 커진다)",
-      ok: ctx.length <= cap,
-      got: `조립=${ctx.length}자 (상한 ≈${cap}자)`,
-    });
-    out.push({
-      name: "최근 턴만 담는다(오래된 것은 빠진다)",
-      ok: ctx.split("\n").length <= SUGGESTION_CONTEXT_TURNS,
-      got: `줄 수=${ctx.split("\n").length} (기대 ≤${SUGGESTION_CONTEXT_TURNS})`,
-    });
-  }
-
-  // ── ④ ★긴 발화는 **끝**이 남는다 — 물음이 거기 있다 ────────────────────────
-  //  실사고(2026-08-10): 비서가 "② tigu check 갈까요?" 로 끝냈는데 제안이 "다음은 뭐
-  //  하지?" 로 되물었다. 프롬프트엔 "물으면 답하라" 가 있었지만, 조립이 발화의 **앞**
-  //  600자만 남겨 물음이 통째로 잘려나갔다 — 규칙이 볼 재료가 없었다.
-  {
-    const question = "그럼 ①부터 갈까요?";
-    const longAssistant = "서론".repeat(5_000) + "\n\n" + question;
-    const ctx = buildRecentContext([
-      { role: "user", content: "진행 상황 알려줘" },
-      { role: "assistant", content: longAssistant },
-    ]);
-    out.push({
-      name: "★긴 비서 발화를 잘라도 마지막 물음이 남는다",
-      ok: ctx.includes(question),
-      got: ctx.includes(question)
-        ? `물음 보존됨(조립 ${ctx.length}자)`
-        : `★물음 유실 — 조립 끝부분: ${JSON.stringify(ctx.slice(-60))}`,
-    });
-    out.push({
-      name: "잘린 표시(…)가 앞에 붙는다(뒤를 남겼다는 증거)",
-      ok: /비서: …/.test(ctx),
-      got: /비서: …/.test(ctx) ? "뒤 남김 확인" : "앞을 남긴 형태",
-    });
-  }
-
-  // ── ⑤ 안정 조각은 시스템 채널에 — 프리픽스 캐시 ────────────────────────────
-  {
-    out.push({
-      name: "생성 규칙이 시스템 프롬프트에 있다(휘발 뒤에 놓이지 않는다)",
-      ok:
-        SUGGESTION_SYSTEM_PROMPT.includes("물었으면") &&
-        SUGGESTION_SYSTEM_PROMPT.length > 200,
-      got: `시스템 프롬프트 ${SUGGESTION_SYSTEM_PROMPT.length}자, 규칙 포함=${SUGGESTION_SYSTEM_PROMPT.includes("물었으면")}`,
-    });
-  }
+  // ── ④⑤ **구조가 대신 지킨다** (2026-08-25 인라인 전환) ────────────────────
+  //  ④ 였던 것: 조립이 비서 발화의 앞 600자만 남겨 마지막 물음이 잘려나갔고(2026-08-10
+  //   실사고: "② tigu check 갈까요?" → 제안이 "다음은 뭐 하지?"), 그래서 "물으면 답하라"
+  //   규칙이 볼 재료가 없었다. **이제 조립 자체가 없다** — 제안을 만드는 주체가 그 물음을
+  //   방금 쓴 모델이다. 잘릴 텍스트가 없으니 이 실패 모드가 구조적으로 사라졌다.
+  //  ⑤ 였던 것: 생성 규칙이 시스템(안정) 채널에 있는가 → `inline-next-suggestion` 이 본다.
+  //  ★검사를 지운 게 아니라 **지킬 대상이 없어진 것**이다. 되살아나면(별도 호출 부활)
+  //   `inline-next-suggestion` ⑥이 잡는다.
 
   // ── ⑥ 출력 정리 — 고스트는 한 줄이다 ───────────────────────────────────────
   {

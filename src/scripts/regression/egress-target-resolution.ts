@@ -116,6 +116,68 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ★같은 곳으로 두 번 보내지 않는다 (2026-08-25 라이브 사고) ──────────────
+  //  아침 뉴스가 텔레그램으로 **두 번** 왔다. 실측(chat_log): 08:11:29 `scheduler:21`
+  //  4,562자 · 08:11:31 `tg:<내 chatId>` 4,562자 — 같은 본문, 2초 간격.
+  //
+  //  뿌리: 중복 가드가 **채널 이름**을 비교했다(`ch === input.channel`). 워커 완료
+  //  재주입은 `channel` 이 잡을 띄운 채널(`scheduler`)인데 `reply` 는 잡의 목적지
+  //  (telegram)로 나간다 — 이름이 안 겹치니 가드가 안 걸렸다. **이름은 배달지가 아니다.**
+  //
+  //  ★그런데 재주입을 fan-out 에서 통째로 빼면 안 된다: 2026-08-10 에 정반대 사고가
+  //   있었다(몇 시간짜리 매니저 완료가 텔레그램으로 안 옴 — 자리에 없을 확률이 가장
+  //   높은 경우). 그래서 **좌표가 같을 때만** 뺀다. 아래 둘이 그 두 방향을 함께 지킨다.
+  {
+    const dest = { channel: "telegram", target: "owner-chat-1" };
+    const sched = await resolveEgressTargets(
+      { channel: "scheduler", threadKey: "scheduler:21", egressChannels: ["telegram"], replyTarget: dest },
+      deps(null),
+    );
+    out.push({
+      name: "★답이 이미 그 좌표로 나갔으면 fan-out 하지 않는다(이름이 달라도)",
+      ok: sched.length === 0,
+      got: sched.length === 0 ? "중복 0" : `★또 보냄: ${sched.map((t) => `${t.channel}:${t.target}`).join(",")}`,
+    });
+  }
+  {
+    // 2026-08-10 방향 — 대시보드에서 띄운 잡의 완료는 **여전히** 텔레그램으로 가야 한다.
+    const dashDest = { channel: "http-bridge", target: "dashboard:abc" };
+    const still = await resolveEgressTargets(
+      { channel: "http-bridge", threadKey: "dashboard:abc", egressChannels: ["telegram"], replyTarget: dashDest },
+      deps(null),
+    );
+    out.push({
+      name: "★배달지가 다르면 그대로 보낸다(매니저 완료가 텔레그램에 안 오던 사고 방지)",
+      ok: still.length === 1 && still[0]?.channel === "telegram",
+      got: still.map((t) => `${t.channel}:${t.target}`).join(",") || "★비었다 — 08-10 사고 재발",
+    });
+  }
+  {
+    // 같은 채널이어도 **다른 사람**에게 가는 것이면 막으면 안 된다.
+    const other = await resolveEgressTargets(
+      { channel: "scheduler", threadKey: "scheduler:9", egressChannels: ["telegram"],
+        replyTarget: { channel: "telegram", target: "someone-else" } },
+      deps(null),
+    );
+    out.push({
+      name: "같은 채널이어도 좌표가 다르면 보낸다(사람 단위로 판정)",
+      ok: other.length === 1 && other[0]?.target === "owner-chat-1",
+      got: other.map((t) => `${t.channel}:${t.target}`).join(",") || "★막혔다",
+    });
+  }
+  {
+    // 안 실어 보내면 종전 그대로 — 일반 인입은 이름 비교로 충분하다.
+    const legacy = await resolveEgressTargets(
+      { channel: "http-bridge", threadKey: "dashboard:abc", egressChannels: ["telegram"] },
+      deps(null),
+    );
+    out.push({
+      name: "replyTarget 미지정이면 종전 동작 그대로(회귀 0)",
+      ok: legacy.length === 1,
+      got: `${legacy.length}건`,
+    });
+  }
+
   return out;
 };
 

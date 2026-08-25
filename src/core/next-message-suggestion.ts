@@ -17,7 +17,6 @@
  */
 import { getEventBus } from "./eventbus.js";
 import { loadSettingsLayers } from "./settings.js";
-import { TurnTimeoutError } from "./llm-runtime/turn-timeout.js";
 
 /** 제안 1건의 상한 — 한 문장이면 충분하고, 길면 고스트가 입력창을 덮는다. */
 export const SUGGESTION_MAX_CHARS = 120;
@@ -41,7 +40,6 @@ export const SUGGESTION_MAX_CHARS = 120;
  *  폴백을 **명시 단락**한다. 데드라인을 넘긴 뒤 다음 모델로 또 200초를 쓰면 데드라인이
  *  아니다. `isModelRejected` 비매칭도 그 타입이 보장한다(TT-I3).
  */
-export const SUGGESTION_DEADLINE_MS = 30_000;
 
 export interface SuggestionSettings {
   enabled: boolean;
@@ -75,47 +73,8 @@ export const readSuggestionSettings = (cwd?: string): SuggestionSettings => {
 };
 
 /**
- * 이 호출이 쓸 **풀 체인** — 설정의 `profile` 을 실제 체인으로 바꾼다 (2026-08-24).
- *
- * ★판정을 여기 둔 이유(Q7): 종전엔 이 결정이 `index.ts` 의 핸들러 안에 있어서 **동작을
- *  검사하려면 데몬을 띄워야** 했다. 그래서 그물이 소스 grep 밖에 못 됐고, 실제로 이
- *  기능은 **`profile` 을 읽고도 안 쓰는 채로** 살아 있었다. 순수 함수로 빼면 그물이
- *  동작을 본다.
- * ★`resolve` 를 주입받는다 — llm-runtime 을 import 하지 않으려는 것이다(이 모듈은 설정과
- *  프롬프트만 아는 자리다). 제네릭이라 타입 의존도 없다.
- *
- * @returns `chain` 빈 배열 = 기본 프로파일로 돌라는 뜻(미지정이거나 이름이 없거나).
- *          `missing` 이 non-null = **이름은 적혔는데 그런 프로파일이 없다**(호출자가 말해야 한다).
- */
-export const resolveSuggestionChain = <T>(
-  profile: string | undefined,
-  resolve: (name: string) => T[],
-): { chain: T[]; missing: string | null } => {
-  if (profile === undefined || profile.trim() === "") {
-    return { chain: [], missing: null };
-  }
-  const chain = resolve(profile);
-  return chain.length > 0
-    ? { chain, missing: null }
-    : { chain: [], missing: profile };
-};
-
-/**
- * 데드라인 abort 사유 — **타입이 곧 계약**이다.
- *
- * ★`runPool`·`runRegionA` 는 `TurnTimeoutError` 를 보면 폴백을 **명시 단락**한다. 평범한
- *  `Error` 로 바꾸면 abort 는 되지만 폴백이 살아나서, 30초 뒤 다음 모델로 또 200초를
- *  쓴다 — 데드라인이 데드라인이 아니게 된다. 그래서 이걸 함수로 두고 검사가 본다.
- */
-export const suggestionDeadlineReason = (): Error =>
-  new TurnTimeoutError(SUGGESTION_DEADLINE_MS);
-
-/**
- * 제안을 만들 자리인가 — **사용자가 실제로 보고 쓸 수 있는 세션**만.
- *
- * 스케줄러·워커·서브에이전트·엔드포인트 턴에도 만들면 아무도 안 보는 제안에 매번
- * 토큰을 쓴다(고스트는 대시보드 입력창에만 뜬다). 이름 목록이 아니라 **성질**로 가른다:
- * 사람이 앉아 있는 대화 세션인가.
+ * 제안을 **보여줄 자리**인가 — 파생 턴(스케줄러·워커·엔드포인트·에이전트)은 사람이 보는
+ * 세션이 아니다. 판정 기준은 좌표 접두사 하나뿐이라 이름 목록을 들지 않는다.
  */
 export const shouldSuggestForThread = (threadKey: string): boolean => {
   const tk = typeof threadKey === "string" ? threadKey : "";
@@ -142,11 +101,6 @@ export const shouldSuggestForThread = (threadKey: string): boolean => {
  *  합치면 좌표만 아는 호출자가 쓸 수 없게 되고, 나누면 각자 자기 질문에만 답한다.
  *  대신 **호출부는 이 함수 하나만** 쓴다 — 두 검사를 손으로 나열하면 한쪽이 빠진다.
  */
-export const shouldSuggestForTurn = (msg: {
-  threadKey: string;
-  synthetic?: boolean;
-}): boolean => shouldSuggestForThread(msg.threadKey) && msg.synthetic !== true;
-
 /** 모델이 뱉은 것을 고스트에 쓸 수 있는 한 줄로 정리. 못 쓰겠으면 `null`. */
 export const normalizeSuggestion = (raw: string): string | null => {
   let t = typeof raw === "string" ? raw.trim() : "";
@@ -196,80 +150,81 @@ export const publishSuggestion = (
  *  역할별로 예산이 다른 이유: 사용자 턴은 길어도 대개 붙여넣기라 맥락 밀도가 낮다.
  *  마지막 비서 발화만 크게 주는 이유: **물음이 거기 있다**(p95 를 덮는다).
  */
-export const SUGGESTION_CONTEXT_TURNS = 8;
-export const SUGGESTION_CHARS_ASSISTANT = 3_000; // p90(2,812) 덮음
-export const SUGGESTION_CHARS_USER = 1_200;
-export const SUGGESTION_CHARS_LAST_ASSISTANT = 6_000; // p95(5,712) 덮음
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 인라인 제안 (2026-08-25) — **별도 LLM 호출을 없앤다**
+//
+// 종전엔 답을 보낸 뒤 `runRegionA` 를 한 번 더 불러 제안 한 줄을 만들었다. 재보니 그
+// 호출의 컨텍스트 상한이 **39,600자(≈13~20K 토큰)** 였고(8턴 × (3,000+1,200) + 6,000),
+// 매 턴 바뀌는 대화라 프리픽스 캐시도 못 탔다. (그런데 코드 주석엔 "최근 6턴 × 600자"
+// 라고 적혀 있었다 — 상수가 실측으로 올라갈 때 주석이 안 따라와 **11배**가 벌어져 있었다.)
+//
+// 메인 턴은 **이미 그 맥락을 들고 있고 캐시도 태웠다.** 거기서 한 줄 더 받으면 출력 토큰
+// 스무 개 남짓이다(사용자 판단: "끼워서 같이 받는 게 낫겠다").
+//
+// ★계약은 **선택적**이다. 모델이 안 붙이면 제안이 없을 뿐 실패가 아니다 — 종전 동작도
+//  "확신 없으면 빈 줄"이었으므로 관용의 폭이 같다. 강제하면 억지 제안이 나온다.
+// ★벗기는 자리는 **코어 한 곳**(`callAdapter` 반환 직후, persist·publish 보다 앞)이다.
+//  어댑터마다 벗기면 세 곳이 갈리고, 그건 이 레포가 반복해서 당한 부류다.
+// ★덤: 조립이 사라지면서 옛 실패 모드 하나가 **구조적으로** 없어졌다 — 발화를 잘라 마지막
+//  물음이 유실되던 것(2026-08-10). 이제 그 물음을 쓴 모델이 제안도 쓴다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NEXT_TAG_OPEN = "<next-message>";
+const NEXT_TAG_CLOSE = "</next-message>";
+const NEXT_TAG_RE = /<next-message>([\s\S]*?)<\/next-message>/g;
 
 /**
- * 최근 대화를 **프롬프트에 인라인으로** 담는다 — 스레드 히스토리를 로드시키지 않는다.
- *
- * ★이렇게 하는 이유: 호출 비용이 여기 이 두 상수로 **완전히 결정된다**(최대 6턴 ×600자).
- *  스레드를 붙이면 대화가 길어질수록 제안 호출도 같이 비싸지는데, 그건 조용히 커지는
- *  축이라 이 레포가 반복해서 데인 형상이다. 제안은 "방금 흐름" 만 알면 되고 그 이상은
- *  값이 없다.
+ * 메인 턴 시스템 프롬프트에 실리는 규칙. 자리 판정(메인인가·켜졌나)은 `prompt-assembly` 의
+ * `inlineSuggestionSlotText` 가 한다 — 여기선 **본문만** 만든다.
  */
-export const buildRecentContext = (
-  turns: { role: "user" | "assistant"; content: string }[],
-): string => {
-  const window = turns.slice(-SUGGESTION_CONTEXT_TURNS);
-  const lastAssistantIdx = (() => {
-    for (let i = window.length - 1; i >= 0; i--) {
-      if (window[i]?.role === "assistant") return i;
-    }
-    return -1;
-  })();
-  return window
-    .map((t, i) => {
-      const who = t.role === "assistant" ? "비서" : "사용자";
-      const body = String(t.content ?? "").trim();
-      const budget =
-        i === lastAssistantIdx
-          ? SUGGESTION_CHARS_LAST_ASSISTANT
-          : t.role === "assistant"
-            ? SUGGESTION_CHARS_ASSISTANT
-            : SUGGESTION_CHARS_USER;
-      // ★자를 땐 **뒤를 남긴다**. 발화의 값은 끝에 있다 — 질문·요청·결론이 거기 있고,
-      //  이 기능이 가장 먼저 봐야 하는 것이 "비서가 방금 뭘 물었나" 다. 앞을 남기면
-      //  서론만 오고 물음이 사라진다(종전 동작 · 실증 18:50).
-      const cut = body.length > budget ? `…${body.slice(-budget)}` : body;
-      return `${who}: ${cut}`;
-    })
-    .filter((line) => line.length > 4)
-    .join("\n");
-};
-
-/**
- * 시스템 프롬프트 override — tiguclaw 헌법·페르소나·메모리·스킬 인덱스를 **전부 뺀다**.
- * 이 호출은 비서가 말하는 자리가 아니라 한 줄짜리 유틸이라, 25KB 짜리 인격을 실을 이유가
- * 없다(`systemPromptOverride` 계약: 지정 시 모든 tiguclaw context prefix 미주입).
- */
-/** 생성 프롬프트 — 짧게, 그리고 **사용자 목소리로**. */
-export const buildSuggestionPrompt = (): string =>
+export const inlineSuggestionRule = (): string =>
   [
-    "위 대화에 이어서 **사용자가 다음에 보낼 만한 메시지**를 딱 한 줄로 써라.",
+    "## 다음 메시지 제안",
     "",
-    "★가장 중요한 규칙 — 순서대로 본다:",
-    "1. **비서의 마지막 말이 사용자에게 뭔가 물었으면, 그 질문에 대한 대답을 써라.**",
-    "   선택지를 제시했으면 그중 하나를 고르는 말로. 확인을 구했으면 승인/거절하는 말로.",
-    "   ★이때 **새 화제를 꺼내지 마라** — 물음을 받아놓고 딴 얘기를 하는 건 대화가 아니다.",
-    "2. 묻지 않았으면, 방금 흐름에서 자연스럽게 이어질 다음 지시나 질문을 써라.",
+    `답변을 다 쓴 **맨 끝**에, 사용자가 다음에 보낼 만한 메시지를 ${NEXT_TAG_OPEN}한 줄${NEXT_TAG_CLOSE} 로 덧붙이세요.`,
+    "이 태그는 사용자에게 보이지 않고 입력창의 흐린 제안으로만 뜹니다.",
     "",
-    "형식:",
-    "- 비서(너)의 말이 아니라 **사용자의 말**을 쓴다. 사용자의 말투를 따른다.",
-    "- **짧게.** 사용자는 길게 안 쓴다 — 대개 한 문장, 20자 안팎이면 충분하다.",
-    "- 설명·따옴표·머리말 없이 그 문장만 출력한다.",
-    "- 확신이 안 서면 빈 줄을 출력해라(억지 제안보다 없는 게 낫다).",
+    "- **당신이 뭔가 물었으면 그 물음에 대한 사용자의 대답**을 쓰세요. 선택지를 줬으면 그중 하나를 고르는 말로, 확인을 구했으면 승인/거절하는 말로. ★새 화제를 꺼내지 마세요.",
+    "- 묻지 않았으면 방금 흐름에서 자연스럽게 이어질 다음 지시나 질문을 쓰세요.",
+    "- 비서의 말이 아니라 **사용자의 말**로, 사용자의 말투로. **짧게** — 대개 한 문장, 20자 안팎.",
+    "- **확신이 안 서면 태그를 아예 붙이지 마세요.** 억지 제안보다 없는 게 낫습니다.",
+    "- 답변 본문에서는 이 태그를 절대 언급하지 마세요.",
   ].join("\n");
 
-const SUGGESTION_ROLE =
-  "너는 대화를 보고 사용자가 다음에 보낼 만한 메시지 한 줄을 만드는 도구다. 설명하지 말고 그 한 줄만 출력한다.";
-
 /**
- * ★안정 조각은 **시스템 채널**에 둔다 (프리픽스 캐시 원칙, 2026-07-30 정착).
- *  종전엔 `text` 에 `컨텍스트 + 지시문` 순으로 실었다 — **휘발이 앞, 안정이 뒤**라
- *  지시문이 영원히 캐시 프리픽스가 못 됐다. 규칙은 매 호출 동일하니 여기로 옮긴다.
- *  (claude 는 이미 적중률 99%라 이득 여지가 거의 없다 — 이득은 codex 쪽이고, 어느 쪽이든
- *   순서를 바로잡는 건 공짜다. 절감 수치는 재보기 전엔 주장하지 않는다.)
+ * 답변에서 인라인 제안을 뜯어낸다. **항상 전부 제거**하고, 쓸 만한 마지막 것만 돌려준다.
+ *
+ * ★"마지막"인 이유: 모델이 실수로 중간에 하나 더 붙였다면 꼬리 쪽이 진짜 결론이다.
+ * ★제거는 위치를 안 가린다 — 중간에 있어도 사용자 화면엔 안 보여야 한다.
+ * ★닫는 태그가 없어도(스트림이 잘려도) 열린 태그부터 끝까지를 걷어낸다.
  */
-export const SUGGESTION_SYSTEM_PROMPT = `${SUGGESTION_ROLE}\n\n${buildSuggestionPrompt()}`;
+export const extractInlineSuggestion = (
+  raw: string,
+): { text: string; suggestion: string | null } => {
+  if (typeof raw !== "string" || !raw.includes(NEXT_TAG_OPEN)) {
+    return { text: typeof raw === "string" ? raw : "", suggestion: null };
+  }
+  const found: string[] = [];
+  const stripped = raw.replace(NEXT_TAG_RE, (_m, inner: string) => {
+    found.push(inner);
+    return "";
+  });
+  let tail: string | null = null;
+  let text = stripped;
+  const openAt = stripped.indexOf(NEXT_TAG_OPEN);
+  if (openAt >= 0) {
+    tail = stripped.slice(openAt + NEXT_TAG_OPEN.length);
+    text = stripped.slice(0, openAt);
+  }
+  const candidates = tail !== null ? [...found, tail] : found;
+  let suggestion: string | null = null;
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    const one = normalizeSuggestion(candidates[i] ?? "");
+    if (one !== null) {
+      suggestion = one;
+      break;
+    }
+  }
+  return { text: text.trimEnd(), suggestion };
+};

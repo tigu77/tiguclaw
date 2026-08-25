@@ -106,6 +106,32 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ⑤ ★재주입이 **자기 배달 좌표를 실어 보낸다** (2026-08-25) ───────────────
+  //  ④가 파생 발화를 fan-out 에 태운 뒤, 그 반대 방향 사고가 났다: 잡의 목적지가 이미
+  //  텔레그램인 경우(스케줄發) 같은 본문이 **두 번** 갔다(실측 08:11:29·08:11:31, 4,562자).
+  //  중복 가드가 채널 **이름**만 봤기 때문이다 — 재주입의 이름은 `scheduler`, 배달지는
+  //  telegram 이라 안 겹쳤다. 좌표 판정 자체는 `egress-target-resolution` 이 실행으로 본다.
+  //  ★여기서 보는 건 **그 좌표가 실제로 실려 나가는가** 뿐이다(등급: 배선 린트 — 재주입을
+  //   실제로 돌리려면 LLM 이 필요하다. 동의어 우회는 못 잡는다).
+  {
+    const wj = await readFile(new URL("../../core/worker-jobs.ts", import.meta.url), "utf8");
+    const carried = wj.split("replyTarget:").length - 1;
+    out.push({
+      name: "★[배선 린트] 워커 재주입(완료·점검)이 replyTarget 을 실어 보낸다",
+      ok: carried >= 2,
+      got: carried >= 2 ? `${carried}곳` : `★${carried}곳 — 좌표가 안 실리면 같은 곳에 두 번 간다`,
+    });
+    // 좌표는 `dest` 에서 와야 한다 — 다른 값을 실으면 가드가 엉뚱한 걸 막는다.
+    // ★**전수**로 센다: "하나라도 dest 면 통과" 로 두면 두 곳 중 한 곳만 바꿔도 초록이다
+    //  (실제로 그 구멍으로 변이가 빠져나갔다 — 존재 확인은 개수 확인이 아니다).
+    const fromDest = wj.split("replyTarget: { channel: dest.channel, target: dest.target ?? null }").length - 1;
+    out.push({
+      name: "★그 좌표가 **전부** 잡의 목적지(dest)에서 온다",
+      ok: fromDest === carried && carried > 0,
+      got: fromDest === carried ? `${fromDest}/${carried} dest` : `★${fromDest}/${carried} 만 dest — 나머지는 엉뚱한 좌표`,
+    });
+  }
+
   return out;
 };
 

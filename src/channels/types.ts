@@ -85,6 +85,19 @@ export interface IncomingMessage {
    * 계열 LLM-agnostic 중립 필드). additive.
    */
   egressChannels?: string[];
+  /**
+   * 이 메시지의 `reply` 가 **실제로 배달되는 좌표** — egress fan-out 중복 차단용 (2026-08-25).
+   *
+   * ★왜 필요한가: fan-out 은 종전에 `채널 이름`으로 중복을 걸렀다(`ch === input.channel`).
+   *  보통은 그게 맞다 — 대시보드로 들어온 메시지는 대시보드로 답하니 이름이 곧 배달지다.
+   *  그런데 **워커 완료 재주입**은 다르다: `channel` 은 잡을 띄운 채널(`scheduler`)인데
+   *  `reply` 는 잡의 목적지(telegram)로 나간다. 이름이 안 겹치니 가드가 안 걸리고 같은
+   *  본문이 텔레그램으로 **두 번** 갔다(2026-08-25 실측: 08:11:29 · 08:11:31, 4,562자 동일).
+   *
+   * ★그래서 이름 대신 **좌표**를 준다. 미지정이면 종전 동작 그대로(회귀 0) — 일반 인입은
+   *  이름 비교로 충분하므로 채널들이 이 필드를 채울 필요가 없다.
+   */
+  replyTarget?: { channel: string; target: string | null };
   text: string;
   /**
    * 답글(reply) 원문 — 채널이 reply_to 메시지의 텍스트를 실으면 핸들러가 프롬프트에

@@ -19,6 +19,10 @@ import { readFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
 import { parseFile } from "../store/self-growth-md.js";
 import { resolveModelProfiles } from "./llm-runtime/builtin-profiles.js";
+import {
+  inlineSuggestionRule,
+  readSuggestionSettings,
+} from "./next-message-suggestion.js";
 
 // ─── formatMemorySnippet — user prompt prepend 본문 ──────────────────────
 const SNIPPET_HARD_CAP = 1500;
@@ -486,6 +490,38 @@ export const contextSlotKeys = (): string[] =>
   }).map((s) => s.key);
 
 // 회귀가 계산형 슬롯의 **채널 배치**를 직접 단언할 수 있게 export (이름 예외 목록 대신).
+
+/**
+ * 인라인 제안 규칙 슬롯 — **메인 턴에만, 켜져 있을 때만** (2026-08-25).
+ *
+ * ★왜 여기(시스템 채널 꼬리)인가: 규칙이 매 턴 동일하니 안정 조각이고, 꼬리에 두면
+ *  기능을 껐다 켤 때 무효화가 자기 자신으로 국한된다(AGENT.md 3인방·role 과 같은 논리).
+ * ★왜 메인에만: 서브에이전트·매니저의 결과는 사용자 채팅창이 아니라 **부른 쪽**으로 간다.
+ *  거기에 "사용자가 다음에 보낼 말"을 붙이라고 하면 부모가 읽을 본문이 오염된다.
+ */
+/**
+ * 규칙 본문 판정 — **순수 함수**. 설정을 인자로 받는다.
+ *
+ * ★왜 안에서 안 읽나: 안에서 `readSuggestionSettings()` 를 부르면 검사가 **주변 설정에
+ *  기댄다**. 실제로 그렇게 뒀다가 변이 하나가 빠져나갔다 — 기능이 꺼진 레포에서는 역할
+ *  가드를 통째로 지워도 슬롯이 "" 라 초록이었다(항상 초록인 가짜 검사).
+ *  [[feedback_gate_must_actually_run]] 의 반대편 얼굴이다.
+ */
+export const inlineSuggestionSlotText = (
+  roleSource: { subagentDepth?: number; workerDepth?: number },
+  enabled: boolean,
+): string => {
+  if (!enabled) return "";
+  // 서브에이전트·매니저의 결과는 사용자 채팅창이 아니라 **부른 쪽**으로 간다.
+  if ((roleSource.subagentDepth ?? 0) > 0 || (roleSource.workerDepth ?? 0) > 0) return "";
+  return inlineSuggestionRule();
+};
+
+const inlineSuggestionSlot = (roleSource: {
+  subagentDepth?: number;
+  workerDepth?: number;
+}): string => inlineSuggestionSlotText(roleSource, readSuggestionSettings().enabled);
+
 export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   { key: "system", text: input.system, channel: "system" },
   // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면
@@ -525,6 +561,12 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   //   ★메인은 **빈 문자열**이라 기존 바이트가 그대로다 — 메인 캐시는 전혀 안 건드린다.
   //   서브에이전트는 실측상 모델 티어가 달라(claude-opus-5 0건) 이미 별도 캐시다.
   //  ★왜 user 채널이 아닌가: 역할은 대화 내내 안 변한다. 캐시 밖에 두면 매 턴 재전송이다.
+  // ★`role` **바로 앞** — 맨 끝은 역할 슬롯 자리다(`role-context-block` 가 지킨다).
+  {
+    key: "nextSuggestion",
+    text: inlineSuggestionSlot(input.roleSource),
+    channel: "system",
+  },
   { key: "role", text: roleContextBlock(input.roleSource), channel: "system" },
 ];
 

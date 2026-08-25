@@ -252,6 +252,13 @@ export interface RegionASdkOutput {
    */
   replyToTrigger?: boolean;
   /**
+   * 인라인 다음-메시지 제안 (2026-08-25) — 모델이 답변 꼬리에 `<next-message>` 로 붙인 한 줄.
+   * ★`text` 에서는 **이미 제거돼 있다**(`callAdapter` 반환 직후, persist·publish 보다 앞).
+   *  어댑터는 이 필드를 모른다 — 코어가 한 곳에서 뜯는다(LLM-agnostic).
+   *  모델이 안 붙였으면 미지정. 그건 실패가 아니라 "확신 없음"이다.
+   */
+  nextSuggestion?: string;
+  /**
    * 신규 (additive, /status 개편) — 이 turn 의 토큰 사용량. 세 어댑터 공통 형상.
    * 어댑터가 *이미 받는* result/SSE 에서 추출 (추가 호출 0). 미캡처 시 미지정.
    * ★두 축을 **분리**한다 (2026-07-30, 세 어댑터 공통 계약):

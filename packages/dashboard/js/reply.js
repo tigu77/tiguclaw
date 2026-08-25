@@ -11,11 +11,11 @@
       const startReply = (text, label) => {
         const t = String(text || "").trim();
         if (t === "" || !chatReplyEl) return;
-        replyingTo = { text: t.slice(0, 1500), label: label || i18n("메시지") };
+        replyingTo = { text: t.slice(0, 1500), label: label || i18n("common.message") };
         chatReplyEl.textContent = "";
         const lb = document.createElement("span"); lb.className = "cr-label"; lb.textContent = "↩ " + replyingTo.label;
         const tx = document.createElement("span"); tx.className = "cr-text"; tx.textContent = replyingTo.text.replace(/\s+/g, " ");
-        const x = document.createElement("button"); x.type = "button"; x.className = "cr-x"; x.textContent = "✕"; x.title = i18n("답글 취소");
+        const x = document.createElement("button"); x.type = "button"; x.className = "cr-x"; x.textContent = "✕"; x.title = i18n("reply.cancel");
         x.addEventListener("click", clearReply);
         chatReplyEl.appendChild(lb); chatReplyEl.appendChild(tx); chatReplyEl.appendChild(x);
         chatReplyEl.hidden = false;
@@ -83,7 +83,7 @@
       const messageCtxFromEl = (msg) => {
         const host = msg.closest(".ev.local, .turn-group") || msg.parentElement;
         const typeEl = host ? host.querySelector(".type") : null;
-        const label = typeEl && typeEl.textContent ? typeEl.textContent : i18n("메시지");
+        const label = typeEl && typeEl.textContent ? typeEl.textContent : i18n("common.message");
         const tsAttr = host && host.dataset ? host.dataset.ts : null;
         // ★`raw` = 마크다운 원문(있으면). 복사는 이걸 쓰고, **답글 인용은 `text`**(렌더된
         //  글)를 쓴다 — 인용은 입력창에 짧게 보이는 것이라 기호가 붙으면 읽기 나쁘다.
@@ -103,8 +103,8 @@
         try { await navigator.clipboard.writeText(ctx.raw || ctx.text || ""); } catch {}
       });
       registerMenuItems("message", () => [
-        { id: "reply", label: i18n("답글"), icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },
-        { id: "copy", label: i18n("복사"), icon: "📋", action: { kind: "builtin", handler: "message.copy" } },
+        { id: "reply", label: i18n("reply.label"), icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },
+        { id: "copy", label: i18n("common.copy"), icon: "📋", action: { kind: "builtin", handler: "message.copy" } },
       ]);
       // 우클릭 — 채팅 스트림 위임(가상화로 메시지가 계속 추가/제거되므로 델리게이션, hover 주입과
       // 동형). 텍스트 선택(드래그)과 우클릭은 별개 이벤트라 선택 방해 없음.

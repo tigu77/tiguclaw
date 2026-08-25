@@ -7,12 +7,12 @@
       //  `endpoint`·`command` 는 각자 전용 화면이 있어 여기 안 넣는다(의도적 제외).
       const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp", "hook"];
       const CATEGORY_LABEL = {
-        channel: i18n("채널"),
-        external_plugin: i18n("플러그인"),
-        skill: i18n("스킬"),
-        agent: i18n("에이전트"),
+        channel: i18n("common.cat.channel"),
+        external_plugin: i18n("common.cat.plugin"),
+        skill: i18n("common.cat.skill"),
+        agent: i18n("common.cat.agent"),
         mcp: "mcp",
-        hook: i18n("훅"),
+        hook: i18n("common.cat.hook"),
       };
       const CATEGORY_ICON = {
         channel: "📡",
@@ -77,12 +77,23 @@
         if (typeof renderTabBar === "function") renderTabBar();
       };
       // 채널 접두 표시명 — 탭으로 안 열려 있는 세션(텔레그램·CLI 등)의 폴백 라벨.
-      const CHANNEL_LABEL = { dashboard: i18n("대시보드"), telegram: i18n("텔레그램"), cli: "CLI", http: "HTTP" };
+      const CHANNEL_LABEL = { dashboard: i18n("common.channel.dashboard"), telegram: i18n("common.channel.telegram"), cli: "CLI", http: "HTTP" };
       /**
        * 세션 threadKey → 사람이 읽는 라벨. 탭으로 열려 있으면 그 이름(사용자가 붙인 이름 포함),
        * 아니면 채널 접두로 폴백. 미상("")은 ""를 돌려주고 표시 정책은 호출자가 정한다.
        * ★잡 좌표(worker:/agent:)를 그대로 넣지 말 것 — 원 세션으로 환원한 뒤 부를 것.
        */
+      /**
+       * 잡 카드에 아직 이름이 없을 때 보여줄 글자 — **표시 전용**이다.
+       *
+       * ★"이름이 정해졌나" 를 이 문자열로 판정하지 마라 (2026-08-25). 종전엔 세 곳이
+       *  `labelEl.textContent === "(작업)"` 으로 그 질문에 답했다. 지금은 이 문구가 미래핑이라
+       *  우연히 맞지만, 카탈로그를 태우는 순간 `ko` 에선 항등 매핑이라 통과하고 **다른
+       *  언어에서만** 라벨 로직이 조용히 죽는다 — 번역이 곧 논리 변경이 되는 구조다.
+       *  판정은 `entry.hasLabel`, 값은 `entry.label`, 둘 다 `setJobLabel` 한 곳이 정한다
+       *  ([[feedback_simple_composable_no_duplication]]: 이음매에서 새면 이음매를 없애라).
+       */
+      const JOB_LABEL_FALLBACK = i18n("bg.job.untitled");
       const sessionLabelFor = (tk) => {
         if (typeof tk !== "string" || tk === "") return "";
         if (typeof openTabs !== "undefined" && Array.isArray(openTabs)) {

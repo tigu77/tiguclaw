@@ -23,7 +23,7 @@ import {
 } from "../../core/worker-jobs.js";
 import { createSteeringChannel } from "../../core/steering.js";
 import { getEventBus } from "../../core/eventbus.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -90,8 +90,8 @@ const renderSteers = (
   }
   const created: string[] = [];
   const ctx: Record<string, unknown> = {
-    // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
-    i18n: (v: string) => v,
+    // 화면 문구 — 정본 하나(_framework)를 쓴다. 카탈로그를 태워야 단언이 실문구를 본다.
+    i18n: i18nForContext,
     jobCards: cards,
     document: { createElement: (): FakeEl => mkEl() },
     ensureJobCard: (jobId: string, o: { label?: string }): JobCard => {

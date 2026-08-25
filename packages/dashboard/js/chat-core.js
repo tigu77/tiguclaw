@@ -105,17 +105,17 @@
       const chatEmptyView = (state, count) => {
         if (count > 0) return { show: false, title: "", body: "" };
         if (state === "loading")
-          return { show: true, title: i18n("대화를 불러오는 중…"), body: "" };
+          return { show: true, title: i18n("chat.loading"), body: "" };
         if (state === "error")
           return {
             show: true,
-            title: i18n("대화를 불러오지 못했습니다"),
-            body: i18n("새로고침하거나 잠시 뒤 다시 시도해 주세요."),
+            title: i18n("chat.loadFailed"),
+            body: i18n("chat.loadFailed.hint"),
           };
         return {
           show: true,
-          title: i18n("아직 대화가 없습니다"),
-          body: i18n("아래 입력창에서 메시지를 보내면 이곳에 바로 표시됩니다."),
+          title: i18n("chat.empty"),
+          body: i18n("chat.empty.hint"),
         };
       };
 

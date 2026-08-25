@@ -75,7 +75,9 @@ export const check: RegressionCheck = {
     const hidesSub = /header\s+\.sub[^{]*\{[^}]*display\s*:\s*none/.test(css);
 
     // ① 홈에 버전 행이 있다.
-    const hasRow = /rows\.splice\(1, 0, \[\s*ver\.tone, (?:i18n\()?"버전"/.test(overview);
+    // ★문구가 아니라 **키**를 본다 (2026-08-25 키 규약 통일) — 화면 문구는 카탈로그에 살고
+    //  소스엔 키만 있다. 이 단언의 뜻은 "버전 행이 있나" 지 "무슨 글자냐" 가 아니다.
+    const hasRow = /rows\.splice\(1, 0, \[\s*ver\.tone, i18n\("home\.stat\.version"\)/.test(overview);
     out.push(
       assert(
         "★홈 「상태 요약」에 버전 행이 있다 — 헤더가 숨겨도 도달 경로가 남는다",

@@ -1,7 +1,7 @@
       // 열려 있으면) 목록을 jobCards 스냅샷으로 다시 그린다. capBgList 로 카드가 정리되면 여기서도 사라진다.
       let agentsFilter = "running"; // "running" | "all" — 오른쪽 드로어 필터와 독립(각자 뷰).
       const agentElapsedEls = new Map(); // jobId -> elapsed span (틱 갱신용, 뷰 재렌더마다 재구성).
-      const AGENT_KIND_BADGE = { agent: i18n("🤖 서브에이전트"), worker: i18n("📦 매니저") };
+      const AGENT_KIND_BADGE = { agent: i18n("agents.kind.agent"), worker: i18n("agents.kind.worker") };
       // 카운트/빈상태 동기화 — refreshBgBadge 가 매 이벤트마다 호출(뷰 안 열려도 안전).
       const syncAgentsCounts = (running, total) => {
         const rc = document.getElementById("agents-count-running");
@@ -44,7 +44,8 @@
         st.textContent = BG_STATUS[e.status] || e.status || "";
         top.appendChild(st);
         const name = document.createElement("div"); name.className = "agent-card-name";
-        name.textContent = (e.labelEl && e.labelEl.textContent) || "(작업)";
+        // 드로어 카드의 DOM 을 건너 읽지 않는다 — 상태(`e.label`)를 읽는다. 빈 값 = 아직 이름 없음.
+        name.textContent = (e && e.label) || JOB_LABEL_FALLBACK;
         card.appendChild(top); card.appendChild(name);
         if (e.task) {
           const summary = document.createElement("div"); summary.className = "agent-card-summary";
@@ -62,13 +63,13 @@
         let chev = null;
         if (hasDetail) {
           chev = document.createElement("span"); chev.className = "agent-card-chev";
-          chev.textContent = opts.compact ? i18n("자세히 ↗") : (e.expanded ? i18n("▾ 접기") : i18n("▸ 자세히"));
+          chev.textContent = opts.compact ? i18n("agents.openDrawer") : (e.expanded ? i18n("agents.detail.hide") : i18n("agents.detail.show"));
           meta.appendChild(chev);
         }
         card.appendChild(meta);
         if (e.lastStep) {
           const step = document.createElement("div"); step.className = "agent-card-step";
-          const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = i18n("지금");
+          const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = i18n("agents.now");
           const val = document.createElement("span"); val.textContent = e.lastStep;
           step.appendChild(lbl); step.appendChild(val);
           card.appendChild(step);
@@ -81,25 +82,25 @@
           const detail = document.createElement("div"); detail.className = "agent-card-detail";
           if (e.task) {
             const t = document.createElement("div"); t.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("작업");
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("common.task");
             const b = document.createElement("div"); b.className = "acd-body"; b.textContent = e.task;
             t.appendChild(h); t.appendChild(b); detail.appendChild(t);
           }
           if (e.result) {
             const r = document.createElement("div"); r.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("결과");
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("agents.result");
             const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result;
             r.appendChild(h); r.appendChild(b); detail.appendChild(r);
           }
           if (e.errorText) {
             const er = document.createElement("div"); er.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("에러");
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("agents.error");
             const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText;
             er.appendChild(h); er.appendChild(b); detail.appendChild(er);
           }
           if (e.stepCount > 0 && e.stepsEl) {
             const s = document.createElement("div"); s.className = "agent-card-detail-block";
-            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = "단계 (" + e.stepCount + ")";
+            const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("agents.steps.head", { n: e.stepCount });
             const stepsClone = e.stepsEl.cloneNode(true);
             s.appendChild(h); s.appendChild(stepsClone); detail.appendChild(s);
           }
@@ -109,7 +110,7 @@
           card.addEventListener("click", () => {
             e.expanded = !e.expanded;
             card.classList.toggle("open", e.expanded);
-            if (chev) chev.textContent = e.expanded ? i18n("▾ 접기") : i18n("▸ 자세히");
+            if (chev) chev.textContent = e.expanded ? i18n("agents.detail.hide") : i18n("agents.detail.show");
           });
         }
         return card;
@@ -145,8 +146,8 @@
         if (empty) {
           empty.style.display = shown === 0 ? "" : "none";
           empty.textContent = agentsFilter === "running"
-            ? i18n("진행 중인 에이전트가 없습니다.")
-            : i18n("실행된 에이전트가 없습니다.");
+            ? i18n("agents.empty.running")
+            : i18n("agents.empty.all");
         }
       };
       // 렌더 throttle — llm.activity/lifecycle 이 초당 여러 개 쏟아질 때 renderAgentsView 가
@@ -185,15 +186,29 @@
         root.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "page-view agents-view";
+        // 문구는 텍스트로만 넣는다(카탈로그 값 → innerHTML 금지, util.js i18nNodes 주석).
         wrap.innerHTML =
-          '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">에이전트</div><span class="detail-kind">실시간</span></div>' +
-          '<p class="developer-copy">지금 돌고 있는 백그라운드 작업(매니저 📦 + 에이전트 🤖)을 한눈에. 종류·이름·경과시간·현재 스텝을 실시간으로 표시합니다.</p>' +
+          '<div class="detail-head"><div class="detail-accent active"></div>' +
+          '<div class="detail-name"></div><span class="detail-kind"></span></div>' +
+          '<p class="developer-copy"></p>' +
           '<div class="agents-toolbar"><div class="bg-filter" id="agents-filter">' +
-          '<button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">진행 중 <span class="bg-fcount" id="agents-count-running">0</span></button>' +
-          '<button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">전체 <span class="bg-fcount" id="agents-count-all">0</span></button>' +
-          '</div><span class="agents-hint">라이브 · 오른쪽 드로어와 동일 소스</span></div>' +
+          '<button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true">' +
+          '<span class="bg-flabel"></span> <span class="bg-fcount" id="agents-count-running">0</span></button>' +
+          '<button class="bg-fbtn" type="button" data-filter="all" aria-pressed="false">' +
+          '<span class="bg-flabel"></span> <span class="bg-fcount" id="agents-count-all">0</span></button>' +
+          '</div><span class="agents-hint"></span></div>' +
           '<div class="agents-grid filter-running" id="agents-grid"></div>' +
-          '<div class="empty" id="agents-empty">진행 중인 에이전트가 없습니다.</div>';
+          '<div class="empty" id="agents-empty"></div>';
+        wrap.querySelector(".detail-name").textContent = i18n("agents.page.title");
+        wrap.querySelector(".detail-kind").textContent = i18n("activity.live");
+        wrap.querySelector(".developer-copy").textContent = i18n("agents.page.desc");
+        {
+          const labels = wrap.querySelectorAll(".bg-flabel");
+          labels[0].textContent = i18n("bg.filter.running");
+          labels[1].textContent = i18n("ch.metric.total");
+        }
+        wrap.querySelector(".agents-hint").textContent = i18n("agents.hint");
+        wrap.querySelector("#agents-empty").textContent = i18n("agents.empty.running");
         root.appendChild(wrap);
         // filter=running 클래스는 CSS 보조(카드 렌더 자체가 필터). 토글 버튼 바인딩.
         const bar = wrap.querySelector("#agents-filter");

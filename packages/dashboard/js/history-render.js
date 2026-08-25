@@ -34,7 +34,7 @@
         tsEl.textContent = fmtTime(entry.ts);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isNotice ? i18n("시스템 알림") : (isOut ? assistantName : i18n("나"));
+        tyEl.textContent = isNotice ? i18n("common.systemNotice") : (isOut ? assistantName : i18n("common.sender.me"));
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(entry.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         // 실제 응답 모델 — 라이브 답변 버블(ensureReplyBubble) 파리티. 값 없으면 요소를 만들지
@@ -43,7 +43,7 @@
           const mEl = document.createElement("span");
           mEl.className = "turn-model";
           mEl.textContent = entry.model.trim();
-          mEl.title = i18n("이 답변에 실제로 응답한 모델");
+          mEl.title = i18n("hist.model.title");
           head.appendChild(mEl);
         }
         div.appendChild(head);
@@ -142,7 +142,7 @@
             dl.className = "att-dl";
             dl.href = dlHref;
             dl.setAttribute("download", name);
-            dl.title = i18n("받기");
+            dl.title = i18n("hist.receive");
             dl.textContent = "⬇";
             chip.appendChild(dl);
           }
@@ -215,7 +215,7 @@
         icon.className = "hist-tool-icon"; icon.textContent = skill ? "🛠" : "🔧";
         const label = document.createElement("span");
         label.className = skill ? "hist-tool-label hist-skill" : "hist-tool-label";
-        label.textContent = skill ? "스킬: " + skill.name : (a.label || "tool");
+        label.textContent = skill ? i18n("common.skillStep", { name: skill.name }) : (a.label || "tool");
         line.appendChild(icon); line.appendChild(label);
         // diff 있는 스텝은 diff 헤더가 경로+N/-M 을 보여주므로 verbose detail 생략(접힘 간결).
         // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
@@ -241,9 +241,9 @@
           const dot = document.createElement("span");
           dot.className = "act-bg-dot";
           const txt = document.createElement("span");
-          txt.textContent = i18n("🤖 백그라운드 ↗");
+          txt.textContent = i18n("common.bg.open");
           bg.appendChild(dot); bg.appendChild(txt);
-          bg.title = i18n("백그라운드 작업 열기");
+          bg.title = i18n("common.bg.openTitle");
           bg.addEventListener("click", (e) => {
             e.stopPropagation(); // 스텝 펼침·턴 접힘과 분리(라이브 동형).
             if (typeof openBg === "function") openBg();
@@ -287,10 +287,10 @@
         modelEl.className = "turn-model";
         if (mLast) { // 현재(마지막) 모델만 — 전환 표기 없음.
           modelEl.textContent = mLast;
-          modelEl.title = i18n("이 런이 실제로 사용한 모델");
+          modelEl.title = i18n("hist.model.runTitle");
         }
         const count = document.createElement("span");
-        count.className = "hist-turn-count"; count.textContent = acts.length + "단계";
+        count.className = "hist-turn-count"; count.textContent = i18n("tok.stepCount", { n: acts.length });
         const preview = document.createElement("span");
         preview.className = "hist-turn-preview";
         preview.textContent = acts.map((a) => { const s = skillStepInfo(a); return s ? "🛠 " + s.name : (a.label || "tool"); }).slice(0, 6).join(" · ");
@@ -576,7 +576,7 @@
       // 비서 이름을 정적 문구(채팅 설명 등)에 반영 — 라벨은 렌더 시점에 assistantName 참조.
       const applyAssistantName = () => {
         const desc = document.querySelector(".chat-desc");
-        if (desc) desc.textContent = assistantName + "와 대화합니다. 진행 단계는 대화에 바로, 백그라운드 작업은 옆 패널에서 확인합니다.";
+        if (desc) desc.textContent = i18n("chat.descWith", { name: assistantName });
       };
 
       const loadChatHistory = async () => {

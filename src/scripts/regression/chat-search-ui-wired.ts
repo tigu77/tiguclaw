@@ -50,6 +50,11 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const js = await read("js/chat-search.js");
+    // 화면 문구는 카탈로그에 산다 — 단언이 그 값을 직접 본다.
+    const koCat = JSON.parse(
+      await readFile(path.join(REPO, "locales", "ko.json"), "utf8"),
+    ) as Record<string, string>;
+    const searchPartial = koCat["search.partial"] ?? "";
     const html = await read("index.html");
     const manifestRaw = await read("js/_manifest.json");
     const tabs = await read("js/tabs.js");
@@ -197,8 +202,13 @@ export const check: RegressionCheck = {
         //  했는데 실제로는 1,438건이었다(실측) — 캡의 침묵은 사용자에게 거짓이 된다
         //  ([[project_hotpath_bound_preserve_record]] · [[feedback_pruned_table_absence]]).
         "★검색 결과가 잘리면 총 건수와 함께 알린다(조용한 절삭 0)",
-        js.includes("data.total") && js.includes("건 중 ${hits.length}건"),
-        `total=${js.includes("data.total")} 문구=${js.includes("건 중 ${hits.length}건")}`,
+        // ★문구는 카탈로그에 산다 — 키를 부르는지와, 그 문구가 **총 건수와 표시 건수를 둘 다**
+        //  담는지(자리표시자 두 개)를 본다. 원문 grep 은 번역 가능한 문장마다 낡는다.
+        js.includes('i18n("search.partial"') &&
+          js.includes("data.total") &&
+          /\{total\}/.test(searchPartial) &&
+          /\{shown\}/.test(searchPartial),
+        `total=${js.includes("data.total")} 키=${js.includes('i18n("search.partial"')} 문구=${JSON.stringify(searchPartial)}`,
       ),
       assert(
         // 목록과 개수가 **같은 조건**을 써야 "N건 중 M건" 이 참이 된다.

@@ -23,7 +23,7 @@
       //    채널 무관이라(텔레그램도 기본 세션에 합류) "텔레그램 경유"를 가시화한다. 대시보드
       //    자기 채널(http-bridge/dashboard)은 자명하므로 배지 없음. §0 단방향: 코어 아닌
       //    대시보드/채널 레이어의 UI 컨벤션이라 채널명→라벨 매핑 허용(generic 폴백 유지).
-      const CHANNEL_LABELS = { telegram: { short: "TG", full: i18n("텔레그램") }, cli: { short: "CLI", full: "CLI" } };
+      const CHANNEL_LABELS = { telegram: { short: "TG", full: i18n("common.channel.telegram") }, cli: { short: "CLI", full: "CLI" } };
       const OWN_CHANNELS = new Set(["http-bridge", "dashboard"]);
       // ★배지는 **실재하는 채널**에만 단다 (2026-08-03 사용자 제보).
       //  종전엔 `xxx:` 접두면 무엇이든 채널로 보고 `앞 6글자 대문자` 배지를 만들었다.
@@ -74,7 +74,7 @@
         const m = channelMeta(ch);
         if (!m) return null;
         const b = document.createElement("span");
-        b.className = "ch-badge"; b.textContent = m.short; b.title = m.full + " 경유";
+        b.className = "ch-badge"; b.textContent = m.short; b.title = i18n("ch.via", { name: m.full });
         return b;
       };
       // ★수명주기 (2026-07-26) — 서버가 요청 접수 시 phase:"start", 끝나면 phase:"done" 을
@@ -117,7 +117,7 @@
           ts, callId, kind,
           pending: phase === "start",
           name: kind === "gateway"
-            ? String((p && p.model) || i18n("(기본)"))
+            ? String((p && p.model) || i18n("ch.default"))
             : String((p && p.name) || "endpoint"),
           ok: (p && p.ok) !== false,
           request: String((p && p.request) || ""),
@@ -165,7 +165,7 @@
       const buildEpSection = (label, text) => {
         const box = document.createElement("div"); box.className = "ep-sec";
         const lab = document.createElement("div"); lab.className = "ep-sec-label"; lab.textContent = label;
-        const body = document.createElement("div"); body.className = "ep-item-body"; body.textContent = text || i18n("(없음)");
+        const body = document.createElement("div"); body.className = "ep-item-body"; body.textContent = text || i18n("ch.none");
         box.appendChild(lab); box.appendChild(body); return box;
       };
       // 엔드포인트 뷰 렌더 — 메인 nav destination(#detail-panel). currentView 가 endpoints 일 때만
@@ -177,10 +177,12 @@
         root.innerHTML = "";
         const wrap = document.createElement("div"); wrap.className = "page-view";
         const head = document.createElement("div"); head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent"></div><div class="detail-name">외부 호출</div><span class="detail-kind">API 활동</span>';
+        head.innerHTML = '<div class="detail-accent"></div><div class="detail-name"></div><span class="detail-kind"></span>';
+        head.querySelector(".detail-name").textContent = i18n("ch.page.title");
+        head.querySelector(".detail-kind").textContent = i18n("ch.page.kind");
         wrap.appendChild(head);
         const desc = document.createElement("p"); desc.className = "ep-view-desc";
-        desc.textContent = i18n("외부가 나를 호출한 기록입니다 — 커스텀 엔드포인트와 LLM 게이트웨이(OpenAI 호환). 읽기 전용이고 DB 에 영속됩니다. 게이트웨이는 앱 데이터를 남기지 않아 본문 없이 회계·건강만 기록합니다.");
+        desc.textContent = i18n("ch.desc");
         wrap.appendChild(desc);
         // ── 필터 (2026-08-10) — 한 페이지에서 축을 나눠 본다(사용자 결정). ──────
         const bar = document.createElement("div"); bar.className = "ep-filter-bar";
@@ -189,7 +191,7 @@
           endpoint: endpointLog.filter((d) => d.kind !== "gateway").length,
           gateway: endpointLog.filter((d) => d.kind === "gateway").length,
         };
-        for (const [key, label] of [["all",i18n("전체")],["endpoint",i18n("엔드포인트")],["gateway",i18n("게이트웨이")]]) {
+        for (const [key, label] of [["all",i18n("ch.metric.total")],["endpoint",i18n("ch.kind.endpoint")],["gateway",i18n("ch.kind.gateway")]]) {
           const b = document.createElement("button");
           b.type = "button";
           b.className = "ep-filter" + (epFilter === key ? " active" : "");
@@ -203,7 +205,7 @@
         );
         if (shown.length === 0) {
           const empty = document.createElement("div"); empty.className = "ep-empty";
-          empty.textContent = i18n("아직 엔드포인트 호출이 없습니다.");
+          empty.textContent = i18n("ch.empty");
           wrap.appendChild(empty);
         } else {
           const list = document.createElement("div"); list.className = "ep-view-list";
@@ -216,7 +218,7 @@
             const h = document.createElement("div"); h.className = "ep-item-head";
             const car = document.createElement("span"); car.className = "ep-caret"; car.textContent = "▶";
             const st = document.createElement("span"); st.className = "ep-item-state";
-            st.textContent = e.pending ? i18n("⏳ 진행 중") : e.ok ? i18n("✅ 완료") : i18n("⚠ 실패");
+            st.textContent = e.pending ? i18n("ch.status.running") : e.ok ? i18n("common.status.done") : i18n("ch.status.failed");
             const kb = document.createElement("span");
             kb.className = "ep-kind " + (e.kind === "gateway" ? "ep-kind-gw" : "ep-kind-ep");
             kb.textContent = e.kind === "gateway" ? "GW" : "EP";
@@ -249,32 +251,32 @@
               //  요청/응답 두 칸만 그리면 "(없음)(없음)" 이라 아무것도 없는 것처럼 보인다.
               if (e.kind === "gateway") {
                 const rows = [
-                  [i18n("요청 모델"), e.name || i18n("(기본)")],
-                  [i18n("실제 처리"), e.servedBy || i18n("(미기록)")],
-                  [i18n("토큰"), `입력 ${(e.inputTokens || 0).toLocaleString()} · 출력 ${(e.outputTokens || 0).toLocaleString()}`],
-                  [i18n("도구 호출"), String(e.toolCalls || 0)],
-                  [i18n("메시지"), `${e.messages || 0}개${e.stream ? " · 스트리밍" : ""}`],
-                  [i18n("소요"), e.durationMs > 0 ? fmtElapsed(e.durationMs) : i18n("(진행 중)")],
+                  [i18n("ch.metric.reqModel"), e.name || i18n("ch.default")],
+                  [i18n("ch.metric.handled"), e.servedBy || i18n("ch.unrecorded")],
+                  [i18n("ch.metric.tokens"), i18n("ch.tokens.inOut", { in: (e.inputTokens || 0).toLocaleString(), out: (e.outputTokens || 0).toLocaleString() })],
+                  [i18n("ch.metric.toolCalls"), String(e.toolCalls || 0)],
+                  [i18n("common.message"), i18n("ch.msgCount", { n: e.messages || 0, stream: e.stream ? i18n("ch.streaming") : "" })],
+                  [i18n("ch.metric.elapsed"), e.durationMs > 0 ? fmtElapsed(e.durationMs) : i18n("ch.inProgress")],
                 ];
-                if (e.error) rows.push([i18n("오류"), e.error]);
-                detail.appendChild(buildEpSection(i18n("회계·건강"), rows.map(([k, v]) => `${k}: ${v}`).join("\n")));
+                if (e.error) rows.push([i18n("common.error"), e.error]);
+                detail.appendChild(buildEpSection(i18n("ch.metric.accounting"), rows.map(([k, v]) => `${k}: ${v}`).join("\n")));
                 // ★본문도 보여준다 (2026-08-12, 사용자 결정) — 무슨 요청이 오갔는지가 이
                 //  기록의 목적이다. 게이트웨이 턴은 transcripts 에 안 남으므로(internal)
                 //  여기가 유일한 기록이고, 길면 앞부분 + 잘린 사실이 본문에 명시돼 온다.
-                detail.appendChild(buildEpSection(i18n("요청"), e.request));
+                detail.appendChild(buildEpSection(i18n("ch.metric.request"), e.request));
                 detail.appendChild(
                   e.pending
-                    ? buildEpSection(i18n("응답"), i18n("아직 처리 중입니다 — 완료되면 여기에 표시됩니다."))
-                    : buildEpSection(i18n("응답"), e.response),
+                    ? buildEpSection(i18n("ch.metric.response"), i18n("ch.pending"))
+                    : buildEpSection(i18n("ch.metric.response"), e.response),
                 );
                 return;
               }
-              detail.appendChild(buildEpSection(i18n("요청"), e.request));
+              detail.appendChild(buildEpSection(i18n("ch.metric.request"), e.request));
               // 진행 중이면 응답이 아직 없다 — "(없음)" 은 실패로 읽히므로 상태를 그대로 쓴다.
               detail.appendChild(
                 e.pending
-                  ? buildEpSection(i18n("응답"), i18n("아직 처리 중입니다 — 완료되면 여기에 표시됩니다."))
-                  : buildEpSection(i18n("응답"), e.response),
+                  ? buildEpSection(i18n("ch.metric.response"), i18n("ch.pending"))
+                  : buildEpSection(i18n("ch.metric.response"), e.response),
               );
             };
             if (open) fillDetail();
@@ -400,7 +402,7 @@
         tsEl.textContent = ts;
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        tyEl.textContent = isNotice ? i18n("시스템 알림") : (isOut ? assistantName : i18n("나"));
+        tyEl.textContent = isNotice ? i18n("common.systemNotice") : (isOut ? assistantName : i18n("common.sender.me"));
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(payload.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         div.appendChild(head);

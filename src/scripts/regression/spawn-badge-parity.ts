@@ -82,7 +82,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★이력 렌더러가 배경 칩을 실제로 만든다(판정만 부르고 안 붙이면 소용없다)",
-        /act-bg-link/.test(hist) && /백그라운드 ↗/.test(hist),
+        /act-bg-link/.test(hist) && /i18n\("common\.bg\.open"\)/.test(hist),
         /act-bg-link/.test(hist) ? "칩 생성" : "★칩 없음",
       ),
       assert(

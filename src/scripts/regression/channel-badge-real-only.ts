@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -45,7 +45,7 @@ const harness = (serverChannels: string[] | null): Harness => {
   let renders = 0;
   const ctx: Record<string, unknown> = {
     // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
-    i18n: (v: string) => v,
+    i18n: i18nForContext,
     console: { warn: () => {} },
     renderTabBar: () => {
       renders += 1;

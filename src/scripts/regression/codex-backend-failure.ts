@@ -18,6 +18,7 @@
  *   response.failed  → { type, response: { error: { code, message } } }
  *   response.incomplete → { type, response: { incomplete_details: { reason } } }
  */
+import { readFile } from "node:fs/promises";
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -145,15 +146,29 @@ export const check: RegressionCheck = {
         honest.ok ? "2개 확인" : `누락 ${honest.missing.join(" ")}`,
       ),
     );
+    // ★화면 문구를 소스에서 grep 하지 않는다 (2026-08-25 키 규약 통일). 문구는 카탈로그에
+    //  살고 소스엔 키만 있다 — 원문을 여기 적으면 번역 가능한 문구 하나마다 검사가 낡는다.
+    //  대신 **분기가 있고 두 갈래가 서로 다른 실문구로 풀리는지**를 본다(언어 무관).
     const ui = await sourceHas("../../../packages/dashboard/js/sse.js", [
       /p\.hasFallback/,
-      /재시도할 다른 모델이 없습니다/,
+      /i18n\("sys\.fallback\.trying"\)/,
+      /i18n\("sys\.fallback\.exhausted"\)/,
     ]);
+    const ko = JSON.parse(
+      await readFile(new URL("../../../locales/ko.json", import.meta.url), "utf8"),
+    ) as Record<string, string>;
+    const trying = ko["sys.fallback.trying"] ?? "";
+    const exhausted = ko["sys.fallback.exhausted"] ?? "";
+    const distinct = trying !== "" && exhausted !== "" && trying !== exhausted;
     out.push(
       assert(
         "★UI 가 후보 없을 때 다른 문구를 낸다(거짓 안내 0)",
-        ui.ok,
-        ui.ok ? "분기 확인" : `누락 ${ui.missing.join(" ")}`,
+        ui.ok && distinct,
+        ui.ok
+          ? distinct
+            ? "분기 + 서로 다른 문구 확인"
+            : `★두 갈래가 같은 문구로 풀린다: ${JSON.stringify(trying)}`
+          : `누락 ${ui.missing.join(" ")}`,
       ),
     );
     // ★"인풋이 커서 실패하나" 에 답하려면 요청 **크기 분해**가 있어야 한다. 종전 로그의

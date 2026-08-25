@@ -89,7 +89,7 @@
           }
         }
         if (running > 0) {
-          chatShellActiveEl.textContent = "🖥️ 셸 " + running + "개 실행 중";
+          chatShellActiveEl.textContent = i18n("bg.shells.activeCount", { n: running });
           chatShellActiveEl.hidden = false;
         } else {
           chatShellActiveEl.hidden = true;
@@ -107,10 +107,10 @@
       if (bgJump) bgJump.addEventListener("click", () => { bgList.scrollTop = 0; updateBgJump(); });
       bgList.addEventListener("scroll", updateBgJump, { passive: true });
       const BG_STATUS = {
-        running: i18n("🟡 진행 중"), done: i18n("✅ 완료"), failed: i18n("⚠️ 실패"), cancelled: i18n("⏹ 취소"),
+        running: i18n("bg.status.running"), done: i18n("common.status.done"), failed: i18n("bg.status.failed"), cancelled: i18n("bg.status.cancelled"),
         // 종료된 건 확실한데 결과를 못 받은 경우(연결이 끊긴 사이 종료·데몬 재시작).
         // "완료"로 단정하지 않는다 — 성공 여부를 모르는데 성공처럼 보이면 거짓값이다.
-        interrupted: i18n("⏹ 종료됨(결과 미수신)"),
+        interrupted: i18n("bg.status.interrupted"),
       };
       /** 되돌릴 수 없는 종료 상태 — 이 상태의 카드는 다시 running 이 되지 않는다. */
       const TERMINAL_JOB_STATUS = new Set(["done", "failed", "cancelled", "interrupted"]);
@@ -130,14 +130,14 @@
         const show = canCancelJob(entry);
         entry.stopBtnEl.style.display = show ? "" : "none";
         entry.stopBtnEl.disabled = !!entry._cancelRequested;
-        entry.stopBtnEl.textContent = entry._cancelRequested ? i18n("중지 요청…") : i18n("⏹️ 중지");
+        entry.stopBtnEl.textContent = entry._cancelRequested ? i18n("common.stopping") : i18n("bg.stop");
       };
       const requestCancelJob = async (jobId) => {
         const entry = jobCards.get(jobId);
         if (!canCancelJob(entry) || entry._cancelRequested) return;
         entry._cancelRequested = true;
         updateStopBtn(entry);
-        if (entry.statusEl) entry.statusEl.textContent = i18n("⏳ 취소 중…");
+        if (entry.statusEl) entry.statusEl.textContent = i18n("bg.status.cancelling");
         const revert = () => {
           entry._cancelRequested = false;
           updateStopBtn(entry);
@@ -178,10 +178,10 @@
       registerBuiltinHandler("job.copy", async (ctx) => {
         const entry = jobCards.get(ctx.targetId);
         if (!entry || !navigator.clipboard) return;
-        const parts = [entry.labelEl.textContent || ""];
-        if (entry.task) parts.push("작업: " + entry.task);
-        if (entry.result) parts.push("결과: " + entry.result);
-        if (entry.errorText) parts.push("에러: " + entry.errorText);
+        const parts = [entry.label || ""];
+        if (entry.task) parts.push(i18n("bg.copy.task", { v: entry.task }));
+        if (entry.result) parts.push(i18n("bg.copy.result", { v: entry.result }));
+        if (entry.errorText) parts.push(i18n("bg.copy.error", { v: entry.errorText }));
         try { await navigator.clipboard.writeText(parts.join("\n")); } catch {}
       });
       // 세션으로 이동 — 그 작업을 띄운 세션(threadKey)으로 점프(전체활동 activity.jump 동형).
@@ -210,25 +210,25 @@
         const items = [];
         // 세션으로 이동 — 원 세션 threadKey 가 있을 때만(worker:/agent: 의사키·미지정 제외).
         if (ctx.threadKey) {
-          items.push({ id: "jump", label: i18n("세션으로 이동"), icon: "↪️", action: { kind: "builtin", handler: "job.jumpSession" } });
+          items.push({ id: "jump", label: i18n("common.jumpSession"), icon: "↪️", action: { kind: "builtin", handler: "job.jumpSession" } });
         }
         if (entry && entry.el.classList.contains("has-detail")) {
           items.push({
             id: "detail",
-            label: entry.el.classList.contains("open") ? i18n("상세 접기") : i18n("상세 보기"),
+            label: entry.el.classList.contains("open") ? i18n("bg.detail.hide") : i18n("bg.detail.show"),
             icon: "🔎",
             action: { kind: "builtin", handler: "job.toggleDetail" },
           });
         }
-        items.push({ id: "copy", label: i18n("복사"), icon: "📋", action: { kind: "builtin", handler: "job.copy" } });
+        items.push({ id: "copy", label: i18n("common.copy"), icon: "📋", action: { kind: "builtin", handler: "job.copy" } });
         if (entry && entry.result) {
-          items.push({ id: "copy-result", label: i18n("결과만 복사"), icon: "📄", action: { kind: "builtin", handler: "job.copyResult" } });
+          items.push({ id: "copy-result", label: i18n("bg.copyResult"), icon: "📄", action: { kind: "builtin", handler: "job.copyResult" } });
         }
-        items.push({ id: "copy-id", label: i18n("작업 ID 복사"), icon: "🔖", action: { kind: "builtin", handler: "job.copyId" } });
+        items.push({ id: "copy-id", label: i18n("bg.copyId"), icon: "🔖", action: { kind: "builtin", handler: "job.copyId" } });
         if (canCancelJob(entry) && !entry._cancelRequested) {
           items.push({
             id: "cancel",
-            label: i18n("중지"),
+            label: i18n("bg.stopShort"),
             icon: "⏹️",
             danger: true,
             action: { kind: "builtin", handler: "job.cancel" },
@@ -277,9 +277,9 @@
         const t = typeof now === "number" ? now : Date.now();
         const txt =
           Array.isArray(act.inFlight) && act.inFlight.length > 0
-            ? " · " + act.inFlight.map((f) => `${f.tool} ${fmtElapsed(t - f.since)}째`).join(", ")
+            ? " · " + act.inFlight.map((f) => i18n("bg.inFlight", { tool: f.tool, elapsed: fmtElapsed(t - f.since) })).join(", ")
             : typeof act.lastActivityAt === "number"
-              ? ` · 마지막 활동 ${fmtElapsed(t - act.lastActivityAt)} 전`
+              ? i18n("bg.lastActivity", { ago: fmtElapsed(t - act.lastActivityAt) })
               : "";
         if (txt === "") { el.style.display = "none"; return; }
         el.style.display = "";
@@ -306,7 +306,7 @@
         if (!el) return;
         el.style.display = "";
         el.textContent = m; // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
-        el.title = i18n("이 작업이 실제로 사용한 모델");
+        el.title = i18n("bg.model.title");
       };
 
       const applyDurationBadge = (el, ms) => {
@@ -319,7 +319,7 @@
         if (!b) { b = document.createElement("span"); b.className = "dur-badge"; el.appendChild(b); }
         b.textContent = fmtDur(ms);
         if (ms >= 90000) b.classList.add("slow"); // tool-slow 임계 이상 = warn 틴트.
-        b.title = "도구 실행시간 " + fmtDur(ms);
+        b.title = i18n("bg.toolElapsed", { v: fmtDur(ms) });
       };
 
       /**
@@ -592,18 +592,18 @@
           //  이 목록은 세션 스코프라 **둘이 다른 건 설계**인데, 종전 문구는 그 차이를 안 말해서
           //  사용자가 "숫자는 2인데 카드가 없다" 를 신고했다(그리고 나는 그걸 결함으로 쫓았다).
           //  숫자가 갈릴 땐 **어디에 있는지**를 말한다 — 스코프 토글이 바로 옆에 있다.
-          const kindWord = bgFilter === "running" ? i18n("진행 중인") : i18n("완료된");
+          const kindWord = bgFilter === "running" ? i18n("bg.filter.runningAdj") : i18n("bg.filter.doneAdj");
           const elsewhere = bgSessionScope === "session"
             ? (bgFilter === "running" ? running - runningScoped : (total - running) - (totalScoped - runningScoped))
             : 0;
           bgEmpty.textContent = elsewhere > 0
-            ? "이 대화엔 " + kindWord + " 작업이 없습니다 — 다른 대화에 " + elsewhere + "개 있어요(위 범위를 '전체'로 바꿔보세요)."
-            : kindWord + " 작업이 없습니다.";
+            ? i18n("bg.empty.elsewhere", { kind: kindWord, n: elsewhere })
+            : i18n("bg.empty.scoped", { kind: kindWord });
         }
         // 컴포저 인디케이터 — 현재 세션(runningScoped)에 도는 작업이 있으면 입력창 위에 표시.
         if (chatBgActiveEl) {
           if (runningScoped > 0) {
-            chatBgActiveEl.textContent = "🔄 백그라운드 작업 " + runningScoped + "개 진행중";
+            chatBgActiveEl.textContent = i18n("bg.activeCount", { n: runningScoped });
             chatBgActiveEl.hidden = false;
           } else {
             chatBgActiveEl.hidden = true;
@@ -633,7 +633,7 @@
         entry.chevEl.style.display = "";
         entry.el.classList.add("has-detail");
         const open = entry.el.classList.contains("open");
-        entry.chevEl.textContent = (open ? "▾ " : "▸ ") + (entry.stepCount > 0 ? entry.stepCount + "단계" : i18n("자세히"));
+        entry.chevEl.textContent = (open ? "▾ " : "▸ ") + (entry.stepCount > 0 ? i18n("bg.stepCount", { n: entry.stepCount }) : i18n("bg.more"));
       };
       // opts.threadKey 에서 "진짜" 원 세션 threadKey 만 뽑는다 — handleWorkerActivity 는 라우팅용
       // 내부 의사-threadKey("worker:<jobId>"/"agent:<jobId>")를 opts.threadKey 로 넘기기도 하는데,
@@ -664,6 +664,22 @@
       };
       // 워커 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
       const WORKER_LABEL_PREFIX = "📦 ";
+      /**
+       * 잡 카드 라벨을 정하는 **유일한 자리** — 상태(`label`·`hasLabel`)와 화면을 같이 쓴다.
+       *
+       * ★종전엔 "이름이 아직 없다" 를 화면 글자로 판정했다(`textContent === "(작업)"`, 3곳).
+       *  표시 문자열을 상태로 쓰면 그 문구를 번역하는 순간 판정이 언어별로 갈린다
+       *  ([[JOB_LABEL_FALLBACK]] 주석 참조). 상태를 따로 들면 번역은 표시만 바꾼다.
+       * ★`label` 을 문자열로도 보관하는 이유는 옆 뷰 때문이다 — `view-agents.js` 가 이 카드의
+       *  DOM(`labelEl.textContent`)을 건너 읽고 있었다. `lastStep`·`task` 가 이미 쓰는 방식
+       *  (DOM 과 별개 보관)으로 맞춰 뷰 간 DOM 결합을 없앤다.
+       * 빈 문자열 = 아직 이름 없음(화면엔 폴백 문구).
+       */
+      const setJobLabel = (entry, text) => {
+        entry.label = typeof text === "string" ? text : "";
+        entry.hasLabel = entry.label !== "";
+        entry.labelEl.textContent = entry.hasLabel ? entry.label : JOB_LABEL_FALLBACK;
+      };
       // 잡 카드 확보(없으면 생성). label/task 는 worker.started, result 는 worker.done 이 채운다.
       // 소속 세션 배지 갱신 — 이름을 **알 때만** 단다(멱등). ownerTk 는 lifecycle/하이드레이션이
       // 뒤늦게 채울 수 있고, 세션 이름도 `/api/sessions` 폴 뒤에야 알려질 수 있으므로 여러 번
@@ -682,7 +698,7 @@
           return;
         }
         el.textContent = "↪ " + name;
-        el.title = "이 작업을 띄운 세션 — 눌러서 이동 (" + tk + ")";
+        el.title = i18n("bg.ownerSession.title", { tk });
         el.style.display = "";
         if (raw) raw.style.display = "none"; // 이름이 있으면 좌표는 툴팁에만.
       };
@@ -696,7 +712,7 @@
           el.dataset.threadkey = realSessionThreadKey(opts && opts.threadKey); // 세션 스코프 필터 대상.
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
-          label.textContent = (opts && opts.label) || "(작업)";
+          label.textContent = JOB_LABEL_FALLBACK; // 실제 값은 entry 생성 직후 setJobLabel 이 정한다.
           // kind 배지(워커/서브에이전트) — status 뱃지와 별개 축. 기본은 워커 배지("📦 워커")를
           // 항상 표시하고, lifecycle 로 서브에이전트로 승격되면 아래에서 텍스트를 교체(.agent 가 색 전환).
           const kindBadge = document.createElement("span"); kindBadge.className = "bg-job-kind";
@@ -714,8 +730,8 @@
           // 중지 버튼 — running 이면 노출(worker·agent 무관, U-I4 개정; updateStopBtn 이 켜고/끔).
           // 클릭은 top 의 펼침 토글로 버블링되지 않게 stopPropagation.
           const stopBtn = document.createElement("button");
-          stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = i18n("작업 중지");
-          stopBtn.textContent = i18n("⏹️ 중지"); stopBtn.style.display = "none";
+          stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = i18n("bg.stopTitle");
+          stopBtn.textContent = i18n("bg.stop"); stopBtn.style.display = "none";
           stopBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestCancelJob(jobId); });
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
           // 실제 응답 모델 (2026-07-27) — tierBadge 는 *요청한* 티어(high/mid/low)이고 이건 그
@@ -817,6 +833,7 @@
             cwd: "", // 실행 폴더(cwd) — worker.started payload.cwd. 프로젝트 상세가 이걸로 필터/귀속.
             task: "", result: "", errorText: "", // 작업 지시/결과/에러 원문(문자열) — DOM 과 별개 보관. 에이전트 뷰가 한 줄 요약·펼침 상세에 읽음.
             expanded: false, // 에이전트 뷰 카드 펼침 상태(jobId 별) — 리렌더돼도 유지. 드로어는 .open 클래스로 별도 관리.
+            label: "", hasLabel: false, // setJobLabel 이 정한다(아래). 빈 값 = 아직 이름 없음.
             status: "running", kind: "worker", stepCount: 0, hasTask: false, hasResult: false,
             threadKey: realSessionThreadKey(opts && opts.threadKey), // 잡 좌표 원본(부모 링크일 수 있음).
             // 서버가 환원한 원 세션(worker.* payload / GET /api/worker-jobs 의 ownerThreadKey).
@@ -825,6 +842,7 @@
             seenSteps: new Set(), // ★스텝 dedup — SSE replay(새로고침 재연결)가 같은 활동을 재전송해도 중복 append 방지.
             _cancelRequested: false, // 낙관 취소 요청 중(재클릭 방지) — cancelled:false/실패 시 되돌림.
           };
+          setJobLabel(entry, opts && opts.label ? String(opts.label) : "");
           entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, entry.ownerTk));
           updateSessionBadge(entry);
           jobCards.set(jobId, entry);
@@ -842,7 +860,7 @@
           // ctxFn 은 매 호출 시 최신 entry 를 다시 읽어(jobCards.get) label/threadKey 드리프트 없음.
           const jobCtx = () => {
             const e = jobCards.get(jobId);
-            return { type: "job", targetId: jobId, threadKey: e ? e.threadKey : "", label: e ? e.labelEl.textContent : jobId };
+            return { type: "job", targetId: jobId, threadKey: e ? e.threadKey : "", label: (e && e.label) || jobId };
           };
           attachKebab(top, "job", jobCtx);
           attachContextMenu(el, "job", jobCtx);
@@ -874,7 +892,7 @@
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.
         if (entry.kind === "agent" && opts && opts.agentName) {
           const want = "🤖 " + opts.agentName;
-          if (entry.labelEl.textContent !== want) entry.labelEl.textContent = want;
+          if (entry.label !== want) setJobLabel(entry, want);
         }
         // 모델 티어(멱등) — 워커·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.
         // lifecycle 이 실어 오면(먼저/나중 무관) entry.modelTier 저장 + 드로어 칩 갱신. 에이전트 뷰는 renderAgentsView 가 읽음.
@@ -922,26 +940,26 @@
         updateSessionBadge(entry);
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
-        if (opts && opts.label && entry.labelEl.textContent === "(작업)") entry.labelEl.textContent = opts.label;
+        if (opts && opts.label && !entry.hasLabel) setJobLabel(entry, String(opts.label));
         // 라벨 kind 접두 (2026-07-26) — 서브에이전트는 위에서 "🤖 <name>" 으로 쓰는데 워커는
         // 접두가 없어 비대칭이었다. 워커도 "📦 <작업>" 으로 맞춰, 드로어에 워커·서브가 섞여
         // 있을 때 **이름만 보고** 구분되게 한다. 특히 모바일에선 kind 배지가 다음 줄로 wrap
         // 되므로(.bg-job-top flex-wrap) 라벨 접두가 사실상 유일한 구분 단서다.
         // 멱등 — 이미 붙었으면 재적용 0. agent 로 승격되면 위(agentName 분기)가 라벨을 통째
         // 교체하지만, agentName 없이 승격된 드문 경우엔 여기서 접두를 떼어 정합을 지킨다.
-        if (entry.labelEl.textContent !== "(작업)") {
-          const cur = entry.labelEl.textContent;
+        if (entry.hasLabel) {
+          const cur = entry.label;
           if (entry.kind === "agent") {
             if (cur.indexOf(WORKER_LABEL_PREFIX) === 0) {
-              entry.labelEl.textContent = cur.slice(WORKER_LABEL_PREFIX.length);
+              setJobLabel(entry, cur.slice(WORKER_LABEL_PREFIX.length));
             }
           } else if (cur.indexOf(WORKER_LABEL_PREFIX) !== 0) {
-            entry.labelEl.textContent = WORKER_LABEL_PREFIX + cur;
+            setJobLabel(entry, WORKER_LABEL_PREFIX + cur);
           }
         }
         if (opts && opts.task && !entry.hasTask) {
           entry.task = String(opts.task); // 원문 보관(에이전트 뷰가 읽음).
-          entry.taskEl.textContent = "작업 · " + opts.task; // 펼침 영역 전문.
+          entry.taskEl.textContent = i18n("bg.task.full", { v: opts.task }); // 펼침 영역 전문.
           entry.taskEl.style.display = ""; entry.hasTask = true;
           // 항상 보이는 한 줄 요약(이름 아래) — 접혀 있어도 무슨 작업인지 구분.
           entry.summaryEl.textContent = opts.task;
@@ -1011,7 +1029,7 @@
         }
         if (status === "done" && p.result) {
           entry.result = String(p.result); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
-          entry.resultEl.textContent = "결과 · " + p.result;
+          entry.resultEl.textContent = i18n("bg.result.full", { v: p.result });
           entry.resultEl.style.display = ""; entry.hasResult = true; updateChev(entry);
         }
         capBgList();
@@ -1151,10 +1169,10 @@
       // 답할 일이고, 그래야 원래 의도와 변경이 **둘 다** 남는다.
       // 전달 못 된 시도(closed/absent)도 같은 자리에 남긴다 — 유실이야말로 사후에 봐야 할 값.
       const STEER_OUTCOME_NOTE = {
-        closed: i18n("매니저가 막 끝나 반영 안 됨"),
-        absent: i18n("전달 실패 — 이미 종료되었거나 스티어 비활성"),
-        "other-session": i18n("다른 대화의 매니저라 전달하지 않음"),
-        "no-target": i18n("대상 매니저를 찾지 못함"),
+        closed: i18n("bg.steer.justFinished"),
+        absent: i18n("bg.steer.failed"),
+        "other-session": i18n("bg.steer.otherThread"),
+        "no-target": i18n("bg.steer.notFound"),
       };
       const handleWorkerSteered = (p, ts) => {
         // 대상을 못 고른 시도(no-target)는 붙일 카드가 없다 — events 기록으로만 남는다
@@ -1174,7 +1192,7 @@
         const icon = document.createElement("span");
         icon.className = "bg-step-icon"; icon.textContent = "💬";
         const lab = document.createElement("span");
-        lab.className = "bg-step-label bg-steer"; lab.textContent = i18n("지시 추가");
+        lab.className = "bg-step-label bg-steer"; lab.textContent = i18n("bg.steer.add");
         line.appendChild(icon); line.appendChild(lab);
         if (p.message) {
           const d = document.createElement("span");
@@ -1228,7 +1246,7 @@
         const icon = document.createElement("span"); icon.className = "bg-step-icon";
         icon.textContent = skill ? "🛠" : (p.kind === "tool" ? "🔧" : "▶");
         const lab = document.createElement("span"); lab.className = skill ? "bg-step-label bg-skill" : "bg-step-label";
-        lab.textContent = skill ? "스킬: " + skill.name : (p.label || p.kind || i18n("활동"));
+        lab.textContent = skill ? i18n("bg.step.skill", { name: skill.name }) : (p.label || p.kind || i18n("bg.activity"));
         line.appendChild(icon); line.appendChild(lab);
         if (p.detail && !skill) { // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
           const d = document.createElement("span"); d.className = "bg-step-detail";
@@ -1253,7 +1271,7 @@
         appendJobStep(entry, line);
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
-          const lbl = skill ? "🛠 스킬: " + skill.name : (p.label || p.kind || i18n("활동"));
+          const lbl = skill ? i18n("bg.step.skillBadge", { name: skill.name }) : (p.label || p.kind || i18n("bg.activity"));
           entry.lastStep = (!skill && p.detail) ? lbl + " · " + p.detail : lbl;
           if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
         }

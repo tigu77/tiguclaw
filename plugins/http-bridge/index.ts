@@ -26,6 +26,7 @@ import type {
   MessageHandler,
 } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
+import type { DisplayText } from "../../src/core/plugins/providers.js";
 import {
   isAllowedHost,
   parseAllowedHosts,
@@ -1498,12 +1499,18 @@ class HttpBridge implements Channel, Observer {
                 nextRun = null;
               }
             }
-            const en = r.enabled ? "켜짐" : "꺼짐";
-            const status = r.lastStatus ?? "미실행";
-            const description =
+            // ★서버는 문장을 만들지 않는다 — 값·스펙만 보내고 화면이 만든다
+            //  (`DisplayText`, 2026-08-25). 여기 쓰이던 사실은 아래 `metadata` 에 이미
+            //  구조화돼 있어, 종전 문장은 같은 판단의 두 번째 사본이기도 했다.
+            const state: DisplayText = { key: r.enabled ? "common.on" : "common.off" };
+            const status: DisplayText = r.lastStatus ?? { key: "inv.schedule.neverRan" };
+            const description: DisplayText =
               r.triggerType === "reboot"
-                ? `재부팅 시 · ${en}(${status})`
-                : `${r.cronExpr} · 다음 ${nextRun ?? "-"} · ${en}(${status})`;
+                ? { key: "inv.schedule.reboot", params: { state, status } }
+                : {
+                    key: "inv.schedule.cron",
+                    params: { cron: r.cronExpr ?? "-", next: nextRun ?? "-", state, status },
+                  };
             const metadata: Record<string, unknown> = {
               trigger_type: r.triggerType,
               dest_channel: r.destChannel,
@@ -1686,7 +1693,8 @@ class HttpBridge implements Channel, Observer {
         const factory = IN_PROCESS_MCP_FACTORIES[want];
         if (factory === undefined) {
           // 외부 MCP 는 연결된 클라이언트가 있어야 물어볼 수 있다 — 없으면 정직하게 빈 목록.
-          writeJson(res, 200, { name: want, tools: [], note: "in-process 서버가 아니라 도구 상세를 조회할 수 없습니다(외부 MCP 는 연결 시점에만 노출)." });
+          const note: DisplayText = { key: "inv.tools.externalOnly" };
+          writeJson(res, 200, { name: want, tools: [], note });
           return;
         }
         const bridge = await adaptClaudeMcpServer(factory(), want);

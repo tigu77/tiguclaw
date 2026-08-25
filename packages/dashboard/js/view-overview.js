@@ -38,18 +38,18 @@
        * @returns {{tone:string, desc:string, meta:string}}
        */
       const versionStatusRow = (version, availability) => {
-        const meta = version ? "v" + version : i18n("확인 중");
+        const meta = version ? "v" + version : i18n("home.update.checking");
         const state = availability && availability.state;
         if (state === "available")
-          return { tone: "warn", desc: i18n("받을 업데이트가 있습니다 — 상단 [업데이트] 버튼으로 적용합니다."), meta };
+          return { tone: "warn", desc: i18n("home.update.available"), meta };
         if (state === "blocked")
           return {
             tone: "warn",
-            desc: availability.blockedReason || i18n("지금은 업데이트할 수 없습니다."),
+            desc: availability.blockedReason || i18n("upd.unavailable"),
             meta,
           };
-        if (state === "up-to-date") return { tone: "good", desc: i18n("최신입니다."), meta };
-        return { tone: "good", desc: i18n("현재 실행 중인 버전입니다."), meta };
+        if (state === "up-to-date") return { tone: "good", desc: i18n("home.update.upToDate"), meta };
+        return { tone: "good", desc: i18n("home.stat.versionTitle"), meta };
       };
 
       const setActiveNav = (view) => {
@@ -83,27 +83,29 @@
           ? CATEGORIES.reduce((sum, cat) => sum + ((inventoryCache[cat] || []).length), 0)
           : "…";
         const healthClass = errors > 0 ? "bad" : degraded > 0 ? "warn" : "good";
-        const healthText = errors > 0 ? i18n("오류") : degraded > 0 ? i18n("주의") : i18n("정상");
+        const healthText = errors > 0 ? i18n("common.error") : degraded > 0 ? i18n("common.health.warn") : i18n("common.health.ok");
         const healthDesc = providersCache.length === 0
-          ? i18n("모듈 정보를 불러오는 중입니다.")
+          ? i18n("home.modules.loading")
           : degraded > 0
-            ? "점검이 필요한 모듈이 " + degraded + "개 있습니다."
-            : i18n("모든 모듈이 정상 상태입니다.");
+            ? i18n("home.modules.degraded", { n: degraded })
+            : i18n("home.modules.ok");
         root.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "page-view overview";
 
         const hero = document.createElement("div");
         hero.className = "hero-card";
-        hero.innerHTML = '<h1>오늘의 운영 상태</h1><p>자주 보는 상태와 다음 행동만 모았습니다. 자세한 런타임 정보는 모듈과 능력에서 확인하세요.</p>';
+        hero.innerHTML = "<h1></h1><p></p>";
+        hero.querySelector("h1").textContent = i18n("home.hero.title");
+        hero.querySelector("p").textContent = i18n("home.hero.desc");
         wrap.appendChild(hero);
 
         const quick = document.createElement("div");
         quick.className = "quick-grid";
         const metrics = [
-          [i18n("상태"), healthText, healthDesc],
-          [i18n("모듈"), String(providersCache.length), active + "개 정상"],
-          [i18n("이벤트"), String(evCount), i18n("채팅의 활동 로그에서 확인")],
+          [i18n("common.status"), healthText, healthDesc],
+          [i18n("common.kind.module"), String(providersCache.length), i18n("home.stat.activeCount", { n: active })],
+          [i18n("home.stat.events"), String(evCount), i18n("home.card.activityDesc")],
         ];
         for (const [label, value, hint] of metrics) {
           const card = document.createElement("div");
@@ -117,19 +119,23 @@
         layout.className = "overview-layout";
         const statusPanel = document.createElement("section");
         statusPanel.className = "subpanel";
-        statusPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상태 요약</h2><p class="subpanel-desc">지금 확인해야 할 운영 신호입니다.</p></div><span class="health-pill ' + escHtml(healthClass) + '">' + escHtml(healthText) + '</span></div>';
+        statusPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title"></h2>' +
+          '<p class="subpanel-desc"></p></div><span class="health-pill ' + escHtml(healthClass) + '"></span></div>';
+        statusPanel.querySelector(".subpanel-title").textContent = i18n("home.status.head");
+        statusPanel.querySelector(".subpanel-desc").textContent = i18n("home.status.desc");
+        statusPanel.querySelector(".health-pill").textContent = healthText;
         const statusList = document.createElement("div");
         statusList.className = "status-list";
         const rows = [
-          [healthClass, i18n("모듈 상태"), healthDesc, active + "/" + providersCache.length],
-          [localChatCount > 0 ? "good" : "warn", i18n("대화"), localChatCount > 0 ? i18n("최근 대화가 대화 탭에 표시됩니다.") : i18n("아직 대화가 없습니다."), localChatCount + "개"],
-          [inventoryCache ? "good" : "warn", i18n("인벤토리"), inventoryCache ? i18n("스킬·에이전트·MCP 등 능력을 불러왔습니다.") : i18n("인벤토리를 불러오는 중입니다."), String(invTotal)],
+          [healthClass, i18n("common.moduleStatus"), healthDesc, active + "/" + providersCache.length],
+          [localChatCount > 0 ? "good" : "warn", i18n("home.card.chat"), localChatCount > 0 ? i18n("home.chat.hint") : i18n("home.chat.empty"), i18n("home.stat.count", { n: localChatCount })],
+          [inventoryCache ? "good" : "warn", i18n("home.card.inventory"), inventoryCache ? i18n("home.inventory.ok") : i18n("home.inventory.loading"), String(invTotal)],
         ];
         // ★자리: `모듈 상태`(지금 도는가) 바로 다음 = **둘째 줄**. 맨 끝에 뒀더니 390×780
         //  화면에서 top=811px 로 **뷰포트 밖**이었다(헤드리스 실측) — 모바일에서 보이게 하려고
         //  만든 행이 모바일에서만 안 보이면 고친 게 아니다. 나머지 둘은 개수라 밀려도 된다.
         const ver = versionStatusRow(appVersion, updateChip.state());
-        rows.splice(1, 0, [ver.tone, i18n("버전"), ver.desc, ver.meta]);
+        rows.splice(1, 0, [ver.tone, i18n("home.stat.version"), ver.desc, ver.meta]);
         // (업데이트 판정이 **늦게** 도착하면 아래 onChange 등록이 이 화면을 다시 그린다.)
         for (const [tone, title, desc, meta] of rows) {
           const row = document.createElement("div");
@@ -142,14 +148,17 @@
 
         const actionPanel = document.createElement("section");
         actionPanel.className = "subpanel";
-        actionPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">빠른 이동</h2><p class="subpanel-desc">자주 쓰는 화면으로 바로 들어갑니다.</p></div></div>';
+        actionPanel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title"></h2>' +
+          '<p class="subpanel-desc"></p></div></div>';
+        actionPanel.querySelector(".subpanel-title").textContent = i18n("home.quick.head");
+        actionPanel.querySelector(".subpanel-desc").textContent = i18n("home.quick.desc");
         const actions = document.createElement("div");
         actions.className = "home-actions";
         const actionData = [
-          ["providers", "📦", i18n("모듈 보기"), i18n("채널·어댑터 등 카테고리별 패널과 상세 상태 확인")],
-          ["chat", "💬", assistantName + "와 대화", i18n("대화와 활동 로그를 한 화면에서 확인")],
-          ["inventory", "📚", i18n("인벤토리"), i18n("스킬·에이전트(명세)·MCP·스케줄 등 설치·발견된 capability 점검")],
-          ["restart", "🔄", i18n("데몬 재시작"), i18n("멈춘 작업까지 정리하고 자동 복귀")],
+          ["providers", "📦", i18n("home.card.modules"), i18n("home.card.modulesDesc")],
+          ["chat", "💬", i18n("home.card.chatWith", { name: assistantName }), i18n("home.card.chatDesc")],
+          ["inventory", "📚", i18n("home.card.inventory"), i18n("home.card.inventoryDesc")],
+          ["restart", "🔄", i18n("home.restart"), i18n("home.restartDesc")],
         ];
         for (const [view, icon, title, desc] of actionData) {
           const btn = document.createElement("button");

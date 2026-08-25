@@ -108,7 +108,11 @@ export const check: RegressionCheck = {
     //  라고 적혀 있었다. 문장이 코드보다 앞서면 그게 오늘 하루의 병이다.
     // 문구는 바뀔 수 있으니 **보장의 알맹이**(영속·재시작 생존)로 본다 — 문장 그대로를
     // 박아두면 표현을 다듬을 때마다 검사가 깨지고, 그러면 검사를 고치는 습관이 든다.
-    const claimsPersist = /영속/.test(view) && /읽기 전용/.test(view);
+    // ★안내문은 이제 카탈로그에 산다(소스엔 키만) — **문구가 사는 곳**에서 알맹이를 본다.
+    //  소스를 grep 하면 번역 가능한 문장 하나마다 검사가 낡는다.
+    const koCat = JSON.parse(read("locales/ko.json")) as Record<string, string>;
+    const notice = /i18n\("ch\.desc"\)/.test(view) ? (koCat["ch.desc"] ?? "") : "";
+    const claimsPersist = /영속/.test(notice) && /읽기 전용/.test(notice);
     out.push(
       assert(
         "화면 안내문이 실제 동작과 일치한다",

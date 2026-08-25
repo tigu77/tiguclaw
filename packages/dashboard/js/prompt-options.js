@@ -37,7 +37,7 @@
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
         const tyEl = document.createElement("span");
-        tyEl.className = "type"; tyEl.textContent = assistantName + " · 선택";
+        tyEl.className = "type"; tyEl.textContent = i18n("opts.head", { name: assistantName });
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);
         if (payload.question) {
@@ -61,11 +61,11 @@
         const otherInput = document.createElement("input");
         otherInput.type = "text";
         otherInput.className = "prompt-other-input";
-        otherInput.placeholder = i18n("기타 — 직접 입력…");
+        otherInput.placeholder = i18n("opts.other");
         const otherSend = document.createElement("button");
         otherSend.type = "button";
         otherSend.className = "prompt-other-send";
-        otherSend.textContent = i18n("보내기");
+        otherSend.textContent = i18n("opts.send");
         otherRow.appendChild(otherInput); otherRow.appendChild(otherSend);
         const applyPick = (value) => {
           if (chosen) return;

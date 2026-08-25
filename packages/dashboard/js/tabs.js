@@ -25,7 +25,7 @@
         if (changed) { try { localStorage.setItem(SESSION_NUM_LS, JSON.stringify(map)); } catch {} }
         return map[tk];
       };
-      const deriveTabFallbackName = (tk) => "세션" + sessionNumberFor(tk);
+      const deriveTabFallbackName = (tk) => i18n("tab.fallbackName", { n: sessionNumberFor(tk) });
 
       // 저장 플로우(§4-1): 낙관적 반영 → best-effort POST → 성공 시 서버 정규화값 재동기화,
       // 실패 시 로컬(낙관적) 이름을 그대로 두고 경고만(다음 refreshSessionPreviews 폴이 재조정).
@@ -126,11 +126,11 @@
       registerBuiltinHandler("session.new", () => { newTab(); });
       registerMenuItems("session", (ctx) => {
         const items = [
-          { id: "rename", label: i18n("이름 변경"), icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },
-          { id: "new", label: i18n("새 세션"), icon: "➕", action: { kind: "builtin", handler: "session.new" } },
+          { id: "rename", label: i18n("tab.rename"), icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },
+          { id: "new", label: i18n("tab.new"), icon: "➕", action: { kind: "builtin", handler: "session.new" } },
         ];
         if (ctx.targetId !== DEFAULT_DASH_THREAD) {
-          items.push({ id: "close", label: i18n("탭 닫기"), icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });
+          items.push({ id: "close", label: i18n("tab.close"), icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });
         }
         return items;
       });
@@ -235,7 +235,7 @@
           // 채널 힌트 칩 — 원격/레거시 세션(텔레그램·CLI 등)을 대시보드 세션과 구분(ADR §D6).
           // 채널 메타는 서버 세션(refreshSessionPreviews) 또는 threadKey 접두에서 파생. 대시보드 세션은 없음.
           { const cm = channelMeta(tab.channel || channelFromThreadKey(tab.threadKey));
-            if (cm) { const ch = document.createElement("span"); ch.className = "st-ch"; ch.textContent = cm.short; ch.title = cm.full + " 세션"; b.appendChild(ch); } }
+            if (cm) { const ch = document.createElement("span"); ch.className = "st-ch"; ch.textContent = cm.short; ch.title = i18n("tab.channelSession", { name: cm.full }); b.appendChild(ch); } }
           // 진행 뱃지 — 이 세션(또는 스폰한 워커/서브)이 진행 중이면 점(모든 세션 추적, §5.12).
           // 진행 배지 = 활성 턴 **또는** 그 세션이 띄운 백그라운드(워커·서브·셸)가 도는 중
           // (2026-07-26 사용자 요청). 종전엔 턴만 봐서, 워커/셸이 도는 세션 탭이 조용했다.
@@ -253,7 +253,7 @@
             const u = document.createElement("span");
             u.className = "st-unread";
             u.textContent = unread > 99 ? "99+" : String(unread);
-            u.title = `안 읽은 답변 ${unread}개`;
+            u.title = i18n("tab.unread", { n: unread });
             b.appendChild(u);
           }
           b.addEventListener("click", () => switchToThread(tab.threadKey));
@@ -269,7 +269,7 @@
         }
         const plus = document.createElement("button");
         plus.type = "button"; plus.className = "session-tab session-add"; plus.textContent = "+";
-        plus.title = i18n("새 세션");
+        plus.title = i18n("tab.new");
         plus.addEventListener("click", newTab);
         sessionTabsEl.appendChild(plus);
         // ★활성 탭이 보이는 자리로 스크롤 (2026-08-10 사용자 지적). 탭이 늘면 활성 탭이
@@ -527,7 +527,7 @@
             const serverName = (typeof s.name === "string" && s.name) ? s.name : null;
             // 파생은 서버 규칙 하나(sessionDisplayName). 채널 라벨은 그것도 비었을 때만.
             const name = (typeof s.displayName === "string" && s.displayName)
-              ? s.displayName : (serverName || (cm ? cm.full : i18n("세션")));
+              ? s.displayName : (serverName || (cm ? cm.full : i18n("tab.session")));
             const sp = (typeof s.modelProfile === "string" && s.modelProfile) ? s.modelProfile : null;
             const tab = { threadKey: tk, name, modelProfile: sp, ...(serverName ? { customName: serverName } : {}), ...(s.preview ? { preview: s.preview } : {}), ...(ch ? { channel: ch } : {}) };
             openTabs.push(tab);

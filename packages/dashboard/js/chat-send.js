@@ -27,7 +27,7 @@
             chip.appendChild(ic); chip.appendChild(nm);
           }
           const x = document.createElement("button");
-          x.type = "button"; x.className = "att-x"; x.textContent = "✕"; x.title = i18n("제거");
+          x.type = "button"; x.className = "att-x"; x.textContent = "✕"; x.title = i18n("common.remove");
           x.addEventListener("click", () => { pendingAttachments.splice(i, 1); renderAttachChips(); });
           chip.appendChild(x);
           attachEl.appendChild(chip);
@@ -41,12 +41,12 @@
       });
       const addFiles = async (files) => {
         for (const f of files) {
-          if (pendingAttachments.length >= ATT_MAX) { showToast(`첨부는 최대 ${ATT_MAX}개까지`, "warn"); break; }
-          if (f.size > ATT_MAX_BYTES) { showToast(`'${f.name}' 이(가) 10MB 초과 — 제외`, "warn"); continue; }
+          if (pendingAttachments.length >= ATT_MAX) { showToast(i18n("chat.attach.max", { n: ATT_MAX }), "warn"); break; }
+          if (f.size > ATT_MAX_BYTES) { showToast(i18n("chat.attach.tooBig", { name: f.name }), "warn"); continue; }
           try {
             const dataBase64 = await readAsBase64(f);
             pendingAttachments.push({ filename: f.name || "file", mimeType: f.type || "application/octet-stream", dataBase64, bytes: f.size });
-          } catch { showToast(`'${f.name}' 읽기 실패`, "bad"); }
+          } catch { showToast(i18n("chat.attach.readFailed", { name: f.name }), "bad"); }
         }
         renderAttachChips();
       };

@@ -142,15 +142,15 @@
     if (row && row.scrollIntoView) row.scrollIntoView({ block: "nearest" });
     const hit = hits[cursor];
     if (typeof window.openSessionByKey !== "function") {
-      setStatus(i18n("세션으로 이동할 수 없습니다(탭 모듈 미로드)."));
+      setStatus(i18n("search.jump.noTabs"));
       return;
     }
     // 못 닿으면 **말한다** — 조용히 넘어가면 사용자는 클릭이 씹혔다고 읽는다.
     window.notifyJumpMiss = (why) => {
       setStatus(
         why === "not-found"
-          ? i18n("그 대화로 옮겼지만 해당 메시지는 너무 과거라 못 찾았습니다.")
-          : i18n("그 메시지 위치로 이동하지 못했습니다."),
+          ? i18n("search.jump.tooOld")
+          : i18n("search.jump.failed"),
       );
     };
     const ok = window.openSessionByKey(hit.threadKey, {
@@ -158,7 +158,7 @@
       channel: hit.channel,
       jumpTs: hit.ts,
     });
-    if (!ok) setStatus(i18n("그 세션을 열 수 없습니다."));
+    if (!ok) setStatus(i18n("search.jump.noSession"));
   };
 
   const render = (found, query, meta, append) => {
@@ -176,7 +176,7 @@
     syncNav();
     void before;
     if (hits.length === 0) {
-      setStatus(`'${query}' — 찾은 대화가 없습니다.`);
+      setStatus(i18n("search.noResults", { q: query }));
       return;
     }
     if (hits.length >= total) exhausted = true;
@@ -184,20 +184,20 @@
     //  알았다(실측: `는` 은 1,438건). 이제 더 있으면 이어 받으므로, 남았다는 사실도 함께.
     setStatus(
       hits.length < total
-        ? `'${query}' — ${total.toLocaleString()}건 중 ${hits.length}건 (아래로 내리면 더 불러옵니다)`
-        : `'${query}' — ${hits.length.toLocaleString()}건`,
+        ? i18n("search.partial", { q: query, total: total.toLocaleString(), shown: hits.length })
+        : i18n("search.count", { q: query, n: hits.length.toLocaleString() }),
     );
     for (const hit of (append === true ? found : hits)) {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "cs-hit";
-      row.title = i18n("이 대화로 이동");
+      row.title = i18n("search.jump.action");
 
       const head = document.createElement("div");
       head.className = "cs-hit-head";
       const who = document.createElement("span");
       who.className = "cs-hit-role";
-      who.textContent = hit.role === "user" ? i18n("나") : i18n("돌쇠");
+      who.textContent = hit.role === "user" ? i18n("common.sender.me") : i18n("common.sender.assistant");
       const sess = document.createElement("span");
       sess.className = "cs-hit-session";
       sess.textContent = hit.sessionLabel || hit.threadKey;
@@ -271,11 +271,11 @@
       //  날아오는 응답을 무효화하지 못한다. 질의를 닫는 것도 `run` 의 일이다.
       seq += 1;
       clearResults();
-      setStatus(q === "" ? "" : `${MIN_LEN}글자 이상 입력하세요.`);
+      setStatus(q === "" ? "" : i18n("search.tooShort", { n: MIN_LEN }));
       return;
     }
     const my = ++seq;
-    setStatus(i18n("찾는 중…"));
+    setStatus(i18n("search.searching"));
     try {
       const r = await fetch(`/api/chat-search?q=${encodeURIComponent(q)}&limit=50`);
       if (my !== seq) return; // 더 새 질의가 떴다 — 이 응답은 버린다.
@@ -284,12 +284,12 @@
         // ★옛 결과를 남기지 않는다 — 남기면 "실패" 문구 아래 이전 질의 결과가 보이고,
         //  그 상태에서 ↑/↓ 를 누르면 엉뚱한 대화로 점프한다(적대 검토 D9).
         clearResults();
-        setStatus(`검색 실패: ${data.error || r.status}`);
+        setStatus(i18n("search.failed", { err: data.error || r.status }));
         return;
       }
       if (data.tooShort === true) {
         clearResults();
-        setStatus(`${MIN_LEN}글자 이상 입력하세요.`);
+        setStatus(i18n("search.tooShort", { n: MIN_LEN }));
         return;
       }
       render(Array.isArray(data.hits) ? data.hits : [], q, {
@@ -299,7 +299,7 @@
     } catch (e) {
       if (my !== seq) return;
       clearResults();
-      setStatus(`검색 실패: ${e && e.message ? e.message : e}`);
+      setStatus(i18n("search.failed", { err: e && e.message ? e.message : e }));
     }
   };
 

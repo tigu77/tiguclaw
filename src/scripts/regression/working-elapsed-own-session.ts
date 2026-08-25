@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -54,7 +54,7 @@ const paint = (
   const out: Record<string, string> = { label: "", elapsed: "" };
   const ctx: Record<string, unknown> = {
     // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
-    i18n: (v: string) => v,
+    i18n: i18nForContext,
     activeTurns: new Map(turns),
     // ★사유 맵 (2026-08-13) — 내가 안 시킨 턴(워커·에이전트 정리)에만 "왜 도는지" 가 붙는다.
     turnReason: new Map(reasons),

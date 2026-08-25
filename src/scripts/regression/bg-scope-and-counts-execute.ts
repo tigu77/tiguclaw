@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { assert, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck, JS_I18N_STUB } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const SRC = path.join(REPO, "packages/dashboard/js/background-drawer.js");
@@ -109,7 +109,7 @@ export const check: RegressionCheck = {
         chatBgActiveEl: el(),
         jobOwnerSession: () => "",
         isShellInScope: () => false,
-        i18n: (v: string) => v,
+        i18n: i18nForContext,
       };
       vm.createContext(ctx);
       try {

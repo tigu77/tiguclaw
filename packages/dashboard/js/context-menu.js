@@ -117,7 +117,7 @@
             const label = ctx && ctx.label ? ctx.label : (ctx && ctx.targetId ? ctx.targetId : "");
             const targetId = ctx && ctx.targetId ? ctx.targetId : "";
             const text = action.kind === "invoke_skill"
-              ? (String(action.skill || "") + " 스킬을 이 " + (ctx && ctx.type ? ctx.type : i18n("대상")) + "(" + label + ")에 실행")
+              ? i18n("ctx.invokeSkill", { skill: String(action.skill || ""), kind: ctx && ctx.type ? ctx.type : i18n("ctx.target"), label })
               : String(action.template || "").replace(/\$\{label\}/g, label).replace(/\$\{targetId\}/g, targetId);
             if (text.trim() === "") return;
             const threadKey = (ctx && ctx.threadKey) || (typeof activeThreadKey !== "undefined" ? activeThreadKey : undefined);
@@ -144,7 +144,7 @@
 
       const runMenuItem = async (item, ctx) => {
         if (item.enabled === false) return;
-        if (item.danger && !window.confirm((item.label || i18n("이 작업")) + " — 계속할까요?")) return;
+        if (item.danger && !window.confirm(i18n("ctx.confirm", { what: item.label || i18n("ctx.thisAction") }))) return;
         closeMenu(); // §1.3 — 실행 시 항상 닫음(성공/실패 무관, 에러는 메뉴 밖 토스트/로컬챗에 표기).
         await executeMenuAction(item, ctx);
       };
@@ -287,7 +287,7 @@
       const attachKebab = (hostEl, type, ctxFn, opts) => {
         if (!hostEl) return null;
         const btn = document.createElement("span");
-        btn.className = "cm-kebab"; btn.textContent = "⋯"; btn.title = i18n("메뉴");
+        btn.className = "cm-kebab"; btn.textContent = "⋯"; btn.title = i18n("common.menu");
         btn.setAttribute("role", "button"); btn.tabIndex = 0;
         const trigger = (ev) => {
           ev.stopPropagation();

@@ -19,7 +19,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../..");
 const SRC = path.join(REPO, "packages/dashboard/js/axis1-options.js");
@@ -43,8 +43,8 @@ const load = (): Harness => {
     turnPhase: new Map<string, unknown>(),
     activeThreadKey: "dashboard:default",
     refreshWorking: () => {},
-    // 화면 문구 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다.
-    i18n: (v: string) => v,
+    // 화면 문구 — 정본 하나(_framework)를 쓴다. 카탈로그를 태워야 단언이 실문구를 본다.
+    i18n: i18nForContext,
   };
   vm.createContext(ctx);
   vm.runInContext(

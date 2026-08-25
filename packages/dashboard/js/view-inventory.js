@@ -13,33 +13,33 @@
       // 렌더 — 읽기 전용(편집은 대화로, 모델 프로파일·모듈과 동형). 풀 명세 본문(스킬 SKILL.md/
       // 에이전트 .md 전문)은 /api/inventory 에 없어 이 슬라이스 범위 밖 — 디테일에 안내 문구만.
 
-      const CAP_LAYER_LABEL = { meta_infra: i18n("메타 인프라"), in_tree: "in-tree", discovered: i18n("발견됨") };
+      const CAP_LAYER_LABEL = { meta_infra: i18n("inv.layer.metaInfra"), in_tree: "in-tree", discovered: i18n("inv.layer.discovered") };
 
       const CAPABILITY_GROUPS = [
-        { key: "skill", srcKey: "skill", label: i18n("🛠️ 스킬"), emptyNote: null },
-        { key: "agent", srcKey: "agent", label: i18n("🤖 에이전트"), emptyNote: null },
-        { key: "mcp", srcKey: "mcp", label: i18n("🧩 도구 (MCP)"), emptyNote: null },
+        { key: "skill", srcKey: "skill", label: i18n("inv.cat.skill"), emptyNote: null },
+        { key: "agent", srcKey: "agent", label: i18n("inv.cat.agent"), emptyNote: null },
+        { key: "mcp", srcKey: "mcp", label: i18n("inv.cat.mcp"), emptyNote: null },
         // 커맨드 = 슬래시 명령 모음(빌트인 /models·/update … + 유저 <home>/commands/*.md).
         // /api/inventory 가 command[] 를 주므로 srcKey 만 추가(엔드포인트와 동형, 신규 렌더코드 0).
-        { key: "command", srcKey: "command", label: i18n("⌨️ 커맨드"), emptyNote: null },
+        { key: "command", srcKey: "command", label: i18n("inv.cat.command"), emptyNote: null },
         // P4c(ADR 2026-07-17 § 2축모델) — 엔드포인트(<home>/endpoints/*.md, 슬래시 명령의
         // HTTP 판)도 능력(데이터) 축. /api/inventory 가 endpoint[] 를 주므로 srcKey 만 추가
         // — 정의 0건 홈은 빈 카테고리 자동 숨김(위 렌더 로직, 신규 코드 0).
-        { key: "endpoint", srcKey: "endpoint", label: i18n("🔌 엔드포인트"), emptyNote: null },
+        { key: "endpoint", srcKey: "endpoint", label: i18n("inv.cat.endpoint"), emptyNote: null },
         // 스케줄(cron/reboot 트리거) — /api/inventory 가 schedules[] 를 주므로 srcKey 만 추가
         // (엔드포인트와 동형, 신규 렌더코드 0). 스케줄 아이템은 layer 없음 → renderCapabilityListItem
         // 의 pi-kind 는 빈 문자열 폴백(entry.layer || ""), 정렬은 LAYERS.indexOf(-1)→99 로 안전.
         // 읽기 전용(디테일은 제네릭 renderCapabilityDetailCard). 스케줄 0건 홈은 빈 카테고리 자동 숨김.
-        { key: "schedules", srcKey: "schedules", label: i18n("⏰ 스케줄"), emptyNote: null },
+        { key: "schedules", srcKey: "schedules", label: i18n("inv.cat.schedule"), emptyNote: null },
         // 훅(settings.json hooks[event], daemon-engineer PROJECT.md 2026-07-24) — 채널·
         // 플러그인·스킬과 동형 1급 능력. /api/inventory 가 hook[] 을 주므로 srcKey 만 추가
         // (스케줄과 동형, 신규 렌더코드 0). 0건 홈은 빈 카테고리 자동 숨김.
-        { key: "hook", srcKey: "hook", label: i18n("🪝 훅"), emptyNote: null },
+        { key: "hook", srcKey: "hook", label: i18n("inv.cat.hook"), emptyNote: null },
         {
           key: "memory",
           srcKey: null,
-          label: i18n("💭 메모리"),
-          emptyNote: i18n("메모리 항목은 아직 이 화면에 연동되지 않았습니다 — 대화로 확인하세요(예: \"기억나는 거 있어?\")."),
+          label: i18n("inv.cat.memory"),
+          emptyNote: i18n("inv.memory.notice"),
         },
       ];
 
@@ -48,7 +48,8 @@
 
       const capabilityDescription = (entry) => {
         // 설명 — description(frontmatter/manifest). MCP 는 없으면 command/url.
-        let desc = entry.description || "";
+        // 서버가 문장을 만들지 않으므로(스케줄 설명 등) 여기서 푼다 — util.js resolveText 주석.
+        let desc = resolveText(entry.description);
         if (!desc && entry.category === "mcp") {
           const md = entry.metadata || {};
           desc = md.url || (md.command ? md.command + (Array.isArray(md.args) && md.args.length ? " " + md.args.join(" ") : "") : "");
@@ -69,7 +70,7 @@
         kind.className = "pi-kind"; kind.textContent = CAP_LAYER_LABEL[entry.layer] || entry.layer || "";
         const dot = document.createElement("span");
         dot.className = "pi-status-dot" + (enabled ? " active" : "");
-        dot.title = enabled ? i18n("활성") : i18n("비활성");
+        dot.title = enabled ? i18n("common.enabled") : i18n("common.disabled");
         head.appendChild(name); head.appendChild(kind); head.appendChild(dot);
         item.appendChild(head);
         const desc = capabilityDescription(entry);
@@ -127,7 +128,8 @@
           });
         }
         if (list.childElementCount === 0) {
-          list.innerHTML = '<div class="empty" style="margin:10px">표시할 능력이 없습니다.</div>';
+          list.innerHTML = '<div class="empty" style="margin:10px"></div>';
+          list.querySelector(".empty").textContent = i18n("inv.empty");
         }
         updateCapabilityNavCount(inv);
         if (!selectedCapabilityId && capabilitiesCache.length > 0) {
@@ -156,7 +158,11 @@
         const shell = document.createElement("section");
         shell.className = "subpanel detail-card";
         if (!item) {
-          shell.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상세</h2><p class="subpanel-desc">왼쪽에서 능력 항목을 선택하세요.</p></div></div><div class="empty">선택된 항목이 없습니다.</div>';
+          shell.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title"></h2>' +
+            '<p class="subpanel-desc"></p></div></div><div class="empty"></div>';
+          shell.querySelector(".subpanel-title").textContent = i18n("stream.detail");
+          shell.querySelector(".subpanel-desc").textContent = i18n("inv.detail.pickOne");
+          shell.querySelector(".empty").textContent = i18n("inv.detail.none");
           return shell;
         }
         const { entry, group } = item;
@@ -165,9 +171,9 @@
         const summaryGrid = document.createElement("div");
         summaryGrid.className = "summary-grid";
         const metricData = [
-          [i18n("카테고리"), group.label, i18n("능력 그룹")],
-          [i18n("레이어"), CAP_LAYER_LABEL[entry.layer] || entry.layer || "-", i18n("발견 위치")],
-          [i18n("상태"), enabled ? i18n("활성") : i18n("비활성"), i18n("enabled 플래그")],
+          [i18n("inv.metric.category"), group.label, i18n("inv.metric.group")],
+          [i18n("inv.metric.layer"), CAP_LAYER_LABEL[entry.layer] || entry.layer || "-", i18n("inv.metric.foundAt")],
+          [i18n("common.status"), enabled ? i18n("common.enabled") : i18n("common.disabled"), i18n("inv.metric.enabledFlag")],
         ];
         for (const [label, value, hint] of metricData) {
           const card = document.createElement("div");
@@ -178,23 +184,24 @@
         const desc = capabilityDescription(entry);
         const head = document.createElement("div");
         head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(entry.name || "?") + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(desc || i18n("설명 없음")) + '</div></div><span class="detail-kind">' + escHtml(group.label) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(enabled ? i18n("활성") : i18n("비활성")) + '</span>';
+        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(entry.name || "?") + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(desc || i18n("common.desc.none")) + '</div></div><span class="detail-kind">' + escHtml(group.label) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(enabled ? i18n("common.enabled") : i18n("common.disabled")) + '</span>';
         shell.appendChild(head);
         shell.appendChild(summaryGrid);
         // 메타(경로+metadata 원문) — 모듈 상세와 같은 kv 그리드로.
-        const meta = {};
-        if (entry.source) meta[i18n("경로")] = entry.source;
+        // 표시 라벨(번역됨)과 metadata 실제 키를 **한 객체에 섞지 않는다** — appendKvPairs 주석 참조.
+        const metaPairs = [];
+        if (entry.source) metaPairs.push([i18n("inv.meta.path"), entry.source]);
         const md = entry.metadata || {};
-        for (const k of Object.keys(md)) meta[k] = md[k];
-        if (Object.keys(meta).length > 0) {
+        for (const k of Object.keys(md)) metaPairs.push([k, md[k]]);
+        if (metaPairs.length > 0) {
           const viewsWrap = document.createElement("div");
           viewsWrap.className = "views";
           const view = document.createElement("div");
           view.className = "view";
           const title = document.createElement("div");
-          title.className = "view-title"; title.textContent = i18n("메타데이터");
+          title.className = "view-title"; title.textContent = i18n("inv.meta.head");
           view.appendChild(title);
-          appendKv(view, meta);
+          appendKvPairs(view, metaPairs);
           viewsWrap.appendChild(view);
           shell.appendChild(viewsWrap);
         }
@@ -208,9 +215,9 @@
           const v = document.createElement("div");
           v.className = "view";
           const t = document.createElement("div");
-          t.className = "view-title"; t.textContent = i18n("제공 도구");
+          t.className = "view-title"; t.textContent = i18n("inv.tools.head");
           const body = document.createElement("div");
-          body.textContent = i18n("불러오는 중…");
+          body.textContent = i18n("common.loading");
           v.appendChild(t); v.appendChild(body); sec.appendChild(v); shell.appendChild(sec);
           fetch("/api/mcp-tools?name=" + encodeURIComponent(entry.name || ""))
             .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
@@ -220,7 +227,7 @@
               body.textContent = "";
               if (tools.length === 0) {
                 body.className = "developer-copy";
-                body.textContent = d.note || i18n("노출된 도구가 없습니다.");
+                body.textContent = resolveText(d.note) || i18n("inv.tools.empty");
                 return;
               }
               for (const tool of tools) {
@@ -252,14 +259,14 @@
             .catch(() => {
               if (selectedCapabilityId !== capturedMcpId) return;
               body.className = "developer-copy";
-              body.textContent = i18n("도구 목록을 불러오지 못했습니다.");
+              body.textContent = i18n("inv.tools.loadFailed");
             });
         }
         const note = document.createElement("p");
         note.className = "developer-copy";
         note.textContent = entry.source
-          ? i18n("전체 정의 본문(스킬/에이전트 전문)은 위 경로의 파일에서 확인할 수 있습니다 — 이 화면은 메타 정보까지만 보여줍니다(읽기 전용, 편집은 대화로).")
-          : i18n("이 항목은 메타 정보만 보여줍니다(읽기 전용, 편집은 대화로).");
+          ? i18n("inv.body.metaOnlyLong")
+          : i18n("inv.body.metaOnly");
         shell.appendChild(note);
 
         // 정의 본문(파일 source) — bridge GET /api/inventory-item?source= 로 파일을 재-Read 해
@@ -277,12 +284,12 @@
           const view = document.createElement("div");
           view.className = "view";
           const title = document.createElement("div");
-          title.className = "view-title"; title.textContent = i18n("정의 본문");
+          title.className = "view-title"; title.textContent = i18n("inv.body.head");
           const bodyInner = document.createElement("div");
           bodyInner.className = "cap-body-inner";
           bodyInner.style.maxHeight = "50vh";
           bodyInner.style.overflowY = "auto";
-          bodyInner.textContent = i18n("본문 불러오는 중…");
+          bodyInner.textContent = i18n("inv.body.loading");
           view.appendChild(title);
           view.appendChild(bodyInner);
           bodySec.appendChild(view);
@@ -353,6 +360,7 @@
         } catch (e) {
           const list = document.getElementById("capabilities-list");
           if (list) list.innerHTML =
-            '<div class="empty" style="font-size:11px;padding:10px">능력 목록 불러오기 실패: ' + escHtml(e.message) + "</div>";
+            '<div class="empty" style="font-size:11px;padding:10px">' +
+            escHtml(i18n("inv.loadFailed", { err: e.message })) + "</div>";
         }
       };

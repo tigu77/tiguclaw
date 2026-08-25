@@ -12,12 +12,12 @@
 
       const channelToModuleItem = (c) => {
         const status = CHANNEL_STATUS_TO_MODULE_STATUS[c.status] || "unknown";
-        const bits = [status === "inactive" ? i18n("비활성 채널") : i18n("라이브 채널")];
-        if (c.canDeliver) bits.push(i18n("발신 가능"));
+        const bits = [status === "inactive" ? i18n("modules.group.inactiveChannel") : i18n("modules.group.liveChannel")];
+        if (c.canDeliver) bits.push(i18n("modules.cap.egress"));
         return {
           id: "channel." + (c.name || "unknown"),
           kind: "channel",
-          name: c.name || i18n("(이름 없음)"),
+          name: c.name || i18n("common.unnamed"),
           status,
           summary: bits.join(" · "),
           capabilities: [],
@@ -33,7 +33,7 @@
         const seen = new Set();
         for (const p of providers) {
           if (typeof p.id === "string") seen.add(p.id.toLowerCase());
-          if (typeof p.name === "string") seen.add(p.name.toLowerCase());
+          { const nm = resolveText(p.name); if (nm !== "") seen.add(nm.toLowerCase()); }
         }
         for (const c of channels || []) {
           const name = (c.name || "").toLowerCase();
@@ -136,7 +136,7 @@
               kind,
               name: e.name,
               status: e.enabled ? "active" : "inactive",
-              summary: [e.description, kindHint].filter(Boolean).join(" · ") || i18n("번들 플러그인"),
+              summary: [e.description, kindHint].filter(Boolean).join(" · ") || i18n("modules.group.bundled"),
               capabilities: [],
               views: [],
               actions: [],
@@ -166,7 +166,7 @@
         const nextEnabled = !provider.moduleEnabled;
         if (!nextEnabled && CRITICAL_MODULE_NAMES.has(provider.moduleName)) {
           const proceed = window.confirm(
-            i18n("이 모듈을 끄면 대시보드/브리지 접근을 잃을 수 있습니다. 계속할까요?"),
+            i18n("modules.disable.confirm"),
           );
           if (!proceed) return; // 취소 → no-op(파괴적-행위 소프트 게이트).
         }
@@ -174,13 +174,15 @@
         try {
           const data = await setModuleEnabledRequest(provider.moduleName, nextEnabled);
           showToast(
-            (nextEnabled ? i18n("활성화됨: ") : i18n("비활성화됨: ")) + provider.moduleName +
-              " — 재시작 시 적용됩니다." + (data.warning === "critical" ? i18n(" (핵심 모듈)") : ""),
+            i18n(nextEnabled ? "modules.toggled.on" : "modules.toggled.off", {
+              name: provider.moduleName,
+              critical: data.warning === "critical" ? i18n("modules.toggle.critical") : "",
+            }),
             data.warning === "critical" ? "warn" : "good",
           );
           await fetchProviders(); // 재조회 → 버튼 라벨/배지가 새 enabled 값으로 갱신.
         } catch (e) {
-          showToast("모듈 전환 실패: " + e.message, "bad");
+          showToast(i18n("modules.toggleFailed", { err: e.message }), "bad");
           btn.disabled = false;
         }
       };
@@ -191,18 +193,18 @@
         if (provider.moduleEnabled === false) {
           const badge = document.createElement("span");
           badge.className = "module-disabled-badge";
-          badge.textContent = i18n("비활성 · 재시작 시 적용");
+          badge.textContent = i18n("modules.status.disabledPending");
           wrap.appendChild(badge);
         }
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "module-toggle-btn" + (provider.moduleEnabled === false ? " is-off" : "");
-        btn.textContent = provider.moduleEnabled === false ? i18n("활성화") : i18n("비활성화");
+        btn.textContent = provider.moduleEnabled === false ? i18n("modules.enable") : i18n("modules.disable");
         btn.addEventListener("click", () => onModuleToggleClick(provider, btn));
         wrap.appendChild(btn);
         const hint = document.createElement("div");
         hint.className = "module-toggle-hint";
-        hint.textContent = i18n("MVP: 재시작 시 적용됩니다(핫 토글 아님).");
+        hint.textContent = i18n("modules.toggle.note");
         wrap.appendChild(hint);
         return wrap;
       };
@@ -212,12 +214,12 @@
         const item = document.createElement("div");
         item.className = "provider-item s-" + status + (provider.id === selectedProviderId ? " selected" : "");
         item.dataset.id = provider.id;
-        item.dataset.searchText = [provider.name, provider.id, kindLabel(provider.kind), provider.summary]
+        item.dataset.searchText = [resolveText(provider.name), provider.id, kindLabel(provider.kind), resolveText(provider.summary)]
           .filter(Boolean).join(" ").toLowerCase();
         const head = document.createElement("div");
         head.className = "pi-head";
         const name = document.createElement("span");
-        name.className = "pi-name"; name.textContent = provider.name || provider.id;
+        name.className = "pi-name"; name.textContent = resolveText(provider.name) || provider.id;
         const kind = document.createElement("span");
         kind.className = "pi-kind"; kind.textContent = kindLabel(provider.kind);
         const dot = document.createElement("span");
@@ -225,16 +227,21 @@
         dot.title = status;
         head.appendChild(name); head.appendChild(kind); head.appendChild(dot);
         item.appendChild(head);
-        if (provider.summary) {
-          const summary = document.createElement("div");
-          summary.className = "pi-summary"; summary.textContent = provider.summary;
-          item.appendChild(summary);
+        {
+          // 서버는 값·스펙만 보낸다 — 문장은 resolveText 가 만든다(util.js 주석 참조).
+          const summaryText = resolveText(provider.summary);
+          if (summaryText !== "") {
+            const summary = document.createElement("div");
+            summary.className = "pi-summary";
+            summary.textContent = summaryText;
+            item.appendChild(summary);
+          }
         }
         // 서브 리스트에도 비활성 상태 표시(디테일 패널과 동일 뱃지, §4 — "가능하면 서브 리스트도").
         if (provider.moduleName && provider.moduleEnabled === false) {
           const badge = document.createElement("span");
           badge.className = "module-disabled-badge module-disabled-badge-sm";
-          badge.textContent = i18n("비활성 · 재시작 시 적용");
+          badge.textContent = i18n("modules.status.disabledPending");
           item.appendChild(badge);
         }
         item.addEventListener("click", () => selectProvider(provider.id, { userClick: true }));
@@ -256,16 +263,20 @@
         const shell = document.createElement("section");
         shell.className = "subpanel detail-card";
         if (!provider) {
-          shell.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title">상세</h2><p class="subpanel-desc">왼쪽 카드에서 모듈을 선택하세요.</p></div></div><div class="empty">선택된 모듈이 없습니다.</div>';
+          shell.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title"></h2>' +
+            '<p class="subpanel-desc"></p></div></div><div class="empty"></div>';
+          shell.querySelector(".subpanel-title").textContent = i18n("stream.detail");
+          shell.querySelector(".subpanel-desc").textContent = i18n("modules.detail.pickOne");
+          shell.querySelector(".empty").textContent = i18n("modules.detail.none");
           return shell;
         }
         const status = provider.status || "unknown";
         const summaryGrid = document.createElement("div");
         summaryGrid.className = "summary-grid";
         const metricData = [
-          [i18n("상태"), statusLabel(status), provider.summary || i18n("모듈 상태")],
-          [i18n("화면"), String((provider.views || []).length), i18n("사용 가능한 패널")],
-          [i18n("작업"), String((provider.actions || []).length), i18n("호출 가능한 기능")],
+          [i18n("common.status"), statusLabel(status), resolveText(provider.summary) || i18n("common.moduleStatus")],
+          [i18n("tab.view"), String((provider.views || []).length), i18n("modules.panels.head")],
+          [i18n("common.task"), String((provider.actions || []).length), i18n("modules.cap.callable")],
         ];
         for (const [label, value, hint] of metricData) {
           const card = document.createElement("div");
@@ -275,7 +286,7 @@
         }
         const head = document.createElement("div");
         head.className = "detail-head";
-        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(provider.name || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(provider.summary || i18n("모듈 상태")) + '</div></div><span class="detail-kind">' + escHtml(kindLabel(provider.kind)) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(statusLabel(status)) + '</span>';
+        head.innerHTML = '<div class="detail-accent ' + escHtml(status) + '"></div><div><div class="detail-name">' + escHtml(resolveText(provider.name) || provider.id) + '</div><div class="detail-summary" style="margin:4px 0 0">' + escHtml(resolveText(provider.summary) || i18n("common.moduleStatus")) + '</div></div><span class="detail-kind">' + escHtml(kindLabel(provider.kind)) + '</span><span class="detail-status ' + escHtml(status) + '">' + escHtml(statusLabel(status)) + '</span>';
         shell.appendChild(head);
         // 모듈 활성/비활성 토글(P4a-2) — moduleName 이 해석된(=인벤토리에서 이름이 발견된) 항목만.
         // 코어 프로바이더(daemon/memory/schedule/plugin-registry)는 moduleName 이 없어 토글이
@@ -298,12 +309,12 @@
         viewsWrap.className = "views";
         for (const view of views) viewsWrap.appendChild(renderProviderView(view));
         if ((provider.actions || []).length > 0) {
-          viewsWrap.appendChild(renderProviderView({ title: i18n("작업"), kind: "action-panel", data: { actions: provider.actions } }));
+          viewsWrap.appendChild(renderProviderView({ title: i18n("common.task"), kind: "action-panel", data: { actions: provider.actions } }));
         }
         if (views.length === 0 && (provider.actions || []).length === 0) {
           const e = document.createElement("div");
           e.className = "empty";
-          e.textContent = i18n("표시할 세부 패널이 없습니다.");
+          e.textContent = i18n("modules.panels.empty");
           viewsWrap.appendChild(e);
         }
         shell.appendChild(viewsWrap);
@@ -356,14 +367,14 @@
         list.innerHTML = "";
         const providers = registry.providers || [];
         providersCache = providers;
-        countEl.textContent = providers.length + "개";
+        countEl.textContent = i18n("home.stat.count", { n: providers.length });
         const navCount = document.getElementById("nav-provider-count");
         if (navCount) navCount.textContent = String(providers.length);
         if (providers.length === 0) {
           selectedProviderId = null;
           const e = document.createElement("div");
           e.className = "empty"; e.style.margin = "8px";
-          e.textContent = i18n("모듈이 없습니다.");
+          e.textContent = i18n("modules.empty");
           list.appendChild(e);
           if (currentView === "providers") renderProviderHub();
           return;
@@ -432,7 +443,7 @@
           list.innerHTML = "";
           const div = document.createElement("div");
           div.className = "empty"; div.style.margin = "8px";
-          div.textContent = "불러오기 실패: " + e.message;
+          div.textContent = i18n("modules.loadFailed", { err: e.message });
           list.appendChild(div);
         }
       };

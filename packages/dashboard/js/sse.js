@@ -9,14 +9,14 @@
         const tk = p.threadKey;
         if (isEndpointThread(tk)) return;   // 기계 API 호출 — 엔드포인트 뷰가 따로 보여준다.
         if (!isActiveThread(tk)) return;    // 멀티세션 — 자기 세션에만.
-        const who = p.adapter ? String(p.adapter) : i18n("모델");
+        const who = p.adapter ? String(p.adapter) : i18n("sys.model");
         const why = p.message ? ` — ${String(p.message).slice(0, 140)}` : "";
         // ★"다른 모델로 이어서" 는 **다음 후보가 실제로 있을 때만** (2026-07-30).
         //  종전엔 무조건 붙여서, 단일 모델 세션(의도적 설정)에서는 항상 거짓말이었다 —
         //  사용자는 오지 않을 답을 기다렸다(실측: 27분 과부하 중 7회 전부 후보 0).
         const next = p.hasFallback
-          ? i18n("\n다른 모델로 이어서 시도합니다(답이 오면 아래에 이어집니다).")
-          : i18n("\n재시도할 다른 모델이 없습니다 — 잠시 후 다시 시도해 주세요.");
+          ? i18n("sys.fallback.trying")
+          : i18n("sys.fallback.exhausted");
         // ★사용량 한도면 **언제 풀리는지** 말한다 (2026-08-01, 사용자 지적).
         //  429 원문에 resets_at 이 오는데 위 `why` 가 140자에서 잘라 **그 값 바로 앞에서**
         //  끊겼다. 서버는 그걸 파싱해 쿨다운까지 걸어놓고 있었으니 — 아는데 말을 안 한 것.
@@ -25,15 +25,21 @@
         if (typeof p.cooldownUntilTs === "number" && p.cooldownUntilTs > Date.now()) {
           const d = new Date(p.cooldownUntilTs);
           const mins = Math.round((p.cooldownUntilTs - Date.now()) / 60000);
+          // 날짜·시각 표기는 **화면 언어**를 따른다(고정 "ko-KR" 은 영어 화면에서도 한국식이었다).
+          const loc = currentLocale();
           const when = mins >= 1440
-            ? `${d.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })} ${d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`
-            : d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
-          const dur = mins >= 1440 ? `약 ${Math.round(mins / 1440)}일 뒤` : mins >= 60 ? `약 ${Math.round(mins / 60)}시간 뒤` : `${mins}분 뒤`;
-          until = `\n사용량 한도 — ${when} 해제 예정(${dur}). 그때까지 이 모델은 건너뜁니다.`;
+            ? `${d.toLocaleDateString(loc, { month: "numeric", day: "numeric" })} ${d.toLocaleTimeString(loc, { hour: "2-digit", minute: "2-digit" })}`
+            : d.toLocaleTimeString(loc, { hour: "2-digit", minute: "2-digit" });
+          const dur = mins >= 1440
+            ? i18n("sys.cooldown.days", { n: Math.round(mins / 1440) })
+            : mins >= 60
+              ? i18n("sys.cooldown.hours", { n: Math.round(mins / 60) })
+              : i18n("sys.cooldown.mins", { n: mins });
+          until = i18n("sys.cooldown.note", { when, dur });
         }
         renderLocalChat(
           "error",
-          `⚠️ ${who} 턴 실패${why}${until}${next}`,
+          i18n("sys.turnFailed", { who, why, until, next }),
           { ts: evTs, key: "turn-failure|" + (tk || "") },
         );
       };
@@ -49,10 +55,10 @@
         const to = Number(p.summaryChars) || 0;
         // 경과 — 기다린 시간이 얼마였는지 사후에도 보이게(진단의 1차 수치).
         const ms = Number(p.elapsedMs) || 0;
-        const took = ms > 0 ? ` · ${(ms / 1000).toFixed(1)}초 걸렸습니다` : "";
+        const took = ms > 0 ? i18n("sys.compact.took", { sec: (ms / 1000).toFixed(1) }) : "";
         renderLocalChat(
           "info",
-          `🗜 대화가 길어져 이전 ${turns}턴을 요약으로 압축했습니다 (${from.toLocaleString()}자 → ${to.toLocaleString()}자)${took}. 최근 대화는 원문 그대로 유지됩니다.`,
+          i18n("sys.compact.done", { turns, from: from.toLocaleString(), to: to.toLocaleString(), took }),
           { ts: evTs, key: "compacted|" + (tk || "") + "|" + evTs },
         );
       };
@@ -98,8 +104,8 @@
         const el = renderLocalChat(
           "info",
           turns > 0
-            ? `🗜 대화가 길어져 이전 ${turns}턴을 요약하는 중입니다… (끝나면 결과를 알려드립니다)`
-            : i18n("🗜 대화가 길어져 요약하는 중입니다… (끝나면 결과를 알려드립니다)"),
+            ? i18n("compact.running", { turns })
+            : i18n("compact.runningNoTurns"),
           // key 에 ts 를 넣어 같은 스레드의 다음 압축과 안 겹치게(사후 렌더와 동형).
           { ts: evTs, key: "compacting|" + (tk || "") + "|" + evTs },
         );
@@ -125,7 +131,7 @@
           firstEvent = false;
         }
         evCount += 1;
-        evCountEl.textContent = evCount + "개 이벤트";
+        evCountEl.textContent = i18n("sys.eventCount", { n: evCount });
         const navEventCount = document.getElementById("nav-event-count");
         if (navEventCount) navEventCount.textContent = String(evCount);
         if (currentView === "overview") setTimeout(showOverview, 0);
@@ -315,7 +321,7 @@
         // (phase!=="dispatch")도 같이 알린다 — 어느 쪽이든 사용자는 결과를 못 받았다.
         if (ev.type === "scheduler.error") {
           const p = ev.payload || {};
-          const what = p.label ? `'${p.label}'` : `스케줄 #${p.scheduleId ?? "?"}`;
+          const what = p.label ? `'${p.label}'` : i18n("sys.sched.fallbackLabel", { id: p.scheduleId ?? "?" });
           const where = p.destChannel ? ` → ${p.destChannel}` : "";
           const why = p.error ? ` (${String(p.error).slice(0, 120)})` : "";
           const isDelivery = p.phase === "dispatch" || p.phase === "dispatch_retry";
@@ -323,18 +329,18 @@
           // 무엇이 예정돼 있는지 알린다(결과는 복구/최종실패로 다시 알림). 재전송이 꺼져
           // 있거나 이미 재전송까지 실패한 건은 그대로 확정 실패.
           const tail = p.willRetry === true
-            ? i18n(" · 내용은 생성됐습니다. 5분 뒤 자동으로 다시 보냅니다.")
+            ? i18n("sys.deliver.retry")
             : isDelivery
-              ? i18n(" · 내용은 생성됐고 대화 기록에 남아 있습니다.")
+              ? i18n("sys.deliver.kept")
               : "";
           const verb = p.phase === "dispatch_retry"
-            ? i18n("전송 최종 실패(자동 재전송도 실패)")
+            ? i18n("sys.sendFailedFinal")
             : isDelivery
-              ? i18n("전송 실패")
-              : i18n("실행 실패");
+              ? i18n("sys.sendFailed")
+              : i18n("sys.runFailed");
           renderLocalChat(
             p.willRetry === true ? "info" : "error",
-            `⚠️ 스케줄 ${verb} — ${what}${where}${why}${tail}`,
+            i18n("sys.sched.error", { verb, what, where, why, tail }),
             { ts: ev.ts, key: "scheduler.error" },
           );
           return;
@@ -345,10 +351,10 @@
         // scheduler.retryFailedDispatch=false 로 끈다).
         if (ev.type === "scheduler.recovered") {
           const p = ev.payload || {};
-          const what = p.label ? `'${p.label}'` : `스케줄 #${p.scheduleId ?? "?"}`;
+          const what = p.label ? `'${p.label}'` : i18n("sys.sched.fallbackLabel", { id: p.scheduleId ?? "?" });
           renderLocalChat(
             "info",
-            `✅ 스케줄 자동 복구 — ${what} 전송이 실패해 자동으로 다시 보냈고 성공했습니다.`,
+            i18n("sys.sched.recovered", { what }),
             { ts: ev.ts, key: "scheduler.recovered" },
           );
           return;
@@ -364,8 +370,7 @@
           if (p.autoLanded === true && p.target === "directive") {
             renderLocalChat(
               "info",
-              `🧠 자동 지침 추가 — '${p.memoryName}' (반복 실패 ${p.count ?? "?"}회 학습 · ` +
-                `SELF_GROWTH.md · 확정 안 하면 자동 만료). 잘못된 지침이면 알려주세요.`,
+              i18n("sys.growth.learned", { name: p.memoryName, count: p.count ?? "?" }),
               { ts: ev.ts, key: "self-growth|" + (p.memoryName || "") },
             );
           }
@@ -379,9 +384,11 @@
           if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
             renderLocalChat(
               "error",
-              `⚠️ 대화 압축이 ${p.streak || 3}회 연속 실패하고 있습니다 — 오래된 맥락이 계속 버려지는 중입니다.\n` +
-                `(접으려던 양 ${Number(p.foldChars || 0).toLocaleString()}자, 사유: ${p.reason || "미상"})\n` +
-                `이 상태가 지속되면 하던 작업을 잊고 계획만 반복할 수 있습니다. \`/compact\` 로 수동 압축을 시도해 보세요.`,
+              i18n("sys.compactStuck", {
+                streak: p.streak || 3,
+                chars: Number(p.foldChars || 0).toLocaleString(),
+                reason: p.reason || i18n("common.unknown"),
+              }),
               { ts: ev.ts, key: "compaction-stuck|" + (p.threadKey || "") },
             );
           }
@@ -424,8 +431,7 @@
             const secs = Math.round((Number(p.ms) || 180000) / 1000);
             renderLocalChat(
               "info",
-              `⏳ 도구 \`${p.tool || "?"}\` 이(가) ${secs}초+ 응답이 없습니다 — 느린 것일 수도, 멈춘 것일 수도 있습니다.\n` +
-                `기다리시거나 \`/stop\` 으로 중단할 수 있어요(오래 지나면 자동으로 끊깁니다).`,
+              i18n("sys.toolSlow", { tool: p.tool || "?", sec: secs }),
               { ts: ev.ts, key: "tool-slow|" + (p.threadKey || "") + "|" + (p.tool || "") },
             );
           }
@@ -449,8 +455,7 @@
           if (isActiveThread(p.threadKey)) {
             renderLocalChat(
               "info",
-              `⚠️ 서브에이전트 '${p.agentName || "agent"}' 가 도구를 한 번도 쓰지 않고 끝났습니다` +
-                ` (반환 ${p.resultChars ?? "?"}자). 파일·명령 실행이 필요한 지시였다면 결과를 확인해 주세요.`,
+              i18n("sys.agentNoTools", { name: p.agentName || "agent", chars: p.resultChars ?? "?" }),
             );
           }
           return;
@@ -535,7 +540,7 @@
         tsEl.textContent = fmtTime(now);
         const tyEl = document.createElement("span");
         tyEl.className = "type";
-        const chatLabel = { user: i18n("나"), reply: assistantName, error: i18n("오류"), info: i18n("안내") };
+        const chatLabel = { user: i18n("common.sender.me"), reply: assistantName, error: i18n("common.error"), info: i18n("sys.notice") };
         tyEl.textContent = chatLabel[kind] || kind;
         head.appendChild(tsEl); head.appendChild(tyEl);
         div.appendChild(head);

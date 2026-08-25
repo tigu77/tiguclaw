@@ -683,7 +683,7 @@
           //  대시보드에 로그인이 없어(포트에 닿는 것이 곧 권한) 임의 실행 통로가 되며,
           //  폰에서 누르면 **데몬 기계에서** 창이 떠 누른 사람은 못 본다.
           //  복사는 폰 포함 모든 환경에서 동작하고 위험이 0이다.
-          ps.title = i18n("클릭하면 경로 복사");
+          ps.title = i18n("stream.path.copyHint");
           ps.classList.add("act-diff-path-copy");
           ps.addEventListener("click", (e) => {
             e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다(헤더는 원래 토글 대상).
@@ -691,7 +691,7 @@
             navigator.clipboard.writeText(pathText).then(
               () => {
                 try {
-                  if (typeof showToast === "function") showToast(i18n("경로를 복사했습니다"), "ok");
+                  if (typeof showToast === "function") showToast(i18n("stream.path.copied"), "ok");
                 } catch { /* noop */ }
               },
               () => { /* 권한 거부 등 — 조용히 무시(복사는 보조 기능) */ },
@@ -709,7 +709,7 @@
           // 제약(프로젝트 하위·실행권한 등)은 **여기 안 적는다** — 실패하면 서버가 준
           //  사유를 토스트로 그대로 보여준다. 누르기 전엔 어차피 할 수 있는 게 없고,
           //  제약을 적기 시작하면 전부 적어야 해서 툴팁이 아니게 된다.
-          ob.title = i18n("기본 앱으로 열기");
+          ob.title = i18n("stream.path.openApp");
           ob.addEventListener("click", (e) => {
             e.stopPropagation();
             fetch("/api/open-path", {
@@ -723,13 +723,13 @@
                 // 실패 사유를 그대로 보여준다 — "안 열렸다" 만으론 왜인지 모른다.
                 try {
                   if (typeof showToast === "function") {
-                    showToast((d && d.error) || i18n("열기 실패"), "warn");
+                    showToast((d && d.error) || i18n("stream.open.failed"), "warn");
                   }
                 } catch { /* noop */ }
               })
               .catch(() => {
                 try {
-                  if (typeof showToast === "function") showToast(i18n("열기 요청 실패"), "bad");
+                  if (typeof showToast === "function") showToast(i18n("stream.open.reqFailed"), "bad");
                 } catch { /* noop */ }
               });
           });
@@ -779,7 +779,7 @@
         }
         if (diff.truncated) {
           const t = document.createElement("div");
-          t.className = "dl dl-trunc"; t.textContent = i18n("… (이하 생략 — 크기 제한)");
+          t.className = "dl dl-trunc"; t.textContent = i18n("stream.truncated");
           pre.appendChild(t);
         }
         body.appendChild(pre);
@@ -798,13 +798,13 @@
         caret.className = "act-diff-caret"; caret.textContent = "▸";
         const lbl = document.createElement("span");
         lbl.className = "act-output-lbl";
-        lbl.textContent = output.isError ? i18n("출력 (에러)") : i18n("출력");
+        lbl.textContent = output.isError ? i18n("stream.output.err") : i18n("stream.output");
         head.appendChild(caret); head.appendChild(lbl);
         const body = document.createElement("div");
         body.className = "act-diff-body";
         const pre = document.createElement("pre");
         pre.className = "act-output-pre";
-        pre.textContent = (output.text != null ? output.text : "") + (output.truncated ? i18n("\n… (이하 생략 — 크기 제한)") : "");
+        pre.textContent = (output.text != null ? output.text : "") + (output.truncated ? i18n("stream.truncated.nl") : "");
         body.appendChild(pre);
         // 토글은 스텝(부모) 단위 — 헤더는 접힘 시 요약("출력")만. (클릭 핸들러 없음.)
         wrap.appendChild(head); wrap.appendChild(body);
@@ -819,7 +819,7 @@
         wrap.className = "act-plan";
         const head = document.createElement("div");
         head.className = "act-plan-head";
-        head.textContent = i18n("📋 계획 (승인 대기)");
+        head.textContent = i18n("stream.plan.pending");
         const body = document.createElement("div");
         body.className = "act-plan-body md";
         try {
@@ -846,13 +846,13 @@
         const caret = document.createElement("span");
         caret.className = "act-diff-caret"; caret.textContent = "▸";
         const lbl = document.createElement("span");
-        lbl.className = "act-output-lbl"; lbl.textContent = i18n("상세");
+        lbl.className = "act-output-lbl"; lbl.textContent = i18n("stream.detail");
         head.appendChild(caret); head.appendChild(lbl);
         const body = document.createElement("div");
         body.className = "act-diff-body";
         const pre = document.createElement("pre");
         pre.className = "act-output-pre";
-        pre.textContent = (meta ? meta + "\n\n" : "") + (detail || i18n("(상세 정보 없음)"));
+        pre.textContent = (meta ? meta + "\n\n" : "") + (detail || i18n("stream.detail.none"));
         body.appendChild(pre);
         wrap.appendChild(head); wrap.appendChild(body);
         return wrap;
@@ -868,7 +868,7 @@
       const SHELL_CHIP_ID_RE = /\(bash_id:\s*(bash_[a-z0-9]+)\)/i;
 
       const shellChipStatusLabel = (entry) => {
-        if (!entry || entry.status === "running") return i18n("실행 중");
+        if (!entry || entry.status === "running") return i18n("stream.running");
         if (entry.status === "killed") return "killed";
         return "exited(" + (entry.exitCode != null ? entry.exitCode : "?") + ")";
       };
@@ -892,7 +892,7 @@
             const killable = !entry || entry.killable !== false; // 부재=killable:true(계약).
             killBtn.style.display = (running && killable) ? "" : "none";
             killBtn.disabled = !!(entry && entry.killRequested);
-            killBtn.title = entry && entry.killRequested ? i18n("중지 요청…") : i18n("셸 강제 종료");
+            killBtn.title = entry && entry.killRequested ? i18n("common.stopping") : i18n("common.shell.kill");
           }
           const sdkNote = chip.querySelector(".act-shell-chip-sdk");
           if (sdkNote) sdkNote.style.display = (running && entry && entry.killable === false) ? "" : "none";
@@ -910,14 +910,14 @@
         chip = document.createElement("span");
         chip.className = "act-shell-chip";
         chip.dataset.shellId = shellId;
-        chip.title = "백그라운드 셸 " + shellId;
+        chip.title = i18n("stream.shell.chipTitle", { id: shellId });
         const dot = document.createElement("span"); dot.className = "act-shell-chip-dot running";
-        const txt = document.createElement("span"); txt.className = "act-shell-chip-txt"; txt.textContent = i18n("🖥️ 실행 중");
+        const txt = document.createElement("span"); txt.className = "act-shell-chip-txt"; txt.textContent = i18n("stream.shell.running");
         const sdkNote = document.createElement("span"); sdkNote.className = "act-shell-chip-sdk"; sdkNote.style.display = "none";
-        sdkNote.textContent = i18n("SDK 소유"); sdkNote.title = i18n("claude 백그라운드 셸은 대화 턴 안에서만 제어됩니다.");
+        sdkNote.textContent = i18n("common.shell.sdkOwned"); sdkNote.title = i18n("stream.shell.sdkOwned");
         const killBtn = document.createElement("button");
         killBtn.type = "button"; killBtn.className = "act-shell-chip-kill"; killBtn.textContent = "⏹️";
-        killBtn.title = i18n("셸 강제 종료");
+        killBtn.title = i18n("common.shell.kill");
         // 워커/서브 스폰 칩(.act-bg-link)과 클릭 핸들러 패턴 동형 — 스텝 펼침 클릭과 분리.
         killBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
@@ -940,7 +940,7 @@
         icon.textContent = skill ? "🛠" : (p.kind === "tool" ? "🔧" : "▶");
         const label = document.createElement("span");
         label.className = skill ? "act-label act-skill" : "act-label";
-        label.textContent = skill ? "스킬: " + skill.name : (p.label || p.kind || "activity");
+        label.textContent = skill ? i18n("common.skillStep", { name: skill.name }) : (p.label || p.kind || "activity");
         // 인라인 상세(중립 detail = path=…, cmd: … 등). 단 diff 있는 스텝(Edit/Write)은 diff
         // 헤더가 경로+N/-M 을 이미 보여주므로 verbose 한 old_string=… 은 접힘 한 줄에서 생략(간결).
         // 스킬 스텝은 detail(=name=…)이 라벨과 중복이라 생략.
@@ -974,9 +974,9 @@
           const dot = document.createElement("span");
           dot.className = "act-bg-dot" + (job && job.status ? " " + job.status : "");
           const txt = document.createElement("span");
-          txt.textContent = i18n("🤖 백그라운드 ↗");
+          txt.textContent = i18n("common.bg.open");
           bg.appendChild(dot); bg.appendChild(txt);
-          bg.title = i18n("백그라운드 작업 열기");
+          bg.title = i18n("common.bg.openTitle");
           bg.addEventListener("click", (e) => {
             e.stopPropagation(); // 스텝 펼침/상세 클릭과 분리.
             openBg();
@@ -1069,7 +1069,7 @@
         const lastEl = document.createElement("span");
         lastEl.className = "turn-last"; lastEl.textContent = "";
         const countEl = document.createElement("span");
-        countEl.className = "turn-count"; countEl.textContent = i18n("0단계");
+        countEl.className = "turn-count"; countEl.textContent = i18n("stream.steps.zero");
         head.appendChild(caret); head.appendChild(badge);
         // 서브에이전트면 "🤖 <name>" 라벨 — 누가 하는 작업인지 한눈에. raw threadKey 는 숨김.
         const agentName = agentOfThread(thread);

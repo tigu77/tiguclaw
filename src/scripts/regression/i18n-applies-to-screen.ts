@@ -221,23 +221,154 @@ const run = async (): Promise<Assertion[]> => {
     const files = (await readdir(jsDir)).filter((f) => f.endsWith(".js"));
     const leaks: string[] = [];
     let scanned = 0;
+    // ★싱크는 `innerHTML` 만이 아니다 — `outerHTML`·`insertAdjacentHTML` 도 같은 구멍이다
+    //  (적대 검토 B-F4: 셋 중 둘이 검사 밖이었다).
+    const SINK = /\b(innerHTML|outerHTML|insertAdjacentHTML)\b/;
+    // ★출처도 `i18n(` 만이 아니다 — `resolveText()` 의 출력이 곧 카탈로그 값이고,
+    //  **변수 한 칸을 거치면** 종전 검사는 못 봤다(`const s = i18n(k); el.innerHTML = …s…`).
+    //  그래서 파일 안에서 카탈로그 값을 담은 **변수 이름을 먼저 걷고** 싱크에서 그 이름도 본다.
+    const SOURCE = /\b(?:i18n|i18nNodes|resolveText)\s*\(/g;
     for (const f of files) {
       const src = await readFile(new URL(f, jsDir), "utf8");
-      src.split("\n").forEach((line, i) => {
-        if (!line.includes("innerHTML")) return;
+      const lines = src.split("\n");
+      const tainted = new Set<string>();
+      for (const line of lines) {
+        const m = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:i18n|resolveText)\s*\(/.exec(line);
+        if (m !== null) tainted.add(m[1]!);
+      }
+      lines.forEach((line, i) => {
+        const t = line.trimStart();
+        if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return;
+        if (!SINK.test(line)) return;
         scanned++;
-        for (const m of line.matchAll(/i18n\(/g)) {
+        for (const m of [...line.matchAll(SOURCE)]) {
           if (!insideEscHtml(line, m.index!)) leaks.push(`${f}:${i + 1}`);
+        }
+        // ★변수 이름을 찾을 땐 **문자열 내부를 가린다** — 안 가리면 `i18n("common.desc.none")`
+        //  안의 `desc` 가 변수로 잡힌다(실제로 오탐 1건). 길이를 보존해 인덱스를 유지한다.
+        const masked = line.replace(/(["'`])(?:[^\\]|\\.)*?\1/g, (m) => m[0] + " ".repeat(Math.max(0, m.length - 2)) + m[m.length - 1]);
+        for (const name of tainted) {
+          const re = new RegExp(`\\b${name}\\b`, "g");
+          for (const m of [...masked.matchAll(re)]) {
+            if (!insideEscHtml(line, m.index!)) leaks.push(`${f}:${i + 1}(${name})`);
+          }
         }
       });
     }
     out.push(
       assert(
-        "★번역 값이 escHtml 없이 innerHTML 로 가지 않는다(언어 파일은 신뢰 경계 밖이다)",
+        "★번역 값이 escHtml 없이 HTML 싱크로 가지 않는다(언어 파일은 신뢰 경계 밖이다)",
         leaks.length === 0 && scanned > 0,
         leaks.length === 0
-          ? `innerHTML 문장 ${scanned}줄 전부 안전`
+          ? `HTML 싱크 ${scanned}줄 전부 안전`
           : `★새는 자리 ${leaks.length}곳: ${leaks.slice(0, 4).join(" ")}`,
+      ),
+    );
+  }
+
+  // ── ⑦ ★`i18nNodes` 를 **실행한다** (2026-08-26 적대 검토 B-F2·B-F1) ──────────────
+  //  이 함수는 "카탈로그 값이 innerHTML 로 가는 것"을 막으려고 이번에 새로 만든 자리인데,
+  //  **통째로 빈 fragment 를 반환하게 바꿔도** 스위트가 초록이었다(실행 커버리지 0).
+  //  ★그리고 실제 결함이 하나 있었다(B-F1): `appendChild` 는 노드를 **옮기므로** 같은
+  //   자리표시자가 두 번 나오면 두 번째가 첫 번째에서 훔쳐 가 앞자리가 조용히 빈다.
+  //   값이 문자열일 땐 멀쩡하고 **엘리먼트일 때만** 깨져서 더 안 보인다.
+  {
+    const m = /const i18nNodes = \(key, parts\) => \{[\s\S]*?\n {6}\};/.exec(util);
+    if (m === null) throw new Error("i18nNodes 정의를 못 찾음 — 구조가 바뀌었나");
+    // 최소 DOM — 텍스트 노드와 엘리먼트를 구분할 수 있을 만큼만.
+    const dom = `
+      class Node { constructor(){ this.children=[]; this.text=""; } }
+      class TextNode extends Node { constructor(t){ super(); this.text=t; } get out(){ return this.text; } }
+      class ElNode extends Node {
+        constructor(tag,t){ super(); this.tag=tag; this.text=t; }
+        get out(){ return "<"+this.tag+">"+this.text+"</"+this.tag+">"; }
+        cloneNode(){ return new ElNode(this.tag,this.text); }
+      }
+      class Frag extends Node {
+        appendChild(n){ const i=this.children.indexOf(n); if(i>=0) this.children.splice(i,1); this.children.push(n); return n; }
+        get out(){ return this.children.map(c=>c.out).join(""); }
+      }
+      const document = { createDocumentFragment: () => new Frag(), createTextNode: (t) => new TextNode(t) };
+    `;
+    const make = new Function(
+      "catalog",
+      `${dom}
+       const i18n = (k, p) => { const r = typeof catalog[k] === "string" ? catalog[k] : k;
+         return p ? r.replace(/\\{(\\w+)\\}/g, (w,n) => (p[n] === undefined ? w : String(p[n]))) : r; };
+       ${m[0]}
+       return { i18nNodes, el: (tag, t) => new ElNode(tag, t) };`,
+    ) as (c: Record<string, string>) => {
+      i18nNodes: (k: string, p?: Record<string, unknown>) => { out: string };
+      el: (tag: string, t: string) => unknown;
+    };
+
+    const cat = {
+      "t.plain": "앞 {a} 뒤",
+      "t.missing": "앞 {a} 뒤",
+      "t.dup": "{doc} 는 {name} 가 씁니다. {doc} 를 보세요.",
+      "t.tail": "머리 {a} 꼬리글",
+    };
+    const api = make(cat);
+    const run = (k: string, p?: Record<string, unknown>): string => api.i18nNodes(k, p).out;
+
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      ["문자열 자리를 채운다", run("t.plain", { a: "값" }), "앞 값 뒤"],
+      ["값이 없으면 자리표시자를 남긴다", run("t.missing", {}), "앞 {a} 뒤"],
+      ["마지막 자리 **뒤 꼬리글**을 잃지 않는다", run("t.tail", { a: "X" }), "머리 X 꼬리글"],
+    ];
+    const wrong = cases.filter(([, got, want]) => got !== want);
+    // ★엘리먼트가 **두 번** 나오는 경우 — B-F1 이 여기서 걸린다.
+    const dup = run("t.dup", { doc: api.el("code", "PROJECT.md"), name: "돌쇠" });
+    const dupOk = dup === "<code>PROJECT.md</code> 는 돌쇠 가 씁니다. <code>PROJECT.md</code> 를 보세요.";
+    out.push(
+      assert(
+        "★i18nNodes 가 실제로 조립한다(값·빈자리·꼬리글) — 통째로 비워도 초록이던 자리",
+        wrong.length === 0,
+        wrong.length === 0
+          ? `${cases.length}케이스 통과`
+          : `★${wrong.map(([n, g, w]) => `${n}: got=${JSON.stringify(g)} want=${JSON.stringify(w)}`).join(" · ")}`,
+      ),
+      assert(
+        "★같은 자리표시자에 **엘리먼트**가 두 번 와도 앞자리가 안 빈다(appendChild 는 옮긴다)",
+        dupOk,
+        dupOk ? "사본 삽입 확인" : `★got=${JSON.stringify(dup)}`,
+      ),
+    );
+  }
+
+  // ── ⑥ ★`escHtml` **자신**을 검사한다 (2026-08-26 적대 검토 B-F3) ─────────────────
+  //  종전엔 호출부가 escHtml 을 **부르는지**만 봤고, escHtml 이 **무엇을 하는지**는 아무도
+  //  안 봤다 — `.replace(/</g, "&lt;")` 한 줄을 지워도 스위트 1,820건이 초록이었다.
+  //  이 함수는 2026-07-31 에 실증된 XSS 9곳을 막는 **유일한** 방어이고, 같은 오리진에
+  //  `/api/messages`(= 비서에게 임의 지시 = 도구 실행)가 있다.
+  //  ★"게이트는 '있다'가 아니라 '도는가'" 의 정확한 재발형이라 **순수 함수로 실행**한다.
+  {
+    const m = /const escHtml = \([\s\S]*?;\n/.exec(util);
+    if (m === null) throw new Error("escHtml 정의를 못 찾음 — 구조가 바뀌었나");
+    const esc = new Function(`${m[0]}return escHtml;`)() as (v: unknown) => string;
+    const cases: ReadonlyArray<readonly [unknown, string]> = [
+      ["<img src=x onerror=alert(1)>", "&lt;img src=x onerror=alert(1)&gt;"],
+      ["&", "&amp;"],
+      ['"', "&quot;"],
+      ["'", "&#39;"],
+      ["a<b>&\"'c", "a&lt;b&gt;&amp;&quot;&#39;c"],
+      [null, ""],
+      [undefined, ""],
+    ];
+    const wrong = cases.filter(([input, want]) => esc(input) !== want);
+    out.push(
+      assert(
+        "★escHtml 이 실제로 다섯 문자를 전부 막는다(호출부가 부르는지만 보면 이 함수는 검사 밖이다)",
+        wrong.length === 0,
+        wrong.length === 0
+          ? `${cases.length}케이스 통과`
+          : `★${wrong.length}건 어긋남: ${wrong.map(([i]) => JSON.stringify(i)).join(", ")}`,
+      ),
+      // ★`&` 를 **먼저** 치환해야 한다 — 나중이면 `&lt;` 가 `&amp;lt;` 로 이중 인코딩된다.
+      assert(
+        "★`&` 치환이 먼저다(순서가 뒤집히면 이중 인코딩된다)",
+        esc("<") === "&lt;" && esc("&lt;") === "&amp;lt;",
+        `esc("<")=${esc("<")} · esc("&lt;")=${esc("&lt;")}`,
       ),
     );
   }

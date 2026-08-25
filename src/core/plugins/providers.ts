@@ -22,9 +22,29 @@ export type ViewKind =
 export type DangerLevel = "safe" | "gray" | "danger";
 export type EventLevel = "info" | "warn" | "error";
 
+/**
+ * 화면에 뜨는 문구 — **서버는 언어를 만들지 않는다** (2026-08-25 사용자 지적:
+ * *"인증됨은 인증 여부값이고 어댑터도 타입인데 굳이 언어가 그대로 올 필요가 있을까?"*).
+ *
+ * ★종전엔 `summary: \`${adapter} 어댑터 · 인증됨\`` 처럼 서버가 **문장을 조립**했다. 그런데
+ *  그 문장이 쓰는 사실(`adapter`·`authenticated`)은 같은 응답의 `views[].data` 에 **이미
+ *  구조화돼** 있었다 — 번역 문제이기 전에 같은 판단이 두 곳에 있던 것이다. 게다가 데몬은
+ *  하나인데 대시보드를 보는 사람의 언어는 브라우저마다 다를 수 있어, 서버가 고른 언어는
+ *  애초에 맞을 수가 없다.
+ *
+ * 그래서 두 가지 모양만 둔다:
+ *  - **문자열** = 언어가 없는 값(브랜드명·식별자·`pid 51759`·런타임 에러 메시지)
+ *  - **스펙**   = 화면이 카탈로그로 만들 문장(`{ key, params }`)
+ * 어느 쪽인지는 **모양으로** 갈리므로 필드를 두 벌 두지 않는다. 판정은 화면의
+ * `resolveText()` 한 곳.
+ */
+export type DisplayText =
+  | string
+  | { key: string; params?: Record<string, string | number | DisplayText> };
+
 export interface ViewSpec {
   id: string;
-  title: string;
+  title: DisplayText;
   kind: ViewKind;
   data: unknown;
   order?: number;
@@ -33,8 +53,8 @@ export interface ViewSpec {
 
 export interface ActionSpec {
   id: string;
-  label: string;
-  description?: string;
+  label: DisplayText;
+  description?: DisplayText;
   inputSchema?: unknown;
   danger: DangerLevel;
   requiresConfirmation: boolean;
@@ -52,9 +72,9 @@ export interface EventSpec {
 export interface Module {
   id: string;
   kind: ModuleKind;
-  name: string;
+  name: DisplayText;
   status: ModuleStatus;
-  summary?: string;
+  summary?: DisplayText;
   capabilities?: string[];
   views?: ViewSpec[];
   actions?: ActionSpec[];
@@ -85,7 +105,7 @@ const coreDaemonModule = (): Module => ({
   views: [
     {
       id: "core.daemon.summary",
-      title: "데몬",
+      title: { key: "common.kind.daemon" },
       kind: "summary-card",
       data: {
         pid: process.pid,
@@ -111,12 +131,12 @@ const coreMemoryModule = (): Module => {
     kind: "core",
     name: "Memory",
     status: "active",
-    summary: `${total} memories`,
+    summary: { key: "modules.summary.memories", params: { n: total } },
     capabilities: ["memory.read"],
     views: [
       {
         id: "core.memory.summary",
-        title: "메모리",
+        title: { key: "common.kind.memory" },
         kind: "summary-card",
         data: {
           total,
@@ -128,7 +148,7 @@ const coreMemoryModule = (): Module => {
       },
       {
         id: "core.memory.recent",
-        title: "최근 메모리",
+        title: { key: "modules.view.recentMemories" },
         kind: "table",
         data: {
           columns: ["type", "name", "description", "updatedAt"],
@@ -154,12 +174,12 @@ const coreScheduleModule = (): Module => {
     kind: "core",
     name: "Schedule",
     status: "active",
-    summary: `${enabled.length}/${schedules.length} enabled`,
+    summary: { key: "modules.summary.schedules", params: { enabled: enabled.length, total: schedules.length } },
     capabilities: ["schedule.read"],
     views: [
       {
         id: "core.schedule.summary",
-        title: "스케줄",
+        title: { key: "common.kind.schedule" },
         kind: "summary-card",
         data: {
           total: schedules.length,
@@ -170,7 +190,7 @@ const coreScheduleModule = (): Module => {
       },
       {
         id: "core.schedule.table",
-        title: "등록된 스케줄",
+        title: { key: "modules.view.schedules" },
         kind: "table",
         data: {
           columns: [
@@ -224,12 +244,12 @@ const corePluginRegistryModule = async (): Promise<Module> => {
     kind: "core",
     name: "Plugin Registry",
     status: "active",
-    summary: `${all.length} entries`,
+    summary: { key: "modules.summary.entries", params: { n: all.length } },
     capabilities: ["plugin.discovery", "plugin.inventory"],
     views: [
       {
         id: "core.plugin-registry.summary",
-        title: "플러그인/능력 인벤토리",
+        title: { key: "modules.view.inventory" },
         kind: "summary-card",
         data: {
           total: all.length,
@@ -241,7 +261,7 @@ const corePluginRegistryModule = async (): Promise<Module> => {
       },
       {
         id: "core.plugin-registry.entries",
-        title: "인벤토리 항목",
+        title: { key: "modules.view.inventoryEntries" },
         kind: "table",
         data: {
           columns: ["category", "layer", "name", "enabled", "description"],
@@ -262,11 +282,11 @@ const corePluginRegistryModule = async (): Promise<Module> => {
 
 // LLM 어댑터 벤더 표시명 — 고정 5종 하드매핑(ADR 2026-07-17 §5: 동적 일반화 금지,
 // PROVIDER_REGISTRY 가 실제로 5종을 넘을 때만 키 추가). 미지 provider = provider id 원문 폴백.
-const LLM_ADAPTER_DISPLAY_NAME: Record<string, string> = {
+const LLM_ADAPTER_DISPLAY_NAME: Record<string, DisplayText> = {
   anthropic: "Anthropic (Claude)",
-  codex: "OpenAI Codex (구독)",
+  codex: { key: "modules.adapter.codex" },
   openai: "OpenAI",
-  ollama: "Ollama (로컬)",
+  ollama: { key: "modules.adapter.ollama" },
   google: "Google Gemini",
 };
 
@@ -278,9 +298,11 @@ const llmAdapterModule = (provider: string): Module => {
   const authenticated = providerAuthAvailable(provider);
   const adapter = conn?.adapter ?? "unknown";
   const name = LLM_ADAPTER_DISPLAY_NAME[provider] ?? provider;
-  const summary = authenticated
-    ? `${adapter} 어댑터 · 인증됨`
-    : `${adapter} 어댑터 · ${conn?.apiKeyEnv ?? "?"} 미설정`;
+  // ★문장을 조립하지 않는다 — 화면이 만든다(DisplayText 주석 참조). 여기서 정하는 것은
+  //  **어느 문장인가**(인증 여부)이고, 그건 서버만 아는 사실이다.
+  const summary: DisplayText = authenticated
+    ? { key: "modules.summary.adapterAuthed", params: { adapter } }
+    : { key: "modules.summary.adapterMissingKey", params: { adapter, env: conn?.apiKeyEnv ?? "?" } };
 
   return {
     id: `llm-adapter.${provider}`,

@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -39,7 +39,7 @@ const paint = (name: string, tk: string): Painted => {
     textContent: "",
     title: "",
   });
-  const ctx: Record<string, unknown> = { sessionNameFor: () => name };
+  const ctx: Record<string, unknown> = { sessionNameFor: () => name, i18n: i18nForContext };
   vm.createContext(ctx);
   vm.runInContext(`${m[0]}\nthis.__f = updateSessionBadge;`, ctx);
   const badge = mk();

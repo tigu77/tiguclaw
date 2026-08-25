@@ -56,15 +56,17 @@
         const t = Number(ts);
         if (!Number.isFinite(t) || t <= 0) return "";
         const sec = Math.floor((Date.now() - t) / 1000);
-        if (sec < 60) return i18n("방금");
+        if (sec < 60) return i18n("time.justNow");
         const min = Math.floor(sec / 60);
-        if (min < 60) return min + "분 전";
+        if (min < 60) return i18n("time.minsAgo", { n: min });
         const hr = Math.floor(min / 60);
-        if (hr < 24) return hr + "시간 전";
+        if (hr < 24) return i18n("time.hoursAgo", { n: hr });
         const day = Math.floor(hr / 24);
-        if (day < 30) return day + "일 전";
+        if (day < 30) return i18n("time.daysAgo", { n: day });
         const mon = Math.floor(day / 30);
-        return mon < 12 ? mon + "개월 전" : Math.floor(mon / 12) + "년 전";
+        return mon < 12
+          ? i18n("time.monthsAgo", { n: mon })
+          : i18n("time.yearsAgo", { n: Math.floor(mon / 12) });
       };
 
       /**
@@ -90,6 +92,74 @@
       };
       const currentLocale = () =>
         (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
+
+      /**
+       * 카탈로그 문구를 **DOM 으로** 조립한다 — `{자리표시자}` 에 문자열뿐 아니라 **엘리먼트**를
+       * 넣을 수 있다. 반환은 DocumentFragment.
+       *
+       * ★왜 필요한가: 문구 안에 `<code>`·`<i>` 같은 태그가 섞인 자리가 있는데, 그걸 담으려고
+       *  카탈로그 값을 `innerHTML` 에 넣으면 **번역 파일 하나가 대시보드 XSS 벡터**가 된다.
+       *  언어 파일은 사용자가 받아서 홈에 놓는 데이터다(스킬·에이전트와 같은 신뢰 등급이
+       *  아니다 — 이건 남이 만든 것을 받아 쓰라고 만든 기능이다). 같은 오리진에
+       *  `/api/messages`(=비서에게 임의 지시 = 도구 실행)가 있어 대가가 크다.
+       * ★그래서 **문구는 언제나 텍스트 노드**로 들어가고, 태그는 코드가 만든다. 조각으로
+       *  쪼개 이어붙이는 대신 자리표시자를 쓰므로 어순이 다른 언어에서도 성립한다.
+       * 값이 없는 자리표시자는 `i18n()` 과 같은 규칙으로 **그대로 남긴다**.
+       */
+      const i18nNodes = (key, parts) => {
+        const frag = document.createDocumentFragment();
+        const raw = i18n(key);
+        let last = 0;
+        // ★같은 자리표시자가 **두 번 나오면 사본을 넣는다.** `appendChild` 는 노드를 복사하지
+        //  않고 **옮기므로**, 그냥 넣으면 두 번째가 첫 번째에서 훔쳐 가 앞자리가 조용히 빈다
+        //  (콘솔 에러 0, 문장은 그럴듯하게 남는다). 값이 문자열일 땐 멀쩡하고 **엘리먼트일
+        //  때만** 깨져서 더 안 보인다. 번역하는 사람이 자리표시자를 반복하는 건 흔한 일이고,
+        //  그게 바로 이 기능을 쓰는 사람이다.
+        const usedNodes = new Set();
+        for (const m of raw.matchAll(/\{(\w+)\}/g)) {
+          if (m.index > last) frag.appendChild(document.createTextNode(raw.slice(last, m.index)));
+          const v = parts ? parts[m[1]] : undefined;
+          let node;
+          if (v instanceof Node) {
+            node = usedNodes.has(m[1]) ? v.cloneNode(true) : v;
+            usedNodes.add(m[1]);
+          } else {
+            node = document.createTextNode(v === undefined ? m[0] : String(v));
+          }
+          frag.appendChild(node);
+          last = m.index + m[0].length;
+        }
+        if (last < raw.length) frag.appendChild(document.createTextNode(raw.slice(last)));
+        return frag;
+      };
+      /**
+       * 서버가 준 표시값을 문장으로 — **언어 판정은 여기 한 곳**.
+       *
+       * 서버(`src/core/plugins/providers.ts` 의 `DisplayText`)는 두 모양만 보낸다:
+       *  - **문자열** = 언어가 없는 값(브랜드명·`pid 51759`·런타임 에러 메시지) → 그대로
+       *  - **스펙** `{ key, params }` = 화면이 카탈로그로 만들 문장 → 여기서 만든다
+       * ★데몬은 하나인데 보는 사람의 언어는 브라우저마다 다를 수 있다. 그래서 문장은
+       *  **서버가 아니라 화면**이 만든다(서버가 고른 언어는 애초에 맞을 수가 없다).
+       */
+      const resolveText = (v) => {
+        if (typeof v === "string") return v;
+        if (typeof v === "number") return String(v);
+        if (v && typeof v === "object" && typeof v.key === "string") {
+          // ★자리표시자 값도 스펙일 수 있다(재귀). 그래야 "재부팅 시 · {state}({status})" 처럼
+          //  안쪽에 또 문구가 들어가는 문장을 **조합 폭발 없이** 한 키로 둘 수 있다
+          //  (안 그러면 on/off × 실행/미실행 로 키가 네 배가 된다).
+          const params = {};
+          for (const k of Object.keys(v.params || {})) params[k] = resolveText(v.params[k]);
+          return i18n(v.key, params);
+        }
+        return "";
+      };
+      /** `<code>텍스트</code>` 한 개 — i18nNodes 자리표시자에 넣는 용도. */
+      const codeNode = (text) => {
+        const el = document.createElement("code");
+        el.textContent = text;
+        return el;
+      };
 
       /**
        * `data-i18n="key"` 를 가진 요소를 카탈로그 문구로 채운다.
@@ -219,20 +289,20 @@
       let restartInFlight = false;
       const restartDaemon = async () => {
         if (restartInFlight) return;
-        if (!window.confirm(i18n("데몬을 재시작할까요? 진행 중인 작업이 중단되고 잠시 후 자동 복귀합니다."))) return;
+        if (!window.confirm(i18n("daemon.restart.confirm"))) return;
         restartInFlight = true;
-        showToast(i18n("재시작 요청 중…"), "warn");
+        showToast(i18n("daemon.restart.requesting"), "warn");
         try {
           const r = await fetch("/api/restart", { method: "POST" });
           if (r.ok || r.status === 202) {
-            showToast(i18n("재시작 중… 잠시 후 복귀합니다."), "good");
+            showToast(i18n("daemon.restart.running"), "good");
           } else {
             const data = await r.json().catch(() => ({}));
-            showToast("재시작 실패: " + (data.error || ("HTTP " + r.status)), "bad");
+            showToast(i18n("daemon.restart.failed", { err: data.error || ("HTTP " + r.status) }), "bad");
           }
         } catch (err) {
           // 데몬이 즉시 종료되면 응답 전에 연결이 끊길 수 있음 — 정상 흐름으로 안내.
-          showToast(i18n("재시작 신호 전송됨 (응답 끊김) — 잠시 후 복귀합니다."), "warn");
+          showToast(i18n("daemon.restart.sent"), "warn");
         } finally {
           setTimeout(() => { restartInFlight = false; }, 6000);
         }
@@ -244,13 +314,18 @@
         return String(value);
       };
 
-      const appendKv = (root, data) => {
+      /**
+       * kv 그리드를 **순서가 있는 쌍 목록**으로 그린다.
+       *
+       * ★표시 라벨을 데이터 키로 쓰지 않으려고 낸 입구다 (2026-08-25). 번역된 라벨을 객체 키로
+       *  넣으면(`meta[i18n("경로")] = ...`) 그 값이 metadata 의 실제 키와 충돌할 수 있고,
+       *  **어느 입력이 충돌하는지가 언어마다 달라진다**(`ko` 에선 "경로", `en` 에선 "Path"가
+       *  덮인다). 라벨은 표시, 키는 데이터 — 섞이는 자리 자체를 없앤다.
+       */
+      const appendKvPairs = (root, pairs) => {
         const kv = document.createElement("div");
         kv.className = "kv";
-        const entries = data && typeof data === "object" && !Array.isArray(data)
-          ? Object.entries(data)
-          : [["value", data]];
-        for (const [key, value] of entries) {
+        for (const [key, value] of pairs) {
           const k = document.createElement("div");
           k.className = "kv-key"; k.textContent = key;
           const v = document.createElement("div");
@@ -259,6 +334,12 @@
         }
         root.appendChild(kv);
       };
+      const appendKv = (root, data) => {
+        const entries = data && typeof data === "object" && !Array.isArray(data)
+          ? Object.entries(data)
+          : [["value", data]];
+        appendKvPairs(root, entries);
+      };
 
       // kind 배지 라벨. ADR 2026-07-17(모듈/능력 2축) §5 P0 — 모듈 뷰(옛 프로바이더 뷰)가
       // provider(core|plugin)와 채널 presence(kind:"channel")를 한 목록에 섞어 렌더하므로
@@ -266,30 +347,30 @@
       // 필드 도입) 이후 실제로 채워질 값 — 지금은 core|plugin|channel 만 실사용.
       const kindLabel = (kind) => {
         const map = {
-          provider: i18n("모듈"),
-          core: i18n("코어"),
-          plugin: i18n("플러그인"),
-          channel: i18n("채널"),
-          service: i18n("서비스"),
-          trigger: i18n("트리거"),
-          observer: i18n("옵저버"),
-          runtime: i18n("런타임"),
-          system: i18n("시스템"),
-          daemon: i18n("데몬"),
-          memory: i18n("메모리"),
-          schedule: i18n("스케줄"),
+          provider: i18n("common.kind.module"),
+          core: i18n("common.kind.core"),
+          plugin: i18n("common.cat.plugin"),
+          channel: i18n("common.cat.channel"),
+          service: i18n("common.kind.service"),
+          trigger: i18n("common.kind.trigger"),
+          observer: i18n("common.kind.observer"),
+          runtime: i18n("common.kind.runtime"),
+          system: i18n("common.kind.system"),
+          daemon: i18n("common.kind.daemon"),
+          memory: i18n("common.kind.memory"),
+          schedule: i18n("common.kind.schedule"),
         };
-        return map[kind] || kind || i18n("모듈");
+        return map[kind] || kind || i18n("common.kind.module");
       };
 
       const statusLabel = (status) => {
-        const map = { active: i18n("정상"), degraded: i18n("주의"), error: i18n("오류"), inactive: i18n("비활성"), unknown: i18n("알 수 없음") };
-        return map[status] || status || i18n("알 수 없음");
+        const map = { active: i18n("common.health.ok"), degraded: i18n("common.health.warn"), error: i18n("common.error"), inactive: i18n("common.disabled"), unknown: i18n("common.unknown") };
+        return map[status] || status || i18n("common.unknown");
       };
 
       const dangerLabel = (danger) => {
-        const map = { safe: i18n("안전"), gray: i18n("확인 필요"), danger: i18n("위험") };
-        return map[danger] || danger || i18n("안전");
+        const map = { safe: i18n("common.risk.safe"), gray: i18n("common.risk.confirm"), danger: i18n("common.risk.danger") };
+        return map[danger] || danger || i18n("common.risk.safe");
       };
 
       const isCoreProvider = (provider) => {
@@ -303,7 +384,7 @@
         div.className = "view";
         const title = document.createElement("div");
         title.className = "view-title";
-        title.textContent = view.title || view.id || i18n("화면");
+        title.textContent = resolveText(view.title) || view.id || i18n("tab.view");
         div.appendChild(title);
         const data = view.data || {};
         if (view.kind === "table" && Array.isArray(data.rows)) {
@@ -330,7 +411,7 @@
           table.appendChild(tbody); div.appendChild(table);
           if (data.rows.length > 20) {
             const more = document.createElement("div");
-            more.className = "more"; more.textContent = "+ " + (data.rows.length - 20) + "개 행 더 있음";
+            more.className = "more"; more.textContent = i18n("common.moreRows", { n: data.rows.length - 20 });
             div.appendChild(more);
           }
         } else if (view.kind === "action-panel" && Array.isArray(data.actions)) {
@@ -338,7 +419,7 @@
             const line = document.createElement("div");
             line.className = "action";
             const btn = document.createElement("button");
-            btn.textContent = action.label || action.id;
+            btn.textContent = resolveText(action.label) || action.id;
             btn.disabled = true;
             const danger = document.createElement("span");
             danger.className = "danger-" + (action.danger || "safe");
@@ -444,7 +525,7 @@
             emptyMsg = document.createElement("div");
             emptyMsg.className = "empty search-empty-msg";
             emptyMsg.style.margin = "8px";
-            emptyMsg.textContent = i18n("검색 결과가 없습니다.");
+            emptyMsg.textContent = i18n("common.search.empty");
             listEl.appendChild(emptyMsg);
           }
         } else if (emptyMsg) {
@@ -470,9 +551,9 @@
        *  (`kind` 는 어댑터가 내는 값 — "text" = 답을 쓰는 중, 그 외 = 도구.)
        */
       const doingText = (phase) => {
-        if (!phase || !phase.kind) return i18n("생각 중");
-        if (phase.kind === "text") return i18n("답변 쓰는 중");
-        return phase.label ? phase.label + " 실행 중" : i18n("도구 실행 중");
+        if (!phase || !phase.kind) return i18n("chat.phase.thinking");
+        if (phase.kind === "text") return i18n("chat.phase.writing");
+        return phase.label ? i18n("chat.phase.toolNamed", { name: phase.label }) : i18n("chat.phase.tool");
       };
 
       // 타임스탬프 — 로컬. 기존 toISOString().slice 는 UTC(한국이면 9h 어긋남)+밀리초였다.
@@ -489,7 +570,7 @@
       };
       const fmtDate = (ms) => {
         const d = new Date(ms);
-        const w = [i18n("일"), i18n("월"), i18n("화"), i18n("수"), i18n("목"), i18n("금"), i18n("토")][d.getDay()];
+        const w = [i18n("time.dow.sun"), i18n("time.dow.mon"), i18n("time.dow.tue"), i18n("time.dow.wed"), i18n("time.dow.thu"), i18n("time.dow.fri"), i18n("time.dow.sat")][d.getDay()];
         return `${dateKey(ms)} (${w})`;
       };
 

@@ -25,6 +25,7 @@ Everything else lives here. Nothing was dropped.
 - **Ask from the dashboard, get pinged on Telegram** — flip 📤 in the composer to mirror replies to another channel, so long jobs that finish while you're away still reach your phone. **Reply to that message and it lands back in the conversation that produced it** — even when several conversations share one chat.
 - **It suggests your next message** *(off by default)* — after a turn, a grey draft sits in the composer; Tab (or tap the input on mobile) fills it in. Sending is still yours. It costs a few tokens per turn, so you turn it on in **Settings**.
 - **Outbound calls are logged too** — HTTP endpoints you opened and LLM gateway calls share one view. Not the content: just which model handled how many messages, with tokens, duration, and success.
+- **Pick your interface language** — change it in settings and the dashboard follows (English ships in the box). To add a language, drop a single `<language>.json` into `locales/` under your home — no code changes. **A half-finished translation won't break the screen**: anything missing falls back to the default language, so you can translate a few lines at a time.
 - **Refresh without losing your place** — the view you were on, your session tabs, and the background panel all come back.
 
 ## What's different

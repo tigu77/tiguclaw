@@ -23,6 +23,17 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const readRel = (rel: string): Promise<string> => readFile(new URL(rel, import.meta.url), "utf8");
 
+/** 주석 줄·줄끝 주석을 지운다 — 설명문 속 예시가 키로 걷히지 않게. */
+const stripComments = (src: string): string =>
+  src
+    .split("\n")
+    .map((line) => {
+      const t = line.trimStart();
+      if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return "";
+      return line.split(/\s\/\/\s/)[0]!;
+    })
+    .join("\n");
+
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const ko = JSON.parse(await readRel("../../../locales/ko.json")) as Record<string, string>;
@@ -54,11 +65,13 @@ const run = async (): Promise<Assertion[]> => {
   const jsFiles = (await readdir(jsDir)).filter((f) => f.endsWith(".js"));
   const jsSources: string[] = [];
   for (const f of jsFiles) {
-    const src = await readFile(new URL(f, jsDir), "utf8");
+    // ★**주석은 코드가 아니다** (2026-08-25). 수집이 주석 속 예시(`meta[i18n("경로")] = …`
+    //  같은 설명문)를 키로 세어 "카탈로그에 없는 키" 로 오탐했다 — 게이트가 자기 문서를
+    //  고발한 셈이다([[feedback_gate_must_actually_run]]: 검사 대상은 코드지 그걸 설명하는
+    //  글이 아니다). 수집과 대조 계수 **둘 다** 같은 소스를 봐야 어긋나지 않는다.
+    const src = stripComments(await readFile(new URL(f, jsDir), "utf8"));
     jsSources.push(src);
-    // ★키가 `nav.chat` 같은 짧은 이름만은 아니다 — 코드 안에서는 **원문 자체가 키**다
-    //  (`t("복사")`). 자리마다 읽히는 것을 키로 둔다: 마크업엔 짧은 이름, 코드엔 원문.
-    //  그래서 `[\w.]+` 로 좁히면 원문 키 300여 개가 조용히 검사 밖으로 나간다.
+    // ★키 형태를 `[\w.]+` 로 좁히지 않는다 — 좁히면 따옴표 안의 무엇이든 놓친다.
     for (const m of src.matchAll(/\bi18n\(\s*(["'])((?:[^"'\\\n]|\\.)*?)\1/g)) fromJs.push(m[2]!);
   }
   for (const k of [...fromText, ...fromAttrs, ...fromJs]) used.add(k);

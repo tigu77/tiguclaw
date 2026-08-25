@@ -2,7 +2,7 @@
       // GET /api/projects → 그리드 카드(name·status 배지·설명 일부). 카드 클릭 → 뷰 내부
       // 오른쪽 상세 패널에 GET /api/projects/detail?path= 를 렌더(설명 본문 마크다운 +
       // 전용 스킬/에이전트 + related 클릭 이동). 새 프레임워크 0 — 기존 fetch/renderMarkdown 재사용.
-      const PROJECT_STATUS_LABEL = { active: i18n("진행 중"), paused: i18n("보류"), done: i18n("완료") };
+      const PROJECT_STATUS_LABEL = { active: i18n("proj.status.active"), paused: i18n("proj.status.onHold"), done: i18n("common.done") };
       let projectsCache = [];
       let selectedProjectPath = null;
 
@@ -10,9 +10,9 @@
       // 1회 등록(모듈 로드 시). bridge 가 등록 프로젝트 경로만 허용(검증). 브라우저가 아니라
       // 데몬(tiguclaw 호스트)에서 열리므로 폰에서 눌러도 호스트 Mac 의 Finder 가 열린다.
       registerMenuItems("project", () => [
-        { id: "open-folder", label: i18n("폴더 열기"), icon: "📂", action: { kind: "builtin", handler: "project.openFolder" } },
-        { id: "rename", label: i18n("이름 수정"), icon: "✏️", action: { kind: "builtin", handler: "project.rename" } },
-        { id: "remove", label: i18n("제거"), icon: "🗑", action: { kind: "builtin", handler: "project.remove" } },
+        { id: "open-folder", label: i18n("proj.folder.open"), icon: "📂", action: { kind: "builtin", handler: "project.openFolder" } },
+        { id: "rename", label: i18n("proj.rename"), icon: "✏️", action: { kind: "builtin", handler: "project.rename" } },
+        { id: "remove", label: i18n("common.remove"), icon: "🗑", action: { kind: "builtin", handler: "project.remove" } },
       ]);
       registerBuiltinHandler("project.openFolder", async (ctx) => {
         if (!ctx || !ctx.path) return;
@@ -22,9 +22,9 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path: ctx.path }),
           });
-          showToast(r.ok ? i18n("폴더를 열었습니다") : i18n("폴더 열기 실패"), r.ok ? "good" : "bad");
+          showToast(r.ok ? i18n("proj.folder.opened") : i18n("proj.folder.openFailed"), r.ok ? "good" : "bad");
         } catch {
-          showToast(i18n("폴더 열기 실패"), "bad");
+          showToast(i18n("proj.folder.openFailed"), "bad");
         }
       });
       // 프로젝트 "제거" — ★비파괴: 레지스트리(인덱스)에서만 등록 해제, 폴더/PROJECT.md 는 안 지운다
@@ -33,10 +33,10 @@
 
       registerBuiltinHandler("project.rename", async (ctx) => {
         const currentName = String(ctx.name || ctx.title || "").trim();
-        const nextName = prompt(i18n("새 프로젝트 이름"), currentName);
+        const nextName = prompt(i18n("proj.new.ph"), currentName);
         if (nextName === null) return;
         const name = nextName.trim();
-        if (!name) return alert(i18n("프로젝트 이름을 입력하세요."));
+        if (!name) return alert(i18n("proj.new.required"));
         if (name === currentName) return;
         try {
           const r = await fetch("/api/project-rename", {
@@ -51,28 +51,28 @@
           await fetchProjects();
           if (selectedProjectPath === ctx.path) await openProjectDetail(ctx.path);
         } catch (e) {
-          alert(`프로젝트 이름 수정 실패: ${e.message || e}`);
+          alert(i18n("proj.rename.failed", { err: e.message || e }));
         }
       });
 
       registerBuiltinHandler("project.remove", async (ctx) => {
         if (!ctx || !ctx.path) return;
         const label = ctx.label || ctx.path;
-        if (!window.confirm(label + " 을 목록에서 제거할까요? 폴더는 삭제되지 않습니다.")) return;
+        if (!window.confirm(i18n("proj.remove.confirm", { name: label }))) return;
         try {
           const r = await fetch("/api/project-forget", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ path: ctx.path }),
           });
-          if (!r.ok) { showToast(i18n("제거 실패"), "bad"); return; }
+          if (!r.ok) { showToast(i18n("proj.remove.failed"), "bad"); return; }
           // 열려 있던 프로젝트면 상세 닫기(closeProjectDetail 이 리스트 재렌더까지 수행).
           if (selectedProjectPath === ctx.path) closeProjectDetail();
           await fetchProjects(); // 레지스트리 재조회 → renderProjectsGrid + 컨텍스트 태그 갱신.
           if (currentView === "projects") renderProjectsGrid();
-          showToast(i18n("목록에서 제거했습니다(폴더는 보존)"), "good");
+          showToast(i18n("proj.remove.done"), "good");
         } catch {
-          showToast(i18n("제거 실패"), "bad");
+          showToast(i18n("proj.remove.failed"), "bad");
         }
       });
 
@@ -85,7 +85,8 @@
         document.getElementById("workbench").classList.add("show-projects");
         selectedProjectPath = null;
         document.getElementById("detail-panel").innerHTML =
-          '<div id="detail-empty">프로젝트를 선택하세요.</div>';
+          '<div id="detail-empty"></div>';
+        document.getElementById("detail-empty").textContent = i18n("proj.detail.pickOne");
         const searchInput = document.getElementById("projects-search");
         if (searchInput && !searchInput.dataset.wired) {
           searchInput.dataset.wired = "1";
@@ -245,10 +246,10 @@
         // 토글 — 접힘 1줄 / 펼침 다줄+스크롤. caret + "컨텍스트" + 개수.
         const toggle = document.createElement("button");
         toggle.type = "button"; toggle.className = "ctx-toggle";
-        toggle.title = expanded ? i18n("컨텍스트 태그 접기") : "컨텍스트 태그 펼치기(" + names.length + ")";
+        toggle.title = expanded ? i18n("proj.ctx.collapse") : i18n("proj.ctx.expand", { n: names.length });
         const caret = document.createElement("span");
         caret.className = "ctx-tcaret"; caret.textContent = expanded ? "▾" : "▸";
-        toggle.appendChild(caret); toggle.appendChild(document.createTextNode(i18n(" 컨텍스트 ")));
+        toggle.appendChild(caret); toggle.appendChild(document.createTextNode(i18n("proj.ctx.toggle")));
         const cnt = document.createElement("span");
         cnt.className = "ctx-count"; cnt.textContent = String(names.length);
         toggle.appendChild(cnt);
@@ -264,7 +265,10 @@
           const chip = document.createElement("span");
           chip.className = "ctx-chip" + (p ? " s-" + status : " ctx-generic") + (isResolved ? "" : " ctx-unresolved");
           chip.dataset.tag = name;
-          chip.title = (p ? i18n("프로젝트") : isResolved ? i18n("스킬/에이전트") : i18n("태그(미해석)")) + " → 클릭: #" + name + " 넣기/빼기";
+          chip.title = i18n("proj.tag.chipTitle", {
+            kind: p ? i18n("proj.title") : isResolved ? i18n("proj.assets.head") : i18n("proj.tag.unresolved"),
+            name,
+          });
           const hash = document.createElement("span");
           hash.className = "ctx-hash"; hash.textContent = "#";
           chip.appendChild(hash); chip.appendChild(document.createTextNode(name));
@@ -272,7 +276,7 @@
           // 학습 칩(프로젝트 시드 아님)은 × 로 제거 가능. 프로젝트는 registry 관리라 × 없음.
           if (!p) {
             const x = document.createElement("span");
-            x.className = "ctx-x"; x.textContent = "×"; x.title = i18n("이 태그 칩 제거");
+            x.className = "ctx-x"; x.textContent = "×"; x.title = i18n("proj.tag.removeTitle");
             x.addEventListener("click", (e) => { e.stopPropagation(); ctxUnlearn(name); });
             chip.appendChild(x);
           }
@@ -291,8 +295,8 @@
         const addChip = document.createElement("button");
         addChip.type = "button";
         addChip.className = "ctx-chip ctx-generic ctx-add";
-        addChip.textContent = i18n("＋ 새 태그");
-        addChip.title = i18n("커서 자리에 #[] 를 넣습니다 (공백 있는 이름도 가능)");
+        addChip.textContent = i18n("proj.tag.add");
+        addChip.title = i18n("proj.tag.insertHint");
         addChip.addEventListener("click", () => {
           const ta = document.getElementById("chat-input");
           if (!ta) return;
@@ -321,13 +325,34 @@
           //  만들어줘" 하나뿐이라, 폴더 없이 새로 시작하는 길은 어디에도 안 적혀
           //  있었다(비서는 하는데 아무도 모름). 화면에 등록 버튼을 만드는 대신
           //  여기 한 줄로 — 등록은 평생 몇 번이고, 판단은 비서가 한다.
-          grid.innerHTML =
-            '<div class="empty"><b>등록된 프로젝트가 없습니다.</b><br>' +
-            escHtml(assistantName) + ' 에게 이렇게 말해보세요 —<br>' +
-            '· <i>"<code>~/work/myapp</code> 프로젝트로 등록해줘"</i> (있는 폴더를)<br>' +
-            '· <i>"이런 프로젝트 하나 해보자"</i> (폴더까지 새로 만들어 등록합니다)<br>' +
-            '<small>설명을 담은 <code>PROJECT.md</code> 는 ' + escHtml(assistantName) +
-            ' 가 씁니다. 등록하면 <code>#이름</code> 으로 그 프로젝트 얘기를 할 수 있어요.</small></div>';
+          // ★문구는 카탈로그에, 태그는 코드가 — 카탈로그 값이 innerHTML 로 가면 번역 파일이
+          //  XSS 벡터가 된다(i18nNodes 주석 참조). 예시 문장은 통째로 한 키라 어순이 다른
+          //  언어에서도 성립한다.
+          const box = document.createElement("div");
+          box.className = "empty";
+          const strong = document.createElement("b");
+          strong.textContent = i18n("proj.empty.title");
+          box.appendChild(strong);
+          box.appendChild(document.createElement("br"));
+          box.appendChild(i18nNodes("proj.empty.lead", { name: assistantName }));
+          box.appendChild(document.createElement("br"));
+          const italic = (frag) => { const el = document.createElement("i"); el.appendChild(frag); return el; };
+          box.appendChild(i18nNodes("proj.empty.ex1", {
+            quote: italic(i18nNodes("proj.empty.ex1.text", { path: codeNode("~/work/myapp") })),
+          }));
+          box.appendChild(document.createElement("br"));
+          box.appendChild(i18nNodes("proj.empty.ex2", {
+            quote: italic(i18nNodes("proj.empty.ex2.text")),
+          }));
+          box.appendChild(document.createElement("br"));
+          const note = document.createElement("small");
+          note.appendChild(i18nNodes("proj.empty.note", {
+            doc: codeNode("PROJECT.md"),
+            name: assistantName,
+            tag: codeNode(i18n("proj.empty.tagExample")),
+          }));
+          box.appendChild(note);
+          grid.appendChild(box);
           return;
         }
         // 모듈/능력 뷰와 동형 master-detail 리스트(provider-item) — 카드 그리드 폐기(2026-07-18
@@ -342,7 +367,7 @@
           head.className = "pi-head";
           const name = document.createElement("span");
           name.className = "pi-name";
-          name.textContent = p.name || i18n("(이름 없음)");
+          name.textContent = p.name || i18n("common.unnamed");
           name.title = p.name || "";
           head.appendChild(name);
           if (status !== "active") {
@@ -354,7 +379,7 @@
           item.appendChild(head);
           const summary = document.createElement("div");
           summary.className = "pi-summary";
-          summary.textContent = p.description || i18n("설명 없음");
+          summary.textContent = p.description || i18n("common.desc.none");
           item.appendChild(summary);
           const pathEl = document.createElement("div");
           pathEl.className = "pi-summary pi-path";
@@ -365,7 +390,7 @@
             .filter(Boolean).join(" ").toLowerCase();
           item.addEventListener("click", () => openProjectDetail(p.path));
           // ⋯ 메뉴 + 우클릭 + 롱프레스(3경로 동일). ctx 에 path 를 실어 "폴더 열기"가 씀.
-          const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || i18n("(이름 없음)"), name: p.name || "", path: p.path });
+          const projectCtx = () => ({ type: "project", targetId: p.path, label: p.name || i18n("common.unnamed"), name: p.name || "", path: p.path });
           attachKebab(item, "project", projectCtx);
           attachContextMenu(item, "project", projectCtx);
           attachLongPress(item, "project", projectCtx);
@@ -380,7 +405,8 @@
         selectedProjectPath = null;
         projectAgentsBox = null; // 라이브 재렌더 훅 중단.
         document.getElementById("detail-panel").innerHTML =
-          '<div id="detail-empty">프로젝트를 선택하세요.</div>';
+          '<div id="detail-empty"></div>';
+        document.getElementById("detail-empty").textContent = i18n("proj.detail.pickOne");
         renderProjectsGrid();
       };
 
@@ -390,7 +416,8 @@
         // 상세는 공유 #detail-panel 에 렌더(모듈/능력 뷰 동형).
         const panel = document.getElementById("detail-panel");
         if (!panel) return;
-        panel.innerHTML = '<div class="empty">불러오는 중…</div>';
+        panel.innerHTML = '<div class="empty"></div>';
+        panel.querySelector(".empty").textContent = i18n("common.loading");
         let detail;
         try {
           const r = await fetch("/api/projects/detail?path=" + encodeURIComponent(projectPath));
@@ -400,8 +427,8 @@
             const msg = document.createElement("div");
             msg.className = "empty";
             msg.textContent = r.status === 404
-              ? i18n("PROJECT.md 를 찾을 수 없습니다 (폴더/파일 부재).")
-              : ("상세를 불러오지 못했습니다: " + (err.error || r.status));
+              ? i18n("proj.doc.missing")
+              : i18n("proj.detail.loadFailedWith", { err: err.error || r.status });
             panel.appendChild(msg);
             return;
           }
@@ -410,7 +437,7 @@
           panel.innerHTML = '';
           const msg = document.createElement("div");
           msg.className = "empty";
-          msg.textContent = i18n("상세를 불러오지 못했습니다.");
+          msg.textContent = i18n("proj.detail.loadFailed");
           panel.appendChild(msg);
           return;
         }
@@ -441,14 +468,14 @@
         t.className = "pd-section-title pd-collapsible" + (collapsed ? " collapsed" : "");
         t.setAttribute("role", "button"); t.tabIndex = 0;
         const chevS = document.createElement("span"); chevS.className = "pd-sec-chev"; chevS.textContent = collapsed ? "▸" : "▾";
-        const label = document.createElement("span"); label.textContent = "진행 중 에이전트 (" + running.length + ")";
+        const label = document.createElement("span"); label.textContent = i18n("proj.agents.head", { n: running.length });
         t.appendChild(chevS); t.appendChild(label);
         sec.appendChild(t);
         const body = document.createElement("div"); body.className = "pd-sec-body";
         if (collapsed) body.style.display = "none";
         if (running.length === 0) {
           const e = document.createElement("div"); e.className = "pd-empty";
-          e.textContent = i18n("지금 이 프로젝트에서 작업 중인 에이전트가 없습니다.");
+          e.textContent = i18n("proj.agents.empty");
           body.appendChild(e);
         } else {
           const grid = document.createElement("div"); grid.className = "pd-agents-grid";
@@ -494,11 +521,11 @@
         head.className = "project-detail-head";
         const name = document.createElement("div");
         name.className = "project-detail-name";
-        name.textContent = meta.name || i18n("(이름 없음)");
+        name.textContent = meta.name || i18n("common.unnamed");
         const close = document.createElement("button");
         close.type = "button";
         close.className = "project-detail-close";
-        close.setAttribute("aria-label", i18n("닫기"));
+        close.setAttribute("aria-label", i18n("common.close"));
         close.textContent = "✕";
         close.addEventListener("click", closeProjectDetail);
         head.appendChild(name);
@@ -534,7 +561,7 @@
         bodyInner.className = "pd-body";
         if (bodySrc.trim() === "") {
           bodyInner.classList.add("pd-empty");
-          bodyInner.textContent = i18n("설명이 없습니다.");
+          bodyInner.textContent = i18n("proj.desc.empty");
         } else if (typeof window.marked !== "undefined") {
           try { bodyInner.innerHTML = renderMarkdown(bodySrc); bodyInner.classList.add("md"); }
           catch (e) { bodyInner.textContent = bodySrc; }
@@ -549,7 +576,7 @@
         //  않는다(거기 없는 것들이고, 섞으면 "메인 대화에서도 쓸 수 있다" 는 오해가 난다).
         //  본문은 **누를 때만** 가져오고(목록 로드 비대화 0) 한 번 받으면 DOM 에 남긴다.
         const loadCapabilityBody = async (kind, name, box) => {
-          box.textContent = i18n("불러오는 중…");
+          box.textContent = i18n("common.loading");
           try {
             const r = await fetch(
               "/api/projects/capability?path=" + encodeURIComponent(projectPath) +
@@ -557,7 +584,7 @@
             );
             const d = await r.json();
             if (!r.ok || !d || typeof d.body !== "string") {
-              box.textContent = (d && d.error) || i18n("본문을 불러오지 못했습니다.");
+              box.textContent = (d && d.error) || i18n("proj.doc.loadFailed");
               return;
             }
             box.innerHTML = "";
@@ -566,7 +593,7 @@
             setChatBody(md, d.body, true);
             box.appendChild(md);
           } catch (e) {
-            box.textContent = "본문을 불러오지 못했습니다: " + (e && e.message ? e.message : e);
+            box.textContent = i18n("proj.doc.loadFailedWith", { err: e && e.message ? e.message : e });
           }
         };
 
@@ -580,7 +607,7 @@
           if (!Array.isArray(items) || items.length === 0) {
             const e = document.createElement("div");
             e.className = "pd-empty";
-            e.textContent = i18n("없음");
+            e.textContent = i18n("proj.assets.none");
             sec.appendChild(e);
           } else {
             const list = document.createElement("div");
@@ -590,7 +617,7 @@
               row.className = "pd-item";
               const n = document.createElement("div");
               n.className = "pd-item-name";
-              n.textContent = it.name || i18n("(이름 없음)");
+              n.textContent = it.name || i18n("common.unnamed");
               // 모델 티어(에이전트 명세) — 있으면 이름 옆 뱃지. 스킬·MCP 는 없어 생략.
               if (it.model) {
                 const m = document.createElement("span");
@@ -608,7 +635,7 @@
               // 스킬·에이전트만 펼침(MCP 는 파일 본문이 없다 — 설정 한 줄이라 이미 다 보인다).
               if (kind === "skill" || kind === "agent") {
                 row.classList.add("pd-item-open");
-                row.title = i18n("눌러서 본문 보기");
+                row.title = i18n("proj.doc.openHint");
                 const body = document.createElement("div");
                 body.className = "pd-item-body";
                 body.style.display = "none";
@@ -631,11 +658,11 @@
           panel.appendChild(sec);
         };
 
-        listSection(i18n("🛠️ 전용 스킬"), detail.skills, "skill");
-        listSection(i18n("🤖 전용 에이전트"), detail.agents, "agent");
+        listSection(i18n("proj.assets.skills"), detail.skills, "skill");
+        listSection(i18n("proj.assets.agents"), detail.agents, "agent");
         // 전용 MCP — 이 프로젝트로 위임할 때만 노출되는 프로젝트 스코프 MCP(<project>/.mcp.json).
         listSection(
-          i18n("🧩 전용 MCP"),
+          i18n("proj.assets.mcp"),
           (detail.mcp || []).map((m) => ({ name: m.name, description: m.desc })),
         );
 
@@ -643,7 +670,7 @@
         // ★훅은 **모델이 안 부르는데 자동으로 도는** 유일한 능력이라, 목록에 없으면
         //  "왜 이게 실행됐지" 를 추적할 데가 없다. 이벤트·matcher·명령을 그대로 보여준다.
         listSection(
-          i18n("🪝 전용 훅"),
+          i18n("proj.assets.hooks"),
           (detail.hooks || []).map((h) => ({
             name: h.matcher && h.matcher !== "*" ? `${h.event} (${h.matcher})` : h.event,
             description: h.command,
@@ -655,13 +682,13 @@
         relSec.className = "pd-section";
         const relTitle = document.createElement("div");
         relTitle.className = "pd-section-title";
-        relTitle.textContent = i18n("연관 프로젝트");
+        relTitle.textContent = i18n("proj.related.head");
         relSec.appendChild(relTitle);
         const related = Array.isArray(detail.related) ? detail.related : [];
         if (related.length === 0) {
           const e = document.createElement("div");
           e.className = "pd-empty";
-          e.textContent = i18n("없음");
+          e.textContent = i18n("proj.assets.none");
           relSec.appendChild(e);
         } else {
           const chips = document.createElement("div");
@@ -669,7 +696,7 @@
           for (const rel of related) {
             const chip = document.createElement("span");
             chip.className = "pd-related-chip" + (rel.path ? " link" : "");
-            chip.textContent = rel.name || rel.path || i18n("(연관)");
+            chip.textContent = rel.name || rel.path || i18n("proj.related.badge");
             if (rel.path) {
               chip.title = rel.path;
               chip.addEventListener("click", () => openProjectDetail(rel.path));

@@ -37,8 +37,8 @@ export const check: RegressionCheck = {
       /const loadCapabilityBody = async \(kind, name, box\)/,
       /pd-item-body/,
       // 기존 이모지 관례 재사용(🛠️ 스킬 · 🤖 에이전트 · 🧩 MCP) — 새 어휘를 만들지 않는다.
-      /"🛠️ 전용 스킬"/,
-      /"🤖 전용 에이전트"/,
+      /"proj.assets.skills"/,
+      /"proj.assets.agents"/,
     ]);
     // 목록 응답에 본문이 섞이지 않는다(비대화 재발 방지).
     const detailLean = await sourceHas("../../../plugins/http-bridge/index.ts", [

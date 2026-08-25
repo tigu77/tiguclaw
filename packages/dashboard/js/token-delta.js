@@ -90,12 +90,12 @@
         card.body.appendChild(buildActivityLine(p));
         card.lastSeq = p.seq ?? 0;
         card.count += 1;
-        card.countEl.textContent = card.count + "단계";
+        card.countEl.textContent = i18n("tok.stepCount", { n: card.count });
         // 진행 중/접힘 시 헤더 미리보기 — 도구명 + 상세(무슨 파일/명령인지 한눈에).
         {
           const skill = skillStepInfo(p);
           card.lastEl.textContent = skill
-            ? "🛠 스킬: " + skill.name
+            ? i18n("tok.step.skill", { name: skill.name })
             : (p.label || p.kind || "") + (p.detail ? " · " + p.detail : "");
         }
         card.setOpen(true); // 진행 중엔 펼쳐서 라이브로 보이게.
@@ -138,7 +138,7 @@
         //  로 남겼는데, 폴백 이력까지 화면에 들고 있을 필요는 없다는 판단. 폴백 사실은 turn_error
         //  통지·로그·events 에 이미 남는다. 표시는 "지금 무엇으로 답했나" 하나만.
         target.textContent = m;
-        target.title = i18n("이 턴에 실제로 응답한 모델");
+        target.title = i18n("tok.model.title");
       };
 
       const setTurnCost = (thread, payload) => {
@@ -159,21 +159,28 @@
           ? Number(payload && payload.cachedTokensTotal)
           : Number(payload && payload.cachedTokens);
         const parts = ["↓" + fmtTokens(shownIn)];
-        if (useTotal) parts.push(iters + "회");   // 몇 번 재전송했나 = 낭비의 직접 신호.
+        if (useTotal) parts.push(i18n("tok.iters", { n: iters }));   // 몇 번 재전송했나 = 낭비의 직접 신호.
         // 캐시 적중률 — 재전송분 중 캐시로 처리된 몫. 낮으면 루프가 비싸다는 신호.
         if (Number.isFinite(cached) && cached > 0) {
-          parts.push("캐시 " + Math.round((cached / shownIn) * 100) + "%");
+          parts.push(i18n("tok.cacheRate", { pct: Math.round((cached / shownIn) * 100) }));
         }
         parts.push("↑" + fmtTokens(outTok));
         target.textContent = parts.join(" · ");
-        const exact = (useTotal
-            ? "도구 루프 " + iters + "회 · 입력 합계 " + shownIn.toLocaleString() + " 토큰(마지막 회 "
-              + inTok.toLocaleString() + ")"
-            : "입력 " + shownIn.toLocaleString() + " 토큰")
-          + (Number.isFinite(cached) && cached > 0
-              ? " (캐시 적중 " + cached.toLocaleString() + " — 실효 " + (shownIn - cached).toLocaleString() + ")"
-              : "")
-          + " / 출력 " + outTok.toLocaleString() + " 토큰";
+        const exact =
+          (useTotal
+            ? i18n("tok.exact.loop", {
+                iters,
+                total: shownIn.toLocaleString(),
+                last: inTok.toLocaleString(),
+              })
+            : i18n("tok.exact.single", { total: shownIn.toLocaleString() })) +
+          (Number.isFinite(cached) && cached > 0
+            ? i18n("tok.exact.cache", {
+                cached: cached.toLocaleString(),
+                effective: (shownIn - cached).toLocaleString(),
+              })
+            : "") +
+          i18n("tok.exact.out", { out: outTok.toLocaleString() });
         target.title = exact;
         // 입력이 유난히 큰 턴은 눈에 띄게(임계는 관측 평균의 ~3배 — 확실히 이상한 것만).
         if (shownIn >= 200000) target.classList.add("heavy");
@@ -218,7 +225,7 @@
         }
         // delta-only 경량 그룹(스텝 카드 없음)은 접을 카드가 없다 — 그룹만 반환.
         if (!card.el) return card.group;
-        card.countEl.textContent = card.count + "단계 완료";
+        card.countEl.textContent = i18n("tok.stepCountDone", { n: card.count });
         card.el.classList.add("done");
         // ★진행중/최신 턴은 펼친 채 유지(사용자 요청 2026-07-10) — 완료돼도 자동접힘 안 함.
         // 직전 턴 정리는 새 턴 시작 시 renderActivity 가 접는다(최신만 펼침 → 클러터 방지).

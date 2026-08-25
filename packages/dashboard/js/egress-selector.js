@@ -40,7 +40,7 @@
       const egressBoxEl = document.getElementById("chat-egress");        // 옵션 팝오버(체크박스 목록).
       const egressBtnEl = document.getElementById("chat-egress-btn");    // 📤 도구 버튼(팝오버 토글).
       const egressDotEl = document.getElementById("egress-dot");         // 체크됨 표시 점.
-      const EGRESS_LABELS = { telegram: i18n("텔레그램"), cli: "CLI", slack: i18n("슬랙"), discord: i18n("디스코드") };
+      const EGRESS_LABELS = { telegram: i18n("common.channel.telegram"), cli: "CLI", slack: i18n("common.channel.slack"), discord: i18n("common.channel.discord") };
       const egressLabel = (name) => EGRESS_LABELS[name] || name;
       // 전송 시 reply.js 가 호출 — 체크된 채널 배열(빈 배열 = fan-out 없음 = 현행).
       const getEgressChannels = () => [...egressChecked];
@@ -84,12 +84,12 @@
         egressBoxEl.innerHTML = "";
         const lead = document.createElement("span");
         lead.className = "egress-lead";
-        lead.textContent = i18n("📤 함께:");
+        lead.textContent = i18n("chat.egress.also");
         egressBoxEl.appendChild(lead);
         for (const c of candidates) {
           const lbl = document.createElement("label");
           lbl.className = "egress-opt";
-          lbl.title = egressLabel(c.name) + " 로도 이 답을 보냄";
+          lbl.title = i18n("chat.egress.optTitle", { name: egressLabel(c.name) });
           const cb = document.createElement("input");
           cb.type = "checkbox";
           cb.value = c.name;

@@ -8,7 +8,7 @@
       // codex/openai=프로세스 우리 소유(GET /api/shells 시드+kill/tail 완전). claude=SDK 내부
       // 소유라 Phase 4 관측 브리지(SSE shell.*, owner:"sdk"·killable:false)로만 라이브 유입 —
       // /api/shells 시드엔 없음(BG_SHELLS 밖), kill/tail 정직 미지원(Phase 3b, ADR §6).
-      const SHELL_STATUS_LABEL = { running: i18n("🟡 실행 중"), exited: i18n("✅ 종료"), killed: i18n("⏹ 중지됨") };
+      const SHELL_STATUS_LABEL = { running: i18n("shell.status.running"), exited: i18n("shell.status.exited"), killed: i18n("shell.status.stopped") };
       const SHELL_MAX = 50; // 레지스트리 상한(메모리 바운드) — capBgList 동형.
       const SHELL_TAIL_POLL_MS = 1500; // 표면 D 폴 간격(고volume 방어, ADR §5).
       const SHELL_DEBOUNCE_MS = 800; // 단명 셸 노이즈 방지(ADR §5) — running 지속 시에만 그리드 노출.
@@ -159,14 +159,16 @@
               const stillEl = shellOutputEls.get(shellId);
               if (!stillEl || !document.body.contains(stillEl)) { stopShellTailPoll(shellId); return; }
               if (!d || d.error) {
-                stillEl.textContent = "(출력 없음" + (d && d.error ? ": " + d.error : "") + ")";
+                stillEl.textContent = d && d.error
+                  ? i18n("shell.noOutputWhy", { err: d.error })
+                  : i18n("shell.noOutput");
                 stopShellTailPoll(shellId);
                 return;
               }
               const parts = [];
               if (d.stdout) parts.push(d.stdout);
               if (d.stderr) parts.push("\n[stderr]\n" + d.stderr);
-              const combined = parts.join("") || i18n("(출력 없음)");
+              const combined = parts.join("") || i18n("shell.noOutput");
               stillEl.textContent = combined;
               stillEl.scrollTop = stillEl.scrollHeight;
               // 마지막 출력 꼬리 1줄(카드 컴팩트 표시용) — 비어있지 않은 마지막 줄만. 풀 그리드
@@ -237,7 +239,7 @@
         card.dataset.shellId = entry.shellId;
         const top = document.createElement("div"); top.className = "agent-card-top";
         const kind = document.createElement("span"); kind.className = "agent-card-kind";
-        kind.textContent = i18n("🖥️ 셸");
+        kind.textContent = i18n("shell.badge");
         top.appendChild(kind);
         const st = document.createElement("span"); st.className = "agent-card-status";
         st.textContent = SHELL_STATUS_LABEL[entry.status] || entry.status;
@@ -246,8 +248,8 @@
         // 모른다 — kill/출력 tail 불가를 카드에서 정직히 노출(cosmetic ⏹️ 금지, U-I4 교훈).
         if (entry.owner === "sdk") {
           const ownerBadge = document.createElement("span"); ownerBadge.className = "shell-card-owner";
-          ownerBadge.textContent = i18n("SDK 소유");
-          ownerBadge.title = i18n("claude 백그라운드 셸은 SDK 내부 소유 — 강제 종료·출력 tail 불가(대화 턴 안에서만 제어).");
+          ownerBadge.textContent = i18n("common.shell.sdkOwned");
+          ownerBadge.title = i18n("shell.sdkOwned.long");
           top.appendChild(ownerBadge);
         }
         // 어느 세션이 띄운 셸인가 (2026-07-28) — 이 뷰는 세션 필터 없는 *전체 인벤토리* 라
@@ -259,15 +261,15 @@
             (typeof shellOwnerSession === "function" ? shellOwnerSession(entry.threadKey) : "");
           const sess = document.createElement("span");
           sess.className = "shell-card-session" + (owner ? "" : " unknown");
-          sess.textContent = owner ? sessionLabelFor(owner) : i18n("세션 미상");
+          sess.textContent = owner ? sessionLabelFor(owner) : i18n("shell.session.unknown");
           sess.title = owner
-            ? "이 셸을 띄운 세션: " + owner
-            : i18n("띄운 세션을 알 수 없습니다(부모 잡 유실 — 새로고침하면 복원될 수 있습니다).");
+            ? i18n("shell.session.owner", { tk: owner })
+            : i18n("shell.session.unknownHint");
           top.appendChild(sess);
         }
         card.appendChild(top);
         const name = document.createElement("div"); name.className = "agent-card-name shell-card-command";
-        name.textContent = entry.command || i18n("(명령 없음)");
+        name.textContent = entry.command || i18n("shell.noCommand");
         card.appendChild(name);
         if (entry.cwd) {
           const cwd = document.createElement("div"); cwd.className = "shell-card-cwd";
@@ -295,7 +297,7 @@
         // 마지막 출력 꼬리(1줄) — 최소 한 번 펼쳐 폴링한 적 있어야 채워짐(전 카드 상시 폴링은
         // 백엔드 부하라 안 함, ADR §5 "폴 간격 바운드"). 없으면 안내만.
         const tailLine = document.createElement("div"); tailLine.className = "shell-card-tailline";
-        tailLine.textContent = entry.lastLine || i18n("(출력 미리보기 없음 — 펼쳐서 확인)");
+        tailLine.textContent = entry.lastLine || i18n("shell.noPreview");
         shellTailLineEls.set(entry.shellId, tailLine); // 폴 결과가 직접 갱신(위 startShellTailPoll).
         card.appendChild(tailLine);
         const controls = document.createElement("div"); controls.className = "shell-card-controls";
@@ -304,7 +306,7 @@
         if (entry.owner !== "sdk") {
           const toggleBtn = document.createElement("button");
           toggleBtn.type = "button"; toggleBtn.className = "shell-card-toggle";
-          toggleBtn.textContent = entry.expanded ? i18n("▾ 출력 접기") : i18n("▸ 출력 보기");
+          toggleBtn.textContent = entry.expanded ? i18n("shell.output.hide") : i18n("shell.output.show");
           toggleBtn.addEventListener("click", (ev) => { ev.stopPropagation(); toggleShellExpand(entry.shellId); });
           controls.appendChild(toggleBtn);
         }
@@ -313,15 +315,15 @@
             // killable:false(claude SDK 소유) — ⏹️ 를 cosmetic 으로 달지 않는다(U-I4 하드 위반
             // 경고: "표시만 되고 안 멈춤"). 대신 정직한 안내만.
             const note = document.createElement("span"); note.className = "shell-card-kill-disabled";
-            note.textContent = i18n("⏹️ SDK 소유(자동 종료)");
-            note.title = i18n("claude 백그라운드 셸은 대화 턴 안에서만 제어됩니다(모델의 KillShell 도구로).");
+            note.textContent = i18n("shell.status.sdkOwned");
+            note.title = i18n("shell.sdkOwned.kill");
             controls.appendChild(note);
           } else {
             const killBtn = document.createElement("button");
             killBtn.type = "button"; killBtn.className = "bg-job-stop shell-card-kill";
-            killBtn.title = i18n("셸 강제 종료");
+            killBtn.title = i18n("common.shell.kill");
             killBtn.disabled = entry.killRequested;
-            killBtn.textContent = entry.killRequested ? i18n("중지 요청…") : "⏹️ Kill";
+            killBtn.textContent = entry.killRequested ? i18n("common.stopping") : "⏹️ Kill";
             killBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestKillShell(entry.shellId); });
             controls.appendChild(killBtn);
           }
@@ -329,7 +331,7 @@
         card.appendChild(controls);
         if (entry.expanded) {
           const out = document.createElement("pre"); out.className = "shell-card-output";
-          out.textContent = i18n("출력을 불러오는 중…");
+          out.textContent = i18n("shell.output.loading");
           card.appendChild(out);
           shellOutputEls.set(entry.shellId, out);
           startShellTailPoll(entry.shellId);
@@ -380,7 +382,7 @@
         if (ac) ac.textContent = String(total - running);
         if (empty) {
           empty.style.display = shown === 0 ? "" : "none";
-          empty.textContent = shellsFilter === "running" ? i18n("실행 중인 셸이 없습니다.") : i18n("완료된 셸이 없습니다.");
+          empty.textContent = shellsFilter === "running" ? i18n("bg.shells.empty") : i18n("shell.empty.done");
         }
       };
       let shellsRenderQueued = false;

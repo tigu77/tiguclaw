@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-08-26
+
+### Added
+
+- **화면 언어를 고를 수 있습니다 — 영어가 함께 들어갑니다.** 설정에서 언어를 고르면
+  대시보드가 그 언어로 뜹니다. 새 언어는 홈의 `locales/` 폴더에 `<언어>.json` 파일 하나를
+  넣으면 늘어납니다(코드 변경 없음). **반만 번역해도 화면이 안 깨집니다** — 빠진 문구는
+  기본 언어로 나오므로 몇 줄씩 옮겨 가며 써도 됩니다.
+
+### Changed
+
+- **서버가 화면 문구를 만들지 않습니다.** 모듈·능력 화면에 뜨던 문장(`claude 어댑터 ·
+  인증됨`, `재부팅 시 · 켜짐(ok)`)을 서버가 미리 조립해 내려보내던 것을 값과 키로
+  바꿨습니다. 데몬은 하나인데 대시보드를 보는 사람의 언어는 브라우저마다 다를 수 있어,
+  서버가 고른 언어는 애초에 맞을 수가 없었습니다. 이제 문장은 화면이 만듭니다.
+- 날짜·시각 표기가 화면 언어를 따릅니다(종전엔 항상 한국식이었습니다).
+
+### Fixed
+
+- **안내 문구 네 개가 번역 카탈로그에 영영 닿지 못하던 것.** 줄바꿈으로 시작하는 문구가
+  조회에 실패해, 언어를 바꿔도 그 넷은 늘 기본 문구로만 나왔습니다.
+- 백그라운드 작업 카드의 이름 판정이 **화면에 보이는 글자**에 매여 있던 것. 그 문구를
+  번역하면 한국어가 아닌 화면에서 작업 이름·매니저 배지가 어긋났습니다.
+
 ## [0.38.0] - 2026-08-25
 
 ### Added
@@ -1579,7 +1603,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.38.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.39.0...HEAD
+[0.39.0]: https://github.com/tigu77/tiguclaw/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tigu77/tiguclaw/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/tigu77/tiguclaw/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/tigu77/tiguclaw/compare/v0.35.1...v0.36.0

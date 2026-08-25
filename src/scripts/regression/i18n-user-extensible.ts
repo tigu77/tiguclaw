@@ -4,7 +4,9 @@
  * 요구 셋:
  *  ① 언어를 **바꿀 수 있다**(`settings.json` 의 `locale`)
  *  ② 언어를 **쉽게 추가**할 수 있다 — `<home>/locales/<lang>.json` 을 놓으면 끝, **코드 변경 0**
- *  ③ **LLM 이 만드는 말은 제외**하고 시스템이 보여주는 것은 전부(UI + 서버 통지)
+ *  ③ **LLM 이 만드는 말은 제외**하고 **화면**이 보여주는 것은 전부.
+ *     ★서버 통지는 범위 밖이다 (2026-08-25 사용자 결정) — 통지의 정상 경로는 LLM 이
+ *      다시 쓰므로 이미 사용자 언어다. 근거는 `core/i18n.ts` 헤더에.
  *
  * ★②의 전제는 **부분 번역이 안전한 것**이다. 사람이 처음부터 완역할 리 없다 — 몇 줄만 옮겨
  *  보고, 쓰면서 늘린다. 그때 빠진 키가 **빈 문자열**로 나오면 버튼이 사라지고 화면이 깨진다.
@@ -60,25 +62,28 @@ const run = async (): Promise<Assertion[]> => {
 
     // ── ② 파일 하나로 언어가 는다 — **코드 변경 0** ─────────────────────────
     //  일부러 **반만** 번역한다. 그게 실제 사용자가 하는 일이다.
+    //  ★배포본이 **안 싣는** 언어를 쓴다 (2026-08-25 en.json 동봉 후). `en` 으로 하면
+    //   홈의 반쪽 파일 아래에 배포본 영어가 깔려 빈칸이 영어로 채워진다 — 그건 더 나은
+    //   동작이지만, 여기서 지키려는 것은 **기본 언어 폴백**이라 축이 흐려진다.
     writeFileSync(
-      path.join(home, "locales", "en.json"),
+      path.join(home, "locales", "de.json"),
       JSON.stringify({
-        "chat.send": "Send",
-        "compact.running": "Summarizing the previous {turns} turns…",
+        "chat.send": "Senden",
+        "compact.running": "Fasse die vorherigen {turns} Züge zusammen…",
       }) + "\n",
       "utf8",
     );
-    writeFileSync(path.join(home, "settings.json"), JSON.stringify({ locale: "en" }) + "\n", "utf8");
+    writeFileSync(path.join(home, "settings.json"), JSON.stringify({ locale: "de" }) + "\n", "utf8");
     const en = runIn(home);
     out.push(
       assert(
-        "★홈에 `locales/en.json` 을 놓으면 그 언어가 목록에 뜨고 선택된다(코드 변경 0)",
-        Array.isArray(en.locales) && (en.locales as string[]).includes("en") && en.locale === "en",
+        "★홈에 `locales/<언어>.json` 을 놓으면 그 언어가 목록에 뜨고 선택된다(코드 변경 0)",
+        Array.isArray(en.locales) && (en.locales as string[]).includes("de") && en.locale === "de",
         `목록=${JSON.stringify(en.locales)} 고름=${String(en.locale)}`,
       ),
       assert(
         "번역한 키는 그 언어로 나온다",
-        en.send === "Send",
+        en.send === "Senden",
         JSON.stringify(en.send),
       ),
       assert(
@@ -146,7 +151,7 @@ const run = async (): Promise<Assertion[]> => {
       assert(
         "★언어를 하나 더 놓으면 그것도 바로 뜬다(이름 목록을 코드에 안 적는다)",
         Array.isArray(ja.locales) &&
-          ["ko", "en", "ja"].every((l) => (ja.locales as string[]).includes(l)) &&
+          ["ko", "en", "ja", "de"].every((l) => (ja.locales as string[]).includes(l)) &&
           ja.send === "送信",
         `목록=${JSON.stringify(ja.locales)} send=${JSON.stringify(ja.send)}`,
       ),
@@ -155,7 +160,7 @@ const run = async (): Promise<Assertion[]> => {
       assert(
         "★파일이 **없는** 언어는 목록에 안 뜬다(손 목록이 아니라 파일이 정한다)",
         Array.isArray(ja.locales) &&
-          (ja.locales as string[]).every((l) => ["ko", "en", "ja", "broken"].includes(l)),
+          (ja.locales as string[]).every((l) => ["ko", "en", "ja", "de", "broken"].includes(l)),
         `목록=${JSON.stringify(ja.locales)} — 파일에 없는 이름이 섞였다`,
       ),
     );

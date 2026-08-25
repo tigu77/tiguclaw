@@ -57,7 +57,7 @@
         const el = document.getElementById("chat-histind");
         if (!el) return;
         if (cursor === null || total === 0) { el.hidden = true; el.textContent = ""; return; }
-        el.textContent = `히스토리 ${cursor + 1}/${total}`;
+        el.textContent = i18n("chat.hist.pos", { at: cursor + 1, total });
         el.hidden = false;
       };
       const histReset = () => { histCursor = null; histDraft = ""; histRender(0, null); };

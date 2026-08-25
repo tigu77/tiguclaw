@@ -12,6 +12,7 @@
  *  4. **회귀를 잡은 적이 있다** — 실제 사고에서 나온 것. "있으면 좋은 테스트"는 제외.
  * 브라우저(CDP)·라이브 데몬이 필요한 검증은 여기 넣지 않는다(별도 수동 스위트).
  */
+import { readFileSync } from "node:fs";
 
 export interface Assertion {
   /** 사람이 읽는 단언 — 실패 시 그대로 보고된다. */
@@ -81,9 +82,38 @@ export const within = async <T>(
 /**
  * 대시보드 js 조각을 node 에서 실제로 돌릴 때 필요한 **화면 문구 함수 대역**.
  *
- * ★2026-08-25 화면 문구를 카탈로그로 옮기면서 `i18n("원문")` 이 생겼는데, 그 함수는 브라우저
+ * ★2026-08-25 화면 문구를 카탈로그로 옮기면서 `i18n(…)` 이 생겼는데, 그 함수는 브라우저
  *  전역에만 있다. 실행 기반 검사 7개가 한꺼번에 `ReferenceError: i18n is not defined` 로 터졌다
  *  — 그물이 제 몫을 한 것이다(소스 린트였으면 조용히 통과했다).
- *  검사에서 중요한 건 **판정**이지 번역이 아니므로 원문을 그대로 돌려준다.
+ *
+ * ★그리고 **항등 함수(`(s) => s`)로는 안 된다** (2026-08-25 키 규약 통일). 키가 곧 한국어
+ *  문장이던 동안엔 맞았지만, 추상 키로 옮기자 화면 문구를 보는 단언들이 전부 `chat.empty`
+ *  같은 키를 받았다 — **표시 문구를 상태로 쓰던 것과 같은 부류가 검사 쪽에도 있었다.**
+ *  진짜 카탈로그를 태우면 단언은 그대로 살고, 키가 카탈로그에 없으면 문구가 안 나오므로
+ *  **그 자체가 그물 하나**가 된다. 브라우저 `i18n` 과 규칙을 맞춘다(없으면 키 자체,
+ *  `{name}` 만 채우고 값 없는 자리표시자는 남긴다).
  */
-export const JS_I18N_STUB = "const i18n = (s) => s;";
+const KO_CATALOG = JSON.parse(
+  readFileSync(new URL("../../../locales/ko.json", import.meta.url), "utf8"),
+) as Record<string, string>;
+export const JS_I18N_STUB =
+  `const __KO = ${JSON.stringify(KO_CATALOG)};` +
+  `const i18n = (k, p) => { const r = typeof __KO[k] === "string" ? __KO[k] : k; ` +
+  `return p ? r.replace(/\\{(\\w+)\\}/g, (w, n) => (p[n] === undefined ? w : String(p[n]))) : r; };`;
+
+/**
+ * `vm.createContext` 에 넣는 `i18n` — `JS_I18N_STUB` 과 **같은 규칙**이다.
+ * ★두 자리가 각자 스텁을 들면(실제로 그랬다: 항등 함수 두 벌) 키 규약이 바뀔 때 한쪽만
+ *  낡는다. 정본을 여기 하나 둔다([[feedback_simple_composable_no_duplication]]).
+ */
+export const i18nForContext = (
+  key: string,
+  params?: Readonly<Record<string, string | number>>,
+): string => {
+  const raw = typeof KO_CATALOG[key] === "string" ? KO_CATALOG[key] : key;
+  return params === undefined
+    ? raw
+    : raw.replace(/\{(\w+)\}/g, (whole, name: string) =>
+        params[name] === undefined ? whole : String(params[name]),
+      );
+};

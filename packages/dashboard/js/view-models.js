@@ -46,7 +46,7 @@
         if (profiles.length === 0) {
           const e = document.createElement("div");
           e.className = "empty";
-          e.textContent = i18n("정의된 모델 프로파일이 없습니다 (settings.json 의 models.profiles 비어 있음).");
+          e.textContent = i18n("models.profiles.empty");
           root.appendChild(e);
           return;
         }
@@ -77,7 +77,7 @@
           picker.type = "color";
           picker.className = "model-color-input";
           picker.value = profileColor(prof) || "#9aa7b7";
-          picker.title = i18n("이 프로파일의 배지 색 — 잡 카드·에이전트 카드에 같은 색으로 뜹니다");
+          picker.title = i18n("models.color.hint");
           const saveColor = async (color) => {
             picker.disabled = true;
             try {
@@ -88,10 +88,10 @@
               });
               const data = await r.json().catch(() => ({}));
               if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-              showToast(color === null ? prof.name + " 배지 색 초기화" : prof.name + " 배지 색 변경", "good");
+              showToast(i18n(color === null ? "models.color.resetDone" : "models.color.changed", { name: prof.name }), "good");
               await fetchModelProfiles(); // 이름색·좌측선·배지까지 한 번에 재렌더.
             } catch (e) {
-              showToast("색 변경 실패: " + e.message, "bad");
+              showToast(i18n("models.color.failed", { err: e.message }), "bad");
               picker.disabled = false;
             }
           };
@@ -105,8 +105,8 @@
             const reset = document.createElement("button");
             reset.type = "button";
             reset.className = "model-color-reset";
-            reset.textContent = i18n("색 초기화");
-            reset.title = i18n("기본색으로 되돌립니다");
+            reset.textContent = i18n("models.color.reset");
+            reset.title = i18n("models.color.resetTitle");
             reset.addEventListener("click", () => void saveColor(null));
             head.appendChild(reset);
           }
@@ -120,7 +120,7 @@
             const setBtn = document.createElement("button");
             setBtn.type = "button";
             setBtn.className = "model-set-default";
-            setBtn.textContent = i18n("기본으로 설정");
+            setBtn.textContent = i18n("models.setDefault");
             setBtn.addEventListener("click", async () => {
               setBtn.disabled = true;
               try {
@@ -131,10 +131,10 @@
                 });
                 const data = await r.json().catch(() => ({}));
                 if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-                showToast("기본 프로파일: " + prof.name, "good");
+                showToast(i18n("models.default.set", { name: prof.name }), "good");
                 await fetchModelProfiles(); // 배지 이동 반영(재렌더).
               } catch (e) {
-                showToast("기본 설정 실패: " + e.message, "bad");
+                showToast(i18n("models.default.failed", { err: e.message }), "bad");
                 setBtn.disabled = false;
               }
             });
@@ -151,7 +151,7 @@
           pool.className = "model-pool";
           const plabel = document.createElement("span");
           plabel.className = "model-pool-label";
-          plabel.textContent = i18n("풀");
+          plabel.textContent = i18n("models.pool.label");
           pool.appendChild(plabel);
           // ★풀 원소는 문자열 또는 `{spec, reasoning}` 이다 (2026-08-24). 서버가 정규화해
           //  보내지만, 옛 배포본과 섞여도 안 깨지게 여기서도 둘 다 받는다(경계 관용).
@@ -164,7 +164,7 @@
           if (entries.length === 0) {
             const empty = document.createElement("span");
             empty.className = "model-pool-empty";
-            empty.textContent = i18n("(빈 풀 — 어댑터 디폴트로 강등)");
+            empty.textContent = i18n("models.pool.empty");
             pool.appendChild(empty);
           } else {
             entries.forEach((e, i) => {
@@ -185,9 +185,9 @@
               if (e.reasoning !== undefined && e.reasoning !== "") {
                 const r = document.createElement("span");
                 r.className = "model-spec-reasoning";
-                r.textContent = "강도 " + e.reasoning;
+                r.textContent = i18n("models.effort.badge", { v: e.reasoning });
                 r.title =
-                  i18n("이 프로파일에서만 적용되는 추론 강도 — 전역 models.reasoning 보다 우선합니다.");
+                  i18n("models.effort.hint");
                 pool.appendChild(r);
               }
             });
@@ -196,7 +196,7 @@
           if (prof.fallback) {
             const fb = document.createElement("div");
             fb.className = "model-fallback";
-            fb.innerHTML = "폴백 프로파일: <code></code>";
+            fb.innerHTML = escHtml(i18n("models.fallback.label")) + " <code></code>";
             fb.querySelector("code").textContent = prof.fallback;
             card.appendChild(fb);
           }
@@ -212,7 +212,8 @@
         } catch (e) {
           const root = document.getElementById("models");
           if (root) root.innerHTML =
-            '<div class="empty" style="font-size:11px;padding:10px">모델 프로파일 불러오기 실패: ' + escHtml(e.message) + "</div>";
+            '<div class="empty" style="font-size:11px;padding:10px">' +
+            escHtml(i18n("models.profiles.loadFailed", { err: e.message })) + "</div>";
         }
       };
 
@@ -225,7 +226,29 @@
         root.innerHTML = "";
         const wrap = document.createElement("div");
         wrap.className = "page-view";
-        wrap.innerHTML = '<div class="detail-head"><div class="detail-accent active"></div><div class="detail-name">모델 프로파일</div><span class="detail-kind">표시</span></div><p class="developer-copy">settings.json 의 <code>models.profiles</code> 를 보여줍니다. 각 프로파일은 이름·설명·풀(provider:model, 폴백 순서 →)·폴백 프로파일로 구성됩니다. 추가·수정은 대화로 요청하세요(비서가 settings.json 을 편집).</p><div id="models" class="models-shell"><div class="empty">불러오는 중…</div></div>';
+        // ★카탈로그 값을 **innerHTML 로 넣지 않는다**. 언어 파일은 사용자가 받아서 홈에 놓는
+        //  데이터라, 그대로 넣으면 번역 파일 하나가 대시보드 XSS 벡터가 된다(같은 오리진의
+        //  /api/messages = 비서에게 임의 지시). 문구는 텍스트로만 넣고, 안에 들어갈 태그는
+        //  자리표시자를 기준으로 잘라 **DOM 으로 조립**한다.
+        wrap.innerHTML =
+          '<div class="detail-head"><div class="detail-accent active"></div>' +
+          '<div class="detail-name"></div><span class="detail-kind"></span></div>' +
+          '<p class="developer-copy"></p>' +
+          '<div id="models" class="models-shell"><div class="empty"></div></div>';
+        wrap.querySelector(".detail-name").textContent = i18n("models.page.title");
+        wrap.querySelector(".detail-kind").textContent = i18n("models.page.kind");
+        wrap.querySelector(".models-shell .empty").textContent = i18n("common.loading");
+        {
+          const para = wrap.querySelector(".developer-copy");
+          const [head, tail] = i18n("models.page.desc").split("{code}");
+          para.appendChild(document.createTextNode(head));
+          if (tail !== undefined) {
+            const codeEl = document.createElement("code");
+            codeEl.textContent = "models.profiles";
+            para.appendChild(codeEl);
+            para.appendChild(document.createTextNode(tail));
+          }
+        }
         root.appendChild(wrap);
         if (modelProfilesCache) renderModelProfiles(modelProfilesCache);
       };
@@ -240,24 +263,25 @@
         page.className = "page-view";
         page.innerHTML =
           '<div class="detail-head"><div class="detail-accent"></div>' +
-          '<div class="detail-name">설정</div></div>';
+          '<div class="detail-name"></div></div>';
+        page.querySelector(".detail-name").textContent = i18n("nav.settings");
         const row = document.createElement("div");
         row.className = "settings-row";
         const meta = document.createElement("div");
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = i18n("다음 메시지 제안");
+        name.textContent = i18n("models.suggest.head");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
         desc.textContent =
-          i18n("턴이 끝나면 이어서 보낼 만한 말을 입력창에 회색으로 제안합니다. Tab 이면 입력창에 채워집니다(전송은 직접). 매 턴 토큰을 조금 씁니다.");
+          i18n("models.suggest.hint");
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "settings-toggle" + (enabled ? " on" : "");
-        btn.textContent = enabled ? i18n("켜짐") : i18n("꺼짐");
+        btn.textContent = enabled ? i18n("common.on") : i18n("common.off");
         btn.addEventListener("click", async () => {
           btn.disabled = true;
           const next = !enabled;
@@ -269,10 +293,10 @@
             });
             const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-            showToast("다음 메시지 제안: " + (next ? i18n("켜짐") : i18n("꺼짐")), "good");
+            showToast(i18n("models.suggest.toggled", { state: next ? i18n("common.on") : i18n("common.off") }), "good");
             renderSettingsRow(root, next); // 서버가 확인해 준 값으로 다시 그린다.
           } catch (e) {
-            showToast("설정 저장 실패: " + e.message, "bad");
+            showToast(i18n("models.settings.saveFailed", { err: e.message }), "bad");
             btn.disabled = false;
           }
         });
@@ -305,7 +329,7 @@
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = i18n("화면 언어");
+        name.textContent = i18n("models.locale.head");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
         meta.appendChild(name);
@@ -313,12 +337,12 @@
 
         const cur = (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
         const list = (window.__TIGU_I18N__ && window.__TIGU_I18N__.available) || [cur];
-        desc.textContent = i18n("설치된 언어 {n}개. 새 언어는 홈의 locales 폴더에 <언어>.json 을 넣으면 늘어납니다.")
+        desc.textContent = i18n("models.locale.hint")
           .replace("{n}", String(list.length));
 
         const sel = document.createElement("select");
         sel.className = "chat-model-select";
-        sel.title = i18n("화면 언어");
+        sel.title = i18n("models.locale.head");
         for (const code of list) {
           const o = document.createElement("option");
           o.value = code;
@@ -338,10 +362,10 @@
             });
             const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
-            showToast(i18n("언어를 바꿉니다 — 새로고침합니다."), "good");
+            showToast(i18n("models.locale.changing"), "good");
             setTimeout(() => window.location.reload(), 600);
           } catch (e) {
-            showToast(i18n("언어 변경 실패: ") + e.message, "bad");
+            showToast(i18n("models.locale.changeFailed", { err: e.message }), "bad");
             sel.value = cur;
             sel.disabled = false;
           }
@@ -387,16 +411,16 @@
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = i18n("오늘 로그");
+        name.textContent = i18n("models.log.head");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
-        desc.textContent = i18n("불러오는 중…");
+        desc.textContent = i18n("common.loading");
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "settings-toggle";
-        btn.textContent = i18n("비우기");
+        btn.textContent = i18n("common.clear");
         btn.disabled = true;
 
         const fmtBytes = (n) =>
@@ -406,15 +430,14 @@
 
         const paint = (s) => {
           if (!s || s.exists !== true) {
-            desc.textContent = i18n("오늘 기록된 로그가 아직 없습니다.");
+            desc.textContent = i18n("models.log.empty");
             btn.disabled = true;
             return;
           }
           const ago = s.lastWriteTs ? fmtAgo(s.lastWriteTs) : "";
-          const others = s.otherDays > 0 ? ` · 다른 날짜 ${s.otherDays}개는 그대로 둡니다` : "";
-          desc.textContent =
-            `${fmtBytes(s.bytes)}${ago ? " · 마지막 기록 " + ago : ""}${others}. ` +
-            "비우면 파일은 남고 내용만 지워집니다(데몬은 계속 같은 파일에 씁니다).";
+          const others = s.otherDays > 0 ? i18n("models.log.otherDays", { n: s.otherDays }) : "";
+          const last = ago ? i18n("models.log.lastWrite", { ago }) : "";
+          desc.textContent = i18n("models.log.desc", { size: fmtBytes(s.bytes), last, others });
           btn.disabled = s.bytes === 0;
         };
 
@@ -423,30 +446,26 @@
             const r = await fetch("/api/log-status");
             paint(r.ok ? await r.json() : null);
           } catch {
-            desc.textContent = i18n("로그 상태를 읽지 못했습니다.");
+            desc.textContent = i18n("models.log.loadFailed");
             btn.disabled = true;
           }
         };
 
         btn.addEventListener("click", async () => {
-          if (!window.confirm(
-            "오늘 로그를 비울까요?\n\n" +
-            "되돌릴 수 없습니다. 로그는 문제가 생겼을 때 원인을 찾는 1차 자료입니다 — " +
-            "지금 이상이 있는 상태라면 비우기 전에 확인하세요."
-          )) return;
+          if (!window.confirm(i18n("models.log.clearConfirm"))) return;
           btn.disabled = true;
           try {
             const r = await fetch("/api/log-clear", { method: "POST" });
             const d = await r.json().catch(() => ({}));
             if (r.ok && d.ok === true) {
-              showToast(fmtBytes(d.clearedBytes || 0) + " 비웠습니다.", "good");
+              showToast(i18n("models.log.cleared", { size: fmtBytes(d.clearedBytes || 0) }), "good");
               paint(d.status); // 서버가 준 사후 상태로 그린다(스스로 증명한 값).
             } else {
-              showToast("로그 비우기 실패: " + (d.error || "HTTP " + r.status), "bad");
+              showToast(i18n("models.log.clearFailed", { err: d.error || "HTTP " + r.status }), "bad");
               await load();
             }
           } catch (e) {
-            showToast("로그 비우기 실패: " + e.message, "bad");
+            showToast(i18n("models.log.clearFailed", { err: e.message }), "bad");
             await load();
           }
         });
@@ -464,7 +483,10 @@
         document.getElementById("workbench").classList.remove("show-capabilities");
         const root = document.getElementById("detail-panel");
         root.innerHTML =
-          '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div><div class="detail-name">설정</div></div><div class="empty">불러오는 중…</div></div>';
+          '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div>' +
+          '<div class="detail-name"></div></div><div class="empty"></div></div>';
+        root.querySelector(".detail-name").textContent = i18n("nav.settings");
+        root.querySelector(".empty").textContent = i18n("common.loading");
         let enabled = false;
         try {
           const r = await fetch("/api/suggestion");
@@ -491,16 +513,16 @@
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = i18n("변경 이력");
+        name.textContent = i18n("models.changelog.head");
         const desc = document.createElement("div");
         desc.className = "settings-desc";
-        desc.textContent = i18n("이 설치본에 담긴 릴리스 노트입니다.");
+        desc.textContent = i18n("models.changelog.desc");
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "settings-toggle";
-        btn.textContent = i18n("보기");
+        btn.textContent = i18n("common.view");
         row.appendChild(meta);
         row.appendChild(btn);
 
@@ -516,16 +538,16 @@
         btn.addEventListener("click", async () => {
           if (!wrap.hidden) { // 접기
             wrap.hidden = true;
-            btn.textContent = i18n("보기");
+            btn.textContent = i18n("common.view");
             btn.classList.remove("on");
             return;
           }
           wrap.hidden = false;
-          btn.textContent = i18n("접기");
+          btn.textContent = i18n("common.collapse");
           btn.classList.add("on");
           if (loaded) return; // 한 번만 받는다(파일은 재시작 전까지 안 바뀐다).
           body.className = "empty";
-          body.textContent = i18n("불러오는 중…");
+          body.textContent = i18n("common.loading");
           let md = "";
           try {
             const r = await fetch("/api/changelog");
@@ -533,7 +555,7 @@
           } catch { /* 미도달 — 아래 안내로 떨어진다 */ }
           // ★없으면 **없다고 말한다** — 빈 화면으로 두면 "로딩 중" 과 구분이 안 된다.
           if (md.trim() === "") {
-            body.textContent = i18n("변경 이력을 찾지 못했습니다(CHANGELOG.md 부재).");
+            body.textContent = i18n("models.changelog.missing");
             return; // loaded 를 안 세운다 — 다시 눌러 재시도할 수 있게.
           }
           loaded = true;

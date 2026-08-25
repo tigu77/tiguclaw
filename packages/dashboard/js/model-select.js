@@ -48,8 +48,8 @@
           sel.innerHTML = "";
           const optDefault = document.createElement("option");
           optDefault.value = ""; // "" = 상속(clearSessionModelProfile).
-          optDefault.textContent = "기본 (" + defaultName + ")";
-          optDefault.title = i18n("전역 기본 프로파일을 상속 (이 세션 전용 선택 없음)");
+          optDefault.textContent = i18n("models.select.defaultWith", { name: defaultName });
+          optDefault.title = i18n("models.select.inherit");
           sel.appendChild(optDefault);
           for (const p of profiles) {
             if (p.isDefault) continue; // 기본은 위 상속 옵션이 대표(중복 방지).
@@ -110,19 +110,19 @@
             if (!r.ok) {
               if (typeof showToast === "function")
                 showToast(
-                  "프로파일 설정 실패: " + (data.error || "HTTP " + r.status),
+                  i18n("models.select.failed", { err: data.error || "HTTP " + r.status }),
                   "bad",
                 );
               return;
             }
             if (typeof showToast === "function")
               showToast(
-                profile === "" ? i18n("모델 프로파일: 기본") : "모델 프로파일: " + profile,
+                profile === "" ? i18n("models.select.default") : i18n("models.select.picked", { name: profile }),
                 "good",
               );
           } catch (err) {
             if (typeof showToast === "function")
-              showToast(i18n("프로파일 설정 실패(연결)"), "bad");
+              showToast(i18n("models.select.failedConn"), "bad");
           }
         });
 

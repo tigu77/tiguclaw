@@ -46,7 +46,7 @@
        * @returns {{show:boolean, label:string, elapsed:string, idle:boolean}}
        */
       const workingBannerView = (v) => {
-        const name = v.assistantName || i18n("비서");
+        const name = v.assistantName || i18n("axis.assistant");
         if (v.mineActive) {
           const doing = doingText(v.phase); // 잡 카드와 **같은 판정**(util.js 정의점).
           const why = v.reason ? " · " + v.reason : "";
@@ -66,7 +66,7 @@
           return {
             show: true,
             idle: true,
-            label: name + " 대기 중 · 백그라운드 " + v.bgRunning + "건 진행",
+            label: i18n("axis.idleWithBg", { name, n: v.bgRunning }),
             elapsed: "",
           };
         }
@@ -161,7 +161,7 @@
         //  (사유는 "왜 도는지" 를 말하려고 2026-08-13 에 붙인 것이고, 그 전제는 턴의 원인이
         //   하나라는 것이었다. 원인이 둘이면 그 전제가 깨진다.)
         if (opts && typeof opts.reason === "string" && opts.reason) {
-          turnReason.set(k, wasActive ? i18n("정리 중") : opts.reason);
+          turnReason.set(k, wasActive ? i18n("axis.cleaning") : opts.reason);
         } else if (!(opts && opts.keepReason)) turnReason.delete(k);
         refreshWorking();
       };
@@ -207,15 +207,15 @@
             el.classList.remove("queued");
             el.classList.add("cancelled-turn");
             const b = el.querySelector(".queued-badge");
-            if (b) { b.textContent = i18n("취소됨"); b.classList.add("cancelled-badge"); }
+            if (b) { b.textContent = i18n("axis.cancelled"); b.classList.add("cancelled-badge"); }
             btn.remove();
             const idx = pendingQueued.indexOf(entry);
             if (idx !== -1) pendingQueued.splice(idx, 1); // echo 승격 대상에서 제외.
           } else {
             // 이미 시작됨(echo 도착 후) 또는 미상 — 안내만(G3).
             btn.disabled = false;
-            btn.title = i18n("이미 시작됨 — 중지하려면 /stop 을 보내세요");
-            renderLocalChat("info", i18n("이미 처리가 시작됐어요 — 중지하려면 /stop 을 보내세요."));
+            btn.title = i18n("axis.alreadyStarted.short");
+            renderLocalChat("info", i18n("axis.alreadyStarted"));
           }
         } catch {
           btn.disabled = false; // 네트워크 실패 = 버블 유지, 재시도 가능.
@@ -233,13 +233,13 @@
         if (o.queued) {
           div.classList.add("queued");
           const badge = document.createElement("span");
-          badge.className = "queued-badge"; badge.textContent = i18n("대기 중");
+          badge.className = "queued-badge"; badge.textContent = i18n("axis.waiting");
           (div.firstChild || div).appendChild(badge); // head(ts+라벨) 에 배지 부착.
           if (cid) {
             // ✕ 취소 버튼 — 대기 중(미시작) 버블에만. echo 승격 시 제거(D3).
             const x = document.createElement("button");
             x.type = "button"; x.className = "queued-cancel"; x.textContent = "✕";
-            x.title = i18n("대기 취소");
+            x.title = i18n("axis.cancelWait");
             x.addEventListener("click", (ev) => { ev.stopPropagation(); void cancelQueuedBubble(entry, x); });
             (div.firstChild || div).appendChild(x);
           }

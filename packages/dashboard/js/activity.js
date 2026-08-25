@@ -91,8 +91,8 @@
       });
       registerMenuItems("activity", (ctx) => {
         const items = [];
-        if (ctx.threadKey) items.push({ id: "jump", label: i18n("세션으로 이동"), icon: "↪️", action: { kind: "builtin", handler: "activity.jump" } });
-        items.push({ id: "copy", label: i18n("복사"), icon: "📋", action: { kind: "builtin", handler: "activity.copy" } });
+        if (ctx.threadKey) items.push({ id: "jump", label: i18n("common.jumpSession"), icon: "↪️", action: { kind: "builtin", handler: "activity.jump" } });
+        items.push({ id: "copy", label: i18n("common.copy"), icon: "📋", action: { kind: "builtin", handler: "activity.copy" } });
         return items;
       });
 
@@ -119,7 +119,7 @@
         const prev = document.createElement("span"); prev.className = "aav-preview";
         // ★한 줄 프리뷰는 기호를 걷어낸다 — 접힌 줄에 `**` 가 그대로 보였다(실측).
         //  펼치면 아래 `.aav-md` 가 진짜 마크다운으로 그린다.
-        prev.textContent = stripMarkdownText(full) || (hasAtt ? "" : i18n("(빈 메시지)"));
+        prev.textContent = stripMarkdownText(full) || (hasAtt ? "" : i18n("activity.emptyMessage"));
         const md = document.createElement("div"); md.className = "aav-md";
         md.dataset.src = full;
         body.appendChild(prev); body.appendChild(md);
@@ -162,15 +162,15 @@
         if (typeof a.model === "string" && a.model.trim() !== "") {
           const mb = document.createElement("span");
           mb.className = "aav-model"; mb.textContent = a.model.trim();
-          mb.title = i18n("실제로 응답한 모델");
+          mb.title = i18n("activity.model.title");
           meta.appendChild(mb);
         }
         const body = document.createElement("div"); body.className = "aav-body";
         if (a.kind === "text") {
           const full = activityFullText(a.text);
-          body.textContent = full ? "텍스트 응답: " + full : i18n("(텍스트 세그먼트)");
+          body.textContent = full ? i18n("activity.textResponse", { v: full }) : i18n("activity.textSegment");
         } else {
-          const label = skill ? "스킬: " + skill.name : String(a.label || "tool");
+          const label = skill ? i18n("common.skillStep", { name: skill.name }) : String(a.label || "tool");
           const detail = (!skill && a.detail) ? " — " + activityFullText(a.detail) : "";
           body.textContent = label + detail;
         }
@@ -201,8 +201,12 @@
         const body = document.createElement("div"); body.className = "aav-body";
         const evName = String(h.event || "hook");
         const tool = h.toolName ? " · " + h.toolName : "";
-        const blocked = h.blocked ? " — 차단" + (h.blockReason ? ": " + activityFullText(h.blockReason) : "") : "";
-        body.textContent = "훅 " + evName + tool + blocked;
+        const blocked = h.blocked
+          ? (h.blockReason
+              ? i18n("activity.hook.blockedWhy", { why: activityFullText(h.blockReason) })
+              : i18n("activity.hook.blocked"))
+          : "";
+        body.textContent = i18n("activity.hook", { event: evName, tool, blocked });
         line.appendChild(meta); line.appendChild(body);
         line.addEventListener("click", () => line.classList.toggle("expanded"));
         const hookCtx = () => ({ type: "activity", targetId: "h|" + h.ts + "|" + evName + "|" + (h.toolName || ""), threadKey: h.threadKey, label: body.textContent });
@@ -485,7 +489,7 @@
           const sub = document.getElementById("app-sub");
           if (h && typeof h.version === "string") {
             appVersion = h.version;
-            if (sub) sub.textContent = i18n("app.sub") + " · v" + h.version;
+            if (sub) sub.textContent = i18n("app.subWithVersion", { sub: i18n("app.sub"), version: h.version });
             if (currentView === "overview") setTimeout(showOverview, 0);
           }
           // 시작시각은 서버가 안 준다 → 모른다고 표시한다(경과시간 미표시).
@@ -497,7 +501,7 @@
       const connText = document.getElementById("conn-text");
       const setConn = (up) => {
         connDot.className = "dot " + (up ? "up" : "down");
-        connText.textContent = up ? i18n("실시간") : i18n("재연결 중…");
+        connText.textContent = up ? i18n("activity.live") : i18n("activity.reconnecting");
       };
 
       // SSE 연결 — 재연결 가능 클로저. EventSource 는 보통 끊기면 자동 재연결하지만,
@@ -517,6 +521,29 @@
         setConn(false);
         connectStream();
       };
+      /**
+       * 데몬이 **다른 버전으로** 바뀌어 있으면 이 탭을 새로고침한다.
+       *
+       * ★열어둔 탭은 옛 js 를 들고 있는데 서버만 새 버전이 되는 창이 있다 — 그러면 새 와이어
+       *  (`DisplayText` 스펙 객체 등)를 옛 렌더러가 문자열처럼 써서 `[object Object]` 가 뜬다.
+       *  자동 새로고침은 종전에 `update-chip` 의 `reloadWhenBack` 하나뿐이었고 그건
+       *  **그 탭의 칩으로 업데이트를 시작했을 때만** 돈다 — 텔레그램 `/update`·CLI·배포
+       *  스크립트·재시작으로 올라간 경우엔 아무도 안 알려준다. SSE 는 알아서 재연결하므로
+       *  탭은 멀쩡히 살아 있고, 그래서 **사용자가 새로고침할 이유를 못 느낀다.**
+       * 재연결 때만 본다(부팅 첫 연결은 `appVersion` 이 아직 비어 있어 그냥 지나간다).
+       */
+      const reloadIfServerChanged = () => {
+        if (appVersion === "") return; // 아직 버전을 모른다 = 비교할 것이 없다.
+        fetch("/api/health")
+          .then((r) => r.json())
+          .then((h) => {
+            if (h && typeof h.version === "string" && h.version !== appVersion) {
+              window.location.reload();
+            }
+          })
+          .catch(() => { /* health 미도달 — 다음 재연결에 다시 본다 */ });
+      };
+
       const connectStream = () => {
         es = new EventSource("/api/events");
         lastRecvAt = Date.now();
@@ -526,6 +553,7 @@
           // 끊겨 있는 동안 끝난 잡이 "진행 중" 유령으로 남지 않게 서버와 대조(2026-07-28).
           // replay 는 창(최근 N건) 밖의 종료 이벤트를 못 주므로 replay 만으로는 못 고친다.
           try { if (typeof window.reconcileBgJobs === "function") window.reconcileBgJobs(); } catch {}
+          reloadIfServerChanged();
         };
         es.onmessage = (m) => {
           lastRecvAt = Date.now(); // 하트비트 포함 — 모든 수신이 liveness 증거.

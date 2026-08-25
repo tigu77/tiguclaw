@@ -39,7 +39,10 @@ export const collectProvider = (): Module => {
     kind: "plugin",
     name: "Self Growth",
     status,
-    summary: `${reflections.length} reflections, ${weeklyReviews.length} weekly reviews`,
+    summary: {
+      key: "modules.summary.selfGrowth",
+      params: { reflections: reflections.length, weekly: weeklyReviews.length },
+    },
     capabilities: [
       "memory.feedback.observe",
       "growth.reflection.suggest",
@@ -49,7 +52,7 @@ export const collectProvider = (): Module => {
     views: [
       {
         id: "plugin.self-growth.summary",
-        title: "자가 성장",
+        title: { key: "modules.selfGrowth.title" },
         kind: "summary-card",
         data: {
           reflections: reflections.length,
@@ -64,7 +67,7 @@ export const collectProvider = (): Module => {
       },
       {
         id: "plugin.self-growth.recent",
-        title: "최근 자가 성장 메모리",
+        title: { key: "modules.selfGrowth.recentMemories" },
         kind: "table",
         data: {
           columns: ["name", "description", "updatedAt"],
@@ -78,7 +81,7 @@ export const collectProvider = (): Module => {
       },
       {
         id: "plugin.self-growth.latest-review",
-        title: "최근 주간 회고",
+        title: { key: "modules.selfGrowth.recentWeekly" },
         kind: "summary-card",
         data: weeklyReviews[0]
           ? {
@@ -92,7 +95,7 @@ export const collectProvider = (): Module => {
       },
       {
         id: "plugin.self-growth.actions",
-        title: "자가 성장 액션",
+        title: { key: "modules.selfGrowth.actions" },
         kind: "action-panel",
         data: {
           note: "action 실행 endpoint는 아직 연결하지 않았습니다. v0.1은 읽기 전용 provider입니다.",
@@ -104,8 +107,8 @@ export const collectProvider = (): Module => {
     actions: [
       {
         id: "run-weekly-review",
-        label: "주간 회고 실행",
-        description: "self-growth 스킬/플러그인 회고를 수동 실행합니다. 현재는 metadata만 노출합니다.",
+        label: { key: "modules.selfGrowth.runWeekly" },
+        description: { key: "modules.selfGrowth.runWeeklyDesc" },
         danger: "gray",
         requiresConfirmation: true,
       },

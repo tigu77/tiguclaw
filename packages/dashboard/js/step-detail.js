@@ -41,7 +41,7 @@
           dv.textContent = String(p.detail); // ← textContent: XSS 0(마크다운 렌더 불요).
         } else {
           dv.className = "sd-detail empty";
-          dv.textContent = i18n("상세 정보 없음");
+          dv.textContent = i18n("step.detail.none");
         }
         dRow.appendChild(dk); dRow.appendChild(dv);
         body.appendChild(dRow);

@@ -14,6 +14,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # 손으로 돌릴 수단 — 설정을 고친 뒤 즉시 확인하려면 필요하다(없어서 빈 커밋을 밀 뻔했다).
+  workflow_dispatch:
   schedule:
     # 주 1회 — 새 규칙·새 취약점은 코드가 안 바뀌어도 나온다.
     - cron: "37 5 * * 1"

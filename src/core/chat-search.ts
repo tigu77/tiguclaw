@@ -163,3 +163,84 @@ export const searchConversations = async (
   });
   return { query: q.raw, tooShort: false, hits, total, limit, scope };
 };
+
+// ─── 기간 훑기: 키워드가 없을 때의 길 ────────────────────────────────────────
+//
+// ★검색과 **다른 질문**이라 도구를 나눈다 (2026-08-25). `search_conversations` 는
+//  *"언제 X 얘기했지?"* 에, 이쪽은 *"그 무렵 뭘 했지?"* 에 답한다. 이름이 비슷하다고 묶으면
+//  한 자리가 두 가지를 말한다([[project_manager_agent_naming]] 의 Q8 렌즈).
+//
+// ★실측이 근거다: 기간 훑기가 없을 때 비서는 키워드를 짐작해 `search_conversations` 를
+//  **한 턴에 56회** 불렀다. 답은 맞았지만 그건 운이었다.
+
+export interface PeriodSession {
+  readonly threadKey: string;
+  readonly channel: string;
+  /** 이 대화의 **주제** — 세션 표시명(커스텀 이름 > 첫 발화). */
+  readonly topic: string;
+  readonly messages: number;
+  readonly firstTs: number;
+  readonly lastTs: number;
+}
+
+export interface PeriodBrowse {
+  readonly sinceTs: number;
+  readonly untilTs: number;
+  readonly sessions: readonly PeriodSession[];
+  /** 기간 전체 세션 수(상한과 무관) — 목록이 잘렸는지 소비처가 말할 수 있게. */
+  readonly totalSessions: number;
+  /** 기간 전체 메시지 수(상한과 무관). */
+  readonly totalMessages: number;
+}
+
+/**
+ * 날짜 문자열 → epoch ms. `YYYY-MM-DD` 는 **로컬 자정**으로 읽는다.
+ *
+ * ★`new Date("2026-08-01")` 은 **UTC 자정**이라 한국에선 7월 31일 09시가 된다 — 사용자가
+ *  "8월" 이라고 한 기간이 하루 어긋난다. 날짜만 온 경우는 로컬로 해석한다.
+ */
+export const parseDayBoundary = (v: string, endOfDay = false): number | null => {
+  const s = v.trim();
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (ymd !== null) {
+    const d = new Date(
+      Number(ymd[1]),
+      Number(ymd[2]) - 1,
+      Number(ymd[3]),
+      endOfDay ? 23 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 59 : 0,
+      endOfDay ? 999 : 0,
+    );
+    return Number.isNaN(d.getTime()) ? null : d.getTime();
+  }
+  const t = new Date(s).getTime();
+  return Number.isNaN(t) ? null : t;
+};
+
+export const browseConversationPeriod = async (
+  sinceTs: number,
+  untilTs: number,
+  opts?: { limit?: number },
+): Promise<PeriodBrowse> => {
+  const { listChatPeriods, countChatPeriod } = await import("../store/chat-log.js");
+  const rows = listChatPeriods(sinceTs, untilTs, opts);
+  // ★총계는 **따로 센다** — 목록은 상한이 있어서 그걸 더하면 그 합도 잘린 값이다.
+  //  첫 판에 그렇게 썼다가 고쳤다([[project_hotpath_bound_preserve_record]]: 캡이 있는
+  //  자리에서 캡을 안 말하면 조용한 절삭이다).
+  const totals = countChatPeriod(sinceTs, untilTs);
+  return {
+    sinceTs,
+    untilTs,
+    sessions: rows.map((r) => ({
+      threadKey: r.threadKey,
+      channel: r.channel,
+      topic: r.sessionLabel,
+      messages: r.messages,
+      firstTs: r.firstTs,
+      lastTs: r.lastTs,
+    })),
+    totalSessions: totals.sessions,
+    totalMessages: totals.messages,
+  };
+};

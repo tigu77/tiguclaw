@@ -271,6 +271,88 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
+  // ── ⑥c ★키워드가 없는 회상 — 기간으로 훑는다 (2026-08-25 사용자 요청) ──────────
+  //  *"2주전에 주요 대화 주제가 뭔지"* · *"저번달에 집중한 주제"*. 이 길이 없으면 비서는
+  //  키워드를 **짐작해서** 두드린다 — 실측 한 턴에 `search_conversations` **56회**.
+  {
+    const { initStore, getDb, setThreadName } = await import("../../store/sessions.js");
+    const { recordChatMessage } = await import("../../store/chat-log.js");
+    const { browseConversationPeriod, parseDayBoundary } = await import("../../core/chat-search.js");
+    initStore();
+    const day = 86_400_000;
+    const base = Date.now() - 20 * day;
+    const mk = (suffix: string, name: string, n: number, at: number): string => {
+      const tk = `dashboard:regr-period-${suffix}-${Date.now()}`;
+      getDb()
+        .prepare(
+          `INSERT OR IGNORE INTO threads
+             (channel, channel_thread_id, claude_session_id, name, last_used_at, created_at)
+           VALUES ('dashboard', ?, 'x', ?, ?, ?)`,
+        )
+        .run(tk, name, at, at);
+      for (let i = 0; i < n; i++) {
+        recordChatMessage({ threadKey: tk, channel: "dashboard", role: "user", text: `말 ${i}`, ts: at } as never);
+      }
+      setThreadName(tk, name);
+      return tk;
+    };
+    // ★적게 한 쪽을 **더 최근**으로 둔다 — 안 그러면 "많이 한 순" 과 "최근 순" 이 같은
+    //  답을 내서, 정렬을 시간순으로 바꾸는 변이가 통과한다(첫 판에 실제로 통과했다).
+    mk("hot", "주제-많이한것", 9, base - 2 * 3_600_000);
+    mk("cold", "주제-조금한것", 2, base);
+    mk("out", "주제-기간밖", 7, base - 10 * day); // 창 밖 — 나오면 안 된다
+
+    const since = base - day;
+    const until = base + day;
+    const r = await browseConversationPeriod(since, until, { limit: 30 });
+    const topics = r.sessions.map((x) => x.topic);
+    out.push(
+      assert(
+        "★기간 안의 대화가 **주제(세션 이름)별로** 묶여 나온다",
+        topics.includes("주제-많이한것") && topics.includes("주제-조금한것"),
+        topics.slice(0, 5).join(" · "),
+      ),
+      assert(
+        "★많이 오간 주제가 먼저다(그게 '주로 무슨 얘기' 의 답이다)",
+        topics.indexOf("주제-많이한것") < topics.indexOf("주제-조금한것"),
+        `${topics.indexOf("주제-많이한것")} < ${topics.indexOf("주제-조금한것")}`,
+      ),
+      assert(
+        "★기간 밖은 안 나온다(창이 정말 걸리는가)",
+        !topics.includes("주제-기간밖"),
+        topics.includes("주제-기간밖") ? "★샜다" : "제외 확인",
+      ),
+      assert(
+        "메시지 수가 실제 건수다",
+        r.sessions.find((x) => x.topic === "주제-많이한것")?.messages === 9,
+        String(r.sessions.find((x) => x.topic === "주제-많이한것")?.messages),
+      ),
+    );
+
+    // ★총계는 **상한과 무관**해야 한다 — 목록을 더하면 그 합도 잘린 값이다(첫 판의 결함).
+    const capped = await browseConversationPeriod(since, until, { limit: 1 });
+    out.push(
+      assert(
+        "★목록이 잘려도 총계는 진짜 값이다(잘렸다는 사실을 말할 수 있어야 한다)",
+        capped.sessions.length === 1 &&
+          capped.totalSessions >= 2 &&
+          capped.totalMessages >= 11,
+        `보인 ${capped.sessions.length} / 전체 세션 ${capped.totalSessions} · 메시지 ${capped.totalMessages}`,
+      ),
+    );
+
+    // ★`YYYY-MM-DD` 는 **로컬 자정** — UTC 로 읽으면 한국에선 하루가 어긋난다.
+    const local = parseDayBoundary("2026-08-01");
+    const d = local === null ? null : new Date(local);
+    out.push(
+      assert(
+        "★날짜만 온 경우 로컬 자정으로 읽는다(UTC 로 읽으면 '8월' 이 하루 어긋난다)",
+        d !== null && d.getDate() === 1 && d.getHours() === 0 && d.getMonth() === 7,
+        d === null ? "파싱 실패" : d.toString().slice(0, 24),
+      ),
+    );
+  }
+
   // ── ⑦ ★판단이 핸들러에 없다 — 있으면 검사가 데몬을 띄워야 한다(Q7) ──────────
   {
     // ★2026-08-25: 조합(정규화→조회→스니펫→총건수)까지 코어로 올라갔다. 비서의

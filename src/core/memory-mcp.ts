@@ -22,7 +22,12 @@ import {
   type MemoryType,
 } from "../store/memory.js";
 import { getEventBus } from "./eventbus.js";
-import { searchConversations, MIN_QUERY_LEN } from "./chat-search.js";
+import {
+  searchConversations,
+  browseConversationPeriod,
+  parseDayBoundary,
+  MIN_QUERY_LEN,
+} from "./chat-search.js";
 import {
   collectInventory,
   formatInventoryForLlm,
@@ -150,6 +155,56 @@ const searchConversationsTool = tool(
   },
 );
 
+/**
+ * **그 무렵 무슨 얘기를 했나** — 키워드가 없을 때의 길 (2026-08-25 사용자 요청).
+ *
+ * ★`search_conversations` 와 **다른 질문**이라 도구를 나눈다. 저쪽은 *"언제 X 얘기했지?"*,
+ *  이쪽은 *"2주 전에 주로 뭘 했지?"* 다. 실측: 기간 훑기가 없을 때 비서는 키워드를 짐작해
+ *  `search_conversations` 를 **한 턴에 56회** 불렀다(답은 맞았지만 그건 운이다).
+ * ★요약 LLM 을 부르지 않는다 — **세션 표시명이 곧 그 대화의 주제**다(커스텀 이름 > 첫 발화).
+ *  이미 있는 판단으로 답이 서는데 새 판단을 만들 이유가 없다.
+ */
+const listConversationsTool = tool(
+  "list_conversations",
+  "기간을 주면 그때 오간 대화를 **세션(주제)별로 묶어** 보여줍니다. 많이 오간 순. " +
+    "「2주 전에 주로 무슨 얘기 했지?」·「저번 달에 집중한 주제는?」·「지난주에 뭐 했더라?」처럼 " +
+    "**키워드가 없는** 회상에 쓰는 도구 — 그럴 때 search_conversations 로 단어를 짐작해 " +
+    "여러 번 두드리지 마세요. 반환 = 주제(세션 이름)·메시지 수·기간·채널 + 전체 세션 수. " +
+    "구체적인 대목이 필요하면 그 다음에 search_conversations 로 파고드세요. " +
+    "날짜는 `YYYY-MM-DD`(로컬 날짜) 또는 ISO 시각.",
+  {
+    since: z.string().min(4),
+    until: z.string().min(4).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  },
+  async (args) => {
+    const sinceTs = parseDayBoundary(args.since);
+    if (sinceTs === null) return okJson({ ok: false, error: "bad_since", got: args.since });
+    const untilTs =
+      args.until === undefined ? Date.now() : parseDayBoundary(args.until, true);
+    if (untilTs === null) return okJson({ ok: false, error: "bad_until", got: args.until });
+    if (untilTs < sinceTs) return okJson({ ok: false, error: "until_before_since" });
+    const r = await browseConversationPeriod(sinceTs, untilTs, { limit: args.limit ?? 30 });
+    const day = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+    return okJson({
+      ok: true,
+      period: { from: day(r.sinceTs), to: day(r.untilTs) },
+      totalSessions: r.totalSessions,
+      totalMessages: r.totalMessages,
+      shown: r.sessions.length,
+      truncated: r.totalSessions > r.sessions.length,
+      sessions: r.sessions.map((x) => ({
+        topic: x.topic,
+        messages: x.messages,
+        from: day(x.firstTs),
+        to: day(x.lastTs),
+        channel: x.channel,
+        threadKey: x.threadKey,
+      })),
+    });
+  },
+);
+
 const addMemoryTool = tool(
   "add_memory",
   "새 메모리 추가 또는 동일 name 존재 시 UPSERT. 사용자에게 「기억할까요?」 묻지 말고 즉시 호출.",
@@ -254,6 +309,7 @@ const MEMORY_TOOLS = [
   readMemoryTool,
   searchMemoryTool,
   searchConversationsTool,
+  listConversationsTool,
   addMemoryTool,
   updateMemoryTool,
   deleteMemoryTool,

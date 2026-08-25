@@ -320,6 +320,83 @@ export const countChatLogMatches = (
   return row?.n ?? 0;
 };
 
+/**
+ * 기간 안의 **진짜** 총계 — 세션 수·메시지 수. `listChatPeriods` 는 상한이 있으므로
+ * 잘렸다는 사실을 말하려면 이게 따로 필요하다(목록을 더하면 그 합도 잘린 값이다).
+ */
+export const countChatPeriod = (
+  sinceTs: number,
+  untilTs: number,
+): { sessions: number; messages: number } => {
+  const visible = visibleSessionSql("t");
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(DISTINCT c.thread_key) AS s, COUNT(*) AS m
+         FROM chat_log c
+         JOIN threads t ON t.channel_thread_id = c.thread_key
+        WHERE ${[...visible.conds, "c.ts >= ?", "c.ts <= ?"].join("\n          AND ")}`,
+    )
+    .get(...visible.params, sinceTs, untilTs) as { s: number; m: number } | undefined;
+  return { sessions: row?.s ?? 0, messages: row?.m ?? 0 };
+};
+
+/**
+ * **기간 안에 오간 대화를 세션별로** 묶어 준다 — 키워드가 없을 때의 길 (2026-08-25).
+ *
+ * ★왜 필요했나 (사용자): *"2주전에 주요 대화 주제가 뭔지"* · *"저번달에 집중한 주제"*.
+ *  키워드 검색밖에 없으면 비서는 키워드를 **짐작해서** 두드린다 — 실측 한 턴에
+ *  `search_conversations` **56회**. 답은 맞았지만 그건 운이고 비용이다.
+ *
+ * ★세션 표시명이 곧 **그 대화의 주제**다(`sessionDisplayName`: 커스텀 이름 > 첫 발화).
+ *  그래서 요약 LLM 호출 없이, 이미 있는 판단만으로 답이 선다.
+ * ★가시성 판정은 검색과 **같은 것**(`visibleSessionSql`)을 쓴다 — 내부 파생·보관된 세션이
+ *  한쪽에만 나오면 사용자는 두 화면이 다른 세상을 말한다고 느낀다.
+ * ★정렬은 **많이 오간 순**이다 — 질문이 "주로 무슨 얘기" 이기 때문이다. 최근 순으로 두면
+ *  스치듯 지나간 대화가 맨 위에 온다.
+ */
+export const listChatPeriods = (
+  sinceTs: number,
+  untilTs: number,
+  opts?: { limit?: number },
+): Array<{
+  threadKey: string;
+  channel: string;
+  sessionLabel: string;
+  messages: number;
+  firstTs: number;
+  lastTs: number;
+}> => {
+  const limit = opts?.limit !== undefined && opts.limit > 0 ? Math.min(opts.limit, 200) : 30;
+  const visible = visibleSessionSql("t");
+  const rows = getDb()
+    .prepare(
+      `SELECT c.thread_key, c.channel, t.name AS thread_name,
+              COUNT(*) AS n, MIN(c.ts) AS first_ts, MAX(c.ts) AS last_ts
+         FROM chat_log c
+         JOIN threads t ON t.channel_thread_id = c.thread_key
+        WHERE ${[...visible.conds, "c.ts >= ?", "c.ts <= ?"].join("\n          AND ")}
+        GROUP BY c.thread_key
+        ORDER BY n DESC, last_ts DESC
+        LIMIT ?`,
+    )
+    .all(...visible.params, sinceTs, untilTs, limit) as Array<{
+    thread_key: string;
+    channel: string;
+    thread_name: string | null;
+    n: number;
+    first_ts: number;
+    last_ts: number;
+  }>;
+  return rows.map((r) => ({
+    threadKey: r.thread_key,
+    channel: r.channel,
+    sessionLabel: sessionDisplayName(r.thread_key, r.thread_name, getFirstUserText(r.thread_key)),
+    messages: r.n,
+    firstTs: r.first_ts,
+    lastTs: r.last_ts,
+  }));
+};
+
 export const searchChatLog = (
   like: string,
   opts?: { limit?: number; threadKey?: string; beforeTs?: number; beforeId?: number },

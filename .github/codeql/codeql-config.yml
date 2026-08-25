@@ -1,0 +1,46 @@
+# CodeQL 설정 — 무엇을 스캔하고 무엇을 왜 뺐는지.
+#
+# ★왜 파일로 두는가 (2026-08-25): 종전엔 GitHub 관리형(default setup)이라 조정할 자리가
+#  없었고, 경보 25건이 상시로 떠 있었다. 그중 실제 위험은 0이었지만 — **경보가 계속 쌓여
+#  있으면 다음에 진짜가 와도 안 보인다.** 개별 dismiss 로 치우면 판단 근거가 GitHub 안에만
+#  남고 레포엔 안 남는다. 여기 적으면 다음 사람이 "왜 뺐지" 를 코드에서 읽는다.
+#
+# ★뺀 것은 **판정이 틀린 것만**이다. 실제 위험이 있는데 시끄럽다고 빼면 그게 더 나쁘다.
+#  남겨 둔 `js/clear-text-logging` 은 실측(라이브 로그 12MB 시크릿 0건)상 낮지만 기제는
+#  살아 있어서(에러 객체를 통째로 로깅) 그대로 둔다 — 고칠 대상이지 뺄 대상이 아니다.
+
+name: "tiguclaw CodeQL"
+
+paths-ignore:
+  # 회귀 스위트·검증 스크립트 — **자기 검사 코드**다. 사용자 입력이 도달하지 않고,
+  # 공격 문자열을 일부러 픽스처로 들고 있어서 살균 규칙에 상시로 걸린다(실측 9건).
+  # 스위트가 매일 커지므로 그대로 두면 노이즈만 선형으로 는다.
+  - "src/scripts/regression/**"
+  - "scripts/**"
+  # 벤더링된 서드파티(하이라이터 등) — 우리가 고칠 코드가 아니다.
+  - "packages/dashboard/js/vendor/**"
+
+query-filters:
+  # ── 아래 넷은 **실측으로 오탐 판정**했다 (2026-08-25). 근거를 각각 적는다. ──
+
+  # HTML 태그 제거 정규식(`<[^>]+>`)이 불완전하다는 지적.
+  # 우리 두 소비처는 **DOM 살균이 아니다**:
+  #  ①`file-ops-mcp.stripHtmlToMarkdown` → 결과가 **모델 컨텍스트 텍스트**로 간다.
+  #    화면으로 갈 때는 대시보드가 다시 살균한다(태그 화이트리스트 + 전 속성 제거).
+  #  ②`telegram-channel.htmlToPlainText` → `parse_mode` **없이** 보내는 폴백 평문이다.
+  #    텔레그램이 HTML 로 해석하지 않으므로 최악이 "태그가 글자로 보임" 이다.
+  # ★실측(헤드리스, 실제 렌더러): XSS 페이로드 10종 전부 무력화, 실행 0건.
+  - exclude:
+      id: js/bad-tag-filter
+  - exclude:
+      id: js/incomplete-multi-character-sanitization
+
+  # `spawn("cmd", [배열])` 을 셸 주입으로 본다. 셸 문자열 조립이 아니라 **인자 배열**이고,
+  # 값은 `process.execPath` 와 우리가 만든 경로다(사용자 입력 미포함).
+  - exclude:
+      id: js/shell-command-injection-from-environment
+
+  # `Math.random` 을 지적하는데 그 자리는 `crypto.randomUUID()` 의 **폴백**이고,
+  # 용도가 대시보드 **탭 id** 다. 추측 가능해도 얻는 게 없다(포트 도달 자체가 권한).
+  - exclude:
+      id: js/insecure-randomness

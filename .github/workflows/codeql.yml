@@ -1,0 +1,42 @@
+# CodeQL — GitHub 관리형(default setup)에서 워크플로 방식으로 옮겼다 (2026-08-25).
+#
+# ★옮긴 이유: default setup 은 **설정 파일을 안 읽는다.** 경보 25건 중 실제 위험은 0이었는데
+#  (회귀 픽스처 9 · 살균 오탐 5 · 나머지 오탐 4 · 낮음 7) 조정할 자리가 없어 계속 쌓였다.
+#  경보가 쌓여 있으면 **다음에 진짜가 와도 안 보인다** — 이 레포가 게이트에서 반복해 겪은
+#  실패 모양이다([[feedback_gate_must_actually_run]]). 무엇을 왜 뺐는지는 config 에 있다.
+#
+# ★한 가지 대가: 이제 이 워크플로를 우리가 유지한다(액션 버전 등). ci.yml 과 같은 버전을
+#  쓴다 — 두 파일이 갈리면 하나는 반드시 뒤처진다.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 주 1회 — 새 규칙·새 취약점은 코드가 안 바뀌어도 나온다.
+    - cron: "37 5 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript-typescript", "actions"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

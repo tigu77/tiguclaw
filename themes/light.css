@@ -1,0 +1,98 @@
+/**
+ * Light — 번들 테마 프리셋.
+ *
+ * ★제품 기본은 다크(`app.css` 의 `:root`)이고, 이 파일은 그 위에 얹혀 **색 토큰만 갈아끼운다**
+ *  (`@layer tigu-preset`). 밝기를 별도 축으로 두지 않고 **테마 하나로** 두기로 한 결과다
+ *  (2026-08-26 사용자) — 고를 것이 `다크(기본)` · `light` 둘뿐이라 축이 하나다.
+ *
+ * ★**기본의 색 토큰을 빠짐없이 덮어야 한다.** 하나라도 빠지면 그 자리만 다크 값이 남아
+ *  흰 배경에 밝은 회색 글씨가 된다 — 화면은 멀쩡히 뜨고 에러도 안 난다. 회귀
+ *  `theme-light-covers-dark` 가 그걸 센다.
+ *
+ * 대비 규칙: 강조·의미색은 다크 톤(밝은 색)을 흰 배경에 그대로 쓰면 안 읽힌다. 같은
+ * 색상(hue)의 **어두운 단계**로 내리고 `--on-accent` 는 흰색으로 뒤집는다.
+ *
+ * 새 테마를 만들려면 이 파일을 `<home>/themes/<이름>.css` 로 복사해 값만 바꾸면 된다.
+ */
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --bg-soft: #eceef2;
+  --bg-grad-end: #eef0f4;
+  --bg-rgb: 246 247 249;
+  --bg-soft-rgb: 236 238 242;
+  --panel: rgba(255, 255, 255, 0.86);
+  --panel-solid: #ffffff;
+  --panel-solid-rgb: 255 255 255;
+  --card: rgba(15, 23, 42, 0.04);
+  --card-hover: rgba(15, 23, 42, 0.07);
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.22);
+  --text: #0f172a;
+  --text-mute: #475569;
+  --text-dim: #64748b;
+  --fg-plain: #0f172a;
+  --fg-rgb: 15 23 42;
+  --shadow: 0 18px 50px rgba(15, 23, 42, 0.14);
+  --shadow-rgb: 15 23 42;
+
+  --accent: #0284c7;
+  --accent-rgb: 2 132 199;
+  --accent-2: #7c3aed;
+  --accent-2-rgb: 124 58 237;
+  --good: #059669;
+  --good-rgb: 5 150 105;
+  --warn: #b45309;
+  --warn-rgb: 180 83 9;
+  --bad: #e11d48;
+  --bad-rgb: 225 29 72;
+  --info: #2563eb;
+  --info-rgb: 37 99 235;
+  --purple: #9333ea;
+  --purple-rgb: 147 51 234;
+  --teal: #0d9488;
+  --teal-rgb: 13 148 136;
+  --on-accent: #ffffff;
+  --on-accent-strong: #ffffff;
+
+  --danger-rgb: 220 38 38;
+  --muted-rgb: 100 116 139;
+  --skill-rgb: 109 40 217;
+  --gray-rgb: 71 85 105;
+  --steer-rgb: 180 83 9;
+  --flash-rgb: 202 138 4;
+  --mark-rgb: 180 83 9;
+  --mark-active-rgb: 194 65 12;
+  --diff-add-rgb: 22 128 61;
+  --diff-del-rgb: 185 28 28;
+
+  /* 코드 하이라이트 — GitHub Light 계열(vendored hljs 가 이 변수들을 읽는다). */
+  --syn-comment: #6e7781;
+  --syn-keyword: #8250df;
+  --syn-string: #0a3069;
+  --syn-number: #953800;
+  --syn-type: #0550ae;
+  --syn-variable: #953800;
+  --syn-attribute: #24292f;
+
+  --diff-add-fg: #1a7f37;
+  --diff-add-op: #116329;
+  --diff-del-fg: #cf222e;
+  --diff-del-op: #a40e26;
+  --danger-fg: #b91c1c;
+  --danger-soft: #dc2626;
+  --danger-softer: #ef4444;
+  --danger-pre: #b42318;
+  --unread: #c81e1e;
+  --agent-fg: #6d28d9;
+  --skill-fg: #5b21b6;
+  --cancel-armed-fg: #92400e;
+  --pending-fg: #1d4ed8;
+  --outbound-fg: #047857;
+  --tier-low-fg: #475569;
+  --cancelled-fg: #94a3b8;
+  --cancelled-badge-fg: #64748b;
+  --steer-fg: #92400e;
+  --select-fg: #0f172a;
+  --select-bg: #dbeafe;
+}

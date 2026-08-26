@@ -62,6 +62,15 @@ export interface PluginManifest {
   name: string;
   /** plugin 디렉토리 기준 상대 경로. default export = class. */
   entry: string;
+  /**
+   * ★제품의 일부인가 = **끄기 대상이 아닌가**(2026-08-26).
+   *
+   * 로더는 이 값으로 **아무 행동도 바꾸지 않는다** — 읽는 곳은 인벤토리와 토글 경로다.
+   * ★**번들에서만 유효**하다: 유효성은 선언이 아니라 **위치**로 판정한다(레포 `plugins/`).
+   *  자기가 자기를 "핵심" 이라 선언하면 검증할 방법이 없기 때문이다 — 설치된 플러그인이
+   *  적어도 코어가 되지 않는다.
+   */
+  core?: boolean;
 }
 
 export interface LoadedPlugin {
@@ -74,7 +83,23 @@ export interface LoadedPlugin {
   instance: unknown;
 }
 
-const KNOWN_CAPABILITIES = new Set(["channel", "observer", "trigger", "service"]);
+/**
+ * 로더가 아는 capability.
+ *
+ * ★`provider` 는 **로더가 start 훅을 부르지 않는** 값인데도 여기 있다(2026-08-26). 종전엔
+ *  빠져 있었고, 그래서 `kind` 한 필드를 **두 소비자가 서로 다른 사전으로** 읽었다 —
+ *  로더는 넷을 알고 `core/plugins/providers.ts` 만 `provider` 를 안다(모듈 카드용).
+ *  결과: `kind:["provider"]` 만 적은 플러그인은 **카드는 뜨는데 로더엔 안 뜨는** 반쪽
+ *  상태가 된다(아래 `hasKnown` 이 skip 하므로). 사전을 하나로 합쳐서 그 구멍을 막는다.
+ *  ★소비자가 둘인 건 괜찮다. 아는 값 목록이 둘인 게 사고다.
+ */
+const KNOWN_CAPABILITIES = new Set([
+  "channel",
+  "observer",
+  "trigger",
+  "service",
+  "provider",
+]);
 
 const publishError = (
   eventBus: EventBus | undefined,
@@ -135,8 +160,21 @@ export const loadPlugins = async (
         continue;
       }
 
-      // 알려진 capability 가 하나도 없으면 skip (V1 trigger 등 미지원도 silent).
-      const hasKnown = capabilities.some((c) => KNOWN_CAPABILITIES.has(c));
+      // ★모르는 값은 **조용히 버리지 않는다**(2026-08-26). 종전엔 로그가 0이라
+      //  `kind:["chanel"]` 같은 오타가 플러그인을 통째로 사라지게 하고도 아무 흔적을 안
+      //  남겼고, `["observer","chanel"]` 은 절반만 무시된 채 떴다. 둘 다 무음이었다.
+      const unknown = capabilities.filter((c) => !KNOWN_CAPABILITIES.has(c));
+      const hasKnown = capabilities.length > unknown.length;
+      if (unknown.length > 0) {
+        const known = [...KNOWN_CAPABILITIES].join(", ");
+        console.warn(
+          `[plugin-loader] ${entryName}: kind 에 알 수 없는 값 ${JSON.stringify(unknown)} ` +
+            `— 아는 값은 [${known}]. ` +
+            (hasKnown
+              ? "이 값만 무시하고 나머지로 로드합니다."
+              : "아는 값이 하나도 없어 이 플러그인을 건너뜁니다."),
+        );
+      }
       if (!hasKnown) continue;
 
       if (
@@ -158,6 +196,7 @@ export const loadPlugins = async (
         kind: m.kind as string | string[],
         name: m.name,
         entry: m.entry,
+        ...(m.core === true ? { core: true } : {}),
       };
 
       // 사용자 비활성(ADR 2026-07-17-module-capability-model §5.6 MVP) — settings.json

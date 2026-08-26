@@ -48,6 +48,7 @@ import {
 } from "../../src/core/plugins/inventory.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { collectModules } from "../../src/core/plugins/providers.js";
+import { isCoreModule } from "../../src/core/plugins/inventory.js";
 import {
   loadModelProfiles,
   loadGatewayConfig,
@@ -55,6 +56,7 @@ import {
   setDefaultProfile,
   setSuggestionEnabled,
   setLocale,
+  setTheme,
   setEgressChannels,
   readEgressChannels,
   setModuleDisabled,
@@ -203,7 +205,15 @@ const HISTORY_EXCLUDE = new Set<string>(["llm.delta", "llm.sdk_message"]);
 // 대시보드 UI 자체가 안 뜨고, http-bridge(자기 자신)가 꺼지면 이 API 자체가 죽는다.
 // 막지 않는다(사용자 결정, 파괴적-행위 소프트 게이트) — /set-module-enabled 응답에
 // warning:"critical" 만 실어 프런트가 danger 확인 UX 를 붙이게 한다.
-const CRITICAL_MODULE_NAMES = new Set<string>(["dashboard", "http-bridge"]);
+// ★`http-bridge` 는 여기서 빠졌다(2026-08-26) — 이제 **manifest 선언**(`tiguclaw.core`)으로
+// 읽고 `isCoreModule()` 이 판정한다. 코어는 경고가 아니라 **거절**이다: 브리지를 끄면
+// 대시보드가 죽고, 무엇보다 다시 켤 경로(`setModuleDisabled` 호출부)가 여기 하나뿐이라
+// **제품 안에서 되돌릴 수 없게 된다.**
+//
+// ★남은 하나(`dashboard`)는 **의존이 아니라 자기참조**다 — 끈다고 남이 깨지진 않지만 토글을
+//  누르는 **그 화면**을 잃는다. 유도할 수 없는 성질이라 목록으로 남긴다. 막지는 않는다
+//  (사용자 결정, 파괴적-행위 소프트 게이트) — `warning:"critical"` 로 확인만 받는다.
+const SELF_REFERENTIAL_MODULE_NAMES = new Set<string>(["dashboard"]);
 
 // ── 첨부 intake (#2, 2026-07-08) — 대시보드 채팅이 붙여넣은 파일을 홈에 저장 → Attachment[]. ──
 // 텔레그램 첨부 경로와 동형(진실 소스 = Attachment 계약, <home>/data/attachments/<channel>/
@@ -1395,6 +1405,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
               : pathname === "/set-locale" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
+              : pathname === "/set-theme" && method === "POST"
+                ? "write" // 설정 파일을 쓴다 — set-locale 과 같은 등급(테마 프리셋).
               : pathname === "/set-profile-color" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-default-profile 과 같은 등급.
               : pathname === "/set-module-enabled" && method === "POST"
@@ -1981,6 +1993,36 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
+    // /set-theme — 테마 프리셋. write 게이트(위 role 표). body { theme?: string|null }
+    // ★판정은 코어(`setAppearance`·`setTheme`) 한 곳이다 — 여기서 목록을 다시 들면 두 곳이
+    //  갈린다(`/set-locale` 과 같은 규약). `theme: null` 은 해제다.
+    if (pathname === "/set-theme" && method === "POST") {
+      let tbody: Record<string, unknown>;
+      try {
+        tbody = await readJsonBody(req);
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 400, { error: `invalid body: ${m}` });
+        return;
+      }
+      try {
+        const changed: Record<string, unknown> = {};
+        if (tbody.theme !== undefined) {
+          const want = typeof tbody.theme === "string" ? tbody.theme.trim() : "";
+          if (!setTheme(want === "" ? undefined : want)) {
+            writeJson(res, 400, { error: `'${want}' 테마가 설치돼 있지 않습니다` });
+            return;
+          }
+          changed.theme = want;
+        }
+        writeJson(res, 200, { ok: true, ...changed });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        writeJson(res, 500, { error: m });
+      }
+      return;
+    }
+
     // /set-egress — "이 답도 함께 보낼" 추가 채널(전역). write 게이트(위 role 표).
     // body { channels: string[] }. settings.json 의 egress.channels 한 키만
     // read-modify-write. ★서버에 두는 이유: 브라우저에만 있으면 서버가 스스로 만드는
@@ -2138,8 +2180,22 @@ class HttpBridge implements Channel, Observer {
           });
           return;
         }
+        // ★코어는 끄기 대상이 아니다 — 거절한다(2026-08-26). 켜기는 통과시킨다(되돌리기는
+        //  언제나 열려 있어야 한다). 판정은 손 목록이 아니라 manifest 선언이다.
+        if (!enabled && isCoreModule(name)) {
+          writeJson(res, 400, {
+            ok: false,
+            name,
+            error:
+              `'${name}' 은 코어 모듈이라 끌 수 없습니다 — 끄면 대시보드와 이 API 가 함께 ` +
+              "멈추고, 다시 켤 경로도 여기 하나뿐이라 제품 안에서 되돌릴 수 없게 됩니다.",
+          });
+          return;
+        }
         setModuleDisabled(name, !enabled);
-        const warning = CRITICAL_MODULE_NAMES.has(name) ? "critical" : undefined;
+        const warning = SELF_REFERENTIAL_MODULE_NAMES.has(name)
+          ? "critical"
+          : undefined;
         writeJson(res, 200, {
           ok: true,
           name,

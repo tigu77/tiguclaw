@@ -15,6 +15,31 @@
     <link rel="icon" type="image/png" href="/icon.png" />
     <link rel="apple-touch-icon" href="/icon.png" />
     <link rel="stylesheet" href="/app.css" />
+    <!-- ★선택된 테마 프리셋 — `settings.json` 의 `theme` → `themes/<이름>.css`.
+         언어와 같은 모양이다(`locales/*.json` + `locale`). 서버가 이름을 고르므로 URL 엔
+         이름이 없다. 고른 게 없으면 빈 200 이라 기본 팔레트가 그대로다. -->
+    <link id="theme-preset" rel="stylesheet" href="/theme-preset.css" />
+    <!-- ★사용자 테마 오버라이드 — `<home>/theme.css`. **app.css 뒤**라 캐스케이드가 병합을
+         대신한다(적은 것만 덮이고 나머지는 기본값). 없으면 서버가 빈 200 을 준다.
+         ★비서도 이 파일을 고칠 수 있다 — "테마 좀 더 어둡게" 가 되는 자리다. -->
+    <link id="user-theme" rel="stylesheet" href="/theme.css" />
+    <!-- ★테마 상태 주입 — 서버가 이 한 줄을 치환한다(언어 카탈로그와 같은 방식).
+         설정 화면의 「테마」 줄이 목록·현재값을 여기서 읽는다. -->
+    <script id="tigu-appearance">window.__TIGU_THEME__ = { theme: "", themes: [] };</script>
+    <script>
+      (function () {
+        // ★"바로바로 반영" — 창이 다시 활성화되면 테마 CSS 를 다시 읽는다. 파일 감시자도
+        //  SSE 도 새로 만들지 않는다(오버라이드 두 파일에 배관을 늘릴 값이 없다).
+        document.addEventListener("visibilitychange", function () {
+          if (document.visibilityState !== "visible") return;
+          var t = Date.now();
+          var pre = document.getElementById("theme-preset");
+          if (pre) pre.href = "/theme-preset.css?v=" + t;
+          var usr = document.getElementById("user-theme");
+          if (usr) usr.href = "/theme.css?v=" + t;
+        });
+      })();
+    </script>
     <!-- vendored 마크다운 파서 (marked v4, 단일파일·외부 의존 0·CDN 0). 봇 답변 렌더에만 사용. -->
     <script src="/marked.min.js"></script>
     <!-- vendored 코드 하이라이터 (highlight.js v11, 단일파일·외부 의존 0·CDN 0). 코드블록 렌더. -->

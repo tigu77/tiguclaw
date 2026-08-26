@@ -5,8 +5,12 @@
   "type": "module",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": ["channel", "observer"],
+    "kind": [
+      "channel",
+      "observer"
+    ],
     "name": "http-bridge",
-    "entry": "./index.ts"
+    "entry": "./index.ts",
+    "core": true
   }
 }

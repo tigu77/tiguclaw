@@ -35,8 +35,16 @@ const run = async (): Promise<Assertion[]> => {
   if (rootBlock === null) {
     return [assert("★`:root` 토큰 블록이 있다", false, "사라졌다 — 테마 축 자체가 없다")];
   }
-  // 토큰 정의는 리터럴이어야 한다(거기가 값이 사는 자리다) → 누수 계산에서 뺀다.
-  const body = css.slice(0, rootBlock.index) + css.slice(rootBlock.index + rootBlock[0].length);
+  // ★토큰 **정의 블록**은 이제 둘이다 — 다크 `:root` 와 라이트 `:root[data-theme="light"]`
+  //  (2026-08-26 라이트 스킴). 정의는 리터럴이어야 하므로 둘 다 누수 계산에서 뺀다.
+  //  ★"밖" 의 뜻은 *어느 팔레트 블록에도 안 속한 자리* 다 — 라이트를 빼먹으면 라이트 블록의
+  //  45개 리터럴이 전부 "누수" 로 잡혀 검사가 거짓 빨간불이 된다(실제로 그렇게 걸렸다).
+  const lightBlock = /:root\[data-theme="light"\]\s*\{([^}]*)\}/.exec(css);
+  const cut = [rootBlock, lightBlock]
+    .filter((b): b is RegExpExecArray => b !== null)
+    .sort((a, b) => b.index - a.index);
+  let body = css;
+  for (const b of cut) body = body.slice(0, b.index) + body.slice(b.index + b[0].length);
 
   // ── ① 색 리터럴 0 ─────────────────────────────────────────────────────────
   const hexes = body.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];

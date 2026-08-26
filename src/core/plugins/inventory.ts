@@ -67,6 +67,12 @@ export interface PluginEntry {
   description?: string;
   source: string; // 절대 경로 또는 "in-process:<id>"
   enabled: boolean; // (b) 만 settings cross-ref. 그 외 항상 true (V1).
+  /**
+   * ★제품의 일부인가 = **끄기 대상이 아닌가**(manifest `tiguclaw.core`, 2026-08-26).
+   * **번들에서만 채운다** — 유효성을 선언이 아니라 **위치**로 판정하기 때문이다
+   * (설치된 플러그인이 자기를 코어라 선언해도 코어가 되지 않는다).
+   */
+  core?: boolean;
   metadata?: Record<string, unknown>;
 }
 
@@ -240,6 +246,7 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
         name?: string;
         schemaVersion?: number;
         entry?: string;
+        core?: boolean;
       };
       // kind 는 문자열 또는 배열(예 http-bridge: ['channel','observer']) — 정규화해 검사.
       const kinds = Array.isArray(marker.kind)
@@ -257,6 +264,7 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
         // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 동일 판정
         // (settings.json modules.disabled). "disabled" ≠ "inactive" — 이건 명시 off.
         enabled: !isModuleDisabled(marker.name),
+        ...(marker.core === true ? { core: true } : {}),
         metadata: {
           kind: kinds.join(", "),
           schemaVersion: marker.schemaVersion,
@@ -268,6 +276,28 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
     }
   }
   return out;
+};
+
+/**
+ * ★번들 플러그인 이름 → **끄기 대상이 아닌가**(manifest `tiguclaw.core`, 2026-08-26).
+ *
+ * 종전엔 이 판정이 **손 목록 두 벌**이었다 — `plugins/http-bridge/index.ts` 의
+ * `CRITICAL_MODULE_NAMES` 와 그것을 베낀 `packages/dashboard/js/view-providers.js` 의 미러
+ * (그 미러 주석이 스스로 *"드리프트된 경우 대비"* 라고 적고 있었다). 이제 **선언**으로 읽는다.
+ *
+ * ★**레포 `plugins/` 만 본다** — 유효성을 선언이 아니라 **위치**로 판정한다. 설치된
+ *  플러그인이 `core:true` 를 적어도 여기 안 걸린다(자기 선언은 검증할 수 없다).
+ */
+export const isCoreModule = (name: string): boolean => {
+  const root = path.join(appRoot(), "plugins");
+  for (const dir of safeReaddir(root)) {
+    const pkg = safeReadJson(path.join(root, dir, "package.json")) as
+      | { tiguclaw?: { name?: string; core?: boolean } }
+      | undefined;
+    const m = pkg?.tiguclaw;
+    if (m?.name === name) return m.core === true;
+  }
+  return false;
 };
 
 // 번들 비채널 플러그인 (appRoot/plugins/* 중 kind 에 "channel" 없는 것 — service·trigger·
@@ -284,7 +314,7 @@ const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
         | { tiguclaw?: Record<string, unknown>; description?: string }
         | undefined;
       const m = pkg?.tiguclaw as
-        | { kind?: string | string[]; name?: string }
+        | { kind?: string | string[]; name?: string; core?: boolean }
         | undefined;
       if (!m || typeof m !== "object") continue;
       const kinds = Array.isArray(m.kind)
@@ -302,6 +332,7 @@ const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
         source: pluginDir,
         // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 동일 판정.
         enabled: !isModuleDisabled(m.name),
+        ...(m.core === true ? { core: true } : {}),
         metadata: { kind: kinds.join(", ") },
       });
     } catch {

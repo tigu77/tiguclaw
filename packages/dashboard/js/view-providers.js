@@ -90,11 +90,12 @@
       // loadPlugins skip 대상이라 토글이 있어야 하므로 kind 리터럴 대신 이 방식을 쓴다.
       const normModuleKey = (s) => String(s || "").trim().toLowerCase().replace(/[\s_]+/g, "-");
 
-      // 백엔드 CRITICAL_MODULE_NAMES 미러(plugins/http-bridge/index.ts) — 비활성화 클릭 시 *POST
-      // 전* 확인 게이트용(파괴적-행위 소프트 게이트, feedback_destructive_actions_soft_enforcement:
-      // 막지 않되 명시 확인). 서버가 이후에도 warning:"critical" 을 실어주면(이 미러가 드리프트된
-      // 경우 대비) 성공 토스트에서 추가로 강조한다 — 이중 방어, 프런트가 막지는 않음.
-      const CRITICAL_MODULE_NAMES = new Set(["dashboard", "http-bridge"]);
+      // ★손 목록 미러였다(2026-08-26 제거). `http-bridge` 는 이제 **manifest 선언**
+      // (`tiguclaw.core`)을 인벤토리가 실어주므로 `item.core` 로 읽고, 코어면 토글 자체를
+      // 안 그린다(서버도 거절한다 — 이중 방어). 남은 `dashboard` 는 의존이 아니라
+      // **자기참조**(끄면 이 화면을 잃는다)라 유도할 수 없어 목록으로 남는다. 막지는 않고
+      // 확인만 받는다(파괴적-행위 소프트 게이트).
+      const SELF_REFERENTIAL_MODULE_NAMES = new Set(["dashboard"]);
 
       const findInventoryMatch = (item, invIndex) => {
         const candidates = [item.name, String(item.id || "").replace(/^(channel|plugin)\./, "")];
@@ -121,6 +122,7 @@
           if (match) {
             item.moduleName = match.name;
             item.moduleEnabled = match.enabled;
+            if (match.core === true) item.core = true;
             seen.add(normModuleKey(match.name));
           }
         }
@@ -142,6 +144,7 @@
               actions: [],
               moduleName: e.name,
               moduleEnabled: e.enabled,
+              ...(e.core === true ? { core: true } : {}),
             });
           }
         };
@@ -164,7 +167,7 @@
 
       const onModuleToggleClick = async (provider, btn) => {
         const nextEnabled = !provider.moduleEnabled;
-        if (!nextEnabled && CRITICAL_MODULE_NAMES.has(provider.moduleName)) {
+        if (!nextEnabled && SELF_REFERENTIAL_MODULE_NAMES.has(provider.moduleName)) {
           const proceed = window.confirm(
             i18n("modules.disable.confirm"),
           );
@@ -291,7 +294,10 @@
         // 모듈 활성/비활성 토글(P4a-2) — moduleName 이 해석된(=인벤토리에서 이름이 발견된) 항목만.
         // 코어 프로바이더(daemon/memory/schedule/plugin-registry)는 moduleName 이 없어 토글이
         // 자연히 안 붙는다(가드1, 코드 분기 없이 유지).
-        if (provider.moduleName) shell.appendChild(renderModuleToggleControls(provider));
+        // ★코어 모듈은 토글을 그리지 않는다 — 끄기 대상이 아니다(서버도 거절한다).
+        if (provider.moduleName && provider.core !== true) {
+          shell.appendChild(renderModuleToggleControls(provider));
+        }
         shell.appendChild(summaryGrid);
         const caps = Array.isArray(provider.capabilities) ? provider.capabilities : [];
         if (caps.length > 0) {

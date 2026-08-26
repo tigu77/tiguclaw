@@ -39,6 +39,11 @@ const NOT_SHIPPED = [
   // 비전 정본 — 내부 실측(메모리 구성·인스턴스 수치)과 `docs/decisions/` 참조를 담고 있어
   // 배포본에선 끊긴 링크가 된다. 공개용 비전이 필요하면 **밖을 향해 따로 쓴다**(2026-08-25).
   "docs/vision.md",
+  // 로드맵 — dev 작업 목록. 내부 품질 갭("여기 그물이 없다")과 개인 사용 통계가 실려 있고
+  // `docs/decisions/` 참조가 배포본에선 끊긴다(2026-08-26).
+  "docs/roadmap.md",
+  // 비즈니스 비전 — 상용 전략 + "지금 백엔드로는 팔면 약관 위반" 이라는 자기 진술(2026-08-26).
+  "docs/vision-business.md",
 ];
 /** 배포 manifest 가 빼는 개발 전용 문서 — 검사 대상에서도 빠진다. */
 const DEV_ONLY = [...NOT_SHIPPED, "CLAUDE.md", "PROJECT.md", "_workspace/", ".claude/", ".tiguclaw/"];

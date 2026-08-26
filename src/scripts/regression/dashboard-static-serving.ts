@@ -128,7 +128,12 @@ export const check: RegressionCheck = {
           });
           const len = (await r.arrayBuffer()).byteLength;
           // 200 이어도 본문이 비면 서빙된 게 아니다(읽기 실패를 200 으로 덮는 경우).
-          if (!r.ok || len === 0) bad.push(`${a} → ${r.status}/${len}B`);
+          // ★예외 하나 — 사용자 테마 오버라이드(`<home>/theme.css`)는 **비어 있는 게 정상**
+          //  이다(2026-08-26). 없을 때 404 를 주면 콘솔에 매번 에러가 찍혀 진짜 문제를 덮으므로
+          //  빈 200 으로 답한다. 이 자산만 크기 조건에서 빼고, 지키는 것(404 조용한 실패)은 그대로.
+          // 프리셋(고른 게 없을 때)과 개인 오버라이드(파일이 없을 때) 둘 다 빈 200 이 정상이다.
+          const mayBeEmpty = a === "/theme.css" || a === "/theme-preset.css";
+          if (!r.ok || (len === 0 && !mayBeEmpty)) bad.push(`${a} → ${r.status}/${len}B`);
         } catch (e) {
           bad.push(`${a} → ${(e as Error).message}`);
         }

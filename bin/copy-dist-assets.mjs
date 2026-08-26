@@ -59,8 +59,16 @@ const copyFile = async (rel) => {
   log(`file: ${rel}`);
 };
 
-/** 디렉터리 트리 복사. filter 로 .ts 제외 가능. */
-const copyTree = async (rel, { excludeTs = false } = {}) => {
+/**
+ * 디렉터리 트리 복사. filter 로 .ts 제외 가능.
+ *
+ * ★`prune` 이면 **먼저 지우고 복사한다**(2026-08-26). `fs.cp` 는 덮어쓰기만 하고 **원본에서
+ *  사라진 파일은 dist 에 남긴다.** 실사고: `themes/nord.css` 를 지우고 배포했는데 배포본엔
+ *  그대로 남아 테마 목록에 계속 떴다 — 목록의 정본이 "파일" 인 구조라 **지운 것이 안 지워지면
+ *  그 자체가 거짓말**이 된다. 목록을 파일로 정하는 트리(`themes`·`locales`)엔 필수다.
+ *  ★`plugins`·`packages` 엔 tsc 산출물(`.js`)이 **먼저** 들어와 있으므로 지우면 안 된다.
+ */
+const copyTree = async (rel, { excludeTs = false, prune = false } = {}) => {
   const src = path.join(repoRoot, rel);
   const dest = path.join(dist, rel);
   try {
@@ -69,12 +77,13 @@ const copyTree = async (rel, { excludeTs = false } = {}) => {
     log(`skip (absent): ${rel}/`);
     return;
   }
+  if (prune) await fs.rm(dest, { recursive: true, force: true });
   await fs.cp(src, dest, {
     recursive: true,
     // 디렉터리는 이름이 .ts 로 안 끝나므로 통과 → 재귀 유지. .ts 파일만 제외.
     filter: excludeTs ? (s) => !s.endsWith(".ts") : undefined,
   });
-  log(`tree: ${rel}/${excludeTs ? " (non-.ts)" : ""}`);
+  log(`tree: ${rel}/${excludeTs ? " (non-.ts)" : ""}${prune ? " [prune]" : ""}`);
 };
 
 const main = async () => {
@@ -98,7 +107,11 @@ const main = async () => {
   await copyTree("agents");
   // ★언어 카탈로그 (2026-08-25) — appRoot()-상대 자산이라 dist 에 실재해야 배포본에서
   //  기본 문구가 나온다. 빠지면 카탈로그가 비어 화면이 키(nav.settings)로 뜬다.
-  await copyTree("locales");
+  await copyTree("locales", { prune: true });
+  // ★테마 프리셋 (2026-08-26) — 언어 카탈로그와 같은 이유다. appRoot()-상대 자산이라
+  //  dist 에 실재해야 배포본에서 프리셋 목록이 보인다. 빠지면 고른 테마가 조용히 무시된다
+  //  (`readTheme` 이 "설치 안 된 이름" 으로 보고 빈 문자열을 준다).
+  await copyTree("themes", { prune: true });
 
   // 2) 플러그인 트리의 비-.ts 자산 → dist/plugins (특히 로더 발견의 근거인 package.json).
   //    .ts 는 tsc 가 dist/plugins/**/*.js 로 이미 emit — 여기선 제외하고 나머지만 미러.

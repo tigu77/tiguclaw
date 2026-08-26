@@ -18,7 +18,6 @@ import {
 } from "./store/channel-session.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
-import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Channel,
   ChannelName,
@@ -31,7 +30,6 @@ import {
   setChannelPresence,
   type ChannelPresence,
 } from "./core/channel-registry.js";
-import { registerMcpServer } from "./core/mcp-registry.js";
 import {
   expandCommand,
   isEphemeralCommandText,
@@ -47,6 +45,7 @@ import {
   formatInventoryForUser,
 } from "./core/plugins/inventory.js";
 import { loadPlugins } from "./core/plugins/loader.js";
+import { wirePlugin } from "./core/plugins/wire.js";
 import {
   startSelfMaintenance,
   stopSelfMaintenance,
@@ -163,7 +162,6 @@ import {
 import {
   registerChannelOutbound,
   getChannelOutbound,
-  type ChannelOutbound,
 } from "./core/channel-outbound.js";
 import {
   beginChannelActivity,
@@ -381,198 +379,11 @@ try {
     bus,
   );
   for (const lp of loaded) {
-    const inst = lp.instance as {
-      name?: string;
-      start?: (arg: unknown) => Promise<void>;
-      startChannel?: (handler: MessageHandler) => Promise<void>;
-      startObserver?: (eventBus: EventBus) => Promise<void>;
-      startTrigger?: (eventBus: EventBus) => Promise<void>;
-      startService?: (eventBus: EventBus) => Promise<void>;
-      stop?: () => Promise<void>;
-      getMcpServer?: () => McpSdkServerConfigWithInstance | undefined;
-      outbound?: ChannelOutbound;
-      status?: "up" | "disabled";
-    };
-    const relDir = path.relative(appRoot(), lp.pluginDir);
-
-    // ─── MCP server registration (scheduler v1 §8.1 대안 C) ──────────────────
-    // capability 무관 — plugin 인스턴스가 in-process MCP server 를 export 하면
-    // registry 에 박는다. router 가 영역 A 호출 시 extraMcpServers 로 전달.
-    if (typeof inst.getMcpServer === "function") {
-      try {
-        // ★부팅 땐 "있는지"만 확인하고, 실제 인스턴스는 **턴마다** 팩토리로 만든다
-        //  (2026-08-10). 여기서 만든 하나를 registry 에 담아두면 프로세스 싱글턴이
-        //  되고, 동시 턴에서 MCP transport 가 충돌한다 — mcp-registry.ts 주석 참조.
-        const server = inst.getMcpServer();
-        if (server !== undefined) {
-          const getMcpServer = inst.getMcpServer.bind(inst);
-          registerMcpServer(lp.manifest.name, () => {
-            const fresh = getMcpServer();
-            if (fresh === undefined) {
-              throw new Error(
-                `plugin '${lp.manifest.name}' getMcpServer() 가 이번엔 undefined 를 돌려줬습니다`,
-              );
-            }
-            return fresh;
-          });
-          console.log(
-            `registered mcp server from plugin: ${lp.manifest.name} (from ${relDir})`,
-          );
-        }
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(
-          `[plugin-loader] mcp server registration ${lp.manifest.name} failed: ${reason}`,
-        );
-      }
-    }
-
-    // ─── channel capability 등록 (start* 호출은 아래 channels.start loop 가 담당) ──
-    if (lp.capabilities.includes("channel")) {
-      const channelName =
-        typeof inst.name === "string" ? inst.name : lp.manifest.name;
-      const conflict = channels.some((c) => c.name === channelName);
-      if (conflict) {
-        console.warn(
-          `channel plugin "${lp.manifest.name}" skipped (name conflict with hardcoded)`,
-        );
-      } else {
-        // hybrid 의 경우 startChannel 우선, 단일 capability 면 start fallback.
-        const startFn =
-          typeof inst.startChannel === "function"
-            ? inst.startChannel.bind(inst)
-            : (inst.start as (h: MessageHandler) => Promise<void>).bind(inst);
-        const stopFn =
-          typeof inst.stop === "function"
-            ? inst.stop.bind(inst)
-            : async (): Promise<void> => {
-                /* no-op */
-              };
-        channels.push({
-          name: channelName,
-          start: startFn,
-          stop: stopFn,
-          // presence 상태 forward(D1(b), §12.3) — 플러그인 채널은 wrapper 로 push 되므로
-          // 인스턴스가 선언한 status 를 duck-type 으로 읽어 wrapper 에 실어야 presence 루프가
-          // 본다(inst.outbound → registerChannelOutbound forward 와 동형). 미선언 = 미포함
-          // → presence `?? "up"`(회귀 0).
-          ...(inst.status !== undefined ? { status: inst.status } : {}),
-        });
-        // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — plugin 이 `outbound` 를 표명하면
-        // loader 가 duck-typing 으로 읽어 코어 레지스트리에 등록(startChannel 과 동형, §0 준수:
-        // core→plugin import 0). http-bridge = 관측-전용(deliver 없음) 이지만 *등록*은 한다
-        // ("미등록/unsupported" 과 구분). 코어 채널은 아래 channels.start 루프가 등록.
-        if (inst.outbound !== undefined) {
-          registerChannelOutbound(channelName, inst.outbound);
-        }
-        console.log(
-          `loaded channel plugin: ${lp.manifest.name} (from ${relDir})`,
-        );
-      }
-    }
-
-    // ─── trigger capability — startTrigger(bus) 즉시 호출 (observer 동형) ─────
-    if (lp.capabilities.includes("trigger")) {
-      const startFn =
-        typeof inst.startTrigger === "function"
-          ? inst.startTrigger.bind(inst)
-          : (inst.start as (b: EventBus) => Promise<void>).bind(inst);
-      try {
-        await startFn(bus);
-        console.log(
-          `loaded trigger plugin: ${lp.manifest.name} (from ${relDir})`,
-        );
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(
-          `[plugin-loader] trigger ${lp.manifest.name} start failed: ${reason}`,
-        );
-        try {
-          bus.publish({
-            type: "plugin.error",
-            ts: Date.now(),
-            payload: {
-              pluginName: lp.manifest.name,
-              phase: "start",
-              error: reason,
-            },
-          });
-        } catch {
-          // bus 자체 throw — 무시.
-        }
-      }
-    }
-
-    // ─── observer capability — start(bus) 즉시 호출 (기존 동작 보존) ─────────────
-    if (lp.capabilities.includes("observer")) {
-      const startFn =
-        typeof inst.startObserver === "function"
-          ? inst.startObserver.bind(inst)
-          : (inst.start as (b: EventBus) => Promise<void>).bind(inst);
-      try {
-        await startFn(bus);
-        console.log(
-          `loaded observer plugin: ${lp.manifest.name} (from ${relDir})`,
-        );
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(
-          `[plugin-loader] observer ${lp.manifest.name} start failed: ${reason}`,
-        );
-        try {
-          bus.publish({
-            type: "plugin.error",
-            ts: Date.now(),
-            payload: {
-              pluginName: lp.manifest.name,
-              phase: "start",
-              error: reason,
-            },
-          });
-        } catch {
-          // bus 자체 throw — 무시.
-        }
-      }
-    }
-
-    // ─── service capability — startService(bus) 즉시 호출 (trigger/observer 동형) ──
-    // 외부 프로세스(대시보드 등) 기동·정리. stop() 은 shutdown 이 일괄 호출.
-    if (lp.capabilities.includes("service")) {
-      const startFn =
-        typeof inst.startService === "function"
-          ? inst.startService.bind(inst)
-          : (inst.start as (b: EventBus) => Promise<void>).bind(inst);
-      try {
-        await startFn(bus);
-        if (typeof inst.stop === "function") {
-          serviceStops.push({
-            name: lp.manifest.name,
-            stop: inst.stop.bind(inst),
-          });
-        }
-        console.log(
-          `loaded service plugin: ${lp.manifest.name} (from ${relDir})`,
-        );
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(
-          `[plugin-loader] service ${lp.manifest.name} start failed: ${reason}`,
-        );
-        try {
-          bus.publish({
-            type: "plugin.error",
-            ts: Date.now(),
-            payload: {
-              pluginName: lp.manifest.name,
-              phase: "start",
-              error: reason,
-            },
-          });
-        } catch {
-          // bus 자체 throw — 무시.
-        }
-      }
-    }
+    // ★배선은 **플러그인별로 격리**된다(`core/plugins/wire.ts`) — 하나가 kind 를 잘못
+    //  선언하거나 start 에서 던져도 나머지는 그대로 붙는다. 종전엔 이 루프 본문 전체가
+    //  아래 catch 하나에 묶여 있어서, 앞선 플러그인의 TypeError 가 **뒤의 전부**를
+    //  미등록으로 만들 수 있었다(남는 흔적은 `loadPlugins failed:` 한 줄).
+    await wirePlugin(lp, { bus, channels, serviceStops });
   }
 } catch (e) {
   console.error("loadPlugins failed:", e);

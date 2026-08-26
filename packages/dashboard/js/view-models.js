@@ -304,9 +304,97 @@
         row.appendChild(btn);
         page.appendChild(row);
         page.appendChild(buildLocaleRow());
+        page.appendChild(buildThemeRow());
         page.appendChild(buildLogRow());
         page.appendChild(buildChangelogRow());
         root.appendChild(page);
+      };
+
+      /**
+       * 밝기·테마 공통 — 고른 값을 서버에 쓴다(`settings.json` 이 정본).
+       * ★언어와 달리 **새로고침하지 않는다**: 밝기는 속성 한 줄, 테마는 스타일시트만
+       *  다시 읽으면 되므로 화면을 버릴 이유가 없다.
+       */
+      const postTheme = async (body) => {
+        const r = await fetch("/api/set-theme", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+        return data;
+      };
+
+      /** 셀렉트 한 줄 — 이름·설명·드롭다운. 언어 항목과 같은 모양이다. */
+      const buildSelectRow = (headKey, descText, options, current, onPick) => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = i18n(headKey);
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        desc.textContent = descText;
+        meta.appendChild(name);
+        meta.appendChild(desc);
+        const sel = document.createElement("select");
+        sel.className = "chat-model-select";
+        sel.title = i18n(headKey);
+        for (const [value, label] of options) {
+          const o = document.createElement("option");
+          o.value = value;
+          o.textContent = label;
+          if (value === current) o.selected = true;
+          sel.appendChild(o);
+        }
+        sel.addEventListener("change", async () => {
+          const prev = current;
+          sel.disabled = true;
+          try {
+            await onPick(sel.value);
+          } catch (e) {
+            showToast(i18n("theme.changeFailed", { err: e.message }), "bad");
+            sel.value = prev;
+          } finally {
+            sel.disabled = false;
+          }
+        });
+        row.appendChild(meta);
+        row.appendChild(sel);
+        return row;
+      };
+
+      /**
+       * 「테마」 항목 — 설치된 프리셋 중 하나(`themes/*.css`).
+       *
+       * ★목록은 **서버가 주입한 값**에서 읽는다(`__TIGU_THEME__.themes`). 조회 엔드포인트를
+       *  새로 만들면 "무슨 테마가 있나" 의 정본이 둘이 된다 — 언어가 이미 그 규약이다.
+       *  그리고 그 목록의 정본은 **파일**이다: `<home>/themes/<이름>.css` 를 놓으면 여기
+       *  저절로 나타난다(코드 변경 0).
+       * ★고르면 스타일시트만 다시 읽는다 — 새로고침 불요.
+       */
+      const buildThemeRow = () => {
+        const st = window.__TIGU_THEME__ || {};
+        const list = Array.isArray(st.themes) ? st.themes : [];
+        const opts = [["", i18n("theme.preset.none")]].concat(
+          list.map((n) => [n, n]),
+        );
+        return buildSelectRow(
+          "theme.preset.head",
+          i18n("theme.preset.hint").replace("{n}", String(list.length)),
+          opts,
+          st.theme || "",
+          async (next) => {
+            await postTheme({ theme: next });
+            const pre = document.getElementById("theme-preset");
+            if (pre) pre.href = "/theme-preset.css?v=" + Date.now();
+            if (window.__TIGU_THEME__) window.__TIGU_THEME__.theme = next;
+            showToast(i18n("theme.changed"), "good");
+          },
+        );
       };
 
       /**

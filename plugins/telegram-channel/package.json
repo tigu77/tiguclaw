@@ -4,7 +4,9 @@
   "type": "module",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": "channel",
+    "kind": [
+      "channel"
+    ],
     "name": "telegram",
     "entry": "./index.ts"
   }

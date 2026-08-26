@@ -831,6 +831,46 @@ export const setLocale = (locale: string): boolean => {
 };
 
 /**
+ * 테마 프리셋을 고른다 (2026-08-26). `setLocale` 과 **같은 모양**이다 —
+ * `themes/<이름>.css` 가 목록이고 여기 이름만 적는다.
+ *
+ * ★`name === undefined` 면 **지운다**(= 프리셋 없이 제품 기본 팔레트). 안 고른 상태가
+ *  정상이라 "해제" 가 있어야 한다.
+ * ★설치 안 된 이름은 `false` — 조용한 성공 금지(호출자가 말해야 한다). 판정은 코어
+ *  `availableThemes()` 한 곳이고, 호출자가 목록을 다시 만들지 않는다.
+ *
+ * @returns 설치 안 된 이름이면 `false`.
+ */
+export const setTheme = (name: string | undefined): boolean => {
+  const want = name?.trim() ?? "";
+  if (want !== "") {
+    // 순환 import 회피 — `setLocale` 이 i18n 을 가져오는 것과 같은 수법.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { availableThemes } = createRequire(import.meta.url)("./theme.js") as {
+      availableThemes: () => string[];
+    };
+    if (!availableThemes().includes(want)) return false;
+  }
+  const file = getPaths().settings;
+  let root: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      root = parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* 부재·파싱 실패 → 최소 {} 신설(형제 setter 동형) */
+  }
+  if (want === "") delete root.theme;
+  else root.theme = want;
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
+  renameSync(tmp, file);
+  return true;
+};
+
+/**
  * 프로파일 **배지 색**을 쓴다 (2026-08-25 사용자 요청 — 대시보드에서 고른다).
  *
  * `color === undefined` 면 **지운다**(= 기본색으로 되돌리기). 형식은 `isBadgeColor` 한 곳이

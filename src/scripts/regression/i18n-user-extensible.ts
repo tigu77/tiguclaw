@@ -165,6 +165,41 @@ const run = async (): Promise<Assertion[]> => {
       ),
     );
 
+    // ── ⑤b **출하되는 유일한 생산 호출부**를 직접 본다 (2026-08-26) ─────────────
+    //  ★적대 검토 G축: `core/i18n.ts` 의 단언 19개가 전부 **호출부 0인** `translate`/
+    //   `interpolate` 에 걸려 있었다. 실제로 화면에 나가는 건 `catalogForClient` 하나뿐인데
+    //   거기엔 단언이 0이었다 — `available` 을 빈 배열로 만들거나 `locale` 을 고정해도
+    //   스위트가 전부 초록이다(실증). 그러면 **언어 드롭다운이 텅 비고**, 잘못 고른 언어를
+    //   되돌릴 수단조차 없어진다.
+    out.push(
+      assert(
+        "★생산 호출부(catalogForClient)가 고른 언어를 그대로 싣는다",
+        ja.clientLocale === "ja",
+        `clientLocale=${JSON.stringify(ja.clientLocale)} (기대 "ja")`,
+      ),
+      assert(
+        "★생산 호출부가 **선택 가능한 언어 목록**을 싣는다(비면 드롭다운이 텅 빈다)",
+        Array.isArray(ja.clientAvailable) &&
+          ["ko", "en", "ja", "de"].every((l) =>
+            (ja.clientAvailable as string[]).includes(l),
+          ),
+        `clientAvailable=${JSON.stringify(ja.clientAvailable)}`,
+      ),
+      assert(
+        "★생산 호출부의 문구가 고른 언어의 것이다(병합 순서가 뒤집히면 여기서 걸린다)",
+        ja.clientSend === "送信",
+        `clientSend=${JSON.stringify(ja.clientSend)} (기대 "送信")`,
+      ),
+      assert(
+        "생산 호출부의 목록이 availableLocales() 와 같다(두 벌로 갈리지 않는다)",
+        Array.isArray(ja.clientAvailable) &&
+          Array.isArray(ja.locales) &&
+          JSON.stringify([...(ja.clientAvailable as string[])].sort()) ===
+            JSON.stringify([...(ja.locales as string[])].sort()),
+        `client=${JSON.stringify(ja.clientAvailable)} vs locales=${JSON.stringify(ja.locales)}`,
+      ),
+    );
+
     // ── ⑥ 언어를 **바꾸는 경로**(요구 ①) — 쓰고 나서 실제로 반영되는가 ──────────
     //  ★캐시를 안 비우면 "바꿨는데 그대로" 가 된다. 그걸 자식 프로세스 두 번으로 확인한다
     //   (같은 프로세스 안에서 보면 캐시 무효화 여부를 못 가른다).
@@ -214,8 +249,10 @@ const run = async (): Promise<Assertion[]> => {
       out.push(
         assert(
           "★`copy-dist-assets` 가 `locales` 를 복사한다(skills·agents 와 같은 자산이다)",
-          /copyTree\("locales"\)/.test(copyAssets),
-          /copyTree\("locales"\)/.test(copyAssets) ? "복사 확인" : "★빠졌다 — 배포본에 기본 문구가 없다",
+          // ★인자까지 고정한 리터럴이었다 — `{ prune: true }` 를 더하자 거짓 빨간불이
+          //  났다(2026-08-26). 검사할 것은 **복사하는가**이지 인자 모양이 아니다.
+          /copyTree\("locales"/.test(copyAssets),
+          /copyTree\("locales"/.test(copyAssets) ? "복사 확인" : "★빠졌다 — 배포본에 기본 문구가 없다",
         ),
       );
       const dashPlugin = await readFileText("../../../plugins/dashboard/index.ts");

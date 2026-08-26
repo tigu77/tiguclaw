@@ -125,6 +125,9 @@ export const check: RegressionCheck = {
       // (멱등), 폴백이 되부르는 상황은 보통 **앞 시도가 어디까지 갔는지 모르는** 때다.
       // 설정 파일 쓰기를 재실행 무해로 분류할 이유가 없다(보수적 기본).
       "set_model_reasoning",
+      // 화면 테마 선택 — 같은 이유로 부작용이다(settings.json 쓰기). `name` 을 비우면
+      // 조회지만 **분류는 도구 단위**라, 쓰는 갈래가 있으면 부작용으로 둔다(보수적 기본).
+      "set_theme",
     ]);
 
     const unclassified = [...registered].filter(

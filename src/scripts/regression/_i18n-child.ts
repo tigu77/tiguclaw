@@ -54,6 +54,12 @@ process.stdout.write(
     //  "누락 값을 빈칸으로" 변이가 그대로 통과한다(실제로 통과했다).
     missingParam: translate("compact.running", { other: 1 }),
     catalogSize: Object.keys(catalogForClient().strings).length,
+    // ★출하되는 유일한 생산 호출부의 값을 **그대로** 싣는다(2026-08-26). 종전엔 크기만
+    //  실어서, `available` 이 빈 배열이 되거나 `locale` 이 고정돼도 스위트가 전부 초록이었다
+    //  — 그러면 언어 드롭다운이 텅 비고 잘못 고른 언어를 되돌릴 수단조차 없어진다.
+    clientLocale: catalogForClient().locale,
+    clientAvailable: catalogForClient().available,
+    clientSend: catalogForClient().strings["chat.send"],
     ...(setLocaleOk !== undefined ? { setLocaleOk } : {}),
     ...(afterSetInSameProcess !== undefined ? { afterSetInSameProcess } : {}),
     ...(afterFileEdit !== undefined ? { afterFileEdit } : {}),

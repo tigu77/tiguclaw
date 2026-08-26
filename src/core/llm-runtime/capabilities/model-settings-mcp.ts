@@ -304,5 +304,60 @@ export const createModelSettingsMcpServer = (
           }
         },
       ),
+      /**
+       * 화면 테마 — `themes/<이름>.css` 중 하나를 고른다(홈 settings.json 의 `theme`).
+       *
+       * ★**같은 서버에 얹는다.** 서버를 하나 더 만들면 3어댑터 배선이 늘고 매 턴 프롬프트도
+       *  그만큼 붇는다(MCP 도구 수엔 상한이 없다). 이 서버의 규약은 *"범용 settings writer 를
+       *  만들지 않는다"* 이지 *"도구를 하나만 둔다"* 가 아니다 — 여기 있는 것들은 전부
+       *  **키 하나씩** 만진다.
+       * ★**도구 하나로 조회·해제·설정을 다 한다.** `name` 을 비우면 현재값과 목록을 돌려주므로
+       *  "테마 뭐 있어?" 에 별도 도구가 필요 없다(도구 수를 늘리지 않는 게 이 자리의 값이다).
+       */
+      tool(
+        "set_theme",
+        "대시보드 **화면 테마**를 고릅니다 — 홈 settings.json 의 `theme`(값은 `themes/<이름>.css` 의 파일명). " +
+          "**name 을 비우면 조회**입니다: 지금 고른 테마와 설치된 목록을 돌려줍니다. " +
+          "**name 을 `none` 으로 주면 해제**(제품 기본 팔레트로 복귀)입니다. " +
+          "설치 안 된 이름은 거절하고 목록을 돌려줍니다. " +
+          "저장 즉시 반영됩니다(대시보드를 새로 열거나 창을 다시 활성화하면 보입니다 — 재시작 불요). " +
+          "★사용자가 색을 **세밀하게** 바꾸고 싶어하면 테마 프리셋 대신 `<home>/theme.css` 를 고치세요 — " +
+          "그 파일이 프리셋 위에 얹혀 원하는 토큰만 덮습니다(예: `:root { --accent: #ff00aa; }`).",
+        {
+          name: z
+            .string()
+            .optional()
+            .describe("고를 테마 이름. 비우면 조회, `none` 이면 해제."),
+        },
+        async (args: { name?: string }) => {
+          try {
+            // 지연 로드 — 이 서버는 매 턴 만들어지므로 부팅 경로에 얹지 않는다.
+            const { availableThemes, readTheme } = await import("../../theme.js");
+            const { setTheme } = await import("../../settings.js");
+            const list = availableThemes();
+            const shown = list.length === 0 ? "(설치된 테마 없음)" : list.join(", ");
+            const want = args.name?.trim() ?? "";
+
+            if (want === "") {
+              const now = readTheme(cwd);
+              return okText(
+                `현재 테마: **${now === "" ? "(없음 — 제품 기본)" : now}**\n설치됨: ${shown}`,
+              );
+            }
+            if (want.toLowerCase() === "none") {
+              setTheme(undefined);
+              return okText("테마 해제 — 제품 기본 팔레트로 돌아갑니다.");
+            }
+            if (!setTheme(want)) {
+              return errText(`'${want}' 는 설치된 테마가 아닙니다. 설치됨: ${shown}`);
+            }
+            return okText(
+              `테마 **${want}** 로 바꿨습니다. 대시보드를 새로 열거나 창을 다시 활성화하면 보입니다.`,
+            );
+          } catch (e) {
+            return errText(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
     ],
   });

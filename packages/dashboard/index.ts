@@ -53,6 +53,8 @@ import {
   parseAllowedHosts,
   rebindRejectionMessage,
 } from "../../src/core/net/host-guard.js";
+import { getPaths } from "../../src/core/paths.js";
+import { readThemeCss, withLayer } from "../../src/core/theme.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -264,9 +266,29 @@ const server = http.createServer((req, res) => {
           path.join(__dirname, "index.html"),
           "utf8",
         );
+        // ★테마 상태 주입 — 실패해도 화면은 뜬다(기본 자리표시자가 남는다).
+        let withMode = html;
+        try {
+          const { readTheme, availableThemes } = await import(
+            "../../src/core/theme.js"
+          );
+          // ★설정 화면이 쓸 목록·현재값. 조회 엔드포인트를 따로 만들면 "무슨 테마가 있나"
+          //  의 정본이 둘이 된다(언어가 `__TIGU_I18N__.available` 로 이미 그렇게 한다).
+          const payload = { theme: readTheme(), themes: availableThemes() };
+          withMode = html.replace(
+            /<script id="tigu-appearance">[\s\S]*?<\/script>/,
+            () =>
+              `<script id="tigu-appearance">window.__TIGU_THEME__ = ${JSON.stringify(
+                payload,
+              ).replace(/</g, "\\u003c")};</script>`,
+          );
+        } catch {
+          /* 기본 자리표시자(system) 가 남는다 */
+        }
+
         // ★언어 카탈로그 주입 (2026-08-25) — 첫 렌더 전에 있어야 화면이 안 깜빡인다.
         //  실패해도 화면은 뜬다(기본 자리표시자가 남고, 폴백이 키를 그대로 보여준다).
-        let withI18n = html;
+        let withI18n = withMode;
         try {
           const { catalogForClient } = await import("../../src/core/i18n.js");
           const cat = catalogForClient();
@@ -277,7 +299,7 @@ const server = http.createServer((req, res) => {
           //  한복판으로 도로 들어간다. 실측: 값 하나에 `` $` `` 만 있어도 DOM 이 +89% 로
           //  부풀고 `window.__TIGU_I18N__` 가 undefined 가 된다(= 화면 전체가 기본 언어).
           //  try/catch 는 안 걸린다 — replace 는 "성공" 하기 때문이다.
-          withI18n = html.replace(/<script id="tigu-i18n">[\s\S]*?<\/script>/, () => payload);
+          withI18n = withMode.replace(/<script id="tigu-i18n">[\s\S]*?<\/script>/, () => payload);
         } catch {
           /* 카탈로그 실패가 대시보드를 막지 않는다 */
         }
@@ -308,11 +330,55 @@ const server = http.createServer((req, res) => {
           "Content-Type": "text/css; charset=utf-8",
           "Cache-Control": "no-store, must-revalidate",
         });
-        res.end(css);
+        res.end(withLayer("tigu-base", css, true));
       } catch {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("app.css load failed");
       }
+      return;
+    }
+
+    /**
+     * 선택된 테마 프리셋 — `settings.json` 의 `theme` → `themes/<이름>.css` (2026-08-26).
+     *
+     * ★언어와 **같은 모양**이다(`locales/<lang>.json` + settings `locale`). 새 개념 0.
+     * ★URL 에 이름이 안 실린다 — 이름은 settings 에서만 오므로 주소창으로 경로를 탈출할
+     *  여지가 없다. 고른 게 없으면 빈 200(그때는 `app.css` 기본 팔레트가 그대로다).
+     */
+    if (pathname === "/theme-preset.css" && method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/css; charset=utf-8",
+        "Cache-Control": "no-store, must-revalidate",
+      });
+      res.end(withLayer("tigu-preset", readThemeCss()));
+      return;
+    }
+
+    /**
+     * 사용자 테마 오버라이드 — `<home>/theme.css` (2026-08-26).
+     *
+     * ★**설정 화면이 아니라 파일**인 이유는 둘이다:
+     *  ① **오버라이드가 공짜다.** `:root` 변수 76개를 640곳이 읽고 있으므로, 이 파일이
+     *     `app.css` **뒤에** 얹히면 캐스케이드가 병합을 대신한다 — 적은 것만 덮이고 나머지는
+     *     기본값이다. 우리가 병합 로직을 만들 필요가 없다.
+     *  ② ★**파일이면 비서가 고칠 수 있다.** *"테마 좀 더 어둡게 해줘"* 가 된다. 설정 UI 만
+     *     있으면 비서는 못 만진다(로드맵 A3 — Layout 은 비서가 읽고 쓰는 데이터여야 한다).
+     *
+     * 없으면 **빈 200** 이다 — 404 면 콘솔에 매번 에러가 찍혀 진짜 문제를 덮는다.
+     * `no-store` 라 새로고침만으로 바로 반영된다(화면은 창이 다시 활성화될 때도 다시 읽는다).
+     */
+    if (pathname === "/theme.css" && method === "GET") {
+      let css = "";
+      try {
+        css = await fs.readFile(path.join(getPaths().home, "theme.css"), "utf8");
+      } catch {
+        // 없으면 없는 것 — 기본 테마 그대로.
+      }
+      res.writeHead(200, {
+        "Content-Type": "text/css; charset=utf-8",
+        "Cache-Control": "no-store, must-revalidate",
+      });
+      res.end(withLayer("tigu-user", css));
       return;
     }
 
@@ -523,6 +589,18 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/set-locale" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-locale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 화면 밝기·테마 프리셋 — 설정 화면의 두 줄이 쓴다.
+    // ★읽기 엔드포인트는 **안 만든다** — 현재값과 설치 목록은 이미 index.html 에 주입된다
+    //  (`window.__TIGU_THEME__`). 언어와 같은 규약이다: 만들면 정본이 둘이 된다.
+    if (pathname === "/api/set-theme" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-theme", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

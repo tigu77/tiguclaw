@@ -44,16 +44,22 @@ export interface UpdateAvailability {
   /**
    * - `up-to-date` — 받을 게 없다. 화면에 아무것도 안 띄운다.
    * - `available` — 받을 게 있고 받을 수 있다. **버튼을 띄운다.**
+   * - `unreleased` — 받을 커밋은 있는데 **버전이 안 올랐다**(= 릴리스가 아니라 미러 동기화).
+   *   화면에 아무것도 안 띄운다. 받고 싶으면 `/update` 로 언제든 받을 수 있다.
    * - `blocked` — 받을 건 있는데 지금 누르면 실패한다(작업트리가 갈라짐). 이유를 보여준다.
    * - `unknown` — 판정 못 함(git 없음·원격 없음·네트워크 실패). **조용히 아무것도 안 띄운다.**
    */
-  state: "up-to-date" | "available" | "blocked" | "unknown";
+  state: "up-to-date" | "available" | "unreleased" | "blocked" | "unknown";
   /** origin 이 몇 커밋 앞서 있나. unknown 이면 0. */
   behind: number;
   /** `blocked` 사유 — 사용자에게 그대로 보여줄 한 줄. 그 외 상태에선 undefined. */
   blockedReason?: string;
   /** `git reset --hard` 가 파괴할 미커밋 변경(경로). 진단용 — 없으면 빈 배열. */
   dirty: readonly string[];
+  /** 지금 설치된 버전. 못 읽으면 undefined. */
+  version?: string;
+  /** 원격이 올려둔 버전. `available` 이면 이 값이 위 `version` 보다 높다. */
+  newVersion?: string;
 }
 
 const UNKNOWN: UpdateAvailability = { state: "unknown", behind: 0, dirty: [] };
@@ -87,6 +93,43 @@ export const parsePorcelainZ = (out: string): string[] => {
     if (xy.includes("R") || xy.includes("C")) i++; // 원래 경로 조각을 건너뛴다.
   }
   return paths;
+};
+
+/**
+ * `x.y.z` 세 자리 비교. 판정 못 하면 `null`.
+ *
+ * ★prerelease(`1.2.3-rc.1`)는 **접두 숫자만** 본다 — 우리 릴리스는 세 자리뿐이고, 여기서
+ *  semver 전체를 구현하면 그게 "직접 만들 일 아닌 것" 이다. 모르면 `null` 을 내고 호출자가
+ *  **보수적으로**(=업데이트를 숨기지 않고) 처리한다.
+ */
+export const compareVersions = (a: string, b: string): number | null => {
+  const parse = (v: string): number[] | null => {
+    const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v.trim());
+    return m === null ? null : [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (pa === null || pb === null) return null;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i]! !== pb[i]!) return pa[i]! < pb[i]! ? -1 : 1;
+  }
+  return 0;
+};
+
+/** 어떤 커밋(`HEAD`·`@{u}`)의 `package.json` 버전. 못 읽으면 undefined. */
+const versionAt = async (
+  ref: string,
+  cwd: string,
+  timeoutMs: number,
+): Promise<string | undefined> => {
+  const r = await git(["show", `${ref}:package.json`], cwd, timeoutMs);
+  if (!r.ok) return undefined;
+  try {
+    const v = (JSON.parse(r.out) as { version?: unknown }).version;
+    return typeof v === "string" ? v : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 export const checkUpdateAvailability = async (
@@ -170,5 +213,25 @@ export const checkUpdateAvailability = async (
     };
   }
 
-  return { state: "available", behind, dirty };
+  // ★**버전이 올랐을 때만 버튼을 띄운다** (2026-08-26 사용자: *"업데이트 버튼은 버전이
+  //  올라갔을 때만 반응한다가 기준이면 좋을 것 같은데"*).
+  //
+  //  종전엔 `behind > 0` 이면 무조건 띄웠다. 그런데 public 레포는 **미러**라 dev 변경마다
+  //  sync 가 커밋을 쌓는다(오늘만 32커밋) — 사용자에겐 매번 "업데이트 있음" 이 뜨는데
+  //  정작 달라지는 게 없는 날도 있다. 알림의 값은 **드물 때** 나온다.
+  //
+  //  ★받는 것 자체는 막지 않는다(사용자: *"그냥 업데이트 받아버리는 건 어쩔 수 없고"*) —
+  //   `/update` 는 언제나 최신을 받는다. 여기서 정하는 건 **먼저 말을 거는가**뿐이다.
+  //  ★버전을 못 읽거나 비교가 안 되면 **종전대로 띄운다** — 우리 파싱 실패로 진짜 릴리스를
+  //   숨기는 쪽이 반대보다 나쁘다.
+  const version = await versionAt("HEAD", cwd, timeoutMs);
+  const newVersion = await versionAt("@{u}", cwd, timeoutMs);
+  const cmp =
+    version !== undefined && newVersion !== undefined
+      ? compareVersions(version, newVersion)
+      : null;
+  if (cmp !== null && cmp >= 0) {
+    return { state: "unreleased", behind, dirty, version, newVersion };
+  }
+  return { state: "available", behind, dirty, version, newVersion };
 };

@@ -39,7 +39,7 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "번들 프리셋이 목록에 뜬다(빈손 통과 금지)",
-        bundled.includes("light"),
+        bundled.includes("light") && bundled.includes("dark"),
         JSON.stringify(bundled),
       ),
     );
@@ -59,7 +59,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "목록에 파일 없는 이름이 섞이지 않는다(손 목록이 아니라 파일이 정한다)",
-        withHome.every((t) => t === "light" || t === "probe-theme"),
+        withHome.every((t) => ["light", "dark", "probe-theme"].includes(t)),
         JSON.stringify(withHome),
       ),
     );
@@ -157,9 +157,29 @@ export const check: RegressionCheck = {
         nameKeys.length === 0 ? "이름 키 0" : JSON.stringify(nameKeys),
       ),
       assert(
-        "기본 선택지도 이름처럼 보인다(한쪽만 번역돼 섞이지 않게)",
-        ko["theme.preset.none"] === "dark",
-        JSON.stringify(ko["theme.preset.none"]),
+        "★목록에 번역된 특수 항목이 없다(전부 파일명 그대로)",
+        ko["theme.preset.none"] === undefined,
+        ko["theme.preset.none"] === undefined
+          ? "특수 케이스 0"
+          : `아직 남음: ${JSON.stringify(ko["theme.preset.none"])}`,
+      ),
+    );
+
+    // ── ⑥c 세는 것과 보이는 것이 같은가 (2026-08-26 사용자 지적) ────────────────
+    //  ★"목록엔 dark·light 둘인데 설명은 1개라고 한다" — 개수를 **파일 수**에서 가져왔는데
+    //   목록 앞에 "프리셋 없음" 이라는 **특수 케이스**가 끼어 있었기 때문이다. 문구로 덮지
+    //   않고 `themes/dark.css` 를 만들어 케이스를 없앴다 — 이제 목록·개수·선택이 전부
+    //   "파일이 곧 목록" 하나로 설명된다(언어와 동형).
+    const view = readFileSync(
+      path.join(REPO, "packages/dashboard/js/view-models.js"),
+      "utf8",
+    );
+    out.push(
+      assert(
+        "★테마 개수를 선택지에서 센다(파일 수를 세면 dark 가 빠져 어긋난다)",
+        /const opts = list\.map/.test(view) &&
+          /String\(opts\.length\)/.test(view.replace(/\/\/[^\n]*\n/g, "")),
+        /theme\.preset\.none/.test(view) ? "★아직 특수 케이스가 있다" : "파일이 곧 목록",
       ),
     );
 

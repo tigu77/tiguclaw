@@ -379,14 +379,16 @@
       const buildThemeRow = () => {
         const st = window.__TIGU_THEME__ || {};
         const list = Array.isArray(st.themes) ? st.themes : [];
-        const opts = [["", i18n("theme.preset.none")]].concat(
-          list.map((n) => [n, n]),
-        );
+        // ★특수 케이스가 없다 — **파일이 곧 목록**이고 `dark` 도 그중 하나다(언어와 동형).
+        //  종전엔 "프리셋 없음" 을 목록 앞에 끼워 넣어서 화면엔 둘인데 파일은 하나라
+        //  개수가 어긋났다(2026-08-26 사용자 지적). `themes/dark.css` 를 두어 없앴다.
+        const opts = list.map((n) => [n, n]);
         return buildSelectRow(
           "theme.preset.head",
-          i18n("theme.preset.hint").replace("{n}", String(list.length)),
+          i18n("theme.preset.hint").replace("{n}", String(opts.length)),
           opts,
-          st.theme || "",
+          // 아직 안 골랐으면 = 기본 팔레트 = `dark` 를 고른 것과 같다.
+          st.theme || "dark",
           async (next) => {
             await postTheme({ theme: next });
             const pre = document.getElementById("theme-preset");

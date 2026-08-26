@@ -152,6 +152,61 @@ export const check: RegressionCheck = {
       );
       await git(["reset", "-q", "--hard", "HEAD~1"], clone);
 
+      // ⑤ ★**버전이 올랐을 때만 버튼이 뜬다** (2026-08-26). public 레포는 미러라 dev 변경마다
+      //   sync 가 커밋을 쌓는다(하루 32커밋도 있었다) — `behind > 0` 만 보면 매번 "업데이트
+      //   있음" 이 뜨고, 그러면 알림이 배경 소음이 된다. 알림의 값은 **드물 때** 나온다.
+      //   ★받는 것 자체는 막지 않는다 — 여기서 정하는 건 **먼저 말을 거는가**뿐이다.
+      //  ★픽스처 주의: push 는 **앞선 쪽(`other`)에서만** 한다. 뒤처진 `clone` 에서 밀면
+      //   non-fast-forward 로 거절된다(첫 판에서 그렇게 걸렸다).
+      await writeFile(path.join(other, "package.json"), '{"version":"1.0.0"}\n');
+      await git(["add", "-A"], other);
+      await git(["commit", "-qm", "v1"], other);
+      await git(["push", "--quiet"], other);
+      await git(["pull", "--quiet", "--ff-only"], clone); // 이제 clone 도 1.0.0 · behind 0
+
+      // (a) 버전 그대로 + 커밋만 쌓임 = sync → 조용하다.
+      await writeFile(path.join(other, "c.txt"), "3\n");
+      await git(["add", "-A"], other);
+      await git(["commit", "-qm", "sync"], other);
+      await git(["push", "--quiet"], other);
+      const sSync = await checkUpdateAvailability(clone);
+      out.push(
+        assert(
+          "★버전이 그대로면 unreleased — 버튼을 안 띄운다(sync 는 알림이 아니다)",
+          sSync.state === "unreleased" && sSync.behind > 0,
+          `state=${sSync.state} behind=${sSync.behind} ${sSync.version}→${sSync.newVersion}`,
+        ),
+      );
+
+      // (b) 버전이 오르면 = release → 띄운다.
+      await writeFile(path.join(other, "package.json"), '{"version":"1.1.0"}\n');
+      await git(["add", "-A"], other);
+      await git(["commit", "-qm", "release"], other);
+      await git(["push", "--quiet"], other);
+      const sRel = await checkUpdateAvailability(clone);
+      out.push(
+        assert(
+          "★버전이 오르면 available + 새 버전을 알려준다",
+          sRel.state === "available" && sRel.newVersion === "1.1.0" && sRel.version === "1.0.0",
+          `state=${sRel.state} ${sRel.version}→${sRel.newVersion}`,
+        ),
+      );
+
+      // (c) 버전을 못 읽으면 **종전대로 띄운다** — 우리 파싱 실패로 진짜 릴리스를 숨기는
+      //     쪽이 반대보다 나쁘다(보수적 폴백).
+      await writeFile(path.join(other, "package.json"), '{"version":"garbage"}\n');
+      await git(["add", "-A"], other);
+      await git(["commit", "-qm", "bad-version"], other);
+      await git(["push", "--quiet"], other);
+      const sBad = await checkUpdateAvailability(clone);
+      out.push(
+        assert(
+          "★비교 불가면 숨기지 않는다(파싱 실패로 릴리스를 가리지 않는다)",
+          sBad.state === "available",
+          `state=${sBad.state} ${sBad.version}→${sBad.newVersion}`,
+        ),
+      );
+
       // ④ 판정 불가 → unknown. "최신" 으로 수렴하면 업데이트가 영영 안 보인다.
       const s5 = await checkUpdateAvailability(root); // git 레포 아님
       out.push(
@@ -159,6 +214,18 @@ export const check: RegressionCheck = {
           "★판정 불가는 unknown 이다 — '최신'으로 삼키지 않는다(조용한 실패)",
           s5.state === "unknown",
           `state=${s5.state}`,
+        ),
+      );
+      const { compareVersions } = await import("../../core/update-availability.js");
+      out.push(
+        assert(
+          "버전 비교 — 세 자리 · 자릿수 아닌 사전순이 아니다",
+          compareVersions("0.9.0", "0.10.0") === -1 &&
+            compareVersions("1.0.0", "1.0.0") === 0 &&
+            compareVersions("2.0.0", "1.9.9") === 1 &&
+            compareVersions("1.2.3-rc.1", "1.2.3") === 0 &&
+            compareVersions("x", "1.0.0") === null,
+          `0.9.0<0.10.0=${compareVersions("0.9.0", "0.10.0")} rc=${compareVersions("1.2.3-rc.1", "1.2.3")}`,
         ),
       );
     } finally {

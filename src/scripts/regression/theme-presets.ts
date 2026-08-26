@@ -121,26 +121,11 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ── ④ 배포본에도 실리는가 ─────────────────────────────────────────────────
-    const copier = readFileSync(path.join(REPO, "bin/copy-dist-assets.mjs"), "utf8");
-    out.push(
-      assert(
-        "★`themes/` 가 dist 복사 대상이다(빠지면 배포본에서만 테마가 무시된다)",
-        /copyTree\("themes"/.test(copier),
-        /copyTree\("themes"/.test(copier) ? "복사 대상" : "★빠졌다",
-      ),
-      // ★실사고(2026-08-26): `fs.cp` 는 덮어쓰기만 하고 **원본에서 사라진 파일은 dist 에
-      //  남긴다.** `nord.css` 를 지우고 배포했는데 배포본 목록엔 그대로 떴다. 목록의 정본이
-      //  "파일" 인 구조에서 **지운 것이 안 지워지면 그 구조 자체가 거짓말**이 된다.
-      assert(
-        "★목록의 정본이 파일인 트리는 prune 한다(지운 테마·언어가 배포본에 남지 않게)",
-        /copyTree\("themes", \{ prune: true \}\)/.test(copier) &&
-          /copyTree\("locales", \{ prune: true \}\)/.test(copier),
-        `themes=${/copyTree\("themes", \{ prune: true \}\)/.test(copier)} locales=${/copyTree\("locales", \{ prune: true \}\)/.test(
-          copier,
-        )}`,
-      ),
-    );
+    // ── ④ 배포본에도 실리는가 → **`dist-assets-actually-copied` 로 옮겼다**(2026-08-26)
+    //  종전엔 `copyTree("themes")` 라는 **글자**를 셌다. 그러면 그 호출을 `if (false)` 로
+    //  감싸도 초록이고, 실제로 `prune: true` 를 더하자 **거짓 빨간불**이 났다(인자 모양까지
+    //  고정한 리터럴이었다). 검사할 것은 *복사하는가*이지 소스 생김새가 아니다 —
+    //  그쪽은 스크립트를 임시 dist 에 **실제로 돌려** 결과를 본다(prune 포함).
 
     // ── ⑥b 이름은 **파일명 그대로** 쓴다 (2026-08-26) ──────────────────────────
     //  ★프리셋 이름을 번역하면 손 목록이 생기고, 사용자가 홈에 놓은 테마는 애초에 번역할

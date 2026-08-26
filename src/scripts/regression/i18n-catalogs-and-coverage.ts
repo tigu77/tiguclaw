@@ -24,8 +24,17 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 const BASE = "ko";
 const HANGUL = /[가-힣]/;
 const PLACEHOLDER = /\{(\w+)\}/g;
-/** `?perf=1` 로만 뜨는 개발자 HUD — 화면이 아니라 진단면(콘솔 로그와 같은 등급). */
-const DIAGNOSTIC_ONLY = new Set(["perf.js"]);
+/**
+ * 화면이 아니라 **진단면**인 파일(콘솔 로그와 같은 등급)은 i18n 대상이 아니다.
+ *
+ * ★판정을 **파일 자신의 선언**으로 옮겼다 (2026-08-26 G축 ②). 종전엔 여기 파일명
+ *  목록(`DIAGNOSTIC_ONLY = {"perf.js"}`)을 뒀는데, 새 진단 파일이 생기면 **이 파일을**
+ *  고쳐야 했고 그건 아무도 안 한다([[feedback_hand_maintained_lists]]). 파일이 스스로
+ *  `@diagnostic-only` 를 달면 목록이 사라지고, 파일을 옮기거나 지워도 따라간다.
+ * ★반대 방향도 좋아진다 — 진단면이 나중에 사용자 대면이 되면 **그 파일에서** 표식을 떼게
+ *  되고, 그 순간 검사가 바로 본다(목록이면 조용히 면제가 남는다).
+ */
+const DIAGNOSTIC_MARK = "@diagnostic-only";
 
 const readRel = (rel: string): Promise<string> => readFile(new URL(rel, import.meta.url), "utf8");
 const placeholders = (s: string): Set<string> =>
@@ -92,6 +101,28 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
+  // ── ①b ★빈 값 금지 (2026-08-26) ─────────────────────────────────────────────
+  //  ★`""` 는 *키 부재*가 아니라 **값**이라, 조회(`??`)도 병합(스프레드)도 그걸 이긴다.
+  //   반쯤 번역한 파일에 `"chat.send": ""` 이 있으면 **빈 버튼**이 된다 — 화면은 멀쩡히
+  //   뜨고 에러도 0이라 눈으로는 안 잡힌다. 이 기능(언어를 파일 하나로 늘린다)의 핵심
+  //   실패 모드가 정확히 그것이다. 조회·병합 쪽은 이제 빈 값을 「없음」으로 치지만,
+  //   **애초에 카탈로그에 안 들어가는 것**이 낫다(폴백은 안전망이지 목표가 아니다).
+  for (const loc of [BASE, ...others]) {
+    const cat = catalogs.get(loc) ?? {};
+    const empties = Object.entries(cat)
+      .filter(([, v]) => typeof v !== "string" || v.trim() === "")
+      .map(([k]) => k);
+    out.push(
+      assert(
+        `★${loc}.json 에 빈 값이 없다(빈 값은 기본 언어를 이겨서 빈 화면이 된다)`,
+        empties.length === 0,
+        empties.length === 0
+          ? `${Object.keys(cat).length}키 · 빈 값 0`
+          : `★빈 값 ${empties.length}개: ${empties.slice(0, 6).join(", ")}`,
+      ),
+    );
+  }
+
   // ── ② 자리표시자 ────────────────────────────────────────────────────────────
   for (const loc of others) {
     const cat = catalogs.get(loc)!;
@@ -135,9 +166,13 @@ const run = async (): Promise<Assertion[]> => {
   const leaks: string[] = [];
   let scanned = 0;
   let logSkipped = 0;
+  const diagnostic: string[] = [];
   for (const f of jsFiles) {
-    if (DIAGNOSTIC_ONLY.has(f)) continue;
     const src = await readFile(new URL(f, jsDir), "utf8");
+    if (src.includes(DIAGNOSTIC_MARK)) {
+      diagnostic.push(f);
+      continue;
+    }
     const strings = scanJsStrings(src);
     const masked = maskJsStrings(src, strings);
     scanned += 1;
@@ -165,6 +200,16 @@ const run = async (): Promise<Assertion[]> => {
       "★스캔이 실제로 소스를 봤다(모듈 수·콘솔 제외 건수가 0이 아니다)",
       scanned >= 20 && logSkipped > 0,
       `모듈 ${scanned} · 콘솔 제외 ${logSkipped}`,
+    ),
+    // ★면제를 **보이게** 한다. 이 항목의 병은 면제 자체가 아니라 **조용한 면제**였다 —
+    //  파일명 목록은 아무도 다시 안 보고, 그래서 면제가 영원히 남는다. 이름을 매번 찍으면
+    //  검사 결과를 보는 사람이 "얘가 왜 빠져 있지" 를 물을 수 있다.
+    assert(
+      "진단면 면제가 몇 개인지 보인다(조용한 면제 금지 — 늘면 눈에 띈다)",
+      diagnostic.length <= 2,
+      diagnostic.length === 0
+        ? "면제 0"
+        : `면제 ${diagnostic.length}개: ${diagnostic.join(", ")} — @diagnostic-only 선언`,
     ),
   );
 
@@ -203,16 +248,40 @@ const run = async (): Promise<Assertion[]> => {
         if (e.isDirectory()) {
           if (e.name === "node_modules" || e.name === "dist") continue;
           await walk(child);
-        } else if (e.name.endsWith(".ts")) {
-          // ★**화면에 값을 내보내는 파일만** 본다 — 판정 기준은 "그 타입을 쓰는가" 다.
-          //  기억 레코드(`analysis.ts`)·모델용 지침(`directives.ts`)도 `description:` 을
-          //  쓰지만 화면이 아니다. 이름 목록 대신 타입 참조로 가른다.
+        } else if (e.name.endsWith(".ts") || e.name.endsWith(".js")) {
+          // ★**화면에 값을 내보내는 파일만** 본다. 기억 레코드(`analysis.ts`)·모델용 지침
+          //  (`directives.ts`)도 `description:` 을 쓰지만 화면이 아니다.
+          //
+          //  ★기준을 **이름에서 모양으로** 바꿨다 (2026-08-26 G축 ②). 종전엔 `DisplayText`
+          //   같은 **타입 이름을 언급하는가**로 골랐는데, 우리 플러그인 계약은 *구조적*이라
+          //   (`{id, load}`) 타입을 import 할 의무가 **없다** — 타입을 안 쓰고 같은 모양을
+          //   내보내는 생산자는 통째로 안 보였다. 이제 **무엇을 만들어 내보내는가**로 고른다:
+          //   `{ key: "a.b" }`(DisplayText 스펙) 또는 `views:`/`actions:`/뷰 `kind:`.
+          //   ★`.js` 도 본다(종전 `.ts` 만 — 배포본·드롭인 생산자가 0% 커버였다).
+          //   ★전환 시점에 둘이 **같은 3개**를 고르는 걸 확인했다(동작 변화 0, 견고성만 상승).
           const body = await readFile(child, "utf8");
-          if (/\bDisplayText\b|\bViewSpec\b|:\s*Module\b|Module\[\]/.test(body)) producers.push(child);
+          const emitsDisplay =
+            /\{\s*key:\s*"[a-z0-9_-]+\.[a-z0-9._-]+"/.test(body) ||
+            /(?:^|\s)views:\s*\[/m.test(body) ||
+            /(?:^|\s)actions:\s*\[/m.test(body) ||
+            /kind:\s*"(?:summary-card|metric-card|table|list|badge)"/.test(body);
+          if (emitsDisplay) producers.push(child);
         }
       }
     };
     for (const d of producerDirs) await walk(d);
+    // ★선별이 죽으면 아래 단언이 전부 "위반 0" 으로 초록이 된다. 실제 와이어 생산자 둘이
+    //  잡혔는지 이름으로 확인한다 — 목록이 아니라 **하한**이다(더 잡히는 건 정상).
+    const picked = producers.map((u) => u.pathname);
+    out.push(
+      assert(
+        "★생산자 선별이 살아 있다(죽으면 아래 위반 검사가 전부 무의미해진다)",
+        producers.length >= 2 &&
+          picked.some((p) => p.endsWith("core/plugins/providers.ts")) &&
+          picked.some((p) => p.includes("http-bridge")),
+        `${producers.length}개: ${picked.map((p) => p.split("/").slice(-2).join("/")).join(", ")}`,
+      ),
+    );
     const bad: string[] = [];
     let checked = 0;
     for (const rel of producers) {

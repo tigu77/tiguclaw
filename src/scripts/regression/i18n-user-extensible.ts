@@ -200,6 +200,36 @@ const run = async (): Promise<Assertion[]> => {
       ),
     );
 
+    // ── ⑤c ★**빈 값은 기본 언어로 떨어진다** (2026-08-26) ──────────────────────
+    //  ★카탈로그에 빈 값을 금지하는 단언은 `i18n-catalogs-and-coverage` 에 있지만, 그건
+    //   **우리 파일**만 본다. 사용자가 홈에 반쯤 번역한 파일을 놓는 게 이 기능의 전제이므로
+    //   **폴백 자체가 도는지**를 따로 봐야 한다 — 안 그러면 폴백을 지워도 스위트가 초록이다.
+    //   `""` 는 키 부재가 아니라 **값**이라 `??` 도 스프레드 병합도 그걸 이긴다.
+    writeFileSync(
+      path.join(home, "locales", "ja.json"),
+      JSON.stringify({ "chat.send": "", "nav.settings": "設定" }) + "\n",
+      "utf8",
+    );
+    writeFileSync(path.join(home, "settings.json"), JSON.stringify({ locale: "ja" }) + "\n", "utf8");
+    const half = runIn(home);
+    out.push(
+      assert(
+        "★반쯤 번역한 파일의 빈 값은 기본 언어로 떨어진다(빈 버튼 방지)",
+        typeof half.send === "string" && half.send !== "" && half.send !== "chat.send",
+        `send=${JSON.stringify(half.send)} (빈 문자열이면 화면에 빈 버튼)`,
+      ),
+      assert(
+        "채운 값은 그대로 쓴다(폴백이 과하게 먹지 않는다)",
+        half.settingsLabel === "設定",
+        `settingsLabel=${JSON.stringify(half.settingsLabel)}`,
+      ),
+      assert(
+        "★생산 호출부(catalogForClient)도 빈 값에 안 덮인다",
+        typeof half.clientSend === "string" && half.clientSend !== "",
+        `clientSend=${JSON.stringify(half.clientSend)}`,
+      ),
+    );
+
     // ── ⑥ 언어를 **바꾸는 경로**(요구 ①) — 쓰고 나서 실제로 반영되는가 ──────────
     //  ★캐시를 안 비우면 "바꿨는데 그대로" 가 된다. 그걸 자식 프로세스 두 번으로 확인한다
     //   (같은 프로세스 안에서 보면 캐시 무효화 여부를 못 가른다).
@@ -207,6 +237,8 @@ const run = async (): Promise<Assertion[]> => {
     const beforeSwitch = runIn(home);
     const switched = runIn(home, ["--set-locale", "en"]);
     const afterSwitch = runIn(home);
+    const edited = runIn(home, ["--edit-catalog", "en", "Ship it"]);
+    const rejected = runIn(home, ["--set-locale", "zz"]);
     out.push(
       assert(
         "★`setLocale` 로 언어를 바꾸면 그 뒤로 그 언어가 나온다(요구 ①)",
@@ -222,13 +254,18 @@ const run = async (): Promise<Assertion[]> => {
       //  애초에 문제가 안 된다 — 첫 판에 그걸 잘못 짚어 변이가 통과했다).
       assert(
         "★언어 파일을 고치면 **재시작 없이** 반영된다(데이터는 매 턴 fresh)",
-        runIn(home, ["--edit-catalog", "en", "Ship it"]).afterFileEdit === "Ship it",
-        `편집 후=${JSON.stringify(runIn(home, ["--edit-catalog", "en", "Ship it"]).afterFileEdit)}`,
+        // ★같은 호출을 조건·증거에서 **두 번** 했다(자식 프로세스를 두 번 띄운다 — 느릴
+        //  뿐 아니라 두 실행이 다르면 증거가 조건과 **다른 실행**을 가리킨다). 한 번만 부른다.
+        edited.afterFileEdit === "Ship it",
+        `편집 후=${JSON.stringify(edited.afterFileEdit)} (기대 "Ship it")`,
       ),
       assert(
         "★설치 안 된 언어로는 **안 바꾼다**(조용히 기본으로 떨어지면 '바꿨는데 왜 그대로지'가 된다)",
-        (runIn(home, ["--set-locale", "zz"]).setLocaleOk as boolean) === false,
-        "거절 확인",
+        // ★같은 호출을 조건·증거에서 **두 번** 하고 증거엔 고정 문자열을 찍고 있었다 —
+        //  실패하면 "거절 확인" 이 찍혀 **무엇이 관측됐는지 알 수 없었다**(G축 ②).
+        //  한 번만 부르고 그 값을 증거로 쓴다.
+        rejected.setLocaleOk === false,
+        `setLocaleOk=${JSON.stringify(rejected.setLocaleOk)} locale=${JSON.stringify(rejected.locale)} (기대 false)`,
       ),
     );
 
@@ -245,16 +282,9 @@ const run = async (): Promise<Assertion[]> => {
           `${pathJoin(appRoot(), "locales", "ko.json")} — 없으면 화면이 키(nav.settings)로 뜬다`,
         ),
       );
-      const copyAssets = await readFileText("../../../bin/copy-dist-assets.mjs");
-      out.push(
-        assert(
-          "★`copy-dist-assets` 가 `locales` 를 복사한다(skills·agents 와 같은 자산이다)",
-          // ★인자까지 고정한 리터럴이었다 — `{ prune: true }` 를 더하자 거짓 빨간불이
-          //  났다(2026-08-26). 검사할 것은 **복사하는가**이지 인자 모양이 아니다.
-          /copyTree\("locales"/.test(copyAssets),
-          /copyTree\("locales"/.test(copyAssets) ? "복사 확인" : "★빠졌다 — 배포본에 기본 문구가 없다",
-        ),
-      );
+      // ★`copyTree("locales")` 리터럴 단언은 **`dist-assets-actually-copied`** 로 옮겼다
+      //  (2026-08-26) — 글자를 세면 `if (false)` 로 감싸도 초록이고, 인자를 바꾸면 거짓
+      //  빨간불이 난다(둘 다 오늘 실제로 겪었다). 그쪽은 스크립트를 실제로 돌린다.
       const dashPlugin = await readFileText("../../../plugins/dashboard/index.ts");
       out.push(
         assert(

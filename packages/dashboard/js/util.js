@@ -84,7 +84,10 @@
        */
       const i18n = (key, params) => {
         const cat = (window.__TIGU_I18N__ && window.__TIGU_I18N__.strings) || {};
-        const raw = typeof cat[key] === "string" ? cat[key] : key;
+        // ★빈 문자열은 「없음」으로 친다 — 서버 병합이 이미 막지만, 화면이 직접 받은
+        //  카탈로그에 빈 값이 있어도 **키를 보여주는 쪽**이 빈 버튼보다 낫다(마지막 방어).
+        const hit = cat[key];
+        const raw = typeof hit === "string" && hit !== "" ? hit : key;
         if (!params) return raw;
         return raw.replace(/\{(\w+)\}/g, (whole, name) =>
           params[name] === undefined ? whole : String(params[name]),

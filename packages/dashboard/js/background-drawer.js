@@ -665,6 +665,20 @@
       // 워커 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
       const WORKER_LABEL_PREFIX = "📦 ";
       /**
+       * kind 에 맞는 라벨을 돌려준다 — **순수 함수**(2026-08-26).
+       *
+       * 규칙: 워커면 접두를 붙이고, 에이전트면 뗀다. **멱등**이라 몇 번 불러도 같다.
+       * ★함수로 뺀 이유는 미관이 아니라 **검사 가능성**이다 — 종전엔 이 판단이 갱신 루프
+       *  한복판에 인라인으로 있어서 회귀가 부를 수가 없었고, 그래서 접두 규칙엔 그물이
+       *  **하나도 없었다**(적대 검토 G축 ②). 접두가 두 번 붙거나 승격 때 안 떨어져도
+       *  스위트는 초록이다 — 화면에서 눈으로만 보인다.
+       */
+      const withKindPrefix = (kind, label) => {
+        const has = String(label).indexOf(WORKER_LABEL_PREFIX) === 0;
+        if (kind === "agent") return has ? String(label).slice(WORKER_LABEL_PREFIX.length) : String(label);
+        return has ? String(label) : WORKER_LABEL_PREFIX + String(label);
+      };
+      /**
        * 잡 카드 라벨을 정하는 **유일한 자리** — 상태(`label`·`hasLabel`)와 화면을 같이 쓴다.
        *
        * ★종전엔 "이름이 아직 없다" 를 화면 글자로 판정했다(`textContent === "(작업)"`, 3곳).
@@ -949,13 +963,8 @@
         // 교체하지만, agentName 없이 승격된 드문 경우엔 여기서 접두를 떼어 정합을 지킨다.
         if (entry.hasLabel) {
           const cur = entry.label;
-          if (entry.kind === "agent") {
-            if (cur.indexOf(WORKER_LABEL_PREFIX) === 0) {
-              setJobLabel(entry, cur.slice(WORKER_LABEL_PREFIX.length));
-            }
-          } else if (cur.indexOf(WORKER_LABEL_PREFIX) !== 0) {
-            setJobLabel(entry, WORKER_LABEL_PREFIX + cur);
-          }
+          const next = withKindPrefix(entry.kind, cur);
+          if (next !== cur) setJobLabel(entry, next);
         }
         if (opts && opts.task && !entry.hasTask) {
           entry.task = String(opts.task); // 원문 보관(에이전트 뷰가 읽음).

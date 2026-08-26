@@ -373,6 +373,56 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
+  // ── ★빈 값이 HTML 폴백을 지우지 않는다 (2026-08-26 G축 ②) ────────────────────
+  //  `applyI18n` 의 `v !== ""` 가드엔 그물이 없었다. HTML 은 기본 언어 문구를 **그대로**
+  //  써두는 설계라(카탈로그가 없어도 화면이 멀쩡히 뜬다), 반쯤 번역한 파일의 빈 값이
+  //  그걸 **덮으면 빈 화면**이 된다 — 에러 0, 눈으로만 보인다. 코어·브라우저 조회 쪽은
+  //  오늘 막았지만(1827e1e) **마크업 적용 경로는 별개 자리**다.
+  //
+  //  ★첫 판은 **이미 채워진 요소**를 재활용해서 변이가 안 먹었다(가드를 떼도 초록) —
+  //   그건 이 작업이 내내 잡아온 **가짜 검사** 그 자체다. 픽스처를 **새로** 만든다:
+  //   원본 문구가 남아 있는 요소에 **빈 값만 든 카탈로그**를 적용한다. 가드가 있으면
+  //   원본이 그대로고, 없으면 빈 문자열이 된다 — 두 결과가 겹칠 수 없다.
+  {
+    const fresh = fakeDomFrom(html);
+    const freshText = fresh.els.filter((e) => e.dataset.i18n !== undefined);
+    const freshAttr = fresh.els.find((e) => (e.dataset.i18nAttrs ?? "").includes("="));
+    const emptyCat: Record<string, string> = {};
+    for (const el of fresh.els) {
+      if (el.dataset.i18n !== undefined) emptyCat[el.dataset.i18n] = "";
+      for (const pair of (el.dataset.i18nAttrs ?? "").split(";")) {
+        const eq = pair.indexOf("=");
+        if (eq >= 0) emptyCat[pair.slice(eq + 1).trim()] = "";
+      }
+    }
+    const w = ctx.window as {
+      __TIGU_I18N__: { strings: Record<string, string> };
+    };
+    const prevDoc = ctx.document;
+    ctx.document = fresh.doc;
+    w.__TIGU_I18N__.strings = emptyCat;
+    apply();
+    ctx.document = prevDoc;
+
+    const wiped = freshText.filter((e) => e.textContent === "");
+    out.push(
+      assert(
+        "★카탈로그의 빈 값이 본문을 지우지 않는다(반쯤 번역한 파일이 화면을 비우던 자리)",
+        freshText.length > 10 && wiped.length === 0,
+        wiped.length === 0
+          ? `${freshText.length}개 요소 · 원본 유지`
+          : `★${wiped.length}개가 빈 문자열로 덮였다(예: ${String(wiped[0]?.dataset.i18n)})`,
+      ),
+      assert(
+        "★빈 값이 속성도 지우지 않는다(본문과 같은 규칙)",
+        freshAttr === undefined || Object.values(freshAttr.attrs).every((v) => v !== ""),
+        freshAttr === undefined
+          ? "속성 요소 없음"
+          : `attrs=${JSON.stringify(freshAttr.attrs)} (기대: 빈 값으로 안 채워짐)`,
+      ),
+    );
+  }
+
   return out;
 };
 

@@ -152,7 +152,15 @@ export const translate = (
   locale?: string,
 ): string => {
   const lang = locale ?? readLocale();
-  const found = loadCatalog(lang)[key] ?? (lang === BASE_LOCALE ? undefined : loadCatalog(BASE_LOCALE)[key]);
+  // ★**빈 문자열도 「없음」이다** (2026-08-26). `??` 는 *키 부재*만 보므로 반쯤 번역한
+  //  파일에 `"chat.send": ""` 이 있으면 그 빈 값이 기본 언어를 **이겨서** 빈 버튼이 된다 —
+  //  화면은 멀쩡히 뜨고 에러도 안 난다. 이 기능(언어를 파일 하나로 늘린다)의 핵심 실패
+  //  모드가 정확히 그것이라 헤더가 이미 그렇게 적어놨는데, 조회가 그걸 안 봤다.
+  const pick = (v: string | undefined): string | undefined =>
+    v !== undefined && v !== "" ? v : undefined;
+  const found =
+    pick(loadCatalog(lang)[key]) ??
+    (lang === BASE_LOCALE ? undefined : pick(loadCatalog(BASE_LOCALE)[key]));
   return interpolate(found ?? key, params);
 };
 
@@ -167,6 +175,14 @@ export const catalogForClient = (
   locale?: string,
 ): { locale: string; strings: Catalog; available: string[] } => {
   const lang = locale ?? readLocale();
-  const strings = { ...loadCatalog(BASE_LOCALE), ...loadCatalog(lang) };
+  // ★빈 값이 기본 언어를 **덮지 못하게** 한다 — 얕은 스프레드는 `""` 도 값으로 쳐서
+  //  덮는다(위 `translate` 와 같은 이유). 화면은 이 병합 결과만 받으므로 여기서 막아야
+  //  브라우저 쪽이 다시 판단할 필요가 없다(가장자리는 판단하지 않는다).
+  const base = loadCatalog(BASE_LOCALE);
+  const over = loadCatalog(lang);
+  const strings: Record<string, string> = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    if (typeof v === "string" && v !== "") strings[k] = v;
+  }
   return { locale: lang, strings, available: availableLocales() };
 };

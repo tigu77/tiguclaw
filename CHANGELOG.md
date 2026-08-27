@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1] - 2026-08-27
+
+### Fixed
+
+- **검색(`Grep`/`Glob`)이 조용히 죽어 있던 기계가 스스로 복구됩니다.** 이 도구들은 `ripgrep`
+  위에 서는데, 없으면 종전엔 데몬이 **경고 한 줄만 남기고** 그대로 돌았습니다. 그 줄을 볼
+  일이 없으니 검색이 안 되는 상태가 계속됐고, 비서는 파일을 찾을 때마다 셸 명령으로
+  우회하다 엉뚱한 데서 멈추곤 했습니다. 이제 **부팅할 때 없으면 받아 둡니다.** 받는 동안
+  시작이 늦어지지는 않고, 못 받으면(오프라인·사내 프록시) 그 사실을 로그에 남기고 다음
+  부팅에 다시 시도합니다.
+
 ## [0.40.0] - 2026-08-27
 
 ### Added
@@ -1634,7 +1645,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.40.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.40.1...HEAD
+[0.40.1]: https://github.com/tigu77/tiguclaw/compare/v0.40.0...v0.40.1
 [0.40.0]: https://github.com/tigu77/tiguclaw/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/tigu77/tiguclaw/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tigu77/tiguclaw/compare/v0.37.0...v0.38.0

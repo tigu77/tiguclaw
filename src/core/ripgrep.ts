@@ -258,3 +258,61 @@ export const ensureRipgrep = async (
     await fs.rm(`${managedRgPath(home)}.partial`, { force: true }).catch(() => {});
   }
 };
+
+/**
+ * **부팅에서 없으면 받는다** (2026-08-27 사용자 결정: "부팅에서 받게 해줘").
+ *
+ * ★종전엔 부팅이 **진단만** 했다 — 없으면 경고 한 줄 찍고 넘어갔다. 그런데 그 줄을 볼
+ *  사람이 없다(회사PC는 원격도 안 되고, 데몬 로그를 열어볼 이유도 없다). 그래서 rg 없는
+ *  기계는 **매 부팅 같은 경고를 남기며 영원히** 검색이 죽은 채로 돈다 — 2026-08-27 회사
+ *  인스턴스가 정확히 그 상태였고, 그 결과 모델이 모든 검색을 윈도우 Bash 로 우회하다
+ *  셸이 매달려 작업 하나가 통째로 어긋났다.
+ *
+ * ★**왜 `/update` 로는 부족한가** — 확보를 거기에만 두면 구멍이 셋이다:
+ *   ① 업데이트 칩은 **버전이 올랐을 때만** 뜬다(v0.40.0) — 그런데 rg 복구는 버전과 무관하다.
+ *      환경이 깨진 기계는 업데이트가 **더** 필요한데 규칙은 **덜** 부른다.
+ *   ② dep-free CLI 복구 경로(`bin/daemon.mjs`)엔 rg 코드가 **0줄**이다.
+ *   ③ self-update 변경은 **다음 업데이트부터** 듣는다(수행 주체가 옛 코드다) — 첫 한 번은
+ *      그냥 지나간다.
+ *  부팅은 이 셋을 전부 우회한다. **환경 복구가 코드 배포에 얹혀 있으면 안 된다.**
+ *
+ * ★**부팅을 막지 않는다.** 호출부는 `void` 로 던지고 기다리지 않는다 — 여기서 await 하면
+ *  사내 프록시·오프라인에서 데몬 기동이 그만큼 늦어진다. 다운로드가 끝나면 다음 `Grep`
+ *  호출이 자동으로 새 경로를 집는다(`rgPath()` 가 매번 다시 푼다 + 실패는 안 굳는다).
+ *
+ * ★`deps` 는 **주입 지점**이다. 이게 없으면 이 판정을 격리해서 부를 수가 없다 —
+ *  `findRipgrep` 은 PATH 와 하드코딩 경로(`/opt/homebrew/bin` 등)를 읽으므로, rg 가 깔린
+ *  개발 기계에서는 "없는 상태" 를 **재현할 방법이 원리적으로 없다**(실제로 첫 검증이 그렇게
+ *  막혔다). 그래서 찾는 쪽·받는 쪽 둘 다 뺀다. 제품 경로는 기본값 그대로다.
+ */
+export const repairRipgrepAtBoot = async (
+  home: string,
+  log: (line: string) => void = console.log,
+  deps: {
+    find?: (h: string) => string | null;
+    ensure?: (h: string) => Promise<RipgrepEnsureResult>;
+  } = {},
+): Promise<RipgrepEnsureResult | null> => {
+  const find = deps.find ?? findRipgrep;
+  const ensure = deps.ensure ?? ensureRipgrep;
+  const found = find(home);
+  if (found !== null) {
+    log(`[file-ops] ripgrep: ${found}`);
+    return null;
+  }
+  log("[file-ops] ripgrep 없음 — 지금 받아 둡니다(Grep/Glob 이 이것 위에 섭니다).");
+  try {
+    const r = await ensure(home);
+    log(
+      r.ok
+        ? `[file-ops] ripgrep 확보 — ${r.detail}`
+        : `[file-ops] ★ripgrep 확보 실패 — ${r.detail} · Grep/Glob 이 실패합니다(다음 부팅에 다시 시도합니다).`,
+    );
+    return r;
+  } catch (e) {
+    // ensureRipgrep 은 throw 하지 않는 계약이지만, 여기서 새면 부팅 로그가 통째로 죽는다.
+    const msg = e instanceof Error ? e.message : String(e);
+    log(`[file-ops] ★ripgrep 확보 중 예외 — ${msg} (Grep/Glob 이 실패합니다)`);
+    return { ok: false, path: null, detail: msg, installed: false };
+  }
+};

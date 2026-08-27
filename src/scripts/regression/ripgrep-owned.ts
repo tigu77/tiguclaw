@@ -191,10 +191,12 @@ export const check: RegressionCheck = {
     // ★주석을 걷어내고 본다 — 종전엔 IIFE 를 지우고 **그걸 설명하는 주석만** 남겨도
     //  통과했다(적대 검토 4R MUT-3). doctor·self-update 는 걷어내는데 여기만 안 걷었다.
     const entryBody = entry.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-    const bootLogs =
-      /findRipgrep\(getPaths\(\)\.home\)/.test(entryBody) &&
-      /\[file-ops\] ripgrep/.test(entryBody) &&
-      /ripgrep 없음/.test(entryBody);
+    // ★**진단이 아니라 조치**여야 한다 (2026-08-27). 종전엔 부팅이 `findRipgrep` 으로 보고만
+    //  했고, 그 경고를 볼 사람이 없어서 rg 없는 기계는 검색이 죽은 채 영원히 돌았다.
+    //  그리고 **기다리면 안 된다** — 여기서 await 하면 오프라인·프록시에서 데몬 기동이 막힌다.
+    const bootRepairs =
+      /void repairRipgrepAtBoot\(getPaths\(\)\.home\)/.test(entryBody) &&
+      !/await repairRipgrepAtBoot/.test(entryBody);
 
     // ── 배선 ──
     const body = doctor.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -210,6 +212,59 @@ export const check: RegressionCheck = {
     const runtimeShares =
       /findRipgrep\(getPaths\(\)\.home\)/.test(fileops) &&
       !/require\.resolve\([\s\S]{0,80}package\.json/.test(fileops);
+
+    // ── ★부팅 복구를 **실제로 부른다** (동작 검사) ────────────────────────────────
+    //  ★`find`·`ensure` 를 주입한다 — `findRipgrep` 이 PATH 와 하드코딩 경로를 읽으므로
+    //   rg 가 깔린 기계에서는 "없는 상태" 를 **원리적으로 재현할 수 없다**(실증: PATH 를
+    //   비워도 `/opt/homebrew/bin/rg` 가 잡혔다). 다운로드는 안 탄다(회귀는 네트워크에
+    //   의존하지 않는다) — 받는 쪽 자체는 이 변경이 건드리지 않았다.
+    const { repairRipgrepAtBoot } = await import("../../core/ripgrep.js");
+    const say = (): { lines: string[]; log: (l: string) => void } => {
+      const lines: string[] = [];
+      return { lines, log: (l) => lines.push(l) };
+    };
+    const miss = say();
+    let ensureCalls = 0;
+    const missResult = await repairRipgrepAtBoot("/tmp/regr-rg-home", miss.log, {
+      find: () => null,
+      ensure: async (h) => {
+        ensureCalls += 1;
+        return { ok: true, path: `${h}/bin/rg`, detail: "받음", installed: true };
+      },
+    });
+    const have = say();
+    let ensureCallsWhenPresent = 0;
+    const haveResult = await repairRipgrepAtBoot("/tmp/regr-rg-home", have.log, {
+      find: () => "/usr/bin/rg",
+      ensure: async () => {
+        ensureCallsWhenPresent += 1;
+        return { ok: false, path: null, detail: "부르면 안 된다", installed: false };
+      },
+    });
+    const boom = say();
+    const boomResult = await repairRipgrepAtBoot("/tmp/regr-rg-home", boom.log, {
+      find: () => null,
+      ensure: () => {
+        throw new Error("프록시 차단");
+      },
+    });
+    const bootRepair: Assertion[] = [
+      assert(
+        "★없으면 실제로 받으러 간다(경고만 찍고 넘어가지 않는다)",
+        ensureCalls === 1 && missResult?.ok === true,
+        `ensure 호출 ${ensureCalls}회 · ok=${String(missResult?.ok)} · ${JSON.stringify(miss.lines)}`,
+      ),
+      assert(
+        "★있으면 안 받는다(멀쩡한 기계가 매 부팅 네트워크를 타지 않는다)",
+        ensureCallsWhenPresent === 0 && haveResult === null,
+        `ensure 호출 ${ensureCallsWhenPresent}회 · ${JSON.stringify(have.lines)}`,
+      ),
+      assert(
+        "★확보가 던져도 부팅이 안 죽고 그 사실이 로그에 남는다",
+        boomResult?.ok === false && boom.lines.some((l) => l.includes("프록시 차단")),
+        JSON.stringify(boom.lines),
+      ),
+    ];
 
     return [
       assert(
@@ -290,10 +345,13 @@ export const check: RegressionCheck = {
         `try/catch=${String(updateBestEffort)} · 시간상한=${String(updateBounded)}`,
       ),
       assert(
-        "★부팅 로그에 rg 유무가 남는다(원격 불가 기계의 1차 진단면)",
-        bootLogs,
-        bootLogs ? "index.ts 진단 유지" : "★부팅에 아무 흔적이 없다",
+        "★부팅이 **받는다**(진단만 하지 않는다) + 기다리지 않는다",
+        bootRepairs,
+        `void 호출=${/void repairRipgrepAtBoot\(getPaths\(\)\.home\)/.test(entryBody)} · ` +
+          `await 아님=${!/await repairRipgrepAtBoot/.test(entryBody)}` +
+          (bootRepairs ? "" : " — 진단만 하면 그 경고를 볼 사람이 없다"),
       ),
+      ...bootRepair,
       assert(
         "[배선 린트] 닥터가 확보를 호출하고 결과를 문제로 보고한다(조건 감싸기는 못 잡는다 — 헤더 참조)",
         doctorChecks && doctorReports,

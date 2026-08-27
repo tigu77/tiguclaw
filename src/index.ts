@@ -1,6 +1,6 @@
 import { formatResetAt, isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
 import { flushEnvLoadLog } from "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
-import { findRipgrep } from "./core/ripgrep.js";
+import { repairRipgrepAtBoot } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -240,17 +240,12 @@ process.on("uncaughtException", (err) => {
 flushEnvLoadLog();
 // ★검색 도구(ripgrep) 해소 결과 — 같은 이유로 여기서 흘린다. 없으면 codex 계열 검색이
 //  통째로 죽는데, 그 사실이 로그에 없으면 사용자는 "왜 못 찾지" 만 겪는다(윈도우 실측).
-(() => {
-  // ★부팅 시점 **진단만** 한다 — 값을 굳히지 않는다(런타임은 첫 사용 때 다시 푼다).
-  //  없으면 codex 계열 검색이 통째로 죽는데, 그 사실이 로그에 없으면 사용자는
-  //  "왜 못 찾지" 만 겪는다(윈도우 실측). 가장 먼저 봐야 할 줄이라 부팅에 남긴다.
-  const rg = findRipgrep(getPaths().home);
-  console.log(
-    rg === null
-      ? "[file-ops] ★ripgrep 없음 — Grep/Glob 이 실패합니다. `npm run doctor` 가 자동으로 받아 둡니다."
-      : `[file-ops] ripgrep: ${rg}`,
-  );
-})();
+// ★진단에서 **조치**로 (2026-08-27). 종전엔 없어도 경고 한 줄이 전부였고, 그 줄을 볼
+//  사람이 없어서 rg 없는 기계는 검색이 죽은 채 영원히 돌았다. 이제 없으면 받는다.
+//  ★`void` — **기다리지 않는다.** 여기서 await 하면 사내 프록시·오프라인에서 데몬 기동이
+//   그만큼 늦어진다. 다운로드가 끝나면 다음 Grep 호출이 알아서 새 경로를 집는다.
+//   값도 굳히지 않는다(런타임은 첫 사용 때 다시 푼다).
+void repairRipgrepAtBoot(getPaths().home);
 
 console.log("tiguclaw daemon: starting");
 

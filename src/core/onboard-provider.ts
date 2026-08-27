@@ -24,3 +24,24 @@ export const codexProviderFromEnvBody = (body: string): boolean => {
   const m = body.match(/^REGION_A_MODELS=(.*)$/m);
   return m !== null && m[1]!.trim().startsWith("codex");
 };
+
+/**
+ * **claude 구독(claude-sub) 설치인가** — codex 판정과 **같은 모양**으로 둔다 (2026-08-27).
+ *
+ * ★둘 다 구독 OAuth 이고 온보드가 대신 발급해준다. 판정이 한쪽만 있으면 그 한쪽만 자동이
+ *  되는데, 실제로 그랬다 — codex 는 대신 해주고 claude 구독은 사용자에게 심부름을 시켰다.
+ *
+ * ★**전역 `claude` 설치를 요구하지 않는다.** Agent SDK 가 플랫폼별 `claude` 바이너리를
+ *  optional 의존으로 같이 깔고(실측 259MB), 거기에 `setup-token` 이 **있다**(실측). 즉
+ *  `npm ci` 가 끝나면 발급 수단이 이미 손안에 있다 — 전역 설치를 시키면 같은 것을 두 번
+ *  받게 하고 버전이 갈린다. (내가 처음엔 반대로 오진했다: 압축된 래퍼 4.1MB 만 보고
+ *  "번들 안 한다" 고 단정 — [[feedback_verify_before_asserting]].)
+ */
+export const claudeSubProviderFromEnvBody = (body: string): boolean => {
+  const explicit = body.match(/^TIGUCLAW_PROVIDER=(.*)$/m);
+  if (explicit !== null && explicit[1]!.trim() !== "") {
+    return explicit[1]!.trim() === "claude-sub";
+  }
+  // 옛 설치 호환 — 그때 .env 엔 TIGUCLAW_PROVIDER 가 없고 토큰만 있다.
+  return /^CLAUDE_CODE_OAUTH_TOKEN=.+$/m.test(body);
+};

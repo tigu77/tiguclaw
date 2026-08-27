@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-08-27
+
+### Added
+
+- **답변 안에 다이어그램이 그려집니다.** 비서가 ` ```mermaid ` 블록으로 순서도·시퀀스·클래스
+  다이어그램을 그리면 이제 **그림으로** 뜹니다(전엔 코드 상자였습니다). 다이어그램 렌더러는
+  **쓸 때만 내려받습니다** — 안 쓰는 분은 한 바이트도 받지 않습니다. 인터넷에도 안 나갑니다.
+- **마크다운이 더 많이 표현됩니다** — 체크박스 목록(`- [ ]`), 접었다 펴는 `<details>`,
+  표의 좌/우/가운데 정렬, 단축키 표기(`<kbd>`). 전부 비서가 이미 쓰던 문법인데 화면에서만
+  뭉개지고 있었습니다.
+- **업데이트하기 전에 무엇이 바뀌는지 봅니다.** 업데이트 버튼을 누르면 확인 창에 **이번에
+  받는 버전의 변경 내역**이 함께 뜹니다. 받아보고 나서야 아는 일이 없어집니다.
+- **Claude 구독으로 설치할 때 토큰을 대신 받아옵니다.** 전엔 CLI 를 따로 깔고, 명령을 치고,
+  나온 토큰을 복사해 붙여야 했습니다. 이제 설치 마법사에서 **claude-sub** 를 고르면 브라우저
+  로그인만 하면 됩니다(`tiguclaw claude-auth` 로 언제든 다시 받을 수 있습니다).
+
+### Changed
+
+- **옛 대화를 열어도 도구 사용 기록이 남아 있습니다.** 전엔 대화 글은 남는데 그 안의 도구
+  카드만 며칠 뒤 사라졌습니다 — 정리 대상이 아닌 것이 정리되고 있었습니다. 이제 대화의
+  기록은 지우지 않고, 백그라운드 작업의 진행 로그만 정리합니다.
+- **브랜드 아이콘 배경이 투명해졌습니다** — 밝은 테마에서 아이콘 주위에 검은 사각형이 보이던
+  것이 사라집니다.
+- 비서가 **자기 홈 폴더와 설치 위치를 압니다.** "테마 하나 만들어줘" 처럼 파일을 놓아야 하는
+  요청이 제자리를 찾아갑니다. (매 대화에 두 줄이 추가로 실립니다.)
+
+### Fixed
+
+- `doctor` 가 **Claude 실행기까지** 점검합니다 — 키는 있는데 실행기가 없어 대화가 안 되던
+  상태를 "정상" 으로 넘기지 않습니다.
+- Claude 실행 실패가 **알아들을 수 있는 말**로 나옵니다(전엔 내부 옵션 이름이 그대로 나왔습니다).
+- 아이콘을 바꿔도 브라우저가 옛 그림을 계속 쓰던 문제.
+
+
 ## [0.40.1] - 2026-08-27
 
 ### Fixed
@@ -1645,7 +1679,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.40.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.41.0...HEAD
+[0.41.0]: https://github.com/tigu77/tiguclaw/compare/v0.40.1...v0.41.0
 [0.40.1]: https://github.com/tigu77/tiguclaw/compare/v0.40.0...v0.40.1
 [0.40.0]: https://github.com/tigu77/tiguclaw/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/tigu77/tiguclaw/compare/v0.38.0...v0.39.0

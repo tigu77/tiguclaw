@@ -6,8 +6,42 @@
         "p","br","strong","em","b","i","code","pre","ul","ol","li",
         "blockquote","h1","h2","h3","h4","h5","h6","a","hr","del","s",
         "table","thead","tbody","tr","th","td","span",
+        // 2026-08-27 추가 — 전부 **marked 가 이미 만들거나 통과시키던 것**이고, 여기서만
+        // 죽고 있었다(실측). 값은 있는데 도달 경로가 0이던 부류.
+        "input",              // GFM 체크박스 `- [ ]` (아래 정책이 disabled 를 강제한다)
+        "details","summary",  // 접기 — 긴 답변에서 실제로 유용
+        "kbd",                // 단축키 표기
       ]);
       const MD_SAFE_HREF = /^(https?:|mailto:)/i;
+
+      /**
+       * **태그별 속성 정책** — 값까지 본다 (2026-08-27).
+       *
+       * ★종전엔 "모든 속성 제거 후 `a.href`·`code.class` 만 if 두 개로 복원" 이었다. 태그가
+       *  늘 때마다 분기가 붙는 모양이라, 그 자체가 다음 실수의 자리다. 데이터로 바꾼다.
+       * ★기본은 여전히 **전부 제거**다 — 여기 적힌 것만 살아남는다(allowlist, denylist 아님).
+       *  값 검사까지 하는 이유: 속성 이름만 보면 `type="image"` 같은 게 통과한다.
+       */
+      const MD_ATTR_POLICY = {
+        a: {
+          href: (v) => (MD_SAFE_HREF.test(v.trim()) ? v.trim() : null),
+        },
+        code: {
+          // 하이라이터가 언어 판별에 쓴다.
+          class: (v) => (/^language-[\w#+.\-]+$/.test(v.trim()) ? v.trim() : null),
+        },
+        // ★체크박스는 **읽기 전용**이어야 한다. 모델이 만든 문서일 뿐이고, 누를 수 있으면
+        //  사용자가 "체크하면 뭔가 된다" 고 오해한다(아무 일도 안 난다). `disabled` 는
+        //  아래에서 **무조건** 붙인다 — marked 가 빼먹어도 우리가 강제한다.
+        input: {
+          type: (v) => (v.trim().toLowerCase() === "checkbox" ? "checkbox" : null),
+          checked: () => "",
+        },
+        // 표 정렬 — marked 가 `align="left|center|right"` 로 준다.
+        th: { align: (v) => (/^(left|center|right)$/i.test(v.trim()) ? v.trim().toLowerCase() : null) },
+        td: { align: (v) => (/^(left|center|right)$/i.test(v.trim()) ? v.trim().toLowerCase() : null) },
+        details: { open: () => "" },
+      };
       // 미닫힌 코드펜스(``` 홀수) 봉합 — 답변에 ``` 하나만 있어도 깨진 HTML 방지(렌더용 복사본만).
       const sealFences = (src) => {
         const fences = (src.match(/^```/gm) || []).length;
@@ -27,23 +61,33 @@
                 node.removeChild(child);
                 continue;
               }
-              // 모든 속성 제거 후, a.href·code 의 language 클래스만 화이트리스트로 복원.
-              const href = tag === "a" ? child.getAttribute("href") : null;
-              // 코드블록 언어 클래스(예: language-csharp) 보존 → 하이라이터가 언어 판별에 사용.
-              const codeLang =
-                tag === "code" ? child.getAttribute("class") : null;
+              // 정책에 통과한 값만 **먼저 뜨고**, 나머지는 전부 지운 뒤 되돌린다.
+              const policy = MD_ATTR_POLICY[tag] || {};
+              const keep = {};
+              for (const name of Object.keys(policy)) {
+                const raw = child.getAttribute(name);
+                if (raw === null) continue;
+                const ok = policy[name](raw);
+                if (ok !== null && ok !== undefined) keep[name] = ok;
+              }
               for (const attr of Array.from(child.attributes)) {
                 child.removeAttribute(attr.name);
               }
-              if (tag === "a") {
-                if (href && MD_SAFE_HREF.test(href.trim())) {
-                  child.setAttribute("href", href.trim());
-                  child.setAttribute("target", "_blank");
-                  child.setAttribute("rel", "noopener noreferrer");
-                }
+              for (const [name, value] of Object.entries(keep)) {
+                child.setAttribute(name, value);
               }
-              if (tag === "code" && codeLang && /^language-[\w#+.\-]+$/.test(codeLang.trim())) {
-                child.setAttribute("class", codeLang.trim());
+              if (tag === "a" && child.hasAttribute("href")) {
+                child.setAttribute("target", "_blank");
+                child.setAttribute("rel", "noopener noreferrer");
+              }
+              if (tag === "input") {
+                // ★타입이 안 남았으면(=checkbox 가 아니었으면) 요소 자체를 버린다. 그리고
+                //  살아남았어도 **항상** 비활성 — 우리가 강제하지 marked 를 믿지 않는다.
+                if (child.getAttribute("type") !== "checkbox") {
+                  node.removeChild(child);
+                  continue;
+                }
+                child.setAttribute("disabled", "");
               }
               walk(child);
             } else if (child.nodeType !== 3) {
@@ -55,6 +99,154 @@
         walk(doc.body);
         return doc.body.innerHTML;
       };
+      /**
+       * **mermaid 다이어그램 렌더** — 나타났을 때만 3.4MB 를 받는다 (2026-08-27).
+       *
+       * ★사용자 요청. 종전엔 `` ```mermaid `` 가 그냥 코드 블록으로 떴다(원문이 회색 상자에).
+       *
+       * ★**sanitize 를 건드리지 않는다.** 입력은 이미 정화된 코드 블록의 **텍스트**이고,
+       *  mermaid 가 만든 SVG 는 우리가 만든 컨테이너에 넣는다. 화이트리스트에 `svg` 를
+       *  여는 쪽이 훨씬 위험하다 — 거기엔 `foreignObject`·이벤트 핸들러가 들어올 수 있고,
+       *  그 자리가 지금 XSS 방어의 전부다.
+       * ★`securityLevel:"strict"` — 라벨을 이스케이프하고 클릭 핸들러를 끈다. 모델 출력은
+       *  신뢰 입력이 아니다. (실측: 생성된 SVG 에 `<script>` 0개.)
+       * ★실패해도 **원문이 남는다** — 코드 블록을 지우고 그리는 게 아니라, 성공했을 때만
+       *  바꿔치운다. 문법 오류 하나로 내용이 사라지면 안 된다.
+       */
+      /**
+       * 배경이 밝으면 mermaid 도 밝게 — 화면에서 **읽는다**.
+       *
+       * ★`body` 의 `backgroundColor` 를 보면 안 된다: 실측 `rgba(0, 0, 0, 0)` 로 **투명**이다
+       *  (색은 `--bg` 토큰이 칠한다). 그걸 읽고 "어둡다" 로 판정하면 밝은 테마에서 다이어그램만
+       *  까맣게 뜬다 — 첫 판이 정확히 그랬다.
+       * ★테마 **이름**을 열거하지 않는다(dark/light/…). 사용자가 만든 테마에서 바로 갈린다.
+       *  판정은 `--bg` 의 밝기 하나다.
+       */
+      const mermaidTheme = () => {
+        try {
+          const raw = getComputedStyle(document.documentElement)
+            .getPropertyValue("--bg")
+            .trim();
+          let r, g, b;
+          const hex = /^#([0-9a-f]{6})$/i.exec(raw);
+          const rgb = /rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/.exec(raw);
+          if (hex) {
+            const n = parseInt(hex[1], 16);
+            r = (n >> 16) & 255; g = (n >> 8) & 255; b = n & 255;
+          } else if (rgb) {
+            r = +rgb[1]; g = +rgb[2]; b = +rgb[3];
+          } else {
+            return "dark"; // 못 읽으면 제품 기본(어두움) 쪽.
+          }
+          return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5 ? "default" : "dark";
+        } catch {
+          return "dark";
+        }
+      };
+
+      /**
+       * mermaid 초기화 — **매번 다시 부른다**(테마가 바뀔 수 있다).
+       *
+       * ★`htmlLabels:false` 가 핵심이다 (2026-08-27 적대 검토 F1). 기본값(`true`)이면 라벨을
+       *  `<foreignObject>` 안 **HTML 로** 그리는데, 거기 `<img src>` 를 쓰면 렌더되는 순간
+       *  **임의 호스트로 요청이 나간다** — 사용자 클릭 없이, 조용히(열람 사실·IP·UA 유출).
+       *  실측: 요청 2건 → `htmlLabels:false` 로 **0건**(foreignObject 도 0).
+       *  ★이 커밋이 `img[src]` 를 "정책 설계가 먼저" 라며 일부러 미뤘는데, mermaid 가 그
+       *   결정을 옆문으로 우회하고 있었다. 정문만 잠근 셈이었다.
+       */
+      const initMermaid = (m) =>
+        m.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          htmlLabels: false,
+          flowchart: { htmlLabels: false },
+          theme: mermaidTheme(),
+        });
+
+      /**
+       * mermaid 산출 SVG 를 **우리 정책에 한 번 더 통과**시킨다 (적대 검토 F1·F2).
+       *
+       * ★`htmlLabels:false` 로 정문은 닫혔지만, 그건 **설정 하나에 기댄 것**이다. 다이어그램
+       *  타입이 늘거나 상류 기본값이 바뀌면 조용히 되살아난다. 그래서 **결과물을 본다.**
+       * ★링크: mermaid 앵커엔 `target`·`rel` 이 **없다**(실측 속성 `xlink:href,data-look,
+       *  transform`). 그대로 두면 같은 화면 안에서 링크 정책이 둘이 되고, 클릭하면 대시보드
+       *  탭 자체가 남의 URL 로 이동한다. 우리 `a` 정책(스킴 검사 + 새 탭 + noopener)을 먹인다.
+       */
+      const hardenMermaidSvg = (root) => {
+        for (const el of root.querySelectorAll("img, image, iframe, foreignObject, script")) {
+          el.remove();
+        }
+        for (const a of root.querySelectorAll("a")) {
+          const raw = a.getAttribute("xlink:href") ?? a.getAttribute("href") ?? "";
+          const ok = MD_ATTR_POLICY.a.href(raw);
+          a.removeAttribute("xlink:href");
+          a.removeAttribute("href");
+          if (ok === null) continue; // 스킴 탈락 — 링크가 아니라 그냥 글자로 남는다.
+          a.setAttribute("href", ok);
+          a.setAttribute("target", "_blank");
+          a.setAttribute("rel", "noopener noreferrer");
+        }
+      };
+
+      let mermaidLoading = null;
+      const loadMermaid = () => {
+        if (window.mermaid) return Promise.resolve(window.mermaid);
+        if (mermaidLoading) return mermaidLoading;
+        mermaidLoading = new Promise((resolve, reject) => {
+          const el = document.createElement("script");
+          el.src = "/mermaid.min.js";
+          el.onload = () => resolve(window.mermaid || null);
+          el.onerror = () => reject(new Error("mermaid load failed")); // 내부 신호(catch 가 삼킨다) — 화면 문구 아님
+          document.head.appendChild(el);
+        }).then((m) => {
+          // ★테마를 **화면에서 읽는다** — 못박으면 반대 테마에서 다이어그램만 따로 논다
+          //  (헤드리스 실증에서 밝은 화면에 어두운 다이어그램이 떴다).
+          //  판정은 배경색 밝기 하나 — 테마 이름을 열거하면 사용자가 만든 테마에서 갈린다
+          //  ([[feedback_hand_maintained_lists]]).
+          if (m) initMermaid(m);
+          return m;
+        });
+        return mermaidLoading;
+      };
+
+      let mermaidSeq = 0;
+      const renderMermaidBlocks = (root) => {
+        const blocks = Array.from(root.querySelectorAll("pre > code.language-mermaid"));
+        if (blocks.length === 0) return; // ★안 쓰면 로드도 안 한다.
+        loadMermaid()
+          .then(async (m) => {
+            if (!m) return;
+            for (const code of blocks) {
+              const pre = code.parentElement;
+              if (!pre || pre.dataset.mermaidDone === "1") continue;
+              pre.dataset.mermaidDone = "1"; // 재렌더(스크롤 가상화)에서 두 번 그리지 않게.
+              const rid = `md-mermaid-${++mermaidSeq}`;
+              try {
+                initMermaid(m); // ★테마는 매 렌더 다시 읽는다(F4 — 전환 후에도 옛 테마로 그려졌다).
+                const { svg } = await m.render(rid, code.textContent || "");
+                const box = document.createElement("div");
+                box.className = "md-mermaid";
+                box.innerHTML = svg;
+                hardenMermaidSvg(box); // ★산출물을 우리 정책에 통과시킨다(F1·F2).
+                pre.replaceWith(box);
+              } catch {
+                // 문법 오류 등 — 원문 코드 블록을 그대로 둔다(사용자가 무엇이 왔는지는 봐야 한다).
+                pre.dataset.mermaidDone = "";
+              } finally {
+                // ★mermaid 가 렌더용 임시 노드를 body 에 남긴다 — 실패 시 특히(실측: 20회에
+                //  21개, DOM +264 노드). 상시 떠 있는 화면이라 단조 증가한다. 우리가 치운다.
+                for (const id of [rid, `d${rid}`]) {
+                  const leaked = document.getElementById(id);
+                  if (leaked && leaked.parentElement === document.body) leaked.remove();
+                }
+              }
+            }
+          })
+          .catch(() => {
+            /* 로드 실패(오프라인 아님 — 로컬 파일) — 코드 블록 그대로. */
+          });
+      };
+
       // 코드블록 하이라이팅 — vendored highlight.js(window.hljs). sanitize 후 DOM 의 pre code 를
       // 언어(language-* 클래스, 없으면 자동감지)로 하이라이트. hljs 미로드 시 무해 스킵.
       const highlightCodeBlocks = (root) => {
@@ -260,6 +452,7 @@
             //  버튼을 code 밖(pre 직속)에 두므로 순서가 뒤바뀌어도 안전하게 하려는 것도 겸한다.
             decorateCodeBlocks(msgEl);
             installCodeCopy();
+            renderMermaidBlocks(msgEl); // ★비동기 — 실패해도 위 렌더는 이미 끝나 있다.
             return;
           } catch (e) {
             // 폴백: 평문.

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 //  (`initStore`·`getDb`·`resolveDataDir`·`listActive`·`listSchedules`·`listWatches`)
 import { DISALLOWED_TOOLS } from "../auth/permissions.js";
 import { ensureRipgrep } from "../core/ripgrep.js";
+import { findBundledClaude, bundledClaudeMissingHint } from "../core/claude-cli.js";
 import { getPaths } from "../core/paths.js";
 import type { BridgeTokenRole } from "../store/bridge-tokens.js";
 import {
@@ -612,6 +613,24 @@ const main = async (): Promise<void> => {
     `${"ripgrep".padEnd(PAD)}${rg.ok ? (rg.installed ? "설치함" : "OK") : "★없음"}  ${rg.detail}`,
   );
   if (!rg.ok) issues.push("ripgrep 없음 — Grep/Glob 실패(codex 계열 검색 불가)");
+  console.log("");
+
+  // ─── Claude 실행기 ────────────────────────────────────────────────────
+  // ★rg 와 **같은 축**이다 (2026-08-27): 우리가 부르는 실행기가 실제로 있는가. 종전엔 키만
+  //  보고 통과시켰다 — **키는 있는데 실행기가 없는** 상태가 "정상" 으로 보였다.
+  //  보통은 `npm ci` 가 의존성으로 같이 깐다(플랫폼별 optional). 없을 수 있는 경우는
+  //  `--omit=optional` 설치와 미지원 플랫폼뿐이고, 둘 다 조치가 다르므로 그대로 말한다.
+  //  ★rg 와 달리 **받아오지 않는다** — 전역 설치는 같은 259MB 를 두 벌로 만들고 버전이 갈린다.
+  console.log("── Claude 실행기");
+  const claudeBin = findBundledClaude();
+  console.log(
+    `${"claude".padEnd(PAD)}${claudeBin !== null ? "OK" : "★없음"}  ${claudeBin ?? bundledClaudeMissingHint()}`,
+  );
+  if (claudeBin === null) {
+    issues.push(
+      "Claude 실행기 없음 — anthropic·claude 구독 provider 가 동작하지 않습니다(`npm ci` 재실행)",
+    );
+  }
   console.log("");
 
   // 「다음 단계」 — 우선순위 사다리, 첫 번째 결손만

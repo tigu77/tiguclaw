@@ -19,6 +19,9 @@
  *  ②는 배선 린트(회귀 프로세스에서 `npm ci` 를 돌릴 수는 없다).
  */
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
@@ -91,6 +94,9 @@ export const check: RegressionCheck = {
 
     // init 이 자동 모드에서 **아무것도 안 쓰는가** — 쓰면 그 값에 고정돼 자동 최신이 죽는다.
     const init = await readFile(new URL("../init.ts", import.meta.url), "utf8");
+    const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+    const cli = await readFile(path.join(REPO, "src/cli.ts"), "utf8");
+    const pkg = await readFile(path.join(REPO, "package.json"), "utf8");
     const writesNothing =
       /if \(modelMode === "auto"\) \{/.test(init) &&
       /seedModelProfiles\(buildSeedProfiles\(answers\), "high"\);/.test(init) &&
@@ -111,22 +117,37 @@ export const check: RegressionCheck = {
     //  우리 문서 어디에도 없었다(README 포함 0건).
     //  ★install.sh 헤더가 적어둔 것과 같은 규칙이다 — **어느 경로로 끝나든 다음 행동이
     //   남아야 한다.** 반쯤 설치된 상태로 사람을 버리지 않는다.
+    // ★계약이 **바뀌었다** (2026-08-27). 종전 요구는 *"설치 명령을 알려줘라"* 였는데, 이제는
+    //  **우리가 대신 발급한다** — Agent SDK 가 `claude` 바이너리를 의존성으로 같이 깔고
+    //  (실측 259MB) 거기에 `setup-token` 이 있으므로, 사용자에게 같은 것을 한 번 더 받게 할
+    //  이유가 없다. 그러니 옛 단언은 **낡아서** 빨간불이 난 것이지 코드가 나빠진 게 아니다.
+    //  ★다만 그 게이트가 지키던 **원칙은 그대로다**: *"어느 경로로 끝나든 다음 행동이
+    //   남아야 한다."* 그래서 약화시키지 않고 **더 강한 형태**로 바꾼다 — 안내가 아니라
+    //   **자동 실행**을 요구한다. 되돌아가면(다시 붙여넣기를 시키면) 빨간불이다.
     {
-      const sub = /if \(provider === "claude-sub"\) \{[\s\S]{0,1200}?\n {2}\}/.exec(init)?.[0] ?? "";
+      const sub = /if \(provider === "claude-sub"\) \{[\s\S]{0,1600}?\n {2}\}/.exec(init)?.[0] ?? "";
+      const asksPaste = /askRequired\(|await ask\(/.test(sub);
       out.push(
         assert(
-          "★구독 안내가 CLI 설치까지 알려준다(없는 명령을 시키지 않는다)",
-          // ★**출력되는 안내**(console.log)에서 본다. 첫 판은 "블록 어딘가에 그 문자열이
-          //  있나" 였는데, 재시도 힌트(빈 입력 시에만 뜨는 문장)에도 같은 명령이 있어서
-          //  **정작 화면에 먼저 나오는 안내를 지워도 초록**이었다. 오늘 네 번째 같은 실수다.
-          sub !== "" &&
-            /console\.log\([^)]*@anthropic-ai\/claude-code/.test(sub) &&
-            /console\.log\([^)]*claude setup-token/.test(sub),
+          "★구독 토큰을 사용자에게 받아 적게 하지 않는다(대신 발급한다)",
+          sub !== "" && !asksPaste && /claude-auth/.test(sub),
           sub === ""
             ? "★claude-sub 분기를 못 찾음(검사 전제)"
-            : /console\.log\([^)]*@anthropic-ai\/claude-code/.test(sub)
-              ? "설치 → 발급 → 붙여넣기"
-              : "★`claude setup-token` 만 있고 그 CLI 를 어디서 받는지가 없다",
+            : asksPaste
+              ? "★다시 붙여넣기를 시킨다 — 자동 발급으로 되돌려라"
+              : "자동 발급 안내",
+        ),
+        assert(
+          "★온보드가 claude 구독도 **실제로** 대신 발급한다(codex 와 대칭)",
+          /providerIsClaudeSub\(\)/.test(cli) && /"claude-auth"/.test(cli),
+          `판정=${/providerIsClaudeSub\(\)/.test(cli)} · 실행=${/"claude-auth"/.test(cli)}` +
+            " — 한쪽만 자동이면 그 비대칭이 곧 사용자 심부름이다",
+        ),
+        assert(
+          "★발급 스크립트가 실재한다(가리키는 곳이 비면 안내가 막다른 길이 된다)",
+          existsSync(path.join(REPO, "src/scripts/claude-auth.ts")) &&
+            /"claude-auth":/.test(pkg),
+          `파일=${existsSync(path.join(REPO, "src/scripts/claude-auth.ts"))} · npm 스크립트=${/"claude-auth":/.test(pkg)}`,
         ),
       );
     }

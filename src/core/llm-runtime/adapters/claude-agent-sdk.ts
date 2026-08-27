@@ -42,6 +42,7 @@ import {
 import type { SteeringChannel, SteeringInput } from "../../steering.js";
 import { getSession, invalidateResume } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
+import { bundledClaudeMissingHint } from "../../claude-cli.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { buildActivityDetail } from "./_activity-detail.js";
 import { buildActivityDiff } from "./_activity-diff.js";
@@ -941,7 +942,18 @@ export const runClaude = async (
   // resume 세션 부재/손상은 SDK 가 "process exited with code 1" 로 종료시킨다 →
   // resume 없이 fresh 세션으로 1회 graceful 폴백 (본질 수정: 마이그레이션·세션 만료·
   // cwd 변경에도 턴이 안 죽게). model 거부는 별도 표면(is_error throw)이라 무간섭.
-  const isResumeProcessFailure = (e: unknown): boolean =>
+  /**
+ * SDK 가 Claude Code 실행기를 못 찾았나 — **문구로 판정한다**(상류가 타입을 안 준다).
+ *
+ * ★두 형태를 다 본다: 파일 자체가 없을 때와, 있는데 못 띄울 때(예: musl/glibc 불일치).
+ *  사용자에게 필요한 조치가 같으므로(=설치가 온전한가) 한 갈래로 묶는다.
+ */
+const isClaudeExecutableMissing = (e: unknown): boolean => {
+  const m = e instanceof Error ? e.message : String(e);
+  return /Claude Code (executable|native binary) (not found|at .* exists but failed to launch)/i.test(m);
+};
+
+const isResumeProcessFailure = (e: unknown): boolean =>
     e instanceof Error && /process exited with code 1/i.test(e.message);
   // 처리불가 이미지 등 재생 불가한 turn 이 resume jsonl 에 박히는 400 — 그대로 두면 이후 모든
   // turn 이 그 resume 을 재생하며 영구 실패(스레드 오염). 감지 시 resume 만 무효화(아래) 하면
@@ -1923,6 +1935,19 @@ export const runClaude = async (
         reason instanceof WorkerCancelledError)
     ) {
       throw reason;
+    }
+    // ★실행기 부재를 **우리 말로** 바꾼다 (2026-08-27). SDK 원문은
+    //  `Claude Code executable not found at <...>. Is options.pathToClaudeCodeExecutable set?`
+    //  인데, 그 옵션은 **우리 코드의 인자 이름**이라 사용자에겐 아무 뜻이 없다. 그대로 나가면
+    //  "무슨 소린지 모르겠고 어떻게 고치는지도 모르는" 실패가 된다 —
+    //  [[feedback_logs_must_stand_alone]] 이 말하는 그 형상이다.
+    //  ★그리고 이 실패는 **폴백에 가려진다**: 풀에 codex/openai 가 같이 있으면 다음 모델이
+    //   조용히 이어받아 claude 만 영영 죽어 있는 걸 아무도 모른다. 원인을 문장에 박아
+    //   최소한 로그·turn_error 에는 남게 한다.
+    if (isClaudeExecutableMissing(e)) {
+      throw new Error(
+        `${bundledClaudeMissingHint()} (원본: ${e instanceof Error ? e.message : String(e)})`,
+      );
     }
     throw e;
   }

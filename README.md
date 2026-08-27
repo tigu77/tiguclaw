@@ -132,6 +132,20 @@ ChatGPT subscriptions**, and **any OpenAI-compatible endpoint** (OpenRouter, Gro
 → Keys, config examples, day-to-day commands, updating and uninstalling live in
 **[Setup & operations](docs/setup.en.md)**.
 
+### Changing reasoning effort
+
+You can control **how hard a model thinks**. No config file — just say it:
+
+> "raise codex sol's reasoning effort to high" · "put opus back to its default"
+
+Values are the vendor's own tiers (`low` · `medium` · `high` · `xhigh` · `max` — which ones
+exist varies by model). Say it with no value to **clear** the override and fall back to the
+model's designed default. It takes effect on the next turn; no restart. Whatever is currently
+set shows as a badge on the dashboard's **Models** screen.
+
+> ⚠️ More effort means **more output, more cost, more latency.** (Measured: pinning one model
+> to its designed `low` cut output by 37%.) Raise it for the job that needs it, then put it back.
+
 **If something's off**, run `tiguclaw doctor` first — it checks keys, home, service, native modules and
 the global command, and tells you what to do about whatever it finds. Still stuck? Open an
 [issue](https://github.com/tigu77/tiguclaw/issues/new/choose). For security problems use

@@ -10,7 +10,7 @@ For people who just installed tiguclaw — or are about to. For *what it is*, se
 |---|---|
 | **Ollama (local)** | No key, free, offline. Just install Ollama. (Smaller models, lower quality.) |
 | **Anthropic API key** | Grab one at console.anthropic.com — easiest, pay-as-you-go. |
-| **Claude subscription** ⚠️ | Use your Claude Pro/Max plan — run `claude setup-token` (no API key, no per-token billing). **Terms caveat — see [below](#before-you-use-a-subscription-token).** |
+| **Claude subscription** ⚠️ | Use your Claude Pro/Max plan — onboarding **mints the token for you** (`npm run claude-auth`; you just log in). No API key, no per-token billing. **Terms caveat — see [below](#before-you-use-a-subscription-token).** |
 | **OpenAI API key** | platform.openai.com — pay-as-you-go. |
 | **codex (ChatGPT subscription)** ⚠️ | After install, run `npm run codex-auth` to log in. **Terms caveat — see [below](#before-you-use-a-subscription-token).** |
 | **Anything OpenAI-compatible** | OpenRouter, Groq, Together, vLLM, your own endpoint — add it in `settings.json`, no code. See below. |
@@ -63,9 +63,16 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 3. Add credit under **Plans & Billing** (pay-as-you-go).
 
 **Claude subscription** (use your Claude Pro/Max plan instead of an API key) — ⚠️ [terms caveat](#before-you-use-a-subscription-token)
-1. Install the Claude Code CLI, then run **`claude setup-token`**.
-2. Log in in the browser — it prints a long-lived token; copy it.
-3. Paste it as `CLAUDE_CODE_OAUTH_TOKEN` (the wizard's **claude-sub** option, or in `.env`). No per-token billing — it runs on your subscription.
+
+Pick **claude-sub** in the wizard and you're done. We mint the token for you — a browser opens,
+you log in, that's it. Nothing extra to install (the `claude` binary used to mint it ships as a
+dependency and is installed by `npm ci`).
+
+To re-mint it later or switch accounts, any time:
+
+```bash
+npm run claude-auth      # or: tiguclaw claude-auth
+```
 
 **OpenAI API key** (`sk-…`)
 1. Sign in at **platform.openai.com**.

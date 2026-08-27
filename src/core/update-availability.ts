@@ -58,6 +58,15 @@ export interface UpdateAvailability {
   dirty: readonly string[];
   /** 지금 설치된 버전. 못 읽으면 undefined. */
   version?: string;
+  /**
+   * **받으면 뭐가 바뀌나** — 원격 CHANGELOG 에서 현재 버전보다 위인 항목만 (2026-08-27).
+   * `available` 에서만, 그것도 읽혔을 때만 실린다. 없어도 칩은 정상 동작한다.
+   */
+  notes?: {
+    sections: Array<{ version: string; body: string }>;
+    /** 상한(3) 때문에 못 실은 나머지 버전 수 — 화면이 "그 외 N개" 로 정직하게 말한다. */
+    omitted: number;
+  };
   /** 원격이 올려둔 버전. `available` 이면 이 값이 위 `version` 보다 높다. */
   newVersion?: string;
 }
@@ -117,6 +126,78 @@ export const compareVersions = (a: string, b: string): number | null => {
 };
 
 /** 어떤 커밋(`HEAD`·`@{u}`)의 `package.json` 버전. 못 읽으면 undefined. */
+/**
+ * **CHANGELOG 에서 "이번에 받으면 뭐가 바뀌나" 만 잘라낸다** — 순수 함수 (2026-08-27).
+ *
+ * ★사용자 지적: *"업데이트 버튼만 달랑 있으니까 변경 내역을 확인하기가 힘든데."* 맞다 —
+ *  지금은 **받아봐야 안다.**
+ *
+ * ★그런데 **이미 손안에 있다.** 판정이 어차피 `git fetch` 를 돌리는데(그래야 몇 커밋
+ *  뒤처졌는지 안다), fetch 는 원격 오브젝트를 **다운로드까지** 한다 — 작업트리만 안 건드릴
+ *  뿐이다. 즉 칩이 "업데이트 있음" 을 띄운 순간 새 CHANGELOG 는 디스크에 있다.
+ *  실증(뒤처진 클론에서): `origin/main` ref 를 지우면 `git show` 가 실패하고, `fetch` 만
+ *  하면 작업트리는 0.40.0 인 채로 **원격 0.40.1 항목이 읽힌다** — 프록시를 막아도 읽힌다
+ *  (= 오브젝트가 로컬에 있다). ★첫 실증은 이미 최신인 레포에서 해서 **아무것도 증명하지
+ *  못했다**(정태님이 짚어줬다).
+ *
+ * ★커밋 제목이 아니라 **CHANGELOG** 인 이유: 우리 커밋은 길고 내부 용어다
+ *  (`fix(events): 휘발성 축만 자른다`). CHANGELOG 는 애초에 사용자 문장으로 쓴다.
+ *
+ * @param body   원격 CHANGELOG 전문
+ * @param from   지금 설치된 버전(이것보다 **위**인 항목만 남긴다). 모르면 undefined → 최신 1개.
+ * @param maxSections 최대 몇 버전까지 실을지 — 오래 밀린 설치에서 패널이 스크롤 지옥이 되지 않게.
+ */
+export const changelogSince = (
+  body: string,
+  from: string | undefined,
+  maxSections = 3,
+): { sections: Array<{ version: string; body: string }>; omitted: number } => {
+  // `## [1.2.3] - 날짜` 헤더로 자른다. `[Unreleased]` 는 버전이 아니라 건너뛴다.
+  const re = /^## \[([^\]]+)\][^\n]*$/gm;
+  const marks: Array<{ version: string; start: number; headEnd: number }> = [];
+  for (let m = re.exec(body); m !== null; m = re.exec(body)) {
+    marks.push({ version: m[1] as string, start: m.index, headEnd: m.index + m[0].length });
+  }
+  const all: Array<{ version: string; body: string }> = [];
+  for (let i = 0; i < marks.length; i++) {
+    const cur = marks[i] as { version: string; start: number; headEnd: number };
+    if (!/^\d/.test(cur.version)) continue; // Unreleased 등
+    const end = i + 1 < marks.length ? (marks[i + 1] as { start: number }).start : body.length;
+    all.push({ version: cur.version, body: body.slice(cur.headEnd, end).trim() });
+  }
+  // `from` 보다 **위**인 것만. 비교 불가면 최신 1개만(거짓말보다 적게 말한다).
+  const newer =
+    from === undefined
+      ? all.slice(0, 1)
+      : all.filter((s) => {
+          const c = compareVersions(from, s.version);
+          return c !== null && c < 0;
+        });
+  return { sections: newer.slice(0, maxSections), omitted: Math.max(0, newer.length - maxSections) };
+};
+
+/**
+ * 원격(@{u}) CHANGELOG 를 **pull 없이** 읽는다. 없으면 undefined — 칩은 그대로 뜬다.
+ *
+ * ★자리가 **둘**이다 (2026-08-27 적대 검토 F4). 배포본은 루트에 `CHANGELOG.md` 가 있지만,
+ *  **개발 레포는 정본이 `_workspace/public-overlay/` 안**이다(공개 오버레이가 배포 때 루트로
+ *  옮긴다). 그래서 이 기능을 요청한 인스턴스에서 **정작 안 보였다** — 코드 주석은 "dev 레포가
+ *  그렇다" 고 알고 있었는데 그게 요청자의 화면이라는 걸 못 봤다.
+ *  ★경로를 **열거하지 않고 순서대로 시도**한다 — 둘 다 우리가 아는 자리이고, 늘어날 일이
+ *  없으며(오버레이 규약이 정한다), 없으면 그냥 조용하다.
+ */
+const CHANGELOG_PATHS = ["CHANGELOG.md", "_workspace/public-overlay/CHANGELOG.md"] as const;
+const remoteChangelog = async (
+  cwd: string,
+  timeoutMs: number,
+): Promise<string | undefined> => {
+  for (const rel of CHANGELOG_PATHS) {
+    const r = await git(["show", `@{u}:${rel}`], cwd, timeoutMs);
+    if (r.ok && r.out.trim() !== "") return r.out;
+  }
+  return undefined;
+};
+
 const versionAt = async (
   ref: string,
   cwd: string,
@@ -233,5 +314,17 @@ export const checkUpdateAvailability = async (
   if (cmp !== null && cmp >= 0) {
     return { state: "unreleased", behind, dirty, version, newVersion };
   }
-  return { state: "available", behind, dirty, version, newVersion };
+  // ★변경 내역 — **best-effort**. 못 읽어도 칩은 그대로 뜬다(업데이트를 막을 이유가 없다).
+  //  못 읽는 정상 경우: CHANGELOG 가 루트에 없는 설치(dev 레포가 그렇다)·git 아님.
+  let notes: UpdateAvailability["notes"];
+  try {
+    const body = await remoteChangelog(cwd, timeoutMs);
+    if (body !== undefined) {
+      const cut = changelogSince(body, version);
+      if (cut.sections.length > 0) notes = cut;
+    }
+  } catch {
+    /* 변경 내역은 부가 정보다 — 실패가 판정을 흔들면 안 된다 */
+  }
+  return { state: "available", behind, dirty, version, newVersion, ...(notes !== undefined ? { notes } : {}) };
 };

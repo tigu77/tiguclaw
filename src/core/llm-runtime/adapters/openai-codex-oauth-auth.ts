@@ -6,6 +6,7 @@
  * 공개 표면은 메인 파일의 배럴 re-export 로 보존된다.
  */
 import { generatePKCE as generatePkceUpstream } from "@openauthjs/openauth/pkce";
+import { upsertHomeEnvVars } from "../../env-file.js";
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homeEnvPath } from "../../load-env.js";
@@ -208,62 +209,14 @@ export const getCodexTokenExpiry = (): number | undefined => {
 };
 
 export const upsertCodexTokens = async (tokens: OAuthTokens): Promise<void> => {
-  // in-memory 먼저 — 파일 write 성패와 무관하게 현재 turn 이 새 토큰을 즉시 사용한다.
-  process.env.OPENAI_CODEX_OAUTH_TOKEN = tokens.access;
-  process.env.OPENAI_CODEX_OAUTH_REFRESH = tokens.refresh;
-  process.env.OPENAI_CODEX_OAUTH_EXPIRES = String(tokens.expires);
-
-  const ENV_PATH = homeEnvPath(); // ★홈 .env (레포 아님) — 매 호출 신선 해석.
-  let body = "";
-  try {
-    body = await fs.readFile(ENV_PATH, "utf8");
-  } catch (err) {
-    // ★ENOENT(진짜 부재)만 "새로 작성". 그 외 읽기 실패(일시적 EBUSY·업데이트 중 파일
-    //  교체 레이스 등)를 "부재"로 오인하면 body="" → OAuth 3키만 write → 기존 다른 키
-    //  (TELEGRAM_BOT_TOKEN·HTTP_BRIDGE_TOKEN 등) 전부 소멸(데이터 손실 사고). 부재가
-    //  아니면 clobber 방지 위해 파일 갱신을 건너뛴다(process.env 는 위에서 이미 갱신됨).
-    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-      console.error(
-        `[codex] upsertCodexTokens: .env 읽기 실패(${String(err)}) at ${ENV_PATH} — ` +
-          `기존 .env clobber 방지 위해 파일 갱신 skip (process.env 는 갱신됨).`,
-      );
-      return;
-    }
-    // ENOENT — 진짜 부재, 새로 작성 OK.
-  }
-  const updates: Record<string, string> = {
+  // ★쓰기 규칙(ENOENT 만 신규 · 원자적 rename · 0600 유지 · in-memory 먼저)은 전부
+  //  `core/env-file.ts` 로 옮겼다 (2026-08-27). `claude-auth` 가 같은 걸 필요로 했는데,
+  //  베끼면 다음 사고 때 한쪽만 고쳐진다 — 이 함수들은 전부 실사고에서 나온 것이다.
+  await upsertHomeEnvVars({
     OPENAI_CODEX_OAUTH_TOKEN: tokens.access,
     OPENAI_CODEX_OAUTH_REFRESH: tokens.refresh,
     OPENAI_CODEX_OAUTH_EXPIRES: String(tokens.expires),
-  };
-  const lines = body === "" ? [] : body.split("\n");
-  const seen = new Set<string>();
-  const next = lines.map((line) => {
-    const match = line.match(/^(OPENAI_CODEX_OAUTH_\w+)=/);
-    if (match !== null) {
-      const key = match[1]!;
-      if (updates[key] !== undefined) {
-        seen.add(key);
-        return `${key}=${updates[key]}`;
-      }
-    }
-    return line;
   });
-  for (const key of TOKEN_KEYS) {
-    if (!seen.has(key)) next.push(`${key}=${updates[key]}`);
-  }
-  const out = next.join("\n");
-  const finalBody = out.endsWith("\n") ? out : `${out}\n`;
-  // ★원자적 write — temp 파일에 쓰고 rename. 재작성 도중 프로세스가 죽어도(업데이트
-  //  stop·crash) 기존 .env 가 truncate 되지 않는다(rename 은 원자적). in-memory 동기화는
-  //  함수 상단에서 이미 완료.
-  const tmp = `${ENV_PATH}.tmp-${process.pid}`;
-  // ★0600 유지 (2026-07-28) — mode 미지정이면 tmp 가 0644 로 생기고 rename 이 그 퍼미션을
-  //  가져간다. 사용자가 chmod 600 해도 **다음 토큰 refresh 때 0644 로 되돌아가는** 루프였다.
-  await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 });
-  await fs.rename(tmp, ENV_PATH);
-  // 기존 파일이 이미 느슨하면 승격(신규는 위 mode 로 충분 — 이건 구 설치본 치유).
-  await fs.chmod(ENV_PATH, 0o600).catch(() => {});
 };
 
 // V3.3 — token 자동 refresh. 만료 임박(5분 이내) 시 refresh 호출 + .env 갱신.

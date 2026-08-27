@@ -160,6 +160,37 @@ export const check: RegressionCheck = {
           `status=${icon.status} type=${ct || "(없음)"} ${bytes}B`,
         ),
       );
+      // ★**두 판이 다 나가야 한다** (2026-08-27). `icon.png` 는 배경을 뚫은 것(어느 테마에도
+      //  얹힌다), `icon-solid.png` 는 배경이 있는 것(**iOS 홈 화면 전용** — iOS 는 투명을
+      //  검게 합성하므로 뚫은 걸 주면 지금과 똑같거나 더 나빠진다).
+      //  ★한쪽만 검사하면 나머지가 404 여도 초록이다 — 그러면 홈 화면 아이콘이 통째로 깨진다.
+      const solid = await fetch(`http://127.0.0.1:${port}/icon-solid.png`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      const solidCt = solid.headers.get("content-type") ?? "";
+      const solidBytes = (await solid.arrayBuffer()).byteLength;
+      out.push(
+        assert(
+          "★apple-touch 용 solid 아이콘도 image/png 로 나간다(iOS 홈 화면)",
+          solid.ok && solidCt.startsWith("image/png") && solidBytes > 1000,
+          `status=${solid.status} type=${solidCt || "(없음)"} ${solidBytes}B`,
+        ),
+        assert(
+          "★둘이 서로 다른 파일이다(같으면 나눈 의미가 없다)",
+          solidBytes !== bytes,
+          `투명 ${bytes}B · solid ${solidBytes}B`,
+        ),
+        assert(
+          "★마크업이 apple-touch 에만 solid 를 건다(파비콘·브랜드는 투명)",
+          /rel="apple-touch-icon" href="\/icon-solid\.png"/.test(html) &&
+            /rel="icon"[^>]*href="\/icon\.png"/.test(html) &&
+            /class="brand-icon" src="\/icon\.png"/.test(html),
+          `apple-touch=${/apple-touch-icon" href="\/icon-solid\.png"/.test(html)} · ` +
+            `favicon=${/rel="icon"[^>]*href="\/icon\.png"/.test(html)} · ` +
+            `brand=${/class="brand-icon" src="\/icon\.png"/.test(html)}`,
+        ),
+      );
+
       // 캐시 정책 — 내용이 고정인 자산을 매 요청 재전송하면 폰에서 체감이 나쁘다.
       out.push(
         assert(

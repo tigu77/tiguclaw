@@ -44,6 +44,7 @@
  * 외부 의존 0 — node 표준 http/fs/path/url 만. Channel/Observer import 0 (외부 client).
  */
 import http from "node:http";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -266,8 +267,31 @@ const server = http.createServer((req, res) => {
           path.join(__dirname, "index.html"),
           "utf8",
         );
+        // ★아이콘 캐시 깨기 — **파일 내용 해시**로 (2026-08-27).
+        //  아이콘은 `max-age=86400` 이라(내용이 고정인 자산이니 맞다) 파일을 바꿔도 브라우저가
+        //  **하루 동안 옛 것을 계속 쓴다.** 파비콘은 특히 끈질기게 남는다 — 실제로 배경을
+        //  뚫어 배포했는데도 화면엔 검은 사각형이 그대로였다.
+        //  ★손 번호(`?v=2`)를 쓰지 않는다: 파일을 고치고 번호를 안 올리면 조용히 안 바뀌고,
+        //   그 목록은 반드시 드리프트한다([[feedback_hand_maintained_lists]]).
+        //   내용 해시는 **바뀔 때만** 바뀌고 사람이 관리할 것이 없다.
+        //  실패해도 화면은 뜬다(해시 없이 나가면 종전 동작 = 캐시가 남을 뿐).
+        let withHash = html;
+        try {
+          const stamp = async (file: string): Promise<string> =>
+            createHash("sha1")
+              .update(await fs.readFile(path.join(__dirname, file)))
+              .digest("hex")
+              .slice(0, 8);
+          const [a, b] = await Promise.all([stamp("icon.png"), stamp("icon-solid.png")]);
+          withHash = html
+            .replace(/(["'])\/icon\.png\1/g, `$1/icon.png?v=${a}$1`)
+            .replace(/(["'])\/icon-solid\.png\1/g, `$1/icon-solid.png?v=${b}$1`);
+        } catch {
+          /* 해시 실패 — 종전대로 나간다(화면은 정상, 캐시만 늦게 갱신) */
+        }
+
         // ★테마 상태 주입 — 실패해도 화면은 뜬다(기본 자리표시자가 남는다).
-        let withMode = html;
+        let withMode = withHash;
         try {
           const { readTheme, availableThemes } = await import(
             "../../src/core/theme.js"
@@ -275,7 +299,7 @@ const server = http.createServer((req, res) => {
           // ★설정 화면이 쓸 목록·현재값. 조회 엔드포인트를 따로 만들면 "무슨 테마가 있나"
           //  의 정본이 둘이 된다(언어가 `__TIGU_I18N__.available` 로 이미 그렇게 한다).
           const payload = { theme: readTheme(), themes: availableThemes() };
-          withMode = html.replace(
+          withMode = withHash.replace(
             /<script id="tigu-appearance">[\s\S]*?<\/script>/,
             () =>
               `<script id="tigu-appearance">window.__TIGU_THEME__ = ${JSON.stringify(
@@ -429,11 +453,18 @@ const server = http.createServer((req, res) => {
     }
 
     // 정적 vendored 마크다운 파서 (marked, 단일파일·외부 의존 0).
-    // 브랜드 아이콘 — favicon + apple-touch(폰 홈 화면). 내용이 고정이라 vendored 자산과
-    // 같은 캐시 정책(앱 CSS/JS 의 no-store 와 다르다 — 매 요청 재전송할 이유가 없다).
-    if (pathname === "/icon.png" && method === "GET") {
+    // 브랜드 아이콘 — 내용이 고정이라 vendored 자산과 같은 캐시 정책(앱 CSS/JS 의
+    // no-store 와 다르다 — 매 요청 재전송할 이유가 없다).
+    //
+    // ★**둘로 나뉜다** (2026-08-27 사용자 지적: "테마를 바꾸니 검은색 주변이 좀 그러네").
+    //  - `icon.png`       배경을 뚫은 것 — 화면 안 브랜드·파비콘. 어느 테마에도 얹힌다.
+    //  - `icon-solid.png` 배경이 있는 것 — **apple-touch 전용**. iOS 는 홈 화면 아이콘의
+    //    투명을 **검게 합성**해서, 뚫은 걸 주면 지금과 똑같거나 더 나빠진다.
+    //  ★뚫을 때 "어두운 픽셀 제거" 로 하면 **게 몸통의 긁힘 무늬까지 뚫린다**(실측
+    //   `23,2,0`). 배경은 푸른 기(B>R)·게 그림자는 붉은 기(R>B)라 색상으로 갈랐다.
+    if ((pathname === "/icon.png" || pathname === "/icon-solid.png") && method === "GET") {
       try {
-        const buf = await fs.readFile(path.join(__dirname, "icon.png"));
+        const buf = await fs.readFile(path.join(__dirname, path.basename(pathname)));
         res.writeHead(200, {
           "Content-Type": "image/png",
           "Cache-Control": "public, max-age=86400",
@@ -441,7 +472,7 @@ const server = http.createServer((req, res) => {
         res.end(buf);
       } catch {
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("icon.png not found");
+        res.end("icon not found");
       }
       return;
     }
@@ -460,6 +491,30 @@ const server = http.createServer((req, res) => {
       } catch {
         res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("marked.min.js load failed");
+      }
+      return;
+    }
+
+    /**
+     * 정적 vendored 다이어그램 렌더러 (mermaid v11, 단일파일·외부 의존 0·CDN 0).
+     *
+     * ★**3.4MB 다** — 나머지 자산을 다 합친 것보다 크다. 그래서 `index.html` 이 미리 걸지
+     *  않는다: 화면이 `` ```mermaid `` 블록을 **실제로 만났을 때만** 이 URL 을 부른다
+     *  (`markdown.js` 의 지연 로드). 다이어그램을 안 쓰는 사용자는 1바이트도 안 받는다.
+     * ★로컬(127.0.0.1) 이라 첫 로드도 디스크 읽기 한 번이다 — CDN 을 안 쓰는 이유이기도 하다
+     *  (오프라인·사내망에서 깨지면 안 되고, 외부로 요청이 나가서도 안 된다).
+     */
+    if (pathname === "/mermaid.min.js" && method === "GET") {
+      try {
+        const js = await fs.readFile(path.join(__dirname, "mermaid.min.js"), "utf8");
+        res.writeHead(200, {
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "public, max-age=86400",
+        });
+        res.end(js);
+      } catch {
+        res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("mermaid.min.js load failed");
       }
       return;
     }

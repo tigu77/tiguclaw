@@ -16,6 +16,7 @@
  * import 한다.
  */
 import { existsSync } from "node:fs";
+import { appRoot, getPaths } from "./paths.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -91,6 +92,16 @@ export const formatEnvContext = (input: {
     `OS Version: ${os.type()} ${os.release()}`,
     `Today's date: ${toYmd(input.now ?? new Date())}`,
     `Shell: ${shell.label} — ${shell.syntaxHint}`,
+    // ★홈과 앱 루트를 **매 턴 싣는다** (2026-08-27 사용자 지적: "비서가 테마 파일을
+    //  <home>/themes 에 두는 걸 모르나? 원본 레포 위치는 아나?").
+    //  종전엔 `Working directory` 뿐이었는데 그건 **턴마다 달라진다**(프로젝트 폴더일 수
+    //  있다) — 홈과 무관하다. 그래서 사용자 자산이 어디 사는지(테마·스킬·에이전트·설정)와
+    //  자기 소스가 어디 있는지를 **알 방법이 없었다.**
+    //  ★도구 설명으로 때울 수 없는 자리다: "홈에 두세요" 라고 적어도 홈이 어딘지 모르면
+    //   그 문장은 실행 불가다(안내가 한 걸음 앞에서 끊기는 부류).
+    //  비용은 두 줄(~0.1KB) — 매 턴 필요한 것이라 여기가 맞다.
+    `tiguclaw home: ${getPaths().home}  (사용자 자산 — settings.json · themes/ · skills/ · agents/ · memory/)`,
+    `tiguclaw app root: ${appRoot()}  (제품 소스 — 업데이트가 덮으므로 사용자 자산을 여기 두지 말 것)`,
   ];
   // P2(선택) — 단순 체크(상위 워크트리 탐색 안 함). 미검출 시 라인 생략.
   if (existsSync(path.join(input.cwd, ".git"))) {

@@ -10,10 +10,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>티구클로 대시보드</title>
-    <!-- 브랜드 아이콘 — 한 파일(256px)로 favicon 과 홈 화면 아이콘을 겸한다. 크기별로
+    <!-- 브랜드 아이콘 — **두 판**이다 (2026-08-27). `icon.png` 는 배경을 뚫어 어느 테마에도
+         얹히고, `icon-solid.png` 는 배경이 있다. iOS 홈 화면은 투명을 검게 합성하므로
+         apple-touch 만 solid 를 쓴다. 256px 한 크기로
          여러 벌 두면 다음에 하나가 뒤처진다(브라우저가 알아서 축소한다). -->
     <link rel="icon" type="image/png" href="/icon.png" />
-    <link rel="apple-touch-icon" href="/icon.png" />
+    <!-- ★iOS 는 홈 화면 아이콘의 투명을 검게 합성한다 — 여기만 배경 있는 판을 준다. -->
+    <link rel="apple-touch-icon" href="/icon-solid.png" />
     <link rel="stylesheet" href="/app.css" />
     <!-- ★선택된 테마 프리셋 — `settings.json` 의 `theme` → `themes/<이름>.css`.
          언어와 같은 모양이다(`locales/*.json` + `locale`). 서버가 이름을 고르므로 URL 엔

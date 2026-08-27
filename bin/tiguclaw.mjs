@@ -7,7 +7,7 @@
 //   로 **직접** spawn — tsx·cli.ts·npm·node_modules 를 전혀 거치지 않는다. 깨진
 //   node_modules/tsx 에서도 stop·restart·uninstall·install·update 가 항상 된다
 //   (update 는 자체적으로 npm ci 로 node_modules 를 복구한다).
-// 그 외 앱 명령(onboard/init/doctor/codex-auth/help)은 종전대로 tsx 로 src/cli.ts 실행
+// 그 외 앱 명령(onboard/init/doctor/codex-auth/claude-auth/help)은 종전대로 tsx 로 src/cli.ts 실행
 //   (앱 전체 deps 가 있어야 의미 있는 명령이라 tsx OK).
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";

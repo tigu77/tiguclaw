@@ -2,8 +2,8 @@
 /**
  * tiguclaw CLI — 자가호스트 통합 진입점 (bin/tiguclaw.mjs 가 cwd=repo 로 호출).
  *
- *   tiguclaw onboard   # 원샷 설정: init → (codex)codex-auth → daemon 등록 → doctor
- *   tiguclaw status|restart|update|logs|uninstall|install|doctor|init|codex-auth
+ *   tiguclaw onboard   # 원샷 설정: init → (구독)codex-auth|claude-auth → daemon 등록 → doctor
+ *   tiguclaw status|restart|update|logs|uninstall|install|doctor|init|codex-auth|claude-auth
  *
  * 기존 npm 스크립트를 순서대로 위임(재사용) — 단일 진실 소스 유지.
  */
@@ -11,7 +11,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { codexProviderFromEnvBody } from "./core/onboard-provider.js";
+import {
+  codexProviderFromEnvBody,
+  claudeSubProviderFromEnvBody,
+} from "./core/onboard-provider.js";
 import process from "node:process";
 
 // 설정(.env)은 런타임 홈에 있다(레포 무오염, 2026-07-09). 홈 = TIGUCLAW_HOME / 기본 ~/.tiguclaw.
@@ -56,6 +59,10 @@ const runDaemon = (cmd: string): number => {
 const providerIsCodex = (): boolean =>
   existsSync(ENV_PATH) && codexProviderFromEnvBody(readFileSync(ENV_PATH, "utf8"));
 
+/** claude 구독인가 — 같은 리프 판정(둘 다 온보드가 대신 발급한다). */
+const providerIsClaudeSub = (): boolean =>
+  existsSync(ENV_PATH) && claudeSubProviderFromEnvBody(readFileSync(ENV_PATH, "utf8"));
+
 /** 전역 PATH 에서 명령 위치 해석 (unix: which / win: where). 없으면 null. */
 const resolveCmd = (name: string): string | null => {
   const finder = process.platform === "win32" ? "where" : "which";
@@ -97,14 +104,23 @@ const onboard = (): number => {
     return 1;
   }
 
-  if (providerIsCodex()) {
-    console.log("\n[2/5] codex provider — ChatGPT OAuth 발급…");
-    if (runNpm("codex-auth") !== 0) {
-      console.error("→ codex-auth 실패. onboard 중단.");
+  // ★구독 provider 둘을 **같이** 처리한다 (2026-08-27). 종전엔 codex 만 대신 발급해주고
+  //  claude 구독은 사용자에게 심부름을 시켰다 — "CLI 를 깔고, 토큰을 받아서, 붙여넣으세요".
+  //  게다가 그 첫 걸음은 이미 `npm ci` 로 받아둔 259MB 를 **한 번 더** 받는 것이었다.
+  //  같은 성격의 인증인데 한쪽만 자동인 건 비대칭이다.
+  const authScript = providerIsCodex()
+    ? "codex-auth"
+    : providerIsClaudeSub()
+      ? "claude-auth"
+      : null;
+  if (authScript !== null) {
+    console.log(`\n[2/5] 구독 OAuth 발급 (${authScript})…`);
+    if (runNpm(authScript) !== 0) {
+      console.error(`→ ${authScript} 실패. onboard 중단.`);
       return 1;
     }
   } else {
-    console.log("\n[2/5] codex 아님 — OAuth 단계 건너뜀.");
+    console.log("\n[2/5] 구독 provider 아님 — OAuth 단계 건너뜀.");
   }
 
   // 런타임 모드 (ADR 2026-07-14 D2/D4, Amendment 2026-07-14) — 명시 env 만 진실.
@@ -170,9 +186,10 @@ const onboard = (): number => {
 
 const USAGE = `tiguclaw — 자가호스트 AI 비서 CLI
 
-  tiguclaw onboard      원샷 설정 (init → codex-auth → 데몬 등록 → doctor)
+  tiguclaw onboard      원샷 설정 (init → 구독 OAuth → 데몬 등록 → doctor)
   tiguclaw init         설정 마법사만 (.env 재생성)
-  tiguclaw codex-auth   ChatGPT OAuth 토큰 발급
+  tiguclaw codex-auth   ChatGPT 구독 OAuth 토큰 발급
+  tiguclaw claude-auth  Claude 구독 OAuth 토큰 발급
   tiguclaw doctor       설정 검증
   tiguclaw status       데몬 상태
   tiguclaw restart      데몬 재시작 (코드 변경 적용)
@@ -208,6 +225,10 @@ const main = (): number => {
       return runNpm("init");
     case "codex-auth":
       return runNpm("codex-auth");
+    // ★claude 구독도 같은 자리 (2026-08-27) — 문서가 `tiguclaw claude-auth` 를 약속하는데
+    //  디스패치에 없으면 그게 곧 "없는 명령을 시키는" 막다른 길이다(고치려던 그 부류).
+    case "claude-auth":
+      return runNpm("claude-auth");
     case "doctor":
       return runNpm("doctor");
     case "status":

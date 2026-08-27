@@ -5,7 +5,7 @@
  * 기록 정책(어떤 type 을 남길지·페이로드 캡)은 core/event-persist.ts 의 sink 가 결정 —
  * 본 모듈은 순수 저장/조회/prune CRUD.
  */
-import { getDb } from "./sessions.js";
+import { getDb, visibleSessionSql } from "./sessions.js";
 
 export interface PersistedEvent {
   id: number;
@@ -38,6 +38,25 @@ export const countEvents = (): number =>
     .n;
 
 /**
+ * **잘리는 행만** 센다 — 경보선(bound) 비교용 (2026-08-27).
+ *
+ * ★`countEvents()`(전체)를 상한과 비교하면, 대화 도구 스텝이 레코드로 남기 시작한 순간부터
+ *  총계가 상한을 넘어 **영구 오경보**가 난다. 경보가 물어야 할 것은 *"자동 정리가 제 일을
+ *  하는가"* 이므로, 자르는 대상만 세는 게 맞다. 남기는 축은 별도로 보고한다(정보).
+ */
+export const countPrunableEvents = (): number => {
+  const marks = HIGH_VOLUME_TYPES.map(() => "?").join(", ");
+  const v = volatileActivitySql();
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM events
+        WHERE type NOT IN (${marks}) OR (${v.sql})`,
+    )
+    .get(...HIGH_VOLUME_TYPES, ...v.params) as { n: number };
+  return row.n;
+};
+
+/**
  * **고volume 타입 목록** — 이들만 자기 몫으로 따로 프루닝한다 (2026-07-30).
  *
  * ★왜: 종전 프루닝은 **전체 건수** 기준(`id <= MAX(id) - keepLast`)이라, 잦은 타입이 상한을
@@ -53,6 +72,55 @@ export const countEvents = (): number =>
 // ★`llm.delta`·`llm.sdk_message` 는 넣지 않는다 — event-persist 의 SKIP_TYPES 라 **애초에
 //  영속되지 않는다**(DELETE 가 매번 0행). 원칙 검토 지적: "미래 가능성 위해 만든 항목" 차단.
 const HIGH_VOLUME_TYPES = ["llm.activity"] as const;
+
+/**
+ * ★**`llm.activity` 는 두 가지 일을 겸한다** — 그래서 프루닝도 갈라야 한다 (2026-08-27).
+ *
+ *  - **대화의 도구 스텝** = 화면에 보이는 **레코드**. `/chat-history` 가 이걸로 옛 대화의
+ *    도구 카드를 복원한다. 지우면 사용자가 **말은 있는데 도구만 사라진** 대화를 본다.
+ *  - **그 밖의 활동** = 진짜 **휘발성 텔레메트리**(잡·서브에이전트·스케줄·엔드포인트·
+ *    게이트웨이·내부 파생). 사용자가 **열 수 없는** 좌표라 화면 어디에도 안 나온다.
+ *
+ * ★**판정을 새로 만들지 않는다** (2026-08-27 적대 검토 F1). 첫 판은 접두 목록을 손으로 적었고
+ *  (`worker:`/`agent:`/`gateway:`), 그건 정본(`INTERNAL_THREAD_PREFIXES`)과 **두 개가
+ *  어긋난 네 번째 사본**이었다. 실측: `scheduler:` 677건 · `suggest:` 70 · `webfetch:` 6 이
+ *  "대화 레코드" 로 분류돼 영원히 안 지워지고, 경보도 그걸 안 세서 **원리적으로 못 울렸다.**
+ *  (라벨이 틀렸을 뿐 수치는 맞았다 — 내가 헤더에 "대화 0.12MB/일" 이라 적은 것의 **절반이
+ *  대화가 아니었다**.)
+ *
+ * ★그래서 **뒤집는다**: 무엇이 휘발성인지 열거하는 대신, **"사용자가 열 수 있는 세션인가"**
+ *  를 묻는다. 그 판정은 이미 있다 — `visibleSessionSql` 이고, **검색·세션 목록이 같은 걸
+ *  쓴다**. 실측으로 레코드 1,523 → **770건**(753건이 열 수도 없는 좌표였다).
+ *  ★접두가 새로 생겨도 자동으로 따라온다. 손 목록이 아예 없어진다
+ *  ([[feedback_hand_maintained_lists]]).
+ *
+ * ★`INTERNAL_THREAD_PRUNABLE_PREFIXES`(scheduler 제외판)를 쓰면 **안 된다** — 그건
+ *  `threads` **행**을 지울 때의 판단이다(스케줄은 같은 threadKey 를 재사용하므로 지우면
+ *  대화 연속성이 끊긴다). 여기서 다루는 건 `events` 행이고, 스케줄의 도구 스텝은 화면에
+ *  안 나오므로 텔레메트리다. 두 판단이 겹쳐 보이지만 다른 것이다.
+ *
+ * 비용: 남기는 축 실측 **0.06MB/일**(연 22MB). 옆의 `transcripts` 가 무한으로 0.49MB/일이다.
+ */
+/**
+ * **휘발성 활동인가** — SQL 조각. 프루닝과 관측(잔여 건수)이 **같은 판정**을 써야 한다.
+ *
+ * 정의: *"사용자가 열 수 있는 세션의 활동이 **아닌** 것."* 판정 자체는
+ * `visibleSessionSql`(검색·세션 목록이 쓰는 그것)에 위임한다 — 여기서 다시 정의하지 않는다.
+ *
+ * ★`threads` 행이 **아예 없는** 좌표(`suggest:`·`webfetch:` 등 실측)도 자동으로 휘발성이다.
+ *  세션이 없으면 열 수 없고, 열 수 없으면 화면에 안 나온다.
+ */
+const volatileActivitySql = (): { sql: string; params: string[] } => {
+  // ★보관된 대화도 **레코드**다 — 보관은 숨기는 것이지 지우는 게 아니다(해제하면 돌아와야
+  //  한다). 사용자 뷰와 판정이 갈리는 유일한 지점이라 여기 명시한다.
+  const v = visibleSessionSql("t", { includeArchived: true });
+  return {
+    sql:
+      `json_valid(payload) AND json_extract(payload, '$.threadKey') NOT IN (` +
+      `SELECT t.channel_thread_id FROM threads t WHERE ${v.conds.join(" AND ")})`,
+    params: v.params,
+  };
+};
 
 /**
  * 프루닝 — 고volume 타입은 **타입별 상한**, 그 외는 **전체 상한**.
@@ -72,6 +140,7 @@ export const eventsTotalBound = (keepLast: number): number =>
 export const pruneEvents = (keepLast: number): number => {
   const db = getDb();
   const marks = HIGH_VOLUME_TYPES.map(() => "?").join(", ");
+  const v = volatileActivitySql();
   let removed = 0;
   // ★순위 기반으로 자른다 — `id <= MAX(id) - keepLast` 같은 **오프셋** 방식은 id 가 전역
   //  단조라 고volume 을 먼저 지워도 희귀 행이 여전히 컷오프 아래에 남는다(실측: 그 방식으로
@@ -79,13 +148,20 @@ export const pruneEvents = (keepLast: number): number => {
   // ① 고volume 타입: 각자 자기 몫(전체 상한의 절반)까지만.
   const perType = Math.max(1, Math.floor(keepLast / 2));
   for (const t of HIGH_VOLUME_TYPES) {
+    // ★**휘발성 축만** 자른다 — 대화의 도구 스텝은 레코드라 남긴다(위 헤더).
+    //  `id NOT IN (...)` 의 안쪽 목록도 같은 축으로 좁혀야 한다. 안 좁히면 레코드 행이
+    //  "최신 N" 자리를 차지해 **휘발성이 안 잘리고**, 결국 아무것도 안 잘린다.
     removed += db
       .prepare(
         `DELETE FROM events
-           WHERE type = ?
-             AND id NOT IN (SELECT id FROM events WHERE type = ? ORDER BY id DESC LIMIT ?)`,
+           WHERE type = ? AND ${v.sql}
+             AND id NOT IN (
+               SELECT id FROM events
+                WHERE type = ? AND ${v.sql}
+                ORDER BY id DESC LIMIT ?
+             )`,
       )
-      .run(t, t, perType).changes;
+      .run(t, ...v.params, t, ...v.params, perType).changes;
   }
   // ② 그 외(희귀 타입 전부): 자기들끼리 상한을 쓴다 — 활동량과 무관해진다.
   removed += db

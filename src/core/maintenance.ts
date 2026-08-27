@@ -25,7 +25,7 @@ import path from "node:path";
 import { getPaths } from "./paths.js";
 import { RETENTION_KEEP } from "./event-persist.js";
 import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
-import { eventsTotalBound, countEvents } from "../store/events.js";
+import { eventsTotalBound, countEvents, countPrunableEvents } from "../store/events.js";
 import { countWorkerJobs } from "../store/worker-jobs.js";
 import { TERMINAL_WORKER_JOB_KEEP } from "./worker-jobs.js";
 import {
@@ -118,7 +118,12 @@ export const runMaintenanceScan = (): MaintenanceReport => {
   const stores: StoreHealth[] = [];
 
   // events — 휘발성/파생(관측). RETENTION_KEEP prune 이 매 256건마다 발화(이미 됨).
+  // ★**잘리는 행만** 상한과 견준다 (2026-08-27). 대화의 도구 스텝은 이제 레코드로 남으므로
+  //  전체 건수를 쓰면 **영구 오경보**가 난다 — 경보가 물어야 할 것은 "자동 정리가 제 일을
+  //  하는가" 이지 "행이 몇 개인가" 가 아니다. 남는 축은 count 에 함께 보여주되 판정엔 안 쓴다.
   const eventsCount = countEvents();
+  const prunable = countPrunableEvents();
+  const kept = eventsCount - prunable;
   stores.push({
     store: "events",
     axis: "volatile",
@@ -126,8 +131,11 @@ export const runMaintenanceScan = (): MaintenanceReport => {
     // ★실제 상한 공식(희귀 몫 + 고volume 타입별 몫) — RETENTION_KEEP 단독은 여유 0 이라
     //  고volume 종류가 하나 늘면 즉시 영구 attention 오경보가 난다(2026-07-30 원칙 검토).
     bound: eventsTotalBound(RETENTION_KEEP),
-    status: boundedStatus(eventsCount, eventsTotalBound(RETENTION_KEEP)),
-    note: `관측 이벤트(감사·메트릭) — 최근 ${RETENTION_KEEP.toLocaleString()}건만 보존, 초과분은 주기적으로 자동 정리(파생 데이터, 삭제 안전).`,
+    status: boundedStatus(prunable, eventsTotalBound(RETENTION_KEEP)),
+    note:
+      `관측 이벤트(감사·메트릭) — 정리 대상 ${prunable.toLocaleString()}건은 최근 ` +
+      `${RETENTION_KEEP.toLocaleString()}건만 보존(파생 데이터, 삭제 안전). ` +
+      `대화의 도구 스텝 ${kept.toLocaleString()}건은 **레코드라 안 지운다** — 옛 대화를 열어도 도구 사용이 남아 있어야 한다.`,
   });
 
   // 메모리 인덱스 — 콜드는 유저 자산(전부 보존), 핫(매 턴 프롬프트 주입)은 캡

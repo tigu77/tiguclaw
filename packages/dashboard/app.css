@@ -134,7 +134,10 @@
         border-bottom: 1px solid var(--border);
         backdrop-filter: blur(18px);
       }
-      header .brand { display:flex; align-items:center; gap:10px; font-weight: 800; font-size:1rem; letter-spacing: -0.02em; }
+      /* ★gap 은 **아이콘 여백을 뺀 값**이다 (2026-08-27). 배경을 뚫으면서 파일에 박힌
+         투명 여백이 한쪽당 16→35px(256px 기준) 로 늘었다 = 32px 렌더에서 +2.4px.
+         그래서 10px 그대로 두면 시각적으로 벌어져 보인다(사용자 관측). 실측만큼 뺐다. */
+      header .brand { display:flex; align-items:center; gap:7px; font-weight: 800; font-size:1rem; letter-spacing: -0.02em; }
       /* 모바일 헤더 버튼(☰ 호출 / ‹ 뒤로) — 데스크탑은 숨김(네비=사이드바), 모바일 미디어쿼리서 노출. */
       .hdr-btn { display:none; align-items:center; justify-content:center; width:34px; height:34px; flex:none;
         border:1px solid var(--border); border-radius:10px; background:rgb(var(--fg-rgb) / .04); color:var(--text);
@@ -354,6 +357,10 @@
       .detail-card .detail-head { margin-bottom:0; }
       .detail-card .detail-summary { margin:0; }
       .action { display:flex; align-items:center; gap:8px; margin:5px 0; font-size:0.6875rem; }
+      /* mermaid 다이어그램 — 코드 블록 자리를 대신한다. 어두운/밝은 테마 모두에서
+         배경 없이 얹히도록 투명 + 가로 넘침만 스크롤. */
+      .md .md-mermaid { margin:10px 0; overflow-x:auto; }
+      .md .md-mermaid svg { max-width:100%; height:auto; }
       .action-name { background:var(--card); color:var(--text-mute); border:1px solid var(--border); border-radius:8px; padding:5px 10px; }
       .danger-safe { color:var(--good); } .danger-gray { color:var(--warn); } .danger-danger { color:var(--bad); }
       .more { font-size:0.625rem; color:var(--text-dim); margin-top:5px; }

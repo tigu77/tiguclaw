@@ -41,6 +41,55 @@
         return { show: false, kind: "", label: "", title: "" }; // 모르면 조용하다.
       };
 
+      /**
+       * **CHANGELOG 조각 → confirm 에 넣을 평문** — 순수 함수 (2026-08-27).
+       *
+       * ★사용자 지적: *"업데이트 버튼만 달랑 있으니까 변경 내역을 확인하기가 힘든데."*
+       *  결정하는 순간은 확인 대화상자다 — 새 패널을 만들 게 아니라 **거기에 실어야** 한다.
+       *
+       * ★`window.confirm` 은 평문만 받고 스크롤도 없다. 그래서 ①마크다운 장식을 걷고
+       *  ②길이를 자른다. 자를 땐 **자른 사실을 말한다**(조용히 삼키면 "전부 본 줄" 안다).
+       *
+       * ★순수 함수로 뺀 이유는 검사다 — 대화상자 안에 인라인으로 두면 부를 방법이 없다
+       *  ([[feedback_simple_composable_no_duplication]]).
+       *
+       * @param {{sections:Array<{version:string,body:string}>, omitted:number}|null|undefined} notes
+       * @param {number} maxChars
+       * @returns {string} 빈 문자열이면 붙일 게 없다는 뜻(호출부가 그대로 종전 문구를 쓴다).
+       */
+      const formatUpdateNotes = (notes, maxChars = 2400) => {
+        if (!notes || !Array.isArray(notes.sections) || notes.sections.length === 0) return "";
+        const plain = (md) =>
+          String(md)
+            // ★섹션 헤더(`### Added`)는 **버린다** (2026-08-27 적대 검토 F2). Keep a Changelog
+            //  의 영문 어휘라 한국어 대화상자에 그대로 남았다. 번역하려면 닫힌 어휘 6개를
+            //  손으로 들고 다녀야 하는데, 확인 창에서 그 값이 항목 내용보다 크지 않다.
+            .replace(/^###+[^\n]*\n?/gm, "")
+            // ★`[\s\S]` — `.` 은 개행을 안 먹어서 **줄바꿈을 넘는 굵게**가 그대로 남았다
+            //  (실측: 실제 CHANGELOG 에서 `**` 13줄 잔존, 사용자가 볼 본문에도 2개).
+            .replace(/\*\*([\s\S]+?)\*\*/g, "$1")
+            .replace(/`{1,3}([^`]*)`{1,3}/g, "$1") // 코드 표시(인라인·펜스 표기 모두)
+            .replace(/`/g, "")                     // 짝이 안 맞아 남은 것까지
+            .replace(/^\s*-\s+/gm, "• ")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        const parts = notes.sections.map((s) => `[${s.version}]\n${plain(s.body)}`);
+        let out = parts.join("\n\n");
+        let cut = false;
+        if (out.length > maxChars) {
+          // ★**줄 경계**에서 자른다 — 단어 경계로 자르면 문장 한가운데서 끊긴다(실측:
+          //  "…그 줄을 볼\n  일이 없으니"). 줄이 없으면 그때만 공백 경계로 물러선다.
+          const head = out.slice(0, maxChars);
+          const nl = head.lastIndexOf("\n");
+          out = nl > maxChars * 0.5 ? head.slice(0, nl) : head.replace(/\s+\S*$/, "");
+          cut = true;
+        }
+        const tail = [];
+        if (cut) tail.push(i18n("upd.notesTruncated"));
+        if (notes.omitted > 0) tail.push(i18n("upd.notesOmitted", { n: notes.omitted }));
+        return tail.length > 0 ? `${out}\n\n${tail.join(" ")}` : out;
+      };
+
       const updateChip = (() => {
         // ★판정이 도착했을 때 알릴 곳 — **직접 부르지 않는다** (2026-08-21 적대 검토 F1).
         //  이 파일은 index.html 에서 `view-overview.js` 보다 **두 칸 먼저** 로드된다. 그래서
@@ -134,7 +183,13 @@
             window.alert(current.blockedReason || i18n("upd.unavailable"));
             return;
           }
-          if (!window.confirm(i18n("upd.confirm"))) return;
+          // ★변경 내역을 **결정하는 자리에** 붙인다. 없으면 종전 문구 그대로(칩은 정상).
+          const notes = formatUpdateNotes(current.notes);
+          const ask =
+            notes === ""
+              ? i18n("upd.confirm")
+              : `${i18n("upd.notesHead", { v: current.newVersion || "" })}\n\n${notes}\n\n${i18n("upd.confirm")}`;
+          if (!window.confirm(ask)) return;
 
           inFlight = true;
           chip.disabled = true;

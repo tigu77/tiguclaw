@@ -1161,6 +1161,16 @@ export const SUBAGENT_THREAD_MARKER = "::sub::";
  */
 export const visibleSessionSql = (
   alias: string,
+  opts?: {
+    /**
+     * 보관(archived)된 세션도 포함할지. 기본 `false`(= 종전 동작, 사용자 뷰).
+     *
+     * ★`events` 프루닝이 이걸 켠다 (2026-08-27). 보관은 **숨기는 것이지 지우는 게 아니다** —
+     *  보관했다고 그 대화의 도구 스텝을 지우면, 해제했을 때 말만 남는다. 사용자 뷰(검색·세션
+     *  목록)는 종전대로 보관을 빼야 하므로 **기본값은 안 바꾼다.**
+     */
+    includeArchived?: boolean;
+  },
 ): { conds: string[]; params: string[] } => {
   const col = alias === "" ? "channel_thread_id" : `${alias}.channel_thread_id`;
   const conds: string[] = [];
@@ -1171,7 +1181,9 @@ export const visibleSessionSql = (
   }
   conds.push(`${col} NOT LIKE ? ESCAPE '\\'`);
   params.push(`%${escapeLike(SUBAGENT_THREAD_MARKER)}%`);
-  conds.push(`${alias === "" ? "archived_at" : `${alias}.archived_at`} IS NULL`);
+  if (opts?.includeArchived !== true) {
+    conds.push(`${alias === "" ? "archived_at" : `${alias}.archived_at`} IS NULL`);
+  }
   return { conds, params };
 };
 

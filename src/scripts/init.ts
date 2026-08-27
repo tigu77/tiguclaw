@@ -194,6 +194,9 @@ const collectProviderConfig = async (
   if (provider === "anthropic") {
     console.log("");
     console.log("  → Anthropic 콘솔(console.anthropic.com)에서 API 키를 발급하세요.");
+    // ★Claude Code 설치 안내는 **필요 없다** (2026-08-27 확인). Agent SDK 가 플랫폼별
+    //  `claude` 바이너리를 optional 의존으로 **같이 깔기** 때문에 키만으로 돈다
+    //  (실증: PATH 를 비우고 SDK 를 돌려도 정상 기동).
     const anthropicKey = await askRequired(
       "  ANTHROPIC_API_KEY (sk-ant-...): ",
       "키는 비워둘 수 없습니다. 발급 후 붙여넣으세요.",
@@ -207,26 +210,15 @@ const collectProviderConfig = async (
   if (provider === "claude-sub") {
     console.log("");
     console.log("  → Claude 구독(Pro/Max)으로 인증합니다 — 키 대신 OAuth 토큰을 씁니다.");
-    console.log("");
-    // ★CLI 설치 줄이 없으면 안내가 **한 걸음 앞에서 끊긴다** (2026-08-19 사용자 지적).
-    //  종전엔 "Claude Code CLI 에서 `claude setup-token` 실행" 이라고만 했다. 그런데 처음
-    //  설치하는 사람에게 그 CLI 가 깔려 있을 이유가 없다 — 없으면 "그런 명령이 없습니다" 에서
-    //  막히고, 어디서 구하는지는 우리 문서 어디에도 없었다(README 포함 0건).
-    //  ★"다음 행동이 남는가" 를 여기서도 지킨다 — 설치 스크립트가 반쯤 설치된 채 끝나지
-    //   않게 만든 것과 같은 규칙이다(install.sh 헤더 참조).
-    console.log("     ① Claude Code CLI 가 없다면 먼저 설치:");
-    console.log("        npm i -g @anthropic-ai/claude-code");
-    console.log("     ② 토큰 발급 (브라우저 로그인이 열립니다):");
-    console.log("        claude setup-token");
-    console.log("     ③ 출력된 토큰을 복사해 아래 붙여넣으세요.");
-    console.log("");
-    const claudeOauthToken = await askRequired(
-      "  CLAUDE_CODE_OAUTH_TOKEN: ",
-      "토큰은 비워둘 수 없습니다. `npm i -g @anthropic-ai/claude-code` → `claude setup-token` 으로 발급 후 붙여넣으세요.",
-    );
+    // ★여기서 토큰을 **받아 적지 않는다** (2026-08-27). codex 와 같은 모양으로, 온보드
+    //  [2/5] 가 `npm run claude-auth` 를 대신 돌린다 — 사용자는 브라우저 로그인만 하면 된다.
+    //  종전엔 "CLI 를 깔고 → 토큰을 받고 → 붙여넣으세요" 세 걸음이었고, 첫 걸음은 이미
+    //  `npm ci` 로 받아둔 259MB 를 한 번 더 받는 것이었다.
+    console.log("     발급은 다음 단계에서 자동으로 진행합니다 (`npm run claude-auth`).");
+    console.log("     브라우저가 열리면 로그인만 하세요 — 토큰은 저희가 저장합니다.");
     return {
       anthropicKey: "",
-      claudeOauthToken,
+      claudeOauthToken: "",
       openaiKey: "",
     };
   }

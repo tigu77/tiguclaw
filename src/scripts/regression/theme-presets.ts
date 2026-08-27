@@ -203,15 +203,41 @@ export const check: RegressionCheck = {
       path.join(REPO, "packages/dashboard/index.ts"),
       "utf8",
     );
+    // ── ⑧ **남의 CSS 를 글자로 감싸지 않는다** (2026-08-27, v0.40.0 적대 검토 P-1) ─────────
+    //  ★`@layer x { ...남의 CSS... }` 로 감싸면 그 안의 여분 `}` 하나가 **레이어를 닫고**
+    //   나머지가 밖으로 나간다. 레이어 밖은 레이어 안을 이기므로 프리셋 오타 하나가 개인
+    //   오버라이드를 조용히 덮는다 — 08-26 사고가 다른 입구로 돌아온 것이다.
+    //   `@import url(...) layer(x)` 는 가져온 시트를 **통째로** 그 레이어에 넣어서
+    //   탈출 자체가 불가능하다.
+    //  ★CDP 실측(`_workspace/_theme_layer_escape_cdp.mjs`): 여분 `}` 프리셋 + 개인
+    //   오버라이드 → `--accent = #USER00`(사용자 승). 개인 오버라이드를 빼면 `#PRE001` 이라
+    //   **프리셋이 실제로 먹고 있음**도 같이 확인했다(초록이 공짜가 아니다).
+    const { layerImport } = await import("../../core/theme.js");
+    const imp = layerImport("tigu-preset", "/theme-preset-raw.css");
+    // `withLayer(` 호출의 첫 인자만 모은다 — 우리 파일(`tigu-base`)만 감싸도 된다.
+    const wrapCalls = [...server.matchAll(/withLayer\("([a-z-]+)"/g)].map((m) => m[1]);
     out.push(
       assert(
-        "★세 시트가 전부 레이어로 나간다(하나라도 빠지면 그 층만 특이도 싸움을 한다)",
-        /withLayer\("tigu-base", css, true\)/.test(server) &&
-          /withLayer\("tigu-preset"/.test(server) &&
-          /withLayer\("tigu-user"/.test(server),
-        `base=${/withLayer\("tigu-base"/.test(server)} preset=${/withLayer\("tigu-preset"/.test(
-          server,
-        )} user=${/withLayer\("tigu-user"/.test(server)}`,
+        "★가져오기 형태다(감싸는 게 아니라 import 로 레이어를 건다)",
+        imp === '@import url("/theme-preset-raw.css") layer(tigu-preset);\n',
+        JSON.stringify(imp),
+      ),
+      assert(
+        "★사용자가 쓴 CSS 는 **글자로 감싸지 않는다**(감싸면 여분 } 하나로 레이어를 탈출한다)",
+        wrapCalls.length > 0 && wrapCalls.every((l) => l === "tigu-base"),
+        `withLayer 대상: ${wrapCalls.join(", ") || "(없음 — 검사 전제가 깨졌다)"} — tigu-base(우리 app.css) 만 허용`,
+      ),
+      assert(
+        "★프리셋·개인 테마가 layer() import 로 나간다",
+        /layerImport\("tigu-preset", "\/theme-preset-raw\.css"\)/.test(server) &&
+          /layerImport\("tigu-user", "\/theme-raw\.css"\)/.test(server),
+        `preset=${/layerImport\("tigu-preset"/.test(server)} user=${/layerImport\("tigu-user"/.test(server)}`,
+      ),
+      assert(
+        "★원본 라우트 둘이 실재하고 **감싸지 않고** 낸다(import 대상이 없으면 테마가 통째로 안 먹는다)",
+        /pathname === "\/theme-preset-raw\.css"[\s\S]{0,400}res\.end\(readThemeCss\(\)\)/.test(server) &&
+          /pathname === "\/theme-raw\.css"[\s\S]{0,600}res\.end\(css\)/.test(server),
+        `preset-raw=${/pathname === "\/theme-preset-raw\.css"/.test(server)} theme-raw=${/pathname === "\/theme-raw\.css"/.test(server)}`,
       ),
     );
 

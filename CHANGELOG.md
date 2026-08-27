@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-08-27
+
+### Added
+
+- **화면 테마를 바꿀 수 있습니다 — 파일 하나면 됩니다.** 홈에 `theme.css` 를 두면 그 안에
+  적은 값이 화면을 덮습니다. 배경색·글자색은 물론 **전체 글자 크기, 패널별 글꼴**까지
+  바꿀 수 있고, 저장하고 새로고침하면 바로 보입니다. 고르는 방식도 언어와 똑같습니다 —
+  홈의 `themes/` 폴더에 `<이름>.css` 를 넣으면 **그게 곧 목록**이라 설정 화면에 나타납니다
+  (기본으로 `dark` 와 `light` 둘이 들어 있습니다). 비서에게 **말로 시켜도 됩니다** —
+  "밝은 테마로 바꿔줘" 처럼.
+- **검색 결과를 한 세션으로 좁힐 수 있습니다.** 검색창 옆 「이 세션만」을 켜거나, 결과에
+  붙은 세션 이름을 누르면 그 대화로만 좁혀집니다. 좁혀진 상태는 칩으로 보이고 ✕ 로 풉니다.
+
+### Changed
+
+- **업데이트 버튼이 「새 버전이 나왔을 때」만 뜹니다.** 종전엔 저장소에 커밋이 하나라도
+  쌓이면 떴습니다. 이제 버전이 실제로 올라갔을 때만 알리므로, **개발 중인 변경을 굳이 받지
+  않아도 됩니다.** 직접 `/update` 를 부르면 예전처럼 최신 상태를 그대로 받습니다.
+- 모듈 화면의 작업 목록에서 **눌리지 않는 버튼을 걷어냈습니다.** 아직 실행 경로가 없어
+  언제나 비활성이었는데, 눌리지 않는 버튼은 있는 편보다 없는 편이 정직합니다.
+
+### Fixed
+
+- **플러그인 하나의 설정 오타가 그 뒤의 플러그인을 전부 끄던 문제.** 이제 문제가 있는
+  플러그인 하나만 건너뛰고 나머지는 정상적으로 켜지며, 무엇을 왜 건너뛰었는지 로그에
+  남습니다.
+- **화면 언어에서 문구가 통째로 비던 문제.** 번역 파일에 빈 값이 들어 있으면 그 빈 값이
+  기본 언어를 덮어써 화면 일부가 사라졌습니다. 빈 값은 이제 「없는 것」으로 봅니다.
+- **지운 테마·언어 파일이 업데이트 후에도 목록에 남던 문제.**
+- HTTP 브리지가 JSON 응답을 만들다 실패하면 데몬이 종료될 수 있던 문제(잠복).
+
 ## [0.39.0] - 2026-08-26
 
 ### Added
@@ -1603,7 +1634,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.39.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.40.0...HEAD
+[0.40.0]: https://github.com/tigu77/tiguclaw/compare/v0.39.0...v0.40.0
 [0.39.0]: https://github.com/tigu77/tiguclaw/compare/v0.38.0...v0.39.0
 [0.38.0]: https://github.com/tigu77/tiguclaw/compare/v0.37.0...v0.38.0
 [0.37.0]: https://github.com/tigu77/tiguclaw/compare/v0.36.0...v0.37.0

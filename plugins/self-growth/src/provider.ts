@@ -93,16 +93,10 @@ export const collectProvider = (): Module => {
           : { message: "주간 회고 메모리가 아직 없습니다." },
         order: 42,
       },
-      {
-        id: "plugin.self-growth.actions",
-        title: { key: "modules.selfGrowth.actions" },
-        kind: "action-panel",
-        data: {
-          note: "action 실행 endpoint는 아직 연결하지 않았습니다. v0.1은 읽기 전용 provider입니다.",
-          actions: ["run-weekly-review"],
-        },
-        order: 43,
-      },
+      // ★`action-panel` 뷰를 **손으로 짓지 않는다** — 대시보드가 아래 `actions` 에서 만든다.
+      //  종전엔 여기서 같은 것을 한 번 더 지었고(`actions: ["run-weekly-review"]` = 문자열
+      //  배열), 렌더러는 `ActionSpec` 객체를 기대하므로 패널이 **둘** 뜨고 그중 하나는
+      //  라벨이 `undefined` 였다. 같은 목록을 두 곳에서 지으면 갈린다.
     ],
     actions: [
       {

@@ -19,6 +19,8 @@
  * 등급: 동작 검사 — 진짜 매니페스트를 읽는 `isCoreModule` 과 인벤토리 수집을 부른다.
  */
 import { promises as fs } from "node:fs";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCoreModule } from "../../core/plugins/inventory.js";
@@ -118,6 +120,81 @@ export const check: RegressionCheck = {
         bridge.includes("isCoreModule(name)") ? "거절 가드 있음" : "가드 없음",
       ),
     );
+
+    // ── ⑤ ★**엔드포인트를 건너뛰어도 코어는 안 꺼진다** (v0.40.0 적대 검토 F2) ────────────
+    //  종전엔 보호가 ④(HTTP 엔드포인트)에만 있었고 로더는 `isModuleDisabled` 만 봤다.
+    //  그래서 `settings.json` 에 한 줄 쓰면 브리지가 안 뜨고, **다시 켤 경로가 그 브리지
+    //  하나뿐이라** 제품 안에서 되돌릴 수 없었다. 그리고 이 경로는 이론이 아니다 —
+    //  설정을 쓰는 도구를 비서에게 준 적이 없어 비서는 JSON 을 직접 고칠 수밖에 없다.
+    //
+    //  ★**실행해서 본다.** ④는 문자열 grep 이라 거절을 경고로 강등해도 통과한다(F3).
+    //   격리 홈에 진짜 `settings.json` 을 쓰고 `loadPlugins` 를 **부른다**.
+    //
+    //  ★**자식 프로세스여야 한다.** 첫 판은 이 프로세스 안에서 `process.env.TIGUCLAW_HOME`
+    //   을 바꿨는데, `getPaths()` 가 **메모이즈**돼 있어(paths.ts `cached`) 앞선 검사가 이미
+    //   홈을 고정한 뒤였다 — **단독 실행은 초록, 스위트 안에선 빨강**인 순서 의존 검사가
+    //   됐다. 검사가 자기 순서에 따라 답이 달라지면 그건 검사가 아니다.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tgc-core-"));
+    let loaded: string[] = [];
+    let active: Record<string, boolean> = {};
+    try {
+      await fs.writeFile(
+        path.join(tmp, "settings.json"),
+        JSON.stringify({ modules: { disabled: ["http-bridge", "scheduler"] } }),
+        "utf8",
+      );
+      // ★`tsx -e` 는 cjs 로 내보내서 **최상위 await 이 안 된다**(첫 판이 그걸로 죽었다).
+      //  async IIFE 로 감싼다.
+      const probe = `void (async () => {
+        const { loadPlugins } = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/loader.ts"))});
+        const { isModuleActive } = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/inventory.ts"))});
+        const names = (await loadPlugins(${JSON.stringify(path.join(REPO, "plugins"))})).map((p) => p.manifest.name);
+        console.log("__J__" + JSON.stringify({ loaded: names,
+          active: { "http-bridge": isModuleActive("http-bridge"), scheduler: isModuleActive("scheduler") } }));
+      })();`;
+      const r = spawnSync(path.join(REPO, "node_modules/.bin/tsx"), ["-e", probe], {
+        cwd: tmp, // ★프로젝트 레이어도 임시 디렉터리로 — 레포의 `.tiguclaw/` 가 안 섞이게.
+        env: { ...process.env, TIGUCLAW_HOME: tmp },
+        encoding: "utf8",
+        timeout: 120_000,
+      });
+      const line = `${r.stdout ?? ""}`.split("\n").find((l) => l.startsWith("__J__"));
+      const parsed = line === undefined
+        ? undefined
+        : (JSON.parse(line.slice(5)) as { loaded: string[]; active: Record<string, boolean> });
+      loaded = parsed?.loaded ?? [];
+      active = parsed?.active ?? {};
+      out.push(
+        assert(
+          "★프로브가 실제로 돌았다(0이면 아래는 미검사다)",
+          parsed !== undefined && loaded.length > 0,
+          parsed === undefined
+            ? `★프로브 실패 — ${`${r.stderr ?? ""}`.slice(-200)}`
+            : `로드 ${loaded.length}개`,
+        ),
+        assert(
+          "★코어는 `disabled` 목록에 있어도 뜬다(엔드포인트를 건너뛴 경로)",
+          loaded.includes("http-bridge"),
+          loaded.includes("http-bridge")
+            ? "http-bridge 생존"
+            : `★settings.json 한 줄로 꺼졌다 — 되돌릴 경로가 없다. 로드됨: ${loaded.join(", ")}`,
+        ),
+        assert(
+          "★그렇다고 전부 못 끄는 건 아니다(비코어는 여전히 꺼진다)",
+          !loaded.includes("scheduler") && loaded.length > 0,
+          `scheduler 꺼짐=${!loaded.includes("scheduler")} · 로드 ${loaded.length}개: ${loaded.join(", ")}`,
+        ),
+        assert(
+          "★화면과 실제가 같은 함수를 쓴다(인벤토리 `enabled` == 로더 판정)",
+          active["http-bridge"] === loaded.includes("http-bridge") &&
+            active.scheduler === loaded.includes("scheduler"),
+          `active(bridge)=${String(active["http-bridge"])}/로드=${loaded.includes("http-bridge")} · ` +
+            `active(scheduler)=${String(active.scheduler)}/로드=${loaded.includes("scheduler")}`,
+        ),
+      );
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
 
     return out;
   },

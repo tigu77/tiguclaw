@@ -261,9 +261,9 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
         layer: "in_tree", // <repo>/plugins/* — 위치 자체가 in-tree dogfood
         name: marker.name,
         source: pluginDir,
-        // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 동일 판정
-        // (settings.json modules.disabled). "disabled" ≠ "inactive" — 이건 명시 off.
-        enabled: !isModuleDisabled(marker.name),
+        // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 **같은 함수**를
+        // 쓴다(v0.40.0 F2 — 종전엔 각자 판정해서 코어를 한쪽만 봤다). "disabled" ≠ "inactive".
+        enabled: isModuleActive(marker.name),
         ...(marker.core === true ? { core: true } : {}),
         metadata: {
           kind: kinds.join(", "),
@@ -300,6 +300,24 @@ export const isCoreModule = (name: string): boolean => {
   return false;
 };
 
+/**
+ * **이 모듈이 실제로 도는가** — 끌 수 없는 것(`core`)은 `disabled` 목록에 있어도 돈다.
+ *
+ * ★v0.40.0 적대 검토 F2. 종전엔 로더가 `isModuleDisabled` 만 봐서, `settings.json` 에
+ *  `{"modules":{"disabled":["http-bridge"]}}` 한 줄이면 **코어 보호가 통째로 우회**됐다
+ *  (실측 재현: `isCoreModule('http-bridge')=true` 인데 로드 0). 보호는 HTTP 엔드포인트에만
+ *  있었고, 그 엔드포인트가 사는 브리지가 바로 꺼지는 대상이라 **제품 안에서 되돌릴 길이
+ *  없었다.** 그리고 이 경로는 이론이 아니다 — 설정을 쓰는 도구를 비서에게 준 적이 없어
+ *  *"비서는 JSON 을 직접 편집할 수밖에 없다"* 고 `model-settings-mcp.ts` 가 스스로 적어뒀다.
+ *
+ * ★**판정을 여기 하나로 모은다.** 종전엔 "도는가" 가 로더 스킵 · 인벤토리 `enabled` 두 곳 ·
+ *  브리지 엔드포인트에 각자 있었고, 그중 하나만 코어를 봤다. 갈릴 수밖에 없는 배치다
+ *  ([[feedback_hand_maintained_lists]]). 브리지 엔드포인트의 거절은 **다른 판정**이라
+ *  (=사용자가 바꿀 수 있는가) 그대로 둔다.
+ */
+export const isModuleActive = (name: string): boolean =>
+  !isModuleDisabled(name) || isCoreModule(name);
+
 // 번들 비채널 플러그인 (appRoot/plugins/* 중 kind 에 "channel" 없는 것 — service·trigger·
 // observer·provider: dashboard·scheduler·file-watch·self-growth 등). 채널은 collectChannels 가
 // "채널"로 담으니 여기선 제외(중복 방지). "플러그인"(external_plugin) 카테고리로 노출 —
@@ -330,8 +348,8 @@ const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
         name: m.name,
         description: pkg?.description,
         source: pluginDir,
-        // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 동일 판정.
-        enabled: !isModuleDisabled(m.name),
+        // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 **같은 함수**.
+        enabled: isModuleActive(m.name),
         ...(m.core === true ? { core: true } : {}),
         metadata: { kind: kinds.join(", ") },
       });

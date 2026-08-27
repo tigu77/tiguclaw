@@ -26,6 +26,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # ★`build` 도 본다 (v0.40.0). `typecheck`·`build:prod` 는 넓은 스코프
+      #  (`tsconfig.check/build.json` = src+plugins+packages)라 **`rootDir` 위반을 못 본다** —
+      #  순수 `tsc`(=`tsconfig.json`, `rootDir: src`)만 TS6059 를 낸다. 실제로 v0.40.0 에서
+      #  회귀 하나가 `plugins/` 를 import 해 `npm run build` 가 죽었는데, CI 가 그 명령을
+      #  한 번도 안 불러서 **릴리스 게이트까지 살아남았다**. package.json 에 있는 명령은
+      #  누군가 친다 — 안 도는 명령은 조용히 썩는다.
+      - run: npm run build
       # 회귀 스위트 — 실제 사고에서 나온 계약만 모아 매 push 에서 다시 돌린다.
       # (종전엔 typecheck 하나뿐이라, 검증 하네스를 아무리 만들어도 재실행되지 않았다.)
       # 격리: 러너가 TIGUCLAW_HOME 을 임시 디렉터리로 잡아 실제 홈·DB 를 안 건드린다.

@@ -18,6 +18,7 @@
  * 등급: 대조 검사(파일 텍스트) — 판정 대상은 사람이 유지하는 목록 그 자체다.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -78,6 +79,38 @@ export const check: RegressionCheck = {
           missing.length === 0
             ? `${notShipped.length}개 전부 언급됨`
             : `빠진 것: ${JSON.stringify(missing)} — 이 파일은 실제 복사/배포 판단에 쓰인다`,
+        ),
+      );
+
+      // ★**산문이 아니라 실행되는 필터를 본다** (v0.40.0 적대 검토 F1).
+      //  위 `text.includes(p)` 는 파일 **어디든** 그 문자열이 있으면 통과한다 — 그래서
+      //  `docs/roadmap.md`·`docs/vision-business.md` 가 EXCLUDE **산문 문단에만** 있고
+      //  실제로 돌아가는 `grep -vE` 정규식엔 빠진 채로 초록이었다. 08-26 에 고친 그 부류
+      //  (목록 세 벌 드리프트)가 **같은 파일 안에서 한 단 아래로** 옮겨간 것이다.
+      //  ★그때 안 샌 이유는 명령이 맞아서가 아니라 sync 를 돈 모델이 산문을 읽고 손으로
+      //   뺐기 때문이다 — 사람이 매번 알아채야 하는 건 게이트가 아니다.
+      if (!mirror.endsWith("SKILL.md")) continue;
+      const rx = /git ls-files \| grep -vE \\\r?\n\s*'([^']+)'/.exec(text)?.[1];
+      out.push(
+        assert(
+          `${mirror} 에서 **실행되는** 필터를 떼어냈다(못 떼면 아래는 미검사다)`,
+          rx !== undefined && rx.length > 50,
+          rx === undefined ? "★필터를 못 찾음 — 절차가 바뀌었나" : `${rx.length}자`,
+        ),
+      );
+      if (rx === undefined) continue;
+      // 진짜 파일 목록에 **돌려본다**. 리터럴 대조가 아니라 결과를 본다.
+      const shipped = execSync("git ls-files", { cwd: REPO, encoding: "utf8" })
+        .split("\n")
+        .filter((f) => f !== "" && !new RegExp(rx).test(f));
+      const leaked = notShipped.filter((p) => shipped.includes(p));
+      out.push(
+        assert(
+          `★${mirror} 의 필터를 실제로 돌리면 제외 대상이 안 남는다`,
+          leaked.length === 0,
+          leaked.length === 0
+            ? `SHIP ${shipped.length}개 · 제외 대상 유출 0`
+            : `★유출: ${JSON.stringify(leaked)} — 산문엔 적혀 있어도 필터가 안 막는다`,
         ),
       );
     }

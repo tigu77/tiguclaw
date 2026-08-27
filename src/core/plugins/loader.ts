@@ -17,7 +17,7 @@ import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { EventBus } from "../eventbus.js";
-import { isModuleDisabled } from "../settings.js";
+import { isModuleActive } from "./inventory.js";
 
 // D1-c (2026-07-14, ADR built-artifact-production-runtime) — built(순수 node) 런타임에서
 //  컴파일되지 않은 `.ts` drop-in 플러그인을 로드하기 위한 tsx 온디맨드 로더 등록.
@@ -201,9 +201,11 @@ export const loadPlugins = async (
 
       // 사용자 비활성(ADR 2026-07-17-module-capability-model §5.6 MVP) — settings.json
       // `modules.disabled[]` 에 이 plugin 이름이 있으면 로드 자체를 스킵(import/인스턴스화
-      // 0회 — 부작용 없음). ★이 로더는 <rootDir>/plugins/* 만 훑으므로 여기 도달하는 모든
-      // manifest 는 kind:plugin(코어는 이 경로에 없음, 가드1 자연 정합) — 별도 kind 검사 불필요.
-      if (isModuleDisabled(manifest.name)) {
+      // 0회 — 부작용 없음).
+      // ★판정은 `isModuleActive` 하나가 한다 — **코어는 목록에 있어도 돈다**(v0.40.0 F2:
+      //  settings.json 한 줄로 브리지를 꺼서 되돌릴 길이 없어지던 것). 인벤토리의 `enabled`
+      //  도 같은 함수를 쓰므로 화면과 실제가 갈리지 않는다.
+      if (!isModuleActive(manifest.name)) {
         console.log(`[plugin-loader] skip ${manifest.name}: user-disabled`);
         continue;
       }

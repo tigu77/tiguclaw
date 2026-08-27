@@ -16,6 +16,7 @@
  */
 import http from "node:http";
 import crypto from "node:crypto";
+import { writeJson } from "../../src/core/net/write-json.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -378,14 +379,6 @@ const readRawBody = async (req: http.IncomingMessage): Promise<string> => {
   return Buffer.concat(chunks).toString("utf8");
 };
 
-const writeJson = (
-  res: http.ServerResponse,
-  status: number,
-  body: unknown,
-): void => {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body));
-};
 
 // ── LLM 게이트웨이(ADR 2026-07-09) — OpenAI 호환 /v1/chat/completions. 앱이 tiguclaw 멀티LLM
 // 폴백을 HTTP 로 사용. 전용 토큰(LLM_GATEWAY_TOKEN) 미설정 시 비활성(안전 기본, 404). 얇은 경로:

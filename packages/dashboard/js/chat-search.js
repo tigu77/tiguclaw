@@ -43,9 +43,63 @@
   let loadingMore = false;
   let exhausted = false;
 
+  // ── 세션 좁히기 (2026-08-26 사용자 요청) ────────────────────────────────────
+  //  ★**입구는 둘, 상태는 하나**다: 「이 세션만」 토글과 결과의 세션 라벨 클릭이 같은 값을
+  //   세팅한다. 두 벌을 두면 토글과 칩이 서로 다른 말을 하게 된다.
+  //  ★목록형 선택자를 안 만든 이유는 실측이다 — 최근 30일 활동 세션 **53개 중 이름 붙은 게
+  //   7개**라(나머지는 `dashboard:<uuid>`) 목록에서 **고를 수가 없다.** 그래서 "고르기" 를
+  //   **"보고 나서 좁히기"** 로 뒤집었다: 결과에 이미 세션 라벨이 있으니 그걸 누른다.
+  //  ★거르지 않고 **다시 던진다**. 전체 결과가 50건 상한이라 클라에서 거르면 그 세션 것이
+  //   상한 밖으로 밀려 "있는데 안 나오는" 상태가 된다.
+  const mineToggle = document.getElementById("chat-search-mine");
+  const scopeChip = document.getElementById("chat-search-scope-chip");
+  let scopeKey = null; // threadKey | null(전 세션)
+  let scopeLabel = ""; // 사람이 읽는 이름 — 없으면 threadKey 를 그대로 쓴다
+
+  /**
+   * 검색 URL — **한 곳에서만 만든다.** 첫 질의와 더보기(커서)가 각자 조립하면 한쪽에만
+   * 필터가 실려 "좁혔는데 더보기하면 전 세션이 섞이는" 상태가 된다.
+   */
+  const searchUrl = (q, extra) =>
+    `/api/chat-search?q=${encodeURIComponent(q)}&limit=50` +
+    (scopeKey !== null ? `&threadKey=${encodeURIComponent(scopeKey)}` : "") +
+    (extra || "");
+
+  /**
+   * 좁히기를 세팅/해제하고 **다시 검색한다**. 입구가 어디든 여기로 모인다.
+   * @param key threadKey, 또는 `null` 이면 전 세션
+   */
+  const setScope = (key, label) => {
+    const next = key || null;
+    if (next === scopeKey) return; // 같은 값 재적용 = 질의 낭비.
+    scopeKey = next;
+    scopeLabel = next === null ? "" : label || sessionNameFor(next) || next;
+    if (mineToggle) mineToggle.checked = scopeKey !== null && scopeKey === activeThreadKey;
+    if (scopeChip) {
+      if (scopeKey === null) {
+        scopeChip.hidden = true;
+        scopeChip.textContent = "";
+      } else {
+        scopeChip.hidden = false;
+        // ★칩이 **무엇으로 좁혀졌는지** 말한다. 안 보이면 "왜 결과가 없지" 가 된다.
+        scopeChip.textContent = i18n("search.scope.chip", { name: scopeLabel }) + " ✕";
+        scopeChip.title = i18n("search.scope.clear");
+      }
+    }
+    // 거르지 않고 다시 던진다 — 이유는 위 블록 주석(50건 상한).
+    if (curQuery !== "") run(curQuery);
+  };
+
   const setStatus = (t) => {
     if (statusEl) statusEl.textContent = t;
   };
+
+  if (mineToggle) {
+    mineToggle.addEventListener("change", () => {
+      setScope(mineToggle.checked ? activeThreadKey : null);
+    });
+  }
+  if (scopeChip) scopeChip.addEventListener("click", () => setScope(null));
 
   const isOpen = () => document.body.classList.contains("cs-open");
   const open = () => {
@@ -176,7 +230,12 @@
     syncNav();
     void before;
     if (hits.length === 0) {
-      setStatus(i18n("search.noResults", { q: query }));
+      // ★좁혀진 상태에서 0건이면 **왜 없는지**와 **빠져나갈 길**을 같이 말한다 —
+      //  안 그러면 "검색이 고장났나" 로 읽힌다(칩은 위에 있지만 눈이 결과 쪽에 있다).
+      setStatus(
+        i18n("search.noResults", { q: query }) +
+          (scopeKey !== null ? " " + i18n("search.scope.emptyHere") : ""),
+      );
       return;
     }
     if (hits.length >= total) exhausted = true;
@@ -198,9 +257,18 @@
       const who = document.createElement("span");
       who.className = "cs-hit-role";
       who.textContent = hit.role === "user" ? i18n("common.sender.me") : i18n("common.sender.assistant");
+      // ★세션 라벨이 곧 **좁히기 입구**다(2026-08-26). 목록형 선택자를 못 두는 대신
+      //  (이름 없는 세션이 대부분) 결과를 보고 그 세션으로 좁힌다. 행 전체는 "그 대화로
+      //  점프" 이므로 여기서 전파를 끊는다.
       const sess = document.createElement("span");
       sess.className = "cs-hit-session";
       sess.textContent = hit.sessionLabel || hit.threadKey;
+      sess.title = i18n("search.scope.chip", { name: hit.sessionLabel || hit.threadKey });
+      sess.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        ev.preventDefault();
+        setScope(hit.threadKey, hit.sessionLabel);
+      });
       const when = document.createElement("span");
       when.className = "cs-hit-when";
       when.textContent = fmtWhen(hit.ts);
@@ -237,11 +305,14 @@
     try {
       const cursorTs = hits[hits.length - 1].ts;
       const r = await fetch(
-        `/api/chat-search?q=${encodeURIComponent(q0)}&limit=50&beforeTs=${cursorTs}` +
-          // 복합 커서 — 같은 ts 가 여럿일 때 경계 행이 유실되는 것을 막는다(검토 D-1).
-          (typeof hits[hits.length - 1].id === "number"
-            ? `&beforeId=${hits[hits.length - 1].id}`
-            : ""),
+        searchUrl(
+          q0,
+          `&beforeTs=${cursorTs}` +
+            // 복합 커서 — 같은 ts 가 여럿일 때 경계 행이 유실되는 것을 막는다(검토 D-1).
+            (typeof hits[hits.length - 1].id === "number"
+              ? `&beforeId=${hits[hits.length - 1].id}`
+              : ""),
+        ),
       );
       if (my !== seq || q0 !== curQuery) return; // 더 새 질의가 떴다 — 이 응답은 버린다.
       if (!r.ok) return;
@@ -277,7 +348,7 @@
     const my = ++seq;
     setStatus(i18n("search.searching"));
     try {
-      const r = await fetch(`/api/chat-search?q=${encodeURIComponent(q)}&limit=50`);
+      const r = await fetch(searchUrl(q));
       if (my !== seq) return; // 더 새 질의가 떴다 — 이 응답은 버린다.
       const data = await r.json().catch(() => ({}));
       if (!r.ok || data.error) {

@@ -418,16 +418,19 @@
             div.appendChild(more);
           }
         } else if (view.kind === "action-panel" && Array.isArray(data.actions)) {
+          // ★버튼이 아니라 **읽는 목록**이다. 종전엔 `<button disabled>` 였는데 실행
+          //  endpoint 가 없어 언제나 비활성이었다 — 비활성 버튼은 "누를 수 있다" 고 말하고
+          //  안 눌리는 거짓말이다. 실행이 붙는 날 버튼으로 되돌린다.
           for (const action of data.actions) {
             const line = document.createElement("div");
             line.className = "action";
-            const btn = document.createElement("button");
-            btn.textContent = resolveText(action.label) || action.id;
-            btn.disabled = true;
+            const name = document.createElement("span");
+            name.className = "action-name";
+            name.textContent = resolveText(action.label) || action.id || "";
             const danger = document.createElement("span");
             danger.className = "danger-" + (action.danger || "safe");
             danger.textContent = dangerLabel(action.danger || "safe");
-            line.appendChild(btn); line.appendChild(danger);
+            line.appendChild(name); line.appendChild(danger);
             div.appendChild(line);
           }
         } else {

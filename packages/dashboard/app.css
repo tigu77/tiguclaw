@@ -98,6 +98,19 @@
            (19종이 전부 16으로 나누어떨어져 배율 1에서 오차가 0이다). */
         --font-scale: 1;
       }
+      /* 검색 세션 좁히기 (2026-08-26) — 토글 + 좁혀졌을 때만 뜨는 칩. */
+      .cs-scope { gap: 10px; align-items: center; }
+      .cs-scope-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--text-mute); font-size: 0.85rem; cursor: pointer; }
+      .cs-scope-toggle input { accent-color: var(--accent); }
+      .cs-scope-chip {
+        border: 1px solid rgb(var(--accent-rgb) / 0.45); background: rgb(var(--accent-rgb) / 0.12);
+        color: var(--text); border-radius: 999px; padding: 2px 10px; font-size: 0.8rem; cursor: pointer;
+        max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .cs-scope-chip:hover { background: rgb(var(--accent-rgb) / 0.2); }
+      /* 결과의 세션 라벨 = 좁히기 입구. 누를 수 있음을 보이게. */
+      .cs-hit-session { cursor: pointer; text-decoration: underline dotted rgb(var(--fg-rgb) / 0.35); }
+      .cs-hit-session:hover { color: var(--accent); }
       html { min-height: 100%; background: var(--bg); font-size: calc(16px * var(--font-scale)); }
       body {
         margin: 0;
@@ -341,7 +354,7 @@
       .detail-card .detail-head { margin-bottom:0; }
       .detail-card .detail-summary { margin:0; }
       .action { display:flex; align-items:center; gap:8px; margin:5px 0; font-size:0.6875rem; }
-      .action button { background:var(--card); color:var(--text-mute); border:1px solid var(--border); border-radius:8px; padding:5px 10px; cursor:not-allowed; }
+      .action-name { background:var(--card); color:var(--text-mute); border:1px solid var(--border); border-radius:8px; padding:5px 10px; }
       .danger-safe { color:var(--good); } .danger-gray { color:var(--warn); } .danger-danger { color:var(--bad); }
       .more { font-size:0.625rem; color:var(--text-dim); margin-top:5px; }
       .empty { color:var(--text-dim); padding:18px; text-align:center; background:var(--card); border-radius:14px; border:1px dashed var(--border); }

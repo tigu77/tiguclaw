@@ -108,3 +108,26 @@ export const withLayer = (layer: string, css: string, first = false): string => 
   const order = first ? "@layer tigu-base, tigu-preset, tigu-user;\n" : "";
   return `${order}@layer ${layer} {\n${css}\n}\n`;
 };
+
+/**
+ * **사용자가 쓴 CSS** 를 레이어에 넣는 방법 — 감싸지 않고 **가져온다** (2026-08-27).
+ *
+ * ★`withLayer` 처럼 `@layer x { ...남의 CSS... }` 로 **글자를 감싸면**, 그 CSS 안에 여분
+ *  `}` 가 하나만 있어도 **레이어가 거기서 닫히고 나머지가 레이어 밖으로 나간다.** 레이어
+ *  밖 선언은 레이어 안을 이기므로, 프리셋의 오타 하나가 **개인 오버라이드를 조용히
+ *  덮어쓴다** — 에러 0, 화면은 멀쩡하다. v0.40.0 적대 검토에서 CDP 실측으로 재현됐고
+ *  (`--accent` 가 `#USER00` → `#PREESC`), 이건 2026-08-26 에 고친 그 사고가 **다른 입구로**
+ *  돌아온 것이다.
+ *
+ * ★그래서 **텍스트 조립을 그만둔다.** `@import url(...) layer(x)` 는 가져온 시트를
+ *  **통째로** 그 레이어에 넣는다 — 안에 무엇이 있든(짝 안 맞는 중괄호·안 닫힌 주석·
+ *  깨진 문자열) 파서가 그 시트 안에서 복구하고, **레이어를 탈출할 방법이 없다.** 중괄호를
+ *  세어 막는 길도 있었지만, 그 계수기 자체가 문자열·주석을 발라내야 하는 **같은 부류의
+ *  깨지기 쉬운 코드**라 자리를 옮기는 쪽을 골랐다
+ *  ([[feedback_simple_composable_no_duplication]] — 이음매에서 새면 이음매를 없애라).
+ *
+ * 우리 자신의 `app.css` 는 그대로 `withLayer` 를 쓴다 — 우리가 쓰는 파일이고, **레이어
+ * 순서 선언**(`first`)이 가장 먼저 파싱되는 시트에 있어야 하기 때문이다.
+ */
+export const layerImport = (layer: string, rawUrl: string): string =>
+  `@import url("${rawUrl}") layer(${layer});\n`;

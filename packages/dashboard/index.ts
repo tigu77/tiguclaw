@@ -54,7 +54,7 @@ import {
   rebindRejectionMessage,
 } from "../../src/core/net/host-guard.js";
 import { getPaths } from "../../src/core/paths.js";
-import { readThemeCss, withLayer } from "../../src/core/theme.js";
+import { readThemeCss, withLayer, layerImport } from "../../src/core/theme.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -350,7 +350,19 @@ const server = http.createServer((req, res) => {
         "Content-Type": "text/css; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
       });
-      res.end(withLayer("tigu-preset", readThemeCss()));
+      // ★감싸지 않고 **가져온다** — 프리셋의 중괄호 오타가 레이어를 탈출하지 못하게.
+      //  이유는 `layerImport` 헤더에.
+      res.end(layerImport("tigu-preset", "/theme-preset-raw.css"));
+      return;
+    }
+
+    // 프리셋 원본 — 위 `@import` 의 대상. **감싸지 않는다**(레이어는 import 가 건다).
+    if (pathname === "/theme-preset-raw.css" && method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/css; charset=utf-8",
+        "Cache-Control": "no-store, must-revalidate",
+      });
+      res.end(readThemeCss());
       return;
     }
 
@@ -368,6 +380,16 @@ const server = http.createServer((req, res) => {
      * `no-store` 라 새로고침만으로 바로 반영된다(화면은 창이 다시 활성화될 때도 다시 읽는다).
      */
     if (pathname === "/theme.css" && method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/css; charset=utf-8",
+        "Cache-Control": "no-store, must-revalidate",
+      });
+      res.end(layerImport("tigu-user", "/theme-raw.css"));
+      return;
+    }
+
+    // 사용자 테마 원본 — 위 `@import` 의 대상. 없으면 **빈 200**(404 면 콘솔이 매번 운다).
+    if (pathname === "/theme-raw.css" && method === "GET") {
       let css = "";
       try {
         css = await fs.readFile(path.join(getPaths().home, "theme.css"), "utf8");
@@ -378,7 +400,7 @@ const server = http.createServer((req, res) => {
         "Content-Type": "text/css; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
       });
-      res.end(withLayer("tigu-user", css));
+      res.end(css);
       return;
     }
 

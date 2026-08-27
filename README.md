@@ -145,13 +145,16 @@ Six things. Everything else is in [the full feature list](docs/features.en.md).
    you ask ("update yourself" or `/update`), rolling back if the new code won't build.
 2. **Same assistant wherever you come in** — Telegram, CLI, HTTP, web dashboard. One identity, shared
    memory. Start on your phone, finish at your desk.
-3. **Hand over whole goals** — big work goes to a **manager** that assembles its own sub-agents and
+3. **One conversation per thing you're doing** — a session is a thread, not a window. Keep them in
+   tabs, run several at once without them blocking each other, and pick up any of them later from
+   a different channel. Search spans every session, and narrows to one when you want it to.
+4. **Hand over whole goals** — big work goes to a **manager** that assembles its own sub-agents and
    isn't done until it has collected results. Your conversation keeps going meanwhile.
-4. **Many LLMs, one surface** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), `google`,
+5. **Many LLMs, one surface** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), `google`,
    plus any OpenAI-compatible endpoint. Cross-provider fallback, and the same tools on every model.
-5. **Extend by asking** — new slash commands, HTTP endpoints, scheduled work and reusable skills are
+6. **Extend by asking** — new slash commands, HTTP endpoints, scheduled work and reusable skills are
    added as *data* under your home, without patching the core.
-6. **Your data stays on your machine** — sessions, memory and DB all local (`~/.tiguclaw`).
+7. **Your data stays on your machine** — sessions, memory and DB all local (`~/.tiguclaw`).
 
 It also speaks **Claude Code's formats directly**: the same tools, the same `settings.json` `hooks`
 block, and the same skill layout — existing ones carry over unchanged.

@@ -217,6 +217,17 @@
         <button id="chat-search-prev" class="cs-nav" type="button" aria-label="이전 결과" title="이전 (↑)" data-i18n-attrs="aria-label=search.prev.aria;title=search.prev.title" disabled>‹</button>
         <button id="chat-search-next" class="cs-nav" type="button" aria-label="다음 결과" title="다음 (↓)" data-i18n-attrs="aria-label=search.next.aria;title=search.next.title" disabled>›</button>
       </div>
+      <!-- 세션 좁히기 (2026-08-26) — 입구는 둘(이 토글 · 결과의 세션 라벨 클릭)이고 상태는
+           하나다. 좁혀졌을 때만 칩이 뜨고, × 로 푼다. 목록형 선택자를 안 두는 이유는
+           실측이다: 최근 30일 활동 세션 53개 중 이름 붙은 게 7개라 **고를 수가 없다** —
+           그래서 "고르기" 대신 "보고 나서 좁히기" 로 뒤집었다. -->
+      <div class="cs-row cs-scope">
+        <label class="cs-scope-toggle">
+          <input id="chat-search-mine" type="checkbox" />
+          <span data-i18n="search.scope.thisSession">이 세션만</span>
+        </label>
+        <button id="chat-search-scope-chip" class="cs-scope-chip" type="button" hidden></button>
+      </div>
       <div id="chat-search-status" class="cs-status"></div>
       <div id="chat-search-results" class="cs-results"></div>
     </aside>

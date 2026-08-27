@@ -181,6 +181,57 @@ const summarizeMcpToolResult = (result: unknown): string => {
   return JSON.stringify(result ?? {});
 };
 
+/**
+ * SDK `result` 에서 usage 를 **graceful** 하게 뽑는다. 못 뽑으면 `undefined`(정직 →
+ * `/status` "측정 전"). 형상 결합 0 — 런타임 가드 + 옵셔널 체이닝.
+ *
+ * ★**자리를 고쳤다** (2026-08-27). 종전엔 `result.context.usage` 를 읽었는데 **그런 필드가
+ *  없다** — `RunResult` 의 공개 표면은 `state` 하나이고 usage 는 `RunState.usage`(공개
+ *  getter)로 나온다. 즉 openai 어댑터의 usage 는 **한 번도 안 잡히고 있었고**, graceful
+ *  폴백이라 "측정 전" 으로 조용히 보였다. 실측: 같은 턴이 옛 경로 `null` / 새 경로
+ *  `{inputTokens:4095, outputTokens:3}`.
+ *  ★`state._context.usage` 도 같은 값을 주지만 **사설 필드**라 안 쓴다 — 그걸 읽으면 다음
+ *   SDK 업그레이드가 조용히 깨뜨린다(이 파일이 이미 그 부류로 두 번 데었다).
+ *  `StreamedRunResult` 도 같은 base 를 상속하므로 스트리밍 경로도 이 함수가 덮는다.
+ *
+ * ★**밖으로 뺀 이유는 검사다.** 인라인이던 동안 이 판정을 부를 방법이 없어 소스 grep 말고는
+ *  검증 수단이 없었고, 그래서 "안 잡힌다" 를 아무도 못 봤다
+ *  ([[feedback_simple_composable_no_duplication]] — 검사가 껄끄러우면 코드가 잘못 놓인 것).
+ */
+export const extractUsage = (
+  result: unknown,
+): { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined => {
+  const rawUsage = (result as { state?: { usage?: unknown } })?.state?.usage;
+  if (rawUsage === null || typeof rawUsage !== "object") return undefined;
+  const u = rawUsage as {
+    inputTokens?: unknown;
+    outputTokens?: unknown;
+    inputTokensDetails?: unknown;
+  };
+  if (typeof u.inputTokens !== "number" || typeof u.outputTokens !== "number") return undefined;
+  // 캐시 적중(2026-07-30) — codex/claude 는 이미 cachedTokens 를 싣는데 여기만 빠져 있어서,
+  // 프리픽스 캐시가 openai 어댑터에서 걸리는지 **원리적으로 확인 불가**였다(관측 비대칭 =
+  // 원칙 #2 위반). SDK 는 상세를 inputTokensDetails 로 넘긴다(배열 또는 단일 객체, provider
+  // 별 키 표기도 갈림) — 있는 것만 긁고 없으면 미설정.
+  const details = Array.isArray(u.inputTokensDetails)
+    ? u.inputTokensDetails
+    : u.inputTokensDetails !== undefined
+      ? [u.inputTokensDetails]
+      : [];
+  let cached = 0;
+  for (const d of details) {
+    if (d === null || typeof d !== "object") continue;
+    const rec = d as Record<string, unknown>;
+    const v = rec.cached_tokens ?? rec.cachedTokens;
+    if (typeof v === "number") cached += v;
+  }
+  return {
+    inputTokens: u.inputTokens,
+    outputTokens: u.outputTokens,
+    ...(cached > 0 ? { cachedTokens: cached } : {}),
+  };
+};
+
 export const runOpenAi = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
@@ -1082,44 +1133,7 @@ export const runOpenAi = async (
     }
   }
 
-  // /status 개편 — usage graceful 추출 (이번 라운드 필수 아님). Agents SDK 가
-  // result 에 usage 를 노출하면(통상 RunContext.usage = {inputTokens, outputTokens, ...})
-  // 동일 형상으로 캡처, 없으면 미설정(정직 → /status "측정 전"). spike 어댑터라 SDK
-  // 타입 미검증 → 런타임 가드 + 옵셔널 체이닝으로 안전 추출(타입 결합 0).
-  const rawUsage = (result as { context?: { usage?: unknown } }).context?.usage;
-  let usage:
-    | { inputTokens: number; outputTokens: number; cachedTokens?: number }
-    | undefined;
-  if (rawUsage !== null && typeof rawUsage === "object") {
-    const u = rawUsage as {
-      inputTokens?: unknown;
-      outputTokens?: unknown;
-      inputTokensDetails?: unknown;
-    };
-    if (typeof u.inputTokens === "number" && typeof u.outputTokens === "number") {
-      // 캐시 적중(2026-07-30) — codex/claude 는 이미 cachedTokens 를 싣는데 여기만 빠져
-      // 있어서, 프리픽스 캐시가 openai 어댑터에서 걸리는지 **원리적으로 확인 불가**였다
-      // (관측 비대칭 = 원칙 #2 위반). Agents SDK 는 상세를 inputTokensDetails 로 넘긴다
-      // (배열 또는 단일 객체, provider 별 키 표기도 갈림) — 있는 것만 긁고 없으면 미설정.
-      const details = Array.isArray(u.inputTokensDetails)
-        ? u.inputTokensDetails
-        : u.inputTokensDetails !== undefined
-          ? [u.inputTokensDetails]
-          : [];
-      let cached = 0;
-      for (const d of details) {
-        if (d === null || typeof d !== "object") continue;
-        const rec = d as Record<string, unknown>;
-        const v = rec.cached_tokens ?? rec.cachedTokens;
-        if (typeof v === "number") cached += v;
-      }
-      usage = {
-        inputTokens: u.inputTokens,
-        outputTokens: u.outputTokens,
-        ...(cached > 0 ? { cachedTokens: cached } : {}),
-      };
-    }
-  }
+  const usage = extractUsage(result);
 
   // externalTools 패스스루 얼리 리턴 (ADR 2026-07-25 §Decision-5, 스파이크 §2.1) — 이
   // 경우 `result.finalOutput` 은 우리 execute() 마커의 반환값(`stopAtToolNames` 가 승격한

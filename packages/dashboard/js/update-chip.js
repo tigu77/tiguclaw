@@ -42,27 +42,25 @@
       };
 
       /**
-       * **CHANGELOG 조각 → confirm 에 넣을 평문** — 순수 함수 (2026-08-27).
+       * **받을 게 실제로 있나** — 「업데이트 내역」이 보일 조건. 순수 함수 (2026-08-27).
        *
-       * ★사용자 지적: *"업데이트 버튼만 달랑 있으니까 변경 내역을 확인하기가 힘든데."*
-       *  결정하는 순간은 확인 대화상자다 — 새 패널을 만들 게 아니라 **거기에 실어야** 한다.
+       * ★소비자가 **둘**이다: 칩 옆 `?` 와 설정의 「업데이트 내역」 행. 둘이 각자
+       *  `state === "available"` 을 조립하면 그게 판단의 사본이고, 이 레포엔 그렇게
+       *  **두 화면이 같은 값에 반대로 행동한** 전례가 있다(위 `updateChipView` 머리말 F4·F6).
        *
-       * ★`window.confirm` 은 평문만 받고 스크롤도 없다. 그래서 ①마크다운 장식을 걷고
-       *  ②길이를 자른다. 자를 땐 **자른 사실을 말한다**(조용히 삼키면 "전부 본 줄" 안다).
+       * ★`updateChipView` 를 **다시 쓴다** — "받을 게 있다" 는 이미 그 함수가 답하는 질문이고
+       *  (`kind === "ready"`), 여기서 상태 문자열을 다시 해석하면 어휘가 두 벌이 된다.
+       *  `blocked`(못 받는다)·`unreleased`·`unknown` 은 전부 false 로 떨어진다.
        *
-       * ★순수 함수로 뺀 이유는 검사다 — 대화상자 안에 인라인으로 두면 부를 방법이 없다
-       *  ([[feedback_simple_composable_no_duplication]]).
+       * ★순수 함수로 뽑은 이유는 **검사**다 (2026-08-27 적대 검토 G-a). 종전엔 이 판정이
+       *  두 파일에 인라인이었고, 그물이 소스 문자열만 봐서 **가드를 반대로 뒤집어도**
+       *  회귀 29건이 전부 초록이었다(받을 게 있을 때 행이 사라지는 변이가 통과했다).
+       *  뽑아 두면 회귀가 **실행해서** 진리표를 확인한다.
        *
-       * @param {{sections:Array<{version:string,body:string}>, omitted:number}|null|undefined} notes
-       * @param {number} maxChars
-       * @returns {string} 빈 문자열이면 붙일 게 없다는 뜻(호출부가 그대로 종전 문구를 쓴다).
+       * @param {{state?:string}|null|undefined} availability
+       * @returns {boolean}
        */
-      /**
-       * ★**포맷터가 사라졌다** (2026-08-27). 종전엔 확인창이 평문만 받아서 마크다운을 걷고
-       *  자르는 함수 둘을 들고 있었다. 이제 내역은 설정 →「업데이트 내역」이 **우리 마크다운
-       *  렌더러로** 그대로 보여주므로, 걷을 이유도 자를 이유도 없다.
-       *  (변경 내역 데이터 자체는 `/update-availability` 의 `notes` 로 계속 온다.)
-       */
+      const updateNotesVisible = (availability) => updateChipView(availability).kind === "ready";
 
       const updateChip = (() => {
         // ★판정이 도착했을 때 알릴 곳 — **직접 부르지 않는다** (2026-08-21 적대 검토 F1).
@@ -114,7 +112,7 @@
           chip.textContent = v.label;
           chip.title = v.title;
           // 받을 게 실제로 있을 때만(`blocked` 는 못 받으니 내역도 안 묻는다).
-          if (notesBtn) notesBtn.hidden = v.kind !== "ready";
+          if (notesBtn) notesBtn.hidden = !updateNotesVisible(a);
         };
 
         const refresh = async () => {

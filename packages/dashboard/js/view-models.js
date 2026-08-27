@@ -702,14 +702,14 @@
       // ★**받을 게 없으면 아예 안 그린다** (2026-08-27 정태님: *"업데이트 내역이 없으면
       //  안 보여주는 게 어때?"*). 열어봐야 "없습니다" 인 행은 상시 배지와 같은 부류다 —
       //  자리만 차지하고 아무것도 안 말한다.
-      //  ★★판정을 **새로 만들지 않는다**: 칩·`?`·이 행이 전부 `updateChipView` 하나를 본다.
-      //   여기서 `state === "available"` 이라고 다시 적으면 그게 판단의 네 번째 사본이고,
-      //   실제로 이 레포엔 그렇게 **두 화면이 같은 값에 반대로 행동한** 전례가 있다
-      //   (update-chip.js 머리말의 적대 검토 F4·F6).
+      //  ★★판정을 **새로 만들지 않는다**: 칩·`?`·이 행이 전부 `updateNotesVisible` 하나를
+      //   본다(그건 다시 `updateChipView` 를 쓴다). 여기서 `state === "available"` 이라고
+      //   적으면 판단의 네 번째 사본이고, 이 레포엔 그렇게 **두 화면이 같은 값에 반대로
+      //   행동한** 전례가 있다(update-chip.js 머리말의 적대 검토 F4·F6).
       //  ★상태가 아직 안 왔으면(부팅 직후 설정으로 복원) 안 그린다. 갇히지 않는다 —
       //   판정이 도착하면 칩과 `?` 가 뜨고, 그 `?` 가 이 화면을 다시 그린다.
       const buildUpdateNotesRow = () => {
-        if (updateChipView(updateChip.state()).kind !== "ready") return document.createDocumentFragment();
+        if (!updateNotesVisible(updateChip.state())) return document.createDocumentFragment();
         return buildMarkdownRow({
           id: "update-notes",
           head: i18n("models.updateNotes.head"),

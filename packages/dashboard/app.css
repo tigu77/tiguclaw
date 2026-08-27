@@ -152,6 +152,10 @@
       .update-chip.ready:hover { background:rgb(var(--good-rgb) / .18); }
       .update-chip.blocked { border-color:var(--warn); color:var(--warn); background:rgb(var(--warn-rgb) / .10); }
       .update-chip:disabled { opacity:.6; cursor:default; }
+      /* 칩 옆 `?` — 칩의 형제라 같은 규칙을 상속하고, 폭만 원형으로 줄인다. */
+      .update-notes-btn { width:22px; padding:0; margin-left:-4px; font-weight:700;
+        border-color:var(--good); color:var(--good); background:rgb(var(--good-rgb) / .10); }
+      .update-notes-btn:hover { background:rgb(var(--good-rgb) / .18); }
       #menu-toggle { position:relative; }
       #menu-backdrop { display:none; }
       /* 아이콘 자체가 둥근 판(투명 모서리)을 갖고 있어 배경·테두리를 얹지 않는다 — 얹으면 액자가 두 겹이 된다. */

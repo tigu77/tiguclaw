@@ -59,14 +59,12 @@ export interface UpdateAvailability {
   /** 지금 설치된 버전. 못 읽으면 undefined. */
   version?: string;
   /**
-   * **받으면 뭐가 바뀌나** — 원격 CHANGELOG 에서 현재 버전보다 위인 항목만 (2026-08-27).
-   * `available` 에서만, 그것도 읽혔을 때만 실린다. 없어도 칩은 정상 동작한다.
+   * ★**변경 내역은 여기 안 싣는다** (2026-08-27, 같은 날 두 번째 판). 첫 판은 확인창에
+   *  넣으려고 이 응답에 태웠는데, 정태님이 *"설정에 변경 이력 밑에 업데이트 내역 하나
+   *  더"* 로 자리를 바꿨다 — 그 자리는 **누를 때만** 읽으면 되므로(`readUpdateChangelog`),
+   *  30분마다 도는 이 판정이 `git show` 를 할 이유가 없어졌다. 소비자 없는 필드를 남기면
+   *  같은 내용에 경로가 둘이 되고, 그중 하나가 늙는다.
    */
-  notes?: {
-    sections: Array<{ version: string; body: string }>;
-    /** 상한(3) 때문에 못 실은 나머지 버전 수 — 화면이 "그 외 N개" 로 정직하게 말한다. */
-    omitted: number;
-  };
   /** 원격이 올려둔 버전. `available` 이면 이 값이 위 `version` 보다 높다. */
   newVersion?: string;
 }
@@ -145,25 +143,38 @@ export const compareVersions = (a: string, b: string): number | null => {
  *
  * @param body   원격 CHANGELOG 전문
  * @param from   지금 설치된 버전(이것보다 **위**인 항목만 남긴다). 모르면 undefined → 최신 1개.
- * @param maxSections 최대 몇 버전까지 실을지 — 오래 밀린 설치에서 패널이 스크롤 지옥이 되지 않게.
+ * ★**기본은 상한 없음**이다 (2026-08-27 개정). 종전 기본값 3은 `window.confirm` 이 스크롤도
+ *  없는 평문 상자였기 때문에 있던 것인데, 보여주는 자리가 설정 패널로 바뀌면서 그 이유가
+ *  사라졌다. 상한이 필요한 호출자가 **자기가** 정한다 — 안 그러면 "왜 3개까지지?" 를
+ *  아무도 답할 수 없는 상수가 코어에 남는다.
+ *
+ * @param maxSections 최대 몇 버전까지 실을지. 안 주면 전부.
  */
 export const changelogSince = (
   body: string,
   from: string | undefined,
-  maxSections = 3,
-): { sections: Array<{ version: string; body: string }>; omitted: number } => {
+  maxSections = Number.POSITIVE_INFINITY,
+): {
+  sections: Array<{ version: string; heading: string; body: string }>;
+  omitted: number;
+} => {
   // `## [1.2.3] - 날짜` 헤더로 자른다. `[Unreleased]` 는 버전이 아니라 건너뛴다.
   const re = /^## \[([^\]]+)\][^\n]*$/gm;
-  const marks: Array<{ version: string; start: number; headEnd: number }> = [];
+  const marks: Array<{ version: string; heading: string; start: number; headEnd: number }> = [];
   for (let m = re.exec(body); m !== null; m = re.exec(body)) {
-    marks.push({ version: m[1] as string, start: m.index, headEnd: m.index + m[0].length });
+    marks.push({
+      version: m[1] as string,
+      heading: m[0],
+      start: m.index,
+      headEnd: m.index + m[0].length,
+    });
   }
-  const all: Array<{ version: string; body: string }> = [];
+  const all: Array<{ version: string; heading: string; body: string }> = [];
   for (let i = 0; i < marks.length; i++) {
-    const cur = marks[i] as { version: string; start: number; headEnd: number };
+    const cur = marks[i] as { version: string; heading: string; start: number; headEnd: number };
     if (!/^\d/.test(cur.version)) continue; // Unreleased 등
     const end = i + 1 < marks.length ? (marks[i + 1] as { start: number }).start : body.length;
-    all.push({ version: cur.version, body: body.slice(cur.headEnd, end).trim() });
+    all.push({ version: cur.version, heading: cur.heading, body: body.slice(cur.headEnd, end).trim() });
   }
   // `from` 보다 **위**인 것만. 비교 불가면 최신 1개만(거짓말보다 적게 말한다).
   const newer =
@@ -314,17 +325,44 @@ export const checkUpdateAvailability = async (
   if (cmp !== null && cmp >= 0) {
     return { state: "unreleased", behind, dirty, version, newVersion };
   }
-  // ★변경 내역 — **best-effort**. 못 읽어도 칩은 그대로 뜬다(업데이트를 막을 이유가 없다).
-  //  못 읽는 정상 경우: CHANGELOG 가 루트에 없는 설치(dev 레포가 그렇다)·git 아님.
-  let notes: UpdateAvailability["notes"];
-  try {
-    const body = await remoteChangelog(cwd, timeoutMs);
-    if (body !== undefined) {
-      const cut = changelogSince(body, version);
-      if (cut.sections.length > 0) notes = cut;
-    }
-  } catch {
-    /* 변경 내역은 부가 정보다 — 실패가 판정을 흔들면 안 된다 */
-  }
-  return { state: "available", behind, dirty, version, newVersion, ...(notes !== undefined ? { notes } : {}) };
+  return { state: "available", behind, dirty, version, newVersion };
+};
+
+/**
+ * **받으면 뭐가 바뀌나 — 마크다운 전문** (2026-08-27).
+ *
+ * ★정태님 설계: *"업데이트 버튼 옆에 물음표 하나 띄워서 설정에 변경 이력 밑에 업데이트 내역
+ *  하나 더 있고 거기서 보여주면 어때?"* → *"저러면 업데이트 내역을 **다** 볼 수 있으니까."*
+ *  그래서 **상한이 없다.** 확인창에 실을 땐 평문 2,400자로 잘라야 했지만, 설정 패널은
+ *  스크롤이 되고 우리 마크다운 렌더러를 타므로 자를 이유가 사라졌다.
+ *
+ * ★응답 모양을 `/changelog`(설치본 CHANGELOG)와 **똑같이** `{ markdown }` 으로 맞춘다 —
+ *  그래야 화면이 행 컴포넌트 하나로 둘을 그린다(같은 모양의 UI 를 두 벌 짓지 않는다).
+ *
+ * ★여기서 `git fetch` 를 **안 한다.** 첫 판은 했는데 실측이 2.6초였고(로컬 파일을 읽는
+ *  `/changelog` 는 4ms), 무엇보다 **중복이었다** — 이 화면으로 오는 문(칩 옆 `?`)은 칩이
+ *  떠야만 보이고, 칩이 떴다는 건 판정이 방금 fetch 를 돌렸다는 뜻이다.
+ *  ★그리고 따로 fetch 하면 **칩과 이 화면이 다른 답을 할 수 있다**("받을 것 없음" 이라고
+ *   해놓고 내역엔 새 버전이 뜨는 식). 같은 오브젝트를 보는 쪽이 맞다 — 갱신은 판정의 일이다.
+ */
+export const readUpdateChangelog = async (
+  cwd: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<{ markdown: string; version?: string; newVersion?: string }> => {
+  const timeoutMs = opts.timeoutMs ?? 20_000;
+  const upstream = await git(
+    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    cwd,
+    timeoutMs,
+  );
+  if (!upstream.ok || upstream.out.trim() === "") return { markdown: "" };
+  const version = await versionAt("HEAD", cwd, timeoutMs);
+  const newVersion = await versionAt("@{u}", cwd, timeoutMs);
+  const body = await remoteChangelog(cwd, timeoutMs);
+  if (body === undefined) return { markdown: "", version, newVersion };
+  const cut = changelogSince(body, version);
+  // 헤더(`## [0.41.0] - 날짜`)를 **되살려서** 잇는다 — 날짜와 버전 구분이 읽는 사람에게
+  // 필요하고, 이게 없으면 여러 버전이 한 덩어리로 붙는다.
+  const markdown = cut.sections.map((s) => `${s.heading}\n\n${s.body}`).join("\n\n");
+  return { markdown, version, newVersion };
 };

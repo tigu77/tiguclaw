@@ -65,6 +65,10 @@
            두는 이유: "더 새 빌드가 있다" 는 연결 상태와 같은 종류의 인스턴스 사실이고,
            업데이트 중 끊김→재연결을 바로 옆 conn-dot 이 이미 표현하기 때문. -->
       <button id="update-chip" class="hdr-btn update-chip" type="button" hidden></button>
+      <!-- ★"받기 전에 뭐가 바뀌는지" — 칩과 **함께** 뜨고 함께 사라진다(2026-08-27 정태님
+           설계). 여기서 내용을 띄우지 않고 설정 →「업데이트 내역」으로 데려가는 이유:
+           그 자리는 스크롤도 마크다운 렌더도 되고, 무엇보다 **전부** 볼 수 있다. -->
+      <button id="update-notes" class="hdr-btn update-chip update-notes-btn" type="button" hidden>?</button>
     </header>
     <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
     <div id="menu-backdrop"></div>

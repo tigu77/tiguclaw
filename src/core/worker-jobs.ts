@@ -18,6 +18,7 @@
  * MVP = 메모리 레지스트리(영속 0, W-I7 재시작 정직). scheduler `inFlight` Set 동형.
  */
 import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
+import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
 import { randomUUID } from "node:crypto";
 import { extractTelegramChatId } from "./threadkey.js";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
@@ -60,10 +61,18 @@ const publishWorkerLifecycle = (
   extra?: { error?: string; task?: string; result?: string },
 ): void => {
   try {
+    // ★리비전 스탬프 (2026-08-27 Phase 1) — 이 이벤트가 스냅샷 대비 **몇 번째 변경인가**.
+    //  화면은 `event.revision === local.revision + 1` 일 때만 적용하고, 크면 스냅샷을 다시
+    //  받는다. 그 한 줄이 dedup·sticky 종료·순서 가드·"replay 창 밖으로 밀린 긴 워커" 를
+    //  전부 대체한다(근거: docs/decisions/2026-08-27-frontend-architecture.md §A.4).
+    //  ★발행하는 **이 자리에서 정확히 한 번** 올린다 — 두 곳에서 올리면 화면이 헛되이
+    //   스냅샷을 받고, 안 올리면 조용히 안 따라온다(후자가 훨씬 나쁘다).
+    const stamp = { ...stampFor(RUNNING_WORK), revision: bumpRevision(RUNNING_WORK) };
     getEventBus().publish({
       type,
       ts: Date.now(),
       payload: {
+        ...stamp,
         jobId: job.jobId,
         label: job.label,
         threadKey: job.threadKey, // 어느 대화가 띄운 잡인지 상관(correlate)용.

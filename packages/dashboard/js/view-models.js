@@ -307,6 +307,7 @@
         page.appendChild(buildThemeRow());
         page.appendChild(buildLogRow());
         page.appendChild(buildChangelogRow());
+        page.appendChild(buildUpdateNotesRow());
         root.appendChild(page);
       };
 
@@ -566,7 +567,11 @@
         return row;
       };
 
-      const showSettings = async () => {
+      /**
+       * @param {{open?:string}} [opts] `open` 이면 그 `data-settings-row` 를 펴고 스크롤한다
+       *   (헤더 업데이트 칩 옆 `?` 가 「업데이트 내역」으로 데려올 때 쓴다).
+       */
+      const showSettings = async (opts) => {
         setActiveNav("settings");
         setChatPanel("chat");
         document.getElementById("workbench").classList.remove("show-providers");
@@ -586,9 +591,20 @@
           }
         } catch { /* 조회 실패 = 꺼짐으로 그린다(값은 서버가 정본) */ }
         renderSettingsRow(root, enabled);
+        // ★행을 **클릭해서** 연다 — 여는 절차(로딩·1회 fetch·문구 전환)가 그 핸들러에만
+        //  있으므로, 여기서 `hidden = false` 를 흉내 내면 그게 두 번째 사본이 된다.
+        const want = opts && opts.open;
+        if (typeof want === "string" && want !== "") {
+          const target = root.querySelector('[data-settings-row="' + want + '"]');
+          if (target !== null) {
+            const b = target.querySelector("button");
+            if (b !== null && !b.classList.contains("on")) b.click();
+            target.scrollIntoView({ block: "center" });
+          }
+        }
       };
 
-      // ── 변경 이력 (2026-08-24 사용자 요청: "릴리즈 노트를 대시보드에서 확인") ──────
+      // ── 변경 이력 · 업데이트 내역 (2026-08-24 / 2026-08-27) ────────────────────
       //  ★자리를 여기로 정한 이유(principle-check Q0): `#detail-panel` 은 자유 패널이 아니라
       //   **nav 목적지 본체**다(뷰별 `currentView` 전환). 홈에서 그걸 가로채면 다른 여덟 뷰와
       //   규칙이 갈리고, 새 목적지를 만들면 "새 네비 0" 이 거짓이 된다. `설정` 은 이미 nav 에
@@ -596,17 +612,28 @@
       //  ★**버튼 뒤에 둔다**(사용자 지정). 설정을 열 때마다 140KB·153섹션을 그리던 것을
       //   누를 때만 그린다 — 설정의 본업은 토글이고, 릴리스 노트는 찾아서 보는 것이다.
       //   덤으로 안 누르면 fetch 도 0이다(설정 진입 비용이 원래대로 돌아온다).
-      const buildChangelogRow = () => {
+      //
+      //  ★**행이 둘인데 코드는 하나다** (2026-08-27). 「업데이트 내역」을 붙이면서 이 70줄을
+      //   복사할 뻔했다 — 두 행은 *묻는 대상*만 다르고(지금 깔린 것 / 받을 것) 접힘·1회
+      //   로딩·빈손 안내·마크다운 렌더가 전부 같다. 서버도 같은 모양(`{ markdown }`)으로
+      //   답하게 맞춰서, 여기선 **URL 과 문구만** 다르게 준다.
+      //   (정태님 지적으로 이 설계가 나왔다: *"설정에 변경 이력 밑에 업데이트 내역 하나 더"*.)
+      /**
+       * 마크다운 본문을 **접었다 펴는** 설정 행.
+       * @param {{id:string, head:string, desc:string, missing:string, url:string}} spec
+       */
+      const buildMarkdownRow = (spec) => {
         const row = document.createElement("div");
         row.className = "settings-row";
+        row.dataset.settingsRow = spec.id; // `?` 가 이 행을 찾아 연다.
         const meta = document.createElement("div");
         meta.className = "settings-meta";
         const name = document.createElement("div");
         name.className = "settings-name";
-        name.textContent = i18n("models.changelog.head");
+        name.textContent = spec.head;
         const desc = document.createElement("div");
         desc.className = "settings-desc";
-        desc.textContent = i18n("models.changelog.desc");
+        desc.textContent = spec.desc;
         meta.appendChild(name);
         meta.appendChild(desc);
         const btn = document.createElement("button");
@@ -635,17 +662,17 @@
           wrap.hidden = false;
           btn.textContent = i18n("common.collapse");
           btn.classList.add("on");
-          if (loaded) return; // 한 번만 받는다(파일은 재시작 전까지 안 바뀐다).
+          if (loaded) return; // 한 번만 받는다.
           body.className = "empty";
           body.textContent = i18n("common.loading");
           let md = "";
           try {
-            const r = await fetch("/api/changelog");
+            const r = await fetch(spec.url);
             if (r.ok) md = String((await r.json()).markdown || "");
           } catch { /* 미도달 — 아래 안내로 떨어진다 */ }
           // ★없으면 **없다고 말한다** — 빈 화면으로 두면 "로딩 중" 과 구분이 안 된다.
           if (md.trim() === "") {
-            body.textContent = i18n("models.changelog.missing");
+            body.textContent = spec.missing;
             return; // loaded 를 안 세운다 — 다시 눌러 재시도할 수 있게.
           }
           loaded = true;
@@ -658,6 +685,38 @@
         frag.appendChild(row);
         frag.appendChild(wrap);
         return frag;
+      };
+
+      const buildChangelogRow = () =>
+        buildMarkdownRow({
+          id: "changelog",
+          head: i18n("models.changelog.head"),
+          desc: i18n("models.changelog.desc"),
+          missing: i18n("models.changelog.missing"),
+          url: "/api/changelog",
+        });
+
+      // ★「받을 것」은 「가진 것」 **바로 밑**에 둔다 — 둘은 같은 질문의 과거·미래형이라
+      //  떨어뜨려 놓으면 사용자가 어느 쪽을 보고 있는지 헷갈린다.
+      //
+      // ★**받을 게 없으면 아예 안 그린다** (2026-08-27 정태님: *"업데이트 내역이 없으면
+      //  안 보여주는 게 어때?"*). 열어봐야 "없습니다" 인 행은 상시 배지와 같은 부류다 —
+      //  자리만 차지하고 아무것도 안 말한다.
+      //  ★★판정을 **새로 만들지 않는다**: 칩·`?`·이 행이 전부 `updateChipView` 하나를 본다.
+      //   여기서 `state === "available"` 이라고 다시 적으면 그게 판단의 네 번째 사본이고,
+      //   실제로 이 레포엔 그렇게 **두 화면이 같은 값에 반대로 행동한** 전례가 있다
+      //   (update-chip.js 머리말의 적대 검토 F4·F6).
+      //  ★상태가 아직 안 왔으면(부팅 직후 설정으로 복원) 안 그린다. 갇히지 않는다 —
+      //   판정이 도착하면 칩과 `?` 가 뜨고, 그 `?` 가 이 화면을 다시 그린다.
+      const buildUpdateNotesRow = () => {
+        if (updateChipView(updateChip.state()).kind !== "ready") return document.createDocumentFragment();
+        return buildMarkdownRow({
+          id: "update-notes",
+          head: i18n("models.updateNotes.head"),
+          desc: i18n("models.updateNotes.desc"),
+          missing: i18n("models.updateNotes.missing"),
+          url: "/api/update-changelog",
+        });
       };
 
       // ── 에이전트 뷰(왼쪽 nav 1급 destination) ──────────────────────────────

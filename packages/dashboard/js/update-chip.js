@@ -57,38 +57,12 @@
        * @param {number} maxChars
        * @returns {string} 빈 문자열이면 붙일 게 없다는 뜻(호출부가 그대로 종전 문구를 쓴다).
        */
-      const formatUpdateNotes = (notes, maxChars = 2400) => {
-        if (!notes || !Array.isArray(notes.sections) || notes.sections.length === 0) return "";
-        const plain = (md) =>
-          String(md)
-            // ★섹션 헤더(`### Added`)는 **버린다** (2026-08-27 적대 검토 F2). Keep a Changelog
-            //  의 영문 어휘라 한국어 대화상자에 그대로 남았다. 번역하려면 닫힌 어휘 6개를
-            //  손으로 들고 다녀야 하는데, 확인 창에서 그 값이 항목 내용보다 크지 않다.
-            .replace(/^###+[^\n]*\n?/gm, "")
-            // ★`[\s\S]` — `.` 은 개행을 안 먹어서 **줄바꿈을 넘는 굵게**가 그대로 남았다
-            //  (실측: 실제 CHANGELOG 에서 `**` 13줄 잔존, 사용자가 볼 본문에도 2개).
-            .replace(/\*\*([\s\S]+?)\*\*/g, "$1")
-            .replace(/`{1,3}([^`]*)`{1,3}/g, "$1") // 코드 표시(인라인·펜스 표기 모두)
-            .replace(/`/g, "")                     // 짝이 안 맞아 남은 것까지
-            .replace(/^\s*-\s+/gm, "• ")
-            .replace(/\n{3,}/g, "\n\n")
-            .trim();
-        const parts = notes.sections.map((s) => `[${s.version}]\n${plain(s.body)}`);
-        let out = parts.join("\n\n");
-        let cut = false;
-        if (out.length > maxChars) {
-          // ★**줄 경계**에서 자른다 — 단어 경계로 자르면 문장 한가운데서 끊긴다(실측:
-          //  "…그 줄을 볼\n  일이 없으니"). 줄이 없으면 그때만 공백 경계로 물러선다.
-          const head = out.slice(0, maxChars);
-          const nl = head.lastIndexOf("\n");
-          out = nl > maxChars * 0.5 ? head.slice(0, nl) : head.replace(/\s+\S*$/, "");
-          cut = true;
-        }
-        const tail = [];
-        if (cut) tail.push(i18n("upd.notesTruncated"));
-        if (notes.omitted > 0) tail.push(i18n("upd.notesOmitted", { n: notes.omitted }));
-        return tail.length > 0 ? `${out}\n\n${tail.join(" ")}` : out;
-      };
+      /**
+       * ★**포맷터가 사라졌다** (2026-08-27). 종전엔 확인창이 평문만 받아서 마크다운을 걷고
+       *  자르는 함수 둘을 들고 있었다. 이제 내역은 설정 →「업데이트 내역」이 **우리 마크다운
+       *  렌더러로** 그대로 보여주므로, 걷을 이유도 자를 이유도 없다.
+       *  (변경 내역 데이터 자체는 `/update-availability` 의 `notes` 로 계속 온다.)
+       */
 
       const updateChip = (() => {
         // ★판정이 도착했을 때 알릴 곳 — **직접 부르지 않는다** (2026-08-21 적대 검토 F1).
@@ -110,6 +84,20 @@
         const chip = document.getElementById("update-chip");
         if (!chip) return { refresh: () => {}, state: () => null, onChange: (fn) => subscribers.push(fn) };
 
+        // ★`?` 는 **칩과 운명을 같이한다** — 받을 게 없으면 물어볼 것도 없다. 그래서 자기
+        //  판정을 갖지 않고 아래 `render` 가 칩과 같은 값으로 켜고 끈다(판정 두 벌 금지).
+        const notesBtn = document.getElementById("update-notes");
+        if (notesBtn) {
+          notesBtn.title = i18n("upd.notes");
+          notesBtn.setAttribute("aria-label", i18n("upd.notes"));
+          notesBtn.addEventListener("click", () => {
+            // ★여기서 이름으로 부르는 것은 안전하다 — 이 파일 머리말이 경고하는 전방 참조
+            //  사고는 **fetch 응답**(로드 경쟁 구간)에서 부를 때였다. 클릭은 정의상 모든
+            //  스크립트가 실린 뒤에 일어난다. 그래도 없으면 조용히 아무 일 없게 둔다.
+            if (typeof showSettings === "function") showSettings({ open: "update-notes" });
+          });
+        }
+
         let inFlight = false;
         let current = null;
 
@@ -118,10 +106,15 @@
           notify(a);
           const v = updateChipView(a);
           chip.hidden = !v.show;
-          if (!v.show) return;
+          if (!v.show) {
+            if (notesBtn) notesBtn.hidden = true;
+            return;
+          }
           chip.className = "hdr-btn update-chip " + v.kind;
           chip.textContent = v.label;
           chip.title = v.title;
+          // 받을 게 실제로 있을 때만(`blocked` 는 못 받으니 내역도 안 묻는다).
+          if (notesBtn) notesBtn.hidden = v.kind !== "ready";
         };
 
         const refresh = async () => {
@@ -183,13 +176,15 @@
             window.alert(current.blockedReason || i18n("upd.unavailable"));
             return;
           }
-          // ★변경 내역을 **결정하는 자리에** 붙인다. 없으면 종전 문구 그대로(칩은 정상).
-          const notes = formatUpdateNotes(current.notes);
-          const ask =
-            notes === ""
-              ? i18n("upd.confirm")
-              : `${i18n("upd.notesHead", { v: current.newVersion || "" })}\n\n${notes}\n\n${i18n("upd.confirm")}`;
-          if (!window.confirm(ask)) return;
+          // ★확인창은 **짧게** 둔다 (2026-08-27 사용자 결정). 변경 내역은 설정 →
+          //  「업데이트 내역」이 **전부** 보여주고, 칩 옆 `?` 가 그리로 데려간다.
+          //  여기에 또 실으면 같은 글을 두 자리에서 렌더하게 되고, 그중 하나가 늙는다.
+          //  ★`window.confirm` 이 평문만 받는 것도 그래서 문제가 아니게 된다 — 한 줄이니까.
+          const head =
+            current.newVersion === undefined || current.newVersion === ""
+              ? ""
+              : `${i18n("upd.notesHead", { v: current.newVersion })}\n\n`;
+          if (!window.confirm(`${head}${i18n("upd.confirm")}`)) return;
 
           inFlight = true;
           chip.disabled = true;

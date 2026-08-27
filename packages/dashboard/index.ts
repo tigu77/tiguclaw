@@ -579,6 +579,12 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/changelog");
       return;
     }
+    // 업데이트 내역 — bridge GET /update-changelog (read). 같은 `{ markdown }` 모양이라
+    // 설정 뷰가 「변경 이력」과 **같은 행 컴포넌트**로 그린다.
+    if (pathname === "/api/update-changelog" && method === "GET") {
+      await proxyJson(res, "/update-changelog");
+      return;
+    }
     // 전달(bridge 가 allowlist 검사 후 파일 재-Read). 능력 상세뷰 본문 섹션이 소비.
     if (pathname === "/api/inventory-item" && method === "GET") {
       const qs = url.search ?? "";

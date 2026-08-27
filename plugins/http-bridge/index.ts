@@ -17,6 +17,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { writeJson } from "../../src/core/net/write-json.js";
+import { stampFor, RUNNING_WORK } from "../../src/core/resource-revision.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -1376,6 +1377,8 @@ class HttpBridge implements Channel, Observer {
                   ? "read"
                 : pathname === "/update-availability" && method === "GET"
                   ? "read" // 조회만 — 상태를 읽을 뿐 아무것도 바꾸지 않는다.
+                : pathname === "/update-changelog" && method === "GET"
+                  ? "read" // 원격 CHANGELOG 읽기 — `/changelog` 와 같은 등급.
                 : pathname === "/log-status" && method === "GET"
                   ? "read"
                 : pathname === "/log-clear" && method === "POST"
@@ -1640,6 +1643,10 @@ class HttpBridge implements Channel, Observer {
     // 긴 워커의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시 activity-only 카드
     // 라 라벨이 "(작업)"으로 뜨던 문제 → in-memory listJobs 로 label·kind·task 복원. read 게이트.
     if (pathname === "/worker-jobs" && method === "GET") {
+      // ★리비전을 **목록보다 먼저** 읽는다 (2026-08-27 Phase 1). 반대로 하면 목록을 만드는
+      //  사이에 들어온 변경이 리비전에만 반영돼, 화면이 "이미 최신" 이라 믿고 그 이벤트를
+      //  버린다(잃어버린 갱신). 먼저 읽으면 최악이 **한 번 더 받는 것**이라 안전한 쪽이다.
+      const stamp = stampFor(RUNNING_WORK);
       const jobs = listJobs({ runningOnly: true, limit: 200 }).map((j) => ({
         jobId: j.jobId,
         label: j.label,
@@ -1674,7 +1681,7 @@ class HttpBridge implements Channel, Observer {
           return act === undefined ? {} : { activity: act };
         })(),
       }));
-      writeJson(res, 200, { jobs });
+      writeJson(res, 200, { ...stamp, items: jobs, jobs });
       return;
     }
 
@@ -3068,6 +3075,18 @@ class HttpBridge implements Channel, Observer {
       );
       const { sourceRoot } = await import("../../src/core/paths.js");
       writeJson(res, 200, await checkUpdateAvailability(sourceRoot()));
+      return;
+    }
+
+    // /update-changelog — "받으면 뭐가 바뀌나" 전문. `/changelog`(지금 깔린 것)의 짝이고
+    // 응답 모양도 **같다**(`{ markdown }`) — 그래서 설정 화면이 행 컴포넌트 하나로 둘을
+    // 그린다. 조회만(read 게이트). 판정·자르기는 전부 코어에 있다.
+    if (pathname === "/update-changelog" && method === "GET") {
+      const { readUpdateChangelog } = await import(
+        "../../src/core/update-availability.js"
+      );
+      const { sourceRoot } = await import("../../src/core/paths.js");
+      writeJson(res, 200, await readUpdateChangelog(sourceRoot()));
       return;
     }
 

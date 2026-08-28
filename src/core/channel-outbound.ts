@@ -73,6 +73,9 @@ export const registerChannelOutbound = (
   registry.set(name, o);
 };
 
+/** 등록 해제 (2026-08-28) — 플러그인 제거가 실제로 배달을 멈추게 한다. */
+export const unregisterChannelOutbound = (name: string): boolean => registry.delete(name);
+
 /**
  * 등록된 채널 아웃바운드 조회. `undefined` = 미등록(현행 switch default = "unsupported" warn).
  * *등록됐지만 `deliver` 없음* 은 관측-전용(http-bridge) — "미등록" 과 레지스트리 존재로 구분.

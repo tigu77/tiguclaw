@@ -1,0 +1,21 @@
+{
+  "name": "running-work",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": [
+      "service"
+    ],
+    "name": "running-work",
+    "entry": "./src/index.ts"
+  },
+  "description": {
+    "ko": "지금 돌고 있는 매니저·에이전트를 홈에 보여줍니다.",
+    "en": "Shows managers and agents that are running right now, on your home screen."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw"
+}

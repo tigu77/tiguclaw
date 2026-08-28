@@ -461,6 +461,16 @@
           return;
         }
         if (typeof ev.type === "string" && ev.type.indexOf("worker.") === 0) {
+          // ★**순서를 먼저 묻는다** (2026-08-28, 증분 5b) — `resource-store` 가
+          //  `event.revision === local.revision + 1` 인지 판정한다. `ignore` 는 replay·중복
+          //  이고(종전엔 sticky 단조가 뒤에서 막던 것), `resnapshot` 은 놓친 구간이라
+          //  스토어가 스냅샷을 다시 받는다(종전엔 재연결 대조가 하던 것).
+          // ★게이트가 없으면(구버전 화면) `apply` 로 떨어져 **현행 그대로** 돈다.
+          const decision =
+            typeof window.gateWorkerEvent === "function"
+              ? window.gateWorkerEvent(ev.payload || {})
+              : "apply";
+          if (decision !== "apply") return;
           handleWorkerEvent(ev.payload || {}, ts);
           return;
         }

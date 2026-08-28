@@ -86,6 +86,40 @@ const copyTree = async (rel, { excludeTs = false, prune = false } = {}) => {
   log(`tree: ${rel}/${excludeTs ? " (non-.ts)" : ""}${prune ? " [prune]" : ""}`);
 };
 
+/**
+ * `dist/<rel>` 아래에서 **소스에 없는 디렉터리**를 지운다.
+ *
+ * ★트리 통째 prune 과 다르다: 살아 있는 항목의 tsc 산출물(.js)은 그대로 두고 **없어진 것만**
+ *  치운다. 미러가 삭제를 반영하지 않으면 **지운 것이 계속 돈다** — 실제로 시험용 `_probe` 를
+ *  소스에서 지웠는데 매 부팅마다 로드되고 실패로 찍히고 있었다. 사용자 쪽도 같다:
+ *  플러그인을 지워도 빌드본에선 안 사라진다.
+ */
+const pruneOrphanDirs = async (rel) => {
+  const srcDir = path.join(repoRoot, rel);
+  const dstDir = path.join(dist, rel);
+  let live;
+  try {
+    live = new Set(
+      (await fs.readdir(srcDir, { withFileTypes: true }))
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name),
+    );
+  } catch {
+    return; // 소스 트리가 없으면 판단 근거가 없다 — 아무것도 안 지운다(보수적).
+  }
+  let there;
+  try {
+    there = (await fs.readdir(dstDir, { withFileTypes: true })).filter((d) => d.isDirectory());
+  } catch {
+    return;
+  }
+  for (const d of there) {
+    if (live.has(d.name)) continue;
+    await fs.rm(path.join(dstDir, d.name), { recursive: true, force: true });
+    log(`prune-orphan: ${rel}/${d.name}`);
+  }
+};
+
 const main = async () => {
   // dist/ 가 없으면 tsc 빌드가 선행되지 않은 것 — 방어.
   try {
@@ -116,6 +150,13 @@ const main = async () => {
   // 2) 플러그인 트리의 비-.ts 자산 → dist/plugins (특히 로더 발견의 근거인 package.json).
   //    .ts 는 tsc 가 dist/plugins/**/*.js 로 이미 emit — 여기선 제외하고 나머지만 미러.
   await copyTree("plugins", { excludeTs: true });
+  // ★**소스에서 사라진 플러그인은 dist 에서도 지운다** (2026-08-28).
+  //  `fs.cp` 는 덮어쓰기만 하고 **삭제를 반영하지 않는다** — 그래서 지운 플러그인이 빌드본에서
+  //  계속 로드된다. 실제로 시험용 `_probe` 를 소스에서 지웠는데 매 부팅마다 뜨고 있었고,
+  //  로더가 그걸 실패로 찍고 있었다. 사용자 쪽에서도 같다: 플러그인을 지워도 안 사라진다.
+  //  ★`plugins` 트리 전체를 prune 할 수는 없다 — tsc 산출물(.js)이 **먼저** 들어와 있다.
+  //   그래서 **고아 디렉터리만** 골라 지운다(살아 있는 플러그인의 .js 는 안 건드린다).
+  await pruneOrphanDirs("plugins");
 
   // 3) packages 트리의 비-.ts 정적 자산 → dist/packages (2026-07-14 dashboard built fix).
   //    tsc 가 dist/packages/dashboard/index.js 로 emit 하지만 그 __dirname 기준으로 서빙하는

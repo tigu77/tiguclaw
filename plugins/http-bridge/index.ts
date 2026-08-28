@@ -17,6 +17,9 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { writeJson } from "../../src/core/net/write-json.js";
+import { callPluginDataRoute, isPluginMedia } from "../../src/core/plugins/data-routes.js";
+import { readHomeWidgets } from "../../src/core/home-widgets.js";
+import { listLivePlugins } from "../../src/core/plugins/manager.js";
 import { stampFor, RUNNING_WORK } from "../../src/core/resource-revision.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1379,6 +1382,10 @@ class HttpBridge implements Channel, Observer {
                   ? "read" // 조회만 — 상태를 읽을 뿐 아무것도 바꾸지 않는다.
                 : pathname === "/update-changelog" && method === "GET"
                   ? "read" // 원격 CHANGELOG 읽기 — `/changelog` 와 같은 등급.
+                : pathname === "/plugins" && method === "GET"
+                  ? "read" // 목록 조회.
+                : pathname === "/plugins/action" && method === "POST"
+                  ? "admin" // ★설치·제거·켜기·끄기 — 데몬의 능력을 바꾼다(/restart 와 동급).
                 : pathname === "/log-status" && method === "GET"
                   ? "read"
                 : pathname === "/log-clear" && method === "POST"
@@ -1425,6 +1432,14 @@ class HttpBridge implements Channel, Observer {
                   ? "write"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
+                : pathname === "/home-widgets" && method === "GET"
+                  ? "read" // 배치 조회 — 쓰기는 도구(configure_home)로만 간다.
+                : pathname.startsWith("/plugin-data/") && method === "GET"
+                  ? // ★**프리픽스 한 줄**이다 — 플러그인마다 여기 한 줄씩 늘면 그게 곧
+                    //  손으로 관리하는 목록이고, 이 사다리는 이미 한 번 빠뜨려서 read 토큰이
+                    //  세션 프로파일을 바꿀 수 있었다([[feedback_hand_maintained_lists]]).
+                    //  읽기만 한다 — 라우트는 값을 만들 뿐 아무것도 안 바꾼다.
+                    "read"
                   : null;
     if (required !== null && !meetsRole(resolved.role, required)) {
       writeJson(res, 403, {
@@ -1432,6 +1447,67 @@ class HttpBridge implements Channel, Observer {
         required,
         presented: resolved.role,
       });
+      return;
+    }
+
+    // 홈 위젯 배치 (2026-08-28, §J) — 화면이 "무엇을 어떤 순서로 그릴지" 를 받는 자리.
+    // ★**읽기만 있다.** 쓰기는 `configure_home` 도구로만 간다 — 배치는 비서가 하는 것이고
+    //  (A3), 화면에 쓰기 구멍을 내면 그게 곧 손 배치 UI 의 절반이 된다(아직 안 짓는다).
+    if (pathname === "/home-widgets" && method === "GET") {
+      const known = new Set(listLivePlugins().map((p) => p.name));
+      const { widgets, rejected } = readHomeWidgets(known);
+      // ★**어느 위젯이 값을 받아올 수 있나**(2026-08-28, 증분 5). 관례상 데이터 라우트
+      //  이름 = 위젯 이름이므로, 이 목록에 없으면 그 위젯은 **poll 대상이 아니다**
+      //  (Running Work 처럼 화면에서 `ctx.resource` 로 값을 받는 것). 화면이 404 를 맞고
+      //  "값을 못 받았습니다" 를 띄우지 않게 **서버가 먼저 말해 준다** — 이미 계산하는
+      //  값이라 새 선언을 만들지 않는다.
+      const { listPluginDataRoutes } = await import(
+        "../../src/core/plugins/data-routes.js"
+      );
+      writeJson(res, 200, { widgets, rejected, dataRoutes: listPluginDataRoutes() });
+      return;
+    }
+
+    // ─── 플러그인 데이터 라우트 (2026-08-28, 위젯 플랫폼 §E.2) ───────────────
+    //  `/plugin-data/<plugin>/<route>?…` — 홈 위젯이 모델을 안 거치고 값을 받는 길.
+    //  ★외부 호출·캐시·`needs.network` 집행은 전부 코어(`data-routes.ts`)가 한다.
+    //   여기는 **주소를 값으로 바꾸는 자리**일 뿐이다(가장자리는 판단하지 않는다).
+    if (pathname.startsWith("/plugin-data/") && method === "GET") {
+      const rest = pathname.slice("/plugin-data/".length).split("/");
+      const plugin = decodeURIComponent(rest[0] ?? "");
+      const route = decodeURIComponent(rest[1] ?? "");
+      if (rest.length !== 2 || plugin === "" || route === "") {
+        writeJson(res, 404, { error: "/plugin-data/<plugin>/<route> 형식이어야 합니다." });
+        return;
+      }
+      const query: Record<string, string> = {};
+      for (const [k, v] of url.searchParams) {
+        if (k !== "token") query[k] = v; // 토큰은 질의가 아니다 — 캐시 키에 섞이면 안 된다.
+      }
+      const r = await callPluginDataRoute(plugin, route, query);
+      if (!r.ok) {
+        writeJson(res, r.status, { error: r.error });
+        return;
+      }
+      // ★**바이트도 낸다** — 지도 타일처럼 브라우저가 직접 못 받는 것(CSP `img-src 'self'`).
+      //  같은 라우트·같은 캐시이고 여기서 표현만 갈린다.
+      if (isPluginMedia(r.value)) {
+        res.writeHead(200, {
+          "Content-Type": r.value.contentType,
+          // ★브라우저도 캐시하게 둔다 — 서버 TTL 과 **같은 수명**이라 둘이 갈리지 않는다.
+          //  타일은 안 바뀌므로 이게 poll 마다 다시 받는 것을 막는 가장 싼 수단이다.
+          "Cache-Control": `private, max-age=${Math.max(0, Math.floor(r.ttlMs / 1000))}`,
+        });
+        res.end(Buffer.from(r.value.body));
+        return;
+      }
+      // ★JSON 은 **캐시하지 않는다** — 신선도 판단은 서버 TTL 한 곳에만 둔다. 브라우저까지
+      //  캐시하면 "값이 왜 안 바뀌지" 를 두 곳에서 봐야 한다.
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify({ data: r.value, cached: r.cached }));
       return;
     }
 
@@ -3075,6 +3151,115 @@ class HttpBridge implements Channel, Observer {
       );
       const { sourceRoot } = await import("../../src/core/paths.js");
       writeJson(res, 200, await checkUpdateAvailability(sourceRoot()));
+      return;
+    }
+
+    // ─── 플러그인 관리 (2026-08-28) — 목록·설치·제거·켜기·끄기 ────────────────────
+    // ★판정은 전부 코어(`core/plugins/manager.ts`) — 브리지는 배관만 한다.
+    if (pathname === "/plugins" && method === "GET") {
+      const { listAllPlugins } = await import("../../src/core/plugins/manager.js");
+      const { PLUGIN_SCHEMA_VERSION } = await import("../../src/core/plugins/loader.js");
+      writeJson(res, 200, {
+        schemaVersion: PLUGIN_SCHEMA_VERSION,
+        // ★코드 갱신은 재부팅이 필요하다 — 화면이 이걸 그대로 말한다(실측: ESM 은 엔트리만
+        //  무효화하면 하위 모듈이 옛것이라, 반쪽 리로드가 안 하느니 못하다).
+        codeReloadRequiresRestart: true,
+        // ★꺼진 것도 나온다 — 안 그러면 끄는 순간 목록에서 사라져 다시 못 켠다.
+        items: (await listAllPlugins()).map((p) => ({
+          name: p.name,
+          source: p.source,
+          version: p.version ?? null,
+          needs: p.needs,
+          capabilities: p.capabilities,
+          wired: p.wired,
+          enabled: p.enabled,
+          // ★설명은 **언어를 안 고르고** 그대로 넘긴다(문자열 또는 언어별 객체) —
+          //  고르는 건 화면 몫이다(서버는 언어를 만들지 않는다).
+          meta: p.meta,
+          // ★설정은 **선언 + 값**이 함께 온다 — 화면이 손으로 행을 짓지 않게 하려면
+          //  "무엇을 물어볼지" 를 서버가 줘야 한다(§D.2). secret 은 값 대신 있다/없다만.
+          settings: p.settings,
+        })),
+      });
+      return;
+    }
+    if (pathname === "/plugins/action" && method === "POST") {
+      const body = (await readJsonBody(req)) as {
+        action?: unknown;
+        name?: unknown;
+        key?: unknown;
+        value?: unknown;
+      };
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const action = typeof body.action === "string" ? body.action : "";
+      if (name === "") {
+        writeJson(res, 400, { error: "name required" });
+        return;
+      }
+      const m = await import("../../src/core/plugins/manager.js");
+      try {
+        if (action === "install") {
+          writeJson(res, 200, await m.installHomePlugin(name));
+          return;
+        }
+        if (action === "remove") {
+          writeJson(res, 200, await m.removePlugin(name));
+          return;
+        }
+        if (action === "enable" || action === "disable") {
+          writeJson(res, 200, await m.setPluginEnabled(name, action === "enable"));
+          return;
+        }
+        // 설정 한 칸 쓰기 (2026-08-28, §D) — ★검증은 코어가 한다. 여기는 주소를 값으로
+        //  바꾸는 자리일 뿐이고, 모르는 키·타입 불일치·secret 거부는 전부 거기서 판정된다.
+        if (action === "set-setting") {
+          const key = typeof body.key === "string" ? body.key : "";
+          if (key === "") {
+            writeJson(res, 400, { ok: false, reason: "key required" });
+            return;
+          }
+          const v = body.value;
+          const okType =
+            v === undefined || v === null ||
+            typeof v === "string" || typeof v === "number" || typeof v === "boolean";
+          if (!okType) {
+            writeJson(res, 400, { ok: false, reason: "value 는 문자열·숫자·참거짓이어야 합니다" });
+            return;
+          }
+          const { writePluginSetting } = await import(
+            "../../src/core/plugins/settings.js"
+          );
+          const { scanPluginManifests } = await import("../../src/core/plugins/loader.js");
+          const { appRoot, getPaths } = await import("../../src/core/paths.js");
+          const nodePath = (await import("node:path")).default;
+          // ★선언의 정본은 **매니페스트**다 — 목록 응답을 되읽지 않는다(두 벌이면 갈린다).
+          //  번들이 먼저다(로더·자산 라우트와 같은 우선순위).
+          const specs =
+            (
+              await Promise.all(
+                [nodePath.join(appRoot(), "plugins"), getPaths().commonPlugins].map((root) =>
+                  scanPluginManifests(root),
+                ),
+              )
+            )
+              .flat()
+              .find((x) => x.manifest.name === name)?.manifest.settings ?? [];
+          const r = writePluginSetting(
+            name,
+            specs,
+            key,
+            v === null ? undefined : (v as string | number | boolean | undefined),
+          );
+          writeJson(res, r.ok ? 200 : 400, r.ok ? { ok: true } : { ok: false, reason: r.error });
+          return;
+        }
+      } catch (e) {
+        writeJson(res, 500, { ok: false, reason: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+      writeJson(res, 400, {
+        error: "action must be install|remove|enable|disable|set-setting",
+      });
       return;
     }
 

@@ -415,6 +415,7 @@
         if (view === "overview") showOverview();
         else if (view === "providers") showProviders();
         else if (view === "models") showModels();
+        else if (view === "plugins") void showPlugins();
         else if (view === "inventory") showInventory();
         else if (view === "projects") showProjects();
         else if (view === "endpoints") showEndpoints();
@@ -423,7 +424,7 @@
         else if (view === "settings") showSettings();
         else return false; // 모르는 뷰 — 호출부가 폴백한다.
         // 모바일은 뷰를 열면 본문 탭으로(종전 동작 유지).
-        if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
+        if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","plugins","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
         return true;
       };
       // 부팅 복원 — 저장값이 없거나 못 그리면 채팅(기존 동작). 다른 모듈이 다 로드된
@@ -453,7 +454,7 @@
           // (data-view="providers")에 흡수, 실행 중 에이전트는 백그라운드 드로어 잡카드 소관.
           // 🖥️ 셸 top-nav 제거(ADR §5, Phase 3b-2) — 백그라운드 드로어 안 별도 섹션으로 이식
           // (showShells 는 이제 openBg 로 드로어를 여는 함수, background-drawer.js 표면 B 소관).
-          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
+          if (window.matchMedia("(max-width: 900px)").matches && ["overview","providers","models","inventory","plugins","settings","projects","endpoints","activity"].includes(view)) setActiveTab("main");
         });
       }
 
@@ -489,6 +490,7 @@
           const sub = document.getElementById("app-sub");
           if (h && typeof h.version === "string") {
             appVersion = h.version;
+            appAssets = typeof h.assets === "string" ? h.assets : appAssets;
             if (sub) sub.textContent = i18n("app.subWithVersion", { sub: i18n("app.sub"), version: h.version });
             if (currentView === "overview") setTimeout(showOverview, 0);
           }
@@ -537,7 +539,15 @@
         fetch("/api/health")
           .then((r) => r.json())
           .then((h) => {
-            if (h && typeof h.version === "string" && h.version !== appVersion) {
+            // ★**자산 지문도 본다** (2026-08-28). 버전만 보면 sync 배포(버전 동일)에서
+            //  영영 안 바뀌어, 서버는 새 프런트를 서빙하는데 브라우저는 옛 JS 를 계속 쓴다
+            //  — 실제로 오늘 28번 재시작하는 동안 그랬고, 새로 만든 위젯 호스트가 그
+            //  화면엔 아예 없었다(사용자에겐 "위젯이 안 나온다" 로 보인다).
+            const verChanged = typeof h.version === "string" && h.version !== appVersion;
+            const assetsChanged =
+              typeof h.assets === "string" && h.assets !== "" && appAssets !== "" &&
+              h.assets !== appAssets;
+            if (h && (verChanged || assetsChanged)) {
               window.location.reload();
             }
           })

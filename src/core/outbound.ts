@@ -16,6 +16,7 @@
 import type { EventBus } from "./eventbus.js";
 import { getEventBus } from "./eventbus.js";
 import { recordOutboundMessage } from "../store/outbound-messages.js";
+import { checkWidgetAttachments } from "./widget-attachment.js";
 import {
   getChannelOutbound,
   listOutboundChannels,
@@ -58,6 +59,15 @@ export interface OutboundInput {
    */
   observeThreadKey?: string;
   /**
+   * **관측에만** 실리는 첨부 (2026-08-28, 위젯 플랫폼 증분 2).
+   *
+   * ★물리 발송은 **건드리지 않는다.** 위젯은 대시보드가 그리는 표현이고, 텔레그램·CLI 엔
+   *  `text` 가 간다 — 그래서 *"도구의 텍스트 답만으로 완결이어야 한다"* 는 규칙이 지켜진다
+   *  (위젯이 없으면 정보가 사라지는 설계면 그건 다채널 단일 인격 위반이다).
+   * ★`event-persist` 가 이미 `payload.attachments` 를 `chat_log` 에 적재한다 — 새 경로 0.
+   */
+  attachments?: readonly unknown[];
+  /**
    * **이 말을 낸 세션** — 답장 라우팅(그 메시지에 답하면 그 세션으로)의 재료.
    *
    * ★`observeThreadKey` 와 갈라놓은 이유 (2026-08-11 실사고): 그 필드는 *"어디에 표시할까"*
@@ -92,6 +102,7 @@ const publishOut = (
   text: string,
   notice: boolean,
   copy = false,
+  attachments?: readonly unknown[],
 ): void => {
   try {
     bus.publish({
@@ -107,6 +118,8 @@ const publishOut = (
         //  발행은 하고(라이브 신호는 살린다) `event-persist` 가 **적재만** 건너뛴다.
         //  `ephemeral` 과 같은 결이다 — 발행을 끄면 그 이벤트에 얹힌 다른 일까지 꺼진다.
         ...(copy ? { copyOfRecorded: true } : {}),
+        // 관측 전용 — 물리 발송 경로엔 안 간다(위 주석).
+        ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
       },
     });
   } catch {
@@ -133,6 +146,14 @@ export interface OutboundResult {
   readonly delivered: boolean;
   /** 미배달 사유(사람이 읽는 한 줄). delivered=true 면 undefined. */
   readonly reason?: string;
+  /**
+   * 규칙을 어겨 **빠진 위젯 첨부**의 사유들 (2026-08-28). 비어 있으면 전부 실렸다.
+   *
+   * ★메시지는 죽이지 않는다 — 빠지는 건 그 첨부뿐이다. 위젯은 덤이고 텍스트가 정본이다.
+   *  다만 **조용히 빠지지는 않는다**: 여기로 돌려주고 로그에도 남긴다(플러그인 작성자가
+   *  즉시 알아야 고친다).
+   */
+  readonly rejectedAttachments?: readonly string[];
 }
 
 export const deliverOutbound = async (
@@ -191,6 +212,15 @@ export const deliverOutbound = async (
   // 관측은 항상(채널무관) — 대시보드 chat_log·라이브 SSE(원칙 #4). observe:false 만 억제.
   // 관측 threadKey = caller 가 준 세션 id(observeThreadKey) 우선, 없으면 물리 채널 키 폴백
   //  (회귀 0). 배달 좌표(channel/target)와 세션 귀속의 분리 — §D3.
+  // ★위젯 첨부 규칙을 **여기서 집행한다** — 플러그인이 부르는 자리다(설계 §C.1.1).
+  //  읽을 때 자르지 않고 **쓸 때 거부**한다: 그래야 개발자가 즉시 보고 사용자는 안 겪는다.
+  const verdict = checkWidgetAttachments(input.attachments);
+  if (verdict.rejected.length > 0) {
+    console.warn(
+      `${tag}deliverOutbound: 위젯 첨부 ${verdict.rejected.length}건이 규칙 위반으로 빠졌습니다 — ` +
+        verdict.rejected.join(" / "),
+    );
+  }
   if (observe) {
     publishOut(
       bus,
@@ -199,7 +229,11 @@ export const deliverOutbound = async (
       text,
       input.notice === true,
       input.copyOfRecorded === true,
+      verdict.kept,
     );
   }
-  return { delivered: true };
+  return {
+    delivered: true,
+    ...(verdict.rejected.length > 0 ? { rejectedAttachments: verdict.rejected } : {}),
+  };
 };

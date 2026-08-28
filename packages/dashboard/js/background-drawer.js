@@ -1100,7 +1100,19 @@
         //  서버 목록에 없는 running 카드 = 이미 끝난 잡이다(관측된 사실). 결과는 모르므로
         //  "완료"로 단정하지 않고 종료 사실만 반영한다(거짓값 금지).
         const startedAt = Date.now();
-        fetch("/api/worker-jobs").then((r) => r.json()).then((d) => {
+        return fetch("/api/worker-jobs").then((r) => r.json()).then((d) => {
+          applyJobsSnapshot(d, startedAt);
+          return d;
+        }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
+      };
+
+      /**
+       * 받은 스냅샷을 화면에 반영한다 — **받아오는 일과 가른다**(2026-08-28, 증분 5b).
+       *
+       * ★가르는 이유: `resource-store` 가 스냅샷 요청을 소유해야 **합치기**(도는 중이면 합류)가
+       *  성립한다. 반영만 함수로 빼면 두 곳이 각자 fetch 하지 않고 한 곳이 받아 여기로 넘긴다.
+       */
+      const applyJobsSnapshot = (d, startedAt) => {
           if (!d || !Array.isArray(d.jobs)) return;
           const live = new Set();
           for (const j of d.jobs) {
@@ -1123,8 +1135,75 @@
             if ((e.createdTs || e.startTs || 0) > startedAt) continue;
             handleWorkerEvent({ jobId, status: "interrupted" }, fmtTime(Date.now()));
           }
-        }).catch(() => { /* 미도달 — SSE 로 채워짐 */ });
       };
+
+      /**
+       * ★**순서 판정을 `resource-store` 에 맡긴다** (2026-08-28, 증분 5b).
+       *
+       *  종전엔 SSE 이벤트를 무조건 반영하고, 그 부작용을 **뒤에서** 막았다: 끝난 카드를
+       *  되살리는 replay 는 sticky 단조로, 놓친 `worker.done` 은 재연결 대조로, replay 창
+       *  밖으로 밀린 긴 잡은 하이드레이션으로. 셋 다 **같은 병(순서를 모른다)의 다른 증상**
+       *  이었다. 이제 규칙 하나가 앞에서 가른다:
+       *
+       *      apply      → 지금처럼 그린다
+       *      ignore     → 버린다            (replay·중복 — sticky 가 하던 일)
+       *      resnapshot → 스냅샷을 다시 받는다 (놓친 구간 — 대조가 하던 일)
+       *
+       * ★**렌더링은 한 줄도 안 바꾼다.** 문지기만 세운다 — 문제가 생기면 이 자리만 되돌린다.
+       * ★스토어가 들고 있는 건 **좌표뿐**이고 카드 상태는 드로어 것이다. 데이터를 옮기면
+       *  1,348줄을 다시 쓰는 일이 되고, 그건 이 증분이 하려는 게 아니다.
+       */
+      /**
+       * 이벤트를 목록에 반영한다 — **순수하게**(입력을 안 바꾸고 새 배열을 낸다).
+       *
+       * ★스토어가 **데이터도** 들고 있어야 드로어 말고 다른 소비자(위젯)가 생긴다. 드로어의
+       *  카드는 여전히 드로어 것이다 — 여기 있는 건 서버가 말한 사실의 사본이고, 규칙이
+       *  걸러 준 것만 들어온다.
+       * ★상한 50 — 잡은 계속 생기고 목록은 "지금 뭐 도는가" 를 보는 것이라 오래된 것을
+       *  무한히 들 이유가 없다([[project_hotpath_bound_preserve_record]] — 핫 워킹셋만 바운드).
+       *  ★기록이 아니다: 원본은 서버 잡 레지스트리와 `chat_log` 가 갖는다.
+       */
+      const applyJobEvent = (prev, p) => {
+        const list = Array.isArray(prev) ? prev : [];
+        if (!p || !p.jobId) return list;
+        const next = list.filter((j) => j.jobId !== p.jobId);
+        next.unshift({
+          jobId: p.jobId,
+          label: p.label,
+          status: p.status || "running",
+          kind: p.kind || "worker",
+          agentName: p.agentName,
+          startedAt: p.startedAt,
+          ownerThreadKey: p.ownerThreadKey,
+        });
+        return next.slice(0, 50);
+      };
+
+      const workRes =
+        typeof window.resourceStore === "object" && window.resourceStore !== null
+          ? window.resourceStore.resource("running-work", () =>
+              hydrateActiveJobs().then((d) => ({
+                epoch: d && d.epoch,
+                revision: d && d.revision,
+                // ★스토어가 **목록도** 소유한다 — 그래야 드로어 말고 다른 소비자가 붙는다.
+                //  드로어의 카드(렌더 상태)는 그대로 드로어 것이다.
+                data: (d && d.jobs) || [],
+              })),
+            )
+          : null;
+
+      /**
+       * SSE 가 부른다 — 이 이벤트를 그려도 되나.
+       * ★스토어가 없거나(구버전 화면) 이벤트에 좌표가 없으면 **그대로 그린다** — 계약을
+       *  모르는 발행자를 우리가 막아 세우면, 고장이 아니라 침묵이 된다(회귀 0).
+       */
+      window.gateWorkerEvent = (p) => {
+        if (workRes === null || !p || typeof p.epoch !== "string") return "apply";
+        return workRes.handle(p, (prev) => applyJobEvent(prev, p));
+      };
+      window.workerResourceState = () =>
+        workRes === null ? null : { ...workRes.stats(), coord: workRes.state() };
+
       hydrateActiveJobs();
       // 재연결마다 다시 대조 — 끊겨 있는 동안 끝난 잡이 유령으로 남지 않게(활동.js 가 부름).
       window.reconcileBgJobs = hydrateActiveJobs;

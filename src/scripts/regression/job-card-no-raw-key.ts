@@ -90,13 +90,26 @@ export const check: RegressionCheck = {
           new URL("../../../packages/dashboard/js/background-drawer.js", import.meta.url),
           "utf8",
         );
-        const hyd = /const hydrateActiveJobs[\s\S]*?\n {6}\};/.exec(src)?.[0] ?? "";
+        // ★**스냅샷을 화면에 반영하는 자리**를 본다. 2026-08-28(증분 5b)에 그 자리가
+        //  `hydrateActiveJobs`(받아오기)와 `applyJobsSnapshot`(반영)으로 갈렸다 — 스토어가
+        //  스냅샷 요청을 소유해야 합치기가 성립하기 때문이다. 함수 **이름**을 앵커로 쓰면
+        //  이런 분리마다 검사가 깨지므로, 두 함수 몸통을 합쳐서 본다(지키려는 성질은
+        //  "그 경로가 시각을 포맷해서 넘기는가" 이지 함수 개수가 아니다).
+        const region = ["const hydrateActiveJobs", "const applyJobsSnapshot"]
+          .map((anchor) => {
+            const at = src.indexOf(anchor);
+            if (at < 0) return "";
+            const end = src.indexOf("\n      };", at);
+            return end < 0 ? src.slice(at) : src.slice(at, end);
+          })
+          .join("\n");
+        const hyd = region.trim() === "" ? "" : region;
         const rawNow = /handleWorkerEvent\([^)]*\}, Date\.now\(\)\)/.test(hyd);
         return assert(
           "★하이드레이션이 시각을 포맷해서 넘긴다(카드에 epoch 원값이 안 뜬다)",
           hyd !== "" && !rawNow && /fmtTime\(/.test(hyd) && /j\.startedAt/.test(hyd),
           hyd === ""
-            ? "★hydrateActiveJobs 를 못 찾음(검사 전제)"
+            ? "★하이드레이션 경로를 못 찾음(검사 전제)"
             : rawNow
               ? "★Date.now() 원값을 그대로 넘긴다"
               : "fmtTime + startedAt 확인",

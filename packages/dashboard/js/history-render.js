@@ -82,6 +82,20 @@
         const wrap = document.createElement("div");
         wrap.className = "chat-atts";
         attachments.forEach((a) => {
+          // ★**위젯 첨부** (2026-08-28, 위젯 플랫폼 증분 1). 플러그인이 그리는 카드다.
+          //  여기 한 곳만 고치면 **라이브(`channel-hints.js`)와 복원(아래 `buildHistoryDiv`)이
+          //  같이** 간다 — 둘이 이 함수를 공유하기 때문이고, 그게 첨부를 이음매로 고른
+          //  이유이기도 하다(저장·복원·가상화·프루닝·검색이 전부 메시지 것을 탄다).
+          //  ★비동기다(플러그인 스크립트를 처음 한 번 데려온다). 실패하면 자리만 남고
+          //   나머지 첨부·채팅은 그대로다.
+          if (a.kind === "widget") {
+            const box = document.createElement("div");
+            box.className = "chat-widget";
+            box.dataset.widget = String(a.widget || "");
+            wrap.appendChild(box);
+            void widgetHost.mount(box, a);
+            return;
+          }
           const mime = a.mime || a.mimeType || "";
           const name = a.name || a.filename || "file";
           const isImg = mime.startsWith("image/") || a.kind === "image";

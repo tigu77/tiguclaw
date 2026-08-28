@@ -53,6 +53,7 @@ import {
   formatModelProfiles,
   splitSystemContext,
 } from "../../prompt-assembly.js";
+import { claimToolNames, keepClaimed } from "../tool-name-claim.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
@@ -74,6 +75,8 @@ import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
+import { reaches, turnKindOf } from "../capability-reach.js";
+import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
@@ -495,6 +498,8 @@ export const runOpenAiCodex = async (
   // V7.2.b — sub-agent 인덱스. depth 0 turn 만 노출 (child turn 은 spawn 도구
   // 미등록 → 인덱스도 박지 않음, 재spawn 유도 0). 빈 list 면 prepend 0.
   const depth = input.subagentDepth ?? 0;
+  // ★도구 노출 사다리 — 판정은 `capability-reach.ts` 한 곳(claude·openai 와 같은 표).
+  const turnKind = turnKindOf(input);
   const agentIndex =
     depth === 0
       ? formatAgentIndex(await discoverAgents(discoveryCwd))
@@ -765,7 +770,7 @@ export const runOpenAiCodex = async (
 
     // V7.2.b — depth 0 turn 만 spawn_agent 등록. child(depth 1) 는 미등록 →
     // 재spawn 물리적 불가. runner = runOpenAiCodex 자기 자신 (circular 회피 인자 주입).
-    if (depth === 0) {
+    if (reaches("agents", turnKind)) {
       const spawnServer = createSpawnAgentMcpServer(input);
       // 잡 소유 브리지 — 안쪽 경계(잡 상한 WORKER_TIMEOUT_MS)보다 넉넉한 천장을 넘긴다.
       // 기본 11분을 그대로 쓰면 정상 진행 중인 서브에이전트를 바깥이 먼저 자른다.
@@ -786,7 +791,7 @@ export const runOpenAiCodex = async (
     // depth 0(서브에이전트 아님) + workerDepth 0(워커 안 아님) turn 만 등록 →
     // 워커가 또 워커를 발사 불가(W-I5). spawn_agent depth 가드와 동형. claude/openai
     // 어댑터와 동일 의미(W-I3 — 어댑터 분기 0).
-    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+    if (reaches("workers", turnKind)) {
       const workerServer = createWorkerMcpServer(input);
       const workerBridge = await adaptClaudeMcpServer(workerServer, "workers");
       allBridges.push(workerBridge);
@@ -802,7 +807,7 @@ export const runOpenAiCodex = async (
     // depth 0 && workerDepth 0). lean(none = restricted 엔드포인트 턴)이면 이 블록
     // 자체가 미실행 → 엔드포인트가 또 엔드포인트를 만드는 재귀 자연 차단. claude/openai
     // 와 동일 의미(어댑터 분기 0).
-    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+    if (reaches("endpoints", turnKind)) {
       const endpointServer = createEndpointToolsMcpServer();
       const endpointBridge = await adaptClaudeMcpServer(endpointServer, "endpoints");
       allBridges.push(endpointBridge);
@@ -817,7 +822,7 @@ export const runOpenAiCodex = async (
     // list_commands/delete_command. endpoint/worker 와 *동일* 가드(이 블록은 !toolsNone
     // 안 + depth 0 && workerDepth 0). lean(none) 이면 이 블록 자체가 미실행. claude/openai
     // 와 동일 의미(어댑터 분기 0). 슬래시 명령은 항상 prompt 라 mode 무관.
-    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+    if (reaches("commands", turnKind)) {
       const commandServer = createCommandToolsMcpServer();
       const commandBridge = await adaptClaudeMcpServer(commandServer, "commands");
       allBridges.push(commandBridge);
@@ -830,7 +835,7 @@ export const runOpenAiCodex = async (
 
     // 외부 MCP 등록 도구 (2026-07-07) — add/list/remove_mcp_server. command 와 동일 가드.
     // 파일(<home>/mcp.json)만 다룸. claude/openai 와 parity(#2). (실연결 브리지=Phase 2.)
-    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+    if (reaches("mcp-admin", turnKind)) {
       const mcpAdminBridge = await adaptClaudeMcpServer(
         createMcpAdminMcpServer(),
         "mcp-admin",
@@ -841,10 +846,14 @@ export const runOpenAiCodex = async (
         toolBridgeMap.set((t as { name: string }).name, mcpAdminBridge);
       }
       mcpTools.push(...mcpAdminToolsRaw);
+    }
 
-      // 모델 추론 강도 손잡이(set_model_reasoning) — claude/openai 와 parity(#2).
-      // ★cwd 는 아래 resolveReasoningEffort 호출과 **같은 값**(input.cwd, 미지정 시
-      //  process.cwd()) — 도구가 되읽는 유효값이 어댑터가 볼 값과 갈리면 경고가 거짓이 된다.
+    // 모델 추론 강도 손잡이(set_model_reasoning) — claude/openai 와 parity(#2).
+    // ★cwd 는 아래 resolveReasoningEffort 호출과 **같은 값**(input.cwd, 미지정 시
+    //  process.cwd()) — 도구가 되읽는 유효값이 어댑터가 볼 값과 갈리면 경고가 거짓이 된다.
+    // ★종전엔 mcp-admin 과 **한 조건문**을 같이 썼다. 이름마다 물어야 `REACH` 가 실제로
+    //  판정에 쓰이고, 셋 중 하나의 등급을 바꿔도 나머지가 딸려가지 않는다.
+    if (reaches("model-settings", turnKind)) {
       const modelSettingsBridge = await adaptClaudeMcpServer(
         createModelSettingsMcpServer(input.cwd ?? process.cwd()),
         "model-settings",
@@ -857,11 +866,25 @@ export const runOpenAiCodex = async (
       mcpTools.push(...modelSettingsToolsRaw);
     }
 
+    // 홈 위젯 배치(configure_home) — claude/openai 와 parity(§J.5).
+    if (reaches("home-widgets", turnKind)) {
+      const homeWidgetsBridge = await adaptClaudeMcpServer(
+        createHomeWidgetsMcpServer(),
+        "home-widgets",
+      );
+      allBridges.push(homeWidgetsBridge);
+      const homeWidgetsToolsRaw = await homeWidgetsBridge.listTools();
+      for (const t of homeWidgetsToolsRaw) {
+        toolBridgeMap.set((t as { name: string }).name, homeWidgetsBridge);
+      }
+      mcpTools.push(...homeWidgetsToolsRaw);
+    }
+
     // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 서버를 @mcp/sdk 클라이언트로 연결한
     // persistent 브리지 도구를 노출(claude 네이티브와 parity). ★allBridges 에 넣지 않는다
     // — 외부 브리지는 persistent(캐시)라 per-turn 일괄 close 대상이 아니다(연결 유지). depth0만.
     // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
-    if ((depth === 0 && (input.workerDepth ?? 0) === 0) || isProjectMcpCwd(input.cwd)) {
+    if (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd)) {
       for (const extBridge of await getConnectedExternalMcpBridges(input.cwd)) {
         // ★죽은 브리지 하나가 **턴 전체를 무너뜨리지 않게** 한다 (2026-08-19 실사고).
         //  외부 브리지는 persistent 캐시라, 연결된 뒤 대상 앱이 꺼지면(Unity Editor 종료,
@@ -883,10 +906,10 @@ export const runOpenAiCodex = async (
           );
           continue;
         }
-        for (const t of extToolsRaw) {
-          toolBridgeMap.set((t as { name: string }).name, extBridge);
-        }
-        mcpTools.push(...extToolsRaw);
+        // ★**먼저 잡은 쪽이 갖는다** — 외부 MCP 가 코어 도구를 덮지 못한다(2026-08-28).
+        //  종전엔 그냥 `set` 이라 같은 이름이면 조용히 가로챘다.
+        const extClaim = claimToolNames(toolBridgeMap, extToolsRaw, extBridge, "external-mcp");
+        mcpTools.push(...keepClaimed(extToolsRaw, extClaim.claimed));
       }
     }
 
@@ -894,7 +917,7 @@ export const runOpenAiCodex = async (
     // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀
     // 차단). 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey
     // 에서 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. claude/openai 와 parity(#2).
-    if (depth === 0 && (input.workerDepth ?? 0) === 0) {
+    if (reaches("update-self", turnKind)) {
       const updateSelfServer = createUpdateSelfMcpServer(
         notifyDestFromCoords(
           input.channel,
@@ -921,14 +944,20 @@ export const runOpenAiCodex = async (
     // ★공유 브리지 — 같은 인스턴스를 `find_capabilities` 가 아래서 또 어댑팅한다.
     //  MCP 인스턴스는 transport 를 하나만 갖는다("Already connected to a transport")
     //  → 인스턴스에 묶어 하나만 만든다. 인스턴스 자체는 registry 가 턴마다 새로 준다.
-    for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
+    // ★`REACH.plugins` 가 오늘의 답("전부")을 명시로 들고 있다 — 조건 없는 통과로 두면
+    //  그게 결정인지 빠뜨림인지 코드만 봐선 모른다(claude·openai 와 동형).
+    for (const [name, server] of Object.entries(
+      reaches("plugins", turnKind) ? (input.extraMcpServers ?? {}) : {},
+    )) {
       const extraBridge = await adaptSharedClaudeMcpServer(server, name);
       allBridges.push(extraBridge);
       const extraToolsRaw = await extraBridge.listTools();
-      for (const t of extraToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, extraBridge);
-      }
-      mcpTools.push(...extraToolsRaw);
+      // ★**먼저 잡은 쪽이 갖는다** (2026-08-28 정태님 지적). 플러그인은 코어보다 나중에
+      //  담기므로, 종전엔 `update_self` 같은 이름을 내면 **모델이 그 이름을 부를 때
+      //  플러그인 핸들러가 돌았다** — 충돌이 아니라 가로채기였다.
+      //  ★거절된 것은 모델에게 **안 보여준다**: 부를 수 없는 도구를 광고하지 않는다.
+      const pluginClaim = claimToolNames(toolBridgeMap, extraToolsRaw, extraBridge, name);
+      mcpTools.push(...keepClaimed(extraToolsRaw, pluginClaim.claimed));
     }
 
     // find_capabilities (P1, capability-awareness contract §3c) — 여기까지 채운

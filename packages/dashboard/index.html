@@ -94,6 +94,7 @@
           <button class="nav-button" data-view="endpoints" type="button"><span class="ic">🔌</span><span class="label" data-i18n="nav.endpoints">엔드포인트</span><span class="hint" id="nav-endpoint-count">0</span></button>
           <button class="nav-button" data-view="activity" type="button"><span class="ic">📜</span><span class="label" data-i18n="nav.activity">전체 활동</span><span class="hint" data-i18n="nav.activity.hint">모니터</span></button>
           <div class="nav-divider"></div>
+          <button class="nav-button" data-view="plugins" type="button"><span class="ic">🧩</span><span class="label" data-i18n="nav.plugins">플러그인</span><span class="hint" id="nav-plugin-count">0</span></button>
           <button class="nav-button" data-view="inventory" type="button"><span class="ic">📚</span><span class="label" data-i18n="nav.inventory">인벤토리</span><span class="hint" id="nav-capability-count">0</span></button>
           <button class="nav-button" data-view="settings" type="button"><span class="ic">⚙️</span><span class="label" data-i18n="nav.settings">설정</span></button>
         </div>
@@ -302,14 +303,23 @@
     <script src="/js/view-shells.js"></script>
     <script src="/js/view-projects.js"></script>
     <script src="/js/view-providers.js"></script>
+    <script src="/js/view-plugins.js"></script>
     <script src="/js/view-inventory.js"></script>
     <script src="/js/chat-core.js"></script>
     <script src="/js/step-detail.js"></script>
+    <!-- 실시간 계약의 화면 쪽(2026-08-28, 증분 5a·5b) — 스냅샷·이벤트·재연결을 한 규칙으로.
+         ★**소비자보다 먼저 실려야 한다.** 처음엔 위젯 호스트 옆(317번째)에 뒀는데,
+         background-drawer(310)가 먼저 돌아 `window.resourceStore` 를 못 잡았다 —
+         typeof 가드가 있어서 **조용히 폴백**으로 떨어졌고, 게이트는 서 있는데
+         아무것도 안 가르는 상태였다(라이브 실측으로 잡았다: 좌표가 null).
+         "게이트는 있다가 아니라 도는가" 의 정확한 사례. -->
+    <script src="/js/resource-store.js"></script>
     <script src="/js/background-drawer.js"></script>
     <script src="/js/virtualization.js"></script>
     <script src="/js/token-delta.js"></script>
     <script src="/js/markdown.js"></script>
     <script src="/js/channel-hints.js"></script>
+    <script src="/js/widget-host.js"></script>
     <script src="/js/history-render.js"></script>
     <script src="/js/axis1-options.js"></script>
     <script src="/js/egress-selector.js"></script>

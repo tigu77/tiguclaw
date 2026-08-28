@@ -52,7 +52,11 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ① 저장은 정의점(setActiveNav)에서 — 문마다가 아니다 ──────────────────
   {
-    const navBlock = /const setActiveNav = \(view\) => \{[\s\S]{0,600}?\n      \};/.exec(overview);
+    // ★창을 1200자로 넓힌다 (2026-08-28). 600 은 함수 길이에 대한 **직감**이었고, 홈 위젯
+    //  poll 정지(한 줄)를 이 정의점에 넣자 넘쳤다 — 즉 "setActiveNav 에 코드를 더하면 관계
+    //  없는 검사가 빨개진다"는 뜻이라 그건 판정이 아니라 함정이다. 게으른 매칭이 함수 끝
+    //  (`\n      };`)에서 멈추므로 넓혀도 **의미는 그대로**다(변이로 확인: setItem 제거 → 빨강).
+    const navBlock = /const setActiveNav = \(view\) => \{[\s\S]{0,1200}?\n      \};/.exec(overview);
     const savesInNav = navBlock !== null && /localStorage\.setItem\(VIEW_LS, view\)/.test(navBlock[0]);
     out.push({
       name: "★뷰 저장이 setActiveNav(정의점) 안에 있다 — 새 문이 생겨도 덮인다",

@@ -45,8 +45,10 @@
  */
 import http from "node:http";
 import { createHash } from "node:crypto";
+import { assetFingerprintOf } from "../../src/core/asset-fingerprint.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -54,7 +56,11 @@ import {
   parseAllowedHosts,
   rebindRejectionMessage,
 } from "../../src/core/net/host-guard.js";
-import { getPaths } from "../../src/core/paths.js";
+import { appRoot, getPaths } from "../../src/core/paths.js";
+import {
+  PLUGIN_ASSET_PREFIX,
+  resolvePluginAssetIn,
+} from "../../src/core/plugin-assets.js";
 import { readThemeCss, withLayer, layerImport } from "../../src/core/theme.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -62,6 +68,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // dashboard-split Phase2 (ADR 2026-07-16) — /js/<name>.js 화이트리스트. _manifest.json
 // (로드순서 배열)을 기동 시 1회 읽어 Set 화 — 라우팅 데이터테이블. 매니페스트 없으면 빈
 // 화이트리스트(그 phase 이전엔 /js/ 라우트 자체가 무의미 — 404 로 저절로 닫힘).
+/**
+ * 서빙하는 프런트 자산의 **내용 지문** — 배포마다 바뀌고, 안 바뀌면 그대로다.
+ *
+ * ★없어서 화면이 늙었다 (2026-08-28 실사용). 새로고침 판정이 **버전**만 봤는데, sync 배포는
+ *  버전을 안 올린다 — 오늘 데몬을 28번 재시작하는 동안 브라우저는 **아침 JS 를 그대로**
+ *  들고 있었고, 새로 만든 위젯 호스트가 그 화면엔 아예 없었다.
+ * ★아이콘엔 이미 내용 해시를 쓰고 있었다(그 주석: *"손 번호를 쓰지 않는다 — 내용 해시는
+ *  바뀔 때만 바뀌고 사람이 관리할 것이 없다"*). 같은 규칙을 JS·CSS 에도 적용한다.
+ * ★프로세스가 뜰 때 한 번 잰다 — 배포는 프로세스를 갈아치우므로 그걸로 충분하다.
+ */
+let assetFingerprint = "";
+
 const JS_MANIFEST_PATH = path.join(__dirname, "js", "_manifest.json");
 let jsWhitelist: Set<string> = new Set();
 try {
@@ -73,6 +91,17 @@ try {
   }
 } catch {
   jsWhitelist = new Set();
+}
+// 지문은 매니페스트를 읽은 **직후 한 번** 잰다 — 배포가 프로세스를 갈아치우므로 그걸로 족하다.
+// 못 재면 빈 값이고, 화면은 종전대로 버전만 비교한다(회귀 0).
+try {
+  assetFingerprint = assetFingerprintOf(
+    ["index.html", "app.css", ...[...jsWhitelist].sort().map((n) => `js/${n}`)].map((f) =>
+      fsSync.readFileSync(path.join(__dirname, f)),
+    ),
+  );
+} catch {
+  assetFingerprint = ""; // 못 재면 화면이 종전대로 버전만 비교한다(회귀 0).
 }
 
 const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
@@ -477,6 +506,47 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    /**
+     * 플러그인 자산 — `/plugin-asset/<plugin>/<경로>` (2026-08-28, 위젯 플랫폼 §E.1).
+     *
+     * ★위젯의 **브라우저 코드**를 플러그인이 들고 올 수 있게 하는 유일한 길이다. 종전엔
+     *  대시보드가 파일마다 라우트를 손으로 썼는데(marked·mermaid·highlight, 아래), 그건
+     *  **대시보드 자기 자산**이라 이 라우트로 흡수하지 않는다 — 그 디렉터리엔 `index.js`
+     *  소스가 같이 있어서 확장자 허용만으로는 샌다. 여기 base 는 `plugins/<name>/web/` 라
+     *  **구조적으로** 브라우저용 파일만 들어 있다.
+     *
+     * ★**판정은 여기 없다** — `core/plugin-assets.ts` 의 순수 함수가 한다. 경로 트래버설은
+     *  정규식으로 지킬 수 있는 종류가 아니라 회귀가 **실제로 뚫어봐야** 하고, 그러려면
+     *  서버를 안 띄우고 부를 수 있어야 한다(principle-check Q7).
+     *
+     * ★캐시를 안 건다. 플러그인 자산은 `/update` 로 바뀌는데 버전 지문이 없다 —
+     *  하루짜리 캐시를 걸면 **업데이트 후에도 옛 위젯이 뜬다**(그게 훨씬 나쁘다).
+     *  필요해지면 그때 지문을 붙인다(지금 없는 문제를 위한 최적화 금지).
+     */
+    if (pathname.startsWith(PLUGIN_ASSET_PREFIX) && method === "GET") {
+      // 번들이 앞, 홈이 뒤 — 로더와 **같은 우선순위**다(같은 이름이면 번들이 이긴다).
+      const r = resolvePluginAssetIn(
+        [path.join(appRoot(), "plugins"), getPaths().commonPlugins],
+        pathname,
+        existsSync,
+      );
+      // ★막힌 이유를 밖에 알려주지 않는다 — 그 자체가 탐색 도구가 된다. 전부 404.
+      if (!r.ok) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("not found");
+        return;
+      }
+      try {
+        const buf = await fs.readFile(r.file);
+        res.writeHead(200, { "Content-Type": r.contentType, "Cache-Control": "no-store" });
+        res.end(buf);
+      } catch {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("not found");
+      }
+      return;
+    }
+
     if (pathname === "/marked.min.js" && method === "GET") {
       try {
         const js = await fs.readFile(
@@ -577,6 +647,37 @@ const server = http.createServer((req, res) => {
     // 변경 이력 — bridge GET /changelog (read). 설정 뷰가 마크다운으로 렌더한다.
     if (pathname === "/api/changelog" && method === "GET") {
       await proxyJson(res, "/changelog");
+      return;
+    }
+    // 플러그인 관리 — bridge GET /plugins (read) · POST /plugins/action (admin).
+    // 홈 위젯 배치 — bridge GET /home-widgets (read). 홈 뷰가 부팅 때 한 번 읽는다.
+    if (pathname === "/api/home-widgets" && method === "GET") {
+      await proxyJson(res, "/home-widgets");
+      return;
+    }
+    // 플러그인 데이터 라우트 (2026-08-28, 위젯 플랫폼 §E.2) — 홈 위젯이 값을 받는 길.
+    // ★**프리픽스 하나**다. 플러그인마다 여기 한 줄씩 늘면 그게 곧 드리프트 자리다 —
+    //  이 파일은 판정을 안 한다(모르는 플러그인·라우트는 bridge 가 404 로 답한다).
+    // ★`proxyRaw` 다 — 이 라우트는 JSON 도 **바이트**도 낸다(지도 타일). `proxyJson` 은
+    //  `text()` 로 읽어 바이너리를 깨뜨린다. raw 는 content-type·cache-control 을 그대로
+    //  보존하므로 두 반환형이 **한 경로**로 지난다(분기 0).
+    if (pathname.startsWith("/api/plugin-data/") && method === "GET") {
+      const rest = pathname.slice("/api/plugin-data/".length);
+      await proxyRaw(res, "/plugin-data/" + rest + (url.search ?? ""));
+      return;
+    }
+    if (pathname === "/api/plugins" && method === "GET") {
+      await proxyJson(res, "/plugins");
+      return;
+    }
+    // 설치·제거·켜기·끄기 **+ 설정 한 칸 쓰기**(2026-08-28, §D). 액션이 늘어도 이 분기는
+    // 안 는다 — 판정은 전부 bridge 뒤 코어에 있다(가장자리는 판단하지 않는다).
+    if (pathname === "/api/plugins/action" && method === "POST") {
+      await proxyJson(res, "/plugins/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: await readBody(req),
+      });
       return;
     }
     // 업데이트 내역 — bridge GET /update-changelog (read). 같은 `{ markdown }` 모양이라
@@ -732,8 +833,21 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
+    // ★브리지 health 에 **자산 지문**을 얹는다 (2026-08-28). 화면이 "새 프런트가 나왔나" 를
+    //  판단하는 재료인데, 종전엔 `version` 뿐이라 **sync 배포(버전 동일)에선 영영 안 바뀌었다**
+    //  — 오늘 28번 재시작하는 동안 브라우저는 아침 JS 를 그대로 들고 있었다.
+    //  브리지는 자기 자산을 모르므로 여기서 더한다(프록시 + 보강). 실패해도 종전 동작.
     if (pathname === "/api/health" && method === "GET") {
-      await proxyJson(res, "/health");
+      try {
+        const r = await fetch(bridgeUrl("/health"), {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        });
+        const body = (await r.json()) as Record<string, unknown>;
+        res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ...body, assets: assetFingerprint }));
+      } catch {
+        await proxyJson(res, "/health"); // 못 얹으면 그냥 넘긴다(화면은 버전만 본다).
+      }
       return;
     }
     // 대화 이력 — bridge GET /chat-history (read 토큰 server-side 주입). 대시보드가 SSE

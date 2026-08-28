@@ -37,3 +37,11 @@ bench/.home*
 #  `git add -A` 가 **워크트리를 통째로 커밋에 싣는다**(embedded git repository 경고).
 #  둘 다 겪었으니 규칙으로 막는다.
 .claude/worktrees/
+
+# 플러그인 소스 옆의 컴파일 산출물 (2026-08-28).
+# ★단순 정리가 아니다 — `index.ts` 가 `./x.js` 를 부르는데 그 파일이 **실재하면**
+#  source 모드가 옛 컴파일본을 로드한다. 실제로 셋이 커밋돼 있었고, 우연히 최신이라
+#  안 터졌을 뿐이다(성질이 아니라 운). 산출물은 `dist/` 에만 산다.
+plugins/**/src/*.js
+plugins/**/src/*.js.map
+plugins/**/src/*.d.ts

@@ -156,6 +156,24 @@
       .update-notes-btn { width:22px; padding:0; margin-left:-4px; font-weight:700;
         border-color:var(--good); color:var(--good); background:rgb(var(--good-rgb) / .10); }
       .update-notes-btn:hover { background:rgb(var(--good-rgb) / .18); }
+      /* 위젯 첨부가 그려질 자리 — 플러그인은 이 안만 만진다. 토큰만 쓴다(색 직접 금지). */
+      .chat-widget { display:block; width:100%; margin:6px 0; border:1px solid var(--border);
+        border-radius:10px; overflow:hidden; background:var(--bg-soft); }
+      .chat-widget.widget-failed { padding:10px 12px; color:var(--text-dim); font-size:0.8125rem; }
+      /* 플러그인 뷰 — 토큰만 쓴다. */
+      .plugin-row.off { opacity:.55; }
+      .plugin-about { color:inherit; }
+      .plugin-by { font-size:0.75rem; opacity:.8; }
+      .plugin-by a { color:var(--accent); }
+      .plugin-src { margin-left:8px; vertical-align:1px; padding:1px 6px; border-radius:999px; font-size:0.6875rem;
+        font-weight:600; border:1px solid var(--border); color:var(--text-dim); }
+      .plugin-src.home { border-color:var(--accent); color:var(--accent); }
+      .plugin-actions { display:flex; gap:6px; align-items:center; }
+      .settings-toggle.danger { border-color:var(--bad); color:var(--bad); }
+      .plugin-note { margin:8px 0 12px; padding:8px 10px; border-radius:8px;
+        background:var(--card); color:var(--text-dim); font-size:0.8125rem; }
+      .plugin-install-input { flex:0 0 200px; padding:6px 8px; border-radius:8px;
+        border:1px solid var(--border); background:var(--bg); color:inherit; font:inherit; }
       #menu-toggle { position:relative; }
       #menu-backdrop { display:none; }
       /* 아이콘 자체가 둥근 판(투명 모서리)을 갖고 있어 배경·테두리를 얹지 않는다 — 얹으면 액자가 두 겹이 된다. */
@@ -382,6 +400,24 @@
       .quick-hint { margin-top:4px; color:var(--text-mute); font-size:0.6875rem; }
       .section-head { display:flex; align-items:center; gap:10px; margin:4px 0 0; }
       .section-head h2 { margin:0; font-size:0.75rem; text-transform:uppercase; letter-spacing:.12em; color:var(--text-dim); }
+      /* 플러그인 설정 행 — ★선언에서 생긴다(§D.2). 여기에 플러그인 이름은 없다. */
+      .plugin-settings { display:grid; gap:6px; margin-top:8px; padding-top:8px;
+        border-top:1px solid var(--border); grid-column:1/-1; }
+      .plugin-setting { display:flex; align-items:center; gap:10px; font-size:.75rem; }
+      .plugin-setting-label { color:var(--text-dim); }
+      .plugin-setting-input { margin-left:auto; padding:4px 8px; border:1px solid var(--border);
+        border-radius:8px; background:var(--card); color:var(--text); font-size:.75rem; }
+      .plugin-setting-secret { margin-left:auto; color:var(--text-mute); font-size:.6875rem; }
+      .plugin-setting-secret.on { color:var(--good); }
+      /* 홈 위젯 (2026-08-28, 위젯 플랫폼 §J) — ★격자는 여기가 푼다.
+         서버가 주는 건 순서와 size 등급뿐이라 breakpoint 별 레이아웃을 저장할 게 없다.
+         `auto-fill` 이라 창을 줄이면 알아서 접힌다(모바일 규칙을 따로 안 쓴다). */
+      .home-widget-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
+      .home-widget { min-width:0; }
+      .home-widget[data-size="wide"] { grid-column:span 2; }
+      .home-widget-body { min-width:0; }
+      .home-widget-note { padding:14px; border:1px dashed var(--border); border-radius:16px;
+        background:var(--card); color:var(--text-mute); font-size:0.75rem; }
       .overview-layout { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr); gap:12px; align-items:start; }
       .status-list { display:grid; gap:8px; }
       .status-row { display:flex; align-items:center; gap:10px; padding:11px 12px; border:1px solid var(--border); border-radius:14px; background:var(--card); }
@@ -657,7 +693,11 @@
       /* 이력 스텝 메타 — 라이브 .act-meta 와 같은 역할(2026-08-20 파리티 복구). */
       .hist-tool-meta { color:var(--text-dim); font-size:0.625rem; margin-left:auto; white-space:nowrap; font-family:var(--font-mono); flex:none; }
       .turn-card { padding:0; overflow:hidden; }
-      .turn-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
+      /* ★wrap = **같은 메타 줄의 기존 규칙**이다(.bubble-meta 는 처음부터 wrap 이었다). 배지가
+         전부 nowrap 이라 좁은 화면에선 한 줄에 못 담는데(390px 실측 486 > 366), .turn-card 가
+         overflow:hidden 이라 안 접으면 오른쪽이 **잘려 사라진다**. 임계(미디어쿼리)를 손으로
+         정하지 않는다 — 넓으면 어차피 한 줄이라 wrap 은 아무 일도 안 한다. */
+      .turn-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
       .turn-head:hover { background:rgb(var(--fg-rgb) / .04); }
       .turn-caret { color:var(--text-dim); font-size:0.5625rem; width:10px; flex:none; }
       /* 긴 uuid thread — 배지·칩을 밀어 접히게 하지 않도록 여기서 줄이고 끝을 …로 자른다. */
@@ -670,7 +710,10 @@
          완료(.done)되면 톤다운해 최종 소요시간으로 읽히게. 배지류와 같이 flex:none·nowrap. */
       /* 턴 비용(2026-07-26) — 완료된 턴의 토큰. 경과시간과 같은 급의 부가정보라 톤을 낮춘다.
          .heavy = 입력 20만 토큰 이상(관측 평균의 ~3배) — 확실히 이상한 턴만 눈에 띄게. */
-      .turn-cost { color:var(--text-dim); font-weight:700; font-size:0.625rem; font-variant-numeric:tabular-nums; opacity:.8; }
+      /* ★flex:none·nowrap 은 **형제 규칙**이다(위 .ts 주석: "압축은 항상 유연 텍스트가 흡수").
+         비용만 그 규칙에서 빠져 있어, 모바일(390px)에서 유일하게 압축 가능한 배지가 되어
+         폭 12px·높이 277px 로 **한 글자씩 세로로** 흘렀다(실측 2026-08-28, 헤더 293px). */
+      .turn-cost { color:var(--text-dim); font-weight:700; font-size:0.625rem; font-variant-numeric:tabular-nums; opacity:.8; flex:none; white-space:nowrap; }
       .turn-cost.heavy { color:var(--warn); opacity:1; }
       /* 실제 응답 모델 — adapter 배지(누가)와 달리 *어떤 모델*인지. 값 없으면 빈 span = 자리 차지 0. */
       .turn-model { color:var(--text-dim); font-size:0.625rem; font-weight:600; flex:none; white-space:nowrap; opacity:.75; }
@@ -1623,6 +1666,9 @@
         #stream { min-height:calc(100svh - 56px - 50px - 126px); overflow:visible; }
         .summary-grid { grid-template-columns:repeat(3,1fr); gap:8px; }
         .quick-grid, .provider-layout, .overview-layout { grid-template-columns:1fr; }
+        /* ★한 칸짜리 격자에서 `span 2` 는 넘친다 — 등급을 화면이 다시 해석하는 자리다. */
+        .home-widget-grid { grid-template-columns:1fr; }
+        .home-widget[data-size="wide"] { grid-column:auto; }
         .provider-grid { grid-template-columns:1fr; }
         .summary-card { padding:11px; } .summary-value { font-size:1.1875rem; }
         .detail-head { padding:15px; } .detail-name { font-size:1.1875rem; }

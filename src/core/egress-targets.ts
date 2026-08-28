@@ -12,6 +12,38 @@
  *  표시와 배달이 **같은 좌표**를 쓰게 한다.
  */
 import type { ChannelOutbound } from "./channel-outbound.js";
+import { DEFAULT_SESSION_ID } from "./threadkey.js";
+
+/**
+ * **이 사본이 어느 세션에서 왔나** — 붙일 접두 (2026-08-28).
+ *
+ * ★사고가 근거다. 내가 번들 플러그인을 검증하려고 임의 세션(`dashboard:bundle-probe`)에
+ *  말을 걸었더니, 그 답이 egress 를 타고 정태님 텔레그램에 **맥락 없는 `echo:안녕` 한 줄**로
+ *  도착했다. 세션 귀속은 `recordOutboundMessage` 가 이미 들고 있었지만 그건 *답장 라우팅용*
+ *  이지 **사람에게 보여주는 게 아니었다.**
+ *
+ * ★**막지 않고 말해준다.** 처음엔 "등록된 세션만 밖으로" 라는 게이트를 제안했다가 접었다
+ *  (정태님 지적): 임의 세션은 개발 중에만 생기고, 게이트는 새 서버 개념 + 마이그레이션 +
+ *  **조용한 실패**(등록을 놓치면 영영 안 감)를 끌고 온다. 라벨은 아무것도 막지 않으므로
+ *  조용한 실패가 없다. 진짜 차단이 필요해지는 조건은 로드맵에 따로 서 있다.
+ *
+ * ★**기본 세션엔 안 붙는다** — 평소 사용은 글자 하나 안 바뀐다. 라벨이 매번 붙으면 그게
+ *  배경 소음이 되고, 그러면 진짜 이상할 때 아무도 안 본다([[feedback_logs_must_stand_alone]]
+ *  의 *"반복은 세라"* 와 같은 결).
+ *
+ * ★이름 없는 세션은 `unknown` 이다(2026-08-28 정태님). 첫 발화에서 파생하지 않는 이유는
+ *  그게 **대화 내용을 다른 채널 라벨로 흘리는** 짓이기 때문이다. 어느 것인지까지 알아야
+ *  하면 대시보드가 답한다 — 폰에서 필요한 답은 *"내 대화가 아니다"* 하나다.
+ */
+export const egressSourcePrefix = (
+  originThreadKey: string | undefined,
+  name: string | null | undefined,
+): string => {
+  if (originThreadKey === undefined || originThreadKey === "") return "";
+  if (originThreadKey === DEFAULT_SESSION_ID) return "";
+  const custom = name?.trim();
+  return `[${custom !== undefined && custom !== "" ? custom : "unknown"}] `;
+};
 
 export interface EgressTarget {
   channel: string;

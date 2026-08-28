@@ -45,6 +45,7 @@ import {
   formatInventoryForUser,
 } from "./core/plugins/inventory.js";
 import { loadPlugins } from "./core/plugins/loader.js";
+import { initPluginManager, trackPlugin } from "./core/plugins/manager.js";
 import { wirePlugin } from "./core/plugins/wire.js";
 import {
   startSelfMaintenance,
@@ -169,6 +170,7 @@ import {
   DEFAULT_ACTIVITY_OPTIONS,
 } from "./core/channel-activity.js";
 import {
+  egressSourcePrefix,
   resolveEgressTargets,
   type EgressTarget,
 } from "./core/egress-targets.js";
@@ -369,16 +371,38 @@ const serviceStops: Array<{ name: string; stop: () => Promise<void> }> = [];
 try {
   // α (2026-05-25) — plugins 는 앱 배포 아티팩트 → cwd 가 아니라 appRoot 기준 로드
   // (dev=레포=cwd 동치라 회귀 0, prod 독립앱에서 cwd≠레포여도 plugins 정상 발견).
-  const loaded = await loadPlugins(
-    path.join(appRoot(), "plugins"),
-    bus,
-  );
+  // ★**뿌리가 둘이다** (2026-08-28, 설치 형태). 번들은 앱과 함께 오고, 사용자가 깐 것은
+  //  홈에 산다 — 그 자리(`<home>/plugins`)는 이미 부팅 때 만들어지고 인벤토리·스킬·에이전트
+  //  등 다섯 곳이 이미 읽고 있었는데, **코드만 안 실리고 있었다.**
+  //  ★홈이지 앱 폴더가 아닌 이유: 레포 `plugins/` 에 쓰면 `/update` 의 `git pull --ff-only`
+  //   가 충돌해 **영구 업데이트 불능**이 된다([[project_self_dev_flag_gate]]).
+  //  ★**번들이 이긴다.** 같은 이름이면 홈 것을 버린다 — 홈에서 코어 플러그인을 가로채는 건
+  //   그 자체가 공격면이다(설치는 신뢰가 아니다).
+  // ★관리자에 배선 재료를 한 번 넘긴다 — 이후 설치·켜기는 인자 없이 부른다.
+  initPluginManager({ bus, channels, serviceStops });
+  const bundled = await loadPlugins(path.join(appRoot(), "plugins"), bus);
+  const bundledNames = new Set(bundled.map((p) => p.manifest.name));
+  const homeRoot = getPaths().commonPlugins;
+  const home = (await loadPlugins(homeRoot, bus)).filter((p) => {
+    if (!bundledNames.has(p.manifest.name)) return true;
+    console.warn(
+      `[plugin-loader] 홈 플러그인 '${p.manifest.name}' 를 건너뜁니다 — 같은 이름의 번들 ` +
+        `플러그인이 있습니다(번들이 이깁니다).`,
+    );
+    return false;
+  });
+  if (home.length > 0) {
+    console.log(`[plugin-loader] 홈 플러그인 ${home.length}개 로드 (${homeRoot})`);
+  }
+  const loaded = [...bundled, ...home];
   for (const lp of loaded) {
     // ★배선은 **플러그인별로 격리**된다(`core/plugins/wire.ts`) — 하나가 kind 를 잘못
     //  선언하거나 start 에서 던져도 나머지는 그대로 붙는다. 종전엔 이 루프 본문 전체가
     //  아래 catch 하나에 묶여 있어서, 앞선 플러그인의 TypeError 가 **뒤의 전부**를
     //  미등록으로 만들 수 있었다(남는 흔적은 `loadPlugins failed:` 한 줄).
-    await wirePlugin(lp, { bus, channels, serviceStops });
+    // ★부팅 배선도 관리자에 등록한다 — 그래야 홈 것을 나중에 뺄 수 있다(런타임 제거).
+    const wired = await wirePlugin(lp, { bus, channels, serviceStops });
+    trackPlugin(lp, bundledNames.has(lp.manifest.name) ? "bundled" : "home", wired);
   }
 } catch (e) {
   console.error("loadPlugins failed:", e);
@@ -680,6 +704,15 @@ const fanOutEgress = async (
   bus: EventBus,
   originThreadKey?: string,
 ): Promise<void> => {
+  // ★**어디서 온 사본인지 말해준다** (2026-08-28). 판정은 `egressSourcePrefix` 한 곳에 있고
+  //  여기선 이름만 조회해 넘긴다. 기본 세션이면 빈 문자열이라 평소 사용은 무변화다.
+  //  (조회 실패는 삼킨다 — 라벨 때문에 배달이 죽으면 그게 더 나쁘다.)
+  let prefix = "";
+  try {
+    prefix = egressSourcePrefix(originThreadKey, getThreadName(originThreadKey ?? ""));
+  } catch {
+    /* 이름을 못 읽으면 라벨 없이 간다 */
+  }
   for (const t of targets) {
     try {
       await deliverOutbound({
@@ -687,7 +720,7 @@ const fanOutEgress = async (
         // 좌표는 턴 시작에 이미 해석됐다(기본 좌표까지) — 표시와 배달이 같은 값을 쓴다.
         // null 이면(해석 실패) deliverOutbound 가 한 번 더 시도한다.
         target: t.target,
-        text,
+        text: prefix + text,
         bus,
         // ★이 복사본도 **어느 세션이 낸 말인지**는 안다 (2026-08-11 실사고). 표시
         //  (observeThreadKey)는 그대로 두고 귀속만 싣는다 — 안 실으면 사용자가 텔레그램에서

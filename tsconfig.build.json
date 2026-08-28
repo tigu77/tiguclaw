@@ -13,6 +13,15 @@
   "compilerOptions": {
     "rootDir": ".",
     "outDir": "dist",
+    // ★플러그인 **공개 면**(2026-08-28). 플러그인은 코어를 상대 경로로 짚지 않고
+    //  `@tiguclaw/plugin` 하나만 부른다 — 홈에 깔린 플러그인엔 `../../../src/core` 가
+    //  존재하지 않기 때문이다(실측: 홈이 레포 밖이면 해석 실패).
+    // ★**타입 전용 패키지**라 컴파일 뒤 import 가 사라진다 → 런타임 해석이 필요 없다.
+    //  그래서 워크스페이스 링크도, 퍼블리시도 지금은 필요 없다.
+    "baseUrl": ".",
+    "paths": {
+      "@tiguclaw/plugin": ["packages/plugin/index.ts"]
+    },
     // 플러그인은 지금껏 typecheck 밖이라 미검증 타입 오류가 잠재할 수 있다(메모리:
     // "plugins 는 typecheck 밖"). 프로덕션 산출물 emit 을 그런 잔여 타입 이슈로 막지
     // 않도록 noEmitOnError=false — .js 는 항상 나오게. 타입 게이트는 별도 typecheck 가 담당.

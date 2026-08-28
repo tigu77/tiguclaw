@@ -35,7 +35,15 @@ export const check: RegressionCheck = {
     // 프런트가 실제로 부르는 경로를 **뽑는다**(손으로 적지 않는다).
     const called = new Set<string>();
     for (const f of readdirSync(path.join(DASH, "js")).filter((n) => n.endsWith(".js"))) {
-      const src = readFileSync(path.join(DASH, "js", f), "utf8");
+      // ★**주석은 빼고 본다** (2026-08-28). 형제 검사(`dashboard-view-restore`)가 이미
+      //  적어둔 규칙인데 여기만 없었다 — *"결함을 설명한 글을 코드로 세면 상시 실패한다."*
+      //  실제로 걸렸다: 홈 위젯 주석에 예시로 적은 `/api/plugin-data/weather/forecast` 를
+      //  **호출로 세서** 프록시 누락이라고 보고했다(그 경로는 프리픽스 배선으로 이미 있다).
+      //  검사 대상은 코드이지 그걸 설명하는 글이 아니다([[feedback_gate_must_actually_run]]).
+      const src = readFileSync(path.join(DASH, "js", f), "utf8")
+        .split("\n")
+        .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+        .join("\n");
       // ★**다중 세그먼트를 본다** (2026-08-17, 전체검토 C-4). 종전엔 `[a-z0-9-]+` 라
       //  한 세그먼트만 잡아 `/api/projects/detail` 이 `/api/projects` 로 **축약**됐고,
       //  그건 프록시에 있으니 초록이었다 — 사각지대에 `/api/projects/detail`,

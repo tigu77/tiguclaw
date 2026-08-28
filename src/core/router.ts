@@ -180,7 +180,14 @@ export const route = async (
       sendAttachment: msg.sendAttachment,
       // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
       presentOptions: msg.presentOptions,
-      extraMcpServers: getRegisteredMcpServers(),
+      // ★플러그인 도구에 **이 턴이 어느 대화인지** 알려준다 (2026-08-28). 없으면 플러그인이
+      //  결과를 대화에 붙일 수 없다 — 코어 도구는 이미 threadKey 를 받고 있었고 플러그인만
+      //  못 받고 있었다. 좌표는 여기 이미 다 있다(아래 세 줄이 위에서 쓰던 값 그대로다).
+      extraMcpServers: getRegisteredMcpServers({
+        threadKey: sessionId,
+        channel: msg.channel,
+        target: channelAddress ?? null,
+      }),
       // 2층 턴 타임아웃 — 핸들러가 만든 turn signal 을 어댑터까지 운반. 미전달 시
       // undefined → 어댑터가 idle AC 만 link → 1층-only(회귀 0, TT-I7).
       abortSignal: opts?.abortSignal,

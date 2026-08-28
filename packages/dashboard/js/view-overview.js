@@ -53,6 +53,9 @@
       };
 
       const setActiveNav = (view) => {
+        // ★**문마다 붙이지 않는다** — 뷰로 들어가는 문은 여럿이지만 전부 여기로 모인다
+        //  (같은 이유로 「마지막 본 페이지」 저장도 여기 있다). 홈을 떠나면 poll 을 끈다.
+        if (view !== "overview") stopHomeWidgets();
         currentView = view;
         document.body.dataset.view = view;
         try {
@@ -68,6 +71,148 @@
         for (const btn of document.querySelectorAll(".nav-button")) {
           btn.classList.toggle("active", btn.dataset.view === view);
         }
+      };
+
+      // ── 홈 위젯 (2026-08-28, 위젯 플랫폼 §J) ─────────────────────────────────
+      //
+      // ★**배치는 비서가 정한다.** 여기엔 드래그도, 크기 조절도, 저장 버튼도 없다 —
+      //  화면은 `/api/home-widgets` 가 주는 순서대로 그릴 뿐이다(로드맵 A3: *"Layout 은
+      //  비서가 읽고 쓸 수 있는 데이터"*). 손 배치는 탈출구라 나중이고, 이 길이 기본이다.
+      //
+      // ★**좌표를 안 받는다.** 서버가 주는 건 순서와 `size` 등급뿐이고 격자는 CSS 가 푼다.
+      //  그래서 breakpoint 마다 레이아웃이 한 벌씩 생기지 않고, 모바일이 저절로 된다.
+      //
+      // ★**위젯 코드는 채팅과 같은 것을 쓴다** — `widgetHost.mount(el, {widget, data})`.
+      //  플러그인의 `mount(root, data, ctx)` 는 데이터가 어디서 왔는지 모른다. 그게 §B 의
+      //  *"하나의 계약, 두 데이터 모드"* 가 실제로 값을 내는 자리다(weather 수정 0줄).
+      //
+      // ★**데이터 라우트 이름 = 위젯 이름**이다(관례). `weather/forecast` 위젯은
+      //  `/api/plugin-data/weather/forecast` 에서 값을 받는다. 별도 필드를 두지 않는 이유는
+      //  두면 두 이름이 갈리고, 갈리면 조용히 빈 자리가 되기 때문이다.
+      const HOME_WIDGET_POLL_MS = 5 * 60 * 1000;
+      const HOME_LAYOUT_POLL_MS = 30 * 1000;
+      /** 서버가 준 배치. null = 아직 못 받음(그리지 않는다). */
+      let homeWidgets = null;
+      /** 값을 받아올 수 있는 위젯(서버가 알려준다). 여기 없으면 poll 안 한다. */
+      let homeDataRoutes = [];
+      /** id → 마지막으로 받은 값. 다시 그릴 때 깜빡이지 않게 들고 있는다. */
+      const homeWidgetData = new Map();
+      /** 홈에 있는 동안만 도는 타이머들. */
+      let homeTimers = [];
+
+      /**
+       * ★**홈을 떠나면 멈춘다.** 위젯 하나가 곧 주기적인 외부 호출 하나라, 안 보이는 화면이
+       *  계속 부르면 그건 그냥 크롤러다(§J.9 ③). 위젯 자신의 타이머는 `ctx.onDispose` 로
+       *  코어가 회수하고, **여기서 거는 poll 은 우리 것이라 우리가 회수한다.**
+       */
+      const stopHomeWidgets = () => {
+        for (const t of homeTimers) clearInterval(t);
+        homeTimers = [];
+      };
+
+      /** 위젯 하나를 그린다 — 값이 없으면 「받아오는 중」, 실패면 한 줄. */
+      const paintHomeWidget = (card, w) => {
+        const prev = card.querySelector(".home-widget-body");
+        // ★**제거가 먼저**다 — 관측자가 그때 회수한다(타이머·구독). 새 노드를 먼저 붙이면
+        //  같은 위젯이 잠깐 둘이 되고, 둘 중 하나가 회수 없이 사라질 수 있다.
+        if (prev) prev.remove();
+        const box = document.createElement("div");
+        box.className = "home-widget-body";
+        // ★`data-widget` 이 있어야 **조상이 통째로 지워질 때**도 회수된다(sweep 이 이 속성으로
+        //  후손을 찾는다). 홈은 뷰를 옮길 때 `#detail-panel` 을 통째로 비운다.
+        box.dataset.widget = w.type;
+        card.appendChild(box);
+        // ★**두 모드**(§B). 데이터 라우트가 있으면 값을 받아 그리고(poll), 없으면 값 없이
+        //  그린다 — 그 위젯은 화면에서 `ctx.resource(...)` 로 스스로 구독한다(live).
+        //  종전엔 무조건 받으러 가서, 라우트 없는 위젯이 404 를 맞고 "값을 못 받았습니다" 로
+        //  떴다. 판정 근거는 서버가 준다(관례: 라우트 이름 = 위젯 이름).
+        if (!homeDataRoutes.includes(w.type)) {
+          void widgetHost.mount(box, { widget: w.type, data: null });
+          return;
+        }
+        const state = homeWidgetData.get(w.id);
+        if (state === undefined) {
+          box.classList.add("home-widget-note");
+          box.textContent = i18n("home.widget.loading");
+          return;
+        }
+        if (state.error) {
+          box.classList.add("home-widget-note");
+          box.textContent = i18n("home.widget.failed");
+          return;
+        }
+        void widgetHost.mount(box, { widget: w.type, data: state.data });
+      };
+
+      /** 값을 받아온다. ★외부는 데몬이 부른다 — 브라우저는 우리 오리진만 만진다(CSP). */
+      const refreshHomeWidget = async (w) => {
+        const slash = w.type.indexOf("/");
+        const plugin = w.type.slice(0, slash);
+        const route = w.type.slice(slash + 1);
+        const qs = new URLSearchParams();
+        for (const [k, v] of Object.entries(w.config || {})) qs.set(k, String(v));
+        const url =
+          "/api/plugin-data/" + encodeURIComponent(plugin) + "/" + encodeURIComponent(route) +
+          (qs.toString() ? "?" + qs.toString() : "");
+        try {
+          const r = await fetch(url, { cache: "no-store" });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j && j.error ? j.error : "HTTP " + r.status);
+          homeWidgetData.set(w.id, { data: j.data });
+        } catch (e) {
+          // ★**하나가 실패해도 나머지는 산다**(§J.9 ⑥). 사유는 콘솔에, 화면엔 한 줄.
+          console.warn("[home-widget] " + w.type + " 값을 못 받았습니다:", e);
+          homeWidgetData.set(w.id, { error: true });
+        }
+        const card = document.querySelector('.home-widget[data-id="' + CSS.escape(w.id) + '"]');
+        if (card) paintHomeWidget(card, w);
+      };
+
+      /**
+       * 위젯 영역을 만든다. ★**0개면 아무것도 안 그린다** — 빈 상자를 두면 사용자가
+       *  "여기 뭔가 있어야 하나" 를 새로 관리하게 된다(받을 게 없으면 행을 아예 안 그리는
+       *  기존 규칙과 같다).
+       */
+      const buildHomeWidgets = () => {
+        if (!Array.isArray(homeWidgets) || homeWidgets.length === 0) return null;
+        const panel = document.createElement("section");
+        panel.className = "subpanel home-widgets";
+        panel.innerHTML = '<div class="subpanel-head"><div><h2 class="subpanel-title"></h2>' +
+          '<p class="subpanel-desc"></p></div></div>';
+        panel.querySelector(".subpanel-title").textContent = i18n("home.widgets.head");
+        panel.querySelector(".subpanel-desc").textContent = i18n("home.widgets.desc");
+        const grid = document.createElement("div");
+        grid.className = "home-widget-grid";
+        for (const w of homeWidgets) {
+          const card = document.createElement("div");
+          card.className = "home-widget";
+          card.dataset.id = w.id;
+          card.dataset.size = w.size === "wide" ? "wide" : "small";
+          grid.appendChild(card);
+        }
+        panel.appendChild(grid);
+        return panel;
+      };
+
+      /** 배치를 받아온다. 바뀌었을 때만 다시 그린다(가만히 있는 화면을 흔들지 않는다). */
+      const loadHomeLayout = async (repaint) => {
+        let next = [];
+        try {
+          const r = await fetch("/api/home-widgets", { cache: "no-store" });
+          const j = await r.json();
+          next = Array.isArray(j.widgets) ? j.widgets : [];
+          homeDataRoutes = Array.isArray(j.dataRoutes) ? j.dataRoutes : [];
+        } catch {
+          return; // 못 받으면 지금 그림을 그대로 둔다 — 있던 위젯을 지우지 않는다.
+        }
+        const same = JSON.stringify(homeWidgets) === JSON.stringify(next);
+        homeWidgets = next;
+        // 사라진 위젯의 값은 버린다(캡 없는 Map 을 남기지 않는다).
+        const ids = new Set(next.map((w) => w.id));
+        for (const id of [...homeWidgetData.keys()]) {
+          if (!ids.has(id)) homeWidgetData.delete(id);
+        }
+        if (!same && repaint && currentView === "overview") showOverview();
       };
 
       const showOverview = () => {
@@ -114,6 +259,16 @@
           quick.appendChild(card);
         }
         wrap.appendChild(quick);
+
+        // ★위젯을 **여기** 둔다(요약 다음·상태 패널 위). 맨 아래에 두면 390×780 화면에서
+        //  뷰포트 밖으로 밀린다 — 버전 행이 정확히 그래서 둘째 줄로 옮겨졌다. 사용자가
+        //  "왼쪽 모니터에 띄워두는" 것이라 눈이 먼저 가는 자리여야 한다.
+        stopHomeWidgets();
+        const widgetPanel = buildHomeWidgets();
+        if (widgetPanel) wrap.appendChild(widgetPanel);
+        // ★**그리는 건 문서에 붙은 뒤**다(아래 `root.appendChild` 이후 — `paintHomeWidgets()`).
+        //  붙기 전에 마운트하면 호스트가 그 노드를 **대기줄**에 넣는데, 값이 도착해 상자를
+        //  갈아끼우면 그 대기분은 영영 안 붙어 관측자가 안 꺼진다(실측 5건).
 
         const layout = document.createElement("div");
         layout.className = "overview-layout";
@@ -179,6 +334,28 @@
         layout.appendChild(actionPanel);
         wrap.appendChild(layout);
         root.appendChild(wrap);
+        // 문서에 붙었다 — 이제 그린다(마운트가 항상 **연결된** 노드를 받는다).
+        if (widgetPanel) {
+          for (const w of homeWidgets) {
+            const card = widgetPanel.querySelector('.home-widget[data-id="' + CSS.escape(w.id) + '"]');
+            if (card) paintHomeWidget(card, w);
+          }
+        }
+
+        // ★타이머는 **그린 뒤에** 건다. 배치를 아직 못 받았으면 그것부터 받아오고,
+        //  받아오면 (바뀌었을 때만) 다시 그린다.
+        if (homeWidgets === null) {
+          void loadHomeLayout(true);
+        } else if (homeWidgets.length > 0) {
+          for (const w of homeWidgets) {
+            // live 위젯(라우트 없음)은 받아올 게 없다 — 타이머도 안 건다.
+            if (!homeDataRoutes.includes(w.type)) continue;
+            void refreshHomeWidget(w);
+            homeTimers.push(setInterval(() => void refreshHomeWidget(w), HOME_WIDGET_POLL_MS));
+          }
+        }
+        // 배치 자체도 지켜본다 — "대화로 추가해줘" 가 화면에 반영되는 길이다.
+        homeTimers.push(setInterval(() => void loadHomeLayout(true), HOME_LAYOUT_POLL_MS));
       };
 
       // showInventory (능력 뷰 진입) — view-inventory.js 로 이관(ADR 2026-07-17 §5·§7 P2, 3패널화

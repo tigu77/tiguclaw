@@ -106,6 +106,8 @@ import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
+import { reaches, turnKindOf } from "../capability-reach.js";
+import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
@@ -439,6 +441,10 @@ export const runClaude = async (
   const neutralTurn = input.systemPromptOverride !== undefined;
   const cwd = input.cwd ?? (neutralTurn ? neutralCwd() : getPaths().home);
   const depth = input.subagentDepth ?? 0;
+  // ★**도구 노출 사다리** (2026-08-28) — 어느 칸의 턴인가를 **한 번** 도출한다.
+  //  종전엔 `depth === 0 && (input.workerDepth ?? 0) === 0` 이 이 파일에만 8곳,
+  //  세 어댑터 합쳐 24곳에 복사돼 있었다. 판정은 `capability-reach.ts` 한 곳에 산다.
+  const turnKind = turnKindOf(input);
 
   // 커스텀 서브에이전트 → SDK `options.agents` 주입 (codex spawn_agent 브리지의
   // claude 대응 — SDK native Task tool 이 발견·실행). depth 0 turn 만 주입
@@ -543,17 +549,13 @@ export const runClaude = async (
         // 비차단 백그라운드 워커와 의미가 달라 양 어댑터 모두 명시 등록(W-I3, contract §2).
         // SDK in-process MCP server (McpSdkServerConfigWithInstance) 를 그대로 맵에 주입
         // — spawn_agent 와 달리 native 대응이 없으므로 codex/openai 와 동일 server 사용.
-        ...(depth === 0 && (input.workerDepth ?? 0) === 0
-          ? { workers: createWorkerMcpServer(input) }
-          : {}),
+        ...(reaches("workers", turnKind) ? { workers: createWorkerMcpServer(input) } : {}),
         // 커스텀 HTTP 엔드포인트 등록/조회/삭제 도구 (2026-06-18) —
         // register_endpoint/list_endpoints/delete_endpoint. worker 와 *동일* 가드
         // (depth 0 + workerDepth 0). lean(toolsNone) 이면 leanMcpServers={} 라 미등록
         // → restricted 엔드포인트 턴 안에선 register_endpoint 미노출 = 엔드포인트가 또
         // 엔드포인트를 만드는 재귀 자연 차단. LLM-agnostic(어댑터 분기 0).
-        ...(depth === 0 && (input.workerDepth ?? 0) === 0
-          ? { endpoints: createEndpointToolsMcpServer() }
-          : {}),
+        ...(reaches("endpoints", turnKind) ? { endpoints: createEndpointToolsMcpServer() } : {}),
         // ★spawn_agent MCP (projects 3a, 2026-07-07) — cross-project/병렬 위임 경로.
         // SDK 네이티브 Task(options.agents)는 *현재 cwd* 서브 전용이라 다른 프로젝트를
         // 못 띄운다(SDK 가 per-Task cwd 미지원). 이 MCP 도구는 runRegionA(childInput.cwd=
@@ -561,19 +563,17 @@ export const runClaude = async (
         // 분업: Task=현재 컨텍스트 서브 / spawn_agent(project=X)=임의 프로젝트 위임(병렬).
         // depth 0 만(codex/openai 와 동일 게이트) — 자식은 subagentDepth 1 라 재spawn 차단.
         // 회귀 0: Task 경로 무변경(additive), 자식이 same-cwd 면 기존과 동일 동작.
-        ...(depth === 0 ? { agents: createSpawnAgentMcpServer(input) } : {}),
+        ...(reaches("agents", turnKind) ? { agents: createSpawnAgentMcpServer(input) } : {}),
         // 커스텀 슬래시 명령 등록/조회/삭제 도구 (2026-06-18) —
         // register_command/list_commands/delete_command. endpoint/worker 와 *동일* 가드
         // (depth 0 + workerDepth 0). lean(toolsNone) 이면 leanMcpServers={} 라 미등록.
         // LLM-agnostic(어댑터 분기 0). 슬래시 명령은 항상 prompt 라 mode 무관.
-        ...(depth === 0 && (input.workerDepth ?? 0) === 0
-          ? { commands: createCommandToolsMcpServer() }
-          : {}),
+        ...(reaches("commands", turnKind) ? { commands: createCommandToolsMcpServer() } : {}),
         // 자가 업데이트 도구 (2026-06-26) — update_self. command-tools 와 *동일* 가드
         // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀
         // 차단). 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey
         // 에서 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. codex/openai 와 parity(#2).
-        ...(depth === 0 && (input.workerDepth ?? 0) === 0
+        ...(reaches("update-self", turnKind)
           ? {
               "update-self": createUpdateSelfMcpServer(
                 notifyDestFromCoords(
@@ -586,15 +586,17 @@ export const runClaude = async (
           : {}),
         // 외부 MCP 등록 도구(add/list/remove_mcp_server) — endpoint/command 동형 가드.
         // 파일(<home>/mcp.json)만 다룸. codex/openai 와 parity(#2 — 어댑터 분기 0).
-        ...(depth === 0 && (input.workerDepth ?? 0) === 0
-          ? { "mcp-admin": createMcpAdminMcpServer() }
-          : {}),
+        ...(reaches("mcp-admin", turnKind) ? { "mcp-admin": createMcpAdminMcpServer() } : {}),
         // 모델 추론 강도 손잡이(set_model_reasoning) — 홈 settings.json 의
         // models.reasoning 한 키만. 3어댑터 동일(#2 — 키가 provider:model 이라 어댑터 무관).
-        ...(depth === 0 && (input.workerDepth ?? 0) === 0
+        ...(reaches("model-settings", turnKind)
           ? { "model-settings": createModelSettingsMcpServer(cwd) }
           : {}),
-        ...(input.extraMcpServers ?? {}),
+        // 홈 위젯 배치(configure_home) — 위젯 플랫폼 §J.5. 3어댑터 동일(홈 settings.json
+        // 한 키를 쓸 뿐이라 어댑터 무관). ★이 도구가 "비서가 배치한다"(A3)를 성립시킨다.
+        ...(reaches("home-widgets", turnKind) ? { "home-widgets": createHomeWidgetsMcpServer() } : {}),
+        // 플러그인 도구 — `REACH.plugins` 가 오늘의 답("전부")을 **명시로** 들고 있다.
+        ...(reaches("plugins", turnKind) ? (input.extraMcpServers ?? {}) : {}),
       };
 
   // ★외부 MCP 서버 연결(ADR 2026-07-07) — <home>/mcp.json 의 stdio/sse config 를 SDK
@@ -605,7 +607,7 @@ export const runClaude = async (
   // 가 전역+프로젝트 병합). 비프로젝트 서브/워커는 기존대로 생략(재spawn 회피). lean 생략.
   const externalMcpServers =
     !toolsNone &&
-    ((depth === 0 && (input.workerDepth ?? 0) === 0) || isProjectMcpCwd(input.cwd))
+    (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
       ? ((await readExternalMcpServers(input.cwd)) as Options["mcpServers"])
       : {};
 

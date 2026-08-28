@@ -1,0 +1,105 @@
+/**
+ * 회귀: **egress 사본은 어디서 왔는지 말한다** (2026-08-28).
+ *
+ * 사고: 번들 플러그인을 검증하려고 임의 세션(`dashboard:bundle-probe`)에 말을 걸었더니,
+ * 그 답이 `egress: {channels:["telegram"]}` 를 타고 사용자 텔레그램에 **맥락 없는
+ * `echo:안녕` 한 줄**로 도착했다. 세션 귀속은 `recordOutboundMessage` 가 이미 들고
+ * 있었지만 그건 **답장 라우팅용**이지 사람에게 보여주는 게 아니었다. 사용자는 폰만 보고는
+ * 그게 뭔지 알 수 없어 물어봐야 했다.
+ *
+ * ★**막지 않고 말해준다.** 첫 제안은 *"등록된 세션만 밖으로"* 라는 게이트였는데 접었다
+ *  (사용자 지적: 임의 세션은 개발 중에만 생긴다). 게이트는 새 서버 개념 + 마이그레이션 +
+ *  **조용한 실패**(등록을 놓치면 영영 안 감)를 끌고 온다. 라벨은 아무것도 막지 않으므로
+ *  조용한 실패가 없다.
+ *
+ * 지키는 것 넷:
+ *  ① 기본 세션엔 **안 붙는다** — 평소 사용이 글자 하나도 안 바뀐다(라벨이 배경 소음이 되면
+ *     진짜 이상할 때 아무도 안 본다).
+ *  ② 이름 있는 세션은 그 이름으로, 없으면 `unknown`.
+ *  ③ ★**첫 발화에서 파생하지 않는다** — 그건 대화 내용을 다른 채널의 라벨로 흘리는 짓이다.
+ *  ④ 라벨이 **egress 사본에만** 붙는다 — 인입 채널 응답은 그대로다(중복 표시 금지).
+ *
+ * 등급: ①②③은 **동작**(순수 함수 실행), ④는 배선 대조.
+ */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { egressSourcePrefix } from "../../core/egress-targets.js";
+import { DEFAULT_SESSION_ID } from "../../core/threadkey.js";
+import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+export const check: RegressionCheck = {
+  name: "egress-source-label",
+  guards:
+    "임의 세션의 답이 egress 로 사용자 텔레그램에 맥락 없이 도착해 '누가 보낸 건지' 알 수 없던 것(실사고 2026-08-28) + 그걸 고치면서 평소 대화까지 라벨로 시끄러워지는 것 + 라벨이 대화 내용을 다른 채널로 흘리는 것",
+  run: async (): Promise<Assertion[]> => {
+    const out: Assertion[] = [];
+
+    out.push(
+      assert(
+        "★★기본 세션엔 라벨이 **안 붙는다** — 평소 사용은 글자 하나 안 바뀐다(매번 붙으면 배경 소음이 되고, 그러면 진짜일 때 아무도 안 본다)",
+        egressSourcePrefix(DEFAULT_SESSION_ID, null) === "" &&
+          egressSourcePrefix(DEFAULT_SESSION_ID, "공통") === "",
+        `기본(무명)="${egressSourcePrefix(DEFAULT_SESSION_ID, null)}" · 기본(유명)="${egressSourcePrefix(DEFAULT_SESSION_ID, "공통")}"`,
+      ),
+    );
+    out.push(
+      assert(
+        "★이름이 있으면 그 이름으로 — 여러 세션이 한 대화방에 섞여 와도 어느 것인지 안다",
+        egressSourcePrefix("dashboard:abc", "핫딜알리미") === "[핫딜알리미] ",
+        JSON.stringify(egressSourcePrefix("dashboard:abc", "핫딜알리미")),
+      ),
+    );
+    out.push(
+      assert(
+        "★★이름 없는 세션은 `unknown` — 폰에서 필요한 답은 '내 대화가 아니다' 하나다(이게 이 사고에서 없던 것)",
+        egressSourcePrefix("dashboard:bundle-probe", null) === "[unknown] " &&
+          egressSourcePrefix("dashboard:bundle-probe", "  ") === "[unknown] ",
+        JSON.stringify(egressSourcePrefix("dashboard:bundle-probe", null)),
+      ),
+    );
+    out.push(
+      assert(
+        "★★라벨이 **대화 내용에서 파생되지 않는다** — 파생하면 첫 발화가 다른 채널의 라벨로 새어 나간다(표시명 파생과 일부러 다르게 둔다)",
+        !egressSourcePrefix("dashboard:x", null).includes("안녕") &&
+          egressSourcePrefix("dashboard:x", null) === "[unknown] ",
+        egressSourcePrefix("dashboard:x", null),
+      ),
+    );
+    out.push(
+      assert(
+        "좌표를 모르면 아무 말도 안 한다(모르는 것을 아는 것처럼 말하지 않는다)",
+        egressSourcePrefix(undefined, null) === "" && egressSourcePrefix("", null) === "",
+        `undefined="${egressSourcePrefix(undefined, null)}" · 빈문자="${egressSourcePrefix("", null)}"`,
+      ),
+    );
+
+    // ── ④ 배선 — egress 사본에만 붙는다 ───────────────────────────────────
+    const idx = readFileSync(path.join(REPO, "src/index.ts"), "utf8");
+    const fan = /const fanOutEgress = async \([\s\S]{0,1600}?\n\};/.exec(idx);
+    out.push(
+      assert(
+        "★라벨을 붙이는 자리가 **egress fan-out 한 곳**이다 — 성공·실패 경로가 둘 다 이 함수를 지나므로 한 곳이면 둘 다 덮인다",
+        fan !== null &&
+          /egressSourcePrefix\(/.test(fan[0]) &&
+          /text: prefix \+ text/.test(fan[0]),
+        fan === null ? "fanOutEgress 를 못 찾음" : "fanOutEgress 안에서 붙임",
+      ),
+    );
+    const outsideFan = idx
+      .split("const fanOutEgress")
+      .filter((_, i) => i !== 1)
+      .join("");
+    out.push(
+      assert(
+        "★인입 채널 응답에는 라벨이 **안 붙는다**(그 채널엔 이미 문맥이 있다 — 붙이면 중복 표시)",
+        !/egressSourcePrefix\(/.test(outsideFan),
+        /egressSourcePrefix\(/.test(outsideFan) ? "★fan-out 밖에서도 붙인다" : "fan-out 전용",
+      ),
+    );
+
+    return out;
+  },
+};

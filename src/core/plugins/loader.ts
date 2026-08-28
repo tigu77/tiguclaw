@@ -17,6 +17,8 @@ import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { EventBus } from "../eventbus.js";
+import { describeNeeds, readNeeds, type PluginNeeds } from "./host.js";
+import { readSettingsSpec, type PluginSettingSpec } from "./settings.js";
 import { isModuleActive } from "./inventory.js";
 
 // D1-c (2026-07-14, ADR built-artifact-production-runtime) — built(순수 node) 런타임에서
@@ -55,8 +57,42 @@ export const resolveEntry = async (pluginDir: string, entry: string): Promise<st
   return entryAbs;
 };
 
+/**
+ * 목록·설치 화면이 보여줄 것. 전부 **npm 표준 필드**에서 온다 — 새 키를 만들지 않는다.
+ *
+ * ★`description` 은 **문자열이거나 언어별 객체**다: 모양으로 갈린다(`DisplayText` 규약과
+ *  같은 결). 서버가 언어를 고르지 않고 **화면이** 고른다.
+ * ★**`author` 가 가장 중요하다.** 격리가 0이라(설계 §H) 설치는 곧 신뢰 결정이고,
+ *  *"누가 만들었나"* 가 그 자리에서 유일한 판단 재료다.
+ */
+export interface PluginMeta {
+  readonly description?: string | Record<string, string>;
+  readonly author?: string;
+  readonly homepage?: string;
+  readonly license?: string;
+}
+
 export interface PluginManifest {
   schemaVersion: number;
+  /** 이 플러그인이 요구하는 것 — 검사·정규화를 거친 값(`readNeeds`). */
+  needs?: PluginNeeds;
+  /**
+   * 이 플러그인이 사람에게 물어보는 것 — 검사·정규화를 거친 값(`readSettingsSpec`).
+   * ★화면은 **이 선언에서** 행을 만든다. 손으로 행을 짓지 않는다(§D.2).
+   */
+  settings?: PluginSettingSpec[];
+  /** 플러그인 자기 버전(`package.json` 의 `version`). 없으면 undefined. */
+  version?: string;
+  /**
+   * **사람이 알아야 할 것** — 전부 `package.json` 의 **npm 표준 필드**에서 읽는다
+   * (2026-08-28 정태님: *"많이 사용하는 플러그인들 방식"*).
+   *
+   * ★새 키를 만들지 않는다. `description`·`author`·`homepage`·`license` 는 이미 표준이고
+   *  자리가 있었다 — 우리가 안 읽고 있었을 뿐이다.
+   * ★**`author` 가 가장 중요하다.** 격리가 0이라(설계 §H) 설치는 곧 신뢰 결정이고,
+   *  *"누가 만들었나"* 가 그 자리에서 유일한 판단 재료다.
+   */
+  meta?: PluginMeta;
   /** V1: string 단일 OR V2: string[] 배열. 로더 정규화 후 capabilities 보존. */
   kind: string | string[];
   name: string;
@@ -93,6 +129,55 @@ export interface LoadedPlugin {
  *  상태가 된다(아래 `hasKnown` 이 skip 하므로). 사전을 하나로 합쳐서 그 구멍을 막는다.
  *  ★소비자가 둘인 건 괜찮다. 아는 값 목록이 둘인 게 사고다.
  */
+/**
+ * 이 tiguclaw 가 아는 **플러그인 계약 버전**.
+ *
+ * ★올리는 규칙: 호스트 표면(`host.ts` 의 `PluginHost`)이나 매니페스트 모양을 **깨는 방식**
+ *  으로 바꿀 때만 올린다. 필드를 *더하는* 건 안 올린다(옛 플러그인이 그대로 돈다).
+ * ★올리면 옛 플러그인은 **사유와 함께 멈춘다** — 조용히 반쯤 도는 것보다 낫다.
+ */
+export const PLUGIN_SCHEMA_VERSION = 1;
+
+/** npm 표준 필드에서 사람이 볼 것을 뽑는다. 없으면 없는 대로(빈 객체). */
+export const readPluginMeta = (pkg: Record<string, unknown>): PluginMeta => {
+  const m: {
+    description?: string | Record<string, string>;
+    author?: string;
+    homepage?: string;
+    license?: string;
+  } = {};
+  const d = pkg.description;
+  if (typeof d === "string" && d.trim() !== "") m.description = d.trim();
+  else if (d !== null && typeof d === "object" && !Array.isArray(d)) {
+    const byLang: Record<string, string> = {};
+    for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim() !== "") byLang[k] = v.trim();
+    }
+    if (Object.keys(byLang).length > 0) m.description = byLang;
+  }
+  // ★`author` 는 npm 이 문자열도 객체(`{name,email,url}`)도 허용한다 — 둘 다 받는다.
+  const a = pkg.author;
+  if (typeof a === "string" && a.trim() !== "") m.author = a.trim();
+  else if (a !== null && typeof a === "object" && typeof (a as { name?: unknown }).name === "string") {
+    m.author = String((a as { name: string }).name).trim();
+  }
+  // `homepage` 가 없으면 `repository.url`(또는 문자열)로 대신한다 — 같은 질문에 답한다.
+  const h = pkg.homepage;
+  if (typeof h === "string" && /^https?:\/\//.test(h.trim())) m.homepage = h.trim();
+  else {
+    const r = pkg.repository;
+    const url =
+      typeof r === "string" ? r : r !== null && typeof r === "object" ? (r as { url?: unknown }).url : undefined;
+    if (typeof url === "string") {
+      const clean = url.replace(/^git\+/, "").replace(/\.git$/, "");
+      if (/^https?:\/\//.test(clean)) m.homepage = clean;
+    }
+  }
+  if (typeof pkg.license === "string" && pkg.license.trim() !== "") m.license = pkg.license.trim();
+  return m;
+};
+
+
 const KNOWN_CAPABILITIES = new Set([
   "channel",
   "observer",
@@ -108,10 +193,15 @@ const publishError = (
   err: unknown,
 ): void => {
   const reason = err instanceof Error ? err.message : String(err);
-  if (eventBus === undefined) {
-    console.error(`[plugin-loader] ${pluginName} ${phase}: ${reason}`);
-    return;
-  }
+  // ★**항상 로그에 남긴다** (2026-08-28). 종전엔 버스가 있으면 이벤트만 발행하고 **콘솔엔
+  //  아무것도 안 찍었다** — 그래서 `weather` 플러그인이 로드에 실패해 도구가 통째로 없는데,
+  //  데몬 로그엔 한 줄도 없었고 흔적은 DB `events` 행 하나뿐이었다. 그걸 보려면 이미
+  //  "플러그인이 안 뜬다" 를 의심하고 SQL 을 쳐야 한다 — 진단이 거꾸로다.
+  //  ★이 레포 규범: **로그가 1차 진단면**이다([[feedback_logs_must_stand_alone]]) —
+  //   회사 PC·윈도우처럼 원격이 안 되는 기계에선 로그가 유일한 창이다.
+  //  ★버스 발행은 대시보드를 위한 것이고 로그는 진단을 위한 것이라, **둘 다** 한다.
+  console.error(`[plugin-loader] ${pluginName} ${phase}: ${reason}`);
+  if (eventBus === undefined) return;
   try {
     eventBus.publish({
       type: "plugin.error",
@@ -119,8 +209,67 @@ const publishError = (
       payload: { pluginName, phase, error: reason },
     });
   } catch {
-    console.error(`[plugin-loader] ${pluginName} ${phase}: ${reason}`);
+    /* 발행 실패 — 위에서 이미 로그에 남겼다 */
   }
+};
+
+/**
+ * **코드를 실행하지 않고** 매니페스트만 훑는다 (2026-08-28).
+ *
+ * ★목록에는 **꺼진 것도** 나와야 한다 — 안 그러면 끄는 순간 목록에서 사라져 **다시 켤 수가
+ *  없다**(일방통행 문). 그런데 그걸 보려고 `loadPlugins` 를 쓰면 **코드를 실행**하게 된다.
+ * ★**목록을 보려고 남의 코드를 돌리지 않는다** — 지금은 우리 것뿐이라 무해하지만, 서드파티를
+ *  받는 순간 그건 "구경만 하려다 실행" 이 된다. 지금 갈라 두는 게 싸다.
+ */
+export const scanPluginManifests = async (
+  rootDir: string,
+): Promise<Array<{ manifest: PluginManifest; pluginDir: string; capabilities: string[] }>> => {
+  let entries: string[];
+  try {
+    entries = (await fs.readdir(rootDir, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+  const out: Array<{ manifest: PluginManifest; pluginDir: string; capabilities: string[] }> = [];
+  for (const entryName of entries) {
+    const pluginDir = path.resolve(rootDir, entryName);
+    try {
+      const pkgRaw = JSON.parse(
+        await fs.readFile(path.join(pluginDir, "package.json"), "utf8"),
+      ) as Record<string, unknown>;
+      const pkg = pkgRaw as { tiguclaw?: unknown; version?: unknown };
+      const m = pkg.tiguclaw as Partial<PluginManifest> | undefined;
+      if (m === undefined || typeof m !== "object") continue;
+      if (typeof m.name !== "string" || typeof m.entry !== "string") continue;
+      if (typeof m.schemaVersion !== "number") continue;
+      const capabilities =
+        typeof m.kind === "string"
+          ? [m.kind]
+          : Array.isArray(m.kind)
+            ? m.kind.filter((k): k is string => typeof k === "string")
+            : [];
+      out.push({
+        manifest: {
+          schemaVersion: m.schemaVersion,
+          kind: m.kind as string | string[],
+          name: m.name,
+          entry: m.entry,
+          needs: readNeeds((m as { needs?: unknown }).needs).needs,
+          settings: readSettingsSpec((m as { settings?: unknown }).settings).specs,
+          ...(typeof pkg.version === "string" ? { version: pkg.version } : {}),
+          meta: readPluginMeta(pkgRaw),
+          ...(m.core === true ? { core: true } : {}),
+        },
+        pluginDir,
+        capabilities,
+      });
+    } catch {
+      /* 읽기·파싱 실패 = 플러그인 아님(로드 때 사유가 남는다) */
+    }
+  }
+  return out;
 };
 
 export const loadPlugins = async (
@@ -142,7 +291,8 @@ export const loadPlugins = async (
     try {
       const pkgPath = path.join(pluginDir, "package.json");
       const raw = await fs.readFile(pkgPath, "utf8");
-      const pkg = JSON.parse(raw) as { tiguclaw?: unknown };
+      const pkgRaw = JSON.parse(raw) as Record<string, unknown>;
+      const pkg = pkgRaw as { tiguclaw?: unknown; version?: unknown };
       const marker = pkg.tiguclaw;
 
       // 마커 부재 — 조용히 skip (tiguclaw plugin 아님).
@@ -177,6 +327,23 @@ export const loadPlugins = async (
       }
       if (!hasKnown) continue;
 
+      // ★**스키마 버전을 실제로 본다** (2026-08-28). 종전엔 *숫자인지*만 확인해서
+      //  `schemaVersion: 99` 도 통과했다 — 선언이 있는데 집행이 0이었다.
+      //  ★이게 앞으로의 안전장치다: 호스트 표면(`plugins/host.ts`)이나 매니페스트 모양을
+      //   바꿀 때 이 숫자를 올리면, 옛 플러그인이 **조용히 반쯤 도는 대신 사유와 함께**
+      //   멈춘다. 안 올리면 그때 깨지는 건 사용자 화면이다.
+      if (typeof m.schemaVersion === "number" && m.schemaVersion !== PLUGIN_SCHEMA_VERSION) {
+        publishError(
+          eventBus,
+          typeof m.name === "string" ? m.name : entryName,
+          "load",
+          new Error(
+            `schemaVersion ${m.schemaVersion} 은 이 tiguclaw 가 모릅니다(아는 것: ` +
+              `${PLUGIN_SCHEMA_VERSION}). 플러그인을 갱신하거나 tiguclaw 를 업데이트하세요.`,
+          ),
+        );
+        continue;
+      }
       if (
         typeof m.schemaVersion !== "number" ||
         typeof m.name !== "string" ||
@@ -191,11 +358,28 @@ export const loadPlugins = async (
         continue;
       }
 
+      // ★**권한 선언을 여기서 읽고 검사한다** (2026-08-28). 모르는 키는 거부한다 —
+      //  집행하지 않는 권한을 선언하게 두면 사용자가 "막히는 줄" 오해한다.
+      const nv = readNeeds((marker as { needs?: unknown }).needs);
+      for (const problem of nv.problems) {
+        console.warn(`[plugin-loader] ${m.name}: ${problem}`);
+      }
+      // ★설정 선언도 **같은 자리에서** 읽고 검사한다 — 나쁜 칸 하나는 그 칸만 떨어지고
+      //  이유가 로그에 남는다(오타 하나에 설정이 통째로 사라지지 않는다).
+      const sv = readSettingsSpec((marker as { settings?: unknown }).settings);
+      for (const problem of sv.problems) {
+        console.warn(`[plugin-loader] ${m.name}: ${problem}`);
+      }
       const manifest: PluginManifest = {
         schemaVersion: m.schemaVersion,
         kind: m.kind as string | string[],
         name: m.name,
         entry: m.entry,
+        needs: nv.needs,
+        settings: sv.specs,
+        // 플러그인 자기 버전 — 목록에 보여주고, 갱신됐는지 사람이 판단할 근거가 된다.
+        ...(typeof pkg.version === "string" ? { version: pkg.version } : {}),
+        meta: readPluginMeta(pkgRaw),
         ...(m.core === true ? { core: true } : {}),
       };
 
@@ -226,6 +410,9 @@ export const loadPlugins = async (
       }
 
       const instance = new Ctor();
+      // ★**무엇을 요구하는지 부팅 로그에 남긴다.** 사용자가 나중에 "쟤가 왜 나가지?" 를
+      //  물을 수 있어야 한다 — 특히 홈에 설치한 것은 우리가 검토하지 않았다.
+      console.log(`[plugin-loader] ${manifest.name}: ${describeNeeds(nv.needs)}`);
       loaded.push({ manifest, pluginDir, capabilities, instance });
     } catch (err) {
       publishError(eventBus, entryName, "load", err);

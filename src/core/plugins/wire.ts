@@ -22,9 +22,16 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import type { Channel, MessageHandler } from "../../channels/types.js";
 import {
   registerChannelOutbound,
+  unregisterChannelOutbound,
   type ChannelOutbound,
 } from "../channel-outbound.js";
-import { registerMcpServer } from "../mcp-registry.js";
+import { registerMcpServer, unregisterMcpServer } from "../mcp-registry.js";
+import {
+  registerPluginDataRoutes,
+  unregisterPluginDataRoutes,
+  type PluginDataRoutes,
+} from "./data-routes.js";
+import { createPluginHost, type PluginHost } from "./host.js";
 import type { EventBus } from "../eventbus.js";
 import { appRoot } from "../paths.js";
 import type { LoadedPlugin } from "./loader.js";
@@ -35,6 +42,18 @@ export interface WireResult {
   wired: string[];
   /** 건너뛴 것 — 선언은 했는데 못 꽂았다. */
   skipped: Array<{ capability: string; reason: string }>;
+  /**
+   * **이 플러그인이 등록한 것을 전부 되돌린다** (2026-08-28, 런타임 설치/제거).
+   *
+   * ★없어서 막혔다. 배선은 등록을 **여기저기 흩뿌린다**(채널 목록·outbound 레지스트리·
+   *  MCP 레지스트리·서비스 stop) — 제거하려면 *"이 플러그인이 무엇을 등록했나"* 를 알아야
+   *  하는데 그 기록이 없었다. 그래서 제거가 원리적으로 불가능했다.
+   * ★고침은 목록을 새로 만드는 게 아니라 **등록하는 자리에서 되돌림을 같이 모으는 것**이다
+   *  — 위젯 호스트(`onDispose`)에서 이미 검증한 형상이고, 손 목록이 안 생긴다.
+   * ★**"더 이상 안 불린다" 까지**다. 코드는 프로세스에 남는다(ESM 언로드 없음) — 진짜
+   *  언로드는 프로세스 경계가 있어야 한다(설계 §H).
+   */
+  dispose: () => Promise<void>;
 }
 
 export interface WirePluginDeps {
@@ -54,7 +73,21 @@ interface PluginInstance {
   startTrigger?: (eventBus: EventBus) => Promise<void>;
   startService?: (eventBus: EventBus) => Promise<void>;
   stop?: () => Promise<void>;
-  getMcpServer?: () => McpSdkServerConfigWithInstance | undefined;
+  /**
+   * ★`host` 는 **옵션**이다 — 안 받는 플러그인은 그대로 돈다(회귀 0).
+   * ★플러그인이 코어를 만지는 **유일한 표면**이다(`core/plugins/host.ts`). 나중에 격리를
+   *  넣을 때 이 표면만 IPC 로 바꾸면 되고, 플러그인은 안 고친다.
+   */
+  getMcpServer?: (
+    host?: PluginHost,
+  ) => McpSdkServerConfigWithInstance | undefined;
+  /**
+   * **데이터 라우트** — 위젯이 모델을 안 거치고 값을 받아오는 길 (2026-08-28, §E.2).
+   *
+   * ★`getMcpServer` 와 같은 형이다: capability 선언과 **무관**하게, 내면 배선된다.
+   *  홈 위젯을 내는 플러그인은 도구도 같이 내는 게 보통이라 별도 `kind` 를 만들지 않는다.
+   */
+  getDataRoutes?: () => PluginDataRoutes | undefined;
   outbound?: ChannelOutbound;
   status?: "up" | "disabled";
 }
@@ -103,7 +136,25 @@ export const wirePlugin = async (
   deps: WirePluginDeps,
 ): Promise<WireResult> => {
   const { bus, channels, serviceStops } = deps;
-  const result: WireResult = { wired: [], skipped: [] };
+  // ★등록하는 자리에서 되돌림을 같이 모은다 — 나중에 목록을 다시 뒤지지 않는다.
+  const undo: Array<() => Promise<void> | void> = [];
+  const result: WireResult = {
+    wired: [],
+    skipped: [],
+    dispose: async () => {
+      // 역순 — 나중에 등록한 것부터 되돌린다(의존 순서를 뒤집는다).
+      for (const fn of [...undo].reverse()) {
+        try {
+          await fn();
+        } catch (e) {
+          console.error(
+            `[plugin-loader] ${lp.manifest.name} 되돌리기 실패: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+      undo.length = 0;
+    },
+  };
   const inst = lp.instance as PluginInstance;
   const relDir = path.relative(appRoot(), lp.pluginDir);
 
@@ -131,8 +182,15 @@ export const wirePlugin = async (
         const server = inst.getMcpServer();
         if (server !== undefined) {
           const getMcpServer = inst.getMcpServer.bind(inst);
-          registerMcpServer(lp.manifest.name, () => {
-            const fresh = getMcpServer();
+          const needs = lp.manifest.needs ?? {};
+          undo.push(() => {
+            unregisterMcpServer(lp.manifest.name);
+          });
+          registerMcpServer(lp.manifest.name, (ctx) => {
+            // ★턴 좌표를 **호스트로 감싸서** 준다 — 플러그인은 좌표가 아니라 능력을 받는다.
+            const fresh = getMcpServer(
+              createPluginHost(lp.manifest.name, needs, ctx, lp.manifest.settings ?? []),
+            );
             if (fresh === undefined) {
               throw new Error(
                 `plugin '${lp.manifest.name}' getMcpServer() 가 이번엔 undefined 를 돌려줬습니다`,
@@ -150,6 +208,36 @@ export const wirePlugin = async (
         result.skipped.push({ capability: "mcp", reason });
         console.error(
           `[plugin-loader] mcp server registration ${lp.manifest.name} failed: ${reason}`,
+        );
+      }
+    }
+
+    // ─── 데이터 라우트 등록 (2026-08-28, 위젯 플랫폼 §E.2) ──────────────────
+    // MCP 와 같은 형: capability 무관, 내면 배선된다. 실패는 이 플러그인만 건너뛴다.
+    if (typeof inst.getDataRoutes === "function") {
+      try {
+        const routes = inst.getDataRoutes();
+        if (routes !== undefined && Object.keys(routes).length > 0) {
+          registerPluginDataRoutes(
+            lp.manifest.name,
+            lp.manifest.needs ?? {},
+            routes,
+            lp.manifest.settings ?? [],
+          );
+          undo.push(() => {
+            unregisterPluginDataRoutes(lp.manifest.name);
+          });
+          result.wired.push("data-routes");
+          console.log(
+            `registered data routes from plugin: ${lp.manifest.name} ` +
+              `(${Object.keys(routes).sort().join(", ")}) (from ${relDir})`,
+          );
+        }
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        result.skipped.push({ capability: "data-routes", reason });
+        console.error(
+          `[plugin-loader] data route registration ${lp.manifest.name} failed: ${reason}`,
         );
       }
     }
@@ -176,6 +264,17 @@ export const wirePlugin = async (
             : async (): Promise<void> => {
                 /* no-op */
               };
+        undo.push(async () => {
+          const i = channels.findIndex((c) => c.name === channelName);
+          if (i >= 0) {
+            const [removed] = channels.splice(i, 1);
+            try {
+              await removed?.stop();
+            } catch {
+              /* 이미 죽었을 수 있다 — 제거는 계속한다 */
+            }
+          }
+        });
         channels.push({
           name: channelName,
           start: startFn,
@@ -192,6 +291,9 @@ export const wirePlugin = async (
         // ("미등록/unsupported" 과 구분). 코어 채널은 index.ts 의 start 루프가 등록.
         if (inst.outbound !== undefined) {
           registerChannelOutbound(channelName, inst.outbound);
+          undo.push(() => {
+            unregisterChannelOutbound(channelName);
+          });
         }
         result.wired.push("channel");
         console.log(
@@ -230,6 +332,17 @@ export const wirePlugin = async (
       try {
         await startFn(bus);
         if (capability === "service" && typeof inst.stop === "function") {
+          undo.push(async () => {
+            const i = serviceStops.findIndex((x) => x.name === lp.manifest.name);
+            if (i >= 0) {
+              const [removed] = serviceStops.splice(i, 1);
+              try {
+                await removed?.stop();
+              } catch {
+                /* 이미 죽었을 수 있다 */
+              }
+            }
+          });
           serviceStops.push({
             name: lp.manifest.name,
             stop: inst.stop.bind(inst),

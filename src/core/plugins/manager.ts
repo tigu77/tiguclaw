@@ -1,0 +1,245 @@
+// src/core/plugins/manager.ts
+/**
+ * **돌고 있는 플러그인을 켜고 끄는 자리** — 재부팅 없이 (2026-08-28).
+ *
+ * ★정태님: *"실제로 대시보드에서 외부 플러그인을 설치한다고 했을 때 재부팅 없이 가능한
+ *  거야? 목록을 보여주고 설치 및 제거하는 거지. 이게 돼야 진짜 맞는 거잖아."* — 맞다.
+ *  **재부팅이 필요하면 그건 설치가 아니라 배포다.**
+ *
+ * ★재보니 절반은 이미 됐다: 자산은 요청마다 디스크를 읽고, 위젯 빌더는 지연 로드되고,
+ *  MCP 레지스트리는 **턴마다** 읽히므로 새 도구가 다음 턴에 보인다. 없던 건 **되돌리는
+ *  길**이었다 — 레지스트리에 넣기만 하고 빼는 함수가 0이었고, *"이 플러그인이 무엇을
+ *  등록했나"* 를 아무도 안 적어 뒀다. 그건 `wirePlugin` 이 `dispose` 를 돌려주게 해서 풀었다.
+ *
+ * ★**정직한 한계 둘**:
+ *  ① **코드는 안 사라진다.** ESM 은 언로드가 없다 — 제거는 *"더 이상 불리지 않는다"* 까지고,
+ *     이미 잡힌 클로저·참조는 프로세스에 남는다. 진짜 언로드는 프로세스 경계가 필요하다(§H).
+ *  ② **갱신은 캐시를 우회해야 한다.** 같은 경로를 다시 `import` 하면 **같은 객체**다(실측).
+ *     그래서 재설치는 URL 에 지문을 붙인다. 옛 인스턴스가 남긴 타이머·리스너는 `stop` 이
+ *     회수해야 하고, 안 하면 새는 건 플러그인 책임이다 — 그래서 `stop` 이 계약이다.
+ */
+import {
+  loadPlugins,
+  scanPluginManifests,
+  type LoadedPlugin,
+  type PluginMeta,
+} from "./loader.js";
+import { wirePlugin, type WirePluginDeps, type WireResult } from "./wire.js";
+import { describeNeeds } from "./host.js";
+import { settingsForClient } from "./settings.js";
+import { appRoot, getPaths } from "../paths.js";
+import { setModuleDisabled } from "../settings.js";
+import path from "node:path";
+
+export interface LivePlugin {
+  readonly name: string;
+  /** 어디서 왔나 — `bundled`(앱과 함께) 또는 `home`(사용자가 깐 것). */
+  readonly source: "bundled" | "home";
+  readonly dir: string;
+  readonly capabilities: readonly string[];
+  /** 플러그인 자기 버전 — 목록에 보여주고, 갱신 여부를 사람이 판단하는 근거. */
+  readonly version?: string;
+  /** 사람이 읽는 요구사항 한 줄 — 목록·설치 안내가 **같은 문장**을 쓴다. */
+  readonly needs: string;
+  readonly wired: readonly string[];
+  readonly dispose: () => Promise<void>;
+}
+
+const LIVE = new Map<string, LivePlugin>();
+
+/**
+ * 배선 재료 — 부팅이 한 번 준다.
+ *
+ * ★인자로 들고 다니지 않는 이유: 설치·켜기를 부르는 곳은 **브리지 엔드포인트**인데 거기엔
+ *  `bus`·`channels`·`serviceStops` 가 없다. 호출부마다 넘기게 하면 그 세 개가 코드 여기저기로
+ *  퍼지고, 그게 나중에 격리를 넣을 때 걷어내야 할 결합이 된다. 한 곳에 둔다.
+ */
+let DEPS: WirePluginDeps | undefined;
+
+/** 부팅이 배선 재료를 넘겨준다. 이게 없으면 런타임 설치·켜기가 안 된다(정직하게 거절). */
+export const initPluginManager = (deps: WirePluginDeps): void => {
+  DEPS = deps;
+};
+
+const needDeps = (): WirePluginDeps => {
+  if (DEPS === undefined) {
+    throw new Error("플러그인 관리자가 아직 준비되지 않았습니다(부팅 중일 수 있습니다)");
+  }
+  return DEPS;
+};
+
+/** 부팅 배선이 끝난 플러그인을 등록한다 — 그래야 나중에 뺄 수 있다. */
+export const trackPlugin = (
+  lp: LoadedPlugin,
+  source: "bundled" | "home",
+  wired: WireResult,
+): void => {
+  LIVE.set(lp.manifest.name, {
+    name: lp.manifest.name,
+    source,
+    dir: lp.pluginDir,
+    capabilities: lp.capabilities,
+    ...(lp.manifest.version !== undefined ? { version: lp.manifest.version } : {}),
+    needs: describeNeeds(lp.manifest.needs ?? {}),
+    wired: wired.wired,
+    dispose: wired.dispose,
+  });
+};
+
+/** 지금 돌고 있는 것. */
+export const listLivePlugins = (): LivePlugin[] => [...LIVE.values()];
+
+export interface PluginListItem {
+  readonly name: string;
+  readonly source: "bundled" | "home";
+  readonly version?: string;
+  readonly needs: string;
+  readonly capabilities: readonly string[];
+  readonly wired: readonly string[];
+  /** 지금 돌고 있나. 꺼진 것도 목록엔 나온다(안 그러면 다시 못 켠다). */
+  readonly enabled: boolean;
+  /** 사람이 알아야 할 것(설명·만든 사람·링크·라이선스) — npm 표준 필드에서 온다. */
+  readonly meta: PluginMeta;
+  /**
+   * 설정 **선언 + 현재 값** — 화면은 이걸로 행을 만든다(§D.2).
+   *
+   * ★`secret` 은 값을 안 싣는다(`hasSecret` 만). 이 응답은 브라우저로 나간다.
+   */
+  readonly settings: ReturnType<typeof settingsForClient>;
+}
+
+/**
+ * **꺼진 것까지 포함한 목록** — 대시보드가 이걸 본다.
+ *
+ * ★`LIVE` 만 보여주면 끄는 순간 사라져 **다시 켤 수가 없다**(일방통행 문). 그래서 두 뿌리의
+ *  매니페스트를 훑되, **코드는 실행하지 않는다**(`scanPluginManifests`).
+ * ★같은 이름이면 **번들이 이긴다** — 로더·자산 라우트와 같은 우선순위다.
+ */
+export const listAllPlugins = async (): Promise<PluginListItem[]> => {
+  const roots: Array<{ root: string; source: "bundled" | "home" }> = [
+    { root: path.join(appRoot(), "plugins"), source: "bundled" },
+    { root: getPaths().commonPlugins, source: "home" },
+  ];
+  const seen = new Map<string, PluginListItem>();
+  for (const { root, source } of roots) {
+    for (const m of await scanPluginManifests(root)) {
+      if (seen.has(m.manifest.name)) continue; // 번들이 먼저다.
+      const live = LIVE.get(m.manifest.name);
+      seen.set(m.manifest.name, {
+        name: m.manifest.name,
+        source,
+        ...(m.manifest.version !== undefined ? { version: m.manifest.version } : {}),
+        needs: describeNeeds(m.manifest.needs ?? {}),
+        meta: m.manifest.meta ?? {},
+        capabilities: m.capabilities,
+        wired: live?.wired ?? [],
+        enabled: live !== undefined,
+        settings: settingsForClient(m.manifest.name, m.manifest.settings ?? []),
+      });
+    }
+  }
+  return [...seen.values()];
+};
+
+/**
+ * 제거 — 등록한 것을 전부 되돌리고 목록에서 뺀다.
+ *
+ * ★**번들은 못 뺀다.** 앱과 함께 오는 것을 런타임에 끄면 되돌릴 길이 애매해지고, 그건
+ *  `modules.disabled`(설정) 의 일이다 — 그쪽은 재부팅 시 반영되고 기록으로 남는다.
+ *  [[project_self_dev_flag_gate]] 와 같은 결: 되돌릴 수 없게 만들지 않는다.
+ */
+export const removePlugin = async (
+  name: string,
+): Promise<{ ok: boolean; reason?: string }> => {
+  const live = LIVE.get(name);
+  if (live === undefined) return { ok: false, reason: "그런 플러그인이 없습니다" };
+  if (live.source === "bundled") {
+    return {
+      ok: false,
+      reason: "번들 플러그인은 제거하지 않습니다 — 설정의 모듈 비활성으로 끄세요.",
+    };
+  }
+  await live.dispose();
+  LIVE.delete(name);
+  console.log(`[plugin-manager] 제거: ${name}`);
+  return { ok: true };
+};
+
+/**
+ * 끄기·켜기 — **재부팅 없이**, 그리고 설정에 기록한다 (2026-08-28).
+ *
+ * ★제거와 다르다: 폴더는 그대로 두고 **배선만 걷는다.** 그래서 **번들에도 된다** —
+ *  번들은 제거할 수 없지만 끌 수는 있고, 그게 사용자가 실제로 원하는 것이다.
+ * ★기록이 있어야 재부팅 뒤에도 유지된다 — `settings.json` 의 `modules` 가 그 자리다
+ *  (없으면 켜짐 · 어느 레이어든 `enabled:false` 면 꺼짐).
+ * ★**서버 코드 변경은 이걸로 못 고친다.** 껐다 켜도 ESM 캐시 때문에 옛 코드가 돈다
+ *  (실측: 엔트리만 무효화하면 하위 모듈은 옛것 그대로 — 반만 새것인 상태가 더 나쁘다).
+ *  그건 프로세스 경계가 필요하고, 그래서 **갱신과 격리는 같은 문제**다(설계 §H).
+ */
+export const setPluginEnabled = async (
+  name: string,
+  enabled: boolean,
+): Promise<{ ok: boolean; reason?: string; codeReloaded: boolean }> => {
+  const deps = needDeps();
+  const live = LIVE.get(name);
+  if (!enabled) {
+    if (live === undefined) return { ok: false, reason: "그런 플러그인이 없습니다", codeReloaded: false };
+    await live.dispose();
+    LIVE.delete(name);
+    setModuleDisabled(name, true);
+    console.log(`[plugin-manager] 끔: ${name}`);
+    return { ok: true, codeReloaded: false };
+  }
+  // 켜기 — 설정을 먼저 되돌려야 로더의 `isModuleActive` 가 통과시킨다.
+  setModuleDisabled(name, false);
+  if (live !== undefined) return { ok: true, codeReloaded: false }; // 이미 돌고 있다.
+  const roots: Array<{ root: string; source: "bundled" | "home" }> = [
+    { root: path.join(appRoot(), "plugins"), source: "bundled" },
+    { root: getPaths().commonPlugins, source: "home" },
+  ];
+  for (const { root, source } of roots) {
+    const found = (await loadPlugins(root, deps.bus)).find((p) => p.manifest.name === name);
+    if (found === undefined) continue;
+    const wired = await wirePlugin(found, deps);
+    trackPlugin(found, source, wired);
+    console.log(`[plugin-manager] 켬: ${name} (${source}) · ${describeNeeds(found.manifest.needs ?? {})}`);
+    // ★**코드는 새로 안 읽혔다** — ESM 캐시가 옛 모듈을 준다. 정직하게 알린다.
+    return { ok: true, codeReloaded: false };
+  }
+  return { ok: false, reason: `${name} 을(를) 어느 뿌리에서도 못 찾았습니다`, codeReloaded: false };
+};
+
+/**
+ * 설치 — `<home>/plugins/<name>` 을 지금 읽어 배선한다(재부팅 없이).
+ *
+ * @param name 홈 플러그인 폴더 이름. 폴더는 **이미 거기 있어야** 한다 — 이 함수는 파일을
+ *   가져오지 않는다(원격 다운로드는 격리 이후다, 설계 §H).
+ *
+ * ★같은 이름이 이미 살아 있으면 **먼저 되돌린다** — 그게 "재설치" 다.
+ * ★번들과 이름이 겹치면 거부한다: 홈에서 코어 플러그인을 가로채는 건 공격면이다.
+ */
+export const installHomePlugin = async (
+  name: string,
+): Promise<{ ok: boolean; reason?: string; needs?: string; wired?: readonly string[] }> => {
+  const deps = needDeps();
+  const existing = LIVE.get(name);
+  if (existing !== undefined && existing.source === "bundled") {
+    return { ok: false, reason: "같은 이름의 번들 플러그인이 있습니다(번들이 이깁니다)" };
+  }
+  const root = getPaths().commonPlugins;
+  // ★로더를 **그대로 쓴다** — 매니페스트 검사·권한 파싱·클래스 요구가 부팅과 같은 판정이어야
+  //  한다. 여기서 따로 읽으면 그게 두 번째 사본이고, 둘은 반드시 갈린다.
+  const found = (await loadPlugins(root, deps.bus)).find((p) => p.manifest.name === name);
+  if (found === undefined) {
+    return {
+      ok: false,
+      reason: `${path.join(root, name)} 에서 유효한 플러그인을 못 찾았습니다(로그에 사유가 있습니다)`,
+    };
+  }
+  if (existing !== undefined) await existing.dispose(); // 재설치 — 먼저 되돌린다.
+  const wired = await wirePlugin(found, deps);
+  trackPlugin(found, "home", wired);
+  const needs = describeNeeds(found.manifest.needs ?? {});
+  console.log(`[plugin-manager] 설치: ${name} · ${needs} · 꽂힘 [${wired.wired.join(", ")}]`);
+  return { ok: true, needs, wired: wired.wired };
+};

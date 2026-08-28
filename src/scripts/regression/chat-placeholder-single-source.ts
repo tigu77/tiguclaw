@@ -35,8 +35,11 @@ const findWriters = async (): Promise<string[]> => {
     const setsAttr = /setAttribute\(\s*["']placeholder["']/.test(src);
     const setsProp = /\.placeholder\s*=/.test(src);
     if (!setsAttr && !setsProp) continue;
-    // prompt-options.js 는 **다른 입력창**(선택지 '기타' 입력)이다 — 대상 밖.
-    if (f === "prompt-options.js") continue;
+    // ★**이름을 세지 않고 대상을 본다** (2026-08-28). 종전엔 `prompt-options.js` 를 손으로
+    //  예외 처리했는데, 그건 목록이라 파일이 늘 때마다 자란다 — 실제로 플러그인 뷰의 설치
+    //  입력칸이 걸려서 두 번째 예외가 될 뻔했다. 이 규칙이 지키는 건 **채팅 입력창**이므로,
+    //  그 입력창을 만지지 않는 파일은 애초에 대상이 아니다([[feedback_hand_maintained_lists]]).
+    if (!/chat-input/.test(src)) continue;
     hits.push(f);
   }
   return hits.sort();

@@ -44,6 +44,18 @@ const NOT_SHIPPED = [
   "docs/roadmap.md",
   // 비즈니스 비전 — 상용 전략 + "지금 백엔드로는 팔면 약관 위반" 이라는 자기 진술(2026-08-26).
   "docs/vision-business.md",
+  // ★**예제 플러그인은 공개본에 안 넣는다** (2026-08-29 정태님). 이유는 코드 품질이 아니라
+  //  **제공자 약관**이다: 날씨는 Open-Meteo, 지도는 OpenStreetMap 타일을 쓰는데, 개인
+  //  기계에서 쓰는 것과 **앱에 실어 배포하는 것**은 제공자 입장에서 다른 일이다(특히 OSM
+  //  타일 정책은 앱 배포를 명시적으로 제한한다). 확인 전에 넣으면 **빼기가 어렵다** —
+  //  한 번 나간 것은 사용자 홈에 남고, 지우는 건 우리 손을 떠난다.
+  // ★대신 dev 에는 그대로 두고 도그푸딩한다. 플랫폼 릴리즈 때 **레포 밖으로 옮겨**
+  //  서드파티와 같은 경로(홈 설치)로 쓰는 것이 종착점이다.
+  "plugins/weather/",
+  "plugins/map/",
+  // 그 둘을 픽스처로 쓰는 회귀 — 대상이 배포본에 없다. `bench-*` 와 같은 규칙:
+  // **없는 것을 검사하는 검사는 배포하지 않는다**(정적 import 가 배포 typecheck 를 깬다).
+  "src/scripts/regression/plugin-widget-end-to-end.ts",
 ];
 /** 배포 manifest 가 빼는 개발 전용 문서 — 검사 대상에서도 빠진다. */
 const DEV_ONLY = [...NOT_SHIPPED, "CLAUDE.md", "PROJECT.md", "_workspace/", ".claude/", ".tiguclaw/"];

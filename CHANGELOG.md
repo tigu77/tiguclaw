@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-08-29
+
+### Added
+
+- **홈에 위젯을 둘 수 있습니다.** 대시보드 홈에 카드를 올려두고 늘 볼 수 있습니다. 배치는
+  **말로 합니다** — *"지금 돌고 있는 작업을 홈 맨 위에 둬"* 처럼요. 격자를 손으로 미는
+  화면은 없습니다(필요해지면 그때 만듭니다).
+- **「지금 돌고 있는 작업」 위젯.** 백그라운드 작업을 보려고 서랍을 열 필요 없이 홈에서
+  바로 봅니다. 작업이 없으면 그렇다고 말합니다.
+- **플러그인이 화면과 설정을 더할 수 있습니다.** 플러그인이 *"이런 걸 물어봐 주세요"* 라고
+  적어두면 설정 화면에 **저절로** 행이 생기고, 답변이나 홈에 자기 카드를 그릴 수 있습니다.
+  비밀번호·열쇠 같은 값은 화면에 안 나오고 **있다/없다만** 보입니다.
+- **플러그인 메뉴** — 목록·켜기·끄기·설치·제거를 한 자리에서. 켜고 끄는 데 재시작이
+  필요 없습니다. 누가 만들었는지·어떤 권한을 요구하는지도 함께 봅니다.
+- **플러그인이 자기 번역을 들고 옵니다.** 영어로 쓰시면 플러그인 문구도 영어로 나옵니다.
+
+### Changed
+
+- **다른 대화에서 온 알림에 출처가 붙습니다.** 텔레그램으로 함께 받는 답이 어느 대화에서
+  왔는지 앞에 표시됩니다(평소 쓰는 기본 대화는 그대로입니다). 여러 대화를 오갈 때
+  *"이건 뭐지"* 가 없어집니다.
+- **업데이트 내역**을 설정에서 전부 봅니다(확인창은 한 줄로 짧아졌습니다).
+- **새 화면이 나오면 브라우저가 스스로 새로고침**합니다 — 옛 화면을 계속 보고 있는 일이
+  없어집니다.
+
+### Fixed
+
+- **긴 대화에서 카드가 사라지던 것.** 위로 스크롤했다 내려오면 플러그인 카드가 빈 칸이
+  됐습니다. 이제 다시 그려집니다.
+- **새로고침하면 카드가 안 뜨던 것**, **업데이트가 없는데 「업데이트 내역」 행이 뜨던 것**.
+- 모바일에서 **턴 카드 머리글이 세로로 흐르던 것**.
+
 ## [0.41.0] - 2026-08-27
 
 ### Added
@@ -1679,7 +1711,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.41.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.42.0...HEAD
+[0.42.0]: https://github.com/tigu77/tiguclaw/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/tigu77/tiguclaw/compare/v0.40.1...v0.41.0
 [0.40.1]: https://github.com/tigu77/tiguclaw/compare/v0.40.0...v0.40.1
 [0.40.0]: https://github.com/tigu77/tiguclaw/compare/v0.39.0...v0.40.0

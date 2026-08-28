@@ -120,7 +120,14 @@ export interface LoadedSettings {
    * 2026-07-17-module-capability-model §5.6 MVP). loadPlugins 가 이 목록을 스킵.
    * 코어(라우터·스토어)는 이 목록과 무관 — 애초에 kind:plugin 이 아니다.
    */
-  modules?: { disabled?: unknown };
+  /**
+   * 모듈(플러그인) 상태.
+   *
+   * ★**두 모양을 다 읽는다** (2026-08-28). 새 모양은 이름별 객체(`{ weather: { enabled: false } }`)
+   *  이고 옛 모양은 이름 배열(`{ disabled: ["weather"] }`)이다. 이 레포엔 설치본이 넷 돌고
+   *  있어서 한쪽만 읽으면 **그 기계들이 조용히 설정을 잃는다.** 쓰기는 새 모양으로만 한다.
+   */
+  modules?: { disabled?: unknown; [name: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -1140,10 +1147,25 @@ export const setSuggestionEnabled = (enabled: boolean): void => {
 const readDisabledModules = (cwd: string = process.cwd()): Set<string> => {
   const disabled = new Set<string>();
   for (const layer of loadSettingsLayers(cwd)) {
-    const list = layer.modules?.disabled;
-    if (!Array.isArray(list)) continue;
-    for (const name of list) {
-      if (typeof name === "string" && name.trim() !== "") disabled.add(name.trim());
+    const m = layer.modules;
+    if (m === undefined || m === null || typeof m !== "object") continue;
+    // ── 옛 모양: `disabled: ["a","b"]` (읽기 계속 지원) ──
+    const list = (m as { disabled?: unknown }).disabled;
+    if (Array.isArray(list)) {
+      for (const name of list) {
+        if (typeof name === "string" && name.trim() !== "") disabled.add(name.trim());
+      }
+    }
+    // ── 새 모양: `{ a: { enabled: false } }` ──
+    // ★**AND 로 합친다** — 어느 레이어든 `enabled: false` 면 꺼짐이다. 순진하게 "나중
+    //  레이어가 이김" 으로 하면 **프로젝트 설정이 홈의 차단을 되살린다** — 그건 편의가
+    //  아니라 보안 성질이 뒤집히는 것이다(옛 배열이 합집합이었던 이유가 그거다).
+    // ★**없으면 켜짐**이다. 침묵을 꺼짐으로 읽으면 `/update` 로 새 번들 플러그인이 들어왔을
+    //  때 **조용히 안 뜬다** — 사용자는 기능이 없어진 줄 안다.
+    for (const [name, v] of Object.entries(m as Record<string, unknown>)) {
+      if (name === "disabled") continue; // 옛 키는 위에서 처리했다.
+      if (v === null || typeof v !== "object" || Array.isArray(v)) continue;
+      if ((v as { enabled?: unknown }).enabled === false) disabled.add(name);
     }
   }
   return disabled;
@@ -1184,15 +1206,22 @@ export const setModuleDisabled = (name: string, disabled: boolean): void => {
     !Array.isArray(existingModules)
       ? (existingModules as Record<string, unknown>)
       : {};
+  // ★**새 모양으로 쓴다** — 이름별 객체. 옛 배열은 읽기만 지원하고(위 `readDisabledModules`),
+  //  여기서 그 이름을 **빼 준다**: 두 모양이 같은 이름을 두고 서로 다른 말을 하면 AND 규칙
+  //  때문에 "켜기" 가 영영 안 먹는다(배열이 계속 이긴다).
   const existingList = modules.disabled;
-  const current = new Set<string>(
-    Array.isArray(existingList)
-      ? existingList.filter((x): x is string => typeof x === "string")
-      : [],
-  );
-  if (disabled) current.add(name);
-  else current.delete(name);
-  modules.disabled = [...current].sort();
+  if (Array.isArray(existingList)) {
+    const rest = existingList.filter((x) => typeof x === "string" && x !== name);
+    if (rest.length > 0) modules.disabled = rest.sort();
+    else delete modules.disabled;
+  }
+  const prev = modules[name];
+  const entry: Record<string, unknown> =
+    prev !== null && typeof prev === "object" && !Array.isArray(prev)
+      ? (prev as Record<string, unknown>)
+      : {};
+  entry.enabled = !disabled;
+  modules[name] = entry;
   root.modules = modules;
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;

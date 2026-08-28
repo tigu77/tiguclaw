@@ -72,6 +72,8 @@ import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
+import { reaches, turnKindOf } from "../capability-reach.js";
+import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -284,6 +286,8 @@ export const runOpenAi = async (
   // discoveryCwd — 스킬/스폰 발견 cwd. codex 답습(input.cwd ?? home). β: home 폴백.
   const discoveryCwd = input.cwd ?? getPaths().home;
   const depth = input.subagentDepth ?? 0;
+  // ★도구 노출 사다리 — 판정은 `capability-reach.ts` 한 곳(claude·codex 와 같은 표).
+  const turnKind = turnKindOf(input);
 
   // lean 도구 정책 (2026-06-15, architect §2a I-2). 중립 신호 toolPolicy 를 *이 어댑터의
   // 도구 집합*(MCP 서버들)에서 해석한다 — 도구명 매핑은 어댑터 안(추상 누수 0, I-3).
@@ -406,7 +410,7 @@ export const runOpenAi = async (
 
   // spawn_agent — depth 0 turn 만 등록(child depth≥1 미등록 → 재spawn 물리 차단).
   // codex L932-940 답습. runner 인자 주입(circular 회피)은 팩토리 내부 처리.
-  if (!toolsNone && depth === 0) {
+  if (!toolsNone && reaches("agents", turnKind)) {
     mcpServers.push(
       // 잡 소유 브리지 — 안쪽 경계(잡 상한)보다 넉넉한 천장(codex 어댑터와 동형).
       await adaptClaudeMcpServer(
@@ -420,7 +424,7 @@ export const runOpenAi = async (
   // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
   // depth 0 + workerDepth 0 turn 만 등록 → 워커가 또 워커 발사 불가(W-I5). lean(none)
   // 은 미등록(toolsNone). codex/claude 와 동일 의미(W-I3 — 어댑터 분기 0).
-  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+  if (!toolsNone && reaches("workers", turnKind)) {
     mcpServers.push(
       await adaptClaudeMcpServer(createWorkerMcpServer(input), "workers"),
     );
@@ -430,7 +434,7 @@ export const runOpenAi = async (
   // list_endpoints/delete_endpoint. worker 와 *동일* 가드(!toolsNone && depth 0 &&
   // workerDepth 0). lean(none = restricted 엔드포인트 턴)이면 미등록 → 엔드포인트가
   // 또 엔드포인트를 만드는 재귀 자연 차단. claude/codex 와 동일 의미(어댑터 분기 0).
-  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+  if (!toolsNone && reaches("endpoints", turnKind)) {
     mcpServers.push(
       await adaptClaudeMcpServer(createEndpointToolsMcpServer(), "endpoints"),
     );
@@ -440,7 +444,7 @@ export const runOpenAi = async (
   // list_commands/delete_command. endpoint/worker 와 *동일* 가드(!toolsNone && depth 0
   // && workerDepth 0). lean(none) 이면 미등록. claude/codex 와 동일 의미(어댑터 분기 0).
   // 슬래시 명령은 항상 prompt 라 mode 무관.
-  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+  if (!toolsNone && reaches("commands", turnKind)) {
     mcpServers.push(
       await adaptClaudeMcpServer(createCommandToolsMcpServer(), "commands"),
     );
@@ -449,19 +453,31 @@ export const runOpenAi = async (
   // 외부 MCP 등록 도구 (2026-07-07) — add/list/remove_mcp_server. endpoint/command 와
   // *동일* 가드. 파일(<home>/mcp.json)만 다룸. claude/codex 와 parity(#2 — 도구 분기 0).
   // (외부 MCP 실연결 브리지는 Phase 2 — 지금은 등록 도구만 3어댑터 대칭.)
-  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+  if (!toolsNone && reaches("mcp-admin", turnKind)) {
     mcpServers.push(
       await adaptClaudeMcpServer(createMcpAdminMcpServer(), "mcp-admin"),
     );
-    // 모델 추론 강도 손잡이(set_model_reasoning) — claude/codex 와 parity(#2).
-    // ★cwd 는 위 resolveReasoningEffort 호출과 **같은 값**을 준다(input.cwd, 미지정 시
-    //  process.cwd()) — 도구가 쓰고 나서 되읽는 유효값이 어댑터가 실제로 볼 값과 갈리면,
-    //  "프로젝트 층이 덮고 있다" 경고가 거짓말을 한다.
+  }
+
+  // 모델 추론 강도 손잡이(set_model_reasoning) — claude/codex 와 parity(#2).
+  // ★cwd 는 위 resolveReasoningEffort 호출과 **같은 값**을 준다(input.cwd, 미지정 시
+  //  process.cwd()) — 도구가 쓰고 나서 되읽는 유효값이 어댑터가 실제로 볼 값과 갈리면,
+  //  "프로젝트 층이 덮고 있다" 경고가 거짓말을 한다.
+  // ★종전엔 mcp-admin 과 **한 조건문**을 같이 썼다. 이름마다 물어야 표(`REACH`)가 실제로
+  //  판정에 쓰이고, 셋 중 하나의 등급을 바꿔도 나머지가 딸려가지 않는다.
+  if (!toolsNone && reaches("model-settings", turnKind)) {
     mcpServers.push(
       await adaptClaudeMcpServer(
         createModelSettingsMcpServer(input.cwd ?? process.cwd()),
         "model-settings",
       ),
+    );
+  }
+
+  // 홈 위젯 배치(configure_home) — claude/codex 와 parity(§J.5).
+  if (!toolsNone && reaches("home-widgets", turnKind)) {
+    mcpServers.push(
+      await adaptClaudeMcpServer(createHomeWidgetsMcpServer(), "home-widgets"),
     );
   }
 
@@ -471,7 +487,7 @@ export const runOpenAi = async (
   // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
   if (
     !toolsNone &&
-    ((depth === 0 && (input.workerDepth ?? 0) === 0) || isProjectMcpCwd(input.cwd))
+    (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
   ) {
     for (const bridge of await getConnectedExternalMcpBridges(input.cwd)) {
       mcpServers.push(bridge);
@@ -482,7 +498,7 @@ export const runOpenAi = async (
   // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀 차단).
   // 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey 에서
   // 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. claude/codex 와 parity(#2).
-  if (!toolsNone && depth === 0 && (input.workerDepth ?? 0) === 0) {
+  if (!toolsNone && reaches("update-self", turnKind)) {
     mcpServers.push(
       await adaptClaudeMcpServer(
         createUpdateSelfMcpServer(
@@ -499,7 +515,9 @@ export const runOpenAi = async (
 
   // extraMcpServers — router 가 facade 통해 전달하는 plugin MCP(scheduler add_schedule 등).
   // codex L946-953 / claude mcpServers spread 와 동등(LLM-agnostic parity). lean 은 생략.
-  if (!toolsNone) {
+  // ★`REACH.plugins` 가 오늘의 답("전부")을 명시로 들고 있다 — 조건 없는 통과로 두면
+  //  그게 결정인지 빠뜨림인지 코드만 봐선 모른다.
+  if (!toolsNone && reaches("plugins", turnKind)) {
     // ★공유 브리지 — 인스턴스당 하나(codex 와 동일). MCP 인스턴스는 transport 를
     //  하나만 갖고, 같은 인스턴스를 find_capabilities 가 또 어댑팅한다.
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {

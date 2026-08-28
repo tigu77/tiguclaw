@@ -44,6 +44,9 @@ Where it diverges from similar tools.
 - **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core.
 - **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and managers run another; edit them just by asking, or list them with `/models`.
 - **Watch the work happen.** Sub-agents and long-running managers run as tracked jobs you follow in the dashboard — status, steps, results.
+- **Arrange your home with widgets.** Keep cards on the dashboard home and see them at a glance —
+  and **place them by talking**: *"put what's running at the top of my home."* There's no grid to drag.
+  Widgets come from plugins, so you install only the ones you want.
 - **Extend it by asking.** New slash commands, HTTP endpoints, scheduled jobs, reusable skills — it adds them as *data* under your home, never by patching the core (so updates stay clean).
 - **Use it as your apps' LLM backend.** Point any OpenAI-compatible client at the built-in gateway (`POST /v1/chat/completions`, `GET /v1/models`) and your own app inherits the whole pool — cross-provider fallback, images in, tool calls passed straight through, streaming if you ask for it. One endpoint instead of one SDK per provider. Off until you set a gateway token, and it answers as *your app*, never as the assistant.
 - **See what a turn costs — and what actually answered.** Every turn shows tokens in / out and the cache-hit rate right in the chat, so waste is visible instead of theoretical. Each reply, tool run, and background job is labelled with the model that *actually* produced it — which is not always the tier you asked for, once a rate limit sends work to a fallback. `/status` names any model that's cooling down.
@@ -86,7 +89,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 
 - **Core** — one LLM runtime (adapter pool: claude / codex / openai / ollama / google) + router + SQLite store (sessions, memory, transcripts).
 - **Channels** — Telegram / CLI / HTTP adapters render one abstract intent per channel.
-- **Plugins** — scheduler (cron), file-watch, dashboard, http-bridge (dashboard API + the OpenAI-compatible gateway), self-growth (learns & proposes) — extend without touching the core.
+- **Plugins** — extend without touching the core. Beyond tools, triggers and channels, a plugin can add **screen and settings** too: draw its own card in a reply or on your home screen, add its own rows to the settings page, and bring its own translations. To see what's installed, open **Dashboard → Plugins** (listing names here would go stale every time one is added).
 - **Capabilities are data** — agents, skills, memory, and hooks under `<home>/` extend the assistant endlessly (a microkernel + plugin ecosystem).
 
 ---

@@ -1,5 +1,5 @@
 /**
- * 백그라운드 워커 잡 영속 (메타만) — 재시작 정직 통지용.
+ * 백그라운드 매니저 잡 영속 (메타만) — 재시작 정직 통지용.
  *
  * 런타임 진실 소스는 `core/worker-jobs.ts` 의 in-memory Map. 이 모듈은 그 메타를
  * SQLite 에 미러해 *데몬 재시작 생존*만 담당한다. 부팅 시 status='running' 으로 남아있는
@@ -17,7 +17,7 @@ export type PersistedJobStatus =
   | "interrupted";
 
 /**
- * 워커 완료/실패 통지 목적지 — generic 좌표(어느 플러그인이 채웠는지 store 무관).
+ * 매니저 완료/실패 통지 목적지 — generic 좌표(어느 플러그인이 채웠는지 store 무관).
  * core/worker-jobs.ts 의 `WorkerNotifyDest` 와 동형(코어 export 확정 전까지 구조적 호환
  * 로컬 정의). store 는 이 형 ↔ notify_channel/notify_target 2 컬럼 변환만 담당하며
  * scheduler·채널 의미를 해석하지 않는다(단방향: store 는 generic channel/target 만 봄).
@@ -48,7 +48,7 @@ export interface PersistedWorkerJob {
   /** 서브에이전트 정의 이름(kind==='agent' 만). 대시보드 라벨용. */
   agentName?: string;
   /**
-   * **실행 축** — 소환자가 기다리지 않는 잡인가(워커 전부 + `spawn_agent(wait:false)`).
+   * **실행 축** — 소환자가 기다리지 않는 잡인가(매니저 전부 + `spawn_agent(wait:false)`).
    * 재시작 복구가 "통지할 소환자가 있나" 를 이걸로 가른다: awaited 서브는 부모 턴이
    * 같이 사라져 통지 대상이 없지만, detached 는 소환자가 살아 있어 **말해줘야 한다**.
    */
@@ -94,9 +94,9 @@ const toJob = (r: DbRow): PersistedWorkerJob => ({
   // kind 미존재(구 레코드)·비정상값이면 'worker'(회귀 안전).
   kind: r.kind === "agent" ? "agent" : "worker",
   agentName: r.agent_name ?? undefined,
-  // 구 레코드(컬럼 부재/NULL)는 0 → awaited. 워커는 등록 시 항상 1을 쓴다.
+  // 구 레코드(컬럼 부재/NULL)는 0 → awaited. 매니저는 등록 시 항상 1을 쓴다.
   detached: r.detached === 1,
-  // 채널이 영속돼 있을 때만 dest 복원(미지정 = 기존 워커 → undefined → core 폴백).
+  // 채널이 영속돼 있을 때만 dest 복원(미지정 = 기존 매니저 → undefined → core 폴백).
   notifyDest:
     r.notify_channel !== null
       ? { channel: r.notify_channel, target: r.notify_target }

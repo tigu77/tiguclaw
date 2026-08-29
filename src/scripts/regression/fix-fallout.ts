@@ -18,7 +18,7 @@
  *
  *  ③**취소가 삼켜졌다.** 내가 단 주석이 "취소류는 위에서 단락되니 여기 안 온다" 고 단언
  *   했는데 **거짓**이었다(단락되는 건 TurnTimeoutError 하나). 결과: `/stop` 후 가짜 에러
- *   답장 + 취소된 턴이 **성공으로** 적재, **워커 타임아웃이 "완료" 로 보고**.
+ *   답장 + 취소된 턴이 **성공으로** 적재, **매니저 타임아웃이 "완료" 로 보고**.
  *
  *  ④**`[fatal]` 을 `/logs` 가 버렸다.** 같은 날 `logFatal` 이 새 레벨을 만들었는데
  *   `LOG_LINE_PREFIX` 가 레벨을 **열거**해서 크래시 원인 줄이 통째로 접혔다 —
@@ -234,7 +234,7 @@ export const check: RegressionCheck = {
     const stallJ = "value" in stallR ? parse(stallR.value) : {};
     out.push(
       assert(
-        "★스톨 백오프 중 취소도 삼키지 않는다(워커 타임아웃이 '완료' 로 보고되던 것)",
+        "★스톨 백오프 중 취소도 삼키지 않는다(매니저 타임아웃이 '완료' 로 보고되던 것)",
         stallJ.outcome === "threw" && stallJ.identical === true,
         stallJ.outcome === "returned"
           ? "★정상 반환 = 취소가 삼켜졌다(가짜 답장 + 성공 적재)"

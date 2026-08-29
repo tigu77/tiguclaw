@@ -185,6 +185,7 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 | [전체 기능 목록](docs/features.md) | 위 여섯 가지에 안 담긴 전부 |
 | [훅](docs/hooks.md) | 도구 호출 관찰·차단 — Claude Code `hooks` 포맷 |
 | [LLM 게이트웨이](docs/gateway.md) | 내 앱의 OpenAI 호환 백엔드로 쓰기 |
+| [플러그인 만들기](docs/plugins.md) | 위젯 하나 + 도구 하나 — 계약 전부가 한 장에 |
 | [보안](docs/security.md) | 비서가 닿을 수 있는 것, 하기 전에 묻는 것 |
 | [코드 지도](docs/code-map.md) · [코어 경계](docs/core-boundaries.md) | 무엇이 어느 파일에 · 부팅·라우팅·권한의 흐름 |
 | [기여 안내](CONTRIBUTING.md) | 변경이 반영되는 방식 |

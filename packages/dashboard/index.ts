@@ -36,7 +36,7 @@
  *  - POST /api/session-name → bridge POST /session-name (write, 세션 커스텀 이름 설정)
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
  *  - POST /api/cancel-queued → bridge POST /cancel-queued (admin, 대기 중 메시지 취소)
- *  - POST /api/cancel-worker → bridge POST /cancel-worker (write, 진행 중 백그라운드 워커 취소)
+ *  - POST /api/cancel-worker → bridge POST /cancel-worker (write, 진행 중 백그라운드 매니저 취소)
  *  - GET  /api/shells    → bridge GET  /shells          (JSON pass, 백그라운드 셸 관측 레인 시드)
  *  - GET  /api/shell-output → bridge GET /shell-output  (JSON pass, ★비소비 tail 스냅샷 폴링)
  *  - POST /api/kill-shell → bridge POST /kill-shell     (write, 백그라운드 셸 강제 종료)
@@ -964,7 +964,7 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
-    // 진행 중 백그라운드 워커 취소 — bridge POST /cancel-worker (write 토큰 server-side
+    // 진행 중 백그라운드 매니저 취소 — bridge POST /cancel-worker (write 토큰 server-side
     // 주입, browser 미노출). 2026-07-16. body{jobId} 그대로 전달, /api/cancel-queued 와
     // 동일 프록시 메커니즘(POST /api/messages 동형).
     if (pathname === "/api/cancel-worker" && method === "POST") {

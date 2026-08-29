@@ -36,7 +36,7 @@ export interface OutboundInput {
   /**
    * 관측(`channel.message.out`) 발행 여부(additive, 기본 true) — 물리 발송(telegram send 등)은
    * 이 값과 무관하게 항상 수행한다. false 는 *핸들러(index.ts)가 관측을 발행하는 재주입 경로*
-   * 전용 — 워커 done 재주입 reply 가 물리 발송만 하고 관측은 핸들러 성공분기 단일 지점에
+   * 전용 — 매니저 done 재주입 reply 가 물리 발송만 하고 관측은 핸들러 성공분기 단일 지점에
    * 위임해, 일반 turn 과 대칭(대시보드 이중 버블 0)을 이루게 한다. 우회 통지(handler 미경유:
    * failed/cancelled·done 안전망·부팅 복구)는 이 값을 지정하지 않아 기본 true = 관측 유지.
    */
@@ -52,7 +52,7 @@ export interface OutboundInput {
   copyOfRecorded?: boolean;
   /**
    * 관측(세션 귀속)용 threadKey — 배달 좌표(channel/target)와 **독립**. 세션을 아는 caller 가
-   * 채운다(예: 스케줄·워커·통지가 `dashboard:default` 등 세션 id 를 실어보냄). 미전달 시 현행
+   * 채운다(예: 스케줄·매니저·통지가 `dashboard:default` 등 세션 id 를 실어보냄). 미전달 시 현행
    * 물리 채널 키(`threadKeyForObservation`) 폴백 = 회귀 0. §D3 정체성/표시 2분리: 관측
    * threadKey 는 *세션*이며 채널은 payload.channel 이 운반한다. opaque 문자열(세션 id)로만
    * 받는다 — 세션→값 결정은 caller(plugin) 몫(§0 단방향: 코어는 채널명 분기·telegram import 없음).

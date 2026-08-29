@@ -598,7 +598,7 @@
         setHistoryLoadState("loading"); // 받아보기 전엔 "없다"고 말하지 않는다.
         try {
           // 멀티세션(ADR 2026-07-15) — 초기 로드도 active 세션(기본=dashboard:default)만. 미지정이면
-          // 전 스레드 병합이라 텔레그램/워커가 섞임(D4 위배). threadKey 로 스코프.
+          // 전 스레드 병합이라 텔레그램/매니저가 섞임(D4 위배). threadKey 로 스코프.
           const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(activeThreadKey));
           if (!r.ok) { setHistoryLoadState("error"); return; } // 실패와 빈 대화는 다른 상태다.
           const data = await r.json().catch(() => ({}));

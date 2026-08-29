@@ -80,20 +80,20 @@ export const IDLE_TIMEOUT_CONFIG: IdleTimeoutConfig = {
 // idle/first 면제(아래, 2026-06-24) 도입으로 제거됨 — codex 의 큰 프리필 느린 TTFT 도
 // 더는 컷되지 않으니 비례 확장이 무의미. 입력-비례 가드의 역할은 면제가 통째로 흡수했다.
 
-// ── 전 턴 idle/first 면제 (메인·서브에이전트·워커 동형) ─────────────────────────
+// ── 전 턴 idle/first 면제 (메인·서브에이전트·매니저 동형) ─────────────────────────
 // 1층 idle/first 타임아웃은 본래 *인터랙티브* 턴 가정의 산물이었다(사용자 대기 →
 // 90s 무이벤트면 끊는 게 옳다는 발상). 그러나 실측(라이브 대화, 2026-06-24)에서
 // 메인 비서 턴이 100s~170s 짜리 *정상 Bash* 실행 중 idle(90s) 연속 오발화로
 // 응답을 유실했다. idle heartbeat 는 SDK 메시지 도착마다 beat() 인데, 긴 Bash(도구
 // 실행) 동안 SDK 메시지가 0이라 흐르는 작업인데도 90s 에 컷된다 — false-kill.
 //
-// 사용자 확정 결정(A안): 메인(workerDepth 0)·서브에이전트도 워커와 동형으로 idle/first
-// 면제. 따라서 1층 idle/first 는 *어떤 비서 턴도* 끊지 않는다. 워커가 이미 면제였고
+// 사용자 확정 결정(A안): 메인(workerDepth 0)·서브에이전트도 매니저와 동형으로 idle/first
+// 면제. 따라서 1층 idle/first 는 *어떤 비서 턴도* 끊지 않는다. 매니저가 이미 면제였고
 // (예: 712개 API 단일 Bash), 그 논리는 메인/서브에이전트에도 그대로 성립한다 —
 // "진행 중 작업을 임의 시간으로 컷하지 않는다"는 사용자 원칙.
 //
 // 회복 경로는 그대로 보존: 진짜 API 먹통은 /restart 아웃오브밴드·cancel_worker·외부
-// turn signal(linkAbort) 로 수동 회복하고, 워커는 2층 WORKER_TIMEOUT_MS(30분 wall-clock,
+// turn signal(linkAbort) 로 수동 회복하고, 매니저는 2층 WORKER_TIMEOUT_MS(30분 wall-clock,
 // abortSignal 경로)가 hung 백스톱을 별도로 건다. 면제는 1층(idle/first)만이다.
 //
 // 왜 #2(어댑터별 특수분기 금지)에 안 걸리나: 이 함수는 입력 속성(workerDepth)·어댑터
@@ -112,9 +112,9 @@ const IDLE_DISABLED_MS = 2_147_400_000;
 /**
  * 전 턴 idle/first 면제 설정.
  *
- * 메인(workerDepth 0)·서브에이전트·워커 모두 동일하게 idle/first 사실상 무제한(비활성).
+ * 메인(workerDepth 0)·서브에이전트·매니저 모두 동일하게 idle/first 사실상 무제한(비활성).
  * workerDepth/base 는 시그니처 호환을 위해 받지만 면제 결과는 동일 — 어떤 비서 작업도
- * 1층 idle/first 로 끊기지 않는다. hung 회복은 워커 2층 WORKER_TIMEOUT_MS 와
+ * 1층 idle/first 로 끊기지 않는다. hung 회복은 매니저 2층 WORKER_TIMEOUT_MS 와
  * /restart·cancel·외부 turn signal 이 담당한다.
  *
  * 세 어댑터가 createIdleTimer 직전 이 함수로 cfg 를 감싼다 → 단일 정책·parity.

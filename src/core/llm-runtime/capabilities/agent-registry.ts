@@ -398,7 +398,7 @@ const buildAgentChildInput = (o: {
  * 로 닫는다. 형태는 `worker-registry.ts` 의 runner 와 같다: 그쪽이 이미 스티어 채널·
  * 잔여 회수·자원 해제·통지를 다 갖고 있어서, 새 프리미티브가 **0개**다.
  *
- * ★워커 runner 와 **다른 점 하나**: 하드 백스톱(Promise.race)을 두지 않는다. 워커는
+ * ★매니저 runner 와 **다른 점 하나**: 하드 백스톱(Promise.race)을 두지 않는다. 매니저는
  *  `WORKER_TIMEOUT_MS` 를 갖지만 서브는 `createJobAbort(timeoutMs: SUBAGENT_TIMEOUT_MS)`
  *  가 이미 자체 상한이고, 그 위에 두 번째 상한을 얹으면 어느 쪽이 끊었는지 로그가
  *  갈린다(경계 순서 불변식은 *중첩*을 요구하지 중복을 요구하지 않는다).
@@ -471,10 +471,10 @@ export const startDetachedAgent = (o: {
 
       // ─── 하드 백스톱 — **형제(worker-registry)와 대칭** (2026-08-22) ──────────────
       //  ★없었다. `abort.signal` 은 LLM 스트림은 끊지만 hung MCP callTool 은 못 끊는다
-      //   (MCP 한계). 워커 레인엔 2026-06-20 에 이 race 가 들어갔는데 **이 레인은 그대로**
+      //   (MCP 한계). 매니저 레인엔 2026-06-20 에 이 race 가 들어갔는데 **이 레인은 그대로**
       //   였다 — 또 "한 쪽만 고치고 옆 레인을 안 봤다".
       //  실측(2026-08-22, `_workspace/probe_agent_timeout_notice.ts`): abort 를 무시하는
-      //   자식을 상한 400ms 로 띄우면 워커는 실패 통지 1건이 나가는데, 이 레인은 12초
+      //   자식을 상한 400ms 로 띄우면 매니저는 실패 통지 1건이 나가는데, 이 레인은 12초
       //   관측 내내 **잡이 running 으로 굳고 통지 0건**이었다. `onWorkerComplete` 가 영영
       //   안 불리므로 사용자는 끝났는지조차 모른다 — 사용자 신고 "타임아웃 이후 아무런
       //   응답이 없어" 의 실체.
@@ -488,7 +488,7 @@ export const startDetachedAgent = (o: {
         const hardDeadline = new Promise<never>((_resolve, reject) => {
           hardTimer = setTimeout(
             () => reject(new WorkerTimeoutError(SUBAGENT_TIMEOUT_MS)),
-            // ★클램프 필수 — 워커 레인과 같은 이유(검토 F2).
+            // ★클램프 필수 — 매니저 레인과 같은 이유(검토 F2).
             asFiniteTimeoutMs(SUBAGENT_TIMEOUT_MS + WORKER_HARD_GRACE_MS),
           );
           (hardTimer as { unref?: () => void }).unref?.();
@@ -508,7 +508,7 @@ export const startDetachedAgent = (o: {
     } finally {
       o.abort.done();
       // 스티어 채널 종료 + 잔여 회수. 서브에겐 다음 턴이 없으므로 그냥 close 하면 막
-      // 도착한 지시가 조용히 사라진다(워커와 같은 손실창 — 같은 처리로 닫는다).
+      // 도착한 지시가 조용히 사라진다(매니저와 같은 손실창 — 같은 처리로 닫는다).
       if (steerCh !== undefined) {
         // ★**레지스트리에서 현재 채널을 다시 읽는다** (2026-08-20 적대 검토 A-F5).
         //  `steerJob` 은 채널이 닫혔어도 잡이 살아 있으면 갈아끼우고 `"delivered"` 를 준다.
@@ -610,11 +610,11 @@ export const createSpawnAgentMcpServer = (
         };
       }
       const args = { ...rawArgs, name: agentName };
-      // 관측 잡 (kind:'agent') — 서브에이전트를 워커와 동일한 대시보드 잡으로 노출
+      // 관측 잡 (kind:'agent') — 서브에이전트를 매니저와 동일한 대시보드 잡으로 노출
       // (ADR 2026-07-03 subagent-worker-unify, Phase A). 실행 모델은 불변(블로킹 await).
-      // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=워커만) 자동 충족.
+      // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=매니저만) 자동 충족.
       // 자식 실행 threadKey = `agent:<jobId>` → 활동(llm.activity)이 그 좌표로 흘러
-      // 대시보드가 워커(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
+      // 대시보드가 매니저(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
       const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS } =
         await import("../../worker-jobs.js");
       // 중복 스폰 판정 — LLM 무관 공용(어댑터 3종에 흩어지지 않게 코어에 둔다).
@@ -695,7 +695,7 @@ export const createSpawnAgentMcpServer = (
           channel: parentInput.channel,
           // ★종전엔 `""` 였고 주석이 "agent 잡은 재주입·통지를 둘 다 안 하므로" 라고
           //  단언했다. `wait:false` 가 생기면서 **그 단언이 거짓이 됐다** — detached 서브는
-          //  onWorkerComplete 를 타고 소환자에게 결과를 돌려준다. 워커와 같은 근거로
+          //  onWorkerComplete 를 타고 소환자에게 결과를 돌려준다. 매니저와 같은 근거로
           //  같은 값을 쓴다(재주입 reply 는 threadKey 로 좌표를 잡는다, worker-registry 동형).
           //  awaited 경로는 이 필드를 안 읽으므로 값이 생겨도 회귀 0.
           channelUserId: parentInput.threadKey,
@@ -711,7 +711,7 @@ export const createSpawnAgentMcpServer = (
 
         // 취소용 abort 핸들 (U-I4 개정, 2026-07-17) — 백그라운드 잡 카드 중지 버튼이 이
         // jobId 로 cancelJob() 을 부르면 signal 이 abort 돼 runRegionA 가 reject 한다.
-        // timeoutMs 생략 = cancel-only(자동 타임아웃 없음 — 부모 턴 종속). 워커는 timeoutMs 지정.
+        // timeoutMs 생략 = cancel-only(자동 타임아웃 없음 — 부모 턴 종속). 매니저는 timeoutMs 지정.
         // ★자체 상한을 준다 (2026-07-29 검토). 종전엔 cancel-only 라 멈춘 서브에이전트가
         //  부모 턴을 브리지 천장까지 잡았다. 안쪽(이 상한)이 바깥(천장=상한+5분)보다 먼저
         //  끝나야 "무엇이 왜 끝났는지" 가 정확히 남는다 — 경계 순서 불변식의 안쪽 축.

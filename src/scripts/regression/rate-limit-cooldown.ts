@@ -69,9 +69,9 @@ export const check: RegressionCheck = {
         "llm-runtime/index.ts",
       ),
       assert(
-        // ★사본이 3곳이었고 1곳만 고쳐서, 사용자 안내는 원문 덤프·워커 통지는
+        // ★사본이 3곳이었고 1곳만 고쳐서, 사용자 안내는 원문 덤프·매니저 통지는
         //  "잠시 후 다시" 를 냈다(실제론 수 시간 계정 한도). 같은 판정을 쓰는지 고정.
-        "★사용자 안내·워커 통지도 같은 판정을 쓴다(사본 금지)",
+        "★사용자 안내·매니저 통지도 같은 판정을 쓴다(사본 금지)",
         (await sourceHas("../../index.ts", [/isRateLimited\(/])).ok &&
           (await sourceHas("../../core/worker-jobs.ts", [/isRateLimited\(/])).ok,
         "index.ts · worker-jobs.ts",

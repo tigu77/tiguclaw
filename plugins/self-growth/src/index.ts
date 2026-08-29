@@ -275,7 +275,7 @@ class SelfGrowthPlugin {
       case "worker.failed":
         // Phase 7a (2026-07-02) — 실패 주도 개선. 작업 단위(task) 1급 실패 신호.
         // fire-and-forget async(게이트 통과 시 reflect 1회 LLM 호출) — 내부 try/catch
-        // never-reject. worker.failed 는 유저/스케줄 워커만 발행(self-growth 는 워커 안
+        // never-reject. worker.failed 는 유저/스케줄 매니저만 발행(self-growth 는 매니저 안
         // 띄움 = internal 분류만) → 구조적으로 자기입력 아님(§4-3).
         void this.handleWorkerFailed(event.payload as WorkerFailedPayload);
         return;
@@ -378,9 +378,9 @@ class SelfGrowthPlugin {
       this.failureCounts.set(key, count);
       this.capMap(this.failureCounts, PATTERN_MAP_CAP);
 
-      // Phase 7a (§4-2 이중 학습 방지) — workerDepth>0 turn_error 는 워커 내부 LLM 턴.
+      // Phase 7a (§4-2 이중 학습 방지) — workerDepth>0 turn_error 는 매니저 내부 LLM 턴.
       // 같은 작업 실패가 (a) worker.failed(작업 단위·풍부) (b) turn_error(턴 단위) 둘 다 올
-      // 수 있다. worker.failed 를 1급으로 삼고, 워커 turn_error 는 여기서 *reflect 브랜치만*
+      // 수 있다. worker.failed 를 1급으로 삼고, 매니저 turn_error 는 여기서 *reflect 브랜치만*
       // skip 한다(카운트·효율·스킬 결과 귀속은 위에서 이미 유지 — 이중학습은 박기에서만 막음).
       // 메인·서브에이전트 턴(workerDepth 미존재)은 종전대로 학습.
       if (typeof payload.workerDepth === "number" && payload.workerDepth > 0) {
@@ -459,7 +459,7 @@ class SelfGrowthPlugin {
       if (task === "" && error === "") return;
       // 사용자 명시 취소는 실패 아님(worker-jobs markCancelled 별도 status) → drop.
       if (status === "cancelled") return;
-      // self namespace(growth) 경로면 drop(방어적, 실제 미발생 — self-growth 는 워커 안 띄움).
+      // self namespace(growth) 경로면 drop(방어적, 실제 미발생 — self-growth 는 매니저 안 띄움).
       if (threadKey.toLowerCase().includes(SELF_NAMESPACE)) return;
 
       // ── 원인 라벨 도출 (LLM-agnostic 문자열 휴리스틱 — 분기 키 아님, 집계 라벨) ──
@@ -505,7 +505,7 @@ class SelfGrowthPlugin {
 
       // ── reflect 1회 (박기 임박·비멱등 순간에만) — never-throw, internal:true ─────
       // 실패 윈도에 겹친 skill.invoked 이름들(있으면) — skill 유형 라우팅 근거. threadKey 는
-      // 원 thread(worker:<id> 아님). 워커 활동은 worker:<jobId> 로 흐르므로 원 thread 로는
+      // 원 thread(worker:<id> 아님). 매니저 활동은 worker:<jobId> 로 흐르므로 원 thread 로는
       // 못 잡을 수 있음 → 보수적으로 최근 invoke 를 그냥 안 붙이고 빈 배열(과귀속 방지).
       const relatedSkills: string[] = [];
       const reflection: FailureReflection = await reflectFailureCause({

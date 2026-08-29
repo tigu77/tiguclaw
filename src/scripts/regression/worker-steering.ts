@@ -1,10 +1,10 @@
 /**
- * 회귀: **돌고 있는 워커에 지시가 닿는다** (2026-07-29).
+ * 회귀: **돌고 있는 매니저에 지시가 닿는다** (2026-07-29).
  *
  * 배경: steering 소비층(3어댑터)은 `input.steering` 하나만 보므로 배관은 처음부터
- * LLM-agnostic 이었다. 워커가 못 받은 이유는 단 하나 — runner 가 steering 을 안 넘기고
+ * LLM-agnostic 이었다. 매니저가 못 받은 이유는 단 하나 — runner 가 steering 을 안 넘기고
  * 아무도 `worker:<jobId>` 키로 채널을 만들지 않았다(채널 핸들러의 맵은 세션 키 전용).
- * 즉 버퍼 키 불일치가 아니라 **부재**였다. 배선이 다시 빠지면 워커는 조용히 fire-and-forget
+ * 즉 버퍼 키 불일치가 아니라 **부재**였다. 배선이 다시 빠지면 매니저는 조용히 fire-and-forget
  * 으로 되돌아가고, 사용자는 "보냈는데 아무 일도 안 일어남" 만 겪는다(조용한 실패).
  *
  * 레지스트리 계약(등록·전달·종료 후 거절·미상 구분)을 검사한다 — 네트워크·LLM 0.
@@ -20,7 +20,7 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const msg = (t: string) => ({ text: t, raw: t, ts: 1 });
 
-/** runner → runRegionA 배선 확인. 이게 빠지면 워커는 조용히 fire-and-forget 으로 돌아간다. */
+/** runner → runRegionA 배선 확인. 이게 빠지면 매니저는 조용히 fire-and-forget 으로 돌아간다. */
 const runnerPassesSteering = async (): Promise<boolean> => {
   const { readFile } = await import("node:fs/promises");
   const url = new URL(

@@ -58,7 +58,7 @@ description: "티구클로 스킬을 제대로 만들고 고치는 메타 스킬
 3. **채점**: `spawn_agent({name:"skill-eval-grader"})` — 엄격 JSON(pass/passed_count/total_count + weak_assertions/missing_checks).
 4. **집계**: 채점을 `{skill, runs:[...]}` 로 모아 `node <이 스킬>/scripts/aggregate.mjs <results.json> --baseline baseline --candidate candidate` → pass_rate(mean±sd)·time·tokens + **Δ + 판정**.
 5. **개선 반복**: Δ≤0/고분산이면 실패 케이스로 본문·description 재작성 후 재측정(직전과 구조적으로 다르게). grader 의 weak/missing 경고로 테스트셋 보강.
-6. **human-gate**: 표(Δ + 경고)를 채널로 보고, 승인 후에만 반영. 오래 걸리면 백그라운드 워커 + 완료 알림.
+6. **human-gate**: 표(Δ + 경고)를 채널로 보고, 승인 후에만 반영. 오래 걸리면 백그라운드 매니저 + 완료 알림.
 
 ## 비채용 (하지 마라)
 

@@ -19,7 +19,6 @@ import { runClaude } from "./claude.js";
 import { parseModelSpecList, resolveModelChain } from "./llm-runtime/index.js";
 import { resolveProfileChain } from "./settings.js";
 import { poolToSpecs } from "./llm-runtime/index.js";
-import { getRegisteredMcpServers } from "./mcp-registry.js";
 
 export interface RouteOutput {
   text: string;
@@ -63,7 +62,7 @@ export const route = async (
     // mid-turn steering (additive, 2026-07-16, ADR 2026-07-16-midturn-steering §5). 핸들러가
     // turn 별 SteeringChannel 을 만들어 운반 → runClaude input.steering 으로 그대로 전달(router
     // 순수성 — 소비/해석 0, abortSignal·toolPolicy 운반과 동형). 미전달(STEERING_ENABLED off·
-    // 스케줄러·워커 등) = undefined = 어댑터 미주입 = 현행 동작(회귀 0).
+    // 스케줄러·매니저 등) = undefined = 어댑터 미주입 = 현행 동작(회귀 0).
     steering?: SteeringChannel;
     /**
      * 이 턴을 돌릴 **모델 프로파일 이름**(additive, 2026-08-01). 커스텀 엔드포인트가
@@ -91,7 +90,7 @@ export const route = async (
     //     단독 키로 돌도록, route() 호출 **전에** msg.threadKey = sessionId 로 세팅해야 한다
     //     (resolveSessionId 는 순수·멱등이라 채널·route 가 같은 sessionId 를 본다).
     //
-    // ★미전달(스케줄러·워커·서브에이전트·file-watch·엔드포인트·웨이브2b 이전 채널) →
+    // ★미전달(스케줄러·매니저·서브에이전트·file-watch·엔드포인트·웨이브2b 이전 채널) →
     //   현행 동작: msg.threadKey 를 세션 id 로, msg.channel 로 세션-정체성 저장(회귀 0).
     //   §0 단방향: route() 는 채널명으로 분기하지 않는다 — 셀렉터 유무는 호출부가
     //   explicitSessionId 전달 여부로 표현하고, canonical 상수는 store 소유.
@@ -180,14 +179,10 @@ export const route = async (
       sendAttachment: msg.sendAttachment,
       // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
       presentOptions: msg.presentOptions,
-      // ★플러그인 도구에 **이 턴이 어느 대화인지** 알려준다 (2026-08-28). 없으면 플러그인이
-      //  결과를 대화에 붙일 수 없다 — 코어 도구는 이미 threadKey 를 받고 있었고 플러그인만
-      //  못 받고 있었다. 좌표는 여기 이미 다 있다(아래 세 줄이 위에서 쓰던 값 그대로다).
-      extraMcpServers: getRegisteredMcpServers({
-        threadKey: sessionId,
-        channel: msg.channel,
-        target: channelAddress ?? null,
-      }),
+      // ★플러그인 도구는 **`runRegionA` 가 채운다** (2026-08-29). 종전엔 여기 한 곳뿐이라
+      //  router 를 안 지나는 호출(스케줄·파일감시·서브에이전트·매니저)이 전부 플러그인
+      //  도구 0개였다. 좌표는 저쪽 입력에도 다 있으므로 여기서 다시 만들지 않는다 —
+      //  두 곳이 각자 만들면 그게 곧 두 벌의 판단이다.
       // 2층 턴 타임아웃 — 핸들러가 만든 turn signal 을 어댑터까지 운반. 미전달 시
       // undefined → 어댑터가 idle AC 만 link → 1층-only(회귀 0, TT-I7).
       abortSignal: opts?.abortSignal,
@@ -211,7 +206,7 @@ export const route = async (
         : undefined,
   );
 
-  // 세션의 마지막 인입 채널+주소 캡처(§D3) — 비동기 outbound(워커 완료·능동발신) 기본 목적지.
+  // 세션의 마지막 인입 채널+주소 캡처(§D3) — 비동기 outbound(매니저 완료·능동발신) 기본 목적지.
   // saveSession(runClaude 내부 persistOutput)이 세션 행을 만든 *직후* 이므로 UPDATE-only 성립.
   // 정규화 인입만 캡처(실채널=msg.channel, 주소=channelAddress). 세션 id 파싱 의존 대체(§1.3).
   // 행 없음(응답 실패로 saveSession 미실행)이면 UPDATE no-op(false) — 폴백 보존, 회귀 0.

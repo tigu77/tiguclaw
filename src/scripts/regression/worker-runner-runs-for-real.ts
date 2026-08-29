@@ -1,5 +1,5 @@
 /**
- * 매니저(워커) 러너의 **실행 경로를 진짜로 돌린다** (2026-08-20)
+ * 매니저(매니저) 러너의 **실행 경로를 진짜로 돌린다** (2026-08-20)
  *
  * 잡는 회귀 — 재검토 F2, **위험도 4**:
  * `worker-registry.ts` 의 `await onWorkerComplete(job.jobId, outcome)` 를 **지워도 1,343건이
@@ -209,7 +209,7 @@ export const check: RegressionCheck = {
     //  실행하는데 배선은 안 지키던 그 부류다. 등록된 러너를 꺼내 동일성을 본다.
     out.push(
       assert(
-        "★데몬이 발사하는 워커 러너가 runWorkerJob 이다 — 아니면 run_in_background 가 아무것도 안 한다",
+        "★데몬이 발사하는 매니저 러너가 runWorkerJob 이다 — 아니면 run_in_background 가 아무것도 안 한다",
         getRegisteredWorkerRunner() === runWorkerJob,
         getRegisteredWorkerRunner() === runWorkerJob ? "동일" : "★다른 함수가 등록돼 있다",
       ),

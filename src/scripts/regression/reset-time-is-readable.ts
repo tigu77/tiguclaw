@@ -7,7 +7,7 @@
  * 시도하나" 인데 그게 무너진다. 분은 한 시간 안쪽에서만 쓸모 있다.
  *
  * ★그리고 같은 판단이 **두 곳**에 각자 적혀 있었다(`index.ts` 채널 응답 · `worker-jobs`
- *  워커 통지). 한쪽만 고치면 다른 쪽이 늙는다 — 오늘만 같은 부류로 두 번 겪었다
+ *  매니저 통지). 한쪽만 고치면 다른 쪽이 늙는다 — 오늘만 같은 부류로 두 번 겪었다
  *  (도구 느림 문구도 로그만 고치고 채널 푸시를 빠뜨렸었다).
  *
  * ★로케일 API 를 쓰지 않는다. 같은 코드가 맥·윈도우·리눅스에서 도는데
@@ -90,7 +90,7 @@ const run = async (): Promise<Assertion[]> => {
       ownMathRe.test(stripComments(idx)) || ownMathRe.test(stripComments(wj));
     out.push(
       assert(
-        "★채널 응답·워커 통지가 같은 문구 함수를 쓴다(자체 계산 금지)",
+        "★채널 응답·매니저 통지가 같은 문구 함수를 쓴다(자체 계산 금지)",
         bothUse && !ownMath,
         `index=${idx.includes("formatResetAt(")} worker=${wj.includes("formatResetAt(")} 자체계산=${ownMath}`,
       ),
@@ -103,6 +103,6 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "reset-time-is-readable",
   guards:
-    "한도 리셋 안내가 `약 8118분 후`(5.6일)처럼 읽을 수 없는 숫자로 나가던 것 + 같은 문구를 채널 응답과 워커 통지가 각자 만들어 한쪽만 늙던 것",
+    "한도 리셋 안내가 `약 8118분 후`(5.6일)처럼 읽을 수 없는 숫자로 나가던 것 + 같은 문구를 채널 응답과 매니저 통지가 각자 만들어 한쪽만 늙던 것",
   run,
 };

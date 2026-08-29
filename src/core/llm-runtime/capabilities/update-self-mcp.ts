@@ -93,7 +93,7 @@ const renderResult = (r: SelfUpdateResult): string => {
  *
  * 양 어댑터(claude=mcpServers map / codex·openai=adaptClaudeMcpServer bridge)가 동형으로
  * 등록 → parity (원칙 1·2). 등록 가드는 command-tools 와 동일(depth 0 && workerDepth 0)
- * 로 어댑터가 적용 — 워커/서브에이전트가 자가 업데이트를 트리거하지 못하게(재귀 차단).
+ * 로 어댑터가 적용 — 매니저/서브에이전트가 자가 업데이트를 트리거하지 못하게(재귀 차단).
  */
 export const createUpdateSelfMcpServer = (
   notify?: SelfUpdateNotifyDest,

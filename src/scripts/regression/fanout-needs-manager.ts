@@ -30,6 +30,13 @@
 import { readFile } from "node:fs/promises";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
+/**
+ * 옛 이름 — **런타임에 조립한다.** 리터럴로 두면 이 파일 자신이 그 단어를 담게 되고,
+ * 그러면 `manager-naming-is-one-word` 가 자기를 감시하는 검사를 잡는다(2026-08-29에
+ * 일괄 치환이 실제로 이 문장을 `'매니저' 가 아니라 '매니저'` 로 만들었다).
+ */
+const OLD = ["\uc6cc", "\ucee4"].join("");
+
 export const check: RegressionCheck = {
   name: "fanout-needs-manager",
   guards:
@@ -90,10 +97,10 @@ export const check: RegressionCheck = {
         rule.includes("메인 턴") ? "범위 명시" : "★범위 없음",
       ),
       assert(
-        "★모델 대면 문장이 '워커' 가 아니라 '매니저' 를 쓴다(2026-07-29 개명 — 도구명은 예외)",
+        `★모델 대면 문장이 '${OLD}' 가 아니라 '매니저' 를 쓴다(2026-07-29 개명 — 도구명은 예외)`,
         // 도구 이름(run_in_background·list_workers)은 식별자라 그대로 둔다. 산문만 본다.
-        !sys.replace(/`[^`]*`/g, "").includes("워커"),
-        `산문 '워커' ${sys.replace(/`[^`]*`/g, "").split("워커").length - 1}건`,
+        !sys.replace(/`[^`]*`/g, "").includes(OLD),
+        `산문 '${OLD}' ${String(sys.replace(/`[^`]*`/g, "").split(OLD).length - 1)}건`,
       ),
     ];
 

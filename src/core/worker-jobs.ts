@@ -1,11 +1,27 @@
 /**
- * 백그라운드 워커 — daemon 인프라 (잡 레지스트리 + 완료 재주입 + thread 직렬 큐 +
- * reply 클로저 재획득 + 워커 전용 타임아웃 주입).
+ * ★**용어: 사람에게는 「매니저」, 코드에는 `worker`** (2026-07-29 개명 · 2026-08-29 정리).
+ *
+ *  옛 한국어 이름이 능력 서열과 **반대**였다 — 매니저가 서브에이전트보다 유능한데 더
+ *  하찮게 들리는 말이었다. 그래서 **사람·모델이 보는 말만** 바꾸고 식별자는 그대로 뒀다:
+ *
+ *  | 어디 | 뭐라고 부르나 |
+ *  |---|---|
+ *  | 화면·모델이 읽는 글·로그·주석 | **매니저** |
+ *  | DB(`worker_jobs`)·이벤트(`worker.*`)·도구명(`run_in_background`·`steer_worker`) | `worker` 그대로 |
+ *
+ *  ★식별자를 안 바꾼 이유는 **마이그레이션이 이름값을 못 한다**는 것이다 — 테이블·이벤트를
+ *   개명하면 옛 레코드·옛 구독자가 조용히 갈리는데, 얻는 건 영문 단어 하나다.
+ *  ★2026-08-29 에 주석 450건이 아직 옛 이름을 쓰고 있는 걸 정태님이 잡았다. 화면은
+ *   매니저인데 주석은 그 반대였으니 **읽는 사람마다 다른 어휘**를 갖게 된다. 회귀
+ *   `manager-naming-is-one-word` 가 이제 그 갈림을 막는다.
+ *
+ * 백그라운드 매니저 — daemon 인프라 (잡 레지스트리 + 완료 재주입 + thread 직렬 큐 +
+ * reply 클로저 재획득 + 매니저 전용 타임아웃 주입).
  *
  * 진실 소스: architect contract `_workspace/background-worker_architect.md`
  * (불변식 W-I1~W-I8, 구현 contract §9-b). 본 모듈은 daemon 인프라 파트 —
  * region-engineer 의 worker-registry.ts(발사 도구 + runWorkerJob 실행 본체)가
- * 호출할 *깨끗한 API* 를 제공한다. 워커 실행 본체(runRegionA)는 region 경계.
+ * 호출할 *깨끗한 API* 를 제공한다. 매니저 실행 본체(runRegionA)는 region 경계.
  *
  * 경계 (W-I4 코어 불변):
  *  - daemon (본 모듈): registerJob / markDone / markFailed / listJobs (레지스트리),
@@ -35,10 +51,10 @@ import { createSteeringChannel } from "./steering.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
 import { runSubagentStopHooks } from "./entry/hook-runner.js";
 
-// Step 1 (2026-06-30) — 워커 lifecycle 을 EventBus 에 발행한다. 워커 활동(llm.activity,
+// Step 1 (2026-06-30) — 매니저 lifecycle 을 EventBus 에 발행한다. 매니저 활동(llm.activity,
 // threadKey=worker:<jobId>)은 이미 버스에 흐르지만 "잡 시작/완료/실패" 상태 전이는 그동안
 // worker_jobs SQLite 에만 있어 대시보드가 라이브로 못 받았다 → 백그라운드 작업 뷰의 토대.
-// best-effort: 관측 발행 실패가 워커 흐름을 무르지 않는다(원칙 3 견고성). 단방향: core
+// best-effort: 관측 발행 실패가 매니저 흐름을 무르지 않는다(원칙 3 견고성). 단방향: core
 // worker → core bus(플러그인 무참조). 대시보드 등 구독자가 worker.* 를 받아 렌더.
 const publishWorkerLifecycle = (
   type:
@@ -63,7 +79,7 @@ const publishWorkerLifecycle = (
   try {
     // ★리비전 스탬프 (2026-08-27 Phase 1) — 이 이벤트가 스냅샷 대비 **몇 번째 변경인가**.
     //  화면은 `event.revision === local.revision + 1` 일 때만 적용하고, 크면 스냅샷을 다시
-    //  받는다. 그 한 줄이 dedup·sticky 종료·순서 가드·"replay 창 밖으로 밀린 긴 워커" 를
+    //  받는다. 그 한 줄이 dedup·sticky 종료·순서 가드·"replay 창 밖으로 밀린 긴 매니저" 를
     //  전부 대체한다(근거: docs/decisions/2026-08-27-frontend-architecture.md §A.4).
     //  ★발행하는 **이 자리에서 정확히 한 번** 올린다 — 두 곳에서 올리면 화면이 헛되이
     //   스냅샷을 받고, 안 올리면 조용히 안 따라온다(후자가 훨씬 나쁘다).
@@ -94,11 +110,11 @@ const publishWorkerLifecycle = (
       },
     });
   } catch {
-    /* noop — 관측 발행 실패가 워커를 무르지 않는다. */
+    /* noop — 관측 발행 실패가 매니저를 무르지 않는다. */
   }
 };
 
-// DB 미러는 best-effort — 영속 실패가 워커 진행/완료를 막지 않게 격리(데몬 생존, 원칙 3).
+// DB 미러는 best-effort — 영속 실패가 매니저 진행/완료를 막지 않게 격리(데몬 생존, 원칙 3).
 // 런타임 진실 소스는 아래 in-memory Map. DB 는 재시작 생존(정직 통지)만 담당.
 const persistSafe = (label: string, fn: () => void): void => {
   try {
@@ -127,8 +143,8 @@ const pruneTerminalJobsSafe = (): void => {
 
 // ─── 통지 목적지 (generic 좌표 — architect §3-a) ─────────────────────────────
 /**
- * 워커 완료/실패 통지를 보낼 *목적지* — generic 좌표(어느 플러그인이 채웠는지 코어 무관).
- * 미지정 시 onWorkerComplete 가 job.channel/threadKey 로 폴백(텔레그램 직접 발화 워커 회귀 0).
+ * 매니저 완료/실패 통지를 보낼 *목적지* — generic 좌표(어느 플러그인이 채웠는지 코어 무관).
+ * 미지정 시 onWorkerComplete 가 job.channel/threadKey 로 폴백(텔레그램 직접 발화 매니저 회귀 0).
  *  - channel: 통지 채널명(예 "telegram"). reacquireReply 가 이 값으로 dispatch.
  *  - target : 채널 내 목적지(telegram=chatId, cli=무시). 채널 의미는 reacquireReply 가 해석.
  *
@@ -150,7 +166,7 @@ export type WorkerJobStatus = "running" | "done" | "failed" | "cancelled";
  *
  * ★2026-08-19 개정 — 이 타입은 **실행 의미를 더는 안 진다.**
  *  종전 문장: *"awaited 는 별 필드 아닌 kind==='agent' 파생. 배타 불변식(U-I1~U-I5):
- *  재주입·워커타임아웃·cancel_worker·재시작 복구 통지는 'worker'만."*
+ *  재주입·매니저타임아웃·cancel_worker·재시작 복구 통지는 'worker'만."*
  *  `spawn_agent(wait:false)` 가 그 등식을 깼다 — agent 인데 detached 인 잡이 생겼다.
  *  그 잡은 소환자가 손을 뗐으므로 재주입·취소·재시작 통지가 **전부 필요하다.**
  *
@@ -171,7 +187,7 @@ export interface WorkerJobRecord {
    * `spawn_agent(wait:false)` 가 그 조합을 깼다(agent 인데 안 기다림). 실행 축은 `detached`.
    */
   kind: WorkerJobKind;
-  /** **실행 축** — 소환자가 안 기다리는가. 워커=항상 true, 서브=`wait:false` 일 때만. */
+  /** **실행 축** — 소환자가 안 기다리는가. 매니저=항상 true, 서브=`wait:false` 일 때만. */
   detached: boolean;
   /** 서브에이전트 정의 이름(kind==='agent' 만) — 대시보드 라벨. */
   agentName?: string;
@@ -179,7 +195,7 @@ export interface WorkerJobRecord {
   modelTier?: string;
   /** 사람이 읽는 짧은 이름 (완료 보고·상태 조회·로그). */
   label: string;
-  /** 워커가 수행한 자연어 작업 지시 (메인이 작성). */
+  /** 매니저가 수행한 자연어 작업 지시 (메인이 작성). */
   task: string;
   /** 완료 재주입이 합류할 *원* thread (메인 인격·history 연속, W-I1). 예 "tg:123". */
   threadKey: string;
@@ -209,7 +225,7 @@ export interface WorkerJobRecord {
   lastActivityAt?: number;
   /** 정체 보고를 몇 번 했나 — 반복을 세서 "배경소음" 이 되지 않게(로그·문구에 싣는다). */
   stallReports?: number;
-  /** status==="done" 시 워커 출력 (재주입 전 — 채널 직행 절대 X, W-I1). */
+  /** status==="done" 시 매니저 출력 (재주입 전 — 채널 직행 절대 X, W-I1). */
   result?: string;
   /** status==="failed" 시 redact 된 원인 문자열. */
   error?: string;
@@ -230,7 +246,7 @@ export interface RegisterJobInput {
   kind?: WorkerJobKind;
   /**
    * **실행 축** — 소환자가 안 기다리는 잡인가 (ADR 2026-08-19 Q0).
-   * 워커는 항상 true. 서브는 `spawn_agent(wait:false)` 일 때만 true.
+   * 매니저는 항상 true. 서브는 `spawn_agent(wait:false)` 일 때만 true.
    * 미지정 = false(awaited) — 종전 호출부 전부가 그 의미였다(회귀 0).
    */
   detached?: boolean;
@@ -250,7 +266,7 @@ export const registerJob = (input: RegisterJobInput): string => {
   const jobId = randomUUID();
   const startedAt = Date.now();
   const kind: WorkerJobKind = input.kind ?? "worker";
-  // 워커는 정의상 detached — 호출부가 매번 적게 하지 않는다(적는 자리가 늘면 빠뜨린다).
+  // 매니저는 정의상 detached — 호출부가 매번 적게 하지 않는다(적는 자리가 늘면 빠뜨린다).
   const detached = input.detached ?? kind === "worker";
   jobs.set(jobId, {
     jobId,
@@ -308,7 +324,7 @@ export const registerJob = (input: RegisterJobInput): string => {
 
 /**
  * SubagentStop 훅 디스패치 (Phase 1.1, 2026-07-24) — kind==='agent' 잡의 done/failed
- * 전이에서만 발화한다. 워커(kind==='worker', run_in_background)는 Claude Code
+ * 전이에서만 발화한다. 매니저(kind==='worker', run_in_background)는 Claude Code
  * SubagentStop 시맨틱 대상이 아니라(SubagentStop = Task *서브에이전트* 종료 전용)
  * 제외(`src/core/entry/hook-runner.ts` Phase 1.1 주석 참고).
  *
@@ -339,7 +355,7 @@ const dispatchSubagentStopHook = (
   });
 };
 
-/** 워커 성공 — 결과 기록. 재주입(채널 보고)은 onWorkerComplete 가 별도 수행. */
+/** 매니저 성공 — 결과 기록. 재주입(채널 보고)은 onWorkerComplete 가 별도 수행. */
 export const markDone = (jobId: string, result: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
@@ -378,7 +394,7 @@ export const classifyFailure = (raw: string): string =>
               ? "취소"
               : "기타";
 
-/** 워커 실패/타임아웃 — 원인 기록. */
+/** 매니저 실패/타임아웃 — 원인 기록. */
 export const markFailed = (jobId: string, error: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
@@ -407,7 +423,7 @@ export const markFailed = (jobId: string, error: string): void => {
 };
 
 /**
- * 워커 취소 마킹 — 사용자 명시 취소(타임아웃과 구분, 별도 status). worker_jobs DB
+ * 매니저 취소 마킹 — 사용자 명시 취소(타임아웃과 구분, 별도 status). worker_jobs DB
  * status 는 TEXT 라 자유. 통지 문구는 onWorkerComplete 가 status 로 분기.
  */
 /**
@@ -471,7 +487,7 @@ export interface ListJobsOpts {
    *
    * ★왜 필요한가 (2026-07-29 사용자 신고): 잡 레코드에는 띄운 세션의 threadKey 가
    *  처음부터 실려 있는데 **읽는 쪽이 그걸 안 썼다.** 그래서 `list_workers` 가 전 세션의
-   *  잡을 돌려줬고, 메인 비서는 다른 세션에서 도는 general 워커를 보고 "이전 워커가 실행
+   *  잡을 돌려줬고, 메인 비서는 다른 세션에서 도는 general 매니저를 보고 "이전 매니저가 실행
    *  중" 이라고 판단했다. 게다가 비서는 자기 세션 id 조차 몰라(컨텍스트 블록에 없었다)
    *  남의 것인지 구분할 수단도 없었다. 미지정 = 전체(대시보드·브리지는 전역이 맞다).
    */
@@ -1005,7 +1021,7 @@ export const listJobs = (opts?: ListJobsOpts): WorkerJobRecord[] => {
 };
 
 /**
- * 이 스레드에 **살아있는 자식 잡**(워커·서브에이전트)이 있는가.
+ * 이 스레드에 **살아있는 자식 잡**(매니저·서브에이전트)이 있는가.
  *
  * ★용도: 부모의 도구 wall-clock 타임아웃이 "무응답"을 판정할 때 쓴다(2026-07-27).
  *  자식이 running 이라는 건 *관측된 사실* 이므로 무응답이 아니다 — 그 상태에서 부모가
@@ -1025,7 +1041,7 @@ export const hasLiveChildJob = (threadKey: string): boolean => {
     // ★손자까지 본다 (2026-07-28). 종전엔 **직계 자식(정확 일치)** 만 봤다. 서브에이전트가
     //  또 서브를 띄우면 손자의 threadKey 는 `agent:<자식jobId>` 라 이 비교에 안 걸린다 —
     //  그래서 "자식이 끝났지만 손자가 아직 일하는" 창에서 부모가 무응답으로 오판해 끊었고,
-    //  모델은 그 에러를 보고 **같은 일을 워커로 다시 돌렸다**(사용자 신고: 중복 실행).
+    //  모델은 그 에러를 보고 **같은 일을 매니저로 다시 돌렸다**(사용자 신고: 중복 실행).
     //  판정 기준은 "이 대화가 띄운 잡이 살아있나" 이므로 원 세션으로 환원해 비교한다.
     if (resolveOwnerThreadKey(j.threadKey) === threadKey) return true;
   }
@@ -1036,7 +1052,7 @@ export const hasLiveChildJob = (threadKey: string): boolean => {
  * 이 대화가 띄워 **지금 돌고 있는** 잡 목록. hasLiveChildJob 과 같은 기준(손자 포함).
  *
  * 용도: 턴 컨텍스트에 "진행 중인 백그라운드 작업" 을 넣어, 메인이 자기가 띄운 걸 모른 채
- * 같은 일을 또 띄우는 것을 막는다(2026-07-29 실측: 워커가 도는 중에 워커 재발사).
+ * 같은 일을 또 띄우는 것을 막는다(2026-07-29 실측: 매니저가 도는 중에 매니저 재발사).
  * 규칙으로 훈계하는 대신 **사실을 준다** — 판단 근거를 가진 쪽이 판단한다.
  */
 /**
@@ -1091,11 +1107,11 @@ export const __resetJobsForTest = (): void => {
   pendingTurnIds.clear();
 };
 
-// ─── 워커 전용 타임아웃 (architect §5, W-I6) ─────────────────────────────────
-// 워커는 2층 턴 타임아웃(480s) *제외* — 길게 도는 게 정상. 대신 워커 전용 상한을
+// ─── 매니저 전용 타임아웃 (architect §5, W-I6) ─────────────────────────────────
+// 매니저는 2층 턴 타임아웃(480s) *제외* — 길게 도는 게 정상. 대신 매니저 전용 상한을
 // 기존 abortSignal 메커니즘(turn-timeout.ts 동형)으로 주입. 1층 idle/first 는 전 턴
-// 면제(idleConfigExempt, 어댑터 wrap — 2026-06-24)라 워커도 당연히 면제다. 긴 배치의
-// 무이벤트 구간이 정상이라 idle 오살이 없다. 워커의 hung 방어는 이 워커 전용 상한이 담당.
+// 면제(idleConfigExempt, 어댑터 wrap — 2026-06-24)라 매니저도 당연히 면제다. 긴 배치의
+// 무이벤트 구간이 정상이라 idle 오살이 없다. 매니저의 hung 방어는 이 매니저 전용 상한이 담당.
 // 값은 상수+env override (매직넘버 금지, turn-timeout.ts 정책 답습).
 
 /**
@@ -1202,7 +1218,7 @@ export const JOB_CHECKIN_INTERVAL_MS = parseTimeoutEnv(
  */
 export const STALL_KILL_AFTER_CHECKINS = 2;
 
-/** 워커 1잡 전체 wall-clock 상한 (ms). env `WORKER_TIMEOUT_MS` override. */
+/** 매니저 1잡 전체 wall-clock 상한 (ms). env `WORKER_TIMEOUT_MS` override. */
 export const WORKER_TIMEOUT_MS = parseTimeoutEnv(
   process.env.WORKER_TIMEOUT_MS,
   DEFAULT_WORKER_TIMEOUT_MS,
@@ -1212,15 +1228,15 @@ export const WORKER_TIMEOUT_MS = parseTimeoutEnv(
 const DEFAULT_WORKER_HARD_GRACE_MS = 60_000;
 
 /**
- * 워커 하드 백스톱 grace (ms). createJobAbort 의 abort 가 hung MCP callTool 을
+ * 매니저 하드 백스톱 grace (ms). createJobAbort 의 abort 가 hung MCP callTool 을
  * 못 끊는 경우(MCP 한계), abort 시점(WORKER_TIMEOUT_MS) 이후 이만큼 더 기다려도
  * runRegionA 가 안 settle 하면 runner 가 WorkerTimeoutError 로 *강제* 종료해 통지를
  * 정시 발화시킨다. env `WORKER_HARD_GRACE_MS` override (매직넘버 금지, 채널 백스톱 동형).
  */
 /**
- * 서브에이전트 1잡 상한 (ms). env `SUBAGENT_TIMEOUT_MS`. 기본 = 워커 상한과 동일.
+ * 서브에이전트 1잡 상한 (ms). env `SUBAGENT_TIMEOUT_MS`. 기본 = 매니저 상한과 동일.
  *
- * ★없었다 (2026-07-29 검토가 잡음). 워커는 `createJobAbort(jobId, {timeoutMs})` 로 상한을
+ * ★없었다 (2026-07-29 검토가 잡음). 매니저는 `createJobAbort(jobId, {timeoutMs})` 로 상한을
  *  받는데 서브에이전트는 `createJobAbort(jobId)`(cancel-only)라 **자체 상한이 0** 이었다.
  *  그 상태에서 부모의 도구 wall-clock 을 폐기(0cffeb7)했으니, 멈춘 서브에이전트는 브리지
  *  천장(잡상한+5분)까지 부모 턴을 잡는다 — 없앤 8분의 15배. "안쪽이 먼저 끝난다" 는
@@ -1238,7 +1254,7 @@ export const WORKER_HARD_GRACE_MS = parseTimeoutEnv(
 );
 
 /**
- * 워커 상한 타임아웃 에러.
+ * 매니저 상한 타임아웃 에러.
  *
  * TurnTimeoutError 와 동형 — message 에 "모델 거부 아님" 토큰을 박아 facade
  * `MODEL_REJECTED_PATTERNS` 비매칭 보장 (멀쩡한 모델이 깨진 것으로 오제거되는 것 방지).
@@ -1255,7 +1271,7 @@ export class WorkerTimeoutError extends Error {
 }
 
 /**
- * 워커 사용자 취소 에러 — 타임아웃과 *구분*(통지 문구 "취소됨" vs "시간 초과").
+ * 매니저 사용자 취소 에러 — 타임아웃과 *구분*(통지 문구 "취소됨" vs "시간 초과").
  * abort reason 으로 운반되거나 cancelJob 이 직접 마킹. WorkerTimeoutError 처럼
  * "모델 거부 아님" 토큰을 박아 facade MODEL_REJECTED_PATTERNS 오매칭을 막는다.
  */
@@ -1289,13 +1305,13 @@ export const clearCancelHook = (jobId: string): void => {
   cancelHooks.delete(jobId);
 };
 
-// ─── 워커 스티어 레지스트리 (2026-07-29) ─────────────────────────────────────
-// jobId → 그 워커 턴의 SteeringChannel. 위 cancelHooks 의 **자매**다(같은 데몬 경계, 같은
+// ─── 매니저 스티어 레지스트리 (2026-07-29) ─────────────────────────────────────
+// jobId → 그 매니저 턴의 SteeringChannel. 위 cancelHooks 의 **자매**다(같은 데몬 경계, 같은
 // 생명주기: 잡 시작 시 등록 → finally 해제).
 //
-// ★왜 워커엔 원래 없었나: steering 소비층(3어댑터)은 `input.steering` 하나만 보고 채널·워커를
-//  구분하지 않는다 — 즉 배관은 처음부터 LLM-agnostic 이었다. 워커가 못 받은 이유는 단 하나,
-//  워커 runner 가 steering 을 안 넘기고 아무도 `worker:<jobId>` 키로 채널을 만들지 않아서다
+// ★왜 매니저엔 원래 없었나: steering 소비층(3어댑터)은 `input.steering` 하나만 보고 채널·매니저를
+//  구분하지 않는다 — 즉 배관은 처음부터 LLM-agnostic 이었다. 매니저가 못 받은 이유는 단 하나,
+//  매니저 runner 가 steering 을 안 넘기고 아무도 `worker:<jobId>` 키로 채널을 만들지 않아서다
 //  (채널 핸들러의 steeringChannels 는 세션 threadKey 전용). 버퍼 키 불일치가 아니라 부재.
 //
 // 그래서 여기 두는 이유: index.ts(데몬)와 worker-registry(region)가 **둘 다 이미 import 하는
@@ -1305,7 +1321,7 @@ const steerChannels = new Map<string, SteeringChannel>();
 /** 기본 on. 문제 시 끌 수 있게 — 채널 경로의 STEERING_ENABLED 와 동형(하드 게이트 금지). */
 export const WORKER_STEERING_ENABLED = process.env.WORKER_STEERING_ENABLED !== "0";
 
-/** 워커 턴의 steering 채널 등록 — runner 가 잡 시작 시 1회. 같은 jobId 재등록은 덮어쓴다. */
+/** 매니저 턴의 steering 채널 등록 — runner 가 잡 시작 시 1회. 같은 jobId 재등록은 덮어쓴다. */
 export const setSteerChannel = (jobId: string, ch: SteeringChannel): void => {
   steerChannels.set(jobId, ch);
 };
@@ -1442,12 +1458,12 @@ export const publishSteerAttempt = (info: {
 };
 
 /**
- * 돌고 있는 워커에 지시를 얹는다.
+ * 돌고 있는 매니저에 지시를 얹는다.
  *
  * @returns "delivered"=적재 성공(다음 model-call 경계에서 반영) /
- *          "closed"=턴이 이미 닫힘(막 끝났다) / "absent"=그런 워커 없음·스티어 비활성.
+ *          "closed"=턴이 이미 닫힘(막 끝났다) / "absent"=그런 매니저 없음·스티어 비활성.
  *
- * ★반영 시점은 **다음 model-call 경계**다 — 워커가 10분짜리 Bash 안이면 그때까지 대기한다
+ * ★반영 시점은 **다음 model-call 경계**다 — 매니저가 10분짜리 Bash 안이면 그때까지 대기한다
  *  (선점 없음). 호출부가 이 사실을 사용자에게 정직하게 고지해야 한다(cancel_worker 가
  *  "즉시는 아닐 수 있음" 을 고지하는 것과 같은 이유).
  *
@@ -1508,10 +1524,10 @@ export interface WorkerAbort {
 
 /**
  * 잡 전용 abortSignal 발급 (2026-07-17 통합 — 기존 createWorkerAbort·createAgentAbort 일원화).
- * region 의 runWorkerJob(워커)·spawn_agent 핸들러(서브에이전트)가 호출해
+ * region 의 runWorkerJob(매니저)·spawn_agent 핸들러(서브에이전트)가 호출해
  * `RegionASdkInput.abortSignal` 로 주입한다(새 메커니즘 0, 값만 잡별 — architect §5).
  *
- * `opts.timeoutMs` 지정 시(워커): 그 ms 에 WorkerTimeoutError 로 자동 abort(무한 워커 봉쇄,
+ * `opts.timeoutMs` 지정 시(매니저): 그 ms 에 WorkerTimeoutError 로 자동 abort(무한 매니저 봉쇄,
  * W-I6). 생략 시(서브에이전트): **타이머 없음 = cancel-only** — 서브는 부모 턴에 종속(awaited)
  * 되어 부모 턴 타임아웃/생명주기를 이미 따르므로 별도 상한이 부적절(이중·불일치 자동종료 방지).
  *
@@ -1533,7 +1549,7 @@ export const createJobAbort = (
   if (ms !== undefined && Number.isFinite(ms)) {
     // ★`setTimeout` 은 2^31-1 을 넘으면 32-bit 오버플로로 **즉시 발화**한다. 무한만 막고
     //  큰 유한값을 그대로 넘기면 같은 함정에 빠진다 — 실측: `WORKER_TIMEOUT_MS=2147483647`
-    //  (코드가 "안전한 최대치" 로 정의한 그 값!)을 주면 **모든 워커가 11ms 에 실패**하고
+    //  (코드가 "안전한 최대치" 로 정의한 그 값!)을 주면 **모든 매니저가 11ms 에 실패**하고
     //  에러엔 "24.8일 상한 초과" 가 찍혀 원인 추적이 사실상 불가능했다(2026-08-23 검토 F2).
     handle = setTimeout(() => {
       if (!ac.signal.aborted) ac.abort(new WorkerTimeoutError(ms));
@@ -1553,7 +1569,7 @@ export const createJobAbort = (
 };
 
 /**
- * 진행 중 워커/서브에이전트 취소(best-effort) — cancel_worker 도구(worker)·백그라운드
+ * 진행 중 매니저/서브에이전트 취소(best-effort) — cancel_worker 도구(worker)·백그라운드
  * 잡 카드 중지 버튼(worker·agent 공통, U-I4 개정 2026-07-17)이 호출. abort 를 부르고 취소
  * 상태로 마킹한다. abort 는 LLM 스트림은 끊지만 hung MCP callTool 은 signal 미수신
  * (MCP 한계)이라 *다음 도구 경계*(최대 MCP_CALL_TIMEOUT)에서 멈춤 — 도구가 그 점 안내.
@@ -1799,7 +1815,7 @@ export const cancelQueuedTurn = (
 export const pendingThreadCount = (): number => threadTails.size;
 
 // ─── reply 클로저 재획득 (architect §3-b) ────────────────────────────────────
-// 워커는 원 turn 의 reply 클로저를 안 들고 있다(원 turn 종료). 재주입 turn 의 reply 를
+// 매니저는 원 turn 의 reply 클로저를 안 들고 있다(원 turn 종료). 재주입 turn 의 reply 를
 // 채널명→send 매핑으로 재구성. dispatcher.ts 의 telegram/cli 분기와 *동일 의미* —
 // 단 dispatcher 는 결과 텍스트 직접 push 였고, 여기선 핸들러 재진입의 reply 통로.
 // (telegram threadKey "tg:<chatId>" → chatId 복원, cli → console.log.)
@@ -1814,8 +1830,8 @@ import {
 import { formatToolSlowNotice } from "./llm-runtime/tool-watchdog.js";
 
 /**
- * notifyDest 없는 워커(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
- * slice 로직을 그대로 추출. 텔레그램 직접 워커는 notifyDest 미주입이므로 이 폴백이 현행과
+ * notifyDest 없는 매니저(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
+ * slice 로직을 그대로 추출. 텔레그램 직접 매니저는 notifyDest 미주입이므로 이 폴백이 현행과
  * *비트 동일* 한 chatId 를 낸다(회귀 0, architect §5). cli·미지원 채널은 target 무의미 → null.
  */
 const deriveTargetFromThreadKey = (
@@ -1833,7 +1849,7 @@ const deriveTargetFromThreadKey = (
  * generic 통지 목적지(dest)로 reply 클로저 재획득. 코어는 dest.channel("telegram" 등)만 보고
  * dispatch — *어느 플러그인이 dest 를 채웠는지*(scheduler 였는지)는 영원히 모른다(단방향 §6).
  * 라우팅·발송·관측은 core 단일 통로 deliverOutbound 에 위임(scheduler·file-watch·부팅통지와
- * 동일 로직 — 같은 걸 두 번 구현 X). 덕분에 워커 완료 통지도 대시보드 chat_log 에 뜬다
+ * 동일 로직 — 같은 걸 두 번 구현 X). 덕분에 매니저 완료 통지도 대시보드 chat_log 에 뜬다
  * (예전엔 raw 발송이라 안 보였음). 미지원 채널·발송 실패는 deliverOutbound 가 정직 처리.
  */
 const reacquireReply = (
@@ -1862,7 +1878,7 @@ const reacquireReply = (
 
 /**
  * 잡의 notifyDest(있으면) 또는 channel/threadKey 폴백으로 통지 dest 를 도출 — onWorkerComplete·
- * recoverInterruptedJobs 공용. notifyDest 미지정 워커(텔레그램 직접 발화)는 폴백이 현행 동작
+ * recoverInterruptedJobs 공용. notifyDest 미지정 매니저(텔레그램 직접 발화)는 폴백이 현행 동작
  * 재현(회귀 0). 채운 주체가 누구든 코어는 generic 좌표만 본다(단방향).
  */
 const destForJob = (job: {
@@ -1876,9 +1892,9 @@ const destForJob = (job: {
   };
 
 // ─── 완료 → 메인 재주입 (architect §3, W-I1 단일 인격 핵심) ───────────────────
-// 워커 완료 시 원 잡의 threadKey 로 *합성 user-turn* 을 주입해 메인 핸들러를 재진입 →
+// 매니저 완료 시 원 잡의 threadKey 로 *합성 user-turn* 을 주입해 메인 핸들러를 재진입 →
 // 메인(같은 SYSTEM/AGENT 인격 + 그 thread history)이 결과를 받아 맥락 입혀 채널 보고.
-// 채널로 나가는 텍스트는 *항상 메인 출력* (워커 텍스트 직행 절대 금지, W-I1).
+// 채널로 나가는 텍스트는 *항상 메인 출력* (매니저 텍스트 직행 절대 금지, W-I1).
 
 /**
  * daemon 부팅 시 1회 주입되는 핸들러 핸들. index.ts 가 메인 MessageHandler 를
@@ -1889,10 +1905,10 @@ let mainHandler: MessageHandler | undefined;
 
 /**
  * 메인 핸들러 등록 — index.ts 가 부팅 시 1회 호출.
- * 등록 전 onWorkerComplete 가 불리면(이론상 워커가 핸들러보다 먼저 끝날 일 없음) 경고.
+ * 등록 전 onWorkerComplete 가 불리면(이론상 매니저가 핸들러보다 먼저 끝날 일 없음) 경고.
  */
-// 워커 스트림 스톨 → 유저 통지 (ADR 2026-07-02). codex 어댑터는 llm.stream_stall 만
-// publish(채널 무결합) — 여기서 워커 dest 로 "이어서 재개 중" 핑을 보낸다(deliverOutbound
+// 매니저 스트림 스톨 → 유저 통지 (ADR 2026-07-02). codex 어댑터는 llm.stream_stall 만
+// publish(채널 무결합) — 여기서 매니저 dest 로 "이어서 재개 중" 핑을 보낸다(deliverOutbound
 // 단일 통로 → 텔레그램+대시보드). threadKey=worker:<jobId> 만 대상(메인 턴은 제외 — 사용자가
 // 직접 대기 중이라 별도 통지 불요). 부팅 1회 구독.
 let stallNotifySubscribed = false;
@@ -1922,10 +1938,10 @@ const subscribeWorkerStallNotify = (): void => {
   });
 };
 
-// 워커 도구 조기-경고 → 유저 통지 (2026-07-03). codex 어댑터가 `llm.tool_slow` 발행(도구가
-// CODEX_TOOL_SLOW_WARN_MS 초과 실행). 워커면 dest 로 "멈춤 — Mac 권한 확인" 핑을
+// 매니저 도구 조기-경고 → 유저 통지 (2026-07-03). codex 어댑터가 `llm.tool_slow` 발행(도구가
+// CODEX_TOOL_SLOW_WARN_MS 초과 실행). 매니저면 dest 로 "멈춤 — Mac 권한 확인" 핑을
 // *잡당 1회*(스팸 방지) 보낸다. 권한요청/hung/느림 구분은 못 하나 "확인해봐"가 actionable —
-// 실측: 워커가 macOS 권한 다이얼로그에 조용히 막혀 30분+ 헤맴. 부팅 1회 구독. 통지 실패 무해.
+// 실측: 매니저가 macOS 권한 다이얼로그에 조용히 막혀 30분+ 헤맴. 부팅 1회 구독. 통지 실패 무해.
 
 /**
  * 이 도구의 지연을 **사용자에게 푸시**할 가치가 있는가.
@@ -1964,7 +1980,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
       typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
     const tool =
       typeof event.payload.tool === "string" ? event.payload.tool : "도구";
-    // ★메인 턴도 알린다 (2026-08-06) — 종전엔 워커만이라, 대화 중 도구가 멈추면 사용자에게
+    // ★메인 턴도 알린다 (2026-08-06) — 종전엔 매니저만이라, 대화 중 도구가 멈추면 사용자에게
     //  **아무 신호도 안 갔다**(경고는 로그에만). 회사 PC 실측: 39분 동안 화면엔 "작업 중"
     //  만 돌고 있었고, 느린 건지 멈춘 건지 알 방법이 없었다. 대시보드는 SSE 로 이 이벤트를
     //  직접 받아 그리므로(js/sse.js), 여기선 **화면을 안 보고 있는 채널**(텔레그램)만 민다.
@@ -2019,8 +2035,8 @@ const subscribeWorkerToolSlowNotify = (): void => {
 
 export const registerWorkerHandler = (handler: MessageHandler): void => {
   mainHandler = handler;
-  subscribeWorkerStallNotify(); // 부팅 1회 — 워커 스톨 재개 유저 통지 구독.
-  subscribeWorkerToolSlowNotify(); // 부팅 1회 — 워커 도구 멈춤(권한 등) 조기 통지 구독.
+  subscribeWorkerStallNotify(); // 부팅 1회 — 매니저 스톨 재개 유저 통지 구독.
+  subscribeWorkerToolSlowNotify(); // 부팅 1회 — 매니저 도구 멈춤(권한 등) 조기 통지 구독.
 };
 
 /**
@@ -2084,10 +2100,10 @@ const humanizeWorkerError = (raw: string): string => {
 };
 
 /**
- * 워커 종료를 *LLM 무경유* 로 결정 전달하는 raw 아웃바운드 문구(done/failed/cancelled).
+ * 매니저 종료를 *LLM 무경유* 로 결정 전달하는 raw 아웃바운드 문구(done/failed/cancelled).
  *
  * 안전망 전용 — 정상 경로(LLM 재주입)가 메인 인격으로 자연스럽게 보고하지만, 모델 풀이
- * 죽어 재주입 turn 마저 실패하면(워커 실패의 흔한 원인과 동일 — codex 429+claude idle)
+ * 죽어 재주입 turn 마저 실패하면(매니저 실패의 흔한 원인과 동일 — codex 429+claude idle)
  * 통지가 영영 안 가는 deadlock 을 막는다. recoverInterruptedJobs 의 raw 통지와 동형.
  * failed 는 humanizeWorkerError 로 *왜·언제 다시* 를 담는다(actionable, 임무 §2).
  */
@@ -2101,7 +2117,7 @@ const buildRawNotice = (job: WorkerJobRecord): string => {
   if (job.status === "cancelled") {
     return `🛑 백그라운드 작업 '${job.label}'을(를) 요청대로 취소했어요.`;
   }
-  // 부분 진행 힌트 — daemon 경계엔 정확한 처리 건수가 없다(워커 thread 의 부수효과로만
+  // 부분 진행 힌트 — daemon 경계엔 정확한 처리 건수가 없다(매니저 thread 의 부수효과로만
   // 존재, region 도메인). 카운트를 *지어내지 않고* 일부 진행 가능성을 정직히 안내해
   // 사용자가 이어서/처음부터 중 결정하게 한다(임무 §3 — feasible 범위 한도).
   return (
@@ -2162,7 +2178,7 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
  * 흐름 (status 분기 — 통지 미도착 0 보장):
  *  1) result/error 로 레지스트리 마킹 (markDone/markFailed/cancelled 보존).
  *  2-failed) LLM *무경유* raw 아웃바운드 직행(reacquireReply + buildRawNotice).
- *     워커 실패의 흔한 원인이 모델 풀 소진(429+idle)이라, 같은 죽은 풀로 통지 turn 을 돌리면
+ *     매니저 실패의 흔한 원인이 모델 풀 소진(429+idle)이라, 같은 죽은 풀로 통지 turn 을 돌리면
  *     통지마저 침묵하기 때문(2026-06-22 실측). humanizeWorkerError 로 actionable. 메인 thread/
  *     직렬 큐 미경유(폴러 차단 0). recoverInterruptedJobs 의 raw 통지와 동형.
  *  2-done/cancelled) 합성 user-turn 으로 메인 핸들러 재주입(W-I1 — 결과는 맥락 입혀 보고).
@@ -2173,7 +2189,7 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
  *     결과를 결정 전달. mainHandler(serializedHandler)가 *자체* enqueueThreadTurn 단일 직렬화
  *     하므로 직접 호출(이중 enqueue deadlock 0, 60d1777 유지).
  *
- * 본 함수는 워커의 분리(fire-and-forget) promise 안에서 await 되므로 done 재주입을 await 해도
+ * 본 함수는 매니저의 분리(fire-and-forget) promise 안에서 await 되므로 done 재주입을 await 해도
  * 채널 폴러·데몬 메인루프를 막지 않는다. 내부 try/catch 로 throw 0(데몬 생존, 원칙 3).
  *
  * @param outcome 성공이면 {result}, 실패면 {error}. error 는 호출자가 redact 후 전달 권장
@@ -2209,7 +2225,7 @@ const deliverToSummoner = (
   //  멈춘 작업을 다시 띄운다** — 명시적 사용자 행위를 모델이 되돌리는 셈이라, 사용자는
   //  멈췄는데 계속 도는 걸 보게 된다.
   // ★취소를 **가장 먼저** 본다 (2026-08-20 적대 검토 A5). `onWorkerComplete` 는 취소 직후
-  //  워커가 마지막 도구를 끝내고 결과를 낸 경우에도 취소 상태를 보존한다(코드가 명시적으로
+  //  매니저가 마지막 도구를 끝내고 결과를 낸 경우에도 취소 상태를 보존한다(코드가 명시적으로
   //  다루는 실재 경로) — 그때 `{result}` 가 들어오므로, `"result" in outcome` 을 먼저 보면
   //  **사용자가 멈춘 작업을 "완료 · 결과" 로 보고**하게 된다. 이 함수가 막으려던 그 오독이다.
   const head =
@@ -2244,7 +2260,7 @@ export const onWorkerComplete = async (
   //    abort 가 runRegionA 를 reject 시켜 여기로 error 가 와도 "실패" 아닌 "취소"로 통지.
   const existing = jobs.get(jobId);
   if ("result" in outcome) {
-    // 취소 직후 워커가 마지막 도구를 끝내고 결과를 낸 희귀 경우 — 취소 의도 보존(통지 일관).
+    // 취소 직후 매니저가 마지막 도구를 끝내고 결과를 낸 희귀 경우 — 취소 의도 보존(통지 일관).
     if (existing?.status !== "cancelled") markDone(jobId, outcome.result);
   } else if (existing?.status === "cancelled") {
     // 이미 취소 마킹됨 — 재마킹 불요(멱등). buildCompletionPrompt 가 취소 문구로 분기.
@@ -2328,12 +2344,12 @@ export const onWorkerComplete = async (
 
   // ─── 실패 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
   // failed 는 (a) 사용자가 *무조건* 알아야 하는 운영 사건이고, (b) LLM 이 실패
-  // 원인에 보탤 material 이 없으며(원인 문자열이 곧 전부), (c) 워커 실패의 흔한 원인이 모델 풀
+  // 원인에 보탤 material 이 없으며(원인 문자열이 곧 전부), (c) 매니저 실패의 흔한 원인이 모델 풀
   // 소진(codex 429 + claude idle, 2026-06-22 실측)이라 *같은 죽은 풀로 재주입 turn 을 돌리면
   // 통지마저 침묵* 한다. → recoverInterruptedJobs 와 동형으로 raw 아웃바운드 직행해 모델
   // 상태와 무관하게 결정적으로 전달한다(LLM-agnostic — 어댑터·모델 무관). humanizeWorkerError
   // 가 "왜·언제 다시"(예 429 → ~N분 후 리셋)를 담아 actionable(임무 §2). 채널 직행이라 메인
-  // thread/직렬 큐를 안 타 폴러·메인루프 차단 0(fire-and-forget 격리 유지). 본 함수는 워커의
+  // thread/직렬 큐를 안 타 폴러·메인루프 차단 0(fire-and-forget 격리 유지). 본 함수는 매니저의
   // 분리된 promise 안에서 await 되므로 데몬 메인루프와 무관.
   // ★`failed` 만 raw 직행이다 (2026-08-15). `cancelled` 는 아래 재주입 경로로 간다 —
   //  근거는 buildCompletionPrompt 의 취소 분기 주석에.
@@ -2371,7 +2387,7 @@ export const onWorkerComplete = async (
   };
   // 세션-정체성 정규화(채널/세션 분리 ADR 2026-07-15 §D1, QA §6 P1) — 재주입 완료턴이
   // route() 를 통해 **실세션 정체성**(resume/history/context boundary)에 붙도록, 사용자 세션
-  // threadKey(dashboard:*)이면서 job.channel 이 canonical 과 다를 때만(telegram/cli發 워커)
+  // threadKey(dashboard:*)이면서 job.channel 이 canonical 과 다를 때만(telegram/cli發 매니저)
   // session 을 실어 정규화한다 → route 가 (SESSION_STORAGE_CHANNEL, job.threadKey) 로 키잉해
   // 이전 유저턴과 **동일 세션 정체성**(resume/transcript 파편화 해소). ★내부 파생 스레드
   // (scheduler:/worker:/endpoint: 등)·대시보드發(이미 canonical)은 idChannel===job.channel →
@@ -2406,7 +2422,7 @@ export const onWorkerComplete = async (
   // 감싸면 같은 thread 에 이중 enqueue → 재진입 deadlock(외부 task 가 내부 task 를 await 하는데
   // 내부 task 는 외부 tail 을 기다림) → 통지 턴이 영영 실행 안 됨(2026-06-20 발견). 직접 호출해
   // 단일 enqueue 로 닫는다. 재주입을 *await* 해 delivered 를 본 뒤 안전망을 결정한다 — 이
-  // await 은 워커의 분리 promise 안이라 데몬 메인루프·폴러를 막지 않는다(워커는 fire-and-forget).
+  // await 은 매니저의 분리 promise 안이라 데몬 메인루프·폴러를 막지 않는다(매니저는 fire-and-forget).
   const handler = mainHandler;
   try {
     await handler(synthetic);
@@ -2435,7 +2451,7 @@ export const onWorkerComplete = async (
 };
 
 // ─── 부팅 복구 (option b, 2026-06-19) ────────────────────────────────────────
-// 재시작/크래시로 중단된 워커(DB status='running')를 사용자에게 정직 통지. index.ts 가
+// 재시작/크래시로 중단된 매니저(DB status='running')를 사용자에게 정직 통지. index.ts 가
 // 채널 start 직후 1회 호출. 통지는 *raw 아웃바운드*(LLM 무경유) — 모델 풀이 죽어 있어도
 // 결정적으로 전달된다. 통지 후 status='interrupted' 전이 → 다음 부팅 재통지 0(멱등).
 
@@ -2445,7 +2461,7 @@ export const onWorkerComplete = async (
  * ★사고: 재시작하면 DB status 만 조용히 running→interrupted 로 바뀌고 **이벤트가 안 나갔다.**
  *  started/done/failed/cancelled 는 전부 발행하는데 이 전이만 빠져 있었다. 그래서 이벤트
  *  스트림만 보는 관측자(대시보드 SSE replay 등)는 "시작"만 알고 "끝"을 영영 못 배웠고,
- *  재시작 후에도 워커·서브에이전트가 진행 중으로 남았다(사용자 신고). 실측: dev events 에
+ *  재시작 후에도 매니저·서브에이전트가 진행 중으로 남았다(사용자 신고). 실측: dev events 에
  *  종료 이벤트가 아예 없는 worker.started 6건.
  *  대시보드는 이걸 클라이언트 폴링(/api/worker-jobs 대조)으로 덮고 있었는데, 그건 부팅·
  *  재연결 시점에만 도는 **부분 보정**이다 — 사실을 안 알리는 쪽이 근본이다.
@@ -2465,9 +2481,9 @@ const publishInterrupted = (
 };
 
 /**
- * 잡 소유 대화로 **raw 통지**(LLM 무경유). 워커 잔여 steer 고지처럼, 모델 턴을 새로 태우지
+ * 잡 소유 대화로 **raw 통지**(LLM 무경유). 매니저 잔여 steer 고지처럼, 모델 턴을 새로 태우지
  * 않고 사실만 결정적으로 전달해야 하는 곳이 쓴다 — recoverInterruptedJobs 의 중단 통지와 동형.
- * 발송 실패는 호출부가 흡수한다(통지 실패가 워커 종료를 되돌리지 않는다).
+ * 발송 실패는 호출부가 흡수한다(통지 실패가 매니저 종료를 되돌리지 않는다).
  */
 export const notifyJobOwner = async (
   job: {
@@ -2520,7 +2536,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       `결과를 받지 못했으니, 필요하면 다시 시켜주세요.`;
     try {
       // 영속된 notifyDest(store 가 미러)가 있으면 그걸로, 없으면 channel/threadKey 폴백 →
-      // 재시작 후에도 스케줄 워커 통지가 올바른 chatId 로 도달(정직 통지 강화). store 가
+      // 재시작 후에도 스케줄 매니저 통지가 올바른 chatId 로 도달(정직 통지 강화). store 가
       // notifyDest 컬럼을 아직 안 실어도 폴백이 현행 동작 재현(회귀 0). job.notifyDest 는
       // PersistedWorkerJob 에 additive 라 미존재 시 undefined → 폴백 분기.
       const reply = reacquireReply(
@@ -2554,23 +2570,23 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
 
 // ─── region 이 호출할 발사 API 경계 (architect §9-a/§9-b) ─────────────────────
 // startWorkerJob = (a) registerJob (b) region 의 runWorkerJob 을 fire-and-forget 호출.
-// 단 runWorkerJob(워커 실행 본체 = runRegionA on worker:<jobId>)은 region 파트 →
+// 단 runWorkerJob(매니저 실행 본체 = runRegionA on worker:<jobId>)은 region 파트 →
 // 본 모듈은 그 함수를 *주입* 받아 호출만 한다(경계 명확, 순환은 region 이 lazy import).
 
 /**
- * region 이 구현·주입하는 워커 실행 본체 시그니처.
+ * region 이 구현·주입하는 매니저 실행 본체 시그니처.
  *  - job: 본 모듈이 registerJob 으로 만든 레코드 (jobId·task·threadKey 등).
- *  - 워커는 `worker:<jobId>` thread 에서 runRegionA 실행(메인 history 청결, §3).
+ *  - 매니저는 `worker:<jobId>` thread 에서 runRegionA 실행(메인 history 청결, §3).
  *  - workerDepth:1 가드 + createJobAbort().signal 주입은 region 책임(daemon 헬퍼 제공).
  *  - 완료/실패 시 onWorkerComplete(jobId, ...) 를 부른다 (await 불필요).
- *  - fire-and-forget — 반환 즉시(워커는 백그라운드). throw 금지(내부에서 onComplete 로 닫음).
+ *  - fire-and-forget — 반환 즉시(매니저는 백그라운드). throw 금지(내부에서 onComplete 로 닫음).
  */
 export type WorkerRunner = (job: WorkerJobRecord) => void;
 
 let workerRunner: WorkerRunner | undefined;
 
 /**
- * region 의 worker-registry 가 부팅 시(또는 lazy) 워커 실행 본체를 주입.
+ * region 의 worker-registry 가 부팅 시(또는 lazy) 매니저 실행 본체를 주입.
  * 미주입 상태에서 startWorkerJob 호출 시 명시 에러(사일런트 실패 회피).
  */
 export const registerWorkerRunner = (runner: WorkerRunner): void => {
@@ -2606,7 +2622,7 @@ export interface StartWorkerJobInput {
   channel: ChannelName;
   channelUserId: string;
   /**
-   * 완료/실패 통지 generic 목적지 (additive). 워커 발사 도구(run_in_background)가
+   * 완료/실패 통지 generic 목적지 (additive). 매니저 발사 도구(run_in_background)가
    * parentInput.notifyDest 를 읽어 채운다 — 스케줄이 dest(telegram/chatId)를 주입하는 경로.
    * 미지정(텔레그램 직접 발화 등)이면 channel/threadKey 폴백(회귀 0).
    */
@@ -2614,11 +2630,11 @@ export interface StartWorkerJobInput {
   /**
    * 실행 cwd(관측+동작) — run_in_background(path=X) 가 프로젝트 스코프 위임 시 그 폴더.
    * registerJob 으로 흘러 잡 레코드·SSE 에 실리고(대시보드 프로젝트 귀속), runner 가
-   * 이 값을 childInput.cwd 로 써 워커의 file-ops 상대경로가 그 폴더 기준(3b). 미지정=home 폴백.
+   * 이 값을 childInput.cwd 로 써 매니저의 file-ops 상대경로가 그 폴더 기준(3b). 미지정=home 폴백.
    */
   cwd?: string;
   /**
-   * 워커 모델 등급(high/mid/low/nano 또는 provider:model). run_in_background(tier=X) 가
+   * 매니저 모델 등급(high/mid/low/nano 또는 provider:model). run_in_background(tier=X) 가
    * 채운다 — registerJob 이 레코드로 흘려 runner 가 resolveTier→specs 로 그 티어 풀 사용
    * (미지정 시 기본 모델). 서브에이전트 model 등급과 동일 경로. 대시보드 관측에도 실림.
    */
@@ -2628,7 +2644,7 @@ export interface StartWorkerJobInput {
 /**
  * spawn_worker 도구가 호출하는 발사 API (즉시 jobId 반환 — W-I2 메인 안 갇힘).
  *  1) registerJob → jobId.
- *  2) region 이 주입한 workerRunner 를 fire-and-forget 호출 (워커는 백그라운드 진행).
+ *  2) region 이 주입한 workerRunner 를 fire-and-forget 호출 (매니저는 백그라운드 진행).
  *  3) jobId 즉시 반환 → 도구는 {jobId, status:"started"} 로 응답.
  *
  * runner 미등록(부팅 순서 이상)이면 잡을 즉시 failed 마킹 + throw 없이 jobId 반환

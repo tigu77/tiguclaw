@@ -106,6 +106,7 @@ import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
+import { decidePluginMcp, describeShadowed } from "../plugin-mcp-merge.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
@@ -543,10 +544,10 @@ export const runClaude = async (
               ),
             }
           : {}),
-        // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
-        // depth 0(서브에이전트 아님) + workerDepth 0(워커 안 아님) turn 만 등록 →
-        // 워커가 또 워커 발사 불가(W-I5). claude native Task 는 *블로킹* 위임이라
-        // 비차단 백그라운드 워커와 의미가 달라 양 어댑터 모두 명시 등록(W-I3, contract §2).
+        // 백그라운드 매니저 발사 도구 (2026-06-17) — run_in_background/list_workers.
+        // depth 0(서브에이전트 아님) + workerDepth 0(매니저 안 아님) turn 만 등록 →
+        // 매니저가 또 매니저 발사 불가(W-I5). claude native Task 는 *블로킹* 위임이라
+        // 비차단 백그라운드 매니저와 의미가 달라 양 어댑터 모두 명시 등록(W-I3, contract §2).
         // SDK in-process MCP server (McpSdkServerConfigWithInstance) 를 그대로 맵에 주입
         // — spawn_agent 와 달리 native 대응이 없으므로 codex/openai 와 동일 server 사용.
         ...(reaches("workers", turnKind) ? { workers: createWorkerMcpServer(input) } : {}),
@@ -570,7 +571,7 @@ export const runClaude = async (
         // LLM-agnostic(어댑터 분기 0). 슬래시 명령은 항상 prompt 라 mode 무관.
         ...(reaches("commands", turnKind) ? { commands: createCommandToolsMcpServer() } : {}),
         // 자가 업데이트 도구 (2026-06-26) — update_self. command-tools 와 *동일* 가드
-        // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀
+        // (depth 0 + workerDepth 0) — 매니저/서브에이전트가 자가 업데이트 트리거 불가(재귀
         // 차단). 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey
         // 에서 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. codex/openai 와 parity(#2).
         ...(reaches("update-self", turnKind)
@@ -595,16 +596,30 @@ export const runClaude = async (
         // 홈 위젯 배치(configure_home) — 위젯 플랫폼 §J.5. 3어댑터 동일(홈 settings.json
         // 한 키를 쓸 뿐이라 어댑터 무관). ★이 도구가 "비서가 배치한다"(A3)를 성립시킨다.
         ...(reaches("home-widgets", turnKind) ? { "home-widgets": createHomeWidgetsMcpServer() } : {}),
-        // 플러그인 도구 — `REACH.plugins` 가 오늘의 답("전부")을 **명시로** 들고 있다.
-        ...(reaches("plugins", turnKind) ? (input.extraMcpServers ?? {}) : {}),
       };
+
+  // ★플러그인 MCP 는 **판정을 거쳐** 얹는다 (2026-08-29, 적대 검토 B). 종전엔 위 리터럴
+  //  마지막에 스프레드해서 ⓐ `toolsNone` 갈래엔 안 실리는 게 **우연**이었고(검사 0)
+  //  ⓑ 같은 이름의 플러그인이 `memory`·`skills`·`update-self` 를 **통째로 덮었다**.
+  //  판정은 `plugin-mcp-merge.ts` 한 곳에 있고 세 어댑터가 같은 것을 쓴다.
+  const pluginMcp = decidePluginMcp(
+    input.extraMcpServers,
+    Object.keys(leanMcpServers),
+    toolsNone,
+    reaches("plugins", turnKind),
+  );
+  if (pluginMcp.shadowed.length > 0) console.warn(describeShadowed(pluginMcp.shadowed));
+  const mcpServersWithPlugins: Options["mcpServers"] = {
+    ...leanMcpServers,
+    ...pluginMcp.servers,
+  };
 
   // ★외부 MCP 서버 연결(ADR 2026-07-07) — <home>/mcp.json 의 stdio/sse config 를 SDK
   // options.mcpServers 유니온에 *그대로* 주입 → SDK 가 네이티브로 spawn+연결·도구 노출.
-  // depth0 메인 턴만(서브/워커는 외부 MCP 재연결 안 함). lean(toolsNone)은 생략. 읽기
+  // depth0 메인 턴만(서브/매니저는 외부 MCP 재연결 안 함). lean(toolsNone)은 생략. 읽기
   // 실패=빈 맵(external-mcp never-throw) → 데몬 생존(#3). codex/openai 는 Phase 2 브리지.
-  // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(그 프로젝트 <cwd>/.mcp.json — readExternalMcpServers
-  // 가 전역+프로젝트 병합). 비프로젝트 서브/워커는 기존대로 생략(재spawn 회피). lean 생략.
+  // 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(그 프로젝트 <cwd>/.mcp.json — readExternalMcpServers
+  // 가 전역+프로젝트 병합). 비프로젝트 서브/매니저는 기존대로 생략(재spawn 회피). lean 생략.
   const externalMcpServers =
     !toolsNone &&
     (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
@@ -618,16 +633,19 @@ export const runClaude = async (
   // find_capabilities 자기 자신은 아직 mcpServers 에 없으므로 활성 목록엔 안 잡힌다
   // (§3d, 순환 없음). "agents" 항목은 claude 만 Task 도구 병기 문구로 override.
   const capabilityActiveNames = Object.keys({
-    ...leanMcpServers,
+    // ★플러그인 포함 맵을 쓴다 — 종전엔 스프레드가 `leanMcpServers` **안**에 있어서 저절로
+    //  들어갔다. 판정을 밖으로 뺐으니 여기도 같이 옮겨야 `find_capabilities` 가 플러그인
+    //  도구를 계속 본다(안 옮기면 조용히 목록에서 사라진다).
+    ...mcpServersWithPlugins,
     ...externalMcpServers,
   });
 
   // 유휴 타임아웃 — SDK `Options.abortController` 경로 (runtimeTypes.d.ts:234,
   // "stop and clean up resources"). idle/first 만료 시 헬퍼가 ac.abort(IdleTimeoutError).
   // heartbeat = for-await msg 도착마다. timer.done() = finally (누수 0, I-6).
-  // 전 턴(메인·서브에이전트·워커) 1층 idle/first 면제 — 진행 중 작업(긴 Bash 등 SDK
+  // 전 턴(메인·서브에이전트·매니저) 1층 idle/first 면제 — 진행 중 작업(긴 Bash 등 SDK
   // 무이벤트 구간)을 임의 시간으로 컷하지 않는다(사용자 A안, 2026-06-24). hung 회복은
-  // 워커 2층 WORKER_TIMEOUT_MS + /restart·cancel·외부 turn signal 이 담당. idleConfigExempt.
+  // 매니저 2층 WORKER_TIMEOUT_MS + /restart·cancel·외부 turn signal 이 담당. idleConfigExempt.
   const idleAc = new AbortController();
   const idleTimer = createIdleTimer(
     idleAc,
@@ -780,7 +798,7 @@ export const runClaude = async (
   //  기본 힌트(`spawn_agent({name, prompt})`)로 되돌리면 셋이 같은 문장을 쓴다(분기 0).
   const agentIndex = formatAgentIndex(discoveredAgents);
 
-  // 모델 프로파일 인지 — depth 0 turn 만 (agentIndex 와 동일 게이트: 서브에이전트/워커를
+  // 모델 프로파일 인지 — depth 0 turn 만 (agentIndex 와 동일 게이트: 서브에이전트/매니저를
   // 구성하는 최상위 turn 에서만 필요). settings.json 프로파일 부재/오류 시 ""(graceful).
   const modelProfiles = depth === 0 ? formatModelProfiles(cwd) : "";
 
@@ -797,7 +815,7 @@ export const runClaude = async (
   // SYSTEM.md(작동 헌법) — 매 turn 최상단 (on-demand Read 아님, 2026-05-27). codex parity.
   const system = readSystem();
   // 환경 자기인지(env 블록, runtime-env.ts) — depth 게이트 없음(전 depth, 계약 §1.4).
-  // 서브에이전트/워커도 Bash 를 쓰고 플랫폼을 알아야 하므로 child turn 에도 간다.
+  // 서브에이전트/매니저도 Bash 를 쓰고 플랫폼을 알아야 하므로 child turn 에도 간다.
   const env = formatEnvContext({ cwd });
   // 시스템 컨텍스트(매 turn 주입 스캐폴딩) ↔ 사용자 turn 분리 (2026-05-28 딴소리 fix).
   //  스캐폴딩 = SYSTEM.md·env·AGENT.md·hint·대화컨텍스트·foreign delta·메모리·스킬·에이전트.
@@ -910,7 +928,7 @@ export const runClaude = async (
     //  떼어낸다(켜면 매 턴 연결까지 최대 5초 막힌다). 생성부 20곳에 손으로 붙이던 것을
     //  소비 경계로 옮겨, 레포 밖 생산자까지 자동으로 덮는다.
     mcpServers: applyToolLoadPolicy({
-      ...leanMcpServers,
+      ...mcpServersWithPlugins,
       ...externalMcpServers,
       // ★셸을 우리 도구로 일원화 (2026-08-09). SDK 빌트인 Bash 는 서브프로세스 안에서 돌아
       //  데몬이 출력을 못 쥔다 → 대시보드 잡카드에 **출력이 안 뜬다**(카드는 뜬다).
@@ -993,7 +1011,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
 
   // ── P1c mid-turn steering (ADR `2026-07-16-midturn-steering.md` §claude, Phase P1c) ──
   //
-  // steering 미주입(STEERING_ENABLED off·스케줄러·워커·서브에이전트·비대화 turn) =
+  // steering 미주입(STEERING_ENABLED off·스케줄러·매니저·서브에이전트·비대화 turn) =
   // `input.steering === undefined` → **현행 string-prompt 경로 바이트 동일**(회귀 0,
   // 하드게이트). steering 주입 시에만 async-generator prompt(streaming-input 모드)로 전환.
   //
@@ -1163,7 +1181,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
   // 로 닫아 실패 lifecycle 이 codex(spawn_agent throw→markFailed)와 parity(#2 하드게이트).
 
   // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
-  // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
+  // (서브에이전트/매니저 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
   // SDK assistant message text 는 이미 덩어리(자연 coalesce) — coalescer 가 통일 정책 적용.
   const deltaStream = createDeltaStream({
     enabled: depth === 0 && (input.workerDepth ?? 0) === 0,
@@ -1501,7 +1519,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
         //    01:15:17 recv=result/error_during_execution
         //      errors=["only prompt commands are supported in streaming mode",
         //              "MaxFileReadTokenExceededError: File content (33,579 tokens) …"]
-        //  종전엔 두 번째를 무조건 throw 해 **55분짜리 워커의 완성된 결과를 통째로 폐기**하고
+        //  종전엔 두 번째를 무조건 throw 해 **55분짜리 매니저의 완성된 결과를 통째로 폐기**하고
         //  "모든 어댑터 실패" 로 끝냈다(폴백까지 태우고 실패). 큰 파일 Read 는 모델이
         //  offset/limit 으로 다시 읽으면 되는 **회복 가능한 도구 에러**지, 완료된 작업을
         //  날릴 사유가 아니다. 로그 전수 3건 발생(07-19 2 · 07-28 1) — 드물지만 손실이 크다.
@@ -1697,7 +1715,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
                   t0: Date.now(),
                   label: toolName,
                   // ★도구 지연 감시 (2026-07-28, D) — 종전엔 codex 에만 있어, claude 로 도는
-                  //  워커는 도구가 권한 다이얼로그에 막혀도 사용자에게 신호가 없었다.
+                  //  매니저는 도구가 권한 다이얼로그에 막혀도 사용자에게 신호가 없었다.
                   //  판정은 공통 엔진이 하고 여기선 시작/종료만 건다.
                   // ★2026-08-06 — 경고에 더해 **중단 레버**를 넘긴다. 종전엔 "경고만" 이라
                   //  아무도 안 끊었고, 회사 PC 로그에서 도구가 멈춘 뒤 39분간 그 세션이

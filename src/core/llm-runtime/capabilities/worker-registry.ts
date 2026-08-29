@@ -1,12 +1,12 @@
 /**
- * 백그라운드 워커 — region 파트 (발사 도구 MCP 서버 + 워커 실행 본체 WorkerRunner).
+ * 백그라운드 매니저 — region 파트 (발사 도구 MCP 서버 + 매니저 실행 본체 WorkerRunner).
  *
  * 진실 소스: architect contract `_workspace/background-worker_architect.md`
  * (§2 발사 도구, §9-a region 구현, 불변식 W-I1~W-I8). daemon 인프라(잡 레지스트리·
- * 완료 재주입·thread 직렬 큐·reply 재획득·워커 전용 abortSignal)는 `core/worker-jobs.ts`
+ * 완료 재주입·thread 직렬 큐·reply 재획득·매니저 전용 abortSignal)는 `core/worker-jobs.ts`
  * 가 *이미* 제공 — 본 모듈은 그 깨끗한 API 를 써서 두 가지만 올린다:
  *
- *  1) 워커 실행 본체 (WorkerRunner) — `runRegionA` 를 `worker:<jobId>` 격리 thread 에서
+ *  1) 매니저 실행 본체 (WorkerRunner) — `runRegionA` 를 `worker:<jobId>` 격리 thread 에서
  *     workerDepth:1 로 *fire-and-forget* 실행, settle 시 daemon 의 `onWorkerComplete`
  *     콜백. 모듈 import 시 `registerWorkerRunner(runner)` self-register.
  *  2) 발사 도구 MCP 서버 `createWorkerMcpServer(parentInput)` (spawn_agent 팩토리 동형):
@@ -17,7 +17,7 @@
  *  - 도구 `run_in_background` → daemon `startWorkerJob` (registerJob + workerRunner 발사).
  *  - daemon `startWorkerJob` → 본 모듈 `workerRunner(job)` (fire-and-forget).
  *  - `workerRunner` settle → daemon `onWorkerComplete(jobId, {result}|{error})` (메인 재주입).
- *  - 채널로 나가는 텍스트는 *항상* 메인 재주입 turn 출력 (W-I1). 워커 출력 직행 0.
+ *  - 채널로 나가는 텍스트는 *항상* 메인 재주입 turn 출력 (W-I1). 매니저 출력 직행 0.
  *
  * LLM-agnostic (W-I3): 발사 도구는 claude/codex/openai *동일 의미* 등록(어댑터 분기 0).
  *   spawn_agent 의 createSpawnAgentMcpServer 등록 지점과 동형.
@@ -68,17 +68,17 @@ import { getLastWorkerActivity } from "../../../store/events.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
 
-// ─── 워커 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
+// ─── 매니저 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
 // runRegionA 로 메인 동급 full capability. await 하지 않고 fire-and-forget — runner 는
-// 즉시 반환하고(startWorkerJob 즉시 jobId), 워커는 백그라운드 Promise 로 진행한다.
+// 즉시 반환하고(startWorkerJob 즉시 jobId), 매니저는 백그라운드 Promise 로 진행한다.
 //
-// 워커 작업 turn input:
-//  - threadKey: `worker:<jobId>` (메인 thread 와 분리 — 워커 중간 도구 turn 이 메인
+// 매니저 작업 turn input:
+//  - threadKey: `worker:<jobId>` (메인 thread 와 분리 — 매니저 중간 도구 turn 이 메인
 //    history 를 오염시키지 않게. 최종 결과만 daemon 이 메인 thread 로 재주입, §3·§12-1).
 //  - workerDepth: 1 (어댑터가 run_in_background/list_workers 미등록 → 재발사 차단, W-I5).
-//  - subagentDepth: 0 (미설정) — 워커 안 spawn_agent 블로킹 위임은 허용(§2, W-I5 직교).
-//  - abortSignal: createJobAbort(jobId, {timeoutMs}) 의 signal (워커 전용 상한, §5·W-I6).
-//    어댑터가 1층 idle 과 OR 결합 — 새 메커니즘 0, 값만 워커 전용.
+//  - subagentDepth: 0 (미설정) — 매니저 안 spawn_agent 블로킹 위임은 허용(§2, W-I5 직교).
+//  - abortSignal: createJobAbort(jobId, {timeoutMs}) 의 signal (매니저 전용 상한, §5·W-I6).
+//    어댑터가 1층 idle 과 OR 결합 — 새 메커니즘 0, 값만 매니저 전용.
 //  - channel/cwd: 원 잡 상속 (메인과 동일 작업 환경).
 
 const okText = (text: string) => ({
@@ -90,8 +90,8 @@ const errText = (text: string) => ({
 });
 
 /**
- * 워커 1잡 실행 — daemon `startWorkerJob` 이 fire-and-forget 호출.
- * 본 함수는 *동기 반환* (워커는 백그라운드 Promise). throw 금지 — 모든 종료는
+ * 매니저 1잡 실행 — daemon `startWorkerJob` 이 fire-and-forget 호출.
+ * 본 함수는 *동기 반환* (매니저는 백그라운드 Promise). throw 금지 — 모든 종료는
  * onWorkerComplete 로 닫고 항상 abort 타이머를 done() 으로 해제(누수 0).
  */
 export const runWorkerJob = (
@@ -105,11 +105,11 @@ export const runWorkerJob = (
    */
   __runForTest?: (input: RegionASdkInput) => Promise<RegionASdkOutput>,
 ): void => {
-  // 워커 전용 상한 — timeoutMs 만료 시 WorkerTimeoutError 로 abort (무한 워커 봉쇄, W-I6).
-  // jobId 등록 → cancel_worker·대시보드 중지 버튼이 외부에서 이 워커의 abort 를 부를 수 있다.
+  // 매니저 전용 상한 — timeoutMs 만료 시 WorkerTimeoutError 로 abort (무한 매니저 봉쇄, W-I6).
+  // jobId 등록 → cancel_worker·대시보드 중지 버튼이 외부에서 이 매니저의 abort 를 부를 수 있다.
   const abort = createJobAbort(job.jobId, { timeoutMs: WORKER_TIMEOUT_MS });
 
-  // 워커 스티어 채널 (2026-07-29) — 돌고 있는 워커에 지시를 얹을 수 있게 한다.
+  // 매니저 스티어 채널 (2026-07-29) — 돌고 있는 매니저에 지시를 얹을 수 있게 한다.
   // 소비층(3어댑터)은 `input.steering` 하나만 보므로 어댑터 변경 0 — 여기서 넘기기만 하면 된다.
   // 비활성(WORKER_STEERING_ENABLED=0)이면 채널 자체를 만들지 않는다: steering 주입 여부가
   // claude 의 실행 경로(string-prompt ↔ streaming-input)를 바꾸므로, 끄면 종전 경로 그대로다.
@@ -126,12 +126,12 @@ export const runWorkerJob = (
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
     let hardTimer: ReturnType<typeof setTimeout> | undefined;
-    // 워커 본체(runRegionA) settle 결과를 먼저 확정하고, 워커 전용 자원(abort 타이머·취소
+    // 매니저 본체(runRegionA) settle 결과를 먼저 확정하고, 매니저 전용 자원(abort 타이머·취소
     // 훅·하드 타이머)을 *재주입 통지 전에* 해제한다. 통지(onWorkerComplete)는 done 의 경우
-    // 메인 재주입 LLM 턴까지 await 하므로(통지 보장), 그 동안 워커 타임아웃이 남아있지 않게
-    // 본체 settle 즉시 해제 — 늦은 워커-timeout abort 의 무의미 발화·자원 누수 0.
+    // 메인 재주입 LLM 턴까지 await 하므로(통지 보장), 그 동안 매니저 타임아웃이 남아있지 않게
+    // 본체 settle 즉시 해제 — 늦은 매니저-timeout abort 의 무의미 발화·자원 누수 0.
     let outcome: { result: string } | { error: string };
-    /** 워커가 끝나는 순간 도착해 반영 못 한 지시(원문). 완료 통지 뒤 소유 세션에 알린다. */
+    /** 매니저가 끝나는 순간 도착해 반영 못 한 지시(원문). 완료 통지 뒤 소유 세션에 알린다. */
     let pendingSteerNotice: string[] = [];
     try {
       const { runRegionA, resolveModelChain } =
@@ -151,7 +151,7 @@ export const runWorkerJob = (
           threadKey: `worker:${job.jobId}`,
           channel: job.channel,
           // run_in_background(path=X) 로 스코프됐으면 그 폴더 cwd, 아니면 undefined=home 폴백.
-          // 워커 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
+          // 매니저 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
           cwd: job.cwd,
           workerDepth: 1,
           abortSignal: abort.signal,
@@ -161,13 +161,13 @@ export const runWorkerJob = (
       );
 
       // 하드 백스톱 (2026-06-20) — index.ts 채널 백스톱(Promise.race) 동형. abort.signal 은
-      // LLM 스트림은 끊지만 hung MCP callTool(signal 미수신 = MCP 한계)은 못 끊어 워커가
-      // 상한을 넘겨 실행(실측: 20s 워커가 273s). WORKER_TIMEOUT_MS + grace 후에도 runRegionA
+      // LLM 스트림은 끊지만 hung MCP callTool(signal 미수신 = MCP 한계)은 못 끊어 매니저가
+      // 상한을 넘겨 실행(실측: 20s 매니저가 273s). WORKER_TIMEOUT_MS + grace 후에도 runRegionA
       // 미settle 시 WorkerTimeoutError 로 *강제* 종료 → onWorkerComplete 가 정시 발화(통지 옴).
       // 버려진 runRegionAP 의 늦은 reject 는 흡수(unhandledRejection→crash-fast 오발 방지,
-      // 어제 채널 fix 와 동일 패턴). 정상 워커는 상한 전 settle 이라 영향 0.
+      // 어제 채널 fix 와 동일 패턴). 정상 매니저는 상한 전 settle 이라 영향 0.
       // ★상한이 무한이면 **타이머를 아예 안 건다** (2026-08-22). `setTimeout(fn, Infinity)` 은
-      //  Node 가 1ms 로 클램프해서 *모든* 워커가 시작 즉시 타임아웃으로 죽는다 — "상한 없음"
+      //  Node 가 1ms 로 클램프해서 *모든* 매니저가 시작 즉시 타임아웃으로 죽는다 — "상한 없음"
       //  이 "상한 1ms" 로 뒤집히는 자리다. 무한일 땐 race 자체를 안 건다(불필요한 Promise 0).
       const bounded = Number.isFinite(WORKER_TIMEOUT_MS);
       const hardDeadline = bounded
@@ -276,11 +276,11 @@ export const runWorkerJob = (
     } catch (e) {
       outcome = { error: e instanceof Error ? e.message : String(e) };
     } finally {
-      // 워커 전용 자원 해제 — 본체 settle 즉시(통지 전). 정상/실패 무관 항상(누수·오발화 0, 멱등).
+      // 매니저 전용 자원 해제 — 본체 settle 즉시(통지 전). 정상/실패 무관 항상(누수·오발화 0, 멱등).
       if (hardTimer !== undefined) clearTimeout(hardTimer);
       abort.done();
       // 스티어 채널 종료 + **잔여 회수**. 메인 턴은 미소비 steering 을 새 턴으로 재주입하지만
-      // (index.ts) 워커엔 다음 턴이 없다 — 그냥 close 하면 막 도착한 지시가 조용히 사라진다
+      // (index.ts) 매니저엔 다음 턴이 없다 — 그냥 close 하면 막 도착한 지시가 조용히 사라진다
       // (project_steering_endturn_skip 과 같은 손실창). 사용자 확정(2026-07-29): **소유 세션에
       // 정직 통지**. 원문(raw)을 쓴다 — framing 문구가 사용자 화면에 노출된 실사고가 있었다.
       // 수신함은 steering 플래그와 무관하게 항상 만들었으므로 항상 해제한다
@@ -290,7 +290,7 @@ export const runWorkerJob = (
       if (steerCh !== undefined) {
         // ★**레지스트리의 현재 채널**을 거둔다 (2026-08-20 적대 검토 A1). 형제
         //  (`startDetachedAgent`)엔 어제 이 수정이 들어갔는데 **이 레인은 그대로였다** —
-        //  게다가 그 커밋의 주석은 "워커는 회전하니까 안전" 이라는 뜻으로 읽히게 적혀
+        //  게다가 그 커밋의 주석은 "매니저는 회전하니까 안전" 이라는 뜻으로 읽히게 적혀
         //  있었다. 틀렸다: 회전은 **거두기 루프 안**에서만 일어나므로, 백그라운드 자식이
         //  없는 **평범한 매니저**는 루프를 한 번도 안 돌아 똑같이 노출돼 있었다.
         //  증상: 돌고 있는 매니저에 지시를 보내면 `steerJob` 이 닫힌 채널을 갈아끼우고
@@ -318,7 +318,7 @@ export const runWorkerJob = (
     // 완료/실패 통지 — daemon 이 done 은 메인 재주입(+raw 안전망), failed/cancelled 는 raw
     // 직행으로 *반드시* 전달한다. await 로 onComplete 예외도 본 IIFE 가 흡수(throw 0, 데몬
     // 생존). 본 IIFE 자체가 fire-and-forget(detached)이라 이 await 은 채널 폴러·메인루프를
-    // 막지 않는다(워커 격리 유지).
+    // 막지 않는다(매니저 격리 유지).
     try {
       await onWorkerComplete(job.jobId, outcome);
     } catch (e) {
@@ -354,7 +354,7 @@ registerWorkerRunner(runWorkerJob);
 // ─── 발사 도구 MCP 서버 (architect §2 — spawn_agent 팩토리 동형) ──────────────
 // run_in_background: 비차단 발사(즉시 jobId). list_workers: 상태 조회(MVP 포함, §6·§12-2).
 // 양 어댑터(claude/codex/openai) 동일 의미 등록 — 어댑터 분기 0(W-I3). 어댑터는
-// depth0 + workerDepth0 turn 에만 이 서버를 등록(워커 안 미등록 = W-I5).
+// depth0 + workerDepth0 turn 에만 이 서버를 등록(매니저 안 미등록 = W-I5).
 
 /** ms 경과를 사람이 읽는 짧은 문자열로 (list_workers 포맷용). */
 const formatElapsed = (fromMs: number, toMs: number): string => {
@@ -377,7 +377,7 @@ const STATUS_LABEL: Record<WorkerJobRecord["status"], string> = {
  * 발사 도구 MCP server 팩토리 — codex 어댑터는 mcpServers(bridge)로, claude 어댑터는
  * 동일 SDK server 를 mcpServers 맵에 직접 등록(spawn_agent createSpawnAgentMcpServer 동형).
  *
- * @param parentInput 현 메인 turn input — 워커가 합류할 원 thread/channel/사용자 파생.
+ * @param parentInput 현 메인 turn input — 매니저가 합류할 원 thread/channel/사용자 파생.
  *                    `channelUserId` 는 RegionASdkInput 에 없으므로 threadKey 로 대체
  *                    (telegram threadKey "tg:<chatId>" 가 곧 사용자 식별 — daemon 재주입
  *                    reacquireReply 가 threadKey 로 채널 복원하므로 일관).
@@ -416,7 +416,7 @@ export const createWorkerMcpServer = (
             ? path.resolve(parentInput.cwd ?? process.cwd(), args.path)
             : undefined;
         // 비차단 발사 — startWorkerJob 이 registerJob 후 workerRunner 를 fire-and-forget
-        // 호출하고 jobId 를 *즉시* 반환(블로킹 0, W-I2). 워커 결과는 절대 여기로 안 옴 —
+        // 호출하고 jobId 를 *즉시* 반환(블로킹 0, W-I2). 매니저 결과는 절대 여기로 안 옴 —
         // daemon 의 onWorkerComplete 가 메인 thread 로 재주입한다(W-I1).
         // ★같은 창에 **같은 인자**로 또 왔으면 다시 안 띄운다 (2026-08-20 사용자 신고 —
         //  "매니저도 마찬가지"). 근거·범위는 spawn-dedupe.ts 참조. 병렬은 그대로 되고,
@@ -450,11 +450,11 @@ export const createWorkerMcpServer = (
           // channelUserId — RegionASdkInput 에 없음. 재주입 reply 는 threadKey 로
           // 채널 복원하므로(reacquireReply) threadKey 를 사용자 식별로 운반.
           channelUserId: parentInput.threadKey,
-          // 워커 모델 등급 — 지정 시 runner 가 resolveTier→specs 로 그 티어 풀 사용
+          // 매니저 모델 등급 — 지정 시 runner 가 resolveTier→specs 로 그 티어 풀 사용
           // (미지정 시 기본 모델). 서브에이전트 model 등급과 동일 경로.
           modelTier: args.tier,
-          // 워커 완료/실패 통지 dest — parentInput.notifyDest 가 있으면(예 스케줄 발화)
-          // 그 generic 좌표를 잡에 박아 워커가 그 dest 로 통지하게 한다.
+          // 매니저 완료/실패 통지 dest — parentInput.notifyDest 가 있으면(예 스케줄 발화)
+          // 그 generic 좌표를 잡에 박아 매니저가 그 dest 로 통지하게 한다.
           // ★채널/세션 분리(ADR 2026-07-15 §D3): notifyDest 미지정(텔레그램 등 채널 직접
           //   발화)이어도 parentInput.channelAddress(캡처된 배달 좌표)가 있으면 (실채널,
           //   그 좌표)로 dest 를 **스폰 시점 캡처**한다. 세션 id 가 채널 무관(dashboard:*)이
@@ -502,7 +502,7 @@ export const createWorkerMcpServer = (
       try {
         const now = Date.now();
         // ★세션 스코프 (2026-07-29 사용자 신고) — 종전엔 **전 세션 통합**이라, 다른 대화에서
-        //  도는 워커를 보고 메인이 "이전 워커가 실행 중" 이라고 판단해 새 작업을 안 띄웠다.
+        //  도는 매니저를 보고 메인이 "이전 매니저가 실행 중" 이라고 판단해 새 작업을 안 띄웠다.
         //  잡에는 띄운 세션이 처음부터 실려 있었는데 읽는 쪽이 안 썼던 것 = 데이터가 아니라
         //  질의의 결함. 소속 미상(부모 잡이 정리된 경우)은 전역으로 열어 둔다 — 읽기 도구라
         //  숨기는 쪽이 더 나쁘다.
@@ -536,7 +536,7 @@ export const createWorkerMcpServer = (
           const status = STATUS_LABEL[j.status];
           if (j.status === "running") {
             // 최근 활동 1건(events 의 llm.activity, threadKey=`worker:<jobId>`) →
-            // "마지막: <도구> N분 전". 활동이 오래됐으면 stuck 신호. 워커당 1회 조회(워커
+            // "마지막: <도구> N분 전". 활동이 오래됐으면 stuck 신호. 매니저당 1회 조회(매니저
             // 수 적어 OK). 조회 실패는 활동 생략(데몬 생존 — 목록 자체는 항상 나간다).
             let activity = "";
             try {
@@ -560,10 +560,10 @@ export const createWorkerMcpServer = (
   );
 
   /**
-   * 전체 세션 워커 — **별도 도구**로 분리 (2026-07-29, 사용자 확정).
+   * 전체 세션 매니저 — **별도 도구**로 분리 (2026-07-29, 사용자 확정).
    *
    * 원래는 list_workers 에 `all_sessions` 플래그로 붙였는데, 그건 footgun 이다: 모델이
-   * "혹시 모르니 전체로" 켜는 순간 이번 사고(다른 대화 워커를 자기 것으로 오인)가 그대로
+   * "혹시 모르니 전체로" 켜는 순간 이번 사고(다른 대화 매니저를 자기 것으로 오인)가 그대로
    * 재발한다. 도구를 나누면 **호출하는 순간 의도가 확정**되고, list_workers 는 어떤 인자
    * 조합에서도 세션을 넘지 않는다. 비용은 능력 인덱스 한 줄.
    */
@@ -606,10 +606,10 @@ export const createWorkerMcpServer = (
   );
 
   /**
-   * 돌고 있는 워커에 지시를 얹는다 (2026-07-29).
+   * 돌고 있는 매니저에 지시를 얹는다 (2026-07-29).
    *
    * cancel_worker 와 **같은 지목 규약**을 쓴다: label 우선·job_id 보조, kind='worker' 게이트,
-   * label 매칭은 이 대화 안에서만(남의 대화 워커에 오주입 = 되돌릴 수 없다).
+   * label 매칭은 이 대화 안에서만(남의 대화 매니저에 오주입 = 되돌릴 수 없다).
    */
   const steerWorker = tool(
     "steer_worker",
@@ -727,7 +727,7 @@ export const createWorkerMcpServer = (
         // 은 U-I4 개정으로 worker·agent 모두 취소함 — 그건 사용자가 카드에서 명시 지목한 경우라
         // 경로가 다르다.) agent 잡이 같은 레지스트리에 running 으로 상주하므로 필터 필수.
         let target: WorkerJobRecord | undefined;
-        // ★label 매칭은 **이 대화의 워커 안에서만** (2026-07-29). label 은 사람이 붙인
+        // ★label 매칭은 **이 대화의 매니저 안에서만** (2026-07-29). label 은 사람이 붙인
         //  이름이라 세션 간 충돌이 흔하다("리서치", "정리"…). 전역에서 최신 것을 집으면
         //  사용자가 의도하지 않은 **남의 대화 작업을 취소**할 수 있다 — 되돌릴 수 없는 행위라
         //  범위를 좁히는 쪽이 옳다. 소속 미상이면 종전대로 전역(부모 잡이 정리된 예외).

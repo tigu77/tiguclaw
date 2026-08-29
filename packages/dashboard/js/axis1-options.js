@@ -140,7 +140,7 @@
       const restoredAt = new Map(); // threadKey -> 복원 시각(스윕 전용, 표시 금지)
       // ★"무엇 때문에 도는가" (2026-08-13) — 사용자: "뭘 하고 있는지 알기가 어렵다".
       //  사용자가 직접 친 턴은 자기가 뭘 시켰는지 안다. 모르는 건 **자기가 안 시킨 턴**
-      //  (워커·에이전트 완료 후 메인이 정리하는 구간)이라, 그때만 이유를 같이 적는다.
+      //  (매니저·에이전트 완료 후 메인이 정리하는 구간)이라, 그때만 이유를 같이 적는다.
       const turnReason = new Map(); // threadKey -> 사유(있을 때만)
       const markTurnActive = (tk, opts) => {
         const k = tk || activeThreadKey;

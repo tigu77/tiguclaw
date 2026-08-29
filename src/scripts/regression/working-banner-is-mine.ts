@@ -166,13 +166,13 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // 배선 — 백그라운드 잡은 **메인 상태에 안 섞인다**: 워커 활동을 걸러낸 뒤에만 단계를 싣는다.
+    // 배선 — 백그라운드 잡은 **메인 상태에 안 섞인다**: 매니저 활동을 걸러낸 뒤에만 단계를 싣는다.
     const sse = JS("sse.js");
     const wIdx = sse.indexOf("handleWorkerActivity(ap, ts)");
     const pIdx = sse.indexOf("setTurnPhase(");
     out.push(
       assert(
-        "★진행 단계는 워커 활동을 걸러낸 **뒤**에 실린다(백그라운드가 메인 상태로 새지 않는다)",
+        "★진행 단계는 매니저 활동을 걸러낸 **뒤**에 실린다(백그라운드가 메인 상태로 새지 않는다)",
         wIdx >= 0 && pIdx > wIdx,
         `handleWorkerActivity=${wIdx} · setTurnPhase=${pIdx}`,
       ),

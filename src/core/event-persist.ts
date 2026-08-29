@@ -173,7 +173,7 @@ export const startEventPersistence = (bus: EventBus): void => {
  *
  * 배경: 완료된 turn 의 전체본은 transcripts/channel.message.out 에 있으나, *진행 중·멈춘·
  * 루프* turn 의 스트리밍 서술은 어디에도 안 남아(delta denylist) 사후 진단 불가였다(실측:
- * 워커가 무한 재탐색처럼 보이는데 delta 미영속이라 확인 못 함). → threadKey 별로 델타를
+ * 매니저가 무한 재탐색처럼 보이는데 delta 미영속이라 확인 못 함). → threadKey 별로 델타를
  * 모아 ~12s 또는 ~1500자마다 tail 스냅샷 1건 로그. ★로그 전용 근거: 완료턴은 transcripts
  * 와 중복이고, events 는 최근 1만 건 prune 이라 스트리밍 트레이스가 에러·lifecycle 을 밀어내는
  * 보존 오염. 로그(일자별 파일)는 그 문제 0 + grep 으로 충분. 저volume + 누수 가드(동시 추적

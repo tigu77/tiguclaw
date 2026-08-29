@@ -247,6 +247,38 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── 끄면 **정말 멈춘다** (2026-08-29, 적대 검토 A) ──────────────────────
+    // ★종전엔 `stop()` 되돌림이 `service`·`channel` 에만 걸려 있었다. 번들
+    //  `scheduler`·`file-watch` 는 둘 다 `trigger` 이고 `stop()` 을 구현해 뒀는데 **한 번도
+    //  안 불렸다** — 대시보드에서 끄면 "끔" 이 뜨고 목록에서 사라지는데 **cron 은 계속
+    //  발화한다**(실측: dispose 전 tick 4 → 후 9). 종전 회귀는 `service` 하나로만 검사해서
+    //  이 갈래를 한 번도 안 밟았다.
+    {
+      const notStopped: string[] = [];
+      for (const kind of ["trigger", "observer", "service"] as const) {
+        let stopped = 0;
+        const hook = `start${kind[0]?.toUpperCase() ?? ""}${kind.slice(1)}`;
+        const r = await wirePlugin(
+          fakePlugin(`stop-${kind}`, [kind], {
+            [hook]: async (): Promise<void> => undefined,
+            stop: async (): Promise<void> => {
+              stopped += 1;
+            },
+          }),
+          freshDeps(),
+        );
+        await r.dispose();
+        if (stopped !== 1) notStopped.push(`${kind}(${String(stopped)}회)`);
+      }
+      out.push(
+        assert(
+          "★★`trigger`·`observer`·`service` 를 끄면 **셋 다 `stop()` 이 불린다** — 종전엔 `service` 만이라, 번들 스케줄러를 꺼도 cron 이 계속 발화했다(사용자에겐 '껐다' 고 보이는데 알림이 계속 온다)",
+          notStopped.length === 0,
+          notStopped.length === 0 ? "trigger·observer·service 각 1회" : `★안 멈춤: ${notStopped.join(", ")}`,
+        ),
+      );
+    }
+
     return out;
   },
 };

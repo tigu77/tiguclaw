@@ -57,7 +57,7 @@ const run = async (): Promise<Assertion[]> => {
   // ── ③ 되돌릴 수단을 준다 — 기다릴지 끊을지는 사용자가 정한다 ──────────────
   out.push(
     assert(
-      "중단 수단을 준다(워커=cancel_worker · 메인=/stop)",
+      "중단 수단을 준다(매니저=cancel_worker · 메인=/stop)",
       worker.includes("cancel_worker") && main.includes("/stop") && !main.includes("cancel_worker"),
       `worker=${worker.includes("cancel_worker")} main=${main.includes("/stop")}`,
     ),
@@ -104,10 +104,10 @@ const run = async (): Promise<Assertion[]> => {
         `호출 ${calls.length}곳: ${calls.map((a) => a.replace(/\s+/g, " ").trim()).join(" | ")}`,
       ),
     );
-    // ⑪ 곁가지 — 워커 통지는 jobLabel 을 넘겨야 `cancel_worker` 안내가 나간다.
+    // ⑪ 곁가지 — 매니저 통지는 jobLabel 을 넘겨야 `cancel_worker` 안내가 나간다.
     out.push(
       assert(
-        "워커 호출부는 jobLabel 을 넘긴다(없으면 있지도 않은 /stop 을 안내한다)",
+        "매니저 호출부는 jobLabel 을 넘긴다(없으면 있지도 않은 /stop 을 안내한다)",
         calls.some((a) => /jobLabel/.test(a)),
         calls.join(" | "),
       ),
@@ -116,7 +116,7 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ⑦ ★구독이 실제로 걸린다 (적대 검토 ⑫ — 4점) ────────────────────────────
   //  종전 검사는 함수 **본문**만 봤다. `subscribeWorkerToolSlowNotify()` 호출 한 줄을
-  //  지우면 워커·메인 턴 통지가 **전부** 사라지는데 992건이 초록이었다 —
+  //  지우면 매니저·메인 턴 통지가 **전부** 사라지는데 992건이 초록이었다 —
   //  이 검사군이 태어난 사고(39분 무통지)가 그대로 재현되는데 그물이 없었다.
   {
     const src = await readFile(

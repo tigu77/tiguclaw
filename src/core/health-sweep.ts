@@ -161,7 +161,7 @@ export const isSelfHandled = (rawPayload: string): boolean => {
  * ★알림에 근거를 싣는 이유: 종전 문구("어댑터·백엔드 이상일 수 있습니다")는 받는 사람이
  *  로그를 받아 분류해야만 뜻을 알 수 있었다 — 알림이 일을 만들었다. 어느 모델이 무슨
  *  이유로 몇 번인지가 있으면 대개 그 한 줄에서 판단이 끝난다.
- * ★배경 스레드(서브에이전트·워커)를 따로 표시한다: 내 대화가 멀쩡한데 뒤에서 도는 잡이
+ * ★배경 스레드(서브에이전트·매니저)를 따로 표시한다: 내 대화가 멀쩡한데 뒤에서 도는 잡이
  *  흔들린 것과, 내 대화가 죽은 것은 **다른 사건**이다(실측 08-11: 39건 중 34건이 서브에이전트).
  */
 export const describeTurnErrors = (rawPayloads: string[]): string => {
@@ -199,7 +199,7 @@ export const describeTurnErrors = (rawPayloads: string[]): string => {
     background === 0
       ? "내 대화"
       : background === rawPayloads.length
-        ? "전부 배경·외부 호출(서브에이전트·워커·엔드포인트·게이트웨이)"
+        ? "전부 배경·외부 호출(서브에이전트·매니저·엔드포인트·게이트웨이)"
         : `배경·외부 호출 ${background}건 포함`;
   return `${top} (${where}).`;
 };

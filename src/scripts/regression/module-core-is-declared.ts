@@ -18,6 +18,7 @@
  *
  * 등급: 동작 검사 — 진짜 매니페스트를 읽는 `isCoreModule` 과 인벤토리 수집을 부른다.
  */
+import { probeInterpreter } from "./_probe-helpers.js";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
@@ -152,7 +153,7 @@ export const check: RegressionCheck = {
         console.log("__J__" + JSON.stringify({ loaded: names,
           active: { "http-bridge": isModuleActive("http-bridge"), scheduler: isModuleActive("scheduler") } }));
       })();`;
-      const r = spawnSync(path.join(REPO, "node_modules/.bin/tsx"), ["-e", probe], {
+      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
         cwd: tmp, // ★프로젝트 레이어도 임시 디렉터리로 — 레포의 `.tiguclaw/` 가 안 섞이게.
         env: { ...process.env, TIGUCLAW_HOME: tmp },
         encoding: "utf8",

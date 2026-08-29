@@ -20,6 +20,7 @@
  *     - output.jsonlPath 있음 (claude) → indexJsonlIfNeeded (jsonl catch-up, 진실 소스)
  *     - 없음 (codex-oauth·openai) → appendTranscript user + assistant 직접 INSERT
  */
+import { getRegisteredMcpServers } from "../mcp-registry.js";
 import { runClaude } from "./adapters/claude-agent-sdk.js";
 import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
@@ -342,7 +343,7 @@ export const resolveTier = (
       return parseModelSpecList(env);
     }
     // ★프로파일도 env 도 없을 때 — 빌트인(인증된 provider 조립)으로. 종전엔 여기서 []
-    //  이라 등급 이름(high/mid/low)이 **아무 의미도 없었다**: 서브에이전트·워커가 등급을
+    //  이라 등급 이름(high/mid/low)이 **아무 의미도 없었다**: 서브에이전트·매니저가 등급을
     //  선언해도 전부 같은 어댑터 디폴트로 흘렀다. `nano` 는 빌트인이 모르므로 그대로 [].
     return parseModelSpecList(builtinTierPool(s, cwd).join(","), cwd);
   }
@@ -1064,7 +1065,7 @@ const persistOutput = (
 
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(threads resume sid / transcript_index)
   // 은 canonical 저장 채널로 키잉. route() 가 채널 인입을 세션으로 정규화할 때 sessionChannel
-  // (=SESSION_STORAGE_CHANNEL)을 실어보낸다. 미지정(워커·스케줄러·서브에이전트·엔드포인트·
+  // (=SESSION_STORAGE_CHANNEL)을 실어보낸다. 미지정(매니저·스케줄러·서브에이전트·엔드포인트·
   // Phase 1 이전 채널) → channel 폴백(현행 (channel, threadKey) 키잉 그대로, 회귀 0).
   // 어댑터의 getSession(idChannel) 과 대칭 — 저장·조회가 같은 canonical 키를 봐야 계승됨.
   const idChannel = input.sessionChannel ?? input.channel;
@@ -1270,7 +1271,7 @@ const runPool = async (
         //  않습니다 — 미배달 87자 [cooldown]` 로 끝났다. 즉 위 주석이 "채널 무관 통지"라고
         //  선언한 바로 그 경로가 **비채널 트리거에서만 조용히 안 갔다**.
         //  스케줄러는 자기 목적지를 이미 `notifyDest`(destChannel/destTarget)로 주입하고
-        //  있었다 — 워커 완료 통지는 그걸 쓰고 이것만 안 썼다. 좌표 도출은 새로 만들지
+        //  있었다 — 매니저 완료 통지는 그걸 쓰고 이것만 안 썼다. 좌표 도출은 새로 만들지
         //  않고 기존 단일 판정(`notifyDestFromCoords`: 캡처 좌표 → threadKey 파싱)에 맡긴다.
         const notifyAt =
           input.notifyDest ??
@@ -1332,14 +1333,44 @@ const runPool = async (
 };
 
 export const runRegionA = async (
-  input: RegionASdkInput,
+  rawInput: RegionASdkInput,
   opts?: { specs?: ModelSpec[]; chain?: ModelSpec[][] },
 ): Promise<RegionASdkOutput> => {
   // 전사 seam(contract §1) — 오디오/음성 첨부를 chain 루프 *전* 1회 전사해 Attachment.transcript 를
   // 채운다. best-effort(enrichTranscripts 자체가 첨부 단위 격리·never-throw). 다운스트림 3 어댑터
   // formatAttachments + persistOutput 이 분기 0 으로 동일 소비 → #2 구조보장·resume 재전사 0.
   // 미설정/실패/비대상 = Attachment.transcript 미설정 → path-reference 폴백(회귀 0).
-  await enrichTranscripts(input.attachments, input.cwd);
+  await enrichTranscripts(rawInput.attachments, rawInput.cwd);
+  // ★**플러그인 도구를 여기서 채운다** (2026-08-29). 종전엔 `router.ts` **한 곳**만 채웠고,
+  //  그래서 router 를 안 지나는 호출은 전부 플러그인 도구가 **0개**였다:
+  //
+  //    scheduler · file-watch  → `runClaude({text, threadKey, channel, cwd})` 직접 호출
+  //    서브에이전트 · 매니저   → 스폰 입력에 `extraMcpServers` **0건**(실측)
+  //
+  //  `REACH.plugins` 는 `"subagent"`(=전부)라고 **선언**하고 있었는데 실제로는 메인 턴만
+  //  받고 있었다 — 선언과 현실이 갈려 있었다. 사용자에게 보이는 모습은 이렇다: 서드파티가
+  //  플러그인을 만들고 "매일 아침 그걸로 알려줘" 스케줄을 걸면, 그 턴의 모델에겐 그 도구가
+  //  없다.
+  //
+  // ★호출부마다 한 줄씩 더하지 않고 **여기 한 곳**에 둔다. 두 트리거가 이미 각자 빠뜨렸고,
+  //  세 번째가 생기면 또 빠뜨린다([[feedback_hand_maintained_lists]] · "이음매에서 새면
+  //  린트 말고 이음매를 없애라"). 좌표는 이 입력에 이미 다 있다.
+  //
+  // ★**도구가 없어야 하는 호출은 안 다친다** — `toolPolicy:{mode:"none"}` 이 어댑터에서
+  //  플러그인 MCP 를 이미 걷어낸다(세 어댑터 동형). 실측으로 그 부류(분류·webfetch 추출·
+  //  엔드포인트·`host.ask` 기본)는 전부 `none` 을 명시하고 있다. 즉 이 기본값은 **도구를
+  //  받기로 되어 있던 턴에만** 닿는다.
+  const input: RegionASdkInput =
+    rawInput.extraMcpServers !== undefined
+      ? rawInput
+      : {
+          ...rawInput,
+          extraMcpServers: getRegisteredMcpServers({
+            threadKey: rawInput.threadKey,
+            channel: rawInput.channel,
+            target: rawInput.channelAddress ?? null,
+          }),
+        };
   // 풀 체인 조립 — 프로파일 간(inter) 폴백을 *분리된 풀들*로 운반한다(평탄화 금지).
   //  (1) opts.chain(신규 — 프로파일 .fallback 체인): 그대로. chain[0]=요청 풀.
   //  (2) opts.specs(레거시 — /model override·서브에이전트 단일 풀): [override, 기본 풀] 2단.

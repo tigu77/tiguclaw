@@ -3,7 +3,7 @@
       // 파일은 이제 페이지 뷰가 아니라 드로어 안 별도 섹션을 그린다(showShells()는 openBg()로
       // 드로어를 열 뿐). 카드 그리드·경과 틱·상태 배지 로직(view-agents.js 클론)과 shell.started/
       // shell.exited, GET /api/shells·/api/shell-output·POST /api/kill-shell 계약은 그대로.
-      // 워커/에이전트 jobCards 와 완전 분리된 자체 registry(shellRegistry) — 이 파일 하나로
+      // 매니저/에이전트 jobCards 와 완전 분리된 자체 registry(shellRegistry) — 이 파일 하나로
       // 자기완결(ADR §2 "레지스트리 분리" — worker_jobs 아님, in-memory BG_SHELLS 미러).
       // codex/openai=프로세스 우리 소유(GET /api/shells 시드+kill/tail 완전). claude=SDK 내부
       // 소유라 Phase 4 관측 브리지(SSE shell.*, owner:"sdk"·killable:false)로만 라이브 유입 —
@@ -28,7 +28,7 @@
       const TERMINAL_SHELL_STATUS = new Set(["exited", "killed"]);
       const upsertShellEntry = (shellId, patch, opts) => {
         let e = shellRegistry.get(shellId);
-        // ★셸 상태도 단조다 (2026-07-29 검토). 워커 잡엔 넣었는데 셸엔 안 넣어서,
+        // ★셸 상태도 단조다 (2026-07-29 검토). 매니저 잡엔 넣었는데 셸엔 안 넣어서,
         //  재연결 replay 가 옛 shell.started 를 흘리면 **종료된 셸이 running 으로
         //  되돌아갔고**(CDP 실측) 셸엔 하이드레이션 대조도 없어 영영 유령으로 남았다.
         if (
@@ -254,7 +254,7 @@
         }
         // 어느 세션이 띄운 셸인가 (2026-07-28) — 이 뷰는 세션 필터 없는 *전체 인벤토리* 라
         // (작업관리자 성격) 필터 대신 **귀속을 명시**한다. 근거는 서버 환원값(ownerTk) 우선,
-        // 없으면 프런트 환원. 워커·서브가 띄운 셸은 threadKey 가 잡 좌표라 그대로 쓰면 안 된다.
+        // 없으면 프런트 환원. 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표라 그대로 쓰면 안 된다.
         {
           const owner =
             entry.ownerTk ||

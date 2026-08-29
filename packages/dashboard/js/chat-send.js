@@ -99,7 +99,7 @@
         // 답글 인용 — 특정 메시지에 답글 중이면 그 원문을 replyToText 로 실어 전송 후 칩 비움.
         const replyToText = replyingTo ? replyingTo.text : undefined;
         clearReply();
-        // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 워커
+        // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 매니저
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
         await sendChatMessage(text, atts, replyToText);
       });

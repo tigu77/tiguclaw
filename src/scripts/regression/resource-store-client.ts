@@ -141,13 +141,13 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // 건너뛴 이벤트 — 스냅샷을 다시 받는다(종전엔 "replay 창 밖으로 밀린 긴 워커" 가 영영 안 왔다).
+    // 건너뛴 이벤트 — 스냅샷을 다시 받는다(종전엔 "replay 창 밖으로 밀린 긴 매니저" 가 영영 안 왔다).
     const before = snapshots;
     const d4 = r.handle({ epoch: E, revision: 99 }, (prev) => prev);
     await new Promise((res) => setTimeout(res, 0));
     out.push(
       assert(
-        "★★건너뛴 구간이 있으면 **스냅샷을 다시 받는다** — 이게 'replay 창 밖으로 밀린 긴 워커가 새로고침 뒤 영영 안 오던 것' 을 대체한다",
+        "★★건너뛴 구간이 있으면 **스냅샷을 다시 받는다** — 이게 'replay 창 밖으로 밀린 긴 매니저가 새로고침 뒤 영영 안 오던 것' 을 대체한다",
         d4 === "resnapshot" && snapshots === before + 1,
         `판정=${d4} · 스냅샷 ${before}→${snapshots}`,
       ),

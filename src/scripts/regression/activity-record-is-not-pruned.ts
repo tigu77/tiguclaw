@@ -22,6 +22,7 @@
  *
  * 등급: **동작 검사** — 임시 홈에 진짜 DB 를 만들어 `pruneEvents` 를 **실행**한다.
  */
+import { probeInterpreter } from "./_probe-helpers.js";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -114,7 +115,7 @@ export const check: RegressionCheck = {
           prunable: ev.countPrunableEvents(),
         }));
       })();`;
-      const r = spawnSync(path.join(REPO, "node_modules/.bin/tsx"), ["-e", probe], {
+      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
         cwd: tmp,
         env: { ...process.env, TIGUCLAW_HOME: tmp },
         encoding: "utf8",

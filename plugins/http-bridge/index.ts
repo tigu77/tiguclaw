@@ -625,7 +625,7 @@ const parseGatewayTools = (
 };
 
 // ── 이력 도구 스텝(기능 B, 2026-07-09) — chat_log 메시지 window 와 같은 ts 범위의 영속
-// llm.activity(start·tool, 워커·서브·게이트웨이 제외)를 복원용으로 반환. 도구 스텝은 events 에
+// llm.activity(start·tool, 매니저·서브·게이트웨이 제외)를 복원용으로 반환. 도구 스텝은 events 에
 // 이미 영속되나 chat-history 는 메시지만 줬다 → 새로고침 시 도구 사용이 사라져 보였음. 이제
 // 여기서 함께 반환하고 대시보드가 메시지와 시간순 인터리브 렌더. best-effort(실패=빈 배열). ──
 interface HistoryActivity {
@@ -1545,7 +1545,7 @@ class HttpBridge implements Channel, Observer {
       //  발화시키지 않아 **브라우저가 "핑이 끊겼다"를 알 방법이 없었다**. 그래서 연결이
       //  조용히 half-open 으로 죽으면(맥 절전·네트워크 전환·프록시 idle) onerror 도 안 뜨고
       //  readyState 는 OPEN 이라 재연결이 영영 안 걸려, 그 뒤 발행된 이벤트(worker.done 등)를
-      //  못 받아 카드가 "실행 중"으로 영구히 남았다(실측: 끝난 워커가 30분째 도는 것처럼 보임).
+      //  못 받아 카드가 "실행 중"으로 영구히 남았다(실측: 끝난 매니저가 30분째 도는 것처럼 보임).
       //  → 코멘트 대신 **실제 이벤트**로 보내 클라가 수신 시각을 추적/워치독할 수 있게 한다.
       //  `stream.heartbeat` 는 EventBus 를 타지 않는 **전송 계층 전용** 신호(영속·관측 대상 아님)
       //  라 소비자(대시보드)는 렌더하지 않고 liveness 갱신에만 쓴다.
@@ -1723,7 +1723,7 @@ class HttpBridge implements Channel, Observer {
     }
 
     // /worker-jobs — 현재 실행 중(running) 백그라운드 잡 목록. 대시보드 부팅 시 하이드레이션용:
-    // 긴 워커의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시 activity-only 카드
+    // 긴 매니저의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시 activity-only 카드
     // 라 라벨이 "(작업)"으로 뜨던 문제 → in-memory listJobs 로 label·kind·task 복원. read 게이트.
     if (pathname === "/worker-jobs" && method === "GET") {
       // ★리비전을 **목록보다 먼저** 읽는다 (2026-08-27 Phase 1). 반대로 하면 목록을 만드는
@@ -2109,7 +2109,7 @@ class HttpBridge implements Channel, Observer {
     // /set-egress — "이 답도 함께 보낼" 추가 채널(전역). write 게이트(위 role 표).
     // body { channels: string[] }. settings.json 의 egress.channels 한 키만
     // read-modify-write. ★서버에 두는 이유: 브라우저에만 있으면 서버가 스스로 만드는
-    // 발화(워커 완료·스케줄·파일감시)가 사용자가 켠 걸 몰라 fan-out 을 못 탄다.
+    // 발화(매니저 완료·스케줄·파일감시)가 사용자가 켠 걸 몰라 fan-out 을 못 탄다.
     if (pathname === "/set-egress" && method === "POST") {
       let ebody: Record<string, unknown>;
       try {
@@ -3343,12 +3343,12 @@ class HttpBridge implements Channel, Observer {
       return;
     }
 
-    // /cancel-worker — 진행 중(running) 백그라운드 워커 수동 취소(2026-07-16). write 게이트
+    // /cancel-worker — 진행 중(running) 백그라운드 매니저 수동 취소(2026-07-16). write 게이트
     // (위 role 표) — /messages·/stop 동형 "사용자 자기 잡 제어"(admin 아님, /cancel-queued 는
-    // out-of-band 큐 조작이라 admin 이었으나 이건 이미 시작된 *자기* 워커를 멈추는 것뿐).
+    // out-of-band 큐 조작이라 admin 이었으나 이건 이미 시작된 *자기* 매니저를 멈추는 것뿐).
     // §0 단방향: 코어 export `cancelJob`(src/core/worker-jobs.ts) 를 그대로 호출 — 코어는
     // http-bridge 를 모른다. running 인 worker·agent 모두 실제 취소(U-I4 개정 2026-07-17 —
-    // 코어 cancelJob 이 kind∈{worker,agent} 게이트: worker=워커 abort, agent=서브에이전트
+    // 코어 cancelJob 이 kind∈{worker,agent} 게이트: worker=매니저 abort, agent=서브에이전트
     // cancel-only abort 또는 claude native Task 는 부모 턴 coarse abort). done 은 false. abort 는
     // LLM 스트림은 끊지만 hung 도구 호출은 다음 도구 경계까지 못 끊을 수 있다(코어 주석 참조)
     // — 여기선 신호 발사 여부만 정직 반환.

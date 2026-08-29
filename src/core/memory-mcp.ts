@@ -301,7 +301,7 @@ const listInstalledPluginsTool = tool(
  *
  * ★공유 금지 (2026-07-03): McpServer 인스턴스는 transport 를 하나만 물 수 있어,
  * 하나의 싱글턴을 여러 브리지/쿼리가 동시에 connect/close 하면 한쪽 close 가 다른
- * 쪽 callTool 을 죽인다(부모 턴 종료 finally 가 워커 인스턴스 close → 워커 도구 hang).
+ * 쪽 callTool 을 죽인다(부모 턴 종료 finally 가 매니저 인스턴스 close → 매니저 도구 hang).
  * 그래서 어댑터는 턴/쿼리마다 이 팩토리로 전용 인스턴스를 만든다. 도구는 무상태
  * 클로저(모듈/DB 상태 참조)라 재생성 비용 0. 형제 서버 9종과 동일한 팩토리 패턴.
  */

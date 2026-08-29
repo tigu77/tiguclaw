@@ -51,7 +51,7 @@ export interface FailureReflection {
 }
 
 export interface ReflectFailureCauseInput {
-  /** 워커 작업 지시 근사(무슨 작업이었나 — turn_error 가 못 가진 정보). */
+  /** 매니저 작업 지시 근사(무슨 작업이었나 — turn_error 가 못 가진 정보). */
   task?: string;
   /** 에러 종류 라벨(timeout·model_rejected·error 등). 집계 라벨. */
   errorKind?: string;

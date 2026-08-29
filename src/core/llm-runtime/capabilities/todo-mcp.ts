@@ -53,7 +53,7 @@ const formatTodos = (
 /**
  * ★threadKey 를 받는다 (2026-08-14) — 종전 payload 는 `{ todos }` 뿐이라 **어느 대화의
  *  할일인지 알 수가 없었다.** 소비처가 0이던 동안엔 안 드러났지만, 화면에 붙이는 순간
- *  워커·서브에이전트의 할일이 메인 대화에 뜨는 오염이 된다(대시보드는 세션별 화면이다).
+ *  매니저·서브에이전트의 할일이 메인 대화에 뜨는 오염이 된다(대시보드는 세션별 화면이다).
  *  session-tools·file-ops 가 이미 같은 이유로 threadKey 를 받는다 — 같은 규칙을 따른다.
  */
 const makeUpdateTodosTool = (threadKey: string) => tool(

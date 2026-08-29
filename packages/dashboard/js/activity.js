@@ -240,7 +240,7 @@
       const appendActivityNode = (node, ts) => {
         // ★순서 가드 (2026-07-29 검토) — dedup 은 있으나 pruneActivityStream 이 키를 축출하고
         //  (KEY_CACHE_MAX) append 는 무조건이라, 키가 빠진 옛 이벤트가 replay 로 오면 바닥에
-        //  재삽입된다. 채팅(vtIsStaleForAppend)·워커(단조)에 넣은 가드가 이 뷰만 빠져 있었다.
+        //  재삽입된다. 채팅(vtIsStaleForAppend)·매니저(단조)에 넣은 가드가 이 뷰만 빠져 있었다.
         //  이 뷰는 자체 리스트라 마지막 노드의 ts 와 비교한다(임계는 채팅과 동일 5초).
         // ★인자를 넘긴다. 종전엔 자유변수 `a` 를 참조해 **ReferenceError** 였고,
         //  loadAllActivity 의 try{}catch{} 와 SSE 의 catch 가 삼켜 콘솔 에러조차 0 —
@@ -363,7 +363,7 @@
 
       // 라이브 SSE 분기(§4) — 전체활동뷰가 currentView 일 때만, 전 스레드 그대로 append
       // (activeThreadKey 필터 없음). renderEvent 의 기존 채팅뷰 if/return 사슬과는 별개 호출로,
-      // 그 흐름의 return·activityByStep 마스터 저장·워커 드로어 라우팅을 전혀 건드리지 않는다.
+      // 그 흐름의 return·activityByStep 마스터 저장·매니저 드로어 라우팅을 전혀 건드리지 않는다.
       const handleActivityLiveEvent = (ev) => {
         if (currentView !== "activity") return;
         if (ev.type === "channel.message.in" || ev.type === "channel.message.out") {
@@ -383,7 +383,7 @@
           if (ap.ts == null) ap.ts = ev.ts;
           if (ap.phase === "end") return; // 실행시간 주석 이벤트 — 단순화(§2.2), 모니터 라인 없음.
           const tk = typeof ap.threadKey === "string" ? ap.threadKey : "";
-          // 워커/서브/게이트웨이 스텝 제외 — bridge historyActivities(§1.2)와 동일 규칙(드로어 소관).
+          // 매니저/서브/게이트웨이 스텝 제외 — bridge historyActivities(§1.2)와 동일 규칙(드로어 소관).
           if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0 || tk.indexOf("gateway:") === 0) return;
           const node = renderActivityUnit({ kind: "act", a: ap });
           if (node) appendActivityNode(node, ap.ts);
@@ -393,7 +393,7 @@
           const h = ev.payload || {};
           if (h.ts == null) h.ts = ev.ts;
           const tk = typeof h.threadKey === "string" ? h.threadKey : "";
-          // 도구 라인과 동일 규칙 — 워커/서브/게이트웨이는 드로어 소관이라 모니터 제외.
+          // 도구 라인과 동일 규칙 — 매니저/서브/게이트웨이는 드로어 소관이라 모니터 제외.
           if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0 || tk.indexOf("gateway:") === 0) return;
           const node = renderActivityUnit({ kind: "hook", h });
           if (node) appendActivityNode(node, h.ts);
@@ -513,7 +513,7 @@
       // ★liveness 워치독(2026-07-26) — onerror 만으로는 **조용한 죽음**을 못 잡는다. 연결이
       //  half-open 이 되면(맥 절전·네트워크 전환·프록시 idle timeout) 브라우저는 에러를 안 받고
       //  readyState 도 OPEN 이라 자동 재연결이 영영 안 걸린다. 그 사이 발행된 이벤트를 통째로
-      //  놓쳐 카드가 "실행 중"으로 굳었다(실측: 끝난 워커가 30분째 도는 것처럼 보임).
+      //  놓쳐 카드가 "실행 중"으로 굳었다(실측: 끝난 매니저가 30분째 도는 것처럼 보임).
       //  서버가 20s 마다 `stream.heartbeat` **실제 이벤트**를 보내므로(코멘트 ping 은 onmessage
       //  미발화라 관측 불가였음), 마지막 수신 시각을 추적해 임계 초과면 강제 재연결한다.
       let lastRecvAt = Date.now();

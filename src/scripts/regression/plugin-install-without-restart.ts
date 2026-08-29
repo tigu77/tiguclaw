@@ -19,6 +19,7 @@
  *
  * 등급: **동작 검사** — 임시 홈에 플러그인을 만들어 설치·제거를 실제로 돌린다.
  */
+import { probeInterpreter } from "./_probe-helpers.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -93,7 +94,7 @@ export const check: RegressionCheck = {
         stopped, rm1, rm2,
       }));
     })();`;
-      const r = spawnSync(path.join(REPO, "node_modules/.bin/tsx"), ["-e", probe], {
+      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
         cwd: REPO,
         env: { ...process.env, TIGUCLAW_HOME: home },
         encoding: "utf8",

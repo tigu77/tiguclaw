@@ -570,11 +570,11 @@ export const runPostToolUseHooks = async (params: {
 // ── Phase 1.1 (2026-07-24) — SubagentStop ───────────────────────────────────
 // 지점: `src/core/worker-jobs.ts` `markDone`/`markFailed`(kind==='agent' 잡만).
 // 서브에이전트(spawn_agent, claude 네이티브 Task 포함) 완료 시 daemon 이 강제 호출.
-// 워커(kind==='worker', run_in_background)는 Claude Code 시맨틱상 SubagentStop 대상이
-// 아니라(SubagentStop = Task *서브에이전트* 종료 전용, 워커는 별개 개념) 제외.
+// 매니저(kind==='worker', run_in_background)는 Claude Code 시맨틱상 SubagentStop 대상이
+// 아니라(SubagentStop = Task *서브에이전트* 종료 전용, 매니저는 별개 개념) 제외.
 
 /**
- * SubagentStop 훅 — 서브에이전트(kind:'agent' 워커 잡) 완료(done/failed) 시 daemon 이
+ * SubagentStop 훅 — 서브에이전트(kind:'agent' 매니저 잡) 완료(done/failed) 시 daemon 이
  * 호출(관찰 전용, Claude Code 표준 SubagentStop 시맨틱 답습). PreToolUse/PostToolUse 와
  * 마찬가지로 `runHooks("SubagentStop", ...)` 를 재사용(새 실행 경로 0). 이미 종료된
  * 잡에 대한 통지라 block/additionalContext 는 의미가 없어 전부 버린다(반환 void) —

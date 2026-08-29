@@ -3,12 +3,12 @@
  *
  * 사고: 재시작 복구가 DB status 만 조용히 running→interrupted 로 바꾸고 **이벤트를 안 냈다.**
  * started/done/failed/cancelled 는 전부 발행하는데 이 전이만 빠져서, 이벤트 스트림만 보는
- * 관측자(대시보드 SSE replay)는 "시작"만 알고 "끝"을 영영 못 배웠다 → 재시작 후에도 워커·
+ * 관측자(대시보드 SSE replay)는 "시작"만 알고 "끝"을 영영 못 배웠다 → 재시작 후에도 매니저·
  * 서브에이전트가 진행 중으로 남았다(사용자 신고). 실측: dev events 에 종료 이벤트가 아예
  * 없는 worker.started 6건. 대시보드의 클라이언트 폴링 대조는 부팅·재연결 때만 도는 부분 보정.
  *
  * 여기선 실제로 잡을 심고 복구를 돌려 **이벤트가 나가는지**를 본다(소스 문자열 검사 아님).
- * kind='agent' 로 심는다 — 워커 분기는 사용자 통지(외부 채널)를 시도하므로 검사에 부적합.
+ * kind='agent' 로 심는다 — 매니저 분기는 사용자 통지(외부 채널)를 시도하므로 검사에 부적합.
  */
 import { getEventBus } from "../../core/eventbus.js";
 import { recoverInterruptedJobs } from "../../core/worker-jobs.js";

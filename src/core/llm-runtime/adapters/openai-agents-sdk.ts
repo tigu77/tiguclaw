@@ -421,8 +421,8 @@ export const runOpenAi = async (
     );
   }
 
-  // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
-  // depth 0 + workerDepth 0 turn 만 등록 → 워커가 또 워커 발사 불가(W-I5). lean(none)
+  // 백그라운드 매니저 발사 도구 (2026-06-17) — run_in_background/list_workers.
+  // depth 0 + workerDepth 0 turn 만 등록 → 매니저가 또 매니저 발사 불가(W-I5). lean(none)
   // 은 미등록(toolsNone). codex/claude 와 동일 의미(W-I3 — 어댑터 분기 0).
   if (!toolsNone && reaches("workers", turnKind)) {
     mcpServers.push(
@@ -484,7 +484,7 @@ export const runOpenAi = async (
   // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 의 서버를 @mcp/sdk 클라이언트로 연결한
   // persistent 브리지를 도구로 노출(claude 네이티브와 parity). depth0 메인 턴만. 이 브리지는
   // close()=no-op 이라 아래 finally 의 일괄 close 가 외부 연결을 끊지 않는다(캐시 재사용).
-  // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
+  // 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
   if (
     !toolsNone &&
     (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
@@ -495,7 +495,7 @@ export const runOpenAi = async (
   }
 
   // 자가 업데이트 도구 (2026-06-26) — update_self. command-tools 와 *동일* 가드
-  // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀 차단).
+  // (depth 0 + workerDepth 0) — 매니저/서브에이전트가 자가 업데이트 트리거 불가(재귀 차단).
   // 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey 에서
   // 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. claude/codex 와 parity(#2).
   if (!toolsNone && reaches("update-self", turnKind)) {
@@ -799,9 +799,9 @@ export const runOpenAi = async (
   // (재구현 0). 각 스트림 이벤트 = heartbeat → idle 타이머 reset. abort 시 signal 전파.
   // finalOutput·context.usage 출력 계약은 StreamedRunResult 에도 동일 형상으로 존재 →
   // 회귀 0 (아래 text/usage 추출 무변경).
-  // 전 턴(메인·서브에이전트·워커) 1층 idle/first 면제 — 진행 중 작업(긴 도구 실행 등
+  // 전 턴(메인·서브에이전트·매니저) 1층 idle/first 면제 — 진행 중 작업(긴 도구 실행 등
   // 무이벤트 구간)을 임의 시간으로 컷하지 않는다(사용자 A안, 2026-06-24). hung 회복은
-  // 워커 2층 WORKER_TIMEOUT_MS + /restart·cancel·외부 turn signal 이 담당. idleConfigExempt.
+  // 매니저 2층 WORKER_TIMEOUT_MS + /restart·cancel·외부 turn signal 이 담당. idleConfigExempt.
   const idleAc = new AbortController();
   const idleTimer = createIdleTimer(
     idleAc,
@@ -813,7 +813,7 @@ export const runOpenAi = async (
   const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
 
   // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
-  // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
+  // (서브에이전트/매니저 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
   // SDK 가 OpenAI Responses·Chat Completions(openai/google/ollama)를 동일 RunStreamEvent
   // 로 정규화 → 단일 fan-out 지점 1개로 풀의 3 provider 전부 커버(어댑터 내 provider 분기 0).
   const deltaStream = createDeltaStream({

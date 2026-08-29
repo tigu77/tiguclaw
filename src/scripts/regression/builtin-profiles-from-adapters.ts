@@ -193,7 +193,7 @@ export const check: RegressionCheck = {
         ),
       );
 
-      // 등급 해석(서브에이전트·워커) 도 빌트인으로.
+      // 등급 해석(서브에이전트·매니저) 도 빌트인으로.
       const tier = resolveTier("low", empty);
       out.push(
         assert(

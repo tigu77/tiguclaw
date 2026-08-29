@@ -297,8 +297,8 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
     threadKey: input.threadKey,
     channel: input.channel,
     cwd: input.cwd,
-    // 워커 통지 dest forward — runner 가 채운 generic 좌표를 RegionASdkInput.notifyDest 로
-    // 그대로 넘긴다(어댑터는 미독해, 워커 발사 도구만 읽음). 미지정이면 회귀 0.
+    // 매니저 통지 dest forward — runner 가 채운 generic 좌표를 RegionASdkInput.notifyDest 로
+    // 그대로 넘긴다(어댑터는 미독해, 매니저 발사 도구만 읽음). 미지정이면 회귀 0.
     notifyDest: input.notifyDest,
   });
 };

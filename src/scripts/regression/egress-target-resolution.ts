@@ -120,7 +120,7 @@ const run = async (): Promise<Assertion[]> => {
   //  아침 뉴스가 텔레그램으로 **두 번** 왔다. 실측(chat_log): 08:11:29 `scheduler:21`
   //  4,562자 · 08:11:31 `tg:<내 chatId>` 4,562자 — 같은 본문, 2초 간격.
   //
-  //  뿌리: 중복 가드가 **채널 이름**을 비교했다(`ch === input.channel`). 워커 완료
+  //  뿌리: 중복 가드가 **채널 이름**을 비교했다(`ch === input.channel`). 매니저 완료
   //  재주입은 `channel` 이 잡을 띄운 채널(`scheduler`)인데 `reply` 는 잡의 목적지
   //  (telegram)로 나간다 — 이름이 안 겹치니 가드가 안 걸렸다. **이름은 배달지가 아니다.**
   //

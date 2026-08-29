@@ -379,10 +379,10 @@ export const judgeContradictionGate = async (
 // 비멱등 순간에만 reflect 1회(비용 bound). 전부 suggester(자동 확정 0 — 7b 별건).
 
 // worker.failed threshold=1 — 실패 시 즉시 분석(반복 대기 X). 근거(2026-07-02 라이브 실측
-// 정정): 비서가 워커 task·label 을 매 실행 리워딩 → 2회 실패해도 다른 키 → 반복 그룹핑이
-// 근본 불안정(반복 게이트 무의미). 게다가 워커 실패는 드문 신호라 스팸방지용 반복 게이트가
+// 정정): 비서가 매니저 task·label 을 매 실행 리워딩 → 2회 실패해도 다른 키 → 반복 그룹핑이
+// 근본 불안정(반복 게이트 무의미). 게다가 매니저 실패는 드문 신호라 스팸방지용 반복 게이트가
 // 불필요하고, 사용자 비전("*실패했으면* 원인 분석해 제안")과도 정합. 비용 bound 는 멱등
-// (같은 키 이미 학습 → LLM skip) + gate A(취소·무근거 drop) + 워커 실패의 희소성으로 유지.
+// (같은 키 이미 학습 → LLM skip) + gate A(취소·무근거 drop) + 매니저 실패의 희소성으로 유지.
 // (ADR 결정 #1 을 실측이 정정 — turn_error 는 빈발이라 FAILURE_THRESHOLD=3 유지.)
 export const WORKER_FAILURE_THRESHOLD = 1;
 
@@ -399,13 +399,13 @@ export interface WorkerFailedPayload {
   status?: string;
   /** redact 된 원인(≤300자). 게이트 A: task 와 둘 다 비면 drop. */
   error?: string;
-  /** 워커 작업 지시(≤500자). 작업 근사 키의 원천. */
+  /** 매니저 작업 지시(≤500자). 작업 근사 키의 원천. */
   task?: string;
 }
 
 /**
  * 작업 근사 키 — worker.failed 의 task 를 정규화(normalizeErrorMessage 재사용 — 휘발
- * 토큰·경로·id·숫자 마스킹). 같은 일일 워커가 표면 텍스트만 달라도 같은 키로 묶이게 한다.
+ * 토큰·경로·id·숫자 마스킹). 같은 일일 매니저가 표면 텍스트만 달라도 같은 키로 묶이게 한다.
  * 빈 task 는 빈 문자열(호출자 게이트 A 가 error·task 둘 다 빈 경우를 이미 drop).
  */
 export const normalizeTaskKey = (task: string): string =>

@@ -25,6 +25,7 @@ import {
   unregisterChannelOutbound,
   type ChannelOutbound,
 } from "../channel-outbound.js";
+import { buildToolServer, readToolSpecs } from "./tools.js";
 import { registerMcpServer, unregisterMcpServer } from "../mcp-registry.js";
 import {
   registerPluginDataRoutes,
@@ -78,6 +79,11 @@ interface PluginInstance {
    * ★플러그인이 코어를 만지는 **유일한 표면**이다(`core/plugins/host.ts`). 나중에 격리를
    *  넣을 때 이 표면만 IPC 로 바꾸면 되고, 플러그인은 안 고친다.
    */
+  /**
+   * 도구를 **SDK 없이** 선언한다 (2026-08-29). `getMcpServer` 의 형제 —
+   * 저건 SDK 를 쓸 수 있는 사람용, 이건 아무것도 import 하지 않는 사람용.
+   */
+  getTools?: () => unknown;
   getMcpServer?: (
     host?: PluginHost,
   ) => McpSdkServerConfigWithInstance | undefined;
@@ -212,6 +218,43 @@ export const wirePlugin = async (
       }
     }
 
+    // ─── 도구 선언 등록 — **SDK 없이** (2026-08-29, tools.ts) ────────────────
+    // ★`getMcpServer()` 와 형제다. 저건 SDK 를 쓸 수 있는 사람용이고, 이건 **아무것도
+    //  import 하지 않는 사람용**이다 — 홈에 깔린 플러그인엔 `node_modules` 가 없어서
+    //  SDK import 가 로드에서 죽는다(실측). 둘 다 내면 둘 다 실린다.
+    if (typeof inst.getTools === "function") {
+      try {
+        const tv = readToolSpecs(inst.getTools());
+        for (const problem of tv.problems) {
+          // ★나쁜 칸 하나는 **그 도구만** 떨어뜨린다 — 오타 하나에 나머지가 같이 죽지 않는다.
+          console.warn(`[plugin-loader] ${lp.manifest.name}: ${problem}`);
+        }
+        if (tv.specs.length > 0) {
+          const needs = lp.manifest.needs ?? {};
+          const name = `${lp.manifest.name}-tools`;
+          undo.push(() => {
+            unregisterMcpServer(name);
+          });
+          registerMcpServer(name, (ctx) =>
+            buildToolServer(
+              lp.manifest.name,
+              tv.specs,
+              createPluginHost(lp.manifest.name, needs, ctx, lp.manifest.settings ?? []),
+            ),
+          );
+          result.wired.push("tools");
+          console.log(
+            `registered ${String(tv.specs.length)} tool(s) from plugin: ${lp.manifest.name} ` +
+              `(${tv.specs.map((t) => t.name).join(", ")}) (from ${relDir})`,
+          );
+        }
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        result.skipped.push({ capability: "tools", reason });
+        console.error(`[plugin-loader] tool registration ${lp.manifest.name} failed: ${reason}`);
+      }
+    }
+
     // ─── 데이터 라우트 등록 (2026-08-28, 위젯 플랫폼 §E.2) ──────────────────
     // MCP 와 같은 형: capability 무관, 내면 배선된다. 실패는 이 플러그인만 건너뛴다.
     if (typeof inst.getDataRoutes === "function") {
@@ -326,12 +369,27 @@ export const wirePlugin = async (
       if (!lp.capabilities.includes(capability)) continue;
       const startFn = resolveStartHook<EventBus>(inst, specific);
       if (startFn === undefined) {
-        skip(capability, missingHook(capability, hook));
+        // ★**이미 무언가를 냈으면 그게 곧 그 capability 다** (2026-08-29). 종전엔 도구·
+        //  데이터 라우트를 다 등록해놓은 플러그인에게 *"아무것도 없습니다"* 라고 경고했다.
+        //  실측: 레포 밖에서 가이드대로 만든 플러그인이 첫 부팅에서 이 경고를 받았고,
+        //  작성자 입장에선 **뭘 잘못했는지 알 수 없는 거짓 신호**다(아무것도 안 틀렸다).
+        //  `service` 는 원래 "낼 것을 내는" 종류라 수명주기 훅이 필요 없다.
+        const alreadyProvides =
+          capability === "service" &&
+          (result.wired.includes("mcp") ||
+            result.wired.includes("tools") ||
+            result.wired.includes("data-routes"));
+        if (!alreadyProvides) skip(capability, missingHook(capability, hook));
         continue;
       }
       try {
         await startFn(bus);
-        if (capability === "service" && typeof inst.stop === "function") {
+        // ★**`service` 뿐 아니라 `trigger`·`observer` 도 멈춘다** (2026-08-29, 적대 검토 A).
+        //  종전엔 `service`·`channel` 에만 `stop` 을 걸어서, 대시보드에서 스케줄러를 끄면
+        //  *"끔"* 이 뜨고 목록에서 사라지는데 **cron 은 계속 돌아 계속 발화했다**(실측:
+        //  dispose 전 tick 4 → 후 9). 번들 `scheduler`·`file-watch` 가 둘 다 `trigger` 이고
+        //  `stop()` 을 구현해 뒀는데 그게 한 번도 안 불렸다.
+        if (typeof inst.stop === "function") {
           undo.push(async () => {
             const i = serviceStops.findIndex((x) => x.name === lp.manifest.name);
             if (i >= 0) {

@@ -30,7 +30,7 @@ export interface RegionASdkInput {
    * transcripts 를 **같은 행으로 계승**한다(파편화 0).
    *
    * ★미지정 → `channel` 폴백(회귀 0). 셀렉터 없는 채널을 세션으로 정규화하지 않는 경로
-   * (스케줄러·워커·서브에이전트·file-watch·엔드포인트·Phase 1 이전 채널)는 이 필드를 안
+   * (스케줄러·매니저·서브에이전트·file-watch·엔드포인트·Phase 1 이전 채널)는 이 필드를 안
    * 채우므로 현행 (channel, threadKey) 키잉 그대로 — 라이브 데몬 비파괴.
    *
    * ★§0/2분리: 이건 *저장 정체성* 채널일 뿐. 표시·감사(llm.activity/delta payload,
@@ -42,7 +42,7 @@ export interface RegionASdkInput {
    * 신규(additive, 2026-07-15) — **배달 좌표(delivery address)** (채널/세션 분리 §D3).
    * telegram=chatId, http=threadKey 등 이 인입의 outbound 목적지. 세션 id 를 파싱해
    * 좌표를 도출하던 것(extractTelegramChatId/deriveTargetFromThreadKey)을 대체하는
-   * **캡처된 메타**. 워커 완료 통지 등 비동기 outbound 가 세션 id(=이제 채널 무관 dashboard:*)
+   * **캡처된 메타**. 매니저 완료 통지 등 비동기 outbound 가 세션 id(=이제 채널 무관 dashboard:*)
    * 를 파싱해도 텔레그램 chatId 를 못 얻으므로, 인입 시점 좌표를 여기로 운반해
    * `notifyDestFromCoords` 가 파싱 대신 이 값을 우선 쓴다(파싱은 폴백 보존, 회귀 0).
    * 미지정(Phase 1 이전·좌표 없는 채널) → 기존 threadKey 파싱 폴백.
@@ -79,11 +79,11 @@ export interface RegionASdkInput {
    */
   subagentDepth?: number;
   /**
-   * 신규(additive, 2026-06-17) — 백그라운드 워커 중첩 깊이. 메인(채널) turn = 0
-   * (또는 undefined), `spawn_worker`(run_in_background) 로 실행되는 워커 작업 turn = 1.
+   * 신규(additive, 2026-06-17) — 백그라운드 매니저 중첩 깊이. 메인(채널) turn = 0
+   * (또는 undefined), `spawn_worker`(run_in_background) 로 실행되는 매니저 작업 turn = 1.
    * depth ≥ 1 인 turn 에는 run_in_background/list_workers 도구를 등록하지 않아
-   * 워커가 또 워커를 발사하는 것을 물리적으로 차단(무한 워커 봉쇄, W-I5).
-   * subagentDepth 와 동형 메커니즘(도구 가용성 가드) — 직교(워커 안의 spawn_agent 블로킹
+   * 매니저가 또 매니저를 발사하는 것을 물리적으로 차단(무한 매니저 봉쇄, W-I5).
+   * subagentDepth 와 동형 메커니즘(도구 가용성 가드) — 직교(매니저 안의 spawn_agent 블로킹
    * 위임은 허용). architect contract `_workspace/background-worker_architect.md` §2·§9-a.
    */
   workerDepth?: number;
@@ -178,20 +178,20 @@ export interface RegionASdkInput {
    */
   systemPromptOverride?: string;
   /**
-   * 신규(additive, 2026-06-24) — 이 turn 이 발사하는 백그라운드 워커의 완료/실패 *통지
+   * 신규(additive, 2026-06-24) — 이 turn 이 발사하는 백그라운드 매니저의 완료/실패 *통지
    * 목적지*. generic 좌표(`WorkerNotifyDest` = {channel, target}) — 코어 소유, scheduler 무관.
    *
    * 채우는 주체: 비채널 트리거 플러그인(예 scheduler runner)이 자신이 아는 dest
    * (schedule.destChannel/destTarget)를 주입한다. 텔레그램 등 채널 직접 발화 turn 은
-   * 미지정(undefined) — 그 경우 워커는 job.channel/threadKey 폴백으로 통지(회귀 0).
+   * 미지정(undefined) — 그 경우 매니저는 job.channel/threadKey 폴백으로 통지(회귀 0).
    *
    * 읽는 주체: ★어댑터는 이 필드를 읽지 않는다(LLM-agnostic — 통지 라우팅은 daemon 경계,
    * 모델 무관·claude/codex/openai 동일 동작·어댑터 분기 0). 코어·도구 쪽 둘:
-   *  ①워커 발사 도구(run_in_background, worker-registry.ts)가 parentInput.notifyDest 를 읽어
+   *  ①매니저 발사 도구(run_in_background, worker-registry.ts)가 parentInput.notifyDest 를 읽어
    *   startWorkerJob 으로 잡에 박는다 → onWorkerComplete 가 이 generic dest 로 dispatch.
    *  ②코어의 **턴 밖 통지**(쿨다운 알림, llm-runtime/index.ts)가 좌표로 쓴다.
    *
-   * ★이름은 "워커 통지" 지만 실제 의미는 **이 턴의 사람 도달 좌표**다 (2026-08-06 확장).
+   * ★이름은 "매니저 통지" 지만 실제 의미는 **이 턴의 사람 도달 좌표**다 (2026-08-06 확장).
    *  ②를 안 쓰던 동안 스케줄 턴의 한도 알림이 `channel="scheduler"`(발송 채널이 아니라
    *  트리거 이름)로 나가 조용히 미배달됐다. 비채널 트리거 턴에서 사람에게 뭔가 보낼 일이
    *  생기면 `input.channel` 이 아니라 **이 필드부터** 봐라.
@@ -207,7 +207,7 @@ export interface RegionASdkInput {
    * 읽어서 채널/모델 분기 0(#2). 소비 idiom 은 어댑터별(claude=stream·codex/openai=drain)이나
    * 계약(다음 model-call 경계 append)은 동일 = 인터페이스 parity 하드게이트.
    *
-   * ★미지정 → 주입 없음(회귀 0). 스케줄러·워커·서브에이전트·비대화 turn 및 STEERING_ENABLED
+   * ★미지정 → 주입 없음(회귀 0). 스케줄러·매니저·서브에이전트·비대화 turn 및 STEERING_ENABLED
    * off(기본) = 이 필드를 안 채움 = 현행 route input 바이트 동일. P0 = 계약·프리미티브·개입점만;
    * 어댑터 소비(drain/stream)는 P1(codex→openai→claude) 범위.
    */
@@ -612,7 +612,7 @@ export interface SkillInvokedPayload {
  *
  * 메타-재귀 안전: self-growth 는 LLM 턴을 직접 돌리지 않으므로 이 이벤트 구독이
  * 또 turn_done/error 를 낳지 않는다(피드백 루프 0). 서브에이전트(subagentDepth)·
- * 워커(workerDepth)가 runRegionA 를 재귀 호출하는 경로는 *원래 사용자 턴의 하위 작업*
+ * 매니저(workerDepth)가 runRegionA 를 재귀 호출하는 경로는 *원래 사용자 턴의 하위 작업*
  * 으로 각자 1 이벤트를 내는 것이 정상이며(중복 아님), depth 필드로 self-growth 가 구분.
  */
 export interface RegionATurnDonePayload {
@@ -665,9 +665,9 @@ export interface RegionATurnDonePayload {
   /** 턴 전체 캐시 적중 합계 — 진짜 적중률 = cachedTokensTotal / inputTokensTotal. */
   cachedTokensTotal?: number;
   /**
-   * 하위 작업 컨텍스트 — self-growth 가 채널 턴 vs 워커 vs 서브에이전트를 구분.
+   * 하위 작업 컨텍스트 — self-growth 가 채널 턴 vs 매니저 vs 서브에이전트를 구분.
    *  - subagentDepth: spawn_agent child 면 ≥1, 메인 턴이면 0/생략.
-   *  - workerDepth: 백그라운드 워커 작업이면 ≥1, 메인 턴이면 0/생략.
+   *  - workerDepth: 백그라운드 매니저 작업이면 ≥1, 메인 턴이면 0/생략.
    * (depth>0 턴이 자체 turn_done 을 내는 건 정상 — 중복 아님. contract 참조.)
    */
   subagentDepth?: number;

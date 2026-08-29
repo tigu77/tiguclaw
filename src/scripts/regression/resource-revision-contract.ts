@@ -20,6 +20,7 @@
  * 등급: **동작 검사** — 리비전·판정은 직접 호출, 발행은 자식 프로세스에서 버스를 태운다
  * (`getPaths()` 메모이즈 때문에 홈을 바꾸려면 프로세스를 갈라야 한다).
  */
+import { probeInterpreter } from "./_probe-helpers.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -92,7 +93,7 @@ export const check: RegressionCheck = {
         snapshot: snap,
       }));
     })();`;
-    const r = spawnSync(path.join(REPO, "node_modules/.bin/tsx"), ["-e", probe], {
+    const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
       cwd: REPO,
       env: { ...process.env },
       encoding: "utf8",

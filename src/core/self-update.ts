@@ -48,7 +48,7 @@ export interface SelfUpdateNotifyDest {
 }
 
 /**
- * 현재 turn 의 채널/threadKey(+캡처 좌표)에서 완료 통지 좌표를 도출 — update_self·워커
+ * 현재 turn 의 채널/threadKey(+캡처 좌표)에서 완료 통지 좌표를 도출 — update_self·매니저
  * notify 캡처 공용. update_self 도구가 이 좌표를 runSelfUpdate.notify 로 운반해, 재시작 후
  * 부팅이 "업데이트 완료" 를 *요청자에게* 회신한다. 채널 미지원(cli 등)은 target=null.
  *

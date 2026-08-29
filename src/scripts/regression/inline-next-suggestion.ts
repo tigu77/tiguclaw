@@ -173,7 +173,7 @@ const run = async (): Promise<Assertion[]> => {
     //  고스트는 threadKey 접두사로 걸러 둘이 갈렸다. 스케줄러·엔드포인트 턴(실측 34%)에
     //  규칙이 실리고 모델이 제안을 만들고 그 제안은 버려졌다.
     assert(
-      "★파생 좌표(스케줄러·엔드포인트·워커)엔 규칙을 안 싣는다 — 만들어도 버려지니까",
+      "★파생 좌표(스케줄러·엔드포인트·매니저)엔 규칙을 안 싣는다 — 만들어도 버려지니까",
       ["scheduler:21", "endpoint:x", "worker:abc", "agent:y", "gateway:z"].every(
         (tk) => inlineSuggestionSlotText({ threadKey: tk }, true) === "",
       ),

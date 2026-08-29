@@ -53,7 +53,7 @@ const projectMcpPath = (cwd: string): string => path.join(cwd, ".mcp.json");
 
 /**
  * cwd 가 프로젝트 스코프 대상인가 — 지정됨 + 홈 아님(홈은 전역 mcp.json 소유). 어댑터가
- * "프로젝트 위임 서브/워커면 외부 MCP 를 읽는다" 게이트로도 사용(export).
+ * "프로젝트 위임 서브/매니저면 외부 MCP 를 읽는다" 게이트로도 사용(export).
  */
 export const isProjectMcpCwd = (cwd?: string): cwd is string => {
   if (cwd === undefined || cwd === "") return false;

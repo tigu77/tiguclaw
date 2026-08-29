@@ -918,7 +918,7 @@
         const killBtn = document.createElement("button");
         killBtn.type = "button"; killBtn.className = "act-shell-chip-kill"; killBtn.textContent = "⏹️";
         killBtn.title = i18n("common.shell.kill");
-        // 워커/서브 스폰 칩(.act-bg-link)과 클릭 핸들러 패턴 동형 — 스텝 펼침 클릭과 분리.
+        // 매니저/서브 스폰 칩(.act-bg-link)과 클릭 핸들러 패턴 동형 — 스텝 펼침 클릭과 분리.
         killBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
           if (typeof requestKillShell === "function") void requestKillShell(shellId);
@@ -956,7 +956,7 @@
         line.appendChild(icon); line.appendChild(label);
         if (detail) line.appendChild(detail);
         line.appendChild(meta);
-        // 인라인 스폰 스텝 ↔ 백그라운드 잡 링크(2026-07-13) — 서브에이전트/워커를 띄운 스텝이면
+        // 인라인 스폰 스텝 ↔ 백그라운드 잡 링크(2026-07-13) — 서브에이전트/매니저를 띄운 스텝이면
         // "🤖 백그라운드 ↗" 칩을 붙인다. 라벨 매칭은 어댑터-불문(원칙 #2): claude native Task
         // (=p.jobId), codex/openai bare `spawn_agent`/`run_in_background`, 그리고 claude 가
         // path= 크로스프로젝트 위임 시 쓰는 MCP 라벨 `mcp__agents__spawn_agent`·

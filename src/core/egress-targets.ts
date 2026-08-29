@@ -65,7 +65,7 @@ export interface EgressResolveInput {
   channel: string;
   /**
    * `reply` 가 실제로 나가는 좌표(있으면). 이름이 달라도 **여기와 같은 좌표면 건너뛴다** —
-   * 워커 완료 재주입처럼 `channel`(scheduler)과 배달지(telegram)가 갈리는 경우가 있다.
+   * 매니저 완료 재주입처럼 `channel`(scheduler)과 배달지(telegram)가 갈리는 경우가 있다.
    */
   replyTarget?: { channel: string; target: string | null } | undefined;
   threadKey: string;

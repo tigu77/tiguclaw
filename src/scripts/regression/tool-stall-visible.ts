@@ -8,7 +8,7 @@
  *
  * ★두 겹으로 조용했다:
  *  ①`llm.tool_slow` 이벤트를 **대시보드가 안 그렸다**(핸들러 부재 — 경고가 로그에만).
- *  ②채널 푸시는 **워커 전용**이었다(`worker:` 접두가 아니면 즉시 return). 대화 중
+ *  ②채널 푸시는 **매니저 전용**이었다(`worker:` 접두가 아니면 즉시 return). 대화 중
  *    메인 턴이 멈추면 텔레그램 사용자는 영영 모른다.
  *
  * ★이 부류는 재발이다 — `llm.compaction_stuck` 도 "발행했는데 소비처가 없어" 로그에만
@@ -22,7 +22,7 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
   name: "tool-stall-visible",
-  guards: "도구가 멈춰도 사용자에게 아무 신호가 안 가 39분간 '작업 중'만 돌던 것(대시보드 미렌더 + 채널 푸시 워커 전용)",
+  guards: "도구가 멈춰도 사용자에게 아무 신호가 안 가 39분간 '작업 중'만 돌던 것(대시보드 미렌더 + 채널 푸시 매니저 전용)",
   run: async (): Promise<Assertion[]> => {
     const dash = await sourceHas("../../../packages/dashboard/js/sse.js", [
       // 대시보드가 지연 이벤트를 **그린다**(종전엔 핸들러 자체가 없었다).
@@ -69,7 +69,7 @@ export const check: RegressionCheck = {
         dash.ok ? "sse.js" : `누락: ${dash.missing.join(" / ")}`,
       ),
       assert(
-        "★메인 턴 지연도 채널로 알린다(종전엔 워커 전용이라 대화 중 멈춤은 무통지)",
+        "★메인 턴 지연도 채널로 알린다(종전엔 매니저 전용이라 대화 중 멈춤은 무통지)",
         notify.ok,
         notify.ok ? "worker-jobs.ts" : `누락: ${notify.missing.join(" / ")}`,
       ),

@@ -306,8 +306,8 @@ const CODEX_STALL_BACKOFF_MS = parsePosIntEnv(
 // ★근본 원인(실측): 위 progressTimer(CODEX_NO_PROGRESS_MS)는 진전 이벤트
 // (output_text.delta·function_call)마다 beat=리셋된다. 그래서 codex 백엔드가 델타를
 // *찔끔찔끔*(trickle; 예: 2분마다 한 조각) 흘리면 5분 무진전 가드가 *영영 안 터지고*
-// 한 SSE 턴이 8~22분을 끈다(라이브 2026-07-03: 위키 워커 한 턴 8분 + 22분 trickle 정지
-// → 30분 워커 wall-clock 상한만이 죽임). no-progress 가드도 도구 타임아웃(v0.3.12)도
+// 한 SSE 턴이 8~22분을 끈다(라이브 2026-07-03: 위키 매니저 한 턴 8분 + 22분 trickle 정지
+// → 30분 매니저 wall-clock 상한만이 죽임). no-progress 가드도 도구 타임아웃(v0.3.12)도
 // 못 잡음(도구 hang 아니라 SSE trickle이라).
 //
 // 이건 progressTimer(dead=무진전)와 *직교*하는 단일 SSE 턴 절대 wall-clock 캡이다:
@@ -335,7 +335,7 @@ const CODEX_TURN_MAX_MS = parsePosIntEnv(
 // codex 개별 도구 호출의 wall-clock 상한은 **폐기됐다** (2026-07-28, 근본 수정).
 // 경계가 역전돼 있었다 — 도구 자체(Bash 120~600s) < MCP 브리지(11분) 로 설계해 놓고
 // 그보다 바깥인 어댑터가 8분으로 조여, 정상 진행 중인 작업(특히 서브에이전트)을
-// "무응답"으로 잘랐다. 모델은 그 에러를 보고 같은 일을 워커로 다시 띄웠다(작업 충돌).
+// "무응답"으로 잘랐다. 모델은 그 에러를 보고 같은 일을 매니저로 다시 띄웠다(작업 충돌).
 // 이제 경계는 각 층이 소유한다: 도구 자체 → 잡 상한(WORKER_TIMEOUT_MS) → MCP callTool 천장 →
 // 사용자 /stop. 잡을 소유하는 브리지는 JOB_OWNING_TOOL_CALL_TIMEOUT_MS 로 천장을 넘긴다.
 // 이 순서(안쪽이 조이고 바깥이 느슨)는 `scripts/regression/timeout-layering.ts` 가 지킨다.
@@ -787,9 +787,9 @@ export const runOpenAiCodex = async (
       mcpTools.push(...spawnToolsRaw);
     }
 
-    // 백그라운드 워커 발사 도구 (2026-06-17) — run_in_background/list_workers.
-    // depth 0(서브에이전트 아님) + workerDepth 0(워커 안 아님) turn 만 등록 →
-    // 워커가 또 워커를 발사 불가(W-I5). spawn_agent depth 가드와 동형. claude/openai
+    // 백그라운드 매니저 발사 도구 (2026-06-17) — run_in_background/list_workers.
+    // depth 0(서브에이전트 아님) + workerDepth 0(매니저 안 아님) turn 만 등록 →
+    // 매니저가 또 매니저를 발사 불가(W-I5). spawn_agent depth 가드와 동형. claude/openai
     // 어댑터와 동일 의미(W-I3 — 어댑터 분기 0).
     if (reaches("workers", turnKind)) {
       const workerServer = createWorkerMcpServer(input);
@@ -883,7 +883,7 @@ export const runOpenAiCodex = async (
     // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 서버를 @mcp/sdk 클라이언트로 연결한
     // persistent 브리지 도구를 노출(claude 네이티브와 parity). ★allBridges 에 넣지 않는다
     // — 외부 브리지는 persistent(캐시)라 per-turn 일괄 close 대상이 아니다(연결 유지). depth0만.
-    // 메인 턴(전역) 또는 프로젝트 위임 서브/워커(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
+    // 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
     if (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd)) {
       for (const extBridge of await getConnectedExternalMcpBridges(input.cwd)) {
         // ★죽은 브리지 하나가 **턴 전체를 무너뜨리지 않게** 한다 (2026-08-19 실사고).
@@ -914,7 +914,7 @@ export const runOpenAiCodex = async (
     }
 
     // 자가 업데이트 도구 (2026-06-26) — update_self. command-tools 와 *동일* 가드
-    // (depth 0 + workerDepth 0) — 워커/서브에이전트가 자가 업데이트 트리거 불가(재귀
+    // (depth 0 + workerDepth 0) — 매니저/서브에이전트가 자가 업데이트 트리거 불가(재귀
     // 차단). 위험 로직 0(전부 runSelfUpdate). notify 좌표는 현재 turn 의 channel/threadKey
     // 에서 도출 — 재시작 후 부팅이 요청자에게 "완료" 회신. claude/openai 와 parity(#2).
     if (reaches("update-self", turnKind)) {
@@ -1109,7 +1109,7 @@ export const runOpenAiCodex = async (
   const bus = getEventBus();
 
   // llm.delta — 토큰 스트리밍 fan-out(보조 점증 렌더). depth-0 가드: 메인 답변만 발행
-  // (서브에이전트/워커 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
+  // (서브에이전트/매니저 depth>0 turn 은 out 도 안 내므로 화면 버블 대상 아님 = no-op).
   // codex SSE delta 는 토큰 단위(고빈도) → coalescer 가 ~80ms∥120자로 묶음. seq 는
   // iteration 가로질러 단조(activitySeq 동형). parseCodexSse 의 onTextDelta 콜백으로 push,
   // 각 iteration SSE 소비 후 flush(도구 실행 전 잔여 발행).
@@ -1152,10 +1152,10 @@ export const runOpenAiCodex = async (
     }
     return text;
   };
-  // ★워커/서브에이전트 서술 트레이스 (2026-07-03) — deltaStream(대시보드 fan-out)은 depth-0
-  // 전용이라 워커(workerDepth>0)·서브에이전트(depth>0) 서술이 그간 어디에도 안 남아 사후
-  // 진단 불가였다(실측: 워커 크롤/루프를 델타 미영속으로 확인 못 함). event-persist 의
-  // stream-trace 는 llm.delta(=depth-0만 발행)를 보므로 그것도 워커를 못 잡는다. → deltaStream
+  // ★매니저/서브에이전트 서술 트레이스 (2026-07-03) — deltaStream(대시보드 fan-out)은 depth-0
+  // 전용이라 매니저(workerDepth>0)·서브에이전트(depth>0) 서술이 그간 어디에도 안 남아 사후
+  // 진단 불가였다(실측: 매니저 크롤/루프를 델타 미영속으로 확인 못 함). event-persist 의
+  // stream-trace 는 llm.delta(=depth-0만 발행)를 보므로 그것도 매니저를 못 잡는다. → deltaStream
   // 이 *꺼진* 턴에서만(중복 회피) 서술을 coalesce 해 `[stream-trace]` 로그로 남긴다. 로그 전용
   // (events DB 미기록 — 보존 오염 0, event-persist 정책과 동일). 형식도 event-persist 와 동형.
   const traceDelta = !(depth === 0 && (input.workerDepth ?? 0) === 0);
@@ -1383,14 +1383,14 @@ export const runOpenAiCodex = async (
           );
         }
       }
-      // 무진전(no-progress) 감지 + 같은 컨텍스트 스텝 재개 (ADR 2026-07-02). ★메인·워커
-      // 한방향 — codex 스핀은 워커뿐 아니라 메인 인터랙티브 턴도 때리므로 분기 없이 통일.
+      // 무진전(no-progress) 감지 + 같은 컨텍스트 스텝 재개 (ADR 2026-07-02). ★메인·매니저
+      // 한방향 — codex 스핀은 매니저뿐 아니라 메인 인터랙티브 턴도 때리므로 분기 없이 통일.
       // 타이머는 *진전 이벤트(output_text.delta·function_call)에만* reset(onProgress) —
       // response.in_progress heartbeat 로는 reset 안 됨. 그래서 답/도구가 흐르면(진전) 아무리
       // 길어도 안 잘리고, in_progress 만 N분(dead=무바이트 포함) = 진짜 무진전만 컷 → 같은
       // body(=같은 대화 컨텍스트)로 재개(이전 완료 스텝은 inputArray 보존). 타이머는 스트림
       // (fetch) 단위 + 도구 실행 전 done()(finally) 이라 긴 도구 오살 0. per-iteration idleAc
-      // 발화는 turn/워커 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
+      // 발화는 turn/매니저 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
       let stallAttempt = 0;
       for (;;) {
@@ -1489,7 +1489,7 @@ export const runOpenAiCodex = async (
           },
           (delta) => {
             deltaStream.push(delta); // llm.delta fan-out (coalesce → publish, depth-0).
-            tracePush(delta); // 워커/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
+            tracePush(delta); // 매니저/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
           },
           () => progressTimer.beat(), // onProgress — 실제 output/tool = 진전 → 타이머 reset.
           externalToolNames.size === 0
@@ -1627,7 +1627,7 @@ export const runOpenAiCodex = async (
           //  떨어진다 — tsc 가 잡았다.)
           throw e;
         }
-        // 무진전(IdleTimeoutError = no-progress 타이머)이고 워커/턴 예산이 아직 살아있고
+        // 무진전(IdleTimeoutError = no-progress 타이머)이고 매니저/턴 예산이 아직 살아있고
         // 재시도 여유가 있으면 → turn 을 죽이지 말고 *같은 body(같은 대화 컨텍스트)로* 스텝
         // 재개(모델 폴백 아님). 계측을 로그·이벤트로 남겨 dead(chunks=0) vs spinning(chunks>0,
         // in_progress 만 흐름)을 드러낸다.
@@ -1722,7 +1722,7 @@ export const runOpenAiCodex = async (
         // 이 iteration SSE 잔여 델타 flush(도구 실행/다음 iteration 전 발행) + 타이머 정리.
         // best-effort — 실패해도 out 전체본이 권위 교체. seq 는 다음 iteration 으로 단조 유지.
         deltaStream.flush();
-        traceFlush("iter"); // 워커 서술 트레이스도 iteration 경계마다 flush(길게 끄는 턴도 로그).
+        traceFlush("iter"); // 매니저 서술 트레이스도 iteration 경계마다 flush(길게 끄는 턴도 로그).
       }
       }
       const { text, responseId, toolCalls, usage } = sseResult;
@@ -2113,7 +2113,7 @@ export const runOpenAiCodex = async (
                 //    2026-06-19 위키 11h outage(MCP 60s 가 정상 도구를 자름)와 같은 구조이고,
                 //    2026-06-23 에 메인 턴 wall-clock 을 폐기한 결정과도 어긋난다.
                 //  실측 피해: 서브에이전트가 멀쩡히 일하는데 부모가 끊고, 모델은 그 에러를
-                //    보고 같은 작업을 워커로 다시 띄웠다 = 중복 실행·작업 충돌(사용자 신고 3회).
+                //    보고 같은 작업을 매니저로 다시 띄웠다 = 중복 실행·작업 충돌(사용자 신고 3회).
                 //  이제 경계는 각자 소유한다: 도구 자체 타임아웃 → 잡 상한(WORKER_TIMEOUT_MS, 잡 소유
                 //    브리지는 그보다 넉넉한 천장) → MCP callTool 천장 → 사용자 /stop·취소.
                 //  재무장·자식 관측 같은 보정 장치도 함께 제거한다(그건 역전을 덮던 땜빵이다).
@@ -2292,7 +2292,7 @@ export const runOpenAiCodex = async (
     //  단락되는 건 TurnTimeoutError 하나뿐이고, UserCancelled/WorkerCancelled/WorkerTimeout
     //  은 `throw input.abortSignal.reason` 으로 이 catch 에 **도달한다**.
     //  삼킨 결과: ①`/stop` 후 가짜 에러 답장이 한 통 더 가고 취소된 턴이 **성공으로**
-    //  히스토리·self-growth 에 적재 ②**워커 타임아웃이 "완료" 로 보고**(markFailed 를 건너뛰어
+    //  히스토리·self-growth 에 적재 ②**매니저 타임아웃이 "완료" 로 보고**(markFailed 를 건너뛰어
     //  onWorkerComplete 가 markDone) ③서브에이전트 취소가 부모에게 성공으로 보고.
     //  판정은 이름 목록이 아니라 **동일성**이다: 이 에러가 곧 abort 사유면 취소다.
     const abortReason: unknown = input.abortSignal?.reason;

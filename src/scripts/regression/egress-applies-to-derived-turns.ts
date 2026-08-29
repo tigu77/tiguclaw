@@ -6,7 +6,7 @@
  *  대시보드에서 "텔레그램에도 보내기" 는 켜져 있었다.
  *
  *  뿌리: egress 선택이 **브라우저 localStorage** 에만 있었고, 컴포저가 전송할 때마다
- *  메시지에 실어 보내는 per-message 플래그였다. 그런데 워커 완료는 서버가 만든 **합성
+ *  메시지에 실어 보내는 per-message 플래그였다. 그런데 매니저 완료는 서버가 만든 **합성
  *  메시지**를 메인 핸들러에 재주입하는 경로라(worker-jobs.ts) 그 플래그가 없다.
  *  스케줄·파일감시도 같다. 즉 **서버는 사용자가 켠 사실을 아예 몰랐고**, 사람이 그 자리에
  *  없을 확률이 가장 높은 긴 작업일수록 알림이 안 갔다.
@@ -70,7 +70,7 @@ const run = async (): Promise<Assertion[]> => {
   }
 
   // ── ③ ★핸들러가 메시지 값과 서버 설정을 **합집합**으로 쓴다 ────────────────
-  //  이게 없으면 서버가 만든 합성 메시지(워커 완료 재주입)는 영원히 fan-out 을 못 탄다.
+  //  이게 없으면 서버가 만든 합성 메시지(매니저 완료 재주입)는 영원히 fan-out 을 못 탄다.
   {
     const src = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
     const usesSettings = src.includes("readEgressChannels()");
@@ -142,7 +142,7 @@ const run = async (): Promise<Assertion[]> => {
     const wj = await readFile(new URL("../../core/worker-jobs.ts", import.meta.url), "utf8");
     const carried = wj.split("replyTarget:").length - 1;
     out.push({
-      name: "★[배선 린트] 워커 재주입(완료·점검)이 replyTarget 을 실어 보낸다",
+      name: "★[배선 린트] 매니저 재주입(완료·점검)이 replyTarget 을 실어 보낸다",
       ok: carried >= 2,
       got: carried >= 2 ? `${carried}곳` : `★${carried}곳 — 좌표가 안 실리면 같은 곳에 두 번 간다`,
     });
@@ -213,6 +213,6 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "egress-applies-to-derived-turns",
   guards:
-    "egress 선택이 브라우저에만 있어 서버가 만드는 발화(워커 완료 재주입·스케줄·파일감시)가 fan-out 을 못 타던 것 — 긴 작업일수록 사람이 그 자리에 없는데 알림이 거기로만 갔다",
+    "egress 선택이 브라우저에만 있어 서버가 만드는 발화(매니저 완료 재주입·스케줄·파일감시)가 fan-out 을 못 타던 것 — 긴 작업일수록 사람이 그 자리에 없는데 알림이 거기로만 갔다",
   run,
 };

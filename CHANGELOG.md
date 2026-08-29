@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-08-29
+
+플러그인을 **남이 만들 수 있게** 하는 릴리스입니다. 레포 밖에서 문서만 보고 직접 만들어
+보면서 막히는 자리를 찾아 고쳤습니다.
+
+### Added
+
+- **[플러그인 만드는 법](docs/plugins.md)** — 문서가 생겼습니다. 위젯 하나와 도구 하나를
+  이 문서만 보고 만들 수 있습니다(영문판도 함께). 그동안은 능력만 있고 쓰는 법이 어디에도
+  없었습니다.
+- **도구를 만드는 데 아무것도 설치할 필요가 없습니다.** 이름·설명·인자만 적으면 됩니다.
+  예전 방식대로 SDK 를 쓰셔도 그대로 동작합니다.
+- **플러그인이 대화 없이도 일할 수 있습니다.** 무슨 일이 생기면 알아채고, 스스로 알림을
+  보내고, 필요하면 모델에게 물어봅니다 — 스케줄이나 파일 감시 같은 것을 이제 누구나
+  만들 수 있습니다. 폰으로 메시지를 보내거나 모델을 부르는 플러그인은 **설치할 때 그
+  사실이 보입니다.**
+
+### Changed
+
+- **TypeScript 지원은 아직 준비 중입니다.** 지금은 JavaScript 로 만들어 주세요 — 문서가
+  계약이고, 거기 적힌 것은 안 깨뜨립니다.
+- **플러그인 도구가 모든 상황에서 보입니다.** 예전에는 직접 대화할 때만 보이고, 아침
+  스케줄이나 백그라운드 작업에서는 안 보였습니다. *"매일 아침 그걸로 알려줘"* 같은 부탁이
+  이제 실제로 됩니다.
+- **홈에 둘 수 있는 위젯이 12개에서 24개로 늘었습니다.**
+- **플러그인에 거는 제약을 줄였습니다.** 사용자나 데몬이 실제로 다치는 것만 막고, 나머지는
+  만드는 사람에게 맡깁니다.
+
+### Fixed
+
+- **플러그인을 끄면 정말 멈춥니다.** 스케줄러나 파일 감시처럼 스스로 깨어나는 플러그인은
+  꺼도 계속 돌고 있었습니다 — 목록에서는 사라지는데 알림은 계속 왔습니다.
+- **플러그인이 다른 대화에 끼어들 수 없습니다.** 이름이 겹치면 사용자의 실제 대화를
+  가리킬 수 있었습니다. 이름에 쓸 수 있는 글자도 좁혔습니다(폴더 밖으로 못 나갑니다).
+- **플러그인이 기본 기능(기억·스킬 등)을 가릴 수 없습니다.** 같은 이름을 쓰면 기본 기능이
+  통째로 대체되던 것 — 이제 기본 기능이 우선하고, 겹친 사실을 알려줍니다.
+- **위젯 설정 개수 제한을 없앴습니다** — 설정이 많은 위젯(지도·차트 등)이 이유 없이
+  막히던 것.
+- 플러그인이 도구와 화면을 다 제공했는데도 로그에 *"아무것도 없습니다"* 라고 찍히던 것.
+
 ## [0.42.1] - 2026-08-29
 
 ### Fixed
@@ -1728,7 +1768,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.42.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.43.0...HEAD
+[0.43.0]: https://github.com/tigu77/tiguclaw/compare/v0.42.1...v0.43.0
 [0.42.1]: https://github.com/tigu77/tiguclaw/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/tigu77/tiguclaw/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/tigu77/tiguclaw/compare/v0.40.1...v0.41.0

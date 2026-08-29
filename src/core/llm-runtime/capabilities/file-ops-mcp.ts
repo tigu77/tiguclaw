@@ -66,7 +66,7 @@ import { getPaths } from "../../paths.js";
 import { loadWebSearchConfig } from "../../settings.js";
 import { detectShell } from "../../runtime-env.js";
 import { getEventBus } from "../../eventbus.js";
-// 셸의 원 세션 환원 — 워커·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
+// 셸의 원 세션 환원 — 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
 // 아니다. 잡 레지스트리를 보는 코어가 환원해서 관측면에 실어 준다(대시보드 추측 제거).
 import { resolveOwnerThreadKey } from "../../worker-jobs.js";
 import {
@@ -626,7 +626,7 @@ export const listShells = (): BgShellSnapshot[] =>
       status: s.status,
       startedAt: s.startedAt,
       threadKey: s.threadKey,
-      // 워커·서브가 띄운 셸의 threadKey 는 세션 키가 아니라 잡 좌표 → 서버가 환원해서 준다
+      // 매니저·서브가 띄운 셸의 threadKey 는 세션 키가 아니라 잡 좌표 → 서버가 환원해서 준다
       // (잡 레지스트리 전체를 보는 쪽이 authoritative — 대시보드 세션 스코프 판정 근거).
       ownerThreadKey: resolveOwnerThreadKey(s.threadKey),
       exitCode: s.exitCode,
@@ -925,7 +925,7 @@ const makeFileOpsTools = (
   base: string,
   threadKey: string,
   includeWebSearch: boolean,
-  /** 턴/워커 중단 신호 — /stop·취소가 실행 중인 포그라운드 셸까지 끊게 한다(G, 2026-07-28). */
+  /** 턴/매니저 중단 신호 — /stop·취소가 실행 중인 포그라운드 셸까지 끊게 한다(G, 2026-07-28). */
   abortSignal?: AbortSignal,
 ) => {
   // ★이 Map 이 곧 "턴 스코프" — createFileOpsMcpServer 가 턴마다 새로 호출되므로

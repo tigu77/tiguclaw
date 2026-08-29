@@ -72,6 +72,23 @@ export interface PluginMeta {
   readonly license?: string;
 }
 
+/**
+ * 플러그인 이름으로 쓸 수 있나 — **순수 판정**(회귀가 직접 부른다).
+ *
+ * ★이 이름은 세 곳에서 **좌표와 경로**가 된다: `pluginThreadKey(name, scope)` =
+ *  `<name>:<scope>` · `dataDir`·`settingsFile` = `<home>/plugins/<name>/…`. 종전엔
+ *  `typeof === "string"` 뿐이라 `name:"../../.ssh"` 가 `~/.ssh` 로 나갔다(실측).
+ *
+ * 소문자·숫자·하이픈만 — 경로 문자(`/`·`.`·`\\`)와 콜론이 **원천적으로 못 들어온다.**
+ *
+ * ★**예약어 목록은 두지 않는다.** 처음엔 `dashboard`·`telegram`·`cli` 를 막으려 했는데,
+ *  그게 **번들 플러그인의 실제 이름**이라 전부 로드에 실패했다(실측으로 즉시 잡혔다).
+ *  좌표 충돌은 이름을 단속해서가 아니라 **좌표를 만들 때** 막는 게 맞다 —
+ *  `pluginThreadKey` 가 접두사를 붙인다.
+ */
+export const isValidPluginName = (name: string): boolean =>
+  /^[a-z0-9][a-z0-9-]{0,63}$/.test(name);
+
 export interface PluginManifest {
   schemaVersion: number;
   /** 이 플러그인이 요구하는 것 — 검사·정규화를 거친 값(`readNeeds`). */
@@ -354,6 +371,25 @@ export const loadPlugins = async (
           typeof m.name === "string" ? m.name : entryName,
           "load",
           new Error("invalid manifest fields"),
+        );
+        continue;
+      }
+      // ★**이름을 좁게 검사한다** (2026-08-29, 적대 검토 A). 종전엔 `typeof === "string"`
+      //  뿐이었는데, 이 이름은 세 곳에서 **좌표와 경로**가 된다:
+      //    `pluginThreadKey(name, scope)` = `<name>:<scope>`  ← 대화 좌표
+      //    `dataDir` · `settingsFile` = `<home>/plugins/<name>/…`  ← 파일 경로
+      //  실측으로 `name:"dashboard"` 는 **사용자의 실제 메인 대화**(`dashboard:default`)를
+      //  가리켰고, `name:"../../.ssh"` 는 `~/.ssh` 로 나갔다. §D.1 이 *"경계가 코드가 아니라
+      //  파일시스템에서 지켜진다"* 고 한 자리인데, 이름이 자유로우면 파일시스템이 못 지킨다.
+      if (!isValidPluginName(m.name)) {
+        publishError(
+          eventBus,
+          m.name,
+          "load",
+          new Error(
+            `플러그인 이름 '${m.name}' 을 받지 않습니다 — 소문자·숫자·하이픈만 됩니다. ` +
+              `이 이름은 대화 좌표와 파일 경로가 됩니다.`,
+          ),
         );
         continue;
       }

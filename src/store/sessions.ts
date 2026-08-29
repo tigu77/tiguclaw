@@ -293,7 +293,7 @@ export const initStore = (): void => {
   }
 
   // ─── 채널/세션 분리: threads.last_channel / last_channel_target (ADR 2026-07-15 §D3) ──
-  // 세션은 채널 무관이지만, 비동기 outbound(워커 완료·능동발신)의 **기본 목적지**는
+  // 세션은 채널 무관이지만, 비동기 outbound(매니저 완료·능동발신)의 **기본 목적지**는
   // 세션의 *마지막 인입 채널+주소* 다. 채널 주소를 세션 id 에서 파싱하지 않고(=폐지 대상)
   // 인입 턴 저장 시 **캡처**해 여기 경량 메타로 둔다(§D3). generic 데이터(채널명·주소) —
   // 코어는 이 값으로 채널 정체성을 분기하지 않는다(§0 단방향). 둘 다 nullable → 미기록
@@ -574,7 +574,7 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_watches_enabled ON watches(enabled);
   `);
 
-  // ─── 백그라운드 워커 잡 영속 (메타만 — 재시작 정직 통지용, 2026-06-19) ─────────
+  // ─── 백그라운드 매니저 잡 영속 (메타만 — 재시작 정직 통지용, 2026-06-19) ─────────
   // 런타임 진실 소스는 core/worker-jobs.ts 의 in-memory Map(핫패스 무변경). 이 테이블은
   // *재시작 생존*만 담당 — 부팅 시 status='running' 잔류 = 그 잡을 돌던 프로세스가 죽었음
   // → 중단으로 보고. result/error 본문은 비영속(option b: 메타 영속 + 정직 통지, 풀 재개 아님).
@@ -592,11 +592,11 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_worker_jobs_status ON worker_jobs(status);
   `);
 
-  // ─── 워커 통지 dest threading: worker_jobs.notify_channel/notify_target ────
+  // ─── 매니저 통지 dest threading: worker_jobs.notify_channel/notify_target ────
   // Idempotent ALTER TABLE ADD COLUMN — schedules.trigger_type 패턴 동형.
-  // generic 통지 좌표(채널 무관 데이터) 영속 — 스케줄 발화 워커가 재시작 후에도
+  // generic 통지 좌표(채널 무관 데이터) 영속 — 스케줄 발화 매니저가 재시작 후에도
   // 올바른 telegram chatId 등으로 완료/실패 통지 도달하게. NULL 허용 = 미지정(=기존
-  // 텔레그램 직접 발화 워커)이면 core 폴백(job.channel/threadKey)으로 회귀 0.
+  // 텔레그램 직접 발화 매니저)이면 core 폴백(job.channel/threadKey)으로 회귀 0.
   // 신규 DB: CREATE 직후 probe 에 없음 → ADD. 반복 부팅: 이미 존재 → skip.
   const wjCols = handle
     .prepare(`PRAGMA table_info(worker_jobs)`)
@@ -608,10 +608,10 @@ export const initStore = (): void => {
     handle.exec(`ALTER TABLE worker_jobs ADD COLUMN notify_target TEXT`);
   }
 
-  // ─── 서브·워커 통합: worker_jobs.kind/agent_name (2026-07-03, ADR subagent-worker-unify) ──
-  // 잡 관측 체계를 워커+서브에이전트 공용으로 통합. kind='worker'(detached, run_in_background)
+  // ─── 서브·매니저 통합: worker_jobs.kind/agent_name (2026-07-03, ADR subagent-worker-unify) ──
+  // 잡 관측 체계를 매니저+서브에이전트 공용으로 통합. kind='worker'(detached, run_in_background)
   // | 'agent'(awaited 서브에이전트). agent_name = 서브에이전트 정의 이름(대시보드 라벨). NULL
-  // 허용 + DEFAULT 'worker' → 기존 워커 레코드 100% 호환(재시작 복구 시 kind 없으면 worker).
+  // 허용 + DEFAULT 'worker' → 기존 매니저 레코드 100% 호환(재시작 복구 시 kind 없으면 worker).
   // notify_channel 패턴 동형(idempotent probe+ADD). awaited 는 별 컬럼 아닌 kind==='agent' 파생.
   if (!wjCols.some((c) => c.name === "kind")) {
     handle.exec(
@@ -630,7 +630,7 @@ export const initStore = (): void => {
   //  ★파생이 아니라 **컬럼**인 이유: parentJobId 는 threadKey 규약에 이미 적혀 있어서
   //   파생이 맞았지만, "기다렸나" 는 어디에도 안 적힌 사실이다. 없는 것을 짜내려고
   //   다른 필드(channelUserId 등)에 의미를 얹으면 그게 우연한 인코딩이 된다.
-  //  DEFAULT 0 = 기존 레코드는 전부 awaited/워커 취급 → 재시작 복구 회귀 0.
+  //  DEFAULT 0 = 기존 레코드는 전부 awaited/매니저 취급 → 재시작 복구 회귀 0.
   if (!wjCols.some((c) => c.name === "detached")) {
     handle.exec(
       `ALTER TABLE worker_jobs ADD COLUMN detached INTEGER NOT NULL DEFAULT 0`,
@@ -1206,7 +1206,7 @@ const INTERNAL_THREAD_PRUNABLE_PREFIXES = INTERNAL_THREAD_PREFIXES.filter(
  * ★핫경로 바운드 + 레코드 보존 원칙([[project_hotpath_bound_preserve_record]]): 여기서
  * 지우는 건 `threads` **메타 행**(세션-정체성 포인터: claude_session_id·model·last_used_at
  * 등)뿐이다. 대화 레코드 자체(`transcripts`·`transcript_index`·`chat_log`)는 threadKey 로
- * 키잉된 **별 테이블**이라 이 DELETE 로 전혀 건드리지 않는다 — 완료된 워커/서브에이전트/
+ * 키잉된 **별 테이블**이라 이 DELETE 로 전혀 건드리지 않는다 — 완료된 매니저/서브에이전트/
  * 엔드포인트/게이트웨이 잡의 메타 포인터만 정리하고, 그 잡이 실제로 무슨 대화를 했는지의
  * 레코드는 콜드 보존된다(감사·검색 가능, 대시보드 세션 탭에만 안 뜸 — 원래도 excludeInternal
  * 로 배제되던 것들).
@@ -1247,7 +1247,7 @@ export const pruneInternalThreads = (olderThanMs: number): number => {
 };
 
 /**
- * 세션-정체성 저장 채널 도출 — 슬래시 핸들러·워커 재주입이 route() 정규화와 **동일 키**로
+ * 세션-정체성 저장 채널 도출 — 슬래시 핸들러·매니저 재주입이 route() 정규화와 **동일 키**로
  * 세션-정체성(resume/context boundary/model override/summary)을 read/write 하도록 canonical
  * 채널을 준다(채널/세션 분리 ADR 2026-07-15 §D1, QA BLOCKER 후속).
  *
@@ -1284,11 +1284,11 @@ export const canonicalSessionChannel = (
 };
 
 /**
- * 우회 통지(워커 done/failed·stall·tool-slow 등)의 **관측 세션 threadKey** 도출 —
+ * 우회 통지(매니저 done/failed·stall·tool-slow 등)의 **관측 세션 threadKey** 도출 —
  * canonicalSessionChannel 과 동일 분류(§D3 표시 귀속). job.threadKey 가 실 dashboard
  * 세션이면 그 세션에 표시, 아니면(내부 파생 scheduler:/worker:/sub·물리 tg:/cli) 기본
  * 세션. deliverOutbound({observeThreadKey}) 에 실어 통지가 발원 세션(또는 기본)에 뜨게 한다.
- * ★스케줄이 띄운 워커(job.threadKey="scheduler:<id>")를 물리 tg: 키에 남기던 비대칭 해소.
+ * ★스케줄이 띄운 매니저(job.threadKey="scheduler:<id>")를 물리 tg: 키에 남기던 비대칭 해소.
  */
 export const notifySessionThreadKey = (threadKey: string): string => {
   for (const p of INTERNAL_THREAD_PREFIXES) {
@@ -1716,7 +1716,7 @@ export const invalidateResume = (
 };
 
 // ─── 채널/세션 분리: 세션의 마지막 인입 채널+주소 메타 (ADR 2026-07-15 §D3) ────────
-// 비동기 outbound(워커 완료·능동발신)의 **기본 목적지**를 세션 id 에서 파싱하지 않고
+// 비동기 outbound(매니저 완료·능동발신)의 **기본 목적지**를 세션 id 에서 파싱하지 않고
 // 인입 시점에 캡처해 둔다. region/daemon 웨이브2가 인입 턴 처리 시 saveSession **직후**
 // 호출한다(행 존재 전제 — UPDATE-only, 없으면 no-op 폴백). 키는 saveSession 과 동일한
 // (channel, threadKey) — Phase 1 은 threads PK 가 아직 복합키라 동일 키잉으로 정합.

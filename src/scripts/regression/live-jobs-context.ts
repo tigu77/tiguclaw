@@ -1,7 +1,7 @@
 /**
  * 회귀: 진행 중인 백그라운드 작업이 **턴 컨텍스트에 보인다** (2026-07-29).
  *
- * 사고: 워커가 아직 도는데 메인이 같은 일로 워커를 하나 더 띄웠다(DB 실측: 23:41 시작한
+ * 사고: 매니저가 아직 도는데 메인이 같은 일로 매니저를 하나 더 띄웠다(DB 실측: 23:41 시작한
  * 잡이 살아있는 채 23:43 재발사). 서브에이전트를 끊은 게 아니라 **그대로 둔 채 또 띄운**
  * 것이므로 타임아웃 문제가 아니다 — 원인은 모델이 **자기가 뭘 띄웠는지 턴 안에서 볼
  * 수단이 없었던** 것. 규칙으로 훈계하는 대신 사실을 준다(판단 근거를 가진 쪽이 판단).
@@ -32,7 +32,7 @@ export const check: RegressionCheck = {
     const a = registerJob({ label: "검증 서브", threadKey: `worker:${w}`, channel: "dashboard", channelUserId: "u", task: "t", kind: "agent" });
     const withJobs = formatConversationContext("http-bridge", TK, "addr");
     out.push(assert("매니저가 보인다", withJobs.includes("파이프라인"), "포함 여부"));
-    // ★손자까지 — 워커가 띄운 서브는 threadKey 가 잡 좌표라 정확 일치로는 안 걸린다.
+    // ★손자까지 — 매니저가 띄운 서브는 threadKey 가 잡 좌표라 정확 일치로는 안 걸린다.
     out.push(assert("손자(매니저가 띄운 서브)도 보인다", withJobs.includes("검증 서브"), "포함 여부"));
     markDone(a, "ok");
     markDone(w, "ok");

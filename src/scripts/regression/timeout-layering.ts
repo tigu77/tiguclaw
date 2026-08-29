@@ -6,7 +6,7 @@
  *  - 2026-06-19 위키 11h outage — MCP 60s 천장이 정상 도구(60s+)를 자름.
  *  - 2026-06-23 메인 턴 wall-clock 폐기 — 정상 긴 작업을 자르던 부작용.
  *  - 2026-07-28 어댑터 8분 도구 시계 — MCP 11분·잡 2시간보다 **더 조여서** 서브에이전트를
- *    끊었고, 모델이 같은 작업을 워커로 재실행했다(사용자 신고 3회).
+ *    끊었고, 모델이 같은 작업을 매니저로 재실행했다(사용자 신고 3회).
  *
  * 그래서 "이번엔 안 그러겠지"가 아니라 숫자 관계 자체를 검사한다.
  */
@@ -61,7 +61,7 @@ export const check: RegressionCheck = {
       assert(
         // ★두 레인이 **대칭**인가 (2026-08-22). `startDetachedAgent` 엔 하드 백스톱이
         //  없어서, abort 를 안 듣는 자식(hung MCP)이면 잡이 영원히 running 으로 굳고
-        //  통지가 0건이었다(워커 레인은 1건). 실측으로 확인한 실사고 —
+        //  통지가 0건이었다(매니저 레인은 1건). 실측으로 확인한 실사고 —
         //  사용자 신고 "타임아웃 이후 아무런 응답이 없어".
         "★두 잡 레인 모두 하드 백스톱이 있다(abort 를 안 듣는 자식도 닫힌다)",
         await bothLanesHaveHardBackstop(),
@@ -108,7 +108,7 @@ const fmt = (ms: number): string => (Number.isFinite(ms) ? String(ms) : "무한(
 const outerIsLooser = (outer: number, inner: number): boolean =>
   Number.isFinite(inner) ? outer > inner : !Number.isFinite(outer);
 
-/** 두 잡 레인(워커·서브에이전트)이 **모두** 하드 백스톱 race 를 갖는지. */
+/** 두 잡 레인(매니저·서브에이전트)이 **모두** 하드 백스톱 race 를 갖는지. */
 const bothLanesHaveHardBackstop = async (): Promise<boolean> => {
   const { readFile } = await import("node:fs/promises");
   const read = async (rel: string): Promise<string | null> => {

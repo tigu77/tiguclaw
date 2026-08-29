@@ -55,7 +55,7 @@ export const check: RegressionCheck = {
       ["claude native Task", true, "Task", undefined],
       ["claude native Agent (SDK 0.3 개명)", true, "Agent", undefined],
       ["claude MCP 라벨(접두사 흡수)", true, "mcp__agents__spawn_agent", undefined],
-      ["claude MCP 워커 라벨", true, "mcp__workers__run_in_background", undefined],
+      ["claude MCP 매니저 라벨", true, "mcp__workers__run_in_background", undefined],
       ["jobId 가 있으면 라벨 무관", true, "무엇이든", "job-1"],
       ["평범한 도구는 아니다", false, "Read", undefined],
       ["비슷하지만 다른 이름", false, "spawn_agent_list", undefined],

@@ -23,7 +23,7 @@
  *  ④**비채널 트리거 턴의 통지가 목적지 없이 나갔다.** 스케줄 턴은 `channel="scheduler"`
  *   (발송 채널이 아니라 트리거 이름)로 도는데, 한도 쿨다운 알림이 그걸 그대로 목적지로 써서
  *   `미배달 87자 [cooldown]` 으로 끝났다. 스케줄러는 실제 목적지를 `notifyDest` 로 이미
- *   주입하고 있었고 워커 완료 통지는 그걸 썼다 — 이 알림만 안 봤다.
+ *   주입하고 있었고 매니저 완료 통지는 그걸 썼다 — 이 알림만 안 봤다.
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";

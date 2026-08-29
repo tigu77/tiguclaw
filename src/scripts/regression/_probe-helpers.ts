@@ -7,7 +7,7 @@
  *  누락·`HTTP_BRIDGE_HOST` 미고정)을 한쪽만 고쳤으면 조용히 갈렸을 자리다.
  *  [[feedback_hand_maintained_lists]] · [[feedback_simple_composable_no_duplication]]
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -109,3 +109,33 @@ export const reapOnExit = (pid: number | undefined): void => {
   process.on("exit", kill);
 };
 
+/**
+ * 자식 프로브를 돌릴 **인터프리터 경로** — 한 곳에서 정한다 (2026-08-29).
+ *
+ * ★사고: 다섯 검사가 `path.join(REPO, "node_modules/.bin/tsx")` 를 각자 박아뒀다. 그런데
+ *  적대 검토는 **격리 워크트리**에서 도는 게 이 레포의 관행이고, 워크트리엔 `node_modules`
+ *  가 없다 → `ENOENT` → stdout 이 빈 문자열 → *"프로브가 돌았다"* 실패. 실측으로
+ *  **거짓 빨강 8건**이 떴고, 증거란도 비어 있어 원인이 안 보였다.
+ *
+ *  다음 검토자는 그 8건을 **"이번 변경이 깼다"** 로 오독한다. 실제로 오늘 그럴 뻔했다.
+ *
+ * ★이 파일은 이미 포트를 `freePort()` 로 뽑아 워크트리 병렬을 고려하고 있었다 — 인터프리터
+ *  경로만 그 배려에서 빠져 있었다. 손으로 다섯 번 맞추는 대신 **판정을 여기 하나로** 모은다
+ *  ([[feedback_hand_maintained_lists]]).
+ *
+ * 순서: 이 트리의 `node_modules` → 없으면 **상위로 올라가며** 찾는다(워크트리는 부모
+ * 레포 곁에 생기므로 대개 여기서 잡힌다) → 그래도 없으면 `PATH` 의 `tsx`.
+ */
+export const probeInterpreter = (repo: string): string => {
+  let dir = repo;
+  for (let i = 0; i < 6; i += 1) {
+    const cand = path.join(dir, "node_modules", ".bin", "tsx");
+    if (existsSync(cand)) return cand;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  // ★못 찾으면 `PATH` 에 맡긴다 — 여기서 던지면 검사가 **원인을 못 말하고** 죽는다.
+  //  이름만 주면 `spawnSync` 가 ENOENT 를 주고, 그건 아래 `bootVerdict` 가 문장으로 만든다.
+  return "tsx";
+};

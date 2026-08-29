@@ -2,13 +2,13 @@
  * 도구 지연 감시 — **어댑터 무관** 단일 엔진 (2026-07-28, 딥리뷰 D).
  *
  * ★왜 공통층인가: 이 경고는 codex 어댑터의 수동 도구 루프 안에만 있었다. 그래서 claude·
- *  openai 로 도는 워커는 도구가 권한 다이얼로그에 막혀 조용히 멈춰도 **사용자에게 아무
+ *  openai 로 도는 매니저는 도구가 권한 다이얼로그에 막혀 조용히 멈춰도 **사용자에게 아무
  *  신호가 안 갔다** — "모든 기능은 LLM 무관"(원칙 #2) 위반. 판정 로직은 어댑터와 무관한
  *  순수 시간 문제라 여기 한 번만 두고, 어댑터는 자기 관측 지점에서 start/stop 만 부른다.
  *
  * 죽이지 않고 **경고만** 한다. 실행 취소·타임아웃은 각 어댑터/도구의 소관이다(경계 분리).
  *
- * 배경(codex 시절 실측): 워커 도구(Bash 등)가 macOS 권한 요청 다이얼로그에 막혀 멈췄는데
+ * 배경(codex 시절 실측): 매니저 도구(Bash 등)가 macOS 권한 요청 다이얼로그에 막혀 멈췄는데
  * 도구 시작만 찍히고 완료 신호가 없어 "느림 vs 막힘" 구분이 안 돼 30분+ 헤맸다.
  */
 import { getEventBus } from "../eventbus.js";
@@ -93,7 +93,7 @@ export const toolSlowWarnMs = (_tool: string): number => toolSlowWarnDefaultMs()
  *
  * 그럼 2026-08-06 에 이 상한을 넣게 만든 사고(도구가 진짜 멈춰 세션 직렬 큐가 얼어붙음)는?
  * 그건 **끊어서** 가 아니라 **몰라서** 나쁜 사고였다 — 아무 신호가 없어 39분을 헤맸다.
- * 그래서 신호는 남기고(`[tool-slow]` 경고 + `llm.tool_slow` 이벤트 → 워커 핑) 칼만 뺀다.
+ * 그래서 신호는 남기고(`[tool-slow]` 경고 + `llm.tool_slow` 이벤트 → 매니저 핑) 칼만 뺀다.
  * 진짜 멈춘 도구의 회복 경로는 그대로다: `/stop`(턴 중단) · `cancel_worker` · `/restart`.
  *
  * 끊고 싶으면 `TOOL_HARD_TIMEOUT_MS` 에 ms 를 명시한다(미설정 = 안 끊음).
@@ -107,7 +107,7 @@ const toolHardMs = (): number | null => {
 
 /**
  * 하드 상한에서 **제외**되는 도구 — 자기 상한을 이미 가진 것들.
- * 서브에이전트는 `SUBAGENT_TIMEOUT_MS`(기본 = 워커 상한)로 스스로 끊는다. 여기서 13분에 자르면
+ * 서브에이전트는 `SUBAGENT_TIMEOUT_MS`(기본 = 매니저 상한)로 스스로 끊는다. 여기서 13분에 자르면
  * **정상적인 장시간 위임을 죽인다**(실측: 완료 서브 138건 평균 124초·최대 627초지만 상한은
  * 시간 단위). 느림 경고 완화와 같은 판정을 쓰는 것은 우연이 아니다 —
  * "오래 걸리는 게 정상" 이라는 같은 사실의 두 얼굴이다.
@@ -140,7 +140,7 @@ export const formatToolSlowNotice = (input: {
   readonly tool: string;
   /** 경과 **초**. ms 를 넘기지 마라 — 호출부는 이미 초를 갖고 있다. */
   readonly secs: number;
-  /** 워커 통지면 잡 라벨. 없으면 메인 턴 통지. */
+  /** 매니저 통지면 잡 라벨. 없으면 메인 턴 통지. */
   readonly jobLabel?: string;
 }): string => {
   const secs = Math.max(1, Math.round(input.secs));
@@ -188,8 +188,8 @@ export const watchToolStart = (input: ToolWatchInput): (() => void) => {
         `안 끝나는 것으로 보이면 권한 다이얼로그(OS) 대기·외부 MCP 대상 앱 미실행을 먼저 확인하세요.` +
         `${input.note !== undefined ? ` ${input.note}` : ""}`,
     );
-    // 관측 이벤트 — worker-jobs 가 구독해 워커면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
-    // 채널 무결합(어댑터는 event 만, dest 라우팅은 워커 계층). best-effort.
+    // 관측 이벤트 — worker-jobs 가 구독해 매니저면 사용자에게 "멈춤, 권한 확인" 핑(잡당 1회).
+    // 채널 무결합(어댑터는 event 만, dest 라우팅은 매니저 계층). best-effort.
     try {
       getEventBus().publish({
         type: "llm.tool_slow",

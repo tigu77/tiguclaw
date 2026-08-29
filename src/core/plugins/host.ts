@@ -23,6 +23,7 @@
 import path from "node:path";
 import { readLocale } from "../i18n.js";
 import { getPaths } from "../paths.js";
+import { getEventBus } from "../eventbus.js";
 import { deliverOutbound } from "../outbound.js";
 import { pluginFetch } from "../plugin-fetch.js";
 import {
@@ -42,10 +43,47 @@ export interface PluginNeeds {
   readonly network?: readonly string[];
   /** 화면에 붙는 자리. 집행: 위젯 첨부가 이 선언 없이 오면 거부한다. */
   readonly ui?: readonly "chat-widget"[];
+
+  // ── 턴 밖에서 행동하기 (2026-08-29) ────────────────────────────────────────
+  // ★**선언은 사용자에게 대가가 있는 것에만 요구한다** (2026-08-29 정태님).
+  //
+  //  처음엔 `events`(이벤트 구독)도 선언을 요구하고 안 적으면 던지게 했는데, 걷어냈다 —
+  //  **이벤트를 읽는 건 대가가 없다.** 매니페스트 한 줄이 빠졌다고 서드파티 플러그인이
+  //  부팅에서 죽는 건 지키는 것에 비해 과하다. 남긴 셋은 대가가 있다: 폰에 메시지가 가고
+  //  (`outbound`), 돈이 나가고(`llm`), 도구가 힘을 갖는다(`tools`).
+  //
+  // ★**그리고 이건 보안이 아니다.** 격리가 0이라 안 적고 코어를 직접 import 하면 그만이고,
+  //  실제로 번들 플러그인 둘이 이미 `host.fetch` 대신 전역 `fetch` 로 나간다(실측). 선언의
+  //  값은 **사람 눈에 보이는 것** 하나뿐이다 — 그래서 `describeNeeds` 가 문장으로 낸다.
+  //  문서에 "선언 안 하면 못 한다" 고 쓰면 그건 거짓 안심이다.
+
+  /** 스스로 말하기(`host.say`). 집행: 선언 없으면 `say` 가 거부한다. */
+  readonly outbound?: boolean;
+  /** 모델 호출(`host.ask`). 집행: 선언 없으면 `ask` 가 거부한다. */
+  readonly llm?: boolean;
+  // ★`tools` 키는 **뺐다** (2026-08-29, 적대 검토 A). 넣었다가 실측으로 되돌린 것이다:
+  //  코어의 `toolPolicy` 는 `{mode:"allow", names}` 를 만들 수는 있는데 **그 `names` 를
+  //  읽는 코드가 레포에 0곳**이고(세 어댑터 전부 `mode === "none"` 한 줄만 본다),
+  //  `none` 이 아니면 **전체 도구**로 안전 degrade 한다. 결과가 정반대였다:
+  //
+  //    needs: { llm: true }              → 도구 0개  (의도대로)
+  //    needs: { llm: true, tools: [...] } → **도구 전량** + `ask` 가 main 턴이라
+  //                                          `update_self`·`model-settings` 까지
+  //
+  //  **좁히려고 적은 사람이 가장 넓게 열렸다.** 게다가 `describeNeeds` 가 설치 화면에
+  //  "모델 호출(도구 Read)" 라고 찍어 **거짓 권한을 보여줬다.**
+  //
+  //  `KNOWN_NEED_KEYS` 의 규칙("집행 없는 선언 금지")대로 키를 뺀다. `allow` 를 세 어댑터에
+  //  실제로 구현하는 날 다시 넣는다 — 그때는 이 주석이 무엇을 확인해야 하는지 말해준다.
 }
 
 /** 지금 아는 권한 키 — 여기 없는 키는 **거부**한다(집행 없는 선언 금지). */
-export const KNOWN_NEED_KEYS: ReadonlySet<string> = new Set(["network", "ui"]);
+export const KNOWN_NEED_KEYS: ReadonlySet<string> = new Set([
+  "network",
+  "ui",
+  "outbound",
+  "llm",
+]);
 
 export interface NeedsVerdict {
   readonly needs: PluginNeeds;
@@ -73,7 +111,12 @@ export const readNeeds = (raw: unknown): NeedsVerdict => {
       );
     }
   }
-  const needs: { network?: string[]; ui?: "chat-widget"[] } = {};
+  const needs: {
+    network?: string[];
+    ui?: "chat-widget"[];
+    outbound?: boolean;
+    llm?: boolean;
+  } = {};
   if (o.network !== undefined) {
     if (!Array.isArray(o.network) || o.network.some((h) => typeof h !== "string")) {
       problems.push("needs.network 는 호스트 문자열 배열이어야 합니다");
@@ -85,6 +128,11 @@ export const readNeeds = (raw: unknown): NeedsVerdict => {
     const ok = Array.isArray(o.ui) && o.ui.every((v) => v === "chat-widget");
     if (!ok) problems.push('needs.ui 는 ["chat-widget"] 만 받습니다');
     else needs.ui = o.ui as "chat-widget"[];
+  }
+  for (const k of ["outbound", "llm"] as const) {
+    if (o[k] === undefined) continue;
+    if (typeof o[k] !== "boolean") problems.push(`needs.${k} 는 true/false 여야 합니다`);
+    else needs[k] = o[k] as boolean;
   }
   return { needs, problems };
 };
@@ -106,8 +154,25 @@ export const describeNeeds = (needs: PluginNeeds): string => {
       : "외부 미선언(모름)",
   );
   if (needs.ui !== undefined && needs.ui.length > 0) parts.push(`화면 ${needs.ui.join(", ")}`);
+  // ★행동 권한은 **사람이 보는 문장**에 들어간다 — 격리가 0인 지금 이 선언은 강제가 아니라
+  //  의도 표명이고, 그 값은 오직 **보이는 데** 있다. 안 보이면 적을 이유도 없다.
+  if (needs.outbound === true) parts.push("스스로 말함");
+  // ★"도구 없음" 은 지금 **참**이다 — `ask` 는 언제나 `toolPolicy:{mode:"none"}` 으로 돈다.
+  if (needs.llm === true) parts.push("모델 호출(도구 없음)");
   return parts.join(" · ");
 };
+
+/**
+ * 플러그인이 보는 이벤트 — 코어 `EventBusEvent` 의 **읽기 전용 모양**.
+ *
+ * ★코어 타입을 그대로 재수출하지 않는다. 재수출하면 코어가 필드를 더할 때마다 그게 곧
+ *  서드파티 계약이 되고, 그러면 코어를 못 바꾼다. 여기 적힌 셋만 약속이다.
+ */
+export interface PluginEvent {
+  readonly type: string;
+  readonly ts: number;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
 
 /** 이 턴이 어느 대화인가. 없을 수도 있다(부팅 탐침 등 — 그땐 카드를 안 붙인다). */
 export interface PluginTurn {
@@ -153,7 +218,91 @@ export interface PluginHost {
   readonly dataDir: string;
   /** 로그 — 접두사가 자동으로 붙어 어느 플러그인인지 안다. */
   log(message: string): void;
+
+  // ── 턴 밖에서 행동하기 (2026-08-29) ────────────────────────────────────────
+
+  /**
+   * 코어 이벤트 구독 — **선언한 타입만**(`needs.events`).
+   *
+   * `type` 이 `.` 으로 끝나면 접두사다(`worker.` 는 `worker.started` 를 받는다).
+   * @returns 해지 함수. **플러그인이 꺼질 때 반드시 부른다** — 안 그러면 죽은 플러그인이
+   *          계속 깨어난다(`dispose` 에서 부르면 로더가 이미 그 시점을 준다).
+   */
+  on(type: string, handler: (event: PluginEvent) => void): () => void;
+
+  /**
+   * 스스로 말한다 — **턴이 없어도**(`needs.outbound`).
+   *
+   * ★`postCard` 와 다르다: 저건 *"지금 하는 답에 카드를 붙인다"* 이고 이건 *"내가 먼저
+   *  말한다"* 다. 스케줄러·파일감시가 하는 일이 후자인데 그 길이 없었다.
+   * ★반드시 `deliverOutbound` 를 지난다 — 우회하면 대시보드에 안 보인다(2026-06-30 실사고:
+   *  스케줄 발화가 그렇게 사라져서 "보냈다는데 화면에 없다" 가 됐다).
+   */
+  say(input: {
+    channel: string;
+    target: string | null;
+    text: string;
+  }): Promise<{ ok: boolean; error?: string }>;
+
+  /**
+   * 모델에게 묻는다 (`needs.llm`).
+   *
+   * ★**좁은 래퍼다.** 코어의 실행 입력은 필드가 28개고 거기엔 `model`·`provider` 가 있는데,
+   *  그걸 열면 플러그인이 특정 어댑터를 박을 수 있고 *"모든 기능 LLM 무관"* 이 플러그인
+   *  층에서 깨진다. 재보니 좁혀도 잃는 게 없다 — 우리 원형 둘(`scheduler`·`file-watch`)이
+   *  실제로 쓰는 건 **28개 중 4개**뿐이고, 그나마 `channel` 엔 자기 이름을 넣는다.
+   *  그래서 채널과 대화 좌표는 **인자가 아니라 플러그인 정체성에서 파생**시킨다.
+   * ★도구는 기본 **0개**. 필요하면 `needs.tools` 에 적는다(정태님 결정 2026-08-29).
+   *
+   * @param scope 같은 플러그인 안에서 대화를 가르고 싶을 때(기본 `"default"`).
+   *              실제 좌표는 `<plugin>:<scope>` 이므로 남의 대화엔 못 닿는다.
+   */
+  ask(input: { prompt: string; scope?: string }): Promise<
+    { ok: true; text: string } | { ok: false; error: string }
+  >;
 }
+
+/**
+ * 구독 필터 — 이 구독이 이 이벤트를 받나. **순수 판정.**
+ *
+ * 규칙 둘뿐: 정확히 같거나, 신청이 `.` 으로 끝나는 **접두사**거나.
+ * ★`"worker"` 는 `worker.started` 를 **안** 먹는다(부분 문자열이 아니다) — 안 그러면 신청한
+ *  것보다 넓게 받아 플러그인이 자기가 안 부른 이벤트로 깨어난다.
+ *
+ * ★따로 세운 이유는 [[feedback_simple_composable_no_duplication]] 그대로다: 인라인이면
+ *  검사하려고 호스트를 만들어야 하고, 그러면 회귀가 약해진다.
+ */
+export const eventAllowed = (
+  declared: readonly string[] | undefined,
+  type: string,
+): boolean => {
+  if (declared === undefined) return false;
+  return declared.some((d) => (d.endsWith(".") ? type.startsWith(d) : d === type));
+};
+
+/**
+ * `ask` 안의 모델이 받을 도구 정책 — **언제나 없음**.
+ *
+ * ★한때 `needs.tools` 로 좁힐 수 있게 했다가 되돌렸다(적대 검토 A). `{mode:"allow"}` 의
+ *  `names` 를 읽는 코드가 레포에 **0곳**이고, `none` 이 아니면 어댑터가 **전체 도구**로
+ *  안전 degrade 한다 — 좁히려는 선언이 정반대로 작동했다. 구현이 없는 모드를 만들어
+ *  주느니 **하나만 확실히** 하는 게 낫다.
+ */
+export const toolPolicyFor = (_needs: PluginNeeds): { mode: "none" } => ({ mode: "none" });
+
+/**
+ * `plugin:<name>:<scope>` — 플러그인은 **자기 이름공간 밖 대화엔 못 닿는다.**
+ *
+ * ★접두사 `plugin:` 이 붙는다 (2026-08-29, 적대 검토 A). 종전엔 `<name>:<scope>` 였는데,
+ *  좌표 이름공간은 평평해서(`dashboard:`·`worker:`·`agent:`·`telegram:`) `name:"dashboard"`
+ *  인 플러그인의 `ask` 가 **사용자의 실제 메인 대화**(`dashboard:default`)를 가리켰다(실측).
+ * ★고침을 **이름 단속이 아니라 좌표 생성**에 뒀다. 이름을 막으려 했더니 그게 번들
+ *  플러그인의 실제 이름이었다(`cli`·`dashboard`·`telegram`) — 목록으로 푸는 문제가 아니었다.
+ */
+export const pluginThreadKey = (plugin: string, scope?: string): string => {
+  const s = scope?.trim();
+  return `plugin:${plugin}:${s === undefined || s === "" ? "default" : s}`;
+};
 
 export const createPluginHost = (
   plugin: string,
@@ -206,4 +355,60 @@ export const createPluginHost = (
   },
   dataDir: path.join(getPaths().commonPlugins, plugin),
   log: (message) => console.log(`[plugin:${plugin}] ${message}`),
+
+  // ★게이트가 **없다** — 이벤트를 읽는 건 사용자에게 대가가 없다(위 주석 참조).
+  //  버스는 어차피 import 하면 읽히므로, 여기서 막아도 막히는 건 정직한 플러그인뿐이다.
+  on: (type, handler) =>
+    getEventBus().subscribe((e) => {
+      if (!eventAllowed([type], e.type)) return;
+      handler({ type: e.type, ts: e.ts, payload: e.payload });
+    }),
+
+  say: async ({ channel, target, text }) => {
+    if (needs.outbound !== true) {
+      return {
+        ok: false,
+        error:
+          `plugin '${plugin}': 스스로 말하려면 package.json 의 tiguclaw.needs.outbound 를 ` +
+          `true 로 두세요.`,
+      };
+    }
+    // ★`label` 에 플러그인 이름을 실어 보낸다 — 사용자가 폰에서 "이건 누가 보낸 거지" 를
+    //  물어야 했던 일이 있었다(2026-08-28 egress 라벨과 같은 규범).
+    const r = await deliverOutbound({ channel, target, text, label: plugin });
+    // ★`delivered` 를 그대로 읽는다 — 종전 스케줄러가 미등록 채널을 성공으로 봐서
+    //  "매일 아침 리포트를 만들고 아무 데도 안 보내고 DB 엔 ok" 가 됐던 자리다.
+    return r.delivered ? { ok: true } : { ok: false, error: r.reason ?? "전달 실패" };
+  },
+
+  ask: async ({ prompt, scope }) => {
+    if (needs.llm !== true) {
+      return {
+        ok: false,
+        error:
+          `plugin '${plugin}': 모델을 부르려면 package.json 의 tiguclaw.needs.llm 을 ` +
+          `true 로 두세요.`,
+      };
+    }
+    try {
+      // ★지연 로드 — 어댑터 스택 전체가 딸려 오므로 부팅 경로에 얹지 않는다.
+      const { runRegionA } = await import("../llm-runtime/index.js");
+      const out = await runRegionA({
+        text: prompt,
+        // 좌표는 **인자가 아니라 정체성에서** 나온다. 남의 대화엔 못 닿는다.
+        threadKey: pluginThreadKey(plugin, scope),
+        channel: plugin as never,
+        toolPolicy: toolPolicyFor(needs),
+        // ★**메인 턴이 아니다** (2026-08-29, 적대 검토 A). 깊이를 안 넘기면 `turnKindOf` 가
+        //  `main` 을 주고, 그러면 사다리 최상단(`update_self`·`model-settings`·`mcp-admin`)
+        //  이 열린다. `ask` 는 위임받아 도는 턴이므로 서브에이전트 층이 맞다.
+        //  ★재귀 상한도 여기서 온다 — 플러그인 도구 → ask → 같은 도구 가 무한히 못 돈다.
+        subagentDepth: 1,
+      });
+      return { ok: true, text: out.text };
+    } catch (e) {
+      // ★플러그인의 모델 호출 실패가 데몬을 죽이면 안 된다 — 값으로 답한다.
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  },
 });

@@ -2,7 +2,7 @@
  * threadKey 채널 관습의 단일 정의점.
  *
  * threadKey 형식(채널별): telegram=`tg:<chatId>`, cli=`cli:<id>`, http-bridge=자유.
- * telegram 의 `tg:<chatId>` 접두 추출이 여러 곳(부팅 통지·워커 통지·자가업데이트 좌표·
+ * telegram 의 `tg:<chatId>` 접두 추출이 여러 곳(부팅 통지·매니저 통지·자가업데이트 좌표·
  * 프롬프트 컨텍스트·최근 대화 조회)에서 제각각 `slice("tg:".length)` 로 복제됐다. 관습이
  * 바뀌면 전부 손대야 하므로 여기 하나로 모은다(같은 걸 두 번 구현 X).
  */

@@ -181,6 +181,7 @@ block, and the same skill layout — existing ones carry over unchanged.
 | [Full feature list](docs/features.en.md) | Everything not in the six above |
 | [Hooks](docs/hooks.en.md) | Observe or block tool calls — Claude Code `hooks` format |
 | [LLM gateway](docs/gateway.en.md) | Use tiguclaw as the OpenAI-compatible backend for your own apps |
+| [Writing a plugin](docs/plugins.en.md) | Build a widget and a tool — the whole contract on one page |
 | [Security](docs/security.en.md) | What the assistant can reach, and what it asks before doing |
 | [Code map](docs/code-map.md) · [Core boundaries](docs/core-boundaries.md) | What lives where; boot, routing, permissions |
 | [Contributing](CONTRIBUTING.md) | How changes land |

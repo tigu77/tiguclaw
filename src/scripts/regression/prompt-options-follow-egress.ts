@@ -11,7 +11,7 @@
  *  ① egress 가 없으면 인입 클로저 **그대로**(래핑 0 = 회귀 0)
  *  ② 버튼을 그릴 수 있는 채널(`presentOptionsTo`)엔 버튼으로, 좌표까지 실려서
  *  ③ 못 그리는 채널엔 **텍스트(질문+번호 목록)** 로 — 아예 안 가는 것보단 낫다
- *  ④ 인입이 없어도(스케줄·워커 완료 같은 서버 생성 턴) egress 만으로 물을 수 있다
+ *  ④ 인입이 없어도(스케줄·매니저 완료 같은 서버 생성 턴) egress 만으로 물을 수 있다
  *  ⑤ 일부 실패해도 한 곳이라도 갔으면 ok(도구가 중복 렌더 안 하게) · 전부 실패면 ok:false
  *  ⑥ ★index.ts 가 실제로 그 클로저를 route 입력에 싣는다(배선 린트 — 안 실으면 위 전부 죽은 코드)
  *  ⑦ ★telegram 이 ctx 없이 **좌표만으로** 버튼을 그린다(이게 없으면 텔레그램은 늘 텍스트 폴백)
@@ -124,7 +124,7 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
-  // ── ④ 인입이 없어도 egress 만으로 물을 수 있다(스케줄·워커 완료 턴) ────────
+  // ── ④ 인입이 없어도 egress 만으로 물을 수 있다(스케줄·매니저 완료 턴) ────────
   {
     let asked = 0;
     const wrapped = withEgressPromptOptions(
@@ -145,7 +145,7 @@ const run = async (): Promise<Assertion[]> => {
     );
     const r = wrapped === undefined ? null : await wrapped("q", OPTIONS);
     out.push({
-      name: "★인입 채널이 없는 턴(스케줄·워커)도 egress 로 물을 수 있다",
+      name: "★인입 채널이 없는 턴(스케줄·매니저)도 egress 로 물을 수 있다",
       ok: wrapped !== undefined && asked === 1 && r?.ok === true,
       got:
         wrapped === undefined

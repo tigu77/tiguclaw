@@ -251,7 +251,7 @@ export interface TurnDonePayload {
 // 귀속 휴리스틱: 한 턴에 여러 스킬 → 그 턴 결과를 invoke 된 스킬 *전부* 에 귀속.
 // suggester 라 OK — Phase 2 가 집계(성공률)로 정제. 윈도에 스킬 0개면 no-op.
 // 메타재귀: 읽기(getRecentSkillInvocations)+upsert(recordSkillOutcome)만 — 새 이벤트
-// 발행 0이라 자기입력 루프 신규 위험 0. 워커 턴(threadKey=worker:)도 그 스킬 사용은
+// 발행 0이라 자기입력 루프 신규 위험 0. 매니저 턴(threadKey=worker:)도 그 스킬 사용은
 // 유효하니 자연 포함(거버넌스 제외는 P2 제안 경로에만 적용, 결과 누적엔 무관).
 
 /** turn_done/turn_error 의 결과 상관 입력 — threadKey + durationMs + ok. */

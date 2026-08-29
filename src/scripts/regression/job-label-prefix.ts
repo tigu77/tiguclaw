@@ -3,7 +3,7 @@
  *
  * ★이 규칙엔 그물이 **하나도 없었다**(적대 검토 G축 ②). 접두가 두 번 붙거나(`📦 📦 작업`)
  *  에이전트로 승격됐는데 안 떨어져도 스위트는 초록이다 — **화면에서 눈으로만** 보인다.
- *  드로어에 워커와 서브에이전트가 섞여 있을 때 접두가 사실상 유일한 구분 단서라(모바일에선
+ *  드로어에 매니저와 서브에이전트가 섞여 있을 때 접두가 사실상 유일한 구분 단서라(모바일에선
  *  kind 배지가 다음 줄로 wrap 된다) 틀리면 바로 "이게 뭐였지" 가 된다.
  *
  * ★검사할 수 있게 하려고 판단을 **순수 함수로 뺐다**(`withKindPrefix`). 종전엔 갱신 루프
@@ -32,7 +32,7 @@ const sliceDefs = (src: string): string => {
 export const check: RegressionCheck = {
   name: "job-label-prefix",
   guards:
-    "워커/서브에이전트 라벨 접두(📦/🤖) 규칙에 그물이 0이라, 접두가 두 번 붙거나 에이전트 승격 때 안 떨어져도 스위트가 초록이던 것 — 드로어에서 둘을 가르는 사실상 유일한 단서다",
+    "매니저/서브에이전트 라벨 접두(📦/🤖) 규칙에 그물이 0이라, 접두가 두 번 붙거나 에이전트 승격 때 안 떨어져도 스위트가 초록이던 것 — 드로어에서 둘을 가르는 사실상 유일한 단서다",
   run: async (): Promise<Assertion[]> => {
     const src = await readFile(SRC, "utf8");
     const ctx: Record<string, unknown> = {};
@@ -53,7 +53,7 @@ export const check: RegressionCheck = {
         `접두=${JSON.stringify(P)}`,
       ),
       assert(
-        "★워커 라벨엔 접두가 붙는다",
+        "★매니저 라벨엔 접두가 붙는다",
         worker1 === `${P}정산`,
         `${JSON.stringify(worker1)} (기대 ${JSON.stringify(`${P}정산`)})`,
       ),
@@ -73,7 +73,7 @@ export const check: RegressionCheck = {
         `2회=${JSON.stringify(agent2)} · 무접두=${JSON.stringify(f("agent", "이름"))}`,
       ),
       assert(
-        "★접두로 시작하는 **사용자 문구**를 잘못 깎지 않는다(워커 경로)",
+        "★접두로 시작하는 **사용자 문구**를 잘못 깎지 않는다(매니저 경로)",
         f("worker", `${P}${P}x`) === `${P}${P}x`,
         JSON.stringify(f("worker", `${P}${P}x`)),
       ),

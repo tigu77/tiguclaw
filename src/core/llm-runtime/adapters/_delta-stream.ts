@@ -14,7 +14,7 @@
  *   (delta 는 보조 점증 렌더, 권위 전체본은 channel.message.out). 발행 실패해도
  *   turn·최종본은 그대로 진행.
  *
- * ★depth-0 가드: 서브에이전트/워커(depth>0) turn 의 토큰은 화면 버블 대상이 아니다
+ * ★depth-0 가드: 서브에이전트/매니저(depth>0) turn 의 토큰은 화면 버블 대상이 아니다
  *   (out 도 안 냄). 어댑터가 가드를 평가해 `enabled=false` 면 이 coalescer 는 no-op
  *   (push/flush 모두 무시) — 발행 비용 0, out↔버블 1:1 유지.
  *

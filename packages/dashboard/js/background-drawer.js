@@ -1,6 +1,6 @@
       // ── Step2/3 (2026-06-30) — 백그라운드 작업 드로어 + 잡 카드 + 스텝 타임라인 ──
       // worker.* lifecycle(Step1)로 잡 카드 생성·상태(payload.status: running/done/failed/
-      // cancelled). 워커 llm.activity(threadKey=worker:<jobId>)는 그 잡 카드 안 접이식
+      // cancelled). 매니저 llm.activity(threadKey=worker:<jobId>)는 그 잡 카드 안 접이식
       // 스텝으로(Step3) — 채팅으로 새지 않게 dispatch 에서 가로채 여기로 보낸다.
       // 토글 드로어(PC 우측 고정·모바일 슬라이드인+백드롭). 배지 = 실행 중 잡 수.
       const bgPanel = document.getElementById("bg-panel");
@@ -13,14 +13,14 @@
       if (chatBgActiveEl) chatBgActiveEl.addEventListener("click", () => { if (typeof openBg === "function") openBg(); });
 
       // ── 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) ─────────────────────────
-      // chat-bg-active(워커)와 물리적으로 분리된 별도 레인(사용자 확정 — 셸=다른 종). 세션
+      // chat-bg-active(매니저)와 물리적으로 분리된 별도 레인(사용자 확정 — 셸=다른 종). 세션
       // 스코프(runningScoped 패턴 동형) — shell.started.threadKey 가 활성 세션과 같은 running
       // 셸만 카운트. 누르면 셸 사이드바 뷰로 점프(택1 중 간단한 쪽 — 별도 팝오버 신설 안 함).
       const chatShellActiveEl = document.getElementById("chat-shell-active");
       // 셸 세션 스코프 판정. ★worker/서브가 띄운 셸의 threadKey 는 세션 좌표가 아니라 **잡 좌표**
       //  ("worker:<jobId>"/"agent:<jobId>")라 activeThreadKey 와 **절대** 안 맞는다(아래
       //  realSessionThreadKey 주석과 동일 근거). 종전 `tk === activeThreadKey` 단순 비교는 그런 셸을
-      //  영구히 숨겨, 워커가 띄운 dev 서버가 30분째 돌아도 "🖥️ 셸 N개 실행 중"이 안 뜨는 버그를 냈다
+      //  영구히 숨겨, 매니저가 띄운 dev 서버가 30분째 돌아도 "🖥️ 셸 N개 실행 중"이 안 뜨는 버그를 냈다
       //  (2026-07-26 실측). 잡 좌표면 원 세션으로 환원해 판정한다.
       // 셸 threadKey → **원 세션** threadKey 환원. 잡 좌표(worker:/agent:<jobId>)면 그 잡 카드가
       // 아는 원 세션으로, 이미 세션 좌표면 그대로. 모르면 ""(=소속 미상).
@@ -296,7 +296,7 @@
       };
       // ★잡 카드의 실제 응답 모델 (2026-07-27) — 채팅의 setTurnModel 과 같은 규칙:
       //  값 없으면 안 그린다(거짓값 금지) · 같은 값 반복은 no-op · 도중에 바뀌면 "이전→현재" 로
-      //  남긴다(폴백을 지우지 않는다). 워커·서브에이전트는 사용자가 안 보는 동안 도는 것이라
+      //  남긴다(폴백을 지우지 않는다). 매니저·서브에이전트는 사용자가 안 보는 동안 도는 것이라
       //  "어느 모델로 돌았나" 가 사후에 더 중요하다.
       const setJobModel = (entry, model) => {
         const m = typeof model === "string" ? model.trim() : "";
@@ -387,7 +387,7 @@
           if (card && card.stepsEl) {
             const stepEl = card.stepsEl.querySelector('.bg-step[data-seq="' + ap.seq + '"]');
             applyDurationBadge(stepEl, ap.durationMs);
-            // 워커 output(Bash/Read/Grep/Glob 등)은 자동 append 하지 않고(채팅 누수/컴팩트 유지)
+            // 매니저 output(Bash/Read/Grep/Glob 등)은 자동 append 하지 않고(채팅 누수/컴팩트 유지)
             // 스텝에 보관 + 펼침 affordance 만 배선 — on-demand 로만 buildOutputBlock 렌더.
             if (stepEl && ap.output) { stepEl._output = ap.output; ensureStepExpandable(stepEl); }
           }
@@ -662,12 +662,12 @@
         const parent = jobCards.get(id);
         return parent ? jobOwnerSession(parent.threadKey, s) : "";
       };
-      // 워커 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
+      // 매니저 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
       const WORKER_LABEL_PREFIX = "📦 ";
       /**
        * kind 에 맞는 라벨을 돌려준다 — **순수 함수**(2026-08-26).
        *
-       * 규칙: 워커면 접두를 붙이고, 에이전트면 뗀다. **멱등**이라 몇 번 불러도 같다.
+       * 규칙: 매니저면 접두를 붙이고, 에이전트면 뗀다. **멱등**이라 몇 번 불러도 같다.
        * ★함수로 뺀 이유는 미관이 아니라 **검사 가능성**이다 — 종전엔 이 판단이 갱신 루프
        *  한복판에 인라인으로 있어서 회귀가 부를 수가 없었고, 그래서 접두 규칙엔 그물이
        *  **하나도 없었다**(적대 검토 G축 ②). 접두가 두 번 붙거나 승격 때 안 떨어져도
@@ -727,7 +727,7 @@
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
           label.textContent = JOB_LABEL_FALLBACK; // 실제 값은 entry 생성 직후 setJobLabel 이 정한다.
-          // kind 배지(워커/서브에이전트) — status 뱃지와 별개 축. 기본은 워커 배지("📦 워커")를
+          // kind 배지(매니저/서브에이전트) — status 뱃지와 별개 축. 기본은 매니저 배지("📦 매니저")를
           // 항상 표시하고, lifecycle 로 서브에이전트로 승격되면 아래에서 텍스트를 교체(.agent 가 색 전환).
           const kindBadge = document.createElement("span"); kindBadge.className = "bg-job-kind";
           kindBadge.textContent = AGENT_KIND_BADGE.worker;
@@ -738,7 +738,7 @@
           const ago = document.createElement("span"); ago.className = "bg-job-ago";
           const st = document.createElement("span"); st.className = "bg-job-status";
           // 기본 상태 텍스트 — 활동(activity)으로만 생성된 카드(대시보드가 worker.started 를
-          // 놓친 경우: 워커 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
+          // 놓친 경우: 매니저 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
           // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
           st.textContent = BG_STATUS.running;
           // 중지 버튼 — running 이면 노출(worker·agent 무관, U-I4 개정; updateStopBtn 이 켜고/끔).
@@ -894,8 +894,8 @@
           }
         }
         // 서브에이전트 마킹(멱등) — lifecycle(kind:"agent")이 활동보다 먼저/나중 어느 쪽으로 와도
-        // 카드를 서브로 승격. 배지 텍스트를 워커→서브에이전트로 교체(.agent 클래스가 색 전환).
-        // 워커(kind 미지정/"worker")는 기본 워커 배지 그대로 유지.
+        // 카드를 서브로 승격. 배지 텍스트를 매니저→서브에이전트로 교체(.agent 클래스가 색 전환).
+        // 매니저(kind 미지정/"worker")는 기본 매니저 배지 그대로 유지.
         if (opts && opts.kind === "agent" && entry.kind !== "agent") {
           entry.kind = "agent";
           entry.el.classList.add("agent");
@@ -908,7 +908,7 @@
           const want = "🤖 " + opts.agentName;
           if (entry.label !== want) setJobLabel(entry, want);
         }
-        // 모델 티어(멱등) — 워커·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.
+        // 모델 티어(멱등) — 매니저·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.
         // lifecycle 이 실어 오면(먼저/나중 무관) entry.modelTier 저장 + 드로어 칩 갱신. 에이전트 뷰는 renderAgentsView 가 읽음.
         if (opts && opts.modelTier != null && String(opts.modelTier).trim() !== "" && String(opts.modelTier).trim().toLowerCase() !== "default") {
           const tier = String(opts.modelTier).trim();
@@ -955,8 +955,8 @@
         // 실행 cwd(멱등) — worker.started 가 실어 옴. 프로젝트 상세가 이걸로 필터/귀속.
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
         if (opts && opts.label && !entry.hasLabel) setJobLabel(entry, String(opts.label));
-        // 라벨 kind 접두 (2026-07-26) — 서브에이전트는 위에서 "🤖 <name>" 으로 쓰는데 워커는
-        // 접두가 없어 비대칭이었다. 워커도 "📦 <작업>" 으로 맞춰, 드로어에 워커·서브가 섞여
+        // 라벨 kind 접두 (2026-07-26) — 서브에이전트는 위에서 "🤖 <name>" 으로 쓰는데 매니저는
+        // 접두가 없어 비대칭이었다. 매니저도 "📦 <작업>" 으로 맞춰, 드로어에 매니저·서브가 섞여
         // 있을 때 **이름만 보고** 구분되게 한다. 특히 모바일에선 kind 배지가 다음 줄로 wrap
         // 되므로(.bg-job-top flex-wrap) 라벨 접두가 사실상 유일한 구분 단서다.
         // 멱등 — 이미 붙었으면 재적용 0. agent 로 승격되면 위(agentName 분기)가 라벨을 통째
@@ -1048,7 +1048,7 @@
         scheduleProjectAgentsRender(); // 프로젝트 상세 열려 있으면 그 프로젝트 카드도 라이브 반영.
       };
       // Step3 — 백그라운드 잡 활동(threadKey=worker:<jobId> | agent:<jobId>)을 그 잡 카드 안
-      // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(워커·서브 동일 격리). 서브 규약(ADR
+      // 스텝으로. true=처리됨 → 메인 채팅 로그로 안 샘(매니저·서브 동일 격리). 서브 규약(ADR
       // 2026-07-03): prefix 만 worker:→agent: 로 다르고 payload 구조 동형. agent: 로 온 활동은
       // 카드를 서브로 마킹(lifecycle 보다 활동이 먼저 도착해도 배지 표시).
       // 잡 카드 스텝 on-demand 펼침 — 기본은 컴팩트 한 줄(채팅 누수 차단 유지), diff/output 이
@@ -1080,7 +1080,7 @@
       };
 
       // ── 부팅 하이드레이션 — 실행 중 잡을 서버(GET /api/worker-jobs = in-memory listJobs)에서
-      // 받아 카드 복원. 긴 워커의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시
+      // 받아 카드 복원. 긴 매니저의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시
       // activity-only 카드라 라벨이 "(작업)"으로 뜨던 문제를 label·kind·task 복원으로 해소.
       // handleWorkerEvent 재사용(멱등 ensureJobCard — SSE 와 중복돼도 같은 jobId=같은 카드).
       // 원 세션 미상 카드를 위한 **디바운스 백필** — 카드가 연달아 생겨도 fetch 는 1회.
@@ -1321,7 +1321,7 @@
         // 실제 모델 — dedup(아래) *앞*에서 반영한다. 재전송된 스텝이라도 모델 정보는 유효하고,
         //  폴백이 늦은 스텝에서 일어나면 그 스텝이 dedup 에 걸려도 전환은 남아야 한다.
         setJobModel(entry, p.model);
-        // ★dedup — SSE replay(새로고침 시 재연결) 가 버퍼 이벤트를 재전송하면 같은 워커 스텝이
+        // ★dedup — SSE replay(새로고침 시 재연결) 가 버퍼 이벤트를 재전송하면 같은 매니저 스텝이
         // 매번 다시 append 돼 "무한 반복"처럼 보였다(2026-07-03 실측). seq(어댑터 단조) 로 판정,
         // seq 없으면 label␟detail 로 폴백. 이미 그린 스텝이면 건너뛴다.
         const stepKey = p.seq != null ? "s" + p.seq : (p.label || "") + "␟" + (p.detail || "");

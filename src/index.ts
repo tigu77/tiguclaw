@@ -252,7 +252,7 @@ void repairRipgrepAtBoot(getPaths().home);
 console.log("tiguclaw daemon: starting");
 
 // ── event-loop wedge 진단 (2026-07-03, gated: LOOP_DIAG=1) ──────────────────
-// 데몬이 워커 실행 중 응답불능(wedge)되는 원인 규명용. event-loop lag(타이머 드리프트)
+// 데몬이 매니저 실행 중 응답불능(wedge)되는 원인 규명용. event-loop lag(타이머 드리프트)
 // + active handles/requests 수 + rss 를 주기 로그 → 누수(handles 단조 증가) vs 블록
 // (lag 급증 후 로그 멈춤) 판별. 평시 off, 디버깅 시만 켠다.
 if (process.env.LOOP_DIAG === "1") {
@@ -648,7 +648,7 @@ const publishInboundEcho = (
   //
   //  스킵의 의도는 옳았다(스캐폴딩 텍스트가 "나(user)" 버블로 새면 안 된다). 문제는 그
   //  하나의 이벤트가 **두 가지 일**을 하고 있었다는 것 — ①버블을 그린다 ②진행 표시를 켠다.
-  //  버블을 막으려고 이벤트를 통째로 끄니 진행 표시까지 같이 꺼졌고, 워커가 끝나고 메인이
+  //  버블을 막으려고 이벤트를 통째로 끄니 진행 표시까지 같이 꺼졌고, 매니저가 끝나고 메인이
   //  결과를 맥락 입혀 정리하는 **가장 긴 구간**이 화면상 완전한 공백이 됐다(사용자 버블도
   //  없고 작업중도 없고, 결과가 뜰 때까지 아무것도 안 바뀜).
   //
@@ -747,9 +747,9 @@ const fanOutEgress = async (
  * 이제 메인 턴이 답변 꼬리에 `<next-message>` 로 같이 뱉고, 코어가 한 곳에서 뜯는다 —
  * 남은 비용은 출력 토큰 스무 개 남짓이고, 데드라인·폴백·프로파일 배관이 통째로 사라졌다.
  *
- * ★여기 남은 판단은 **보여줄 자리인가** 하나뿐이다: 파생 스레드(스케줄러·워커·엔드포인트)
+ * ★여기 남은 판단은 **보여줄 자리인가** 하나뿐이다: 파생 스레드(스케줄러·매니저·엔드포인트)
  *  는 사람이 보는 세션이 아니다. `synthetic` 검사는 **뺐다** — 사용자 지정이 바뀌었다:
- *  *"메인턴이 응답을 보낼 때마다"* (2026-08-25). 워커 완료 정리 턴도 메인 턴이다.
+ *  *"메인턴이 응답을 보낼 때마다"* (2026-08-25). 매니저 완료 정리 턴도 메인 턴이다.
  */
 /**
  * 이미 경고한 프로파일 이름 — 같은 warn 을 매 턴 찍으면 배경소음이 되고, 배경소음은
@@ -775,7 +775,7 @@ const maybeSuggestNextMessage = (
 };
 
 const handler: MessageHandler = async (msg) => {
-  // 내부 기원 합성 turn(워커 done 재주입 등)은 인바운드 관측 발행을 스킵 — 합성 텍스트는
+  // 내부 기원 합성 turn(매니저 done 재주입 등)은 인바운드 관측 발행을 스킵 — 합성 텍스트는
   // 내부 스캐폴딩(buildCompletionPrompt)이라 대시보드 chat_log 에 "나(user)"로 새면 안 된다.
   // 라우팅·발송 등 나머지 처리는 실 인바운드와 동일. 아웃바운드 관측은 아래 성공분기 단일 발행.
   // ★휘발성 명령은 **인바운드도** 안 남긴다 (2026-08-23 적대 검토 D-2). 종전엔 응답만
@@ -831,8 +831,8 @@ const handler: MessageHandler = async (msg) => {
     );
     return;
   }
-  // `/agents` — 진행 중인 백그라운드 작업(워커+서브에이전트) 요약. 채널 입구 fast-path
-  // (LLM 턴 0, 즉답·무료·결정적). 서브·워커 통합 잡 모델(kind) 기반 — listJobs 단일 소스.
+  // `/agents` — 진행 중인 백그라운드 작업(매니저+서브에이전트) 요약. 채널 입구 fast-path
+  // (LLM 턴 0, 즉답·무료·결정적). 서브·매니저 통합 잡 모델(kind) 기반 — listJobs 단일 소스.
   // 원칙 4: 상태 조회를 모델에게 안 시킴(원칙 1 슈퍼셋의 사용자-driven 갈래).
   if (trimmed === "/agents") {
     const running = listJobs({ runningOnly: true });
@@ -845,12 +845,12 @@ const handler: MessageHandler = async (msg) => {
     // 분 단위 나눗셈을 했고, 그러면 한 곳만 늙는다(`reset-time-is-readable` 가 잡으려던 바로
     // 그 부류). 시간 단위도 여기서 같이 얻는다(2시간짜리 잡이 "125분째" 로 보이던 것).
     const fmtElapsed = (startedAt: number): string => `${formatDurationKo(now - startedAt)}째`;
-    // 최신 먼저(listJobs 가 startedAt 내림차순). 워커/서브 구분 라벨.
+    // 최신 먼저(listJobs 가 startedAt 내림차순). 매니저/서브 구분 라벨.
     const lines = running.map((j) => {
       const icon = j.kind === "agent" ? "🤖" : "📦";
       const kindLabel = j.kind === "agent" ? "서브에이전트" : "매니저";
       const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
-      // 모델 티어 표시(low/mid/high 등) — 워커·서브 공통. modelTier 있고 default/빈값 아닐 때만.
+      // 모델 티어 표시(low/mid/high 등) — 매니저·서브 공통. modelTier 있고 default/빈값 아닐 때만.
       const tier =
         j.modelTier !== undefined &&
         j.modelTier !== "" &&
@@ -1745,7 +1745,7 @@ const handler: MessageHandler = async (msg) => {
   //  여기선 "켠다/끈다"만. egressChannels 없으면 배열이 비어 전부 no-op(회귀 0).
   // ★egress 채널 = **서버 설정**(전역) ∪ 이 메시지가 실어온 것.
   //  종전엔 브라우저가 매 전송에 실어보내는 것뿐이라, 서버가 스스로 만드는 발화
-  //  (워커 완료 재주입·스케줄·파일감시)는 사용자가 켠 걸 몰라 fan-out 을 못 탔다.
+  //  (매니저 완료 재주입·스케줄·파일감시)는 사용자가 켠 걸 몰라 fan-out 을 못 탔다.
   //  실사고(2026-08-10): 몇 시간짜리 매니저 완료가 텔레그램으로 안 왔다 — 정작 그
   //  자리에 없을 확률이 가장 높은 경우다. 설정을 서버에 두니 **모든 발화가 같은 규칙**
   //  을 얻는다(합성 메시지에 플래그를 일일이 실어 나르는 배관이 아니라).
@@ -1805,7 +1805,7 @@ const handler: MessageHandler = async (msg) => {
     steeringChannels.set(msg.threadKey, steeringCh);
   }
   // 세션 정규화 지시(채널/세션 분리 ADR 2026-07-15) — 사용자 대면 채널이 msg.session 을
-  // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·워커 재주입·
+  // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·매니저 재주입·
   // 서브에이전트·엔드포인트 등 내부 파생 turn)이면 forward 안 함 = 현행 passthrough(회귀 0).
   const routeP = route(
     {
@@ -1983,11 +1983,11 @@ const handler: MessageHandler = async (msg) => {
   }
 };
 
-// 백그라운드 워커 — thread 별 turn 직렬 큐로 채널 핸들러 래핑 (architect §4, W-I4).
-// 현 핸들러엔 turn 직렬화 락이 없어, 워커 완료-turn 재주입이 유저 interim 메시지와 같은
+// 백그라운드 매니저 — thread 별 turn 직렬 큐로 채널 핸들러 래핑 (architect §4, W-I4).
+// 현 핸들러엔 turn 직렬화 락이 없어, 매니저 완료-turn 재주입이 유저 interim 메시지와 같은
 // thread 의 세션 resume 을 동시에 건드리면 race. enqueueThreadTurn(threadKey, …) 가
 // threadKey 별로 직렬화(전역 락 아님 — 다른 thread 병렬). 같은 thread 단일 스트림인
-// 일반 동작은 회귀 0(앞 turn 없으면 즉시 실행). 워커 완료 재주입(onWorkerComplete)도
+// 일반 동작은 회귀 0(앞 turn 없으면 즉시 실행). 매니저 완료 재주입(onWorkerComplete)도
 // 같은 큐에 합류해 race 0.
 // ── 재시작 단일 진실 소스 ────────────────────────────────────────────────
 // 텔레그램 /restart(B)·대시보드 버튼(A, control.restart)·자가업데이트(/update·도구) 모두
@@ -2135,7 +2135,7 @@ bus.subscribe((event) => {
 // mid-turn steering 개입 판정(ADR 2026-07-16 §5) — steer 대상 = 일반 사용자 대화 메시지만.
 //  - 슬래시(`/…`)는 제어 명령(out-of-band /stop·/restart·/update 는 위에서 이미 처리, in-band
 //    /clear·/model 등은 큐로) → steering 대상 아님.
-//  - 합성(synthetic) turn(워커 완료 재주입 등)은 사용자 메시지가 아니고 자체 프롬프트를 turn 으로
+//  - 합성(synthetic) turn(매니저 완료 재주입 등)은 사용자 메시지가 아니고 자체 프롬프트를 turn 으로
 //    처리해야 하므로 제외(steering 으로 새면 완료 통지 유실) — publishInboundEcho 스킵 대상과 정합.
 const steerable = (msg: IncomingMessage): boolean =>
   msg.synthetic !== true && !msg.text.trim().startsWith("/");
@@ -2342,7 +2342,7 @@ const shutdown = async (signal: string): Promise<void> => {
   //  종전엔 레지스트리 주석만 "재시작 정직" 이라고 적혀 있었고 알리는 코드는 없었다. 그래서
   //  배포 재시작이 사용자 턴을 죽였을 때 사용자는 **그냥 답이 안 오는 것**으로 겪었다
   //  (00:10:42 질문 → 00:13:22 재시작 → 7분 뒤 "응답이 없다" 신고).
-  //  워커 잡은 이미 부팅 복구가 "데몬 재시작으로 중단" 을 통지한다(recoverInterruptedJobs).
+  //  매니저 잡은 이미 부팅 복구가 "데몬 재시작으로 중단" 을 통지한다(recoverInterruptedJobs).
   //  메인 턴만 없었다 — 그 비대칭을 없앤다.
   //  ★채널 stop() **전에** 해야 한다(아래에서 채널이 닫히면 발송 경로가 사라진다).
   //  발송 실패는 삼킨다 — 통지 실패가 종료를 막으면 안 된다(force-exit 백스톱 1500ms).
@@ -2502,7 +2502,7 @@ for (const ch of channels) {
   setChannelPresence(presence);
 }
 
-// 재시작으로 중단된 백그라운드 워커를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).
+// 재시작으로 중단된 백그라운드 매니저를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).
 await recoverInterruptedJobs();
 
 // 백그라운드 셸(file-ops run_in_background) 부팅 reaper — ADR 2026-07-17 §4, Unit 1
@@ -2510,7 +2510,7 @@ await recoverInterruptedJobs();
 // detached 셸이 `daemon:restart`(kickstart -k) 잡그룹 이탈·hard-kill·크래시·전원상실로
 // 살아남았을 수 있는 고아를 PID 재사용 신원검증 후 정리한다(killAllBgShells 의 graceful
 // 경로가 못 미친 나머지 절반). never-throw(내부 완전 격리) — await 실패해도 부팅 불가 X.
-// 통지 없음(셸은 사용자 통지 대상 아님, ADR §4 — 워커와 달리 조용히 reap). 사용자 turn 처리
+// 통지 없음(셸은 사용자 통지 대상 아님, ADR §4 — 매니저와 달리 조용히 reap). 사용자 turn 처리
 // 시작 전(채널 start 이후) 실행 — 신규 셸이 아직 없어 status='running' 잔류=전부 이전 세대.
 try {
   const { reapPreviousGeneration } = await import(

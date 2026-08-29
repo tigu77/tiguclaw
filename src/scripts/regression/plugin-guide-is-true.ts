@@ -200,6 +200,44 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ⑦ 좌표 형식이 **실행값과 같다** (3라운드 G-4) ───────────────────────
+    // ★`pluginThreadKey` 의 반환 형식을 바꾼 커밋이 그걸 설명하는 **JSDoc 2 + 양문 가이드
+    //  2** 를 안 고쳐 넷이 거짓이 됐다. 그리고 **같은 커밋이 이 게이트를 강화하면서 그 넷을
+    //  하나도 안 봤다.** 기계적으로 검증 가능한 축이었는데 사람이 지키고 있었다.
+    const { pluginThreadKey } = await import("../../core/plugins/host.js");
+    const sample = pluginThreadKey("weather", "seoul"); // 예: plugin:weather:seoul
+    const shape = sample.split(":")[0] ?? "";           // 접두사만 뽑는다
+    const claims: Array<[string, string]> = [
+      ["host.ts JSDoc", hostTs],
+      ["가이드(한)", guide],
+      ["가이드(영)", existsSync(enPath) ? readFileSync(enPath, "utf8") : ""],
+    ];
+    // ★**문장마다** 본다 — 파일 어딘가에 옳은 문장이 하나 있으면 통과하던 게 종전이고,
+    //  그래서 JSDoc 한 줄만 낡아도 안 잡혔다(실측). 좌표를 설명하는 인용문을 **전부** 뽑아
+    //  각각이 실제 접두사를 담는지 확인한다.
+    const COORD = /`[^`]*<(?:plugin|플러그인|이름|name)[^`]*>:<scope>`/g;
+    // ★**과거 서술은 대상이 아니다.** 이 레포는 "종전엔 이랬다" 를 주석에 남기는 게
+    //  규범인데(그게 다음 사람의 판단 재료다), 첫 판은 그걸 낡은 주장으로 잡았다 —
+    //  실행 즉시 오탐 하나가 났다. 검사 대상은 **지금 그렇다고 말하는 문장**뿐이다.
+    const PAST = /(종전|이전|예전|였는데|였다|이었다|was |formerly|before |used to)/;
+    const stale: string[] = [];
+    for (const [label, src] of claims) {
+      if (src === "") continue;
+      for (const line of src.split("\n")) {
+        if (PAST.test(line)) continue;
+        for (const m of line.matchAll(COORD)) {
+          if (!m[0].startsWith(`\`${shape}:`)) stale.push(`${label}: ${m[0]}`);
+        }
+      }
+    }
+    out.push(
+      assert(
+        `★★좌표 형식을 **설명하는 곳**이 실행값과 같다(지금 \`${sample}\`) — 형식을 바꾼 커밋이 그걸 설명하는 네 곳을 안 고쳐 전부 거짓이 됐고, 그 커밋이 이 게이트를 강화하면서도 그 넷을 안 봤다`,
+        stale.length === 0,
+        stale.length === 0 ? `실행값 ${sample} · 설명문 전부 일치` : `★낡음: ${stale.join(" / ")}`,
+      ),
+    );
+
     return out;
   },
 };

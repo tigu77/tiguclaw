@@ -137,6 +137,10 @@ const resolveStartHook = <A>(
  * 플러그인 하나를 배선한다. **이 함수는 던지지 않는다** — 자기 예외를 자기가 삼키고
  * `skipped` 에 이유를 남긴다(호출자 루프가 다음 플러그인으로 간다).
  */
+/** 채널 배선이 쓰는 이름 규칙과 **같은 것**을 쓴다(두 곳이 다르면 중복 제거가 헛돈다). */
+const channelNameOf = (lp: LoadedPlugin, inst: PluginInstance): string =>
+  typeof inst.name === "string" ? inst.name : lp.manifest.name;
+
 export const wirePlugin = async (
   lp: LoadedPlugin,
   deps: WirePluginDeps,
@@ -389,14 +393,18 @@ export const wirePlugin = async (
         //  *"끔"* 이 뜨고 목록에서 사라지는데 **cron 은 계속 돌아 계속 발화했다**(실측:
         //  dispose 전 tick 4 → 후 9). 번들 `scheduler`·`file-watch` 가 둘 다 `trigger` 이고
         //  `stop()` 을 구현해 뒀는데 그게 한 번도 안 불렸다.
-        // ★**플러그인당 한 번만** 넣는다 (2026-08-29, 2라운드 P-2). `stop` 등록이
-        //  capability 루프 안에 있어서, `kind:["channel","observer"]` 인 `http-bridge` 나
-        //  다중 선언 플러그인은 `stop()` 을 **N번** 받았다(실측 2·3회). 지금은 번들 둘이
-        //  멱등이라 피해가 0이지만, 계약이 조용히 "capability 당 1회" 로 바뀌었고
-        //  `dispose` 의 `catch {}` 가 사유를 삼켜 서드파티가 던져도 무음이다.
+        // ★**플러그인당 한 번만** `stop()` 을 받는다 (2026-08-29, 2R P-2 · 3R G-5).
+        //
+        //  등록이 capability 루프 안에 있어서 다중 선언 플러그인은 `stop()` 을 **N번**
+        //  받았다(실측 2·3회). 2라운드에서 `serviceStops` 안의 중복만 막았는데, **그건
+        //  내가 예시로 든 실물을 안 고쳤다** — `http-bridge`(`kind:["channel","observer"]`)
+        //  의 2회는 `channels` 와 `serviceStops` **두 배열**에서 오기 때문이다(3라운드가
+        //  실측으로 잡았다: 고친 뒤에도 여전히 2회).
+        // ★그래서 **두 배열을 다 본다.** 이미 어느 쪽에 등록됐으면 다시 안 넣는다.
         if (
           typeof inst.stop === "function" &&
-          !serviceStops.some((x) => x.name === lp.manifest.name)
+          !serviceStops.some((x) => x.name === lp.manifest.name) &&
+          !channels.some((c) => c.name === channelNameOf(lp, inst))
         ) {
           undo.push(async () => {
             const i = serviceStops.findIndex((x) => x.name === lp.manifest.name);

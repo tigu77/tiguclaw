@@ -270,6 +270,34 @@ export const check: RegressionCheck = {
         await r.dispose();
         if (stopped !== 1) notStopped.push(`${kind}(${String(stopped)}회)`);
       }
+      // ★**다중 선언 플러그인은 한 번만** 받는다 (3라운드 G-5). 종전엔 `serviceStops`
+      //  안의 중복만 막아서, `kind:["channel","observer"]` 인 실물 `http-bridge` 는
+      //  `channels`+`serviceStops` **두 배열**에서 와 여전히 2회였다 — 내가 예시로 든
+      //  바로 그 플러그인이 안 고쳐진 것을 3라운드가 실측으로 잡았다.
+      let multi = 0;
+      const mDeps = freshDeps();
+      const mr = await wirePlugin(
+        fakePlugin("multi-stop", ["channel", "observer"], {
+          name: "multi-stop",
+          startChannel: async (): Promise<void> => undefined,
+          startObserver: async (): Promise<void> => undefined,
+          stop: async (): Promise<void> => {
+            multi += 1;
+          },
+        }),
+        mDeps,
+      );
+      for (const c of mDeps.channels) await c.stop();
+      for (const x of mDeps.serviceStops) await x.stop();
+      out.push(
+        assert(
+          "★★여러 역할을 겸한 플러그인도 **`stop()` 을 한 번만** 받는다 — 종전엔 `channels`·`serviceStops` 두 배열에서 각각 와 2회였다(번들 `http-bridge` 가 그 모양이다). 멱등하지 않은 서드파티 `stop()` 이면 두 번째가 던지고 `dispose` 의 `catch {}` 가 사유를 삼킨다",
+          multi === 1,
+          `${String(multi)}회 (channels=${String(mDeps.channels.length)} serviceStops=${String(mDeps.serviceStops.length)})`,
+        ),
+      );
+      void mr;
+
       out.push(
         assert(
           "★★`trigger`·`observer`·`service` 를 끄면 **셋 다 `stop()` 이 불린다** — 종전엔 `service` 만이라, 번들 스케줄러를 꺼도 cron 이 계속 발화했다(사용자에겐 '껐다' 고 보이는데 알림이 계속 온다)",

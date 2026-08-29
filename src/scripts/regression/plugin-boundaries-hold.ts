@@ -27,7 +27,8 @@
  *
  * 등급: 전부 **동작**(순수 함수 실행 + 진짜 `wirePlugin` 배선).
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isValidPluginName } from "../../core/plugins/loader.js";
@@ -101,21 +102,36 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ── ④ 가드가 **이름이 쓰이는 곳**에 걸려 있다 (2라운드 P-1) ─────────────
-    // ★순수 함수만 검사하면 이 축이 안 보인다. 실측으로 `loadPlugins` 엔 가드가 있는데
-    //  `scanPluginManifests` 엔 없어서, `../../ESCAPED` 가 대시보드 목록에 뜨고
-    //  **홈 밖에 `settings.json` 을 만들었다**(실측). 진입점 하나만 막으면 다른 문으로
-    //  들어온다 — 가드는 그 값이 **쓰이는 곳**에 건다.
-    const loaderSrc = readFileSync(
-      path.join(REPO, "src/core/plugins/loader.ts"),
-      "utf8",
-    );
-    const guards = loaderSrc.split("isValidPluginName(m.name)").length - 1;
+    // ── ④ 가드가 **이름이 쓰이는 곳**에 걸려 있다 (2R P-1 · 3R G-3) ─────────
+    // ★종전엔 `loader.ts` 에 `isValidPluginName(m.name)` 이라는 **글자가 두 번 나오나**를
+    //  셌다. 그래서 가드는 두고 `continue` 만 지우거나, 같은 조건을 두 번 쓰는 것만으로도
+    //  통과했다(3라운드 실측). 이제 **진짜로 스캔해 본다** — 임시 루트에 나쁜 이름 매니페스트를
+    //  두고 `scanPluginManifests` 가 그걸 안 주는지.
+    const dir = mkdtempSync(path.join(tmpdir(), "regr-name-"));
+    const put = (folder: string, name: string): void => {
+      const d = path.join(dir, folder);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        path.join(d, "package.json"),
+        JSON.stringify({
+          name: folder,
+          version: "1.0.0",
+          tiguclaw: { schemaVersion: 1, kind: "service", name, entry: "index.js" },
+        }),
+      );
+      writeFileSync(path.join(d, "index.js"), "export default class {}");
+    };
+    put("escape", "../../ESCAPED");
+    put("upper", "BadName");
+    put("good", "good-one");
+    const { scanPluginManifests } = await import("../../core/plugins/loader.js");
+    const scanned = (await scanPluginManifests(dir)).map((x) => x.manifest.name).sort();
+    rmSync(dir, { recursive: true, force: true });
     out.push(
       assert(
-        "★★이름 가드가 **두 진입점 모두**에 있다(`loadPlugins` + `scanPluginManifests`) — 후자는 대시보드 목록과 설정 쓰기가 타는 경로라, 여기가 비면 로드도 안 되는 플러그인이 목록에 뜨고 그 설정이 홈 밖에 쓰인다(실측)",
-        guards >= 2,
-        `호출 ${String(guards)}곳`,
+        "★★나쁜 이름은 **스캔 단계에서** 안 나온다 — 대시보드 목록과 설정 쓰기가 이 결과를 그대로 쓴다. 실측으로 `../../ESCAPED` 가 목록에 뜨고 **홈 밖에 settings.json 을 만들었다**",
+        scanned.join(",") === "good-one",
+        `스캔 결과 [${scanned.join(", ")}] (기대 [good-one])`,
       ),
     );
 

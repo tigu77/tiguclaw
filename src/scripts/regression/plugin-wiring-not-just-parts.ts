@@ -105,7 +105,12 @@ export const check: RegressionCheck = {
       // find_capabilities 목록에도
       ["활성 목록에도", /capabilityActiveNames = Object\.keys\(\{[\s\S]{0,300}?\.\.\.mcpServersWithPlugins,/.test(claude)],
       // 충돌은 말한다
-      ["충돌 통지", /warnShadowedOnce\(pluginMcp\.shadowed\)/.test(claude)],
+      // ★**조건까지 본다** (3라운드 G-2). 호출문만 보면 `> 99` 같은 도달 불가 조건으로
+      //  바꿔도 통과한다(실측). "하나라도 떨어뜨렸으면 말한다" 가 지켜야 할 성질이다.
+      [
+        "충돌 통지",
+        /if \(pluginMcp\.shadowed\.length > 0\) warnShadowedOnce\(pluginMcp\.shadowed\)/.test(claude),
+      ],
     ];
     const broken = wiring.filter(([, ok]) => !ok).map(([n]) => n);
     out.push(
@@ -124,7 +129,13 @@ export const check: RegressionCheck = {
       [...declared.matchAll(/"([a-z-]+)"/g)].map((m) => m[1] ?? ""),
     );
     // 최종 리터럴에서 `...mcpServersWithPlugins` **뒤에** 등장하는 서버 키들
-    const tail = claude.split("...mcpServersWithPlugins,")[1]?.slice(0, 1800) ?? "";
+    // ★`...mcpServersWithPlugins,` 는 파일에 **두 번** 나온다(활성목록·최종 리터럴).
+    //  종전엔 `[1]` 을 써서 **그 둘 사이의 무관한 코드**를 읽었고, `actual` 이 **항상 빈
+    //  집합**이라 무엇을 넣거나 빼도 통과했다(3라운드 G-1: 목록에서 `todo` 를 빼도 초록).
+    //  마지막 조각이 최종 리터럴이다. 그리고 **빈손이면 실패**시킨다 — 아무것도 못 읽은
+    //  검사가 초록인 게 이 결함의 형태였다([[feedback_gate_must_actually_run]]).
+    const parts = claude.split("...mcpServersWithPlugins,");
+    const tail = (parts.at(-1) ?? "").slice(0, 1800);
     const actual = new Set(
       [...tail.matchAll(/^\s+"?([a-z][a-z-]+)"?: create[A-Z]/gm)].map((m) => m[1] ?? ""),
     );
@@ -132,14 +143,43 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★★후발 코어 서버 목록이 **실물과 같다** — 뒤에 붙는 코어 키를 빠뜨리면 그 이름의 플러그인이 충돌로 안 잡히고, 코어에 덮여 사라지는데, `find_capabilities` 는 그걸 계속 광고한다(실측된 형태)",
-        missing.length === 0 && declaredSet.size > 0,
-        declaredSet.size === 0
+        missing.length === 0 && declaredSet.size > 0 && actual.size > 0,
+        actual.size === 0
+          ? "★실물을 한 글자도 못 읽었다(정규식이 헛돈다)"
+          : declaredSet.size === 0
           ? "★목록을 못 찾음"
           : missing.length === 0
             ? `선언 [${[...declaredSet].join(", ")}] · 실물 [${[...actual].join(", ")}]`
             : `★목록에 없음: ${missing.join(", ")}`,
       ),
     );
+
+    // ── ⑤ 충돌 경고가 **로그에 닿는다** (3라운드 G-2) ───────────────────────
+    // ★종전엔 `describeShadowed` 의 **문자열 내용**만 검사했다. 그래서 호출 조건을
+    //  도달 불가로 바꾸거나(`> 99`) 함수 본문을 `void` 로 비워도 통과했다 — *"조용히
+    //  떨어뜨리지 않는다"* 가 이 변경의 **명시 목표**인데 그걸 지키는 강제가 0이었다.
+    //  이제 실제로 `console.warn` 을 가로채 **한 줄이 나오는지** 본다.
+    {
+      const { warnShadowedOnce } = await import("../../core/llm-runtime/plugin-mcp-merge.js");
+      const orig = console.warn;
+      const lines: string[] = [];
+      console.warn = (...a: unknown[]): void => {
+        lines.push(a.map(String).join(" "));
+      };
+      try {
+        // ★이름을 매번 바꾼다 — 1회 가드가 모듈 전역 Set 이라 같은 조합은 두 번째부터 안 찍힌다.
+        warnShadowedOnce([`regr-shadow-${String(Date.now())}`]);
+      } finally {
+        console.warn = orig;
+      }
+      out.push(
+        assert(
+          "★★코어와 겹쳐 떨어뜨린 것이 **실제로 로그에 나온다** — 이 변경의 명시 목표가 *조용히 떨어뜨리지 않는다* 인데, 종전 검사는 문자열 **내용**만 봐서 그 문장이 로그에 **닿는지**는 아무도 안 봤다(호출을 도달 불가로 만들거나 함수를 비워도 초록이었다)",
+          lines.length === 1 && lines[0]?.includes("이름이 겹쳐") === true,
+          lines.length === 0 ? "★한 줄도 안 나왔다" : `${String(lines.length)}줄 · "${(lines[0] ?? "").slice(0, 44)}…"`,
+        ),
+      );
+    }
 
     return out;
   },

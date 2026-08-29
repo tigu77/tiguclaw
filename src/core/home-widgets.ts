@@ -17,9 +17,12 @@
  *  병합으로 하면, 프로젝트 `.tiguclaw/settings.json` 이 값을 가리는 순간 **쓰기가 먹은 것
  *  처럼 보이는데 화면은 안 바뀐다.** 읽는 자리와 쓰는 자리는 같아야 한다.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { getPaths } from "./paths.js";
+import {
+  readSettingsRootForWrite,
+  readSettingsRootLenient,
+  writeSettingsRootAtomic,
+} from "./settings-file.js";
 
 /** 크기 등급 — 격자 좌표가 아니라 **의미**다. 실제 열 수는 CSS 가 정한다. */
 export type HomeWidgetSize = "small" | "wide";
@@ -55,13 +58,70 @@ export const HOME_WIDGET_MAX = 12;
 const TYPE_RE = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/;
 
 /**
- * 자격증명처럼 **보이는** 키 — 거부한다.
+ * **자격증명 낱말** — 키 이름 어디에 있어도 걸린다(부분 문자열).
+ *
+ * ★규칙이 **하나**다. 종전엔 "어디서나 걸리는 낱말" 과 "낱말로 서 있을 때만 걸리는 낱말"
+ *  둘로 나눴는데, 뒤쪽이 `accesskey`·`authkey`·`basicauth`·`authorization` 처럼 **붙여 쓴
+ *  소문자·대문자 이름에서 통째로 사라졌다**(쪼갤 경계가 없으면 한 낱말이 된다).
+ *  실측 29/29 통과 — 규칙의 절반이 없는 것과 같았다.
+ */
+const CREDENTIAL_WORDS = [
+  "token", "secret", "password", "passwd", "credential", "bearer", "cookie",
+  "jwt", "oauth", "signature", "authorization",
+];
+
+/**
+ * 같은 자격증명 낱말이지만, **무해한 낱말을 덜어낸 뒤에** 본다 — 이것들은 평범한 이름에도
+ * 자주 들어간다(`keyword`·`author`·`passenger`).
+ */
+const CREDENTIAL_WORDS_AFTER_STRIP = [
+  "key", "auth", "pass", "cert", "private", "session", "pwd",
+];
+
+/**
+ * **자격증명 낱말을 품고 있지만 무해한 낱말** — 판정 전에 **지워서** 본다.
+ *
+ * ★지우고 보는 이유는 합성을 살리기 위해서다. `authorName` 은 `author` 를 지우면 `Name`
+ *  만 남아 통과하고, `keywordToken` 은 `keyword` 를 지워도 `Token` 이 남아 걸린다.
+ *  이름 전체를 열거하면 `authorName` 이 새 이름일 때마다 목록이 낡는다
+ *  ([[feedback_hand_maintained_lists]]).
+ */
+const INNOCENT_WORDS = [
+  "keyword", "monkey", "donkey", "turnkey", "keyboard", "hockey", "whiskey",
+  "author", "passenger", "passage", "compass", "certain", "concert",
+];
+
+/**
+ * 자격증명처럼 **보이는** 키인가 — 거부 판정.
  *
  * ★이건 경계가 아니라 **가드**다. 진짜 경계는 §D.1 이 정한 것(secret 은 `.env`)이고,
  *  여기서 막는 건 흔한 실수 하나다: 모델이 친절하게 `apiKey` 를 위젯 설정에 넣는 것.
  *  이 레코드는 **브라우저로 나가고 백업에 들어간다** — 들어가면 조용히 샌다.
+ *
+ * ★**종전 정규식은 거의 아무것도 안 막았다** (2026-08-29, 적대 검토 A-F2). 앞에 `(^|[^a-z])`
+ *  가 붙어 있어서 낱말이 이름 중간에 오면 통과했다 — `authToken`·`clientSecret`·
+ *  `accessKey`·`x-api-key`·`bearer`·`cookie` 가 전부 뚫렸다.
+ *
+ * ★**첫 수정은 절반만 닫았다**(같은 날 적대 검토). 낱말 경계를 쓰는 갈래를 뒀는데, 경계가
+ *  없는 이름(`accesskey`·`AUTHORIZATION`)에선 그 갈래가 통째로 무효였다. 그런데 **표본
+ *  21종이 전부 camelCase 라 그 절반을 한 번도 안 밟았다** — 표본이 규칙을 다 밟지 않으면
+ *  개수가 많아도 표본이 아니다.
+ *
+ * ★**틀리는 방향을 골랐다.** 잘못 막으면 위젯이 사유와 함께 떨어져 사용자가 즉시 안다.
+ *  잘못 통과시키면 열쇠가 브라우저와 백업으로 **조용히** 나간다. 그래서 넓게 잡고,
+ *  흔한 무해 낱말만 위에서 덜어낸다.
+ *
+ * @param key 설정 키 이름
  */
-const SECRETISH_RE = /(^|[^a-z])(api_?key|token|secret|password|passwd|credential)/i;
+export const looksLikeCredentialKey = (key: string): boolean => {
+  const lower = key.toLowerCase();
+  // ★강한 낱말은 **지우기 전에** 본다 — 안 그러면 `author` 를 덜어내다 `authorization`
+  //  까지 사라진다(실측으로 그렇게 뚫렸다).
+  if (CREDENTIAL_WORDS.some((w) => lower.includes(w))) return true;
+  let rest = lower;
+  for (const w of INNOCENT_WORDS) rest = rest.split(w).join(" ");
+  return CREDENTIAL_WORDS_AFTER_STRIP.some((w) => rest.includes(w));
+};
 
 const isScalar = (v: unknown): v is string | number | boolean =>
   typeof v === "string" || typeof v === "number" || typeof v === "boolean";
@@ -137,7 +197,7 @@ export const normalizeHomeWidgets = (
       let bad: string | undefined;
       for (const k of keys) {
         const v = src[k];
-        if (SECRETISH_RE.test(k)) {
+        if (looksLikeCredentialKey(k)) {
           bad =
             `config.${k} 는 자격증명처럼 보입니다 — 이 값은 브라우저로 나가고 백업에 ` +
             `들어갑니다. 열쇠는 홈 .env 의 TIGUCLAW_PLUGIN_<NAME>_<KEY> 로 두세요.`;
@@ -168,20 +228,18 @@ export const normalizeHomeWidgets = (
   return { widgets, rejected };
 };
 
-/** `<home>/settings.json` 의 `dashboard.home.widgets` 원값. 없으면 undefined. */
-const readRaw = (): { root: Record<string, unknown>; widgets: unknown } => {
+/**
+ * `<home>/settings.json` 의 `dashboard.home.widgets` 원값.
+ *
+ * ★**읽기와 쓰기가 다른 함수를 쓴다**(2026-08-29, 적대 검토). 읽기는 못 읽어도 `{}` 로
+ *  물러서지만(화면이 깨진 파일 하나로 죽으면 고칠 수단까지 잃는다), **쓰기는 거부한다** —
+ *  그 `{}` 를 파일에 덮으면 모델 프로파일·테마가 함께 사라진다.
+ */
+const readRaw = (forWrite = false): { root: Record<string, unknown>; widgets: unknown } => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    if (existsSync(file)) {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-        root = parsed as Record<string, unknown>;
-      }
-    }
-  } catch {
-    // 파싱 실패 → 배치 없음으로 본다. 여기서 파일을 고치지 않는다(다른 키를 날린다).
-  }
+  const root = forWrite
+    ? readSettingsRootForWrite(file)
+    : readSettingsRootLenient(file);
   const dashboard = root.dashboard;
   const home =
     dashboard !== null && typeof dashboard === "object" && !Array.isArray(dashboard)
@@ -207,7 +265,8 @@ export const readHomeWidgets = (
  */
 export const writeHomeWidgets = (widgets: readonly HomeWidget[]): void => {
   const file = getPaths().settings;
-  const { root } = readRaw();
+  // ★깨진 파일이면 **여기서 던진다** — 덮으면 남의 설정이 사라진다(적대 검토 A-F1).
+  const { root } = readRaw(true);
   const existingDashboard = root.dashboard;
   const dashboard: Record<string, unknown> =
     existingDashboard !== null &&
@@ -226,8 +285,5 @@ export const writeHomeWidgets = (widgets: readonly HomeWidget[]): void => {
   else dashboard.home = home;
   if (Object.keys(dashboard).length === 0) delete root.dashboard;
   else root.dashboard = dashboard;
-  mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
 };

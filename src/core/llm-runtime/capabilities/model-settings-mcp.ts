@@ -169,7 +169,14 @@ export const applyModelReasoning = (args: {
     //  "됐습니다" 라고 답했다. 전역 갈래엔 이미 이 가드가 있는데(`stillOverridden`) **새로
     //  만든 이 갈래만 그 재측정을 건너뛰었다.** 같은 기능의 두 갈래가 갈린 자리다.
     const before = poolReasoningOf(profileName, key, cwd);
-    const wrote = setProfilePoolReasoning(profileName, key, want);
+    let wrote: boolean;
+    try {
+      wrote = setProfilePoolReasoning(profileName, key, want);
+    } catch (e) {
+      // ★깨진 settings.json 위에는 안 쓴다 — 던져진 사유를 모델이 사용자에게 전한다
+      //  (2026-08-29 A-F1). 종전엔 덮어써서 프로파일 전체가 사라졌다.
+      return { ok: false, text: e instanceof Error ? e.message : String(e) };
+    }
     if (!wrote) {
       const names = Object.keys(loadModelProfiles(cwd));
       return {
@@ -210,7 +217,11 @@ export const applyModelReasoning = (args: {
     };
   }
 
-  setModelReasoning(key, want);
+  try {
+    setModelReasoning(key, want);
+  } catch (e) {
+    return { ok: false, text: e instanceof Error ? e.message : String(e) };
+  }
   const after = resolveReasoningEffort(provider, model, cwd);
 
   // ★쓴 뒤에도 **덮어쓰기 층이 남아 있나.** 홈은 방금 우리가 썼으므로, 남아 있다면 그건

@@ -131,7 +131,14 @@ const CONFIGURE_HOME = tool(
           `\n\n${describeState()}`,
       );
     }
-    writeHomeWidgets(widgets);
+    try {
+      writeHomeWidgets(widgets);
+    } catch (e) {
+      // ★**설정 파일이 깨져 있으면 쓰기가 거부된다**(2026-08-29, 적대 검토 A-F1). 종전엔
+      //  그 위에 덮어써서 모델 프로파일·테마가 함께 사라졌고, 모델은 "바꿨습니다" 를 받았다.
+      //  사유를 그대로 전한다 — 모델이 사용자에게 무엇을 고쳐야 하는지 말할 수 있어야 한다.
+      return errText(e instanceof Error ? e.message : String(e));
+    }
     return okText(
       `홈 배치를 바꿨습니다.\n${describeState()}\n` +
         "★열려 있는 대시보드는 다음 갱신에 반영됩니다.",

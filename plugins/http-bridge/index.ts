@@ -891,6 +891,13 @@ class HttpBridge implements Channel, Observer {
     if (this.server !== null) return;
 
     this.server = http.createServer((req, res) => {
+      // ★여기에 `SettingsFileCorruptError` 전용 `.catch` 를 뒀다가 **걷어냈다**
+      //  (2026-08-29, 적대 검토 G-2). 그 예외를 던지는 setter 16곳이 **전부 각자
+      //  `try/catch` 안**이라 이 그물엔 도달 경로가 0이었다(전수 확인). 그런데 도달하는
+      //  날엔 헤더가 이미 나간 뒤일 수 있어 `writeJson` 이 `ERR_HTTP_HEADERS_SENT` 로
+      //  다시 던지고, 그게 곧 `unhandledRejection` 이다 — 이 레포가
+      //  `write-json-serializes-first` 로 지키는 바로 그 사고를 새 자리에 다시 만드는 셈.
+      //  원칙 게이트 Q6: **발생 불가능한 시나리오의 fallback 은 가짜 견고함**이다.
       void this.handleRequest(req, res);
     });
 

@@ -184,9 +184,13 @@ export const setPluginEnabled = async (
   const live = LIVE.get(name);
   if (!enabled) {
     if (live === undefined) return { ok: false, reason: "그런 플러그인이 없습니다", codeReloaded: false };
+    // ★**기록을 먼저** 쓴다 (2026-08-29, 적대 검토 P-2). 종전엔 `dispose()` → `LIVE.delete`
+    //  → 기록 순서였는데, 설정 파일이 깨져 있으면 마지막 줄이 던져 **배선은 걷혔는데 기록은
+    //  안 남는** 반쪽 상태가 됐다: 사용자는 실패(500)를 받고, 플러그인은 지금 꺼져 있고,
+    //  재시작하면 되살아난다. 비가역인 쪽을 뒤에 둔다 — 던지면 아무 일도 안 일어난다.
+    setModuleDisabled(name, true);
     await live.dispose();
     LIVE.delete(name);
-    setModuleDisabled(name, true);
     console.log(`[plugin-manager] 끔: ${name}`);
     return { ok: true, codeReloaded: false };
   }

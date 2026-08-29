@@ -19,8 +19,8 @@
  *  `provider:model` 문자열만 참조.
  */
 import { createRequire } from "node:module";
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { readSettingsRootForWrite, writeSettingsRootAtomic } from "./settings-file.js";
 import { getPaths, projectScope, projectScopeLegacy } from "./paths.js";
 
 /**
@@ -696,15 +696,9 @@ export const setModelReasoning = (
   effort: string | undefined,
 ): void => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음) — setDefaultProfile 동형.
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const existingModels = root.models;
   const models: Record<string, unknown> =
     existingModels !== null &&
@@ -725,10 +719,7 @@ export const setModelReasoning = (
   else models.reasoning = reasoning;
   if (Object.keys(models).length === 0) delete root.models;
   else root.models = models;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
 };
 
 /**
@@ -752,15 +743,9 @@ export const setProfilePoolReasoning = (
   effort: string | undefined,
 ): boolean => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    return false; // 파일이 없으면 고칠 프로파일도 없다.
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const models = root.models;
   if (models === null || typeof models !== "object" || Array.isArray(models)) return false;
   const profiles = (models as Record<string, unknown>).profiles;
@@ -791,10 +776,7 @@ export const setProfilePoolReasoning = (
   }
   if (!hit) return false;
 
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
   return true;
 };
 
@@ -820,20 +802,11 @@ export const setLocale = (locale: string): boolean => {
   const { availableLocales } = requireI18n();
   if (!availableLocales().includes(want)) return false;
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    /* 부재·파싱 실패 → 최소 {} 신설(형제 setter 동형) */
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   root.locale = want;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
   return true;
 };
 
@@ -859,21 +832,12 @@ export const setTheme = (name: string | undefined): boolean => {
     if (!availableThemes().includes(want)) return false;
   }
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    /* 부재·파싱 실패 → 최소 {} 신설(형제 setter 동형) */
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   if (want === "") delete root.theme;
   else root.theme = want;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
   return true;
 };
 
@@ -893,15 +857,9 @@ export const setTheme = (name: string | undefined): boolean => {
 export const setProfileColor = (profile: string, color: string | undefined): boolean => {
   if (color !== undefined && !isBadgeColor(color)) return false;
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    return false; // 파일이 없으면 고칠 프로파일도 없다.
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const models = root.models;
   if (models === null || typeof models !== "object" || Array.isArray(models)) return false;
   const profiles = (models as Record<string, unknown>).profiles;
@@ -913,10 +871,7 @@ export const setProfileColor = (profile: string, color: string | undefined): boo
   if (color === undefined) delete rec.color;
   else rec.color = color.trim().toLowerCase();
 
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
   return true;
 };
 
@@ -1015,16 +970,9 @@ export const getDefaultProfileName = (
  */
 export const setDefaultProfile = (name: string): void => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const raw = readFileSync(file, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음).
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const existingModels = root.models;
   const models: Record<string, unknown> =
     existingModels !== null &&
@@ -1034,10 +982,7 @@ export const setDefaultProfile = (name: string): void => {
       : {};
   models.default = name;
   root.models = models;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
 };
 
 /**
@@ -1073,15 +1018,9 @@ export const readEgressChannels = (cwd?: string): string[] => {
 /** `egress.channels` **한 키만** 병합 수정 — setDefaultProfile 동형(다른 키 보존). */
 export const setEgressChannels = (channels: string[]): void => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    /* 부재/파싱 실패 → 최소 {} 신설 */
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const existing = root.egress;
   const egress: Record<string, unknown> =
     existing !== null && typeof existing === "object" && !Array.isArray(existing)
@@ -1091,10 +1030,7 @@ export const setEgressChannels = (channels: string[]): void => {
     (c) => typeof c === "string" && c.trim() !== "",
   );
   root.egress = egress;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
 };
 
 /**
@@ -1106,15 +1042,9 @@ export const setEgressChannels = (channels: string[]): void => {
  */
 export const setSuggestionEnabled = (enabled: boolean): void => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음) — setDefaultProfile 동형.
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const existing = root.suggestions;
   const suggestions: Record<string, unknown> =
     existing !== null && typeof existing === "object" && !Array.isArray(existing)
@@ -1131,10 +1061,7 @@ export const setSuggestionEnabled = (enabled: boolean): void => {
   nextMessage.enabled = enabled;
   suggestions.nextMessage = nextMessage;
   root.suggestions = suggestions;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
 };
 
 /**
@@ -1189,16 +1116,9 @@ export const isModuleDisabled = (
  */
 export const setModuleDisabled = (name: string, disabled: boolean): void => {
   const file = getPaths().settings;
-  let root: Record<string, unknown> = {};
-  try {
-    const raw = readFileSync(file, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      root = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // 부재/파싱 실패 → 최소 {} 신설(다른 키 없음).
-  }
+  // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
+  //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
+  const root = readSettingsRootForWrite(file);
   const existingModules = root.modules;
   const modules: Record<string, unknown> =
     existingModules !== null &&
@@ -1223,10 +1143,7 @@ export const setModuleDisabled = (name: string, disabled: boolean): void => {
   entry.enabled = !disabled;
   modules[name] = entry;
   root.modules = modules;
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(root, null, 2) + "\n", "utf8");
-  renameSync(tmp, file);
+  writeSettingsRootAtomic(file, root);
 };
 
 /**

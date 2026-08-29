@@ -19,9 +19,13 @@
  *  대시보드가 읽어 화면에 뿌리고 백업에 들어가서"* 이므로, 파일을 갈라도 그대로 성립한다.
  *  값은 홈 `.env` 의 `TIGUCLAW_PLUGIN_<NAME>_<KEY>` 에서만 오고 **화면엔 있다/없다만** 간다.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { getPaths } from "../paths.js";
+import {
+  readSettingsRootForWrite,
+  readSettingsRootLenient,
+  writeSettingsRootAtomic,
+} from "../settings-file.js";
 
 /**
  * 설정 한 칸의 종류.
@@ -147,20 +151,17 @@ export const secretEnvName = (plugin: string, key: string): string =>
 const settingsFile = (plugin: string): string =>
   path.join(getPaths().commonPlugins, plugin, "settings.json");
 
-/** 파일에 저장된 원값(검증 전). 없거나 깨졌으면 빈 객체 — **다른 플러그인은 무사하다**. */
-const readRaw = (plugin: string): Record<string, unknown> => {
+/**
+ * 파일에 저장된 원값(검증 전).
+ *
+ * ★**읽기와 쓰기가 다르다**(2026-08-29, 적대 검토 A-F3). 읽기는 깨졌어도 기본값으로
+ *  물러서지만(깨진 JSON 하나가 **그 플러그인만** 죽인다 — §D.1 의 폭발 반경), **쓰기는
+ *  거부한다**: 그 `{}` 를 덮으면 같은 파일의 다른 칸이 조용히 사라진다. 실측으로
+ *  `{units, count, city}` 중 둘이 없어졌다.
+ */
+const readRaw = (plugin: string, forWrite = false): Record<string, unknown> => {
   const f = settingsFile(plugin);
-  try {
-    if (!existsSync(f)) return {};
-    const parsed = JSON.parse(readFileSync(f, "utf8")) as unknown;
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-  } catch {
-    // 깨진 JSON 하나가 **그 플러그인만** 죽인다(§D.1 의 폭발 반경). 코어는 무사하다.
-    console.warn(`[plugin-settings] ${plugin}: settings.json 을 읽지 못했습니다 — 기본값으로 봅니다.`);
-  }
-  return {};
+  return forWrite ? readSettingsRootForWrite(f) : readSettingsRootLenient(f);
 };
 
 export type PluginSettingValue = string | number | boolean;
@@ -251,13 +252,10 @@ export const writePluginSetting = (
             (spec.type !== "enum" || (spec.values ?? []).includes(value));
     if (!ok) return { ok: false, error: `'${key}' 값이 type '${spec.type}' 과 맞지 않습니다` };
   }
-  const raw = readRaw(plugin);
+  // ★깨진 파일이면 **여기서 던진다** — 호출부가 사유를 사용자에게 그대로 전한다.
+  const raw = readRaw(plugin, true);
   if (value === undefined) delete raw[key];
   else raw[key] = value;
-  const f = settingsFile(plugin);
-  mkdirSync(path.dirname(f), { recursive: true });
-  const tmp = `${f}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(raw, null, 2) + "\n", "utf8");
-  renameSync(tmp, f);
+  writeSettingsRootAtomic(settingsFile(plugin), raw);
   return { ok: true };
 };

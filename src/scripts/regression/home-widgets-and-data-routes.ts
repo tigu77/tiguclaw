@@ -18,11 +18,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   HOME_WIDGET_MAX,
+  looksLikeCredentialKey,
   normalizeHomeWidgets,
   readHomeWidgets,
   writeHomeWidgets,
 } from "../../core/home-widgets.js";
 import {
+  PLUGIN_MEDIA_MAX_BYTES,
   callPluginDataRoute,
   clearPluginDataCache,
   registerPluginDataRoutes,
@@ -39,7 +41,7 @@ const KNOWN = new Set(["weather"]);
 export const check: RegressionCheck = {
   name: "home-widgets-and-data-routes",
   guards:
-    "홈 배치가 모르는 플러그인·중복 id·자격증명을 받아들이는 것 + 배치 쓰기가 settings.json 의 다른 키를 날리는 것 + 위젯 데이터가 브라우저마다 외부를 부르는 것(캐시 없음) + 실패를 캐시해 새로고침이 안 먹는 것 + /plugin-data 게이트 누락 + configure_home 이 한 어댑터에만 실리는 것",
+    "서드파티 핸들러의 **동기** throw 가 reject 로 새어 데몬을 crash-fast 시키는 것 + 미디어 상한이 in-flight 합류자에게만 안 걸리는 것 + 자격증명 가드가 낱말이 이름 중간에 오면 통과하던 것(authToken·clientSecret·x-api-key) + 홈 배치가 모르는 플러그인·중복 id·자격증명을 받아들이는 것 + 배치 쓰기가 settings.json 의 다른 키를 날리는 것 + 위젯 데이터가 브라우저마다 외부를 부르는 것(캐시 없음) + 실패를 캐시해 새로고침이 안 먹는 것 + /plugin-data 게이트 누락 + configure_home 이 한 어댑터에만 실리는 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
@@ -264,6 +266,99 @@ export const check: RegressionCheck = {
         "★홈을 떠나면 poll 을 끄는 자리가 **정의점**(setActiveNav)에 있다 — 뷰로 들어가는 문은 여럿이라 문마다 붙이면 또 빠뜨린다",
         /const setActiveNav = \(view\) => \{[\s\S]{0,400}?stopHomeWidgets\(\)/.test(overview),
         (overview.match(/[^\n]*stopHomeWidgets\(\);[^\n]*/) ?? ["없음"])[0].trim(),
+      ),
+    );
+
+    // ── ⑤ 적대 검토 수정분 (2026-08-29) ────────────────────────────────────
+    // ★셋 다 **실행**으로 검사한다 — 소스를 훑는 검사는 동의어 하나로 뚫린다.
+
+    // B-P4 — 서드파티 핸들러가 **동기로** 던진다(거부 프라미스가 아니라 `throw`).
+    //  종전엔 `handler()` 호출이 `try` 밖이라 이 함수가 **reject** 로 샜고, 브리지에서
+    //  그건 `unhandledRejection` → 데몬 crash-fast 다. 플러그인 하나가 데몬을 죽인다.
+    registerPluginDataRoutes("sync-throw", {}, {
+      boom: {
+        ttlMs: 1000,
+        handler: () => {
+          throw new Error("동기 폭발");
+        },
+      },
+    });
+    let syncRejected = false;
+    let syncResult: unknown;
+    try {
+      syncResult = await callPluginDataRoute("sync-throw", "boom", {});
+    } catch {
+      syncRejected = true;
+    }
+    unregisterPluginDataRoutes("sync-throw");
+    out.push(
+      assert(
+        "★★핸들러가 **동기로** 던져도 이 함수는 값으로 답한다(502) — reject 로 새면 브리지에서 `unhandledRejection` → **데몬 crash-fast** 라, 서드파티 플러그인 하나가 데몬을 죽인다",
+        !syncRejected &&
+          (syncResult as { ok: boolean; status?: number }).ok === false &&
+          (syncResult as { status?: number }).status === 502,
+        syncRejected ? "★reject 로 샜다" : JSON.stringify(syncResult),
+      ),
+    );
+
+    // B-P1 — 미디어 상한은 **합류자에게도** 걸린다. 상한이 "먼저 물어본 사람에게만"
+    //  걸리면 그건 상한이 아니다.
+    clearPluginDataCache();
+    let bigCalls = 0;
+    registerPluginDataRoutes("big-media", {}, {
+      tile: {
+        ttlMs: 60_000,
+        handler: async () => {
+          bigCalls += 1;
+          await new Promise((r) => setTimeout(r, 10));
+          return {
+            contentType: "image/png",
+            body: new Uint8Array(PLUGIN_MEDIA_MAX_BYTES + 1),
+          };
+        },
+      },
+    });
+    // 첫 호출이 도는 사이에 둘째가 **합류**한다(첫 호출을 await 하지 않고 바로 부른다).
+    const bothBig = await Promise.all([
+      callPluginDataRoute("big-media", "tile", {}),
+      callPluginDataRoute("big-media", "tile", {}),
+    ]);
+    unregisterPluginDataRoutes("big-media");
+    out.push(
+      assert(
+        "★★상한을 넘긴 미디어는 **합류한 쪽에도** 안 나간다 — 종전엔 최초 호출자 경로에만 검사가 있어, 탭 둘을 동시에 열면 둘째가 상한을 우회했다",
+        bigCalls === 1 && bothBig.every((r) => !r.ok && r.status === 502),
+        `밖으로 ${bigCalls}회 · 결과=${bothBig.map((r) => (r.ok ? "ok" : `${String(r.status)}`)).join(",")}`,
+      ),
+    );
+
+    // A-F2 — 자격증명 가드. ★**표본이 한 개면 그건 표본이 아니다** — 종전 회귀는 `apiKey`
+    //  하나만 봤는데, 그게 옛 정규식이 유일하게 잡던 형태였다.
+    const mustBlock = [
+      "apiKey", "api_key", "x-api-key", "apikey", "authToken", "auth_token",
+      "authtoken", "clientSecret", "accessKey", "privateKey", "password",
+      "passwd", "credentials", "bearer", "Cookie", "sessionId", "jwt",
+      "oauthToken", "SIGNATURE", "pwd", "certPath",
+    ];
+    const mustPass = [
+      "city", "units", "keyword", "author", "monkey", "lat", "lon", "zoom",
+      "refreshMinutes", "title", "query", "passenger", "turnkey", "donkey",
+      "authorName",
+    ];
+    const leaked = mustBlock.filter((k) => !looksLikeCredentialKey(k));
+    const overblocked = mustPass.filter((k) => looksLikeCredentialKey(k));
+    out.push(
+      assert(
+        `★★자격증명처럼 보이는 키 ${String(mustBlock.length)}종이 전부 막힌다 — 종전 정규식은 낱말이 **이름 중간**에 오면 통과시켜 \`authToken\`·\`clientSecret\`·\`accessKey\`·\`x-api-key\` 가 다 뚫렸다(이 값은 브라우저로 나가고 백업에 들어간다)`,
+        leaked.length === 0,
+        leaked.length === 0 ? `${String(mustBlock.length)}종 전부 차단` : `★통과: ${leaked.join(", ")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★평범한 설정 키는 안 막힌다 — `keyword`·`author`·`monkey` 는 자격증명이 아니다(넓히면서 낱말 경계를 두는 이유)",
+        overblocked.length === 0,
+        overblocked.length === 0 ? `${String(mustPass.length)}종 전부 통과` : `★차단됨: ${overblocked.join(", ")}`,
       ),
     );
 

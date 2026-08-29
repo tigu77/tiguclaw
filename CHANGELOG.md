@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-08-29
+
+### Fixed
+
+- **설정 파일이 깨져 있으면 그 위에 덮어쓰지 않습니다.** `settings.json` 을 손으로 고치다
+  괄호 하나를 빠뜨린 채로 테마나 모델을 바꾸면, 그동안은 **"바꿨습니다"** 라는 답과 함께
+  모델 프로파일·테마·gateway 설정이 **한꺼번에 사라졌습니다**. 이제는 멈추고, 어느 파일이
+  왜 안 읽히는지 말해 드립니다. 화면과 조회는 그대로 뜹니다 — 고칠 수단까지 잃으면
+  안 되니까요.
+- **플러그인 하나의 실수가 데몬을 죽이지 않습니다.** 위젯에 값을 대는 함수가 잘못 짜여
+  있으면 전체가 재시작되던 경로가 있었습니다. 이제 그 위젯만 실패하고 사유가 남습니다.
+- **큰 이미지 상한이 모든 요청에 걸립니다.** 같은 카드를 여러 탭에서 동시에 열면 두 번째
+  요청부터 크기 제한을 지나칠 수 있었습니다.
+- **위젯 설정에 열쇠를 넣는 실수를 훨씬 넓게 막습니다.** `authToken`·`clientSecret`·
+  `accessKey`·`x-api-key` 처럼 이름 중간에 들어간 형태가 그동안 통과했습니다. 이 값은
+  브라우저로 나가고 백업에 들어갑니다 — 열쇠는 `.env` 에 두세요.
+
 ## [0.42.0] - 2026-08-29
 
 ### Added
@@ -1711,7 +1728,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.42.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.42.1...HEAD
+[0.42.1]: https://github.com/tigu77/tiguclaw/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/tigu77/tiguclaw/compare/v0.41.0...v0.42.0
 [0.41.0]: https://github.com/tigu77/tiguclaw/compare/v0.40.1...v0.41.0
 [0.40.1]: https://github.com/tigu77/tiguclaw/compare/v0.40.0...v0.40.1

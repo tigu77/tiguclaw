@@ -148,6 +148,23 @@ export type PluginDataResult =
  *  전자는 우리 배선 문제이고 후자는 남의 서버 문제라, 같은 코드로 뭉치면 로그만 보고
  *  어느 쪽인지 알 수 없다([[feedback_logs_must_stand_alone]]).
  */
+/**
+ * 미디어 상한 — **두 경로가 같은 판정을 쓴다** (2026-08-29, 적대 검토 B-P1).
+ *
+ * ★종전엔 최초 호출자 경로에만 있었다. 같은 라우트를 동시에 부르면 두 번째는 in-flight 에
+ *  **합류**하는데 그 갈래엔 검사가 없어, 상한을 넘긴 본문이 그대로 나갔다. 상한이 "먼저
+ *  물어본 사람에게만" 걸리는 건 상한이 아니다 — 판정을 여기 한 곳에 둔다
+ *  ([[feedback_simple_composable_no_duplication]]).
+ */
+const enforceMediaCap = (value: unknown): void => {
+  // ★상한을 **쓸 때** 막는다 — 읽을 때 자르면 조용한 반쪽이 된다(§C.1.1 과 같은 규칙).
+  if (isPluginMedia(value) && value.body.byteLength > PLUGIN_MEDIA_MAX_BYTES) {
+    throw new Error(
+      `미디어가 상한을 넘었습니다: ${value.body.byteLength}B > ${PLUGIN_MEDIA_MAX_BYTES}B`,
+    );
+  }
+};
+
 export const callPluginDataRoute = async (
   plugin: string,
   route: string,
@@ -171,25 +188,30 @@ export const callPluginDataRoute = async (
   const sharing = INFLIGHT.get(key);
   if (sharing !== undefined) {
     try {
-      return { ok: true, value: await sharing, cached: true, ttlMs: def.ttlMs };
+      const shared = await sharing;
+      enforceMediaCap(shared);
+      return { ok: true, value: shared, cached: true, ttlMs: def.ttlMs };
     } catch (e) {
-      return { ok: false, status: 502, error: e instanceof Error ? e.message : String(e) };
+      // ★합류자도 로그를 남긴다 (2026-08-29, 적대 검토 P-4). 종전엔 최초 호출자만 찍어서,
+      //  탭 셋이 동시에 실패해도 로그는 한 줄이었다 — 실패 규모가 안 보인다.
+      const error = e instanceof Error ? e.message : String(e);
+      console.warn(`[plugin-data] ${plugin}/${route} 실패(합류): ${error}`);
+      return { ok: false, status: 502, error };
     }
   }
   // ★호스트는 **턴 없이** 만든다 — 이 호출엔 대화 좌표가 없다(사람이 화면을 보는 중이지
   //  모델이 도구를 부르는 중이 아니다). `postCard` 는 그래서 여기선 못 쓴다(경고를 남기고
   //  false 를 준다 — 이미 그렇게 동작한다).
-  const host = createPluginHost(plugin, entry.needs, undefined, entry.settingsSpec);
-  const p = def.handler(query, host);
-  INFLIGHT.set(key, p);
   try {
+    // ★**호스트 생성과 핸들러 호출이 `try` 안에 있다** (2026-08-29, 적대 검토 B-P4).
+    //  종전엔 둘 다 밖이었다 — 서드파티 핸들러가 **동기로** 던지면(거부 프라미스가 아니라
+    //  `throw`) 이 함수가 reject 로 새고, 브리지 쪽에서 그건 `unhandledRejection` →
+    //  **데몬 crash-fast** 다. 플러그인 하나의 실수가 데몬을 죽이면 안 된다.
+    const host = createPluginHost(plugin, entry.needs, undefined, entry.settingsSpec);
+    const p = def.handler(query, host);
+    INFLIGHT.set(key, p);
     const value = await p;
-    // ★상한을 **쓸 때** 막는다 — 읽을 때 자르면 조용한 반쪽이 된다(§C.1.1 과 같은 규칙).
-    if (isPluginMedia(value) && value.body.byteLength > PLUGIN_MEDIA_MAX_BYTES) {
-      throw new Error(
-        `미디어가 상한을 넘었습니다: ${value.body.byteLength}B > ${PLUGIN_MEDIA_MAX_BYTES}B`,
-      );
-    }
+    enforceMediaCap(value);
     if (CACHE.size >= CACHE_MAX) {
       const oldest = CACHE.keys().next();
       if (!oldest.done) CACHE.delete(oldest.value);

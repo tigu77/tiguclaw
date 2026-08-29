@@ -21,7 +21,9 @@
  *  여기선 "합집합을 쓰는 배선이 있는가" 만 본다. 동의어 우회는 못 잡는다.
  */
 import { readFile } from "node:fs/promises";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { __resetPathsCache } from "../../core/paths.js";
+import { setEgressChannels } from "../../core/settings.js";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -90,19 +92,42 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ④ 저장은 한 키만 건드린다(다른 설정 보존) ──────────────────────────────
   //  setDefaultProfile 이 지키는 불변식과 같다 — 통째로 덮어쓰면 손으로 넣은 값이 날아간다.
+  //
+  // ★**소스 대조에서 실행으로 바꿨다** (2026-08-29). 종전엔 `setEgressChannels` 본문에
+  //  `JSON.parse(readFileSync(` 와 `renameSync(tmp, file)` 이라는 **글자**가 있는지 봤다.
+  //  그런데 그 관용구가 9곳에 복사돼 있어서 공용 헬퍼로 모으자 — **동작은 그대로인데** —
+  //  이 검사가 빨간불이 됐다. 지키려는 건 글자가 아니라 *"다른 키가 살아남는가"* 이므로,
+  //  임시 홈에 진짜 파일을 두고 진짜 함수를 돌려 바이트를 본다. 이러면 배치를 바꿔도
+  //  안 깨지고, 반대로 **동작이 깨지면 반드시 깨진다**([[feedback_gate_must_actually_run]]).
   {
-    const settingsSrc = await readFile(
-      new URL("../../core/settings.ts", import.meta.url),
-      "utf8",
-    );
-    const i = settingsSrc.indexOf("export const setEgressChannels");
-    const body = i < 0 ? "" : settingsSrc.slice(i, i + 1400);
+    const dir = mkdtempSync(path.join(tmpdir(), "tiguclaw-egress-"));
+    const before = process.env.TIGUCLAW_HOME;
+    process.env.TIGUCLAW_HOME = dir;
+    __resetPathsCache();
+    const file = path.join(dir, "settings.json");
+    let got = "";
+    let ok = false;
+    try {
+      writeFileSync(file, '{"models":{"default":"high"},"theme":"dusk"}\n', "utf8");
+      setEgressChannels(["telegram"]);
+      const root = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      const kept = root.theme === "dusk" && (root.models as { default?: string })?.default === "high";
+      const wrote =
+        JSON.stringify((root.egress as { channels?: string[] })?.channels) === '["telegram"]';
+      ok = kept && wrote;
+      got = `theme=${String(root.theme)} default=${String((root.models as { default?: string })?.default)} egress=${JSON.stringify((root.egress as { channels?: string[] })?.channels)}`;
+    } catch (e) {
+      got = `★던짐: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      if (before === undefined) delete process.env.TIGUCLAW_HOME;
+      else process.env.TIGUCLAW_HOME = before;
+      __resetPathsCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
     out.push({
-      name: "저장이 read-modify-write 다(다른 키 보존 · 원자적 rename)",
-      ok:
-        body.includes("JSON.parse(readFileSync(file") &&
-        body.includes("renameSync(tmp, file)"),
-      got: `read=${body.includes("JSON.parse(readFileSync(file")} rename=${body.includes("renameSync(tmp, file)")}`,
+      name: "★저장이 read-modify-write 다 — 실제로 써 보고 **다른 키가 남아 있는지** 파일에서 확인한다(통째로 덮으면 손으로 넣은 값이 날아간다)",
+      ok,
+      got,
     });
   }
 

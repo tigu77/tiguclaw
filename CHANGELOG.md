@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-08-29
+
+0.43.0 을 낸 직후 한 번 더 검토했더니, **그 릴리스를 만들면서 고친 것들**에서 다섯 가지가
+나왔습니다. 사용자가 겪는 것만 골라 고쳤습니다.
+
+### Fixed
+
+- **플러그인이 기본 기능을 가릴 수 있던 경우가 세 가지 더 있었습니다.** 이름이 겹치면
+  알려주기로 했는데, 일부 기능은 그 검사를 지나쳐 **조용히 사라졌습니다** — 그런데 목록에는
+  계속 있는 것처럼 보였습니다.
+- **잘못된 이름의 플러그인이 설정을 엉뚱한 곳에 쓸 수 있었습니다.** 이름 검사가 한쪽
+  통로에만 있었습니다.
+- **플러그인을 끌 때 정리가 여러 번 불리던 것.** 여러 역할을 겸하는 플러그인이 그랬습니다.
+- **같은 경고가 매번 반복되던 것** — 이제 한 번만 알려줍니다.
+- 플러그인 문서와 코드 주석 네 곳이 **0.43.0 에서 바뀐 동작을 안 따라가** 사실과 달랐습니다.
+
 ## [0.43.0] - 2026-08-29
 
 플러그인을 **남이 만들 수 있게** 하는 릴리스입니다. 레포 밖에서 문서만 보고 직접 만들어
@@ -1768,7 +1784,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.43.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.43.1...HEAD
+[0.43.1]: https://github.com/tigu77/tiguclaw/compare/v0.43.0...v0.43.1
 [0.43.0]: https://github.com/tigu77/tiguclaw/compare/v0.42.1...v0.43.0
 [0.42.1]: https://github.com/tigu77/tiguclaw/compare/v0.42.0...v0.42.1
 [0.42.0]: https://github.com/tigu77/tiguclaw/compare/v0.41.0...v0.42.0

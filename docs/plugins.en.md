@@ -273,7 +273,7 @@ if (a.ok) host.log(a.text);                     // ★using `a` directly prints 
 
 `ask` is deliberately narrow — you can't pick a model or provider. The user's profile settings
 decide that, so your plugin keeps working whichever backend they switch to. The conversation
-key isn't a parameter either; it's derived as `<plugin>:<scope>`, so you can't reach someone
+key isn't a parameter either; it's derived as `plugin:<name>:<scope>`, so you can't reach someone
 else's conversation.
 
 **Want to do something periodically?** Just use `setInterval`. Nothing stops you — clean it up

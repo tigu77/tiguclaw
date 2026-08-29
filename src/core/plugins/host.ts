@@ -252,10 +252,11 @@ export interface PluginHost {
    *  층에서 깨진다. 재보니 좁혀도 잃는 게 없다 — 우리 원형 둘(`scheduler`·`file-watch`)이
    *  실제로 쓰는 건 **28개 중 4개**뿐이고, 그나마 `channel` 엔 자기 이름을 넣는다.
    *  그래서 채널과 대화 좌표는 **인자가 아니라 플러그인 정체성에서 파생**시킨다.
-   * ★도구는 기본 **0개**. 필요하면 `needs.tools` 에 적는다(정태님 결정 2026-08-29).
+   * ★**도구는 언제나 0개다.** 한때 `needs.tools` 로 좁힐 수 있게 했다가 되돌렸다
+   *  (`toolPolicyFor` 주석 참조) — 적으면 모르는 권한으로 거부된다.
    *
    * @param scope 같은 플러그인 안에서 대화를 가르고 싶을 때(기본 `"default"`).
-   *              실제 좌표는 `<plugin>:<scope>` 이므로 남의 대화엔 못 닿는다.
+   *              실제 좌표는 `plugin:<이름>:<scope>` 이므로 남의 대화엔 못 닿는다.
    */
   ask(input: { prompt: string; scope?: string }): Promise<
     { ok: true; text: string } | { ok: false; error: string }

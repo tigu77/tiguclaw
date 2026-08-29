@@ -115,9 +115,14 @@ export const check: RegressionCheck = {
         (src.includes("claimToolNames") || /!toolsNone && reaches\("plugins"/.test(src));
       if (!usesShared && !ownGuard) unguarded.push(label);
     }
+    // ★**단언문을 검사까지로 좁혔다** (2026-08-29, 2라운드 P-5). 종전엔 *"세 어댑터가 전부
+    //  코어를 지킨다"* 고 적었는데 **거짓이었다** — openai 는 `claimToolNames` 를 안 쓰고,
+    //  SDK 가 중복 도구 이름에 `UserError` 를 던져 **턴 전체가 죽는다**(`@openai/agents-core`
+    //  `mcp.js` 확인). 검사가 실제로 보는 건 *"도구 0 턴을 막는가"* 뿐이므로 그렇게만 적는다.
+    //  코어 이름 보호의 어댑터별 비대칭은 백로그다([[project_openai_adapter_parity]]).
     out.push(
       assert(
-        "★세 어댑터가 전부 **도구 0 턴을 막고 코어를 지킨다**(공용 판정을 쓰거나, 자기 방식으로 둘 다) — 하나라도 빠지면 그 백엔드에서만 새는 비대칭이 생긴다",
+        "★세 어댑터가 전부 **도구 0 턴에 플러그인을 안 싣는다**(공용 판정을 쓰거나 자기 `!toolsNone` 가드로) — 하나라도 빠지면 분류·엔드포인트 턴이 그 백엔드에서만 플러그인 도구를 받는다. ★코어 **이름** 보호는 어댑터마다 다르다(claude=떨어뜨림 · codex=먼저 잡은 쪽 · openai=미보호) — 이 단언은 거기까진 말하지 않는다",
         unguarded.length === 0,
         unguarded.length === 0 ? "claude=공용판정 · codex/openai=자기 가드" : `★무방비: ${unguarded.join(", ")}`,
       ),

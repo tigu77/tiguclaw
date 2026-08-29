@@ -16,9 +16,15 @@
  *  코어가 이기는데 **claude 만 진다** — 어댑터별로 안전성이 다르면 그건
  *  [[feedback_every_feature_llm_agnostic]] 위반이다.
  *
- * ★그래서 **판단을 여기 하나로** 옮긴다. 세 어댑터가 각자 손으로 하던 것을 한 함수로 모으면
- *  ⓐ 갈리지 않고 ⓑ **회귀가 실제로 돌려볼 수 있다**(어댑터 안에 인라인이면 모델을 띄워야
- *  검사가 된다 — principle-check Q7 의 "검사가 껄끄러우면 코드가 잘못 놓인 것").
+ * ★그래서 **판단을 함수로** 뽑았다 — 어댑터 안에 인라인이면 검사하려고 모델을 띄워야 하고,
+ *  그러면 회귀가 약해진다(principle-check Q7).
+ *
+ * ★**지금 이걸 쓰는 것은 claude 하나다** (2026-08-29, 2라운드 G-4 정정). 처음엔 이 머리말이
+ *  *"세 어댑터가 같은 것을 쓴다"* 고 적었는데 **거짓이었다** — codex 는 `!toolsNone` 블록 +
+ *  `claimToolNames` 로 자기 방식으로 지키고, **openai 는 코어 이름을 안 지킨다**(SDK 가
+ *  중복 도구 이름에 `UserError` 를 던져 턴 전체가 죽는다). 세 어댑터의 안전성은 아직
+ *  다르고, 그 사실을 여기 적어두는 게 맞다([[project_openai_adapter_parity]]: 헤더가 거짓인
+ *  부류를 이 레포는 이미 겪었다).
  */
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 
@@ -65,7 +71,20 @@ export const decidePluginMcp = (
   return { servers, shadowed, reason: "ok" };
 };
 
-/** 사람이 읽는 한 줄 — 세 어댑터가 **같은 문장**을 쓴다. */
+/** 사람이 읽는 한 줄. */
 export const describeShadowed = (plugin: readonly string[]): string =>
   `[plugin-mcp] 코어와 이름이 겹쳐 실지 않았습니다: ${plugin.join(", ")} — ` +
   `플러그인 이름을 바꾸세요(코어 도구가 우선합니다).`;
+
+/**
+ * 충돌 경고 — **좌표당 한 번만**. 매 턴 찍으면 배경 소음이 되고, 그러면 진짜일 때 아무도
+ * 안 본다([[feedback_logs_must_stand_alone]]). 이 레포엔 이미 같은 관용구가 있다
+ * (`threadkey.ts` 의 `warnBindingLookupOnce`).
+ */
+const warned = new Set<string>();
+export const warnShadowedOnce = (plugin: readonly string[]): void => {
+  const key = [...plugin].sort().join(",");
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(describeShadowed(plugin));
+};

@@ -389,7 +389,15 @@ export const wirePlugin = async (
         //  *"끔"* 이 뜨고 목록에서 사라지는데 **cron 은 계속 돌아 계속 발화했다**(실측:
         //  dispose 전 tick 4 → 후 9). 번들 `scheduler`·`file-watch` 가 둘 다 `trigger` 이고
         //  `stop()` 을 구현해 뒀는데 그게 한 번도 안 불렸다.
-        if (typeof inst.stop === "function") {
+        // ★**플러그인당 한 번만** 넣는다 (2026-08-29, 2라운드 P-2). `stop` 등록이
+        //  capability 루프 안에 있어서, `kind:["channel","observer"]` 인 `http-bridge` 나
+        //  다중 선언 플러그인은 `stop()` 을 **N번** 받았다(실측 2·3회). 지금은 번들 둘이
+        //  멱등이라 피해가 0이지만, 계약이 조용히 "capability 당 1회" 로 바뀌었고
+        //  `dispose` 의 `catch {}` 가 사유를 삼켜 서드파티가 던져도 무음이다.
+        if (
+          typeof inst.stop === "function" &&
+          !serviceStops.some((x) => x.name === lp.manifest.name)
+        ) {
           undo.push(async () => {
             const i = serviceStops.findIndex((x) => x.name === lp.manifest.name);
             if (i >= 0) {

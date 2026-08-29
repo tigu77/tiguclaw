@@ -261,6 +261,12 @@ export const scanPluginManifests = async (
       if (m === undefined || typeof m !== "object") continue;
       if (typeof m.name !== "string" || typeof m.entry !== "string") continue;
       if (typeof m.schemaVersion !== "number") continue;
+      // ★**여기에도 이름 가드가 있어야 한다** (2026-08-29, 2라운드 P-1). 종전엔
+      //  `loadPlugins` 에만 걸어놨는데, **경로를 실제로 만드는 소비처**는 이쪽을 탄다 —
+      //  `listAllPlugins`(대시보드 목록)와 브리지 `set-setting` 이 여기서 이름을 받아
+      //  `<home>/plugins/<name>/settings.json` 을 쓴다. 실측으로 `../../ESCAPED` 가
+      //  **홈 밖에 파일을 만들었다.** 가드는 이름이 **쓰이는 곳**에 건다.
+      if (!isValidPluginName(m.name)) continue;
       const capabilities =
         typeof m.kind === "string"
           ? [m.kind]

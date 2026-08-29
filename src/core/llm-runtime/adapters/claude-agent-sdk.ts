@@ -106,7 +106,7 @@ import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
-import { decidePluginMcp, describeShadowed } from "../plugin-mcp-merge.js";
+import { decidePluginMcp, warnShadowedOnce } from "../plugin-mcp-merge.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
@@ -505,6 +505,11 @@ export const runClaude = async (
     neutralTurn && (input.attachments?.length ?? 0) > 0
       ? { "file-read": createFileOpsMcpServer(cwd, input.threadKey, { readsOnly: true }) }
       : {};
+  // ★최종 리터럴에서 **플러그인 뒤에** 붙는 코어 서버들 (2026-08-29, 2라운드 P-3).
+  //  여기 이름과 아래 키가 갈리면 그 이름의 플러그인이 **조용히 사라진다** — 충돌로 안
+  //  잡혀 경고가 안 나가고, 뒤에 오는 코어에 덮이고, 그런데 `find_capabilities` 는 계속
+  //  광고한다. 회귀가 이 목록과 실제 리터럴을 **대조**한다.
+  const LATE_CORE_MCP_KEYS = ["file-ops", "todo", "find-capabilities"] as const;
   const leanMcpServers: Options["mcpServers"] = toolsNone
     ? { ...externalToolsMcp, ...neutralReadMcp }
     : {
@@ -604,11 +609,11 @@ export const runClaude = async (
   //  판정은 `plugin-mcp-merge.ts` 한 곳에 있고 세 어댑터가 같은 것을 쓴다.
   const pluginMcp = decidePluginMcp(
     input.extraMcpServers,
-    Object.keys(leanMcpServers),
+    [...Object.keys(leanMcpServers), ...LATE_CORE_MCP_KEYS],
     toolsNone,
     reaches("plugins", turnKind),
   );
-  if (pluginMcp.shadowed.length > 0) console.warn(describeShadowed(pluginMcp.shadowed));
+  if (pluginMcp.shadowed.length > 0) warnShadowedOnce(pluginMcp.shadowed);
   const mcpServersWithPlugins: Options["mcpServers"] = {
     ...leanMcpServers,
     ...pluginMcp.servers,

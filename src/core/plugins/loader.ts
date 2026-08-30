@@ -313,6 +313,25 @@ export const loadPlugins = async (
     const pluginDir = path.resolve(rootDir, entryName);
     try {
       const pkgPath = path.join(pluginDir, "package.json");
+      // ★**`package.json` 이 없으면 플러그인이 아니다 — 에러가 아니다** (2026-08-31).
+      //  같은 질문에 답이 둘이었다: `scanPluginManifests` 는 이걸 *"플러그인 아님"* 으로
+      //  조용히 넘기는데(그리고 바로 아래 `마커 부재` 도 그렇게 넘긴다) 여기만 ENOENT 를
+      //  잡아 `[error]` 로 찍었다.
+      // ★그런데 **코어가 바로 그 자리에 폴더를 만든다** — `settingsFile`·`dataDir` 가 둘 다
+      //  `<home>/plugins/<이름>/` 이다. 그래서 `weather` 설정을 한 번 바꾸기만 해도 매 부팅
+      //  `[error] weather load: ENOENT …` 가 찍힌다. `weather` 는 멀쩡한데 깨진 것처럼
+      //  읽히고, 로그가 1차 진단면인 이 레포에서 가짜 에러는 진짜를 묻는다
+      //  ([[feedback_logs_must_stand_alone]]).
+      // ★**조용히 넘기지는 않는다.** `index.js` 만 넣고 `package.json` 을 빠뜨린 설치는
+      //  진짜 실수이고, 그건 여전히 흔적이 있어야 한다. 그래서 **없애는 것은 `[error]` 라는
+      //  거짓말이지 신호가 아니다** — 사실대로 한 줄 남긴다.
+      if (!(await fs.stat(pkgPath).then(() => true).catch(() => false))) {
+        console.log(
+          `[plugin-loader] ${entryName}: package.json 이 없어 플러그인이 아닙니다 ` +
+            `— 설정·데이터 폴더면 정상입니다.`,
+        );
+        continue;
+      }
       const raw = await fs.readFile(pkgPath, "utf8");
       const pkgRaw = JSON.parse(raw) as Record<string, unknown>;
       const pkg = pkgRaw as { tiguclaw?: unknown; version?: unknown };

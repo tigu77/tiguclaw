@@ -19,10 +19,11 @@
  *  (0 과 구분하려고 일부러 그렇게 설계했다). 모를 때 켜면 가짜 "작업 중"이 영원히 남는다.
  */
 import { readFile } from "node:fs/promises";
+import { readSource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const ACTIVITY = "../../../packages/dashboard/js/activity.js";
-const BRIDGE = "../../../plugins/http-bridge/index.ts";
+const BRIDGE = "../../../plugins/http-bridge";
 const INDEX_HTML = "../../../packages/dashboard/index.html";
 const TABS = "../../../packages/dashboard/js/tabs.js";
 const AXIS = "../../../packages/dashboard/js/axis1-options.js";
@@ -33,7 +34,8 @@ export const check: RegressionCheck = {
     "새로고침 후 진행 중 턴의 작업중 표시·탭 배지가 복원된다 — 서버는 아는데 화면이 안 묻던 것",
   run: async (): Promise<Assertion[]> => {
     const src = await readFile(new URL(ACTIVITY, import.meta.url), "utf8");
-    const bridge = await readFile(new URL(BRIDGE, import.meta.url), "utf8");
+    // ★디렉터리다 — 공용 리더가 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일로 갈렸다).
+    const bridge = await readSource(BRIDGE);
     const html = await readFile(new URL(INDEX_HTML, import.meta.url), "utf8");
     const tabs = await readFile(new URL(TABS, import.meta.url), "utf8");
     const axis = await readFile(new URL(AXIS, import.meta.url), "utf8");

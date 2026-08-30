@@ -69,51 +69,71 @@ export const check: RegressionCheck = {
     //  `Identifier 'X' has already been declared` 로 **통째로** 죽는다. 위 ①의 파일 단위
     //  파싱으로는 원리적으로 안 보인다.
     //
-    //  ★이 판정은 `src/scripts/verify-dashboard-js.mjs` 에 **이미 정확하게** 있었다. 문제는
-    //   **아무도 안 부른다는 것**이었다 — package.json 정의 1곳뿐이고 CI·배포 어디서도 안
-    //   돈다(전수 조사 확인). `feedback_gate_must_actually_run` 과 같은 형상인데 이번엔
-    //   오탐이 아니라 **호출부 부재**다. 그 스크립트는 `verify-` 접두라 public 싱크에서
-    //   제외되므로 회귀가 부를 수 없다 — 그래서 **판정을 자동으로 도는 자리로 옮긴다.**
+    //  ★이 판정은 `src/scripts/verify-dashboard-js.mjs` 에 **이미 정확하게** 있었다 —
+    //   이어붙여 한 번에 파싱하는 것(브라우저 전역 스코프와 같은 조건). 문제는 **아무도 안
+    //   부른다는 것**이었다(package.json 정의 1곳뿐, CI·배포 어디서도 안 돌았다).
+    //
+    // ★**옮길 때 파서가 아니라 짐작을 옮겼다** (2026-08-31, 적대 검토 F5). 여기 온 것은
+    //  들여쓰기 6칸 정규식이었고, 그게 함수 안 지역변수를 최상위로 세는 바람에 IIFE 예외를
+    //  덧대야 했다 — **어림을 옮기고 어림의 구멍을 덧댄 것**이다. 실측으로 두 갈래가 뚫렸다:
+    //    (a) `channel-hints.js` 끝에 **4칸** 들여쓰기로 `const CATEGORIES` → 스위트 초록.
+    //        이 레포엔 포매터·린터가 **없어서** 6칸을 강제하는 게 아무것도 없다 — 새 파일을
+    //        2칸/4칸으로 쓰면 그 파일 전체가 사각이 된다.
+    //    (b) IIFE 앵커(`(function(){ … })();`)를 유지한 채 진짜 전역을 하나 만들면 파일이
+    //        통째로 제외된다.
+    //  둘 다 브라우저에선 뒤 파일이 `SyntaxError` 로 죽고, 증상은 콘솔의 `X is not defined`
+    //  하나뿐이다 — 이 검사가 처음 생긴 원인("showEndpoints is not defined")과 같은 그림이다.
+    //
+    // ★그래서 **파서로 판정한다.** 들여쓰기는 최상위의 근사일 뿐인데 파서는 그걸 정확히
+    //  안다. 근사가 없으니 IIFE 예외도 필요 없다 — IIFE 안은 애초에 전역이 아니라서 파서가
+    //  충돌로 세지 않는다. 이름은 실패했을 때만, **역시 파싱으로** 찾는다(누적 파싱 → 처음
+    //  깨지는 파일 / `let <이름>;` 탐침 → 먼저 선언한 파일). 메시지를 위해 짐작을 되살리지
+    //  않는다.
     const manifest = JSON.parse(
       await readFile(new URL("_manifest.json", dir), "utf8"),
     ) as string[];
-    // 최상위 선언 = 들여쓰기 6칸(이 레포 대시보드 js 관습). 함수 안은 더 깊다.
-    const TOP_DECL = /^ {6}(?:const|let|class)\s+([A-Za-z_$][\w$]*)/;
-    /**
-     * ★**IIFE 로 감싼 모듈은 전역을 안 만든다** — 검사 대상이 아니다 (2026-08-23).
-     *
-     *  들여쓰기 6칸을 최상위로 보는 건 이 레포 관습에 기댄 어림이다. 그 관습을 안 따르는
-     *  파일(예: 2칸 들여쓰기 + 전체 IIFE)에서는 **함수 안 지역변수가 6칸에 걸려** 충돌로
-     *  오인된다 — 실제로 `chat-search.js` 의 `const r`·`const data` 가 그렇게 잡혔다.
-     *  그 파일은 전역을 하나도 안 만들므로 위험이 0인데 빨간불이 났다.
-     *  ★오탐은 게이트를 죽인다(`feedback_gate_must_actually_run` — 상시 FAIL 이면 아무도
-     *   안 본다). 위험이 없는 형태는 대상에서 뺀다.
-     */
-    const isIifeWrapped = (src: string): boolean =>
-      /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*\s*\((?:\(\)|function)/.test(src) &&
-      /\}\)\(\);?\s*$/.test(src.trimEnd());
-    const owner = new Map<string, string>();
-    const dupes: string[] = [];
-    let skipped = 0;
+    const sources: Array<{ file: string; src: string }> = [];
     for (const f of manifest) {
-      const src = await readFile(new URL(f, dir), "utf8");
-      if (isIifeWrapped(src)) { skipped += 1; continue; }
-      for (const line of src.split("\n")) {
-        const m = TOP_DECL.exec(line);
-        if (m === null) continue;
-        const name = m[1] ?? "";
-        const first = owner.get(name);
-        if (first !== undefined) dupes.push(`${name}: ${first} ↔ ${f}`);
-        else owner.set(name, f);
+      sources.push({ file: f, src: await readFile(new URL(f, dir), "utf8") });
+    }
+    const join = (upTo: number): string =>
+      sources
+        .slice(0, upTo)
+        .map(({ file, src }) => `\n// ==== ${file} ====\n${src}`)
+        .join("");
+    const parseCombined = (code: string): string | null => {
+      try {
+        new vm.Script(code, { filename: "dashboard-combined.js" });
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    };
+    const combinedError = parseCombined(join(sources.length));
+    let where = "";
+    if (combinedError !== null) {
+      const culprit = sources.findIndex((_, i) => parseCombined(join(i + 1)) !== null);
+      const dup = /Identifier '([^']+)' has already been declared/.exec(combinedError);
+      if (dup !== null && culprit >= 0) {
+        const name = dup[1] ?? "";
+        const first = sources
+          .slice(0, culprit)
+          .find(({ src }) => parseCombined(`${src}\nlet ${name};`) !== null);
+        where = ` · '${name}' 먼저 선언 ${first?.file ?? "(못 찾음)"} ↔ ${sources[culprit]?.file ?? "?"}`;
+      } else if (culprit >= 0) {
+        where = ` · 깨지는 파일 ${sources[culprit]?.file ?? "?"}`;
       }
     }
     out.push(
       assert(
-        `★파일 간 최상위 이름 충돌 0(뒤 파일이 통째로 죽는다 · ${manifest.length}개 대조)`,
-        dupes.length === 0,
-        dupes.length === 0
-          ? `최상위 이름 ${owner.size}개 전부 유일(IIFE 모듈 ${skipped}개는 전역 0이라 제외)`
-          : `★충돌: ${dupes.join(" · ")}`,
+        `★파일 간 최상위 **렉시컬** 충돌 0(뒤 파일이 통째로 죽는다 · ${manifest.length}개를 이어붙여 파싱)`,
+        combinedError === null,
+        // ★문구가 판정보다 넓으면 안 된다 (적대 검토 F7). 파서가 잡는 건 `const`·`let`·
+        //  `class` 이고, 최상위 `function`·`var` 중복은 **에러가 아니라 조용한 덮어쓰기**다.
+        //  종전 문구("중복 최상위 선언 0")는 안 보는 것까지 봤다고 말했다.
+        combinedError === null
+          ? `${String(manifest.length)}개 통합 파싱 OK — const·let·class 기준(function·var 중복은 파서가 안 잡는다)`
+          : `★${combinedError}${where}`,
       ),
     );
 

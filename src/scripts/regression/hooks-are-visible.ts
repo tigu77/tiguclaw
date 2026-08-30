@@ -17,14 +17,16 @@
  * 여기서는 매번 싸게 배선을 지킨다.
  */
 import { readFile } from "node:fs/promises";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = async (rel: string): Promise<string> => {
   try {
-    return await readFile(path.join(REPO, rel), "utf8");
+    return readSourceSync(rel);
   } catch {
     return "";
   }
@@ -37,7 +39,7 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const consts = await read("packages/dashboard/js/constants.js");
     const inv = await read("src/core/plugins/inventory.ts");
-    const bridge = await read("plugins/http-bridge/index.ts");
+    const bridge = await read("plugins/http-bridge");
     const projView = await read("packages/dashboard/js/view-projects.js");
     if (consts === "" || inv === "") {
       return [assert("소스 부재 시 통과(배포본 — 오탐 0)", true, "★확인 못 함")];

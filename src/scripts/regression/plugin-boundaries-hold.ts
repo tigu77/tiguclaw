@@ -135,6 +135,41 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★`readNeeds` 거부 갈래 전수 ─────────────────────────────────────────
+    // ★선언을 읽는 자리는 **거부가 본체**다 — 통과 경로만 재면 오타·잘못된 타입이 조용히
+    //  `{}` 가 되고, 그러면 플러그인은 *"적었는데 왜 안 되지"* 를 겪는다. 여섯 갈래를
+    //  **실행**해서 각각이 말을 하는지 본다(문자열 대조가 아니라 반환값 판정).
+    {
+      const cases: Array<[string, unknown, boolean]> = [
+        ["없으면 조용히 빈 것", undefined, false],
+        ["객체가 아니면 거부", "network", true],
+        ["배열이면 거부", ["network"], true],
+        ["모르는 키는 거부(오타를 삼키지 않는다)", { netwrok: ["a"] }, true],
+        ["network 가 배열이 아니면 거부", { network: "api.example.com" }, true],
+        ["network 원소가 문자열이 아니면 거부", { network: [1] }, true],
+        ["ui 가 허용 값이 아니면 거부", { ui: ["sidebar"] }, true],
+        ["boolean 자리에 문자열이면 거부", { outbound: "yes" }, true],
+        ["제대로 적으면 통과", { network: ["a.example.com"], ui: ["chat-widget"], outbound: true }, false],
+      ];
+      const wrong = cases
+        .filter(([, raw, wantProblem]) => readNeeds(raw).problems.length > 0 !== wantProblem)
+        .map(([n]) => n);
+      out.push(
+        assert(
+          `★★선언을 읽는 자리가 **거부를 말한다**(${String(cases.length)}갈래 실행) — 조용히 \`{}\` 로 접으면 플러그인 작성자는 "적었는데 왜 안 되지" 를 겪고, 그 시간은 전부 그 사람 것이다`,
+          wrong.length === 0,
+          wrong.length === 0 ? `${String(cases.length)}갈래 전부 선언대로` : `★어긋남: ${wrong.join(", ")}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★거부해도 **나머지는 살린다** — 한 키가 틀렸다고 전부 버리면 고칠 단서가 준다",
+          readNeeds({ network: ["ok.example.com"], outbound: "yes" }).needs.network?.length === 1,
+          JSON.stringify(readNeeds({ network: ["ok.example.com"], outbound: "yes" })),
+        ),
+      );
+    }
+
     return out;
   },
 };

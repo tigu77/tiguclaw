@@ -667,7 +667,7 @@
       .act-icon { font-size:0.8125rem; } .act-label { color:var(--text); font-weight:700; flex:none; } .act-meta { color:var(--text-dim); font-size:0.625rem; margin-left:auto; white-space:nowrap; font-family:var(--font-mono); flex:none; }
       .act-detail { color:var(--text-dim); font-size:0.625rem; font-family:var(--font-mono); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       /* 🛠 스킬 스텝 배지 (2026-07-14) — invoke_skill 도구 스텝을 뚜렷한 스킬 표시로 승격.
-         라이브(act-skill)·워커/서브(bg-skill)·이력 복원(hist-skill) 공통. 일반 도구 스텝 무영향. */
+         라이브(act-skill)·매니저/서브(bg-skill)·이력 복원(hist-skill) 공통. 일반 도구 스텝 무영향. */
       .act-skill, .bg-skill, .hist-skill { color:var(--skill-fg); background:rgb(var(--skill-rgb) / .20); border-radius:5px; padding:0 6px; box-shadow:inset 0 0 0 1px rgb(var(--skill-rgb) / .45); }
       /* 도구 실행시간(#3) — phase:"end" 활동이 시작 스텝에 붙이는 뱃지. 임계 초과면 warn 틴트. */
       .dur-badge { color:var(--accent-2); font-size:0.625rem; font-weight:800; font-family:var(--font-mono); flex:none; margin-left:6px; }
@@ -744,7 +744,7 @@
       .act-bg-dot.running { background:var(--accent-2); animation:tc-pulse 1.5s ease-in-out infinite; }
       .act-bg-dot.done { background:var(--good); }
       .act-bg-dot.error { background:var(--diff-del-fg); }
-      /* 백그라운드 셸 인라인 칩(표면 A, ADR 2026-07-17 §5-A / Phase 3b) — 워커/서브 스폰 칩
+      /* 백그라운드 셸 인라인 칩(표면 A, ADR 2026-07-17 §5-A / Phase 3b) — 매니저/서브 스폰 칩
          (.act-bg-link, 보라)과 시각 구분(청록) — 이건 프로세스, 그건 잡. */
       .act-shell-chip { display:inline-flex; align-items:center; gap:5px; margin-left:8px; padding:1px 7px; border-radius:8px; font-size:0.625rem; font-weight:800; color:var(--teal); background:rgb(var(--teal-rgb) / .12); border:1px solid rgb(var(--teal-rgb) / .3); user-select:none; }
       .act-shell-chip-dot { width:6px; height:6px; border-radius:50%; background:var(--text-dim); flex:none; }
@@ -979,7 +979,7 @@
          항상 소속). 상태필터(위)와 독립 클래스 → 두 규칙이 겹쳐 AND 로 숨김(둘 중 하나만 걸려도 숨김). */
       .bg-list.scope-session .bg-job:not(.bg-in-scope) { display:none; }
       .bg-empty { color:var(--text-mute); font-style:italic; font-size:0.75rem; padding:20px 6px; text-align:center; }
-      /* ── 셸/프로세스 그룹 본문(ADR 2026-07-17 §5, Phase 3b-2) — 워커/에이전트 잡 리스트(#bg-list,
+      /* ── 셸/프로세스 그룹 본문(ADR 2026-07-17 §5, Phase 3b-2) — 매니저/에이전트 잡 리스트(#bg-list,
          위)와 물리적으로 분리된 별도 그룹(데이터 레인 분리 유지: shellRegistry ≠ jobCards).
          작업 본문(#bg-jobs-body)이 내용 높이만 차지(flex-grow:0) → 이 셸 그룹이 바로 밑에 붙는다.
          이 본문은 max-height 로 bound 되 셸이 많아지면 자체 스크롤 — 잡 리스트 로직은 무변경. */
@@ -998,7 +998,7 @@
       .bg-job.done { border-left-color:var(--good); }
       .bg-job.failed { border-left-color:var(--danger-fg); }
       .bg-job.cancelled { border-left-color:var(--text-dim); opacity:.85; }
-      /* 서브에이전트 잡 — 워커와 시각적 구분(보라 좌측 강조 + 배지). status 색은 top-border 로,
+      /* 서브에이전트 잡 — 매니저와 시각적 구분(보라 좌측 강조 + 배지). status 색은 top-border 로,
          kind 는 좌측 accent+배지로 직교 표현. .agent.done 등 status 색이 kind 색을 덮지 않게
          .agent 는 border-left 를 항상 보라 유지(status 는 뱃지 텍스트로 이미 구분). */
       .bg-job.agent { border-left-color:var(--accent-2); }
@@ -1006,8 +1006,8 @@
       .bg-job.agent.done { border-left-color:var(--accent-2); }
       .bg-job.agent.failed { border-left-color:var(--danger-fg); }
       .bg-job.agent.cancelled { border-left-color:var(--accent-2); opacity:.85; }
-      /* kind 배지 — 워커=중립 회색(기본), 서브에이전트=보라(.agent 승격 시). agents 그리드
-         .agent-card-kind 패턴과 동형. 워커도 "📦 워커" 배지가 항상 보인다(2026-07-14). */
+      /* kind 배지 — 매니저=중립 회색(기본), 서브에이전트=보라(.agent 승격 시). agents 그리드
+         .agent-card-kind 패턴과 동형. 매니저도 "📦 매니저" 배지가 항상 보인다(2026-07-14). */
       .bg-job-kind { flex:none; font-size:0.5625rem; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgb(var(--fg-rgb) / .05); color:var(--text-mute); border:1px solid var(--border); white-space:nowrap; }
       .bg-job.agent .bg-job-kind { background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); border-color:rgb(var(--accent-2-rgb) / .4); }
       /* 모델 티어 칩 — kind 칩과 동형(작은 pill). 티어별 색상 힌트(data-tier). */
@@ -1133,7 +1133,7 @@
          "모델 활동이 아니라 사람이 얹은 지시" 임을 구분. 전달 못 된 시도는 사유를 흐리게. */
       .bg-steer { color:var(--steer-fg); background:rgb(var(--steer-rgb) / .20); border-radius:5px; padding:0 6px; box-shadow:inset 0 0 0 1px rgb(var(--steer-rgb) / .45); }
       .bg-steer-miss { color:var(--text-mute); font-style:italic; }
-      /* ── 에이전트 뷰(메인 nav destination) — 진행 중 워커+서브를 크게. 오른쪽 드로어와 동일
+      /* ── 에이전트 뷰(메인 nav destination) — 진행 중 매니저+서브를 크게. 오른쪽 드로어와 동일
          jobCards 데이터를 읽어 렌더(중복 데이터 모델 없음). 필터 토글·경과·마지막 스텝 재사용. */
       /* flex 컬럼 — .page-view min-height:100% + grid align-content:stretch 가 행을 늘려
          헤더·툴바·목록 사이를 벌리던 문제 수정. flex 컬럼은 내용을 위로 자연 스택(gap 유지). */
@@ -1388,15 +1388,15 @@
       .chat-reply .cr-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
       .chat-reply .cr-x { flex:none; cursor:pointer; border:0; background:transparent; color:var(--text-dim); font-size:0.8125rem; line-height:1; padding:0 2px; }
       .chat-reply .cr-x:hover { color:var(--text); }
-      /* 컴포저 백그라운드 작업 인디케이터 — 현재 세션에 워커가 돌면 입력창 위에 노출(클릭=드로어). */
+      /* 컴포저 백그라운드 작업 인디케이터 — 현재 세션에 매니저가 돌면 입력창 위에 노출(클릭=드로어). */
       .chat-bg-active { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:6px 11px; border:1px solid rgb(var(--good-rgb) / .4); background:rgb(var(--good-rgb) / .10); border-radius:999px; font-size:0.6875rem; font-weight:700; color:var(--good); cursor:pointer; align-self:flex-start; }
       .chat-bg-active:hover { border-color:var(--good); background:rgb(var(--good-rgb) / .16); }
       .chat-bg-active[hidden] { display:none; }
-      /* 입력 히스토리 위치(↑/↓ 탐색 중). 워커 스트립과 같은 레인·같은 pill 이되 중립색 —
+      /* 입력 히스토리 위치(↑/↓ 탐색 중). 매니저 스트립과 같은 레인·같은 pill 이되 중립색 —
          상태 알림이 아니라 위치 표시라 시선을 끌면 안 된다. */
       .chat-histind { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:5px 10px; border:1px solid var(--border); background:var(--card); border-radius:999px; font-size:0.6875rem; font-weight:700; color:var(--text-mute); font-variant-numeric:tabular-nums; align-self:flex-start; }
       .chat-histind[hidden] { display:none; }
-      /* 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) — 워커 스트립(위 .chat-bg-active
+      /* 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) — 매니저 스트립(위 .chat-bg-active
          초록)과 별도 레인·별도 색(청록, .act-shell-chip 과 동일 팔레트로 "이건 셸" 일관 신호). */
       .chat-shell-active { border-color:rgb(var(--teal-rgb) / .4); background:rgb(var(--teal-rgb) / .10); color:var(--teal); }
       .chat-shell-active:hover { border-color:var(--teal); background:rgb(var(--teal-rgb) / .18); }

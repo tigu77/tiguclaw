@@ -19,6 +19,8 @@
  *  윈도우 실측: 다운로드 2,011KB → 해제 → `<home>\\bin\\rg.exe` → `ripgrep 14.1.1` 실행 확인.
  */
 import { readFile } from "node:fs/promises";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -27,6 +29,16 @@ const FILEOPS = "../../../src/core/llm-runtime/capabilities/file-ops-mcp.ts";
 const RIPGREP = "../../../src/core/ripgrep.ts";
 const SELFUPDATE = "../../../src/core/self-update.ts";
 const ENTRY = "../../../src/index.ts";
+
+/**
+ * 이 검사가 쓰는 임시 뿌리 — ★**고정 경로를 안 쓴다** (2026-08-30 적대 검토 C조).
+ *
+ * 종전엔 `/tmp/regr-rgtrap` 이었고 시작하자마자 그걸 지웠다. 같은 기계에서 스위트 둘이
+ * 겹치면 한쪽이 지우는 중에 다른 쪽 복사가 들어가 `EACCES` 로 죽는다 — 그러면 `run.ts` 가
+ * `total` 을 안 늘려 **이 검사의 건수가 조용히 사라진다**(실측: 2,371 이 아니라 2,352).
+ * 옆 파일 `_probe-helpers.freePort` 가 같은 이유로 포트를 커널에서 받는다.
+ */
+const trapBase = mkdtempSync(path.join(tmpdir(), "regr-rgtrap-"));
 
 export const check: RegressionCheck = {
   name: "ripgrep-owned",
@@ -58,12 +70,13 @@ export const check: RegressionCheck = {
     })();
 
     const bin = rgBinName();
-    const managed = managedRgPath("/tmp/regr-home");
+    const probeHome = path.join(trapBase, "home");
+    const managed = managedRgPath(probeHome);
     // 우리가 받아두는 자리는 **홈 아래**여야 한다 — 레포/node_modules 는 /update·npm ci 로 날아간다.
     const managedUnderHome =
-      managed.startsWith(path.join("/tmp/regr-home", "bin")) && managed.endsWith(bin);
+      managed.startsWith(path.join(probeHome, "bin")) && managed.endsWith(bin);
     // 없는 홈을 줘도 터지지 않고, 시스템에 있으면 그걸 찾는다(이 기계엔 있다).
-    const found = findRipgrep("/tmp/regr-home-없음");
+    const found = findRipgrep(path.join(trapBase, "home-없음"));
     // ★다운로드를 끄면 **네트워크를 안 탄다**(회귀가 외부에 의존하면 안 된다).
     const offline = await ensureRipgrep("/tmp/regr-home-없음", { download: false });
 
@@ -72,8 +85,7 @@ export const check: RegressionCheck = {
     //  자리(`<home>/bin/rg`)에 있으면 정상 rg 를 **영원히 가린다** — 닥터는 "OK" 를 찍고
     //  Grep/Glob 은 계속 죽고 재실행으로 자가치유가 안 된다.
     const { mkdirSync, writeFileSync, rmSync, chmodSync } = await import("node:fs");
-    const trapBase = "/tmp/regr-rgtrap";
-    rmSync(trapBase, { recursive: true, force: true });
+    // (덫은 위에서 만든 `trapBase` 아래에 둔다 — 아래 `finally` 가 통째로 치운다.)
     const mk = (name: string): string => {
       const h = path.join(trapBase, name);
       mkdirSync(path.join(h, "bin"), { recursive: true });

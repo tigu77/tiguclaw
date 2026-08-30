@@ -35,6 +35,7 @@
  * (거긴 모델 호출 없이 못 태운다).
  */
 import { readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -46,7 +47,8 @@ import { runRegionA } from "../../core/llm-runtime/index.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "plugin-tools-reach-every-turn",

@@ -2,15 +2,23 @@
 
 > 짝 문서: [`core-boundaries.md`](core-boundaries.md) — 부팅·라우팅·권한의 **흐름**.
 
-> **기준 커밋**: `9acfe6e` (2026-08-08) · **작성**: 개발돌쇠, 소스 독해 기반
+> 소스를 읽어 쓴 지도입니다. **정본은 코드**이고, 어긋나면 코드가 맞습니다.
 >
 > 설계의 **정본은 `README.md`** 이고(개발 저장소에선 `docs/architecture.md` ·
 > `docs/decisions/` 도 — ★그 둘은 **배포본에 없다**), 이 문서는
 > 그것을 대체하지 않는다. 여기 담는 것은 **좌표**뿐이다 — "무엇이 어느 파일에 있고, 어디를
 > 건드리면 무엇이 조용히 깨지는가".
 >
-> **★스테일 판정법**: `git rev-list --count 9acfe6e..HEAD` 가 100을 넘으면 좌표가 밀렸다고
-> 보고 §4 표부터 대조하라. 이 문서가 틀린 채 남는 것은 없는 것보다 나쁘다 —
+> **★줄번호를 안 적는다** (2026-08-30). 종전엔 `함수()` 뒤에 줄번호를 괄호로 달고, 머리말이
+> *"기준 커밋 이후 100커밋을 넘으면 밀린 걸로 보라"* 는 **스스로 정한 스테일 게이트**를
+> 뒀다. 그런데 그건 **사람이 손으로 돌리는 게이트**였고 아무도 안 돌렸다 — 실측 시점
+> **549커밋(임계의 5.5배)**, 줄번호 주장 13건 중 **맞는 것 0건**, 밀림 폭 14~245줄.
+> 게이트가 있다는 것과 도는 것은 다르다([[feedback_gate_must_actually_run]]).
+>
+> 그래서 **썩는 좌표를 없애고, 안 썩는 좌표만 남겼다** — 파일 경로와 심볼 이름. 둘 다
+> `grep` 한 줄로 찾을 수 있고 리팩터로 옮겨도 따라간다. 그리고 판정을 **자동으로 도는
+> 자리**로 옮겼다: 회귀 `map-docs-point-at-real-things` 가 이 문서와 짝 문서가 말하는
+> 파일·심볼이 실재하는지 매번 확인한다. 이 문서가 틀린 채 남는 것은 없는 것보다 나쁘다 —
 > `.tiguclaw/analysis-cache/` 가 정확히 그렇게 썩었다(§9).
 
 ---
@@ -32,19 +40,19 @@
 
 ```
 채널(전부 플러그인) — cli · telegram · http-bridge · dashboard
-      │  Channel.start(handler)
+      │ Channel.start(handler)
       ▼
 직렬 큐 enqueueThreadTurn → 슬래시 fast-path → 매크로 → UserPromptSubmit 훅
       ▼
-route()                          ← src/core/router.ts · 순수 운반자, 분기 0
+route() ← src/core/router.ts · 순수 운반자, 분기 0
       ▼
-runClaude → llm-runtime facade   ← src/core/llm-runtime/index.ts
-      ├── spec 해석 · 풀/체인 · 폴백 · 실패분류 · 쿨다운 · 관측   ← facade 전속
+runClaude → llm-runtime facade ← src/core/llm-runtime/index.ts
+      ├── spec 해석 · 풀/체인 · 폴백 · 실패분류 · 쿨다운 · 관측 ← facade 전속
       └── callAdapter(switch) → claude(SDK) │ codex(자체 루프) │ openai
       ▼
 Stop 훅 → outbound sanitize → 채널 reply
       ▼
-SQLite 20테이블                  ← src/store/sessions.ts 단독 소유
+SQLite 20테이블 ← src/store/sessions.ts 단독 소유
 ```
 
 **코어는 5종만 직접 만든다** — 런타임 · 라우터 · 권한 · 채널 인터페이스 · 메모리. 나머지는
@@ -59,9 +67,9 @@ SQLite 20테이블                  ← src/store/sessions.ts 단독 소유
 | 찾는 것 | 이름상 있을 곳 | **실제 위치** |
 |---|---|---|
 | region A 런타임 본체 | `src/core/claude.ts` | 거긴 **18줄 re-export shim**. 실체는 `src/core/llm-runtime/` 전체 |
-| SSE **연결** | `packages/dashboard/js/sse.js` | `js/activity.js:410-449` (`connectStream`). `sse.js` 는 **디스패처만** |
-| 프런트 부트스트랩 | `main.js` 류 | `js/tabs.js:447-450` — `DOMContentLoaded` 없이 top-level 즉시 실행 |
-| 세션 탭 영속 | `js/tabs.js` | `js/activity.js:484-558` |
+| SSE **연결** | `packages/dashboard/js/sse.js` | `js/activity.js-449` (`connectStream`). `sse.js` 는 **디스패처만** |
+| 프런트 부트스트랩 | `main.js` 류 | `js/tabs.js-450` — `DOMContentLoaded` 없이 top-level 즉시 실행 |
+| 세션 탭 영속 | `js/tabs.js` | `js/activity.js-558` |
 | 축1 선택지 | `js/axis1-options.js` | 헤더 주석만 그렇고 내용은 **진행표시 + 낙관적 큐 버블** |
 
 ★**주석도 믿지 마라.** `packages/dashboard/index.ts` 주석은 "read 토큰 / write 토큰 / admin
@@ -78,7 +86,7 @@ SQLite 20테이블                  ← src/store/sessions.ts 단독 소유
 | 모든 `CREATE TABLE` (20테이블) | `src/store/sessions.ts` — 나머지 14개 store 파일은 CRUD 헬퍼뿐 |
 | 시스템/유저 프롬프트 조립 | `src/core/prompt-assembly.ts` |
 | 실패 분류 · 폴백 · 쿨다운 · 턴 관측 | `src/core/llm-runtime/index.ts` (facade **전속**) |
-| 3어댑터 공통 sysprompt 본문 | `src/core/llm-runtime/capabilities/_shared-sysprompt.ts` |
+| 3어댑터 공통 sysprompt 본문 | `src/core/llm-runtime/adapters/_shared-sysprompt.ts` |
 | SDK 서브에이전트 도구명 | `src/core/llm-runtime/subagent-tools.ts` → `SDK_SUBAGENT_TOOLS = ["Agent","Task"]` |
 | 능력명 디렉터리 탈출 방어 | `capabilities/_names.ts` → `isSafeCapabilityName` |
 | 자산 우선순위(project>user>plugin>builtin) | `capabilities/dedup-by-source.ts` |
@@ -99,7 +107,7 @@ SQLite 20테이블                  ← src/store/sessions.ts 단독 소유
 ### LLM 런타임
 어댑터 인터페이스는 `run()` **1면**뿐이고, 나머지 7면(세션 재개 · 도구 실행 · MCP 등록 ·
 permission · 훅 · 자동발견 · 스트림)은 **의도적으로 어댑터 안에 캡슐화**돼 있다
-(`types.ts:8-10`).
+(`types.ts-10`).
 
 | 축 | claude | codex |
 |---|---|---|
@@ -174,7 +182,7 @@ export class**. `kind` 는 `channel|observer|trigger|service` 중 하나 이상(
 | 메모리 인덱스 8192바이트 초과 | 조용히 잘리고 검색으로만 도달 | 규범을 메모리에 두면 안 되는 이유 |
 | 쿨다운을 메모리 Map 으로만 판정 | 재인증 후에도 안 풀리는 **자기 잠금** | 진실은 DB, Map 은 폴백 캐시 |
 | 통지 좌표에 `channel` 사용 | `notifyDest` 를 무시해 알림이 **조용히 미배달** | — |
-| 프런트 함수를 다른 파일로 이동 | TDZ → **채팅 통째 백지** | `js/util.js:21-33` 에 실측 수치 |
+| 프런트 함수를 다른 파일로 이동 | TDZ → **채팅 통째 백지** | `js/util.js-33` 에 실측 수치 |
 | SVG 첨부를 인라인 서빙 | 같은 오리진 스크립트 실행 → `?token=` **브리지 토큰 탈취**(실증됨) | 콘텐츠타입 매핑에서 의도적 제외 |
 | 텔레그램에 MarkdownV2 재도입 | 표 셀 하이픈 등에서 parse 400 → **포맷 전체 손실** | 2026-07-23 에 HTML 로 되돌림 |
 
@@ -184,23 +192,27 @@ export class**. `kind` 는 `channel|observer|trigger|service` 중 하나 이상(
 
 | 목적 | 명령 | 비고 |
 |---|---|---|
-| 검증 | `npm run test:regression` | 1,551건. 부담 없이 자주 |
+| 검증 | `npm run test:regression` | 부담 없이 자주 (건수는 스위트가 스스로 찍습니다) |
 | 타입체크 | `typecheck` · `typecheck:bin` | `typecheck` 가 **배포되는 코드 전부**(src·plugins·packages, 범위는 `tsconfig.build.json` 에서 상속). 2026-08-22 이전엔 src 만 봐서 컴파일 안 되는 코드가 초록으로 커밋됐다 |
-| 배포 | `npm run deploy:dev` | ★**이것만.** `npm run deploy` 는 셸 env 가 새어 엉뚱한 인스턴스를 겨눈다 |
+| 반영 | `npm run build:prod` → `daemon:restart` | 고친 코드를 돌고 있는 데몬에 올린다 |
 | 데몬 | `daemon:restart/stop/status/logs` | `bin/daemon.mjs` (의존성 프리) |
 
-**`npm start` 는 죽은 스크립트다** — `dist/index.js` 를 가리키는데 실제 진입점은
-`dist/src/index.js` 다.
+**`npm run build` 는 빌드가 아니라 게이트다** — 순수 `tsc`(=`tsconfig.json`, `rootDir: src`)
+라서 *"`src/` 가 `src/` 밖을 정적으로 짚지 않는가"*(TS6059)를 보는 **유일한** 자리다.
+`typecheck`·`build:prod` 는 스코프가 넓어(`src`+`plugins`+`packages`) 그 위반을 못 본다.
+진짜 배포 빌드는 **`build:prod`** 뿐이고, 사용자는 둘 다 안 친다(`tiguclaw update` 가 한다).
+
+> ★2026-08-30 까지 이 게이트는 **dev 에서 상시 빨강**이었다 — 회귀 하나가 `plugins/` 를
+> 짚어서다. 상시 빨강은 아무도 안 보고, 그동안 그 실패한 빌드가 **플러그인 소스 트리에
+> `.js`·`.d.ts` 를 뱉고 있었다**(`plugin-public-surface` 가 잡았다). 게이트를 넓히는 대신
+> 위반 쪽을 고쳤다 — 넓히면 진짜 위반이 다시 안 보인다.
 
 **회귀 추가 = 파일만 만들면 끝.** `src/scripts/regression/<이름>.ts` 에
 `export const check = { name, guards, run }` 를 쓰면 자동 발견된다. 등록 목록이 없다 —
 "파일 추가하고 등록 잊음" 을 구조로 봉쇄한 것이다. 실행 시 `TIGUCLAW_HOME` 을 임시
 디렉터리로 강제하고 `REGION_A_*`·`CODEX_*` 등을 봉인하므로 "내 머신에선 초록" 이 안 난다.
 
-**원자 교체는 `/update` 에만 있다.** `deploy:dev` 는 `dist/` 에 직접 emit 이다.
-
-> 인스턴스 지형(홈·포트·라벨) · 개발 순서(회귀→deploy:dev→라이브확인→`/update`)는
-> **`PROJECT.md` 가 정본**이다. 여기 복사하지 않는다.
+**원자 교체는 `/update` 에만 있다.** 손으로 빌드하면 `dist/` 에 직접 emit 이라, 반쯤 갱신된 상태로 데몬이 뜰 창이 있다.
 
 ---
 
@@ -215,7 +227,7 @@ export class**. `kind` 는 `channel|observer|trigger|service` 중 하나 이상(
 - CSRF 가드가 `Sec-Fetch-Site`·`Origin` 둘 다 없을 때 통과 → 결함인가 의도된 트레이드오프인가
 - CSP 가 `<meta>` 라서 `frame-ancestors` 무효 → 실제 공격 시나리오가 성립하나
 - 죽은 코드 3건(`#sd-body` · `.chat-tab` · `#hdr-back`) → 동적 생성이 아닌 진짜 사장(死藏)인가
-- `deploy:dev` 비원자성 → 반쯤 갱신된 dist 로 데몬이 뜰 창이 실재하나
+- 손 빌드의 비원자성 → 반쯤 갱신된 dist 로 데몬이 뜰 창이 실재하나
 - capabilities 16개 × 3어댑터 **실제 등록 parity** → 미문서화 갭이 있나
 
 ---

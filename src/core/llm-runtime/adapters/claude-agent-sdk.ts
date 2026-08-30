@@ -106,7 +106,7 @@ import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
 import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
-import { decidePluginMcp, warnShadowedOnce } from "../plugin-mcp-merge.js";
+import { assembleMcpServers, warnShadowedOnce } from "../plugin-mcp-merge.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
@@ -607,17 +607,7 @@ export const runClaude = async (
   //  마지막에 스프레드해서 ⓐ `toolsNone` 갈래엔 안 실리는 게 **우연**이었고(검사 0)
   //  ⓑ 같은 이름의 플러그인이 `memory`·`skills`·`update-self` 를 **통째로 덮었다**.
   //  판정은 `plugin-mcp-merge.ts` 한 곳에 있고 세 어댑터가 같은 것을 쓴다.
-  const pluginMcp = decidePluginMcp(
-    input.extraMcpServers,
-    [...Object.keys(leanMcpServers), ...LATE_CORE_MCP_KEYS],
-    toolsNone,
-    reaches("plugins", turnKind),
-  );
-  if (pluginMcp.shadowed.length > 0) warnShadowedOnce(pluginMcp.shadowed);
-  const mcpServersWithPlugins: Options["mcpServers"] = {
-    ...leanMcpServers,
-    ...pluginMcp.servers,
-  };
+
 
   // ★외부 MCP 서버 연결(ADR 2026-07-07) — <home>/mcp.json 의 stdio/sse config 를 SDK
   // options.mcpServers 유니온에 *그대로* 주입 → SDK 가 네이티브로 spawn+연결·도구 노출.
@@ -637,13 +627,22 @@ export const runClaude = async (
   // 원천 차단(§3b). skills 와 동일하게 depth 무관 + !toolsNone 만 게이트 —
   // find_capabilities 자기 자신은 아직 mcpServers 에 없으므로 활성 목록엔 안 잡힌다
   // (§3d, 순환 없음). "agents" 항목은 claude 만 Task 도구 병기 문구로 override.
-  const capabilityActiveNames = Object.keys({
-    // ★플러그인 포함 맵을 쓴다 — 종전엔 스프레드가 `leanMcpServers` **안**에 있어서 저절로
-    //  들어갔다. 판정을 밖으로 뺐으니 여기도 같이 옮겨야 `find_capabilities` 가 플러그인
-    //  도구를 계속 본다(안 옮기면 조용히 목록에서 사라진다).
-    ...mcpServersWithPlugins,
-    ...externalMcpServers,
+  // ★**조립과 활성 이름을 한 곳에서 낸다** (2026-08-30). 종전엔 서버 맵과
+  //  `find_capabilities` 가 볼 목록이 어댑터 지역 변수 사이 **스프레드 몇 줄**로 두 번
+  //  조립됐고, 3라운드 적대 검토가 심은 변이 셋(M5 코어키에서 lean 제거 · M7 병합에서
+  //  플러그인 삭제 · M26 활성목록에서 외부 MCP 제거)이 전부 **살아남았다** — 검사가
+  //  소스를 grep 하는 것 말고 할 게 없었기 때문이다. 순수 함수로 나가니 실행해서 잡는다.
+  const assembled = assembleMcpServers({
+    lean: leanMcpServers ?? {},
+    lateCoreKeys: LATE_CORE_MCP_KEYS,
+    extra: input.extraMcpServers,
+    external: externalMcpServers ?? {},
+    toolsNone,
+    inReach: reaches("plugins", turnKind),
   });
+  if (assembled.shadowed.length > 0) warnShadowedOnce(assembled.shadowed);
+  const mcpServersWithPlugins: Options["mcpServers"] = assembled.servers;
+  const capabilityActiveNames = assembled.activeNames;
 
   // 유휴 타임아웃 — SDK `Options.abortController` 경로 (runtimeTypes.d.ts:234,
   // "stop and clean up resources"). idle/first 만료 시 헬퍼가 ac.abort(IdleTimeoutError).

@@ -73,6 +73,8 @@ export interface PluginEntry {
    * (설치된 플러그인이 자기를 코어라 선언해도 코어가 되지 않는다).
    */
   core?: boolean;
+  /** 끄면 지금 보고 있는 화면이 사라지는가 — 막지 않고 **확인을 받는 근거**. */
+  selfReferential?: boolean;
   metadata?: Record<string, unknown>;
 }
 
@@ -265,6 +267,7 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
         // 쓴다(v0.40.0 F2 — 종전엔 각자 판정해서 코어를 한쪽만 봤다). "disabled" ≠ "inactive".
         enabled: isModuleActive(marker.name),
         ...(marker.core === true ? { core: true } : {}),
+        ...(isSelfReferentialModule(marker.name) ? { selfReferential: true } : {}),
         metadata: {
           kind: kinds.join(", "),
           schemaVersion: marker.schemaVersion,
@@ -288,17 +291,94 @@ const collectChannels = (repoRoot: string): PluginEntry[] => {
  * ★**레포 `plugins/` 만 본다** — 유효성을 선언이 아니라 **위치**로 판정한다. 설치된
  *  플러그인이 `core:true` 를 적어도 여기 안 걸린다(자기 선언은 검증할 수 없다).
  */
-export const isCoreModule = (name: string): boolean => {
+const bundledManifestBlocks = (): Array<Record<string, unknown>> => {
   const root = path.join(appRoot(), "plugins");
+  const out: Array<Record<string, unknown>> = [];
   for (const dir of safeReaddir(root)) {
     const pkg = safeReadJson(path.join(root, dir, "package.json")) as
-      | { tiguclaw?: { name?: string; core?: boolean } }
+      | { tiguclaw?: Record<string, unknown> }
       | undefined;
     const m = pkg?.tiguclaw;
-    if (m?.name === name) return m.core === true;
+    if (m !== undefined && typeof m === "object" && typeof m["name"] === "string") out.push(m);
   }
-  return false;
+  return out;
 };
+
+/**
+ * **매니페스트를 아예 못 읽은 번들 디렉터리** — 그래도 폴더 이름은 예약한다.
+ *
+ * ★사고(2026-08-31, 적대 검토 F6): `bundledDeclaredNames` 의 선언이 *"깨진 번들은 그 이름으로
+ *  들어올 가장 좋은 순간이라 오히려 더 막혀야 한다"* 인데, 실측하니 **절반만** 참이었다 —
+ *  스키마 미통과(`entry` 없음)는 막았지만 **JSON 이 깨졌거나 `tiguclaw` 블록이 없으면**
+ *  그 디렉터리가 아예 없는 것이 돼 이름이 열렸다. 그런데 현실에서 더 흔한 깨짐은
+ *  후자다(중단된 `/update` · `copy-dist-assets` 중 디스크 참 · 부분 쓰기).
+ *  덜 흔한 깨짐이 더 흔한 깨짐보다 더 보호받고 있었다.
+ *
+ * ★폴더 이름은 **디스크에 이미 있는 값**이다 — 새 목록을 만드는 게 아니다. 이름과 폴더가
+ *  다른 번들이 있지만(`cli-channel`→`cli`), 매니페스트를 못 읽으면 그 대응을 알 길이
+ *  없으므로 **아는 것으로 막는다**(그래서 깨진 `cli-channel` 은 `cli` 를 못 지킨다 —
+ *  아는 한계다).
+ *
+ * ★술어는 *"디렉터리인가"* 가 **아니라** *"플러그인이려고 한 흔적이 있나"* 다
+ *  (2026-08-31, 적대 검토 5R F2). 처음엔 디렉터리면 다 가져갔는데, 그러면 `plugins/` 에
+ *  남은 **잔해 폴더 하나**(`.DS_Store` 만 있는 것)가 정상 홈 플러그인을 *"같은 이름의 번들
+ *  플러그인이 있습니다"* 라는 **거짓 사유**로 막는다. 실측 재현됐고 도달 경로도 가정이
+ *  아니다 — `/update` 는 `git pull` 이라 추적 안 되는 파일이 남은 폴더를 안 지우고,
+ *  macOS 는 폴더를 열기만 해도 `.DS_Store` 를 만든다. 이 레포엔 번들이 실제로 지워진
+ *  이력도 있다(`b81667ae` `observer-dashboard`).
+ * ★그리고 그건 `docs/plugins.md` §11 의 약속 *"폴더는 아무렇게나 둬도 됩니다"* 를
+ *  거짓으로 만든다. **넓힌 술어의 거짓양성 쪽에 게이트를 안 단 것**이다.
+ *  `package.json` 이 **있는데 못 읽히는** 경우만 보면 표적(중단된 `/update`·부분 쓰기)은
+ *  그대로 잡고 잔해는 빠진다 — 번들 10개 전부 `package.json` 이 있으므로 보호력 손실 0.
+ */
+const unreadableBundleDirs = (): string[] => {
+  const root = path.join(appRoot(), "plugins");
+  return safeReaddir(root).filter((dir) => {
+    const pkgPath = path.join(root, dir, "package.json");
+    if (!fs.existsSync(pkgPath)) return false; // 플러그인이려던 적이 없다 = 잔해
+    const pkg = safeReadJson(pkgPath) as { tiguclaw?: Record<string, unknown> } | undefined;
+    const m = pkg?.tiguclaw;
+    return m === undefined || typeof m !== "object" || typeof m["name"] !== "string";
+  });
+};
+
+const bundledManifestFlag = (name: string, flag: string): boolean =>
+  bundledManifestBlocks().some((m) => m["name"] === name && m[flag] === true);
+
+/**
+ * **앱과 함께 오는 이름들** — 예약 목록의 유일한 답이다.
+ *
+ * ★사고(2026-08-30, 3라운드 D-3): 같은 질문에 답이 **또** 둘이었다. 예약은
+ *  `scanPluginManifests`(스키마를 통과해야 산다)를 봤고 `core`/`selfReferential` 판정은
+ *  원시 `package.json` 을 봤다. 그래서 번들 하나의 `entry` 한 줄만 지우면 예약이 10→9 로
+ *  줄어 그 이름이 홈에 열리는데, 같은 순간 `isSelfReferentialModule` 은 여전히 `true` 였다.
+ *  한 겹 위에서 없앤 병이 한 겹 아래서 그대로 났다.
+ *
+ * ★**판정은 「선언이 디스크에 있는가」다 — 그것이 오늘 잘 떴느냐가 아니다.** 이름은 번들이
+ *  깨졌을 때 오히려 더 막혀야 한다(깨진 번들 = 그 이름으로 들어올 가장 좋은 순간).
+ */
+export const bundledDeclaredNames = (): Set<string> =>
+  new Set([
+    ...bundledManifestBlocks().map((m) => m["name"] as string),
+    ...unreadableBundleDirs(),
+  ]);
+
+export const isCoreModule = (name: string): boolean => bundledManifestFlag(name, "core");
+
+/**
+ * **끄면 지금 보고 있는 화면이 사라지는가**(manifest `tiguclaw.selfReferential`, 2026-08-30).
+ *
+ * ★`core` 와 축은 같고 세기가 다르다: `core` 는 **끌 수 없고**, 이건 **끌 수 있되 그 순간
+ *  화면이 없어진다.** 그래서 막지 않고 **확인을 받는다**(파괴적 행위 = 소프트 게이트).
+ *
+ * ★위 `isCoreModule` 주석이 적어둔 바로 그 병이 **다시 났다.** 이 판정도 손 목록 두 벌이었고
+ *  (`routes-settings.ts` 의 `SELF_REFERENTIAL_MODULE_NAMES` + `view-providers.js` 의 사본),
+ *  **두 벌 다 플러그인 화면엔 없었다.** 그래서 그 화면의 토글은 확인도 경고도 없이 대시보드를
+ *  껐다 — 실측: 63,216바이트 → `000`, 그리고 `settings.json` 에 굳어 재시작해도 안 돌아온다.
+ *  목록은 늘 조용히 낡는다([[feedback_hand_maintained_lists]]).
+ */
+export const isSelfReferentialModule = (name: string): boolean =>
+  bundledManifestFlag(name, "selfReferential");
 
 /**
  * **이 모듈이 실제로 도는가** — 끌 수 없는 것(`core`)은 `disabled` 목록에 있어도 돈다.
@@ -351,6 +431,7 @@ const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
         // 사용자 비활성(ADR 2026-07-17 §5.6 MVP) — loadPlugins 스킵 대상과 **같은 함수**.
         enabled: isModuleActive(m.name),
         ...(m.core === true ? { core: true } : {}),
+        ...(isSelfReferentialModule(m.name) ? { selfReferential: true } : {}),
         metadata: { kind: kinds.join(", ") },
       });
     } catch {

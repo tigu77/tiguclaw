@@ -17,12 +17,14 @@
  *     목적이므로 실행권한이 있으면 거부한다.
  */
 import { readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "open-path-safety",
@@ -31,7 +33,7 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const proxy = read("packages/dashboard/index.ts");
-    const bridge = read("plugins/http-bridge/index.ts");
+    const bridge = read("plugins/http-bridge");
 
     // ★① CSRF — 이름 열거가 아니라 **부작용 있는 메서드 전부**를 막아야 한다.
     const guardBlock =
@@ -136,7 +138,11 @@ export const check: RegressionCheck = {
   {
     const pats: [string, RegExp][] = [
       // 첨부 분기 안에서 realpath 로 풀고,
-      ["realpath 로 푼다", /pathname\.startsWith\("\/attachments\/"\)[\s\S]{0,1200}?real = nodeFs\.realpathSync\(abs\)/],
+      // ★**핸들러 함수**를 앵커로 (2026-08-30). 종전엔 라우트 **조건**부터 봤는데, 조건은
+      //  `index.ts` 에 남고 본문은 `routes-files.ts` 로 갔다 — 정규식이 파일 경계를 넘어
+      //  못 맞았다. 묻고 싶던 건 *"첨부 서빙이 심링크를 푸나"* 이지 *"조건 근처에 그 줄이
+      //  있나"* 가 아니다.
+      ["realpath 로 푼다", /handleAttachmentServe = async[\s\S]{0,1200}?real = nodeFs\.realpathSync\(abs\)/],
       // **푼 값으로** 경계를 비교하고,
       ["푼 값으로 경계 비교", /real === realDir \|\| real\.startsWith\(realDir \+ path\.sep\)/],
       // **푼 경로로 읽는다**(원래 경로로 읽으면 위 검사가 무의미하다).

@@ -145,25 +145,10 @@ import { getInflightTurns } from "../../src/core/inflight-turns.js";
  * 새 in-process 서버가 생기면 여기 한 줄만 추가하면 도구 상세가 자동으로 따라온다
  * (하드코딩 목록을 또 만들지 않는다 — 기존 두 곳이 이미 드리프트했다, 2026-07-29).
  */
-const IN_PROCESS_MCP_FACTORIES: Record<string, () => ReturnType<typeof createMemoryMcpServer>> = {
-  memory: createMemoryMcpServer,
-};
 import { readFileSync } from "node:fs";
 import * as nodeFs from "node:fs";
 import { execFile } from "node:child_process";
 
-// 앱 버전 = 레포 루트 package.json(데몬 cwd=repoRoot). 하드코딩 stale 방지 — /health 가 이걸
-// 반환하고 대시보드 헤더가 표시한다. 읽기 실패 시 "unknown".
-const VERSION: string = (() => {
-  try {
-    const raw = readFileSync(nodePath.join(process.cwd(), "package.json"), "utf8");
-    const v = (JSON.parse(raw) as { version?: unknown }).version;
-    return typeof v === "string" && v !== "" ? v : "unknown";
-  } catch {
-    return "unknown";
-  }
-})();
-const HANDLER_TIMEOUT_MS = 60_000;
 // 커스텀 엔드포인트 전용 타임아웃(2026-07-26) — `/messages`(대시보드)와 **성격이 다르다**:
 //  - /messages: 최종 답은 SSE 로 가므로 HTTP 응답이 잘려도 사용자는 답을 받는다(504 무해).
 //  - 엔드포인트: 앱이 **HTTP 응답 본문을 결과로 쓴다** → 잘리면 진짜 실패다.
@@ -186,591 +171,38 @@ const ENDPOINT_TIMEOUT_MS = ((): number => {
  *  - 전문은 `transcripts` 에 그대로 남는다(잘리는 건 **라이브 UI 미리보기뿐**).
  *  - 잘렸으면 얼마나 잘렸는지 본문에 명시 — 조용한 절단은 "이게 전부" 로 읽힌다.
  */
-const ENDPOINT_PREVIEW_MAX = 4000;
+import { endpointPreview } from "./endpoint-preview.js";
 
-/** 관측 이벤트용 미리보기 — 길면 앞부분만 + 잘린 사실·원본 길이 명시(조용한 절단 금지). */
-const endpointPreview = (s: string): string => {
-  const text = String(s ?? "");
-  if (text.length <= ENDPOINT_PREVIEW_MAX) return text;
-  return (
-    text.slice(0, ENDPOINT_PREVIEW_MAX) +
-    `\n\n… (전체 ${text.length.toLocaleString()}자 중 앞 ${ENDPOINT_PREVIEW_MAX.toLocaleString()}자만 표시 — 전문은 대화 기록에 보존됩니다)`
-  );
-};
 
-// 신규 SSE 접속 history replay 에서 제외할 고volume 스트리밍 타입.
-// - llm.delta: 토큰 증분(P5). 재연결이 옛 턴 토큰을 재생해 깨진 부분 버블을 만들지 않도록.
-//   라이브 fan-out 은 통과(진행 중 턴 실시간엔 필요), history(과거 재생)에서만 제외.
-//   최종 권위 전체본은 channel.message.out 이라 델타 재생 없이도 수렴.
-// - llm.sdk_message: claude firehose. 같은 고volume·감사가치 낮음(영속 SKIP 과 동렬).
-// core/event-persist.ts 의 SKIP_TYPES 와 의미는 비슷하나 모듈 경계가 달라 로컬 set(과결합 회피).
-const HISTORY_EXCLUDE = new Set<string>(["llm.delta", "llm.sdk_message"]);
-
-// 핵심 플러그인(비활성 = "자기 눈 가림", ADR 2026-07-17 §5.6 가드) — dashboard 가 꺼지면
-// 대시보드 UI 자체가 안 뜨고, http-bridge(자기 자신)가 꺼지면 이 API 자체가 죽는다.
-// 막지 않는다(사용자 결정, 파괴적-행위 소프트 게이트) — /set-module-enabled 응답에
-// warning:"critical" 만 실어 프런트가 danger 확인 UX 를 붙이게 한다.
-// ★`http-bridge` 는 여기서 빠졌다(2026-08-26) — 이제 **manifest 선언**(`tiguclaw.core`)으로
-// 읽고 `isCoreModule()` 이 판정한다. 코어는 경고가 아니라 **거절**이다: 브리지를 끄면
-// 대시보드가 죽고, 무엇보다 다시 켤 경로(`setModuleDisabled` 호출부)가 여기 하나뿐이라
-// **제품 안에서 되돌릴 수 없게 된다.**
-//
-// ★남은 하나(`dashboard`)는 **의존이 아니라 자기참조**다 — 끈다고 남이 깨지진 않지만 토글을
-//  누르는 **그 화면**을 잃는다. 유도할 수 없는 성질이라 목록으로 남긴다. 막지는 않는다
-//  (사용자 결정, 파괴적-행위 소프트 게이트) — `warning:"critical"` 로 확인만 받는다.
-const SELF_REFERENTIAL_MODULE_NAMES = new Set<string>(["dashboard"]);
 
 // ── 첨부 intake (#2, 2026-07-08) — 대시보드 채팅이 붙여넣은 파일을 홈에 저장 → Attachment[]. ──
 // 텔레그램 첨부 경로와 동형(진실 소스 = Attachment 계약, <home>/data/attachments/<channel>/
 // <yyyymmdd>/<id>.<ext>). base64 인바운드는 로컬(127.0.0.1)+토큰 게이트 한정 = 외부 노출 아님.
 // 크기/개수 캡은 boundary 검증(메모리·디스크 보호). 캡 위반·저장 실패는 400 으로 닫고 데몬 생존.
-const ATTACH_MAX_COUNT = 10;
-const ATTACH_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB/파일
-const ATTACH_MAX_TOTAL_BYTES = 25 * 1024 * 1024; // 25MB/요청
-class AttachmentError extends Error {}
-const attachmentKindOf = (mime: string): AttachmentKind =>
-  mime.startsWith("image/")
-    ? "image"
-    : mime.startsWith("audio/")
-      ? "audio"
-      : mime.startsWith("video/")
-        ? "video"
-        : "document";
-const EXT_BY_MIME: Record<string, string> = {
-  "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp",
-  "image/svg+xml": "svg", "application/pdf": "pdf", "text/plain": "txt",
-  "text/markdown": "md", "application/json": "json", "text/csv": "csv",
-};
-// 🎤 음성입력(/transcribe) 임시파일 확장자 — 오디오 mime → ext. MediaRecorder 기본은 webm/opus.
-// whisper wrapper 가 ffmpeg 로 재변환하므로 확장자만 맞으면 충분(미지 = webm 폴백).
-const AUDIO_EXT_BY_MIME: Record<string, string> = {
-  "audio/webm": "webm", "audio/ogg": "ogg", "audio/oga": "ogg",
-  "audio/mp4": "mp4", "audio/x-m4a": "m4a", "audio/aac": "aac",
-  "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav",
-  "audio/x-wav": "wav", "audio/wave": "wav", "audio/flac": "flac",
-};
-// 서빙용 확장자→content-type (인바운드 첨부 파일 렌더). 미지 확장자는 octet-stream.
-const CONTENT_TYPE_BY_EXT: Record<string, string> = {
-  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
-  webp: "image/webp", pdf: "application/pdf",
-  // ★svg 는 **의도적으로 뺐다** (2026-07-31 전체검토 P0). SVG 는 스크립트를 담을 수 있고,
-  //  `image/svg+xml` 로 inline 서빙하면 top-level 이동 시 **같은 오리진에서 실행**된다
-  //  (실증: `<svg><script>fetch('/pwned')</script></svg>` 가 서버 요청을 냈다).
-  //  첨부 URL 은 인증을 `?token=` 으로 싣기 때문에, 실행되는 순간 `location.search` 로
-  //  브리지 토큰을 읽어 API 전부를 부를 수 있다. 심는 경로는 write 토큰뿐 아니라
-  //  **프롬프트 인젝션으로 비서가 send_file 한 경우·텔레그램 인바운드 첨부**도 같다.
-  //  → 미지 확장자로 떨어져 `application/octet-stream` + 아래 nosniff/attachment 로 닫힌다.
-  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8",
-  json: "application/json; charset=utf-8", csv: "text/csv; charset=utf-8",
-};
-const sanitizeFilename = (n: string): string =>
-  n.replace(/[/\\]/g, "_").replace(/[^\w.\- ]/g, "").trim().slice(-120) || "file";
-const extForAttachment = (filename: string, mime: string): string => {
-  const e = path.extname(filename).replace(/^\./, "").toLowerCase();
-  if (e.length > 0 && e.length <= 8) return e;
-  return EXT_BY_MIME[mime] ?? "bin";
-};
-const yyyymmddUtc = (): string =>
-  new Date().toISOString().slice(0, 10).replace(/-/g, "");
-// body.attachments([{filename?, mimeType?, dataBase64}]) → Attachment[] (홈 저장). 캡 위반 throw.
-const ingestAttachments = async (
-  raw: unknown,
-  channel: string,
-): Promise<Attachment[]> => {
-  if (!Array.isArray(raw) || raw.length === 0) return [];
-  if (raw.length > ATTACH_MAX_COUNT) {
-    throw new AttachmentError(`첨부는 최대 ${ATTACH_MAX_COUNT}개까지 가능합니다.`);
-  }
-  const dir = path.join(getPaths().attachmentsDir, channel, yyyymmddUtc());
-  const out: Attachment[] = [];
-  let total = 0;
-  for (const a of raw) {
-    const item = a as { filename?: unknown; mimeType?: unknown; dataBase64?: unknown };
-    if (typeof item.dataBase64 !== "string" || item.dataBase64 === "") continue;
-    const filename = sanitizeFilename(
-      typeof item.filename === "string" ? item.filename : "file",
-    );
-    const mimeType =
-      typeof item.mimeType === "string" && item.mimeType !== ""
-        ? item.mimeType
-        : "application/octet-stream";
-    const buf = Buffer.from(item.dataBase64, "base64");
-    if (buf.length === 0) continue;
-    if (buf.length > ATTACH_MAX_FILE_BYTES) {
-      throw new AttachmentError(
-        `'${filename}' 이(가) 파일당 한도(${ATTACH_MAX_FILE_BYTES / 1024 / 1024}MB)를 초과합니다.`,
-      );
-    }
-    total += buf.length;
-    if (total > ATTACH_MAX_TOTAL_BYTES) {
-      throw new AttachmentError(
-        `첨부 총합이 한도(${ATTACH_MAX_TOTAL_BYTES / 1024 / 1024}MB)를 초과합니다.`,
-      );
-    }
-    await fs.mkdir(dir, { recursive: true });
-    const id = crypto.randomBytes(8).toString("hex");
-    const abs = path.join(dir, `${id}.${extForAttachment(filename, mimeType)}`);
-    await fs.writeFile(abs, buf);
-    out.push({
-      kind: attachmentKindOf(mimeType),
-      mimeType,
-      path: abs,
-      filename,
-      bytes: buf.length,
-    });
-  }
-  return out;
-};
+import { ATTACH_MAX_FILE_BYTES, AttachmentError, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename, ingestAttachments, persistOutboundAttachment } from "./attachments.js";
+import { readJsonBody, readRawBody } from "./http-body.js";
+import {
+  handleSetDefaultProfile, handleSetProfileColor, handleSetSuggestion, handleSetLocale,
+  handleSetTheme, handleSetEgress, handleGetEgress, handleGetSuggestion,
+  handleSetSessionProfile, handleSetModuleEnabled, handleGetModelProfiles,
+  handleGetProviders,
+} from "./routes-settings.js";
+import { handleSessions, handleSessionName, handleSessionArchive } from "./routes-sessions.js";
+import { handleHealth, handleLogStatus, handleLogClear, handleUpdateAvailability, handleUpdateChangelog, handleSelfUpdate, handleRestart, handleChangelog } from "./routes-ops.js";
+import { handleEvents, handleEndpointCalls, handleAllActivity } from "./routes-activity.js";
+import { handleProjects, handleProjectCapability, handleProjectDetail, handleProjectForget, handleProjectRename } from "./routes-projects.js";
+import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell } from "./routes-work.js";
+import { handleMessages, handleChatHistory, handleChatSearch } from "./routes-chat.js";
+import { handleAttachmentServe, handleTranscribe, handleOpenPath } from "./routes-files.js";
+import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
+import type { RouteCtx } from "./route-ctx.js";
+import {
+  serveGatewayChat,
+  serveGatewayModels,
+} from "./routes-gateway.js";
 
-// ── 아웃바운드 첨부(send_file, #2 parity) — 비서가 send_file 로 보낸 절대경로 파일을 대시보드가
-// 받아볼 수 있게 통제 디렉터리로 *복사*해 servable rel 을 확보한다. ★임의 절대경로를 그대로
-// 서빙하지 않는다(보안): 인바운드와 동일하게 attachmentsDir/<channel>/<yyyymmdd>/<id>.<ext> 만
-// /attachments 로 노출된다. 인바운드 ingest 와 대칭(같은 디렉터리·명명·kind 매핑 헬퍼 재사용). ──
-// ext → 깨끗한 mime(CONTENT_TYPE_BY_EXT 는 charset 파라미터 포함 → 첫 토큰만). 미지 = octet-stream.
-const mimeForExt = (ext: string): string => {
-  const ct = CONTENT_TYPE_BY_EXT[ext];
-  return ct !== undefined ? (ct.split(";")[0]?.trim() ?? "application/octet-stream") : "application/octet-stream";
-};
-interface OutboundAttachmentMeta {
-  rel: string;
-  name: string;
-  mime: string;
-  kind: AttachmentKind;
-  bytes: number;
-}
-// srcPath(절대경로) → 통제 디렉터리 복사 후 서빙 메타. 파일 부재/디렉터리/접근불가면 null(호출자 {ok:false}).
-const persistOutboundAttachment = async (
-  srcPath: string,
-  channel: string,
-): Promise<OutboundAttachmentMeta | null> => {
-  const st = await fs.stat(srcPath).catch(() => null);
-  if (st === null || !st.isFile()) return null;
-  const name = sanitizeFilename(path.basename(srcPath));
-  const srcExt = path.extname(srcPath).replace(/^\./, "").toLowerCase();
-  const mime = mimeForExt(srcExt);
-  const kind = attachmentKindOf(mime);
-  const dir = path.join(getPaths().attachmentsDir, channel, yyyymmddUtc());
-  await fs.mkdir(dir, { recursive: true });
-  const id = crypto.randomBytes(8).toString("hex");
-  const destExt = srcExt.length > 0 && srcExt.length <= 8 ? srcExt : (EXT_BY_MIME[mime] ?? "bin");
-  const abs = path.join(dir, `${id}.${destExt}`);
-  await fs.copyFile(srcPath, abs);
-  const rel = path
-    .relative(getPaths().attachmentsDir, abs)
-    .split(path.sep)
-    .join("/"); // URL 경로 정규화(윈도우 \ → /).
-  return { rel, name, mime, kind, bytes: st.size };
-};
-
-const readJsonBody = async (
-  req: http.IncomingMessage,
-): Promise<Record<string, unknown>> => {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  const text = Buffer.concat(chunks).toString("utf8");
-  if (text.length === 0) return {};
-  const parsed = JSON.parse(text) as unknown;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("body must be a JSON object");
-  }
-  return parsed as Record<string, unknown>;
-};
-
-// 커스텀 엔드포인트 $BODY 치환용 raw body(파싱 안 함 — 모델이 읽음, §3). GET 은 빈 문자열.
-const readRawBody = async (req: http.IncomingMessage): Promise<string> => {
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
-};
-
-
-// ── LLM 게이트웨이(ADR 2026-07-09) — OpenAI 호환 /v1/chat/completions. 앱이 tiguclaw 멀티LLM
-// 폴백을 HTTP 로 사용. 전용 토큰(LLM_GATEWAY_TOKEN) 미설정 시 비활성(안전 기본, 404). 얇은 경로:
-// runRegionA(internal=persist·이벤트 스킵 + toolPolicy:none=도구0 + systemPromptOverride=앱 system,
-// 비서 페르소나 누수 0). ──
-let gatewayInflight = 0;
-
-// ── 게이트웨이 런타임 설정 해석(2026-07-26) — **settings.json `gateway:{}` 우선, env 레거시 폴백**.
-//   settings 는 매 요청 fresh read(캐시 0)라 켜기/끄기·모델·동시성 변경이 **재시작 불요**.
-//   settings 에 gateway 섹션이 없으면 종전 env 경로 그대로(= 토큰 존재만으로 활성) → 회귀 0.
-//   토큰은 언제나 env 에서만 읽는다(D5 — raw 토큰을 settings 파일에 두지 않음).
-interface GatewayRuntime {
-  /** 활성 여부(= 토큰 있음 AND settings.enabled). false 면 /v1/* 는 404. */
-  enabled: boolean;
-  /** 인증 토큰(빈 문자열이면 비활성). */
-  token: string;
-  /** 기본 모델 풀 raw 문자열(콤마) — 요청 model 미매칭 시 폴백. */
-  poolRaw: string;
-  /** 동시 처리 상한(초과 429). */
-  maxConcurrency: number;
-}
-const resolveGatewayRuntime = (): GatewayRuntime => {
-  const cfg = loadGatewayConfig();
-  const tokenEnvName = cfg?.tokenEnv ?? "LLM_GATEWAY_TOKEN";
-  const token = process.env[tokenEnvName]?.trim() ?? "";
-  // settings 섹션 부재 = 레거시(토큰만으로 판정) / 존재 = enabled 플래그가 킬스위치.
-  const enabled = token !== "" && (cfg === undefined || cfg.enabled);
-  const poolRaw =
-    cfg?.models !== undefined && cfg.models.length > 0
-      ? cfg.models.join(",")
-      : (process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "");
-  const envCap = Number(process.env.LLM_GATEWAY_MAX_CONCURRENCY);
-  const maxConcurrency =
-    cfg?.maxConcurrency ??
-    (Number.isInteger(envCap) && envCap > 0 ? envCap : 4);
-  return { enabled, token, poolRaw, maxConcurrency };
-};
-
-// 요청 model → tiguclaw 스펙. `tier:high|mid|low` / `provider:model` / 그 외=기본 풀 폴백.
-const resolveGatewaySpecs = (model: unknown, poolRaw: string): ModelSpec[] => {
-  const m = typeof model === "string" ? model.trim() : "";
-  if (m.startsWith("tier:")) {
-    const t = resolveTier(m.slice("tier:".length));
-    if (t.length > 0) return t;
-  }
-  const direct = parseModelSpec(m);
-  if (direct !== null) return [direct];
-  return parseModelSpecList(poolRaw);
-};
-
-// ── GET /v1/models (ADR 2026-07-25) — 사용 가능 모델 id 목록. ★왕복(round-trip) 보장:
-//   프로파일/티어는 `tier:<name>` 로 노출(resolveGatewaySpecs 가 tier: 접두만 resolveTier 를
-//   타므로 — 순수 이름을 그대로 노출하면 클라가 body.model 에 넣었을 때 조용히 기본 풀로 치환
-//   되는 기존 갭을 광고하는 꼴). 직접 풀 스펙은 specLabel(provider:model) 로 대칭 노출. ──
-const GATEWAY_MODELS_CREATED = Math.floor(Date.now() / 1000); // 부팅 1회 고정(매요청 Date.now()면 클라 캐시 무효화).
-const GATEWAY_TIER_ENV: Record<string, string> = {
-  high: "MODEL_TIER_HIGH",
-  mid: "MODEL_TIER_MID",
-  low: "MODEL_TIER_LOW",
-  nano: "MODEL_TIER_NANO",
-};
-const buildModelsListResponse = (poolRaw: string): {
-  object: "list";
-  data: Array<{ id: string; object: "model"; created: number; owned_by: string }>;
-} => {
-  const seen = new Set<string>();
-  const data: Array<{ id: string; object: "model"; created: number; owned_by: string }> = [];
-  const add = (id: string, owner: string): void => {
-    if (id === "" || seen.has(id)) return;
-    seen.add(id);
-    data.push({ id, object: "model", created: GATEWAY_MODELS_CREATED, owned_by: owner });
-  };
-  // 1) 명명 프로파일 → tier:<name>
-  try {
-    for (const name of Object.keys(loadModelProfiles())) add(`tier:${name}`, "tiguclaw");
-  } catch {
-    /* settings 파싱 실패 — 프로파일 스킵(부재 graceful) */
-  }
-  // 2) 레거시 티어 — MODEL_TIER_* env 가 실제로 채워진 것만(빈 풀=어댑터 디폴트라 제외).
-  for (const [tier, envKey] of Object.entries(GATEWAY_TIER_ENV)) {
-    const v = process.env[envKey];
-    if (typeof v === "string" && v.trim() !== "") add(`tier:${tier}`, "tiguclaw");
-  }
-  // 3) 직접 풀 스펙 — settings gateway.models ?? env (resolveGatewaySpecs 폴백과 동일 소스).
-  for (const spec of parseModelSpecList(poolRaw)) {
-    const label = specLabel(spec);
-    add(label, label.includes(":") ? label.slice(0, label.indexOf(":")) : "tiguclaw");
-  }
-  return { object: "list", data };
-};
-
-// OpenAI messages content 의 image_url 파트 → ingestAttachments 입력 shape (vision, ADR 2026-07-25).
-//   v1 은 `data:<mime>;base64,<payload>` 인라인만 지원 — http(s) URL 다운로드는 SSRF 표면이라
-//   스코프아웃(후속). 텍스트 파트·기타는 무시(flattenChatMessages 가 텍스트 담당).
-const extractGatewayImageAttachments = (
-  messages: Array<{ content?: unknown }>,
-): Array<{ filename: string; mimeType: string; dataBase64: string }> => {
-  const out: Array<{ filename: string; mimeType: string; dataBase64: string }> = [];
-  for (const msg of messages) {
-    if (!Array.isArray(msg.content)) continue;
-    for (const part of msg.content) {
-      if (
-        part === null ||
-        typeof part !== "object" ||
-        (part as { type?: unknown }).type !== "image_url"
-      ) {
-        continue;
-      }
-      const urlRaw = (part as { image_url?: { url?: unknown } }).image_url?.url;
-      if (typeof urlRaw !== "string") continue;
-      const m = /^data:([^;,]+);base64,(.+)$/s.exec(urlRaw);
-      if (m === null) continue; // data: URI 만 (http URL = 스코프아웃).
-      const ext = (m[1].split("/")[1] ?? "png").replace(/[^a-z0-9]/gi, "") || "png";
-      out.push({ filename: `image.${ext}`, mimeType: m[1], dataBase64: m[2] });
-    }
-  }
-  return out;
-};
-
-// OpenAI chat message shape — 게이트웨이가 받는 요청 messages[] 원소. tool_calls/tool_call_id
-// 는 함수콜 패스스루(ADR 2026-07-25 §Decision-5, role:"assistant"/"tool" 직렬화)에서만 읽힘.
-interface GatewayChatMessage {
-  role?: string;
-  content?: unknown;
-  tool_calls?: Array<{
-    id?: string;
-    type?: string;
-    function?: { name?: string; arguments?: string };
-  }>;
-  tool_call_id?: string;
-}
-
-// OpenAI messages[] → (system override, user text). system 은 override 로, 나머지는 순서대로
-// 이어붙임. ★role:"assistant"(tool_calls 있음)/"tool"(결과) 는 텍스트로 서술 직렬화한다 —
-// 게이트웨이는 매 요청 새 threadKey(gateway:<uuid>) 라 무상태(어댑터 세션 resume 없음) →
-// 이건 진짜 네이티브 멀티턴 tool state 재현이 아니라 "과거 tool 호출 기록"의 프롬프트 문자열
-// 재구성일 뿐이다(설계 §2-b 최소안, 과대약속 금지). 모델은 이 서술을 컨텍스트로만 인지한다.
-const flattenChatMessages = (
-  messages: GatewayChatMessage[],
-): { system: string; text: string } => {
-  const sys: string[] = [];
-  const turns: string[] = [];
-  // tool_call_id → 호출 시점 함수명(role:"tool" 결과를 그 함수명과 함께 서술하기 위한 역참조 맵).
-  const toolCallNames = new Map<string, string>();
-  for (const msg of messages) {
-    if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
-      for (const tc of msg.tool_calls) {
-        if (typeof tc?.id === "string" && tc.id !== "") {
-          toolCallNames.set(tc.id, tc.function?.name ?? "tool");
-        }
-      }
-    }
-  }
-  for (const msg of messages) {
-    const role = typeof msg.role === "string" ? msg.role : "user";
-    const content =
-      typeof msg.content === "string"
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content
-              .map((c) =>
-                typeof c === "object" && c !== null && "text" in c
-                  ? String((c as { text?: unknown }).text ?? "")
-                  : "",
-              )
-              .join("")
-          : "";
-    if (role === "system") {
-      sys.push(content);
-    } else if (role === "user") {
-      turns.push(content);
-    } else if (role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-      // 과거 함수콜 turn — 실행 없이 "이렇게 불렀었다"만 서술(2-b 최소안).
-      const calls = msg.tool_calls
-        .map((tc) => `[assistant called ${tc.function?.name ?? "tool"}(${tc.function?.arguments ?? ""})]`)
-        .join("\n");
-      turns.push(content !== "" ? `${calls}\n${content}` : calls);
-    } else if (role === "tool") {
-      const name =
-        typeof msg.tool_call_id === "string" ? (toolCallNames.get(msg.tool_call_id) ?? "tool") : "tool";
-      turns.push(`[tool result for ${name}]\n${content}`);
-    } else {
-      turns.push(`[${role}]\n${content}`);
-    }
-  }
-  return { system: sys.join("\n\n"), text: turns.join("\n\n") };
-};
-
-// OpenAI tools[]/tool_choice → externalTools 패스스루(ADR 2026-07-25 §Decision-5). 실행은
-//   tiguclaw 가 하지 않는다 — 모델이 고른 의도만 그대로 caller(게이트웨이 클라이언트)에 반환.
-//   body.tools 부재/빈 배열 = 미주입(현행, 회귀 0).
-const parseGatewayTools = (
-  body: Record<string, unknown>,
-): {
-  externalTools?: Array<{ name: string; description?: string; parameters: unknown }>;
-  externalToolChoice?: "auto" | "none" | "required" | { name: string };
-} => {
-  const rawTools = body.tools;
-  if (!Array.isArray(rawTools) || rawTools.length === 0) return {};
-  // ★`tool_choice:"none"` = **절대 부르지 마라**(OpenAI 계약). 스키마를 아예 안 넘기는 게
-  //  가장 확실한 집행이다 — 모델에게 "부르지 마"라고 부탁하는 것보다 부를 수단을 안 주는 게
-  //  낫다. 실측(2026-08-09): 넘겨만 두면 `none` 인데도 tool_calls 가 나왔다(계약 위반).
-  if (body.tool_choice === "none") return {};
-  const externalTools: Array<{ name: string; description?: string; parameters: unknown }> = [];
-  for (const t of rawTools) {
-    if (t === null || typeof t !== "object") continue;
-    if ((t as { type?: unknown }).type !== "function") continue;
-    const fn = (t as { function?: unknown }).function;
-    if (fn === null || typeof fn !== "object") continue;
-    const name = (fn as { name?: unknown }).name;
-    if (typeof name !== "string" || name === "") continue;
-    const description = (fn as { description?: unknown }).description;
-    externalTools.push({
-      name,
-      ...(typeof description === "string" ? { description } : {}),
-      parameters: (fn as { parameters?: unknown }).parameters ?? {},
-    });
-  }
-  if (externalTools.length === 0) return {}; // 전부 무효 항목이면 미주입(안전 degrade).
-  const rawChoice = body.tool_choice;
-  let externalToolChoice: "auto" | "none" | "required" | { name: string } | undefined;
-  if (rawChoice === "auto" || rawChoice === "none" || rawChoice === "required") {
-    externalToolChoice = rawChoice;
-  } else if (rawChoice !== null && typeof rawChoice === "object") {
-    const fnName = (rawChoice as { function?: { name?: unknown } }).function?.name;
-    if (typeof fnName === "string" && fnName !== "") externalToolChoice = { name: fnName };
-  }
-  // ★특정 함수 강제(`tool_choice:{type:"function",function:{name}}`) — 어댑터에 "그것만
-  //  불러라" 를 시킬 수단이 없으므로 **노출을 그 하나로 좁혀서** 집행한다(`none` 과 같은
-  //  방식: 부탁이 아니라 수단 제한). 그 위에 아래 응답부가 required 판정을 얹어, 안 부르면
-  //  에러가 된다. 실측(2026-08-09): 그전엔 조용히 무시돼 **다른 함수가 호출됐다**
-  //  (set_voxel_layers 를 강제했는데 clear_scene 이 왔다).
-  if (externalToolChoice !== undefined && typeof externalToolChoice === "object") {
-    const only = externalTools.filter((t) => t.name === externalToolChoice.name);
-    // 목록에 없는 이름을 강제하면 조용히 무시하지 않고 그대로 알린다(클라 실수를 숨기지 않는다).
-    if (only.length === 0) return { externalTools, externalToolChoice };
-    return { externalTools: only, externalToolChoice: "required" as const };
-  }
-  return { externalTools, ...(externalToolChoice !== undefined ? { externalToolChoice } : {}) };
-};
-
-// ── 이력 도구 스텝(기능 B, 2026-07-09) — chat_log 메시지 window 와 같은 ts 범위의 영속
-// llm.activity(start·tool, 매니저·서브·게이트웨이 제외)를 복원용으로 반환. 도구 스텝은 events 에
-// 이미 영속되나 chat-history 는 메시지만 줬다 → 새로고침 시 도구 사용이 사라져 보였음. 이제
-// 여기서 함께 반환하고 대시보드가 메시지와 시간순 인터리브 렌더. best-effort(실패=빈 배열). ──
-interface HistoryActivity {
-  ts: number;
-  threadKey: string;
-  adapter: string;
-  seq: number;
-  label: string;
-  detail: string;
-  diff?: unknown; // 리치 diff(ActivityDiff) — 있으면 그대로 통과(대시보드가 렌더). 2026-07-09.
-  output?: unknown; // 리치 출력(ActivityOutput) — phase:"end" 에서 시작 스텝으로 병합. 2026-07-09.
-  plan?: string; // ExitPlanMode 전체 계획(마크다운) — 있으면 통과(대시보드 전체 렌더). 2026-07-19.
-  /**
-   * "tool" | "text" (2026-07-13, additive). 미지정 시 프런트 기본 해석 = "tool"
-   * (하위호환 — 옛 이력에 kind 필드가 아예 없던 시절과 동형 형상). "text" 면 `text`
-   * 필드가 그 세그먼트 본문(마크다운). seq 는 tool 활동과 같은 카운터 공간 — seq 정렬
-   * = 인터리브 렌더 순서(`docs/decisions/2026-07-13-dashboard-turn-interleave.md`).
-   */
-  kind?: "tool" | "text";
-  /** kind==="text" 일 때만 — 그 세그먼트의 마크다운 원문. 2026-07-13. */
-  text?: string;
-}
-const historyActivities = (
-  entries: Array<{ ts: number }>,
-  scopeThreadKey?: string,
-  /**
-   * ★상한 적용 여부 (2026-07-30) — **최신 페이지에서는 상한을 걸면 안 된다.**
-   *
-   * 사고: 탭을 전환하면 그 세션에서 *진행 중인* 턴이 통째로 안 보였다. 원인은 아래
-   * `newestTs` 컷이다 — `chat_log` 는 `channel.message.in`(사용자 발화, 인바운드 즉시)과
-   * `channel.message.out`(비서 응답, **턴 완료 후**)로만 쌓이므로, 진행 중 턴에는
-   * assistant 행이 아직 없어 `newestTs` = 사용자 발화 시각이다. 그 턴의 도구 스텝·텍스트
-   * 세그먼트는 전부 그 이후라 **100% 버려졌다**. 그래서 `tabs.js` 의 "진행 중 턴 seamless
-   * 재개"(activeTurns && activities.length > 0)가 **한 번도 발동하지 못했다** — 방어 코드는
-   * 있는데 서버가 재료를 안 줬다.
-   *
-   * 상한의 원래 의도는 **역방향 페이지네이션**(옛 페이지를 볼 때 창 밖 활동 배제)이다.
-   * 그래서 `beforeTs` 가 지정된 과거 페이지에서만 건다.
-   */
-  upperBounded = false,
-): HistoryActivity[] => {
-  if (entries.length === 0) return [];
-  const sinceTs = entries[0].ts; // ASC — oldest.
-  const newestTs = upperBounded
-    ? entries[entries.length - 1].ts
-    : Number.POSITIVE_INFINITY;
-  try {
-    const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 });
-    // 1차 파싱 — start 스텝은 out 으로, end 이벤트의 output 은 (threadKey|adapter|seq) 맵으로
-    // 모아 뒤에 시작 스텝에 병합(라이브의 phase:end→스텝 주석과 동형). durationMs 는 이력 불필요.
-    const out: HistoryActivity[] = [];
-    const endOutputs = new Map<string, unknown>();
-    const okey = (tk: string, adapter: string, seq: number) => tk + "|" + adapter + "|" + seq;
-    for (const e of raw) {
-      if (e.ts > newestTs) continue;
-      let p: {
-        threadKey?: unknown;
-        adapter?: unknown;
-        model?: unknown;
-        seq?: unknown;
-        label?: unknown;
-        detail?: unknown;
-        phase?: unknown;
-        kind?: unknown;
-        diff?: unknown;
-        output?: unknown;
-        text?: unknown;
-        plan?: unknown;
-      };
-      try {
-        p = JSON.parse(e.payload);
-      } catch {
-        continue;
-      }
-      // 2026-07-13 인터리브 — "tool" 외에 "text"(도구 경계 텍스트 세그먼트)도 이력에 admit.
-      // "turn"(coarse floor) 은 여전히 제외 — 렌더 대상 아님(기존과 동일).
-      if (p.kind !== "tool" && p.kind !== "text") continue;
-      const tk = typeof p.threadKey === "string" ? p.threadKey : "";
-      if (tk.startsWith("worker:") || tk.startsWith("agent:") || tk.startsWith("gateway:")) {
-        continue; // 잡·게이트웨이 스텝은 채팅 이력 아님(text 세그먼트도 depth>0 은 애초 미발행).
-      }
-      // 멀티세션 탭(ADR 2026-07-15) — 요청 threadKey 로 스코프해 entries 와 동일 계약 유지
-      //  (안 하면 타 스레드 도구 스텝이 세션 이력에 샘 = 크로스세션 누수). 미지정=현행(전 스레드).
-      if (scopeThreadKey !== undefined && scopeThreadKey !== "" && tk !== scopeThreadKey) continue;
-      const seq = typeof p.seq === "number" ? p.seq : 0;
-      const adapter = typeof p.adapter === "string" ? p.adapter : "";
-      // ★실제 응답 모델을 이력 투영에 포함 (2026-07-27). 종전엔 여기서 버려져, 라이브 SSE 에는
-      //  모델이 보이는데 **새로고침하면 사라지고** 전체활동 뷰엔 아예 안 나왔다(같은 데이터인데
-      //  경로에 따라 달라지는 것 = 관측을 믿을 수 없게 만든다). 없으면 키 자체를 생략(거짓값 금지).
-      const model = typeof p.model === "string" && p.model !== "" ? p.model : undefined;
-      if (p.kind === "text") {
-        // 텍스트 세그먼트 — phase/output/diff 없음(발행측이 안 채움). 그대로 1건.
-        out.push({
-          ts: e.ts,
-          threadKey: tk,
-          adapter,
-          ...(model !== undefined ? { model } : {}),
-          seq,
-          label: typeof p.label === "string" ? p.label : "text",
-          detail: "",
-          kind: "text",
-          text: typeof p.text === "string" ? p.text : "",
-        });
-        continue;
-      }
-      if (p.phase === "end") {
-        // 실행시간 주석 이벤트 — 스텝은 아니나 output 이 있으면 시작 스텝에 병합.
-        if (p.output !== undefined && p.output !== null) endOutputs.set(okey(tk, adapter, seq), p.output);
-        continue;
-      }
-      out.push({
-        ts: e.ts,
-        threadKey: tk,
-        adapter,
-        ...(model !== undefined ? { model } : {}),
-        seq,
-        label: typeof p.label === "string" ? p.label : "tool",
-        detail: typeof p.detail === "string" ? p.detail : "",
-        kind: "tool",
-        ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
-        ...(typeof p.plan === "string" ? { plan: p.plan } : {}),
-      });
-    }
-    // 2차 — end output 을 대응 시작 스텝에 병합.
-    if (endOutputs.size > 0) {
-      for (const s of out) {
-        const o = endOutputs.get(okey(s.threadKey, s.adapter, s.seq));
-        if (o !== undefined) s.output = o;
-      }
-    }
-    // ★ASC 로 돌려준다 (2026-07-30) — `entries`(ASC, 위 sinceTs 주석)와 **같은 방향**이어야
-    //  한다. listEvents 는 `ORDER BY id DESC` 라 여기까지 최신순인데, 소비처는 ASC 를
-    //  가정한다: `tabs.js` 의 진행 중 턴 분할이 배열 끝에서부터 seq 증가 구간을 되짚어
-    //  "마지막 turn" 을 찾는다(DESC 면 가장 오래된 1건만 집어 재개가 깨진다).
-    //  `groupMergedItems` 는 자체 정렬이라 무영향 — 즉 지금까지 이 뒤집힘이 드러난 곳이
-    //  분할 로직 하나뿐이었고, 그마저 위 상한 컷 때문에 실행된 적이 없어 가려져 있었다.
-    out.sort((a, b) => a.ts - b.ts || a.seq - b.seq);
-    return out;
-  } catch {
-    return [];
-  }
-};
-
-// endpoint × role 매핑 — contract §1.Q3 표 그대로.
-// admin 은 모든 role 포함 (superset). dashboard V2 contract §1.Q3.
+import { resolveGatewayRuntime, resolveGatewaySpecs, buildModelsListResponse, extractGatewayImageAttachments, GatewayChatMessage, flattenChatMessages, parseGatewayTools } from "./gateway.js";
+import { historyActivities } from "./history-activities.js";
 const ROLE_RANK: Record<BridgeTokenRole, number> = {
   read: 1,
   write: 2,
@@ -916,6 +348,24 @@ class HttpBridge implements Channel, Observer {
     });
   }
 
+  /** 라우트 군집이 쓰는 문맥 — 재서 정했다(지역 셋 + 채널 이름). */
+  private routeCtx(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+  ): RouteCtx {
+    return {
+      req,
+      res,
+      url,
+      pathname: url.pathname,
+      channelName: this.name,
+      bus: this.bus,
+      sseClients: this.sseClients,
+      channelHandler: this.channelHandler,
+    };
+  }
+
   private async handleRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -940,392 +390,21 @@ class HttpBridge implements Channel, Observer {
 
     // /health — 인증 무.
     if (pathname === "/health" && method === "GET") {
-      const buffer_size = this.bus ? this.bus.history().length : 0;
-      // ★진행 중 메인 턴 — "살아있나" 가 아니라 "지금 누구를 위해 일하나" (2026-08-01 A5).
-      //  재시작 전 확인용. 미등록이면 null 로 답한다(0 과 구분 — 모르는 걸 안전으로 읽으면
-      //  그게 사고의 형상이었다).
-      const inflight = getInflightTurns();
-      writeJson(res, 200, {
-        ok: true,
-        version: VERSION,
-        // ★프로세스 가동시간 — "이게 **새 프로세스인가**" 의 유일한 답 (2026-08-21 검토 F5).
-        //  업데이트 후 복귀 판정에 쓴다. version 으로는 안 된다(sync 는 대개 버전을 안 올린다).
-        uptime_ms: Math.round(process.uptime() * 1000),
-        buffer_size,
-        subscribers: this.sseClients.size,
-        channel_handler: this.channelHandler !== null,
-        active_turns: inflight === null ? null : inflight.count,
-        active_turn_threads: inflight === null ? null : inflight.keys,
-      });
+      await handleHealth(this.routeCtx(req, res, url));
       return;
     }
 
     // LLM 게이트웨이 모델 목록 — OpenAI 호환 `GET /v1/models`(ADR 2026-07-25). chat 과 동일
     // 인증(gateway 토큰), 비활성=404. read-only 라 동시성 캡 밖(gatewayInflight 무증감).
     if (pathname === "/v1/models" && method === "GET") {
-      const gw = resolveGatewayRuntime(); // settings fresh read → 재시작 없이 반영.
-      if (!gw.enabled) {
-        writeJson(res, 404, { error: { message: "llm gateway disabled (settings gateway.enabled / token not set)" } });
-        return;
-      }
-      const auth = req.headers.authorization ?? "";
-      const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-      if (bearer !== gw.token) {
-        writeJson(res, 401, { error: { message: "unauthorized" } });
-        return;
-      }
-      writeJson(res, 200, buildModelsListResponse(gw.poolRaw));
+      await serveGatewayModels(this.routeCtx(req, res, url));
       return;
     }
 
     // LLM 게이트웨이 — OpenAI 호환. **브리지 role 토큰과 별개**의 전용 게이트웨이 토큰.
     // 비활성 = 404. 앱 서버가 토큰 쥐고 호출(브라우저 직접 금지). 127.0.0.1 바인드.
     if (pathname === "/v1/chat/completions" && method === "POST") {
-      const gw = resolveGatewayRuntime(); // settings fresh read → 재시작 없이 반영.
-      if (!gw.enabled) {
-        writeJson(res, 404, { error: { message: "llm gateway disabled (settings gateway.enabled / token not set)" } });
-        return;
-      }
-      const gwAuth = req.headers.authorization ?? "";
-      const bearer = gwAuth.startsWith("Bearer ") ? gwAuth.slice("Bearer ".length).trim() : "";
-      if (bearer !== gw.token) {
-        writeJson(res, 401, { error: { message: "unauthorized" } });
-        return;
-      }
-      if (gatewayInflight >= gw.maxConcurrency) {
-        writeJson(res, 429, { error: { message: "gateway busy (max concurrency reached)" } });
-        return;
-      }
-      let body: Record<string, unknown>;
-      try {
-        body = await readJsonBody(req);
-      } catch (e) {
-        writeJson(res, 400, { error: { message: `invalid body: ${e instanceof Error ? e.message : String(e)}` } });
-        return;
-      }
-      const messages = Array.isArray(body.messages)
-        ? (body.messages as GatewayChatMessage[])
-        : [];
-      if (messages.length === 0) {
-        writeJson(res, 400, { error: { message: "messages required" } });
-        return;
-      }
-      const { system, text } = flattenChatMessages(messages);
-      // 함수콜 패스스루(ADR 2026-07-25 §Decision-5) — body.tools 없으면 미주입(현행, 회귀 0).
-      const gatewayTools = parseGatewayTools(body);
-      // 비전(ADR 2026-07-25) — messages content 의 image_url(data: URI) → Attachment. 기존
-      //   ingestAttachments/attachments seam 재사용(어댑터 vision 경로 그대로). 이미지 없으면
-      //   빈 배열=현행 text-only(회귀 0). 파싱/캡 위반은 400.
-      let gatewayAttachments: Attachment[] = [];
-      try {
-        gatewayAttachments = await ingestAttachments(
-          extractGatewayImageAttachments(messages),
-          this.name,
-        );
-      } catch (e) {
-        writeJson(res, 400, {
-          error: { message: `image parse failed: ${e instanceof Error ? e.message : String(e)}` },
-        });
-        return;
-      }
-      // 강제 지정한 함수가 tools 목록에 없다 = 클라이언트 실수. 조용히 auto 로 돌지 않는다.
-      const forced =
-        gatewayTools.externalToolChoice !== undefined &&
-        typeof gatewayTools.externalToolChoice === "object"
-          ? gatewayTools.externalToolChoice.name
-          : undefined;
-      if (forced !== undefined && !(gatewayTools.externalTools ?? []).some((t) => t.name === forced)) {
-        writeJson(res, 400, {
-          error: {
-            message: `tool_choice 가 지정한 함수 "${forced}" 가 tools 목록에 없습니다.`,
-            type: "invalid_tool_choice",
-          },
-        });
-        return;
-      }
-      const specs = resolveGatewaySpecs(body.model, gw.poolRaw);
-      const runInput = {
-        text: text !== "" ? text : " ",
-        threadKey: `gateway:${crypto.randomUUID()}`,
-        channel: this.name,
-        // ★`internal` 을 뗀다 (2026-08-12, 사용자 결정: "게이트웨이도 같이 남기는 게 맞지
-        //  않을까"). 종전엔 persist·turn 이벤트를 통째로 스킵해서, 이벤트 미리보기(4,000자)를
-        //  넘는 요청은 **어디에도 남지 않았다** — 유일한 기록이 잘린 사본이었다.
-        //  엔드포인트(`endpoint:<name>:<nonce>`)는 원래 이렇게 돈다: transcripts 에 전문이
-        //  남고, 화면 오염은 **threadKey 접두 필터**가 막는다(세션 목록은 이미 `gateway:` 를
-        //  배제한다 — store/sessions.ts excludeInternal). 같은 표면이니 같은 규칙을 쓴다.
-        //  ★부수효과도 대칭이다: 이제 게이트웨이 턴도 llm.turn_done/turn_error 를 낸다 —
-        //   외부에 열린 표면의 건강이 자가 진단에 잡히는 건 옳다(대신 그 실패는 '내 대화'가
-        //   아니라 외부 호출로 분류된다 — core/health-sweep.ts).
-        toolPolicy: { mode: "none" as const }, // 도구 0.
-        systemPromptOverride: system, // 앱 system(빈 문자열도 override — 비서 페르소나 스킵).
-        ...(gatewayAttachments.length > 0 ? { attachments: gatewayAttachments } : {}), // 비전.
-        ...gatewayTools, // 함수콜 패스스루(externalTools/externalToolChoice, 없으면 미주입).
-      };
-      // ── 게이트웨이 호출 기록 (2026-08-10) ────────────────────────────────
-      // ★게이트웨이는 **외부에 열린 표면**인데 정태님이 볼 자리가 없었다: transcripts 0건
-      //  (internal:true 라 의도적으로 안 남긴다 — 앱 데이터를 우리 DB 에 쌓을 이유가 없다),
-      //  events 는 llm.activity 뿐. "누가·언제·뭘·얼마나 썼나" 조차 남지 않았다.
-      //  엔드포인트가 2026-08-01 에 같은 병을 앓고 고쳤다(endpoint.call 을 SKIP 에서 뺌).
-      //  ★**본문도 남긴다** (2026-08-12, 사용자 결정: "요청·결과 다 남는 게 맞지 않나?
-      //   그걸 알고 싶어서 저기에 기록이 남는 건데"). 종전 주석은 "앱 데이터라 회계·건강만"
-      //   이라고 적었는데 그건 **내 판단이었고 사용자 것이 아니었다.** 티구클로에 연결해 쓰는
-      //   내 앱이라면 무슨 요청이 오갔는지가 곧 이 기록의 목적이다.
-      //  ★단, 게이트웨이 턴은 `internal:true` 라 transcripts 에 안 남는다 — 즉 **이 이벤트가
-      //   유일한 기록**이다. 그래서 엔드포인트와 같은 미리보기 상한을 쓰되(핫경로 바운드),
-      //   잘렸으면 얼마나 잘렸는지 본문에 명시한다(조용한 절단 금지).
-      const gwCallId = crypto.randomUUID();
-      const gwStartedAt = Date.now();
-      const publishGatewayCall = (
-        phase: "start" | "done",
-        extra: Record<string, unknown> = {},
-      ): void => {
-        try {
-          this.bus?.publish({
-            type: "gateway.call",
-            ts: phase === "start" ? gwStartedAt : Date.now(),
-            payload: {
-              callId: gwCallId,
-              phase,
-              model: typeof body.model === "string" ? body.model : "(기본)",
-              stream: body.stream === true,
-              messages: messages.length,
-              ...extra,
-            },
-          });
-        } catch {
-          /* 관측 발행 실패가 응답을 무르지 않는다(원칙 3). */
-        }
-      };
-      publishGatewayCall("start", { request: endpointPreview(runInput.text) });
-      const specOpt = specs.length > 0 ? { specs } : undefined;
-      const cid = `chatcmpl-${crypto.randomUUID()}`;
-      const created = Math.floor(Date.now() / 1000);
-      const reqModel = typeof body.model === "string" ? body.model : "tiguclaw";
-
-      // ── 스트리밍(stream:true) — SSE, OpenAI chat.completion.chunk. 이 게이트웨이 턴의
-      // llm.delta(threadKey 필터)를 구독해 content 청크로 중계. 델타 전무(비스트리밍 모델)
-      // 시 완료 후 전체본 1청크 폴백. 함수콜(ADR 2026-07-25 §Decision-5) — llm.tool_call_delta
-      // (형제 이벤트, llm.delta 확장 아님)를 옆에서 구독해 index-기반 tool_calls 조각으로 중계.
-      // externalTools 미요청 turn 은 이 이벤트 발행처 자체가 없어 이 구독은 그냥 무동작(회귀 0). ──
-      if (body.stream === true) {
-        res.writeHead(200, {
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-        let modelLabel = reqModel;
-        let sawDelta = false;
-        let sawToolCallDelta = false;
-        const chunk = (delta: Record<string, unknown>, finish: string | null): void => {
-          res.write(
-            `data: ${JSON.stringify({ id: cid, object: "chat.completion.chunk", created, model: modelLabel, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
-          );
-        };
-        chunk({ role: "assistant" }, null);
-        const unsub =
-          this.bus !== null
-            ? this.bus.subscribe((ev) => {
-                if (ev.type !== "llm.delta") return;
-                const p = ev.payload as {
-                  threadKey?: string;
-                  delta?: string;
-                  model?: string;
-                };
-                if (p.threadKey !== runInput.threadKey) return;
-                if (typeof p.model === "string" && p.model !== "") modelLabel = p.model;
-                if (typeof p.delta === "string" && p.delta !== "") {
-                  sawDelta = true;
-                  chunk({ content: p.delta }, null);
-                }
-              })
-            : null;
-        const unsubTool =
-          this.bus !== null
-            ? this.bus.subscribe((ev) => {
-                if (ev.type !== "llm.tool_call_delta") return;
-                const p = ev.payload as {
-                  threadKey?: string;
-                  index?: number;
-                  id?: string;
-                  name?: string;
-                  argumentsDelta?: string;
-                };
-                if (p.threadKey !== runInput.threadKey) return;
-                if (typeof p.index !== "number") return;
-                sawToolCallDelta = true;
-                chunk(
-                  {
-                    tool_calls: [
-                      {
-                        index: p.index,
-                        ...(typeof p.id === "string" && p.id !== "" ? { id: p.id, type: "function" } : {}),
-                        function: {
-                          ...(typeof p.name === "string" && p.name !== "" ? { name: p.name } : {}),
-                          ...(typeof p.argumentsDelta === "string" && p.argumentsDelta !== ""
-                            ? { arguments: p.argumentsDelta }
-                            : {}),
-                        },
-                      },
-                    ],
-                  },
-                  null,
-                );
-              })
-            : null;
-        gatewayInflight += 1;
-        try {
-          const out = await runRegionA(runInput, specOpt);
-          if (out.model !== undefined && out.model !== null && out.model !== "") modelLabel = out.model;
-          const toolCalls = out.externalToolCalls ?? [];
-          if (toolCalls.length > 0) {
-            if (!sawToolCallDelta) {
-              // 델타 미발행(폴링형/비스트리밍 어댑터) — llm.delta 전무 폴백과 동형: 완료 후
-              // 전체 tool_calls 1청크로.
-              chunk(
-                {
-                  tool_calls: toolCalls.map((tc, i) => ({
-                    index: i,
-                    id: tc.id,
-                    type: "function",
-                    function: { name: tc.name, arguments: tc.argumentsJson },
-                  })),
-                },
-                null,
-              );
-            }
-            chunk({}, "tool_calls");
-          } else {
-            if (!sawDelta && out.text) chunk({ content: out.text }, null); // 델타 전무 폴백.
-            chunk({}, "stop");
-          }
-          res.write("data: [DONE]\n\n");
-          publishGatewayCall("done", {
-            ok: true,
-            request: endpointPreview(runInput.text),
-            response: endpointPreview(
-              out.text !== undefined && out.text !== ""
-                ? out.text
-                : `(텍스트 없음 — 도구 호출 ${(out.externalToolCalls ?? []).length}건)`,
-            ),
-            inputTokens: out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0,
-            outputTokens: out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0,
-            toolCalls: (out.externalToolCalls ?? []).length,
-            elapsedMs: Date.now() - gwStartedAt,
-            ...(typeof out.model === "string" && out.model !== "" ? { servedBy: out.model } : {}),
-          });
-        } catch (e) {
-          const reason = e instanceof Error ? e.message : String(e);
-          res.write(`data: ${JSON.stringify({ error: { message: reason } })}\n\n`);
-          // 실패도 남긴다 — 스트리밍은 200 으로 시작해 중간에 깨지므로 상태코드로는 안 보인다.
-          publishGatewayCall("done", {
-            ok: false,
-            request: endpointPreview(runInput.text),
-            error: reason.slice(0, 300),
-            elapsedMs: Date.now() - gwStartedAt,
-          });
-        } finally {
-          if (unsub !== null) safeUnsubscribe(unsub);
-          if (unsubTool !== null) safeUnsubscribe(unsubTool);
-          gatewayInflight -= 1;
-          res.end();
-        }
-        return;
-      }
-
-      // ── 비스트리밍 — out.externalToolCalls 있으면 tool_calls 응답(§Decision-5), 없으면
-      // 기존 그대로(content:out.text, finish_reason:"stop") — 하위호환 100%. ──
-      gatewayInflight += 1;
-      try {
-        const out = await runRegionA(runInput, specOpt);
-        // ★prompt_tokens 는 **턴 전체 합계** (2026-07-30). `inputTokens` 는 계약상
-        //  "마지막 호출 1회"(컨텍스트 참 정도)라, 도구 루프를 도는 요청에서 그걸 내보내면
-        //  클라이언트 비용·예산 회계가 실제의 일부만 본다. 제3자에게 나가는 값이라
-        //  우리 화면처럼 나중에 눈으로 걸러지지 않는다 — 합계가 정직하다.
-        const inTok = out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0;
-        // ★출력도 **턴 합계**다 — 바로 위 주석이 입력에 대해 말한 이유가 출력에도 그대로
-        //  적용된다. 한쪽만 합계면 클라이언트 회계가 비대칭으로 틀린다(2026-08-09 벤치에서
-        //  같은 비대칭이 "우리가 11배 효율적"이라는 거짓 결론을 만들었다).
-        const outTok = out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0;
-        const toolCalls = out.externalToolCalls ?? [];
-        const hasToolCalls = toolCalls.length > 0;
-        const bodyText = out.text ?? "";
-        // ★★게이트웨이는 **반드시 결과를 준다**: tool_calls · 텍스트 · 명시적 에러 셋 중 하나.
-        //  침묵도 빈 200 도 없다. 앱 입장에서 제일 나쁜 건 "아무 일도 안 일어난 것처럼 보이는
-        //  성공 응답"이다 — 어디를 고쳐야 할지 알 수가 없다(2026-08-09 실사용 사고의 본체).
-        if (!hasToolCalls && bodyText.trim() === "") {
-          writeJson(res, 502, {
-            error: {
-              message:
-                "모델이 빈 응답을 반환했습니다(텍스트도 함수콜도 없음). 요청은 정상 처리됐으나 결과가 비었습니다 — 모델/풀 상태를 확인하세요.",
-              type: "empty_completion",
-            },
-          });
-          return;
-        }
-        // ★`tool_choice:"required"` = 반드시 도구를 부른다(OpenAI 계약). 못 지켰으면 텍스트를
-        //  성공인 척 돌려주지 않는다 — 앱은 tool_calls 를 기다리고 있고, 조용히 텍스트를 받으면
-        //  '모델이 도구를 안 쓴다'로만 보인다(그 진단에 하루가 들었다).
-        if (!hasToolCalls && gatewayTools.externalToolChoice === "required") {
-          writeJson(res, 502, {
-            error: {
-              message: `tool_choice:"required" 인데 모델이 함수를 호출하지 않았습니다(텍스트만 반환). 모델을 바꾸거나 tool_choice 를 "auto" 로 낮추세요.`,
-              type: "tool_choice_unsatisfied",
-            },
-          });
-          return;
-        }
-        writeJson(res, 200, {
-          id: cid,
-          object: "chat.completion",
-          created,
-          model: out.model ?? reqModel,
-          choices: [
-            {
-              index: 0,
-              message: hasToolCalls
-                ? {
-                    role: "assistant",
-                    content: null,
-                    tool_calls: toolCalls.map((tc) => ({
-                      id: tc.id,
-                      type: "function",
-                      function: { name: tc.name, arguments: tc.argumentsJson },
-                    })),
-                  }
-                : { role: "assistant", content: out.text ?? "" },
-              finish_reason: hasToolCalls ? "tool_calls" : "stop",
-            },
-          ],
-          usage: { prompt_tokens: inTok, completion_tokens: outTok, total_tokens: inTok + outTok },
-        });
-        publishGatewayCall("done", {
-          ok: true,
-          request: endpointPreview(runInput.text),
-          response: endpointPreview(
-            out.text !== undefined && out.text !== ""
-              ? out.text
-              : `(텍스트 없음 — 도구 호출 ${toolCalls.length}건)`,
-          ),
-          inputTokens: inTok,
-          outputTokens: outTok,
-          toolCalls: toolCalls.length,
-          elapsedMs: Date.now() - gwStartedAt,
-          ...(typeof out.model === "string" && out.model !== "" ? { servedBy: out.model } : {}),
-        });
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        writeJson(res, 502, { error: { message: reason } });
-        // 실패도 남긴다 — 외부 표면의 건강은 성공만 봐선 안 보인다.
-        publishGatewayCall("done", {
-          ok: false,
-          request: endpointPreview(runInput.text),
-          error: reason.slice(0, 300),
-          elapsedMs: Date.now() - gwStartedAt,
-        });
-      } finally {
-        gatewayInflight -= 1;
-      }
+      await serveGatewayChat(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1461,17 +540,7 @@ class HttpBridge implements Channel, Observer {
     // ★**읽기만 있다.** 쓰기는 `configure_home` 도구로만 간다 — 배치는 비서가 하는 것이고
     //  (A3), 화면에 쓰기 구멍을 내면 그게 곧 손 배치 UI 의 절반이 된다(아직 안 짓는다).
     if (pathname === "/home-widgets" && method === "GET") {
-      const known = new Set(listLivePlugins().map((p) => p.name));
-      const { widgets, rejected } = readHomeWidgets(known);
-      // ★**어느 위젯이 값을 받아올 수 있나**(2026-08-28, 증분 5). 관례상 데이터 라우트
-      //  이름 = 위젯 이름이므로, 이 목록에 없으면 그 위젯은 **poll 대상이 아니다**
-      //  (Running Work 처럼 화면에서 `ctx.resource` 로 값을 받는 것). 화면이 404 를 맞고
-      //  "값을 못 받았습니다" 를 띄우지 않게 **서버가 먼저 말해 준다** — 이미 계산하는
-      //  값이라 새 선언을 만들지 않는다.
-      const { listPluginDataRoutes } = await import(
-        "../../src/core/plugins/data-routes.js"
-      );
-      writeJson(res, 200, { widgets, rejected, dataRoutes: listPluginDataRoutes() });
+      await handleHomeWidgets(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1480,89 +549,13 @@ class HttpBridge implements Channel, Observer {
     //  ★외부 호출·캐시·`needs.network` 집행은 전부 코어(`data-routes.ts`)가 한다.
     //   여기는 **주소를 값으로 바꾸는 자리**일 뿐이다(가장자리는 판단하지 않는다).
     if (pathname.startsWith("/plugin-data/") && method === "GET") {
-      const rest = pathname.slice("/plugin-data/".length).split("/");
-      const plugin = decodeURIComponent(rest[0] ?? "");
-      const route = decodeURIComponent(rest[1] ?? "");
-      if (rest.length !== 2 || plugin === "" || route === "") {
-        writeJson(res, 404, { error: "/plugin-data/<plugin>/<route> 형식이어야 합니다." });
-        return;
-      }
-      const query: Record<string, string> = {};
-      for (const [k, v] of url.searchParams) {
-        if (k !== "token") query[k] = v; // 토큰은 질의가 아니다 — 캐시 키에 섞이면 안 된다.
-      }
-      const r = await callPluginDataRoute(plugin, route, query);
-      if (!r.ok) {
-        writeJson(res, r.status, { error: r.error });
-        return;
-      }
-      // ★**바이트도 낸다** — 지도 타일처럼 브라우저가 직접 못 받는 것(CSP `img-src 'self'`).
-      //  같은 라우트·같은 캐시이고 여기서 표현만 갈린다.
-      if (isPluginMedia(r.value)) {
-        res.writeHead(200, {
-          "Content-Type": r.value.contentType,
-          // ★브라우저도 캐시하게 둔다 — 서버 TTL 과 **같은 수명**이라 둘이 갈리지 않는다.
-          //  타일은 안 바뀌므로 이게 poll 마다 다시 받는 것을 막는 가장 싼 수단이다.
-          "Cache-Control": `private, max-age=${Math.max(0, Math.floor(r.ttlMs / 1000))}`,
-        });
-        res.end(Buffer.from(r.value.body));
-        return;
-      }
-      // ★JSON 은 **캐시하지 않는다** — 신선도 판단은 서버 TTL 한 곳에만 둔다. 브라우저까지
-      //  캐시하면 "값이 왜 안 바뀌지" 를 두 곳에서 봐야 한다.
-      res.writeHead(200, {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      res.end(JSON.stringify({ data: r.value, cached: r.cached }));
+      await handlePluginData(this.routeCtx(req, res, url));
       return;
     }
 
     // /events — SSE.
     if (pathname === "/events" && method === "GET") {
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-      // 초기 history 푸시 (bus 가 붙어있을 때만).
-      // 고volume 스트리밍 타입(llm.delta 등)은 재생 제외 — 라이브 fan-out 은 통과, history 만 필터.
-      if (this.bus !== null) {
-        const recent = this.bus
-          .history({ limit: 50 })
-          .filter((e) => !HISTORY_EXCLUDE.has(e.type));
-        for (const e of recent) {
-          try {
-            res.write(`data: ${redactSecrets(JSON.stringify(e))}\n\n`); // 위와 같은 이유.
-          } catch {
-            return;
-          }
-        }
-      }
-      this.sseClients.add(res);
-      // 하트비트 — 연결 유지 + **클라이언트 liveness 관측**(2026-07-26).
-      //  종전엔 SSE 코멘트(`: ping`)만 보냈는데, 코멘트는 EventSource 의 onmessage 를
-      //  발화시키지 않아 **브라우저가 "핑이 끊겼다"를 알 방법이 없었다**. 그래서 연결이
-      //  조용히 half-open 으로 죽으면(맥 절전·네트워크 전환·프록시 idle) onerror 도 안 뜨고
-      //  readyState 는 OPEN 이라 재연결이 영영 안 걸려, 그 뒤 발행된 이벤트(worker.done 등)를
-      //  못 받아 카드가 "실행 중"으로 영구히 남았다(실측: 끝난 매니저가 30분째 도는 것처럼 보임).
-      //  → 코멘트 대신 **실제 이벤트**로 보내 클라가 수신 시각을 추적/워치독할 수 있게 한다.
-      //  `stream.heartbeat` 는 EventBus 를 타지 않는 **전송 계층 전용** 신호(영속·관측 대상 아님)
-      //  라 소비자(대시보드)는 렌더하지 않고 liveness 갱신에만 쓴다.
-      const heartbeat = setInterval(() => {
-        try {
-          res.write(`data: ${JSON.stringify({ type: "stream.heartbeat", ts: Date.now() })}\n\n`);
-        } catch {
-          /* 끊긴 소켓 — close/error 가 cleanup 처리 */
-        }
-      }, 20_000);
-      (heartbeat as { unref?: () => void }).unref?.();
-      const cleanup = (): void => {
-        clearInterval(heartbeat);
-        this.sseClients.delete(res);
-      };
-      req.on("close", cleanup);
-      req.on("error", cleanup);
+      await handleEvents(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1572,67 +565,7 @@ class HttpBridge implements Channel, Observer {
     // 카테고리로 렌더(읽기 전용). next_run 계산은 scheduler mcp list_schedules 로직 재사용(croner
     // dry-run). 격리: 스케줄 수집 실패해도 나머지 인벤토리는 그대로 응답(빈 배열 폴백).
     if (pathname === "/inventory" && method === "GET") {
-      try {
-        const inv = await collectInventory();
-        let schedules: Array<Record<string, unknown>> = [];
-        try {
-          schedules = listSchedules().map((r) => {
-            let nextRun: string | null = null;
-            if (r.enabled && r.triggerType === "cron") {
-              try {
-                const dry = new Cron(r.cronExpr, {
-                  timezone: r.timezone,
-                  paused: true,
-                });
-                const next = dry.nextRun();
-                nextRun = next === null ? null : next.toISOString();
-              } catch {
-                nextRun = null;
-              }
-            }
-            // ★서버는 문장을 만들지 않는다 — 값·스펙만 보내고 화면이 만든다
-            //  (`DisplayText`, 2026-08-25). 여기 쓰이던 사실은 아래 `metadata` 에 이미
-            //  구조화돼 있어, 종전 문장은 같은 판단의 두 번째 사본이기도 했다.
-            const state: DisplayText = { key: r.enabled ? "common.on" : "common.off" };
-            const status: DisplayText = r.lastStatus ?? { key: "inv.schedule.neverRan" };
-            const description: DisplayText =
-              r.triggerType === "reboot"
-                ? { key: "inv.schedule.reboot", params: { state, status } }
-                : {
-                    key: "inv.schedule.cron",
-                    params: { cron: r.cronExpr ?? "-", next: nextRun ?? "-", state, status },
-                  };
-            const metadata: Record<string, unknown> = {
-              trigger_type: r.triggerType,
-              dest_channel: r.destChannel,
-            };
-            if (r.triggerType === "cron") {
-              metadata.cron_expr = r.cronExpr;
-              metadata.timezone = r.timezone;
-              if (nextRun !== null) metadata.next_run = nextRun;
-            }
-            if (r.destTarget !== null && r.destTarget !== "")
-              metadata.dest_target = r.destTarget;
-            if (r.lastStatus !== null) metadata.last_status = r.lastStatus;
-            if (r.lastError !== null && r.lastError !== "")
-              metadata.last_error = r.lastError;
-            return {
-              category: "schedule",
-              name: r.label,
-              description,
-              source: `schedule:${r.id}`,
-              enabled: r.enabled,
-              metadata,
-            };
-          });
-        } catch {
-          schedules = [];
-        }
-        writeJson(res, 200, { ...inv, schedules });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleInventory(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1652,64 +585,12 @@ class HttpBridge implements Channel, Observer {
     //  그 판정이 회귀(`release-notes-extractable`)와 두 벌이 된다. 안 만드는 게 제일 싸다.
     // ★`appRoot()` 기준 — 홈이 아니라 **앱 아티팩트**다(헌법 SYSTEM.md 와 같은 분류).
     if (pathname === "/changelog" && method === "GET") {
-      // ★경로는 **하나**다 — `appRoot()/CHANGELOG.md`(헌법 SYSTEM.md 와 같은 분류).
-      //  개발 레포엔 루트에 그 파일이 없지만(오버레이가 정본), 그 차이는 **빌드 스크립트**
-      //  (`bin/copy-dist-assets.mjs`)가 흡수한다 — 제품 코드에 dev 사정을 넣지 않는다.
-      let md = "";
-      try {
-        md = await fs.readFile(path.join(appRoot(), "CHANGELOG.md"), "utf8");
-      } catch {
-        /* 없으면 빈 값 — 화면이 "찾지 못했습니다" 를 띄운다 */
-      }
-      // 없으면 빈 값으로 정직하게 — 화면이 "찾지 못했습니다" 를 띄운다(빈 화면 금지).
-      writeJson(res, 200, { markdown: md });
+      await handleChangelog(this.routeCtx(req, res, url));
       return;
     }
 
     if (pathname === "/inventory-item" && method === "GET") {
-      const source = url.searchParams.get("source") ?? "";
-      if (source.trim() === "") {
-        writeJson(res, 400, { error: "source required" });
-        return;
-      }
-      try {
-        const inv = await collectInventory();
-        const allow = new Set<string>();
-        // 모든 카테고리의 파일 source(절대 경로)만 허용 집합에 편입. in-process:/builtin:/
-        // schedule: 같은 비파일 source 는 path.isAbsolute 가 false → 자동 제외.
-        for (const arr of [
-          inv.channel,
-          inv.external_plugin,
-          inv.skill,
-          inv.agent,
-          inv.mcp,
-          inv.endpoint,
-          inv.command,
-        ]) {
-          for (const e of arr) {
-            if (typeof e.source === "string" && path.isAbsolute(e.source)) {
-              allow.add(e.source);
-            }
-          }
-        }
-        if (!allow.has(source)) {
-          // allowlist 밖 = 임의 경로·비파일 source·부재 항목 → 읽기 거부(보안).
-          writeJson(res, 403, { error: "forbidden" });
-          return;
-        }
-        let body: string;
-        try {
-          body = await fs.readFile(source, "utf8");
-        } catch {
-          // 집합엔 있으나 파일 부재/디렉터리(예: 플러그인 dir) → 본문 없음.
-          writeJson(res, 404, { error: "not found", source });
-          return;
-        }
-        writeJson(res, 200, { source, body });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleInventoryItem(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1726,45 +607,7 @@ class HttpBridge implements Channel, Observer {
     // 긴 매니저의 worker.started SSE 가 replay 창(50) 밖으로 밀리면 새로고침 시 activity-only 카드
     // 라 라벨이 "(작업)"으로 뜨던 문제 → in-memory listJobs 로 label·kind·task 복원. read 게이트.
     if (pathname === "/worker-jobs" && method === "GET") {
-      // ★리비전을 **목록보다 먼저** 읽는다 (2026-08-27 Phase 1). 반대로 하면 목록을 만드는
-      //  사이에 들어온 변경이 리비전에만 반영돼, 화면이 "이미 최신" 이라 믿고 그 이벤트를
-      //  버린다(잃어버린 갱신). 먼저 읽으면 최악이 **한 번 더 받는 것**이라 안전한 쪽이다.
-      const stamp = stampFor(RUNNING_WORK);
-      const jobs = listJobs({ runningOnly: true, limit: 200 }).map((j) => ({
-        jobId: j.jobId,
-        label: j.label,
-        kind: j.kind ?? "worker",
-        threadKey: j.threadKey,
-        // 원 세션(잡 좌표 환원) — worker.* 이벤트 payload 와 동형. 대시보드 세션 스코프 필터가
-        // SSE·하이드레이션 어느 경로로 카드를 만들든 같은 근거로 판정하게 한다.
-        ownerThreadKey: resolveOwnerThreadKey(j.threadKey),
-        status: j.status,
-        // ★시작 시각 (2026-08-19 사용자 지적: 카드에 `1787121377393` 같은 숫자가 뜬다).
-        //  종전엔 이 필드가 없어서 하이드레이션이 `Date.now()` 를 시각 자리에 넣었고,
-        //  그것도 **포맷 안 된 epoch** 라 카드에 원값이 그대로 보였다. 시각은 서버가 아는
-        //  사실이므로 여기서 준다 — 클라가 "지금"으로 지어내면 그건 다른 값이다.
-        ...(typeof j.startedAt === "number" ? { startedAt: j.startedAt } : {}),
-        ...(j.agentName !== undefined ? { agentName: j.agentName } : {}),
-        ...(j.modelTier !== undefined && j.modelTier !== ""
-          ? { modelTier: j.modelTier }
-          : {}),
-        ...(j.task !== undefined ? { task: j.task } : {}),
-        ...(j.cwd !== undefined && j.cwd !== "" ? { cwd: j.cwd } : {}),
-        // ★"지금 무엇을 하는 중인가" 도 같이 준다 (2026-08-24 사용자 신고: "새로고침하면
-        //  백그라운드 매니저·에이전트의 뭘 진행중인지가 사라져"). 종전엔 이 한 줄이 SSE
-        //  스텝으로만 왔는데, replay 창(50) 밖으로 밀린 긴 잡은 새로고침 뒤 영영 안 왔다 —
-        //  카드는 복원되는데 **속이 비었다.**
-        //  ★새로 재지 않는다 — **점검(check-in)이 쓰는 것과 같은 증거**를 읽는다
-        //   (`getJobActivity`). 채팅 `/workers` 도 이미 이걸로 같은 문구를 만든다.
-        //   계측을 또 만들면 같은 사실을 두 곳이 다르게 말하게 된다.
-        //  ★한계(정직하게): `evidence` 는 in-memory 라 **데몬 재시작이면 비어 있다**.
-        //   그땐 카드는 서고 이 줄만 없다(잡 자체도 재시작으로 끊기므로 실질 영향은 작다).
-        ...(() => {
-          const act = getJobActivity(j.jobId);
-          return act === undefined ? {} : { activity: act };
-        })(),
-      }));
-      writeJson(res, 200, { ...stamp, items: jobs, jobs });
+      await handleWorkerJobs(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1779,42 +622,12 @@ class HttpBridge implements Channel, Observer {
     // 물어본다** — 하드코딩이 아니라 단일 진실 소스이므로 드리프트가 구조적으로 불가능하다.
     // 지연 조회(이 요청이 올 때만 인스턴스 생성) — 평시 비용 0. read 게이트.
     if (pathname === "/mcp-tools" && method === "GET") {
-      const want = (url.searchParams.get("name") ?? "").trim();
-      if (want === "") {
-        writeJson(res, 400, { error: "name 파라미터가 필요합니다" });
-        return;
-      }
-      try {
-        const factory = IN_PROCESS_MCP_FACTORIES[want];
-        if (factory === undefined) {
-          // 외부 MCP 는 연결된 클라이언트가 있어야 물어볼 수 있다 — 없으면 정직하게 빈 목록.
-          const note: DisplayText = { key: "inv.tools.externalOnly" };
-          writeJson(res, 200, { name: want, tools: [], note });
-          return;
-        }
-        const bridge = await adaptClaudeMcpServer(factory(), want);
-        const raw = (await bridge.listTools()) as Array<{
-          name?: string;
-          description?: string;
-          inputSchema?: { properties?: Record<string, unknown>; required?: string[] };
-        }>;
-        const tools = raw.map((t) => ({
-          name: String(t.name ?? ""),
-          description: String(t.description ?? ""),
-          params: Object.keys(t.inputSchema?.properties ?? {}),
-          required: Array.isArray(t.inputSchema?.required) ? t.inputSchema.required : [],
-        }));
-        writeJson(res, 200, { name: want, tools });
-      } catch (e) {
-        writeJson(res, 500, {
-          error: `도구 조회 실패: ${e instanceof Error ? e.message : String(e)}`,
-        });
-      }
+      await handleMcpTools(this.routeCtx(req, res, url));
       return;
     }
 
     if (pathname === "/shells" && method === "GET") {
-      writeJson(res, 200, { shells: listShells() });
+      await handleShells(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1823,17 +636,7 @@ class HttpBridge implements Channel, Observer {
     // BashOutput 의 증분 폴링 offset(stdoutRead/stderrRead)을 절대 소비하지 않는다 —
     // 이 엔드포인트를 아무리 폴링해도 모델이 받을 출력이 줄지 않는다. 없는 id 는 404.
     if (pathname === "/shell-output" && method === "GET") {
-      const shellId = url.searchParams.get("id") ?? "";
-      if (shellId === "") {
-        writeJson(res, 400, { error: "id required" });
-        return;
-      }
-      const tail = tailShell(shellId);
-      if (tail === undefined) {
-        writeJson(res, 404, { error: "shell not found", shellId });
-        return;
-      }
-      writeJson(res, 200, tail);
+      await handleShellOutput(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1845,62 +648,20 @@ class HttpBridge implements Channel, Observer {
     // 나올 수 없지만 방어선으로 재검사(§2.4). 전용 스킬-실행 엔드포인트는 만들지 않음
     // — 실행은 프론트가 기존 POST /api/messages(모델 매개)로 발동, 여기선 read 만.
     if (pathname === "/context-menu-items" && method === "GET") {
-      try {
-        const contributions = await collectContextMenuContributions();
-        const items: Array<{
-          id: string;
-          type: string;
-          label: string;
-          icon?: string;
-          action: { kind: "invoke_skill"; skill: string };
-          group?: string;
-          danger?: boolean;
-        }> = [];
-        for (const c of contributions) {
-          c.items.forEach((raw, idx) => {
-            const action = { kind: "invoke_skill" as const, skill: c.skillName };
-            if (!isWhitelistedContextMenuAction(action.kind)) return; // 방어선(도달 불가 — 항상 invoke_skill).
-            items.push({
-              id: `skill:${c.skillName}:${idx}`,
-              type: raw.on,
-              label: raw.label,
-              ...(raw.icon !== undefined ? { icon: raw.icon } : {}),
-              action,
-              ...(raw.group !== undefined ? { group: raw.group } : {}),
-              ...(raw.danger !== undefined ? { danger: raw.danger } : {}),
-            });
-          });
-        }
-        writeJson(res, 200, { items, generatedAt: Date.now() });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleContextMenuItems(this.routeCtx(req, res, url));
       return;
     }
 
     // /commands — JSON. 슬래시 명령 목록(빌트인 + 커스텀) 대시보드 노출. getAllCommands
     // 가 내부에서 discoverCommands 실패를 흡수(빌트인 폴백)하므로 여기선 경계 표준 에러만.
     if (pathname === "/commands" && method === "GET") {
-      try {
-        const cmds = await getAllCommands();
-        writeJson(res, 200, { commands: cmds });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleCommands(this.routeCtx(req, res, url));
       return;
     }
 
     // /providers — JSON. Dashboard/Dolsoe 공통 provider interface.
     if (pathname === "/providers" && method === "GET") {
-      try {
-        const providers = await collectModules();
-        writeJson(res, 200, providers);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleGetProviders(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1910,42 +671,7 @@ class HttpBridge implements Channel, Observer {
     // 기본 = settings.json `models.default` 포인터(미설정 시 "default") — 하드코딩 아님.
     // 프로파일 부재 시 profiles:[] graceful(400/500 아님). 편집 아님 — 표시만(설정은 대화·POST /set-default-profile).
     if (pathname === "/model-profiles" && method === "GET") {
-      try {
-        // ★설정이 0개면 **런타임이 실제로 쓰는 것**(빌트인 자동 조립)을 보여준다
-        //  (2026-08-19 사용자 신고: "설치하면 기본 모델 프로파일들이 생기지가 않아 —
-        //  대시보드에 비어 있는 상태"). 런타임은 원래 빌트인으로 잘 도는데 **화면만**
-        //  비어 있어서 설치가 덜 된 것처럼 보였다. 같은 폴백을 2026-08-13 에 `/models`
-        //  에는 넣었는데 여기와 프롬프트 인벤토리는 빠졌다 — 그래서 폴백을 소비처마다
-        //  적지 않고 `resolveModelProfiles` 한 곳으로 모았다.
-        const { profiles: map, builtin } = resolveModelProfiles();
-        const defaultName = builtin ? BUILTIN_DEFAULT_TIER : getDefaultProfileName();
-        const names = Object.keys(map);
-        const rest = names.filter((n) => n !== defaultName);
-        const ordered = names.includes(defaultName)
-          ? [defaultName, ...rest]
-          : rest;
-        const profiles = ordered.map((name) => {
-          const p = map[name]!;
-          return {
-            name,
-            isDefault: name === defaultName,
-            ...(p.description !== undefined ? { description: p.description } : {}),
-            pool: p.pool,
-            ...(p.fallback !== undefined ? { fallback: p.fallback } : {}),
-            ...(p.color !== undefined ? { color: p.color } : {}),
-          };
-        });
-        writeJson(res, 200, {
-          profiles,
-          count: profiles.length,
-          // 화면이 "자동 조립본" 임을 말할 수 있게(설정으로 고정한 것과 구분).
-          builtin,
-          generatedAt: new Date().toISOString(),
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleGetModelProfiles(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1953,34 +679,7 @@ class HttpBridge implements Channel, Observer {
     // body { name } — name 은 실존 프로파일이어야(loadModelProfiles 검증) → 없으면 400(댕글링 차단).
     // OK 면 settings.json read-modify-write(다른 키 보존) → 재시작 없이 fresh read 로 다음 턴 반영.
     if (pathname === "/set-default-profile" && method === "POST") {
-      let dbody: Record<string, unknown>;
-      try {
-        dbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const name = typeof dbody.name === "string" ? dbody.name.trim() : "";
-      if (name === "") {
-        writeJson(res, 400, { error: "name required" });
-        return;
-      }
-      const profiles = loadModelProfiles();
-      if (profiles[name] === undefined) {
-        writeJson(res, 400, {
-          error: `존재하지 않는 프로파일: ${name}`,
-          available: Object.keys(profiles),
-        });
-        return;
-      }
-      try {
-        setDefaultProfile(name);
-        writeJson(res, 200, { ok: true, default: name });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetDefaultProfile(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1992,57 +691,11 @@ class HttpBridge implements Channel, Observer {
     // body { name, color }. `color: null` = 지우기(기본색 복귀). 형식 판정은 코어 경계
     // (`isBadgeColor`) 한 곳 — 여기서 정규식을 또 쓰면 두 곳이 갈린다.
     if (pathname === "/set-profile-color" && method === "POST") {
-      let cbody: Record<string, unknown>;
-      try {
-        cbody = await readJsonBody(req);
-      } catch (e) {
-        writeJson(res, 400, { error: `invalid body: ${e instanceof Error ? e.message : String(e)}` });
-        return;
-      }
-      const name = typeof cbody.name === "string" ? cbody.name.trim() : "";
-      if (name === "") {
-        writeJson(res, 400, { error: "name(string) required" });
-        return;
-      }
-      const raw = cbody.color;
-      if (raw !== null && typeof raw !== "string") {
-        writeJson(res, 400, { error: "color 는 '#rrggbb' 문자열이거나 null(지우기) 이어야 합니다" });
-        return;
-      }
-      try {
-        const ok = setProfileColor(name, raw === null ? undefined : raw);
-        if (!ok) {
-          writeJson(res, 400, {
-            error: `'${name}' 프로파일을 못 찾았거나 색 형식이 '#rrggbb' 가 아닙니다`,
-          });
-          return;
-        }
-        writeJson(res, 200, { ok: true, name, color: raw });
-      } catch (e) {
-        writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
-      }
+      await handleSetProfileColor(this.routeCtx(req, res, url));
       return;
     }
     if (pathname === "/set-suggestion" && method === "POST") {
-      let sbody: Record<string, unknown>;
-      try {
-        sbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      if (typeof sbody.enabled !== "boolean") {
-        writeJson(res, 400, { error: "enabled(boolean) required" });
-        return;
-      }
-      try {
-        setSuggestionEnabled(sbody.enabled);
-        writeJson(res, 200, { ok: true, enabled: sbody.enabled });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetSuggestion(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2050,29 +703,7 @@ class HttpBridge implements Channel, Observer {
     // ★설치 안 된 언어는 **거절**한다(판정은 코어 `setLocale` 한 곳 — 여기서 목록을 다시
     //  들면 두 곳이 갈린다). 카탈로그는 서빙 때 주입되므로 반영은 새로고침에 일어난다.
     if (pathname === "/set-locale" && method === "POST") {
-      let lbody: Record<string, unknown>;
-      try {
-        lbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const want = typeof lbody.locale === "string" ? lbody.locale.trim() : "";
-      if (want === "") {
-        writeJson(res, 400, { error: "locale(string) required" });
-        return;
-      }
-      try {
-        if (!setLocale(want)) {
-          writeJson(res, 400, { error: `'${want}' 언어가 설치돼 있지 않습니다` });
-          return;
-        }
-        writeJson(res, 200, { ok: true, locale: want });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetLocale(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2080,29 +711,7 @@ class HttpBridge implements Channel, Observer {
     // ★판정은 코어(`setAppearance`·`setTheme`) 한 곳이다 — 여기서 목록을 다시 들면 두 곳이
     //  갈린다(`/set-locale` 과 같은 규약). `theme: null` 은 해제다.
     if (pathname === "/set-theme" && method === "POST") {
-      let tbody: Record<string, unknown>;
-      try {
-        tbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      try {
-        const changed: Record<string, unknown> = {};
-        if (tbody.theme !== undefined) {
-          const want = typeof tbody.theme === "string" ? tbody.theme.trim() : "";
-          if (!setTheme(want === "" ? undefined : want)) {
-            writeJson(res, 400, { error: `'${want}' 테마가 설치돼 있지 않습니다` });
-            return;
-          }
-          changed.theme = want;
-        }
-        writeJson(res, 200, { ok: true, ...changed });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetTheme(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2111,46 +720,24 @@ class HttpBridge implements Channel, Observer {
     // read-modify-write. ★서버에 두는 이유: 브라우저에만 있으면 서버가 스스로 만드는
     // 발화(매니저 완료·스케줄·파일감시)가 사용자가 켠 걸 몰라 fan-out 을 못 탄다.
     if (pathname === "/set-egress" && method === "POST") {
-      let ebody: Record<string, unknown>;
-      try {
-        ebody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      if (!Array.isArray(ebody.channels)) {
-        writeJson(res, 400, { error: "channels(string[]) required" });
-        return;
-      }
-      const known = new Set(listOutboundChannels());
-      const channels = ebody.channels.filter(
-        (c): c is string => typeof c === "string" && known.has(c),
-      );
-      // 오타·사라진 채널은 조용히 버린다 — 댕글링 좌표를 저장하면 영구 무발신이 된다
-      // (add_schedule dest_channel 이 그렇게 당했다).
-      try {
-        setEgressChannels(channels);
-        writeJson(res, 200, { ok: true, channels, available: [...known] });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetEgress(this.routeCtx(req, res, url));
       return;
     }
 
     // /egress — 현재 값 + 지금 가능한 채널. 대시보드 셀렉터가 이걸로 그린다.
     if (pathname === "/egress" && method === "GET") {
-      writeJson(res, 200, {
-        channels: readEgressChannels(),
-        available: listOutboundChannels(),
-      });
+      await handleGetEgress(this.routeCtx(req, res, url));
       return;
     }
 
-    // /suggestion — 현재 값 조회(설정 화면 초기 렌더용). read 게이트 기본.
+    // /suggestion — 현재 값 조회(설정 화면 초기 렌더용).
+    // ★종전 주석은 "read 게이트 기본" 이라고 적혀 있었는데 **기본값 같은 건 없다** — 위
+    //  role 표에서 빠지면 `required=null` 이라 게이트를 **아예 안 탄다**(2026-08-30 구조
+    //  검토). 그래도 결과가 같은 이유는 하나뿐이다: `read` 가 ROLE_RANK 최하위라
+    //  「등급 없음 ≡ read」인 것. 우연이 아니라 성질이므로 회귀
+    //  `bridge-role-table-complete` 가 그 전제를 지킨다 — `read` 아래 등급이 생기면 운다.
     if (pathname === "/suggestion" && method === "GET") {
-      writeJson(res, 200, { enabled: readSuggestionSettings().enabled });
+      await handleGetSuggestion(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2161,64 +748,7 @@ class HttpBridge implements Channel, Observer {
     // "default"/"" (= 상속으로 되돌림 → clearSessionModelProfile). 미지 이름 → 400(constraint 2).
     // 저장 키 = (SESSION_STORAGE_CHANNEL, resolveSessionId(...)) — /messages·router 와 동일 정규화.
     if (pathname === "/set-session-profile" && method === "POST") {
-      let dbody: Record<string, unknown>;
-      try {
-        dbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const rawThreadKey =
-        typeof dbody.threadKey === "string" ? dbody.threadKey.trim() : "";
-      if (rawThreadKey === "") {
-        writeJson(res, 400, { error: "threadKey required" });
-        return;
-      }
-      // profile 필드(계약) — name alias 도 관용 허용.
-      const rawProfile =
-        typeof dbody.profile === "string"
-          ? dbody.profile.trim()
-          : typeof dbody.name === "string"
-            ? dbody.name.trim()
-            : "";
-      // /messages 와 동일 정규화 — sessionId = resolveSessionId(this.name, threadKey, threadKey).
-      const sessionId = resolveSessionId(this.name, rawThreadKey, rawThreadKey);
-      // "" / "default" / 현재 전역 default 이름 → 세션 override 제거(전역 default 상속).
-      const isInherit =
-        rawProfile === "" ||
-        rawProfile === "default" ||
-        rawProfile === getDefaultProfileName();
-      if (isInherit) {
-        try {
-          clearSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId);
-          writeJson(res, 200, { ok: true, threadKey: rawThreadKey, profile: null });
-        } catch (e) {
-          const m = e instanceof Error ? e.message : String(e);
-          writeJson(res, 500, { error: m });
-        }
-        return;
-      }
-      // 실존 프로파일 검증(댕글링 차단 = constraint 2 방어심).
-      const profiles = loadModelProfiles();
-      if (profiles[rawProfile] === undefined) {
-        writeJson(res, 400, {
-          error: `존재하지 않는 프로파일: ${rawProfile}`,
-          available: Object.keys(profiles),
-        });
-        return;
-      }
-      try {
-        setSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId, rawProfile);
-        writeJson(res, 200, {
-          ok: true,
-          threadKey: rawThreadKey,
-          profile: rawProfile,
-        });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetSessionProfile(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2231,65 +761,7 @@ class HttpBridge implements Channel, Observer {
     // 죽음) — 막지 않되(사용자 결정, 파괴적-행위 소프트 게이트) warning:"critical" 을 실어
     // 프런트가 danger 확인하게 한다.
     if (pathname === "/set-module-enabled" && method === "POST") {
-      let dbody: Record<string, unknown>;
-      try {
-        dbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const name = typeof dbody.name === "string" ? dbody.name.trim() : "";
-      const enabled = dbody.enabled;
-      if (name === "") {
-        writeJson(res, 400, { error: "name required" });
-        return;
-      }
-      if (typeof enabled !== "boolean") {
-        writeJson(res, 400, { error: "enabled(boolean) required" });
-        return;
-      }
-      // 존재 검증(댕글링 이름 차단) — inventory 의 channel/external_plugin 카테고리(loadPlugins
-      // 가 <root>/plugins/* 에서 훑는 대상과 동일 모집단)에서 이름을 찾는다.
-      try {
-        const inv = await collectInventory();
-        const known = [...inv.channel, ...inv.external_plugin].some(
-          (e) => e.name === name,
-        );
-        if (!known) {
-          writeJson(res, 400, {
-            error: `존재하지 않는 모듈: ${name}`,
-            available: [...inv.channel, ...inv.external_plugin].map((e) => e.name),
-          });
-          return;
-        }
-        // ★코어는 끄기 대상이 아니다 — 거절한다(2026-08-26). 켜기는 통과시킨다(되돌리기는
-        //  언제나 열려 있어야 한다). 판정은 손 목록이 아니라 manifest 선언이다.
-        if (!enabled && isCoreModule(name)) {
-          writeJson(res, 400, {
-            ok: false,
-            name,
-            error:
-              `'${name}' 은 코어 모듈이라 끌 수 없습니다 — 끄면 대시보드와 이 API 가 함께 ` +
-              "멈추고, 다시 켤 경로도 여기 하나뿐이라 제품 안에서 되돌릴 수 없게 됩니다.",
-          });
-          return;
-        }
-        setModuleDisabled(name, !enabled);
-        const warning = SELF_REFERENTIAL_MODULE_NAMES.has(name)
-          ? "critical"
-          : undefined;
-        writeJson(res, 200, {
-          ok: true,
-          name,
-          enabled,
-          requiresRestart: true,
-          ...(warning !== undefined ? { warning } : {}),
-        });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSetModuleEnabled(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2301,73 +773,7 @@ class HttpBridge implements Channel, Observer {
     // (읽기성이나 파일 업로드라 write 권장). 임시파일은 전사 후 정리(우발 누적 방지 — 채팅 첨부와
     // 달리 회수/서빙 대상 아님). openai 25MB 한도 정합 위해 파일당 캡(ATTACH_MAX_FILE_BYTES) 재사용.
     if (pathname === "/transcribe" && method === "POST") {
-      let tbody: Record<string, unknown>;
-      try {
-        tbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const dataBase64 = typeof tbody.dataBase64 === "string" ? tbody.dataBase64 : "";
-      const mimeRaw =
-        typeof tbody.mimeType === "string" && tbody.mimeType !== ""
-          ? tbody.mimeType
-          : "audio/webm";
-      if (dataBase64 === "") {
-        writeJson(res, 400, { error: "dataBase64 required" });
-        return;
-      }
-      const buf = Buffer.from(dataBase64, "base64");
-      if (buf.length === 0) {
-        writeJson(res, 400, { error: "빈 오디오" });
-        return;
-      }
-      if (buf.length > ATTACH_MAX_FILE_BYTES) {
-        writeJson(res, 400, {
-          error: `오디오가 한도(${ATTACH_MAX_FILE_BYTES / 1024 / 1024}MB)를 초과합니다.`,
-        });
-        return;
-      }
-      // provider 해석은 저장 전에(미설정이면 파일 안 만들고 조기 종료). cwd = 데몬 루트(dev 홈은
-      // TIGUCLAW_HOME 이 아닌 settings 레이어가 해석 — loadTranscriptionConfig 가 홈/프로젝트 병합).
-      const resolved = resolveTranscriptionProvider(process.cwd());
-      if (resolved === null) {
-        writeJson(res, 200, {
-          error: "전사가 설정되지 않았습니다 (settings.json transcription).",
-        });
-        return;
-      }
-      const mime = (mimeRaw.split(";")[0] ?? "audio/webm").trim();
-      const ext = AUDIO_EXT_BY_MIME[mime] ?? "webm";
-      const tmpDir = path.join(getPaths().attachmentsDir, "transcribe");
-      let tmpPath = "";
-      try {
-        await fs.mkdir(tmpDir, { recursive: true });
-        tmpPath = path.join(
-          tmpDir,
-          `${crypto.randomBytes(8).toString("hex")}.${ext}`,
-        );
-        await fs.writeFile(tmpPath, buf);
-        const text = await resolved.provider.transcribe({
-          filePath: tmpPath,
-          mimeType: mime,
-          language: resolved.language,
-        });
-        writeJson(res, 200, { text: text.trim() });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[transcribe] 실패 — ${msg}`);
-        writeJson(res, 200, { error: `전사 실패: ${msg}` });
-      } finally {
-        if (tmpPath !== "") {
-          try {
-            await fs.unlink(tmpPath);
-          } catch {
-            /* 임시파일 정리 실패 무해(다음 부팅·OS 청소) */
-          }
-        }
-      }
+      await handleTranscribe(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2380,99 +786,12 @@ class HttpBridge implements Channel, Observer {
     //   DB 는 `store/chat-log.ts` 가, 세션 표시명은 `sessionDisplayName` 이 판단한다.
     //   핸들러에 판단을 두면 검사하려고 데몬을 띄워야 한다(원칙 게이트 Q7).
     if (pathname === "/chat-search" && method === "GET") {
-      try {
-        // ★조합(정규화→조회→스니펫→총건수)은 `core/chat-search.searchConversations` 한 곳이다.
-        //  비서의 `search_conversations` 도구도 **같은 함수**를 쓴다 — 여기서 다시 조합하면
-        //  도구와 화면이 다른 답을 준다.
-        const { searchConversations } = await import("../../src/core/chat-search.js");
-        const n = (v: string | null): number | undefined => {
-          const x = parseInt(v ?? "", 10);
-          return Number.isFinite(x) && x > 0 ? x : undefined;
-        };
-        const tkRaw = url.searchParams.get("threadKey");
-        const threadKey = tkRaw !== null && tkRaw.trim() !== "" ? tkRaw : undefined;
-        const r = await searchConversations(url.searchParams.get("q") ?? "", {
-          ...(n(url.searchParams.get("limit")) !== undefined
-            ? { limit: n(url.searchParams.get("limit"))! }
-            : {}),
-          ...(threadKey !== undefined ? { threadKey } : {}),
-          ...(n(url.searchParams.get("beforeTs")) !== undefined
-            ? { beforeTs: n(url.searchParams.get("beforeTs"))! }
-            : {}),
-          ...(n(url.searchParams.get("beforeId")) !== undefined
-            ? { beforeId: n(url.searchParams.get("beforeId"))! }
-            : {}),
-        });
-        // 너무 짧다 = 오류가 아니라 **아직 검색할 게 아니다**. 빈 결과로 조용히 답한다.
-        if (r.tooShort) {
-          writeJson(res, 200, { hits: [], query: "", tooShort: true });
-          return;
-        }
-        writeJson(res, 200, {
-          hits: r.hits,
-          total: r.total,
-          limit: r.limit,
-          query: r.query,
-          scope: r.scope,
-        });
-      } catch (err) {
-        writeJson(res, 500, {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+      await handleChatSearch(this.routeCtx(req, res, url));
       return;
     }
 
     if (pathname === "/chat-history" && method === "GET") {
-      try {
-        const limitRaw = url.searchParams.get("limit");
-        const parsed = limitRaw !== null ? parseInt(limitRaw, 10) : NaN;
-        const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 200;
-        // beforeTs — 페이지네이션(스크롤 더보기). 그 시각 *이전* N 건을 ASC 반환.
-        // 안전 파싱: 유효 양수만 전달, 그 외엔 undefined(= 최신 묶음).
-        const beforeRaw = url.searchParams.get("beforeTs");
-        const beforeParsed =
-          beforeRaw !== null ? parseInt(beforeRaw, 10) : NaN;
-        const beforeTs =
-          Number.isFinite(beforeParsed) && beforeParsed > 0
-            ? beforeParsed
-            : undefined;
-        // threadKey — 멀티세션 탭(ADR 2026-07-15 D5.3). 지정 시 그 스레드만, 미지정 시
-        // 현행(전 스레드 병합, 회귀 0). limit/beforeTs 와 결합.
-        const threadKeyRaw = url.searchParams.get("threadKey");
-        const threadKey =
-          threadKeyRaw !== null && threadKeyRaw.trim() !== ""
-            ? threadKeyRaw
-            : undefined;
-        // 복합 커서의 두 번째 축 — 같은 ts 가 여럿일 때 경계 행이 유실되는 것을 막는다.
-        // ★2026-08-23 3라운드: 이 파싱을 한 번 **잘못 지웠다.** "죽은 코드" 라고 판단한 건
-        //  `/all-activity` 쪽이었는데 일괄 치환이 두 핸들러를 다 잡아서 **살아 있는 이쪽**이
-        //  지워졌고, 주석·커밋 메시지·백로그가 셋 다 반대로 적혔다. 실측 귀결: 동률 3행 ×
-        //  40그룹(120행)을 끝까지 페이징해 **96행만 수집 — 24행(20%) 영구 유실**.
-        //  보내는 쪽은 `history-render.js:468,517`(위로 더보기·점프) 두 곳이다 — 지우기 전에
-        //  **보내는 쪽을 grep** 했으면 30초에 보였다. [[feedback_verify_before_asserting]]
-        const beforeIdRaw2 = parseInt(url.searchParams.get("beforeId") ?? "", 10);
-        const beforeId2 =
-          Number.isFinite(beforeIdRaw2) && beforeIdRaw2 > 0 ? beforeIdRaw2 : undefined;
-        const entries = getRecentChatLog({
-          limit,
-          ...(beforeTs !== undefined ? { beforeTs } : {}),
-          ...(beforeId2 !== undefined ? { beforeId: beforeId2 } : {}),
-          ...(threadKey !== undefined ? { threadKey } : {}),
-        });
-        // 비서 표시 이름(AGENT.md 이름 필드, 없으면 tiguclaw) — 대시보드 채팅 라벨용.
-        // activities(기능 B) — 이력에 도구 스텝 복원(새로고침 후에도 도구 사용 표시).
-        writeJson(res, 200, {
-          entries,
-          // 상한은 역방향 페이지네이션(beforeTs)일 때만 — 최신 페이지는 진행 중 턴의
-          // 활동이 chat_log 마지막 행보다 뒤에 있어 상한을 걸면 통째로 사라진다.
-          activities: historyActivities(entries, threadKey, beforeTs !== undefined),
-          assistantName: getAssistantName(),
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleChatHistory(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2487,104 +806,12 @@ class HttpBridge implements Channel, Observer {
     // 을 영속으로 돌리고(event-persist SKIP 해제) 여기서 되읽는다 — 채팅의 `/chat-history`
     // 와 같은 자리. 라이브 SSE 는 그대로 두고, **열 때 과거를 채우는** 용도다.
     if (pathname === "/endpoint-calls" && method === "GET") {
-      try {
-        const raw = url.searchParams.get("limit");
-        const n = raw !== null ? parseInt(raw, 10) : NaN;
-        const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 60;
-        // 한 호출이 start/done 2건이므로 넉넉히 읽어 callId 로 접는다(done 이 start 를 대체).
-        // ★엔드포인트와 게이트웨이를 **한 목록으로** 준다 (2026-08-10). 둘 다 "외부가
-        //  나를 호출한 기록" 이라 사용자가 보는 질문이 같다("누가·언제·뭘·얼마나").
-        //  화면을 둘로 나누면 같은 판단이 두 곳에 생기고, 어느 쪽을 봐야 할지도 매번
-        //  고민거리가 된다. 구분은 `kind` 필드로 주고 필터는 뷰가 한다.
-        const rows = listEvents({
-          types: ["endpoint.call", "gateway.call"],
-          limit: limit * 3,
-        });
-        const byCall = new Map<
-          string,
-          { ts: number; kind: string; payload: Record<string, unknown> }
-        >();
-        for (const r of rows) {
-          // ★`PersistedEvent.payload` 는 **JSON 문자열**이다(객체 아님). 캐스팅으로 넘기면
-          //  조용히 빈 값이 나간다 — tsc 가 잡아줬다.
-          let pl: Record<string, unknown>;
-          try {
-            const parsed: unknown = JSON.parse(r.payload);
-            pl =
-              parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-                ? (parsed as Record<string, unknown>)
-                : {};
-          } catch {
-            continue; // 깨진 행은 건너뛴다(한 행이 이력 전체를 막지 않게).
-          }
-          const kind = r.type === "gateway.call" ? "gateway" : "endpoint";
-          // callId 는 각 축에서만 유일하므로 kind 를 섞어 키를 만든다(충돌 0).
-          const id = `${kind}:${String(pl.callId ?? r.ts)}`;
-          const prev = byCall.get(id);
-          // done(phase!=="start") 이 start 를 이긴다. 같은 phase 면 나중 것.
-          if (prev === undefined || pl.phase !== "start" || prev.payload.phase === "start") {
-            byCall.set(id, { ts: r.ts, kind, payload: pl });
-          }
-        }
-        // ★start 만 있고 done 이 없는 호출 = **끝을 못 본 호출**(데몬 재시작 등).
-        //  그대로 두면 화면에 영원히 "진행 중" 으로 보인다 — 오늘 고친 "실패했는데 아무것도
-        //  안 보이는" 것의 화면판이다. 진행 중일 수 없는 시간이 지났으면 미완으로 못 박는다.
-        const STALE_MS = 10 * 60_000;
-        const now = Date.now();
-        const calls = [...byCall.values()]
-          .sort((a, b) => a.ts - b.ts)
-          .slice(-limit)
-          .map((c) =>
-            c.payload.phase === "start" && now - c.ts > STALE_MS
-              ? {
-                  ts: c.ts,
-                  kind: c.kind,
-                  ...c.payload,
-                  phase: "done",
-                  ok: false,
-                  response:
-                    "(완료 기록 없음 — 데몬 재시작 등으로 중단된 호출입니다. 생성 중이던 응답은 남지 않았습니다.)",
-                }
-              : { ts: c.ts, kind: c.kind, ...c.payload },
-          );
-        writeJson(res, 200, { calls, generatedAt: new Date().toISOString() });
-      } catch (e) {
-        writeJson(res, 500, { error: String(e) });
-      }
+      await handleEndpointCalls(this.routeCtx(req, res, url));
       return;
     }
 
     if (pathname === "/all-activity" && method === "GET") {
-      try {
-        const limitRaw = url.searchParams.get("limit");
-        const parsed = limitRaw !== null ? parseInt(limitRaw, 10) : NaN;
-        const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 200;
-        const beforeRaw = url.searchParams.get("beforeTs");
-        const beforeParsed =
-          beforeRaw !== null ? parseInt(beforeRaw, 10) : NaN;
-        const beforeTs =
-          Number.isFinite(beforeParsed) && beforeParsed > 0
-            ? beforeParsed
-            : undefined;
-        // ★`/all-activity` 는 복합 커서를 **안 쓴다**. 이 뷰는 chat_log 와 llm.activity 를
-        //  ts 로 병합해 한 축으로 페이징하므로, chat_log 의 id 를 두 번째 축으로 넣으면
-        //  activities 쪽엔 뜻이 없는 값이 된다(반쪽 커서). 제대로 하려면 테이블별 커서가
-        //  필요하다 — 백로그. 보내는 클라이언트도 없다(`activity.js:303` 은 beforeTs 만).
-
-        const entries = getRecentChatLog({
-          limit,
-          ...(beforeTs !== undefined ? { beforeTs } : {}),
-        });
-        writeJson(res, 200, {
-          entries,
-          // /chat-history 와 동일 규칙 — 상한은 역방향 페이지(beforeTs)에서만.
-          activities: historyActivities(entries, undefined, beforeTs !== undefined),
-          generatedAt: new Date().toISOString(),
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleAllActivity(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2595,49 +822,7 @@ class HttpBridge implements Channel, Observer {
     // 텔레그램 기본 세션 = 대시보드 첫 탭 = 동일 id(DEFAULT_SESSION_ID)라 중복 0. 세션별
     // 프리뷰(chat_log 최근 1건 요약) 부착. read 게이트. SSE 는 전체 브로드캐스트 유지(D5).
     if (pathname === "/sessions" && method === "GET") {
-      try {
-        // 사용자에게 보이는 목록 — 프로브·검증 흔적 제외(대시보드 세션 목록과 /sessions 공통 기준).
-        const threads = listThreads({ excludeInternal: true });
-        const sessions = threads.map((t) => {
-          // 프리뷰 — 그 스레드 최근 1건 text 요약(80자 슬라이스). 첨부-only(text="")는
-          // 스킵되어 빈 프리뷰(undefined)로 graceful.
-          const recent = getRecentChatLog({ threadKey: t.threadKey, limit: 1 });
-          const previewText = recent.length > 0 ? recent[recent.length - 1]!.text : "";
-          const preview =
-            previewText.trim() !== ""
-              ? previewText.replace(/\s+/g, " ").slice(0, 80)
-              : undefined;
-          // 세션 모델 프로파일(대시보드 드롭다운 상태 복원용, additive — 기존 소비자 무영향,
-          // ADR model-dropdown §3-c). 미기재 세션 → null(드롭다운 default 로 hydrate).
-          const modelProfile = getSessionModelProfile(
-            SESSION_STORAGE_CHANNEL,
-            t.threadKey,
-          );
-          return {
-            threadKey: t.threadKey,
-            lastUsedAt: t.lastUsedAt,
-            ...(t.model !== null ? { model: t.model } : {}),
-            ...(preview !== undefined ? { preview } : {}),
-            ...(t.name !== null ? { name: t.name } : {}),
-            // ★표시명은 **서버가 정한다** — 클라가 각자 파생하면 같은 세션이 채널마다
-            //  다른 이름으로 보인다(실제로 그랬다: 대시보드 `세션3` vs 텔레그램 생키).
-            displayName: sessionDisplayName(
-              t.threadKey,
-              t.name,
-              // ★*첫* 발화다(최근 아님) — 최근으로 파생하면 이름이 매 턴 바뀐다.
-              getFirstUserText(t.threadKey),
-            ),
-            modelProfile: modelProfile ?? null,
-          };
-        });
-        writeJson(res, 200, {
-          sessions,
-          generatedAt: new Date().toISOString(),
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleSessions(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2646,86 +831,14 @@ class HttpBridge implements Channel, Observer {
     // 경로가 반드시 attachmentsDir 하위여야(../ 이스케이프·절대경로 거부). 로컬 바인딩 + 토큰
     // 게이트 뒤라 표면 작음. base64 를 DB 에 안 담고 이 파일을 재사용 = 이력 이미지 영속.
     if (pathname.startsWith("/attachments/") && method === "GET") {
-      try {
-        const rel = decodeURIComponent(pathname.slice("/attachments/".length));
-        const dir = getPaths().attachmentsDir;
-        const abs = path.resolve(dir, rel);
-        // ★**심링크를 풀고 다시 검사한다** (2026-08-17, 전체검토 C-L1 실증).
-        //  `path.resolve` + 접두 비교는 `..` 는 막지만 **심링크는 못 막는다** — 첨부
-        //  디렉터리 안의 링크 하나로 홈 밖 파일이 200 으로 나갔다(실측:
-        //  `GET /attachments/link.txt` → 홈 밖 파일 내용, 로그 0줄).
-        //  ★같은 파일의 `/open-path` 는 이미 `realpathSync` 로 풀고 다시 검사하며 회귀가
-        //   그걸 강제한다(`open-path-safety`). 두 경로가 같은 파일 안에서 비대칭이었고
-        //   하필 **파일 내용을 밖으로 내보내는 쪽**이 약했다 — 엄격도를 맞춘다.
-        //  ★없는 파일은 realpath 가 throw 한다 → 404 로(존재 여부를 403/404 로 흘리지 않게
-        //   기존 흐름 유지: 아래 readFile 이 null 이면 404).
-        let real: string;
-        try {
-          real = nodeFs.realpathSync(abs);
-        } catch {
-          writeJson(res, 404, { error: "not found" });
-          return;
-        }
-        const realDir = ((): string => {
-          try {
-            return nodeFs.realpathSync(dir);
-          } catch {
-            return dir;
-          }
-        })();
-        if (!(real === realDir || real.startsWith(realDir + path.sep))) {
-          writeJson(res, 403, { error: "forbidden" });
-          return;
-        }
-        const buf = await fs.readFile(real).catch(() => null);
-        if (buf === null) {
-          writeJson(res, 404, { error: "not found" });
-          return;
-        }
-        const ext = path.extname(real).replace(/^\./, "").toLowerCase();
-        const ctype = CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream";
-        // ★inline 실행 차단 3종 (2026-07-31 전체검토 P0):
-        //  ①nosniff — 브라우저가 내용을 보고 타입을 추측(sniff)해 HTML/SVG 로 실행하는 것 차단.
-        //  ②알려진 안전 타입이 아니면 `attachment` — 다운로드로만 열리고 렌더되지 않는다.
-        //  ③CSP sandbox — 혹시 렌더돼도 스크립트·같은 오리진 권한이 없다.
-        const inlineSafe = CONTENT_TYPE_BY_EXT[ext] !== undefined;
-        res.writeHead(200, {
-          "Content-Type": ctype,
-          "X-Content-Type-Options": "nosniff",
-          "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:",
-          ...(inlineSafe
-            ? {}
-            : { "Content-Disposition": `attachment; filename="${sanitizeFilename(path.basename(abs))}"` }),
-          "Cache-Control": "private, max-age=86400",
-          "Content-Length": buf.length,
-        });
-        res.end(buf);
-      } catch (e) {
-        writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
-      }
+      await handleAttachmentServe(this.routeCtx(req, res, url));
       return;
     }
 
     // /projects — JSON. 등록된 프로젝트 목록(레지스트리 조회 캐시). 대시보드 그리드 카드용.
     // 진실은 각 폴더의 PROJECT.md — 여긴 인덱스일 뿐(상세 열 때 파일 재-Read). read 게이트.
     if (pathname === "/projects" && method === "GET") {
-      try {
-        // 각 프로젝트에 현재 실행 중 에이전트 수(runningAgents) 부착 — 그리드 카드의
-        // "🤖 N 실행 중" 배지용. in-memory listJobs(running) 을 job.cwd 로 귀속(G2).
-        const running = listJobs({ runningOnly: true, limit: 500 });
-        const rows = listProjects().map((p) => ({
-          ...p,
-          runningAgents: running.filter(
-            (j) =>
-              j.cwd !== undefined &&
-              nodePath.resolve(j.cwd) === nodePath.resolve(p.path),
-          ).length,
-        }));
-        writeJson(res, 200, rows);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleProjects(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2738,39 +851,7 @@ class HttpBridge implements Channel, Observer {
     //  discover 결과의 filePath 만 읽는다. `source === "project"` 로 한 번 더 좁혀 전역 자산도
     //  이 통로로는 안 나간다(프로젝트 것은 프로젝트 레벨에서만 — 2026-08-07 사용자 확정).
     if (pathname === "/projects/capability" && method === "GET") {
-      const projectPath = url.searchParams.get("path") ?? "";
-      const kind = url.searchParams.get("kind") ?? "";
-      const name = url.searchParams.get("name") ?? "";
-      if (projectPath.trim() === "" || name.trim() === "") {
-        writeJson(res, 400, { error: "path·name required" });
-        return;
-      }
-      if (kind !== "skill" && kind !== "agent") {
-        writeJson(res, 400, { error: "kind 는 skill 또는 agent" });
-        return;
-      }
-      try {
-        const found =
-          kind === "skill"
-            ? (await discoverSkills(projectPath).catch(() => [])).find(
-                (x) => x.source === "project" && x.name === name,
-              )
-            : (await discoverAgents(projectPath).catch(() => [])).find(
-                (x) => x.source === "project" && x.name === name,
-              );
-        if (found === undefined) {
-          writeJson(res, 404, { error: `이 프로젝트의 ${kind} '${name}' 을 찾을 수 없습니다.` });
-          return;
-        }
-        const raw = await fs.readFile(found.filePath, "utf8");
-        // 상한 — 브라우저 DOM 에 통째로 붓지 않는다(비대화 방지). 넘으면 잘렸다고 말한다.
-        const CAP = 64 * 1024;
-        const body = raw.length > CAP ? `${raw.slice(0, CAP)}\n\n…(${raw.length - CAP}자 생략 — 전문은 ${found.filePath})` : raw;
-        writeJson(res, 200, { name: found.name, kind, body });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleProjectCapability(this.routeCtx(req, res, url));
       return;
     }
 
@@ -2778,349 +859,13 @@ class HttpBridge implements Channel, Observer {
     // discover*(path) project-source 스킬/에이전트 + related 해소. PROJECT.md/폴더 부재 시 404.
     // recentJobs 는 P1 빈 배열([]) — G2 후속(cwd 귀속 payload 확장에 편승).
     if (pathname === "/projects/detail" && method === "GET") {
-      const projectPath = url.searchParams.get("path") ?? "";
-      if (projectPath.trim() === "") {
-        writeJson(res, 400, { error: "path required" });
-        return;
-      }
-      try {
-        const mdPath = nodePath.join(projectPath, "PROJECT.md");
-        let raw: string;
-        try {
-          raw = await fsp.readFile(mdPath, "utf8");
-        } catch {
-          // PROJECT.md 부재/폴더 없음 → 404 (best-effort, throw 0).
-          writeJson(res, 404, {
-            error: "PROJECT.md not found",
-            path: projectPath,
-          });
-          return;
-        }
-        const folderName = nodePath.basename(projectPath);
-        const meta = parseProjectMd(raw, folderName);
-
-        // 프로젝트 전용 스킬/에이전트 — discover*(path) 중 source==="project" 만.
-        const [allSkills, allAgents] = await Promise.all([
-          discoverSkills(projectPath).catch(() => []),
-          discoverAgents(projectPath).catch(() => []),
-        ]);
-        const skills = allSkills
-          .filter((s) => s.source === "project")
-          .map((s) => ({ name: s.name, description: s.description }));
-        const agents = allAgents
-          .filter((a) => a.source === "project")
-          .map((a) => ({
-            name: a.name,
-            description: a.description,
-            model: a.model ?? null, // 모델 티어(high/mid/low 또는 provider:model). 대시보드 표시.
-          }));
-        // 프로젝트 전용 훅 — `<path>/settings.json` 의 hooks (project 스코프만).
-        // ★사용자 결정 2026-08-23: "훅 목록은 오히려 인벤토리나 각 프로젝트별로 보여주면".
-        //  훅은 원래 user(런타임 홈) + project 2층이라 분배가 구조를 그대로 따라간다 —
-        //  전역은 인벤토리, 그 폴더에서만 도는 것은 여기. 판정은 `listHooksForInventory`
-        //  한 곳이고 여기선 scope 로 거른다(스킬·에이전트가 `source==="project"` 로 거르는
-        //  것과 같은 꼴 — 새 규칙 0).
-        const hooks = listHooksForInventory(projectPath)
-          .filter((h) => h.scope === "project")
-          .map((h) => ({ event: h.event, matcher: h.matcher, command: h.command }));
-        // 프로젝트 전용 MCP — <path>/.mcp.json (프로젝트 스코프). 대시보드 상세에 노출.
-        const projectMcp = await readProjectMcpServers(projectPath).catch(() => ({}));
-        const mcp = Object.entries(projectMcp).map(([name, cfg]) => ({
-          name,
-          desc: describeExternalMcpConfig(name, cfg),
-        }));
-
-        // related 해소 — 각 항목(경로 또는 등록 name)을 등록 목록에서 name/path 로.
-        // 못 찾으면 path=null(텍스트로만 표시). 상대경로는 프로젝트 폴더 기준 절대화 후 매칭.
-        let registered: ReturnType<typeof listProjects>;
-        try {
-          registered = listProjects();
-        } catch {
-          registered = [];
-        }
-        const related = meta.related.map((ref: string) => {
-          const trimmed = ref.trim();
-          const abs = nodePath.isAbsolute(trimmed)
-            ? trimmed
-            : nodePath.resolve(projectPath, trimmed);
-          const byPath = registered.find(
-            (p) => p.path === abs || p.path === trimmed,
-          );
-          if (byPath !== undefined) {
-            return { name: byPath.name, path: byPath.path };
-          }
-          const byName = registered.find((p) => p.name === trimmed);
-          if (byName !== undefined) {
-            return { name: byName.name, path: byName.path };
-          }
-          return { name: trimmed, path: null };
-        });
-
-        // recentJobs — 이 프로젝트(cwd) 에서 실행된/실행 중인 서브에이전트 잡(G2 귀속).
-        // in-memory listJobs 를 실행 cwd 로 필터(spawn_agent(path=X)가 job.cwd=X 기록).
-        // running 먼저(startedAt desc, listJobs 기본 정렬) → 최대 20건. 무귀속(cwd 미기록)
-        // 잡은 자연 제외. 대시보드가 "이 프로젝트에서 작업 중/최근 서브에이전트" 로 렌더.
-        const projAbs = nodePath.resolve(projectPath);
-        const recentJobs = listJobs({ limit: 200 })
-          .filter(
-            (j) => j.cwd !== undefined && nodePath.resolve(j.cwd) === projAbs,
-          )
-          .slice(0, 20)
-          .map((j) => ({
-            jobId: j.jobId,
-            kind: j.kind,
-            agentName: j.agentName ?? j.label,
-            modelTier: j.modelTier ?? null,
-            status: j.status,
-            startedAt: j.startedAt,
-            finishedAt: j.finishedAt ?? null,
-            task: j.task,
-          }));
-
-        writeJson(res, 200, {
-          meta: {
-            name: meta.name,
-            description: meta.description,
-            status: meta.status,
-            related: meta.related,
-            body: meta.body,
-          },
-          skills,
-          agents,
-          mcp,
-          hooks,
-          related,
-          recentJobs,
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: msg });
-      }
+      await handleProjectDetail(this.routeCtx(req, res, url));
       return;
     }
 
     // /messages — POST 양방향.
     if (pathname === "/messages" && method === "POST") {
-      if (this.channelHandler === null) {
-        writeJson(res, 503, { error: "channel not started" });
-        return;
-      }
-      let body: Record<string, unknown>;
-      try {
-        body = await readJsonBody(req);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${msg}` });
-        return;
-      }
-      const text =
-        typeof body.text === "string" ? body.text.trim() : "";
-      // 첨부(#2) — 붙여넣은 파일을 홈에 저장해 Attachment[] 구성. 캡 위반·저장 실패 = 400.
-      let attachments: Attachment[] = [];
-      try {
-        attachments = await ingestAttachments(body.attachments, this.name);
-      } catch (e) {
-        writeJson(res, 400, {
-          error:
-            e instanceof AttachmentError
-              ? e.message
-              : `attachment 처리 실패: ${e instanceof Error ? e.message : String(e)}`,
-        });
-        return;
-      }
-      // 파일만 보내는 경우(캡션 없는 첨부)도 허용 — text 또는 attachments 중 하나면 진행.
-      if (text === "" && attachments.length === 0) {
-        writeJson(res, 400, { error: "text 또는 attachments 가 필요합니다." });
-        return;
-      }
-      // 채널/세션 분리(ADR 2026-07-15 §D1/§D2) — 대시보드는 활성 탭 세션 id 를 body.threadKey
-      // 로 명시 전달(explicitSessionId → resolveSessionId passthrough). 비-대시보드 http
-      // default(threadKey 미부여)는 기본 세션(DEFAULT_SESSION_ID)으로 수렴. channelAddress =
-      // http 배달 좌표(= sessionId, 대시보드가 SSE 를 그 탭으로 라우팅). msg.threadKey=sessionId
-      // 로 세팅(직렬 큐/`/cancel-queued`/`/stop` 정합) + session 으로 route 가 canonical
-      // (http-bridge, sessionId) 로 정규화. 세션 id 는 채널 무관 — telegram/cli 기본 세션과 공유.
-      const explicitSessionId =
-        typeof body.threadKey === "string" && body.threadKey.trim() !== ""
-          ? body.threadKey.trim()
-          : undefined;
-      const threadKey = resolveSessionId(
-        this.name,
-        explicitSessionId,
-        explicitSessionId,
-      );
-      const channelUserId =
-        typeof body.userId === "string" && body.userId.trim() !== ""
-          ? body.userId
-          : "http-bridge";
-
-      let replyText = "";
-      // 축1(2026-06-25) — 선택지 제시. http-bridge 는 SSE 채널이므로 inline keyboard
-      // (telegram) 대신 EventBus 에 `prompt.options` 이벤트를 publish 한다. 대시보드가
-      // SSE 로 받아 버튼 묶음을 채팅 흐름에 렌더하고, 클릭 시 그 value 를 POST /messages
-      // {text:value} 로 흘려보낸다(= 사용자가 그 값을 입력한 것과 동치, route() 단일 인격
-      // 재진입). 비차단: 이벤트 1회 publish 후 즉시 {ok:true}. bus 미연결(observer 미부착)
-      // 환경에선 렌더 경로가 없으므로 {ok:false} → MCP 도구가 텍스트 제시로 graceful 폴백.
-      const bus = this.bus;
-      const presentOptions: IncomingMessage["presentOptions"] = async (
-        question,
-        options,
-        presentOpts,
-      ) => {
-        if (bus === null) {
-          return { ok: false, error: "control bus not started (관측 미연결)" };
-        }
-        try {
-          bus.publish({
-            type: "prompt.options",
-            ts: Date.now(),
-            payload: {
-              channel: this.name,
-              threadKey,
-              question,
-              options,
-              ...(presentOpts?.note !== undefined
-                ? { note: presentOpts.note }
-                : {}),
-            },
-          });
-          return { ok: true };
-        } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : String(e) };
-        }
-      };
-      // 답글 인용(대시보드 등) — body.replyToText 를 중립 필드로 실어 route 직전 인용 주입
-      // (telegram 의 reply_to_message 와 동형·LLM-agnostic, index.ts 934 단일 지점). 캡 1500.
-      const replyToText =
-        typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 1500) : "";
-      // 큐-취소 correlationId(ADR 2026-07-15) — 클라(대시보드)가 전송 순간 만든 상관 id.
-      // 실제 사용자 인바운드(POST /messages)만 실린다 — 이 값을 큐 항목 식별 키로 전달해
-      // 대기 중(미시작) 항목을 나중에 POST /cancel-queued 로 지목 취소 가능. 미부여 = 익명
-      // 큐 항목(현행 동작). 어댑터는 이 값을 안 읽는다(순수 큐 상관, #2 LLM-agnostic).
-      const correlationId =
-        typeof body.correlationId === "string" ? body.correlationId.trim() : "";
-      // egress fan-out(ADR 2026-07-16 §D4 Phase B2) — 컴포저 체크박스가 "이 답도 함께 보낼"
-      // 추가 채널들(예 telegram)을 body.outboundChannels(string[]) 로 실어 온다. swap 아님 —
-      // 인입 채널 응답은 항상 유지. 여기선 문자열 배열 검증만(라우팅·outbound-capable 여부는 코어
-      // handler 가 레지스트리 조회로) → egressChannels 중립 필드로 전달. 미지정/빈 배열/비배열 =
-      // undefined(현행 동작·회귀 0). 중복·빈문자 제거.
-      const egressChannels = Array.isArray(body.outboundChannels)
-        ? [
-            ...new Set(
-              body.outboundChannels
-                .filter((c): c is string => typeof c === "string")
-                .map((c) => c.trim())
-                .filter((c) => c !== ""),
-            ),
-          ]
-        : [];
-      // 아웃바운드 첨부(send_file, #2 parity) — 텔레그램 sendDocument 와 동형의 추상 의도
-      // 렌더. send_file 된 절대경로를 통제 디렉터리로 복사(servable rel 확보)한 뒤,
-      // `channel.message.out` 이벤트에 additive `attachments:[{rel,name,mime,kind,caption?}]`
-      // 를 실어 발행한다 → 대시보드가 SSE 로 받아 첨부 카드(미리보기+받기 버튼)로 렌더하고,
-      // event-persist 가 chat_log(role:assistant)에 영속(인바운드 첨부 영속과 대칭 = 새로고침·
-      // 재시작 후에도 유지). 멱등은 호출자(send_file 도구, per-turn sentPaths)가 보장 — 채널은
-      // 복사+발행 1회만. bus 미연결(observer 미부착)이면 렌더 경로 없음 → {ok:false}.
-      const channelName = this.name;
-      const sendAttachment: IncomingMessage["sendAttachment"] = async (
-        filePath,
-        opts,
-      ) => {
-        const meta = await persistOutboundAttachment(filePath, channelName).catch(
-          () => null,
-        );
-        if (meta === null) {
-          return {
-            ok: false,
-            error: `파일을 찾을 수 없거나 접근할 수 없습니다: ${filePath}`,
-          };
-        }
-        if (bus === null) {
-          return { ok: false, error: "control bus not started (대시보드 미연결)" };
-        }
-        try {
-          bus.publish({
-            type: "channel.message.out",
-            ts: Date.now(),
-            payload: {
-              channel: channelName,
-              threadKey,
-              text: "", // 첨부-only 아웃바운드(캡션은 attachment.caption 으로). 최종 답변 text-out 과 별개 버블.
-              attachments: [
-                {
-                  rel: meta.rel,
-                  mime: meta.mime,
-                  name: meta.name,
-                  kind: meta.kind,
-                  bytes: meta.bytes,
-                  ...(opts?.caption !== undefined && opts.caption !== ""
-                    ? { caption: opts.caption }
-                    : {}),
-                },
-              ],
-            },
-          });
-          return { ok: true };
-        } catch (e) {
-          return { ok: false, error: e instanceof Error ? e.message : String(e) };
-        }
-      };
-      const msg: IncomingMessage = {
-        channel: this.name,
-        channelUserId,
-        threadKey,
-        // 배달 좌표(http) = sessionId. 세션 정규화 지시(session) — 대시보드는 explicitSessionId
-        // 로 활성 탭 세션 passthrough, 비-대시보드는 미부여 → route 가 DEFAULT 로 수렴.
-        channelAddress: threadKey,
-        session: {
-          ...(explicitSessionId !== undefined ? { explicitSessionId } : {}),
-          channelAddress: threadKey,
-        },
-        text,
-        receivedAt: Date.now(),
-        ...(replyToText !== "" ? { replyToText } : {}),
-        ...(correlationId !== "" ? { correlationId } : {}),
-        ...(egressChannels.length > 0 ? { egressChannels } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
-        reply: async (out: string): Promise<void> => {
-          replyText = out;
-        },
-        sendAttachment,
-        presentOptions,
-      };
-
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      const timeoutP = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => {
-          reject(new Error("timeout"));
-        }, HANDLER_TIMEOUT_MS);
-      });
-
-      try {
-        const outcome = await Promise.race([this.channelHandler(msg), timeoutP]);
-        // 큐-취소(ADR 2026-07-15, G1) — 이 항목이 대기 중 취소돼 handler 미실행 no-op
-        // resolve 면 정상 흐름으로 {replyText:"", cancelled:true} 응답(에러 아님). 클라는
-        // 이미 취소 UI 를 로컬 처리했으므로 무시 가능. isCancelledTurnResult 가 sentinel 판정.
-        if (isCancelledTurnResult(outcome)) {
-          writeJson(res, 200, { replyText: "", cancelled: true });
-        } else if (isSteeredTurnResult(outcome)) {
-          // mid-turn steering 주입(ADR 2026-07-16) — 이 메시지는 새 턴이 아니라 진행 턴에
-          // append 됐고 핸들러가 즉시 resolve 한다(원래 턴은 아직 진행). 클라가 이 200-반환을
-          // "턴 완료"로 오인해 작업중을 조기에 끄지 않도록 steered 플래그를 실어 응답한다.
-          // 실제 종료는 원래 턴의 SSE channel.message.out/turn_done 이 담당(steering 조기-off 픽스).
-          writeJson(res, 200, { replyText: "", steered: true });
-        } else {
-          writeJson(res, 200, { replyText });
-        }
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        if (reason === "timeout") {
-          writeJson(res, 504, { error: "timeout" });
-        } else {
-          writeJson(res, 500, { error: reason });
-        }
-      } finally {
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-      }
+      await handleMessages(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3132,18 +877,11 @@ class HttpBridge implements Channel, Observer {
     // `log-file-admin` 한 곳(브리지는 배관만). ★비우기는 truncate 다 — 지우거나 옮기면
     // 데몬 fd 가 옛 파일을 따라가 로그가 조용히 사라진다(그 사고 때문에 만든 기능이다).
     if (pathname === "/log-status" && method === "GET") {
-      const { readLogFileStatus } = await import("../../src/core/log-file-admin.js");
-      writeJson(res, 200, readLogFileStatus());
+      await handleLogStatus(this.routeCtx(req, res, url));
       return;
     }
     if (pathname === "/log-clear" && method === "POST") {
-      const { clearTodayLog, readLogFileStatus } = await import(
-        "../../src/core/log-file-admin.js"
-      );
-      const result = clearTodayLog();
-      // 비운 뒤 상태를 같이 준다 — 화면이 다시 조회하지 않아도 되고, "정말 비워졌나" 를
-      // 결과가 스스로 증명한다(성공을 말만 하지 않는다).
-      writeJson(res, result.ok ? 200 : 500, { ...result, status: readLogFileStatus() });
+      await handleLogClear(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3153,120 +891,18 @@ class HttpBridge implements Channel, Observer {
     // 실패는 전부 코어가 `unknown` 으로 수렴시키므로 여기서 try/catch 를 덧대지 않는다
     // (가짜 견고함 금지 — 내부 호출에 방어를 겹치지 않는다).
     if (pathname === "/update-availability" && method === "GET") {
-      const { checkUpdateAvailability } = await import(
-        "../../src/core/update-availability.js"
-      );
-      const { sourceRoot } = await import("../../src/core/paths.js");
-      writeJson(res, 200, await checkUpdateAvailability(sourceRoot()));
+      await handleUpdateAvailability(this.routeCtx(req, res, url));
       return;
     }
 
     // ─── 플러그인 관리 (2026-08-28) — 목록·설치·제거·켜기·끄기 ────────────────────
     // ★판정은 전부 코어(`core/plugins/manager.ts`) — 브리지는 배관만 한다.
     if (pathname === "/plugins" && method === "GET") {
-      const { listAllPlugins } = await import("../../src/core/plugins/manager.js");
-      const { PLUGIN_SCHEMA_VERSION } = await import("../../src/core/plugins/loader.js");
-      writeJson(res, 200, {
-        schemaVersion: PLUGIN_SCHEMA_VERSION,
-        // ★코드 갱신은 재부팅이 필요하다 — 화면이 이걸 그대로 말한다(실측: ESM 은 엔트리만
-        //  무효화하면 하위 모듈이 옛것이라, 반쪽 리로드가 안 하느니 못하다).
-        codeReloadRequiresRestart: true,
-        // ★꺼진 것도 나온다 — 안 그러면 끄는 순간 목록에서 사라져 다시 못 켠다.
-        items: (await listAllPlugins()).map((p) => ({
-          name: p.name,
-          source: p.source,
-          version: p.version ?? null,
-          needs: p.needs,
-          capabilities: p.capabilities,
-          wired: p.wired,
-          enabled: p.enabled,
-          // ★설명은 **언어를 안 고르고** 그대로 넘긴다(문자열 또는 언어별 객체) —
-          //  고르는 건 화면 몫이다(서버는 언어를 만들지 않는다).
-          meta: p.meta,
-          // ★설정은 **선언 + 값**이 함께 온다 — 화면이 손으로 행을 짓지 않게 하려면
-          //  "무엇을 물어볼지" 를 서버가 줘야 한다(§D.2). secret 은 값 대신 있다/없다만.
-          settings: p.settings,
-        })),
-      });
+      await handlePlugins(this.routeCtx(req, res, url));
       return;
     }
     if (pathname === "/plugins/action" && method === "POST") {
-      const body = (await readJsonBody(req)) as {
-        action?: unknown;
-        name?: unknown;
-        key?: unknown;
-        value?: unknown;
-      };
-      const name = typeof body.name === "string" ? body.name.trim() : "";
-      const action = typeof body.action === "string" ? body.action : "";
-      if (name === "") {
-        writeJson(res, 400, { error: "name required" });
-        return;
-      }
-      const m = await import("../../src/core/plugins/manager.js");
-      try {
-        if (action === "install") {
-          writeJson(res, 200, await m.installHomePlugin(name));
-          return;
-        }
-        if (action === "remove") {
-          writeJson(res, 200, await m.removePlugin(name));
-          return;
-        }
-        if (action === "enable" || action === "disable") {
-          writeJson(res, 200, await m.setPluginEnabled(name, action === "enable"));
-          return;
-        }
-        // 설정 한 칸 쓰기 (2026-08-28, §D) — ★검증은 코어가 한다. 여기는 주소를 값으로
-        //  바꾸는 자리일 뿐이고, 모르는 키·타입 불일치·secret 거부는 전부 거기서 판정된다.
-        if (action === "set-setting") {
-          const key = typeof body.key === "string" ? body.key : "";
-          if (key === "") {
-            writeJson(res, 400, { ok: false, reason: "key required" });
-            return;
-          }
-          const v = body.value;
-          const okType =
-            v === undefined || v === null ||
-            typeof v === "string" || typeof v === "number" || typeof v === "boolean";
-          if (!okType) {
-            writeJson(res, 400, { ok: false, reason: "value 는 문자열·숫자·참거짓이어야 합니다" });
-            return;
-          }
-          const { writePluginSetting } = await import(
-            "../../src/core/plugins/settings.js"
-          );
-          const { scanPluginManifests } = await import("../../src/core/plugins/loader.js");
-          const { appRoot, getPaths } = await import("../../src/core/paths.js");
-          const nodePath = (await import("node:path")).default;
-          // ★선언의 정본은 **매니페스트**다 — 목록 응답을 되읽지 않는다(두 벌이면 갈린다).
-          //  번들이 먼저다(로더·자산 라우트와 같은 우선순위).
-          const specs =
-            (
-              await Promise.all(
-                [nodePath.join(appRoot(), "plugins"), getPaths().commonPlugins].map((root) =>
-                  scanPluginManifests(root),
-                ),
-              )
-            )
-              .flat()
-              .find((x) => x.manifest.name === name)?.manifest.settings ?? [];
-          const r = writePluginSetting(
-            name,
-            specs,
-            key,
-            v === null ? undefined : (v as string | number | boolean | undefined),
-          );
-          writeJson(res, r.ok ? 200 : 400, r.ok ? { ok: true } : { ok: false, reason: r.error });
-          return;
-        }
-      } catch (e) {
-        writeJson(res, 500, { ok: false, reason: e instanceof Error ? e.message : String(e) });
-        return;
-      }
-      writeJson(res, 400, {
-        error: "action must be install|remove|enable|disable|set-setting",
-      });
+      await handlePluginsAction(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3274,11 +910,7 @@ class HttpBridge implements Channel, Observer {
     // 응답 모양도 **같다**(`{ markdown }`) — 그래서 설정 화면이 행 컴포넌트 하나로 둘을
     // 그린다. 조회만(read 게이트). 판정·자르기는 전부 코어에 있다.
     if (pathname === "/update-changelog" && method === "GET") {
-      const { readUpdateChangelog } = await import(
-        "../../src/core/update-availability.js"
-      );
-      const { sourceRoot } = await import("../../src/core/paths.js");
-      writeJson(res, 200, await readUpdateChangelog(sourceRoot()));
+      await handleUpdateChangelog(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3289,27 +921,12 @@ class HttpBridge implements Channel, Observer {
     // 동시 실행 가드는 코어에 이미 있다(`updating` 락 → status:"busy") — 화면은 그 상태를
     // 그대로 받아 표시한다.
     if (pathname === "/self-update" && method === "POST") {
-      const { runSelfUpdate } = await import("../../src/core/self-update.js");
-      // restart 는 부팅 시 박힌 전역 레지스트리(setSelfUpdateRestart)가 처리한다 —
-      // 도구(update_self) 경로와 같은 배선.
-      const result = await runSelfUpdate({});
-      writeJson(res, 200, result);
+      await handleSelfUpdate(this.routeCtx(req, res, url));
       return;
     }
 
     if (pathname === "/restart" && method === "POST") {
-      if (this.bus === null) {
-        // observer 미연결 = 재시작 트리거 경로 없음. 거짓 200 금지.
-        writeJson(res, 503, { error: "control bus not started" });
-        return;
-      }
-      this.bus.publish({
-        type: "control.restart",
-        ts: Date.now(),
-        payload: { source: "http-bridge:dashboard" },
-      });
-      // 데몬이 곧 종료되므로 즉시 ack(이 응답 후 graceful shutdown 진행).
-      writeJson(res, 202, { ok: true, restarting: true });
+      await handleRestart(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3320,26 +937,7 @@ class HttpBridge implements Channel, Observer {
     // 대기 항목을 correlationId 로 지목 취소하고 결과("cancelled"/"already-started"/"not-found")
     // 를 그대로 반환. 텔레그램 후속(/cancel 슬래시 등)도 동일 코어 primitive 재사용 가능(범위 밖).
     if (pathname === "/cancel-queued" && method === "POST") {
-      let cbody: Record<string, unknown>;
-      try {
-        cbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const threadKey =
-        typeof cbody.threadKey === "string" ? cbody.threadKey.trim() : "";
-      const correlationId =
-        typeof cbody.correlationId === "string" ? cbody.correlationId.trim() : "";
-      if (threadKey === "" || correlationId === "") {
-        writeJson(res, 400, {
-          error: "threadKey and correlationId required",
-        });
-        return;
-      }
-      const result = cancelQueuedTurn(threadKey, correlationId);
-      writeJson(res, 200, { result });
+      await handleCancelQueued(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3353,21 +951,7 @@ class HttpBridge implements Channel, Observer {
     // LLM 스트림은 끊지만 hung 도구 호출은 다음 도구 경계까지 못 끊을 수 있다(코어 주석 참조)
     // — 여기선 신호 발사 여부만 정직 반환.
     if (pathname === "/cancel-worker" && method === "POST") {
-      let wbody: Record<string, unknown>;
-      try {
-        wbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const jobId = typeof wbody.jobId === "string" ? wbody.jobId.trim() : "";
-      if (jobId === "") {
-        writeJson(res, 400, { error: "jobId required" });
-        return;
-      }
-      const cancelled = cancelJob(jobId);
-      writeJson(res, 200, { ok: true, cancelled });
+      await handleCancelWorker(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3377,22 +961,7 @@ class HttpBridge implements Channel, Observer {
     // shell.exited 발행까지 그 안에서 처리(모델 대면 KillShell 도구와 동일 헬퍼 재사용).
     // claude 셸(SDK 소유)은 이 레인 밖 — codex/openai BG_SHELLS 에 없는 id 는 killed:false.
     if (pathname === "/kill-shell" && method === "POST") {
-      let kbody: Record<string, unknown>;
-      try {
-        kbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const shellId =
-        typeof kbody.shellId === "string" ? kbody.shellId.trim() : "";
-      if (shellId === "") {
-        writeJson(res, 400, { error: "shellId required" });
-        return;
-      }
-      const killed = await killShellById(shellId);
-      writeJson(res, 200, { ok: true, killed });
+      await handleKillShell(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3401,35 +970,7 @@ class HttpBridge implements Channel, Observer {
     // body { threadKey, name } — name 은 string|null(빈문자→null=커스텀 제거→파생 폴백).
     // store setThreadName 이 정규화(trim·60캡·빈값→null)까지 수행 — 여기선 pass-through.
     if (pathname === "/session-name" && method === "POST") {
-      let nbody: Record<string, unknown>;
-      try {
-        nbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const threadKey =
-        typeof nbody.threadKey === "string" ? nbody.threadKey.trim() : "";
-      if (threadKey === "") {
-        writeJson(res, 400, { error: "threadKey required" });
-        return;
-      }
-      const nameIn =
-        typeof nbody.name === "string" ? nbody.name : null;
-      try {
-        setThreadName(threadKey, nameIn);
-        // 정규화된 값을 응답에 반영 — store 는 changes count 만 반환하므로 여기서
-        // 동일 정규화 규칙(trim·60캡·빈값→null)을 재적용해 클라 로컬 동기화값을 만든다.
-        const normName =
-          nameIn === null || nameIn.trim() === ""
-            ? null
-            : nameIn.trim().slice(0, 60);
-        writeJson(res, 200, { ok: true, threadKey, name: normName });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSessionName(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3443,34 +984,7 @@ class HttpBridge implements Channel, Observer {
     //  판단을 로컬로 **따로** 구현하고 있었다(같은 판단이 두 곳 = 반드시 갈린다).
     //  body { threadKey, archived: boolean }. 기본 세션은 보관 불가(닫을 수 없는 홈).
     if (pathname === "/session-archive" && method === "POST") {
-      let abody: Record<string, unknown>;
-      try {
-        abody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const threadKey =
-        typeof abody.threadKey === "string" ? abody.threadKey.trim() : "";
-      if (threadKey === "") {
-        writeJson(res, 400, { error: "threadKey required" });
-        return;
-      }
-      if (threadKey === DEFAULT_SESSION_ID) {
-        writeJson(res, 400, { error: "기본 세션은 보관할 수 없습니다" });
-        return;
-      }
-      const archived = abody.archived !== false; // 미지정 = 보관.
-      try {
-        // 보관 = 바인딩 해제까지 한 동작(setSessionArchived). 대시보드 탭 닫기가 오는
-        // **주 경로**인데 종전엔 여기만 바인딩을 안 풀어, 방이 목록에 없는 세션에 계속 묶였다.
-        const { unboundRooms } = setSessionArchived(threadKey, archived);
-        writeJson(res, 200, { ok: true, threadKey, archived, ...(unboundRooms > 0 ? { unboundRooms } : {}) });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleSessionArchive(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3478,103 +992,14 @@ class HttpBridge implements Channel, Observer {
     // 파일·폴더는 절대 안 지운다(store forgetProject = DELETE FROM projects WHERE path=?). write
     // 게이트(위 role 표, /session-name 동형). body { path } — 정규화·검증 후 forgetProject 호출.
     if (pathname === "/project-forget" && method === "POST") {
-      let pbody: Record<string, unknown>;
-      try {
-        pbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const pathIn =
-        typeof pbody.path === "string" ? pbody.path.trim() : "";
-      if (pathIn === "") {
-        writeJson(res, 400, { error: "path required" });
-        return;
-      }
-      try {
-        forgetProject(pathIn);
-        writeJson(res, 200, { ok: true, path: pathIn });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleProjectForget(this.routeCtx(req, res, url));
       return;
     }
 
 
     // /project-rename — PROJECT.md frontmatter name 갱신 + 레지스트리 캐시 갱신. write.
     if (pathname === "/project-rename" && method === "POST") {
-      let pbody: Record<string, unknown>;
-      try {
-        pbody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const pathIn = typeof pbody.path === "string" ? pbody.path.trim() : "";
-      const name = typeof pbody.name === "string" ? pbody.name.trim() : "";
-      if (pathIn === "" || name === "") {
-        writeJson(res, 400, { error: "path and name required" });
-        return;
-      }
-      if (/[\x00-\x1f\x7f]/.test(name)) {
-        writeJson(res, 400, { error: "name must not contain control characters" });
-        return;
-      }
-      const abs = nodePath.resolve(pathIn);
-      const projects = listProjects();
-      const registered = projects.find((p) => nodePath.resolve(p.path) === abs);
-      if (registered === undefined) {
-        writeJson(res, 404, { error: "project not registered" });
-        return;
-      }
-      const duplicate = projects.find(
-        (p) => nodePath.resolve(p.path) !== abs && p.name === name,
-      );
-      if (duplicate !== undefined) {
-        writeJson(res, 409, { error: "project name already exists" });
-        return;
-      }
-      try {
-        const mdPath = path.join(registered.path, "PROJECT.md");
-        const raw = await fs.readFile(mdPath, "utf8");
-        let next: string;
-        if (raw.startsWith("---\n")) {
-          const end = raw.indexOf("\n---", 4);
-          if (end >= 0) {
-            const fm = raw.slice(4, end);
-            const rest = raw.slice(end);
-            const escaped = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-            const nameLine = `name: "${escaped}"`;
-            const nextFm = /^name\s*:/m.test(fm)
-              ? fm.replace(/^name\s*:.*$/m, nameLine)
-              : `${nameLine}\n${fm}`;
-            next = `---\n${nextFm}${rest}`;
-          } else {
-            next = raw;
-          }
-        } else {
-          const escapedName = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-          const escapedDescription = (registered.description ?? "")
-            .replace(/\\/g, "\\\\")
-            .replace(/"/g, '\\"');
-          next = `---\nname: "${escapedName}"\ndescription: "${escapedDescription}"\nstatus: ${registered.status}\n---\n\n${raw}`;
-        }
-        if (next === raw) {
-          writeJson(res, 400, { error: "invalid PROJECT.md frontmatter" });
-          return;
-        }
-        await fs.writeFile(mdPath, next, "utf8");
-        const folderName = path.basename(registered.path);
-        const meta = parseProjectMd(next, folderName);
-        upsertProject({ path: registered.path, ...meta });
-        writeJson(res, 200, { ok: true, path: registered.path, name: meta.name });
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 500, { error: m });
-      }
+      await handleProjectRename(this.routeCtx(req, res, url));
       return;
     }
 
@@ -3582,87 +1007,7 @@ class HttpBridge implements Channel, Observer {
     // ⋯ 메뉴). ★보안: **등록된 프로젝트 경로만** 허용(임의 경로 열기·정찰 차단). execFile(배열
     // 인자, no shell)이라 셸 인젝션 0 — 경로는 검증된 등록값만 인자로 넘긴다.
     if (pathname === "/open-path" && method === "POST") {
-      let obody: Record<string, unknown>;
-      try {
-        obody = await readJsonBody(req);
-      } catch (e) {
-        const m = e instanceof Error ? e.message : String(e);
-        writeJson(res, 400, { error: `invalid body: ${m}` });
-        return;
-      }
-      const pathIn =
-        typeof obody.path === "string" ? obody.path.trim() : "";
-      if (pathIn === "") {
-        writeJson(res, 400, { error: "path required" });
-        return;
-      }
-      // ★파일 열기 확장 (2026-08-02) — 종전엔 **정확일치(등록 프로젝트 폴더)** 만 허용했다.
-      //  편집 카드의 파일도 열려면 "등록 프로젝트 **루트 하위**" 로 넓혀야 한다. 넓히는
-      //  만큼 두 가지를 닫는다:
-      //   ①**심링크 탈출** — resolve 만으론 `<proj>/link → /etc` 를 못 막는다. realpath 로
-      //     실제 대상까지 풀고 **다시** 루트 하위인지 본다(존재하지 않으면 애초에 못 연다).
-      //   ②**실행** — macOS `open` 은 `.app`·실행권한 파일을 **실행**한다. 우리는 소스를
-      //     *보려는* 것이지 실행하려는 게 아니므로 실행권한이 있으면 거부한다. 디렉터리는
-      //     종전대로 허용(폴더 열기가 원래 용도).
-      const abs = nodePath.resolve(pathIn);
-      let real: string;
-      try {
-        real = nodeFs.realpathSync(abs);
-      } catch {
-        writeJson(res, 404, { error: "경로가 존재하지 않습니다" });
-        return;
-      }
-      const roots = listProjects().map((p) => {
-        const r = nodePath.resolve(p.path);
-        try {
-          return nodeFs.realpathSync(r); // 루트도 실제 경로로 — 양쪽을 같은 기준에 놓는다.
-        } catch {
-          return r; // 루트가 사라졌으면 원경로로 비교(어차피 하위도 존재 안 함).
-        }
-      });
-      const inRoot = roots.some(
-        (r) => real === r || real.startsWith(r + nodePath.sep),
-      );
-      if (!inRoot) {
-        writeJson(res, 403, {
-          error: "등록된 프로젝트 경로가 아닙니다(허용된 경로만 열 수 있음)",
-        });
-        return;
-      }
-      let st: import("node:fs").Stats;
-      try {
-        st = nodeFs.statSync(real);
-      } catch {
-        writeJson(res, 404, { error: "경로가 존재하지 않습니다" });
-        return;
-      }
-      if (st.isFile() && (st.mode & 0o111) !== 0) {
-        writeJson(res, 403, {
-          error: "실행 권한이 있는 파일은 열지 않습니다(실행 위험) — 편집기에서 직접 여세요",
-        });
-        return;
-      }
-      if (!st.isFile() && !st.isDirectory()) {
-        writeJson(res, 403, { error: "일반 파일·디렉터리만 열 수 있습니다" });
-        return;
-      }
-      const match = { path: real };
-      // darwin=open · win32=explorer · 그 외=xdg-open. 폴더 열기는 fire-and-forget(즉시 200).
-      // Windows explorer 는 성공해도 exit 1 을 내는 알려진 quirk → win32 는 에러를 무시한다.
-      const opener =
-        process.platform === "darwin"
-          ? "open"
-          : process.platform === "win32"
-            ? "explorer"
-            : "xdg-open";
-      execFile(opener, [match.path], (err) => {
-        if (err !== null && process.platform !== "win32") {
-          console.warn(
-            `http-bridge: open-path 실패(${opener} ${match.path}) — ${err.message}`,
-          );
-        }
-      });
-      writeJson(res, 200, { ok: true, path: match.path });
+      await handleOpenPath(this.routeCtx(req, res, url));
       return;
     }
 

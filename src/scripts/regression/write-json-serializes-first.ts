@@ -16,6 +16,7 @@
  * 격리: 포트를 커널에서 받고(`listen(0)`) 끝나면 닫는다 — 도는 데몬을 안 건드린다.
  */
 import http from "node:http";
+import { readSourceSync } from "./_wiring.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,7 +91,7 @@ export const check: RegressionCheck = {
     "브리지 JSON 응답이 헤더를 먼저 쓰고 직렬화를 나중에 해서, stringify 가 던지면 상위의 500 쓰기가 ERR_HTTP_HEADERS_SENT 로 또 던져 unhandledRejection → 데몬 crash-fast 로 가던 것 — 요청 하나가 프로세스를 죽인다",
   run: async (): Promise<Assertion[]> => {
     const p = await probe();
-    const src = readFileSync(path.join(REPO, "plugins/http-bridge/index.ts"), "utf8");
+    const src = readSourceSync("plugins/http-bridge");
 
     return [
       assert(

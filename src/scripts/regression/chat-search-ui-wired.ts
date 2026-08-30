@@ -16,6 +16,7 @@
  *  그래서 양쪽에 **둘 다** 있는지를 본다(한쪽만 검사하면 드리프트를 못 본다).
  */
 import { readFile } from "node:fs/promises";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -61,7 +62,7 @@ export const check: RegressionCheck = {
     const css = (await read("app.css")) ?? "";
     const vt = (await read("js/virtualization.js")) ?? "";
     const store = (await readFile(path.join(REPO, "src", "store", "chat-log.ts"), "utf8").catch(() => "")) as string;
-    const bridge = (await readFile(path.join(REPO, "plugins", "http-bridge", "index.ts"), "utf8").catch(() => "")) as string;
+    const bridge = readSourceSync("plugins/http-bridge");
     const consts = (await read("js/constants.js")) ?? "";
     const bg = (await read("js/background-drawer.js")) ?? "";
     const md = (await read("js/markdown.js")) ?? "";

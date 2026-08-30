@@ -32,8 +32,18 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** 사는 코드 — `docs/decisions/`(기록)는 뺀다. */
-const ROOTS = ["src", "plugins", "packages", "skills", "agents"];
-const EXT = /\.(ts|js|md)$/;
+const ROOTS = ["src", "plugins", "packages", "skills", "agents", "docs"];
+const EXT = /\.(ts|js|md|html|css)$/;
+
+/**
+ * **날짜가 박힌 기록은 고치지 않는다** — `docs/decisions/` 는 *"그때 이렇게 정했다"* 의
+ * 아카이브다. 거기 226건을 개명하면 기록이 **거짓**이 된다(그 결정을 내리던 날 우리는
+ * 실제로 옛 이름을 썼다). 보존 대상은 안 지운다([[project_hotpath_bound_preserve_record]]).
+ *
+ * ★목록이 아니라 **성질**이다 — "날짜가 이름에 박힌 아카이브". 새 아카이브가 생기면
+ *  같은 이유로 들어오고, 그때 이 주석이 근거가 된다([[feedback_hand_maintained_lists]]).
+ */
+const ARCHIVE = path.join("docs", "decisions");
 
 /**
  * 찾는 옛 이름 — **런타임에 조립한다.**
@@ -48,7 +58,10 @@ const walk = (dir: string, out: string[] = []): string[] => {
   for (const name of readdirSync(dir)) {
     if (name === "node_modules" || name === "dist") continue;
     const p = path.join(dir, name);
-    if (statSync(p).isDirectory()) walk(p, out);
+    if (statSync(p).isDirectory()) {
+      if (p.endsWith(ARCHIVE)) continue; // 날짜 박힌 기록 — 위 ARCHIVE 주석 참조.
+      walk(p, out);
+    }
     else if (EXT.test(name)) out.push(p);
   }
   return out;

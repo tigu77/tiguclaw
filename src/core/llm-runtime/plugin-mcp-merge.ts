@@ -88,3 +88,59 @@ export const warnShadowedOnce = (plugin: readonly string[]): void => {
   warned.add(key);
   console.warn(describeShadowed(plugin));
 };
+
+/**
+ * **이번 턴에 실제로 서는 MCP 서버 맵과 그 이름들** — 한 곳에서 낸다.
+ *
+ * ★어댑터 안에 흩어져 있던 조립을 여기로 뺐다 (2026-08-30). 3라운드 적대 검토가 심은
+ *  변이 셋이 **살아남은 자리**가 정확히 여기였다:
+ *
+ *  - **M5** `coreKeys` 에서 lean 을 빼기 → 플러그인이 코어 도구 이름을 덮는다
+ *  - **M7** 병합 지점에서 플러그인을 지우기 → 도구가 조용히 사라진다
+ *  - **M26** 활성 목록에서 외부 MCP 를 빼기 → `find_capabilities` 가 거짓 목록을 광고한다
+ *
+ *  셋 다 어댑터 지역 변수 사이의 **스프레드 한 줄**이라, 검사가 소스를 grep 하는 것 말고는
+ *  할 게 없었다(그래서 변이가 살았다). 순수 함수로 나오면 **실행해서** 잡을 수 있다
+ *  ([[feedback_simple_composable_no_duplication]] — 검사가 껄끄러우면 코드가 잘못 놓인 것).
+ *
+ * ★**활성 이름이 같은 계산에서 나온다**는 게 요점이다. 종전엔 서버 맵과 `find_capabilities`
+ *  가 볼 목록이 **두 번** 조립됐고, 한쪽만 고치면 *"광고는 하는데 없는 도구"* 가 된다.
+ */
+export const assembleMcpServers = <T>(args: {
+  /** 코어 서버들(이번 턴 lean 여부가 이미 반영된 것). */
+  /** 코어 서버들 — SDK 인스턴스형·stdio형이 섞인다(어댑터의 실제 맵 타입 그대로). */
+  readonly lean: Readonly<Record<string, T>>;
+  /** 최종 리터럴에서 **플러그인 뒤에** 붙는 코어 키들 — 이름이 겹치면 플러그인이 진다. */
+  readonly lateCoreKeys: readonly string[];
+  /** 플러그인·외부에서 온 것(미판정). */
+  readonly extra: Record<string, McpSdkServerConfigWithInstance> | undefined;
+  /** 외부 MCP(`mcp.json`) — 이번 턴에 실제로 연결된 것만. */
+  readonly external: Readonly<Record<string, unknown>>;
+  readonly toolsNone: boolean;
+  readonly inReach: boolean;
+}): {
+  servers: Record<string, T>;
+  activeNames: string[];
+  shadowed: string[];
+  reason: string;
+} => {
+  const decided = decidePluginMcp(
+    args.extra,
+    [...Object.keys(args.lean), ...args.lateCoreKeys],
+    args.toolsNone,
+    args.inReach,
+  );
+  // ★`decidePluginMcp` 는 **키만** 본다(어느 것을 실을지). 그래서 값 타입을 좁히지 않고
+  //  여기서만 어댑터의 맵 타입으로 되돌린다 — 판정은 이름의 문제이지 값의 문제가 아니다.
+  const servers: Record<string, T> = {
+    ...args.lean,
+    ...(decided.servers as unknown as Record<string, T>),
+  };
+  return {
+    servers,
+    // ★같은 계산에서 낸다 — 두 번 조립하면 광고와 실물이 갈린다.
+    activeNames: Object.keys({ ...servers, ...args.external }),
+    shadowed: decided.shadowed,
+    reason: decided.reason,
+  };
+};

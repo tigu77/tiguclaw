@@ -24,13 +24,15 @@
  *  기록물(`docs/decisions/`·dev `README.md`·스크래치)은 **당시**를 적은 것이라 제외한다.
  */
 import { execFileSync } from "node:child_process";
+import { readSourceSync } from "./_wiring.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 /** 두 포트 각각의 **정본** — 여기 적힌 값이 진실이고 나머지는 전부 이것을 따른다. */
 const PORTS = [
@@ -43,7 +45,7 @@ const PORTS = [
   {
     env: "HTTP_BRIDGE_PORT",
     what: "http-bridge",
-    source: "plugins/http-bridge/index.ts",
+    source: "plugins/http-bridge",
     re: /process\.env\.HTTP_BRIDGE_PORT \?\? "(\d+)"/,
   },
 ] as const;

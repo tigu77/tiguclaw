@@ -24,6 +24,7 @@
  * 지킨다. ★정직하게: 동의어·우회로 뚫린다. 그래도 이 두 줄이 조용히 되돌아가는 걸 막는다.
  */
 import { readFile } from "node:fs/promises";
+import { readSource } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -41,7 +42,7 @@ export const check: RegressionCheck = {
     );
     const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const bridge = (
-      await readFile(new URL("../../../plugins/http-bridge/index.ts", import.meta.url), "utf8")
+      await readSource("../../../plugins/http-bridge")
     )
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/^\s*\/\/.*$/gm, "");

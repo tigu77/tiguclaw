@@ -61,7 +61,44 @@
         }
       };
 
-      const pluginAction = async (action, name, extra) => {
+      /**
+   * 선언을 **내 언어의 한 줄**로. 서버가 준 데이터(`needsFacts`)를 카탈로그로 옮긴다.
+   *
+   * ★자리표시자 이름은 카탈로그와 짝이다(`{hosts}`·`{slots}`) — 회귀
+   *  `i18n-placeholders-match-callsites` 가 호출부까지 대조하므로 여기서 틀리면 운다.
+   */
+  const needsText = (p) => {
+    const facts = p && p.needsFacts;
+    if (!Array.isArray(facts) || facts.length === 0) return (p && p.needs) || "";
+    // ★키를 **리터럴로** 적는다 — `"plugins.need." + f.kind` 로 조립하면 회귀
+    //  `i18n-keys-complete` 가 키를 못 보고, 오타 하나가 사용자 화면에 키 문자열로
+    //  뜬다(실제로 이 검사가 잡았다). 서버가 모르는 kind 를 보내면 빈 칸이 아니라
+    //  **kind 이름**을 보여준다 — 모르는 것을 없는 것처럼 감추지 않는다.
+    const line = (f) =>
+      f.kind === "network"
+        ? i18n("plugins.need.network", { hosts: f.value || "" })
+        : f.kind === "ui"
+          ? i18n("plugins.need.ui", { slots: f.value || "" })
+          : f.kind === "networkUnknown"
+            ? i18n("plugins.need.networkUnknown")
+            : f.kind === "outbound"
+              ? i18n("plugins.need.outbound")
+              : f.kind === "llm"
+                ? i18n("plugins.need.llm")
+                : String(f.kind);
+    return facts.map(line).join(" · ");
+  };
+
+  /**
+   * **끄기 전에 물어야 하는가** — 켜는 건 안 묻고, 끄는 것만, 그것도 자기참조일 때만.
+   *
+   * ★인라인 조건이던 것을 이름으로 꺼냈다 (2026-08-30, 적대 검토 B-G1). 검사가 소스만
+   *  볼 수 있어서 **극성 반전**(끌 때가 아니라 켤 때 묻기)이 안 잡혔다 — 사고 그 자체가
+   *  복원되는데 그물은 초록이었다. 이름이 있으면 회귀가 **불러서** 네 조합을 다 밟는다.
+   */
+  const needsDisableConfirm = (p) => p.enabled !== false && p.selfReferential === true;
+
+  const pluginAction = async (action, name, extra) => {
         pluginsState.busy = name + ":" + action;
         renderPluginsView();
         try {
@@ -71,12 +108,22 @@
             body: JSON.stringify({ action, name, ...(extra || {}) }),
           });
           const d = await r.json().catch(() => ({}));
-          // ★서버가 준 사유를 **그대로** 보여준다. 여기서 문장을 지어내면 두 벌이 되고 갈린다.
-          if (d.ok === false) showToast(d.reason || i18n("plugins.failed"), "bad");
+          // ★서버가 준 **키**로 화면 언어에 맞춰 그린다 (2026-08-30, 적대 검토 C조 C3).
+          //  종전엔 `d.reason` 을 그대로 띄워서 영어 사용자가 토스트에서 한국어를 만났다 —
+          //  0.43.2 가 "화면 언어대로 나옵니다" 라고 고친 바로 그 기능의 형제 경로였다.
+          // ★해석됐을 때만 쓴다. `i18n` 은 없는 키면 **키 자체**를 돌려주므로, 카탈로그가
+          //  아직 그 키를 모르면 `plugins.reason.…` 라는 글자가 뜬다 — 그건 한국어 문장보다
+          //  나쁘다. 그래서 서버 문장이 마지막 폴백으로 남는다(여기서 문장을 지어내진 않는다).
+          if (d.ok === false) {
+            const t = d.reasonKey ? i18n(d.reasonKey, d.reasonArgs) : "";
+            showToast(t && t !== d.reasonKey ? t : d.reason || i18n("plugins.failed"), "bad");
+          }
           else if (action === "enable" || action === "install") {
             // ★코드 갱신은 재부팅이 필요하다 — 되는 척하지 않는다(ESM 캐시, 실측).
             showToast(
-              d.needs ? i18n("plugins.installed", { needs: d.needs }) : i18n("plugins.done"),
+              needsText(d)
+                ? i18n("plugins.installed", { needs: needsText(d) })
+                : i18n("plugins.done"),
               "good",
             );
           } else showToast(i18n("plugins.done"), "good");
@@ -123,10 +170,14 @@
         }
         const desc = document.createElement("div");
         desc.className = "settings-desc";
-        // ★요구 권한을 **그대로** 보여준다 — 서버가 만든 한 문장(`describeNeeds`)이라
-        //  부팅 로그·설치 안내와 글자가 같다.
+        // ★요구 권한을 **내 언어로** 보여준다 (2026-08-30 구조 검토). 종전엔 서버가 만든
+        //  한국어 문장(`p.needs`)을 그대로 박아서 **영어 사용자가 한국어를 봤다** — 하필
+        //  `docs/security.md §2` 가 "설치 전에 여기서 읽으세요" 라고 가리키는 자리다.
+        //  서버는 이제 데이터(`needsFacts`)도 보내고, 문장은 여기서 만든다.
+        // ★`p.needs` 폴백을 남긴다 — 옛 데몬에 새 화면이 붙는 순간(업데이트 도중)이 있고,
+        //  그때 빈 칸을 보여주느니 한국어라도 보여주는 게 낫다.
         desc.textContent =
-          (p.needs || "") + (p.wired && p.wired.length ? " · " + p.wired.join(", ") : "");
+          (needsText(p) || "") + (p.wired && p.wired.length ? " · " + p.wired.join(", ") : "");
         card.appendChild(meta);
 
         if (p.enabled === false) card.classList.add("off");
@@ -135,15 +186,30 @@
         const busy = pluginsState.busy.startsWith(p.name + ":");
         // 끄기/켜기 — **번들에도 된다**(제거는 안 되지만 끄는 건 된다). 꺼진 것도 목록에
         // 남아야 다시 켤 수 있다(안 그러면 일방통행 문이다).
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "settings-toggle" + (p.enabled === false ? "" : " on");
-        toggle.textContent = i18n(p.enabled === false ? "plugins.enable" : "plugins.disable");
-        toggle.disabled = busy;
-        toggle.addEventListener("click", () =>
-          void pluginAction(p.enabled === false ? "enable" : "disable", p.name),
-        );
-        actions.appendChild(toggle);
+        //
+        // ★단 **끌 수 없는 것은 토글을 아예 안 만든다** (2026-08-30, 적대 검토 C조 P1).
+        //  종전엔 누구든 누를 수 있었고 이 문엔 서버 거절도 없어서 **브리지가 실제로
+        //  꺼졌다**(재시작 전까지 대시보드 API 사망). 서버는 이제 거절하지만, 못 하는 걸
+        //  할 수 있는 것처럼 보여주지 않는 게 먼저다 — 눌러보고서야 아는 건 답이 아니다.
+        if (p.core !== true) {
+          const toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "settings-toggle" + (p.enabled === false ? "" : " on");
+          toggle.textContent = i18n(p.enabled === false ? "plugins.enable" : "plugins.disable");
+          toggle.disabled = busy;
+          toggle.addEventListener("click", () => {
+            // ★**끄면 이 화면이 사라지는 것은 확인을 받는다** (2026-08-30, 적대 검토 B-2).
+            //  종전엔 여기만 확인이 없어서, 모듈 화면에선 경고가 뜨는 그 플러그인을 이
+            //  화면에선 한 번 눌러 껐다 — 실측: 63,216바이트 → `000`, 그리고 설정에 굳어
+            //  재시작해도 안 돌아온다(되돌릴 문이 이 화면 하나였다).
+            //  ★목록을 여기 두지 않는다 — 서버가 매니페스트 선언을 읽어 보내준다.
+            if (needsDisableConfirm(p)) {
+              if (!window.confirm(i18n("modules.disable.confirm"))) return; // 취소 → no-op
+            }
+            void pluginAction(p.enabled === false ? "enable" : "disable", p.name);
+          });
+          actions.appendChild(toggle);
+        }
         // 제거 — 홈에 깐 것만. 번들은 서버가 거절하지만, 애초에 안 보여주는 게 정직하다.
         if (p.source === "home") {
           const rm = document.createElement("button");

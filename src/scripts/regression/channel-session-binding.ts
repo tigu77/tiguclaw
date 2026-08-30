@@ -22,6 +22,7 @@ import {
   setSessionArchived,
 } from "../../store/channel-session.js";
 import { listThreads, getDb, setThreadArchived, deleteSession } from "../../store/sessions.js";
+import { readSource } from "./_wiring.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CH = "telegram";
@@ -198,15 +199,18 @@ export const check: RegressionCheck = {
     //  못 본다(적대 검토 M11: `/sessions` 에서 excludeInternal 유실 → worker:/agent: 잡이
     //  사용자 세션 목록·탭바로 쏟아짐). 사용자 대면 목록을 만드는 자리 전수를 본다.
     {
-      const { readFile } = await import("node:fs/promises");
       const files: Array<[string, RegExp]> = [
-        ["../../../plugins/http-bridge/index.ts", /pathname === "\/sessions"[\s\S]{0,900}listThreads\(\{ excludeInternal: true/],
+        // ★**핸들러 함수** 기준으로 본다 (2026-08-30). 종전엔 `pathname === "/sessions"` 부터
+        //  900자 안을 봤는데, 라우트 본문이 `routes-sessions.ts` 로 갈리면서 조건과 본문이
+        //  **다른 파일**이 됐다. 원래 묻고 싶던 것은 *"그 핸들러가 내부 파생을 배제하나"* 이지
+        //  *"조건 근처에 그 호출이 있나"* 가 아니었다 — 자리보다 판정이 정확해졌다.
+        ["../../../plugins/http-bridge", /handleSessions = async[\s\S]{0,900}listThreads\(\{ excludeInternal: true/],
         ["../../../src/core/llm-runtime/capabilities/session-tools-mcp.ts", /listThreads\(\{ excludeInternal: true/],
         ["../../../src/index.ts", /listThreads\(\{ excludeInternal: true/],
       ];
       const missing: string[] = [];
       for (const [rel, re] of files) {
-        const body = await readFile(new URL(rel, import.meta.url), "utf8");
+        const body = await readSource(rel);
         if (!re.test(body)) missing.push(rel.split("/").pop() ?? rel);
       }
       out.push(

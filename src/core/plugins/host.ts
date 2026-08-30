@@ -146,21 +146,61 @@ export const readNeeds = (raw: unknown): NeedsVerdict => {
  *  경우는 우리가 못 보므로(설계 §H), 안 보이는 것을 "없다" 고 하면 안 된다.
  *  [[feedback_verify_before_asserting]] 과 같은 규범이다.
  */
-export const describeNeeds = (needs: PluginNeeds): string => {
-  const parts: string[] = [];
-  parts.push(
+/** 선언 하나 — `kind` 는 i18n 키가 되고, `value` 는 그 안의 자리표시자에 들어간다. */
+export interface NeedFact {
+  readonly kind: "network" | "networkUnknown" | "ui" | "outbound" | "llm";
+  readonly value?: string;
+}
+
+/**
+ * **선언을 데이터로** 낸다 — 이 파일의 유일한 판정이고, 문장은 여기서 안 만든다.
+ *
+ * ★사고(2026-08-30 구조 검토): 종전엔 여기서 **한국어 문장**을 만들어 그대로 API 에 실었고,
+ *  대시보드가 그걸 `textContent` 로 박았다. 그래서 **영어 로케일 사용자가 플러그인 목록에서
+ *  한국어를 봤다.** 감싸는 문구만 i18n 을 타고 안쪽 문자열은 안 탔다.
+ *
+ * ★하필 이 면이다 — `docs/security.md §2` 가 *"설치 전에 여기서 무엇을 요구하는지 읽으세요"*
+ *  라고 안내하는 자리다. 못 읽으면 그 조언이 통째로 무효다.
+ *
+ * ★그래서 **판단은 여기 한 곳, 표현은 가장자리**로 갈랐다(코어는 문장을 모른다).
+ *  로그용 한국어 문장(`describeNeeds`)도 **이 데이터에서 파생**시켜, 두 벌이 갈리지 않는다.
+ */
+export const needsFacts = (needs: PluginNeeds): NeedFact[] => {
+  const facts: NeedFact[] = [];
+  facts.push(
     needs.network !== undefined && needs.network.length > 0
-      ? `외부 ${needs.network.join(", ")}`
-      : "외부 미선언(모름)",
+      ? { kind: "network", value: needs.network.join(", ") }
+      : { kind: "networkUnknown" },
   );
-  if (needs.ui !== undefined && needs.ui.length > 0) parts.push(`화면 ${needs.ui.join(", ")}`);
-  // ★행동 권한은 **사람이 보는 문장**에 들어간다 — 격리가 0인 지금 이 선언은 강제가 아니라
+  if (needs.ui !== undefined && needs.ui.length > 0) {
+    facts.push({ kind: "ui", value: needs.ui.join(", ") });
+  }
+  // ★행동 권한은 **사람이 보는 것**에 들어간다 — 격리가 0인 지금 이 선언은 강제가 아니라
   //  의도 표명이고, 그 값은 오직 **보이는 데** 있다. 안 보이면 적을 이유도 없다.
-  if (needs.outbound === true) parts.push("스스로 말함");
+  if (needs.outbound === true) facts.push({ kind: "outbound" });
   // ★"도구 없음" 은 지금 **참**이다 — `ask` 는 언제나 `toolPolicy:{mode:"none"}` 으로 돈다.
-  if (needs.llm === true) parts.push("모델 호출(도구 없음)");
-  return parts.join(" · ");
+  if (needs.llm === true) facts.push({ kind: "llm" });
+  return facts;
 };
+
+/**
+ * **로그용 한국어 한 줄** — 부팅 로그·설치 로그는 개발자 진단면이라 카탈로그를 안 탄다.
+ *
+ * ★`needsFacts` 에서 **파생**한다. 여기서 따로 조립하면 그게 곧 두 번째 판정이고, 한쪽만
+ *  고쳐지는 순간 화면과 로그가 다른 말을 한다([[feedback_simple_composable_no_duplication]]).
+ */
+const KO: Record<NeedFact["kind"], (v: string) => string> = {
+  network: (v) => `외부 ${v}`,
+  networkUnknown: () => "외부 미선언(모름)",
+  ui: (v) => `화면 ${v}`,
+  outbound: () => "스스로 말함",
+  llm: () => "모델 호출(도구 없음)",
+};
+
+export const describeNeeds = (needs: PluginNeeds): string =>
+  needsFacts(needs)
+    .map((f) => KO[f.kind](f.value ?? ""))
+    .join(" · ");
 
 /**
  * 플러그인이 보는 이벤트 — 코어 `EventBusEvent` 의 **읽기 전용 모양**.
@@ -289,6 +329,18 @@ export const eventAllowed = (
  *  안전 degrade 한다 — 좁히려는 선언이 정반대로 작동했다. 구현이 없는 모드를 만들어
  *  주느니 **하나만 확실히** 하는 게 낫다.
  */
+/**
+ * `host.ask` 가 도는 턴의 깊이 — **서브에이전트**다(메인이 아니다).
+ *
+ * ★리터럴 `1` 을 인라인으로 두면 검사가 소스를 볼 수밖에 없고, 그러면 `1 - 1`(=0, 메인 턴)
+ *  같은 변이가 정규식 `[1-9]` 를 **통과한다**(3라운드 M11 이 그렇게 살아남았다). 이름을
+ *  주면 검사가 `turnKindOf` 에 **넣어서 실행**할 수 있다 — 값이 아니라 결과를 본다.
+ *
+ * ★메인이 되면 사다리 최상단이라 `update_self` 까지 닿는다. 플러그인이 부르는 모델 호출이
+ *  그 자리에 있으면 안 된다.
+ */
+export const ASK_TURN_DEPTH = 1;
+
 export const toolPolicyFor = (_needs: PluginNeeds): { mode: "none" } => ({ mode: "none" });
 
 /**
@@ -404,7 +456,7 @@ export const createPluginHost = (
         //  `main` 을 주고, 그러면 사다리 최상단(`update_self`·`model-settings`·`mcp-admin`)
         //  이 열린다. `ask` 는 위임받아 도는 턴이므로 서브에이전트 층이 맞다.
         //  ★재귀 상한도 여기서 온다 — 플러그인 도구 → ask → 같은 도구 가 무한히 못 돈다.
-        subagentDepth: 1,
+        subagentDepth: ASK_TURN_DEPTH,
       });
       return { ok: true, text: out.text };
     } catch (e) {

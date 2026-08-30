@@ -13,6 +13,7 @@
  * 초록일 수 있다.
  */
 import { readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
@@ -116,16 +117,21 @@ export const check: RegressionCheck = {
         );
       })(),
       (() => {
-        const bridge = readFileSync(
-          new URL("../../../plugins/http-bridge/index.ts", import.meta.url),
-          "utf8",
-        );
+        const bridge = readSourceSync("plugins/http-bridge");
         // ★**응답을 조립하는 지점**을 앵커로 잡는다. 경로 문자열(`pathname === "/worker-jobs"
         //  && method === "GET"`)은 이 파일에 **두 번** 나온다 — 위쪽 라우트 게이트 표와 실제
         //  핸들러. 첫 일치를 쓰면 게이트 표를 물어서, 응답에 필드가 있어도 없다고 판정한다
         //  (실제로 그렇게 옳은 코드가 빨간불이었다). 같은 문자열이 여러 번 나오는 파일에서
         //  "첫 일치" 는 앵커가 아니다.
-        const block = /listJobs\(\{ runningOnly: true[\s\S]{0,900}/.exec(bridge)?.[0] ?? "";
+        // ★**핸들러 함수**를 앵커로 잡는다 (2026-08-30). 종전 앵커
+        //  (`listJobs({ runningOnly: true`)는 브리지가 여러 파일로 갈리면서 **두 곳**에서
+        //  일치했고(`routes-projects` 가 먼저다), 첫 일치를 쓰니 옳은 코드가 빨간불이었다.
+        //  이 검사가 머리말에 스스로 적어둔 함정("같은 문자열이 여러 번 나오면 첫 일치는
+        //  앵커가 아니다")을 **파일이 갈리자 다시 밟았다** — 함수 이름은 유일하다.
+        // ★창을 글자 수로 재지 않는다 — **함수 하나**를 통째로 잡는다. 앵커를 함수로
+        //  옮긴 직후 900자 창이 **910자**에서 아슬하게 빗나갔다(주석 아홉 줄 때문). 숫자
+        //  창은 주석 한 줄에 흔들리고, 그러면 검사가 코드가 아니라 **서식**을 보게 된다.
+        const block = /handleWorkerJobs = async[\s\S]*?\n\};/.exec(bridge)?.[0] ?? "";
         return assert(
           "서버가 startedAt 을 실어 보낸다(클라가 '지금' 으로 지어내지 않게)",
           // ★조건부 스프레드(`...(typeof j.startedAt === "number" ? { startedAt: … } : {})`)도

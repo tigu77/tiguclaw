@@ -45,7 +45,7 @@ import {
   formatInventoryForUser,
 } from "./core/plugins/inventory.js";
 import { loadPlugins } from "./core/plugins/loader.js";
-import { initPluginManager, trackPlugin } from "./core/plugins/manager.js";
+import { bundledPluginNames, initPluginManager, trackPlugin } from "./core/plugins/manager.js";
 import { wirePlugin } from "./core/plugins/wire.js";
 import {
   startSelfMaintenance,
@@ -381,7 +381,10 @@ try {
   // ★관리자에 배선 재료를 한 번 넘긴다 — 이후 설치·켜기는 인자 없이 부른다.
   initPluginManager({ bus, channels, serviceStops });
   const bundled = await loadPlugins(path.join(appRoot(), "plugins"), bus);
-  const bundledNames = new Set(bundled.map((p) => p.manifest.name));
+  // ★**로드 성공이 아니라 이름의 존재**로 예약한다(2026-08-30, B-1). 종전엔 `bundled` 에서
+  //  이름을 뽑아, 번들 하나가 깨지면 그 이름이 홈에 열렸다. 판정은 매니저가 소유한다 —
+  //  설치 문도 같은 것을 부른다(같은 질문에 두 답이 있어서 난 사고다).
+  const bundledNames = await bundledPluginNames();
   const homeRoot = getPaths().commonPlugins;
   const home = (await loadPlugins(homeRoot, bus)).filter((p) => {
     if (!bundledNames.has(p.manifest.name)) return true;

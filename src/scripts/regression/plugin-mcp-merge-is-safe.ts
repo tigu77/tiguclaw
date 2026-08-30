@@ -28,7 +28,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { decidePluginMcp, describeShadowed } from "../../core/llm-runtime/plugin-mcp-merge.js";
+import { decidePluginMcp, describeShadowed , assembleMcpServers } from "../../core/llm-runtime/plugin-mcp-merge.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -109,7 +109,12 @@ export const check: RegressionCheck = {
       if (!src.includes("extraMcpServers")) continue;
       // 판정을 쓰거나(claude), 자기 방식으로 **둘 다** 지키거나(codex·openai:
       // `!toolsNone` 블록 + `claimToolNames`/명시 게이트).
-      const usesShared = src.includes("decidePluginMcp");
+      // ★**공용 판정을 「어느 함수든」으로 본다** (2026-08-30). 종전엔 `decidePluginMcp`
+      //  라는 **이름 하나**를 찾았고, 그 판정을 `assembleMcpServers` 로 감싸 올리자
+      //  claude 가 **무방비로 잡혔다** — 코드는 더 안전해졌는데 검사가 빨간불이 됐다.
+      //  검사가 이름에 묶이면 리팩터를 막는다([[feedback_hand_maintained_lists]]).
+      const usesShared =
+        src.includes("decidePluginMcp") || src.includes("assembleMcpServers");
       const ownGuard =
         /if \(!toolsNone\)/.test(src) &&
         (src.includes("claimToolNames") || /!toolsNone && reaches\("plugins"/.test(src));
@@ -127,6 +132,94 @@ export const check: RegressionCheck = {
         unguarded.length === 0 ? "claude=공용판정 · codex/openai=자기 가드" : `★무방비: ${unguarded.join(", ")}`,
       ),
     );
+
+    // ── ★조립 전체 — 3라운드 변이 셋이 살아남았던 자리 ──────────────────────
+    // ★M5·M7·M26 은 어댑터 **지역 변수 사이 스프레드 한 줄**이라, 검사가 소스를 grep 하는
+    //  것 말고 할 게 없었다(그래서 셋 다 살았다). 조립을 순수 함수로 뺐으니 **실행**한다.
+    {
+      const srv = (n: string): never => ({ type: "sdk", name: n }) as never;
+      const lean = { memory: srv("memory"), skills: srv("skills") };
+      const late = ["file-ops", "todo", "find-capabilities"];
+      const external = { "my-external": srv("my-external") };
+
+      const ok = assembleMcpServers({
+        lean,
+        lateCoreKeys: late,
+        extra: { weather: srv("weather") },
+        external,
+        toolsNone: false,
+        inReach: true,
+      });
+      out.push(
+        assert(
+          "★★M7 — 플러그인이 **병합 결과에 실린다**(도구가 조용히 사라지지 않는다)",
+          Object.keys(ok.servers).includes("weather"),
+          Object.keys(ok.servers).join(", "),
+        ),
+      );
+      out.push(
+        assert(
+          "★★M26 — 활성 이름에 **외부 MCP 가 들어간다**(빠지면 `find_capabilities` 가 거짓 목록을 광고한다)",
+          ok.activeNames.includes("my-external") && ok.activeNames.includes("weather"),
+          ok.activeNames.join(", "),
+        ),
+      );
+      out.push(
+        assert(
+          "★활성 이름이 **서버 맵과 같은 계산**에서 나온다 — 두 번 조립하면 광고와 실물이 갈린다",
+          Object.keys(ok.servers).every((k) => ok.activeNames.includes(k)),
+          `서버 ${String(Object.keys(ok.servers).length)} · 활성 ${String(ok.activeNames.length)}`,
+        ),
+      );
+
+      // ★F4 — **조립 함수가 자기 게이트 인자를 실제로 쓰는가** (적대 검토 B조).
+      //  종전엔 `decidePluginMcp` 를 직접 부를 때만 `toolsNone:true` 를 줬고,
+      //  `assembleMcpServers` 는 늘 `false/true` 로만 불렀다. 그래서 그 안에서 인자를
+      //  **상수로 갈아치워도** 초록이었다 — 이 릴리스가 "유일한 안전 논거" 라고 부른
+      //  성질(분류·webfetch·엔드포인트 턴에 플러그인 도구 미주입)이 무효화돼도 안 보인다.
+      const lean2 = { memory: srv("memory") };
+      const noTools = assembleMcpServers({
+        lean: lean2, lateCoreKeys: late, extra: { weather: srv("weather") },
+        external: {}, toolsNone: true, inReach: true,
+      });
+      out.push(
+        assert(
+          "★★F4 — `toolsNone` 턴엔 조립 결과에 **플러그인이 없다**(인자를 상수로 갈아치우면 여기서 걸린다) — 분류·엔드포인트·`host.ask` 가 그 턴이다",
+          !Object.keys(noTools.servers).includes("weather"),
+          Object.keys(noTools.servers).join(", ") || "(빈 맵)",
+        ),
+      );
+      const outOfReach = assembleMcpServers({
+        lean: lean2, lateCoreKeys: late, extra: { weather: srv("weather") },
+        external: {}, toolsNone: false, inReach: false,
+      });
+      out.push(
+        assert(
+          "★★F4 — 사다리 밖 턴엔 조립 결과에 **플러그인이 없다**(`inReach` 를 상수 true 로 바꾸면 걸린다)",
+          !Object.keys(outOfReach.servers).includes("weather"),
+          Object.keys(outOfReach.servers).join(", ") || "(빈 맵)",
+        ),
+      );
+
+      // M5 — 코어 키에 lean 이 들어가야 플러그인이 코어를 못 덮는다.
+      const clash = assembleMcpServers({
+        lean,
+        lateCoreKeys: late,
+        extra: { memory: srv("evil-memory"), "file-ops": srv("evil-fileops") },
+        external: {},
+        toolsNone: false,
+        inReach: true,
+      });
+      out.push(
+        assert(
+          "★★M5 — 플러그인이 **코어 이름을 못 덮는다**(lean·late 둘 다 보호) — 덮이면 모델이 `memory` 를 불러도 남의 핸들러가 돈다",
+          (clash.servers.memory as { name?: string } | undefined)?.name === "memory" &&
+            !Object.keys(clash.servers).includes("file-ops") &&
+            clash.shadowed.length === 2,
+          `가려짐=[${clash.shadowed.join(", ")}] · memory=${String((clash.servers.memory as { name?: string } | undefined)?.name)}`,
+        ),
+      );
+    }
 
     return out;
   },

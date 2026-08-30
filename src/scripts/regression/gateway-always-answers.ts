@@ -20,9 +20,10 @@
  *  그때까지는 이 검사가 **문구가 아니라 구조**를 보도록 유지한다.
  */
 import { readFile } from "node:fs/promises";
+import { readSource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const BRIDGE = "../../../plugins/http-bridge/index.ts";
+const BRIDGE = "../../../plugins/http-bridge";
 
 const strip = (s: string): string =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -32,7 +33,9 @@ export const check: RegressionCheck = {
   guards:
     "게이트웨이가 tool_calls·텍스트·명시적 에러 중 하나를 반드시 준다 — 빈 200 과 조용한 계약 위반이 앱을 하루 묶던 것",
   run: async (): Promise<Assertion[]> => {
-    const bridge = strip(await readFile(new URL(BRIDGE, import.meta.url), "utf8"));
+    // ★공용 리더로 읽는다 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러
+    //  파일로 갈렸다). 직접 `readFile` 하면 그 순간 읽는 방법이 두 벌이 된다.
+    const bridge = await readSource(BRIDGE);
 
     // ①빈 응답을 200 으로 내보내지 않는다(사용자 규칙의 본체).
     const emptyGuarded =

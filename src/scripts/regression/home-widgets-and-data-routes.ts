@@ -14,11 +14,13 @@
  * 등급: ①②③은 **동작**(실제로 부르고 쓰고 읽는다), ④는 소스 대조(라우팅·배선 사실).
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   HOME_WIDGET_MAX,
   looksLikeCredentialKey,
+  looksLikeCredentialValue,
   normalizeHomeWidgets,
   readHomeWidgets,
   writeHomeWidgets,
@@ -34,7 +36,8 @@ import { getPaths } from "../../core/paths.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 const KNOWN = new Set(["weather"]);
 
@@ -231,7 +234,7 @@ export const check: RegressionCheck = {
     );
 
     // ── ④ 게이트 · parity (소스 대조) ──────────────────────────────────────
-    const bridge = read("plugins/http-bridge/index.ts");
+    const bridge = read("plugins/http-bridge");
     out.push(
       assert(
         '★★`/plugin-data/` 가 role 게이트에 **프리픽스로** 있다 — 플러그인마다 한 줄씩 늘면 그게 곧 빠뜨릴 목록이다(이 사다리는 이미 한 번 빠뜨려 read 토큰이 쓰기를 했다)',
@@ -334,19 +337,109 @@ export const check: RegressionCheck = {
 
     // A-F2 — 자격증명 가드. ★**표본이 한 개면 그건 표본이 아니다** — 종전 회귀는 `apiKey`
     //  하나만 봤는데, 그게 옛 정규식이 유일하게 잡던 형태였다.
+    // ★★**표본도 같이 되돌렸다** (2026-08-30). 값 기반 판정을 되돌렸으므로 그 표본은
+    //  대상이 없다. 남아 있는 결함(정상 키 과차단)은 로드맵에 있다 — 다음 설계 때
+    //  **갈래마다 그 갈래만 밟는 표본**을 함께 만든다(이번에 두 번 놓친 축이다).
     const mustBlock = [
       "apiKey", "api_key", "x-api-key", "apikey", "authToken", "auth_token",
       "authtoken", "clientSecret", "accessKey", "privateKey", "password",
       "passwd", "credentials", "bearer", "Cookie", "sessionId", "jwt",
       "oauthToken", "SIGNATURE", "pwd", "certPath",
+      "API_KEY", "refreshToken", "accessToken", "secretKey", "sessionKey", "AUTHORIZATION",
+      // ★**2026-08-30 실측으로 뚫렸던 24종** (적대 검토 B조 P-2). 아침에 `key`·`pass`·
+      //  `session` 을 약한 목록에서 빼고 *"합성어로 되찾는다"* 고 적었는데, 되찾기가 손
+      //  목록이라 이것들이 전부 새어 나갔다. 진짜 export 로 돌려보니
+      //  `passphrase="correct-horse-battery-staple"` 가 settings.json 에 쓰이고 브라우저로
+      //  나갔다. **표본이 구현의 낱말 목록을 베끼면 그 목록의 빈틈은 원리적으로 안 보인다** —
+      //  그래서 여기엔 구현을 안 보고 *"이건 자격증명이다"* 로 고른 이름을 적는다.
+      "passphrase", "passcode", "pass", "apiPass", "userPass", "pgpass", "gpgPassphrase",
+      "key", "consumerKey", "encryptionKey", "signingKey", "hmacKey", "sharedKey",
+      "clientKey", "licenseKey", "masterKey", "appKey", "serviceKey", "deployKey",
+      "hostKey", "subscriptionKey", "keyfile", "api.key", "api key",
     ];
     const mustPass = [
+      // 자격증명 낱말이 **아예 없는** 이름 — 이건 언제나 통과해야 한다.
       "city", "units", "keyword", "author", "monkey", "lat", "lon", "zoom",
-      "refreshMinutes", "title", "query", "passenger", "turnkey", "donkey",
-      "authorName",
+      "refreshMinutes", "title", "query", "passenger", "turnkey", "donkey", "authorName",
+      "columns", "showLegend", "maxItems", "dateFormat", "unit",
     ];
+    // ★**지금 막히는 무해한 이름들 — 결함이 아니라 치르는 값이다.**
+    //
+    //  `chartKey` 와 `apiKey` 는 문법이 같다(수식어 + 머리명사 `key`). 이름만으로는
+    //  구조적으로 못 가르므로 **막는 쪽을 기본**으로 골랐다 — 이 가드는 비대칭이라서다:
+    //  과차단은 되돌릴 수 있고(위젯이 사유와 함께 거부되고 `.env` 안내가 붙는다) 유출은
+    //  되돌릴 수 없다(값이 화면·백업으로 나간 뒤다).
+    //
+    // ★**이 목록을 풀려면 같은 커밋에서 위 `mustBlock` 이 여전히 전부 막힌다는 걸 보여라.**
+    //  아침에 그 증명 없이 풀었다가 24종을 뚫었다. 여기 적어 두는 이유는 그 교환을 **눈에
+    //  보이게** 두기 위해서다 — 조용히 뒤집히지 않게.
+    const knownOverBlocked = [
+      "chartKey", "sortKey", "dataKey", "labelKey", "titleKey", "cacheKey", "seriesKey",
+      "groupKey", "rowKey", "localeKey", "primaryKey", "passRate", "sessionCount",
+      "tokenCount", "certPathLabel", "privateNote", "jwtDocsUrl", "passwordHintText",
+    ];
+    // ── 값이 대놓고 자격증명인 것 ─────────────────────────────────────────
+    // ★이름 가드가 원리적으로 못 보는 갈래다 (2026-08-30, 적대 검토 D조 D-1). 이름을
+    //  되돌리면서 값 관측까지 같이 지웠고, 그래서 `pem: "-----BEGIN RSA PRIVATE KEY-----"`
+    //  처럼 **값이 개인키인데** 이름에 낱말이 없어 통과했다. 실측 19종.
+    const valueMustBlock: Array<[string, string]> = [
+      ["pem", "-----BEGIN RSA PRIVATE KEY-----MIIEpAIBAAKCAQEA"],
+      ["identityFile", "-----BEGIN OPENSSH PRIVATE KEY-----b3BlbnNzaA"],
+      ["kubeconfig", "-----BEGIN CERTIFICATE-----MIIDdzCCAl+gAwIB"],
+      ["githubPat", "ghp_16C7e42F292c6912E7710c838347Ae178B4a"],
+      ["slackWebhook", "xoxb-2321-4432-abcdefghijklmnop"],
+      ["creds", "sk-proj-abcdefghijklmnopqrstuvwxyz"],
+      ["databaseUrl", "postgres://admin:hunter2@db:5432/app"],
+      ["mongoUri", "mongodb://user:pw@host:27017/db"],
+    ];
+    // ★반대 방향 — 평범한 URL·문자열이 막히면 위젯을 못 만든다.
+    const valueMustPass: Array<[string, string]> = [
+      ["docsUrl", "https://example.com/guide"],
+      ["apiBase", "https://api.example.com/v1"],
+      ["title", "이번 달 매출"],
+      ["dateFormat", "YYYY-MM-DD"],
+      ["city", "Seoul"],
+      ["query", "select * from t"],
+      ["avatar", "https://cdn.example.com/a.png"],
+    ];
+    const valueLeaked = valueMustBlock.filter(([, v]) => !looksLikeCredentialValue(v));
+    const valueOver = valueMustPass.filter(([, v]) => looksLikeCredentialValue(v));
+    out.push(
+      assert(
+        "★★**값이 대놓고 자격증명이면** 이름이 평범해도 막는다 — `pem`·`kubeconfig`·`githubPat` 은 이름에 걸릴 낱말이 없어서 이름 가드만으론 원리적으로 못 본다(실측 19종이 그렇게 샜다)",
+        valueLeaked.length === 0,
+        valueLeaked.length === 0 ? `${String(valueMustBlock.length)}종 전부 차단` : `★샘: ${valueLeaked.map(([k]) => k).join(", ")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★★평범한 URL·문자열은 **그대로 통과한다** — 값 가드가 길이·엔트로피 추측으로 번지면 그건 또 하나의 이름 맞히기이고, 과차단이 늘면 사람들이 가드를 우회하는 법부터 배운다",
+        valueOver.length === 0,
+        valueOver.length === 0 ? `${String(valueMustPass.length)}종 전부 통과` : `★막힘: ${valueOver.map(([k]) => k).join(", ")}`,
+      ),
+    );
+
+    // ★**입구로 통과시켜 본다** — 판정 함수만 부르면 이음매가 안 검사된다. 실제로 변이
+    //  M12(호출부에서 `|| looksLikeCredentialValue(v)` 를 뗌)가 위 단언들을 **전부 통과**
+    //  했다: 부품은 멀쩡한데 아무도 안 부르는 상태다([[feedback_simple_composable_no_duplication]]).
+    const throughDoor = normalizeHomeWidgets(
+      [
+        { id: "leak", type: "weather/forecast", config: { pem: "-----BEGIN RSA PRIVATE KEY-----MIIEpAIBAAKCAQEA" } },
+        { id: "fine", type: "weather/forecast", config: { place: "수원시" } },
+      ],
+      KNOWN,
+    );
+    out.push(
+      assert(
+        "★★자격증명 **값**을 담은 위젯이 **실제 입구에서 거부된다** — 판정 함수만 검사하면 그 판정을 아무도 안 불러도 초록이다(그 변이가 실제로 통과했다)",
+        throughDoor.widgets.length === 1 && throughDoor.widgets[0]?.id === "fine",
+        `통과한 위젯 ${throughDoor.widgets.map((w) => w.id).join(", ") || "없음"}`,
+      ),
+    );
+
     const leaked = mustBlock.filter((k) => !looksLikeCredentialKey(k));
     const overblocked = mustPass.filter((k) => looksLikeCredentialKey(k));
+    const quietlyUnblocked = knownOverBlocked.filter((k) => !looksLikeCredentialKey(k));
     out.push(
       assert(
         `★★자격증명처럼 보이는 키 ${String(mustBlock.length)}종이 전부 막힌다 — 종전 정규식은 낱말이 **이름 중간**에 오면 통과시켜 \`authToken\`·\`clientSecret\`·\`accessKey\`·\`x-api-key\` 가 다 뚫렸다(이 값은 브라우저로 나가고 백업에 들어간다)`,
@@ -359,6 +452,15 @@ export const check: RegressionCheck = {
         "★평범한 설정 키는 안 막힌다 — `keyword`·`author`·`monkey` 는 자격증명이 아니다(넓히면서 낱말 경계를 두는 이유)",
         overblocked.length === 0,
         overblocked.length === 0 ? `${String(mustPass.length)}종 전부 통과` : `★차단됨: ${overblocked.join(", ")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★★지금 막히는 무해한 이름들이 **조용히 풀리지 않는다** — 풀려면 같은 커밋에서 위 자격증명 표본이 여전히 전부 막힌다는 걸 보여야 한다(아침에 그 증명 없이 풀었다가 24종을 뚫었다)",
+        quietlyUnblocked.length === 0,
+        quietlyUnblocked.length === 0
+          ? `${String(knownOverBlocked.length)}종 여전히 차단(치르는 값 — 이름만으론 apiKey 와 chartKey 를 못 가른다)`
+          : `★풀렸다: ${quietlyUnblocked.join(", ")} — 자격증명 표본을 다시 재라`,
       ),
     );
 

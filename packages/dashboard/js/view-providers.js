@@ -95,7 +95,7 @@
       // 안 그린다(서버도 거절한다 — 이중 방어). 남은 `dashboard` 는 의존이 아니라
       // **자기참조**(끄면 이 화면을 잃는다)라 유도할 수 없어 목록으로 남는다. 막지는 않고
       // 확인만 받는다(파괴적-행위 소프트 게이트).
-      const SELF_REFERENTIAL_MODULE_NAMES = new Set(["dashboard"]);
+
 
       const findInventoryMatch = (item, invIndex) => {
         const candidates = [item.name, String(item.id || "").replace(/^(channel|plugin)\./, "")];
@@ -110,6 +110,20 @@
       // moduleEnabled 를 붙이고, 매치 안 되는 인벤토리 엔트리는 새 항목으로 push. 인벤토리 fetch
       // 실패(inv=null/undefined)는 no-op — 프로바이더 목록 자체는 항상 정상 렌더(§ fetchProviders
       // 의 기존 격리 원칙과 동형).
+      /**
+       * 인벤토리 행이 들고 오는 **판정 플래그** — 매치·합성 **두 경로가 같은 것**을 쓴다.
+       *
+       * ★사고(2026-08-30, 적대 검토 B조 P-1): 두 경로가 필드를 **각자 손으로 베꼈고**,
+       *  `selfReferential` 을 매치 경로에만 넣었다. 그런데 `dashboard` 는 프로바이더와
+       *  매치되지 않아 **반드시 합성 경로로** 그려진다 — 그래서 대시보드를 끌 때 뜨던
+       *  확인창이 **조용히 사라졌다.** 손 목록을 선언으로 바꾸면서 돌던 안전장치를 깬 것이다.
+       *  베끼는 자리가 둘이면 반드시 갈린다.
+       */
+      const moduleFlagsOf = (e) => ({
+        ...(e.core === true ? { core: true } : {}),
+        ...(e.selfReferential === true ? { selfReferential: true } : {}),
+      });
+
       const mergeInventoryModuleInfo = (list, inv) => {
         if (!inv) return list;
         const invIndex = new Map();
@@ -122,7 +136,7 @@
           if (match) {
             item.moduleName = match.name;
             item.moduleEnabled = match.enabled;
-            if (match.core === true) item.core = true;
+            Object.assign(item, moduleFlagsOf(match));
             seen.add(normModuleKey(match.name));
           }
         }
@@ -144,7 +158,7 @@
               actions: [],
               moduleName: e.name,
               moduleEnabled: e.enabled,
-              ...(e.core === true ? { core: true } : {}),
+              ...moduleFlagsOf(e),
             });
           }
         };
@@ -167,7 +181,9 @@
 
       const onModuleToggleClick = async (provider, btn) => {
         const nextEnabled = !provider.moduleEnabled;
-        if (!nextEnabled && SELF_REFERENTIAL_MODULE_NAMES.has(provider.moduleName)) {
+        // ★손 목록이 아니라 **서버가 보낸 선언**을 본다 (2026-08-30, B-2). 사본이 두 벌
+        //  있었고 둘 다 플러그인 화면엔 없었다 — 그래서 그쪽 문은 무방비였다.
+        if (!nextEnabled && provider.selfReferential === true) {
           const proceed = window.confirm(
             i18n("modules.disable.confirm"),
           );

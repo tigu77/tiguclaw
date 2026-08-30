@@ -21,13 +21,15 @@
  *  없다. 아래는 문자열 대조뿐이고, 진짜 검증은 윈도우 인스턴스에서 실제로 돌리는 것이다.
  */
 import { execFileSync } from "node:child_process";
+import { readSourceSync } from "./_wiring.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Assertion, RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 /**
  * ★주석을 뺀 **실행되는 줄**만 남긴다. 이 검사가 처음에 그걸 안 해서, 결함을 *설명한*

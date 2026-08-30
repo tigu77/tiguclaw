@@ -215,9 +215,20 @@ export const settingsForClient = (
   );
 };
 
+/**
+ * 한 칸 쓰기의 판정.
+ *
+ * ★`error` 는 **로그·폴백용 한 문장**이고, `errorKey` 가 화면이 자기 언어로 그리는 근거다
+ *  (2026-08-30, 3라운드 D-4). 종전엔 문장만 있었고 브리지가 그걸 그대로 `reason` 으로
+ *  실어 보내서, 영어 사용자가 플러그인 설정을 바꾸다 실패하면 한국어 토스트를 만났다 —
+ *  매니저 쪽에서 고친 것과 **같은 부류**이고, 그때 이 형제 경로만 빠졌다.
+ *  키 이름은 `PluginActionResult.reasonKey` 와 같은 `plugins.reason.*` 이름공간이다.
+ */
 export interface WriteVerdict {
   readonly ok: boolean;
   readonly error?: string;
+  readonly errorKey?: string;
+  readonly errorArgs?: Record<string, string>;
 }
 
 /**
@@ -233,13 +244,21 @@ export const writePluginSetting = (
   value: PluginSettingValue | undefined,
 ): WriteVerdict => {
   const spec = specs.find((s) => s.key === key);
-  if (spec === undefined) return { ok: false, error: `모르는 설정 키 '${key}'` };
+  if (spec === undefined)
+    return {
+      ok: false,
+      error: `모르는 설정 키 '${key}'`,
+      errorKey: "plugins.reason.unknownSettingKey",
+      errorArgs: { key },
+    };
   if (spec.type === "secret") {
     return {
       ok: false,
       error:
         `'${key}' 는 secret 입니다 — 홈 .env 의 ${secretEnvName(plugin, key)} 에 두세요. ` +
         `설정 파일은 화면에 뿌려지고 백업에 들어갑니다.`,
+      errorKey: "plugins.reason.secretGoesInEnv",
+      errorArgs: { key, env: secretEnvName(plugin, key) },
     };
   }
   if (value !== undefined) {
@@ -250,7 +269,13 @@ export const writePluginSetting = (
           ? typeof value === "number" && Number.isFinite(value)
           : typeof value === "string" &&
             (spec.type !== "enum" || (spec.values ?? []).includes(value));
-    if (!ok) return { ok: false, error: `'${key}' 값이 type '${spec.type}' 과 맞지 않습니다` };
+    if (!ok)
+      return {
+        ok: false,
+        error: `'${key}' 값이 type '${spec.type}' 과 맞지 않습니다`,
+        errorKey: "plugins.reason.settingTypeMismatch",
+        errorArgs: { key, type: spec.type },
+      };
   }
   // ★깨진 파일이면 **여기서 던진다** — 호출부가 사유를 사용자에게 그대로 전한다.
   const raw = readRaw(plugin, true);

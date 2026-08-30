@@ -29,6 +29,7 @@
  *  ★"지키지도 못하면서 지킨다고 적어둔 검사가 가장 나쁘다" — 그래서 이 문단이 있다.
  */
 import { readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { REGION_A_SYSTEM_PROMPT } from "../../core/llm-runtime/adapters/_shared-sysprompt.js";
@@ -37,7 +38,8 @@ import { discoverSkills, formatSkillIndex } from "../../core/llm-runtime/capabil
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 /**
  * ★**넛지는 파일이 아니라 조립된 문자열로 읽는다** (2026-08-20 적대 검토 F1).

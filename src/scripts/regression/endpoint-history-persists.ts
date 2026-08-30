@@ -16,10 +16,12 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSourceSync } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "endpoint-history-persists",
@@ -50,13 +52,13 @@ export const check: RegressionCheck = {
     );
 
     // ★② 서버 라우트 — 되읽을 창구가 있는가.
-    const bridge = read("plugins/http-bridge/index.ts");
+    const bridge = read("plugins/http-bridge");
     // ★핸들러 **본문**의 유일한 지점을 본다 — 경로 문자열은 권한(role) 분기에도 있어서
     //  라우트를 통째로 지워도 그쪽에 걸렸다(변이 적발).
     //  ★가드와 본문을 **한 덩어리로** 본다 — 본문만 보면 `if (false)` 로 도달만 막아도
     //   통과하고, 경로 문자열만 보면 권한 분기의 같은 문자열에 걸린다(둘 다 변이로 확인).
     const hasRoute =
-      /pathname === "\/endpoint-calls" && method === "GET"\)[\s\S]{0,3000}writeJson\(res, 200, \{ calls,/.test(
+      /handleEndpointCalls = async[\s\S]{0,3000}writeJson\(res, 200, \{ calls,/.test(
         bridge,
       );
     // 2026-08-10: 게이트웨이 호출도 같은 라우트가 준다(한 페이지 + 필터) — 두 타입을 함께 읽는다.

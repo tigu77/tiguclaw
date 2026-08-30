@@ -17,12 +17,14 @@
  *  그래서 종료 시 `llm.turn_error` 를 남긴다(통지는 채널이 있어야 닿지만 기록은 항상 남는다).
  */
 import { readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "inflight-covers-all-paths",
@@ -97,7 +99,7 @@ export const check: RegressionCheck = {
     );
 
     // ★③ 배선 — 엔드포인트 경로가 **실제로** 등록·해제하는가. 위 ①②는 심(shim)만 본다.
-    const bridge = read("plugins/http-bridge/index.ts");
+    const bridge = read("plugins/http-bridge");
     // ★앞 경계를 잡는다 — `unregisterExternalTurn(...)` 안에 `registerExternalTurn(...)` 이
     //  **부분 문자열로 들어 있어서**, 등록을 통째로 지워도 해제 줄에 걸려 통과했다(변이 적발).
     const wired =

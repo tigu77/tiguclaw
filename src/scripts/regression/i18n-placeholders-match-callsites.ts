@@ -28,6 +28,7 @@
  * 등급: 대조 검사(소스 토크나이저 + 카탈로그). 판정 대상은 **화면 js + 서버 생산자** 다.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanJsStrings, maskJsStrings } from "./_js-strings.js";
@@ -161,40 +162,63 @@ export const scanCallSites = (sources: readonly string[]): CallSiteScan => {
  * ★`params` 는 **shorthand**(`{ state, status }`)가 흔하다 — `topLevelKeys` 가 그걸 안다
  *  (정규식 `ident:` 로 읽던 첫 판은 4건을 "안 채워짐" 으로 오탐했다).
  */
+/**
+ * 서버가 키와 인자를 함께 내보내는 **모양들** — 이름만 다르고 판정은 같다.
+ *
+ * ★`{ reasonKey, reasonArgs }` 를 여기 등록한 이유 (2026-08-31): 플러그인 거부 사유가
+ *  같은 게임에 들어왔는데(`plugins.reason.*`) 이 축 밖이었다. 그쪽 검사 파일에 파서를
+ *  하나 더 두려다 되돌렸다 — **같은 판단이 두 곳이면 갈린다**. 게다가 새 파서는 템플릿
+ *  안의 `${name}` 을 감싸는 객체로 오인해 첫 판에 8건을 오탐했고, 그건 이 파일이 이미
+ *  세 번 겪고 토크나이저로 넘어간 함정이다. 모양이 늘면 **여기 한 줄** 늘린다.
+ */
+const EMIT_SHAPES: ReadonlyArray<{ key: string; args: string }> = [
+  { key: "key", args: "params" },
+  { key: "reasonKey", args: "reasonArgs" },
+  { key: "errorKey", args: "errorArgs" },
+];
+
 export const scanServerEmits = (
   sources: readonly string[],
 ): Array<{ key: string; params: Set<string> }> => {
   const out: Array<{ key: string; params: Set<string> }> = [];
   for (const src of sources) {
     const masked = maskJsStrings(src, scanJsStrings(src));
-    for (const m of src.matchAll(/\{\s*key:\s*"([a-zA-Z0-9._-]+)"/g)) {
-      const key = m[1] as string;
-      if (!key.includes(".")) continue; // 슬롯 객체 등 — i18n 키가 아니다
-      // ★**그 객체 안**만 본다. 창(예: 뒤 400자)으로 읽으면 **다음 문장의 `params`** 를
-      //  삼킨다 — 실증: `{ key: "inv.schedule.neverRan" }`(params 없음)가 바로 다음 줄
-      //  `inv.schedule.reboot` 의 `params: { state, status }` 를 자기 것으로 셌다.
-      //  이 파일에서 같은 부류(창이 경계를 못 봄)로 **세 번** 걸렸다.
-      const open = m.index ?? 0;
-      let d = 0;
-      let close = -1;
-      for (let q = open; q < masked.length; q++) {
-        const c = masked[q];
-        if (c === "{") d += 1;
-        else if (c === "}") {
-          d -= 1;
-          if (d === 0) {
-            close = q;
-            break;
+    for (const shape of EMIT_SHAPES) {
+      const at = new RegExp(`(?<![a-zA-Z])${shape.key}:\\s*"([a-zA-Z0-9._-]+)"`, "g");
+      // ★키 **이름**은 원본에서 읽는다(가린 소스엔 문자열 속 글자가 없다 — 첫 판이 그래서
+      //  수집 0이 됐다). 위치는 길이가 보존되므로 가린 소스와 같다.
+      for (const m of src.matchAll(at)) {
+        const key = m[1] as string;
+        if (!key.includes(".")) continue; // 슬롯 객체 등 — i18n 키가 아니다
+        // ★**그 객체 안**만 본다. 창(예: 뒤 400자)으로 읽으면 **다음 문장의 인자**를
+        //  삼킨다 — 실증: `{ key: "inv.schedule.neverRan" }`(params 없음)가 바로 다음 줄
+        //  `inv.schedule.reboot` 의 `params: { state, status }` 를 자기 것으로 셌다.
+        //  이 파일에서 같은 부류(창이 경계를 못 봄)로 **세 번** 걸렸다.
+        // ★여는 괄호는 **가려진 소스**에서 뒤로 찾는다 — 문자열·템플릿 안의 `{` 는
+        //  이미 공백이라 `` `${name} …` `` 같은 사유 문장에 속지 않는다.
+        const open = masked.lastIndexOf("{", m.index ?? 0);
+        if (open < 0) continue;
+        let d = 0;
+        let close = -1;
+        for (let q = open; q < masked.length; q++) {
+          const c = masked[q];
+          if (c === "{") d += 1;
+          else if (c === "}") {
+            d -= 1;
+            if (d === 0) {
+              close = q;
+              break;
+            }
           }
         }
+        const body = close < 0 ? "" : src.slice(open, close + 1);
+        const pm = new RegExp(`${shape.args}:\\s*\\{`).exec(body);
+        const params = new Set<string>();
+        if (pm !== null) {
+          for (const k of topLevelKeys(body.slice(pm.index + pm[0].length - 1))) params.add(k);
+        }
+        out.push({ key, params });
       }
-      const body = close < 0 ? "" : src.slice(open, close + 1);
-      const pm = /params:\s*\{/.exec(body);
-      const params = new Set<string>();
-      if (pm !== null) {
-        for (const k of topLevelKeys(body.slice(pm.index + pm[0].length - 1))) params.add(k);
-      }
-      out.push({ key, params });
     }
   }
   return out;
@@ -258,13 +282,17 @@ export const check: RegressionCheck = {
     );
 
     // ── 서버 생산자 축 ────────────────────────────────────────────────────────
+    // ★`providers.ts` 한 파일에서 **디렉터리로** 넓혔다 (2026-08-31) — 같은 폴더의
+    //  `manager.ts`·`settings.ts` 가 거부 사유 키를 내는데 대상 밖이었다. 파일 이름을
+    //  적으면 넷째가 조용히 빠진다([[feedback_hand_maintained_lists]]).
     const tsFiles = [
-      "src/core/plugins/providers.ts",
-      "plugins/http-bridge/index.ts",
+      "src/core/plugins",
+      "plugins/http-bridge",
       "src/core/prompt-assembly.ts",
     ].filter((f) => existsSync(path.join(REPO, f)));
     const emits = scanServerEmits(
-      tsFiles.map((f) => readFileSync(path.join(REPO, f), "utf8")),
+      // ★디렉터리도 있다(`plugins/http-bridge`) — 공용 리더가 그 아래 `.ts` 를 전부 본다.
+      tsFiles.map((f) => readSourceSync(f)),
     );
     const badKey: string[] = [];
     const badPh: string[] = [];

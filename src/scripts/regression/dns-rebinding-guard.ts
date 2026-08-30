@@ -20,6 +20,7 @@
  *  첫 검사로 부르는가)은 소스 대조 — 그 한계는 아래 단언 이름에 적었다.
  */
 import { readFile } from "node:fs/promises";
+import { readSource } from "./_wiring.js";
 import {
   hostnameOf,
   isIpLiteral,
@@ -162,10 +163,7 @@ const run = async (): Promise<Assertion[]> => {
     new URL("../../../packages/dashboard/index.ts", import.meta.url),
     "utf8",
   );
-  const bridge = await readFile(
-    new URL("../../../plugins/http-bridge/index.ts", import.meta.url),
-    "utf8",
-  );
+  const bridge = await readSource("../../../plugins/http-bridge");
   const csrfAt = dash.indexOf("sec-fetch-site");
   const guardAt = dash.indexOf("isAllowedHost(req.headers.host");
   out.push(

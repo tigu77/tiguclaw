@@ -27,6 +27,7 @@ import type { Channel } from "../../channels/types.js";
 import type { EventBus } from "../../core/eventbus.js";
 import type { LoadedPlugin } from "../../core/plugins/loader.js";
 import { wirePlugin, type WirePluginDeps } from "../../core/plugins/wire.js";
+import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** publish 를 세는 최소 버스 — 실제 EventBus 를 쓰면 라이브 구독자에 닿는다. */
@@ -305,6 +306,91 @@ export const check: RegressionCheck = {
           notStopped.length === 0 ? "trigger·observer·service 각 1회" : `★안 멈춤: ${notStopped.join(", ")}`,
         ),
       );
+    }
+
+    // ── ★`getTools` 배선을 **동작**으로 ─────────────────────────────────────
+    // ★종전엔 `wire.ts` 소스에 `inst.getTools === "function"` 이라는 글자가 있는지만 봤다.
+    //  그건 `if (false)` 한 줄이나 동의어 하나로 뚫린다([[feedback_gate_must_actually_run]]).
+    //  여기선 실제로 배선해서 **MCP 서버가 나오는지**, 그리고 **선언 오타 하나가 나머지
+    //  도구를 죽이지 않는지**를 본다.
+    {
+      const deps = freshDeps();
+      const r = await wirePlugin(
+        fakePlugin("tools-only", ["provider"], {
+          name: "tools-only",
+          getTools: () => [
+            { name: "good", description: "정상", parameters: {}, handler: async () => "ok" },
+            { name: "", description: "이름 없음 — 이 항목만 거절돼야 한다", handler: async () => "x" },
+          ],
+        }),
+        deps,
+      );
+      out.push(
+        assert(
+          "★★평범한 데이터 선언(`getTools`)이 **실제로 MCP 로 꽂힌다** — 소스에 글자가 있는지가 아니라 배선 결과를 본다",
+          r.wired.some((w) => w.includes("mcp") || w.includes("tool")),
+          `wired=[${r.wired.join(", ")}] · skipped=[${r.skipped.map((x) => x.capability).join(", ")}]`,
+        ),
+      );
+      out.push(
+        assert(
+          "★선언 오타 하나가 **나머지 도구를 안 죽인다**(항목별 거절) — 전부 버리면 플러그인 하나가 자기 도구를 통째로 잃는다",
+          r.wired.length > 0,
+          `wired ${String(r.wired.length)}건`,
+        ),
+      );
+    }
+
+    // ── ★`createPluginHost` 가 주는 면이 **실재하고 동작한다** ───────────────
+    // ★열 개를 주는데 회귀가 실행하던 건 여섯이었다. 나머지(`settings`·`log`·`on`)는
+    //  "있다" 조차 안 재고 있었다 — 면은 **부르는 순간** 계약이 된다.
+    {
+      const { createPluginHost } = await import("../../core/plugins/host.js");
+      // ★인자 자리를 틀리면 조용히 빈 설정이 된다 — 첫 판이 그래서 `{}` 였다.
+      //  `(plugin, needs, turn?, settingsSpec?)` 이고 스펙은 **네 번째**다.
+      const host = createPluginHost("regr-host", {}, undefined, [
+        { key: "greeting", type: "string", labelKey: "greeting", default: "안녕" },
+      ]);
+      const surface = ["fetch", "settings", "dataDir", "locale", "log", "postCard", "on", "say", "ask"];
+      const missing = surface.filter(
+        (k) => (host as unknown as Record<string, unknown>)[k] === undefined,
+      );
+      out.push(
+        assert(
+          `★★플러그인이 받는 면 ${String(surface.length)}개가 **전부 실재한다** — 하나가 undefined 면 그걸 부른 플러그인이 로드 중에 죽고, 원인은 남의 코드처럼 보인다`,
+          missing.length === 0,
+          missing.length === 0 ? surface.join(", ") : `★없음: ${missing.join(", ")}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★`settings` 는 **선언한 기본값**을 준다(설정 파일이 없어도) — 없으면 플러그인이 첫 실행에 undefined 를 만진다",
+          (host.settings as Record<string, unknown>).greeting === "안녕",
+          JSON.stringify(host.settings),
+        ),
+      );
+      out.push(
+        assert(
+          "★`dataDir` 는 **홈 아래**다 — 레포나 cwd 를 가리키면 업데이트가 사용자 데이터를 지운다",
+          host.dataDir.includes("regr-host") && path.isAbsolute(host.dataDir),
+          host.dataDir,
+        ),
+      );
+      let got = 0;
+      const off = host.on("worker.started", () => {
+        got += 1;
+      });
+      out.push(
+        assert(
+          "★`on` 은 **구독 해제 함수**를 돌려준다 — 없으면 플러그인을 꺼도 핸들러가 남아 계속 발화한다",
+          typeof off === "function",
+          typeof off,
+        ),
+      );
+      // ★실패해도 **검사가 죽으면 안 된다** — 변이 시험에서 `on` 이 함수가 아닌 걸
+      //  돌려주자 여기서 던져 스위트가 크래시했다(빨강이 아니라 무응답이 된다).
+      if (typeof off === "function") off();
+      void got;
     }
 
     return out;

@@ -21,12 +21,14 @@
  *  도구 설명이 그것을 말하는지도 여기서 지킨다. 규칙을 코드에만 두면 비서는 모른다.
  */
 import { readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "endpoint-mode-semantics",
@@ -34,7 +36,7 @@ export const check: RegressionCheck = {
     "restricted 엔드포인트가 도구는 0인데 비서 인격 25KB 를 받아 역할이 충돌하고 정의가 방어 문장을 쓰던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const bridge = read("plugins/http-bridge/index.ts");
+    const bridge = read("plugins/http-bridge");
 
     // ★① 두 갈래가 **같은 조건식**에서 갈리는가 — 따로 두면 하나만 바뀌어 어긋난다.
     const toolsGated = /toolPolicy: ep\.mode === "restricted" \? \{ mode: "none" \} : undefined/.test(

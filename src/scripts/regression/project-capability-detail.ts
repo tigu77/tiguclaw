@@ -22,7 +22,7 @@ export const check: RegressionCheck = {
   guards:
     "프로젝트 전용 스킬·에이전트를 눌러도 본문이 안 오거나(프록시 누락), 전역 인벤토리에 섞이던 것",
   run: async (): Promise<Assertion[]> => {
-    const bridge = await sourceHas("../../../plugins/http-bridge/index.ts", [
+    const bridge = await sourceHas("../../../plugins/http-bridge", [
       /pathname === "\/projects\/capability" && method === "GET"/,
       // ★프로젝트 것만 — 전역 자산이 이 통로로 새면 "프로젝트 레벨에서만" 이 깨진다.
       /x\.source === "project" && x\.name === name/,
@@ -41,7 +41,7 @@ export const check: RegressionCheck = {
       /"proj.assets.agents"/,
     ]);
     // 목록 응답에 본문이 섞이지 않는다(비대화 재발 방지).
-    const detailLean = await sourceHas("../../../plugins/http-bridge/index.ts", [
+    const detailLean = await sourceHas("../../../plugins/http-bridge", [
       /\.map\(\(s\) => \(\{ name: s\.name, description: s\.description \}\)\)/,
     ]);
 

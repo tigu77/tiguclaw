@@ -103,6 +103,9 @@ export const check: RegressionCheck = {
       // ★배선 — http-bridge 가 정의값을 route 로 넘기고, route 가 그걸 체인으로 푸는가.
       //  (실 HTTP 턴은 LLM 을 태우므로, 운반 계약을 소스 순서로 본다.)
       const { sourceOrder } = await import("./_wiring.js");
+      // ★순서 판정은 **한 파일 안에서만** 뜻이 있다 — 디렉터리를 주면 이어붙이는 순서가
+      //  파일시스템에 좌우된다(`_wiring.sourceOrder` 가 이제 거절한다). 두 패턴 다
+      //  `index.ts` 안에 있으므로 거기로 좁힌다.
       const wired = await sourceOrder("../../../plugins/http-bridge/index.ts", [
         /toolPolicy: ep\.mode === "restricted"/,
         /\.\.\.\(ep\.model !== "" \? \{ modelProfile: ep\.model \} : \{\}\)/,

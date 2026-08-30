@@ -69,6 +69,64 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★선언한 타입이 **진짜 스키마**가 되는가 ────────────────────────────
+    // ★종전엔 `server !== undefined` 만 봤다. 그러면 `zodOf` 가 다섯 갈래를 전부
+    //  `z.any()` 로 접어도 초록이다 — 모델이 아무 값이나 넣어도 통과하고, 그 오류는
+    //  플러그인 핸들러 **안에서** 터진다(작성자 탓처럼 보인다). 스키마를 **실행**한다.
+    {
+      const spec = readToolSpecs([
+        {
+          name: "typed",
+          description: "타입 다섯 갈래",
+          parameters: {
+            s: { type: "string" },
+            n: { type: "number" },
+            b: { type: "boolean" },
+            e: { type: "string", enum: ["a", "b"] },
+            o: { type: "string", required: false },
+          },
+          handler: async () => "ok",
+        },
+      ]).specs;
+      const srv = buildToolServer("regr-typed", spec, HOST) as unknown as {
+        instance: {
+          _registeredTools: Record<
+            string,
+            { inputSchema?: { safeParse: (x: unknown) => { success: boolean } } }
+          >;
+        };
+      };
+      const reg = srv.instance._registeredTools;
+      const schema = reg.typed?.inputSchema;
+      out.push(
+        assert(
+          "★도구가 **실제로 등록된다**(이름으로 찾힌다) — 이게 없으면 아래 판정이 공짜로 통과한다",
+          schema !== undefined,
+          Object.keys(reg).join(", ") || "★등록 0",
+        ),
+      );
+      if (schema !== undefined) {
+        const ok = (x: unknown): boolean => schema.safeParse(x).success;
+        const base = { s: "x", n: 1, b: true, e: "a" };
+        const cases: Array<[string, unknown, boolean]> = [
+          ["선언대로면 통과", base, true],
+          ["number 자리에 문자열은 거절", { ...base, n: "1" }, false],
+          ["boolean 자리에 문자열은 거절", { ...base, b: "yes" }, false],
+          ["enum 밖의 값은 거절", { ...base, e: "zzz" }, false],
+          ["필수를 빠뜨리면 거절", { n: 1, b: true, e: "a" }, false],
+          ["required:false 는 생략해도 통과", base, true],
+        ];
+        const wrong = cases.filter(([, val, want]) => ok(val) !== want).map(([n]) => n);
+        out.push(
+          assert(
+            "★★선언(`type`·`enum`·`required`)이 **집행되는 스키마**가 된다 — 전부 통과시키면 모델이 아무 값이나 넣고, 그 오류는 플러그인 핸들러 안에서 터져 작성자 탓처럼 보인다",
+            wrong.length === 0,
+            wrong.length === 0 ? `${String(cases.length)}가지 전부 선언대로` : `★어긋남: ${wrong.join(", ")}`,
+          ),
+        );
+      }
+    }
+
     // ── ② 나쁜 칸 하나는 그 도구만 ──────────────────────────────────────────
     // ★표본이 **모든 거부 갈래를 밟아야** 한다 — 처음엔 전부 객체라 "객체가 아님" 갈래를
     //  한 번도 안 밟았고, 그 자리에 변이를 넣어도 초록이었다(자격증명 가드에서 겪은 것과

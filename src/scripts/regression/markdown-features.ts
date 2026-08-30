@@ -19,13 +19,15 @@
  * mermaid SVG 1·`<script>` 0 · **로드 직후 mermaid 요청 0건 → 블록 만난 뒤 1건**(지연 로드).
  */
 import { readFileSync, statSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 /** 정책 테이블만 떼어 vm 에서 **실제로 부른다**(대시보드 JS 는 import 불가). */
 const slicePolicy = (src: string): string => {

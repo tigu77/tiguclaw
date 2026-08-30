@@ -118,7 +118,7 @@ export const check: RegressionCheck = {
     );
 
     // ★배선 — 순수 로직만 보면 서버가 상한을 다시 걸어도 초록이다.
-    const w = await sourceHas("../../../plugins/http-bridge/index.ts", [
+    const w = await sourceHas("../../../plugins/http-bridge", [
       // 상한은 기본 off, 역방향 페이지에서만 켠다.
       /upperBounded = false,/,
       /historyActivities\(entries, threadKey, beforeTs !== undefined\)/,

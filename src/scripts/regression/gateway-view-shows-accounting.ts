@@ -18,6 +18,7 @@
  *  회귀 스위트는 브라우저를 안 띄우므로(_framework 승격 기준) 여기선 배선만 지킨다.
  */
 import { readFile } from "node:fs/promises";
+import { readSource } from "./_wiring.js";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const run = async (): Promise<Assertion[]> => {
@@ -66,10 +67,7 @@ const run = async (): Promise<Assertion[]> => {
     ok: showsBody,
     got: showsBody ? "요청·응답 섹션 있음" : "★본문 미표시 — 회계만 보인다",
   });
-  const bridge = await readFile(
-    new URL("../../../plugins/http-bridge/index.ts", import.meta.url),
-    "utf8",
-  );
+  const bridge = await readSource("../../../plugins/http-bridge");
   const records =
     /request: endpointPreview\(runInput\.text\)/.test(bridge) &&
     /response: endpointPreview\(/.test(bridge);

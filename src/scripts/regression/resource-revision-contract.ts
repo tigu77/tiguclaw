@@ -21,6 +21,7 @@
  * (`getPaths()` 메모이즈 때문에 홈을 바꾸려면 프로세스를 갈라야 한다).
  */
 import { probeInterpreter } from "./_probe-helpers.js";
+import { readSourceSync } from "./_wiring.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -110,7 +111,7 @@ export const check: RegressionCheck = {
         });
 
     // ── ③ 배선 ──
-    const bridge = readFileSync(path.join(REPO, "plugins/http-bridge/index.ts"), "utf8");
+    const bridge = readSourceSync("plugins/http-bridge");
     // ★`git grep` 으로 **추적되는 파일 전부**를 훑는다(손 목록 금지 — G5).
     const grep = spawnSync(
       "git",

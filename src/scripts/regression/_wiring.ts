@@ -1,3 +1,6 @@
+import nodeFs from "node:fs";
+import nodePath from "node:path";
+import * as nodeUrl from "node:url";
 /**
  * **배선 단언 공용 헬퍼** (2026-07-30).
  *
@@ -57,10 +60,41 @@ export const stripComments = (src: string): string => {
   return out;
 };
 
-/** 세 헬퍼가 공유하는 읽기 — **주석을 벗긴 코드**를 준다. */
-const readCode = async (url: URL): Promise<string | null> => {
-  const { readFile } = await import("node:fs/promises");
+/**
+ * 세 헬퍼가 공유하는 읽기 — **주석을 벗긴 코드**를 준다.
+ *
+ * ★**디렉터리를 주면 그 아래 `.ts` 를 전부 이어붙인다** (2026-08-30). 파일 이름을 적는
+ *  검사는 그 파일이 쪼개지는 순간 빨강이 되는데, **검사가 틀린 게 아니라 코드가 옆
+ *  파일로 간 것**이다. 그러면 다음 사람은 검사를 고치기 싫어서 **파일을 안 쪼갠다** —
+ *  검사가 리팩터를 막는 자리가 된다. 실제로 `http-bridge/index.ts`(3,905줄)에서 네 조각을
+ *  떼자마자 둘이 그렇게 깨졌다. 지키려는 성질은 *"브리지가 그렇게 한다"* 이지
+ *  *"index.ts 안에 그렇게 적혀 있다"* 가 아니다([[feedback_hand_maintained_lists]]).
+ *
+ * 한계: 이어붙이므로 **파일을 가로지르는 정규식**이 우연히 맞을 수 있다. 넓은 범위
+ * (`[\s\S]{0,900}`)를 쓸 땐 대상을 파일 하나로 좁히는 편이 낫다.
+ */
+export const readCode = async (url: URL): Promise<string | null> => {
+  const { readFile, readdir, stat } = await import("node:fs/promises");
   try {
+    if ((await stat(url)).isDirectory()) {
+      const parts: string[] = [];
+      const walk = async (dir: URL): Promise<void> => {
+        // ★**정렬한다** — `readdir` 순서는 파일시스템 의존이라 mac(APFS)과 CI(ext4)가
+        //  다르다. 이어붙이는 순서가 갈리면 `sourceOrder` 류가 **여기선 초록 / CI 에선
+        //  빨강**이 된다(회귀 승격 기준 #2: 결정적).
+        const entries = [...(await readdir(dir, { withFileTypes: true }))].sort((a, b) =>
+          a.name.localeCompare(b.name),
+        );
+        for (const e of entries) {
+          if (e.name === "node_modules" || e.name === "dist") continue;
+          const child = new URL(`${e.name}${e.isDirectory() ? "/" : ""}`, dir);
+          if (e.isDirectory()) await walk(child);
+          else if (e.name.endsWith(".ts")) parts.push(await readFile(child, "utf8"));
+        }
+      };
+      await walk(new URL(url.href.endsWith("/") ? url.href : `${url.href}/`));
+      return stripComments(parts.join("\n"));
+    }
     return stripComments(await readFile(url, "utf8"));
   } catch {
     return null;
@@ -90,6 +124,11 @@ export const sourceOrder = async (
   patterns: RegExp[],
 ): Promise<{ ok: boolean; detail: string }> => {
   const url = new URL(relFromRegressionDir, import.meta.url);
+  // ★**디렉터리는 거절한다** — 순서 판정은 **한 파일 안에서만** 뜻이 있다. 여러 파일을
+  //  이어붙이면 "먼저 나온다" 가 파일 나열 순서에 좌우되고, 그건 판정이 아니라 우연이다.
+  if (nodeFs.existsSync(nodeUrl.fileURLToPath(url)) && nodeFs.statSync(nodeUrl.fileURLToPath(url)).isDirectory()) {
+    return { ok: false, detail: "★sourceOrder 에 디렉터리를 주면 안 된다 — 순서는 한 파일 안에서만 뜻이 있다" };
+  }
   const src = await readCode(url);
   if (src === null) return { ok: false, detail: `읽기 실패(경로 오타?) ${String(url)}` };
   let at = -1;
@@ -116,4 +155,42 @@ export const sourceHasCount = async (
       ?? []).length;
     return { ok: found >= min, found };
   }
+};
+
+/**
+ * 회귀 디렉터리 기준 상대 경로로 **주석 벗긴 소스**를 읽는다. 디렉터리를 주면 그 아래
+ * `.ts` 를 전부 이어붙인다(위 `readCode` 참조).
+ *
+ * ★`sourceHas` 를 안 쓰고 **직접 읽는** 검사들이 있어서 낸다. 읽는 방법이 두 벌이면
+ *  한쪽만 디렉터리를 알게 되고, 그게 곧 다음 리팩터에서 갈리는 자리다.
+ */
+export const readSource = async (relFromRegressionDir: string): Promise<string> =>
+  (await readCode(new URL(relFromRegressionDir, import.meta.url))) ?? "";
+
+/**
+ * `readSource` 의 **동기판** — 주석은 안 벗긴다(호출부들이 원문을 기대한다).
+ *
+ * ★검사마다 `readFileSync(path.join(REPO, rel))` 를 손으로 지어 들고 있었다(실측 둘이
+ *  글자까지 같았다). 그 사본들은 **디렉터리를 모른다** — 브리지가 여러 파일로 갈리자
+ *  전부 `EISDIR` 로 죽었다. 읽는 방법은 한 곳이어야 한다.
+ */
+export const readSourceSync = (relFromRepoRoot: string): string => {
+  const { readFileSync, readdirSync, statSync } = nodeFs;
+  const abs = nodePath.resolve(
+    nodePath.dirname(nodeUrl.fileURLToPath(import.meta.url)),
+    "../../..",
+    relFromRepoRoot,
+  );
+  if (!statSync(abs).isDirectory()) return readFileSync(abs, "utf8");
+  const parts: string[] = [];
+  const walk = (d: string): void => {
+    for (const name of [...readdirSync(d)].sort()) {
+      if (name === "node_modules" || name === "dist") continue;
+      const c = nodePath.join(d, name);
+      if (statSync(c).isDirectory()) walk(c);
+      else if (c.endsWith(".ts")) parts.push(readFileSync(c, "utf8"));
+    }
+  };
+  walk(abs);
+  return parts.join("\n");
 };

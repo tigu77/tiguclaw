@@ -18,6 +18,7 @@
 import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { readSource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** LLM 자격증명 env 를 통째로 저장/복원 — 다른 검사로 새면 안 된다. */
@@ -412,7 +413,7 @@ export const check: RegressionCheck = {
     //   이 검사는 **셋이 그 하나를 쓰는지**만 본다(규칙을 감시하는 대신 부를 것을 하나로).
     {
       const consumers: Array<[string, string]> = [
-        ["대시보드(/model-profiles)", await readFile(new URL("../../../plugins/http-bridge/index.ts", import.meta.url), "utf8")],
+        ["대시보드(/model-profiles)", await readSource("../../../plugins/http-bridge")],
         ["프롬프트 인벤토리", await readFile(new URL("../../core/prompt-assembly.ts", import.meta.url), "utf8")],
       ];
       const missing = consumers.filter(([, src]) => !/resolveModelProfiles\(/.test(src)).map(([n]) => n);

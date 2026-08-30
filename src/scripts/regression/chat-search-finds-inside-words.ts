@@ -359,11 +359,11 @@ const run = async (): Promise<Assertion[]> => {
     //  `search_conversations` 도구가 **같은 함수**를 쓰기 때문이다 — 핸들러에 조합이
     //  남아 있으면 도구가 그걸 다시 써야 하고, `%` 이스케이프 하나만 갈려도 화면과
     //  도구가 다른 답을 준다.
-    const h = await sourceHas("../../../plugins/http-bridge/index.ts", [
+    const h = await sourceHas("../../../plugins/http-bridge", [
       /pathname === "\/chat-search"/,
       /searchConversations/,
     ]);
-    const bad = await sourceHas("../../../plugins/http-bridge/index.ts", [
+    const bad = await sourceHas("../../../plugins/http-bridge", [
       /ESCAPE|SNIPPET_LEN|toLowerCase\(\)\.indexOf|normalizeChatQuery|makeSnippet/,
     ]);
     out.push(

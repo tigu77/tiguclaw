@@ -2,7 +2,7 @@
  * 회귀: **"끌 수 없는 모듈" 은 손 목록이 아니라 선언이다** (2026-08-26).
  *
  * ★종전엔 이 판정이 **손 목록 두 벌**이었다:
- *   - `plugins/http-bridge/index.ts` 의 `CRITICAL_MODULE_NAMES = {dashboard, http-bridge}`
+ *   - `plugins/http-bridge` 의 `CRITICAL_MODULE_NAMES = {dashboard, http-bridge}`
  *   - 그것을 베낀 `packages/dashboard/js/view-providers.js` 의 미러 — 그 주석이 **스스로**
  *     *"이 미러가 드리프트된 경우 대비"* 라고 적고 있었다([[feedback_hand_maintained_lists]]).
  *
@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCoreModule } from "../../core/plugins/inventory.js";
+import { readSource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -110,10 +111,9 @@ export const check: RegressionCheck = {
 
     // ④ 되돌림 — 켜는 경로가 여전히 브리지 하나뿐인지 센다. 하나뿐이라는 사실이 곧
     //    "코어를 끄면 안 되는" 이유이므로, 이 수가 늘면 그때 정책을 다시 본다.
-    const bridge = await fs.readFile(
-      path.join(REPO, "plugins/http-bridge/index.ts"),
-      "utf8",
-    );
+    // ★파일이 아니라 **디렉터리**를 읽는다 — 이 라우트는 2026-08-30 에 `routes-settings.ts`
+    //  로 옮겨갔고, 파일 이름을 적어두면 그 순간 이 검사가 리팩터를 막는다.
+    const bridge = await readSource("../../../plugins/http-bridge");
     out.push(
       assert(
         "★코어를 끄려는 요청은 거절된다(경고가 아니라)",
@@ -195,6 +195,74 @@ export const check: RegressionCheck = {
       );
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
+    }
+
+    // ── ★문이 몇 개든 **전부** 막히는가 (적대 검토 C조 P1) ──────────────────
+    // ★종전엔 `bridge.includes("isCoreModule(name)")` **한 번**이면 통과했다. 그런데
+    //  `setModuleDisabled` 로 가는 문이 **둘**이었고(모듈 화면 · 플러그인 화면) 가드는
+    //  하나뿐이라, 플러그인 화면에서 **브리지가 실제로 꺼졌다** — 재시작 전까지 대시보드
+    //  API 가 죽는다. 그리고 배포되는 `docs/security.md §2` 는 그 사이 *"못 끕니다"* 라고
+    //  단언하고 있었다(거짓 약속).
+    //
+    // ★고침은 문마다 가드를 다는 게 아니라 **판정 자리로 내리는 것**이다 — 그래야 세 번째
+    //  문이 생겨도 샌다. 그래서 여기선 *"끄기로 가는 모든 길이 코어 판정을 지나는가"* 를
+    //  묻는다([[feedback_hand_maintained_lists]]).
+    {
+      const mgr = await readSource("../../../src/core/plugins/manager.ts");
+      // 가드는 이제 `!enabled` 블록 **앞**에 있다 — 함수 머리부터 그 블록까지를 본다.
+      const disableBranch =
+        /export const setPluginEnabled[\s\S]*?\n  if \(!enabled\) \{/.exec(mgr)?.[0] ?? "";
+      // ★소스가 아니라 **실행**으로 먼저 본다 — 가드가 아무 의존도 안 쓰므로 데몬 없이
+      //  부를 수 있다(그래서 `needDeps()` **앞**에 뒀다).
+      {
+        const { setPluginEnabled } = await import("../../core/plugins/manager.js");
+        const r = await setPluginEnabled("http-bridge", false).catch(() => null);
+        out.push(
+          assert(
+            "★★코어 모듈은 **실제로 거절된다**(플러그인 화면 경로로 불러도) — 소스에 가드가 있는지가 아니라 부작용을 본다",
+            r !== null && r.ok === false && /끌 수 없습니다/.test(r.reason ?? ""),
+            r === null ? "★던졌다(의존을 먼저 요구한다 = 부팅 중엔 무방비)" : `ok=${String(r.ok)} · ${String(r.reason).slice(0, 40)}`,
+          ),
+        );
+      }
+      out.push(
+        assert(
+          "★끄기 경로의 **판정 자리**가 코어를 거절한다 — 문마다 가드를 달면 세 번째 문에서 샌다",
+          /isCoreModule\(name\)/.test(disableBranch),
+          disableBranch === ""
+            ? "★끄기 갈래를 못 찾음"
+            : /isCoreModule/.test(disableBranch)
+              ? "판정 자리에서 거절"
+              : "★가드 없음 — 문마다 달려 있다면 새 문이 뚫린다",
+        ),
+      );
+      out.push(
+        assert(
+          "★거절이 **의존 획득보다도 먼저**다 — `needDeps()` 뒤면 부팅 중엔 거절이 아니라 '관리자 미준비' 로 떨어진다",
+          disableBranch.indexOf("isCoreModule") >= 0 &&
+            disableBranch.indexOf("isCoreModule") < disableBranch.indexOf("needDeps()"),
+          disableBranch.indexOf("isCoreModule") < disableBranch.indexOf("needDeps()")
+            ? "거절 먼저"
+            : "★의존 획득이 먼저다",
+        ),
+      );
+      const view = await readSource("../../../packages/dashboard/js/view-plugins.js");
+      out.push(
+        assert(
+          "★화면이 끌 수 없는 것의 **토글을 안 만든다** — 서버가 거절해도, 못 하는 걸 할 수 있는 것처럼 보여주면 사용자는 눌러보고서야 안다",
+          /p\.core !== true/.test(view),
+          /p\.core/.test(view) ? "core 로 토글을 감춤" : "★토글이 무조건 만들어진다",
+        ),
+      );
+      out.push(
+        assert(
+          "★서버가 화면에 `core` 를 **실어 보낸다** — 안 실으면 위 판정이 항상 참이 되어 조용히 무의미해진다",
+          /core:\s*p\.core/.test(
+            await readSource("../../../plugins/http-bridge/routes-inventory.ts"),
+          ) && /core:\s*isCoreModule\(/.test(mgr),
+          `브리지=${String(/core:\s*p\.core/.test(await readSource("../../../plugins/http-bridge/routes-inventory.ts")))} · 매니저=${String(/core:\s*isCoreModule\(/.test(mgr))}`,
+        ),
+      );
     }
 
     return out;

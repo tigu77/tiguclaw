@@ -5,8 +5,11 @@
   "type": "module",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": ["service"],
+    "kind": [
+      "service"
+    ],
     "name": "dashboard",
-    "entry": "./index.ts"
+    "entry": "./index.ts",
+    "selfReferential": true
   }
 }

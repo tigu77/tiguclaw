@@ -171,7 +171,7 @@
           <div id="chat-reply" class="chat-reply" hidden></div>
           <button id="chat-bg-active" class="chat-bg-active" type="button" hidden title="백그라운드 작업 보기" data-i18n-attrs="title=bg.view.title"></button>
           <!-- 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b → §5 셸 드로어 이식 Phase 3b-2).
-               워커 스트립(위)과 물리적으로 분리된 별도 레인(사용자 확정 — 다른 종). 세션 스코프
+               매니저 스트립(위)과 물리적으로 분리된 별도 레인(사용자 확정 — 다른 종). 세션 스코프
                러닝 카운트, 누르면 백그라운드 드로어를 열고 셸 섹션으로 포커스(view-shells.js
                showShells → openBg). background-drawer.js refreshShellStrip 이 갱신. -->
           <button id="chat-shell-active" class="chat-bg-active chat-shell-active" type="button" hidden title="셸 보기" data-i18n-attrs="title=shell.view.title"></button>
@@ -251,8 +251,8 @@
         <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true" data-i18n="bg.scope.session">현재 세션</button>
         <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false" data-i18n="bg.scope.all">전체 세션</button>
       </div>
-      <!-- 작업 그룹(워커·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
-           kind(워커/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
+      <!-- 작업 그룹(매니저·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
+           kind(매니저/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
       <div class="bg-group-head" id="bg-jobs-head" role="button" tabindex="0" aria-expanded="true">
         <span class="bg-group-chevron">▾</span>
         <span class="bg-group-label" data-i18n="bg.jobs.head">⚙️ 매니저 / 에이전트</span>
@@ -266,7 +266,7 @@
           <div class="bg-empty" id="bg-empty" data-i18n="bg.empty">진행 중인 작업이 없습니다.</div>
         </div>
       </div>
-      <!-- 셸/프로세스 그룹(ADR 2026-07-17 §5, Phase 3b-2) — 워커·에이전트 잡(위)과 데이터
+      <!-- 셸/프로세스 그룹(ADR 2026-07-17 §5, Phase 3b-2) — 매니저·에이전트 잡(위)과 데이터
            레인이 다른 별도 그룹(shellRegistry ≠ jobCards, view-shells.js 소관). 카드 빌더·tail
            폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 #bg-shells-list. 접이식 헤더 동형. -->
       <div class="bg-group-head" id="bg-shells-head" role="button" tabindex="0" aria-expanded="true">

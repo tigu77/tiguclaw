@@ -37,6 +37,7 @@
  * **실제로 부른다**. 남은 소스 대조는 배선(엔드포인트·결선)뿐이고 그 사실을 아래에 적었다.
  */
 import { execFile } from "node:child_process";
+import { readSourceSync } from "./_wiring.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -351,7 +352,7 @@ export const check: RegressionCheck = {
       await readFile(path.join(REPO, "src/core/update-availability.ts"), "utf8"),
     );
     const bridge = stripComments(
-      await readFile(path.join(REPO, "plugins/http-bridge/index.ts"), "utf8"),
+      readSourceSync("plugins/http-bridge"),
     );
     const proxy = stripComments(
       await readFile(path.join(REPO, "packages/dashboard/index.ts"), "utf8"),

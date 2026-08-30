@@ -24,6 +24,9 @@
  * 옵션 조립까지만 돌려 `mcpServers` **키 집합**을 본다.
  */
 import { readFileSync } from "node:fs";
+import { ASK_TURN_DEPTH } from "../../core/plugins/host.js";
+import { turnKindOf } from "../../core/llm-runtime/capability-reach.js";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPluginHost } from "../../core/plugins/host.js";
@@ -31,7 +34,8 @@ import { registerMcpServer, unregisterMcpServer } from "../../core/mcp-registry.
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "plugin-wiring-not-just-parts",
@@ -78,7 +82,12 @@ export const check: RegressionCheck = {
     const carried: Array<[string, boolean]> = [
       ["toolPolicy", /toolPolicy: toolPolicyFor\(/.test(askBody)],
       ["좌표 파생", /threadKey: pluginThreadKey\(plugin, scope\)/.test(askBody)],
-      ["subagentDepth", /subagentDepth: [1-9]/.test(askBody)],
+      // ★**값이 아니라 결과를 본다** (2026-08-30). 종전엔 `/subagentDepth: [1-9]/` 였는데
+      //  `subagentDepth: 1 - 1`(=0, **메인 턴**)로 바꿔도 정규식은 "1" 을 보고 통과한다 —
+      //  3라운드 M11 이 정확히 그렇게 살아남았다. 이제 상수를 `turnKindOf` 에 **넣어서**
+      //  서브에이전트로 판정되는지 확인한다.
+      ["subagentDepth", /subagentDepth: ASK_TURN_DEPTH,/.test(askBody)],
+      ["깊이가 실제로 서브에이전트", turnKindOf({ subagentDepth: ASK_TURN_DEPTH }) === "subagent"],
       ["채널=플러그인", /channel: plugin as never/.test(askBody)],
     ];
     const dropped = carried.filter(([, ok]) => !ok).map(([n]) => n);
@@ -92,24 +101,36 @@ export const check: RegressionCheck = {
 
     // ── ③ claude 어댑터가 플러그인을 **실제로 싣는다** ──────────────────────
     const claude = read("src/core/llm-runtime/adapters/claude-agent-sdk.ts");
+    // ★**여섯 자리가 한 호출이 됐다** (2026-08-30). 조립(판정→병합→활성목록)을
+    //  `assembleMcpServers` 로 뺐기 때문이다 — 그전엔 어댑터 지역 변수 사이 스프레드
+    //  몇 줄이라 여기서 정규식 여섯 개로 지킬 수밖에 없었고, 그런데도 3라운드 변이 셋이
+    //  살았다. 이제 **그 함수의 동작**은 `plugin-mcp-merge-is-safe` 가 실행으로 잡고,
+    //  여기는 *"어댑터가 그 함수에 진짜 재료를 넘기는가"* 만 본다.
     const wiring: Array<[string, boolean]> = [
-      // 판정을 부르고
-      ["decidePluginMcp 호출", /decidePluginMcp\(\s*input\.extraMcpServers/.test(claude)],
-      // 코어 키를 **전부** 준다(뒤에 붙는 셋 포함)
-      ["코어 키에 후발 셋", /LATE_CORE_MCP_KEYS/.test(claude) && /\.\.\.LATE_CORE_MCP_KEYS/.test(claude)],
-      // toolsNone·reach 를 그대로 넘긴다(고정값이 아니다)
-      ["toolsNone 전달", /decidePluginMcp\([\s\S]{0,200}?\n    toolsNone,/.test(claude)],
-      ["reach 전달", /decidePluginMcp\([\s\S]{0,240}?reaches\("plugins", turnKind\),/.test(claude)],
+      // 조립을 부르고
+      ["조립 호출", /assembleMcpServers\(\{/.test(claude)],
+      // 재료를 **그대로** 넘긴다(고정값이 아니다)
+      ["extra 전달", /extra: input\.extraMcpServers,/.test(claude)],
+      ["lean 전달", /lean: leanMcpServers/.test(claude)],
+      ["코어 키에 후발 셋", /lateCoreKeys: LATE_CORE_MCP_KEYS,/.test(claude)],
+      ["외부 MCP 전달", /external: externalMcpServers/.test(claude)],
+      ["toolsNone 전달", /assembleMcpServers\(\{[\s\S]{0,400}?\n    toolsNone,/.test(claude)],
+      ["reach 전달", /inReach: reaches\("plugins", turnKind\),/.test(claude)],
       // 결과를 **SDK 에 싣는다**
       ["SDK 에 실림", /mcpServers: applyToolLoadPolicy\(\{\s*\n\s*\.\.\.mcpServersWithPlugins,/.test(claude)],
-      // find_capabilities 목록에도
-      ["활성 목록에도", /capabilityActiveNames = Object\.keys\(\{[\s\S]{0,300}?\.\.\.mcpServersWithPlugins,/.test(claude)],
-      // 충돌은 말한다
-      // ★**조건까지 본다** (3라운드 G-2). 호출문만 보면 `> 99` 같은 도달 불가 조건으로
-      //  바꿔도 통과한다(실측). "하나라도 떨어뜨렸으면 말한다" 가 지켜야 할 성질이다.
+      // find_capabilities 목록도 **같은 결과**에서 온다(두 번 조립하면 갈린다)
+      ["활성 목록이 같은 결과에서", /capabilityActiveNames = assembled\.activeNames;/.test(claude)],
+      // ★M27 — 활성 목록을 **find_capabilities 에 실제로 넘긴다**. 목록을 잘 만들어도
+      //  넘기는 자리에서 `undefined`·`[]` 로 바꾸면 비서는 자기 능력을 못 본다(3라운드
+      //  M27 이 여기로 살았다 — 만드는 자리만 보고 넘기는 자리를 안 봤다).
+      [
+        "find_capabilities 에 전달",
+        /createFindCapabilitiesMcpServer\(\s*\n?\s*capabilityActiveNames,/.test(claude),
+      ],
+      // 충돌은 말한다 — ★조건까지 본다(3라운드 G-2): 호출문만 보면 `> 99` 로 바꿔도 통과한다.
       [
         "충돌 통지",
-        /if \(pluginMcp\.shadowed\.length > 0\) warnShadowedOnce\(pluginMcp\.shadowed\)/.test(claude),
+        /if \(assembled\.shadowed\.length > 0\) warnShadowedOnce\(assembled\.shadowed\)/.test(claude),
       ],
     ];
     const broken = wiring.filter(([, ok]) => !ok).map(([n]) => n);

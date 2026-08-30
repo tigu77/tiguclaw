@@ -96,11 +96,15 @@ Then the value is at `/api/plugin-data/hello/greeting?who=you`.
 | Key | Meaning |
 |---|---|
 | `schemaVersion` | `1` for now |
-| `name` | Plugin name. Keep it the same as the folder |
+| `name` | Plugin name. Keep it the same as the folder. **Lowercase letters, digits and hyphens only**, starting with a letter or digit (64 chars max) — `my-widget` works, `My-Widget` **does not**. ★**Names that ship with the app are reserved** — see below |
 | `entry` | Path relative to the folder. **Default export must be a class** |
 | `kind` | See below. A string or an array |
 | `needs` | What you're asking for (§4) |
 | `settings` | What you ask the person (§5) |
+
+> ★**Break the name rule and your plugin quietly doesn't exist.** The screen only says *"No
+> usable plugin found"*; the real reason is in **the log**. If it doesn't show up, check the
+> name first.
 
 `description`, `author`, `homepage` and `license` are read from the **standard npm fields** — we
 didn't invent new keys. They show up in the plugin list, and **`author` matters most**: with no
@@ -356,8 +360,19 @@ Bundling and npm also mean you **don't have to publish your source**.
 
 - **A throwing handler won't kill the daemon** — that one request becomes a 502 and the reason
   is logged. But throwing from `start()` fails that plugin's load (others are unaffected).
-- **Don't put keys in widget config.** Names like `apiKey` or `authToken` are rejected. That
-  record goes to the browser and into backups — use a `secret` setting or `.env`.
+- ★**You can't use the name of a plugin that ships with the app.** Currently reserved: `cli`,
+  `dashboard`, `file-watch`, `http-bridge`, `running-work`, `scheduler`, `self-growth`,
+  `telegram`. What counts is the **`name` in your manifest**, not the folder — name
+  the folder whatever you like. Installing under a reserved name is refused with *"a bundled
+  plugin already has that name"*, and that holds even if the bundled one is switched off or
+  failed to load. The name is reserved; it doesn't depend on whether it started up today.
+- **Don't put keys in widget config.** Those values go to the browser and end up in backups —
+  keep keys in a `secret` setting or in `.env`. Rejection goes **by name**: anything carrying a
+  key word — `apiKey`, `authToken`, `passphrase`, `signingKey` — is blocked whatever the value is.
+  ★Ordinary names like `chartKey` and `sortKey` are blocked too. They're grammatically identical
+  to `apiKey` (modifier + `key`), so the name alone can't tell them apart, and a leak can't be
+  undone — so blocking won. You get the reason when it's refused: rename it, or declare it as a
+  `secret`.
 - **Clean up when you're disabled.** Timers and subscriptions left running mean a disabled
   plugin keeps waking up.
 - **Don't commit build output into `plugins/<name>/src/`** — if `index.ts` imports `./x.js` and

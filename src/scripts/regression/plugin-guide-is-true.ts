@@ -22,14 +22,18 @@
  * 읽어야 하고, 그렇다고 적어둔다.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { KNOWN_NEED_KEYS } from "../../core/plugins/host.js";
 import { secretEnvName } from "../../core/plugins/settings.js";
+import { bundledPluginNames } from "../../core/plugins/manager.js";
+import { isValidPluginName } from "../../core/plugins/loader.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "plugin-guide-is-true",
@@ -237,6 +241,140 @@ export const check: RegressionCheck = {
         stale.length === 0 ? `실행값 ${sample} · 설명문 전부 일치` : `★낡음: ${stale.join(" / ")}`,
       ),
     );
+
+    // ── 이름 규칙 — 가이드가 **드는 예시를 실제로 돌려본다** ────────────────
+    // ★사고(2026-08-30, 3라운드 E-F7): 가이드가 이름 문자 규칙을 **아예 안 적었다.**
+    //  `name: "Weather"` 로 지으면 화면엔 *"쓸 수 있는 플러그인을 못 찾았습니다"* 만 뜨고
+    //  진짜 이유는 로그에만 있다 — 독자는 자기 코드를 의심하며 시간을 태운다.
+    // ★그래서 규칙을 적되, **적힌 예시를 검증기에 넣어본다**. 규칙이 바뀌면 이 검사가 먼저
+    //  빨개진다(글이 조용히 낡는 대신).
+    for (const [label, body] of [
+      ["ko", guide],
+      ["en", existsSync(enPath) ? readFileSync(enPath, "utf8") : ""],
+    ] as Array<[string, string]>) {
+      const says = /`my-widget`/.test(body) && /`My-Widget`/.test(body);
+      out.push(
+        assert(
+          `★★가이드(${label})가 **이름 문자 규칙을 적고, 든 예시가 실제 검증기와 맞는다** — 규칙을 어긴 플러그인은 조용히 없는 것이 되고 사유는 로그에만 남는다`,
+          says && isValidPluginName("my-widget") && !isValidPluginName("My-Widget"),
+          says
+            ? `my-widget=${String(isValidPluginName("my-widget"))} · My-Widget=${String(isValidPluginName("My-Widget"))}`
+            : "★규칙(되는 예 / 안 되는 예)이 글에 없음",
+        ),
+      );
+    }
+
+    // ── 예약된 이름 목록이 **실물에서 파생되는가** ─────────────────────────
+    // ★가이드는 예약 이름을 **열거해야 한다**(독자가 자기 이름을 고르기 전에 알아야 하니까).
+    //  그러면 그 목록은 번들이 하나 늘거나 이름이 바뀌는 순간 조용히 낡는다
+    //  ([[feedback_hand_maintained_lists]]). 그래서 **여기서 디스크와 대조한다** — 목록은
+    //  글에 두되 권위는 코드에 둔다.
+    // ★**가이드는 배포되는 글이다** — 예약 목록도 *받는 사람의 앱*을 기준으로 참이어야 한다
+    //  (2026-08-31, 릴리스 게이트가 잡았다). dev 트리엔 예제 플러그인 `map`·`weather` 가
+    //  있는데 **제공자 약관 때문에 배포에서 빠진다**. 그래서 배포본 독자에게는 그 두 이름이
+    //  **쓸 수 있는 이름**인데 가이드가 예약이라고 적고 있었다 — 읽은 사람은 멀쩡한 이름을
+    //  피해 자기 플러그인을 개명한다(이 파일의 "날조" 단언이 말하는 바로 그 피해다).
+    // ★그 사실의 정본은 **sync manifest 한 곳**이다. 여기 이름을 다시 적지 않는다.
+    //  배포 트리엔 그 파일이 없고, 그때는 뺄 것도 없다 — 그 트리의 `plugins/` 가 이미
+    //  배포본이기 때문이다. ([[feedback_hand_maintained_lists]] · 조용한 통과 금지라
+    //  어느 쪽으로 돌았는지 단언에 남긴다.)
+    const syncManifest = path.join(REPO, ".claude/skills/sync-public/SKILL.md");
+    const isDevTree = existsSync(syncManifest);
+    // ★manifest 는 **폴더 이름**으로 빼는데 예약은 **매니페스트 `name`** 이다 — 이름공간이
+    //  둘이라 그냥 빼면 갈린다 (2026-08-31, 적대 검토 F4). 실측으로 번들 10개 중 둘이 이미
+    //  다르다: `cli-channel`→`cli` · `telegram-channel`→`telegram`. `map`·`weather` 는
+    //  우연히 폴더명==이름이라 오늘은 맞았을 뿐이고, 다른 플러그인이 배포에서 빠지는 순간
+    //  조용히 틀린다. 그래서 **디스크에서 한 번 번역**한다(새 목록이 아니다).
+    // ★가이드 본문이 *"폴더명이 아니라 매니페스트의 `name` 으로 봅니다"* 라고 적고 있는데
+    //  그걸 검증하는 코드가 폴더명으로 빼고 있었다.
+    const notShipped = isDevTree
+      ? [
+          ...new Set(
+            [...readFileSync(syncManifest, "utf8").matchAll(/\^plugins\/([a-z0-9-]+)\//g)]
+              .map((m) => m[1] ?? "")
+              .map((dir) => {
+                // ★맨 `JSON.parse` 를 쓰면 깨진 매니페스트 하나에 **검사가 통째로 던진다**
+                //  (5R F5 — 16단언이 한 줄로 사라졌다). 같은 커밋이 코어 쪽엔
+                //  `safeReadJson` 을 쓰면서 여기만 맨손이었다. 못 읽으면 폴더 이름으로
+                //  떨어지면 된다 — 그게 아래 `notShipped` 가 원하는 값이다.
+                const pkg = path.join(REPO, "plugins", dir, "package.json");
+                if (!existsSync(pkg)) return dir;
+                try {
+                  const t = (
+                    JSON.parse(readFileSync(pkg, "utf8")) as { tiguclaw?: { name?: unknown } }
+                  ).tiguclaw;
+                  return typeof t?.name === "string" ? t.name : dir;
+                } catch {
+                  return dir;
+                }
+              }),
+          ),
+        ].sort()
+      : [];
+    const reserved = [...(await bundledPluginNames())].filter((n) => !notShipped.includes(n)).sort();
+    out.push(
+      assert(
+        "★배포에서 빠지는 번들은 예약 목록에서도 빠진다 — 가이드는 **받는 사람의 앱**을 설명한다(dev 에만 있는 예제 이름을 예약이라고 적으면 독자가 쓸 수 있는 이름을 피한다)",
+        isDevTree ? notShipped.length > 0 : reserved.length > 0,
+        isDevTree
+          ? `dev 트리 · 배포 제외 ${String(notShipped.length)}개(${notShipped.join(", ")}) → 예약 ${String(reserved.length)}개`
+          : `배포 트리 · 여기 plugins/ 가 곧 배포본 → 예약 ${String(reserved.length)}개`,
+      ),
+    );
+    for (const [label, body, section] of [
+      ["ko", guide, "예약"],
+      ["en", existsSync(enPath) ? readFileSync(enPath, "utf8") : "", "reserved"],
+    ] as Array<[string, string, string]>) {
+      const missing = reserved.filter((n) => !new RegExp("`" + n + "`").test(body));
+      out.push(
+        assert(
+          `★★가이드(${label})가 **예약된 번들 이름 ${String(reserved.length)}개를 전부** 적는다 — 하나라도 빠지면 그 이름을 고른 사람이 설치 단계에서야 알게 된다`,
+          missing.length === 0,
+          missing.length === 0 ? reserved.join(", ") : `★빠짐: ${missing.join(", ")}`,
+        ),
+      );
+      // ★**반대 방향도 본다** (2026-08-30, 적대 검토 E조 F4). 종전엔 *"디스크의 이름이
+      //  글에 있나"* 한 방향뿐이라, 글에 `notion`·`slack` 을 예약이라고 **날조해도**
+      //  초록이었다. 그러면 독자는 쓸 수 있는 이름을 피해 자기 것을 개명한다 — 이 파일이
+      //  `host.*`·`needs.*` 에는 *"없는 것을 지어내지 않는다"* 축을 이미 두고 있는데
+      //  새 목록에만 안 붙였다.
+      // 범위는 **예약 이름을 전부 담는 가장 좁은 창** — 종전엔 각 이름의 *첫 등장*으로
+      // 잡았는데, 예약된 이름 하나(`weather`)를 §2 예시로 한 번 쓰자 창이 문서 전체로
+      // 벌어져 매니페스트 키·`host` 메서드까지 "날조" 로 셌다(2026-08-30, 3라운드).
+      // 검사가 **거짓 빨강**을 내면 아무도 안 돌리게 된다([[feedback_gate_must_actually_run]]).
+      const hits = reserved.flatMap((n, i) =>
+        [...body.matchAll(new RegExp("`" + n + "`", "g"))].map((m) => ({ at: m.index ?? 0, i })),
+      ).sort((a, b) => a.at - b.at);
+      let span = "";
+      if (new Set(hits.map((h) => h.i)).size === reserved.length) {
+        const seen = new Map<number, number>();
+        let best: [number, number] | undefined;
+        let lo = 0;
+        for (const h of hits) {
+          seen.set(h.i, (seen.get(h.i) ?? 0) + 1);
+          while (seen.size === reserved.length) {
+            const width = h.at - hits[lo]!.at;
+            if (best === undefined || width < best[1] - best[0]) best = [hits[lo]!.at, h.at];
+            const drop = hits[lo]!.i;
+            const left = (seen.get(drop) ?? 0) - 1;
+            if (left === 0) seen.delete(drop);
+            else seen.set(drop, left);
+            lo++;
+          }
+        }
+        if (best !== undefined) span = body.slice(best[0], best[1] + 20);
+      }
+      const invented = [...span.matchAll(/`([a-z][a-z0-9-]{2,})`/g)]
+        .map((m) => m[1] ?? "")
+        .filter((n) => !reserved.includes(n));
+      out.push(
+        assert(
+          `★★가이드(${label})가 **예약되지 않은 이름을 예약이라고 적지 않는다** — 날조하면 독자는 쓸 수 있는 이름을 피해 자기 플러그인을 개명한다`,
+          span !== "" && invented.length === 0,
+          span === "" ? "★예약 목록을 못 찾음" : invented.length === 0 ? "날조 0" : `★날조: ${invented.join(", ")}`,
+        ),
+      );
+    }
 
     return out;
   },

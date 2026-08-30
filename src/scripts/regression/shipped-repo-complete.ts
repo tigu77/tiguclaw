@@ -95,12 +95,22 @@ export const check: RegressionCheck = {
     for (const rel of shippedDocs()) {
       const body = readFileSync(path.join(REPO, rel), "utf8");
       // 주석/설명이 아니라 **참조**를 본다: 마크다운 링크와 백틱 경로.
+      // ★**백틱 맨이름은 안 본다** — 넓혀 봤다가 되돌렸다 (2026-08-30). `` `PROJECT.md` ``
+      //  를 잡으려고 패턴을 넓혔더니 `SYSTEM.md` 에서 **오탐 3건**이 났다: 거기 나오는
+      //  `PROJECT.md` 는 우리 레포 파일이 아니라 **사용자 폴더에 만들어 주는 제품 기능**이다.
+      //  이름이 같을 뿐 다른 것이고, 이름만으로는 못 가른다. 상시 빨간 게이트는 아무도 안
+      //  돌리므로(이 레포가 그렇게 몇 주를 잃었다) 넓히지 않는다.
+      //  링크(`[..](경로)`)는 진짜 경로라 그대로 본다. 맨이름 언급은 사람이 본다.
       for (const m of body.matchAll(/\[[^\]]*\]\(([^)]+)\)|`(docs\/[a-z0-9._/-]+)`/gi)) {
         const t = (m[1] ?? m[2] ?? "").split("#")[0]?.trim() ?? "";
         if (t === "" || /^(https?:|mailto:)/i.test(t)) continue;
         const norm = t.startsWith("docs/") ? t : path.posix.normalize(path.posix.join(path.posix.dirname(rel), t));
         // ★"배포본엔 없다" 고 **명시한** 문장은 통과시킨다 — 그건 독자를 속이지 않는다.
-        if (NOT_SHIPPED.some((n) => norm === n || norm.startsWith(n))) {
+        // ★**`DEV_ONLY` 로 판정한다** (2026-08-30, C7). 같은 파일에 목록이 둘인데
+        //  이 자리만 짧은 쪽(`NOT_SHIPPED` 9개)을 잡고 있었다 — 위 ①의 배포 대상
+        //  판정은 이미 `DEV_ONLY` 를 쓴다. 그 15개 차이로 `PROJECT.md`·`CLAUDE.md`
+        //  참조가 통과했다. **한 파일 안의 두 목록이 갈리는 것**이 이 부류의 전형이다.
+        if (DEV_ONLY.some((n) => norm === n || norm.startsWith(n))) {
           // ★면제는 **그 참조가 실제로 있는 줄**에서만 인정한다 (2026-08-20 적대 검토).
           //  종전엔 `body.split("\n").find(l => l.includes(t))` 로 **파일 전체의 첫 매칭 줄**을
           //  봤다. 그래서 어느 한 줄에 면제 문구를 달아두면 그 파일의 **같은 경로 참조 전부**가

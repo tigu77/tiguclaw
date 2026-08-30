@@ -19,10 +19,12 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { readSourceSync } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const read = (rel: string): string => readFileSync(path.join(REPO, rel), "utf8");
+/** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
+const read = (rel: string): string => readSourceSync(rel);
 
 export const check: RegressionCheck = {
   name: "session-name-single-rule",
@@ -163,7 +165,7 @@ export const check: RegressionCheck = {
       );
     }
 
-    const bridge = read("plugins/http-bridge/index.ts");
+    const bridge = read("plugins/http-bridge");
     out.push(
       assert(
         "/api/sessions 가 displayName 을 실어 보낸다(클라가 각자 파생하지 않게)",
@@ -310,7 +312,7 @@ export const check: RegressionCheck = {
     }
 
     const dash = read("packages/dashboard/index.ts");
-    const bridge2 = read("plugins/http-bridge/index.ts");
+    const bridge2 = read("plugins/http-bridge");
     out.push(
       assert(
         "보관은 비파괴이고 기본 세션은 막는다(닫을 수 없는 홈)",

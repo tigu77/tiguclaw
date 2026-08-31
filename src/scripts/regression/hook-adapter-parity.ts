@@ -80,7 +80,11 @@ export const check: RegressionCheck = {
       for (const e of await readdir(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
         if (e.isDirectory()) {
-          if (!/node_modules|dist/.test(p)) await walk(p, acc);
+          // ★**basename 으로 거른다** — 종전엔 전체 경로에 `/node_modules|dist/` 를 대서,
+          //  레포가 이름에 `dist` 가 든 디렉터리 아래 있으면(예: 릴리스 §7 이 쓰던
+          //  `/tmp/tiguclaw-dist-check.XXXX`) **트리 전체가 스킵**돼 «소비처 0» 이라는
+          //  거짓 빨강이 났다(2026-09-01 실측: 클린룸 2건 빨강, 경로만 바꾸니 초록).
+          if (!/^(node_modules|dist)$/.test(e.name)) await walk(p, acc);
         } else if (e.name.endsWith(".ts") && !p.endsWith("hook-runner.ts")) {
           acc.push(await readFile(p, "utf8"));
         }

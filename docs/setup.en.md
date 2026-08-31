@@ -38,6 +38,13 @@ Then set `OPENROUTER_API_KEY` in your `.env` and use it anywhere a model is name
 `openrouter:anthropic/claude-sonnet-5`, in a model profile pool, as a fallback target.
 OpenRouter alone puts a few hundred models one line away.
 
+**You don't have to memorise names.** Once it's attached, `/models` queries that provider and
+lists what it has — and where the vendor tells us, each model carries its context size and
+whether it supports tools, like `[131K · tools✅]` (nothing is shown when the vendor doesn't
+say — we don't pretend to know). One caveat: **being listed doesn't guarantee it works** —
+vendors sometimes keep retired models in the list, so if the one you picked fails, we'll tell
+you why.
+
 Notes: the key lives in your environment, never in the file (`apiKeyEnv` is the variable
 *name*). Built-in provider names can't be redefined — writing `anthropic` here is ignored,
 so a stray config can't quietly reroute a trusted name somewhere else. An `adapter` other

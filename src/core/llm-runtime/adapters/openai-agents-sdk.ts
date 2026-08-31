@@ -105,6 +105,13 @@ import {
   formatToolBlock,
 } from "../../entry/hook-runner.js";
 import type { SteeringInput } from "../../steering.js";
+import { catalogContextTokens, catalogSupportsTools } from "../model-catalog.js";
+import {
+  detectTruncation,
+  predictTruncation,
+  truncationNote,
+  willTruncateNote,
+} from "../truncation.js";
 import type {
   RegionAActivityPayload,
   RegionASdkInput,
@@ -705,6 +712,31 @@ export const runOpenAi = async (
   const reasoningEffort =
     input.reasoning ??
     resolveReasoningEffort(input.provider ?? "openai", input.model ?? "", input.cwd);
+  // ★**보내기 전에** 잘릴 걸 안다 (2026-08-31). 벤더가 `/models` 로 컨텍스트를 알려준
+  //  경우에만 — 모르면 침묵한다(추측하면 멀쩡한 모델을 못 쓰게 막는 것처럼 읽힌다).
+  //  ★막지 않는다. 말할 뿐이다 — 코드가 판단을 가로채지 않는다
+  //  ([[feedback_capability_not_routing]]). 사후 판정(`detectTruncation`)은 그대로 둔다:
+  //  컨텍스트를 안 알려주는 provider 는 그쪽으로 잡힌다.
+  // ★**도구를 보내는데 그 모델이 도구를 안 한다고 선언했으면** 말한다 (2026-08-31).
+  //  벤더가 `/models` 로 선언한 경우에만 — **모르면 침묵한다**(부재 ≠ 지원 안 함).
+  //  ★막지 않는다. 선언이 틀릴 수도 있고, 막으면 코드가 판단을 가로채는 것이다.
+  const declaresTools = catalogSupportsTools(input.provider ?? "openai", input.model ?? "");
+  if (declaresTools === false && mcpServers.length > 0) {
+    console.warn(
+      `[openai] 이 모델(${input.model ?? "?"})은 **도구를 지원하지 않는다고 선언**했는데 ` +
+        `도구 ${String(mcpServers.length)}종을 보냅니다 — 무시되거나 오류가 날 수 있습니다. ` +
+        `도구가 필요하면 다른 모델을 쓰세요.`,
+    );
+  }
+
+  const willTruncate = predictTruncation(
+    Buffer.byteLength(instructions, "utf8") + Buffer.byteLength(promptWithMemory, "utf8"),
+    catalogContextTokens(input.provider ?? "openai", input.model ?? ""),
+  );
+  if (willTruncate !== null) {
+    console.warn(`[openai] ${willTruncateNote(willTruncate, input.model ?? "?")}`);
+  }
+
   const agent = new Agent({
     name: "tiguclaw-spike",
     instructions,
@@ -1152,6 +1184,19 @@ export const runOpenAi = async (
   }
 
   const usage = extractUsage(result);
+
+  // ★**조용히 잘렸나** (2026-08-31). 여기가 *보낸 것*(instructions + user 프롬프트)과
+  //  *처리된 것*(상대가 보고한 입력 토큰)을 **둘 다 아는 유일한 자리**다. 판정은 순수
+  //  함수에 있고(`truncation.ts`) 여기선 재료만 넘긴다 — 그래야 그 판정을 데몬 없이 잰다.
+  //  provider 이름을 묻지 않는다(LLM 무관). usage 미보고면 아무 말도 안 한다.
+  const truncated = detectTruncation(
+    Buffer.byteLength(instructions, "utf8") + Buffer.byteLength(promptWithMemory, "utf8"),
+    usage?.inputTokens,
+  );
+  if (truncated !== null) {
+    // 로그가 1차 진단면 — 판정 수치를 싣는다(원격 인스턴스는 이 줄이 유일한 창이다).
+    console.warn(`[openai] ${truncationNote(truncated, input.model ?? "?")}`);
+  }
 
   // externalTools 패스스루 얼리 리턴 (ADR 2026-07-25 §Decision-5, 스파이크 §2.1) — 이
   // 경우 `result.finalOutput` 은 우리 execute() 마커의 반환값(`stopAtToolNames` 가 승격한

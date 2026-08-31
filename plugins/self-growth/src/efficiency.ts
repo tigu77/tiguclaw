@@ -11,6 +11,9 @@ import {
   SELF_NAMESPACE,
   WEEKLY_REVIEW_INTERVAL_MS,
 } from "./constants.js";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { getPaths } from "../../../src/core/paths.js";
 
 /**
  * V3 효율 관측 — turn_done 의 durationMs/토큰을 (adapter, model) 별로 누적 관측한다.
@@ -71,22 +74,51 @@ export const accumulateEfficiency = (
  * 이미 7일 안에 회고 박힌 적 있으면 null (멱등). 강제 박기 = force=true.
  * 회고 name: `feedback_growth_weekly_review_<YYYY-MM-DD>`.
  */
+/** 마지막으로 회고를 «돌아본» 시각 — 기록 여부와 무관하다(무내용은 인덱스에 안 넣는다). */
+const lastReviewFile = (): string =>
+  path.join(getPaths().home, "data", "self-growth-last-review");
+
+const readLastReviewAt = (): number => {
+  try {
+    return Number.parseInt(readFileSync(lastReviewFile(), "utf8").trim(), 10) || 0;
+  } catch {
+    return 0; // 없으면 «본 적 없음» — 첫 틱에 한 번 돈다.
+  }
+};
+
+const stampLastReviewAt = (at: number): void => {
+  try {
+    mkdirSync(path.dirname(lastReviewFile()), { recursive: true });
+    writeFileSync(lastReviewFile(), String(at), "utf8");
+  } catch {
+    /* 못 써도 회고는 돈다 — 다음 틱에 한 번 더 볼 뿐(never-throw). */
+  }
+};
+
 export const generateWeeklyReview = (
   force: boolean = false,
-): { reviewName: string; segmentCount: number; driftCount: number } | null => {
+): {
+  reviewName: string;
+  segmentCount: number;
+  driftCount: number;
+  /** 실제로 메모리에 썼나 — 신호 0이면 안 쓴다. 호출부의 `…added` 이벤트가 이걸 본다. */
+  written: boolean;
+} | null => {
   const all = listMemories({ type: "feedback", limit: 10000 });
   const now = Date.now();
   const weekAgo = now - WEEKLY_REVIEW_INTERVAL_MS;
 
   // 멱등 — 최근 7일 안 회고 박힌 적 있으면 skip.
-  if (!force) {
-    const recent = all.find(
-      (m) =>
-        m.name.startsWith(`feedback_${SELF_NAMESPACE}_weekly_review_`) &&
-        m.updatedAt >= weekAgo,
-    );
-    if (recent !== undefined) return null;
-  }
+  // ★멱등 가드는 **메모리 존재**로 판정했다. 그런데 신호 0이면 이제 메모리를 안 만들므로
+  //  가드가 **원리적으로 못 선다** — `runWeeklyReview` 는 1시간마다 불리니 조용한 인스턴스
+  //  에서 주 1회이던 로그·전량 스캔이 **주 168회**가 된다(적대 검토 P2).
+  //  [[feedback_logs_must_stand_alone]] 의 *"매 턴 같은 warn = 배경소음, 12일 묻혔다"* 와
+  //  정면으로 부딪힌다.
+  // ★고침: 판정 근거를 **메모리가 아니라 「마지막으로 돌아본 시각」** 으로 바꾼다. 썼든
+  //  안 썼든 한 번 봤으면 7일간 안 본다 — 원래 의도가 *"주 1회 회고"* 이지 *"주 1회 기록"*
+  //  이 아니었다. 시각은 캡 있는 인덱스가 아니라 **상태 파일**에 둔다(무내용을 인덱스에
+  //  넣지 않는다는 이번 수정의 요지를 지킨다).
+  if (!force && Date.now() - readLastReviewAt() < WEEKLY_REVIEW_INTERVAL_MS) return null;
 
   // 지난 7일 동안 생성된 reflection 통계.
   const segmentReflections = all.filter(
@@ -120,17 +152,31 @@ export const generateWeeklyReview = (
     2,
   );
 
-  addMemory({
-    type: "feedback",
-    name: reviewName,
-    description: `이번 주 회고 — segment ${segmentReflections.length}건, drift ${driftReflections.length}건`,
-    body,
-  });
+  // ★**신호가 0이면 안 쓴다** (2026-08-31). 종전엔 무조건 썼고, 그래서 *"segment 0건,
+  //  drift 0건"* 이라는 **무내용 회고가 매주 한 건씩 인덱스에 적립**됐다 — 실측 6건 중
+  //  4건이 **읽힘 0**, 연 52건 페이스. 바운드가 없다.
+  // ★인덱스는 캡이 있는 자리다. 거기에 아무도 안 읽는 항목이 매주 쌓이면 **읽혀야 할 것을
+  //  밀어낸다**([[project_hotpath_bound_preserve_record]] 의 "캡 있는 자리" 그대로).
+  //  스스로 `"이번 주 신호 0 — 정상 운영"` 이라고 적으면서 자리를 차지하는 건 앞뒤가 안 맞는다.
+  // ★**기록을 지우는 게 아니다** — 애초에 만들지 않는 것이다. 신호가 있으면 그대로 쓴다.
+  const hasSignal = segmentReflections.length + driftReflections.length > 0;
+  if (hasSignal) {
+    addMemory({
+      type: "feedback",
+      name: reviewName,
+      description: `이번 주 회고 — segment ${segmentReflections.length}건, drift ${driftReflections.length}건`,
+      body,
+    });
+  }
 
+  stampLastReviewAt(now); // ★썼든 안 썼든 «봤다» 를 남긴다 — 그게 이 가드의 기준이다.
   return {
     reviewName,
     segmentCount: segmentReflections.length,
     driftCount: driftReflections.length,
+    // ★안 썼으면 안 썼다고 말한다 — 호출부가 `…added` 이벤트를 발행한다(계약 변경 →
+    //  호출부 전수, [[feedback_scope_of_a_fix]]). 안 쓰고 "추가됨" 을 알리면 거짓말이다.
+    written: hasSignal,
   };
 };
 

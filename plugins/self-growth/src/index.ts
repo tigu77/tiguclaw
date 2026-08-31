@@ -228,9 +228,13 @@ class SelfGrowthPlugin {
     try {
       const result = generateWeeklyReview();
       if (result === null) return;
+      // ★신호 0이면 **안 쓴다** — 무내용 회고가 매주 인덱스 한 자리를 먹던 것(실측 6건 중
+      //  4건 읽힘 0). 로그는 남긴다: "돌았는데 쓸 게 없었다" 와 "안 돌았다" 는 다르다.
       console.log(
-        `self-growth: weekly review — segment=${result.segmentCount} drift=${result.driftCount}`,
+        `self-growth: weekly review — segment=${result.segmentCount} drift=${result.driftCount}` +
+          (result.written ? "" : " (신호 0 — 기록 안 함)"),
       );
+      if (!result.written) return;
       if (this.bus !== null) {
         this.bus.publish({
           type: "self_growth.weekly_review.added",

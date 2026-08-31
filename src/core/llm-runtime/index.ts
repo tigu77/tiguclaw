@@ -61,6 +61,7 @@ import {
   parseCooldownMs,
 } from "./rate-limit.js";
 import { applyInlineSuggestion } from "../next-message-suggestion.js";
+import { redactSecrets } from "../outbound-sanitize.js";
 import {
   resolveProfileChain,
   getDefaultProfileName,
@@ -72,11 +73,53 @@ import {
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
 // export (2026-06-02) — daemon catch 가 사용자 채널 에러 노출에 재사용 (중복 구현 금지).
+/**
+ * **알려진 상류 한계** — 우리 설정으로 못 고치는 실패에 그 사실을 붙인다 (2026-08-31).
+ *
+ * ★사고: `google` provider 로 도구를 쓰면 Gemini 가 400 을 준다 — 함수 호출 파트마다
+ *  `thought_signature` 를 되돌려받아야 하는데, `@openai/agents`(0.17.0, 최신)의 **스트리밍**
+ *  조립기가 그 벤더 확장 필드를 떨어뜨린다(**비스트리밍은 보존한다** — 같은 SDK 안의
+ *  비대칭이다). 우리는 토큰 스트리밍이 필수라 늘 그 경로를 탄다.
+ *  실측으로 갈랐다: 필드를 버리면 400, 되돌려주면 200.
+ *
+ * ★사용자에게 이 구분이 중요한 이유: 상류 원문만 보면 **자기 설정을 의심하게 된다.**
+ *  실제로 이 결함을 진단하던 나 자신이 두 번 *"구조적 한계"* 로 오판했다. 모델명 오타나
+ *  키 문제와 달리 **사용자가 할 수 있는 게 없다** — 그 말을 해줘야 한다.
+ *
+ * ★**provider 이름으로 분기하지 않는다** — 오류의 *모양*으로 잡는다(위 두 분류와 같은 방식).
+ *  벤더 확장을 요구하는 다른 provider 가 와도 같은 자리에 걸린다.
+ * ★**이 목록은 부채다** — 업스트림이 고치면 거짓이 된다. 그래서 짝이 되는 회귀
+ *  (`upstream-limits-are-current`)가 SDK 안의 비대칭이 사라지면 빨간불을 낸다.
+ */
+const KNOWN_UPSTREAM_LIMITS: ReadonlyArray<{ match: RegExp; note: string }> = [
+  {
+    match: /thought_signature/,
+    note:
+      "이 provider 는 지금 **도구 호출이 안 됩니다** — 모델이 함수 호출에 붙여 준 값을 " +
+      "우리가 쓰는 SDK 가 스트리밍 경로에서 떨어뜨립니다(업스트림 이슈, 설정으로 못 고칩니다). " +
+      "도구 없는 대화는 정상입니다.",
+  },
+];
+
+/** 알려진 상류 한계면 그 해설, 아니면 빈 문자열. */
+export const upstreamLimitNote = (errStr: string): string =>
+  KNOWN_UPSTREAM_LIMITS.find((k) => k.match.test(errStr))?.note ?? "";
+
+// undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
+// cause 까지 펼쳐 진단 소실 차단.
+// export (2026-06-02) — daemon catch 가 사용자 채널 에러 노출에 재사용 (중복 구현 금지).
+// ★**여기가 오류가 글자가 되는 한 자리다** — 그래서 상류 한계 해설도 여기 붙인다.
+//  로그·폴백 고지·사용자 채널 노출이 전부 이 함수를 지나므로 소비처마다 다시 안 붙인다.
 export const errorDetail = (e: unknown): string => {
-  if (!(e instanceof Error)) return String(e);
-  const cause = (e as { cause?: unknown }).cause;
-  if (cause === undefined || cause === null) return e.message;
-  return `${e.message} (cause: ${cause instanceof Error ? cause.message : String(cause)})`;
+  const base = !(e instanceof Error)
+    ? String(e)
+    : (() => {
+        const cause = (e as { cause?: unknown }).cause;
+        if (cause === undefined || cause === null) return e.message;
+        return `${e.message} (cause: ${cause instanceof Error ? cause.message : String(cause)})`;
+      })();
+  const note = upstreamLimitNote(base);
+  return note === "" ? base : `${base}\n\n★ ${note}`;
 };
 
 // 모델-거부 식별 — 어댑터 무관 문자열 휴리스틱 1개 (facade 단일 지점).
@@ -1408,9 +1451,30 @@ export const runRegionA = async (
         output.model !== ""
           ? output.model
           : chain[i].map(specLabel).join(",");
+      // ★**왜 못 쓰는지도 말한다** (2026-08-31). 종전엔 *"쓸 수 없어"* 만 말하고 사유는
+      //  데몬 로그에만 남았다 — 사용자는 화면만 보고 "왜?" 를 알 길이 없었고, 원격 인스턴스
+      //  (회사 PC·윈도우)에선 로그도 못 본다. 실측 사례: `google:gemini-3.6-flash` 가 도구
+      //  호출에서 400 을 받았는데(업스트림 SDK 가 벤더 확장 필드를 스트리밍에서 떨어뜨린다)
+      //  화면엔 "쓸 수 없어" 뿐이라 **모델 이름을 잘못 쓴 것과 구분이 안 됐다.**
+      // ★provider 별 분기는 두지 않는다 — 사유는 그 어댑터가 낸 것을 **그대로** 옮긴다
+      //  (LLM 무관). 다만 상류 오류 본문에 자격증명이 섞일 수 있어 **기존 재액터를 지난다**
+      //  (`redactSecrets` — 새로 만들지 않는다).
+      // ★**해설을 먼저 놓는다** (적대 검토 P1). 종전엔 `errorDetail` 이 해설을 본문 **뒤에**
+      //  붙였고 여기서 200자로 잘랐다 — 그런데 동기가 된 실측 오류(Gemini 400 JSON)가
+      //  **485자**라 해설이 통째로 잘려나갔다. 즉 *"사용자가 자기 설정을 의심한다"* 를
+      //  고치려고 넣은 문장이 **정작 그 사례에서 안 보였다.**
+      //  이제 해설을 따로 뽑아 **앞에** 두고, 자르는 건 상류 원문뿐이다.
+      const rawDetail = lastError === undefined ? "" : errorDetail(lastError);
+      const note = upstreamLimitNote(rawDetail);
+      const body = redactSecrets(rawDetail.replace(note === "" ? "" : `\n\n★ ${note}`, ""))
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 200);
+      const reason = note === "" ? body : `★ ${note}\n${body}`;
       const notice =
-        `\n\n⚠️ 지정 모델 \`${requestedLabel}\` 을(를) 쓸 수 없어 기본 모델로 답했습니다. ` +
-        `다시 지정하려면 \`/model <provider:model>\`.`;
+        `\n\n⚠️ 지정 모델 \`${requestedLabel}\` 을(를) 쓸 수 없어 기본 모델로 답했습니다.` +
+        (reason === "" ? "" : `\n사유: ${reason}`) +
+        `\n다시 지정하려면 \`/model <provider:model>\`.`;
       return {
         ...output,
         text: output.text === "" ? output.text : `${output.text}${notice}`,

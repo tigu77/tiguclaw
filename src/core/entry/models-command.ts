@@ -12,6 +12,42 @@
  */
 import type { ModelProfile, PoolEntry } from "../settings.js";
 
+/**
+ * 모델 능력 조회 — **주입받는다**(이 파일은 순수 함수라 전역·IO 를 안 읽는다).
+ *
+ * ★삼상태를 그대로 옮긴다: 값이 없으면 **모르는 것**이지 "없는 것" 이 아니다. 뭉개면
+ *  화면이 *"이 모델은 도구 안 됨"* 이라고 **거짓말**을 하게 된다.
+ */
+export interface ModelCaps {
+  /** 컨텍스트 토큰 — 벤더가 알려줬을 때만. */
+  context?: number;
+  /** 도구 지원 — 벤더가 **선언했을 때만**. `undefined` = 모름. */
+  tools?: boolean;
+}
+
+/** 사람이 읽는 크기 — 128000 → `128K`. */
+const compactTokens = (n: number): string =>
+  n >= 1_000_000
+    ? `${String(Math.round(n / 100_000) / 10)}M`
+    : n >= 1_000
+      ? `${String(Math.round(n / 1_000))}K`
+      : String(n);
+
+/**
+ * 풀 원소 하나에 붙는 능력 꼬리표 — **아는 것만** 적는다.
+ *
+ * ★모르면 아무것도 안 붙인다. 빈 자리가 "모름" 이라는 뜻이 되게 두는 편이,
+ *  `도구?` 같은 물음표를 늘어놓아 화면을 시끄럽게 하는 것보다 낫다.
+ */
+export const capsLabel = (c: ModelCaps | undefined): string => {
+  if (c === undefined) return "";
+  const parts: string[] = [];
+  if (c.context !== undefined) parts.push(compactTokens(c.context));
+  if (c.tools === true) parts.push("도구✅");
+  else if (c.tools === false) parts.push("도구✖");
+  return parts.length === 0 ? "" : ` [${parts.join(" · ")}]`;
+};
+
 /** 레거시 티어 env 키 — 프로파일 0개일 때만 폴백 안내에 노출(resolveTier 의 TIER_ENV 와 대응). */
 const LEGACY_TIER_ENV_KEYS = [
   "MODEL_TIER_HIGH",
@@ -27,15 +63,20 @@ const LEGACY_TIER_ENV_KEYS = [
  *  (풀 원소 > models.reasoning > 카탈로그) 어디서 온 값인지 안 보이면, 전역을 바꿔도
  *  안 먹는 이유를 알 수 없다 — 그게 이 기능의 진짜 위험이다.
  */
-const formatPool = (pool: readonly PoolEntry[]): string => {
+const formatPool = (
+  pool: readonly PoolEntry[],
+  caps?: (spec: string) => ModelCaps | undefined,
+): string => {
   const parts = pool.filter((e) => e.spec.trim() !== "");
   if (parts.length === 0) return "(빈 풀 — 어댑터 디폴트로 강등)";
   return parts
-    .map((e) =>
-      e.reasoning === undefined
-        ? `\`${e.spec.trim()}\``
-        : `\`${e.spec.trim()}\`(강도 ${e.reasoning})`,
-    )
+    .map((e) => {
+      const spec = e.spec.trim();
+      const strength = e.reasoning === undefined ? "" : `(강도 ${e.reasoning})`;
+      // ★능력은 **재놓고 안 보여주면 없는 것과 같다** (2026-08-31). 컨텍스트·도구 지원을
+      //  벤더에게 물어 카탈로그에 담아뒀는데 사용자가 모델을 고르는 이 화면이 안 썼다.
+      return `\`${spec}\`${strength}${capsLabel(caps?.(spec))}`;
+    })
     .join(" → ");
 };
 
@@ -44,6 +85,7 @@ const formatProfile = (
   name: string,
   prof: ModelProfile,
   isDefault: boolean,
+  caps?: (spec: string) => ModelCaps | undefined,
 ): string => {
   const lines: string[] = [];
   const desc = prof.description?.trim();
@@ -53,7 +95,7 @@ const formatProfile = (
       ? `● \`${name}\`${tag} — ${desc}`
       : `● \`${name}\`${tag}`,
   );
-  lines.push(`   풀: ${formatPool(prof.pool)}`);
+  lines.push(`   풀: ${formatPool(prof.pool, caps)}`);
   if (prof.fallback !== undefined && prof.fallback.trim() !== "") {
     lines.push(`   폴백 프로파일: \`${prof.fallback.trim()}\``);
   }
@@ -115,6 +157,15 @@ export const renderModelProfiles = (
   defaultName = "default",
   env: NodeJS.ProcessEnv = process.env,
   builtin = false,
+  /**
+   * 모델 능력 조회 — **필수 인자다**(값은 `undefined` 여도 된다).
+   *
+   * ★기본값을 주면 호출부가 **인자를 빼도 조용히 컴파일된다** — 실측으로 부팅 파일에서
+   *  이 인자를 지웠는데 스위트가 초록이었다(그 배선은 데몬을 띄워야 재진다). 필수로 두면
+   *  지우는 순간 **타입이 깨지고**, 타입체크는 회귀가 실제로 돌린다
+   *  (`typecheck-covers-shipped-code`). 짐작이 아니라 컴파일러가 지킨다.
+   */
+  caps: ((spec: string) => ModelCaps | undefined) | undefined,
 ): string => {
   const blocks: string[] = ["🧩 모델 프로파일"];
   // ★출처를 밝힌다 (2026-08-13) — 프로파일이 settings.json 에 없으면 인증된 provider 로
@@ -143,7 +194,7 @@ export const renderModelProfiles = (
 
   blocks.push(
     names
-      .map((n) => formatProfile(n, profiles[n]!, n === defaultName))
+      .map((n) => formatProfile(n, profiles[n]!, n === defaultName, caps))
       .join("\n\n"),
   );
   blocks.push("프로파일 추가·수정은 대화로 요청하세요 (비서가 settings.json 을 편집합니다).");

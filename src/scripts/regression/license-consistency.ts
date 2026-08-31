@@ -39,15 +39,62 @@ export const check: RegressionCheck = {
       read(`${O}README.md`),
       read("../../../.claude/skills/sync-public/SKILL.md"),
     ]);
+    // ★**레시피가 아니라 요리를 본다** (2026-09-01). 아래 «스크럽 규칙» 단언은 SKILL.md 안의
+    //  치환 *문자열*이 있는지만 보고 실제 `package.json` 은 한 번도 안 읽었다. 그래서 배포
+    //  트리의 license 를 `UNLICENSED` 로 바꿔도 스위트가 초록이었다(실측). 하필 이 검사가
+    //  헤더에 «package.json 의 license 필드» 를 본다고 적어둔 자리다 — 지키지도 못하면서
+    //  지킨다고 적어둔 검사가 가장 나쁘다.
+    //  ★실제로 당했다: 재싱크 때 §3 스크럽을 다시 안 돌려 rsync 가 DEV 판으로 덮었고,
+    //   PII·typecheck·회귀·업데이트경로 **어느 게이트도** 안 잡았다.
+    const pkg = await (async (): Promise<{ license?: string; scripts?: Record<string, string> } | null> => {
+      const raw = await read("../../../package.json");
+      try {
+        return raw === null ? null : (JSON.parse(raw) as { license?: string; scripts?: Record<string, string> });
+      } catch {
+        return null;
+      }
+    })();
 
     // ★배포 레포엔 `_workspace/`·`.claude/` 가 없다(매니페스트 EXCLUDE) — 거기선 대상 아님.
+    // ★오버레이 유무가 곧 «어느 트리인가» 다 — 판정이 갈리는 지점이고, 배포 트리에서만
+    //  볼 수 있는 것이 있다(스크럽 결과 자체). 종전엔 여기서 그냥 나가서 **진짜 소비처를
+    //  한 번도 안 봤다.**
     if (lic === null) {
+      // ★«못 읽음» 과 «깨끗함» 을 가른다 (2026-09-01 4라운드 F5). `?? {}` 로 두면
+      //  package.json 을 못 읽었을 때 «dev 스크립트 0개» 라고 **보고한다** — 형제 커밋이
+      //  PII 게이트에서 방금 고친 바로 그 병(0건을 스캔하고도 초록)을 새 코드에서 되풀이했다.
+      const devScripts =
+        pkg === null
+          ? null
+          : Object.keys(pkg.scripts ?? {}).filter((k) => /^(e2e:|verify:|probe:|bench)/.test(k));
       return [
-        assert("라이선스 일치", true, "배포 레포 — 오버레이 없음(대상 아님)"),
+        assert(
+          `★배포된 package.json 의 license 가 ${SPDX} 다 — npm·GitHub·의존성 스캐너가 보는 건 전문이 아니라 이 필드다`,
+          pkg?.license === SPDX,
+          `license=${pkg?.license ?? "(읽기 실패)"}`,
+        ),
+        assert(
+          "★dev 전용 npm 스크립트가 안 남았다 — 그 대상 .ts 는 매니페스트가 빼므로, 스크립트만 남으면 사용자가 부를 때 «파일 없음» 으로 깨진다",
+          devScripts !== null && devScripts.length === 0,
+          devScripts === null
+            ? "★package.json 을 못 읽었다 — 0개가 아니라 «모름» 이다"
+            : devScripts.length === 0
+              ? "0개"
+              : `★남음: ${devScripts.join(",")}`,
+        ),
       ];
     }
+    // dev 트리 — 스크럽의 **전제**를 지킨다. sed 는 `"license": "UNLICENSED"` 를 찾는다.
+    // 여기가 다른 값이 되면 치환이 조용히 no-op 이 되고 배포본이 dev 값을 그대로 입는다.
 
     const out: Assertion[] = [];
+    out.push(
+      assert(
+        "★dev 의 license 가 UNLICENSED 다 — sync 의 sed 가 찾는 값. 여기가 바뀌면 치환이 조용히 no-op 이 된다",
+        pkg?.license === "UNLICENSED",
+        `dev license=${pkg?.license ?? "(읽기 실패)"}`,
+      ),
+    );
     out.push(
       assert(
         `★LICENSE 가 ${SPDX} 전문이다`,

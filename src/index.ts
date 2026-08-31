@@ -176,6 +176,7 @@ import {
 } from "./core/egress-targets.js";
 import { withEgressPromptOptions } from "./core/prompt-options-egress.js";
 import { readEgressChannels } from "./core/settings.js";
+import { modelCapsFor } from "./core/llm-runtime/model-catalog.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -979,7 +980,15 @@ const handler: MessageHandler = async (msg) => {
     const sessionOverride = getSessionModelOverride(sidChannel, msg.threadKey);
     await replyCommand(
       msg,
-      renderModelProfiles(profiles, sessionOverride, defaultName, process.env, builtin),
+      renderModelProfiles(
+        profiles,
+        sessionOverride,
+        defaultName,
+        process.env,
+        builtin,
+        // ★조회는 모듈에 있다 — 여기 인라인으로 두면 그 배선을 재려고 데몬을 띄워야 한다.
+        modelCapsFor,
+      ),
     );
     return;
   }

@@ -29,6 +29,7 @@ import { claudeAuthAvailable, providerAuthAvailable } from "./provider-availabil
 import { getAuthProvider } from "./auth-registry.js";
 import { CODEX_BASE_URL } from "./adapters/openai-codex-oauth-history.js";
 import { loadModelReasoning } from "../settings.js";
+import { listProviderNames, resolveProviderConn } from "./provider-registry.js";
 
 /** provider → 최신순 모델 이름들(접두사 없음). 빈 배열 = 조회 실패/미인증. */
 export interface ModelCatalog {
@@ -46,6 +47,18 @@ export interface ModelCatalog {
    * 옛 캐시 파일엔 이 키가 없다 — 부재는 "모른다"이고, 모르면 아무것도 안 보낸다(종전 동작).
    */
   reasoning?: Record<string, string>;
+  /**
+   * 순서에 의미가 없는 provider 들 — `catalogTierModel` 이 등급을 주장하지 않는다.
+   * ★**없음 = 순위 있음**으로 읽는다(옛 캐시 무회귀). 2026-08-31.
+   */
+  unranked?: string[];
+  /**
+   * `provider:model` → 컨텍스트 토큰. **벤더가 알려줄 때만** 채운다(실측: OpenRouter·Groq 는
+   * 준다, google 은 안 준다). 없으면 모르는 것이고, 모르면 아무 말도 안 한다.
+   */
+  context?: Record<string, number>;
+  /** `provider:model` → 도구 지원. **선언이 있을 때만**(부재 = 모름). */
+  tools?: Record<string, boolean>;
 }
 
 /**
@@ -153,6 +166,12 @@ export const catalogTierModel = (
   //  들어갈 수 있는 값이 선택을 통과해 `codex-auto-review` 가 high 로 뽑혔다(회귀가 잡음).
   const list = raw.filter((m) => !m.startsWith("codex-auto-"));
   if (list.length === 0) return undefined;
+  // ★**순서에 의미가 없는 목록엔 등급을 주장하지 않는다** (2026-08-31). 아래 일반 경로는
+  //  *"첫 원소가 최상급"* 을 전제하는데 그건 최신순을 주는 조회에서만 참이다. 표준
+  //  `/models` 를 붙이면서 실측으로 걸렸다 — 정품 openai 는 임베딩·TTS 까지 한 배열이라
+  //  `tier:high` 가 `text-embedding-…` 이 될 수 있었다. 이름은 알되 등급은 모른다고 말한다
+  //  (모르면 호출자가 정적 표로 강등한다 — 그게 옛 동작이다).
+  if (provider !== "anthropic" && (c?.unranked ?? []).includes(provider)) return undefined;
   if (provider === "anthropic") {
     const family = tier === "high" ? "claude-opus" : tier === "mid" ? "claude-sonnet" : "claude-haiku";
     return list.find((m) => m.startsWith(family));
@@ -278,10 +297,132 @@ const discoverCodex = async (): Promise<DiscoverResult> => {
   return ours;
 };
 
+/**
+ * **OpenAI 호환 `<base>/models`** — 표준 경로 하나로 provider 전부 (2026-08-31).
+ *
+ * ★왜 필요한가(실측): 종전엔 조회하는 provider 가 `anthropic`·`codex` **둘뿐**이었고 그
+ *  둘은 **구독** 경로다. 공식 API 키 경로(`openai`·`google`·`ollama` + 사용자 정의 전부)는
+ *  목록이 **0** 이라, 사용자가 벤더 사이트를 보고 모델 이름을 손으로 알아내야 했고
+ *  티어(`tier:high`) 자동 선택에서도 통째로 빠졌다. `parseModelSpec` 은 `provider:model`
+ *  을 요구하는데 *"어떤 provider 가 이 모델을 지원하나"* 에 답할 자리가 제품 안에 없었다.
+ *
+ * ★**provider 별 분기 0.** 판정은 *"이 provider 가 openai 어댑터를 쓰나"* 하나다 — 그러면
+ *  OpenAI 호환을 말한다는 뜻이고 `/models` 는 그 규약의 표준이다. 새 provider 를 붙이면
+ *  **저절로** 들어온다(손 목록을 늘리지 않는다).
+ *  실측 200: openrouter(396) · google(54) · ollama. 정품 openai 는 baseURL 이 없어
+ *  규약 기본값으로 친다.
+ *
+ * ★**목록 ≠ 호출 가능**이다 — google 은 `gemini-2.5-flash` 를 목록에 계속 실으면서 호출은
+ *  404(*"no longer available to new users"*)로 거절한다. 그래서 이 목록은 **후보**이지
+ *  보증이 아니다. 고르면 왜 안 되는지는 폴백 고지가 말한다(`index.ts` 의 `사유:`).
+ */
+/**
+ * `/models` 행들 → `모델 → 컨텍스트 토큰`. **아는 이름만 읽고 없으면 뺀다.**
+ *
+ * ★필드 이름이 벤더마다 다르다(실측: OpenRouter `context_length` · Groq `context_window` ·
+ *  google 은 **안 준다**). 별칭 목록은 어쩔 수 없지만 **지어내지는 않는다** — 모르는 모델은
+ *  없는 채로 둔다. 추측한 컨텍스트로 경고하면 멀쩡한 모델을 못 쓰게 막는 것처럼 읽힌다.
+ * ★**함수로 뽑아 둔 이유**: 조회 안에 인라인으로 두면 이 판정을 재려고 네트워크를 타야 하고,
+ *  그러면 그물이 약해진다(실측: 이 추출을 통째로 지워도 스위트가 초록이었다).
+ */
+export const readContextLengths = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const r of rows) {
+    const id = typeof r["id"] === "string" ? r["id"].replace(/^models\//, "") : "";
+    const n = ["context_length", "context_window"]
+      .map((k) => r[k])
+      .find((v): v is number => typeof v === "number" && v > 0);
+    if (id !== "" && n !== undefined) out[id] = n;
+  }
+  return out;
+};
+
+/**
+ * `/models` 행들 → `모델 → 도구 지원 여부`. **선언이 있을 때만** 담는다 (2026-08-31).
+ *
+ * ★삼상태다 — **지원함 / 선언했는데 없음 / 모름.** 부재를 "지원 안 함" 으로 읽으면 안 된다
+ *  (실측: Groq `whisper-large-v3` 는 `supported_features: null` 이다). 모르는 건 빼 둔다.
+ * ★필드 이름은 벤더마다 다르다(실측: OpenRouter `supported_parameters` · Groq
+ *  `supported_features` · google 은 **안 준다**). 둘 다 문자열 배열이고 `"tools"` 가 들어
+ *  있으면 지원 선언이다.
+ * ★**추측하지 않는다** — 모델 이름으로 "이건 도구 되겠지" 를 판정하면 그게 곧 화이트리스트다.
+ */
+export const readToolSupport = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): Record<string, boolean> => {
+  const out: Record<string, boolean> = {};
+  for (const r of rows) {
+    const id = typeof r["id"] === "string" ? r["id"].replace(/^models\//, "") : "";
+    const arr = ["supported_parameters", "supported_features"]
+      .map((k) => r[k])
+      .find((v): v is unknown[] => Array.isArray(v));
+    if (id === "" || arr === undefined) continue; // 선언 없음 = 모름
+    out[id] = arr.some((x) => x === "tools");
+  }
+  return out;
+};
+
+/**
+ * `/models` 행들 → 조회 결과 **전체**. 네트워크 밖의 모든 판단이 여기 있다 (2026-08-31).
+ *
+ * ★**조립까지 뽑아낸 이유**: 추출 함수(`readContextLengths`·`readToolSupport`)만 뽑았더니
+ *  그것들을 **결과에 싣는 줄**이 그물 밖이었다 — 실측으로 `...(tools 있으면 싣기)` 한 줄을
+ *  지워도 스위트가 초록이었다. **부품은 검사되는데 이음매가 비는** 이 레포의 그 모양이다.
+ *  이제 조립 결과 전체를 실행으로 잰다.
+ */
+export const buildCompatDiscoverResult = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): DiscoverResult => {
+  const context = readContextLengths(rows);
+  const tools = readToolSupport(rows);
+  return {
+    // ★표준 `/models` 는 **정렬을 약속하지 않는다** — 등급을 주장하지 않는다(아래 unranked).
+    unranked: true,
+    ...(Object.keys(context).length > 0 ? { context } : {}),
+    ...(Object.keys(tools).length > 0 ? { tools } : {}),
+    slugs: rows
+      .filter((r): r is { id: string } => typeof r["id"] === "string")
+      // google 은 `models/gemini-…` 처럼 접두를 붙여 준다 — 호출할 때 쓰는 이름으로 맞춘다.
+      .map((r) => (r["id"] as string).replace(/^models\//, "")),
+  };
+};
+
+const discoverOpenAiCompat = async (provider: string): Promise<DiscoverResult> => {
+  const conn = resolveProviderConn(provider);
+  if (conn === null || conn.adapter !== "openai") return { slugs: [] };
+  const base = (conn.baseURL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+  const key = (conn.apiKey ?? "").trim();
+  const res = await fetch(`${base}/models`, {
+    ...(key === "" ? {} : { headers: { authorization: `Bearer ${key}` } }),
+  });
+  if (!res.ok) throw new Error(`${provider} ${base}/models ${String(res.status)}`);
+  const json = (await res.json()) as { data?: Array<{ id?: unknown }> };
+  const rows = Array.isArray(json.data) ? json.data : [];
+  // ★**벤더가 알려주면 받는다** (2026-08-31). 컨텍스트 길이를 알면 잘림을 **보내기 전에**
+  //  말할 수 있다. 필드 이름은 벤더마다 다르다(실측: OpenRouter `context_length` ·
+  //  Groq `context_window` · google 은 **안 준다**) — 아는 이름만 읽고 없으면 침묵한다.
+  //  **지어내지 않는다**: 모르는 컨텍스트를 추측하면 멀쩡한 모델을 못 쓰게 막는 것처럼 된다.
+  return buildCompatDiscoverResult(rows as Array<Record<string, unknown>>);
+};
+
 /** provider 조회 결과 — 모델 목록 + (있으면) 모델별 설계 기본 추론 강도. */
 interface DiscoverResult {
   slugs: string[];
   reasoning?: Record<string, string>;
+  /** 모델별 컨텍스트 토큰 — 벤더가 알려줄 때만. 없으면 모르는 것이다(추측 금지). */
+  context?: Record<string, number>;
+  /** 모델별 도구 지원 — 벤더가 **선언했을 때만**. 부재 = 모름(≠ 지원 안 함). */
+  tools?: Record<string, boolean>;
+  /**
+   * ★**이 목록의 순서에 의미가 없다**(2026-08-31). 표준 `/models` 는 정렬을 약속하지 않고
+   *  종류도 섞여 나온다(정품 openai 는 임베딩·TTS·이미지까지 한 배열이다). 그런데
+   *  `catalogTierModel` 의 일반 경로는 *"첫 원소가 최상급"* 을 전제한다 — 그건 **최신순을
+   *  주는 조회**(codex)를 위해 쓰인 것이다.
+   * ★없으면 순위 있음(기존 동작 보존) — 옛 캐시를 읽어도 회귀 0.
+   */
+  unranked?: boolean;
 }
 
 /**
@@ -329,10 +470,22 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
   // ★reasoning 은 provider 실패 시에도 **직전 값을 잃지 않는다** — 목록과 같은 규칙
   //  ("한 번 흔들렸다고 아는 것을 잃지 않는다").
   const nextReasoning: Record<string, string> = { ...(cache?.reasoning ?? {}) };
+  const nextUnranked = new Set<string>(cache?.unranked ?? []);
+  const nextContext: Record<string, number> = { ...(cache?.context ?? {}) };
+  const nextTools: Record<string, boolean> = { ...(cache?.tools ?? {}) };
   let changed = false;
+  // ★조회 대상을 **손으로 적지 않는다** (2026-08-31). 종전엔 배열에 둘을 적어뒀고, 그래서
+  //  새 provider 를 붙여도 목록이 영원히 비어 있었다([[feedback_hand_maintained_lists]]).
+  //  규칙: 전용 조회가 있는 둘 + **openai 어댑터를 쓰는 provider 전부**(표준 `/models`).
+  const compat = listProviderNames().filter(
+    (n) => resolveProviderConn(n)?.adapter === "openai",
+  );
   const jobs: Array<[string, () => Promise<DiscoverResult>]> = [
     ["anthropic", discoverAnthropic],
     ["codex", discoverCodex],
+    ...compat.map(
+      (n): [string, () => Promise<DiscoverResult>] => [n, () => discoverOpenAiCompat(n)],
+    ),
   ];
   for (const [provider, fn] of jobs) {
     if (!providerAuthAvailable(provider)) continue;
@@ -349,6 +502,10 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
         changed = true;
       }
       next[provider] = list;
+      if (res.unranked === true) nextUnranked.add(provider);
+      else nextUnranked.delete(provider);
+      for (const [m, n] of Object.entries(res.context ?? {})) nextContext[`${provider}:${m}`] = n;
+      for (const [m, t] of Object.entries(res.tools ?? {})) nextTools[`${provider}:${m}`] = t;
       // ★그 provider 의 키를 **통째로 교체**한다 (적대 검토 B1 곁가지). 병합만 하면 벤더가
       //  어떤 모델의 `default_reasoning_level` 을 없애도 우리 옛 값이 영구히 이긴다 —
       //  신선도 미요구와 겹쳐 되돌릴 방법이 없어진다. 조회가 **성공했을 때만** 교체하므로
@@ -368,6 +525,9 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
     fetchedAt: Date.now(),
     models: next,
     ...(Object.keys(nextReasoning).length > 0 ? { reasoning: nextReasoning } : {}),
+    ...(nextUnranked.size > 0 ? { unranked: [...nextUnranked].sort() } : {}),
+    ...(Object.keys(nextContext).length > 0 ? { context: nextContext } : {}),
+    ...(Object.keys(nextTools).length > 0 ? { tools: nextTools } : {}),
   };
   if (changed || !existsSync(CATALOG_FILE())) {
     try {
@@ -429,4 +589,46 @@ export const resolveReasoningEffort = (
   // '같은 판정으로 통일' 이 절반만 참이면 두 자리는 언젠가 다시 갈린다(적대 검토 지적).
   const t = v.trim();
   return t === "" ? undefined : t;
+};
+
+/**
+ * `provider:model` 의 컨텍스트 토큰 — 모르면 `undefined`.
+ *
+ * ★신선도를 요구하지 않는다(`catalogModelKeys` 와 같은 이유) — 컨텍스트 길이는 목록처럼
+ *  늙지 않고, 낡았다고 안 쓰면 오프라인에서 경고가 조용히 사라진다.
+ */
+export const catalogContextTokens = (provider: string, model: string): number | undefined => {
+  ensureLoaded();
+  return cache?.context?.[`${provider}:${model}`];
+};
+
+/**
+ * `provider:model` 이 도구를 지원하나 — **모르면 `undefined`**(≠ `false`).
+ *
+ * ★삼상태를 소비처까지 들고 간다. `false` 로 뭉개면 *"선언 안 한 모델"* 이 *"도구 못 쓰는
+ *  모델"* 이 되어, 실제로는 되는 모델을 못 쓰게 막는 것처럼 읽힌다.
+ */
+export const catalogSupportsTools = (provider: string, model: string): boolean | undefined =>
+  (ensureLoaded(), cache?.tools?.[`${provider}:${model}`]);
+
+/**
+ * `provider:model` → 화면이 쓸 능력 꼬리표 재료. **`/models` 렌더러에 주입한다.**
+ *
+ * ★**`index.ts` 에서 뽑아냈다** (2026-08-31). 조회를 부팅 파일 안 인라인 클로저로 두면
+ *  그 배선을 재려고 데몬을 띄워야 하고, 그래서 **끊어도 스위트가 초록**이었다(실측).
+ *  이 레포가 이미 같은 대가를 치렀다 — `/logs` 규칙을 `index.ts` 에 뒀다가 grep 검사밖에
+ *  못 했고, 모듈로 뽑자 동작 검사가 변이를 5/5 잡았다
+ *  ([[feedback_simple_composable_no_duplication]]).
+ * ★**아무것도 모르면 `undefined`** — 삼상태를 화면까지 그대로 옮긴다(뭉개면 화면이 거짓말).
+ */
+export const modelCapsFor = (
+  spec: string,
+): { context?: number; tools?: boolean } | undefined => {
+  const i = spec.indexOf(":");
+  if (i < 0) return undefined;
+  const provider = spec.slice(0, i);
+  const model = spec.slice(i + 1);
+  const context = catalogContextTokens(provider, model);
+  const tools = catalogSupportsTools(provider, model);
+  return context === undefined && tools === undefined ? undefined : { context, tools };
 };

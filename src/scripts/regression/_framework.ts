@@ -117,3 +117,27 @@ export const i18nForContext = (
         params[name] === undefined ? whole : String(params[name]),
       );
 };
+
+/**
+ * 플러그인 소스를 **빌드 프로그램에 끌어들이지 않고** 실행한다.
+ *
+ * ★`npm run build` 는 `tsconfig.json`(rootDir=`src`, include=`src`)을 쓴다 — 회귀가
+ *  `plugins/…` 를 **리터럴로** import 하면(정적이든 `await import("…")` 이든 tsc 는 둘 다
+ *  정적으로 따라간다) `TS6059` 로 **빌드 전체가 깨진다.** 2026-09-01 실측: DEV·배포 트리
+ *  양쪽에서 `rc=2`. `npm run typecheck` 는 `tsconfig.check.json`(rootDir=`.`)이라
+ *  **통과해서 안 보였다** — 설정이 둘인데 하나만 검사하고 있었다.
+ *
+ * ★**이게 왜 문제인가는 「사용자 업데이트가 깨져서」가 아니다** — 처음에 그렇게 적었고
+ *  틀렸다. 전수로 세어보면 `npm run build` 를 부르는 코드 경로는 **0개**다: `/update` 는
+ *  `tsc -p tsconfig.build.json`(rootDir=`.`), 설치·dep-free 갱신은 `build:prod`. 실제
+ *  소비처는 **공개 CI** 뿐이다. 즉 이건 사고가 아니라 **경계 게이트가 빨강이 되는 것**이고,
+ *  `plugin-widget-end-to-end.ts` 가 이미 그 프레임으로 적어뒀다 —
+ *  *"`npm run build` 는 「src 가 src 밖을 정적으로 짚지 않는가」를 보는 유일한 자리"*.
+ *  재지 않고 쓴 «전 사용자» 라는 말이 인접한 두 파일을 서로 반대로 만들 뻔했다.
+ *
+ * 지정자를 **계산**하면 tsc 가 못 따라가 프로그램에 안 들어온다. 타입은 호출부가 자기가
+ * 쓸 모양만 적는다 — `typeof import("…")` 을 쓰면 그 파일이 **다시** 프로그램에 들어와
+ * 원래 문제로 돌아간다.
+ */
+export const loadPluginModule = async <T>(relFromThisDir: string): Promise<T> =>
+  (await import(new URL(relFromThisDir, import.meta.url).href)) as T;

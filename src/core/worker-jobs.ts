@@ -1200,6 +1200,22 @@ export const asFiniteTimeoutMs = (ms: number): number =>
  *
  *  강제 종료가 필요하면 `WORKER_TIMEOUT_MS` 에 유한값을 주면 종전 동작이 살아난다(기본 무한).
  */
+/**
+ * **이 스레드를 잡 점검이 지키는가** (2026-08-31).
+ *
+ * ★codex 도구 한도에서 «잘라야 하나 이어가야 하나» 를 가르는 판정이다. 이어가도 되는
+ *  이유는 위 점검이 **활동 기준**으로 런어웨이를 잡기 때문인데, 그 보호는 매니저·에이전트
+ *  스레드에만 있다. 사용자가 기다리는 대화는 그 방어가 없으므로 이어가면 안 된다.
+ *
+ * ★**여기 두는 이유**: 판정의 근거가 점검이므로 소유자가 점검을 가진 이 파일이다. 그리고
+ *  어댑터 안 인라인 조건으로 두면 그 분기를 **실행으로 잴 수가 없다** — 실측으로 조건을
+ *  `false` 로 바꿔도 회귀가 초록이었다(검사가 문장의 존재만 보고 도달을 못 봤다).
+ * ★`health-sweep` 에도 비슷한 접두사 검사가 있지만 **질문이 다르다** — 거기는 *"내 대화가
+ *  아닌가"* 라 엔드포인트·게이트웨이도 센다. 이름이 같다고 합치지 않는다(SYSTEM.md §통합).
+ */
+export const isCheckinGuardedThread = (threadKey: string): boolean =>
+  threadKey.startsWith("worker:") || threadKey.startsWith("agent:");
+
 export const JOB_CHECKIN_INTERVAL_MS = parseTimeoutEnv(
   process.env.JOB_CHECKIN_INTERVAL_MS,
   2 * 60 * 60_000,

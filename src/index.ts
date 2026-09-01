@@ -323,15 +323,12 @@ try {
 // 가장 이른 지점. 실패해도 빈 상태로 진행(종전 동작).
 restoreCooldowns();
 
-// auth-provider 등록 (2026-07-18, 계약 §5·§8) — Tier 2 구독 인증(codex OAuth)을 레지스트리에
-// self-register 하는 side-effect 모듈을 optional dynamic import 로 로드. 첫 turn 전 완료 보장
-// (부팅 초기·채널 기동 전). Business/OSS 빌드는 이 파일을 EXCLUDE → import 실패 → catch 로
-// graceful(레지스트리 빈 채, codex 백엔드가 조회 시 typed 에러→폴백). 코어 크래시 0.
-await import("./core/llm-runtime/auth-providers.js").catch((e) => {
-  console.log(
-    `[auth-provider] codex 구독 인증 미등록(EXCLUDE 빌드 또는 로드 실패): ${String(e)}`,
-  );
-});
+// ★구독 인증은 **번들 플러그인**이 등록한다 (2026-09-01) — 여기엔 없다.
+//  종전엔 `auth-providers.ts` 를 optional dynamic import 하는 코어 배선이었는데, 그러면
+//  코어가 먼저 잡아(이 자리 < 플러그인 적재) 플러그인이 원리적으로 그 id 를 못 가져간다.
+//  «플러그인으로 뺀다» 가 이름뿐이 되지 않으려면 등록 자체가 플러그인이어야 한다.
+//  이제 Business 판이 빼는 단위는 코어 파일 하나가 아니라 **플러그인 디렉터리**다
+//  (`plugins/weather/`·`plugins/map/` 를 배포에서 빼는 것과 같은, 이미 도는 기제).
 
 // 잔존 self-restart 예약작업 정리 (win32 only, best-effort). 직전 /restart 가 만든 1회성
 // schtasks 작업이 이 부팅을 띄운 뒤 목록에 남아있으면 제거(멱등 — 없으면 no-op). 재발화는

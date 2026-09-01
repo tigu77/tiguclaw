@@ -105,6 +105,27 @@ const KNOWN_UPSTREAM_LIMITS: ReadonlyArray<{ match: RegExp; note: string }> = [
 export const upstreamLimitNote = (errStr: string): string =>
   KNOWN_UPSTREAM_LIMITS.find((k) => k.match.test(errStr))?.note ?? "";
 
+/**
+ * 폴백 고지에 실릴 **사유 한 줄**을 만든다 — 해설을 앞에, 상류 원문은 뒤에서 200자.
+ *
+ * ★조립을 여기로 뽑은 이유 (2026-09-01). 종전엔 `runRegionA` 안에 네 줄로 흩어져 있어서,
+ *  회귀가 **소스 문자열**로만 확인할 수 있었다. 그래서 `const note = upstreamLimitNote(...)`
+ *  를 `= ""` 한 줄로 바꾸면 P1 이 통째로 죽는데(해설이 다시 뒤에 붙어 200자에 잘린다)
+ *  스위트가 초록이었다 — 부품(`upstreamLimitNote`)만 실행하고 **조립은 안 봤다.**
+ *
+ * ★**해설이 자르기보다 앞이다.** 동기가 된 실측 오류(Gemini 400 JSON)가 **485자**라,
+ *  해설을 뒤에 붙이고 전체를 자르면 정작 그 사례에서 해설이 안 보인다.
+ * ★**해설은 전부 걷어낸다** — `replace` 는 첫 하나만 지운다. `errorDetail` 을 두 번 지난
+ *  오류면 해설이 두 번 들어가고 하나가 본문에 남아 200자를 잡아먹는다.
+ * ★자르는 것은 **상류 원문뿐**이고, 그 원문만 재액터를 지난다(해설은 우리가 쓴 고정 문자열).
+ */
+export const fallbackReason = (rawDetail: string): string => {
+  const note = upstreamLimitNote(rawDetail);
+  const stripped = note === "" ? rawDetail : rawDetail.split(`\n\n★ ${note}`).join("");
+  const body = redactSecrets(stripped).replace(/\s+/g, " ").trim().slice(0, 200);
+  return note === "" ? body : `★ ${note}\n${body}`;
+};
+
 // undici fetch 실패는 표면 message "fetch failed", 진짜 원인은 e.cause 에 있음.
 // cause 까지 펼쳐 진단 소실 차단.
 // export (2026-06-02) — daemon catch 가 사용자 채널 에러 노출에 재사용 (중복 구현 금지).
@@ -1464,13 +1485,7 @@ export const runRegionA = async (
       //  **485자**라 해설이 통째로 잘려나갔다. 즉 *"사용자가 자기 설정을 의심한다"* 를
       //  고치려고 넣은 문장이 **정작 그 사례에서 안 보였다.**
       //  이제 해설을 따로 뽑아 **앞에** 두고, 자르는 건 상류 원문뿐이다.
-      const rawDetail = lastError === undefined ? "" : errorDetail(lastError);
-      const note = upstreamLimitNote(rawDetail);
-      const body = redactSecrets(rawDetail.replace(note === "" ? "" : `\n\n★ ${note}`, ""))
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 200);
-      const reason = note === "" ? body : `★ ${note}\n${body}`;
+      const reason = fallbackReason(lastError === undefined ? "" : errorDetail(lastError));
       const notice =
         `\n\n⚠️ 지정 모델 \`${requestedLabel}\` 을(를) 쓸 수 없어 기본 모델로 답했습니다.` +
         (reason === "" ? "" : `\n사유: ${reason}`) +

@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { errorDetail, fallbackReason } from "../../core/llm-runtime/index.js";
 import { redactSecrets } from "../../core/outbound-sanitize.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -43,16 +44,37 @@ export const check: RegressionCheck = {
     const block = at < 0 ? "" : code.slice(Math.max(0, at - 1200), at + 600);
 
     const carries = /사유: \$\{reason\}/.test(block);
+    // ★**조립을 실행해서 잰다** (2026-09-01). 종전엔 이 판정이 전부 소스 문자열이라
+    //  `const note = upstreamLimitNote(...)` 를 `= ""` 한 줄로 바꾸면 P1 이 통째로 죽는데
+    //  (해설이 다시 본문 뒤로 가 200자에 잘린다) 스위트가 초록이었다 — 부품만 실행하고
+    //  조립은 안 봤다. 이제 조립이 `fallbackReason` 이라 **넣어보고 본다.**
+    //  픽스처는 동기가 된 실측 오류다: Gemini 400 JSON, 그 길이가 **485자**였다.
+    const upstream485 =
+      'openai: 400 {"error":{"message":"Function call is missing a thought_signature. ' +
+      "Please ensure the thought_signature returned by the model is passed back in the " +
+      "subsequent request. This is required for the model to maintain its reasoning " +
+      "context across turns. See https://ai.google.dev/gemini-api/docs/thinking for " +
+      'details.","status":"INVALID_ARGUMENT","code":400}}' +
+      " ".repeat(0);
+    const assembled = fallbackReason(errorDetail(new Error(upstream485)));
+    // ①해설이 **보인다** ②해설이 맨 앞이다 ③원문도 조금은 남는다 ④전체가 폭주하지 않는다
+    const noteVisible = assembled.startsWith("★ ") && /도구 호출이 안 됩니다/.test(assembled);
+    const bodyKept = /400/.test(assembled);
+    const bounded = assembled.length < 600;
+    // ★해설이 **두 번 들어가지 않는다** — `errorDetail` 을 두 번 지난 오류(감싸기)에서
+    //  `replace` 는 첫 하나만 지웠다. 그 둘째가 본문 200자를 잡아먹는다.
+    //  ★본문이 **짧아야** 잰다. 485자로 재면 둘째 해설이 200자 절단 뒤로 밀려 안 보이고,
+    //   그러면 `replace`(첫 하나만 제거)로 되돌려도 통과한다 — 실측으로 그 변이가 초록이었다.
+    //   경계를 안 넘는 픽스처는 검사가 아니다.
+    const short = "400 thought_signature missing";
+    const doubled = fallbackReason(errorDetail(new Error(errorDetail(new Error(short)))));
+    const noDoubleNote = (doubled.match(/도구 호출이 안 됩니다/g) ?? []).length === 1;
     // ★**해설이 자르기보다 앞에 놓인다** (적대 검토 P1). 종전엔 해설이 본문 뒤에 붙고
     //  전체를 200자로 잘랐다 — 동기가 된 실측 오류가 **485자**라 해설이 통째로 잘려나갔다.
     //  즉 이 릴리스의 요점이 **정작 그 사례에서 안 보였다.** 자르는 건 상류 원문뿐이어야 한다.
     // 자르는 대상이 `body`(상류 원문)이고, `reason` 은 해설을 **앞에** 이어 붙인다.
-    const noteFirst =
-      /const body = [\s\S]{0,200}?\.slice\(0, 200\)/.test(block) &&
-      /const reason = note === ""/.test(block) &&
-      /`★ \$\{note\}/.test(block) &&
-      !/const reason[\s\S]{0,120}?\.slice\(0, 200\)/.test(block);
-    const redacted = /redactSecrets\(/.test(block);
+    const noteFirst = noteVisible && bodyKept && bounded;
+    const redacted = /fallbackReason\(/.test(block);
     // ★사유는 lastError 에서 온다 — 문구를 새로 짓지 않는다(어댑터가 낸 것을 그대로).
     const fromAdapter = /errorDetail\(lastError\)/.test(block);
 
@@ -62,13 +84,18 @@ export const check: RegressionCheck = {
     // ② 동작 — 재액터가 실제로 토큰을 지우는가(문자열 존재가 아니라 실행으로).
     const probe = `400 upstream said Authorization: Bearer sk-or-v1-${"a".repeat(40)} failed`;
     const cleaned = redactSecrets(probe);
-    const wiped = !cleaned.includes(`sk-or-v1-${"a".repeat(40)}`);
+    const wiped =
+      !cleaned.includes(`sk-or-v1-${"a".repeat(40)}`) &&
+      // ★조립을 **통과시켜서도** 확인한다 — 재액터가 조립 안에 실제로 있는지.
+      !fallbackReason(probe).includes(`sk-or-v1-${"a".repeat(40)}`);
 
     return [
       assert(
         "★★폴백 고지가 **사유를 싣는다** — 없으면 사용자는 오타와 기능미지원을 구분할 수 없고, 원격 인스턴스는 로그도 못 본다",
-        block !== "" && carries && fromAdapter && noteFirst,
-        block === "" ? "★고지 블록을 못 찾음" : `사유 포함=${String(carries)} · 어댑터 원문=${String(fromAdapter)} · 해설이 자르기 앞=${String(noteFirst)}`,
+        block !== "" && carries && fromAdapter && noteFirst && noDoubleNote,
+        block === ""
+          ? "★고지 블록을 못 찾음"
+          : `485자 오류 → ${assembled.length}자 · 첫머리="${assembled.slice(0, 24)}…" · 원문잔존=${String(bodyKept)} · 이중해설(짧은본문 ${short.length}자)=${(doubled.match(/도구 호출이 안 됩니다/g) ?? []).length}회`,
       ),
       assert(
         "★★그 사유가 **재액터를 지난다** — 상류 오류 본문엔 요청 헤더가 섞여 나올 수 있고, 이 문장은 화면과 기록으로 간다",

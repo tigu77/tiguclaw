@@ -47,8 +47,36 @@ export interface AuthProvider {
 /** provider-id 키 코어 레지스트리. */
 const registry = new Map<string, AuthProvider>();
 
-/** auth provider 등록(멱등 — 같은 provider id 재등록 시 최신으로 대체). */
+/**
+ * auth provider 등록 — ★**먼저 잡은 쪽이 갖는다** (2026-09-01).
+ *
+ * ★종전엔 *"멱등 — 같은 id 재등록 시 최신으로 대체"* 였다. 코어만 등록하던 동안엔 무해했지만,
+ *  **구독 인증을 플러그인으로 옮기면 그 규칙이 곧 가로채기 문**이 된다: 나중에 뜬 플러그인이
+ *  `claude-subscription` 을 덮으면 *"이 토큰은 유효하다"* 를 그쪽이 답하게 된다.
+ *
+ * ★**규칙은 `tool-name-claim.ts` 와 같다** — 도구 이름도 같은 질문("늦게 온 것이 먼저 잡은
+ *  것을 덮지 못하게")에 같은 답을 한다. 함수를 합치지는 않았다: 저쪽은 이름 배열과 브리지
+ *  맵을 다루고 여기는 provider 객체 하나라, 하나로 묶으려면 제네릭이 판정보다 커진다.
+ *  **같은 규칙이라는 것은 이 주석이 잇는다.**
+ *
+ * ★**조용히 버리지 않는다.** 거절하면 누가 무엇을 뺏으려 했는지 로그에 남긴다 — 플러그인
+ *  작성자는 그걸 봐야 고친다([[feedback_logs_must_stand_alone]]).
+ *
+ * ★그리고 이건 **격리가 아니다.** 격리가 0이라 남의 코드가 이 모듈을 직접 import 해서
+ *  `registry` 를 건드릴 수는 없지만(모듈 지역 변수다), 코어의 다른 문으로 우회할 여지는
+ *  남는다. 여기서 막는 것은 **덮어쓰기 한 가지**다 — 그 이상을 약속하지 않는다.
+ */
 export const registerAuthProvider = (p: AuthProvider): void => {
+  const held = registry.get(p.provider);
+  if (held !== undefined) {
+    if (held === p) return; // 같은 객체 재등록 = 무해한 중복 배선.
+    console.warn(
+      `[auth] provider id '${p.provider}' 는 이미 등록돼 있어 **거절**했습니다 — ` +
+        `먼저 잡은 쪽이 갖습니다. 늦게 온 등록이 인증 판정을 덮으면 "이 토큰은 유효하다" 를 ` +
+        `그쪽이 답하게 됩니다. 다른 id 를 쓰세요.`,
+    );
+    return;
+  }
   registry.set(p.provider, p);
 };
 

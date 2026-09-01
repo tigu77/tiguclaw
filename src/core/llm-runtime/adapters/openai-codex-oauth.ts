@@ -150,7 +150,18 @@ import {
 // 외부 importer(index.ts·llm-runtime/index.ts·scripts/{doctor,codex-auth,e2e-compaction})
 // 는 계속 이 파일에서 import 한다. auth/history 로 이동한 공개 심볼을 그대로 재노출.
 export * from "./openai-codex-oauth-auth.js";
+import {
+  capAdvice,
+  isCheckpointDue,
+  isWindowEnd,
+  iterLabel,
+  shouldStopContinuing,
+  willAutoContinue,
+  capFlushPrompt,
+  withinWindow,
+} from "./openai-codex-oauth-loop.js";
 export * from "./openai-codex-oauth-history.js";
+export * from "./openai-codex-oauth-loop.js";
 
 const CODEX_DEFAULT_MODEL = "gpt-5.5";
 
@@ -1051,6 +1062,15 @@ export const runOpenAiCodex = async (
   // CODEX_MAX_TOOL_ITERATIONS 는 soft checkpoint 간격(진행 nudge).
   let finalText = "";
   /**
+   * 지금 요청한 마무리 턴 **뒤에 이어서 계속 도는가** — 마무리를 **요청할 때** 정하고,
+   * 이어갈지 정할 때 **그 결정을 그대로 쓴다**.
+   *
+   * ★두 번 판단하지 않는 게 요점이다. 모델에게 «최종 요약» 을 시켜놓고 이어 돌리면
+   *  사용자 눈엔 «완료라고 해놓고 계속 도는 것» 이 된다(라이브 worker:4bb5d813).
+   *  판정 자체는 `willAutoContinue` 한 곳에 있다.
+   */
+  let flushWillContinue = false;
+  /**
    * **마지막 텍스트 이후 실행한 도구 수** — "예고만 하고 사라지는 턴" 탐지용 (2026-07-29).
    *
    * gpt 계열은 "확인하겠습니다" 같은 *예고*를 먼저 뱉고 도구를 부른 뒤, 다음 iteration 을
@@ -1228,8 +1248,10 @@ export const runOpenAiCodex = async (
   let iterationBase = 0;
   /** 자동 이어가기 횟수 — 로그로만 쓴다(제한 아님). 헛돈 게 있으면 로그로 잡힌다. */
   let autoContinues = 0;
-  /** 이어가기 누적 iteration — 한 턴이 실제로 얼마나 컸는지 로그가 말해야 한다. */
-  let totalIterations = 0;
+  // ★누적 iteration 을 **따로 담지 않는다** (2026-09-01). `totalIterations = iteration` 은
+  //  사본일 뿐이었는데, 그 한 줄을 `= 0` 으로 바꾸면 백스톱이 상수 0 을 받아 **영원히 안
+  //  걸린다** — 순수 함수는 옳은데 어댑터가 틀린 값을 먹이는 이음매였다(실측: 그 변이가
+  //  스위트를 통과했다). 사본을 없애면 그 자리가 사라진다.
   // 2026-06-05 (C+) — finalFlush turn 자체도 빈 텍스트 종료하는 경우 1회 더 강한 nudge
   //  로 재시도. 기존엔 flush 응답이 비어도 즉시 break → fallback 메시지로 떨어졌음.
   //  postFlushRetry 1회 한정 (재시도 무한 방지 — flag 한 번 set 되면 다음엔 break).
@@ -1311,7 +1333,7 @@ export const runOpenAiCodex = async (
   try {
     // ★창(window)으로 본다 — 이어갈 때 `iterationBase` 만 옮기고 `iteration` 은 계속 는다.
     //  (0 으로 되돌리면 iteration 0 전용 입력 상한 가드가 다시 켜져 부작용 중복을 부른다.)
-    while (iteration < iterationBase + CODEX_MAX_TOOL_ITERATIONS_HARD) {
+    while (withinWindow(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)) {
       // 2층 도구 루프 가드 (TT-I6, §4.4 #1) — iteration 진입(다음 LLM 호출) 직전 체크.
       // codex 는 수동 agentic 루프라 callTool 에 signal 이 안 들어간다(MCP 한계). 직전
       // iteration 의 도구 1개가 행이었어도 *그 도구가 반환하면* 여기서 다음 fetch 진입을
@@ -1952,9 +1974,12 @@ export const runOpenAiCodex = async (
         //  `WORKER_TIMEOUT_MS` 기본값도 무한이다. 즉 그때는 **아무도 안 막고 있었다.**
         // ★**메인 턴엔 안 붙인다** — 그 방어가 매니저·에이전트에만 있기 때문이다. 사용자가
         //  기다리는 대화가 혼자 무한히 도는 것은 다른 문제다.
-        if (isCheckinGuardedThread(input.threadKey)) {
+        // ★**마무리를 요청할 때 정한 그 결정을 쓴다** (2026-09-01). 종전엔 여기서 다시
+        //  `isCheckinGuardedThread` 를 물었고, 백스톱도 여기서 따로 쟀다 — 즉 «뭐라고
+        //  시킬까» 와 «이어갈까» 가 **두 번 판단**됐다. 그래서 모델에겐 «최종 요약» 을
+        //  시켜놓고 이어 돌리는 상태가 성립했다. 판정은 `willAutoContinue` 한 곳이다.
+        if (flushWillContinue) {
           autoContinues += 1;
-          totalIterations = iteration;
           // ★**누적 백스톱** (적대 검토 P4). 종전 주석은 *"런어웨이 방어는 잡 점검이 맡는다"*
           //  고 적었는데 **양끝을 확인하니 거짓이었다**: 점검의 종료 조건은
           //  `silent = toolEvents===0 && textEvents===0 && inFlight.size===0` 이라
@@ -1962,9 +1987,11 @@ export const runOpenAiCodex = async (
           //  `WORKER_TIMEOUT_MS` 기본값은 `POSITIVE_INFINITY` 다. 즉 **아무도 안 막았다.**
           // ★실측 최대 정당 작업은 **149회**였다. 그 10배를 백스톱으로 둔다 — 정당한
           //  대작업은 안 닿고(이 상한이 원래 지키려던 것), 진짜 런어웨이는 멈춘다.
-          if (totalIterations >= CODEX_MAX_TOTAL_ITERATIONS) {
+          // 방어적 재확인 — `flushWillContinue` 는 마무리 요청 시점 값이라 한 iteration
+          // 이르다. 여기서 넘겼으면 멈춘다(이중 판정이 아니라 **같은 방향의 안전망**이다).
+          if (shouldStopContinuing(iteration, CODEX_MAX_TOTAL_ITERATIONS)) {
             console.error(
-              `[codex-tool-cap-runaway] 누적 도구 반복 ${String(totalIterations)}회가 백스톱 ` +
+              `[codex-tool-cap-runaway] 누적 도구 반복 ${String(iteration)}회가 백스톱 ` +
                 `${String(CODEX_MAX_TOTAL_ITERATIONS)} 에 닿아 **이어가기를 멈춥니다** — ` +
                 `thread=${input.threadKey} model=${model} 이어가기 ${String(autoContinues)}회. ` +
                 `정당하게 긴 작업이면 CODEX_MAX_TOTAL_ITERATIONS 를 올리세요.`,
@@ -1973,7 +2000,7 @@ export const runOpenAiCodex = async (
           }
           console.warn(
             `[codex-tool-cap-continue] 한도 마무리 후 **자동 이어가기** ${String(autoContinues)}회째 — ` +
-              `thread=${input.threadKey} model=${model} 누적 iteration=${String(totalIterations)}/` +
+              `thread=${input.threadKey} model=${model} 누적 iteration=${String(iteration)}/` +
               `백스톱 ${String(CODEX_MAX_TOTAL_ITERATIONS)}.`,
           );
           finalFlushRequested = false;
@@ -2062,6 +2089,15 @@ export const runOpenAiCodex = async (
           //  이미 flush 트리거됐으면 (위 분기에서) 그냥 break.
           if (!finalFlushRequested) {
             finalFlushRequested = true;
+            // ★이 경로에서도 **같은 판정으로** 정한다 (2026-09-01). 안 세우면 기본값
+            //  false 라 빈-응답 마무리 뒤의 이어가기가 **조용히 사라진다** — 계약을
+            //  바꿨으면 그 계약을 세우는 자리를 전수로 본다([[feedback_scope_of_a_fix]]).
+            //  이 경로의 넛지는 «빈 응답» 전용이라 문구는 그대로 둔다(«최종» 을 안 시킨다).
+            flushWillContinue = willAutoContinue(
+              isCheckinGuardedThread(input.threadKey),
+              iteration,
+              CODEX_MAX_TOTAL_ITERATIONS,
+            );
             inputArray.push({
               type: "message",
               role: "user",
@@ -2094,8 +2130,14 @@ export const runOpenAiCodex = async (
       // 전송 안 됨(빈 finalText 그대로 종료). flush 는 HARD-1 슬롯을 *대체*하므로 다음
       // 루프 진입이 보장돼야 한다. flush turn 응답은 위 `if (finalFlushRequested) break`
       // 가 종료를 보장 → 무한 루프 0.
-      if (iteration === iterationBase + CODEX_MAX_TOOL_ITERATIONS_HARD - 1) {
+      if (isWindowEnd(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)) {
         finalFlushRequested = true;
+        // ★**여기서 한 번만 정한다** — 아래 이어가기 분기가 이 값을 그대로 쓴다.
+        flushWillContinue = willAutoContinue(
+          isCheckinGuardedThread(input.threadKey),
+          iteration,
+          CODEX_MAX_TOTAL_ITERATIONS,
+        );
         // ★로그를 남긴다 (2026-08-14). 종전엔 이 백스톱이 **아무 줄도 안 찍고** 발동했다 —
         //  모델은 사용자에게 "도구 호출 한도에 도달했습니다" 라고 말하는데(이 nudge 문구를
         //  그대로 옮겨 적는다) 로그엔 그 사건이 없어서, "자꾸 한도에 걸린다"는 신고를
@@ -2109,11 +2151,14 @@ export const runOpenAiCodex = async (
           .map(([n, c]) => `${n}×${c}`)
           .join(",");
         console.warn(
-          `[codex-tool-cap] 도구 반복 상한 도달 — iter=${iteration - iterationBase}/${CODEX_MAX_TOOL_ITERATIONS_HARD}` +
-            `${iterationBase > 0 ? ` 누적=${iteration}` : ""} ` +
+          `[codex-tool-cap] 도구 반복 상한 도달 — iter=${iterLabel(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)} ` +
             `thread=${input.threadKey} model=${model} 마지막텍스트이후=${toolCallsSinceText}회` +
             `${top !== "" ? ` 상위(${top})` : ""} — 다음 턴은 tools:[] 로 마무리만 시킵니다. ` +
-            `정당하게 긴 작업이면 CODEX_MAX_TOOL_ITERATIONS_HARD 를 올리세요(기본 150).`,
+            capAdvice(
+              isCheckinGuardedThread(input.threadKey),
+              CODEX_MAX_TOOL_ITERATIONS_HARD,
+              CODEX_MAX_TOTAL_ITERATIONS,
+            ),
         );
         // 2026-06-11 (Fix 2) — flush nudge 에도 사용자 원 입력 재주입.
         inputArray.push({
@@ -2122,7 +2167,8 @@ export const runOpenAiCodex = async (
           content: [
             {
               type: "input_text",
-              text: `도구 호출 한도에 도달했습니다. ${userTextEcho}${ranListMsg} 지금까지의 결과로 위 질문에 답하는 형식의 최종 요약 텍스트를 작성하세요. 추가 도구 사용 없이 정리만.`,
+              text: capFlushPrompt({ willContinue: flushWillContinue, userTextEcho, ranListMsg })
+                .text,
             },
           ],
         });
@@ -2137,16 +2183,18 @@ export const runOpenAiCodex = async (
       // 앞세우지 않음), update_todos 로 진행을 추적하도록 안내. lastCheckpointIteration
       // 가드로 같은 iteration 에서 두 번 push 하지 않는다(무한 중복 방지).
       if (
-        iteration > 0 &&
-        (iteration - iterationBase) % CODEX_MAX_TOOL_ITERATIONS === 0 &&
-        lastCheckpointIteration !== iteration
+        isCheckpointDue(
+          iteration,
+          iterationBase,
+          CODEX_MAX_TOOL_ITERATIONS,
+          lastCheckpointIteration,
+        )
       ) {
         lastCheckpointIteration = iteration;
         // 25·50·75… 마다 한 줄. 상한(150)에 부딪히기 **전에** 커지는 턴이 보여야 한다 —
         // 이 줄이 없으면 진단 재료가 "걸렸다/안 걸렸다" 둘뿐이다. 25회 간격이라 소음 아님.
         console.log(
-          `[codex-tool-progress] iter=${iteration - iterationBase}/${CODEX_MAX_TOOL_ITERATIONS_HARD}` +
-            `${iterationBase > 0 ? ` 누적=${iteration}` : ""} ` +
+          `[codex-tool-progress] iter=${iterLabel(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)} ` +
             `thread=${input.threadKey} model=${model} — 계속 진행 nudge.`,
         );
         inputArray.push({
@@ -2556,8 +2604,7 @@ export const runOpenAiCodex = async (
     //  가설 A(reasoning effort 가 텍스트 슬롯 잠식) 검증 + 다음 가설 진단에 사용.
     //  데몬 stderr 로 한 줄 — 사용자 텔레그램 노출 X.
     console.error(
-      `[codex empty-response] threadKey=${input.threadKey} iteration=${iteration - iterationBase}/${CODEX_MAX_TOOL_ITERATIONS_HARD}` +
-        `${iterationBase > 0 ? ` 누적=${iteration}` : ""}` +
+      `[codex empty-response] threadKey=${input.threadKey} iteration=${iterLabel(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)}` +
         ` finalFlush=${finalFlushRequested} postFlushRetry=${postFlushRetryUsed}` +
         ` emptyBreakRetries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES}` +
         ` sideEffect=${sideEffectExecuted}` +

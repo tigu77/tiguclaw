@@ -27,7 +27,15 @@
 import { CODEX_BASE_URL } from "./adapters/openai-codex-oauth-history.js";
 import { resolveCodexModel } from "./adapters/openai-codex-oauth.js";
 import { getAuthProvider } from "./auth-registry.js";
-import "./auth-providers.js"; // side-effect 등록.
+// ★인증 등록은 **여기서 하지 않는다** (2026-09-01). 종전엔 `import "./auth-providers.js"`
+//  side-effect 였는데, 그 파일은 구독 인증을 플러그인으로 빼면서 **삭제됐다.** 그런데
+//  `tsc` 는 **부작용 import 를 검사하지 않는다**(값을 import 해야 TS2307 — 실측) →
+//  타입체크·빌드·회귀 2,505건이 전부 초록인 채로 남아 있었고, 이 기계에서만 **낡은
+//  `dist/**/auth-providers.js`**(빌드가 dist 를 안 치운다)가 그걸 가려주고 있었다.
+//  깨끗한 설치였으면 이 모듈을 부르는 순간 ERR_MODULE_NOT_FOUND 다.
+//  이제 등록 주체는 번들 플러그인(`codex-subscription-auth`)이고, 데몬 경로는 부팅 때
+//  이미 배선돼 있다. 플러그인 로더가 없는 단독 실행(`diagnose-codex`)은 **그쪽이**
+//  부팅과 같은 배선을 만든다 — 등록을 부르는 자리를 늘리지 않는다.
 
 const LEAN_INSTRUCTIONS = "You are a helpful assistant. Answer in one short line.";
 /** 실제 어댑터와 같은 무게로 맞춘다 — 그래야 A/B 가 성립한다. */

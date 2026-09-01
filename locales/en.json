@@ -426,6 +426,7 @@
   "plugins.install.placeholder": "folder name",
   "plugins.installed": "Installed — asks for: {needs}",
   "plugins.need.llm": "calls the model (no tools)",
+  "plugins.need.auth": "provides subscription auth ({ids})",
   "plugins.need.network": "network: {hosts}",
   "plugins.need.networkUnknown": "network: not declared (unknown)",
   "plugins.need.outbound": "speaks on its own",

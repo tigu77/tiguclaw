@@ -47,7 +47,7 @@ export const check: RegressionCheck = {
     const { resolveModelSpecs, resolveTier } = await import(
       "../../core/llm-runtime/index.js"
     );
-    const { providerAuthAvailable } = await import(
+    const { claudeAuthAvailable, providerAuthAvailable } = await import(
       "../../core/llm-runtime/provider-availability.js"
     );
     const { registerAuthProvider, getAuthProvider } = await import(
@@ -95,7 +95,47 @@ export const check: RegressionCheck = {
           ),
         );
       }
-      registerAuthProvider(codexAuthProvider); // 이후는 데몬과 같은 상태(부팅 시 등록).
+      // ── claude 구독: **심이 곧 능력이다** (2026-09-01) ────────────────────────
+      // ★Business 판은 `auth-providers.ts` 를 EXCLUDE 한다 → 심이 없다 → 구독 경로가 닫힌다.
+      //  종전엔 `claudeAuthAvailable()` 이 env 를 직접 읽어서 **뺄 자리가 없었다**(codex 만
+      //  빠지는 비대칭). 이것도 등록 **전에** 재야 한다 — 순서가 곧 판정이다.
+      if (getAuthProvider("claude-subscription") === undefined) {
+        only("CLAUDE_CODE_OAUTH_TOKEN");
+        const noShimSub = !claudeAuthAvailable() && builtinTierPool("high", empty).length === 0;
+        out.push(
+          assert(
+            "★★심이 없으면 구독 토큰이 있어도 claude 가 안 열린다 — Business 판이 구독을 뺄 수 있으려면 이 문이 있어야 한다(없는 상태가 안전한 상태)",
+            noShimSub,
+            noShimSub ? "심 없음 + 토큰 있음 → 닫힘" : "★심 없이도 구독으로 열렸다",
+          ),
+        );
+        // ★반대 방향 — 심이 없어도 **API 키는 그대로 된다.** 키는 레지스트리를 안 지난다.
+        //  여기가 무너지면 «능력 손실이 아니라 비용 차이» 라는 전제 자체가 거짓이 된다.
+        only("ANTHROPIC_API_KEY");
+        const keyStillWorks =
+          claudeAuthAvailable() &&
+          builtinTierPool("high", empty).some((m) => m.startsWith("anthropic:"));
+        out.push(
+          assert(
+            "★★심이 없어도 **API 키 경로는 산다** — 구독을 빼는 것이 claude 를 빼는 것이면 안 된다(공식 API 는 118개이고 구독이 안 주는 상위 모델까지 있다)",
+            keyStillWorks,
+            keyStillWorks ? "심 없음 + 키 있음 → 열림" : "★키까지 같이 막혔다",
+          ),
+        );
+      }
+
+      // ★구독 인증은 이제 **번들 플러그인**이 등록한다 — 코어엔 없다. 여기선 데몬이 그
+      //  플러그인들을 배선한 뒤의 상태를 흉내낸다(실물 배선은 `home-plugin-can-provide-auth`
+      //  가 진짜 플러그인을 설치해서 본다).
+      registerAuthProvider(codexAuthProvider);
+      // ★claude 구독은 **번들 플러그인**이 등록한다 (2026-09-01) — 코어엔 없다. 여기선
+      //  데몬이 그 플러그인을 배선한 뒤의 상태를 흉내낸다. 실물이 정말 그렇게 도는지는
+      //  `home-plugin-can-provide-auth` 가 진짜 플러그인을 설치해서 본다.
+      registerAuthProvider({
+        provider: "claude-subscription",
+        getAccessToken: () => Promise.resolve((process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim()),
+        isAuthenticated: () => (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim() !== "",
+      });
 
       // ★등록은 무조건 일어난다 — 토큰을 한 번도 발급 안 한 설치에서도. 등록을 인증으로
       //  치면 그런 설치가 매 폴백마다 codex 를 한 번씩 때리고, `/models` 는 "인증됨" 이라

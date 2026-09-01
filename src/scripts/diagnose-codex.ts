@@ -20,12 +20,40 @@
  * 실행: `npm run diagnose:codex`  (원격 접속 불가 인스턴스에서 사용자가 직접)
  * 부작용 0 — 도구 미등록·짧은 응답만 요청하고 결과를 저장하지 않는다.
  */
+import path from "node:path";
 import { loadHomeEnv } from "../core/load-env.js";
 import { runCodexWeightProbe } from "../core/llm-runtime/codex-weight-probe.js";
-import "../core/llm-runtime/auth-providers.js"; // side-effect 등록.
+import { getEventBus } from "../core/eventbus.js";
+import { loadPlugins } from "../core/plugins/loader.js";
+import { wirePlugin } from "../core/plugins/wire.js";
+import { appRoot } from "../core/paths.js";
+
+/**
+ * **부팅이 하는 인증 배선을 그대로 만든다** (2026-09-01).
+ *
+ * ★종전엔 `import "../core/llm-runtime/auth-providers.js"` 한 줄이었는데, 그 파일은 구독
+ *  인증을 플러그인으로 빼면서 **삭제됐다.** `tsc` 는 **부작용 import 를 검사하지 않아서**
+ *  (값을 import 해야 TS2307 — 실측) 타입체크·빌드·회귀가 전부 초록이었고, dev 기계에서만
+ *  낡은 `dist` 산출물이 가려주고 있었다. 깨끗한 설치에선 이 스크립트가
+ *  ERR_MODULE_NOT_FOUND 로 죽는다 — 그리고 이 파일은 **public 에 배포된다.**
+ *
+ * ★등록을 여기서 직접 부르지 않는다 — 그러면 «누가 등록하나» 가 두 곳이 되고, 규칙이
+ *  갈리는 순간 한쪽 사용자만 조용히 로그아웃된다. **플러그인이 진실 소스**이므로 부팅과
+ *  같은 것을 로드한다.
+ * ★단 `needs.auth` 를 선언한 것만 배선한다 — 전부 배선하면 http-bridge 가 포트를 잡고
+ *  텔레그램 폴링까지 떠서 **라이브 데몬과 충돌**한다(회귀가 같은 이유로 같은 필터를 쓴다).
+ */
+const wireAuthPlugins = async (): Promise<void> => {
+  const all = await loadPlugins(path.join(appRoot(), "plugins"), getEventBus());
+  const authOnly = all.filter((lp) => Array.isArray(lp.manifest.needs?.auth));
+  for (const lp of authOnly) {
+    await wirePlugin(lp, { bus: getEventBus(), channels: [], serviceStops: [] });
+  }
+};
 
 const main = async (): Promise<void> => {
   loadHomeEnv();
+  await wireAuthPlugins();
   console.log(
     "codex 요청 무게 A/B — 같은 auth·같은 엔드포인트로 LEAN/HEAVY 를 번갈아 2라운드.\n",
   );

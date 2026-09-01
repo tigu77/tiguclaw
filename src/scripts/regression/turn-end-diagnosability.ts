@@ -144,7 +144,7 @@ export const check: RegressionCheck = {
       assert(
         "★도구 상한 로그가 **조건 없이** 찍히고 판정 수치를 자기 문장 안에 담는다",
         unconditional("[codex-tool-cap]") &&
-          /iter=\$\{iteration - iterationBase\}\/\$\{CODEX_MAX_TOOL_ITERATIONS_HARD\}/.test(capBlock) &&
+          /iter=\$\{iterLabel\(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD\)\}/.test(capBlock) &&
           // ★분자·분모가 **같은 좌표계**여야 한다 (2026-09-01 적대 검토 F4). 이어가기가
           //  창을 옮기면서 분자만 절대값이 됐고, 실제 로그가 `iter=1639/150` 을 찍었다 —
           //  분자가 분모를 열 배 넘으니 원격에서 그 줄만 보는 사람은 계산이 깨졌다고 읽는다.
@@ -190,7 +190,7 @@ export const check: RegressionCheck = {
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [
         /^\s*console\.warn\(\s*`\[codex-tool-cap\]/m, // 무조건 출력 + warn 레벨(드문 사건)
-        /iter=\$\{iteration - iterationBase\}\/\$\{CODEX_MAX_TOOL_ITERATIONS_HARD\}/, // 창 안 위치(분모와 같은 좌표계)
+        /iter=\$\{iterLabel\(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD\)\}/, // 라벨은 한 곳(openai-codex-oauth-loop.ts)에서 만든다
         /thread=\$\{input\.threadKey\}/, // 어느 대화인가(원격 진단의 유일한 좌표)
         /상위\(\$\{top\}\)/, // 무엇을 반복했나 — 루프 판별
         /^\s*console\.log\(\s*`\[codex-tool-progress\]/m, // 부딪히기 전에 커지는 게 보인다

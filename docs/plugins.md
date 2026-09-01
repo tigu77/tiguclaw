@@ -118,6 +118,17 @@ registered data routes from plugin: hello (greeting)
 | `trigger` | `startTrigger()` | 스스로 깨어나야 할 때(주기·감시) |
 | `observer` | `startObserver()` | 오가는 것을 지켜볼 때 |
 | `channel` | `startChannel()` · `name` | 새 대화 채널을 붙일 때 |
+| `provider` | 매니페스트에 `provider:{id,entry}` + 그 entry 가 모듈을 냄 | **대시보드 모듈 카드**를 낼 때 |
+
+> ★**`provider` 는 «LLM provider» 가 아닙니다.** 이름이 그렇게 읽히지만, 이 kind 가 내는
+> 것은 대시보드 «모듈» 화면 카드(요약·표·액션·이벤트)입니다. **새 모델 공급자를 붙이는
+> 자리가 아닙니다** — 그건 지금 코어의 provider 레지스트리와 어댑터 구현이고, 플러그인
+> 계약으로 열려 있지 않습니다.
+>
+> 쓰는 법: 매니페스트에 `"kind": ["provider"]` 와 `"provider": { "id": "plugin.<이름>",
+> "entry": "./src/provider.ts" }` 를 적고, 그 entry 에서 셋 중 하나를 냅니다 —
+> `collectProvider()` 가 모듈을 돌려주거나, `provider`/`default` 로 `{ id, load }` 를 냅니다.
+> 실물은 번들 `self-growth` 가 `collectProvider()` 를 씁니다.
 
 어느 kind든 아래는 **있으면 불립니다**(덕 타이핑):
 
@@ -172,7 +183,8 @@ export default class Hello {
   "network": ["api.example.com"],
   "ui": ["chat-widget"],
   "outbound": true,
-  "llm": true
+  "llm": true,
+  "auth": ["claude-subscription"]
 }
 ```
 
@@ -182,6 +194,7 @@ export default class Hello {
 | `ui` | 화면에 붙을 자리 — 지금은 `["chat-widget"]` |
 | `outbound` | `host.say()` 로 **스스로** 말할 수 있음 |
 | `llm` | `host.ask()` 로 모델을 부를 수 있음 — **그 모델은 도구를 안 씁니다** |
+| `auth` | `host.registerAuthProvider()` 로 **구독 인증을 이 설치에서 허용**할 수 있음 — 적은 id 만 |
 
 여기 없는 키를 적으면 로그에 경고가 남고 그 키만 무시됩니다(플러그인은 그대로 뜹니다).
 
@@ -257,6 +270,7 @@ getDataRoutes() {
 | `host.on(type, fn)` | 코어 이벤트 구독. `"worker."` 처럼 `.` 으로 끝나면 접두사 |
 | `host.say({channel, target, text})` | **스스로** 말합니다(`needs.outbound`) |
 | `host.ask({prompt, scope})` | 모델에게 묻습니다(`needs.llm`) |
+| `host.registerAuthProvider(p)` | 구독 인증을 켭니다(`needs.auth`). 부팅 때 `startService(bus, host)` 에서 부르세요 |
 
 ★**`say` 와 `ask` 는 실패를 값으로만 말합니다** — 로그에 안 남습니다. 반드시 받아서 보세요:
 
@@ -355,8 +369,9 @@ handler: async (args, host) => `안녕, ${args.text}`,
 
 - **핸들러가 던져도 데몬은 안 죽습니다** — 그 요청만 502 가 되고 로그에 남습니다. 다만
   `start()` 에서 던지면 그 플러그인만 로드에 실패합니다(다른 플러그인은 무사합니다).
-- ★**앱과 함께 오는 플러그인의 이름은 못 씁니다.** 지금 예약된 이름은 `cli`·`dashboard`·
-  `file-watch`·`http-bridge`·`running-work`·`scheduler`·`self-growth`·`telegram` 입니다. 폴더명이 아니라 **매니페스트의 `name`** 으로 봅니다(폴더는 아무렇게나
+- ★**앱과 함께 오는 플러그인의 이름은 못 씁니다.** 지금 예약된 이름은 `claude-subscription-auth`·`cli`·
+  `codex-subscription-auth`·`dashboard`·`file-watch`·`http-bridge`·`running-work`·`scheduler`·
+  `self-growth`·`telegram` 입니다. 폴더명이 아니라 **매니페스트의 `name`** 으로 봅니다(폴더는 아무렇게나
   둬도 됩니다). 그 이름으로 설치하면 *"같은 이름의 번들 플러그인이 있습니다"* 로 거부됩니다 —
   그 플러그인이 꺼져 있거나 로드에 실패했어도 마찬가지입니다. 이름은 예약된 것이지 그날
   잘 떴느냐에 달린 게 아닙니다.

@@ -25,6 +25,10 @@ import { readLocale } from "../i18n.js";
 import { getPaths } from "../paths.js";
 import { getEventBus } from "../eventbus.js";
 import { deliverOutbound } from "../outbound.js";
+import {
+  getAuthProvider,
+  registerAuthProvider,
+} from "../llm-runtime/auth-registry.js";
 import { pluginFetch } from "../plugin-fetch.js";
 import {
   effectiveSettings,
@@ -61,6 +65,14 @@ export interface PluginNeeds {
   readonly outbound?: boolean;
   /** 모델 호출(`host.ask`). 집행: 선언 없으면 `ask` 가 거부한다. */
   readonly llm?: boolean;
+  /**
+   * **구독 인증을 이 설치에서 허용한다**(`host.registerAuthProvider`) — 서빙할 provider id 들.
+   * 집행: 선언에 없는 id 를 등록하려 하면 거부한다.
+   *
+   * ★대가가 있다: 이게 있으면 데몬이 그 구독으로 **돈이 나가는 호출**을 한다. 없으면 토큰이
+   *  `.env` 에 있어도 안 쓴다 — 설치가 곧 «이 구독을 쓰겠다» 는 귀속 가능한 행위다.
+   */
+  readonly auth?: readonly string[];
   // ★`tools` 키는 **뺐다** (2026-08-29, 적대 검토 A). 넣었다가 실측으로 되돌린 것이다:
   //  코어의 `toolPolicy` 는 `{mode:"allow", names}` 를 만들 수는 있는데 **그 `names` 를
   //  읽는 코드가 레포에 0곳**이고(세 어댑터 전부 `mode === "none"` 한 줄만 본다),
@@ -81,6 +93,8 @@ export interface PluginNeeds {
 export const KNOWN_NEED_KEYS: ReadonlySet<string> = new Set([
   "network",
   "ui",
+  // ★집행한다 — `host.registerAuthProvider` 가 선언에 없는 id 를 거부한다(2026-09-01).
+  "auth",
   "outbound",
   "llm",
 ]);
@@ -116,6 +130,7 @@ export const readNeeds = (raw: unknown): NeedsVerdict => {
     ui?: "chat-widget"[];
     outbound?: boolean;
     llm?: boolean;
+    auth?: string[];
   } = {};
   if (o.network !== undefined) {
     if (!Array.isArray(o.network) || o.network.some((h) => typeof h !== "string")) {
@@ -128,6 +143,12 @@ export const readNeeds = (raw: unknown): NeedsVerdict => {
     const ok = Array.isArray(o.ui) && o.ui.every((v) => v === "chat-widget");
     if (!ok) problems.push('needs.ui 는 ["chat-widget"] 만 받습니다');
     else needs.ui = o.ui as "chat-widget"[];
+  }
+  if (o.auth !== undefined) {
+    const ok =
+      Array.isArray(o.auth) && o.auth.length > 0 && o.auth.every((v) => typeof v === "string" && v !== "");
+    if (!ok) problems.push("needs.auth 는 비어 있지 않은 provider id 문자열 배열이어야 합니다");
+    else needs.auth = o.auth as string[];
   }
   for (const k of ["outbound", "llm"] as const) {
     if (o[k] === undefined) continue;
@@ -148,7 +169,7 @@ export const readNeeds = (raw: unknown): NeedsVerdict => {
  */
 /** 선언 하나 — `kind` 는 i18n 키가 되고, `value` 는 그 안의 자리표시자에 들어간다. */
 export interface NeedFact {
-  readonly kind: "network" | "networkUnknown" | "ui" | "outbound" | "llm";
+  readonly kind: "network" | "networkUnknown" | "ui" | "outbound" | "llm" | "auth";
   readonly value?: string;
 }
 
@@ -180,6 +201,9 @@ export const needsFacts = (needs: PluginNeeds): NeedFact[] => {
   if (needs.outbound === true) facts.push({ kind: "outbound" });
   // ★"도구 없음" 은 지금 **참**이다 — `ask` 는 언제나 `toolPolicy:{mode:"none"}` 으로 돈다.
   if (needs.llm === true) facts.push({ kind: "llm" });
+  if (needs.auth !== undefined && needs.auth.length > 0) {
+    facts.push({ kind: "auth", value: needs.auth.join(", ") });
+  }
   return facts;
 };
 
@@ -192,6 +216,7 @@ export const needsFacts = (needs: PluginNeeds): NeedFact[] => {
 const KO: Record<NeedFact["kind"], (v: string) => string> = {
   network: (v) => `외부 ${v}`,
   networkUnknown: () => "외부 미선언(모름)",
+  auth: (v) => `구독 인증 제공(${v})`,
   ui: (v) => `화면 ${v}`,
   outbound: () => "스스로 말함",
   llm: () => "모델 호출(도구 없음)",
@@ -283,6 +308,30 @@ export interface PluginHost {
     target: string | null;
     text: string;
   }): Promise<{ ok: boolean; error?: string }>;
+
+  /**
+   * **이 설치에서 구독 인증을 허용한다** (`needs.auth`) — 2026-09-01.
+   *
+   * ★왜 플러그인이 하나. Business 판은 코어의 등록 배선을 빼서 구독 경로를 닫는다. 기업이
+   *  그걸 되돌리려면 **자기 책임으로 되돌리는 행위**가 있어야 하는데, 앱 트리를 고치는 것은
+   *  `/update` 가 되살린다(소스에서 다시 빌드한다). **홈 플러그인은 레포 밖이라 살아남는다** —
+   *  그래서 이 문이 목표가 성립하는 유일한 형태다.
+   *
+   * ★**어댑터가 아니라 인증만** 온다. claude 어댑터는 SDK 의존(홈 플러그인엔 `node_modules`
+   *  가 없다 — 폴더에 `npm i` 하면 실측 247MB)이라 코어에 남는다. 여기로 오는 것은 토큰
+   *  판정 하나이고, 그건 env 문자열을 보는 게 전부라 **의존성이 0**이다.
+   *
+   * ★**먼저 잡은 쪽이 갖는다.** 코어가 등록한 id 는 못 뺏는다(부팅 순서상 코어가 먼저다) —
+   *  즉 기본 빌드에선 이 문으로 코어 판정을 덮을 수 없다. Business 빌드에서만 비어 있다.
+   *
+   * ★**격리가 아니다.** 격리가 0이라 마음먹은 코드는 다른 문으로 돈다. 이 문이 막는 것은
+   *  «아무도 모르게 구독으로 돌아가는 것» 이고, 그 이상을 약속하지 않는다.
+   */
+  registerAuthProvider(p: {
+    provider: string;
+    getAccessToken(): Promise<string>;
+    isAuthenticated?(): boolean;
+  }): { ok: boolean; error?: string };
 
   /**
    * 모델에게 묻는다 (`needs.llm`).
@@ -417,6 +466,28 @@ export const createPluginHost = (
       handler({ type: e.type, ts: e.ts, payload: e.payload });
     }),
 
+  registerAuthProvider: (p) => {
+    if (needs.auth === undefined || !needs.auth.includes(p.provider)) {
+      return {
+        ok: false,
+        error:
+          `plugin '${plugin}': '${p.provider}' 를 등록하려면 package.json 의 ` +
+          `tiguclaw.needs.auth 에 그 id 를 적으세요(사용자가 설치 전에 봅니다).`,
+      };
+    }
+    registerAuthProvider(p);
+    // ★**등록됐는지 확인한다** — 코어는 «먼저 잡은 쪽이 갖는다» 라 거절될 수 있고, 그때
+    //  플러그인이 «됐다» 고 믿으면 조용히 아무 일도 안 일어난다.
+    if (getAuthProvider(p.provider) !== p) {
+      return {
+        ok: false,
+        error:
+          `plugin '${plugin}': '${p.provider}' 는 이미 등록돼 있습니다 — 먼저 잡은 쪽이 ` +
+          `갖습니다(기본 빌드에선 코어가 먼저입니다).`,
+      };
+    }
+    return { ok: true };
+  },
   say: async ({ channel, target, text }) => {
     if (needs.outbound !== true) {
       return {

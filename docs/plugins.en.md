@@ -118,6 +118,17 @@ sandbox, "who wrote this" is the only thing a person can judge at install time.
 | `trigger` | `startTrigger()` | You need to wake up on your own |
 | `observer` | `startObserver()` | You watch what goes by |
 | `channel` | `startChannel()`, `name` | You add a new conversation channel |
+| `provider` | `provider:{id,entry}` in the manifest + that entry exports a module | You contribute a **dashboard module card** |
+
+> ★**`provider` is not an "LLM provider".** The name reads that way, but this kind
+> contributes a dashboard *module* card (summary, tables, actions, events). It is **not the
+> place to plug in a new model provider** — that lives in the core provider registry and its
+> adapters, and it is not open as a plugin contract today.
+>
+> How: put `"kind": ["provider"]` and `"provider": { "id": "plugin.<name>", "entry":
+> "./src/provider.ts" }` in the manifest, then export one of three from that entry —
+> `collectProvider()` returning the module, or `provider`/`default` as `{ id, load }`.
+> The bundled `self-growth` plugin uses `collectProvider()`.
 
 Whatever the kind, these are called **if present** (duck typing):
 
@@ -172,7 +183,8 @@ turn: your own chat, a scheduled run, a subagent.
   "network": ["api.example.com"],
   "ui": ["chat-widget"],
   "outbound": true,
-  "llm": true
+  "llm": true,
+  "auth": ["claude-subscription"]
 }
 ```
 
@@ -182,6 +194,7 @@ turn: your own chat, a scheduled run, a subagent.
 | `ui` | Where you attach — `["chat-widget"]` for now |
 | `outbound` | You may speak on your own via `host.say()` |
 | `llm` | You may call the model via `host.ask()` — **that model gets no tools** |
+| `auth` | You may **enable subscription auth on this install** via `host.registerAuthProvider()` — only the ids you list |
 
 An unknown key is logged and ignored — the plugin still loads.
 
@@ -260,6 +273,7 @@ Handed to `getDataRoutes` handlers and tool implementations.
 | `host.on(type, fn)` | Subscribe to core events. Trailing `.` means prefix (`"worker."`) |
 | `host.say({channel, target, text})` | Speak **on your own** (`needs.outbound`) |
 | `host.ask({prompt, scope})` | Ask the model (`needs.llm`) |
+| `host.registerAuthProvider(p)` | Turn on subscription auth (`needs.auth`). Call it from `startService(bus, host)` at boot |
 
 ★**`say` and `ask` report failure only in their return value** — nothing is logged. Always
 check it:
@@ -360,9 +374,9 @@ Bundling and npm also mean you **don't have to publish your source**.
 
 - **A throwing handler won't kill the daemon** — that one request becomes a 502 and the reason
   is logged. But throwing from `start()` fails that plugin's load (others are unaffected).
-- ★**You can't use the name of a plugin that ships with the app.** Currently reserved: `cli`,
-  `dashboard`, `file-watch`, `http-bridge`, `running-work`, `scheduler`, `self-growth`,
-  `telegram`. What counts is the **`name` in your manifest**, not the folder — name
+- ★**You can't use the name of a plugin that ships with the app.** Currently reserved: `claude-subscription-auth`,
+  `cli`, `codex-subscription-auth`, `dashboard`, `file-watch`, `http-bridge`,
+  `running-work`, `scheduler`, `self-growth`, `telegram`. What counts is the **`name` in your manifest**, not the folder — name
   the folder whatever you like. Installing under a reserved name is refused with *"a bundled
   plugin already has that name"*, and that holds even if the bundled one is switched off or
   failed to load. The name is reserved; it doesn't depend on whether it started up today.

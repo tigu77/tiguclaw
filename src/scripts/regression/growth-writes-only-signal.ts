@@ -17,6 +17,8 @@
  *
  * 등급: **동작** — 격리 홈에서 실제로 돌리고 기억이 늘었는지 센다.
  */
+import { existsSync, writeFileSync } from "node:fs";
+import { join as pathJoin } from "node:path";
 import { assert, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
@@ -64,6 +66,22 @@ export const check: RegressionCheck = {
     const loud = generateWeeklyReview(true);
     const afterLoud = reviews();
 
+    // ③ ★**상태 파일이 손상되면** (2026-09-01, 3라운드 F12). 현행 코드는 옳지만 그 축에
+    //  그물이 없었다 — 픽스처가 손상 파일을 안 만들었다. «손상되면 방금 본 것으로 친다»
+    //  변이가 초록이었고, 그건 회고가 **영구히·조용히 멈추는** 것이다.
+    //  자리도 여기서 같이 못 박는다: 코어 공용(`<home>/data/`)이 아니라 이 플러그인의 자리.
+    const { getPaths } = await import("../../core/paths.js");
+    const stateFile = pathJoin(getPaths().commonPlugins, "self-growth", "last-review");
+    const stateInPluginDir = existsSync(stateFile);
+    // ★자리가 틀리면 **깨끗하게 실패**해야 한다 — 첫 판은 여기서 그냥 썼고, 자리를 되돌리는
+    //  변이에서 디렉터리가 없어 **검사가 던졌다**(단언 5개가 통째로 사라졌다). 빨강은 났지만
+    //  그건 판정이 아니라 사고다. 무엇이 관측됐는지 남기려면 던지면 안 된다.
+    let corruptRecovers = false;
+    if (stateInPluginDir) {
+      writeFileSync(stateFile, "쓰레기값", "utf8");
+      corruptRecovers = generateWeeklyReview(false) !== null; // 손상 → «본 적 없음» → 돈다
+    }
+
     return [
       assert(
         "★★신호가 0이면 **기억을 만들지 않는다** — 무내용 항목이 캡 있는 자리에 매주 쌓이면 읽혀야 할 것을 밀어낸다",
@@ -74,6 +92,11 @@ export const check: RegressionCheck = {
         "★★반대 방향 — **신호가 있으면 그대로 쓴다**(전부 안 쓰면 자가성장이 죽는다)",
         afterLoud > afterQuiet && loud?.written === true,
         `${String(afterQuiet)} → ${String(afterLoud)} · written=${String(loud?.written)}`,
+      ),
+      assert(
+        "★★상태 파일이 **손상되면 다시 본다** — «방금 봤다» 로 치면 회고가 영구히·조용히 멈춘다. 그리고 그 파일은 코어 공용이 아니라 이 플러그인의 자리에 산다(지울 때 같이 지워져야 한다)",
+        corruptRecovers && stateInPluginDir,
+        `손상 후 실행=${corruptRecovers ? "돌았다" : "★건너뜀"} · 자리=${stateFile.replace(getPaths().home, "<home>")}`,
       ),
       assert(
         "★안 썼으면 **«추가됨» 을 알리지 않는다** — 계약이 바뀌면 호출부까지 본다(안 쓰고 이벤트만 내면 거짓말이다)",

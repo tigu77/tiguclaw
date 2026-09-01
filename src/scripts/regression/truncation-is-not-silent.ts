@@ -100,6 +100,21 @@ export const check: RegressionCheck = {
       /잘라냈을 수 있습니다/.test(truncationNote(maybe, "m"));
     // 정상(실측 비율 2.18B/토큰 ≈ 26,548)은 여전히 침묵해야 한다 — 오탐은 상시 경고가 된다.
     const normalQuiet = detectTruncation(SENT, 26_548) === null;
+    // ★**문턱 바로 위**를 잰다 (2026-09-01, 3라운드 F8). 위 픽스처의 실제 비율은
+    //  26,548 / (57,875/4) = **1.835** — 문턱(0.85)에서 2.2배 떨어져 있어서
+    //  `SUSPECT_RATIO ≤ 1.835` 는 **뭐든 통과했다.** 실측으로 0.85 → 1.0 도, → 1.8 도
+    //  초록이었다. 1.8 이면 사실상 **모든 호출**에 «잘라냈을 수 있습니다» 가 붙는데,
+    //  그건 이 릴리스가 문턱을 둘로 나눈 이유(«오탐은 상시 경고가 되고 상시 경고는 아무도
+    //  안 본다»)를 정확히 되돌리는 것이다. 경계를 안 넘는 픽스처는 검사가 아니다.
+    const floor = SENT / 4; // 보수 하한(4바이트/토큰)
+    const justAbove = detectTruncation(SENT, Math.ceil(floor * 0.86)) === null;
+    const justBelow = detectTruncation(SENT, Math.floor(floor * 0.84))?.confidence === "의심";
+    // ★사전 판정에 **죽은 필드가 없다** (3라운드 F10). 종전엔 `confidence: "확실"` 을
+    //  억지로 채웠는데 `willTruncateNote` 가 안 읽었다 — 값을 «의심» 으로 바꿔도 스위트가
+    //  초록이었다. 예보는 구조적으로 «확실» 뿐이므로(하한이 넘으면 실제는 반드시 더 많다)
+    //  소비자를 고칠 게 아니라 **필드를 없애는** 것이 답이다. 타입이 아니라 실물을 본다.
+    const pred = predictTruncation(SENT, 4_096);
+    const predNoDeadField = pred !== null && !("confidence" in pred) && pred.sentAtLeast > 4_096;
 
     return [
       assert(
@@ -136,13 +151,28 @@ export const check: RegressionCheck = {
         "★★**69% 유실이 침묵하지 않는다** — 문턱이 하나뿐일 땐 `num_ctx=8192`(흔한 설정)에서 아무 말도 안 했다. 확실한 구간은 단정하고 애매한 구간은 «잘렸을 수 있다» 로 등급을 낮춰 말한다",
         // ★`16384` 는 **침묵이 정직하다** — 보수 하한(14,468)보다 많이 처리했으니 우리가
         //  알 수가 없다. 아는 척하지 않는 게 이 검사의 다른 절반이다.
-        blind.c4096 === "확실" && blind.c8192 !== "침묵" && gradedWording,
+        blind.c4096 === "확실" &&
+          blind.c8192 !== "침묵" &&
+          // ★16,384 는 보수 하한(14,468)보다 **많이 처리한** 값이라 우리가 알 수가 없다 —
+          //  침묵이 정직하다. 계산해 놓고 단언에 안 넣으면 «본 것»이 아니다(3라운드 F9).
+          blind.c16384 === "침묵" &&
+          gradedWording,
         `4096=${blind.c4096} · 8192=${blind.c8192} · 16384=${blind.c16384} · 문구등급=${String(gradedWording)}`,
       ),
       assert(
         "★반대 방향 — **정상 비율엔 여전히 침묵한다**(오탐은 상시 경고가 되고, 상시 경고는 아무도 안 본다)",
         normalQuiet,
         normalQuiet ? "실측 26,548토큰 → 침묵" : "★오탐",
+      ),
+      assert(
+        "★★문턱이 **그 자리에 있다** — 바로 위는 침묵, 바로 아래는 의심. 종전 픽스처는 문턱에서 2.2배 떨어져 있어 `SUSPECT_RATIO` 를 1.8 로 올려도 초록이었다(그러면 사실상 모든 호출에 경고가 붙는다)",
+        justAbove && justBelow,
+        `하한×0.86=${Math.ceil((SENT / 4) * 0.86)} → ${justAbove ? "침묵" : "★경고"} · 하한×0.84=${Math.floor((SENT / 4) * 0.84)} → ${justBelow ? "의심" : "★침묵"}`,
+      ),
+      assert(
+        "★사전 판정엔 **아무도 안 읽는 필드가 없다** — 예보는 구조적으로 «확실» 뿐이라 등급을 채우면 죽은 값이 된다(값을 바꿔도 아무 일도 안 일어났다)",
+        predNoDeadField,
+        `필드=${Object.keys(pred ?? {}).join(",")}`,
       ),
       assert(
         "★★발견이 **벤더 컨텍스트 필드를 실제로 읽는다**(별칭 둘) — 안 읽으면 위 사전 판정이 영원히 침묵한다",

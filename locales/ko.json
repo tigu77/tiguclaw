@@ -426,6 +426,7 @@
   "plugins.install.placeholder": "폴더 이름",
   "plugins.installed": "설치했습니다 — 요구: {needs}",
   "plugins.need.llm": "모델 호출(도구 없음)",
+  "plugins.need.auth": "구독 인증 제공({ids})",
   "plugins.need.network": "외부 {hosts}",
   "plugins.need.networkUnknown": "외부 미선언(모름)",
   "plugins.need.outbound": "스스로 말함",

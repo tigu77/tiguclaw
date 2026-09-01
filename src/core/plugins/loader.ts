@@ -195,7 +195,14 @@ export const readPluginMeta = (pkg: Record<string, unknown>): PluginMeta => {
 };
 
 
-const KNOWN_CAPABILITIES = new Set([
+/**
+ * 아는 capability — 여기 없는 `kind` 는 거부한다.
+ *
+ * ★export 인 이유: 회귀가 **문서와 양방향 대조**한다(2026-09-01). `needs` 키엔 그 그물이
+ *  있었는데 `kind` 엔 없어서, 로더가 받는 `provider` 가 가이드에 **한 줄도 없는** 채로
+ *  살아 있었다 — 받아주면서 설명이 0이면 «LLM provider 를 붙이는 자리» 로 읽힌다.
+ */
+export const KNOWN_CAPABILITIES = new Set([
   "channel",
   "observer",
   "trigger",

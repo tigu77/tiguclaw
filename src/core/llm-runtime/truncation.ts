@@ -40,11 +40,23 @@ const TRUNCATION_RATIO = 0.5;
 /** 이 아래면 «잘렸을 수 있다»(확신 낮음). 실측 비율(2.18)에 더 가깝다. */
 const SUSPECT_RATIO = 0.85;
 
-export interface TruncationVerdict {
+export interface TruncationForecast {
   /** 보낸 바이트로 계산한 **보수적 최소** 토큰 수. */
   readonly sentAtLeast: number;
-  /** 상대가 처리했다고 말한 토큰 수. */
+  /** 상대가 처리했다고 말한 토큰 수(사전 판정에선 그 모델의 컨텍스트 상한). */
   readonly processed: number;
+}
+
+/**
+ * **사후** 판정 — 등급이 붙는다.
+ *
+ * ★사전 판정엔 등급이 없다 (2026-09-01, 3라운드 F10). 예보는 보수 하한(4바이트/토큰)이
+ *  컨텍스트를 넘을 때만 나오는데, 하한이 넘으면 실제 토큰은 **반드시** 더 많다 — 구조적으로
+ *  «확실» 뿐이다. 그래서 종전처럼 `confidence: "확실"` 을 억지로 채우면 **아무도 안 읽는
+ *  죽은 필드**가 된다(실제로 `willTruncateNote` 가 안 읽었고, 값을 «의심» 으로 바꿔도
+ *  스위트가 초록이었다). 타입이 커진 만큼 값이 없으면 타입을 줄인다.
+ */
+export interface TruncationVerdict extends TruncationForecast {
   /** `"확실"` = 단정해도 되는 구간 · `"의심"` = «잘렸을 수 있다» 로만 말한다. */
   readonly confidence: "확실" | "의심";
 }
@@ -98,16 +110,16 @@ export const truncationNote = (v: TruncationVerdict, model: string): string =>
 export const predictTruncation = (
   sentBytes: number,
   contextTokens: number | undefined,
-): TruncationVerdict | null => {
+): TruncationForecast | null => {
   if (contextTokens === undefined || contextTokens <= 0 || sentBytes <= 0) return null;
   const sentAtLeast = Math.floor(sentBytes / CONSERVATIVE_BYTES_PER_TOKEN);
   // 답할 자리도 남아야 하므로 컨텍스트를 꽉 채우면 이미 잘린다.
   if (sentAtLeast <= contextTokens) return null;
-  return { sentAtLeast, processed: contextTokens, confidence: "확실" };
+  return { sentAtLeast, processed: contextTokens };
 };
 
 /** 사전 경고 문구 — 사후와 달리 "잘렸다" 가 아니라 "잘릴 것" 이다. */
-export const willTruncateNote = (v: TruncationVerdict, model: string): string =>
+export const willTruncateNote = (v: TruncationForecast, model: string): string =>
   `이 모델(${model})의 컨텍스트는 ${v.processed.toLocaleString()}토큰인데 우리 프롬프트는 ` +
   `최소 ${v.sentAtLeast.toLocaleString()}토큰입니다 — **지침·메모리·능력 목록이 잘려 나갑니다**(에러는 안 납니다). ` +
   `더 큰 컨텍스트의 모델을 쓰거나, 로컬이면 \`num_ctx\` 를 키우세요.`;

@@ -2298,8 +2298,13 @@ export const onWorkerComplete = async (
   // 아래 종전 경로로 간다(회귀 0).
   if (deliverToSummoner(found, outcome)) {
     console.log(
+      // ★낱말을 바로잡았다 (2026-09-01). 종전엔 «steering 큐로 전달» 이라고 찍었는데
+      //  실제로는 **결과 수신함**(`jobResultChannels`)이다 — 바로 위 코드 주석이 그렇게
+      //  명시하는데 로그만 옛 낱말이었다. 이 한 줄 때문에 사고 재구성 때 전달 경로를
+      //  «개입(steering)» 으로 오독했다. 로그가 1차 진단면이면 틀린 낱말은 틀린 수치와
+      //  같은 무게다([[feedback_logs_must_stand_alone]]).
       `worker-jobs: '${found.label}'(${jobId}) 결과를 소환자 매니저 ` +
-        `${parentJobIdOf(found.threadKey) ?? "?"} 의 steering 큐로 전달 — 다음 model-call 경계에서 반영`,
+        `${parentJobIdOf(found.threadKey) ?? "?"} 의 결과 수신함으로 전달 — 그 매니저가 턴을 마치면 거두기 턴에서 반영`,
     );
     return;
   }

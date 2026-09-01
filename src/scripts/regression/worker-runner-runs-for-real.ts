@@ -28,6 +28,7 @@ import {
   steerJob,
 } from "../../core/worker-jobs.js";
 import { createSteeringChannel } from "../../core/steering.js";
+import { reaches, turnKindOf } from "../../core/llm-runtime/capability-reach.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../../core/llm-runtime/types.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -44,7 +45,7 @@ const until = async (cond: () => boolean, ms = 5000): Promise<boolean> => {
 export const check: RegressionCheck = {
   name: "worker-runner-runs-for-real",
   guards:
-    "매니저 러너의 결과 전달(onWorkerComplete)을 통째로 지워도 스위트가 초록이던 것 — 형제(에이전트) 러너엔 그물이 있는데 이쪽만 없었다 (2026-08-20 재검토 F2)",
+    "매니저 러너의 결과 전달(onWorkerComplete)을 통째로 지워도 스위트가 초록이던 것 — 형제(에이전트) 러너엔 그물이 있는데 이쪽만 없었다 (2026-08-20 재검토 F2). ★거두기 턴의 «범위 보존» 은 `harvest-turn-keeps-scope` 가 따로 잰다(여기선 루프가 도는 것과 깊이만)",
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
     const out: Assertion[] = [];
@@ -199,6 +200,26 @@ export const check: RegressionCheck = {
           "★거두기 재주입 턴도 workerDepth=1 — 이어받는 턴에 팬아웃이 다시 열리면 안 된다",
           depths.length >= 2 && depths.every((d) => d === 1),
           `깊이=${depths.join(",")}`,
+        ),
+      );
+    }
+
+    // ── ⑦ ★매니저의 위임 권한은 **의도된 결정**이다 (표를 직접 물어본다) ─────────────
+    //  `agents: "manager"`(capability-reach.ts:92 "매니저가 자식을 못 띄우면 위임 층이 반쪽").
+    //  거두기 턴에도 이 권한은 유지된다 — 범위 판단은 매니저가 하고, 시스템은 판단 기준
+    //  (원래 과제)을 눈앞에 둘 뿐이다(`harvest-turn-keeps-scope`).
+    {
+      const managerTurn = turnKindOf({ workerDepth: 1 });
+      out.push(
+        assert(
+          "매니저 턴은 turnKind='manager'",
+          managerTurn === "manager",
+          `${managerTurn}`,
+        ),
+        assert(
+          "★매니저는 자식을 띄울 수 있다 — 거두기 턴도 마찬가지다(«작업 전체 소유»). 이 권한을 조이면 늦게 발견된 차단 결함을 매니저가 못 고친다",
+          reaches("agents", managerTurn),
+          reaches("agents", managerTurn) ? "닿는다(전제 성립)" : "★안 닿는다 — 설계가 바뀌었다",
         ),
       );
     }

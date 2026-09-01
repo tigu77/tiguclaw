@@ -23,7 +23,12 @@ import { getAuthProvider } from "./auth-registry.js";
  */
 export const claudeAuthAvailable = (): boolean =>
   (process.env.ANTHROPIC_API_KEY ?? "") !== "" ||
-  (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "") !== "";
+  // ★구독 경로는 **심에게 묻는다** (2026-09-01). 종전엔 여기서 env 를 직접 읽어서, Business
+  //  판이 codex 구독만 빼고 claude 구독은 계속 쓰는 **비대칭**이었다 — 뺄 자리가 없었다.
+  //  이제 `auth-providers.ts`(EXCLUDE 단위)가 없으면 심도 없고 구독 경로가 닫힌다.
+  //  **없는 상태가 안전한 상태**다: 심은 제약이 아니라 능력이고, 빠져도 API 키는 위 줄로
+  //  그대로 된다(레지스트리를 안 지난다). 능력 손실이 아니라 비용 차이다.
+  (getAuthProvider("claude-subscription")?.isAuthenticated?.() ?? false);
 
 /**
  * provider id → 지금 인증돼 있나. 미지 provider = false.

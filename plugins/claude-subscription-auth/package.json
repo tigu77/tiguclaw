@@ -1,0 +1,16 @@
+{
+  "name": "claude-subscription-auth",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude 구독(OAuth) 인증을 이 설치에서 허용합니다. 없으면 API 키만 씁니다.",
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "tiguclaw": {
+    "schemaVersion": 1,
+    "kind": ["service"],
+    "name": "claude-subscription-auth",
+    "entry": "./index.mjs",
+    "needs": { "auth": ["claude-subscription"] }
+  }
+}

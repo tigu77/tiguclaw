@@ -75,8 +75,17 @@ export const accumulateEfficiency = (
  * 회고 name: `feedback_growth_weekly_review_<YYYY-MM-DD>`.
  */
 /** 마지막으로 회고를 «돌아본» 시각 — 기록 여부와 무관하다(무내용은 인덱스에 안 넣는다). */
+/**
+ * «마지막으로 돌아본 시각» 을 담는 자리.
+ *
+ * ★**코어 공용 자리가 아니라 이 플러그인의 자리다** (2026-09-01, 2라운드 F14). 종전엔
+ *  `<home>/data/` 에 뒀는데 거기는 SQLite 옆 코어 공용이다. 판정 3줄 중 하나가 안 섰다 —
+ *  «지울 때 같이 지워지나» ❌. [[feedback_external_things_own_their_unit]].
+ * ★그리고 `getPaths()` 가 이미 `commonPlugins` 를 준다 — 손으로 다시 조립하면 권위가
+ *  두 곳이 된다(종전엔 `home` 에 `"data"` 를 직접 붙였다).
+ */
 const lastReviewFile = (): string =>
-  path.join(getPaths().home, "data", "self-growth-last-review");
+  path.join(getPaths().commonPlugins, "self-growth", "last-review");
 
 const readLastReviewAt = (): number => {
   try {
@@ -90,8 +99,16 @@ const stampLastReviewAt = (at: number): void => {
   try {
     mkdirSync(path.dirname(lastReviewFile()), { recursive: true });
     writeFileSync(lastReviewFile(), String(at), "utf8");
-  } catch {
-    /* 못 써도 회고는 돈다 — 다음 틱에 한 번 더 볼 뿐(never-throw). */
+  } catch (e) {
+    // ★**조용히 넘어가면 안 된다** (2026-09-01, 2라운드 F13). 이 쓰기가 실패하면
+    //  `readLastReviewAt()` 이 영원히 0 이라 가드가 **원리적으로 못 서고**, 주 1회이던
+    //  회고가 매시(runWeeklyReview 는 1시간마다 불린다) 로그·기억 전량 스캔으로 돌아간다.
+    //  게다가 신호가 있으면 회고 메모가 **날마다** 다시 박힌다 — 종전 주석의 «다음 틱에
+    //  한 번 더» 는 실제로 «영원히» 였다. 로그가 1차 진단면이므로 한 줄은 남긴다.
+    console.warn(
+      `[self-growth] 회고 시각을 못 남겼습니다 (${lastReviewFile()}) — 가드가 서지 않아 ` +
+        `매 틱 전량 스캔으로 돌아갑니다: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 };
 

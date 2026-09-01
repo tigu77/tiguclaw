@@ -85,7 +85,9 @@
               ? i18n("plugins.need.outbound")
               : f.kind === "llm"
                 ? i18n("plugins.need.llm")
-                : String(f.kind);
+                : f.kind === "auth"
+                  ? i18n("plugins.need.auth", { ids: f.value ?? "" })
+                  : String(f.kind);
     return facts.map(line).join(" · ");
   };
 

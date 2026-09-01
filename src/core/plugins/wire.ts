@@ -70,9 +70,16 @@ interface PluginInstance {
   name?: string;
   start?: (arg: never) => Promise<void>;
   startChannel?: (handler: MessageHandler) => Promise<void>;
-  startObserver?: (eventBus: EventBus) => Promise<void>;
-  startTrigger?: (eventBus: EventBus) => Promise<void>;
-  startService?: (eventBus: EventBus) => Promise<void>;
+  startObserver?: (eventBus: EventBus, host?: PluginHost) => Promise<void>;
+  startTrigger?: (eventBus: EventBus, host?: PluginHost) => Promise<void>;
+  /**
+   * ★두 번째 인자 `host` 는 **옵션**이다 (2026-09-01). 종전엔 host 가 `getMcpServer`·
+   *  `getTools` 에만 갔는데, 그 둘은 «낼 것을 낸다» 는 자리라 **부팅 시점 등록**을 못 한다.
+   *  구독 인증 플러그인이 필요한 게 정확히 그 자리다 — 도구를 내는 게 아니라 «이 설치에서
+   *  이 인증을 허용한다» 를 켜는 것이라, 첫 도구 호출을 기다릴 수 없다.
+   *  안 받는 플러그인은 그대로 돈다(인자가 하나면 두 번째는 무시된다).
+   */
+  startService?: (eventBus: EventBus, host?: PluginHost) => Promise<void>;
   stop?: () => Promise<void>;
   /**
    * ★`host` 는 **옵션**이다 — 안 받는 플러그인은 그대로 돈다(회귀 0).
@@ -124,11 +131,11 @@ const publishPluginError = (
  */
 const resolveStartHook = <A>(
   inst: PluginInstance,
-  specific: ((arg: A) => Promise<void>) | undefined,
-): ((arg: A) => Promise<void>) | undefined => {
+  specific: ((arg: A, host?: PluginHost) => Promise<void>) | undefined,
+): ((arg: A, host?: PluginHost) => Promise<void>) | undefined => {
   if (typeof specific === "function") return specific.bind(inst);
   if (typeof inst.start === "function") {
-    return (inst.start as (arg: A) => Promise<void>).bind(inst);
+    return (inst.start as (arg: A, host?: PluginHost) => Promise<void>).bind(inst);
   }
   return undefined;
 };
@@ -387,7 +394,18 @@ export const wirePlugin = async (
         continue;
       }
       try {
-        await startFn(bus);
+        // ★턴은 **없다** — 부팅 시점이라 `postCard` 처럼 대화 좌표가 필요한 것은 못 쓴다.
+        //  `createPluginHost` 가 `turn` 을 옵션으로 받으므로 그대로 두면 그 자리만 비고
+        //  나머지(설정·fetch·log·registerAuthProvider)는 그대로 온다.
+        await startFn(
+          bus,
+          createPluginHost(
+            lp.manifest.name,
+            lp.manifest.needs ?? {},
+            undefined,
+            lp.manifest.settings ?? [],
+          ),
+        );
         // ★**`service` 뿐 아니라 `trigger`·`observer` 도 멈춘다** (2026-08-29, 적대 검토 A).
         //  종전엔 `service`·`channel` 에만 `stop` 을 걸어서, 대시보드에서 스케줄러를 끄면
         //  *"끔"* 이 뜨고 목록에서 사라지는데 **cron 은 계속 돌아 계속 발화했다**(실측:

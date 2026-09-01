@@ -25,6 +25,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { KNOWN_CAPABILITIES } from "../../core/plugins/loader.js";
 import { KNOWN_NEED_KEYS } from "../../core/plugins/host.js";
 import { secretEnvName } from "../../core/plugins/settings.js";
 import { bundledPluginNames } from "../../core/plugins/manager.js";
@@ -127,6 +128,23 @@ export const check: RegressionCheck = {
         undocumented.length === 0
           ? [...KNOWN_NEED_KEYS].join(", ")
           : `★문서에 없음: ${undocumented.join(", ")}`,
+      ),
+    );
+
+    // ── ③b `kind` — 같은 질문에 같은 그물 (2026-09-01) ──────────────────────
+    // ★`needs` 엔 이 대조가 있었는데 `kind` 엔 없었다. 그래서 로더가 받는 `provider` 가
+    //  가이드에 **한 줄도 없는** 채로 살아 있었다 — 받아주면서 설명이 0이면 이름이 능력을
+    //  대신 광고한다("LLM provider 를 붙이는 자리" 로 읽힌다). 외부 감사가 그걸 짚었다.
+    const kindsUndocumented = [...KNOWN_CAPABILITIES].filter(
+      (k) => !guide.includes(`| \`${k}\``),
+    );
+    out.push(
+      assert(
+        `★★\`kind\` ${String(KNOWN_CAPABILITIES.size)}개가 **전부 문서 표에 있다** — 로더가 받는데 가이드에 없으면 이름이 능력을 대신 광고한다`,
+        kindsUndocumented.length === 0,
+        kindsUndocumented.length === 0
+          ? [...KNOWN_CAPABILITIES].join(", ")
+          : `★문서에 없음: ${kindsUndocumented.join(", ")}`,
       ),
     );
 

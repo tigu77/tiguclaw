@@ -38,6 +38,20 @@ import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./
 const TASK =
   "VOXEL-Q6-5B-앞표식 " + "완료조건을 길게 적는다. ".repeat(40) + "VOXEL-Q6-5B-뒤표식";
 
+/**
+ * 두 턴 입력이 어긋난 필드 — `text`(당연히 다르다)와 `steering`(라운드마다 **교체**가 의도)만
+ * 뺀다. 나머지는 첫 턴과 같아야 한다. ★필드를 열거하지 않는 것이 요점이다: 새 필드가 생겨도
+ * 저절로 덮이고, 손 목록처럼 낡지 않는다([[feedback_hand_maintained_lists]]).
+ */
+const diffFields = (a: RegionASdkInput, b: RegionASdkInput): string[] => {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  keys.delete("text");
+  keys.delete("steering");
+  return [...keys].filter(
+    (k) => (a as unknown as Record<string, unknown>)[k] !== (b as unknown as Record<string, unknown>)[k],
+  );
+};
+
 export const check: RegressionCheck = {
   name: "harvest-turn-keeps-scope",
   guards:
@@ -47,19 +61,28 @@ export const check: RegressionCheck = {
     __resetJobsForTest();
     registerWorkerHandler((async () => ({ text: "" })) as never);
 
+    // ★`cwd`·`modelTier` 를 **실제로 준다** (2026-09-01 2라운드 G-3). 안 주면 두 값이
+    //  양쪽 다 `undefined` 라, 거두기에서 그 필드를 빼는 변이를 검사가 **원리적으로 못 본다**
+    //  (실측: cwd 제거·체인 제거 변이가 둘 다 초록이었다).
     const base = { channel: "cli" as const, channelUserId: "u", task: TASK };
-    const jid = registerJob({ ...base, kind: "worker", label: "범위보존", threadKey: "cli:s1" });
+    const jid = registerJob({
+      ...base, kind: "worker", label: "범위보존", threadKey: "cli:s1",
+      cwd: "/tmp/regr-harvest-cwd", modelTier: "high",
+    });
     const c1 = registerJob({ ...base, kind: "agent", label: "감사자1", threadKey: `worker:${jid}`, detached: true });
     const c2 = registerJob({ ...base, kind: "agent", label: "감사자2", threadKey: `worker:${jid}`, detached: true });
 
     let turns = 0;
     /** 첫(구현) 턴 입력 — 여기까지 조이면 매니저가 아무 일도 못 한다. */
     let implTurn: RegionASdkInput | undefined;
+    let implOpts: { chain?: unknown } | undefined;
     const inputs: RegionASdkInput[] = [];
-    runWorkerJob(getJob(jid) as never, async (input): Promise<RegionASdkOutput> => {
+    const optsSeen: Array<{ chain?: unknown } | undefined> = [];
+    runWorkerJob(getJob(jid) as never, async (input, opts): Promise<RegionASdkOutput> => {
       turns += 1;
       if (turns === 1) {
         implTurn = input;
+        implOpts = opts;
         // ★두 자식 결과를 **동시에** 넣는다 — 하나만 실으면 나머지는 drain 돼 영구 유실이다
         //  (적대 검토 A4: `arrived.slice(0,1)` 변이가 통과했다).
         setTimeout(() => {
@@ -70,6 +93,7 @@ export const check: RegressionCheck = {
         return { text: "마감 완료" } as RegionASdkOutput;
       }
       inputs.push(input);
+      optsSeen.push(opts);
       if (turns === 2) {
         // ★2라운드를 강제한다 — 원 과제를 «1회째만» 싣는 변이(A3)를 잡으려면 필요하다.
         setTimeout(() => {
@@ -103,6 +127,14 @@ export const check: RegressionCheck = {
           : text.includes(TASK)
             ? "통째로 실림"
             : "★안 실림",
+      ),
+      // ★상수가 **비어 있으면** `includes("")` 가 항상 참이라 아래 단언이 공짜로 통과한다
+      //  (2026-09-01 2라운드 G-1 실측: 상수를 `""` 로 만들면 2,510건 전부 초록이었다).
+      //  술어를 제품 값에서 읽을 때는 **그 값이 실질적인지** 먼저 재야 한다.
+      assert(
+        "★★판단 규칙 상수가 **비어 있지 않다** — 비면 아래 «실린다» 단언이 항상 참이 된다(술어를 제품 값에서 읽는 함정)",
+        HARVEST_SCOPE_GUIDANCE.trim().length > 150,
+        `${HARVEST_SCOPE_GUIDANCE.trim().length}자 (150 초과여야)`,
       ),
       assert(
         "★★판단 규칙이 실린다 — 이게 장치의 나머지 절반이다. 없으면 매니저는 «무엇과 대조하라» 는 말을 못 듣는다(문구를 지워도 초록이던 자리)",
@@ -141,16 +173,40 @@ export const check: RegressionCheck = {
             ? "제약 없음(의도)"
             : `★조여 있다: ${JSON.stringify(implTurn.toolPolicy)}`,
       ),
-      // ── 배관: 없으면 조용히 망가지는 것들 (적대 검토 G-5) ──────────────────────────
+      // ── ★배관은 **열거하지 않고 기준으로** 잰다 (2026-09-01 2라운드 G-3) ──────────
+      //  1라운드는 «중요한 것만» 골라 `threadKey`·`abortSignal` 둘을 손으로 적었다. 그래서
+      //  나머지 셋을 지워도 전체 스위트가 초록이었다 — `cwd`(거두기 턴 파일 쓰기가 홈으로
+      //  샌다) · `steering`(`steer_worker` 가 거두기 턴에 안 닿는다 = 사용자 개입 창이 바로
+      //  거기다) · 모델 체인(`high` 매니저가 조용히 기본 풀로 떨어진다).
+      //  ★손으로 고른 목록은 낡는다([[feedback_hand_maintained_lists]]) — **«text 만 다르고
+      //   나머지는 첫 턴과 같다»** 라는 판정 하나로 바꾼다. 새 필드가 생겨도 저절로 덮인다.
       assert(
-        "★★거두기 턴도 **같은 대화**로 나간다 — threadKey 가 갈리면 매니저가 자기가 한 일을 모르는 채 최종 보고를 쓴다",
-        inputs.every((i) => i.threadKey === `worker:${jid}`),
-        `${inputs.map((i) => i.threadKey).join(" · ")}`,
+        "★★거두기 입력은 첫 턴과 **`text`·`steering` 외 전 필드가 같다** — 손으로 고른 필드만 지키면 나머지가 조용히 샌다(cwd·모델체인이 실제로 그랬다)",
+        implTurn !== undefined &&
+          inputs.length > 0 &&
+          inputs.every((i) => diffFields(implTurn as RegionASdkInput, i).length === 0),
+        implTurn === undefined || inputs.length === 0
+          ? "★비교 대상을 못 잡음"
+          : (() => {
+              const d = inputs.flatMap((i) => diffFields(implTurn as RegionASdkInput, i));
+              return d.length === 0 ? "text·steering 외 전 필드 동일" : `★어긋난 필드: ${[...new Set(d)].join(", ")}`;
+            })(),
+      ),
+      // ★`steering` 은 **값이 아니라 존재**로 잰다 — 거두기 라운드마다 채널을 새로 교체하는
+      //  것이 의도이기 때문이다(`rotateSteerChannel`: 어댑터가 턴 끝에 닫으므로). 예외를
+      //  기준 안에 우겨넣지 않고 여기 한 줄로 남긴다 — 표는 규칙만 말하고, 규칙으로 안 되는
+      //  것은 눈에 보이는 편이 낫다.
+      assert(
+        "★★거두기 턴에도 **스티어 채널이 있다** — 없으면 `steer_worker` 가 안 닿는다. 매니저는 후반부를 거두기 턴에서 보내므로 사용자 개입 창이 바로 거기다",
+        inputs.length > 0 &&
+          inputs.every((i) => (i.steering !== undefined) === (implTurn?.steering !== undefined)),
+        `첫턴=${implTurn?.steering !== undefined} 거두기=${inputs.map((i) => i.steering !== undefined).join(",")}`,
       ),
       assert(
-        "★★거두기 턴에 **abortSignal 이 실린다** — 설계가 말하는 유일한 하드 종료다. 없으면 사용자 중지 버튼이 이 턴에 안 닿는다",
-        inputs.every((i) => i.abortSignal !== undefined),
-        `실림=${inputs.filter((i) => i.abortSignal !== undefined).length}/${inputs.length}`,
+        "★★모델 체인도 거두기 턴에 그대로 간다 — 빠지면 `high` 로 띄운 매니저가 거두기부터 조용히 기본 풀로 떨어진다",
+        optsSeen.length > 0 &&
+          optsSeen.every((o) => JSON.stringify(o?.chain) === JSON.stringify(implOpts?.chain)),
+        `첫턴=${JSON.stringify(implOpts?.chain)} 거두기=${optsSeen.map((o) => JSON.stringify(o?.chain)).join(",")}`,
       ),
       assert(
         "★거두기 턴도 매니저다 — 그래서 위임 권한을 갖는다(그 권한이 곧 «작업 전체 소유» 다)",

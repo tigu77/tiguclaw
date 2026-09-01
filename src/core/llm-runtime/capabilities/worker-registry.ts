@@ -122,8 +122,15 @@ export const runWorkerJob = (
    *  이쪽엔 없어서 **같은 줄을 지워도 1,343건이 전부 초록**이었다. 그러면 매니저의 결과가
    *  아무에게도 안 가고 잡이 영원히 running 으로 굳는다 — 조용히, 전 사용자에게.
    *  프로덕션 경로는 이 인자를 안 받으므로 동작 변화 0(테스트만 넘긴다).
+   *
+   * ★**2번째 인자(`{ chain }`)도 받는다** (2026-09-01 2라운드 G-3). 종전엔 `input` 만 받아서
+   *  **모델 체인이 검사 눈에 안 보였고**, 거두기 재실행에서 체인을 빼는 변이가 전체
+   *  스위트를 통과했다(`high` 로 띄운 매니저가 거두기 턴부터 조용히 기본 풀로 떨어진다).
    */
-  __runForTest?: (input: RegionASdkInput) => Promise<RegionASdkOutput>,
+  __runForTest?: (
+    input: RegionASdkInput,
+    opts?: { chain?: unknown },
+  ) => Promise<RegionASdkOutput>,
 ): void => {
   // 매니저 전용 상한 — timeoutMs 만료 시 WorkerTimeoutError 로 abort (무한 매니저 봉쇄, W-I6).
   // jobId 등록 → cancel_worker·대시보드 중지 버튼이 외부에서 이 매니저의 abort 를 부를 수 있다.
@@ -157,7 +164,16 @@ export const runWorkerJob = (
       const { runRegionA, resolveModelChain } =
         __runForTest === undefined
           ? await import("../index.js")
-          : { runRegionA: __runForTest, resolveModelChain: () => [] };
+          : {
+              runRegionA: __runForTest,
+              // ★검사용 심도 `modelTier` 를 **반영**한다 (2026-09-01 2라운드 G-3). 종전엔
+              //  무조건 `[]` 라 체인이 항상 `undefined` 였고, 거두기에서 체인을 빼는 변이를
+              //  검사가 **원리적으로 못 봤다**. 프로덕션은 이 심을 안 쓰므로 동작 변화 0.
+              resolveModelChain: (tier: string | undefined, _cwd?: string) =>
+                (tier ?? "") === ""
+                  ? []
+                  : [[{ adapter: "claude" as const, model: tier as string }]],
+            };
       // 잡에 modelTier 가 있으면 그 풀 체인을 넘긴다(서브에이전트 동형) — 프로파일이면
       // .fallback 체인까지(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 미지정·빈 체인
       // 이면 undefined → runRegionA 가 기본 모델 풀 사용.
@@ -276,9 +292,10 @@ export const runWorkerJob = (
           //  거두기 턴인지» 를 말하는 것이 **아무것도 없었다.** 그래서 `[tool-slow]` 타이머와
           //  turn-end 시각을 교차해 **추론**해야 했다(실측: 거두기 턴 하나 안에서 새 자식
           //  일곱이 순차로 돌았는데, 그걸 알아내는 데 로그만으로는 길이 없었다).
-          //  ★«남은 자식» 은 **detached 자식만** 센다 — awaited(`wait:true`)는 턴 안에서
-          //   나고 죽어 여기 안 잡힌다(적대 검토 G-2 실측). 그러니 이 수가 0이라고
-          //   «범위가 안 넓어졌다» 로 읽지 마라. awaited 폭주는 `[tool-slow]` 가 드러낸다.
+          //  ★이 수는 **라운드 경계의 표본**이다 — awaited(`wait:true`) 자식은 턴 안에서
+          //   나고 죽어 여기 안 잡힌다(카운터에 `detached` 필터가 있는 게 아니라 재는
+          //   **시점** 때문이다). 0이라고 «범위가 안 넓어졌다» 로 읽지 마라 — awaited
+          //   폭주는 `[tool-slow]` 가 드러낸다(적대 검토 G-2·2라운드 정정).
           console.log(
             `worker-registry: '${job.label}' **거두기 턴** ${rounds}회째 시작 — ` +
               `반영할 자식 결과 ${arrived.length}건 · 남은 자식 ` +
@@ -331,6 +348,12 @@ export const runWorkerJob = (
             },
             workerChain.length > 0 ? { chain: workerChain } : undefined,
           );
+          // ★여기엔 `void rerunP.catch(() => {})` 가 **필요 없다** — 넣었다가 뺐다
+          //  (2026-09-01, 2라운드 검토가 반증). `Promise.race` 는 **두 입력 모두에** 핸들러를
+          //  영구 부착하므로, 버려진 쪽이 나중에 reject 해도 `unhandledRejection` 이 안 난다
+          //  (실측: node 프로브 exit=0). 첫 턴의 그 줄(위)은 사실상 중복 방어다.
+          //  ★내가 «없으면 데몬이 crash-fast 로 간다» 고 단언했는데 **재지 않고 한 말이었고
+          //   틀렸다.** 같은 부류를 오늘 여러 번 했다([[feedback_verify_before_asserting]]).
           out =
             hardDeadline === undefined
               ? await rerunP

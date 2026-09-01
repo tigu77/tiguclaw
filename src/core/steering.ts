@@ -104,7 +104,10 @@ export const partitionSteering = (
  *   - `listLiveChildJobs` 는 **라운드 경계에서만** 표본을 뜨는데, `spawn_agent(wait:true)`
  *     자식은 턴 **안에서** 나고 죽는다 → 경계엔 흔적이 없다.
  *   - awaited 자식은 `onWorkerComplete`→수신함 경로를 안 타므로 **추가 라운드도 안 생긴다**.
- *  즉 «남은 자식» 은 **detached 자식만** 드러낸다.
+ *  ★기제는 **표본 시점**이지 카운터의 성질이 아니다 — `listLiveChildJobs` 에 `detached`
+ *   필터는 **없다**(`status === "running"` + 세션 소속만 본다). awaited 자식도 똑같이
+ *   등록된다. 라운드 경계에서 재기 때문에 이미 끝나 있을 뿐이다(2라운드 검토 정정 —
+ *   내가 «detached 만 센다» 고 요약해서, 없는 필터를 찾으러 가게 만들었다).
  *
  * ★실제로 폭주를 드러낸 신호는 이 둘이었다(오늘 사고를 이걸로 재구성했다):
  *   - `[tool-slow] … 도구 spawn_agent 이(가) 600s+` — awaited 호출 **하나당 한 번**.

@@ -121,9 +121,27 @@ const bothLanesHaveHardBackstop = async (): Promise<boolean> => {
   const worker = await read("../../core/llm-runtime/capabilities/worker-registry.ts");
   const agent = await read("../../core/llm-runtime/capabilities/agent-registry.ts");
   if (worker === null || agent === null) return true; // 배포본(.ts 미포함) — 오탐 0.
-  const hasRace = (src: string): boolean =>
-    /Promise\.race\(\[/.test(src) && /new WorkerTimeoutError\(/.test(src);
-  return hasRace(worker) && hasRace(agent);
+  // ★**파일에 race 가 «있나» 가 아니라 «모델 호출마다 있나»** 로 잰다 (2026-09-01 2라운드 G-2).
+  //  종전엔 `/Promise\.race\(\[/.test(src)` 한 줄이라 **파일 단위 존재 grep** 이었다. 그래서
+  //  거두기 턴에 백스톱을 하나 더 붙이는 순간, 두 자리 중 **어느 쪽을 지워도** 초록이 됐다
+  //  (실측: 첫 턴 race 삭제·거두기 race 삭제 둘 다 2,510건 통과). 백스톱을 고치면서 그
+  //  백스톱을 지키던 유일한 검사를 스스로 껐던 것이다 — 같은 파일이 클램프 검사에 대해
+  //  이미 *"있다/없다를 세는 검사는 동의어 하나로 뚫린다"* 고 적어놨는데 여기만 그대로였다.
+  //  ★판정: **모델 호출 결과를 담은 변수는 전부** `Promise.race([<그 변수>` 에 나타나야 한다.
+  //   개수를 손으로 적지 않으므로 자리가 늘어도 저절로 덮인다.
+  const everyModelCallIsRaced = (src: string): boolean => {
+    if (!/new WorkerTimeoutError\(/.test(src)) return false;
+    // ★삼항으로 감싼 형태도 잡는다 — `const childP = inject ? inject(x) : runRegionA(x, …)`
+    //  (agent-registry 가 그 모양이다). «변수에 담긴 모델 호출» 이 판정 대상이고,
+    //  `await runRegionA(...)` 처럼 **변수에 안 담고 그 자리에서 기다리는** 것은 다른
+    //  경로다(awaited spawn_agent — 자체 상한이 있어 백스톱 대상이 아니다).
+    const ids = [
+      ...src.matchAll(/const\s+(\w+)\s*=\s*(?:[^;]*?[?:]\s*)?(?:runRegionA|rerun)\s*\(/g),
+    ].map((m) => m[1]);
+    if (ids.length === 0) return false; // 모델 호출을 못 찾았다 = 판정 불가(초록 금지).
+    return ids.every((id) => new RegExp(`Promise\\.race\\(\\[\\s*${id}\\b`).test(src));
+  };
+  return everyModelCallIsRaced(worker) && everyModelCallIsRaced(agent);
 };
 
 /**

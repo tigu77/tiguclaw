@@ -17,7 +17,7 @@ tiguclaw 은 **비서 한 명하고만 이야기하면 되도록** 만든 상시
   <img src="assets/banner.jpg" alt="tiguclaw — Personal AI Agent OS" width="720">
 </p>
 
-**바로 깔아보려면 → [빠른 시작](#빠른-시작)** (받아서 `onboard` 한 번, 끝입니다).
+**바로 설치하려면 → [빠른 시작](#빠른-시작)** (받아서 `onboard` 한 번, 끝입니다).
 
 ## 데모
 
@@ -149,7 +149,7 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 > ⚠️ 강도를 올리면 **출력·비용·지연이 함께 오릅니다.** (실측: 어떤 모델을 설계 기본인 `low`
 > 로 명시했더니 출력이 37% 줄었습니다.) 필요한 작업에만 올리고, 끝나면 되돌리세요.
 
-**잘 안 되면** 먼저 `tiguclaw doctor` 를 돌려보세요 — 키·홈·서비스·네이티브 모듈·전역 명령까지
+**잘 안 되면** 먼저 `tiguclaw doctor` 를 실행하세요 — 키·홈·서비스·네이티브 모듈·전역 명령까지
 한 번에 점검하고, 막힌 자리에 맞는 조치를 알려줍니다. 그래도 안 되면
 [이슈](https://github.com/tigu77/tiguclaw/issues/new/choose)로 알려주세요. 보안 문제는 공개 이슈
 말고 [SECURITY](.github/SECURITY.md) 를 봐주세요.
@@ -207,8 +207,8 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 
 ## 변경 이력
 
-릴리스 노트는 [`CHANGELOG.md`](CHANGELOG.md) 참조 (이 프로젝트는 [SemVer](https://semver.org/) 를
-따릅니다).
+릴리스 노트는 [`CHANGELOG.ko.md`](CHANGELOG.ko.md) 참조 ([영문](CHANGELOG.md)). 이 프로젝트는
+[SemVer](https://semver.org/) 를 따릅니다.
 
 ## 감사의 말
 

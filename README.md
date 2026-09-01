@@ -202,7 +202,7 @@ rather than shipping a workflow editor, let the plan fall out of the goal. Sensi
 
 ## Changelog
 
-Release notes are in [`CHANGELOG.md`](CHANGELOG.md). This project follows [SemVer](https://semver.org/).
+Release notes are in [`CHANGELOG.md`](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)). This project follows [SemVer](https://semver.org/).
 
 ## Credits
 

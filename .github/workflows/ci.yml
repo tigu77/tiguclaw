@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # ★`dev` 도 본다 (2026-09-01). `main` 은 이제 **릴리스·핫픽스에만** 갱신되고 평소
+    #  동기화는 `dev` 로 간다. 트리거를 안 넓히면 릴리스 직전까지 CI 가 한 번도 안 돌아,
+    #  리눅스·깨끗한 설치 축(로컬 mac 이 못 보는 축)을 그때서야 처음 보게 된다.
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 # 같은 브랜치에 연달아 push 하면 앞 잡을 취소한다 — 종전엔 중복 잡이 러너를 물고
 # 앉아 있었다(2026-08-23 4R F11).

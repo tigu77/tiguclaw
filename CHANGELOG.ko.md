@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-02
+
+### Added
+
+- 배경 작업에 제목을 붙일 수 있습니다. 작업 카드에 «에이전트 이름 · 제목» 으로 보여, 같은
+  에이전트를 여럿 실행해도 구분됩니다.
+
+### Fixed
+
+- 세션 목록처럼 선택지로 답하는 명령을 쓰면 대시보드가 계속 «작업 중» 으로 남던 것.
+- 정기 실행·파일 감시 작업이 «진행 중» 으로 세어지지 않아, 그 사이 재시작하면 진행 중인
+  작업을 끊던 것. 이제 재시작 전 확인에 잡힙니다.
+- 설치하지 않은 구독 로그인을 설치 마법사와 진단이 계속 묻고 권하던 것. 이제 이 설치가
+  제공할 수 있는 것만 묻습니다.
+
+### Changed
+
+- 변경 내역을 언어별로 나눴습니다 — [`CHANGELOG.md`](CHANGELOG.md)(영어) ·
+  [`CHANGELOG.ko.md`](CHANGELOG.ko.md)(한국어).
+
 ## [0.45.0] - 2026-09-01
 
 ### Fixed
@@ -1806,7 +1826,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...v0.45.0
 [0.44.1]: https://github.com/tigu77/tiguclaw/compare/v0.44.0...v0.44.1
 [0.44.0]: https://github.com/tigu77/tiguclaw/compare/v0.43.2...v0.44.0

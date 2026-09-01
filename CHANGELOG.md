@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-09-02
+
+### Added
+
+- Background work can carry a title. Job cards show "agent name · title", so several runs of
+  the same agent stay distinguishable.
+
+### Fixed
+
+- Commands that answer with a choice list (such as the session list) left the dashboard stuck
+  on "working".
+- Scheduled and file-watch runs were not counted as in-flight, so a restart during one could
+  cut it short. They now appear in the pre-restart check.
+- The setup wizard and doctor kept asking about subscription sign-ins this installation cannot
+  provide. They now offer only what is actually installed.
+
+### Changed
+
+- The changelog is split by language — [`CHANGELOG.md`](CHANGELOG.md) (English) ·
+  [`CHANGELOG.ko.md`](CHANGELOG.ko.md) (Korean).
+
 ## [0.45.0] - 2026-09-01
 
 ### Fixed
@@ -233,7 +254,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...HEAD
+[0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...v0.45.0
 [0.44.1]: https://github.com/tigu77/tiguclaw/compare/v0.44.0...v0.44.1
 [0.44.0]: https://github.com/tigu77/tiguclaw/compare/v0.43.2...v0.44.0

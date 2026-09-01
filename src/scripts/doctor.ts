@@ -9,6 +9,7 @@
  * 자체 splitPool 6 줄 + provider→envvar 매핑 7 줄로 진단만 수행.
  */
 import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
+import { subscriptionAuthAvailable } from "../core/auth-plugin-presence.js";
 import process from "node:process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -191,8 +192,13 @@ const main = async (): Promise<void> => {
   }
   if (!hasRegionAAuth) {
     fatal += 1;
+    // ★구독 인증이 이 설치에 **없으면 권하지 않는다** (2026-09-01). 그 토큰을 채워도
+    //  등록할 플러그인이 없어 아무 일도 안 난다 — 없는 길을 처방하는 셈이다.
+    const claudeSub = subscriptionAuthAvailable("claude-subscription");
     issues.push(
-      "LLM 인증 없음 — .env 에 ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN(또는 다른 provider 키) 채우기 / npm run init",
+      claudeSub
+        ? "LLM 인증 없음 — .env 에 ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN(또는 다른 provider 키) 채우기 / npm run init"
+        : "LLM 인증 없음 — .env 에 ANTHROPIC_API_KEY(또는 다른 provider 키) 채우기 / npm run init",
     );
   }
 
@@ -224,9 +230,14 @@ const main = async (): Promise<void> => {
     codexRefresh.length > 0 ||
     codexExpires.length > 0;
   const regionAUsesCodex = regionAPool.some((t) => t.startsWith("codex:"));
-  // 조건부: 토큰이 하나라도 있거나 REGION_A_MODELS 에 codex 가 있을 때만 점검.
-  // 둘 다 아니면 침묵 (불필요 noise 금지).
-  if (anyCodexTokenSet || regionAUsesCodex) {
+  // ★**이 설치에 codex 구독 인증이 없으면 아예 안 묻는다** (2026-09-01 사용자 지시).
+  //  v0.45.0 부터 구독 인증은 번들 플러그인이다 — 그 폴더를 뺀 설치에서 *"npm run
+  //  codex-auth 로 발급하세요"* 라고 안내하면, 발급해도 등록할 곳이 없어 아무 일도 안 난다.
+  //  없는 능력을 진단하고 처방까지 주는 상태였다. 판정은 플러그인이 **선언한 것**을 읽는다.
+  const codexAuthInstalled = subscriptionAuthAvailable("codex");
+  // 조건부: (구독 인증이 설치돼 있고) 토큰이 하나라도 있거나 REGION_A_MODELS 에 codex 가
+  // 있을 때만 점검. 아니면 침묵 (불필요 noise 금지).
+  if (codexAuthInstalled && (anyCodexTokenSet || regionAUsesCodex)) {
     if (!anyCodexTokenSet && regionAUsesCodex) {
       // codex 풀에 등장했는데 토큰 0 — 폴백만 가능, 경고.
       console.log(
@@ -637,7 +648,9 @@ const main = async (): Promise<void> => {
   let nextStep: string;
   if (!hasRegionAAuth) {
     nextStep =
-      "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 또는 CLAUDE_CODE_OAUTH_TOKEN (claude setup-token 명령으로 발급) 를 채우세요.";
+      (subscriptionAuthAvailable("claude-subscription")
+        ? "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 또는 CLAUDE_CODE_OAUTH_TOKEN (claude setup-token 명령으로 발급) 를 채우세요."
+        : "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 를 채우세요.");
   } else if (regionAPool.length === 0) {
     nextStep =
       "다음 단계: .env.example 의 REGION_A_MODELS 라인을 .env 로 복사하세요.";

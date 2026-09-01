@@ -12,6 +12,7 @@
  *   라이브 데몬의 실 토큰이 들어있을 수 있으므로 기본 동작 = 중단.
  */
 import { createInterface } from "node:readline/promises";
+import { declaredAuthProviders } from "../core/auth-plugin-presence.js";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import os from "node:os";
@@ -168,21 +169,47 @@ const askRequired = async (prompt: string, retryHint: string): Promise<string> =
   }
 };
 
+/**
+ * ★**이 설치에 없는 구독은 묻지 않는다** (2026-09-01 사용자 지시).
+ *  구독 인증은 v0.45.0 부터 번들 플러그인이다 — 그 폴더를 뺀 설치(Business 판 등)에서
+ *  *"Claude 구독 OAuth 를 고르세요"* 라고 권하면, 고른 뒤 부팅 때 그 인증이 없어 조용히
+ *  폴백한다. **없는 능력을 권하는 상태**였다.
+ *  판정은 이름 열거가 아니라 플러그인이 **선언한 것**을 읽는다(`auth-plugin-presence`).
+ *  번호는 남은 항목으로 **다시 매긴다** — 안 그러면 «2번은 없습니다» 를 사람이 외워야 한다.
+ */
 const askProvider = async (): Promise<Provider> => {
+  const has = declaredAuthProviders();
+  const all: Array<{ p: Provider; desc: string; aliases: string[] }> = [
+    { p: "anthropic", desc: "anthropic  — Anthropic API 키 (가장 쉬움, 토큰 종량)", aliases: ["anthropic"] },
+    ...(has.has("claude-subscription")
+      ? [{
+          p: "claude-sub" as Provider,
+          desc: "claude-sub — Claude 구독 OAuth (`claude setup-token`, 키 입력 없이 토큰)",
+          aliases: ["claude-sub", "claude"],
+        }]
+      : []),
+    { p: "openai", desc: "openai     — OpenAI API 키 (토큰 종량)", aliases: ["openai"] },
+    ...(has.has("codex")
+      ? [{
+          p: "codex" as Provider,
+          desc: "codex      — ChatGPT 구독 OAuth (키 입력 없음, 설치 후 발급)",
+          aliases: ["codex"],
+        }]
+      : []),
+  ];
   console.log("");
   console.log("[1/4] LLM provider 선택 — 가진 것 하나만 고르세요.");
-  console.log("  1) anthropic  — Anthropic API 키 (가장 쉬움, 토큰 종량)");
-  console.log("  2) claude-sub — Claude 구독 OAuth (`claude setup-token`, 키 입력 없이 토큰)");
-  console.log("  3) openai     — OpenAI API 키 (토큰 종량)");
-  console.log("  4) codex      — ChatGPT 구독 OAuth (키 입력 없음, 설치 후 발급)");
+  all.forEach((o, i) => console.log(`  ${i + 1}) ${o.desc}`));
+  const nums = all.map((_, i) => String(i + 1));
   for (;;) {
-    const v = await ask("  선택 [1/2/3/4] (기본 1): ");
-    if (v === "" || v === "1" || v.toLowerCase() === "anthropic") return "anthropic";
-    if (v === "2" || v.toLowerCase() === "claude-sub" || v.toLowerCase() === "claude")
-      return "claude-sub";
-    if (v === "3" || v.toLowerCase() === "openai") return "openai";
-    if (v === "4" || v.toLowerCase() === "codex") return "codex";
-    console.log("  ⚠️  1, 2, 3, 4 중 하나를 입력하세요.");
+    const v = await ask(`  선택 [${nums.join("/")}] (기본 1): `);
+    if (v === "") return all[0]!.p;
+    const byNum = nums.indexOf(v);
+    if (byNum >= 0) return all[byNum]!.p;
+    const lower = v.toLowerCase();
+    const hit = all.find((o) => o.aliases.includes(lower));
+    if (hit !== undefined) return hit.p;
+    console.log(`  ⚠️  ${nums.join(", ")} 중 하나를 입력하세요.`);
   }
 };
 

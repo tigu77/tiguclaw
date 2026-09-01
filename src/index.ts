@@ -561,6 +561,58 @@ const replyCommand = async (
   }
 };
 
+/**
+ * **선택지를 띄우고 턴을 닫는다** — `presentOptions` 전용 통로 (2026-09-01 사용자 신고).
+ *
+ * ★신고: *"텔레그램에서 `/sessions` 실행하면 대시보드에서 계속 작업중으로 뜬다."*
+ *  기제는 위 `replyCommand` 주석이 이미 적어둔 **그 부류의 재발**이다 —
+ *  «활성 = `channel.message.in` ↔ 완료 = `.out`/`turn_done`» 인데, `presentOptions` 는
+ *  채널 클로저라(cli=stdout · telegram=`ctx.reply`) **버스를 안 탄다.** 그래서 `in` 으로
+ *  켜진 진행 표시를 끄는 이벤트가 **하나도 없다**(슬래시는 LLM 미경유라 `turn_done` 도 없다).
+ *  대시보드의 15분 stale 스윕이 걷을 때까지 «작업 중» 이 남는다.
+ *
+ * ★2026-07-10 에 `/status` 로 같은 것을 겪고 `replyCommand` 로 닫았는데, **`presentOptions`
+ *  경로는 그 통로를 안 거친다.** 부류가 닫힌 게 아니라 한 갈래만 닫혀 있었다.
+ *
+ * ★질문 문구를 그대로 실어 보낸다 — 사용자는 실제로 그 질문을 받았으므로 «나간 메시지» 가
+ *  맞고, 라이브 대시보드에도 보이는 편이 낫다(지금은 «작업 중» 만 돌고 아무것도 안 보인다).
+ *  `ephemeral` 이면 `event-persist` 가 적재만 건너뛴다(발행은 그대로 — 그 판정은 거기 한 곳).
+ */
+const presentAndClose = async (
+  msg: {
+    presentOptions?: (
+      q: string,
+      o: Array<{ label: string; value: string }>,
+      extra?: { note?: string },
+    ) => Promise<{ ok: boolean; error?: string }>;
+    channel: string;
+    threadKey: string;
+  },
+  question: string,
+  options: Array<{ label: string; value: string }>,
+  extra: { note?: string },
+  opts?: { ephemeral?: boolean },
+): Promise<{ ok: boolean; error?: string }> => {
+  if (msg.presentOptions === undefined) return { ok: false, error: "선택지 미지원 채널" };
+  const r = await msg.presentOptions(question, options, extra);
+  if (!r.ok) return r; // 실패면 호출부가 텍스트로 폴백하고, 그 폴백이 `replyCommand` 라 닫힌다.
+  try {
+    bus.publish({
+      type: "channel.message.out",
+      ts: Date.now(),
+      payload: {
+        channel: msg.channel,
+        threadKey: msg.threadKey,
+        text: question.slice(0, EVENT_TEXT_MAX),
+        ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
+      },
+    });
+  } catch {
+    /* 관측 발행 실패가 선택지 렌더를 무르지 않는다(원칙 3). */
+  }
+  return r;
+};
+
 // 사용자 중단(/stop) — 진행 중 턴을 프로세스 안 죽이고 abort 할 때 turnAc.abort() 에 넣는 reason.
 // 핸들러가 이 reason 을 보면 에러가 아니라 사용자 취소로 인지해 조용히 종료(안내는 /stop 이 담당).
 class UserCancelledError extends Error {
@@ -1271,12 +1323,18 @@ const handler: MessageHandler = async (msg) => {
           value: `/sessions ${sub} ${t.threadKey}`,
         }));
         const q = restoring ? "어떤 세션을 복원할까요?" : "어떤 세션을 보관할까요?";
-        if (msg.presentOptions !== undefined) {
-          const r = await msg.presentOptions(q, opts2, {
-            note: restoring
-              ? "복원하면 목록에 다시 나옵니다."
-              : "보관 = 목록에서 숨김. 대화 기록은 지우지 않습니다(되돌리기 가능).",
-          });
+        {
+          const r = await presentAndClose(
+            msg,
+            q,
+            opts2,
+            {
+              note: restoring
+                ? "복원하면 목록에 다시 나옵니다."
+                : "보관 = 목록에서 숨김. 대화 기록은 지우지 않습니다(되돌리기 가능).",
+            },
+            { ephemeral },
+          );
           if (r.ok) return;
           console.warn(`/sessions ${sub} 선택지 렌더 실패 — 텍스트 폴백: ${r.error ?? "(사유 없음)"}`);
         }
@@ -1442,11 +1500,17 @@ const handler: MessageHandler = async (msg) => {
         //  지우고 세션은 남긴다("이름·설정은 그대로예요"). 그래서 같은 이름을 다시 만들어
         //  **목록에 같은 이름이 둘** 남았다. 능력(`archive`)은 있었는데 닿을 길이 없었다.
         //  목록을 보는 그 순간이 정리하고 싶어지는 순간이므로, 안내도 그 자리에 둔다.
-        const r = await msg.presentOptions("이 대화방을 어느 세션에 묶을까요?", options, {
-          note:
-            `${header}\n새로 만들기 \`/sessions new [이름]\` · 목록에서 숨기기 \`/sessions archive\`` +
-            hiddenNote,
-        });
+        const r = await presentAndClose(
+          msg,
+          "이 대화방을 어느 세션에 묶을까요?",
+          options,
+          {
+            note:
+              `${header}\n새로 만들기 \`/sessions new [이름]\` · 목록에서 숨기기 \`/sessions archive\`` +
+              hiddenNote,
+          },
+          { ephemeral },
+        );
         if (r.ok) return;
         // 렌더 실패 — 조용히 넘기지 않고 텍스트로 폴백(선택지가 사라지는 사고 방지).
         console.warn(`/sessions 선택지 렌더 실패 — 텍스트 폴백: ${r.error ?? "(사유 없음)"}`);

@@ -23,6 +23,7 @@ import {
   type EventBusEvent,
 } from "../../../src/core/eventbus.js";
 import { runClaude } from "../../../src/core/claude.js";
+import { withExternalTurn } from "../../../src/core/inflight-turns.js";
 import {
   getWatch,
   listWatches,
@@ -174,12 +175,21 @@ class FileWatchPlugin {
 
 // 데몬 정상 부팅 시 runClaude default — 영역 A 직접 호출.
 const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
-  return runClaude({
-    text: input.text,
-    threadKey: input.threadKey,
-    channel: input.channel,
-    cwd: input.cwd,
-  });
+  // 스케줄러와 **같은 이유·같은 처방** — 이 경로도 핸들러를 우회하므로 진행 중 등록이
+  // 없으면 `/health` 가 0을 답하고 배포 가드가 도는 작업을 죽인다(`inflight-turns.ts` 주석).
+  const ac = new AbortController();
+  return withExternalTurn(
+    input.threadKey,
+    { ac, channel: input.channel, target: null },
+    () =>
+      runClaude({
+        text: input.text,
+        threadKey: input.threadKey,
+        channel: input.channel,
+        cwd: input.cwd,
+        abortSignal: ac.signal,
+      }),
+  );
 };
 
 // ─── singleton instance — src/index.ts 가 enable/disable 슬래시에서 접근 ──

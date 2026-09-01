@@ -904,8 +904,14 @@
         }
         // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.
+        // ★제목이 있으면 **둘 다** 보인다 (2026-09-01 사용자 요청). 종전엔 라벨을 통째로
+        //  "🤖 <name>" 로 덮어써서, `spawn_agent({label})` 로 제목을 줘도 카드엔 안 보였다
+        //  — 그러면 deep 셋을 동시에 띄웠을 때 구분이 안 된다(그게 label 을 만든 이유다).
+        //  제목이 곧 에이전트 이름이면(미지정 기본값) 한 번만 쓴다.
         if (entry.kind === "agent" && opts && opts.agentName) {
-          const want = "🤖 " + opts.agentName;
+          const nm = String(opts.agentName);
+          const title = typeof opts.label === "string" ? opts.label.trim() : "";
+          const want = title !== "" && title !== nm ? "🤖 " + nm + " · " + title : "🤖 " + nm;
           if (entry.label !== want) setJobLabel(entry, want);
         }
         // 모델 티어(멱등) — 매니저·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.

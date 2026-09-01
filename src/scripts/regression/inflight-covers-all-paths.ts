@@ -143,6 +143,56 @@ export const check: RegressionCheck = {
         skipBlock.includes("llm.turn_error") ? "★SKIP 에 들어감" : "영속 확인",
       ),
     );
+    // ── ★핸들러를 우회하는 **모든** 경로가 등록한다 (2026-09-01, 같은 부류 3건째) ──────
+    //  엔드포인트로 이 모듈을 만들 때 «경로 하나가 남아 있었다» 를 헤더에 적어놓고,
+    //  **스케줄·파일감시 갈래를 또 안 봤다.** 실측(격리 데몬, 매분 스케줄 + 0.5초 폴링):
+    //  수정 전엔 90초 내내 `active_turns` 가 0이었고 수정 후엔 `[scheduler:1]` 로 잡힌다.
+    //  그 사이 배포하면 «진행 중 턴 0건 — 재시작 안전» 을 찍고 도는 작업을 죽인다
+    //  (그게 이 모듈이 생긴 바로 그 사고다).
+    //  ★**이름을 열거하지 않는다**([[feedback_hand_maintained_lists]]) — 판정은
+    //   «코어 밖에서 `core/claude.js`(=runRegionA facade)를 부르는 파일은 `withExternalTurn`
+    //   을 거친다» 이다. 새 플러그인이 생겨도 저절로 덮인다.
+    {
+      const { readdir } = await import("node:fs/promises");
+      const roots = ["plugins", "packages"];
+      const offenders: string[] = [];
+      let scanned = 0;
+      const walk = async (dir: string): Promise<void> => {
+        let entries;
+        try {
+          entries = await readdir(dir, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const e of entries) {
+          if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith(".")) continue;
+          const full = `${dir}/${e.name}`;
+          if (e.isDirectory()) await walk(full);
+          else if (/\.(ts|mts|js|mjs)$/.test(e.name)) {
+            const src2 = read(full.replace(`${REPO}/`, ""));
+            if (!/from\s+["'][^"']*core\/claude\.js["']/.test(src2)) continue;
+            scanned += 1;
+            if (!/withExternalTurn\s*\(/.test(src2)) offenders.push(full.replace(`${REPO}/`, ""));
+          }
+        }
+      };
+      for (const r of roots) await walk(`${REPO}/${r}`);
+      out.push(
+        assert(
+          "★`core/claude.js` 를 부르는 코어 밖 파일을 실제로 찾았다(0이면 아래는 공짜 초록이다)",
+          scanned > 0,
+          `${scanned}개 파일`,
+        ),
+        assert(
+          "★★핸들러를 우회해 모델을 부르는 곳은 **전부** `withExternalTurn` 을 거친다 — 안 거치면 `/health` 가 0을 답하고 배포 가드가 도는 작업을 죽인다",
+          offenders.length === 0,
+          offenders.length === 0
+            ? `${scanned}개 전부 등록`
+            : `★미등록: ${offenders.join(", ")}`,
+        ),
+      );
+    }
+
     return out;
   },
 };

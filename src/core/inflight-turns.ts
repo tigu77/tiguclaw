@@ -57,6 +57,35 @@ export const registerExternalTurn = (key: string, turn: InterruptedTurn): void =
 export const unregisterExternalTurn = (key: string): void => {
   externalTurns.delete(key);
 };
+
+/**
+ * 직렬화 밖 턴을 **등록·해제까지 한 몸으로** 돌린다 (2026-09-01).
+ *
+ * ★사고: 스케줄·파일감시 발화는 핸들러를 우회해 `runRegionA` 를 직접 부르는데, **진행 중
+ *  등록을 안 했다.** 그래서 `/health` 의 `active_turns` 가 0이었고, 배포 가드가
+ *  *"진행 중 턴 0건 — 재시작 안전"* 을 찍는다. 실측: `돌쇠위키 정리` 는 매일 20분
+ *  (02:21~02:41) 도는데 그 창 전체가 0이다 — 그때 배포하면 그 작업을 죽인다.
+ *  ★엔드포인트가 **같은 사고**를 내서 이 모듈이 생겼다(4,610자 응답 유실). 그때 닫은 건
+ *  엔드포인트 한 갈래뿐이었고, 스케줄 갈래는 그대로 남아 있었다.
+ *
+ * ★`finally` 로 묶는 이유: 등록만 하고 해제를 호출부에 맡기면 예외 경로에서 샌다
+ *  (그러면 `/health` 가 반대로 «영원히 진행 중» 이라 거짓말한다 — 그게 더 나쁘다).
+ * ★`ac` 는 **실제로 이어져야 한다** — 종료 경로가 `ac.abort()` 를 부르므로(위 99행),
+ *  배선 없는 컨트롤러를 넣으면 «끊었다» 가 거짓이 된다. 호출부가 그 signal 을 모델
+ *  호출에 넘기는 것까지가 계약이다.
+ */
+export const withExternalTurn = async <T>(
+  key: string,
+  turn: InterruptedTurn,
+  fn: () => Promise<T>,
+): Promise<T> => {
+  registerExternalTurn(key, turn);
+  try {
+    return await fn();
+  } finally {
+    unregisterExternalTurn(key);
+  }
+};
 /** 리포터가 합칠 때 쓴다(index.ts). 이 모듈 밖에서 직접 순회하지 않는다. */
 export const listExternalTurns = (): Array<[string, InterruptedTurn]> => [...externalTurns];
 

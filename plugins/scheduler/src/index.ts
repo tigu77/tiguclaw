@@ -36,6 +36,7 @@ import {
   type ScheduleRow,
 } from "../../../src/store/schedules.js";
 import { runClaude } from "../../../src/core/claude.js";
+import { withExternalTurn } from "../../../src/core/inflight-turns.js";
 import { runScheduleFiring, type RunnerDeps } from "./runner.js";
 import { setSchedulerLifecycleHooks, createSchedulerMcpServer } from "./mcp.js";
 
@@ -292,15 +293,27 @@ class SchedulerPlugin {
 // 데몬 정상 부팅 시 runClaude default — 영역 A 직접 호출.
 // spike 는 deps.runClaude mock 으로 대체.
 const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
-  return runClaude({
-    text: input.text,
-    threadKey: input.threadKey,
-    channel: input.channel,
-    cwd: input.cwd,
-    // 매니저 통지 dest forward — runner 가 채운 generic 좌표를 RegionASdkInput.notifyDest 로
-    // 그대로 넘긴다(어댑터는 미독해, 매니저 발사 도구만 읽음). 미지정이면 회귀 0.
-    notifyDest: input.notifyDest,
-  });
+  // ★진행 중 턴으로 **등록**한다 (2026-09-01). 스케줄 발화는 핸들러를 우회하므로 종전엔
+  //  `/health` 의 `active_turns` 에 안 잡혔고, 배포 가드가 *"진행 중 턴 0건 — 재시작 안전"*
+  //  을 찍었다. 실측: 이 경로로 도는 정리 작업이 매일 20분인데 그 창 전체가 0이었다.
+  //  ★`signal` 을 **실제로 넘긴다** — 종료 경로가 `ac.abort()` 를 부르므로, 안 넘기면
+  //   «끊었다» 가 거짓이 된다(등록만 하고 안 끊기는 것보다 나쁘다).
+  const ac = new AbortController();
+  return withExternalTurn(
+    input.threadKey,
+    { ac, channel: input.channel, target: null },
+    () =>
+      runClaude({
+        text: input.text,
+        threadKey: input.threadKey,
+        channel: input.channel,
+        cwd: input.cwd,
+        abortSignal: ac.signal,
+        // 매니저 통지 dest forward — runner 가 채운 generic 좌표를 RegionASdkInput.notifyDest 로
+        // 그대로 넘긴다(어댑터는 미독해, 매니저 발사 도구만 읽음). 미지정이면 회귀 0.
+        notifyDest: input.notifyDest,
+      }),
+  );
 };
 
 // ─── singleton instance — src/index.ts 가 enable/disable 슬래시에서 접근 ──

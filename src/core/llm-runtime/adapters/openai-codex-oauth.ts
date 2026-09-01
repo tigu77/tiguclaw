@@ -1191,8 +1191,29 @@ export const runOpenAiCodex = async (
     );
     traceBuf = "";
   };
+  /**
+   * **이번 SSE 시도에서 흘러나온 답변 텍스트** — 실패했을 때 답장에 실으려고 **보관**한다.
+   *
+   * ★사고(2026-09-01 실측). 매니저 턴이 iter=15 에서 `TypeError: terminated` 로 끊겼는데
+   *  로그엔 `shown=0자` 였다. 그 직전 트레이스는 `total=3859` — 즉 **모델이 쓴 마무리 보고
+   *  3,859자가 통째로 사라지고** 사용자에겐 일반 오류 문구만 갔다.
+   *
+   *  사슬은 이렇다: SSE 가 `response.completed` 없이 죽으면 `const { text } = sseResult` 가
+   *  실행되지 않아 `finalText` 는 ""(앞 14 iteration 은 도구만 썼다). 그리고 삼킴 경로가
+   *  «이미 흘러간 텍스트» 를 꺼내는 `closeTextSegment()` 는 `deltaStream` 을 읽는데, 그건
+   *  **`depth === 0 && workerDepth === 0` 에서만 켜진다** — 매니저·에이전트는 꺼져 있다.
+   *  그래서 2026-08-08 에 «잘린 문장만 남는다» 를 고친 그 수정이 **매니저에는 적용된 적이
+   *  없었다.** 특정 오류의 문제가 아니다 — 스트림 중간에 죽는 **모든** 실패가 같은 손실을 낸다.
+   *
+   * ★`traceBuf` 로는 못 쓴다 — `traceFlush` 가 그걸 **비운다**(로그엔 tail 400자만 남는다).
+   *  그래서 지우지 않는 별도 버퍼가 필요하다.
+   * ★**시도마다 초기화**한다. stall 재개는 같은 body 로 재전송해 모델이 텍스트를 처음부터
+   *  다시 내므로, 누적하면 답장에 같은 문단이 두 번 실린다.
+   */
+  let streamedInFlight = "";
   const tracePush = (delta: string): void => {
     if (!traceDelta) return;
+    streamedInFlight += delta;
     traceBuf += delta;
     traceTotal += delta.length;
     if (traceBuf.length >= 1500) traceFlush("chunk");
@@ -1507,6 +1528,8 @@ export const runOpenAiCodex = async (
         // 이후 arguments.delta 조각은 이 캐시로 필터(파서는 이름 모름, 필터는 어댑터 몫).
         // 매 재시도(stall-resume)마다 새 parseCodexSse 호출 = index 재출발이라 로컬 재선언.
         const toolDeltaIsExternal = new Map<number, boolean>();
+        // 이 시도가 흘린 텍스트만 담는다 — 위 선언의 «시도마다 초기화» 참조.
+        streamedInFlight = "";
         sseResult = await parseCodexSse(
           res.body,
           () => {
@@ -2449,7 +2472,8 @@ export const runOpenAiCodex = async (
       //  되고, 그래서 이 자리에서 하루에 사용자 대면 결함이 세 번 났다.
       //  `closeTextSegment()` 를 쓰는 이유: 원시 `closeSegment()` 는 버퍼만 비우고 대시보드
       //  턴 뷰가 읽는 `llm.activity kind:"text"` 세그먼트를 **발행하지 않는다**(실측 사고).
-      const streamedSoFar = closeTextSegment() ?? "";
+      // ★`deltaStream` 이 꺼진 턴(매니저·에이전트)에서는 이게 **유일한 재료**다.
+      const streamedSoFar = closeTextSegment() ?? streamedInFlight;
       const view = composeSwallowedFailure(finalText, streamedSoFar, notice);
       console.error(
         `[codex-swallowed] ${input.threadKey} ${e instanceof Error ? e.name : "unknown"}: ` +

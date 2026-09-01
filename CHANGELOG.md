@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-09-01
+
+**긴 배경 작업이 중간에 끊기면, 쓰던 보고가 통째로 사라지던 것.** 매니저가 결과를 정리해
+쓰는 도중 연결이 끊기면 그때까지 쓴 글이 **한 글자도 안 남고** *"요청 처리 중 오류가
+발생했습니다"* 만 왔습니다(실측: 3,859자 유실). 일 자체는 이미 끝나 있었는데 **무엇을
+했는지가 안 보였습니다.**
+
+### Fixed
+
+- **끊기기 전까지 쓴 내용을 그대로 보여줍니다.** 화면에 글이 흐르는 일반 대화에선 원래
+  이렇게 동작했는데, **매니저·에이전트에는 그 처리가 빠져 있었습니다** — 그쪽은 글을
+  실시간으로 흘리지 않아 «이미 보여준 글» 이 없다고 판단했기 때문입니다. 이제 양쪽이
+  같습니다. ★특정 오류만의 문제가 아니라 **중간에 끊기는 모든 경우**에 해당합니다.
+
 ## [0.44.0] - 2026-09-01
 
 **어떤 모델을 쓸 수 있는지 제품이 알려줍니다.** 지금까지는 모델 목록을 구독 경로(Claude·
@@ -1882,7 +1896,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.44.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...HEAD
+[0.44.1]: https://github.com/tigu77/tiguclaw/compare/v0.44.0...v0.44.1
 [0.44.0]: https://github.com/tigu77/tiguclaw/compare/v0.43.2...v0.44.0
 [0.43.2]: https://github.com/tigu77/tiguclaw/compare/v0.43.1...v0.43.2
 [0.43.1]: https://github.com/tigu77/tiguclaw/compare/v0.43.0...v0.43.1

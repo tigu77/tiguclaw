@@ -87,6 +87,16 @@ export const check: RegressionCheck = {
         `원시 호출 ${(body.match(/deltaStream\.closeSegment\(\)/g) ?? []).length}회`,
       ),
       assert(
+        "★★[린트] 매니저·에이전트 턴에서도 **흘러나온 텍스트를 싣는다** — `deltaStream` 은 `depth===0 && workerDepth===0` 에서만 켜지므로, 폴백이 없으면 매니저의 부분 보고가 통째로 사라진다(2026-09-01 실측: iter=15 에서 끊긴 매니저가 3,859자를 잃고 `shown=0자`)",
+        /closeTextSegment\(\) \?\? streamedInFlight/.test(body) &&
+          // 시도마다 초기화한다 — stall 재개는 같은 body 를 재전송해 텍스트를 처음부터 다시
+          // 내므로, 누적하면 답장에 같은 문단이 두 번 실린다. 초기화가 SSE 호출 **직전**인지 본다.
+          /streamedInFlight = "";\s*\n\s*sseResult = await parseCodexSse\(/.test(body) &&
+          // 그 버퍼를 실제로 채우는가 — 선언만 있고 안 채우면 폴백이 늘 빈 문자열이다.
+          /streamedInFlight \+= delta;/.test(body),
+        "폴백·시도별 초기화·적재 셋 다 확인",
+      ),
+      assert(
         "[린트] 삼키기 전에 판정 수치와 함께 로그를 남긴다",
         /codex-swallowed/.test(body) &&
           /iter=\$\{iteration\}/.test(body) &&

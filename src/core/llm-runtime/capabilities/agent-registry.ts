@@ -897,17 +897,20 @@ export const createSpawnAgentMcpServer = (
     async (args) => {
       try {
         // lazy import — capabilities → worker-jobs circular 회피(이 파일의 다른 경로와 동형).
-        const { awaitJobOutcome, claimJobJoin, SUBAGENT_TIMEOUT_MS } =
+        // ★`SUBAGENT_TIMEOUT_MS` 를 **안 쓴다** — 그건 «자식을 죽이는 시계» 이고 기본이
+        //  `Infinity` 다(2026-09-03 P-A 실측). 여기는 «부모가 기다리는 시계» 라 유한해야 한다.
+        const { awaitJobOutcome, claimJobJoin, releaseJobJoin, JOIN_WAIT_TIMEOUT_MS } =
           await import("../../worker-jobs.js");
         const capMs =
           args.timeout_seconds !== undefined && Number.isFinite(args.timeout_seconds)
             ? Math.max(1000, Math.round(args.timeout_seconds * 1000))
-            : SUBAGENT_TIMEOUT_MS;
+            : JOIN_WAIT_TIMEOUT_MS;
         // ★선점을 **기다리기 전에** 전부 건다 — 하나씩 기다리며 걸면 그 사이에 끝난 자식이
         //  재주입으로 새어 나가 이중 보고가 된다.
         for (const id of args.job_ids) claimJobJoin(id);
         const deadline = Date.now() + capMs;
         const lines: string[] = [];
+        try {
         for (const id of args.job_ids) {
           const left = Math.max(0, deadline - Date.now());
           const job = await awaitJobOutcome(id, left);
@@ -924,6 +927,13 @@ export const createSpawnAgentMcpServer = (
           }
         }
         return okText(lines.join("\n\n"));
+        } finally {
+          // ★★**어떤 경로로 끝나든 선점을 푼다** (2026-09-03 P-B). 정상·예외·부모 턴 중단
+          //  모두 여기를 지난다. 안 풀면 나중에 자식이 끝나도 «합류가 받아갔다» 고 보고
+          //  배달이 생략돼 **결과가 조용히 사라진다** — 이 집합은 결과를 잃지 않는 쪽으로
+          //  실패해야 한다. 이미 받은 것은 `awaitJobOutcome` 이 먼저 풀었으므로 무해(멱등).
+          for (const id of args.job_ids) releaseJobJoin(id);
+        }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         return { content: [{ type: "text" as const, text: `wait_for_worker 실패: ${reason}` }], isError: true };

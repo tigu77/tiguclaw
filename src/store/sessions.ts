@@ -215,7 +215,7 @@ export const explainDbOpenFailure = (e: unknown): Error => {
   if (hint === null) return e instanceof Error ? e : new Error(msg);
   // 원문을 버리지 않는다 — 안내를 **앞에** 붙여 사람이 먼저 읽게 한다.
   const wrapped = new Error(`${hint}\n\n원문: ${msg}`);
-  // ★`stack` 을 **원본으로 덮지 않는다** (2026-08-19, SANTO 머신 로그로 실증).
+  // ★`stack` 을 **원본으로 덮지 않는다** (2026-08-19, 윈도우 사용자 머신 로그로 실증).
   //  종전엔 `wrapped.stack = e.stack` 이었다. 그런데 크래시 핸들러(`logFatal(..., err)`)는
   //  Error 객체를 통째로 넘기고 콘솔은 그럴 때 `message` 가 아니라 **`stack` 을 찍는다** —
   //  그 문자열은 `Error: Could not locate the bindings file…` 로 시작하므로 **안내가 통째로

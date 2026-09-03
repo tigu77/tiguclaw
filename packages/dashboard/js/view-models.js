@@ -302,12 +302,116 @@
         row.appendChild(meta);
         row.appendChild(btn);
         page.appendChild(row);
+        page.appendChild(buildMemoryCapRow());
         page.appendChild(buildLocaleRow());
         page.appendChild(buildThemeRow());
         page.appendChild(buildLogRow());
         page.appendChild(buildChangelogRow());
         page.appendChild(buildUpdateNotesRow());
         root.appendChild(page);
+      };
+
+      /**
+       * 메모리 인덱스 크기 — 슬라이더 한 줄 (2026-09-03 정태님 요청).
+       *
+       * ★종전엔 `settings.json` 을 손으로 고쳐야만 바뀌었다 — 옵션은 있는데 **사람이 쓸
+       *  자리가 없었다.** 값·범위는 서버가 준다(`/api/memory-cap`) — 여기서 숫자를 다시
+       *  적으면 코어 판정과 두 곳이 갈린다.
+       * ★**왼쪽 끝은 0 = 끄기**다. 「4KB 미만은 오타」라는 코어 규칙 때문에 슬라이더는
+       *  0 다음이 곧 최소값으로 뛴다 — 그 사이는 고를 수 있는 값이 아니다.
+       */
+      const buildMemoryCapRow = () => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = i18n("settings.memoryCap.head");
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        desc.textContent = i18n("settings.memoryCap.hint");
+        meta.appendChild(name);
+        meta.appendChild(desc);
+        row.appendChild(meta);
+
+        const box = document.createElement("div");
+        box.className = "settings-slider";
+        const out = document.createElement("span");
+        out.className = "settings-slider-value";
+        const range = document.createElement("input");
+        range.type = "range";
+        range.disabled = true;
+        // ★기본값 되돌리기 — 슬라이더로 헤매다 «원래 얼마였지» 로 막히지 않게(정태님 요청).
+        //  기본값은 **서버가 준다**(`/api/memory-cap` 의 `default`) — 여기 숫자를 박으면
+        //  코어 기본값과 두 곳이 갈린다.
+        const resetBtn = document.createElement("button");
+        resetBtn.type = "button";
+        resetBtn.className = "settings-slider-reset";
+        resetBtn.textContent = i18n("settings.memoryCap.reset");
+        resetBtn.disabled = true;
+        box.appendChild(range);
+        box.appendChild(out);
+        box.appendChild(resetBtn);
+        row.appendChild(box);
+
+        // 4KB 단위 눈금 — 0 은 별도 지점(왼쪽 끝)으로 둔다.
+        const STEP = 4096;
+        const label = (bytes) =>
+          bytes === 0
+            ? i18n("settings.memoryCap.off")
+            : bytes >= 1024 * 1024
+              ? (bytes / 1024 / 1024).toFixed(1) + " MB"
+              : Math.round(bytes / 1024) + " KB";
+
+        void (async () => {
+          try {
+            const r = await fetch("/api/memory-cap");
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+            range.min = "0";
+            range.max = String(Math.round(d.max / STEP));
+            range.step = "1";
+            const toBytes = (tick) => (Number(tick) === 0 ? 0 : Math.max(d.min, Number(tick) * STEP));
+            range.value = String(d.bytes === 0 ? 0 : Math.round(d.bytes / STEP));
+            out.textContent = label(d.bytes);
+            range.disabled = false;
+            const applyBytes = async (bytes) => {
+              range.disabled = true;
+              resetBtn.disabled = true;
+              try {
+                const rr = await fetch("/api/set-memory-cap", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ bytes }),
+                });
+                const dd = await rr.json().catch(() => ({}));
+                if (!rr.ok) throw new Error(dd.error || "HTTP " + rr.status);
+                range.value = String(bytes === 0 ? 0 : Math.round(bytes / STEP));
+                out.textContent = label(bytes);
+                showToast(i18n("settings.memoryCap.saved", { value: label(bytes) }), "good");
+              } catch (e) {
+                showToast(i18n("models.settings.saveFailed", { err: e.message }), "bad");
+              } finally {
+                range.disabled = false;
+                resetBtn.disabled = false;
+              }
+            };
+            resetBtn.disabled = false;
+            resetBtn.addEventListener("click", () => {
+              void applyBytes(d.default);
+            });
+            range.addEventListener("input", () => {
+              out.textContent = label(toBytes(range.value));
+            });
+            range.addEventListener("change", () => {
+              void applyBytes(toBytes(range.value));
+            });
+          } catch {
+            out.textContent = "—"; // 못 읽으면 조작 불가로 둔다(거짓 값을 보여주지 않는다).
+          }
+        })();
+        return row;
       };
 
       /**

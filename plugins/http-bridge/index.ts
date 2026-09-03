@@ -183,6 +183,7 @@ import { ATTACH_MAX_FILE_BYTES, AttachmentError, AUDIO_EXT_BY_MIME, CONTENT_TYPE
 import { readJsonBody, readRawBody } from "./http-body.js";
 import {
   handleSetDefaultProfile, handleSetProfileColor, handleSetSuggestion, handleSetLocale,
+  handleSetMemoryCap, handleGetMemoryCap,
   handleSetTheme, handleSetEgress, handleGetEgress, handleGetSuggestion,
   handleSetSessionProfile, handleSetModuleEnabled, handleGetModelProfiles,
   handleGetProviders,
@@ -492,6 +493,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다(위 set-session-profile 누락 전례 참조).
               : pathname === "/set-suggestion" && method === "POST"
                 ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
+              : pathname === "/set-memory-cap" && method === "POST"
+                ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-locale" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-theme" && method === "POST"
@@ -698,6 +701,19 @@ class HttpBridge implements Channel, Observer {
     }
     if (pathname === "/set-suggestion" && method === "POST") {
       await handleSetSuggestion(this.routeCtx(req, res, url));
+      return;
+    }
+
+    // /set-memory-cap — 메모리 인덱스 캡(바이트). write 게이트(위 role 표).
+    // body { bytes: number }. `0` 은 «끄기» 다. 판정은 코어(`isMemoryIndexCapValue`) 한 곳 —
+    // 여기서 범위를 다시 쓰면 두 곳이 갈린다(/set-locale·/set-theme 와 같은 규약).
+    if (pathname === "/set-memory-cap" && method === "POST") {
+      await handleSetMemoryCap(this.routeCtx(req, res, url));
+      return;
+    }
+    // /memory-cap — 현재 값 + 허용 범위. 설정 화면 슬라이더가 이걸로 그린다.
+    if (pathname === "/memory-cap" && method === "GET") {
+      await handleGetMemoryCap(this.routeCtx(req, res, url));
       return;
     }
 

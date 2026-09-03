@@ -17,6 +17,7 @@ import {
   roleContextBlock,
   composeSystemChannel,
   contextSlotKeys,
+  roleScopedSlotKeys,
   buildContextSlots,
   splitSystemContext,
 } from "../../core/prompt-assembly.js";
@@ -210,18 +211,38 @@ export const check: RegressionCheck = {
         `system=${at(MARK.system)} skill=${at(MARK.skillIndex)} agent=${at(MARK.agent)} warn=${at(MARK.agentWarn)}`,
       ),
     );
-    out.push(
-      assert(
-        "★★②역할 축 — 역할 전용(agentIndex·modelProfiles)이 **공용 전부보다 뒤**다. 앞으로 오면 자식 프리픽스가 거기서 갈려 뒤가 통째로 두 벌 캐시된다(실제로 그랬다: 공유 53%)",
-        at(MARK.agentIndex) > at(MARK.system) &&
-          at(MARK.agentIndex) > at(MARK.skillIndex) &&
-          at(MARK.agentIndex) > at(MARK.memoryIndex) &&
-          at(MARK.agentIndex) > at(MARK.agent) &&
-          at(MARK.agentIndex) > at(MARK.agentWarn) &&
-          at(MARK.modelProfiles) > at(MARK.agentWarn),
-        `agentIdx=${at(MARK.agentIndex)} profiles=${at(MARK.modelProfiles)} · 공용 최댓값=${Math.max(at(MARK.system), at(MARK.skillIndex), at(MARK.memoryIndex), at(MARK.agent), at(MARK.agentWarn))}`,
-      ),
-    );
+    // ★★②역할 축 — **이름을 세지 않고 성질에서 파생**한다 (2026-09-03 적대 검토 B-6·B-8).
+    //  종전엔 `agentIndex`·`modelProfiles` **두 이름**만 봤다. 그런데 같은 날 세 번째
+    //  (`memoryIndex`)가 역할 전용이 됐고 — 자식은 목록을 안 받는다(`memoryScopeFor`) —
+    //  **그 규칙을 어긴 것이 바로 다음 커밋**이었는데 이 검사는 옛 분류를 못 박고 있어
+    //  «고쳐도 안 걸리고 안 고쳐도 안 걸리는» 상태였다. `nextSuggestion` 을 맨 앞으로
+    //  옮기는 변이도 같은 구멍으로 통과했다.
+    //  이제 `roleScopedSlotKeys()` 로 정의점에서 뽑으므로 **새 역할 전용 슬롯이 생기면
+    //  저절로 검사 대상**이 된다([[feedback_hand_maintained_lists]]).
+    {
+      const roleKeys = roleScopedSlotKeys();
+      const sysKeys = contextSlotKeys().filter((k) => MARK[k as keyof typeof MARK] !== undefined);
+      const posOf = (k: string): number => stable.indexOf(MARK[k as keyof typeof MARK] ?? "\u0000없음");
+      const rolePos: number[] = roleKeys.map(posOf).filter((n: number) => n >= 0);
+      const sharedPos: number[] = sysKeys
+        .filter((k) => !roleKeys.includes(k))
+        .map(posOf)
+        .filter((n: number) => n >= 0);
+      const minRole = Math.min(...rolePos);
+      const maxShared = Math.max(...sharedPos);
+      out.push(
+        assert(
+          "★★★역할 전용 슬롯이 **공용 전부보다 뒤**다 — 앞에 오면 그 뒤의 공용 조각이 역할마다 두 벌 캐시된다",
+          rolePos.length > 0 && sharedPos.length > 0 && minRole > maxShared,
+          `역할전용 ${roleKeys.join("·")} (최소 ${minRole}) · 공용 최대 ${maxShared}`,
+        ),
+        assert(
+          "★역할 전용이 **이름 목록이 아니라 정의점에서** 나온다 — 새 슬롯이 생기면 저절로 검사된다",
+          roleKeys.length >= 3 && roleKeys.includes("memoryIndex"),
+          `roleScoped: ${roleKeys.join(" · ")}`,
+        ),
+      );
+    }
 
     // 빈 슬롯(depth≥1 의 agentIndex/modelProfiles, leanMemory 의 메모리 등)은 양쪽에서 제거.
     const lean = splitSystemContext({

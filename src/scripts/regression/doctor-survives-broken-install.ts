@@ -6,7 +6,7 @@
  * 해서 `main()` 이 시작조차 못 했다. 즉 **진단 도구가 가장 필요한 순간에 침묵**했다:
  * 사내 npm 설정(`ignore-scripts=true`)으로 네이티브가 안 깔린 머신에서 데몬은 부팅마다
  * 죽는데(실측 6회 연속), `doctor` 를 쳐도 원시 dlopen 에러 한 줄뿐이라 사용자가 로그를
- * 손으로 보내야 했다(SANTO, 2026-08-19).
+ * 손으로 보내야 했다(윈도우 사용자 신고, 2026-08-19).
  *
  * 그리고 전역 `tiguclaw` 명령 — "특정 머신에서 명령이 안 먹힌다" 는 신고가 있었는데
  * `doctor` 는 그 축을 **아예 안 봤다**(PATH·전역 명령 언급 0회).
@@ -357,9 +357,9 @@ export const check: RegressionCheck = {
     //  ★종전엔 이게 «모름» 으로 흘러 *"판정 불가"* 라고 답했다 — **고치는 법을 아는데
     //   우회로만 알려준 것**이다. 그래서 «조회 실패» 와 «폴더 없음» 을 값으로 가른다.
     const brokenWin = judgeGlobalCommand(
-      "C:\\Users\\SANTO\\AppData\\Roaming\\npm\\tiguclaw.cmd",
-      "C:/Users/SANTO/tiguclaw",
-      { kind: "broken", expected: "C:/Users/SANTO/AppData/Roaming/npm/node_modules/tiguclaw" },
+      "C:\\Users\\user\\AppData\\Roaming\\npm\\tiguclaw.cmd",
+      "C:/Users/user/tiguclaw",
+      { kind: "broken", expected: "C:/Users/user/AppData/Roaming/npm/node_modules/tiguclaw" },
     );
     const unknownStill = judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", {
       kind: "unknown",

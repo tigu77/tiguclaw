@@ -19,6 +19,8 @@
  *  - POST /api/set-default-profile → bridge POST /set-default-profile (write, 기본 프로파일 포인터 설정)
  *  - POST /api/set-suggestion → bridge POST /set-suggestion (write, 다음 메시지 제안 on/off)
  *  - GET  /api/suggestion → bridge GET /suggestion (read, 현재 값)
+ *  - POST /api/set-memory-cap → bridge POST /set-memory-cap (write, 메모리 인덱스 캡)
+ *  - GET  /api/memory-cap → bridge GET /memory-cap (read, 현재 값 + 허용 범위)
  *  - POST /api/set-egress → bridge POST /set-egress (write, 함께 보낼 채널)
  *  - GET  /api/egress → bridge GET /egress (read, 현재 값 + 가능 채널)
  *  - POST /api/set-session-profile → bridge POST /set-session-profile (write, 이 세션(탭)만 sticky 프로파일)
@@ -772,6 +774,21 @@ const server = http.createServer((req, res) => {
     }
     // 다음 메시지 제안 on/off — bridge (write 토큰 server-side 주입, browser 미노출).
     // /set-default-profile 과 동형: 설정 화면 토글이 부르고, settings.json 한 키만 바뀐다.
+    // 메모리 인덱스 캡 — 설정 화면 슬라이더가 부른다. `0` 은 끄기.
+    //  /set-suggestion 과 동형(write 토큰 server-side 주입, browser 미노출).
+    if (pathname === "/api/set-memory-cap" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-memory-cap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    if (pathname === "/api/memory-cap" && method === "GET") {
+      await proxyJson(res, "/memory-cap");
+      return;
+    }
     if (pathname === "/api/set-suggestion" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-suggestion", {

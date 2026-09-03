@@ -17,7 +17,8 @@ import { writeJson } from "../../src/core/net/write-json.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import { collectInventory, isCoreModule, isSelfReferentialModule } from "../../src/core/plugins/inventory.js";
 import { collectModules } from "../../src/core/plugins/providers.js";
-import { setDefaultProfile, getDefaultProfileName, loadModelProfiles, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled } from "../../src/core/settings.js";
+import { setDefaultProfile, getDefaultProfileName, loadModelProfiles, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX } from "../../src/core/settings.js";
+import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
 import { readJsonBody } from "./http-body.js";
@@ -110,6 +111,55 @@ export const handleSetSuggestion = async (ctx: RouteCtx): Promise<void> => {
   try {
     setSuggestionEnabled(sbody.enabled);
     writeJson(res, 200, { ok: true, enabled: sbody.enabled });
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, 500, { error: m });
+  }
+  return;
+};
+
+/**
+ * `/set-memory-cap` — 메모리 인덱스 캡(바이트) 쓰기. `handleSetSuggestion` 과 동형.
+ *
+ * ★`0` 은 **끄기**다 (2026-09-03 정태님). 판정은 코어 `isMemoryIndexCapValue` 한 곳 —
+ *  여기서 범위를 다시 쓰면 두 곳이 갈린다.
+ */
+export const handleSetMemoryCap = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, 400, { error: `invalid body: ${m}` });
+    return;
+  }
+  if (!isMemoryIndexCapValue(body.bytes)) {
+    writeJson(res, 400, {
+      error: `bytes must be 0 (off) or ${MEMORY_INDEX_CAP_MIN}~${MEMORY_INDEX_CAP_MAX}`,
+    });
+    return;
+  }
+  try {
+    setMemoryIndexCapBytes(body.bytes);
+    writeJson(res, 200, { ok: true, bytes: body.bytes });
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, 500, { error: m });
+  }
+  return;
+};
+
+/** `/memory-cap` — 현재 값 + 허용 범위. 슬라이더가 이걸로 그린다. */
+export const handleGetMemoryCap = async (ctx: RouteCtx): Promise<void> => {
+  const { res } = ctx;
+  try {
+    writeJson(res, 200, {
+      bytes: readMemoryIndexCapBytes(MEMORY_INDEX_CAP_BYTES),
+      min: MEMORY_INDEX_CAP_MIN,
+      max: MEMORY_INDEX_CAP_MAX,
+      default: MEMORY_INDEX_CAP_BYTES,
+    });
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
     writeJson(res, 500, { error: m });

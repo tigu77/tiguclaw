@@ -645,5 +645,10 @@
   "plugins.fact.version": "Version",
   "plugins.fact.author": "Author",
   "plugins.fact.homepage": "Website",
-  "plugins.fact.license": "License"
+  "plugins.fact.license": "License",
+  "settings.memoryCap.head": "Memory index size",
+  "settings.memoryCap.hint": "Caps the “what do I remember” list the assistant sees every turn. Lower it for a lighter prompt; set it to 0 to leave the list out entirely (search still reaches your memories).",
+  "settings.memoryCap.off": "Off — no list",
+  "settings.memoryCap.saved": "Memory index size set to {value}.",
+  "settings.memoryCap.reset": "Default"
 }

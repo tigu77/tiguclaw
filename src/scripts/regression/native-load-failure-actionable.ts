@@ -109,7 +109,7 @@ const run = async (): Promise<Assertion[]> => {
       got: `메시지 앞머리=${JSON.stringify(wrapped.message.slice(0, 60))}`,
     });
 
-    // ★**로그에 실제로 찍히는 것**은 message 가 아니라 stack 이다 (2026-08-19, SANTO 머신
+    // ★**로그에 실제로 찍히는 것**은 message 가 아니라 stack 이다 (2026-08-19, 윈도우 사용자 머신
     //  실증). 크래시 핸들러가 `logFatal(..., err)` 로 Error 객체를 통째로 넘기고 콘솔은
     //  그럴 때 `stack` 을 찍는다. 종전엔 `wrapped.stack = e.stack` 으로 **원본 스택을
     //  덮어써서**, 그 문자열이 `Error: Could not locate the bindings file…` 로 시작해

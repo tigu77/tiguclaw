@@ -1013,9 +1013,16 @@ export const setDefaultProfile = (name: string): void => {
  * ★그래서 **정하는 자리만 연다** — 설치마다 메모리 양도 예산도 다르고, 그건 우리가 아니라
  *  사용자가 안다. 값을 정하는 건 사용자, 기본을 정하는 건 실측이다.
  *
- * 범위는 4KB~512KB 로 막는다: 0 이나 음수면 인덱스가 통째로 사라져 «비서가 자기 기억을
- * 모르는» 상태가 되고(도달 축), 상한이 없으면 무한 증가한다. 이상값은 **무시하고 기본값**
- * — 설정 오타 하나로 비서가 기억을 잃지 않게.
+ * 범위는 **0 또는 4KB~512KB**. 상한이 없으면 무한 증가하고, 4KB 미만은 한 줄도 못 담아
+ * «있는데 비어 보이는» 상태가 된다. 이상값은 **무시하고 기본값** — 설정 오타 하나로
+ * 비서가 기억을 잃지 않게.
+ *
+ * ★**0 은 «인덱스를 아예 싣지 않는다» 는 뜻으로 연다** (2026-09-03 정태님: *"0이면 메모리
+ *  인덱스가 하나도 안 들어가는 거고"*). 종전엔 0을 이상값으로 막았는데, 그건 «오타» 와
+ *  «끄겠다는 의사» 를 같은 것으로 본 것이다. 슬라이더로 조절하는 자리가 생기면서 0은
+ *  **도달 가능한 선택**이 됐고, 선택은 막는 게 아니라 그 뜻대로 따르는 게 맞다.
+ *  ★끄면 비서는 검색(`search_memory`)으로만 기억에 닿는다 — 목록이 없으니 «무엇이 있는지»
+ *   를 모른다. 그래도 그건 사용자가 아는 트레이드오프다.
  */
 export const readMemoryIndexCapBytes = (fallback: number, cwd?: string): number => {
   try {
@@ -1025,7 +1032,8 @@ export const readMemoryIndexCapBytes = (fallback: number, cwd?: string): number 
       const raw = (m as { indexCapBytes?: unknown }).indexCapBytes;
       if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
       const v = Math.floor(raw);
-      if (v < 4_096 || v > 524_288) continue; // 이상값 = 못 본 것으로
+      // 0 = 끄기(의사) / 1~4,095 = 한 줄도 못 담는 값(오타로 본다) / >512KB = 무한 증가
+      if (v !== 0 && (v < 4_096 || v > 524_288)) continue;
       return v;
     }
   } catch {
@@ -1076,6 +1084,44 @@ export const setEgressChannels = (channels: string[]): void => {
  * 다른 키(모델 프로파일·게이트웨이·selfDevelopment…)를 통째로 덮어쓰면 안 된다.
  * 저장 즉시 다음 턴부터 반영된다 — 설정은 매 턴 fresh 로 읽힌다(재시작 불요).
  */
+/**
+ * 메모리 인덱스 캡 쓰기 — `memory.indexCapBytes` **한 키만** 병합 수정.
+ *
+ * ★화면(설정 → 슬라이더)이 부른다 (2026-09-03 정태님: *"설정에 메모리 인덱스 캡 사이즈
+ *  수정하는 공간이 없어 … 슬라이더 같은 걸로 둬도 괜찮을 듯"*). 종전엔 `settings.json` 을
+ *  손으로 고쳐야만 바뀌었다 — 옵션은 있는데 **사람이 쓸 자리가 없었다.**
+ * ★값 판정은 **읽는 쪽과 같은 규칙**이다(`readMemoryIndexCapBytes`): `0`(끄기) 또는
+ *  4,096~524,288. 여기서 범위를 다시 적으면 두 곳이 갈리므로 상수를 공유한다.
+ */
+export const MEMORY_INDEX_CAP_MIN = 4_096;
+export const MEMORY_INDEX_CAP_MAX = 524_288;
+
+/** 쓸 수 있는 값인가 — 화면·엔드포인트·읽기가 같은 판정을 쓴다(순수). */
+export const isMemoryIndexCapValue = (v: unknown): v is number =>
+  typeof v === "number" &&
+  Number.isFinite(v) &&
+  Number.isInteger(v) &&
+  (v === 0 || (v >= MEMORY_INDEX_CAP_MIN && v <= MEMORY_INDEX_CAP_MAX));
+
+export const setMemoryIndexCapBytes = (bytes: number): void => {
+  if (!isMemoryIndexCapValue(bytes)) {
+    throw new Error(
+      `메모리 인덱스 캡은 0(끄기) 또는 ${MEMORY_INDEX_CAP_MIN}~${MEMORY_INDEX_CAP_MAX} 바이트여야 합니다.`,
+    );
+  }
+  const file = getPaths().settings;
+  // ★깨져 있으면 던진다 — `{}` 로 덮으면 이 파일의 다른 설정이 함께 사라진다(형제와 동형).
+  const root = readSettingsRootForWrite(file);
+  const existing = root.memory;
+  const memory: Record<string, unknown> =
+    existing !== null && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  memory.indexCapBytes = bytes;
+  root.memory = memory;
+  writeSettingsRootAtomic(file, root);
+};
+
 export const setSuggestionEnabled = (enabled: boolean): void => {
   const file = getPaths().settings;
   // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의

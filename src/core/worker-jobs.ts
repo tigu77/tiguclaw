@@ -474,24 +474,6 @@ export const markCancelled = (jobId: string, reason: string): void => {
   publishWorkerLifecycle("worker.cancelled", job, { error: reason, task: job.task });
 };
 
-/**
- * **합류(join) 레지스트리** — 이 잡의 결과를 «부른 쪽이 직접 받겠다» 고 선점한 것.
- *
- * ★왜 필요한가 (2026-09-03). `spawn_agent` 이 항상 비동기가 되면서 「띄우기」와 「기다리기」가
- *  갈렸다. 그런데 자식이 끝나면 종전 경로(`onWorkerComplete`)가 **결과를 소환자에게 밀어
- *  넣는다** — 합류로 이미 받았는데 재주입까지 오면 **같은 걸 두 번 보고**한다.
- *  그래서 합류가 선점하면 밀어넣기를 건너뛴다.
- *
- * ★**선점을 못 한 경우는 종전대로 둔다.** 자식이 합류 전에 이미 끝나 결과가 배달됐다면
- *  그건 «늦게 합류한» 것이고, 그때는 재주입이 옳다(결과를 잃는 것보다 두 번 보는 게 낫다).
- *  즉 이 집합은 **결과를 잃지 않는 쪽으로** 실패한다.
- */
-const joinedJobs = new Set<string>();
-
-/**
- * 이 잡의 결과를 합류로 받겠다고 선점한다.
- * 이미 끝난 잡이면 `false` — 그때는 재주입이 이미 갔거나 가는 중이라 선점이 의미 없다.
- */
 export const claimJobJoin = (jobId: string): boolean => {
   const job = jobs.get(jobId);
   if (job === undefined || job.status !== "running") return false;
@@ -503,6 +485,21 @@ export const claimJobJoin = (jobId: string): boolean => {
 export const isJobJoined = (jobId: string): boolean => joinedJobs.has(jobId);
 
 /**
+ * 선점을 **푼다** — 합류가 «더는 기다리지 않는다» 고 알린다.
+ *
+ * ★반드시 `finally` 에서 부른다 (2026-09-03 적대 검토 P-B, 실측 재현). 선점한 채로 부모
+ *  턴이 죽으면(`/stop`·브리지 끊김·턴 실패·매니저 취소) `onWorkerComplete` 가 «합류가
+ *  받아갔다» 고 보고 배달을 건너뛰어 **결과가 조용히 사라진다.** 검토자가 고아 프로미스로
+ *  재현했다: 재주입 0건(대조군 1건), 로그엔 «선점 — 재주입 생략» 한 줄만.
+ * ★그리고 그 자동 복구(시한 초과 시 해제)는 기본 시한이 무한이라 **절대 안 돌았다**(P-A).
+ *  둘이 겹쳐 «영구 유실» 이 됐다 — 그래서 시한을 유한으로 바꾸고 해제를 `finally` 로 옮겼다.
+ *  ★이 집합은 **결과를 잃지 않는 쪽으로** 실패해야 한다: 못 받았으면 종전 경로가 받는다.
+ */
+export const releaseJobJoin = (jobId: string): void => {
+  joinedJobs.delete(jobId);
+};
+
+/**
  * 잡이 끝날 때까지 **프로세스 안에서** 기다린다 — 모델 왕복 0.
  *
  * ★폴링이지만 **토큰이 안 든다.** 대안(`list_workers` 를 모델이 반복 호출)은 폴링 한 번마다
@@ -510,12 +507,24 @@ export const isJobJoined = (jobId: string): boolean => joinedJobs.has(jobId);
  * ★시한이 **반드시** 있어야 한다: 자식이 안 끝나면 부모 턴을 영원히 붙잡는다.
  *  종전 `wait:true` 경로가 `SUBAGENT_TIMEOUT_MS` 를 쓰므로 같은 값을 기본으로 둔다.
  */
+/**
+ * 합류에 쓸 **유한 시한**을 고른다 — 순수 함수(검사가 기다리지 않고 확인할 수 있게).
+ *
+ * ★**무한을 받지 않는다** (2026-09-03 P-A). 무한이면 시한 분기가 영원히 거짓이 되고,
+ *  그러면 «시한 초과 → 선점 해제» 라는 **유일한 자동 복구**가 안 돈다(P-B). 호출부 하나가
+ *  실수로 `SUBAGENT_TIMEOUT_MS`(기본 `Infinity`)를 넘겨도 여기서 막힌다.
+ * ★순수로 뺀 이유는 **검사 가능성**이다 — 안 그러면 «무한이 유한으로 떨어지나» 를 확인하려고
+ *  회귀가 10분을 기다린다(실제로 그렇게 만들었다가 스위트를 멈춰 세웠다).
+ */
+export const resolveJoinTimeoutMs = (ms: number | undefined): number =>
+  ms !== undefined && Number.isFinite(ms) && ms >= 0 ? ms : JOIN_WAIT_TIMEOUT_MS;
+
 export const awaitJobOutcome = async (
   jobId: string,
   timeoutMs: number,
   pollMs = 200,
 ): Promise<WorkerJobRecord | undefined> => {
-  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const deadline = Date.now() + resolveJoinTimeoutMs(timeoutMs);
   for (;;) {
     const job = jobs.get(jobId);
     if (job === undefined) return undefined; // 모르는 잡 — 호출자가 «없음» 으로 보고한다.
@@ -1324,6 +1333,52 @@ const DEFAULT_WORKER_HARD_GRACE_MS = 60_000;
 export const SUBAGENT_TIMEOUT_MS = parseTimeoutEnv(
   process.env.SUBAGENT_TIMEOUT_MS,
   WORKER_TIMEOUT_MS,
+);
+
+/**
+ * **합류(join) 레지스트리** — 이 잡의 결과를 «부른 쪽이 직접 받겠다» 고 선점한 것.
+ *
+ * ★왜 필요한가 (2026-09-03). `spawn_agent` 이 항상 비동기가 되면서 「띄우기」와 「기다리기」가
+ *  갈렸다. 그런데 자식이 끝나면 종전 경로(`onWorkerComplete`)가 **결과를 소환자에게 밀어
+ *  넣는다** — 합류로 이미 받았는데 재주입까지 오면 **같은 걸 두 번 보고**한다.
+ *  그래서 합류가 선점하면 밀어넣기를 건너뛴다.
+ *
+ * ★**선점을 못 한 경우는 종전대로 둔다.** 자식이 합류 전에 이미 끝나 결과가 배달됐다면
+ *  그건 «늦게 합류한» 것이고, 그때는 재주입이 옳다(결과를 잃는 것보다 두 번 보는 게 낫다).
+ *  즉 이 집합은 **결과를 잃지 않는 쪽으로** 실패한다.
+ */
+const joinedJobs = new Set<string>();
+
+/**
+ * 이 잡의 결과를 합류로 받겠다고 선점한다.
+ * 이미 끝난 잡이면 `false` — 그때는 재주입이 이미 갔거나 가는 중이라 선점이 의미 없다.
+ */
+/**
+ * **합류의 기본 시한** (ms) — 1분. env `JOIN_WAIT_TIMEOUT_MS`.
+ *
+ * ★**끊는 게 아니라 «그만 기다리고 제어를 돌려주는» 것**이다 (2026-09-03 정태님). 자식은
+ *  계속 돈다 — 다시 부르면 이어서 기다린다. 그래서 2026-08-22 결정("냅다 끊지 마라")과
+ *  충돌하지 않는다. *"일이 안 끝났으면 기다리는 건 당연한 것"* 이고, 여기서 정하는 건
+ *  «얼마나 기다리다 한 번 돌아볼까» 뿐이다.
+ * ★1분인 근거는 실측이다 — 벤치에서 서브에이전트가 **6~35초**에 끝났다. 대부분 한 번의
+ *  합류로 끝나고, 긴 것만 한 번 더 부른다. 짧게 잡을수록 «다시 부르기» 비용(프롬프트 한 벌)이
+ *  늘고, 길게 잡을수록 굳은 자식이 대화를 오래 붙잡는다 — 그 사이를 실측으로 고른 값이다.
+ *
+ * ★`SUBAGENT_TIMEOUT_MS` 를 **쓰면 안 된다** (2026-09-03 적대 검토 P-A, 실측). 그 값의
+ *  기본은 **`Infinity`** 다(2026-08-22 에 «상한에 걸린 작업은 멈춘 게 아니라 잘린 것» 이라
+ *  일부러 무한으로 바꿨다). 그런데 그건 **자식을 죽이는 시계**이고, 여기는 **부모가 기다리는
+ *  시계**다 — 성질이 반대인데 같은 상수를 썼다. 결과:
+ *   - `deadline = Date.now() + Infinity` 라 시한 분기가 **영원히 거짓**
+ *   - 도구 설명은 *"미지정 = 서브에이전트 기본 상한"* 이라고 **있지도 않은 시한을 약속**
+ *   - 무엇보다 «시한 초과 → 선점 해제» 라는 **유일한 자동 복구가 기본 설정에서 절대 안 돈다**
+ *     (P-B: 합류 대기자가 사라지면 자식 결과가 조용히 사라진다)
+ *
+ * ★**자식을 죽이지 않는다** — 기다리기를 멈출 뿐이고 작업은 계속 돈다. 그래서 2026-08-22
+ *  결정("냅다 끊지 마라")과 충돌하지 않는다. 끊는 것과 그만 기다리는 것은 다르다.
+ */
+export const JOIN_WAIT_TIMEOUT_MS = parseTimeoutEnv(
+  process.env.JOIN_WAIT_TIMEOUT_MS,
+  60_000,
 );
 
 export const WORKER_HARD_GRACE_MS = parseTimeoutEnv(

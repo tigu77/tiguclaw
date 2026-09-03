@@ -87,8 +87,20 @@ export const formatMemorySnippet = (ctx: RetrievedContext): string => {
  * ★넘치면 `listMemoriesForIndex` 가 **읽힘 순**으로 자른다(hot-first, 2026-08-11) —
  *  실패 모드가 "안 읽힌 것부터" 라 상한이 넘어도 안전하다. 캡을 없애지 않는 이유는
  *  사용자가 계속 쌓으면 무한 증가하기 때문이다.
+ *
+ * ★**40,960 → 25,600 으로 내렸다** (2026-09-03 정태님 결정). 종전엔 «오래 쓴 설치에서
+ *  사람이 쓴 항목이 잘린다» 를 근거로 안 내렸는데, 그 근거가 두 가지로 약해졌다:
+ *   ①**기본값은 남의 설치에 더 중요하다** — 새 사용자의 인덱스는 0에 가깝고, 이 값은
+ *     그들이 처음 만나는 상한이다. 개발 기계(191건)를 기준으로 전 사용자 기본을 정하고
+ *     있었다([[feedback_dev_machine_config_leak]] — 내 기계 배치가 제품 기본값으로 승격).
+ *   ②**바꿀 자리가 생겼다** — 설정 화면에 슬라이더가 붙어(같은 날) 많이 쌓인 설치는
+ *     직접 올린다. 종전엔 `settings.json` 을 손으로 고쳐야 해서 기본값이 사실상 유일한 값이었다.
+ * ★실측(이 개발 설치, 191건): 25,600B 에서 **74건이 잘리고 그중 59건이 사람이 쓴 것**이다
+ *  (`style-*` 상시 규칙 다수). 그건 이 기계가 슬라이더로 올릴 일이지 기본값이 떠안을 일이
+ *  아니다 — 그리고 그 `style-*` 들은 원래 `AGENT.md`·`PROJECT.md` 로 옮겨야 하는 것들이다
+ *  (`memory-tidy`).
  */
-export const MEMORY_INDEX_CAP_BYTES = 40_960;
+export const MEMORY_INDEX_CAP_BYTES = 25_600;
 
 /**
  * **역할별 기억 범위** — 비서·매니저·에이전트가 같은 기억 뭉치를 받을 이유가 없다.
@@ -454,6 +466,19 @@ interface ContextSlot {
   readonly key: string;
   readonly text: string;
   readonly channel: ContextChannel;
+  /**
+   * ★**역할 전용인가** — depth 0(비서)에만 실리고 자식(서브에이전트·매니저)에겐 빈다.
+   *
+   * 성질로 둔 이유 (2026-09-03 적대 검토 B-6·B-8): 종전엔 «역할 전용은 꼬리로» 를 회귀가
+   * **이름 두 개**(`agentIndex`·`modelProfiles`)로 지켰다. 그런데 같은 날 `memoryIndex` 가
+   * 역할 전용이 되면서(자식은 목록을 안 받는다) **규칙을 어긴 것이 내 다음 커밋**이었고,
+   * 검사는 옛 분류를 못 박고 있어 못 봤다. `nextSuggestion` 도 같은 구멍으로 맨 앞에
+   * 옮겨도 통과했다. → 이름을 세지 말고 **이 성질로 판정**한다.
+   *
+   * 계약: **roleScoped 슬롯은 전부 공용 슬롯보다 뒤에 온다.** 앞에 오면 자식의 프리픽스가
+   * 거기서 갈려 **뒤따르는 공용 조각이 역할마다 두 벌 캐시된다**(내용이 같은데도).
+   */
+  readonly roleScoped?: boolean;
 }
 
 /**
@@ -524,8 +549,19 @@ export const roleContextBlock = (opts: {
  *  리터럴에 없어도 컴파일이 통과해, 그물 밖으로 조용히 빠진다(modelProfiles·foreignDelta
  *  가 이미 optional). 이름을 손으로 열거하는 대신 정의점에서 뽑는다.
  */
-export const contextSlotKeys = (): string[] =>
-  buildContextSlots({
+/**
+ * **역할 전용 슬롯 키** — 검사가 이름을 세지 않고 **성질에서 파생**하도록 내보낸다.
+ *
+ * ★2026-09-03 적대 검토가 이 함수를 만들었다. 회귀가 «역할 전용은 꼬리로» 를 이름 두 개로
+ *  지키고 있었고, 같은 날 세 번째(`memoryIndex`)가 생기자 **그 규칙을 어긴 것이 다음
+ *  커밋**이었는데 검사는 옛 목록을 못 박고 있었다. 목록은 조용히 낡는다.
+ */
+export const roleScopedSlotKeys = (): string[] =>
+  buildContextSlots(EMPTY_SLOT_INPUT)
+    .filter((s) => s.roleScoped === true)
+    .map((s) => s.key);
+
+const EMPTY_SLOT_INPUT: SystemContextInput = {
     system: "",
     env: "",
     agent: "",
@@ -536,7 +572,10 @@ export const contextSlotKeys = (): string[] =>
     skillIndex: "",
     agentIndex: "",
     roleSource: {},
-  }).map((s) => s.key);
+  };
+
+export const contextSlotKeys = (): string[] =>
+  buildContextSlots(EMPTY_SLOT_INPUT).map((s) => s.key);
 
 // 회귀가 계산형 슬롯의 **채널 배치**를 직접 단언할 수 있게 export (이름 예외 목록 대신).
 
@@ -608,7 +647,6 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   //   hot-first 로 «고르되» 이름순으로 «내보내는» 이유가 그것이다(안 그러면 read_memory
   //   한 번에 순서가 바뀌어 캐시가 깨진다).
   //  ★`memorySnippet`(검색 결과)은 **안 옮긴다** — 그건 질문마다 달라지는 진짜 user 채널감이다.
-  { key: "memoryIndex", text: input.memoryIndex, channel: "system" },
   { key: "selfGrowth", text: formatSelfGrowthDirectives(), channel: "system" },
   { key: "agentPathHint", text: agentPathHint(), channel: "system" },
   { key: "agent", text: input.agent, channel: "system" },
@@ -627,8 +665,13 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   //  `agent`(AGENT.md)는 비서가 수시로 고치지만 **공용**이라 이 둘보다 앞이다 — 그래야
   //  자식이 AGENT.md 까지 공유한다. 대신 AGENT.md 를 고치면 이 4.7KB 가 같이 무효화되는데,
   //  34KB 를 두 벌 잡는 것보다 싸다.
-  { key: "agentIndex", text: input.agentIndex, channel: "system" },
-  { key: "modelProfiles", text: input.modelProfiles ?? "", channel: "system" },
+  // ★`memoryIndex` 도 **역할 전용이 됐다** (2026-09-03) — 자식은 목록을 안 받는다
+  //  (`memoryScopeFor`). 그런데 한가운데 있어서 그 뒤의 **공용** 조각(selfGrowth·
+  //  agentPathHint·AGENT.md·agentWarn)이 역할마다 두 벌 잡히고 있었다. 같은 날 내가 정한
+  //  규칙을 내 다음 커밋이 어긴 것이다.
+  { key: "memoryIndex", text: input.memoryIndex, channel: "system", roleScoped: true },
+  { key: "agentIndex", text: input.agentIndex, channel: "system", roleScoped: true },
+  { key: "modelProfiles", text: input.modelProfiles ?? "", channel: "system", roleScoped: true },
   // ★역할 표시 — **시스템 채널의 맨 끝** (2026-08-21).
   //  종전엔 메인·매니저·서브에이전트가 **같은 헌법을 받고 아무도 자기가 누군지 몰랐다.**
   //  헌법엔 이미 역할 조건절이 있는데("이 판정은 메인 턴에만 적용된다") 읽는 쪽이 자기가

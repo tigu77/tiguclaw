@@ -547,6 +547,7 @@ export const runClaude = async (
               "prompt-options": createPromptOptionsMcpServer(
                 input.presentOptions,
                 askedQuestions,
+                input.threadKey,
               ),
             }
           : {}),

@@ -703,7 +703,7 @@ export const runOpenAiCodex = async (
   const promptOptionsBridge =
     input.presentOptions !== undefined
       ? await adaptClaudeMcpServer(
-          createPromptOptionsMcpServer(input.presentOptions, askedQuestions),
+          createPromptOptionsMcpServer(input.presentOptions, askedQuestions, input.threadKey),
           "prompt-options",
         )
       : undefined;

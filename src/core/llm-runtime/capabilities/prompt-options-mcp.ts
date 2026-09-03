@@ -31,6 +31,7 @@
  *    텍스트로 제시하라" graceful 반환. 양 어댑터(claude/codex) 동일 동작 (parity).
  */
 import { z } from "zod";
+import { rememberPendingOptions } from "../../pending-options.js";
 import {
   createSdkMcpServer,
   tool,
@@ -53,6 +54,11 @@ const okText = (text: string) => ({
 export const createPromptOptionsMcpServer = (
   presentOptions: IncomingMessage["presentOptions"],
   askedQuestions: Set<string>,
+  /**
+   * 이 대화 좌표 — 렌더한 질문을 여기 걸어 **다음 턴**이 «무엇에 대한 답인지» 알게 한다
+   * (2026-09-03). 선택은 다음 턴에 «값만» 도착하고 질문은 이력에 안 남는다.
+   */
+  threadKey: string,
 ): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "prompt-options",
@@ -113,7 +119,16 @@ export const createPromptOptionsMcpServer = (
           );
           // ★렌더 *성공* 시에만 dedup 기록 — 실패한 렌더가 같은 턴 재시도를 막지 않도록
           //  (실패=미기록→즉시 재시도 허용, 성공=기록→중복 렌더 차단). send_file 동형.
-          if (r.ok) askedQuestions.add(args.question);
+          if (r.ok) {
+            askedQuestions.add(args.question);
+            // ★다음 턴이 «무엇에 대한 답인지» 알 수 있게 질문을 남긴다 (2026-09-03).
+            //  렌더 **성공** 시에만 — 사용자가 못 본 질문을 답으로 취급하면 안 된다.
+            rememberPendingOptions(
+              threadKey,
+              args.question,
+              normalized.map((o) => o.label ?? String(o.value ?? "")),
+            );
+          }
           return r.ok
             ? okText(
                 "선택지를 제시했습니다. 사용자가 보기를 누르면 그 값이 다음 메시지로 도착합니다. 지금은 답을 기다리지 말고, 사용자 응답이 필요하면 이 턴을 마치세요.",

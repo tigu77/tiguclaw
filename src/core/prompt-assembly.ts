@@ -16,6 +16,7 @@ import type { RetrievedContext } from "./memory.js";
 import { readMemoryIndexCapBytes } from "./settings.js";
 import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs } from "./worker-jobs.js";
+import { pendingOptionsLine } from "./pending-options.js";
 import { readFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
 import { parseFile } from "../store/self-growth-md.js";
@@ -303,10 +304,16 @@ export const formatConversationContext = (
   //  띄웠는지 턴 안에서 볼 수단이 없었기** 때문이다. 규칙으로 훈계하는 대신 사실을 준다
   //  (판단 근거를 가진 쪽이 판단한다). 없으면 줄 자체를 안 넣는다 = 평시 토큰 0.
   const live = liveChildJobsLine(threadKey);
+  // ★직전에 **내가 물은 것** (2026-09-03 사용자 신고). 선택지는 다음 턴에 «고른 값만»
+  //  도착하고, 질문은 도구 인자에 있어 턴 사이 이력(`{role,content}` 텍스트)에 안 남는다.
+  //  그래서 «원인 확인만» 같은 답이 **새 지시**로 읽혀 «무엇을 확인할까요» 가 나왔다.
+  //  한 턴만 살고 읽으면 지운다 — 옛 질문이 따라다니면 그게 오염이다.
+  const asked = pendingOptionsLine(threadKey);
   return [
     "## 현재 대화 컨텍스트",
     ...lines,
     ...(live !== "" ? [live] : []),
+    ...(asked !== "" ? [asked] : []),
     '스케줄·알림 등을 "지금 이 대화로" 보낼 때 위 dest_channel/dest_target 를 사용하세요.',
   ].join("\n");
 };

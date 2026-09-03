@@ -8,8 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-09-03
+
 ### Added
 
+- Settings now has a slider for the memory index size — the “what do I remember” list the
+  assistant sees every turn. Slide it to 0 to leave the list out entirely (search still reaches
+  your memories), or press Default to go back. The default is now 25 KB.
 - `/memory-tidy` — a command that reviews your saved memories, merges duplicates and proposes
   what to drop. The assistant also offers it when the memory index reaches its cap, which you
   can now set with `memory.indexCapBytes`.
@@ -294,7 +299,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...v0.45.0
 [0.44.1]: https://github.com/tigu77/tiguclaw/compare/v0.44.0...v0.44.1

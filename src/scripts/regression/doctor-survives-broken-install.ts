@@ -15,7 +15,7 @@
  * 않는지는 소스로 본다(그건 import 그래프라 실행으로 재려면 프로세스를 띄워야 한다).
  */
 import { readFile } from "node:fs/promises";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   judgeGlobalCommand,
@@ -322,6 +322,32 @@ export const check: RegressionCheck = {
     //  부품은 검사되는데 이음매가 안 검사되던 것([[feedback_simple_composable_no_duplication]]).
     //  ★`npm root -g` 는 `npm_config_prefix` 를 따르므로(실측) 진짜 조회를 그대로 돌린다.
     const pathM = await import("node:path");
+    // ★★**doctor 가 그 조회 결과를 실제로 넘기는가** (2026-09-03 적대 검토 F2).
+    //  이 파일은 «조회 → 값» 이음매를 닫았는데, **«조회 → 판정» 이음매**는 여전히 픽스처였다:
+    //  `judgeGlobalCommand(…, {kind:"broken"})` 를 손으로 넘겨 결과만 보고, `doctor.ts` 가
+    //  그 인자를 정말 넘기는지는 아무도 안 봤다. 검토자가 그 줄을 **지우고** 전체 스위트를
+    //  통과시켰다 — 그러면 오늘 고친 사고(윈도우 `MODULE_NOT_FOUND`)가 산 채로 죽는다.
+    //  «판정 불가» 로 되돌아가 사용자는 `npm link` 를 영영 못 듣는다.
+    {
+      const doctorSrc = readFileSync(
+        new URL("../doctor.ts", import.meta.url).pathname,
+        "utf8",
+      );
+      const wired =
+        /judgeGlobalCommand\(\s*\n?\s*resolveGlobalCommand\(\),\s*\n?\s*installRoot,\s*\n?\s*resolveLinkedInstall\(\),/.test(
+          doctorSrc,
+        );
+      out.push(
+        assert(
+          "★★★`doctor` 가 조회 결과를 **판정에 실제로 넘긴다** — 이 인자가 빠지면 판정이 «모름» 으로 떨어져 처방이 사라진다",
+          wired,
+          wired
+            ? "세 인자 배선됨"
+            : "★배선 끊김 — judgeGlobalCommand 가 linked 를 못 받는다(항상 unknown)",
+        ),
+      );
+    }
+
     const prefix = mkdtempSync(pathM.join(tmpdir(), "tgc-prefix-"));
     const prevPrefix = process.env.npm_config_prefix;
     let lookupBroken: ReturnType<typeof resolveLinkedInstall>;

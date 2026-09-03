@@ -8,8 +8,13 @@
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-09-03
+
 ### Added
 
+- 설정에 메모리 인덱스 크기 슬라이더가 생겼습니다 — 비서가 매 턴 보는 «무엇을 기억하고
+  있나» 목록의 상한입니다. 0으로 두면 목록을 아예 싣지 않고(검색으로는 계속 닿습니다),
+  「기본값」 버튼으로 되돌립니다. 기본값은 25 KB 입니다.
 - `/memory-tidy` — 저장된 기억을 훑어 중복을 합치고 버릴 것을 제안하는 명령입니다. 기억
   인덱스가 상한에 닿으면 비서가 먼저 권하기도 하며, 그 상한은 `memory.indexCapBytes` 로
   정할 수 있습니다.
@@ -1864,7 +1869,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...v0.45.0
 [0.44.1]: https://github.com/tigu77/tiguclaw/compare/v0.44.0...v0.44.1

@@ -410,7 +410,7 @@ export const runOpenAi = async (
     const askedQuestions = new Set<string>();
     mcpServers.push(
       await adaptClaudeMcpServer(
-        createPromptOptionsMcpServer(input.presentOptions, askedQuestions),
+        createPromptOptionsMcpServer(input.presentOptions, askedQuestions, input.threadKey),
         "prompt-options",
       ),
     );

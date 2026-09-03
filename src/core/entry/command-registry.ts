@@ -67,6 +67,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "sessions", description: "세션 선택·생성·보관(목록·전환·new·archive)" },
   { name: "model", description: "세션 메인 모델 선택/조회" },
   { name: "models", description: "모델 프로파일 목록 표시" },
+  { name: "providers", description: "붙은 프로바이더와 그들이 주는 모델" },
   { name: "schedule", description: "스케줄 관리(목록·삭제·활성·비활성)" },
   { name: "stop", description: "진행 중 턴 중단" },
 ] as const;

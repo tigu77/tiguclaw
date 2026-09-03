@@ -279,6 +279,23 @@
       #capabilities-head h1 { font-size:0.75rem; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
       #capabilities-head .count { margin-left:auto; font-family:var(--font-mono); font-size:0.6875rem; color:var(--text-mute); }
       #capabilities-list { padding:10px; flex:1; }
+      /* 플러그인 뷰 3패널 — 위 셋과 완전 동형 (2026-09-02). 목록 행은 아이콘·이름·설명만
+         두고 나머지는 눌렀을 때 오른쪽 상세에서 본다(사용자 지정). */
+      #plugins-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; border-right:1px solid var(--border); }
+      #workbench.show-plugins { display:grid; grid-template-columns: minmax(240px,300px) minmax(0,1fr); gap:0; height:100%; }
+      #workbench.show-plugins #plugins-panel { display:flex; }
+      #plugins-head { display:flex; align-items:center; gap:10px; padding:16px 16px 12px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgb(var(--panel-solid-rgb) / .92); backdrop-filter: blur(14px); z-index:1; }
+      #plugins-head h1 { font-size:0.75rem; margin:0; font-weight:800; letter-spacing:.12em; text-transform:uppercase; color:var(--text-dim); }
+      /* 목록 한 줄 = 아이콘 + (이름 / 설명). 설명은 두 줄에서 자른다 — 길이가 제각각이라
+         안 자르면 줄 높이가 들쭉날쭉해 훑기가 어려워진다. */
+      .plugin-item { display:flex; gap:10px; align-items:flex-start; padding:10px 14px; cursor:pointer; border:0; background:none; width:100%; text-align:left; color:inherit; border-bottom:1px solid var(--border); }
+      .plugin-item:hover { background:rgb(var(--panel-solid-rgb) / .6); }
+      .plugin-item.on { background:rgb(var(--accent-rgb) / .14); }
+      .plugin-item.off .plugin-item-name { color:var(--text-mute); }
+      .plugin-item-icon { width:28px; height:28px; flex:0 0 28px; border-radius:7px; object-fit:cover; }
+      .plugin-item-body { min-width:0; }
+      .plugin-item-name { font-size:.8125rem; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .plugin-item-desc { font-size:.75rem; color:var(--text-mute); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
       /* 프로젝트 뷰 3패널 — show-providers/show-capabilities 와 완전 동형(별도 id 로 폴러 충돌 0). */
       #projects-panel { min-width:0; height:100%; background: transparent; overflow-y:auto; display:none; flex-direction:column; border-right:1px solid var(--border); }
       #workbench.show-projects { display:grid; grid-template-columns: minmax(240px,300px) minmax(0,1fr); gap:0; height:100%; }
@@ -401,14 +418,31 @@
       .section-head { display:flex; align-items:center; gap:10px; margin:4px 0 0; }
       .section-head h2 { margin:0; font-size:0.75rem; text-transform:uppercase; letter-spacing:.12em; color:var(--text-dim); }
       /* 플러그인 설정 행 — ★선언에서 생긴다(§D.2). 여기에 플러그인 이름은 없다. */
+      /* ★부모가 **flex** 인데 `grid-column:1/-1` 이 붙어 있었다 — 그 규칙은 grid 부모에서만
+         뜻이 있어서 아무 일도 안 했고, 설정 블록이 «메타 · 동작» 옆에 세 번째 항목으로
+         붙었다. 목록이 전체 폭일 땐 덜 보였는데 상세 패널로 옮기자 바로 드러났다.
+         행을 감싸게 하고 폭을 100% 로 — 이제 이름/동작 **아래**로 내려간다. */
+      .plugin-row { flex-wrap:wrap; }
+      /* 상세의 사실 목록 — 아는 것만 줄로 생긴다(없는 줄은 안 만든다). */
+      .plugin-facts { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin-top:8px; font-size:.75rem; }
+      .plugin-fact { display:contents; }
+      .plugin-fact-key { color:var(--text-mute); }
+      .plugin-fact-val { color:var(--text); word-break:break-word; }
+      a.plugin-fact-val { color:var(--accent); text-decoration:none; }
+      a.plugin-fact-val:hover { text-decoration:underline; }
       .plugin-settings { display:grid; gap:6px; margin-top:8px; padding-top:8px;
-        border-top:1px solid var(--border); grid-column:1/-1; }
+        border-top:1px solid var(--border); flex-basis:100%; width:100%; }
       .plugin-setting { display:flex; align-items:center; gap:10px; font-size:.75rem; }
       .plugin-setting-label { color:var(--text-dim); }
       .plugin-setting-input { margin-left:auto; padding:4px 8px; border:1px solid var(--border);
         border-radius:8px; background:var(--card); color:var(--text); font-size:.75rem; }
       .plugin-setting-secret { margin-left:auto; color:var(--text-mute); font-size:.6875rem; }
       .plugin-setting-secret.on { color:var(--good); }
+      /* 정본이 홈 .env 인 설정 — 값은 보여주고 손댈 수는 없다(2026-09-02). 입력칸처럼
+         보이면 «고칠 수 있다» 는 뜻이 되므로, 값 + 출처 이름을 나란히 글로 둔다. */
+      .plugin-setting-env { margin-left:auto; display:flex; align-items:center; gap:6px; min-width:0; }
+      .plugin-setting-envvalue { color:var(--text); font-size:.75rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
+      .plugin-setting-envname { color:var(--text-mute); font-size:.6875rem; }
       /* 홈 위젯 (2026-08-28, 위젯 플랫폼 §J) — ★격자는 여기가 푼다.
          서버가 주는 건 순서와 size 등급뿐이라 breakpoint 별 레이아웃을 저장할 게 없다.
          `auto-fill` 이라 창을 줄이면 알아서 접힌다(모바일 규칙을 따로 안 쓴다). */

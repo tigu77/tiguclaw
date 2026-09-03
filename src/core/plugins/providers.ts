@@ -7,6 +7,7 @@ import { listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
 import { resolveEntry } from "./loader.js";
 import { listProviderNames, resolveProviderConn } from "../llm-runtime/provider-registry.js";
+import { catalogModelKeys, modelCapsFor } from "../llm-runtime/model-catalog.js";
 import { providerAuthAvailable } from "../llm-runtime/provider-availability.js";
 
 export type ModuleKind = "core" | "plugin" | "llm-adapter";
@@ -290,6 +291,81 @@ const LLM_ADAPTER_DISPLAY_NAME: Record<string, DisplayText> = {
   google: "Google Gemini",
 };
 
+/**
+ * 이 provider 가 **실제로 주는 것** — 카탈로그가 받아둔 모델을 상세에 싣는다 (2026-09-02).
+ *
+ * ★왜 (정태님: *"상세보기가 디테일한 부분들을 잘 보여줬으면 해 / llm프로바이더의 경우
+ *  벤더및 모델 목록이 될 수 있겠지"*). 종전 상세는 **제목이 자기 이름뿐인 카드 하나**였다 —
+ *  `provider`·`adapter`·`apiKeyEnv` 는 이미 요약에 있는 것이라 파고들 게 없었다.
+ *  정작 «이 provider 로 뭘 쓸 수 있나» 는 카탈로그가 부팅·매시 받아두고 있었는데
+ *  화면에 나오지 않았다.
+ *
+ * ★모양은 **데이터가 정한다**(`/providers` 슬래시와 같은 판단): id 에 네임스페이스가 있으면
+ *  벤더 색인이 더 읽히고(openrouter 420개 → 58종), 없으면 모델을 바로 보여주는 게 맞다.
+ *  provider 이름을 여기 적지 않는다 — 새 provider 가 저절로 맞는 모양을 얻는다(원칙 2).
+ * ★표 렌더러는 20행에서 자르고 «외 N개» 를 붙인다. 그래서 **많은 순**으로 정렬한다 —
+ *  잘릴 거라면 잘리는 쪽이 덜 중요해야 한다. 전수 탐색은 `/providers <이름> <검색어>` 가
+ *  맡는다(같은 것을 두 곳에서 다시 만들지 않는다).
+ * ★`models`·`caps` 를 **인자로 받는다** — 여기서 캐시를 읽으면 이 함수를 격리해서 못 잰다
+ *  (홈에 카탈로그가 없는 환경에선 검사가 «0개» 로 공짜 초록이 된다).
+ * ★능력(컨텍스트·도구)은 **아는 것만** 싣는다 — 모르면 칸을 비운다. 뭉개면 화면이
+ *  «이 모델은 도구 안 됨» 이라고 거짓말한다.
+ */
+export const catalogViews = (
+  provider: string,
+  models: readonly string[],
+  caps: (spec: string) => { context?: number; tools?: boolean } | undefined,
+): ViewSpec[] => {
+  if (models.length === 0) return [];
+
+  const vendors = new Map<string, number>();
+  for (const m of models) {
+    const at = m.indexOf("/");
+    if (at <= 0) {
+      vendors.clear();
+      break;
+    }
+    vendors.set(m.slice(0, at), (vendors.get(m.slice(0, at)) ?? 0) + 1);
+  }
+
+  if (vendors.size > 1) {
+    return [
+      {
+        id: `llm-adapter.${provider}.vendors`,
+        title: { key: "modules.adapter.vendors", params: { n: vendors.size } },
+        kind: "table",
+        data: {
+          columns: ["vendor", "models"],
+          rows: [...vendors.entries()]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .map(([vendor, n]) => ({ vendor, models: n })),
+        },
+        order: 41,
+      },
+    ];
+  }
+
+  return [
+    {
+      id: `llm-adapter.${provider}.models`,
+      title: { key: "modules.adapter.models", params: { n: models.length } },
+      kind: "table",
+      data: {
+        columns: ["model", "context", "tools"],
+        rows: models.map((model) => {
+          const c = caps(`${provider}:${model}`);
+          return {
+            model,
+            context: c?.context ?? "",
+            tools: c?.tools === undefined ? "" : c.tools ? "✅" : "✖",
+          };
+        }),
+      },
+      order: 41,
+    },
+  ];
+};
+
 const llmAdapterModule = (provider: string): Module => {
   const conn = resolveProviderConn(provider);
   // ★판정은 `providerAuthAvailable` 한 곳 (2026-08-13) — 종전엔 `conn.apiKey` 유무만 봐서
@@ -325,6 +401,14 @@ const llmAdapterModule = (provider: string): Module => {
         },
         order: 40,
       },
+      // 조회는 여기서, 판단은 위 순수 함수에서 — 그래야 데몬 없이 검사된다.
+      ...catalogViews(
+        provider,
+        catalogModelKeys()
+          .filter((k) => k.startsWith(`${provider}:`))
+          .map((k) => k.slice(provider.length + 1)),
+        modelCapsFor,
+      ),
     ],
     updatedAt: new Date().toISOString(),
   };

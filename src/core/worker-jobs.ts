@@ -474,6 +474,68 @@ export const markCancelled = (jobId: string, reason: string): void => {
   publishWorkerLifecycle("worker.cancelled", job, { error: reason, task: job.task });
 };
 
+/**
+ * **합류(join) 레지스트리** — 이 잡의 결과를 «부른 쪽이 직접 받겠다» 고 선점한 것.
+ *
+ * ★왜 필요한가 (2026-09-03). `spawn_agent` 이 항상 비동기가 되면서 「띄우기」와 「기다리기」가
+ *  갈렸다. 그런데 자식이 끝나면 종전 경로(`onWorkerComplete`)가 **결과를 소환자에게 밀어
+ *  넣는다** — 합류로 이미 받았는데 재주입까지 오면 **같은 걸 두 번 보고**한다.
+ *  그래서 합류가 선점하면 밀어넣기를 건너뛴다.
+ *
+ * ★**선점을 못 한 경우는 종전대로 둔다.** 자식이 합류 전에 이미 끝나 결과가 배달됐다면
+ *  그건 «늦게 합류한» 것이고, 그때는 재주입이 옳다(결과를 잃는 것보다 두 번 보는 게 낫다).
+ *  즉 이 집합은 **결과를 잃지 않는 쪽으로** 실패한다.
+ */
+const joinedJobs = new Set<string>();
+
+/**
+ * 이 잡의 결과를 합류로 받겠다고 선점한다.
+ * 이미 끝난 잡이면 `false` — 그때는 재주입이 이미 갔거나 가는 중이라 선점이 의미 없다.
+ */
+export const claimJobJoin = (jobId: string): boolean => {
+  const job = jobs.get(jobId);
+  if (job === undefined || job.status !== "running") return false;
+  joinedJobs.add(jobId);
+  return true;
+};
+
+/** 합류가 선점했나 — `onWorkerComplete` 가 밀어넣기를 건너뛸지 판정한다. */
+export const isJobJoined = (jobId: string): boolean => joinedJobs.has(jobId);
+
+/**
+ * 잡이 끝날 때까지 **프로세스 안에서** 기다린다 — 모델 왕복 0.
+ *
+ * ★폴링이지만 **토큰이 안 든다.** 대안(`list_workers` 를 모델이 반복 호출)은 폴링 한 번마다
+ *  프롬프트 한 벌(82KB)을 다시 싣는다 — 그게 이 도구를 만든 이유다.
+ * ★시한이 **반드시** 있어야 한다: 자식이 안 끝나면 부모 턴을 영원히 붙잡는다.
+ *  종전 `wait:true` 경로가 `SUBAGENT_TIMEOUT_MS` 를 쓰므로 같은 값을 기본으로 둔다.
+ */
+export const awaitJobOutcome = async (
+  jobId: string,
+  timeoutMs: number,
+  pollMs = 200,
+): Promise<WorkerJobRecord | undefined> => {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    const job = jobs.get(jobId);
+    if (job === undefined) return undefined; // 모르는 잡 — 호출자가 «없음» 으로 보고한다.
+    if (job.status !== "running") {
+      joinedJobs.delete(jobId); // 받았으니 선점 해제(누수 0).
+      return job;
+    }
+    if (Date.now() >= deadline) {
+      // ★**선점을 반드시 푼다** — 안 풀면 나중에 자식이 끝나도 `onWorkerComplete` 가
+      //  «합류가 받아갔다» 고 보고 배달을 건너뛴다. 즉 **결과가 조용히 사라진다.**
+      //  (2026-09-03 이 함수를 만들면서 낸 결함 — 분류 검토 중에 잡았다.)
+      //  합류가 못 받았으면 종전 경로가 받아야 한다: 이 집합은 **결과를 잃지 않는 쪽으로**
+      //  실패해야 한다.
+      joinedJobs.delete(jobId);
+      return job; // running 그대로 반환 = 시한 초과 신호.
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+};
+
 export const getJob = (jobId: string): WorkerJobRecord | undefined =>
   jobs.get(jobId);
 
@@ -2291,6 +2353,17 @@ export const onWorkerComplete = async (
     console.error(`worker-jobs: onWorkerComplete unknown jobId=${jobId}`);
     return;
   }
+  // ─── ⓪ **합류가 선점했으면 밀어넣지 않는다** (2026-09-03) ─────────────────────────
+  //  `wait_for_worker` 로 부른 쪽이 결과를 직접 받는다. 여기서 또 밀어넣으면 **같은 것을
+  //  두 번 보고**한다. 상태 마킹(markDone/markFailed)은 **위에서 이미 끝났으므로**
+  //  합류 쪽이 그 값을 읽는다 — 여기서 거르는 건 «배달» 뿐이다.
+  if (isJobJoined(jobId)) {
+    console.log(
+      `worker-jobs: '${found.label}'(${jobId}) 는 합류(wait_for_worker)가 선점 — 재주입 생략`,
+    );
+    return;
+  }
+
   // ─── ① 소환자가 **돌고 있는 매니저**면 그 턴의 steering 큐로 (ADR 2026-08-19 §4) ────
   // 새 턴을 여는 아래 경로보다 **먼저** 본다: 매니저 좌표(`worker:<id>`)로 합성 유저턴을
   // 열면 그 턴은 돌고 있는 매니저에게 안 닿고(매니저는 핸들러가 아니라 runRegionA 안이다)

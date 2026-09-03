@@ -1,11 +1,20 @@
 {
   "name": "file-watch",
   "version": "0.1.0",
+  "description": {
+    "ko": "지정한 폴더의 변화를 지켜보다 비서를 실행합니다.",
+    "en": "Watches folders you choose and runs the assistant when something changes."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": ["trigger"],
+    "kind": [
+      "trigger"
+    ],
     "name": "file-watch",
     "entry": "./src/index.ts"
   },

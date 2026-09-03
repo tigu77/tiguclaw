@@ -5,7 +5,7 @@
  * `textContent` 로 박았다. 감싸는 문구(`plugins.installed`)만 카탈로그를 타고 **안쪽
  * 문자열은 안 탔다** — 그래서 영어 로케일 사용자는 플러그인 목록에서 한국어를 봤다.
  *
- * ★하필 그 면이다. `docs/security.md §2` 가 *"설치 전에 여기서 무엇을 요구하는지
+ * ★하필 그 면이다. `docs/security.ko.md §2` 가 *"설치 전에 여기서 무엇을 요구하는지
  *  읽으세요"* 라고 **가리키는 자리**다. 못 읽으면 그 안내가 통째로 무효다. 표시 흠으로
  *  보이지만 실제로는 **사용자가 신뢰 판단을 하는 근거**가 안 닿는 것이다.
  *
@@ -59,7 +59,7 @@ const cat = (name: string): Record<string, string> =>
 export const check: RegressionCheck = {
   name: "plugin-needs-speak-my-language",
   guards:
-    "플러그인이 요구하는 권한이 **한국어 문장**으로 API 에 실려, 영어 로케일 사용자가 목록에서 못 읽던 것 — 하필 docs/security.md §2 가 '설치 전에 여기서 읽으세요' 라고 가리키는 면이라, 표시 흠이 아니라 신뢰 판단 근거가 안 닿는 것이었다 + 그걸 고치다 화면과 로그가 각자 문장을 조립해 갈리는 것 + 업데이트 도중(새 화면·옛 데몬) 요구사항이 빈 칸으로 보여 '요구 없음' 으로 읽히는 것",
+    "플러그인이 요구하는 권한이 **한국어 문장**으로 API 에 실려, 영어 로케일 사용자가 목록에서 못 읽던 것 — 하필 docs/security.ko.md §2 가 '설치 전에 여기서 읽으세요' 라고 가리키는 면이라, 표시 흠이 아니라 신뢰 판단 근거가 안 닿는 것이었다 + 그걸 고치다 화면과 로그가 각자 문장을 조립해 갈리는 것 + 업데이트 도중(새 화면·옛 데몬) 요구사항이 빈 칸으로 보여 '요구 없음' 으로 읽히는 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const sample = { network: ["api.open-meteo.com"], ui: ["chat-widget"] as "chat-widget"[], outbound: true, llm: true };

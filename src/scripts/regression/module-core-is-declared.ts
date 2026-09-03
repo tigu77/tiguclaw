@@ -201,7 +201,7 @@ export const check: RegressionCheck = {
     // ★종전엔 `bridge.includes("isCoreModule(name)")` **한 번**이면 통과했다. 그런데
     //  `setModuleDisabled` 로 가는 문이 **둘**이었고(모듈 화면 · 플러그인 화면) 가드는
     //  하나뿐이라, 플러그인 화면에서 **브리지가 실제로 꺼졌다** — 재시작 전까지 대시보드
-    //  API 가 죽는다. 그리고 배포되는 `docs/security.md §2` 는 그 사이 *"못 끕니다"* 라고
+    //  API 가 죽는다. 그리고 배포되는 `docs/security.ko.md §2` 는 그 사이 *"못 끕니다"* 라고
     //  단언하고 있었다(거짓 약속).
     //
     // ★고침은 문마다 가드를 다는 게 아니라 **판정 자리로 내리는 것**이다 — 그래야 세 번째

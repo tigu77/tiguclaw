@@ -95,7 +95,7 @@ export const check: RegressionCheck = {
       "Glob", "Grep", "Read", "WebFetch", "WebSearch",
       "find_agents", "find_capabilities", "find_skills",
       "list_all_workers", "list_commands", "list_endpoints", "list_installed_plugins",
-      "list_mcp_servers", "list_schedules", "list_watches", "list_workers",
+      "list_mcp_servers", "list_memories", "list_schedules", "list_watches", "list_workers",
       "maintenance_status", "project_capabilities", "project_list",
       "read_memory", "search_memory",
       // 지난 대화 조회 — 순수 읽기(2026-08-25).
@@ -112,6 +112,10 @@ export const check: RegressionCheck = {
       "BashOutput",
       // 사용자에게 선택지를 다시 띄운다 — 표시 중복.
       "prompt_options",
+      // ★`archive_memory` 는 **되돌릴 수 있지만 부작용**이다 — 인덱스에서 내려가므로
+      //  폴백이 다시 부르면 «이미 내린 것» 위에 또 실행된다(멱등이긴 하나 상태를 바꾼다).
+      //  되돌릴 수 있다는 건 승인 문턱을 낮출 뿐, 읽기전용으로 분류할 근거가 아니다.
+      "archive_memory",
       "add_mcp_server", "add_memory", "add_schedule", "add_watch",
       "cancel_worker", "delete_command", "delete_endpoint", "delete_memory",
       "delete_schedule", "delete_watch", "invoke_skill",
@@ -144,6 +148,13 @@ export const check: RegressionCheck = {
       //  타일은 서버가 TTL 로 캐시하지만, 그건 남의 API 호출을 줄일 뿐 **카드 중복**을
       //  막지 못한다 — 분류의 근거는 캐시가 아니라 *"다시 불러도 무해한가"* 다.
       "map_lookup",
+      // ★`wait_for_worker` — 읽기처럼 보이지만 **부작용**이다 (2026-09-03).
+      //  처음엔 읽기전용으로 뒀다가 프로덕션 판정과 어긋나 걸렸고, 다시 보니 **이 파일이
+      //  이미 정한 규칙**에 내가 어긋난 것이었다: *"상태를 바꾸는 것은 부작용으로 둔다
+      //  (보수적 기본)"*. 둘을 바꾼다 — ①**합류를 선점**해 그 잡의 결과를 «누가 받나» 를
+      //  바꾸고(재주입 생략) ②**턴을 막는다**. 폴백이 되부르면 상한만큼 또 기다린다.
+      //  `weather_lookup` 과 같은 함정이다 — 분류는 **이름이 아니라 하는 일**로 한다.
+      "wait_for_worker",
     ]);
 
     const unclassified = [...registered].filter(

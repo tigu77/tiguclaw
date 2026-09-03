@@ -27,6 +27,55 @@ const log = (msg) => console.log(`[copy-dist-assets] ${msg}`);
 
 /** 파일 1개 복사(부모 디렉터리 보장). */
 /** src→dest 이름이 다른 복사(오버레이 → 배포 루트 위치). 이미 있으면 덮지 않는다. */
+/**
+ * 변경 내역 — **있는 언어를 전부** 옮긴다. 자리는 둘 중 하나다: 배포본은 루트에 실물이
+ * 있고, 개발 레포는 `_workspace/public-overlay/` 가 정본이다(manifest 가 루트로 옮긴다).
+ *
+ * ★언어를 **열거하지 않는다** (2026-09-02). `CHANGELOG.md` 만 적어 뒀더니 그날 만든
+ *  `CHANGELOG.ko.md` 가 **dist 에 안 실려**, 화면 언어를 따르는 기능이 배포본에서 통째로
+ *  죽어 있었다(= 실제 사용자에겐 영어만). 손목록은 조용히 낡는다
+ *  ([[feedback_hand_maintained_lists]]) — 규약(`CHANGELOG*.md`)이 판정한다.
+ * ★그리고 **언제나 덮어쓴다.** 종전 `copyFileAs` 는 «목적지가 이미 있으면 건너뛴다» 였는데,
+ *  dist 는 빌드마다 지워지지 않아 그 조건이 항상 참이었다 — 실측: 돌쇠의 「변경 이력」이
+ *  **8월 24일자**로 굳어 9일을 그렇게 보여줬다. 조용한 정지라 아무도 못 봤다.
+ */
+const copyChangelogs = async () => {
+  const pick = async (dir) => {
+    try {
+      return (await fs.readdir(dir))
+        .filter((f) => /^CHANGELOG(\.[A-Za-z-]+)?\.md$/.test(f))
+        .sort();
+    } catch {
+      return [];
+    }
+  };
+  const overlay = path.join(repoRoot, "_workspace", "public-overlay");
+  // 루트에 하나라도 있으면 **거기가 정본**이다(배포본). 없을 때만 오버레이를 본다.
+  let from = repoRoot;
+  let names = await pick(repoRoot);
+  if (names.length === 0) {
+    from = overlay;
+    names = await pick(overlay);
+  }
+  if (names.length === 0) {
+    log("skip (absent): CHANGELOG*.md");
+    return;
+  }
+  for (const n of names) {
+    await fs.cp(path.join(from, n), path.join(dist, n), { recursive: false });
+  }
+  // ★원본에서 사라진 이름은 dist 에서도 지운다 — `fs.cp` 는 덮어쓰기만 하고 남은 것을
+  //  건드리지 않는다. 실측: 코드 없는 `CHANGELOG.md` 를 `.en.md` 로 옮겼는데 옛 파일이
+  //  dist 에 그대로 살아남았다(`themes/nord.css` 와 같은 부류 — 산출물이 원본을 거짓으로
+  //  말한다). 여기선 마지막 폴백이라 조용하지만, 조용한 게 이 부류의 성질이다.
+  const stale = (await pick(dist)).filter((f) => !names.includes(f));
+  for (const f of stale) await fs.rm(path.join(dist, f), { force: true });
+  log(
+    `CHANGELOG: ${names.join(" · ")} (from ${from === repoRoot ? "루트" : "오버레이"})` +
+      (stale.length > 0 ? ` · prune ${stale.join(" · ")}` : ""),
+  );
+};
+
 const copyFileAs = async (relSrc, relDest) => {
   const src = path.join(repoRoot, relSrc);
   const dest = path.join(dist, relDest);
@@ -135,8 +184,7 @@ const main = async () => {
   //  배포본은 루트에 실물이 있고, **개발 레포는 오버레이가 정본**이라(manifest 가 루트로
   //  복사한다) 여기서 그 차이를 흡수한다 — 이 스크립트의 일이 "dist 를 설치본처럼 보이게"
   //  하는 것이므로, 제품 코드에 dev 사정을 넣는 대신 여기서 맞춘다(오염 0).
-  await copyFile("CHANGELOG.md");
-  await copyFileAs("_workspace/public-overlay/CHANGELOG.md", "CHANGELOG.md");
+  await copyChangelogs();
   await copyTree("skills");
   await copyTree("agents");
   // ★언어 카탈로그 (2026-08-25) — appRoot()-상대 자산이라 dist 에 실재해야 배포본에서

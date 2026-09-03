@@ -198,6 +198,9 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     ...(replyToText !== "" ? { replyToText } : {}),
     ...(correlationId !== "" ? { correlationId } : {}),
     ...(egressChannels.length > 0 ? { egressChannels } : {}),
+    // ★`noEgress: true` 면 이 답을 다른 채널로 복사하지 않는다 — 프로그램이 띄우는 턴
+    //  (프로브·스크립트·통합)이 사용자 폰을 울리지 않게. 덜 보내는 쪽이라 안전하다.
+    ...(body.noEgress === true ? { noEgress: true } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     reply: async (out: string): Promise<void> => {
       replyText = out;

@@ -87,6 +87,8 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
       "add_memory",
       "update_memory",
       "delete_memory",
+      "archive_memory",
+      "list_memories",
       "list_installed_plugins",
     ],
   },

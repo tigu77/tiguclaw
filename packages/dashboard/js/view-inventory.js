@@ -346,8 +346,7 @@
       const showInventory = () => {
         setActiveNav("inventory");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        document.getElementById("workbench").classList.add("show-capabilities");
+        setWorkbenchLayout("capabilities");
         if (!selectedCapabilityId && capabilitiesCache.length > 0) selectedCapabilityId = capabilitiesCache[0].id;
         renderCapabilityHub();
       };

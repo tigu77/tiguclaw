@@ -20,8 +20,13 @@ import {
   updateMemory,
   type Memory,
   type MemoryType,
+  archiveMemory,
+  unarchiveMemory,
+  listMemories,
 } from "../store/memory.js";
 import { getEventBus } from "./eventbus.js";
+import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
+import { readMemoryIndexCapBytes } from "./settings.js";
 import {
   searchConversations,
   browseConversationPeriod,
@@ -207,7 +212,15 @@ const listConversationsTool = tool(
 
 const addMemoryTool = tool(
   "add_memory",
-  "새 메모리 추가 또는 동일 name 존재 시 UPSERT. 사용자에게 「기억할까요?」 묻지 말고 즉시 호출.",
+  // ★설명은 **판정만** 담는다 — 이유·실측은 헌법 §4 가 정본이다(2026-09-02 감사 축①).
+  //  종전엔 이 설명이 헌법의 근거 문단을 통째로 복창해서 «같은 판단이 세 곳» 이었다.
+  //  판정은 결정 지점에 있어야 지켜지고(축⑩ 도달), 이유는 한 곳에만 있으면 된다.
+  "새 메모리 추가 또는 동일 name 존재 시 UPSERT. 사용자에게 「기억할까요?」 묻지 말고 즉시 호출. " +
+    "★**여기는 «사실» 자리다.** 두 질문으로 가른다: ①필요한 순간에 대화에 **그걸 찾을 낱말이 " +
+    "있나** ②안 실렸을 때 **사용자가 겪나**. 「등산 취미」=여기. 「항상 존댓말」·「자동 푸시 " +
+    "금지」처럼 둘 다 아니면 **전역은 `<home>/AGENT.md`, 프로젝트 것은 그 폴더** " +
+    "(근거는 헌법 §4 「규범은 여기 두지 마라」). 애매하면 규범 쪽으로 — 잘못 올리면 조금 " +
+    "커질 뿐이지만 잘못 넣으면 조용히 사라진다.",
   {
     type: z.enum(MEMORY_TYPES),
     name: z
@@ -280,6 +293,83 @@ const deleteMemoryTool = tool(
   },
 );
 
+/**
+ * **인덱스 재기 — 정리의 첫 걸음** (2026-09-02).
+ *
+ * ★없어서 스킬이 못 돌았다. `memory-tidy` 를 만들고 **실제로 돌려보니** 첫 단계(«먼저
+ *  잰다»)에서 멈췄다 — 비서에게 열린 건 `read_memory`(이름 하나)·`search_memory`(질의)
+ *  뿐이라 **전체를 셀 방법이 없었고**, 셸로 DB 를 직접 읽으려다 승인 게이트에 걸렸다.
+ *  스킬은 있는데 도달 경로가 0이었던 것이다.
+ *
+ * ★**읽기 전용**이다 — `bumpAccess` 를 부르지 않는다(`getMemory` 와 다르다). 세는 행위가
+ *  hot 순위를 바꾸면 «재는 것이 재는 대상을 바꾸는» 상태가 되고, 인덱스가 시스템 채널에
+ *  실린 지금은 그게 곧 **캐시 무효화**다.
+ * ★본문(`body`)은 안 싣는다 — 정리 판단에 필요한 건 «무엇이 얼마나 차지하나» 이고,
+ *  본문까지 실으면 이 도구 한 번이 인덱스보다 커진다(197건 × 본문 = 수십 KB).
+ */
+const listMemoriesTool = tool(
+  "list_memories",
+  "메모리 인덱스를 **세어서** 반환(읽기 전용, 본문 제외). 이름·종류·설명·읽힌 횟수·" +
+    "인덱스 바이트 + 총량·캡. 정리(memory-tidy)·용량 점검에 쓴다. " +
+    "`includeArchived:true` 면 아카이브분도 본다.",
+  { includeArchived: z.boolean().optional() },
+  async (args) => {
+    const rows = listMemories({
+      limit: 10_000,
+      ...(args.includeArchived === true ? { includeArchived: true } : {}),
+    });
+    const line = (m: { type: string; name: string; description?: string }): number =>
+      Buffer.byteLength(`- [${m.type}] ${m.name}: ${m.description ?? ""}`, "utf8") + 1;
+    const items = rows.map((m) => ({
+      type: m.type,
+      name: m.name,
+      description: m.description ?? "",
+      accessCount: (m as { accessCount?: number }).accessCount ?? 0,
+      indexBytes: line(m),
+    }));
+    const totalBytes = items.reduce((a, b) => a + b.indexBytes, 0);
+    return okJson({
+      ok: true,
+      total: items.length,
+      totalIndexBytes: totalBytes,
+      capBytes: readMemoryIndexCapBytes(MEMORY_INDEX_CAP_BYTES),
+      items,
+    });
+  },
+);
+
+/**
+ * **아카이브 — 정리의 안전한 원시 동작** (2026-09-02).
+ *
+ * ★왜 필요한가: 메모리 정리(중복 병합·만료 정리)를 하려는데 비서에게 열려 있는 건
+ *  `delete_memory` **물리 삭제뿐**이었다. 그러면 정리 스킬이 구조적으로 되돌릴 수 없는
+ *  길을 쓰게 된다 — 「이건 중복이다」가 한 번 틀리면 규칙이 조용히 사라진다.
+ *
+ * ★아카이브는 **인덱스에서만 빼고 도달은 유지**한다: `listMemoriesForIndex` 는
+ *  `archived_at IS NULL` 만 싣지만 FTS(`searchMemories`)는 아카이브분도 계속 찾는다.
+ *  즉 «매 턴 실리지 않을 뿐 잃지는 않는다» — 정리에 정확히 맞는 성질이다.
+ * ★그리고 되돌릴 수 있다(`unarchive`). 파괴적 행위는 승인이 필요하지만, 되돌릴 수 있는
+ *  행위는 그 문턱이 낮아진다([[project_self_observation_sweep]] — 기준은 확신이 아니라
+ *  «되돌릴 수 있는가»).
+ * ★self-growth 는 이미 같은 판단을 했다(회귀 `growth-loop-closes` 가 «물리 삭제 아님» 을
+ *  못 박는다). 사람이 쓴 메모리에도 같은 규범을 준다.
+ */
+const archiveMemoryTool = tool(
+  "archive_memory",
+  "메모리를 인덱스에서 내린다(삭제 아님 — 검색으로는 계속 찾히고 되돌릴 수 있다). " +
+    "중복 병합·만료 정리에 쓴다. `restore:true` 면 되돌린다. 없는 name 은 멱등.",
+  { name: z.string().min(1), restore: z.boolean().optional() },
+  async (args) => {
+    const m = args.restore === true ? unarchiveMemory(args.name) : archiveMemory(args.name);
+    return okJson({
+      ok: true,
+      found: m !== undefined,
+      archived: args.restore !== true,
+      name: args.name,
+    });
+  },
+);
+
 // ─── Phase B Inventory V1 — list_installed_plugins 도구 ──────────────────
 // contract `_workspace/phaseB_inventory_architect_contract.md` §4. 단일 in-process
 // MCP server 일관 — V3 memoryTools 옆에 같은 server 로 추가. SDK 외부 노출 이름:
@@ -313,6 +403,8 @@ const MEMORY_TOOLS = [
   addMemoryTool,
   updateMemoryTool,
   deleteMemoryTool,
+  listMemoriesTool,
+  archiveMemoryTool,
   listInstalledPluginsTool,
 ];
 

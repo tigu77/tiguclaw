@@ -16,6 +16,7 @@
  *  그 벽에 부딪힌다. 그래서 판정은 **뒤처짐 + 그걸 받을 수 있는 상태인가**를 함께 낸다.
  */
 import { execFile } from "node:child_process";
+import { changelogCandidates } from "./changelog.js";
 
 /** git 한 방 — 실패는 throw 하지 않고 빈 결과로(판정은 데몬을 죽이지 않는다). */
 const git = (
@@ -197,14 +198,24 @@ export const changelogSince = (
  *  ★경로를 **열거하지 않고 순서대로 시도**한다 — 둘 다 우리가 아는 자리이고, 늘어날 일이
  *  없으며(오버레이 규약이 정한다), 없으면 그냥 조용하다.
  */
-const CHANGELOG_PATHS = ["CHANGELOG.md", "_workspace/public-overlay/CHANGELOG.md"] as const;
+/**
+ * 찾을 자리 — 배포본은 루트, 개발 레포는 오버레이 안.
+ * ★**이름**은 `changelog.ts` 가 정한다(언어별). 자리 × 이름을 여기서 곱한다 — 이름 규약을
+ *  여기에 또 적으면 판정이 두 곳이 되고, 한쪽만 언어를 타는 상태가 조용히 생긴다.
+ * ★언어를 **자리보다 먼저** 본다: 한국어 화면이면 두 자리 모두에서 한국어를 먼저 찾고,
+ *  그래도 없을 때 영어로 떨어진다(원격이 아직 안 갈라진 옛 버전일 수 있다).
+ */
+const CHANGELOG_ROOTS = ["", "_workspace/public-overlay/"] as const;
 const remoteChangelog = async (
   cwd: string,
   timeoutMs: number,
+  locale?: string,
 ): Promise<string | undefined> => {
-  for (const rel of CHANGELOG_PATHS) {
-    const r = await git(["show", `@{u}:${rel}`], cwd, timeoutMs);
-    if (r.ok && r.out.trim() !== "") return r.out;
+  for (const name of changelogCandidates(locale)) {
+    for (const root of CHANGELOG_ROOTS) {
+      const r = await git(["show", `@{u}:${root}${name}`], cwd, timeoutMs);
+      if (r.ok && r.out.trim() !== "") return r.out;
+    }
   }
   return undefined;
 };
@@ -347,7 +358,7 @@ export const checkUpdateAvailability = async (
  */
 export const readUpdateChangelog = async (
   cwd: string,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; locale?: string } = {},
 ): Promise<{ markdown: string; version?: string; newVersion?: string }> => {
   const timeoutMs = opts.timeoutMs ?? 20_000;
   const upstream = await git(
@@ -358,7 +369,7 @@ export const readUpdateChangelog = async (
   if (!upstream.ok || upstream.out.trim() === "") return { markdown: "" };
   const version = await versionAt("HEAD", cwd, timeoutMs);
   const newVersion = await versionAt("@{u}", cwd, timeoutMs);
-  const body = await remoteChangelog(cwd, timeoutMs);
+  const body = await remoteChangelog(cwd, timeoutMs, opts.locale);
   if (body === undefined) return { markdown: "", version, newVersion };
   const cut = changelogSince(body, version);
   // 헤더(`## [0.41.0] - 날짜`)를 **되살려서** 잇는다 — 날짜와 버전 구분이 읽는 사람에게

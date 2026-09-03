@@ -19,7 +19,7 @@ import {
   initStore,
   getDb,
 } from "../../store/sessions.js";
-import { addMemory, listMemoriesForIndex } from "../../store/memory.js";
+import { addMemory, getMemory, listMemoriesForIndex } from "../../store/memory.js";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const run = async (): Promise<Assertion[]> => {
@@ -45,21 +45,44 @@ const run = async (): Promise<Assertion[]> => {
   setRow("warm-mid", 5, 2_000);
   setRow("cold-new", 0, 9_000);
 
-  // ── ① 사용빈도가 최신순을 이긴다 ──────────────────────────────────────────
+  // ── ① 출력은 **안정 순서**다 (2026-09-02) ─────────────────────────────────
+  //  ★인덱스가 시스템 채널(프리픽스 캐시)로 옮겨갔다. hot-first 로 «내보내면»
+  //   `read_memory` 한 번에 access_count 가 올라 순서가 바뀌고 **캐시가 깨진다**.
+  //   그래서 «고르기» 만 hot-first 고 «내보내기» 는 이름순이다 — 아래 ②가 고르기를 본다.
   {
-    const { lines } = listMemoriesForIndex(64 * 1024); // 캡 넉넉 — 순서만 본다.
+    const { lines } = listMemoriesForIndex(64 * 1024);
     const order = lines.map((l) => /\] ([a-z-]+):/.exec(l)?.[1] ?? "");
+    const sorted = [...order].sort((a, b) => a.localeCompare(b));
     out.push({
-      name: "★자주 쓰이는 것이 먼저다(오래 전 갱신이어도)",
-      ok: order[0] === "hot-old" && order[1] === "warm-mid",
-      got: `순서=${JSON.stringify(order)} (기대 hot-old · warm-mid · cold-new)`,
+      name: "★★출력이 이름순으로 **안정**하다 — 안 그러면 메모리를 읽을 때마다 캐시가 깨진다",
+      ok: JSON.stringify(order) === JSON.stringify(sorted),
+      got: `순서=${JSON.stringify(order)}`,
+    });
+  }
+
+  // ── ①' 읽어도 텍스트가 안 바뀐다 (캐시 안정성의 실제 계약) ────────────────
+  {
+    const before = listMemoriesForIndex(64 * 1024).lines.join("\n");
+    // ★제품 경로로 올린다(`readMemory` = 모델이 실제로 부르는 도구가 쓰는 함수) —
+    //  내부 헬퍼를 export 해서 검사용 문을 새로 열지 않는다.
+    getMemory("cold-new");
+    const after = listMemoriesForIndex(64 * 1024).lines.join("\n");
+    out.push({
+      name: "★★`read_memory` 로 access_count 가 올라도 인덱스 텍스트가 **그대로**다(프리픽스 캐시 유지)",
+      ok: before === after && before !== "",
+      got: before === after ? "동일" : "★바뀜 — 캐시가 매 읽기마다 깨진다",
     });
   }
 
   // ── ② 캡을 넘으면 **적게 쓰이는 것**이 잘린다 ─────────────────────────────
   {
-    const one = listMemoriesForIndex(64 * 1024).lines[0] ?? "";
-    const cap = Buffer.byteLength(one, "utf8") + 1; // 딱 한 줄 들어가는 캡.
+    // ★캡은 **가장 뜨거운 줄** 기준으로 잡는다 — 출력이 이름순이 된 뒤로 `lines[0]` 은
+    //  더 이상 «가장 뜨거운 것» 이 아니다(그 전제로 짰던 옛 판이 여기서 깨졌다).
+    // ★★그리고 종류별 몫(2026-09-02)이 생긴 뒤로는 **총 캡을 한 줄로 잡으면 안 된다** —
+    //  `user` 몫이 총량의 10% 라 한 줄도 안 들어가 전부 잘린다(그렇게 한 번 깨졌다).
+    //  여기 셋은 다 `user` 타입이므로, **그 몫이 딱 한 줄**이 되게 총 캡을 역산한다.
+    const hot = listMemoriesForIndex(64 * 1024).lines.find((l) => l.includes("hot-old")) ?? "";
+    const cap = Math.ceil((Buffer.byteLength(hot, "utf8") + 1) / 0.1); // user 몫 = 한 줄
     const r = listMemoriesForIndex(cap);
     out.push({
       name: "★캡 초과 시 남는 것은 가장 많이 쓰인 것",

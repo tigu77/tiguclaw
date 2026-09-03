@@ -29,9 +29,13 @@ const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const pkgRaw = await readFile(new URL("../../../package.json", import.meta.url), "utf8");
   const version = String((JSON.parse(pkgRaw) as { version?: string }).version ?? "");
+  // ★영어판이 릴리스 노트의 원본이다(`gh release` 는 영어권도 본다). 이름에 코드가 붙었다
+  //  (2026-09-02) — 옛 이름은 배포 레포·옛 체크아웃을 위해 뒤에 남긴다.
   const found = await readFirst([
-    "../../../_workspace/public-overlay/CHANGELOG.md", // dev(진실 소스)
-    "../../../CHANGELOG.md", // 배포 레포(사용자가 받는 실물)
+    "../../../_workspace/public-overlay/CHANGELOG.en.md", // dev(진실 소스)
+    "../../../CHANGELOG.en.md", // 배포 레포(사용자가 받는 실물)
+    "../../../_workspace/public-overlay/CHANGELOG.md", // 코드 없던 시절
+    "../../../CHANGELOG.md",
   ]);
 
   out.push(

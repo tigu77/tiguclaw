@@ -20,7 +20,15 @@
  * 레포의 `dist/` 는 건드리지 않는다.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  readdirSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +55,10 @@ export const check: RegressionCheck = {
     const tmp = mkdtempSync(path.join(os.tmpdir(), "tgc-dist-"));
     try {
       const outDir = path.join(tmp, "dist");
+      // ★변경 내역도 같은 대접 — 원본에 없는 이름을 심어두고 prune 되는지 본다
+      //  (실측: `CHANGELOG.md` → `.en.md` 로 옮겼는데 옛 파일이 dist 에 살아남았다).
+      mkdirSync(outDir, { recursive: true });
+      writeFileSync(path.join(outDir, "CHANGELOG.zz.md"), "stale\n", "utf8");
       // ★지워져야 할 파일을 **미리 심는다** — prune 이 죽으면 이게 살아남는다.
       for (const tree of PRUNED_TREES) {
         mkdirSync(path.join(outDir, tree), { recursive: true });
@@ -102,6 +114,60 @@ export const check: RegressionCheck = {
             : `★남아버린 트리: ${survivors.join(", ")}`,
         ),
       );
+
+      // ②' ★변경 내역은 **있는 언어를 전부** 실어야 한다 (2026-09-02).
+      //   두 결함이 같은 자리에서 나왔다:
+      //   ⓐ 손목록이 `CHANGELOG.md` 하나였다 — 그날 만든 `CHANGELOG.ko.md` 가 dist 에 안
+      //     실려, 화면 언어를 따르는 기능이 **배포본에서 통째로 죽어** 있었다.
+      //   ⓑ 옛 `copyFileAs` 는 «목적지가 있으면 건너뛴다» 였는데 dist 는 빌드마다 안 지워져
+      //     그 조건이 항상 참이었다 — 실측으로 돌쇠의 「변경 이력」이 **9일간 8월 24일자**로
+      //     굳어 있었다. 조용한 정지였다.
+      //   그래서 **이름을 열거하지 않고** 「원본에 있는 것이 전부, 그리고 내용까지 같은가」를 본다.
+      {
+        const CL = /^CHANGELOG(\.[A-Za-z-]+)?\.md$/;
+        //   ★원본 위치 판별에 **이름을 박지 마라** (2026-09-03, 배포 트리에서 걸렸다).
+        //    종전엔 `CHANGELOG.md` 의 존재로 «공개 레포인가» 를 갈랐는데, 바로 그 파일을
+        //    `CHANGELOG.en.md` 로 **개명하면서** 표지가 사라졌다 — 공개 트리에서 원본을
+        //    `_workspace/public-overlay`(거긴 EXCLUDE 라 없다)로 찾아 **원본 0개**가 됐고,
+        //    이 검사는 그 레포에서 **영영 빨간불**이 된다(CI 가 거기서 돈다).
+        //    자기가 감시하는 대상을 표지로 쓴 것이다 — 같은 규칙(`CL`)으로 판별한다.
+        const hasAtRoot = readdirSync(REPO).some((f) => CL.test(f));
+        const srcDir = hasAtRoot ? REPO : path.join(REPO, "_workspace", "public-overlay");
+        const want = existsSync(srcDir) ? readdirSync(srcDir).filter((f) => CL.test(f)) : [];
+        const got = readdirSync(outDir).filter((f) => CL.test(f));
+        out.push(
+          assert(
+            "★★변경 내역이 **있는 언어 전부** dist 에 실린다 — 하나라도 빠지면 그 언어 사용자에겐 기능이 없는 것과 같다",
+            want.length >= 2 && want.every((f) => got.includes(f)),
+            want.length < 2
+              ? `★원본이 ${want.length}개뿐 — 언어별로 갈렸는지부터 확인(${srcDir})`
+              : `원본 ${want.join(" · ")} → dist ${got.join(" · ")}`,
+          ),
+        );
+        // ★없는 파일은 여기서 세지 않는다 — 위 단언이 이미 «빠졌다» 로 잡는다. 읽으려 들면
+        //  검사가 **던져서** 나머지 단언이 통째로 안 돈다(실측: 변이가 빨강 대신 예외였다).
+        const stale = want
+          .filter((f) => got.includes(f))
+          .filter(
+            (f) =>
+              readFileSync(path.join(srcDir, f), "utf8") !==
+              readFileSync(path.join(outDir, f), "utf8"),
+          );
+        out.push(
+          assert(
+            "★원본에 없는 언어 파일은 dist 에서 **지워진다** — 산출물이 원본을 거짓으로 말하지 않게",
+            !got.includes("CHANGELOG.zz.md"),
+            got.includes("CHANGELOG.zz.md") ? "★남아버렸다" : "prune 됨",
+          ),
+        );
+        out.push(
+          assert(
+            "★★내용이 **최신이다** — 옛 복사기는 목적지가 있으면 건너뛰어 9일 묵은 내역을 보여줬다(조용한 정지)",
+            stale.length === 0,
+            stale.length === 0 ? `${want.length}개 내용 일치` : `★묵은 파일: ${stale.join(", ")}`,
+          ),
+        );
+      }
 
       // ③ 헌법·빌트인 자산도 함께 — 이것들이 빠지면 부팅이 "작동 헌법이 비었습니다" 를 찍는다.
       for (const rel of ["SYSTEM.md", "skills", "agents"]) {

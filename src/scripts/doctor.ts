@@ -27,7 +27,7 @@ import {
   judgeGlobalCommand,
   probeNativeModule,
   resolveGlobalCommand,
-  resolveLinkedInstallRoot,
+  resolveLinkedInstall,
 } from "./doctor-install.js";
 // codex OAuth 토큰 키 상수 + 만료 파서를 어댑터에서 재사용 (하드코딩 중복 금지).
 // 해당 모듈은 top-level side-effect 0 (순수 const + 함수 정의) — env 미설정에서도
@@ -150,7 +150,7 @@ const main = async (): Promise<void> => {
   const cmd = judgeGlobalCommand(
     resolveGlobalCommand(),
     installRoot,
-    resolveLinkedInstallRoot(),
+    resolveLinkedInstall(),
   );
   console.log(line("tiguclaw 명령", cmd.kind === "ok" ? `${cmd.detail} ✅` : `⚠️  ${cmd.detail}`));
   if (cmd.kind !== "ok") {

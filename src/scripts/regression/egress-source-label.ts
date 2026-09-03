@@ -15,7 +15,9 @@
  * 지키는 것 넷:
  *  ① 기본 세션엔 **안 붙는다** — 평소 사용이 글자 하나도 안 바뀐다(라벨이 배경 소음이 되면
  *     진짜 이상할 때 아무도 안 본다).
- *  ② 이름 있는 세션은 그 이름으로, 없으면 `unknown`.
+ *  ② 이름 있는 세션은 그 이름으로, 없으면 **세션 키**로(2026-09-02 개정 — `unknown` 은
+ *     아는 것을 버리는 말이었다. 실측: `[unknown]` 21건 중 18건이 개발 프로브인데 어느
+ *     것인지 알 길이 없었다).
  *  ③ ★**첫 발화에서 파생하지 않는다** — 그건 대화 내용을 다른 채널의 라벨로 흘리는 짓이다.
  *  ④ 라벨이 **egress 사본에만** 붙는다 — 인입 채널 응답은 그대로다(중복 표시 금지).
  *
@@ -54,17 +56,28 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "★★이름 없는 세션은 `unknown` — 폰에서 필요한 답은 '내 대화가 아니다' 하나다(이게 이 사고에서 없던 것)",
-        egressSourcePrefix("dashboard:bundle-probe", null) === "[unknown] " &&
-          egressSourcePrefix("dashboard:bundle-probe", "  ") === "[unknown] ",
+        "★★이름이 없으면 **세션 키**를 쓴다 — `unknown` 은 아는 것을 버리는 말이었다(어느 프로브인지 알 길이 없었다)",
+        egressSourcePrefix("dashboard:bundle-probe", null) === "[dashboard:bundle-probe] " &&
+          egressSourcePrefix("dashboard:bundle-probe", "  ") === "[dashboard:bundle-probe] " &&
+          !egressSourcePrefix("dashboard:bundle-probe", null).includes("unknown"),
         JSON.stringify(egressSourcePrefix("dashboard:bundle-probe", null)),
+      ),
+    );
+    out.push(
+      assert(
+        "★UUID 는 앞 8자만 — 폰 알림 한 줄에 36자를 넣으면 본문이 안 보인다(줄여도 찾을 수 있다)",
+        egressSourcePrefix("worker:3f74a2f5-d5a9-4ee8-a77e-8fb24ac765ae", null) ===
+          "[worker:3f74a2f5] " &&
+          egressSourcePrefix("scheduler:21", null) === "[scheduler:21] ",
+        JSON.stringify(egressSourcePrefix("worker:3f74a2f5-d5a9-4ee8-a77e-8fb24ac765ae", null)),
       ),
     );
     out.push(
       assert(
         "★★라벨이 **대화 내용에서 파생되지 않는다** — 파생하면 첫 발화가 다른 채널의 라벨로 새어 나간다(표시명 파생과 일부러 다르게 둔다)",
         !egressSourcePrefix("dashboard:x", null).includes("안녕") &&
-          egressSourcePrefix("dashboard:x", null) === "[unknown] ",
+          // 키만 쓴다 — 키는 사람·코드가 고른 **식별자**지 대화 내용이 아니다.
+          egressSourcePrefix("dashboard:x", null) === "[dashboard:x] ",
         egressSourcePrefix("dashboard:x", null),
       ),
     );

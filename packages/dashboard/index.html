@@ -136,6 +136,19 @@
           </div>
           <div id="projects-list"><div class="empty" style="margin:8px" data-i18n="common.loading">불러오는 중…</div></div>
         </section>
+        <!-- 플러그인 뷰 3패널 — 모듈/능력/프로젝트와 완전 동형 (2026-09-02).
+             ★자기 id 를 갖는 이유: 모듈 뷰의 `renderProviderHub` 가 currentView 를 안 보고
+             `#detail-panel` 을 덮는다. 리스트 패널을 공유하면 두 뷰가 서로를 지운다. -->
+        <section id="plugins-panel">
+          <div id="plugins-head">
+            <h1 data-i18n="nav.plugins">플러그인</h1>
+            <span class="count" id="plugins-count"></span>
+          </div>
+          <div class="list-search-row">
+            <input type="search" id="plugins-search" class="list-search-input" placeholder="플러그인 검색 (이름·설명·종류)" data-i18n-attrs="placeholder=panel.plugins.search" />
+          </div>
+          <div id="plugins-list"><div class="empty" style="margin:8px" data-i18n="common.loading">불러오는 중…</div></div>
+        </section>
         <section id="detail-panel">
           <div id="detail-empty" data-i18n="detail.loading">홈을 불러오는 중입니다.</div>
         </section>

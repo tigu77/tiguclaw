@@ -80,12 +80,21 @@ export const handleUpdateAvailability = async (ctx: RouteCtx): Promise<void> => 
 };
 
 export const handleUpdateChangelog = async (ctx: RouteCtx): Promise<void> => {
-  const { res } = ctx;
+  const { res, url } = ctx;
   const { readUpdateChangelog } = await import(
     "../../src/core/update-availability.js"
   );
+  const { localeFromQuery } = await import("../../src/core/changelog.js");
   const { sourceRoot } = await import("../../src/core/paths.js");
-  writeJson(res, 200, await readUpdateChangelog(sourceRoot()));
+  // 언어는 `/changelog` 와 **같은 규칙**으로 넘긴다 — 두 행이 나란히 있는데 한쪽만
+  // 한국어면 그게 더 이상하다(설정 화면이 행 컴포넌트 하나로 둘을 그린다).
+  writeJson(
+    res,
+    200,
+    await readUpdateChangelog(sourceRoot(), {
+      locale: localeFromQuery(url.searchParams.get("lang")),
+    }),
+  );
   return;
 };
 
@@ -117,16 +126,20 @@ export const handleRestart = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleChangelog = async (ctx: RouteCtx): Promise<void> => {
-  const { res } = ctx;
-  // ★경로는 **하나**다 — `appRoot()/CHANGELOG.md`(헌법 SYSTEM.md 와 같은 분류).
-  //  개발 레포엔 루트에 그 파일이 없지만(오버레이가 정본), 그 차이는 **빌드 스크립트**
-  //  (`bin/copy-dist-assets.mjs`)가 흡수한다 — 제품 코드에 dev 사정을 넣지 않는다.
-  let md = "";
-  try {
-    md = await fs.readFile(path.join(appRoot(), "CHANGELOG.md"), "utf8");
-  } catch {
-    /* 없으면 빈 값 — 화면이 "찾지 못했습니다" 를 띄운다 */
-  }
+  const { res, url } = ctx;
+  // ★자리는 **하나**다 — `appRoot()`(헌법 SYSTEM.md 와 같은 분류). 개발 레포엔 루트에 그
+  //  파일이 없지만(오버레이가 정본), 그 차이는 **빌드 스크립트**(`bin/copy-dist-assets.mjs`)
+  //  가 흡수한다 — 제품 코드에 dev 사정을 넣지 않는다.
+  // ★**이름**은 화면 언어가 정한다 (2026-09-02) — v0.46.0 에서 변경 내역을 언어별로 갈랐는데
+  //  이 라우트가 `CHANGELOG.md` 한 이름만 읽어 한국어 화면에도 영어가 나왔다. 고르는 판정은
+  //  코어(`core/changelog.ts`)가 소유한다 — 여기선 «어느 루트인가»·«어느 언어인가» 만 준다.
+  const { readInstalledChangelog, localeFromQuery } = await import(
+    "../../src/core/changelog.js"
+  );
+  const md = await readInstalledChangelog(
+    appRoot(),
+    localeFromQuery(url.searchParams.get("lang")),
+  );
   // 없으면 빈 값으로 정직하게 — 화면이 "찾지 못했습니다" 를 띄운다(빈 화면 금지).
   writeJson(res, 200, { markdown: md });
   return;

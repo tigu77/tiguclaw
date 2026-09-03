@@ -1,6 +1,13 @@
 {
   "name": "http-bridge",
   "version": "0.1.0",
+  "description": {
+    "ko": "로컬 HTTP 로 메시지·조회 창구를 엽니다. 대시보드와 외부 앱이 이 문으로 붙습니다.",
+    "en": "Opens the local HTTP endpoint for messages and queries. The dashboard and external apps connect through it."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {
@@ -11,6 +18,28 @@
     ],
     "name": "http-bridge",
     "entry": "./index.ts",
-    "core": true
+    "core": true,
+    "settings": [
+      {
+        "key": "allowedHosts",
+        "type": "string",
+        "env": "HTTP_BRIDGE_ALLOWED_HOSTS"
+      },
+      {
+        "key": "port",
+        "type": "number",
+        "env": "HTTP_BRIDGE_PORT"
+      },
+      {
+        "key": "gatewayMaxConcurrency",
+        "type": "number",
+        "env": "LLM_GATEWAY_MAX_CONCURRENCY"
+      },
+      {
+        "key": "endpointTimeoutMs",
+        "type": "number",
+        "env": "ENDPOINT_TIMEOUT_MS"
+      }
+    ]
   }
 }

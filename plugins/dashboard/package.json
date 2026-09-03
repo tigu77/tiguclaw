@@ -1,6 +1,13 @@
 {
   "name": "dashboard-service",
   "version": "0.1.0",
+  "description": {
+    "ko": "웹 대시보드를 실행합니다. 대화·작업·설정을 한 화면에서 봅니다.",
+    "en": "Runs the web dashboard, where conversations, jobs and settings live in one place."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {
@@ -10,6 +17,13 @@
     ],
     "name": "dashboard",
     "entry": "./index.ts",
-    "selfReferential": true
+    "selfReferential": true,
+    "settings": [
+      {
+        "key": "port",
+        "type": "number",
+        "env": "DASHBOARD_PORT"
+      }
+    ]
   }
 }

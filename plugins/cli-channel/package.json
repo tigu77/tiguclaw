@@ -1,5 +1,13 @@
 {
   "name": "cli-channel",
+  "version": "1.0.0",
+  "description": {
+    "ko": "터미널에서 비서와 대화합니다.",
+    "en": "Talk to the assistant from your terminal."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {

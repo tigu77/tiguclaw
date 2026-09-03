@@ -70,6 +70,16 @@ export interface PluginMeta {
   readonly author?: string;
   readonly homepage?: string;
   readonly license?: string;
+  /**
+   * 목록에 뜨는 아이콘 — 플러그인 폴더 **안**의 상대 경로 (2026-09-02 사용자 지정:
+   * *"아이콘 필드가 있어야지 / 비어있으면 그냥 기본 아이콘으로"*).
+   *
+   * ★**래스터만 받는다**(`.png`·`.webp`). SVG 를 받으면 같은 오리진에서 스크립트가 도는
+   *  파일을 서드파티가 넣을 수 있고, 이 오리진엔 `/api/messages`(= 비서에게 임의 지시)가
+   *  있다. 아이콘 하나를 위해 열 문이 아니다 — 기본 아이콘은 우리가 그린 인라인 SVG 다.
+   * ★경로 탈출(`../`)·절대경로는 여기서 거른다. 읽는 쪽에서 또 거르지만, 애초에 안 담는다.
+   */
+  readonly icon?: string;
 }
 
 /**
@@ -162,6 +172,7 @@ export const readPluginMeta = (pkg: Record<string, unknown>): PluginMeta => {
     author?: string;
     homepage?: string;
     license?: string;
+    icon?: string;
   } = {};
   const d = pkg.description;
   if (typeof d === "string" && d.trim() !== "") m.description = d.trim();
@@ -177,6 +188,21 @@ export const readPluginMeta = (pkg: Record<string, unknown>): PluginMeta => {
   if (typeof a === "string" && a.trim() !== "") m.author = a.trim();
   else if (a !== null && typeof a === "object" && typeof (a as { name?: unknown }).name === "string") {
     m.author = String((a as { name: string }).name).trim();
+  }
+  // 아이콘 — 폴더 안의 래스터 파일만. 모양이 안 맞으면 **조용히 없는 것**으로 둔다
+  // (없으면 화면이 기본 아이콘을 쓰므로, 하나 잘못 적었다고 플러그인이 안 뜨면 과하다).
+  const ic = (pkg as { tiguclaw?: { icon?: unknown } }).tiguclaw?.icon;
+  if (typeof ic === "string") {
+    const v = ic.trim();
+    if (
+      v !== "" &&
+      !v.startsWith("/") &&
+      !v.includes("..") &&
+      !v.includes("\\") &&
+      /\.(png|webp)$/i.test(v)
+    ) {
+      m.icon = v;
+    }
   }
   // `homepage` 가 없으면 `repository.url`(또는 문자열)로 대신한다 — 같은 질문에 답한다.
   const h = pkg.homepage;

@@ -326,7 +326,7 @@ const bundledManifestBlocks = (): Array<Record<string, unknown>> => {
  *  아니다 — `/update` 는 `git pull` 이라 추적 안 되는 파일이 남은 폴더를 안 지우고,
  *  macOS 는 폴더를 열기만 해도 `.DS_Store` 를 만든다. 이 레포엔 번들이 실제로 지워진
  *  이력도 있다(`b81667ae` `observer-dashboard`).
- * ★그리고 그건 `docs/plugins.md` §11 의 약속 *"폴더는 아무렇게나 둬도 됩니다"* 를
+ * ★그리고 그건 `docs/plugins.ko.md` §11 의 약속 *"폴더는 아무렇게나 둬도 됩니다"* 를
  *  거짓으로 만든다. **넓힌 술어의 거짓양성 쪽에 게이트를 안 단 것**이다.
  *  `package.json` 이 **있는데 못 읽히는** 경우만 보면 표적(중단된 `/update`·부분 쓰기)은
  *  그대로 잡고 잔해는 빠진다 — 번들 10개 전부 `package.json` 이 있으므로 보호력 손실 0.

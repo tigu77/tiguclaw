@@ -45,12 +45,48 @@ const rowToMemory = (row: MemoryRow): Memory => ({
 // access_count/last_accessed: getMemory·searchMemories 히트 시 증분(별도 UPDATE,
 // updated_at·FTS 무영향 — 트리거 재동기 content 동일). 지금 당장 절단 개선에는
 // 무효(cold-start 전량 0) — 미래 hot-first 정렬(§6 Option D)로 가는 forward 투자.
+/**
+ * ★**«읽었다» 와 «검색에 걸렸다» 를 가른다** (2026-09-02).
+ *
+ * 종전엔 `getMemory`(모델이 이름을 대고 가져옴)와 `searchMemories`(매 턴 도는 자동 검색)가
+ * **같은 카운터**를 올렸다. 그 결과 실측:
+ *  - 197건 중 **171건(87%)이 «최근 7일 내 사용»** 으로 찍혀 시간축의 판별력이 0이었다
+ *  - 상위 1~3위가 전부 **기계가 만든 메모리**(`feedback_growth_*`, 455/450/309) —
+ *    흔한 낱말을 담아 FTS 에 계속 걸리고, 걸릴 때마다 올라 눌러앉는 **자기강화 루프**였다
+ *  - 반면 「사용자를 '정태님'이라고 부른다」는 **193위**
+ *
+ * ★그리고 더 근본적으로 **신호의 방향이 반대다.** 이 카운터가 정하는 건 «인덱스에 상주할
+ *  값이 있나» 인데, **검색으로 찾혔다는 건 상주가 필요 없다는 증거**다(낱말로 도달했으니까).
+ *  검색 히트를 세면 «인덱스 없이도 되는 것» 이 인덱스를 차지한다. 세면 안 되는 게 아니라
+ *  **거꾸로 세고 있었다.**
+ *
+ * 그래서 **명시적 fetch 만** 센다 — 모델이 인덱스를 보고 이름을 대서 가져온 경우.
+ * 그때가 «인덱스가 제 일을 했다» 는 유일한 증거다.
+ * ★그리고 **하루 1회로 접는다**: 한 대화에서 같은 것을 열 번 열어도 «그날 썼다» 는 하나다.
+ *  raw 횟수는 대화 길이를 재는 것이지 가치를 재는 게 아니다.
+ *
+ * ★옛 카운트는 **안 지운다** — 사용자 데이터고, 지우면 되돌릴 수 없다. 오염분은 새로 안
+ *  늘어나므로 시간이 지나며 상대적으로 묽어진다. 그 사이의 왜곡은 **종류별 캡**이 막는다
+ *  (자동생성이 아무리 뜨거워도 제 몫을 넘어 남의 자리를 못 뺏는다).
+ */
 const bumpAccess = (db: ReturnType<typeof requireDb>, ids: readonly number[]): void => {
   if (ids.length === 0) return;
   const now = Date.now();
+  const dayStart = new Date(now).setHours(0, 0, 0, 0);
   const stmt = db.prepare(
-    `UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?`,
+    `UPDATE memories
+        SET access_count = access_count + CASE WHEN coalesce(last_accessed, 0) < ? THEN 1 ELSE 0 END,
+            last_accessed = ?
+      WHERE id = ?`,
   );
+  for (const id of ids) stmt.run(dayStart, now, id);
+};
+
+/** 검색 히트 — **카운트를 올리지 않는다**(위 주석 참조). 마지막 노출 시각만 남긴다. */
+const touchSeen = (db: ReturnType<typeof requireDb>, ids: readonly number[]): void => {
+  if (ids.length === 0) return;
+  const now = Date.now();
+  const stmt = db.prepare(`UPDATE memories SET last_accessed = ? WHERE id = ?`);
   for (const id of ids) stmt.run(now, id);
 };
 
@@ -153,9 +189,57 @@ export const updateMemory = (
 };
 
 // ─── V3 인덱스 빌더 — 모든 memories 의 1줄 요약 (contract §2.3) ────────────
+/**
+ * 인덱스에서 이 메모리가 속한 **몫**. 종류(`type`)를 쓰되 **자동 생성분만 따로** 뺀다.
+ *
+ * ★자동 생성분을 가르는 이유: 그건 `feedback` 타입이지만 **성질이 다르다** — 기계가 쓰고
+ *  기계가 읽으며, 사람이 쓴 규범과 같은 몫을 두고 경쟁하면 늘 이긴다(빈도로는). 소유자도
+ *  다르다(self-growth 루프가 스스로 만료시킨다).
+ * ★이름으로 가르는 게 손목록 아닌가? 아니다 — 이건 **생성 주체**의 표식이고 그 접두사는
+ *  self-growth 가 코드로 붙인다([[feedback_hand_maintained_lists]] 의 «판정 기준으로
+ *  바꿀 수 있나» 에 대한 답: 이게 그 판정 기준이다).
+ */
+const KNOWN_BUCKETS = new Set(["user", "feedback", "project", "reference"]);
+const memoryBucket = (name: string, type: string): string =>
+  name.startsWith("feedback_growth_") || name.startsWith("growth_")
+    ? "auto"
+    : KNOWN_BUCKETS.has(type)
+      ? type
+      : "other";
+
+/**
+ * 종류별 몫 — 총량 대비 비중으로 푼다(캡을 바꿔도 비례해서 따라간다).
+ *
+ * ★`user`(사람 사실)에 **넉넉히** 준다: 지금 894B 인데 10%(4KB)를 준다. 작아서 비용이
+ *  없고, 잘리면 사용자가 **매 문장에서 겪는다**(호칭·말투). 남는 몫은 놀아도 된다.
+ * ★`auto`(자동생성)는 **10% 로 묶는다**: 지금 5.3KB(15.8%)로 이미 넘고 상위 1~3위를
+ *  차지하고 있다. 여기를 안 묶으면 나머지 조치가 다 무의미하다.
+ * ★모르는 type 은 `other` 로 모아 받는다 — 새 type 이 생겨도 **0이 되지 않는다**(그러면
+ *  그 종류가 통째로 사라진다).
+ */
+const memoryTypeBudgets = (total: number): Map<string, number> => {
+  // ★합이 1.0 이다. `type` 은 DB 가 `CHECK (type IN ('user','feedback','project','reference'))`
+  //  로 막고 있어 다섯 버킷(넷 + auto)이 전부다 — 처음엔 `other` 에 6% 를 뒀는데 **도달할
+  //  수 없는 몫**이었다(검사가 그 타입을 못 만들어서 드러났다). 안 쓰는 자리에 예산을 두면
+  //  그만큼 쓰는 자리가 줄어든다.
+  //  ★그래도 `other` 자체는 남긴다(아래 0.02) — 미래에 type 이 늘면 **0이 되어 그 종류가
+  //   통째로 사라지는** 게 최악이다. 몫이 작은 건 되돌릴 수 있지만 사라지는 건 조용하다.
+  const share: Record<string, number> = {
+    user: 0.1,
+    feedback: 0.34,
+    project: 0.34,
+    reference: 0.1,
+    auto: 0.1,
+    other: 0.02,
+  };
+  const out = new Map<string, number>();
+  for (const [k, v] of Object.entries(share)) out.set(k, Math.floor(total * v));
+  return out;
+};
+
 export const listMemoriesForIndex = (
   maxBytes: number,
-): { lines: string[]; total: number; truncated: number } => {
+): { lines: string[]; total: number; truncated: number; cutNames: Set<string> } => {
   const db = requireDb("listMemoriesForIndex");
   // 인덱스 티어링(계약 §3.2): archived_at IS NULL — 아카이브분은 always-on 핫셋에서
   // 제외(FTS/searchMemories 로는 여전히 도달, §3.3 무변경).
@@ -177,20 +261,58 @@ export const listMemoriesForIndex = (
     )
     .all() as Pick<MemoryRow, "type" | "name" | "description">[];
 
-  const lines: string[] = [];
+  // ★**고르기는 hot-first, 내보내기는 안정 순서** (2026-09-02).
+  //  이 인덱스는 이제 **시스템 채널(프리픽스 캐시)** 에 실린다. 그런데 위 정렬은
+  //  `access_count DESC` 라, `read_memory` 를 한 번 부를 때마다 카운트가 올라 **순서가
+  //  바뀌고 텍스트가 바뀐다** — 캐시가 메모리를 읽는 족족 깨진다(실측: 인덱스 내용 자체가
+  //  바뀌는 사건은 하루 1.7회인데, 읽기는 그보다 훨씬 잦다).
+  //  ★hot-first 의 목적은 **캡에서 무엇이 살아남느냐**이지 화면 순서가 아니다
+  //   (2026-08-11 주석: "82회 읽힌 것이 6월 갱신이라는 이유로 잘려 나갔다"). 그래서 자르는
+  //   판정은 그대로 두고, 살아남은 것만 **이름순**으로 내보낸다 — 선택은 안 바뀌고
+  //   텍스트만 안정된다. 둘 다 지킨다.
+  // ★**종류마다 자기 몫이 있다** (2026-09-02). 종전엔 한 통에 넣고 hot-first 로 잘라서,
+  //  한 종류가 다른 종류를 통째로 밀어냈다. 실측이 선명했다:
+  //   1~3위 = 기계가 만든 `feedback_growth_*`(455/450/309) · 「정태님」 = **193위/197건**
+  //   `user`(사람 사실) 10건은 인덱스의 **2.7%** 인데 순위는 20위·193위로 흩어져 있었다
+  //  ★한 통에서 빈도로 줄 세우면 **기계 생성물이 사람 사실을 이긴다** — 기계는 매 턴
+  //   돌며 자기가 쓴 것을 자기가 읽으니까. 순서를 바꿔 풀 문제가 아니라 **자리를 나눠야**
+  //   하는 문제다([[feedback_external_things_own_their_unit]] 와 같은 결).
+  //  ★몫은 **비율이 아니라 바이트**다 — 비율이면 한 종류가 폭증할 때 남의 몫도 같이 흔들린다.
+  //  ★남은 몫은 **재분배하지 않는다.** 그러면 «자동생성이 남은 자리를 다 먹는» 옛 상태로
+  //   돌아간다. 덜 쓰는 종류의 여유는 그 종류의 성장 여지로 남긴다.
+  const budget = memoryTypeBudgets(maxBytes);
+  const used = new Map<string, number>();
+  const picked: Pick<MemoryRow, "type" | "name" | "description">[] = [];
   let bytes = 0;
   let truncated = 0;
   for (const r of rows) {
     const line = `- [${r.type}] ${r.name}: ${r.description}`;
     const lineBytes = Buffer.byteLength(line, "utf8") + 1; // +\n
-    if (bytes + lineBytes > maxBytes) {
-      truncated = rows.length - lines.length;
-      break;
-    }
-    lines.push(line);
+    const bucket = memoryBucket(r.name, r.type);
+    const cap = budget.get(bucket) ?? 0;
+    const u = used.get(bucket) ?? 0;
+    // ★**몫이 비었으면 첫 항목은 무조건 들인다** (2026-09-02, 검사가 잡았다).
+    //  안 그러면 «항목 하나가 자기 몫보다 큰» 종류는 **통째로 0** 이 된다 — 중요도와
+    //  무관하게 영영 안 보이고, 그건 몫을 나눈 목적(한 종류가 사라지지 않게)과 정반대다.
+    //  총량 상한은 아래에서 여전히 지킨다.
+    if (u > 0 && u + lineBytes > cap) continue; // 이 종류의 몫이 찼다 — 다음 것을 본다
+    if (bytes + lineBytes > maxBytes) break; // 총량 상한(안전망)
+    picked.push(r);
+    used.set(bucket, u + lineBytes);
     bytes += lineBytes;
   }
-  return { lines, total: rows.length, truncated };
+  truncated = rows.length - picked.length;
+  const lines = picked
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((r) => `- [${r.type}] ${r.name}: ${r.description}`);
+  // ★**잘린 이름**도 함께 낸다 (2026-09-02) — 캡의 «피해» 를 재려면 이게 필요하다.
+  //  종전 실측은 전부 **저장 쪽**(건수·바이트·증가율)이었고 «잘려서 실제로 놓친 적이
+  //  있나» 를 세는 숫자가 **하나도 없었다**. 캐시 용어로 miss cost 를 안 재고 eviction
+  //  정책을 튜닝하고 있었던 것이다. 여기서 한 번 계산하는 김에 내보낸다(추가 질의 0).
+  const kept = new Set(picked.map((r) => r.name));
+  const cutNames = new Set(rows.filter((r) => !kept.has(r.name)).map((r) => r.name));
+  return { lines, total: rows.length, truncated, cutNames };
 };
 
 // 쿼리 → 단어별 연속 3-그램 집합(FTS5 trigram tokenizer 단위). 공백/구두점으로 단어 분리
@@ -238,7 +360,8 @@ export const searchMemories = (query: string, limit = 10): Memory[] => {
        LIMIT ?`,
     )
     .all(matchExpr, limit) as MemoryRow[];
-  bumpAccess(db, rows.map((r) => r.id));
+  // ★검색 히트는 **세지 않는다** — 낱말로 도달했다는 건 인덱스 상주가 필요 없다는 증거다.
+  touchSeen(db, rows.map((r) => r.id));
   return rows.map(rowToMemory);
 };
 

@@ -32,7 +32,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 
 /** 가이드 §1 의 코드 블록 — 순서대로 package.json · index.js · web/widget.js. */
 const recipeBlocks = (): Array<{ lang: string; body: string }> => {
-  const md = readFileSync(path.join(REPO, "docs/plugins.md"), "utf8");
+  const md = readFileSync(path.join(REPO, "docs/plugins.ko.md"), "utf8");
   const from = md.indexOf("## 1. 30초 판");
   const to = md.indexOf("## 2.", from);
   if (from < 0 || to < 0) return [];

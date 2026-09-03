@@ -310,8 +310,7 @@
       const showEndpoints = () => {
         setActiveNav("endpoints");
         loadEndpointHistory();
-        document.getElementById("workbench").classList.remove("show-providers"); // detail-panel 노출(다른 뷰와 동형).
-        document.getElementById("workbench").classList.remove("show-capabilities");
+        setWorkbenchLayout();
         renderEndpointsView();
       };
 

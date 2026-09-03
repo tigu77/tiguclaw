@@ -1,6 +1,6 @@
 # Writing a plugin
 
-> 한국어: [plugins.md](plugins.md)
+> 한국어: [plugins.md](plugins.ko.md)
 
 tiguclaw grows through plugins. You should be able to build **one widget and one tool** from
 this page alone — if you can't, that's a documentation bug. Please open an issue.

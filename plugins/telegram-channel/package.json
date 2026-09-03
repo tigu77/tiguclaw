@@ -1,5 +1,13 @@
 {
   "name": "telegram-channel",
+  "version": "1.0.0",
+  "description": {
+    "ko": "텔레그램으로 비서와 대화합니다. 사진·음성·파일도 그대로 오갑니다.",
+    "en": "Talk to the assistant on Telegram, including photos, voice and files."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {
@@ -8,6 +16,18 @@
       "channel"
     ],
     "name": "telegram",
-    "entry": "./index.ts"
+    "entry": "./index.ts",
+    "settings": [
+      {
+        "key": "botToken",
+        "type": "secret",
+        "env": "TELEGRAM_BOT_TOKEN"
+      },
+      {
+        "key": "allowedUserIds",
+        "type": "string",
+        "env": "TELEGRAM_ALLOWED_USER_IDS"
+      }
+    ]
   }
 }

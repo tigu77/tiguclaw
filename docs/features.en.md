@@ -3,7 +3,7 @@
 The README carries only **six** — the ones that answer "why not use something else."
 Everything else lives here. Nothing was dropped.
 
-[← README](../README.md) · [한국어](features.md)
+[← README](../README.md) · [한국어](features.ko.md)
 
 ## What it does
 
@@ -83,7 +83,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 
 **Reach it anywhere** — your phone (Telegram), your terminal (CLI), or your own apps (HTTP). Same assistant, same memory.
 
-> It has shell & file access to your machine, and **asks for your OK before anything destructive or irreversible** (see [`docs/security.en.md`](docs/security.en.md)).
+> It has shell & file access to your machine, and **asks for your OK before anything destructive or irreversible** (see [`docs/security.en.md`](security.en.md)).
 
 ## How it's built
 

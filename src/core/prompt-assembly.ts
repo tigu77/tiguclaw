@@ -13,6 +13,7 @@ import { agentPathHint } from "./identity.js";
 import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
+import { readMemoryIndexCapBytes } from "./settings.js";
 import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs } from "./worker-jobs.js";
 import { readFileSync } from "node:fs";
@@ -89,8 +90,42 @@ export const formatMemorySnippet = (ctx: RetrievedContext): string => {
  */
 export const MEMORY_INDEX_CAP_BYTES = 40_960;
 
+/**
+ * **역할별 기억 범위** — 비서·매니저·에이전트가 같은 기억 뭉치를 받을 이유가 없다.
+ *
+ * ★근거 (2026-09-03 실측, 정태님 제안 *"코어만 같이 쓰고 각자 필요한 것만 추가하는 거지"*).
+ *  자식은 프롬프트 상수의 **95.8%를 물려받는다**(depth0 95,426B / depth1 91,394B). 그중
+ *  가장 큰 조각이 **메모리 인덱스 32,417B** 인데, 그건 «사용자에 관한 사실 목록» 이다 —
+ *  `alpha.js` 버그를 고치는 자식에게 정태님의 호칭·취향·과거 사고 이력이 필요할 근거가 약하다.
+ *  그리고 위임 런에서 **자식이 입력 토큰의 66%**를 쓴다(자식 2,054,963 / 메인 1,068,864).
+ *
+ * ★**인덱스와 스니펫을 가른다** — 이게 이 판정의 핵심이다.
+ *  - `index`  = 기억 **목록 전체**(뭐가 있는지). 넓고 크고, 자식 작업과 무관한 게 대부분.
+ *  - `snippet`= 이번 입력으로 **검색된 것**(limit 5). 좁고 작고, 그 작업에 관련된 것.
+ *  자식에게서 **목록만 걷고 검색은 남긴다.** 그래야 «필요하면 닿는다» 가 유지된다 —
+ *  통째로 끊으면 자식이 맥락을 잃고 되묻거나 엉뚱하게 가고, 그건 토큰보다 비싸다.
+ *
+ * ★기존 `leanMemory`(에이전트가 `tools: none` 을 선언한 경우)는 **둘 다** 끊는다 — 그건
+ *  «단순작업 child» 라는 명시 선언이라 종전 의미를 그대로 둔다(회귀 0).
+ *
+ * ★판정을 **여기 한 곳**에 둔다 — 어댑터 셋이 각자 `input.leanMemory === true` 를 복제하고
+ *  있었다. 한 곳에서 파생시키지 않으면 새 규칙이 한 어댑터에만 들어가 조용히 갈린다
+ *  (LLM-agnostic 위반은 무소음이다).
+ */
+export const memoryScopeFor = (input: {
+  leanMemory?: boolean;
+  subagentDepth?: number;
+  workerDepth?: number;
+}): { index: boolean; snippet: boolean } => {
+  if (input.leanMemory === true) return { index: false, snippet: false };
+  const isChild = (input.subagentDepth ?? 0) > 0 || (input.workerDepth ?? 0) > 0;
+  return { index: !isChild, snippet: true };
+};
+
 export const formatMemoryIndex = (
-  maxBytes: number = MEMORY_INDEX_CAP_BYTES,
+  // ★기본값이 **상수가 아니라 설정**이다 (2026-09-02) — `settings.json` 의
+  //  `memory.indexCapBytes`. 미지정·이상값이면 위 상수로 떨어진다.
+  maxBytes: number = readMemoryIndexCapBytes(MEMORY_INDEX_CAP_BYTES),
 ): string => {
   const { lines, total, truncated } = listMemoriesForIndex(maxBytes);
   if (total === 0) return "";
@@ -102,8 +137,14 @@ export const formatMemoryIndex = (
     // (retrieveContext)이 여전히 찾아 스니펫으로 되살리고, (2) 정확한 이름을 알면
     // `read_memory` 로 바로 fetch 가능(FTS 는 아카이브·절단 무관 전 메모리를 계속
     // findable 하게 유지).
+    // ★캡에 **닿았을 때만** 정리를 제안한다 (2026-09-02 정태님: *"옵션으로 정한 캡에
+    //  도달하면 비서가 제안하면 어떨까"*). 안 넘치면 이 줄 자체가 없으므로 평소 비용은 0 —
+    //  «관측은 자동, 행동은 승인» 의 관측 쪽이다.
+    // ★«정리하라» 가 아니라 «제안하라» 다: 병합은 되돌리기 어려운 판단이라 사람이 고른다.
     out.push(
       `… ${truncated}건 더 (인덱스 캡 — 소실 아님: 관련 대화 시 자동 검색으로 도달, 이름 알면 read_memory 로 직접 fetch)`,
+      `※ 캡에 닿았습니다. 중복·만료가 쌓였을 수 있으니 \`memory-tidy\` 스킬로 정리를 **제안**하세요` +
+        ` (합치는 것은 사용자가 고릅니다). 캡 자체를 바꾸려면 settings.json 의 \`memory.indexCapBytes\`.`,
     );
   }
   return out.join("\n");
@@ -550,21 +591,44 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   { key: "convoContext", text: input.convoContext, channel: "user" },
   // claude 전용 — 그 외 어댑터는 ""(빈 슬롯은 걸러진다).
   { key: "foreignDelta", text: input.foreignDelta ?? "", channel: "user" },
-  { key: "memoryIndex", text: input.memoryIndex, channel: "user" },
   { key: "memorySnippet", text: input.memorySnippet, channel: "user" },
   { key: "skillIndex", text: input.skillIndex, channel: "system" },
-  { key: "agentIndex", text: input.agentIndex, channel: "system" },
-  // depth 0 만 — 그 외/부재는 ""(빈 슬롯은 걸러진다).
-  { key: "modelProfiles", text: input.modelProfiles ?? "", channel: "system" },
   // ★AGENT.md 3인방을 시스템 채널의 **꼬리**에 둔다 (2026-07-30 검토 지적):
   //  안정 조각 중 가장 자주 바뀌는 게 AGENT.md 다 — 비서 자신이 정체성·습관을 수시로
   //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
   //  에이전트 인덱스·프로파일)의 캐시까지 통째로 무효화한다. 꼬리에 두면 무효화가
   //  자기 자신으로 국한된다. "프리픽스는 앞에서만 매칭한다"를 블록 *안*에도 적용한 것.
+  // ★메모리 인덱스도 **꼬리**다 (2026-09-02). 종전엔 user 채널이라 **매 콜 정가**로
+  //  나갔다 — 실측 33.2KB 로 매 턴 상수 99.3KB 의 3분의 1이고, 우리 비용의 대부분이
+  //  거기서 나왔다(캐시 읽기는 정가의 10%). 인덱스는 «턴마다 변하는 것» 이 아니다:
+  //  내용이 바뀌는 사건이 **하루 1.7회**(실측 14일)라, 성질로는 AGENT.md·selfGrowth 와
+  //  같은 «가끔 바뀌는 안정 조각» 이다.
+  //  ★꼬리인 이유는 아래 3인방과 같다 — 바뀔 때 무효화가 자기 자신으로 국한된다.
+  //  ★그리고 이게 성립하려면 **텍스트가 안정**해야 한다. `listMemoriesForIndex` 가
+  //   hot-first 로 «고르되» 이름순으로 «내보내는» 이유가 그것이다(안 그러면 read_memory
+  //   한 번에 순서가 바뀌어 캐시가 깨진다).
+  //  ★`memorySnippet`(검색 결과)은 **안 옮긴다** — 그건 질문마다 달라지는 진짜 user 채널감이다.
+  { key: "memoryIndex", text: input.memoryIndex, channel: "system" },
   { key: "selfGrowth", text: formatSelfGrowthDirectives(), channel: "system" },
   { key: "agentPathHint", text: agentPathHint(), channel: "system" },
   { key: "agent", text: input.agent, channel: "system" },
   { key: "agentWarn", text: input.agentWarn, channel: "system" },
+  // ★★**역할 전용은 꼬리에 둔다** (2026-09-03 실측). 이 둘은 depth 0(비서)에만 실리고
+  //  서브에이전트·매니저에겐 빈 슬롯이다. 그런데 **한가운데 있었다** — 그러면 자식의
+  //  프리픽스가 여기서 갈려 **뒤따르는 것이 전부 따로 캐시된다. 내용이 똑같은데도.**
+  //  실측(dev 홈): 메인↔자식 공유 프리픽스가 **44,093B(53%)** 뿐이고 뒤의 39,147B(47%)가
+  //  역할마다 두 벌 잡혔다. 꼬리로 내리면 공유가 **78,508B(94%)** — 조각을 하나도 빼지 않고
+  //  순서만으로. 그리고 자식은 입력 토큰의 **66%**를 쓴다(위임 런 실측: 자식 2,054,963 /
+  //  메인 1,068,864) — 즉 이 배치가 비용의 큰 쪽을 정한다.
+  //
+  // ★배치 축이 **둘**이고 충돌하면 **역할 축이 이긴다**:
+  //   ①변동성 — 안 변하는 것이 앞(프리픽스는 앞에서만 매칭).
+  //   ②역할   — **공용이 앞, 역할 전용이 뒤**.
+  //  `agent`(AGENT.md)는 비서가 수시로 고치지만 **공용**이라 이 둘보다 앞이다 — 그래야
+  //  자식이 AGENT.md 까지 공유한다. 대신 AGENT.md 를 고치면 이 4.7KB 가 같이 무효화되는데,
+  //  34KB 를 두 벌 잡는 것보다 싸다.
+  { key: "agentIndex", text: input.agentIndex, channel: "system" },
+  { key: "modelProfiles", text: input.modelProfiles ?? "", channel: "system" },
   // ★역할 표시 — **시스템 채널의 맨 끝** (2026-08-21).
   //  종전엔 메인·매니저·서브에이전트가 **같은 헌법을 받고 아무도 자기가 누군지 몰랐다.**
   //  헌법엔 이미 역할 조건절이 있는데("이 판정은 메인 턴에만 적용된다") 읽는 쪽이 자기가

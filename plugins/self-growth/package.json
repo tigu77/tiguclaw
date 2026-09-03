@@ -1,11 +1,21 @@
 {
   "name": "self-growth",
   "version": "0.1.0",
+  "description": {
+    "ko": "지난 작업에서 배울 점을 모아 비서의 지침으로 쌓습니다.",
+    "en": "Collects lessons from past work and turns them into standing guidance."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": ["observer", "provider"],
+    "kind": [
+      "observer",
+      "provider"
+    ],
     "name": "self-growth",
     "entry": "./src/index.ts",
     "provider": {

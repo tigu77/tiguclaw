@@ -42,6 +42,7 @@ import {
   formatAttachments,
   formatConversationContext,
   formatMemoryIndex,
+  memoryScopeFor,
   formatMemorySnippet,
   formatModelProfiles,
   splitSystemContext,
@@ -633,9 +634,12 @@ export const runOpenAi = async (
   // leanMemory (2026-06-15, architect §2c I-5) — lean child 는 메모리 스니펫·인덱스
   // prepend 를 생략(장기기억은 단순작업의 잡음). persona(SYSTEM.md/AGENT.md)는 불가침
   // (I-4) — 아래 systemContextParts 의 system/agentBody 는 그대로. codex/claude 동형(I-2).
-  const leanMemory = input.leanMemory === true;
-  const memoryIndex = leanMemory ? "" : formatMemoryIndex();
-  const memorySnippet = leanMemory
+  // ★역할별 기억 범위 — 판정은 코어 한 곳(`memoryScopeFor`). 자식(서브에이전트·매니저)은
+  //  **목록(index)은 안 받고 검색(snippet)만 받는다** — 상수 32.4KB 를 걷되 «필요하면
+  //  닿는다» 는 유지한다. `leanMemory`(에이전트가 tools:none 선언)는 종전대로 둘 다 끊는다.
+  const memScope = memoryScopeFor(input);
+  const memoryIndex = memScope.index ? formatMemoryIndex() : "";
+  const memorySnippet = !memScope.snippet
     ? ""
     : formatMemorySnippet(
         retrieveContext(idChannel, input.threadKey, input.text, {

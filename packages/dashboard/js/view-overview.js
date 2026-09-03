@@ -67,7 +67,7 @@
         // 워크벤치 3패널 모드 클래스 중앙 초기화 — 각 뷰가 setActiveNav 후 자기 모드만 add.
         // (모듈=show-providers / 능력=show-capabilities / 프로젝트=show-projects. 나머지=없음).
         const wb = document.getElementById("workbench");
-        if (wb) wb.classList.remove("show-providers", "show-capabilities", "show-projects");
+        setWorkbenchLayout();
         for (const btn of document.querySelectorAll(".nav-button")) {
           btn.classList.toggle("active", btn.dataset.view === view);
         }
@@ -218,8 +218,7 @@
       const showOverview = () => {
         setActiveNav("overview");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        document.getElementById("workbench").classList.remove("show-capabilities");
+        setWorkbenchLayout();
         const root = document.getElementById("detail-panel");
         const active = providersCache.filter((p) => (p.status || "unknown") === "active").length;
         const degraded = providersCache.filter((p) => ["degraded", "error"].includes(p.status || "unknown")).length;

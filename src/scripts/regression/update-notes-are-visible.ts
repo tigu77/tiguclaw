@@ -295,6 +295,10 @@ export const check: RegressionCheck = {
 
     const ctx: Record<string, unknown> = {
       i18n: (k: string) => `<${k}>`,
+      // ★행이 URL 에 **화면 언어**를 싣는다 (2026-09-02) — 없으면 여기서 ReferenceError 로
+      //  검사가 통째로 던진다. 표식 값을 줘서 위 `readyRow.url` 이 실물 모양을 보게 한다.
+      currentLocale: (): string => "ko",
+      encodeURIComponent: (v: string) => v,
       // 행 조립기와 빈 fragment 를 **구분되는 표식**으로 바꿔치기한다 — DOM 없이 결과를 읽는다.
       buildMarkdownRow: (spec: { id: string; url: string }) => ({ row: spec.id, url: spec.url }),
       document: { createDocumentFragment: () => ({ empty: true }) },
@@ -340,7 +344,9 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★그 행은 **원격**을 본다(설치본 CHANGELOG 를 다시 보여주면 의미가 없다)",
-        readyRow.url === "/api/update-changelog",
+        // ★쿼리(`?lang=`)가 붙는다 — 경로만 본다. 언어를 싣는지는
+        //  `changelog-follows-screen-language` 가 따로 지킨다(판정을 두 벌로 만들지 않는다).
+        String(readyRow.url).split("?")[0] === "/api/update-changelog",
         String(readyRow.url),
       ),
     );
@@ -385,10 +391,12 @@ export const check: RegressionCheck = {
       "models.updateNotes.desc",
       "models.updateNotes.missing",
       "upd.notes",
-      "upd.notesHead",
       "upd.confirm",
     ];
-    const DEAD = ["upd.notesTruncated", "upd.notesOmitted"];
+    // ★`upd.notesHead` 가 여기로 왔다 (2026-09-02). 2026-08-27 에 내역을 설정으로 옮기면서
+    //  **제목 줄만 남아** 확인창이 *"바뀌는 것:"* 이라 해놓고 빈손이었다. 문구를 지웠으니
+    //  이 목록이 «되살아나면 빨개지는» 자리다 — 죽은 키는 조용히 다시 자란다.
+    const DEAD = ["upd.notesTruncated", "upd.notesOmitted", "upd.notesHead"];
 
     out.push(
       assert(
@@ -402,13 +410,15 @@ export const check: RegressionCheck = {
         `remoteChangelog=${/remoteChangelog\(/.test(availBody)} · changelogSince=${/changelogSince\(/.test(availBody)}`,
       ),
       assert(
-        "★코어가 원격 CHANGELOG 를 **pull 없이** 읽는다 + **두 자리를** 본다",
-        /git\(\[\s*"show",\s*`@\{u\}:\$\{rel\}`\]/.test(core) &&
-          /"CHANGELOG\.md"/.test(core) &&
-          /"_workspace\/public-overlay\/CHANGELOG\.md"/.test(core),
-        // ★개발 레포는 정본이 오버레이 안이라, 루트만 보면 **요청자의 화면에서 안 뜬다**.
-        `루트=${/"CHANGELOG\.md"/.test(core)} · 오버레이=${/public-overlay\/CHANGELOG\.md"/.test(core)}`,
+        "★코어가 원격 CHANGELOG 를 **pull 없이** 읽는다(`git show @{u}:` — 작업트리를 안 건드린다)",
+        /git\(\[\s*"show",\s*`@\{u\}:\$\{root\}\$\{name\}`\]/.test(core),
+        /git\(\["show"/.test(core) ? "show 사용" : "★pull 로 바뀌었다",
       ),
+      // ★«두 자리를 본다» 는 여기서 **문자열로 안 본다** (2026-09-02). 자리 × 이름이
+      //  언어별로 곱해지면서 리터럴이 사라졌고, 무엇보다 그건 grep 으로 지킬 수 있는
+      //  성질이 아니다(경로를 남긴 채 순서만 뒤집으면 통과한다 — 오늘 레드팀이 같은
+      //  부류를 넷 뚫었다). `changelog-follows-screen-language` 가 **진짜 원격 레포**를
+      //  오버레이 자리에만 만들어 놓고 읽어낸다.
       assert(
         "★브리지가 `/update-changelog` 를 **read 게이트로** 연다",
         /pathname === "\/update-changelog" && method === "GET"[\s\S]{0,80}?\?\s*"read"/.test(bridge) &&
@@ -418,7 +428,9 @@ export const check: RegressionCheck = {
       assert(
         "★대시보드가 그걸 프록시한다(없으면 브라우저에서 404)",
         /pathname === "\/api\/update-changelog" && method === "GET"/.test(proxy) &&
-          /proxyJson\(res, "\/update-changelog"\)/.test(proxy),
+          // ★쿼리(`?lang=`)가 붙는다 — 여기선 «프록시하는가» 만 본다. 그 쿼리를 **넘기는가**는
+          //  `changelog-follows-screen-language` 가 지킨다(판정을 두 벌로 만들지 않는다).
+          /proxyJson\(res, "\/update-changelog"/.test(proxy),
         `라우트=${/"\/api\/update-changelog"/.test(proxy)}`,
       ),
       assert(
@@ -452,10 +464,11 @@ export const check: RegressionCheck = {
         `공유 판정=${/notesBtn\.hidden = !updateNotesVisible\(a\);/.test(chip)} · 숨김=${/notesBtn\.hidden = true;/.test(chip)}`,
       ),
       assert(
-        "★확인창은 **짧다**(같은 글을 두 자리에서 렌더하면 하나가 늙는다)",
-        /window\.confirm\(`\$\{head\}\$\{i18n\("upd\.confirm"\)\}`\)/.test(chip) &&
-          !/formatUpdateNotes/.test(chip),
-        `짧은 confirm=${/window\.confirm\(`/.test(chip)} · 옛 포맷터 잔존=${/formatUpdateNotes/.test(chip)}`,
+        "★★확인창은 **한 줄**이다 — 내역도, 그것을 가리키는 제목도 없다(빈 약속이 남지 않게)",
+        /window\.confirm\(i18n\("upd\.confirm"\)\)/.test(chip) &&
+          !/formatUpdateNotes/.test(chip) &&
+          !/notesHead/.test(chip),
+        `한 줄 confirm=${/window\.confirm\(i18n\("upd\.confirm"\)\)/.test(chip)} · 제목 잔존=${/notesHead/.test(chip)} · 옛 포맷터=${/formatUpdateNotes/.test(chip)}`,
       ),
       // ── i18n: 양 언어 ──
       // ★`upd.notesHead`·`upd.confirm` 도 본다 (적대 검토 G11 부류) — 확인창이 쓰는 키가

@@ -99,10 +99,27 @@ export const check: RegressionCheck = {
         ),
       );
       if (rx === undefined) continue;
+      // ★파이프라인이 **두 단**이다 (2026-09-02) — `grep -vE`(전역 EXCLUDE) 다음에
+      //  `docs/` 전용 **허용목록** awk 가 붙는다. 앞단만 떼어 돌리면 뒷단이 막는 것을
+      //  «유출» 로 보고한다(실제로 이 검사가 그렇게 빨개졌다). 두 단을 다 태운다 —
+      //  한 단만 보는 검사는 절차가 바뀌면 **거짓 빨강**을 내고, 상시 빨강은 안 보게 된다.
+      const docsShip = /DOCS_SHIP="([^"]+)"/.exec(text)?.[1];
+      out.push(
+        assert(
+          `${mirror} 에 docs 허용목록이 있다 — 없으면 docs/ 가 EXCLUDE 로 돌아간 것이다`,
+          docsShip !== undefined && docsShip.length > 20,
+          docsShip === undefined ? "★허용목록 없음" : `${docsShip.split("|").length}개`,
+        ),
+      );
+      const docsOk = docsShip === undefined ? null : new RegExp(`^(${docsShip})$`);
       // 진짜 파일 목록에 **돌려본다**. 리터럴 대조가 아니라 결과를 본다.
       const shipped = execSync("git ls-files", { cwd: REPO, encoding: "utf8" })
         .split("\n")
-        .filter((f) => f !== "" && !new RegExp(rx).test(f));
+        .filter((f) => f !== "" && !new RegExp(rx).test(f))
+        .filter((f) => {
+          if (!f.startsWith("docs/")) return true;
+          return docsOk !== null && docsOk.test(f.slice("docs/".length));
+        });
       const leaked = notShipped.filter((p) => shipped.includes(p));
       out.push(
         assert(

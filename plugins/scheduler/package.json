@@ -1,11 +1,20 @@
 {
   "name": "scheduler",
   "version": "0.1.0",
+  "description": {
+    "ko": "정한 시각과 주기에 비서를 실행합니다. 결과는 지정한 채널로 알립니다.",
+    "en": "Runs the assistant on a schedule and reports the result to the channel you choose."
+  },
+  "author": "tiguclaw",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "private": true,
   "type": "module",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": ["trigger"],
+    "kind": [
+      "trigger"
+    ],
     "name": "scheduler",
     "entry": "./src/index.ts"
   }

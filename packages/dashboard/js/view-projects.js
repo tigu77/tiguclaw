@@ -82,7 +82,7 @@
       const showProjects = () => {
         setActiveNav("projects");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.add("show-projects");
+        setWorkbenchLayout("projects");
         selectedProjectPath = null;
         document.getElementById("detail-panel").innerHTML =
           '<div id="detail-empty"></div>';

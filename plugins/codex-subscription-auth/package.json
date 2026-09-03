@@ -6,11 +6,18 @@
   "description": "Codex(ChatGPT) 구독 인증을 이 설치에서 허용합니다. 없으면 codex 백엔드가 스스로 꺼집니다.",
   "author": "tiguclaw",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/tigu77/tiguclaw",
   "tiguclaw": {
     "schemaVersion": 1,
-    "kind": ["service"],
+    "kind": [
+      "service"
+    ],
     "name": "codex-subscription-auth",
     "entry": "./index.ts",
-    "needs": { "auth": ["codex"] }
+    "needs": {
+      "auth": [
+        "codex"
+      ]
+    }
   }
 }

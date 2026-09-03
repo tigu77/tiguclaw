@@ -42,7 +42,7 @@ export const check: RegressionCheck = {
     "작성 가이드가 코드보다 낡아 독자가 그대로 타이핑한 이름이 안 먹는 것(틀린 문서는 없는 것보다 나쁘다 — 없으면 소스를 읽지만 틀리면 그걸 믿고 시간을 태운다) + 한국어판과 영어판이 갈려 한쪽 독자만 틀린 걸 읽는 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const guide = read("docs/plugins.md");
+    const guide = read("docs/plugins.ko.md");
 
     // ── ① 가이드가 **이 이름들을 반드시 담아야 한다** ────────────────────────
     // ★방향이 뒤집혔다 (2026-08-29, 적대 검토 C). 종전엔 `guide.includes(X) && !코드에있음`

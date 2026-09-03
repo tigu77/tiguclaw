@@ -46,7 +46,7 @@ export interface LivePlugin {
    * 같은 선언의 **데이터 판** — 화면이 자기 언어로 그린다.
    *
    * ★위 `needs` 문장과 **한 곳(`needsFacts`)에서 같이 나온다.** 문장만 있던 시절 영어
-   *  사용자가 목록에서 한국어를 봤고, 하필 `docs/security.md §2` 가 *"설치 전에 여기서
+   *  사용자가 목록에서 한국어를 봤고, 하필 `docs/security.ko.md §2` 가 *"설치 전에 여기서
    *  읽으세요"* 라고 가리키는 면이었다.
    */
   readonly needsFacts: readonly NeedFact[];
@@ -164,7 +164,7 @@ export interface PluginActionResult {
  *  ```
  *
  *  이름·버전만 틀린 게 아니라 **권한 표시가 틀렸다** — 화면은 "밖으로 아무것도 안 합니다"
- *  라고 하는데 나가겠다고 선언한 코드가 돌고 있었다. `docs/security.md §2` 가 "목록에서
+ *  라고 하는데 나가겠다고 선언한 코드가 돌고 있었다. `docs/security.ko.md §2` 가 "목록에서
  *  출처가 보입니다" 라고 약속하는 바로 그 자리다.
  *
  * ★**로드 성공이 아니라 이름의 존재**로 판정한다. 종전 부팅 판정은 *로드에 성공한* 번들만

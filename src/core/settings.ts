@@ -998,6 +998,42 @@ export const setDefaultProfile = (name: string): void => {
  * ★전역이다(세션별 아님). 컴포저 토글이 원래 탭 구분 없는 단일 집합이었고, 그걸
  *  세션별로 쪼개면 한 번 켠 게 새 탭마다 꺼져 사용자 기대와 어긋난다.
  */
+/**
+ * 메모리 인덱스 캡 — `settings.json` 의 `memory.indexCapBytes` (2026-09-02 정태님 요청:
+ * *"옵션에 크기 조절 옵션을 넣고 줄일 수도 있고 늘릴 수도 있는거지"*).
+ *
+ * ★**기본값은 안 내렸다.** 정태님이 «반으로» 를 제안하셨고 재봤는데, 이 설치에선 20,480B
+ *  에서 **사람이 쓴 77건**이 잘리고 그 안에 상시 행동 규칙이 들어 있었다
+ *  (`style-never-auto-push-…`·`style-persistently-diagnose-…`, access 17~18).
+ *  경계도 촘촘하다 — 잘리는 것의 최대 access 19 / 남는 것의 최소 20. 17~19회 읽힌 건
+ *  죽은 게 아니라 **쓰이고 있는** 것이다. 이 레포는 같은 기제로 두 번 데였다
+ *  ([[project_hotpath_bound_preserve_record]] — 캡 있는 자리에 도달해야 할 것을 두지 마라).
+ * ★게다가 비용 근거도 약해졌다: 인덱스가 시스템 채널로 옮겨가(같은 날) 캐시가 10%다.
+ *
+ * ★그래서 **정하는 자리만 연다** — 설치마다 메모리 양도 예산도 다르고, 그건 우리가 아니라
+ *  사용자가 안다. 값을 정하는 건 사용자, 기본을 정하는 건 실측이다.
+ *
+ * 범위는 4KB~512KB 로 막는다: 0 이나 음수면 인덱스가 통째로 사라져 «비서가 자기 기억을
+ * 모르는» 상태가 되고(도달 축), 상한이 없으면 무한 증가한다. 이상값은 **무시하고 기본값**
+ * — 설정 오타 하나로 비서가 기억을 잃지 않게.
+ */
+export const readMemoryIndexCapBytes = (fallback: number, cwd?: string): number => {
+  try {
+    for (const layer of loadSettingsLayers(cwd)) {
+      const m = (layer as { memory?: unknown }).memory;
+      if (typeof m !== "object" || m === null) continue;
+      const raw = (m as { indexCapBytes?: unknown }).indexCapBytes;
+      if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+      const v = Math.floor(raw);
+      if (v < 4_096 || v > 524_288) continue; // 이상값 = 못 본 것으로
+      return v;
+    }
+  } catch {
+    /* 읽기·파싱 실패 = 없음(never throw) */
+  }
+  return fallback;
+};
+
 export const readEgressChannels = (cwd?: string): string[] => {
   try {
     for (const layer of loadSettingsLayers(cwd)) {

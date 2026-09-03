@@ -1,12 +1,50 @@
-# Changelog
+# 변경 내역
 
-All notable changes to this project are documented here.
-[English changelog](CHANGELOG.md)
+이 프로젝트의 주요 변경 사항을 기록합니다.
+[English changelog](CHANGELOG.en.md)
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/) 를 따르고,
+버전은 [유의적 버전](https://semver.org/lang/ko/) 을 따릅니다.
 
 ## [Unreleased]
+
+### Added
+
+- `/memory-tidy` — 저장된 기억을 훑어 중복을 합치고 버릴 것을 제안하는 명령입니다. 기억
+  인덱스가 상한에 닿으면 비서가 먼저 권하기도 하며, 그 상한은 `memory.indexCapBytes` 로
+  정할 수 있습니다.
+- 플러그인 목록에서 카테고리를 접고 검색합니다(인벤토리와 같은 동작). 상세에는 종류·버전·
+  만든 사람·웹사이트·라이선스가 함께 나옵니다 — 매니페스트에 있는 것만 보여줍니다.
+- 플러그인 목록이 종류별로 묶입니다 — 채널 · 트리거 · 옵저버 · 서비스. 번들 플러그인에는
+  설명이 붙어, 무엇을 하는 것인지 목록에서 바로 읽힙니다.
+- 플러그인 목록이 아이콘·이름·설명만 보여주고, 누르면 오른쪽에서 상세를 봅니다. 플러그인은
+  `icon` 으로 자기 아이콘(png·webp)을 둘 수 있고, 없으면 기본 아이콘을 씁니다.
+- 플러그인이 «이 설정은 읽기 전용» 이라고 스스로 선언할 수 있습니다. 반대로 «편집 허용» 은
+  선언으로 열리지 않습니다 — 비밀과 `.env` 값은 언제나 보호됩니다.
+- 플러그인 설정 화면이 홈 `.env` 값을 함께 보여줍니다 — 브리지·대시보드 포트, 텔레그램
+  허용 사용자, 봇 토큰 유무 등. 정본이 `.env` 인 값은 **보여주기만** 하고 어느 환경변수인지
+  같이 적습니다(비밀은 언제나 있다/없다만).
+- 대시보드 모듈 상세에서 각 LLM 프로바이더가 주는 모델을 봅니다 — 모델이 많으면 벤더별
+  개수로, 적으면 모델별 컨텍스트 크기와 도구 지원 여부까지. 벤더가 알려주지 않는 값은
+  빈칸으로 둡니다.
+- `/providers` — 붙어 있는 프로바이더와 각각이 주는 모델을 봅니다. 모델이 많은
+  프로바이더는 벤더별 개수로 먼저 보여주고, 이름 일부로 좁힐 수 있습니다
+  (`/providers openrouter sonnet`). 인증이 없어 조회하지 못한 프로바이더도 그렇게 표시합니다.
+
+### Changed
+
+- 위임한 일이 이제 동시에 진행됩니다. 비서가 서로 독립인 작업을 한꺼번에 넘기고 한 번에
+  거두므로, 종전에 각 작업 시간의 합이 걸리던 네 갈래가 이제 가장 긴 하나만큼 걸립니다.
+- 서브에이전트와 매니저는 더 이상 기억 목록 전체를 받지 않습니다. 맡은 일과 관련된 항목은
+  그대로 받으므로 필요한 것은 알되, 나머지 비용은 치르지 않습니다.
+- `tiguclaw doctor` 가 전역 링크가 끊긴 상태를 알아봅니다 — `tiguclaw` 명령은 PATH 에
+  남아 있는데 가리키는 곳이 없는 경우로, 설치 폴더에서 `npm link` 를 실행하라고 알려줍니다.
+  종전에는 «판정 불가» 라고만 했습니다.
+- 다른 세션의 답이 함께 배달될 때 붙는 라벨이 `[unknown]` 대신 **세션 키**를 보여줍니다 —
+  어느 작업에서 온 것인지 바로 압니다. 세션에 이름을 붙였으면 그 이름이 우선입니다.
+- 문서 파일 이름이 언어를 표시합니다 — `docs/security.ko.md`(한국어) ·
+  `docs/security.en.md`(영어). 예전 이름으로 걸어둔 링크는 새 이름으로 바꿔야 합니다.
+  `README.md` 는 그대로입니다.
 
 ## [0.46.0] - 2026-09-02
 
@@ -25,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 변경 내역을 언어별로 나눴습니다 — [`CHANGELOG.md`](CHANGELOG.md)(영어) ·
+- 변경 내역을 언어별로 나눴습니다 — [`CHANGELOG.en.md`](CHANGELOG.en.md)(영어) ·
   [`CHANGELOG.ko.md`](CHANGELOG.ko.md)(한국어).
 
 ## [0.45.0] - 2026-09-01
@@ -94,11 +132,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 플러그인 설정을 한 번이라도 바꾸면 그 저장 폴더를 플러그인으로 읽으려다 실패해, 멀쩡한
   플러그인이 매 부팅 오류로 찍히던 것.
 - 플러그인 이름에 대문자를 쓰면 아무 일도 안 일어나고 이유는 로그에만 남던 것. 이름 규칙을
-  [만드는 법](docs/plugins.md) §2 에 적었습니다.
+  [만드는 법](docs/plugins.ko.md) §2 에 적었습니다.
 
 ### Changed
 
-- 보안 문서에 확장 이야기를 넣었습니다([`docs/security.md`](docs/security.md)). 플러그인은
+- 보안 문서에 확장 이야기를 넣었습니다([`docs/security.ko.md`](docs/security.ko.md)). 플러그인은
   데몬과 같은 프로세스에서 돌고 격리가 없으며, `needs` 는 선언이지 감옥이 아닙니다.
 
 ## [0.43.1] - 2026-08-29
@@ -115,7 +153,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- [플러그인 만드는 법](docs/plugins.md) — 이 문서만 보고 위젯과 도구를 만들 수 있습니다
+- [플러그인 만드는 법](docs/plugins.ko.md) — 이 문서만 보고 위젯과 도구를 만들 수 있습니다
   (영문판 포함). 그동안 능력만 있고 쓰는 법이 없었습니다.
 - 도구를 만드는 데 아무것도 설치할 필요가 없습니다. 이름·설명·인자만 적으면 됩니다.
   SDK 를 쓰던 방식도 그대로 동작합니다.
@@ -305,15 +343,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   생겨서, 백엔드 과부하 때 턴마다 3분씩 재시도하던 것이 끊깁니다.
 - **입력창 위 진행 표시가 내 대화만 말합니다.** 다른 세션 수 `(+N)` 를 뺐습니다 — 그 사실은
   세션 탭의 진행 점이 이미 알려줍니다.
-- **README 를 랜딩 페이지로 다시 짰습니다.** 상세는 `docs/features.md`·`docs/hooks.md`·
-  `docs/gateway.md` 로 옮겼습니다(내용 그대로).
+- **README 를 랜딩 페이지로 다시 짰습니다.** 상세는 `docs/features.ko.md`·`docs/hooks.ko.md`·
+  `docs/gateway.ko.md` 로 옮겼습니다(내용 그대로).
 - **GitHub 랜딩이 영어가 됐습니다.** `README.md`=영어, `README.ko.md`=한국어입니다(옛
   `README.en.md` 는 없어졌습니다). 저장소 설명·토픽이 영어라 첫 화면만 한국어면 입구와
   내용이 갈렸습니다. **하위 문서(`docs/`)는 한국어가 기본**으로 그대로입니다 — 작업 언어가
   한국어고 거기가 원본이라서요. 두 README 는 상단 링크로 오갑니다.
 - **구독 토큰 사용에 약관 주의를 명시했습니다.** `claude setup-token`·ChatGPT 구독 로그인은
   제공사 약관이 허용하지 않을 수 있고, 특히 LLM 게이트웨이와 함께 쓰면 개인 구독이 임의 앱의
-  API 백엔드가 됩니다. 막지는 않되 [설치와 운영](docs/setup.md#구독-토큰을-쓰기-전에)에
+  API 백엔드가 됩니다. 막지는 않되 [설치와 운영](docs/setup.ko.md#구독-토큰을-쓰기-전에)에
   적었습니다.
 
 ### Fixed
@@ -876,7 +914,7 @@ v0.32.0 직후에 나온 것들을 잡은 핫픽스입니다. 백그라운드 �
 - **프로젝트 전용 스킬·에이전트를 눌러 내용을 봅니다.** 프로젝트 상세에서 항목을 누르면 그 자리에서 본문이 펼쳐집니다 — 어떤 지침으로 도는지 확인하려고 파일을 찾아갈 필요가 없습니다. 목록을 열 때는 이름만 가져오고, 본문은 누를 때만 받아옵니다.
 
 ### Changed
-- **문서 기본 언어가 한국어가 됐습니다.** `README.md`·`docs/security.md` 가 한국어, 영어판은 `README.en.md`·`docs/security.en.md` 로 나란히 있습니다. 상단 링크로 오갈 수 있습니다.
+- **문서 기본 언어가 한국어가 됐습니다.** `README.md`·`docs/security.ko.md` 가 한국어, 영어판은 `README.en.md`·`docs/security.en.md` 로 나란히 있습니다. 상단 링크로 오갈 수 있습니다.
 
 ### Fixed
 - **프로젝트 전용 MCP 서버가 전역으로 등록되던 것**을 막았습니다. 특정 프로젝트에서만 쓰는 서버가 전역에 들어가면 무관한 대화에도 도구가 실리고, 그 앱이 없는 컴퓨터에서는 켤 때마다 연결 실패가 납니다. 이제 프로젝트 폴더를 가리키는 서버를 전역으로 등록하려 하면 막고 올바른 방법을 알려줍니다.

@@ -52,6 +52,33 @@ export interface PluginSettingSpec {
   /** `enum` 일 때의 값들. */
   readonly values?: readonly string[];
   readonly default?: string | number | boolean;
+  /**
+   * ★**이 값의 정본은 홈 `.env` 의 이 환경변수다** (2026-09-02 정태님: *"홈셋팅도 같이
+   *  읽어서 사용할 수 있어도 나쁘진 않을거같아"*).
+   *
+   * 왜: 번들 플러그인들은 `process.env.HTTP_BRIDGE_PORT` 처럼 **자기가 직접** 읽는다.
+   * 그걸 전부 `host.settings` 로 옮기는 건 큰 이사이고, 토큰류는 env 이름이 바뀌어
+   * **기존 설치가 깨진다**. 이 한 칸이면 옮기지 않고도 «봇 토큰이 있나»·«포트가 몇이지» 가
+   * 화면에 뜬다 — 선언만 추가하면 된다.
+   *
+   * ★그래서 이건 **읽기 전용**이다. 플러그인이 여전히 env 를 직접 읽으므로 화면에서 고쳐도
+   *  안 먹는다 — 편집 가능하게 두면 «누를 수 있다고 말하고 안 되는» 화면이 또 하나 생긴다.
+   *  `secret` 이 이미 같은 대접(값은 .env, 화면은 표시만)이라 새 개념이 아니다.
+   */
+  readonly env?: string;
+  /**
+   * **이 값은 손대는 게 아니다** — 플러그인이 그렇게 말한 경우 (2026-09-02 정태님:
+   * *"읽기 전용인지, 설정 가능인지 뭐 이런것들도 공통적으로 다 가능한가?"*).
+   *
+   * ★규칙은 하나다: **선언은 «더 조이는 방향» 만 유효하다. 푸는 방향은 코어가 정한다.**
+   *  - `true` → 존중한다(플러그인이 스스로 조인 것).
+   *  - `false` → **약속이 아니다.** `env` 가 정본이거나 `secret` 이면 코어가 그대로 막는다.
+   *    제약받는 쪽이 제약을 풀 수 있으면 그건 게이트가 아니다.
+   *  같은 규범이 `ActionSpec.requiresConfirmation` 에도 있다(켜는 건 되고 끄는 건 안 된다).
+   *
+   * 쓰는 곳: 플러그인이 스스로 계산해 두는 값, 다른 곳에서 관리되는 값.
+   */
+  readonly readOnly?: boolean;
 }
 
 export interface SettingsSpecVerdict {
@@ -107,8 +134,24 @@ export const readSettingsSpec = (raw: unknown): SettingsSpecVerdict => {
       labelKey?: string;
       values?: string[];
       default?: string | number | boolean;
+      env?: string;
+      readOnly?: boolean;
     } = { key, type: type as PluginSettingType };
     if (typeof e.labelKey === "string" && e.labelKey !== "") spec.labelKey = e.labelKey;
+    if (e.env !== undefined) {
+      // ★`secret` 에도 붙일 수 있다 — 그때는 «이 비밀의 env 이름은 규칙 대신 이것» 이라는
+      //  뜻이다. 이게 있어야 기존 설치가 안 깨진다: 규칙대로면 telegram 토큰이
+      //  `TIGUCLAW_PLUGIN_TELEGRAM_BOTTOKEN` 이 되어 사용자의 `TELEGRAM_BOT_TOKEN` 을
+      //  못 찾고 봇이 죽는다. 명시했으니 «어디서 오는지 모른다» 는 문제도 없다.
+      if (typeof e.env !== "string" || !ENV_RE.test(e.env)) {
+        problems.push(`${at}: env 는 대문자 환경변수 이름이어야 합니다 (받은 값: ${String(e.env)})`);
+        continue;
+      }
+      spec.env = e.env;
+    }
+    // ★`true` 만 받는다 — `false` 는 «풀어달라» 는 뜻인데 그건 선언으로 되는 일이 아니다.
+    //  받아서 저장하면 화면·서버가 그 값을 참고할 위험이 생기므로 아예 안 담는다.
+    if (e.readOnly === true) spec.readOnly = true;
     if (type === "enum") {
       const vs = e.values;
       if (!Array.isArray(vs) || vs.length === 0 || vs.some((v) => typeof v !== "string")) {
@@ -172,6 +215,28 @@ export type PluginSettingValue = string | number | boolean;
  * ★선언에 없는 키는 안 준다. 파일에 남아 있어도(선언이 바뀐 뒤) 조용히 흘러들지 않는다.
  * ★`secret` 은 파일이 아니라 `.env` 에서 온다. 없으면 **키 자체가 없다**(빈 문자열이 아니라).
  */
+const ENV_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** 환경변수는 언제나 문자열이다 — 선언한 형으로 읽어본다. 안 맞으면 `undefined`(= 없는 것). */
+const coerceEnv = (
+  raw: string | undefined,
+  spec: PluginSettingSpec,
+): PluginSettingValue | undefined => {
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  const v = raw.trim();
+  if (spec.type === "number") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  if (spec.type === "boolean") {
+    if (["true", "1", "yes", "on"].includes(v.toLowerCase())) return true;
+    if (["false", "0", "no", "off"].includes(v.toLowerCase())) return false;
+    return undefined;
+  }
+  if (spec.type === "enum") return (spec.values ?? []).includes(v) ? v : undefined;
+  return v;
+};
+
 export const effectiveSettings = (
   plugin: string,
   specs: readonly PluginSettingSpec[],
@@ -180,7 +245,7 @@ export const effectiveSettings = (
   const out: Record<string, PluginSettingValue> = {};
   for (const spec of specs) {
     if (spec.type === "secret") {
-      const v = process.env[secretEnvName(plugin, spec.key)];
+      const v = process.env[spec.env ?? secretEnvName(plugin, spec.key)];
       if (typeof v === "string" && v !== "") out[spec.key] = v;
       continue;
     }
@@ -193,7 +258,13 @@ export const effectiveSettings = (
           : typeof v === "string" &&
             (spec.type !== "enum" || (spec.values ?? []).includes(v));
     if (ok) out[spec.key] = v as PluginSettingValue;
-    else if (spec.default !== undefined) out[spec.key] = spec.default;
+    else {
+      // ★파일에 없으면 **선언한 env** 를 본다(정본이 거기라고 적힌 경우). 그래야 빌트인을
+      //  옮기지 않고도 화면이 «지금 값» 을 말한다. 없거나 형이 안 맞으면 조용히 default 로.
+      const fromEnv = spec.env === undefined ? undefined : coerceEnv(process.env[spec.env], spec);
+      if (fromEnv !== undefined) out[spec.key] = fromEnv;
+      else if (spec.default !== undefined) out[spec.key] = spec.default;
+    }
   }
   return out;
 };
@@ -211,7 +282,11 @@ export const settingsForClient = (
   return specs.map((spec) =>
     spec.type === "secret"
       ? { ...spec, hasSecret: eff[spec.key] !== undefined }
-      : { ...spec, ...(eff[spec.key] !== undefined ? { value: eff[spec.key] } : {}) },
+      : {
+          ...spec,
+          ...(eff[spec.key] !== undefined ? { value: eff[spec.key] } : {}),
+          // `env` 는 스펙에 그대로 실려 나간다 — 화면이 «읽기 전용 + 어느 변수인지» 를 그린다.
+        },
   );
 };
 
@@ -255,10 +330,30 @@ export const writePluginSetting = (
     return {
       ok: false,
       error:
-        `'${key}' 는 secret 입니다 — 홈 .env 의 ${secretEnvName(plugin, key)} 에 두세요. ` +
+        `'${key}' 는 secret 입니다 — 홈 .env 의 ${spec.env ?? secretEnvName(plugin, key)} 에 두세요. ` +
         `설정 파일은 화면에 뿌려지고 백업에 들어갑니다.`,
       errorKey: "plugins.reason.secretGoesInEnv",
-      errorArgs: { key, env: secretEnvName(plugin, key) },
+      errorArgs: { key, env: spec.env ?? secretEnvName(plugin, key) },
+    };
+  }
+  if (spec.readOnly === true) {
+    return {
+      ok: false,
+      error: `'${key}' 는 읽기 전용입니다 — 이 플러그인이 그렇게 선언했습니다.`,
+      errorKey: "plugins.reason.settingReadOnly",
+      errorArgs: { key },
+    };
+  }
+  if (spec.env !== undefined) {
+    // ★서버가 막는다. 화면만 읽기 전용으로 두면 API 를 직접 부르는 순간 파일에 값이 남고,
+    //  그 값은 플러그인이 안 읽으므로 «고쳤는데 안 먹는» 상태가 영구히 남는다.
+    return {
+      ok: false,
+      error:
+        `'${key}' 의 정본은 홈 .env 의 ${spec.env} 입니다 — 거기서 고치세요. ` +
+        `이 플러그인은 그 환경변수를 직접 읽습니다.`,
+      errorKey: "plugins.reason.settingComesFromEnv",
+      errorArgs: { key, env: spec.env },
     };
   }
   if (value !== undefined) {

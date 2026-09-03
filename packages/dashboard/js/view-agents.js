@@ -180,8 +180,7 @@
       const showAgents = () => {
         setActiveNav("agents");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        document.getElementById("workbench").classList.remove("show-capabilities");
+        setWorkbenchLayout();
         const root = document.getElementById("detail-panel");
         root.innerHTML = "";
         const wrap = document.createElement("div");

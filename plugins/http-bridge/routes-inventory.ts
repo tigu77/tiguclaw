@@ -2,7 +2,7 @@
  * **인벤토리·플러그인 라우트** — 무엇이 깔려 있고 무엇을 할 수 있나.
  *
  * ★`/plugins/action`(설치·제거·켜기·끄기)이 여기 있고 role 표에서 **admin** 이다 —
- *  플러그인은 데몬과 같은 프로세스에서 돈다(`docs/security.md §2`).
+ *  플러그인은 데몬과 같은 프로세스에서 돈다(`docs/security.ko.md §2`).
  * ★`/plugin-data/` 는 프리픽스 라우트 — 플러그인마다 한 줄씩 늘지 않게 한 줄로 받는다.
  */
 import { createMemoryMcpServer } from "../../src/core/memory-mcp.js";

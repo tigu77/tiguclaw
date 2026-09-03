@@ -13,7 +13,12 @@
  * 검사하는 것:
  *  ①`README.md`(랜딩)가 **영어**다 — 한글 문서가 아니다. (파일 존재만 보면 내용이 바뀌어도 초록이다.)
  *  ②한국어판이 `README.ko.md` 로 함께 있다(양문 유지 — 한국어를 버리자는 게 아니다).
- *  ③`docs/security.md` 는 **한국어**이고 `docs/security.en.md` 가 함께 있다(하위 문서 축은 불변).
+ *  ③`docs/security.ko.md` 는 **한국어**이고 `docs/security.en.md` 가 함께 있다(하위 문서 축은 불변).
+ *  ★⑦**이름이 언어를 말한다** (2026-09-02 정태님: *"언어 관련 문서들 전부 코드를 붙이는게
+ *   좋겠어"*). 종전엔 코드 없는 이름의 언어가 **파일마다 달랐다** — `CHANGELOG.md`=영어인데
+ *   `docs/security.md`=한국어. 이름만 보고는 알 수 없었고, 실제로 그 혼란에 걸렸다.
+ *   이제 언어판은 **전부 코드**를 단다. 예외는 `README.md` 하나 — GitHub 이 그 이름을
+ *   소유한다(다른 이름으로 두면 첫 화면이 빈다). 예외를 **하나로 못박는 것**이 이 단언이다.
  *  ④상호 링크가 **양방향**이다(한쪽만 걸리면 다른 쪽에서 못 돌아온다).
  *  ⑤각 언어판이 **같은 언어의 하위 문서**를 가리킨다 — 한국어 README 가 영어 security 를
  *   링크하던 옛 불일치가 이 규칙의 출발점이었다.
@@ -43,9 +48,45 @@ export const check: RegressionCheck = {
     };
 
     const out: Assertion[] = [];
+
+    // ⑦ ★코드 없는 언어판이 **남아 있지 않다.** 이름을 열거하지 않는다 — `X.en.md` 가
+    //   있는데 `X.md` 도 있으면 그 `X.md` 는 «코드 없는 언어판» 이다(예외는 README 뿐).
+    {
+      const { readdir } = await import("node:fs/promises");
+      const scan = async (relDir: string): Promise<string[]> => {
+        try {
+          return await readdir(new URL(relDir, import.meta.url));
+        } catch {
+          return [];
+        }
+      };
+      const offenders: string[] = [];
+      for (const [dir, label] of [
+        [DOCS, "docs/"],
+        [OVERLAY, ""],
+      ] as const) {
+        const files = await scan(dir);
+        for (const f of files) {
+          const m = /^(.+)\.en\.md$/.exec(f);
+          if (m === null) continue;
+          const stem = m[1]!;
+          if (stem === "README") continue; // ★유일한 예외 — GitHub 이 이 이름을 소유한다.
+          if (files.includes(`${stem}.md`)) offenders.push(`${label}${stem}.md`);
+        }
+      }
+      out.push(
+        assert(
+          "★★코드 없는 언어판이 없다 — 이름이 언어를 말한다(예외는 README.md 하나, GitHub 이 그 이름을 소유한다)",
+          offenders.length === 0,
+          offenders.length === 0
+            ? "코드 없는 언어판 0"
+            : `★코드가 빠진 것: ${offenders.join(", ")}`,
+        ),
+      );
+    }
     const koReadme = await read(`${OVERLAY}README.ko.md`);
     const enReadme = await read(`${OVERLAY}README.md`);
-    const koSec = await read(`${DOCS}security.md`);
+    const koSec = await read(`${DOCS}security.ko.md`);
     const enSec = await read(`${DOCS}security.en.md`);
 
     // ★배포 레포엔 `_workspace/` 가 없다(매니페스트 EXCLUDE) — 거기선 README 축이 대상
@@ -80,9 +121,9 @@ export const check: RegressionCheck = {
         assert(
           "★각 언어판이 같은 언어의 하위 문서를 가리킨다(옛 불일치가 이 규칙의 출발점)",
           (enReadme ?? "").includes("docs/security.en.md") &&
-            (koReadme ?? "").includes("docs/security.md") &&
+            (koReadme ?? "").includes("docs/security.ko.md") &&
             !(koReadme ?? "").includes("docs/security.en.md"),
-          `영→${(enReadme ?? "").includes("docs/security.en.md") ? "en" : "?"} · 한→${(koReadme ?? "").includes("docs/security.md") ? "ko" : "?"}`,
+          `영→${(enReadme ?? "").includes("docs/security.en.md") ? "en" : "?"} · 한→${(koReadme ?? "").includes("docs/security.ko.md") ? "ko" : "?"}`,
         ),
       );
     }
@@ -90,7 +131,7 @@ export const check: RegressionCheck = {
     // ★하위 문서 축은 **안 뒤집혔다** — 작업 언어가 한국어이므로 `docs/X.md` 가 한국어다.
     out.push(
       assert(
-        "docs/security.md(기본)가 한국어다 — 하위 문서는 작업 언어가 기본",
+        "docs/security.ko.md(기본)가 한국어다 — 하위 문서는 작업 언어가 기본",
         koSec !== null && isKorean(koSec),
         koSec === null ? "파일 없음" : `한글 ${(koSec.match(/[가-힣]/g) ?? []).length}자`,
       ),

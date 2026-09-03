@@ -147,7 +147,13 @@ set shows as a badge on the dashboard's **Models** screen.
 > to its designed `low` cut output by 37%.) Raise it for the job that needs it, then put it back.
 
 **If something's off**, run `tiguclaw doctor` first — it checks keys, home, service, native modules and
-the global command, and tells you what to do about whatever it finds. Still stuck? Open an
+the global command, and tells you what to do about whatever it finds.
+
+If `tiguclaw` itself fails with `Cannot find module ...`, the global link is gone — the command is
+still on your PATH but no longer points anywhere. Run `npm link` in the install folder to restore it.
+Until then, every command also works as `node bin/tiguclaw.mjs <command>`.
+
+Still stuck? Open an
 [issue](https://github.com/tigu77/tiguclaw/issues/new/choose). For security problems use
 [SECURITY](.github/SECURITY.md), not a public issue.
 
@@ -202,7 +208,7 @@ rather than shipping a workflow editor, let the plan fall out of the goal. Sensi
 
 ## Changelog
 
-Release notes are in [`CHANGELOG.md`](CHANGELOG.md) ([한국어](CHANGELOG.ko.md)). This project follows [SemVer](https://semver.org/).
+Release notes are in [`CHANGELOG.en.md`](CHANGELOG.en.md) ([한국어](CHANGELOG.ko.md)). This project follows [SemVer](https://semver.org/).
 
 ## Credits
 

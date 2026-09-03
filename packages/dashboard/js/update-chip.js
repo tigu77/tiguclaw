@@ -178,11 +178,12 @@
           //  「업데이트 내역」이 **전부** 보여주고, 칩 옆 `?` 가 그리로 데려간다.
           //  여기에 또 실으면 같은 글을 두 자리에서 렌더하게 되고, 그중 하나가 늙는다.
           //  ★`window.confirm` 이 평문만 받는 것도 그래서 문제가 아니게 된다 — 한 줄이니까.
-          const head =
-            current.newVersion === undefined || current.newVersion === ""
-              ? ""
-              : `${i18n("upd.notesHead", { v: current.newVersion })}\n\n`;
-          if (!window.confirm(`${head}${i18n("upd.confirm")}`)) return;
+          // ★★그때 내역만 걷고 **제목 줄은 남겼다** — 그래서 확인창이 *"이번 업데이트에서
+          //  바뀌는 것:"* 이라고 해놓고 **아무것도 안 보여줬다**(2026-09-02 정태님 화면).
+          //  «가서 보는 버튼»(칩 옆 `?`)이 생긴 뒤로는 그 자리에 있을 이유가 없다.
+          //  ★부류를 적어둔다: 무언가를 **옮길 때 그것을 가리키던 글도 같이** 옮겨야 한다.
+          //  안 그러면 빈 약속만 화면에 남는다 — 없는 것보다 나쁘다.
+          if (!window.confirm(i18n("upd.confirm"))) return;
 
           inFlight = true;
           chip.disabled = true;

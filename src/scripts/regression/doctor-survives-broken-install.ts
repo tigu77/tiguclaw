@@ -15,9 +15,11 @@
  * 않는지는 소스로 본다(그건 import 그래프라 실행으로 재려면 프로세스를 띄워야 한다).
  */
 import { readFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   judgeGlobalCommand,
+  resolveLinkedInstall,
   probeNativeModule,
   resolveGlobalCommand,
 } from "../doctor-install.js";
@@ -130,7 +132,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "이 설치를 가리키면 정상",
-        judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw", "/opt/tiguclaw").kind === "ok",
+        judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw", { kind: "linked", root: "/opt/tiguclaw" }).kind === "ok",
         "ok 여야",
       ),
       // ★직접 관측이 간접 근거를 이긴다 (2026-08-20 재검토 F5). 종전엔 `linkedRoot` 가
@@ -143,17 +145,17 @@ export const check: RegressionCheck = {
         judgeGlobalCommand(
           "/opt/tiguclaw/node_modules/.bin/tiguclaw",
           "/opt/tiguclaw",
-          "/opt/other",
+          { kind: "linked", root: "/opt/other" },
         ).kind === "ok",
         JSON.stringify(
-          judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw", "/opt/other"),
+          judgeGlobalCommand("/opt/tiguclaw/node_modules/.bin/tiguclaw", "/opt/tiguclaw", { kind: "linked", root: "/opt/other" }),
         ).slice(0, 100),
       ),
       assert(
         "★다른 설치를 가리키면 그걸 말한다 — '명령 없음' 보다 나쁜 조용한 오답이다",
-        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", "/opt/other").kind ===
+        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", { kind: "linked", root: "/opt/other" }).kind ===
           "elsewhere",
-        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", "/opt/other").kind,
+        judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", { kind: "linked", root: "/opt/other" }).kind,
       ),
       // ★심링크·형제경로 (2026-08-20 적대 검토) — 첫 판은 `path.resolve` 접두 비교라
       //  **양방향으로** 틀렸다: `npm link` 심링크를 안 풀어 정상 설치를 "다른 설치" 라 했고,
@@ -165,12 +167,12 @@ export const check: RegressionCheck = {
         judgeGlobalCommand(
           "/Users/x/.tiguclaw-install/bin/tiguclaw",
           "/Users/x/.tiguclaw",
-          "/Users/x/.tiguclaw-install",
+          { kind: "linked", root: "/Users/x/.tiguclaw-install" },
         ).kind === "elsewhere",
         judgeGlobalCommand(
           "/Users/x/.tiguclaw-install/bin/tiguclaw",
           "/Users/x/.tiguclaw",
-          "/Users/x/.tiguclaw-install",
+          { kind: "linked", root: "/Users/x/.tiguclaw-install" },
         ).kind,
       ),
       assert(
@@ -196,8 +198,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "경로 대소문자·구분자 차이를 흡수한다(윈도우)",
-        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw", "C:/Apps/Tiguclaw").kind === "ok",
-        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw", "C:/Apps/Tiguclaw").kind,
+        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw", { kind: "linked", root: "C:/Apps/Tiguclaw" }).kind === "ok",
+        judgeGlobalCommand("C:\\Apps\\Tiguclaw\\bin\\tiguclaw.cmd", "C:/apps/tiguclaw", { kind: "linked", root: "C:/Apps/Tiguclaw" }).kind,
       ),
     );
 
@@ -255,7 +257,7 @@ export const check: RegressionCheck = {
           // ★`linkedRoot`(npm 이 링크한 실체)를 넘긴다 — 실제 doctor 도 그렇게 부른다.
           //  안 넘기면 판정이 `unknown`(모른다)이고 그건 **옳은 보수적 답**이다:
           //  윈도우 shim 은 원래 설치 루트 밖이라 "밖=다른 설치" 로 단정하면 전원 오경보다.
-          const got = judgeGlobalCommand(cmd, root, cmd === null ? null : linkedOf(cmd)).kind;
+          const got = judgeGlobalCommand(cmd, root, cmd === null ? { kind: "unknown" as const } : ({ kind: "linked" as const, root: linkedOf(cmd) })).kind;
           out.push(
             assert(`지형: ${name}`, got === want, got === want ? got : `${got} (기대 ${want})`),
           );
@@ -313,6 +315,77 @@ export const check: RegressionCheck = {
         rmSync(home, { recursive: true, force: true });
       }
     }
+
+    // ★★**조회 함수 자체를 돌린다** — 이음매를 검사한다 (2026-09-03 변이로 발각).
+    //  판정(`judgeGlobalCommand`)만 픽스처로 부르면, **조회가 «폴더 없음» 을 «모름» 으로
+    //  퇴화시켜도 통과한다** — 실제로 그 변이가 살아남았다(4개 중 1개 생존).
+    //  부품은 검사되는데 이음매가 안 검사되던 것([[feedback_simple_composable_no_duplication]]).
+    //  ★`npm root -g` 는 `npm_config_prefix` 를 따르므로(실측) 진짜 조회를 그대로 돌린다.
+    const pathM = await import("node:path");
+    const prefix = mkdtempSync(pathM.join(tmpdir(), "tgc-prefix-"));
+    const prevPrefix = process.env.npm_config_prefix;
+    let lookupBroken: ReturnType<typeof resolveLinkedInstall>;
+    let lookupLinked: ReturnType<typeof resolveLinkedInstall>;
+    try {
+      process.env.npm_config_prefix = prefix;
+      lookupBroken = resolveLinkedInstall(); // 패키지 폴더 없음
+      const gRoot = pathM.join(prefix, "lib", "node_modules", "tiguclaw");
+      mkdirSync(gRoot, { recursive: true });
+      lookupLinked = resolveLinkedInstall(); // 이제 있음
+    } finally {
+      if (prevPrefix === undefined) delete process.env.npm_config_prefix;
+      else process.env.npm_config_prefix = prevPrefix;
+      rmSync(prefix, { recursive: true, force: true });
+    }
+    out.push(
+      assert(
+        "★★★조회가 «폴더 없음» 을 **broken 으로** 분류한다 — unknown 으로 퇴화하면 처방이 사라진다(이음매 검사)",
+        lookupBroken.kind === "broken",
+        lookupBroken.kind,
+      ),
+      assert(
+        "★조회가 폴더가 **있으면** linked 다 — 항상 broken 이면 멀쩡한 설치에 오경보를 준다",
+        lookupLinked.kind === "linked",
+        lookupLinked.kind,
+      ),
+    );
+
+    // ★★**링크가 끊긴 경우** — 2026-09-03 사용자(동료 기계) 신고로 갈래가 생겼다.
+    //  윈도우에서 `AppData\Roaming\npm\node_modules\tiguclaw` 가 통째로 사라졌는데
+    //  `.cmd` shim 만 남아, `tiguclaw update` 가 날것의 `MODULE_NOT_FOUND` 스택으로 죽었다.
+    //  레포는 멀쩡했고(파일 4,839B 확인) 답은 `npm link` 한 줄이었다.
+    //  ★종전엔 이게 «모름» 으로 흘러 *"판정 불가"* 라고 답했다 — **고치는 법을 아는데
+    //   우회로만 알려준 것**이다. 그래서 «조회 실패» 와 «폴더 없음» 을 값으로 가른다.
+    const brokenWin = judgeGlobalCommand(
+      "C:\\Users\\SANTO\\AppData\\Roaming\\npm\\tiguclaw.cmd",
+      "C:/Users/SANTO/tiguclaw",
+      { kind: "broken", expected: "C:/Users/SANTO/AppData/Roaming/npm/node_modules/tiguclaw" },
+    );
+    const unknownStill = judgeGlobalCommand("/usr/local/bin/tiguclaw", "/opt/tiguclaw", {
+      kind: "unknown",
+    });
+    out.push(
+      assert(
+        "★★링크가 끊기면 `broken-link` 다 — «모름» 이 아니다(답을 아는 상태)",
+        brokenWin.kind === "broken-link",
+        brokenWin.kind,
+      ),
+      assert(
+        "★★처방이 `npm link` 다 — 우회로만 주면 사용자는 고칠 방법을 영영 모른다",
+        brokenWin.kind !== "ok" && /npm link/.test(brokenWin.fix),
+        brokenWin.kind === "ok" ? "★ok 로 샘" : brokenWin.fix.slice(0, 60),
+      ),
+      assert(
+        "★그래도 우회로는 같이 준다 — `tiguclaw doctor` 자신이 그 shim 을 지나므로 도달 경로가 그것뿐이다",
+        brokenWin.kind !== "ok" && /node bin\/tiguclaw\.mjs/.test(brokenWin.fix),
+        brokenWin.kind === "ok" ? "★ok 로 샘" : "우회로 있음",
+      ),
+      assert(
+        "★★조회 자체가 실패한 경우는 **여전히 «모름»** 이다 — 둘을 뭉치면 없는 처방을 주게 된다",
+        unknownStill.kind === "unknown",
+        unknownStill.kind,
+      ),
+    );
 
     return out;
   },

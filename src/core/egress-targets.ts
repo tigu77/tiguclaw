@@ -31,10 +31,20 @@ import { DEFAULT_SESSION_ID } from "./threadkey.js";
  *  배경 소음이 되고, 그러면 진짜 이상할 때 아무도 안 본다([[feedback_logs_must_stand_alone]]
  *  의 *"반복은 세라"* 와 같은 결).
  *
- * ★이름 없는 세션은 `unknown` 이다(2026-08-28 정태님). 첫 발화에서 파생하지 않는 이유는
- *  그게 **대화 내용을 다른 채널 라벨로 흘리는** 짓이기 때문이다. 어느 것인지까지 알아야
- *  하면 대시보드가 답한다 — 폰에서 필요한 답은 *"내 대화가 아니다"* 하나다.
+ * ★첫 발화에서 파생하지 않는다 — 그건 **대화 내용을 다른 채널 라벨로 흘리는** 짓이다.
+ *
+ * ★★이름이 없으면 **세션 키를 쓴다**(2026-09-02 정태님). 종전엔 `unknown` 이었는데,
+ *  그건 **아는 것을 버리는** 말이었다: 키가 이미 `worker:…`·`scheduler:21`·`probe:icon`
+ *  처럼 무엇인지 적고 있다. 키는 사람이나 코드가 고른 **식별자**라 내용이 새지 않는다.
+ *  (실측 배경: `[unknown]` 21건 중 18건이 개발 프로브였고, 어느 프로브인지 알 길이 없었다.)
+ * ★UUID 는 앞 8자만 — 폰 알림 한 줄에 36자를 넣으면 정작 본문이 안 보인다. 그 8자로도
+ *  대시보드·로그에서 찾을 수 있다(줄여도 «어느 것인지» 는 남는다).
  */
+const shortenIds = (key: string): string =>
+  key.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, (m) =>
+    m.slice(0, 8),
+  );
+
 export const egressSourcePrefix = (
   originThreadKey: string | undefined,
   name: string | null | undefined,
@@ -42,7 +52,9 @@ export const egressSourcePrefix = (
   if (originThreadKey === undefined || originThreadKey === "") return "";
   if (originThreadKey === DEFAULT_SESSION_ID) return "";
   const custom = name?.trim();
-  return `[${custom !== undefined && custom !== "" ? custom : "unknown"}] `;
+  // 이름을 붙였으면 그게 이긴다 — 사람이 고른 말이 기계 키보다 낫다.
+  if (custom !== undefined && custom !== "") return `[${custom}] `;
+  return `[${shortenIds(originThreadKey)}] `;
 };
 
 export interface EgressTarget {

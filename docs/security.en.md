@@ -1,6 +1,6 @@
 # Security & trust model (self-hosted)
 
-[한국어](security.md) · **English**
+[한국어](security.ko.md) · **English**
 
 tiguclaw is **self-hosted** — you run it on your own machine or server, with your own keys and your own bot. The security model follows from that: it's built to be powerful *on a machine you control*, not locked down for untrusted environments.
 

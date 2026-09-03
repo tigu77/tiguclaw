@@ -124,6 +124,7 @@ import {
   getDefaultProfileName,
 } from "./core/settings.js";
 import { renderModelProfiles } from "./core/entry/models-command.js";
+import { renderProviders } from "./core/entry/providers-command.js";
 import {
   hasSupervisorRespawn,
   shouldExitForRestart,
@@ -176,7 +177,9 @@ import {
 } from "./core/egress-targets.js";
 import { withEgressPromptOptions } from "./core/prompt-options-egress.js";
 import { readEgressChannels } from "./core/settings.js";
-import { modelCapsFor } from "./core/llm-runtime/model-catalog.js";
+import { catalogModelKeys, modelCapsFor } from "./core/llm-runtime/model-catalog.js";
+import { providerAuthAvailable } from "./core/llm-runtime/provider-availability.js";
+import { listProviderNames } from "./core/llm-runtime/provider-registry.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -1041,6 +1044,39 @@ const handler: MessageHandler = async (msg) => {
     );
     return;
   }
+  // `/providers [이름] [검색어]` — 붙은 provider 와 그들이 주는 모델 (2026-09-02).
+  // ★`/models`(내가 설정한 프로파일)의 짝이다. 종전엔 카탈로그를 부팅·매시 받아두고도
+  //  그걸 읽는 곳이 비서의 도구뿐이라, 사용자는 «무슨 모델이 있는지» 볼 곳이 없었다.
+  // ★조립은 여기, 판단은 렌더에. provider 이름을 코드에 적지 않는다 — 카탈로그 키와
+  //  `listProviderNames()` 에서 파생시킨다(원칙 2: 새 provider 가 저절로 나타난다).
+  if (trimmed === "/providers" || trimmed.startsWith("/providers ")) {
+    const byProvider = new Map<string, string[]>();
+    for (const key of catalogModelKeys()) {
+      const at = key.indexOf(":");
+      if (at <= 0) continue;
+      const p = key.slice(0, at);
+      const list = byProvider.get(p);
+      if (list === undefined) byProvider.set(p, [key.slice(at + 1)]);
+      else list.push(key.slice(at + 1));
+    }
+    // ★설정된 것 ∪ 카탈로그가 답한 것 — 설정했는데 0개인 provider 도 **보여준다**.
+    //  안 보여주면 "왜 내 openrouter 가 없지" 에 답할 길이 없다(빈손이 곧 진단이다).
+    const names = [...new Set([...listProviderNames(), ...byProvider.keys()])].sort();
+    await replyCommand(
+      msg,
+      renderProviders(
+        names.map((name) => ({
+          name,
+          models: byProvider.get(name) ?? [],
+          authed: providerAuthAvailable(name),
+        })),
+        trimmed.slice("/providers".length),
+        modelCapsFor,
+      ),
+    );
+    return;
+  }
+
   // 슬래시 명령은 채널 입구에서 파싱 (원칙 4 다채널 단일 인격, 원칙: 모델에게
   // 슬래시 처리 시키지 않는다). 첫 토큰 = 명령, 나머지 = args.
   if (trimmed.startsWith("/")) {
@@ -1822,10 +1858,20 @@ const handler: MessageHandler = async (msg) => {
   //  실사고(2026-08-10): 몇 시간짜리 매니저 완료가 텔레그램으로 안 왔다 — 정작 그
   //  자리에 없을 확률이 가장 높은 경우다. 설정을 서버에 두니 **모든 발화가 같은 규칙**
   //  을 얻는다(합성 메시지에 플래그를 일일이 실어 나르는 배관이 아니라).
-  const egressFromSettings = readEgressChannels();
-  const egressUnion = [
-    ...new Set([...(msg.egressChannels ?? []), ...egressFromSettings]),
-  ];
+  // ★**보내는 쪽이 끌 수 있다** (2026-09-02 정태님: *"아직 텔레그램에 [probe:cache]
+  //  메시지가 온다"*). 위 합집합은 «서버가 만드는 발화도 fan-out 을 타게» 하려고 넣은
+  //  것인데, 그 대가로 **끌 방법이 사라졌다** — 설정에 telegram 이 있으면 프로그램이
+  //  띄운 턴까지 전부 사용자 폰으로 간다(오늘 하루 내 프로브가 그렇게 울렸다).
+  //  ★한 방향만 연다: `noEgress` 는 **덜 보내는** 쪽이라 안전하다(더 보내게는 못 한다).
+  //   같은 규범이 오늘 플러그인 `readOnly` 에도 있다 — 조이는 건 되고 푸는 건 안 된다.
+  //  ★자동 판정(이름·접두사로 «기계 세션» 을 가려내기)은 **하지 않는다**: 그건 손목록이고,
+  //   무엇보다 스케줄 실패 알림처럼 **정말 가야 하는 것**을 조용히 막을 수 있다.
+  //   보내는 쪽이 자기 의도를 안다.
+  const egressFromSettings = msg.noEgress === true ? [] : readEgressChannels();
+  const egressUnion =
+    msg.noEgress === true
+      ? []
+      : [...new Set([...(msg.egressChannels ?? []), ...egressFromSettings])];
   const egressTargets = await resolveEgressTargets({ ...msg, egressChannels: egressUnion }, {
     getOutbound: getChannelOutbound,
     getSessionMeta: (threadKey) =>

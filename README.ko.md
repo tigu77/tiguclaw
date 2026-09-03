@@ -67,7 +67,7 @@ tiguclaw 은 그 반대로 갑니다. 나는 **비서 한 명**과 이야기하�
 
 **Node 20+**, **git**, **LLM provider 하나**(아래), 그리고 (선택) **텔레그램 봇** 이 필요합니다.
 
-> ⚠️ 먼저 [`docs/security.md`](docs/security.md) 를 읽어주세요 — 비서는 *내* 컴퓨터의 쉘·파일에
+> ⚠️ 먼저 [`docs/security.ko.md`](docs/security.ko.md) 를 읽어주세요 — 비서는 *내* 컴퓨터의 쉘·파일에
 > 접근할 수 있고(Claude Code 와 같은 자기-선택 모델), **파괴적이거나 되돌릴 수 없는 작업 전에는
 > 반드시 승인을 받습니다**.
 
@@ -131,7 +131,7 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 **Claude/ChatGPT 구독**, 그리고 **OpenAI 호환 엔드포인트라면 무엇이든**(OpenRouter·Groq·vLLM…)
 됩니다. `onboard` 가 물어보며 안내하고, 나중에 바꿔도 능력은 그대로입니다.
 
-→ 키 발급 방법·설정 예시·평소 쓰는 명령·업데이트·삭제는 **[설치와 운영](docs/setup.md)** 에
+→ 키 발급 방법·설정 예시·평소 쓰는 명령·업데이트·삭제는 **[설치와 운영](docs/setup.ko.md)** 에
 모아뒀습니다.
 
 ### 추론 강도 바꾸기
@@ -150,13 +150,19 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 > 로 명시했더니 출력이 37% 줄었습니다.) 필요한 작업에만 올리고, 끝나면 되돌리세요.
 
 **잘 안 되면** 먼저 `tiguclaw doctor` 를 실행하세요 — 키·홈·서비스·네이티브 모듈·전역 명령까지
-한 번에 점검하고, 막힌 자리에 맞는 조치를 알려줍니다. 그래도 안 되면
+한 번에 점검하고, 막힌 자리에 맞는 조치를 알려줍니다.
+
+`tiguclaw` 명령 자체가 `Cannot find module ...` 으로 실패한다면 전역 링크가 사라진 것입니다.
+명령은 PATH 에 남아 있지만 가리키는 곳이 없는 상태이니, 설치 폴더에서 `npm link` 로 다시
+연결하세요. 그전까지는 모든 명령을 `node bin/tiguclaw.mjs <명령>` 으로 실행할 수 있습니다.
+
+그래도 안 되면
 [이슈](https://github.com/tigu77/tiguclaw/issues/new/choose)로 알려주세요. 보안 문제는 공개 이슈
 말고 [SECURITY](.github/SECURITY.md) 를 봐주세요.
 
 ## 뭘 하나
 
-여섯 가지입니다. 나머지는 전부 [전체 기능 목록](docs/features.md)에 있습니다.
+여섯 가지입니다. 나머지는 전부 [전체 기능 목록](docs/features.ko.md)에 있습니다.
 
 1. **항상 켜져 있음** — 백그라운드 서비스로 상시 실행되고, 죽으면 스스로 재시작하며,
    부탁하면("업데이트해줘" 또는 `/update`) 스스로 최신화합니다. 새 코드가 빌드되지 않으면
@@ -181,12 +187,12 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 
 | | |
 |---|---|
-| [설치와 운영](docs/setup.md) | 키·설정·평소 명령·업데이트·삭제 |
-| [전체 기능 목록](docs/features.md) | 위 여섯 가지에 안 담긴 전부 |
-| [훅](docs/hooks.md) | 도구 호출 관찰·차단 — Claude Code `hooks` 포맷 |
-| [LLM 게이트웨이](docs/gateway.md) | 내 앱의 OpenAI 호환 백엔드로 쓰기 |
-| [플러그인 만들기](docs/plugins.md) | 위젯 하나 + 도구 하나 — 계약 전부가 한 장에 |
-| [보안](docs/security.md) | 비서가 닿을 수 있는 것, 하기 전에 묻는 것 |
+| [설치와 운영](docs/setup.ko.md) | 키·설정·평소 명령·업데이트·삭제 |
+| [전체 기능 목록](docs/features.ko.md) | 위 여섯 가지에 안 담긴 전부 |
+| [훅](docs/hooks.ko.md) | 도구 호출 관찰·차단 — Claude Code `hooks` 포맷 |
+| [LLM 게이트웨이](docs/gateway.ko.md) | 내 앱의 OpenAI 호환 백엔드로 쓰기 |
+| [플러그인 만들기](docs/plugins.ko.md) | 위젯 하나 + 도구 하나 — 계약 전부가 한 장에 |
+| [보안](docs/security.ko.md) | 비서가 닿을 수 있는 것, 하기 전에 묻는 것 |
 | [코드 지도](docs/code-map.md) · [코어 경계](docs/core-boundaries.md) | 무엇이 어느 파일에 · 부팅·라우팅·권한의 흐름 |
 | [기여 안내](CONTRIBUTING.md) | 변경이 반영되는 방식 |
 
@@ -207,7 +213,7 @@ LLM 하나는 있어야 합니다. **Ollama**(무료·로컬·키 불필요)부�
 
 ## 변경 이력
 
-릴리스 노트는 [`CHANGELOG.ko.md`](CHANGELOG.ko.md) 참조 ([영문](CHANGELOG.md)). 이 프로젝트는
+릴리스 노트는 [`CHANGELOG.ko.md`](CHANGELOG.ko.md) 참조 ([영문](CHANGELOG.en.md)). 이 프로젝트는
 [SemVer](https://semver.org/) 를 따릅니다.
 
 ## 감사의 말

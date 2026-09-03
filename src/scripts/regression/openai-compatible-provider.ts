@@ -67,12 +67,12 @@ export const check: RegressionCheck = {
     const { readFile } = await import("node:fs/promises");
     const docHits: string[] = [];
     // ★"README" 가 아니라 **사용자가 읽는 문서 묶음**을 본다 (2026-08-11). 설정 예시가
-    //  README 에서 `docs/setup.md` 로 옮겨가자 이 검사가 울었다 — 내용이 사라진 게 아니라
+    //  README 에서 `docs/setup.ko.md` 로 옮겨가자 이 검사가 울었다 — 내용이 사라진 게 아니라
     //  자리가 바뀐 것이었다. 대상을 한 파일로 박아두면 문서를 정리할 때마다 게이트가 운다.
     for (const rel of [
       "_workspace/public-overlay/README.md",
       "_workspace/public-overlay/README.en.md",
-      "docs/setup.md",
+      "docs/setup.ko.md",
       "docs/setup.en.md",
     ]) {
       const url = new URL(`../../../${rel}`, import.meta.url);

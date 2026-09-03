@@ -45,3 +45,17 @@ bench/.home*
 plugins/**/src/*.js
 plugins/**/src/*.js.map
 plugins/**/src/*.d.ts
+
+# ── 개발용 스크래치 (2026-09-02 정태님: "굳이 안 실려도 되는거 레포에 싣지말자") ──
+# `_workspace/` 는 일회성 프로브·캡처가 쌓이는 자리다. 실측으로 **544개 10.4MB** 가
+# 아무 데서도 참조되지 않은 채 추적되고 있었다 — 공개 배포엔 원래 안 실렸지만(manifest 가
+# `^_workspace/` 를 EXCLUDE), 레포가 커지고 다음 사람이 «뭐가 살아 있는 건지» 를 못 가린다.
+# ★지우지 않고 **추적에서만** 뺐다(디스크엔 그대로).
+# ★예외 둘은 계속 추적한다:
+#   - `public-overlay/`  = 공개 문서의 **진실 소스**다(README·CHANGELOG·LICENSE…)
+#   - `*.md`             = 설계 노트·인계문. 한 번 쓰고 버린 게 아니라 **기록**이다
+#     ([[project_hotpath_bound_preserve_record]] — 콜드 레코드는 안 지운다)
+_workspace/*
+!_workspace/*.md
+!_workspace/public-overlay/
+!_workspace/public-overlay/**

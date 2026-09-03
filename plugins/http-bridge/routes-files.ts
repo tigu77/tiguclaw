@@ -19,6 +19,70 @@ import nodePath from "node:path";
 import path from "node:path";
 import type { RouteCtx } from "./route-ctx.js";
 
+/**
+ * `GET /plugin-icon?name=<플러그인>` — 그 플러그인이 선언한 아이콘 파일.
+ *
+ * ★선언이 없거나 파일이 없으면 **404** 다. 화면은 그때 기본 아이콘을 그린다(사용자 지정:
+ *  *"비어있으면 그냥 기본 아이콘으로"*). 여기서 기본 아이콘을 대신 내보내지 않는다 —
+ *  그러면 «선언했는데 파일이 없다» 와 «선언을 안 했다» 가 화면에서 구분이 안 된다.
+ *
+ * ★안전은 셋으로 막는다:
+ *  ① 매니페스트 파서가 `..`·절대경로·비래스터를 **애초에 안 담는다**
+ *  ② 여기서 심링크를 풀고 **플러그인 폴더 안인지 다시 검사**한다(첨부 서빙이 심링크로
+ *    한 번 뚫린 전례가 있다 — 같은 엄격도로 맞춘다)
+ *  ③ 확장자에서 content-type 을 **고정 표**로 정한다(파일이 이름을 정하게 두지 않는다)
+ */
+export const handlePluginIcon = async (ctx: RouteCtx): Promise<void> => {
+  const { res, url } = ctx;
+  const name = (url.searchParams.get("name") ?? "").trim();
+  // 자리는 둘(번들 + 홈) — `routes-inventory` 의 설정 쓰기가 쓰는 그 조회와 같은 모양이다.
+  const { scanPluginManifests } = await import("../../src/core/plugins/loader.js");
+  const { appRoot, getPaths } = await import("../../src/core/paths.js");
+  const found = (
+    await Promise.all(
+      [path.join(appRoot(), "plugins"), getPaths().commonPlugins].map((root) =>
+        scanPluginManifests(root),
+      ),
+    )
+  )
+    .flat()
+    .find((x) => x.manifest.name === name);
+  const icon = found?.manifest.meta?.icon;
+  if (found === undefined || typeof icon !== "string" || icon === "") {
+    writeJson(res, 404, { error: "no icon" });
+    return;
+  }
+  const abs = path.resolve(found.pluginDir, icon);
+  let real: string;
+  let realDir: string;
+  try {
+    real = nodeFs.realpathSync(abs);
+    realDir = nodeFs.realpathSync(found.pluginDir);
+  } catch {
+    writeJson(res, 404, { error: "not found" });
+    return;
+  }
+  if (real !== realDir && !real.startsWith(realDir + path.sep)) {
+    writeJson(res, 403, { error: "outside plugin dir" });
+    return;
+  }
+  const type = real.toLowerCase().endsWith(".webp") ? "image/webp" : "image/png";
+  let bytes: Buffer;
+  try {
+    bytes = nodeFs.readFileSync(real);
+  } catch {
+    writeJson(res, 404, { error: "not found" });
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": type,
+    "Content-Length": String(bytes.length),
+    // 아이콘은 자주 안 바뀐다 — 매 렌더마다 다시 받지 않게. 바뀌면 새로고침으로 족하다.
+    "Cache-Control": "private, max-age=300",
+  });
+  res.end(bytes);
+};
+
 export const handleAttachmentServe = async (ctx: RouteCtx): Promise<void> => {
   const { res, pathname } = ctx;
   try {

@@ -534,23 +534,40 @@ export const check: RegressionCheck = {
         "utf8",
       ),
     );
+    // ★계약이 바뀌었다 (2026-09-03): `wait` 인자를 **없앴고** `spawn_agent` 은 **항상**
+    //  detached 다. 종전 단언(M6·M7)은 «`wait:false` 분기가 살아 있나» 를 봤는데, 그 분기
+    //  자체가 사라졌다. **의도는 그대로다** — `kind:"agent"` 가 awaited 를 뜻하지 않는다는 것.
+    //  그래서 기제가 아니라 **결과**를 본다: 분기 없이 항상 detached 인가, 그리고 옛 인자가
+    //  되살아나지 않았나(되살아나면 «기본값이 곧 동작» 이던 상태로 돌아간다 —
+    //  실사용 잡 21건이 전부 `wait:true` 였던 그 상태다).
     out.push(
       assert(
-        "★spawn_agent 가 wait:false 를 실행 축(detached)으로 배선한다(M6)",
-        /detached:\s*rawArgs\.wait === false/.test(agentSrc),
-        /detached:/.test(agentSrc) ? "배선 있음" : "★미배선 — 재시작 통지·취소가 다 틀어진다",
-      ),
-      // ★`if (…)` 에 앵커한다. 종전엔 `rawArgs.wait === false` 만 찾았는데 그 문자열은
-      //  `detached:` 대입에도 있어서, 분기 조건을 `if (false)` 로 죽여도 통과했다
-      //  (적대 검토 M7 이 그렇게 뚫었고, 내 재검증에서도 한 번 더 살아남았다).
-      assert(
-        "★wait:false **분기**가 살아 있고 detached 실행으로 간다(M7)",
-        /if\s*\(\s*rawArgs\.wait === false\s*\)/.test(agentSrc) &&
+        "★★spawn_agent 이 **항상** detached 다 — 조건부면 «기본값이 곧 동작» 으로 되돌아간다(M6 개정)",
+        /detached:\s*true/.test(agentSrc) &&
+          !/detached:\s*rawArgs\.wait/.test(agentSrc) &&
           /startDetachedAgent\(\{/.test(agentSrc),
-        /if\s*\(\s*rawArgs\.wait === false\s*\)/.test(agentSrc)
-          ? "분기 있음"
-          : "★분기가 죽었다 — wait 인자가 무시된다",
+        /detached:\s*true/.test(agentSrc) ? "항상 detached" : "★조건부로 되돌아갔다",
       ),
+      assert(
+        "★★`wait` 인자가 **되살아나지 않았다** — 되살리면 띄우기와 기다리기가 다시 한 동사로 뭉친다(M7 개정)",
+        !/wait:\s*z\b/.test(agentSrc) && !/rawArgs\.wait/.test(agentSrc),
+        /rawArgs\.wait/.test(agentSrc) ? "★wait 인자 부활" : "인자 없음",
+      ),
+      await (async () => {
+        // ★합류 도구는 **소환과 같은 서버**(agent-registry)에 있다 — worker-registry 는
+        //  `workers:"main"` 이라 매니저가 못 닿는다(2026-09-03 정태님 지적으로 이전).
+        const wr = await readFile(
+          new URL("../../core/llm-runtime/capabilities/agent-registry.ts", import.meta.url),
+          "utf8",
+        );
+        const declared = /tool\(\s*\n?\s*"wait_for_worker"/.test(wr);
+        const exported = /tools:\s*\[[^\]]*waitForWorker/.test(wr);
+        return assert(
+          "★★기다리기가 **별도 도구**로 있고 서버에 실려 있다 — 없으면 결과를 받을 방법이 폴링뿐이고, 그건 폴링마다 프롬프트 한 벌이다",
+          declared && exported,
+          `선언=${String(declared)} · 서버 등록=${String(exported)}`,
+        );
+      })(),
     );
 
     const runnerSrc = await readFile(

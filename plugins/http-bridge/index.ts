@@ -193,7 +193,7 @@ import { handleEvents, handleEndpointCalls, handleAllActivity } from "./routes-a
 import { handleProjects, handleProjectCapability, handleProjectDetail, handleProjectForget, handleProjectRename } from "./routes-projects.js";
 import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell } from "./routes-work.js";
 import { handleMessages, handleChatHistory, handleChatSearch } from "./routes-chat.js";
-import { handleAttachmentServe, handleTranscribe, handleOpenPath } from "./routes-files.js";
+import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath } from "./routes-files.js";
 import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
 import type { RouteCtx } from "./route-ctx.js";
 import {
@@ -518,6 +518,8 @@ class HttpBridge implements Channel, Observer {
                   ? "write"
                 : pathname.startsWith("/attachments/") && method === "GET"
                   ? "read"
+                : pathname === "/plugin-icon" && method === "GET"
+                  ? "read" // 플러그인이 선언한 아이콘 파일 — 조회만.
                 : pathname === "/home-widgets" && method === "GET"
                   ? "read" // 배치 조회 — 쓰기는 도구(configure_home)로만 간다.
                 : pathname.startsWith("/plugin-data/") && method === "GET"
@@ -830,6 +832,13 @@ class HttpBridge implements Channel, Observer {
     // read 게이트(위). rel = attachmentsDir 기준 상대경로. ★path traversal 방어: 해석된 절대
     // 경로가 반드시 attachmentsDir 하위여야(../ 이스케이프·절대경로 거부). 로컬 바인딩 + 토큰
     // 게이트 뒤라 표면 작음. base64 를 DB 에 안 담고 이 파일을 재사용 = 이력 이미지 영속.
+    // /plugin-icon?name= — 그 플러그인이 선언한 아이콘. 없으면 404 고, 화면이 기본 아이콘을
+    // 그린다(여기서 기본을 대신 주면 «선언 안 함» 과 «파일 없음» 이 구분되지 않는다).
+    if (pathname === "/plugin-icon" && method === "GET") {
+      await handlePluginIcon(this.routeCtx(req, res, url));
+      return;
+    }
+
     if (pathname.startsWith("/attachments/") && method === "GET") {
       await handleAttachmentServe(this.routeCtx(req, res, url));
       return;

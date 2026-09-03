@@ -447,6 +447,9 @@ export const startDetachedAgent = (o: {
     if (steerCh !== undefined) setSteerChannel(o.jobId, steerCh);
 
     let outcome: { result: string } | { error: string };
+    // ★도구 스텝 카운터·구독 해제는 `try` **밖**에 둔다 — finally 와 결과 판정이 둘 다 본다.
+    let childToolSteps = 0;
+    let unsubTools: () => void = () => {};
     /** 서브가 끝나는 순간 도착해 반영 못 한 지시(원문). 결과 보고 뒤에 정직 통지. */
     let pendingSteerNotice: string[] = [];
     try {
@@ -465,6 +468,24 @@ export const startDetachedAgent = (o: {
         abortSignal: o.abort.signal,
         ...(steerCh !== undefined ? { steering: steerCh } : {}),
       });
+      // ─── 자식이 **도구를 한 번도 안 썼나** — 품질 신호 (2026-08-08) ──────────────
+      //  실측 근거: 파일을 읽으라고 시켰는데 도구 0회로 값을 지어냈고(실제 0.18.0 인데
+      //  "0.5.5"), 40초 대기를 17초에 백그라운드로 던지고 끝냈다. 정상 건은 9~30회 쓴다.
+      //  ★단정하지 않는다 — 요약·판단만 시키면 0회가 정상이다. 실패로 닫지 않고 신호만.
+      //  ★★**여기로 옮겼다** (2026-09-03). 종전엔 `spawn_agent` 의 awaited 분기에만 있었는데,
+      //   `wait` 인자를 없애 모든 서브가 이 경로로 오면서 그 분기가 사라졌다 — 같이 안 옮겼으면
+      //   **감지가 통째로 죽는다**(회귀가 잡았다). 「A 를 바꿨으면 A 에 의존하던 B 를 봐라」.
+      const childKey = `agent:${o.jobId}`;
+      const busRef = getEventBus();
+      unsubTools = busRef.subscribe((ev) => {
+        if (ev.type !== "llm.activity") return;
+        if (ev.payload?.threadKey !== childKey) return;
+        // ★allowlist 다 — `kind !== "text"` 로 쓰면 denylist 라 새 kind 가 생기면 조용히 열린다.
+        //  ★단위 주의: 도구 1개당 start+end 2건이 온다 — `=== 0` 판정에만 쓰므로 무해하다.
+        if (ev.payload?.kind !== "tool") return;
+        childToolSteps += 1;
+      });
+
       const childP = inject
         ? inject(childInput)
         : runRegionA(childInput, chain.length > 0 ? { chain } : undefined);
@@ -506,6 +527,8 @@ export const startDetachedAgent = (o: {
     } catch (e) {
       outcome = { error: e instanceof Error ? e.message : String(e) };
     } finally {
+      // 정상·throw·취소 모두 해제 — 구독 누수 0(worker-registry 동형 패턴).
+      try { unsubTools(); } catch { /* best-effort */ }
       o.abort.done();
       // 스티어 채널 종료 + 잔여 회수. 서브에겐 다음 턴이 없으므로 그냥 close 하면 막
       // 도착한 지시가 조용히 사라진다(매니저와 같은 손실창 — 같은 처리로 닫는다).
@@ -530,6 +553,32 @@ export const startDetachedAgent = (o: {
           );
         }
       }
+    }
+
+    // 도구 0회 신호 — 성공했을 때만 본다(실패는 원인이 따로 있다).
+    const { toolsWereExpected } = await import("./tools-expected.js");
+    if ("result" in outcome && childToolSteps === 0 && toolsWereExpected(o.prompt)) {
+      console.warn(
+        `[agent-no-tools] ${o.parentInput.threadKey} 서브에이전트 '${o.agent.name}' 가 ` +
+          `도구를 **한 번도 쓰지 않고** 끝났습니다(내부 스텝 0). 지시가 파일·명령 실행을 ` +
+          `요구했다면 결과가 지어낸 것일 수 있습니다 — 반환 ${outcome.result.length}자.`,
+      );
+      try {
+        getEventBus().publish({
+          // ★`worker.` 접두 금지 — sse.js 가 worker.* 를 타입 없이 블라인드 라우팅해
+          //  상태 없는 페이로드가 카드 상태를 건드린다. 잡 생애주기가 아니라 품질 신호다.
+          type: "llm.agent_no_tools",
+          ts: Date.now(),
+          payload: {
+            channel: o.parentInput.channel,
+            threadKey: o.parentInput.threadKey,
+            jobId: o.jobId,
+            agentName: o.agent.name,
+            task: o.prompt.slice(0, 200),
+            resultChars: outcome.result.length,
+          },
+        });
+      } catch { /* best-effort — 관측 실패가 완료를 무르지 않는다 */ }
     }
 
     // 결과를 소환자에게 — 매니저면 그 턴의 steering 큐, 세션이면 새 턴(deliverToSummoner).
@@ -576,7 +625,7 @@ export const createSpawnAgentMcpServer = (
 ): McpSdkServerConfigWithInstance => {
   const spawnTool = tool(
     "spawn_agent",
-    "정의된 서브에이전트를 1회 실행하고 그 결과 텍스트를 반환합니다. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속. 서로 다른 path 로 여러 번 호출하면 폴더(프로젝트)별 병렬 위임이 됩니다.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. **선택 기준**: 결과를 *이번 답변 안에서* 써서 다음 판단을 해야 할 때는 그대로 부르세요(기본 `wait:true` — 부모 턴을 붙잡고 기다립니다). 오래 걸리거나 여러 개를 동시에 돌리고 싶으면 **`wait:false`** 로 부르세요 — 즉시 jobId 를 받고 계속 진행할 수 있으며, **끝나면 결과가 당신에게 돌아옵니다**(당신이 매니저면 진행 중인 턴에 이어지고, 메인 대화면 새 답변으로 옵니다). 소환해놓고 잊는 게 아니라 *지금 안 기다릴 뿐* 입니다. 규모가 크고 스스로 팬아웃까지 해야 하는 작업은 run_in_background(매니저) 가 더 맞습니다. **`label` 에 이 작업이 무엇인지 한 줄로 적어 주세요** — 백그라운드 작업 카드에서 여럿을 구분하는 데 씁니다(`name` 은 에이전트 이름이지 제목이 아닙니다).",
+    "정의된 서브에이전트를 **띄우고 즉시 jobId 를 돌려줍니다** — 기다리지 않습니다. 결과가 필요하면 `wait_for_worker([jobId, ...])` 로 합류하세요. ★**서로 독립인 일은 전부 띄운 뒤 한 번에 합류하세요** — 그러면 자식들이 동시에 돕니다. 하나 띄우고 바로 합류하기를 반복하면 줄을 서게 되니, 앞 결과가 있어야 다음을 정할 수 있을 때만 그렇게 하세요. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 합류하지 않고 턴을 끝내도 결과는 사라지지 않습니다 — 끝나면 당신에게 돌아옵니다(당신이 매니저면 진행 중인 턴에 이어지고, 메인 대화면 새 답변으로 옵니다). 규모가 크고 스스로 팬아웃까지 해야 하는 작업은 run_in_background(매니저) 가 더 맞습니다. **`label` 에 이 작업이 무엇인지 한 줄로 적어 주세요** — 백그라운드 작업 카드에서 여럿을 구분하는 데 씁니다(`name` 은 에이전트 이름이지 제목이 아닙니다).",
     {
       // ★`subagent_type` 은 SDK 빌트인 `Agent` 의 인자 이름이다 (2026-08-08).
       //  그 도구를 차단한 뒤에도 모델은 **습관으로** 그 이름을 부르고(그래서 toolAliases 로
@@ -607,13 +656,11 @@ export const createSpawnAgentMcpServer = (
           "이 작업이 무엇인지 한 줄(예: 'Q6-5b 회귀 감사'). 백그라운드 작업 카드에 에이전트 이름과 함께 표시됩니다. 미지정이면 에이전트 이름만 보입니다.",
         ),
       path: z.string().optional(),
-      // ★기본 true = 현행 동작 (Q1 슈퍼셋 — 능력 추가만, 제거 0).
-      wait: z
-        .boolean()
-        .optional()
-        .describe(
-          "결과를 이 답변 안에서 기다릴지. 기본 true(기다림). false 면 즉시 jobId 를 반환하고 계속 진행할 수 있으며, 끝나면 결과가 당신에게 돌아옵니다 — 오래 걸릴 작업이나 여러 개를 동시에 돌릴 때 씁니다.",
-        ),
+      // ★`wait` 인자는 **없앴다** (2026-09-03). 실사용 잡 21건이 전부 `wait:true` 였다 —
+      //  설명에 `wait:false` 안내가 이미 있었는데 **한 번도** 안 쓰였다. 인자가 죽어 있었고
+      //  기본값이 곧 동작이었다(같은 태스크 5런이 전부 직렬, 벽시계 3.41배).
+      //  그래서 「띄우기」와 「기다리기」를 **동사 둘로 갈랐다**: 여기는 항상 띄우기,
+      //  기다리기는 `wait_for_worker`.
     },
     async (rawArgs) => {
       const agentName = rawArgs.name ?? rawArgs.subagent_type;
@@ -720,7 +767,7 @@ export const createSpawnAgentMcpServer = (
           //  awaited 경로는 이 필드를 안 읽으므로 값이 생겨도 회귀 0.
           channelUserId: parentInput.threadKey,
           // 실행 축 — 재시작 복구가 "통지할 소환자가 있나" 를 이걸로 가른다(ADR Q0).
-          detached: rawArgs.wait === false,
+          detached: true, // 항상 비동기 — 기다리기는 `wait_for_worker` 가 한다.
         });
         rememberSpawn(
           parentInput.threadKey,
@@ -742,7 +789,7 @@ export const createSpawnAgentMcpServer = (
         //  큐로, 세션이면 새 턴으로. 즉 "안 기다리지만 반드시 거둔다".
         //  ★abort 는 여기서 done() 하면 안 된다 — 자식이 아직 돌고 있고, 중지 버튼·
         //   부모 취소 캐스케이드가 이 핸들로 자식을 끊는다. detached runner 가 해제한다.
-        if (rawArgs.wait === false) {
+        // 항상 비동기 — 띄우고 jobId 만 돌려준다. 기다리기는 `wait_for_worker`.
           startDetachedAgent({
             jobId,
             agent,
@@ -758,85 +805,12 @@ export const createSpawnAgentMcpServer = (
               `기다리지 않고 계속 진행하세요 — 끝나면 결과가 당신에게 돌아옵니다.\n` +
               `진행 상황은 list_workers, 중지는 cancel_worker 로 볼 수 있습니다.`,
           );
-        }
 
-        const childInput = buildAgentChildInput({
-          jobId,
-          agent,
-          def,
-          prompt: args.prompt,
-          targetCwd,
-          parentInput,
-          abortSignal: abort.signal,
-        });
 
-        // lazy import — capabilities → llm-runtime/index circular 회피.
-        // resolveModelChain(2026-07-14) — agent.model 이 프로파일이면 .fallback 체인까지
-        //  운반(예 high→default), 레거시 티어/직접 spec 이면 단일 풀. 빈 체인 = 어댑터 디폴트.
-        const { runRegionA, resolveModelChain } = await import("../index.js");
-        const chain = resolveModelChain(agent.model, targetCwd);
-        // ★도구 0회 신호 (2026-08-08 이관) — 종전엔 claude 어댑터의 SDK Task 경로에만 있었다.
-        //  그 경로를 막으면서 신호가 **통째로 죽었다**(정리하다 발견). 위임이 우리 루프로
-        //  일원화됐으니 판정도 여기로 온다 — 그리고 여기 오면서 **세 어댑터 공통**이 된다.
-        //  실측 근거: 파일을 읽으라고 시켰는데 도구 0회로 값을 지어냈고(실제 0.18.0 인데
-        //  "0.5.5"), 40초 대기를 17초에 백그라운드로 던지고 끝냈다. 정상 건은 9~30회 쓴다.
-        //  ★단정하지 않는다 — 요약·판단만 시키면 0회가 정상이다. 실패로 닫지 않고 신호만.
-        const childKey = `agent:${jobId}`;
-        let childToolSteps = 0;
-        const busRef = getEventBus();
-        const unsub = busRef.subscribe((ev) => {
-          if (ev.type !== "llm.activity") return;
-          if (ev.payload?.threadKey !== childKey) return;
-          // ★allowlist 다 (검토 지적, 2026-08-08). 처음엔 `kind !== "text"` 로 썼는데
-          //  그건 **denylist** 라 새 kind 가 생기면 조용히 열린다. ★정직하게: 유니온의
-          //  `"turn"` 은 **현재 어디서도 발행되지 않는다**(레드팀 실측) — 즉 그 위험은
-          //  가정이었고 좁혀서 잃은 것도 없다. 그래도 allowlist 가 맞다(방향이 안전하다).
-          //  ★단위 주의: 도구 1개당 `phase` start+end **2건**이 온다 — 이 카운터는 실제
-          //   도구 수의 2배다. `=== 0` 판정에만 쓰므로 무해하지만, 0 아닌 임계를 넣거나
-          //   숫자를 노출하려면 `phase` 를 봐야 한다. 원본(어댑터 `entry.seq`)도 구조적으로
-          //  도구만 셌다 — 그 의미를 그대로 옮기려면 도구를 **명시적으로** 세야 한다.
-          if (ev.payload?.kind !== "tool") return;
-          childToolSteps += 1;
-        });
-        let out: RegionASdkOutput;
-        try {
-          out = await runRegionA(
-            childInput,
-            chain.length > 0 ? { chain } : undefined,
-          );
-        } finally {
-          // 정상·throw·취소 모두 해제 — cancelHooks 누수 0(worker-registry.ts 동형 패턴).
-          abort.done();
-          try { unsub(); } catch { /* best-effort */ }
-        }
-        // ★"도구 0회" 만으로 경고하지 않는다 (2026-08-20 사용자 신고). 핑·질의·판단을
-        //  시키는 스폰이 정상 용법이 되면서, 시킨 대로 한 에이전트에게 "지어냈을 수 있다"
-        //  고 말하고 있었다. 판정은 `toolsWereExpected` 한 곳 — 근거는 그 파일에.
-        if (childToolSteps === 0 && toolsWereExpected(args.prompt)) {
-          console.warn(
-            `[agent-no-tools] ${parentInput.threadKey} 서브에이전트 '${args.name}' 가 ` +
-              `도구를 **한 번도 쓰지 않고** 끝났습니다(내부 스텝 0). 지시가 파일·명령 실행을 ` +
-              `요구했다면 결과가 지어낸 것일 수 있습니다 — 반환 ${out.text.length}자.`,
-          );
-          try {
-            busRef.publish({
-              // ★`worker.` 접두 금지 — sse.js 가 worker.* 를 타입 없이 블라인드 라우팅해
-              //  상태 없는 페이로드가 카드 상태를 건드린다. 이건 잡 생애주기가 아니라 품질 신호다.
-              type: "llm.agent_no_tools",
-              ts: Date.now(),
-              payload: {
-                channel: parentInput.channel,
-                threadKey: parentInput.threadKey,
-                jobId,
-                agentName: args.name,
-                task: args.prompt.slice(0, 200),
-                resultChars: out.text.length,
-              },
-            });
-          } catch { /* best-effort — 관측 실패가 완료를 무르지 않는다 */ }
-        }
-        markDone(jobId, out.text); // 관측 완료 — 재주입 없음(결과는 아래 return 으로 부모 회수).
-        return okText(out.text);
+        // ★옛 **awaited 경로**(`wait:true`)는 지웠다 (2026-09-03). 인자를 없애 항상 비동기가
+        //  됐으므로 여기까지 도달할 수 없다 — 남기면 «같은 일을 하는 두 벌» 이 되고,
+        //  둘 중 안 도는 쪽은 조용히 낡는다([[feedback_simple_composable_no_duplication]]).
+        //  기다리기는 `wait_for_worker` 가 한다.
       } catch (e) {
         // 위 finally 가 이미 abort.done() 을 부르므로 여기서 재호출 불요(멱등이라도 무해).
         const isCancelled = e instanceof WorkerCancelledError;
@@ -887,9 +861,79 @@ export const createSpawnAgentMcpServer = (
     },
   );
 
+  /**
+   * **합류(join)** — 띄워둔 자식이 끝날 때까지 기다렸다가 결과를 받는다.
+   *
+   * ★왜 이 도구가 생겼나 (2026-09-03 실측). `spawn_agent` 이 `wait` 인자 하나로 «띄우기» 와
+   *  «기다리기» 를 겸하고 있었고, 그래서 **넷을 띄우면 자동으로 줄섰다** — 같은 태스크
+   *  5런이 전부 직렬이었고 벽시계가 상대 엔진의 3.41배(135초 vs 40초)였다. 기계는 병렬을
+   *  지원하는데(겹침 52% 런이 실제로 있었다) 기본값이 정하고 있었던 것이다.
+   *  ★그리고 실사용 잡 **21건이 전부 `wait:true`** 였다 — 설명에 `wait:false` 안내가 이미
+   *   있었는데 **한 번도** 안 쓰였다. 즉 인자는 죽어 있었고 「판단에 맡긴다」가 실제로는
+   *   일어나지 않았다. 그래서 인자를 없애고 **동사를 둘로 갈랐다.**
+   *
+   * ★**소환과 같은 서버에 둔다** (2026-09-03, 정태님 지적으로 옮김). 처음엔 `worker-registry`
+   *  에 뒀는데 그 서버는 `workers:"main"` 이라 **매니저가 못 닿는다** — 그런데 매니저는
+   *  `agents:"manager"` 로 자식을 띄울 수 있다. 즉 «띄울 수는 있는데 합류할 수 없는» 상태였다.
+   *  띄우는 자리와 거두는 자리는 **같은 도달 범위**여야 한다.
+   * ★폴링을 **프로세스 안에서** 한다 — 모델 왕복 0. 대안(모델이 `list_workers` 를 반복 호출)은
+   *  폴링 한 번마다 프롬프트 한 벌(82KB)을 다시 싣는다.
+   * ★부분 실패는 **부분 결과를 준다** — 넷 중 하나가 실패해도 나머지 셋은 그대로 보고한다.
+   *  통째로 실패시키면 성공분이 버려진다.
+   */
+  const waitForWorker = tool(
+    "wait_for_worker",
+    "띄워둔 서브에이전트·매니저가 **끝날 때까지 기다렸다가 결과를 받습니다**. `spawn_agent` 은 jobId 만 주고 바로 돌아오므로, 그 결과가 필요하면 이 도구로 합류하세요. **여러 jobId 를 한 번에 넘기면 그것들이 동시에 도는 채로 함께 기다립니다** — 서로 독립인 일은 전부 띄운 뒤 여기서 한 번에 거두세요(하나씩 띄우고 하나씩 기다리면 줄을 서게 됩니다). 하나가 실패해도 나머지 결과는 그대로 돌려줍니다.",
+    {
+      job_ids: z
+        .array(z.string())
+        .min(1)
+        .describe("기다릴 jobId 목록. spawn_agent·run_in_background 가 반환한 값."),
+      timeout_seconds: z
+        .number()
+        .optional()
+        .describe("이만큼 지나면 아직 도는 것은 «진행 중» 으로 보고하고 돌아옵니다(작업은 계속 됩니다). 미지정 = 서브에이전트 기본 상한."),
+    },
+    async (args) => {
+      try {
+        // lazy import — capabilities → worker-jobs circular 회피(이 파일의 다른 경로와 동형).
+        const { awaitJobOutcome, claimJobJoin, SUBAGENT_TIMEOUT_MS } =
+          await import("../../worker-jobs.js");
+        const capMs =
+          args.timeout_seconds !== undefined && Number.isFinite(args.timeout_seconds)
+            ? Math.max(1000, Math.round(args.timeout_seconds * 1000))
+            : SUBAGENT_TIMEOUT_MS;
+        // ★선점을 **기다리기 전에** 전부 건다 — 하나씩 기다리며 걸면 그 사이에 끝난 자식이
+        //  재주입으로 새어 나가 이중 보고가 된다.
+        for (const id of args.job_ids) claimJobJoin(id);
+        const deadline = Date.now() + capMs;
+        const lines: string[] = [];
+        for (const id of args.job_ids) {
+          const left = Math.max(0, deadline - Date.now());
+          const job = await awaitJobOutcome(id, left);
+          if (job === undefined) {
+            lines.push(`· ${id}: 그런 작업이 없습니다(이미 정리됐거나 잘못된 id).`);
+          } else if (job.status === "running") {
+            lines.push(`· ${job.label} (${id}): ⏳ 아직 진행 중 — 시한이 지나 기다리기를 멈췄습니다(작업은 계속 됩니다).`);
+          } else if (job.status === "done") {
+            lines.push(`· ${job.label} (${id}): ✅ 완료\n${job.result ?? "(결과 없음)"}`);
+          } else if (job.status === "cancelled") {
+            lines.push(`· ${job.label} (${id}): 🚫 취소됨`);
+          } else {
+            lines.push(`· ${job.label} (${id}): 🔴 실패 — ${job.error ?? "(원인 미상)"}`);
+          }
+        }
+        return okText(lines.join("\n\n"));
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        return { content: [{ type: "text" as const, text: `wait_for_worker 실패: ${reason}` }], isError: true };
+      }
+    },
+  );
+
   return createSdkMcpServer({
     name: "agents",
     version: "1.1.0",
-    tools: [spawnTool, findAgentsTool],
+    tools: [spawnTool, waitForWorker, findAgentsTool],
   });
 };

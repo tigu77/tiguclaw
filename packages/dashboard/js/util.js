@@ -382,6 +382,55 @@
         return id.startsWith("core.") || kind === "core" || ["daemon", "memory", "schedule", "plugin-registry"].some((key) => id.includes(key));
       };
 
+      /**
+       * 작업판 레이아웃을 **하나만** 켠다 — 두 컬럼 뷰(모듈·능력·프로젝트·플러그인)와
+       * 단일 컬럼(그 외).
+       *
+       * ★손목록을 없애려고 만들었다 (2026-09-02). 종전엔 뷰마다
+       *  `classList.remove("show-capabilities")` 를 손으로 적었고, **이미 갈려 있었다** —
+       *  여덟 자리 중 일곱이 `show-capabilities` 만 지우고 한 곳만 셋을 지웠다. 그래서
+       *  모듈·프로젝트 뷰에서 다른 뷰로 갈 때 두 컬럼 레이아웃이 남을 수 있었다.
+       *  이제 «지금 뷰가 무엇인가» 하나만 말하면 된다([[feedback_hand_maintained_lists]]).
+       * @param {string} [name] 두 컬럼을 쓰는 뷰 이름. 없으면 단일 컬럼.
+       */
+      /**
+       * kind 그룹 — **모듈 뷰와 플러그인 뷰가 같은 판단을 쓴다** (2026-09-02 공용으로 이관).
+       *
+       * ★두 화면이 같은 `kind` 값을 서로 다른 아이콘·순서로 그리면 그게 곧 두 사전이다.
+       *  옮기기 전엔 모듈 뷰 안에만 있었고, 플러그인 뷰가 카테고리를 갖는 순간 복사될
+       *  자리였다([[feedback_simple_composable_no_duplication]] — 같은 판단이 두 곳).
+       * ★미지 kind 는 **뒤로 보내되 지우지 않는다** — 새 kind 가 생겨도 화면에서 사라지지
+       *  않는다(코드 변경 0으로 새 그룹이 생긴다).
+       */
+      const MODULE_GROUP_ORDER = ["channel", "adapter", "llm-adapter", "trigger", "observer", "service", "core", "plugin"];
+      const MODULE_GROUP_ICON = { channel: "📡", adapter: "🧠", "llm-adapter": "🧠", trigger: "⏰", observer: "👁️", service: "🖥️", core: "⚙️", plugin: "🔌" };
+      const moduleGroupLabel = (kind) => (MODULE_GROUP_ICON[kind] ? MODULE_GROUP_ICON[kind] + " " : "") + kindLabel(kind);
+      const groupProvidersByKind = (providers) => {
+        const buckets = new Map();
+        for (const p of providers) {
+          const kind = p.kind || "unknown";
+          if (!buckets.has(kind)) buckets.set(kind, []);
+          buckets.get(kind).push(p);
+        }
+        const orderedKinds = Array.from(buckets.keys()).sort((a, b) => {
+          const ia = MODULE_GROUP_ORDER.indexOf(a);
+          const ib = MODULE_GROUP_ORDER.indexOf(b);
+          if (ia === -1 && ib === -1) return 0; // 미지 kind 둘 다면 등장(Map insertion) 순서 유지
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return ia - ib;
+        });
+        return orderedKinds.map((kind) => ({ kind, label: moduleGroupLabel(kind), items: buckets.get(kind) }));
+      };
+
+      const setWorkbenchLayout = (name) => {
+        const wb = document.getElementById("workbench");
+        if (!wb) return;
+        // 이름을 열거하지 않는다 — 지금 붙어 있는 `show-*` 를 전부 걷고 하나만 켠다.
+        for (const c of [...wb.classList]) if (c.startsWith("show-")) wb.classList.remove(c);
+        if (name) wb.classList.add("show-" + name);
+      };
+
       const renderProviderView = (view) => {
         const div = document.createElement("div");
         div.className = "view";
@@ -495,7 +544,10 @@
         for (const head of listEl.querySelectorAll(":scope > .module-group-head")) {
           const itemsWrap = head.nextElementSibling;
           if (!itemsWrap || !itemsWrap.classList.contains("module-group-items")) continue;
-          const items = itemsWrap.querySelectorAll(".provider-item");
+          // ★클래스가 아니라 **계약**으로 고른다 (2026-09-02) — `data-search-text` 를 가진
+          //  것이 곧 검색 대상이다. 종전엔 `.provider-item` 이라 새 뷰가 이 헬퍼를 쓰려면
+          //  남의 클래스를 달아야 했다(플러그인 목록이 그 자리였다). 이름 결합을 없앤다.
+          const items = itemsWrap.querySelectorAll("[data-search-text]");
           const countEl = head.querySelector(".module-group-count");
           if (!q) {
             head.classList.remove("search-hidden-group");
@@ -519,7 +571,7 @@
           if (!groupEmpty) anyVisible = true;
         }
         // 그룹 없는 직접 항목(플랫 리스트, 예: 프로젝트 패널)도 동일 필터.
-        for (const item of listEl.querySelectorAll(":scope > .provider-item")) {
+        for (const item of listEl.querySelectorAll(":scope > [data-search-text]")) {
           if (!q) { item.classList.remove("search-hidden"); anyVisible = true; continue; }
           const match = (item.dataset.searchText || "").includes(q);
           item.classList.toggle("search-hidden", !match);

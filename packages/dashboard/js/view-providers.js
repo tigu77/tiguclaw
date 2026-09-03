@@ -48,27 +48,7 @@
       // kind 값은 core|plugin|channel 뿐이라 대부분 폴백(§5.5)으로 떨어지지만, type 필드가 생기는
       // P3 이후에도 코드 변경 없이 같은 순서를 그대로 쓰도록 어댑터/트리거/옵저버/서비스도 미리 둔다.
       // 목록에 없는(미지) kind 는 등장 순서대로 뒤에 붙는다 — 새 모듈 kind 도 코드변경0으로 그룹 생성.
-      const MODULE_GROUP_ORDER = ["channel", "adapter", "llm-adapter", "trigger", "observer", "service", "core", "plugin"];
       // 카테고리 아이콘 — 그룹 헤더 전용(항목 kind 배지는 kindLabel 그대로, 깨끗이). 미지 kind=아이콘 없음.
-      const MODULE_GROUP_ICON = { channel: "📡", adapter: "🧠", "llm-adapter": "🧠", trigger: "⏰", observer: "👁️", service: "🖥️", core: "⚙️", plugin: "🔌" };
-      const moduleGroupLabel = (kind) => (MODULE_GROUP_ICON[kind] ? MODULE_GROUP_ICON[kind] + " " : "") + kindLabel(kind);
-      const groupProvidersByKind = (providers) => {
-        const buckets = new Map();
-        for (const p of providers) {
-          const kind = p.kind || "unknown";
-          if (!buckets.has(kind)) buckets.set(kind, []);
-          buckets.get(kind).push(p);
-        }
-        const orderedKinds = Array.from(buckets.keys()).sort((a, b) => {
-          const ia = MODULE_GROUP_ORDER.indexOf(a);
-          const ib = MODULE_GROUP_ORDER.indexOf(b);
-          if (ia === -1 && ib === -1) return 0; // 미지 kind 둘 다면 등장(Map insertion) 순서 유지
-          if (ia === -1) return 1;
-          if (ib === -1) return -1;
-          return ia - ib;
-        });
-        return orderedKinds.map((kind) => ({ kind, label: moduleGroupLabel(kind), items: buckets.get(kind) }));
-      };
 
       // (검색+접이식 카테고리 — ADR §5·§5.5 마스터-디테일 통일) 그룹 헤더/검색 필터는
       // js/util.js 의 appendCollapsibleGroup·applyListSearchFilter 공용 헬퍼로 이관(능력 뷰와 재사용).
@@ -272,8 +252,7 @@
         setChatPanel("chat");
         // §5: 모듈 리스트 서브패널을 디테일과 나란히 노출(다른 뷰는 이 클래스를 안 붙여 detail-panel
         // 단일 컬럼 그대로 — 회귀 없음).
-        document.getElementById("workbench").classList.remove("show-capabilities");
-        document.getElementById("workbench").classList.add("show-providers");
+        setWorkbenchLayout("providers");
         if (!selectedProviderId && providersCache.length > 0) selectedProviderId = providersCache[0].id;
         renderProviderHub();
       };

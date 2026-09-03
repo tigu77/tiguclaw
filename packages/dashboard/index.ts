@@ -491,7 +491,11 @@ const server = http.createServer((req, res) => {
     //    투명을 **검게 합성**해서, 뚫은 걸 주면 지금과 똑같거나 더 나빠진다.
     //  ★뚫을 때 "어두운 픽셀 제거" 로 하면 **게 몸통의 긁힘 무늬까지 뚫린다**(실측
     //   `23,2,0`). 배경은 푸른 기(B>R)·게 그림자는 붉은 기(R>B)라 색상으로 갈랐다.
-    if ((pathname === "/icon.png" || pathname === "/icon-solid.png") && method === "GET") {
+    //  ★★이름을 **열거하지 않는다** (2026-09-02). 종전엔 두 이름이 손으로 적혀 있었고,
+    //   세 번째(`plugin-default.png`)를 넣는 순간 그 목록이 곧 드리프트가 된다
+    //   ([[feedback_hand_maintained_lists]]). 규칙은 «대시보드 폴더의 png» 하나다 —
+    //   모양으로 판정하므로 경로 탈출(`../`·하위 폴더)은 성립하지 않는다.
+    if (/^\/[a-z0-9][a-z0-9-]*\.png$/.test(pathname) && method === "GET") {
       try {
         const buf = await fs.readFile(path.join(__dirname, path.basename(pathname)));
         res.writeHead(200, {
@@ -646,7 +650,11 @@ const server = http.createServer((req, res) => {
     // 인벤토리 항목 정의 본문 — bridge GET /inventory-item?source= (read). source 쿼리 그대로
     // 변경 이력 — bridge GET /changelog (read). 설정 뷰가 마크다운으로 렌더한다.
     if (pathname === "/api/changelog" && method === "GET") {
-      await proxyJson(res, "/changelog");
+      // ★쿼리를 **그대로 넘긴다**(`?lang=` — 2026-09-02). 종전엔 경로만 넘겨서, 화면이
+      //  언어를 실어도 브리지엔 도착하지 않았다. 프록시가 사슬 가운데 토막이라 양끝만
+      //  보면 안 보인다([[feedback_verify_before_asserting]] — 실제로 그렇게 놓쳤다).
+      //  검증은 브리지가 한다(`localeFromQuery`) — 여기서 다시 판정하면 규칙이 두 벌이 된다.
+      await proxyJson(res, "/changelog" + (url.search ?? ""));
       return;
     }
     // 플러그인 관리 — bridge GET /plugins (read) · POST /plugins/action (admin).
@@ -683,10 +691,16 @@ const server = http.createServer((req, res) => {
     // 업데이트 내역 — bridge GET /update-changelog (read). 같은 `{ markdown }` 모양이라
     // 설정 뷰가 「변경 이력」과 **같은 행 컴포넌트**로 그린다.
     if (pathname === "/api/update-changelog" && method === "GET") {
-      await proxyJson(res, "/update-changelog");
+      await proxyJson(res, "/update-changelog" + (url.search ?? ""));
       return;
     }
     // 전달(bridge 가 allowlist 검사 후 파일 재-Read). 능력 상세뷰 본문 섹션이 소비.
+    // 플러그인 아이콘 — 바이너리라 raw 프록시(첨부와 동형). 없으면 브리지가 404 를 주고
+    // 화면이 기본 아이콘으로 떨어진다. 쿼리를 그대로 넘긴다.
+    if (pathname === "/api/plugin-icon" && method === "GET") {
+      await proxyRaw(res, "/plugin-icon" + (url.search ?? ""));
+      return;
+    }
     if (pathname === "/api/inventory-item" && method === "GET") {
       const qs = url.search ?? "";
       await proxyJson(res, "/inventory-item" + qs);

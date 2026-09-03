@@ -58,6 +58,7 @@ const ROLE_MARK = roleContextBlock({ workerDepth: 1 }).split("\n")[0]!;
 /** 시스템 채널에 있어야 하는 것 = 턴 사이에 안 변하는 것. */
 const STABLE = [
   MARK.system,
+  MARK.memoryIndex,
   PATH_HINT_MARK,
   MARK.agent,
   MARK.agentWarn,
@@ -70,7 +71,11 @@ const STABLE = [
 const VOLATILE = [
   MARK.env,
   MARK.convoContext,
-  MARK.memoryIndex,
+  // ★`memoryIndex` 는 2026-09-02 에 **시스템 채널 꼬리로 옮겼다**(아래 STABLE).
+  //  그때까지 여기 있었던 건 «메모리는 변한다» 였는데, 재보니 **내용이 바뀌는 사건이
+  //  하루 1.7회**(14일 실측)라 성질이 AGENT.md·selfGrowth 와 같았다. 반면 크기는
+  //  33.2KB — 매 턴 상수 99.3KB 의 3분의 1이 **매 콜 정가**로 나가고 있었다.
+  //  ★`memorySnippet` 은 그대로 둔다: 그건 질문마다 달라지는 **검색 결과**다.
   MARK.memorySnippet,
   MARK.foreignDelta,
 ];
@@ -108,12 +113,12 @@ export const check: RegressionCheck = {
 
     const out: Assertion[] = [
       assert(
-        "★안정 조각(SYSTEM.md·AGENT.md·스킬/에이전트 인덱스·프로파일)이 시스템 채널로 간다",
+        "★안정 조각(SYSTEM.md·AGENT.md·메모리 **인덱스**·스킬/에이전트 인덱스·프로파일)이 시스템 채널로 간다",
         misplacedStable.length === 0,
         misplacedStable.length === 0 ? `${STABLE.length}개 전부` : `누락 ${misplacedStable.join(",")}`,
       ),
       assert(
-        "★휘발 조각(env·대화 컨텍스트·메모리·foreign delta)은 user 채널에 남는다",
+        "★휘발 조각(env·대화 컨텍스트·메모리 **스니펫**·foreign delta)은 user 채널에 남는다",
         misplacedVolatile.length === 0,
         misplacedVolatile.length === 0
           ? `${VOLATILE.length}개 전부`
@@ -182,19 +187,39 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★블록 *안*의 순서도 캐시 성질이다 — 프리픽스는 앞에서만 매칭하므로 "가장 안 변하는
-    //  것이 앞". 특히 AGENT.md(비서가 수시로 Edit)가 스킬·에이전트 인덱스보다 앞에 오면
-    //  한 줄 수정이 뒤따르는 28KB 를 통째로 무효화한다. 소속만 검사하면 재배열이 그냥 통과한다.
+    // ★블록 *안*의 순서도 캐시 성질이다 — 프리픽스는 앞에서만 매칭한다. 소속만 검사하면
+    //  재배열이 그냥 통과하므로 순서를 직접 본다. **축이 둘**이다:
+    //   ①변동성 — 안 변하는 것이 앞(SYSTEM.md 가 맨 앞).
+    //   ②★역할 — **공용이 앞, 역할 전용(depth 0 만)이 뒤**.
+    //
+    // ★②는 2026-09-03 실측으로 들어왔다. `agentIndex`·`modelProfiles` 는 비서에게만 실리는데
+    //  **한가운데 있었다** — 자식(서브에이전트·매니저)의 프리픽스가 거기서 갈려 **뒤따르는
+    //  것이 전부 두 벌 캐시됐다. 내용이 똑같은데도.** 메인↔자식 공유가 44,093B(53%)뿐이고
+    //  뒤의 39,147B(47%)가 역할마다 따로 잡혔다. 꼬리로 내려 공유가 78,508B(94%)가 됐다.
+    //  자식이 입력 토큰의 66%를 쓰므로(위임 런 실측) 이 배치가 비용의 큰 쪽을 정한다.
+    //
+    // ★둘이 충돌하면 **역할 축이 이긴다**: `agent`(AGENT.md)는 비서가 수시로 고치지만
+    //  **공용**이라 역할 전용보다 앞이다 — 그래야 자식이 거기까지 공유한다.
     const at = (m: string): number => stable.indexOf(m);
     out.push(
       assert(
-        "★안정 블록 안에서 SYSTEM.md 가 맨 앞, AGENT.md 3인방이 꼬리",
+        "★①변동성 축 — SYSTEM.md 가 맨 앞, 스킬 인덱스가 그다음, AGENT.md 가 그 뒤",
         at(MARK.system) < at(MARK.skillIndex) &&
-          at(MARK.skillIndex) < at(MARK.agentIndex) &&
-          at(MARK.agentIndex) < at(MARK.modelProfiles) &&
-          at(MARK.modelProfiles) < at(MARK.agent) &&
+          at(MARK.skillIndex) < at(MARK.agent) &&
           at(MARK.agent) < at(MARK.agentWarn),
-        `system=${at(MARK.system)} skill=${at(MARK.skillIndex)} agentIdx=${at(MARK.agentIndex)} profiles=${at(MARK.modelProfiles)} agent=${at(MARK.agent)} warn=${at(MARK.agentWarn)}`,
+        `system=${at(MARK.system)} skill=${at(MARK.skillIndex)} agent=${at(MARK.agent)} warn=${at(MARK.agentWarn)}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★★②역할 축 — 역할 전용(agentIndex·modelProfiles)이 **공용 전부보다 뒤**다. 앞으로 오면 자식 프리픽스가 거기서 갈려 뒤가 통째로 두 벌 캐시된다(실제로 그랬다: 공유 53%)",
+        at(MARK.agentIndex) > at(MARK.system) &&
+          at(MARK.agentIndex) > at(MARK.skillIndex) &&
+          at(MARK.agentIndex) > at(MARK.memoryIndex) &&
+          at(MARK.agentIndex) > at(MARK.agent) &&
+          at(MARK.agentIndex) > at(MARK.agentWarn) &&
+          at(MARK.modelProfiles) > at(MARK.agentWarn),
+        `agentIdx=${at(MARK.agentIndex)} profiles=${at(MARK.modelProfiles)} · 공용 최댓값=${Math.max(at(MARK.system), at(MARK.skillIndex), at(MARK.memoryIndex), at(MARK.agent), at(MARK.agentWarn))}`,
       ),
     );
 

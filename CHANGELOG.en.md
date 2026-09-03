@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/memory-tidy` — a command that reviews your saved memories, merges duplicates and proposes
+  what to drop. The assistant also offers it when the memory index reaches its cap, which you
+  can now set with `memory.indexCapBytes`.
+- Plugin categories can be collapsed and searched, matching the inventory. The detail pane adds
+  kind, version, author, website and license — only the fields a plugin actually declares.
+- The plugin list is grouped by kind — channel, trigger, observer, service. Bundled plugins now
+  carry descriptions, so the list says what each one does.
+- The plugin list now shows icon, name and description only; selecting one opens its detail on
+  the right. A plugin can ship its own `icon` (png/webp); without one a default is used.
+- A plugin can declare a setting read-only. The reverse is not possible — secrets and `.env`
+  values stay protected no matter what a plugin declares.
+- Plugin settings now surface values that live in your home `.env` — bridge and dashboard
+  ports, Telegram allowed users, whether a bot token is set. Values owned by `.env` are shown
+  read-only next to the variable they come from (secrets stay set/unset only).
+- The dashboard module detail now shows what each LLM provider offers — by vendor when there
+  are many models, otherwise per model with context size and tool support. Values the vendor
+  does not report are left blank.
+- `/providers` — lists the providers you have connected and the models each one offers.
+  Providers with many models are summarised by vendor first, and you can narrow by name
+  (`/providers openrouter sonnet`). Providers that could not be queried say so.
+
+### Changed
+
+- Delegated work now runs in parallel. The assistant hands out independent jobs and collects
+  them in one go, instead of waiting for each one in turn — four sub-tasks that used to take
+  the sum of their times now take about the longest one.
+- Sub-agents and managers no longer carry your whole memory list. They still get the entries
+  relevant to the job they were given, so they know what they need without paying for the rest.
+- `tiguclaw doctor` now recognises a broken global link — when the `tiguclaw` command is still
+  on your PATH but points nowhere — and tells you to run `npm link` in the install folder.
+  Previously it only said it could not tell.
+- When a reply from another session is copied to your channel, the label now shows the session
+  key instead of `[unknown]`, so you can tell which run it came from. A named session still
+  shows its name.
+- Documentation file names now state their language — `docs/security.ko.md` (Korean) ·
+  `docs/security.en.md` (English). Links to the old names need updating. `README.md` is
+  unchanged.
+
 ## [0.46.0] - 2026-09-02
 
 ### Added
@@ -26,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The changelog is split by language — [`CHANGELOG.md`](CHANGELOG.md) (English) ·
+- The changelog is split by language — [`CHANGELOG.en.md`](CHANGELOG.en.md) (English) ·
   [`CHANGELOG.ko.md`](CHANGELOG.ko.md) (Korean).
 
 ## [0.45.0] - 2026-09-01

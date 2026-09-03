@@ -69,17 +69,54 @@ export const resolveGlobalCommand = (
  *  npm 이 링크한 패키지 디렉터리의 realpath. 양 플랫폼에서 같은 답을 준다.
  *  (같은 판단을 세 번째로 다시 구현하지 않으려고 여기 한 번만 두고 판정은 순수 함수로 뺀다.)
  */
-export const resolveLinkedInstallRoot = (): string | null => {
+export type LinkedInstall =
+  /** npm 이 링크한 패키지 폴더가 **실제로 있다**. */
+  | { kind: "linked"; root: string }
+  /**
+   * ★npm 은 답했는데 **그 폴더가 없다** — 정션·심링크가 끊긴 것.
+   *
+   * 이걸 «모름» 과 가르는 게 이 타입의 이유다 (2026-09-03 사용자 신고). 종전엔 둘 다
+   * `null` 이라 판정이 «판정 불가» 로 떨어졌고, 처방이 *"이 설치를 확실히 쓰려면
+   * `node bin/tiguclaw.mjs <명령>`"* 였다 — **우회로만 알려주고 고치는 법을 안 알려줬다.**
+   * 실제 사례: 윈도우에서 `AppData\Roaming\npm\node_modules\tiguclaw` 가 통째로
+   * 사라졌는데 `.cmd` shim 만 남아, `tiguclaw update` 가 날것의 `MODULE_NOT_FOUND`
+   * 스택으로 죽었다. 레포는 멀쩡했고 답은 `npm link` 한 줄이었다.
+   */
+  | { kind: "broken"; expected: string }
+  /** npm 조회 자체가 실패 — 정말 모른다(npm 부재·권한·비정상 종료). */
+  | { kind: "unknown" };
+
+/**
+ * 전역 `tiguclaw` 가 **실제로 어느 설치를 서빙하나** — `npm root -g/tiguclaw` 의 실체.
+ *
+ * ★PATH 상의 파일 경로로는 못 판정한다 (2026-08-20 적대 검토 B-F3). 유닉스에선 그게
+ *  심링크라 `realpath` 로 풀리지만, **윈도우에선 `cmd-shim` 이 만든 일반 파일**
+ *  (`tiguclaw`·`.cmd`·`.ps1`)이라 풀 것이 없다 — 결과가 영원히 `%APPDATA%\npm\…` 이고
+ *  설치 루트 밖이라, **모든 윈도우 사용자가 매번 "다른 설치본" 오경보**를 받는다.
+ *
+ * ★그래서 `src/cli.ts globalTiguclawIsOurs()` 가 쓰는 것과 **같은 근거**로 본다:
+ *  npm 이 링크한 패키지 디렉터리의 realpath. 양 플랫폼에서 같은 답을 준다.
+ *
+ * ★**실패를 둘로 가른다** — «조회 실패» 와 «조회는 됐는데 폴더가 없다» 는 처방이 다르다.
+ *  전자는 정말 모르는 것이고, 후자는 **답을 아는 것**이다(`npm link`).
+ */
+export const resolveLinkedInstall = (): LinkedInstall => {
+  let rootOut: string;
   try {
-    const rootOut = execFileSync("npm", ["root", "-g"], {
+    rootOut = execFileSync("npm", ["root", "-g"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       shell: process.platform === "win32",
     });
-    const pkg = path.join(rootOut.trim(), "tiguclaw");
-    return path.resolve(realpathSync(pkg));
   } catch {
-    return null; // 전역 설치가 없거나 링크가 끊겼다.
+    return { kind: "unknown" }; // npm 이 없거나 비정상 종료 — 정말 모른다.
+  }
+  const pkg = path.join(rootOut.trim(), "tiguclaw");
+  try {
+    return { kind: "linked", root: path.resolve(realpathSync(pkg)) };
+  } catch {
+    // npm 은 답했는데 그 경로가 없다 = **링크가 끊겼다**(모르는 게 아니다).
+    return { kind: "broken", expected: path.resolve(pkg) };
   }
 };
 
@@ -87,6 +124,11 @@ export type GlobalCommandVerdict =
   | { kind: "ok"; detail: string }
   | { kind: "missing"; detail: string; fix: string }
   | { kind: "elsewhere"; detail: string; fix: string }
+  /**
+   * ★전역 링크가 **끊겼다** — 명령은 PATH 에 있는데 그게 가리키는 패키지 폴더가 없다.
+   *  «모름» 과 가르는 이유는 처방이 있기 때문이다(`npm link` 한 줄).
+   */
+  | { kind: "broken-link"; detail: string; fix: string }
   // ★"모른다" 를 분리한다 — 밖에 있다고 **다른 설치라고 단정하면** 윈도우에서 전원 오경보다.
   | { kind: "unknown"; detail: string; fix: string };
 
@@ -100,8 +142,8 @@ export type GlobalCommandVerdict =
 export const judgeGlobalCommand = (
   resolved: string | null,
   repoRoot: string,
-  /** `npm root -g/tiguclaw` 실체(있으면 이게 **1순위 근거**). 미지정=조회 실패. */
-  linkedRoot?: string | null,
+  /** `npm root -g/tiguclaw` 조회 결과. 미지정=조회 안 함(=`unknown` 과 동형). */
+  linked?: LinkedInstall,
 ): GlobalCommandVerdict => {
   if (resolved === null) {
     return {
@@ -134,12 +176,25 @@ export const judgeGlobalCommand = (
   //   `linkedRoot` 는 **명령이 이 설치 밖일 때** 그게 어디로 가는지를 설명하는 근거다.
   if (inside(resolved)) return { kind: "ok", detail: resolved };
   // 2순위: 명령이 밖이면(윈도우 shim 이 대표적) npm 이 링크한 실체로 판정한다.
-  if (linkedRoot !== undefined && linkedRoot !== null) {
-    if (inside(linkedRoot)) return { kind: "ok", detail: `${resolved} → ${linkedRoot}` };
+  if (linked?.kind === "linked") {
+    if (inside(linked.root)) return { kind: "ok", detail: `${resolved} → ${linked.root}` };
     return {
       kind: "elsewhere",
-      detail: `${resolved} → ${linkedRoot} (이 설치가 아닙니다)`,
+      detail: `${resolved} → ${linked.root} (이 설치가 아닙니다)`,
       fix: "다른 tiguclaw 설치본이 전역 명령을 잡고 있습니다. 이 설치를 쓰려면 여기서 `npm run onboard` 를 다시 돌리거나, 명령마다 `node bin/tiguclaw.mjs <명령>` 을 쓰세요.",
+    };
+  }
+  // ★2.5순위: **링크가 끊겼다** — 모르는 게 아니라 답을 아는 상태다 (2026-09-03 사용자 신고).
+  //  명령은 PATH 에 남아 있는데 그게 가리키는 패키지 폴더가 없다. 그러면 `tiguclaw <무엇>`
+  //  이 전부 날것의 `MODULE_NOT_FOUND` 스택으로 죽는다 — **`tiguclaw doctor` 조차** 같은
+  //  shim 을 지나므로, 이 진단에 도달할 수 있는 건 `node bin/tiguclaw.mjs doctor` 뿐이다.
+  //  종전엔 이 경우가 아래 «모름» 으로 흘러 *"판정 불가"* 라고 답했다 — 고치는 법을 아는데
+  //  우회로만 알려준 것이다.
+  if (linked?.kind === "broken") {
+    return {
+      kind: "broken-link",
+      detail: `${resolved} → ${linked.expected} (없음 — 전역 링크가 끊겼습니다)`,
+      fix: "설치 폴더에서 `npm link` 로 전역 명령을 다시 거세요. 그 전까진 `node bin/tiguclaw.mjs <명령>` 으로 대신할 수 있습니다.",
     };
   }
   // 3순위(링크 조회 실패 + 명령도 밖): **단정하지 않는다** — 모른다고 말한다.

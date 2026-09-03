@@ -524,7 +524,7 @@ const acquireAttachment = async (
 let cachedBot: Bot | null = null;
 
 // 소유자 식별 집합 파싱 — TELEGRAM_ALLOWED_USER_IDS(콤마 구분 user id). 빈 = 잠금.
-// 다중 ID = 미래 ① 공유 팀 비서 seam (배포 계획서 §6 / docs/security.md).
+// 다중 ID = 미래 ① 공유 팀 비서 seam (배포 계획서 §6 / docs/security.ko.md).
 const parseAllowedTelegramIds = (): Set<string> =>
   new Set(
     (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")

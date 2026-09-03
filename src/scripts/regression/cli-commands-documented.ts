@@ -41,7 +41,7 @@ const NOT_USER_FACING = new Set(["print"]);
 /**
  * 사용자가 읽는 **문서 묶음**을 합쳐 본다 — 한 파일을 지목하지 않는다.
  *
- * ★2026-08-11: 설치·운영 상세를 `docs/setup.md` 로 옮기자 이 검사가 울었다. 명령이 사라진
+ * ★2026-08-11: 설치·운영 상세를 `docs/setup.ko.md` 로 옮기자 이 검사가 울었다. 명령이 사라진
  *  게 아니라 **자리가 바뀐 것**이었다. 대상을 README 한 파일로 박아두면, 문서를 정리할
  *  때마다 게이트가 울어서 결국 게이트를 무시하게 된다(이 레포가 이미 겪은 형상).
  *  판정은 "사용자가 읽는 곳에 있는가" 이지 "어느 파일에 있는가" 가 아니다.
@@ -52,7 +52,7 @@ const readUserDocs = (): { text: string; from: string[] } | null => {
   for (const rel of [
     "_workspace/public-overlay/README.md", // dev
     "README.md", // 배포 레포
-    "docs/setup.md",
+    "docs/setup.ko.md",
   ]) {
     try {
       parts.push(readFileSync(path.join(REPO, rel), "utf8"));

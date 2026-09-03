@@ -4,7 +4,7 @@
 
 tiguclaw runs on **your own machine** with access to your shell, files, and
 credentials — the same self-elected model as Claude Code. Read
-[`docs/security.md`](../docs/security.md) ([English](../docs/security.en.md)) for the
+[`docs/security.ko.md`](../docs/security.ko.md) ([English](../docs/security.en.md)) for the
 threat model and the boundaries the runtime does and does not enforce.
 
 ## Reporting a vulnerability

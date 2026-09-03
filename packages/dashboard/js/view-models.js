@@ -220,8 +220,7 @@
       const showModels = () => {
         setActiveNav("models");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        document.getElementById("workbench").classList.remove("show-capabilities");
+        setWorkbenchLayout();
         const root = document.getElementById("detail-panel");
         root.innerHTML = "";
         const wrap = document.createElement("div");
@@ -574,8 +573,7 @@
       const showSettings = async (opts) => {
         setActiveNav("settings");
         setChatPanel("chat");
-        document.getElementById("workbench").classList.remove("show-providers");
-        document.getElementById("workbench").classList.remove("show-capabilities");
+        setWorkbenchLayout();
         const root = document.getElementById("detail-panel");
         root.innerHTML =
           '<div class="page-view"><div class="detail-head"><div class="detail-accent"></div>' +
@@ -693,7 +691,10 @@
           head: i18n("models.changelog.head"),
           desc: i18n("models.changelog.desc"),
           missing: i18n("models.changelog.missing"),
-          url: "/api/changelog",
+          // ★화면 언어를 실어 보낸다 (2026-09-02) — v0.46.0 에서 변경 내역을 언어별로 갈랐다.
+          //  안 실으면 한국어 화면에서도 영어가 온다(`sse.js` 의 고정 "ko-KR" 날짜와 같은 부류).
+          //  서버는 그 언어 파일이 없으면 기본(영어)으로 떨어진다 — 화면은 그걸 몰라도 된다.
+          url: `/api/changelog?lang=${encodeURIComponent(currentLocale())}`,
         });
 
       // ★「받을 것」은 「가진 것」 **바로 밑**에 둔다 — 둘은 같은 질문의 과거·미래형이라
@@ -715,7 +716,7 @@
           head: i18n("models.updateNotes.head"),
           desc: i18n("models.updateNotes.desc"),
           missing: i18n("models.updateNotes.missing"),
-          url: "/api/update-changelog",
+          url: `/api/update-changelog?lang=${encodeURIComponent(currentLocale())}`,
         });
       };
 

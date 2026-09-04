@@ -650,5 +650,6 @@
   "settings.memoryCap.hint": "비서가 매 턴 보는 «무엇을 기억하고 있나» 목록의 상한입니다. 줄이면 프롬프트가 가벼워지고, 0으로 두면 목록을 아예 싣지 않습니다(검색으로는 계속 닿습니다).",
   "settings.memoryCap.off": "끔 — 목록 없음",
   "settings.memoryCap.saved": "메모리 인덱스 크기를 {value} 로 바꿨습니다.",
-  "settings.memoryCap.reset": "기본값"
+  "settings.memoryCap.reset": "기본값",
+  "bg.task.truncated": " … (여기까지만 남아 있습니다 — 원문은 작업이 끝나 사라졌습니다)"
 }

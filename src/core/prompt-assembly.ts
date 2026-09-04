@@ -17,7 +17,6 @@ import { readMemoryIndexCapBytes } from "./settings.js";
 import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs } from "./worker-jobs.js";
 import { pendingOptionsLine } from "./pending-options.js";
-import { childPromptOverrides } from "./child-prompt-experiment.js";
 import { scopeConstitution } from "./constitution-scope.js";
 import { turnKindOf } from "./llm-runtime/capability-reach.js";
 import { readFileSync } from "node:fs";
@@ -489,6 +488,24 @@ interface ContextSlot {
    * 거기서 갈려 **뒤따르는 공용 조각이 역할마다 두 벌 캐시된다**(내용이 같은데도).
    */
   readonly roleScoped?: boolean;
+
+  /**
+   * ★**역할마다 내용이 다른가** — `roleScoped` 와 다르다. 저쪽은 «자식에겐 **빈다**»,
+   * 이쪽은 «자식에게도 가는데 **다른 값**이다»(헌법 역할 분할·스킬 인덱스 reach).
+   *
+   * 왜 범주가 따로 필요했나 (2026-09-04 3R P-1): 계약을 지키는 검사가 `roleScoped === true`
+   * 만 보고 있어서, **분류가 없는 세 번째 부류**는 어디에 놓든 아무도 안 봤다. 실제로
+   * `system`(슬롯 #1)·`skillIndex`(#6)가 역할마다 달라지면서 비서↔자식 공유 프리픽스가
+   * **94% → 3.2%** 로 끊겼는데 검사는 조용했다. **범주가 셋인데 계약이 둘만 알았다.**
+   *
+   * ★그래서 «뒤로 옮겨라» 를 강제하지는 **않는다** — 청구서를 이미 쟀기 때문이다:
+   *  헌법 축 실측 비용은 **+0.7%**(대조군 잡음 1.7% 안)였고, 같은 배치에서 스킬 축이
+   *  −8.8% 를 냈다(합계 −7.8%). 기제(프리픽스가 앞에서 갈린다)는 실재하지만 **금액이
+   *  잡음 안**이고, 헌법을 꼬리로 보내는 것은 재본 적 없는 프롬프트 설계 변경이다.
+   *  여기서 강제하는 것은 **분류를 빠뜨리지 않는 것** 하나다 — 다음에 역할마다 다른
+   *  슬롯이 생기면 사람이 한 번 보게 된다.
+   */
+  readonly roleVarying?: boolean;
 }
 
 /**
@@ -571,6 +588,12 @@ export const roleScopedSlotKeys = (): string[] =>
     .filter((s) => s.roleScoped === true)
     .map((s) => s.key);
 
+/** **역할마다 값이 다른 슬롯 키** — 위와 같은 이유로 이름이 아니라 성질에서 파생한다. */
+export const roleVaryingSlotKeys = (): string[] =>
+  buildContextSlots(EMPTY_SLOT_INPUT)
+    .filter((s) => s.roleVarying === true)
+    .map((s) => s.key);
+
 const EMPTY_SLOT_INPUT: SystemContextInput = {
     system: "",
     env: "",
@@ -643,10 +666,7 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => {
   //  매니저도 못 쓴다. 자기가 못 하는 일에 대한 지시를 매 호출 받는 건 크기가 아니라
   //  **정확성** 문제다. ★메인은 바이트 단위로 종전과 같다(표시만 걷힌다).
   const system = scopeConstitution(input.system, turnKindOf(input.roleSource)).body;
-  // 그 위에 **측정 전용** 게이트(스킬 인덱스 — 미결). 기본이면 `{}` 라 종전 그대로다.
-  const skillIndex =
-    childPromptOverrides(input.roleSource).skillIndex ?? input.skillIndex;
-  return buildContextSlotsInner(input, system, skillIndex);
+  return buildContextSlotsInner(input, system, input.skillIndex);
 };
 
 const buildContextSlotsInner = (
@@ -654,7 +674,7 @@ const buildContextSlotsInner = (
   system: string,
   skillIndexText: string,
 ): ContextSlot[] => [
-  { key: "system", text: system, channel: "system" },
+  { key: "system", text: system, channel: "system", roleVarying: true },
   // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면
   // 자정마다 시스템 채널 전체(30KB)의 캐시를 깨뜨린다. user 채널이 정답.
   { key: "env", text: input.env, channel: "user" },
@@ -662,7 +682,7 @@ const buildContextSlotsInner = (
   // claude 전용 — 그 외 어댑터는 ""(빈 슬롯은 걸러진다).
   { key: "foreignDelta", text: input.foreignDelta ?? "", channel: "user" },
   { key: "memorySnippet", text: input.memorySnippet, channel: "user" },
-  { key: "skillIndex", text: skillIndexText, channel: "system" },
+  { key: "skillIndex", text: skillIndexText, channel: "system", roleVarying: true },
   // ★AGENT.md 3인방을 시스템 채널의 **꼬리**에 둔다 (2026-07-30 검토 지적):
   //  안정 조각 중 가장 자주 바뀌는 게 AGENT.md 다 — 비서 자신이 정체성·습관을 수시로
   //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
@@ -725,7 +745,10 @@ const buildContextSlotsInner = (
     text: inlineSuggestionSlotText(input.roleSource, readSuggestionSettings().enabled),
     channel: "system",
   },
-  { key: "role", text: roleContextBlock(input.roleSource), channel: "system" },
+  // ★역할마다 다른 값이다(정의상) — 그래서 **꼬리**에 있고, 그 사실을 선언해 둔다.
+  //  이 선언은 3R 의 새 검사가 «갈리는데 선언이 없다» 며 **스스로 찾아냈다**(내가 목록에
+  //  적은 게 아니다 — 그게 이름 열거 대신 성질로 판정한 값이다).
+  { key: "role", text: roleContextBlock(input.roleSource), channel: "system", roleVarying: true },
 ];
 
 /**

@@ -372,6 +372,15 @@ const SKILL_INDEX_CAP = 40;
  */
 const SKILL_INDEX_CAP_BYTES = 25_600;
 
+/**
+ * `find_skills` 한 응답의 최대 항목 수.
+ *
+ * ★**잘리면 잘렸다고 말한다** — 이 상한 자체는 응답 크기를 묶는 것이고, 조용히 자르면
+ *  모델이 «전체를 봤다» 고 믿는다(적대 검토 P-3: 122개 도달인데 «122개(전체)» 라 적고
+ *  50줄만 줬다). 넘치면 «N개 더 있습니다 — query 로 좁히세요» 를 붙인다.
+ */
+const FIND_SKILLS_MAX = 50;
+
 // 사용빈도 랭킹 재료 — skill_usage(일반 store 테이블, self-growth 가 채움). 코어는
 // opportunistic read(빈 테이블·미초기화 시 무랭킹 폴백 — 플러그인 *의존* 아님).
 const skillUsageRank = (): Map<string, number> => {
@@ -622,15 +631,18 @@ export const createSkillInvokeMcpServer = (
         matched.sort(
           (a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0),
         );
-        const lines = matched
-          .slice(0, 50)
-          .map((s) => `- ${s.name}: ${s.description}`);
-        // ★q 가 빈 문자열이면 «전체 목록» 이다 — 그렇게 읽히는 문구를 준다(«'' 매칭» 은
-        //  모델에게 «검색이 이상하게 됐다» 로 읽힌다).
+        const shown = matched.slice(0, FIND_SKILLS_MAX);
+        const lines = shown.map((s) => `- ${s.name}: ${s.description}`);
+        // ★**잘렸으면 잘렸다고 말한다** (2026-09-04 적대 검토 P-3). 종전엔 50건에서 자르면서
+        //  머리말이 «N개(전체)» 라고 했다 — 모델이 «다 봤다» 고 믿는다. 열거 경로를 연 이유가
+        //  «무엇이 있는지 모르면 키워드를 못 짠다» 였는데, 그 순환이 0 → 50 으로 옮겨졌을 뿐이고
+        //  라벨이 거짓이라 **더 나빴다**. 잘렸으면 좁히는 법을 같이 준다(막다른 길 금지).
+        const rest = matched.length - shown.length;
+        const tail = rest > 0 ? `\n\n… ${rest}개 더 있습니다 — query 로 좁혀서 다시 부르세요.` : "";
         return okText(
-          q === ""
-            ? `사용 가능 스킬 ${matched.length}개(전체):\n${lines.join("\n")}`
-            : `'${args.query}' 매칭 스킬 ${matched.length}개:\n${lines.join("\n")}`,
+          (q === ""
+            ? `사용 가능 스킬 ${matched.length}개${rest > 0 ? ` 중 ${shown.length}개` : "(전체)"}:\n${lines.join("\n")}`
+            : `'${args.query}' 매칭 스킬 ${matched.length}개${rest > 0 ? ` 중 ${shown.length}개` : ""}:\n${lines.join("\n")}`) + tail,
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));

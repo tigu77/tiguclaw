@@ -18,6 +18,7 @@ import {
   composeSystemChannel,
   contextSlotKeys,
   roleScopedSlotKeys,
+  roleVaryingSlotKeys,
   buildContextSlots,
   splitSystemContext,
 } from "../../core/prompt-assembly.js";
@@ -240,6 +241,55 @@ export const check: RegressionCheck = {
           "★역할 전용이 **이름 목록이 아니라 정의점에서** 나온다 — 새 슬롯이 생기면 저절로 검사된다",
           roleKeys.length >= 3 && roleKeys.includes("memoryIndex"),
           `roleScoped: ${roleKeys.join(" · ")}`,
+        ),
+      );
+    }
+
+    // ★★③**세 번째 범주** — «자식에겐 빈다»(`roleScoped`)도 «공용»도 아닌 «역할마다 **다른
+    //  값**»이 있다(2026-09-04 3R P-1). 위 ②는 `roleScoped === true` 만 보므로 그 부류는
+    //  **분류 자체가 없어** 어디에 놓든 아무도 안 봤다. 실제로 `system`(헌법)이 슬롯 #1 에서
+    //  역할마다 갈리면서 비서↔자식 공유 프리픽스가 94% → 3.2% 로 끊겼는데 조용했다.
+    //  ★**같은 입력을 세 칸으로 조립해서** 실제로 갈리는 슬롯을 찾는다 — 선언을 믿지 않는다.
+    //   갈리는데 선언이 없으면 운다(«범주가 셋인데 계약이 둘만 안다» 의 재발 방지).
+    //  ★한계를 정직하게: 이 검사는 **슬롯 안에서** 갈리는 것만 본다. `skillIndex` 는 어댑터가
+    //   이미 걸러서 넘기므로 여기선 안 갈린다 — 그쪽 배선은 `skill-index-role-scope` 가
+    //   어댑터 3벌 × 두 반쪽(인덱스·find_skills)으로 잰다.
+    {
+      const declared = new Set([...roleScopedSlotKeys(), ...roleVaryingSlotKeys()]);
+      /**
+       * 세 칸이 **같은 입력**을 받게 한다 — 갈리면 그건 순전히 역할 때문이다.
+       * ★헌법에 **실제 표시를 넣는다.** 첫 판은 표시 없는 문자열이라 `system` 이 애초에
+       *  안 갈렸고, 그래서 그 선언을 지우는 변이가 **통과했다**. 재는 재료에 판별력이
+       *  없으면 검사는 «갈리는 게 없다» 를 «다 선언됐다» 로 보고한다.
+       */
+      const FENCED = `${MARK.system}\n<!--role:main-->\n비서 전용\n<!--/role-->\n<!--role:manager-->\n매니저까지\n<!--/role-->\n`;
+      const EMPTY_FOR_ROLE = {
+        system: FENCED, env: "", agent: "", agentWarn: "", convoContext: "",
+        memoryIndex: MARK.memoryIndex, memorySnippet: "", skillIndex: MARK.skillIndex,
+        agentIndex: MARK.agentIndex, toolNudge: "", roleSource: {},
+      };
+      const forRole = (rs: Record<string, unknown>): Map<string, string> =>
+        new Map(
+          buildContextSlots({ ...EMPTY_FOR_ROLE, roleSource: rs } as never).map(
+            (sl) => [sl.key, sl.text] as const,
+          ),
+        );
+      const asMain = forRole({});
+      const asSub = forRole({ subagentDepth: 1 });
+      const asMgr = forRole({ workerDepth: 1 });
+      const varying = [...asMain.keys()].filter(
+        (k) => asMain.get(k) !== asSub.get(k) || asMain.get(k) !== asMgr.get(k),
+      );
+      const undeclared = varying.filter((k) => !declared.has(k));
+      out.push(
+        assert(
+          "★역할마다 값이 갈리는 슬롯은 **전부 선언돼 있다**(공용인 척하는 슬롯 0 — 프리픽스가 거기서 끊긴다)",
+          varying.length > 0 && undeclared.length === 0,
+          varying.length === 0
+            ? "★갈리는 슬롯을 하나도 못 찾았다(검사가 공허하다)"
+            : undeclared.length === 0
+              ? `갈림 ${varying.join("·")} — 전부 선언됨`
+              : `★미선언 ${undeclared.join("·")}`,
         ),
       );
     }

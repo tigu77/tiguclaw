@@ -218,6 +218,12 @@ const main = async () => {
   //    index.html·marked.min.js·highlight.min.js·package.json·README.md 는 안 옮긴다 → 옆에 복사.
   //    없으면 built 대시보드가 정적파일 로드 실패(HTML 0 bytes). .ts 는 이미 .js 로 emit.
   await copyTree("packages", { excludeTs: true });
+  // ★**여기도 고아를 지운다** (2026-09-04 3R). `plugins` 와 **같은 모양**인데 한 줄이
+  //  빠져 있었다 — 08-26 사고를 고치며 옆 레인을 안 본 것이 이걸로 세 번째다(그때 `plugins`
+  //  만, 09-04 에 `skills`·`agents` 를, 이제 `packages`). 패키지를 지우거나 이름을 바꾸면
+  //  `dist/packages/` 에 옛 트리가 남는다. 로더가 훑지 않아 «계속 돈다» 는 아니지만,
+  //  `dist` 는 배포·설치가 통째로 실어 나르는 트리다.
+  await pruneOrphanDirs("packages");
 
   log("done.");
 };

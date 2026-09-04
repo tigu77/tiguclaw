@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-04
+
 ### Changed
 
 - Delegated agents and managers are now briefed only on what they can actually do.
@@ -29,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Expanding a background job card now shows the **full** instructions. They were
+  previously cut at 500 characters, and the same card would suddenly grow longer after a
+  refresh. If the job has ended and the original text is gone, the card says so.
 - Deleted skills and agents no longer linger in an installation and keep loading.
 
 
@@ -323,7 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...HEAD
+[0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...v0.45.0

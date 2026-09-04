@@ -44,12 +44,17 @@ export const check: RegressionCheck = {
     // 스크립트는 `dist/` 존재를 선행 조건으로 본다(없으면 방어적으로 아무것도 안 한다).
     writeFileSync(path.join(dist, ".keep"), "");
     // tsc 산출물이 섞이는 자리를 흉내 — plugins 는 통째 prune 하면 안 되는 레인이다.
-    mkdirSync(path.join(dist, "plugins", "keeper"), { recursive: true });
-    writeFileSync(path.join(dist, "plugins", "keeper", "index.js"), "// tsc 산출물");
+    for (const lane of ["plugins", "packages"]) {
+      mkdirSync(path.join(dist, lane, "keeper"), { recursive: true });
+      writeFileSync(path.join(dist, lane, "keeper", "index.js"), "// tsc 산출물");
+      // 소스에 대응이 **없는** 트리 — 지워진 플러그인·패키지의 옛 산출물을 흉내낸다.
+      mkdirSync(path.join(dist, lane, "orphan"), { recursive: true });
+      writeFileSync(path.join(dist, lane, "orphan", "index.js"), "// 지워진 것의 잔해");
+    }
 
     seed(tmp, "skills", ["alive", "doomed"]);
     seed(tmp, "agents", ["alive-agent", "doomed-agent"]);
-    mkdirSync(path.join(tmp, "plugins", "keeper"), { recursive: true });
+    for (const lane of ["plugins", "packages"]) mkdirSync(path.join(tmp, lane, "keeper"), { recursive: true });
     writeFileSync(path.join(tmp, "SYSTEM.md"), "헌법");
 
     // ★스크립트를 **임시 레포 안으로 복사해서** 돌린다 — `repoRoot` 를 자기 파일 위치에서
@@ -118,14 +123,35 @@ export const check: RegressionCheck = {
           `skills=[${readdirSync(path.join(dist, "skills")).join(",")}] agents=[${readdirSync(path.join(dist, "agents")).join(",")}]`,
         ),
       );
-      // ★`plugins` 는 통째 prune 하면 tsc 산출물이 날아간다 — 그 레인은 다른 처방(orphan)이다.
-      out.push(
-        assert(
-          "★plugins 의 tsc 산출물은 안 지운다 — 그 레인은 통째 prune 이 아니다",
-          existsSync(path.join(dist, "plugins", "keeper", "index.js")),
-          existsSync(path.join(dist, "plugins", "keeper", "index.js")) ? "보존" : "★날아갔다",
-        ),
-      );
+      // ★그리고 **고아 디렉터리**(소스에 대응이 없는 것)는 두 레인 다 사라져야 한다.
+      //  ★이 축이 이 검사에 없었다 (2026-09-04 3R R-14): `pruneOrphanDirs("plugins")` 호출을
+      //   지웠는데 **여기는 초록**이었고 옆 게이트가 대신 잡았다. 「지운 것이 빌드본에 남지
+      //   않는다」를 이름에 걸고 있는 검사가 그 절반(prune 레인)만 보고 있었다.
+      //   그리고 `packages` 는 **호출 자체가 없었다** — 옆 레인을 안 본 것이 세 번째다.
+      for (const lane of ["plugins", "packages"]) {
+        out.push(
+          assert(
+            `★${lane} 의 고아 디렉터리는 사라진다 — 소스에 없는 것이 빌드본에 남으면 안 된다`,
+            !existsSync(path.join(dist, lane, "orphan")),
+            existsSync(path.join(dist, lane, "orphan")) ? "★남아 있다" : "사라짐",
+          ),
+        );
+      }
+      // ★`plugins`·`packages` 는 통째 prune 하면 tsc 산출물이 날아간다 — 다른 처방(orphan)이다.
+      //  ★**두 레인을 다 심는다** (2026-09-04 적대 검토 G-4). 종전엔 `plugins` 만 심어서,
+      //   `packages` 에 prune 을 달면 **built 대시보드 서버(dist/packages/dashboard/index.js)가
+      //   통째로 사라지는데 2,766건이 전부 초록**이었다. 코드 주석은 두 레인을 나란히 적어
+      //   놓고 그물은 하나만 봤다 — 이번 릴리스가 고친 것과 **같은 기제**(옆 레인을 안 봄).
+      for (const lane of ["plugins", "packages"]) {
+        const artifact = path.join(dist, lane, "keeper", "index.js");
+        out.push(
+          assert(
+            `★${lane} 의 tsc 산출물은 안 지운다 — 그 레인은 통째 prune 이 아니다`,
+            existsSync(artifact),
+            existsSync(artifact) ? "보존" : "★날아갔다",
+          ),
+        );
+      }
     }
 
     rmSync(tmp, { recursive: true, force: true });

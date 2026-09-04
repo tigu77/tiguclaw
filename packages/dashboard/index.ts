@@ -722,7 +722,13 @@ const server = http.createServer((req, res) => {
     }
     // 실행 중 백그라운드 잡 하이드레이션(대시보드 부팅 시 라벨 복원 — worker.started SSE 놓친 경우).
     if (pathname === "/api/worker-jobs" && method === "GET") {
-      await proxyJson(res, "/worker-jobs");
+      // ★쿼리를 **통째로** 넘긴다 — `?jobId=` 단건 갈래(카드 펼침 시 지시문 원문)가 이 프록시를
+      //  탄다. 안 넘기면 단건 요청이 조용히 «목록» 으로 떨어지고, 끝난 잡은 목록에 없으므로
+      //  화면이 «원문이 사라졌다» 고 잘못 말한다.
+      //  ★첫 판은 `jobId` **하나만 골라** 재조립했는데, 그건 손 목록이다 — 두 번째 파라미터가
+      //   생기는 순간 조용히 버려진다. 바로 아래 `/endpoint-calls${url.search}` 를 포함해
+      //   이 파일의 라우트 10곳이 이미 통째로 넘긴다([[feedback_hand_maintained_lists]]).
+      await proxyJson(res, `/worker-jobs${url.search}`);
       return;
     }
     // 엔드포인트 호출 이력 (2026-08-01) — 뷰가 열릴 때 과거를 채운다. 종전엔 라이브 SSE

@@ -56,6 +56,16 @@ import { runSubagentStopHooks } from "./entry/hook-runner.js";
 // worker_jobs SQLite 에만 있어 대시보드가 라이브로 못 받았다 → 백그라운드 작업 뷰의 토대.
 // best-effort: 관측 발행 실패가 매니저 흐름을 무르지 않는다(원칙 3 견고성). 단방향: core
 // worker → core bus(플러그인 무참조). 대시보드 등 구독자가 worker.* 를 받아 렌더.
+/**
+ * 이벤트에 싣는 `task` 의 상한.
+ *
+ * ★`task` 는 사용자·모델이 쓴 글이라 **길이 상한이 없다**(실사용에서 수 KB). 이 값은
+ *  이벤트 버스와 SSE 리플레이 버퍼에 실리므로 여기서 묶는다. 넘으면 `taskTruncated` 를
+ *  같이 실어 **화면이 «펼칠 때 원문을 받아 갈지» 를 판단**할 수 있게 한다 — 그 원문은
+ *  `GET /api/worker-jobs` 가 컷 없이 준다(메모리에 사는 동안).
+ */
+export const TASK_EVENT_CAP = 500;
+
 const publishWorkerLifecycle = (
   type:
     | "worker.started"
@@ -105,7 +115,19 @@ const publishWorkerLifecycle = (
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
-        ...(extra?.task !== undefined ? { task: extra.task.slice(0, 500) } : {}),
+        // ★**잘렸으면 잘렸다고 말한다** (2026-09-04). 종전엔 조용히 잘라 보냈고, 화면은
+        //  그 값을 «전문» 이라 부르며 펼침 영역에 그대로 뿌렸다 — 사용자가 보는 것이
+        //  원문인지 잘린 것인지 **구분할 방법이 0** 이었다(실제로 같은 카드가 새로고침
+        //  전후로 길이가 달라졌다: SSE 는 여기서 자르고 `GET /api/worker-jobs` 는 전문을 준다).
+        //  ★컷 자체는 유지한다 — `task` 는 **사용자가 쓴 글**이라 상한이 없고, 이 값은
+        //   이벤트 버스와 SSE 리플레이 버퍼에 실린다(핫 경로는 바운드,
+        //   [[project_hotpath_bound_preserve_record]]). 대신 **화면이 펼칠 때 원문을 받아 간다.**
+        ...(extra?.task !== undefined
+          ? {
+              task: extra.task.slice(0, TASK_EVENT_CAP),
+              ...(extra.task.length > TASK_EVENT_CAP ? { taskTruncated: true } : {}),
+            }
+          : {}),
         ...(extra?.result !== undefined ? { result: extra.result.slice(0, 1200) } : {}),
       },
     });

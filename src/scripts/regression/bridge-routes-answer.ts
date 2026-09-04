@@ -43,6 +43,8 @@ interface Probe {
   boot?: boolean;
   why?: string;
   rows?: Array<{ path: string; status: number }>;
+  /** `?jobId=` 단건 갈래가 살아 있나 — 1=목록으로 안 떨어짐, 0=떨어짐, -1=요청 실패. */
+  taskOne?: { got: number; want: number };
   alive?: boolean;
   tail?: string;
 }
@@ -69,6 +71,16 @@ export const check: RegressionCheck = {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+
+    // ★단건 갈래(`?jobId=`)가 **목록으로 떨어지지 않는지** — 라우트 목록 훑기가 못 보는 축.
+    //  떨어지면 끝난 잡의 지시문이 영영 안 오고 화면이 «원문이 사라졌습니다» 로 거짓말한다.
+    out.push(
+      assert(
+        "★/worker-jobs?jobId= 가 단건으로 답한다(목록으로 떨어지면 P-4 가 재발한다)",
+        got.taskOne?.got === 1,
+        got.taskOne === undefined ? "미측정(부팅 실패)" : `got=${got.taskOne.got}`,
+      ),
+    );
 
     const rows = got.rows ?? [];
     out.push(

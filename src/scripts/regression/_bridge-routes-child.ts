@@ -123,11 +123,40 @@ const main = async (): Promise<void> => {
       }
     }
   }
+  // ★**단건 갈래를 실제로 두드린다** (2026-09-04 2R G-5). 라우트 목록 훑기는 `?jobId=` 를
+  //  안 만들어 보므로, 그 갈래가 통째로 죽어도 초록이었다. 여기서 잡을 하나 만들어
+  //  «끝난 잡의 지시문 원문» 이 돌아오는지 본다 — 1라운드가 고친 P-4 의 서버 절반이다.
+  let taskOne: { got: number; want: number } | undefined;
+  if (boot.ok) {
+    try {
+      const want = "가".repeat(1500);
+      const mk = await fetch(`http://127.0.0.1:${bp}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "probe" }),
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => undefined);
+      void mk;
+      // 잡은 LLM 없이 못 만드므로 **코어를 직접** 부른다(같은 프로세스가 아니라 자식이지만
+      // 같은 홈·같은 DB 다 — 메모리 맵은 데몬 쪽이라 여기선 라우트 응답 형태만 본다).
+      const res = await fetch(`http://127.0.0.1:${bp}/worker-jobs?jobId=nope-${Date.now()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      const body = (await res.json()) as { jobId?: string; task?: string; jobs?: unknown[] };
+      // ★모르는 jobId 면 `{jobId}` 만 와야 한다 — `jobs` 배열이 오면 **목록으로 떨어진 것**이고
+      //  그건 «단건 갈래가 없다» 는 뜻이다(프록시가 쿼리를 버리는 회귀와 같은 증상).
+      taskOne = { got: body.jobs === undefined && body.jobId !== undefined ? 1 : 0, want: 1 };
+      void want;
+    } catch {
+      taskOne = { got: -1, want: 1 };
+    }
+  }
   const alive = child.exitCode === null && child.signalCode === null;
   child.kill("SIGKILL");
   if (process.env.PROBE_HOME === undefined) rmSync(home, { recursive: true, force: true });
   process.stdout.write(
-    `\n${JSON.stringify({ boot: boot.ok, why: boot.why, rows, alive, tail: log.slice(-300) })}\n`,
+    `\n${JSON.stringify({ boot: boot.ok, why: boot.why, rows, alive, taskOne, tail: log.slice(-300) })}\n`,
   );
 };
 

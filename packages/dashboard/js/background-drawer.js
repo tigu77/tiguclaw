@@ -161,19 +161,76 @@
       registerBuiltinHandler("job.cancel", (ctx) => requestCancelJob(ctx.targetId));
 
       // ── 컨텍스트메뉴(잡, context-menu 계약 §2.2) — 상세 보기/접기 · 복사 · (해당 시) 중지.
-      registerBuiltinHandler("job.toggleDetail", (ctx) => {
-        const entry = jobCards.get(ctx.targetId);
-        if (!entry || !entry.el.classList.contains("has-detail")) return;
-        const nowOpen = entry.el.classList.toggle("open");
+      /**
+       * 펼칠 때 **원문**을 받아 온다 — SSE 로 온 `task` 는 서버에서 잘려 있다.
+       *
+       * ★접힘 카드는 싼 값(이벤트)을 쓰고, 펼치는 순간에만 전문을 받는다. 이벤트 버스·
+       *  SSE 리플레이 버퍼의 바운드를 안 깨면서 «펼치면 다 보인다» 를 성립시킨다.
+       * ★`GET /api/worker-jobs` 는 **메모리에 사는 잡**만 전문을 준다(DB 엔 `task` 컬럼이
+       *  없다). 끝나서 내려간 잡은 원문이 어디에도 없으므로 **그 사실을 말한다** — 잘린
+       *  채로 조용히 두면 사용자는 그게 원문인 줄 안다.
+       * ★한 번만 시도한다(성공이든 부재든). 펼칠 때마다 두드리면 목록 전체를 매번 받는다.
+       */
+      const hydrateFullTask = (jobId, entry) => {
+        if (!entry || !entry.taskTruncated || entry.taskHydrateTried) return;
+        entry.taskHydrateTried = true;
+        // ★**단건**으로 묻는다 — 목록(`/api/worker-jobs`)은 `runningOnly` 라 끝난 잡을 안 준다.
+        //  카드는 끝난 뒤에도 남고 사람이 읽는 시점은 대개 «끝난 뒤» 라, 목록으로 물으면
+        //  거의 항상 «사라졌습니다» 가 뜬다(v0.48.0 검토 P-4).
+        fetch("/api/worker-jobs?jobId=" + encodeURIComponent(jobId))
+          .then((r) => {
+            // ★`r.ok` 를 본다 — 프록시는 브리지 미도달 시 **502 + 정상 JSON** 을 준다.
+            //  안 보면 «데몬 재시작 중» 이 «원문이 사라졌다» 로 둔갑하고, 그 카드는 세션
+            //  내내 거짓 문구를 달고 산다(재시도 플래그가 이미 서 있어서).
+            if (!r.ok) throw new Error("http " + r.status);
+            return r.json();
+          })
+          .then((d) => {
+            const full = d && typeof d.task === "string" ? d.task : "";
+            if (full.length > (entry.task || "").length) {
+              entry.task = full;
+              entry.taskEl.textContent = i18n("bg.task.full", { v: full });
+              entry.taskTruncated = false;
+              return;
+            }
+            // ★이미 전문을 들고 있으면(스냅샷이 먼저 승격) **아무 말도 덧붙이지 않는다** —
+            //  완전한 글에 «사라졌습니다» 를 붙이던 것이 검토 P-2 였다.
+            if (!entry.taskTruncated) return;
+            // 서버가 더는 안 들고 있다 — 잘린 것이 남은 전부다. 그 사실을 붙인다.
+            entry.taskEl.textContent =
+              i18n("bg.task.full", { v: entry.task || "" }) + i18n("bg.task.truncated");
+          })
+          .catch(() => { entry.taskHydrateTried = false; /* 다음 펼침에 재시도 */ });
+      };
+
+      /**
+       * 카드를 펼치거나 접는다 — **펼치는 길은 여기 하나다.**
+       *
+       * ★종전엔 `classList.toggle("open")` 이 **세 곳**에 흩어져 있었고(헤더 클릭 · 컨텍스트메뉴
+       *  «상세 보기» · `focusBgJob` 자동 펼침), 원문 채우기는 그중 **하나에만** 걸려 있었다.
+       *  그래서 사용자가 평소 하는 동작(카드 클릭)으로는 잘린 값이 그대로 보였다 — 고쳤다고
+       *  적어놓고 주 경로에선 안 도는 상태였다(v0.48.0 적대 검토가 잡았다).
+       * ★고침은 «세 곳에 호출을 더한다» 가 아니라 **이음매를 없애는 것**이다 — 더하는 쪽이면
+       *  네 번째 경로가 생길 때 또 빠진다([[feedback_simple_composable_no_duplication]]).
+       */
+      const setJobOpen = (jobId, entry, want) => {
+        if (!entry || !entry.el || !entry.el.classList.contains("has-detail")) return false;
+        const nowOpen =
+          want === undefined ? entry.el.classList.toggle("open") : (entry.el.classList.toggle("open", want), want);
         updateChev(entry);
-        // 펼칠 때 스텝박스를 최신(바닥)으로 — 안 그러면 scrollTop=0(맨위)이라 스텝 append 팔로우
-        //   (near-bottom 24px 판정)가 영영 안 붙어 진행 중 잡의 라이브 스텝을 못 따라간다. rAF 로
-        //   .open 레이아웃 반영 후 스크롤(접힘 상태 clientHeight=0 회피).
-        if (nowOpen && entry.stepsEl) {
-          requestAnimationFrame(() => {
-            entry.stepsEl.scrollTop = entry.stepsEl.scrollHeight;
-          });
+        if (nowOpen) {
+          hydrateFullTask(jobId, entry);
+          if (entry.stepsEl) {
+            requestAnimationFrame(() => { entry.stepsEl.scrollTop = entry.stepsEl.scrollHeight; });
+          }
         }
+        return nowOpen;
+      };
+
+      registerBuiltinHandler("job.toggleDetail", (ctx) => {
+        // 판정(has-detail)·스크롤 팔로우·원문 채우기는 전부 `setJobOpen` 이 한다 — 여기서
+        // 다시 하면 그게 두 번째 자리가 되고, 두 자리는 갈린다.
+        setJobOpen(ctx.targetId, jobCards.get(ctx.targetId));
       });
       registerBuiltinHandler("job.copy", async (ctx) => {
         const entry = jobCards.get(ctx.targetId);
@@ -438,11 +495,7 @@
         requestAnimationFrame(() => {
           const entry = jobCards.get(jobId);
           if (!entry || !entry.el) return;
-          if (entry.el.classList.contains("has-detail") && !entry.el.classList.contains("open")) {
-            entry.el.classList.add("open");
-            if (typeof updateChev === "function") updateChev(entry);
-            if (entry.stepsEl) requestAnimationFrame(() => { entry.stepsEl.scrollTop = entry.stepsEl.scrollHeight; });
-          }
+          if (!entry.el.classList.contains("open")) setJobOpen(jobId, entry, true);
           if (entry.el.scrollIntoView) entry.el.scrollIntoView({ block: "center" });
         });
       };
@@ -811,9 +864,7 @@
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
           el.appendChild(top); el.appendChild(meta); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
-          top.addEventListener("click", () => {
-            if (entry.el.classList.contains("has-detail")) { el.classList.toggle("open"); updateChev(entry); }
-          });
+          top.addEventListener("click", () => { setJobOpen(jobId, entry); });
           // 최신=위 삽입 + stickTop 팔로우 — 삽입 전 맨 위 근처(최신 주시)면 삽입 후 top 으로
           // 스냅해 새 카드 노출. 아래로 내려 과거 잡을 보는 중이면 존중(브라우저 scroll-anchoring
           // 이 위치 보존, yank 금지) = 채팅 stickBottom 의 상단판. 임계 40px.
@@ -974,12 +1025,22 @@
         }
         if (opts && opts.task && !entry.hasTask) {
           entry.task = String(opts.task); // 원문 보관(에이전트 뷰가 읽음).
-          entry.taskEl.textContent = i18n("bg.task.full", { v: opts.task }); // 펼침 영역 전문.
+          // ★**잘린 값인지 기억한다** (2026-09-04). SSE 는 서버에서 500자로 자르고
+          //  `GET /api/worker-jobs` 는 전문을 준다 — 같은 카드가 새로고침 전후로 길이가
+          //  달라지던 원인이다. 잘렸으면 **펼칠 때** 원문을 받아 간다(아래 hydrateFullTask).
+          entry.taskTruncated = !!(opts.taskTruncated);
+          entry.taskEl.textContent = i18n("bg.task.full", { v: opts.task });
           entry.taskEl.style.display = ""; entry.hasTask = true;
           // 항상 보이는 한 줄 요약(이름 아래) — 접혀 있어도 무슨 작업인지 구분.
           entry.summaryEl.textContent = opts.task;
           entry.summaryEl.style.display = "";
           updateChev(entry);
+        } else if (opts && opts.task && entry.hasTask && entry.taskTruncated
+                   && !opts.taskTruncated) {
+          // 스냅샷(REST)이 **전문**을 들고 왔다 — 잘린 값을 들고 있었으면 그것으로 승격한다.
+          entry.task = String(opts.task);
+          entry.taskEl.textContent = i18n("bg.task.full", { v: opts.task });
+          entry.taskTruncated = false;
         }
         return entry;
       };

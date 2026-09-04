@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-09-04
+
 ### Changed
 
 - 위임받은 에이전트·매니저가 **자기가 할 수 있는 것만** 안내받습니다. 종전엔 작동 헌법과
@@ -27,6 +29,9 @@
 
 ### Fixed
 
+- 백그라운드 작업 카드를 펼치면 지시문 **전문**이 보입니다. 종전엔 500자에서 잘린 채
+  보였고, 새로고침하면 같은 카드가 갑자기 길어졌습니다. 작업이 끝나 원문이 사라진
+  경우엔 그 사실을 함께 알려 줍니다.
 - 지운 스킬·에이전트가 설치본에 남아 계속 로드되던 것을 고쳤습니다.
 
 
@@ -1891,7 +1896,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...HEAD
+[0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0
 [0.45.0]: https://github.com/tigu77/tiguclaw/compare/v0.44.1...v0.45.0

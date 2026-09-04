@@ -12,7 +12,7 @@
  *   헌법이 없는 것을 인용하게 된다(헌법 역할 분할에서 겪은 «끊긴 참조» 와 같은 모양).
  *  ③`reach` 오타 하나로 스킬이 조용히 안 보이게 되는 것.
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -124,33 +124,79 @@ export const check: RegressionCheck = {
       }
     }
 
-    // ★**검색도 같은 규칙을 탄다** (2026-09-04 정태님: *"비서도 마찬가지고"*).
-    //  첫 판은 검색을 안 걸렀는데 앞뒤가 안 맞았다 — `reach: main` 의 근거가 *"그 칸에선
-    //  절차를 완료할 수 없다"* 인데, 완료 못 할 절차를 검색에 띄우면 자식이 본문을 로드하고
-    //  따라가다 막힌다(막다른 길). 규칙은 하나: **모든 칸이 자기 칸 것만 본다.**
-    //  ★탈출구는 `invoke_skill(name)` — 거긴 게이트가 없다(아래 단언이 지킨다).
-    const registrySrc = await (await import("node:fs")).promises.readFile(
-      path.resolve(import.meta.dirname, "../../core/llm-runtime/capabilities/skill-registry.ts"),
-      "utf8",
+    // ─── ★`find_skills`·`invoke_skill` 을 **실제로 호출해서** 본다 ───────────────
+    //  (2026-09-04 적대 검토 G-5). 종전엔 이 셋이 전부 `registrySrc` 정규식이었다 —
+    //  «`turnReaches(` 라는 낱말이 있나» 만 봤다. 그래서 인자를 뒤집거나(사다리 반전),
+    //  상수로 고정하거나(필터 무효), 핸들러 첫 줄에서 열거를 거절해도 **전부 초록**이었다.
+    //  실측 피해: 인자 뒤집기 하나로 **비서가 code-review·verify·harness 를 잃고**
+    //  자식은 전부를 본다 — 이 릴리스가 막으려던 바로 그 상태.
+    //  ★인덱스 쪽(`formatSkillIndex`)은 동작으로 묶여 있었는데 검색 쪽만 낱말이었다:
+    //   한 기능의 두 반쪽 중 하나만 하중을 받고 있었다.
+    const { adaptClaudeMcpServer } = await import(
+      "../../core/llm-runtime/adapters/_mcp-bridge.js"
     );
-    const findBody = registrySrc.slice(registrySrc.indexOf('"find_skills"'));
-    const findHead = findBody.slice(0, findBody.indexOf("okText(") + 1 || 3000);
+    const { createSkillInvokeMcpServer } = await import(
+      "../../core/llm-runtime/capabilities/skill-registry.js"
+    );
+    const callTool = async (turn: TurnKind, name: string, args: Record<string, unknown>) => {
+      const srv = (await adaptClaudeMcpServer(
+        createSkillInvokeMcpServer(emptyCwd, {
+          channel: "cli", threadKey: "regr:find", adapter: "claude", turn,
+        }),
+        "skills",
+      )) as unknown as {
+        callTool: (n: string, a: Record<string, unknown>) => Promise<unknown>;
+      };
+      const c = (await srv.callTool(name, args)) as unknown;
+      const arr = Array.isArray(c) ? c : [c];
+      return (arr[0] as { text?: string } | undefined)?.text ?? "";
+    };
+    const prevHome2 = process.env.TIGUCLAW_HOME;
+    process.env.TIGUCLAW_HOME = home;
+    let found: Record<string, string> = {};
+    try {
+      for (const t of KINDS) found[t] = await callTool(t, "find_skills", {});
+    } finally {
+      if (prevHome2 !== undefined) process.env.TIGUCLAW_HOME = prevHome2;
+    }
+    const countOf = (s: string): number => (s.match(/\n- /g) ?? []).length;
     out.push(
       assert(
-        "★find_skills 도 자기 칸 것만 돌려준다(인덱스와 같은 규칙 — 막다른 길 금지)",
-        /turnReaches\(/.test(findHead),
-        /turnReaches\(/.test(findHead) ? "칸으로 거른다" : "★전부 반환 — 완료 못 할 절차를 띄운다",
+        "★find_skills 를 인자 없이 부르면 목록이 온다(열거 경로가 실제로 산다)",
+        countOf(found.main ?? "") > 0,
+        `main ${countOf(found.main ?? "")}개`,
       ),
     );
-    // ★그리고 **`invoke_skill` 은 안 거른다** — 부모가 이름을 대면 닿아야 한다. 여기까지
-    //  막으면 표시가 잘못 붙은 순간 되돌릴 길이 사라진다(자동 발견만 막고 명시 지정은 남긴다).
-    const invokeBody = registrySrc.slice(registrySrc.indexOf('"invoke_skill"'));
-    const invokeHead = invokeBody.slice(0, invokeBody.indexOf('"find_skills"') + 1 || 3000);
     out.push(
       assert(
-        "★invoke_skill 은 reach 로 안 막는다 — 부모가 이름을 대면 닿는다(탈출구)",
-        !/turnReaches\(/.test(invokeHead),
-        /turnReaches\(/.test(invokeHead) ? "★탈출구까지 막혔다" : "이름 지정은 통과",
+        "★find_skills 가 칸마다 다른 집합을 준다 — main > manager ≥ subagent (사다리가 실제로 돈다)",
+        countOf(found.main ?? "") > countOf(found.subagent ?? "") &&
+          countOf(found.manager ?? "") >= countOf(found.subagent ?? ""),
+        `${countOf(found.main ?? "")} / ${countOf(found.manager ?? "")} / ${countOf(found.subagent ?? "")}`,
+      ),
+    );
+    for (const n of NAMED_BY_CONSTITUTION) {
+      out.push(
+        assert(
+          `★find_skills 결과에도 «${n}» 이 세 칸 모두에 있다(헌법이 이름으로 가리킨다)`,
+          KINDS.every((t) => (found[t] ?? "").includes(`- ${n}:`)),
+          KINDS.map((t) => `${t}=${(found[t] ?? "").includes(`- ${n}:`)}`).join(" "),
+        ),
+      );
+    }
+    // ★탈출구 — `invoke_skill` 은 칸으로 막지 않는다. 부모가 이름을 대면 닿아야 한다.
+    process.env.TIGUCLAW_HOME = home;
+    let escaped = "";
+    try {
+      escaped = await callTool("subagent", "invoke_skill", { name: "app-ai-wiring" });
+    } finally {
+      if (prevHome2 !== undefined) process.env.TIGUCLAW_HOME = prevHome2;
+    }
+    out.push(
+      assert(
+        "★자식이 main 전용 스킬을 **이름으로** 부르면 로드된다(탈출구 — 낱말이 아니라 호출로 잰다)",
+        escaped.length > 0 && !/미발견|찾을 수 없|not found/i.test(escaped),
+        escaped.slice(0, 60).replace(/\n/g, " "),
       ),
     );
 
@@ -222,6 +268,26 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    // ★**뚱뚱한 스킬 하나가 나머지를 다 밀어내지 않는다** (2026-09-04 3R P-6).
+    //  위 벌크 프로브는 전부 **균일 크기**라 `continue`(그 줄만 건너뛴다)와 `break`(거기서
+    //  통째로 그만둔다)를 **원리적으로 구분하지 못한다** — 검토자가 `break` 로 바꿔도 34건이
+    //  초록이었다. 실제 배치는 균일하지 않다: 마켓에서 받은 스킬 **하나**가 설명을 3만 자로
+    //  쓰면 `break` 판에서는 그 뒤가 전부 사라져 «자주 쓰는 0개» 가 된다(설치본 전 칸에서
+    //  스킬 인덱스가 통째로 증발한다). 재는 재료가 균일하면 순서 결함을 못 본다.
+    const withFatty = [
+      { ...mk("fatty", "subagent"), description: "가".repeat(30_000) },
+      ...bulk(20, 300),
+    ];
+    const fattyIdx = formatSkillIndex(withFatty, "subagent");
+    const listed = (fattyIdx.match(/^- /gm) ?? []).length;
+    out.push(
+      assert(
+        "★설명이 폭주한 스킬 하나를 건너뛰고 **나머지는 계속 싣는다**(거기서 그만두지 않는다)",
+        listed >= 15 && !fattyIdx.includes("- fatty:"),
+        `실린 항목 ${listed}개 · ${B(fattyIdx)}B · fatty=${fattyIdx.includes("- fatty:") ? "★실림" : "제외"}`,
+      ),
+    );
+
     // ★역할 필터가 **캡보다 먼저** 걸린다 — 안 그러면 남의 칸 스킬이 캡을 먹고
     //  자기 칸 스킬이 밀려난다(«캡 있는 자리에 반드시 도달해야 할 것을 두지 마라»).
     const mixed = [...bulk(200, 400, "main"), mk("mine", "subagent")];
@@ -253,6 +319,49 @@ export const check: RegressionCheck = {
           : `★비대: ${fat.map(([n, b]) => `${n}(${b}B)`).join(", ")} — 본문으로 내려라`,
       ),
     );
+
+    // ★**어댑터 셋이 turn 을 실제로 넘기나** (2026-09-04 2R G-7). 인덱스 단언은 전부
+    //  `formatSkillIndex` 를 **직접** 부른다 — 그래서 어댑터 3벌에서 `turnKindOf(input)`
+    //  인자를 빼면(=기능 전체가 선언만 남는다) 2,780건이 초록이었다. `turn?` 이 optional 이라
+    //  타입도 안 막고, `turnKindOf` 는 다른 데도 쓰여 미사용 import 로도 안 걸린다.
+    //  ★어댑터는 «모든 기능 LLM 무관» 대상이라 **셋을 다** 본다 — 하나만 빠지면 그 어댑터로
+    //   도는 자식만 조용히 전부를 받는다(비대칭은 무소음이다).
+    const ADAPTERS = [
+      "claude-agent-sdk.ts", "openai-agents-sdk.ts", "openai-codex-oauth.ts",
+    ];
+    //  ★**호출을 전부 본다 — 첫 줄 하나가 아니다** (3R P-4). 종전엔 `.find()` 로 «처음
+    //   나오는 줄» 을 골랐는데, `formatSkillIndex(...)` 를 **언급하는 주석 한 줄**을 위에
+    //   놓으면 그 주석이 자리를 선점해 실제 호출은 검사 밖으로 나갔다. 게다가 줄 단위라
+    //   prettier 가 인자를 접기만 해도 정상 코드가 빨개진다(오탐·미탐이 같은 방향).
+    //   **주석을 걷고 · 호출을 전부 세고 · 공백을 접어서** 본다.
+    //  ★그리고 **검색 쪽(`find_skills`)도 같이 본다** (3R P-5). 종전엔 인덱스 쪽만 지켰다 —
+    //   codex 어댑터에서 `turn:` 한 줄을 지워도 아무도 안 울었고, 그러면 그 백엔드로 도는
+    //   자식만 `find_skills` 로 비서 전용 스킬 전량을 발견한다(`ctx?.turn === undefined` 가
+    //   «빠뜨림 = 전량 노출» 로 떨어진다). 한 기능의 두 반쪽 중 하나만 하중을 받고 있었다.
+    const WIRES = [
+      { what: "인덱스", re: /formatSkillIndex\(\s*skills\s*,\s*turnKindOf\(input\)\s*\)/,
+        callRe: /formatSkillIndex\(/g },
+      { what: "find_skills", re: /turn:\s*turnKindOf\(input\)/,
+        callRe: /createSkillInvokeMcpServer\(/g },
+    ];
+    for (const a of ADAPTERS) {
+      const raw = readFileSync(
+        path.resolve(import.meta.dirname, "../../core/llm-runtime/adapters", a),
+        "utf8",
+      );
+      const code = raw.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+      const flat = code.replace(/\s+/g, " ");
+      for (const w of WIRES) {
+        const calls = [...code.matchAll(w.callRe)].length;
+        out.push(
+          assert(
+            `★${a} 의 ${w.what} 배선이 turn 을 넘긴다(빼면 그 어댑터만 조용히 전부를 싣는다)`,
+            calls > 0 && w.re.test(flat),
+            calls === 0 ? "★호출 없음" : w.re.test(flat) ? `호출 ${calls}곳 · turn 전달` : "★turn 미전달",
+          ),
+        );
+      }
+    }
 
     return out;
   },

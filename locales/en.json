@@ -650,5 +650,6 @@
   "settings.memoryCap.hint": "Caps the “what do I remember” list the assistant sees every turn. Lower it for a lighter prompt; set it to 0 to leave the list out entirely (search still reaches your memories).",
   "settings.memoryCap.off": "Off — no list",
   "settings.memoryCap.saved": "Memory index size set to {value}.",
-  "settings.memoryCap.reset": "Default"
+  "settings.memoryCap.reset": "Default",
+  "bg.task.truncated": " … (this is all that remains — the full text is gone now that the job has ended)"
 }

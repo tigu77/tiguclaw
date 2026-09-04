@@ -1,6 +1,7 @@
 ---
 name: app-ai-wiring
 description: "앱(웹·서버·스크립트 등)에 AI/LLM 을 연결할 때 사용. tiguclaw 에 붙이는 두 방식 — (A) tiguclaw 직결 커스텀 엔드포인트(비서의 도구·스킬·메모리까지 쓰는 에이전틱 호출, 규약 자유) vs (B) OpenAI 호환 LLM 게이트웨이(OpenRouter·OpenAI 와 baseURL 만 바꿔 스왑 가능한 표준 규약) — 의 선택 기준·규약·배선 절차·검증을 담는다. 트리거: '앱에 AI 붙여줘', '이 앱에서 LLM 쓰게 해줘', 'tiguclaw 를 백엔드로', '오픈라우터처럼 연결', 'API 로 비서 호출', '게이트웨이 켜줘', 앱 개발 중 LLM 연결 지점에 도달했을 때. 사용자가 방식을 안 정했으면 §1 기준으로 추천하고 확인받은 뒤 배선한다."
+reach: main
 ---
 
 # 앱 ↔ AI 연결 배선 (tiguclaw)

@@ -529,7 +529,7 @@ export const runOpenAiCodex = async (
   //  발견). input.cwd 우선순위 유지.
   const discoveryCwd = input.cwd ?? getPaths().home;
   const skills = await discoverSkills(discoveryCwd);
-  const skillIndex = formatSkillIndex(skills);
+  const skillIndex = formatSkillIndex(skills, turnKindOf(input));
   // V7.2.b — sub-agent 인덱스. depth 0 turn 만 노출 (child turn 은 spawn 도구
   // 미등록 → 인덱스도 박지 않음, 재spawn 유도 0). 빈 list 면 prepend 0.
   const depth = input.subagentDepth ?? 0;
@@ -655,6 +655,8 @@ export const runOpenAiCodex = async (
       channel: input.channel,
       threadKey: input.threadKey,
       adapter: "codex",
+          // 이 턴의 칸 — find_skills 가 자기 칸 스킬만 돌려주게(인덱스와 같은 규칙).
+          turn: turnKindOf(input),
     }),
     "skills",
   );

@@ -40,6 +40,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
+import { asReach, turnReaches, type Reach, type TurnKind } from "../capability-reach.js";
 import type { ChannelName } from "../../../channels/types.js";
 import { dedupeBySource } from "./dedup-by-source.js";
 import { listSkillUsage } from "../../../store/skill-usage.js";
@@ -64,6 +65,16 @@ export interface Skill {
   source: "builtin" | "user" | "project" | "plugin";
   /** frontmatter `disable-model-invocation: true` 시 true. 디폴트 false. */
   disableModelInvocation: boolean;
+  /**
+   * **이 스킬이 인덱스에 실리는 가장 깊은 칸** — frontmatter `reach: main|manager|subagent`.
+   *
+   * ★기본은 `subagent`(= 전부). 안 적으면 종전대로 모두에게 실린다 — 사용자가 쓴 스킬이
+   *  표시 하나 없다고 조용히 사라지면 안 된다(빠뜨림이 «종전대로» 쪽으로 틀리게).
+   * ★판정은 헌법과 **같은 사다리**(`capability-reach` 의 `turnReaches`)를 쓴다.
+   * ★**발견까지 막지는 않는다** — `find_skills` 는 전 칸이 전부를 검색한다. 이건 «매 호출
+   *  미리 실어 보낼 값이 있나» 이지 «쓸 수 있나» 가 아니다(그건 `invoke_skill` 이 정한다).
+   */
+  reach: Reach;
   /**
    * source === "plugin" 시 plugin id (디렉터리 이름). 그 외 undefined.
    * 디버깅·관측·향후 plugin enable/disable 정책 분기용.
@@ -248,6 +259,10 @@ const loadSingleSkillDirectory = async (
     false,
   );
 
+  // ★모르는 값은 **기본으로 떨어뜨린다**(전부에게 실림). 오타 하나로 스킬이 조용히
+  //  안 보이게 되는 쪽보다, 표시가 안 먹는 쪽이 낫다 — 전자는 알아챌 방법이 없다.
+  const reach: Reach = asReach((frontmatter.reach ?? "").trim());
+
   return {
     name,
     description,
@@ -255,6 +270,7 @@ const loadSingleSkillDirectory = async (
     baseDir: path.resolve(skillDir),
     source,
     disableModelInvocation,
+    reach,
   };
 };
 
@@ -336,6 +352,26 @@ export const parseBool = (
 // (현행 동일·회귀 0), >K 면 상위 K + find_skills 검색 안내.
 const SKILL_INDEX_CAP = 40;
 
+/**
+ * 인덱스의 **바이트** 상한 (2026-09-04).
+ *
+ * ★**개수 캡만으로는 안 묶인다** — 정태님 지적(*"스킬은 계속 추가될 수 있고 몇 개가
+ *  들어갈지는 아무도 모른다"*)을 재다가 나왔다. 캡이 개수에만 걸려 있어서 **설명 길이는
+ *  무제한**이었다. 실측: 39개 × 설명 5,000자 = **585,675B 인데 캡이 안 걸린다.**
+ *  스킬 설명은 사용자·마켓이 쓰는 값이라 우리가 못 정한다 — 그러면 묶어야 할 축은
+ *  개수가 아니라 바이트다([[project_hotpath_bound_preserve_record]] — 핫 워킹셋만 바운드).
+ *
+ * ★이 축은 **메모리 인덱스가 이미 배운 것**이다(`MEMORY_INDEX_CAP_BYTES`). 같은 종류의
+ *  «매 턴 실리는 목록» 인데 한쪽만 바이트로 묶여 있었다.
+ *
+ * ★**숫자는 지어내지 않았다** — 현행 개수 캡(40)에 실측 평균 설명 길이(번들 10개
+ *  6,498B ≈ 650B/개)를 곱하면 **약 26,000B** 다. 25,600B 는 *"오늘 동작을 바꾸지 않으면서
+ *  바이트 축을 닫는"* 값이다. 평균보다 긴 설명을 쓰는 설치에서만 먼저 걸린다.
+ * ★칸마다 다른 값을 줄지는 **안 쟀다** — 자식의 프롬프트 예산이 더 빠듯한 건 맞지만
+ *  근거 없이 숫자를 나누지 않는다(이 파일의 옛 12·16 이 그렇게 생겼다).
+ */
+const SKILL_INDEX_CAP_BYTES = 25_600;
+
 // 사용빈도 랭킹 재료 — skill_usage(일반 store 테이블, self-growth 가 채움). 코어는
 // opportunistic read(빈 테이블·미초기화 시 무랭킹 폴백 — 플러그인 *의존* 아님).
 const skillUsageRank = (): Map<string, number> => {
@@ -348,16 +384,47 @@ const skillUsageRank = (): Map<string, number> => {
   }
 };
 
-export const formatSkillIndex = (skills: ReadonlyArray<Skill>): string => {
-  const invocable = skills.filter((s) => !s.disableModelInvocation);
+/**
+ * 인덱스 본문.
+ *
+ * ★`turn` 을 주면 **그 칸에 닿는 스킬만** 싣는다(frontmatter `reach`, 기본 = 전부).
+ *  근거는 헌법 역할 분할과 같다 — 번들 스킬 다수는 트리거가 *«사용자가 이렇게 말하면»*
+ *  인데 **자식에겐 사용자 발화가 없다.** 부모가 준 지시 한 건만 있다. 그런 스킬의 설명을
+ *  매 호출 싣는 건 크기 이전에 **발동 조건이 성립하지 않는 텍스트**를 보내는 것이다.
+ * ★**발견을 막지는 않는다** — `find_skills` 는 전 칸이 전부를 검색하고 `invoke_skill` 도
+ *  그대로다. 이건 «미리 실어 보낼 값이 있나» 이지 «쓸 수 있나» 가 아니다.
+ * ★`turn` 생략 = 종전 그대로(전부). 옛 호출부·검사가 안 깨진다.
+ */
+export const formatSkillIndex = (
+  skills: ReadonlyArray<Skill>,
+  turn?: TurnKind,
+): string => {
+  const usable = skills.filter((s) => !s.disableModelInvocation);
+  const invocable = usable.filter(
+    // ★`asReach` 를 **여기서도** 판다 — 정규화가 파서에만 있으면 다른 경로로 들어온
+    //  값이 조용히 걸러진다(회귀가 그 구멍을 잡았다).
+    (s) => turn === undefined || turnReaches(turn, asReach(s.reach)),
+  );
+  // ★**가려진 개수를 자식에게 알리지 않는다** (2026-09-04 정태님 반문: *"가려진 게 있다는
+  //  걸 자식이 알 이유가 있어?"*). 한 판 전엔 «N개가 더 있다» 를 한 줄 실었는데, 근거로
+  //  든 선례(자가성장 제안이 캡 밖으로 밀려나 5주간 안 보임)가 **이 자리엔 안 맞았다** —
+  //  거기서 가려진 건 *비서가 했어야 할 일* 이고, 여기서 가려진 건 *자식이 완료할 수 없는
+  //  절차* 다.
+  // ★그리고 **탈출구는 부모가 쓴다.** 부모가 위임 프롬프트에 이름을 대면 자식이
+  //  `invoke_skill` 을 부른다 — 자식이 그 스킬의 **존재를 발견할 필요가 없다.**
+  //  필요가 생기면 «필요» 를 보고하면 되고(헌법이 이미 시킨다) 카탈로그 이름은 안 든다.
+  //  행동으로 이어지지 않는 정보를 매 호출 싣지 않는다.
   if (invocable.length === 0) return "";
   // 헤더 다음 한 줄 — codex 측에 invoke 도구 이름 명시. sysprompt L18-22 의
   // "하네스 라우팅 — 적합 스킬 호출" 추상 지시를 *도구 이름* 으로 구체화.
   const header = `## 사용 가능 스킬\n\n적합한 스킬을 발견하면 \`invoke_skill({name})\` 도구로 본문 (frontmatter+가이드) 을 로드한 뒤 그 본문에 따라 행동하세요.`;
   const fmt = (list: ReadonlyArray<Skill>) =>
     list.map((s) => `- ${s.name}: ${s.description}`).join("\n");
-  // 캡 이하 — 전부 표시(현행과 동일, 회귀 0).
-  if (invocable.length <= SKILL_INDEX_CAP) {
+  // 캡 이하 — 전부 표시(현행과 동일, 회귀 0). ★개수 **와** 바이트 둘 다 넘지 않아야 한다.
+  if (
+    invocable.length <= SKILL_INDEX_CAP &&
+    Buffer.byteLength(fmt(invocable), "utf8") <= SKILL_INDEX_CAP_BYTES
+  ) {
     return `${header}\n\n${fmt(invocable)}`;
   }
   // 캡 초과 — 사용빈도순 상위 K + 검색 안내(상시 무게 바운드). Array.sort 안정정렬로
@@ -369,12 +436,22 @@ export const formatSkillIndex = (skills: ReadonlyArray<Skill>): string => {
   //  바뀔 때만 문자열이 바뀌게 하면 무효화가 실제 변화에만 국한된다.
   const usage = skillUsageRank();
   const order = new Map(invocable.map((s, i) => [s.name, i]));
-  const top = [...invocable]
-    .sort((a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0))
-    .slice(0, SKILL_INDEX_CAP)
-    .sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0));
-  const rest = invocable.length - SKILL_INDEX_CAP;
-  return `${header}\n\n자주 쓰는 ${SKILL_INDEX_CAP}개만 표시합니다. 나머지 ${rest}개는 \`find_skills({query})\` 로 검색하세요.\n\n${fmt(top)}`;
+  // 빈도순으로 고르되 **개수와 바이트 둘 다** 지킨다. 한 줄이 통째로 상한을 넘으면
+  // 그 줄은 안 넣는다(반쪽 설명을 싣느니 검색으로 보낸다 — 잘린 설명은 오독을 만든다).
+  const picked: Skill[] = [];
+  let bytes = 0;
+  for (const s of [...invocable].sort(
+    (a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0),
+  )) {
+    if (picked.length >= SKILL_INDEX_CAP) break;
+    const lineBytes = Buffer.byteLength(`- ${s.name}: ${s.description}\n`, "utf8");
+    if (bytes + lineBytes > SKILL_INDEX_CAP_BYTES) continue;
+    picked.push(s);
+    bytes += lineBytes;
+  }
+  const top = picked.sort((a, b) => (order.get(a.name) ?? 0) - (order.get(b.name) ?? 0));
+  const rest = invocable.length - top.length;
+  return `${header}\n\n자주 쓰는 ${top.length}개만 표시합니다. 나머지 ${rest}개는 \`find_skills\` 로 검색하세요(인자 없이 부르면 전체 목록).\n\n${fmt(top)}`;
 };
 
 /**
@@ -447,6 +524,12 @@ export const createSkillInvokeMcpServer = (
     channel: ChannelName;
     threadKey: string;
     adapter: "claude" | "codex" | "openai";
+    /**
+     * 이 턴의 칸 — `find_skills` 가 **자기 칸 스킬만** 돌려주기 위해 쓴다.
+     *
+     * ★생략하면 전부(종전 그대로). 옛 호출부·검사가 안 깨진다.
+     */
+    turn?: TurnKind;
   },
 ): McpSdkServerConfigWithInstance => {
   const skillInvokeTool = tool(
@@ -494,26 +577,46 @@ export const createSkillInvokeMcpServer = (
     },
   );
 
-  // find_skills — 인덱스가 상한(SKILL_INDEX_CAP)으로 잘렸을 때, 필요한 스킬을
-  // 이름/키워드로 검색(ADR 2026-07-07-capability-index-scaling). 부분일치(임베딩 없음),
-  // 사용빈도순. throw 0(에러텍스트). cwd 는 인덱스와 동일 소스라 인덱스↔검색 정합.
+  // find_skills — 인덱스에 안 실린 스킬을 이름/키워드로 찾는다
+  // (ADR 2026-07-07-capability-index-scaling). 부분일치(임베딩 없음), 사용빈도순.
+  // throw 0(에러텍스트). cwd 는 인덱스와 동일 소스라 인덱스↔검색 정합.
+  //
+  // ★**`query` 를 선택 인자로 열었다** (2026-09-04 정태님 지적). 종전엔 `min(1)` 이라
+  //  **열거가 불가능**했다 — 키워드를 알아야 찾는데, 무엇이 있는지 모르면 키워드를 못 짠다.
+  //  인덱스가 전부를 보여주던 때는 그 순환이 안 보였지만, 역할 범위로 인덱스가 칸마다
+  //  줄어든 순간(같은 날) **자식은 자기가 뭘 쓸 수 있는지 알 방법이 0이 됐다.**
+  //  ★새 도구(`list_skills`)를 만들지 않았다 — 도구 설명은 매 턴 실리고 이미 25.6KB 다.
+  //   같은 물음("무엇이 있나")에 도구가 둘이면 모델이 고르는 데 턴을 버린다.
+  // ★**검색도 `reach` 를 탄다 — 인덱스와 같은 규칙이다** (2026-09-04 정태님: *"비서도
+  //  마찬가지고"*). 첫 판은 «인덱스는 미리 알림, 검색은 닿는 길» 이라며 검색을 안 걸렀는데,
+  //  **앞뒤가 안 맞았다**: `reach` 를 `main` 으로 준 근거가 *"그 칸에선 절차를 완료할 수
+  //  없다"* 였다(승인받을 사용자가 없다 · 그 도구가 등록되지 않는다). 완료할 수 없는 절차를
+  //  검색에 띄우면 자식은 8KB 본문을 로드하고 따라가다 마지막에 막힌다 — 그건 «닿는 길» 이
+  //  아니라 **막다른 길**이다.
+  // ★**규칙은 하나다 — 모든 칸이 자기 칸 것만 본다.** 비서는 최상단이라 결과가 전부이지만
+  //  예외를 두지 않는다(예외를 두면 그게 곧 두 번째 규칙이다).
+  // ★**탈출구는 `invoke_skill(name)`** — 거긴 게이트가 없다. 자식이 **스스로 찾을 때** 는
+  //  자기 칸 것만 나오고, **부모가 이름을 대면** 그대로 로드된다. 표시가 잘못 붙어도 사람·
+  //  부모가 이름을 대면 닿으므로, 자동 발견만 막고 명시 지정은 남기는 «되돌릴 수 있는» 쪽이다.
   const findSkillsTool = tool(
     "find_skills",
-    "이름·설명에 query 가 포함된 스킬을 검색합니다. 사용 가능 스킬이 많아 인덱스에 다 표시되지 않을 때, 필요한 스킬을 키워드/이름 조각으로 찾을 때 사용. 사용빈도순 정렬. 찾은 뒤 invoke_skill 로 로드하세요.",
-    { query: z.string().min(1) },
+    "**이 자리에서 쓸 수 있는** 스킬을 찾습니다. **query 를 생략하면 전체 목록**(이름+설명)을 돌려주니, 무엇을 쓸 수 있는지 모를 때 먼저 이렇게 부르세요. query 를 주면 이름·설명 부분일치로 좁힙니다. 사용빈도순 정렬. 찾은 뒤 invoke_skill 로 로드하세요.",
+    { query: z.string().optional() },
     async (args) => {
       try {
         const invocable = (await discoverSkills(cwd)).filter(
-          (s) => !s.disableModelInvocation,
+          (s) =>
+            !s.disableModelInvocation &&
+            (ctx?.turn === undefined || turnReaches(ctx.turn, asReach(s.reach))),
         );
-        const q = args.query.toLowerCase();
+        const q = (args.query ?? "").toLowerCase();
         const matched = invocable.filter(
           (s) =>
             s.name.toLowerCase().includes(q) ||
             s.description.toLowerCase().includes(q),
         );
         if (matched.length === 0) {
-          return errText(`'${args.query}' 에 매칭되는 스킬이 없습니다.`);
+          return errText(`'${args.query ?? ""}' 에 매칭되는 스킬이 없습니다.`);
         }
         const usage = skillUsageRank();
         matched.sort(
@@ -522,8 +625,12 @@ export const createSkillInvokeMcpServer = (
         const lines = matched
           .slice(0, 50)
           .map((s) => `- ${s.name}: ${s.description}`);
+        // ★q 가 빈 문자열이면 «전체 목록» 이다 — 그렇게 읽히는 문구를 준다(«'' 매칭» 은
+        //  모델에게 «검색이 이상하게 됐다» 로 읽힌다).
         return okText(
-          `'${args.query}' 매칭 스킬 ${matched.length}개:\n${lines.join("\n")}`,
+          q === ""
+            ? `사용 가능 스킬 ${matched.length}개(전체):\n${lines.join("\n")}`
+            : `'${args.query}' 매칭 스킬 ${matched.length}개:\n${lines.join("\n")}`,
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));

@@ -185,8 +185,15 @@ const main = async () => {
   //  복사한다) 여기서 그 차이를 흡수한다 — 이 스크립트의 일이 "dist 를 설치본처럼 보이게"
   //  하는 것이므로, 제품 코드에 dev 사정을 넣는 대신 여기서 맞춘다(오염 0).
   await copyChangelogs();
-  await copyTree("skills");
-  await copyTree("agents");
+  // ★`prune` 이다 — 소스에서 **지운 스킬·에이전트가 빌드본에 남으면 계속 돈다.**
+  //  2026-09-04 실사고: `schedule-safety-check` 를 걷고 배포했는데 `dist/skills/` 에 그대로
+  //  남아 자식 인덱스에 다시 실렸다(그 파일엔 `reach:` 가 없으니 **전 칸 기본값**으로 들어간다
+  //  — 그날 한 최적화가 배포본에서만 반쪽이 됐다).
+  //  ★같은 부류를 2026-08-26 에 `plugins` 에서 이미 겪고 `pruneOrphanDirs` 를 만들었는데
+  //   **옆 레인(skills·agents)엔 안 붙였다.** 여기는 tsc 산출물이 섞이지 않으므로
+  //   `plugins` 와 달리 **트리 통째 prune 이 안전하다**(locales·themes 와 같은 처리).
+  await copyTree("skills", { prune: true });
+  await copyTree("agents", { prune: true });
   // ★언어 카탈로그 (2026-08-25) — appRoot()-상대 자산이라 dist 에 실재해야 배포본에서
   //  기본 문구가 나온다. 빠지면 카탈로그가 비어 화면이 키(nav.settings)로 뜬다.
   await copyTree("locales", { prune: true });

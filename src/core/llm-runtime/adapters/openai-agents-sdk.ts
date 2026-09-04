@@ -380,6 +380,8 @@ export const runOpenAi = async (
             channel: input.channel,
             threadKey: input.threadKey,
             adapter: "openai",
+          // 이 턴의 칸 — find_skills 가 자기 칸 스킬만 돌려주게(인덱스와 같은 규칙).
+          turn: turnKindOf(input),
           }),
           "skills",
         ),
@@ -658,7 +660,7 @@ export const runOpenAi = async (
   // 스킬/에이전트 인덱스 — depth 0 turn 만 (codex L805-813 parity). depth≥1 child 는
   // spawn 도구 미등록과 정합해 인덱스도 박지 않음 (재spawn 유도 0).
   const skills = await discoverSkills(discoveryCwd);
-  const skillIndex = formatSkillIndex(skills);
+  const skillIndex = formatSkillIndex(skills, turnKindOf(input));
   const agentIndex =
     depth === 0 ? formatAgentIndex(await discoverAgents(discoveryCwd)) : "";
   // 모델 프로파일 인지 — depth 0 만 (agentIndex 게이트 parity). 부재/오류 시 ""(graceful).

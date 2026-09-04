@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Delegated agents and managers are now briefed only on what they can actually do.
+  Previously they received the same operating constitution and skill list as the
+  assistant, including instructions to use tools that aren't available at their level.
+  No capability is lost — they can still find skills with `find_skills` and use any
+  skill by name.
+- Calling `find_skills` with **no argument** now returns the full list of available
+  skills. It previously required a search term, so there was no way to discover what
+  existed.
+- The skill list now respects a **byte limit**. It previously capped only the number of
+  entries, so a few skills with long descriptions could grow it without bound.
+
+### Removed
+
+- Removed the `schedule-safety-check` skill. What it did — checking, before a schedule is
+  created, whether that prompt is safe to run unattended later — is now **built into the
+  assistant's default behaviour**, so the same check applies in delegated turns too.
+
+### Fixed
+
+- Deleted skills and agents no longer linger in an installation and keep loading.
+
+
 ## [0.47.0] - 2026-09-03
 
 ### Added

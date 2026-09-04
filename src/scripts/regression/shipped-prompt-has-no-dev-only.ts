@@ -140,16 +140,30 @@ export const check: RegressionCheck = {
       );
     }
 
-    // ★③ 안전 게이트는 **배포돼야** 한다 — 프롬프트가 시키는 이상 없으면 안 된다.
-    //  (①이 "안 시키면 통과" 이므로, 지워서 통과시키는 길을 막는다.)
-    const demanded = prompt.includes("schedule-safety-check");
+    // ★③ 위험 트리거 등록 게이트가 **실제로 배달된다**.
+    //
+    //  ★**이름이 아니라 실질을 본다** (2026-09-04). 종전엔 `schedule-safety-check` 라는
+    //   **스킬 이름**이 프롬프트에 있는지 + 그 스킬이 배포되는지를 봤다. 그런데 그 스킬을
+    //   없애고 **규칙을 프롬프트에 인라인**으로 옮기자, 이 검사는 «게이트가 사라졌다» 고
+    //   울었다 — 실제로는 게이트가 **더 확실해졌는데도**(스킬 조회가 필요 없고, 스킬
+    //   인덱스에서 그것을 못 보는 위임 턴에도 같은 문장이 간다).
+    //  ★그러니 검사가 지켜야 할 것은 **철자가 아니라 규칙의 실질**이다. 아래 조각이 전부
+    //   있어야 통과한다 — «언제 평가하나 · 왜 위험한가 · 무엇을 받아야 하나». 조각 중
+    //   하나라도 지우면 빨간불이 뜨므로 «지워서 통과시키는 길» 은 여전히 막혀 있다.
+    const gateParts: Array<[string, string]> = [
+      ["등록 시점", "등록하기 전"],
+      ["대상 도구", "add_schedule"],
+      ["무인 발화 근거", "bypassPermissions"],
+      ["승인 요구", "명시 승인"],
+    ];
+    const missing = gateParts.filter(([, frag]) => !prompt.includes(frag)).map(([k]) => k);
     out.push(
       assert(
-        "★위험 스케줄 안전 게이트가 지시되고 그 스킬이 배포된다",
-        demanded && shipped.has("schedule-safety-check"),
-        demanded
-          ? `지시 O · 배포 ${shipped.has("schedule-safety-check")}`
-          : "★게이트 지시 자체가 사라졌다(누수를 지워서 통과시킨 것 아닌가)",
+        "★위험 트리거 등록 게이트의 실질이 프롬프트에 있다(이름이 아니라 내용)",
+        missing.length === 0,
+        missing.length === 0
+          ? `조각 ${gateParts.length}개 전부 있음`
+          : `★빠진 조각: ${missing.join(", ")} — 게이트를 지워서 통과시킨 것 아닌가`,
       ),
     );
     return out;

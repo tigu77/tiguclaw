@@ -128,6 +128,30 @@ export type CapabilityName = keyof typeof REACH;
 export const reaches = (name: CapabilityName, turn: TurnKind): boolean =>
   ORDER[turn] <= ORDER[REACH[name]];
 
+/**
+ * **사다리 비교 그 자체** — 능력 표를 안 거치고 «이 칸이 저 칸까지 닿나» 만 묻는다.
+ *
+ * ★도구가 아닌 것도 같은 사다리를 타야 하기 때문에 뽑았다(2026-09-04): 작동 헌법의
+ *  일부 절은 **메인만·매니저까지** 도달한다(예: 위임 규칙은 `spawn_agent` 을 전제하는데
+ *  그 도구는 `agents: "manager"` 라 서브에이전트엔 등록조차 안 된다). 그 판정을 여기서
+ *  파생시키지 않고 새로 쓰면 **사다리가 두 벌**이 되고, 한쪽만 고쳐져 갈린다
+ *  ([[feedback_simple_composable_no_duplication]]).
+ */
+export const turnReaches = (turn: TurnKind, level: Reach): boolean =>
+  ORDER[turn] <= ORDER[level];
+
+/**
+ * 아무 값이나 → `Reach`. **모르는 값은 `subagent`(= 전부)** 로 떨어진다.
+ *
+ * ★틀리는 방향을 고른 것이다: 오타 하나로 스킬이 **조용히 안 보이게** 되는 쪽보다,
+ *  표시가 안 먹어 **종전대로 다 보이는** 쪽이 낫다 — 전자는 알아챌 방법이 없다.
+ * ★**판정 지점에서도 이걸 쓴다**(파서에서만 쓰지 않는다). 정규화가 입구에만 있으면
+ *  다른 경로로 들어온 값이 `ORDER[undefined]` 를 타고 조용히 걸러진다 — 회귀가 실제로
+ *  그 구멍을 잡았다(2026-09-04).
+ */
+export const asReach = (v: unknown): Reach =>
+  v === "main" || v === "manager" || v === "subagent" ? v : "subagent";
+
 /** 진단·검사용 — 이 칸이 받는 능력 전부. */
 export const capabilitiesFor = (turn: TurnKind): CapabilityName[] =>
   (Object.keys(REACH) as CapabilityName[]).filter((n) => reaches(n, turn)).sort();

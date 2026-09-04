@@ -95,7 +95,7 @@ delete_watch({ id: 3 })
 ## 권한
 
 - 발화는 `runClaude` 의 단일 권한 정책 (bypass + `disallowedTools`) — Phase 4 단일 정책 정합.
-- 등록 시점의 prompt + path 위험성은 `schedule-safety-check` 스킬 (file-watch 카테고리 보강) 이 능동 평가. gray/danger 시 사용자 명시 승인 후만 `add_watch` 호출.
+- 등록 시점의 prompt + path 위험성은 **시스템 프롬프트의 트리거 등록 게이트**가 평가한다 — 등록할 프롬프트가 나중에 사용자 없이 `bypassPermissions` 로 발화하므로, 위험이 있으면 등록 전 사용자 명시 승인 후만 `add_watch` 호출.
 
 ## 외부 작성자 답습 가이드 (5 섹션)
 

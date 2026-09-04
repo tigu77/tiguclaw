@@ -17,6 +17,9 @@ import { readMemoryIndexCapBytes } from "./settings.js";
 import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs } from "./worker-jobs.js";
 import { pendingOptionsLine } from "./pending-options.js";
+import { childPromptOverrides } from "./child-prompt-experiment.js";
+import { scopeConstitution } from "./constitution-scope.js";
+import { turnKindOf } from "./llm-runtime/capability-reach.js";
 import { readFileSync } from "node:fs";
 import { getPaths } from "./paths.js";
 import { parseFile } from "../store/self-growth-md.js";
@@ -629,8 +632,29 @@ export const inlineSuggestionSlotText = (
   return inlineSuggestionRule();
 };
 
-export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
-  { key: "system", text: input.system, channel: "system" },
+/**
+ * ★**역할별로 가르는 자리는 여기 하나다.** 어댑터 셋에 각각 넣으면 같은 판단이 세 벌이
+ *  되고, 한쪽만 고쳐져 갈린다(그리고 갈려도 조용하다).
+ */
+export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => {
+  // ★**헌법 역할 범위 — 상시 적용**(실험 아님). 헌법의 일부 절은 그 칸에 **도달할 수단이
+  //  없다**: 「위임과 규모」는 `spawn_agent` 을 전제하는데 그건 `agents: "manager"` 라
+  //  서브에이전트 턴엔 등록조차 안 되고, 「긴 작업」의 위임 배관은 `workers: "main"` 이라
+  //  매니저도 못 쓴다. 자기가 못 하는 일에 대한 지시를 매 호출 받는 건 크기가 아니라
+  //  **정확성** 문제다. ★메인은 바이트 단위로 종전과 같다(표시만 걷힌다).
+  const system = scopeConstitution(input.system, turnKindOf(input.roleSource)).body;
+  // 그 위에 **측정 전용** 게이트(스킬 인덱스 — 미결). 기본이면 `{}` 라 종전 그대로다.
+  const skillIndex =
+    childPromptOverrides(input.roleSource).skillIndex ?? input.skillIndex;
+  return buildContextSlotsInner(input, system, skillIndex);
+};
+
+const buildContextSlotsInner = (
+  input: SystemContextInput,
+  system: string,
+  skillIndexText: string,
+): ContextSlot[] => [
+  { key: "system", text: system, channel: "system" },
   // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면
   // 자정마다 시스템 채널 전체(30KB)의 캐시를 깨뜨린다. user 채널이 정답.
   { key: "env", text: input.env, channel: "user" },
@@ -638,7 +662,7 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => [
   // claude 전용 — 그 외 어댑터는 ""(빈 슬롯은 걸러진다).
   { key: "foreignDelta", text: input.foreignDelta ?? "", channel: "user" },
   { key: "memorySnippet", text: input.memorySnippet, channel: "user" },
-  { key: "skillIndex", text: input.skillIndex, channel: "system" },
+  { key: "skillIndex", text: skillIndexText, channel: "system" },
   // ★AGENT.md 3인방을 시스템 채널의 **꼬리**에 둔다 (2026-07-30 검토 지적):
   //  안정 조각 중 가장 자주 바뀌는 게 AGENT.md 다 — 비서 자신이 정체성·습관을 수시로
   //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·

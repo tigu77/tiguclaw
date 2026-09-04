@@ -1,6 +1,7 @@
 ---
 name: codex-wrapper-sync
 description: "Codex 의 스킬(~/.codex/skills, 프로젝트 AGENTS.md·프롬프트)을 tiguclaw 로 가져와(래핑/동기화) 그대로 쓸 수 있게 한다. (1) '코덱스에서 쓰던 스킬 가져와', 'codex 래핑/동기화', 'codex-wrapper-sync' 요청 시, (2) Codex 로 쓰던 능력을 tiguclaw 비서가 재사용하고 싶을 때. Codex 스킬도 SKILL.md 포맷이라 검증+복사가 핵심(단 Codex 는 서브에이전트 없음)."
+reach: main
 ---
 
 # codex-wrapper-sync — Codex 자산을 tiguclaw 로 래핑

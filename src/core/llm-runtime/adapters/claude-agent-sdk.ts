@@ -530,6 +530,8 @@ export const runClaude = async (
           channel: input.channel,
           threadKey: input.threadKey,
           adapter: "claude",
+          // 이 턴의 칸 — find_skills 가 자기 칸 스킬만 돌려주게(인덱스와 같은 규칙).
+          turn: turnKindOf(input),
         }),
         // reply-intent — 이 turn 응답을 트리거 메시지 직접 답글로 마킹 (codex 와 parity).
         "reply-intent": replyIntentServer,
@@ -795,7 +797,7 @@ export const runClaude = async (
   // project > plugin > user 우선 1개만 → invoke_skill 의 fetch 우선순위와 일치
   // (인덱스↔실행 단일 진실).
   const skills = await discoverSkills(cwd);
-  const skillIndex = formatSkillIndex(skills);
+  const skillIndex = formatSkillIndex(skills, turnKindOf(input));
 
   // 서브에이전트 인덱스 — 세 어댑터 동일 노출(LLM 이 에이전트 존재를 알게).
   // depth 0 turn 만 (위 discoveredAgents 재사용 — 중복 fs walk 0).

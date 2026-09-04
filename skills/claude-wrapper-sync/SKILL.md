@@ -1,6 +1,7 @@
 ---
 name: claude-wrapper-sync
 description: "Claude Code 프로젝트의 서브에이전트·스킬·슬래시커맨드(.claude/)를 tiguclaw 로 가져와(래핑/동기화) 그대로 쓸 수 있게 한다. (1) '클로드 코드에서 쓰던 에이전트/스킬 가져와', '.claude 래핑/동기화', 'claude-wrapper-sync' 요청 시, (2) Claude Code 로 작업한 폴더의 능력을 tiguclaw 비서가 재사용하고 싶을 때. 포맷이 거의 동일해 검증+복사가 핵심."
+reach: main
 ---
 
 # claude-wrapper-sync — Claude Code 자산을 tiguclaw 로 래핑

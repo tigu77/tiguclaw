@@ -861,6 +861,24 @@ const server = http.createServer((req, res) => {
     }
     // 모듈 활성/비활성 — bridge POST /set-module-enabled (write 토큰 server-side 주입). P4a-2
     // 프런트(view-providers.js)가 body{name,enabled} 그대로 전달 — /set-default-profile 과 동형.
+    // 구독 인증(2026-09-05) — 목록은 읽기, 시작·마무리는 admin(브리지 role 표가 집행한다).
+    // ★붙여넣은 값(리다이렉트 주소·토큰)은 그대로 통과시키고 **여기서 로그에 안 남긴다.**
+    if (pathname === "/api/auth-providers" && method === "GET") {
+      await proxyJson(res, "/auth-providers");
+      return;
+    }
+    if (
+      (pathname === "/api/auth-login-begin" || pathname === "/api/auth-login-finish") &&
+      method === "POST"
+    ) {
+      const body = await readBody(req);
+      await proxyJson(res, pathname.replace("/api", ""), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
     if (pathname === "/api/set-module-enabled" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-module-enabled", {

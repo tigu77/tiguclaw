@@ -26,35 +26,20 @@
 import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
+import { createAuthorizationFlow } from "../core/llm-runtime/adapters/openai-codex-oauth.js";
+// ★파싱·CSRF 검증·토큰 저장·쿨다운 해제는 **코어에 있다** — 대시보드 인증 버튼이 같은 일을
+//  하게 되면서 꺼냈다(2026-09-05). 복사하면 한쪽만 고쳐지는 날 한쪽 사용자가 조용히
+//  로그아웃된다. 여기 남는 것은 터미널 문구와 readline 뿐이다.
 import {
-  createAuthorizationFlow,
-  exchangeAuthorizationCode,
-  upsertCodexTokens,
-} from "../core/llm-runtime/adapters/openai-codex-oauth.js";
+  CODEX_CALLBACK_PORT as PORT,
+  CODEX_CALLBACK_PATH as CALLBACK_PATH,
+  parseRedirectInput,
+  completeCodexLogin,
+} from "../core/llm-runtime/adapters/openai-codex-oauth-login.js";
 
-const PORT = 1455;
-const CALLBACK_PATH = "/auth/callback";
+export { parseRedirectInput };
 /** 이 시간 안에 콜백이 안 오면 수동 경로를 **다시** 안내한다(중단하지 않는다). */
 const NUDGE_MS = 45_000;
-
-/**
- * 붙여넣은 문자열에서 code·state 를 뽑는다 — 전체 리다이렉트 URL 이든, 쿼리스트링이든,
- * `code=` 한 조각이든 받는다. ★사용자가 무엇을 붙여넣을지 우리가 못 정한다(주소창 전체를
- * 복사하는 게 가장 자연스럽다) → 관대하게 받고, 판정은 state 검증에서 한다.
- */
-export const parseRedirectInput = (
-  raw: string,
-): { code: string; state: string | null } | null => {
-  const s = raw.trim().replace(/^["']|["']$/g, "");
-  if (s === "") return null;
-  const qs = s.includes("?") ? s.slice(s.indexOf("?") + 1) : s;
-  const p = new URLSearchParams(qs);
-  const code = p.get("code");
-  if (code !== null && code !== "") return { code, state: p.get("state") };
-  // `code` 파라미터가 아니라 코드 자체를 붙여넣은 경우(공백·URL 문법 없음).
-  if (!/[\s?&=]/.test(s)) return { code: s, state: null };
-  return null;
-};
 
 /**
  * 콜백 성공 페이지. ★"창을 닫으세요" 로 끝내지 않는다 — 터미널이 안 넘어갔을 때
@@ -114,39 +99,23 @@ const main = async (): Promise<void> => {
       state: string | null,
     ): Promise<void> => {
       if (settled) return;
-      if (state !== null && state !== flow.state) {
-        throw new Error("State mismatch (CSRF guard)");
-      }
-      const tokens = await exchangeAuthorizationCode(code, flow.pkce.verifier);
-      await upsertCodexTokens(tokens);
+      const r = await completeCodexLogin({
+        code,
+        state,
+        expectedState: flow.state,
+        verifier: flow.pkce.verifier,
+      });
       settled = true;
       cleanup();
-      const expiresInSec = Math.round((tokens.expires - Date.now()) / 1000);
-      // ★재인증했으면 이전 한도 판정은 무효다 (2026-07-28). 쿨다운은 "호출 성공 시"에만
-      //  풀리는데 쿨다운 중엔 그 백엔드를 아예 안 부르므로 스스로는 안 풀린다 = 자기 잠금.
-      //  새 자격증명은 전제가 바뀐 것이므로 여기서 지운다. 이 CLI 는 데몬과 별 프로세스라
-      //  DB 만 지울 수 있다 → 돌고 있는 데몬에는 `/cooldown clear codex` 또는 재시작이 필요.
-      let cooldownNote = "";
-      try {
-        const { initStore } = await import("../store/sessions.js");
-        const { loadLiveCooldowns, deleteCooldown } = await import(
-          "../store/cooldowns.js"
-        );
-        initStore();
-        const live = loadLiveCooldowns(Date.now()).filter((c) =>
-          c.key.startsWith("codex"),
-        );
-        for (const c of live) deleteCooldown(c.key);
-        if (live.length > 0) {
-          cooldownNote =
-            `\n⚠️ codex 쿨다운 ${live.length}건을 해제했습니다(재인증 = 이전 한도 판정 무효).` +
-            `\n   돌고 있는 데몬에는 즉시 반영되지 않습니다 — 채팅에서 \`/cooldown clear codex\` 를 보내거나 데몬을 재시작하세요.`;
-        }
-      } catch {
-        /* store 미준비 등 — 인증 자체는 성공했으므로 진행 */
-      }
+      // ★쿨다운 해제는 코어가 했다 — 여기서는 «그래서 사용자가 무엇을 해야 하나» 만 말한다.
+      //  이 CLI 는 데몬과 별 프로세스라 DB 만 바뀐다(돌고 있는 데몬엔 즉시 반영 안 됨).
+      const cooldownNote =
+        r.clearedCooldowns > 0
+          ? `\n⚠️ codex 쿨다운 ${r.clearedCooldowns}건을 해제했습니다(재인증 = 이전 한도 판정 무효).` +
+            `\n   돌고 있는 데몬에는 즉시 반영되지 않습니다 — 채팅에서 \`/cooldown clear codex\` 를 보내거나 데몬을 재시작하세요.`
+          : "";
       console.log(`\n✅ 토큰 발급 + .env 저장 완료.${cooldownNote}`);
-      console.log(`   access_token expires in ~${expiresInSec}s`);
+      console.log(`   access_token expires in ~${r.expiresInSec}s`);
       console.log(`   refresh_token 보존 (자동 refresh hook 활성)`);
       resolve();
     };

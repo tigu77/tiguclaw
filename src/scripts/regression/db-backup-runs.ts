@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { readEntrySource } from "./_wiring.js";
 import type { Assertion, RegressionCheck } from "./_framework.js";
 
 const run = async (): Promise<Assertion[]> => {
@@ -217,7 +218,9 @@ const run = async (): Promise<Assertion[]> => {
   {
     const { readFile } = await import("node:fs/promises");
     const bk = await readFile(new URL("../../store/backup.ts", import.meta.url), "utf8");
-    const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    // ★`/status` 본문이 `core/entry/slash-commands.ts` 로 나갔다(2026-09-05 구조 감사 ③) —
+  //  지키는 성질(«백업 상태를 밀지 않고 /status 에서 본다»)은 그대로, 읽는 자리만 옮긴다.
+  const idx = readEntrySource();
     // ★설정을 **실제로 돌려서** 확인한다 (2026-08-12, 사용자: "자동 백업 할 건지는
     //  설정에 두자 · 기본은 켜있는걸로"). 종전엔 소스 정규식뿐이라 동의어 하나로 뚫렸다.
     {

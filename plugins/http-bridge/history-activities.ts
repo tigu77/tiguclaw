@@ -7,6 +7,7 @@
  * ★`index.ts` 에서 떼어냈다 (2026-08-30). 143줄에 import 는 `listEvents` 하나뿐이었다.
  */
 import { listEvents } from "../../src/store/events.js";
+import { isDerivedThread } from "../../src/core/threadkey.js";
 
 interface HistoryActivity {
   ts: number;
@@ -84,8 +85,10 @@ export const historyActivities = (
       // "turn"(coarse floor) 은 여전히 제외 — 렌더 대상 아님(기존과 동일).
       if (p.kind !== "tool" && p.kind !== "text") continue;
       const tk = typeof p.threadKey === "string" ? p.threadKey : "";
-      if (tk.startsWith("worker:") || tk.startsWith("agent:") || tk.startsWith("gateway:")) {
-        continue; // 잡·게이트웨이 스텝은 채팅 이력 아님(text 세그먼트도 depth>0 은 애초 미발행).
+      // ★손 목록이 갈려 있었다 (2026-09-05 적대 검토) — 셋만 적어 `scheduler:`·`endpoint:`
+      //  가 빠졌고, 그래서 스케줄·엔드포인트 도구 스텝이 채팅 이력에 섞였다. 코어 정본을 쓴다.
+      if (isDerivedThread(tk)) {
+        continue; // 파생 턴(잡·에이전트·스케줄·엔드포인트·게이트웨이) 스텝은 채팅 이력 아님.
       }
       // 멀티세션 탭(ADR 2026-07-15) — 요청 threadKey 로 스코프해 entries 와 동일 계약 유지
       //  (안 하면 타 스레드 도구 스텝이 세션 이력에 샘 = 크로스세션 누수). 미지정=현행(전 스레드).

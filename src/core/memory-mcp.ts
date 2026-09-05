@@ -14,6 +14,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   addMemory,
+  peekMemory,
   deleteMemory,
   getMemory,
   searchMemories,
@@ -44,7 +45,9 @@ import {
 export const addMemoryWithGuard = async (
   input: Parameters<typeof addMemory>[0],
 ): Promise<{ memory: Memory; updated: boolean }> => {
-  const before = getMemory(input.name);
+  // ★쓰기 전 «있었나» 확인은 **읽기가 아니다** — `getMemory` 를 쓰면 add 할 때마다 그
+  //  메모리의 access 가 오른다(2026-09-05 자기부풀림 발견). 판정 전용 문으로 본다.
+  const before = peekMemory(input.name);
   const memory = addMemory(input);
   getEventBus().publish({
     type: "memory.write",
@@ -283,13 +286,41 @@ const updateMemoryTool = tool(
   },
 );
 
+/**
+ * **정리는 한 건씩 오지 않는다** — 그래서 이름을 배열로 받는다 (2026-09-04).
+ *
+ * ★`memory-tidy` 는 한 판에 «상위 25건» 을 다룬다(스킬 §3). 그런데 archive·delete 가
+ *  이름 하나만 받으면 그 한 판이 도구 호출 수십 번이 된다 — 왕복도 승인도 건별이고,
+ *  중간에 턴이 끊기면 «절반만 정리된» 상태가 남는다. 한 번의 판단은 한 번의 호출이어야
+ *  한다.
+ * ★단건도 배열이다 — `name` 과 `names` 를 둘 다 받으면 입력 모양이 둘이 되고, 어느 쪽이
+ *  진짜인지 판정하는 코드가 생긴다([[feedback_simple_composable_no_duplication]]).
+ * ★건별 결과를 그대로 돌려준다 — 없는 이름이 섞여도 멱등이지만, **무엇이 실제로 바뀌었나**
+ *  를 모델이 알아야 "정리했다" 는 보고가 정직해진다.
+ */
+const NAMES_ARG = z
+  .array(z.string().min(1))
+  .min(1)
+  .describe("메모리 이름(slug) 배열. 한 건이어도 배열로 준다.");
+
+// 같은 이름을 두 번 세면 «몇 건 바뀌었나» 가 부풀려진다(동작은 멱등이라 무해).
+const uniqueNames = (names: string[]): string[] => [...new Set(names)];
+
 const deleteMemoryTool = tool(
   "delete_memory",
-  "메모리 영구 삭제. 없는 name 도 멱등 (deleted:false).",
-  { name: z.string().min(1) },
+  "메모리 영구 삭제 — **여러 건을 한 번에** 준다(`names` 배열, 한 건이어도 배열). " +
+    "없는 이름도 멱등(그 건만 deleted:false).",
+  { names: NAMES_ARG },
   async (args) => {
-    const deleted = deleteMemory(args.name);
-    return okJson({ ok: true, deleted });
+    const results = uniqueNames(args.names).map((name) => ({
+      name,
+      deleted: deleteMemory(name),
+    }));
+    return okJson({
+      ok: true,
+      deleted: results.filter((r) => r.deleted).length,
+      results,
+    });
   },
 );
 
@@ -357,15 +388,20 @@ const listMemoriesTool = tool(
 const archiveMemoryTool = tool(
   "archive_memory",
   "메모리를 인덱스에서 내린다(삭제 아님 — 검색으로는 계속 찾히고 되돌릴 수 있다). " +
-    "중복 병합·만료 정리에 쓴다. `restore:true` 면 되돌린다. 없는 name 은 멱등.",
-  { name: z.string().min(1), restore: z.boolean().optional() },
+    "**여러 건을 한 번에** 준다(`names` 배열, 한 건이어도 배열). 중복 병합·만료 정리에 " +
+    "쓴다. `restore:true` 면 준 이름들을 되돌린다. 없는 이름은 멱등.",
+  { names: NAMES_ARG, restore: z.boolean().optional() },
   async (args) => {
-    const m = args.restore === true ? unarchiveMemory(args.name) : archiveMemory(args.name);
+    const restoring = args.restore === true;
+    const results = uniqueNames(args.names).map((name) => ({
+      name,
+      found: (restoring ? unarchiveMemory(name) : archiveMemory(name)) !== undefined,
+    }));
     return okJson({
       ok: true,
-      found: m !== undefined,
-      archived: args.restore !== true,
-      name: args.name,
+      archived: !restoring,
+      changed: results.filter((r) => r.found).length,
+      results,
     });
   },
 );

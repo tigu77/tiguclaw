@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readEntrySource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -31,7 +32,8 @@ export const check: RegressionCheck = {
   guards:
     "슬래시 명령이 대시보드 «작업 중» 을 켜놓고 안 끄던 것 — `presentOptions` 는 채널 클로저라 버스를 안 타고 슬래시는 LLM 미경유라 turn_done 도 없다. 2026-07-10 에 /status 로 같은 것을 겪고 replyCommand 로 닫았는데 그 통로를 안 거치는 갈래가 남아 있었다(사용자 신고 2026-09-01)",
   run: async (): Promise<Assertion[]> => {
-    const src = readFileSync(path.join(REPO, "src/index.ts"), "utf8");
+    // 진입 경로 전체 — 명령 본문과 응답 헬퍼가 `core/entry/` 로 나갔다(구조 감사 ③).
+    const src = readEntrySource();
 
     // ① 원시 호출은 **헬퍼 안의 한 줄뿐**이어야 한다.
     const rawCalls = [...src.matchAll(/msg\.presentOptions\(/g)].length;

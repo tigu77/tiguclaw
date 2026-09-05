@@ -26,6 +26,30 @@ export const TELEGRAM_THREAD_PREFIX = "tg:";
 export const DEFAULT_SESSION_ID = "dashboard:default";
 
 /**
+ * **파생 턴 접두사** — 사람이 말을 건 대화가 아니라 **우리가 만든 턴**의 좌표들.
+ *
+ * ★한 곳에 둔다 (2026-09-05). 종전엔 이 목록이 소비처마다 따로 있었고, 그래서
+ *  **자가성장의 사본에 `agent:` 가 빠져 있었다** — 실측: 스킬 제안 8건 중 1건이 통째로
+ *  서브에이전트 턴에서 만들어졌다(우리가 띄운 하위 작업의 도구 순서를 «사용자 작업 흐름»
+ *  으로 읽은 것이다). 손으로 관리하는 목록은 반드시 드리프트한다
+ *  ([[feedback_hand_maintained_lists]]) — 특히 **새 종류가 늘 때 조용히 새어 든다.**
+ * ★자리가 여기인 이유: 이건 좌표의 성질이다. 소비처(제안 UI·자가성장)가 각자 아는 게
+ *  아니라 **좌표를 아는 곳**이 말해야 한다.
+ * ★파생 턴은 전부 접두사로 **자기 출신을 밝힌다** — 그게 판정 기준이고, 이름 열거가 아니다.
+ */
+export const DERIVED_THREAD_PREFIXES = [
+  "scheduler:",
+  "worker:",
+  "agent:",
+  "endpoint:",
+  "gateway:",
+] as const;
+
+/** 이 좌표가 파생 턴인가(= 사람이 말을 건 대화가 아닌가). */
+export const isDerivedThread = (threadKey: string): boolean =>
+  DERIVED_THREAD_PREFIXES.some((p) => threadKey.startsWith(p));
+
+/**
  * 세션 정체성의 단일 정의점 — 채널이 자기 정체성을 threadKey 에 인코딩하던 로직을
  * 여기 하나로 모은다(ADR §D1). 채널은 더 이상 세션 정체성을 소유하지 않는다.
  *
@@ -106,4 +130,29 @@ export const extractTelegramChatId = (threadKey: string): string | null => {
   if (!threadKey.startsWith(TELEGRAM_THREAD_PREFIX)) return null;
   const chatId = threadKey.slice(TELEGRAM_THREAD_PREFIX.length).trim();
   return chatId.length > 0 ? chatId : null;
+};
+
+/**
+ * **답장이 세션을 갈랐나** — 갈랐으면 그 세션, 아니면 `null` (2026-09-05 적대 검토 P2).
+ *
+ * ★이게 함수인 이유는 판정이 **두 벌이었기 때문**이다. 종전엔 텔레그램 핸들러 안에
+ *  인라인으로 있었는데, 로그는 «갈렸을 때만» 으로 좁혀놓고 **라벨은 원값을 받았다.**
+ *  그래서 양방향으로 틀렸다:
+ *   - `/sessions use` 로 비기본 세션에 묶인 대화는 **답글마다 상시 라벨**(갈리지도 않았는데)
+ *   - 정작 갈린 순간엔 조용 — 라벨이 있어야 할 유일한 경우다
+ *  같은 판단이 두 곳이면 한쪽만 좁혀진다.
+ *
+ * ★그리고 핸들러 클로저 안에 있으면 **동작으로 검사할 수가 없다** — 이 레포가
+ *  `egress-targets.ts` 를 꺼낼 때 적어둔 것과 같은 이유다("정확히 검사 못 한 자리에서
+ *  결함이 나왔다"). 순수 함수면 진리표가 그대로 못 박힌다.
+ *
+ * ★«매핑이 있다» 는 이유가 아니다 — 인입 응답까지 매핑에 들어가면서 평소 답글에도
+ *  매핑이 잡히기 때문이다. 이유는 **갈렸다** 하나뿐이다.
+ */
+export const routedReplySession = (
+  repliedSession: string | null | undefined,
+  boundSession: string,
+): string | null => {
+  if (repliedSession === null || repliedSession === undefined || repliedSession === "") return null;
+  return repliedSession === boundSession ? null : repliedSession;
 };

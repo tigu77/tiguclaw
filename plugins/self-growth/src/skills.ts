@@ -1,4 +1,6 @@
-import { addMemory, getMemory } from "../../../src/store/memory.js";
+import { isDerivedThread } from "../../../src/core/threadkey.js";
+import { homeFields, suggestHome } from "./home.js";
+import { addMemory, peekMemory } from "../../../src/store/memory.js";
 import { isStrongerSignal, upsertReflection } from "./analysis.js";
 import { getRecentActivities } from "../../../src/store/events.js";
 import {
@@ -42,15 +44,19 @@ export interface ActivitySegment {
 }
 
 /**
- * 메타재귀 §6-2 — skill_proposal 집계는 *사용자 채널 threadKey 만* 대상.
- * worker:/internal/self 경로 threadKey 는 제외(self-growth 자기 산출물발 활동·
- * 내부 분류 호출이 fingerprint 로 재트리거되는 루프 차단). 방어적 화이트리스트 아닌
- * 블랙리스트 — 미래 사용자 채널 추가 시 코드 변경 0(원칙: 채널 분기 금지).
+ * 메타재귀 §6-2 — skill_proposal 집계는 **사람이 말을 건 대화만** 대상.
+ *
+ * ★**파생 턴 목록은 코어가 든다**(`threadkey.ts`). 종전엔 여기 사본이 있었고 `worker:`·
+ *  `internal` 만 막았다 — 그래서 **`agent:` 가 새어 들었다**: 실측(2026-09-05) 스킬 제안
+ *  8건 중 1건이 통째로 서브에이전트 턴에서 만들어졌고(«Bash→Read→Bash→Read→Bash»),
+ *  그건 사용자의 작업 흐름이 아니라 **우리가 띄운 하위 작업의 탐색 모양**이다. 사본을
+ *  없애면 새 파생 종류가 생겨도 여기 고칠 게 없다([[feedback_hand_maintained_lists]]).
+ * ★`internal`·self 네임스페이스는 **이 플러그인 것**이라 여기 남는다(자기 산출물발 활동이
+ *  fingerprint 로 재트리거되는 루프 차단 — 코어가 알 이유가 없는 사정이다).
  */
 export const isAggregableThreadKey = (threadKey: string): boolean => {
   const k = threadKey.toLowerCase();
-  if (k.startsWith("worker:")) return false;
-  if (k.startsWith("internal:")) return false;
+  if (isDerivedThread(k)) return false;
   if (k.startsWith("internal")) return false;
   if (k.includes(SELF_NAMESPACE)) return false; // self-growth 경로 방어
   return true;
@@ -252,8 +258,7 @@ export const analyzeSkillProposal = (
       confidence: 0.4,
       assumed_significance:
         "같은 도구 시퀀스 반복 = 절차화 가능한 작업 후보(행동 지문 근사 — 의미 동일성은 사용자·비서 확인 단계 판정).",
-      suggested_action:
-        "비서가 사용자에게 이 작업을 harness:harness 로 스킬화할지 명시 확인. 거절 시 이 reflection delete. 승인 시 비서가 harness:harness 발화로 스킬 작성(self-growth 는 작성 안 함).",
+      ...homeFields(suggestHome({ kind: "skill_proposal" })),
       execution_boundary:
         "self-growth 는 제안만. 스킬 파일 작성은 harness:harness(비서 프롬프트 경로).",
     },
@@ -261,7 +266,7 @@ export const analyzeSkillProposal = (
     2,
   );
 
-  const priorProp = getMemory(reflectionName);
+  const priorProp = peekMemory(reflectionName);
   if (priorProp !== undefined && !isStrongerSignal(priorProp.body, "evidence_count", count)) {
     return null; // 같은 창 재스캔 — 갱신하면 만료 시계만 헛돈다.
   }
@@ -353,7 +358,7 @@ export const isGovernanceSkill = (skillName: string): boolean => {
 export const readGuardSnapshot = (
   skillName: string,
 ): SkillImproveGuardSnapshot | null => {
-  const memo = getMemory(`${SKILL_IMPROVE_GUARD_PREFIX}${skillNameSlug(skillName)}`);
+  const memo = peekMemory(`${SKILL_IMPROVE_GUARD_PREFIX}${skillNameSlug(skillName)}`);
   if (memo === undefined) return null;
   try {
     const parsed = JSON.parse(memo.body) as Record<string, unknown>;
@@ -384,7 +389,7 @@ export const upsertGuardSnapshot = (
     ts: number;
   },
 ): void => {
-  addMemory({
+  upsertReflection({
     type: "reference",
     name: `${SKILL_IMPROVE_GUARD_PREFIX}${skillNameSlug(skillName)}`,
     description: `(내부) ${skillName} 개선제안 가드 스냅샷 — 재제안 thrash 차단용`,
@@ -436,7 +441,7 @@ export const analyzeSkillImprove = (usage: {
   // 2. 멱등(§3-1) — 미해결 제안 메모 있으면 재제안 0. growth namespace 라 자기분석도 skip.
   // 재발 갱신 — analysis.ts 와 같은 판정(신호가 세졌을 때만). 옛 `있으면 skip` 은
   //  인덱스 밀림 + 만료 시계 정지 둘 다를 낳았다(2026-08-02).
-  const priorImp = getMemory(reflectionName);
+  const priorImp = peekMemory(reflectionName);
   if (priorImp !== undefined && !isStrongerSignal(priorImp.body, "fail_count", usage.failCount)) {
     return null; // 실패가 더 안 늘었다 — 갱신하면 만료 시계만 헛돈다.
   }
@@ -480,8 +485,7 @@ export const analyzeSkillImprove = (usage: {
         min_invocations: MIN_INVOCATIONS,
         fail_rate_threshold: FAIL_RATE_THRESHOLD,
       },
-      suggested_action:
-        "비서가 사용자에게 이 스킬을 harness:harness 로 개선할지 명시 확인. 거절/적용 후 이 reflection delete. self-growth 는 제안만 — 스킬 파일 수정은 harness(비서 프롬프트 경로).",
+      ...homeFields(suggestHome({ kind: "skill_improve" })),
       execution_boundary:
         "self-growth 는 skill_usage 읽기 + 제안만. 스킬 수정은 harness:harness.",
     },

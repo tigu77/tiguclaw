@@ -20,6 +20,7 @@
  *  - 백업 성공은 침묵(로그만), 실패·첫 벌만 말한다 — `backupNotice` 가 정한다.
  */
 import { getEventBus, type EventBus, type EventBusEvent } from "./eventbus.js";
+import { ownerPushChannel } from "./channel-outbound.js";
 import { deliverOutbound } from "./outbound.js";
 import { runBackupIfDue, backupNotice } from "../store/backup.js";
 import { runHealthSweep, type HealthFinding } from "./health-sweep.js";
@@ -59,8 +60,18 @@ const reportFindings = (bus: EventBus | null, findings: HealthFinding[]): void =
     }
   }
   const lines = findings.map((f) => `• ${f.summary}`).join("\n");
+  // ★채널 이름을 코어가 부르지 않는다 (2026-09-05 구조 감사) — 종전엔 `"telegram"` 고정이라
+  //  그 채널이 없는 설치에선 이 알림이 어디에도 안 갔다. 「보낼 수 있고 주소를 아는」 채널을
+  //  능력으로 고른다. 없으면 로그로 닫는다 — 그것도 사실이니 조용히 넘어가지 않는다.
+  const pushTo = ownerPushChannel();
+  if (pushTo === null) {
+    console.warn(
+      `self-maintenance: 이상 ${findings.length}건을 알릴 채널이 없습니다(발송 가능·기본 주소 있는 채널 0) — ${lines}`,
+    );
+    return;
+  }
   void deliverOutbound({
-    channel: "telegram",
+    channel: pushTo,
     target: null, // 채널 기본 대상(소유자) — 좌표 하드코딩 0.
     text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
     label: "self-maintenance:health",

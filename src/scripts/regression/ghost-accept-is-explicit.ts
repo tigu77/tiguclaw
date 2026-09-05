@@ -104,8 +104,14 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "버튼은 숨김 상태에서 자리를 차지하지 않는다",
-      /#chat-ghost-accept\[hidden\] \{ display:none; \}/.test(css),
-      "hidden 스타일 확인",
+      // ★자가 바뀌었다 (2026-09-05): 종전엔 이 요소 **전용** 한 줄(`#chat-ghost-accept
+      //  [hidden]{display:none}`)을 문자로 봤는데, 그 한 줄짜리들이 열두 개나 되는 «잊으면
+      //  깨지는 목록» 이라 **전역 규칙 하나**로 바꿨다(실제로 새 기능에서 잊혀 빈 상자가
+      //  떴다). 지키려는 성질은 그대로다 — 검사는 그 성질을 봐야지 특정 문장을 보면 안 된다.
+      /\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(css),
+      /\[hidden\]\s*\{\s*display:\s*none\s*!important/.test(css)
+        ? "전역 [hidden] 규칙이 덮는다"
+        : "★숨김 보장이 없다",
     ),
   );
 

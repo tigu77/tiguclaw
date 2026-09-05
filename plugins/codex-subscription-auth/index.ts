@@ -21,6 +21,10 @@ import {
   codexAuthAvailable,
   ensureFreshAccessToken,
 } from "../../src/core/llm-runtime/adapters/openai-codex-oauth-auth.js";
+import {
+  beginCodexLogin,
+  finishCodexLogin,
+} from "../../src/core/llm-runtime/adapters/openai-codex-oauth-login.js";
 
 export default class CodexSubscriptionAuth {
   async startService(_bus: EventBus, host?: PluginHost): Promise<void> {
@@ -29,6 +33,29 @@ export default class CodexSubscriptionAuth {
       provider: "codex",
       getAccessToken: ensureFreshAccessToken,
       isAuthenticated: codexAuthAvailable,
+      /**
+       * ★**화면에서 끝까지 된다** (2026-09-05). 순수 웹 OAuth(PKCE) 라 브라우저 한 번이면
+       *  된다 — 종전엔 발급 수단이 `npm run codex-auth` **터미널 안에만** 있어서, 폰이나
+       *  원격에서는 인증할 길이 아예 없었다.
+       * ★그래도 붙여넣기 칸을 **항상** 연다. 콜백은 `localhost:1455` 로 오는데 대시보드를
+       *  폰에서 열었다면 그 localhost 는 폰이라 자동 경로가 **원리적으로** 안 온다. 게다가
+       *  자동 콜백은 원래 못 믿는다(2026-08-11 윈도우 실사고).
+       */
+      login: {
+        label: "ChatGPT 로 로그인",
+        begin: async () => {
+          const { url, autoCallback } = await beginCodexLogin();
+          return {
+            summary: autoCallback
+              ? "새 탭에서 ChatGPT 에 로그인하면 이 기계로 돌아와 자동으로 끝납니다. 안 넘어가면 아래에 주소를 붙여넣으세요."
+              : "새 탭에서 ChatGPT 에 로그인한 뒤, 돌아온 주소창 전체를 아래에 붙여넣으세요(자동 콜백은 못 씁니다).",
+            openUrl: url,
+            pasteHint: "로그인 뒤 브라우저 주소창 전체(code=… 포함)",
+            needsRestart: false,
+          };
+        },
+        finish: finishCodexLogin,
+      },
     });
     if (!r.ok) host.log(`구독 인증을 못 켰습니다: ${r.error}`);
   }

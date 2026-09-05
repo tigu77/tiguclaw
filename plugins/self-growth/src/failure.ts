@@ -1,11 +1,11 @@
 import {
-  addMemory,
-  getMemory,
+  peekMemory,
   listMemories,
   searchMemories,
 } from "../../../src/store/memory.js";
 import { listSkillUsage } from "../../../src/store/skill-usage.js";
 import { isStrongerSignal, upsertReflection } from "./analysis.js";
+import { homeFields, suggestHome } from "./home.js";
 import {
   getDirective,
   upsertDirective,
@@ -120,9 +120,8 @@ export const analyzeFailurePattern = async (input: {
       });
       if (landed === null) {
         // 파일 쓰기 실패(디스크·권한 등) → 신호 잃지 않게 reflection 강등으로 폴백.
-        if (getMemory(reflectionName) === undefined) {
-          addMemory({
-            type: "feedback",
+        if (peekMemory(reflectionName) === undefined) {
+          upsertReflection({
             name: reflectionName,
             description: `반복 실패 (${input.errorKind}·${input.adapter}, ${input.count}회) — SELF_GROWTH.md 쓰기 실패로 강등, 사용자 확인 후 결정`,
             body: JSON.stringify(
@@ -130,8 +129,12 @@ export const analyzeFailurePattern = async (input: {
                 observed_pattern: `(${input.errorKind} · ${input.adapter}) '${messageNorm}' 가 ${input.count}회 누적`,
                 evidence_count: input.count,
                 self_growth_md_write_failed: true,
-                suggested_action:
-                  "SELF_GROWTH.md 확정 지침 쓰기 실패 — 디스크/권한 점검. 비서가 사용자에게 이 패턴 대응 의향 명시 확인.",
+                // ★원인을 **모른다** — 여기 온 이유는 SELF_GROWTH.md 쓰기가 실패해서다(디스크·권한).
+                //  종전엔 `cause:"prompt_config", hasCause:true` 를 **상수로** 넘겨,
+                //  방금 실패한 그 일("SELF_GROWTH.md 로 올려라")을 다음 할 일로 실었다
+                //  (적대 검토 P5). 판정 함수의 «모르면 ask» 를 호출부가 뚫고 있었다.
+                ...homeFields(suggestHome({ kind: "failure", errorKind: input.errorKind, hasCause: false })),
+                blocked_by: "SELF_GROWTH.md 쓰기 실패 — 디스크/권한 점검이 먼저다.",
               },
               null,
               2,
@@ -145,7 +148,7 @@ export const analyzeFailurePattern = async (input: {
 
     // verdict === "yes"(모순) / "uncertain"(실패·불확실·타임아웃) → 보수적 강등.
     // LLM 을 박기 *강행* 근거로 쓰지 않음 — 불확실이면 무조건 강등(ADR 가드레일 c).
-    if (getMemory(reflectionName) !== undefined) {
+    if (peekMemory(reflectionName) !== undefined) {
       return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
     }
     const demoteBody = JSON.stringify(
@@ -161,16 +164,19 @@ export const analyzeFailurePattern = async (input: {
         llm_contradiction_duration_ms: durationMs,
         llm_contradiction_existing_count: existing.length,
         confidence: 0.4,
-        suggested_action:
+        // ★여기 온 이유가 «모순 의심» 또는 «판단 불확실» 이다 — 그런데 종전엔 원인을
+        //  `prompt_config` 로 **지어내** 강등 사유와 정반대인 directive 를 냈다(적대 검토 P5).
+        //  불확실해서 내린 것을 확신이 필요한 자리로 보내면 안 된다.
+        ...homeFields(suggestHome({ kind: "failure", errorKind: input.errorKind, hasCause: false })),
+        demoted_because:
           verdict === "yes"
-            ? "LLM 의미 모순 의심(verdict=yes): 이 lesson 이 기존 사용자 확정 메모(feedback/identity 류)와 충돌 가능. 비서가 사용자에게 명시 확인 후 결정 — 자동 박기 강등."
-            : "LLM 모순판단 불확실(verdict=uncertain: 타임아웃·실패·모호). 보수적 강등 — 비서가 사용자에게 이 반복 실패 패턴 대응 의향 명시 확인 후 결정.",
+            ? "LLM 의미 모순 의심 — 기존 사용자 확정과 충돌할 수 있어 자동 확정에서 내렸다."
+            : "LLM 모순판단 불확실(타임아웃·모호) — 보수적으로 내렸다.",
       },
       null,
       2,
     );
-    addMemory({
-      type: "feedback",
+    upsertReflection({
       name: reflectionName,
       description: `반복 실패 (${input.errorKind}·${input.adapter}, ${input.count}회) — LLM 모순판단=${verdict}, suggester only, 사용자 확인 후 결정`,
       body: demoteBody,
@@ -180,7 +186,7 @@ export const analyzeFailurePattern = async (input: {
 
   // 자격 미달/모호 → reflection(suggester) 강등 (기존 동작 — 동기 1차 게이트 탈락).
   // 이름이 feedback_growth_* (self namespace) 라 후속 add 분석에서 자동 skip 됨(루프 (i)/(ii)).
-  if (getMemory(reflectionName) !== undefined) {
+  if (peekMemory(reflectionName) !== undefined) {
     return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
   }
   const body = JSON.stringify(
@@ -193,14 +199,13 @@ export const analyzeFailurePattern = async (input: {
       low_risk_auto_landed: false,
       gate_reasons: gate.reasons,
       confidence: 0.4,
-      suggested_action:
-        "비서가 사용자에게 이 반복 실패 패턴 대응(메모화/회피 규칙) 의향 명시 확인. 자동 박기 자격 미달이라 suggester only.",
+      ...homeFields(suggestHome({ kind: "failure", cause: "uncertain", errorKind: input.errorKind, hasCause: false })),
+      demoted_because: "저위험 자동 확정 자격 미달(게이트 사유는 gate_reasons).",
     },
     null,
     2,
   );
-  addMemory({
-    type: "feedback",
+  upsertReflection({
     name: reflectionName,
     description: `반복 실패 (${input.errorKind}·${input.adapter}, ${input.count}회) — suggester only, 사용자 확인 후 결정`,
     body,
@@ -494,7 +499,7 @@ export const routeFailureReflection = (input: {
     // 재발 갱신 — 실패가 더 쌓이면 신호가 세진 것이다(그게 FAILURE_THRESHOLD 의 전제).
     //  옛 `있으면 skip` 은 카운트·updated_at 을 얼려 인덱스 밀림 + 만료 정지를 낳았다.
     //  ★자동 확정은 여전히 0 — 코어 수정은 개발자 몫이다. 신호의 세기만 바로잡는다.
-    const priorFlag = getMemory(name);
+    const priorFlag = peekMemory(name);
     if (priorFlag !== undefined && !isStrongerSignal(priorFlag.body, "evidence_count", input.count)) {
       return null;
     }
@@ -513,8 +518,19 @@ export const routeFailureReflection = (input: {
   }
 
   // ── prompt_config / task_design / uncertain(+ skill 강등분) → 일반 reflection ──
+  // ★**원인을 모르면 안 남긴다** (2026-09-05 재구성). 실측: 실패반성 12건 중 **8건**이
+  //  `one_line_cause: ""` · `suggested_fix: ""` · `cause_category: "uncertain"` 이었다 —
+  //  남는 건 오류 지문과 *"사용자에게 확인하세요"* 뿐이고, 그건 없느니만 못하다(자리를
+  //  차지하고 읽는 사람의 시간을 쓴다). 원인을 아는 유일한 주체는 그 턴을 돌던 비서이지
+  //  이벤트만 받는 이 플러그인이 아니다 — 모르면 **비워두는 게 정직하다.**
+  //  ★신호 자체는 안 잃는다: 실패 카운트는 `failureKey` 누적으로 살아 있고, 원인이 잡히는
+  //   순간(다음 실패에서 LLM 이 한 줄을 뽑으면) 그때 박힌다.
+  const hasCause =
+    input.reflection.oneLine.trim() !== "" || input.reflection.suggestedFix.trim() !== "";
+  if (!hasCause) return null;
+
   const name = `feedback_${SELF_NAMESPACE}_failure_${slug}`;
-  const priorFail = getMemory(name);
+  const priorFail = peekMemory(name);
   if (priorFail !== undefined && !isStrongerSignal(priorFail.body, "evidence_count", input.count)) {
     return null; // 실패가 더 안 늘었다 — 갱신하면 만료 시계만 헛돈다.
   }
@@ -560,7 +576,16 @@ const buildFailureReflectionBody = (input: {
       related_skills: input.relatedSkills,
       evidence_count: input.count,
       confidence: 0.4,
-      suggested_action: input.guidance,
+      // ★«확인하세요» 대신 **어디로 갈지**를 말한다 (2026-09-05). 판정은 `home.ts` 한 곳.
+      ...homeFields(
+        suggestHome({
+          kind: "failure",
+          cause: input.cause,
+          errorKind: input.errorKind,
+          hasCause: input.reflection.oneLine.trim() !== "",
+        }),
+      ),
+      guidance: input.guidance,
       execution_boundary:
         "self-growth 는 제안만(suggester) — 스킬 파일 수정은 harness, 코어 수정은 개발자, 설정 변경은 사용자. 자동 확정 0.",
     },

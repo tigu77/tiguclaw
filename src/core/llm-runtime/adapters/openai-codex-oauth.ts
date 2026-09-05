@@ -408,6 +408,26 @@ const CODEX_PERSISTENCE_PROMPT = [
  * Codex Responses tools 원소:
  *   { type:"function", name, description, parameters }
  */
+/**
+ * 브리지의 도구를 **등록한다** — 이름→브리지 지도와 노출 목록을 한 번에 채운다.
+ *
+ * ★같은 세 조각(선언·지도·push)이 **열아홉 번** 반복됐다(실측 278줄). 하나만 빠져도
+ *  조용하다: 지도에 없으면 모델이 부를 때 «모르는 도구» 가 되고, 목록에 없으면 있는 능력이
+ *  안 보인다. 세 곳을 손으로 맞추는 자리는 언젠가 어긋난다.
+ * ★**플러그인 브리지는 이 문을 안 쓴다** — 거긴 «먼저 잡은 쪽이 갖는다»(`claimToolNames`)가
+ *  더 붙어 모양이 다르다. 다른 것을 같게 만들면 그게 다음 사고다.
+ * ★순서는 호출 순서 그대로다 — 모델에 보이는 도구 목록 순서를 바꾸지 않는다.
+ */
+const registerBridgeTools = async <B extends { listTools: () => Promise<unknown[]> }>(
+  bridge: B,
+  map: Map<string, B>,
+  out: unknown[],
+): Promise<void> => {
+  const tools = await bridge.listTools();
+  for (const t of tools) map.set((t as { name: string }).name, bridge);
+  out.push(...tools);
+};
+
 const convertMcpToolsToResponsesTools = (
   mcpTools: ReadonlyArray<{
     name: string;
@@ -742,67 +762,29 @@ export const runOpenAiCodex = async (
   const mcpTools: Awaited<ReturnType<typeof memoryBridge.listTools>> = [];
 
   if (!toolsNone) {
-    const memoryToolsRaw = await memoryBridge.listTools();
-    const fileOpsToolsRaw = await fileOpsBridge.listTools();
-    const todoToolsRaw = await todoBridge.listTools();
-    const sessionToolsRaw = await sessionToolsBridge.listTools();
-    const projectToolsRaw = await projectBridge.listTools();
-    const skillToolsRaw = await skillBridge.listTools();
-    const replyIntentToolsRaw = await replyIntentBridge.listTools();
-    const maintenanceToolsRaw = await maintenanceBridge.listTools();
-
-    for (const t of memoryToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, memoryBridge);
+    // ★항상 켜지는 브리지 여덟 — 종전엔 선언 8줄 + 지도 루프 24줄 + push 10줄로 **같은 이름이
+    //  세 번씩** 적혀 있었다(42줄). 순서는 그대로다.
+    for (const b of [
+      memoryBridge,
+      fileOpsBridge,
+      todoBridge,
+      sessionToolsBridge,
+      projectBridge,
+      skillBridge,
+      replyIntentBridge,
+      maintenanceBridge,
+    ]) {
+      await registerBridgeTools(b, toolBridgeMap, mcpTools);
     }
-    for (const t of fileOpsToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, fileOpsBridge);
-    }
-    for (const t of todoToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, todoBridge);
-    }
-    for (const t of sessionToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, sessionToolsBridge);
-    }
-    for (const t of projectToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, projectBridge);
-    }
-    for (const t of skillToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, skillBridge);
-    }
-    for (const t of replyIntentToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, replyIntentBridge);
-    }
-    for (const t of maintenanceToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, maintenanceBridge);
-    }
-
-    mcpTools.push(
-      ...memoryToolsRaw,
-      ...fileOpsToolsRaw,
-      ...todoToolsRaw,
-      ...sessionToolsRaw,
-      ...projectToolsRaw,
-      ...skillToolsRaw,
-      ...replyIntentToolsRaw,
-      ...maintenanceToolsRaw,
-    );
 
     // send-file — 채널 전송 클로저가 있을 때만 등록 (claude 어댑터 조건부 주입과 parity).
     if (sendFileBridge !== undefined) {
-      const sendFileToolsRaw = await sendFileBridge.listTools();
-      for (const t of sendFileToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, sendFileBridge);
-      }
-      mcpTools.push(...sendFileToolsRaw);
+      await registerBridgeTools(sendFileBridge, toolBridgeMap, mcpTools);
     }
 
     // prompt-options(축1) — 채널 렌더 클로저가 있을 때만 등록 (claude 어댑터와 parity).
     if (promptOptionsBridge !== undefined) {
-      const promptOptionsToolsRaw = await promptOptionsBridge.listTools();
-      for (const t of promptOptionsToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, promptOptionsBridge);
-      }
-      mcpTools.push(...promptOptionsToolsRaw);
+      await registerBridgeTools(promptOptionsBridge, toolBridgeMap, mcpTools);
     }
 
     // V7.2.b — depth 0 turn 만 spawn_agent 등록. child(depth 1) 는 미등록 →
@@ -817,11 +799,7 @@ export const runOpenAiCodex = async (
         JOB_OWNING_TOOL_CALL_TIMEOUT_MS(),
       );
       allBridges.push(spawnBridge);
-      const spawnToolsRaw = await spawnBridge.listTools();
-      for (const t of spawnToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, spawnBridge);
-      }
-      mcpTools.push(...spawnToolsRaw);
+      await registerBridgeTools(spawnBridge, toolBridgeMap, mcpTools);
     }
 
     // 백그라운드 매니저 발사 도구 (2026-06-17) — run_in_background/list_workers.
@@ -832,11 +810,7 @@ export const runOpenAiCodex = async (
       const workerServer = createWorkerMcpServer(input);
       const workerBridge = await adaptClaudeMcpServer(workerServer, "workers");
       allBridges.push(workerBridge);
-      const workerToolsRaw = await workerBridge.listTools();
-      for (const t of workerToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, workerBridge);
-      }
-      mcpTools.push(...workerToolsRaw);
+      await registerBridgeTools(workerBridge, toolBridgeMap, mcpTools);
     }
 
     // 커스텀 HTTP 엔드포인트 등록/조회/삭제 도구 (2026-06-18) — register_endpoint/
@@ -848,11 +822,7 @@ export const runOpenAiCodex = async (
       const endpointServer = createEndpointToolsMcpServer();
       const endpointBridge = await adaptClaudeMcpServer(endpointServer, "endpoints");
       allBridges.push(endpointBridge);
-      const endpointToolsRaw = await endpointBridge.listTools();
-      for (const t of endpointToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, endpointBridge);
-      }
-      mcpTools.push(...endpointToolsRaw);
+      await registerBridgeTools(endpointBridge, toolBridgeMap, mcpTools);
     }
 
     // 커스텀 슬래시 명령 등록/조회/삭제 도구 (2026-06-18) — register_command/
@@ -863,11 +833,7 @@ export const runOpenAiCodex = async (
       const commandServer = createCommandToolsMcpServer();
       const commandBridge = await adaptClaudeMcpServer(commandServer, "commands");
       allBridges.push(commandBridge);
-      const commandToolsRaw = await commandBridge.listTools();
-      for (const t of commandToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, commandBridge);
-      }
-      mcpTools.push(...commandToolsRaw);
+      await registerBridgeTools(commandBridge, toolBridgeMap, mcpTools);
     }
 
     // 외부 MCP 등록 도구 (2026-07-07) — add/list/remove_mcp_server. command 와 동일 가드.
@@ -878,11 +844,7 @@ export const runOpenAiCodex = async (
         "mcp-admin",
       );
       allBridges.push(mcpAdminBridge);
-      const mcpAdminToolsRaw = await mcpAdminBridge.listTools();
-      for (const t of mcpAdminToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, mcpAdminBridge);
-      }
-      mcpTools.push(...mcpAdminToolsRaw);
+      await registerBridgeTools(mcpAdminBridge, toolBridgeMap, mcpTools);
     }
 
     // 모델 추론 강도 손잡이(set_model_reasoning) — claude/openai 와 parity(#2).
@@ -896,11 +858,7 @@ export const runOpenAiCodex = async (
         "model-settings",
       );
       allBridges.push(modelSettingsBridge);
-      const modelSettingsToolsRaw = await modelSettingsBridge.listTools();
-      for (const t of modelSettingsToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, modelSettingsBridge);
-      }
-      mcpTools.push(...modelSettingsToolsRaw);
+      await registerBridgeTools(modelSettingsBridge, toolBridgeMap, mcpTools);
     }
 
     // 홈 위젯 배치(configure_home) — claude/openai 와 parity(§J.5).
@@ -910,11 +868,7 @@ export const runOpenAiCodex = async (
         "home-widgets",
       );
       allBridges.push(homeWidgetsBridge);
-      const homeWidgetsToolsRaw = await homeWidgetsBridge.listTools();
-      for (const t of homeWidgetsToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, homeWidgetsBridge);
-      }
-      mcpTools.push(...homeWidgetsToolsRaw);
+      await registerBridgeTools(homeWidgetsBridge, toolBridgeMap, mcpTools);
     }
 
     // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 서버를 @mcp/sdk 클라이언트로 연결한
@@ -967,11 +921,7 @@ export const runOpenAiCodex = async (
         "update-self",
       );
       allBridges.push(updateSelfBridge);
-      const updateSelfToolsRaw = await updateSelfBridge.listTools();
-      for (const t of updateSelfToolsRaw) {
-        toolBridgeMap.set((t as { name: string }).name, updateSelfBridge);
-      }
-      mcpTools.push(...updateSelfToolsRaw);
+      await registerBridgeTools(updateSelfBridge, toolBridgeMap, mcpTools);
     }
 
     // V7.5 (parity P0 fix) — extraMcpServers 도 bridge. router 가 facade 통해
@@ -1014,11 +964,7 @@ export const runOpenAiCodex = async (
       "find-capabilities",
     );
     allBridges.push(findCapabilitiesBridge);
-    const findCapabilitiesToolsRaw = await findCapabilitiesBridge.listTools();
-    for (const t of findCapabilitiesToolsRaw) {
-      toolBridgeMap.set((t as { name: string }).name, findCapabilitiesBridge);
-    }
-    mcpTools.push(...findCapabilitiesToolsRaw);
+    await registerBridgeTools(findCapabilitiesBridge, toolBridgeMap, mcpTools);
   }
 
   const functionTools = convertMcpToolsToResponsesTools(

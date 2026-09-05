@@ -51,7 +51,6 @@ export const CONTRADICTION_EXISTING_CAP = 5;
 // V4 (2026-06-22) — 확정 지침 층 포인터 + 마이그레이션.
 // 포인터 메모: 매 턴 메모리 인덱스 prepend 로 generic 주입돼 비서가 SELF_GROWTH.md 를
 // Read 하게 유도(단방향). growth namespace 라 self-growth 자기분석 skip 됨(메타재귀 0).
-export const POINTER_MEMO_NAME = "growth_directive_pointer";
 // V3 레거시 reference 메모 prefix — V4 가 1회 SELF_GROWTH.md 로 이관 후 삭제(이중 노출 0).
 export const LEGACY_LESSON_PREFIX = "growth_failure_lesson_";
 // 실패 지침의 SELF_GROWTH.md 그룹 라벨(사람이 읽는 분류).

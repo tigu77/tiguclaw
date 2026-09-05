@@ -19,11 +19,19 @@
  *     아는 것을 버리는 말이었다. 실측: `[unknown]` 21건 중 18건이 개발 프로브인데 어느
  *     것인지 알 길이 없었다).
  *  ③ ★**첫 발화에서 파생하지 않는다** — 그건 대화 내용을 다른 채널의 라벨로 흘리는 짓이다.
- *  ④ 라벨이 **egress 사본에만** 붙는다 — 인입 채널 응답은 그대로다(중복 표시 금지).
+ *  ④ 라벨을 붙이는 **자리 전수**가 계약을 지킨다 — egress fan-out 과, 답장으로 세션이
+ *     갈린 인입 응답 **둘 뿐**이고, 후자는 반드시 `repliedSession`(«답장이 세션을 바꿨다»)
+ *     을 신호로 쓴다.
+ *     ★2026-09-04 개정: 종전 문구는 *"인입 응답엔 안 붙는다 — 그 채널엔 이미 문맥이
+ *      있다"* 였다. 그 근거는 평소엔 맞지만 **답장으로 다른 세션에 물었을 때 깨진다** —
+ *      그때 화면의 문맥은 «내가 방금 친 말»이지 «답이 나온 세션»이 아니다(사용자 신고).
+ *      게이트가 틀린 게 아니라 **조건이 덜 적혀** 있었다.
+ *     ★그리고 종전 검사는 `src/index.ts` **한 파일만** 봤다 — 라벨을 채널에서 부르면
+ *      초록인 채로 의미를 잃었다. 그래서 호출 자리를 파일이 아니라 **전수 스캔**으로 센다.
  *
  * 등급: ①②③은 **동작**(순수 함수 실행), ④는 배선 대조.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { egressSourcePrefix } from "../../core/egress-targets.js";
@@ -107,12 +115,102 @@ export const check: RegressionCheck = {
       .join("");
     out.push(
       assert(
-        "★인입 채널 응답에는 라벨이 **안 붙는다**(그 채널엔 이미 문맥이 있다 — 붙이면 중복 표시)",
+        "★`src/index.ts` 안에서는 fan-out **밖에서 안 부른다**(인입 응답엔 이미 문맥이 있다)",
         !/egressSourcePrefix\(/.test(outsideFan),
         /egressSourcePrefix\(/.test(outsideFan) ? "★fan-out 밖에서도 붙인다" : "fan-out 전용",
       ),
     );
 
+    // ── ⑤ 호출 자리 **전수** — 파일 하나만 보면 게이트가 조용히 눈이 먼다 ─────
+    // ★종전 ④는 index.ts 만 봤다. 라벨을 채널 플러그인에서 부르면 초록인 채로 통과했다.
+    //  그래서 «어디서 부르든» 을 소스 전수로 세고, 허용된 자리만 남긴다.
+    const callers = listPrefixCallers();
+    out.push(
+      assert(
+        "★★라벨을 부르는 자리는 **egress fan-out 과 텔레그램 인입 응답 둘 뿐**이다 — 새 자리가 생기면 계약(기본 세션 제외·신호가 무엇인가)을 다시 봐야 한다",
+        callers.length === 2 &&
+          callers.includes("src/index.ts") &&
+          callers.includes("plugins/telegram-channel/index.ts"),
+        callers.join(", ") || "(호출 자리 없음)",
+      ),
+    );
+
+    // ── ⑥ 인입 응답의 신호는 `repliedSession` 이다 (2026-09-04) ────────────────
+    // ★`sessionId` 를 넘기면 «채널↔세션 바인딩이 생기는 순간 모든 답에 라벨» 이 된다.
+    //  바인딩은 `/sessions use` 로 언제든 생기므로 이건 가정이 아니라 대기 중인 결함이다.
+    //  이 변이(repliedSession → sessionId)가 반드시 빨간불이어야 한다.
+    const tg = readFileSync(
+      path.join(REPO, "plugins/telegram-channel/index.ts"),
+      "utf8",
+    );
+    const prefixDecl = /egressSourcePrefix\(\s*([A-Za-z_$][\w$]*)/.exec(tg);
+    out.push(
+      assert(
+        "★★인입 응답 라벨의 신호는 **답장이 바꾼 세션**이다 — `sessionId` 를 넘기면 채널↔세션 바인딩이 생기는 순간 모든 답에 라벨이 붙는다",
+        prefixDecl !== null && /^replied/.test(prefixDecl[1] ?? ""),
+        prefixDecl === null ? "라벨 호출을 못 찾음" : `인자=${prefixDecl[1]}`,
+      ),
+    );
+
+    // ── ⑦ ★그 «신호» 를 **누가 만드나** — 이름이 아니라 동작으로 (2026-09-05) ─────
+    //  ⑥은 `replyAndRecord` **안**에서 라벨에 넘기는 인자의 *이름*만 봤다. 그런데 그건
+    //  파라미터 이름이라 늘 `replied…` 였고, **호출부가 원값을 넘기는 것**은 못 봤다.
+    //  실제로 그래서 새어 나갔다: 로그는 «갈렸을 때만» 으로 좁혀놓고 라벨은 안 좁혀
+    //  ①비기본 세션에 묶인 대화는 답글마다 상시 라벨 ②정작 갈린 순간엔 침묵 — 양방향.
+    //  ★이름을 보는 검사는 이름만 지킨다. 판정을 순수 함수로 꺼냈으니 **돌려서** 본다.
+    const { routedReplySession } = await import("../../core/threadkey.js");
+    const table: Array<[string, string | null, string, string | null]> = [
+      ["묶인 세션과 같다(=안 갈렸다)", "dashboard:proj", "dashboard:proj", null],
+      ["갈렸다 — 그 세션을 낸다", "dashboard:proj", "dashboard:default", "dashboard:proj"],
+      ["기본으로 갈린 것도 «갈림»이다", "dashboard:default", "dashboard:proj", "dashboard:default"],
+      ["매핑 없음", null, "dashboard:proj", null],
+    ];
+    const bad = table.filter(([, r, b, want]) => routedReplySession(r, b) !== want);
+    out.push(
+      assert(
+        "★★라벨 신호가 «매핑이 있다» 가 아니라 «세션이 갈렸다» 로 만들어진다(진리표)",
+        bad.length === 0,
+        bad.length === 0
+          ? table.map(([n, r, b]) => `${n}→${routedReplySession(r, b) ?? "null"}`).join(" · ")
+          : `★틀린 것: ${bad.map(([n, r, b, w]) => `${n} 기대=${w ?? "null"} 실제=${routedReplySession(r, b) ?? "null"}`).join(" · ")}`,
+      ),
+    );
+    // 그리고 호출부가 **그 함수**를 쓴다(인라인으로 되돌아가면 위 진리표가 무의미해진다).
+    const usesFn = /repliedSession:\s*routedSession/.test(tg) && /routedReplySession\(/.test(tg);
+    out.push(
+      assert(
+        "호출부가 그 판정 함수를 지난다 — 인라인으로 되돌아가면 진리표가 지키는 게 없어진다",
+        usesFn,
+        usesFn ? "routedReplySession → repliedSession: routedSession" : "★인라인 판정으로 되돌아갔다",
+      ),
+    );
+
     return out;
   },
+};
+
+/**
+ * `egressSourcePrefix` 를 **부르는 파일 전수** — 이름을 손으로 적지 않는다
+ * ([[feedback_hand_maintained_lists]]). 정의 파일과 이 검사 자신은 뺀다.
+ */
+const listPrefixCallers = (): string[] => {
+  const roots = ["src", "plugins", "packages"];
+  const hits: string[] = [];
+  const skip = new Set(["node_modules", "dist", ".git"]);
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(path.join(REPO, dir), { withFileTypes: true })) {
+      if (skip.has(e.name)) continue;
+      const rel = `${dir}/${e.name}`;
+      if (e.isDirectory()) walk(rel);
+      else if (e.name.endsWith(".ts") || e.name.endsWith(".js")) {
+        if (rel.endsWith("core/egress-targets.ts")) continue;
+        if (rel.includes("scripts/regression/")) continue;
+        if (/egressSourcePrefix\(/.test(readFileSync(path.join(REPO, rel), "utf8"))) {
+          hits.push(rel);
+        }
+      }
+    }
+  };
+  for (const r of roots) walk(r);
+  return hits.sort();
 };

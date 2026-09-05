@@ -1,3 +1,4 @@
+import { upsertReflection } from "./analysis.js";
 import {
   addMemory,
   listMemories,
@@ -178,8 +179,7 @@ export const generateWeeklyReview = (
   // ★**기록을 지우는 게 아니다** — 애초에 만들지 않는 것이다. 신호가 있으면 그대로 쓴다.
   const hasSignal = segmentReflections.length + driftReflections.length > 0;
   if (hasSignal) {
-    addMemory({
-      type: "feedback",
+    upsertReflection({
       name: reviewName,
       description: `이번 주 회고 — segment ${segmentReflections.length}건, drift ${driftReflections.length}건`,
       body,
@@ -252,4 +252,31 @@ export const archiveColdObservations = (
     }
   }
   return archived;
+};
+
+/**
+ * **한 번 걷기** — 이미 인덱스에 실려 있는 옛 산출물을 내린다 (2026-09-05 재구성).
+ *
+ * 새 산출물은 `upsertReflection` 이 박자마자 내리지만, 그 전에 쌓인 것들은 그대로 남아
+ * 있다. 실측(dev): 살아있는 성장 메모리 24건 = **3,568B** = 인덱스 원재료의 **16.5%**.
+ * 삭제가 아니라 아카이브라 검색으로 계속 도달하고 되돌릴 수 있다(비파괴).
+ *
+ * ★멱등이다 — 이미 내려간 것은 UPDATE 가 no-op 이고, 매 부팅 돌아도 값이 같다.
+ * ★사용자가 일부러 되올린 것(승격)은 **다시 안 내린다**: 승격은 `source: user` 로
+ *  SELF_GROWTH.md 에 사는 것이지 메모리 인덱스로 올리는 게 아니다.
+ */
+export const archiveGrowthOutputsOnce = (): number => {
+  let n = 0;
+  try {
+    for (const m of listMemories({ limit: 10_000 })) {
+      if (!m.name.startsWith(`feedback_${SELF_NAMESPACE}_`) && !m.name.startsWith(`${SELF_NAMESPACE}_`)) {
+        continue;
+      }
+      if (archiveMemory(m.name) !== undefined) n += 1;
+    }
+    if (n > 0) console.log(`self-growth: 성장 산출물 ${n}건을 인덱스에서 내렸습니다(검색·복원 가능).`);
+  } catch (e) {
+    console.error(`self-growth: archiveGrowthOutputsOnce failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return n;
 };

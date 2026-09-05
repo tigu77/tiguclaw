@@ -14,6 +14,9 @@
  * ★숨기면 **숨겼다고 말해야** 한다. 조용히 접히면 사용자는 세션이 사라진 줄 안다
  *  ([[project_hotpath_bound_preserve_record]] — 캡 있는 자리의 침묵이 사고를 만든다).
  */
+// ★자리가 갈렸다 (2026-09-05 구조 감사 ③): `/sessions` 본문이 진입점에서
+//  `core/entry/slash-commands.ts` 로 나갔다. 검사가 지키는 성질(«같은 규칙으로 목록을
+//  만든다»)은 그대로고, **읽는 자리만** 옮긴다 — 파일 이름에 묶인 검사는 다음 분해를 막는다.
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -22,7 +25,7 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ① 텔레그램 선택지가 **이름 붙인 것만** 뿌린다(대시보드 탭 규칙과 동형) ─────
   {
-    const w = await sourceHas("../../index.ts", [
+    const w = await sourceHas("../../core/entry", [
       /const allThreads = listThreads\(\{ excludeInternal: true \}\);/,
       /\(t\.name \?\? ""\)\.trim\(\) !== "" \|\| t\.threadKey === current/,
     ]);
@@ -39,7 +42,7 @@ const run = async (): Promise<Assertion[]> => {
   //  이게 빠지면 무명 세션에 묶인 사용자가 **자기 위치를 못 본다**(관측성 훼손 = 08-09
   //  에 폐지한 그 필터와 같은 병).
   {
-    const w = await sourceHas("../../index.ts", [
+    const w = await sourceHas("../../core/entry", [
       /\|\| t\.threadKey === current/,
     ]);
     out.push(
@@ -53,7 +56,7 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ③ ★숨긴 개수를 말한다 + 되찾는 법을 준다 ────────────────────────────────
   {
-    const w = await sourceHas("../../index.ts", [
+    const w = await sourceHas("../../core/entry", [
       /const hiddenCount = allThreads\.length - threads\.length;/,
       /이름 없는 세션 \$\{hiddenCount\}개는 숨겼어요/,
     ]);
@@ -70,7 +73,7 @@ const run = async (): Promise<Assertion[]> => {
   //  `/sessions` 하위명령은 `use|new|archive|unarchive` 뿐이다. 한때 안내에
   //  `/sessions rename` 을 적을 뻔했는데 그런 건 없다 — 사용자가 치면 막힌다.
   {
-    const src = await sourceHas("../../index.ts", [/\/sessions rename/]);
+    const src = await sourceHas("../../core/entry", [/\/sessions rename/]);
     out.push(
       assert(
         "★없는 하위명령(`/sessions rename`)을 안내하지 않는다",
@@ -78,7 +81,7 @@ const run = async (): Promise<Assertion[]> => {
         !src.ok ? "실재 명령만 안내" : "★없는 명령을 안내한다",
       ),
     );
-    const real = await sourceHas("../../index.ts", [
+    const real = await sourceHas("../../core/entry", [
       /sub === "archive" \|\| sub === "unarchive"/,
       /sub === "use" && rest !== ""/,
       /sub === "new"/,
@@ -112,6 +115,8 @@ const run = async (): Promise<Assertion[]> => {
   //  실제로 사용자가 세션을 없애려고 `/clear` 를 썼고, 안 없어지니 같은 이름으로 새로
   //  만들어 목록에 중복이 남았다. 갈림길에서 대안을 안 주면 사용자가 우회로를 만든다.
   {
+    // ★`/clear` 는 **진입점에 남아 있다** — `/` 블록 앞에서 처리되는 갈래라 옮기지 않았다.
+    //  일괄로 자리를 바꾸다 이것까지 옮겨 «막다른 안내» 로 오탐이 났다(2026-09-05).
     const w = await sourceHas("../../index.ts", [
       /컨텍스트 초기화됨[\s\S]{0,200}?\/sessions archive/,
     ]);

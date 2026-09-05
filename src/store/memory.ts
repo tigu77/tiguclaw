@@ -146,6 +146,22 @@ export const getMemory = (name: string): Memory | undefined => {
   return rowToMemory(row);
 };
 
+/**
+ * **세지 않고 본다** — 존재·내용만 확인하는 읽기 (2026-09-05).
+ *
+ * ★`getMemory` 는 `access_count` 를 올린다(read 시맨틱). 그런데 «이미 박았나?» 를 묻는
+ *  **멱등 검사**가 그 문을 쓰면, 그 메모리를 **쓴 쪽이 자기 카운터를 올린다.** 실측:
+ *  self-growth 가 자기 산출물을 12곳에서 그렇게 확인했고, 상위 성장 메모리가 769·455·450회
+ *  로 올라 있었다 — 사람이 읽은 횟수가 아니라 **플러그인이 센 횟수**다. 인덱스 정렬이
+ *  hot-first 라, 그 부풀림이 곧 **자기 메모리를 인덱스 상석에 올리는 힘**이 됐다(캡 25.6KB
+ *  의 84% 가 찬 자리에서 사람이 쓴 규범을 밀어냈다).
+ * ★그래서 「쓰기 전 확인」·「이미 있나」 류는 전부 이 문을 쓴다. 판정은 판정이어야 하고,
+ *  세는 행위가 재는 대상을 바꾸면 그건 계측이 아니다(`list_memories` 가 이미 같은 이유로
+ *  읽기 전용이다).
+ */
+export const peekMemory = (name: string): Memory | undefined =>
+  getMemoryRaw(requireDb("peekMemory"), name);
+
 export const deleteMemory = (name: string): boolean => {
   const db = requireDb("deleteMemory");
   const result = db.prepare(`DELETE FROM memories WHERE name = ?`).run(name);
@@ -461,6 +477,29 @@ const getMemoryRaw = (
     )
     .get(name) as MemoryRow | undefined;
   return row === undefined ? undefined : rowToMemory(row);
+};
+
+/**
+ * **내려둔 것이 쌓였나** — 아카이브 건수와 그중 «한 번도 안 열린» 수 (2026-09-05).
+ *
+ * ★자가성장 산출물이 매 턴 인덱스에 실리는 걸 그만두면서(제안은 «한 번 닿으면 되는 것»),
+ *  대신 필요한 게 **한 번의 도달**이다. `/status` 는 궁금할 때 언제나 있는 자리라
+ *  알림처럼 배경 소음이 되지 않는다(백업 줄이 같은 이유로 여기 있다).
+ * ★**플러그인 이름을 코어가 모른다** — 「아카이브됐고 안 읽힌 것」은 이름 없이 셀 수 있는
+ *  성질이다(§0 단방향 불변식). 사용자가 정리해 내려둔 것도 같이 세지는데, 그것도 «쌓였다»
+ *  라는 같은 질문의 답이라 섞여도 거짓이 아니다.
+ * ★`access_count` 가 이 판정의 근거라 **세는 행위가 카운터를 올리면 안 된다** — 그래서
+ *  멱등 검사는 `peekMemory` 를 쓴다(같은 날 고친 자기부풀림).
+ */
+export const countArchivedMemories = (): { total: number; unread: number } => {
+  const db = requireDb("countArchivedMemories");
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total, SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) AS unread
+       FROM memories WHERE archived_at IS NOT NULL`,
+    )
+    .get() as { total: number; unread: number | null };
+  return { total: row.total, unread: row.unread ?? 0 };
 };
 
 // ─── /status revamp: 메모리 총 개수 (contract §3.1) ──────────────────────────

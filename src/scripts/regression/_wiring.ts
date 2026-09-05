@@ -174,6 +174,19 @@ export const readSource = async (relFromRegressionDir: string): Promise<string> 
  *  글자까지 같았다). 그 사본들은 **디렉터리를 모른다** — 브리지가 여러 파일로 갈리자
  *  전부 `EISDIR` 로 죽었다. 읽는 방법은 한 곳이어야 한다.
  */
+/**
+ * **진입 경로 전체** — `src/index.ts` + `src/core/entry/` (2026-09-05 구조 감사 ③).
+ *
+ * ★슬래시 명령 본문이 진입점에서 `core/entry/slash-commands.ts` 로 나가면서, 그걸 «index.ts
+ *  안에 그렇게 적혀 있나» 로 보던 검사 6건이 한꺼번에 빨개졌다. 코드가 틀린 게 아니라
+ *  **검사가 파일 이름에 묶여 있던 것**이다 — 그러면 다음 사람은 고치기 싫어서 파일을 안
+ *  쪼갠다(그게 이 감사가 막으려는 것이다).
+ * ★지키려는 성질은 *"진입 경로가 그렇게 한다"* 이지 *"그 파일에 그렇게 적혀 있다"* 가
+ *  아니다. 그러니 리더가 **자리**를 읽는다 — 다음에 또 쪼개도 검사는 안 건드린다.
+ */
+export const readEntrySource = (): string =>
+  `${readSourceSync("src/index.ts")}\n${readSourceSync("src/core/entry")}`;
+
 export const readSourceSync = (relFromRepoRoot: string): string => {
   const { readFileSync, readdirSync, statSync } = nodeFs;
   const abs = nodePath.resolve(

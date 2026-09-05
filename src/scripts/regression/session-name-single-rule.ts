@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { readSourceSync } from "./_wiring.js";
+import { readSourceSync, readEntrySource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -111,7 +111,7 @@ export const check: RegressionCheck = {
     );
 
     // ★② 소비자 전수 — 한 곳이라도 자기 파생을 쓰면 다시 갈린다.
-    const idx = read("src/index.ts");
+    const idx = readEntrySource();
     out.push(
       assert(
         "★/sessions 가 키 원문을 뱉지 않는다(공용 파생 사용)",
@@ -148,7 +148,10 @@ export const check: RegressionCheck = {
     //  돌았다. 2026-08-07 에 고친 것(②)은 파생 **순서**였고, 이건 아예 규칙을 **안 부른**
     //  자리다. 규칙이 옳아도 부르지 않으면 소용없다.
     {
-      const opts = /const options = \[[\s\S]{0,900}?\n {6}\];/.exec(idx)?.[0] ?? "";
+      // ★**들여쓰기를 세지 않는다** (2026-09-05): 종전 정규식이 닫는 줄을 `\n {6}];` 로 못
+      //  박아서, 본문이 `core/entry/` 로 옮겨져 들여쓰기가 2칸 줄자 **못 찾겠다** 고 실패했다.
+      //  코드가 틀린 게 아니라 검사가 «자리» 를 본 것이다 — 검사는 형태를 봐야 한다.
+      const opts = /const options = \[[\s\S]{0,900}?\n\s*\];/.exec(idx)?.[0] ?? "";
       const code = opts.replace(/^\s*\/\/.*$/gm, ""); // 이 검사를 설명하는 주석은 대상이 아니다.
       out.push(
         assert(
@@ -330,7 +333,7 @@ export const check: RegressionCheck = {
     //  이 검사는 그 하나가 도로 흩어지지 않는지만 본다.
     {
       const sites: Array<[string, string]> = [
-        ["명령(/sessions archive)", read("src/index.ts")],
+        ["명령(/sessions archive)", readEntrySource()],
         ["엔드포인트(/session-archive)", bridge2],
         [
           "도구(archive_session)",

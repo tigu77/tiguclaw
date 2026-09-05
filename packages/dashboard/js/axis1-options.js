@@ -107,8 +107,64 @@
         if (sp) sp.textContent = v.idle ? "💤" : "✳️";
         s.classList.toggle("idle", v.idle);
       };
+      /**
+       * 컴포저 버튼이 **전송이냐 정지냐** — 순수 판정 (2026-09-05 사용자 요청).
+       *
+       * ★능력은 이미 있었다: `/stop` 이 그 스레드의 진행 중 턴을 프로세스 안 죽이고 abort
+       *  한다(세 어댑터에 `abortSignal` 이 관통하고 포그라운드 셸까지 끊는다). 없던 건
+       *  **손잡이**다 — 턴이 도는 중에 슬래시를 타이핑하는 건 가장 치기 어려운 순간이고,
+       *  모바일에선 더하다. 잡 카드엔 진작 중지 버튼이 있었는데 정작 «내가 보고 있는 턴»
+       *  에만 없었다.
+       *
+       * ★«작업 중이면 정지» 가 **아니다** — «작업 중이고 할 말이 없을 때» 정지다. 이 대시보드는
+       *  턴이 도는 중에도 전송이 열려 있고(돌고 있는 턴에 말을 얹는 mid-turn steering,
+       *  `chat-send.js` 가 "이어서 말 걸 수 있게" 라고 적어 둔 그 성질), 작업 중이라고 전송을
+       *  정지로 덮어 버리면 **그 기능이 버튼에서 사라진다.** 칠 말이 있으면 그건 전송이다.
+       */
+      const composerAction = (v) => (v.mineActive === true && v.hasDraft !== true ? "stop" : "send");
+
+      /**
+       * 판정을 버튼에 바른다 — 라벨·모드는 **여기 한 곳**에서만 정한다(누르는 쪽은
+       * `dataset.mode` 를 읽을 뿐이라 «보이는 것과 하는 것»이 갈릴 수 없다).
+       * ★입력창 사정(`hasDraft`)은 컴포저만 안다 — 사본을 만들지 않고 그쪽 getter 를 부른다.
+       */
+      const paintComposerButton = () => {
+        const btn = document.getElementById("chat-send");
+        if (!btn) return;
+        const hasDraft = typeof window.composerHasDraft === "function" ? window.composerHasDraft() === true : false;
+        const mode = composerAction({ mineActive: activeTurns.has(activeThreadKey), hasDraft });
+        if (mode === "send") delete btn.dataset.stopping; // 턴이 끝났거나 칠 말이 생겼다 — 요청 상태 해제.
+        btn.dataset.mode = mode;
+        btn.classList.toggle("stop", mode === "stop");
+        // ★**정지는 언제나 아이콘 하나다** (2026-09-05 정태님: *"정지 버튼 사이즈도 기본으로
+        //  작게 가자"*). 처음엔 «좁은 화면에서만 낱말을 접자» 였는데, 그러면 폭마다 다른
+        //  모양을 유지해야 하고 분기가 하나 더 산다. 기본을 작게 두면 **분기가 사라진다.**
+        //  ★뜻은 안 잃는다: `title`·`aria-label` 이 남고(스크린리더는 «진행 중인 턴 중단»
+        //   을 읽는다), 위 배너가 «작업 중» 을 말하고, 색·모양이 전송과 확연히 다르다.
+        //  ★«중지 요청…» 상태는 글자가 아니라 **흐림**으로 말한다 — 라벨이 바뀌면 폭이
+        //   바뀌고, 그 순간 옆 칸이 다시 밀린다(오늘 고친 그 병이다).
+        btn.textContent = "";
+        if (mode === "stop") {
+          const stopping = btn.dataset.stopping === "1";
+          const icon = document.createElement("span");
+          icon.className = "cb-icon";
+          icon.textContent = "⏹️";
+          btn.appendChild(icon);
+          const label = stopping ? i18n("common.stopping") : i18n("chat.stop.title");
+          btn.title = label;
+          btn.setAttribute("aria-label", label);
+        } else {
+          btn.textContent = i18n("chat.send");
+          btn.title = "";
+          btn.removeAttribute("aria-label");
+        }
+      };
+      window.refreshComposerButton = paintComposerButton;
+
       const refreshWorking = () => {
         if (onTurnsChanged) onTurnsChanged(); // 세션 탭 진행 뱃지 갱신(모든 세션 추적, active 대표).
+        // 진행 상태가 바뀌면 컴포저 버튼도 같이 바뀐다 — 배너와 버튼이 **같은 사실**을 읽는다.
+        paintComposerButton();
         const s = document.getElementById("chat-status"); if (!s) return;
         if (!currentBannerView().show) {
           if (chatWorkingTimer) { clearInterval(chatWorkingTimer); chatWorkingTimer = null; }

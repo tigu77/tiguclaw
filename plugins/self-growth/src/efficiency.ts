@@ -4,6 +4,7 @@ import {
   listMemories,
   archiveMemory,
   listColdMemoriesForArchive,
+  resetArchivedMemoryAccess,
 } from "../../../src/store/memory.js";
 import {
   REFLECTION_TTL_DAYS,
@@ -265,16 +266,49 @@ export const archiveColdObservations = (
  * ★사용자가 일부러 되올린 것(승격)은 **다시 안 내린다**: 승격은 `source: user` 로
  *  SELF_GROWTH.md 에 사는 것이지 메모리 인덱스로 올리는 게 아니다.
  */
+/**
+ * 이 스윕이 **이미 돌았나** — `last-review` 와 같은 자리·같은 방식의 표식 (2026-09-05).
+ *
+ * ★이름은 `…Once` 인데 **매 부팅 돌고 있었다**(생성자에서 호출). 그래서 사용자가 일부러
+ *  되올린 제안이 **재시작 때마다 조용히 다시 내려갔다** — 바로 아래 주석이 *"승격은 다시
+ *  안 내린다"* 고 약속하는 그 동작이다(적대 검토가 실행으로 잡았다).
+ *  이건 백필(옛 산출물 정리)이라 정의상 한 번이면 끝이고, 그 뒤 인덱스에 올라와 있는
+ *  성장 산출물은 **사람이 올린 것**뿐이다.
+ */
+const sweptMarkerFile = (): string =>
+  path.join(getPaths().commonPlugins, "self-growth", "outputs-archived");
+
 export const archiveGrowthOutputsOnce = (): number => {
   let n = 0;
   try {
+    try {
+      readFileSync(sweptMarkerFile(), "utf8");
+      return 0; // 이미 돌았다 — 여기서 또 돌면 사용자 승격을 되돌린다.
+    } catch {
+      /* 표식 없음 = 첫 실행 */
+    }
+    let reset = 0;
     for (const m of listMemories({ limit: 10_000 })) {
       if (!m.name.startsWith(`feedback_${SELF_NAMESPACE}_`) && !m.name.startsWith(`${SELF_NAMESPACE}_`)) {
         continue;
       }
-      if (archiveMemory(m.name) !== undefined) n += 1;
+      if (archiveMemory(m.name) !== undefined) {
+        n += 1;
+        // ★부풀어 있던 접근 카운터를 되돌린다 — 그 값은 사람이 읽어서가 아니라
+        //  자가성장이 자기 것을 `getMemory` 로 세던 버그(같은 날 고침)가 만든 것이다.
+        //  안 되돌리면 `/status` 의 «미열람» 이 죽은 채로 남는다(실측: 46건 중 45건이
+        //  «읽음» 으로 잡혀 «미열람 1» 이라고 답했다) — 인덱스에서 내리면서 도달을
+        //  그 카운트에 맡겼는데, 그 카운트가 이미 망가져 있었다.
+        if (resetArchivedMemoryAccess(m.name)) reset += 1;
+      }
     }
-    if (n > 0) console.log(`self-growth: 성장 산출물 ${n}건을 인덱스에서 내렸습니다(검색·복원 가능).`);
+    mkdirSync(path.dirname(sweptMarkerFile()), { recursive: true });
+    writeFileSync(sweptMarkerFile(), String(Date.now()), "utf8");
+    if (n > 0) {
+      console.log(
+        `self-growth: 성장 산출물 ${n}건을 인덱스에서 내렸습니다(검색·복원 가능) · 미열람 신호 복구 ${reset}건. 이 정리는 1회만 돕니다.`,
+      );
+    }
   } catch (e) {
     console.error(`self-growth: archiveGrowthOutputsOnce failed: ${e instanceof Error ? e.message : String(e)}`);
   }

@@ -433,6 +433,27 @@ export const archiveMemory = (name: string): Memory | undefined => {
   return getMemoryRaw(db, name);
 };
 
+/**
+ * **접근 카운터를 0으로** — 아카이브된 자가성장 산출물의 «미열람» 신호 복구용 (2026-09-05).
+ *
+ * ★왜 필요한가: `/status` 의 «미열람» 은 `access_count = 0` 으로 센다. 그런데 자가성장이
+ *  자기 산출물을 `getMemory` 로 읽던 버그(같은 날 고침) 때문에 옛 산출물의 카운터가 이미
+ *  부풀어 있다 — 실측: 성장 산출물 46건 중 **45건이 «읽음»으로 잡혀** `/status` 가
+ *  «미열람 1» 이라고 말한다. 사람이 읽은 적이 없는데 도달 신호가 죽은 것이다.
+ * ★아카이브된 것만 대상이다 — 인덱스 정렬(`access_count DESC`)에 안 쓰이므로 부작용이 없다.
+ *  살아 있는 메모리의 카운터는 사람의 실제 사용 기록이라 **건드리지 않는다.**
+ */
+export const resetArchivedMemoryAccess = (name: string): boolean => {
+  const db = requireDb("resetArchivedMemoryAccess");
+  const info = db
+    .prepare(
+      `UPDATE memories SET access_count = 0, last_accessed = NULL
+       WHERE name = ? AND archived_at IS NOT NULL`,
+    )
+    .run(name);
+  return info.changes > 0;
+};
+
 export const unarchiveMemory = (name: string): Memory | undefined => {
   const db = requireDb("unarchiveMemory");
   const info = db

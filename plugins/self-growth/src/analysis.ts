@@ -108,6 +108,11 @@ export const upsertReflection = (input: {
   type?: "feedback" | "reference";
 }): void => {
   if (peekMemory(input.name) !== undefined) {
+    // ★갱신은 **아카이브 상태를 안 건드린다** (2026-09-05 적대 검토).
+    //  종전엔 여기서도 무조건 `archiveMemory` 를 불렀고, 주석엔 *"사용자가 되돌려 올렸다면
+    //  그건 승격이고 그때는 이 문을 안 지난다"* 고 적혀 있었는데 **코드가 안 그랬다** —
+    //  재발이 한 번만 나도 사용자가 일부러 올린 것이 조용히 다시 내려갔다(실행으로 확인).
+    //  이미 내려가 있으면 그대로 있고, 사용자가 올렸으면 올라간 채로 둔다.
     updateMemory(input.name, { description: input.description, body: input.body });
   } else {
     addMemory({
@@ -116,10 +121,9 @@ export const upsertReflection = (input: {
       description: input.description,
       body: input.body,
     });
+    // 새로 만든 것만 인덱스에서 내린다 — 제안은 매 턴 실리는 자리를 먹지 않는다.
+    archiveMemory(input.name);
   }
-  // ★인덱스에서 내린다 — 갱신분도 매번(사용자가 되돌려 올렸다면 그건 승격이고, 그때는
-  //  이 문을 안 지난다). 이미 아카이브면 무해한 멱등 UPDATE 다.
-  archiveMemory(input.name);
 };
 
 export const isSelfNamespace = (name: string): boolean => {

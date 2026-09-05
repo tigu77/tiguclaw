@@ -85,6 +85,9 @@ export function buildActivityOutput(
     if (out.length === 0 && !truncated) return undefined;
     return {
       text: out.join("\n"),
+      // ★캡 **전**의 전체 크기 — 프리뷰는 4,000자에서 평평해지므로 여기서만 잴 수 있다.
+      //  세 어댑터가 이 빌더를 공유하니 여기 한 줄이면 LLM 무관으로 다 붙는다.
+      fullChars: text.length,
       ...(truncated ? { truncated: true } : {}),
       ...(err ? { isError: true } : {}),
     };

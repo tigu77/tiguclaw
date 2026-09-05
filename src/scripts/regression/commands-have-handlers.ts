@@ -78,12 +78,41 @@ export const check: RegressionCheck = {
 
     // 반대 방향도 본다 — 처리하는데 목록에 없으면 **사용자가 그 명령을 알 길이 없다**.
     // (내부 전용 이름이 생길 수 있으므로 실패가 아니라 «보고» 로 남긴다.)
+    // ── ★반대 방향은 «잊었나» 와 «일부러 뺐나» 를 갈라야 한다 (2026-09-05 정태님 지적) ──
+    //  종전엔 «목록에 없는 처리기» 를 무조건 **실패**로 냈다. 주석엔 *"내부 전용 이름이
+    //  생길 수 있으므로 실패가 아니라 보고로 남긴다"* 고 적어놓고 코드는 `assert` 였다 —
+    //  주석과 코드가 어긋나 있었다.
+    //  ★그 빨간불이 실제로 사고를 냈다: `/diagnose`(codex 요청 무게 A/B — 결론이 «무게 탓
+    //   / 계정 탓» 둘인데 어느 쪽이든 **사용자가 할 수 있는 일이 없다**)를 내가 목록에
+    //   추가해 해소했고, **전 사용자 자동완성에 내부 진단이 실려 공개본까지 나갔다.**
+    //   검사가 «둘 중 하나를 고르라» 고 하지 않고 한쪽만 초록으로 만들면, 다음 사람은
+    //   그 한쪽으로 간다.
+    //  ★그래서 판정을 **의도 표시**로 바꾼다. 처리기 옆에 `@unlisted <이름>` 을 적으면
+    //   «일부러 뺐다», 없으면 «잊었다». 중앙 목록을 만들지 않으므로 낡지 않고, 결정이
+    //   내려진 자리(처리기)에 남는다([[feedback_hand_maintained_lists]]).
     const undocumented = [...handled].filter((h) => !names.includes(h)).sort();
+    const declaredUnlisted = new Set(
+      [...entry.matchAll(/@unlisted\s+([a-z-]+)/g)].map((m) => m[1] ?? ""),
+    );
+    const forgotten = undocumented.filter((n) => !declaredUnlisted.has(n));
     out.push(
       assert(
-        "처리하는데 목록에 없는 명령이 없다(있으면 사용자는 그 명령을 알 길이 없다)",
-        undocumented.length === 0,
-        undocumented.length === 0 ? "숨은 명령 0" : `★목록에 없는 처리기: ${undocumented.join(", ")}`,
+        "★목록에 없는 처리기는 **일부러** 뺀 것이다(`@unlisted` 로 표시) — 안 그러면 사용자는 그 명령을 알 길이 없다",
+        forgotten.length === 0,
+        forgotten.length === 0
+          ? `숨은 명령 ${undocumented.length}개 전부 의도 표시됨${undocumented.length > 0 ? ` (${undocumented.join(", ")})` : ""}`
+          : `★표시 없이 숨은 처리기: ${forgotten.join(", ")} — 목록에 넣든지 @unlisted 로 이유를 적어라`,
+      ),
+    );
+    // 반대 오용도 막는다 — 목록에 **있으면서** @unlisted 를 단 것(둘 다면 어느 쪽이 참인지 모른다).
+    const contradictory = [...declaredUnlisted].filter((n) => names.includes(n));
+    out.push(
+      assert(
+        "`@unlisted` 를 달고 목록에도 있는 명령이 없다(둘 다면 의도가 두 벌이다)",
+        contradictory.length === 0,
+        contradictory.length === 0
+          ? `@unlisted ${declaredUnlisted.size}개 · 목록과 겹침 0`
+          : `★모순: ${contradictory.join(", ")}`,
       ),
     );
 

@@ -5,6 +5,13 @@
       const fileInput = document.getElementById("chat-file");
       const attachBtn = document.getElementById("chat-attach-btn");
       // fmtBytes 는 util.js 로 옮겼다 — history-render.js 가 더 먼저 로드돼 쓴다(2026-07-31).
+      // 컴포저 버튼이 «전송/정지» 중 무엇인지 정하려면 **지금 칠 말이 있나**를 알아야 하는데,
+      // 그 사실은 여기(입력창·첨부 큐)만 안다. 사본을 만들지 않고 getter 를 내준다 —
+      // 판정 자체는 axis1-options.js 의 `composerAction` 한 곳에 있다.
+      window.composerHasDraft = () => input.value.trim() !== "" || pendingAttachments.length > 0;
+      const repaintComposer = () => { if (typeof window.refreshComposerButton === "function") window.refreshComposerButton(); };
+      input.addEventListener("input", repaintComposer);
+
       const renderAttachChips = () => {
         attachEl.innerHTML = "";
         pendingAttachments.forEach((a, i) => {
@@ -32,6 +39,7 @@
           chip.appendChild(x);
           attachEl.appendChild(chip);
         });
+        repaintComposer(); // 첨부만 있어도 «칠 말이 있다» — 그럼 이 버튼은 전송이다.
       };
       const readAsBase64 = (file) => new Promise((resolve, reject) => {
         const r = new FileReader();
@@ -78,6 +86,16 @@
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
+        // ⏹ 정지 — 버튼이 정지 모드면 이 제출은 «진행 중 턴 중단» 이다. 사용자가 `/stop` 을
+        // 친 것과 **똑같은 경로**로 보낸다(새 API·새 판단 0). `/stop` 은 아웃오브밴드라
+        // 직렬 큐를 안 타고 그 스레드의 턴을 곧장 abort 한다. 실제 종료 반영은 SSE(turn_done)
+        // 가 하고, 그때 `paintComposerButton` 이 버튼을 전송으로 되돌린다.
+        if (sendBtn && sendBtn.dataset.mode === "stop") {
+          sendBtn.dataset.stopping = "1";
+          repaintComposer();
+          await sendChatMessage("/stop", [], undefined);
+          return;
+        }
         const text = input.value.trim();
         if (text.length === 0 && pendingAttachments.length === 0) return;
         // 큐 스냅샷 후 즉시 비움(전송 중 사용자가 새 첨부 추가 가능 — 다음 메시지로).
@@ -101,6 +119,7 @@
         clearReply();
         // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 매니저
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
+        repaintComposer(); // 입력창을 비웠다 — 턴이 돌기 시작하면 이 버튼이 정지가 된다.
         await sendChatMessage(text, atts, replyToText);
       });
 
@@ -152,3 +171,4 @@
       // 부팅 복원 — chat-send.js 는 tabs.js 뒤에 로드되므로 loadTabs()가 activeThreadKey 를 이미
       //   세팅한 뒤다. 초기 활성 탭의 저장 draft 를 입력창에 복원(첨부는 영속 안 해 텍스트만).
       try { if (typeof activeThreadKey !== "undefined") window.restoreChatDraft(activeThreadKey); } catch {}
+      repaintComposer(); // 부팅 1회 — 새로고침으로 들어와도 첫 그림이 맞다(복원된 진행 중 턴 포함).

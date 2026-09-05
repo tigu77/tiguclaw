@@ -17,6 +17,87 @@
       // Esc 로도 닫기(접근성).
       document.addEventListener("keydown", (e) => { if (e.key === "Escape") mnCloseMenu(); });
 
+      // ── 드로어를 **손가락으로** 연다·닫는다 (2026-09-05 사용자 요청) ──────────
+      // ☰ 버튼은 열 수만 있고 닫는 건 백드롭 탭뿐이었다 — 폰에선 «가장자리에서 밀어 열고
+      // 밀어 닫는» 게 기본 문법이고, 그게 없으면 한 손으로 쓰기가 어렵다.
+      //
+      // ★세로 스크롤을 뺏지 않는 것이 이 코드의 전부다. 드로어 안은 세로로 긴 목록이라,
+      //  손가락이 «가로로 갈 작정» 임을 확인하기 전엔 아무것도 가로채지 않는다(아래 판정).
+      //  이 레포는 같은 자리에서 한 번 당했다 — 세션탭 pull-to-refresh 가 `touch-action`
+      //  선언을 뒤집어 스트립을 훑을 때마다 새로고침이 됐고, 그래서 걷어냈다(위 주석).
+      const mnSidebar = document.getElementById("sidebar");
+      /** 가장자리에서 시작해야 «여는 제스처» 다 — 화면 어디서나 열리면 목록 스와이프와 싸운다. */
+      const DRAWER_EDGE_PX = 24;
+
+      /**
+       * 이 움직임을 드로어가 **가져갈까** — 순수 판정.
+       * 가로가 세로보다 확실히 클 때만(≥8px 이동 + |dx|>|dy|), 그리고 방향이 맞을 때만.
+       */
+      const drawerEngage = (v) => {
+        if (Math.abs(v.dx) < 8 || Math.abs(v.dx) <= Math.abs(v.dy)) return false;
+        return v.open === true ? v.dx < 0 : v.startX <= DRAWER_EDGE_PX && v.dx > 0;
+      };
+
+      /**
+       * 손을 뗐을 때 **열린 채로 둘까** — 순수 판정. 거리(60%/40%)와 속도(플릭) 둘 다 본다.
+       * ★플릭을 따로 보는 이유: 짧고 빠른 밀기는 거리가 짧아도 «열어라» 는 뜻이다. 거리만
+       *  보면 빠른 손이 매번 실패하고, 그러면 사용자는 제스처가 없는 줄 안다.
+       */
+      const drawerSettle = (v) => {
+        const speed = v.elapsedMs > 0 ? v.dx / v.elapsedMs : 0;
+        if (Math.abs(speed) > 0.35) return speed > 0;
+        return v.open === true ? v.width + v.dx > v.width * 0.6 : v.dx > v.width * 0.4;
+      };
+
+      if (mnSidebar) {
+        let track = null; // {startX, startY, t0, open, width, engaged}
+        const isMobile = () => window.matchMedia("(max-width: 900px)").matches;
+        const paintDrag = (dx) => {
+          const w = track.width;
+          const x = track.open ? Math.max(-w, Math.min(0, dx)) : Math.min(0, -w + Math.max(0, dx));
+          mnSidebar.style.transform = "translateX(" + x + "px)";
+          if (menuBackdrop) menuBackdrop.style.opacity = String(Math.max(0, Math.min(1, (w + x) / w)));
+        };
+        const endDrag = (keepOpen) => {
+          mnSidebar.style.transform = "";
+          if (menuBackdrop) menuBackdrop.style.opacity = "";
+          mnBody.classList.remove("menu-dragging");
+          mnBody.classList.toggle("menu-open", keepOpen);
+          track = null;
+        };
+        document.addEventListener("touchstart", (e) => {
+          if (!isMobile() || e.touches.length !== 1) return;
+          const t = e.touches[0];
+          const open = mnBody.classList.contains("menu-open");
+          // 닫혀 있으면 «왼쪽 가장자리»에서만, 열려 있으면 드로어 위에서만 추적한다.
+          if (!open && t.clientX > DRAWER_EDGE_PX) return;
+          if (open && !mnSidebar.contains(e.target)) return; // 백드롭 탭은 기존 클릭이 닫는다.
+          track = { startX: t.clientX, startY: t.clientY, t0: Date.now(), open, width: mnSidebar.offsetWidth || 280, engaged: false };
+        }, { passive: true });
+        document.addEventListener("touchmove", (e) => {
+          if (track === null || e.touches.length !== 1) return;
+          const t = e.touches[0];
+          const dx = t.clientX - track.startX, dy = t.clientY - track.startY;
+          if (!track.engaged) {
+            if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { track = null; return; } // 세로 스크롤이다 — 놔준다.
+            if (!drawerEngage({ dx, dy, startX: track.startX, open: track.open })) return;
+            track.engaged = true;
+            mnBody.classList.add("menu-dragging"); // 끄는 동안엔 전환 애니메이션을 끈다(손가락을 따라와야 한다).
+          }
+          e.preventDefault(); // 가로로 가져간 뒤에만 막는다.
+          paintDrag(dx);
+        }, { passive: false });
+        const finish = (e) => {
+          if (track === null) return;
+          if (!track.engaged) { track = null; return; }
+          const t = (e.changedTouches && e.changedTouches[0]) || null;
+          const dx = t === null ? 0 : t.clientX - track.startX;
+          endDrag(drawerSettle({ dx, elapsedMs: Date.now() - track.t0, width: track.width, open: track.open }));
+        };
+        document.addEventListener("touchend", finish, { passive: true });
+        document.addEventListener("touchcancel", finish, { passive: true });
+      }
+
       // ‹ 뒤로 — 상세/서브 뷰에서 홈(overview)으로 복귀. overview 면 숨김. (드로어 네비의 escape 어포던스.)
       const updateBack = () => { if (hdrBack) hdrBack.hidden = (mnBody.dataset.view === "overview" || !mnBody.dataset.view); };
       if (hdrBack) {
@@ -72,7 +153,16 @@
       if (mnWorkbench) {
         mnWorkbench.addEventListener("click", (e) => {
           if (!window.matchMedia("(max-width: 900px)").matches) return;
-          if (e.target && e.target.closest && e.target.closest(".provider-item")) mnSetDetail(true);
+          // ★행 클래스를 **열거하지 않는다** (2026-09-05). `.provider-item` 만 보던 탓에
+          //  플러그인 뷰(행이 `.plugin-item`)가 통째로 빠졌다 — 폰에서 누르면 상세가 목록
+          //  아래에 깔렸고, 거기 인증 버튼이 있다. «-item» 으로 끝나는 행이면 상세로 넘어간다.
+          // ★조상까지 셀렉터에 넣으면 **안 걸린다**(실측): 행의 자기 핸들러가 목록을 다시
+          //  그려서, 이벤트가 여기 올라올 때 `e.target` 은 이미 **떨어져 나간 노드**다 —
+          //  전파 경로는 유지되지만 조상 사슬은 끊긴다. 그래서 «어느 목록 안인가» 는
+          //  리스너가 붙은 자리(#workbench)가 이미 말하고, 여기선 행 자신만 본다.
+          if (e.target && e.target.closest && e.target.closest('[class*="-item"]')) {
+            mnSetDetail(true);
+          }
         });
       }
       if (mnDetailBack) mnDetailBack.addEventListener("click", () => mnSetDetail(false));

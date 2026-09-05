@@ -189,6 +189,11 @@ import {
   handleGetProviders,
 } from "./routes-settings.js";
 import { handleSessions, handleSessionName, handleSessionArchive } from "./routes-sessions.js";
+import {
+  handleAuthProviders,
+  handleAuthLoginBegin,
+  handleAuthLoginFinish,
+} from "./routes-auth.js";
 import { handleHealth, handleLogStatus, handleLogClear, handleUpdateAvailability, handleUpdateChangelog, handleSelfUpdate, handleRestart, handleChangelog } from "./routes-ops.js";
 import { handleEvents, handleEndpointCalls, handleAllActivity } from "./routes-activity.js";
 import { handleProjects, handleProjectCapability, handleProjectDetail, handleProjectForget, handleProjectRename } from "./routes-projects.js";
@@ -501,6 +506,12 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다 — set-locale 과 같은 등급(테마 프리셋).
               : pathname === "/set-profile-color" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-default-profile 과 같은 등급.
+              : pathname === "/auth-providers" && method === "GET"
+                ? "read"
+              : pathname === "/auth-login-begin" && method === "POST"
+                ? "admin" // 자격증명을 만든다 — /self-update·/restart 와 같은 등급.
+              : pathname === "/auth-login-finish" && method === "POST"
+                ? "admin"
               : pathname === "/set-module-enabled" && method === "POST"
                 ? "write"
               : pathname === "/transcribe" && method === "POST"
@@ -778,6 +789,24 @@ class HttpBridge implements Channel, Observer {
     // dashboard·http-bridge 비활성 = "자기 눈 가림"(대시보드 자체가 안 뜨거나 이 API 자체가
     // 죽음) — 막지 않되(사용자 결정, 파괴적-행위 소프트 게이트) warning:"critical" 을 실어
     // 프런트가 danger 확인하게 한다.
+    // ── 구독 인증(2026-09-05) — 화면에서 인증한다 ──────────────────────────────
+    // 종전엔 발급 수단이 터미널 안에만 있어 폰·원격에서는 인증할 길이 아예 없었다.
+    // 이름을 여기 박지 않는다 — 어떤 구독이 있는지는 auth 레지스트리가 안다(플러그인 등록분).
+    // ★begin/finish 는 **admin** 이다: 자격증명을 만드는 행위이고, 그 결과로 데몬이 돈이
+    //  나가는 호출을 하게 된다(/self-update·/restart 와 같은 등급). 목록은 read.
+    if (pathname === "/auth-providers" && method === "GET") {
+      await handleAuthProviders(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/auth-login-begin" && method === "POST") {
+      await handleAuthLoginBegin(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/auth-login-finish" && method === "POST") {
+      await handleAuthLoginFinish(this.routeCtx(req, res, url));
+      return;
+    }
+
     if (pathname === "/set-module-enabled" && method === "POST") {
       await handleSetModuleEnabled(this.routeCtx(req, res, url));
       return;

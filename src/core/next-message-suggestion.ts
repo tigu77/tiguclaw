@@ -15,6 +15,7 @@
  * ★비용을 측정 가능하게 남긴다. "얼마나 드는지 모르겠다" 는 이번에 압축에서 이미 한 번
  *  겪었다(경과를 아무도 안 재고 있었다). 여기선 처음부터 토큰·소요를 로그와 이벤트에 싣는다.
  */
+import { isDerivedThread } from "./threadkey.js";
 import { getEventBus } from "./eventbus.js";
 import { loadSettingsLayers } from "./settings.js";
 
@@ -79,11 +80,8 @@ export const readSuggestionSettings = (cwd?: string): SuggestionSettings => {
 export const shouldSuggestForThread = (threadKey: string): boolean => {
   const tk = typeof threadKey === "string" ? threadKey : "";
   if (tk === "") return false;
-  // 파생 턴은 전부 접두사로 자기 출신을 밝힌다 — 그게 판정 기준이다.
-  for (const derived of ["scheduler:", "worker:", "endpoint:", "agent:", "gateway:"]) {
-    if (tk.startsWith(derived)) return false;
-  }
-  return true;
+  // 파생 턴은 전부 접두사로 자기 출신을 밝힌다 — 목록은 좌표를 아는 곳(threadkey.ts)에 산다.
+  return !isDerivedThread(tk);
 };
 
 /*

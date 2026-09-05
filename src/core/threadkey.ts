@@ -26,6 +26,30 @@ export const TELEGRAM_THREAD_PREFIX = "tg:";
 export const DEFAULT_SESSION_ID = "dashboard:default";
 
 /**
+ * **파생 턴 접두사** — 사람이 말을 건 대화가 아니라 **우리가 만든 턴**의 좌표들.
+ *
+ * ★한 곳에 둔다 (2026-09-05). 종전엔 이 목록이 소비처마다 따로 있었고, 그래서
+ *  **자가성장의 사본에 `agent:` 가 빠져 있었다** — 실측: 스킬 제안 8건 중 1건이 통째로
+ *  서브에이전트 턴에서 만들어졌다(우리가 띄운 하위 작업의 도구 순서를 «사용자 작업 흐름»
+ *  으로 읽은 것이다). 손으로 관리하는 목록은 반드시 드리프트한다
+ *  ([[feedback_hand_maintained_lists]]) — 특히 **새 종류가 늘 때 조용히 새어 든다.**
+ * ★자리가 여기인 이유: 이건 좌표의 성질이다. 소비처(제안 UI·자가성장)가 각자 아는 게
+ *  아니라 **좌표를 아는 곳**이 말해야 한다.
+ * ★파생 턴은 전부 접두사로 **자기 출신을 밝힌다** — 그게 판정 기준이고, 이름 열거가 아니다.
+ */
+export const DERIVED_THREAD_PREFIXES = [
+  "scheduler:",
+  "worker:",
+  "agent:",
+  "endpoint:",
+  "gateway:",
+] as const;
+
+/** 이 좌표가 파생 턴인가(= 사람이 말을 건 대화가 아닌가). */
+export const isDerivedThread = (threadKey: string): boolean =>
+  DERIVED_THREAD_PREFIXES.some((p) => threadKey.startsWith(p));
+
+/**
  * 세션 정체성의 단일 정의점 — 채널이 자기 정체성을 threadKey 에 인코딩하던 로직을
  * 여기 하나로 모은다(ADR §D1). 채널은 더 이상 세션 정체성을 소유하지 않는다.
  *

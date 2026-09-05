@@ -206,7 +206,9 @@ export const check: RegressionCheck = {
         //  *"조건 근처에 그 호출이 있나"* 가 아니었다 — 자리보다 판정이 정확해졌다.
         ["../../../plugins/http-bridge", /handleSessions = async[\s\S]{0,900}listThreads\(\{ excludeInternal: true/],
         ["../../../src/core/llm-runtime/capabilities/session-tools-mcp.ts", /listThreads\(\{ excludeInternal: true/],
-        ["../../../src/index.ts", /listThreads\(\{ excludeInternal: true/],
+        // ★자리가 갈렸다 (2026-09-05): `/sessions` 본문이 `core/entry/slash-commands.ts` 로
+        //  나갔다. 묻고 싶은 건 «진입 경로가 내부 파생을 배제하나» 이므로 자리를 그쪽으로.
+        ["../../../src/core/entry", /listThreads\(\{ excludeInternal: true/],
       ];
       const missing: string[] = [];
       for (const [rel, re] of files) {

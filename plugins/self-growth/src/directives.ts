@@ -11,47 +11,9 @@ import {
 import {
   FAILURE_DIRECTIVE_GROUP,
   LEGACY_LESSON_PREFIX,
-  POINTER_MEMO_NAME,
 } from "./constants.js";
 
 // ─── V4 — 확정 지침 층 포인터·마이그레이션·사람 승격 ──────────────────────────
-
-/**
- * V4 포인터 메모 (단방향 핵심) — `growth_directive_pointer` 1건 멱등 upsert.
- *
- * description 이 매 턴 메모리 인덱스(listMemoriesForIndex) prepend 로 generic 주입돼
- * 비서가 *작업 시작 시 SELF_GROWTH.md 를 Read 해 적용* 하게 유도한다. **코어는 이 메모도
- * SELF_GROWTH.md 도 모른다** — self-growth 가 데이터로만 박는 단방향(임무 §3).
- *
- * growth namespace(parseSegment="growth") 라 후속 add 분석에서 self-growth 자기분석
- * skip(메타재귀 0). addMemory 는 raw store 라 memory.write 미발행 → 자기입력 루프 0.
- * 멱등 — 이미 있으면 description/body 갱신만(addMemory UPSERT). never-throw.
- */
-export const ensureDirectivePointer = (): boolean => {
-  try {
-    const file = getPaths().selfGrowthMd;
-    addMemory({
-      type: "reference",
-      name: POINTER_MEMO_NAME,
-      description: `작업 시작 시 확정 지침 파일을 Read 해 적용하라: ${file}`,
-      body: JSON.stringify(
-        {
-          purpose:
-            "self-growth 확정 지침 층(SELF_GROWTH.md) 으로의 단방향 포인터. 작업 착수 전 이 파일을 Read 해 해당 상황 지침을 적용하라.",
-          path: file,
-          note: "코어는 이 파일을 모름 — self-growth 가 데이터로만 관리. 자율 확정은 저위험 한정, 사용자 승격분은 source:user.",
-        },
-        null,
-        2,
-      ),
-    });
-    return true;
-  } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    console.error(`self-growth: ensureDirectivePointer failed: ${reason}`);
-    return false;
-  }
-};
 
 /**
  * V4 1회 마이그레이션 — V3 가 박아둔 `growth_failure_lesson_*` reference 메모를

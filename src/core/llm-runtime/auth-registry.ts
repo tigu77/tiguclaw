@@ -42,6 +42,51 @@ export interface AuthProvider {
    * 미구현(undefined)이면 호출자가 자기 기본 판정으로 강등한다 — 기존 provider 무회귀.
    */
   isAuthenticated?(): boolean;
+  /**
+   * **인증하는 방법**(선언, 선택). 없으면 화면은 상태만 보여주고 버튼을 안 그린다 —
+   * 모르는 것을 «여기서 됩니다» 라고 하지 않는다.
+   */
+  readonly login?: AuthLogin;
+}
+
+/**
+ * **어떻게 인증하나** — provider 가 스스로 말한다 (2026-09-05 정태님 요청: 인증 버튼).
+ *
+ * ★없던 건 능력이 아니라 **손잡이**였다. 발급 수단은 이미 있는데(`npm run codex-auth`,
+ *  `npm run claude-auth`) 전부 **터미널 안**이라, 폰이나 원격에서는 인증할 길이 아예 없었다.
+ *
+ * ★그런데 화면이 «어떤 플러그인이 어떤 명령을 쓰는지» 를 알면 그 목록이 곧 드리프트한다
+ *  ([[feedback_hand_maintained_lists]]). 그래서 **provider 가 자기 로그인 방법을 선언**하고
+ *  화면은 그것만 그린다 — 셋째 구독이 생겨도 화면은 안 고친다.
+ *
+ * ★방법이 하나가 아니라는 것을 타입이 인정한다. 실측(2026-09-05):
+ *   - codex = 순수 웹 OAuth(PKCE) → `openUrl` 로 **끝까지** 자동
+ *   - claude = 번들 CLI(`claude setup-token`) → **TTY 가 필요**하다(비TTY 로 12초간 출력 0,
+ *     `script -q` 로 PTY 를 붙이는 무의존 우회도 부모에 TTY 가 없으면 실패).
+ *     그래서 이쪽은 `command`(그 기계 터미널에서 한 줄) + `paste`(받은 토큰 붙여넣기)다.
+ *   한 가지 모양을 강요하면 둘 중 하나는 거짓말이 된다.
+ */
+export interface AuthLoginPlan {
+  /** 확인 창에 그대로 뜨는 한 줄 — «지금 무엇이 일어나는가». */
+  readonly summary: string;
+  /** 브라우저로 보내야 하는 곳(웹 OAuth). 있으면 화면이 새 탭으로 연다. */
+  readonly openUrl?: string;
+  /** 그 기계 터미널에서 실행할 한 줄(TTY 가 필요한 흐름). 화면이 복사 버튼과 함께 보여준다. */
+  readonly command?: string;
+  /** 손으로 마무리할 때 무엇을 붙여넣나 — 있으면 붙여넣기 칸이 열린다. */
+  readonly pasteHint?: string;
+  /** 끝난 뒤 데몬 재시작이 필요한가(토큰을 프로세스가 이미 읽은 뒤라면 그렇다). */
+  readonly needsRestart?: boolean;
+}
+
+/** provider 가 내주는 로그인 절차. `finish` 가 없으면 «시작만» 하는 흐름이다. */
+export interface AuthLogin {
+  /** 버튼에 쓰는 이름(예: "ChatGPT 로 로그인"). */
+  readonly label: string;
+  /** 로그인을 시작한다 — 부작용(콜백 서버 대기 등)은 provider 안에 숨는다. */
+  begin(): Promise<AuthLoginPlan>;
+  /** 사용자가 붙여넣은 것으로 마무리한다(자동 콜백이 안 왔을 때·CLI 토큰). */
+  finish?(pasted: string): Promise<{ ok: boolean; message: string }>;
 }
 
 /** provider-id 키 코어 레지스트리. */
@@ -79,6 +124,12 @@ export const registerAuthProvider = (p: AuthProvider): void => {
   }
   registry.set(p.provider, p);
 };
+
+/**
+ * 등록된 provider 전부 — 화면(인증 상태·버튼)이 읽는다.
+ * ★이름을 열거하지 않는다. 레지스트리에 있는 것이 곧 이 설치가 가진 것이다.
+ */
+export const listAuthProviders = (): AuthProvider[] => [...registry.values()];
 
 /** provider id 로 auth provider 조회. 부재 시 undefined(호출자가 graceful 처리). */
 export const getAuthProvider = (provider: string): AuthProvider | undefined =>

@@ -41,7 +41,16 @@ export const check: RegressionCheck = {
     // ① 신호 0 — 빈 기계에서 돌린다.
     // ★**회고만 센다** — 처음엔 feedback 전체를 셌는데, ②에서 내가 심은 픽스처 때문에
     //  개수가 늘어 *"아무것도 안 쓰는"* 변이가 통과했다. 세는 대상이 판정을 흐리면 안 된다.
+    // ★**아카이브분까지 센다** (2026-09-05 재구성). 자가성장 산출물은 이제 박자마자
+    //  인덱스에서 내려간다(`upsertReflection` → archive) — 「기본 목록」으로 세면 «썼는데
+    //  0건» 이 되어 이 검사가 **거짓 실패**한다. 이 검사가 지키려는 건 «신호 없으면 안 쓴다»
+    //  이지 «인덱스에 보인다» 가 아니다. 자리가 바뀌었으면 자를 바꿔야지 판정을 바꾸면 안 된다.
     const reviews = (): number =>
+      listMemories({ type: "feedback", limit: 10000, includeArchived: true }).filter((m) =>
+        m.name.startsWith("feedback_growth_weekly_review_"),
+      ).length;
+    /** 그중 **인덱스에 실리는** 것 — 새 계약에선 언제나 0이어야 한다. */
+    const reviewsInIndex = (): number =>
       listMemories({ type: "feedback", limit: 10000 }).filter((m) =>
         m.name.startsWith("feedback_growth_weekly_review_"),
       ).length;
@@ -65,6 +74,7 @@ export const check: RegressionCheck = {
     });
     const loud = generateWeeklyReview(true);
     const afterLoud = reviews();
+    const inIndexAfterLoud = reviewsInIndex();
 
     // ③ ★**상태 파일이 손상되면** (2026-09-01, 3라운드 F12). 현행 코드는 옳지만 그 축에
     //  그물이 없었다 — 픽스처가 손상 파일을 안 만들었다. «손상되면 방금 본 것으로 친다»
@@ -92,6 +102,15 @@ export const check: RegressionCheck = {
         "★★반대 방향 — **신호가 있으면 그대로 쓴다**(전부 안 쓰면 자가성장이 죽는다)",
         afterLoud > afterQuiet && loud?.written === true,
         `${String(afterQuiet)} → ${String(afterLoud)} · written=${String(loud?.written)}`,
+      ),
+      // ★새 계약(2026-09-05): **쓰되 매 턴 실리는 자리에는 두지 않는다.** 자가성장 산출물은
+      //  «제안» 이지 «규범» 이 아니라서, 캡 있는 인덱스(25.6KB)를 먹으면 사람이 쓴 규범을
+      //  밀어낸다 — 실측으로 24건·3,568B(16.5%)가 그러고 있었고 그 상태로 4개월간 확정
+      //  지침은 0건이었다. 도달은 `/status` 의 미열람 카운트가 맡는다.
+      assert(
+        "★★쓰되 **인덱스엔 안 실린다**(제안은 매 턴 필요한 것이 아니다 — 캡 있는 자리 보호)",
+        inIndexAfterLoud === 0,
+        `인덱스에 보이는 회고=${inIndexAfterLoud}건 · 전체(아카이브 포함)=${afterLoud}건`,
       ),
       assert(
         "★★상태 파일이 **손상되면 다시 본다** — «방금 봤다» 로 치면 회고가 영구히·조용히 멈춘다. 그리고 그 파일은 코어 공용이 아니라 이 플러그인의 자리에 산다(지울 때 같이 지워져야 한다)",

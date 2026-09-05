@@ -61,6 +61,9 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "plugins", description: "설치·활성 플러그인 목록" },
   { name: "agents", description: "진행 중인 백그라운드 작업(매니저·서브에이전트)" },
   { name: "status", description: "시스템 상태" },
+  // ★목록에 없어서 **아무도 몰랐다** (2026-09-05 구조 감사 ⑤가 잡았다) — 처리기는 있는데
+  //  자동완성·도움말 어디에도 안 떠서, 이 명령의 존재를 아는 사람은 소스를 읽은 사람뿐이었다.
+  { name: "diagnose", description: "codex 요청 무게 A/B 진단(최대 2분)" },
   { name: "restart", description: "데몬 재시작" },
   { name: "update", description: "tiguclaw 최신으로 업데이트" },
   { name: "cooldown", description: "백엔드 쿨다운 조회·해제(재인증·한도 회복 시)" },

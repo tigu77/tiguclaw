@@ -28,6 +28,7 @@ import { deliverOutbound } from "../outbound.js";
 import {
   getAuthProvider,
   registerAuthProvider,
+  type AuthLogin,
 } from "../llm-runtime/auth-registry.js";
 import { pluginFetch } from "../plugin-fetch.js";
 import {
@@ -331,7 +332,21 @@ export interface PluginHost {
     provider: string;
     getAccessToken(): Promise<string>;
     isAuthenticated?(): boolean;
+    login?: AuthLogin;
   }): { ok: boolean; error?: string };
+
+  /**
+   * 인증 결과를 홈 `.env` 에 저장한다 (`needs.auth` 선언 필수).
+   *
+   * ★**새 권한이 아니다.** 플러그인은 이미 `node:fs` 를 쓸 수 있다(격리 0). 이 문을 두는
+   *  이유는 «홈 .env 가 어디인가 · 어떻게 쓰는가»(원자적 rename·0600 유지·in-memory 먼저)를
+   *  **두 벌로 만들지 않기** 위해서다 — 그 규칙은 전부 실사고에서 나왔다(`core/env-file.ts`).
+   *  베끼면 다음 사고 때 한쪽만 고쳐진다.
+   * ★그리고 이 문이 있어서 `claude-subscription-auth` 가 **의존성 0** 을 지킨다 — 그게 그
+   *  플러그인이 홈으로 옮겨 살아남는 근거다.
+   * ★값은 절대 로그에 안 남는다. 키 이름만 남긴다.
+   */
+  saveAuthEnv(vars: Record<string, string>): Promise<{ ok: boolean; error?: string }>;
 
   /**
    * 모델에게 묻는다 (`needs.llm`).
@@ -487,6 +502,32 @@ export const createPluginHost = (
       };
     }
     return { ok: true };
+  },
+
+  saveAuthEnv: async (vars) => {
+    if (needs.auth === undefined || needs.auth.length === 0) {
+      return {
+        ok: false,
+        error:
+          `plugin '${plugin}': 인증 값을 저장하려면 package.json 의 tiguclaw.needs.auth 를 ` +
+          `적으세요(사용자가 설치 전에 봅니다).`,
+      };
+    }
+    const keys = Object.keys(vars);
+    // ★키 모양을 본다 — env 이름이 아닌 것이 오면 `.env` 가 깨져 **다음 부팅이 죽는다**.
+    //  값은 검사하지 않는다(무엇이 유효한 토큰인지는 provider 가 안다).
+    const bad = keys.filter((k) => !/^[A-Z][A-Z0-9_]*$/.test(k));
+    if (keys.length === 0 || bad.length > 0) {
+      return { ok: false, error: `env 이름이 아닙니다: ${bad.join(", ") || "(빈 목록)"}` };
+    }
+    try {
+      const { upsertHomeEnvVars } = await import("../env-file.js");
+      const written = await upsertHomeEnvVars(vars);
+      console.log(`[plugin:${plugin}] 인증 값 저장: ${keys.join(", ")} → ${written}`);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
   },
   say: async ({ channel, target, text }) => {
     if (needs.outbound !== true) {

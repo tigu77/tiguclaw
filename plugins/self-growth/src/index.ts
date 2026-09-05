@@ -25,7 +25,7 @@ import {
   type EventBusEvent,
 } from "../../../src/core/eventbus.js";
 import { deliverOutbound } from "../../../src/core/outbound.js";
-import { getMemory } from "../../../src/store/memory.js";
+import { peekMemory } from "../../../src/store/memory.js";
 import { recordSkillInvocation } from "../../../src/store/skill-usage.js";
 import {
   cleanupDirectives,
@@ -68,10 +68,10 @@ import {
   emptyEfficiencyAccumulator,
   generateWeeklyReview,
   type EfficiencyAccumulator,
+  archiveGrowthOutputsOnce,
 } from "./efficiency.js";
 import { runSkillImproveScan, runSkillProposalScan } from "./skills.js";
 import {
-  ensureDirectivePointer,
   migrateLegacyLessons,
 } from "./directives.js";
 
@@ -93,13 +93,14 @@ class SelfGrowthPlugin {
     this.unsubscribe = bus.subscribe((event) => {
       this.handle(event);
     });
-    // V4 — 시작 시 1회: 포인터 메모 멱등 upsert(단방향 핵심) + 레거시 lesson 마이그레이션.
-    // 포인터는 동기·즉시. 마이그레이션은 async(파일 쓰기) → fire-and-forget(내부 never-throw).
-    // ★파일 seed 선행 — 확정 지침이 아직 없어도 SELF_GROWTH.md 가 존재하게 해 포인터가
-    //  dangling 안 되게(fresh install 에서 비서가 "SELF_GROWTH.md 못 찾음" 하던 버그 수정).
+    // 시작 시 1회: 파일 seed + 레거시 lesson 마이그레이션(async·never-throw).
+    // ★**포인터 메모는 없앴다** (2026-09-05). *"작업 전에 SELF_GROWTH.md 를 Read 하라"* 고
+    //  매 턴 인덱스에서 말하던 메모인데, 2026-08-02 부터 **지침 본문 자체가 시스템 슬롯으로
+    //  실린다**(`prompt-assembly.formatSelfGrowthDirectives`). 가리키는 것이 이미 옆에 있는
+    //  포인터는 캡 있는 자리를 먹는 중복이다 — 고칠 때 그 자리의 형제를 안 본 흔적이다.
     void ensureSelfGrowthFile();
-    ensureDirectivePointer();
     void migrateLegacyLessons();
+    void archiveGrowthOutputsOnce();
     // V2.1+V2.2 — 시작 시 즉시 1회 + 1시간 간격 maintenance (cleanup + 주간 회고 + 지침 정리).
     this.runMaintenance();
     this.cleanupInterval = setInterval(() => {
@@ -503,7 +504,7 @@ class SelfGrowthPlugin {
           : `w${createHash("sha1").update(taskNorm).digest("hex").slice(0, 12)}`;
       const failureName = `feedback_${SELF_NAMESPACE}_failure_${slug}`;
       const coreFlagName = `feedback_${SELF_NAMESPACE}_core_flag_${slug}`;
-      if (getMemory(failureName) !== undefined || getMemory(coreFlagName) !== undefined) {
+      if (peekMemory(failureName) !== undefined || peekMemory(coreFlagName) !== undefined) {
         return; // 이미 학습됨 — 멱등, LLM 호출 skip(매 실패 호출 금지, ADR Q6)
       }
 

@@ -35,6 +35,40 @@ export default class ClaudeSubscriptionAuth {
         }
         return t;
       },
+      /**
+       * ★**여기는 «끝까지» 가 안 된다 — 그래서 그렇게 말한다** (2026-09-05 실측).
+       *  발급은 번들 `claude setup-token` 이 하는데 그건 **TTY 가 필요**하다: 비TTY 로 돌리면
+       *  12초간 출력이 0이고, `script -q` 로 PTY 를 붙이는 무의존 우회도 부모에 TTY 가
+       *  없으면 실패한다(`tcgetattr/ioctl`). codex 처럼 «버튼 한 번» 이라고 적으면 그건
+       *  거짓말이 된다.
+       * ★대신 두 길을 연다: 그 기계 **터미널 한 줄**(화면이 복사 버튼과 함께 보여준다)과,
+       *  이미 받은 토큰 **붙여넣기**. 폰에서도 후자로 끝낼 수 있다.
+       * ★저장은 `host.saveAuthEnv` 로 한다 — 이 파일이 **아무것도 import 하지 않는** 성질을
+       *  지키기 위해서다(그게 이 플러그인이 홈으로 옮겨 살아남는 근거다).
+       */
+      login: {
+        label: "구독 토큰 발급",
+        begin: async () => ({
+          summary:
+            "Claude Code 실행기가 토큰을 발급합니다. 이 발급기는 터미널이 필요해서(실측) " +
+            "여기서 끝까지는 안 됩니다 — 아래 명령을 그 기계 터미널에서 돌리고, 나온 토큰을 붙여넣으세요.",
+          command: "npm run claude-auth",
+          pasteHint: "발급된 토큰 (sk-ant- 로 시작합니다)",
+          needsRestart: false,
+        }),
+        finish: async (pasted) => {
+          const t = String(pasted ?? "").trim();
+          // ★모양만 본다(접두는 우리 redact 규칙이 이미 아는 것과 같다). 유효성은 상류가
+          //  정하는 것이라 여기서 단정하지 않는다 — 다만 빈 값·따옴표 사고는 막는다.
+          const token = (/\bsk-ant-[A-Za-z0-9._-]{20,}\b/.exec(t) ?? [])[0] ?? "";
+          if (token === "") {
+            return { ok: false, message: "토큰을 못 찾았습니다 — `sk-ant-` 로 시작하는 값을 붙여넣으세요." };
+          }
+          const w = await host.saveAuthEnv({ CLAUDE_CODE_OAUTH_TOKEN: token });
+          if (!w.ok) return { ok: false, message: w.error ?? "저장 실패" };
+          return { ok: true, message: "토큰을 홈 .env 에 저장했습니다 — 다음 턴부터 구독으로 돕니다." };
+        },
+      },
     });
     if (!r.ok) host.log(`구독 인증을 못 켰습니다: ${r.error}`);
     else if (token() === "") {

@@ -87,6 +87,29 @@ export const unregisterChannelOutbound = (name: string): boolean => registry.del
  */
 export const listOutboundChannels = (): string[] => [...registry.keys()].sort();
 
+/**
+ * **주인에게 미는 알림의 목적지** — 채널 이름을 부르지 않고 고른다 (2026-09-05 구조 감사).
+ *
+ * ★코어가 `"telegram"` 이라고 적으면 그 채널이 없는 설치에선 알림이 **어디에도 안 간다**.
+ *  실측: 자가 점검 이상 알림(`self-maintenance`)이 그랬다 — 채널 미등록이면 배달 실패
+ *  로그만 남고 사용자는 이상을 영영 모른다(그 알림의 존재 이유가 «사용자가 모르는 이상을
+ *  알린다» 인데).
+ * ★판정은 **능력**이다: 물리 발송을 할 수 있고(`deliver`), 주소를 스스로 아는
+ *  (`defaultOutboundTarget`) 채널. 이름 목록이 아니므로 넷째 채널이 생겨도 여기는 안 고친다
+ *  ([[feedback_hand_maintained_lists]]). 오늘 기준 그 조건을 만족하는 건 텔레그램 하나지만,
+ *  **그건 결과이지 전제가 아니다.**
+ * ★후보가 없으면 `null` — «어디로 보낼지» 를 지어내지 않는다. 호출부가 로그로 닫는다.
+ */
+export const ownerPushChannel = (): string | null => {
+  for (const name of listOutboundChannels()) {
+    const o = registry.get(name);
+    if (o?.deliver === undefined) continue; // 관측 전용(http-bridge)
+    if (o.defaultOutboundTarget === undefined) continue; // 주소를 모른다(cli — 세션 문맥 의존)
+    return name;
+  }
+  return null;
+};
+
 export const getChannelOutbound = (
   name: string,
 ): ChannelOutbound | undefined => registry.get(name);

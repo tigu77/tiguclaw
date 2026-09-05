@@ -40,6 +40,30 @@
         }
       };
 
+      /**
+       * **구독 인증 상태** — 이 설치에 등록된 auth provider 와 «지금 인증됐나» (2026-09-05).
+       *
+       * ★provider 이름을 여기 적지 않는다. 어떤 구독이 있는지는 서버(auth 레지스트리)가 알고,
+       *  어느 플러그인 것인지는 그 플러그인의 **선언**(`needs.auth`)이 말한다 — 화면은 둘을
+       *  맞춰 보기만 한다. 셋째 구독이 생겨도 이 파일은 안 고친다.
+       */
+      const authState = { providers: [], busy: "" };
+      const fetchAuthProviders = async () => {
+        try {
+          const r = await fetch("/api/auth-providers", { cache: "no-store" });
+          const d = await r.json();
+          authState.providers = Array.isArray(d.providers) ? d.providers : [];
+        } catch {
+          authState.providers = []; // 못 읽으면 «모른다» — 상태를 지어내지 않는다.
+        }
+      };
+      /** 이 플러그인이 서빙한다고 **선언한** provider 들(매니페스트 needs.auth). */
+      const authProvidersOf = (p) => {
+        const fact = (Array.isArray(p.needsFacts) ? p.needsFacts : []).find((f) => f && f.kind === "auth");
+        if (!fact || typeof fact.value !== "string") return [];
+        return fact.value.split(",").map((v) => v.trim()).filter((v) => v !== "");
+      };
+
       const fetchPlugins = async () => {
         try {
           const r = await fetch("/api/plugins", { cache: "no-store" });
@@ -47,6 +71,8 @@
           const d = await r.json();
           pluginsState.items = Array.isArray(d.items) ? d.items : [];
           pluginsState.meta = d;
+          // 인증 상태는 별 라우트다(레지스트리가 정본) — 같은 새로고침에 함께 읽는다.
+          await fetchAuthProviders();
           // 설정 행이 있는 것만 문구를 데려온다(없으면 요청 0).
           await Promise.all(
             pluginsState.items
@@ -233,6 +259,128 @@
       /** 지금 고른 플러그인 이름 — 목록과 상세를 잇는 유일한 상태다. */
       let selectedPluginName = "";
 
+      /**
+       * 로그인 흐름 — **서버가 준 계획(plan)대로 그린다.**
+       *
+       * plan 은 세 조각을 선택적으로 갖는다: 열 `openUrl`(웹 OAuth) · 그 기계 터미널에서 돌릴
+       * `command`(TTY 가 필요한 흐름) · 붙여넣기 `pasteHint`. 무엇이 오느냐는 provider 마다
+       * 다르고(실측: codex=웹 OAuth 끝까지 / claude=CLI 라 TTY 필요), 화면은 온 것만 그린다.
+       *
+       * ★붙여넣기 칸은 `pasteHint` 가 있으면 **언제나** 연다. 자동 콜백은 못 믿고(2026-08-11
+       *  윈도우 실사고), 폰에서 열었다면 콜백의 localhost 는 폰이라 **원리적으로** 안 온다.
+       */
+      const startAuthLogin = async (id, panel, btn) => {
+        authState.busy = id;
+        btn.disabled = true;
+        panel.hidden = false;
+        panel.textContent = i18n("common.loading");
+        let plan = null;
+        try {
+          const r = await fetch("/api/auth-login-begin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: id }),
+          });
+          const d = await r.json();
+          if (d.ok !== true) throw new Error(d.error || i18n("plugins.auth.failed"));
+          plan = d.plan || {};
+        } catch (e) {
+          panel.textContent = i18n("plugins.auth.failed") + ": " + e.message;
+          authState.busy = "";
+          btn.disabled = false;
+          return;
+        }
+        panel.textContent = "";
+        const line = (text, cls) => {
+          const el = document.createElement("div");
+          el.className = cls || "plugin-auth-line";
+          el.textContent = text;
+          panel.appendChild(el);
+          return el;
+        };
+        if (plan.summary) line(plan.summary);
+        if (plan.openUrl) {
+          // 새 탭으로 보낸다. 팝업 차단으로 안 열릴 수 있으므로 **주소도 같이** 준다.
+          window.open(plan.openUrl, "_blank", "noopener");
+          const a = document.createElement("a");
+          a.className = "plugin-auth-url";
+          a.href = plan.openUrl;
+          a.target = "_blank";
+          a.rel = "noreferrer noopener";
+          a.textContent = i18n("plugins.auth.openAgain");
+          panel.appendChild(a);
+        }
+        if (plan.command) {
+          const row = document.createElement("div");
+          row.className = "plugin-auth-cmd";
+          const code = document.createElement("code");
+          code.textContent = plan.command;
+          const copy = document.createElement("button");
+          copy.type = "button";
+          copy.className = "settings-toggle";
+          copy.textContent = i18n("common.copy");
+          copy.addEventListener("click", () => {
+            void navigator.clipboard.writeText(plan.command).then(
+              () => showToast(i18n("common.copied"), "good"),
+              () => showToast(i18n("common.copyFailed"), "bad"),
+            );
+          });
+          row.appendChild(code);
+          row.appendChild(copy);
+          panel.appendChild(row);
+        }
+        if (plan.pasteHint) {
+          const form = document.createElement("div");
+          form.className = "plugin-auth-paste";
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "list-search-input";
+          input.placeholder = plan.pasteHint;
+          // ★비밀번호 관리자·자동완성이 토큰을 물지 않게.
+          input.autocomplete = "off";
+          input.spellcheck = false;
+          const done = document.createElement("button");
+          done.type = "button";
+          done.className = "settings-toggle on";
+          done.textContent = i18n("plugins.auth.finish");
+          const submit = async () => {
+            const pasted = input.value;
+            if (pasted.trim() === "") return;
+            done.disabled = true;
+            input.disabled = true;
+            try {
+              const r = await fetch("/api/auth-login-finish", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ provider: id, pasted }),
+              });
+              const d = await r.json();
+              // ★붙여넣은 값은 화면에서도 즉시 지운다 — 그건 토큰이다.
+              input.value = "";
+              showToast(d.message || (d.ok ? i18n("plugins.auth.done") : i18n("plugins.auth.failed")),
+                d.ok ? "good" : "bad");
+              if (d.ok) {
+                await fetchAuthProviders();
+                renderPluginsView();
+                return;
+              }
+            } catch (e) {
+              showToast(i18n("plugins.auth.failed") + ": " + e.message, "bad");
+            }
+            done.disabled = false;
+            input.disabled = false;
+          };
+          done.addEventListener("click", () => void submit());
+          input.addEventListener("keydown", (e) => { if (e.key === "Enter") void submit(); });
+          form.appendChild(input);
+          form.appendChild(done);
+          panel.appendChild(form);
+        }
+        if (plan.needsRestart) line(i18n("plugins.auth.restart"), "plugin-auth-note");
+        authState.busy = "";
+        btn.disabled = false;
+      };
+
       const buildPluginCard = (p) => {
         const card = document.createElement("div");
         card.className = "settings-row plugin-row";
@@ -354,6 +502,57 @@
           actions.appendChild(rm);
         }
         card.appendChild(actions);
+
+        // ── 구독 인증 — **여기서 인증한다** (2026-09-05 정태님 요청) ──────────────
+        // ★손잡이가 없던 것을 단다: 발급 수단(`npm run codex-auth`·`claude-auth`)은 있었지만
+        //  전부 터미널 안이라 폰·원격에서는 인증할 길이 아예 없었다.
+        // ★«어떻게 인증하나» 는 **provider 가 선언**한다(서버 plan). 화면은 그 모양대로 그릴
+        //  뿐이라, 웹 OAuth 든 터미널 한 줄이든 같은 코드가 처리한다 — 여기에 provider 이름을
+        //  적으면 셋째 구독이 생길 때 조용히 빠진다.
+        for (const id of authProvidersOf(p)) {
+          const info = authState.providers.find((x) => x && x.provider === id) || null;
+          const box = document.createElement("div");
+          box.className = "plugin-auth";
+          const head = document.createElement("div");
+          head.className = "plugin-auth-head";
+          const nm = document.createElement("span");
+          nm.className = "plugin-auth-name";
+          nm.textContent = id;
+          const st = document.createElement("span");
+          const authed = info && info.authenticated === true;
+          st.className = "plugin-auth-state" + (authed ? " on" : "");
+          // ★«모른다» 를 «미인증» 으로 적지 않는다 — 서버가 판정을 안 주면(구현 없음·읽기
+          //  실패) 그렇게 말한다. 지어낸 상태 하나가 이 화면의 신뢰를 통째로 깎는다.
+          st.textContent = !info
+            ? i18n("plugins.auth.unknown")
+            : info.authenticated === null
+              ? i18n("plugins.auth.unknown")
+              : i18n(authed ? "plugins.auth.on" : "plugins.auth.off");
+          head.appendChild(nm);
+          head.appendChild(st);
+          box.appendChild(head);
+
+          if (info && info.login) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "settings-toggle plugin-auth-btn";
+            btn.textContent = info.login.label;
+            btn.disabled = authState.busy === id;
+            const panel = document.createElement("div");
+            panel.className = "plugin-auth-panel";
+            panel.hidden = true;
+            btn.addEventListener("click", () => {
+              // ★**확인을 먼저 받는다.** 이건 자격증명을 만드는 행위이고, 그 결과로 데몬이
+              //  돈이 나가는 호출을 하게 된다([[feedback_destructive_actions_soft_enforcement]]
+              //  의 형제 — 파괴적이진 않지만 귀속되는 행위다).
+              if (!window.confirm(i18n("plugins.auth.confirm", { provider: id }))) return;
+              void startAuthLogin(id, panel, btn);
+            });
+            box.appendChild(btn);
+            box.appendChild(panel);
+          }
+          card.appendChild(box);
+        }
 
         // ── 설정 — **선언에서 행을 만든다** (2026-08-28, §D.2) ──────────────────
         // ★여기엔 플러그인 이름이 하나도 안 나온다. `buildLocaleRow`·`buildThemeRow` 처럼

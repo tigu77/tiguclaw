@@ -1,6 +1,8 @@
+import { homeFields, suggestHome } from "./home.js";
 import {
   addMemory,
-  getMemory,
+  archiveMemory,
+  peekMemory,
   updateMemory,
   listMemories,
 } from "../../../src/store/memory.js";
@@ -81,17 +83,43 @@ export const isStrongerSignal = (
   }
 };
 
-/** 신규 박기 또는 재발 갱신 — 두 경로가 갈리지 않게 한 곳에서. */
+/**
+ * 신규 박기 또는 재발 갱신 — 두 경로가 갈리지 않게 한 곳에서.
+ *
+ * ★**매 턴 실리는 자리에 두지 않는다** (2026-09-05 재구성). 자가성장 산출물은 «제안» 이지
+ *  «규범» 이 아니다. 그런데 종전엔 메모리 인덱스(캡 25.6KB)에 그대로 들어가 **16.5%(3,568B
+ *  ·24건)** 를 차지했고, 그 상태로 4개월간 확정된 지침은 **0건**이었다. 이 레포가 이미 두 번
+ *  적어둔 규칙이 정확히 이 자리를 말한다 — *"자리는 중요도가 아니라 «매 턴 필요한가» 로
+ *  정한다"* · *"캡 있는 자리에 반드시 도달해야 할 것을 두지 마라"*
+ *  ([[project_hotpath_bound_preserve_record]]).
+ *
+ * ★그래서 **박자마자 인덱스에서 내린다**(archive). 이건 삭제가 아니다 — 검색(FTS)으로
+ *  계속 도달하고 되돌릴 수 있다. 도달은 «매 턴 눈앞» 이 아니라 **`/status` 의 미열람 카운트**
+ *  가 맡는다(한 번 닿으면 되는 것을 매 턴 실을 이유가 없다).
+ * ★2026-08-02 에 «인덱스에서 밀려 5건이 컨텍스트 밖» 을 고친 방식(재발 시 갱신으로 위로
+ *  올리기)은 **증상 처방**이었다 — 캡 있는 자리에 계속 두면서 들어가게 만들었고, 그래서
+ *  다시 84% 가 찼다. 이번엔 자리를 옮긴다.
+ */
 export const upsertReflection = (input: {
   name: string;
   description: string;
   body: string;
+  /** 기본 feedback. 내부 가드 메모 등은 reference. */
+  type?: "feedback" | "reference";
 }): void => {
-  if (getMemory(input.name) !== undefined) {
+  if (peekMemory(input.name) !== undefined) {
     updateMemory(input.name, { description: input.description, body: input.body });
-    return;
+  } else {
+    addMemory({
+      type: input.type ?? "feedback",
+      name: input.name,
+      description: input.description,
+      body: input.body,
+    });
   }
-  addMemory({ type: "feedback", name: input.name, description: input.description, body: input.body });
+  // ★인덱스에서 내린다 — 갱신분도 매번(사용자가 되돌려 올렸다면 그건 승격이고, 그때는
+  //  이 문을 안 지난다). 이미 아카이브면 무해한 멱등 UPDATE 다.
+  archiveMemory(input.name);
 };
 
 export const isSelfNamespace = (name: string): boolean => {
@@ -126,7 +154,7 @@ export const analyzeRepeatedSegment = (
   //  ①메모리 인덱스(`ORDER BY updated_at DESC` + 캡)에서 밀려 **컨텍스트 밖**이 되고
   //  ②만료 기계(`archiveStaleReflections`, updatedAt 기준)의 **시계가 안 간다**.
   //  갱신하면 재발분은 위로 올라오고, 재발이 끊긴 것은 90일 뒤 스스로 아카이브된다.
-  const priorSeg = getMemory(reflectionName);
+  const priorSeg = peekMemory(reflectionName);
   if (priorSeg !== undefined && !isStrongerSignal(priorSeg.body, "evidence_count", members.length)) {
     return null;
   }
@@ -140,8 +168,7 @@ export const analyzeRepeatedSegment = (
         "동일 영역의 반복 피드백 — 상위 정책으로 통합 또는 영역 명시화 후보",
       confidence: 0.4,
       triggered_by: newMemoryName,
-      suggested_action:
-        "비서가 사용자에게 segment 통합/명시화 의향 명시 확인. 단발 거절 가능 (이 reflection delete).",
+      ...homeFields(suggestHome({ kind: "segment" })),
     },
     null,
     2,
@@ -177,7 +204,7 @@ export const analyzeDriftPattern = (
   //  ①메모리 인덱스(`ORDER BY updated_at DESC` + 캡)에서 밀려 **컨텍스트 밖**이 되고
   //  ②만료 기계(`archiveStaleReflections`, updatedAt 기준)의 **시계가 안 간다**.
   //  갱신하면 재발분은 위로 올라오고, 재발이 끊긴 것은 90일 뒤 스스로 아카이브된다.
-  const priorDrift = getMemory(reflectionName);
+  const priorDrift = peekMemory(reflectionName);
   if (priorDrift !== undefined && !isStrongerSignal(priorDrift.body, "update_count", updateCount)) {
     return null;
   }
@@ -190,8 +217,7 @@ export const analyzeDriftPattern = (
       assumed_cause:
         "사용자 의도가 시간에 따라 변하고 있거나, 비서가 사용자 의도를 잘못 추정해 반복 정정 받는 중. SYSTEM.md §Identity 보존선 검토 후보.",
       confidence: 0.4,
-      suggested_action:
-        "비서가 사용자에게 해당 메모의 정합성 명시 확인. 의도 변경이면 영구 박음, 잘못 추정이면 메모 본문 검토 또는 delete.",
+      ...homeFields(suggestHome({ kind: "drift" })),
     },
     null,
     2,

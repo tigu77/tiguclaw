@@ -80,7 +80,7 @@
       <button class="tab" data-tab="chat" type="button"><span class="ic">💬</span><span data-i18n="nav.chat">채팅</span></button>
     </nav>
     <main>
-      <aside id="sidebar">
+      <aside id="sidebar" class="overlay-panel">
         <div class="nav-brand">
           <div class="nav-kicker" data-i18n="nav.kicker">제어 센터</div>
           <div class="nav-title" data-i18n="app.sub">대시보드</div>
@@ -225,7 +225,7 @@
          검색은 잠깐 열고 결과를 고르면 닫는 흐름이라, 채팅 폭을 바꿔 되돌리는 게 더 성가시다.
          인라인 패널이었을 땐 열릴 때마다 대화가 아래로 밀려 채팅 공간을 먹었다. -->
     <div id="cs-backdrop"></div>
-    <aside id="cs-panel" aria-label="대화 검색" data-i18n-attrs="aria-label=search.title" aria-hidden="true">
+    <aside id="cs-panel" class="overlay-panel" aria-label="대화 검색" data-i18n-attrs="aria-label=search.title" aria-hidden="true">
       <div class="cs-resize" id="cs-resize" title="드래그로 폭 조절" data-i18n-attrs="title=common.resize"></div>
       <div class="sd-head">
         <strong data-i18n="search.title">대화 검색</strong>
@@ -253,7 +253,7 @@
       <div id="chat-search-results" class="cs-results"></div>
     </aside>
     <div id="bg-backdrop"></div>
-    <aside id="bg-panel" aria-label="백그라운드 작업" data-i18n-attrs="aria-label=bg.title" aria-hidden="true">
+    <aside id="bg-panel" class="overlay-panel" aria-label="백그라운드 작업" data-i18n-attrs="aria-label=bg.title" aria-hidden="true">
       <div class="bg-resize" id="bg-resize" title="드래그로 폭 조절" data-i18n-attrs="title=common.resize"></div>
       <div class="bg-head">
         <h3 class="panel-title" data-i18n="bg.title">백그라운드 작업</h3>

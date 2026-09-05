@@ -1,4 +1,15 @@
       * { box-sizing: border-box; }
+      /* ★`hidden` 속성은 **항상 이긴다** (2026-09-05 사용자 신고: 인증 버튼 밑 «빈 상자»).
+         `hidden` 의 숨김은 브라우저 기본 스타일의 `display:none` 인데, 우리가 그 요소에
+         `display:grid` 같은 걸 적는 순간 **작성자 규칙이 그걸 이긴다** — JS 는 `hidden=true`
+         라고 믿고, 화면엔 빈 상자가 남는다(실측: `.plugin-auth-panel`, 폰에서 발견).
+         ★그래서 이 레포엔 `X[hidden] { display:none }` 한 줄짜리가 **열두 개** 손으로 적혀
+          있었다 — 새 요소를 만들 때마다 기억해야 하는 목록이고, 나는 그걸 잊었다. 목록을
+          없앤다([[feedback_hand_maintained_lists]]).
+         ★`!important` 는 여기서 정당하다 — 규칙 순서와 무관하게 이겨야 하고(미디어쿼리
+          안에서 나중에 `display` 를 다시 적는 자리가 실제로 있다), 「숨기라고 했으면
+          숨는다」는 예외가 없는 계약이다. */
+      [hidden] { display: none !important; }
       /* 항상 보이는 스크롤바 — macOS 기본(스크롤 시에만 표시=오버레이 자동숨김)을 우회해
          채팅(#stream)·스크롤 패널(사이드바·상세·드로어·잡목록)에서 스크롤바가 늘 보이게.
          WebKit(Chrome/Edge/Safari) 커스텀 + Firefox scrollbar-* 폴백. 다크테마 색. */
@@ -147,7 +158,6 @@
          평소엔 [hidden] 으로 아예 안 뜨고, 받을 게 있을 때만 노출된다(상시 배지 아님). */
       .update-chip { display:inline-flex; width:auto; height:28px; padding:0 10px; font-size:0.75rem;
         font-weight:700; border-radius:999px; white-space:nowrap; }
-      .update-chip[hidden] { display:none; }
       .update-chip.ready { border-color:var(--good); color:var(--good); background:rgb(var(--good-rgb) / .10); }
       .update-chip.ready:hover { background:rgb(var(--good-rgb) / .18); }
       .update-chip.blocked { border-color:var(--warn); color:var(--warn); background:rgb(var(--warn-rgb) / .10); }
@@ -345,6 +355,20 @@
       .pi-status-dot.error { background:var(--bad); }
       .pi-summary { color:var(--text-mute); font-size:0.6875rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .content-stack { display:grid; gap:14px; }
+      /* ★한 칸짜리 «세로 스택» 격자는 **트랙 바닥을 0 으로** 잡는다 (2026-09-04).
+         이것들은 열을 안 적었으므로 암시적 열이 `auto` = max-content 다. 넓은 화면에선
+         컨테이너에 맞춰 늘어나 멀쩡해 보이지만, **컨테이너보다 넓은 자식이 하나라도 있으면
+         그 자식이 열 폭을 정하고 형제 전부가 같이 밀려난다.** 모바일 390 에서 인벤토리
+         상세가 696px 이 됐고(문서 가로 스크롤·오른쪽 글자 잘림) 범인은 정의 본문 하나였다.
+         ★한 자리에 모아 둔 이유: 같은 결함을 **이미 한 번 다른 자리에서 땜빵**했다 —
+         `.md{overflow-wrap:anywhere}` 주석이 «grid 안에선 트랙이 벌어져 형제까지 밀려난다»
+         고 적고 있다. 내용물마다 끊는 대신 **스택 자체의 성질**로 못 박는다. 새 스택을
+         만들면 여기에 이름을 더해라(열을 명시한 격자·`.grow-wrap` 같은 겹침 셀은 제외).
+         `minmax(0,1fr)` 은 넓은 화면 동작을 안 바꾼다 — 늘어나는 건 그대로고 바닥만 생긴다. */
+      .content-stack, .provider-sections, .views, .overview, .status-list, .home-actions,
+      .inventory-shell, .models-shell, .plugin-settings, .detail-card, .nav-section,
+      .plugin-auth, .plugin-auth-panel,
+      #stream-bar { grid-template-columns:minmax(0,1fr); }
       .subpanel { border:1px solid var(--border); border-radius:18px; background:rgb(var(--fg-rgb) / .032); padding:14px; min-width:0; }
       .subpanel-head { display:flex; align-items:center; gap:10px; margin-bottom:11px; }
       .subpanel-title { margin:0; color:var(--text); font-size:0.8125rem; font-weight:850; letter-spacing:-.015em; }
@@ -372,10 +396,16 @@
       .summary-label { color:var(--text-dim); font-size:0.625rem; text-transform:uppercase; letter-spacing:.1em; font-weight:800; }
       .summary-value { margin-top:5px; font-size:1.375rem; line-height:1; font-weight:850; letter-spacing:-.04em; }
       .summary-hint { margin-top:5px; color:var(--text-mute); font-size:0.6875rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      /* flex 항목의 기본 `min-width:auto` 는 «min-content 밑으로는 안 줄어든다» 는 뜻이라,
+         이름·설명 덩어리가 머리글 전체를 밀어냈다. 축소 허용(줄바꿈은 좁은 화면에서만 —
+         데스크톱에서 감으면 칩 두 개가 아랫줄로 떨어져 한 줄 머리글이 두 줄이 된다). */
       .detail-head { display:flex; align-items:center; gap:12px; padding:18px; margin-bottom:14px; border:1px solid var(--border); border-radius:18px; background:linear-gradient(135deg, rgb(var(--accent-rgb) / .10), rgb(var(--accent-2-rgb) / .08)); }
+      /* 줄어드는 건 **글 덩어리**뿐이다 — 칩(분류·상태)까지 줄이면 «스 킬» 처럼 세로로 접힌다. */
+      .detail-head > :not(.detail-accent):not(.detail-kind):not(.detail-status) { min-width:0; }
+      .detail-kind, .detail-status { flex:none; }
       .detail-accent { width:4px; height:32px; border-radius:99px; background:var(--text-dim); }
       .detail-accent.active { background:var(--good); } .detail-accent.degraded { background:var(--warn); } .detail-accent.error { background:var(--bad); }
-      .detail-name { font-size:1.375rem; font-weight:850; color:var(--text); letter-spacing:-.035em; }
+      .detail-name { font-size:1.375rem; font-weight:850; color:var(--text); letter-spacing:-.035em; overflow-wrap:anywhere; }
       .detail-kind { font-size:0.625rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); padding:3px 8px; background:var(--card); border-radius:7px; }
       .detail-status { margin-left:auto; font-size:0.6875rem; text-transform:uppercase; letter-spacing:.06em; padding:5px 11px; border-radius:999px; background:var(--card); color:var(--text-mute); font-weight:800; }
       .detail-status.active { background:rgb(var(--good-rgb) / .14); color:var(--good); } .detail-status.degraded { background:rgb(var(--warn-rgb) / .15); color:var(--warn); } .detail-status.error { background:rgb(var(--bad-rgb) / .15); color:var(--bad); }
@@ -430,6 +460,21 @@
       .plugin-fact-val { color:var(--text); word-break:break-word; }
       a.plugin-fact-val { color:var(--accent); text-decoration:none; }
       a.plugin-fact-val:hover { text-decoration:underline; }
+      /* 구독 인증 — 상태 + 버튼 + (눌렀을 때) 절차 패널. 설정 행과 같은 결로 둔다. */
+      .plugin-auth { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:grid; gap:7px; }
+      .plugin-auth-head { display:flex; align-items:center; gap:8px; }
+      .plugin-auth-name { font-size:.75rem; font-weight:800; color:var(--text); font-family:var(--font-mono); }
+      .plugin-auth-state { font-size:.625rem; font-weight:800; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--text-mute); background:var(--card); }
+      .plugin-auth-state.on { color:var(--good); border-color:rgb(var(--good-rgb) / .4); background:rgb(var(--good-rgb) / .12); }
+      .plugin-auth-btn { justify-self:start; }
+      .plugin-auth-panel { display:grid; gap:7px; padding:10px 11px; border:1px solid var(--border); border-radius:12px; background:rgb(var(--fg-rgb) / .03); }
+      .plugin-auth-line { font-size:.6875rem; color:var(--text-mute); line-height:1.55; }
+      .plugin-auth-note { font-size:.6875rem; color:var(--warn); }
+      .plugin-auth-url { font-size:.6875rem; color:var(--info); text-decoration:underline; justify-self:start; }
+      .plugin-auth-cmd { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .plugin-auth-cmd code { flex:1; min-width:0; font-family:var(--font-mono); font-size:.6875rem; padding:6px 9px; border-radius:8px; background:rgb(var(--shadow-rgb) / .28); border:1px solid var(--border); color:var(--text); overflow-wrap:anywhere; }
+      .plugin-auth-paste { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .plugin-auth-paste .list-search-input { flex:1; min-width:160px; }
       .plugin-settings { display:grid; gap:6px; margin-top:8px; padding-top:8px;
         border-top:1px solid var(--border); flex-basis:100%; width:100%; }
       .plugin-setting { display:flex; align-items:center; gap:10px; font-size:.75rem; }
@@ -951,6 +996,19 @@
       }
       #bg-toggle .bg-badge { min-width:17px; height:17px; padding:0 5px; border-radius:9px; background:var(--accent-2); color:var(--on-accent); font-size:0.625rem; font-weight:900; display:none; align-items:center; justify-content:center; line-height:1; }
       #bg-toggle .bg-badge.show { display:inline-flex; }
+      /* ── 오버레이 패널은 **자기 안에서** 스크롤이 끝난다 (2026-09-05 정태님 신고) ──────
+         증상: 폰에서 백그라운드 패널 안을 세로로 밀면 **뒤 홈이 스크롤됐다**(실측 546px).
+         원인은 두 겹이다 — ①패널 자신이 스크롤 컨테이너가 아니라(`overflow:visible`) 터치가
+         그대로 문서로 넘어갔고 ②안쪽 목록은 스크롤 컨테이너지만 스크롤할 게 없으면(실측
+         `scrollHeight-clientHeight = 0`) 브라우저가 **뒤 스크롤러로 이어 넘긴다**(scroll
+         chaining). 그래서 «컨테이너로 만들고» + «이어 넘기기를 막는다» 둘 다 필요하다.
+         ★자손 전체에 `overscroll-behavior` 를 거는 건 낭비가 아니다 — 스크롤 컨테이너가
+          아닌 요소에선 무효라, 안쪽 스크롤러 이름을 열거하지 않아도 된다
+          ([[feedback_hand_maintained_lists]]).
+         ★표식은 **마크업에 산다**(`class="overlay-panel"`) — 어떤 패널이 오버레이인지는 그
+          패널 자리에서 선언하는 게 맞고, 여기 이름을 모으면 새 패널이 조용히 빠진다. */
+      .overlay-panel { overflow-y:auto; }
+      .overlay-panel, .overlay-panel * { overscroll-behavior:contain; }
       #bg-backdrop { position:fixed; inset:0; background:rgb(var(--shadow-rgb) / .5); z-index:18; display:none; }
       #bg-panel {
         position:fixed; top:0; right:0; bottom:0; width:380px; max-width:88vw;
@@ -1313,7 +1371,7 @@
       .pd-related-chip.link { cursor:pointer; color:var(--accent-2); border-color:rgb(var(--accent-rgb) / .36); }
       .pd-related-chip.link:hover { background:rgb(var(--accent-rgb) / .12); }
       .pd-empty { font-size:0.75rem; color:var(--text-dim); padding:8px 0; }
-      @media (max-width: 760px) { .projects-split { grid-template-columns:1fr; } .project-detail { position:static; max-height:none; } }
+      @media (max-width: 760px) { .projects-split { grid-template-columns:minmax(0,1fr); } .project-detail { position:static; max-height:none; } }
       /* 드로어 카드 한 줄 요약 — 이름 아래 항상 표시(1줄 truncate). 펼치면(.open) 전문(bg-job-task)이
          나오므로 중복 방지로 요약은 숨김. */
       .bg-job-summary { font-size:0.6875rem; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
@@ -1323,14 +1381,12 @@
       .chat-slash { position:absolute; left:12px; right:12px; bottom:calc(100% - 8px); z-index:30;
         background:rgb(var(--bg-soft-rgb) / .98); border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--shadow);
         max-height:min(280px,44vh); overflow-y:auto; padding:5px; }
-      .chat-slash[hidden] { display:none; }
       /* 최신으로 점프 버튼 — 위로 스크롤(과거 열람) 중일 때만 표시, 클릭하면 맨 아래(최신)로. */
       .chat-jump { position:absolute; right:14px; bottom:calc(100% + 10px); z-index:20;
         display:inline-flex; align-items:center; gap:5px; padding:7px 12px; font-size:0.75rem; font-weight:600;
         color:var(--text); background:rgb(var(--bg-soft-rgb) / .96); border:1px solid var(--border-strong); border-radius:999px;
         box-shadow:var(--shadow); cursor:pointer; }
       .chat-jump:hover { border-color:rgb(var(--accent-rgb) / .55); color:var(--accent); }
-      .chat-jump[hidden] { display:none; }
       /* 드로어 "↑ 최신" 점프 — 채팅 chat-jump 의 상단판. 아래로 내려 과거 잡을 보는 중(스크롤>임계)
          일 때만 노출, 클릭하면 맨 위(최신=insertBefore 로 top)로. bottom 앵커라 헤더/필터 높이 무관. */
       .bg-jump { position:absolute; bottom:14px; left:50%; transform:translateX(-50%); z-index:20;
@@ -1338,7 +1394,6 @@
         color:var(--text); background:rgb(var(--bg-soft-rgb) / .96); border:1px solid var(--border-strong); border-radius:999px;
         box-shadow:var(--shadow); cursor:pointer; }
       .bg-jump:hover { border-color:rgb(var(--accent-rgb) / .55); color:var(--accent); }
-      .bg-jump[hidden] { display:none; }
       .slash-item { display:flex; align-items:baseline; gap:9px; padding:7px 10px; border-radius:9px; cursor:pointer; user-select:none; }
       .slash-item.active { background:rgb(var(--accent-rgb) / .14); }
       .slash-name { color:var(--accent); font-weight:750; font-size:0.75rem; white-space:nowrap; }
@@ -1350,7 +1405,7 @@
          읽기 0 = 타이핑 JS 비용 O(1)(대화 길이 무관). 두 요소의 박스 메트릭(폰트·패딩·테두리폭)은
          반드시 동일해야 높이가 일치한다. border-color 는 공유 규칙에서 건드리지 않는다(포커스 파란
          테두리 규칙과 충돌 방지) — textarea 는 기본/포커스 규칙, ::after 는 transparent. */
-      .grow-wrap { flex:1; min-width:0; display:grid; }
+      .grow-wrap { flex:1; min-width:0; display:grid; grid-template-columns:minmax(0,1fr); }
       .grow-wrap::after { content:attr(data-replicated-value) " "; visibility:hidden; overflow:hidden; border-color:transparent; }
       .grow-wrap > #chat-input, .grow-wrap::after {
         grid-area:1 / 1 / 2 / 2; box-sizing:border-box; width:100%;
@@ -1367,7 +1422,6 @@
         font-size:0.75rem; font-family:inherit; line-height:1.45; max-height:148px;
         white-space:pre-wrap; overflow-wrap:anywhere; overflow:hidden;
         color:var(--text-mute); opacity:.62; pointer-events:none; user-select:none; }
-      .grow-wrap > #chat-ghost[hidden] { display:none; }
       /* 제안 수락 버튼 — 입력창 오른쪽 끝. 고스트(pointer-events:none)와 달리 **누를 수
          있어야** 하므로 별도 노드다. ★모바일에서 "입력창을 탭하면 자동 수락" 을 대체한다:
          그냥 쓰려고 눌렀는데 제안이 들어오던 것이 사라지고, 수락은 명시적 행동 하나가 된다.
@@ -1380,7 +1434,6 @@
         border:1px solid rgb(var(--accent-rgb) / .45); font-size:0.875rem; line-height:1; font-family:inherit;
         opacity:.85; }
       .grow-wrap > #chat-ghost-accept:hover { opacity:1; border-color:rgb(var(--accent-rgb) / .85); }
-      .grow-wrap > #chat-ghost-accept[hidden] { display:none; }
       /* 모델 프로파일 드롭다운(탭별 sticky, ADR model-dropdown §3) — 컴포저 버튼과 동형 톤. */
       /* 모델 프로파일 빠른선택 — 솔리드 다크 bg(네이티브 팝업이 밝게 렌더돼 밝은 글자가
          안 보이던 것 fix, 2026-07-19) + 액센트 테두리(디스커버빌리티).
@@ -1417,7 +1470,6 @@
       #chat-attach:empty { display:none; }
       /* 답글 인용 칩(인바운드) — 특정 메시지에 답글로 입력. 전송 시 원문을 replyToText 로 실음. */
       .chat-reply { display:flex; align-items:center; gap:8px; margin-bottom:8px; padding:6px 10px; border-left:3px solid var(--accent-2); background:rgb(var(--accent-2-rgb) / .08); border-radius:8px; font-size:0.6875rem; color:var(--text-mute); }
-      .chat-reply[hidden] { display:none; }
       .chat-reply .cr-label { font-weight:800; color:var(--accent-2); flex:none; }
       .chat-reply .cr-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
       .chat-reply .cr-x { flex:none; cursor:pointer; border:0; background:transparent; color:var(--text-dim); font-size:0.8125rem; line-height:1; padding:0 2px; }
@@ -1425,11 +1477,9 @@
       /* 컴포저 백그라운드 작업 인디케이터 — 현재 세션에 매니저가 돌면 입력창 위에 노출(클릭=드로어). */
       .chat-bg-active { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:6px 11px; border:1px solid rgb(var(--good-rgb) / .4); background:rgb(var(--good-rgb) / .10); border-radius:999px; font-size:0.6875rem; font-weight:700; color:var(--good); cursor:pointer; align-self:flex-start; }
       .chat-bg-active:hover { border-color:var(--good); background:rgb(var(--good-rgb) / .16); }
-      .chat-bg-active[hidden] { display:none; }
       /* 입력 히스토리 위치(↑/↓ 탐색 중). 매니저 스트립과 같은 레인·같은 pill 이되 중립색 —
          상태 알림이 아니라 위치 표시라 시선을 끌면 안 된다. */
       .chat-histind { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:5px 10px; border:1px solid var(--border); background:var(--card); border-radius:999px; font-size:0.6875rem; font-weight:700; color:var(--text-mute); font-variant-numeric:tabular-nums; align-self:flex-start; }
-      .chat-histind[hidden] { display:none; }
       /* 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b) — 매니저 스트립(위 .chat-bg-active
          초록)과 별도 레인·별도 색(청록, .act-shell-chip 과 동일 팔레트로 "이건 셸" 일관 신호). */
       .chat-shell-active { border-color:rgb(var(--teal-rgb) / .4); background:rgb(var(--teal-rgb) / .10); color:var(--teal); }
@@ -1504,7 +1554,6 @@
          팝오버는 #chat(position:relative) 기준 절대배치, 컴포저 위에 뜬다. 닫힘=hidden. */
       .chat-egress { position:absolute; left:12px; bottom:calc(100% + 8px); z-index:30; display:flex; flex-direction:column; gap:5px; align-items:flex-start;
         background:rgb(var(--bg-soft-rgb) / .98); border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--shadow); padding:9px 11px; max-width:min(280px,82vw); }
-      .chat-egress[hidden] { display:none; }
       .chat-egress .egress-lead { color:var(--text-mute); font-size:0.6875rem; font-weight:700; }
       .chat-egress .egress-opt { display:flex; align-items:center; gap:7px; color:var(--text); font-size:0.8125rem; cursor:pointer; user-select:none; padding:2px 0; }
       .chat-egress .egress-opt input { cursor:pointer; margin:0; accent-color:var(--accent-2); width:16px; height:16px; }
@@ -1513,11 +1562,18 @@
       #chat-egress-btn { position:relative; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:0 11px; font-size:0.9375rem; cursor:pointer; flex:none; align-self:stretch; }
       #chat-egress-btn:hover { border-color:rgb(var(--accent-rgb) / .55); }
       #chat-egress-btn.active { border-color:rgb(var(--accent-rgb) / .7); background:rgb(var(--accent-rgb) / .12); }
-      #chat-egress-btn[hidden] { display:none; }
       .egress-dot { position:absolute; top:3px; right:3px; width:7px; height:7px; border-radius:50%; background:var(--accent-2); }
-      .egress-dot[hidden] { display:none; }
       #chat-send { background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:var(--on-accent-strong); border:0; border-radius:12px; padding:10px 14px; font-weight:850; cursor:pointer; }
       #chat-send:disabled { filter:grayscale(1); opacity:.55; cursor:not-allowed; }
+      /* ⏹ 정지 모드 — 같은 버튼이 다른 일을 하므로 **색으로도 다르다**(누르기 전에 보인다).
+         강조색 그라데이션(전송)과 헷갈리면 안 되는 자리라 위험색 계열로 뺀다. */
+      /* 정지는 **아이콘 하나** — 라벨이 없으니 폭이 고정이고, 어느 화면 폭에서도 옆 칸을
+         밀지 않는다. 터치 타깃은 유지(≥44px). «중지 요청…» 은 글자가 아니라 흐림으로. */
+      #chat-send.stop { padding:10px 12px; min-width:44px; }
+      #chat-send.stop .cb-icon { font-size:0.9375rem; line-height:1; }
+      #chat-send.stop[data-stopping="1"] { opacity:.55; }
+      #chat-send.stop { background:rgb(var(--bad-rgb) / .16); color:var(--bad); box-shadow:inset 0 0 0 1px rgb(var(--bad-rgb) / .45); }
+      #chat-send.stop:hover { background:rgb(var(--bad-rgb) / .26); }
       #chat-status { color:var(--text-mute); font-size:0.625rem; margin-top:6px; min-height:12px; }
       #chat-status.working { color:var(--accent-2); font-weight:700; animation:chat-working-pulse 1.4s ease-in-out infinite; }
       /* 대기 중(메인은 비었고 백그라운드만 도는 상태) — 강조도 펄스도 없다. "지금 말 걸어도
@@ -1650,15 +1706,16 @@
            상세 전체화면 + ‹목록 뒤로 버튼. 세 뷰 모두 리스트=.provider-item, 상세=#detail-panel 공유. */
         /* ★마스터-디테일 뷰(show-providers/capabilities/projects)에서만 리스트↔상세 토글. 홈·모델·
            설정 등 단일패널 뷰는 #detail-panel 에 직접 렌더되므로 절대 숨기면 안 됨(안 그럼 통째 사라짐). */
-        body:not(.m-detail) #workbench.show-providers #detail-panel,
-        body:not(.m-detail) #workbench.show-capabilities #detail-panel,
-        body:not(.m-detail) #workbench.show-projects #detail-panel { display:none; }
-        body.m-detail #workbench.show-providers #providers-panel,
-        body.m-detail #workbench.show-capabilities #capabilities-panel,
-        body.m-detail #workbench.show-projects #projects-panel { display:none; }
-        body.m-detail #workbench.show-providers #detail-panel,
-        body.m-detail #workbench.show-capabilities #detail-panel,
-        body.m-detail #workbench.show-projects #detail-panel { display:block; padding-top:46px; }  /* ‹목록 버튼 자리 */
+        /* ★**이름을 열거하지 않는다** (2026-09-05). 종전엔 뷰 이름 셋이 아홉 줄에 박혀 있었고,
+           2026-09-02 에 생긴 **플러그인 뷰가 그 목록에서 빠졌다** — 폰에서 플러그인을 누르면
+           상세가 목록 열두 개 아래에 깔려 아무 일도 안 일어난 것처럼 보였다(거기 인증 버튼이
+           있다). `show-*` 는 `setWorkbenchLayout` 이 «두 컬럼 뷰» 라는 뜻으로 붙이는 표식이니
+           그걸 그대로 판정으로 쓴다 — 다음 뷰는 코드 변경 0으로 따라온다.
+           ★단일 컬럼 뷰(홈·모델·설정)는 `show-*` 자체가 없어 여기 안 걸린다 — 그 뷰들은
+           `#detail-panel` 에 직접 그리므로 숨기면 통째로 사라진다. */
+        body:not(.m-detail) #workbench[class*="show-"] #detail-panel { display:none; }
+        body.m-detail #workbench[class*="show-"] > section[id$="-panel"]:not(#detail-panel) { display:none; }
+        body.m-detail #workbench[class*="show-"] #detail-panel { display:block; padding-top:46px; }  /* ‹목록 버튼 자리 */
         body.m-detail #wb-detail-back { display:inline-flex; align-items:center; gap:4px; position:fixed;
           top:52px; left:10px; z-index:15; padding:6px 12px; border:1px solid var(--border-strong);
           border-radius:999px; background:rgb(var(--bg-soft-rgb) / .96); color:var(--accent); font-size:0.75rem;
@@ -1685,28 +1742,53 @@
         body.menu-open #sidebar { transform:translateX(0); }
         #menu-backdrop { position:fixed; inset:0; background:rgb(var(--shadow-rgb) / .5); z-index:39; display:none; }
         body.menu-open #menu-backdrop { display:block; }
+        /* ★손가락으로 끄는 동안엔 **전환을 끈다** — 애니메이션이 붙어 있으면 드로어가
+           손가락을 0.2초 늦게 따라와 «무겁다»고 느껴진다. 백드롭도 이때만 미리 깔고
+           (불투명도는 JS 가 진행률로 준다) 손을 떼면 다시 CSS 가 맡는다. */
+        body.menu-dragging #sidebar { transition:none; }
+        body.menu-dragging #menu-backdrop { display:block; }
         /* 전체 활동 — main 탭에서 workbench 대신 activity-view. ★모바일 높이 바운드(라이브 실측:
            height:auto 그룹에 두면 800 실노드로 168,625px 폭주). #activity-view 를 그 그룹에서
            빼고 뷰포트 고정 높이(헤더46+탭바50 제외)로 묶어 #activity-stream(overflow-y:auto)만
            내부 스크롤하게 한다(채팅 #right 동형이나 별 컨테이너라 독립). */
         #activity-view { display:none; width:100%; border:0; border-radius:0; box-shadow:none; height:calc(100svh - 46px); overflow:hidden; }
         body[data-main="activity"] #activity-view { display:flex; }
-        #sidebar { overflow:visible; padding-bottom:76px; }
-        #providers-panel { border-right:0; height:auto; overflow:visible; }
-        #capabilities-panel { border-right:0; height:auto; overflow:visible; }
-        #projects-panel { border-right:0; height:auto; overflow:visible; }
+        /* ★드로어는 **자기 안에서 스크롤한다** (2026-09-05 정태님: *"설정 들어가기가 힘들더라"*).
+           종전엔 `overflow:visible` 이었다 — 이 줄은 「패널을 페이지 흐름으로 되돌리는」 이웃
+           규칙들과 한 묶음으로 적혀 있었는데, **모바일 `#sidebar` 만은 페이지 흐름이 아니다**
+           (`position:fixed; top:0; bottom:0` 인 오버레이 드로어다). 그래서 뷰포트를 넘는
+           부분에 **도달할 방법이 아예 없었다**: 실측 `scrollTop = 9999` 를 넣어도 `0` 이고,
+           620px 화면에서 마지막 항목(설정)의 아래가 611px — 조금만 더 짧은 폰이면 잘린다.
+           ★`overscroll-behavior:contain` — 드로어 끝에서 계속 밀 때 뒤 페이지가 따라
+           움직이지 않게(열린 창 안에서 스크롤이 끝나야 한다). */
+        #sidebar { overflow-y:auto; overscroll-behavior:contain; padding-bottom:76px; }
+        /* 리스트 서브패널 전부 — 같은 이유로 이름을 안 적는다(`#plugins-panel` 이 빠져 있었다). */
+        #workbench > section[id$="-panel"]:not(#detail-panel) { border-right:0; height:auto; overflow:visible; }
         #detail-panel { height:auto; min-height:calc(100svh - 56px - 50px); overflow:visible; padding:14px 14px 70px; }
         #right { min-height:calc(100svh - 56px - 50px); }
         #stream { min-height:calc(100svh - 56px - 50px - 126px); overflow:visible; }
-        .summary-grid { grid-template-columns:repeat(3,1fr); gap:8px; }
-        .quick-grid, .provider-layout, .overview-layout { grid-template-columns:1fr; }
+        /* ★`1fr` 은 min 이 `auto`(=min-content) 라 좁은 화면에서 트랙이 안 줄어든다 —
+           데스크톱 규칙은 `minmax(0,1fr)` 인데 이 모바일 덮어쓰기가 그 바닥을 도로 풀었다. */
+        .summary-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+        .quick-grid, .provider-layout, .overview-layout { grid-template-columns:minmax(0,1fr); }
         /* ★한 칸짜리 격자에서 `span 2` 는 넘친다 — 등급을 화면이 다시 해석하는 자리다. */
-        .home-widget-grid { grid-template-columns:1fr; }
+        .home-widget-grid { grid-template-columns:minmax(0,1fr); }
         .home-widget[data-size="wide"] { grid-column:auto; }
-        .provider-grid { grid-template-columns:1fr; }
+        .provider-grid { grid-template-columns:minmax(0,1fr); }
         .summary-card { padding:11px; } .summary-value { font-size:1.1875rem; }
-        .detail-head { padding:15px; } .detail-name { font-size:1.1875rem; }
-        .pi-summary { white-space:normal; }
+        .detail-head { padding:15px; align-items:flex-start; flex-wrap:wrap; row-gap:9px; } .detail-name { font-size:1.1875rem; }
+        /* ★좁은 화면에선 머리글이 **세 줄로 눕는다** (2026-09-04): 색 띠 → 이름·설명 →
+           분류·상태 칩. 한 줄로 두면 이름 옆에 칩 둘이 붙어 설명이 손가락 폭으로 줄고,
+           줄바꿈만 허용하면 4px 짜리 색 막대가 첫 줄을 혼자 차지한다. 그래서 막대를
+           **상단 띠**로 눕힌다 — 같은 정보(상태색)를 좁은 화면 문법으로 옮긴 것. */
+        .detail-head > .detail-accent { width:100%; height:4px; }
+        .detail-head > :not(.detail-accent):not(.detail-kind):not(.detail-status) { flex:1 1 100%; }
+        .detail-status { margin-left:auto; }
+        /* ★목록 한 줄의 높이는 **설명 길이가 아니라 규칙**이 정한다 (2026-09-04).
+           모바일엔 hover 가 없어 한 줄 자르기(데스크톱)를 풀어 전문을 폈는데, 설명이
+           제각각이라 한 항목이 화면을 통째로 먹었다 — 실측 62개 항목에 목록 7,480px,
+           스킬 하나 보려고 열 화면을 넘겼다. 두 줄까지만 편다(넘치면 …). */
+        .pi-summary { white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow:clip; }
         /* 복제(::after)도 같이 16px — 안 그러면 replica(12px)와 textarea(16px) 높이 불일치. */
         .grow-wrap > #chat-input, .grow-wrap::after, .grow-wrap > #chat-ghost { font-size:1rem; max-height:36vh; }
         /* 모바일 — 멀티라인 입력이 넉넉히 늘어나게 캡 상향(148px→36vh). 하단고정 입력이라 자라도 여유.
@@ -1751,16 +1833,41 @@
         /* 입력필드를 도구 버튼들 위 전용 행으로 — textarea 전폭 첫 행, 📎·🎤·(egress)·전송 아래 행.
            전송은 우측 정렬. (모바일 전용, 2026-07-19 사용자 요청) */
         #chat-form .grow-wrap { order:-1; flex-basis:100%; width:100%; }
-        #chat-form #chat-send { margin-left:auto; }
+        /* ★한 줄에는 **줄어드는 칸이 하나** 있어야 한다 (2026-09-05 사용자 신고: 정지
+           버튼이 아랫줄로 내려감). 실측 375px: 44+44+44+112(모델선택)+75(버튼)+간격32
+           = **351 = 폼 폭과 정확히 같다** — 여유가 0이라 라벨이 몇 px만 넓어져도(실기기의
+           이모지 폭·긴 프로파일 이름·큰 글꼴 설정) 버튼이 감긴다. 버튼 폭을 줄이는 건
+           증상 처방이다(다음 라벨에서 또 넘친다). 모델 선택이 **줄어드는 칸**을 맡는다 —
+           고르는 값은 잘려도 캐럿과 앞글자가 남고, 버튼은 늘 제자리에 있다. */
+        /* ★기준 폭은 **0** 이어야 한다. 줄바꿈은 «줄이기 전에» 결정되므로(각 항목의 기준
+           폭으로 한 줄을 채운 뒤 그 줄 안에서 줄인다), 기준을 72px 로 두면 320px 화면에서
+           합이 넘쳐 **버튼이 또 아랫줄로 간다**(실측). 0 이면 줄은 언제나 서고, 남는 폭을
+           이 칸이 받는다 — 375 에서 92px, 320 에서 37px 로 좁아지되 줄은 안 깨진다. */
+        #chat-form .chat-model-select { flex:1 1 0; min-width:0; max-width:none; }
+        #chat-form #chat-send { flex:none; margin-left:auto; }
         #chat-status.working { margin:0 0 6px; }
       }
-      @media (max-width: 430px) { .summary-grid { grid-template-columns:1fr; } header .brand { font-size:0.9375rem; } }
+      @media (max-width: 430px) { .summary-grid { grid-template-columns:minmax(0,1fr); } header .brand { font-size:0.9375rem; } }
       /* ── 설정 뷰 (2026-08-10) — 항목 하나짜리. 늘 때 늘린다. ── */
       .settings-row { display:flex; align-items:flex-start; gap:16px; padding:14px 16px; margin-top:10px;
         background:var(--card); border:1px solid var(--border); border-radius:12px; }
       .settings-meta { flex:1; min-width:0; }
       .settings-name { font-weight:800; font-size:0.8125rem; color:var(--text); }
       .settings-desc { margin-top:5px; font-size:0.6875rem; line-height:1.5; color:var(--text-mute); }
+      /* ★**글자를 세로로 세우지 않는다** (2026-09-05 정태님: «글자가 세로로 나열되는 건 다
+         문제야»). 한국어는 글자마다 줄바꿈 기회가 있어 **min-content 가 한 글자**다 — 그래서
+         `flex:1 1 0` + `min-width:0` 인 칸은 옆칸이 넓으면 «한 글자 폭» 까지 줄어들고, 설명
+         한 줄이 24줄짜리 기둥이 된다(실측 390 화면에서 폭 10~32px · 플러그인 상세와 설정).
+         고침은 «덜 줄여라» 가 아니라 **«한 줄에 안 들어가면 줄을 바꿔라»** 다: 기준 폭(220px)을
+         못 받으면 컨트롤이 아랫줄로 내려간다.
+         ★이 규칙은 `.settings-row` **정의 뒤**에 있어야 한다 — 위쪽 모바일 블록에 적었더니
+         파일 순서상 기본 규칙이 나중이라 그대로 덮였다(같은 특이성이면 뒤가 이긴다). */
+      @media (max-width: 900px) {
+        .settings-row { flex-wrap:wrap; }
+        .settings-meta { flex:1 1 220px; }
+        /* 사실 표(키/값)도 같은 병 — `auto` 열이 한 글자로 접힌다. */
+        .plugin-facts { grid-template-columns:minmax(0,auto) minmax(0,1fr); }
+      }
       /* 슬라이더 한 줄 — 토글과 같은 자리(오른쪽 끝)에 값 라벨과 함께 놓는다. */
       .settings-slider { flex:none; align-self:center; display:flex; align-items:center; gap:10px; }
       .settings-slider input[type=range] { width:180px; accent-color:var(--accent); }

@@ -129,7 +129,11 @@ export const analyzeFailurePattern = async (input: {
                 observed_pattern: `(${input.errorKind} · ${input.adapter}) '${messageNorm}' 가 ${input.count}회 누적`,
                 evidence_count: input.count,
                 self_growth_md_write_failed: true,
-                ...homeFields(suggestHome({ kind: "failure", cause: "prompt_config", errorKind: input.errorKind, hasCause: true })),
+                // ★원인을 **모른다** — 여기 온 이유는 SELF_GROWTH.md 쓰기가 실패해서다(디스크·권한).
+                //  종전엔 `cause:"prompt_config", hasCause:true` 를 **상수로** 넘겨,
+                //  방금 실패한 그 일("SELF_GROWTH.md 로 올려라")을 다음 할 일로 실었다
+                //  (적대 검토 P5). 판정 함수의 «모르면 ask» 를 호출부가 뚫고 있었다.
+                ...homeFields(suggestHome({ kind: "failure", errorKind: input.errorKind, hasCause: false })),
                 blocked_by: "SELF_GROWTH.md 쓰기 실패 — 디스크/권한 점검이 먼저다.",
               },
               null,
@@ -160,7 +164,10 @@ export const analyzeFailurePattern = async (input: {
         llm_contradiction_duration_ms: durationMs,
         llm_contradiction_existing_count: existing.length,
         confidence: 0.4,
-        ...homeFields(suggestHome({ kind: "failure", cause: "prompt_config", errorKind: input.errorKind, hasCause: true })),
+        // ★여기 온 이유가 «모순 의심» 또는 «판단 불확실» 이다 — 그런데 종전엔 원인을
+        //  `prompt_config` 로 **지어내** 강등 사유와 정반대인 directive 를 냈다(적대 검토 P5).
+        //  불확실해서 내린 것을 확신이 필요한 자리로 보내면 안 된다.
+        ...homeFields(suggestHome({ kind: "failure", errorKind: input.errorKind, hasCause: false })),
         demoted_because:
           verdict === "yes"
             ? "LLM 의미 모순 의심 — 기존 사용자 확정과 충돌할 수 있어 자동 확정에서 내렸다."

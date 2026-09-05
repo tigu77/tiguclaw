@@ -87,6 +87,78 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★핸들러가 **답을 보내나** (2026-09-05 적대 검토) ──────────────────────
+    //  사고: `/status` 의 마지막 한 줄(`replyCommand(msg, lines.join("\n"))`)만 지우면
+    //  명령이 **완전 침묵**하는데 2,902건이 초록이었다. 소스 정규식들이 찾는 문자열
+    //  (`backupInfo()`·`백업:`)은 전부 남아 있으니 핸들러가 «있다» 고 읽은 것이다.
+    //  ★그리고 슬래시는 LLM 미경유라 `turn_done` 이 없다 — 답이 없을 뿐 아니라
+    //   **대시보드 «작업 중» 이 15분 stale 스윕까지 켜져 있다.**
+    //  ★이름을 열거하지 않는다: 파일에서 핸들러를 **파생**하고, 각자 몸통에 송신이
+    //   있는지 본다. 새 명령을 더하면 저절로 대상이 된다.
+    let slash: string;
+    try {
+      slash = readFileSync(path.join(REPO, "src/core/entry/slash-commands.ts"), "utf8");
+    } catch {
+      return out;
+    }
+    const bodies = [...slash.matchAll(/export const (handle\w+) = async \(/g)].map((m, i, all) => {
+      const start = m.index ?? 0;
+      const next = i + 1 < all.length ? (all[i + 1]?.index ?? slash.length) : slash.length;
+      return [m[1] ?? "", slash.slice(start, next)] as const;
+    });
+    // 송신 수단 — `replyCommand` 또는 `presentAndClose`(선택지 제시도 답이다).
+    const silent = bodies
+      .filter(([, body]) => {
+        const code = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+        return !/\b(replyCommand|presentAndClose)\s*\(/.test(code);
+      })
+      .map(([name]) => name);
+    out.push(
+      assert(
+        "핸들러를 파일에서 읽는다(파싱이 죽으면 아래 검사가 무의미하다)",
+        bodies.length >= 8,
+        `${bodies.length}개: ${bodies.map(([n]) => n).join(", ")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★★모든 슬래시 핸들러가 답을 보낸다 — 안 보내면 침묵일 뿐 아니라 대시보드 «작업 중» 이 15분 켜져 있다",
+        silent.length === 0,
+        silent.length === 0
+          ? `${bodies.length}개 전부 송신 있음`
+          : `★송신이 없는 핸들러: ${silent.join(", ")}`,
+      ),
+    );
+
+    // ★위 단언만으론 **모자란다**: 송신이 여럿인 핸들러(성공 + 에러)는 성공 경로만
+    //  지워도 통과한다. 실제로 `/status` 가 그 모양이라 첫 판의 변이가 안 걸렸다.
+    //  ★그래서 결함 **모양**을 겨눈다: «줄을 모아놓고 안 보낸다». 핸들러가 배열을
+    //   쌓아 올렸으면(`.push(`) 그 변수가 송신 인자에 나와야 한다. 안 나오면 그건
+    //   만들어놓고 버린 출력이다 — 정확히 그 사고의 형상이다.
+    const builtButUnsent: string[] = [];
+    for (const [name, body] of bodies) {
+      const code = body.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const built = new Set(
+        [...code.matchAll(/\b([A-Za-z_$][\w$]*)\.push\(/g)].map((m) => m[1] ?? ""),
+      );
+      for (const v of built) {
+        // 그 변수가 송신 호출의 인자에 등장하나(직접 또는 `.join(...)` 을 거쳐).
+        const sent = new RegExp(
+          `(?:replyCommand|presentAndClose)\\s*\\([^)]*\\b${v}\\b`,
+        ).test(code);
+        if (!sent) builtButUnsent.push(`${name}.${v}`);
+      }
+    }
+    out.push(
+      assert(
+        "★★모아 올린 줄이 실제로 나간다 — 만들어놓고 안 보내면 «답이 없다» 로만 드러나고, 소스 검사는 내용이 남아 있어 통과한다",
+        builtButUnsent.length === 0,
+        builtButUnsent.length === 0
+          ? `누적 변수 전부 송신 인자에 도달`
+          : `★쌓았는데 안 보내는 것: ${builtButUnsent.join(", ")}`,
+      ),
+    );
+
     return out;
   },
 };

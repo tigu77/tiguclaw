@@ -73,7 +73,7 @@
     <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
     <div id="menu-backdrop"></div>
     <!-- 모바일 마스터-디테일 뒤로 버튼 — 상세(#detail-panel) 볼 때만 노출, 누르면 리스트로. 데스크탑 미표시. -->
-    <button id="wb-detail-back" type="button" hidden data-i18n="wb.back">‹ 목록</button>
+    <button id="wb-detail-back" type="button" data-i18n="wb.back">‹ 목록</button>
     <nav id="tab-bar">
       <button class="tab" data-tab="menu" type="button"><span class="ic">☰</span><span data-i18n="common.menu">메뉴</span></button>
       <button class="tab active" data-tab="main" type="button"><span class="ic">🏠</span><span data-i18n="tab.view">화면</span></button>
@@ -165,7 +165,7 @@
                    2026-08-23: "검색 버튼이 따로 있는 건 어때?"). 버튼 → 패널. -->
               <button id="chat-search-btn" type="button" aria-label="대화 검색" title="대화 검색 (전 세션)" data-i18n-attrs="aria-label=search.title;title=search.btn.title" data-i18n="search.btn.text">🔍 검색</button>
               <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업" data-i18n-attrs="aria-label=bg.title;title=bg.title">
-                백그라운드 <span class="bg-badge" id="bg-badge">0</span>
+                <span class="bg-word">백그라운드</span> <span class="bg-badge" id="bg-badge">0</span>
               </button>
             </div>
           </div>

@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-05
+
+### Added
+
+- **Stop a running turn from the composer.** While the assistant is working and the
+  input box is empty, the send button becomes a stop button. Typing still sends, so you
+  can keep talking to a turn that is already in progress.
+- **Sign in to Claude and Codex from the dashboard.** Each subscription plugin's detail
+  screen now has a sign-in button with a confirmation step, so a terminal is no longer
+  required.
+
+### Fixed
+
+- **Replying to a Telegram message now returns to the conversation it came from.**
+  Replies had been landing in whatever session was current instead.
+- Several mobile layout problems: text standing on its side in narrow columns; the menu
+  drawer neither opening by drag nor scrolling far enough to reach settings; scrolling
+  inside a panel dragging the page behind it; an empty box under a button; and the
+  inventory detail view running off screen.
+
+### Changed
+
+- `archive_memory` and `delete_memory` accept a list of names, so tidying several
+  memories at once is one step.
+- Self-growth proposals now say **where** a lesson belongs — a regression, a skill, or a
+  standing directive — instead of always ending with "check with the user".
+
+
 ## [0.48.0] - 2026-09-04
 
 ### Changed
@@ -328,7 +356,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0

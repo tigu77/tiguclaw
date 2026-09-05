@@ -8,6 +8,31 @@
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-09-05
+
+### Added
+
+- **작업 중인 턴을 입력창에서 멈춥니다.** 비서가 일하는 동안 입력창이 비어 있으면 전송
+  버튼이 정지 버튼으로 바뀝니다. 글을 치면 그대로 전송이라, 돌고 있는 턴에 말을 얹는
+  길은 그대로 열려 있습니다.
+- **Claude·Codex 인증을 대시보드에서 합니다.** 각 구독 플러그인 상세 화면에 인증 버튼이
+  생겼고 확인 창을 거칩니다. 터미널을 열 필요가 없습니다.
+
+### Fixed
+
+- **텔레그램에서 답글을 달면 그 답이 나온 대화로 돌아갑니다.** 그동안은 조용히 현재
+  세션으로 떨어졌습니다.
+- 모바일 화면 문제 몇 가지: 좁은 칸에서 글자가 세로로 서던 것, 메뉴 서랍이 손가락으로
+  열리지 않고 설정까지 스크롤되지도 않던 것, 패널 안에서 민 스크롤이 뒤 페이지를 끌던 것,
+  버튼 아래 빈 상자, 인벤토리 상세가 화면 밖으로 나가던 것.
+
+### Changed
+
+- `archive_memory`·`delete_memory` 가 이름 묶음을 받습니다. 여러 개를 한 번에 정리합니다.
+- 자가성장 제안이 그 교훈이 **어디로 가야 하는지**(회귀·스킬·상시 지침) 말합니다. 전에는
+  종류와 무관하게 «사용자에게 확인하세요» 로 끝났습니다.
+
+
 ## [0.48.0] - 2026-09-04
 
 ### Changed
@@ -1896,7 +1921,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/tigu77/tiguclaw/compare/v0.45.0...v0.46.0

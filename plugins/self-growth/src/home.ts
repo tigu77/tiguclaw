@@ -35,12 +35,24 @@ export interface HomeVerdict {
 /**
  * **결정적 실패인가** — 같은 입력이면 같은 결과인가.
  *
- * ★네트워크·한도·과부하·타임아웃은 **우리가 못 고치는 바깥 사정**이라 검사로 못 박는다.
- *  그걸 회귀로 보내면 «되지도 않을 일» 을 시키는 것이고, 그 검사는 깜빡이다가 무시된다
- *  (이 레포가 이미 아는 부류 — 항상 초록인 가짜 검사의 반대편).
+ * ★네트워크·한도·과부하·타임아웃은 **우리가 못 고치는 바깥 사정**이라 상시 규범으로 못
+ *  박는다. 그걸 매 턴 실리는 자리에 앉히면 «지킬 수 없는 규칙» 이 헌법에 쌓인다.
+ *
+ * ★★2026-09-05 적대 검토 P2 — **여기 있던 정규식은 이 시스템이 만들지 않는 어휘로
+ *  쓰여 있었다.** `rate|overload|network|econn|etimedout|5\d\d|quota|cooldown` 중
+ *  무엇도 `errorKind` 에 나타날 수 없다. 실제 어휘는 `classifyTurnError` 가 내는
+ *  **셋뿐**이다 — `timeout` · `model_rejected` · `error`. 그래서 결과가 이랬다:
+ *    model_rejected → directive   (그런데 이건 `usage_limit|429|rate.?limit` 을 흡수한다)
+ *    error          → directive   (그런데 이건 ECONNRESET·502·네트워크를 전부 흡수한다)
+ *  **한도 초과와 네트워크 장애가 SELF_GROWTH.md 확정 지침 후보로 올라가고 있었다.**
+ *
+ * ★고침은 정규식을 «진짜 어휘로» 다시 쓰는 게 아니다. 셋 중 **어느 것도 결정성을
+ *  보장하지 못한다** — `error` 는 catch-all 이고, `model_rejected` 는 진짜 모델 거부와
+ *  한도 초과가 **같은 이름 아래 섞여 있어** errorKind 만으로는 가를 수 없다.
+ *  아는 척하지 않는다: 실패는 자동으로 상시 규범이 되지 않고 **사람에게 간다**.
+ *  (`directive` 는 여전히 `segment`·`drift` 로 도달한다 — 반복 규범·표류가 그 자리다.)
  */
-const isDeterministic = (errorKind: string): boolean =>
-  !/(timeout|rate|overload|network|econn|etimedout|5\d\d|quota|cooldown)/i.test(errorKind);
+const isDeterministic = (_errorKind: string): boolean => false;
 
 /**
  * 자리를 정한다. 입력은 **자가성장이 실제로 들고 있는 것만** 받는다(없는 신호를 요구하면

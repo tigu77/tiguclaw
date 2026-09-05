@@ -28,6 +28,7 @@
  */
 import { listSchedules } from "../store/schedules.js";
 import { listEvents } from "../store/events.js";
+import { isDerivedThread } from "./threadkey.js";
 import { getRecentChatLog } from "../store/chat-log.js";
 import { backupInfo } from "../store/backup.js";
 import { listMemoriesForIndex } from "../store/memory.js";
@@ -172,12 +173,11 @@ export const describeTurnErrors = (rawPayloads: string[]): string => {
     const thread = str(p.threadKey);
     // ★외부 호출(엔드포인트·게이트웨이)도 '내 대화'가 아니다 (2026-08-12) — 게이트웨이 턴이
     //  이제 turn 이벤트를 내므로, 안 가르면 앱 호출 실패가 "내 대화가 죽었다"로 보고된다.
-    if (
-      thread.startsWith("agent:") ||
-      thread.startsWith("worker:") ||
-      thread.startsWith("endpoint:") ||
-      thread.startsWith("gateway:")
-    ) {
+    // ★★목록을 손으로 들고 있다가 **이미 갈렸다** (2026-09-05 적대 검토). 넷을 적어놓고
+    //  `scheduler:` 를 빠뜨려서, **스케줄 턴이 실패하면 "내 대화가 죽었다"로 보고**됐다 —
+    //  정확히 이 주석이 막겠다고 적어둔 그 사고다. 코어 정본을 쓴다: 새 파생 종류가
+    //  생기면 저절로 따라간다([[feedback_hand_maintained_lists]]).
+    if (isDerivedThread(thread)) {
       background += 1;
     }
     const detail = `${str(p.message)} ${str(p.error)}`;

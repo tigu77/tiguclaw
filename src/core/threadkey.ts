@@ -131,3 +131,28 @@ export const extractTelegramChatId = (threadKey: string): string | null => {
   const chatId = threadKey.slice(TELEGRAM_THREAD_PREFIX.length).trim();
   return chatId.length > 0 ? chatId : null;
 };
+
+/**
+ * **답장이 세션을 갈랐나** — 갈랐으면 그 세션, 아니면 `null` (2026-09-05 적대 검토 P2).
+ *
+ * ★이게 함수인 이유는 판정이 **두 벌이었기 때문**이다. 종전엔 텔레그램 핸들러 안에
+ *  인라인으로 있었는데, 로그는 «갈렸을 때만» 으로 좁혀놓고 **라벨은 원값을 받았다.**
+ *  그래서 양방향으로 틀렸다:
+ *   - `/sessions use` 로 비기본 세션에 묶인 대화는 **답글마다 상시 라벨**(갈리지도 않았는데)
+ *   - 정작 갈린 순간엔 조용 — 라벨이 있어야 할 유일한 경우다
+ *  같은 판단이 두 곳이면 한쪽만 좁혀진다.
+ *
+ * ★그리고 핸들러 클로저 안에 있으면 **동작으로 검사할 수가 없다** — 이 레포가
+ *  `egress-targets.ts` 를 꺼낼 때 적어둔 것과 같은 이유다("정확히 검사 못 한 자리에서
+ *  결함이 나왔다"). 순수 함수면 진리표가 그대로 못 박힌다.
+ *
+ * ★«매핑이 있다» 는 이유가 아니다 — 인입 응답까지 매핑에 들어가면서 평소 답글에도
+ *  매핑이 잡히기 때문이다. 이유는 **갈렸다** 하나뿐이다.
+ */
+export const routedReplySession = (
+  repliedSession: string | null | undefined,
+  boundSession: string,
+): string | null => {
+  if (repliedSession === null || repliedSession === undefined || repliedSession === "") return null;
+  return repliedSession === boundSession ? null : repliedSession;
+};

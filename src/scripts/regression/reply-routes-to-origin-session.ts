@@ -230,11 +230,28 @@ const run = async (): Promise<Assertion[]> => {
     //  신호를 **안 넘기는** 변이(`repliedSession` → `null`)가 2,812건을 통과했다 —
     //  이음매를 하나로 모으면 «그 이음매에 값이 들어오는가» 가 새 사각이 된다.
     //  (3R 에서 카드 헤더 클릭이 같은 이유로 새 나갔다: 이음매는 모았는데 입구를 안 봤다.)
-    const signalPassed = /replyAndRecord\([\s\S]{0,320}?\{\s*\n\s*repliedSession,/.test(tg);
+    //  ★2026-09-05 개정: 종전엔 `repliedSession,` 이라는 **문장 모양**을 봤다. 그래서
+    //   ①호출부가 값을 좁히지 않고 원값을 넘기는 진짜 결함은 못 보고(적대 검토 P2)
+    //   ②판정을 순수 함수로 꺼내는 정당한 리팩터에는 빨간불을 냈다. 검사가 이름을 보면
+    //   이름만 지킨다. 지금은 «무엇이든 **좁혀진 값**이 넘어가는가» 를 본다.
+    //  ★주석에 걸리지 않게 **코드만** 본다 — 첫 판은 `{` 다음에 바로 `repliedSession:` 이
+    //   오는 모양을 봐서, 그 사이에 설명 주석을 한 줄 넣자 «미전달» 로 오판했다.
+    //   («검사 대상은 마크업이지 그걸 설명하는 글이 아니다» — 같은 부류를 또 저질렀다.)
+    const tgCode = tg.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const signal = /replyAndRecord\([\s\S]{0,360}?repliedSession:\s*([A-Za-z_$][\w$]*)/
+      .exec(tgCode);
+    const passedName = signal?.[1] ?? "";
+    // 원값(`repliedSession`)을 그대로 넘기면 «매핑이 있다» 가 이유가 된다 — 그게 P2 였다.
+    const narrowed = passedName !== "" && passedName !== "repliedSession";
     out.push({
-      name: "★★답장 신호가 실제로 송신 이음매까지 **넘어간다** — 안 넘기면 라벨 판정이 제자리에 있어도 영영 발동하지 않는다",
-      ok: signalPassed,
-      got: signalPassed ? "핸들러가 repliedSession 을 넘김" : "★신호 미전달(라벨이 죽는다)",
+      name: "★★답장 신호가 송신 이음매까지 **넘어가되, 좁혀진 값**으로 간다 — 안 넘기면 라벨이 영영 안 뜨고, 원값을 넘기면 갈리지도 않았는데 매번 뜬다",
+      ok: narrowed,
+      got:
+        passedName === ""
+          ? "★신호 미전달(라벨이 죽는다)"
+          : passedName === "repliedSession"
+            ? "★원값 전달 — 바인딩만 있으면 답글마다 라벨이 붙는다"
+            : `좁혀진 값 전달: repliedSession: ${passedName}`,
     });
   }
 

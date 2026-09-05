@@ -10,6 +10,14 @@
           안에서 나중에 `display` 를 다시 적는 자리가 실제로 있다), 「숨기라고 했으면
           숨는다」는 예외가 없는 계약이다. */
       [hidden] { display: none !important; }
+      /* ★이 버튼의 기본 숨김은 **속성이 아니라 CSS** 다 (2026-09-05 적대 검토 P1).
+         종전엔 HTML 에 `hidden` 을 달아 숨기고 모바일 규칙이 그걸 «켜는» 구조였다 — 즉
+         `hidden` 을 「숨김」이 아니라 「기본은 꺼짐, CSS 가 켠다」로 쓴 것이다. 바로 위
+         전역 규칙을 넣자 그 켜기가 통째로 졌고, **폰에서 상세로 들어가면 목록으로
+         돌아오는 버튼이 사라졌다**(빈 46px 띠만 남음). 고치던 결함의 거울상이었다.
+         ★그리고 이 기본값은 **최상위**여야 한다 — 모바일 미디어쿼리 안에 두면 데스크톱에서
+         속성도 규칙도 없이 그냥 보인다(첫 수정에서 실제로 그랬다). 켜는 쪽만 모바일이다. */
+      #wb-detail-back { display: none; }
       /* 항상 보이는 스크롤바 — macOS 기본(스크롤 시에만 표시=오버레이 자동숨김)을 우회해
          채팅(#stream)·스크롤 패널(사이드바·상세·드로어·잡목록)에서 스크롤바가 늘 보이게.
          WebKit(Chrome/Edge/Safari) 커스텀 + Firefox scrollbar-* 폴백. 다크테마 색. */
@@ -1722,7 +1730,33 @@
           font-weight:700; box-shadow:var(--shadow); cursor:pointer; }
         /* 모바일 — 얇은 헤더 바(☰ 드로어 버튼 + 브랜드 + 상태). 풀 브랜딩(sub·이벤트수)만 숨김.
            탭바 제거, 네비는 ☰ 드로어. 콘텐츠는 헤더 아래로 깔끔히 시작(플로팅 ☰ 가리는 문제 해소). */
-        header { position:sticky; top:0; z-index:20; height:46px; padding:0 10px; } header .sub, header .meter { display:none; }
+        header { position:sticky; top:0; z-index:20; height:46px; padding:0 10px; gap:8px; } header .sub, header .meter { display:none; }
+        /* ★gap 도 모바일에선 좁힌다 — 14px × 요소 사이 5곳 = 70px 이고, 320px 화면에선
+           그것만으로 넘쳤다(실측 333/320). 데스크톱 14px 은 그대로다. */
+        /* ★헤더는 **한 줄**이다 — 줄어드는 칸은 `.spacer` 하나뿐이고 나머지는 안 줄어든다
+           (2026-09-05 정태님 신고: «티구클로 타이틀이 세로로 나온다»).
+           원인은 컴포저 때와 같다: `.brand`·`.live` 가 `flex-shrink:1` 이라, 칸이 모자라면
+           **거기서** 압력을 받아 min-content 로 찌그러진다. 그리고 한국어의 min-content 는
+           **한 글자**라 글자가 세로로 선다. 실측(375px, 업데이트 칩이 뜬 상태):
+           brand 82×49 · live 46×39 — 둘 다 줄바꿈.
+           ★평소엔 안 보였다 — **업데이트 칩이 뜬 화면에서만** 폭이 모자랐다. 그래서
+            로컬에서 재현이 안 됐고, 칩을 강제로 띄워서야 잡혔다. */
+        header > *:not(.spacer) { flex: none; }
+        header .brand, header .live { white-space: nowrap; }
+        /* ★그래도 폭이 모자라면 **무엇을 접을지 우리가 정한다**(안 정하면 브라우저가
+           브랜드를 접는다). 접는 것은 연결 상태 «글자» 다 — 색 점이 같은 사실을 이미
+           말하고 있고, 브랜드는 정체성이라 접으면 안 된다.
+           ★`display:none` 이 아니라 **화면에서만 감춘다** — 스크린리더는 계속 읽는다
+            (모양만 줄이고 의미는 안 줄인다: 정지 버튼 때와 같은 규칙). */
+        header .live #conn-text {
+          position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+          overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0;
+        }
+        /* ★그래도 모자라면 **낱말**을 접는다 — 뜻은 `aria-label`·`title` 이 지킨다
+           (정지 버튼 때와 같은 규칙: 모양만 줄이고 의미는 안 줄인다). 개수 배지는 남는다.
+           실측: 이걸 안 접으면 375px 에서 384px 가 필요해 **페이지가 가로로 스크롤**된다 —
+           세로 글자를 고치려다 가로 스크롤을 만드는 셈이라, 여기서 자리를 낸다. */
+        header #bg-toggle .bg-word { display:none; }
         header .brand { font-size:0.9375rem; }
         header .brand .brand-icon { width:28px; height:28px; }
         /* 백그라운드 버튼(mobile-nav.js 가 헤더로 이동) — 컴팩트. */

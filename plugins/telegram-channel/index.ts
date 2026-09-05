@@ -14,7 +14,7 @@ import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
 import { getPaths } from "../../src/core/paths.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { getEventBus } from "../../src/core/eventbus.js";
-import { resolveSessionId } from "../../src/core/threadkey.js";
+import { resolveSessionId, routedReplySession } from "../../src/core/threadkey.js";
 import { getMostRecentTelegramChatId, getThreadName } from "../../src/store/sessions.js";
 import {
   findSessionForOutboundMessage,
@@ -776,12 +776,17 @@ export default class TelegramChannel implements Channel {
           : findSessionForOutboundMessage("telegram", chatId, repliedMsgId);
       const boundSession = resolveSessionId("telegram", chatId);
       const sessionId = repliedSession ?? boundSession;
-      // ★**갈렸을 때만** 로그한다 (2026-09-04). 인입 응답도 기록하게 되면서 평소 답글에도
-      //  매핑이 잡히는데, 그건 대개 이 대화가 원래 묶인 세션이라 «라우팅» 이 아니다.
-      //  조건을 안 좁히면 매 답글마다 같은 줄이 찍혀 배경 소음이 된다.
-      if (repliedSession !== null && repliedSession !== boundSession) {
+      // ★«답장이 세션을 **갈랐나**» — 판정은 **여기 한 번**이다 (2026-09-05 적대 검토 P2).
+      //  인입 응답도 기록하게 되면서 평소 답글에도 매핑이 잡히는데, 그건 대개 이 대화가
+      //  원래 묶인 세션이라 «라우팅» 이 아니다.
+      //  ★종전엔 이 조건이 **로그에만** 있었고 라벨은 `repliedSession` 원값을 받았다.
+      //   그래서 양방향으로 틀렸다: 텔레그램이 `/sessions use` 로 비기본 세션에 묶인
+      //   사용자는 **답글마다 상시 라벨**을 받았고(갈리지도 않았는데), 정작 갈린 순간엔
+      //   조용했다. 같은 판단이 두 곳에 있으면 한쪽만 좁혀진다 — 그래서 합친다.
+      const routedSession = routedReplySession(repliedSession, boundSession);
+      if (routedSession !== null) {
         console.log(
-          `telegram: 답장 → 발원 세션으로 라우팅 (message_id=${repliedMsgId} session=${repliedSession})`,
+          `telegram: 답장 → 발원 세션으로 라우팅 (message_id=${repliedMsgId} session=${routedSession})`,
         );
       }
       // ★답장으로 세션이 갈렸으면 **답에 그 세션을 적는다** (2026-09-04 정태님 신고:
@@ -810,7 +815,9 @@ export default class TelegramChannel implements Channel {
             chatId,
             out,
             {
-              repliedSession,
+              // ★갈렸을 때만 넘긴다 — 매핑이 있다는 사실이 아니라 «세션이 갈렸다» 가
+              //  라벨의 이유다.
+              repliedSession: routedSession,
               ...(opts?.replyToTrigger === true
                 ? { replyToMessageId: ctx.message.message_id }
                 : {}),

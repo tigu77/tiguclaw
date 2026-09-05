@@ -122,6 +122,37 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★선언한 브리지가 **전부 등록에 도달하나** (2026-09-05 적대 검토) ────────
+    //  사고: 문을 하나로 접으면서 «항상 켜지는 여덟» 이 배열 리터럴이 됐다. 그런데
+    //  거기서 `projectBridge,` **한 줄만 지워도** 2,902건이 초록이었다 — codex 에서
+    //  프로젝트 도구가 통째로 사라지는데 아무도 안 본다.
+    //  ★접기 전엔 한 브리지를 잃으려면 선언·지도·목록 **세 곳**을 지워야 했다(부분
+    //   삭제는 반쪽이 남아 티가 났다). 접은 뒤엔 배열 한 줄이 전부다 — 게이트는 그대로인데
+    //   **표면이 3배 얇아졌다.** 접기 자체는 옳았지만(19곳 대조 결과 차이 없음),
+    //   얇아진 만큼 그물을 대야 한다.
+    //  ★이름을 열거하지 않는다: 선언(`const XxxBridge =`)에서 **파생**하고, 그 이름이
+    //   `registerBridgeTools(` 에 도달하는지 본다. 새 브리지를 더하면 저절로 대상이 된다.
+    const declared = [...bare.matchAll(/const ([a-zA-Z]+Bridge)\s*=/g)].map((m) => m[1] ?? "");
+    const unregistered = declared.filter((n) => {
+      // ★claim 경로는 **일부러 이 문을 안 쓴다** — 플러그인·외부 MCP 는 «먼저 잡은 쪽이
+      //  갖는다»(`claimToolNames`)가 더 붙어 모양이 다르고, 다른 것을 같게 만들면 가로채기
+      //  방지선이 사라진다. 이름으로 빼지 않고 **그 함수를 지나는가**로 판정한다.
+      if (new RegExp(`claimToolNames\\([^)]*\\b${n}\\b`).test(bare)) return false;
+      // 직접 인자로 넘기거나, `registerBridgeTools` 를 도는 배열 안에 있으면 도달이다.
+      if (new RegExp(`registerBridgeTools\\(\\s*${n}\\b`).test(bare)) return false;
+      const loops = [...bare.matchAll(/for \(const \w+ of \[([\s\S]*?)\]\)\s*\{[\s\S]{0,200}?registerBridgeTools\(/g)];
+      return !loops.some((l) => new RegExp(`\\b${n}\\b`).test(l[1] ?? ""));
+    });
+    out.push(
+      assert(
+        "★★선언한 브리지가 전부 도구 등록에 도달한다 — 배열에서 한 줄이 빠지면 그 능력이 codex 에서 통째로 사라지는데 조용하다",
+        unregistered.length === 0,
+        unregistered.length === 0
+          ? `브리지 ${declared.length}개 전부 등록 도달`
+          : `★등록에 안 닿는 브리지: ${unregistered.join(", ")}`,
+      ),
+    );
+
     return out;
   },
 };

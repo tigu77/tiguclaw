@@ -55,10 +55,14 @@ export const check: RegressionCheck = {
         { kind: "failure", cause: "task_design", errorKind: "type_error", hasCause: true },
         "skill",
       ],
+      // ★이 줄은 종전에 `errorKind:"empty_response"` → `directive` 였다. 그런데
+      //  `empty_response` 는 **이 시스템이 만들지 않는 값**이라(실제 어휘는 timeout·
+      //  model_rejected·error 셋) 진리표가 없는 세계를 검사하고 있었다. 실제 어휘로
+      //  바꾸면 답은 `ask` 다 — 셋 중 어느 것도 결정성을 보장하지 못한다(적대 검토 P2).
       [
-        "설정·지침(결정적)",
-        { kind: "failure", cause: "prompt_config", errorKind: "empty_response", hasCause: true },
-        "directive",
+        "설정·지침(바깥 사정과 안 갈림)",
+        { kind: "failure", cause: "prompt_config", errorKind: "model_rejected", hasCause: true },
+        "ask",
       ],
       ["반복 규범", { kind: "segment" }, "directive"],
       ["표류", { kind: "drift" }, "directive"],
@@ -95,17 +99,40 @@ export const check: RegressionCheck = {
     // ── ③ ★바깥 사정은 규범으로 만들지 않는다 ────────────────────────────────
     //  타임아웃·한도·과부하는 우리 규칙으로 안 막힌다. 그걸 지침으로 올리면 매 턴 실리는
     //  자리에 «지킬 수 없는 규칙» 이 앉는다.
-    const flaky = ["timeout", "rate_limit", "server_is_overloaded", "ETIMEDOUT", "http_503"];
-    const leaked = flaky.filter(
+    // ★★표본을 **정본에서 뽑는다** (2026-09-05 적대 검토 P2).
+    //  종전 표본은 `["timeout","rate_limit","server_is_overloaded","ETIMEDOUT","http_503"]`
+    //  였는데 **그중 `timeout` 하나만 실재**했다. 나머지 넷은 지어낸 값이라 이 단언은
+    //  영원히 초록이었고, 그 뒤에서 진짜 어휘 둘(`model_rejected`·`error`)이 상시 규범으로
+    //  새고 있었다 — `model_rejected` 는 `usage_limit|429|rate.?limit` 을,
+    //  `error` 는 네트워크·5xx 를 흡수한다. **이 레포가 이름 붙인 «항상 초록인 가짜 검사».**
+    //  이제 `classifyTurnError` 가 실제로 내는 리터럴을 소스에서 읽는다 — 새 종류가
+    //  생기면 이 검사가 저절로 그것까지 요구한다([[feedback_hand_maintained_lists]]).
+    const runtimeSrc = readFileSync(
+      path.join(REPO, "src/core/llm-runtime/index.ts"),
+      "utf8",
+    );
+    const fnStart = runtimeSrc.indexOf("const classifyTurnError =");
+    const fnBody = runtimeSrc.slice(fnStart, runtimeSrc.indexOf("\n};", fnStart));
+    const realKinds = [...new Set([...fnBody.matchAll(/return "([a-z_]+)"/g)].map((m) => m[1] ?? ""))];
+    out.push(
+      assert(
+        "실패 종류를 정본(classifyTurnError)에서 읽는다 — 지어낸 표본은 영원히 초록이다",
+        realKinds.length >= 3,
+        `${realKinds.length}종: ${realKinds.join(", ")}`,
+      ),
+    );
+    const leaked = realKinds.filter(
       (k) =>
         suggestHome({ kind: "failure", cause: "prompt_config", errorKind: k, hasCause: true })
           .home === "directive",
     );
     out.push(
       assert(
-        "★바깥 사정(타임아웃·한도·과부하)은 상시 규범이 되지 않는다",
+        "★★실패는 자동으로 상시 규범이 되지 않는다 — errorKind 셋 중 어느 것도 결정성을 보장하지 못한다(한도·네트워크가 그 안에 섞여 있다)",
         leaked.length === 0,
-        leaked.length === 0 ? `${flaky.length}종 전부 ask` : `★규범으로 샌 것: ${leaked.join(", ")}`,
+        leaked.length === 0
+          ? `${realKinds.length}종 전부 ask (${realKinds.join(", ")})`
+          : `★규범으로 샌 것: ${leaked.join(", ")} — 매 턴 실리는 자리에 지킬 수 없는 규칙이 앉는다`,
       ),
     );
 
@@ -121,6 +148,30 @@ export const check: RegressionCheck = {
         `싣는 파일 ${carriers.length}개: ${carriers.join(", ")}`,
       ),
     );
+    // ★★호출부가 원인을 **지어내지 않는다** (2026-09-05 적대 검토 P5).
+    //  판정 함수엔 «모르면 ask» 가 있는데 **호출부에서 뚫렸다**: 강등 경로 둘이
+    //  `cause:"prompt_config", hasCause:true` 를 **상수로** 넘겨, 하나는 방금 실패한
+    //  일("SELF_GROWTH.md 로 올려라")을 다음 할 일로 싣고, 하나는 «불확실해서 내렸다»
+    //  면서 확신이 필요한 자리를 가리켰다. 순수 함수를 재는 것만으로는 안 보인다 —
+    //  이번 릴리스가 반복해서 맞은 부류다(«함수는 재는데 배선은 안 잰다»).
+    const fabricated = files
+      .map((f) => [f, readFileSync(path.join(PLUGIN, f), "utf8").replace(/^\s*\/\/.*$/gm, "")] as const)
+      .filter(([, src]) => /suggestHome\(\{[^}]*hasCause:\s*true[^}]*\}\)/.test(src))
+      .filter(([, src]) =>
+        // 상수 `cause:"..."` 와 상수 `hasCause:true` 가 **같은 호출 안에** 있으면 지어낸 것이다.
+        /suggestHome\(\{[^}]*cause:\s*"[a-z_]+"[^}]*hasCause:\s*true[^}]*\}\)/.test(src),
+      )
+      .map(([f]) => f);
+    out.push(
+      assert(
+        "★호출부가 원인을 상수로 지어내지 않는다 — 판정 함수의 «모르면 ask» 는 호출부에서 뚫린다",
+        fabricated.length === 0,
+        fabricated.length === 0
+          ? `${files.length}개 파일 · 상수 원인 0`
+          : `★지어낸 파일: ${fabricated.join(", ")} — cause 와 hasCause:true 가 한 호출에 리터럴로 박혔다`,
+      ),
+    );
+
     const strays = files.filter((f) => {
       const src = readFileSync(path.join(PLUGIN, f), "utf8").replace(/^\s*\/\/.*$/gm, "");
       // 자리 문구를 손으로 적은 흔적 — 판정이 두 벌이 되는 신호.

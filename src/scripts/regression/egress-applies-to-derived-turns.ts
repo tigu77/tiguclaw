@@ -23,9 +23,12 @@
 import { readFile } from "node:fs/promises";
 import { __resetPathsCache } from "../../core/paths.js";
 import { setEgressChannels } from "../../core/settings.js";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const run = async (): Promise<Assertion[]> => {
@@ -206,6 +209,49 @@ const run = async (): Promise<Assertion[]> => {
         : "★귀속이 빠졌다 — 텔레그램 답장이 원래 세션을 못 찾는다(2026-08-11 사고)",
     });
   }
+
+  // ── ★파생 목록의 **사본**이 없다 (2026-09-05 적대 검토) ─────────────────────
+  //  사고: 이 목록을 손으로 든 자리가 둘 있었고 **둘 다 이미 갈려 있었다** —
+  //   `health-sweep.ts` 가 넷만 적어 `scheduler:` 를 빠뜨렸고(스케줄 턴이 실패하면
+  //   «내 대화가 죽었다» 로 보고됐다 — 그 파일 주석이 막겠다고 적어둔 바로 그 사고),
+  //   `history-activities.ts` 는 셋만 적어 스케줄·엔드포인트 스텝이 채팅 이력에 섞였다.
+  //  ★그리고 이 성질을 **상수에서 목록을 뽑아** 검사하면 항진명제가 된다(상수에서 한
+  //   항목을 지우면 «전부 제외» 로 통과한다 — 실제로 그랬다). 그래서 반대로 본다:
+  //   **손으로 접두사를 세는 자리**를 찾는다.
+  //  ★한둘은 정당하다 — `worker-jobs.ts` 의 «잡 스레드 = worker·agent» 는 파생 전체보다
+  //   **좁은 술어**다. 셋 이상을 한 파일에서 세면 그건 «파생인가» 를 다시 구현한 것이다.
+  const DERIVED = ["worker", "agent", "scheduler", "endpoint", "gateway"];
+  const roots = ["src", "plugins", "packages"];
+  const walk = (d: string): string[] => {
+    const out: string[] = [];
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith(".")) continue;
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) out.push(...walk(full));
+      else if (/\.(ts|js)$/.test(e.name)) out.push(full);
+    }
+    return out;
+  };
+  const copies: string[] = [];
+  for (const root of roots) {
+    const dir = path.join(REPO, root);
+    for (const f of walk(dir)) {
+      const rel = path.relative(REPO, f);
+      if (rel.endsWith("core/threadkey.ts")) continue; // 정본
+      if (rel.startsWith("src/scripts/regression/")) continue; // 검사는 벡터를 적어도 된다
+      const src = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const hit = DERIVED.filter((p2) => new RegExp(`startsWith\\(["'\`]${p2}:["'\`]\\)`).test(src));
+      if (hit.length >= 3) copies.push(`${rel}(${hit.join("·")})`);
+    }
+  }
+  out.push({
+    name: "★★파생 목록을 손으로 다시 세는 자리가 없다 — 사본은 조용히 갈리고, 실제로 둘 다 갈려 있었다",
+    ok: copies.length === 0,
+    got:
+      copies.length === 0
+        ? `접두사 3개 이상을 손으로 세는 파일 0 (정본=DERIVED_THREAD_PREFIXES)`
+        : `★사본: ${copies.join(" · ")} — isDerivedThread() 를 써라`,
+  });
 
   return out;
 };

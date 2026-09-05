@@ -152,6 +152,39 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ⑦ ★그 «신호» 를 **누가 만드나** — 이름이 아니라 동작으로 (2026-09-05) ─────
+    //  ⑥은 `replyAndRecord` **안**에서 라벨에 넘기는 인자의 *이름*만 봤다. 그런데 그건
+    //  파라미터 이름이라 늘 `replied…` 였고, **호출부가 원값을 넘기는 것**은 못 봤다.
+    //  실제로 그래서 새어 나갔다: 로그는 «갈렸을 때만» 으로 좁혀놓고 라벨은 안 좁혀
+    //  ①비기본 세션에 묶인 대화는 답글마다 상시 라벨 ②정작 갈린 순간엔 침묵 — 양방향.
+    //  ★이름을 보는 검사는 이름만 지킨다. 판정을 순수 함수로 꺼냈으니 **돌려서** 본다.
+    const { routedReplySession } = await import("../../core/threadkey.js");
+    const table: Array<[string, string | null, string, string | null]> = [
+      ["묶인 세션과 같다(=안 갈렸다)", "dashboard:proj", "dashboard:proj", null],
+      ["갈렸다 — 그 세션을 낸다", "dashboard:proj", "dashboard:default", "dashboard:proj"],
+      ["기본으로 갈린 것도 «갈림»이다", "dashboard:default", "dashboard:proj", "dashboard:default"],
+      ["매핑 없음", null, "dashboard:proj", null],
+    ];
+    const bad = table.filter(([, r, b, want]) => routedReplySession(r, b) !== want);
+    out.push(
+      assert(
+        "★★라벨 신호가 «매핑이 있다» 가 아니라 «세션이 갈렸다» 로 만들어진다(진리표)",
+        bad.length === 0,
+        bad.length === 0
+          ? table.map(([n, r, b]) => `${n}→${routedReplySession(r, b) ?? "null"}`).join(" · ")
+          : `★틀린 것: ${bad.map(([n, r, b, w]) => `${n} 기대=${w ?? "null"} 실제=${routedReplySession(r, b) ?? "null"}`).join(" · ")}`,
+      ),
+    );
+    // 그리고 호출부가 **그 함수**를 쓴다(인라인으로 되돌아가면 위 진리표가 무의미해진다).
+    const usesFn = /repliedSession:\s*routedSession/.test(tg) && /routedReplySession\(/.test(tg);
+    out.push(
+      assert(
+        "호출부가 그 판정 함수를 지난다 — 인라인으로 되돌아가면 진리표가 지키는 게 없어진다",
+        usesFn,
+        usesFn ? "routedReplySession → repliedSession: routedSession" : "★인라인 판정으로 되돌아갔다",
+      ),
+    );
+
     return out;
   },
 };

@@ -266,7 +266,24 @@ flushEnvLoadLog();
 //   값도 굳히지 않는다(런타임은 첫 사용 때 다시 푼다).
 void repairRipgrepAtBoot(getPaths().home);
 
-console.log("tiguclaw daemon: starting");
+// ★부팅 첫 줄이 **무엇이 어디서 도는가**를 말한다 (2026-09-06 정태님 지적으로 추가).
+//  종전엔 `starting` 한 마디뿐이라, 원격 인스턴스(회사돌쇠·윈도우처럼 붙을 수 없는 곳)에서
+//  «지금 어느 버전이 도는가» 를 **로그만으로는 알 수 없었다.** 이 레포의 1차 진단면이
+//  로그인데(붙을 수 없는 인스턴스가 여럿이다) 그 면에 버전이 없었다.
+//  ★런타임은 **선언(env)이 아니라 실물 경로에서 파생**한다 — `TIGUCLAW_RUNTIME` 은 실행기가
+//   적어주는 값이라 실제로 무엇이 도는지와 갈릴 수 있고, 이 레포는 «선언과 실물이 갈려»
+//   데인 전례가 있다. `dist/` 에서 돌고 있으면 built 다, 누가 뭐라고 적었든.
+// ★★그리고 **진단 한 줄이 부팅을 죽일 수는 없다.** `appBuildId()` 는 `git` 을 실행하고
+//  `import.meta.url` 은 문맥에 따라 없을 수 있다(`tsx -e` 에서 실제로 undefined 였다).
+//  실패하면 옛 한 줄로 물러난다 — 배너를 못 찍는 것과 데몬이 안 뜨는 것은 격이 다르다.
+try {
+  const runtimeKind = (import.meta.url ?? "").includes("/dist/") ? "built" : "source";
+  console.log(
+    `tiguclaw daemon: starting — v${appVersion()} · ${runtimeKind} · ${appBuildId()} · node ${process.version} · pid ${process.pid}`,
+  );
+} catch {
+  console.log("tiguclaw daemon: starting");
+}
 
 // ── event-loop wedge 진단 (2026-07-03, gated: LOOP_DIAG=1) ──────────────────
 // 데몬이 매니저 실행 중 응답불능(wedge)되는 원인 규명용. event-loop lag(타이머 드리프트)
@@ -1604,6 +1621,16 @@ const serializedHandler: MessageHandler = (msg) => {
       await replyCommand(msg, text).catch(() => {});
     })();
   }
+  // @unlisted diagnose — 사용자가 할 수 있는 일이 없는 내부 진단이다(아래 근거).
+  // ★**일부러 명령 목록에 안 넣는다** (2026-09-05 정태님 지적으로 되돌림).
+  //  오늘 `commands-have-handlers` 가 «처리기는 있는데 목록에 없다» 를 보고했고, 내가 그걸
+  //  판단 없이 «목록에 추가» 로 해소해 **전 사용자 자동완성에 내부 진단이 떴다**(공개본까지
+  //  나갔다). 그 검사는 스스로 *"내부 전용 이름이 생길 수 있으므로 실패가 아니라 보고로
+  //  남긴다"* 고 적어뒀는데, 보고를 조치로 바꾼 게 잘못이다.
+  //  ★기준은 [[prompt-audit ⑧]] 이다 — «그게 있어서 사용자의 행동이 달라지나». 이 진단의
+  //   결론은 «무게가 원인 / 계정이 원인» 둘인데, 어느 쪽이든 사용자가 할 수 있는 일이
+  //   없다(대책이 우리 쪽 도구 축소·instructions 분할이다). 우리 원격 인스턴스에는 꼭
+  //   필요하고, **목록에 없어도 명령은 그대로 동작한다** — 안 보이는 것이지 없는 게 아니다.
   if (msg.text.trim() === "/diagnose") {
     publishInboundEcho(msg);
     void (async (): Promise<void> => {

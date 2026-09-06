@@ -352,7 +352,50 @@ const queryToTrigrams = (q: string): string[] => {
   return [...seen];
 };
 
-export const searchMemories = (query: string, limit = 10): Memory[] => {
+/**
+ * 검색 결과 합치기 — **살아 있는 것이 아카이브에 밀리지 않는다** (2026-09-06).
+ *
+ * 정책이 «정리는 아카이브지 삭제가 아니다» 이므로 아카이브는 **단조 증가**한다. 그런데
+ * 검색은 아카이브를 포함하고(그게 도달 경로다), 이 검색을 `retrieveContext` 가 **매 턴**
+ * 부른다. 그대로 두면 언젠가 상위 칸을 옛것이 먹고 **모델이 매 턴 옛것을 본다.**
+ *
+ * ★«언제» 는 사용자마다 다르다 — 한 기계에서 관측한 여유는 근거가 못 된다. 그래서
+ *  임계를 지켜보지 않고 **불변식**으로 막는다:
+ *   ① 아카이브는 live 가 **안 쓴 칸**만 채운다(살아 있는 것이 절대 안 밀린다).
+ *   ② 아카이브가 매칭되면 **최소 한 칸**은 준다(도달 경로가 죽지 않는다).
+ *  ②의 «1» 은 «0 이 아니다» 라는 뜻이고, 그때 밀리는 것은 live 중 **가장 약한 매칭**이다.
+ */
+export const mergeSearchHits = <T>(
+  live: readonly T[],
+  archived: readonly T[],
+  limit: number,
+): T[] => {
+  if (limit <= 0) return [];
+  const room = Math.max(0, limit - live.length);
+  if (archived.length === 0) return live.slice(0, limit);
+  if (room > 0) return [...live.slice(0, limit), ...archived.slice(0, room)];
+  // live 가 칸을 다 썼다 — 그래도 아카이브 한 칸은 남긴다(가장 약한 live 를 내린다).
+  return [...live.slice(0, Math.max(0, limit - 1)), ...archived.slice(0, Math.min(1, limit))];
+};
+
+export const searchMemories = (
+  query: string,
+  limit = 10,
+  opts?: {
+    /**
+     * 아카이브분도 찾을까. **기본 false** — `listMemories` 와 **같은 말·같은 기본값**이다.
+     *
+     * ★기본을 «제외» 로 둔 이유 (2026-09-06 정태님 지적): *"매 턴 검색에 아카이브한 게
+     *  나올 이유가 있나."* 없다 — 실행으로 확인했다. 아카이브는 검색으로 **찾히기만 하고
+     *  스스로 인덱스로 돌아오지 않는다**(되돌리는 길은 사람이 `restore` 하는 것 하나).
+     *  그러니 매 턴 자동 검색(`retrieveContext`)에 섞으면 **돌아오지도 않는데 자리만 먹고**,
+     *  «인덱스에서 내린다» 는 결정을 반쯤 무른다.
+     * ★그래서 **찾는 쪽이 옵트인**한다 — 새 자동 호출자가 깜빡하면 «안 나온다»(눈에 보임)
+     *  가 되고, «옛것이 매 턴 실린다»(안 보임) 는 안 된다. 틀리는 방향을 고른 것이다.
+     */
+    includeArchived?: boolean;
+  },
+): Memory[] => {
   const db = requireDb("searchMemories");
   const trimmed = query.trim();
   if (trimmed === "") return [];
@@ -364,18 +407,39 @@ export const searchMemories = (query: string, limit = 10): Memory[] => {
   const matchExpr = grams
     .map((g) => `"${g.replace(/"/g, '""')}"`)
     .join(" OR ");
-  // ★무변경(계약 §3.3) — archived 필터 없음. FTS 에 아카이브 행이 그대로 남아
-  // always-on 에서 밀린 콜드 메모리도 검색으로 계속 도달(findability 보증).
-  const rows = db
-    .prepare(
-      `SELECT m.id, m.type, m.name, m.description, m.body, m.created_at, m.updated_at
-       FROM memories_fts f
-       JOIN memories m ON m.id = f.rowid
-       WHERE memories_fts MATCH ?
-       ORDER BY bm25(memories_fts)
-       LIMIT ?`,
-    )
-    .all(matchExpr, limit) as MemoryRow[];
+  // ★아카이브도 계속 검색된다(계약 §3.3) — always-on 에서 밀린 콜드 메모리의 도달 경로다.
+  //  **그런데 그것만으로는 오래 못 간다** (2026-09-06 정태님 지적으로 보강).
+  //
+  //  이 함수는 `retrieveContext` 가 **매 턴** 부른다. 아카이브는 정리할수록 늘고
+  //  (정책이 «지우지 않는다» 이므로 단조 증가한다) 지우지도 않으므로, 언젠가 상위 N칸을
+  //  아카이브가 먹는다 = **모델이 매 턴 옛것을 본다.** 실측(2026-09-06 이 기계): 230건 중
+  //  아카이브 53건이고 어휘 넷으로 재보니 매칭에 아카이브 0건 — **지금은** 여유가 있다.
+  //  ★그런데 «언제 그 날이 오나» 는 사용자마다 다르다. 한 대에서 관측한 여유를 근거로
+  //   두면, 다른 사용자에게는 이미 온 뒤다. 그래서 **임계를 지켜보지 않고 구조로 막는다.**
+  //
+  //  불변식 둘 (`mergeSearchHits` 가 정본):
+  //   ① **살아 있는 것이 아카이브에 밀리지 않는다** — 아카이브는 live 가 안 쓴 칸만 채운다.
+  //   ② **아카이브가 매칭되면 최소 한 칸은 준다** — 안 그러면 «검색으로 계속 찾힌다» 는
+  //      아카이브의 존재 이유가 live 가 많아지는 순간 조용히 죽는다.
+  //  ★상수는 «1» 하나이고 그건 «0 이 아니다» 라는 뜻이다 — 직감으로 고른 임계가 아니다.
+  const pick = (archived: boolean, n: number): MemoryRow[] =>
+    n <= 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT m.id, m.type, m.name, m.description, m.body, m.created_at, m.updated_at
+             FROM memories_fts f
+             JOIN memories m ON m.id = f.rowid
+             WHERE memories_fts MATCH ?
+               AND m.archived_at IS ${archived ? "NOT NULL" : "NULL"}
+             ORDER BY bm25(memories_fts)
+             LIMIT ?`,
+          )
+          .all(matchExpr, n) as MemoryRow[]);
+  const rows =
+    opts?.includeArchived === true
+      ? mergeSearchHits(pick(false, limit), pick(true, limit), limit)
+      : pick(false, limit);
   // ★검색 히트는 **세지 않는다** — 낱말로 도달했다는 건 인덱스 상주가 필요 없다는 증거다.
   touchSeen(db, rows.map((r) => r.id));
   return rows.map(rowToMemory);
@@ -426,11 +490,38 @@ export const listMemories = (opts?: {
 // (그건 항상 updated_at 범프). 없는 name → undefined(no-op).
 export const archiveMemory = (name: string): Memory | undefined => {
   const db = requireDb("archiveMemory");
+  // ★**이미 내려간 것은 시각을 안 덮는다** (2026-09-06). 종전엔 조건 없이 재-스탬프해서,
+  //  전량을 훑는 백필이 한 번 돌자 **46건의 «언제 내려갔나» 가 전부 그날로 덮였다**(실측).
+  //  아카이브의 값은 «되돌릴 수 있다» 인데, 그 판단 재료인 시각을 정리 작업이 지운다.
+  //  [[project_hotpath_bound_preserve_record]] 「정리≠삭제 · 레코드 보존」.
+  //  ★부수 효과 하나 더: 반환값이 «실제로 내린 것» 만 뜻하게 돼, 호출부의 개수가
+  //   «훑은 수» 가 아니라 «내린 수» 가 된다(로그가 사실을 말한다).
   const info = db
-    .prepare(`UPDATE memories SET archived_at = ? WHERE name = ?`)
+    .prepare(`UPDATE memories SET archived_at = ? WHERE name = ? AND archived_at IS NULL`)
     .run(Date.now(), name);
   if (info.changes === 0) return undefined;
   return getMemoryRaw(db, name);
+};
+
+/**
+ * **접근 카운터를 0으로** — 아카이브된 자가성장 산출물의 «미열람» 신호 복구용 (2026-09-05).
+ *
+ * ★왜 필요한가: `/status` 의 «미열람» 은 `access_count = 0` 으로 센다. 그런데 자가성장이
+ *  자기 산출물을 `getMemory` 로 읽던 버그(같은 날 고침) 때문에 옛 산출물의 카운터가 이미
+ *  부풀어 있다 — 실측: 성장 산출물 46건 중 **45건이 «읽음»으로 잡혀** `/status` 가
+ *  «미열람 1» 이라고 말한다. 사람이 읽은 적이 없는데 도달 신호가 죽은 것이다.
+ * ★아카이브된 것만 대상이다 — 인덱스 정렬(`access_count DESC`)에 안 쓰이므로 부작용이 없다.
+ *  살아 있는 메모리의 카운터는 사람의 실제 사용 기록이라 **건드리지 않는다.**
+ */
+export const resetArchivedMemoryAccess = (name: string): boolean => {
+  const db = requireDb("resetArchivedMemoryAccess");
+  const info = db
+    .prepare(
+      `UPDATE memories SET access_count = 0, last_accessed = NULL
+       WHERE name = ? AND archived_at IS NOT NULL`,
+    )
+    .run(name);
+  return info.changes > 0;
 };
 
 export const unarchiveMemory = (name: string): Memory | undefined => {

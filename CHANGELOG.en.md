@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-09-06
+
+### Fixed
+
+- **The header no longer stacks letters vertically on a phone.** With an update chip
+  showing, the brand and status labels were squeezed to one character per line.
+
+### Changed
+
+- `/diagnose` no longer appears in the command list. It is an internal check whose
+  result — a backend weight or account question — you cannot act on. The command still
+  works if you type it.
+- Self-growth proposals you restore to the memory index now stay there. A recurrence or
+  a daemon restart used to quietly take them back down, and `/status` reported almost
+  none of them as unread.
+- Memories you tidied away no longer come back into the assistant's per-turn lookup.
+  They are still found when it searches for them — tidying takes them out of the
+  always-on list, not out of reach.
+
+### Added
+
+- The daemon's first log line now says which version, runtime and build it is running.
+  On a machine you cannot attach to, the log alone answers "what is running there?".
+- Claude subscription limits are read **before** you hit them — which window is binding,
+  when it resets, and whether you are near it. Previously this was only visible after a
+  request was refused.
+
+
 ## [0.49.0] - 2026-09-05
 
 ### Added
@@ -356,7 +384,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...HEAD
+[0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0

@@ -92,6 +92,71 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ⑤ ★헤더도 한 줄이다 (2026-09-05 정태님: «티구클로 타이틀이 세로로 나온다») ──
+    //  같은 병이 헤더에 남아 있었다. `.brand`·`.live` 가 `flex-shrink:1` 이라 칸이 모자라면
+    //  거기서 압력을 받아 min-content(=한국어 한 글자)로 찌그러진다.
+    //  실측(375px, 업데이트 칩이 뜬 상태): brand 82×49 · live 46×39 — 둘 다 세로.
+    //  ★평소엔 안 보였다 — **업데이트 칩이 뜬 화면에서만** 폭이 모자랐다. 그래서 로컬
+    //   재현이 안 됐고, 칩을 강제로 띄워서야 잡혔다. «안 보인다≠없다».
+    //  ★그리고 고칠 때 **가로 스크롤로 바꿔치기하지 않았는지**를 같이 못 박는다 —
+    //   nowrap 만 걸었더니 375px 에서 384px 가 필요해 페이지가 가로로 스크롤됐다.
+    //   그래서 낱말 접기(뜻은 aria-label·title)와 모바일 gap 축소가 짝으로 들어갔다.
+    // ★★**주석을 걷은 본문을 본다** (2026-09-06 적대 검토 G1). 이 파일의 ①~④는 `bare`
+    //  (주석 제거본)를 쓰는데 여기만 원본 `css` 를 봤다. 그래서 **네 규칙을 전부 CSS
+    //  주석으로 감싸도 10/10 초록**이었다 — 그 상태에서 CDP 로 재면 브랜드가 48×87 로
+    //  다시 서고 가로 스크롤(419 > 375)까지 난다. 정태님이 신고한 그 화면이 그대로
+    //  재현되는데 게이트는 만점이었다. [[feedback_gate_must_actually_run]] 와 같은 기제,
+    //  반대 방향(그때는 주석 안의 태그를 세서 상시 빨강이었다).
+    const mob = bare.slice(bare.indexOf("@media (max-width: 900px)"));
+    const onlySpacerShrinks = /header > \*:not\(\.spacer\) \{[^}]*flex:\s*none/.test(mob);
+    out.push(
+      assert(
+        "★헤더에서 줄어드는 칸은 `.spacer` 하나뿐이다 — 아니면 브랜드가 압력을 받아 한 글자씩 선다",
+        onlySpacerShrinks,
+        onlySpacerShrinks ? "header > *:not(.spacer) { flex:none }" : "★없음 — 텍스트 칸이 min-content 로 찌그러진다",
+      ),
+    );
+    const brandNowrap = /header \.brand,\s*header \.live \{[^}]*white-space:\s*nowrap/.test(mob);
+    out.push(
+      assert(
+        "브랜드·상태 글자가 줄바꿈하지 않는다",
+        brandNowrap,
+        brandNowrap ? "white-space:nowrap" : "★없음",
+      ),
+    );
+    // ★자리를 낸 쪽 — 이게 없으면 위 두 규칙이 가로 스크롤을 만든다(실측 384 > 375).
+    const roomMade =
+      /header #bg-toggle \.bg-word \{\s*display:none/.test(mob) &&
+      /header \{[^}]*gap:8px/.test(mob);
+    out.push(
+      assert(
+        "★★자리를 내주는 쪽이 같이 있다 — 없으면 세로 글자를 **가로 스크롤로 바꿔치기**한다",
+        roomMade,
+        roomMade ? "낱말 접기 + gap 8px" : "★없음 — nowrap 만 걸면 375px 에서 384px 가 필요하다",
+      ),
+    );
+    // 접은 낱말의 뜻이 살아 있나(모양만 줄이고 의미는 안 줄인다).
+    const indexHtml = readFileSync(path.join(REPO, "packages/dashboard/index.html"), "utf8");
+    const bgAria =
+      /id="bg-toggle"[^>]*aria-label="[^"]+"/.test(indexHtml) &&
+      /id="bg-toggle"[^>]*title="[^"]+"/.test(indexHtml);
+    out.push(
+      assert(
+        "접은 낱말의 뜻이 aria-label·title 에 남아 있다",
+        bgAria,
+        bgAria ? "aria-label·title 유지" : "★뜻이 사라졌다",
+      ),
+    );
+    // 연결 상태 글자는 **지우지 않고** 화면에서만 감춘다(스크린리더는 읽는다).
+    const srOnly = /header \.live #conn-text \{[^}]*clip-path:\s*inset\(50%\)/.test(mob);
+    out.push(
+      assert(
+        "연결 상태 글자는 display:none 이 아니라 화면에서만 감춘다 — 뜻을 지우지 않는다",
+        srOnly,
+        srOnly ? "clip-path 로 시각적 숨김" : "★display:none 이면 스크린리더도 못 읽는다",
+      ),
+    );
+
     return out;
   },
 };

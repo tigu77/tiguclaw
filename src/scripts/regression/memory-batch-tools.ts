@@ -80,7 +80,10 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ② 아카이브는 삭제가 아니다 — 묶음으로 해도 검색은 도달한다 ──────────────
   {
-    const hits = searchMemories("batch-beta", 8).map((m) => m.name);
+    // ★`includeArchived: true` 로 묻는다 (2026-09-06). 기본이 «제외» 로 바뀌었다 —
+    //  매 턴 자동 검색에 아카이브가 나올 이유가 없어서다. 여기서 확인하려는 성질은
+    //  «아카이브는 삭제가 아니다 = **찾으면 나온다**» 이므로 명시적으로 찾는 게 맞다.
+    const hits = searchMemories("batch-beta", 8, { includeArchived: true }).map((m) => m.name);
     out.push(
       assert(
         "★묶음 아카이브 뒤에도 검색으로 도달한다(삭제가 아니다)",

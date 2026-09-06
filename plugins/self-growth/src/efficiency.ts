@@ -4,6 +4,7 @@ import {
   listMemories,
   archiveMemory,
   listColdMemoriesForArchive,
+  resetArchivedMemoryAccess,
 } from "../../../src/store/memory.js";
 import {
   REFLECTION_TTL_DAYS,
@@ -265,16 +266,95 @@ export const archiveColdObservations = (
  * ★사용자가 일부러 되올린 것(승격)은 **다시 안 내린다**: 승격은 `source: user` 로
  *  SELF_GROWTH.md 에 사는 것이지 메모리 인덱스로 올리는 게 아니다.
  */
-export const archiveGrowthOutputsOnce = (): number => {
+/**
+ * 이 스윕이 **이미 돌았나** — `last-review` 와 같은 자리·같은 방식의 표식 (2026-09-05).
+ *
+ * ★이름은 `…Once` 인데 **매 부팅 돌고 있었다**(생성자에서 호출). 그래서 사용자가 일부러
+ *  되올린 제안이 **재시작 때마다 조용히 다시 내려갔다** — 바로 아래 주석이 *"승격은 다시
+ *  안 내린다"* 고 약속하는 그 동작이다(적대 검토가 실행으로 잡았다).
+ *  이건 백필(옛 산출물 정리)이라 정의상 한 번이면 끝이고, 그 뒤 인덱스에 올라와 있는
+ *  성장 산출물은 **사람이 올린 것**뿐이다.
+ */
+const sweptMarkerFile = (): string =>
+  path.join(getPaths().commonPlugins, "self-growth", "outputs-archived");
+
+/**
+ * ★**카운터 복구는 아카이브와 다른 일이다** (2026-09-06 적대 검토 P1 로 갈랐다).
+ *
+ * 종전엔 스윕 하나가 둘을 같이 했고, 카운터 복구를 뒤늦게 붙이면서 **마커 판을 올렸다**
+ * (`outputs-archived` → `-v2`). 그런데 그러면 v0.49.0 홈이 올라올 때 **아카이브까지 다시
+ * 돈다** — 사용자가 되올린 제안이 되돌려지고, 사람이 읽은 기록(access_count)까지 0으로
+ * 지워진다. 어제 «승격은 다시 안 내린다» 고 고친 그 동작을, 오늘 판 올림이라는 탈출구로
+ * 내가 되살린 것이다(실행으로 확인: 인덱스 true → false).
+ *
+ * ★그래서 **일마다 마커를 따로 둔다.** 아카이브 백필은 한 번 돌았으면 끝이고(그 홈에서
+ *  다시 돌면 승격을 되돌린다), 카운터 복구는 그와 무관하게 한 번 더 돌아야 했다.
+ *  두 일을 한 마커로 묶으면 «둘 중 하나 때문에 판을 올리는 순간 나머지도 다시 돈다».
+ */
+const accessResetMarkerFile = (): string =>
+  path.join(getPaths().commonPlugins, "self-growth", "access-reset-v1");
+
+/**
+ * 부푼 접근 카운터를 되돌린다 — **아카이브된 성장 산출물만**, 1회.
+ *
+ * 그 값은 사람이 읽어서가 아니라 자가성장이 자기 것을 `getMemory` 로 세던 버그(2026-09-05
+ * 수정)가 만든 것이다. 안 되돌리면 `/status` 의 «미열람» 이 죽은 채로 남는다
+ * (실측: 라이브 46건 중 45건이 «읽음» 으로 잡혀 «미열람 1» 이라고 답했다).
+ * ★**아카이브 상태는 안 건드린다** — 인덱스에 올라와 있는 것은 사용자가 올린 것이다.
+ */
+export const resetGrowthAccessOnce = (): number => {
   let n = 0;
   try {
-    for (const m of listMemories({ limit: 10_000 })) {
+    try {
+      readFileSync(accessResetMarkerFile(), "utf8");
+      return 0;
+    } catch {
+      /* 첫 실행 */
+    }
+    for (const m of listMemories({ limit: 10_000, includeArchived: true })) {
       if (!m.name.startsWith(`feedback_${SELF_NAMESPACE}_`) && !m.name.startsWith(`${SELF_NAMESPACE}_`)) {
         continue;
       }
+      if (resetArchivedMemoryAccess(m.name)) n += 1;
+    }
+    mkdirSync(path.dirname(accessResetMarkerFile()), { recursive: true });
+    writeFileSync(accessResetMarkerFile(), String(Date.now()), "utf8");
+    if (n > 0) console.log(`self-growth: 미열람 신호 복구 ${n}건(옛 카운터 오염). 1회만 돕니다.`);
+  } catch (e) {
+    console.error(`self-growth: resetGrowthAccessOnce failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return n;
+};
+
+export const archiveGrowthOutputsOnce = (): number => {
+  let n = 0;
+  try {
+    try {
+      readFileSync(sweptMarkerFile(), "utf8");
+      return 0; // 이미 돌았다 — 여기서 또 돌면 사용자 승격을 되돌린다.
+    } catch {
+      /* 표식 없음 = 첫 실행 */
+    }
+    // ★**아카이브분까지 본다** (2026-09-06 라이브 배포에서 드러남). `listMemories` 기본은
+    //  `archived_at IS NULL` 이라, 이미 내려가 있는 산출물은 **아예 안 보인다.** 그런데
+    //  복구가 필요한 카운터는 정확히 그것들이다 — 실측: 라이브 성장 산출물 46건이 **전부
+    //  아카이브** 상태였고 미열람은 1건뿐(45건이 옛 버그로 부풀어 있음)이었는데, 첫 판은
+    //  0건을 보고 표식만 남겨 **다시는 안 돌게** 만들었다. 격리 홈 테스트에선 내가 직접
+    //  unarchive 해서 만든 상황이라 이 갈래가 안 보였다 — **실데이터로 돌려서야 나왔다.**
+    for (const m of listMemories({ limit: 10_000, includeArchived: true })) {
+      if (!m.name.startsWith(`feedback_${SELF_NAMESPACE}_`) && !m.name.startsWith(`${SELF_NAMESPACE}_`)) {
+        continue;
+      }
+      // ★카운터 복구는 여기서 안 한다 — `resetGrowthAccessOnce` 로 갈랐다(위 주석 참조).
       if (archiveMemory(m.name) !== undefined) n += 1;
     }
-    if (n > 0) console.log(`self-growth: 성장 산출물 ${n}건을 인덱스에서 내렸습니다(검색·복원 가능).`);
+    mkdirSync(path.dirname(sweptMarkerFile()), { recursive: true });
+    writeFileSync(sweptMarkerFile(), String(Date.now()), "utf8");
+    if (n > 0) {
+      console.log(
+        `self-growth: 성장 산출물 ${n}건을 인덱스에서 내렸습니다(검색·복원 가능). 이 정리는 1회만 돕니다.`,
+      );
+    }
   } catch (e) {
     console.error(`self-growth: archiveGrowthOutputsOnce failed: ${e instanceof Error ? e.message : String(e)}`);
   }

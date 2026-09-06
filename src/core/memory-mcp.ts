@@ -105,7 +105,9 @@ const searchMemoryTool = tool(
     limit: z.number().int().min(1).max(20).optional(),
   },
   async (args) => {
-    const hits = searchMemories(args.query, args.limit ?? 8);
+    // ★명시적으로 «찾는» 자리라 아카이브를 포함한다 — 그게 아카이브의 존재 이유다
+    //  (매 턴 자동 검색은 기본 제외. `searchMemories` 주석 참조).
+    const hits = searchMemories(args.query, args.limit ?? 8, { includeArchived: true });
     return okJson({
       ok: true,
       count: hits.length,

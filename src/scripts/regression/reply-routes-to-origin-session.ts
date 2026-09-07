@@ -237,6 +237,27 @@ const run = async (): Promise<Assertion[]> => {
     //  ★주석에 걸리지 않게 **코드만** 본다 — 첫 판은 `{` 다음에 바로 `repliedSession:` 이
     //   오는 모양을 봐서, 그 사이에 설명 주석을 한 줄 넣자 «미전달» 로 오판했다.
     //   («검사 대상은 마크업이지 그걸 설명하는 글이 아니다» — 같은 부류를 또 저질렀다.)
+    // ── ★«조회» 쪽 배선 (2026-09-06) ─────────────────────────────────────
+    //  위 단언들은 조회 **함수**를 잘 검사한다. 그런데 **핸들러가 그 함수를 부르는지**는
+    //  아무도 안 봤다 — 변이로 확인했다: 핸들러의 `findSessionForOutboundMessage(...)` 를
+    //  `null` 로 바꿔도 **2,928건이 초록**이었다. 그 상태가 정확히 2026-06-11~09-04 에
+    //  답장 라우팅이 **한 번도 안 걸렸던** 그 상태다(로그 0건).
+    //  ★어제 «기록» 절반을 고쳐 살렸는데 «조회» 절반이 무방비면 같은 침묵이 그대로 돌아온다.
+    //  ★이 레포가 반복해서 맞는 부류다: **순수 함수는 재는데 배선은 안 잰다.**
+    const lookupCode = tg.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const lookupWired =
+      /repliedSession\s*=[\s\S]{0,220}?findSessionForOutboundMessage\(\s*"telegram"\s*,\s*chatId\s*,\s*repliedMsgId\s*\)/.test(
+        lookupCode,
+      );
+    out.push({
+      name: "★★핸들러가 답장 매핑을 **실제로 조회한다** — 조회를 죽이면 기록이 멀쩡해도 라우팅은 영영 안 일어난다(넉 달간 0건이던 그 상태)",
+      ok: lookupWired,
+      got: lookupWired
+        ? "repliedSession ← findSessionForOutboundMessage(telegram, chatId, repliedMsgId)"
+        : `★조회 미배선 — 대입부: ${(/repliedSession\s*=[^;]{0,120}/.exec(lookupCode)?.[0] ?? "찾지 못함").replace(/\s+/g, " ")}`,
+    });
+
+
     const tgCode = tg.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const signal = /replyAndRecord\([\s\S]{0,360}?repliedSession:\s*([A-Za-z_$][\w$]*)/
       .exec(tgCode);

@@ -104,6 +104,23 @@ export const check: RegressionCheck = {
           : `★표시 없이 숨은 처리기: ${forgotten.join(", ")} — 목록에 넣든지 @unlisted 로 이유를 적어라`,
       ),
     );
+    // ★★그리고 «목록에서 뺀 이름» 은 **예약돼 있어야 한다** (2026-09-06 적대 검토 P2).
+    //  `/diagnose` 를 자동완성에서 빼자 예약어에서도 같이 빠졌다 — 예약어가 목록에서만
+    //  파생했기 때문이다. 그러면 사용자가 같은 이름으로 커스텀 명령을 만들 수 있는데,
+    //  아웃오브밴드 매치가 먼저 잡아 그 명령은 **영원히 안 돈다**(죽은 정의).
+    //  즉 «자동완성에서 뺀다» 는 결정이 «그 이름을 남에게 연다» 로 새어 나갔다.
+    const { UNLISTED_BUILTIN_COMMANDS } = await import("../../core/entry/command-registry.js");
+    const unreserved = [...declaredUnlisted].filter((n) => !UNLISTED_BUILTIN_COMMANDS.includes(n));
+    out.push(
+      assert(
+        "★★`@unlisted` 로 숨긴 이름이 **예약돼 있다** — 안 그러면 사용자가 같은 이름을 만들 수 있고 그 명령은 영원히 안 돈다",
+        unreserved.length === 0,
+        unreserved.length === 0
+          ? `예약 ${UNLISTED_BUILTIN_COMMANDS.length}개(${UNLISTED_BUILTIN_COMMANDS.join(", ")}) · 숨긴 것 전부 포함`
+          : `★예약 안 된 숨은 명령: ${unreserved.join(", ")}`,
+      ),
+    );
+
     // 반대 오용도 막는다 — 목록에 **있으면서** @unlisted 를 단 것(둘 다면 어느 쪽이 참인지 모른다).
     const contradictory = [...declaredUnlisted].filter((n) => names.includes(n));
     out.push(

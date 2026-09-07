@@ -43,6 +43,7 @@ import {
   discoverCommands,
   formatCommandIndex,
   BUILTIN_COMMANDS as BUILTIN_COMMANDS_ARRAY,
+  UNLISTED_BUILTIN_COMMANDS,
 } from "../../entry/command-registry.js";
 
 const okText = (text: string) => ({
@@ -62,9 +63,12 @@ const errText = (text: string) => ({
  * 하드코딩돼 clear·agents·model·schedule·stop 이 예약어에서 빠져 커스텀 명령이 빌트인을
  * 가릴 수 있었다(갭). 이제 canonical 이 늘면 예약어도 자동 편입된다.
  */
-const BUILTIN_COMMANDS: ReadonlySet<string> = new Set(
-  BUILTIN_COMMANDS_ARRAY.map((c) => c.name),
-);
+// ★목록에 **없는** 빌트인도 예약한다 (2026-09-06 적대 검토 P2). 목록에서만 파생하면,
+//  «자동완성에서 뺀다» 는 결정이 «그 이름을 남에게 연다» 로 새어 나간다.
+const BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
+  ...BUILTIN_COMMANDS_ARRAY.map((c) => c.name),
+  ...UNLISTED_BUILTIN_COMMANDS,
+]);
 
 /** 빌트인 이름 목록 — 도구 설명·힌트에 보간(canonical 파생, 프로즈 열거 하드코딩 방지). */
 const RESERVED_NAMES = BUILTIN_COMMANDS_ARRAY.map((c) => c.name).join("·");

@@ -260,7 +260,9 @@ export const evaluateFailureLowRiskGate = (input: {
   } else {
     for (const kw of keywords) {
       try {
-        const hits = searchMemories(kw, 5);
+        // ★모순 탐색은 아카이브도 본다 — 사용자가 인덱스에서 내렸어도 «확정한 사실» 은
+        //  그대로다. 안 보면 이미 정한 것과 부딪히는 제안을 다시 낸다.
+        const hits = searchMemories(kw, 5, { includeArchived: true });
         const contradicting = hits.find(
           (m) =>
             // self-growth 산출물(reflection/lesson)이 아닌 = 사용자/외부 확정 메모면 모순 의심.

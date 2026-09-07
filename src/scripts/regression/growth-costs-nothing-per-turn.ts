@@ -21,7 +21,8 @@
  *  계속 두면서 들어가게 만들었다). 이 검사는 **그 되돌림을 막는다** — 다시 인덱스로
  *  올리려면 이 단언들을 먼저 지워야 한다.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readEntrySource } from "./_wiring.js";
@@ -143,6 +144,50 @@ export const check: RegressionCheck = {
         /if \(!hasCause\) return null;/.test(failure) ? "빈칸 미기록" : "★빈칸도 기록한다",
       ),
     );
+
+    // ── ★«쓰기 전 확인» 이 접근 카운터를 올리지 않는다 — **동작으로** (2026-09-06) ──
+    //  위 스캔은 `plugins/self-growth/src` **한 디렉터리만** 본다. 그래서 정작 코어의 문
+    //  (`memory-mcp.ts addMemoryWithGuard`)은 범위 밖이었고, 거기서 `peekMemory` 를
+    //  `getMemory` 로 되돌려도 **2,928건이 초록**이었다(변이로 확인).
+    //  ★손으로 고른 디렉터리가 판정 범위이면 그 밖은 안 보인다
+    //   ([[feedback_hand_maintained_lists]]). 그리고 이건 **4개월 묻혔던 부류**다 —
+    //   되돌아가면 `save_memory` 할 때마다 그 메모리가 자기 access 를 올려 hot-first
+    //   인덱스 상석을 자기가 차지한다.
+    //  ★그래서 소스를 넓히는 대신 **문을 실제로 두드린다** — 어떤 함수를 쓰든 «카운터가
+    //   안 오른다» 는 성질만 본다. 구현이 바뀌어도 성질은 그대로 검사된다.
+    const prevHome = process.env.TIGUCLAW_HOME;
+    const home = mkdtempSync(path.join(tmpdir(), "growth-guard-"));
+    process.env.TIGUCLAW_HOME = home;
+    try {
+      const { __resetPathsCache } = await import("../../core/paths.js");
+      __resetPathsCache?.();
+      const { initStore } = await import("../../store/sessions.js");
+      initStore();
+      const { addMemoryWithGuard } = await import("../../core/memory-mcp.js");
+      const { archiveMemory, countArchivedMemories } = await import("../../store/memory.js");
+
+      // ★`Memory` 는 `access_count` 를 노출하지 않는다. 그래서 **공개 API 로 관측 가능한
+      //  형태**로 본다 — 아카이브하면 `countArchivedMemories().unread` 가 `access_count = 0`
+      //  인 것만 센다. 카운터가 올랐으면 «미열람» 에서 빠진다.
+      const NAME = "feedback_guard_probe";
+      await addMemoryWithGuard({ type: "feedback", name: NAME, description: "첫 기록", body: "{}" });
+      // 같은 이름으로 두 번 더 쓴다 — «있었나» 확인이 매번 일어난다.
+      await addMemoryWithGuard({ type: "feedback", name: NAME, description: "갱신 1", body: "{}" });
+      await addMemoryWithGuard({ type: "feedback", name: NAME, description: "갱신 2", body: "{}" });
+      archiveMemory(NAME);
+      const c = countArchivedMemories();
+      out.push(
+        assert(
+          "★★쓰기 전 «있었나» 확인이 접근 카운터를 안 올린다 — 올리면 그 메모리가 자기 인덱스 상석을 만들고(자기부풀림) «미열람» 신호도 죽는다",
+          c.unread === 1 && c.total === 1,
+          `쓰기 3회 뒤 아카이브 ${c.total}건 중 미열람 ${c.unread}${c.unread === 1 ? "" : " ★카운터가 올랐다"}`,
+        ),
+      );
+    } finally {
+      if (prevHome === undefined) delete process.env.TIGUCLAW_HOME;
+      else process.env.TIGUCLAW_HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
 
     return out;
   },

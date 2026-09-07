@@ -69,6 +69,7 @@ import {
   generateWeeklyReview,
   type EfficiencyAccumulator,
   archiveGrowthOutputsOnce,
+  resetGrowthAccessOnce,
 } from "./efficiency.js";
 import { runSkillImproveScan, runSkillProposalScan } from "./skills.js";
 import {
@@ -101,6 +102,7 @@ class SelfGrowthPlugin {
     void ensureSelfGrowthFile();
     void migrateLegacyLessons();
     void archiveGrowthOutputsOnce();
+    void resetGrowthAccessOnce();
     // V2.1+V2.2 — 시작 시 즉시 1회 + 1시간 간격 maintenance (cleanup + 주간 회고 + 지침 정리).
     this.runMaintenance();
     this.cleanupInterval = setInterval(() => {

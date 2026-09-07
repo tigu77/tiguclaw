@@ -8,6 +8,30 @@
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-09-06
+
+### Fixed
+
+- **폰에서 헤더 글자가 세로로 서던 것을 고쳤습니다.** 업데이트 칩이 떠 있으면 브랜드와
+  상태 글자가 한 글자씩 눌려 기둥이 됐습니다.
+
+### Changed
+
+- `/diagnose` 가 명령 목록에서 빠집니다. 결과가 «백엔드 무게 / 계정» 둘인데 어느 쪽이든
+  사용자가 할 수 있는 일이 없는 내부 점검입니다. 직접 치면 여전히 동작합니다.
+- 메모리 인덱스로 되올린 자가성장 제안이 그대로 남습니다. 그동안은 재발이나 데몬 재시작이
+  조용히 다시 내렸고, `/status` 도 그것들을 거의 «읽음» 으로 셌습니다.
+- 정리해 내린 기억이 비서의 매 턴 조회에 다시 끼어들지 않습니다. 찾을 때는 그대로 나옵니다 —
+  정리는 상시 목록에서 내리는 것이지 손이 안 닿게 하는 게 아닙니다.
+
+### Added
+
+- 데몬 첫 로그 줄이 **어느 버전·어느 런타임·어느 빌드**인지 말합니다. 접속할 수 없는
+  기기에서도 «저기서 뭐가 돌고 있나» 를 로그만으로 답할 수 있습니다.
+- Claude 구독 한도를 **부딪히기 전에** 읽습니다 — 어느 창이 걸려 있는지, 언제 리셋되는지,
+  가까워졌는지. 그동안은 요청이 거절된 뒤에야 알 수 있었습니다.
+
+
 ## [0.49.0] - 2026-09-05
 
 ### Added
@@ -1921,7 +1945,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...HEAD
+[0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/tigu77/tiguclaw/compare/v0.46.0...v0.47.0

@@ -43,10 +43,11 @@ export const check: RegressionCheck = {
       const { upsertReflection } = await loadPluginModule<{
         upsertReflection: (i: { name: string; description: string; body: string }) => void;
       }>("../../../plugins/self-growth/src/analysis.ts");
-      const { archiveGrowthOutputsOnce } = await loadPluginModule<{
+      const { archiveGrowthOutputsOnce, resetGrowthAccessOnce } = await loadPluginModule<{
         archiveGrowthOutputsOnce: () => number;
+        resetGrowthAccessOnce: () => number;
       }>("../../../plugins/self-growth/src/efficiency.ts");
-      const { listMemories, unarchiveMemory, getMemory, countArchivedMemories } = await import(
+      const { listMemories, unarchiveMemory, archiveMemory, getMemory, countArchivedMemories } = await import(
         "../../store/memory.js"
       );
 
@@ -60,8 +61,21 @@ export const check: RegressionCheck = {
       getMemory(N);
       getMemory(N);
 
+      // ★★그리고 **이미 아카이브된** 산출물도 하나 둔다 (2026-09-06 라이브에서 드러난 갈래).
+      //  첫 판은 `listMemories` 기본(`archived_at IS NULL`)만 봐서 **이것들을 아예 못 봤다**.
+      //  그런데 복구가 필요한 카운터는 정확히 이쪽이다 — 실측: 라이브 46건이 **전부
+      //  아카이브** 상태였고 미열람 1건뿐이었다. 내 격리 테스트는 직접 unarchive 해서
+      //  만든 상황만 봐서 이 갈래가 통째로 빠져 있었다.
+      const ARCHIVED = "feedback_growth_already_archived";
+      upsertReflection({ name: ARCHIVED, description: "이미 내려간 옛 산출물", body: "{}" });
+      unarchiveMemory(ARCHIVED);
+      getMemory(ARCHIVED);
+      getMemory(ARCHIVED);
+      archiveMemory(ARCHIVED); // 스윕 전부터 아카이브 상태 + 카운터 부풀어 있음
+
       // ① 첫 부팅(백필) — 내려가고, 부푼 카운터가 복구된다.
       archiveGrowthOutputsOnce();
+      resetGrowthAccessOnce();
       const afterSweep = countArchivedMemories();
       out.push(
         assert(
@@ -75,6 +89,13 @@ export const check: RegressionCheck = {
           "★★부풀어 있던 접근 카운터가 복구돼 «미열람» 이 산다 — 안 그러면 도달 신호가 죽은 채로 남는다",
           afterSweep.unread >= 1,
           `미열람 ${afterSweep.unread} / 아카이브 ${afterSweep.total} (읽은 척 3회를 만들어 넣었다)`,
+        ),
+      );
+      out.push(
+        assert(
+          "★★**이미 아카이브된** 산출물의 카운터도 복구된다 — 라이브에서 복구 대상 46건이 전부 이 상태였고, 첫 판은 그걸 아예 못 봤다",
+          afterSweep.unread === afterSweep.total,
+          `미열람 ${afterSweep.unread} / 아카이브 ${afterSweep.total}${afterSweep.unread === afterSweep.total ? "" : " ★아카이브분이 복구에서 빠졌다"}`,
         ),
       );
 
@@ -96,12 +117,40 @@ export const check: RegressionCheck = {
       // ④ 재부팅이 승격을 취소하지 않는다(스윕이 진짜 1회다)
       archiveGrowthOutputsOnce();
       archiveGrowthOutputsOnce();
+      resetGrowthAccessOnce();
       const afterReboot = inIndex();
       out.push(
         assert(
           "★★재부팅이 사용자 승격을 취소하지 않는다(`…Once` 가 이름값을 한다)",
           afterReboot,
           afterReboot ? "재부팅 2회에도 승격 유지" : "★스윕이 매번 돌아 승격을 되돌린다",
+        ),
+      );
+
+      // ④' ★★**«한 일이 다시 도는» 갈래** (2026-09-06 적대 검토 P1).
+      //  카운터 복구를 뒤늦게 붙이면서 마커 판을 올렸더니(`outputs-archived` → `-v2`),
+      //  **옛 홈이 올라올 때 아카이브 백필까지 다시 돌아** 사용자가 되올린 제안이
+      //  되돌려지고 사람이 읽은 기록까지 0으로 지워졌다. 어제 고친 그 동작을 오늘
+      //  «판 올림» 이라는 탈출구로 내가 되살린 것이다(실행으로 확인: 인덱스 true → false).
+      //  ★고침은 **일마다 마커를 따로 두는 것** — 두 일을 한 마커로 묶으면 «하나 때문에
+      //   판을 올리는 순간 나머지도 다시 돈다».
+      //  이 검사는 그 상황을 그대로 만든다: 옛 마커만 있는 홈에서 부팅한다.
+      const { mkdirSync, writeFileSync } = await import("node:fs");
+      const { getPaths } = await import("../../core/paths.js");
+      const dir = path.join(getPaths().commonPlugins, "self-growth");
+      mkdirSync(dir, { recursive: true });
+      // 마커를 **전부** 지우고 옛 이름 하나만 남긴다 = 옛 판에서 올라온 홈.
+      const { rmSync: rmOne, readdirSync } = await import("node:fs");
+      for (const f of readdirSync(dir)) if (/^(outputs-archived|access-reset)/.test(f)) rmOne(path.join(dir, f));
+      writeFileSync(path.join(dir, "outputs-archived"), String(Date.now()), "utf8");
+      archiveGrowthOutputsOnce();
+      resetGrowthAccessOnce();
+      const afterUpgrade = inIndex();
+      out.push(
+        assert(
+          "★★판을 올려도(옛 마커만 있는 홈) 승격이 되돌려지지 않는다 — 마커를 하나로 묶으면 «하나 때문에 판을 올리는 순간 나머지도 다시 돈다»",
+          afterUpgrade,
+          afterUpgrade ? "옛 마커 홈에서 부팅해도 승격 유지" : "★백필이 다시 돌아 승격을 되돌렸다(읽은 기록도 0이 된다)",
         ),
       );
 

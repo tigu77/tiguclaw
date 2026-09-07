@@ -345,6 +345,21 @@ export const formatCommandIndex = (commands: ReadonlyArray<Command>): string => 
  * happy path 에 예외를 묻지 않도록 try/catch 는 이 병합 경계에만 둔다: `discoverCommands`
  * 가 던지면(fs 오류 등) 빌트인만이라도 반환해 명령 메뉴가 통째로 사라지지 않게 한다.
  */
+/**
+ * **목록엔 없지만 이름은 예약된** 빌트인 (2026-09-06 적대 검토 P2).
+ *
+ * ★`/diagnose` 를 자동완성 목록에서 빼자(사용자가 할 수 있는 일이 없는 내부 진단)
+ *  **예약어에서도 같이 빠졌다** — 예약어가 `BUILTIN_COMMANDS` 에서만 파생하기 때문이다.
+ *  그러면 `create_command({name:"diagnose"})` 가 통과하는데, 채널 입구의 아웃오브밴드
+ *  매치가 먼저 잡으므로 사용자가 만든 그 명령은 **영원히 안 돈다** — 정확히
+ *  `command-tools-mcp` 주석이 *"영원히 가려진 죽은 정의"* 라고 적어둔 그 사고다.
+ *
+ * ★`/logs` 는 **이전부터** 같은 구멍이었다(목록에도 예약어에도 없다). 같이 닫는다.
+ * ★이 배열은 **정의점**이지 사본이 아니다 — `commands-have-handlers` 회귀가
+ *  «처리기 옆 `@unlisted` 표시 ↔ 이 배열» 을 맞물려 검사하므로 조용히 갈릴 수 없다.
+ */
+export const UNLISTED_BUILTIN_COMMANDS: readonly string[] = ["diagnose", "logs"];
+
 export const getAllCommands = async (cwd?: string): Promise<BuiltinCommand[]> => {
   const builtins = BUILTIN_COMMANDS.map((c) => ({
     name: c.name,

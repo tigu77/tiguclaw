@@ -101,7 +101,13 @@ export const check: RegressionCheck = {
     //  ★그리고 고칠 때 **가로 스크롤로 바꿔치기하지 않았는지**를 같이 못 박는다 —
     //   nowrap 만 걸었더니 375px 에서 384px 가 필요해 페이지가 가로로 스크롤됐다.
     //   그래서 낱말 접기(뜻은 aria-label·title)와 모바일 gap 축소가 짝으로 들어갔다.
-    const mob = css.slice(css.indexOf("@media (max-width: 900px)"));
+    // ★★**주석을 걷은 본문을 본다** (2026-09-06 적대 검토 G1). 이 파일의 ①~④는 `bare`
+    //  (주석 제거본)를 쓰는데 여기만 원본 `css` 를 봤다. 그래서 **네 규칙을 전부 CSS
+    //  주석으로 감싸도 10/10 초록**이었다 — 그 상태에서 CDP 로 재면 브랜드가 48×87 로
+    //  다시 서고 가로 스크롤(419 > 375)까지 난다. 정태님이 신고한 그 화면이 그대로
+    //  재현되는데 게이트는 만점이었다. [[feedback_gate_must_actually_run]] 와 같은 기제,
+    //  반대 방향(그때는 주석 안의 태그를 세서 상시 빨강이었다).
+    const mob = bare.slice(bare.indexOf("@media (max-width: 900px)"));
     const onlySpacerShrinks = /header > \*:not\(\.spacer\) \{[^}]*flex:\s*none/.test(mob);
     out.push(
       assert(

@@ -27,6 +27,7 @@
  *  — AGENT.md 편집·스킬 추가로 resume 이 끊기지 않게. 상세는 조립부 주석.
  */
 import { createHash } from "node:crypto";
+import { parseRateLimit } from "../rate-limit-view.js";
 import { claudeAuthAvailable } from "../provider-availability.js";
 import { promises as fs } from "node:fs";
 import {
@@ -376,6 +377,16 @@ export const steeringContents = async function* (args: {
     yield args.render(s);
   }
 };
+
+/**
+ * 한도 로그 dedupe — **턴 밖**에 산다 (2026-09-06 적대 검토 P3).
+ *
+ * ★처음엔 `runClaude` 안 지역 변수였다. 그러면 «바뀔 때만 남긴다» 가 **한 턴 안에서만**
+ *  성립해서, 값이 하나도 안 바뀌는데도 매 턴 한 줄이 나간다. 게다가 우리 SDK 경로는
+ *  사용률이 없어 서명이 사실상 고정이라 **영원히 같은 줄**이 된다 —
+ *  [[feedback_logs_must_stand_alone]] 의 «매 턴 같은 warn = 배경소음(12일 묻힘)» 그대로다.
+ */
+let lastRateLimitSig = "";
 
 export const runClaude = async (
   input: RegionASdkInput,
@@ -1298,6 +1309,31 @@ const isResumeProcessFailure = (e: unknown): boolean =>
             `시작한 것으로 보고 **이 답변에는 섞지 않습니다**. 백그라운드 Task 알림이 ` +
             `자동으로 턴을 여는 0.3 동작(task_notification → system/init).`,
         );
+      }
+      continue;
+    }
+
+    // ── ★구독 한도 — SDK 가 «부딪히기 전에» 말해준다 (2026-09-06, 1단계: 관측만) ──
+    //  종전엔 한도를 **부딪힌 뒤에만** 알았다(쿨다운 `remainingMs`). 그런데 SDK 가
+    //  `rate_limit_event` 로 `utilization`(얼마나 썼나)·`resetsAt`·창 종류(5시간/7일)를
+    //  구독 사용자에게 준다. 오늘 실측에서 «아끼는 것은 돈이 아니라 한도» 라는 결론이
+    //  나왔는데, 정작 그 한도를 볼 방법이 없었다.
+    //  ★**1단계는 읽기만 한다** — 타입에 있다 ≠ 실제로 온다. 우리 경로(구독 OAuth +
+    //   stream-json)에서 정말 발화하는지, 값이 어떤 모양인지 먼저 본다. 저장·표시는
+    //   그게 확인된 뒤다([[feedback_verify_before_asserting]]).
+    //  ★같은 값을 매 턴 찍으면 배경소음이 된다 — **바뀔 때만** 남기고, 경고·거절은 항상
+    //   남긴다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
+    if (msg.type === "rate_limit_event") {
+      try {
+        const view = parseRateLimit((msg as { rate_limit_info?: unknown }).rate_limit_info);
+        // 같은 값을 매 턴 찍으면 배경소음이 된다 — **바뀔 때만** 남기고, 경고·거절은 항상
+        // 남긴다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
+        if (view.line !== null && (view.status !== "allowed" || view.signature !== lastRateLimitSig)) {
+          lastRateLimitSig = view.signature;
+          console.log(`[rate-limit] ${view.line}`);
+        }
+      } catch {
+        /* 관측이 턴을 깨지 않는다 */
       }
       continue;
     }

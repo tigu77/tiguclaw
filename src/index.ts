@@ -266,7 +266,24 @@ flushEnvLoadLog();
 //   값도 굳히지 않는다(런타임은 첫 사용 때 다시 푼다).
 void repairRipgrepAtBoot(getPaths().home);
 
-console.log("tiguclaw daemon: starting");
+// ★부팅 첫 줄이 **무엇이 어디서 도는가**를 말한다 (2026-09-06 정태님 지적으로 추가).
+//  종전엔 `starting` 한 마디뿐이라, 원격 인스턴스(회사돌쇠·윈도우처럼 붙을 수 없는 곳)에서
+//  «지금 어느 버전이 도는가» 를 **로그만으로는 알 수 없었다.** 이 레포의 1차 진단면이
+//  로그인데(붙을 수 없는 인스턴스가 여럿이다) 그 면에 버전이 없었다.
+//  ★런타임은 **선언(env)이 아니라 실물 경로에서 파생**한다 — `TIGUCLAW_RUNTIME` 은 실행기가
+//   적어주는 값이라 실제로 무엇이 도는지와 갈릴 수 있고, 이 레포는 «선언과 실물이 갈려»
+//   데인 전례가 있다. `dist/` 에서 돌고 있으면 built 다, 누가 뭐라고 적었든.
+// ★★그리고 **진단 한 줄이 부팅을 죽일 수는 없다.** `appBuildId()` 는 `git` 을 실행하고
+//  `import.meta.url` 은 문맥에 따라 없을 수 있다(`tsx -e` 에서 실제로 undefined 였다).
+//  실패하면 옛 한 줄로 물러난다 — 배너를 못 찍는 것과 데몬이 안 뜨는 것은 격이 다르다.
+try {
+  const runtimeKind = (import.meta.url ?? "").includes("/dist/") ? "built" : "source";
+  console.log(
+    `tiguclaw daemon: starting — v${appVersion()} · ${runtimeKind} · ${appBuildId()} · node ${process.version} · pid ${process.pid}`,
+  );
+} catch {
+  console.log("tiguclaw daemon: starting");
+}
 
 // ── event-loop wedge 진단 (2026-07-03, gated: LOOP_DIAG=1) ──────────────────
 // 데몬이 매니저 실행 중 응답불능(wedge)되는 원인 규명용. event-loop lag(타이머 드리프트)

@@ -422,6 +422,19 @@
   "plugins.auth.openAgain": "Open the sign-in page again",
   "plugins.auth.restart": "Restart the daemon for this to fully take effect.",
   "plugins.auth.unknown": "Status unknown",
+  "plugins.auth.usage.window.week": "Weekly",
+  "plugins.auth.usage.window.days": "{n}-day",
+  "plugins.auth.usage.window.hours": "{n}h",
+  "plugins.auth.usage.window.minutes": "{n}m",
+  "plugins.auth.usage.window.generic": "Limit",
+  "plugins.auth.usage.remaining": "{n}% left",
+  "plugins.auth.usage.reset": "resets {when}",
+  "plugins.auth.usage.until.soon": "soon",
+  "plugins.auth.usage.until.minutes": "in {n}m",
+  "plugins.auth.usage.until.hours": "in {n}h",
+  "plugins.auth.usage.until.hoursMinutes": "in {h}h {m}m",
+  "plugins.auth.usage.until.days": "in {n}d",
+  "plugins.auth.usage.limitReached": " — limit reached",
   "plugins.badNumber": "Enter a number.",
   "plugins.by": "by {who}",
   "plugins.byUnknown": "author unknown",
@@ -663,5 +676,7 @@
   "settings.memoryCap.off": "Off — no list",
   "settings.memoryCap.saved": "Memory index size set to {value}.",
   "settings.memoryCap.reset": "Default",
-  "bg.task.truncated": " … (this is all that remains — the full text is gone now that the job has ended)"
+  "bg.task.truncated": " … (this is all that remains — the full text is gone now that the job has ended)",
+  "plugins.auth.usage.pending": "usage check waiting — retrying {when}",
+  "plugins.auth.usage.unavailable": "usage lookup unavailable for this account"
 }

@@ -471,6 +471,32 @@
       /* 구독 인증 — 상태 + 버튼 + (눌렀을 때) 절차 패널. 설정 행과 같은 결로 둔다. */
       .plugin-auth { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:grid; gap:7px; }
       .plugin-auth-head { display:flex; align-items:center; gap:8px; }
+      /* 한도 — 인증 상태 바로 밑. 숫자가 주인공이 아니라 «남았나» 가 주인공이라
+         본문보다 작고 조용하게(2026-09-07).
+         ★**창 하나 = 한 줄**이다. 한 줄에 몰면 좁은 화면에서 아무 데서나 접혀 어느 숫자가
+          어느 창 것인지 알 수 없다(정태님: "줄 나눠서 이쁘게").
+         ★줄어드는 칸은 **막대 하나**고 기준 폭은 0이다 — 줄바꿈은 «줄이기 전에» 결정되므로
+          기준 폭이 있으면 좁은 화면에서 값이 아랫줄로 감긴다(컴포저에서 그 변이를 실제로 봤다). */
+      .plugin-auth-usage { margin-top:6px; display:flex; flex-direction:column; gap:5px; font-size:0.75rem; color:var(--text-mute); font-variant-numeric:tabular-nums; }
+      /* ★리셋은 **아랫줄**이다 (2026-09-07 실측). 이 상자는 데스크톱에서도 **235px** 뿐이라
+         (이름 46 + 값 59 + 리셋 106 + 간격 24 = 235) 네 칸을 한 줄에 두면 남는 폭이 0이고,
+         줄어드는 칸인 막대가 **0px 로 접힌다** — 헤드리스로 그 상태를 실제로 봤다.
+         ★그래서 «막대를 좁히지» 말고 리셋을 내린다: 한 줄엔 이름·막대·값만 둔다.
+         `flex-basis:100%` 이면 폭에 상관없이 **항상** 내려가 모든 화면에서 같은 모양이다. */
+      .usage-win { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; }
+      .usage-win-name { flex:none; min-width:3.4em; font-weight:700; color:var(--text); }
+      /* 기준 폭 0으로 줄되 **접히지는 않게** — 0px 막대는 «없다» 로 읽힌다. */
+      .usage-win-bar { flex:1 1 0; min-width:36px; height:5px; border-radius:999px; background:rgb(var(--fg-rgb) / .10); overflow:hidden; }
+      .usage-win-bar > i { display:block; height:100%; border-radius:999px; background:var(--good); }
+      .usage-win-bar > i.warn { background:var(--warn, var(--accent)); }
+      .usage-win-bar > i.bad { background:var(--bad); }
+      /* 모르는 값 — 빈 막대를 그리면 0%로 읽힌다. 아예 안 채우고 흐린 자리만 남긴다. */
+      .usage-win-bar.unknown { background:rgb(var(--fg-rgb) / .06); }
+      .usage-win-val { flex:none; font-weight:700; color:var(--text); }
+      .usage-win-reset { flex:0 0 100%; text-align:right; opacity:.65; }
+      .usage-win-hit { color:var(--bad); font-weight:700; }
+      /* 못 쟀을 때의 한 줄 — 숫자가 아니라 «왜 · 언제» 다. 조용하게. */
+      .usage-win-pending { opacity:.7; }
       .plugin-auth-name { font-size:.75rem; font-weight:800; color:var(--text); font-family:var(--font-mono); }
       .plugin-auth-state { font-size:.625rem; font-weight:800; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--text-mute); background:var(--card); }
       .plugin-auth-state.on { color:var(--good); border-color:rgb(var(--good-rgb) / .4); background:rgb(var(--good-rgb) / .12); }
@@ -1002,6 +1028,11 @@
         0%,55% { background:rgb(var(--flash-rgb) / .20); box-shadow:0 0 0 2px rgb(var(--flash-rgb) / .35) inset; }
         100%   { background:transparent; box-shadow:none; }
       }
+      /* ★아이콘은 **항상** 보인다 — 낱말과 배지는 둘 다 사라질 수 있다(모바일에선 낱말을
+         접고, 배지는 잡이 0이면 `display:none` 이다). 그래서 그 둘만 두면 모바일에서
+         **빈 상자**가 된다(2026-09-07 정태님 신고: "우상단 백그라운드 버튼에 이름이
+         없어졌지"). 폭이 고정이라 옆 칸을 안 민다 — 정지 버튼에서 배운 것과 같다. */
+      #bg-toggle .bg-icon { font-size:0.8125rem; line-height:1; }
       #bg-toggle .bg-badge { min-width:17px; height:17px; padding:0 5px; border-radius:9px; background:var(--accent-2); color:var(--on-accent); font-size:0.625rem; font-weight:900; display:none; align-items:center; justify-content:center; line-height:1; }
       #bg-toggle .bg-badge.show { display:inline-flex; }
       /* ── 오버레이 패널은 **자기 안에서** 스크롤이 끝난다 (2026-09-05 정태님 신고) ──────
@@ -1757,6 +1788,9 @@
            실측: 이걸 안 접으면 375px 에서 384px 가 필요해 **페이지가 가로로 스크롤**된다 —
            세로 글자를 고치려다 가로 스크롤을 만드는 셈이라, 여기서 자리를 낸다. */
         header #bg-toggle .bg-word { display:none; }
+        /* ★낱말을 접어도 **아이콘은 남는다** — 배지는 잡이 0이면 안 뜨므로, 아이콘이
+           없으면 이 버튼이 빈 상자가 된다. 접는 것은 «모양» 이지 «존재» 가 아니다. */
+        header #bg-toggle .bg-icon { display:inline-block; font-size:0.875rem; }
         header .brand { font-size:0.9375rem; }
         header .brand .brand-icon { width:28px; height:28px; }
         /* 백그라운드 버튼(mobile-nav.js 가 헤더로 이동) — 컴팩트. */

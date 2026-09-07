@@ -13,6 +13,7 @@
  * 플러그인 이름* 을 하드코딩하지 않는다 — codex 어댑터가 자기 id "codex" 로 조회하는 것은
  * 자기 정체성 참조라 불변식 대상 아님(계약 §2).
  */
+import type { ProviderUsage } from "../plugins/provider-usage.js";
 
 /**
  * 라이브-리프레시 인증 provider 의 최소 계약.
@@ -47,6 +48,17 @@ export interface AuthProvider {
    * 모르는 것을 «여기서 됩니다» 라고 하지 않는다.
    */
   readonly login?: AuthLogin;
+  /**
+   * **한도가 얼마나 남았나** — 옵셔널 (2026-09-07 정태님).
+   *
+   * ★사용자가 묻는 축은 둘뿐이다: *"주간 한도가 얼마나 남았나 · 시간 한도가 얼마나 남았나."*
+   *  («어디서 토큰을 많이 쓰나» 는 다른 문제라 여기 안 들어온다.)
+   * ★**알아내는 법은 provider 마다 다르고, 그 지식은 그 플러그인이 갖는다** — 코어는
+   *  «남은 양» 이라는 표현만 안다. codex 는 전용 엔드포인트를 폴링하고, claude 는 SDK 가
+   *  턴마다 주는 이벤트를 받는다. 여기서 갈리지 않고 한 문에서 모인다.
+   * ★실패는 조용하다 — 비공식 경로는 언제든 막힌다. 못 가져오면 `undefined`(던지지 마라).
+   */
+  getUsage?(): Promise<ProviderUsage | undefined>;
 }
 
 /**

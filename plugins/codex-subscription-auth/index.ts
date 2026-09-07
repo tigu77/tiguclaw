@@ -25,6 +25,7 @@ import {
   beginCodexLogin,
   finishCodexLogin,
 } from "../../src/core/llm-runtime/adapters/openai-codex-oauth-login.js";
+import { fetchCodexUsage, setUsageLogSink } from "./usage.js";
 
 export default class CodexSubscriptionAuth {
   async startService(_bus: EventBus, host?: PluginHost): Promise<void> {
@@ -33,6 +34,12 @@ export default class CodexSubscriptionAuth {
       provider: "codex",
       getAccessToken: ensureFreshAccessToken,
       isAuthenticated: codexAuthAvailable,
+      // ★한도가 얼마나 남았나 — 상세를 열 때만 가져온다(배경 폴링 0, 30분 캐시).
+      //  provider 지식이 provider 플러그인에 사는 자리다(`usage.ts` 주석 참조).
+      getUsage: () => {
+        setUsageLogSink((m) => host.log(m)); // 왜 사용량이 비었는지는 **로그에만** 남는다.
+        return fetchCodexUsage(ensureFreshAccessToken);
+      },
       /**
        * ★**화면에서 끝까지 된다** (2026-09-05). 순수 웹 OAuth(PKCE) 라 브라우저 한 번이면
        *  된다 — 종전엔 발급 수단이 `npm run codex-auth` **터미널 안에만** 있어서, 폰이나

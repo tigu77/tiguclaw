@@ -1,3 +1,93 @@
+
+/**
+ * 한도 표시 — **여기서 만든다** (2026-09-07 정태님).
+ *
+ * ★한 줄에 몰아넣지 않는다(정태님: *"줄 나눠서 이쁘게 좀 보이게 하자"*). 창이 둘이면
+ *  «5시간 56% 남음 (34분 뒤 리셋) · 주간 19% 남음 (5일 뒤 리셋)» 이 되는데, 좁은 화면에서
+ *  아무 데서나 접혀 어느 숫자가 어느 창 것인지 알 수 없었다. **창 하나 = 한 줄**이다.
+ * ★그리고 **막대를 준다** — 이 화면에서 사람이 하는 일은 정확한 수를 읽는 게 아니라
+ *  *"더 돌려도 되나"* 를 한눈에 보는 것이다. 숫자는 옆에 그대로 둔다(막대만 두면 못 읽는다).
+ *
+ * ★코어도 플러그인도 «한도» 라는 도메인을 알 필요가 없다. 코어는 모양(`windows[]`)만 나르고,
+ *  문장은 **카탈로그가 있는 여기**가 만든다. 플러그인이 만들면 영어 화면에 한국어가 샌다
+ *  (`i18n-catalogs-and-coverage` 가 정확히 그 부류를 막는다).
+ * ★**모르는 값은 안 그린다** — 0% 로 뭉개면 그 숫자로 판단하게 된다.
+ * ★창 이름은 **초에서 파생**한다 — 5시간·주간을 손으로 나열하지 않는다. 새 창 종류가
+ *  생겨도 저절로 따라간다.
+ */
+function usageWindowLabel(seconds) {
+  if (typeof seconds !== "number" || !(seconds > 0)) return i18n("plugins.auth.usage.window.generic");
+  const h = seconds / 3600;
+  if (h >= 24) {
+    const d = Math.round(h / 24);
+    return d === 7 ? i18n("plugins.auth.usage.window.week") : i18n("plugins.auth.usage.window.days", { n: d });
+  }
+  if (h >= 1) return i18n("plugins.auth.usage.window.hours", { n: Math.round(h) });
+  return i18n("plugins.auth.usage.window.minutes", { n: Math.round(seconds / 60) });
+}
+
+function usageUntilLabel(resetAt, now) {
+  if (typeof resetAt !== "number" || !Number.isFinite(resetAt)) return "";
+  const s = Math.round((resetAt - now) / 1000);
+  if (s <= 0) return i18n("plugins.auth.usage.until.soon");
+  if (s < 3600) return i18n("plugins.auth.usage.until.minutes", { n: Math.max(1, Math.round(s / 60)) });
+  const h = s / 3600;
+  if (h < 24) {
+    const hh = Math.floor(h);
+    const mm = Math.round((h - hh) * 60);
+    return mm === 0
+      ? i18n("plugins.auth.usage.until.hours", { n: hh })
+      : i18n("plugins.auth.usage.until.hoursMinutes", { h: hh, m: mm });
+  }
+  return i18n("plugins.auth.usage.until.days", { n: Math.round(h / 24) });
+}
+
+/**
+ * 창 하나 = 한 줄. 그리는 쪽과 **한 문장으로 요약하는 쪽**(title·aria)이 같은 데서 나온다 —
+ * 두 벌로 지으면 화면과 툴팁이 갈린다.
+ */
+function usageRows(usage, now) {
+  if (!usage || !Array.isArray(usage.windows) || usage.windows.length === 0) return [];
+  const at = typeof now === "number" ? now : Date.now();
+  const rows = [];
+  for (const w of usage.windows) {
+    const pct = typeof w.remainingPercent === "number" ? Math.round(w.remainingPercent) : null;
+    const left = pct === null ? "" : i18n("plugins.auth.usage.remaining", { n: pct });
+    const until = usageUntilLabel(w.resetAt, at);
+    const reset = until === "" ? "" : i18n("plugins.auth.usage.reset", { when: until });
+    if (left === "" && reset === "") continue;
+    rows.push({ name: usageWindowLabel(w.windowSeconds), percent: pct, left, reset });
+  }
+  return rows;
+}
+
+/**
+ * ★**「모른다」와 「아무 말도 안 한다」는 다르다** (2026-09-07 정태님: *"아무것도 안떠"*).
+ *  빈 자리는 «이 제공자는 원래 한도를 안 알려준다» 로도, «지금 못 가져왔다» 로도 읽힌다.
+ *  둘은 사용자가 할 일이 다르다(포기 vs 잠시 뒤 다시). 그 답이 로그에만 있으면 안 된다 —
+ *  로그는 우리 것이지 사용자 것이 아니다.
+ * ★그렇다고 숫자를 지어내지는 않는다. 말하는 것은 **이유와 시각**뿐이다.
+ */
+function usagePendingLine(usage, now) {
+  if (!usage || (Array.isArray(usage.windows) && usage.windows.length > 0)) return "";
+  // ★«기다려도 안 된다» 가 «잠시 뒤 다시» 보다 **먼저**다 — 둘이 겹치면 「N분 뒤 다시 시도」가
+  //  영원히 떠 있게 되고, 그건 모름이 아니라 거짓 약속이다(2026-09-07 claude 실측).
+  if (usage.unavailable === true) return i18n("plugins.auth.usage.unavailable");
+  const at = typeof usage.retryAt === "number" ? usage.retryAt : null;
+  if (at === null) return "";
+  const when = usageUntilLabel(at, typeof now === "number" ? now : Date.now());
+  return when === "" ? "" : i18n("plugins.auth.usage.pending", { when });
+}
+
+function formatUsageLine(usage, now) {
+  const rows = usageRows(usage, now);
+  if (rows.length === 0) return usagePendingLine(usage, now);
+  const parts = rows.map(
+    (r) => r.name + (r.left === "" ? "" : " " + r.left) + (r.reset === "" ? "" : " (" + r.reset + ")"),
+  );
+  return parts.join(" · ") + (usage.limitReached === true ? i18n("plugins.auth.usage.limitReached") : "");
+}
+
       /**
        * **플러그인 뷰** — 목록 + 네 동작 + 요구 권한 (2026-08-28).
        *
@@ -531,6 +621,70 @@
           head.appendChild(nm);
           head.appendChild(st);
           box.appendChild(head);
+
+          // ── ★한도가 **얼마나 남았나** (2026-09-07 정태님) ────────────────────
+          //  사용자가 묻는 축은 둘뿐이다: «주간이 얼마나 남았나 · 시간이 얼마나 남았나».
+          //  («어디서 토큰을 많이 쓰나» 는 다른 문제라 여기 안 넣는다 — 섞으면 흥미로운
+          //   숫자로 붐비고 정작 필요한 답이 안 보인다.)
+          //  ★문장은 **여기서** 만든다 — 카탈로그(i18n)가 사는 자리가 여기다. 서버나
+          //   플러그인이 만들면 영어 화면에 한국어가 샌다. 서버는 숫자만 준다.
+          //  ★**모르면 아무것도 안 그린다.** 실제로 자주 그렇다 — claude 의 조회
+          //   엔드포인트는 폴링 방지로 조여 있어 `429 retry-after ~1시간` 을 낸다(실측).
+          //   그때 빈 자리는 «모름» 이라는 뜻이고, **왜 비었는지는 로그가 말한다**
+          //   (`[usage] claude-subscription: 429 조회 제한 — …`). 0% 로 뭉개면 그
+          //   숫자로 판단하게 되고, «한도 도달» 로 적으면 거짓말이 된다.
+          const rows = usageRows(info && info.usage);
+          const pendingLine = usagePendingLine(info && info.usage);
+          if (rows.length > 0 || pendingLine !== "") {
+            const u = document.createElement("div");
+            u.className = "plugin-auth-usage";
+            // 한 문장 요약은 **툴팁**으로 남긴다 — 줄로 쪼개도 «복사해서 붙일 한 줄» 은
+            // 여전히 쓸모가 있고, 그게 `formatUsageLine` 과 이 화면이 갈리지 않는 이유다.
+            u.title = formatUsageLine(info && info.usage);
+            for (const r of rows) {
+              const row = document.createElement("div");
+              row.className = "usage-win";
+              const nm2 = document.createElement("span");
+              nm2.className = "usage-win-name";
+              nm2.textContent = r.name;
+              row.appendChild(nm2);
+              // 막대는 **아는 값이 있을 때만** — 모르는데 빈 막대를 그리면 0% 로 읽힌다.
+              const bar = document.createElement("span");
+              bar.className = "usage-win-bar" + (r.percent === null ? " unknown" : "");
+              if (r.percent !== null) {
+                const fill = document.createElement("i");
+                // 남은 양이 적을수록 눈에 띄게 — 판단이 «더 돌려도 되나» 라서 그 축으로 칠한다.
+                fill.className = r.percent <= 10 ? "bad" : r.percent <= 25 ? "warn" : "";
+                fill.style.width = Math.max(0, Math.min(100, r.percent)) + "%";
+                bar.appendChild(fill);
+              }
+              row.appendChild(bar);
+              const val = document.createElement("span");
+              val.className = "usage-win-val";
+              val.textContent = r.left;
+              row.appendChild(val);
+              if (r.reset !== "") {
+                const rs = document.createElement("span");
+                rs.className = "usage-win-reset";
+                rs.textContent = r.reset;
+                row.appendChild(rs);
+              }
+              u.appendChild(row);
+            }
+            if (pendingLine !== "") {
+              const pw = document.createElement("div");
+              pw.className = "usage-win-pending";
+              pw.textContent = pendingLine;
+              u.appendChild(pw);
+            }
+            if (info.usage && info.usage.limitReached === true) {
+              const hit = document.createElement("div");
+              hit.className = "usage-win-hit";
+              hit.textContent = i18n("plugins.auth.usage.limitReached").replace(/^\s*—\s*/, "");
+              u.appendChild(hit);
+            }
+            box.appendChild(u);
+          }
 
           if (info && info.login) {
             const btn = document.createElement("button");

@@ -333,6 +333,16 @@ export interface PluginHost {
     getAccessToken(): Promise<string>;
     isAuthenticated?(): boolean;
     login?: AuthLogin;
+    /**
+     * **한도가 얼마나 남았나** (2026-09-07). 옵셔널 — 모르면 안 달면 된다.
+     *
+     * ★**provider 지식은 provider 플러그인이 갖는다.** 코어는 «남은 양» 이라는 표현만 알고,
+     *  어떻게 알아내는지는 각자다 — codex 는 전용 엔드포인트를 폴링하고, claude 는 SDK 가
+     *  턴마다 주는 이벤트를 받는다. 그래서 여기서 갈리지 않고 **한 문에서** 모인다.
+     * ★실패는 조용해야 한다 — 비공식 경로는 언제든 막히고, 그때 «모름» 이지 에러가 아니다.
+     *  못 가져오면 `undefined` 를 돌려라(던지지 마라).
+     */
+    getUsage?(): Promise<import("./provider-usage.js").ProviderUsage | undefined>;
   }): { ok: boolean; error?: string };
 
   /**

@@ -147,6 +147,24 @@ export const check: RegressionCheck = {
         bgAria ? "aria-label·title 유지" : "★뜻이 사라졌다",
       ),
     );
+    // ── ★그런데 **보이는 것도 남아야 한다** (2026-09-07 정태님 신고) ─────────────
+    //  위 검사는 «뜻이 살아 있나»만 봤다. 그래서 낱말을 접었을 때 **화면에 아무것도 안
+    //  남는 것**을 못 봤다 — 배지(`.bg-badge`)는 잡이 0이면 `display:none` 이라 평소엔
+    //  안 뜨고, 낱말까지 접히면 버튼이 **빈 상자**가 된다. 사용자가 그걸 보고 물었다.
+    //  ★접는 것은 «모양» 이지 «존재» 가 아니다. 항상 보이는 조각이 하나는 있어야 한다.
+    // ★«태그가 있나» 가 아니라 «**글자가 있나**» 를 본다 — 빈 껍데기(<span …></span>)는
+    //  화면에서 여전히 빈 상자다. 첫 판이 `\S` 로 재서 그 변이가 그냥 통과했다(실측):
+    //  닫는 `<` 도 `\S` 라서, 검사가 «아무것도 안 보임» 을 «보인다» 로 읽었다.
+    const hasIcon = /id="bg-toggle"[\s\S]{0,300}?class="bg-icon"[^>]*>\s*[^<\s]/.test(indexHtml);
+    const iconStays = !/header #bg-toggle \.bg-icon \{[^}]*display:\s*none/.test(mob);
+    const badgeIsConditional = /#bg-toggle \.bg-badge \{[^}]*display:\s*none/.test(bare);
+    out.push(
+      assert(
+        "★★낱말을 접어도 **보이는 조각**이 남는다 — 배지는 잡이 0이면 안 뜨므로 아이콘이 없으면 빈 상자가 된다",
+        hasIcon && iconStays,
+        `아이콘=${hasIcon} · 모바일에서 유지=${iconStays} · 배지는 조건부=${badgeIsConditional}`,
+      ),
+    );
     // 연결 상태 글자는 **지우지 않고** 화면에서만 감춘다(스크린리더는 읽는다).
     const srOnly = /header \.live #conn-text \{[^}]*clip-path:\s*inset\(50%\)/.test(mob);
     out.push(

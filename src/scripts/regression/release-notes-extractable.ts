@@ -105,6 +105,48 @@ const run = async (): Promise<Assertion[]> => {
         : `★[Unreleased] 가 v${version} 이 아닌 옛 버전을 가리킨다(릴리스 때 같이 올리는 줄)`,
     ),
   );
+
+  // ── ★직전 버전 헤더가 살아 있나 (2026-09-07 적대 검토 P7) ────────────────────
+  //  `## [0.49.1]` 한 줄을 지우면 그 버전 항목들이 **이번 섹션에 흡수**되고, R5 의 awk 가
+  //  그걸 그대로 GitHub 릴리스 노트로 낸다. «다음 헤더를 안 넘어간다» 단언은 헤더가 없으니
+  //  **당연히** 초록이다 — 그래서 못 잡았다. [[feedback_changelog_header_drop]] 에 «2회» 라고
+  //  적힌 그 사고에 그물이 없었다.
+  //  ★판정은 목록이 아니라 **파생**이다: 하단 `[x.y.z]:` 링크 참조가 있는 버전은 본문에
+  //   헤더가 있어야 한다(둘은 짝이다). 새 버전을 더해도 저절로 대상이 된다.
+  const linked = [...found.text.matchAll(/^\[(\d+\.\d+\.\d+)\]:\s*http/gm)].map((m) => m[1] ?? "");
+  const headed = new Set(
+    [...found.text.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1] ?? ""),
+  );
+  const orphanRefs = linked.filter((v) => !headed.has(v));
+  out.push(
+    assert(
+      "★링크 참조가 있는 버전은 본문에 **헤더가 있다** — 헤더를 지우면 그 버전 내용이 이번 릴리스 노트에 섞여 나간다",
+      orphanRefs.length === 0,
+      orphanRefs.length === 0
+        ? `버전 ${headed.size}개 · 고아 참조 0`
+        : `★헤더 없는 참조: ${orphanRefs.slice(0, 5).join(", ")}`,
+    ),
+  );
+
+  // ── ★한국어판에도 이번 릴리스가 있나 (2026-09-07 적대 검토 P8) ────────────────
+  //  이 검사는 영어판만 읽었다. `CHANGELOG.ko.md` 에서 현재 버전 섹션을 통째로 지워도
+  //  초록이었고, 한국어 사용자에겐 이 릴리스가 **없는 것**이 된다. 「양문」이 링크
+  //  상호참조만 지키고 **내용 대칭**은 안 지키고 있었다.
+  const ko = await readFirst([
+    "../../../_workspace/public-overlay/CHANGELOG.ko.md",
+    "../../../CHANGELOG.ko.md",
+  ]);
+  out.push(
+    assert(
+      "★양문이 **내용으로** 대칭이다 — 한국어판에도 이번 버전 섹션이 있다",
+      ko === null || ko.text.includes(`## [${version}]`),
+      ko === null
+        ? "한국어판 없음(배포 레포·옛 체크아웃) — 대상 아님"
+        : ko.text.includes(`## [${version}]`)
+          ? `ko 에도 [${version}] 있음`
+          : `★ko 에 [${version}] 이 없다 — 한국어 사용자에겐 이 릴리스가 없는 것이 된다`,
+    ),
+  );
   return out;
 };
 

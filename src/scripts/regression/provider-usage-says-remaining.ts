@@ -61,6 +61,23 @@ const untilLabel = (at: number | undefined, now: number): string | undefined => 
   return s === "" ? undefined : s;
 };
 
+/**
+ * ★«못 쟀다» 는 답엔 **창이 없어야 한다** (2026-09-07 3라운드 P4).
+ *
+ * 2라운드에서 이 성질을 codex 의 반복 호출 한 곳에만 달았더니, claude 의 `unavailable`
+ * 가지가 그대로 뚫렸다 — `windows:[{remainingPercent:100}]` 를 담으면 화면이
+ * «이 계정에선 한도 조회가 안 됩니다» 대신 **«5시간 100% 남음»** 을 그린다
+ * (`rows.length > 0` 이 대기·불가 문장을 억누른다).
+ * ★그래서 판정을 **한 곳에** 두고 두 provider·세 경로에 전부 건다. 성질이 한 자리에 있으면
+ *  다음 provider 가 생겨도 같은 문을 지난다([[feedback_hand_maintained_lists]]).
+ */
+const saysNothingMeasured = (v: unknown): boolean => {
+  const u = v as { windows?: unknown[]; retryAt?: number; unavailable?: boolean } | undefined;
+  if (u === undefined) return true; // 아예 «모름» — 그것도 지어내지 않은 것이다.
+  const marked = typeof u.retryAt === "number" || u.unavailable === true;
+  return marked ? (u.windows ?? []).length === 0 : true;
+};
+
 export const check: RegressionCheck = {
   name: "provider-usage-says-remaining",
   guards:
@@ -134,8 +151,6 @@ export const check: RegressionCheck = {
     );
 
     // ── ④ ★비대칭을 지어내지 않는다 — provider 계약이 옵셔널이다 ─────────────
-    const { listAuthProviders } = await import("../../core/llm-runtime/auth-registry.js");
-    void listAuthProviders;
     const srcHost = await import("node:fs").then((fs) =>
       fs.readFileSync(new URL("../../core/plugins/host.ts", import.meta.url), "utf8"),
     );
@@ -621,6 +636,13 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
+        "★★못 쟀다는 답(대기·불가)엔 **창이 없다** — 있으면 화면이 그 숫자를 그려서 지어낸 값이 실측인 척 뜬다",
+        saysNothingMeasured(stillPending) && saysNothingMeasured(goneAnswer),
+        `대기=창 ${((stillPending as { windows?: unknown[] })?.windows ?? []).length}개 · 불가=창 ${((goneAnswer as { windows?: unknown[] })?.windows ?? []).length}개`,
+      ),
+    );
+    out.push(
+      assert(
         "★★기다렸는데도 거절당한 창이 둘이면 «이 계정에선 안 된다» 로 바꾼다 — 안 그러면 「잠시 뒤 다시」가 영원히 뜬다",
         isGone(goneAnswer),
         isGone(goneAnswer) ? "unavailable" : `★여전히 대기라고 말한다: ${JSON.stringify(goneAnswer)}`,
@@ -689,6 +711,45 @@ export const check: RegressionCheck = {
         "★모양이 바뀌면 «모름» 이다 — 못 읽는 건 괜찮고 **잘못 읽는 게** 나쁘다",
         junk.length === 0,
         junk.length === 0 ? "빈 결과" : `★지어냈다: ${JSON.stringify(junk)}`,
+      ),
+    );
+
+
+    // ── ★«대기 중» 이 **캐시 창 안에서도** 유지된다 (2026-09-07 적대 검토 P1) ────────
+    //  실측으로 잡힌 결함: 실패를 캐시에 담을 때 `undefined` 를 넣고 **반환만** `?? pending`
+    //  했더니, 캐시 적중 분기(`return cached.value`)가 그 폴백을 **우회**했다. 그래서
+    //  첫 열기엔 «5분 뒤 다시 시도» 가 뜨고 **두 번째 열기엔 아무것도 안 떴다** —
+    //  그 문장을 읽은 사람이 가장 하기 쉬운 행동이 «다시 열어보기» 라, 재현이 쉬운 쪽이다.
+    //  ★그래서 한 번이 아니라 **연달아 세 번** 부른다. 한 번만 재는 검사는 이걸 못 본다.
+    const failMod = new URL(
+      "../../../plugins/codex-subscription-auth/usage.ts",
+      import.meta.url,
+    ).href;
+    const repeated: unknown[] = [];
+    try {
+      const m = (await import(`${failMod}?cachefail`)) as {
+        fetchCodexUsage: (g: () => Promise<string>) => Promise<unknown>;
+      };
+      globalThis.fetch = (async () => ({ ok: false, status: 503 })) as never;
+      for (let i = 0; i < 3; i += 1) repeated.push(await m.fetchCodexUsage(async () => "t"));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    //  ★«못 쟀다» 는 답에 **창이 있으면 안 된다** (2026-09-07 2R #9). `retryAt` 만 보던
+    //   판은, 실패 경로가 `windows:[{remainingPercent:100}]` 를 함께 담아도 초록이었다 —
+    //   그러면 화면이 대기 문장 대신 **«5시간 100% 남음»** 을 그린다(`rows.length > 0` 이
+    //   대기 줄을 억누른다). 비공식 엔드포인트가 막히는 건 설계상 정상 경로라, 막힐 때마다
+    //   지어낸 숫자가 뜨는 셈이다. 이 레포가 가장 싫어하는 부류(지어낸 값을 실측인 척)다.
+    const allPending = repeated.every(
+      (v) => typeof (v as { retryAt?: number })?.retryAt === "number" && saysNothingMeasured(v),
+    );
+    out.push(
+      assert(
+        "★★못 쟀다는 말이 **연달아 열어도** 유지된다 — 캐시가 실패를 담으면 두 번째부터 화면이 다시 침묵한다",
+        repeated.length === 3 && allPending,
+        allPending
+          ? "3회 전부 retryAt 유지"
+          : `★${repeated.map((v) => { const u = v as { retryAt?: number; windows?: unknown[] }; return u?.retryAt === undefined ? "표식없음" : `창${(u.windows ?? []).length}개`; }).join("→")}`,
       ),
     );
 

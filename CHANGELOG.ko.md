@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-07
+
+### Added
+
+- **구독 한도가 얼마나 남았는지 보여줍니다.** 플러그인 상세를 열면 시간 한도와 주간 한도가
+  창마다 한 줄로, 남은 양과 리셋 시각이 함께 뜹니다. 조회는 토큰을 쓰지 않고 배경에서
+  주기적으로 돌지도 않습니다 — 상세를 열 때만 확인합니다.
+- Claude 쪽 한도는 이 기기에 **로그인된 Claude Code CLI** 가 있을 때 읽습니다. 없으면
+  숫자 대신 조회를 못 한 이유가 뜹니다.
+
+### Fixed
+
+- 폰에서 우상단 백그라운드 버튼이 **빈 칸**으로 보이던 것을 고쳤습니다. 진행 중인 작업이
+  없으면 아무것도 그려지지 않았습니다.
+
 ## [0.49.1] - 2026-09-06
 
 ### Fixed
@@ -1945,7 +1960,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...HEAD
+[0.50.0]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...v0.50.0
 [0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0

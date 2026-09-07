@@ -142,6 +142,15 @@ export const fetchCodexUsage = async (
     const err = e as { name?: string; message?: string };
     note(`조회 실패 — ${err?.name ?? "Error"}: ${String(err?.message ?? e).slice(0, 120)}`);
   }
-  cached = { at: now, value };
-  return value ?? pending;
+  // ★**캐시에도 «답할 것» 을 담는다** (2026-09-07 적대 검토 P1).
+  //  종전엔 `cached.value` 에 `undefined` 를 담고 반환만 `value ?? pending` 했다. 그러면
+  //  **캐시 적중 분기가 `pending` 을 우회**해(위 첫 줄 `return cached.value`) 두 번째로
+  //  여는 순간 «5분 뒤 다시 시도» 문장이 사라진다. 그 문장을 읽은 사람이 가장 하기 쉬운
+  //  행동이 «다시 열어보기» 라 그 창에서 정확히 재현된다 — 정태님이 *"아무것도 안떠"* 라고
+  //  신고한 그 증상이 캐시 창 안에서 되살아나는 것이다.
+  //  ★이음매를 없앤다: 두 경로가 **같은 값**을 내보내게 하면 우회할 자리 자체가 없어진다.
+  //   덤으로 `retryAt` 이 «최초 실패 시각 + 캐시» 로 고정돼 더 정직하다(열 때마다 안 밀린다).
+  const answer = value ?? pending;
+  cached = { at: now, value: answer };
+  return answer;
 };

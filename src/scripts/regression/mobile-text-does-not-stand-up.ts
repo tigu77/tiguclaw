@@ -107,7 +107,37 @@ export const check: RegressionCheck = {
     //  다시 서고 가로 스크롤(419 > 375)까지 난다. 정태님이 신고한 그 화면이 그대로
     //  재현되는데 게이트는 만점이었다. [[feedback_gate_must_actually_run]] 와 같은 기제,
     //  반대 방향(그때는 주석 안의 태그를 세서 상시 빨강이었다).
-    const mob = bare.slice(bare.indexOf("@media (max-width: 900px)"));
+    // ★★`mob` 은 **그 블록**이어야 한다 — 파일의 뒤쪽 전부가 아니다 (2026-09-07 적대 검토 P6).
+    //  종전엔 `slice(indexOf(...))` 라 첫 900px 마커부터 **파일 끝까지**였다(실측: 마커가
+    //  560행이라 파일의 72%). 그래서 모바일 규칙 다섯을 통째로 `@media (min-width: 1400px)`
+    //  로 **옮겨도 만점**이었다 — 폰에선 세로 글자·가로 스크롤·빈 상자가 전부 되살아나는데.
+    //  ★부정 단언(«이게 없다»)은 범위가 넓을수록 공짜 초록이 된다. 그래서 범위를 닫는다:
+    //   다음 최상위 `@media` 가 시작하는 자리에서 끊는다.
+    //  ★모바일 블록은 **여러 개**다(실측: `max-width:900px` 만 여섯, 그 밖에 640·760·430).
+    //   그래서 «첫 마커부터 끝까지» 도, «한 블록» 도 아니다 — **좁은 폭 블록 전부**를 모은다.
+    //   판정 기준은 폭이다: `max-width: N` 에서 N ≤ 900 인 블록만. `min-width` 블록은
+    //   정의상 빠지므로 P6 의 «데스크톱 전용 블록으로 옮기기» 가 통한다.
+    const mobileBlocks = ((): string => {
+      const parts: string[] = [];
+      const re = /@media\s*\(max-width\s*:\s*(\d+)px\)\s*\{/g;
+      for (let m = re.exec(bare); m !== null; m = re.exec(bare)) {
+        if (Number(m[1]) > 900) continue;
+        // 여는 중괄호부터 짝이 맞는 닫는 중괄호까지.
+        let depth = 0;
+        let i = m.index + m[0].length - 1;
+        const from = i;
+        for (; i < bare.length; i += 1) {
+          if (bare[i] === "{") depth += 1;
+          else if (bare[i] === "}") {
+            depth -= 1;
+            if (depth === 0) break;
+          }
+        }
+        parts.push(bare.slice(from, i + 1));
+      }
+      return parts.join("\n");
+    })();
+    const mob = mobileBlocks;
     const onlySpacerShrinks = /header > \*:not\(\.spacer\) \{[^}]*flex:\s*none/.test(mob);
     out.push(
       assert(
@@ -155,8 +185,37 @@ export const check: RegressionCheck = {
     // ★«태그가 있나» 가 아니라 «**글자가 있나**» 를 본다 — 빈 껍데기(<span …></span>)는
     //  화면에서 여전히 빈 상자다. 첫 판이 `\S` 로 재서 그 변이가 그냥 통과했다(실측):
     //  닫는 `<` 도 `\S` 라서, 검사가 «아무것도 안 보임» 을 «보인다» 로 읽었다.
-    const hasIcon = /id="bg-toggle"[\s\S]{0,300}?class="bg-icon"[^>]*>\s*[^<\s]/.test(indexHtml);
-    const iconStays = !/header #bg-toggle \.bg-icon \{[^}]*display:\s*none/.test(mob);
+    //  ★그리고 «글자» 는 **보이는 글자**여야 한다 (2026-09-07 적대 검토 P4). `[^<\s]` 로
+    //   좁힌 판은 «문자 그대로 빈 껍데기» 하나만 닫았다 — `&nbsp;` · `&#8203;` · ZWSP 리터럴이
+    //   전부 통과했고, 사용자 눈엔 여전히 빈 상자다. 그리고 300자 창이라 아이콘 `<span>` 을
+    //   **버튼 밖으로 빼도** 매칭됐다.
+    //  ★그래서 둘 다 좁힌다: 버튼 **안**을 잘라내고, 그 안의 아이콘 내용에서 «안 보이는 것»
+    //   (공백류·zero-width·HTML 공백 엔티티)을 걷어낸 뒤 남는 게 있는지 본다.
+    const btnInner =
+      /<button[^>]*id="bg-toggle"[\s\S]*?<\/button>/.exec(indexHtml)?.[0] ?? "";
+    const iconInner = /class="bg-icon"[^>]*>([\s\S]*?)<\/span>/.exec(btnInner)?.[1] ?? "";
+    //  ★엔티티 **목록을 적지 않는다** — 첫 판이 16진(`&#x200b;`)만 보고 **십진(`&#8203;`)을
+    //   놓쳤다**(변이가 통과했다). 목록은 늘 한 칸 모자란다([[feedback_hand_maintained_lists]]).
+    //   대신 **디코드하고 나서 «보이나» 로 판정**한다: 숫자 엔티티는 코드포인트로 바꾸고,
+    //   이름 엔티티는 공백류만 풀면 된다(나머지는 어차피 보이는 글자다).
+    const decoded = iconInner
+      .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(Number.parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+      .replace(/&nbsp;/gi, "\u00a0");
+    const visibleIcon = decoded.replace(/[\s\u00a0\u200b-\u200d\u2060\ufeff]/g, "");
+    const hasIcon = visibleIcon !== "";
+    // ★«숨겼나» 를 **한 철자**로 재던 것 (2026-09-07 적대 검토 P5). `display:none` 만
+    //  부정했더니 `visibility:hidden`·`opacity:0`·`font-size:0`·`width:0` 이 전부 통과했다 —
+    //  사용자 눈에는 다 같은 «안 보임» 이다. 숨기는 방법을 열거하는 대신 **그 규칙 블록에
+    //  숨김류 선언이 하나도 없어야 한다**로 쓴다.
+    const iconRule = /header #bg-toggle \.bg-icon \{([^}]*)\}/.exec(mob)?.[1] ?? "";
+    const hidesIcon =
+      /display\s*:\s*none/.test(iconRule) ||
+      /visibility\s*:\s*hidden/.test(iconRule) ||
+      /opacity\s*:\s*0(?![.\d])/.test(iconRule) ||
+      /font-size\s*:\s*0(?![.\d])/.test(iconRule) ||
+      /(?:^|;)\s*width\s*:\s*0(?![.\d])/.test(iconRule);
+    const iconStays = iconRule !== "" && !hidesIcon;
     const badgeIsConditional = /#bg-toggle \.bg-badge \{[^}]*display:\s*none/.test(bare);
     out.push(
       assert(

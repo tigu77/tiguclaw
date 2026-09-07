@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-09-07
+
+### Added
+
+- **See how much of your subscription limit is left.** Open a plugin's detail view and each
+  window — session and weekly — shows on its own line with the remaining amount and reset
+  time. Checking costs no tokens and nothing polls in the background; it refreshes when you
+  open the view.
+- The Claude figures need a signed-in Claude Code CLI on the machine. Without one you get the
+  reason the lookup failed instead of a number.
+
+### Fixed
+
+- Fixed the background button in the top right showing as an **empty box** on phones. With no
+  work in progress, nothing was drawn at all.
+
 ## [0.49.1] - 2026-09-06
 
 ### Fixed
@@ -384,7 +400,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...HEAD
+[0.50.0]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...v0.50.0
 [0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/tigu77/tiguclaw/compare/v0.47.0...v0.48.0

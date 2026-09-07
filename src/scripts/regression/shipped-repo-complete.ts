@@ -22,7 +22,7 @@
  *  한쪽에서만 도는 검사를 만들면 그게 바로 "로컬 초록 ≠ CI 초록" 이다.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -32,18 +32,36 @@ const OVERLAY = path.join(REPO, "_workspace/public-overlay");
 /** 개발 레포면 오버레이가, 배포 레포면 루트가 공개 자산의 자리다. */
 const PUBLIC_ROOT = existsSync(OVERLAY) ? OVERLAY : REPO;
 
+/**
+ * ★`docs/` 의 «안 나가는 것» 은 **여기 적지 않는다 — 파생한다** (2026-09-07).
+ *
+ * 사고: `docs/platform-roadmap.md` 를 내부 문서로 만들면서 `docs-ship-is-allowlist` 의
+ * `KNOWN_INTERNAL` 에 등록했는데 **이 검사가 빨개졌다.** 같은 판단(«이 문서가 나가나»)이
+ * 세 곳에 적혀 있었기 때문이다 — 스킬의 `DOCS_SHIP` · 그 회귀의 `KNOWN_INTERNAL` ·
+ * 여기 `NOT_SHIPPED`. 한 곳을 고치면 다른 곳이 낡는다([[feedback_hand_maintained_lists]]).
+ *
+ * 정본은 **스킬의 `DOCS_SHIP` 허용목록** 하나다(sync 가 실제로 그걸로 거른다).
+ * 여기서는 «디스크에 있는데 그 목록에 없는 docs» 를 안 나가는 것으로 **계산**한다.
+ * ★배포 레포엔 스킬이 없다 — 그때는 `docs/` 에 있는 게 곧 나간 것이므로 빈 집합이 맞다.
+ */
+const notShippedDocs = (): string[] => {
+  let ship: Set<string>;
+  try {
+    const skill = readFileSync(path.join(REPO, ".claude/skills/sync-public/SKILL.md"), "utf8");
+    const m = /DOCS_SHIP="([^"]+)"/.exec(skill);
+    ship = new Set((m?.[1] ?? "").split("|").filter((x) => x !== ""));
+  } catch {
+    return []; // 배포 레포 — 여기 있는 docs 는 정의상 전부 나간 것이다.
+  }
+  if (ship.size === 0) return [];
+  return readdirSync(path.join(REPO, "docs"))
+    .filter((f) => f.endsWith(".md") && !ship.has(f))
+    .map((f) => `docs/${f}`);
+};
+
 const NOT_SHIPPED = [
-  "docs/architecture.md",
+  ...notShippedDocs(),
   "docs/decisions/",
-  "docs/distribution-plan.md",
-  // 비전 정본 — 내부 실측(메모리 구성·인스턴스 수치)과 `docs/decisions/` 참조를 담고 있어
-  // 배포본에선 끊긴 링크가 된다. 공개용 비전이 필요하면 **밖을 향해 따로 쓴다**(2026-08-25).
-  "docs/vision.md",
-  // 로드맵 — dev 작업 목록. 내부 품질 갭("여기 그물이 없다")과 개인 사용 통계가 실려 있고
-  // `docs/decisions/` 참조가 배포본에선 끊긴다(2026-08-26).
-  "docs/roadmap.md",
-  // 비즈니스 비전 — 상용 전략 + "지금 백엔드로는 팔면 약관 위반" 이라는 자기 진술(2026-08-26).
-  "docs/vision-business.md",
   // ★**예제 플러그인은 공개본에 안 넣는다** (2026-08-29 정태님). 이유는 코드 품질이 아니라
   //  **제공자 약관**이다: 날씨는 Open-Meteo, 지도는 OpenStreetMap 타일을 쓰는데, 개인
   //  기계에서 쓰는 것과 **앱에 실어 배포하는 것**은 제공자 입장에서 다른 일이다(특히 OSM
@@ -73,12 +91,26 @@ const shippedDocs = (): string[] => {
   const tracked = execFileSync("git", ["ls-files"], { cwd: REPO, encoding: "utf8" })
     .split("\n")
     .filter((f) => f.endsWith(".md"));
-  return tracked.filter(
+  const base = tracked.filter(
     (f) =>
       !DEV_ONLY.some((d) => f === d || f.startsWith(d)) &&
       // 개발 레포에선 루트 README 가 dev 판이다(배포본은 오버레이 판) — 대상 아님.
       !(PUBLIC_ROOT !== REPO && /^README(\.en|\.ko)?\.md$/.test(f)),
   );
+  // ★★**사용자가 실제로 받는 README 를 넣는다** (2026-09-07 적대 검토 P3).
+  //  종전엔 `DEV_ONLY` 가 `_workspace/` 를 통째로 빼고 루트 README 도 따로 뺐다. 루트를 뺀
+  //  건 맞았지만(그건 dev 판) **오버레이까지 빼서, 결과적으로 어떤 README 도 이 검사를 한
+  //  번도 안 지났다**(실측: 스캔 대상 66개에 오버레이 0개). 그래서 공개 랜딩 페이지가
+  //  «나가지 않는 문서» 를 링크해도 초록이었다 — 이 검사가 «잡는다» 고 선언한 바로 그 결함이.
+  //  ★배포 레포에선 그 파일들이 이미 루트에 있으므로 `base` 가 덮는다(중복 안 넣는다).
+  if (PUBLIC_ROOT === REPO) return base;
+  const overlay = execFileSync("git", ["ls-files", "_workspace/public-overlay"], {
+    cwd: REPO,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter((f) => f.endsWith(".md"));
+  return [...base, ...overlay];
 };
 
 /** 배포본에 **없는** 것 — 문서가 이걸 "정본" 이라 가리키면 독자는 막다른 길에 선다. */
@@ -94,6 +126,11 @@ export const check: RegressionCheck = {
     const dangling: string[] = [];
     for (const rel of shippedDocs()) {
       const body = readFileSync(path.join(REPO, rel), "utf8");
+      // ★오버레이 파일은 **배포 루트가 그 폴더**다 (2026-09-07 P3 를 닫으며). 링크를 레포
+      //  루트에서 풀면 `_workspace/public-overlay/...` 가 되어 `DEV_ONLY` 에 걸리고 **전부
+      //  오탐**이 된다(실측 23건). 참조를 풀 때만 배포본에서의 자리로 바꿔 읽는다 —
+      //  파일을 읽는 경로(`rel`)와 참조를 푸는 기준(`asShipped`)은 다른 것이다.
+      const asShipped = rel.replace(/^_workspace\/public-overlay\//, "");
       // 주석/설명이 아니라 **참조**를 본다: 마크다운 링크와 백틱 경로.
       // ★**백틱 맨이름은 안 본다** — 넓혀 봤다가 되돌렸다 (2026-08-30). `` `PROJECT.md` ``
       //  를 잡으려고 패턴을 넓혔더니 `SYSTEM.md` 에서 **오탐 3건**이 났다: 거기 나오는
@@ -104,7 +141,9 @@ export const check: RegressionCheck = {
       for (const m of body.matchAll(/\[[^\]]*\]\(([^)]+)\)|`(docs\/[a-z0-9._/-]+)`/gi)) {
         const t = (m[1] ?? m[2] ?? "").split("#")[0]?.trim() ?? "";
         if (t === "" || /^(https?:|mailto:)/i.test(t)) continue;
-        const norm = t.startsWith("docs/") ? t : path.posix.normalize(path.posix.join(path.posix.dirname(rel), t));
+        const norm = t.startsWith("docs/")
+          ? t
+          : path.posix.normalize(path.posix.join(path.posix.dirname(asShipped), t));
         // ★"배포본엔 없다" 고 **명시한** 문장은 통과시킨다 — 그건 독자를 속이지 않는다.
         // ★**`DEV_ONLY` 로 판정한다** (2026-08-30, C7). 같은 파일에 목록이 둘인데
         //  이 자리만 짧은 쪽(`NOT_SHIPPED` 9개)을 잡고 있었다 — 위 ①의 배포 대상

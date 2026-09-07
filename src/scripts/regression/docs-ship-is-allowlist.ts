@@ -32,6 +32,8 @@ const KNOWN_INTERNAL = new Set([
   "distribution-plan.md",
   "vision.md",
   "vision-business.md",
+  // 플랫폼 장기 방향 — 내부 전략(경쟁·수익 구조·단계별 계획). 2026-09-07 정태님 작성.
+  "platform-roadmap.md",
 ]);
 
 export const check: RegressionCheck = {
@@ -51,6 +53,7 @@ export const check: RegressionCheck = {
     const ship = new Set((m?.[1] ?? "").split("|").filter((s) => s !== ""));
     const onDisk = readdirSync(path.join(REPO, "docs")).filter((f) => f.endsWith(".md"));
     const unclassified = onDisk.filter((f) => !ship.has(f) && !KNOWN_INTERNAL.has(f));
+
     const ghosts = [...ship].filter((f) => !onDisk.includes(f));
 
     return [
@@ -82,5 +85,29 @@ export const check: RegressionCheck = {
         [...KNOWN_INTERNAL].filter((f) => ship.has(f)).join(", ") || "내부 문서 유출 0",
       ),
     ];
+
+    // ── ★★목록만 보지 말고 **거르는 코드를 돌린다** (2026-09-07 적대 검토 P1·P2·P9) ──
+    //  종전엔 이 검사가 «`DOCS_SHIP` 에 뭐가 적혔나» 와 «`awk -v ok="$DOCS_SHIP"` 라는
+    //  글자가 있나» 만 봤다. **실제로 거르는 파이프라인 본문은 아무도 안 봤다.** 세 방향으로
+    //  뚫렸다(전부 스위트 초록):
+    //   ①awk 본문을 `{ print }` 로 → 배포 docs 14 → **193개**(`decisions/` 173개 포함).
+    //   ②`DOCS_SHIP="$DOCS_SHIP|platform-roadmap.md"` 한 줄 추가 → **쉘은 마지막 대입을
+    //     쓰는데 이 검사의 정규식은 첫 번째를 읽는다.** 내부 전략 문서가 나간다.
+    //   ③`grep -vE` 에 `^docs/security\.` 를 더해 → 배포 docs 14 → 10개. README 가
+    //     가리키는 문서가 404 가 된다(반대 방향).
+    //  ★고침은 단언을 늘리는 게 아니라 **판정을 실행으로 바꾸는 것**이다 — 스킬에서 §1
+    //   파이프라인을 그대로 떼어 돌리고, 나온 `docs/` 집합을 목록과 대조한다. 셋이 한 번에
+    //   닫힌다([[feedback_gate_must_actually_run]] 「게이트는 있다가 아니라 도는가」).
+    //  ★**파괴적인 줄은 절대 안 돌린다** — 그 블록엔 `git ls-files -z | xargs -0 rm -f`
+    //   (스테이징 비우기)와 `rsync` 가 같이 있다. 떼어낸 뒤 남아 있으면 실행을 거부한다.
+    // ── 이력: 여기서 «스킬의 셸을 떼어 실행» 을 시도했다가 되돌렸다 (2026-09-07) ──
+    //  세 라운드가 같은 구조를 뚫었다: 절대경로엔 제약이 없어 **스위트가 파일을 실제로
+    //  지웠고**, 추출 앵커가 위치라 미끼로 우회됐고, 격리한 가짜 `git` 이 pathspec 축을
+    //  눈멀게 했다. 안전하게 만들려면 컨테이너가 필요해 판돈이 안 맞는다 —
+    //  **회귀가 문서의 셸을 실행하는 구조 자체가 틀렸다.**
+    //  ★그 판정은 `sync-public` §4(파이프라인이 **이미 돈 뒤** 결과 폴더를 세는 자리)에 있다.
+    //   거기서 잡는 것: awk 본문 조작 · grep 제외 추가. **못 잡는 것: 중복 대입 ·
+    //   `docs/` 하위 폴더** — 로드맵에 백로그로 적어뒀다(2026-09-07 4라운드 실측).
+
   },
 };

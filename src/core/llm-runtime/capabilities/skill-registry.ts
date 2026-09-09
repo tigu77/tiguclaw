@@ -42,7 +42,7 @@ import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths
 import { getEventBus } from "../../eventbus.js";
 import { asReach, turnReaches, type Reach, type TurnKind } from "../capability-reach.js";
 import type { ChannelName } from "../../../channels/types.js";
-import { dedupeBySource } from "./dedup-by-source.js";
+import { dedupeWithShadows, warnShadowed } from "./dedup-by-source.js";
 import { listSkillUsage } from "../../../store/skill-usage.js";
 
 export interface Skill {
@@ -141,7 +141,10 @@ export const discoverSkills = async (
     ...bundledPluginSkills,
     ...homePluginSkills,
   ];
-  return opts.dedupe === false ? all : dedupeBySource(all);
+  if (opts.dedupe === false) return all;
+  const d = dedupeWithShadows(all);
+  warnShadowed("skill", d.shadowed);
+  return d.kept;
 };
 
 /**

@@ -19,7 +19,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
-import { dedupeBySource } from "../llm-runtime/capabilities/dedup-by-source.js";
+import { dedupeWithShadows, warnShadowed } from "../llm-runtime/capabilities/dedup-by-source.js";
 import { appRoot, getPaths } from "../paths.js";
 
 export type EndpointMethod = "GET" | "POST";
@@ -114,12 +114,14 @@ export const discoverEndpoints = async (
       walkPluginsEndpoints(homePluginsRoot),
     ]);
 
-  return dedupeBySource([
+  const _d = dedupeWithShadows([
     ...userEps,
     ...projectEps,
     ...bundledPluginEps,
     ...homePluginEps,
   ]);
+  warnShadowed("endpoint", _d.shadowed);
+  return _d.kept;
 };
 
 /**

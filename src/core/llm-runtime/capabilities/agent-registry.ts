@@ -36,7 +36,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseFrontmatter } from "./skill-registry.js";
-import { dedupeBySource } from "./dedup-by-source.js";
+import { dedupeWithShadows, warnShadowed } from "./dedup-by-source.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 
@@ -111,7 +111,7 @@ export const discoverAgents = async (
     walkPluginsAgents(homePluginsRoot),
   ]);
 
-  return dedupeBySource([
+  const _d = dedupeWithShadows([
     ...builtinAgents,
     ...userAgents,
     ...projectAgents, // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
@@ -119,6 +119,8 @@ export const discoverAgents = async (
     ...bundledPluginAgents,
     ...homePluginAgents,
   ]);
+  warnShadowed("agent", _d.shadowed);
+  return _d.kept;
 };
 
 /**

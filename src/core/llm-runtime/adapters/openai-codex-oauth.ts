@@ -38,6 +38,7 @@
  *    (README §직접 만들 것 vs 라이브러리 의 "채널 어댑터" 면).
  */
 import { randomBytes } from "node:crypto";
+import { prefixFingerprint, describeFingerprint, rememberFingerprint } from "../prefix-fingerprint.js";
 import {
   agentSizeWarning,
   readAgent,
@@ -1281,6 +1282,8 @@ export const runOpenAiCodex = async (
    *  instructions / input / tools 를 **따로** 재야 한다.
    */
   let lastReqBytes = { total: 0, instructions: 0, input: 0, tools: 0, items: 0 };
+  let lastFingerprint: string[] = [];
+  let lastFingerprintNote = "fp=없음";
 
   try {
     // ★창(window)으로 본다 — 이어갈 때 `iterationBase` 만 옮기고 `iteration` 은 계속 는다.
@@ -1375,6 +1378,17 @@ export const runOpenAiCodex = async (
       // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
       const bodyJson = JSON.stringify(body);
+      // ★**캐시가 끊긴 자리를 로그가 말하게 한다** (2026-09-09). 종전엔 바이트 수만 남아서
+      //  «크기는 같은데 내용이 다른가» 를 못 가렸다 — 같은 분에 같은 크기의 두 요청이
+      //  65% 와 8% 로 갈린 것을 설명할 수 없었다. 프리픽스를 **보내는 순서 그대로**
+      //  이어붙여 사다리로 해시한다(지시 → 입력. 도구는 프리픽스 뒤라 제외).
+      lastFingerprint = prefixFingerprint(
+        String(body.instructions ?? "") + JSON.stringify(body.input ?? []),
+      );
+      lastFingerprintNote = describeFingerprint(
+        lastFingerprint,
+        rememberFingerprint(input.threadKey, lastFingerprint),
+      );
       lastReqBytes = {
         total: bodyJson.length,
         instructions: String(body.instructions ?? "").length,
@@ -1769,7 +1783,8 @@ export const runOpenAiCodex = async (
             `[cache-curve] ${model} i${usageTotals.iterations} ` +
               `in=${usage.inputTokens.toLocaleString()} cached=${(usage.cachedTokens ?? 0).toLocaleString()} ` +
               `적중=${Math.round(hitPct(usage))}% req=${lastReqBytes.total.toLocaleString()}자` +
-              `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()})`,
+              `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
+              lastFingerprintNote,
           );
         }
       }
@@ -2016,6 +2031,7 @@ export const runOpenAiCodex = async (
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
             `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
             `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
+            `${lastFingerprintNote} ` +
             // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가
             //  쪼개져 있었는데 `cached` 가 없어서, «프리픽스가 어디서 끊겼나» 를 물으면
             //  로그로는 답이 안 나왔다 — 프로브를 새로 짜서 반나절을 썼다. 세 필드면

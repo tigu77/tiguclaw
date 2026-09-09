@@ -26,7 +26,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
-import { dedupeBySource } from "../llm-runtime/capabilities/dedup-by-source.js";
+import { dedupeWithShadows, warnShadowed } from "../llm-runtime/capabilities/dedup-by-source.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../paths.js";
 
 /**
@@ -177,13 +177,15 @@ export const discoverCommands = async (
       walkPluginsCommands(homePluginsRoot),
     ]);
 
-  return dedupeBySource([
+  const _d = dedupeWithShadows([
     ...userCmds,
     ...projectCmds, // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
     ...projectLegacyCmds,
     ...bundledPluginCmds,
     ...homePluginCmds,
   ]);
+  warnShadowed("command", _d.shadowed);
+  return _d.kept;
 };
 
 /**

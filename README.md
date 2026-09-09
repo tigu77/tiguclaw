@@ -63,7 +63,8 @@ But the goal finishing without you is the default.
 
 ## Quick start
 
-You need **Node 20+**, **git**, **one LLM provider** (below), and optionally a **Telegram bot**.
+You need **git**, **one LLM provider** (below), and optionally a **Telegram bot**. Node 20+ too —
+but if you don't have it, the installer offers to fetch one just for tiguclaw.
 
 > ⚠️ Please read [`docs/security.en.md`](docs/security.en.md) first — the assistant can reach *your*
 > shell and files (the same self-selecting model as Claude Code), and **asks for your OK before
@@ -80,9 +81,11 @@ irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 ```
 
 Download, install, and the setup wizard, in one go. Default location is `tiguclaw/` under your home —
-override with `TIGUCLAW_DIR`. All it needs is **Node.js 20+ and git**; if they're already there it
-won't overwrite, it tells you. (Stick to an LTS — **20 · 22 · 24**. Prebuilt native binaries track LTS,
-so odd-numbered releases may require C++ build tools.)
+override with `TIGUCLAW_DIR`. **git** has to be there already. If **Node 20+** isn't, the installer
+asks before fetching one into `<install dir>/.node` — for tiguclaw only: no admin rights, nothing
+added to your system `PATH`, and it goes away when you delete the folder. If something is already
+installed at the target path it stops and tells you rather than overwriting. (It picks a current
+**LTS**; prebuilt native binaries track LTS, so odd-numbered releases may require C++ build tools.)
 
 <details>
 <summary><b>Prefer to do it yourself</b> (same thing, by hand)</summary>

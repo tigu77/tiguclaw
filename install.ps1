@@ -15,6 +15,8 @@ $ErrorActionPreference = 'Stop'
 $RepoUrl  = 'https://github.com/tigu77/tiguclaw.git'
 $Dir      = if ($env:TIGUCLAW_DIR) { $env:TIGUCLAW_DIR } else { Join-Path $env:USERPROFILE 'tiguclaw' }
 $MinNode  = 20
+# 자동 설치할 때 고를 LTS 계열 — 네이티브 미리빌드가 LTS 를 따라간다(sh 판과 같은 값).
+$LtsMajor = if ($env:TIGUCLAW_NODE_MAJOR) { $env:TIGUCLAW_NODE_MAJOR } else { '22' }
 
 function Die($msg) { Write-Host "`n[X] $msg" -ForegroundColor Red; exit 1 }
 
@@ -25,8 +27,73 @@ Write-Host ""
 
 # ── 전제 ────────────────────────────────────────────────────────────────────
 if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git 이 없습니다. 먼저 설치하세요: winget install Git.Git" }
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Die "Node.js 가 없습니다 — $MinNode 이상이 필요합니다: winget install OpenJS.NodeJS.LTS" }
-if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { Die "npm 이 없습니다. Node.js 설치를 확인하세요." }
+
+# ★**Node 가 없으면 여기서 멈추지 않는다** — sh 판과 같은 이유·같은 방식이다(2026-09-09).
+#  `winget install` 을 부르지 않는다: 전역 변경이고, 무엇보다 **지울 때 같이 안 지워진다.**
+#  대신 앱 폴더 안에 이 설치본 전용 Node 를 둔다: <설치폴더>\.node
+#  ★서비스 등록(사용자 수준 예약작업)은 `bin/daemon.mjs` 가 `process.execPath` 를 굽기
+#   때문에 저절로 이 Node 를 가리킨다 — 배선을 새로 만들 필요가 없다.
+$NodeDir = Join-Path $Dir '.node'
+$NeedNode = $false
+
+function Test-NodeOk {
+  if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
+  if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { return $false }
+  try { $maj = [int]((((node --version) -replace '^v','') -split '\.')[0]) } catch { return $false }
+  return ($maj -ge $MinNode)
+}
+
+function Install-PrivateNode {
+  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+  # 버전을 손으로 박지 않는다 — `latest-v<major>.x/SHASUMS256.txt` 가 파일 이름과 해시를 같이 준다.
+  $base = "https://nodejs.org/dist/latest-v$LtsMajor.x"
+  $tmp  = Join-Path ([System.IO.Path]::GetTempPath()) ("tiguclaw-node-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+  try {
+    $sums = (Invoke-WebRequest -UseBasicParsing "$base/SHASUMS256.txt").Content -split "`n"
+    $line = $sums | Where-Object { $_ -match "node-v[\d.]+-win-$arch\.zip\s*$" } | Select-Object -First 1
+    if (-not $line) { Die "이 플랫폼(win-$arch)용 Node 배포본을 목록에서 못 찾았습니다." }
+    $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
+    $want  = $parts[0]; $file = $parts[1]
+    Write-Host "   받는 중: $file"
+    $zip = Join-Path $tmp $file
+    Invoke-WebRequest -UseBasicParsing "$base/$file" -OutFile $zip
+    # ★검증 실패는 «다시 시도» 가 아니라 중단이다 — 실행 파일을 받는 중이다.
+    $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+    if ($got -ne $want.ToLower()) { Die "Node 배포본 체크섬이 다릅니다 — 설치를 중단합니다.`n   기대: $want`n   실제: $got" }
+    Expand-Archive -Path $zip -DestinationPath $tmp -Force
+    $inner = Get-ChildItem -Path $tmp -Directory | Where-Object { $_.Name -like 'node-v*' } | Select-Object -First 1
+    if (-not $inner) { Die "Node 압축 안에서 폴더를 못 찾았습니다." }
+    New-Item -ItemType Directory -Path $NodeDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $NodeDir -Recurse -Force
+  } finally {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+  }
+  $env:PATH = "$NodeDir;$env:PATH"
+  if (-not (Test-NodeOk)) { Die "전용 Node 를 설치했는데 실행되지 않습니다 ($NodeDir\node.exe)." }
+  Write-Host "[v] 전용 node $(node -v) — $NodeDir (시스템은 안 건드렸습니다)" -ForegroundColor Green
+}
+
+if (Test-NodeOk) {
+  Write-Host "[v] node $(node -v) · git $((git --version).Split(' ')[2])"
+} else {
+  if (Get-Command node -ErrorAction SilentlyContinue) {
+    Write-Host "! 지금 node 는 $(node -v) 인데 $MinNode 이상이 필요합니다." -ForegroundColor Yellow
+  } else {
+    Write-Host "! Node.js 가 없습니다 ($MinNode 이상이 필요합니다)." -ForegroundColor Yellow
+  }
+  Write-Host ""
+  Write-Host "  tiguclaw 전용 Node 를 이 설치 폴더 안에만 받을 수 있습니다:"
+  Write-Host "    $NodeDir   (약 50MB · 관리자 권한 불필요 · 시스템 PATH 를 안 건드림)"
+  Write-Host "  지울 때는 설치 폴더를 지우면 같이 사라집니다."
+  Write-Host ""
+  # ★묻는다 — 런타임을 받아 까는 일을 조용히 하지 않는다.
+  if (-not $env:TIGUCLAW_AUTO_NODE) {
+    $ans = Read-Host "  받을까요? [Y/n]"
+    if ($ans -match '^(n|no)$') { Die "설치를 멈췄습니다. Node $MinNode 이상을 직접 설치한 뒤 다시 실행하세요 (winget install OpenJS.NodeJS.LTS)." }
+  }
+  $NeedNode = $true
+}
 
 # ★npm 은 **npm.cmd** 로 부른다 (2026-08-19 실사고).
 #  PowerShell 에서 `npm` 을 부르면 `npm.ps1` 이 잡히는데, 실행 정책이 기본 잠금인 윈도우에서는
@@ -68,6 +135,14 @@ Write-Host "-> 코드 받는 중..."
 git clone --quiet $RepoUrl $Dir
 if ($LASTEXITCODE -ne 0) { Die "clone 실패 — 네트워크나 접근 권한을 확인하세요." }
 Set-Location $Dir
+
+# ★전용 Node 는 clone 뒤에 받는다 — 폴더가 먼저 있으면 `git clone` 이 실패한다.
+#  여기서 PATH 를 앞세우면 아래 npm·onboard·서비스 등록이 전부 이 Node 를 쓴다.
+if ($NeedNode) {
+  Write-Host ""
+  Write-Host "-> 전용 Node 준비 중..." -ForegroundColor Cyan
+  Install-PrivateNode
+}
 
 Write-Host "-> 의존성 설치 중... (네이티브 모듈 빌드로 1~2분 걸릴 수 있습니다)"
 # ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에

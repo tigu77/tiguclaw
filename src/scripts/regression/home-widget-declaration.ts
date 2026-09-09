@@ -201,6 +201,43 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★**읽는 쪽이 «거부하는» 것은 «놓여 있다» 가 아니다** (2026-09-09, 적대 검토 P5).
+    //  새 `asked` 가 파일의 **원값**을 세는 바람에, `normalizeHomeWidgets` 가 떨어뜨릴
+    //  항목(size 가 틀렸다든지)도 «이미 놓여 있다» 로 읽혔다. 그러면 화면엔 없는데
+    //  `seeded` 엔 «물어봤다» 가 적혀 **다시는 안 놓인다** — 사용자가 그 깨진 줄을 지워도
+    //  영영 안 살아난다. 이 파일이 캡 옆에 적어둔 규칙을 다른 문으로 어긴 것이다.
+    writeFileSync(
+      settings,
+      JSON.stringify(
+        {
+          dashboard: {
+            home: {
+              // 읽는 쪽이 떨어뜨릴 항목(size 규칙 위반).
+              widgets: [{ id: "broken", type: "running-work/live", size: "BOGUS", config: {} }],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const brokenSeed = seedDefaultHomeWidgets(AV);
+    const brokenSeeded = ((JSON.parse(readFileSync(settings, "utf8")) as {
+      dashboard?: { home?: { seeded?: unknown } };
+    }).dashboard?.home?.seeded ?? []) as string[];
+    // 사용자가 깨진 줄을 고친다(지우고 다시 부팅).
+    writeHomeWidgets([]);
+    const afterFix = seedDefaultHomeWidgets(AV);
+    out.push(
+      assert(
+        "★★읽는 쪽이 **거부하는** 항목은 «물어본 것» 으로 세지 않는다 — 세면 화면엔 없는데 seeded 엔 적혀, 사용자가 그 줄을 고쳐도 영영 안 놓인다",
+        !brokenSeeded.includes("running-work/live") && afterFix.length === 1,
+        JSON.stringify({ brokenSeed, brokenSeeded, afterFix }),
+      ),
+    );
+    writeHomeWidgets([]);
+
     // ★**id 는 만드는 자리에서 읽는 쪽 규칙을 지킨다** (2026-09-09, 적대 검토 F3).
     //  `idForType` 이 64자로 자른 뒤 `freeId` 가 `-2` 를 덧붙여 66자를 만들면,
     //  `normalizeHomeWidgets` 가 그 칸을 떨어뜨리는데 `seeded` 엔 «놓았다» 가 남아

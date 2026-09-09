@@ -96,7 +96,27 @@ const toWindow = (w: unknown): UsageWindow | undefined => {
   };
 };
 
+/**
+ * **진행 중인 조회 하나를 나눠 쓴다** (2026-09-09, 적대 검토 P1).
+ *
+ * ★연타 하한은 `cached.at` 을 보는데 그 값은 조회가 **끝난 뒤에야** 갱신된다 — 직렬
+ *  연타만 막고 동시 요청은 전부 통과해, 비공식 엔드포인트를 동시에 여러 번 때렸다.
+ *  (claude 쪽은 같은 구멍으로 CLI 프로세스가 20개 떴다.)
+ */
+let inflight: Promise<ProviderUsage | undefined> | undefined;
+
 export const fetchCodexUsage = async (
+  getAccessToken: () => Promise<string>,
+  force = false,
+): Promise<ProviderUsage | undefined> => {
+  if (inflight !== undefined) return inflight;
+  inflight = fetchCodexUsageInner(getAccessToken, force).finally(() => {
+    inflight = undefined;
+  });
+  return inflight;
+};
+
+const fetchCodexUsageInner = async (
   getAccessToken: () => Promise<string>,
   force = false,
 ): Promise<ProviderUsage | undefined> => {

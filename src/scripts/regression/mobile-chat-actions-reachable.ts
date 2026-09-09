@@ -32,13 +32,34 @@ export const check: RegressionCheck = {
     const out: Assertion[] = [];
 
     // ① 옮기는 대상이 «그 상자 안의 버튼 전부» 인가 — 이름을 적으면 옆이 빠진다.
-    const moves = /\.chat-head-actions\s*>\s*button/.test(nav);
-    const namesOne = /getElementById\("bg-toggle"\)[\s\S]{0,400}?insertBefore/.test(nav);
+    const box = /\.chat-head-actions/.test(nav);
+    const allButtons = /querySelectorAll\(\s*["'](?:\.chat-head-actions\s*>\s*button|:scope\s*>\s*button)["']/.test(nav);
+    const namesOne = /querySelectorAll\([^)]*button#|getElementById\("(bg-toggle|chat-search-btn)"\)[\s\S]{0,300}?(insertBefore|appendChild)/.test(nav);
     out.push(
       assert(
         "★★모바일이 채팅 상단 버튼을 **상자째** sticky 헤더로 옮긴다 — 이름을 하나 적으면 옆에 나란한 버튼이 조용히 빠지고, 그건 «스크롤로 사라지는 상자» 에 갇힌다는 뜻이다(검색이 그랬다)",
-        moves && !namesOne,
-        JSON.stringify({ 상자째: moves, 이름하나로: namesOne }),
+        box && allButtons && !namesOne,
+        JSON.stringify({ 상자: box, 버튼전부: allButtons, 이름하나로: namesOne }),
+      ),
+    );
+    // ★**옮기는 코드가 실제로 있나** (적대 검토 B4: 셀렉터만 두고 이동을 지워도 초록이었다).
+    out.push(
+      assert(
+        "★모아둔 버튼을 실제로 헤더에 **넣는다** — 셀렉터만 남기고 이동을 지우면 «상자째» 는 참인데 아무 버튼도 안 옮겨진다",
+        /mnHeader\.(insertBefore|appendChild)\(/.test(nav),
+        /mnHeader\.(insertBefore|appendChild)\(/.test(nav) ? "헤더 삽입 있음" : "★삽입 없음",
+      ),
+    );
+    // ★**폭이 바뀌면 다시 판정하나** (적대 검토 P3: 로드 1회 판정이라 창을 좁히면 원래
+    //  버그가 그대로 돌아왔다 — 폰 회전도 900px 경계를 넘는다).
+    // ★`[^)]*` 를 쓰면 안 된다 — 질의문 자체가 `(max-width: 900px)` 라 괄호를 품는다.
+    const reacts = /matchMedia[\s\S]{0,80}?addEventListener\(\s*["']change["']|addEventListener\(\s*["']resize["']/.test(nav);
+    const movesBack = /mnHome\.appendChild|parentElement\s*!==\s*mnHome/.test(nav);
+    out.push(
+      assert(
+        "★★폭이 바뀌면 **다시 판정한다**(그리고 넓어지면 제자리로 돌린다) — 로드 1회 판정이면 넓은 창에서 열었다가 좁힐 때 버튼이 «스크롤로 사라지는 상자» 에 0×0 으로 갇힌다(고친 버그가 다른 문으로 돌아온다)",
+        reacts && movesBack,
+        JSON.stringify({ 폭변화감지: reacts, 되돌리기: movesBack }),
       ),
     );
 

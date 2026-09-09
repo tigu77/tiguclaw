@@ -101,20 +101,19 @@ if (Test-NodeOk) {
 #  없으므로 npm.ps1 파일을 로드할 수 없습니다"). `npm.cmd` 는 배치 파일이라 정책 대상이 아니다.
 #  ★사용자에게 `Set-ExecutionPolicy` 를 시키지 않는다 — 설치 하나 하려고 시스템 보안 설정을
 #   바꾸게 하는 건 우리가 할 말이 아니고, 우리가 부르는 방식만 바꾸면 되는 일이다.
-$Npm = if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
+# ★해석은 **전용 Node 를 깐 뒤**에 한다 (적대 검토 P2). 여기서 정하면 그 시점엔 전용 Node 가
+#  아직 없어 `$Npm = "npm"` 으로 굳고, 나중에 Node 를 깔아도 그대로라 `npm.ps1` 을 잡는다 —
+#  바로 위 주석이 막겠다고 적어둔 2026-08-19 사고가 그대로 재발한다.
 
-# 버전 판정은 PowerShell 안에서 한다 — node 에 **표현식을 넘기지 않는다**.
-#  ★종전: `node -p 'process.versions.node.split(".")[0]'`. Windows PowerShell(5.1 계열)은
-#   네이티브 명령에 인자를 넘길 때 **큰따옴표를 이스케이프하지 않는다.** 그래서 node.exe 가
-#   `"` 를 인자 구분자로 먹고 `process.versions.node.split(.)[0]` 을 받아 SyntaxError 를 낸다.
-#   그러면 이 줄이 빈 값이 되고 `[int]` 가 0 이 돼, **Node 24 를 깔아둔 사람에게**
-#   "Node.js 20 이상이 필요합니다 (지금 v24.19.0)" 라는 **자기모순 메시지**로 설치가 멈춘다
-#   (2026-08-19 실제 신고). PowerShell 7.3+ 는 동작이 바뀌어 안 터진다 = 기계마다 갈린다.
-#  ★install.sh 의 같은 줄은 멀쩡하다 — bash 는 argv 를 그대로 넘겨 재파싱이 없다. 같은
-#   코드가 셸에 따라 다르게 깨지는 자리라, 여기만 고친다.
-$nodeMajor = [int]((((node --version) -replace '^v', '') -split '\.')[0])
-if ($nodeMajor -lt $MinNode) { Die "Node.js $MinNode 이상이 필요합니다 (지금 $(node -v))." }
-Write-Host "[v] node $(node -v)"
+# ★**여기 있던 버전 검사 3줄을 지웠다** (2026-09-09, 적대 검토 P1). 위 `Test-NodeOk` 가
+#  이미 같은 판정을 하는데 옛 검사가 남아 **두 벌**이 됐고, 그게 치명적이었다: 이 줄에
+#  도달하는 사람은 정의상 **node 가 없어서** 온 사람인데 `node --version` 을 맨몸으로 불렀다.
+#  `$ErrorActionPreference='Stop'` 이라 CommandNotFound 로 죽고, 넘어가도 `[int]('')` 가 던지고,
+#  0 이면 "지금 " 이라는 빈 자기모순 메시지로 죽는다 — **세 갈래 전부 clone 전에 중단**이라
+#  윈도우에서 전용 Node 기능이 **0% 작동**했다.
+#  ★함정을 몰라서가 아니다 — 42행의 같은 호출은 `try{}catch{}` 안에 있다. **새 갈래에서만**
+#   빠뜨렸다. 같은 판단을 두 곳에 두면 한쪽이 낡는다.
+#  (원래 이 자리가 막던 PowerShell 5.1 인용 함정은 `Test-NodeOk` 안으로 옮겨가 있다.)
 
 # ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
 if (Test-Path $Dir) {
@@ -143,6 +142,9 @@ if ($NeedNode) {
   Write-Host "-> 전용 Node 준비 중..." -ForegroundColor Cyan
   Install-PrivateNode
 }
+
+# ★이제서야 npm 을 해석한다 — 전용 Node 를 깔았으면 그쪽 `npm.cmd` 가 잡혀야 한다(P2).
+$Npm = if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
 
 Write-Host "-> 의존성 설치 중... (네이티브 모듈 빌드로 1~2분 걸릴 수 있습니다)"
 # ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에

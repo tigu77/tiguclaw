@@ -8,6 +8,33 @@
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-09-09
+
+### Added
+
+- **Node.js 가 없어도 설치가 끝납니다.** 한 줄 설치가 Node 20 이상을 못 찾으면, 물어본 뒤
+  이 설치본 전용으로 `<설치폴더>/.node` 에 받습니다. 관리자 권한이 필요 없고 시스템 PATH 를
+  건드리지 않으며, 설치 폴더를 지우면 같이 사라집니다.
+- 구독 한도 옆에 **새로고침**(🔄)이 생겼습니다. 캐시는 30초라, 다시 열면 새 값이 옵니다.
+
+### Changed
+
+- **플러그인 메뉴가 즉시 열립니다.** 종전엔 목록을 그리기 전에 모든 구독의 한도 조회를
+  기다려 최대 25초까지 멈췄습니다. 이제 한도는 **플러그인 상세를 열 때** 그 하나만 가져옵니다.
+- 코드 리뷰는 이제 **매니저가 수행**하고, 인원도 매니저가 코드를 읽고 정합니다.
+  비서는 범위만 지정합니다.
+- 기여 안내에 무엇을 이슈로·PR 로·먼저 논의로 보낼지 적었습니다. 손으로 반영하더라도
+  기여자와 PR 번호를 커밋·릴리스 노트에 남깁니다.
+
+### Fixed
+
+- **모바일 채팅에서 검색 버튼이 안 보이던 것**을 고쳤습니다. 스크롤로 사라지는 자리에 있어
+  대화가 길면 닿을 수 없었습니다. 검색창을 눌렀을 때 화면이 확대되던 것도 함께 고쳤습니다.
+- 좁지 않은 화면에서도 헤더 글자가 사라지던 것을 고쳤습니다.
+- 홈에 이미 놓여 있던 기본 위젯을 끄면 **재시작마다 되살아나던 것**을 고쳤습니다.
+- 한도 새로고침을 연달아 누르면 조회가 겹쳐 실행되던 것을 고쳤습니다.
+
+
 ## [0.50.0] - 2026-09-07
 
 ### Added
@@ -1960,7 +1987,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...v0.50.0
 [0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/tigu77/tiguclaw/compare/v0.48.0...v0.49.0

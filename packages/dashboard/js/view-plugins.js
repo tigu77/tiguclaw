@@ -153,7 +153,14 @@ function formatUsageLine(usage, now) {
       const loadUsage = async (provider, force) => {
         if (!force && usageState.has(provider)) return; // 한 번만 — 재렌더로 다시 안 묻는다
         usageState.set(provider, "loading");
-        renderPluginsView();
+        // ★여기서 **다시 그리지 않는다** (2026-09-09, 적대 검토 P2). 이 함수는
+        //  `buildPluginCard` 안에서 불리므로(첫 `await` 전까지 동기 실행), 여기서
+        //  `renderPluginsView()` 를 부르면 **렌더 안에서 렌더**가 돈다: 안쪽이
+        //  `root.innerHTML` 을 갈아끼운 뒤 바깥이 이어서 살아있는 노드에 설치 행을 한 벌
+        //  더 붙였다 — 실측으로 조회가 끝날 때까지(claude CLI 2.3초, 시한 25초) 입력칸과
+        //  설치 버튼이 **두 벌**이었다.
+        //  ★잃는 것도 없다: 호출부가 `usageState.set` **직후에** 상태를 읽으므로 지금
+        //   돌고 있는 렌더가 이미 «확인하는 중» 을 그린다.
         try {
           const r = await fetch(
             "/api/auth-usage?provider=" + encodeURIComponent(provider) + (force ? "&force=1" : ""),
@@ -668,7 +675,13 @@ function formatUsageLine(usage, now) {
           //   (`[usage] claude-subscription: 429 조회 제한 — …`). 0% 로 뭉개면 그
           //   숫자로 판단하게 되고, «한도 도달» 로 적으면 거짓말이 된다.
           // ★목록 응답엔 이제 사용량이 없다 — 이 카드가 열릴 때 provider 하나만 묻는다.
-          if (info && info.hasUsage === true && !usageState.has(id)) void loadUsage(id, false);
+          // ★**인증된 provider 에게만 묻는다** (2026-09-09, 적대 검토 P4). 종전엔
+          //  `hasUsage` 만 보고 물어서 둘 다 나빴다: codex 는 로그인 전이라 **영원히 안 올**
+          //  값을 «1분 뒤 다시 시도» 로 약속했고, claude 는 이 설치가 쓰지도 않는 OS 로그인
+          //  계정의 키체인을 CLI 가 읽어 **토큰이 없는데 «63% 남음»** 을 띄웠다. 둘 다
+          //  «모름» 이 정답인 자리에 그럴듯한 숫자·약속을 놓은 것이다.
+          const canAsk = info && info.hasUsage === true && info.authenticated === true;
+          if (canAsk && !usageState.has(id)) void loadUsage(id, false);
           const cur = usageState.get(id);
           const loading = cur === "loading";
           const usage = loading ? null : cur || null;
@@ -677,11 +690,16 @@ function formatUsageLine(usage, now) {
           // ★**새로고침** (2026-09-09 정태님) — 캐시의 일은 «화면 한 번 여는 동안의 중복
           //  호출을 접는 것» 이므로, 다시 누른 것은 정의상 그 중복이 아니다. 누른 사람이
           //  그 숫자를 보려고 기다리는 것이니 여기선 기다려도 된다(목록과 성질이 다르다).
-          if (info && info.hasUsage === true) {
+          if (canAsk) {
             const rf = document.createElement("button");
             rf.className = "ghost-btn usage-refresh";
             rf.type = "button";
-            rf.textContent = i18n("plugins.auth.usage.refresh");
+            // ★**아이콘으로 둔다** (2026-09-09 정태님). 이 줄에 이미 provider 이름·상태가
+            //  붙어 있어 낱말을 하나 더 얹으면 머리가 붐빈다. 다만 «모양만 줄이고 의미는
+            //  안 줄인다» — 뜻은 `aria-label`·`title` 이 그대로 진다(헤더 낱말 접기와 같은 규칙).
+            rf.textContent = "🔄";
+            rf.setAttribute("aria-label", i18n("plugins.auth.usage.refresh"));
+            rf.title = i18n("plugins.auth.usage.refresh");
             rf.disabled = loading;
             rf.addEventListener("click", () => void loadUsage(id, true));
             head.appendChild(rf);

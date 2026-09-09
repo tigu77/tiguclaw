@@ -482,8 +482,18 @@ export const seedDefaultHomeWidgets = (
   //  다음 부팅에 «아직 안 물어봤다» 로 읽혀 되살아나고, 껐다→되살아남이 끝나지 않는다.
   //  `widgets` 는 «지금 보이는 것», `seeded` 는 «이미 물어본 것» — 놓은 주체가 누구든
   //  거기 있다는 사실은 물어본 것과 같다.
+  // ★**읽는 쪽이 받아들이는 것만** «있다» 로 센다 (2026-09-09, 적대 검토 P5). `present` 는
+  //  파일의 **원값**이라, `normalizeHomeWidgets` 가 떨어뜨릴 항목(size 가 틀렸다든지)도
+  //  «놓여 있다» 로 읽혔다. 그러면 화면엔 없는데 `seeded` 엔 «물어봤다» 가 적혀 **다시는
+  //  안 놓인다** — 사용자가 그 깨진 줄을 지워도 영영 안 살아난다(실측).
+  //  이 파일이 캡 `break` 옆에 적어둔 *"읽는 쪽이 거부할 것을 쓰지 않는다"* 를, 바로 두 줄
+  //  위에서 다른 문으로 어기고 있었다.
+  const acceptedTypes = new Set(
+    normalizeHomeWidgets(readRaw().widgets, new Set(available.map((w) => w.type.split("/")[0] ?? "")))
+      .widgets.map((w) => w.type),
+  );
   const asked = available
-    .filter((w) => w.default && !seeded.has(w.type) && present.has(w.type))
+    .filter((w) => w.default && !seeded.has(w.type) && acceptedTypes.has(w.type))
     .map((w) => w.type);
   if (add.length === 0 && asked.length === 0) return [];
   const placed: string[] = [];

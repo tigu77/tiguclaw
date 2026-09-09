@@ -29,6 +29,17 @@ say ""
 # ── 전제 ────────────────────────────────────────────────────────────────────
 command -v git >/dev/null 2>&1 || die "git 이 없습니다. 먼저 설치하세요."
 
+# ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
+if [ -e "$DIR" ]; then
+  if [ -d "$DIR/.git" ]; then
+    die "$DIR 에 이미 설치돼 있습니다.
+   업데이트는:  cd $DIR && npx tiguclaw update
+   (그 명령이 정지 → 의존성 → 재빌드 → 기동을 순서대로 합니다.)"
+  fi
+  die "$DIR 이 이미 있는데 tiguclaw 설치본이 아닙니다. 다른 경로를 쓰세요:
+   TIGUCLAW_DIR=~/tiguclaw2 curl -fsSL <위 URL> | sh"
+fi
+
 # ★**Node 가 없으면 여기서 멈추지 않는다** (2026-09-09 정태님: *"일반 사용자들도 설치하기
 #  시작했거든"*). 이 제품의 정체성은 «당신의 상시 AI 비서» 이고 그 대상은 개발자가 아니다.
 #  «먼저 Node 20 이상을 설치하세요» 는 거기서 벽이다.
@@ -89,10 +100,27 @@ fetch_node() {
    기대: $_want
    실제: $_got"
 
-  mkdir -p "$NODE_DIR" || die "$NODE_DIR 를 만들 수 없습니다."
-  tar -xzf "$_tmp/$_file" -C "$NODE_DIR" --strip-components=1 \
+  # ★**임시 자리에 푼다** (2026-09-09, 적대 검토 P3). 종전엔 clone 뒤에 받아서, 받기가
+  #  어떤 이유로든 실패하면(목록 404·다운로드 끊김·체크섬 불일치·미지원 OS/arch·tar 실패)
+  #  **clone 된 폴더만 남았다.** 그 사람은 Node 가 없어서 온 사람이라 안내하던 탈출구
+  #  (`npx tiguclaw update`)를 실행할 수도 없었고, 재실행하면 «이미 설치돼 있습니다» 로
+  #  막혔다 — 유일한 길 `rm -rf` 는 어디에도 안 적혀 있었다. 이 파일 머리말이 *"반쯤
+  #  설치된 상태로 두지 않는다"* 고 적어둔 바로 그 상태다.
+  #  ★그래서 **clone 보다 먼저** 받는다. 실패하면 아직 아무것도 안 만들었으니 그냥 끝난다.
+  NODE_STAGE="$_tmp/node"
+  mkdir -p "$NODE_STAGE" || die "임시 폴더를 만들 수 없습니다."
+  tar -xzf "$_tmp/$_file" -C "$NODE_STAGE" --strip-components=1 \
     || die "Node 압축을 풀지 못했습니다."
-  rm -rf "$_tmp"
+  rm -f "$_tmp/$_file"
+  "$NODE_STAGE/bin/node" -v >/dev/null 2>&1 \
+    || die "받은 Node 가 이 기계에서 실행되지 않습니다 ($_os-$_a)."
+  say "✓ 전용 node $("$NODE_STAGE/bin/node" -v) 준비됨 (설치 폴더로 옮깁니다)"
+}
+
+# 받아둔 것을 설치 폴더 안으로 옮기고 PATH 를 앞세운다 — clone 뒤에 부른다.
+place_node() {
+  mv "$NODE_STAGE" "$NODE_DIR" || die "$NODE_DIR 로 옮기지 못했습니다."
+  rm -rf "$(dirname "$NODE_STAGE")"
   PATH="$NODE_DIR/bin:$PATH"; export PATH
   node_ok || die "전용 Node 를 설치했는데 실행되지 않습니다 ($NODE_DIR/bin/node)."
   say "✓ 전용 node $(node -v) — $NODE_DIR (시스템은 안 건드렸습니다)"
@@ -108,13 +136,19 @@ else
   fi
   say ""
   say "  tiguclaw 전용 Node 를 **이 설치 폴더 안에만** 받을 수 있습니다:"
-  say "    $NODE_DIR   (약 50MB · 관리자 권한 불필요 · 시스템 PATH 를 안 건드림)"
+  # ★숫자를 정직하게 (적대 검토 P8): 내려받기 ≈50MB 지만 **푼 뒤 디스크는 ≈200MB**
+  #  (실측 darwin-arm64 187MB · 파일 4,750개). 받는 양만 말하면 절반만 말한 것이다.
+  say "    $NODE_DIR   (내려받기 약 50MB · 설치 후 약 200MB · 관리자 권한 불필요 · 시스템 PATH 를 안 건드림)"
   say "  지울 때는 설치 폴더를 지우면 같이 사라집니다."
   say ""
   # ★**묻는다.** 런타임을 받아 까는 일을 조용히 하지 않는다. 비대화형(파이프·CI)에서는
   #  묻지 못하므로, 그때는 명시 동의(TIGUCLAW_AUTO_NODE=1)가 있을 때만 진행한다.
-  _yes="${TIGUCLAW_AUTO_NODE:-}"
-  if [ -z "$_yes" ]; then
+  # ★**값을 본다** (적대 검토 P7). 종전엔 «설정됐나» 만 봐서 `TIGUCLAW_AUTO_NODE=0`·
+  #  `false`·`no` 가 전부 «묻지 말고 받아라» 가 됐다 — 끄려고 0 을 넣은 사람이 정확히
+  #  반대를 얻는다.
+  _auto=$(printf '%s' "${TIGUCLAW_AUTO_NODE:-}" | tr 'A-Z' 'a-z')
+  case "$_auto" in 0|false|no|off|n) _auto="" ;; esac
+  if [ -z "$_auto" ]; then
     if [ -t 0 ]; then
       printf '  받을까요? [Y/n] '; read -r _ans || _ans=""
     elif { : < /dev/tty; } 2>/dev/null; then
@@ -124,26 +158,22 @@ else
    직접 설치: https://nodejs.org
    또는 전용 Node 를 자동으로 받으려면:  TIGUCLAW_AUTO_NODE=1 로 다시 실행하세요."
     fi
-    case "${_ans:-y}" in
-      n|N|no|NO) die "설치를 멈췄습니다. Node ${MIN_NODE} 이상을 직접 설치한 뒤 다시 실행하세요 (https://nodejs.org)." ;;
+    # ★거절을 **넓게** 받는다 (2026-09-09, 적대 검토 P6). 종전 `n|N|no|NO` 는 실측으로
+    #  `No`·`nO`·`nope`·`아니오`·`아니요` 를 전부 **승낙**으로 읽었다 — 질문이 한국어이고
+    #  대상이 비개발자인데 거절만 ASCII 4형태였다. 같은 판단을 하는 `install.ps1` 은
+    #  `-match` 가 대소문자를 무시해 `No` 를 제대로 막았다(두 곳이 다르게 구현돼 있었다).
+    #  ★애매하면 **안 받는 쪽**이 맞다: 잘못 멈추면 다시 돌리면 되고, 잘못 받으면 원치
+    #   않은 50MB 다운로드가 이미 끝나 있다.
+    _lower=$(printf '%s' "${_ans:-y}" | tr 'A-Z' 'a-z')
+    case "$_lower" in
+      n|no|nope|nah|q|quit|0|false|아니|아니오|아니요|싫어|취소)
+        die "설치를 멈췄습니다. Node ${MIN_NODE} 이상을 직접 설치한 뒤 다시 실행하세요 (https://nodejs.org)." ;;
     esac
   fi
   say ""
   say "→ 전용 Node 준비 중…"
-  # ★clone 보다 먼저 폴더를 만들면 `git clone` 이 «비어 있지 않다» 로 실패한다.
-  #  그래서 clone 뒤에 받는다 — 아래 «받기·설치» 절에서 부른다.
+  fetch_node          # ★clone 전에 받는다 — 실패해도 아무것도 안 남는다(P3).
   NEED_NODE=1
-fi
-
-# ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
-if [ -e "$DIR" ]; then
-  if [ -d "$DIR/.git" ]; then
-    die "$DIR 에 이미 설치돼 있습니다.
-   업데이트는:  cd $DIR && npx tiguclaw update
-   (그 명령이 정지 → 의존성 → 재빌드 → 기동을 순서대로 합니다.)"
-  fi
-  die "$DIR 이 이미 있는데 tiguclaw 설치본이 아닙니다. 다른 경로를 쓰세요:
-   TIGUCLAW_DIR=~/tiguclaw2 curl -fsSL <위 URL> | sh"
 fi
 
 # ── 받기 · 설치 ─────────────────────────────────────────────────────────────
@@ -152,12 +182,25 @@ say "→ 코드 받는 중…"
 git clone --quiet "$REPO_URL" "$DIR" || die "clone 실패 — 네트워크나 접근 권한을 확인하세요."
 cd "$DIR"
 
-# ★전용 Node 는 **clone 뒤**에 받는다 — 폴더가 먼저 있으면 `git clone` 이 «비어 있지
-#  않다» 로 실패하기 때문이다. 여기서 PATH 를 앞세우면 아래 npm·onboard·서비스 등록이
-#  전부 이 Node 를 쓴다.
-# `if` 로 쓴다 — `[ … ] && fetch_node` 도 실제로는 안 죽지만(sh·dash·zsh 실측: `set -e` 는
-# AND 목록 전체엔 적용되지 않는다), 조건부 실행은 조건문으로 적는 편이 읽는 사람에게 낫다.
-if [ "$NEED_NODE" = "1" ]; then fetch_node; fi
+# 받아둔 전용 Node 를 설치 폴더 안으로 옮긴다(폴더가 먼저 있으면 clone 이 실패하므로 여기서).
+# 여기서 PATH 를 앞세우면 아래 npm·onboard·서비스 등록이 전부 이 Node 를 쓴다.
+if [ "$NEED_NODE" = "1" ]; then place_node; fi
+
+# ★**안내하는 명령이 그 사람 손에서 실제로 돌아야 한다** (2026-09-09, 적대 검토 P5).
+#  전용 Node 는 이 스크립트 프로세스 안에서만 PATH 에 오른다(프로필·setx 어디에도 안 남긴다
+#  — 시스템을 안 건드린다는 약속이 그것이다). 그래서 아래 안내가 `npm run onboard` 라고
+#  적으면 **그 사람 셸엔 npm 이 없다.** 문자열은 남는데 실행이 안 되는 상태였다.
+#  절대경로로 적는다 — 붙여넣으면 그냥 된다.
+if [ "$NEED_NODE" = "1" ]; then
+  NPM_CMD="$NODE_DIR/bin/npm"
+  HOWTO_TAIL="
+   (이 설치본은 전용 Node 를 씁니다 — 터미널에서 계속 쓰시려면 PATH 에 다음을 더하세요:
+      export PATH=\"$NODE_DIR/bin:\$PATH\"
+    안 더해도 채팅에서 /update 로 업데이트됩니다.)"
+else
+  NPM_CMD="npm"
+  HOWTO_TAIL=""
+fi
 
 say "→ 의존성 설치 중… (네이티브 모듈 빌드로 1~2분 걸릴 수 있습니다)"
 # ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에
@@ -167,7 +210,7 @@ say "→ 의존성 설치 중… (네이티브 모듈 빌드로 1~2분 걸릴 �
 if ! npm ci --no-audit --no-fund --ignore-scripts=false; then
   die "의존성 설치 실패.
    빌드 도구가 필요할 수 있습니다 — Linux: build-essential + python3 / macOS: xcode-select --install
-   설치 후 다시:  cd $DIR && npm ci"
+   설치 후 다시:  cd $DIR && $NPM_CMD ci"
 fi
 
 # ★설치가 "성공" 해도 **쓸 수 있는지는 별개다** (2026-08-19 실사고 — 윈도우).
@@ -183,7 +226,7 @@ fi
 if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
   die "SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.
    빌드 도구가 필요합니다 — Linux: build-essential + python3 / macOS: xcode-select --install
-   그 뒤:  cd $DIR && npm rebuild better-sqlite3"
+   그 뒤:  cd $DIR && $NPM_CMD rebuild better-sqlite3"
 fi
 
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
@@ -198,15 +241,15 @@ fi
 # 그래서 `exec` 도 쓰지 않는다 — 껍데기를 남겨 둬야 실패했을 때 안내를 낼 수 있다.
 say ""
 if [ -t 0 ]; then
-  npm run onboard && exit 0
+  "$NPM_CMD" run onboard && exit 0
 elif { : < /dev/tty; } 2>/dev/null; then
-  npm run onboard < /dev/tty && exit 0
+  "$NPM_CMD" run onboard < /dev/tty && exit 0
 fi
 
 say ""
 say "✅ 코드와 의존성은 준비됐습니다 — 설정만 남았습니다."
 say ""
-say "   cd $DIR && npm run onboard"
+say "   cd $DIR && $NPM_CMD run onboard"
 say ""
-say "   (LLM 선택·키 입력·서비스 등록·검증을 마법사가 안내합니다.)"
+say "   (LLM 선택·키 입력·서비스 등록·검증을 마법사가 안내합니다.)$HOWTO_TAIL"
 say ""

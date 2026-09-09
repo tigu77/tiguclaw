@@ -147,15 +147,37 @@
       //  셋째 버튼이 생겨도 저절로 따라온다([[feedback_hand_maintained_lists]]).
       // ★순서는 마크업 순서를 지킨다(검색 → 백그라운드) — 화면마다 자리가 바뀌면 손이
       //  기억하지 못한다.
+      // ★**폭이 바뀌면 다시 판정한다** (2026-09-09, 적대 검토 P3). 종전엔 **로드 시점 1회**
+      //  만 봤다 — 넓은 창에서 열었다가 좁히면(폰 회전도 900px 경계를 넘는다: 세로 430 /
+      //  가로 932) 버튼이 `#stream-bar` 에 그대로 남아 **0×0 으로 갇힌다.** 그게 바로
+      //  *"모바일 채팅에서 검색이 안보여"* 그 상태다 — 고친 버그가 다른 문으로 돌아온다.
+      // ★되돌리기도 한다: 넓어지면 원래 자리(`.chat-head-actions`)로 보낸다. 한쪽만 하면
+      //  데스크탑 헤더에 채팅 버튼이 남는다.
       const mnHeader = document.querySelector("header");
-      const mnLive = mnHeader ? mnHeader.querySelector(".live") : null;
-      const mnActions = document.querySelectorAll(".chat-head-actions > button");
-      if (mnHeader && window.matchMedia("(max-width: 900px)").matches) {
-        for (const b of mnActions) {
-          if (mnLive) mnHeader.insertBefore(b, mnLive);
-          else mnHeader.appendChild(b);
+      const mnHome = document.querySelector(".chat-head-actions");
+      const mnPlaceActions = () => {
+        if (!mnHeader || !mnHome) return;
+        const mnLive = mnHeader.querySelector(".live");
+        // ★목록을 **매번 새로 읽는다** — 옮긴 뒤엔 셀렉터가 안 잡히므로, 양쪽에서 모은다.
+        const btns = [
+          ...mnHome.querySelectorAll(":scope > button"),
+          ...mnHeader.querySelectorAll(":scope > button[data-chat-action]"),
+        ];
+        const narrow = window.matchMedia("(max-width: 900px)").matches;
+        for (const b of btns) {
+          b.dataset.chatAction = "1"; // 헤더로 간 뒤에도 «이건 채팅 것» 임을 알 수 있게
+          if (narrow) {
+            if (b.parentElement !== mnHeader) {
+              if (mnLive) mnHeader.insertBefore(b, mnLive);
+              else mnHeader.appendChild(b);
+            }
+          } else if (b.parentElement !== mnHome) {
+            mnHome.appendChild(b);
+          }
         }
-      }
+      };
+      mnPlaceActions();
+      window.matchMedia("(max-width: 900px)").addEventListener("change", mnPlaceActions);
 
       // ── 모바일 마스터-디테일 (2026-07-19) — 모듈·인벤토리·프로젝트 상세를 리스트 밑 스택 대신
       // 전환 화면으로. 세 뷰 공통 리스트 아이템(.provider-item) 탭 → body.m-detail(상세 전체화면),

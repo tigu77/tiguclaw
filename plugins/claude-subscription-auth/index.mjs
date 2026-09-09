@@ -225,7 +225,26 @@ const pending = (now, at) =>
  */
 let cliDead = false; // CLI 가 없다고 판명되면 매번 2초를 태우지 않는다.
 
+/**
+ * **진행 중인 조회 하나를 나눠 쓴다** (2026-09-09, 적대 검토 P1).
+ *
+ * ★연타 하한(`FORCE_MIN_GAP_MS`)은 `lastOk.at` 을 보는데 그 값은 **조회가 끝난 뒤에야**
+ *  갱신된다. 그래서 **직렬 연타만** 막고 동시 요청은 전부 통과했다 — 실측: `?force=1` 을
+ *  20개 동시에 보내면 `claude -p /usage` 프로세스가 **20개** 뜨고 12개만으로도 합계
+ *  RSS 4GB 였다. 주석은 *"CLI 를 무한히 spawn 하지 않는다"* 고 선언해 놓고 안 지켰다.
+ * ★고칠 자리는 하한이 아니라 **여기**다: 이미 묻고 있으면 그 약속을 그대로 돌려준다.
+ */
+let inflight;
+
 const fetchClaudeUsage = async (force = false) => {
+  if (inflight !== undefined) return inflight;
+  inflight = fetchClaudeUsageInner(force).finally(() => {
+    inflight = undefined;
+  });
+  return inflight;
+};
+
+const fetchClaudeUsageInner = async (force = false) => {
   const now = Date.now();
   // ★중복 접기만 한다(30초). 새로고침을 눌렀으면 연타 하한만 남긴다.
   const gap = force ? FORCE_MIN_GAP_MS : DEDUP_MS;

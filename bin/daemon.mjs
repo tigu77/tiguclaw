@@ -163,6 +163,15 @@ ${execStrings(c)
   <dict>
     <key>TIGUCLAW_HOME</key><string>${c.homeRaw}</string>
     <key>TIGUCLAW_RUNTIME</key><string>${c.runtime}</string>
+    <!-- ★node 가 사는 폴더를 앞에 세운다 — **세 플랫폼 전부**에 있어야 한다 (2026-09-09,
+         적대 검토 P4). 종전엔 이 plist 에만 있었고 systemd·윈도우엔 없었다. 그런데
+         self-update 는 npm 을 **맨 이름**으로 부르고, 전용 Node 를 쓰는 설치본에서 npm 은
+         설치폴더/.node/bin 에만 있다 — systemd 기본 PATH 에도 윈도우 사용자 PATH 에도
+         없다. 그러면 의존성이 바뀐 릴리스에서 업데이트가 실패해 롤백한다. 종전엔 nvm
+         사용자만 밟던 갈래인데, 전용 Node 를 도입하면서 **비개발자 리눅스·윈도우 설치
+         전부**가 그 갈래가 됐다.
+         ★백틱을 쓰지 마라 — 이 주석은 템플릿 리터럴 안이라 백틱 하나가 문자열을 끊는다
+         (실제로 그렇게 한 번 깼다). -->
     <key>PATH</key><string>${nodeBinDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -367,6 +376,7 @@ ExecStart=${execStrings(c).join(" ")}
 WorkingDirectory=${c.repoRoot}
 Environment="TIGUCLAW_HOME=${c.homeRaw}"
 Environment="TIGUCLAW_RUNTIME=${c.runtime}"
+Environment="PATH=${path.dirname(c.nodePath)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 Restart=always
 RestartSec=2
 
@@ -671,6 +681,8 @@ const buildWinVbs = (c) => {
   return [
     'Set sh = CreateObject("WScript.Shell")',
     `sh.CurrentDirectory = "${c.repoRoot.replace(/"/g, '""')}"`,
+    // ★node 가 사는 폴더를 PATH 앞에 세운다 — plist·systemd 와 **같은 판단**이다.
+    `sh.Environment("PROCESS")("PATH") = "${path.dirname(c.nodePath).replace(/"/g, '""')};" & sh.ExpandEnvironmentStrings("%PATH%")`,
     // 0 = 숨김, True = 감독자가 끝날 때까지 대기(작업 인스턴스 유지 → IgnoreNew 성립).
     `sh.Run "${cmd.replace(/"/g, '""')}", 0, True`,
     "",

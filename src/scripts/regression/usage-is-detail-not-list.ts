@@ -72,6 +72,65 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★**동시 요청이 하나로 접히나** (2026-09-09, 적대 검토 P1) ──────────
+    //  연타 하한(`FORCE_MIN_GAP_MS`)은 `cached.at`/`lastOk.at` 을 보는데 그 값은 조회가
+    //  **끝난 뒤에야** 갱신된다 — 그래서 직렬 연타만 막고 **동시 요청은 전부 통과**했다.
+    //  실측: `?force=1` 20개를 동시에 보내면 `claude -p /usage` 프로세스가 20개 뜨고,
+    //  12개만으로 합계 RSS 4GB 였다. 주석은 *"CLI 를 무한히 spawn 하지 않는다"* 고
+    //  선언해 놓고 안 지켰다.
+    //  ★**낱말이 아니라 동작으로 잰다** — codex 쪽은 `fetch` 를 갈아끼우고 실제로 동시에
+    //   부를 수 있다(첫 판정을 소스 grep 으로 하면 또 «있는데 안 도는» 검사가 된다).
+    {
+      // ★리터럴 지정자로 쓰지 않는다 — `src/` 가 `plugins/` 를 리터럴로 import 하면
+      //  `npm run build`(rootDir=src)가 TS6059 로 죽는다(그 게이트가 이걸 잡아줬다).
+      //  이 레포 관용구대로 URL 로 계산해 넘긴다.
+      const { fetchCodexUsage } = (await import(
+        new URL("../../../plugins/codex-subscription-auth/usage.ts", import.meta.url).href
+      )) as { fetchCodexUsage: (g: () => Promise<string>, f?: boolean) => Promise<unknown> };
+      const realFetch = globalThis.fetch;
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls += 1;
+        await new Promise((r) => setTimeout(r, 40));
+        return { ok: false, status: 503, json: async () => ({}) } as unknown as Response;
+      }) as typeof fetch;
+      try {
+        await Promise.all(
+          Array.from({ length: 10 }, () => fetchCodexUsage(async () => "stub-token", true)),
+        );
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      out.push(
+        assert(
+          "★★동시에 10번 물어도 **바깥으로 나가는 조회는 한 번**이다 — 연타 하한은 조회가 끝난 뒤 갱신되는 값을 보므로 직렬만 막는다(실측: 동시 20개 → CLI 프로세스 20개, RSS 4GB)",
+          calls === 1,
+          `외부 호출 ${calls}회 (10 동시 요청)`,
+        ),
+      );
+    }
+
+    // claude 쪽은 CLI 를 띄우므로 동작으로 못 잰다 — 같은 가드가 있는지 소스로 본다.
+    const claudeSrc = stripComments(readSourceSync("plugins/claude-subscription-auth/index.mjs"));
+    out.push(
+      assert(
+        "★claude 쪽에도 같은 in-flight 가드가 있다 — 이쪽이 프로세스를 띄우는 쪽이라 피해가 더 크다",
+        /let inflight/.test(claudeSrc) && /if \(inflight !== undefined\) return inflight/.test(claudeSrc),
+        /let inflight/.test(claudeSrc) ? "가드 있음" : "★가드 없음",
+      ),
+    );
+
+    // ── ★등급은 «무엇을 바꾸나» 로 정한다 (적대 검토 P6) ─────────────────
+    const bridge = stripComments(readSourceSync("plugins/http-bridge/index.ts"));
+    const roleLine = (bridge.match(/pathname === "\/auth-usage"[\s\S]{0,400}?\?\s*"(\w+)"/) ?? [])[1];
+    out.push(
+      assert(
+        "★★`/auth-usage` 가 **`read` 가 아니다** — 이름은 조회지만 OAuth 토큰 refresh·홈 `.env` 쓰기·하위 프로세스 spawn·외부 호출이 일어난다. 부작용이 있으면 read 가 아니다",
+        roleLine !== undefined && roleLine !== "read",
+        `등급=${roleLine ?? "★못 찾음"}`,
+      ),
+    );
+
     // ★선언 두 벌이 갈리지 않는가 — 갈리면 인자가 조용히 사라진다.
     const reg = readSourceSync("src/core/llm-runtime/auth-registry.ts");
     const host = readSourceSync("src/core/plugins/host.ts");

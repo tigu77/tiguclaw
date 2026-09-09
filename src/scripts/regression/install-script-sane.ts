@@ -82,7 +82,11 @@ const run = async (): Promise<Assertion[]> => {
   {
     const code = codeOnly(sh);
     const noExecHandoff = !/^\s*exec\s+npm/m.test(code);
-    const hasFallback = /npm run onboard/.test(code) && /cd \$DIR/.test(code);
+    // ★`npm` 을 **리터럴로** 요구하지 않는다 (2026-09-09). 전용 Node 를 쓰는 설치본에선
+    //  그 사람 셸에 `npm` 이 없어서, 안내가 `$NPM_CMD`(절대경로)로 나가야 실제로 돌아간다.
+    //  이 검사가 지키려는 성질은 «어느 경로로 끝나든 다음 행동이 남는가» 이지 «그 문자열이
+    //  적혀 있는가» 가 아니다 — 리터럴을 요구하면 옳은 수정을 막는다.
+    const hasFallback = /(npm|\$NPM_CMD|"\$NPM_CMD") run onboard/.test(code) && /cd \$DIR/.test(code);
     out.push({
       name: "★마법사를 못 띄워도 다음 명령을 알려준다(조용한 종료 0)",
       ok: noExecHandoff && hasFallback,

@@ -104,6 +104,46 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ★**순서**를 본다 — 문자열 존재는 도달을 뜻하지 않는다 ─────────────
+    //  ★적대 검토 P1: `install.ps1` 에 옛 버전 검사 3줄이 남아, **node 가 없어서 온
+    //   사람**에게 `node --version` 을 맨몸으로 불렀다. 그 줄이 clone 보다 앞이라
+    //   윈도우에서 전용 Node 기능이 **0% 작동**했다. 그런데 게이트는 «받는 코드가 있나» 만
+    //   봐서 초록이었다 — 조각은 다 있는데 **도달할 수가 없었다**(G1).
+    //  ★그래서 낱말이 아니라 **자리**를 잰다: 부트스트랩을 결정한 뒤 실제로 받기까지의
+    //   사이에, node/npm 을 **보호 없이 부르는 줄**이 있으면 안 된다. 거기 오는 사람에겐
+    //   그 명령이 없다.
+    // ★문자열을 비운 면으로 본다 — 안내 문구 속 «npm ci 를 직접 돌리지 마세요» 는 호출이
+    //  아니다(첫 판이 그걸 위반으로 셌다. 오늘만 같은 부류 다섯 번째다).
+    for (const [name, src] of [["install.sh", shBare], ["install.ps1", psBare]] as const) {
+      const lines = src.split("\n");
+      const at = (re: RegExp): number => lines.findIndex((l) => re.test(l));
+      // ★기준점은 «없다고 판정한 자리» 다 — 플래그를 세우는 줄이 아니다. `install.sh` 는
+      //  받기를 **결정보다 앞**으로 옮겨(P3) 창이 0이 됐는데, 플래그를 기준으로 삼으면
+      //  그 개선이 «받기가 결정보다 앞» 이라는 헛된 빨강이 된다. 재는 것은 순서 그 자체가
+      //  아니라 **«없는 줄 아는 구간에서 그걸 부르나»** 다.
+      const decided = at(/^\s*if\s+node_ok;\s*then|^\s*if\s+\(Test-NodeOk\)/);
+      // ★**정의가 아니라 호출**을 찾는다 — `fetch_node() {` 는 파일 위쪽에 있어서, 정의를
+      //  세면 «받기가 결정보다 앞» 이라는 헛된 결론이 난다(첫 판이 그랬다: 122행 → 38행).
+      const fetched = lines.findIndex(
+        (l) => /^\s*(fetch_node|Install-PrivateNode)\s*(#.*)?$/.test(l),
+      );
+      // 그 사이 구간에서 node/npm 을 «맨몸으로» 부르는 줄(조건·try 로 감싸지 않은 것).
+      const between = decided >= 0 && fetched > decided ? lines.slice(decided + 1, fetched) : [];
+      const bareCall = between.filter(
+        (l) => /(^|[^\w.$-])(node|npm)\s+(--version|-v|-e|ci|run|install|rebuild)/.test(l) &&
+               !/\btry\b|Get-Command|command -v|SilentlyContinue/.test(l),
+      );
+      out.push(
+        assert(
+          `★★${name}: 부트스트랩을 정한 뒤 **받기 전까지** node·npm 을 맨몸으로 부르지 않는다 — 거기 오는 사람은 정의상 그게 없는 사람이라, 한 줄이면 기능 전체가 도달 불가가 된다`,
+          decided >= 0 && fetched > decided && bareCall.length === 0,
+          bareCall.length > 0
+            ? `★${bareCall.length}줄: ${bareCall[0]?.trim().slice(0, 70)}`
+            : `결정 ${decided + 1}행 → 받기 ${fetched + 1}행 · 사이 맨몸 호출 0`,
+        ),
+      );
+    }
+
     // 버전을 손으로 박지 않았나 — `latest-v<major>.x` 는 되지만 `v22.23.2` 같은 못은 안 된다.
     const pinned = /nodejs\.org\/dist\/v\d+\.\d+\.\d+/.test(sh + ps);
     out.push(

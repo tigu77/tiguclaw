@@ -510,7 +510,13 @@ class HttpBridge implements Channel, Observer {
               : pathname === "/auth-providers" && method === "GET"
                 ? "read"
               : pathname === "/auth-usage" && method === "GET"
-                ? "read" // 남은 양을 «읽는다» — 자격증명을 안 만들고 안 내보낸다.
+                // ★**`read` 가 아니다** (2026-09-09, 적대 검토 P6). 이름은 조회지만 실제로
+                //  일어나는 일은 OAuth 토큰 **refresh + 홈 `.env` 쓰기**(codex), `claude`
+                //  하위 프로세스 spawn, 외부 호출, 캐시 파일 쓰기다. 하필 `routes-auth.ts`
+                //  머리말이 *"getAccessToken 은 여기서 부르지 않는다 — 그건 refresh 부작용
+                //  까지 있다"* 라고 적어뒀는데, 이 라우트가 `getUsage` 를 통해 그걸 부른다.
+                //  등급은 **무엇을 바꾸나**로 정한다 — 부작용이 있으면 read 가 아니다.
+                ? "write"
               : pathname === "/auth-login-begin" && method === "POST"
                 ? "admin" // 자격증명을 만든다 — /self-update·/restart 와 같은 등급.
               : pathname === "/auth-login-finish" && method === "POST"

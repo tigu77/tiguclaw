@@ -138,6 +138,34 @@ function formatUsageLine(usage, now) {
        *  맞춰 보기만 한다. 셋째 구독이 생겨도 이 파일은 안 고친다.
        */
       const authState = { providers: [], busy: "" };
+      /**
+       * **한도는 상세를 열 때 가져온다** (2026-09-09 정태님: *"플러그인 상세정보는 플러그인
+       * 자체를 눌렀을 때 처리해도 되지 않아?"*).
+       *
+       * ★종전엔 목록 응답(`/api/auth-providers`)이 **모든 provider 의 사용량을 다 기다렸다**
+       *  — claude 는 CLI 를 spawn 하고(시한 25초) codex 는 외부를 때린다(5초). 그런데 그
+       *  숫자를 그리는 자리는 이 상세 카드 하나뿐이고 목록 행엔 안 나온다. 아무도 안 볼 수도
+       *  있는 숫자 때문에 **플러그인 메뉴 전체가 멈췄다.**
+       * ★provider 하나씩, 상태는 셋: 없음(안 물어봄) · `"…"`(묻는 중) · 값/`null`(모름).
+       *  «묻는 중» 과 «모름» 을 구분해야 화면이 «모름» 을 성급히 단정하지 않는다.
+       */
+      const usageState = new Map();
+      const loadUsage = async (provider, force) => {
+        if (!force && usageState.has(provider)) return; // 한 번만 — 재렌더로 다시 안 묻는다
+        usageState.set(provider, "loading");
+        renderPluginsView();
+        try {
+          const r = await fetch(
+            "/api/auth-usage?provider=" + encodeURIComponent(provider) + (force ? "&force=1" : ""),
+            { cache: "no-store" },
+          );
+          const d = await r.json();
+          usageState.set(provider, d && d.usage !== undefined ? d.usage : null);
+        } catch {
+          usageState.set(provider, null); // 못 물었으면 «모름» — 0% 로 뭉개지 않는다
+        }
+        renderPluginsView();
+      };
       const fetchAuthProviders = async () => {
         try {
           const r = await fetch("/api/auth-providers", { cache: "no-store" });
@@ -639,14 +667,31 @@ function formatUsageLine(usage, now) {
           //   그때 빈 자리는 «모름» 이라는 뜻이고, **왜 비었는지는 로그가 말한다**
           //   (`[usage] claude-subscription: 429 조회 제한 — …`). 0% 로 뭉개면 그
           //   숫자로 판단하게 되고, «한도 도달» 로 적으면 거짓말이 된다.
-          const rows = usageRows(info && info.usage);
-          const pendingLine = usagePendingLine(info && info.usage);
+          // ★목록 응답엔 이제 사용량이 없다 — 이 카드가 열릴 때 provider 하나만 묻는다.
+          if (info && info.hasUsage === true && !usageState.has(id)) void loadUsage(id, false);
+          const cur = usageState.get(id);
+          const loading = cur === "loading";
+          const usage = loading ? null : cur || null;
+          const rows = usageRows(usage);
+          const pendingLine = loading ? i18n("plugins.auth.usage.loading") : usagePendingLine(usage);
+          // ★**새로고침** (2026-09-09 정태님) — 캐시의 일은 «화면 한 번 여는 동안의 중복
+          //  호출을 접는 것» 이므로, 다시 누른 것은 정의상 그 중복이 아니다. 누른 사람이
+          //  그 숫자를 보려고 기다리는 것이니 여기선 기다려도 된다(목록과 성질이 다르다).
+          if (info && info.hasUsage === true) {
+            const rf = document.createElement("button");
+            rf.className = "ghost-btn usage-refresh";
+            rf.type = "button";
+            rf.textContent = i18n("plugins.auth.usage.refresh");
+            rf.disabled = loading;
+            rf.addEventListener("click", () => void loadUsage(id, true));
+            head.appendChild(rf);
+          }
           if (rows.length > 0 || pendingLine !== "") {
             const u = document.createElement("div");
             u.className = "plugin-auth-usage";
             // 한 문장 요약은 **툴팁**으로 남긴다 — 줄로 쪼개도 «복사해서 붙일 한 줄» 은
             // 여전히 쓸모가 있고, 그게 `formatUsageLine` 과 이 화면이 갈리지 않는 이유다.
-            u.title = formatUsageLine(info && info.usage);
+            u.title = formatUsageLine(usage);
             for (const r of rows) {
               const row = document.createElement("div");
               row.className = "usage-win";
@@ -683,7 +728,7 @@ function formatUsageLine(usage, now) {
               pw.textContent = pendingLine;
               u.appendChild(pw);
             }
-            if (info.usage && info.usage.limitReached === true) {
+            if (usage && usage.limitReached === true) {
               const hit = document.createElement("div");
               hit.className = "usage-win-hit";
               hit.textContent = i18n("plugins.auth.usage.limitReached").replace(/^\s*—\s*/, "");

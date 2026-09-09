@@ -34,11 +34,13 @@ export default class CodexSubscriptionAuth {
       provider: "codex",
       getAccessToken: ensureFreshAccessToken,
       isAuthenticated: codexAuthAvailable,
-      // ★한도가 얼마나 남았나 — 상세를 열 때만 가져온다(배경 폴링 0, 30분 캐시).
+      // ★한도가 얼마나 남았나 — 상세를 열 때만 가져온다(배경 폴링 0, 30초 캐시).
+      //  ★주석이 «30분» 이라고 적혀 있었는데 실제는 5분이었다 — 숫자를 주석에 두 번
+      //   적으면 갈린다. 값은 `usage.ts` 의 `CACHE_MS` 하나가 정본이다.
       //  provider 지식이 provider 플러그인에 사는 자리다(`usage.ts` 주석 참조).
-      getUsage: () => {
+      getUsage: (force) => {
         setUsageLogSink((m) => host.log(m)); // 왜 사용량이 비었는지는 **로그에만** 남는다.
-        return fetchCodexUsage(ensureFreshAccessToken);
+        return fetchCodexUsage(ensureFreshAccessToken, force);
       },
       /**
        * ★**화면에서 끝까지 된다** (2026-09-05). 순수 웹 OAuth(PKCE) 라 브라우저 한 번이면

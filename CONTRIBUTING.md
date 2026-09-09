@@ -10,6 +10,20 @@ Thanks for looking. A few things worth knowing before you spend time.
 mirrored here, scrubbed. That means: PRs are welcome but may be applied upstream
 by hand rather than merged; issues are the faster path for most things.
 
+**So where does your thing go?**
+
+- **A bug, or an install / platform problem** → open an issue. The environment is
+  usually the bug, and that is the one thing we cannot reproduce for you.
+- **A small, self-contained fix** → open a PR. Green typecheck + regression is the
+  whole bar.
+- **A feature, or anything that moves structure** → open a discussion or an issue
+  first. Not for permission — so it doesn't collide with work already in flight
+  upstream, which you cannot see from here.
+
+**When a PR is applied by hand, you keep the credit.** The upstream commit names
+you and the PR number, and so does the release note. Mirroring is a plumbing
+constraint; it is not a way to take authorship.
+
 **Before opening a PR**
 
 ```bash
@@ -39,6 +53,17 @@ Security problems: **not** a public issue — see [SECURITY.md](.github/SECURITY
 **이 저장소는 미러입니다.** 개발은 비공개 저장소에서 이뤄지고 스크럽되어 여기로
 반영됩니다. 그래서 PR 은 환영하지만 머지 대신 상류에 손으로 반영될 수 있고,
 대부분의 경우 **이슈가 더 빠른 길**입니다.
+
+**그럼 무엇을 어디로 보내면 되나요?**
+
+- **버그, 또는 설치·플랫폼 문제** → 이슈. 대개 환경 자체가 버그이고, 그건 저희가
+  대신 재현해 드릴 수 없는 유일한 것입니다.
+- **작고 자기완결적인 수정** → PR. 타입체크와 회귀가 초록이면 그게 기준의 전부입니다.
+- **기능, 또는 구조를 움직이는 것** → 먼저 디스커션이나 이슈로. 허락을 받으라는 게
+  아니라, 여기서는 보이지 않는 상류의 진행 중 작업과 부딪히지 않게 하기 위해서입니다.
+
+**손으로 반영되더라도 공은 기여자의 것입니다.** 상류 커밋에 기여자와 PR 번호를 적고,
+릴리스 노트에도 남깁니다. 미러는 배관상의 제약이지 저작을 가져가는 방식이 아닙니다.
 
 **PR 전에**
 

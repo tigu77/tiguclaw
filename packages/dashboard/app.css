@@ -973,6 +973,9 @@
       .chat-head-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
       #chat-search-btn { border:1px solid var(--border); border-radius:11px; padding:7px 11px; background:rgb(var(--fg-rgb) / .035); color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; white-space:nowrap; }
       #chat-search-btn:hover { color:var(--text); background:var(--card-hover); }
+      /* 아이콘과 낱말 사이 — 종전엔 문구 자체가 "🔍 검색"(공백 포함)이었다. 낱말을 접을 수
+         있게 스팬으로 쪼개면서 그 공백이 사라지므로 여기서 낸다(모바일에선 낱말이 접혀 0). */
+      #chat-search-btn .cs-icon { margin-right:4px; }
       #cs-backdrop { position:fixed; inset:0; background:rgb(var(--shadow-rgb) / .5); z-index:20; display:none; }
       body.cs-open #cs-backdrop { display:block; }
       #cs-panel {
@@ -993,6 +996,15 @@
       #cs-panel .sd-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
       #cs-panel .cs-row { display:flex; gap:8px; align-items:center; }
       #chat-search-input { flex:1; min-width:0; border:1px solid var(--border); border-radius:9px; padding:9px 11px; background:rgb(var(--shadow-rgb) / .18); color:var(--text); font-size:0.75rem; }
+      /* ★**모바일에선 16px** — iOS 는 16px 미만 입력에 포커스가 가면 화면을 확대한다
+         (2026-09-09 정태님: *"모바일에서 검색 누르면 지금 확대되는거 같은데 확대는
+         필요없어"*). 채팅 입력창은 `1rem` 으로 이미 막아뒀는데(아래 모바일 블록) **검색창만
+         빠져 있었다** — 같은 병인데 한 곳만 고쳤다. 안내문(placeholder)만 작게 둬서
+         좁은 화면에서도 안내가 안 잘리게 한다(채팅 입력과 같은 처리). */
+      @media (max-width: 900px) {
+        #chat-search-input { font-size:1rem; }
+        #chat-search-input::placeholder { font-size:0.8125rem; }
+      }
       .cs-count { font-size:0.6875rem; color:var(--text-mute); font-variant-numeric:tabular-nums; white-space:nowrap; min-width:34px; text-align:right; }
       .cs-nav { border:1px solid var(--border); border-radius:8px; width:26px; height:30px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.875rem; line-height:1; }
       .cs-nav:hover:not(:disabled) { color:var(--text); background:var(--card-hover); }
@@ -1787,7 +1799,20 @@
            (정지 버튼 때와 같은 규칙: 모양만 줄이고 의미는 안 줄인다). 개수 배지는 남는다.
            실측: 이걸 안 접으면 375px 에서 384px 가 필요해 **페이지가 가로로 스크롤**된다 —
            세로 글자를 고치려다 가로 스크롤을 만드는 셈이라, 여기서 자리를 낸다. */
-        header #bg-toggle .bg-word { display:none; }
+        /* ★**실측으로 되돌렸다** (2026-09-09 정태님: *"화면 사이즈가 너무 작으면 그렇게
+           해줘 · 유연하게"*). 이 규칙은 375px 실측 하나를 근거로 **900px 이하 전부**에
+           걸려 있었다 — 폰보다 훨씬 넓은 화면에서도 낱말이 사라졌다.
+           헤드리스로 320~900px 를 훑어보니(검색 버튼을 헤더에 더한 뒤에도) **낱말을 펴도
+           가로 넘침이 한 구간도 없었다**(320px 에서 헤더 자식 합 268/320). 옛 실측이 참이던
+           시점의 헤더 구성이 그 뒤 바뀐 것이다.
+           그래서 접는 자리를 **정말 좁은 구간**으로 내린다. 여기서 «안 넘친다» 를 확인한
+           320px 를 문턱으로 삼되, 그보다 좁은 기기(폴더블 접힘·과확대)에서는 여전히
+           접어 가로 스크롤을 막는다 — 뜻은 `aria-label`·`title` 이 지킨다. */
+        @media (max-width: 359px) {
+          header #bg-toggle .bg-word { display:none; }
+          header #chat-search-btn .cs-word { display:none; }
+          header #chat-search-btn .cs-icon { margin-right:0; }
+        }
         /* ★낱말을 접어도 **아이콘은 남는다** — 배지는 잡이 0이면 안 뜨므로, 아이콘이
            없으면 이 버튼이 빈 상자가 된다. 접는 것은 «모양» 이지 «존재» 가 아니다. */
         header #bg-toggle .bg-icon { display:inline-block; font-size:0.875rem; }
@@ -1795,6 +1820,14 @@
         header .brand .brand-icon { width:28px; height:28px; }
         /* 백그라운드 버튼(mobile-nav.js 가 헤더로 이동) — 컴팩트. */
         header #bg-toggle { font-size:0.65625rem; padding:5px 8px; gap:5px; flex:none; white-space:nowrap; }
+        /* ★검색 버튼도 **같이** 헤더로 온다 (2026-09-09) — 종전엔 백그라운드만 옮겨서,
+           바로 옆에 나란히 있던 검색이 #stream-bar 와 함께 스크롤로 사라졌다(긴 대화에선
+           맨 위까지 올라가야 나오니 사실상 없는 기능이었다).
+           ★낱말은 접고 **아이콘은 남긴다** — 375px 에서 헤더가 이미 빠듯해(위 실측: 안
+           접으면 384px 로 가로 스크롤) 낱말을 두면 같은 사고를 다시 낸다. 뜻은
+           `aria-label`·`title` 이 지킨다(백그라운드와 같은 규칙). */
+        header #chat-search-btn { font-size:0.65625rem; padding:5px 8px; flex:none; white-space:nowrap; }
+        header #chat-search-btn .cs-icon { display:inline-block; font-size:0.875rem; }
         #tab-bar { display:none; }
         #menu-toggle { display:inline-flex; }
         main { display:block; min-height:calc(100svh - 46px); height:auto; padding:0; overflow:visible; }

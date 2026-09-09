@@ -134,14 +134,27 @@
       // (util.js computeChatPlaceholder)에서 조합한다. 종전엔 여기와 perf.js 가 서로를
       // 덮어써 **로드 순서가 승자를 정했다**(perf.js 문구는 폰에서 한 번도 안 보였다).
 
-      // 모바일 — 백그라운드 버튼을 sticky 헤더로 이동(원래 #stream-bar 안이라 페이지스크롤로 사라져
-      // 접근 불가였다). ID 기반 클릭핸들러·배지 갱신은 이동해도 유지. 데스크탑은 chat-head 그대로.
-      const mnBgToggle = document.getElementById("bg-toggle");
+      // 모바일 — `.chat-head-actions` 의 버튼을 sticky 헤더로 이동(원래 #stream-bar 안이라
+      // 페이지스크롤로 사라져 접근 불가였다). ID 기반 클릭핸들러·배지 갱신은 이동해도 유지.
+      // 데스크탑은 chat-head 그대로.
+      //
+      // ★**하나만 옮기고 옆을 빼먹었다** (2026-09-09 정태님: *"모바일 채팅에서 검색이
+      //  안보여"*). 백그라운드 버튼에 이 이동을 달면서 **바로 옆에 나란히 있던 검색
+      //  버튼**을 안 옮겼다 — 같은 상자에 있으니 같은 운명인데, 이름을 하나만 적었다.
+      //  그래서 폰에서는 대화 맨 위까지 스크롤해 올라가야만 검색이 나왔다(긴 대화에선
+      //  사실상 없는 기능).
+      // ★그래서 **이름을 열거하지 않는다** — 옮기는 대상은 «그 상자 안의 버튼 전부» 다.
+      //  셋째 버튼이 생겨도 저절로 따라온다([[feedback_hand_maintained_lists]]).
+      // ★순서는 마크업 순서를 지킨다(검색 → 백그라운드) — 화면마다 자리가 바뀌면 손이
+      //  기억하지 못한다.
       const mnHeader = document.querySelector("header");
       const mnLive = mnHeader ? mnHeader.querySelector(".live") : null;
-      if (mnBgToggle && mnHeader && window.matchMedia("(max-width: 900px)").matches) {
-        if (mnLive) mnHeader.insertBefore(mnBgToggle, mnLive);
-        else mnHeader.appendChild(mnBgToggle);
+      const mnActions = document.querySelectorAll(".chat-head-actions > button");
+      if (mnHeader && window.matchMedia("(max-width: 900px)").matches) {
+        for (const b of mnActions) {
+          if (mnLive) mnHeader.insertBefore(b, mnLive);
+          else mnHeader.appendChild(b);
+        }
       }
 
       // ── 모바일 마스터-디테일 (2026-07-19) — 모듈·인벤토리·프로젝트 상세를 리스트 밑 스택 대신

@@ -57,8 +57,11 @@ export interface AuthProvider {
    *  «남은 양» 이라는 표현만 안다. codex 는 전용 엔드포인트를 폴링하고, claude 는 SDK 가
    *  턴마다 주는 이벤트를 받는다. 여기서 갈리지 않고 한 문에서 모인다.
    * ★실패는 조용하다 — 비공식 경로는 언제든 막힌다. 못 가져오면 `undefined`(던지지 마라).
+   * ★`force` — **사용자가 새로고침을 눌렀을 때** (2026-09-09 정태님). 캐시의 일은 «화면 한
+   *  번 여는 동안의 중복 호출을 접는 것» 이므로, 다시 누른 것은 정의상 그 중복이 아니다.
+   *  구현은 캐시를 지나되 **연타 하한**은 스스로 지킨다(비공식 경로를 무한히 때리지 않게).
    */
-  getUsage?(): Promise<ProviderUsage | undefined>;
+  getUsage?(force?: boolean): Promise<ProviderUsage | undefined>;
 }
 
 /**

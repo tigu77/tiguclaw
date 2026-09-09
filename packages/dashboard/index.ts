@@ -877,6 +877,12 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/auth-providers");
       return;
     }
+    // 한도 조회는 **상세를 열 때** provider 하나만 — 목록이 느린 조회를 안 기다린다.
+    // `?provider=&force=` 를 그대로 나른다(브리지가 판정한다 — 여기선 안 고른다).
+    if (pathname === "/api/auth-usage" && method === "GET") {
+      await proxyJson(res, "/auth-usage" + (url.search === "" ? "" : url.search));
+      return;
+    }
     if (
       (pathname === "/api/auth-login-begin" || pathname === "/api/auth-login-finish") &&
       method === "POST"

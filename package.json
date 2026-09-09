@@ -6,7 +6,7 @@
   "bin": {
     "tiguclaw": "bin/tiguclaw.mjs"
   },
-  "description": "Always-on multi-channel AI assistant. Superset of Claude Code capabilities with multi-LLM routing.",
+  "description": "Your always-on AI assistant — you state the goal, it assembles the managers and sub-agents it needs. Self-hosted multi-LLM agent runtime; superset of Claude Code capabilities.",
   "keywords": [
     "ai-assistant",
     "claude-code",

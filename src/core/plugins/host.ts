@@ -341,8 +341,11 @@ export interface PluginHost {
      *  턴마다 주는 이벤트를 받는다. 그래서 여기서 갈리지 않고 **한 문에서** 모인다.
      * ★실패는 조용해야 한다 — 비공식 경로는 언제든 막히고, 그때 «모름» 이지 에러가 아니다.
      *  못 가져오면 `undefined` 를 돌려라(던지지 마라).
+     * ★`force` — 사용자가 **새로고침을 눌렀을 때** (2026-09-09). 캐시를 지나되 연타 하한은
+     *  구현이 스스로 지킨다. 이 선언은 `auth-registry.ts` 의 것과 **같아야 한다** — 갈리면
+     *  플러그인은 이쪽을, 라우트는 저쪽을 보게 되고 인자가 조용히 사라진다(실제로 그랬다).
      */
-    getUsage?(): Promise<import("./provider-usage.js").ProviderUsage | undefined>;
+    getUsage?(force?: boolean): Promise<import("./provider-usage.js").ProviderUsage | undefined>;
   }): { ok: boolean; error?: string };
 
   /**

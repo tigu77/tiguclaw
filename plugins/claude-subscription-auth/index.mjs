@@ -63,8 +63,19 @@ const token = () => (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim();
  * ★의존성 0 을 지킨다 — 이 파일은 아무것도 import 하지 않는다(위 머리말 참조).
  */
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-/** 성공했을 때의 최소 간격. 429 가 오면 그건 `retry-after` 로 덮인다. */
+/**
+ * **엔드포인트 경로**의 최소 간격. 429 가 오면 그건 `retry-after`(`notBefore`)로 덮인다.
+ *
+ * ★**CLI 경로엔 안 건다** (2026-09-09 정태님). 종전엔 이 게이트가 `fetchClaudeUsage` 첫
+ *  줄에 있어 **공짜 경로까지 5분 막았다** — 그런데 CLI 는 이 파일 스스로가 *"토큰을 0 쓴다
+ *  (슬래시 명령이라 모델을 안 거친다 — num_turns 0 · cost 0)"* 라고 적어둔 길이다. 429 를
+ *  걱정해야 하는 건 아래 엔드포인트뿐이고, 거기엔 서버가 정한 `notBefore` 가 따로 있다.
+ */
 const MIN_GAP_MS = 5 * 60_000;
+/** 중복 접기 — 화면 한 번 여는 동안의 재렌더·연타를 접는 것뿐이다(codex 와 같은 값). */
+const DEDUP_MS = 30_000;
+/** 강제 갱신의 연타 하한 — CLI 를 무한히 spawn 하지 않는다. */
+const FORCE_MIN_GAP_MS = 5_000;
 let lastOk; // { at, value }
 let notBefore = 0; // 이 시각 전에는 안 묻는다(429 가 정한다).
 /**
@@ -214,9 +225,11 @@ const pending = (now, at) =>
  */
 let cliDead = false; // CLI 가 없다고 판명되면 매번 2초를 태우지 않는다.
 
-const fetchClaudeUsage = async () => {
+const fetchClaudeUsage = async (force = false) => {
   const now = Date.now();
-  if (lastOk !== undefined && now - lastOk.at < MIN_GAP_MS) return lastOk.value;
+  // ★중복 접기만 한다(30초). 새로고침을 눌렀으면 연타 하한만 남긴다.
+  const gap = force ? FORCE_MIN_GAP_MS : DEDUP_MS;
+  if (lastOk !== undefined && now - lastOk.at < gap) return lastOk.value;
   if (!cliDead) {
     const { fetchUsageViaCli } = await import("./usage-cli.mjs");
     const viaCli = await fetchUsageViaCli(noteUsage);
@@ -230,6 +243,9 @@ const fetchClaudeUsage = async () => {
     cliDead = true; // 이 프로세스가 사는 동안은 다시 안 띄운다(재시작하면 다시 본다).
   }
   // ↓ 여기부터는 **엔드포인트 경로**다 — CLI 가 없거나 못 읽었을 때만 온다.
+  // ★5분 바닥은 **여기**가 제자리다(위 CLI 는 공짜라 안 건다). 마지막 성공이 5분 안이면
+  //  굳이 조여 있는 엔드포인트를 또 때리지 않는다 — 429 를 부르는 건 이 길이다.
+  if (lastOk !== undefined && now - lastOk.at < MIN_GAP_MS) return lastOk.value;
   if (now < notBefore) {
     noteUsage(`대기 중 — ${Math.ceil((notBefore - now) / 1000)}초 남음`);
     return lastOk?.value ?? pending(now, notBefore); // 서버가 쉬라고 한 동안은 마지막 값

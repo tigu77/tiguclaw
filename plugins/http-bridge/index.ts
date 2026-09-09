@@ -191,6 +191,7 @@ import {
 import { handleSessions, handleSessionName, handleSessionArchive } from "./routes-sessions.js";
 import {
   handleAuthProviders,
+  handleAuthUsage,
   handleAuthLoginBegin,
   handleAuthLoginFinish,
 } from "./routes-auth.js";
@@ -508,6 +509,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다 — set-default-profile 과 같은 등급.
               : pathname === "/auth-providers" && method === "GET"
                 ? "read"
+              : pathname === "/auth-usage" && method === "GET"
+                ? "read" // 남은 양을 «읽는다» — 자격증명을 안 만들고 안 내보낸다.
               : pathname === "/auth-login-begin" && method === "POST"
                 ? "admin" // 자격증명을 만든다 — /self-update·/restart 와 같은 등급.
               : pathname === "/auth-login-finish" && method === "POST"
@@ -803,6 +806,10 @@ class HttpBridge implements Channel, Observer {
     //  나가는 호출을 하게 된다(/self-update·/restart 와 같은 등급). 목록은 read.
     if (pathname === "/auth-providers" && method === "GET") {
       await handleAuthProviders(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/auth-usage" && method === "GET") {
+      await handleAuthUsage(this.routeCtx(req, res, url));
       return;
     }
     if (pathname === "/auth-login-begin" && method === "POST") {

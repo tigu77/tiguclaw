@@ -28,8 +28,17 @@
 import type { ProviderUsage, UsageWindow } from "../../src/core/plugins/provider-usage.js";
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
-/** 5분 — 화면 한 번 여는 동안의 중복 호출을 접는다(2026-09-07 정태님). */
-const CACHE_MS = 5 * 60_000;
+/**
+ * **30초** — 화면 한 번 여는 동안의 중복 호출(재렌더·연속 새로고침)을 접는 것뿐이다.
+ *
+ * ★**5분 → 30초** (2026-09-09 정태님). 바로 위 머리말이 *"짧을수록 좋다 · 사용자가 그 뒤
+ *  다시 열었으면 그건 새로 알고 싶다는 뜻"* 이라고 적어놓고 5분을 쓰고 있었다 — 재렌더를
+ *  접는 데 5분이 필요하지 않다. **의도와 숫자가 갈려 있었고**, 그 사이 3분 전 값을 «지금
+ *  남은 양» 으로 보여줬다(이 파일이 스스로 경계한 «낡은 값을 최신인 척» 그 자체).
+ */
+const CACHE_MS = 30_000;
+/** 강제 갱신의 연타 하한 — 비공식 경로를 무한히 때리지 않는다. */
+const FORCE_MIN_GAP_MS = 5_000;
 const TIMEOUT_MS = 5_000;
 
 let cached: { at: number; value: ProviderUsage | undefined } | undefined;
@@ -89,9 +98,12 @@ const toWindow = (w: unknown): UsageWindow | undefined => {
 
 export const fetchCodexUsage = async (
   getAccessToken: () => Promise<string>,
+  force = false,
 ): Promise<ProviderUsage | undefined> => {
   const now = Date.now();
-  if (cached !== undefined && now - cached.at < CACHE_MS) return cached.value;
+  // ★새로고침을 눌렀으면 캐시를 지난다 — 다만 연타 하한은 지킨다(비공식 경로).
+  const gap = force ? FORCE_MIN_GAP_MS : CACHE_MS;
+  if (cached !== undefined && now - cached.at < gap) return cached.value;
   let value: ProviderUsage | undefined;
   // 못 쟀을 때도 «언제 다시 잰다» 는 말해준다 — 빈 자리는 «원래 안 준다» 로 읽힌다.
   const pending: ProviderUsage = { windows: [], measuredAt: now, retryAt: now + CACHE_MS };

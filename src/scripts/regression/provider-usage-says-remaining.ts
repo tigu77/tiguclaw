@@ -158,8 +158,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★`getUsage` 는 옵셔널이다 — 모르는 provider 가 억지로 숫자를 내지 않아도 된다",
-        /getUsage\?\(\)/.test(srcHost),
-        /getUsage\?\(\)/.test(srcHost) ? "옵셔널 선언" : "★필수로 선언됨",
+        /getUsage\?\((force\?: boolean)?\)/.test(srcHost),
+        /getUsage\?\((force\?: boolean)?\)/.test(srcHost) ? "옵셔널 선언" : "★필수로 선언됨",
       ),
     );
 

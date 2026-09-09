@@ -36,6 +36,10 @@ skill-creator Phase 3~6 의 형식·지표·조립 규격. 목적: "이 스킬/�
 - 같은 프롬프트·같은 어댑터·오직 skill-guidance 유무만 차이 = 통제. `runs`(기본 3)회 반복해 분산 포착.
 - 러너 = `spawn_agent({name:"skill-eval-runner", prompt})`. 반환 텍스트 + (가능하면) 소요시간/토큰 기록.
 
+> ★`spawn_agent` 은 **즉시 jobId** 를 돌려주고 기다리지 않는다. 독립인 것은 **전부 띄운 뒤**
+>  `wait_for_worker([jobId, …])` 로 **한 번에** 합류하라 — 하나씩 합류하면 줄을 선다.
+
+
 ## 3. 채점 (grader)
 
 각 (config, eval, run):

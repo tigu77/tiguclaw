@@ -17,6 +17,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readSourceSync, stripComments } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -140,6 +141,46 @@ export const check: RegressionCheck = {
           : `★드리프트 ${drift.length}건: ${drift.join(", ")} — 데몬이 낡은 규칙으로 돈다`,
       ),
     );
+    // ★★**헌법이 부르라는 스킬 이름이 실제로 풀리는가** (2026-09-09).
+    //  사고: 시스템 프롬프트(모든 사용자·매 턴)와 능력 안내가 `harness:harness` 로 부르라고
+    //  했는데 그 이름의 스킬은 **없다**(콜론 이름을 가진 스킬이 0개). 시키는 대로 부르면
+    //  **반드시** «미발견» 이 돌아온다 — 그런데 아무 검사도 안 울었다.
+    //  ★배포되는 글이 **없는 능력을 광고**하는 것은 크기가 아니라 정확성 문제다.
+    {
+      const { discoverSkills } = await import(
+        "../../core/llm-runtime/capabilities/skill-registry.js"
+      );
+      const names = new Set((await discoverSkills(REPO)).map((x) => x.name));
+      const shipped = [
+        "src/core/llm-runtime/adapters/_shared-sysprompt.ts",
+        "src/core/llm-runtime/capabilities/find-capabilities-mcp.ts",
+      ]
+        // ★**주석을 빼고 본다** — 첫 실행이 «종전엔 X 스킬을 …» 이라는 **이력 주석**을
+        //  잡아 없는 위반을 만들었다(그 스킬은 의도적으로 걷어낸 것이다).
+        //  검사 대상은 **사용자에게 나가는 문자열**이지 그걸 설명하는 글이 아니다.
+        .map((f) => ({ file: f, text: stripComments(readSourceSync(f)) }))
+        .filter((d) => d.text !== "");
+      // 백틱으로 감싼 «<이름> 스킬» 형태만 본다 — 산문 속 낱말까지 잡으면 오탐이 난다.
+      const cited = new Set<string>();
+      for (const d of shipped) {
+        for (const m of d.text.matchAll(/`([a-z][a-z0-9:-]*)`\s*스킬/g)) {
+          cited.add(m[1] ?? "");
+        }
+      }
+      const missing = [...cited].filter((n) => !names.has(n));
+      out.push(
+        assert(
+          "★★배포되는 글이 부르라는 스킬 이름이 **실제로 풀린다** — 안 풀리면 시키는 대로 부른 모델이 매번 «미발견» 을 받는다(없는 능력을 광고하는 것)",
+          cited.size > 0 && missing.length === 0,
+          cited.size === 0
+            ? "★인용된 스킬 이름을 하나도 못 뽑았다(검사가 공허하다)"
+            : missing.length === 0
+              ? `인용 ${[...cited].sort().join("·")} 전부 실재`
+              : `★없는 스킬을 부르라 한다: ${missing.join(", ")}`,
+        ),
+      );
+    }
+
     return out;
   },
 };

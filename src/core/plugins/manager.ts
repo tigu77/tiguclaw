@@ -28,7 +28,9 @@ import { wirePlugin, type WirePluginDeps, type WireResult } from "./wire.js";
 import { describeNeeds, needsFacts, type NeedFact } from "./host.js";
 import { bundledDeclaredNames, isCoreModule, isSelfReferentialModule } from "./inventory.js";
 import { settingsForClient } from "./settings.js";
+import type { PluginWidgetSpec } from "./widgets.js";
 import { appRoot, getPaths } from "../paths.js";
+import { readHomeWidgets } from "../home-widgets.js";
 import { setModuleDisabled } from "../settings.js";
 import path from "node:path";
 
@@ -50,6 +52,8 @@ export interface LivePlugin {
    *  읽으세요"* 라고 가리키는 면이었다.
    */
   readonly needsFacts: readonly NeedFact[];
+  /** 홈에 놓을 수 있는 위젯 선언 — 화면의 토글과 자동 편입이 **이것만** 본다. */
+  readonly widgets: readonly PluginWidgetSpec[];
   readonly wired: readonly string[];
   readonly dispose: () => Promise<void>;
 }
@@ -92,6 +96,7 @@ export const trackPlugin = (
     needs: describeNeeds(lp.manifest.needs ?? {}),
     // ★화면이 번역할 수 있게 **데이터도** 싣는다 — 위 문장은 로그·폴백용이다.
     needsFacts: needsFacts(lp.manifest.needs ?? {}),
+    widgets: lp.manifest.widgets ?? [],
     wired: wired.wired,
     dispose: wired.dispose,
   });
@@ -99,6 +104,46 @@ export const trackPlugin = (
 
 /** 지금 돌고 있는 것. */
 export const listLivePlugins = (): LivePlugin[] => [...LIVE.values()];
+
+/**
+ * 홈에 놓을 수 있는 위젯 전부 — 지금 **돌고 있는** 플러그인의 선언에서만 나온다.
+ *
+ * ★**`default` 는 번들에서만 산다.** `core?` 와 같은 규칙이다(`inventory.ts`:
+ *  *"유효성을 선언이 아니라 위치로 판정"*) — 홈은 사용자 자기 자리라, 사용자가 깐
+ *  플러그인이 스스로 거기 앉을 수 있으면 안 된다. 선언은 읽되 **`default` 만 죽인다**
+ *  (목록에는 남아야 상세 화면에서 켤 수 있다).
+ */
+export const listAvailableHomeWidgets = (): AvailableHomeWidget[] =>
+  availableHomeWidgetsFrom([...LIVE.values()]);
+
+/**
+ * 위 판정의 **순수 함수판** — 회귀가 `LIVE` 를 오염시키지 않고 규칙을 밟을 수 있게.
+ *
+ * ★핸들러 안에 두면 검사가 문자열 grep 밖에 못 하고, 그러면 지키는 게 없다
+ *  ([[feedback_simple_composable_no_duplication]] — *"검사가 껄끄러우면 코드가 잘못 놓인 것"*).
+ */
+export const availableHomeWidgetsFrom = (
+  plugins: readonly Pick<LivePlugin, "name" | "source" | "widgets">[],
+): AvailableHomeWidget[] =>
+  plugins.flatMap((p) =>
+    p.widgets.map((w) => ({
+      plugin: p.name,
+      type: `${p.name}/${w.id}`,
+      size: w.size,
+      default: p.source === "bundled" && w.default,
+      ...(w.labelKey !== undefined ? { labelKey: w.labelKey } : {}),
+    })),
+  );
+
+export interface AvailableHomeWidget {
+  readonly plugin: string;
+  /** `<plugin>/<id>` — 배치가 쓰는 그 값이다. */
+  readonly type: string;
+  readonly size: "small" | "wide";
+  /** 선언이 참이고 **번들**일 때만 참. */
+  readonly default: boolean;
+  readonly labelKey?: string;
+}
 
 export interface PluginListItem {
   readonly name: string;
@@ -125,6 +170,18 @@ export interface PluginListItem {
    * ★`secret` 은 값을 안 싣는다(`hasSecret` 만). 이 응답은 브라우저로 나간다.
    */
   readonly settings: ReturnType<typeof settingsForClient>;
+  /**
+   * 이 플러그인이 홈에 놓을 수 있는 위젯과 **지금 놓여 있는가**.
+   *
+   * ★상세 화면의 토글이 이걸 그린다. `settings` 와 같은 형이다 — 선언에서 행이 생기고,
+   *  화면은 손으로 아무것도 열거하지 않는다([[feedback_hand_maintained_lists]]).
+   */
+  readonly widgets: readonly {
+    readonly type: string;
+    readonly size: "small" | "wide";
+    readonly labelKey?: string;
+    readonly onHome: boolean;
+  }[];
 }
 
 /**
@@ -185,6 +242,10 @@ export const listAllPlugins = async (): Promise<PluginListItem[]> => {
     { root: getPaths().commonPlugins, source: "home" },
   ];
   const seen = new Map<string, PluginListItem>();
+  // 지금 홈에 놓여 있는 것 — 토글의 on/off 는 **배치가 진실**이지 선언이 아니다.
+  const onHome = new Set(
+    readHomeWidgets(new Set([...LIVE.keys()])).widgets.map((w) => w.type),
+  );
   for (const { root, source } of roots) {
     for (const m of await scanPluginManifests(root)) {
       if (seen.has(m.manifest.name)) continue; // 번들이 먼저다.
@@ -203,6 +264,12 @@ export const listAllPlugins = async (): Promise<PluginListItem[]> => {
         wired: live?.wired ?? [],
         enabled: live !== undefined,
         settings: settingsForClient(m.manifest.name, m.manifest.settings ?? []),
+        widgets: (m.manifest.widgets ?? []).map((w) => ({
+          type: `${m.manifest.name}/${w.id}`,
+          size: w.size,
+          ...(w.labelKey !== undefined ? { labelKey: w.labelKey } : {}),
+          onHome: onHome.has(`${m.manifest.name}/${w.id}`),
+        })),
       });
     }
   }

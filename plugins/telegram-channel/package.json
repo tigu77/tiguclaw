@@ -15,7 +15,7 @@
     "kind": [
       "channel"
     ],
-    "name": "telegram",
+    "name": "telegram-channel",
     "entry": "./index.ts",
     "settings": [
       {

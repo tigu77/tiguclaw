@@ -27,6 +27,16 @@ export interface ChannelPresence {
    * 판단(U3). telegram=true(owner chatId), cli/http-bridge=false(주소 없음/세션 문맥 의존).
    */
   hasDefaultTarget?: boolean;
+  /**
+   * 이 채널을 제공하는 **플러그인 이름**(매니페스트의 `tiguclaw.name`). 화면이
+   * `/plugin-icon?name=` 을 부르려면 필요하다 — 그 엔드포인트도 `/plugins` 목록도 같은
+   * 키를 쓴다.
+   * ★값을 **유추하지 않는다.** 지금은 채널 이름과 같은 경우가 많지만(`telegram`), 한
+   *  플러그인이 다른 이름의 채널을 제공할 수 있고 그때 «같겠지» 는 조용히 틀린다.
+   *  로더가 **이미 아는 사실**을 흘릴 뿐이다.
+   * 코어 채널(플러그인이 아닌 것)엔 없다.
+   */
+  plugin?: string;
 }
 
 let _presence: ChannelPresence[] = [];

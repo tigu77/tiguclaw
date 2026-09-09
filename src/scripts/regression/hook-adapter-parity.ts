@@ -84,7 +84,12 @@ export const check: RegressionCheck = {
           //  레포가 이름에 `dist` 가 든 디렉터리 아래 있으면(예: 릴리스 §7 이 쓰던
           //  `/tmp/tiguclaw-dist-check.XXXX`) **트리 전체가 스킵**돼 «소비처 0» 이라는
           //  거짓 빨강이 났다(2026-09-01 실측: 클린룸 2건 빨강, 경로만 바꾸니 초록).
-          if (!/^(node_modules|dist)$/.test(e.name)) await walk(p, acc);
+          // ★**`scripts/` 는 소비처가 아니다** (2026-09-08). 종전엔 `src` 전체를 셌는데
+          //  거기엔 회귀가 포함돼, **자기 검사만 부르는 훅**도 «소비됨» 이 됐다. 실측:
+          //  `StopFailure` 배선을 `index.ts` 에서 지워도 스위트가 초록이었다 — 동작 검사는
+          //  훅 함수를 직접 부르므로 **이음매만 조용히 사라진다**([[feedback_simple_composable_no_duplication]]
+          //  「부품은 검사되는데 이음매는 안 검사된다」). 소비는 **제품 코드**에서만 센다.
+          if (!/^(node_modules|dist|scripts)$/.test(e.name)) await walk(p, acc);
         } else if (e.name.endsWith(".ts") && !p.endsWith("hook-runner.ts")) {
           acc.push(await readFile(p, "utf8"));
         }
@@ -96,7 +101,32 @@ export const check: RegressionCheck = {
     for (const f of files) for (const h of calledIn(f)) allCalls.add(h);
     for (const h of exported) if (!allCalls.has(h)) unconsumed.push(h);
 
+    // ── ④ ★훅 이벤트는 **전부 인벤토리에 뜬다** (2026-09-08) ─────────────────────
+    //  실측: `INVENTORY_HOOK_EVENTS` 에서 한 줄만 빼도 스위트가 초록이었다 — 그 훅은
+    //  설정에 써도 대시보드 인벤토리에 **안 보인다**(있는데 없는 것과 같다).
+    //  ★목록을 다시 적지 않는다: `runHooks("X", …)` 가 실제로 쓰는 이벤트 이름에서
+    //   **파생**해 대조한다. 새 훅을 더하면 저절로 대상이 된다.
+    const runnerSrc = await readFile(
+      path.join(REPO, "src/core/entry/hook-runner.ts"),
+      "utf8",
+    );
+    const usedEvents = new Set(
+      [...runnerSrc.matchAll(/runHooks\(\s*"([A-Za-z]+)"/g)].map((m) => m[1] ?? ""),
+    );
+    const invBlock = /INVENTORY_HOOK_EVENTS = \[([\s\S]*?)\]/.exec(runnerSrc)?.[1] ?? "";
+    const listed = new Set(
+      [...invBlock.matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1] ?? ""),
+    );
+    const missingFromInventory = [...usedEvents].filter((e) => !listed.has(e));
+
     return [
+      assert(
+        "★★훅 이벤트가 전부 인벤토리에 노출된다 — 빠지면 설정에 써도 화면에서 안 보인다",
+        missingFromInventory.length === 0,
+        missingFromInventory.length === 0
+          ? `이벤트 ${usedEvents.size}종 전부 노출`
+          : `★인벤토리 누락: ${missingFromInventory.join(", ")}`,
+      ),
       assert(
         "★세 어댑터가 부르는 훅 집합이 같다(하나만 빠져도 그 모델에서만 훅이 죽는다)",
         symmetric,

@@ -101,6 +101,7 @@ Then the value is at `/api/plugin-data/hello/greeting?who=you`.
 | `kind` | See below. A string or an array |
 | `needs` | What you're asking for (§4) |
 | `settings` | What you ask the person (§5) |
+| `widgets` | Widgets that can go on the home screen (§5-1) |
 
 > ★**Break the name rule and your plugin quietly doesn't exist.** The screen only says *"No
 > usable plugin found"*; the real reason is in **the log**. If it doesn't show up, check the
@@ -232,6 +233,40 @@ my-plugin   / api-key  →  TIGUCLAW_PLUGIN_MY_PLUGIN_API_KEY
 ```
 
 ---
+
+
+## 5-1. `widgets` — what can go on the home screen
+
+```json
+"widgets": [
+  { "id": "live", "size": "wide", "default": true, "labelKey": "widget.live" }
+]
+```
+
+The widget itself is registered by `web/widget.js` via
+`tiguWidgets.register("<plugin>/<id>")`. **What you declare here is the list.** Registration
+happens in the browser, so without this declaration the daemon has no way to know which
+widgets a plugin has — which means no switch on the settings screen, and an assistant that
+cannot act on "put that on my home screen" because it does not know the name.
+
+| Key | Meaning |
+|---|---|
+| `id` | Must match the second half of `register("<plugin>/<id>")`. Lowercase, digits, hyphens |
+| `size` | `small` (default) or `wide`. A size class, not grid coordinates |
+| `default` | If true, the widget goes on the home screen as soon as the plugin is there (see below) |
+| `labelKey` | Name shown next to the switch. A key in the plugin's own catalog (§7) |
+
+> ★**`default` only applies to plugins that ship with the app.** A plugin the user installed
+> is not placed automatically even if it declares true — the home screen belongs to the user.
+> The switch on the settings screen turns it on just the same.
+
+> ★**Do not use `default` for a widget that needs configuration.** A weather widget needs a
+> place; placed empty, all the user sees is a "configure me" card.
+
+**It is placed once.** If the user turns the switch off, it is not placed again. Order and
+size are changed by asking the assistant ("move weather to the top") — the switch only
+shows and hides.
+
 
 ## 6. Data routes — how widgets get values
 
@@ -375,8 +410,8 @@ Bundling and npm also mean you **don't have to publish your source**.
 - **A throwing handler won't kill the daemon** — that one request becomes a 502 and the reason
   is logged. But throwing from `start()` fails that plugin's load (others are unaffected).
 - ★**You can't use the name of a plugin that ships with the app.** Currently reserved: `claude-subscription-auth`,
-  `cli`, `codex-subscription-auth`, `dashboard`, `file-watch`, `http-bridge`,
-  `running-work`, `scheduler`, `self-growth`, `telegram`. What counts is the **`name` in your manifest**, not the folder — name
+  `cli-channel`, `codex-subscription-auth`, `dashboard`, `file-watch`, `http-bridge`,
+  `running-work`, `scheduler`, `self-growth`, `telegram-channel`. What counts is the **`name` in your manifest**, not the folder — name
   the folder whatever you like. Installing under a reserved name is refused with *"a bundled
   plugin already has that name"*, and that holds even if the bundled one is switched off or
   failed to load. The name is reserved; it doesn't depend on whether it started up today.

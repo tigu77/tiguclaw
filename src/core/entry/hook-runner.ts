@@ -179,6 +179,7 @@ const loadSettingsHooks = (
 const INVENTORY_HOOK_EVENTS = [
   "UserPromptSubmit",
   "Stop",
+  "StopFailure",
   "PreToolUse",
   "PostToolUse",
   "SubagentStop",
@@ -457,6 +458,38 @@ export const runStopHooks = (params: {
       threadKey: params.threadKey,
     },
     params.cwd, // V9.4 🚩A — project 스코프 settings 가 실제 호출 cwd 와 정합.
+  );
+
+/**
+ * **StopFailure** — 턴이 **에러로** 끝났을 때 (2026-09-08).
+ *
+ * ★`Stop` 과 **짝이자 상호배타**다. `Stop` 은 «응답을 마쳤을 때» 만 나므로, 실패한 턴에는
+ *  어떤 훅도 안 났다 — 그런데 훅으로 하려는 일 중 «턴이 실패했을 때 알려줘» 가 가장
+ *  흔하다. 실측 분모: **실패 130 / 전체 1,594 턴 = 8.2%**(6주 창). 드문 예외가 아니다.
+ * ★이름·의미는 상류를 따른다(Claude Code 에 같은 이름의 훅이 있다 — 원칙 1 «누락은 버그»).
+ *
+ * ★**사용자 취소·매니저 취소에는 안 난다.** 상류도 user interrupt 엔 안 뜨고, 우리 `catch` 도
+ *  그 둘을 먼저 `return` 으로 거른다. «취소도 알림» 은 다른 요구라 그때 따로 판단한다.
+ *
+ * ★`error` 는 **이미 사용자에게 나가는 문자열**이다(`redactSecrets(errorDetail(e))`) —
+ *  훅이 새로 보는 게 아니라 채널로 이미 나간 것과 같은 값이라, 유출 면이 늘지 않는다.
+ *  그 redact 는 이 레포의 보안 불변식이고 호출부가 그걸 통과시킨 뒤 넘긴다.
+ */
+export const runStopFailureHooks = (params: {
+  error: string;
+  cwd: string;
+  channel: string;
+  threadKey: string;
+}): Promise<UserPromptSubmitResult> =>
+  runHooks(
+    "StopFailure",
+    {
+      error: params.error,
+      cwd: params.cwd,
+      channel: params.channel,
+      threadKey: params.threadKey,
+    },
+    params.cwd,
   );
 
 // ── Phase 1 (2026-07-24) — PreToolUse/PostToolUse ──────────────────────────

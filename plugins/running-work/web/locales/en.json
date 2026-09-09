@@ -1,5 +1,6 @@
 {
   "idle": "Nothing running right now.",
   "unnamed": "(unnamed)",
-  "since": "{n}m"
+  "since": "{n}m",
+  "widget.live": "Running work"
 }

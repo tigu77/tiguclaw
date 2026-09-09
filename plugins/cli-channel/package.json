@@ -15,7 +15,7 @@
     "kind": [
       "channel"
     ],
-    "name": "cli",
+    "name": "cli-channel",
     "entry": "./index.ts"
   }
 }

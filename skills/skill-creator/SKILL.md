@@ -61,6 +61,10 @@ reach: main
 5. **개선 반복**: Δ≤0/고분산이면 실패 케이스로 본문·description 재작성 후 재측정(직전과 구조적으로 다르게). grader 의 weak/missing 경고로 테스트셋 보강.
 6. **human-gate**: 표(Δ + 경고)를 채널로 보고, 승인 후에만 반영. 오래 걸리면 백그라운드 매니저 + 완료 알림.
 
+> ★`spawn_agent` 은 **즉시 jobId** 를 돌려주고 기다리지 않는다. 독립인 것은 **전부 띄운 뒤**
+>  `wait_for_worker([jobId, …])` 로 **한 번에** 합류하라 — 하나씩 합류하면 줄을 선다.
+
+
 ## 비채용 (하지 마라)
 
 - 모델 훈련·trajectory 수집 (skill-creator[CC] 에도 없음 = 정합. 개선은 전부 SKILL.md·description 텍스트 재작성).

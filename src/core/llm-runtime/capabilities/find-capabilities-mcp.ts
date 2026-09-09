@@ -196,7 +196,7 @@ const DEFAULT_SUBAGENT_INVOCATION_HINT =
   "`spawn_agent({name, prompt})` 도구로 위임하세요";
 
 const ACQUISITION_FOOTER =
-  "\n\n---\n필요한 능력이 이번 턴에 없다면 습득을 고려하세요 — 새 스킬·서브에이전트는 `harness:harness`, 외부 도구 연결은 `add_mcp_server`, 외부 앱이 나를 호출하게는 `register_endpoint`. 습득 실행 전 위험하면 사용자 승인.";
+  "\n\n---\n필요한 능력이 이번 턴에 없다면 습득을 고려하세요 — 새 스킬·서브에이전트는 `harness` 스킬, 외부 도구 연결은 `add_mcp_server`, 외부 앱이 나를 호출하게는 `register_endpoint`. 습득 실행 전 위험하면 사용자 승인.";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const errText = (text: string) => ({

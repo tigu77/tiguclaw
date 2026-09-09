@@ -14,6 +14,7 @@
  *  엔드포인트가 `429 retry-after: 3569` 를 냈는데, **같은 순간 모델 호출은 정상**이었고
  *  쿨다운도 없었다(claude 5시간 87% 남음). 조회만 조인 것이다.
  */
+import { readSourceSync } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { readFileSync } from "node:fs";
 
@@ -752,6 +753,97 @@ export const check: RegressionCheck = {
           : `★${repeated.map((v) => { const u = v as { retryAt?: number; windows?: unknown[] }; return u?.retryAt === undefined ? "표식없음" : `창${(u.windows ?? []).length}개`; }).join("→")}`,
       ),
     );
+
+    // ★★**엔드포인트 창도 리셋을 읽는다 — 모양이 셋이다** (2026-09-08).
+    //  사고: 회사돌쇠 v0.50.0 에서 «남은 %는 뜨는데 리셋만 안 뜬다». 퍼센트와 리셋은
+    //  **다른 필드를 다른 규칙으로** 읽어서 **혼자 실패할 수 있는데**, 종전 판정은
+    //  `typeof === "string"` 하나뿐이었다 — 저쪽이 숫자로 주면 조용히 반쪽이 된다.
+    //  ★형제 제공자(codex)는 같은 뜻의 필드를 **숫자**로 읽고 있었다. 한 레포 안에서
+    //   같은 개념을 두 모양으로만 받는 것 자체가 신호였다.
+    {
+      const ep = (await import(
+        new URL("../../../plugins/claude-subscription-auth/index.mjs", import.meta.url).href
+      )) as {
+        parseResetAt: (v: unknown) => number | undefined;
+        toWindow: (w: unknown, s: number) => { remainingPercent?: number; resetAt?: number } | undefined;
+      };
+      const iso = "2026-09-08T10:30:00.000Z";
+      const ms = Date.parse(iso);
+      const shapes: [string, unknown, number | undefined][] = [
+        ["ISO 문자열", iso, ms],
+        ["초(unix)", Math.floor(ms / 1000), ms],
+        ["밀리초(unix)", ms, ms],
+        ["빈 문자열", "", undefined],
+        ["쓰레기", "언젠가", undefined],
+        ["0", 0, undefined],
+      ];
+      const bad = shapes.filter(([, v, want]) => ep.parseResetAt(v) !== want);
+      out.push(
+        assert(
+          "★★`resets_at` 을 **ISO·초·밀리초** 셋 다 읽고, 못 읽는 값은 undefined 다(0% 로 뭉개지 않는다)",
+          bad.length === 0,
+          bad.length === 0
+            ? `${shapes.length}종 전부 정합`
+            : `★어긋남: ${bad.map(([n]) => n).join(", ")}`,
+        ),
+      );
+      // ★**관측이 조용히 사라지지 않게** — 이 줄이 없어서 «반쪽» 을 화면 보기 전엔
+      //  아무도 몰랐다. 지우는 변이가 스위트를 통과했으므로(실측) 여기서 못 박는다.
+      //  두 경로(CLI·엔드포인트)가 **같은 문장**을 쓰는 것도 같이 지킨다 — 두 벌이면
+      //  어느 길로 왔는지 로그로 못 가른다.
+      const ixSrc = readSourceSync("plugins/claude-subscription-auth/index.mjs");
+      const hasReset = /리셋★없음/.test(ixSrc) && /리셋있음/.test(ixSrc);
+      const bothPaths =
+        /describeWindows\([^)]*"CLI"\)/.test(ixSrc) &&
+        /describeWindows\([^)]*"엔드포인트"\)/.test(ixSrc);
+      out.push(
+        assert(
+          "★★사용량 로그가 **리셋 유무**를 싣고, CLI·엔드포인트 두 경로가 같은 문장을 쓴다 — 없으면 «퍼센트는 뜨는데 리셋만 없는» 반쪽을 화면 보기 전엔 아무도 모른다",
+          hasReset && bothPaths,
+          `리셋표기=${hasReset} 양쪽경로=${bothPaths}`,
+        ),
+      );
+      // ★★**실행기 찾기는 코어 한 곳** (근본 수정). 이 플러그인이 자기 판을 들고 있던
+      //  동안 결함이 셋 났다: 윈도우에서 확장자 없는 `claude` 를 가리킴 · `.cmd` 를
+      //  띄우려 켠 셸이 공백 있는 사용자 경로를 쪼갬 · 빈 `HOME` 이 프로필 후보를 지움.
+      //  셋 다 «찾기» 를 직접 하지 않으면 애초에 안 생긴다. 그래서 증상이 아니라
+      //  **자리**를 검사한다 — 두 번째 판이 다시 생기면 여기서 운다.
+      // ★**주석을 빼고 본다.** 첫 판이 이 파일의 «종전엔 $HOME/.local/bin 을 뒤졌다» 는
+      //  **설명 문장**을 코드로 세어 빨개졌다 — 검사 대상은 코드이지 그걸 설명하는 글이
+      //  아니다([[feedback_gate_must_actually_run]]).
+      const { stripComments } = await import("./_wiring.js");
+      const cliSrc = stripComments(
+        readSourceSync("plugins/claude-subscription-auth/usage-cli.mjs"),
+      );
+      const owns = [
+        ["env 홈 탐색", /process\.env\.(HOME|USERPROFILE)/],
+        ["셸 실행", /shell:\s*true/],
+        ["경로 후보 하드코딩", /\.local\/bin/],
+      ].filter(([, re]) => (re as RegExp).test(cliSrc)).map(([n]) => n as string);
+      out.push(
+        assert(
+          "★★실행기 찾기를 **직접 하지 않는다** — `findBundledClaude()`(코어)에 위임한다. 같은 판단이 두 곳이면 갈리고, 실제로 윈도우 결함 셋이 그 갈림에서 났다",
+          /findBundledClaude/.test(cliSrc) && owns.length === 0,
+          `findBundledClaude=${/findBundledClaude/.test(cliSrc)} · 자기 탐색 ${owns.length}종${owns.length ? `(${owns.join(",")})` : ""}`,
+        ),
+        assert(
+          "★코어 쪽 판정은 플랫폼을 본다(`win32` → `claude.exe`) — 이게 위임의 값이다",
+          /win32.*claude\.exe/.test(readSourceSync("src/core/claude-cli.ts")),
+          (readSourceSync("src/core/claude-cli.ts").match(/const binName[^;]*;/) ?? [
+            "★binName 없음",
+          ])[0].slice(0, 90),
+        ),
+      );
+
+      const w = ep.toWindow({ utilization: 0.23, resets_at: Math.floor(ms / 1000) }, 18_000);
+      out.push(
+        assert(
+          "★★숫자로 온 리셋이 창까지 도달한다 — 퍼센트만 살아 화면이 «반쪽» 이 되지 않는다",
+          w?.remainingPercent === 77 && w?.resetAt === ms,
+          JSON.stringify(w),
+        ),
+      );
+    }
 
     return out;
   },

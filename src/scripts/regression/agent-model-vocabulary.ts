@@ -38,6 +38,7 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** claude SDK 네이티브 티어 어휘 — 데몬 자산이 쓰면 프로파일 풀·폴백을 잃는다. */
@@ -130,6 +131,66 @@ export const check: RegressionCheck = {
         profileWords.size > 0 || daemonLists.length === 0,
         profileWords.size > 0 ? [...profileWords].sort().join(",") : "데몬 자산 없음(배포 레포)",
       ),
+      // ★★**명세뿐 아니라 «명세를 만들라고 가르치는 글»도 본다** (2026-09-08).
+      //  위 검사는 `agents/*.md` 의 `model:` **값**을 본다. 그런데 하루에 세 곳이 그 값을
+      //  **틀리게 가르치고 있었다** — 래퍼 스킬이 «opus 는 티어로 해석되니 그대로 두면 됨»
+      //  (거짓: 모르는 값은 에러 없이 디폴트로 떨어져 등급 의도만 사라진다), 오케스트레이션
+      //  문서 둘이 «high→opus 매핑» 이라는 **없어진 규칙**을 적고 있었다.
+      //  ★값을 지키면서 안내를 안 지키면, 사람은 안내를 읽고 값을 틀리게 쓴다.
+      //  ★**«금지어 grep» 이 아니라 «필수어»로 판정한다** — 옳은 문서도 «`opus` 라고 쓰지
+      //   마라» 처럼 그 낱말을 **인용**하기 때문이다(금지로 잡으면 정답이 빨개진다).
+      ...(() => {
+        const walk = (dir: string): { file: string; text: string }[] => {
+          if (!existsSync(dir)) return [];
+          const out2: { file: string; text: string }[] = [];
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const p2 = `${dir}/${e.name}`;
+            if (e.isDirectory()) out2.push(...walk(p2));
+            else if (e.name.endsWith(".md")) out2.push({ file: p2, text: readFileSync(p2, "utf8") });
+          }
+          return out2;
+        };
+        const docs = walk("skills");
+        // ★**«보여주는 글» 과 «설명하는 글» 을 가른다** — 첫 판이 이 둘을 안 갈라
+        //  프런트매터 예시(`model: high`, 옳은 값)와 `provider:model` 직접 지정(실제 지원
+        //  문법)까지 빨갛게 했다. 틀리게 **가르칠 수 있는** 글만 대상이다: 이 필드의
+        //  **뜻**을 말하는 글(등급·티어·모델명을 논하는 글).
+        const teaching = docs.filter(
+          (d) => /`model:?`|model:/.test(d.text) && /등급|티어|모델명/.test(d.text),
+        );
+        const noProfile = teaching.filter((d) => !/프로파일/.test(d.text));
+        const stale = docs.filter((d) => /high\s*→\s*opus|MODEL_TIER_|티어로 해석/.test(d.text));
+        return [
+          assert(
+            "★★`model:` 을 설명하는 빌트인 문서는 **«프로파일 이름»이라고 말한다** — 값만 지키고 안내를 안 지키면 읽은 사람이 값을 틀리게 쓴다(모르는 값은 에러 없이 디폴트로 떨어져 등급 의도만 사라진다)",
+            teaching.length > 0 && noProfile.length === 0,
+            teaching.length === 0
+              ? "★`model:` 을 다루는 문서를 못 찾았다(검사가 공허하다)"
+              : noProfile.length === 0
+                ? `${teaching.length}개 전부 «프로파일» 을 말한다`
+                : `★«프로파일» 없이 설명: ${noProfile.map((d) => d.file).join(", ")}`,
+          ),
+          assert(
+            "★★없어진 도구 인자(`spawn_agent(wait:…)`)를 아직 가르치는 문서가 없다 — 이 도구는 **항상 즉시 jobId** 를 준다. 「기본은 기다린다」고 가르치면 따르는 쪽이 **아직 안 쓰인 산출물**을 읽으러 간다",
+            (() => docs.filter((d) => /wait\s*:\s*(true|false)/.test(d.text)).length === 0)(),
+            (() => {
+              const bad = docs.filter((d) => /wait\s*:\s*(true|false)/.test(d.text));
+              return bad.length === 0
+                ? `문서 ${docs.length}개에 없어진 인자 0건`
+                : `★아직 가르침: ${bad.map((d) => d.file).join(", ")}`;
+            })(),
+          ),
+          // ★**«합류하라» 를 의무로 걸지 않는다** (2026-09-09 사용자 판단: *"이걸 사용할지
+          //  안할지는 오케스트레이터 정하면 될 일"*). 도구 자신이 «합류하지 않고 턴을
+          //  끝내도 결과는 사라지지 않는다» 고 말한다 — 첫 판이 이걸 필수로 걸어
+          //  **판단이어야 할 것을 규칙으로** 만들 뻔했다.
+          assert(
+            "★없어진 규칙(`high→opus` · `MODEL_TIER_*` · «티어로 해석»)을 아직 가르치는 문서가 없다",
+            stale.length === 0,
+            stale.length === 0 ? "낡은 매핑 0건" : `★${stale.map((d) => d.file).join(", ")}`,
+          ),
+        ];
+      })(),
     ];
   },
 };

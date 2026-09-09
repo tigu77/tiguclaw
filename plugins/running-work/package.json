@@ -9,7 +9,15 @@
       "service"
     ],
     "name": "running-work",
-    "entry": "./src/index.ts"
+    "entry": "./src/index.ts",
+    "widgets": [
+      {
+        "id": "live",
+        "size": "wide",
+        "default": true,
+        "labelKey": "widget.live"
+      }
+    ]
   },
   "description": {
     "ko": "지금 돌고 있는 매니저·에이전트를 홈에 보여줍니다.",

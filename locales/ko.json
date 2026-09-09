@@ -441,6 +441,7 @@
   "plugins.desc": "설치된 플러그인과 각자가 요구하는 것.",
   "plugins.disable": "끄기",
   "plugins.done": "적용했습니다.",
+  "plugins.widget.toggle": "홈 화면에 표시",
   "plugins.empty": "플러그인이 없습니다.",
   "plugins.enable": "켜기",
   "plugins.failed": "실패했습니다",
@@ -678,5 +679,6 @@
   "settings.memoryCap.reset": "기본값",
   "bg.task.truncated": " … (여기까지만 남아 있습니다 — 원문은 작업이 끝나 사라졌습니다)",
   "plugins.auth.usage.pending": "한도 조회 대기 중 — {when} 다시 시도",
-  "plugins.auth.usage.unavailable": "이 계정에선 한도 조회가 안 됩니다"
+  "plugins.auth.usage.unavailable": "이 계정에선 한도 조회가 안 됩니다",
+  "common.channel.cli": "CLI"
 }

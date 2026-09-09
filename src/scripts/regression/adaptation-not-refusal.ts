@@ -67,7 +67,9 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "내부 습득 세 경로도 그대로 있다(하나를 넣느라 다른 걸 밀어내지 않았다)",
-      /harness:harness/.test(prompt) &&
+      // ★`harness:harness` 는 **안 풀리는 이름**이었다(콜론 이름 스킬 0개) — 이 게이트가
+      //  그걸 «있어야 할 문구» 로 지키고 있었다. 실재하는 이름으로 맞춘다.
+      /`harness` 스킬/.test(prompt) &&
         /add_mcp_server/.test(prompt) &&
         /register_endpoint/.test(prompt),
       "harness · add_mcp_server · register_endpoint",

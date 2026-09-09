@@ -140,10 +140,51 @@ const noteUsage = (reason) => {
   logSink?.(`[usage] claude-subscription: ${reason}${tail}`);
 };
 
-const toWindow = (w, seconds) => {
+/**
+ * `resets_at` 을 밀리초로 — 문자열(ISO)·숫자(초 또는 밀리초) 전부 받는다.
+ * 못 읽으면 `undefined`(리셋은 있으면 좋은 것이지 없으면 안 되는 것이 아니다).
+ */
+export const parseResetAt = (v) => {
+  if (typeof v === "string" && v !== "") {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : undefined;
+  }
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+    // 1e12 미만 = 초 단위(2001-09-09 이전 밀리초는 실용상 없다).
+    return v < 1e12 ? v * 1000 : v;
+  }
+  return undefined;
+};
+
+/**
+ * 창을 로그 한 줄로 — **리셋 유무를 반드시 싣는다** (2026-09-08).
+ *
+ * ★사고: 회사돌쇠 v0.50.0 에서 «남은 %는 뜨는데 리셋 시각만 안 뜬다» 가 났는데, 로그엔
+ *  퍼센트만 적혀 있어 **화면을 보기 전까지 아무도 몰랐다.** 리셋은 별도 필드를 별도
+ *  규칙으로 읽으므로 **혼자 실패할 수 있는데**, 그 실패에 흔적이 없었다.
+ *  ★두 경로(CLI·엔드포인트)가 같은 문장을 쓰게 여기 한 곳에 둔다 — 두 벌로 지으면
+ *   어느 경로였는지 로그로 못 가른다([[feedback_logs_must_stand_alone]]).
+ */
+const describeWindows = (ws, via) =>
+  `창 ${ws.length}개(${via}) — ` +
+  ws
+    .map(
+      (w) =>
+        `${w.windowSeconds}초:${Math.round(w.remainingPercent ?? -1)}%남음` +
+        (w.resetAt === undefined ? "/리셋★없음" : "/리셋있음"),
+    )
+    .join(" ");
+
+export const toWindow = (w, seconds) => {
   if (w === null || typeof w !== "object") return undefined;
   const used = typeof w.utilization === "number" ? w.utilization : undefined;
-  const resetAt = typeof w.resets_at === "string" ? Date.parse(w.resets_at) : undefined;
+  // ★**모양을 하나로 못 박지 않는다** (2026-09-08). 종전엔 문자열만 받아서, 저쪽이 숫자로
+  //  주면 `resetAt` 만 조용히 빠졌다 — 퍼센트는 그대로 나오므로 화면엔 «남은 양은 보이는데
+  //  리셋은 없는» 반쪽이 뜨고, 로그엔 아무것도 안 남는다(회사돌쇠 v0.50.0 증상).
+  //  ★우리 형제 제공자(`codex-subscription-auth`)는 **숫자**로 읽는다 — 같은 뜻의 필드를
+  //   두 플러그인이 다른 모양으로만 받고 있었던 것 자체가 신호였다.
+  //  초/밀리초는 크기로 가른다(2001년보다 작으면 초다). 손 목록 아니고 단위 판정이다.
+  const resetAt = parseResetAt(w.resets_at);
   if (used === undefined && !Number.isFinite(resetAt)) return undefined;
   return {
     windowSeconds: seconds,
@@ -180,6 +221,7 @@ const fetchClaudeUsage = async () => {
     const { fetchUsageViaCli } = await import("./usage-cli.mjs");
     const viaCli = await fetchUsageViaCli(noteUsage);
     if (viaCli !== undefined) {
+      noteUsage(describeWindows(viaCli.windows ?? [], "CLI"));
       lastOk = { at: now, value: viaCli };
       refusedAfterWaiting = 0;
       await saveCache();
@@ -242,7 +284,7 @@ const fetchClaudeUsage = async () => {
     lastOk = { at: now, value };
     refusedAfterWaiting = 0; // 한 번 되면 그 판정은 무효다.
     await saveCache();
-    noteUsage(`창 ${windows.length}개 — ${windows.map((w) => `${w.windowSeconds}초:${Math.round(w.remainingPercent ?? -1)}%남음`).join(" ")}`);
+    noteUsage(describeWindows(windows, "엔드포인트"));
     return value;
   } catch (e) {
     noteUsage(`조회 실패 — ${e?.name ?? "Error"}: ${String(e?.message ?? e).slice(0, 120)}`);

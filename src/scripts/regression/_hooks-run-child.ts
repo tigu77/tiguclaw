@@ -82,6 +82,10 @@ writeFileSync(
           },
         ],
         Stop: [{ hooks: [{ type: "command", command: `touch '${mark("stop")}'` }] }],
+        // ★`Stop` 의 짝 — 실패한 턴에서만 난다(2026-09-08).
+        StopFailure: [
+          { hooks: [{ type: "command", command: `touch '${mark("stopfail")}'` }] },
+        ],
         SubagentStop: [
           { hooks: [{ type: "command", command: `touch '${mark("subagent")}'` }] },
         ],
@@ -169,6 +173,18 @@ const base = { cwd, channel: "regr", threadKey: "regr:hooks" };
   out.postFired = fired("post");
   await H.runStopHooks({ response: "턴 답변", cwd, channel: "regr", threadKey: "regr:hooks" });
   out.stopFired = fired("stop");
+  // ★StopFailure — 여기까진 «안 났어야» 한다. `Stop` 이 이걸 같이 띄우면 성공 턴에도
+  //  실패 알림이 가고, 그건 훅을 단 이유를 정면으로 배신한다(양방향 측정).
+  out.stopFailNotFiredOnSuccess = !fired("stopfail");
+  await H.runStopFailureHooks({
+    error: "boom",
+    cwd,
+    channel: "regr",
+    threadKey: "regr:hooks",
+  });
+  out.stopFailFired = fired("stopfail");
+  // ★그리고 `Stop` 을 되레 띄우지 않는다 — 실패인데 성공 훅이 돌면 반대 방향 거짓말이다.
+  //  (`stop` 마커는 위에서 이미 생겼으므로, 여기선 파일 하나만 새로 생겼는지로 본다.)
   await H.runSubagentStopHooks({
     jobId: "j1",
     agentName: "a",

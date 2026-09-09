@@ -28,6 +28,7 @@ import {
 } from "../../home-widgets.js";
 import { listLivePlugins } from "../../plugins/manager.js";
 import { listPluginDataRoutes } from "../../plugins/data-routes.js";
+import { listAvailableHomeWidgets } from "../../plugins/manager.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const errText = (text: string) => ({
@@ -42,9 +43,14 @@ const livePluginNames = (): ReadonlySet<string> =>
 /**
  * 모델이 볼 현재 상태 한 덩어리.
  *
- * ★**무엇을 놓을 수 있는지 같이 준다.** 코어는 위젯 id 목록을 모르지만(등록소는 브라우저에
- *  있다) *"어떤 플러그인이 홈에 값을 낼 수 있나"* 는 안다 — 데이터 라우트가 그 신호다.
- *  없으면 모델은 이름을 지어내고, 지어낸 이름은 조용히 빈 자리가 된다.
+ * ★**무엇을 놓을 수 있는지 같이 준다.** 없으면 모델은 이름을 지어내고, 지어낸 이름은
+ *  조용히 빈 자리가 된다.
+ *
+ * ★**이제 진짜 이름을 준다**(2026-09-08). 종전엔 *"코어는 위젯 id 목록을 모른다(등록소는
+ *  브라우저에 있다)"* 라 **데이터 라우트 이름**을 대신 줬는데, 그건 «어떤 플러그인이 값을
+ *  낼 수 있나» 지 «무슨 위젯이 있나» 가 아니다 — 그래서 `running-work/live` 를 아는 방법이
+ *  사람뿐이었다. 매니페스트 선언(`tiguclaw.widgets`)이 생겨 목록이 코어에 있다.
+ *  라우트 줄은 **poll 여부**를 말하는 다른 사실이라 그대로 둔다.
  */
 const describeState = (): string => {
   const known = livePluginNames();
@@ -71,10 +77,23 @@ const describeState = (): string => {
         rejected.map((r) => `  ${r.at}: ${r.reason}`).join("\n"),
     );
   }
+  const available = listAvailableHomeWidgets();
+  const placed = new Set(widgets.map((w) => w.type));
+  lines.push(
+    available.length === 0
+      ? "놓을 수 있는 위젯: 없음(위젯을 선언한 플러그인이 없습니다)."
+      : "놓을 수 있는 위젯:\n" +
+          available
+            .map(
+              (w) =>
+                `  ${w.type} (기본 크기 ${w.size}${placed.has(w.type) ? ", 이미 놓임" : ""})`,
+            )
+            .join("\n"),
+  );
   lines.push(
     routes.length === 0
-      ? "홈에 값을 낼 수 있는 플러그인: 없음(데이터 라우트를 내는 플러그인이 없습니다)."
-      : `홈에 값을 낼 수 있는 플러그인 라우트: ${routes.join(", ")}`,
+      ? "주기적으로 값을 받아오는 위젯: 없음."
+      : `주기적으로 값을 받아오는 플러그인 라우트: ${routes.join(", ")}`,
   );
   return lines.join("\n");
 };

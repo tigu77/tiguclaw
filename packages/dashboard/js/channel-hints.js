@@ -23,7 +23,20 @@
       //    채널 무관이라(텔레그램도 기본 세션에 합류) "텔레그램 경유"를 가시화한다. 대시보드
       //    자기 채널(http-bridge/dashboard)은 자명하므로 배지 없음. §0 단방향: 코어 아닌
       //    대시보드/채널 레이어의 UI 컨벤션이라 채널명→라벨 매핑 허용(generic 폴백 유지).
-      const CHANNEL_LABELS = { telegram: { short: "TG", full: i18n("common.channel.telegram") }, cli: { short: "CLI", full: "CLI" } };
+      // ★**대시보드는 채널 이름을 모른다** (2026-09-08 정태님: *"오히려 채널이 아이콘이던
+      //  뭐던 제공을 하는 게 나을 것 같은데"*). 종전엔 여기 `{telegram:"TG", cli:"CLI"}` 가
+      //  박혀 있었다 — 한 플러그인이 **다른 플러그인 둘의 이름**을 아는 것이고, 새 채널이
+      //  붙으면 이 파일을 고쳐야 했다(「밖에서 오는 것은 자기 관리 단위」 위반).
+      //  ★그리고 «짧은 이름» 이라는 개념 자체를 없앴다 (2026-09-08 정태님: *"숏네임도
+      //   telegram 이거 그대로 써도 될듯"* → *"Telegram"*). 이미 카탈로그가 그 이름을
+      //   갖고 있었다(`common.channel.telegram` = 텔레그램/Telegram) — 별도 필드는
+      //   **없어도 되는 것**이었고, 없애니 채널이 선언할 것도 하나 준다.
+      //  ★2단 폴백: 채널이 준 아이콘 → 표시 이름(카탈로그, 없으면 채널 이름 그대로).
+      //   ★종전 파생(`slice(0,6).toUpperCase()`)은 이름을 **훼손**했다(`TELEGR`). 안 자른다.
+      //   아이콘은 **자리만 열려 있다** — 서드파티 서비스 로고를 우리가 대신 싣지 않는다
+      //   (재배포는 브랜드 가이드라인 문제라 소유자가 판단할 일이다). 플러그인이
+      //   `meta.icon` 을 선언하면 `/api/plugin-icon?name=<plugin>` 이 그걸 낸다.
+      const channelInfo = new Map(); // name → { short?, plugin? }
       const OWN_CHANNELS = new Set(["http-bridge", "dashboard"]);
       // ★배지는 **실재하는 채널**에만 단다 (2026-08-03 사용자 제보).
       //  종전엔 `xxx:` 접두면 무엇이든 채널로 보고 `앞 6글자 대문자` 배지를 만들었다.
@@ -32,23 +45,63 @@
       //  정본은 서버 `/api/channels`(살아 있는 채널 presence). 손으로 유지하는 목록이
       //  아니라 실제 목록이므로 새 채널(slack 등)이 붙으면 저절로 배지가 생긴다.
       //  초기값은 보수적으로 라벨을 가진 둘만 — 목록이 오기 전에 가짜 배지가 뜨지 않게.
-      let knownChannels = new Set(Object.keys(CHANNEL_LABELS));
+      // ★씨앗은 **하드코딩이 아니라 지난번에 실제로 본 것**이다 (2026-09-08).
+      //  종전엔 `Object.keys(CHANNEL_LABELS)` 가 씨앗 노릇을 했는데, 그 목록을 없애자
+      //  «`/api/channels` 를 못 받으면 배지가 통째로 사라진다» 는 손실이 생겼다(회귀가 잡음).
+      //  하드코딩을 되살리지 않고, **마지막으로 성공한 목록**을 기억해 그 성질만 되찾는다 —
+      //  탭 선호를 저장하는 그 관용구와 같다. 실패해도 «지어낸» 채널은 여전히 0이다.
+      const CH_LS = "tigu.channels.last";
+      const readSeed = () => {
+        try {
+          const a = JSON.parse(localStorage.getItem(CH_LS) || "[]");
+          return Array.isArray(a) ? a.filter((x) => typeof x === "string") : [];
+        } catch {
+          return [];
+        }
+      };
+      let knownChannels = new Set(readSeed());
+      try {
+        for (const [n, v] of Object.entries(JSON.parse(localStorage.getItem(CH_LS + ".info") || "{}"))) {
+          if (v && typeof v === "object") channelInfo.set(n, v);
+        }
+      } catch {
+        /* 캐시가 깨졌으면 그냥 없는 셈 — 목록이 오면 덮인다 */
+      }
       const loadKnownChannels = async () => {
         try {
           const r = await fetch("/api/channels");
           if (!r.ok) return;
           const d = await r.json();
-          const names = (Array.isArray(d.channels) ? d.channels : [])
-            .map((c) => (c && typeof c.name === "string" ? c.name : null))
-            .filter((n) => n !== null && !OWN_CHANNELS.has(n));
+          const live = (Array.isArray(d.channels) ? d.channels : []).filter(
+            (c) => c && typeof c.name === "string" && !OWN_CHANNELS.has(c.name),
+          );
+          const names = live.map((c) => c.name);
+
           // 빈 응답으로 목록을 비우지 않는다(부팅 순간·실패를 "채널 없음" 으로 오독 금지).
           if (names.length === 0) return;
+          // ★채널이 준 것을 그대로 담는다 — 여기서 만들어내지 않는다.
+          //  ★**빈 응답 가드 뒤**에 둔다. 앞에 뒀더니 빈 응답이 `channelInfo` 만 비워서,
+          //   목록은 살아 있는데 짧은 이름을 잃고 `TELEGR` 로 떨어졌다(회귀가 잡음).
+          //   «빈 응답으로 잃지 않는다» 는 목록과 그 내용에 **똑같이** 적용된다.
+          channelInfo.clear();
+          for (const c of live) {
+            channelInfo.set(c.name, {
+              plugin: typeof c.plugin === "string" && c.plugin !== "" ? c.plugin : null,
+            });
+          }
           const before = [...knownChannels].sort().join(",");
           knownChannels = new Set(names);
           // 목록이 달라졌으면 이미 그려진 배지를 다시 판정한다(늦게 온 진짜 채널 반영).
           // 모듈들은 스코프를 공유한다(tabs.js 가 여기 channelMeta 를 그냥 부르는 것과 같은
           // 관행). 이 콜백은 tabs.js 가 실행된 뒤에 돌므로 참조가 안전하고, 실패해도 아래
           // catch 가 받는다 — 배지 재판정 실패가 화면을 막지 않는다.
+          // 다음 부팅의 씨앗 — «지난번에 실제로 본 채널» 이지 우리가 아는 채널이 아니다.
+          try {
+            localStorage.setItem(CH_LS, JSON.stringify(names));
+            localStorage.setItem(CH_LS + ".info", JSON.stringify(Object.fromEntries(channelInfo)));
+          } catch {
+            /* 저장 실패는 무해 — 다음 로드가 다시 채운다 */
+          }
           if (before !== names.slice().sort().join(",")) renderTabBar();
         } catch (e) {
           console.warn("채널 목록 로드 실패 — 배지는 알려진 채널만:", e && e.message ? e.message : e);
@@ -59,7 +112,24 @@
         if (!ch || typeof ch !== "string" || OWN_CHANNELS.has(ch)) return null;
         // ★없는 채널을 지어내지 않는다. 키 접두는 채널이 아니다.
         if (!knownChannels.has(ch)) return null;
-        return CHANNEL_LABELS[ch] || { short: ch.slice(0, 6).toUpperCase(), full: ch };
+        const info = channelInfo.get(ch) || {};
+        const display = (() => {
+            // ★`i18n` 은 키가 없으면 **키 문자열**을 돌려준다 — 그대로 쓰면 화면에
+            //  `common.channel.slack` 이 뜬다. 카탈로그에 있을 때만 쓰고, 없으면 이름 그대로.
+          const key = "common.channel." + ch;
+          const t = i18n(key);
+          return t === key ? ch : t;
+        })();
+        return {
+          // 배지에 쓰는 **표시 이름** — 언어는 브라우저가 정한다. 별도 «짧은 이름» 은 없다.
+          short: display,
+          full: display,
+          // 아이콘 자리 — 플러그인이 선언했으면 화면이 이 URL 을 시도하고, 404 면
+          // `onerror` 로 짧은 이름으로 떨어진다(`view-plugins` 의 아이콘 관용구와 동형).
+          // 아이콘 자리 — 서버가 알려준 **제공 플러그인**으로만 만든다(이름을 유추하지
+          // 않는다). 선언이 없으면 404 고, 화면은 `onerror` 로 이름 배지로 떨어진다.
+          iconUrl: info.plugin ? "/api/plugin-icon?name=" + encodeURIComponent(info.plugin) : null,
+        };
       };
       // threadKey 접두에서 채널 추론(서버가 channel 메타 미제공 시 폴백). tg:/cli:/dashboard:.
       const channelFromThreadKey = (tk) => {

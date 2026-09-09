@@ -44,7 +44,7 @@ reach: main
    - 본문 = 프롬프트 템플릿(요청 파라미터를 끼워 넣음).
 2. 앱은 그 경로를 호출: `POST http://127.0.0.1:<HTTP_BRIDGE_PORT>/<path>` + bridge 토큰.
 
-### 동기 / 스트리밍 (2026-07-26 추가)
+### 동기 / 스트리밍
 엔드포인트도 **둘 다** 된다 — 앱이 고른다.
 - **동기(기본)**: 그냥 POST → `{ "result": "<본문>" }` 한 번에. 앱 코드 2줄.
 - **스트리밍**: body 에 `"stream": true`(또는 `?stream=1`) → SSE.
@@ -56,8 +56,7 @@ reach: main
   ```
   ★앱은 **result/error 를 받았는지**로 성패를 판정할 것(연결만 끊긴 것과 구분).
   ★`EventSource` 는 POST 불가 → `fetch` + `ReadableStream` 으로 읽는다.
-- **타임아웃**: 엔드포인트 전용 `ENDPOINT_TIMEOUT_MS`(기본 5분, env 조정). 종전 60초 캡에서
-  폴백 낀 긴 턴(70초)이 504로 잘리던 실사고 때문에 분리·상향했다. 스트리밍이면 데이터가
+- **타임아웃**: 엔드포인트 전용 `ENDPOINT_TIMEOUT_MS`(기본 5분, env 조정).   폴백 낀 긴 턴(70초)이 504로 잘리던 실사고 때문에 분리·상향했다. 스트리밍이면 데이터가
   흘러 중간 계층(프록시·Tailscale) idle timeout 도 회피된다.
 
 ### 주의
@@ -78,8 +77,8 @@ reach: main
 ```
 LLM_GATEWAY_TOKEN=<임의 비밀문자열>
 ```
-시크릿이라 **파일(settings.json)에 raw 로 두지 않는다**(D5 원칙). env 는 부팅 고정이라
-이 값을 새로 넣거나 바꿀 때만 재시작(`npm run build:prod && npm run daemon:restart`).
+시크릿이라 **파일(settings.json)에 raw 로 두지 않는다**. env 는 부팅 고정이라
+이 값을 새로 넣거나 바꿀 때만 재시작(`tiguclaw restart`).
 
 **② 나머지 설정 — `<home>/settings.json`, ★재시작 불요(매 요청 fresh read)**
 ```json
@@ -96,7 +95,7 @@ LLM_GATEWAY_TOKEN=<임의 비밀문자열>
 - `models` — 기본 모델 풀. 생략 시 env `LLM_GATEWAY_MODELS`→`REGION_A_MODELS` 폴백.
 - `maxConcurrency` — 동시 처리 상한(초과 429). 생략=4.
 - `tokenEnv` — 토큰을 읽을 env 변수명. 생략=`LLM_GATEWAY_TOKEN`.
-- ★`gateway` 섹션 자체가 없으면 **레거시 env 경로**(토큰 존재만으로 활성) = 기존 설정 무회귀.
+- ★`gateway` 섹션 자체가 없으면 **레거시 env 경로**(토큰 존재만으로 활성).
 
 → **토큰만 한 번 심어두면, 그 뒤 켜기/끄기·모델·동시성 변경은 재시작 없이 즉시 반영된다.**
 즉 비서가 사용자 대화를 끊지 않고 게이트웨이를 토글할 수 있다.
@@ -125,8 +124,7 @@ const client = new OpenAI({
 - 함수호출: 앱이 `tools` 를 주면 모델이 **실행하지 않고** `tool_calls` 를 반환
   (`finish_reason:"tool_calls"`) → **앱이 실행**하고 `role:"tool"` 로 결과를 돌려주면 이어감.
   ★**세 어댑터 전부**(claude·codex·openai)에서 되고, **구독 인증만으로도 된다**(API 키 불요).
-  2026-08-09 이전엔 claude 경로에서 `tools` 가 **조용히 버려졌다** — 앱은 평범한 텍스트를
-  200 으로 받아 "모델이 도구를 안 쓴다"로만 보였다. 그때 배운 것: **되는지 물어보지 말고
+    200 으로 받아 "모델이 도구를 안 쓴다"로만 보였다. 그때 배운 것: **되는지 물어보지 말고
   §5 검증을 돌려라.**
 - `tool_choice` — `"none"` 은 스키마를 아예 안 넘겨 집행하고, `"required"` 를 못 지키면
   **에러**(`tool_choice_unsatisfied`)로 알린다. 텍스트를 성공인 척 주지 않는다.
@@ -203,6 +201,6 @@ curl http://127.0.0.1:<port>/v1/chat/completions \
 
 ## 불변식
 - 사용자가 모드를 정했으면 **그대로**. 안 정했으면 §1 로 **추천 후 확인**.
-- 게이트웨이 토큰·상용 키는 **절대 코드·settings.json 에 raw 로 두지 말 것**(env 만, D5).
+- 게이트웨이 토큰·상용 키는 **절대 코드·settings.json 에 raw 로 두지 말 것**(env 만).
 - **토큰을 새로 심을 때만** 재시작이 필요하다 — 라이브 데몬이 대화 중일 수 있으니 **사전 고지**.
   그 외(켜기/끄기·모델·동시성)는 settings.json 편집으로 재시작 없이 처리한다.

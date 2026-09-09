@@ -48,6 +48,7 @@ import {
   parseSlashCommand,
 } from "./core/entry/command-registry.js";
 import {
+  runStopFailureHooks,
   runStopHooks,
   runUserPromptSubmitHooks,
   setHookObserver,
@@ -57,8 +58,14 @@ import {
   formatInventoryForUser,
 } from "./core/plugins/inventory.js";
 import { loadPlugins } from "./core/plugins/loader.js";
-import { bundledPluginNames, initPluginManager, trackPlugin } from "./core/plugins/manager.js";
-import { wirePlugin } from "./core/plugins/wire.js";
+import { seedDefaultHomeWidgets } from "./core/home-widgets.js";
+import {
+  bundledPluginNames,
+  initPluginManager,
+  listAvailableHomeWidgets,
+  trackPlugin,
+} from "./core/plugins/manager.js";
+import { channelPluginName, wirePlugin } from "./core/plugins/wire.js";
 import {
   startSelfMaintenance,
   stopSelfMaintenance,
@@ -393,7 +400,7 @@ const channels: Channel[] = [];
 const serviceStops: Array<{ name: string; stop: () => Promise<void> }> = [];
 
 // ★코어 하드코딩 채널 0 (2026-07-18) — cli·telegram 모두 채널 플러그인으로 이전
-// (plugins/cli-channel name="cli", plugins/telegram-channel name="telegram"). 로더가
+// (plugins/cli-channel name="cli-channel", plugins/telegram-channel name="telegram-channel"). 로더가
 // 발견·기동한다. telegram 무토큰이면 플러그인이 self-disable(status:"disabled").
 // presence 는 채널 self-report(c.status ?? "up") — 코어가 특정 채널명 모름(§0).
 
@@ -437,6 +444,13 @@ try {
     // ★부팅 배선도 관리자에 등록한다 — 그래야 홈 것을 나중에 뺄 수 있다(런타임 제거).
     const wired = await wirePlugin(lp, { bus, channels, serviceStops });
     trackPlugin(lp, bundledNames.has(lp.manifest.name) ? "bundled" : "home", wired);
+  }
+  // ★선언이 `default: true` 인 위젯을 홈에 **한 번** 놓는다 (2026-09-08). 여기가 자리인
+  //  이유: 위 루프가 끝나야 «지금 돌고 있는 것» 이 확정된다. 이미 놓였거나 사용자가
+  //  껐으면(seeded) 파일을 안 건드리므로, 부팅마다 설정이 다시 쓰이지 않는다.
+  const seededNow = seedDefaultHomeWidgets(listAvailableHomeWidgets());
+  if (seededNow.length > 0) {
+    console.log(`[plugin-loader] 홈 위젯 자동 편입: ${seededNow.join(", ")}`);
   }
 } catch (e) {
   console.error("loadPlugins failed:", e);
@@ -1326,6 +1340,22 @@ const handler: MessageHandler = async (msg) => {
     await replyCommand(msg, formatRegionAError(detail));
     // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조).
     await fanOutEgress(egressTargets, formatRegionAError(detail), bus, msg.threadKey);
+    // ★StopFailure 훅 — `Stop` 의 짝 (2026-09-08). `Stop` 은 위 `try` 안에 있어 **실패한
+    //  턴에는 어떤 훅도 안 났다.** 그런데 훅으로 하려는 일 중 «턴이 실패했을 때 알려줘» 가
+    //  가장 흔하다(실측 분모: 실패 130 / 1,594 턴 = 8.2%). 상류(Claude Code)에도 같은 이름의
+    //  훅이 있어 «누락은 버그» 대상이었다.
+    // ★**응답을 보낸 뒤**에 부른다 — 훅은 임의 셸이고 최대 60초 걸릴 수 있다. 앞에 두면
+    //  사용자가 에러를 그만큼 늦게 본다(견고함 > 단순함).
+    // ★위 두 `return` 이 이미 사용자·매니저 취소를 걸러냈다 — 여기 오는 건 실제 에러뿐이고,
+    //  상류도 user interrupt 엔 이 훅을 안 띄운다.
+    // ★`detail` 은 이미 redact 를 통과해 채널로 나간 값이다(보안 불변식). 훅이 새로 보는
+    //  게 아니라 같은 것을 받는다.
+    await runStopFailureHooks({
+      error: detail,
+      cwd: process.cwd(),
+      channel: msg.channel,
+      threadKey: msg.threadKey,
+    });
   } finally {
     // 활동 표시 해제 — 마지막 참조일 때만 실제로 멈춘다(좌표 단위 refcount).
     releaseActivity();
@@ -1916,6 +1946,12 @@ for (const ch of channels) {
       name: c.name,
       kind: c.name,
       status: c.status ?? "up",
+      // 이 채널을 제공하는 플러그인 — **나르기만** 한다(2026-09-08). 화면이 아이콘을
+      // 부르려면 필요하다. 표시 이름은 카탈로그가 만든다(별도 필드 없음).
+      ...((): { plugin?: string } => {
+        const p = channelPluginName(c.name);
+        return p === undefined ? {} : { plugin: p };
+      })(),
       ...(await outboundFlags(c.name)),
     })),
   );

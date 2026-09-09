@@ -105,6 +105,18 @@ interface PluginInstance {
   status?: "up" | "disabled";
 }
 
+/**
+ * 채널 이름 → 그 채널을 제공하는 플러그인 이름 (2026-09-08).
+ *
+ * ★코어는 채널명을 모른다(§0). 여기 담기는 건 «누가 제공했나» 라는 **배선 사실**이지
+ *  채널에 대한 지식이 아니다. 화면이 그 플러그인의 아이콘을 부를 수 있게 하려고 둔다.
+ */
+const channelPlugins = new Map<string, string>();
+
+/** presence 조립부(index.ts)가 읽는다. */
+export const channelPluginName = (channel: string): string | undefined =>
+  channelPlugins.get(channel);
+
 const publishPluginError = (
   bus: EventBus,
   pluginName: string,
@@ -338,6 +350,13 @@ export const wirePlugin = async (
           // 본다(inst.outbound → registerChannelOutbound forward 와 동형). 미선언 = 미포함
           // → presence `?? "up"`(회귀 0).
           ...(inst.status !== undefined ? { status: inst.status } : {}),
+        });
+        // ★어느 플러그인이 이 채널을 제공하나 — 화면이 `/plugin-icon?name=` 을 부르려면
+        //  필요하다. 지금은 채널 이름과 같은 경우가 많지만 **유추하지 않는다**: 한 플러그인이
+        //  다른 이름의 채널을 제공할 수 있고, 그때 «같겠지» 는 조용히 틀린다.
+        channelPlugins.set(channelName, lp.manifest.name);
+        undo.push(() => {
+          channelPlugins.delete(channelName);
         });
         // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — plugin 이 `outbound` 를 표명하면
         // 덕 타이핑으로 읽어 코어 레지스트리에 등록(startChannel 과 동형, §0 준수:

@@ -82,6 +82,51 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★**메서드도 «부르는 것» 의 일부다** (2026-09-08). 경로가 있어도 **그 메서드**의
+    //  분기가 없으면 조용한 404 다 — 실측으로 그렇게 걸렸다: `/api/home-widgets` 는
+    //  GET 으로 배선돼 있어 위 검사가 초록이었는데, 새로 만든 토글이 같은 경로에 POST 를
+    //  보내 아무 일도 안 일어났다. 쿼리 축(아래)과 **같은 병의 다른 얼굴**이라 나란히 둔다.
+    //  이름을 열거하지 않는다 — 프런트에 `method: "POST"` 가 붙어 있으면 대상이다.
+    const posted = new Set<string>();
+    for (const f of readdirSync(path.join(DASH, "js")).filter((n) => n.endsWith(".js"))) {
+      const src = readFileSync(path.join(DASH, "js", f), "utf8")
+        .split("\n")
+        .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+        .join("\n");
+      // `fetch("/api/x", { … method: "POST" … })` — 한 호출 안에서만 본다(300자 창).
+      for (const m of src.matchAll(/["'`](\/api\/[a-z0-9\-/]+)["'`]\s*,\s*\{([\s\S]{0,300}?)\}/gi)) {
+        if (/method:\s*["'`]POST["'`]/i.test(m[2] ?? "")) {
+          posted.add((m[1] ?? "").replace(/\/+$/, ""));
+        }
+      }
+    }
+    // ★**분기 조건 단위로 본다** — 정확일치 정규식은 첫 실행에서 오탐 2건을 냈다:
+    //  `(a === … || b === …) && method === "POST"` 로 **묶인** 배선을 못 봐서, 멀쩡히
+    //  도는 auth-login 둘이 «누락» 으로 빨개졌다. 없는 위반을 만드는 게이트는 상시 빨강이
+    //  되고, 상시 빨강은 아무도 안 본다([[feedback_gate_must_actually_run]]).
+    //  조건 하나를 통째로 뽑아 «이 경로를 말하면서 POST 도 말하는가» 를 묻는다.
+    const conditions = [...proxy.matchAll(/\bif \(([\s\S]{0,400}?)\)\s*\{/g)].map(
+      (m) => m[1] ?? "",
+    );
+    const isWiredPost = (p: string): boolean =>
+      conditions.some(
+        (c) =>
+          /method === "POST"/.test(c) &&
+          (c.includes(`pathname === "${p}"`) || c.includes(`pathname.startsWith("${p}/")`)),
+      );
+    const missingPost = [...posted].filter((p) => !isWiredPost(p));
+    out.push(
+      assert(
+        `★★프런트가 **POST 로** 부르는 ${posted.size}개 경로가 전부 프록시에 POST 분기를 갖는다 — 같은 경로의 GET 만 있으면 위 검사는 초록인데 화면은 조용히 404 를 맞는다`,
+        posted.size > 0 && missingPost.length === 0,
+        posted.size === 0
+          ? "★POST 호출을 하나도 못 뽑았다 — 검사가 공짜로 통과 중이다"
+          : missingPost.length === 0
+            ? `${posted.size}개 전부 POST 분기 존재`
+            : `★POST 분기 누락 ${missingPost.length}건: ${missingPost.join(", ")}`,
+      ),
+    );
+
     // ★**쿼리를 달고 부르는 경로는 프록시가 쿼리를 흘려야 한다** (2026-09-04 3R P-2).
     //  경로가 있어도 쿼리를 버리면 **다른 응답이 온다** — `?jobId=` 단건 요청이 조용히
     //  목록으로 떨어져 «원문이 사라졌습니다» 가 됐고, 서버는 멀쩡하니 로그에도 안 남는다.

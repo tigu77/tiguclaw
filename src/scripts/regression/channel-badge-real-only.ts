@@ -26,6 +26,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 interface Meta {
   short: string;
   full: string;
+  /** 플러그인이 아이콘을 선언했을 때 화면이 시도할 URL. 제공 플러그인을 모르면 null. */
+  iconUrl: string | null;
 }
 interface Harness {
   meta: (ch: string | null) => Meta | null;
@@ -35,10 +37,13 @@ interface Harness {
 }
 
 /** channel-hints.js 의 배지 판정부를 떼어 vm 에서 실제로 돌린다. */
-const harness = (serverChannels: string[] | null): Harness => {
+const harness = (
+  serverChannels: string[] | null,
+  seed?: Record<string, string>,
+): Harness => {
   const src = readFileSync(path.join(REPO, "packages/dashboard/js/channel-hints.js"), "utf8");
   const block =
-    /const CHANNEL_LABELS = [\s\S]*?const channelFromThreadKey = \(tk\) => \{[\s\S]*?\n {6}\};/.exec(
+    /const channelInfo = new Map\(\);[\s\S]*?const channelFromThreadKey = \(tk\) => \{[\s\S]*?\n {6}\};/.exec(
       src,
     );
   if (block === null) throw new Error("배지 판정부를 못 찾음");
@@ -47,6 +52,18 @@ const harness = (serverChannels: string[] | null): Harness => {
     // 화면 문구 함수 — 브라우저 전역이라 여기선 원문을 그대로 돌려준다(판정만 본다).
     i18n: i18nForContext,
     console: { warn: () => {} },
+    // ★브라우저 전역 — 검사마다 **빈 저장소**로 시작한다(직전 검사의 씨앗이 새지 않게).
+    //  «지난번에 본 채널» 을 재현하려면 아래 `seed` 로 명시적으로 넣는다.
+    localStorage: ((): Record<string, unknown> => {
+      const m = new Map<string, string>();
+      for (const [k, v] of Object.entries(seed ?? {})) m.set(k, v);
+      return {
+        getItem: (k: string) => m.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          m.set(k, v);
+        },
+      };
+    })(),
     renderTabBar: () => {
       renders += 1;
     },
@@ -56,7 +73,17 @@ const harness = (serverChannels: string[] | null): Harness => {
         : Promise.resolve({
             ok: true,
             json: () =>
-              Promise.resolve({ channels: serverChannels.map((n) => ({ name: n })) }),
+              // ★presence 는 이제 «채널이 선언한 것» 을 실어 온다(short·plugin). 검사도 실물
+              //  모양으로 준다 — 이름만 주는 채널(선언 없음)이 섞이는 것도 그대로 재현한다.
+              Promise.resolve({
+                channels: serverChannels.map((n) =>
+                  n === "telegram"
+                    ? { name: n, plugin: "telegram-channel" }
+                    : n === "cli"
+                      ? { name: n, plugin: "cli-channel" }
+                      : { name: n },
+                ),
+              }),
           }),
   };
   vm.createContext(ctx);
@@ -108,7 +135,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★진짜 채널은 그대로 배지가 붙는다(TG·CLI)",
-        tg?.short === "TG" && cli?.short === "CLI",
+        tg?.short === i18nForContext("common.channel.telegram") &&
+          cli?.short === i18nForContext("common.channel.cli"),
         `${tg?.short} · ${cli?.short}`,
       ),
     );
@@ -128,29 +156,110 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★새 채널이 붙으면 저절로 배지 대상이 된다(하드코딩 목록 아님)",
-        slack?.short === "SLACK",
+        slack?.short === i18nForContext("common.channel.slack"),
         slack === null ? "★새 채널이 배지를 못 받는다" : slack.short,
       ),
     );
 
     // ★④ 목록을 못 받았을 때(실패·빈 응답) **가짜 배지가 생기지 않는다.** 여기가 열리면
     //  네트워크가 나쁜 순간마다 옛 동작으로 되돌아간다.
-    const hFail = harness(null);
+    // ★«알려진 채널» 의 뜻이 바뀌었다 (2026-09-08): 종전엔 **대시보드가 하드코딩한 둘**이
+    //  씨앗이었는데, 이제 **지난번에 서버에서 실제로 본 것**이 씨앗이다(localStorage).
+    //  지키려는 성질은 그대로다 — «네트워크가 나빠도 진짜 채널 배지는 살고, 가짜는 안 생긴다».
+    //  ★그래서 여기서 씨앗을 명시적으로 준다. 안 주면 «한 번도 본 적 없는 브라우저» 이고,
+    //   그때 배지가 없는 건 결함이 아니라 **올바른 보수적 동작**이다(아래 ④-b 가 그걸 본다).
+    const lastSeen = {
+      "tigu.channels.last": JSON.stringify(["telegram", "cli"]),
+      "tigu.channels.last.info": JSON.stringify({
+        telegram: { plugin: "telegram-channel" },
+        cli: { plugin: "cli-channel" },
+      }),
+    };
+    const hFail = harness(null, lastSeen);
     await hFail.load();
     out.push(
       assert(
         "★목록 로드 실패해도 가짜 배지 0(알려진 채널만)",
-        hFail.meta("verify") === null && hFail.meta("telegram")?.short === "TG",
+        hFail.meta("verify") === null &&
+          hFail.meta("telegram")?.short === i18nForContext("common.channel.telegram"),
         "실패 시 보수적 동작 확인",
       ),
     );
-    const hEmpty = harness([]);
+    const hEmpty = harness([], lastSeen);
     await hEmpty.load();
     out.push(
       assert(
         "빈 응답으로 알려진 채널을 잃지 않는다(빈 응답 ≠ 채널 없음)",
-        hEmpty.meta("telegram")?.short === "TG" && hEmpty.meta("verify") === null,
+        hEmpty.meta("telegram")?.short === i18nForContext("common.channel.telegram") &&
+          hEmpty.meta("verify") === null,
         "빈 응답 방어 확인",
+      ),
+    );
+
+    // ★④-b **처음 여는 브라우저**는 배지가 없다 — 아직 아무 채널도 «본» 적이 없기 때문이다.
+    //  종전 하드코딩은 이걸 «telegram 은 늘 진짜» 로 가정했다. 그 가정이 곧 대시보드가
+    //  채널을 아는 것이었고, 이 변경이 없앤 것이다. 없는 걸 지어내지 않는 쪽이 맞다.
+    const hCold = harness(null);
+    await hCold.load();
+    out.push(
+      assert(
+        "★한 번도 채널을 못 본 브라우저는 배지를 지어내지 않는다(하드코딩 씨앗 제거의 값)",
+        hCold.meta("telegram") === null && hCold.meta("verify") === null,
+        `telegram=${JSON.stringify(hCold.meta("telegram"))} verify=${JSON.stringify(hCold.meta("verify"))}`,
+      ),
+    );
+
+    // ★④-c **대시보드는 어떤 채널도 특별대우하지 않는다** (2026-09-08) ─────────────
+    //  종전엔 `{ telegram: "TG", cli: "CLI" }` 가 이 파일에 박혀 있었다 — 한 플러그인이
+    //  다른 플러그인의 이름을 아는 것이고, 새 채널이 붙으면 여기를 고쳐야 했다.
+    //  ★이름 목록으로 «없는지» 를 세지 않는다(그건 또 다른 손 목록이다). 대신 **행동**으로
+    //   본다: 서버가 똑같이 알려준 두 채널은 **똑같은 모양**으로 나와야 한다. 하나라도
+    //   특별분기가 있으면 그 채널만 달라진다.
+    const hFair = harness(["telegram", "zzz-made-up"]);
+    await hFair.load();
+    const mKnown = hFair.meta("telegram");
+    const mNew = hFair.meta("zzz-made-up");
+    const sameShape =
+      mKnown !== null &&
+      mNew !== null &&
+      Object.keys(mKnown).sort().join(",") === Object.keys(mNew).sort().join(",") &&
+      // 표시 이름은 **카탈로그가 있으면** 다르다(그건 언어지 특별대우가 아니다).
+      // 특별대우의 증거는 «카탈로그에도 없는데 다르게 나오는 것» 이다.
+      mNew.short === "zzz-made-up";
+    out.push(
+      assert(
+        "★★대시보드가 특정 채널을 특별대우하지 않는다 — 서버가 같은 모양으로 준 둘은 같은 모양으로 나온다",
+        sameShape,
+        `telegram=${JSON.stringify(mKnown)} · 새 채널=${JSON.stringify(mNew)}`,
+      ),
+    );
+
+    // ★④-d **아이콘 자리가 살아 있다** (2026-09-08) ──────────────────────────────
+    //  변이로 확인: `iconUrl` 을 `null` 로 고정해도 스위트가 초록이었다 — 방금 판 자리를
+    //  지키는 게 없었다. 자리는 «있다» 가 아니라 «도는가» 로 재야 한다.
+    //  ★아이콘 파일은 **아무것도 안 싣는다**(서드파티 로고 재배포는 소유자 판단). 그래서
+    //   여기서 보는 건 파일이 아니라 **URL 이 만들어지는가** 다 — 404 면 화면이 이름으로
+    //   떨어지는 건 `view-plugins` 의 아이콘 관용구와 동형이다.
+    const hIcon = harness(["telegram"]);
+    await hIcon.load();
+    const mi = hIcon.meta("telegram");
+    const iconOk =
+      typeof mi?.iconUrl === "string" && mi.iconUrl.includes("telegram-channel");
+    out.push(
+      assert(
+        "★채널이 제공 플러그인을 알려주면 아이콘 URL 이 만들어진다(자리가 도는가)",
+        iconOk,
+        `iconUrl=${JSON.stringify(mi?.iconUrl)}`,
+      ),
+    );
+    // 제공 플러그인을 모르면 URL 도 없다 — 지어내지 않는다(«-channel 붙이기» 금지).
+    const hNoPlugin = harness(["zzz-made-up"]);
+    await hNoPlugin.load();
+    out.push(
+      assert(
+        "제공 플러그인을 모르면 아이콘 URL 을 지어내지 않는다",
+        hNoPlugin.meta("zzz-made-up")?.iconUrl === null,
+        `iconUrl=${JSON.stringify(hNoPlugin.meta("zzz-made-up")?.iconUrl)}`,
       ),
     );
 

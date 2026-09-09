@@ -159,6 +159,8 @@ export const check: RegressionCheck = {
       "selfGrowth",
       "role",
       "nextSuggestion",
+      // 헌법의 역할 절 — `system` 입력에서 파생된다(2026-09-08). 안정 채널이어야 한다.
+      "constitutionRole",
     ] as const;
     const slotChannel = new Map(
       buildContextSlots({
@@ -203,13 +205,26 @@ export const check: RegressionCheck = {
     // ★둘이 충돌하면 **역할 축이 이긴다**: `agent`(AGENT.md)는 비서가 수시로 고치지만
     //  **공용**이라 역할 전용보다 앞이다 — 그래야 자식이 거기까지 공유한다.
     const at = (m: string): number => stable.indexOf(m);
+    // ★**①은 «공용 슬롯끼리만» 잰다** (2026-09-08). 종전엔 `skillIndex` 를 사슬 한가운데
+    //  못 박아, 그 슬롯이 **역할 전용이 되어 꼬리로 내려가자** ①이 빨개졌다 — 규칙이
+    //  깨진 게 아니라 **그 슬롯이 ①의 관할을 떠난 것**이다(위 «충돌하면 역할 축이 이긴다»).
+    //  이름을 지우고 끝내면 다음에 또 같은 자리에서 손 목록이 낡는다 → **성질에서 파생**한다:
+    //  ①의 사슬에 든 슬롯이 실제로 공용인지 먼저 확인하고, 그 다음에 순서를 본다.
+    const VOLATILITY_CHAIN = ["system", "agent", "agentWarn"] as const;
+    const scopedNow = new Set(roleScopedSlotKeys());
+    const strayed = VOLATILITY_CHAIN.filter((k) => scopedNow.has(k));
     out.push(
       assert(
-        "★①변동성 축 — SYSTEM.md 가 맨 앞, 스킬 인덱스가 그다음, AGENT.md 가 그 뒤",
-        at(MARK.system) < at(MARK.skillIndex) &&
-          at(MARK.skillIndex) < at(MARK.agent) &&
-          at(MARK.agent) < at(MARK.agentWarn),
-        `system=${at(MARK.system)} skill=${at(MARK.skillIndex)} agent=${at(MARK.agent)} warn=${at(MARK.agentWarn)}`,
+        "★①변동성 축은 **공용 슬롯끼리만** 순서를 본다 — 역할 전용이 된 슬롯은 ②의 관할이다",
+        strayed.length === 0,
+        strayed.length === 0
+          ? `공용 사슬: ${VOLATILITY_CHAIN.join(" → ")}`
+          : `★역할 전용이 된 슬롯이 ① 사슬에 남아 있다: ${strayed.join(",")}`,
+      ),
+      assert(
+        "★①변동성 축 — SYSTEM.md 가 맨 앞, AGENT.md 가 그 뒤(안 변하는 것이 앞)",
+        at(MARK.system) < at(MARK.agent) && at(MARK.agent) < at(MARK.agentWarn),
+        `system=${at(MARK.system)} agent=${at(MARK.agent)} warn=${at(MARK.agentWarn)}`,
       ),
     );
     // ★★②역할 축 — **이름을 세지 않고 성질에서 파생**한다 (2026-09-03 적대 검토 B-6·B-8).
@@ -290,6 +305,69 @@ export const check: RegressionCheck = {
             : undeclared.length === 0
               ? `갈림 ${varying.join("·")} — 전부 선언됨`
               : `★미선언 ${undeclared.join("·")}`,
+        ),
+      );
+    }
+
+    // ★★④**공유 프리픽스** — «선언» 이 아니라 «배치» 를 잰다 (2026-09-08).
+    //
+    //  ③은 «역할마다 갈리는 슬롯이 **선언됐나**» 만 묻는다. 그래서 선언된 채로 **머리에**
+    //  앉아 있어도 초록이었다 — 실제로 그랬다: `system`(헌법)이 슬롯 #1 에서 갈리고
+    //  `skillIndex` 가 #2 에서 갈려, **메인↔자식 공유 프리픽스가 94% → 18%** 로
+    //  주저앉았는데 스위트 3,020건이 전부 초록이었다. 대가는 로그에 있었다: codex
+    //  적중률 3.1%, 14턴 연속 `cached=3,712` 고정.
+    //
+    //  ★**임계 퍼센트를 두지 않는다.** 손으로 고른 숫자는 내용이 늘면 낡고, 낡은 임계는
+    //   «통과하는데 나빠지는» 상태를 만든다. 대신 **성질**을 본다:
+    //   «모든 칸에서 같은 슬롯은 전부, 갈리는 슬롯보다 앞에 있다.»
+    //   프리픽스는 앞에서만 매칭하므로 이게 곧 «공유가 최대» 라는 말이고, 여기엔 고를
+    //   숫자가 없다([[feedback_hand_maintained_lists]]).
+    {
+      const FENCED_SYS = `${MARK.system}\n<!--role:main-->\n비서 전용\n<!--/role-->\n<!--role:manager-->\n매니저까지\n<!--/role-->\n`;
+      /** 세 칸이 **실제로 받는** 입력 — 역할 전용 슬롯은 그 칸에서 빈다(어댑터와 같은 모양). */
+      const inputFor = (rs: Record<string, unknown>, child: boolean) => ({
+        system: FENCED_SYS,
+        env: "", agent: MARK.agent, agentWarn: "", convoContext: "", memorySnippet: "",
+        // 자식은 목록을 안 받는다(`memoryScopeFor`)·인덱스가 빈다 — 어댑터가 그렇게 넘긴다.
+        memoryIndex: child ? "" : MARK.memoryIndex,
+        skillIndex: child ? "" : MARK.skillIndex,
+        agentIndex: child ? "" : MARK.agentIndex,
+        modelProfiles: child ? "" : "모델 프로파일",
+        roleSource: rs,
+      });
+      // ★**빈 슬롯은 세지 않는다** — `splitSystemContext` 가 조립 전에 걸러내므로 캐시와
+      //  무관하다. 첫 판이 이걸 빠뜨려 «양쪽 다 빈» 슬롯을 «공용» 으로 세고 «꼬리로
+      //  내려라» 는 **없는 위반**을 만들었다(상시 빨강의 씨앗).
+      const sysSlots = (rs: Record<string, unknown>, child: boolean): Map<string, string> =>
+        new Map(
+          buildContextSlots(inputFor(rs, child) as never)
+            .filter((sl) => sl.channel === "system" && sl.text.length > 0)
+            .map((sl) => [sl.key, sl.text] as const),
+        );
+      const mainSlots = sysSlots({}, false);
+      const kids = [sysSlots({ subagentDepth: 1 }, true), sysSlots({ workerDepth: 1 }, true)];
+      /** 메인 기준 순서대로 «모든 칸에서 같은가» 를 매긴다(빈 슬롯도 «다름» 이다). */
+      const order = [...mainSlots.keys()];
+      const sameEverywhere = (k: string): boolean =>
+        kids.every((m) => m.get(k) === mainSlots.get(k));
+      const firstDiff = order.findIndex((k) => !sameEverywhere(k));
+      const strandedShared =
+        firstDiff < 0 ? [] : order.slice(firstDiff + 1).filter((k) => sameEverywhere(k));
+      const sharedBytes = (firstDiff < 0 ? order : order.slice(0, firstDiff))
+        .reduce((n, k) => n + (mainSlots.get(k) ?? "").length, 0);
+      const totalBytes = order.reduce((n, k) => n + (mainSlots.get(k) ?? "").length, 0);
+      out.push(
+        assert(
+          "★★★공용 슬롯이 **전부** 갈리는 슬롯보다 앞이다 — 하나라도 뒤에 있으면 그 뒤의 «내용이 똑같은» 조각이 역할마다 두 벌 캐시된다(실측: 이걸 어겨 94% → 18%)",
+          firstDiff !== 0 && strandedShared.length === 0,
+          strandedShared.length === 0
+            ? `공유 ${sharedBytes}/${totalBytes}자 · 갈림 시작 = ${order[firstDiff] ?? "(없음)"}`
+            : `★갈림(${order[firstDiff]}) **뒤에 남은 공용 슬롯**: ${strandedShared.join(", ")} — 꼬리로 내려라`,
+        ),
+        assert(
+          "★검사가 공허하지 않다 — 갈리는 슬롯이 실제로 있고, 공용 머리도 비어 있지 않다",
+          firstDiff > 0 && sharedBytes > 0,
+          `갈림 인덱스 ${firstDiff} · 공용 머리 ${sharedBytes}자`,
         ),
       );
     }

@@ -163,10 +163,16 @@ function formatUsageLine(usage, now) {
           pluginsState.meta = d;
           // 인증 상태는 별 라우트다(레지스트리가 정본) — 같은 새로고침에 함께 읽는다.
           await fetchAuthProviders();
-          // 설정 행이 있는 것만 문구를 데려온다(없으면 요청 0).
+          // 설정·위젯 행이 있는 것만 문구를 데려온다(없으면 요청 0).
+          // ★위젯 이름(`labelKey`)도 **그 플러그인** 카탈로그의 키다 — 설정과 같은 규칙이라
+          //  조건을 나란히 둔다(빠뜨리면 토글에 키가 그대로 보인다).
           await Promise.all(
             pluginsState.items
-              .filter((p) => Array.isArray(p.settings) && p.settings.length > 0)
+              .filter(
+                (p) =>
+                  (Array.isArray(p.settings) && p.settings.length > 0) ||
+                  (Array.isArray(p.widgets) && p.widgets.length > 0),
+              )
               .map((p) => loadPluginCatalog(p.name)),
           );
           return true;
@@ -713,6 +719,60 @@ function formatUsageLine(usage, now) {
         //  손으로 쓰면 플러그인이 늘 때마다 이 파일을 고쳐야 하고, 그게 곧 드리프트다
         //  ([[feedback_hand_maintained_lists]]).
         // ★번역도 플러그인 것을 쓴다 — `labelKey` 는 그 플러그인 카탈로그의 키다.
+        // ── 홈 위젯 켜기/끄기 (2026-09-08) ────────────────────────────────────
+        // ★**«있다/없다» 한 축뿐**이다. 순서·크기는 `configure_home` 도구가 소유한다 —
+        //  여기에 배치 편집기를 짓기 시작하면 같은 판단이 두 곳이 된다.
+        // ★꺼진 플러그인엔 안 그린다(설정 행과 같은 규칙) — 서버가 돌고 있는 것만
+        //  토글을 받으므로, 그리면 눌러도 안 되는 스위치가 된다.
+        const widgetSpecs = Array.isArray(p.widgets) ? p.widgets : [];
+        if (widgetSpecs.length > 0 && p.enabled !== false) {
+          const wbox = document.createElement("div");
+          wbox.className = "plugin-settings";
+          for (const w of widgetSpecs) {
+            const row = document.createElement("div");
+            row.className = "plugin-setting";
+            const label = document.createElement("span");
+            label.className = "plugin-setting-label";
+            label.textContent =
+              pluginText(p.name, w.labelKey) || w.type.slice(w.type.indexOf("/") + 1);
+            row.appendChild(label);
+            const tg = document.createElement("button");
+            tg.type = "button";
+            tg.className = "settings-toggle" + (w.onHome ? " on" : "");
+            tg.setAttribute("role", "switch");
+            tg.setAttribute("aria-checked", w.onHome ? "true" : "false");
+            tg.setAttribute("aria-label", i18n("plugins.widget.toggle"));
+            tg.title = i18n("plugins.widget.toggle");
+            tg.addEventListener("click", async () => {
+              tg.disabled = true;
+              try {
+                const r = await fetch("/api/home-widgets", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ type: w.type, enabled: !w.onHome }),
+                });
+                const d = await r.json().catch(() => ({}));
+                if (d.ok === false) {
+                  showToast(d.reason || d.error || i18n("plugins.failed"), "bad");
+                  return;
+                }
+                // ★서버가 진실이다 — 목록을 다시 읽어 그린다(낙관적 갱신 금지: 배치는
+                //  도구로도 바뀌므로 화면이 혼자 앞서가면 두 상태가 갈린다).
+                await fetchPlugins();
+                renderPluginsView();
+                showToast(i18n("plugins.done"), "good");
+              } catch (e) {
+                showToast(i18n("plugins.failed") + ": " + e.message, "bad");
+              } finally {
+                tg.disabled = false;
+              }
+            });
+            row.appendChild(tg);
+            wbox.appendChild(row);
+          }
+          card.appendChild(wbox);
+        }
+
         const specs = Array.isArray(p.settings) ? p.settings : [];
         if (specs.length > 0 && p.enabled !== false) {
           const box = document.createElement("div");

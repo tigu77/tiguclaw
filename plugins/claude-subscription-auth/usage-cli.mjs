@@ -94,6 +94,8 @@ const run = async (cmd, args, ms) => {
       delete env.CLAUDE_CODE_OAUTH_TOKEN;
       delete env.ANTHROPIC_API_KEY;
       delete env.ANTHROPIC_AUTH_TOKEN;
+      // ★셸을 쓰지 않는다. 받는 건 언제나 **절대경로**(`findBundledClaude`)라 `spawn` 이
+      //  그대로 실행할 수 있고, 셸을 거치면 공백 있는 경로가 명령행으로 재해석돼 쪼개진다.
       p = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"], env });
     } catch {
       resolve(undefined);
@@ -123,38 +125,38 @@ const run = async (cmd, args, ms) => {
 };
 
 /**
- * `claude` 가 어디 있나 — **두 자리만 본다**.
+ * `claude` 실행기 — **코어가 찾는다.** 여기서 다시 찾지 않는다.
  *
- * ★데몬은 launchd 로 뜬다. 실측한 그 PATH 는
- *  `…/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` 인데 실제 `claude` 는
- *  `~/.local/bin/claude` 에 있다 — **그냥 `spawn("claude")` 는 ENOENT** 였고, 화면엔
- *  «대기 중» 만 뜨고 이유는 안 보였다.
- * ★처음엔 «로그인 셸에게 물어보자»(`$SHELL -lc 'command -v claude'`)로 갔다. 목록을 손으로
- *  안 들어도 되니 그게 옳아 보였는데 **실측에서 안 됐다** — 이 기계의 `.zshrc` 는 PATH 를
- *  세우기 전 줄에서 걸린다(비대화형에선 그 `source` 가 실패한다). 셸 설정에 기대는 방법은
- *  기계마다 다르게 깨지고, 깨져도 «CLI 가 없다» 로만 보인다. 그래서 버렸다.
- * ★남은 둘은 각각 이유가 있다: **PATH**(정상 환경이면 여기 있다) · **`~/.local/bin`**
- *  (Claude Code 네이티브 설치기가 놓는 자리). 목록이 늘어나기 시작하면 그건 이 방법이
- *  틀렸다는 신호다([[feedback_hand_maintained_lists]]) — 그때는 사용자가 경로를 지정하게
- *  하는 쪽이 맞다.
- * ★한 프로세스에 한 번만 정한다.
+ * ★★**이 자리에 두 번째 판을 만들었던 것이 결함이었다.** 종전엔 여기서 `PATH` 와
+ *  `$HOME/.local/bin` 을 뒤졌는데, 코어에 이미 `findBundledClaude()` 가 있고 그게 더
+ *  낫다: SDK 가 플랫폼별 `claude` 바이너리를 **의존성으로 함께 깔기 때문에** 실행기는
+ *  «찾으면 있을 수도 있는 것» 이 아니라 **거의 항상 있는 것**이고, 그 함수는 절대경로를
+ *  돌려주며 윈도우에서 `claude.exe` 를 고른다.
+ *
+ * ★두 벌이 갈린 대가가 실제로 셋이었다:
+ *  ① 윈도우에서 확장자 없는 `claude` 를 가리켜 실행이 안 됨
+ *  ② `.cmd` 를 띄우려 셸을 켰다가 공백 있는 사용자 경로(`C:\Users\Jane Doe\…`)가 쪼개짐
+ *  ③ `HOME` 이 빈 환경에서 프로필 후보가 통째로 사라짐
+ *  셋 다 «찾기» 를 직접 하지 않으면 애초에 생기지 않는다 — 그래서 증상이 아니라
+ *  자리를 고쳤다.
+ *
+ * ★없을 수 있는 경우는 둘뿐이고(설치 시 optional 제외 · 미지원 플랫폼) 그때는 이 길이
+ *  없는 것이다. 결함이 아니라 그냥 조회를 못 하는 것 — 화면은 「모름」으로 말한다.
  */
 let resolvedCmd;
 const resolveClaude = async (log) => {
   if (resolvedCmd !== undefined) return resolvedCmd;
-  const { existsSync } = await import("node:fs");
-  const home = process.env.HOME ?? "";
-  for (const c of ["claude", home === "" ? "" : `${home}/.local/bin/claude`]) {
-    if (c === "") continue;
-    // PATH 후보(`claude`)는 실행해봐야 안다 — `--version` 이 가장 싸다.
-    const ok = c.includes("/") ? existsSync(c) : (await run(c, ["--version"], 8_000)) !== undefined;
-    if (ok) {
-      resolvedCmd = c;
-      return resolvedCmd;
-    }
+  try {
+    const { findBundledClaude } = await import("../../src/core/claude-cli.js");
+    resolvedCmd = findBundledClaude();
+  } catch (e) {
+    resolvedCmd = null;
+    log?.(`실행기 조회 실패 — ${e?.message ?? e}`);
+    return resolvedCmd;
   }
-  resolvedCmd = null;
-  log?.("`claude` 를 못 찾음(PATH · ~/.local/bin) — CLI 경로는 건너뛴다");
+  if (resolvedCmd === null) {
+    log?.("번들 `claude` 실행기를 못 찾음 — CLI 경로는 건너뛴다");
+  }
   return resolvedCmd;
 };
 

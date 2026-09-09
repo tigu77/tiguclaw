@@ -40,7 +40,7 @@ Claude Code 스킬/에이전트는 프로젝트 `CLAUDE.md`(+ 하위 `**/CLAUDE.
 - 각 항목: 종류(agent/skill/command)·이름·소스경로 → 대상경로.
 - **이름 충돌**: 대상(또는 tiguclaw 빌트인 harness·code-review 등)에 같은 이름이 이미 있으면
   ⚠️ 표시하고 **덮어쓰기 여부를 명시 확인**받는다(빌트인 클로버링 금지 — 스킵/개명 권장).
-- frontmatter `name`·`description` 누락 항목은 **드롭**(tiguclaw 파서가 버림) — 목록에 "드롭(사유)"로.
+- frontmatter `description` 누락 → 드롭(파서가 버린다). `name` 은 없어도 **폴더/파일명으로 채워진다** — Claude Code 는 `name` 생략이 정상이라, 이걸 모르면 멀쩡한 것을 버리게 된다
 
 ## 3) ★래핑 방식 — 전체 복사(기본) vs 포인터
 - **기본 = 전체 복사(self-contained)**: 원본 내용을 그대로 대상 파일에 **복사**한다(포인터·요약 아님).
@@ -61,7 +61,13 @@ Claude Code 스킬/에이전트는 프로젝트 `CLAUDE.md`(+ 하위 `**/CLAUDE.
 - **커맨드**: `.claude/commands/<name>.md` → `<대상>/commands/<name>.md`. tiguclaw 도 commands 라이브 발견.
 
 ## 4) 호환 주의 (거의 그대로, 예외만)
-- 에이전트 `model` (opus/sonnet/haiku): tiguclaw 는 티어로 해석 — 그대로 두면 됨(모르는 값은 디폴트).
+- ★**에이전트 `model` 은 반드시 바꿔 적어라** — 여기가 두 포맷이 **안 같은** 유일한 칸이다.
+  Claude Code 의 `model:` 은 **모델 이름**(opus·sonnet·haiku)이고 tiguclaw 의 `model:` 은
+  **프로파일 이름**(high·mid·low·nano)이다. 모르는 값은 **에러가 아니라 디폴트**로 조용히
+  떨어지므로, 그대로 복사하면 **등급 의도가 소리 없이 사라진다**(그 에이전트가 디폴트
+  모델로 돈다).
+
+      opus → high · sonnet → mid · haiku → low
 - 에이전트/스킬 `tools`·`allowed-tools`: Claude Code 도구명(Read/Edit/Bash/Grep/Glob/WebFetch…)은
   tiguclaw file-ops 와 동일. tiguclaw 에 없는 도구(특정 MCP 등)는 tiguclaw 가 무시 → 그대로 두거나
   주석. **어댑터별 특수분기 금지**(#2) — 도구 목록은 의도만, 실제 가용은 런타임이 결정.

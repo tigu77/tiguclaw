@@ -660,9 +660,19 @@ const server = http.createServer((req, res) => {
       return;
     }
     // 플러그인 관리 — bridge GET /plugins (read) · POST /plugins/action (admin).
-    // 홈 위젯 배치 — bridge GET /home-widgets (read). 홈 뷰가 부팅 때 한 번 읽는다.
+    // 홈 위젯 배치 — bridge GET /home-widgets (read) · POST (write).
+    // ★POST 는 **켜기/끄기 한 축**이다(2026-09-08). 순서·크기·config 는 여전히
+    //  `configure_home` 도구만 쓴다 — 가장자리는 판단하지 않는다.
     if (pathname === "/api/home-widgets" && method === "GET") {
       await proxyJson(res, "/home-widgets");
+      return;
+    }
+    if (pathname === "/api/home-widgets" && method === "POST") {
+      await proxyJson(res, "/home-widgets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: await readBody(req),
+      });
       return;
     }
     // 플러그인 데이터 라우트 (2026-08-28, 위젯 플랫폼 §E.2) — 홈 위젯이 값을 받는 길.

@@ -29,6 +29,25 @@
  *
  * ★**기본은 «전부»** 다. 표시가 없는 글은 모든 칸에 간다 — 빠뜨림이 «조용히 사라짐» 이
  *  아니라 «종전대로» 가 되게 하는 쪽으로 틀린다.
+ *
+ * ★★**역할 구역은 «꼬리»로 낸다** (2026-09-08). 이 파일의 첫 판은 표시된 구역을 **제자리
+ *  에서** 걸렀는데, 그러면 역할마다 본문이 **맨 앞에서** 갈린다 — 실측으로 `SYSTEM.md` 의
+ *  첫 표시가 468자(3.2%) 지점에 있어서, 메인↔자식 공유 프리픽스가 **94% → 18%** 로
+ *  주저앉았다. 하루 전 커밋(`fece6f4b`)이 *"역할 전용 슬롯을 꼬리로"* 로 53%→94% 를
+ *  만들어 놨는데, 이 파일이 그 처방을 **머리에서 되돌린** 것이다.
+ *
+ *  실측 지문(2026-09-08 데몬 로그): codex 14턴 연속 `cached=3,712` 고정 — 요청 앞
+ *  ~7,500자에서 끊겼고, 그게 정확히 메인↔자식이 갈리는 7,661자 지점이었다. 같은 창에서
+ *  `instructions` 45,165자·`tools` 34,007자는 **바이트 동일**이었으니 우리 payload 변형이
+ *  아니라 **배치**가 원인이다.
+ *
+ *  그래서 본문을 둘로 낸다: **[표시 없는 공용 본문]** + **[이 칸이 닿는 역할 구역]**.
+ *  공용 본문은 모든 칸에서 바이트 동일이라 프리픽스가 거기까지 공유된다. 내용은 하나도
+ *  안 버린다 — **순서만** 바뀐다.
+ *
+ * ★**원 위치를 같이 적는다.** 구역 중엔 목록 *안*의 불릿이 있어서(예: 「안전선」의
+ *  `register_endpoint` 항목) 통째로 뜯으면 그 틀(*"여기만 묻고 멈춘다"*)을 잃는다.
+ *  가장 가까운 앞선 제목을 한 줄로 달아 맥락을 들려 보낸다.
  */
 import { turnReaches, type Reach, type TurnKind } from "./llm-runtime/capability-reach.js";
 
@@ -36,6 +55,30 @@ import { turnReaches, type Reach, type TurnKind } from "./llm-runtime/capability
 const OPEN_RE = /^[ \t]*<!--\s*role:(main|manager|subagent)\s*-->[ \t]*$/;
 /** 닫는 표시 `<!--/role-->`. */
 const CLOSE_RE = /^[ \t]*<!--\s*\/role\s*-->[ \t]*$/;
+
+/**
+ * 역할 구역 부록의 머리말.
+ *
+ * ★**«덜 중요한 것» 이 아니라 «이 칸에만 해당하는 것»** 이라고 말한다 — 자리가 뒤라고
+ *  약한 규칙으로 읽히면, 옮긴 것 자체가 헌법을 약화시킨 셈이 된다.
+ */
+const ROLE_APPENDIX_HEADER =
+  "## 이 칸에만 해당하는 지침\n\n앞의 헌법과 **같은 무게**입니다 — 자리가 뒤인 것은 " +
+  "칸마다 달라서일 뿐입니다(다른 칸은 이 절을 받지 않습니다).";
+
+export interface ConstitutionScoped {
+  /** 표시 **밖**의 공용 본문 — 모든 칸에서 바이트 동일. 시스템 채널 **머리**로 간다. */
+  readonly body: string;
+  /**
+   * 이 칸이 닿는 역할 구역 — 시스템 채널 **맨 꼬리**로 간다(없으면 "").
+   *
+   * ★**`body` 에 붙여 돌려주지 않는다.** 붙이면 부록이 `system` 슬롯 *안* 꼬리에 앉고,
+   *  그 뒤에 오는 공용 슬롯(스킬 인덱스·AGENT.md·메모리 인덱스…)이 전부 갈린다.
+   *  실측: 붙였을 때 메인↔자식 공유 41.8%, 슬롯으로 빼서 꼬리에 두면 90%대.
+   */
+  readonly roleExtra: string;
+  readonly stats: ConstitutionScopeStats;
+}
 
 export interface ConstitutionScopeStats {
   /** 표시된 구간 수. */
@@ -59,11 +102,16 @@ export interface ConstitutionScopeStats {
 export const scopeConstitution = (
   text: string,
   turn: TurnKind,
-): { body: string; stats: ConstitutionScopeStats } => {
+): ConstitutionScoped => {
   const lines = text.split("\n");
-  const kept: string[] = [];
+  /** 표시 **밖**의 글 — 모든 칸에서 바이트 동일이라 프리픽스가 여기까지 공유된다. */
+  const shared: string[] = [];
+  /** 이 칸이 닿는 역할 구역 — 꼬리로 간다. */
+  const extra: string[] = [];
   const malformed: string[] = [];
   let level: Reach | undefined;
+  /** 여는 표시 바로 앞의 가장 가까운 제목 — 뜯긴 불릿에 맥락을 들려 보낸다. */
+  let heading = "";
   let regions = 0;
   let dropped = 0;
   for (const [i, line] of lines.entries()) {
@@ -72,6 +120,11 @@ export const scopeConstitution = (
       if (level !== undefined) malformed.push(`L${i + 1}: 중첩된 role 표시`);
       level = open[1] as Reach;
       regions += 1;
+      if (turnReaches(turn, level)) {
+        // 구역 사이를 한 줄 띄우고, 어디서 온 글인지 한 줄 남긴다.
+        if (extra.length > 0) extra.push("");
+        if (heading !== "") extra.push(`> (원 위치: ${heading})`);
+      }
       continue;
     }
     if (CLOSE_RE.test(line)) {
@@ -79,17 +132,28 @@ export const scopeConstitution = (
       level = undefined;
       continue;
     }
-    if (level !== undefined && !turnReaches(turn, level)) {
+    if (level === undefined) {
+      // 제목은 **공용 본문에서만** 딴다 — 구역 안의 제목을 따면 자기 자신을 가리킨다.
+      if (/^#{1,6} /.test(line)) heading = line.replace(/^#+\s*/, "").trim();
+      shared.push(line);
+      continue;
+    }
+    if (!turnReaches(turn, level)) {
       dropped += Buffer.byteLength(`${line}\n`, "utf8");
       continue;
     }
-    kept.push(line);
+    extra.push(line);
   }
   if (level !== undefined) malformed.push("파일 끝: 안 닫힌 role 표시");
   if (malformed.length > 0) {
-    return { body: text, stats: { regions, droppedBytes: 0, malformed } };
+    return { body: text, roleExtra: "", stats: { regions, droppedBytes: 0, malformed } };
   }
   // 표시를 걷어내며 생긴 빈 줄 연속은 접는다 — 표시가 없던 때와 같은 모양이 되도록.
-  const body = kept.join("\n").replace(/\n{3,}/g, "\n\n");
-  return { body, stats: { regions, droppedBytes: dropped, malformed } };
+  const fold = (xs: string[]): string => xs.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const tail = fold(extra);
+  return {
+    body: fold(shared),
+    roleExtra: tail === "" ? "" : `${ROLE_APPENDIX_HEADER}\n\n${tail}`,
+    stats: { regions, droppedBytes: dropped, malformed },
+  };
 };

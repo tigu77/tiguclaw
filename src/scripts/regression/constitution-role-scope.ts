@@ -12,6 +12,14 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { scopeConstitution } from "../../core/constitution-scope.js";
+
+/** 부록 머리말의 줄들 — **정의점에서 파생**한다(문구를 여기 베끼면 두 벌이 되어 갈린다). */
+const ROLE_APPENDIX_LINES = new Set(
+  scopeConstitution("<!--role:main-->\nx\n<!--/role-->", "main")
+    .roleExtra.split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && l !== "x"),
+);
 import type { TurnKind } from "../../core/llm-runtime/capability-reach.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -71,12 +79,65 @@ export const check: RegressionCheck = {
       .filter((l) => !/^[ \t]*<!--\s*\/?role(:[a-z]+)?\s*-->[ \t]*$/.test(l))
       .join("\n")
       .replace(/\n{3,}/g, "\n\n");
-    out.push(assert("★메인이 받는 본문 == 표시만 걷은 원문 (메인 무영향)", mainBody === stripped, `${Buffer.byteLength(mainBody, "utf8")}B vs ${Buffer.byteLength(stripped, "utf8")}B`));
+    // ★**«받는 것» 은 body + roleExtra 다** (2026-09-08). 역할 절이 시스템 채널 **꼬리
+    //  슬롯**으로 빠지면서 `body` 는 공용 본문만 담는다 — 그래서 `body` 만 보면 «메인이
+    //  절을 잃었다» 로 잘못 읽힌다. 잃은 게 아니라 **자리가 바뀐** 것이고, 이 검사가
+    //  지켜야 할 성질은 «메인은 한 줄도 안 잃는다» 이지 «순서가 그대로다» 가 아니다.
+    //  (순서는 `prompt-channel-split` 의 배치 축이 따로 지킨다 — 거기가 그 질문의 자리다.)
+    const fullFor = (k: TurnKind): string => {
+      const r = scoped.get(k)!;
+      return r.roleExtra === "" ? r.body : `${r.body}\n${r.roleExtra}`;
+    };
+    /** 줄 단위 다중집합 — 순서는 빼고 «무엇이 있나» 만 본다. */
+    const bag = (t: string): string[] =>
+      t.split("\n").map((l) => l.trim()).filter((l) => l !== "").sort();
+    const mainBag = bag(fullFor("main"));
+    const strippedBag = bag(stripped);
+    // ★**«잃지 않는다» 와 «더하지 않는다» 를 따로 본다.** 부록은 머리말 한 줄과 구역마다
+    //  «원 위치» 한 줄을 **더한다**(맥락이 딸려 가야 해서) — 그건 손실이 아니다. 두 방향을
+    //  한 판정에 담으면 «10줄 늘었다» 가 «93줄 잃었다» 로 읽힌다(첫 판이 그랬다).
+    const left = [...mainBag];
+    const lost = strippedBag.filter((l) => {
+      const i = left.indexOf(l);
+      if (i < 0) return true;
+      left.splice(i, 1);
+      return false;
+    });
+    out.push(
+      assert(
+        "★★메인은 한 줄도 안 잃는다 — 역할 절이 꼬리로 가도 **내용은 그대로**(순서만 바뀐다)",
+        lost.length === 0,
+        lost.length === 0
+          ? `원문 ${strippedBag.length}줄 전부 있다`
+          : `★사라진 ${lost.length}줄: ${lost.slice(0, 2).map((l) => l.slice(0, 40)).join(" / ")}`,
+      ),
+    );
+    // 남은 것(=더해진 줄)은 부록 머리말과 «원 위치» 안내뿐이어야 한다 — 다른 게 섞이면
+    // 조립이 헌법에 없던 문장을 지어내고 있다는 뜻이다.
+    const unexpected = left.filter(
+      (l) => !l.startsWith("> (원 위치:") && !ROLE_APPENDIX_LINES.has(l),
+    );
+    out.push(
+      assert(
+        "★더해진 줄은 부록 머리말·«원 위치» 안내뿐이다 — 조립이 헌법에 없던 문장을 만들지 않는다",
+        unexpected.length === 0,
+        unexpected.length === 0
+          ? `더해진 ${left.length}줄 전부 안내`
+          : `★정체불명 ${unexpected.length}줄: ${unexpected.slice(0, 2).join(" / ")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★그리고 부록이 **비어 있지 않다** — 비면 위 검사는 «순서가 안 바뀌었다» 를 통과로 읽는다(공허해진다)",
+        scoped.get("main")!.roleExtra.length > 0,
+        `부록 ${Buffer.byteLength(scoped.get("main")!.roleExtra, "utf8")}B`,
+      ),
+    );
     out.push(assert("메인에선 한 바이트도 안 잘린다", scoped.get("main")!.stats.droppedBytes === 0, `${scoped.get("main")!.stats.droppedBytes}B`));
 
     // ④ 사다리가 실제로 단조다: 메인 ≥ 매니저 ≥ 서브에이전트.
     const size = (k: TurnKind): number =>
-      Buffer.byteLength(scoped.get(k)!.body, "utf8");
+      Buffer.byteLength(fullFor(k), "utf8");
     out.push(assert("범위가 사다리를 지킨다 (main ≥ manager ≥ subagent)", size("main") >= size("manager") && size("manager") >= size("subagent"), `${size("main")} / ${size("manager")} / ${size("subagent")}`));
 
     // ⑤ 서브에이전트에겐 **실제로 뭔가 걸러진다** — 안 그러면 이 기능은 선언일 뿐이다.
@@ -84,9 +145,9 @@ export const check: RegressionCheck = {
 
     // ⑥ **못 쓰는 도구를 시키는 절이 실제로 빠졌나** — 이 기능의 목적 그 자체.
     //    `spawn_agent` 은 `agents: "manager"` 라 서브에이전트 턴엔 등록되지 않는다.
-    const subHasDelegation = scoped.get("subagent")!.body.includes("### 위임과 규모");
+    const subHasDelegation = fullFor("subagent").includes("### 위임과 규모");
     out.push(assert("★서브에이전트는 「위임과 규모」를 안 받는다 — 그 칸엔 spawn_agent 이 등록되지 않는다", !subHasDelegation, subHasDelegation ? "아직 실려 있다" : `없음 (그 칸 본문 ${size("subagent")}B)`));
-    const mgrHasDelegation = scoped.get("manager")!.body.includes("### 위임과 규모");
+    const mgrHasDelegation = fullFor("manager").includes("### 위임과 규모");
     out.push(assert("★매니저는 「위임과 규모」를 받는다 — 팬아웃을 하는 칸이다", mgrHasDelegation, mgrHasDelegation ? `있음 (그 칸 본문 ${size("manager")}B)` : "사라졌다"));
 
     // ⑦ ★**끊긴 참조가 없다** — 잘라낸 절을 아직 «가리키는» 문장이 남으면, 그 칸의 헌법은
@@ -94,7 +155,7 @@ export const check: RegressionCheck = {
     //    참조를 만나면 지어내거나 그 문장을 통째로 무시한다.
     //    ★대상을 **본문에서 찾는다**(손 목록이 아니라) — 절 제목이 곧 참조 대상이다.
     for (const k of KINDS) {
-      const body = scoped.get(k)!.body;
+      const body = fullFor(k);
       for (const [needle, target] of CROSS_REFS) {
         out.push(
           assert(

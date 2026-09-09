@@ -18,8 +18,59 @@
  *
  * 배선을 검사한다(SDK 응답 없이는 재현 불가). 배포본엔 `.ts` 가 없어 읽기 실패는 통과.
  */
-import { sourceHas } from "./_wiring.js";
+import { readFileSync } from "node:fs";
+import { readSourceSync, sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+
+/**
+ * ★화면이 «캐시 100%» 를 **함부로 말하지 않는다** (2026-09-08 정태님이 보고 물음).
+ *
+ * 대시보드 턴 배지가 `Math.round` 라 **99.5% 를 100% 로** 올렸다. 그런데 매 턴 최소한
+ * 새 메시지는 캐시에 없으므로 «100%» 는 원리적으로 참일 수 없는 문장이다 — 라이브 DB
+ * 실측: `cached == input` 인 턴 **0건**, 99.5%~ 로 올라간 턴 **82건**.
+ *
+ * ★그리고 이 파일 머리말의 그 사고(옛 스키마: `inputTokens` 가 캐시를 **제외**한 증분,
+ *  실측 `8` vs `390,392`)는 비율이 100 을 훌쩍 넘는다(최대 8,809,800%). 지금 화면 도달
+ *  경로는 0이지만(배지는 라이브 `llm.turn_done` 에만 붙는다) 상한이 없으면 새는 자리다.
+ *
+ * ★소스에 `Math.min` 이 있나를 세지 않는다 — **식을 떼어 실제로 돌린다.**
+ */
+const displayedRateChecks = (): Assertion[] => {
+  const out: Assertion[] = [];
+  const src = readFileSync(
+    new URL("../../../packages/dashboard/js/token-delta.js", import.meta.url),
+    "utf8",
+  );
+  const m = /const pct =\s*([\s\S]*?);\s*\n\s*parts\.push\(i18n\("tok\.cacheRate"/.exec(src);
+  out.push(
+    assert(
+      "★적중률 계산식을 떼어낼 수 있다(없으면 아래는 공짜 초록)",
+      m !== null,
+      m === null ? "★못 찾음 — 표현이 바뀌었으면 이 검사부터 고쳐라" : `${m[1]?.trim().length ?? 0}자`,
+    ),
+  );
+  if (m === null) return out;
+  const pctOf = new Function("cached", "shownIn", `return ${m[1] ?? "0"};`) as (
+    c: number,
+    i: number,
+  ) => number;
+  const cases: Array<[number, number, number, string]> = [
+    [602_690, 602_700, 99, "거의 전부"],
+    [995, 1000, 99, "99.5%—올림 금지"],
+    [1000, 1000, 100, "진짜 전부"],
+    [390_392, 8, 100, "옛 스키마—100 에서 잘림"],
+    [500, 1000, 50, "절반"],
+  ];
+  const wrong = cases.filter(([c, i, want]) => pctOf(c, i) !== want);
+  out.push(
+    assert(
+      "★★«캐시 100%» 는 **실제로 전부일 때만** 나온다 — 99.5% 를 올려 말하지 않는다",
+      wrong.length === 0,
+      cases.map(([c, i, w, l]) => `${l}=${pctOf(c, i)}(기대 ${w})`).join(" · "),
+    ),
+  );
+  return out;
+};
 
 export const check: RegressionCheck = {
   name: "usage-token-semantics",
@@ -84,6 +135,27 @@ export const check: RegressionCheck = {
         runtime.ok,
         runtime.ok ? "정의+호출 확인" : `누락 ${runtime.missing.join(" ")}`,
       ),
+      ...displayedRateChecks(),
+      // ★**턴당 한 줄이 캐시 수치를 들고 있다** (2026-09-08). `codex-turn-end` 는 이미
+      //  요청 바이트를 쪼개 찍는데 `cached` 가 없어서 «프리픽스가 어디서 끊겼나» 를
+      //  로그로 답할 수 없었다(프로브를 새로 짜서 반나절을 썼다). 관측의 상시 경로가
+      //  이 줄뿐이라 조용히 사라지면 다음 사고에서 같은 값을 또 치른다.
+      //  ★두 축을 **둘 다** 요구한다: `last`=호출 1회(프리픽스가 걸렸나) ·
+      //   `turn`=iteration 합계(비용). 하나만 있으면 두 질문이 섞인다.
+      ...(() => {
+        const src = readSourceSync(
+          "src/core/llm-runtime/adapters/openai-codex-oauth.ts",
+        );
+        const hasLast = /cache=last /.test(src);
+        const hasTurn = /turn \$\{usageTotals\.cachedTokens/.test(src);
+        return [
+          assert(
+            "★★`codex-turn-end` 가 **호출 단위**와 **턴 합계** 캐시를 둘 다 싣는다",
+            hasLast && hasTurn,
+            `last=${hasLast} turn=${hasTurn}`,
+          ),
+        ];
+      })(),
     ];
   },
 };

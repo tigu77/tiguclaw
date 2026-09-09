@@ -320,7 +320,9 @@ export const normalizeHomeWidgets = (
  *  물러서지만(화면이 깨진 파일 하나로 죽으면 고칠 수단까지 잃는다), **쓰기는 거부한다** —
  *  그 `{}` 를 파일에 덮으면 모델 프로파일·테마가 함께 사라진다.
  */
-const readRaw = (forWrite = false): { root: Record<string, unknown>; widgets: unknown } => {
+const readRaw = (
+  forWrite = false,
+): { root: Record<string, unknown>; widgets: unknown; seeded: unknown } => {
   const file = getPaths().settings;
   const root = forWrite
     ? readSettingsRootForWrite(file)
@@ -334,7 +336,11 @@ const readRaw = (forWrite = false): { root: Record<string, unknown>; widgets: un
     home !== null && typeof home === "object" && !Array.isArray(home)
       ? (home as Record<string, unknown>).widgets
       : undefined;
-  return { root, widgets };
+  const seeded =
+    home !== null && typeof home === "object" && !Array.isArray(home)
+      ? (home as Record<string, unknown>).seeded
+      : undefined;
+  return { root, widgets, seeded };
 };
 
 /** 지금 배치. 못 읽거나 깨졌으면 **빈 배열**(홈은 위젯 영역을 아예 안 그린다). */
@@ -343,14 +349,18 @@ export const readHomeWidgets = (
 ): HomeWidgetsResolution => normalizeHomeWidgets(readRaw().widgets, knownPlugins);
 
 /**
- * 배치를 쓴다 — `setModelReasoning` 과 같은 형(읽고·그 키만 바꾸고·원자 교체).
+ * `dashboard.home` 안을 한 번에 고친다 — **읽고·그 자리만 바꾸고·원자 교체**.
  *
- * ★빈 배열이면 키를 **지운다.** 남겨두면 "설정한 적 없음" 과 "비워둠" 이 구분 안 되는데,
- *  화면 동작은 어차피 같다(안 그린다). 흔적을 안 남기는 쪽이 파일을 읽는 사람에게 정직하다.
+ * ★쓰기가 셋(`writeHomeWidgets`·자동 편입·토글)이 됐다. 각자 «root→dashboard→home» 을
+ *  풀면 그게 곧 같은 판단 세 벌이고, 빈 객체를 지우는 규칙 하나만 갈려도 설정 파일에
+ *  껍데기가 남는다. 자리를 하나로 모은다
+ *  ([[feedback_simple_composable_no_duplication]] — 「이음매에서 새면 이음매를 없애라」).
+ *
+ * ★깨진 파일이면 **여기서 던진다**(적대 검토 A-F1). 덮으면 모델 프로파일·테마가 함께
+ *  사라지고, 모델은 "바꿨습니다" 를 받는다.
  */
-export const writeHomeWidgets = (widgets: readonly HomeWidget[]): void => {
+const mutateHome = (fn: (home: Record<string, unknown>) => void): void => {
   const file = getPaths().settings;
-  // ★깨진 파일이면 **여기서 던진다** — 덮으면 남의 설정이 사라진다(적대 검토 A-F1).
   const { root } = readRaw(true);
   const existingDashboard = root.dashboard;
   const dashboard: Record<string, unknown> =
@@ -364,11 +374,169 @@ export const writeHomeWidgets = (widgets: readonly HomeWidget[]): void => {
     existingHome !== null && typeof existingHome === "object" && !Array.isArray(existingHome)
       ? (existingHome as Record<string, unknown>)
       : {};
-  if (widgets.length === 0) delete home.widgets;
-  else home.widgets = widgets;
+  fn(home);
   if (Object.keys(home).length === 0) delete dashboard.home;
   else dashboard.home = home;
   if (Object.keys(dashboard).length === 0) delete root.dashboard;
   else root.dashboard = dashboard;
   writeSettingsRootAtomic(file, root);
+};
+
+/**
+ * 배치를 쓴다 — `setModelReasoning` 과 같은 형(읽고·그 키만 바꾸고·원자 교체).
+ *
+ * ★빈 배열이면 키를 **지운다.** 남겨두면 "설정한 적 없음" 과 "비워둠" 이 구분 안 되는데,
+ *  화면 동작은 어차피 같다(안 그린다). 흔적을 안 남기는 쪽이 파일을 읽는 사람에게 정직하다.
+ */
+export const writeHomeWidgets = (widgets: readonly HomeWidget[]): void => {
+  mutateHome((home) => {
+    if (widgets.length === 0) delete home.widgets;
+    else home.widgets = widgets;
+  });
+};
+
+// ── 선언에서 오는 것 — 자동 편입과 토글 (2026-09-08) ──────────────────────────
+//
+// ★**이 둘은 배치를 «만들지» 않는다.** 순서·크기·config 는 여전히 `configure_home` 이
+//  소유한다. 여기서 여는 건 «있다/없다» 한 축뿐이다 — 화면에 배치 편집기를 짓기 시작하면
+//  판단이 두 곳이 된다(`http-bridge/index.ts` 가 그래서 쓰기를 막아뒀다).
+
+/** 홈에 놓을 수 있는 위젯 하나 — 선언에서 온다(`plugins/manager.ts`). */
+export interface AvailableWidget {
+  readonly type: string;
+  readonly size: HomeWidgetSize;
+  readonly default: boolean;
+}
+
+/** 배치 안의 id 는 유일해야 한다. `<plugin>-<widget>` 이면 선언끼리 안 부딪힌다. */
+const idForType = (type: string): string => type.replace("/", "-").slice(0, 64);
+
+/**
+ * 이미 쓰이는 id 를 피해서 하나 고른다.
+ *
+ * ★**자동 편입에도 필요하다** (자기 검토에서 잡았다). 종전엔 토글에만 있었는데, 사용자가
+ *  `running-work-live` 라는 id 를 다른 위젯에 이미 붙여뒀으면 자동 편입이 **중복 id** 를
+ *  쓴다 — 그러면 읽는 쪽(`normalizeHomeWidgets`)이 그 칸을 떨어뜨리고, `seeded` 엔
+ *  «놓았다» 가 적혀 **다시는 안 놓인다.** 조용히 사라지는 부류라 아무도 못 고친다.
+ */
+const freeId = (type: string, used: ReadonlySet<string>): string => {
+  const base = idForType(type);
+  if (!used.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const cand = `${base}-${n}`;
+    if (!used.has(cand)) return cand;
+  }
+};
+
+/**
+ * 이미 **한 번 놓아본** 위젯들 — «다시 놓지 않는다» 를 기억하는 자리.
+ *
+ * ★이 기록이 없으면 자동 편입이 «사용자가 껐다» 를 못 본다. 껐는데 재시작마다 되살아나는
+ *  위젯은 고장으로 읽히고, 그걸 끄는 유일한 방법은 플러그인을 지우는 것이 된다.
+ *  배치(`widgets`)는 «지금 보이는 것» 이고 이건 «이미 물어본 것» 이라, 둘은 다른 사실이다.
+ */
+const readSeeded = (): Set<string> => {
+  const { seeded } = readRaw();
+  return new Set(
+    Array.isArray(seeded) ? seeded.filter((x): x is string => typeof x === "string") : [],
+  );
+};
+
+/**
+ * 선언이 `default: true` 인 위젯을 홈에 **한 번** 놓는다.
+ *
+ * ★부팅에서 부른다. 이미 놓였거나(배치에 있음) 이미 물어봤으면(seeded) 아무것도 안 한다 —
+ *  그래서 여러 번 불러도 안전하고, 사용자가 끈 것은 되살아나지 않는다.
+ *
+ * @param available 지금 돌고 있는 플러그인의 선언(`listAvailableHomeWidgets`).
+ * @returns 새로 놓은 개수. 0이면 파일을 **안 건드린다**(부팅마다 설정이 다시 쓰이지 않게).
+ */
+export const seedDefaultHomeWidgets = (
+  available: readonly AvailableWidget[],
+): string[] => {
+  const seeded = readSeeded();
+  const { widgets } = readRaw();
+  const present = new Set(
+    Array.isArray(widgets)
+      ? widgets
+          .map((w) =>
+            w !== null && typeof w === "object" && typeof (w as { type?: unknown }).type === "string"
+              ? ((w as { type: string }).type)
+              : "",
+          )
+          .filter((t) => t !== "")
+      : [],
+  );
+  const add = available.filter(
+    (w) => w.default && !seeded.has(w.type) && !present.has(w.type),
+  );
+  if (add.length === 0) return [];
+  const placed: string[] = [];
+  mutateHome((home) => {
+    const cur = Array.isArray(home.widgets) ? (home.widgets as Record<string, unknown>[]) : [];
+    const used = new Set(cur.map((w) => String(w?.id ?? "")));
+    const next = [...cur];
+    for (const w of add) {
+      // ★**읽는 쪽이 거부할 것을 쓰지 않는다.** 캡을 넘겨 써두면 `normalizeHomeWidgets` 가
+      //  떨어뜨리는데 `seeded` 엔 «놓았다» 가 남아 **다시는 안 놓인다** — 캡 있는 자리에
+      //  반드시 도달해야 할 것을 두면 조용히 접힌다([[project_hotpath_bound_preserve_record]]).
+      if (next.length >= HOME_WIDGET_MAX) break;
+      const id = freeId(w.type, used);
+      used.add(id);
+      next.push({ id, type: w.type, size: w.size, config: {} });
+      placed.push(w.type);
+    }
+    if (placed.length === 0) return;
+    home.widgets = next;
+    home.seeded = [...seeded, ...placed];
+  });
+  return placed;
+};
+
+/**
+ * 위젯 하나를 홈에 놓거나 뺀다 — 상세 화면의 토글이 쓴다.
+ *
+ * ★**켜면 seeded 에도 적는다.** 안 적으면 «껐다가 켠» 위젯이 다음 부팅에 하나 더 붙는다
+ *  (자동 편입이 «아직 안 물어봤다» 로 읽는다). 끌 때도 그대로 둔다 — 그게 이 기록의 일이다.
+ */
+export const setHomeWidgetEnabled = (
+  type: string,
+  on: boolean,
+  available: readonly AvailableWidget[],
+): { ok: boolean; reason?: string } => {
+  const spec = available.find((w) => w.type === type);
+  if (spec === undefined) {
+    return { ok: false, reason: `위젯 "${type}" 은 지금 돌고 있는 플러그인의 것이 아닙니다.` };
+  }
+  const seeded = readSeeded();
+  let changed = false;
+  let capped = false;
+  mutateHome((home) => {
+    const cur = Array.isArray(home.widgets) ? (home.widgets as Record<string, unknown>[]) : [];
+    const has = cur.some((w) => w?.type === type);
+    if (on && !has) {
+      const used = new Set(cur.map((w) => String(w?.id ?? "")));
+      if (cur.length >= HOME_WIDGET_MAX) {
+        // ★**거짓 성공을 내지 않는다.** 종전 초안은 여기서 조용히 빠져나가 «이미 그
+        //  상태였습니다» 를 돌려줬는데, 사용자는 스위치를 눌렀는데 아무 일도 안 나는 것을
+        //  본다 — 화면에 «되는 척» 하는 스위치가 생긴다.
+        capped = true;
+        return;
+      }
+      home.widgets = [...cur, { id: freeId(type, used), type, size: spec.size, config: {} }];
+      changed = true;
+    } else if (!on && has) {
+      const next = cur.filter((w) => w?.type !== type);
+      if (next.length === 0) delete home.widgets;
+      else home.widgets = next;
+      changed = true;
+    }
+    // ★끌 때는 seeded 를 **그대로 둔다** — `home` 은 파일에 있던 그 객체라 이미 들어
+    //  있다. 되쓰면 자기 자신 대입이고, 지우면 다음 부팅에 되살아난다.
+    if (on && !seeded.has(type)) home.seeded = [...seeded, type];
+  });
+  if (capped) {
+    return { ok: false, reason: `홈 위젯은 최대 ${HOME_WIDGET_MAX}개입니다 — 하나를 내리고 다시 켜세요.` };
+  }
+  return changed ? { ok: true } : { ok: true, reason: "이미 그 상태였습니다." };
 };

@@ -646,9 +646,18 @@ const warnIfPrefixCacheCold = (
     `[prefix-cache] 안정 프리픽스가 ${streak}턴 연속 캐시에 안 걸린다 — ` +
       `cached=${cached} (기대 ${PREFIX_CACHE_MIN_CACHED_TOKENS}+), input=${inputTokens}, ` +
       `adapter=${adapterLabel(spec.adapter)} thread=${input.threadKey}. ` +
-      "시스템 채널의 안정 조각이 턴마다 바뀌고 있다는 신호 " +
-      '— prompt-assembly buildContextSlots 의 channel:"system" 슬롯을 의심하라 ' +
-      "(과거 지문: cached 가 정확히 3,456 = sysprompt 만 적중).",
+      // ★**모델부터 의심하라** (2026-09-08 실측). 종전 이 자리는 «시스템 채널 슬롯이
+      //  턴마다 바뀐다» 고 단정했는데, 실측이 그걸 뒤집었다: 같은 홈·같은 payload·같은
+      //  스레드에서 **모델만** 바꾸니 `gpt-5.6-sol` 12%(11회 전부 cached=3,712 고정) →
+      //  `gpt-5.6-terra` 75%(예열 후 95~99%). 우리 프리픽스는 바이트 동일이었다
+      //  (`instructions` 28,525자·`tools` 34,631자가 iteration 4회 내내 같았다).
+      //  ★그러니 순서가 중요하다 — **싼 것부터**: ①모델 교체 ②`codex-turn-end` 의
+      //  `cache=` 곡선 확인 ③그래도 낮으면 그때 슬롯 배치를 본다
+      //  ([[project_codex_model_specific_outage]] 와 같은 부류 — 모델 단위로 막힌다).
+      "먼저 **모델을 바꿔 보라** — 실측상 이 지문(cached 가 한 값에 고정)은 " +
+      "모델 단위 문제였다(sol 12% ↔ terra 95%+, 같은 payload). " +
+      "모델을 바꿔도 그대로면 그때 prompt-assembly buildContextSlots 의 " +
+      'channel:"system" 슬롯 배치를 의심하라.',
   );
 };
 

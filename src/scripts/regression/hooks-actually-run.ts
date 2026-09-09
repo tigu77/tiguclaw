@@ -128,16 +128,17 @@ const run = async (): Promise<Assertion[]> => {
     ),
   );
 
-  // ── ④ 다섯 이벤트 전부 **실제로** 돈다 ──────────────────────────────────────
+  // ── ④ 여섯 이벤트 전부 **실제로** 돈다 ──────────────────────────────────────
   out.push(
     assert(
-      "★다섯 훅 이벤트가 전부 실행된다(Pre·Post·UserPromptSubmit·Stop·SubagentStop)",
+      "★여섯 훅 이벤트가 전부 실행된다(Pre·Post·UserPromptSubmit·Stop·SubagentStop·StopFailure)",
       got.matcherFiredRightTool === true &&
         got.postFired === true &&
         got.upsFired === true &&
         got.stopFired === true &&
-        got.subagentFired === true,
-      `post=${String(got.postFired)} ups=${String(got.upsFired)} stop=${String(got.stopFired)} subagent=${String(got.subagentFired)}`,
+        got.subagentFired === true &&
+        got.stopFailFired === true,
+      `post=${String(got.postFired)} ups=${String(got.upsFired)} stop=${String(got.stopFired)} subagent=${String(got.subagentFired)} stopfail=${String(got.stopFailFired)}`,
     ),
   );
   out.push(
@@ -161,6 +162,19 @@ const run = async (): Promise<Assertion[]> => {
       "★프로젝트 훅은 홈 훅에 **더해진다**(덮지 않는다 — 전역 안전장치가 사라지면 안 된다)",
       got.projectHookFired === true && got.homeHookStillFires === true,
       `프로젝트=${String(got.projectHookFired)} 홈=${String(got.homeHookStillFires)}`,
+    ),
+  );
+
+  // ── ⑤ ★`StopFailure` 는 **성공 턴엔 안 난다** (2026-09-08, 양방향) ─────────────
+  //  한 방향만 재면 «항상 뜨는 훅» 도 통과한다 — 그러면 성공할 때마다 실패 알림이 가고,
+  //  훅을 단 이유를 정면으로 배신한다. `Stop` 을 돌린 직후 이 마커가 **없어야** 한다.
+  out.push(
+    assert(
+      "★`StopFailure` 가 성공 턴엔 안 난다(`Stop` 과 상호배타)",
+      got.stopFailNotFiredOnSuccess === true,
+      got.stopFailNotFiredOnSuccess === true
+        ? "Stop 직후 stopfail 마커 없음"
+        : "★성공 턴에도 실패 훅이 돌았다",
     ),
   );
 

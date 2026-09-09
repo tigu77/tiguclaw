@@ -239,6 +239,37 @@ export const handleHomeWidgets = async (ctx: RouteCtx): Promise<void> => {
   return;
 };
 
+/**
+ * 위젯 하나를 홈에 놓거나 뺀다 — 플러그인 상세의 토글 (2026-09-08).
+ *
+ * ★**여기서 여는 건 «있다/없다» 한 축뿐이다.** 순서·크기·config 는 그대로
+ *  `configure_home` 도구가 소유한다 — 화면에 배치 편집기를 짓기 시작하면 같은 판단이
+ *  두 곳이 된다. 종전 주석이 *"쓰기 구멍을 내면 손 배치 UI 의 절반이 된다"* 고 막아둔
+ *  것이 이 절반인데, 정태님 판단으로 **이 절반만** 연다: 설치했는데 왜 안 보이지가
+ *  그대로 남기 때문이다.
+ */
+export const handleHomeWidgetToggle = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  const { readJsonBody } = await import("./http-body.js");
+  const { setHomeWidgetEnabled } = await import("../../src/core/home-widgets.js");
+  const { listAvailableHomeWidgets } = await import("../../src/core/plugins/manager.js");
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    writeJson(res, 400, { ok: false, error: "본문이 JSON 이 아닙니다." });
+    return;
+  }
+  const type = typeof body.type === "string" ? body.type : "";
+  if (type === "" || typeof body.enabled !== "boolean") {
+    writeJson(res, 400, { ok: false, error: "type(문자열)·enabled(참거짓)가 필요합니다." });
+    return;
+  }
+  const r = setHomeWidgetEnabled(type, body.enabled, listAvailableHomeWidgets());
+  writeJson(res, r.ok ? 200 : 400, r);
+  return;
+};
+
 export const handlePluginData = async (ctx: RouteCtx): Promise<void> => {
   const { res, url, pathname } = ctx;
   const rest = pathname.slice("/plugin-data/".length).split("/");
@@ -308,6 +339,10 @@ export const handlePlugins = async (ctx: RouteCtx): Promise<void> => {
       // ★설정은 **선언 + 값**이 함께 온다 — 화면이 손으로 행을 짓지 않게 하려면
       //  "무엇을 물어볼지" 를 서버가 줘야 한다(§D.2). secret 은 값 대신 있다/없다만.
       settings: p.settings,
+      // ★위젯도 **선언 + 지금 놓였나**가 함께 온다(2026-09-08) — `settings` 와 같은 규칙.
+      //  없으면 화면은 무슨 위젯이 있는지 몰라 스위치를 못 그린다(설치했는데 안 보이는
+      //  증상의 뿌리가 그것이었다).
+      widgets: p.widgets,
     })),
   });
   return;

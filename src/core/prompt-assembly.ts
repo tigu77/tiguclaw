@@ -665,14 +665,15 @@ export const buildContextSlots = (input: SystemContextInput): ContextSlot[] => {
   //  서브에이전트 턴엔 등록조차 안 되고, 「긴 작업」의 위임 배관은 `workers: "main"` 이라
   //  매니저도 못 쓴다. 자기가 못 하는 일에 대한 지시를 매 호출 받는 건 크기가 아니라
   //  **정확성** 문제다. ★메인은 바이트 단위로 종전과 같다(표시만 걷힌다).
-  const system = scopeConstitution(input.system, turnKindOf(input.roleSource)).body;
-  return buildContextSlotsInner(input, system, input.skillIndex);
+  const scoped = scopeConstitution(input.system, turnKindOf(input.roleSource));
+  return buildContextSlotsInner(input, scoped.body, input.skillIndex, scoped.roleExtra);
 };
 
 const buildContextSlotsInner = (
   input: SystemContextInput,
   system: string,
   skillIndexText: string,
+  constitutionRole = "",
 ): ContextSlot[] => [
   { key: "system", text: system, channel: "system", roleVarying: true },
   // env 는 오늘 날짜를 포함 → 하루에 한 번 변한다. 0.2KB 라 올려도 이득이 없고, 올리면
@@ -682,7 +683,7 @@ const buildContextSlotsInner = (
   // claude 전용 — 그 외 어댑터는 ""(빈 슬롯은 걸러진다).
   { key: "foreignDelta", text: input.foreignDelta ?? "", channel: "user" },
   { key: "memorySnippet", text: input.memorySnippet, channel: "user" },
-  { key: "skillIndex", text: skillIndexText, channel: "system", roleVarying: true },
+
   // ★AGENT.md 3인방을 시스템 채널의 **꼬리**에 둔다 (2026-07-30 검토 지적):
   //  안정 조각 중 가장 자주 바뀌는 게 AGENT.md 다 — 비서 자신이 정체성·습관을 수시로
   //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
@@ -720,6 +721,13 @@ const buildContextSlotsInner = (
   //  (`memoryScopeFor`). 그런데 한가운데 있어서 그 뒤의 **공용** 조각(selfGrowth·
   //  agentPathHint·AGENT.md·agentWarn)이 역할마다 두 벌 잡히고 있었다. 같은 날 내가 정한
   //  규칙을 내 다음 커밋이 어긴 것이다.
+  // ★★**스킬 인덱스도 역할 전용이다** (2026-09-08 실측). 선언은 `roleVarying` 이었지만
+  //  실제 동작은 **자식에게 빈다**(`formatSkillIndex(…, "agent") === ""`) — 즉 `roleScoped`
+  //  다. 그런데 자리가 **슬롯 #2**(머리)라, 그 뒤의 **완전히 동일한 15,450자**
+  //  (AGENT.md·메모리 인덱스·에이전트 인덱스·모델 프로파일)가 역할마다 두 벌 캐시됐다.
+  //  헌법과 **같은 병이 두 번째 자리에서** 난 것이다. 성질대로 선언하고 꼬리로 내린다 —
+  //  그러면 ② 게이트(역할 전용은 공용 전부보다 뒤)가 저절로 이 슬롯도 지킨다.
+  { key: "skillIndex", text: skillIndexText, channel: "system", roleScoped: true },
   { key: "memoryIndex", text: input.memoryIndex, channel: "system", roleScoped: true },
   { key: "agentIndex", text: input.agentIndex, channel: "system", roleScoped: true },
   { key: "modelProfiles", text: input.modelProfiles ?? "", channel: "system", roleScoped: true },
@@ -748,6 +756,17 @@ const buildContextSlotsInner = (
   // ★역할마다 다른 값이다(정의상) — 그래서 **꼬리**에 있고, 그 사실을 선언해 둔다.
   //  이 선언은 3R 의 새 검사가 «갈리는데 선언이 없다» 며 **스스로 찾아냈다**(내가 목록에
   //  적은 게 아니다 — 그게 이름 열거 대신 성질로 판정한 값이다).
+  // ★★**헌법의 역할 절** — 여기가 자리다 (2026-09-08). 본문에 붙여 두면 `system` 슬롯
+  //  #1 에서 갈려 **뒤따르는 공용 조각 전부가 역할마다 두 벌 캐시된다** — 실측으로
+  //  메인↔자식 공유가 94% → 18% 로 주저앉았고 codex 적중률이 3.1% 가 됐다.
+  //  `fece6f4b`(역할 전용 슬롯을 꼬리로)와 **같은 처방**이고, 그 커밋이 만든 배치를
+  //  하루 뒤 헌법이 머리에서 되돌린 것을 여기서 되돌린다.
+  {
+    key: "constitutionRole",
+    text: constitutionRole,
+    channel: "system",
+    roleVarying: true,
+  },
   { key: "role", text: roleContextBlock(input.roleSource), channel: "system", roleVarying: true },
 ];
 

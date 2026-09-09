@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import type { EventBus } from "../eventbus.js";
 import { describeNeeds, readNeeds, type PluginNeeds } from "./host.js";
 import { readSettingsSpec, type PluginSettingSpec } from "./settings.js";
+import { readWidgetSpecs, type PluginWidgetSpec } from "./widgets.js";
 import { isModuleActive } from "./inventory.js";
 
 // D1-c (2026-07-14, ADR built-artifact-production-runtime) — built(순수 node) 런타임에서
@@ -96,6 +97,21 @@ export interface PluginMeta {
  *  좌표 충돌은 이름을 단속해서가 아니라 **좌표를 만들 때** 막는 게 맞다 —
  *  `pluginThreadKey` 가 접두사를 붙인다.
  */
+/**
+ * ★**플러그인 이름은 «무엇을 제공하나» 이지 «제공하는 것 자체» 가 아니다** (2026-09-08 정태님).
+ *
+ * 우리 채널 플러그인이 `telegram`·`cli` 라는 **일반명을 선점**하고 있었다. 그런데 이름은
+ * 예약된다 — 번들이 이기므로, 서드파티가 자기 텔레그램 플러그인을 `telegram` 으로 지으면
+ * **설치가 거부**된다. 정태님: *"또 다른 유저 텔레그램 플러그인도 나올 거니까."*
+ * 그래서 `telegram-channel`·`cli-channel` 로 바꿨다(폴더명과도 일치).
+ *
+ * ★채널 이름과는 **다른 축**이다. 채널 이름은 `Channel` 인스턴스가 정하고(`readonly name`),
+ *  플러그인 이름은 매니페스트가 정한다 — 개명해도 채널은 `telegram` 그대로다.
+ *  같아 보인다고 하나로 묶으면, 한 플러그인이 여러 채널을 제공하는 날 갈린다.
+ *
+ * ★새 번들 플러그인을 만들 때: **제공하는 것의 일반명을 쓰지 마라**(`slack`·`memory`·
+ *  `search`). `<무엇>-<kind>` 가 안전하다 — `kind` 는 매니페스트에 이미 있다.
+ */
 export const isValidPluginName = (name: string): boolean =>
   /^[a-z0-9][a-z0-9-]{0,63}$/.test(name);
 
@@ -108,6 +124,12 @@ export interface PluginManifest {
    * ★화면은 **이 선언에서** 행을 만든다. 손으로 행을 짓지 않는다(§D.2).
    */
   settings?: PluginSettingSpec[];
+  /**
+   * 이 플러그인이 홈에 놓을 수 있는 위젯 — 검사·정규화를 거친 값(`readWidgetSpecs`).
+   * ★등록소는 브라우저에 있지만(`web/widget.js`), **목록은 여기 있어야** 화면이 토글을
+   *  그리고 코어가 자동 편입을 판단할 수 있다.
+   */
+  widgets?: PluginWidgetSpec[];
   /** 플러그인 자기 버전(`package.json` 의 `version`). 없으면 undefined. */
   version?: string;
   /**
@@ -314,6 +336,7 @@ export const scanPluginManifests = async (
           entry: m.entry,
           needs: readNeeds((m as { needs?: unknown }).needs).needs,
           settings: readSettingsSpec((m as { settings?: unknown }).settings).specs,
+          widgets: readWidgetSpecs((m as { widgets?: unknown }).widgets).specs,
           ...(typeof pkg.version === "string" ? { version: pkg.version } : {}),
           meta: readPluginMeta(pkgRaw),
           ...(m.core === true ? { core: true } : {}),
@@ -464,6 +487,11 @@ export const loadPlugins = async (
       for (const problem of sv.problems) {
         console.warn(`[plugin-loader] ${m.name}: ${problem}`);
       }
+      // 위젯 선언도 같은 자리 — 나쁜 칸 하나는 그 칸만 떨어지고 이유가 로그에 남는다.
+      const wv = readWidgetSpecs((marker as { widgets?: unknown }).widgets);
+      for (const problem of wv.problems) {
+        console.warn(`[plugin-loader] ${m.name}: ${problem}`);
+      }
       const manifest: PluginManifest = {
         schemaVersion: m.schemaVersion,
         kind: m.kind as string | string[],
@@ -471,6 +499,7 @@ export const loadPlugins = async (
         entry: m.entry,
         needs: nv.needs,
         settings: sv.specs,
+        widgets: wv.specs,
         // 플러그인 자기 버전 — 목록에 보여주고, 갱신됐는지 사람이 판단할 근거가 된다.
         ...(typeof pkg.version === "string" ? { version: pkg.version } : {}),
         meta: readPluginMeta(pkgRaw),

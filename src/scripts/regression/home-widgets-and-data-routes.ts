@@ -244,10 +244,27 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "홈 배치 조회(`/home-widgets`)도 게이트에 있다 — 읽기만 열려 있고 쓰기 구멍은 없다",
-        /pathname === "\/home-widgets" && method === "GET"/.test(bridge) &&
-          !/pathname === "\/home-widgets" && method === "POST"/.test(bridge),
-        (bridge.match(/pathname === "\/home-widgets"[^\n]*/) ?? ["없음"])[0],
+        "홈 배치(`/home-widgets`)가 게이트에 있다 — 조회는 read, **켜기/끄기는 write**",
+        /pathname === "\/home-widgets" && method === "GET"\n\s*\? "read"/.test(bridge) &&
+          /pathname === "\/home-widgets" && method === "POST"\n\s*\? "write"/.test(bridge),
+        (bridge.match(/pathname === "\/home-widgets"[^\n]*/g) ?? ["없음"]).join(" · "),
+      ),
+    );
+    // ★★**열린 것은 «있다/없다» 한 축뿐**이다 (2026-09-08). 종전 이 자리는 *"쓰기 구멍은
+    //  없다"* 였고 그건 맞는 판단이었다 — 화면에 배치 편집기가 생기면 순서·크기의 진실이
+    //  두 곳이 된다. 정태님 판단으로 **절반만** 열었으므로, 그물도 절반만 열어야 한다:
+    //  넓히면(«POST 가 있다» 로만 보면) 나중에 누가 size·config 를 얹어도 초록이다
+    //  ([[feedback_gate_must_actually_run]] — 항상 초록인 검사는 게이트가 아니다).
+    const toggle =
+      (bridge.match(/export const handleHomeWidgetToggle[\s\S]*?\n};/) ?? [""])[0];
+    out.push(
+      assert(
+        "★★토글은 `type`·`enabled` 만 받는다 — 순서·크기·config 는 여전히 `configure_home` 도구만 쓴다(배치의 진실이 두 곳이 되면 화면과 비서가 갈린다)",
+        toggle !== "" &&
+          /body\.type/.test(toggle) &&
+          /body\.enabled/.test(toggle) &&
+          !/body\.(size|config|widgets|id)\b/.test(toggle),
+        toggle === "" ? "핸들러 없음" : `${toggle.length}자 · 읽는 필드=${(toggle.match(/body\.\w+/g) ?? []).join(",")}`,
       ),
     );
     const adapters = [

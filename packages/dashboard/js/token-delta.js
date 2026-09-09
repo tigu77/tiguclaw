@@ -162,7 +162,14 @@
         if (useTotal) parts.push(i18n("tok.iters", { n: iters }));   // 몇 번 재전송했나 = 낭비의 직접 신호.
         // 캐시 적중률 — 재전송분 중 캐시로 처리된 몫. 낮으면 루프가 비싸다는 신호.
         if (Number.isFinite(cached) && cached > 0) {
-          parts.push(i18n("tok.cacheRate", { pct: Math.round((cached / shownIn) * 100) }));
+          // ★«전부» 라고 말하려면 **실제로 전부**여야 한다 (2026-09-08 정태님이 100% 를 보고 물음).
+          //  `Math.round` 는 99.5% 를 100% 로 올린다. 그런데 매 턴 최소한 **새 메시지**는
+          //  캐시에 없으므로 «캐시 100%» 는 원리적으로 참일 수 없는 문장이다 — 실측으로도
+          //  `cached == input` 인 턴은 **0건**이었다(99.5%~ 로 반올림된 턴은 82건).
+          //  올림을 막는 게 아니라 **단언을 못 하게** 한다: 전부가 아니면 99 에서 멈춘다.
+          const pct =
+            cached >= shownIn ? 100 : Math.min(99, Math.round((cached / shownIn) * 100));
+          parts.push(i18n("tok.cacheRate", { pct }));
         }
         parts.push("↑" + fmtTokens(outTok));
         target.textContent = parts.join(" · ");

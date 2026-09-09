@@ -12,7 +12,14 @@ Five events are wired up:
 | `PreToolUse` | before a tool runs | **block** a tool call (e.g. deny writes to a path) |
 | `PostToolUse` | after a tool returns | observe / audit tool results |
 | `SubagentStop` | after a delegated sub-agent finishes | review or record delegated work |
-| `Stop` | after a turn finishes | post-turn notifications or logging |
+| `Stop` | after a turn finishes **successfully** | post-turn notifications or logging |
+| `StopFailure` | when a turn ends with an **error** | failure alerts, incident logging |
+
+> ★**`Stop` and `StopFailure` are mutually exclusive.** Exactly one fires per turn — `Stop` on
+> a clean finish, `StopFailure` on an error. To do something *every* time a turn ends, register
+> **both**. `StopFailure` receives, as `error`, the same (secret-redacted) message the user sees.
+>
+> ★**Neither fires when the user cancels with `/stop`.** A cancellation is not a failure.
 
 Each hook receives a small JSON payload on stdin (`tool_name`, `tool_input`, `cwd`, and so on). For `PreToolUse`, exit code `2` blocks the tool — the assistant sees your reason (on stderr) in place of the tool result and moves on. Any other non-zero exit is isolated and logged, so a broken hook never takes the daemon down.
 

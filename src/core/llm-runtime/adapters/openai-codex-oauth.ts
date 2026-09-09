@@ -2016,6 +2016,16 @@ export const runOpenAiCodex = async (
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
             `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
             `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
+            // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가
+            //  쪼개져 있었는데 `cached` 가 없어서, «프리픽스가 어디서 끊겼나» 를 물으면
+            //  로그로는 답이 안 나왔다 — 프로브를 새로 짜서 반나절을 썼다. 세 필드면
+            //  다음부터는 **로그만으로** 판정된다([[feedback_logs_must_stand_alone]]).
+            //  `last`=마지막 호출 한 번(프리픽스가 걸렸나) · `turn`=iteration 합계(비용).
+            //  둘을 절대 섞지 마라([[project_prompt_prefix_cache_position]]).
+            `cache=last ${(finalUsage?.cachedTokens ?? 0).toLocaleString()}/${(finalUsage?.inputTokens ?? 0).toLocaleString()}` +
+            `(${finalUsage !== undefined && finalUsage.inputTokens > 0 ? Math.round(((finalUsage.cachedTokens ?? 0) / finalUsage.inputTokens) * 100) : 0}%)` +
+            ` turn ${usageTotals.cachedTokens.toLocaleString()}/${usageTotals.inputTokens.toLocaleString()}` +
+            `(${usageTotals.inputTokens > 0 ? Math.round((usageTotals.cachedTokens / usageTotals.inputTokens) * 100) : 0}%) ` +
             `thread=${input.threadKey} tail: ${tail}`,
         );
         if (closing) {

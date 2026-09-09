@@ -200,7 +200,7 @@ import { handleProjects, handleProjectCapability, handleProjectDetail, handlePro
 import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell } from "./routes-work.js";
 import { handleMessages, handleChatHistory, handleChatSearch } from "./routes-chat.js";
 import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath } from "./routes-files.js";
-import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
+import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handleHomeWidgetToggle, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
 import type { RouteCtx } from "./route-ctx.js";
 import {
   serveGatewayChat,
@@ -535,7 +535,9 @@ class HttpBridge implements Channel, Observer {
                 : pathname === "/plugin-icon" && method === "GET"
                   ? "read" // 플러그인이 선언한 아이콘 파일 — 조회만.
                 : pathname === "/home-widgets" && method === "GET"
-                  ? "read" // 배치 조회 — 쓰기는 도구(configure_home)로만 간다.
+                  ? "read" // 배치 조회.
+                : pathname === "/home-widgets" && method === "POST"
+                  ? "write" // 위젯 켜기/끄기 — 순서·크기는 여전히 도구(configure_home)만.
                 : pathname.startsWith("/plugin-data/") && method === "GET"
                   ? // ★**프리픽스 한 줄**이다 — 플러그인마다 여기 한 줄씩 늘면 그게 곧
                     //  손으로 관리하는 목록이고, 이 사다리는 이미 한 번 빠뜨려서 read 토큰이
@@ -553,10 +555,15 @@ class HttpBridge implements Channel, Observer {
     }
 
     // 홈 위젯 배치 (2026-08-28, §J) — 화면이 "무엇을 어떤 순서로 그릴지" 를 받는 자리.
-    // ★**읽기만 있다.** 쓰기는 `configure_home` 도구로만 간다 — 배치는 비서가 하는 것이고
-    //  (A3), 화면에 쓰기 구멍을 내면 그게 곧 손 배치 UI 의 절반이 된다(아직 안 짓는다).
+    // ★**쓰기는 «있다/없다» 한 축만 열려 있다**(2026-09-08). 종전엔 읽기뿐이었고 그 주석은
+    //  *"쓰기 구멍을 내면 손 배치 UI 의 절반이 된다"* 였는데 — 맞는 말이라 절반만 열었다.
+    //  순서·크기·config 는 그대로 `configure_home` 도구가 소유한다.
     if (pathname === "/home-widgets" && method === "GET") {
       await handleHomeWidgets(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/home-widgets" && method === "POST") {
+      await handleHomeWidgetToggle(this.routeCtx(req, res, url));
       return;
     }
 

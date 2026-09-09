@@ -471,6 +471,24 @@
       /* 구독 인증 — 상태 + 버튼 + (눌렀을 때) 절차 패널. 설정 행과 같은 결로 둔다. */
       .plugin-auth { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:grid; gap:7px; }
       .plugin-auth-head { display:flex; align-items:center; gap:8px; }
+      /**
+       * 한도 새로고침 — **줄 안의 동작**이지 칩이 아니다 (2026-09-09 정태님:
+       * *"회색 배경이랑 같이 있어서 뭔가 이상한데 어울리지 않는 느낌"*).
+       *
+       * ★원인은 취향이 아니라 **없는 클래스**였다: `ghost-btn` 은 이 CSS 어디에도 없고
+       *  `usage-refresh` 도 정의가 없었다. 그래서 브라우저 기본 버튼이 그대로 나왔다 —
+       *  헤드리스 실측 `background: rgb(239,239,239) · border: 2px`. 다크 테마 한복판에
+       *  밝은 회색 상자가 박힌다.
+       * ★이름을 지어 쓰기 전에 **정의가 있는지 본다** — 없는 이름은 조용히 «기본값» 이 되고,
+       *  기본값은 우리 테마를 모른다.
+       */
+      .usage-refresh {
+        border:0; background:transparent; color:var(--text-mute); cursor:pointer;
+        width:24px; height:24px; border-radius:8px; padding:0; line-height:1;
+        font-size:0.8125rem; flex:none; opacity:.7;
+      }
+      .usage-refresh:hover:not(:disabled) { background:var(--card-hover); color:var(--text); opacity:1; }
+      .usage-refresh:disabled { opacity:.35; cursor:default; }
       /* 한도 — 인증 상태 바로 밑. 숫자가 주인공이 아니라 «남았나» 가 주인공이라
          본문보다 작고 조용하게(2026-09-07).
          ★**창 하나 = 한 줄**이다. 한 줄에 몰면 좁은 화면에서 아무 데서나 접혀 어느 숫자가

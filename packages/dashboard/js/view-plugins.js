@@ -692,7 +692,7 @@ function formatUsageLine(usage, now) {
           //  그 숫자를 보려고 기다리는 것이니 여기선 기다려도 된다(목록과 성질이 다르다).
           if (canAsk) {
             const rf = document.createElement("button");
-            rf.className = "ghost-btn usage-refresh";
+            rf.className = "usage-refresh";
             rf.type = "button";
             // ★**아이콘으로 둔다** (2026-09-09 정태님). 이 줄에 이미 provider 이름·상태가
             //  붙어 있어 낱말을 하나 더 얹으면 머리가 붐빈다. 다만 «모양만 줄이고 의미는
@@ -701,7 +701,17 @@ function formatUsageLine(usage, now) {
             rf.setAttribute("aria-label", i18n("plugins.auth.usage.refresh"));
             rf.title = i18n("plugins.auth.usage.refresh");
             rf.disabled = loading;
-            rf.addEventListener("click", () => void loadUsage(id, true));
+            // ★**누른 즉시 그린다** (2026-09-09, 코드 리뷰). `loadUsage` 는 렌더 재진입(P2)
+            //  때문에 앞쪽 `renderPluginsView()` 를 없앴는데, 그 제약은 «렌더 안에서 불릴
+            //  때» 의 것이다. 클릭 핸들러는 **렌더 밖**이라 그리는 사람이 아무도 없어,
+            //  조회가 끝날 때까지(claude CLI 2.3초·시한 25초) 화면이 그대로였다 —
+            //  버튼도 계속 눌리는 것처럼 보인다. 여기서만 먼저 그린다.
+            rf.addEventListener("click", () => {
+              if (usageState.get(id) === "loading") return;
+              usageState.set(id, "loading");
+              renderPluginsView();
+              void loadUsage(id, true);
+            });
             head.appendChild(rf);
           }
           if (rows.length > 0 || pendingLine !== "") {

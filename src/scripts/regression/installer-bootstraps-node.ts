@@ -144,6 +144,46 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ★**받기가 폴더를 만들기보다 먼저인가** (2026-09-09, 코드 리뷰) ──────
+    //  ★이 단언이 없어서 **윈도우 결함이 스위트 3,084건 초록인 채로 살아 있었다.**
+    //   `install.sh` 는 받기를 clone 앞으로 옮겨 «실패해도 아무것도 안 남는다» 를 얻었는데
+    //   `install.ps1` 은 clone 뒤 그대로였다 — 받기가 어떤 이유로든 죽으면 clone 된 폴더만
+    //   남고, 재실행은 «이미 설치돼 있습니다 → npx tiguclaw update» 로 막힌다. 그 사람은
+    //   정의상 node·npx 가 없어서 온 사람이다.
+    //  ★같은 판단이 두 파일에 있으면 **한쪽이 낡는다** — 그래서 둘 다 센다.
+    for (const [name, src] of [["install.sh", sh], ["install.ps1", ps]] as const) {
+      const lines = src.split("\n");
+      const fetchAt = lines.findIndex((l) =>
+        /^\s*(fetch_node|Install-PrivateNode)\s*(#.*)?$/.test(l),
+      );
+      const cloneAt = lines.findIndex((l) => /git clone/.test(l) && !/^\s*#/.test(l));
+      out.push(
+        assert(
+          `★★${name}: 전용 Node 를 **폴더를 만들기(clone) 전에** 받는다 — 뒤에 받으면 받기가 실패할 때 clone 된 폴더만 남고, 그 사람은 안내하는 복구 명령을 실행할 수도 없다(node 가 없어서 온 사람이다)`,
+          fetchAt >= 0 && cloneAt >= 0 && fetchAt < cloneAt,
+          `받기 ${fetchAt + 1}행 · clone ${cloneAt + 1}행`,
+        ),
+      );
+    }
+
+    // ★거절·자동동의 판정이 **두 파일에서 같은가** — 한쪽만 넓히면 다른 쪽이 낡는다.
+    for (const [name, src] of [["install.sh", sh], ["install.ps1", ps]] as const) {
+      out.push(
+        assert(
+          `★${name}: 거절을 **넓게** 받는다(한국어 질문에 ASCII 두 형태만 받으면 «아니오» 가 승낙이 된다)`,
+          /아니오/.test(src) && /nope|취소/.test(src),
+          `한국어거절=${/아니오/.test(src)} · 그밖=${/nope|취소/.test(src)}`,
+        ),
+      );
+      out.push(
+        assert(
+          `★${name}: 자동 동의 환경변수를 **값으로** 본다 — 존재만 보면 \`=0\` 이 «묻지 말고 받아라» 가 되어, 끄려던 사람이 정확히 반대를 얻는다`,
+          /0\|false\|no\|off|1\|true\|yes\|on/.test(src),
+          /0\|false\|no\|off|1\|true\|yes\|on/.test(src) ? "값 판정" : "★존재만 본다",
+        ),
+      );
+    }
+
     // 버전을 손으로 박지 않았나 — `latest-v<major>.x` 는 되지만 `v22.23.2` 같은 못은 안 된다.
     const pinned = /nodejs\.org\/dist\/v\d+\.\d+\.\d+/.test(sh + ps);
     out.push(

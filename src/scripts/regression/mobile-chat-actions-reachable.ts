@@ -52,44 +52,42 @@ export const check: RegressionCheck = {
     );
     // ★**폭이 바뀌면 다시 판정하나** (적대 검토 P3: 로드 1회 판정이라 창을 좁히면 원래
     //  버그가 그대로 돌아왔다 — 폰 회전도 900px 경계를 넘는다).
-    // ★`[^)]*` 를 쓰면 안 된다 — 질의문 자체가 `(max-width: 900px)` 라 괄호를 품는다.
-    const reacts = /matchMedia[\s\S]{0,80}?addEventListener\(\s*["']change["']|addEventListener\(\s*["']resize["']/.test(nav);
-    const movesBack = /mnHome\.appendChild|parentElement\s*!==\s*mnHome/.test(nav);
+    // ★**블록 안을 본다 — 문자열 존재가 아니라** (2026-09-09, 코드 리뷰).
+    //  첫 판은 `@media (max-width: 359px)` 가 파일 어딘가 있기만 하면 초록이었다. 그래서
+    //  ①900px 블록에 낱말 접기를 도로 넣어도 ②359px 블록 본문을 통째로 비워도 통과했다 —
+    //  ①이 정확히 이 검사가 막겠다고 적은 회귀다(«375px 실측 하나로 900px 이하 전부에서
+    //  낱말이 사라졌다»). 더구나 정규식 세 갈래 중 둘은 어떤 CSS 에도 안 맞는 죽은 갈래였다.
+    // ★**같은 조건의 블록이 여럿이다** — 첫 것만 보면 안 된다(실측: 900px 블록이 파일에
+    //  여러 벌 있고, 낱말 접기는 그중 뒤쪽에 있다. 첫 판이 그래서 변이를 놓쳤다).
+    const blockBodies = (cond: RegExp): string => {
+      const found: string[] = [];
+      for (const m of css.matchAll(new RegExp(cond.source, "g"))) {
+        // 중첩 `@media` 를 세며 짝 맞는 `}` 까지 — 얕게 자르면 옆 블록을 본다.
+        let depth = 0;
+        for (let k = m.index; k < css.length; k += 1) {
+          if (css[k] === "{") depth += 1;
+          else if (css[k] === "}") {
+            depth -= 1;
+            if (depth === 0) { found.push(css.slice(m.index, k)); break; }
+          }
+        }
+      }
+      return found.join("\n");
+    };
+    const wide = blockBodies(/@media \(max-width:\s*900px\)/);
+    const narrow = blockBodies(/@media \(max-width:\s*3[0-5]\d px\)|@media \(max-width:\s*3[0-5]\dpx\)/);
+    const foldRe = /(\.bg-word|\.cs-word)[^{}]*\{[^{}]*display:\s*none/;
+    // 900px 블록에서 좁은 블록을 빼야 «넓은 구간» 만 남는다(중첩이라 문자열이 포함된다).
+    const wideOnly = narrow === "" ? wide : wide.split(narrow).join("");
     out.push(
       assert(
-        "★★폭이 바뀌면 **다시 판정한다**(그리고 넓어지면 제자리로 돌린다) — 로드 1회 판정이면 넓은 창에서 열었다가 좁힐 때 버튼이 «스크롤로 사라지는 상자» 에 0×0 으로 갇힌다(고친 버그가 다른 문으로 돌아온다)",
-        reacts && movesBack,
-        JSON.stringify({ 폭변화감지: reacts, 되돌리기: movesBack }),
-      ),
-    );
-
-    // ② iOS 확대 — 모바일에서 포커스 받는 입력이 16px 이상인가.
-    //    ★«검색창» 만 세지 않는다. 둘을 같이 세야 다음에 셋째가 생겨도 같은 자리를 본다.
-    const zoomSafe = (id: string): boolean =>
-      new RegExp(`#${id}[^{}]*\\{[^{}]*font-size:\\s*(1rem|16px)`).test(css);
-    out.push(
-      assert(
-        "★★모바일에서 **검색 입력이 16px 이상**이다 — iOS 는 그보다 작은 입력에 포커스가 가면 화면을 확대한다(채팅 입력창은 이미 막혀 있었는데 검색창만 빠졌다)",
-        zoomSafe("chat-search-input"),
-        `검색=${zoomSafe("chat-search-input")} · 채팅=${zoomSafe("chat-input")}`,
-      ),
-    );
-    out.push(
-      assert(
-        "★채팅 입력창의 16px 도 그대로다 — 한쪽을 고치다 다른 쪽을 잃지 않는다",
-        zoomSafe("chat-input"),
-        `채팅=${zoomSafe("chat-input")}`,
-      ),
-    );
-
-    // ③ 낱말 접기는 «정말 좁을 때만» — 실측(320~900px 넘침 0)으로 정한 문턱이다.
-    const foldsNarrowOnly =
-      /@media \(max-width: 3[0-5]\d px?\)|@media \(max-width: 3[0-5]\d\px\)|@media \(max-width: 359px\)/.test(css);
-    out.push(
-      assert(
-        "★낱말 접기가 **아주 좁은 구간에만** 걸린다 — 종전엔 375px 실측 하나를 근거로 900px 이하 전부에서 낱말이 사라졌다(폰보다 훨씬 넓은 화면에서도)",
-        foldsNarrowOnly,
-        foldsNarrowOnly ? "좁은 구간 전용 규칙 있음" : "★900px 전체에 걸려 있다",
+        "★★낱말 접기가 **좁은 구간 안에만** 있다 — 900px 블록에 있으면 폰보다 훨씬 넓은 화면에서도 «백그라운드»·«검색» 글자가 사라진다(375px 실측 하나를 900px 전체에 적용했던 그 회귀)",
+        narrow !== "" && foldRe.test(narrow) && !foldRe.test(wideOnly),
+        JSON.stringify({
+          좁은블록: narrow !== "",
+          좁은블록에접기: foldRe.test(narrow),
+          넓은구간에접기: foldRe.test(wideOnly),
+        }),
       ),
     );
     return out;

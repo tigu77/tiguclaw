@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-09-09
+
+### Fixed
+
+- **Installing on Windows without Node**: if the download failed partway, a half-installed
+  folder was left behind and re-running stopped with "already installed". The download now
+  happens before the folder is created, so a failure leaves nothing behind.
+- The same installer started downloading even when you answered "no", and
+  `TIGUCLAW_AUTO_NODE=0` was read as "don't ask, just download". Both fixed.
+- The commands suggested after a failed install didn't run on installs that use their own
+  Node copy. They are now usable as printed.
+- The subscription-limit **refresh (🔄) left the screen unchanged until the lookup finished**.
+  It now shows "checking" the moment you press it.
+- The refresh button rendered as a grey box that didn't match the theme.
+
+
 ## [0.51.0] - 2026-09-09
 
 ### Added
@@ -23,10 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The plugins menu opens right away.** It used to wait for every subscription's limit lookup
   before drawing the list — up to 25 seconds. Limits are now fetched for one provider, when you
   open its detail.
-- Code review now runs in a **manager**, which decides how many readers it needs after reading
-  the code. The assistant only sets the scope.
-- Contributing now says what belongs in an issue, a PR, or a discussion first. When a PR is
-  applied by hand upstream, the commit and release note name you and the PR number.
+- Code review now runs as a **background job**, so it no longer holds up the conversation —
+  watch its progress in the background panel.
 
 ### Fixed
 
@@ -430,7 +444,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...HEAD
+[0.51.1]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...v0.51.1
 [0.51.0]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...v0.50.0
 [0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1

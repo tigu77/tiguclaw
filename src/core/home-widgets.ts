@@ -488,8 +488,10 @@ export const seedDefaultHomeWidgets = (
   //  안 놓인다** — 사용자가 그 깨진 줄을 지워도 영영 안 살아난다(실측).
   //  이 파일이 캡 `break` 옆에 적어둔 *"읽는 쪽이 거부할 것을 쓰지 않는다"* 를, 바로 두 줄
   //  위에서 다른 문으로 어기고 있었다.
+  // ★`readRaw()` 를 다시 부르지 않는다 — 위에서 이미 읽었다. 같은 스냅샷을 봐야
+  //  `present`(원값)와 `acceptedTypes`(읽는 쪽 판정)가 **같은 파일 상태**에 대한 말이 된다.
   const acceptedTypes = new Set(
-    normalizeHomeWidgets(readRaw().widgets, new Set(available.map((w) => w.type.split("/")[0] ?? "")))
+    normalizeHomeWidgets(widgets, new Set(available.map((w) => w.type.split("/")[0] ?? "")))
       .widgets.map((w) => w.type),
   );
   const asked = available

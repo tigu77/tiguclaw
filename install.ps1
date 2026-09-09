@@ -64,11 +64,27 @@ function Install-PrivateNode {
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     $inner = Get-ChildItem -Path $tmp -Directory | Where-Object { $_.Name -like 'node-v*' } | Select-Object -First 1
     if (-not $inner) { Die "Node 압축 안에서 폴더를 못 찾았습니다." }
-    New-Item -ItemType Directory -Path $NodeDir -Force | Out-Null
-    Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $NodeDir -Recurse -Force
-  } finally {
+    # ★**임시 자리에 둔다** (2026-09-09, 코드 리뷰). `install.sh` 는 같은 날 이 문제를
+    #  고쳤는데 이 파일만 그대로였다 — clone 뒤에 받으면 받기가 어떤 이유로든 실패할 때
+    #  (목록 404·다운로드 끊김·체크섬 불일치·압축 폴더 없음·실행 실패) **clone 된 폴더만
+    #  남고**, 재실행은 «이미 설치돼 있습니다 → npx tiguclaw update» 로 막힌다. 그 사람은
+    #  정의상 node·npx 가 없어서 온 사람이라 그 안내를 실행할 수 없다.
+    #  ★clone 보다 먼저 받으면 실패해도 아직 아무것도 안 만들었으니 그냥 끝난다.
+    $script:NodeStage = $inner.FullName
+    $script:NodeStageTmp = $tmp
+    if (-not (Test-Path (Join-Path $script:NodeStage 'node.exe'))) { Die "받은 Node 안에 node.exe 가 없습니다." }
+  } catch {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    throw
   }
+  Write-Host "[v] 전용 node 준비됨 (설치 폴더로 옮깁니다)" -ForegroundColor Green
+}
+
+# 받아둔 것을 설치 폴더 안으로 옮기고 PATH 를 앞세운다 — clone 뒤에 부른다.
+function Move-PrivateNode {
+  New-Item -ItemType Directory -Path $NodeDir -Force | Out-Null
+  Copy-Item -Path (Join-Path $script:NodeStage '*') -Destination $NodeDir -Recurse -Force
+  Remove-Item -Recurse -Force $script:NodeStageTmp -ErrorAction SilentlyContinue
   $env:PATH = "$NodeDir;$env:PATH"
   if (-not (Test-NodeOk)) { Die "전용 Node 를 설치했는데 실행되지 않습니다 ($NodeDir\node.exe)." }
   Write-Host "[v] 전용 node $(node -v) — $NodeDir (시스템은 안 건드렸습니다)" -ForegroundColor Green
@@ -84,15 +100,27 @@ if (Test-NodeOk) {
   }
   Write-Host ""
   Write-Host "  tiguclaw 전용 Node 를 이 설치 폴더 안에만 받을 수 있습니다:"
-  Write-Host "    $NodeDir   (약 50MB · 관리자 권한 불필요 · 시스템 PATH 를 안 건드림)"
+  Write-Host "    $NodeDir   (내려받기 약 50MB · 설치 후 약 200MB · 관리자 권한 불필요 · 시스템 PATH 를 안 건드림)"
   Write-Host "  지울 때는 설치 폴더를 지우면 같이 사라집니다."
   Write-Host ""
   # ★묻는다 — 런타임을 받아 까는 일을 조용히 하지 않는다.
-  if (-not $env:TIGUCLAW_AUTO_NODE) {
+  # ★**값을 본다**(2026-09-09, 코드 리뷰). 종전 `-not $env:…` 는 «설정됐나» 만 봤고,
+  #  PowerShell 은 비어 있지 않은 문자열을 전부 참으로 보므로 `0`·`false`·`no` 가 모두
+  #  «묻지 말고 받아라» 였다 — 끄려고 0 을 넣은 사람이 정확히 반대를 얻는다.
+  #  `install.sh` 는 같은 날 고쳤는데 이 파일만 그대로였다.
+  if ($env:TIGUCLAW_AUTO_NODE -notmatch '^(1|true|yes|on|y)$') {
     $ans = Read-Host "  받을까요? [Y/n]"
-    if ($ans -match '^(n|no)$') { Die "설치를 멈췄습니다. Node $MinNode 이상을 직접 설치한 뒤 다시 실행하세요 (winget install OpenJS.NodeJS.LTS)." }
+    # ★거절을 **넓게** 받는다 — 질문이 한국어인데 거절만 ASCII 2형태였다.
+    #  애매하면 안 받는 쪽이 맞다: 잘못 멈추면 다시 돌리면 되고, 잘못 받으면 200MB 가
+    #  이미 내려와 있다.
+    if ($ans -match '^\s*(n|no|nope|nah|q|quit|0|false|아니|아니오|아니요|싫어|취소)\s*$') {
+      Die "설치를 멈췄습니다. Node $MinNode 이상을 직접 설치한 뒤 다시 실행하세요 (winget install OpenJS.NodeJS.LTS)."
+    }
   }
   $NeedNode = $true
+  Write-Host ""
+  Write-Host "-> 전용 Node 받는 중..." -ForegroundColor Cyan
+  Install-PrivateNode          # ★clone 전에 받는다 — 실패해도 아무것도 안 남는다.
 }
 
 # ★npm 은 **npm.cmd** 로 부른다 (2026-08-19 실사고).
@@ -137,10 +165,19 @@ Set-Location $Dir
 
 # ★전용 Node 는 clone 뒤에 받는다 — 폴더가 먼저 있으면 `git clone` 이 실패한다.
 #  여기서 PATH 를 앞세우면 아래 npm·onboard·서비스 등록이 전부 이 Node 를 쓴다.
+if ($NeedNode) { Move-PrivateNode }
+
+# ★**안내하는 명령이 그 사람 손에서 실제로 돌아야 한다** (2026-09-09, 코드 리뷰).
+#  전용 Node 는 이 프로세스 안에서만 PATH 에 오른다(프로필·setx 어디에도 안 남긴다 —
+#  시스템을 안 건드린다는 약속이 그것이다). 그래서 아래 안내가 `npm ci` 라고 적으면
+#  **그 사람 셸엔 npm 이 없다.** 문자열은 남는데 실행이 안 되는 상태였다.
+#  `install.sh` 는 같은 날 고쳤는데 이 파일만 그대로였다.
 if ($NeedNode) {
-  Write-Host ""
-  Write-Host "-> 전용 Node 준비 중..." -ForegroundColor Cyan
-  Install-PrivateNode
+  $NpmShow  = Join-Path $NodeDir 'npm.cmd'
+  $HowtoTail = "`n   (이 설치본은 전용 Node 를 씁니다 — 터미널에서 계속 쓰시려면 PATH 에 다음을 더하세요:`n      `$env:PATH = '$NodeDir;' + `$env:PATH`n    안 더해도 채팅에서 /update 로 업데이트됩니다.)"
+} else {
+  $NpmShow = 'npm'
+  $HowtoTail = ''
 }
 
 # ★이제서야 npm 을 해석한다 — 전용 Node 를 깔았으면 그쪽 `npm.cmd` 가 잡혀야 한다(P2).
@@ -157,7 +194,7 @@ if ($LASTEXITCODE -ne 0) {
 의존성 설치 실패.
    C++ 빌드 도구가 필요할 수 있습니다:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   설치 후 다시:  cd $Dir; npm ci
+   설치 후 다시:  cd $Dir; $NpmShow ci
 "@
 }
 
@@ -181,7 +218,7 @@ SQLite 네이티브 모듈을 열 수 없습니다 - 이 상태로는 데몬이 
 
    C++ 빌드 도구가 필요합니다:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   그 뒤:  cd $Dir; npm rebuild better-sqlite3
+   그 뒤:  cd $Dir; $NpmShow rebuild better-sqlite3
 "@
   }
   Write-Host "   네이티브 모듈 복구 완료."

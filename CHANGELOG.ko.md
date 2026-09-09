@@ -8,6 +8,22 @@
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-09-09
+
+### Fixed
+
+- **윈도우에서 Node 없이 설치할 때** 받기가 중간에 실패하면 반쯤 설치된 폴더가 남아,
+  다시 실행해도 «이미 설치돼 있습니다» 로 막히던 것을 고쳤습니다. 이제 폴더를 만들기
+  전에 받으므로 실패해도 아무것도 남지 않습니다.
+- 같은 설치기에서 **「아니오」라고 답해도 내려받기가 시작되던 것**을 고쳤습니다.
+  `TIGUCLAW_AUTO_NODE=0` 이 오히려 «묻지 말고 받아라» 로 읽히던 것도 함께 고쳤습니다.
+- 설치가 실패했을 때 안내하던 명령이 전용 Node 를 쓰는 설치본에서는 실행되지 않던 것을
+  고쳤습니다(이제 그대로 붙여넣으면 됩니다).
+- 구독 한도 **새로고침(🔄)을 눌러도 조회가 끝날 때까지 화면이 그대로**이던 것을
+  고쳤습니다. 이제 누르는 즉시 «확인하는 중» 이 뜹니다.
+- 새로고침 버튼이 테마와 어울리지 않는 회색 상자로 보이던 것을 고쳤습니다.
+
+
 ## [0.51.0] - 2026-09-09
 
 ### Added
@@ -21,10 +37,8 @@
 
 - **플러그인 메뉴가 즉시 열립니다.** 종전엔 목록을 그리기 전에 모든 구독의 한도 조회를
   기다려 최대 25초까지 멈췄습니다. 이제 한도는 **플러그인 상세를 열 때** 그 하나만 가져옵니다.
-- 코드 리뷰는 이제 **매니저가 수행**하고, 인원도 매니저가 코드를 읽고 정합니다.
-  비서는 범위만 지정합니다.
-- 기여 안내에 무엇을 이슈로·PR 로·먼저 논의로 보낼지 적었습니다. 손으로 반영하더라도
-  기여자와 PR 번호를 커밋·릴리스 노트에 남깁니다.
+- 코드 리뷰가 **백그라운드 작업으로 돕니다.** 도는 동안 대화가 막히지 않고, 진행 상황은
+  백그라운드 패널에서 봅니다.
 
 ### Fixed
 
@@ -1987,7 +2001,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...HEAD
+[0.51.1]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...v0.51.1
 [0.51.0]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...v0.50.0
 [0.49.1]: https://github.com/tigu77/tiguclaw/compare/v0.49.0...v0.49.1

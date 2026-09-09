@@ -27,6 +27,14 @@ const run = async (): Promise<Assertion[]> => {
   let css: string;
   try {
     css = await readFile(new URL("../../../packages/dashboard/app.css", import.meta.url), "utf8");
+    // ★**주석을 여기서 걷는다** (2026-09-09). 이 검사가 지키는 성질은 «테마를 바꿔도 안
+    //  바뀌는 자리가 생기지 않는가» 인데 **주석 속 색은 아무것도 칠하지 않는다.** 실측
+    //  기록(브라우저 기본 버튼 색)을 주석에 남기자 빨개졌다 — 옳은 기록을 위반으로 세는
+    //  게이트는 그 기록을 지우게 만든다.
+    // ★**로드 직후**여야 한다: 아래 `:root` 블록 위치를 `index` 로 잘라내므로, 나중에
+    //  걷으면 인덱스가 어긋나 팔레트 블록을 못 빼고 정의 리터럴 21개가 «누수» 로 잡힌다
+    //  (첫 판이 그랬다 — 고치려다 검사를 거짓 빨강으로 만들 뻔했다).
+    css = css.replace(/\/\*[\s\S]*?\*\//g, "");
   } catch {
     return [assert("app.css 없음(배포 레포 아님)", true, "건너뜀")];
   }

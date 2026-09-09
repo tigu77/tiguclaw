@@ -19,7 +19,7 @@
  * 배선을 검사한다(SDK 응답 없이는 재현 불가). 배포본엔 `.ts` 가 없어 읽기 실패는 통과.
  */
 import { readFileSync } from "node:fs";
-import { readSourceSync, sourceHas } from "./_wiring.js";
+import { readSourceSync, sourceHas, stripComments } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /**
@@ -79,7 +79,6 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     // 옛 형태 재도입 감시용 — 주석은 벗긴다(설명하는 글이 판정을 흔들면 안 된다).
     const { readFile } = await import("node:fs/promises");
-    const { stripComments } = await import("./_wiring.js");
     const claudeCode = stripComments(
       await readFile(
         new URL("../../core/llm-runtime/adapters/claude-agent-sdk.ts", import.meta.url),
@@ -143,8 +142,12 @@ export const check: RegressionCheck = {
       //  ★두 축을 **둘 다** 요구한다: `last`=호출 1회(프리픽스가 걸렸나) ·
       //   `turn`=iteration 합계(비용). 하나만 있으면 두 질문이 섞인다.
       ...(() => {
-        const src = readSourceSync(
-          "src/core/llm-runtime/adapters/openai-codex-oauth.ts",
+        // ★**주석을 걷어내고 본다** (2026-09-09, 적대 검토 F4). 종전엔 raw 소스를 훑어서,
+        //  캐시 4줄을 통째로 지우고 그 자리에 «형식 예시» 주석 한 줄만 남겨도 초록이었다 —
+        //  관측이 사라졌는데 게이트가 «둘 다 있다» 고 답한다. 같은 파일의 다른 단언은
+        //  이미 `stripComments` 를 쓰고 있었다(규율을 알면서 새 검사에만 안 붙였다).
+        const src = stripComments(
+          readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"),
         );
         const hasLast = /cache=last /.test(src);
         const hasTurn = /turn \$\{usageTotals\.cachedTokens/.test(src);

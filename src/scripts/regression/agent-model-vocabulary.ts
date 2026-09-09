@@ -71,6 +71,22 @@ const modelValues = async (
   return out;
 };
 
+
+/**
+ * ★**«가르치는 문장» 만 본다** — 인용은 빼고.
+ *
+ * 사고: 금지어 grep 이 «`wait:` 를 쓰지 마라 — 없어진 인자다» 라는 **옳은 경고**를 위반으로
+ * 셌다(적대 검토 실측). 그러면 **재발을 막는 유일한 수단(문서로 못 박기)이 게이트에 의해
+ * 봉쇄된다.** 같은 파일의 주석이 이미 그 함정을 적어뒀는데 옆 단언을 반대로 구현했다.
+ *
+ * 판정: 그 줄에 부정어(쓰지 마라·금지·없어진·아니다·안 된다·삭제)가 있으면 **인용**이다.
+ */
+const teachesPattern = (text: string, re: RegExp): boolean =>
+  text
+    .split("\n")
+    .filter((l) => re.test(l))
+    .some((l) => !/쓰지 마라|쓰지마라|금지|없어진|없앴|아니다|안 된다|안된다|삭제|더는|이제는/.test(l));
+
 export const check: RegressionCheck = {
   name: "agent-model-vocabulary",
   guards:
@@ -159,7 +175,7 @@ export const check: RegressionCheck = {
           (d) => /`model:?`|model:/.test(d.text) && /등급|티어|모델명/.test(d.text),
         );
         const noProfile = teaching.filter((d) => !/프로파일/.test(d.text));
-        const stale = docs.filter((d) => /high\s*→\s*opus|MODEL_TIER_|티어로 해석/.test(d.text));
+        const stale = docs.filter((d) => teachesPattern(d.text, /high\s*→\s*opus|MODEL_TIER|티어로 해석|티어로 읽|알아서 (등급|세기)/));
         return [
           assert(
             "★★`model:` 을 설명하는 빌트인 문서는 **«프로파일 이름»이라고 말한다** — 값만 지키고 안내를 안 지키면 읽은 사람이 값을 틀리게 쓴다(모르는 값은 에러 없이 디폴트로 떨어져 등급 의도만 사라진다)",
@@ -172,9 +188,9 @@ export const check: RegressionCheck = {
           ),
           assert(
             "★★없어진 도구 인자(`spawn_agent(wait:…)`)를 아직 가르치는 문서가 없다 — 이 도구는 **항상 즉시 jobId** 를 준다. 「기본은 기다린다」고 가르치면 따르는 쪽이 **아직 안 쓰인 산출물**을 읽으러 간다",
-            (() => docs.filter((d) => /wait\s*:\s*(true|false)/.test(d.text)).length === 0)(),
+            (() => docs.filter((d) => teachesPattern(d.text, /wait\s*:\s*(true|false)/)).length === 0)(),
             (() => {
-              const bad = docs.filter((d) => /wait\s*:\s*(true|false)/.test(d.text));
+              const bad = docs.filter((d) => teachesPattern(d.text, /wait\s*:\s*(true|false)/));
               return bad.length === 0
                 ? `문서 ${docs.length}개에 없어진 인자 0건`
                 : `★아직 가르침: ${bad.map((d) => d.file).join(", ")}`;

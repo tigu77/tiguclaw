@@ -151,7 +151,12 @@ export const check: RegressionCheck = {
         "../../core/llm-runtime/capabilities/skill-registry.js"
       );
       const names = new Set((await discoverSkills(REPO)).map((x) => x.name));
+      // ★★**파일을 손으로 적지 않는다** — 첫 판이 `src/` 둘만 적어 **`SYSTEM.md` 를
+      //  빠뜨렸다.** 그게 매 턴 최상단에 실리는 헌법 본체인데, 거기 남은 «없는 스킬
+      //  이름» 둘이 그대로 공개 배포본까지 나갔다([[feedback_hand_maintained_lists]]).
+      //  ★대상은 «사람이 읽는 지침으로 배포되는 글» 이다 — 정의에서 파생시킨다.
       const shipped = [
+        "SYSTEM.md",
         "src/core/llm-runtime/adapters/_shared-sysprompt.ts",
         "src/core/llm-runtime/capabilities/find-capabilities-mcp.ts",
       ]
@@ -163,8 +168,12 @@ export const check: RegressionCheck = {
       // 백틱으로 감싼 «<이름> 스킬» 형태만 본다 — 산문 속 낱말까지 잡으면 오탐이 난다.
       const cited = new Set<string>();
       for (const d of shipped) {
-        for (const m of d.text.matchAll(/`([a-z][a-z0-9:-]*)`\s*스킬/g)) {
-          cited.add(m[1] ?? "");
+        // ★**«백틱 + 스킬»만 보면 놓친다** — 실제 표현이 «`harness:harness` 로» 였다.
+        //  백틱 토큰을 전부 뽑되, **스킬 이름처럼 생긴 것**(콜론 형 또는 실재 스킬명)만
+        //  본다 — 그래야 도구·필드 이름을 오탐하지 않으면서 표현 변화에 안 흔들린다.
+        for (const m of d.text.matchAll(/`([a-z][a-z0-9:_-]*)`/g)) {
+          const tok = m[1] ?? "";
+          if (tok.includes(":") || names.has(tok)) cited.add(tok);
         }
       }
       const missing = [...cited].filter((n) => !names.has(n));

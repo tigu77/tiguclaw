@@ -19,7 +19,7 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readWidgetSpecs } from "../../core/plugins/widgets.js";
-import { readSourceSync } from "./_wiring.js";
+import { readSourceSync, stripComments } from "./_wiring.js";
 import { availableHomeWidgetsFrom } from "../../core/plugins/manager.js";
 import {
   HOME_WIDGET_MAX,
@@ -166,6 +166,77 @@ export const check: RegressionCheck = {
         JSON.stringify(readHomeWidgets(known).widgets),
       ),
     );
+    // ★**놓은 주체가 누구든 «거기 있다» 는 물어본 것이다** (2026-09-09, 적대 검토 F2).
+    //  위의 ③은 «빈 홈 → 자동 편입 → 끔 → 재부팅» **한 경로만** 밟았다. 사용자가
+    //  `configure_home` 으로 (또는 이 기능 이전에) 기본 위젯을 **먼저** 놓아둔 홈에서는
+    //  자동 편입이 `add` 가 비어 파일을 안 건드렸고, `seeded` 가 영영 안 적혔다 —
+    //  그래서 끄면 다음 부팅에 되살아났다. 껐다→되살아남이 끝나지 않는 부류다.
+    writeFileSync(
+      settings,
+      JSON.stringify(
+        {
+          dashboard: {
+            home: {
+              widgets: [{ id: "pre", type: "running-work/live", size: "wide", config: {} }],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const preSeed = seedDefaultHomeWidgets(AV);
+    setHomeWidgetEnabled("running-work/live", false, AV);
+    const preOff = readHomeWidgets(known).widgets;
+    const preReseed = seedDefaultHomeWidgets(AV);
+    out.push(
+      assert(
+        "★★**이미 놓여 있던** 기본 위젯을 끄면 재부팅해도 안 되살아난다 — 자동 편입이 «건너뛴 것»도 `seeded` 에 적어야 «이미 물어봤다» 가 성립한다",
+        preSeed.length === 0 &&
+          preOff.length === 0 &&
+          preReseed.length === 0 &&
+          readHomeWidgets(known).widgets.length === 0,
+        JSON.stringify({ preSeed, preOff, preReseed, now: readHomeWidgets(known).widgets }),
+      ),
+    );
+
+    // ★**id 는 만드는 자리에서 읽는 쪽 규칙을 지킨다** (2026-09-09, 적대 검토 F3).
+    //  `idForType` 이 64자로 자른 뒤 `freeId` 가 `-2` 를 덧붙여 66자를 만들면,
+    //  `normalizeHomeWidgets` 가 그 칸을 떨어뜨리는데 `seeded` 엔 «놓았다» 가 남아
+    //  **영영 안 놓인다.** 중복 id 방어는 있었는데 **길이 축**이 없었다 — 같은
+    //  «조용히 접힘» 이 다른 문으로 들어온다.
+    const longOwner = `p${"a".repeat(40)}`;
+    const longType = `${longOwner}/w${"b".repeat(30)}`;
+    const longBase = longType.replace("/", "-").slice(0, 64);
+    const LONG_AV = [{ type: longType, size: "small" as const, default: true }];
+    writeFileSync(
+      settings,
+      JSON.stringify(
+        {
+          // 사용자가 잘린 id 를 이미 선점한 경우 → `freeId` 가 꼬리를 붙여야 한다.
+          dashboard: { home: { widgets: [{ id: longBase, type: "weather/forecast", config: {} }] } },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    seedDefaultHomeWidgets(LONG_AV);
+    const longKnown = new Set([longOwner, "weather"]);
+    const longRes = readHomeWidgets(longKnown);
+    out.push(
+      assert(
+        "★★자동 편입이 만든 id 가 **읽는 쪽 상한(64자)을 안 넘는다** — 넘으면 그 칸이 떨어지는데 seeded 엔 «놓았다» 가 남아 영영 안 놓인다",
+        longRes.widgets.length === 2 &&
+          longRes.rejected.length === 0 &&
+          longRes.widgets.every((w) => w.id.length <= 64) &&
+          longRes.widgets.some((w) => w.type === longType),
+        JSON.stringify({ ids: longRes.widgets.map((w) => `${w.id}(${w.id.length})`), rejected: longRes.rejected }),
+      ),
+    );
+    writeHomeWidgets([]);
+
     // ★자기 검토에서 잡은 둘 — **읽는 쪽이 거부할 값을 쓰지 않는다** (2026-09-08).
     //  자동 편입이 중복 id·캡 초과를 써두면 `normalizeHomeWidgets` 가 그 칸을 떨어뜨리는데
     //  `seeded` 엔 «놓았다» 가 남아 **다시는 안 놓인다** — 조용히 접히는 부류다.
@@ -237,7 +308,12 @@ export const check: RegressionCheck = {
     //  필드를 **골라 담는 손 목록**이라 `widgets` 가 조용히 빠졌고, 화면은 스위치를
     //  하나도 못 그렸다 — 타입체커도 회귀도 전부 초록이었다(빠뜨린 필드는 타입이 아니다).
     //  ★정직하게: 이건 **소스 대조**다. 동작은 격리 데몬을 띄워 확인했다.
-    const listRoute = readSourceSync("plugins/http-bridge/routes-inventory.ts");
+    //  ★**주석을 걷어내고 본다** (2026-09-09, 적대 검토 F5). raw 로 훑으면 필드를 지우고
+    //   그 자리에 «여기서 widgets: p.widgets 를 실어 보낸다» 는 주석만 남겨도 초록이다 —
+    //   이 게이트가 막겠다던 결함 그 자체가 주석 한 줄로 통과한다.
+    const listRoute = stripComments(
+      readSourceSync("plugins/http-bridge/routes-inventory.ts"),
+    );
     out.push(
       assert(
         "★★`/plugins` 응답이 `widgets` 를 실어 보낸다 — 조립이 손으로 필드를 고르는 자리라, 빠지면 코어가 다 돼도 화면엔 스위치가 없다",
@@ -252,7 +328,8 @@ export const check: RegressionCheck = {
       if (specs.length === 0) continue;
       let js = "";
       try {
-        js = readFileSync(path.join(p.dir, "web", "widget.js"), "utf8");
+        // ★여기도 주석을 걷는다 — 주석 속 `register("…")` 는 등록이 아니다(F5 와 같은 부류).
+        js = stripComments(readFileSync(path.join(p.dir, "web", "widget.js"), "utf8"));
       } catch {
         /* 없으면 아래에서 걸린다 */
       }

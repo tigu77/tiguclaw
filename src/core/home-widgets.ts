@@ -423,7 +423,13 @@ const freeId = (type: string, used: ReadonlySet<string>): string => {
   const base = idForType(type);
   if (!used.has(base)) return base;
   for (let n = 2; ; n += 1) {
-    const cand = `${base}-${n}`;
+    // ★꼬리를 **붙이지 말고 자리를 비워서** 넣는다 (2026-09-09, 적대 검토 F3). 종전엔
+    //  이미 64자로 자른 `base` 뒤에 `-2` 를 덧붙여 **66자**를 만들었는데, 읽는 쪽
+    //  (`normalizeHomeWidgets`)은 65자부터 떨어뜨린다 — 그리고 `seeded` 엔 «놓았다» 가
+    //  적혀 **다시는 안 놓인다.** id 를 만드는 함수가 읽는 쪽 규칙을 어기면 그 뒤의
+    //  어떤 방어도 늦다([[project_hotpath_bound_preserve_record]] — 조용히 접힌다).
+    const tail = `-${n}`;
+    const cand = `${base.slice(0, 64 - tail.length)}${tail}`;
     if (!used.has(cand)) return cand;
   }
 };
@@ -470,7 +476,16 @@ export const seedDefaultHomeWidgets = (
   const add = available.filter(
     (w) => w.default && !seeded.has(w.type) && !present.has(w.type),
   );
-  if (add.length === 0) return [];
+  // ★**이미 놓여 있어서 건너뛴 것도 «물어본 것»이다** (2026-09-09, 적대 검토 F2).
+  //  종전엔 `add` 가 비면 파일을 아예 안 건드려서, 사용자가 손으로(또는 `configure_home`
+  //  으로) 먼저 놓아둔 기본 위젯이 `seeded` 에 **한 번도 안 적혔다.** 그 상태에서 끄면
+  //  다음 부팅에 «아직 안 물어봤다» 로 읽혀 되살아나고, 껐다→되살아남이 끝나지 않는다.
+  //  `widgets` 는 «지금 보이는 것», `seeded` 는 «이미 물어본 것» — 놓은 주체가 누구든
+  //  거기 있다는 사실은 물어본 것과 같다.
+  const asked = available
+    .filter((w) => w.default && !seeded.has(w.type) && present.has(w.type))
+    .map((w) => w.type);
+  if (add.length === 0 && asked.length === 0) return [];
   const placed: string[] = [];
   mutateHome((home) => {
     const cur = Array.isArray(home.widgets) ? (home.widgets as Record<string, unknown>[]) : [];
@@ -486,9 +501,9 @@ export const seedDefaultHomeWidgets = (
       next.push({ id, type: w.type, size: w.size, config: {} });
       placed.push(w.type);
     }
-    if (placed.length === 0) return;
-    home.widgets = next;
-    home.seeded = [...seeded, ...placed];
+    if (placed.length === 0 && asked.length === 0) return;
+    if (placed.length > 0) home.widgets = next;
+    home.seeded = [...seeded, ...asked, ...placed];
   });
   return placed;
 };

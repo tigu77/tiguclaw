@@ -763,19 +763,26 @@ export const runOpenAiCodex = async (
   const mcpTools: Awaited<ReturnType<typeof memoryBridge.listTools>> = [];
 
   if (!toolsNone) {
-    // ★항상 켜지는 브리지 여덟 — 종전엔 선언 8줄 + 지도 루프 24줄 + push 10줄로 **같은 이름이
-    //  세 번씩** 적혀 있었다(42줄). 순서는 그대로다.
+    // ★일곱은 전부 `subagent` 라 **게이트가 오늘 아무것도 안 바꾼다** — codex 에만 달면
+    //  «모델을 바꾸면 서브에이전트가 다른 권한을 갖는» 비대칭만 생긴다(원칙 #2). 등급이
+    //  갈리는 것만 게이트한다 — 지금은 `session-tools` 뿐이고, 아래에서 건다.
     for (const b of [
       memoryBridge,
       fileOpsBridge,
       todoBridge,
-      sessionToolsBridge,
       projectBridge,
       skillBridge,
       replyIntentBridge,
       maintenanceBridge,
     ]) {
       await registerBridgeTools(b, toolBridgeMap, mcpTools);
+    }
+    // ★**사용자의 대화를 고치는 도구는 위임에 안 닿는다** (2026-09-10 정태님). 종전엔 이
+    //  브리지가 «항상 켜지는» 목록에 있어 `REACH` 를 안 거쳤고, 그래서 위임받아 1턴 도는
+    //  서브에이전트가 `rename_session`·`archive_session` 으로 사용자의 대화를 이름 바꾸거나
+    //  보관 처리할 수 있었다. 크기가 아니라 **권한** 문제다. 세 어댑터 동일 게이트.
+    if (reaches("session-tools", turnKind)) {
+      await registerBridgeTools(sessionToolsBridge, toolBridgeMap, mcpTools);
     }
 
     // send-file — 채널 전송 클로저가 있을 때만 등록 (claude 어댑터 조건부 주입과 parity).
@@ -1284,6 +1291,8 @@ export const runOpenAiCodex = async (
   let lastReqBytes = { total: 0, instructions: 0, input: 0, tools: 0, items: 0 };
   let lastFingerprint: string[] = [];
   let lastFingerprintNote = "fp=없음";
+  let lastToolsNote = "tools=?";
+  let lastInstrNote = "instr=?";
 
   try {
     // ★창(window)으로 본다 — 이어갈 때 `iterationBase` 만 옮기고 `iteration` 은 계속 는다.
@@ -1389,6 +1398,23 @@ export const runOpenAiCodex = async (
       //  거짓 안심이 된다.
       //  ★순서는 **보내는 대로**다(도구 → 지시 → 입력이 아니라, 우리가 무엇이 변했는지만
       //   알면 되므로 일관된 순서면 족하다).
+      // ★**도구는 개수와 지문을 따로 남긴다** (2026-09-10 실측). 메인 스레드가 29초 만에
+      //  도구 블록이 425자 줄면서 자기 캐시를 깼다(95% → 10%). 그런데 로그엔 **바이트 수만**
+      //  있어서 «어느 도구가 빠졌나» 를 못 짚었다 — 프리픽스 지문은 도구+지시를 뭉쳐 보므로
+      //  «도구가 변했다» 와 «지시가 변했다» 도 못 가른다.
+      //  개수 + 도구만의 해시를 남기면 다음 발생에서 **로그 두 줄을 나란히 놓는 것만으로**
+      //  «12개→11개» 가 보인다([[feedback_logs_must_stand_alone]]).
+      // ★**지시도 따로 뽑는다** (2026-09-10 실측). 메인이 1k·4k·16k·64k 네 칸이 전부
+      //  동일한데도 10%였다 — 즉 64,000자까지 같은데 안 데워진다. 남은 구간은
+      //  64k~256k(지시 뒤쪽 + 사용자 메시지)인데 사다리로는 그 둘을 못 가른다.
+      //  도구를 따로 뽑았듯 지시도 따로 뽑아야 «지시가 변했나 / 사용자 글만 변했나» 가
+      //  갈린다. 크기도 같이 남긴다 — 해시만으론 «얼마나» 를 모른다.
+      const instrStr = String(body.instructions ?? "");
+      lastInstrNote = `instr=${instrStr.length.toLocaleString()}자/${prefixFingerprint(instrStr)[4] ?? "?"}`;
+      const toolsJson = JSON.stringify(body.tools ?? []);
+      lastToolsNote =
+        `tools=${Array.isArray(body.tools) ? body.tools.length : 0}개/` +
+        `${prefixFingerprint(toolsJson)[4] ?? "?"}`;
       lastFingerprint = prefixFingerprint(
         JSON.stringify(body.tools ?? []) +
           String(body.instructions ?? "") +
@@ -1793,7 +1819,7 @@ export const runOpenAiCodex = async (
               `in=${usage.inputTokens.toLocaleString()} cached=${(usage.cachedTokens ?? 0).toLocaleString()} ` +
               `적중=${Math.round(hitPct(usage))}% req=${lastReqBytes.total.toLocaleString()}자` +
               `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
-              lastFingerprintNote,
+              `${lastToolsNote} ${lastInstrNote} ${lastFingerprintNote}`,
           );
         }
       }
@@ -2040,7 +2066,7 @@ export const runOpenAiCodex = async (
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
             `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
             `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
-            `${lastFingerprintNote} ` +
+            `${lastToolsNote} ${lastInstrNote} ${lastFingerprintNote} ` +
             // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가
             //  쪼개져 있었는데 `cached` 가 없어서, «프리픽스가 어디서 끊겼나» 를 물으면
             //  로그로는 답이 안 나왔다 — 프로브를 새로 짜서 반나절을 썼다. 세 필드면
@@ -2510,10 +2536,32 @@ export const runOpenAiCodex = async (
       // ★`deltaStream` 이 꺼진 턴(매니저·에이전트)에서는 이게 **유일한 재료**다.
       const streamedSoFar = closeTextSegment() ?? streamedInFlight;
       const view = composeSwallowedFailure(finalText, streamedSoFar, notice);
+      // ★**`cause` 를 남긴다** (2026-09-10 정태님: *"왜 끊긴지는 알 수 없는거고?"*).
+      //  `TypeError: terminated` 는 undici 의 **껍데기**다 — 진짜 이유(`ECONNRESET` ·
+      //  `UND_ERR_BODY_TIMEOUT` · `SocketError` · 우리 스톨 가드)는 전부 `cause` 사슬에
+      //  들어 있는데 종전엔 그걸 안 찍었다. 그래서 실사고에서 «끊겼다» 만 알고 **왜인지는
+      //  영영 못 가렸다**(회사돌쇠, 원격 불가 기계 — 로그가 유일한 창이다).
+      //  ★요청 크기와 SSE 종료 집계도 같이 남긴다: 크기 축(대형 입력)과 연결 축을 로그
+      //   한 줄로 가르기 위해서다. 둘을 안 가르면 다음에 또 추측한다.
+      const causeChain = (err: unknown, depth = 0): string => {
+        if (depth > 3 || err === null || typeof err !== "object") return "";
+        const c = (err as { cause?: unknown }).cause;
+        if (c === undefined) return "";
+        const name = c instanceof Error ? `${c.name}: ${c.message.slice(0, 80)}` : String(c).slice(0, 80);
+        const rest = causeChain(c, depth + 1);
+        return ` ← ${name}${rest}`;
+      };
+      const codeOf = (err: unknown): string => {
+        const v = (err as { code?: unknown } | null)?.code;
+        return typeof v === "string" ? ` code=${v}` : "";
+      };
       console.error(
         `[codex-swallowed] ${input.threadKey} ${e instanceof Error ? e.name : "unknown"}: ` +
-          `${e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200)} ` +
-          `iter=${iteration} tools=${executedToolNames.size} shown=${view.shown.length}자`,
+          `${e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200)}` +
+          `${codeOf(e)}${causeChain(e)} ` +
+          `iter=${iteration} tools=${executedToolNames.size} shown=${view.shown.length}자 ` +
+          `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
+          `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"}`,
       );
       deltaStream.push(view.deltaText);
       deltaStream.flush();

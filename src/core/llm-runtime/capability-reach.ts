@@ -69,12 +69,35 @@ export const turnKindOf = (input: {
  */
 export const REACH = {
   // ── 전부 — 일하는 데 필요한 것들. 위임받은 쪽도 똑같이 필요하다 ──
+  /**
+   * ★**표에 없던 둘을 채운다** (2026-09-10). `file-ops`·`todo` 는 «항상 켜지는 브리지» 목록에
+   *  있어서 이 표를 한 번도 안 거쳤다 — 표가 *"빠뜨림이 조용하지 않게"* 만든 것인데 정작
+   *  둘이 표 밖에 있었다. 여덟을 표로 돌리자 **타입체커가 즉시 잡았다.**
+   *  둘 다 «일하는 데 필요한 것» 이라 `subagent` 가 맞다(파일을 읽고 할 일을 적는 것은
+   *  위임받은 쪽도 똑같이 한다).
+   */
+  "file-ops": "subagent",
+  todo: "subagent",
   memory: "subagent",
   projects: "subagent",
   maintenance: "subagent",
   skills: "subagent",
   "reply-intent": "subagent",
-  "session-tools": "subagent",
+  /**
+   * ★**메인만** (2026-09-10 정태님: *"list_sessions 를 매니저나 서브가 알 이유가 있나?"*).
+   *
+   * 종전엔 `subagent` 였다. 안에 든 셋은 `list_sessions`·`rename_session`·`archive_session`
+   * 인데, 위임받아 도는 턴이 **사용자의 대화 목록을 읽거나 고칠 이유가 없다.** 특히 뒤의
+   * 둘은 크기 문제가 아니라 **권한** 문제였다 — 1턴짜리 서브에이전트가 사용자의 대화를
+   * 이름 바꾸거나 보관 처리할 수 있었다.
+   * ★읽기/쓰기로 가르지 않았다. 가르면 키가 하나 늘고 «읽기는 왜 필요한가» 에 답이
+   *  없으므로, 셋 다 안 닿는 것이 맞다 — 이 표의 질문(*"위임받아 도는 턴이 이걸 써야
+   *  하나"*)에 셋 다 «아니오» 다.
+   * ★대화 **검색·조회**는 `memory` 소속(`list_conversations`·`search_conversations`)이라
+   *  그대로 서브까지 닿는다. 위임이 맥락을 찾는 길은 막지 않았다.
+   * ★아무 글도 위임에게 이 셋을 시키지 않는다(skills·agents·SYSTEM.md·sysprompt grep 0).
+   */
+  "session-tools": "main",
   "send-file": "subagent",
   "prompt-options": "subagent",
   /**

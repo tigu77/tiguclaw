@@ -113,8 +113,14 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "일하는 데 필요한 것은 위임된 턴도 받는다(메모리·스킬·세션 도구가 없으면 매니저가 반쪽이 된다)",
-        (["memory", "skills", "session-tools", "projects"] as CapabilityName[]).every((n) =>
+        "일하는 데 필요한 것은 위임된 턴도 받는다(메모리·스킬·프로젝트가 없으면 위임이 반쪽이 된다)",
+        // ★`session-tools` 를 뺐다 (2026-09-10 정태님: *"list_sessions 를 매니저나 서브가
+        //  알 이유가 있나?"*). 그 묶음은 `rename_session`·`archive_session`·`list_sessions`
+        //  인데, 위임받아 1턴 도는 턴이 **사용자의 대화를 읽거나 고칠 이유가 없다.** 앞의
+        //  둘은 크기가 아니라 **권한** 문제였다. 대화 **검색·조회**는 `memory` 소속
+        //  (`list_conversations`·`search_conversations`)이라 그대로 닿는다 — 위임이 맥락을
+        //  찾는 길은 안 막았다.
+        (["memory", "skills", "projects", "file-ops"] as CapabilityName[]).every((n) =>
           reaches(n, "subagent"),
         ),
         capabilitiesFor("subagent").join(" "),

@@ -95,7 +95,10 @@ export const check: RegressionCheck = {
         if (src[k] === "(") depth += 1;
         else if (src[k] === ")") {
           depth -= 1;
-          if (depth === 0) return src.slice(start, k).includes("lastFingerprintNote");
+          if (depth === 0) {
+            const body = src.slice(start, k);
+            return body.includes("lastFingerprintNote") && body.includes("lastToolsNote");
+          }
         }
       }
       return false;
@@ -125,6 +128,18 @@ export const check: RegressionCheck = {
         ),
       );
     }
+
+    // ★**도구 변화를 지시 변화와 갈라 본다** (2026-09-10 실측). 메인 스레드가 29초 만에
+    //  도구 블록이 425자 줄면서 자기 캐시를 깼는데(95%→10%), 로그엔 바이트 수만 있어
+    //  «어느 도구가 빠졌나» 를 못 짚었다. 프리픽스 지문은 도구+지시를 뭉쳐 보므로 둘을
+    //  갈라주지 못한다 — 개수와 도구만의 해시를 따로 남겨야 두 줄 대조로 «12개→11개» 가 보인다.
+    out.push(
+      assert(
+        "★★턴 종료 로그가 **도구 개수와 도구만의 해시**를 따로 싣는다 — 프리픽스 지문만으로는 «도구가 변했나 지시가 변했나» 를 못 가르고, 그러면 캐시가 깨진 원인을 여전히 못 짚는다",
+        /lastToolsNote/.test(src) && /tools=\$\{/.test(src) && inLogStatement("[codex-turn-end]"),
+        `변수=${/lastToolsNote/.test(src)} · 개수표기=${/tools=\$\{/.test(src)}`,
+      ),
+    );
 
     return out;
   },

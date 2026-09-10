@@ -546,8 +546,14 @@ export const runClaude = async (
         }),
         // reply-intent — 이 turn 응답을 트리거 메시지 직접 답글로 마킹 (codex 와 parity).
         "reply-intent": replyIntentServer,
-        // 세션 이름 도구(2026-08-07) — rename_session·list_sessions. 3어댑터 동일 등록(#2).
-        "session-tools": createSessionToolsMcpServer(input.threadKey),
+        // 세션 이름 도구(2026-08-07) — rename_session·list_sessions·archive_session.
+        // ★**표를 거친다** (2026-09-10). 종전엔 «3어댑터 동일 등록» 이라며 무조건 켰는데,
+        //  위임받아 1턴 도는 쪽이 **사용자의 대화를 이름 바꾸거나 보관 처리**할 수 있었다.
+        //  크기가 아니라 권한 문제다. 판정은 `REACH` 한 곳에서만 한다(어댑터에 조건식을
+        //  다시 쓰면 그게 24곳이 된 경위다).
+        ...(reaches("session-tools", turnKindOf(input))
+          ? { "session-tools": createSessionToolsMcpServer(input.threadKey) }
+          : {}),
         // send-file — 네이티브 멱등 아웃바운드 전송. 채널 전송 클로저가 있을 때만 등록
         // (스케줄러 등 비채널 turn 은 미등록 = 도구 노출 0). codex 와 parity.
         ...(input.sendAttachment !== undefined

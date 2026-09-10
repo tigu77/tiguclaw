@@ -12,7 +12,7 @@
  * 재료가 빠지는 것을 막는다(순수 로직이 아니라 **관측 가능성**을 지키는 그물).
  */
 import { needsClosingReport } from "../../core/llm-runtime/adapters/_turn-completion.js";
-import { sourceHas } from "./_wiring.js";
+import { sourceHas, readSourceSync, stripComments } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
@@ -228,6 +228,29 @@ export const check: RegressionCheck = {
         ext.ok ? "패스스루 로그 확인" : `누락 ${ext.missing.join(" ")}`,
       ),
     );
+    // ★**끊긴 이유를 로그가 말한다** (2026-09-10 정태님: *"왜 끊긴지는 알 수 없는거고?"*).
+    //  실사고: 회사돌쇠가 `TypeError: terminated` 로 턴을 잃었는데, 그건 undici 의 **껍데기**다.
+    //  진짜 이유(`ECONNRESET` · `UND_ERR_BODY_TIMEOUT` · `SocketError`)는 전부 `cause` 사슬에
+    //  있는데 안 찍어서 **«끊겼다» 만 알고 왜인지는 영영 못 가렸다.** 원격 불가 기계에선
+    //  로그가 유일한 창이다([[feedback_logs_must_stand_alone]]).
+    {
+      const swallowed = stripComments(
+        readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"),
+      );
+      const i2 = swallowed.indexOf("[codex-swallowed]");
+      const stmt = i2 < 0 ? "" : swallowed.slice(Math.max(0, i2 - 1200), i2 + 900);
+      out.push({
+        name: "★★삼킨 실패가 **왜 끊겼는지**를 남긴다(cause 사슬) — `TypeError: terminated` 만으론 연결 끊김·본문 타임아웃·우리 가드를 못 가른다",
+        ok: /causeChain\(/.test(stmt) && /cause/.test(stmt),
+        got: i2 < 0 ? "★로그 자체가 없다" : `cause 사슬=${/causeChain\(/.test(stmt)}`,
+      });
+      out.push({
+        name: "★삼킨 실패가 **요청 크기**도 남긴다 — 크기 축(대형 입력)과 연결 축을 한 줄로 가른다",
+        ok: /lastReqBytes\.total/.test(stmt),
+        got: /lastReqBytes\.total/.test(stmt) ? "req 포함" : "★크기 없음",
+      });
+    }
+
     return out;
   },
 };

@@ -101,6 +101,20 @@
            라면 매니저는 금색이다 — 아이콘 🎖️ 와 같은 언어. ★이름이 능력 서열과 반대로
            읽히던 것을 색으로도 맞춘다([[project_manager_agent_naming]]). */
         --worker-fg: #F2B84B;
+        --worker-rgb: 242 184 75;
+        /* 접힌 카드가 남기는 줄 수 — 바꾸고 싶으면 여기 한 곳. */
+        --collapse-lines: 3;
+        /* 접기 삼각형 — **한 값**으로 묶는다 (2026-09-10 정태님: *"훨씬 큰 걸로, 지금 건 눈에
+           잘 안 띄어서"* → *"전체적으로 어디서나 접기/펴기가 작은 느낌"*).
+           ★종전엔 **아홉 곳**이 각자 크기를 적고 있었고(0.5625~0.6875rem = 9~11px) 색도
+            `--text-dim`/`--text-mute` 로 갈렸다. 누를 수 있다는 유일한 단서가 그렇게 흩어져
+            있으면 «전체적으로 작다» 는 감각이 생기고, 키우려면 아홉 곳을 찾아야 한다
+            ([[feedback_hand_maintained_lists]]).
+           ★색은 `--text-dim`(가장 흐림) → `--text-mute` 로 한 단계 올렸다. */
+        --caret-size: 0.9375rem;
+        /* 페이드 마스크의 «불투명» 끝. 색이 아니라 **알파 스톱**이라 테마와 무관하지만,
+           리터럴을 본문에 두면 «테마가 안 닿는 자리» 검사에 걸린다 — 토큰으로 올린다. */
+        --mask-opaque: #000;
         --skill-fg: #ede9fe;
         --cancel-armed-fg: #fde68a;
         --pending-fg: #93c5fd;
@@ -340,7 +354,7 @@
       .module-group-head { display:flex; align-items:center; gap:9px; padding:14px 6px 7px; cursor:pointer; user-select:none; }
       .module-group-head:first-child { padding-top:4px; }
       .module-group-head:hover .module-group-label { color:var(--text); }
-      .module-group-chevron { font-size:0.6875rem; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
+      .module-group-chevron { font-size:var(--caret-size); line-height:1; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
       .module-group-head.collapsed .module-group-chevron { transform:rotate(-90deg); }
       .module-group-head.collapsed + .module-group-items { display:none; }
       .module-group-label { font-size:0.875rem; font-weight:800; letter-spacing:.01em; color:var(--text-mute); }
@@ -690,6 +704,32 @@
       /* ★클래스명 주의: `.chat-head` 는 채팅 패널 상단 헤더가 이미 쓰고 있다(justify-content:
          space-between). 그 이름을 재사용했다가 버블 메타가 양끝으로 벌어졌다 — 고유 이름을 쓴다. */
       .bubble-meta { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-start; gap:7px; }
+      /* ★★★**접기 규칙은 하나다** (2026-09-10 정태님: *"한 군데서 하는 게 아닌 건가?"*).
+         종전엔 기제 셋 · 상태 클래스 셋(`turn-collapsed`·`bubble-collapsed`·`expanded`)이었고
+         그중 하나는 **의미가 뒤집혀** 있었다. 그래서 접기를 고칠 때마다 한 곳만 고쳐졌다.
+         ★규칙: **머리줄만 남기고 형제를 숨긴다.** 머리줄 종류가 늘어도 셀렉터 한 줄이면 된다.
+         ★머리줄은 남긴다 — 다시 펼칠 손잡이가 사라지면 되돌릴 수 없다. */
+      /* ★**접어도 세 줄은 남긴다** (2026-09-10 정태님: *"접혀도 기본으로 한 3줄 정도는 보이면"*).
+         통째로 숨기면 «무엇이 접혔는지» 를 알 수 없어 하나씩 펴 보게 된다 — 미리보기가 있으면
+         목록을 훑을 수 있다.
+         ★`line-clamp` 대신 **max-height + 페이드**를 쓴다: 본문이 마크다운(문단·제목·코드
+          블록)이라 중첩 블록이 들어오는데, `-webkit-box` 는 그런 구조에서 어긋난다. 높이는
+          내용 구조와 무관하게 언제나 맞는다.
+         ★줄 수를 변수로 — 바꾸고 싶으면 한 곳이다. */
+      #stream .is-collapsed > *:not(.bubble-meta):not(.turn-head):not(.hist-turn-head):not(.turn-card),
+      #stream .turn-group.is-collapsed > .turn-card > .turn-body {
+        max-height: calc(1.55em * var(--collapse-lines));
+        overflow: hidden;
+        /* 아래로 갈수록 흐려져 «더 있다» 를 말한다 — 잘린 글자가 뚝 끊기지 않는다. */
+        -webkit-mask-image: linear-gradient(to bottom, var(--mask-opaque) 55%, transparent 100%);
+        mask-image: linear-gradient(to bottom, var(--mask-opaque) 55%, transparent 100%);
+      }
+      #stream .bubble-meta, #stream .turn-head, #stream .hist-turn-head { cursor:pointer; user-select:none; }
+      /* 삼각형은 «누를 수 있다» 의 유일한 단서다 — 머리줄에 올리면 또렷해진다. */
+      #stream .bubble-meta:hover::before, #stream .hist-turn-head:hover .hist-turn-caret,
+      #stream .turn-head:hover .turn-caret { color:var(--accent); }
+      #stream .ev.local > .bubble-meta::before { content:"▾"; flex:none; font-size:var(--caret-size); line-height:1; color:var(--text-mute); width:1em; text-align:center; }
+      #stream .ev.local.is-collapsed > .bubble-meta::before { content:"▸"; }
       .bubble-meta > .type { margin-left:0; }
       /* 원시 로그 이벤트(JSON dump)의 직속 <pre> 만 hover/expanded 로 토글. ★직속 자식(>)으로
          스코프 — 턴카드(=.ev)의 중첩된 도구 <pre>(.act-diff-pre·.act-output-pre)까지 잡으면
@@ -834,7 +874,14 @@
          정하지 않는다 — 넓으면 어차피 한 줄이라 wrap 은 아무 일도 안 한다. */
       .turn-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; user-select:none; }
       .turn-head:hover { background:rgb(var(--fg-rgb) / .04); }
-      .turn-caret { color:var(--text-dim); font-size:0.5625rem; width:10px; flex:none; }
+      /* ★상태 표시는 **CSS 가 한다** (2026-09-10 적대 검토 P-4). 종전엔 이 캐럿만 JS 가
+         `textContent` 로 ▼/▶ 를 갈아 끼웠는데, 접기를 공용 위임으로 합치면서 그 JS 가
+         빠져 **접혀도 ▼ 인 채로 남았다** — 삼각형을 키운 릴리스에서 삼각형이 거짓말을 했다.
+         형제 둘은 이미 CSS 다(버블 `::before` content · 이력 턴 rotate). 셋째만 JS 였던
+         것이고, 그래서 그 JS 를 지웠을 때 아무도 못 봤다. `.hist-turn-caret` 와 **같은
+         기법**(rotate)으로 맞춘다 — 상태는 `.is-collapsed` 한 곳에만 산다. */
+      .turn-caret { color:var(--text-mute); font-size:var(--caret-size); line-height:1; width:1em; text-align:center; flex:none; transition:transform .12s ease; }
+      .turn-group:not(.is-collapsed) .turn-caret { transform:rotate(90deg); }
       /* 긴 uuid thread — 배지·칩을 밀어 접히게 하지 않도록 여기서 줄이고 끝을 …로 자른다. */
       .turn-thread { color:var(--text-mute); font-size:0.6875rem; font-family:var(--font-mono); flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .agent-badge { font-size:0.625rem; font-weight:800; padding:2px 7px; border-radius:999px; background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); white-space:nowrap; flex:none; }
@@ -868,12 +915,6 @@
       .turn-card.done .turn-count { color:var(--good); }
       /* 수동 접힘(.collapsed) = 두 패널 공통(기존 로그 패널 토글 보존). */
       .turn-card.collapsed .turn-body { display:none; }
-      /* ★턴을 **한 줄로** 줄인다 (2026-09-10 정태님: *"채팅카드 안 접히는데?"*).
-         `.turn-card.collapsed` 는 도구 스텝(`.turn-body`)만 숨긴다 — 답변 버블은
-         `.turn-group` 의 **형제**라 그대로 남아서, 눈에 보이는 큰 덩어리가 안 사라졌다.
-         접기는 «이 턴을 접는다» 여야 하므로 카드 밖 형제(답변 버블·텍스트 세그먼트)도 같이
-         숨긴다. `.turn-card` 자신은 남겨 헤더(다시 펼칠 손잡이)를 지킨다. */
-      .turn-group.turn-collapsed > *:not(.turn-card) { display:none; }
       /* 완료 자동접힘(.done-collapsed) = 채팅 패널만. 로그 패널은 펼친 채 유지(회귀 0). */
       body[data-chat-panel="chat"] .turn-card.done-collapsed .turn-body { display:none; }
       /* 선택된 스텝 하이라이트(P4 마스터-디테일). */
@@ -930,13 +971,13 @@
       .hist-turn { padding:0; }
       .hist-turn-head { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; padding:8px 10px; font-size:0.6875rem; }
       .hist-turn-head:hover { background:rgb(var(--fg-rgb) / .04); }
-      .hist-turn-caret { font-size:0.5625rem; color:var(--text-dim); transition:transform .12s ease; flex:none; }
-      .hist-turn.expanded .hist-turn-caret { transform:rotate(90deg); }
+      .hist-turn-caret { font-size:var(--caret-size); line-height:1; color:var(--text-mute); width:1em; text-align:center; transition:transform .12s ease; flex:none; }
+      .hist-turn:not(.is-collapsed) .hist-turn-caret { transform:rotate(90deg); }
       .hist-turn-icon { flex:none; }
       .hist-turn-count { font-weight:800; color:var(--text); flex:none; }
       .hist-turn-preview { color:var(--text-dim); font-family:var(--font-mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-      .hist-turn-body { display:none; padding:0 10px 8px 26px; }
-      .hist-turn.expanded .hist-turn-body { display:block; }
+      .hist-turn-body { padding:0 10px 8px 26px; } /* 기본 보임 — 숨김은 `.is-collapsed` 한 규칙이 한다 */
+
       /* turn-card 내부 스텝 = 낱줄(카드 크롬 없이). hist-tool 과 동형 내용. */
       .hist-step { display:flex; flex-wrap:wrap; align-items:baseline; gap:7px; padding:2px 2px; font-size:0.6875rem; color:var(--text-mute); }
       .hist-step:hover { background:rgb(var(--fg-rgb) / .04); border-radius:6px; }
@@ -1136,7 +1177,7 @@
       .bg-group-head { flex:none; display:flex; align-items:center; gap:8px; padding:12px 12px 4px; cursor:pointer; user-select:none; }
       .bg-group-label { font-size:0.6875rem; font-weight:900; letter-spacing:.03em; text-transform:uppercase; color:var(--text-mute); }
       .bg-group-head:hover .bg-group-label { color:var(--text); }
-      .bg-group-chevron { font-size:0.6875rem; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
+      .bg-group-chevron { font-size:var(--caret-size); line-height:1; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
       .bg-group-head.collapsed .bg-group-chevron { transform:rotate(-90deg); }
       .bg-group-head.collapsed + .bg-group-body { display:none; }
       /* 작업 그룹 본문 — ★flex-grow:0 → 내용 높이만 차지(빈 공간을 안 먹어 셸 그룹이 바로 밑에
@@ -1172,11 +1213,6 @@
       /* 서브에이전트 잡 — 매니저와 시각적 구분(보라 좌측 강조 + 배지). status 색은 top-border 로,
          kind 는 좌측 accent+배지로 직교 표현. .agent.done 등 status 색이 kind 색을 덮지 않게
          .agent 는 border-left 를 항상 보라 유지(status 는 뱃지 텍스트로 이미 구분). */
-      /* ★매니저는 **`.agent` 가 없는 것**으로 표현된다(kind 는 worker|agent 둘뿐). 그래서
-         `:not(.agent)` 로 잡으면 클래스를 새로 붙일 자리가 안 생기고, kind 가 나중에
-         승격돼 `.agent` 가 붙는 순간 색이 **저절로** 따라간다 — 두 곳을 맞출 필요가 없다. */
-      .bg-job:not(.agent) .bg-job-label { color:var(--worker-fg); }
-      .agent-card:not(.agent) .agent-card-name { color:var(--worker-fg); }
       .bg-job.agent { border-left-color:var(--accent-2); }
       .bg-job.agent.running { border-left-color:var(--accent-2); }
       .bg-job.agent.done { border-left-color:var(--accent-2); }
@@ -1186,6 +1222,13 @@
          .agent-card-kind 패턴과 동형. 매니저도 "🎖️ 매니저" 배지가 항상 보인다(2026-07-14). */
       .bg-job-kind { flex:none; font-size:0.5625rem; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgb(var(--fg-rgb) / .05); color:var(--text-mute); border:1px solid var(--border); white-space:nowrap; }
       .bg-job.agent .bg-job-kind { background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); border-color:rgb(var(--accent-2-rgb) / .4); }
+      /* ★색은 **배지에** 준다 (2026-09-10 정태님 정정: *"색깔을 배지에 매니저 색깔인건데
+         잡 카드 타이틀을 색깔을 적용했네"*). 서브에이전트가 보라 배지면 매니저는 금색 배지 —
+         **같은 자리에 같은 방식**이어야 둘이 한 언어로 읽힌다. 제목은 제목색 그대로 둔다
+         (제목까지 물들이면 무엇이 «종류» 표시인지 흐려진다).
+         ★매니저는 `.agent` 가 없는 것으로 표현된다(kind 는 worker|agent 둘뿐) — `:not(.agent)`
+         면 kind 가 나중에 승격돼도 저절로 따라간다. */
+      .bg-job:not(.agent) .bg-job-kind { background:rgb(var(--worker-rgb) / .16); color:var(--worker-fg); border-color:rgb(var(--worker-rgb) / .4); }
       /* 모델 티어 칩 — kind 칩과 동형(작은 pill). 티어별 색상 힌트(data-tier). */
       /* ★대문자 변환을 뺐다 (2026-08-25 사용자: "배지에도 모델 프로필 이름 그대로 나와도
          괜찮을거같은데"). 이름이 `low|mid|high` 세 개뿐일 땐 대문자가 라벨처럼 보였는데,
@@ -1292,7 +1335,7 @@
       }
       /* Step3 — 잡 카드 접이식 상세(작업 + 스텝 타임라인 + 결과). */
       .bg-job.has-detail .bg-job-top { cursor:pointer; }
-      .bg-job-chev { font-size:0.625rem; color:var(--text-dim); white-space:nowrap; user-select:none; }
+      .bg-job-chev { font-size:var(--caret-size); line-height:1; color:var(--text-mute); white-space:nowrap; user-select:none; }
       .bg-job-detail { display:none; flex-direction:column; gap:7px; margin-top:6px; border-top:1px solid var(--border); padding-top:8px; }
       .bg-job.open .bg-job-detail { display:flex; }
       .bg-job-task { font-size:0.6875rem; color:var(--text-mute); white-space:pre-wrap; word-break:break-word; line-height:1.45; }
@@ -1331,6 +1374,8 @@
       .agent-card-top { display:flex; align-items:center; gap:8px; }
       .agent-card-kind { flex:none; font-size:0.625rem; font-weight:900; letter-spacing:.3px; padding:2px 8px; border-radius:999px; white-space:nowrap; border:1px solid var(--border); background:rgb(var(--fg-rgb) / .05); color:var(--text-mute); }
       .agent-card.agent .agent-card-kind { background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); border-color:rgb(var(--accent-2-rgb) / .4); }
+      /* ★셸 카드가 `.agent-card` 를 재사용하므로 명시로 뺀다(적대 검토 P-2) — 셸은 매니저가 아니다. */
+      .agent-card:not(.agent):not(.shell-card) .agent-card-kind { background:rgb(var(--worker-rgb) / .16); color:var(--worker-fg); border-color:rgb(var(--worker-rgb) / .4); }
       .agent-card-status { flex:none; margin-left:auto; font-size:0.6875rem; font-weight:800; color:var(--text-mute); white-space:nowrap; }
       .agent-card-name { font-size:0.9375rem; font-weight:850; color:var(--text); letter-spacing:-.02em; word-break:break-word; }
       .agent-card-meta { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
@@ -1340,7 +1385,7 @@
       .agent-card-step .lbl { color:var(--text-dim); font-weight:700; flex:none; }
       /* 한 줄 작업 요약 — 이름 아래, 1줄 truncate(ellipsis). 같은 이름 서브 여러 개 구분용. */
       .agent-card-summary { font-size:0.75rem; color:var(--text-mute); line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
-      .agent-card-chev { margin-left:auto; font-size:0.625rem; color:var(--text-dim); user-select:none; white-space:nowrap; }
+      .agent-card-chev { margin-left:auto; font-size:var(--caret-size); line-height:1; color:var(--text-mute); user-select:none; white-space:nowrap; }
       /* 펼침 상세 — 기본 숨김, .open 시 표시(은은한 상단 구분선). */
       .agent-card-detail { display:none; flex-direction:column; gap:9px; margin-top:4px; padding-top:9px; border-top:1px solid var(--border); }
       .agent-card.open .agent-card-detail { display:flex; }
@@ -1434,7 +1479,7 @@
       .pd-section-title { font-size:0.625rem; font-weight:900; letter-spacing:.09em; text-transform:uppercase; color:var(--text-dim); margin-bottom:8px; }
       .pd-section-title.pd-collapsible { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; }
       .pd-section-title.pd-collapsible:hover { color:var(--text-mute); }
-      .pd-sec-chev { font-size:0.5625rem; opacity:.8; }
+      .pd-sec-chev { font-size:var(--caret-size); line-height:1; opacity:.85; }
       .pd-body { color:var(--text); font-size:0.8125rem; line-height:1.6; word-break:break-word; }
       .pd-body.md :first-child { margin-top:0; } .pd-body.md :last-child { margin-bottom:0; }
       .pd-list { display:flex; flex-direction:column; gap:7px; }
@@ -1442,7 +1487,7 @@
       /* 프로젝트 전용 능력 — 눌러서 본문 펼치기(2026-08-07). 전역 인벤토리로 안 보낸다. */
       .pd-item.pd-item-open { cursor:pointer; }
       .pd-item.pd-item-open:hover { background:var(--card-hover); }
-      .pd-item.pd-item-open .pd-item-name::after { content:"▸"; margin-left:6px; color:var(--text-dim); font-size:0.625rem; }
+      .pd-item.pd-item-open .pd-item-name::after { content:"▸"; margin-left:6px; color:var(--text-mute); font-size:var(--caret-size); line-height:1; }
       .pd-item.pd-item-open.expanded .pd-item-name::after { content:"▾"; }
       .pd-item-body { margin-top:8px; padding:10px 12px; background:rgb(var(--shadow-rgb) / .24);
         border:1px solid var(--border); border-radius:8px; max-height:420px; overflow:auto; cursor:default; }
@@ -1728,7 +1773,7 @@
       .aav-line.aav-hook { border-left:3px solid var(--accent-2); opacity:.92; }
       .aav-line.aav-hook-blocked { border-left:3px solid var(--danger-fg); background:rgb(var(--danger-rgb) / .08); opacity:1; }
       .aav-meta { display:flex; align-items:center; justify-content:flex-start; gap:8px; flex:none; flex-wrap:wrap; }
-      .aav-chevron { flex:none; font-size:0.5625rem; color:var(--text-dim); transition:transform .12s ease; display:inline-block; }
+      .aav-chevron { flex:none; font-size:var(--caret-size); line-height:1; color:var(--text-mute); transition:transform .12s ease; display:inline-block; }
       .aav-line.expanded .aav-chevron { transform:rotate(90deg); }
       .aav-time { color:var(--text-dim); font-family:var(--font-mono); font-size:0.65625rem; flex:none; white-space:nowrap; }
       .aav-badges { display:flex; gap:4px; flex:none; flex-wrap:wrap; align-items:center; }

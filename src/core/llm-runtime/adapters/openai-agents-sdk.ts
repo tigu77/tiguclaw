@@ -86,7 +86,7 @@ import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
-import { claimToolNames, hideTakenTools } from "../tool-name-claim.js";
+import { claimToolNames, hideTakenTools, probeBridgeTools } from "../tool-name-claim.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
@@ -506,6 +506,17 @@ export const runOpenAi = async (
     (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
   ) {
     for (const bridge of await getConnectedExternalMcpBridges(input.cwd)) {
+      // ★죽은 브리지 하나가 **턴 전체를 무너뜨리지 않게** 한다 — codex 와 *같은 규칙*
+      //  (`openai-codex-oauth.ts` 의 external-mcp 블록, 2026-08-19 실사고).
+      //  외부 브리지는 persistent 캐시라 연결된 뒤 대상 앱이 꺼지면(Unity Editor 종료·
+      //  stdio 프로세스 사망) 캐시에 **죽은 클라이언트**가 남는다. 그 상태로 push 하면
+      //  SDK 의 `getAllMcpTools` 가 제 손으로 `listTools()` 를 불러 `Not connected` 를
+      //  던지고, `isToolsUnsupported` 에 안 걸려 rethrow → **턴이 통째로 죽는다.**
+      //  ★선점 스캔의 `listSafely` 는 **스캔만** 지킨다 — 죽은 브리지는 그 뒤로도
+      //   `mcpServers` 에 남아 있었다. 여기서 빼야 비로소 턴이 산다.
+      //  ★최악은 «이 턴에서 그 서버를 못 쓴다» 여야지 «턴이 죽는다» 가 아니다.
+      //   다시 켜면 다음 턴에 복구된다(캐시가 재연결한다).
+      if ((await probeBridgeTools(bridge)) === null) continue;
       mcpServers.push(bridge);
     }
   }
@@ -546,9 +557,28 @@ export const runOpenAi = async (
     // ★codex 와 **같은 함수·같은 규칙**을 쓴다(`claimToolNames`). 판정을 두 벌 만들면
     //  언젠가 갈린다 — 접두사를 붙이는 길은 openai 에서만 이름이 달라져 parity 를
     //  반대로 깨므로 안 쓴다.
+    // ★★**하나가 죽어도 턴은 산다** (2026-09-10 적대 검토 P3). 이 사전 스캔은
+    //  `mcpServers` 전부를 도는데 거기엔 **외부 MCP 브리지**가 이미 들어 있다. 외부 브리지는
+    //  persistent 캐시라, 연결된 뒤 대상 앱이 꺼지면(Unity Editor 종료·stdio 프로세스 사망)
+    //  `listTools()` 가 `Not connected` 를 던진다 — codex 는 2026-08-19 에 **그것으로 턴 조립이
+    //  통째로 실패**했고(매니저 소환이 50ms 만에 죽었다) 그래서 거기엔 try/catch 가 있다.
+    //  내가 이 스캔을 추가하며 **같은 사고를 openai 쪽에 그대로 되살렸다**.
+    //  ★못 읽은 서버는 «이름을 안 잡은 것» 으로 둔다 — 최악이 «플러그인 이름을 못 막는다» 이지
+    //   «턴이 죽는다» 가 아니어야 한다.
+    const listSafely = async (s: { name?: string; listTools: () => Promise<unknown[]> }) => {
+      try {
+        return await s.listTools();
+      } catch (e) {
+        console.warn(
+          `[tools] '${s.name ?? "?"}' 도구 목록을 못 읽었습니다(${e instanceof Error ? e.message : String(e)}) — ` +
+            "이름 선점 스캔에서 건너뜁니다(그 서버의 이름은 못 막습니다).",
+        );
+        return [];
+      }
+    };
     const taken = new Set<string>();
     for (const s of mcpServers) {
-      for (const t of await s.listTools()) {
+      for (const t of await listSafely(s as never)) {
         const n = (t as { name?: unknown }).name;
         if (typeof n === "string" && n !== "") taken.add(n);
       }
@@ -558,7 +588,7 @@ export const runOpenAi = async (
       const claim = claimToolNames(
         // 코어가 잡은 이름 집합을 `ToolClaimMap` 면으로 넘긴다(값은 안 쓴다 — 존재만 본다).
         { has: (n) => taken.has(n), set: (n) => taken.add(n) },
-        await bridge.listTools(),
+        await listSafely(bridge as never),
         bridge,
         name,
       );

@@ -175,8 +175,14 @@ const pruneTerminalJobsSafe = (): void => {
  *  이 Map 에만** 산다 — 대시보드가 카드를 펼칠 때 `GET /api/worker-jobs` 로 여기서 전문을
  *  가져간다. 무바운드인 쪽이 하필 무거운 쪽이었다.
  *
- * ★그래서 **삭제가 아니라 바운드**다([[project_hotpath_bound_preserve_record]] — 핫 워킹셋만
- *  바운드, 콜드 레코드는 DB 가 계속 보관). running 은 절대 안 건드린다(진행 중 상태가
+ * ★★**«콜드 레코드는 DB 가 보관한다» 는 내가 재지 않고 쓴 말이고 거짓이다** (2026-09-10
+ *  적대 검토 G-5). 바로 윗줄의 `pruneTerminalWorkerJobs` 가 DB 를 **같은 상수·같은 정렬키**로
+ *  자른다(`store/worker-jobs.ts`: `ORDER BY COALESCE(finished_at, started_at) DESC LIMIT ?`
+ *  — 아래 `finishedAt ?? startedAt` 과 동일). 즉 Map 에서 버려진 잡은 **DB 에서도 지워진다.**
+ *  ★그래도 이 변경은 옳다 — 종전엔 DB만 1,000이고 Map 은 **무한**이었다. 지금은 둘이 같은
+ *   지평을 갖는다. 다만 «어딘가에 남아 있다» 고 오해하면 안 된다(그 보존은 2026-07-12에
+ *   DB 쪽에서 이미 포기된 것이고, 이 변경이 새로 버리는 게 아니다).
+ * running 은 절대 안 건드린다(진행 중 상태가
  *  사라지면 취소·합류·통지가 전부 깨진다). 터미널 판정은 DB 와 **같은 규칙**(≠running)을
  *  쓴다 — 상태 이름을 여기 다시 적으면 두 곳이 갈린다([[feedback_hand_maintained_lists]]).
  *
@@ -196,11 +202,13 @@ const pruneTerminalJobsInMemory = (): void => {
     const j = terminal[i];
     if (j !== undefined) jobs.delete(j.jobId);
   }
-  // 드물게 한 번 도는 자리다 — 조용히 지우지 않는다(무엇이 얼마나 사라졌는지 남긴다).
+  // ★캡에 닿은 뒤엔 **터미널 전이마다** 1건씩 찍힌다(«드물게 한 번» 이 아니다 — 적대 검토
+  //  G-6). 그래도 남긴다: 실측 발생률이 하루 7.6건이라 정상 상태에서도 하루 몇 줄이고,
+  //  조용히 지우는 쪽이 훨씬 나쁘다. 시끄러워지면 그때 «N건마다» 로 묶어라.
   const running = [...jobs.values()].filter((j) => j.status === "running").length;
   console.log(
     `worker-jobs: 런타임 완료 잡 ${drop}건 정리 — 보관 ${TERMINAL_WORKER_JOB_KEEP}건, ` +
-      `남은 총 ${jobs.size}건(진행 중 ${running}건). 메타데이터는 DB 에 남습니다.`,
+      `남은 총 ${jobs.size}건(진행 중 ${running}건). DB 미러도 같은 캡으로 잘립니다.`,
   );
 };
 

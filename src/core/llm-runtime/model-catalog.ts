@@ -727,8 +727,14 @@ export const modelCapsFor = (
   const model = spec.slice(i + 1);
   const context = catalogContextTokens(provider, model);
   const tools = catalogSupportsTools(provider, model);
-  // ★**실제로 실려 나갈 강도**를 같이 준다 (2026-09-10). 어댑터가 쓰는 것과 **같은 함수**라
-  //  화면과 wire 가 갈릴 수 없다 — 두 자리가 같은 판단을 따로 하면 언젠가 어긋난다.
+  // ★**실제로 실려 나갈 강도**를 같이 준다 (2026-09-10). 어댑터가 쓰는 것과 **같은 함수**다
+  //  — 두 자리가 같은 판단을 따로 하면 언젠가 어긋난다.
+  // ★단 «갈릴 수 없다» 고까지는 말하지 않는다 (2026-09-10 적대 검토 정정). 여기 cwd 는
+  //  `process.cwd()`(데몬)이고 어댑터는 `input.cwd` 를 쓴다. **메인 턴은 router 가 cwd 를
+  //  안 실어 `undefined` → 같은 기본값**이라 오늘 화면=wire 가 맞지만, 그건 «구조상 불가»
+  //  가 아니라 **두 경로가 우연히 같은 값에 떨어지는 것**이다. 프로젝트 위임 턴은 갈린다
+  //  (`models.profiles` 는 데몬 스코프인데 `models.reasoning` 만 턴 스코프 — 백로그:
+  //  «`models.*` 해석 스코프를 한 곳에서 정한다»).
   const reasoning = resolveReasoningEffort(provider, model);
   const reasoningFrom = resolveReasoningOrigin(provider, model);
   return context === undefined && tools === undefined && reasoning === undefined

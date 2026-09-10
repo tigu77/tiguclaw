@@ -288,7 +288,6 @@
         const caret = document.createElement("span");
         // ★기본 펼침 (2026-09-10 정태님) — 라이브 카드와 같은 규칙. 종전엔 접힌 채 시작해
         //  새로고침하면 «있던 게 사라진» 것처럼 보였다.
-        turn.classList.add("expanded");
         // ★글자는 `▸` 그대로 — 펼침 표시는 CSS 가 회전으로 한다
         //  (`.hist-turn.expanded .hist-turn-caret { transform:rotate(90deg) }`).
         //  글자까지 바꾸면 **이중으로** 돌아간다.
@@ -318,7 +317,7 @@
         const body = document.createElement("div");
         body.className = "hist-turn-body";
         for (const a of acts) body.appendChild(buildHistStepLine(a));
-        onToggleClick(head, () => turn.classList.toggle("expanded"));
+        // 클릭은 공용 위임(`HEADS`)이 맡는다 — 여기서 리스너를 또 달지 않는다.
         turn.appendChild(head); turn.appendChild(body);
         return turn;
       };
@@ -533,9 +532,14 @@
             reachedOldest = true; // 더 없음.
             return;
           }
+          // ★**커서를 먼저 옮긴다** (2026-09-10). 종전엔 그린 **뒤에** 옮겼는데, 그리는 도중
+          //  예외가 나면 `catch` 가 삼키고 커서가 **그대로 남는다** — 다음 스크롤이 같은
+          //  페이지를 다시 받아 **이미 그린 것 위에 또 그린다.** 부분 렌더 + 재요청은
+          //  «같은 메시지가 두 개» 로 보이는 정확한 모양이다.
+          //  커서의 의미는 «어디까지 받았나» 이지 «어디까지 그렸나» 가 아니다.
+          setOldestCursor(entries, oldestLoadedTs);
           // 도구 스텝·diff·출력·묶음도 함께 복원(초기 로드와 동일 로직, older prepend 방향).
           renderHistoryBatch(entries, activities, true);
-          setOldestCursor(entries, oldestLoadedTs);
           if (entries.length < HISTORY_PAGE) reachedOldest = true; // 페이지 미만 = 마지막 묶음.
         } catch (err) {
           console.warn("older history load failed:", err && err.message ? err.message : err);

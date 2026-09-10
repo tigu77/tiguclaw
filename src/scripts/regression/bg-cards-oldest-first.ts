@@ -37,30 +37,35 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ② 팔로우 — **삽입 전에** 잰다
+    // ② 팔로우 — 삽입 자리에서 **다시 유도하지 않는다**
+    // ★2026-09-10 개정: 종전 단언은 «삽입 **전에** 재라» 였다. 그 처방은 맞았지만 부족했고,
+    //  적대 검토 P-1 이 그 부족분을 실증했다 — 카드가 `.bg-in-scope` 전엔 높이 0이고 그
+    //  뒤로도 107→167px 로 자라서, **언제 재든** 다음 판정이 어긋난다. 처방은 «재는 시점»
+    //  이 아니라 **래치**이고, 늦은 성장은 카드별 ResizeObserver 가 흡수한다.
+    //  옛 단언을 남겨두면 그것이 옳은 수정을 막는다(실제로 빨간불을 냈다).
+    //  성질은 그대로다: **새 카드가 와도 팔로우가 영영 안 꺼진다.**
+    //  동작은 `bg-follow-is-latched` 가 «뒤늦게 자라는 스크롤러» 로 잰다.
     const i = src.indexOf("bgList.appendChild(el)");
-    const before = i < 0 ? "" : src.slice(Math.max(0, i - 320), i);
     const after = i < 0 ? "" : src.slice(i, i + 320);
     out.push(
       assert(
-        "★★바닥 근처였는지를 **삽입 전에** 잰다 — appendChild 뒤엔 scrollHeight 가 이미 늘어 언제나 «바닥 아님» 이 되고, 그러면 팔로우가 영영 안 걸린다",
-        /bgNearBottom\(\)/.test(before),
-        i < 0 ? "★삽입부를 못 찾음" : `삽입 앞 320자에 판정 있음=${/bgNearBottom\(\)/.test(before)}`,
+        "★★삽입 자리에서 «바닥 근처인가» 를 **다시 유도하지 않는다** — 카드는 삽입 시점에 높이 0이고 그 뒤로도 자라므로, 언제 재든 다음 판정이 어긋나 팔로우가 영구히 꺼진다",
+        i >= 0 && !/bgNearBottom\(\)/.test(after),
+        i < 0 ? "★삽입부를 못 찾음" : `삽입부 320자에 기하 재유도 있음=${/bgNearBottom\(\)/.test(after)}`,
       ),
       assert(
-        "★삽입 후 바닥으로 스냅한다",
-        /scrollTop = bgList\.scrollHeight/.test(after),
-        `스냅=${/scrollTop = bgList\.scrollHeight/.test(after)}`,
+        "★삽입 후 **래치 핀**을 부른다 — 래치가 켜져 있을 때만 붙이므로 위를 보는 중이면 안 끌어내린다",
+        /bgPin\(\);/.test(after),
+        `핀 호출=${/bgPin\(\);/.test(after)}`,
       ),
     );
 
     // ③ 점프 — 판정이 **한 벌**이고 방향이 아래다
     out.push(
       assert(
-        "★★점프 노출과 팔로우가 **같은 판정**(`bgNearBottom`)을 쓴다 — 두 벌이면 임계가 갈려 버튼이 깜빡인다",
-        /const bgNearBottom = \(\) =>/.test(src) &&
-          /hidden = bgNearBottom\(\)/.test(src),
-        `정의=${/const bgNearBottom = \(\) =>/.test(src)} · 점프가 사용=${/hidden = bgNearBottom\(\)/.test(src)}`,
+        "★★점프 노출과 팔로우가 **같은 판정**(래치)을 쓴다 — 두 벌이면 임계가 갈려 버튼이 깜빡인다",
+        /let bgStick = /.test(src) && /hidden = bgStick/.test(src),
+        `래치 정의=${/let bgStick = /.test(src)} · 점프가 사용=${/hidden = bgStick/.test(src)}`,
       ),
       assert(
         "★점프가 **바닥**으로 간다 — 반대로 두면 «최신» 버튼이 과거로 데려간다",
@@ -100,7 +105,13 @@ export const check: RegressionCheck = {
     // ★폴백 리터럴은 **허용한다** — 옛 배포본·반쯤 번역된 파일에서 글자가 키 이름
     //  («job.kind.worker.icon»)이 되면 안 된다. 그래서 «조회 없이 박혔나» 만 본다.
     const core = ["src/index.ts", "packages/dashboard/js/background-drawer.js"];
-    const lookedUp = core.filter((f) => /job\.kind\.\w+\.icon|KIND_ICON\(/.test(readSourceSync(f)));
+    // ★**주석에 걸리지 않게 코드만 본다** (2026-09-10 적대 검토 G-1: 730줄 «주석» 의 키 이름이
+    //  게이트를 통과시켰다 — 검사 대상은 마크업이지 그걸 설명하는 글이 아니다).
+    // ★그리고 조회 수단이 공용 `kindIcon`(util.js)으로 올라갔다 — 이름을 하나 박지 말고
+    //  «카탈로그를 보는 호출» 을 넓게 센다.
+    const lookedUp = core.filter((f) =>
+      /job\.kind\.\w+\.icon|kindIcon\(|translate\(iconKey\)/.test(stripComments(readSourceSync(f))),
+    );
     out.push(
       assert(
         "★★잡 아이콘을 **카탈로그에서 읽는다**(서버·드로어) — 코드에 박아 두면 사용자가 그것만 못 바꾼다",
@@ -122,6 +133,14 @@ export const check: RegressionCheck = {
       en["job.kind.worker.icon"] ?? "",
       pk["icon.worker"] ?? "",
     ]);
+    out.push(
+      assert(
+        "★★`agents.kind.*` 에 이모지를 **다시 품지 않는다** — 품으면 아이콘 키를 덮어도 배지만 옛 이모지로 남아 같은 화면에서 갈린다(적대 검토 B-P1)",
+        !/[\u{1F300}-\u{1FAFF}]/u.test(String(ko["agents.kind.worker"] ?? "")) &&
+          !/[\u{1F300}-\u{1FAFF}]/u.test(String(ko["agents.kind.agent"] ?? "")),
+        `ko.worker=${JSON.stringify(ko["agents.kind.worker"])} · ko.agent=${JSON.stringify(ko["agents.kind.agent"])}`,
+      ),
+    );
     out.push(
       assert(
         "★★값이 **한 벌**이다(코어 ko·en + 1차 번들 위젯) — 이 위젯은 코어 데이터를 그리므로 아이콘이 갈리면 같은 잡이 화면마다 달라 보인다",

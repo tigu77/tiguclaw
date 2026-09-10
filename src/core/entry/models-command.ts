@@ -11,6 +11,7 @@
  *  - never-throw 는 상위(replyCommand) 몫 — 여기선 순수 변환만.
  */
 import type { ModelProfile, PoolEntry } from "../settings.js";
+import { SPEED_AWARE_PROVIDERS } from "../llm-runtime/types.js";
 
 /**
  * 모델 능력 조회 — **주입받는다**(이 파일은 순수 함수라 전역·IO 를 안 읽는다).
@@ -105,7 +106,15 @@ const formatPool = (
       //  사용자가 내리는 결정이 다른 크기다 — 뭉뚱그리면 경고가 아니라 장식이다.
       //  ★배수는 벤더가 바꿀 수 있다. 낡으면 이 줄과 위 문서 링크를 같이 고쳐라
       //   (카탈로그도 모델별 설명 문자열을 주긴 한다: `service_tiers[].description`).
-      const fast = e.speed === "fast" ? "(빠름·크레딧 2.5배)" : "";
+      // ★비용은 **실제로 그 비용이 나는 provider 에만** 적는다 (2026-09-10 적대 검토 P4).
+      //  종전엔 `speed:"fast"` 만 보고 무조건 «크레딧 2.5배» 를 찍어, `input.speed` 를
+      //  읽지도 않는 `ollama:qwen3:8b` 에까지 **없는 비용을 지어냈다.** 비용 가시성이
+      //  목적인 화면이 거짓 비용을 말하면 그 화면을 못 믿게 된다.
+      //  ★그렇다고 «빠름» 자체를 숨기지 않는다 — 사용자가 적은 설정이 화면에서 사라지면
+      //   «왜 안 먹지» 를 알 길이 없다. **적혔다는 사실은 보이고, 안 먹는다고 말한다.**
+      const speedAware = SPEED_AWARE_PROVIDERS.some((p) => spec.startsWith(`${p}:`));
+      const fast =
+        e.speed !== "fast" ? "" : speedAware ? "(빠름·크레딧 2.5배)" : "(빠름·이 provider 는 안 읽음)";
       return `\`${spec}\`${strength}${fast}${capsLabel(caps?.(spec))}`;
     })
     .join(" → ");

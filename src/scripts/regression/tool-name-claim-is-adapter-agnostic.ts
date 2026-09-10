@@ -116,6 +116,47 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ④ 죽은 외부 브리지가 **턴을 죽이지 않는다** — 판정도 한 벌이다 ────────────
+    // ★이 자리가 P1 의 출처다(2026-09-10). codex 는 2026-08-19 에 가드를 얻었는데 openai
+    //  에는 없어서 **같은 사고가 다시 났다**. 그래서 «가드가 있나» 를 어댑터마다 grep 하지
+    //  않는다 — 그러면 셋째 어댑터가 왔을 때 또 빠진다. **판정을 한 함수로 모으고, 그
+    //  함수를 동작으로 재고, 두 어댑터가 그걸 부르는지 본다.**
+    const { probeBridgeTools } = await import("../../core/llm-runtime/tool-name-claim.js");
+
+    const live = { name: "alive", listTools: async () => [{ name: "ping" }] };
+    const dead = {
+      name: "unity",
+      listTools: async (): Promise<{ name: string }[]> => {
+        throw new Error("Not connected");
+      },
+    };
+    const probeWarned: string[] = [];
+    const okTools = await probeBridgeTools(live, (m) => probeWarned.push(m));
+    const deadTools = await probeBridgeTools(dead, (m) => probeWarned.push(m));
+
+    out.push(
+      assert(
+        "★★죽은 브리지는 **`null` 로 걸러진다** — 던지게 두면 `getAllMcpTools` 가 rethrow 해서 턴 조립이 통째로 실패한다(2026-08-19 실사고: 매니저 소환이 50ms 만에 죽었다)",
+        deadTools === null,
+        `죽은 브리지 → ${deadTools === null ? "null" : JSON.stringify(deadTools)}`,
+      ),
+      assert(
+        "★살아 있는 브리지는 **도구를 그대로** 돌려준다 — 가드가 멀쩡한 서버까지 삼키면 외부 MCP 가 통째로 사라진다",
+        Array.isArray(okTools) && okTools.length === 1,
+        `살아있는 브리지 → ${JSON.stringify(okTools)}`,
+      ),
+      assert(
+        "★건너뛴 사실이 **로그에 남는다** — 조용히 빼면 «내 MCP 도구가 왜 없지» 에 답할 길이 없다(원격 불가 설치본엔 로그가 유일한 창이다)",
+        probeWarned.length === 1 && probeWarned[0]?.includes("Not connected") === true,
+        `${probeWarned.length}줄 / ${probeWarned[0] ?? "(없음)"}`,
+      ),
+      assert(
+        "★★codex·openai **둘 다 같은 함수**를 부른다 — 어댑터마다 자기 try/catch 를 두면 갈리고, 실제로 갈려서 openai 가 같은 사고를 다시 냈다",
+        /probeBridgeTools\(/.test(codex) && /probeBridgeTools\(/.test(openai),
+        `codex=${/probeBridgeTools\(/.test(codex)} · openai=${/probeBridgeTools\(/.test(openai)}`,
+      ),
+    );
+
     return out;
   },
 };

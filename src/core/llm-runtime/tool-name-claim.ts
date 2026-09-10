@@ -94,3 +94,37 @@ export const hideTakenTools = <S extends { listTools: () => Promise<unknown[]> }
     return tools.filter((t) => !taken.has(String((t as { name?: unknown }).name ?? "")));
   },
 });
+
+/**
+ * 죽은 외부 MCP 브리지를 **이 턴에서 건너뛴다** — 도구 목록을 돌려주거나, 못 읽으면 `null`.
+ *
+ * 외부 브리지는 persistent 캐시라 연결된 뒤 대상 앱이 꺼지면(Unity Editor 종료·stdio
+ * 프로세스 사망) 캐시에 **죽은 클라이언트**가 남고 `listTools()` 가 `Not connected` 를
+ * 던진다. 그걸 안 잡으면 **턴 조립이 통째로 실패**한다 — 2026-08-19 실사고(매니저 소환이
+ * 50ms 만에 죽었다).
+ *
+ * ★**이 함수가 존재하는 이유는 그 판정이 두 벌이었기 때문이다.** codex 는 2026-08-19 에
+ *  가드를 얻었는데 openai 에는 없어서, 2026-09-10 적대 검토가 **같은 사고를 openai 쪽에서
+ *  다시 찾았다**(그 사이 커밋 제목은 이미 «죽은 외부 MCP 가 openai 턴을 못 죽이게» 였다 —
+ *  고친 것은 선점 스캔뿐이었다). 형제 `claimToolNames` 와 **같은 처방**이다: 어댑터마다
+ *  자기 판정을 두면 언젠가 갈리고, 갈린 쪽이 조용히 죽는다.
+ * ★최악은 «이 턴에서 그 서버를 못 쓴다» 여야지 «턴이 죽는다» 가 아니다. 다시 켜면 다음
+ *  턴에 캐시가 재연결한다.
+ * ★`external-mcp` 의 **연결 실패**는 이미 skip 으로 잘 처리된다. 빠져 있던 건 **연결된 뒤
+ *  죽는 경우**다.
+ */
+export const probeBridgeTools = async <T>(
+  bridge: { name?: string; listTools: () => Promise<T[]> },
+  warn: (msg: string) => void = console.warn,
+): Promise<T[] | null> => {
+  try {
+    return await bridge.listTools();
+  } catch (e) {
+    warn(
+      `external-mcp: 브리지 도구 조회 실패 — 이 턴에서 skip (${e instanceof Error ? e.message : String(e)})` +
+        `${bridge.name === undefined || bridge.name === "" ? "" : ` [${bridge.name}]`}. ` +
+        "대상 앱이 꺼졌을 수 있습니다 — 다시 켜면 다음 턴에 복구됩니다.",
+    );
+    return null;
+  }
+};

@@ -1768,17 +1768,22 @@ export const capToolOutputForEntry = (
 export const compactOldToolOutputs = (
   inputArray: ResponseInputItem[],
   opts?: { keepRecent?: number; minOutputChars?: number },
-): void => {
+): number => {
   const keepRecent = opts?.keepRecent ?? CODEX_COMPACT_KEEP_RECENT;
   const minOutputChars = opts?.minOutputChars ?? CODEX_COMPACT_MIN_OUTPUT;
 
   // function_call_output 만의 인덱스 목록 (시간순 = 배열순). 최근 keepRecent 개는
   // 보존, 그 이전(= 앞쪽 인덱스)만 압축 대상.
+  // ★몇 건을 **고쳐 썼는지** 돌려준다 (2026-09-10 적대 검토 P2). 이 함수는 `input` 을
+  //  append 하는 게 아니라 **앞쪽 원소를 제자리에서 고쳐 쓴다** — 즉 프리픽스 한가운데가
+  //  바뀐다. 그런데 그 사실이 밖에서 안 보여서, 캐시 진단이 «우리 프리픽스는 그대로» 라고
+  //  오진했다. 세는 건 공짜고, 호출부는 무시해도 된다(additive).
+  let compacted = 0;
   const outputIdxs: number[] = [];
   for (let i = 0; i < inputArray.length; i++) {
     if (inputArray[i]?.type === "function_call_output") outputIdxs.push(i);
   }
-  if (outputIdxs.length <= keepRecent) return; // 압축할 만큼 안 쌓임 → no-op.
+  if (outputIdxs.length <= keepRecent) return 0; // 압축할 만큼 안 쌓임 → no-op.
 
   const compactUntil = outputIdxs.length - keepRecent; // [0, compactUntil) 만 압축.
   for (let j = 0; j < compactUntil; j++) {
@@ -1789,5 +1794,7 @@ export const compactOldToolOutputs = (
     item.output =
       `${CODEX_COMPACTED_MARKER}[이전 도구 출력 생략 — 약 ${body.length}자. ` +
       `필요하면 같은 인자로 도구를 재호출하세요.]`;
+    compacted += 1;
   }
+  return compacted;
 };

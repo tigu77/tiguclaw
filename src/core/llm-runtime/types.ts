@@ -14,6 +14,20 @@ import type { Attachment, ChannelName } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
 
+/**
+ * `speed` 를 **실제로 wire 에 싣는** provider — 화면이 비용을 말해도 되는 유일한 근거.
+ *
+ * ★이 목록이 여기 있는 이유: `speed` 는 공용 계약에 있지만 읽는 어댑터는 하나뿐이라,
+ *  «설정에 적혔다» 와 «실제로 나간다» 가 갈린다. 지금 묻는 곳은 `/models` 렌더 하나지만
+ *  판정을 그 안에 인라인으로 두면 다음 소비처(설정 경고 등)가 **자기 판정을 또 만든다**
+ *  — 권위를 한 곳에 둔다
+ *  ([[feedback_hand_maintained_lists]] 의 예외가 아니라 그 처방이다: 열거를 없앨 수
+ *  없으면 **한 곳**에 두고 소비처가 그걸 묻게 한다).
+ * ★새 어댑터가 `input.speed` 를 읽기 시작하면 **여기에 더해라.** 안 더하면 화면이
+ *  «이 provider 는 안 읽는다» 고 계속 말한다(조용히 틀리지는 않는다).
+ */
+export const SPEED_AWARE_PROVIDERS: readonly string[] = ["codex"];
+
 export interface RegionASdkInput {
   text: string;
   threadKey: string;
@@ -114,7 +128,11 @@ export interface RegionASdkInput {
    * ★어휘를 중립으로 둔다: `service_tier` 는 OpenAI 낱말이고, 그걸 공용 계약에 박으면
    *  다른 provider 를 붙일 때 남의 벤더 말을 쓰게 된다. 여기선 «빠르게» 라는 **의도**만
    *  운반하고, 그걸 무엇으로 부르는지는 어댑터가 정한다(codex → `service_tier:"priority"`).
-   *  값을 읽지 않는 어댑터는 그냥 무시한다 — `reasoning` 이 anthropic 에서 그러듯이.
+   *  값을 읽지 않는 어댑터는 그냥 무시한다 — 다만 **`reasoning` 과 같은 모양이 아니다**
+   *  (2026-09-10 적대 검토 P4 정정): `reasoning` 은 세 어댑터가 **전부** 읽고 codex 만
+   *  기본값을 갖는 반면, `speed` 는 **codex 하나만** 읽는다. 그래서 «어느 provider 가
+   *  이걸 실제로 쓰는가» 를 `SPEED_AWARE_PROVIDERS` 한 곳에 적어 두고, 화면이 없는
+   *  비용을 지어내지 않게 한다(로컬 ollama 에 «크레딧 2.5배» 를 찍고 있었다).
    * ★공짜가 아니다: 속도는 1.5배인데 **크레딧은 2.5배** 나간다(공식 문서
    *  learn.chatgpt.com/docs/agent-configuration/speed, 2026-09-10 확인). 그래서
    *  **기본은 꺼짐**이고, 프로파일에 적었을 때만 켜진다.

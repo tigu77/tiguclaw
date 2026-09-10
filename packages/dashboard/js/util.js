@@ -817,3 +817,17 @@
         });
       };
 
+      /**
+       * 잡 종류 아이콘 — **카탈로그에서**(`job.kind.<kind>.icon`).
+       *
+       * ★여기(공용)에 두는 이유: 드로어·잡 뷰·채팅이 각자 갖고 있으면 그게 세 벌이고,
+       *  실제로 «드로어만 카탈로그를 보고 나머지는 🤖 를 박아 둔» 상태였다(적대 검토 B-P1).
+       * ★키가 없으면(옛 배포본·미번역) 키 이름이 그대로 돌아온다 — 그때 화면 글자가
+       *  «job.kind.agent.icon» 이 되면 안 되므로 폴백을 둔다.
+       */
+      const kindIcon = (kind) => {
+        const k = "job.kind." + (kind === "agent" ? "agent" : "worker") + ".icon";
+        const v = i18n(k);
+        return v && v !== k ? v : (kind === "agent" ? "🤖" : "🎖️");
+      };
+

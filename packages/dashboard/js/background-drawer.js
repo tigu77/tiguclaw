@@ -108,9 +108,44 @@
       /** 맨 아래(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
       const bgNearBottom = () =>
         bgList.scrollHeight - bgList.scrollTop - bgList.clientHeight < BG_JUMP_THRESHOLD;
-      const updateBgJump = () => { if (bgJump) bgJump.hidden = bgNearBottom(); };
-      if (bgJump) bgJump.addEventListener("click", () => { bgList.scrollTop = bgList.scrollHeight; updateBgJump(); });
-      bgList.addEventListener("scroll", updateBgJump, { passive: true });
+      // ── 팔로우는 **래치**다 (2026-09-10 적대 검토 P-1·P-2) ────────────────────────
+      // ★종전엔 삽입할 때마다 «지금 바닥 근처인가» 를 **기하로 다시 유도**했다. 그런데
+      //  스냅이 도는 시점에 카드는 아직 `.bg-in-scope` 가 없어 `display:none` → **높이 0**
+      //  이라, `scrollTop = scrollHeight` 가 **직전 바닥**에 착지했다. 카드가 뒤늦게 자라면
+      //  그만큼 벌어지고 다음 판정이 거짓이 되어 **다시는 안 붙었다**(실측: 카드 3부터
+      //  끊겨 새 잡 8개가 화면 밖). 옛 «위에 꽂고 scrollTop=0» 은 0 이 카드 높이와 무관한
+      //  **고정점**이라 구조적으로 면역이었는데, 뒤집으며 그 성질을 잃었다.
+      // ★측정 시점을 고치는 것으로는 안 닫힌다 — `.bg-in-scope` 뒤로 미뤄도 카드는 그 뒤로
+      //  107px→167px 로 더 자란다(라벨·live·doing·요약·배지가 나중에 채워진다). +60px 는
+      //  임계 40 을 넘는다. **경계를 하나 고쳐도 다음 경계가 있다.**
+      // ★채팅(`vtProgrammatic`·`userIntentUntil`·`MOVED_EPS_PX`)만큼 복잡할 필요가 없다.
+      //  거긴 **기억한 좌표와 비교**해서 방향을 재느라 stale 이벤트를 흡수해야 했다. 여기선
+      //  ①프로그램적 스크롤이 «바닥으로» 한 종류뿐이고 ②핸들러가 이벤트를 안 믿고 **그
+      //  순간을 다시 재므로**, 늦게 온 이벤트도 그때의 진짜 위치를 읽는다. 그리고 카드가
+      //  자라는 것만으로는 scroll 이벤트가 안 나므로 «자라서 벌어졌다» 가 래치를 못 끈다 —
+      //  P-1 을 만들던 바로 그 경로가 구조적으로 막힌다.
+      // ★초기값 **켜짐** — 새로고침 하이드레이션이 저절로 바닥(최신)에 안착한다(P-2).
+      //  «하이드레이션 끝에 바닥으로» 를 따로 넣으면 그게 다섯 번째 손 목록이 된다.
+      let bgStick = true;
+      /** 래치가 켜져 있으면 바닥에 붙인다. 꺼져 있으면 아무것도 안 한다(yank 금지). */
+      const bgPin = () => { if (bgStick) bgList.scrollTop = bgList.scrollHeight; };
+      // 노출도 **래치와 같은 판정** — 팔로우는 래치, 버튼은 기하면 임계가 갈려 깜빡인다.
+      const updateBgJump = () => { if (bgJump) bgJump.hidden = bgStick; };
+      if (bgJump) bgJump.addEventListener("click", () => {
+        // ★명시로 켠다 — 이미 바닥이면 scroll 이벤트가 안 나 래치가 꺼진 채 남는다.
+        bgStick = true; bgPin(); updateBgJump();
+      });
+      bgList.addEventListener("scroll", () => {
+        bgStick = bgNearBottom(); updateBgJump();
+      }, { passive: true });
+      // ★**카드마다** 관찰한다. `#bg-list` 는 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
+      //  자기 높이가 안 변한다(실측 clientHeight 81→161→309→450→450…) — 컨테이너 관찰자는
+      //  **정확히 문제가 되는 구간에서 한 번도 안 운다.** 가장 나쁜 종류의 관찰자다.
+      //  카드별로 보면 `.bg-in-scope` 타이밍·늦게 붙는 라벨·필터 전환이 **전부 여기로**
+      //  흡수된다(경계를 하나씩 쫓지 않는다).
+      const bgCardRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { bgPin(); });
+      const bgObserveCard = (el) => { if (bgCardRO) bgCardRO.observe(el); };
+      const bgUnobserveCard = (el) => { if (bgCardRO) bgCardRO.unobserve(el); };
       const BG_STATUS = {
         running: i18n("bg.status.running"), done: i18n("common.status.done"), failed: i18n("bg.status.failed"), cancelled: i18n("bg.status.cancelled"),
         // 종료된 건 확실한데 결과를 못 받은 경우(연결이 끊긴 사이 종료·데몬 재시작).
@@ -681,7 +716,7 @@
             const jid = node.dataset ? node.dataset.jobId : null;
             if (!jid) continue;
             const entry = jobCards.get(jid);
-            if (entry && entry.status !== "running") { node.remove(); jobCards.delete(jid); removed = true; break; }
+            if (entry && entry.status !== "running") { bgUnobserveCard(node); node.remove(); jobCards.delete(jid); removed = true; break; }
           }
           if (!removed) break; // 전부 running 이면 중단.
         }
@@ -724,16 +759,8 @@
         return parent ? jobOwnerSession(parent.threadKey, s) : "";
       };
       // 매니저 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
-      // ★아이콘을 **카탈로그에서 읽는다** (2026-09-10 정태님: *"코드에 박힌 걸 빼면 되지 않을까"*).
-      //  이모지가 이미 로케일에 47개 있어 `<home>/locales/<lang>.json` 으로 덮을 수 있었는데,
-      //  잡 아이콘만 코드에 박혀 **그것만 못 바꾸는** 상태였다. 카탈로그가 없으면(옛 배포본)
-      //  키 이름이 그대로 돌아오므로 폴백을 둔다 — 글자가 «job.kind.worker.icon» 이 되면 안 된다.
-      const KIND_ICON = (kind) => {
-        const k = "job.kind." + kind + ".icon";
-        const v = i18n(k);
-        return v && v !== k ? v : (kind === "agent" ? "🤖" : "🎖️");
-      };
-      const WORKER_LABEL_PREFIX = KIND_ICON("worker") + " ";
+      // 아이콘은 공용 `kindIcon`(util.js) — 여기 다시 만들면 두 벌이 된다.
+      const WORKER_LABEL_PREFIX = kindIcon("worker") + " ";
       /**
        * kind 에 맞는 라벨을 돌려준다 — **순수 함수**(2026-08-26).
        *
@@ -881,16 +908,16 @@
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
           el.appendChild(top); el.appendChild(meta); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
-          top.addEventListener("click", () => { setJobOpen(jobId, entry); });
-          // 최신=아래 삽입 + stickBottom 팔로우 — 삽입 **전에** 맨 아래 근처였으면(최신 주시)
-          // 삽입 후 바닥으로 스냅해 새 카드를 보여준다. 위로 올려 과거 잡을 보는 중이면
-          // 존중한다(yank 금지) = 채팅과 **같은 규칙**. 임계 40px.
-          // ★재는 시점이 중요하다 — `appendChild` 뒤엔 scrollHeight 가 이미 늘어 언제나
-          //  "바닥 아님" 이 된다. 그러면 팔로우가 영영 안 걸린다.
-          const _bgNearBottom = bgNearBottom();
+          // 텍스트 드래그는 접기로 안 친다(2026-09-10 적대 검토 P-4) — 이 머리줄엔
+          // `user-select:none` 이 없어 라벨을 끌어 고를 수 있다.
+          onToggleClick(top, () => { setJobOpen(jobId, entry); });
+          // 최신=아래 삽입 + **래치** 팔로우. 위로 올려 과거 잡을 보는 중이면 존중한다
+          // (yank 금지). ★여기서 «바닥 근처인가» 를 다시 재지 않는다 — 그게 P-1 이었다.
+          //  래치는 사용자 스크롤만 끄고, 늦게 자라는 카드는 `bgCardRO` 가 다시 붙인다.
           bgList.appendChild(el); // 최신=아래(bgEmpty 는 size>0 면 숨김).
-          if (_bgNearBottom) bgList.scrollTop = bgList.scrollHeight;
-          updateBgJump(); // 새 카드가 아래에 쌓임 — 올려본 상태면 "↓ 최신" 노출 갱신.
+          bgObserveCard(el);
+          bgPin();
+          updateBgJump();
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             sessBadgeEl: sessBadge, rawTkEl: rawTk,
@@ -981,7 +1008,8 @@
         if (entry.kind === "agent" && opts && opts.agentName) {
           const nm = String(opts.agentName);
           const title = typeof opts.label === "string" ? opts.label.trim() : "";
-          const want = title !== "" && title !== nm ? "🤖 " + nm + " · " + title : "🤖 " + nm;
+          const ai = kindIcon("agent") + " ";
+          const want = title !== "" && title !== nm ? ai + nm + " · " + title : ai + nm;
           if (entry.label !== want) setJobLabel(entry, want);
         }
         // 모델 티어(멱등) — 매니저·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.
@@ -1162,7 +1190,9 @@
         const caret = document.createElement("span");
         caret.className = "act-diff-caret bg-step-caret"; caret.textContent = "▸";
         stepEl.insertBefore(caret, stepEl.firstChild); // 아이콘 앞 작은 ▸ affordance.
-        stepEl.addEventListener("click", (e) => { e.stopPropagation(); toggleWorkerStepRich(stepEl); });
+        // ★여기가 제일 아팠다 — 스텝 줄은 diff·출력이 붙는 자리라 **정확히 복사하고 싶은
+        //  텍스트**인데, 한 줄 안에서 끌어 고르면 손 놓는 순간 접혔다(적대 검토 P-4).
+        onToggleClick(stepEl, (e) => { e.stopPropagation(); toggleWorkerStepRich(stepEl); });
       };
 
       // ── 부팅 하이드레이션 — 실행 중 잡을 서버(GET /api/worker-jobs = in-memory listJobs)에서
@@ -1201,7 +1231,19 @@
       const applyJobsSnapshot = (d, startedAt) => {
           if (!d || !Array.isArray(d.jobs)) return;
           const live = new Set();
-          for (const j of d.jobs) {
+          // ★★**서버는 최신 먼저 준다** (`worker-jobs.ts listJobs`: `b.startedAt - a.startedAt`).
+          //  카드는 `appendChild` 로 쌓으므로 그대로 돌면 **먼저 온 최신이 맨 위**가 된다 —
+          //  즉 새로고침하면 순서가 **정반대**다(2026-09-10 적대 검토 P-1).
+          //  ★이게 정렬 반전의 **네 번째** 자리였다. 커밋은 «셋 더» 라고 적었고 회귀도 셋만
+          //   셌는데, 하이드레이션이 목록에 없었다 — 손으로 센 목록이 또 하나 모자랐다
+          //   ([[feedback_hand_maintained_lists]]).
+          //  ★2차 피해가 더 나쁘다: `capBgList` 는 «앞 = 가장 오래된 것» 을 전제로 앞에서부터
+          //   지우는데, 새로고침 뒤엔 앞이 **최신**이라 «방금 끝난 잡» 부터 지운다. 조용하다.
+          //  라이브 삽입과 **같은 방향**으로 맞춘다(오래된 것 먼저 = 위).
+          const jobsOldestFirst = [...d.jobs].sort(
+            (a, b) => (a && a.startedAt ? a.startedAt : 0) - (b && b.startedAt ? b.startedAt : 0),
+          );
+          for (const j of jobsOldestFirst) {
             if (!j || !j.jobId) continue;
             live.add(j.jobId);
             // ★시각은 **포맷해서** 넘긴다 (2026-08-19). SSE 경로는 `fmtTime(ev.ts)` 를 주는데

@@ -115,6 +115,36 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★★**고쳤다가 다시 깨지면 다시 말한다** (2026-09-10 적대 검토 G-3). 중복 억제만 검사하면
+    //  `clearSkillDefect(filePath)` **한 줄을 지워도 스위트가 초록**인데, 그러면 «고쳤다 다시
+    //  깨진» 스킬이 프로세스 수명 내내 **조용하다.** 그 한 줄이 이 변경의 절반이다.
+    {
+      const warned3: string[] = [];
+      const realWarn2 = console.warn;
+      const good = "---\nname: broken\ndescription: 이제 멀쩡하다.\n---\n\n본문\n";
+      const bad = "name: broken\ndescription: 사라진다\n";
+      const p = path.join(skills, "broken", "SKILL.md");
+      console.warn = (...a: unknown[]): void => {
+        warned3.push(a.map(String).join(" "));
+      };
+      try {
+        writeFileSync(p, good); // 고침
+        await discoverSkills(root);
+        writeFileSync(p, bad); // 다시 깨짐
+        await discoverSkills(root);
+      } finally {
+        console.warn = realWarn2;
+        writeFileSync(p, bad); // 뒷정리 — 다음 실행이 같은 상태에서 시작하게
+      }
+      out.push(
+        assert(
+          "★★고쳤다가 **다시 깨지면 다시 경고한다** — 안 그러면 그 스킬은 프로세스가 죽을 때까지 조용하고, 사용자는 사라진 줄도 모른다",
+          warned3.some((w) => w.includes("broken")),
+          warned3.length === 0 ? "★재파손인데 경고 0건" : warned3.join(" | ").slice(0, 120),
+        ),
+      );
+    }
+
     return out;
   },
 };

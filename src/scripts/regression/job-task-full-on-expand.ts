@@ -389,8 +389,14 @@ export const check: RegressionCheck = {
     //  등급: **배선**(소스 대조) — 리스너를 실제로 누르려면 DOM 이 필요하고, 그 비용은
     //  이 한 줄이 지키는 것에 비해 크다. 여기가 잡는 것은 «클릭이 setJobOpen 에 닿는 배선이
     //  있는가» 하나다.
+    // ★**클릭 등록 방식을 박지 않는다** (2026-09-10). 종전엔 `addEventListener("click"` 을
+    //  리터럴로 요구해서, 드래그 가드(`onToggleClick`)로 감싸자 **빨개졌다** — 배선은 그대로
+    //  있는데 표현만 바뀐 것이다. 지키려는 성질은 «클릭이 `setJobOpen` 에 닿는가» 이지
+    //  «어떤 함수로 등록했는가» 가 아니다. 검사가 표현에 묶이면 다음 사람이 리팩터를 피한다.
     const opener = codeLines.filter(
-      (l) => /addEventListener\("click"/.test(l.text) && /setJobOpen\(jobId/.test(l.text),
+      (l) =>
+        /(addEventListener\("click"|onToggleClick\()/.test(l.text) &&
+        /setJobOpen\(jobId/.test(l.text),
     );
     out.push(
       assert(

@@ -102,7 +102,18 @@
           } catch {
             /* 저장 실패는 무해 — 다음 로드가 다시 채운다 */
           }
-          if (before !== names.slice().sort().join(",")) renderTabBar();
+          // ★**가드가 필요하다** (2026-09-10 실측: 콘솔에 `renderTabBar is not defined`).
+          //  윗 주석은 *"이 콜백은 tabs.js 가 실행된 뒤에 돌므로 참조가 안전하다"* 고
+          //  단언하는데, 그건 **레이스**다 — `void loadKnownChannels()` 는 모듈 평가 중
+          //  시작하고, 로컬호스트 fetch 는 tabs.js(로드 순서 29번, 이 파일은 20번) 평가보다
+          //  먼저 끝날 수 있다. 그러면 TDZ ReferenceError 가 나고 catch 가 «채널 목록 로드
+          //  실패» 로 삼킨다 — 화면은 멀쩡해 보이고 탭바만 조용히 안 갱신된다.
+          //  ★다른 호출부 셋(`background-drawer.js:78`·`constants.js:73,77`)은 **이미** 이
+          //   가드를 갖고 있다 — 여기만 빠져 있었다([[feedback_hand_maintained_lists]]).
+          //  ★넘겨도 안전하다: `tabs.js:588` 이 초기화 때 한 번 그린다.
+          if (before !== names.slice().sort().join(",") && typeof renderTabBar === "function") {
+            renderTabBar();
+          }
         } catch (e) {
           console.warn("채널 목록 로드 실패 — 배지는 알려진 채널만:", e && e.message ? e.message : e);
         }
@@ -350,7 +361,8 @@
               );
             };
             if (open) fillDetail();
-            h.addEventListener("click", () => {
+            // 텍스트 드래그는 접기로 안 친다(2026-09-10) — 넓힌 스캔이 이 자리를 찾아냈다.
+            onToggleClick(h, () => {
               const nowOpen = row.classList.toggle("open");
               if (nowOpen) { fillDetail(); epOpen.add(e.ts); } else epOpen.delete(e.ts);
             });

@@ -366,7 +366,10 @@
           const ra = a.status === "running" ? 0 : 1;
           const rb = b.status === "running" ? 0 : 1;
           if (ra !== rb) return ra - rb;
-          return (b.startedAt || 0) - (a.startedAt || 0);
+          // ★**오래된 것 먼저** (2026-09-10 적대 검토 P-3). 잡 레인을 오래된 순으로 바꾼
+          //  명분이 *"같은 드로어 안에서 시간축이 반대로 흘렀다"* 인데, 정작 같은 드로어의
+          //  아래 레인(셸)이 안 뒤집혀 있었다 — 한 스크롤 면에서 시간이 두 방향으로 흐른다.
+          return (a.startedAt || 0) - (b.startedAt || 0);
         });
         for (const e of entries) {
           total += 1;

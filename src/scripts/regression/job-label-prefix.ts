@@ -28,11 +28,11 @@ const SRC = new URL("../../../packages/dashboard/js/background-drawer.js", impor
  *  다음 사람이 리팩터를 피한다.
  */
 const sliceDefs = (src: string): string => {
-  const from = src.indexOf("      const KIND_ICON = ");
+  const from = src.indexOf("      const WORKER_LABEL_PREFIX = ");
   const to = src.indexOf("      const withKindPrefix", from);
   const end = src.indexOf("      };", to);
   if (from < 0 || to < 0 || end < 0) {
-    throw new Error("KIND_ICON~withKindPrefix 정의를 못 찾음 — 구조가 바뀌었나");
+    throw new Error("WORKER_LABEL_PREFIX~withKindPrefix 정의를 못 찾음 — 구조가 바뀌었나");
   }
   return src.slice(from, end + "      };".length);
 };
@@ -47,7 +47,10 @@ export const check: RegressionCheck = {
     vm.createContext(ctx);
     // 카탈로그는 없다 — `i18n` 이 키를 그대로 돌려주는 상황(옛 배포본·미번역)을 흉내 낸다.
     // 그러면 `KIND_ICON` 의 **폴백 경로**까지 같이 검사된다(글자가 키 이름이 되면 안 된다).
+    // 카탈로그 없음을 흉내 낸다 — `kindIcon` 의 **폴백 경로**까지 같이 검사된다.
+    // ★아이콘 조회가 공용 util 로 올라가 조각 밖이므로 여기서 주입한다(2026-09-10).
     ctx.i18n = (k: string) => k;
+    ctx.kindIcon = (kind: string) => (kind === "agent" ? "🤖" : "🎖️");
     vm.runInContext(`${sliceDefs(src)}\nthis.__f = withKindPrefix;\nthis.__p = WORKER_LABEL_PREFIX;`, ctx);
     const f = ctx.__f as (kind: string, label: string) => string;
     const P = ctx.__p as string;

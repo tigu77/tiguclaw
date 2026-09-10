@@ -8,6 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-09-10
+
+### Added
+
+- **A "fast" switch on model profiles** (codex models for now). Replies come back 1.5–2x
+  quicker and burn **2.5x the credits**. Off by default, and `/models` shows where it's on
+  along with what it costs — and says so plainly for providers that ignore the setting.
+- `/models` now always shows the **reasoning effort actually being sent** — and where the
+  value came from (the profile, your settings, or the model's own default). It used to show
+  up only when written directly on a profile.
+- **Job icons are yours to change.** The manager and subagent icons moved out of the code
+  and can be overridden in `<home>/locales/<lang>.json`.
+- A plugin that ships a skill, agent, command, or endpoint with the **same name as a
+  built-in now warns**. It isn't blocked — but a capability can no longer be swapped out
+  silently.
+
+### Changed
+
+- **Collapsing in the dashboard was rebuilt.** Reply messages collapse too (it used to be
+  tool steps only), a click **anywhere in the body** collapses — not just the header line —
+  and a collapsed message still shows **three lines**. The collapse triangle is also 1.7x
+  bigger.
+- Collapsing now defaults to **expanded**: the previous reply no longer folds itself away.
+  Selecting text by dragging no longer collapses the message either.
+- The manager now reads as a 🎖️ **gold badge**, against the subagent's purple.
+- Background job cards stack **oldest first**.
+- **Subagents running on a delegation can no longer rename or archive your conversations.**
+  A one-turn delegation could reach them. Searching and reading conversations is unchanged.
+
+### Fixed
+
+- **Background job cards stopped following along.** With the drawer open, new cards stopped
+  scrolling into view around the third job — and once it broke, it never recovered. Reloading
+  now lands you on the **newest** job rather than the oldest.
+- **The collapse triangle didn't show the collapsed state** — it stayed pointing down even
+  after you collapsed a message.
+- **One disconnected external MCP server could kill an entire turn.** Restart the target app
+  and it comes back on the next turn.
+- **On the OpenAI adapter, a plugin tool whose name collided with a built-in killed the
+  whole turn.** All three adapters now share one decision.
+- Scrolling up in chat to load older messages could **blank the view**, and leaving it alone
+  kept it blank.
+- Scrolling up no longer shows **the same message twice**.
+- Refreshing **reversed the order of background cards** — and in that state, hitting the cap
+  deleted the jobs that had just finished.
+- Shell command lines no longer pick up the manager's gold, and the channel list no longer
+  fails to refresh in silence.
+- **Skills that failed to load vanished without a word.** The log now says why, and how to
+  fix it.
+- When a connection dropped, the log said only `terminated`, so **the reason was
+  unrecoverable**. The real cause is now recorded.
+- The cache warning used to prescribe "try switching models" on no evidence. That's gone —
+  the log now points at **where the cache actually broke** instead.
+
 ## [0.51.1] - 2026-09-09
 
 ### Fixed
@@ -444,7 +498,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...v0.52.0
 [0.51.1]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...v0.51.1
 [0.51.0]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/tigu77/tiguclaw/compare/v0.49.1...v0.50.0

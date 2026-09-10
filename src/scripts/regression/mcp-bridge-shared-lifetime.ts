@@ -168,30 +168,33 @@ const run = async (): Promise<Assertion[]> => {
   //  ★매니저에서 두드러진 이유: 그 블록 조건이 `depth 0` **또는** `isProjectMcpCwd(cwd)` 인데
   //   매니저는 프로젝트 cwd 로 돌아 두 번째 조건으로 들어온다.
   //
-  //  ★등급: **소스 검사**다. 실제 죽은 외부 서버를 여기서 만들려면 stdio 프로세스를 띄웠다
-  //   죽여야 하고, 그건 이 스위트의 격리 규칙(라이브 무접촉) 밖이다. 대신 **가드의 모양**을
-  //   본다 — `listTools` 가 try 안에 있고 실패가 `continue` 로 끝나는가.
+  //  ★등급: **배선 검사**다. 「죽은 브리지를 걸러내는가」라는 *동작* 은 순수 함수
+  //   `probeBridgeTools` 로 떼어져 `tool-name-claim-is-adapter-agnostic` 이 실제로 던지는
+  //   가짜 브리지로 잰다. 여기선 **두 어댑터가 그 판정을 쓰는가** 만 본다.
+  //  ★종전엔 codex 소스에서 리터럴 `try { … listTools() } catch { … continue }` 를 찾았다.
+  //   두 가지가 틀렸다: ①**codex 만** 봐서 openai 에 같은 구멍이 열린 걸 못 잡았다
+  //   (2026-09-10 적대 검토 P1 — 커밋 제목은 이미 «openai 턴을 못 죽이게» 였는데
+  //   선점 스캔만 고쳐져 있었다) ②지키려는 성질은 «죽은 브리지가 걸러진다» 이지
+  //   «그 자리에 try 가 있다» 가 아니라서, 판정을 공용 함수로 모으는 **옳은 리팩터에
+  //   빨간불**을 냈다([[feedback_gate_must_actually_run]] 의 반대편: 오탐이 개선을 막는다).
   {
     const { readFile } = await import("node:fs/promises");
-    const codex = await readFile(
-      new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url),
-      "utf8",
-    );
-    const block =
-      /getConnectedExternalMcpBridges\(input\.cwd\)\)\s*\{[\s\S]{0,1600}?\n {6}\}/.exec(codex)?.[0] ?? "";
-    const guarded =
-      block !== "" &&
-      /try \{[\s\S]{0,200}?await extBridge\.listTools\(\)/.test(block) &&
-      /catch[\s\S]{0,400}?continue;/.test(block);
+    const read = async (rel: string): Promise<string> =>
+      readFile(new URL(rel, import.meta.url), "utf8");
+    const adapters: Array<[string, string]> = [
+      ["codex", await read("../../core/llm-runtime/adapters/openai-codex-oauth.ts")],
+      ["openai", await read("../../core/llm-runtime/adapters/openai-agents-sdk.ts")],
+    ];
+    const missing = adapters
+      .filter(([, src]) => !(/probeBridgeTools\(/.test(src) && /=== null\) continue;/.test(src)))
+      .map(([n]) => n);
     out.push({
-      name: "★죽은 외부 MCP 브리지는 그 턴에서 skip 된다(하나가 죽어도 턴은 산다)",
-      ok: guarded,
+      name: "★★죽은 외부 MCP 브리지는 그 턴에서 skip 된다 — **두 어댑터가 같은 판정**을 쓴다(하나가 죽어도 턴은 산다)",
+      ok: missing.length === 0,
       got:
-        block === ""
-          ? "★외부 브리지 루프를 못 찾음(검사 전제)"
-          : guarded
-            ? "listTools try + skip 확인"
-            : "🔴 가드 없음 — Not connected 하나가 턴 조립을 무너뜨린다",
+        missing.length === 0
+          ? "codex·openai 둘 다 probeBridgeTools 로 걸러 continue"
+          : `🔴 ${missing.join("·")} 이 공용 판정을 안 쓴다 — Not connected 하나가 그 어댑터의 턴 조립을 무너뜨린다`,
     });
   }
 

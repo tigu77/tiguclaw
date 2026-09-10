@@ -1,7 +1,13 @@
       // 열려 있으면) 목록을 jobCards 스냅샷으로 다시 그린다. capBgList 로 카드가 정리되면 여기서도 사라진다.
       let agentsFilter = "running"; // "running" | "all" — 오른쪽 드로어 필터와 독립(각자 뷰).
       const agentElapsedEls = new Map(); // jobId -> elapsed span (틱 갱신용, 뷰 재렌더마다 재구성).
-      const AGENT_KIND_BADGE = { agent: i18n("agents.kind.agent"), worker: i18n("agents.kind.worker") };
+      // ★아이콘과 낱말을 **따로** 조합한다 (2026-09-10 적대 검토 B-P1). 종전엔 카탈로그 값이
+      //  «🤖 서브에이전트» 처럼 이모지를 문자열에 품고 있어서, 아이콘 키를 덮어도 **배지만
+      //  옛 이모지로 남았다** — 같은 화면에서 아이콘이 갈렸다. 둘을 나누면 각각 덮을 수 있다.
+      const AGENT_KIND_BADGE = {
+        agent: kindIcon("agent") + " " + i18n("agents.kind.agent"),
+        worker: kindIcon("worker") + " " + i18n("agents.kind.worker"),
+      };
       // 카운트/빈상태 동기화 — refreshBgBadge 가 매 이벤트마다 호출(뷰 안 열려도 안전).
       const syncAgentsCounts = (running, total) => {
         const rc = document.getElementById("agents-count-running");

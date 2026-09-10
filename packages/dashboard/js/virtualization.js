@@ -195,6 +195,20 @@
 
         // 마운트 집합 교체 — 범위 밖 detach, 범위 안을 순서대로 mount(노드 참조·observer 유지).
         if (first === -1) {
+          // ★★**빈 범위는 스스로 못 빠져나온다** (2026-09-10). 마운트가 0이면 잴 노드가 없어
+          //  `vtObserver`(ResizeObserver)가 안 울리고, 다시 그릴 계기가 **사용자 스크롤뿐**이다.
+          //  그래서 «가만히 두면 화면이 비어 있는» 상태로 멈춘다.
+          //  ★항목이 있는데 범위가 비었다면 스크롤이 내용 밖을 가리키는 것이다 — 클램프해서
+          //   한 번 더 그린다. 항목이 없으면(진짜 빈 대화) 그대로 둔다.
+          if (vtItems.length > 0 && !stickBottom && !vtJumpTop) {
+            const maxTop = Math.max(0, total - clientH);
+            const st = getScrollTop();
+            if (st > maxTop + 1) {
+              setScrollTop(maxTop);
+              scheduleRelayout();
+              return;
+            }
+          }
           while (vtWindow.firstChild) vtWindow.removeChild(vtWindow.firstChild);
           vtWindow.style.transform = "translateY(0px)";
         } else {
@@ -332,7 +346,18 @@
         }
         if (!newItems.length) return;
         vtItems.unshift.apply(vtItems, newItems);
-        if (addedH) setScrollTop(getScrollTop() + addedH);
+        // ★★**보상은 한 번만 한다** (2026-09-10 정태님: *"위로 올려서 딱 로딩에 들어간 순간
+        //  스크롤을 가만히 두면 비어 있고, 다시 스크롤하면 제대로 보인다"*).
+        //  종전엔 여기서 `scrollTop += addedH` 를 하고, `relayout` 의 **앵커**(주석: *"프리펜드/
+        //  측정 점프 방지"*)가 **또** 보정했다 — 같은 프리펜드를 두 번 밀었다.
+        //  ★그런데 `addedH` 는 **추정**이다(새 노드는 아직 DOM 밖이라 `VT_EST_H`). 앵커는
+        //   실측 top 을 쓴다. 둘을 겹치면 오차만큼 뷰가 아래로 밀려 마운트 범위가 **비고**
+        //   (`first === -1` → 창을 비운다), 그러면 **잴 노드가 없어 ResizeObserver 도 안 울려**
+        //   스스로 못 고친다. 사용자가 스크롤해야 범위가 다시 잡힌다 — 신고된 그 모양이다.
+        //  ★어느 쪽을 남길지는 `relayout` 이 이미 답해 뒀다: 페이지스크롤(모바일)에선 앵커를
+        //   **건너뛰고** *"vtPrependOlder 의 delta 보정이 이미 안정화한다"* 고 적혀 있다.
+        //   그러니 delta 는 **그 모드에서만**, 데스크탑 윈도잉은 앵커에 맡긴다.
+        if (addedH && pageScroll()) setScrollTop(getScrollTop() + addedH);
         vtRecomputeDividers();
         scheduleRelayout();
       };
@@ -536,6 +561,51 @@
       });
 
       // 최신으로 점프 버튼 — 하단 고정이면 숨김, 위로 스크롤(과거 열람) 중이면 표시.
+      // ★★★**접기는 한 곳에서 한다** (2026-09-10 정태님: *"채팅 카드 전부 접힐 수 있게 하면
+      //  되는데 이게 뭔가 한 군데서 하는 게 아닌 건가?"*). 맞다 — 세 벌이었다:
+      //    ①도구 스텝 카드(`turn-head` → `.turn-collapsed`)
+      //    ②메시지 버블(`bubble-meta` → `.bubble-collapsed`)
+      //    ③이력 턴(`hist-turn-head` → `.expanded`, **방향까지 반대**)
+      //  기제 셋 · 상태 클래스 셋 · 그중 하나는 의미가 뒤집혀 있었다. 그래서 «접기» 를 고칠
+      //  때마다 한 곳만 고쳐지고 나머지가 남았다(오늘 그걸로 세 번 헛짚었다).
+      //
+      //  ★규칙 하나로 줄인다: **머리줄을 누르면 그 카드가 접힌다.** 머리줄이 무엇인지는
+      //   `HEADS` 가, 카드 뿌리가 무엇인지는 `closest` 가 정한다. 상태는 `.is-collapsed`
+      //   하나. 새 카드 종류가 생기면 `HEADS` 에 한 줄이면 된다 — 리스너를 새로 달지 않는다.
+      //  ★컨테이너는 `#stream` 이다(`#chat` 은 형제 — 입력창·점프버튼을 담는다).
+      //   첫 판이 `#chat` 이라 **한 번도 안 걸렸다**([[feedback_verify_before_asserting]]).
+      const HEADS = ".bubble-meta, .turn-head, .hist-turn-head";
+      const streamRoot = document.getElementById("stream");
+      if (streamRoot) {
+        streamRoot.addEventListener("click", (e) => {
+          const tgt = e.target;
+          if (!tgt || typeof tgt.closest !== "function") return;
+          if (tgt.closest("button, a, input, select, textarea")) return;
+          const head = tgt.closest(HEADS);
+          let root = null;
+          if (head) {
+            // 카드 뿌리 = 머리줄의 부모. 도구 스텝 카드만 그룹까지 접어야 답변 버블이 같이 숨는다.
+            const card = head.parentElement;
+            if (!card) return;
+            root = card.classList.contains("turn-card") ? card.parentElement ?? card : card;
+          } else {
+            // ★★**본문 한가운데를 눌러도 접힌다** (2026-09-10 정태님: *"중간을 눌러도 접혔으면"*).
+            //  긴 답변은 머리줄이 화면 밖으로 올라가 있어서, 접으려면 위로 스크롤해야 했다.
+            //  ★단 **메시지 본문만**이다. 도구 스텝 줄(`.turn-body`·`.hist-turn-body`)은 **자기
+            //   토글**이 있어(스텝 상세 펼침) 여기서 또 접으면 두 판정이 싸운다 — 한 클릭이
+            //   두 가지를 하면 사용자는 무엇이 일어날지 모른다.
+            //  ★드래그 가드가 이미 «글을 고르는 클릭» 을 걸러내므로, 남는 건 빈 곳 클릭이다.
+            if (tgt.closest(".turn-body, .hist-turn-body")) return;
+            const bubble = tgt.closest(".ev.local");
+            // 머리줄이 있는 것만 = 메시지 버블(펼칠 손잡이가 있어야 되돌릴 수 있다).
+            if (!bubble || !bubble.querySelector(":scope > .bubble-meta")) return;
+            root = bubble;
+          }
+          if (!root) return;
+          if (isTextDragClick(root)) return;
+          root.classList.toggle("is-collapsed");
+        });
+      }
       const chatJump = document.getElementById("chat-jump");
       const updateChatJump = () => { if (chatJump) chatJump.hidden = stickBottom; };
       if (chatJump) {
@@ -1050,7 +1120,8 @@
         const head = document.createElement("div");
         head.className = "turn-head";
         const caret = document.createElement("span");
-        caret.className = "turn-caret"; caret.textContent = "▼";
+        // 글자는 **한 모양**만 둔다(▸) — 펼침/접힘은 CSS 가 rotate 로 말한다.
+        caret.className = "turn-caret"; caret.textContent = "▸";
         const badge = document.createElement("span");
         badge.className = "act-badge act-" + adapter;
         badge.textContent = p.adapter || "?";
@@ -1076,7 +1147,7 @@
         if (agentName) {
           const ab = document.createElement("span");
           ab.className = "agent-badge";
-          ab.textContent = "🤖 " + agentName;
+          ab.textContent = kindIcon("agent") + " " + agentName;
           head.appendChild(ab);
           th.style.display = "none";
         }
@@ -1103,21 +1174,16 @@
         body.className = "turn-body";
         // 수동 접힘(.collapsed) = 두 패널 공통(헤더 클릭, 기존 로그 토글 보존).
         // 완료 자동접힘(.done-collapsed) = 채팅 패널만(로그 패널 회귀 0). 수동 클릭이 우선.
+        // ★상태·클릭은 **공용 위임**(위 `HEADS`)이 맡는다. `setOpen` 은 다른 곳(자동 접힘
+        //  해제 등)이 부르므로 남기되 **한 클래스**만 쓴다.
+        // ★캐럿을 여기서 안 건드린다 (2026-09-10 적대 검토 P-4). 종전엔 이 함수가 글자를
+        //  갈아 끼웠는데, 사용자 클릭은 공용 위임이 처리하므로 **클릭 경로엔 이 함수가
+        //  안 온다** — 그래서 접혀도 ▼ 인 채였다. 표시는 CSS(`.turn-group:not(.is-collapsed)
+        //  .turn-caret`)가 클래스 하나만 보고 정한다: 상태의 권위가 한 곳이 된다.
         const setOpen = (open) => {
-          el.classList.toggle("collapsed", !open);
-          el.classList.remove("done-collapsed"); // 수동 조작이 자동접힘을 해제.
-          // ★**답변 버블까지 접는다** (2026-09-10 정태님: *"채팅카드 안 접히는데?"*).
-          //  종전엔 `.turn-card.collapsed` 가 `.turn-body`(도구 스텝)만 숨겼는데, 답변 버블은
-          //  `.turn-group` 의 **형제**라 그대로 남았다 — 눈에 보이는 큰 덩어리가 안 사라지니
-          //  «접혔다» 로 안 읽힌다. 접기는 «이 턴을 한 줄로 줄인다» 여야 한다.
-          group.classList.toggle("turn-collapsed", !open);
-          caret.textContent = open ? "▼" : "▶";
+          const root = el.parentElement ?? el;
+          root.classList.toggle("is-collapsed", !open);
         };
-        // 텍스트 드래그는 접기로 안 친다 — 헤더는 user-select:none 이라 대개 무해하지만
-        // 판정을 한 곳에 두면 다음에 헤더에 선택 가능한 것이 들어와도 저절로 맞는다.
-        onToggleClick(head, () => setOpen(
-          el.classList.contains("collapsed") || el.classList.contains("done-collapsed"),
-        ));
         el.appendChild(head); el.appendChild(body);
         group.appendChild(el);
         // replyBubble = 이 턴의 진행(타이핑) 답변 슬롯(P5). 첫 delta 때 생성, out 도착 시 승격.

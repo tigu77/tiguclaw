@@ -87,15 +87,43 @@ export const dedupeWithShadows = <T extends Sourced>(
  *
  * ★`console.warn` 이다 — 데몬 로그가 1차 진단면이고, 원격 불가 설치본(회사 PC·윈도우)에선
  *  그게 유일한 창이다([[feedback_logs_must_stand_alone]]). 판정 수치(무엇이·누구에게)를 싣는다.
+ *
+ * ★**상태가 바뀔 때만 찍는다** (2026-09-10 적대 검토 G-2). 이 함수를 부르는 네 축은
+ *  `discoverSkills`/`discoverAgents` 를 타고 **턴마다** 돌고, 대시보드 인벤토리는 한
+ *  요청에 다섯 번 부른다. 억제가 없으면 같은 줄이 턴마다 쌓여 **배경소음**이 되고,
+ *  이 레포는 그 기제로 실제 경고를 12일간 묻은 전례가 있다.
+ *  형제가 이미 셋이다 — `plugin-mcp-merge.ts` 의 `warnShadowedOnce`,
+ *  `skill-registry.ts` 의 `reportedDefects`, `threadkey.ts` 의 `warnBindingLookupOnce`.
+ *  **새 관용구가 아니라, 이 함수만 그걸 건너뛴 것이었다.**
+ * ★실피해는 소음만이 아니었다: 억제가 없어서 **출하된 검사 하나가 환경 의존**이 됐다.
+ *  `skill-drop-is-not-silent` 의 «재발화 0건» 단언이 이 줄까지 세므로, 빌트인을 덮는
+ *  플러그인을 깐 기계에선 빨개진다(우리 홈에 충돌이 없어 초록이었을 뿐이다).
+ * ★«영구 1회» 가 아니라 «서명이 바뀌면 다시» 다 — 플러그인을 뺐다 다시 넣으면 다시
+ *  말해야 한다(재발을 무시하면 그게 곧 침묵이다).
+ * ★키가 축 이름 넷뿐이라 캡·LRU 가 필요 없다(`reportedDefects` 와 달리 무한히 안 는다).
  */
+const lastShadowSignature = new Map<string, string>();
+
+/** 테스트용 — 억제 상태를 비운다(이 경고를 *관찰하는* 검사가 서로 오염되지 않게). */
+export const __resetShadowWarningsForTest = (): void => {
+  lastShadowSignature.clear();
+};
+
 export const warnShadowed = (
   kind: string,
   shadowed: ReadonlyArray<{ name: string; by: string }>,
 ): void => {
-  if (shadowed.length === 0) return;
+  const detail = shadowed.map((s) => `${s.name}(by ${s.by})`).join(", ");
+  if (shadowed.length === 0) {
+    // 충돌이 사라진 것도 «상태 변화» 다 — 지워야 다음에 다시 생겼을 때 말한다.
+    lastShadowSignature.delete(kind);
+    return;
+  }
+  if (lastShadowSignature.get(kind) === detail) return;
+  lastShadowSignature.set(kind, detail);
   console.warn(
     `[capability-shadow] 플러그인이 빌트인 ${kind} ${shadowed.length}개를 덮었습니다 — ` +
-      shadowed.map((s) => `${s.name}(by ${s.by})`).join(", ") +
+      detail +
       ". 빌트인 대신 플러그인 것이 쓰입니다.",
   );
 };

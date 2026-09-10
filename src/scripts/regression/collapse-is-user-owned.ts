@@ -92,12 +92,21 @@ export const check: RegressionCheck = {
     }
 
     // ★토글 자리를 **손으로 세지 않는다** — 남은 raw 핸들러가 0인지 본다.
-    const FILES = ["activity.js", "history-render.js", "virtualization.js"];
+    // ★**파일도 패턴도 손으로 적지 않는다** (2026-09-10 적대 검토 P-4). 첫 판은 파일 셋을
+    //  나열하고 `toggle("expanded")` 만 찾았다 — 그래서 `background-drawer.js` 의 토글 두 곳
+    //  (`setJobOpen` · `toggleWorkerStepRich`)을 **통째로 못 봤다.** 정작 거기가 제일 아팠다:
+    //  스텝 줄은 diff·출력이 붙는 자리라 «정확히 복사하고 싶은 텍스트» 다.
+    //  ★목록을 없앤다 — 대시보드 js **전부**를 훑고, «접기/펼치기로 보이는 호출» 을 넓게 센다
+    //  ([[feedback_hand_maintained_lists]]).
+    const { readdirSync } = await import("node:fs");
+    const FILES = readdirSync(new URL("../../../packages/dashboard/js/", import.meta.url))
+      .filter((f) => f.endsWith(".js"));
+    const TOGGLEY = /toggle\("(expanded|open|collapsed)"\)|toggleWorkerStepRich\(|setJobOpen\(/;
     const raw: string[] = [];
     for (const f of FILES) {
       const src = js(f);
-      // `classList.toggle("expanded")` 를 하는 raw click 리스너가 남아 있나.
-      for (const m of src.matchAll(/addEventListener\("click",[\s\S]{0,160}?toggle\("expanded"\)/g)) {
+      for (const m of src.matchAll(/addEventListener\("click",[\s\S]{0,200}?\)\s*;/g)) {
+        if (!TOGGLEY.test(m[0])) continue;
         raw.push(`${f}:${src.slice(0, m.index ?? 0).split("\n").length}`);
       }
     }
@@ -109,20 +118,63 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ② 접기 범위 — 답변 버블까지
+    // ② ★**접기 규칙이 하나다** (2026-09-10 정태님: *"한 군데서 하는 게 아닌 건가?"*).
+    //  종전엔 기제 셋 · 상태 클래스 셋(`turn-collapsed`·`bubble-collapsed`·`expanded`)이었고
+    //  그중 하나는 **의미가 뒤집혀** 있었다. 그래서 접기를 고칠 때마다 한 곳만 고쳐졌다.
     const vt = js("virtualization.js");
     const css = readSourceSync("packages/dashboard/app.css");
     out.push(
       assert(
-        "★★접기가 **턴 전체**를 줄인다 — 카드 밖 형제(답변 버블)도 숨긴다. 안 그러면 «접었는데 그대로» 다",
-        /group\.classList\.toggle\("turn-collapsed", !open\)/.test(vt) &&
-          /\.turn-group\.turn-collapsed > \*:not\(\.turn-card\)/.test(css),
-        `JS=${/turn-collapsed/.test(vt)} · CSS=${/\.turn-group\.turn-collapsed/.test(css)}`,
+        "★★접기 클릭이 **한 곳**에서만 등록된다 — 머리줄 종류가 늘어도 셀렉터 한 줄이지 리스너가 늘지 않는다",
+        /const HEADS = "\.bubble-meta, \.turn-head, \.hist-turn-head"/.test(vt) &&
+          /streamRoot\.addEventListener\("click"/.test(vt),
+        `HEADS=${/const HEADS = /.test(vt)} · 위임=${/streamRoot\.addEventListener/.test(vt)}`,
       ),
       assert(
-        "★헤더(`.turn-card`)는 남긴다 — 다시 펼칠 손잡이가 사라지면 되돌릴 수 없다",
-        /:not\(\.turn-card\)/.test(css),
-        `예외 규칙=${/:not\(\.turn-card\)/.test(css)}`,
+        "★★상태 클래스가 **하나**다(`is-collapsed`) — 옛 세 벌이 남으면 한쪽만 고쳐진다",
+        // ★**주석을 벗기고 센다** — 옛 이름은 «왜 합쳤나» 를 설명하는 글에 남아야 한다.
+        //  검사 대상은 마크업이지 그걸 설명하는 글이 아니다(오늘 두 번째, 적대 검토 G-1).
+        (() => {
+          const cssCode = stripComments(css);
+          return (
+            !/turn-collapsed|bubble-collapsed/.test(vt) &&
+            !/turn-collapsed|bubble-collapsed/.test(cssCode) &&
+            !/\.hist-turn\.expanded/.test(cssCode)
+          );
+        })(),
+        `js=${/turn-collapsed|bubble-collapsed/.test(vt)} · css(주석 제외)=${/turn-collapsed|bubble-collapsed|\.hist-turn\.expanded/.test(stripComments(css))}`,
+      ),
+      assert(
+        "★★컨테이너가 `#stream` 이다 — `#chat` 은 **형제**(입력창·점프버튼)라 거기 걸면 한 번도 안 걸린다(실제로 그랬다)",
+        /getElementById\("stream"\)/.test(vt) && /#stream \.is-collapsed/.test(css),
+        `js=${/getElementById\("stream"\)/.test(vt)} · css=${/#stream \.is-collapsed/.test(css)}`,
+      ),
+      assert(
+        "★★**본문 한가운데를 눌러도 접힌다** — 긴 답변은 머리줄이 화면 밖이라, 접으려고 위로 스크롤해야 했다",
+        /tgt\.closest\("\.ev\.local"\)/.test(vt) && /querySelector\(":scope > \.bubble-meta"\)/.test(vt),
+        `본문 경로=${/tgt\.closest\("\.ev\.local"\)/.test(vt)} · 머리줄 있는 것만=${/:scope > \.bubble-meta/.test(vt)}`,
+      ),
+      assert(
+        "★★도구 스텝 줄은 **제외**한다 — 거긴 자기 토글(스텝 상세)이 있어, 한 클릭이 두 가지를 하면 사용자는 무엇이 일어날지 모른다",
+        /closest\("\.turn-body, \.hist-turn-body"\)/.test(vt),
+        `스텝 제외=${/\.turn-body, \.hist-turn-body/.test(vt)}`,
+      ),
+      assert(
+        "★★접어도 **세 줄은 남긴다** — 통째로 숨기면 «무엇이 접혔는지» 를 알 수 없어 하나씩 펴 보게 된다",
+        /--collapse-lines: 3/.test(css) &&
+          /max-height: calc\(1\.55em \* var\(--collapse-lines\)\)/.test(css) &&
+          !/is-collapsed[^{]*\{[^}]*display:none/.test(stripComments(css)),
+        `줄 수 변수=${/--collapse-lines/.test(css)} · 높이 제한=${/max-height: calc\(1\.55em/.test(css)}`,
+      ),
+      assert(
+        "★잘린 자리가 **흐려진다** — 글자가 뚝 끊기면 «다 본 것» 처럼 읽힌다",
+        /mask-image: linear-gradient\(to bottom/.test(css),
+        `페이드=${/mask-image: linear-gradient/.test(css)}`,
+      ),
+      assert(
+        "★머리줄은 남긴다 — 다시 펼칠 손잡이가 사라지면 되돌릴 수 없다",
+        /:not\(\.bubble-meta\):not\(\.turn-head\):not\(\.hist-turn-head\)/.test(css),
+        `예외 규칙=${/:not\(\.bubble-meta\)/.test(css)}`,
       ),
     );
 
@@ -134,9 +186,10 @@ export const check: RegressionCheck = {
         `자동접힘 호출=${(js("token-delta.js").match(/done-collapsed/g) ?? []).length}건`,
       ),
       assert(
-        "★새로고침 후 이력 턴도 **펼친 채** 시작한다 — 접힌 채로 뜨면 «있던 게 사라진» 것처럼 보인다",
-        /turn\.classList\.add\("expanded"\)/.test(js("history-render.js")),
-        `기본 expanded=${/turn\.classList\.add\("expanded"\)/.test(js("history-render.js"))}`,
+        "★새로고침 후 이력 턴도 **펼친 채** 시작한다 — 이제 «보임» 이 기본이고 숨김만 클래스로 한다(옛 `.expanded` 는 반대였다)",
+        !/classList\.add\("expanded"\)/.test(js("history-render.js")) &&
+          /\.hist-turn-body \{ padding/.test(readSourceSync("packages/dashboard/app.css")),
+        `opt-in 숨김=${!/classList\.add\("expanded"\)/.test(js("history-render.js"))}`,
       ),
     );
 

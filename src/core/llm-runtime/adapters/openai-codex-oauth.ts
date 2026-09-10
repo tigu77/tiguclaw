@@ -84,7 +84,7 @@ import {
   formatModelProfiles,
   splitSystemContext,
 } from "../../prompt-assembly.js";
-import { claimToolNames, keepClaimed } from "../tool-name-claim.js";
+import { claimToolNames, keepClaimed, probeBridgeTools } from "../tool-name-claim.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
@@ -926,16 +926,10 @@ export const runOpenAiCodex = async (
         //   빠져 있던 건 **연결된 뒤 죽는 경우**다. 같은 규칙을 여기서도 적용한다.
         //  ★매니저에서 두드러진 이유: 이 블록의 조건이 `depth 0` **또는**
         //   `isProjectMcpCwd(cwd)` 인데, 매니저는 프로젝트 cwd 로 돌아 두 번째로 들어온다.
-        let extToolsRaw: Awaited<ReturnType<typeof extBridge.listTools>>;
-        try {
-          extToolsRaw = await extBridge.listTools();
-        } catch (e) {
-          console.warn(
-            `external-mcp: 브리지 도구 조회 실패 — 이 턴에서 skip (${e instanceof Error ? e.message : String(e)}). ` +
-              `대상 앱이 꺼졌을 수 있습니다 — 다시 켜면 다음 턴에 복구됩니다.`,
-          );
-          continue;
-        }
+        // ★판정은 **공용 함수**가 한다 — 어댑터마다 자기 try/catch 를 두면 갈리고,
+        //  실제로 갈려서 openai 가 같은 사고를 다시 냈다(2026-09-10 적대 검토 P1).
+        const extToolsRaw = await probeBridgeTools(extBridge);
+        if (extToolsRaw === null) continue;
         // ★**먼저 잡은 쪽이 갖는다** — 외부 MCP 가 코어 도구를 덮지 못한다(2026-08-28).
         //  종전엔 그냥 `set` 이라 같은 이름이면 조용히 가로챘다.
         const extClaim = claimToolNames(toolBridgeMap, extToolsRaw, extBridge, "external-mcp");
@@ -1323,6 +1317,19 @@ export const runOpenAiCodex = async (
   let lastFingerprint: string[] = [];
   let lastFingerprintNote = "fp=없음";
   let lastToolsNote = "tools=?";
+  /** 이 턴의 **첫 호출에서만** 지문을 기록·비교했나 — 그래야 비교 짝이 «지난 턴» 이 된다. */
+  let turnPrefixNoted = false;
+  /** 마지막 iteration 의 도구 수(노트는 첫 호출 것을 보존하되 «지금 몇 개인가» 는 남긴다). */
+  let lastToolsCount = 0;
+  /**
+   * 이 턴에 **입력 한가운데를 고쳐 쓴** 횟수 (`compactOldToolOutputs`).
+   *
+   * ★왜 세나 (2026-09-10 적대 검토 P2): 지문 사다리는 «안정 프리픽스(지시+도구)» 만 보고,
+   *  그 근거가 *"`input` 은 뒤에 붙기만 하므로 프리픽스를 못 깬다"* 였다. **그 전제가 거짓**
+   *  이다 — 도구 출력 압축은 앞쪽 원소를 제자리에서 바꾼다. 그러면 `갈림=없음` 인데도
+   *  백엔드 캐시는 그 지점부터 깨진다. 세지 않으면 진단이 «우리 밖» 이라고 오진한다.
+   */
+  let turnCompacted = 0;
   let lastInstrNote = "instr=?";
 
   try {
@@ -1473,25 +1480,47 @@ export const runOpenAiCodex = async (
         const o = t as { name?: unknown; type?: unknown };
         return typeof o.name === "string" ? o.name : `<${String(o.type ?? "?")}>`;
       });
-      const toolChange = describeToolChange(
-        toolNames,
-        rememberToolNames(input.threadKey, toolNames),
-      );
-      lastToolsNote =
-        `tools=${Array.isArray(body.tools) ? body.tools.length : 0}개/` +
-        `${prefixFingerprint(toolsJson)[4] ?? "?"}` +
-        (toolChange === "" ? "" : ` ★${toolChange}`);
+      // ★★**턴의 첫 호출에서만 비교한다** (2026-09-10 적대 검토 P1). 이 값들은 while 루프
+      //  밖에 선언되고 **매 iteration 덮인다.** 그런데 로그에 실리는 건 턴당 한 줄
+      //  (`[codex-turn-end]`)이라 담기는 것은 **마지막 iteration** 의 값이다. `tools`·
+      //  `instructions` 는 루프 전에 한 번 만들어져 iteration 사이엔 **정의상 안 변하므로**,
+      //  도구를 한 번이라도 쓴 턴(=대부분)은 구조적으로 «갈림=없음 · 도구변화 없음» 이 찍혔다.
+      //  ★즉 이 관측이 만들려던 신호(«지난 턴과 견줘 변했나»)가 **iteration 1 에서 덮여
+      //   사라졌다.** 회사돌쇠의 `64개↔63개` 가 정확히 그렇게 안 보인 것이다.
+      //  ★고침은 «기억을 언제 갱신하나» 하나다 — 첫 호출에서만 비교·기록하면 짝이 «지난 턴» 이
+      //   된다. 이후 iteration 은 노트를 **안 건드린다**(덮으면 다시 같은 병이다).
+      const firstCallOfTurn = !turnPrefixNoted;
+      const toolChange = firstCallOfTurn
+        ? describeToolChange(toolNames, rememberToolNames(input.threadKey, toolNames))
+        : "";
+      if (!firstCallOfTurn) {
+        // 이번 iteration 의 바이트만 갱신하고(아래 lastReqBytes) 지문 노트는 보존한다.
+        lastToolsCount = Array.isArray(body.tools) ? body.tools.length : 0;
+      }
+      if (firstCallOfTurn) {
+        lastToolsNote =
+          `tools=${Array.isArray(body.tools) ? body.tools.length : 0}개/` +
+          `${prefixFingerprint(toolsJson)[4] ?? "?"}` +
+          (toolChange === "" ? "" : ` ★${toolChange}`);
+      }
       // ★**사다리는 안정 프리픽스(지시+도구)만 본다 — `input` 을 넣지 않는다** (2026-09-10).
       //  이 지문은 매 model-call 마다 갱신되므로 비교 짝이 «지난 턴» 이 아니라 **같은 턴의
       //  직전 call** 이다. 거기서 변하는 건 언제나 `input`(도구 결과가 뒤에 붙는다)뿐이라
       //  로그가 **늘 «갈림=5칸»** 만 찍었다(회사돌쇠 6턴 중 5턴). 뒤에 붙는 것은 원리적으로
       //  프리픽스 캐시를 못 깨므로 판별력이 0이다 — 빼면 질문이 정확히 하나로 좁혀진다:
-      //  **«우리 안정 프리픽스가 변했나»**. «없음» 인데 콜드면 원인은 우리 밖이다.
-      lastFingerprint = prefixFingerprint(String(body.instructions ?? "") + toolsJson);
-      lastFingerprintNote = describeFingerprint(
-        lastFingerprint,
-        rememberFingerprint(input.threadKey, lastFingerprint),
-      );
+      //  **«우리 안정 프리픽스가 변했나»**.
+      //  ★★**그렇다고 «없음» = «우리 밖» 은 아니다** (2026-09-10 적대 검토 P2, 내 첫 판이
+      //   틀렸다). `compactOldToolOutputs` 가 **앞쪽 도구 출력을 제자리에서 고쳐 쓴다** —
+      //   `input` 은 append-only 가 아니다. 그래서 같은 줄에 `압축=N건` 을 싣는다: N>0 이면
+      //   «없음» 이어도 **우리가 프리픽스를 깬 것**이다.
+      if (firstCallOfTurn) {
+        lastFingerprint = prefixFingerprint(String(body.instructions ?? "") + toolsJson);
+        lastFingerprintNote = describeFingerprint(
+          lastFingerprint,
+          rememberFingerprint(input.threadKey, lastFingerprint),
+        );
+        turnPrefixNoted = true;
+      }
       lastReqBytes = {
         total: bodyJson.length,
         instructions: String(body.instructions ?? "").length,
@@ -2134,7 +2163,7 @@ export const runOpenAiCodex = async (
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
             `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
             `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
-            `${lastToolsNote} ${lastInstrNote} ${lastFingerprintNote} ` +
+            `${lastToolsNote}${lastToolsCount > 0 && !lastToolsNote.startsWith(`tools=${lastToolsCount}개`) ? `(현재 ${lastToolsCount}개)` : ""} ${lastInstrNote} ${lastFingerprintNote}${turnCompacted > 0 ? ` ★압축=${turnCompacted}건(입력 한가운데를 고쳐 씀 — 캐시가 여기서 깨진다)` : ""} ` +
             // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가
             //  쪼개져 있었는데 `cached` 가 없어서, «프리픽스가 어디서 끊겼나» 를 물으면
             //  로그로는 답이 안 나왔다 — 프로브를 새로 짜서 반나절을 썼다. 세 필드면
@@ -2507,7 +2536,8 @@ export const runOpenAiCodex = async (
       // placeholder 로 치환해 O(N²) 누적 재전송을 선형으로 묶는다. call_id 쌍은
       // 보존(output 문자열만 교체) → Responses shape 무손상. 압축 대상이 없는 짧은
       // 루프(대부분의 일반 대화)는 no-op → 현행과 100% 동일(회귀 0).
-      compactOldToolOutputs(inputArray);
+      // ★압축은 **프리픽스 한가운데를 고쳐 쓴다** — 몇 건인지 세어 진단에 싣는다(P2).
+      turnCompacted += compactOldToolOutputs(inputArray);
 
       iteration += 1;
     }

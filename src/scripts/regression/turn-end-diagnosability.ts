@@ -59,7 +59,11 @@ export const check: RegressionCheck = {
         //  ★두 줄을 **한 패턴**으로 묶어야 한다. `/^\s*console\.log\($/m` 만 따로 두면
         //   같은 파일의 **다른** console.log 를 맞혀서, 이 호출만 env 게이트 뒤로 숨겨도
         //   초록이었다(실제로 변이 잔재가 작업 트리에 남았는데 스위트가 통과했다).
-        /^\s*console\.log\(\s*`\[codex-turn-end\] model=\$\{model\}/m,
+        // ★**머리를 리터럴로 박지 않는다** (2026-09-10). 이 검사가 지키는 성질은 «판정
+        //  재료가 한 줄에 실리나» 이지 «그 순서가 그대로냐» 가 아니다. threadKey 를 앞에
+        //  더하자 빨개졌는데, 그건 로그가 **좋아진** 변경이었다 — 리터럴을 요구하면 옳은
+        //  개선을 막는다(이 레포가 `npm run onboard` 리터럴로 이미 한 번 겪었다).
+        /^\s*console\.log\(\s*`\[codex-turn-end\][^`]*\$\{model\}/m,
         /closing=\$\{closing \? "재요청" : "종료"\}/, // 가드 판정 결과
         /text=\$\{text\.length\} finalText=\$\{finalText\.length\}/, // 첫 줄 분기 판별
         /toolsSinceText=\$\{toolCallsSinceText\}/, // 두 번째 분기 판별

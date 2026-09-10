@@ -109,6 +109,23 @@ export const check: RegressionCheck = {
         `계산=${/prefixFingerprint\(/.test(src)} · cache-curve=${curve} · codex-turn-end=${turnEnd}`,
       ),
     );
+    // ★**누구 것인지**가 없으면 지문도 소용없다 (2026-09-10 실측).
+    //  위임(`worker:<uuid>`)은 중앙값 **1턴**만 살고 끝난다(최근 5일 56개 중 56개가 2턴
+    //  이하). 그래서 «이 콜드가 어느 위임의 것인가 · 위임들끼리 머리를 공유하나» 를 봐야
+    //  하는데, 로그에 threadKey 가 없어 대조가 불가능했다. 지문이 있어도 주인이 없으면
+    //  두 줄을 나란히 놓을 수가 없다.
+    for (const label of ["[codex-turn-end]", "[cache-curve]"] as const) {
+      const i = src.indexOf(label);
+      const head = i < 0 ? "" : src.slice(i, i + 90);
+      out.push(
+        assert(
+          `★★\`${label}\` 이 **threadKey 를 싣는다** — 없으면 «이 콜드가 어느 위임의 것인가» 를 못 가리고, 지문이 있어도 대조할 짝을 못 찾는다`,
+          /\$\{input\.threadKey\}/.test(head),
+          head === "" ? "★로그 자체가 없다" : head.replace(/\s+/g, " ").slice(0, 70),
+        ),
+      );
+    }
+
     return out;
   },
 };

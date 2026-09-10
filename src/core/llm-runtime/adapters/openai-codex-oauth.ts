@@ -1382,8 +1382,17 @@ export const runOpenAiCodex = async (
       //  «크기는 같은데 내용이 다른가» 를 못 가렸다 — 같은 분에 같은 크기의 두 요청이
       //  65% 와 8% 로 갈린 것을 설명할 수 없었다. 프리픽스를 **보내는 순서 그대로**
       //  이어붙여 사다리로 해시한다(지시 → 입력. 도구는 프리픽스 뒤라 제외).
+      // ★**도구도 지문에 넣는다** (2026-09-10 실측). 첫 판은 `instructions + input` 만
+      //  덮었는데, 실측해 보니 **도구 블록이 28,889자 — 지시(27,293자)와 맞먹는다.** 그리고
+      //  도구야말로 변하기 쉬운 쪽이다(플러그인 로드 순서·MCP 연결·역할별 세트: 실측 34KB
+      //  ↔ 90KB). 가장 변하기 쉬운 것을 계측기가 못 보고 있었다 — 그러면 «갈림=없음» 이
+      //  거짓 안심이 된다.
+      //  ★순서는 **보내는 대로**다(도구 → 지시 → 입력이 아니라, 우리가 무엇이 변했는지만
+      //   알면 되므로 일관된 순서면 족하다).
       lastFingerprint = prefixFingerprint(
-        String(body.instructions ?? "") + JSON.stringify(body.input ?? []),
+        JSON.stringify(body.tools ?? []) +
+          String(body.instructions ?? "") +
+          JSON.stringify(body.input ?? []),
       );
       lastFingerprintNote = describeFingerprint(
         lastFingerprint,
@@ -1780,7 +1789,7 @@ export const runOpenAiCodex = async (
         //  (판정·집계는 위 addUsage — cache-collapse.ts. 여기선 곡선만 찍는다.)
         if (process.env.CODEX_CACHE_CURVE === "1") {
           console.log(
-            `[cache-curve] ${model} i${usageTotals.iterations} ` +
+            `[cache-curve] ${input.threadKey} ${model} i${usageTotals.iterations} ` +
               `in=${usage.inputTokens.toLocaleString()} cached=${(usage.cachedTokens ?? 0).toLocaleString()} ` +
               `적중=${Math.round(hitPct(usage))}% req=${lastReqBytes.total.toLocaleString()}자` +
               `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
@@ -2022,7 +2031,7 @@ export const runOpenAiCodex = async (
         //  tail 은 예고형("~하겠습니다")인지 보고형인지 사람이 판단할 최소 재료.
         const tail = finalText.replace(/\s+/g, " ").slice(-100);
         console.log(
-          `[codex-turn-end] model=${model} iter=${iteration} steered=${steeredTotal} ` +
+          `[codex-turn-end] ${input.threadKey} model=${model} iter=${iteration} steered=${steeredTotal} ` +
             `closing=${closing ? "재요청" : "종료"} ` +
             `text=${text.length} finalText=${finalText.length} ` +
             `toolsSinceText=${toolCallsSinceText}${

@@ -846,6 +846,8 @@ const handler: MessageHandler = async (msg) => {
   // (LLM 턴 0, 즉답·무료·결정적). 서브·매니저 통합 잡 모델(kind) 기반 — listJobs 단일 소스.
   // 원칙 4: 상태 조회를 모델에게 안 시킴(원칙 1 슈퍼셋의 사용자-driven 갈래).
   if (trimmed === "/agents") {
+    // 아이콘을 카탈로그에서 읽는다(아래 iconKey) — 동적 import 로 부팅 그래프를 안 늘린다.
+    const { translate } = await import("./core/i18n.js");
     const running = listJobs({ runningOnly: true });
     if (running.length === 0) {
       await replyCommand(msg,"지금 진행 중인 백그라운드 작업이 없어요.");
@@ -858,7 +860,13 @@ const handler: MessageHandler = async (msg) => {
     const fmtElapsed = (startedAt: number): string => `${formatDurationKo(now - startedAt)}째`;
     // 최신 먼저(listJobs 가 startedAt 내림차순). 매니저/서브 구분 라벨.
     const lines = running.map((j) => {
-      const icon = j.kind === "agent" ? "🤖" : "📦";
+      // ★아이콘은 **카탈로그에서** (2026-09-10 정태님: *"코드에 박힌 걸 빼면 되지 않을까"*).
+      //  이모지가 이미 로케일에 있어 `<home>/locales/<lang>.json` 으로 덮을 수 있는데
+      //  잡 아이콘만 코드에 박혀 그것만 못 바꿨다. `translate` 는 키 부재 시 키를 그대로
+      //  돌려주므로(옛 배포본·반쯤 번역된 파일) 폴백을 둔다 — 글자가 키 이름이 되면 안 된다.
+      const iconKey = j.kind === "agent" ? "job.kind.agent.icon" : "job.kind.worker.icon";
+      const iconT = translate(iconKey);
+      const icon = iconT !== iconKey ? iconT : j.kind === "agent" ? "🤖" : "🎖️";
       const kindLabel = j.kind === "agent" ? "서브에이전트" : "매니저";
       const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
       // 모델 티어 표시(low/mid/high 등) — 매니저·서브 공통. modelTier 있고 default/빈값 아닐 때만.

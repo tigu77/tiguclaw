@@ -108,6 +108,19 @@ export interface RegionASdkInput {
    */
   reasoning?: string;
   /**
+   * 신규(additive, 2026-09-10) — **모델 프로파일이 정한** 속도 티어. 풀 원소
+   * (`{model, speed:"fast"}`)에서 실려 온다. 미지정 = 종전 동작(회귀 0).
+   *
+   * ★어휘를 중립으로 둔다: `service_tier` 는 OpenAI 낱말이고, 그걸 공용 계약에 박으면
+   *  다른 provider 를 붙일 때 남의 벤더 말을 쓰게 된다. 여기선 «빠르게» 라는 **의도**만
+   *  운반하고, 그걸 무엇으로 부르는지는 어댑터가 정한다(codex → `service_tier:"priority"`).
+   *  값을 읽지 않는 어댑터는 그냥 무시한다 — `reasoning` 이 anthropic 에서 그러듯이.
+   * ★공짜가 아니다: 속도는 1.5배인데 **크레딧은 2.5배** 나간다(공식 문서
+   *  learn.chatgpt.com/docs/agent-configuration/speed, 2026-09-10 확인). 그래서
+   *  **기본은 꺼짐**이고, 프로파일에 적었을 때만 켜진다.
+   */
+  speed?: "fast";
+  /**
    * 아웃바운드 첨부 전송 클로저 — 채널 원본(IncomingMessage.sendAttachment)을 router가 주입.
    * send_file MCP 도구가 호출. 미지정(스케줄러 등 비채널 turn) 이면 도구가 미지원 안내.
    */

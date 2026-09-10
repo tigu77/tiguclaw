@@ -99,12 +99,17 @@
       // 부르지만(cross-file 훅), 세션 탭 전환(activeThreadKey 변경)은 tabs.js 를 건드리지 않고도
       // 최대 1s 이내 반영되도록 가벼운 폴 — background-drawer.js 자기완결(무접촉 파일 원칙 준수).
       setInterval(() => { refreshShellStrip(); syncSessionBgBadges(); }, 1000);
-      // "↑ 최신" 점프 — 아래로 내려 과거 잡 열람 중(scrollTop>임계)일 때만 노출, 클릭하면 맨 위(최신)로.
-      // 채팅 chat-jump 의 상단판(newest=insertBefore 로 top). stickTop 이 안 끌어당기는 케이스의 어포던스.
+      // "↓ 최신" 점프 — 위로 올려 과거 잡 열람 중일 때만 노출, 클릭하면 맨 아래(최신)로.
+      // ★**오래된 것부터 아래로 쌓는다** (2026-09-10 정태님). 채팅과 **같은 방향**이라
+      //  두 화면을 오갈 때 읽는 방향이 안 뒤집힌다 — 종전엔 채팅은 아래가 최신인데
+      //  이 목록만 위가 최신이라, 같은 드로어 안에서 시간축이 반대로 흘렀다.
       const bgJump = document.getElementById("bg-jump");
-      const BG_JUMP_THRESHOLD = 40; // stickTop 임계(ensureJobCard _bgNearTop)와 동일.
-      const updateBgJump = () => { if (bgJump) bgJump.hidden = bgList.scrollTop < BG_JUMP_THRESHOLD; };
-      if (bgJump) bgJump.addEventListener("click", () => { bgList.scrollTop = 0; updateBgJump(); });
+      const BG_JUMP_THRESHOLD = 40; // stickBottom 임계(ensureJobCard _bgNearBottom)와 동일.
+      /** 맨 아래(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
+      const bgNearBottom = () =>
+        bgList.scrollHeight - bgList.scrollTop - bgList.clientHeight < BG_JUMP_THRESHOLD;
+      const updateBgJump = () => { if (bgJump) bgJump.hidden = bgNearBottom(); };
+      if (bgJump) bgJump.addEventListener("click", () => { bgList.scrollTop = bgList.scrollHeight; updateBgJump(); });
       bgList.addEventListener("scroll", updateBgJump, { passive: true });
       const BG_STATUS = {
         running: i18n("bg.status.running"), done: i18n("common.status.done"), failed: i18n("bg.status.failed"), cancelled: i18n("bg.status.cancelled"),
@@ -665,10 +670,13 @@
       };
       const capBgList = () => {
         while (jobCards.size > BG_MAX) {
-          // 카드는 그룹 컨테이너 안에 중첩될 수 있어 직계 순회 대신 .bg-job 후손을 뒤에서부터.
+          // 카드는 그룹 컨테이너 안에 중첩될 수 있어 직계 순회 대신 .bg-job 후손을 훑는다.
+          // ★**앞에서부터** — 정렬이 오래된 순이라 앞이 가장 오래된 것이다(2026-09-10).
+          //  종전엔 뒤에서부터였고, 그때는 뒤가 오래된 것이었다. 정렬만 뒤집고 여기를 안
+          //  고치면 **가장 최근에 끝난 잡부터 지운다** — 조용하고, 화면만 보면 모른다.
           const cards = bgList.querySelectorAll(".bg-job");
           let removed = false;
-          for (let i = cards.length - 1; i >= 0; i--) {
+          for (let i = 0; i < cards.length; i++) {
             const node = cards[i];
             const jid = node.dataset ? node.dataset.jobId : null;
             if (!jid) continue;
@@ -716,7 +724,16 @@
         return parent ? jobOwnerSession(parent.threadKey, s) : "";
       };
       // 매니저 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
-      const WORKER_LABEL_PREFIX = "📦 ";
+      // ★아이콘을 **카탈로그에서 읽는다** (2026-09-10 정태님: *"코드에 박힌 걸 빼면 되지 않을까"*).
+      //  이모지가 이미 로케일에 47개 있어 `<home>/locales/<lang>.json` 으로 덮을 수 있었는데,
+      //  잡 아이콘만 코드에 박혀 **그것만 못 바꾸는** 상태였다. 카탈로그가 없으면(옛 배포본)
+      //  키 이름이 그대로 돌아오므로 폴백을 둔다 — 글자가 «job.kind.worker.icon» 이 되면 안 된다.
+      const KIND_ICON = (kind) => {
+        const k = "job.kind." + kind + ".icon";
+        const v = i18n(k);
+        return v && v !== k ? v : (kind === "agent" ? "🤖" : "🎖️");
+      };
+      const WORKER_LABEL_PREFIX = KIND_ICON("worker") + " ";
       /**
        * kind 에 맞는 라벨을 돌려준다 — **순수 함수**(2026-08-26).
        *
@@ -780,7 +797,7 @@
           const top = document.createElement("div"); top.className = "bg-job-top";
           const label = document.createElement("span"); label.className = "bg-job-label";
           label.textContent = JOB_LABEL_FALLBACK; // 실제 값은 entry 생성 직후 setJobLabel 이 정한다.
-          // kind 배지(매니저/서브에이전트) — status 뱃지와 별개 축. 기본은 매니저 배지("📦 매니저")를
+          // kind 배지(매니저/서브에이전트) — status 뱃지와 별개 축. 기본은 매니저 배지("🎖️ 매니저")를
           // 항상 표시하고, lifecycle 로 서브에이전트로 승격되면 아래에서 텍스트를 교체(.agent 가 색 전환).
           const kindBadge = document.createElement("span"); kindBadge.className = "bg-job-kind";
           kindBadge.textContent = AGENT_KIND_BADGE.worker;
@@ -865,13 +882,15 @@
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
           el.appendChild(top); el.appendChild(meta); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
           top.addEventListener("click", () => { setJobOpen(jobId, entry); });
-          // 최신=위 삽입 + stickTop 팔로우 — 삽입 전 맨 위 근처(최신 주시)면 삽입 후 top 으로
-          // 스냅해 새 카드 노출. 아래로 내려 과거 잡을 보는 중이면 존중(브라우저 scroll-anchoring
-          // 이 위치 보존, yank 금지) = 채팅 stickBottom 의 상단판. 임계 40px.
-          const _bgNearTop = bgList.scrollTop < 40;
-          bgList.insertBefore(el, bgList.firstChild); // 최신=위(bgEmpty 는 size>0 면 숨김).
-          if (_bgNearTop) bgList.scrollTop = 0;
-          updateBgJump(); // 새 카드가 위에 쌓임 — 내려본 상태면 "↑ 최신" 노출 갱신.
+          // 최신=아래 삽입 + stickBottom 팔로우 — 삽입 **전에** 맨 아래 근처였으면(최신 주시)
+          // 삽입 후 바닥으로 스냅해 새 카드를 보여준다. 위로 올려 과거 잡을 보는 중이면
+          // 존중한다(yank 금지) = 채팅과 **같은 규칙**. 임계 40px.
+          // ★재는 시점이 중요하다 — `appendChild` 뒤엔 scrollHeight 가 이미 늘어 언제나
+          //  "바닥 아님" 이 된다. 그러면 팔로우가 영영 안 걸린다.
+          const _bgNearBottom = bgNearBottom();
+          bgList.appendChild(el); // 최신=아래(bgEmpty 는 size>0 면 숨김).
+          if (_bgNearBottom) bgList.scrollTop = bgList.scrollHeight;
+          updateBgJump(); // 새 카드가 아래에 쌓임 — 올려본 상태면 "↓ 최신" 노출 갱신.
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             sessBadgeEl: sessBadge, rawTkEl: rawTk,
@@ -1013,7 +1032,7 @@
         if (opts && opts.cwd && !entry.cwd) entry.cwd = String(opts.cwd);
         if (opts && opts.label && !entry.hasLabel) setJobLabel(entry, String(opts.label));
         // 라벨 kind 접두 (2026-07-26) — 서브에이전트는 위에서 "🤖 <name>" 으로 쓰는데 매니저는
-        // 접두가 없어 비대칭이었다. 매니저도 "📦 <작업>" 으로 맞춰, 드로어에 매니저·서브가 섞여
+        // 접두가 없어 비대칭이었다. 매니저도 "🎖️ <작업>" 으로 맞춰, 드로어에 매니저·서브가 섞여
         // 있을 때 **이름만 보고** 구분되게 한다. 특히 모바일에선 kind 배지가 다음 줄로 wrap
         // 되므로(.bg-job-top flex-wrap) 라벨 접두가 사실상 유일한 구분 단서다.
         // 멱등 — 이미 붙었으면 재적용 0. agent 로 승격되면 위(agentName 분기)가 라벨을 통째

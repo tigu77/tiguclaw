@@ -161,7 +161,51 @@ const pruneTerminalJobsSafe = (): void => {
   persistSafe("pruneTerminalWorkerJobs", () =>
     pruneTerminalWorkerJobs(TERMINAL_WORKER_JOB_KEEP),
   );
+  pruneTerminalJobsInMemory();
 };
+
+/**
+ * **런타임 Map 도 같은 캡으로 자른다** (2026-09-10, 외부 검토가 지목).
+ *
+ * ★위 DB 캡만 있고 **아래 `jobs` Map 은 무바운드**였다 — `jobs.delete` 호출이 **0건**이고
+ *  `jobs.clear` 는 테스트 전용이다. 상주 데몬에서 완료 잡이 프로세스 수명 내내 쌓인다.
+ *
+ * ★그런데 **여기가 더 아프다**: DB 테이블엔 `result`·`task` 컬럼이 아예 없다
+ *  (`store/worker-jobs.ts`: *"result/error 본문·풀 재개는 비범위"*). 즉 **가장 큰 두 필드가
+ *  이 Map 에만** 산다 — 대시보드가 카드를 펼칠 때 `GET /api/worker-jobs` 로 여기서 전문을
+ *  가져간다. 무바운드인 쪽이 하필 무거운 쪽이었다.
+ *
+ * ★그래서 **삭제가 아니라 바운드**다([[project_hotpath_bound_preserve_record]] — 핫 워킹셋만
+ *  바운드, 콜드 레코드는 DB 가 계속 보관). running 은 절대 안 건드린다(진행 중 상태가
+ *  사라지면 취소·합류·통지가 전부 깨진다). 터미널 판정은 DB 와 **같은 규칙**(≠running)을
+ *  쓴다 — 상태 이름을 여기 다시 적으면 두 곳이 갈린다([[feedback_hand_maintained_lists]]).
+ *
+ * ★캡을 DB 와 **같은 상수**로 둔다. 두 숫자를 따로 두면 «화면엔 있는데 결과만 없다» 는
+ *  어긋남이 생기고, 그건 사용자가 원인을 알 수 없는 부류다.
+ *
+ * ★실측(2026-09-10, dev 홈): 잡 발생률 **하루 7.6건**(629건/83일). 캡 1,000 이면 ~4개월치라
+ *  실사용에선 사실상 안 잘린다 — 이건 «지금 아픈 것» 이 아니라 상한이 없던 것을 닫는 것이다.
+ */
+const pruneTerminalJobsInMemory = (): void => {
+  const terminal = [...jobs.values()].filter((j) => j.status !== "running");
+  if (terminal.length <= TERMINAL_WORKER_JOB_KEEP) return;
+  // 오래 끝난 것부터 버린다. `finishedAt` 이 없으면(비정상 전이) 시작 시각으로 대신한다.
+  terminal.sort((a, b) => (a.finishedAt ?? a.startedAt) - (b.finishedAt ?? b.startedAt));
+  const drop = terminal.length - TERMINAL_WORKER_JOB_KEEP;
+  for (let i = 0; i < drop; i += 1) {
+    const j = terminal[i];
+    if (j !== undefined) jobs.delete(j.jobId);
+  }
+  // 드물게 한 번 도는 자리다 — 조용히 지우지 않는다(무엇이 얼마나 사라졌는지 남긴다).
+  const running = [...jobs.values()].filter((j) => j.status === "running").length;
+  console.log(
+    `worker-jobs: 런타임 완료 잡 ${drop}건 정리 — 보관 ${TERMINAL_WORKER_JOB_KEEP}건, ` +
+      `남은 총 ${jobs.size}건(진행 중 ${running}건). 메타데이터는 DB 에 남습니다.`,
+  );
+};
+
+/** 테스트용 — 런타임 Map 의 현재 크기(캡이 실제로 도는지 실행으로 재려고). */
+export const __jobsMapSizeForTest = (): number => jobs.size;
 
 // ─── 통지 목적지 (generic 좌표 — architect §3-a) ─────────────────────────────
 /**

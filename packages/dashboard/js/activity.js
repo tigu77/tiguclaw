@@ -129,7 +129,7 @@
           prev.appendChild(att);
         }
         line.appendChild(meta); line.appendChild(body);
-        line.addEventListener("click", () => {
+        onToggleClick(line, () => {
           line.classList.toggle("expanded");
           if (line.classList.contains("expanded")) ensureActivityMarkdown(line);
         });
@@ -175,7 +175,7 @@
           body.textContent = label + detail;
         }
         line.appendChild(meta); line.appendChild(body);
-        line.addEventListener("click", () => line.classList.toggle("expanded"));
+        onToggleClick(line, () => line.classList.toggle("expanded"));
         // 컨텍스트메뉴 트리거 — buildActivityLineFromEntry 와 동형.
         const actCtx2 = () => ({ type: "activity", targetId: "a|" + a.ts + "|" + (a.seq == null ? "" : a.seq), threadKey: a.threadKey, label: body.textContent });
         attachKebab(meta, "activity", actCtx2);
@@ -208,7 +208,7 @@
           : "";
         body.textContent = i18n("activity.hook", { event: evName, tool, blocked });
         line.appendChild(meta); line.appendChild(body);
-        line.addEventListener("click", () => line.classList.toggle("expanded"));
+        onToggleClick(line, () => line.classList.toggle("expanded"));
         const hookCtx = () => ({ type: "activity", targetId: "h|" + h.ts + "|" + evName + "|" + (h.toolName || ""), threadKey: h.threadKey, label: body.textContent });
         attachKebab(meta, "activity", hookCtx);
         attachContextMenu(line, "activity", hookCtx);

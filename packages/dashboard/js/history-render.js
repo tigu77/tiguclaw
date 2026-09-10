@@ -270,13 +270,13 @@
         // 클릭 = 스텝 펼침/접힘(리치 블록 있으면). 부모 turn 접힘으로 전파 방지(stopPropagation).
         if (line.querySelector(":scope > .act-diff, :scope > .act-output, :scope > .act-plan")) {
           line.style.cursor = "pointer";
-          line.addEventListener("click", (e) => { e.stopPropagation(); line.classList.toggle("expanded"); });
+          onToggleClick(line, (e) => { e.stopPropagation(); line.classList.toggle("expanded"); });
         }
         return line;
       };
 
       // 이력 turn 묶음 — 연속된 같은 턴의 도구 스텝을 접이식 "N단계" 카드로(라이브 turn-card 파리티).
-      // 새로고침 후에도 라이브처럼 그룹핑돼 보이게. 기본 접힘(완료된 라이브 턴의 done-collapsed 동형).
+      // 새로고침 후에도 라이브처럼 그룹핑돼 보이게. **기본 펼침**(라이브 턴과 같은 규칙, 2026-09-10).
       const buildHistoryTurnEl = (acts) => {
         for (const a of acts) renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
         const turn = document.createElement("div");
@@ -286,6 +286,12 @@
         const head = document.createElement("div");
         head.className = "hist-turn-head";
         const caret = document.createElement("span");
+        // ★기본 펼침 (2026-09-10 정태님) — 라이브 카드와 같은 규칙. 종전엔 접힌 채 시작해
+        //  새로고침하면 «있던 게 사라진» 것처럼 보였다.
+        turn.classList.add("expanded");
+        // ★글자는 `▸` 그대로 — 펼침 표시는 CSS 가 회전으로 한다
+        //  (`.hist-turn.expanded .hist-turn-caret { transform:rotate(90deg) }`).
+        //  글자까지 바꾸면 **이중으로** 돌아간다.
         caret.className = "hist-turn-caret"; caret.textContent = "▸";
         // 어댑터 뱃지(codex/claude 등) — 라이브 turn-card 파리티(이력 카드도 어댑터 표시).
         // 어댑터 없으면(구 데이터) 기존 🔧 아이콘 폴백.
@@ -312,7 +318,7 @@
         const body = document.createElement("div");
         body.className = "hist-turn-body";
         for (const a of acts) body.appendChild(buildHistStepLine(a));
-        head.addEventListener("click", () => turn.classList.toggle("expanded"));
+        onToggleClick(head, () => turn.classList.toggle("expanded"));
         turn.appendChild(head); turn.appendChild(body);
         return turn;
       };

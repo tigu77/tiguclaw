@@ -17,7 +17,13 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const ICON = { agent: "🤖", worker: "📦" };
+  // ★아이콘도 **자기 카탈로그**에서 (2026-09-10). `ctx.t` 는 플러그인 것만 보므로 코어 키를
+  //  못 읽는다 — 그건 결함이 아니라 격리다([[feedback_external_things_own_their_unit]]).
+  //  대신 이 플러그인은 **코어 데이터를 그리는 1차 번들**이라 값은 코어와 맞춰 둔다.
+  const ICON = (ctx, kind) => {
+    const v = ctx.t("icon." + kind);
+    return v && v !== "icon." + kind ? v : (kind === "agent" ? "🤖" : "🎖️");
+  };
 
   window.tiguWidgets.register("running-work/live", {
     mount(root, _data, ctx) {
@@ -35,7 +41,7 @@
         }
         for (const j of running) {
           const row = el("div", "rw-row");
-          row.appendChild(el("span", "rw-ic", ICON[j.kind] || ICON.worker));
+          row.appendChild(el("span", "rw-ic", ICON(ctx, j.kind === "agent" ? "agent" : "worker")));
           row.appendChild(el("span", "rw-label", j.label || j.agentName || ctx.t("unnamed")));
           if (typeof j.startedAt === "number") {
             const mins = Math.max(0, Math.round((Date.now() - j.startedAt) / 60000));

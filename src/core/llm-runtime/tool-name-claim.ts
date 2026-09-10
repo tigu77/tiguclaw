@@ -66,3 +66,31 @@ export const claimToolNames = (
 /** 거절된 것을 뺀 도구 목록 — 모델에게 **잡은 것만** 보여준다(부를 수 없는 걸 광고하지 않게). */
 export const keepClaimed = <T>(tools: readonly T[], claimed: readonly string[]): T[] =>
   tools.filter((t) => claimed.includes(String((t as { name?: unknown }).name ?? "")));
+
+/**
+ * **이미 쓰이는 이름을 숨긴 사본** — openai 어댑터용 (2026-09-10).
+ *
+ * ★같은 플러그인이 어댑터마다 **셋 다 다르게** 굴러가고 있었다(실측):
+ *   - codex  : `claimToolNames` 로 거절 + 경고 + 모델에게 안 보여줌 (부드럽게 막힘)
+ *   - claude : SDK 가 `mcp__<server>__<tool>` 로 이름공간을 줘 **애초에 충돌 불가**
+ *   - openai : `@openai/agents` 가 **던진다** —
+ *     `UserError: Duplicate tool names found across MCP servers` (mcp.js L438·L462).
+ *     즉 코어와 이름이 겹치는 플러그인 하나가 **그 턴을 통째로 죽인다.**
+ *
+ * ★고침은 codex 와 **같은 규칙**이다 — 이름을 바꾸지 않고(그러면 모델이 아는 이름이 또
+ *  어댑터마다 갈린다) «먼저 잡은 쪽이 갖는다» 를 SDK 가 보기 **전에** 적용한다.
+ *  `includeServerInToolNames` 로 접두사를 붙이는 길도 있지만, 그건 openai 에서만 도구
+ *  이름이 달라지는 것이라 parity 를 반대로 깬다.
+ *
+ * ★래퍼는 `listTools` 하나만 덮는다 — `callTool` 은 그대로다(숨긴 이름은 모델이 못 부른다).
+ */
+export const hideTakenTools = <S extends { listTools: () => Promise<unknown[]> }>(
+  server: S,
+  taken: ReadonlySet<string>,
+): S => ({
+  ...server,
+  listTools: async (): Promise<unknown[]> => {
+    const tools = await server.listTools();
+    return tools.filter((t) => !taken.has(String((t as { name?: unknown }).name ?? "")));
+  },
+});

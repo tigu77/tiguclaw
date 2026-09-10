@@ -97,6 +97,10 @@
         --danger-pre: #ffb4ac;
         --unread: #e5484d;
         --agent-fg: #c4b5fd;
+        /* 매니저 이름색 (2026-09-10 정태님 지정, 다크 기본). 서브에이전트가 보라(--agent-fg)
+           라면 매니저는 금색이다 — 아이콘 🎖️ 와 같은 언어. ★이름이 능력 서열과 반대로
+           읽히던 것을 색으로도 맞춘다([[project_manager_agent_naming]]). */
+        --worker-fg: #F2B84B;
         --skill-fg: #ede9fe;
         --cancel-armed-fg: #fde68a;
         --pending-fg: #93c5fd;
@@ -864,6 +868,12 @@
       .turn-card.done .turn-count { color:var(--good); }
       /* 수동 접힘(.collapsed) = 두 패널 공통(기존 로그 패널 토글 보존). */
       .turn-card.collapsed .turn-body { display:none; }
+      /* ★턴을 **한 줄로** 줄인다 (2026-09-10 정태님: *"채팅카드 안 접히는데?"*).
+         `.turn-card.collapsed` 는 도구 스텝(`.turn-body`)만 숨긴다 — 답변 버블은
+         `.turn-group` 의 **형제**라 그대로 남아서, 눈에 보이는 큰 덩어리가 안 사라졌다.
+         접기는 «이 턴을 접는다» 여야 하므로 카드 밖 형제(답변 버블·텍스트 세그먼트)도 같이
+         숨긴다. `.turn-card` 자신은 남겨 헤더(다시 펼칠 손잡이)를 지킨다. */
+      .turn-group.turn-collapsed > *:not(.turn-card) { display:none; }
       /* 완료 자동접힘(.done-collapsed) = 채팅 패널만. 로그 패널은 펼친 채 유지(회귀 0). */
       body[data-chat-panel="chat"] .turn-card.done-collapsed .turn-body { display:none; }
       /* 선택된 스텝 하이라이트(P4 마스터-디테일). */
@@ -1162,13 +1172,18 @@
       /* 서브에이전트 잡 — 매니저와 시각적 구분(보라 좌측 강조 + 배지). status 색은 top-border 로,
          kind 는 좌측 accent+배지로 직교 표현. .agent.done 등 status 색이 kind 색을 덮지 않게
          .agent 는 border-left 를 항상 보라 유지(status 는 뱃지 텍스트로 이미 구분). */
+      /* ★매니저는 **`.agent` 가 없는 것**으로 표현된다(kind 는 worker|agent 둘뿐). 그래서
+         `:not(.agent)` 로 잡으면 클래스를 새로 붙일 자리가 안 생기고, kind 가 나중에
+         승격돼 `.agent` 가 붙는 순간 색이 **저절로** 따라간다 — 두 곳을 맞출 필요가 없다. */
+      .bg-job:not(.agent) .bg-job-label { color:var(--worker-fg); }
+      .agent-card:not(.agent) .agent-card-name { color:var(--worker-fg); }
       .bg-job.agent { border-left-color:var(--accent-2); }
       .bg-job.agent.running { border-left-color:var(--accent-2); }
       .bg-job.agent.done { border-left-color:var(--accent-2); }
       .bg-job.agent.failed { border-left-color:var(--danger-fg); }
       .bg-job.agent.cancelled { border-left-color:var(--accent-2); opacity:.85; }
       /* kind 배지 — 매니저=중립 회색(기본), 서브에이전트=보라(.agent 승격 시). agents 그리드
-         .agent-card-kind 패턴과 동형. 매니저도 "📦 매니저" 배지가 항상 보인다(2026-07-14). */
+         .agent-card-kind 패턴과 동형. 매니저도 "🎖️ 매니저" 배지가 항상 보인다(2026-07-14). */
       .bg-job-kind { flex:none; font-size:0.5625rem; font-weight:900; letter-spacing:.3px; padding:1px 6px; border-radius:999px; background:rgb(var(--fg-rgb) / .05); color:var(--text-mute); border:1px solid var(--border); white-space:nowrap; }
       .bg-job.agent .bg-job-kind { background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); border-color:rgb(var(--accent-2-rgb) / .4); }
       /* 모델 티어 칩 — kind 칩과 동형(작은 pill). 티어별 색상 힌트(data-tier). */

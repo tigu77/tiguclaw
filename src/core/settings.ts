@@ -48,6 +48,16 @@ export interface PoolEntry {
   spec: string;
   /** 이 프로파일에서 이 모델의 추론 강도. 미지정 = 전역·카탈로그로 내려간다. */
   reasoning?: string;
+  /**
+   * 이 프로파일에서 이 모델을 **빠른 티어**로 굴릴지. 미지정 = 끔(종전 동작).
+   *
+   * ★유일한 값이 `"fast"` 인 이유: 백엔드가 모델마다 광고하는 추가 티어가 그것 하나다
+   *  (`/models` 의 `additional_speed_tiers: ["fast"]`). 새 티어가 생기면 **의식적으로**
+   *  더한다 — 아무 문자열이나 통과시키면 오타가 조용히 «켜짐» 이 된다.
+   * ★대가가 있다: 백엔드 설명이 «1.5~2x speed, **increased usage**» 다(구독 한도를 더
+   *  빨리 쓴다). 그래서 기본이 꺼짐이고 프로파일에 적어야만 켜진다.
+   */
+  speed?: "fast";
 }
 
 /** 명명된 모델 프로파일 — settings.json `models.profiles.<name>` 의 검증된 형태. */
@@ -237,7 +247,19 @@ const validateProfile = (
       continue;
     }
     const r = typeof e.reasoning === "string" ? e.reasoning.trim() : "";
-    pool.push(r === "" ? { spec } : { spec, reasoning: r });
+    // ★모르는 값은 **조용히 켜지 않는다** — 배지 색(`#rrggbb`)과 같은 규칙이다. 적었는데
+    //  안 먹는 쪽이, 오타가 «켜짐» 이 되어 한도를 태우는 쪽보다 낫다.
+    const sp = typeof e.speed === "string" ? e.speed.trim() : "";
+    if (sp !== "" && sp !== "fast" && diagnose) {
+      console.warn(
+        `[settings] models.profiles.${name}: pool 원소 ${spec} 의 speed="${sp}" 는 모르는 값 — 무시(아는 값: fast).`,
+      );
+    }
+    pool.push({
+      spec,
+      ...(r === "" ? {} : { reasoning: r }),
+      ...(sp === "fast" ? { speed: "fast" as const } : {}),
+    });
   }
   if (pool.length === 0 && raw.length > 0) {
     if (diagnose) {
@@ -266,6 +288,15 @@ const validateProfile = (
  * 무효 프로파일은 drop. diagnose=true(부팅 진단)일 때만 콘솔 경고(resolve-time 은 무음
  * — 턴당 스팸 방지). resolve-time 순환/댕글링은 resolveProfileChain 의 cycle-guard 가 처리.
  */
+/**
+ * 테스트용 — `pool` 배열만 떼어 정규화한다(파일·홈 없이 경계 판정을 실행으로 재려고).
+ *
+ * ★`__setCatalogForTest` 와 같은 관용구다. 이 판정(«아는 값만 켠다»)이 실행으로 안 재지면
+ *  검사가 정규식 grep 으로 약해지고, 그러면 오타가 «켜짐» 이 되는 걸 못 잡는다.
+ */
+export const __parsePoolForTest = (raw: readonly unknown[]): PoolEntry[] =>
+  validateProfile("__test", { pool: raw }, false)?.pool ?? [];
+
 export const loadModelProfiles = (
   cwd: string = process.cwd(),
   diagnose = false,

@@ -18,10 +18,10 @@
   "agents.error": "Error",
   "agents.hint": "Live · same source as the right drawer",
   "agents.kind.agent": "🤖 Subagent",
-  "agents.kind.worker": "📦 Manager",
+  "agents.kind.worker": "🎖️ Manager",
   "agents.now": "now",
   "agents.openDrawer": "Details ↗",
-  "agents.page.desc": "Every background job running right now (managers 📦 and agents 🤖) at a glance. Kind, name, elapsed time and current step, updated live.",
+  "agents.page.desc": "Every background job running right now (managers 🎖️ and agents 🤖) at a glance. Kind, name, elapsed time and current step, updated live.",
   "agents.page.title": "Agents",
   "agents.result": "Result",
   "agents.steps.head": "Steps ({n})",
@@ -54,8 +54,8 @@
   "bg.inFlight": "{tool} for {elapsed}",
   "bg.job.untitled": "(job)",
   "bg.jobs.head": "⚙️ Managers / Agents",
-  "bg.jump.text": "↑ Latest",
-  "bg.jump.title": "Jump to top (latest jobs)",
+  "bg.jump.text": "↓ Latest",
+  "bg.jump.title": "Jump to bottom (latest jobs)",
   "bg.lastActivity": " · last activity {ago} ago",
   "bg.model.title": "The model this job actually used",
   "bg.more": "Details",
@@ -682,5 +682,7 @@
   "bg.task.truncated": " … (this is all that remains — the full text is gone now that the job has ended)",
   "plugins.auth.usage.pending": "usage check waiting — retrying {when}",
   "plugins.auth.usage.unavailable": "usage lookup unavailable for this account",
-  "common.channel.cli": "CLI"
+  "common.channel.cli": "CLI",
+  "job.kind.worker.icon": "🎖️",
+  "job.kind.agent.icon": "🤖"
 }

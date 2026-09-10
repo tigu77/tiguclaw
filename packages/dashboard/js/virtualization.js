@@ -996,7 +996,7 @@
         // 클릭 = 도구 스텝 펼침/접힘(항상 인라인, sticky·hover 무관). 리치 diff·출력이 있으면
         // 그 블록을, 없으면 인라인 상세 블록(buildDetailBlock)을 lazy 생성해 그 자리에서 펼친다.
         // (2026-07-15 — 옛 사이드바 상세 분기 제거, 모든 도구 클릭을 인라인 펼침으로 통일.)
-        line.addEventListener("click", () => {
+        onToggleClick(line, () => {
           let block = line.querySelector(":scope > .act-diff, :scope > .act-output, :scope > .act-plan");
           if (!block) {
             const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq)) || p;
@@ -1106,9 +1106,16 @@
         const setOpen = (open) => {
           el.classList.toggle("collapsed", !open);
           el.classList.remove("done-collapsed"); // 수동 조작이 자동접힘을 해제.
+          // ★**답변 버블까지 접는다** (2026-09-10 정태님: *"채팅카드 안 접히는데?"*).
+          //  종전엔 `.turn-card.collapsed` 가 `.turn-body`(도구 스텝)만 숨겼는데, 답변 버블은
+          //  `.turn-group` 의 **형제**라 그대로 남았다 — 눈에 보이는 큰 덩어리가 안 사라지니
+          //  «접혔다» 로 안 읽힌다. 접기는 «이 턴을 한 줄로 줄인다» 여야 한다.
+          group.classList.toggle("turn-collapsed", !open);
           caret.textContent = open ? "▼" : "▶";
         };
-        head.addEventListener("click", () => setOpen(
+        // 텍스트 드래그는 접기로 안 친다 — 헤더는 user-select:none 이라 대개 무해하지만
+        // 판정을 한 곳에 두면 다음에 헤더에 선택 가능한 것이 들어와도 저절로 맞는다.
+        onToggleClick(head, () => setOpen(
           el.classList.contains("collapsed") || el.classList.contains("done-collapsed"),
         ));
         el.appendChild(head); el.appendChild(body);

@@ -8,9 +8,32 @@
  *
  * V5.1' 강화 (2026-05-23):
  *  - V5.1 의 `@openai/agents` SDK 위임 폐기 — raw fetch + SSE 본체 V3.3 답습.
- *  - payload 6 필드만 (`{model, instructions, input, stream:true, store:false,
- *    prompt_cache_key}`). 금지 필드 (text·prompt_cache_retention·context_management·
- *    parallel_tool_calls·tool_choice·truncation·max_output_tokens) 박지 않음.
+ *  - payload 최소 필드 (`{model, instructions, input, stream:true, store:false,
+ *    prompt_cache_key, tools}`). 그 밖은 안 보낸다.
+ *
+ * ★★**«금지 필드» 목록을 정정한다 (2026-09-10 실측).** 종전 이 자리는
+ *  `parallel_tool_calls·tool_choice·truncation·max_output_tokens` 등을 **«금지»** 라고
+ *  적고 있었는데, 그건 재본 적 없는 말이었다 — OpenClaw payload 모양을 답습하며 «안
+ *  보낸다» 가 «못 보낸다» 로 굳은 것이다. 격리 프로브로 직접 쏴 본 결과는 두 갈래다:
+ *
+ *   백엔드가 **실제로 거절**하는 것(400):
+ *     `store: true`                → `Store must be set to false`
+ *     `previous_response_id`       → `Unsupported parameter`
+ *     `prompt_cache_options`(ttl·mode·breakpoint) → `Unsupported parameter`
+ *     `service_tier: "flex"|"auto"` → `Unsupported service_tier`
+ *     `reasoning.effort: "none"` on gpt-6-astra → `Unsupported value`
+ *
+ *   **받아 주는데 우리가 안 보내던** 것(200):
+ *     `tool_choice: "none"|"auto"` · `tool_choice.allowed_tools` ·
+ *     `parallel_tool_calls: false` · `service_tier: "priority"|"default"`
+ *
+ * ★이 구분이 중요한 이유: 공식 문서가 «도구를 배열에서 **빼지 말고** `allowed_tools`·
+ *  `tool_choice` 로 제한하라»(프리픽스 캐시 보존)고 처방하는데, 위 «금지» 한 줄 때문에
+ *  그 처방을 **시도조차 안 하게** 된다. 재지 않은 말을 금지선으로 적어 두면 그건 결정이
+ *  아니라 벽이다([[feedback_verify_before_asserting]]).
+ * ★그렇다고 지금 final flush 의 `tools: []` 를 `tool_choice:"none"` 으로 바꿔도 **이득은
+ *  0이다** — 같은 요청이 `reasoning.effort` 도 바꾸고, 문서상 그것만으로도 프리픽스가
+ *  무효가 된다. 바꿀 값이 생기는 건 «턴마다 도구 집합이 흔들리는» 자리다.
  *  - `previous_response_id` 폐기 → `input` 배열에 prior user/assistant 누적으로 세션 재개.
  *  - `prompt_cache_key: input.threadKey` (stable per-thread, OpenAI prefix cache hit).
  *  - SSE parser 의 `response.completed` event 에서 `response.id` 추출 → sessionId 매핑.
@@ -1353,6 +1376,13 @@ export const runOpenAiCodex = async (
         // 거부하면(거부 시 res.ok=false → throw → 풀 폴백) 대안 = tools 키 omit. 현재는
         // 빈 배열 우선 (function tools shape 와 동일 키 보존, 안전한 1차 시도).
         tools: finalFlushRequested ? [] : responsesTools,
+        // ★프로파일이 «빠르게» 라고 했을 때만 (2026-09-10). 중립 의도(`speed:"fast"`)를
+        //  이 백엔드의 낱말로 옮긴다 — 공용 계약에 `service_tier` 를 박지 않는 이유는
+        //  그게 OpenAI 말이라서다(다른 provider 를 붙일 때 남의 벤더 말을 쓰게 된다).
+        //  실측: `priority`·`default` 는 200, `flex`·`auto` 는 400(Unsupported service_tier).
+        //  ★기본으로 켜지 않는다 — 백엔드 설명이 «1.5~2x speed, **increased usage**» 라
+        //   구독 한도를 더 빨리 쓴다. 사용자가 프로파일에 적었을 때만 켠다.
+        ...(input.speed === "fast" ? { service_tier: "priority" } : {}),
       };
       // 가설 A (2026-06-07): finalFlush turn 에서 reasoning.effort=minimal 강제.
       //  ChatGPT 백엔드 기본 = medium. medium 은 reasoning 토큰을 충분히 소비해 final

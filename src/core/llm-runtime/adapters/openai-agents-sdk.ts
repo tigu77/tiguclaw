@@ -86,6 +86,7 @@ import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
+import { claimToolNames, hideTakenTools } from "../tool-name-claim.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
@@ -535,8 +536,38 @@ export const runOpenAi = async (
   if (!toolsNone && reaches("plugins", turnKind)) {
     // ★공유 브리지 — 인스턴스당 하나(codex 와 동일). MCP 인스턴스는 transport 를
     //  하나만 갖고, 같은 인스턴스를 find_capabilities 가 또 어댑팅한다.
+    // ★**먼저 잡은 쪽이 갖는다** (2026-09-10). 종전엔 그냥 뒤에 붙였는데, 이 SDK 는
+    //  이름이 겹치면 **던진다**: `UserError: Duplicate tool names found across MCP
+    //  servers`(agents-core/dist/mcp.js L438·L462, `includeServerInToolNames` 기본 false).
+    //  즉 코어와 이름이 겹치는 플러그인 하나가 **그 턴을 통째로 죽인다** — codex 는
+    //  거절+경고로 부드럽게 막고, claude 는 SDK 이름공간(`mcp__<server>__<tool>`)이라
+    //  애초에 안 겹친다. 같은 플러그인이 어댑터마다 셋 다 다르게 굴렀다
+    //  ([[feedback_every_feature_llm_agnostic]]).
+    // ★codex 와 **같은 함수·같은 규칙**을 쓴다(`claimToolNames`). 판정을 두 벌 만들면
+    //  언젠가 갈린다 — 접두사를 붙이는 길은 openai 에서만 이름이 달라져 parity 를
+    //  반대로 깨므로 안 쓴다.
+    const taken = new Set<string>();
+    for (const s of mcpServers) {
+      for (const t of await s.listTools()) {
+        const n = (t as { name?: unknown }).name;
+        if (typeof n === "string" && n !== "") taken.add(n);
+      }
+    }
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
-      mcpServers.push(await adaptSharedClaudeMcpServer(server, name));
+      const bridge = await adaptSharedClaudeMcpServer(server, name);
+      const claim = claimToolNames(
+        // 코어가 잡은 이름 집합을 `ToolClaimMap` 면으로 넘긴다(값은 안 쓴다 — 존재만 본다).
+        { has: (n) => taken.has(n), set: (n) => taken.add(n) },
+        await bridge.listTools(),
+        bridge,
+        name,
+      );
+      // 거절이 없으면 원본 그대로(래핑 0 = 회귀 0).
+      mcpServers.push(
+        claim.rejected.length === 0
+          ? bridge
+          : hideTakenTools(bridge, new Set(claim.rejected)),
+      );
     }
   }
 

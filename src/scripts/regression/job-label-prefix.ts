@@ -18,13 +18,21 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const SRC = new URL("../../../packages/dashboard/js/background-drawer.js", import.meta.url);
 
-/** 접두 상수 + 순수 함수 정의만 떼어낸다. */
+/**
+ * 접두 상수 + 순수 함수 정의만 떼어낸다.
+ *
+ * ★시작점이 `KIND_ICON` 이다 (2026-09-10). 아이콘을 카탈로그에서 읽게 바꾸면서
+ *  `WORKER_LABEL_PREFIX` 가 그 함수에 기대게 됐는데, 잘라내기가 상수 줄부터 시작해
+ *  **`KIND_ICON is not defined` 로 검사 자체가 던졌다.** 소스를 떼어 돌리는 검사는 «떼어낸
+ *  조각이 자족적인가» 를 같이 지켜야 한다 — 안 그러면 정상 리팩터가 검사를 깨고, 그러면
+ *  다음 사람이 리팩터를 피한다.
+ */
 const sliceDefs = (src: string): string => {
-  const from = src.indexOf('      const WORKER_LABEL_PREFIX = ');
+  const from = src.indexOf("      const KIND_ICON = ");
   const to = src.indexOf("      const withKindPrefix", from);
   const end = src.indexOf("      };", to);
   if (from < 0 || to < 0 || end < 0) {
-    throw new Error("withKindPrefix 정의를 못 찾음 — 구조가 바뀌었나");
+    throw new Error("KIND_ICON~withKindPrefix 정의를 못 찾음 — 구조가 바뀌었나");
   }
   return src.slice(from, end + "      };".length);
 };
@@ -32,11 +40,14 @@ const sliceDefs = (src: string): string => {
 export const check: RegressionCheck = {
   name: "job-label-prefix",
   guards:
-    "매니저/서브에이전트 라벨 접두(📦/🤖) 규칙에 그물이 0이라, 접두가 두 번 붙거나 에이전트 승격 때 안 떨어져도 스위트가 초록이던 것 — 드로어에서 둘을 가르는 사실상 유일한 단서다",
+    "매니저/서브에이전트 라벨 접두(🎖️/🤖) 규칙에 그물이 0이라, 접두가 두 번 붙거나 에이전트 승격 때 안 떨어져도 스위트가 초록이던 것 — 드로어에서 둘을 가르는 사실상 유일한 단서다",
   run: async (): Promise<Assertion[]> => {
     const src = await readFile(SRC, "utf8");
     const ctx: Record<string, unknown> = {};
     vm.createContext(ctx);
+    // 카탈로그는 없다 — `i18n` 이 키를 그대로 돌려주는 상황(옛 배포본·미번역)을 흉내 낸다.
+    // 그러면 `KIND_ICON` 의 **폴백 경로**까지 같이 검사된다(글자가 키 이름이 되면 안 된다).
+    ctx.i18n = (k: string) => k;
     vm.runInContext(`${sliceDefs(src)}\nthis.__f = withKindPrefix;\nthis.__p = WORKER_LABEL_PREFIX;`, ctx);
     const f = ctx.__f as (kind: string, label: string) => string;
     const P = ctx.__p as string;

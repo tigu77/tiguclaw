@@ -85,6 +85,9 @@
   --danger-pre: #b42318;
   --unread: #c81e1e;
   --agent-fg: #6d28d9;
+  /* 매니저 이름색 — 다크의 #F2B84B 와 **같은 계열, 다른 명도**. 그 값을 그대로 쓰면 흰
+     배경에서 안 읽힌다(대비 부족). 색은 팔레트마다 제 값을 갖는 게 맞다. */
+  --worker-fg: #A16207;
   --skill-fg: #5b21b6;
   --cancel-armed-fg: #92400e;
   --pending-fg: #1d4ed8;

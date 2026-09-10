@@ -215,6 +215,11 @@ export interface ModelSpec {
    * 내려간다 = 종전 동작(회귀 0). 유효값 검증은 하지 않는다 — 판정은 API 가 한다.
    */
   reasoning?: string;
+  /**
+   * 신규(additive, 2026-09-10) — **이 풀 원소만** 빠른 티어로 굴린다. 미지정 = 끔(회귀 0).
+   * 낱말은 중립이다(`service_tier` 는 OpenAI 말) — 어댑터가 자기 이름으로 옮긴다.
+   */
+  speed?: "fast";
 }
 
 // provider id → 어댑터(런타임). 다대일 허용 (openai 어댑터 ← openai/ollama/google).
@@ -312,7 +317,11 @@ export const poolToSpecs = (
   for (const e of pool) {
     const spec = parseModelSpec(e.spec, cwd);
     if (spec === null) continue; // 무효 원소는 drop(종전 parseModelSpecList 동작 그대로).
-    out.push(e.reasoning === undefined ? spec : { ...spec, reasoning: e.reasoning });
+    out.push({
+      ...spec,
+      ...(e.reasoning === undefined ? {} : { reasoning: e.reasoning }),
+      ...(e.speed === undefined ? {} : { speed: e.speed }),
+    });
   }
   return out;
 };
@@ -1268,6 +1277,8 @@ const runPool = async (
         provider: spec.provider,
         // 프로파일이 정한 강도(있으면) — 어댑터가 전역·카탈로그보다 우선한다.
         ...(spec.reasoning !== undefined ? { reasoning: spec.reasoning } : {}),
+        // 프로파일이 «빠르게» 라고 했으면 그 의도를 운반한다 — 낱말은 어댑터가 정한다.
+        ...(spec.speed !== undefined ? { speed: spec.speed } : {}),
       });
       // ★인라인 제안 뜯기 — **persist·publish 보다 앞**, 어댑터별 분기 0 (2026-08-25).
       //  여기가 세 어댑터의 유일한 합류점이라, 여기서 벗기면 transcripts·turn_done·

@@ -783,3 +783,37 @@
       };
 
       applyI18n();
+
+      /**
+       * **텍스트를 끌어 고른 뒤의 click 인가** — 그러면 접기로 치지 않는다 (2026-09-10 정태님:
+       * *"텍스트 드래그는 접기로 안 치는 게 좋을 것 같아"*).
+       *
+       * ★증상: 활동 줄·스텝 줄은 본문이 **선택 가능한 텍스트**인데 클릭이 곧 토글이라,
+       *  로그를 복사하려고 끌면 끝나는 순간 줄이 접혔다. 헤더(`user-select:none`)는 무해했고
+       *  본문 줄만 그랬다.
+       *
+       * ★판정을 **선택 영역**으로 한다(이동 거리가 아니라). 거리로 재면 «천천히 조금 끌어
+       *  고른 것» 을 놓치고, «손 떨려서 2px 움직인 클릭» 을 막는다 — 둘 다 틀린 방향이다.
+       * ★**이 요소 안의 선택만** 본다. 다른 데 골라 둔 게 남아 있다고 클릭이 죽으면
+       *  «왜 안 접히지» 가 된다.
+       * ★never-throw — 접기가 선택 API 때문에 죽으면 안 된다.
+       */
+      const isTextDragClick = (el) => {
+        try {
+          const sel = window.getSelection && window.getSelection();
+          if (!sel || sel.isCollapsed || String(sel).trim() === "") return false;
+          for (let i = 0; i < sel.rangeCount; i++) {
+            const node = sel.getRangeAt(i).commonAncestorContainer;
+            if (el === node || el.contains(node)) return true;
+          }
+          return false;
+        } catch { return false; }
+      };
+      /** 접기 토글 클릭 — 텍스트 드래그면 무시한다. 판정을 한 곳에 둔다(사이트마다 쓰면 갈린다). */
+      const onToggleClick = (el, fn) => {
+        el.addEventListener("click", (e) => {
+          if (isTextDragClick(el)) return;
+          fn(e);
+        });
+      };
+

@@ -75,12 +75,10 @@
           const continuation =
             prevCard && !prevCard.closed && vtIndex.has(prevCard.group) &&
             (prevCard.closedByText || !prevCard.el) && (p.seq ?? 0) > prevCard.lastSeq;
-          // ★최신/진행중 카드만 펼침(2026-07-10) — 새 카드 시작 시 직전 카드를 접는다(도구 클러터↓,
-          // 단 직전 카드의 텍스트 버블은 turn-body 밖 그룹 형제라 접혀도 계속 보인다).
-          if (prevCard && prevCard.el) {
-            prevCard.el.classList.add("done-collapsed");
-            const pc = prevCard.el.querySelector(".turn-caret"); if (pc) pc.textContent = "▶";
-          }
+          // ★**기본은 펼침이다** (2026-09-10 정태님). 2026-07-10 부터 새 카드가 시작되면 직전
+          //  카드를 자동으로 접었는데(도구 클러터↓), 그건 «접기» 가 답변 버블을 안 건드리던
+          //  시절의 균형이었다. 이제 접기가 턴 전체를 줄이므로 자동으로 접으면 **사용자가
+          //  안 시킨 숨김**이 된다. 접는 건 사용자가 정한다.
           card = createTurnCard(p, ts, adapter, thread);
           if (continuation && prevCard.sawTextSegment) card.sawTextSegment = true;
           cardByThread.set(thread, card);

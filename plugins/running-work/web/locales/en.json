@@ -2,5 +2,7 @@
   "idle": "Nothing running right now.",
   "unnamed": "(unnamed)",
   "since": "{n}m",
-  "widget.live": "Running work"
+  "widget.live": "Running work",
+  "icon.worker": "🎖️",
+  "icon.agent": "🤖"
 }

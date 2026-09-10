@@ -22,6 +22,18 @@
  *   **이 경로에선 차이가 없었다**: instructions 파라미터 vs developer 메시지 A/B 에서
  *   중앙값이 둘 다 99% 였다. 문서를 읽고 «그래서 이게 원인» 이라고 넘겨짚지 말 것.
  *  ★`store` 는 손잡이가 아니다 — 백엔드가 `store:true` 를 400 으로 거절한다.
+ *
+ * ★★**사다리는 «안정 프리픽스»(지시+도구)만 잰다 — `input` 은 넣지 않는다** (2026-09-10,
+ *  회사돌쇠 로그가 잡았다). 종전엔 `tools+instructions+input` 을 통째로 이어붙여 쟀는데,
+ *  이 지문은 **매 iteration 마다** 갱신되므로 비교 짝이 «지난 턴» 이 아니라 **같은 턴의
+ *  직전 model-call** 이었다. 그 둘 사이에서 변하는 건 언제나 `input`(도구 결과가 뒤에
+ *  붙는다)뿐이라, 로그가 **항상 «갈림=5칸(64,000~256,000자 사이)»** 만 찍었다 — 실측
+ *  회사돌쇠 6턴 중 5턴이 그 값이었고, 정작 그 시간에 **도구가 64↔63 으로 뒤집히며**
+ *  프리픽스를 깨고 있었는데 사다리는 그걸 한 번도 안 가리켰다.
+ *  ★`input` 은 **뒤에 붙기만 한다** — 뒤에 붙는 것은 프리픽스 캐시를 원리적으로 못 깬다.
+ *   즉 넣어봐야 «갈렸다» 만 나오고 판별력은 0이다. 빼면 남는 질문이 정확히 하나가 된다:
+ *   **«지난 턴과 견줘 우리 안정 프리픽스가 변했나»** — 그게 우리가 답할 수 있는 유일한
+ *   질문이고, «없음» 이면 원인은 우리 밖(백엔드)이라는 뜻이다.
  */
 import { createHash } from "node:crypto";
 
@@ -90,4 +102,52 @@ export const rememberFingerprint = (
     if (oldest !== undefined) lastByThread.delete(oldest);
   }
   return prev;
+};
+
+/**
+ * 스레드별 직전 **도구 이름 집합** — «도구가 변했다» 를 «어느 도구가» 로 바꾼다.
+ *
+ * ★2026-09-10 실측: 회사돌쇠 메인 세션의 도구가 `64개↔63개` 를 턴마다 오갔고, 그때마다
+ *  캐시가 `cached=3,712` 바닥에 고정됐다(10턴 전부). 그런데 로그엔 **개수와 해시뿐**이라
+ *  «어느 도구가 사라졌나» 를 원격에서 짚을 방법이 없었다 — 회사 PC 는 붙을 수가 없으니
+ *  로그가 못 말하면 그건 영영 못 잡는 것이다([[feedback_logs_must_stand_alone]]).
+ * ★**변했을 때만** 적는다. 매 턴 66개를 나열하면 그건 진단이 아니라 배경소음이고,
+ *  배경소음은 실제로 12일간 묻힌 전례가 있다.
+ */
+const lastToolsByThread = new Map<string, readonly string[]>();
+
+/** 직전 도구 이름을 꺼내고 이번 것을 넣는다(같은 호출에서 둘 다 — 순서가 갈리면 틀린다). */
+export const rememberToolNames = (
+  threadKey: string,
+  names: readonly string[],
+): readonly string[] | undefined => {
+  const prev = lastToolsByThread.get(threadKey);
+  lastToolsByThread.delete(threadKey);
+  lastToolsByThread.set(threadKey, names);
+  if (lastToolsByThread.size > CAP) {
+    const oldest = lastToolsByThread.keys().next().value;
+    if (oldest !== undefined) lastToolsByThread.delete(oldest);
+  }
+  return prev;
+};
+
+/** 로그에 실을 한 조각 — 바뀐 게 없으면 **빈 문자열**(적을 게 없으면 안 적는다). */
+export const describeToolChange = (
+  now: readonly string[],
+  prev: readonly string[] | undefined,
+): string => {
+  if (prev === undefined) return "";
+  const before = new Set(prev);
+  const after = new Set(now);
+  const added = now.filter((n) => !before.has(n));
+  const removed = prev.filter((n) => !after.has(n));
+  if (added.length === 0 && removed.length === 0) return "";
+  // 로그 한 줄이 터지지 않게 — 이름이 쏟아지면 앞 몇 개와 총 수만.
+  const cut = (xs: readonly string[]): string =>
+    xs.length <= 6 ? xs.join(",") : `${xs.slice(0, 6).join(",")}…+${xs.length - 6}`;
+  return (
+    `도구변화=${prev.length}→${now.length}` +
+    (added.length > 0 ? ` +[${cut(added)}]` : "") +
+    (removed.length > 0 ? ` -[${cut(removed)}]` : "")
+  );
 };

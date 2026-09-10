@@ -141,6 +141,78 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★★**사다리가 «지난 턴과 견줘 우리 프리픽스가 변했나» 를 답한다** (2026-09-10).
+    //  종전엔 `tools+instructions+input` 을 통째로 이어붙여 쟀는데, 지문은 **매 model-call
+    //  마다** 갱신되므로 비교 짝이 «지난 턴» 이 아니라 **같은 턴의 직전 call** 이었다.
+    //  거기서 변하는 건 언제나 `input`(도구 결과가 뒤에 붙는다)뿐이라 로그가 **늘
+    //  «갈림=5칸»** 만 찍었다 — 회사돌쇠 6턴 중 5턴이 그 값이었고, 정작 그 시간에 도구가
+    //  64↔63 으로 뒤집히며 프리픽스를 깨고 있었는데 사다리는 한 번도 안 가리켰다.
+    //  뒤에 붙는 것은 원리적으로 프리픽스 캐시를 못 깨므로 `input` 은 판별력이 0이다.
+    out.push(
+      assert(
+        "★★지문 사다리에 `input` 을 넣지 않는다 — 넣으면 매 call 마다 «갈렸다» 가 나와 판별력이 0이 되고, 실제로 로그가 늘 «갈림=5칸» 만 찍었다",
+        !/lastFingerprint = prefixFingerprint\([\s\S]{0,200}?body\.input/.test(src),
+        (() => {
+          const m = /lastFingerprint = prefixFingerprint\(([\s\S]{0,220}?)\);/.exec(src);
+          return m === null ? "★조립부를 못 찾음 — 표현이 바뀌었으면 이 검사부터 고쳐라" : m[1]?.replace(/\s+/g, " ").slice(0, 110) ?? "?";
+        })(),
+      ),
+    );
+
+    // ★★**«어느 도구가» 를 로그가 말한다** — 개수와 해시는 «변했다» 까지만 말한다.
+    //  회사돌쇠(원격 접속 불가)의 메인이 `64개↔63개` 를 턴마다 오가며 캐시를 3,712 바닥에
+    //  붙여 뒀는데, 이름이 없어서 원격에서는 끝내 못 짚었다.
+    const { describeToolChange, rememberToolNames } = await import(
+      "../../core/llm-runtime/prefix-fingerprint.js"
+    );
+    rememberToolNames("t-regr", ["a", "b", "c"]);
+    const toolDiff = describeToolChange(["a", "c"], rememberToolNames("t-regr", ["a", "c"]));
+    out.push(
+      assert(
+        "★★도구가 바뀌면 **이름**을 적는다 — «63개» 만으로는 원격 설치본에서 어느 도구인지 영영 못 짚는다",
+        toolDiff.includes("-[b]") && toolDiff.includes("3→2"),
+        `관측=${JSON.stringify(toolDiff)}`,
+      ),
+    );
+    rememberToolNames("t-same", ["a", "b"]);
+    out.push(
+      assert(
+        "★안 바뀌었으면 **아무것도 안 적는다** — 매 턴 66개를 나열하면 진단이 아니라 배경소음이고, 배경소음은 실제로 12일간 묻혔다",
+        describeToolChange(["a", "b"], rememberToolNames("t-same", ["a", "b"])) === "",
+        `관측=${JSON.stringify(describeToolChange(["a", "b"], ["a", "b"]))}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★어댑터가 그 diff 를 **도구 표기에 실어** 턴 종료 줄로 내보낸다 — 계산만 하면 원격에선 없는 것과 같다",
+        /describeToolChange\(/.test(src) &&
+          /rememberToolNames\(input\.threadKey/.test(src) &&
+          /lastToolsNote =[\s\S]{0,400}?toolChange/.test(src),
+        `호출=${/describeToolChange\(/.test(src)} · 기억=${/rememberToolNames\(input\.threadKey/.test(src)} · 표기연결=${/lastToolsNote =[\s\S]{0,400}?toolChange/.test(src)}`,
+      ),
+    );
+
+    // ★**틀린 처방을 제품 문구에 박아 두지 않는다** (2026-09-10). 이 경고는 «먼저 모델을
+    //  바꿔 보라 — sol 12% ↔ terra 95%+» 라고 단언했는데 근거가 **11턴 프로브 한 번**이었다.
+    //  46일 실사용은 sol 메인 227턴 42%·서브 75턴 45% · terra 서브 119턴 52% 로, 8배 격차가
+    //  아니다. 사용자가 그 문구를 받고 «솔이 필요한 상황인데 테라로 내리긴 힘들지» 라고
+    //  되물었다 — 제품이 내보내는 문구는 재지 않은 말을 하면 안 된다(SYSTEM.md §21).
+    const runtime = stripComments(readSourceSync("src/core/llm-runtime/index.ts"));
+    out.push(
+      assert(
+        "★★캐시 경고가 **모델 교체를 처방하지 않는다** — 재지 않은 배수(sol 12% ↔ terra 95%+)를 근거로 모든 사용자를 모델 교체로 보내던 문구",
+        !/모델을 바꿔 보라|sol 12%|terra 95/.test(runtime),
+        `옛 문구 잔존=${/모델을 바꿔 보라|sol 12%|terra 95/.test(runtime)}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★그 자리에 **로그로 판별하는 법**이 들어 있다 — 처방을 지우고 빈칸으로 두면 사용자는 더 막막해진다",
+        /갈림=/.test(runtime) && /도구변화=/.test(runtime),
+        `갈림 안내=${/갈림=/.test(runtime)} · 도구변화 안내=${/도구변화=/.test(runtime)}`,
+      ),
+    );
+
     return out;
   },
 };

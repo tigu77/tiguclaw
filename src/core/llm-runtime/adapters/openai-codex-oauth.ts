@@ -38,7 +38,13 @@
  *    (README §직접 만들 것 vs 라이브러리 의 "채널 어댑터" 면).
  */
 import { randomBytes } from "node:crypto";
-import { prefixFingerprint, describeFingerprint, rememberFingerprint } from "../prefix-fingerprint.js";
+import {
+  prefixFingerprint,
+  describeFingerprint,
+  rememberFingerprint,
+  rememberToolNames,
+  describeToolChange,
+} from "../prefix-fingerprint.js";
 import {
   agentSizeWarning,
   readAgent,
@@ -1412,14 +1418,30 @@ export const runOpenAiCodex = async (
       const instrStr = String(body.instructions ?? "");
       lastInstrNote = `instr=${instrStr.length.toLocaleString()}자/${prefixFingerprint(instrStr)[4] ?? "?"}`;
       const toolsJson = JSON.stringify(body.tools ?? []);
+      // ★**어느 도구가** 바뀌었나 (2026-09-10, 회사돌쇠 로그가 요구했다). 개수와 해시는
+      //  «변했다» 까지만 말한다. 회사돌쇠 메인이 `64개↔63개` 를 턴마다 오가며 캐시를
+      //  바닥(3,712)에 붙여 뒀는데, 원격 접속이 안 되는 기계라 **로그가 이름을 말하지
+      //  않으면 영영 못 짚는다**([[feedback_logs_must_stand_alone]]).
+      //  `web_search` 처럼 이름이 없는 네이티브 도구는 `type` 으로 부른다.
+      const toolNames = (Array.isArray(body.tools) ? body.tools : []).map((t) => {
+        const o = t as { name?: unknown; type?: unknown };
+        return typeof o.name === "string" ? o.name : `<${String(o.type ?? "?")}>`;
+      });
+      const toolChange = describeToolChange(
+        toolNames,
+        rememberToolNames(input.threadKey, toolNames),
+      );
       lastToolsNote =
         `tools=${Array.isArray(body.tools) ? body.tools.length : 0}개/` +
-        `${prefixFingerprint(toolsJson)[4] ?? "?"}`;
-      lastFingerprint = prefixFingerprint(
-        JSON.stringify(body.tools ?? []) +
-          String(body.instructions ?? "") +
-          JSON.stringify(body.input ?? []),
-      );
+        `${prefixFingerprint(toolsJson)[4] ?? "?"}` +
+        (toolChange === "" ? "" : ` ★${toolChange}`);
+      // ★**사다리는 안정 프리픽스(지시+도구)만 본다 — `input` 을 넣지 않는다** (2026-09-10).
+      //  이 지문은 매 model-call 마다 갱신되므로 비교 짝이 «지난 턴» 이 아니라 **같은 턴의
+      //  직전 call** 이다. 거기서 변하는 건 언제나 `input`(도구 결과가 뒤에 붙는다)뿐이라
+      //  로그가 **늘 «갈림=5칸»** 만 찍었다(회사돌쇠 6턴 중 5턴). 뒤에 붙는 것은 원리적으로
+      //  프리픽스 캐시를 못 깨므로 판별력이 0이다 — 빼면 질문이 정확히 하나로 좁혀진다:
+      //  **«우리 안정 프리픽스가 변했나»**. «없음» 인데 콜드면 원인은 우리 밖이다.
+      lastFingerprint = prefixFingerprint(String(body.instructions ?? "") + toolsJson);
       lastFingerprintNote = describeFingerprint(
         lastFingerprint,
         rememberFingerprint(input.threadKey, lastFingerprint),

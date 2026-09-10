@@ -48,6 +48,26 @@ export interface ModelCatalog {
    */
   reasoning?: Record<string, string>;
   /**
+   * `provider:model` → 그 모델이 **받아 주는 가장 낮은 추론 강도**(백엔드 `/models` 의
+   * `supported_reasoning_levels` 첫 원소). 2026-09-10 신설.
+   *
+   * ★왜 필요한가: final-flush 턴은 «생각 말고 텍스트를 뱉어라» 가 목적이라 강도를 바닥으로
+   *  내리는데, 종전엔 모델과 무관하게 `"none"` 을 박았다. 그런데 실측으로 **`gpt-6-astra`
+   *  는 `none` 을 400 으로 거절한다**(`Unsupported value: 'none' is not supported`).
+   *  400 은 재시도 대상이 아니라 즉시 throw → `runPool` 이 **턴을 통째로 다음 모델에 다시
+   *  돌린다**(37 iteration 짜리 작업이면 그걸 다 버린다).
+   *
+   * ★그리고 `"low"` 를 코드에 박지 않는다 — 그것도 손으로 관리하는 목록이다
+   *  ([[feedback_hand_maintained_lists]]). 백엔드가 모델마다 목록을 주므로 그걸 쓴다.
+   *
+   * ★**목록의 순서를 의미로 읽는다**(첫 원소 = 최저). 실측 7개 모델 전부 `low → medium →
+   *  high → xhigh → max(→ ultra)` 오름차순이었다. 순서가 뒤집히면 우리가 틀리지만, 그건
+   *  강도 이름을 우리가 다시 서열화하는 것(=또 하나의 손 목록)보다 낫다.
+   *
+   * 옛 캐시엔 이 키가 없다 — 부재는 «모른다» 이고, 모르면 종전값(`"none"`)으로 간다.
+   */
+  reasoningFloor?: Record<string, string>;
+  /**
    * 순서에 의미가 없는 provider 들 — `catalogTierModel` 이 등급을 주장하지 않는다.
    * ★**없음 = 순위 있음**으로 읽는다(옛 캐시 무회귀). 2026-08-31.
    */
@@ -229,9 +249,13 @@ const discoverAnthropic = async (): Promise<DiscoverResult> => {
 /** codex `<base>/models` — 구독 OAuth. 실패는 throw(호출자가 provider 별로 격리). */
 const codexModelsAt = async (
   clientVersion: string,
-): Promise<{ slugs: string[]; reasoning: Record<string, string> }> => {
+): Promise<{
+  slugs: string[];
+  reasoning: Record<string, string>;
+  reasoningFloor: Record<string, string>;
+}> => {
   const auth = getAuthProvider("codex");
-  if (auth === undefined) return { slugs: [], reasoning: {} };
+  if (auth === undefined) return { slugs: [], reasoning: {}, reasoningFloor: {} };
   const token = await auth.getAccessToken();
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
@@ -251,21 +275,35 @@ const codexModelsAt = async (
   const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`codex /models ${res.status}`);
   const json = (await res.json()) as {
-    models?: Array<{ slug?: unknown; default_reasoning_level?: unknown }>;
+    models?: Array<{
+      slug?: unknown;
+      default_reasoning_level?: unknown;
+      supported_reasoning_levels?: unknown;
+    }>;
   };
   const rows = Array.isArray(json.models) ? json.models : [];
   const slugs: string[] = [];
   const reasoning: Record<string, string> = {};
+  const reasoningFloor: Record<string, string> = {};
   for (const r of rows) {
     if (typeof r.slug !== "string" || r.slug === "") continue;
     slugs.push(r.slug);
+    // ★**최저 수용 강도** — 첫 원소를 쓴다(목록은 오름차순으로 온다).
+    //  모양이 다르면 조용히 건너뛴다 — 지어내는 것보다 모르는 게 낫다.
+    const lv = r.supported_reasoning_levels;
+    if (Array.isArray(lv) && lv.length > 0) {
+      const first = (lv[0] as { effort?: unknown }).effort;
+      if (typeof first === "string" && first !== "") {
+        reasoningFloor[`codex:${r.slug}`] = first;
+      }
+    }
     // ★백엔드가 말한 그대로 담는다 — 유효값 목록을 우리가 흉내 내지 않는다(모델마다 다르다:
     //  sol 은 max·ultra 까지, 5.5 는 xhigh 까지). 이상한 값이면 백엔드가 400 으로 말한다.
     if (typeof r.default_reasoning_level === "string" && r.default_reasoning_level !== "") {
       reasoning[`codex:${r.slug}`] = r.default_reasoning_level;
     }
   }
-  return { slugs, reasoning };
+  return { slugs, reasoning, reasoningFloor };
   // ★여기서 거르지 않는다 — 캐시는 백엔드가 말한 그대로 둔다(레코드 보존).
   //  등급 후보에서 빼는 판단은 `catalogTierModel`(선택) 몫이다.
 };
@@ -411,6 +449,8 @@ const discoverOpenAiCompat = async (provider: string): Promise<DiscoverResult> =
 interface DiscoverResult {
   slugs: string[];
   reasoning?: Record<string, string>;
+  /** 모델별 **최저 수용 추론 강도** — 벤더가 목록을 줄 때만. 부재 = 모름. */
+  reasoningFloor?: Record<string, string>;
   /** 모델별 컨텍스트 토큰 — 벤더가 알려줄 때만. 없으면 모르는 것이다(추측 금지). */
   context?: Record<string, number>;
   /** 모델별 도구 지원 — 벤더가 **선언했을 때만**. 부재 = 모름(≠ 지원 안 함). */
@@ -470,6 +510,7 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
   // ★reasoning 은 provider 실패 시에도 **직전 값을 잃지 않는다** — 목록과 같은 규칙
   //  ("한 번 흔들렸다고 아는 것을 잃지 않는다").
   const nextReasoning: Record<string, string> = { ...(cache?.reasoning ?? {}) };
+  const nextFloor: Record<string, string> = { ...(cache?.reasoningFloor ?? {}) };
   const nextUnranked = new Set<string>(cache?.unranked ?? []);
   const nextContext: Record<string, number> = { ...(cache?.context ?? {}) };
   const nextTools: Record<string, boolean> = { ...(cache?.tools ?? {}) };
@@ -513,6 +554,10 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
       if (res.reasoning !== undefined) {
         if (mergeReasoning(nextReasoning, provider, res.reasoning)) changed = true;
       }
+      // 최저 수용 강도도 **같은 규칙**으로 — 값이 문자열이라 판단이 같다(두 벌 만들지 않는다).
+      if (res.reasoningFloor !== undefined) {
+        if (mergeReasoning(nextFloor, provider, res.reasoningFloor)) changed = true;
+      }
     } catch (e) {
       console.warn(
         `[model-catalog] ${provider} 조회 실패 — ${e instanceof Error ? e.message : String(e)} ` +
@@ -525,6 +570,7 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
     fetchedAt: Date.now(),
     models: next,
     ...(Object.keys(nextReasoning).length > 0 ? { reasoning: nextReasoning } : {}),
+    ...(Object.keys(nextFloor).length > 0 ? { reasoningFloor: nextFloor } : {}),
     ...(nextUnranked.size > 0 ? { unranked: [...nextUnranked].sort() } : {}),
     ...(Object.keys(nextContext).length > 0 ? { context: nextContext } : {}),
     ...(Object.keys(nextTools).length > 0 ? { tools: nextTools } : {}),
@@ -571,10 +617,33 @@ export const resolveReasoningEffort = (
   provider: string,
   model: string,
   cwd: string = process.cwd(),
-): string | undefined => {
+): string | undefined => resolveReasoning(provider, model, cwd)?.value;
+
+/**
+ * 그 값이 **어디서 왔나** — `"설정"`(settings.json models.reasoning) 또는
+ * `"모델기본"`(카탈로그 `default_reasoning_level`). 값이 없으면 `undefined`.
+ *
+ * ★`/models` 화면이 쓴다 (2026-09-10 정태님: *"기본값이더라도 항상 추론강도 표시"*).
+ *  층이 셋인데(풀 원소 > 설정 > 카탈로그) 뒤의 둘을 «기본» 으로 뭉치면, 이 표시가 풀려던
+ *  «전역을 바꿨는데 왜 안 먹지» 가 그대로 남는다.
+ * ★**순서를 여기서 다시 적지 않는다** — `resolveReasoning` 한 곳이 판단하고 둘은 그걸
+ *  꺼내 쓴다. 층 순서가 두 자리에 적히면 언젠가 갈린다.
+ */
+export const resolveReasoningOrigin = (
+  provider: string,
+  model: string,
+  cwd: string = process.cwd(),
+): "설정" | "모델기본" | undefined => resolveReasoning(provider, model, cwd)?.origin;
+
+/** 값과 출처를 **한 번에** 정한다 — 층 순서를 아는 유일한 자리. */
+const resolveReasoning = (
+  provider: string,
+  model: string,
+  cwd: string,
+): { value: string; origin: "설정" | "모델기본" } | undefined => {
   const key = `${provider}:${model}`;
   const override = loadModelReasoning(cwd).get(key);
-  if (override !== undefined) return override;
+  if (override !== undefined) return { value: override, origin: "설정" };
   ensureLoaded();
   // ★신선도(MAX_AGE_MS)를 요구하지 않는다 — 모델의 설계 강도는 목록처럼 늙는 값이 아니고,
   //  낡았다고 안 쓰면 오프라인에서 조용히 종전 동작(백엔드 기본)으로 되돌아간다.
@@ -587,6 +656,29 @@ export const resolveReasoningEffort = (
   if (typeof v !== "string") return undefined;
   // settings 쪽(loadModelReasoning)이 trim 해서 저장하므로 **여기서도 trim** 한다 —
   // '같은 판정으로 통일' 이 절반만 참이면 두 자리는 언젠가 다시 갈린다(적대 검토 지적).
+  const t = v.trim();
+  return t === "" ? undefined : { value: t, origin: "모델기본" };
+};
+
+/**
+ * 이 모델이 **받아 주는 가장 낮은 추론 강도** — 모르면 `undefined`.
+ *
+ * final-flush 턴이 쓴다: 목적이 «생각 말고 텍스트를 뱉어라» 라 강도를 바닥으로 내리는데,
+ * 바닥이 모델마다 다르다(실측: astra 는 `none` 을 400 으로 거절, sol 은 받는다). 우리가
+ * 서열을 흉내 내지 않고 **백엔드가 광고한 첫 원소**를 쓴다.
+ *
+ * ★신선도를 요구하지 않는다 — `resolveReasoningEffort` 와 같은 이유(설계 값은 목록처럼
+ *  늙지 않고, 낡았다고 안 쓰면 오프라인에서 조용히 옛 동작으로 돌아간다).
+ * ★값 검증은 `resolveReasoningEffort` 와 **같은 판정**이다 — 두 자리가 같은 판단을 다르게
+ *  하면 언젠가 갈린다(손편집된 캐시의 숫자·null 이 wire 로 새어 400 을 낸 전례가 있다).
+ */
+export const catalogReasoningFloor = (
+  provider: string,
+  model: string,
+): string | undefined => {
+  ensureLoaded();
+  const v = cache?.reasoningFloor?.[`${provider}:${model}`];
+  if (typeof v !== "string") return undefined;
   const t = v.trim();
   return t === "" ? undefined : t;
 };
@@ -623,12 +715,23 @@ export const catalogSupportsTools = (provider: string, model: string): boolean |
  */
 export const modelCapsFor = (
   spec: string,
-): { context?: number; tools?: boolean } | undefined => {
+): {
+  context?: number;
+  tools?: boolean;
+  reasoning?: string;
+  reasoningFrom?: "설정" | "모델기본";
+} | undefined => {
   const i = spec.indexOf(":");
   if (i < 0) return undefined;
   const provider = spec.slice(0, i);
   const model = spec.slice(i + 1);
   const context = catalogContextTokens(provider, model);
   const tools = catalogSupportsTools(provider, model);
-  return context === undefined && tools === undefined ? undefined : { context, tools };
+  // ★**실제로 실려 나갈 강도**를 같이 준다 (2026-09-10). 어댑터가 쓰는 것과 **같은 함수**라
+  //  화면과 wire 가 갈릴 수 없다 — 두 자리가 같은 판단을 따로 하면 언젠가 어긋난다.
+  const reasoning = resolveReasoningEffort(provider, model);
+  const reasoningFrom = resolveReasoningOrigin(provider, model);
+  return context === undefined && tools === undefined && reasoning === undefined
+    ? undefined
+    : { context, tools, reasoning, reasoningFrom };
 };

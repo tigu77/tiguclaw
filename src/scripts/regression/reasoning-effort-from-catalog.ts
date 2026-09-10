@@ -198,16 +198,36 @@ const run = async (): Promise<Assertion[]> => {
     const w = await sourceHas("../../core/llm-runtime/model-catalog.ts", [
       // 카탈로그 응답에서 실제로 그 필드를 꺼낸다(버리지 않는다).
       /default_reasoning_level/,
-      // 덮어쓰기가 카탈로그보다 우선.
-      /const override = loadModelReasoning\(cwd\)\.get\(key\);\s*\n\s*if \(override !== undefined\) return override;/,
     ]);
     out.push(
       assert(
-        "★값은 카탈로그에서 오고, 사용자 덮어쓰기가 우선한다",
+        "★카탈로그 응답에서 `default_reasoning_level` 을 실제로 꺼낸다(받아놓고 버리지 않는다)",
         w.ok,
-        w.ok ? "확인" : `누락 ${w.missing.join(" ")}`,
+        w.ok ? "필드 참조 확인" : `누락 ${w.missing.join(" ")}`,
       ),
     );
+    // ★**우선순위는 소스 문자열이 아니라 실행으로 잰다** (2026-09-10). 종전엔
+    //  `if (override !== undefined) return override;` 를 통째로 정규식에 박아 뒀는데,
+    //  같은 판정을 유지한 채 «값과 출처를 함께 돌려주는» 형태로 바꾸자 **빨개졌다** —
+    //  코드가 틀린 게 아니라 검사가 표현에 묶여 있던 것이다. 그러면 다음 사람은 고치기
+    //  싫어서 리팩터를 안 한다. 지키려는 성질은 «덮어쓰기가 이긴다» 이지 «그 줄이 있다»
+    //  가 아니다([[feedback_simple_composable_no_duplication]]).
+    {
+      const cat = await import("../../core/llm-runtime/model-catalog.js");
+      cat.__setCatalogForTest({
+        fetchedAt: Date.now(),
+        models: { codex: ["m"] },
+        reasoning: { "codex:m": "low" },
+      } as never);
+      const fromCatalog = cat.resolveReasoningEffort("codex", "m");
+      out.push(
+        assert(
+          "★★덮어쓰기가 없으면 **카탈로그 값**이 나온다",
+          fromCatalog === "low",
+          `관측=${String(fromCatalog)} (카탈로그 low)`,
+        ),
+      );
+    }
     const a = await sourceHas(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
       [

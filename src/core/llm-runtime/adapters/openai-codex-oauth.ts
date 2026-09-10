@@ -97,7 +97,9 @@ import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabiliti
 import { getPaths } from "../../paths.js";
 import { getEventBus } from "../../eventbus.js";
 import { loadModelInputLimits } from "../../settings.js";
-import { resolveReasoningEffort } from "../model-catalog.js";
+import { resolveReasoningEffort,
+  catalogReasoningFloor,
+} from "../model-catalog.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -1360,9 +1362,23 @@ export const runOpenAiCodex = async (
       //  유지 (도구 인자 추론 품질 보존).
       //  ⚠️ 2026-06-11 회귀 수정: gpt-5.5 는 'minimal' 미지원(400 unsupported_value —
       //   'minimal' 은 gpt-5 전용, 5.1+ 에서 'none' 으로 대체). finalFlush 의도(reasoning
-      //   0 → 텍스트 슬롯 최대)와도 'none' 이 정확히 일치. 지원값: none/low/medium/high/xhigh.
+      //   0 → 텍스트 슬롯 최대)와도 'none' 이 정확히 일치.
+      //  ★★**그런데 'none' 도 모든 모델이 받는 게 아니다** (2026-09-10 실측):
+      //   `gpt-6-astra` + `effort:"none"` → **400** `Unsupported value: 'none' is not
+      //   supported with the 'gpt-6-astra' model. Supported: low, medium, high, xhigh, max`.
+      //   같은 요청이 `gpt-5.6-sol` 에선 200 이다. 400 은 RETRIABLE_STATUS(429·5xx)에 없어
+      //   즉시 throw → `runPool` 이 **턴을 통째로 다음 모델에 다시 돌린다**(37 iteration
+      //   짜리 작업이면 그걸 다 버린다). 마지막 안전망이 오히려 작업을 날리는 자리였다.
+      //   ★아직 한 번도 안 터졌다 — 로그 9개에서 `flush=true` 0건(발동 조건이 150 iteration
+      //    또는 빈응답 cap 소진뿐이라 아직 안 닿았다). **잠복 결함**이다.
+      //  ★고치는 방식: 모델 이름으로 분기하지 않는다. 백엔드 `/models` 가 모델마다
+      //   `supported_reasoning_levels` 를 주므로 **그 첫 원소(=최저)** 를 쓴다.
+      //   `"low"` 를 코드에 박는 것도 손 목록이다([[feedback_hand_maintained_lists]]).
+      //  ★모르면(옛 캐시·미인증·조회 실패) **종전값 'none'** 으로 간다 — 회귀 0.
+      //  ★«medium 으로 떨어뜨리자» 는 안 된다: 이 로직이 생긴 이유가 바로 medium 이
+      //   reasoning 을 다 써서 final output_text 가 0자로 끝나던 것이다(위 문단).
       if (finalFlushRequested) {
-        body.reasoning = { effort: "none" };
+        body.reasoning = { effort: catalogReasoningFloor("codex", model) ?? "none" };
       } else {
         // ★일반 턴의 추론 강도 — **모델이 설계된 값**을 명시해 보낸다 (2026-08-14).
         //  종전엔 이 필드를 아예 안 보내 백엔드 기본을 받았는데, 그건 모델 카탈로그가

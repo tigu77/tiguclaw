@@ -23,6 +23,19 @@ export interface ModelCaps {
   context?: number;
   /** 도구 지원 — 벤더가 **선언했을 때만**. `undefined` = 모름. */
   tools?: boolean;
+  /**
+   * 이 모델에 **실제로 실려 나가는** 추론 강도 — `settings.json models.reasoning` 덮어쓰기
+   * 또는 카탈로그의 설계 기본(`default_reasoning_level`). 모르면 `undefined`.
+   *
+   * ★2026-09-10 정태님: *"모델프로필에서 기본값이더라도 항상 추론강도 표시해주고"*.
+   *  종전엔 **풀 원소에 직접 적었을 때만** 보였다. 그런데 강도 층이 셋이라
+   *  (풀 원소 > `models.reasoning` > 카탈로그) 안 보이는 동안에도 **값은 실려 나간다** —
+   *  화면이 «없음» 처럼 보이는데 실제로는 `low` 가 가고 있었다. 고르는 화면에서 안 보이는
+   *  값은 없는 값과 같다.
+   */
+  reasoning?: string;
+  /** 그 값의 출처 — `"설정"`(settings.json) / `"모델기본"`(카탈로그). 층이 셋이라 필요하다. */
+  reasoningFrom?: "설정" | "모델기본";
 }
 
 /** 사람이 읽는 크기 — 128000 → `128K`. */
@@ -72,7 +85,16 @@ const formatPool = (
   return parts
     .map((e) => {
       const spec = e.spec.trim();
-      const strength = e.reasoning === undefined ? "" : `(강도 ${e.reasoning})`;
+      // ★**항상 보여준다** — 명시했으면 그대로, 아니면 실제로 적용될 값을 «기본» 표시와
+      //  함께. 어느 층에서 왔는지가 보여야 «전역을 바꿨는데 왜 안 먹지» 를 풀 수 있다.
+      const c = caps?.(spec);
+      const effective = e.reasoning ?? c?.reasoning;
+      const strength =
+        effective === undefined
+          ? ""
+          : e.reasoning !== undefined
+            ? `(강도 ${e.reasoning}·이 프로파일)`
+            : `(강도 ${effective}·${c?.reasoningFrom ?? "모델기본"})`;
       // ★능력은 **재놓고 안 보여주면 없는 것과 같다** (2026-08-31). 컨텍스트·도구 지원을
       //  벤더에게 물어 카탈로그에 담아뒀는데 사용자가 모델을 고르는 이 화면이 안 썼다.
       return `\`${spec}\`${strength}${capsLabel(caps?.(spec))}`;

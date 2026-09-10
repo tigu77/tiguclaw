@@ -228,6 +228,64 @@ const walkSkillsRoot = async (
 };
 
 /**
+ * **SKILL.md 를 읽었는데 못 쓰는 이유** — 없으면 `null`.
+ *
+ * ★판정을 순수 함수로 떼어 둔다. 로더 안에 두면 «건너뛰었나» 를 데몬을 띄워야만 볼 수
+ *  있고, 그러면 검사가 문자열 grep 으로 약해진다
+ *  ([[feedback_simple_composable_no_duplication]] 「검사가 껄끄러우면 코드가 잘못 놓인 것」).
+ * ★**실제로 일어나는 것만 센다.** 드롭 지점을 전수로 보면 넷인데, `SKILL.md` 부재는
+ *  정상(스킬 루트 자신을 한 번 떠보는 경로가 있다)이고 `name` 은 폴더명으로 폴백되므로,
+ *  남는 진짜 원인은 **아래 둘**이다. 없는 원인을 지어내면 그게 배경소음이 된다.
+ * ★이유엔 **고치는 법**을 붙인다 — 증상만 적힌 로그는 한 번 더 묻게 만든다.
+ */
+export const skillLoadDefect = (
+  frontmatter: Readonly<Record<string, string>> | null,
+): { reason: string; hint: string } | null => {
+  if (frontmatter === null) {
+    return {
+      reason: "frontmatter 를 못 읽었다",
+      hint: "파일 **첫 줄**이 `---` 이어야 하고 아래에서 `---` 로 다시 닫아야 합니다.",
+    };
+  }
+  if ((frontmatter.description ?? "").trim() === "") {
+    return {
+      reason: "`description` 이 비었다",
+      hint: "무엇을 하고 언제 쓰는 스킬인지 한 줄 적어 주세요 — 비면 고를 근거가 없어 싣지 않습니다.",
+    };
+  }
+  return null;
+};
+
+/**
+ * 같은 결함을 매 턴 다시 찍지 않는다 — `discoverSkills` 는 **턴마다** 돈다(캐시 0).
+ *
+ * ★이 레포가 반복해서 데인 자리다: 상시 발화하는 경고는 아무도 안 보게 되고, 그러면
+ *  진짜 사고가 그 사이에 묻힌다(실측 12일). 그래서 **경로별로 이유가 바뀔 때만** 찍고,
+ *  성공하면 잊는다(잊지 않으면 고쳤다 다시 깨졌을 때 조용하다).
+ * ★바운드한다 — 진단용 곁가지가 메모리를 먹으면 안 된다([[project_hotpath_bound_preserve_record]]).
+ */
+const DEFECT_CAP = 128;
+const reportedDefects = new Map<string, string>();
+
+const reportSkillDefect = (
+  filePath: string,
+  defect: { reason: string; hint: string },
+): void => {
+  if (reportedDefects.get(filePath) === defect.reason) return;
+  reportedDefects.delete(filePath);
+  reportedDefects.set(filePath, defect.reason);
+  if (reportedDefects.size > DEFECT_CAP) {
+    const oldest = reportedDefects.keys().next().value;
+    if (oldest !== undefined) reportedDefects.delete(oldest);
+  }
+  console.warn(`[skills] 건너뜀 — ${filePath}: ${defect.reason}. ${defect.hint}`);
+};
+
+const clearSkillDefect = (filePath: string): void => {
+  reportedDefects.delete(filePath);
+};
+
+/**
  * 단일 스킬 디렉터리에서 SKILL.md frontmatter 파싱 → Skill 객체.
  * OpenClaw L44-94 `loadSingleSkillDirectory` 답습.
  *
@@ -249,22 +307,34 @@ const loadSingleSkillDirectory = async (
   }
 
   const frontmatter = parseFrontmatter(raw);
-  if (frontmatter === null) return null;
+  // ★**못 싣는 스킬은 이유를 말한다** (2026-09-10). 종전엔 이 파일에 `console` 호출이
+  //  **0개**였다 — frontmatter 오타 하나면 스킬이 `return null` 로 사라지고 로그엔 한 줄도
+  //  안 남았다. 사용자는 «왜 안 뜨지» 를 알 방법이 없고, 원격 설치본(회사돌쇠·회사 PC)에선
+  //  그게 곧 «영영 못 잡는다» 는 뜻이다([[feedback_logs_must_stand_alone]]).
+  //  ★Agent Skills 가 공개 표준이 되면서 **밖에서 온 스킬**이 들어오기 시작한다 —
+  //   남이 쓴 파일일수록 조용한 드롭이 비싸다.
+  const defect = skillLoadDefect(frontmatter);
+  if (defect !== null) {
+    reportSkillDefect(filePath, defect);
+    return null;
+  }
 
   const fallbackName = path.basename(skillDir).trim();
-  const name = (frontmatter.name ?? "").trim() || fallbackName;
-  const description = (frontmatter.description ?? "").trim();
+  const name = (frontmatter?.name ?? "").trim() || fallbackName;
+  const description = (frontmatter?.description ?? "").trim();
   if (name === "" || description === "") return null;
+  // 고쳤으면 잊는다 — 안 그러면 다시 깨졌을 때 «이미 알린 것» 으로 보고 조용해진다.
+  clearSkillDefect(filePath);
 
   // OpenClaw L209-219 답습 — `disable-model-invocation` 디폴트 false.
   const disableModelInvocation = parseBool(
-    frontmatter["disable-model-invocation"],
+    frontmatter?.["disable-model-invocation"],
     false,
   );
 
   // ★모르는 값은 **기본으로 떨어뜨린다**(전부에게 실림). 오타 하나로 스킬이 조용히
   //  안 보이게 되는 쪽보다, 표시가 안 먹는 쪽이 낫다 — 전자는 알아챌 방법이 없다.
-  const reach: Reach = asReach((frontmatter.reach ?? "").trim());
+  const reach: Reach = asReach((frontmatter?.reach ?? "").trim());
 
   return {
     name,

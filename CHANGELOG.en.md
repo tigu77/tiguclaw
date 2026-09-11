@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-09-11
+
+### Added
+
+- **Claude models can run in "fast" mode too.** 0.52.0 wired it for codex only, so the same
+  setting behaved differently depending on the model. When it doesn't turn on, the log now
+  says why (for example, extra usage being off on your account).
+
+### Fixed
+
+- **The screen described the cost of "fast" wrongly.** Using Claude through a provider name
+  you defined yourself showed "this provider ignores the setting" while **you were actually
+  billed at twice the cost**. codex now reads "2.5x credits" and Claude "2x cost", each correct.
+- **Removed changelog entries (v0.52.0) for things you never hit** — defects that appeared
+  and were fixed inside that same release were written up as if you had run into them.
+
 ## [0.52.0] - 2026-09-10
 
 ### Added
@@ -26,10 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Collapsing in the dashboard was rebuilt.** Reply messages collapse too (it used to be
-  tool steps only), a click **anywhere in the body** collapses — not just the header line —
-  and a collapsed message still shows **three lines**. The collapse triangle is also 1.7x
-  bigger.
+- **Collapsing chat cards was rebuilt.** Reply messages collapse too (it used to be tool-step
+  cards only), a click **anywhere in the body** collapses — not just the header line — and a
+  collapsed message still shows **three lines**. The collapse triangle is also 1.7x bigger.
 - Collapsing now defaults to **expanded**: the previous reply no longer folds itself away.
   Selecting text by dragging no longer collapses the message either.
 - The manager now reads as a 🎖️ **gold badge**, against the subagent's purple.
@@ -39,22 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Background job cards stopped following along.** With the drawer open, new cards stopped
-  scrolling into view around the third job — and once it broke, it never recovered. Reloading
-  now lands you on the **newest** job rather than the oldest.
-- **The collapse triangle didn't show the collapsed state** — it stayed pointing down even
-  after you collapsed a message.
 - **One disconnected external MCP server could kill an entire turn.** Restart the target app
   and it comes back on the next turn.
 - **On the OpenAI adapter, a plugin tool whose name collided with a built-in killed the
   whole turn.** All three adapters now share one decision.
 - Scrolling up in chat to load older messages could **blank the view**, and leaving it alone
   kept it blank.
-- Scrolling up no longer shows **the same message twice**.
-- Refreshing **reversed the order of background cards** — and in that state, hitting the cap
-  deleted the jobs that had just finished.
-- Shell command lines no longer pick up the manager's gold, and the channel list no longer
-  fails to refresh in silence.
+- The channel list no longer fails to refresh in silence.
 - **Skills that failed to load vanished without a word.** The log now says why, and how to
   fix it.
 - When a connection dropped, the log said only `terminated`, so **the reason was
@@ -498,7 +504,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...HEAD
+[0.52.1]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...v0.52.1
 [0.52.0]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...v0.52.0
 [0.51.1]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...v0.51.1
 [0.51.0]: https://github.com/tigu77/tiguclaw/compare/v0.50.0...v0.51.0

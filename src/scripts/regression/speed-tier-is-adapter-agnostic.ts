@@ -53,6 +53,13 @@ const spreadsSpeedIntoOptions = (): boolean => {
       n.initializer !== undefined &&
       ts.isObjectLiteralExpression(n.initializer)
     ) {
+      // ★뒤에 `settings:` 를 직접 놓으면 스프레드가 **덮인다**(2026-09-11 G2). SDK 의
+      //  `ultracode`·`effortLevel` 같은 다른 flag setting 을 쓰는 날 «빠름» 이 조용히
+      //  죽는다. 그 리터럴에 `settings` **직접 지정이 0개**여야 한다.
+      const directSettings = n.initializer.properties.filter(
+        (pr) => ts.isPropertyAssignment(pr) && pr.name.getText() === "settings",
+      ).length;
+      if (directSettings > 0) return; // found 를 안 세운다 = 빨강
       for (const prop of n.initializer.properties) {
         if (!ts.isSpreadAssignment(prop)) continue;
         const e = prop.expression;
@@ -64,7 +71,10 @@ const spreadsSpeedIntoOptions = (): boolean => {
           e.expression.text === "claudeSpeedSettings" &&
           e.arguments.length === 1 &&
           arg !== undefined &&
-          arg.getText() === "input.speed"
+          // ★인자는 «`input` 의 `speed` 를 읽는가» 로 본다 — `input.speed` 문자열 동일성에
+          //  묶으면 `input?.speed` 같은 **동작이 같은 리팩터**에 빨개진다(2026-09-11 N4).
+          //  좁힘 방향 오탐은 옳은 수정을 막고, 그러면 다음 사람이 리팩터를 피한다.
+          /^input\??\.speed$/.test(arg.getText())
         ) {
           found = true;
         }
@@ -74,6 +84,77 @@ const spreadsSpeedIntoOptions = (): boolean => {
   };
   visit(src);
   return found;
+};
+
+
+/**
+ * fast-mode 사유 로그가 **도달 가능한가** — AST 로 본다.
+ *
+ * ★소스에 `fast-mode` 문자열이 있는지로 재면 `if (false && …)` 한 글자에 뚫린다
+ *  (2026-09-11 적대 검토 G3 이 실제로 그렇게 뚫었다). 게이트 조건이 **정확히**
+ *  `input.speed === "fast"` 인지를 본다 — 죽은 조건이 앞에 붙으면 `BinaryExpression`
+ *  모양이 달라져 걸린다.
+ */
+const speedLogIsReachable = (): boolean => {
+  const src = ts.createSourceFile(
+    "claude-agent-sdk.ts",
+    readSourceSync("src/core/llm-runtime/adapters/claude-agent-sdk.ts"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  let ok = false;
+  const visit = (n: ts.Node): void => {
+    if (ts.isIfStatement(n) && /fast_mode_state/.test(n.thenStatement.getText())) {
+      const c = n.expression;
+      ok =
+        ts.isBinaryExpression(c) &&
+        c.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        c.left.getText() === "input.speed" &&
+        c.right.getText() === '"fast"';
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return ok;
+};
+
+
+/**
+ * `index.ts` 가 `/models` 렌더에 **진짜 해석기**를 꽂는가 — AST 로 본다.
+ *
+ * ★이게 없으면 P1 수정이 통째로 무효가 된다(2026-09-11 적대 검토 G1). `() => undefined`
+ *  로 바꾸면 화면의 **모든 행**이 «이 provider 는 안 읽음» 이 되는데, 그물이 0이라 초록이었다.
+ * ★검사 본문은 렌더러에 **자기가 만든 해석기**를 주입해 돌린다 — 그건 렌더러의 판정을 재지
+ *  제품이 무엇을 꽂는지는 안 본다. 그 자리를 여기서 본다.
+ * ★형제 `caps` 도 같은 구멍이었다(G1b) — `models-view-shows-caps` 가 «배선까지 잰다» 고
+ *  적어 놓고 `modelCapsFor` → `undefined` 변이에 초록이었다. 그래서 **둘 다** 본다.
+ */
+const modelsRenderGetsRealLookups = (): { adapterOf: boolean; caps: boolean } => {
+  const src = ts.createSourceFile(
+    "index.ts",
+    readSourceSync("src/index.ts"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const out = { adapterOf: false, caps: false };
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isCallExpression(n) &&
+      ts.isIdentifier(n.expression) &&
+      n.expression.text === "renderModelProfiles"
+    ) {
+      const args = n.arguments;
+      // 6번째 = caps, 7번째 = adapterOf (필수 인자이므로 자리로 센다).
+      const caps = args[5]?.getText() ?? "";
+      const ad = args[6]?.getText() ?? "";
+      if (caps === "modelCapsFor") out.caps = true;
+      // 해석기는 `parseModelSpec` 을 실제로 부르는 클로저여야 한다.
+      if (/parseModelSpec\s*\(/.test(ad) && /\.adapter/.test(ad)) out.adapterOf = true;
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return out;
 };
 
 export const check: RegressionCheck = {
@@ -114,6 +195,11 @@ export const check: RegressionCheck = {
     //  «크레딧 9배» 로 지어내도 · 파생을 손 목록으로 되돌려도 **11/11 초록**이었다.
     //  그리고 커밋이 «렌더까지 돌려 확인» 이라 자랑한 그 줄을 재는 어세션이 **0개**였다.
     //  이제 렌더를 실제로 돌린다 — 화면에 나오는 글자가 판정이다.
+    // ★★**넷 중 셋만 닫혔다**(2026-09-11 적대 검토 G3). «로그 끄기» 는 **아직 안 잡힌다** —
+    //  `if (false && input.speed === "fast")` 로 바꿔도 전체 초록이다. 이 검사에 fast-mode
+    //  로그를 재는 어세션이 **0개**이기 때문이다. 로그는 «왜 안 켜졌나» 의 **유일한 답변
+    //  경로**인데 그물이 없다. 여기 적어 두는 이유: 주석이 «이제 닫혔다» 로 읽히면 다음
+    //  사람이 확인 없이 믿는다 — 그게 이 파일이 처음 가짜였던 방식이다.
     const { renderModelProfiles } = await import("../../core/entry/models-command.js");
     const { parseModelSpec } = await import("../../core/llm-runtime/index.js");
     const line = renderModelProfiles(
@@ -136,8 +222,8 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "★★claude 행이 **단가 2배**로 찍힌다 — 어댑터가 그 값을 실제로 보내는데 화면이 다른 말을 하면 사용자가 비용을 잘못 판단한다",
-        /claude-opus-5`\(빠름·단가 2배\)/.test(line),
+        "★★claude 행이 **비용 2배**로 찍힌다 — 어댑터가 그 값을 실제로 보내는데 화면이 다른 말을 하면 사용자가 비용을 잘못 판단한다(축을 «단가» 로 못박지 않는다 — 구독 경로는 안 쟀다)",
+        /claude-opus-5`\(빠름·비용 2배\)/.test(line),
         line.split("→")[0]?.trim() ?? line,
       ),
       assert(
@@ -158,6 +244,9 @@ export const check: RegressionCheck = {
     );
 
     // ── ②b 배선: 어댑터가 그 번역을 **정말 옵션에 싣는가**(AST) ──────────────────
+    const claudeSrc = stripComments(
+      readSourceSync("src/core/llm-runtime/adapters/claude-agent-sdk.ts"),
+    );
     const codexSrc = stripComments(
       readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"),
     );
@@ -177,7 +266,7 @@ export const check: RegressionCheck = {
     // ── ③ ★P1: **사용자 정의 provider** 도 어댑터로 갈린다 ────────────────────────
     // ★이게 이 검사의 심장이다(2026-09-11 P1). `models.providers` 로 임의 이름을 claude
     //  어댑터에 붙일 수 있으므로, 판정을 provider **이름**으로 하면 화면은 «안 읽음» 인데
-    //  실제로는 **단가 2배가 청구된다.** 오류 방향이 «안 나간다» 쪽이라 사용자가 안심하고
+    //  실제로는 **2배 비용이 청구된다.** 오류 방향이 «안 나간다» 쪽이라 사용자가 안심하고
     //  켜 두는 것이 특히 나쁘다.
     const custom = renderModelProfiles(
       { p: { pool: [{ spec: "myclaude:claude-opus-5", speed: "fast" }] } } as never,
@@ -191,8 +280,8 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "★★**사용자 정의 provider 이름**이 claude 어댑터를 타면 화면도 단가 2배라고 말한다 — 이름으로 판정하면 «안 읽음» 이라 하면서 2배를 청구한다",
-        /단가 2배/.test(custom) && !/안 읽음/.test(custom),
+        "★★**사용자 정의 provider 이름**이 claude 어댑터를 타면 화면도 비용 2배라고 말한다 — 이름으로 판정하면 «안 읽음» 이라 하면서 2배를 청구한다",
+        /비용 2배/.test(custom) && !/안 읽음/.test(custom),
         custom,
       ),
     );
@@ -215,6 +304,41 @@ export const check: RegressionCheck = {
         "★키는 **어댑터 이름**이다 — provider 이름(`anthropic`)으로 잡으면 사용자 정의 provider 가 새어 나간다",
         SPEED_TIER_COST["anthropic"] === undefined && SPEED_TIER_COST["codex"] === undefined,
         Object.keys(SPEED_TIER_COST).join("·"),
+      ),
+    );
+
+    // ── ⑤ 관측: 안 켜진 이유를 로그가 말한다 — **AST 로** 잰다 ────────────────────
+    // ★G3 정정(2026-09-11). 앞 판은 이 축에 어세션이 **0개**였고, 그래서 로그를
+    //  `if (false && …)` 로 꺼도 전체가 초록이었다. 로그는 «빠름 켰는데 왜 안 빨라지죠» 의
+    //  **유일한 답변 경로**다 — 화면은 «적혔다» 만 보여주고 런타임 상태는 여기에만 있다.
+    // ★소스에 문자열이 있는지로 재지 않는다(그게 뚫린 방식이다). 조건문이 **도달 가능한가**
+    //  를 AST 로 본다: 게이트가 `input.speed === "fast"` 하나여야 하고, `false &&` 같은
+    //  죽은 조건이 끼면 걸린다.
+    out.push(
+      assert(
+        "★★«빠름» 이 안 켜진 이유를 로그가 말한다 — 프로파일엔 적혀 있는데 런타임 상태는 로그에만 있다",
+        speedLogIsReachable(),
+        speedLogIsReachable() ? "게이트가 input.speed === \"fast\" 하나(AST)" : "🔴 로그가 죽은 조건 뒤에 있거나 없다",
+      ),
+      assert(
+        "★계정 설정으로 막힌 경우엔 **무엇을 하면 되는지**까지 말한다 — 증상만 적힌 로그는 한 번 더 묻게 만든다",
+        /extra_usage_disabled/.test(claudeSrc) && /추가 사용량/.test(claudeSrc),
+        `처방 있음=${/추가 사용량/.test(claudeSrc)}`,
+      ),
+    );
+
+    // ── ⑥ 배선: 제품이 렌더에 **진짜 조회기**를 꽂는가 ────────────────────────────
+    const wired = modelsRenderGetsRealLookups();
+    out.push(
+      assert(
+        "★★`/models` 가 **진짜 어댑터 해석기**를 받는다 — 끊으면(`() => undefined`) 모든 행이 «안 읽음» 이 되어 P1 수정이 통째로 무효가 되는데, 검사 본문은 자기가 만든 해석기를 주입하므로 이 자리를 못 본다",
+        wired.adapterOf,
+        wired.adapterOf ? "index.ts 가 parseModelSpec().adapter 를 꽂음(AST)" : "🔴 해석기가 안 꽂힌다",
+      ),
+      assert(
+        "★형제 `caps` 배선도 같이 본다 — `models-view-shows-caps` 가 «배선까지 잰다» 고 적어두고 `modelCapsFor`→`undefined` 변이에 초록이었다(G1b)",
+        wired.caps,
+        wired.caps ? "index.ts 가 modelCapsFor 를 꽂음(AST)" : "🔴 caps 가 안 꽂힌다",
       ),
     );
 

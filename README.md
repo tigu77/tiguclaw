@@ -149,6 +149,23 @@ set shows as a badge on the dashboard's **Models** screen.
 > ⚠️ More effort means **more output, more cost, more latency.** (Measured: pinning one model
 > to its designed `low` cut output by 37%.) Raise it for the job that needs it, then put it back.
 
+`/models` shows the effort **actually being sent** right now, and where the value came from —
+the profile, your settings, or the model's own default. Check there when a global change
+doesn't seem to take.
+
+### Running faster
+
+You can make answers come back quicker. It **costs more**, so it's off by default and you turn
+it on per model in a profile:
+
+```jsonc
+{ "model": "codex:gpt-5.6-sol", "speed": "fast" }
+```
+
+codex models burn **2.5x the credits**; Claude costs **2x**. `/models` shows where
+it's on along with what it costs, and if you turn it on and nothing changes, the log says why
+(an account setting, for instance).
+
 **If something's off**, run `tiguclaw doctor` first — it checks keys, home, service, native modules and
 the global command, and tells you what to do about whatever it finds.
 

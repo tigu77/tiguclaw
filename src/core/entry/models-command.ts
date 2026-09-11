@@ -11,7 +11,7 @@
  *  - never-throw 는 상위(replyCommand) 몫 — 여기선 순수 변환만.
  */
 import type { ModelProfile, PoolEntry } from "../settings.js";
-import { SPEED_AWARE_PROVIDERS } from "../llm-runtime/types.js";
+import { SPEED_TIER_COST } from "../llm-runtime/types.js";
 
 /**
  * 모델 능력 조회 — **주입받는다**(이 파일은 순수 함수라 전역·IO 를 안 읽는다).
@@ -79,7 +79,9 @@ const LEGACY_TIER_ENV_KEYS = [
  */
 const formatPool = (
   pool: readonly PoolEntry[],
-  caps?: (spec: string) => ModelCaps | undefined,
+  caps: ((spec: string) => ModelCaps | undefined) | undefined,
+  /** spec → 어댑터. «빠름» 의 대가는 provider 이름이 아니라 **어댑터**로 갈린다(P1). */
+  adapterOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const parts = pool.filter((e) => e.spec.trim() !== "");
   if (parts.length === 0) return "(빈 풀 — 어댑터 디폴트로 강등)";
@@ -112,9 +114,20 @@ const formatPool = (
       //  목적인 화면이 거짓 비용을 말하면 그 화면을 못 믿게 된다.
       //  ★그렇다고 «빠름» 자체를 숨기지 않는다 — 사용자가 적은 설정이 화면에서 사라지면
       //   «왜 안 먹지» 를 알 길이 없다. **적혔다는 사실은 보이고, 안 먹는다고 말한다.**
-      const speedAware = SPEED_AWARE_PROVIDERS.some((p) => spec.startsWith(`${p}:`));
+      // ★대가는 **어댑터**마다 다르다 — 배수·단위는 계약(`SPEED_TIER_COST`)이 갖고 낱말만
+      //  여기서 붙인다. ★종전엔 `spec` 앞의 **provider 이름**으로 찾았는데, 사용자가
+      //  `models.providers` 로 임의 이름을 claude 어댑터에 붙이면 화면이 «이 provider 는
+      //  안 읽음» 이라 말하면서 **실제로는 단가 2배가 청구됐다**(2026-09-11 적대 검토 P1).
+      //  실행이 어댑터로 갈리므로 화면도 어댑터로 갈라야 한다.
+      const cost = adapterOf === undefined ? undefined : SPEED_TIER_COST[adapterOf(spec) ?? ""];
       const fast =
-        e.speed !== "fast" ? "" : speedAware ? "(빠름·크레딧 2.5배)" : "(빠름·이 provider 는 안 읽음)";
+        e.speed !== "fast"
+          ? ""
+          : cost === undefined
+            ? "(빠름·이 provider 는 안 읽음)"
+            : `(빠름·${cost.unit === "credits" ? "크레딧" : "단가"} ${cost.multiplier}배)`;
+      // ★«안 읽음» 은 **어댑터가 정말 안 읽을 때만** 나온다. 해석 자체를 못 하면(미지 provider)
+      //  그건 다른 문제이고, 이 화면이 비용을 단정할 자리가 아니다.
       return `\`${spec}\`${strength}${fast}${capsLabel(caps?.(spec))}`;
     })
     .join(" → ");
@@ -125,7 +138,8 @@ const formatProfile = (
   name: string,
   prof: ModelProfile,
   isDefault: boolean,
-  caps?: (spec: string) => ModelCaps | undefined,
+  caps: ((spec: string) => ModelCaps | undefined) | undefined,
+  adapterOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const lines: string[] = [];
   const desc = prof.description?.trim();
@@ -135,7 +149,7 @@ const formatProfile = (
       ? `● \`${name}\`${tag} — ${desc}`
       : `● \`${name}\`${tag}`,
   );
-  lines.push(`   풀: ${formatPool(prof.pool, caps)}`);
+  lines.push(`   풀: ${formatPool(prof.pool, caps, adapterOf)}`);
   if (prof.fallback !== undefined && prof.fallback.trim() !== "") {
     lines.push(`   폴백 프로파일: \`${prof.fallback.trim()}\``);
   }
@@ -206,6 +220,15 @@ export const renderModelProfiles = (
    *  (`typecheck-covers-shipped-code`). 짐작이 아니라 컴파일러가 지킨다.
    */
   caps: ((spec: string) => ModelCaps | undefined) | undefined,
+  /**
+   * spec → **어댑터** 조회 — `caps` 와 **같은 이유로 필수 인자다**(기본값을 주면 호출부가
+   * 빼도 조용히 컴파일되고, 그 배선은 데몬을 띄워야 재진다).
+   *
+   * ★«빠름» 의 대가는 provider 이름이 아니라 **어댑터**로 갈린다 — 사용자가
+   *  `models.providers` 로 임의 이름을 claude 어댑터에 붙일 수 있기 때문이다
+   *  (2026-09-11 적대 검토 P1: 화면이 «안 읽음» 이라 했는데 단가 2배가 청구됐다).
+   */
+  adapterOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const blocks: string[] = ["🧩 모델 프로파일"];
   // ★출처를 밝힌다 (2026-08-13) — 프로파일이 settings.json 에 없으면 인증된 provider 로
@@ -234,7 +257,7 @@ export const renderModelProfiles = (
 
   blocks.push(
     names
-      .map((n) => formatProfile(n, profiles[n]!, n === defaultName, caps))
+      .map((n) => formatProfile(n, profiles[n]!, n === defaultName, caps, adapterOf))
       .join("\n\n"),
   );
   blocks.push("프로파일 추가·수정은 대화로 요청하세요 (비서가 settings.json 을 편집합니다).");

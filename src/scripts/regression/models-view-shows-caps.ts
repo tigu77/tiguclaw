@@ -39,8 +39,8 @@ export const check: RegressionCheck = {
       },
     } as unknown as Parameters<typeof renderModelProfiles>[0];
 
-    const out = renderModelProfiles(profiles, null, "default", {}, false, (s) => CAPS[s]);
-    const bare = renderModelProfiles(profiles, null, "default", {}, false, undefined);
+    const out = renderModelProfiles(profiles, null, "default", {}, false, (s) => CAPS[s], undefined);
+    const bare = renderModelProfiles(profiles, null, "default", {}, false, undefined, undefined);
 
     // ★**배선까지 잰다** — 렌더러(순수)만 재면 *조회를 실제로 꽂는 자리*가 사각이다.
     //  실측: `index.ts` 안 인라인 클로저를 끊어도 스위트가 초록이었다. 그래서 모듈로 뽑고

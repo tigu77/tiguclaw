@@ -171,6 +171,7 @@ import type {
   RegionASdkInput,
   RegionASdkOutput,
 } from "../types.js";
+import { claudeSpeedSettings } from "../types.js";
 
 // payload 사이즈 가드 — tool_use input · result text 등이 큰 경우 truncate.
 // in-memory ring buffer 라 토큰/비용 영향 0 이지만 buffer 점유 보호.
@@ -387,6 +388,14 @@ export const steeringContents = async function* (args: {
  *  [[feedback_logs_must_stand_alone]] 의 «매 턴 같은 warn = 배경소음(12일 묻힘)» 그대로다.
  */
 let lastRateLimitSig = "";
+
+/**
+ * «빠름» 상태 로그 dedupe — 같은 상태를 매 턴 찍지 않는다.
+ *
+ * ★모듈 스코프가 맞다: `fast_mode_state` 는 **계정 전역** 값이라 세션이 달라도 같은 답이
+ *  온다. 세션마다 들면 같은 줄을 세션 수만큼 찍는다(형제 `lastRateLimitSig` 와 같은 이유).
+ */
+let lastFastModeSig: string | null = null;
 
 export const runClaude = async (
   input: RegionASdkInput,
@@ -880,6 +889,21 @@ export const runClaude = async (
     // 작동헌법 + 안정 스캐폴딩 (위에서 조립). override 시 그 값이 전부 대체.
     systemPrompt: systemChannel,
     permissionMode: "bypassPermissions",
+    // ★«빠름» — codex 와 **같은 중립 신호**(`input.speed`)를 이 백엔드의 낱말로 옮긴다
+    //  (2026-09-11). v0.52.0 이 계약·파서·화면·codex 번역까지 내보내고 **이 한 줄만**
+    //  빠뜨려서, 같은 설정이 어댑터마다 다르게 굴렀다([[feedback_every_feature_llm_agnostic]]).
+    //  적용 단위는 codex 와 동일하게 **풀 원소**다 — 프로파일 안에서 모델마다 따로 켠다.
+    // ★`settings` 는 «flag settings» 층에 **얹는다**(사용자 settings.json 을 대체하지 않는다).
+    //  실측: `fastMode` 만 담은 객체를 넘겨도 모델·권한 등 나머지가 안 깨졌다.
+    // ★실측(격리 프로브, 2026-09-11) — **끝까지 확인했다**:
+    //     미지정                          → off · 사유 sdk_opt_in_required
+    //     settings.fastMode (추가사용량 off) → off · 사유 extra_usage_disabled
+    //     settings.fastMode (추가사용량 on)  → **on · 사유 없음**
+    //  «사유 없음» 은 SDK 정의상 «아무것도 안 막는다» 다. 즉 이 한 줄이 구독 OAuth 경로에서
+    //  실제로 켠다 — 장벽은 계정의 추가 사용량 하나뿐이었고 그 뒤엔 아무것도 없었다.
+    //  그래도 아래에서 **사유를 로그에 남긴다**: 계정 설정은 사용자마다 다르고, 꺼져 있으면
+    //  «적었는데 왜 안 빨라지지» 를 답할 길이 그것뿐이다.
+    ...claudeSpeedSettings(input.speed),
     abortController: effectiveAc,
     // AskUserQuestion 차단(2026-07-17) — claude 전용 SDK 네이티브 도구. tiguclaw 인터랙티브
     // 선택지는 자체 prompt_options(prompt.options 이벤트)만 렌더(축1, 2026-06-25) — 네이티브로
@@ -1329,6 +1353,40 @@ const isResumeProcessFailure = (e: unknown): boolean =>
     //   그게 확인된 뒤다([[feedback_verify_before_asserting]]).
     //  ★같은 값을 매 턴 찍으면 배경소음이 된다 — **바뀔 때만** 남기고, 경고·거절은 항상
     //   남긴다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
+    // ── ★«빠름» 이 왜 안 켜졌는지 — SDK 가 말해주는 것을 그대로 옮긴다 (2026-09-11) ──
+    //  `fast_mode_state`(off|cooldown|on) 와 `fast_mode_disabled_reason` 이 system·result
+    //  메시지에 실려 온다(실측). 프로파일에 «빠름» 을 적었는데 안 빨라지면 사용자는 원인을
+    //  알 길이 없다 — 화면은 «적혔다» 만 보여주고 런타임 상태는 여기에만 있다.
+    //  ★우리가 **켜달라고 한 턴에만** 본다. 안 켠 턴은 언제나 `sdk_opt_in_required` 라
+    //   매 턴 찍으면 배경소음이 된다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
+    //  ★같은 값을 반복해 찍지 않는다 — 바뀔 때만.
+    if (input.speed === "fast") {
+      const st = (msg as { fast_mode_state?: unknown }).fast_mode_state;
+      const rs = (msg as { fast_mode_disabled_reason?: unknown }).fast_mode_disabled_reason;
+      if (typeof st === "string") {
+        const sig = `${st}/${typeof rs === "string" ? rs : "-"}`;
+        if (sig !== lastFastModeSig) {
+          lastFastModeSig = sig;
+          console.log(
+            st === "on"
+              // ★«on» 은 «막는 게 없다» 이지 «이 턴이 빨랐다·2배로 청구됐다» 가 아니다
+              //  (SDK: *"a request may still choose standard speed"*). 비용 문구에서
+              //  재지 않은 단언을 하지 않는다(2026-09-11 적대 검토 N4).
+              // ★배수를 여기 적지 않는다 — 계약(`SPEED_TIER_COST`)이 «배수는 한 곳에» 라고
+              //  적어 뒀는데 이 줄이 그걸 복제하고 있었다(N3). 대가는 `/models` 가 말한다.
+              ? `[fast-mode] 빠름 티어를 쓸 수 있는 상태입니다(막는 조건 없음).`
+              : `[fast-mode] 안 켜짐(state=${st}${typeof rs === "string" ? ` 사유=${rs}` : ""}) — ` +
+                `프로파일엔 «빠름» 이 적혀 있지만 이 턴은 표준 속도로 돕니다.` +
+                (rs === "extra_usage_disabled"
+                  ? " 계정에서 **추가 사용량**을 켜야 합니다."
+                  : rs === "model_not_allowed"
+                    ? " 이 모델은 빠름 티어를 지원하지 않습니다(Opus 5·4.8 만)."
+                    : ""),
+          );
+        }
+      }
+    }
+
     if (msg.type === "rate_limit_event") {
       try {
         const view = parseRateLimit((msg as { rate_limit_info?: unknown }).rate_limit_info);

@@ -88,6 +88,9 @@ export const check: RegressionCheck = {
       {} as NodeJS.ProcessEnv,
       false,
       undefined,
+      // ★«빠름» 의 대가는 **어댑터**로 갈린다(2026-09-11 P1) — 해석기를 안 주면 codex 행도
+      //  «안 읽음» 이 되어 이 검사가 자기 전제를 잃는다.
+      (sp) => (sp.startsWith("codex:") ? "codex-oauth" : undefined),
     );
     const line = body.split("\n").find((l) => l.includes("풀:"))?.trim() ?? "(풀 줄 없음)";
     out.push(

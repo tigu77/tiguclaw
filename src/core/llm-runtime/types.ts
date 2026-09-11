@@ -15,18 +15,35 @@ import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
 
 /**
- * `speed` 를 **실제로 wire 에 싣는** provider — 화면이 비용을 말해도 되는 유일한 근거.
+ * «빠름» 의 **대가** — **어댑터**마다 모양이 다르다.
  *
- * ★이 목록이 여기 있는 이유: `speed` 는 공용 계약에 있지만 읽는 어댑터는 하나뿐이라,
- *  «설정에 적혔다» 와 «실제로 나간다» 가 갈린다. 지금 묻는 곳은 `/models` 렌더 하나지만
- *  판정을 그 안에 인라인으로 두면 다음 소비처(설정 경고 등)가 **자기 판정을 또 만든다**
- *  — 권위를 한 곳에 둔다
- *  ([[feedback_hand_maintained_lists]] 의 예외가 아니라 그 처방이다: 열거를 없앨 수
- *  없으면 **한 곳**에 두고 소비처가 그걸 묻게 한다).
- * ★새 어댑터가 `input.speed` 를 읽기 시작하면 **여기에 더해라.** 안 더하면 화면이
- *  «이 provider 는 안 읽는다» 고 계속 말한다(조용히 틀리지는 않는다).
+ * ★키가 **어댑터**인 이유 (2026-09-11 적대 검토 P1). 처음엔 provider 이름(`codex`·
+ *  `anthropic`)으로 잡았는데, `speed` 를 실제로 읽는 주체는 **어댑터**다. 사용자는
+ *  `models.providers` 로 임의 이름을 claude 어댑터에 붙일 수 있어서 둘이 갈렸다 —
+ *  `myclaude:claude-opus-5` 에 «빠름» 을 적으면 화면은 «이 provider 는 안 읽음» 이라고
+ *  하는데 **실제로는 단가 2배가 청구됐다.** 오류 방향이 «안 나간다» 쪽이라 사용자가
+ *  안심하고 켜 둔다 — 2026-09-10 P4(«없는 비용을 지어냄»)의 정확한 반대 방향이다.
+ * ★어댑터로 키를 잡으면 **열거가 사라진다** — 새 provider 이름이 몇 개 생기든 어댑터는
+ *  셋뿐이고, 판정이 `parseModelSpec().adapter` 한 곳에서 온다
+ *  ([[feedback_hand_maintained_lists]]: 이름 열거를 판정 기준으로 바꾼다).
+ *
+ * - `credits` — 구독 크레딧을 그 배수로 소비한다(codex: 2.5배).
+ * - `rate`    — 토큰 단가가 그 배수다(claude Opus 5 fast: $10/$50 vs 표준 $5/$25 = 2배).
+ *
+ * ★배수를 **한 곳에** 둔다 — 로그·화면이 각자 적으면 벤더가 바꿀 때 갈린다.
+ *  낱말(«크레딧»/«단가»)은 화면이 정한다(계약에 한국어를 박으면 로케일이 갈린다).
+ * ★`openai` 어댑터는 여기 없다 — 아직 `speed` 를 **안 읽는다**(OpenAI Responses API 는
+ *  `service_tier` 를 지원하므로 못 하는 게 아니라 안 한 것이다. parity 잔여).
  */
-export const SPEED_AWARE_PROVIDERS: readonly string[] = ["codex"];
+export const SPEED_TIER_COST: Readonly<Record<string, { multiplier: number; unit: "credits" | "rate" }>> = {
+  "codex-oauth": { multiplier: 2.5, unit: "credits" },
+  claude: { multiplier: 2, unit: "rate" },
+};
+
+export const claudeSpeedSettings = (
+  speed: string | undefined,
+): { settings?: { fastMode: true } } =>
+  speed === "fast" ? { settings: { fastMode: true } } : {};
 
 export interface RegionASdkInput {
   text: string;
@@ -130,9 +147,11 @@ export interface RegionASdkInput {
    *  운반하고, 그걸 무엇으로 부르는지는 어댑터가 정한다(codex → `service_tier:"priority"`).
    *  값을 읽지 않는 어댑터는 그냥 무시한다 — 다만 **`reasoning` 과 같은 모양이 아니다**
    *  (2026-09-10 적대 검토 P4 정정): `reasoning` 은 세 어댑터가 **전부** 읽고 codex 만
-   *  기본값을 갖는 반면, `speed` 는 **codex 하나만** 읽는다. 그래서 «어느 provider 가
-   *  이걸 실제로 쓰는가» 를 `SPEED_AWARE_PROVIDERS` 한 곳에 적어 두고, 화면이 없는
-   *  비용을 지어내지 않게 한다(로컬 ollama 에 «크레딧 2.5배» 를 찍고 있었다).
+   *  기본값을 갖는 반면, `speed` 는 **codex·claude 어댑터만** 읽는다(openai 는 아직 안
+   *  읽는다 — 못 하는 게 아니라 안 한 것이다). 그래서 «어느 **어댑터**가 이걸 실제로
+   *  쓰는가» 를 `SPEED_TIER_COST` 한 곳에 적어 두고, 화면이 없는 비용을 지어내거나
+   *  (로컬 ollama 에 «크레딧 2.5배») 있는 비용을 숨기지(사용자 정의 provider 가 claude
+   *  어댑터를 타는데 «안 읽음») 않게 한다.
    * ★공짜가 아니다: 속도는 1.5배인데 **크레딧은 2.5배** 나간다(공식 문서
    *  learn.chatgpt.com/docs/agent-configuration/speed, 2026-09-10 확인). 그래서
    *  **기본은 꺼짐**이고, 프로파일에 적었을 때만 켜진다.

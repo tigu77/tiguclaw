@@ -87,6 +87,7 @@ export const check: RegressionCheck = {
       {} as NodeJS.ProcessEnv,
       false,
       caps,
+      undefined,
     );
     out.push(
       assert(

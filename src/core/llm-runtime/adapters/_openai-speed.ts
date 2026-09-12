@@ -46,16 +46,37 @@ export const openaiCarriesSpeed = (baseURL: string | undefined): boolean =>
   baseURL === undefined;
 
 /**
- * 중립 신호(`speed`) → 이 백엔드의 낱말. 안 켜는 경우엔 **키 자체가 없다**(`undefined` 를
- * 넘기면 SDK 가 «비우라» 로 읽을 수 있고, 그건 우리가 안 고른 동작이다).
+ * 중립 신호(`speed`) → **요청 본문에 얹을 조각**. OpenAI 계열 두 백엔드(codex·openai)가
+ * 같은 낱말을 쓰므로 여기 한 곳에 둔다.
  *
- * @param speed   풀 원소가 정한 중립 의도. `"fast"` 만 켠다(오타는 조용히 안 켜진다).
- * @param baseURL 이 턴이 실제로 말 거는 엔드포인트.
+ * ★2026-09-12 외부 사냥 H3: 종전엔 codex 어댑터의 본문 리터럴 안에 인라인이었고, 그래서
+ *  그물 둘이 **소스 문자열 대조**(리터럴 정규식 · `/service_tier/` 포함 여부)로 재고 있었다.
+ *  그건 양쪽으로 틀린다 — 무해한 리팩터에 빨개지고, 진짜 고장(조립 뒤 키 삭제)엔 초록이다.
+ *  꺼내 두면 **돌려서** 잴 수 있다.
+ * ★안 켜는 경우엔 **키 자체가 없다** — `service_tier: undefined` 를 보내면 백엔드가 «명시적
+ *  기본» 으로 읽을 수 있고, 그건 우리가 고른 적 없는 동작이다.
+ *
+ * @param speed 풀 원소가 정한 중립 의도. `"fast"` 만 켠다(오타는 조용히 안 켜진다).
+ */
+export const codexSpeedBody = (
+  speed: string | undefined,
+): { service_tier?: "priority" } =>
+  speed === "fast" ? { service_tier: "priority" } : {};
+
+/**
+ * 중립 신호(`speed`) → **agents SDK 의 `modelSettings` 조각**.
+ *
+ * 같은 낱말을 `providerData` 로 감싸 보낸다 — agents SDK 는 `modelSettings.providerData` 의
+ * 키를 요청 본문에 그대로 펼친다(`...restOfProviderData`, node_modules 실측).
+ *
+ * @param speed   풀 원소가 정한 중립 의도.
+ * @param baseURL 이 턴이 실제로 말 거는 엔드포인트. compat 이면 안 싣는다.
  */
 export const openaiSpeedSettings = (
   speed: string | undefined,
   baseURL: string | undefined,
-): { providerData?: { service_tier: "priority" } } =>
-  speed === "fast" && openaiCarriesSpeed(baseURL)
-    ? { providerData: { service_tier: "priority" } }
-    : {};
+): { providerData?: { service_tier: "priority" } } => {
+  if (!openaiCarriesSpeed(baseURL)) return {};
+  const body = codexSpeedBody(speed);
+  return body.service_tier === undefined ? {} : { providerData: { service_tier: body.service_tier } };
+};

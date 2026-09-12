@@ -137,6 +137,7 @@ import type {
 } from "../types.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
+import { codexSpeedBody } from "./_openai-speed.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
@@ -1389,7 +1390,11 @@ export const runOpenAiCodex = async (
         //  실측: `priority`·`default` 는 200, `flex`·`auto` 는 400(Unsupported service_tier).
         //  ★기본으로 켜지 않는다 — 백엔드 설명이 «1.5~2x speed, **increased usage**» 라
         //   구독 한도를 더 빨리 쓴다. 사용자가 프로파일에 적었을 때만 켠다.
-        ...(input.speed === "fast" ? { service_tier: "priority" } : {}),
+        // ★번역을 `_openai-speed.ts` 로 꺼냈다 (2026-09-12, 외부 사냥 H3). 인라인이던 동안
+        //  이 축의 그물 둘이 **소스 문자열 대조**였다(리터럴 정규식 · `/service_tier/` 포함
+        //  여부). 그건 양쪽으로 틀린다 — 무해한 리팩터에 빨개지고, 진짜 고장엔 초록이다.
+        //  꺼내 두면 «켤 때만 켠다» 를 **돌려서** 잰다.
+        ...codexSpeedBody(input.speed),
       };
       // 가설 A (2026-06-07): finalFlush turn 에서 reasoning.effort=minimal 강제.
       //  ChatGPT 백엔드 기본 = medium. medium 은 reasoning 토큰을 충분히 소비해 final

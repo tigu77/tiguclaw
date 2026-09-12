@@ -56,7 +56,7 @@ import { loadThreadHistory } from "../../../store/memory.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
 import { resolveProviderConn } from "../provider-registry.js";
-import { openaiSpeedSettings } from "./_openai-speed.js";
+import { createOpenAiAgent } from "./_openai-agent.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
@@ -810,41 +810,23 @@ export const runOpenAi = async (
     console.warn(`[openai] ${willTruncateNote(willTruncate, input.model ?? "?")}`);
   }
 
-  // ★모델 설정은 **한 객체로 모은다** (2026-09-12, N6). 종전엔 `...(조건 ? {modelSettings:…} : {})`
-  //  하나였는데, 여기 같은 모양을 하나 더 붙이면 **뒤엣것이 앞엣것을 통째로 덮는다** — 두 손잡이
-  //  중 하나가 조용히 죽고 검사는 초록이다. 그 «뒤 스프레드로 덮기» 는 이 레포가 올해만 두 번
-  //  당한 모양이라(claude 옵션 리터럴의 `settings:` · fast-mode 게이트), 아예 자리를 안 만든다.
-  // ★빈 객체면 키 자체를 안 보낸다 — 종전(둘 다 미지정) 과 바이트 동일(회귀 0).
-  const modelSettings = {
-    // 유효값 판정은 API 에 맡긴다(codex·claude 와 같은 규칙) — 우리가 흉내 낸 목록은
-    // 벤더가 새 등급을 내놓을 때 멀쩡한 값을 막는다.
-    ...(reasoningEffort === undefined
-      ? {}
-      : { reasoning: { effort: reasoningEffort as "low" } }),
-    // ★«빠름» — claude·codex 와 **같은 중립 신호**(`input.speed`)를 이 백엔드의 낱말로 옮긴다
-    //  (2026-09-12 N6 parity). 종전엔 이 어댑터만 `speed` 를 안 읽어서, 같은 settings.json 이
-    //  어댑터를 바꾸는 순간 **아무 신호 없이** 무시됐다 — 원칙 #2(모든 기능 LLM 무관) 위반이고,
-    //  형제 `reasoning` 이 2026-08-15 에 똑같이 빠져 있던 자리다(한 고리를 고치며 옆을 빠뜨리는
-    //  이 레포의 반복 사고).
-    // ★판정·번역은 `_openai-speed.ts` 한 곳에 산다 — compat 백엔드(ollama·gemini)는 제외된다.
-    ...openaiSpeedSettings(input.speed, conn.baseURL),
-  };
-
-  const agent = new Agent({
+  // ★Agent 조립은 `_openai-agent.ts` 가 한다 (2026-09-12, 외부 사냥 H1·H2). 여기 인라인이던
+  //  동안 그물이 **모양으로밖에** 못 쟀고, 인자 하나를 바꾸거나(`conn.baseURL`→`undefined`)
+  //  조건을 영영 거짓으로 만들어도(`>0`→`>99`) 스위트가 초록이었다. 술어를 더 얹는 대신
+  //  **돌려서 잴 수 있는 자리로 옮겼다** — 형제 `adapterInputFor` 와 같은 수다.
+  // ★`input`·`conn` 을 **통째로** 넘긴다. `conn.baseURL` 만 떼어 넘기면 «어느 연결인가» 판정이
+  //  다시 이 호출부로 올라와 사각이 된다(H1 이 정확히 그 자리였다).
+  const agent = createOpenAiAgent({
     name: "tiguclaw-spike",
     instructions,
-    model: modelArg,
+    model,
+    modelArg,
     mcpServers,
-    ...(Object.keys(modelSettings).length > 0 ? { modelSettings } : {}),
-    // externalTools 패스스루(§2.3) — 미지정/빈 배열이면 두 필드 모두 생략(스프레드 {} =
-    // 현행과 바이트 동일 Agent 구성, 회귀 0). toolsNone 게이팅과 무관 — mcpServers 축과
-    // 별개 필드라 tiguclaw 도구가 꺼져도 앱 함수는 그대로 노출된다(ADR §Decision-1 3항).
-    ...(nativeExternalTools.length > 0
-      ? {
-          tools: nativeExternalTools,
-          toolUseBehavior: { stopAtToolNames: [...externalToolNames] },
-        }
-      : {}),
+    input,
+    conn,
+    reasoningEffort,
+    externalTools: nativeExternalTools,
+    externalToolNames: [...externalToolNames],
   });
 
   // 2c 세션 연속성 — thread 단위 단일 소스(loadThreadHistory) 로 prior turn 들을 로드해
@@ -1260,11 +1242,22 @@ export const runOpenAi = async (
         `openai: '${model}' 도구(function calling) 미지원 — 도구 없이 재시도(텍스트/vision). ` +
           `channel=${input.channel} thread=${input.threadKey}`,
       );
-      const noToolsAgent = new Agent({
+      // ★폴백도 **같은 조립**을 쓴다 (2026-09-12). 종전엔 여기만 `new Agent` 를 직접 불러
+      //  `modelSettings` 를 **아예 안 줬다** — 즉 도구 미지원 모델로 폴백한 턴은 사용자가
+      //  프로파일에 적은 **추론 강도도 «빠름» 도 잃었고**, 그 사실이 어디에도 안 보였다.
+      //  두 자리가 글자 그대로 같아 그물도 개수로만 셀 수 있었다(`prompt-channel-split`).
+      //  한 함수로 모으면 그 비대칭이 **구조적으로** 사라진다 — 빠뜨릴 자리가 없다.
+      const noToolsAgent = createOpenAiAgent({
         name: "tiguclaw-spike",
         instructions,
-        model: modelArg,
+        model,
+        modelArg,
         mcpServers: [],
+        input,
+        conn,
+        reasoningEffort,
+        externalTools: [],
+        externalToolNames: [],
       });
       result = await runOnce(noToolsAgent, false);
     } else {

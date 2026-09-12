@@ -72,6 +72,23 @@ export const check: RegressionCheck = {
         capsLabel(undefined) === "" && !/gemini-3\.6-flash`\s*\[/.test(out),
         `undefined 라벨="${capsLabel(undefined)}"`,
       ),
+      // ★백만 단위 분기 — 픽스처가 **한 번도 안 밟던 자리**다 (2026-09-12, 외부 사냥 H4).
+      //  컨텍스트 픽스처가 131K·448·200K 뿐이라 `n >= 1_000_000` 을 `>= 100_000_000` 으로
+      //  밀어도 스위트가 초록이었다. 2M 모델이 `2000K` 로 찍히는데 아무도 안 본다 —
+      //  «사람이 읽는 크기» 라는 약속이 그 자리에서만 조용히 깨진다.
+      //  ★경계 양쪽을 같이 둔다: 999K 는 K 로, 1M 은 M 으로. 한쪽만 두면 등호가 안 박힌다.
+      assert(
+        "★★백만 단위는 **M 으로 접는다** — 경계 양쪽(999K/1M/2M)을 같이 재야 «사람이 읽는 크기» 가 지켜진다",
+        capsLabel({ context: 2_000_000 }) === " [2M]" &&
+          capsLabel({ context: 1_000_000 }) === " [1M]" &&
+          capsLabel({ context: 999_000 }) === " [999K]",
+        `2M=${capsLabel({ context: 2_000_000 })} 1M=${capsLabel({ context: 1_000_000 })} 999K=${capsLabel({ context: 999_000 })}`,
+      ),
+      assert(
+        "★소수점 한 자리까지 접는다 — 1.5M 을 `2M` 으로 뭉개면 고르는 사람이 두 배 차이를 못 본다",
+        capsLabel({ context: 1_500_000 }) === " [1.5M]",
+        capsLabel({ context: 1_500_000 }),
+      ),
       assert(
         "★조회를 **`undefined` 로 주면 종전 그대로** — 렌더러의 순수성 유지(인자 자체는 필수라 호출부가 빼면 컴파일이 깨진다)",
         !bare.includes("[") || !/도구/.test(bare),

@@ -40,6 +40,11 @@ const VIEWS: ProviderView[] = [
   { name: "mixed", models: [...many(25, "acme/m"), ...many(15, "beta/m"), ...many(5, "plain")], authed: true },
   { name: "groq", models: [], authed: true }, // 인증은 됐는데 목록을 못 받았다
   { name: "ollama", models: [], authed: false }, // 인증 자체가 없다
+  // ★**캡과 정확히 같은 수**(30) — 경계를 밟는 픽스처다 (2026-09-12, 외부 사냥 H5).
+  //  종전 픽스처는 1·420·45·0 뿐이라 `> CAP` 를 `>= CAP` 로 밀어도 스위트가 초록이었다.
+  //  등호가 갈리는 자리가 «자를 게 없는데 색인으로 보내는가» 라 사용자가 겪는 차이다.
+  //  ★벤더를 둘 이상 둔다 — 하나면 `vendors.size > 1` 가드에 가려 등호가 안 드러난다.
+  { name: "edge", models: [...many(15, "acme/m"), ...many(15, "beta/m")], authed: true },
 ];
 
 const CAPS = (spec: string): { context?: number; tools?: boolean } | undefined =>
@@ -149,6 +154,22 @@ export const check: RegressionCheck = {
         empty.includes("settings.json"),
         empty.replace(/\n+/g, " ").slice(0, 60),
       ),
+      // ★캡 **경계**를 밟는다 (2026-09-12, 외부 사냥 H5). 캡과 같은 수면 자를 것이 없으므로
+      //  색인이 아니라 **목록**이 맞다. 한 칸 넘으면 그때 색인이다. 두 쪽을 나란히 둬야
+      //  `>` 와 `>=` 가 갈린다 — 종전엔 그 수의 픽스처가 없어 등호가 아무것도 안 지켰다.
+      ((): Assertion => {
+        const atCap = renderProviders(VIEWS, "edge", CAPS);
+        const overCap = renderProviders(
+          [{ name: "over", models: [...many(16, "acme/m"), ...many(15, "beta/m")], authed: true }],
+          "over",
+          CAPS,
+        );
+        return assert(
+          "★★캡과 **같은 수**면 색인이 아니라 목록이다 — 자를 게 없는데 색인으로 보내면 한 단계를 공짜로 더 밟게 한다(한 칸 넘으면 그때 색인)",
+          bodyLines(atCap) === 30 && !atCap.includes("벤더 2종") && overCap.includes("벤더 2종"),
+          `캡동일: 모델줄 ${bodyLines(atCap)}개·색인=${atCap.includes("벤더 2종")} / 캡초과: 색인=${overCap.includes("벤더 2종")}`,
+        );
+      })(),
       // 배선 — provider 이름을 코드에 적으면 새 provider 가 안 나타난다(원칙 2).
       ((): Assertion => {
         const idx = readSourceSync("src/index.ts");

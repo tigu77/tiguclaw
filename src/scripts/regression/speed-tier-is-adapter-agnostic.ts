@@ -138,70 +138,52 @@ const speedLogIsReachable = (): boolean => {
 
 
 /**
- * openai 어댑터가 «빠름» 을 **정말 모델 설정에 싣는가** — AST 로 본다 (2026-09-12 N6).
+ * codex 요청 본문이 «빠름» 번역을 **최상위 스프레드로** 편다 — AST 로 본다.
  *
- * ★claude 쪽(`spreadsSpeedIntoOptions`)과 같은 이유로 AST 다: 번역 함수(`openaiSpeedSettings`)
- *  자체는 순수해서 **돌려서** 재지만, «그 결과가 SDK 까지 가는가» 는 라이브 턴 없이는 못 돈다.
- *  그 자리가 이 레포가 반복해 뚫린 곳이라 모양이라도 **정확히** 본다.
- *
- * 셋을 본다 — 셋 다 «기능은 죽는데 문자열은 그대로» 인 변이를 막는다:
- *  ① `modelSettings` 객체가 **최상위 스프레드**로 그 번역을 편다(감싸서 결과를 버리면 걸린다).
- *  ② 형제 `reasoning` 이 **같은 객체 안에** 있다 — 한 고리를 고치다 옆을 빠뜨리는 것이 이
- *     레포의 반복 사고고(2026-08-15 에 이 어댑터만 강도를 안 읽었다), 그 축엔 그물이 0이었다.
- *  ③ `new Agent({…})` 리터럴이 그걸 **스프레드로만** 받는다. 직접 `modelSettings:` 를 뒤에
- *     놓으면 통째로 덮인다 — claude 옵션 리터럴의 `settings:` 와 같은 모양의 사고다.
+ * ★여기만 모양으로 남는 이유를 정직하게 적는다 (2026-09-12, 외부 사냥 H3). openai 쪽은 조립을
+ *  통째로 꺼내 **돌려서** 재게 됐지만(`_openai-agent.ts`), codex 본문은 루프 안 지역 상태
+ *  (히스토리·도구·flush 분기)에 얽혀 있어 같은 수를 쓰려면 핫경로를 크게 들어내야 한다.
+ *  그리고 **들어내도 H3 의 변이는 못 잡는다** — 조립이 끝난 뒤 `delete body.service_tier` 하는
+ *  것은 어느 자리에 함수를 두든 그 밖에서 일어날 수 있다. 그건 나가는 요청을 봐야 잡힌다.
+ * ★그래도 종전(소스 문자열 `/service_tier/` 포함 여부)보다는 낫다: 감싸기·다른 키로 이동·
+ *  호출 인자 바꿔치기가 여기서 걸린다. **얹는 게 아니라 바꾸는 것**이다.
  */
-const openaiWiresSpeed = (): { spread: boolean; sibling: boolean; agent: boolean } => {
+const codexBodySpreadsSpeed = (): boolean => {
   const src = ts.createSourceFile(
-    "openai-agents-sdk.ts",
-    readSourceSync("src/core/llm-runtime/adapters/openai-agents-sdk.ts"),
+    "openai-codex-oauth.ts",
+    readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"),
     ts.ScriptTarget.Latest,
     true,
   );
-  const out = { spread: false, sibling: false, agent: false };
+  let found = false;
   const visit = (n: ts.Node): void => {
     if (
       ts.isVariableDeclaration(n) &&
       ts.isIdentifier(n.name) &&
-      n.name.text === "modelSettings" &&
+      n.name.text === "body" &&
       n.initializer !== undefined &&
       ts.isObjectLiteralExpression(n.initializer)
     ) {
       for (const prop of n.initializer.properties) {
         if (!ts.isSpreadAssignment(prop)) continue;
         const e = prop.expression;
-        // ① 최상위가 그 호출이어야 한다.
         const arg = ts.isCallExpression(e) ? e.arguments[0] : undefined;
         if (
           ts.isCallExpression(e) &&
           ts.isIdentifier(e.expression) &&
-          e.expression.text === "openaiSpeedSettings" &&
+          e.expression.text === "codexSpeedBody" &&
+          e.arguments.length === 1 &&
           arg !== undefined &&
           /^input\??\.speed$/.test(arg.getText())
         ) {
-          out.spread = true;
+          found = true;
         }
-        // ② 형제 강도 — 조건부 스프레드 안에 `reasoning:` 이 있으면 된다(모양은 자유).
-        if (/reasoning\s*:/.test(e.getText())) out.sibling = true;
-      }
-    }
-    if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "Agent") {
-      const lit = n.arguments?.[0];
-      if (lit !== undefined && ts.isObjectLiteralExpression(lit)) {
-        const direct = lit.properties.filter(
-          (pr) => ts.isPropertyAssignment(pr) && pr.name.getText() === "modelSettings",
-        ).length;
-        const spread = lit.properties.some(
-          (pr) => ts.isSpreadAssignment(pr) && /\bmodelSettings\b/.test(pr.expression.getText()),
-        );
-        // ③ 직접 지정이 **0개**여야 한다 — 뒤에 놓으면 스프레드를 덮는다.
-        if (direct === 0 && spread) out.agent = true;
       }
     }
     ts.forEachChild(n, visit);
   };
   visit(src);
-  return out;
+  return found;
 };
 
 
@@ -243,7 +225,7 @@ export const check: RegressionCheck = {
     const { poolToSpecs, adapterInputFor, speedCostKeyFor } = await import(
       "../../core/llm-runtime/index.js"
     );
-    const { openaiSpeedSettings } = await import(
+    const { openaiSpeedSettings, codexSpeedBody } = await import(
       "../../core/llm-runtime/adapters/_openai-speed.js"
     );
     const { resolveProviderConn } = await import("../../core/llm-runtime/provider-registry.js");
@@ -411,6 +393,19 @@ export const check: RegressionCheck = {
           Object.keys(claudeSpeedSettings("true")).length === 0,
         `Fast=${JSON.stringify(claudeSpeedSettings("Fast"))} priority=${JSON.stringify(claudeSpeedSettings("priority"))}`,
       ),
+      // ★codex 번역도 **돌려서** 잰다 (2026-09-12, 외부 사냥 H3). 종전엔 이 축의 그물 둘이
+      //  소스 문자열 대조였다 — 그래서 무해한 리팩터엔 빨개지고 조립 뒤 키 삭제엔 초록이었다.
+      assert(
+        "★★codex 도 같은 중립 신호를 이 백엔드의 낱말로 옮긴다 — 한쪽만 읽으면 그게 이 결함이었다",
+        JSON.stringify(codexSpeedBody("fast")) === JSON.stringify({ service_tier: "priority" }),
+        JSON.stringify(codexSpeedBody("fast")),
+      ),
+      assert(
+        "★안 켠 턴엔 **키 자체가 없다** — `service_tier: undefined` 를 보내면 백엔드가 «명시적 기본» 으로 읽을 수 있고, 그건 우리가 고른 적 없는 동작이다",
+        Object.keys(codexSpeedBody(undefined)).length === 0 &&
+          Object.keys(codexSpeedBody("Fast")).length === 0,
+        `미지정=${JSON.stringify(codexSpeedBody(undefined))} 오타=${JSON.stringify(codexSpeedBody("Fast"))}`,
+      ),
     );
 
     // ── ② 배선: **실제로 렌더를 돌려** 각 어댑터의 대가가 맞게 찍히는지 본다 ──────
@@ -480,12 +475,6 @@ export const check: RegressionCheck = {
     );
 
     // ── ②b 배선: 어댑터가 그 번역을 **정말 옵션에 싣는가**(AST) ──────────────────
-    const claudeSrc = stripComments(
-      readSourceSync("src/core/llm-runtime/adapters/claude-agent-sdk.ts"),
-    );
-    const codexSrc = stripComments(
-      readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"),
-    );
     out.push(
       assert(
         "★★claude 어댑터의 **옵션 리터럴 자체**가 그 번역을 펼친다 — 문자열만 맞고 결과가 버려지면(감싸서 항상 `{}`·다른 옵션으로 이동) 턴은 영원히 표준 속도인데 검사는 초록이다",
@@ -493,31 +482,88 @@ export const check: RegressionCheck = {
         spreadsSpeedIntoOptions() ? "options 리터럴의 최상위 스프레드로 확인(AST)" : "🔴 옵션에 안 실린다",
       ),
       assert(
-        "★codex 어댑터도 같은 중립 신호를 읽는다 — 한쪽만 읽으면 그게 이 결함이었다",
-        /input\.speed === "fast"/.test(codexSrc) && /service_tier/.test(codexSrc),
-        `codex 가 speed 를 읽음=${/input\.speed === "fast"/.test(codexSrc)}`,
+        "★codex 본문이 그 번역을 **최상위 스프레드로** 편다 — 감싸거나 다른 키로 옮기면 걸린다(여기만 모양으로 남는 이유는 위 함수 주석에)",
+        codexBodySpreadsSpeed(),
+        codexBodySpreadsSpeed() ? "body 리터럴의 최상위 스프레드로 확인(AST)" : "🔴 본문에 안 실린다",
       ),
     );
 
-    // ── ②c openai 어댑터 배선 — **세 어댑터가 다 읽는다** (2026-09-12 N6) ──────────
-    const oa = openaiWiresSpeed();
-    out.push(
-      assert(
-        "★★openai 어댑터의 **모델 설정 객체**가 그 번역을 편다 — 감싸서 결과를 버리면 턴은 영원히 표준 속도인데 문자열은 그대로다",
-        oa.spread,
-        oa.spread ? "modelSettings 리터럴의 최상위 스프레드로 확인(AST)" : "🔴 설정에 안 실린다",
-      ),
-      assert(
-        "★형제 `reasoning` 이 **같은 객체 안**에 있다 — 한 고리를 고치다 옆을 빠뜨리는 것이 이 레포의 반복 사고고(2026-08-15 에 이 어댑터만 강도를 안 읽었다), 그 축엔 그물이 0이었다",
-        oa.sibling,
-        oa.sibling ? "modelSettings 안에서 확인(AST)" : "🔴 강도가 같은 객체에 없다",
-      ),
-      assert(
-        "★★`Agent` 리터럴이 그걸 **스프레드로만** 받는다 — 뒤에 `modelSettings:` 를 직접 놓으면 통째로 덮인다(claude 옵션 리터럴의 `settings:` 와 같은 모양의 사고)",
-        oa.agent,
-        oa.agent ? "직접 지정 0개 + 스프레드 1개(AST)" : "🔴 덮이거나 안 꽂힌다",
-      ),
+    // ── ②c **openai 조립을 돌려서 잰다** (2026-09-12, 외부 사냥 H1·H2) ───────────────
+    //
+    // ★종전엔 이 자리가 AST 셋이었고 **둘이 뚫렸다**(둘 다 스위트 초록):
+    //    `openaiSpeedSettings(input.speed, conn.baseURL)` → `(…, undefined)`  ⇒ compat 에 누출
+    //    `Object.keys(modelSettings).length > 0` → `> 99`                     ⇒ 영영 안 실림
+    //  첫째는 검사가 **첫 인자만** 봐서, 둘째는 **조건식 안에 낱말이 있는지**만 봐서 통과했다.
+    // ★술어를 더 얹지 않고 **자리를 옮겼다** — 조립이 `_openai-agent.ts` 로 나왔으므로 여기선
+    //  `Agent` 를 실제로 만들어 **그 객체를 읽는다**. 모양이 아니라 결과가 판정이다.
+    const { createOpenAiAgent, openAiModelSettings } = await import(
+      "../../core/llm-runtime/adapters/_openai-agent.js"
     );
+    {
+      const base = {
+        name: "t",
+        instructions: "i",
+        model: "gpt-5",
+        modelArg: "gpt-5",
+        mcpServers: [],
+        externalTools: [],
+        externalToolNames: [],
+      };
+      const OLLAMA = "http://localhost:11434/v1";
+      const ms = (a: unknown): Record<string, unknown> =>
+        ((a as { modelSettings?: Record<string, unknown> }).modelSettings ?? {}) as Record<
+          string,
+          unknown
+        >;
+      const tier = (a: unknown): unknown =>
+        (ms(a).providerData as { service_tier?: unknown } | undefined)?.service_tier;
+
+      const fastReal = createOpenAiAgent({ ...base, input: { speed: "fast" }, conn: {}, reasoningEffort: undefined });
+      const fastCompat = createOpenAiAgent({ ...base, input: { speed: "fast" }, conn: { baseURL: OLLAMA }, reasoningEffort: undefined });
+      const plainReal = createOpenAiAgent({ ...base, input: {}, conn: {}, reasoningEffort: undefined });
+
+      out.push(
+        assert(
+          "★★«빠름» 이 **SDK 의 Agent 객체까지** 도달한다 — 옵션만 만들어 두고 안 꽂거나(조건을 영영 거짓으로) 인자를 바꿔치기해도 소스 문자열은 그대로다. 그래서 만들어 놓고 **읽는다**",
+          tier(fastReal) === "priority",
+          JSON.stringify(ms(fastReal)),
+        ),
+        assert(
+          "★★compat 연결(ollama)엔 **그 낱말이 안 간다** — 어댑터가 `conn` 을 안 보고 «정품» 이라고 우기면 여기서 걸린다(화면은 «안 읽음» 이라 말하는데 요청엔 실려 나가던 자리)",
+          tier(fastCompat) === undefined,
+          JSON.stringify(ms(fastCompat)),
+        ),
+        assert(
+          "★안 켠 턴엔 «빠름» 낱말이 **없다** — 반대 방향을 같이 봐야 «항상 켬» 이 통과하지 못한다",
+          tier(plainReal) === undefined,
+          JSON.stringify(ms(plainReal)),
+        ),
+      );
+
+      // ★**벤더 기본을 지우지 않는다** — 같은 날 발견한 자초. agents SDK 는 `modelSettings` 를
+      //  넘기는 순간 자기 기본값을 통째로 버린다(실측: 생략 → `{reasoning,text}` · `{}` → `{}`).
+      //  그래서 «빠름» 만 켠 턴이 모델별 기본 추론 강도를 조용히 잃고 있었다.
+      const plainSettings = openAiModelSettings({ model: "gpt-5", input: {}, conn: {}, reasoningEffort: undefined });
+      const reasoningOnly = openAiModelSettings({ model: "gpt-5", input: {}, conn: {}, reasoningEffort: "high" });
+      out.push(
+        assert(
+          "★우리가 정한 게 **하나도 없으면 키를 안 넘긴다** — 넘기는 순간 SDK 가 자기 기본값을 버린다(종전 동작 보존)",
+          plainSettings === undefined,
+          JSON.stringify(plainSettings),
+        ),
+        assert(
+          "★★«빠름» 만 켜도 **벤더 기본 강도가 살아 있다** — 종전엔 그 턴이 모델별 기본 추론 강도를 조용히 잃었다(2026-09-12 N6 이 만든 자초)",
+          (ms(fastReal).reasoning as { effort?: unknown } | undefined)?.effort !== undefined,
+          JSON.stringify(ms(fastReal)),
+        ),
+        assert(
+          "★형제 `reasoning` 은 **우리 값이 이긴다**(그리고 벤더의 나머지 기본은 남는다) — 한 고리를 고치다 옆을 빠뜨리는 것이 이 레포의 반복 사고다",
+          (reasoningOnly?.reasoning as { effort?: unknown } | undefined)?.effort === "high" &&
+            reasoningOnly?.text !== undefined,
+          JSON.stringify(reasoningOnly),
+        ),
+      );
+    }
 
     // ── ③ ★P1: **사용자 정의 provider** 도 어댑터로 갈린다 ────────────────────────
     // ★이게 이 검사의 심장이다(2026-09-11 P1). `models.providers` 로 임의 이름을 claude

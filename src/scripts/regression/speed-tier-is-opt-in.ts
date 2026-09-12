@@ -24,18 +24,20 @@ export const check: RegressionCheck = {
   async run(): Promise<Assertion[]> {
     const out: Assertion[] = [];
 
-    // ① 기본 꺼짐 — 어댑터가 **조건부로만** 싣는다.
-    const adapter = stripComments(
-      readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"),
-    );
-    const guarded = /\.\.\.\(input\.speed === "fast" \? \{ service_tier: "priority" \} : \{\}\)/.test(
-      adapter,
+    // ① 기본 꺼짐 — **돌려서** 잰다.
+    // ★종전엔 어댑터 소스에서 **그 한 줄을 글자 그대로** 찾았다(리터럴 정규식). 그건 양쪽으로
+    //  틀렸다 — 무해한 리팩터(줄바꿈·함수로 추출)에 빨개지고, 진짜 고장(조립 뒤 키 삭제)엔
+    //  초록이었다. 2026-09-12 외부 사냥 H3 이 그걸 실증했고, 번역을 `_openai-speed.ts` 로
+    //  꺼내면서 이 단언을 **실행으로 바꿨다**. 「손으로 베낀 소스 한 줄」은 손 목록이다.
+    const { codexSpeedBody } = await import(
+      "../../core/llm-runtime/adapters/_openai-speed.js"
     );
     out.push(
       assert(
-        "★★빠른 티어는 **조건부로만** 실린다 — 무조건 싣거나 기본값을 주면 모든 사용자의 한도가 더 빨리 닳는다",
-        guarded && !/service_tier: "priority",\s*$/m.test(adapter),
-        `가드된 주입=${guarded}`,
+        "★★빠른 티어는 **켠 턴에만** 실린다 — 무조건 싣거나 기본값을 주면 모든 사용자의 한도가 더 빨리 닳는다",
+        JSON.stringify(codexSpeedBody("fast")) === JSON.stringify({ service_tier: "priority" }) &&
+          Object.keys(codexSpeedBody(undefined)).length === 0,
+        `켬=${JSON.stringify(codexSpeedBody("fast"))} 끔=${JSON.stringify(codexSpeedBody(undefined))}`,
       ),
       assert(
         "★공용 계약엔 `service_tier` 를 박지 않는다 — 그건 OpenAI 낱말이고, 어휘가 새면 다른 provider 를 붙일 때 남의 말을 쓰게 된다",

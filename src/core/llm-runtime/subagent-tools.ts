@@ -19,8 +19,15 @@
  *  여전히 `Task` 가 온다). 둘 다 받는 게 맞고, 이건 목록이 아니라 **호환 창**이다.
  */
 
-/** 우리 MCP 서브에이전트 도구(어댑터 무관). */
-const OURS = "spawn_agent";
+/**
+ * 우리 MCP 서브에이전트 도구(어댑터 무관).
+ *
+ * ★export 하는 이유: 배포되는 **지침 글**(스킬)이 어느 어휘를 쓰는지 검사가 여기서 파생한다
+ *  (`harness-skill-vocabulary`). 검사 쪽에 이름을 또 적으면 그게 손 목록이 되고, 이름이
+ *  바뀌는 날 한쪽만 고쳐진다([[feedback_hand_maintained_lists]]).
+ */
+export const DAEMON_SUBAGENT_TOOL = "spawn_agent";
+const OURS = DAEMON_SUBAGENT_TOOL;
 
 /**
  * MCP 접두사를 벗긴 이름 — `mcp__agents__spawn_agent` → `spawn_agent` (2026-08-19).
@@ -45,6 +52,18 @@ const bare = (tool: string): string =>
  *  **일을 다 한 에이전트를 안 했다고 경고**한다(실측: codex 에서 4회 순회한 잡).
  */
 export const SDK_SUBAGENT_TOOLS = ["Agent", "Task"] as const;
+
+/**
+ * SDK 빌트인 **조율** 도구 — 우리에겐 **없다**.
+ *
+ * ★차단 목록이 아니라 «존재하지 않음» 목록이다. `SDK_SUBAGENT_TOOLS` 는 실제로 와서 막아야
+ *  하는 것이고, 이쪽은 애초에 우리 런타임에 등록된 적이 없다. 그래서 판정 함수를 붙이지
+ *  않는다 — 소비처는 **지침 글 검사**(`harness-skill-vocabulary`) 하나다.
+ * ★왜 적어 두나: 데몬이 읽는 스킬이 `SendMessage` 로 후속 지시하라고 적고 있었다(2026-09-11).
+ *  «없는 도구를 쓰라는 글» 은 시키는 대로 하면 반드시 실패하는데, 이름이 정의점에 없으면
+ *  검사도 그걸 못 본다. 상류가 새 조율 도구를 광고하면 **여기 한 줄**을 늘린다.
+ */
+export const SDK_COORDINATION_TOOLS = ["SendMessage", "TeamCreate"] as const;
 
 export const isSdkSubagentTool = (tool: string): boolean =>
   (SDK_SUBAGENT_TOOLS as readonly string[]).includes(bare(tool));

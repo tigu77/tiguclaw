@@ -24,6 +24,8 @@ import { getRegisteredMcpServers } from "../mcp-registry.js";
 import { runClaude } from "./adapters/claude-agent-sdk.js";
 import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
+import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
+import { resolveProviderConn } from "./provider-registry.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { setSummarizerCooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
@@ -300,6 +302,27 @@ export const parseModelSpec = (raw: string, cwd?: string): ModelSpec | null => {
   return { adapter, model, provider };
 };
 
+/**
+ * spec 문자열 → **«빠름» 대가 표의 키**(`SPEED_TIER_COST`). 안 읽는 자리면 `undefined`.
+ *
+ * ★화면(`/models`)이 이걸 쓴다. 종전엔 호출부가 `parseModelSpec(s)?.adapter` 를 직접 꽂았는데,
+ *  `openai` 어댑터가 `speed` 를 읽기 시작하면서(2026-09-12 N6) **어댑터만으로는 부족해졌다** —
+ *  같은 어댑터로 `ollama`·`google` 도 오는데 그쪽은 `service_tier` 라는 손잡이 자체가 없다.
+ *  어댑터 이름으로 찍으면 `ollama:qwen3:8b` 에 **없는 비용**이 뜬다(2026-09-10 P4 재발).
+ * ★그렇다고 화면이 자기 판정을 새로 만들면 **운반과 표시가 갈린다.** 그래서 가르는 규칙은
+ *  `_openai-speed.ts` 한 곳에 두고 여기·어댑터가 **같은 함수**를 부른다.
+ * ★claude 는 어댑터 이름 그대로다 — 사용자 정의 provider 가 claude 어댑터를 타도 대가는 난다
+ *  (2026-09-11 P1: 이름으로 판정하면 «안 읽음» 이라 하면서 2배가 청구됐다).
+ */
+export const speedCostKeyFor = (raw: string, cwd?: string): string | undefined => {
+  const spec = parseModelSpec(raw, cwd);
+  if (spec === null) return undefined;
+  if (spec.adapter !== "openai") return spec.adapter;
+  const conn = resolveProviderConn(spec.provider, cwd);
+  if (conn === null) return undefined;
+  return openaiCarriesSpeed(conn.baseURL) ? "openai" : undefined;
+};
+
 // export (2026-06-02) — `/model` 슬래시(daemon)·router 가 콤마 풀 파싱에 사용.
 // 무효 part 는 drop (로직 무변경). 빈/전부무효 → []. cwd = 프로젝트 스코프 user provider 해석용.
 /**
@@ -325,6 +348,36 @@ export const poolToSpecs = (
   }
   return out;
 };
+
+/**
+ * 풀 원소가 정한 것을 **턴 입력에 얹어** 어댑터가 받는 최종 모양을 만든다.
+ *
+ * ★인라인 객체 리터럴이었다가 함수로 꺼냈다 (2026-09-12, 외부 사냥 #3). 그 자리에서
+ *  `...(spec.speed !== undefined ? { speed: spec.speed } : {})` 를 `...({})` 로 바꾸면
+ *  **«빠름» 이 어댑터에 아예 안 실리는데**(기능 0·로그 0) 전체 스위트가 초록이었다.
+ *  리터럴 안이라 «돌려서» 잴 방법이 없었기 때문이다 — 남는 수단은 소스를 모양으로 훑는 것뿐인데,
+ *  오늘 그 부류로 다섯 번 뚫렸다. 그래서 **잴 수 있는 자리로 꺼냈다.**
+ * ★형제 `poolToSpecs` 와 한 쌍이다: 저기서 프로파일 → spec 으로 옮기고, 여기서 spec → 턴
+ *  입력으로 옮긴다. 둘 중 하나만 끊겨도 기능이 죽으므로 회귀가 **연쇄로** 잰다
+ *  (`speed-tier-is-adapter-agnostic`).
+ * ★새 객체를 만드는 것이 중요하다 — claude 어댑터가 이 객체의 **identity 를 턴 토큰**으로
+ *  쓴다(`fast-mode-view.ts`). 호출마다 새로 만들어야 턴 경계가 선다.
+ */
+export const adapterInputFor = (
+  input: RegionASdkInput,
+  spec: ModelSpec,
+): RegionASdkInput => ({
+  ...input,
+  // model "" → undefined (어댑터 디폴트).
+  model: spec.model === "" ? undefined : spec.model,
+  // provider 운반 — openai 어댑터가 self-lookup 으로 baseURL/apiKey 해석.
+  // claude/codex 어댑터는 이 필드를 읽지 않음(무시).
+  provider: spec.provider,
+  // 프로파일이 정한 강도(있으면) — 어댑터가 전역·카탈로그보다 우선한다.
+  ...(spec.reasoning !== undefined ? { reasoning: spec.reasoning } : {}),
+  // 프로파일이 «빠르게» 라고 했으면 그 의도를 운반한다 — 낱말은 어댑터가 정한다.
+  ...(spec.speed !== undefined ? { speed: spec.speed } : {}),
+});
 
 export const parseModelSpecList = (raw: string, cwd?: string): ModelSpec[] => {
   const out: ModelSpec[] = [];
@@ -1286,15 +1339,7 @@ const runPool = async (
       // model "" → undefined (어댑터 디폴트). input.model 로 주입.
       // provider 운반 — openai 어댑터가 self-lookup 으로 baseURL/apiKey 해석.
       // claude/codex 어댑터는 이 필드를 읽지 않음(무시) → 회귀 0.
-      const output = await callAdapter(spec.adapter, {
-        ...input,
-        model: spec.model === "" ? undefined : spec.model,
-        provider: spec.provider,
-        // 프로파일이 정한 강도(있으면) — 어댑터가 전역·카탈로그보다 우선한다.
-        ...(spec.reasoning !== undefined ? { reasoning: spec.reasoning } : {}),
-        // 프로파일이 «빠르게» 라고 했으면 그 의도를 운반한다 — 낱말은 어댑터가 정한다.
-        ...(spec.speed !== undefined ? { speed: spec.speed } : {}),
-      });
+      const output = await callAdapter(spec.adapter, adapterInputFor(input, spec));
       // ★인라인 제안 뜯기 — **persist·publish 보다 앞**, 어댑터별 분기 0 (2026-08-25).
       //  여기가 세 어댑터의 유일한 합류점이라, 여기서 벗기면 transcripts·turn_done·
       //  channel.message.out·응답이 **전부** 깨끗하다. 아래 한 곳이라도 놓치면 사용자

@@ -14,7 +14,7 @@
  * 등급: **동작**(순수 렌더를 실제 호출) + **판정**(provider 이름이 코드에 없는가).
  */
 import { renderProviders, type ProviderView } from "../../core/entry/providers-command.js";
-import { readSourceSync } from "./_wiring.js";
+import { readSourceSync, callArgTexts } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** 실측 규모를 그대로 흉내낸다 — 30개짜리 픽스처로는 캡이 안 눌린다. */
@@ -162,6 +162,20 @@ export const check: RegressionCheck = {
           blk === ""
             ? "★배선 블록을 못 찾음(아래는 미검사)"
             : `파생=${String(derives)} · 박힌 이름 ${String(hardcoded.length)}개${hardcoded.length > 0 ? `(${hardcoded.join(",")})` : ""}`,
+        );
+      })(),
+      // ★배선 — 제품이 **진짜 능력 조회기**를 꽂는가 (2026-09-12, G1b 형제).
+      //  위 어세션들은 `CAPS` 라는 **자기가 지은 조회기**를 주입해 돌린다. 그건 렌더러가 어떻게
+      //  그리는지를 재지 제품이 무엇을 꽂는지는 **안 본다** — 실측: `src/index.ts` 의 이 자리를
+      //  `undefined` 로 바꾸면 꼬리표가 전부 사라지는데 **전체 3,267건이 초록**이었다.
+      //  같은 구멍을 `/models` 쪽에서 하루 전에 닫았는데 형제를 안 봤다(이 레포의 반복 사고).
+      ((): Assertion => {
+        const calls = callArgTexts("src/index.ts", "renderProviders");
+        const caps = calls[0]?.[2] ?? "(호출 없음)";
+        return assert(
+          "★★`/providers` 가 **진짜 능력 조회기**를 받는다 — 끊으면 컨텍스트·도구 꼬리표가 통째로 사라지는데, 검사 본문은 자기가 만든 조회기를 주입하므로 이 자리를 못 본다",
+          calls.length === 1 && caps === "modelCapsFor",
+          `호출 ${String(calls.length)}건 · 3번째 인자=${caps}`,
         );
       })(),
     ];

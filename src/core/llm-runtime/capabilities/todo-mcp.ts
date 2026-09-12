@@ -56,8 +56,16 @@ const formatTodos = (
  *  매니저·서브에이전트의 할일이 메인 대화에 뜨는 오염이 된다(대시보드는 세션별 화면이다).
  *  session-tools·file-ops 가 이미 같은 이유로 threadKey 를 받는다 — 같은 규칙을 따른다.
  */
+/**
+ * 우리 할일 도구 이름 — SDK 의 `SDK_TODO_TOOL_NAMES` 와 짝이다.
+ *
+ * ★export 하는 이유: 배포되는 **지침 글**(스킬)이 어느 어휘를 쓰는지 검사가 여기서 파생한다
+ *  (`harness-skill-vocabulary`). 검사 쪽에 이름을 또 적으면 손 목록이 된다.
+ */
+export const DAEMON_TODO_TOOL = "update_todos";
+
 const makeUpdateTodosTool = (threadKey: string) => tool(
-  "update_todos",
+  DAEMON_TODO_TOOL,
   // ★부를 때만큼 **안 부를 때**를 적는다 (2026-08-13, 벤치 실측에서 드러남).
   //  종전 설명은 "멀티스텝이면 추적하세요" 라는 **긍정 트리거뿐**이었고, 그래서 단발
   //  작업에서도 3회씩 불렸다(long-horizon-sheet-xl, tiguclaw-codex): ①시작 ②중간

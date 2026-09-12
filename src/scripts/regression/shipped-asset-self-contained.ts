@@ -125,20 +125,97 @@ export const check: RegressionCheck = {
     //  sync-public 의 **§8 CI 확인**이었다. 즉 내가 쓴 규칙이 **데몬한텐 없는 상태로** 며칠
     //  돌았다(데몬은 그 사이 principle-check 를 실제로 2번 불렀다).
     //  ★이름을 열거하지 않는다 — 양쪽에 다 있는 스킬 전부가 대상이다(세 번째가 갈려도 걸린다).
+    //
+    // ★**«소비자별 구역» 만 예외**다 (2026-09-11). 종전엔 «한 글자도 안 다르다» 였는데, 그건
+    //  두 파일의 소비자가 같다고 본 것이다 — 에이전트에서 이미 틀린 것으로 판명된 가정이고
+    //  (`agent-defs-match-reality` 의 `model:` 예외), 스킬에서도 같은 값을 치렀다:
+    //  `tiguclaw-orchestrator` 가 **데몬에 없는 도구**(`Agent`·`TaskCreate`)를 쓰라고 지시하고
+    //  있었는데, 바이트-동일 단언이 그 결함을 **고정**하고 있었다(고치면 여기가 빨개지니까).
+    //  ★경계를 «도구 이름이 든 줄» 로 잡지 않는다 — `Agent` 는 «Claude Agent SDK» 처럼 흔한
+    //   낱말이라 무관한 줄까지 지워 **진짜 드리프트를 놓친다.** 대신 파일 안에 **명시 마커**를
+    //   두게 한다: 왜 갈리는지가 그 자리에 적히고, 검사는 경계를 추측하지 않는다.
+    //  ★어휘 자체의 유효성(어느 쪽에 무엇이 허용되나)은 `harness-skill-vocabulary` 가 본다.
+    const CONSUMER_BLOCK = /<!-- 소비자별:시작 — .+? -->\n[\s\S]*?<!-- 소비자별:끝 -->\n/g;
+    const withoutConsumerBlocks = (t: string): string =>
+      t.replace(CONSUMER_BLOCK, "<소비자별 구역>\n");
     const both = dirs(".claude/skills").filter((n) => dirs(".tiguclaw/skills").includes(n));
-    const drift = both.filter((n) => {
+    const pair = (n: string): { a: string; b: string } | null => {
       const a = path.join(REPO, ".claude/skills", n, "SKILL.md");
       const b = path.join(REPO, ".tiguclaw/skills", n, "SKILL.md");
-      if (!existsSync(a) || !existsSync(b)) return true;
-      return readFileSync(a, "utf8") !== readFileSync(b, "utf8");
+      if (!existsSync(a) || !existsSync(b)) return null;
+      return { a: readFileSync(a, "utf8"), b: readFileSync(b, "utf8") };
+    };
+    const drift = both.filter((n) => {
+      const p = pair(n);
+      if (p === null) return true;
+      return withoutConsumerBlocks(p.a) !== withoutConsumerBlocks(p.b);
     });
+    // ★마커를 **양쪽이 같은 수·같은 제목**으로 달았는가 — 한쪽에만 달면 그 구역이 통째로
+    //  비교에서 빠져 드리프트가 조용히 숨는다(완화가 만드는 가장 그럴듯한 새 구멍).
+    const titles = (t: string): string[] =>
+      [...t.matchAll(/<!-- 소비자별:시작 — (.+?) -->/g)].map((m) => m[1] ?? "");
+    const markMismatch = both.filter((n) => {
+      const p = pair(n);
+      if (p === null) return true;
+      return titles(p.a).join("|") !== titles(p.b).join("|");
+    });
+    // ★예외가 **예외로만** 남는지 — 마커를 달아 놓고 양쪽 내용이 같으면 그 완화는 아무것도
+    //  거르지 않는 빈 예외다(`agent-defs-match-reality` 의 «model 은 실제로 갈려 있다» 와 같은 축).
+    const emptyException = both.filter((n) => {
+      const p = pair(n);
+      if (p === null || titles(p.a).length === 0) return false; // 마커 없는 스킬은 대상 아님
+      return p.a === p.b;
+    });
+    // ★**예외가 «예외» 로 남는 크기인가** (2026-09-11 적대 검토 P1). 마커 구역에 상한이 없어서,
+    //  본문 전체를 마커 한 쌍으로 감싸고 데몬 사본을 **90% 들어내도**(5,735 → 559 바이트)
+    //  전 스위트가 초록이었다. 즉 «마커 밖만 동일» 이 «아무것도 대조 안 함» 이 될 수 있었다.
+    //  ★비율로 못박는다 — 30%. 이 수는 «소비자별로 갈리는 건 메커니즘 문단 몇 개» 라는 오늘의
+    //   실측(최대 13%)에 여유를 준 값이고, 넘으면 그건 예외가 아니라 **다른 문서**다.
+    const blockRatio = (t: string): number =>
+      [...t.matchAll(CONSUMER_BLOCK)].reduce((n, m) => n + m[0].length, 0) / Math.max(t.length, 1);
+    const overExempt = both
+      .map((n) => ({ n, p: pair(n) }))
+      .filter(
+        ({ p }) => p !== null && Math.max(blockRatio(p.a), blockRatio(p.b)) > 0.3,
+      )
+      .map(({ n, p }) => `${n}(${Math.round(Math.max(blockRatio(p!.a), blockRatio(p!.b)) * 100)}%)`);
+    // ★하한을 **집합 동등**으로 바꾼다(적대 검토 G) — `both.length >= 5` 는 한쪽 스킬을 하위
+    //  폴더로 밀어 넣어 **10→9 로 줄여도** 통과했다. 손 상수 `5` 도 같이 사라진다.
+    const claudeSet = dirs(".claude/skills").sort().join("|");
+    const tiguSet = dirs(".tiguclaw/skills").sort().join("|");
     out.push(
       assert(
-        `★.claude/ 와 .tiguclaw/ 의 같은 스킬이 한 글자도 안 다르다(${both.length}개)`,
-        both.length >= 5 && drift.length === 0,
+        "★★양쪽 스킬 **집합이 정확히 같다** — 한쪽에서 하나가 사라져도 «공통만 대조» 라 조용히 통과하던 자리다",
+        claudeSet === tiguSet && both.length > 0,
+        claudeSet === tiguSet
+          ? `양쪽 ${both.length}개 일치`
+          : `★집합 불일치 — .claude=${dirs(".claude/skills").length}개 / .tiguclaw=${dirs(".tiguclaw/skills").length}개`,
+      ),
+      assert(
+        `★.claude/ 와 .tiguclaw/ 의 같은 스킬이 «소비자별 구역» 말고는 한 글자도 안 다르다(${both.length}개)`,
+        both.length > 0 && drift.length === 0,
         drift.length === 0
           ? `대조 ${both.length}개 · 드리프트 0`
           : `★드리프트 ${drift.length}건: ${drift.join(", ")} — 데몬이 낡은 규칙으로 돈다`,
+      ),
+      assert(
+        "★★마커 구역이 **파일의 30% 를 넘지 않는다** — 상한이 없으면 본문을 통째로 감싸 대조를 무력화할 수 있다(실측: 90% 소실에도 전 스위트 초록이었다)",
+        overExempt.length === 0,
+        overExempt.length === 0 ? "최대 비율 정상" : `★예외 구역 과다: ${overExempt.join(", ")}`,
+      ),
+      assert(
+        "★★그 마커가 **양쪽에 같은 수·같은 제목**으로 있다 — 한쪽에만 달면 그 구역이 비교에서 통째로 빠져 드리프트가 조용히 숨는다",
+        markMismatch.length === 0,
+        markMismatch.length === 0
+          ? `마커 짝 맞음(${both.filter((n) => titles(pair(n)?.a ?? "").length > 0).length}개 스킬이 마커 사용)`
+          : `★불일치: ${markMismatch.join(", ")}`,
+      ),
+      assert(
+        "★마커를 단 스킬은 그 안이 **실제로 갈려 있다** — 같으면 완화가 빈 예외로 굳은 것이고, 그때 이 검사는 초록인 채로 죽는다",
+        emptyException.length === 0,
+        emptyException.length === 0
+          ? "빈 예외 0"
+          : `★마커만 있고 내용이 같다: ${emptyException.join(", ")}`,
       ),
     );
     // ★★**헌법이 부르라는 스킬 이름이 실제로 풀리는가** (2026-09-09).

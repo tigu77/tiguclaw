@@ -56,6 +56,7 @@ import { loadThreadHistory } from "../../../store/memory.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
 import { resolveProviderConn } from "../provider-registry.js";
+import { openaiSpeedSettings } from "./_openai-speed.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
@@ -809,16 +810,32 @@ export const runOpenAi = async (
     console.warn(`[openai] ${willTruncateNote(willTruncate, input.model ?? "?")}`);
   }
 
+  // ★모델 설정은 **한 객체로 모은다** (2026-09-12, N6). 종전엔 `...(조건 ? {modelSettings:…} : {})`
+  //  하나였는데, 여기 같은 모양을 하나 더 붙이면 **뒤엣것이 앞엣것을 통째로 덮는다** — 두 손잡이
+  //  중 하나가 조용히 죽고 검사는 초록이다. 그 «뒤 스프레드로 덮기» 는 이 레포가 올해만 두 번
+  //  당한 모양이라(claude 옵션 리터럴의 `settings:` · fast-mode 게이트), 아예 자리를 안 만든다.
+  // ★빈 객체면 키 자체를 안 보낸다 — 종전(둘 다 미지정) 과 바이트 동일(회귀 0).
+  const modelSettings = {
+    // 유효값 판정은 API 에 맡긴다(codex·claude 와 같은 규칙) — 우리가 흉내 낸 목록은
+    // 벤더가 새 등급을 내놓을 때 멀쩡한 값을 막는다.
+    ...(reasoningEffort === undefined
+      ? {}
+      : { reasoning: { effort: reasoningEffort as "low" } }),
+    // ★«빠름» — claude·codex 와 **같은 중립 신호**(`input.speed`)를 이 백엔드의 낱말로 옮긴다
+    //  (2026-09-12 N6 parity). 종전엔 이 어댑터만 `speed` 를 안 읽어서, 같은 settings.json 이
+    //  어댑터를 바꾸는 순간 **아무 신호 없이** 무시됐다 — 원칙 #2(모든 기능 LLM 무관) 위반이고,
+    //  형제 `reasoning` 이 2026-08-15 에 똑같이 빠져 있던 자리다(한 고리를 고치며 옆을 빠뜨리는
+    //  이 레포의 반복 사고).
+    // ★판정·번역은 `_openai-speed.ts` 한 곳에 산다 — compat 백엔드(ollama·gemini)는 제외된다.
+    ...openaiSpeedSettings(input.speed, conn.baseURL),
+  };
+
   const agent = new Agent({
     name: "tiguclaw-spike",
     instructions,
     model: modelArg,
     mcpServers,
-    // 유효값 판정은 API 에 맡긴다(codex·claude 와 같은 규칙) — 우리가 흉내 낸 목록은
-    // 벤더가 새 등급을 내놓을 때 멀쩡한 값을 막는다.
-    ...(reasoningEffort === undefined
-      ? {}
-      : { modelSettings: { reasoning: { effort: reasoningEffort as "low" } } }),
+    ...(Object.keys(modelSettings).length > 0 ? { modelSettings } : {}),
     // externalTools 패스스루(§2.3) — 미지정/빈 배열이면 두 필드 모두 생략(스프레드 {} =
     // 현행과 바이트 동일 Agent 구성, 회귀 0). toolsNone 게이팅과 무관 — mcpServers 축과
     // 별개 필드라 tiguclaw 도구가 꺼져도 앱 함수는 그대로 노출된다(ADR §Decision-1 3항).

@@ -26,6 +26,7 @@
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
 import { getEventBus } from "../../eventbus.js";
+import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
 import type { SteeringChannel } from "../../steering.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -626,7 +627,11 @@ export const createSpawnAgentMcpServer = (
   parentInput: RegionASdkInput,
 ): McpSdkServerConfigWithInstance => {
   const spawnTool = tool(
-    "spawn_agent",
+    // ★**등록 이름이 곧 정의점이어야 한다** (2026-09-11 적대 검토 G). 종전엔 여기 리터럴이고
+    //  `subagent-tools.ts` 의 상수는 그 **거울**이었다 — 형제 `todo-mcp.ts` 는 이미 상수를
+    //  쓰고 있어 비대칭이었고, 실제로 «등록 이름만 바꾸고 상수는 낡은 채로» 두는 변이가
+    //  어휘 검사를 통과했다(다른 검사 둘이 우연히 막았을 뿐).
+    DAEMON_SUBAGENT_TOOL,
     "정의된 서브에이전트를 **띄우고 즉시 jobId 를 돌려줍니다** — 기다리지 않습니다. 결과가 필요하면 `wait_for_worker([jobId, ...])` 로 합류하세요. ★**서로 독립인 일은 전부 띄운 뒤 한 번에 합류하세요** — 그러면 자식들이 동시에 돕니다. 하나 띄우고 바로 합류하기를 반복하면 줄을 서게 되니, 앞 결과가 있어야 다음을 정할 수 있을 때만 그렇게 하세요. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 합류하지 않고 턴을 끝내도 결과는 사라지지 않습니다 — 끝나면 당신에게 돌아옵니다(당신이 매니저면 진행 중인 턴에 이어지고, 메인 대화면 새 답변으로 옵니다). 규모가 크고 스스로 팬아웃까지 해야 하는 작업은 run_in_background(매니저) 가 더 맞습니다. **`label` 에 이 작업이 무엇인지 한 줄로 적어 주세요** — 백그라운드 작업 카드에서 여럿을 구분하는 데 씁니다(`name` 은 에이전트 이름이지 제목이 아닙니다).",
     {
       // ★`subagent_type` 은 SDK 빌트인 `Agent` 의 인자 이름이다 (2026-08-08).

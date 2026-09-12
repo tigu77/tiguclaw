@@ -80,8 +80,13 @@ const LEGACY_TIER_ENV_KEYS = [
 const formatPool = (
   pool: readonly PoolEntry[],
   caps: ((spec: string) => ModelCaps | undefined) | undefined,
-  /** spec → 어댑터. «빠름» 의 대가는 provider 이름이 아니라 **어댑터**로 갈린다(P1). */
-  adapterOf: ((spec: string) => string | undefined) | undefined,
+  /**
+   * spec → **«빠름» 대가 표의 키**(`SPEED_TIER_COST`). 안 읽는 자리면 `undefined`.
+   * ★provider 이름이 아니다(2026-09-11 P1) — 그리고 어댑터 이름만도 아니다(2026-09-12 N6:
+   *  `openai` 어댑터로 오는 `ollama`·`google` 은 그 손잡이가 없다). 판정은 런타임과 같은
+   *  함수(`speedCostKeyFor`)가 하고, 여기선 받아서 표를 찾을 뿐이다.
+   */
+  speedKeyOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const parts = pool.filter((e) => e.spec.trim() !== "");
   if (parts.length === 0) return "(빈 풀 — 어댑터 디폴트로 강등)";
@@ -119,15 +124,21 @@ const formatPool = (
       //  `models.providers` 로 임의 이름을 claude 어댑터에 붙이면 화면이 «이 provider 는
       //  안 읽음» 이라 말하면서 **실제로는 단가 2배가 청구됐다**(2026-09-11 적대 검토 P1).
       //  실행이 어댑터로 갈리므로 화면도 어댑터로 갈라야 한다.
-      const cost = adapterOf === undefined ? undefined : SPEED_TIER_COST[adapterOf(spec) ?? ""];
+      const cost = speedKeyOf === undefined ? undefined : SPEED_TIER_COST[speedKeyOf(spec) ?? ""];
+      // ★`rate` 는 **API 과금** 축의 배수다. 구독 경로에서 한도가 같은 배수로 닳는지는
+      //  안 쟀으므로(2026-09-11 N9) «단가» 로 못박지 않고 «비용» 으로 말한다.
+      const unitWord = cost?.unit === "credits" ? "크레딧" : "비용";
       const fast =
         e.speed !== "fast"
           ? ""
           : cost === undefined
             ? "(빠름·이 provider 는 안 읽음)"
-            // ★`rate` 는 **API 과금** 축의 배수다. 구독 경로에서 한도가 같은 배수로 닳는지는
-            //  안 쟀으므로(2026-09-11 N9) «단가» 로 못박지 않고 «비용» 으로 말한다.
-            : `(빠름·${cost.unit === "credits" ? "크레딧" : "비용"} ${cost.multiplier}배)`;
+            // ★배수는 **잰 것만** 적는다 (2026-09-12 N6). 읽는 건 맞는데 배수를 모르면
+            //  «모른다» 고 말한다 — 숫자를 지어내면 그게 «없는 비용»(P4)이고, 숨기면
+            //  «안 읽는다면서 돈은 나간다»(P1)다. 둘 다 하지 않는 제3의 답이 이 문구다.
+            : cost.multiplier === undefined
+              ? `(빠름·${unitWord} 더 듦·배수 미측정)`
+              : `(빠름·${unitWord} ${cost.multiplier}배)`;
       // ★«안 읽음» 은 **비용 표에 그 어댑터가 없을 때** 나온다 — 해석 자체를 못 한 경우
       //  (미지 provider·콜론 없음)도 같은 문구다(2026-09-11 N1). 그 원소는 `poolToSpecs` 가
       //  통째로 drop 하므로 애초에 안 쓰이는데, 화면은 «쓰이는데 비용만 없음» 처럼 보인다.
@@ -143,7 +154,7 @@ const formatProfile = (
   prof: ModelProfile,
   isDefault: boolean,
   caps: ((spec: string) => ModelCaps | undefined) | undefined,
-  adapterOf: ((spec: string) => string | undefined) | undefined,
+  speedKeyOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const lines: string[] = [];
   const desc = prof.description?.trim();
@@ -153,7 +164,7 @@ const formatProfile = (
       ? `● \`${name}\`${tag} — ${desc}`
       : `● \`${name}\`${tag}`,
   );
-  lines.push(`   풀: ${formatPool(prof.pool, caps, adapterOf)}`);
+  lines.push(`   풀: ${formatPool(prof.pool, caps, speedKeyOf)}`);
   if (prof.fallback !== undefined && prof.fallback.trim() !== "") {
     lines.push(`   폴백 프로파일: \`${prof.fallback.trim()}\``);
   }
@@ -225,14 +236,16 @@ export const renderModelProfiles = (
    */
   caps: ((spec: string) => ModelCaps | undefined) | undefined,
   /**
-   * spec → **어댑터** 조회 — `caps` 와 **같은 이유로 필수 인자다**(기본값을 주면 호출부가
-   * 빼도 조용히 컴파일되고, 그 배선은 데몬을 띄워야 재진다).
+   * spec → **«빠름» 대가 표의 키** 조회 — `caps` 와 **같은 이유로 필수 인자다**(기본값을 주면
+   * 호출부가 빼도 조용히 컴파일되고, 그 배선은 데몬을 띄워야 재진다).
    *
-   * ★«빠름» 의 대가는 provider 이름이 아니라 **어댑터**로 갈린다 — 사용자가
-   *  `models.providers` 로 임의 이름을 claude 어댑터에 붙일 수 있기 때문이다
-   *  (2026-09-11 적대 검토 P1: 화면이 «안 읽음» 이라 했는데 단가 2배가 청구됐다).
+   * ★provider 이름으로 갈라선 안 된다 — 사용자가 `models.providers` 로 임의 이름을 claude
+   *  어댑터에 붙일 수 있다(2026-09-11 P1: 화면이 «안 읽음» 이라 했는데 단가 2배가 청구됐다).
+   * ★그렇다고 어댑터 이름만으로도 안 된다 — `openai` 어댑터로는 `ollama`·`google` 도 오는데
+   *  그쪽엔 그 손잡이가 없다(2026-09-12 N6). 판정은 런타임과 **같은 함수**(`speedCostKeyFor`)가
+   *  하고, 이 렌더러는 받아서 표를 찾을 뿐이다 — 운반과 표시가 각자 판정하면 반드시 갈린다.
    */
-  adapterOf: ((spec: string) => string | undefined) | undefined,
+  speedKeyOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const blocks: string[] = ["🧩 모델 프로파일"];
   // ★출처를 밝힌다 (2026-08-13) — 프로파일이 settings.json 에 없으면 인증된 provider 로
@@ -261,7 +274,7 @@ export const renderModelProfiles = (
 
   blocks.push(
     names
-      .map((n) => formatProfile(n, profiles[n]!, n === defaultName, caps, adapterOf))
+      .map((n) => formatProfile(n, profiles[n]!, n === defaultName, caps, speedKeyOf))
       .join("\n\n"),
   );
   blocks.push("프로파일 추가·수정은 대화로 요청하세요 (비서가 settings.json 을 편집합니다).");

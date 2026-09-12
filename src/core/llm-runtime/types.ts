@@ -38,12 +38,23 @@ import type { SteeringChannel } from "../steering.js";
  *
  * ★배수를 **한 곳에** 둔다 — 로그·화면이 각자 적으면 벤더가 바꿀 때 갈린다.
  *  낱말(«크레딧»/«단가»)은 화면이 정한다(계약에 한국어를 박으면 로케일이 갈린다).
- * ★`openai` 어댑터는 여기 없다 — 아직 `speed` 를 **안 읽는다**(OpenAI Responses API 는
- *  `service_tier` 를 지원하므로 못 하는 게 아니라 안 한 것이다. parity 잔여).
+ *
+ * ★**`multiplier` 는 옵셔널이다** (2026-09-12, N6). 이 표는 두 가지를 답하는데 — ①이 어댑터가
+ *  `speed` 를 **읽는가** ②대가가 **얼마인가** — 둘을 한 필드에 묶어 두면 «읽긴 읽는데 배수는
+ *  아직 안 쟀다» 를 말할 방법이 없다. 그러면 남는 선택지가 둘 다 나쁘다: 숫자를 **지어내거나**
+ *  (2026-09-10 P4 «없는 비용») 표에서 **빼거나**(2026-09-11 P1 «안 읽는다면서 돈은 나간다»).
+ *  P1 방향이 특히 나쁘다 — 오류가 «안 나간다» 쪽이라 사용자가 안심하고 켜 둔다. 그래서 축을
+ *  나눈다: **표에 있으면 읽는 것**이고, **배수는 잰 것만** 적는다.
+ * ★`openai` 는 배수가 없다 — OpenAI 우선 처리는 모델마다 값이 다르고 **우리가 잰 적이 없다.**
+ *  재고 나서 적어라. 안 잰 수를 사용자 대면 문구에 쓰는 것이 이 레포의 «단가 2배» 사고였다.
  */
-export const SPEED_TIER_COST: Readonly<Record<string, { multiplier: number; unit: "credits" | "rate" }>> = {
+export const SPEED_TIER_COST: Readonly<
+  Record<string, { multiplier?: number; unit: "credits" | "rate" }>
+> = {
   "codex-oauth": { multiplier: 2.5, unit: "credits" },
   claude: { multiplier: 2, unit: "rate" },
+  // 읽는다(= 대가가 난다). 배수는 미측정 — 화면이 그 사실을 그대로 말한다.
+  openai: { unit: "rate" },
 };
 
 export const claudeSpeedSettings = (

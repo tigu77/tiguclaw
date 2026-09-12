@@ -1,6 +1,7 @@
 import nodeFs from "node:fs";
 import nodePath from "node:path";
 import * as nodeUrl from "node:url";
+import ts from "typescript";
 /**
  * **배선 단언 공용 헬퍼** (2026-07-30).
  *
@@ -206,4 +207,44 @@ export const readSourceSync = (relFromRepoRoot: string): string => {
   };
   walk(abs);
   return parts.join("\n");
+};
+
+/**
+ * 어떤 파일에서 `fnName(…)` 호출의 **인자 원문**을 자리순으로 — 호출 하나당 배열 하나.
+ *
+ * ── 왜 있나 (2026-09-12, G1b) ─────────────────────────────────────────────────────
+ *
+ * **순수 렌더러 + 주입된 조회기** 는 이 레포의 관용구다(격리 검증을 위해 IO 를 인자로 끌어올린다).
+ * 그런데 검사가 **자기 조회기를 지어 넣어** 돌리면, 재는 것은 «렌더러가 어떻게 그리나» 뿐이고
+ * «제품이 무엇을 꽂나» 는 **아무도 안 본다.** 그 자리를 끊으면 기능이 통째로 사라지는데 스위트는
+ * 초록이다 — 실측으로 두 번 확인했다:
+ *
+ *  - `/models` 의 `modelCapsFor` → `undefined` (2026-09-11 G1b, 그때 닫았다)
+ *  - `/providers` 의 `modelCapsFor` → `undefined` (2026-09-12, **전체 3,267건 초록**)
+ *
+ * ★같은 구멍이 두 번 난 것은 «그때 그 파일만» 고쳤기 때문이다. 그래서 판정을 헬퍼로 올린다 —
+ *  다음 렌더러는 한 줄이면 재진다.
+ * ★문자열 검색이 아니라 **AST** 인 이유: `readSourceSync(...).includes("modelCapsFor")` 는 그
+ *  파일 아무 데나 그 낱말이 있으면 통과한다(주석 한 줄로도 만족된다 — 이 레포가 세 번 데인 방식).
+ *  여기선 **그 호출의 그 자리**에 그 이름이 있는지만 본다.
+ */
+export const callArgTexts = (
+  relFromRepoRoot: string,
+  fnName: string,
+): string[][] => {
+  const src = ts.createSourceFile(
+    relFromRepoRoot,
+    readSourceSync(relFromRepoRoot),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const out: string[][] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === fnName) {
+      out.push(n.arguments.map((a) => a.getText()));
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return out;
 };

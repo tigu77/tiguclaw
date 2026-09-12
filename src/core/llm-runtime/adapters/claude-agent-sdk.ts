@@ -28,6 +28,7 @@
  */
 import { createHash } from "node:crypto";
 import { parseRateLimit } from "../rate-limit-view.js";
+import { createFastModeReporter } from "../fast-mode-view.js";
 import { claudeAuthAvailable } from "../provider-availability.js";
 import { promises as fs } from "node:fs";
 import {
@@ -390,12 +391,14 @@ export const steeringContents = async function* (args: {
 let lastRateLimitSig = "";
 
 /**
- * «빠름» 상태 로그 dedupe — 같은 상태를 매 턴 찍지 않는다.
+ * «빠름» 상태 리포터 — 상태(모델별 마지막 서명·턴별 서명)를 **클로저에 가둔다**.
  *
- * ★모듈 스코프가 맞다: `fast_mode_state` 는 **계정 전역** 값이라 세션이 달라도 같은 답이
- *  온다. 세션마다 들면 같은 줄을 세션 수만큼 찍는다(형제 `lastRateLimitSig` 와 같은 이유).
+ * ★어댑터가 만질 수 있는 것은 이 함수 하나다 (2026-09-11, 외부 사냥 #6·#7). 종전엔 맵이
+ *  여기 노출돼 있어 `fastModeSigByModel.clear()` 한 줄로 억제가 풀렸고, 게이트 객체가 있어서
+ *  그걸 루프 안으로 옮기면 턴 접기가 풀렸다 — 둘 다 **스위트는 초록**이었다. 이제 맵도
+ *  게이트도 밖에 없다. 규칙 전문은 `fast-mode-view.ts` 헤더.
  */
-let lastFastModeSig: string | null = null;
+const reportFastMode = createFastModeReporter();
 
 export const runClaude = async (
   input: RegionASdkInput,
@@ -1359,33 +1362,15 @@ const isResumeProcessFailure = (e: unknown): boolean =>
     //  알 길이 없다 — 화면은 «적혔다» 만 보여주고 런타임 상태는 여기에만 있다.
     //  ★우리가 **켜달라고 한 턴에만** 본다. 안 켠 턴은 언제나 `sdk_opt_in_required` 라
     //   매 턴 찍으면 배경소음이 된다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
-    //  ★같은 값을 반복해 찍지 않는다 — 바뀔 때만.
-    if (input.speed === "fast") {
-      const st = (msg as { fast_mode_state?: unknown }).fast_mode_state;
-      const rs = (msg as { fast_mode_disabled_reason?: unknown }).fast_mode_disabled_reason;
-      if (typeof st === "string") {
-        const sig = `${st}/${typeof rs === "string" ? rs : "-"}`;
-        if (sig !== lastFastModeSig) {
-          lastFastModeSig = sig;
-          console.log(
-            st === "on"
-              // ★«on» 은 «막는 게 없다» 이지 «이 턴이 빨랐다·2배로 청구됐다» 가 아니다
-              //  (SDK: *"a request may still choose standard speed"*). 비용 문구에서
-              //  재지 않은 단언을 하지 않는다(2026-09-11 적대 검토 N4).
-              // ★배수를 여기 적지 않는다 — 계약(`SPEED_TIER_COST`)이 «배수는 한 곳에» 라고
-              //  적어 뒀는데 이 줄이 그걸 복제하고 있었다(N3). 대가는 `/models` 가 말한다.
-              ? `[fast-mode] 빠름 티어를 쓸 수 있는 상태입니다(막는 조건 없음).`
-              : `[fast-mode] 안 켜짐(state=${st}${typeof rs === "string" ? ` 사유=${rs}` : ""}) — ` +
-                `프로파일엔 «빠름» 이 적혀 있지만 이 턴은 표준 속도로 돕니다.` +
-                (rs === "extra_usage_disabled"
-                  ? " 계정에서 **추가 사용량**을 켜야 합니다."
-                  : rs === "model_not_allowed"
-                    ? " 이 모델은 빠름 티어를 지원하지 않습니다(Opus 5·4.8 만)."
-                    : ""),
-          );
-        }
-      }
-    }
+    //  ★**거절은 접지 않는다** — 형제 rate-limit 의 규칙 그대로다(2026-09-11 N2). 첫 판은
+    //   그 규칙을 바로 아래 주석으로 인용해 놓고 거절까지 서명 하나로 묶어, 데몬 수명 내
+    //   딱 한 번만 찍었다. 판정·접기는 `fast-mode-view.ts` 에 있다 — 어댑터 안 한 줄로
+    //   두면 검사가 소스 대조밖에 못 해 `if (false && …)` 한 글자에 뚫린다(실제로 뚫렸다).
+    //  ★**한 줄로 내렸다** (2026-09-11 적대 검토 P6). 게이트·판정·접기를 여기서 하면 검사가
+    //   그 셋을 AST 술어로 따라다녀야 하고, 술어를 얹을수록 우회로가 늘었다(두 판에 걸쳐
+    //   **열 갈래**). 전부 `fastModeLogFor` 안으로 내려 **돌려서** 재고, 여기 남은 것은
+    //   «부르나» 한 가지다. 규칙 전문은 `fast-mode-view.ts` 헤더.
+    reportFastMode(input, msg, input.speed, input.model);
 
     if (msg.type === "rate_limit_event") {
       try {

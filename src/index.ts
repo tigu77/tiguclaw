@@ -128,6 +128,7 @@ import {
 import {
   parseModelSpec,
   parseModelSpecList,
+  speedCostKeyFor,
   specLabel,
   errorDetail,
   resolveModelSpecs,
@@ -1003,8 +1004,10 @@ const handler: MessageHandler = async (msg) => {
         builtin,
         // ★조회는 모듈에 있다 — 여기 인라인으로 두면 그 배선을 재려고 데몬을 띄워야 한다.
         modelCapsFor,
-        // «빠름» 의 대가는 **어댑터**로 갈린다(사용자 정의 provider 도 claude 어댑터를 탄다).
-        (s) => parseModelSpec(s)?.adapter,
+        // «빠름» 을 **실제로 싣는 자리**만 대가를 적는다 — 판정은 런타임과 같은 함수다
+        // (사용자 정의 provider 도 claude 어댑터를 타고, ollama·google 은 openai 어댑터로
+        //  오지만 그 손잡이가 없다). 클로저로 여기서 다시 조립하면 운반과 표시가 갈린다.
+        speedCostKeyFor,
       ),
     );
     return;

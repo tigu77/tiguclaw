@@ -35,7 +35,12 @@ export const check: RegressionCheck = {
     );
 
     // `spawn_agent` 스키마 블록만 본다(다른 도구의 필드와 섞이지 않게).
-    const at = src.indexOf('tool(\n    "spawn_agent"');
+    // ★앵커를 **도구 이름 리터럴에 걸지 않는다** (2026-09-11). 종전엔 `tool(\n    "spawn_agent"`
+    //  를 찾았는데, 등록 이름을 정의점 상수(`DAEMON_SUBAGENT_TOOL`)로 바꾸자 **이 검사가
+    //  통째로 «못 찾음» 이 됐다** — 즉 이 검사는 «이름이 그 자리에 리터럴로 있는가» 에
+    //  의존하고 있었고, 그건 이 검사가 지키려는 것(스키마에 `label` 이 있나)과 무관하다.
+    //  변수 이름은 그 블록의 정체이므로 그쪽에 건다.
+    const at = src.indexOf("const spawnTool = tool(");
     const block = at < 0 ? "" : src.slice(at, at + 6000);
 
     return [

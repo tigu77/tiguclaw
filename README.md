@@ -162,9 +162,9 @@ it on per model in a profile:
 { "model": "codex:gpt-5.6-sol", "speed": "fast" }
 ```
 
-codex models burn **2.5x the credits**; Claude costs **2x**. `/models` shows where
-it's on along with what it costs, and if you turn it on and nothing changes, the log says why
-(an account setting, for instance).
+codex models burn **2.5x the credits**; Claude costs **2x**. OpenAI models can use it too, but
+we haven't measured the multiplier yet. `/models` shows where it's on along with what it costs,
+and if it doesn't turn on, the log says why (an account setting, for instance).
 
 **If something's off**, run `tiguclaw doctor` first — it checks keys, home, service, native modules and
 the global command, and tells you what to do about whatever it finds.

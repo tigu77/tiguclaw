@@ -8,6 +8,23 @@
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-09-13
+
+### Added
+
+- **OpenAI 모델도 «빠름» 으로 돌릴 수 있습니다.** 프로파일 원소에 `speed: "fast"` 를 적으면
+  됩니다. 로컬 모델이나 호환 백엔드처럼 그 손잡이가 없는 연결에는 보내지 않습니다.
+- `/models` 가 «빠름» 을 적은 원소마다 **그 연결이 실제로 그걸 읽는지와 대가**를 함께
+  보여줍니다. 배수를 측정한 곳만 숫자를 쓰고, 나머지는 «배수 미측정» 이라고 적습니다.
+
+### Fixed
+
+- **OpenAI 어댑터가 모델 설정을 보낼 때 그 모델의 기본값이 지워지던 것**을 고쳤습니다.
+  추론 강도를 지정하면 응답 장황함의 기본값이 함께 사라졌고, 도구를 지원하지 않는 모델로
+  넘어간 턴에서는 지정한 추론 강도 자체가 무시됐습니다.
+- **«빠름» 이 안 켜진 이유가 그날 로그에 없던 것**을 고쳤습니다. 거절 사유가 데몬이 뜬 뒤
+  한 번만 기록돼서, 며칠 지나 이유를 찾으면 로그가 비어 있었습니다.
+
 ## [0.52.1] - 2026-09-11
 
 ### Added
@@ -2057,7 +2074,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0
 [0.52.1]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...v0.52.1
 [0.52.0]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...v0.52.0
 [0.51.1]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...v0.51.1

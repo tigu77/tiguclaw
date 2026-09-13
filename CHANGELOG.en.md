@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-09-13
+
+### Added
+
+- **OpenAI models can run in "fast" mode too.** Add `speed: "fast"` to a pool entry. It is not
+  sent to connections that lack the setting, such as local models or compatible backends.
+- `/models` now shows, for each entry marked "fast", **whether that connection actually reads it
+  and what it costs**. Only measured multipliers are printed; the rest say "multiplier unmeasured".
+
+### Fixed
+
+- **The OpenAI adapter erased the model's own defaults when sending model settings.** Setting a
+  reasoning effort also dropped the default response verbosity, and turns that fell back to a
+  model without tool support ignored the configured reasoning effort entirely.
+- **The reason "fast" did not turn on was missing from that day's log.** The rejection reason was
+  recorded only once per daemon start, so looking it up days later found an empty log.
+
 ## [0.52.1] - 2026-09-11
 
 ### Added
@@ -504,7 +521,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...HEAD
+[0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0
 [0.52.1]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...v0.52.1
 [0.52.0]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...v0.52.0
 [0.51.1]: https://github.com/tigu77/tiguclaw/compare/v0.51.0...v0.51.1

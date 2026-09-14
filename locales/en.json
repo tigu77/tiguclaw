@@ -211,6 +211,8 @@
   "compact.running": "🗜 The conversation got long, so the previous {turns} turns are being summarized… (I'll tell you when it's done)",
   "compact.runningNoTurns": "🗜 The conversation got long, so it's being summarized… (I'll tell you when it's done)",
   "conn.connecting": "Connecting…",
+  "ctx.collapse": "Collapse",
+  "ctx.expand": "Expand",
   "ctx.confirm": "{what} — continue?",
   "ctx.invokeSkill": "Run the {skill} skill on this {kind} ({label})",
   "ctx.target": "target",

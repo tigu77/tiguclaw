@@ -139,7 +139,7 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
       prompt: z
         .string()
         .min(1)
-        .describe("엔드포인트 호출 시 실행할 프롬프트 템플릿(본문). $BODY(POST 본문)·$QUERY·$ARGUMENTS placeholder 사용 가능. ★restricted 면 이 본문이 **그대로 시스템 프롬프트**가 된다 — 역할·입력·출력 형식을 자기완결로 담아라."),
+        .describe("호출 시 실행할 템플릿. restricted면 본문이 **그대로 시스템 프롬프트**가 됩니다. 작성 규칙과 placeholder는 도구 설명을 따르세요."),
       method: z
         .enum(["GET", "POST"])
         .optional()
@@ -151,7 +151,7 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
       mode: z
         .enum(["restricted", "full"])
         .optional()
-        .describe("실행 제한. 기본 restricted = 순수 백엔드(도구 0 + 인격 없음 → prompt 본문이 곧 시스템 프롬프트, 자기완결로 작성). full = 비서로서 실행(전체 도구 + 헌법) — 사용자 명시 동의 시에만."),
+        .describe("실행 모드. 기본 restricted. full은 사용자 명시 동의가 필요합니다."),
       label: z
         .string()
         .optional()

@@ -269,6 +269,16 @@ export interface WorkerJobRecord {
   modelTier?: string;
   /** 사람이 읽는 짧은 이름 (완료 보고·상태 조회·로그). */
   label: string;
+  /**
+   * **결과 본문이 소환자의 결과함으로 들어갔나** (2026-09-14).
+   *
+   * ★합류(`wait_for_worker`)가 선점하면 결과함 배달을 건너뛴다 — 그건 옳다(같은 것을 두 번
+   *  보고하지 않으려는 것). 그런데 그 «건너뜀» 을 **아무도 기억하지 않아서**, 매니저가
+   *  종합하는 시점에 그 본문이 컨텍스트에서 압축돼 사라져도 러너가 알 방법이 없었다.
+   *  이 한 칸이 점호의 재료다: 띄운 자식 중 **여기가 비어 있는 것**이 «종합 전에 다시
+   *  줘야 하는 것» 이다. 런타임 전용(DB 스키마 무변경).
+   */
+  resultDelivered?: boolean;
   /** 매니저가 수행한 자연어 작업 지시 (메인이 작성). */
   task: string;
   /** 완료 재주입이 합류할 *원* thread (메인 인격·history 연속, W-I1). 예 "tg:123". */
@@ -1246,6 +1256,115 @@ export const describeChildJobs = (threadKey: string): string => {
 };
 
 /** 테스트 전용 — 레지스트리 비움 (프로덕션 경로 미사용). */
+/**
+ * **소환자의 자식 목록 — 읽기 전용** (2026-09-14).
+ *
+ * ★왜 필요한가: 매니저에겐 `list_workers` 가 **등록되지 않는다**(재발사 차단, W-I5). 그래서
+ *  합류 응답이 압축돼 본문과 jobId 가 사라지면, 매니저가 «내가 무엇을 띄웠더라» 를 되찾을
+ *  길이 없었다. 실측(외부 재현): 자식 6명이면 압축 안내문의 첫 줄 200자에 UUID 가 **4개만**
+ *  남는다. 안내문 길이에 복구 가능성이 걸려 있으면 안 된다.
+ *
+ * ★`takeUndeliveredChildResults` 와 달리 **아무것도 바꾸지 않는다** — 상태 표시도, 소비도 없다.
+ */
+export interface ChildJobRow {
+  jobId: string;
+  label: string;
+  status: string;
+  resultChars: number;
+  startedAt: number;
+}
+
+/**
+ * **페이지 키 — `(startedAt, jobId)`**. 시각만으로는 부족하다: 한 루프에서 띄운 자식들은
+ * `Date.now()` 가 **같은 값**이라 경계에서 서로를 가린다. jobId 로 동점을 깨면 전순서가 된다.
+ */
+const childCursorOf = (r: { startedAt: number; jobId: string }): string =>
+  `${r.startedAt}:${r.jobId}`;
+
+/** 새것이 앞. 동점이면 jobId 역순 — `childCursorOf` 의 사전식 비교와 같은 순서다. */
+const childNewerFirst = (a: ChildJobRow, b: ChildJobRow): number =>
+  b.startedAt - a.startedAt || (a.jobId < b.jobId ? 1 : a.jobId > b.jobId ? -1 : 0);
+
+/** 커서보다 **엄격히 오래된** 것만 남긴다(같은 항목이 두 쪽에 나오지 않는다). */
+const olderThanCursor = (r: ChildJobRow, cursor: string): boolean => {
+  const at = cursor.indexOf(":");
+  if (at < 0) return true;
+  const ts = Number(cursor.slice(0, at));
+  const id = cursor.slice(at + 1);
+  if (!Number.isFinite(ts)) return true;
+  return r.startedAt < ts || (r.startedAt === ts && r.jobId < id);
+};
+
+export const listChildJobs = (
+  parentThreadKey: string,
+  opts?: { limit?: number; cursor?: string },
+): { rows: ChildJobRow[]; total: number; nextCursor?: string } => {
+  if (parentThreadKey === "") return { rows: [], total: 0 };
+  const all: ChildJobRow[] = [];
+  for (const j of jobs.values()) {
+    if (j.threadKey !== parentThreadKey) continue;
+    all.push({
+      jobId: j.jobId,
+      label: j.label,
+      status: j.status,
+      resultChars: (j.result ?? "").length,
+      startedAt: j.startedAt,
+    });
+  }
+  all.sort(childNewerFirst);
+  // ★**offset 이 아니라 커서다** (2026-09-14). 최신순 목록에 새 자식이 끼면 offset 은 한 칸씩
+  //  밀려 **이미 본 것을 다시 주거나 못 본 것을 건너뛴다.** 커서는 «이 키보다 오래된 것» 이라
+  //  앞에 무엇이 추가돼도 뒤쪽 페이지가 흔들리지 않는다.
+  //  ★계약: 훑는 동안 **새로 생긴 자식은 안 나온다**(그것은 커서보다 새롭다). «지금 보관 중인
+  //   것을 빠짐없이 훑는다» 가 목적이므로 그 편이 맞다 — 새것은 어차피 첫 쪽에서 보인다.
+  const after = opts?.cursor !== undefined && opts.cursor !== ""
+    ? all.filter((r) => olderThanCursor(r, opts.cursor as string))
+    : all;
+  const limit = Math.min(Math.max(1, Math.floor(opts?.limit ?? 30)), 100);
+  const rows = after.slice(0, limit);
+  const last = rows[rows.length - 1];
+  return {
+    rows,
+    total: all.length,
+    ...(after.length > rows.length && last !== undefined
+      ? { nextCursor: childCursorOf(last) }
+      : {}),
+  };
+};
+
+/**
+ * **점호 — 띄운 자식 중 «종합 전에 다시 줘야 하는 것» 을 거둔다** (2026-09-14).
+ *
+ * ★왜 필요한가(실측): 자식 셋이 다 완주했고 본문이 **세 번이나** 전달됐는데도 매니저의
+ *  최종 답엔 1/3 만 담겼다. 합류로 받은 본문은 도구 출력이라, 그 뒤 도구를 13회 더 부르는
+ *  동안 압축이 먹었다(`keepRecent`=3). 즉 «배달» 은 성공했고 «종합 시점의 존재» 가 실패했다.
+ *
+ * ★판정은 **레코드 상태 하나**다 — `resultDelivered` 가 비어 있으면 결과함을 안 거친 것이고,
+ *  결과함을 안 거쳤으면 «턴 안에서 한 번 보여준 것» 뿐이라 종합까지 살아있다는 보장이 없다.
+ *  이름 목록도, 경로별 예외도 없다([[feedback_hand_maintained_lists]]).
+ *
+ * ★**거두면서 표시한다**(take) — 거두기 라운드가 여러 번 돌아도 같은 본문을 다시 밀어넣지
+ *  않는다. 아직 도는 자식은 건드리지 않는다(그건 기존 루프가 기다린다).
+ */
+export const takeUndeliveredChildResults = (
+  parentThreadKey: string,
+): Array<{ jobId: string; label: string; text: string }> => {
+  if (parentThreadKey === "") return [];
+  const out: Array<{ jobId: string; label: string; text: string }> = [];
+  for (const j of jobs.values()) {
+    if (j.threadKey !== parentThreadKey) continue;
+    if (j.status === "running") continue; // 아직 도는 자식은 기존 거두기 루프가 기다린다.
+    if (j.resultDelivered === true) continue; // 이미 결과함으로 갔다.
+    const outcome =
+      j.result !== undefined
+        ? { result: j.result }
+        : { error: j.error ?? "(원인 미상)" };
+    j.resultDelivered = true; // take — 다음 라운드에 중복 주입 0.
+    out.push({ jobId: j.jobId, label: j.label, text: summonerDeliveryText(j, outcome) });
+  }
+  return out;
+};
+
 export const __resetJobsForTest = (): void => {
   jobs.clear();
   cancelHooks.clear();
@@ -2418,14 +2537,15 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
  *
  * @returns 매니저 큐로 전달했으면 true(호출자는 새 턴을 열지 않는다).
  */
-const deliverToSummoner = (
+/**
+ * 소환자에게 보이는 **완료 문구** — 배달과 «점호 재공급» 이 **같은 문구**를 쓴다
+ * (2026-09-14). 두 자리에서 따로 조립하면 같은 판단이 두 벌이 되고 한쪽만 고쳐진다
+ * ([[feedback_simple_composable_no_duplication]]).
+ */
+export const summonerDeliveryText = (
   job: WorkerJobRecord,
   outcome: { result: string } | { error: string },
-): boolean => {
-  const parentId = parentJobIdOf(job.threadKey);
-  if (parentId === undefined) return false; // 소환자가 세션 — 새 턴 경로.
-  const parent = jobs.get(parentId);
-  if (parent === undefined || parent.status !== "running") return false;
+): string =>
   // ★세 가지를 **구분**한다 (ADR 위험 목록 "취소 결과의 의미"). 종전엔 취소도
   //  `[… 완료] 실패했습니다: 사용자 요청으로 취소되었습니다.` 로 나갔다 — 한 문장에
   //  거짓이 둘이다(완료도 실패도 아니다). 매니저가 그걸 고장으로 읽으면 **사용자가 방금
@@ -2435,14 +2555,23 @@ const deliverToSummoner = (
   //  매니저가 마지막 도구를 끝내고 결과를 낸 경우에도 취소 상태를 보존한다(코드가 명시적으로
   //  다루는 실재 경로) — 그때 `{result}` 가 들어오므로, `"result" in outcome` 을 먼저 보면
   //  **사용자가 멈춘 작업을 "완료 · 결과" 로 보고**하게 된다. 이 함수가 막으려던 그 오독이다.
-  const head =
-    job.status === "cancelled"
-      ? `[백그라운드 서브에이전트 '${job.label}' **중지됨**] 사용자가 이 작업을 멈췄습니다 — ` +
-        `고장이 아닙니다. **다시 띄우지 마세요.** 남은 작업만 이어가고, 이 몫이 꼭 필요하면 ` +
-        `사용자에게 먼저 물어보세요.`
-      : "result" in outcome
-        ? `[백그라운드 서브에이전트 '${job.label}' 완료] 결과:\n${outcome.result}`
-        : `[백그라운드 서브에이전트 '${job.label}' 실패] ${outcome.error}`;
+  job.status === "cancelled"
+    ? `[백그라운드 서브에이전트 '${job.label}' **중지됨**] 사용자가 이 작업을 멈췄습니다 — ` +
+      `고장이 아닙니다. **다시 띄우지 마세요.** 남은 작업만 이어가고, 이 몫이 꼭 필요하면 ` +
+      `사용자에게 먼저 물어보세요.`
+    : "result" in outcome
+      ? `[백그라운드 서브에이전트 '${job.label}' 완료] 결과:\n${outcome.result}`
+      : `[백그라운드 서브에이전트 '${job.label}' 실패] ${outcome.error}`;
+
+const deliverToSummoner = (
+  job: WorkerJobRecord,
+  outcome: { result: string } | { error: string },
+): boolean => {
+  const parentId = parentJobIdOf(job.threadKey);
+  if (parentId === undefined) return false; // 소환자가 세션 — 새 턴 경로.
+  const parent = jobs.get(parentId);
+  if (parent === undefined || parent.status !== "running") return false;
+  const head = summonerDeliveryText(job, outcome);
   // raw 는 **사용자 원문** 자리다(steering.ts 주석) — 여기엔 사용자가 친 게 없으므로
   // 둘을 같은 값으로 둔다. 서로 다른 문구를 넣으면 미소비 재주입 때 사용자 화면에
   // 우리 framing 이 "사용자가 보낸 메시지" 로 노출된다(2026-07-27 실사고와 같은 창).
@@ -2451,6 +2580,8 @@ const deliverToSummoner = (
   const box = jobResultChannels.get(parentId);
   if (box === undefined) return false;
   const ok = box.push({ text, raw: text, ts: Date.now(), source: "job" });
+  // ★배달됐음을 **레코드에 남긴다** — 점호(`takeUndeliveredChildResults`)가 이걸 본다.
+  if (ok) job.resultDelivered = true;
   publishSteerAttempt({
     jobId: parentId,
     message: text,

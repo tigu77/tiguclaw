@@ -1796,9 +1796,17 @@ export const compactOldToolOutputs = (
     const body = item.output;
     if (body.length < minOutputChars) continue; // 짧음 → 그냥 둠.
     if (body.startsWith(CODEX_COMPACTED_MARKER)) continue; // 이미 압축됨 (idempotent).
+    // ★**첫 줄은 남긴다** (2026-09-14). 종전 placeholder 엔 «무엇이 생략됐는지» 가 한 글자도
+    //  없어서, 모델이 재호출할 **대상을 특정할 수 없었다** — 자식 결과 묶음이 사라진 자리에
+    //  jobId 가 하나도 안 남는 것이 실제 사고의 한 조각이다. 도구가 첫 줄에 «무엇·어떻게
+    //  다시 읽나» 를 적어두면(합류 응답이 그렇게 한다) 그 식별자가 압축을 견딘다.
+    //  ★도구 이름을 여기서 분기하지 않는다 — 첫 줄 보존은 **모든 도구에 같은 규칙**이다.
+    const firstLine = body.slice(0, body.indexOf("\n") === -1 ? body.length : body.indexOf("\n"));
+    const label = firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
     item.output =
-      `${CODEX_COMPACTED_MARKER}[이전 도구 출력 생략 — 약 ${body.length}자. ` +
-      `필요하면 같은 인자로 도구를 재호출하세요.]`;
+      `${CODEX_COMPACTED_MARKER}[이전 도구 출력 생략 — 약 ${body.length}자.` +
+      (label.trim() === "" ? "" : ` 첫 줄: ${label}`) +
+      ` 필요하면 같은 인자로 도구를 재호출하세요.]`;
     compacted += 1;
   }
   return compacted;

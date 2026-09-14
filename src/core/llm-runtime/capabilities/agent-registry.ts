@@ -38,6 +38,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseFrontmatter } from "./skill-registry.js";
 import { dedupeWithShadows, warnShadowed } from "./dedup-by-source.js";
+import {
+  packJoinResponse,
+  sliceResultPage,
+  RESULT_PAGE_CHARS,
+  type JoinEntry,
+} from "./join-response.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 
@@ -916,24 +922,28 @@ export const createSpawnAgentMcpServer = (
         //  재주입으로 새어 나가 이중 보고가 된다.
         for (const id of args.job_ids) claimJobJoin(id);
         const deadline = Date.now() + capMs;
-        const lines: string[] = [];
+        // ★**자식별로 조립한다** (2026-09-14). 종전엔 본문을 그대로 이어 붙였고, 어댑터
+        //  진입 cap 이 **묶음 전체**에 걸려 가운데 자식이 통째로 사라졌다(실측: 18,169자 →
+        //  표식 9개 중 5개, 둘째 자식 전멸). 자르는 자리를 자식별로 옮기고 머리에 명세를
+        //  둔다 — 판정은 `join-response.ts` 한 곳이다.
+        const entries: JoinEntry[] = [];
         try {
         for (const id of args.job_ids) {
           const left = Math.max(0, deadline - Date.now());
           const job = await awaitJobOutcome(id, left);
           if (job === undefined) {
-            lines.push(`· ${id}: 그런 작업이 없습니다(이미 정리됐거나 잘못된 id).`);
+            entries.push({ jobId: id, label: "(알 수 없음)", status: "그런 작업이 없습니다(이미 정리됐거나 잘못된 id).", body: "" });
           } else if (job.status === "running") {
-            lines.push(`· ${job.label} (${id}): ⏳ 아직 진행 중 — 시한이 지나 기다리기를 멈췄습니다(작업은 계속 됩니다).`);
+            entries.push({ jobId: id, label: job.label, status: "⏳ 아직 진행 중 — 시한이 지나 기다리기를 멈췄습니다(작업은 계속 됩니다).", body: "" });
           } else if (job.status === "done") {
-            lines.push(`· ${job.label} (${id}): ✅ 완료\n${job.result ?? "(결과 없음)"}`);
+            entries.push({ jobId: id, label: job.label, status: "✅ 완료", body: job.result ?? "(결과 없음)" });
           } else if (job.status === "cancelled") {
-            lines.push(`· ${job.label} (${id}): 🚫 취소됨`);
+            entries.push({ jobId: id, label: job.label, status: "🚫 취소됨", body: "" });
           } else {
-            lines.push(`· ${job.label} (${id}): 🔴 실패 — ${job.error ?? "(원인 미상)"}`);
+            entries.push({ jobId: id, label: job.label, status: `🔴 실패 — ${job.error ?? "(원인 미상)"}`, body: "" });
           }
         }
-        return okText(lines.join("\n\n"));
+        return okText(packJoinResponse(entries));
         } finally {
           // ★★**어떤 경로로 끝나든 선점을 푼다** (2026-09-03 P-B). 정상·예외·부모 턴 중단
           //  모두 여기를 지난다. 안 풀면 나중에 자식이 끝나도 «합류가 받아갔다» 고 보고
@@ -948,9 +958,98 @@ export const createSpawnAgentMcpServer = (
     },
   );
 
+  /**
+   * **끝난 작업자의 결과를 읽는다 — 읽기 전용** (2026-09-14).
+   *
+   * ★왜 `wait_for_worker` 와 나누나: 저건 «기다리는» 도구다. 여기 offset/limit 을 얹으면 한
+   *  도구가 «기다림» 과 «읽기» 를 겸해 호출부가 무엇을 시키는지 흐려진다. 그리고 압축
+   *  안내문이 **이름 하나**를 가리킬 수 있어야 복구 경로가 짧아진다.
+   * ★자식을 다시 돌리지 않는다 — 이미 저장된 `job.result` 를 읽기만 한다.
+   */
+  const readWorkerResult = tool(
+    "read_worker_result",
+    "끝난 작업자(서브에이전트·매니저)의 **결과 원문을 읽습니다 — 읽기 전용이라 작업을 다시 돌리지 않습니다.** `job_id` 없이 부르면 이 대화에서 띄운 작업자 **목록**(jobId·상태·결과 길이)을 한 쪽씩 줍니다 — 찾는 것이 첫 쪽에 없으면 응답이 알려주는 `cursor` 로 **다음 쪽**(더 오래된 것)을 부르세요. `job_id` 를 주면 그 결과를 `offset` 부터 한 구간씩 돌려주고, 다음 `offset` 과 마지막 여부를 함께 알려줍니다 — 합류 응답이 길어 생략된 가운데를 읽을 때 쓰세요. 단위는 **문자**입니다.",
+    {
+      job_id: z.string().optional().describe("읽을 작업자의 jobId. 없으면 목록."),
+      cursor: z
+        .string()
+        .optional()
+        .describe("목록의 다음 쪽. 앞 응답이 알려준 값을 그대로 넣으세요(목록일 때만 씁니다)."),
+      offset: z.number().optional().describe("이 위치(문자)부터 읽습니다. 기본 0."),
+      limit: z
+        .number()
+        .optional()
+        .describe(`한 번에 읽을 문자 수. 기본·최대 ${RESULT_PAGE_CHARS}.`),
+    },
+    async (args) => {
+      try {
+        const { getJob, listChildJobs } = await import("../../worker-jobs.js");
+        if (args.job_id === undefined || args.job_id === "") {
+          // ★목록 — 압축이 본문과 jobId 를 치운 뒤에도 **대상을 되찾는 자리**다.
+          const page = listChildJobs(parentInput.threadKey ?? "", { cursor: args.cursor });
+          if (page.total === 0) return okText("띄운 작업자가 없습니다.");
+          if (page.rows.length === 0) {
+            return okText(
+              `이 쪽에는 더 없습니다 — 보관 중인 작업자는 모두 ${page.total}건입니다(cursor 없이 다시 부르면 처음부터).`,
+            );
+          }
+          // ★**«없다» 와 «다음 쪽에 있다» 를 섞지 않는다** — 전체 건수와 다음 쪽 여부를 같이 낸다.
+          //  그래야 찾는 id 가 안 보일 때 «퇴거됐다» 와 «아직 안 넘겼다» 를 가를 수 있다.
+          return okText(
+            `작업자 ${page.rows.length}건 (보관 중 전체 ${page.total}건) — 원문은 read_worker_result(job_id, offset) 로 읽으세요.\n` +
+              page.rows
+                .map(
+                  (r) =>
+                    `· ${r.label} (${r.jobId}): ${r.status}` +
+                    (r.resultChars > 0 ? ` · 결과 ${r.resultChars.toLocaleString()}자` : ""),
+                )
+                .join("\n") +
+              (page.nextCursor === undefined
+                ? "\n— 마지막 쪽입니다."
+                : `\n— 더 오래된 작업자가 있습니다: read_worker_result(cursor="${page.nextCursor}")`),
+          );
+        }
+        const job = getJob(args.job_id);
+        // ★**빈 문자열로 «성공» 을 흉내 내지 않는다** — 못 읽는 이유를 각각 말한다.
+        if (job === undefined) {
+          return errText(
+            `그런 작업이 없습니다(${args.job_id}) — 이미 정리됐거나 잘못된 id 입니다. read_worker_result() 로 목록을 보세요.`,
+          );
+        }
+        if (job.status === "running") {
+          return errText(`'${job.label}' 은 아직 진행 중입니다 — 결과가 아직 없습니다.`);
+        }
+        if (job.status === "cancelled") return errText(`'${job.label}' 은 중지됐습니다.`);
+        if (job.result === undefined) {
+          return errText(
+            `'${job.label}' 은 결과 본문이 없습니다 — ${job.status}` +
+              (job.error !== undefined ? ` · ${job.error}` : ""),
+          );
+        }
+        const page = sliceResultPage(job.result, args.offset, args.limit);
+        if (page.start >= page.total && page.total > 0) {
+          return errText(
+            `범위를 넘었습니다 — '${job.label}' 결과는 ${page.total.toLocaleString()}자입니다(offset 0~${page.total - 1}).`,
+          );
+        }
+        return okText(
+          `${job.label} (${args.job_id}) · 전체 ${page.total.toLocaleString()}자 · ` +
+            `이 구간 ${page.start.toLocaleString()}~${page.end.toLocaleString()}` +
+            (page.done
+              ? " · 마지막 구간입니다."
+              : ` · 다음은 read_worker_result("${args.job_id}", ${page.end}).`) +
+            `\n──\n${page.text}`,
+        );
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        return errText(`read_worker_result 실패: ${reason}`);
+      }
+    },
+  );
+
   return createSdkMcpServer({
     name: "agents",
     version: "1.1.0",
-    tools: [spawnTool, waitForWorker, findAgentsTool],
+    tools: [spawnTool, waitForWorker, readWorkerResult, findAgentsTool],
   });
 };

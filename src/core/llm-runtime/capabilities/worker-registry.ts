@@ -62,9 +62,11 @@ import {
   notifyJobOwner,
   steerJob,
   publishSteerAttempt,
+  takeUndeliveredChildResults,
 }
 from "../../worker-jobs.js";
 import { getLastWorkerActivity } from "../../../store/events.js";
+import { composeWorkerReport, harvestFailureNote } from "../../worker-report.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
 
@@ -223,6 +225,15 @@ export const runWorkerJob = (
           ? await runRegionAP
           : await Promise.race([runRegionAP, hardDeadline]);
 
+      // ★**본 턴 산출물은 여기서 고정한다** (2026-09-14). 아래 거두기 루프가 `out` 을
+      //  덮으므로, 이 줄이 없으면 전체 보고서가 짧은 후속 의견으로 **치환된다**(실측:
+      //  6,474자 → 537자, 사용자가 받은 것이 그것이었다). 소유권을 가른다 —
+      //  `mainText` 는 본 턴의 것이고 `harvestTexts` 는 거두기 라운드의 것이다.
+      const mainText = out.text;
+      const harvestTexts: string[] = [];
+      /** 거두기 턴이 끝나지 못한 이유. 있으면 **실패는 실패로** 닫고 보고서를 함께 싣는다. */
+      let harvestFailure: string | undefined;
+
       // ─── ★소환자는 **거두고** 끝난다 (ADR 2026-08-19, 사용자 확정 §b) ──────────────
       //  "소환해놓고 끝날 수는 없지. 당장은 안 기다리더라도 결과를 받고 마무리해야지."
       //  그리고 그건 **시스템적으로 안 거둘 수 없게** 해야 한다 — 프롬프트로 부탁하면
@@ -253,6 +264,16 @@ export const runWorkerJob = (
       //  개입(steering)은 꺼도 되지만 **결과 거두기는 끌 수 있는 기능이 아니다.**
       {
         let rounds = 0;
+        // ★**점호 — 합류로만 받은 자식 본문을 종합 전에 다시 싣는다** (2026-09-14).
+        //  실측: 자식 셋의 본문이 세 번 전달됐는데도 최종 답엔 1/3 만 담겼다. 합류로 받은
+        //  것은 도구 출력이라 그 뒤 도구 13회에 압축이 먹었다. 여기서 «결과함을 안 거친
+        //  자식» 을 그 함으로 밀어넣으면, 아래 루프가 **이미 있는 배관**으로 거두기 턴을
+        //  한 번 돌려 본문을 다시 보여준다. 새 경로 0 · 어댑터 지식 0.
+        //  ★텍스트 경로라 C2(도구 출력 진입 cap)에 안 걸린다 — 묶음 합류가 가운데 자식을
+        //   잃는 문제(§1.7)와 다른 길이다.
+        for (const m of takeUndeliveredChildResults(`worker:${job.jobId}`)) {
+          resultBox.push({ text: m.text, raw: m.text, ts: Date.now(), source: "job" });
+        }
         // ★턴이 끝나는 **순간** 자식이 끝난 경우 — 자식은 이미 done 이라 아래 live 조건이
         //  0이지만 결과는 큐에 남아 있다. 그대로 두면 finally 가 그걸 *사용자 지시*로 오해해
         //  "⚠️ 방금 보내신 지시는 반영되지 않았어요" 를 보낸다(자식 결과인데). 먼저 걷는다.
@@ -354,10 +375,24 @@ export const runWorkerJob = (
           //  (실측: node 프로브 exit=0). 첫 턴의 그 줄(위)은 사실상 중복 방어다.
           //  ★내가 «없으면 데몬이 crash-fast 로 간다» 고 단언했는데 **재지 않고 한 말이었고
           //   틀렸다.** 같은 부류를 오늘 여러 번 했다([[feedback_verify_before_asserting]]).
-          out =
-            hardDeadline === undefined
-              ? await rerunP
-              : await Promise.race([rerunP, hardDeadline]);
+          // ★거두기 턴이 **터져도 본 보고서를 잃지 않는다** (2026-09-14). 종전엔 이
+          //  reject 가 catch 로 빠져 `outcome = { error }` 가 되고, 이미 완성된 전체
+          //  보고서가 **통째로 사라졌다** — 조용히. 실패는 실패로 보고하되(숨기지 않는다)
+          //  보고서는 꼬리표와 함께 남긴다.
+          try {
+            out =
+              hardDeadline === undefined
+                ? await rerunP
+                : await Promise.race([rerunP, hardDeadline]);
+          } catch (e) {
+            // ★**상태 의미를 뒤집지 않는다.** 여기서 `{result}` 로 닫으면 시한 초과·모델
+            //  실패가 «완료» 로 보고돼 대시보드·부모 매니저·통지가 전부 오독한다
+            //  ([[feedback_scope_of_a_fix]] 조건반전→도달 입력 전수). 실패는 실패로 두고,
+            //  **이미 완성된 본 보고서를 그 안에 실어** 잃지 않게만 한다.
+            harvestFailure = e instanceof Error ? e.message : String(e);
+            break;
+          }
+          harvestTexts.push(out.text);
           // 이번 라운드 소비분 비우고, 그 사이 또 도착한 자식 결과가 있으면 이어서 돈다.
           arrived = resultBox.drain();
         }
@@ -368,7 +403,17 @@ export const runWorkerJob = (
           );
         }
       }
-      outcome = { result: out.text };
+      // ★**본 보고서 + 후속** 으로 닫는다 (2026-09-14). `out.text` 를 그대로 쓰면
+      //  마지막 거두기 턴 텍스트가 전부가 된다. 판정은 `worker-report.ts` 한 곳이고,
+      //  저장(`job.result`)과 부모 전달이 **같은 문자열**을 받는다(onWorkerComplete 가
+      //  이 outcome 하나를 쓴다 — 두 자리가 갈릴 수 없다).
+      {
+        const report = composeWorkerReport(mainText, harvestTexts);
+        outcome =
+          harvestFailure === undefined
+            ? { result: report }
+            : { error: `${harvestFailure}\n\n${harvestFailureNote(harvestFailure)}\n${report}` };
+      }
     } catch (e) {
       outcome = { error: e instanceof Error ? e.message : String(e) };
     } finally {

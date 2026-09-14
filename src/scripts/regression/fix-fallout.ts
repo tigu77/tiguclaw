@@ -98,6 +98,10 @@ export const check: RegressionCheck = {
       "list_mcp_servers", "list_memories", "list_schedules", "list_watches", "list_workers",
       "maintenance_status", "project_capabilities", "project_list",
       "read_memory", "search_memory",
+      // ★`read_worker_result` — **읽기전용이 맞다** (2026-09-14). 끝난 잡의 `job.result` 를
+      //  구간별로 읽기만 한다: 합류 선점 없음 · 턴 막지 않음 · 결과 수신함 미소비 · 자식
+      //  재실행 없음. `wait_for_worker`(부작용)와 **일부러 나눈** 도구라 폴백이 되불러도 무해.
+      "read_worker_result",
       // 지난 대화 조회 — 순수 읽기(2026-08-25).
       "search_conversations", "list_conversations",
       // 부작용이 있으나 재실행이 무해(멱등·표시 전용).

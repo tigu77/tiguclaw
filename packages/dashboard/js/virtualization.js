@@ -575,35 +575,43 @@
       //  ★컨테이너는 `#stream` 이다(`#chat` 은 형제 — 입력창·점프버튼을 담는다).
       //   첫 판이 `#chat` 이라 **한 번도 안 걸렸다**([[feedback_verify_before_asserting]]).
       const HEADS = ".bubble-meta, .turn-head, .hist-turn-head";
+      // 카드 뿌리 = 머리줄의 부모. 도구 스텝 카드만 그룹까지 접어야 답변 버블이 같이 숨는다.
+      const cardRootFromHead = (head) => {
+        const card = head && head.parentElement;
+        if (!card) return null;
+        return card.classList.contains("turn-card") ? card.parentElement ?? card : card;
+      };
+      // ★**펼칠 손잡이가 있는 카드만 접는다** — 머리줄이 없으면 되돌릴 길이 없다.
+      const cardCollapseHead = (root) =>
+        root && typeof root.querySelector === "function"
+          ? root.querySelector(":scope > .bubble-meta, :scope > .turn-card > .turn-head, :scope > .hist-turn-head")
+          : null;
+      const isCardCollapsed = (root) => !!root && root.classList.contains("is-collapsed");
+      // ★접기를 실제로 수행하는 **유일한 자리**. 머리줄 클릭도, 우클릭 메뉴도 여기로 온다 —
+      //  두 벌이 되면 «한쪽만 고쳐지는» 옛 병이 그대로 돌아온다(위 주석의 세 벌 이력).
+      const toggleCardCollapsed = (root) => {
+        if (!root || !cardCollapseHead(root)) return false;
+        root.classList.toggle("is-collapsed");
+        return true;
+      };
       const streamRoot = document.getElementById("stream");
       if (streamRoot) {
         streamRoot.addEventListener("click", (e) => {
           const tgt = e.target;
           if (!tgt || typeof tgt.closest !== "function") return;
           if (tgt.closest("button, a, input, select, textarea")) return;
+          // ★★**머리줄에서만 접는다** (2026-09-14 정태님). 한때 본문 한가운데를 눌러도
+          //  접히게 했는데(2026-09-10 *"중간을 눌러도 접혔으면"*), 그러면 **카드 전체가
+          //  버튼처럼 굴어** 어디를 눌러야 무엇이 되는지가 사라진다 — 도구 카드는 처음부터
+          //  머리줄만이었으므로 둘이 서로 다르게 굴기까지 했다.
+          //  ★그때의 필요(긴 답변은 머리줄이 화면 밖이라 접으려면 위로 스크롤해야 한다)는
+          //   **우클릭 메뉴의 접기/펴기**가 받는다(reply.js) — 본문 어디서든 부를 수 있다.
           const head = tgt.closest(HEADS);
-          let root = null;
-          if (head) {
-            // 카드 뿌리 = 머리줄의 부모. 도구 스텝 카드만 그룹까지 접어야 답변 버블이 같이 숨는다.
-            const card = head.parentElement;
-            if (!card) return;
-            root = card.classList.contains("turn-card") ? card.parentElement ?? card : card;
-          } else {
-            // ★★**본문 한가운데를 눌러도 접힌다** (2026-09-10 정태님: *"중간을 눌러도 접혔으면"*).
-            //  긴 답변은 머리줄이 화면 밖으로 올라가 있어서, 접으려면 위로 스크롤해야 했다.
-            //  ★단 **메시지 본문만**이다. 도구 스텝 줄(`.turn-body`·`.hist-turn-body`)은 **자기
-            //   토글**이 있어(스텝 상세 펼침) 여기서 또 접으면 두 판정이 싸운다 — 한 클릭이
-            //   두 가지를 하면 사용자는 무엇이 일어날지 모른다.
-            //  ★드래그 가드가 이미 «글을 고르는 클릭» 을 걸러내므로, 남는 건 빈 곳 클릭이다.
-            if (tgt.closest(".turn-body, .hist-turn-body")) return;
-            const bubble = tgt.closest(".ev.local");
-            // 머리줄이 있는 것만 = 메시지 버블(펼칠 손잡이가 있어야 되돌릴 수 있다).
-            if (!bubble || !bubble.querySelector(":scope > .bubble-meta")) return;
-            root = bubble;
-          }
+          if (!head) return;
+          const root = cardRootFromHead(head);
           if (!root) return;
           if (isTextDragClick(root)) return;
-          root.classList.toggle("is-collapsed");
+          toggleCardCollapsed(root);
         });
       }
       const chatJump = document.getElementById("chat-jump");

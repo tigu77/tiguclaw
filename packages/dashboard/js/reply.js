@@ -94,6 +94,10 @@
           label,
           text: msg.textContent,
           raw: (msg.dataset && msg.dataset.mdSrc) || msg.textContent,
+          // ★접기/펴기가 겨눌 **카드 뿌리**. 직렬화되지 않는 자리다(ctx 는 어디서도 통째로
+          //  JSON 이 되지 않는다 — endpoint 는 action.body 를, send_message 는 label/targetId
+          //  만 쓴다). 외부 기여 항목은 builtin 을 못 부르므로 이 참조에 닿지 않는다.
+          el: host,
         };
       };
       registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label); });
@@ -102,10 +106,31 @@
         // 마크다운 원문 우선 — 없으면(사용자 메시지 등 평문) 렌더된 글 그대로.
         try { await navigator.clipboard.writeText(ctx.raw || ctx.text || ""); } catch {}
       });
-      registerMenuItems("message", () => [
-        { id: "reply", label: i18n("reply.label"), icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },
-        { id: "copy", label: i18n("common.copy"), icon: "📋", action: { kind: "builtin", handler: "message.copy" } },
-      ]);
+      // ★접기/펴기는 **`toggleCardCollapsed` 한 곳**으로 간다(virtualization.js) — 머리줄
+      //  클릭과 같은 자리다. 여기서 classList 를 직접 만지면 접기 판정이 두 벌이 된다.
+      registerBuiltinHandler("message.collapse", (ctx) => {
+        if (ctx && ctx.el) toggleCardCollapsed(ctx.el);
+      });
+      registerMenuItems("message", (ctx) => {
+        const items = [
+          { id: "reply", label: i18n("reply.label"), icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },
+          { id: "copy", label: i18n("common.copy"), icon: "📋", action: { kind: "builtin", handler: "message.copy" } },
+        ];
+        // ★**본문 어디서 우클릭해도 접을 수 있다** — 머리줄만 누르게 바꾸면서(2026-09-14)
+        //  «긴 답변은 머리줄이 화면 밖» 이 다시 문제가 되는데, 그 필요를 여기가 받는다.
+        //  펼칠 손잡이(머리줄)가 없는 카드엔 항목을 내지 않는다 — 되돌릴 길이 없으니까.
+        const root = ctx && ctx.el;
+        if (root && cardCollapseHead(root)) {
+          const collapsed = isCardCollapsed(root);
+          items.push({
+            id: "collapse",
+            label: collapsed ? i18n("ctx.expand") : i18n("ctx.collapse"),
+            icon: collapsed ? "▸" : "▾",
+            action: { kind: "builtin", handler: "message.collapse" },
+          });
+        }
+        return items;
+      });
       // 우클릭 — 채팅 스트림 위임(가상화로 메시지가 계속 추가/제거되므로 델리게이션, hover 주입과
       // 동형). 텍스트 선택(드래그)과 우클릭은 별개 이벤트라 선택 방해 없음.
       stream.addEventListener("contextmenu", (e) => {

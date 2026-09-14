@@ -725,6 +725,12 @@
         mask-image: linear-gradient(to bottom, var(--mask-opaque) 55%, transparent 100%);
       }
       #stream .bubble-meta, #stream .turn-head, #stream .hist-turn-head { cursor:pointer; user-select:none; }
+      /* ★**누를 수 있는 자리는 머리줄뿐이다** (2026-09-14) — 그러니 머리줄이 그렇게 보여야
+         한다. 종전엔 버블 머리줄만 배경 하이라이트가 없어서(삼각형 색만 바뀜) 도구 카드와
+         감이 달랐다. 셋을 같은 규칙으로 묶는다. */
+      #stream .bubble-meta:hover, #stream .turn-head:hover, #stream .hist-turn-head:hover {
+        background:rgb(var(--fg-rgb) / .04);
+      }
       /* 삼각형은 «누를 수 있다» 의 유일한 단서다 — 머리줄에 올리면 또렷해진다. */
       #stream .bubble-meta:hover::before, #stream .hist-turn-head:hover .hist-turn-caret,
       #stream .turn-head:hover .turn-caret { color:var(--accent); }

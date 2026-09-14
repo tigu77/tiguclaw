@@ -20,7 +20,8 @@ export const check: RegressionCheck = {
   name: "collapse-is-user-owned",
   guards:
     "텍스트를 끌어 고르면 줄이 접히던 것 · 접기가 도구 스텝만 숨기고 답변은 남겨 «안 접힌다» 로 " +
-    "보이던 것 · 사용자가 안 시켰는데 직전 턴이 자동으로 접히던 것",
+    "보이던 것 · 사용자가 안 시켰는데 직전 턴이 자동으로 접히던 것 · **카드 아무 데나 눌러도 " +
+    "접혀** 어디가 손잡이인지 알 수 없던 것(2026-09-14, 우클릭 메뉴가 그 몫을 받는다)",
   async run(): Promise<Assertion[]> {
     const out: Assertion[] = [];
     const util = js("util.js");
@@ -149,15 +150,14 @@ export const check: RegressionCheck = {
         /getElementById\("stream"\)/.test(vt) && /#stream \.is-collapsed/.test(css),
         `js=${/getElementById\("stream"\)/.test(vt)} · css=${/#stream \.is-collapsed/.test(css)}`,
       ),
+      // ★**뒤집힌 판** (2026-09-14 정태님). 2026-09-10 엔 *"중간을 눌러도 접혔으면"* 이라
+      //  본문 클릭도 접게 했는데, 그러면 **카드 전체가 버튼처럼** 굴어 어디를 눌러야 무엇이
+      //  되는지가 사라진다(도구 카드는 머리줄만이라 둘이 서로 다르게 굴기까지 했다).
+      //  그때의 필요(긴 답변은 머리줄이 화면 밖)는 **우클릭 메뉴**가 받는다 — 아래 ④.
       assert(
-        "★★**본문 한가운데를 눌러도 접힌다** — 긴 답변은 머리줄이 화면 밖이라, 접으려고 위로 스크롤해야 했다",
-        /tgt\.closest\("\.ev\.local"\)/.test(vt) && /querySelector\(":scope > \.bubble-meta"\)/.test(vt),
-        `본문 경로=${/tgt\.closest\("\.ev\.local"\)/.test(vt)} · 머리줄 있는 것만=${/:scope > \.bubble-meta/.test(vt)}`,
-      ),
-      assert(
-        "★★도구 스텝 줄은 **제외**한다 — 거긴 자기 토글(스텝 상세)이 있어, 한 클릭이 두 가지를 하면 사용자는 무엇이 일어날지 모른다",
-        /closest\("\.turn-body, \.hist-turn-body"\)/.test(vt),
-        `스텝 제외=${/\.turn-body, \.hist-turn-body/.test(vt)}`,
+        "★★**머리줄에서만 접힌다** — 본문 클릭 경로가 남아 있으면 카드 전체가 버튼처럼 군다",
+        !/tgt\.closest\("\.ev\.local"\)/.test(vt),
+        `본문 경로=${/tgt\.closest\("\.ev\.local"\)/.test(vt) ? "남음" : "없음"}`,
       ),
       assert(
         "★★접어도 **세 줄은 남긴다** — 통째로 숨기면 «무엇이 접혔는지» 를 알 수 없어 하나씩 펴 보게 된다",
@@ -172,11 +172,136 @@ export const check: RegressionCheck = {
         `페이드=${/mask-image: linear-gradient/.test(css)}`,
       ),
       assert(
+        "★★머리줄이 **눌러 보인다** — 누를 수 있는 자리가 거기뿐이니 셋(버블·도구·이력)이 같은 hover 를 준다",
+        /#stream \.bubble-meta:hover, #stream \.turn-head:hover, #stream \.hist-turn-head:hover/.test(
+          stripComments(css),
+        ),
+        `hover 규칙=${/\.bubble-meta:hover, #stream \.turn-head:hover/.test(stripComments(css))}`,
+      ),
+      assert(
         "★머리줄은 남긴다 — 다시 펼칠 손잡이가 사라지면 되돌릴 수 없다",
         /:not\(\.bubble-meta\):not\(\.turn-head\):not\(\.hist-turn-head\)/.test(css),
         `예외 규칙=${/:not\(\.bubble-meta\)/.test(css)}`,
       ),
     );
+
+    // ★★**리스너를 떼어 실제로 돌린다** — 위 정규식은 «그 문자열이 없다» 만 본다. 본문
+    //  클릭 경로를 **다른 이름으로** 되살리는 변이는 그걸 통과한다.
+    {
+      const from = vt.indexOf('streamRoot.addEventListener("click"');
+      const open = vt.indexOf("{", vt.indexOf("(e) =>", from));
+      let depth = 0, end = -1;
+      for (let i = open; i < vt.length && open > 0; i++) {
+        if (vt[i] === "{") depth += 1;
+        else if (vt[i] === "}") { depth -= 1; if (depth === 0) { end = i; break; } }
+      }
+      const body = end > 0 ? vt.slice(open + 1, end) : "";
+      out.push(
+        assert(
+          "★클릭 처리기를 떼어낼 수 있다(없으면 아래는 공짜 초록)",
+          body.length > 0,
+          body.length > 0 ? `${body.length}자` : "★못 찾음 — 표현이 바뀌었으면 이 검사부터 고쳐라",
+        ),
+      );
+      if (body.length > 0) {
+        const fn = new Function(
+          "HEADS", "cardRootFromHead", "isTextDragClick", "toggleCardCollapsed", "e", body,
+        ) as (...a: unknown[]) => void;
+        const HEADS = ".bubble-meta, .turn-head, .hist-turn-head";
+        /** 최소 DOM — `closest(sel)` 가 무엇을 돌려주냐로 «어디를 눌렀나» 를 흉내 낸다.
+         *  ★기본값이 **«조상이 있다»** 다(빈 객체). 그래야 본문 클릭 경로를 **다른 셀렉터로**
+         *   되살리는 변이도 잡힌다 — 기본을 null 로 두면 무엇을 찾든 못 찾아 조용히 통과한다. */
+        const node = (hits: Record<string, unknown>) => ({
+          closest: (sel: string) => (sel in hits ? hits[sel] : {}),
+        });
+        const head = { __head: true };
+        const root = { __root: true };
+        const run = (tgt: unknown): boolean => {
+          let toggled = false;
+          fn(
+            HEADS,
+            () => root,
+            () => false,
+            () => { toggled = true; return true; },
+            { target: tgt },
+          );
+          return toggled;
+        };
+        const cases: Array<[string, unknown, boolean]> = [
+          ["머리줄을 눌렀다", node({ [HEADS]: head, "button, a, input, select, textarea": null }), true],
+          // ★«머리줄만 아니면 전부 조상이 있다» — 어떤 셀렉터로 되살려도 여기서 걸린다.
+          ["본문 한가운데를 눌렀다", node({ [HEADS]: null, "button, a, input, select, textarea": null }), false],
+          ["도구 스텝 줄을 눌렀다", node({ [HEADS]: null, "button, a, input, select, textarea": null }), false],
+          ["머리줄 안의 버튼을 눌렀다", node({ [HEADS]: head }), false],
+        ];
+        const wrong = cases.filter(([, tgt, want]) => run(tgt) !== want);
+        out.push(
+          assert(
+            "★★처리기가 **실제로 머리줄만** 접는다 — 본문·스텝·버튼 클릭은 아무 일도 하지 않는다",
+            wrong.length === 0,
+            cases.map(([l, t, w]) => `${l}=${String(run(t))}(기대 ${String(w)})`).join(" · "),
+          ),
+        );
+      }
+    }
+
+    // ④ ★**우클릭 메뉴가 접기/펴기를 준다** (2026-09-14) — 머리줄만 누르게 바꾸면서 «긴
+    //  답변은 머리줄이 화면 밖» 이 다시 문제가 되는데, 그 필요를 여기가 받는다.
+    {
+      const reply = js("reply.js");
+      out.push(
+        assert(
+          "★접기 판정이 **한 곳**으로 간다 — 메뉴가 classList 를 직접 만지면 기제가 두 벌이 된다",
+          /toggleCardCollapsed\(ctx\.el\)/.test(reply) &&
+            !/is-collapsed/.test(reply),
+          `위임=${/toggleCardCollapsed\(/.test(reply)} · 직접조작=${/is-collapsed/.test(reply)}`,
+        ),
+        assert(
+          "★메뉴가 겨눌 **카드 뿌리**를 ctx 에 싣는다 — 없으면 무엇을 접을지 알 수 없다",
+          /el: host,/.test(reply),
+          `ctx.el=${/el: host,/.test(reply)}`,
+        ),
+      );
+      const from = reply.indexOf('registerMenuItems("message"');
+      const open = reply.indexOf("{", reply.indexOf("(ctx) =>", from));
+      let depth = 0, end = -1;
+      for (let i = open; i < reply.length && open > 0; i++) {
+        if (reply[i] === "{") depth += 1;
+        else if (reply[i] === "}") { depth -= 1; if (depth === 0) { end = i; break; } }
+      }
+      const body = end > 0 ? reply.slice(open + 1, end) : "";
+      out.push(
+        assert(
+          "★메뉴 provider 를 떼어낼 수 있다(없으면 아래는 공짜 초록)",
+          body.length > 0,
+          body.length > 0 ? `${body.length}자` : "★못 찾음",
+        ),
+      );
+      if (body.length > 0) {
+        const fn = new Function("i18n", "cardCollapseHead", "isCardCollapsed", "ctx", body) as (
+          ...a: unknown[]
+        ) => Array<{ id: string; label: string }>;
+        const i18n = (k: string): string => k;
+        const items = (hasHead: boolean, collapsed: boolean) =>
+          fn(i18n, () => (hasHead ? {} : null), () => collapsed, { el: {} });
+        const opened = items(true, false);
+        const closed = items(true, true);
+        const noHead = items(false, false);
+        out.push(
+          assert(
+            "★★펼쳐져 있으면 «접기», 접혀 있으면 «펴기» — 라벨이 상태를 따라간다",
+            opened.some((i) => i.id === "collapse" && i.label === "ctx.collapse") &&
+              closed.some((i) => i.id === "collapse" && i.label === "ctx.expand"),
+            `펼침=${opened.find((i) => i.id === "collapse")?.label ?? "없음"} · 접힘=${closed.find((i) => i.id === "collapse")?.label ?? "없음"}`,
+          ),
+          assert(
+            "★머리줄이 없는 카드엔 **항목을 안 낸다** — 접으면 되돌릴 손잡이가 없다",
+            !noHead.some((i) => i.id === "collapse"),
+            `항목 ${noHead.length}개`,
+          ),
+        );
+      }
+    }
 
     // ③ 기본 펼침 — 자동 접힘 0
     out.push(

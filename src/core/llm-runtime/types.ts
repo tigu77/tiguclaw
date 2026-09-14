@@ -359,6 +359,8 @@ export interface RegionASdkOutput {
     /** 턴 전체 출력 합계 — inputTokensTotal 과 대칭(2026-08-09). */
     outputTokensTotal?: number;
     cachedTokensTotal?: number;
+    /** 요청 경계가 확인된 원본 관측분. 누적값을 요청 한 건으로 변환하지 않는다. */
+    requestUsageEntries?: RequestUsageEntry[];
   };
   /**
    * 신규 (additive) — 세션 모델 override(opts.specs 단일 spec)가 런타임에 거부되어
@@ -696,7 +698,23 @@ export interface SkillInvokedPayload {
  * 매니저(workerDepth)가 runRegionA 를 재귀 호출하는 경로는 *원래 사용자 턴의 하위 작업*
  * 으로 각자 1 이벤트를 내는 것이 정상이며(중복 아님), depth 필드로 self-growth 가 구분.
  */
+/** 공급자가 보고한 개별 요청 사용량. 존재만으로 실패·재시도 전체의 계측 완전성을 보장하지 않는다. */
+export interface RequestUsageEntry {
+  /** 요청 메시지가 보고한 실제 모델. 턴의 설정값으로 추정하지 않는다. */
+  model?: string;
+  /** 입력 총량에 포함된 캐시 생성 토큰. 읽기 할인과 구별한다. */
+  cacheCreationTokens?: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** 미보고는 생략. 관측된 0은 보존한다. */
+  cachedTokens?: number;
+  /** 생성과 압축 등 서로 다른 요청을 구별한다. */
+  endpoint?: string;
+}
+
 export interface RegionATurnDonePayload {
+  /** 어댑터가 보고한 요청별 관측분. 실패 요청의 누락 여부는 별도 검증 대상이다. */
+  requestUsageEntries?: RequestUsageEntry[];
   /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 채널. */
   channel: ChannelName;
   /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 thread. */

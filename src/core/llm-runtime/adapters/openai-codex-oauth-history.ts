@@ -443,12 +443,17 @@ export const parseCodexSse = async (
                 u as { output_tokens_details?: { reasoning_tokens?: number } }
               ).output_tokens_details?.reasoning_tokens;
               const ct = u.input_tokens_details?.cached_tokens;
-              usage = {
-                inputTokens: u.input_tokens ?? 0,
-                outputTokens: u.output_tokens ?? 0,
-                ...(typeof rt === "number" ? { reasoningTokens: rt } : {}),
-                ...(typeof ct === "number" ? { cachedTokens: ct } : {}),
-              };
+              // 공급자 경계: 누락·잘못된 토큰을 관측된 0으로 바꾸지 않는다.
+              const validCount = (v: unknown): v is number =>
+                typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+              usage = validCount(u.input_tokens) && validCount(u.output_tokens)
+                ? {
+                    inputTokens: u.input_tokens,
+                    outputTokens: u.output_tokens,
+                    ...(typeof rt === "number" ? { reasoningTokens: rt } : {}),
+                    ...(validCount(ct) && ct <= u.input_tokens ? { cachedTokens: ct } : {}),
+                  }
+                : undefined;
             }
             // V5.10 — prompt_cache_key 효과 메트릭. CODEX_DEBUG_USAGE=1 gate.
             if (process.env.CODEX_DEBUG_USAGE === "1" && event.response?.usage) {
@@ -1737,7 +1742,6 @@ export const capToolOutputForEntry = (
   if (output.length <= cap) return output;
   // 머리+꼬리가 원본 이상이면 절약 없음 → 그대로.
   if (headChars + tailChars >= output.length) return output;
-  const omitted = output.length - headChars - tailChars;
   // 경계에서 surrogate pair(이모지 등)가 쪼개지면 lone surrogate(깨진 글자)가 남는다.
   // head 끝의 lone high-surrogate, tail 앞의 lone low-surrogate 만 제거(최대 1 code unit).
   // ★가능하면 **줄 경계**에서 끊는다 (2026-07-29 사용자 제안). 글자 수로만 자르면 JSON·로그가
@@ -1746,6 +1750,7 @@ export const capToolOutputForEntry = (
   //  있을 때만 당기고 아니면 종전대로 글자 수로 자른다(내용을 더 버리지 않는다).
   const head = snapHeadToLine(output, headChars).replace(/[\uD800-\uDBFF]$/, "");
   const tail = snapTailToLine(output, tailChars).replace(/^[\uDC00-\uDFFF]/, "");
+  const omitted = output.length - head.length - tail.length;
   return (
     `${head}\n…[중략 ${omitted}자 — 전체 출력이 잘렸습니다. ` +
     `특정 부분이 필요하면 Read offset/limit 또는 Grep 으로 좁혀 재요청하세요.]…\n` +

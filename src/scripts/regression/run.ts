@@ -105,18 +105,26 @@ const main = async (): Promise<void> => {
     .filter((f) => f.endsWith(".ts") && !f.startsWith("_") && f !== "run.ts")
     .sort();
   const checks: RegressionCheck[] = [];
+  let discoveryFailures = 0;
   for (const f of files) {
     const mod = (await import(`./${f.replace(/\.ts$/, ".js")}`)) as {
       check?: RegressionCheck;
     };
     if (mod.check === undefined) {
       console.error(`🔴 ${f} 에 export const check 가 없다 — 회귀 파일 규약 위반.`);
-      process.exitCode = 1;
+      discoveryFailures += 1;
       continue;
     }
     checks.push(mod.check);
   }
-  console.log(`  (검사 파일 ${checks.length}개 자동 발견 — 등록 누락 구조적 불가)`);
+  // 부분 실행도 발견된 검사 파일의 규약 오류를 숨기지 않는다.
+  // 검사 실행 전에 반환해야 마지막 성공 판정이 발견 실패를 덮어쓰지 않는다.
+  if (discoveryFailures > 0) {
+    console.error(`🔴 회귀 스위트 준비 실패 — 검사 파일 규약 위반 ${discoveryFailures}개. 검사를 실행하지 않았습니다.`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`  (검사 파일 ${checks.length}개 자동 발견)`);
   // ★하한 — **그물이 통째로 사라져도 초록이던 것**(2026-07-31 검토 지적).
   //  glob 은 `*.ts` 를 찾는데 `dist/` 엔 `.js` 만 있다 → 배포본에서 돌리면 검사 0개로
   //  `✅ 통과 — 0건`, exit 0. "CI 가 돈다" 는 말이 "아무것도 안 본다" 와 구분이 안 됐다.

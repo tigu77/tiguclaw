@@ -180,7 +180,7 @@ const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
   const ac = new AbortController();
   return withExternalTurn(
     input.threadKey,
-    { ac, channel: input.channel, target: null },
+    { ac, channel: input.channel, target: null, notifyDest: input.interruptDest },
     () =>
       runClaude({
         text: input.text,

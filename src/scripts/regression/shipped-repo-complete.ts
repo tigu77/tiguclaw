@@ -62,6 +62,8 @@ const notShippedDocs = (): string[] => {
 const NOT_SHIPPED = [
   ...notShippedDocs(),
   "docs/decisions/",
+  // sync-public manifest는 bench/ 전체를 제외한다. 내부 측정 보고서도 배포 문서가 아니다.
+  "bench/",
   // ★**예제 플러그인은 공개본에 안 넣는다** (2026-08-29 정태님). 이유는 코드 품질이 아니라
   //  **제공자 약관**이다: 날씨는 Open-Meteo, 지도는 OpenStreetMap 타일을 쓰는데, 개인
   //  기계에서 쓰는 것과 **앱에 실어 배포하는 것**은 제공자 입장에서 다른 일이다(특히 OSM

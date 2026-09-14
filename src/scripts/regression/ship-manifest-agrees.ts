@@ -111,14 +111,14 @@ export const check: RegressionCheck = {
           docsShip === undefined ? "★허용목록 없음" : `${docsShip.split("|").length}개`,
         ),
       );
-      const docsOk = docsShip === undefined ? null : new RegExp(`^(${docsShip})$`);
+      const docsOk = new Set(docsShip?.split("|") ?? []);
       // 진짜 파일 목록에 **돌려본다**. 리터럴 대조가 아니라 결과를 본다.
       const shipped = execSync("git ls-files", { cwd: REPO, encoding: "utf8" })
         .split("\n")
         .filter((f) => f !== "" && !new RegExp(rx).test(f))
         .filter((f) => {
           if (!f.startsWith("docs/")) return true;
-          return docsOk !== null && docsOk.test(f.slice("docs/".length));
+          return docsOk.has(f.slice("docs/".length));
         });
       const leaked = notShipped.filter((p) => shipped.includes(p));
       out.push(

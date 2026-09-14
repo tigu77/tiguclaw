@@ -7,19 +7,15 @@
  *    status = pending | in_progress | completed.
  *  - OpenClaw `update_plan` (execution-contract.ts) 동형 (step + status).
  *
- * parity 배경 (parity 감사 P1):
- *  - claude 어댑터는 SDK builtin TodoWrite 자동 제공 → 본 server 호출 0.
- *  - codex 어댑터만 등록 (능력 동등 흡수, `feedback_llm_agnostic_parity.md`).
+ * 현재 등록: Claude·Codex OAuth·OpenAI SDK가 공용 도구를 사용한다.
+ * Claude의 SDK 할일 도구 대체 배선은 claude-agent-sdk의 등록/제외 목록이 정본이다.
  *
  * 두 가치 (사용자 확인 — "자기 할일 목록이면 중요"):
  *  (1) LLM 자기 관리 — codex agentic loop 에서 `update_todos` 호출 결과가
  *      function_call_output 으로 다음 iteration 컨텍스트에 남아 단계 추적·빠뜨림 방지.
- *  (2) 사용자 가시성 — EventBus `todo.update` publish → dashboard/observer fan-out.
- *      ★2026-08-13 실측: **소비처가 0이다.** 대시보드 JS·플러그인·패키지 전부에서
- *      `todo.update` 를 읽는 곳이 없다(유일한 매치는 codex 어댑터의 주석 한 줄).
- *      즉 이 값은 **설계엔 있고 배선은 없다** — 발행만 하고 아무 화면에도 안 뜬다.
- *      그래서 도구 설명에서 "대시보드가 읽는다" 고 말하면 **모델에게 거짓을 말하는 것**이라
- *      뺐다. 되살릴지(대시보드에 붙이기)·거둘지는 별건 — 지금은 사실만 적는다.
+ *  (2) 사용자 가시성 — llm.activity의 도구 카드에 요약과 전체 목록이 표시된다.
+ *      todo.update 이벤트의 전용 구독자가 없다는 사실과 화면 표시 부재는 다르다.
+ *      _activity-detail/_activity-output 및 todo-update-is-rendered 회귀가 실제 경로다.
  *
  * 정책 게이트:
  *  - dep 추가 0. in-memory 영속 0 (todo 는 turn 컨텍스트 + EventBus 만 — Claude Code
@@ -66,22 +62,12 @@ export const DAEMON_TODO_TOOL = "update_todos";
 
 const makeUpdateTodosTool = (threadKey: string) => tool(
   DAEMON_TODO_TOOL,
-  // ★부를 때만큼 **안 부를 때**를 적는다 (2026-08-13, 벤치 실측에서 드러남).
-  //  종전 설명은 "멀티스텝이면 추적하세요" 라는 **긍정 트리거뿐**이었고, 그래서 단발
-  //  작업에서도 3회씩 불렸다(long-horizon-sheet-xl, tiguclaw-codex): ①시작 ②중간
-  //  ③끝나고 전부 completed 로 쓸어담기. ③은 **턴의 마지막 도구 호출**이었다 —
-  //  턴이 끝나면 그 목록을 볼 사람이 없으므로 그 호출은 순손실이다(왕복 1회 + 토큰).
-  //
-  //  ★경계의 근거는 **자기 관리**(값 ①)다 — 반환 목록이 다음 단계 컨텍스트에 남는 것.
-  //   그래서 "뒤에 읽을 단계가 없는 호출" 은 값이 0이다. 처음엔 "대시보드가 읽으니까"
-  //   라고 썼다가 되돌렸다 — `todo.update` 는 **소비처가 0**이라(헤더 참조) 그 말은
-  //   모델에게 거짓이었다. 있지도 않은 이유로 도구를 설명하면 안 된다.
-  "현재 작업의 할일 목록을 갱신합니다 (Claude Code TodoWrite 동등). " +
-    "반환값(전체 목록)이 다음 단계의 컨텍스트에 남아 **당신이 자기 계획을 다시 읽게** 됩니다 — " +
-    "그게 이 도구의 값입니다. 그러니 여러 단계를 **앞으로** 밟아야 할 때, 그 단계에 **들어가기 전에** 부르세요. " +
-    "부르지 마세요: (a) 한두 스텝이면 끝나는 일 (b) 이미 한 일을 사후에 기록하는 용도 " +
-    "(c) 마지막에 전부 completed 로 만드는 마무리 호출 — 그 뒤로 읽을 단계가 없어 아무 값도 만들지 않습니다. " +
-    "매 호출 전체 목록을 통째로 전달하며, 정확히 하나만 in_progress 여야 합니다. 갱신된 목록 요약을 반환합니다.",
+  // 설명은 실제 두 소비 경로(모델의 다음 입력, llm.activity 도구 카드)에 맞춘다.
+  // 복잡한 작업의 계획/완료 표시는 유지하고, 짧은 작업의 형식적 갱신은 생략한다.
+  "복잡한 다단계 작업의 계획과 진행 상태를 갱신합니다. 목록은 다음 모델 입력과 사용자 도구 카드에 표시됩니다. " +
+    "짧은 조회·단일 수정에는 사용하지 마세요. 계획이나 상태가 실제로 바뀔 때만 갱신하고, 같은 내용을 반복하지 마세요. " +
+    "필요한 갱신은 결과에 의존하지 않는 다른 도구 호출과 같은 응답에 묶으세요. 검증 전에는 완료로 표시하지 마세요. " +
+    "매번 전체 목록을 전달합니다. in_progress는 최대 하나이며, 모든 작업이 끝났으면 모두 completed로 표시할 수 있습니다.",
   {
     todos: z
       .array(
@@ -94,9 +80,7 @@ const makeUpdateTodosTool = (threadKey: string) => tool(
       .min(1),
   },
   async (args) => {
-    // (2) 관측 publish — ★현재 소비처 0 (헤더 참조). 발행은 유지한다: 이벤트를 없애면
-    //  나중에 붙일 화면이 재료를 잃고, 발행 비용은 무시할 만하다. 다만 "보인다" 고
-    //  말하지는 않는다.
+    // 별도 todo.update 이벤트도 유지한다. 사용자 도구 카드는 llm.activity 경로다.
     getEventBus().publish({
       type: "todo.update",
       ts: Date.now(),

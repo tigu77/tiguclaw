@@ -190,11 +190,10 @@ codex `spawn_agent` 다중). 각 서브에이전트는 독립 산출물을 `_wor
 ---
 name: agent-name
 description: "1-2문장 역할 설명 + 위임 트리거 키워드."
-model: high          # 등급: high / mid / low (아래 '모델 등급' 참조). 생략 시 어댑터 디폴트.
-tools:               # 콤마 구분. 생략 시 전체 도구. "none" 이면 도구 0.
-  - Read
-  - Grep
-  - Glob
+# 프로파일 이름. 생략 시 어댑터 디폴트.
+model: high
+# 도구명은 콤마 구분. 생략 시 전체 도구, none이면 도구 0.
+tools: Read, Grep, Glob
 ---
 
 # Agent Name — 역할 한줄 요약

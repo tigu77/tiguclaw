@@ -16,7 +16,8 @@ const OPTS = { cap: 1000, headChars: 500, tailChars: 500 };
 const split = (s: string) => {
   const head = s.split("\n…[중략")[0] ?? "";
   const tail = s.split("]…\n")[1] ?? "";
-  return { head, tail };
+  const omitted = Number(s.match(/\n…\[중략 (\d+)자/)?.[1] ?? Number.NaN);
+  return { head, tail, omitted };
 };
 
 export const check: RegressionCheck = {
@@ -24,11 +25,19 @@ export const check: RegressionCheck = {
   guards: "도구 출력이 줄 한복판에서 끊겨 모델이 조각을 오해하던 것",
   run: async (): Promise<Assertion[]> => {
     const lines = Array.from({ length: 3000 }, (_, i) => `[line ${i}] 판독 결과 항목 ${i}`).join("\n");
-    const { head, tail } = split(capToolOutputForEntry(lines, OPTS));
+    const snapped = split(capToolOutputForEntry(lines, OPTS));
+    const { head, tail } = snapped;
     // 개행이 전혀 없는 입력 — 스냅 포기하고 종전 동작(글자 수) 유지.
-    const flat = split(capToolOutputForEntry("x".repeat(50_000), OPTS));
+    const flatInput = "x".repeat(50_000);
+    const flat = split(capToolOutputForEntry(flatInput, OPTS));
+    // 양쪽 절단 경계가 surrogate pair 한가운데면 깨진 code unit 을 제거한다.
+    const emojiInput = `aaaa😀${"m".repeat(20)}😀bbbb`;
+    const emoji = split(
+      capToolOutputForEntry(emojiInput, { cap: 10, headChars: 5, tailChars: 5 }),
+    );
     // 캡 이하는 손대지 않는다.
-    const small = capToolOutputForEntry("짧은 출력", OPTS);
+    const smallInput = "짧은 출력";
+    const small = capToolOutputForEntry(smallInput, OPTS);
     return [
       assert(
         "★head 가 줄 중간에서 끊기지 않는다",
@@ -46,11 +55,28 @@ export const check: RegressionCheck = {
         `head=${head.length} tail=${tail.length}`,
       ),
       assert(
+        "줄 경계 스냅으로 실제 빠진 UTF-16 길이를 안내한다",
+        snapped.omitted === lines.length - snapped.head.length - snapped.tail.length,
+        `reported=${snapped.omitted} actual=${lines.length - snapped.head.length - snapped.tail.length}`,
+      ),
+      assert(
         "개행 없는 거대 입력은 스냅을 포기한다(내용 과다 손실 방지)",
         flat.head.length === OPTS.headChars,
         `head=${flat.head.length}`,
       ),
-      assert("캡 이하는 원본 그대로", small === "짧은 출력", small),
+      assert(
+        "개행 없는 입력도 실제 빠진 UTF-16 길이를 안내한다",
+        flat.omitted === flatInput.length - flat.head.length - flat.tail.length,
+        `reported=${flat.omitted} actual=${flatInput.length - flat.head.length - flat.tail.length}`,
+      ),
+      assert(
+        "surrogate 보호로 빠진 code unit 도 안내 길이에 반영한다",
+        emoji.omitted === emojiInput.length - emoji.head.length - emoji.tail.length &&
+          !/[\uD800-\uDFFF]$/.test(emoji.head) &&
+          !/^[\uD800-\uDFFF]/.test(emoji.tail),
+        `reported=${emoji.omitted} actual=${emojiInput.length - emoji.head.length - emoji.tail.length}`,
+      ),
+      assert("캡 이하는 원본 그대로", small === smallInput && !small.includes("중략"), small),
     ];
   },
 };

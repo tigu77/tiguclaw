@@ -504,24 +504,20 @@ const convertMcpToolsToResponsesTools = (
  *
  * iterations<=1 이면 합계가 마지막 값과 같으므로 키를 붙이지 않는다(노이즈 0).
  */
-const withTurnTotals = (
+export const withTurnTotals = (
   last: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined,
   totals: { iterations: number; inputTokens: number; outputTokens: number; cachedTokens: number },
-):
-  | {
-      inputTokens: number;
-      outputTokens: number;
-      cachedTokens?: number;
-      iterations?: number;
-      inputTokensTotal?: number;
-      outputTokensTotal?: number;
-      cachedTokensTotal?: number;
-    }
-  | undefined => {
+  requests: readonly NonNullable<CodexSseResult["usage"]>[],
+): RegionASdkOutput["usage"] => {
   if (last === undefined) return undefined;
-  if (totals.iterations <= 1) return last;
+  // 요청별 관측값은 반환 시 복사한다. 이후 루프/호출자의 변경이 기록을 바꾸지 않는다.
+  const requestUsageEntries = requests.map(({ inputTokens, outputTokens, cachedTokens }) => ({
+    inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+  }));
+  if (totals.iterations <= 1) return { ...last, requestUsageEntries };
   return {
     ...last,
+    requestUsageEntries,
     iterations: totals.iterations,
     inputTokensTotal: totals.inputTokens,
     outputTokensTotal: totals.outputTokens,
@@ -1116,6 +1112,7 @@ export const runOpenAiCodex = async (
   //   검사하려고 데몬을 띄워야 하고, 실제로 그래서 검사가 없는 채로 로그가 잘못된
   //   수치를 찍고 있었다(2026-08-19). outputTokens 만 여기서 센다(캐시와 무관).
   const usageTotals = newTally();
+  const requestUsageEntries: NonNullable<CodexSseResult["usage"]>[] = [];
   let outputTokensTotal = 0;
   /** 턴 끝 한 줄 — 붕괴가 있었을 때만 말한다(정상은 침묵). */
   const logCacheCollapses = (): void => {
@@ -1904,6 +1901,7 @@ export const runOpenAiCodex = async (
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) {
         finalUsage = usage;
+        requestUsageEntries.push({ ...usage });
         addUsage(usageTotals, usage);
         outputTokensTotal += usage.outputTokens;
         // ★캐시 붕괴 계수 (2026-08-13) — 턴 합계(84%)만 보면 "왜 낮은지" 를 못 가른다.
@@ -2511,6 +2509,10 @@ export const runOpenAiCodex = async (
         ),
       );
 
+      // 먼저 이전 요청에 실렸던 출력만 압축한다. 새 배치까지 넣은 뒤 최근 3개를
+      // 남기면 병렬 결과 앞부분은 모델이 한 번도 보지 못한 채 생략된다.
+      turnCompacted += compactOldToolOutputs(inputArray);
+
       // C2 (compaction, architect §C2) — inputArray *진입* 직전 단발 cap. 큰 단일
       // output(Bash 1MB·Read 대용량)이 turn 끝까지 매 iteration 재전송되며 비용을
       // 지배하므로, 진입 시점에 머리+꼬리만 남긴다. 도구 자체 cap 과 별개. 에러
@@ -2536,13 +2538,6 @@ export const runOpenAiCodex = async (
         } as (typeof inputArray)[number]);
       }
 
-      // C1 (compaction, architect §C1) — 매 iteration 새 output push 후, 다음 전송
-      // 전 압축 패스. inputArray 의 오래된 function_call_output 본문(최근 K개 제외)을
-      // placeholder 로 치환해 O(N²) 누적 재전송을 선형으로 묶는다. call_id 쌍은
-      // 보존(output 문자열만 교체) → Responses shape 무손상. 압축 대상이 없는 짧은
-      // 루프(대부분의 일반 대화)는 no-op → 현행과 100% 동일(회귀 0).
-      // ★압축은 **프리픽스 한가운데를 고쳐 쓴다** — 몇 건인지 세어 진단에 싣는다(P2).
-      turnCompacted += compactOldToolOutputs(inputArray);
 
       iteration += 1;
     }
@@ -2699,7 +2694,7 @@ export const runOpenAiCodex = async (
           : `codex-${randomBytes(16).toString("hex")}`,
       model,
       replyToTrigger,
-      usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals())),
+      usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries)),
       externalToolCalls: pendingExternalToolCalls,
     };
   }
@@ -2776,6 +2771,6 @@ export const runOpenAiCodex = async (
         : `codex-${randomBytes(16).toString("hex")}`,
     model,
     replyToTrigger,
-    usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals())),
+    usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries)),
   };
 };

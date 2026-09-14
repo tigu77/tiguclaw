@@ -301,7 +301,8 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
   const ac = new AbortController();
   return withExternalTurn(
     input.threadKey,
-    { ac, channel: input.channel, target: null },
+    // 실행 채널은 scheduler지만 중단 통지는 설정된 배달 목적지로 보낸다.
+    { ac, channel: input.channel, target: null, notifyDest: input.notifyDest },
     () =>
       runClaude({
         text: input.text,

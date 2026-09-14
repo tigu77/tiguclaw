@@ -19,38 +19,44 @@
 import { readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
-const file = args.find((a) => !a.startsWith("--"));
-const opt = (flag, def) => {
-  const i = args.indexOf(flag);
-  return i >= 0 && args[i + 1] ? args[i + 1] : def;
-};
-if (!file) {
-  console.error("usage: node aggregate.mjs <results.json> [--baseline <name>] [--candidate <name>]");
-  process.exit(2);
+const fail = (message) => { console.error(message); process.exit(2); };
+let file;
+const options = {};
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (["--baseline", "--candidate"].includes(arg)) {
+    if (!args[i + 1] || args[i + 1].startsWith("--") || options[arg]) fail(`잘못된 옵션: ${arg}`);
+    options[arg] = args[++i];
+  } else if (arg.startsWith("--") || file) fail(`알 수 없는 인자: ${arg}`);
+  else file = arg;
 }
-
+const opt = (flag, def) => options[flag] ?? def;
+if (!file) fail("usage: node aggregate.mjs <results.json> [--baseline <name>] [--candidate <name>]");
 let data;
-try {
-  data = JSON.parse(readFileSync(file, "utf8"));
-} catch (e) {
-  console.error(`결과 파일 파싱 실패: ${e.message}`);
-  process.exit(2);
+try { data = JSON.parse(readFileSync(file, "utf8")); }
+catch (e) { fail(`결과 파일 파싱 실패: ${e.message}`); }
+const runs = data?.runs;
+if (!Array.isArray(runs) || !runs.length) fail("runs 가 비어 있거나 배열이 아닙니다.");
+const metrics = ["time_ms", "tokens", "input_tokens", "cached_input_tokens", "output_tokens"];
+const seen = new Set();
+for (const [i, r] of runs.entries()) {
+  if (!r || typeof r !== "object" || typeof r.config !== "string" || !r.config.trim() ||
+      typeof r.eval_id !== "string" || !r.eval_id.trim() || !Number.isSafeInteger(r.run) || r.run < 1 ||
+      typeof r.pass !== "boolean" || (r.runner_failed !== undefined && typeof r.runner_failed !== "boolean") ||
+      (r.accounting_incomplete !== undefined && typeof r.accounting_incomplete !== "boolean") ||
+      !Number.isSafeInteger(r.total_count) || r.total_count < 1 ||
+      !Number.isSafeInteger(r.passed_count) || r.passed_count < 0 || r.passed_count > r.total_count ||
+      r.pass !== (!r.runner_failed && r.passed_count === r.total_count)) fail(`runs[${i}]: 잘못된 판정·식별자·단언 수`);
+  for (const m of metrics) if (r[m] !== undefined &&
+      (typeof r[m] !== "number" || !Number.isFinite(r[m]) || r[m] < 0 || (m !== "time_ms" && !Number.isSafeInteger(r[m])))) fail(`runs[${i}]: 잘못된 ${m}`);
+  if (r.cached_input_tokens !== undefined && r.input_tokens !== undefined && r.cached_input_tokens > r.input_tokens) fail(`runs[${i}]: 캐시 입력이 전체 입력 초과`);
+  const key = JSON.stringify([r.config, r.eval_id, r.run]);
+  if (seen.has(key)) fail(`중복 실행: ${key}`);
+  seen.add(key);
 }
-const runs = Array.isArray(data.runs) ? data.runs : [];
-if (runs.length === 0) {
-  console.error("runs 가 비어 있음 — eval 실행 결과가 없습니다.");
-  process.exit(2);
-}
-
-const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-// 표본 표준편차(n-1). 표본 1개면 0.
-const stddev = (xs) => {
-  if (xs.length < 2) return 0;
-  const m = mean(xs);
-  return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1));
-};
-const nums = (xs) => xs.filter((x) => typeof x === "number" && Number.isFinite(x));
-const f2 = (x) => (Math.round(x * 100) / 100).toFixed(2);
+const mean = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+const stddev = (xs) => xs.length < 2 ? null : Math.sqrt(xs.reduce((a, b) => a + (b - mean(xs)) ** 2, 0) / (xs.length - 1));
+const f2 = (x) => x == null ? "—" : (Math.round(x * 100) / 100).toFixed(2);
 
 // config 별 그룹
 const byConfig = new Map();
@@ -61,47 +67,46 @@ for (const r of runs) {
 }
 
 const summarize = (rs) => {
-  const passVals = rs.map((r) => (r.pass ? 1 : 0));
-  // assertion 통과율(부분점수): passed_count/total_count
-  const assertRates = nums(
-    rs.map((r) =>
-      typeof r.total_count === "number" && r.total_count > 0
-        ? r.passed_count / r.total_count
-        : NaN,
-    ),
-  );
-  const times = nums(rs.map((r) => r.time_ms));
-  const toks = nums(rs.map((r) => r.tokens));
-  const runnerFails = rs.filter((r) => r.runner_failed).length;
+  const passVals = rs.map(r => Number(r.pass));
+  const coverage = Object.fromEntries(metrics.map(m => {
+    const observed = rs.filter(r => r[m] !== undefined && (m === "time_ms" || !r.accounting_incomplete));
+    return [m, { observed: observed.length, missing: rs.length - observed.length,
+      mean: mean(observed.map(r => r[m])) }];
+  }));
   return {
-    runs: rs.length,
-    pass_rate: mean(passVals),
-    pass_rate_sd: stddev(passVals),
-    assertion_rate: assertRates.length ? mean(assertRates) : null,
-    time_ms: times.length ? mean(times) : null,
-    tokens: toks.length ? mean(toks) : null,
-    runner_failures: runnerFails,
+    runs: rs.length, pass_rate: mean(passVals), pass_rate_sd: stddev(passVals),
+    assertion_rate: mean(rs.map(r => r.passed_count / r.total_count)),
+    ...Object.fromEntries(metrics.map(m => [m, coverage[m].mean])), coverage,
+    runner_failures: rs.filter(r => r.runner_failed).length,
   };
 };
-
-const summary = {};
-for (const [c, rs] of byConfig) summary[c] = summarize(rs);
-
+const summary = Object.fromEntries([...byConfig].map(([c, rs]) => [c, summarize(rs)]));
 const baseName = opt("--baseline", byConfig.has("baseline") ? "baseline" : null);
 const candName = opt("--candidate", byConfig.has("candidate") ? "candidate" : null);
+const warnings = [];
 let delta = null;
-if (baseName && candName && summary[baseName] && summary[candName]) {
-  const b = summary[baseName];
-  const c = summary[candName];
-  const d = (x, y) => (x == null || y == null ? null : x - y);
-  delta = {
-    baseline: baseName,
-    candidate: candName,
-    pass_rate: d(c.pass_rate, b.pass_rate),
-    assertion_rate: d(c.assertion_rate, b.assertion_rate),
-    time_ms: d(c.time_ms, b.time_ms),
-    tokens: d(c.tokens, b.tokens),
-  };
+const conditionKeys = ["adapter", "model", "served_model", "reasoning", "prompt_hash", "fixture_hash", "assertions_hash"];
+if (baseName || candName) {
+  if (!baseName || !candName || baseName === candName || !byConfig.has(baseName) || !byConfig.has(candName)) fail("비교 config 두 개를 서로 다르게 지정하고 실제 결과를 포함하세요.");
+  const key = r => JSON.stringify([r.eval_id, r.run]);
+  const base = new Map(byConfig.get(baseName).map(r => [key(r), r]));
+  const candidate = new Map(byConfig.get(candName).map(r => [key(r), r]));
+  if (base.size !== candidate.size || [...base.keys()].some(k => !candidate.has(k))) warnings.push("과제·반복 번호 집합이 다름: 비교 보류");
+  for (const [k, b] of base) {
+    const c = candidate.get(k);
+    if (!c) continue;
+    if (b.total_count !== c.total_count || conditionKeys.some(f =>
+      typeof b.conditions?.[f] !== "string" || !b.conditions[f].trim() || b.conditions[f] !== c.conditions?.[f])) warnings.push(`${k}: 단언·모델·프롬프트·초기 상태 조건 불명/불일치`);
+  }
+  if (!warnings.length) {
+    const b = summary[baseName], c = summary[candName];
+    delta = { baseline: baseName, candidate: candName, pairs: base.size,
+      pass_rate: c.pass_rate - b.pass_rate, assertion_rate: c.assertion_rate - b.assertion_rate };
+    for (const m of metrics) {
+      delta[m] = b.coverage[m].missing || c.coverage[m].missing ? null : c[m] - b[m];
+      if (delta[m] === null) warnings.push(`${m}: 미관측 실행이 있어 차이 계산 보류`);
+    }
+  }
 }
 
 // ---- 사람용 표 ----
@@ -126,16 +131,13 @@ if (delta) {
       (delta.time_ms == null ? "" : ` · time ${sign(delta.time_ms / 1000)}s`) +
       (delta.tokens == null ? "" : ` · tokens ${sign(delta.tokens)}`),
   );
-  const verdict =
-    delta.pass_rate > 0
-      ? "후보가 baseline 대비 개선 (pass_rate ↑). 사람 승인 후 반영 권장."
-      : delta.pass_rate < 0
-        ? "후보가 baseline 대비 퇴보 (pass_rate ↓). 반영 금지·재설계."
-        : "pass_rate 동률 — 변별 안 됨. 테스트셋이 약하거나 개선 효과 미미(assert_rate·time·tokens 로 판단).";
-  line.push(`\n**판정:** ${verdict}`);
+  line.push("\n**해석:** 이 표본의 관측 차이입니다. 동률은 기능 보존 신호일 수 있으며 검사 삭제 근거가 아닙니다. 작은 표본·실행 순서·캐시 영향과 개별 실패를 확인한 뒤 판단하세요.");
 }
-line.push("\n> 자동 판정은 참고. 스킬 파일 실제 교체는 **사람 승인 게이트** 필수(self-growth 단방향·human-gated).");
+for (const [c, s] of Object.entries(summary)) {
+  line.push(`\n${c} 관측/전체: ` + metrics.map(m => `${m} ${s.coverage[m].observed}/${s.runs}`).join(" · "));
+}
+for (const warning of warnings) line.push(`\n⚠ ${warning}`);
 
 console.log(line.join("\n"));
 // 기계용 JSON (마지막 줄, 필요 시 파싱)
-console.log("\n<!--JSON-->" + JSON.stringify({ skill: data.skill ?? null, summary, delta }));
+console.log("\n<!--JSON-->" + JSON.stringify({ skill: data.skill ?? null, summary, delta, warnings }));

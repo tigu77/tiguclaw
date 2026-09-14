@@ -103,10 +103,7 @@ QA 를 "전체 완성 후" 에만 배치하면 버그가 누적되고 초기 경
 name: qa-inspector
 description: "QA 검증 전문가. 스펙 준수와 모듈 간 통합 정합성(경계면 교차 비교)을 검증. 모듈 완성·통합·검증·정합성 점검 요청 시 위임."
 model: high
-tools:
-  - Read
-  - Grep
-  - Bash
+tools: Read, Grep, Bash
 ---
 
 # QA Inspector

@@ -116,6 +116,7 @@ import {
   willTruncateNote,
 } from "../truncation.js";
 import type {
+  RequestUsageEntry,
   RegionAActivityPayload,
   RegionASdkInput,
   RegionASdkOutput,
@@ -193,6 +194,28 @@ const summarizeMcpToolResult = (result: unknown): string => {
   return JSON.stringify(result ?? {});
 };
 
+/** SDK 공개 요청 목록만 정규화한다. 합계나 requests 횟수로 가상의 요청을 만들지 않는다. */
+export const extractRequestUsageEntries = (raw: unknown): RequestUsageEntry[] | undefined => {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const entries: RequestUsageEntry[] = [];
+  const tokenCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  for (const value of raw) {
+    if (value === null || typeof value !== "object") return undefined;
+    const u = value as Record<string, unknown>;
+    if (!tokenCount(u.inputTokens) || !tokenCount(u.outputTokens)) return undefined;
+    const details = u.inputTokensDetails as Record<string, unknown> | undefined;
+    const cached = details?.cached_tokens ?? details?.cachedTokens;
+    if (cached !== undefined && (!tokenCount(cached) || cached > u.inputTokens)) return undefined;
+    entries.push({
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+      ...(cached !== undefined ? { cachedTokens: cached as number } : {}),
+      ...(typeof u.endpoint === "string" ? { endpoint: u.endpoint } : {}),
+    });
+  }
+  return entries;
+};
+
 /**
  * SDK `result` 에서 usage 를 **graceful** 하게 뽑는다. 못 뽑으면 `undefined`(정직 →
  * `/status` "측정 전"). 형상 결합 0 — 런타임 가드 + 옵셔널 체이닝.
@@ -212,13 +235,14 @@ const summarizeMcpToolResult = (result: unknown): string => {
  */
 export const extractUsage = (
   result: unknown,
-): { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined => {
+): RegionASdkOutput["usage"] => {
   const rawUsage = (result as { state?: { usage?: unknown } })?.state?.usage;
   if (rawUsage === null || typeof rawUsage !== "object") return undefined;
   const u = rawUsage as {
     inputTokens?: unknown;
     outputTokens?: unknown;
     inputTokensDetails?: unknown;
+    requestUsageEntries?: unknown;
   };
   if (typeof u.inputTokens !== "number" || typeof u.outputTokens !== "number") return undefined;
   // 캐시 적중(2026-07-30) — codex/claude 는 이미 cachedTokens 를 싣는데 여기만 빠져 있어서,
@@ -230,17 +254,20 @@ export const extractUsage = (
     : u.inputTokensDetails !== undefined
       ? [u.inputTokensDetails]
       : [];
-  let cached = 0;
+  let cached: number | undefined = details.length > 0 ? 0 : undefined;
   for (const d of details) {
-    if (d === null || typeof d !== "object") continue;
+    if (d === null || typeof d !== "object") { cached = undefined; break; }
     const rec = d as Record<string, unknown>;
     const v = rec.cached_tokens ?? rec.cachedTokens;
-    if (typeof v === "number") cached += v;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) { cached = undefined; break; }
+    cached = (cached ?? 0) + v;
   }
+  const requestUsageEntries = extractRequestUsageEntries(u.requestUsageEntries);
   return {
     inputTokens: u.inputTokens,
     outputTokens: u.outputTokens,
-    ...(cached > 0 ? { cachedTokens: cached } : {}),
+    ...(cached !== undefined ? { cachedTokens: cached } : {}),
+    ...(requestUsageEntries !== undefined ? { requestUsageEntries } : {}),
   };
 };
 

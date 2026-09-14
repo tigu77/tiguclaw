@@ -54,6 +54,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import { findRipgrep, forgetRipgrep, rgBinName } from "../../ripgrep.js";
 import path from "node:path";
+import { withFileMutation } from "./_file-mutation.js";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
@@ -1279,7 +1280,7 @@ const makeFileOpsTools = (
         // 부모 디렉터리 ensure. recursive:true 라 이미 존재해도 무해.
         const dir = path.dirname(abs);
         await fs.mkdir(dir, { recursive: true });
-        await fs.writeFile(abs, args.content, "utf8");
+        await withFileMutation(abs, () => fs.writeFile(abs, args.content, "utf8"));
         return okText(`Wrote ${args.content.length} chars to ${abs}.`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -1301,31 +1302,33 @@ const makeFileOpsTools = (
     async (args) => {
       try {
         const abs = resolvePath(args.path);
-        const stat = await fs.stat(abs);
-        if (!stat.isFile()) {
-          return errText(`path 가 파일이 아닙니다: ${abs}`);
-        }
-        const original = await fs.readFile(abs, "utf8");
-        // 매칭 카운트 — split 길이 - 1 = 발생 횟수.
-        const occurrences = original.split(args.old_string).length - 1;
-        if (occurrences === 0) {
-          return errText(
-            `old_string 이 파일에 없습니다 (path: ${abs}). 사용자 의도 확인 필요.`,
+        return await withFileMutation(abs, async () => {
+          const stat = await fs.stat(abs);
+          if (!stat.isFile()) {
+            return errText(`path 가 파일이 아닙니다: ${abs}`);
+          }
+          const original = await fs.readFile(abs, "utf8");
+          // 매칭 카운트 — split 길이 - 1 = 발생 횟수.
+          const occurrences = original.split(args.old_string).length - 1;
+          if (occurrences === 0) {
+            return errText(
+              `old_string 이 파일에 없습니다 (path: ${abs}). 사용자 의도 확인 필요.`,
+            );
+          }
+          const replaceAll = args.replace_all === true;
+          if (occurrences > 1 && !replaceAll) {
+            return errText(
+              `old_string 이 ${occurrences}회 매칭됩니다. replace_all=true 명시 또는 더 구체적인 old_string 필요 (path: ${abs}).`,
+            );
+          }
+          const next = replaceAll
+            ? original.split(args.old_string).join(args.new_string)
+            : original.replace(args.old_string, args.new_string);
+          await fs.writeFile(abs, next, "utf8");
+          return okText(
+            `Edited ${abs} — replaced ${replaceAll ? occurrences : 1} occurrence(s).`,
           );
-        }
-        const replaceAll = args.replace_all === true;
-        if (occurrences > 1 && !replaceAll) {
-          return errText(
-            `old_string 이 ${occurrences}회 매칭됩니다. replace_all=true 명시 또는 더 구체적인 old_string 필요 (path: ${abs}).`,
-          );
-        }
-        const next = replaceAll
-          ? original.split(args.old_string).join(args.new_string)
-          : original.replace(args.old_string, args.new_string);
-        await fs.writeFile(abs, next, "utf8");
-        return okText(
-          `Edited ${abs} — replaced ${replaceAll ? occurrences : 1} occurrence(s).`,
-        );
+        });
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }

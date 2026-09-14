@@ -746,7 +746,7 @@ const warnIfPrefixCacheCold = (
 // 견고성(임무 §4) — 발행은 try/catch boundary. 발행 실패가 어댑터 턴/데몬을 절대
 // 못 죽이게 (관측은 best-effort). EventBus 자체도 subscriber throw 를 격리하지만
 // publish 호출 자체(getEventBus 등)의 만일을 위해 한 겹 더 감싼다.
-const publishTurnDone = (
+export const publishTurnDone = (
   spec: ModelSpec,
   input: RegionASdkInput,
   output: RegionASdkOutput,
@@ -772,6 +772,9 @@ const publishTurnDone = (
       //  사후 집계(context-windows.ts 주석의 "실사용 358턴" 같은 실측)가 시대를 가르려면
       //  날짜 손목록이 아니라 판정 가능한 필드가 있어야 한다.
       usageSchema: 2,
+      ...(output.usage?.requestUsageEntries !== undefined
+        ? { requestUsageEntries: output.usage.requestUsageEntries }
+        : {}),
       ...(output.usage?.inputTokens !== undefined
         ? { inputTokens: output.usage.inputTokens }
         : {}),

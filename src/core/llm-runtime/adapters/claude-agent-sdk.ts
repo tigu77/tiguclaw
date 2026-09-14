@@ -1,3 +1,4 @@
+import { createClaudeRequestUsage } from "./_claude-request-usage.js";
 /**
  * 영역 A 첫 어댑터 — Claude Agent SDK 위임.
  *
@@ -1130,6 +1131,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
   let assistantTextChunks: string[] = [];
   let lastSessionId: string | undefined;
   let lastModel: string | null = null;
+  const requestUsage = createClaudeRequestUsage();
   let lastUsage:
     | {
         inputTokens: number;
@@ -1292,6 +1294,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
    */
   let ownTextDeltas = 0;
   for await (const msg of q as AsyncIterable<SDKMessage>) {
+    requestUsage.observe(msg);
     // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
     idleTimer.beat();
     if (msg.type === "stream_event") {
@@ -2007,6 +2010,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
       assistantTextChunks = [];
       lastSessionId = undefined;
       lastModel = null;
+      requestUsage.resetPending(); // 완료된 이전 요청 기록은 재시도 뒤에도 보존한다.
       lastUsage = undefined;
       lastCallUsage = undefined; // 실패한 첫 시도의 호출 단위 값이 새 시도로 새지 않게.
       succeeded = false;
@@ -2140,7 +2144,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
       text,
       replyToTrigger,
       externalToolCalls: pendingExternalToolCalls,
-      ...(toolCallUsage !== undefined ? { usage: toolCallUsage } : {}),
+      ...(toolCallUsage !== undefined ? { usage: requestUsage.withUsage(toolCallUsage) } : {}),
     };
   }
   const effectiveSuccess = succeeded || text.length > 0;
@@ -2157,7 +2161,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
       systemPromptHash: SYSTEM_PROMPT_HASH,
       jsonlPath: jsonl,
       replyToTrigger,
-      usage: lastUsage,
+      usage: requestUsage.withUsage(lastUsage),
     };
   }
 

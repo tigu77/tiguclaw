@@ -97,6 +97,8 @@ export interface InterruptedTurn {
   readonly ac: AbortController;
   readonly channel: string;
   readonly target: string | null;
+  /** 실행 채널과 배달 채널이 다른 트리거의 중단 통지 목적지. 오류 기록의 channel은 유지한다. */
+  readonly notifyDest?: { readonly channel: string; readonly target: string | null };
 }
 
 /**
@@ -126,19 +128,20 @@ export const notifyInterruptedTurns = async (
     turns.map(async (t) => {
       // 통지만 하고 턴을 안 끊으면 살아남은 턴이 답장을 한 통 더 낸다(이중 답장).
       t.ac.abort(new Error("데몬 재시작으로 중단"));
+      const dest = t.notifyDest ?? t;
       try {
         const r = await send({
-          channel: t.channel,
-          target: t.target,
+          channel: dest.channel,
+          target: dest.target,
           text: RESTART_INTERRUPT_TEXT,
           label: "restart-interrupt",
         });
         // ★`delivered:false` 는 **throw 하지 않는다** — 반환값을 안 보면 통지 자체가 조용히
         //  유실되고 "알렸다" 고 기록된다(A4e 와 같은 병). 성공만 센다.
         if (r.delivered) notified += 1;
-        else onError?.(t.channel, r.reason ?? "미배달(사유 없음)");
+        else onError?.(dest.channel, r.reason ?? "미배달(사유 없음)");
       } catch (e) {
-        onError?.(t.channel, e instanceof Error ? e.message : String(e));
+        onError?.(dest.channel, e instanceof Error ? e.message : String(e));
       }
     }),
   );

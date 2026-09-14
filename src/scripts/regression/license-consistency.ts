@@ -5,7 +5,7 @@
  * 필드(sync 가 스크럽으로 채운다)·README 의 라이선스 절(한·영). 하나만 안 바뀌면
  * **배포본이 서로 다른 라이선스를 주장한다** — 법적 문서에서 그건 사소한 불일치가 아니다.
  *
- * ★특히 `package.json` 은 **sync 스킬의 sed 한 줄**이 채운다. 그 줄만 옛 값으로 남으면
+ * ★특히 `package.json` 은 **sync 스킬의 JSON 스크럽**이 채운다. 옛 값으로 남으면
  *  LICENSE 파일은 Apache 인데 메타데이터는 MIT 인 상태로 나간다 — npm·GitHub·의존성 스캐너가
  *  전부 메타데이터를 본다. 손으로 관리하는 치환 규칙이라 정확히 드리프트가 나는 부류다.
  *
@@ -30,16 +30,15 @@ export const check: RegressionCheck = {
       }
     };
     const O = "../../../_workspace/public-overlay/";
-    const [lic, notice, koReadme, enReadme, skill] = await Promise.all([
+    const [lic, notice, koReadme, enReadme] = await Promise.all([
       read(`${O}LICENSE`),
       read(`${O}NOTICE`),
       // ★랜딩(`README.md`)이 영어다 (2026-08-24) — 변수 이름과 파일이 어긋나면 다음 사람이
       //  반대로 읽는다. 한국어 판정은 `README.ko.md` 를 봐야 한다.
       read(`${O}README.ko.md`),
       read(`${O}README.md`),
-      read("../../../.claude/skills/sync-public/SKILL.md"),
     ]);
-    // ★**레시피가 아니라 요리를 본다** (2026-09-01). 아래 «스크럽 규칙» 단언은 SKILL.md 안의
+    // ★**레시피가 아니라 요리를 본다** (2026-09-01). 종전 «스크럽 규칙» 단언은 SKILL.md 안의
     //  치환 *문자열*이 있는지만 보고 실제 `package.json` 은 한 번도 안 읽었다. 그래서 배포
     //  트리의 license 를 `UNLICENSED` 로 바꿔도 스위트가 초록이었다(실측). 하필 이 검사가
     //  헤더에 «package.json 의 license 필드» 를 본다고 적어둔 자리다 — 지키지도 못하면서
@@ -84,13 +83,12 @@ export const check: RegressionCheck = {
         ),
       ];
     }
-    // dev 트리 — 스크럽의 **전제**를 지킨다. sed 는 `"license": "UNLICENSED"` 를 찾는다.
-    // 여기가 다른 값이 되면 치환이 조용히 no-op 이 되고 배포본이 dev 값을 그대로 입는다.
+    // dev 트리는 비공개 라이선스 정책을 지킨다. 공개 스크럽 결과는 위 배포 트리 분기에서 검사한다.
 
     const out: Assertion[] = [];
     out.push(
       assert(
-        "★dev 의 license 가 UNLICENSED 다 — sync 의 sed 가 찾는 값. 여기가 바뀌면 치환이 조용히 no-op 이 된다",
+        "★비공개 dev 패키지의 license 가 UNLICENSED 다",
         pkg?.license === "UNLICENSED",
         `dev license=${pkg?.license ?? "(읽기 실패)"}`,
       ),
@@ -111,17 +109,9 @@ export const check: RegressionCheck = {
         notice === null ? "★NOTICE 없음" : "확인",
       ),
     );
-    out.push(
-      assert(
-        "★sync 스크럽이 package.json 에 같은 SPDX 를 넣는다(메타데이터가 진짜 소비처다)",
-        skill !== null && skill.includes(`"license": "${SPDX}"`),
-        skill === null
-          ? "스킬 없음(대상 아님)"
-          : skill.includes(`"license": "${SPDX}"`)
-            ? "치환 규칙 일치"
-            : "★스크럽이 옛 라이선스를 넣는다",
-      ),
-    );
+    // 스킬의 치환 문자열 유무는 실행 성공을 증명하지 않는다(sed 실패 뒤 Python 성공도 통과했다).
+    // 문서 셸을 자동 실행하지 않고, 실제 배포 package.json 검사를 유지한다.
+    // 스크럽 연결 재현은 docs/decisions/2026-09-14-sync-chain-audit.md 참조.
     const koOk = koReadme !== null && koReadme.includes("Apache License 2.0");
     const enOk = enReadme !== null && enReadme.includes("Apache License 2.0");
     out.push(

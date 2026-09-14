@@ -707,24 +707,24 @@ export const createWorkerMcpServer = (
   );
 
   /**
-   * 돌고 있는 매니저에 지시를 얹는다 (2026-07-29).
+   * 돌고 있는 작업에 지시를 얹는다 (2026-07-29).
    *
-   * cancel_worker 와 **같은 지목 규약**을 쓴다: label 우선·job_id 보조, kind='worker' 게이트,
-   * label 매칭은 이 대화 안에서만(남의 대화 매니저에 오주입 = 되돌릴 수 없다).
+   * cancel_worker 와 **같은 지목 규약**을 쓴다: label 우선·job_id 보조, running + detached 게이트,
+   * label 매칭은 이 대화 안에서만(남의 대화 작업에 오주입 = 되돌릴 수 없다).
    */
   const steerWorker = tool(
     "steer_worker",
-    "**진행 중인 백그라운드 매니저에 지시를 추가로 전달**합니다. 사용자가 돌고 있는 작업에 대해 '거기에 ~도 해줘'·'~는 빼고'·'방향 바꿔' 처럼 말할 때 쓰세요(작업을 새로 띄우지 말고 이걸로). 반영은 **매니저의 다음 판단 시점**에 일어납니다 — 지금 오래 걸리는 도구(빌드·대량 처리)를 실행 중이면 그게 끝난 뒤에 반영되니 즉시가 아닐 수 있습니다. 이미 끝난 매니저에는 전달되지 않으며 그 사실을 알려드립니다.",
+    "**소환자가 실행 중인 자식 작업(백그라운드 매니저·서브에이전트)에 추가 지시를 전달**하는 도구입니다. 대상은 실행 중인 detached 작업이며 awaited 작업과 종료된 작업의 재개는 지원하지 않습니다. 스티어링이 활성화돼 있어야 하며 도구의 전달 결과를 확인하세요. 사용자가 돌고 있는 작업에 대해 '거기에 ~도 해줘'·'~는 빼고'·'방향 바꿔' 처럼 말할 때 쓰세요(작업을 새로 띄우지 말고 이걸로). 반영은 **작업의 다음 판단 시점**에 일어납니다 — 지금 오래 걸리는 도구(빌드·대량 처리)를 실행 중이면 그게 끝난 뒤에 반영되니 즉시가 아닐 수 있습니다. 이미 끝난 작업에는 전달되지 않으며 그 사실을 알려드립니다.",
     {
       message: z
         .string()
         .min(1)
-        .describe("매니저에게 전달할 지시 — 사용자 원문을 그대로 싣는 것을 권장."),
+        .describe("자식 작업에 전달할 지시 — 사용자 원문을 그대로 싣는 것을 권장."),
       label: z
         .string()
         .optional()
-        .describe("대상 매니저의 작업 이름(run_in_background 의 label). 우선 식별."),
-      job_id: z.string().optional().describe("대상 매니저의 jobId. label 미지정 시 사용."),
+        .describe("대상 자식 작업의 label. 이 대화 안에서 우선 식별."),
+      job_id: z.string().optional().describe("대상 자식 작업의 jobId. label로 찾지 못하면 사용하며, 정확한 ID는 대화 범위 밖에서도 조회."),
     },
     async (args) => {
       try {
@@ -732,7 +732,7 @@ export const createWorkerMcpServer = (
           (args.label === undefined || args.label === "") &&
           (args.job_id === undefined || args.job_id === "")
         ) {
-          return errText("label 또는 job_id 중 하나로 대상 매니저를 지정하세요.");
+          return errText("label 또는 job_id 중 하나로 대상 작업을 지정하세요.");
         }
         const scope = resolveOwnerThreadKey(parentInput.threadKey);
         let target = findTargetableJob({
@@ -757,12 +757,12 @@ export const createWorkerMcpServer = (
               outcome: "other-session",
             });
             return okText(
-              `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
+              `'${args.label}' 작업은 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
             );
           }
         }
         if (target === undefined) {
-          // ★가장 흔한 유실이 여기다 — "스티어했는데 이미 끝난 매니저였다". steerJob 에
+          // ★가장 흔한 유실이 여기다 — "스티어했는데 이미 끝난 작업이었다". steerJob 에
           //  도달하지 못하는 경로라 여기서 직접 발행해야 사후에 셀 수 있다(ADR 2026-08-03 §4).
           publishSteerAttempt({
             ...(args.job_id !== undefined && args.job_id !== "" ? { jobId: args.job_id } : {}),
@@ -771,7 +771,7 @@ export const createWorkerMcpServer = (
             outcome: "no-target",
           });
           return okText(
-            `지정하신 매니저를 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
+            `지정하신 작업을 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
           );
         }
         const now = Date.now();
@@ -782,16 +782,16 @@ export const createWorkerMcpServer = (
         });
         if (outcome === "delivered") {
           return okText(
-            `'${target.label}' 매니저에 지시를 전달했어요. 매니저의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
+            `'${target.label}' 작업에 지시를 전달했어요. 작업의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
           );
         }
         if (outcome === "closed") {
           return okText(
-            `'${target.label}' 매니저가 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
+            `'${target.label}' 작업이 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
           );
         }
         return okText(
-          `'${target.label}' 매니저에 지시를 전달할 수 없었어요(매니저 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
+          `'${target.label}' 작업에 지시를 전달할 수 없었어요(작업 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -801,16 +801,16 @@ export const createWorkerMcpServer = (
 
   const cancelWorker = tool(
     "cancel_worker",
-    "진행 중인 백그라운드 매니저를 취소합니다. label(작업 이름) 또는 job_id 중 하나로 식별하세요(label 우선). 사용자가 '그 작업 그만해/멈춰' 류로 요청할 때 사용합니다. 취소는 best-effort — 매니저가 지금 도구(예: 오래 걸리는 Bash·웹요청)를 실행 중이면 그 도구가 끝나는 대로 멈춥니다(즉시는 아닐 수 있음).",
+    "소환자가 실행 중인 자식 작업(백그라운드 매니저·서브에이전트)의 취소를 요청합니다. 대상은 running 상태의 detached 작업이며 awaited 작업은 부모 대화를 통해 중단합니다. 하위 작업이 있으면 함께 취소합니다. label(작업 이름) 또는 job_id 중 하나로 식별하세요(label 우선). 사용자가 '그 작업 그만해/멈춰' 류로 요청할 때 사용합니다. 취소는 best-effort이며 실행 중인 도구가 즉시 중단되는 것은 보장하지 않습니다.",
     {
       label: z
         .string()
         .optional()
-        .describe("취소할 매니저의 작업 이름(run_in_background 의 label). 우선 식별."),
+        .describe("취소할 자식 작업의 label. 이 대화 안에서 우선 식별."),
       job_id: z
         .string()
         .optional()
-        .describe("취소할 매니저의 jobId. label 미지정 시 사용."),
+        .describe("취소할 자식 작업의 jobId. label로 찾지 못하면 사용하며, 정확한 ID는 대화 범위 밖에서도 조회."),
     },
     async (args) => {
       try {
@@ -818,17 +818,13 @@ export const createWorkerMcpServer = (
           (args.label === undefined || args.label === "") &&
           (args.job_id === undefined || args.job_id === "")
         ) {
-          return errText("label 또는 job_id 중 하나로 취소할 매니저를 지정하세요.");
+          return errText("label 또는 job_id 중 하나로 취소할 작업을 지정하세요.");
         }
         // label 우선 매칭(running 중에서) → 없으면 job_id. 같은 label 의 running 이
         // 여럿이면 가장 최근(listJobs 가 startedAt 내림차순)을 취소.
-        // ★U-I4 — 이 LLM-대면 cancel_worker 도구의 대상은 kind='worker' 전용(유지). 서브
-        // 에이전트(kind='agent')는 아래 안내처럼 부모 대화를 멈추면 함께 정리되는 게 자연스러워
-        // 이 도구에선 배타한다. (별건: 대시보드 중지 버튼 → /api/cancel-worker → 코어 cancelJob
-        // 은 U-I4 개정으로 worker·agent 모두 취소함 — 그건 사용자가 카드에서 명시 지목한 경우라
-        // 경로가 다르다.) agent 잡이 같은 레지스트리에 running 으로 상주하므로 필터 필수.
+        // 실행 중 detached 잡을 고른다. 백그라운드 서브도 대상이며 awaited 서브는 제외한다.
         let target: WorkerJobRecord | undefined;
-        // ★label 매칭은 **이 대화의 매니저 안에서만** (2026-07-29). label 은 사람이 붙인
+        // ★label 매칭은 **이 대화의 작업 안에서만** (2026-07-29). label 은 사람이 붙인
         //  이름이라 세션 간 충돌이 흔하다("리서치", "정리"…). 전역에서 최신 것을 집으면
         //  사용자가 의도하지 않은 **남의 대화 작업을 취소**할 수 있다 — 되돌릴 수 없는 행위라
         //  범위를 좁히는 쪽이 옳다. 소속 미상이면 종전대로 전역(부모 잡이 정리된 예외).
@@ -848,7 +844,7 @@ export const createWorkerMcpServer = (
           const elsewhere = findTargetableJob({ label: args.label });
           if (elsewhere !== undefined) {
             return okText(
-              `'${args.label}' 매니저는 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
+              `'${args.label}' 작업은 **다른 대화**에서 돌고 있어요. 이 대화에서는 취소하지 않았습니다 — ` +
                 `그 대화에서 멈추거나, 대시보드 작업 카드에서 직접 중지해 주세요.`,
             );
           }
@@ -867,32 +863,32 @@ export const createWorkerMcpServer = (
           );
           if (agentMatch !== undefined) {
             return okText(
-              `'${agentMatch.label}'은(는) 백그라운드 매니저가 아니라 지금 대화 중 실행 중인 ` +
-                `서브에이전트예요. 서브에이전트는 따로 취소하지 않고, 진행 중인 대화(부모 작업)를 ` +
+              `'${agentMatch.label}'은(는) 백그라운드 작업이 아니라 지금 대화 중 실행 중인 ` +
+                `서브에이전트예요. 이 awaited 작업은 이 도구로 따로 취소하지 않고, 진행 중인 대화(부모 작업)를 ` +
                 `멈추면 함께 정리됩니다.`,
             );
           }
           const ident = args.label ?? args.job_id ?? "";
           return okText(
-            `취소할 진행 중인 매니저를 찾지 못했습니다 ('${ident}'). ` +
-              `list_workers 로 현재 진행 중인 매니저를 확인하세요.`,
+            `취소할 진행 중인 작업을 찾지 못했습니다 ('${ident}'). ` +
+              `list_workers 로 현재 진행 중인 작업을 확인하세요.`,
           );
         }
         if (target.status !== "running") {
           return okText(
-            `'${target.label}' 매니저는 이미 ${STATUS_LABEL[target.status]} 상태라 취소할 게 없습니다.`,
+            `'${target.label}' 작업은 이미 ${STATUS_LABEL[target.status]} 상태라 취소할 게 없습니다.`,
           );
         }
         const ok = cancelJob(target.jobId);
         if (!ok) {
           // 식별과 cancelJob 사이 race 로 막 종료된 경우 — 정직 안내.
           return okText(
-            `'${target.label}' 매니저가 막 종료되어 취소할 게 없습니다.`,
+            `'${target.label}' 작업이 막 종료되어 취소할 게 없습니다.`,
           );
         }
         return okText(
-          `🛑 '${target.label}' 매니저 취소를 요청했습니다. ` +
-            `매니저가 지금 실행 중인 도구가 있으면 그게 끝나는 대로 중단되고, 취소 알림을 받게 됩니다.`,
+          `🛑 '${target.label}' 작업 취소를 요청했습니다. ` +
+            `현재 실행 중인 도구의 즉시 중단은 보장되지 않습니다.`,
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));

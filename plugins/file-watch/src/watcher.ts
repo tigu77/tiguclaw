@@ -31,6 +31,8 @@ export interface WatcherDeps {
     threadKey: string;
     channel: string;
     cwd: string;
+    /** 재시작 중단 통지용. 정상 결과의 자동 push를 추가하지 않는다. */
+    interruptDest: { channel: string; target: string | null };
   }) => Promise<{ text: string }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (
@@ -205,6 +207,7 @@ const fireWatch = async (
       threadKey: `file-watch:${row.id}`,
       channel: "file-watch",
       cwd: deps.cwd,
+      interruptDest: { channel: row.destChannel, target: row.destTarget },
     });
     deps.recordFiring(row.id, { ok: true, path: eventPath, event });
     bus.publish({

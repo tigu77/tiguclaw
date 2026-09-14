@@ -21,6 +21,11 @@
  *     - 없음 (codex-oauth·openai) → appendTranscript user + assistant 직접 INSERT
  */
 import { getRegisteredMcpServers } from "../mcp-registry.js";
+import {
+  canReplay,
+  createReplayGuard,
+  replayBlockedReason,
+} from "./replay-safety.js";
 import { runClaude } from "./adapters/claude-agent-sdk.js";
 import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
@@ -506,10 +511,29 @@ export const resolveModelChain = (
   return pool.length > 0 ? [pool] : [];
 };
 
+/**
+ * ★**모델 호출만 갈아끼우는 이음매** (2026-09-14) — `worker-registry.ts` 의 `__runForTest` 와
+ *  같은 관용구·같은 근거다. 풀의 **폴백 행동**(실패 뒤 다음 후보로 가는가 / 부작용 뒤에
+ *  멈추는가)은 어댑터를 실제로 불러야 관측되는데, 그러려면 네트워크가 필요하다. 그래서
+ *  여기 한 곳만 주입 가능하게 둔다 — 프로덕션 경로는 이 값을 **안 넘기므로 동작 변화 0**.
+ */
+let adapterForTest:
+  | ((adapter: RegionAAdapter, input: RegionASdkInput) => Promise<RegionASdkOutput>)
+  | undefined;
+
+/** 검사 전용 — 주입하고 돌린 뒤 반드시 `undefined` 로 되돌린다(반환값이 그 해제 함수다). */
+export const __setAdapterForTest = (
+  fn: (adapter: RegionAAdapter, input: RegionASdkInput) => Promise<RegionASdkOutput>,
+): (() => void) => {
+  adapterForTest = fn;
+  return () => { adapterForTest = undefined; };
+};
+
 const callAdapter = (
   adapter: RegionAAdapter,
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  if (adapterForTest !== undefined) return adapterForTest(adapter, input);
   switch (adapter) {
     case "claude":
       return runClaude(input);
@@ -1323,6 +1347,12 @@ const runPool = async (
   pool: ModelSpec[],
 ): Promise<RegionASdkOutput> => {
   let lastError: unknown;
+  // ★★**guard 는 여기서 만들지 않는다** (2026-09-14 2차 정정, 외부 검토 P1).
+  //  첫 판은 여기서 만들었는데 **풀 순회는 이 함수 바깥**(`runRegionA` 의 chain 루프)이라
+  //  풀이 바뀔 때마다 새 guard 가 생겼다 — 같은 풀 안에서만 막고 **다음 풀에서 부작용이
+  //  다시 일어났다**(실측: 효과 2회). 소유자는 **논리 턴**이어야 한다.
+  //  여기 `??` 는 `runPool` 을 단독으로 부르는 경로의 안전망일 뿐이다.
+  const replay = input.replay ?? createReplayGuard();
   // 쿨다운 스킵 — rate-limit 걸린 어댑터를 매 턴 재두드리지 않음(호출 자체를 안 함,
   // 레이턴시+통신 낭비 제거). 전부 쿨다운이면 selectEligiblePool 이 원본 pool 그대로
   // 반환(last-resort, 유효 풀이 비어 턴이 응답 0 으로 죽지 않게).
@@ -1342,7 +1372,10 @@ const runPool = async (
       // model "" → undefined (어댑터 디폴트). input.model 로 주입.
       // provider 운반 — openai 어댑터가 self-lookup 으로 baseURL/apiKey 해석.
       // claude/codex 어댑터는 이 필드를 읽지 않음(무시) → 회귀 0.
-      const output = await callAdapter(spec.adapter, adapterInputFor(input, spec));
+      const output = await callAdapter(spec.adapter, {
+        ...adapterInputFor(input, spec),
+        replay, // 어댑터 내부 재시작(claude fresh·openai no-tools)도 같은 상태를 본다.
+      });
       // ★인라인 제안 뜯기 — **persist·publish 보다 앞**, 어댑터별 분기 0 (2026-08-25).
       //  여기가 세 어댑터의 유일한 합류점이라, 여기서 벗기면 transcripts·turn_done·
       //  channel.message.out·응답이 **전부** 깨끗하다. 아래 한 곳이라도 놓치면 사용자
@@ -1385,6 +1418,17 @@ const runPool = async (
       // 다음 모델도 즉시 죽음 = 무의미, 또 Task 취소는 폴백=재실행이라 "stop 이 실제 stop" 위반).
       // worker 경로는 onWorkerComplete 가 이미 status="cancelled" 를 보존한다.
       if (e instanceof Error && e.name === "WorkerCancelledError") {
+        throw e;
+      }
+      // ★★**부작용이 시작됐으면 다음 후보로 넘기지 않는다** (2026-09-14).
+      //  폴백은 «같은 요청을 처음부터 다시» 돌리는 것이라, 도구가 이미 실행에 들어갔으면
+      //  그 도구가 **두 번** 실행된다(파일 쓰기·발송·외부 API). 되돌릴 수 없는 쪽이므로
+      //  «한 번 더 시도해 본다» 의 기대값이 음수다. 실패는 실패로 올리되 **어디까지 갔는지**
+      //  를 이유에 실어, 사용자가 «부분 실행» 을 알 수 있게 한다.
+      if (!canReplay(replay)) {
+        if (e instanceof Error) {
+          e.message = `${e.message}\n${replayBlockedReason(replay)}`;
+        }
         throw e;
       }
       // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
@@ -1546,10 +1590,16 @@ export const runRegionA = async (
   const requestedLabel = chain[0].map(specLabel).join(",");
   let lastError: unknown;
 
+  // ★★**논리 턴의 replay 상태는 여기서 만든다** — 풀 순회보다 **바깥**이다 (2026-09-14).
+  //  모든 풀·모든 후보·어댑터 내부 재시작이 **같은 객체**를 본다. 호출자가 이미 실어
+  //  보냈으면(중첩 호출) 그것을 쓴다 — 그래야 «한 논리 턴» 이 위에서부터 성립한다.
+  const turnReplay = input.replay ?? createReplayGuard();
+  const inputWithReplay: RegionASdkInput = { ...input, replay: turnReplay };
+
   for (let i = 0; i < chain.length; i++) {
     const isLast = i === chain.length - 1;
     try {
-      const output = await runPool(input, chain[i]);
+      const output = await runPool(inputWithReplay, chain[i]);
       // 요청 풀(chain[0]) 성공, 또는 폴백 아님(hadOverride=false) → 고지 없이 그대로 반환.
       if (i === 0 || !hadOverride) return output;
       // 프로파일 간/override 폴백 성공 — 조용한 폴백 금지. 명확 고지 + modelOverrideRejected
@@ -1606,6 +1656,11 @@ export const runRegionA = async (
       // 2층 턴 타임아웃 단락 — 런타임 결함이라 다음 풀로 폴백해봐야 같은 turn signal 이 이미
       // abort 라 무의미 + 어댑터 결함 마스킹 방지(feedback_no_cross_adapter_fallback).
       if (e instanceof TurnTimeoutError) throw e;
+      // ★★**부작용이 시작됐으면 다음 «풀» 로도 가지 않는다** (2026-09-14 2차 정정).
+      //  풀 간 전환도 «원 요청을 처음부터 다시» 이므로 후보 전환과 위험이 같다. 그리고
+      //  다음 풀이 성공하면 앞 풀의 **부분 실행 실패가 정상 응답에 가려진다** — 조용한
+      //  오답이라 더 나쁘다. 사유는 `runPool` 이 이미 메시지에 실었다.
+      if (!canReplay(turnReplay)) throw e;
       // 프로파일 간(inter) 폴백은 *구조적 불가*(모델부재 isModelRejected · 자격증명부재
       // isProviderUnavailable)만 트리거. 런타임 스톨/hang/타임아웃은 비트리거 — 그대로 throw.
       // 요청 풀(hadOverride)이면서 구조적 실패이고 다음 풀이 남아있을 때만 전진.

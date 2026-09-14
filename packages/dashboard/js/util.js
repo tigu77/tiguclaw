@@ -810,6 +810,24 @@
         } catch { return false; }
       };
       /** 접기 토글 클릭 — 텍스트 드래그면 무시한다. 판정을 한 곳에 둔다(사이트마다 쓰면 갈린다). */
+      /**
+       * **카드 캐럿 — 세 카드가 같은 요소를 쓴다** (2026-09-14 정태님: *"도구카드랑 같은
+       * 방식으로 가야돼"*).
+       *
+       * ★종전엔 기제가 **둘**이었다: 도구·이력은 실제 `<span>`(한 글자 ▸ + CSS 회전)인데
+       *  버블만 `::before`(글자를 ▾/▸ 로 바꿈)였다. 그래서 hover 규칙이 버블에서만 기본
+       *  규칙에 **특이도로 져** 색이 안 바뀌었다 — *"도구카드는 갖다대면 색이 바뀌는데
+       *  채팅카드는 그대로"*. 기제가 둘이면 한쪽만 깨지고, 그 사실이 소스에선 안 보인다.
+       * ★글자는 **한 모양**만 둔다(▸) — 펼침/접힘은 CSS 가 rotate 로 말한다(도구 카드의
+       *  기존 규칙과 같다). 상태의 권위는 `.is-collapsed` 한 곳이다.
+       */
+      const makeCardCaret = () => {
+        const c = document.createElement("span");
+        c.className = "card-caret";
+        c.textContent = "▸";
+        return c;
+      };
+
       const onToggleClick = (el, fn) => {
         el.addEventListener("click", (e) => {
           if (isTextDragClick(el)) return;

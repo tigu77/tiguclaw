@@ -107,6 +107,7 @@ import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.j
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
+import { markToolDispatch } from "../replay-safety.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -773,6 +774,8 @@ export const runOpenAiCodex = async (
   // (toolsNone/webSearchEnabled 게이팅 밖 — !toolsNone 이어도 tiguclaw MCP 도구 0 +
   // 앱 함수만 노출이 자연히 성립). 미지정/빈 배열 = 이 turn 은 완전히 무영향(회귀 0).
   const externalToolNames = new Set((input.externalTools ?? []).map((t) => t.name));
+  /** 외부 MCP 서버가 제공하는 도구 이름 — 이들은 **언제나 replay 불가**로 본다. */
+  const externalMcpToolNames = new Set<string>();
   const externalFunctionTools = (input.externalTools ?? []).map((t) => ({
     type: "function" as const,
     name: t.name,
@@ -930,6 +933,9 @@ export const runOpenAiCodex = async (
         // ★**먼저 잡은 쪽이 갖는다** — 외부 MCP 가 코어 도구를 덮지 못한다(2026-08-28).
         //  종전엔 그냥 `set` 이라 같은 이름이면 조용히 가로챘다.
         const extClaim = claimToolNames(toolBridgeMap, extToolsRaw, extBridge, "external-mcp");
+        // ★**외부 MCP 가 가져간 이름을 적어둔다** (2026-09-14). replay 판정이 «이름이
+        //  read_ 로 시작하나» 로 안전을 추정하면 안 되는 유일한 자리라, 출처를 남긴다.
+        for (const n of extClaim.claimed) externalMcpToolNames.add(n);
         mcpTools.push(...keepClaimed(extToolsRaw, extClaim.claimed));
       }
     }
@@ -2413,6 +2419,15 @@ export const runOpenAiCodex = async (
                   threadKey: input.threadKey,
                   tool: tc.name,
                 });
+                // ★**dispatch 직전에 표시한다** (2026-09-14) — 성공 후가 아니다. 도구는
+                //  효과를 낸 뒤에 실패할 수 있고, 그때 폴백이 돌면 두 번 실행된다.
+                //  ★읽기 전용 판정은 **우리 분류표**만 믿는다(`isReadOnlyTool`). 외부 MCP
+                //   도구는 이름이 `read_` 여도 남의 부작용을 우리가 모르므로 안전하지 않다.
+                markToolDispatch(
+                  input.replay,
+                  tc.name,
+                  !externalMcpToolNames.has(tc.name) && isReadOnlyTool(tc.name),
+                );
                 const result = await bridge
                   .callTool(tc.name, args)
                   .finally(() => {

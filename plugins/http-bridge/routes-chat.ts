@@ -14,7 +14,7 @@ import { isCancelledTurnResult, isSteeredTurnResult } from "../../src/core/worke
 import { getRecentChatLog } from "../../src/store/chat-log.js";
 import { ingestAttachments, persistOutboundAttachment } from "./attachments.js";
 import { historyActivities } from "./history-activities.js";
-import { readJsonBody } from "./http-body.js";
+import { BODY_LIMIT_ATTACHMENTS, BodyTooLargeError, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 
 export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
@@ -25,10 +25,10 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   }
   let body: Record<string, unknown>;
   try {
-    body = await readJsonBody(req);
+    body = await readJsonBody(req, BODY_LIMIT_ATTACHMENTS); // 첨부(base64)가 오는 경로.
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${msg}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${msg}` });
     return;
   }
   const text =

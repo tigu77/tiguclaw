@@ -27,6 +27,13 @@ export const writeJson = (
   body: unknown,
 ): void => {
   const payload = JSON.stringify(body);
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    // ★**413 은 연결을 닫는다** (2026-09-14, 회귀가 잡았다). 본문이 크면 우리는 읽기를
+    //  멈추고 거절하는데, 그러면 소켓엔 **아직 안 받은 본문**이 남는다. keep-alive 로 그
+    //  소켓을 재사용한 **다음 요청**이 그 잔여물을 헤더로 읽어 깨진다(실측: 6초 지연 뒤
+    //  connection reset). 거절의 대가를 다음 요청이 치르면 안 된다.
+    ...(status === 413 ? { Connection: "close" } : {}),
+  });
   res.end(payload);
 };

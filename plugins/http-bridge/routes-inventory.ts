@@ -19,7 +19,7 @@ import { callPluginDataRoute, isPluginMedia } from "../../src/core/plugins/data-
 import { collectContextMenuContributions, collectInventory, isWhitelistedContextMenuAction } from "../../src/core/plugins/inventory.js";
 import { listLivePlugins } from "../../src/core/plugins/manager.js";
 import type { DisplayText } from "../../src/core/plugins/providers.js";
-import { readJsonBody } from "./http-body.js";
+import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import { Cron } from "croner";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -256,8 +256,8 @@ export const handleHomeWidgetToggle = async (ctx: RouteCtx): Promise<void> => {
   let body: Record<string, unknown>;
   try {
     body = await readJsonBody(req);
-  } catch {
-    writeJson(res, 400, { ok: false, error: "본문이 JSON 이 아닙니다." });
+  } catch (e) {
+    writeJson(res, bodyErrorStatus(e), { ok: false, error: "본문이 JSON 이 아닙니다." });
     return;
   }
   const type = typeof body.type === "string" ? body.type : "";

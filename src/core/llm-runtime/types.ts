@@ -9,6 +9,7 @@
  * 도구 실행 흐름 / MCP 등록 / permission / hook / 자동 발견 / stream fan-out) 은
  * 첫 어댑터 안쪽 캡슐화. V3 두 번째 어댑터 spike 시 면 추가 = additive 변경.
  */
+import type { ReplayGuard } from "./replay-safety.js";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { Attachment, ChannelName } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
@@ -221,6 +222,16 @@ export interface RegionASdkInput {
    * abort reason 은 TurnTimeoutError(turn-timeout.ts) — isModelRejected 비매칭(TT-I3).
    */
   abortSignal?: AbortSignal;
+  /**
+   * **논리 턴 하나가 공유하는 replay 금지 상태** (2026-09-14, `replay-safety.ts`).
+   *
+   * ★도구 실행은 어댑터 **안**에서 일어나는데 모델 후보 전환은 `runPool` **밖**에서 한다.
+   *  그래서 예외를 받은 풀이 «이미 부작용이 시작됐는지» 를 알 방법이 이것뿐이다. 같은
+   *  객체를 모든 후보와 **어댑터 내부 재시작**(claude fresh · openai no-tools)에 넘겨야
+   *  «한 논리 턴» 이 성립한다 — 새로 만들면 그 순간 판정이 리셋된다.
+   * ★결과 객체가 아니라 **여기**에 싣는 이유: 예외로 끝나는 턴엔 결과가 없다.
+   */
+  replay?: ReplayGuard;
   /**
    * 신규(additive, 2026-06-22) — *내부 분류성* 1회 호출 플래그. 데이터 평면(self-growth
    * 등)이 "작은 yes/no/uncertain 분류"를 현재 활성 어댑터로 돌릴 때 세팅한다.

@@ -1127,9 +1127,8 @@
         el.dataset.threadkey = thread;
         const head = document.createElement("div");
         head.className = "turn-head";
-        const caret = document.createElement("span");
-        // 글자는 **한 모양**만 둔다(▸) — 펼침/접힘은 CSS 가 rotate 로 말한다.
-        caret.className = "turn-caret"; caret.textContent = "▸";
+        // 캐럿은 **세 카드 공통**(`makeCardCaret`, util.js) — 기제를 하나로 둔다.
+        const caret = makeCardCaret();
         const badge = document.createElement("span");
         badge.className = "act-badge act-" + adapter;
         badge.textContent = p.adapter || "?";
@@ -1233,10 +1232,10 @@
         div.className = "ev local channel-chat";
         div.dataset.type = "channel.message.out";
         const head = document.createElement("div");
-        head.className = "bubble-meta"; // 채팅 버블 메타 줄 간격(생성 지점 4곳 공통).
         // 메타 줄(시각·이름·모델·비용)이 서로 붙어 읽기 어려웠다 — 스텝 카드 헤더(.turn-head,
         // gap:8px)와 같은 간격 규칙을 쓴다(2026-07-28 사용자 요청).
-        head.className = "bubble-meta";
+        head.className = "bubble-meta"; // 채팅 버블 메타 줄 간격(생성 지점 4곳 공통).
+        head.appendChild(makeCardCaret()); // 도구 카드와 **같은 캐럿** — 맨 앞.
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
         const tyEl = document.createElement("span");

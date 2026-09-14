@@ -224,6 +224,41 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ④-b ★**시각이 같고 jobId 가 작은 새 자식이 끼어도** 기존 항목은 안 흔들린다.
+    //  (2026-09-14 외부 검토가 짚은 경계 — 이때는 새 자식이 뒤쪽 쪽에 «나올 수» 있다.
+    //   그건 손상이 아니다. 지켜야 하는 것은 **기존 항목의 누락·중복 0** 이다.)
+    {
+      __resetJobsForTest();
+      const p = mkParent("tie");
+      const srvT = createSpawnAgentMcpServer({
+        text: "x", threadKey: `worker:${p}`, channel: "dashboard", workerDepth: 1,
+      } as never) as unknown as { instance: { _registeredTools: Record<string, ToolReg> } };
+      const readT = srvT.instance._registeredTools["read_worker_result"] as ToolReg;
+      const base = Array.from({ length: 45 }, (_, i) => spawn(p, `기존 ${i}`, `T_${i}`));
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let guard = 0; guard < 10; guard++) {
+        const t = textOf(await readT.handler(cursor === undefined ? {} : { cursor }, {}));
+        for (const line of t.split("\n")) {
+          if (line.startsWith("· ")) for (const m of line.match(UUID) ?? []) seen.push(m);
+        }
+        // ★같은 밀리초에 태어난 자식을 첫 쪽 직후에 넣는다 — 커서와 시각이 같아 jobId 비교로만
+        //  갈리는 자리다(한 루프에서 띄우면 실제로 늘 이 모양이다).
+        if (guard === 0) for (let k = 0; k < 5; k++) spawn(p, `동점 ${k}`, `TIE_${k}`);
+        const next = CURSOR.exec(t);
+        if (next === null) break;
+        cursor = next[1];
+      }
+      const missed = base.filter((id) => !seen.includes(id));
+      out.push(
+        assert(
+          "★★시각이 같은 새 자식이 끼어도 **기존 45개의 누락·중복이 0** 이다",
+          missed.length === 0 && new Set(seen).size === seen.length,
+          `누락 ${missed.length}건 · 중복 ${seen.length - new Set(seen).size}건 · 수집 ${seen.length}`,
+        ),
+      );
+    }
+
     // ── ⑤ C1 압축 뒤 종단: 안내 → 목록 끝까지 → 오래된 원문 읽기 ─────────────────────
     {
       __resetJobsForTest();

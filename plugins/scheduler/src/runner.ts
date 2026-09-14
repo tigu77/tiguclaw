@@ -87,13 +87,41 @@ const scheduleDispatchRetry = (
     void (async () => {
       try {
         if (inFlight.has(schedule.id)) return; // 다음 발화 진행 중 — 철 지난 재전송 취소.
+        // ★★**발송 직전에 최신 상태를 본다** (2026-09-14, 외부 검토). 종전엔 최신 행을
+        //  조회해놓고 **존재 여부만** 보고, 실제 발송은 타이머 closure 의 **옛 스냅샷**으로
+        //  했다 — 그래서 5분 사이에 사용자가 스케줄을 **끄거나 목적지를 바꿔도** 옛 주소로
+        //  다시 나갔다. 조회한 값을 안 쓰는 코드는 «확인했다» 처럼 보여서 더 나쁘다.
         const current = getSchedule(schedule.id);
-        if (current === undefined) return; // 삭제됨.
+        if (current === undefined) {
+          console.log(`[scheduler:${schedule.id}] '${schedule.label}' 자동 재전송 취소 — 스케줄이 삭제됨`);
+          return;
+        }
+        if (!current.enabled) {
+          console.log(`[scheduler:${schedule.id}] '${current.label}' 자동 재전송 취소 — 스케줄이 비활성화됨`);
+          return;
+        }
+        // ★**목적지가 바뀌었으면 대기 중 발송을 취소한다**(정태님 확정 2026-09-14).
+        //  옛 목적지 재전송은 금지이고, 새 목적지는 **다음 정기 실행부터** 쓴다 — 이 원문은
+        //  옛 수신자를 향해 만들어진 것이라 새 수신자에게 보낼 근거가 없다.
+        //  ★원문은 지우지 않는다(발송 취소와 기록 삭제는 별개다).
+        if (
+          current.destChannel !== schedule.destChannel ||
+          current.destTarget !== schedule.destTarget
+        ) {
+          console.log(
+            `[scheduler:${schedule.id}] '${current.label}' 자동 재전송 취소 — 목적지가 바뀌었다` +
+              ` (${schedule.destChannel}/${schedule.destTarget ?? "—"} → ${current.destChannel}/${current.destTarget ?? "—"}).` +
+              ` 새 목적지는 다음 정기 실행부터 쓴다.`,
+          );
+          return;
+        }
         const dispatchFn = deps.dispatch ?? dispatch;
         await dispatchFn({
           scheduleId: schedule.id,
-          destChannel: schedule.destChannel,
-          destTarget: schedule.destTarget,
+          // 최신 행의 값을 쓴다 — 위에서 같음을 확인했으므로 값은 같고, **읽은 것을 쓴다**는
+          // 사실이 코드에 남는다(스냅샷을 다시 집으면 같은 병이 조용히 돌아온다).
+          destChannel: current.destChannel,
+          destTarget: current.destTarget,
           text,
           bus,
           sessionThreadKey: DEFAULT_SESSION_ID,

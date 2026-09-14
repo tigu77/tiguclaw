@@ -13,7 +13,7 @@ import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-re
 import { writeJson } from "../../src/core/net/write-json.js";
 import { listJobs } from "../../src/core/worker-jobs.js";
 import { forgetProject, listProjects, upsertProject } from "../../src/store/projects.js";
-import { readJsonBody } from "./http-body.js";
+import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
 import path from "node:path";
@@ -209,7 +209,7 @@ export const handleProjectForget = async (ctx: RouteCtx): Promise<void> => {
     pbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const pathIn =
@@ -235,7 +235,7 @@ export const handleProjectRename = async (ctx: RouteCtx): Promise<void> => {
     pbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const pathIn = typeof pbody.path === "string" ? pbody.path.trim() : "";

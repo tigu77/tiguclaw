@@ -128,16 +128,30 @@ export const sliceResultPage = (
   limit?: number,
 ): { text: string; start: number; end: number; total: number; done: boolean } => {
   const total = text.length;
-  const start = Math.min(Math.max(0, Math.floor(offset ?? 0)), total);
+  let start = Math.min(Math.max(0, Math.floor(offset ?? 0)), total);
+  // ★**시작이 쌍 한가운데면 앞의 high 로 정규화한다** (2026-09-14 외부 검토). 종전엔 끝만
+  //  보정해서, 쌍 가운데를 가리키는 offset 이 들어오면 **짝 없는 low 서러게이트**로 시작해
+  //  글자가 깨졌다. 되돌린 위치는 반환 `start` 에 그대로 실어 호출부가 알 수 있게 한다.
+  if (start > 0 && start < total) {
+    const cur = text.charCodeAt(start);
+    const prev = text.charCodeAt(start - 1);
+    if (cur >= 0xdc00 && cur <= 0xdfff && prev >= 0xd800 && prev <= 0xdbff) start -= 1;
+  }
   const want = Math.min(
     Math.max(1, Math.floor(limit ?? RESULT_PAGE_CHARS)),
     RESULT_PAGE_CHARS,
   );
   let end = Math.min(start + want, total);
-  // 서러게이트 쌍을 쪼개지 않는다 — 끝 글자가 high surrogate 이고 뒤가 더 있으면 한 칸 뒤로.
+  // 쌍을 쪼개는 자리에서만 물러선다 — **짝 없는 high** 는 그대로 둔다(버리지 않는다).
   if (end > start && end < total) {
     const code = text.charCodeAt(end - 1);
-    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+    const next = text.charCodeAt(end);
+    if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
   }
+  // ★★**반드시 전진한다** — 남은 데이터가 있는데 0자를 돌려주면 호출부가 **영원히 같은
+  //  자리를 다시 부른다**(실측: `limit=1` 로 쌍을 만나면 진행 0 · done=false). 그때는
+  //  예외적으로 쌍 하나(2 code unit)를 통째로 준다. 「쪼개지 않는다」와 「멈추지 않는다」는
+  //  **둘 다** 지켜야 하고, 종전엔 앞의 하나만 보고 뒤를 못 봤다.
+  if (end <= start && start < total) end = Math.min(start + 2, total);
   return { text: text.slice(start, end), start, end, total, done: end >= total };
 };

@@ -245,6 +245,69 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ④-b ★**limit=1 로도 끝난다** — 쌍 앞에서 멈추면 호출부가 영원히 같은 자리를 부른다.
+    //  (2026-09-14 외부 검토. 실측: `offset=1 limit=1` 이 진행 0 · done=false 였고, 쌍
+    //   한가운데 offset 은 짝 없는 low 서러게이트를 돌려줬다.)
+    {
+      const cases: Array<[string, string]> = [
+        ["ASCII", "abcdef"],
+        ["이모지", "a😀b🎉c"],
+        ["한글·혼합", "가a😀나🎉다b"],
+        ["쌍으로 시작", "😀가나"],
+        ["쌍으로 끝", "가나😀"],
+      ];
+      const bad: string[] = [];
+      for (const [label, body] of cases) {
+        const id = registerJob({
+          kind: "agent", label, task: "리뷰",
+          threadKey: `worker:${parent}`, channel: "dashboard", channelUserId: "u",
+        } as never);
+        markDone(id, body);
+        let offset = 0;
+        let acc = "";
+        let steps = 0;
+        for (;;) {
+          steps += 1;
+          if (steps > body.length * 3 + 5) { bad.push(`${label}: ★끝나지 않음`); break; }
+          const t = textOf(await read.handler({ job_id: id, offset, limit: 1 }, {}));
+          const SEP = "\n──\n";
+          const at = t.indexOf(SEP);
+          acc += at >= 0 ? t.slice(at + SEP.length) : "";
+          const m = /read_worker_result\("[^"]+", (\d+)\)/.exec(t.slice(0, at >= 0 ? at : t.length));
+          if (m === null) break;
+          const next = Number(m[1]);
+          if (next <= offset) { bad.push(`${label}: ★전진 없음(offset ${offset}→${next})`); break; }
+          offset = next;
+        }
+        if (acc !== body) bad.push(`${label}: 재조립 불일치(${acc.length}/${body.length}자)`);
+        if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(acc)) {
+          bad.push(`${label}: ★깨진 글자`);
+        }
+      }
+      out.push(
+        assert(
+          "★★`limit=1` 로 끝까지 읽어도 **유한 종료 · 원문 재조립 · 전진 보장**(쌍을 만나도 멈추지 않는다)",
+          bad.length === 0,
+          bad.length === 0 ? `${cases.length}가지 전부 통과` : bad.join(" · "),
+        ),
+      );
+      // 쌍 한가운데 offset 을 **직접** 준 경우 — 앞의 high 로 정규화되고 깨진 글자가 안 나온다.
+      const id2 = registerJob({
+        kind: "agent", label: "쌍 가운데", task: "리뷰",
+        threadKey: `worker:${parent}`, channel: "dashboard", channelUserId: "u",
+      } as never);
+      markDone(id2, "a😀b");
+      const mid = textOf(await read.handler({ job_id: id2, offset: 2, limit: 1 }, {}));
+      const body2 = mid.slice(mid.indexOf("\n──\n") + "\n──\n".length);
+      out.push(
+        assert(
+          "★쌍 한가운데를 가리키는 offset 은 **앞 high 로 정규화**된다 — 짝 없는 low 를 돌려주지 않는다",
+          body2 === "😀" && mid.includes("이 구간 1~3"),
+          `본문=${JSON.stringify(body2)} · 머리줄=${mid.slice(0, mid.indexOf("\n"))}`,
+        ),
+      );
+    }
+
     // ── ⑤ ★**압축 뒤 종단 복구** — 안내 → 목록 → 선택 → 구간 조회가 실제로 이어진다 ──
     //  자식 6명이면 옛 첫 줄(UUID 나열)은 200자에서 **넷만 남고 둘이 잘렸다**.
     {

@@ -12,8 +12,25 @@ import type { Attachment, AttachmentKind } from "../../src/channels/types.js";
 import { getPaths } from "../../src/core/paths.js";
 
 const ATTACH_MAX_COUNT = 10;
-export const ATTACH_MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB/파일
-const ATTACH_MAX_TOTAL_BYTES = 25 * 1024 * 1024; // 25MB/요청
+/**
+ * **파일당 상한 — 텔레그램 채널과 같은 값** (2026-09-15).
+ *
+ * ★종전 10MiB 는 앵커 없는 수였고, 그래서 **채널마다 능력이 갈렸다**: 텔레그램은 Bot API
+ *  `getFile` 한도(20MB)까지 받아 `fs.writeFile` 로 바로 저장하므로 이 캡을 **안 지난다**.
+ *  즉 같은 15MB 영상이 텔레그램으로는 처리되고 대시보드로는 거절됐다 — 기능이 채널에
+ *  묶인 것이고 이 레포 원칙과 어긋난다([[feedback_every_feature_llm_agnostic]]).
+ * ★20MiB 를 고른 근거는 «넉넉해 보여서» 가 아니라 **다른 채널이 이미 받아주는 천장**이다.
+ *  그리고 전사 provider 한도(25MiB)보다 낮아 오디오 경로도 그대로 성립한다.
+ */
+export const ATTACH_MAX_FILE_BYTES = 20 * 1024 * 1024;
+/**
+ * **한 요청 합계** — 파일당 상한 둘 + 여유. 실측(3개월) 최대가 8.03MiB 이므로 6배 여유다.
+ *
+ * ★이 수가 곧 **HTTP 본문 상한의 뿌리**다(`http-body.ts` 가 base64 표현으로 유도한다).
+ *  즉 여기를 올리면 한 요청이 메모리에 올릴 수 있는 최대치가 같이 오른다 — 데몬 RSS 가
+ *  169MiB 인 기계에서 한 요청 67.7MiB 는 감당되지만, 더 키울 땐 그 대가를 먼저 세라.
+ */
+export const ATTACH_MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 export class AttachmentError extends Error {}
 const attachmentKindOf = (mime: string): AttachmentKind =>
   mime.startsWith("image/")

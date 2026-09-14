@@ -180,7 +180,11 @@ import { endpointPreview } from "./endpoint-preview.js";
 // <yyyymmdd>/<id>.<ext>). base64 인바운드는 로컬(127.0.0.1)+토큰 게이트 한정 = 외부 노출 아님.
 // 크기/개수 캡은 boundary 검증(메모리·디스크 보호). 캡 위반·저장 실패는 400 으로 닫고 데몬 생존.
 import { ATTACH_MAX_FILE_BYTES, AttachmentError, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename, ingestAttachments, persistOutboundAttachment } from "./attachments.js";
-import { readJsonBody, readRawBody } from "./http-body.js";
+import {
+  readJsonBody,
+  readRawBody,
+  respondToRequestFailure,
+} from "./http-body.js";
 import {
   handleSetDefaultProfile, handleSetProfileColor, handleSetSuggestion, handleSetLocale,
   handleSetMemoryCap, handleGetMemoryCap,
@@ -337,7 +341,25 @@ class HttpBridge implements Channel, Observer {
       //  다시 던지고, 그게 곧 `unhandledRejection` 이다 — 이 레포가
       //  `write-json-serializes-first` 로 지키는 바로 그 사고를 새 자리에 다시 만드는 셈.
       //  원칙 게이트 Q6: **발생 불가능한 시나리오의 fallback 은 가짜 견고함**이다.
-      void this.handleRequest(req, res);
+      // ★★**요청 처리의 rejection 을 여기서 닫는다** (2026-09-14, 외부 검토 P1).
+      //  종전엔 `void` 라 라우트가 던지면 그대로 `unhandledRejection` → 전역 정책이
+      //  `exit(1)` 이다. **요청 하나가 데몬을 죽인다.** 실측으로 네 곳(로그인 begin/finish·
+      //  plugin action·커스텀 엔드포인트 raw)이 `readJsonBody` 를 try 없이 부르고 있었고,
+      //  잘못된 JSON 만으로도 닿는 경로였다.
+      //
+      //  ★**라우트마다 catch 를 스무 개 더 다는 대신 여기 한 곳**이다 — 새 라우트가 생겨도
+      //   저절로 덮인다([[feedback_hand_maintained_lists]] · "이음매에서 새면 이음매를 없애라").
+      //  ★2026-08-29 에 걷어낸 중앙 catch 와 **다른 것**이다: 그건 도달 경로가 0인 특정
+      //   예외 전용 fallback(=가짜 견고함)이었고, 이건 **재현된** 유출을 닫는다.
+      //  ★이미 응답했으면 아무것도 안 쓴다(이중 응답 금지 — `writeJson` 이 던지면 그게
+      //   곧 `ERR_HTTP_HEADERS_SENT` 이고 같은 사고의 재발이다).
+      void this.handleRequest(req, res).catch((e: unknown) => {
+        console.error(
+          `http-bridge: 요청 처리 실패 ${req.method ?? "?"} ${req.url ?? "?"} — ` +
+            `${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,
+        );
+        respondToRequestFailure(res, e); // 판정은 `http-body.ts` 한 곳(검사도 그걸 지난다).
+      });
     });
 
     await new Promise<void>((resolve, reject) => {
@@ -1110,6 +1132,8 @@ class HttpBridge implements Channel, Observer {
           return;
         }
         // raw body(POST 만) + query → 템플릿 치환. JSON 파싱 안 함(모델이 읽음, §3).
+        // ★기본 상한(1 MiB)을 그대로 쓴다 — 이 본문은 **모델 프롬프트로 들어간다**.
+        //  1 MiB 면 이미 25만 토큰 규모라 컨텍스트가 먼저 무너진다(= 더 받아도 쓸 데가 없다).
         const rawBody = method === "POST" ? await readRawBody(req) : "";
         const queryStr = url.search.startsWith("?")
           ? url.search.slice(1)

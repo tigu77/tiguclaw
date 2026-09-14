@@ -21,7 +21,7 @@ import { setDefaultProfile, getDefaultProfileName, loadModelProfiles, readEgress
 import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
-import { readJsonBody } from "./http-body.js";
+import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type http from "node:http";
 import type { RouteCtx } from "./route-ctx.js";
 
@@ -34,7 +34,7 @@ export const handleSetDefaultProfile = async (ctx: RouteCtx): Promise<void> => {
     dbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const name = typeof dbody.name === "string" ? dbody.name.trim() : "";
@@ -66,7 +66,7 @@ export const handleSetProfileColor = async (ctx: RouteCtx): Promise<void> => {
   try {
     cbody = await readJsonBody(req);
   } catch (e) {
-    writeJson(res, 400, { error: `invalid body: ${e instanceof Error ? e.message : String(e)}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${e instanceof Error ? e.message : String(e)}` });
     return;
   }
   const name = typeof cbody.name === "string" ? cbody.name.trim() : "";
@@ -101,7 +101,7 @@ export const handleSetSuggestion = async (ctx: RouteCtx): Promise<void> => {
     sbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   if (typeof sbody.enabled !== "boolean") {
@@ -131,7 +131,7 @@ export const handleSetMemoryCap = async (ctx: RouteCtx): Promise<void> => {
     body = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   if (!isMemoryIndexCapValue(body.bytes)) {
@@ -174,7 +174,7 @@ export const handleSetLocale = async (ctx: RouteCtx): Promise<void> => {
     lbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const want = typeof lbody.locale === "string" ? lbody.locale.trim() : "";
@@ -202,7 +202,7 @@ export const handleSetTheme = async (ctx: RouteCtx): Promise<void> => {
     tbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   try {
@@ -230,7 +230,7 @@ export const handleSetEgress = async (ctx: RouteCtx): Promise<void> => {
     ebody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   if (!Array.isArray(ebody.channels)) {
@@ -275,7 +275,7 @@ export const handleSetSessionProfile = async (ctx: RouteCtx): Promise<void> => {
     dbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const rawThreadKey =
@@ -338,7 +338,7 @@ export const handleSetModuleEnabled = async (ctx: RouteCtx): Promise<void> => {
     dbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const name = typeof dbody.name === "string" ? dbody.name.trim() : "";

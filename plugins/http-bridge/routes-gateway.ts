@@ -28,7 +28,7 @@ import {
   flattenChatMessages,
   parseGatewayTools,
 } from "./gateway.js";
-import { readJsonBody } from "./http-body.js";
+import { BODY_LIMIT_ATTACHMENTS, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import { endpointPreview } from "./endpoint-preview.js";
 
 
@@ -68,15 +68,42 @@ export const serveGatewayChat = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 401, { error: { message: "unauthorized" } });
     return;
   }
+  // ★★**검사와 예약 사이에 `await` 를 두지 않는다** (2026-09-14, 외부 검토).
+  //  종전엔 여기서 «자리 있나» 만 보고, 실제 증가는 **모델 호출 직전**(본문 읽기·첨부
+  //  ingest 뒤)이었다. 그 사이가 전부 `await` 라, 동시에 온 요청들이 **모두 검사를 통과한
+  //  뒤** 차례로 증가했다 — 상한이 1이어도 동시 실행이 여럿이 된다. 자바스크립트는 단일
+  //  스레드라 «검사 → 증가» 를 **동기로 붙이면** 그 구간이 원자적이다.
   if (gatewayInflight >= gw.maxConcurrency) {
     writeJson(res, 429, { error: { message: "gateway busy (max concurrency reached)" } });
     return;
   }
+  gatewayInflight += 1; // 예약. 아래 `finally` 가 **정확히 한 번** 반납한다.
+  try {
+    await serveGatewayChatReserved(ctx, gw);
+  } finally {
+    gatewayInflight -= 1;
+  }
+};
+
+/**
+ * 슬롯을 **이미 쥔 상태**로 도는 본체. 여기서 다시 증감하지 않는다 — 반납 자리가 둘이면
+ * 한쪽만 도는 경로가 생기고, 그 순간 상한은 조용히 사라진다.
+ *
+ * ★클라이언트가 끊겨도 **모델이 도는 동안은 반납하지 않는다** — 반납은 호출자의 `finally`
+ *  이고 그것은 이 함수가 끝나야 돈다. 즉 «연결이 끊겼다» 가 아니라 «일이 끝났다» 가 반납
+ *  조건이다.
+ */
+const serveGatewayChatReserved = async (
+  ctx: RouteCtx,
+  gw: ReturnType<typeof resolveGatewayRuntime>,
+): Promise<void> => {
+  const { req, res } = ctx;
   let body: Record<string, unknown>;
   try {
-    body = await readJsonBody(req);
+    // 비전(image_url data URI)이 오는 경로 — 채팅 첨부와 같은 ingest 캡을 지난다.
+    body = await readJsonBody(req, BODY_LIMIT_ATTACHMENTS);
   } catch (e) {
-    writeJson(res, 400, { error: { message: `invalid body: ${e instanceof Error ? e.message : String(e)}` } });
+    writeJson(res, bodyErrorStatus(e), { error: { message: `invalid body: ${e instanceof Error ? e.message : String(e)}` } });
     return;
   }
   const messages = Array.isArray(body.messages)
@@ -249,7 +276,6 @@ export const serveGatewayChat = async (ctx: RouteCtx): Promise<void> => {
             );
           })
         : null;
-    gatewayInflight += 1;
     try {
       const out = await runRegionA(runInput, specOpt);
       if (out.model !== undefined && out.model !== null && out.model !== "") modelLabel = out.model;
@@ -303,7 +329,6 @@ export const serveGatewayChat = async (ctx: RouteCtx): Promise<void> => {
     } finally {
       if (unsub !== null) safeUnsubscribe(unsub);
       if (unsubTool !== null) safeUnsubscribe(unsubTool);
-      gatewayInflight -= 1;
       res.end();
     }
     return;
@@ -311,7 +336,6 @@ export const serveGatewayChat = async (ctx: RouteCtx): Promise<void> => {
 
   // ── 비스트리밍 — out.externalToolCalls 있으면 tool_calls 응답(§Decision-5), 없으면
   // 기존 그대로(content:out.text, finish_reason:"stop") — 하위호환 100%. ──
-  gatewayInflight += 1;
   try {
     const out = await runRegionA(runInput, specOpt);
     // ★prompt_tokens 는 **턴 전체 합계** (2026-07-30). `inputTokens` 는 계약상
@@ -399,7 +423,5 @@ export const serveGatewayChat = async (ctx: RouteCtx): Promise<void> => {
       error: reason.slice(0, 300),
       elapsedMs: Date.now() - gwStartedAt,
     });
-  } finally {
-    gatewayInflight -= 1;
   }
 };

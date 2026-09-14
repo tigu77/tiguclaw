@@ -29,6 +29,7 @@
         if (typeof entry.id === "number") div.dataset.id = String(entry.id);
         const head = document.createElement("div");
         head.className = "bubble-meta"; // 라이브 답변 버블과 같은 간격(새로고침해도 동일해야 함).
+        head.appendChild(makeCardCaret()); // 도구 카드와 **같은 캐럿** — 맨 앞.
         const tsEl = document.createElement("span");
         tsEl.className = "ts";
         tsEl.textContent = fmtTime(entry.ts);
@@ -291,7 +292,7 @@
         // ★글자는 `▸` 그대로 — 펼침 표시는 CSS 가 회전으로 한다
         //  (`.hist-turn.expanded .hist-turn-caret { transform:rotate(90deg) }`).
         //  글자까지 바꾸면 **이중으로** 돌아간다.
-        caret.className = "hist-turn-caret"; caret.textContent = "▸";
+        caret.className = "card-caret"; caret.textContent = "▸"; // 세 카드 공통 캐럿.
         // 어댑터 뱃지(codex/claude 등) — 라이브 turn-card 파리티(이력 카드도 어댑터 표시).
         // 어댑터 없으면(구 데이터) 기존 🔧 아이콘 폴백.
         const adp = acts[0] && acts[0].adapter ? String(acts[0].adapter) : "";

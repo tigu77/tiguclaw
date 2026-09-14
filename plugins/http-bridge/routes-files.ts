@@ -12,7 +12,7 @@ import { writeJson } from "../../src/core/net/write-json.js";
 import { getPaths } from "../../src/core/paths.js";
 import { listProjects } from "../../src/store/projects.js";
 import { ATTACH_MAX_FILE_BYTES, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename } from "./attachments.js";
-import { readJsonBody } from "./http-body.js";
+import { BODY_LIMIT_AUDIO, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import nodePath from "node:path";
@@ -149,10 +149,11 @@ export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
   const { req, res, pathname } = ctx;
   let tbody: Record<string, unknown>;
   try {
-    tbody = await readJsonBody(req);
+    // 오디오(base64)가 오는 경로 — 상한은 파일당 첨부 한도에서 유도된다.
+    tbody = await readJsonBody(req, BODY_LIMIT_AUDIO);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const dataBase64 = typeof tbody.dataBase64 === "string" ? tbody.dataBase64 : "";
@@ -224,7 +225,7 @@ export const handleOpenPath = async (ctx: RouteCtx): Promise<void> => {
     obody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const pathIn =

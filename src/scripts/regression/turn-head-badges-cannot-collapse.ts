@@ -119,6 +119,24 @@ export const check: RegressionCheck = {
         /flex-wrap:wrap/.test(bubbleDecl) ? "bubble-meta 도 wrap" : "★갈렸다",
       ),
     );
+    // ★**팩토리로 만든 것도 센다** (2026-09-14). 캐럿이 `className = "…"` 리터럴에서
+    //  공통 팩토리(`makeCardCaret`)로 바뀌자 위 추출기가 **조용히 놓쳤다** — 이 검사가
+    //  막으려던 바로 그 모양이다(«새 배지가 목록에서 빠진다»). 이름을 손으로 적지 않고
+    //  **팩토리 정의에서 읽어** 그 클래스가 고정폭인지 본다.
+    {
+      const util = readFileSync(path.join(DASH, "js/util.js"), "utf8");
+      const m = /const makeCardCaret = \(\) => \{[\s\S]*?className = "([^"]+)"/.exec(util);
+      const cls = m?.[1] ?? "";
+      const decl = cls === "" ? "" : declarationsFor(css, cls);
+      out.push(
+        assert(
+          "★공통 캐럿 클래스를 **팩토리에서 읽어** 고정폭인지 본다 — 리터럴이 아니라고 빠지면 안 된다",
+          cls !== "" && /flex:none/.test(decl),
+          cls === "" ? "★팩토리를 못 찾음 — 표현이 바뀌었으면 이 검사부터 고쳐라" : `${cls} · flex:none=${/flex:none/.test(decl)}`,
+        ),
+      );
+    }
+
     return out;
   },
 };

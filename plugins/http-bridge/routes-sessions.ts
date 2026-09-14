@@ -9,7 +9,7 @@ import { DEFAULT_SESSION_ID } from "../../src/core/threadkey.js";
 import { setSessionArchived } from "../../src/store/channel-session.js";
 import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
 import { SESSION_STORAGE_CHANNEL, getSessionModelProfile, listThreads, sessionDisplayName, setThreadName } from "../../src/store/sessions.js";
-import { readJsonBody } from "./http-body.js";
+import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 
 export const handleSessions = async (ctx: RouteCtx): Promise<void> => {
@@ -67,7 +67,7 @@ export const handleSessionName = async (ctx: RouteCtx): Promise<void> => {
     nbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const threadKey =
@@ -101,7 +101,7 @@ export const handleSessionArchive = async (ctx: RouteCtx): Promise<void> => {
     abody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const threadKey =

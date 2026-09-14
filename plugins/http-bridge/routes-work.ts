@@ -12,7 +12,7 @@ import { killShellById, listShells, tailShell } from "../../src/core/llm-runtime
 import { writeJson } from "../../src/core/net/write-json.js";
 import { RUNNING_WORK, stampFor } from "../../src/core/resource-revision.js";
 import { cancelJob, cancelQueuedTurn, getJob, getJobActivity, listJobs, resolveOwnerThreadKey } from "../../src/core/worker-jobs.js";
-import { readJsonBody } from "./http-body.js";
+import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 
 /**
@@ -115,7 +115,7 @@ export const handleCancelQueued = async (ctx: RouteCtx): Promise<void> => {
     cbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const threadKey =
@@ -140,7 +140,7 @@ export const handleCancelWorker = async (ctx: RouteCtx): Promise<void> => {
     wbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const jobId = typeof wbody.jobId === "string" ? wbody.jobId.trim() : "";
@@ -160,7 +160,7 @@ export const handleKillShell = async (ctx: RouteCtx): Promise<void> => {
     kbody = await readJsonBody(req);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 400, { error: `invalid body: ${m}` });
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
     return;
   }
   const shellId =

@@ -119,6 +119,8 @@ import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
+import { canReplay, markToolDispatch } from "../replay-safety.js";
+import { isReadOnlyTool } from "./openai-codex-oauth.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -716,6 +718,10 @@ export const runClaude = async (
             // 넘기면 codex/openai(`⛔ Tool \`Read\` blocked...`)와 바이트 불일치 →
             // #2(멀티 LLM 대칭) 위반(계약 §2/§4-3).
             const normalizedToolName = normalizeToolName(hookInput.tool_name);
+            // ★**dispatch 직전 표시** (2026-09-14, `replay-safety.ts`). SDK 의 PreToolUse 는
+            //  빌트인(Read/Bash…)과 MCP 도구가 **함께** 지나는 자리라 여기가 choke point 다.
+            //  ★차단(`pre.block`)되면 실행이 없으므로 **표시하지 않는다** — 아래에서 차단이
+            //   확정된 뒤에 찍는 게 아니라, 여기선 «실행으로 간다» 가 정해진 뒤에 찍는다.
             const pre = await runPreToolUseHooks({
               toolName: normalizedToolName,
               toolInput: (hookInput.tool_input ?? {}) as Record<
@@ -726,7 +732,15 @@ export const runClaude = async (
               channel: input.channel,
               threadKey: input.threadKey,
             });
-            if (!pre.block) return {};
+            if (!pre.block) {
+              // 통과 = 실행으로 간다 → 여기서 표시한다(성공 후가 아니라 **직전**).
+              markToolDispatch(
+                input.replay,
+                normalizedToolName,
+                isReadOnlyTool(normalizedToolName),
+              );
+              return {};
+            }
             // SDK deny 반환 — hookSpecificOutput.permissionDecision:"deny" (coreTypes.d.ts
             // SyncHookJSONOutput). 도구는 실행되지 않고 모델은 reason 을 tool_result 로 받는다.
             return {
@@ -1999,11 +2013,18 @@ const isResumeProcessFailure = (e: unknown): boolean =>
     }
     // resume 세션 부재/손상("process exited with code 1") → resume 제거 후 fresh
     // 세션으로 1회만 재시도. resumable(애초 resume 시도) + 미재시도 + 비-abort 한정.
+    // ★★**부작용이 시작됐으면 fresh 로 다시 돌리지 않는다** (2026-09-14, 외부 검토 P1).
+    //  fresh 재시작은 «원 요청을 처음부터 다시» 다 — 풀·후보 전환과 **위험이 같다**. 이미
+    //  도구가 실행에 들어갔으면 그 도구가 두 번 실행되고, 두 번째가 성공하면 **앞의 부분
+    //  실행 실패가 정상 응답에 가려진다**. 판정은 논리 턴이 들고 온 같은 guard 하나다
+    //  (여기서 새로 만들거나 초기화하지 않는다).
+    //  ★부작용 **이전**의 resume 실패는 종전대로 복구한다 — 안전한 회복을 잃으면 안 된다.
     if (
       !resumeRetried &&
       resumable &&
       isResumeProcessFailure(e) &&
-      !effectiveAc.signal.aborted
+      !effectiveAc.signal.aborted &&
+      canReplay(input.replay)
     ) {
       resumeRetried = true;
       resultText = undefined;

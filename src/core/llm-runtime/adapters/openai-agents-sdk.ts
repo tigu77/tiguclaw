@@ -102,6 +102,8 @@ import {
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
+import { canReplay, markToolDispatch } from "../replay-safety.js";
+import { isReadOnlyTool } from "./openai-codex-oauth.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -686,6 +688,9 @@ export const runOpenAi = async (
           { type: "text", text: formatToolBlock(toolName, pre.blockReason) },
         ] as Awaited<ReturnType<MCPServer["callTool"]>>;
       }
+      // ★**dispatch 직전 표시** (2026-09-14, `replay-safety.ts`) — 차단을 지난 뒤, 실행
+      //  **전**이다. 성공 후에 찍으면 «효과를 내고 실패한» 호출이 안전해 보인다.
+      markToolDispatch(input.replay, toolName, isReadOnlyTool(toolName));
       try {
         const result = await server.callTool(toolName, args, meta);
         void runPostToolUseHooks({
@@ -1259,11 +1264,16 @@ export const runOpenAi = async (
   try {
     result = await runOnce();
   } catch (e) {
+    // ★★**부작용이 시작됐으면 no-tools 로 다시 돌리지 않는다** (2026-09-14, 외부 검토 P1).
+    //  이 재시작도 «원 요청을 처음부터 다시» 다. 도구 미지원이 **실행 전에** 드러난 경우는
+    //  종전대로 복구하고(그때는 guard 가 비어 있다), 이미 도구가 실행에 들어갔으면 멈춘다 —
+    //  두 번째 시도가 성공하면 앞의 부분 실행 실패가 새 성공 응답에 가려진다.
     if (
       isToolsUnsupported(e) &&
       !toolsNone &&
       mcpServers.length > 0 &&
-      !effectiveAc.signal.aborted
+      !effectiveAc.signal.aborted &&
+      canReplay(input.replay)
     ) {
       console.warn(
         `openai: '${model}' 도구(function calling) 미지원 — 도구 없이 재시도(텍스트/vision). ` +

@@ -731,11 +731,22 @@
       #stream .bubble-meta:hover, #stream .turn-head:hover, #stream .hist-turn-head:hover {
         background:rgb(var(--fg-rgb) / .04);
       }
-      /* 삼각형은 «누를 수 있다» 의 유일한 단서다 — 머리줄에 올리면 또렷해진다. */
-      #stream .bubble-meta:hover::before, #stream .hist-turn-head:hover .hist-turn-caret,
-      #stream .turn-head:hover .turn-caret { color:var(--accent); }
-      #stream .ev.local > .bubble-meta::before { content:"▾"; flex:none; font-size:var(--caret-size); line-height:1; color:var(--text-mute); width:1em; text-align:center; }
-      #stream .ev.local.is-collapsed > .bubble-meta::before { content:"▸"; }
+      /* ★★**캐럿은 한 기제다** (2026-09-14 정태님: *"도구카드랑 같은 방식으로 가야돼"*).
+         종전엔 둘이었다 — 도구·이력은 실제 `<span>`(한 글자 ▸ + rotate)인데 **버블만**
+         `::before`(글자를 ▾/▸ 로 바꿈)였다. 그래서 버블의 hover 규칙이 자기 기본 규칙
+         (`#stream .ev.local > .bubble-meta::before`, class 3개)에 **특이도로 졌고**, 도구·이력은
+         기본이 `.turn-caret`(class 1개)이라 이겨서 **둘만 되고 하나는 안 되는** 모양이 났다.
+         ★규칙이 «있다» 와 «먹는다» 는 다르다 — 소스 검사로 못 보이는 축이라, 고치는 방법은
+         특이도를 올리는 게 아니라 **기제를 하나로 만드는 것**이다(`makeCardCaret`, util.js).
+         ★상태는 `.is-collapsed` 한 곳. 펼침이 기본(rotate 90°)이고 접히면 되돌린다 — 카드
+         종류마다 중첩이 달라서 조상 선택자로 한 줄에 담는다(접힌 카드 **안**의 캐럿도 같이
+         접힌 모양이 되는데, 그때는 그 안이 이미 접혀 보이므로 어긋나 보이지 않는다). */
+      .card-caret { color:var(--text-mute); font-size:var(--caret-size); line-height:1; width:1em; text-align:center; flex:none; transform:rotate(90deg); transition:transform .12s ease; }
+      #stream .is-collapsed .card-caret { transform:none; }
+      /* 삼각형은 «누를 수 있다» 의 유일한 단서다 — 머리줄에 올리면 또렷해진다. 세 카드가
+         같은 요소를 쓰므로 규칙도 한 벌이고, 한쪽만 조용히 깨질 자리가 없다. */
+      #stream .bubble-meta:hover .card-caret, #stream .turn-head:hover .card-caret,
+      #stream .hist-turn-head:hover .card-caret { color:var(--accent); }
       .bubble-meta > .type { margin-left:0; }
       /* 원시 로그 이벤트(JSON dump)의 직속 <pre> 만 hover/expanded 로 토글. ★직속 자식(>)으로
          스코프 — 턴카드(=.ev)의 중첩된 도구 <pre>(.act-diff-pre·.act-output-pre)까지 잡으면
@@ -886,8 +897,7 @@
          형제 둘은 이미 CSS 다(버블 `::before` content · 이력 턴 rotate). 셋째만 JS 였던
          것이고, 그래서 그 JS 를 지웠을 때 아무도 못 봤다. `.hist-turn-caret` 와 **같은
          기법**(rotate)으로 맞춘다 — 상태는 `.is-collapsed` 한 곳에만 산다. */
-      .turn-caret { color:var(--text-mute); font-size:var(--caret-size); line-height:1; width:1em; text-align:center; flex:none; transition:transform .12s ease; }
-      .turn-group:not(.is-collapsed) .turn-caret { transform:rotate(90deg); }
+      /* 캐럿 규칙은 `.card-caret` 한 곳으로 옮겼다 (2026-09-14) — 세 카드 공통. */
       /* 긴 uuid thread — 배지·칩을 밀어 접히게 하지 않도록 여기서 줄이고 끝을 …로 자른다. */
       .turn-thread { color:var(--text-mute); font-size:0.6875rem; font-family:var(--font-mono); flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .agent-badge { font-size:0.625rem; font-weight:800; padding:2px 7px; border-radius:999px; background:rgb(var(--accent-2-rgb) / .16); color:var(--agent-fg); white-space:nowrap; flex:none; }
@@ -977,8 +987,7 @@
       .hist-turn { padding:0; }
       .hist-turn-head { display:flex; align-items:center; gap:7px; cursor:pointer; user-select:none; padding:8px 10px; font-size:0.6875rem; }
       .hist-turn-head:hover { background:rgb(var(--fg-rgb) / .04); }
-      .hist-turn-caret { font-size:var(--caret-size); line-height:1; color:var(--text-mute); width:1em; text-align:center; transition:transform .12s ease; flex:none; }
-      .hist-turn:not(.is-collapsed) .hist-turn-caret { transform:rotate(90deg); }
+      /* 캐럿 규칙은 `.card-caret` 한 곳으로 옮겼다 (2026-09-14) — 세 카드 공통. */
       .hist-turn-icon { flex:none; }
       .hist-turn-count { font-weight:800; color:var(--text); flex:none; }
       .hist-turn-preview { color:var(--text-dim); font-family:var(--font-mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

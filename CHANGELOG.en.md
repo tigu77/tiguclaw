@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-09-15
+
+### Added
+
+- **Higher attachment limits.** 20MB per file and 50MB per message. A file that Telegram
+  accepted but the dashboard rejected now works in both.
+
+### Changed
+
+- **Chat cards now collapse from the header row**, matching tool cards — clicking anywhere
+  on the card no longer collapses it. To collapse from the body, use the **right-click menu**.
+- **Oversized requests are refused before the body is read.**
+
+### Fixed
+
+- **Some results went missing from the final report when several background jobs ran.**
+  The step that folded in late results could also overwrite the report written before it.
+- **Results from older jobs could not be found again.** Only recent ones were listed, so
+  anything older was unreachable even though it was still stored.
+- **A request could be retried on another model after a tool had already run**, so a tool
+  that writes a file or sends a message could run twice.
+- **Scheduled retries used stale settings.** After a delivery failure, disabling the
+  schedule or changing its destination in between did not stop the old destination.
+- **Interruption notices for schedules and file watches did not reach the configured target.**
+- **The gateway concurrency limit was not enforced** — simultaneous requests all passed the
+  check and more ran than configured.
+- **The chat card collapse arrow did not change color on hover.**
+
 ## [0.53.0] - 2026-09-13
 
 ### Added
@@ -521,7 +549,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0
 [0.52.1]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...v0.52.1
 [0.52.0]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...v0.52.0

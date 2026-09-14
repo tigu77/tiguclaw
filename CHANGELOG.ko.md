@@ -8,6 +8,34 @@
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-09-15
+
+### Added
+
+- **첨부 파일 상한을 올렸습니다.** 파일 하나당 20MB, 한 번에 보낼 수 있는 합계 50MB 입니다.
+  같은 파일이 텔레그램으로는 되고 대시보드로는 거절되던 차이가 없어집니다.
+
+### Changed
+
+- **채팅 카드는 이제 머리줄을 눌러야 접힙니다.** 카드 아무 데나 눌러도 접히던 것을 도구
+  카드와 같게 맞췄습니다. 본문 어디서든 접고 싶으면 **우클릭 메뉴**에 접기·펴기가 있습니다.
+- **너무 큰 요청은 받기 전에 거절합니다.** 상한을 넘으면 본문을 읽지 않고 돌려보냅니다.
+
+### Fixed
+
+- **백그라운드 작업에 여럿을 맡기면 결과 일부가 최종 보고에서 빠지던 것**을 고쳤습니다.
+  늦게 도착한 결과를 반영하는 마지막 단계가 앞서 작성한 보고서를 통째로 덮어쓰기도 했습니다.
+- **오래전에 끝난 작업의 결과를 다시 찾을 수 없던 것**을 고쳤습니다. 최근 것만 목록에
+  나와서, 그보다 오래된 결과는 남아 있어도 닿을 방법이 없었습니다.
+- **도구가 이미 실행된 뒤 모델을 바꿔 같은 요청을 다시 돌리던 것**을 고쳤습니다. 파일을
+  쓰거나 메시지를 보내는 도구가 두 번 실행될 수 있었습니다.
+- **정기 작업의 재전송이 옛 설정을 쓰던 것**을 고쳤습니다. 전달에 실패한 뒤 다시 보낼 때,
+  그 사이에 정기 작업을 끄거나 보낼 곳을 바꿔도 예전 주소로 나갔습니다.
+- **정기 작업과 파일 감시의 중단 알림이 지정한 곳으로 안 가던 것**을 고쳤습니다.
+- **게이트웨이 동시 실행 제한이 지켜지지 않던 것**을 고쳤습니다. 동시에 들어온 요청이
+  모두 제한을 통과해 설정한 수보다 많이 실행됐습니다.
+- **채팅 카드의 접기 화살표가 마우스를 올려도 색이 바뀌지 않던 것**을 고쳤습니다.
+
 ## [0.53.0] - 2026-09-13
 
 ### Added
@@ -2074,7 +2102,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0
 [0.52.1]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...v0.52.1
 [0.52.0]: https://github.com/tigu77/tiguclaw/compare/v0.51.1...v0.52.0

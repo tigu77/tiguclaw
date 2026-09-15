@@ -52,7 +52,11 @@ import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
-import { loadThreadHistory } from "../../../store/memory.js";
+import {
+  compactThreadHistory,
+  recentTurnsAfter,
+  summarizeInstructions,
+} from "./openai-codex-oauth-history.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
 import { resolveProviderConn } from "../provider-registry.js";
@@ -102,7 +106,11 @@ import {
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { watchToolStart } from "../tool-watchdog.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS } from "../../worker-jobs.js";
-import { canReplay, markToolDispatch } from "../replay-safety.js";
+import {
+  canReplay,
+  isReplaySafeTool,
+  markToolDispatch,
+} from "../replay-safety.js";
 import { isReadOnlyTool } from "./openai-codex-oauth.js";
 import {
   runPreToolUseHooks,
@@ -531,6 +539,14 @@ export const runOpenAi = async (
   // persistent 브리지를 도구로 노출(claude 네이티브와 parity). depth0 메인 턴만. 이 브리지는
   // close()=no-op 이라 아래 finally 의 일괄 close 가 외부 연결을 끊지 않는다(캐시 재사용).
   // 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
+  /**
+   * **이름을 우리가 안 지은 MCP 서버** — 재실행 안전 판정이 출처를 봐야 한다.
+   * 외부 MCP(`.mcp.json`)와 **플러그인** 둘 다 담는다(레드팀 P4).
+   * ★`mcpServers` 에 **실제로 들어가는 값**을 담는다 — 래핑된 사본을 push 하면서 원본을
+   *  담으면 객체 동일성이 어긋나 판정이 조용히 false 가 된다(레드팀 P5).
+   */
+  const externalMcpBridges = new Set<MCPServer>();
+
   if (
     !toolsNone &&
     (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
@@ -548,6 +564,10 @@ export const runOpenAi = async (
       //   다시 켜면 다음 턴에 복구된다(캐시가 재연결한다).
       if ((await probeBridgeTools(bridge)) === null) continue;
       mcpServers.push(bridge);
+      // ★**출처를 적어둔다** (2026-09-15 아스트라 지적) — 재실행 안전 판정이 «외부 MCP 인가»
+      //  를 봐야 하는데, 이 어댑터의 브리지는 무접두사 규약이라 이름만으론 구분이 안 된다.
+      //  이름 목록을 만들지 않고 **서버 객체 자체**를 표시한다(이름이 겹쳐도 안 틀린다).
+      externalMcpBridges.add(bridge);
     }
   }
 
@@ -623,11 +643,14 @@ export const runOpenAi = async (
         name,
       );
       // 거절이 없으면 원본 그대로(래핑 0 = 회귀 0).
-      mcpServers.push(
+      // ★**플러그인도 외부다** (2026-09-15, 레드팀 P4) — 이름을 우리가 안 지었다.
+      //  ★래핑되면 **다른 객체**가 되므로, push 하는 바로 그 값을 표시한다(P5 도 같이 막는다).
+      const pluginServer =
         claim.rejected.length === 0
           ? bridge
-          : hideTakenTools(bridge, new Set(claim.rejected)),
-      );
+          : hideTakenTools(bridge, new Set(claim.rejected));
+      externalMcpBridges.add(pluginServer);
+      mcpServers.push(pluginServer);
     }
   }
 
@@ -672,7 +695,7 @@ export const runOpenAi = async (
   //    이미 수행(hook-runner.ts) — 이 어댑터의 MCP 브리지가 노출하는 이름은 애초에
   //    `mcp__` 접두사가 없어(codex 와 동일 무접두사 규약) normalize 는 no-op, 원본 이름을
   //    그대로 넘긴다(claude 의 `mcp__server__tool` 접두사 케이스와 무관).
-  const wireToolHooks = (server: MCPServer): MCPServer => ({
+  const wireToolHooks = (server: MCPServer, external: boolean): MCPServer => ({
     ...server,
     async callTool(toolName, args, meta) {
       const toolInput = (args ?? {}) as Record<string, unknown>;
@@ -690,7 +713,12 @@ export const runOpenAi = async (
       }
       // ★**dispatch 직전 표시** (2026-09-14, `replay-safety.ts`) — 차단을 지난 뒤, 실행
       //  **전**이다. 성공 후에 찍으면 «효과를 내고 실패한» 호출이 안전해 보인다.
-      markToolDispatch(input.replay, toolName, isReadOnlyTool(toolName));
+      // ★외부 MCP 는 **이름으로 안전을 추정하지 않는다**(2026-09-15). 판정은 한 곳이다.
+      markToolDispatch(
+        input.replay,
+        toolName,
+        isReplaySafeTool({ external, readOnlyByName: isReadOnlyTool(toolName) }),
+      );
       try {
         const result = await server.callTool(toolName, args, meta);
         void runPostToolUseHooks({
@@ -716,7 +744,8 @@ export const runOpenAi = async (
     },
   });
   for (let i = 0; i < mcpServers.length; i++) {
-    mcpServers[i] = wireToolHooks(mcpServers[i]);
+    const server = mcpServers[i] as MCPServer;
+    mcpServers[i] = wireToolHooks(server, externalMcpBridges.has(server));
   }
 
   // 2c+2d (2026-06-15) — 세션 연속성 + 메모리/정체성 parity (층 1).
@@ -870,7 +899,103 @@ export const runOpenAi = async (
   //  - 한도(turn/char)는 loadThreadHistory 내부 디폴트에 위임 — openai 전용 매직넘버 0.
   //  - wrap shape: user→input_text, assistant→output_text(+status:"completed")
   //    (protocol.d.ts UserMessageItem/AssistantMessageItem 실측).
-  const priorTurns = loadThreadHistory(idChannel, input.threadKey);
+  // ★**압축한다 — codex 와 같은 판정으로** (2026-09-15 정태님 지적).
+  //
+  //  종전엔 `loadThreadHistory` 기본값(40턴/200,000자)으로 **요약 없이 오래된 턴을 버렸다.**
+  //  이벤트도 화면 표시도 0이라 사용자는 잃는 줄도 몰랐다 — 「모든 기능 LLM 무관」·「정리는
+  //  삭제가 아니다」를 동시에 어기던 자리다. 2026-06-16 결정이 *"openai=SDK"* 를 전제로
+  //  일부러 뺐는데, 이 어댑터는 서버측 상태를 안 쓰고(`previousResponseId` 사용처 0) 히스토리를
+  //  **우리가 주입**한다 — 그 전제가 거짓이었다.
+  //  ★판정은 **어댑터 무관 드라이버** 한 곳이고 여기선 요약 호출만 준다. 요약기는 이 턴과
+  //   **같은 모델**을 탄다(codex 가 그걸 안 해서 매 턴 400 으로 죽은 게 같은 날 사고였다).
+  const { allTurns, summary, watermark } = await compactThreadHistory({
+    channel: idChannel,
+    threadKey: input.threadKey,
+    provider: input.provider,
+    adapter: "openai",
+    summarize: async (text, targetChars) => {
+      // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
+      //  첫 판은 `new Agent({...})` 로 직접 만들어 `modelSettings` 를 통째로 생략했다 —
+      //  그러면 추론 강도도, 벤더 기본값 보존(`_openai-agent.ts` 머리말)도 다 잃는다.
+      //  **같은 날 codex 에서 고친 바로 그 부류**를 여기 새로 심은 것이다.
+      //  도구는 안 준다(요약기가 도구를 쓰면 안 된다) — 그것만 다르다.
+      const summarizer = createOpenAiAgent({
+        name: "history-summarizer",
+        instructions: summarizeInstructions(targetChars),
+        model,
+        modelArg,
+        mcpServers: [],
+        input,
+        conn,
+        reasoningEffort,
+        externalTools: [],
+        externalToolNames: [],
+      });
+      // ★**취소와 시간 예산이 여기까지 온다** (같은 지적). `maxTurns` 는 실행 시간 제한이
+      //  아니다 — 부모 턴을 끊어도 요약 호출은 계속 돌고 있었다.
+      //  codex 요약기와 **같은 수단**을 쓴다(`createIdleTimer` — 작은 bounded 호출이라
+      //  base 로 충분). 새 추상화를 만들지 않는다.
+      // ★**스트리밍으로 받는다 — 유휴 타이머를 두드려야 하기 때문이다** (2026-09-15 2차 정정,
+      //  실호출에서 잡혔다). 첫 판은 한 번에 `await run(...)` 하면서 `createIdleTimer` 를
+      //  붙였는데, 그 타이머는 **진행 신호로 두드려야** 사는 것이라 두드릴 게 없으면
+      //  «첫 응답 없음» 으로 **무조건 abort** 한다. 실제로 38K자 요약이 `Request was
+      //  aborted.` 로 죽었다 — 내가 붙인 시간 예산이 요약을 죽이고 있었다.
+      //  본 턴도 codex 요약기도 **스트림을 받아 두드린다**. 같은 모양으로 맞춘다.
+      const sumAc = new AbortController();
+      const sumIdle = createIdleTimer(sumAc);
+      const linked = linkAbort(sumAc.signal, input.abortSignal);
+      try {
+        const streamed = await run(
+          summarizer,
+          `다음 대화 조각을 위 지침대로 요약하세요:\n\n${text}`,
+          { maxTurns: 1, stream: true, signal: linked.signal },
+        );
+        // ★**텍스트를 스트림에서 직접 모은다** (2026-09-15 3차 정정, 실호출에서 잡혔다).
+        //  `finalOutput` 만 읽었더니 SDK 가 `Accessed finalOutput before agent run is
+        //  completed.` 를 찍고 **빈 문자열**을 줬다 — 3패스 중 하나가 «요약 0자» 로 죽어
+        //  그 구간이 요약 없이 잘렸다. 본 턴 루프가 쓰는 것과 **같은 소스**
+        //  (`raw_model_stream_event → output_text_delta`)를 쓴다.
+        //  `finalOutput` 은 보조로만 — 델타가 비었을 때만 본다.
+        let acc = "";
+        let deltas = 0;
+        const evKinds = new Map<string, number>();
+        const sumStartedAt = Date.now();
+        for await (const ev of streamed) {
+          sumIdle.beat(); // 진행 = 살아 있다.
+          if (ev.type !== "raw_model_stream_event") continue;
+          const data = (ev as { data?: unknown }).data as
+            | { type?: unknown; delta?: unknown }
+            | undefined;
+          const kind = String(data?.type ?? "?");
+          evKinds.set(kind, (evKinds.get(kind) ?? 0) + 1);
+          if (data?.type === "output_text_delta" && typeof data.delta === "string") {
+            acc += data.delta;
+            deltas += 1;
+          }
+        }
+        await streamed.completed;
+        if (acc.trim() !== "") return acc;
+        // ★**빈 결과는 «왜» 를 남긴다** (2026-09-15). 실측: 실제 압축 6패스 중 2회가
+        //  «요약 0자» 로 죽었는데, 로그엔 그 문구뿐이라 원인을 좁힐 재료가 **0**이었다.
+        //  계측판으로는 8/8 성공해 재현이 안 된다 — 저빈도라 **다음에 났을 때 잡히게** 한다.
+        //  ★가설 둘은 이미 탈락시켰다: 추출 모양이 틀린 것(델타가 정상 도착) · 입력이 커서
+        //   (같은 39K로 8회 성공). 남은 건 이 수치들이 갈라준다
+        //   ([[feedback_logs_must_stand_alone]] — 판정 수치를 실어라).
+        console.warn(
+          `[openai 6b] 요약이 빈 결과 — 입력 ${text.length}자 목표 ${targetChars}자 ` +
+            `델타 ${deltas}개 경과 ${Date.now() - sumStartedAt}ms ` +
+            `이벤트=${JSON.stringify(Object.fromEntries(evKinds))} ` +
+            `thread=${input.threadKey} model=${model}`,
+        );
+        return typeof streamed.finalOutput === "string" ? streamed.finalOutput : "";
+      } finally {
+        sumIdle.done();
+      }
+    },
+  });
+  const priorTurns = recentTurnsAfter(allTurns, watermark, {
+    budgetUsedChars: instructions.length + promptWithMemory.length + summary.length,
+  });
   // ★스캐폴딩 스트립 (2026-07-28) — transcripts 의 user 턴에는 SYSTEM.md·system-reminder 등
   //  런타임 주입물이 함께 박혀 있다(실측: 최근 14일 282행 평균 41,132자·최대 1,324,574자).
   //  그대로 재주입하면 **캡의 대부분을 헌법 재전송이 먹어** 정작 대화 히스토리가 밀려난다
@@ -879,6 +1004,22 @@ export const runOpenAi = async (
   //  스트립 결과가 비면 원문 유지(정보 손실 방지) — codex 와 같은 폴백.
   const stripped = (c: string): string =>
     stripInternalRuntimeScaffolding(c).trim() || c;
+  // ★요약본은 **맨 앞 한 덩어리**로 — codex 의 `buildCodexInputArray` 와 같은 자리·같은 역할.
+  //  없으면(첫 턴·압축 전) 아무것도 안 얹는다.
+  const summaryItems: AgentInputItem[] =
+    summary.trim() === ""
+      ? []
+      : [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: `## 이전 대화 요약\n\n${summary.trim()}`,
+              },
+            ],
+          },
+        ];
   const historyItems: AgentInputItem[] = priorTurns.map((t) =>
     t.role === "assistant"
       ? {
@@ -902,7 +1043,7 @@ export const runOpenAi = async (
     content: [{ type: "input_text", text: promptWithMemory }, ...imageItems],
   };
   // 첫 turn(히스토리 0) 이면 단일 user item — string 입력과 동치(회귀 0).
-  const runInput: AgentInputItem[] = [...historyItems, currentTurn];
+  const runInput: AgentInputItem[] = [...summaryItems, ...historyItems, currentTurn];
 
   // llm.activity — per-tool (kind="tool"), claude/codex 와 동형. SDK 스트림의
   // `run_item_stream_event`(name="tool_called")가 도구 경계를 노출하므로(이전 spike

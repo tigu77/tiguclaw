@@ -180,14 +180,23 @@ export const check: RegressionCheck = {
       ),
     );
     // ★추론 강도 전달도 같은 부류 — env 블록으로 감싸면 기능이 조용히 꺼진다(적대 검토 ③).
-    //  ★2026-08-24: 앞에 `input.reasoning ??` 가 붙었다(프로파일 풀 원소 > 전역 > 카탈로그).
-    //   패턴을 그에 맞추되 **의도는 그대로** — env 뒤로 숨지 않는지를 본다.
+    //  ★2026-09-15: 종전엔 `} else {` 안에 그 줄이 있는지까지 글자로 봤는데, 강도를 «본 턴과
+    //   요약이 함께 쓰는 변수» 로 끌어올리자 **성질은 그대로인데 검사만 빨개졌다.** 위치는
+    //   지키려던 성질이 아니다 — 지키려는 건 «env 뒤로 숨지 않는가» 하나다. 변수 이름도
+    //   잡아서 쓴다(이름이 바뀌어도 성질은 같다).
+    const effortDecl =
+      /const (\w+) = input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\);/.exec(
+        codexSrc,
+      );
+    const beforeDecl =
+      effortDecl === null ? "" : codexSrc.slice(Math.max(0, effortDecl.index - 240), effortDecl.index);
     out.push(
       assert(
         "★추론 강도 전달이 env 게이트 뒤로 숨지 않는다",
-        /\} else \{\n(?:.*\n)*?\s*const effort = input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\);/.test(codexSrc) &&
-          !/process\.env\.[A-Z_]+[^\n]*\n\s*const effort = /.test(codexSrc),
-        "미게이트 확인",
+        effortDecl !== null && !/process\.env\.[A-Z_]+/.test(beforeDecl),
+        effortDecl === null
+          ? "강도 해석부를 못 찾음"
+          : `해석부 ${effortDecl[1]!} · 앞 240자에 process.env ${/process\.env\.[A-Z_]+/.test(beforeDecl)}`,
       ),
     );
     const cap = await sourceHas(

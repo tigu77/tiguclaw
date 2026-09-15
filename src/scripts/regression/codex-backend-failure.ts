@@ -137,7 +137,10 @@ export const check: RegressionCheck = {
     //  7회 전부 후보 0). 코어가 hasFallback 을 싣고 UI 가 분기해야 성립한다 — 양쪽 다 본다.
     const honest = await sourceHas("../../core/llm-runtime/index.ts", [
       /hasFallback,/,
-      /specIndex < effectivePool\.length - 1 && !\(e instanceof TurnTimeoutError\)/,
+      // ★줄바꿈·주석·**뒤에 붙는 추가 조건**을 허용한다 (2026-09-15). 종전엔 한 줄 표현을
+      //  통째로 대조해서, 재실행 차단을 같은 식에 더하자 **성질은 그대로인데 검사만**
+      //  빨개졌다. 지키려는 건 «후보가 있을 때만 약속한다» 이지 «그 줄이 그대로 있다» 가 아니다.
+      /specIndex < effectivePool\.length - 1 &&[\s\S]{0,300}?!\(e instanceof TurnTimeoutError\)/,
     ]);
     out.push(
       assert(

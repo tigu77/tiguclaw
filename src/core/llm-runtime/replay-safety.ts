@@ -46,6 +46,38 @@ export const markToolDispatch = (
   }
 };
 
+/**
+ * **재실행 안전 판정 — 외부 MCP 는 이름으로 추정하지 않는다** (2026-09-15 회사 아스트라 지적).
+ *
+ * ★종전엔 codex 만 «외부 MCP 면 무조건 부작용으로 본다» 를 지켰고 claude·openai 는
+ *  `isReadOnlyTool(이름)` 만 봤다. 그래서 서드파티 MCP 가 `get_*`·`list_*` 처럼 **읽기처럼
+ *  보이는 이름**을 쓰면 실제로 부작용이 있어도 안전으로 분류돼, 폴백 때 **두 번 실행**됐다.
+ * ★우리 빌트인 도구는 우리가 이름과 성질을 같이 정했으니 이름으로 판정해도 된다. 외부
+ *  MCP 는 **남이 지은 이름**이라 그 전제가 성립하지 않는다 — 그래서 출처가 판정에 들어간다.
+ * ★판정을 여기 한 곳에 둔다. 세 어댑터가 각자 `!external && readOnly` 를 적으면 언젠가
+ *  한쪽만 고쳐진다([[feedback_hand_maintained_lists]]) — 실제로 그렇게 갈려 있었다.
+ */
+export const isReplaySafeTool = (opts: {
+  /** 이 도구가 외부 MCP 에서 왔나(우리가 이름을 안 지었나). */
+  external: boolean;
+  /** 우리 빌트인 이름 규칙상 읽기 전용인가. */
+  readOnlyByName: boolean;
+}): boolean => !opts.external && opts.readOnlyByName;
+
+/**
+ * `mcp__<서버>__<도구>` 에서 서버 이름을 뽑는다(그 모양이 아니면 `undefined`).
+ * claude SDK 만 이 접두사를 붙인다 — codex·openai 브리지는 무접두사 규약이다.
+ */
+export const mcpServerOf = (rawToolName: string): string | undefined => {
+  if (!rawToolName.startsWith("mcp__")) return undefined;
+  const parts = rawToolName.split("__");
+  if (parts.length < 3) return undefined;
+  // ★**서버 이름에 `__` 가 들어갈 수 있다** (2026-09-15, 레드팀 P6). `mcp__my__server__tool`
+  //  에서 `parts[1]` 을 쓰면 `my` 가 나와 판정이 어긋난다. `normalizeToolName` 이 도구명으로
+  //  **마지막 조각**을 쓰므로, 서버는 그 반대편 — **처음과 마지막을 뺀 전부**다.
+  return parts.slice(1, -1).join("__");
+};
+
 /** 이 턴을 다시 돌려도 되나 — `runPool` 의 폴백과 어댑터 내부 재시작이 함께 본다. */
 export const canReplay = (guard: ReplayGuard | undefined): boolean =>
   guard === undefined || !guard.unsafe;

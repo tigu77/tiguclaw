@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A tool could run twice when a request failed after it had already executed.** External MCP
+  and plugin tools are no longer assumed safe to re-run just because their name looks read-only.
+  When a re-run is blocked, the rate-limit notice and error report still go through.
+- **On OpenAI models, the earlier part of a long conversation was dropped without a summary.**
+  It is now compacted the same way as other models, and compaction is reported on screen.
+- **Conversation compaction kept failing on some codex models.** The summarize call sent its
+  own reasoning effort instead of the model profile's, so on models that reject that value it
+  failed every time and older messages were dropped without a summary.
+- **The "compacting" indicator never cleared when compaction failed.** Failures and skips are
+  now reported on screen. On Claude models it stayed even when compaction succeeded.
+- **Files over 10MB could not be attached in the dashboard.** The limit was raised to 20MB,
+  but the screen still held the old one and refused the file before sending. It now takes
+  the limit from the server.
+
 ## [0.54.0] - 2026-09-15
 
 ### Added

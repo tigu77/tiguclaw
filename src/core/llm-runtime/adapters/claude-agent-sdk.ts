@@ -119,7 +119,12 @@ import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
-import { canReplay, markToolDispatch } from "../replay-safety.js";
+import {
+  canReplay,
+  isReplaySafeTool,
+  markToolDispatch,
+  mcpServerOf,
+} from "../replay-safety.js";
 import { isReadOnlyTool } from "./openai-codex-oauth.js";
 import {
   runPreToolUseHooks,
@@ -676,6 +681,16 @@ export const runClaude = async (
     toolsNone,
     inReach: reaches("plugins", turnKind),
   });
+  /**
+   * **이름을 우리가 안 지은 MCP 서버** — 재실행 안전 판정이 출처를 봐야 한다.
+   * ★외부 MCP(`.mcp.json`)뿐 아니라 **플러그인**도 담는다 (2026-09-15, 레드팀 P4):
+   *  `isReadOnlyTool` 이 패턴 판정이라 플러그인이 `get_report` 같은 이름을 내면 부작용이
+   *  있어도 안전으로 분류돼 폴백 때 두 번 돈다. «남이 지은 이름» 이라는 논거는 둘 다에 걸린다.
+   */
+  const externalMcpServerNames = new Set([
+    ...Object.keys(externalMcpServers ?? {}),
+    ...Object.keys(input.extraMcpServers ?? {}),
+  ]);
   if (assembled.shadowed.length > 0) warnShadowedOnce(assembled.shadowed);
   const mcpServersWithPlugins: Options["mcpServers"] = assembled.servers;
   const capabilityActiveNames = assembled.activeNames;
@@ -707,6 +722,8 @@ export const runClaude = async (
   // 두 콜백 모두 이 파일이 아니라 `runPreToolUseHooks`/`runPostToolUseHooks` 로
   // 즉시 위임 — codex/openai 와 동일 엔진을 통과해 #2(멀티 LLM 대칭) 를 물리적으로
   // 보장한다(계약 §4-1). 차단 문자열은 `formatToolBlock` 단일 포맷(계약 §2).
+  /** 압축 시작 시각 — `PostCompact` 가 경과를 실으려고 본다(codex 의 `compactStartedAt` 동형). */
+  let compactStartedAt: number | null = null;
   const hooksOption: Options["hooks"] = {
     PreToolUse: [
       {
@@ -734,10 +751,19 @@ export const runClaude = async (
             });
             if (!pre.block) {
               // 통과 = 실행으로 간다 → 여기서 표시한다(성공 후가 아니라 **직전**).
+              // ★**외부 MCP 는 이름으로 안전을 추정하지 않는다** (2026-09-15 아스트라 지적).
+              //  `normalizeToolName` 이 `mcp__<서버>__` 접두사를 떼므로 **원시 이름**으로
+              //  출처를 본다 — 서드파티가 `get_*` 로 이름 지으면 부작용이 있어도 안전으로
+              //  분류돼 폴백 때 두 번 실행됐다. 판정 자체는 `replay-safety` 한 곳이다.
               markToolDispatch(
                 input.replay,
                 normalizedToolName,
-                isReadOnlyTool(normalizedToolName),
+                isReplaySafeTool({
+                  external: externalMcpServerNames.has(
+                    mcpServerOf(hookInput.tool_name) ?? "",
+                  ),
+                  readOnlyByName: isReadOnlyTool(normalizedToolName),
+                }),
               );
               return {};
             }
@@ -793,11 +819,50 @@ export const runClaude = async (
         hooks: [
           async () => {
             try {
+              compactStartedAt = Date.now();
               getEventBus().publish({
                 type: "llm.compacting",
                 ts: Date.now(),
                 payload: { threadKey: input.threadKey, adapter: "claude" },
               });
+            } catch {
+              /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+            }
+            return {};
+          },
+        ],
+      },
+    ] satisfies HookCallbackMatcher[],
+    /**
+     * ★**짝을 맞춘다** (2026-09-15 정태님 신고). 종전엔 `PreCompact` 만 달아 «압축 중 ⏳»
+     *  을 띄우고 **끝을 말한 적이 없다** — codex 는 실패할 때만 유령이었는데 claude 는
+     *  **성공해도 매번** 유령이었다(발행 실측: compacting 1건 · compacted 0건).
+     * ★SDK 가 `compact_summary` 를 준다(타입 주석: *"The conversation summary produced by
+     *  compaction"*). codex 가 내는 `summaryChars` 와 같은 값이라 소비처 분기 0이다.
+     * ★**접힌 턴 수·글자 수는 SDK 가 안 알려준다 → 안 싣는다.** 0을 넣으면 화면이
+     *  "0턴 0자를 접었다" 는 **거짓**을 말한다(헌법 §1 — 본 것과 안 본 것을 같은 말투로
+     *  말하지 마라). 모르는 자리는 비우고 화면이 «모른다» 로 그린다.
+     */
+    PostCompact: [
+      {
+        hooks: [
+          async (hookInput: unknown) => {
+            try {
+              const summary = (hookInput as { compact_summary?: unknown })
+                ?.compact_summary;
+              getEventBus().publish({
+                type: "llm.compacted",
+                ts: Date.now(),
+                payload: {
+                  threadKey: input.threadKey,
+                  adapter: "claude",
+                  ...(typeof summary === "string" ? { summaryChars: summary.length } : {}),
+                  ...(compactStartedAt !== null
+                    ? { elapsedMs: Date.now() - compactStartedAt }
+                    : {}),
+                },
+              });
+              compactStartedAt = null;
             } catch {
               /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
             }
@@ -1408,6 +1473,36 @@ const isResumeProcessFailure = (e: unknown): boolean =>
       if (typeof msg.model === "string") {
         lastModel = msg.model;
         deltaStream.setModel(msg.model); // 델타 라벨 보정(늦게 알게 된 모델).
+      }
+    } else if (msg.type === "system" && msg.subtype === "status") {
+      // ★**압축이 실패로 끝난 것을 여기서 안다** (2026-09-15 회사 아스트라 지적).
+      //  `PreCompact` 는 시작을, `PostCompact` 는 **성공**만 말한다 — 실패하면 어느 훅도
+      //  안 불려 화면의 «압축 중 ⏳» 이 영영 남았다(codex 가 겪은 것과 같은 모양).
+      //  SDK 는 상태 메시지로 `compact_result:"failed"` 와 `compact_error` 를 주는데
+      //  우리는 이 메시지를 **아예 안 읽고 있었다.**
+      // ★성공은 여기서 안 낸다 — `PostCompact` 가 이미 `llm.compacted` 를 낸다(이중 발행 0).
+      const st = msg as {
+        compact_result?: unknown;
+        compact_error?: unknown;
+      };
+      if (st.compact_result === "failed") {
+        try {
+          getEventBus().publish({
+            type: "llm.compact_failed",
+            ts: Date.now(),
+            payload: {
+              threadKey: input.threadKey,
+              adapter: "claude",
+              reason:
+                typeof st.compact_error === "string" && st.compact_error !== ""
+                  ? st.compact_error
+                  : "압축 실패(사유 미제공)",
+            },
+          });
+          compactStartedAt = null;
+        } catch {
+          /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+        }
       }
     } else if (msg.type === "stream_event") {
       // ★델타 스트리밍 파리티(2026-07-17) — `includePartialMessages: true` 로 켠
@@ -2094,6 +2189,29 @@ const isResumeProcessFailure = (e: unknown): boolean =>
   }
   } // for(;;) — resume 폴백 재시도 루프
   } finally {
+    // ★**압축을 시작해놓고 턴이 끝났으면 여기서 끝을 알린다** (2026-09-15, 회사 아스트라).
+    //  `PreCompact` 는 시작을, `PostCompact` 는 성공을, `system/status` 는 SDK 가 보고한
+    //  실패를 말한다. 그런데 **중단·에러·SDK abort 로 턴이 먼저 끝나면** 셋 중 아무것도
+    //  안 온다 — 화면의 «압축 중 ⏳» 이 그대로 남는다. 아래 타이머 해제와 같은 이유로
+    //  «성공·throw·abort 모든 경로»에서 정리한다.
+    // ★`compactStartedAt` 은 성공(`PostCompact`)·실패(`status`) 경로가 **null 로 지운다** —
+    //  즉 여기 남아 있다는 것 자체가 «시작만 하고 끝을 못 말했다» 는 뜻이다(이중 발행 0).
+    if (compactStartedAt !== null) {
+      try {
+        getEventBus().publish({
+          type: "llm.compact_failed",
+          ts: Date.now(),
+          payload: {
+            threadKey: input.threadKey,
+            adapter: "claude",
+            reason: "압축 중 턴이 끝났습니다(중단·오류)",
+          },
+        });
+      } catch {
+        /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+      }
+      compactStartedAt = null;
+    }
     // 타이머 누수 0 (I-6) — 성공·throw·abort 모든 경로에서 해제.
     idleTimer.done();
     // 도구 지연 감시 잔여 해제 — tool_result 없이 턴이 끝난 경우(중단·에러·SDK abort)

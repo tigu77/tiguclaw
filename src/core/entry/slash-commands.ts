@@ -543,14 +543,20 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
     const { ensureFreshAccessToken, extractAccountId } = await import(
       "../llm-runtime/adapters/openai-codex-oauth-auth.js"
     );
+    // ★요약 호출도 **이 비서의 모델 프로파일**을 탄다 (2026-09-15 정태님 지적). 자동
+    //  압축이 쓰는 것과 같은 해석기다 — 여기만 다른 값을 쓰면 «손으로 부른 압축» 과
+    //  «저절로 도는 압축» 이 갈린다(이 파일이 이미 여러 번 데인 자리다).
+    const { resolveReasoningEffort } = await import("../llm-runtime/model-catalog.js");
     try {
       const token = await ensureFreshAccessToken();
+      const codexModel = resolveCodexModel();
       const r = await compactThreadNow(
         msg.channel,
         msg.threadKey,
-        resolveCodexModel(),
+        codexModel,
         token,
         extractAccountId(token),
+        resolveReasoningEffort("codex", codexModel),
       );
       await replyCommand(
         msg,

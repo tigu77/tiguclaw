@@ -187,7 +187,13 @@
               setChatWorking(false);
               renderLocalChat("error", data.error || ("HTTP " + r.status));
             }
-            // 오래 기다린 뒤 끊김 = 긴 턴 → 작업 중 유지(답은 SSE 로). 아무것도 안 함.
+            // 오래 기다린 뒤엔 **작업 중 표시는 유지**한다(긴 턴일 수 있고 답은 SSE 로).
+            // ★그러나 **보낸 게 아니라는 사실은 시간과 무관하다** (2026-09-15 2차 정정,
+            //  회사 아스트라 P2). 종전엔 10초를 넘기면 `{ ok: true }` 로 떨어져, 느린
+            //  업로드 뒤 도착한 **413 같은 명시적 거절**에서 컴포저가 성공으로 알고
+            //  **쓴 글과 첨부를 지웠다.** 서버가 상태 코드로 «안 받았다» 고 말한 것을
+            //  경과 시간으로 뒤집으면 안 된다. 「작업 중 표시」와 「수락 여부」는 다른 판단이다.
+            return { ok: false };
           } else if (data && data.steered) {
             // mid-turn steering 주입(ADR 2026-07-16) — 이 POST 는 진행 턴을 *이어가게* 메시지를
             // 끼워넣고 즉시 반환한다(턴 완료 아님). 여기서 setChatWorking(false) 하면 긴 codex
@@ -201,9 +207,13 @@
           if (Date.now() - t0 < 10000) { // 즉시 네트워크 실패 = 진짜 에러.
             setChatWorking(false);
             renderLocalChat("error", err.message);
+            return { ok: false }; // 위와 같은 이유 — 초안을 되돌릴 수 있게.
           }
-          // 긴 대기 뒤 fetch 끊김 = 긴 턴 → 작업 중 유지(답은 SSE 로).
+          // ★긴 대기 뒤 **연결이 끊긴 것**은 위(명시적 거절)와 다르다 — 서버가 받았는지
+          //  **모른다.** 여기서 실패로 보고하면 사용자가 되돌아온 초안을 다시 보내
+          //  **중복 전송**이 된다. 모를 땐 지우지도, 되돌리지도 않는다(현행 유지).
         }
+        return { ok: true };
       };
       const submitOptionValue = (value) => sendChatMessage(value);
 

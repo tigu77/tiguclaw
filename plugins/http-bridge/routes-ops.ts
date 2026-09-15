@@ -26,6 +26,11 @@ import { writeJson } from "../../src/core/net/write-json.js";
 import { appRoot } from "../../src/core/paths.js";
 import fs from "node:fs/promises";
 
+import {
+  ATTACH_MAX_COUNT,
+  ATTACH_MAX_FILE_BYTES,
+  ATTACH_MAX_TOTAL_BYTES,
+} from "./attachments.js";
 import type { RouteCtx } from "./route-ctx.js";
 
 export const handleHealth = async (ctx: RouteCtx): Promise<void> => {
@@ -46,6 +51,20 @@ export const handleHealth = async (ctx: RouteCtx): Promise<void> => {
     channel_handler: ctx.channelHandler !== null,
     active_turns: inflight === null ? null : inflight.count,
     active_turn_threads: inflight === null ? null : inflight.keys,
+    // ★**첨부 상한을 화면에 알려준다** (2026-09-15 정태님 신고: 대시보드에서 10MB 넘는
+    //  파일이 안 올라갔다). 바로 위 `version` 과 같은 이유다 — 주석이 "하드코딩 stale
+    //  방지" 라고 적어놓은 그 기제인데, 첨부 상한엔 안 적용돼 있었다.
+    //  같은 계약이 **네 곳**에 살고 있었다: 여기(서버)·텔레그램 채널·브라우저 JS·문구의
+    //  "10MB". 서버 둘만 20MB 로 올렸고 브라우저 둘은 10MB 에 남아, 화면이 **보내기도
+    //  전에** 거절했다(서버는 받을 수 있는데 손잡이가 막혀 있었다).
+    // ★판정은 여기 값이 아니라 `ingestAttachments` 가 한다. 이건 화면이 **미리** 알려주기
+    //  위한 재료일 뿐이고, 못 받으면 화면은 미리 막지 않는다(서버가 거절하고 그 문장이
+    //  그대로 화면에 뜬다) — 모를 때 막으면 «서버는 받는데 화면이 거절» 이 또 생긴다.
+    limits: {
+      attachment_bytes: ATTACH_MAX_FILE_BYTES,
+      attachment_total_bytes: ATTACH_MAX_TOTAL_BYTES,
+      attachment_count: ATTACH_MAX_COUNT,
+    },
   });
   return;
 };

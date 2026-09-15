@@ -857,9 +857,17 @@ const publishTurnError = (
   input: RegionASdkInput,
   e: unknown,
   durationMs: number,
+  /**
+   * 부작용 이후 폴백을 막은 사유 — 있으면 **머리에** 놓는다 (2026-09-15, 레드팀 P3).
+   * ★꼬리에 붙이면 아래 `TURN_ERROR_MESSAGE_CAP` 이 **머리부터** 자르므로 긴 오류에선
+   *  사유가 통째로 사라진다. 같은 파일이 이미 겪은 실패 모양이다(485자에 해설 유실).
+   */
+  blockedReason?: string,
 ): void => {
   try {
-    const detail = errorDetail(e);
+    const raw = errorDetail(e);
+    const detail =
+      blockedReason === undefined ? raw : `${blockedReason}\n${raw}`;
     // 해제 시각 — **등록된 쿨다운을 조회**한다(문자열을 여기서 다시 파싱하지 않는다:
     //  같은 판단이 두 곳에 생기면 반드시 갈린다). 0 이면 한도 실패가 아니거나 미등록.
     const remainMs = cooldownRemainingMs(spec);
@@ -1425,12 +1433,22 @@ const runPool = async (
       //  그 도구가 **두 번** 실행된다(파일 쓰기·발송·외부 API). 되돌릴 수 없는 쪽이므로
       //  «한 번 더 시도해 본다» 의 기대값이 음수다. 실패는 실패로 올리되 **어디까지 갔는지**
       //  를 이유에 실어, 사용자가 «부분 실행» 을 알 수 있게 한다.
-      if (!canReplay(replay)) {
-        if (e instanceof Error) {
-          e.message = `${e.message}\n${replayBlockedReason(replay)}`;
-        }
-        throw e;
-      }
+      // ★★**«재실행 금지» 와 «오류 후처리» 는 다른 일이다** (2026-09-15 회사 아스트라 지적).
+      //  종전엔 여기서 **곧장 throw** 해서, 도구 실행 뒤 429 를 맞으면 재실행은 막았지만
+      //  **쿨다운 등록·한도 안내·`turn_error` 까지 통째로 건너뛰었다.** 사용자는 왜 멈췄는지
+      //  못 듣고, 다음 턴은 한도를 모른 채 같은 벽을 또 때린다. 아래 `TurnTimeoutError` 가
+      //  이미 쓰는 모양이 정답이다 — **후처리를 지나고 나서 단락한다.**
+      //  사유는 지금 싣는다(그래야 `errorDetail`·`turn_error` 가 «어디까지 갔는지» 를 담는다).
+      const replayBlocked = !canReplay(replay);
+      // ★★**메시지를 여기서 고치지 않는다** (2026-09-15 2차 정정, 레드팀 P2).
+      //  종전 판은 사유를 `e.message` 에 **바로 붙였는데**, 그러면 아래 분류기
+      //  (`isRateLimited`·`isModelRejected`)가 **우리가 끼워 넣은 글자까지** 파싱한다.
+      //  그 사유에는 `guard.firstTool` 이 들어가고 그건 **서드파티 MCP 가 지은 이름**이다 —
+      //  도구명이 `quota`·`rate-limit` 이면 `isRateLimited` 가 false→true 로 뒤집혀
+      //  **그 모델에 쿨다운을 DB 에 쓰고** «사용량 한도» 를 사용자에게 밀어낸다.
+      //  이 변경의 나머지 절반이 «외부 이름으로 안전을 추정하지 마라» 인데, 여기서 그
+      //  이름을 우리 분류기의 입력에 넣고 있었다. 사유는 **분류가 끝난 뒤** 붙인다.
+      const blockedReason = replayBlocked ? replayBlockedReason(replay) : undefined;
       // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
       // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
       // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
@@ -1479,9 +1497,17 @@ const runPool = async (
         void deliverOutbound({
           channel: notifyAt.channel,
           target: notifyAt.target,
-          text:
-            `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
-            `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`,
+          // ★**차단된 턴에서는 «이어집니다» 가 거짓이다** (2026-09-15, 레드팀 P1).
+          //  종전엔 이 경로가 조기 throw 로 아예 안 돌아서 문제가 없었는데, 후처리를
+          //  지나게 고치자 **새로 도달 가능해진 문구**가 됐다. 부작용 도구가 이미 돌아
+          //  이 턴은 여기서 끝나는데 «대화는 그대로 이어집니다» 를 받으면, 사용자는
+          //  오지 않을 답을 기다린다(바로 아래 `hasFallback` 에 같은 이유로 `!replayBlocked`
+          //  를 달아놨는데 이 문구만 빠져 있었다 — 같은 catch 안 스무 줄 위다).
+          text: replayBlocked
+            ? `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
+              `이 요청은 도구가 이미 실행돼 여기서 멈춥니다(다시 돌리면 그 도구가 두 번 실행됩니다).`
+            : `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
+              `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`,
           label: "cooldown",
         }).catch(() => undefined); // 통지 실패가 턴을 무르지 않는다.
       }
@@ -1492,10 +1518,15 @@ const runPool = async (
           //  바로 아래 TurnTimeoutError 는 폴백을 명시 단락하므로, 후보가 남아 있어도
           //  시도되지 않는다 — 그런데도 "다른 모델로 이어서 시도합니다" 를 띄우면
           //  단일 모델 세션에서 잡았던 것과 **같은 거짓말**이 타임아웃 경로로 되살아난다.
-          specIndex < effectivePool.length - 1 && !(e instanceof TurnTimeoutError),
+          //  ★재실행 차단도 같은 부류다 — 막아놓고 "이어서 시도합니다" 를 띄우면
+          //   그게 바로 이 주석이 말하는 거짓말이다(2026-09-15).
+          specIndex < effectivePool.length - 1 &&
+            !(e instanceof TurnTimeoutError) &&
+            !replayBlocked,
           input,
           e,
           Date.now() - startedAt,
+          blockedReason,
         );
       }
       // 2층 턴 타임아웃(§6) — 폴백 단락. 턴 전체가 wall-clock 초과로 죽은 것이라
@@ -1503,6 +1534,14 @@ const runPool = async (
       // TurnTimeoutError 는 isModelRejected 비매칭(TT-I3)이라 runRegionA 의 override
       // 자동폴백도 안 타고 핸들러로 직행 → "⏱️ 중단" 정직 보고. 여기서 명시 단락해 깔끔히.
       if (e instanceof TurnTimeoutError) throw e;
+      // 부작용 이후 폴백 금지 — 후처리(쿨다운·안내·turn_error)를 **지나고 나서** 단락한다.
+      if (replayBlocked) {
+        // 사유는 **여기서** 붙인다 — 위 분류기들이 우리가 쓴 글자를 읽지 않게(레드팀 P2).
+        if (blockedReason !== undefined && e instanceof Error) {
+          e.message = `${e.message}\n${blockedReason}`;
+        }
+        throw e;
+      }
       // (쿨다운 등록은 위 turn_error 발행 **전에** 끝났다 — 발행이 해제 시각을 실어야 해서.)
       lastError = e;
       if (effectivePool.length > 1) {

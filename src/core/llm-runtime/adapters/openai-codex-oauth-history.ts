@@ -653,10 +653,34 @@ export const noteCompactionOutcome = (
   ok: boolean,
   reason: string,
   foldChars: number,
+  /**
+   * 누가 접다 실패했나 — 끝 신호가 이걸 싣는다 (2026-09-15, **실호출에서 잡힘**).
+   * ★하드코딩된 `"codex"` 를 뺄 때 진짜 값을 안 넘겨 `adapter=undefined` 가 나갔다.
+   *  화면이 «누가 실패했는지» 를 못 말한다 — 어댑터가 셋이 되자 바로 드러났다.
+   */
+  adapter = "codex",
 ): void => {
   if (ok) {
     compactionFailStreak.delete(threadKey);
     return;
+  }
+  // ★**시작을 냈으면 끝도 낸다** (2026-09-15 정태님 신고). 종전엔 끝 신호가 «성공»
+  //  하나뿐이라, 실패·건너뜀이면 화면의 «압축 중 ⏳» 이 **영영 안 걷혔다** — 사용자는
+  //  아직 요약 중인 줄 알고 기다리는데 사실 턴은 진작 끝나 있었다(그래서 "요약이 안
+  //  끝났는데 왜 메시지가 오냐" 가 됐다). 실측: 돌쇠 DB 의 `llm.compacting` 15건 중
+  //  **5건이 짝이 없다**(프루닝 아님 — 더 오래된 성공 기록은 남아 있다).
+  // ★`compaction_stuck` 이 그 자리를 못 메운다 — 그건 **임계에서 정확히 1회만** 나므로
+  //  1·2회째와 4회째 이후는 여전히 조용하다. 저건 «고착 경보» 고 이건 «끝났다» 다.
+  // ★실패·건너뜀 경로가 전부 이 함수를 지난다 — 그래서 여기 한 곳에서 낸다(호출부마다
+  //  적으면 언젠가 하나를 빠뜨린다, [[feedback_hand_maintained_lists]]).
+  try {
+    getEventBus().publish({
+      type: "llm.compact_failed",
+      ts: Date.now(),
+      payload: { threadKey, reason, foldChars, adapter },
+    });
+  } catch {
+    // 관측 발행 실패가 턴을 무르지 않는다(원칙 3).
   }
   const n = (compactionFailStreak.get(threadKey) ?? 0) + 1;
   compactionFailStreak.set(threadKey, n);
@@ -683,10 +707,49 @@ const runSummarizer = async (
   accessToken: string,
   accountId: string | undefined,
   model: string,
+  effort: string | undefined,
 ): Promise<string> =>
   summarizePort !== null
-    ? await summarizePort(text, targetChars)
-    : await summarizeViaCodex(text, accessToken, accountId, model, targetChars);
+    ? await summarizePort(text, targetChars, effort)
+    : await summarizeViaCodex(text, accessToken, accountId, model, targetChars, effort);
+
+/**
+ * **요약 요청 본문 — 판정을 순수 함수로 꺼낸다** (2026-09-15 정태님 신고로 생겼다).
+ *
+ * ★이 자리에 `reasoning: { effort: "none" }` 이 **박혀** 있었다. 사용자가 프로파일을 `low`
+ *  로 해뒀는데도 요약만 `none` 으로 나갔고, `gpt-6-astra` 가 그 값을 거부해 요약이 **매 턴
+ *  400 으로 죽었다** — 턴은 안 깨지고 oldest-drop 으로 진행되니, 화면엔 아무 말도 없이
+ *  긴 대화의 앞부분만 조용히 사라졌다.
+ * ★**왜 그물이 못 잡았나가 이 함수가 생긴 이유다.** 테스트 이음매(`setSummarizerPort`)가
+ *  이 호출을 **통째로** 대체해서, 실제로 나가는 본문을 본 검사가 하나도 없었다. 부품은
+ *  검사되는데 이음매는 안 검사되던 그 부류다([[feedback_simple_composable_no_duplication]]).
+ *  이제 조립을 순수 함수로 꺼내 **검사가 실행**한다.
+ * ★강도를 모르면 **필드를 안 보낸다** — 본 턴과 같은 규칙이고, 모르는 것에 추측값을
+ *  씌우지 않는다(그게 이번 사고의 형상이었다).
+ *
+ * 최소 payload — tools 없음, prompt_cache_key 없음(메인 thread 캐시 충돌 회피), store:false.
+ */
+export const buildSummarizeRequestBody = (
+  model: string,
+  text: string,
+  targetChars: number,
+  effort: string | undefined,
+): Record<string, unknown> => ({
+  model,
+  instructions: summarizeInstructions(targetChars),
+  input: [
+    {
+      type: "message",
+      role: "user",
+      content: [
+        { type: "input_text", text: `다음 대화 조각을 위 지침대로 요약하세요:\n\n${text}` },
+      ],
+    },
+  ],
+  stream: true,
+  store: false,
+  ...(effort !== undefined ? { reasoning: { effort } } : {}),
+});
 
 async function summarizeViaCodex(
   text: string,
@@ -694,6 +757,7 @@ async function summarizeViaCodex(
   accountId: string | undefined,
   model: string,
   targetChars: number,
+  effort: string | undefined,
 ): Promise<string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -706,25 +770,9 @@ async function summarizeViaCodex(
 
   // 최소 payload — tools 없음, prompt_cache_key 없음(메인 thread 캐시 충돌 회피),
   // store:false, stream:true. reasoning 최소화로 요약 텍스트 슬롯 확보(finalFlush 동형).
-  const body = JSON.stringify({
-    model,
-    instructions: summarizeInstructions(targetChars),
-    input: [
-      {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: `다음 대화 조각을 위 지침대로 요약하세요:\n\n${text}`,
-          },
-        ],
-      },
-    ],
-    stream: true,
-    store: false,
-    reasoning: { effort: "none" },
-  });
+  const body = JSON.stringify(
+    buildSummarizeRequestBody(model, text, targetChars, effort),
+  );
 
   // idle/turn 타임아웃 — 작은 bounded 호출이라 base 면 충분(비서 작업 turn 아님 →
   // 전 턴 면제 비대상. 실패해도 호출자 oldest-drop 폴백이라 안전).
@@ -954,7 +1002,17 @@ export const recompactTargetFor = (chars: number): number =>
  *  쿨다운 포트(`setSummarizerCooldownPort`)와 **같은 모양**이다 — 이 파일이 이미 쓰는
  *  이음매지 새로 만든 확장 포인트가 아니다.
  */
-type SummarizePort = (text: string, targetChars: number) => Promise<string>;
+/**
+ * 테스트 이음매 — ★`effort` 도 받는다 (2026-09-15). 종전엔 `(text, targetChars)` 뿐이라
+ * **이 포트를 꽂는 순간 추론 강도가 검사 시야에서 사라졌다.** 실제로 요약이 `none` 으로
+ * 나가 매 턴 400 으로 죽는 동안 압축 회귀들은 전부 초록이었다 — 이음매가 그 축을 안 보면
+ * 그 축은 없는 것과 같다([[feedback_gate_must_actually_run]]).
+ */
+type SummarizePort = (
+  text: string,
+  targetChars: number,
+  effort?: string,
+) => Promise<string>;
 let summarizePort: SummarizePort | null = null;
 export const setSummarizerPort = (p: SummarizePort | null): void => {
   summarizePort = p;
@@ -1172,6 +1230,8 @@ export const compactThreadNow = async (
   model: string,
   accessToken: string,
   accountId: string | undefined,
+  /** 요약 호출의 추론 강도 — 자동 경로와 **같은 규칙**(호출자가 프로파일에서 구해 넘긴다). */
+  turnReasoning?: string,
 ): Promise<
   | { ok: true; foldedTurns: number; foldedChars: number; summaryChars: number }
   | { ok: false; reason: string }
@@ -1200,6 +1260,7 @@ export const compactThreadNow = async (
       accessToken,
       accountId,
       model,
+      turnReasoning,
     );
     // ★자동 경로와 **같은 판정**을 쓴다 (2026-08-01). 종전엔 여기도 `=== ""` 뿐이라
     //  5자짜리를 통과시켜 compactedThrough 를 확정했다 — 자동 경로만 고쳤으면 반쪽이다.
@@ -1231,38 +1292,47 @@ export const compactThreadNow = async (
   }
 };
 
-export const buildTurnHistory = async (
-  input: RegionASdkInput,
-  currentPromptWithMemory: string,
-  mediaItems: ResponseMediaItem[] = [],
-  accessToken: string,
-  accountId: string | undefined,
-  model: string,
-  /**
-   * 이번 요청의 `instructions` 바이트 — char 예산의 **고정 비용**(2026-07-30).
-   * 종전엔 조립 프리픽스가 전부 currentPromptWithMemory 안에 있어서 예산이 그걸
-   * 통해 시스템 프롬프트 무게를 자동으로 셌다. 안정 조각(~30KB)이 instructions 로
-   * 옮겨간 뒤로는 그 자리가 예산에서 **비어** 과거 턴을 그만큼 더 끌어온다 —
-   * 총 전송량이 조용히 늘어난다. 캡의 근거가 "합계 = 히스토리 + 시스템프롬프트"
-   * 이므로(위 CODEX_TURN_HISTORY_CHAR_CAP 주석의 실측 표) 여기서 명시로 센다.
-   */
-  instructionsChars = 0,
-): Promise<ResponseInputItem[]> => {
-  const currentTurn = buildCurrentTurn(currentPromptWithMemory, mediaItems);
+/**
+ * **대화 히스토리 롤링 요약 — 어댑터 무관 드라이버** (2026-09-15 추출).
+ *
+ * ★왜 꺼냈나: 이 판정(임계·저수위·다중 패스·적응 예산·재압축·워터마크·관측)이 codex 조립
+ *  코드와 한 함수에 섞여 있어서, openai 어댑터가 같은 것을 하려면 **판단을 두 벌** 갖는
+ *  수밖에 없었다. 그래서 openai 는 요약 없이 오래된 턴을 버려 왔다 —
+ *  «모든 기능 LLM 무관» 을 어기고 있던 자리다.
+ * ★**요약 호출만 어댑터가 준다**(`summarize`). 그 밖의 모든 판정은 여기 한 곳이다.
+ *  레지스트리·플러그인으로 만들지 않는다 — 지금 필요한 건 둘이고 인자 하나면 된다.
+ * ★실패·건너뜀에도 **끝을 알린다**(`noteCompactionOutcome` → `llm.compact_failed`).
+ *  턴은 깨지 않는다(원칙 3) — 요약을 못 하면 호출부가 oldest-drop 으로 진행한다.
+ */
+export interface CompactedThreadHistory {
+  /** 전체 타임라인(id 동반, cap 없음). 비었으면 첫 턴이다. */
+  allTurns: CodexTurnWithId[];
+  /** 누적 롤링 요약(없으면 ""). */
+  summary: string;
+  /** 이 id 이하는 요약에 접혔다. */
+  watermark: number;
+}
 
+export const compactThreadHistory = async (args: {
+  channel: ChannelName;
+  threadKey: string;
+  provider?: string;
+  /** 관측 이벤트에 실을 어댑터 이름(`codex`·`openai`…). */
+  adapter: string;
+  /** 이 어댑터의 요약 호출 — **본 턴과 같은 모델·추론 강도로** 부를 책임은 호출부에 있다. */
+  summarize: (text: string, targetChars: number) => Promise<string>;
+}): Promise<CompactedThreadHistory> => {
   // 전체 타임라인 (id 동반, cap 없음) — 압축 결정 전용. 첫 turn → [].
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성은 canonical 저장 채널로 키잉
   // (sessionChannel, 미지정 → channel 폴백·회귀 0). runOpenAiCodex 의 idChannel 과 동일 규칙.
   const allTurns = loadThreadHistoryWithIds(
-    input.sessionChannel ?? input.channel,
-    input.threadKey,
+    args.channel,
+    args.threadKey,
   );
-  if (allTurns.length === 0) {
-    return [currentTurn];
-  }
+  if (allTurns.length === 0) return { allTurns, summary: "", watermark: 0 };
 
   // 기존 롤링 요약 + watermark 회수 (없으면 watermark 0 = 전부 미요약).
-  let existing = getThreadSummary(input.threadKey);
+  let existing = getThreadSummary(args.threadKey);
   let watermark = existing?.compactedThrough ?? 0;
   let summary = existing?.summary ?? "";
 
@@ -1275,7 +1345,7 @@ export const buildTurnHistory = async (
   let plan = planHistoryCompaction(
     unsummarized,
     watermark,
-    nextPassOpts(0, currentFoldBudget(input.threadKey), lowWater),
+    nextPassOpts(0, currentFoldBudget(args.threadKey), lowWater),
   );
   let compactPass = 0;
   // ★알림은 **턴에 한 번**이다 (2026-08-09). 저수위까지 여러 번 접게 되자 알림도 패스마다
@@ -1298,9 +1368,9 @@ export const buildTurnHistory = async (
         type: "llm.compacting",
         ts: Date.now(),
         payload: {
-          threadKey: input.threadKey,
+          threadKey: args.threadKey,
           pendingTurns: plan.toFold.length,
-          adapter: "codex",
+          adapter: args.adapter,
         },
       });
     } catch {
@@ -1319,23 +1389,20 @@ export const buildTurnHistory = async (
     // ★한도 중이면 **때리지 않는다** (2026-08-01). 종전엔 메인 턴이 쿨다운으로 건너뛰는
     //  동안에도 요약만 계속 호출해 실패했고, 실패할 때마다 oldest-drop 으로 맥락이 잘렸다.
     //  키는 메인 턴과 같은 규칙(provider ?? adapter) — 같은 백엔드를 같은 이름으로 센다.
-    const cdKey = input.provider ?? "codex-oauth";
+    const cdKey = args.provider ?? "codex-oauth";
     const cdLeft = cooldownPort?.remainingMs(cdKey) ?? 0;
     if (cdLeft > 0) {
       console.warn(
         `[codex 6b] 요약 건너뜀 — '${cdKey}' 쿨다운 ${Math.ceil(cdLeft / 60000)}분 남음 ` +
           `(oldest-drop 폴백, watermark 유지 → 해제 후 재시도)`,
       );
-      noteCompactionOutcome(input.threadKey, false, "쿨다운", prompt.length);
+      noteCompactionOutcome(args.threadKey, false, "쿨다운", prompt.length, args.adapter);
       break; // 쿨다운 중엔 더 시도하지 않는다.
     } else
     try {
-      const fresh = await runSummarizer(
+      const fresh = await args.summarize(
         prompt,
         summaryTargetFor(foldedText.length),
-        accessToken,
-        accountId,
-        model,
       );
       const applied = applyFoldResult(
         { summary, watermark, foldedTurns: foldedTurnsTotal, foldedChars: foldedCharsTotal },
@@ -1349,7 +1416,7 @@ export const buildTurnHistory = async (
         foldedTurnsTotal = applied.next.foldedTurns;
         foldedCharsTotal = applied.next.foldedChars;
         upsertThreadSummary({
-          threadKey: input.threadKey,
+          threadKey: args.threadKey,
           summary,
           compactedThrough: watermark,
         });
@@ -1358,13 +1425,13 @@ export const buildTurnHistory = async (
           //  턴 시작 워터마크를 찍어, 여러 번 접게 된 뒤로 2·3회차가 전부 `0→…` 로 보여
           //  패스별 진행이 로그만으로 안 보였다([[feedback_logs_must_stand_alone]]).
           `[codex 6b] 압축 성공 ${compactPass}/${CODEX_COMPACT_MAX_PASSES}패스 — ` +
-            `${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} ` +
+            `${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} ` +
             `이번 패스 watermark→${watermark} 누적 요약=${summary.length}자 ` +
             // ★경과 — 사용자가 체감하는 건 턴 수가 아니라 이 시간이다(그런데 안 재고 있었다).
             `경과=${((Date.now() - compactStartedAt) / 1000).toFixed(1)}초`,
         );
-        growFoldBudget(input.threadKey);
-        noteCompactionOutcome(input.threadKey, true, "", prompt.length);
+        growFoldBudget(args.threadKey);
+        noteCompactionOutcome(args.threadKey, true, "", prompt.length, args.adapter);
         // ★목표에 한참 못 미치면 남긴다 — 하한(50자)은 통과하지만 **내용이 증발한** 경우다.
         //  실제로 40,542자를 90자로 만든 요약이 성공으로 지나갔고 아무 데도 안 남았다.
         //  판정 수치를 실어야 로그만으로 잡힌다([[feedback_logs_must_stand_alone]]).
@@ -1387,35 +1454,35 @@ export const buildTurnHistory = async (
         console.warn(
           `[codex 6b] 요약이 쓸 수 없는 크기 — oldest-drop 폴백 ` +
             `(요약 ${got}자 < 하한 ${MIN_USABLE_SUMMARY_CHARS}자, ` +
-            `${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
-            `→ 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`,
+            `${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
+            `→ 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`,
         );
-        noteCompactionOutcome(input.threadKey, false, `요약 ${got}자`, prompt.length);
+        noteCompactionOutcome(args.threadKey, false, `요약 ${got}자`, prompt.length, args.adapter);
       }
     } catch (e) {
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
       const msg = e instanceof Error ? e.message : String(e);
       // ★한도로 실패했으면 **등록한다** — 안 하면 메인 턴은 멀쩡한 줄 알고 계속 때리고,
       //  다음 턴 요약도 같은 벽에 부딪힌다(배운 게 안 남는다).
-      cooldownPort?.register(input.provider ?? "codex-oauth", msg);
+      cooldownPort?.register(args.provider ?? "codex-oauth", msg);
       console.warn(
         `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 ` +
-          `(${compactionDiag(input.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}` +
+          `(${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}` +
             // ★예외 경로도 축소한다 (2026-07-30 검토 지적) — 종전엔 빈 결과만 백오프를 탔다.
             //  크기 때문에 hang → idle abort 로 죽는 실패가 이 catch 로 오는데 축소가 0이면
             //  같은 크기를 계속 재시도한다. 단 429/한도는 크기 문제가 아니므로 제외.
             (isRateLimited(msg)
               ? " (한도성 실패 — 예산 유지)"
-              : ` → 다음 시도 예산 ${shrinkFoldBudget(input.threadKey)}자로 축소`),
+              : ` → 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`),
       );
-      noteCompactionOutcome(input.threadKey, false, msg, prompt.length);
+      noteCompactionOutcome(args.threadKey, false, msg, prompt.length, args.adapter);
       break; // 실패하면 같은 턴에서 더 시도하지 않는다(같은 벽을 연달아 때리지 않게).
     }
     // 다음 패스 — **저수위**를 임계로 재판정. 아래로 내려갔으면 needed=false 로 루프 종료.
     plan = planHistoryCompaction(
       allTurns.filter((t) => t.id > watermark),
       watermark,
-      nextPassOpts(compactPass, currentFoldBudget(input.threadKey), lowWater),
+      nextPassOpts(compactPass, currentFoldBudget(args.threadKey), lowWater),
     );
   }
 
@@ -1428,15 +1495,12 @@ export const buildTurnHistory = async (
   for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
     const rec = planSummaryRecompaction(summary, CODEX_SUMMARY_MAX_CHARS);
     if (!rec.needed) break;
-    if ((cooldownPort?.remainingMs(input.provider ?? "codex-oauth") ?? 0) !== 0) break;
+    if ((cooldownPort?.remainingMs(args.provider ?? "codex-oauth") ?? 0) !== 0) break;
     let folded: string;
     try {
-      folded = await runSummarizer(
+      folded = await args.summarize(
         rec.oldPart,
         recompactTargetFor(rec.oldPart.length),
-        accessToken,
-        accountId,
-        model,
       );
     } catch (e) {
       console.warn(
@@ -1456,7 +1520,7 @@ export const buildTurnHistory = async (
       break;
     }
     summary = next;
-    upsertThreadSummary({ threadKey: input.threadKey, summary, compactedThrough: watermark });
+    upsertThreadSummary({ threadKey: args.threadKey, summary, compactedThrough: watermark });
     console.log(
       `[codex 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
         `${folded.trim().length}자 (상한 ${CODEX_SUMMARY_MAX_CHARS}자, 최종 ${summary.length}자)`,
@@ -1480,7 +1544,8 @@ export const buildTurnHistory = async (
         type: "llm.compacted",
         ts: Date.now(),
         payload: {
-          threadKey: input.threadKey,
+          threadKey: args.threadKey,
+          adapter: args.adapter, // ★누가 접었나 — 시작 이벤트만 싣고 있었다(2026-09-15).
           foldedTurns: foldedTurnsTotal,
           foldedChars: foldedCharsTotal,
           summaryChars: summary.length,
@@ -1492,22 +1557,81 @@ export const buildTurnHistory = async (
     }
   }
 
-  // watermark 이후 원문 턴 (압축 성공 시 최근 keepRecent + 그간 신규, 실패 시 전체 미요약).
-  // charCap/limit 가드 = 최신부터 역누적, 초과 시 oldest drop (요약이 없을 때의 안전망).
-  const recentRawAll: CodexTurn[] = allTurns
+  return { allTurns, summary, watermark };
+};
+
+/**
+ * **워터마크 이후의 원문 턴** — 요약에 안 접힌 것만, 예산 안에서 (2026-09-15 추출).
+ *
+ * 압축 성공이면 최근 keepRecent + 그간 신규, 실패면 전체 미요약분이 대상이다.
+ * `charCap`/`limitTurns` 가드는 **요약이 없을 때의 안전망**이라 최신부터 역누적하고
+ * 넘치면 오래된 것부터 버린다.
+ *
+ * ★어댑터가 둘이 되면서 꺼냈다 — 이 자르기까지 각자 적으면 «같은 판단이 두 곳» 이고,
+ *  한쪽만 고쳐질 때 두 어댑터의 기억 범위가 조용히 갈린다.
+ */
+export const recentTurnsAfter = (
+  allTurns: CodexTurnWithId[],
+  watermark: number,
+  opts: { budgetUsedChars: number; limitTurns?: number; charCap?: number },
+): CodexTurn[] => {
+  const limit = opts.limitTurns ?? CODEX_TURN_HISTORY_LIMIT;
+  const charCap = opts.charCap ?? STORE_TURN_HISTORY_CHAR_CAP;
+  const after = allTurns
     .filter((t) => t.id > watermark)
     .map((t) => ({ role: t.role, content: t.content }));
-
-  let charSum =
-    instructionsChars + currentPromptWithMemory.length + summary.length;
-  const recentRaw: CodexTurn[] = [];
-  for (let i = recentRawAll.length - 1; i >= 0; i--) {
-    if (recentRaw.length >= CODEX_TURN_HISTORY_LIMIT) break;
-    const t = recentRawAll[i] as CodexTurn;
-    if (charSum + t.content.length > CODEX_TURN_HISTORY_CHAR_CAP) break;
+  let charSum = opts.budgetUsedChars;
+  const kept: CodexTurn[] = [];
+  for (let i = after.length - 1; i >= 0; i--) {
+    if (kept.length >= limit) break;
+    const t = after[i] as CodexTurn;
+    if (charSum + t.content.length > charCap) break;
     charSum += t.content.length;
-    recentRaw.unshift(t);
+    kept.unshift(t);
   }
+  return kept;
+};
+
+export const buildTurnHistory = async (
+  input: RegionASdkInput,
+  currentPromptWithMemory: string,
+  mediaItems: ResponseMediaItem[] = [],
+  accessToken: string,
+  accountId: string | undefined,
+  model: string,
+  /**
+   * 이번 요청의 `instructions` 바이트 — char 예산의 **고정 비용**(2026-07-30).
+   * 종전엔 조립 프리픽스가 전부 currentPromptWithMemory 안에 있어서 예산이 그걸
+   * 통해 시스템 프롬프트 무게를 자동으로 셌다. 안정 조각(~30KB)이 instructions 로
+   * 옮겨간 뒤로는 그 자리가 예산에서 **비어** 과거 턴을 그만큼 더 끌어온다 —
+   * 총 전송량이 조용히 늘어난다. 캡의 근거가 "합계 = 히스토리 + 시스템프롬프트"
+   * 이므로(위 CODEX_TURN_HISTORY_CHAR_CAP 주석의 실측 표) 여기서 명시로 센다.
+   */
+  instructionsChars = 0,
+  /**
+   * **이 턴의 추론 강도** — 요약 호출도 같은 값으로 간다 (2026-09-15).
+   * `undefined` 면 필드를 안 보낸다(본 턴과 같은 규칙). 호출부 주석이 사유의 정본이다.
+   */
+  turnReasoning?: string,
+): Promise<ResponseInputItem[]> => {
+  const currentTurn = buildCurrentTurn(currentPromptWithMemory, mediaItems);
+
+  const { allTurns, summary, watermark } = await compactThreadHistory({
+    channel: input.sessionChannel ?? input.channel,
+    threadKey: input.threadKey,
+    provider: input.provider,
+    adapter: "codex",
+    summarize: (text, targetChars) =>
+      runSummarizer(text, targetChars, accessToken, accountId, model, turnReasoning),
+  });
+  if (allTurns.length === 0) {
+    return [currentTurn];
+  }
+
+  const recentRaw = recentTurnsAfter(allTurns, watermark, {
+    budgetUsedChars:
+      instructionsChars + currentPromptWithMemory.length + summary.length,
+  });
 
   return buildCodexInputArray(recentRaw, summary, currentTurn);
 };

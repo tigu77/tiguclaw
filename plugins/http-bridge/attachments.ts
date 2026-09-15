@@ -11,7 +11,11 @@ import path from "node:path";
 import type { Attachment, AttachmentKind } from "../../src/channels/types.js";
 import { getPaths } from "../../src/core/paths.js";
 
-const ATTACH_MAX_COUNT = 10;
+/**
+ * **개수 상한.** ★`export` 다 — `/health` 가 이 셋을 화면에 실어 보낸다 (2026-09-15).
+ *  브라우저가 자기 숫자를 들고 있으면 서버에서 올려도 안 따라온다(그래서 이 사고가 났다).
+ */
+export const ATTACH_MAX_COUNT = 10;
 /**
  * **파일당 상한 — 텔레그램 채널과 같은 값** (2026-09-15).
  *

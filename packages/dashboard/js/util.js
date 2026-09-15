@@ -39,6 +39,53 @@
             : (b / 1048576).toFixed(1) + "MB";
 
       /**
+       * **서버가 말한 첨부 상한을 읽는다** (2026-09-15).
+       *
+       * ★`/health` 의 `limits` 를 화면이 쓰는 모양으로 옮기는 것뿐인데, 이걸 순수 함수로
+       *  둔 이유는 **뒤바꿈을 검사가 잡을 수 있어야** 하기 때문이다. 세 수를 인라인으로
+       *  옮기면 `fileBytes: l.attachment_total_bytes` 같은 한 글자 실수가 어떤 검사도
+       *  안 지나간다 — 이름은 다 맞고 값만 틀리니 소스 대조로는 영원히 안 보인다.
+       * ★셋 중 하나라도 수가 아니면 **통째로 «모른다»** 로 답한다(`null`). 반쯤 아는 상태로
+       *  막으면 그게 이번 사고의 형상이다 — 서버는 받는데 화면이 거절하는 것.
+       */
+      const attachLimitsFrom = (health) => {
+        const l = health && health.limits;
+        if (!l) return null;
+        const count = l.attachment_count,
+          fileBytes = l.attachment_bytes,
+          totalBytes = l.attachment_total_bytes;
+        for (const n of [count, fileBytes, totalBytes]) {
+          if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+        }
+        return { count, fileBytes, totalBytes };
+      };
+
+      /**
+       * **첨부를 미리 거절할까 — 판정만** (2026-09-15 정태님 신고로 생겼다).
+       *
+       * ★배경: 브라우저에 `10 * 1024 * 1024` 가 박혀 있어서, 서버 상한을 20MB 로 올렸는데도
+       *  화면이 **보내기도 전에** 거절했다. 같은 계약이 네 곳에 살고 있었고 두 곳만 올라갔다.
+       *  이제 상한은 `/health` 가 준다(`limits`) — 여기엔 숫자를 적지 않는다.
+       * ★**모르면 막지 않는다**(`limits` 가 없으면 `null`). 이 검사는 «올리기 전에 알려주는»
+       *  친절이고 판정자는 서버(`ingestAttachments`)다. 모를 때 막으면 그게 바로 이번 사고의
+       *  형상이다 — 서버는 받는데 손잡이가 닫힌 것.
+       * ★순수 함수로 둔 이유는 검사가 **실행**해서 판정할 수 있어야 하기 때문이다
+       *  ([[feedback_simple_composable_no_duplication]] — "검사가 껄끄러우면 코드가 잘못 놓인 것").
+       *
+       * @returns `null`(통과) · `"count"` · `"size"` · `"total"`
+       */
+      const attachRejection = (queuedCount, queuedBytes, fileBytes, limits) => {
+        if (!limits) return null; // 서버 상한을 모른다 — 서버가 판정한다.
+        const count = Number(limits.count),
+          max = Number(limits.fileBytes),
+          total = Number(limits.totalBytes);
+        if (Number.isFinite(count) && queuedCount >= count) return "count";
+        if (Number.isFinite(max) && fileBytes > max) return "size";
+        if (Number.isFinite(total) && queuedBytes + fileBytes > total) return "total";
+        return null;
+      };
+
+      /**
        * 시간 표기 두 축 — **답하는 질문이 다르다.** (2026-08-21)
        *
        *  - `fmtAgo(ts)`   "언제 일어났나"  → `방금` · `3분 전` · `2시간 전` · `3일 전`

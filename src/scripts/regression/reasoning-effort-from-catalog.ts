@@ -27,7 +27,7 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { loadModelReasoning } from "../../core/settings.js";
 import { mergeReasoning } from "../../core/llm-runtime/model-catalog.js";
-import { sourceHas } from "./_wiring.js";
+import { readSource, sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** `.tiguclaw/settings.json` 한 장 있는 임시 프로젝트 — loadModelReasoning 의 실제 경로. */
@@ -228,20 +228,39 @@ const run = async (): Promise<Assertion[]> => {
         ),
       );
     }
-    const a = await sourceHas(
+    // ★**이름이 아니라 성질을 본다** (2026-09-15). 종전엔 `const effort = …` 한 줄을
+    //  통째로 글자 대조했는데, 강도를 «본 턴과 요약이 같이 쓰는 변수» 로 끌어올리자
+    //  성질은 그대로인데 **검사만 빨개졌다.** 그러면 다음 사람은 고치기 싫어서 코드를
+    //  안 옮긴다 — 지키려는 건 «그 줄이 거기 있다» 가 아니라 아래 셋이다.
+    const codexAdapterSrc = await readSource(
       "../../core/llm-runtime/adapters/openai-codex-oauth.ts",
-      [
-        // ★모르면 **안 보낸다** — 이 가드가 사라지면 undefined 가 wire 로 나간다.
-        // ★2026-08-24: 앞에 `input.reasoning ??` 가 붙었다(프로파일 풀 원소가 전역·카탈로그를
-        //  이긴다). 그 층까지 같이 지킨다 — `??` 가 빠지면 프로파일 강도가 조용히 무시된다.
-        /const effort = input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\);\s*\n\s*if \(effort !== undefined\) body\.reasoning = \{ effort \};/,
-      ],
     );
+    const decl =
+      /const (\w+) = input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\);/.exec(
+        codexAdapterSrc,
+      );
+    const guarded =
+      decl !== null &&
+      new RegExp(
+        `if \\(${decl[1]!} !== undefined\\) body\\.reasoning = \\{ effort(?:: ${decl[1]!})? \\};`,
+      ).test(codexAdapterSrc);
+    const declCount = decl === null
+      ? 0
+      : (codexAdapterSrc.match(
+          /input\.reasoning \?\? resolveReasoningEffort\("codex", model, input\.cwd\)/g,
+        ) ?? []).length;
     out.push(
       assert(
-        "★강도를 모르면 필드를 안 보낸다(추측값 금지 — 종전 동작 유지)",
-        a.ok,
-        a.ok ? "가드 확인" : `누락 ${a.missing.join(" ")}`,
+        "★강도를 모르면 필드를 안 보낸다(추측값 금지 — 종전 동작 유지) + 프로파일이 전역·카탈로그를 이긴다",
+        decl !== null && guarded,
+        decl === null
+          ? "`input.reasoning ?? resolveReasoningEffort(...)` 해석부를 못 찾음"
+          : `해석부 ${decl[1]!} · undefined 가드 ${guarded}`,
+      ),
+      assert(
+        "★그 해석을 **한 번만** 한다 — 두 곳이 각자 구하면 한쪽만 바뀌어 갈린다(요약이 그렇게 갈렸다)",
+        declCount === 1,
+        `해석 지점 ${declCount}곳`,
       ),
     );
     // ④ ★claude 도 **같은 설정 키**를 읽는다 — 단, 기본값은 만들지 않는다 (2026-08-14 정정).

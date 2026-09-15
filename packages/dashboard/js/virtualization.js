@@ -310,6 +310,18 @@
       //
       // 비용: 정상 흐름(도착=최신)에서는 while 이 0회 — push 와 동일. 역행분만 뒤에서
       //  몇 칸 걸어 들어간다. ts 없는 항목(구분선·ts 미상)은 만나면 멈춰 그 뒤에 놓는다.
+      /**
+       * **이 노드를 목록이 아직 갖고 있나** (2026-09-15, 회사 아스트라 P2).
+       *
+       * ★`node.isConnected` 로 물으면 틀린다 — 가상목록은 화면 밖 노드를 **DOM 에서 떼면서
+       *  논리 목록엔 유지**한다. 그래서 «떨어져 있으니 없는 것» 으로 보고 같은 경고를 또
+       *  만들면 **항목이 둘**이 된다(정확히 그 재현이 보고됐다).
+       * ★반대로 `isConnected` 조건만 빼면 **초기화 뒤 남은 폐기 노드**를 되쓴다. 그래서
+       *  소유 여부를 아는 **유일한 자리**(이 모듈의 색인)가 답하게 한다 — 초기화가
+       *  `vtIndex.clear()` 로 같이 비우므로 폐기 노드는 자동으로 «없음» 이 된다.
+       */
+      const vtOwns = (node) => !!node && vtIndex.has(node);
+
       const vtAppend = (node) => {
         if (vtIndex.has(node)) return;
         const it = vtMakeItem(node);
@@ -321,6 +333,25 @@
             if (prev === null || !Number.isFinite(prev) || prev <= ts) break;
             idx--;
           }
+        }
+        // ★**끝이 아닌 자리에 꽂히면 남긴다** (2026-09-15 정태님 신고: *"새 메시지가
+        //  마지막이 아니라 중간으로 들어올 때가 있다 — 새로고침하면 제대로 보인다"*).
+        //  삽입은 `ts` 순서라, 중간에 꽂혔다는 건 **도착한 것의 ts 가 이미 떠 있는 것보다
+        //  과거**라는 뜻이다. «가끔» 이라 재현을 기다리는 대신 그 순간의 **판정 수치**를
+        //  남긴다 — 무엇이(kind) 얼마나(Δms) 과거였는지가 있어야 원인을 좁힌다
+        //  ([[feedback_logs_must_stand_alone]]). 정상 경로(맨 끝)에선 아무것도 안 찍는다.
+        if (idx < vtItems.length) {
+          try {
+            const after = vtItems[idx];
+            const kindOf = (n) =>
+              (n && n.querySelector && (n.querySelector(".type") || {}).textContent) ||
+              (n && n.className) || "?";
+            console.debug(
+              `[vt-order] 끝이 아닌 자리에 삽입 — idx=${idx}/${vtItems.length} ` +
+                `새것(${kindOf(node)} ts=${ts}) < 뒤엣것(${kindOf(after.node)} ts=${vtTsOf(after.node)}) ` +
+                `Δ=${ts !== null && vtTsOf(after.node) !== null ? vtTsOf(after.node) - ts : "?"}ms`,
+            );
+          } catch { /* 진단이 렌더를 무르지 않는다 */ }
         }
         vtItems.splice(idx, 0, it);
         vtIndex.set(node, it);

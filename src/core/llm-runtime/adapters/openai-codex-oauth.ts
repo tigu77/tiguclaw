@@ -107,7 +107,7 @@ import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.j
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
-import { markToolDispatch } from "../replay-safety.js";
+import { isReplaySafeTool, markToolDispatch } from "../replay-safety.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -652,6 +652,20 @@ export const runOpenAiCodex = async (
   const mediaItems = await buildMediaContentItems(input.attachments);
   // 6b — 롤링 요약 압축 통합 (async — 압축 트리거 시 summarizeViaCodex 1회). 요약
   // 호출은 isolated(히스토리 로딩 X, 도구 X) → 재귀 없음. 실패 시 oldest-drop 폴백.
+  /**
+   * **이 턴의 추론 강도 — 한 번만 정한다** (2026-09-15 정태님 지적).
+   *
+   * ★종전엔 본 턴만 프로파일을 탔고 **요약 호출은 `effort:"none"` 을 스스로 박아** 넣었다.
+   *  같은 비서의 같은 모델인데 판단이 둘이었고, `gpt-6-astra` 가 'none' 을 거부하자
+   *  **요약만 조용히 죽었다** — 매 턴 400 → oldest-drop 으로 오래된 맥락이 잘려나갔다.
+   *  사용자는 프로파일을 `low` 로 해뒀는데 요약은 그 값을 **아예 안 읽고** 있었다.
+   * ★그래서 값을 **변수 하나로** 묶는다. 두 곳이 같은 함수를 부르게 하는 것보다 낫다 —
+   *  부르는 것은 갈릴 수 있지만 변수는 갈릴 수가 없다([[feedback_simple_composable_no_duplication]]).
+   * ★`undefined`(미인증·조회 실패·모르는 모델)면 **양쪽 다 필드를 안 보낸다** — 모르는 것에
+   *  추측값을 씌우지 않는 종전 규칙 그대로다.
+   */
+  const turnReasoning = input.reasoning ?? resolveReasoningEffort("codex", model, input.cwd);
+
   const inputArray: ResponseInputItem[] = await buildTurnHistory(
     input,
     promptWithMemory,
@@ -660,6 +674,7 @@ export const runOpenAiCodex = async (
     accountId,
     model,
     instructions.length, // 예산의 고정 비용 — 안정 조각이 여기로 옮겨갔다.
+    turnReasoning, // ★요약 호출도 **이 턴과 같은** 강도로 간다(위 주석).
   );
 
   // V5.3 — MCP memory server (claude 어댑터와 동일 instance) in-memory bridge 회수.
@@ -980,6 +995,11 @@ export const runOpenAiCodex = async (
       //  플러그인 핸들러가 돌았다** — 충돌이 아니라 가로채기였다.
       //  ★거절된 것은 모델에게 **안 보여준다**: 부를 수 없는 도구를 광고하지 않는다.
       const pluginClaim = claimToolNames(toolBridgeMap, extraToolsRaw, extraBridge, name);
+      // ★**플러그인도 «남이 지은 이름» 이다** (2026-09-15, 레드팀 P4). 재실행 안전 판정이
+      //  `isReadOnlyTool` 의 **패턴**(`^(read|list|find|get|…)_`)이라, 플러그인이 `get_report`
+      //  같은 이름을 내면 부작용이 있어도 안전으로 분류돼 폴백 때 두 번 돈다. 외부 MCP 만
+      //  표시하고 플러그인을 뺀 것은 그 논거를 절반만 적용한 것이었다.
+      for (const n of pluginClaim.claimed) externalMcpToolNames.add(n);
       mcpTools.push(...keepClaimed(extraToolsRaw, pluginClaim.claimed));
     }
 
@@ -1434,8 +1454,7 @@ export const runOpenAiCodex = async (
         //  ★값이 없으면(미인증·조회 실패·옛 캐시·모르는 모델) **여전히 안 보낸다** —
         //   모르는 것에 추측값을 씌우는 것보다 종전 동작이 낫다.
         // ★프로파일 값이 우선(2026-08-24) — 세 어댑터 같은 순서: 풀 원소 > 전역 > 카탈로그.
-        const effort = input.reasoning ?? resolveReasoningEffort("codex", model, input.cwd);
-        if (effort !== undefined) body.reasoning = { effort };
+        if (turnReasoning !== undefined) body.reasoning = { effort: turnReasoning };
       }
 
       if (process.env.CODEX_DEBUG_INPUT === "1") {
@@ -2426,7 +2445,10 @@ export const runOpenAiCodex = async (
                 markToolDispatch(
                   input.replay,
                   tc.name,
-                  !externalMcpToolNames.has(tc.name) && isReadOnlyTool(tc.name),
+                  isReplaySafeTool({
+                    external: externalMcpToolNames.has(tc.name),
+                    readOnlyByName: isReadOnlyTool(tc.name),
+                  }),
                 );
                 const result = await bridge
                   .callTool(tc.name, args)

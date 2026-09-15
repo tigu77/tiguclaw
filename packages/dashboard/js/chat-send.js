@@ -1,5 +1,37 @@
       // ── 파일 첨부(#2) — 붙여넣기/드롭/파일선택 → base64 큐 → 전송 시 함께 POST. ──
-      const ATT_MAX = 10, ATT_MAX_BYTES = 10 * 1024 * 1024;
+      /**
+       * **상한은 서버가 준다 — 여기에 숫자를 적지 않는다** (2026-09-15 정태님 신고).
+       *
+       * ★종전엔 개수 10개·파일당 10MiB 가 이 줄에 상수로 박혀 있었다. 서버 상한을
+       *  20MB 로 올렸을 때 이 줄이 안 따라와, 화면이 10MB 초과를 **보내기도 전에** 거절했다.
+       *  같은 계약이 네 곳(서버·텔레그램·여기·문구)에 살면 두 곳만 올라가는 일이 생긴다.
+       * ★못 받으면 `null` 로 남긴다 = **미리 막지 않는다.** 그 경우 초과분은 올라가서
+       *  서버가 거절하고, 그 문장이 채팅에 그대로 뜬다(`sendChatMessage` 의 `!r.ok` 경로).
+       *  느리지만 **정직하다** — 모를 때 막는 것이 이번 사고의 형상이었다.
+       */
+      let attachLimits = null;
+      let attachLimitsInFlight = null;
+      /**
+       * 상한을 **모르면 다시 묻는다** (2026-09-15 아스트라 지적).
+       *
+       * ★종전엔 부팅 때 한 번만 물었다. 그때 브리지가 잠깐 안 떠 있었으면 `attachLimits` 가
+       *  **페이지가 살아 있는 내내 `null`** 로 남아, 화면이 영영 미리 안내를 못 했다.
+       * ★동시 중복 요청은 안 만든다 — 진행 중이면 그 약속을 같이 기다린다.
+       * ★그래도 **못 받으면 미리 막지 않는다**(서버가 판정한다). 재조회는 안내를 되살리는
+       *  것이지 차단을 되살리는 게 아니다.
+       */
+      const ensureAttachLimits = () => {
+        if (attachLimits) return Promise.resolve(attachLimits);
+        if (!attachLimitsInFlight) {
+          attachLimitsInFlight = fetch("/api/health")
+            .then((r) => r.json())
+            .then((h) => { attachLimits = attachLimitsFrom(h); return attachLimits; })
+            .catch(() => null)
+            .finally(() => { attachLimitsInFlight = null; });
+        }
+        return attachLimitsInFlight;
+      };
+      void ensureAttachLimits();
       let pendingAttachments = []; // [{filename, mimeType, dataBase64, bytes}]
       const attachEl = document.getElementById("chat-attach");
       const fileInput = document.getElementById("chat-file");
@@ -48,9 +80,13 @@
         r.readAsDataURL(file);
       });
       const addFiles = async (files) => {
+        await ensureAttachLimits(); // 모르면 여기서 한 번 더 묻는다(부팅 때 못 받았을 수 있다).
         for (const f of files) {
-          if (pendingAttachments.length >= ATT_MAX) { showToast(i18n("chat.attach.max", { n: ATT_MAX }), "warn"); break; }
-          if (f.size > ATT_MAX_BYTES) { showToast(i18n("chat.attach.tooBig", { name: f.name }), "warn"); continue; }
+          const queuedBytes = pendingAttachments.reduce((n, a) => n + (a.bytes || 0), 0);
+          const why = attachRejection(pendingAttachments.length, queuedBytes, f.size, attachLimits);
+          if (why === "count") { showToast(i18n("chat.attach.max", { n: attachLimits.count }), "warn"); break; }
+          if (why === "size") { showToast(i18n("chat.attach.tooBig", { name: f.name, limit: fmtBytes(attachLimits.fileBytes) }), "warn"); continue; }
+          if (why === "total") { showToast(i18n("chat.attach.totalTooBig", { name: f.name, limit: fmtBytes(attachLimits.totalBytes) }), "warn"); continue; }
           try {
             const dataBase64 = await readAsBase64(f);
             pendingAttachments.push({ filename: f.name || "file", mimeType: f.type || "application/octet-stream", dataBase64, bytes: f.size });
@@ -120,14 +156,38 @@
         // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 매니저
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
         repaintComposer(); // 입력창을 비웠다 — 턴이 돌기 시작하면 이 버튼이 정지가 된다.
-        await sendChatMessage(text, atts, replyToText);
+        const sent = await sendChatMessage(text, atts, replyToText);
+        // ★**못 보냈으면 첨부를 되돌린다** (2026-09-15 아스트라 지적). 큐를 전송 전에 비우는
+        //  건 «전송 중에도 새 첨부를 받으려고» 다(다음 메시지로). 그런데 서버가 거절하면
+        //  붙인 파일이 **그냥 사라졌다** — 사용자는 다시 끌어다 놔야 하는 줄도 모른다.
+        // ★그 사이 사용자가 새로 붙였을 수 있으므로 **앞에 되돌리고**, 개수 상한은 지킨다
+        //  (되돌리다 상한을 넘기면 그게 또 조용한 손실이다).
+        if (sent && sent.ok === false) {
+          // ★**텍스트도 같이 되돌린다** (2026-09-15 2차 정정, 아스트라 지적). 첫 판은
+          //  첨부만 되돌렸다 — 413 을 맞으면 **쓴 글이 그대로 사라졌다.** 되돌릴 것은
+          //  «이 전송에 실린 것» 전부다.
+          // ★**기다리는 동안 새로 친 글을 덮지 않는다** — 입력창이 비어 있을 때만 되돌리고,
+          //  아니면 앞에 이어 붙인다(사용자가 친 것이 더 최신이므로 뒤에 둔다).
+          if (atts.length > 0) {
+            const cap = attachLimits ? attachLimits.count : atts.length + pendingAttachments.length;
+            pendingAttachments = [...atts, ...pendingAttachments].slice(0, cap);
+            renderAttachChips();
+          }
+          if (text !== "") {
+            const typedSince = input.value;
+            input.value = typedSince === "" ? text : `${text}\n${typedSince}`;
+            growWrap.dataset.replicatedValue = input.value;
+            try { if (window.saveChatDraft) window.saveChatDraft(activeThreadKey); } catch {}
+          }
+          repaintComposer();
+        }
       });
 
       // ── 세션 탭별 draft(입력 대기 텍스트 + 첨부) 보존 ──────────────────────────
       // 탭 전환 시 떠나는 탭 threadKey 로 현재 입력+첨부를 저장, 들어오는 탭 것을 복원(tabs.js 가
       //   switchToThread/newTab/closeTab 에서 window.* 호출). 텍스트는 localStorage 영속(몇 KB, 새로고침·
       //   재접속 생존), 첨부(base64)는 메모리 Map 만 — 용량이 커 localStorage 쿼터를 깨므로 영속 안 함
-      //   (세션 동안만·새로고침 소실). 개수·용량 캡(ATT_MAX·10MB)이 이미 바운드.
+      //   (세션 동안만·새로고침 소실). 서버가 준 개수·용량 캡이 이미 바운드.
       const DRAFTS_LS = "tc:drafts";
       const chatDrafts = new Map(); // threadKey -> { text, attachments:[{filename,mimeType,dataBase64,bytes}] }
       try { // 부팅 시 텍스트 draft 복원(첨부는 영속 대상 아님).

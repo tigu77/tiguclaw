@@ -77,6 +77,14 @@ export const serveGatewayChat = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 429, { error: { message: "gateway busy (max concurrency reached)" } });
     return;
   }
+  // ★**자리는 본문 수신까지 덮는다 — 일부러 그렇다** (2026-09-15, 아스트라 제안을 재보고 기각).
+  //  제안: «상한은 모델 실행 수를 제한하려는 것이니 본문 수신 뒤에 잡아라». 옳은 관찰이고
+  //  느린 업로드가 모델 자리를 먹는 것도 사실이다. 그런데 **떼면 동시 업로드에 바운드가
+  //  0이 된다** — 첨부 경로 본문 상한이 67.7MiB 이고, 본문 수신 피크 RSS 는 실측 **와이어의
+  //  8.7배**다(20/50/100MiB 에서 8.8·8.7·8.7). 넷이면 ~2.3GB 이고 힙 한계는 4.1GB 다.
+  //  `BODY_LIMIT_*` 는 요청 **하나**의 크기만 막지 동시 개수를 안 막는다.
+  //  ★즉 지금 이 자리가 **동시 업로드 메모리의 유일한 상한**이다. 옮기려면 그 상한을 먼저
+  //   따로 만들어야 하고(제안도 그 단서를 달았다), 지금은 그럴 실수요가 없다.
   gatewayInflight += 1; // 예약. 아래 `finally` 가 **정확히 한 번** 반납한다.
   try {
     await serveGatewayChatReserved(ctx, gw);

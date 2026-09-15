@@ -215,7 +215,8 @@ export const check: RegressionCheck = {
 
     // ⑥ 타임아웃 경로에서 hasFallback 이 거짓말하지 않는다.
     const honest = await sourceHas("../../core/llm-runtime/index.ts", [
-      /specIndex < effectivePool\.length - 1 && !\(e instanceof TurnTimeoutError\)/,
+      // ★표현이 아니라 성질을 본다 — 뒤에 조건이 더 붙어도 «타임아웃이면 약속 안 함» 은 유지된다.
+      /specIndex < effectivePool\.length - 1 &&[\s\S]{0,300}?!\(e instanceof TurnTimeoutError\)/,
     ]);
     out.push(
       assert(

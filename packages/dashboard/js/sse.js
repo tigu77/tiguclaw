@@ -46,21 +46,56 @@
 
       // 대화 압축 통지 (2026-07-29) — 옛 대화가 요약으로 바뀐 상태 변화를 사용자에게 알린다.
       // 임계 초과 시에만 발생하므로 매 턴 뜨지 않는다. 자기 세션에만(멀티세션 누수 0).
+      /**
+       * **접힌 양을 아는가** — 압축 완료 문구를 고르는 판정 (2026-09-15).
+       *
+       * ★claude 는 SDK 가 요약하고 우리는 `PostCompact` 로 결과만 받는데, **몇 턴·몇 자를
+       *  접었는지는 안 준다.** 0을 그대로 그리면 화면이 *"0턴을 압축했습니다 (0자 → N자)"*
+       *  라는 **거짓**을 말한다(헌법 §1 — 본 것과 안 본 것을 같은 말투로 말하지 마라).
+       * ★순수 함수로 둔 이유는 검사가 **실행**해서 판정하기 위해서다. 종전에 이 판정을
+       *  인라인으로 뒀더니 검사가 «변수 이름이 소스에 있나» 만 보게 됐고, 그 변수를
+       *  선언만 남기고 안 쓰는 변이가 **그대로 통과**했다(2026-09-15 자기 변이에서 적발).
+       */
+      const hasFoldCounts = (p) =>
+        Number(p && p.foldedTurns) > 0 && Number(p && p.foldedChars) > 0;
+
+      /**
+       * 압축 완료 문구 **고르기** — 아는 것만 말한다. 반환 `{key, params}`.
+       *
+       * ★술어만 따로 두면 모자란다 — 자기 변이에서 **술어는 그대로 두고 호출부만**
+       *  `true` 로 바꾸는 편집이 검사를 두 번 통과했다. 그래서 «어느 문구를 고르는가»
+       *  자체를 한 함수로 만들어 검사가 그 결과를 본다.
+       * ★`i18n` 을 여기서 부르지 않는다 — 키와 인자만 돌려주면 검사가 카탈로그 없이
+       *  판정을 실행할 수 있다.
+       */
+      const compactDoneMessage = (p, took) => {
+        const to = (Number(p && p.summaryChars) || 0).toLocaleString();
+        if (!hasFoldCounts(p)) return { key: "sys.compact.doneNoCounts", params: { to, took } };
+        return {
+          key: "sys.compact.done",
+          params: {
+            turns: Number(p.foldedTurns),
+            from: Number(p.foldedChars).toLocaleString(),
+            to,
+            took,
+          },
+        };
+      };
+      // ── 압축 문구 판정 끝 ──
+
       const renderCompacted = (p, evTs) => {
         const tk = p.threadKey;
         if (isEndpointThread(tk)) return;
         if (!isActiveThread(tk)) return;
-        const turns = Number(p.foldedTurns) || 0;
-        const from = Number(p.foldedChars) || 0;
-        const to = Number(p.summaryChars) || 0;
+
         // 경과 — 기다린 시간이 얼마였는지 사후에도 보이게(진단의 1차 수치).
         const ms = Number(p.elapsedMs) || 0;
         const took = ms > 0 ? i18n("sys.compact.took", { sec: (ms / 1000).toFixed(1) }) : "";
-        renderLocalChat(
-          "info",
-          i18n("sys.compact.done", { turns, from: from.toLocaleString(), to: to.toLocaleString(), took }),
-          { ts: evTs, key: "compacted|" + (tk || "") + "|" + evTs },
-        );
+        const picked = compactDoneMessage(p, took);
+        renderLocalChat("info", i18n(picked.key, picked.params), {
+          ts: evTs,
+          key: "compacted|" + (tk || "") + "|" + evTs,
+        });
       };
 
       // ★압축 **직전** 표시 (2026-08-10) — 출발점은 "압축이 오래 걸리는데 뭘 하는지
@@ -77,6 +112,8 @@
        *  그 함수다. 표현을 두 벌 만들면 같은 시간이 화면마다 다르게 보인다(오늘 모델 배지에서
        *  겪은 부류). 뱃지 클래스(`dur-badge running`)도 드로어와 **같은 것**을 쓴다.
        */
+      /** threadKey → 압축 실패 안내 줄. 반복 실패를 **한 줄로 고쳐 쓰려고** 들고 있다. */
+      const compactFailLines = new Map();
       const compactingTimers = new Map(); // threadKey → { el, startTs }
       const tickCompacting = () => {
         const now = Date.now();
@@ -381,6 +418,7 @@
         //  같은 사고가 반복된다(감사 지적).
         if (ev.type === "llm.compaction_stuck") {
           const p = ev.payload || {};
+          stopCompactingTick(p.threadKey); // 고착도 «끝» 이다 — 돌아가는 표식을 남기지 않는다.
           if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
             renderLocalChat(
               "error",
@@ -408,6 +446,46 @@
         if (ev.type === "llm.compacted") {
           stopCompactingTick((ev.payload || {}).threadKey);
           renderCompacted(ev.payload || {}, ev.ts);
+          return;
+        }
+        // ★압축이 **실패로 끝났다** (2026-09-15 정태님 신고). 종전엔 끝 신호가 «성공»
+        //  하나뿐이라, 실패하면 «압축 중 ⏳» 이 영영 안 걷혔다 — 사용자는 아직 요약
+        //  중인 줄 알았는데 턴은 진작 끝나 답까지 와 있었다.
+        // ★키에 `ts` 를 **안 붙인다** — 실패는 임계를 넘은 뒤 매 턴 반복되므로, 붙이면
+        //  같은 말이 줄줄이 쌓인다. 스레드당 한 줄로 갱신한다(`compaction_stuck` 이
+        //  임계에서 한 번 크게 말하는 것과 역할이 다르다 — 이건 «지금 상태» 다).
+        if (ev.type === "llm.compact_failed") {
+          const p = ev.payload || {};
+          stopCompactingTick(p.threadKey);
+          if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
+            // ★**이미 있으면 그 줄을 고쳐 쓴다** (2026-09-15 아스트라 지적). 종전엔 키에
+            //  스레드만 넣고 «한 줄로 갱신된다» 고 적었는데, `renderLocalChat` 이 키 뒤에
+            //  `ts` 를 붙여 중복을 판정하므로 **매번 새 줄이 쌓였다** — 주석이 코드보다
+            //  세게 말한 자리다. 압축 실패는 임계를 넘은 뒤 매 턴 나므로 쌓이면 대화가 묻힌다.
+            const failKey = String(p.threadKey || "");
+            const prevLine = compactFailLines.get(failKey);
+            const failText = i18n("sys.compact.failed", {
+              reason: p.reason || i18n("common.unknown"),
+            });
+            // ★**DOM 부착이 아니라 «목록이 갖고 있나» 를 묻는다** (2026-09-15, 아스트라 P2).
+            //  가상목록은 화면 밖 노드를 DOM 에서 떼어도 논리 목록엔 유지한다 — 그래서
+            //  `isConnected` 로 물으면 스크롤 위치에 따라 **같은 경고가 둘**이 된다.
+            if (prevLine && vtOwns(prevLine)) {
+              const body = prevLine.querySelector(":scope .chat-message");
+              if (body) setChatBody(body, failText, false);
+              const ts = prevLine.querySelector(":scope .ts");
+              if (ts) ts.textContent = fmtTime(ev.ts || Date.now());
+              return;
+            }
+            const line = renderLocalChat(
+              // ★`chatLabel` 에 없는 종류를 지어내면 **라벨에 그 글자가 그대로 찍힌다**
+              //  (`chatLabel[kind] || kind`). 같은 계열인 `compaction_stuck` 과 맞춘다.
+              "error",
+              failText,
+              { ts: ev.ts, key: "compact-failed|" + (p.threadKey || "") },
+            );
+            if (line) compactFailLines.set(failKey, line);
+          }
           return;
         }
         // ★도구 지연 고지 (2026-08-06) — 종전엔 이 이벤트를 **아무도 안 그렸다**. 그래서

@@ -8,21 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.1] - 2026-09-15
+
 ### Fixed
 
-- **A tool could run twice when a request failed after it had already executed.** External MCP
-  and plugin tools are no longer assumed safe to re-run just because their name looks read-only.
-  When a re-run is blocked, the rate-limit notice and error report still go through.
+- **External MCP and plugin tools could run twice after a failure.** They are no longer assumed
+  safe to re-run just because their name looks read-only. When a re-run is blocked, the
+  rate-limit notice and error report still go through.
 - **On OpenAI models, the earlier part of a long conversation was dropped without a summary.**
   It is now compacted the same way as other models, and compaction is reported on screen.
-- **Conversation compaction kept failing on some codex models.** The summarize call sent its
-  own reasoning effort instead of the model profile's, so on models that reject that value it
-  failed every time and older messages were dropped without a summary.
+- **On some codex models, conversation compaction kept failing.** While it failed, older
+  messages were dropped without a summary.
 - **The "compacting" indicator never cleared when compaction failed.** Failures and skips are
   now reported on screen. On Claude models it stayed even when compaction succeeded.
-- **Files over 10MB could not be attached in the dashboard.** The limit was raised to 20MB,
-  but the screen still held the old one and refused the file before sending. It now takes
-  the limit from the server.
+- **Files over 10MB could not be attached in the dashboard.** The limit was raised to 20MB, but
+  the screen still showed the old one and refused the file before sending. It now takes the
+  limit from the server.
 
 ## [0.54.0] - 2026-09-15
 
@@ -30,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Higher attachment limits.** 20MB per file and 50MB per message. A file that Telegram
   accepted but the dashboard rejected now works in both.
+  (★This release raised the **server** limit only — the dashboard screen still
+  held the old one, so it actually works in both from 0.54.1.)
 
 ### Changed
 
@@ -565,7 +568,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...HEAD
+[0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1
 [0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0
 [0.52.1]: https://github.com/tigu77/tiguclaw/compare/v0.52.0...v0.52.1

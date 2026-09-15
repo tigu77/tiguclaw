@@ -211,6 +211,62 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ⑤ 레드팀 §5c 가 순서에서 찾은 것들 (2026-09-15) ─────────────────────────
+    const claudeSrc = claude;
+    const hist = stripComments(
+      await readRel("../../core/llm-runtime/adapters/openai-codex-oauth-history.ts"),
+    );
+    const { isCancelled } = await import(
+      "../../core/llm-runtime/adapters/openai-codex-oauth-history.js"
+    );
+    out.push(
+      assert(
+        // ★O1: 요약에 부모 취소를 물리자 `/stop` 이 실패 catch 로 들어왔다. 그대로 두면
+        //  사용자가 세 번 멈출 때 «3회 연속 실패 — 맥락이 버려지는 중» 경보가 뜨고 폴드
+        //  예산까지 줄어든다. 사용자가 멈춘 것을 고장으로 세는 셈이다.
+        "★**취소는 실패로 세지 않는다** — 연속 실패 경보·예산 축소가 사용자 자신의 정지로 울리면 안 된다",
+        isCancelled(Object.assign(new Error("x"), { name: "AbortError" })) === true &&
+          isCancelled(new Error("Request was aborted.")) === true &&
+          isCancelled(new Error("400 unsupported_value")) === false &&
+          /if \(isCancelled\(e\)\)/.test(hist),
+        `AbortError ${isCancelled(Object.assign(new Error("x"), { name: "AbortError" }))} · 문자열 ${isCancelled(new Error("Request was aborted."))} · 진짜실패 ${isCancelled(new Error("400 unsupported_value"))} · catch 배선 ${/if \(isCancelled\(e\)\)/.test(hist)}`,
+      ),
+      assert(
+        // ★O3: 상태 해제가 `publish()` 뒤·`try` 안이면, 발행이 던질 때 상태가 살아남아
+        //  **성공 직후 턴 마무리가 가짜 «압축 실패»** 를 낸다. 그 catch 가 있는 유일한 이유가
+        //  «발행이 던질 수 있다» 인데, 바로 그 경우에 불변식이 깨졌다.
+        "★압축 상태 해제가 **발행보다 먼저**다(발행이 던져도 가짜 실패가 안 난다)",
+        (() => {
+          const at = claudeSrc.indexOf("PostCompact:");
+          const blk = at < 0 ? "" : claudeSrc.slice(at, at + 1500);
+          const clear = blk.indexOf("compactStartedAt = null");
+          const pub = blk.indexOf("getEventBus().publish");
+          const fAt = claudeSrc.indexOf('compact_result === "failed"');
+          const fBlk = fAt < 0 ? "" : claudeSrc.slice(fAt, fAt + 700);
+          const fClear = fBlk.indexOf("compactStartedAt = null");
+          const fPub = fBlk.indexOf("getEventBus().publish");
+          return clear >= 0 && pub >= 0 && clear < pub && fClear >= 0 && fPub >= 0 && fClear < fPub;
+        })(),
+        "성공·실패 두 경로 모두 해제가 발행 앞",
+      ),
+      assert(
+        // ★O8: 같은 `/stop` 이 openai 에선 요약을 끊고 codex 에선 계속 돌았다.
+        "★codex 요약기도 **부모 취소를 받는다** — 같은 명령이 어댑터에 따라 다르게 굴면 안 된다",
+        /parentSignal: AbortSignal \| undefined/.test(hist) &&
+          /linkAbort\(ac\.signal, parentSignal\)/.test(hist) &&
+          /signal: linked\.signal/.test(hist) &&
+          /input\.abortSignal, \/\/ 부모 취소가 요약까지 온다/.test(hist),
+        `인자 ${/parentSignal: AbortSignal/.test(hist)} · 연결 ${/linkAbort\(ac\.signal, parentSignal\)/.test(hist)} · 사용 ${/signal: linked\.signal/.test(hist)} · 전달 ${/input\.abortSignal/.test(hist)}`,
+      ),
+      assert(
+        // ★O5: 이력 로드 창에서 `renderLocalChat` 이 **자기 자신**을 다시 부르도록 미루면
+        //  «한 줄로 고쳐 쓰기» 분기를 건너뛴다 — 창이 열린 동안 실패마다 새 줄이 쌓인다.
+        "★이력 로드 창에서는 **핸들러째** 미룬다(렌더만 미루면 한 줄 갱신이 무너진다)",
+        /holdSseEventDuringHistory\(\{ ts: ev\.ts, __render: \(\) => renderEvent\(ev\) \}\)/.test(sse),
+        `핸들러 재실행으로 미룸 ${/__render: \(\) => renderEvent\(ev\)/.test(sse)}`,
+      ),
+    );
+
     return out;
   },
 };

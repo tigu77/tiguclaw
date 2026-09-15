@@ -847,6 +847,12 @@ export const runClaude = async (
       {
         hooks: [
           async (hookInput: unknown) => {
+            // ★**상태를 먼저 지운다** (2026-09-15, 레드팀 O3). 종전엔 `publish()` **뒤**·
+            //  `try` **안**에서 지웠다 — 발행이 던지면(그 `catch` 가 존재하는 유일한
+            //  이유다) 상태가 살아남아, **성공한 압축 직후 턴 마무리가 가짜 «압축 실패»**
+            //  를 낸다. 지우는 것은 관측과 무관한 장부이므로 앞당겨도 안전하다.
+            const startedAt = compactStartedAt;
+            compactStartedAt = null;
             try {
               const summary = (hookInput as { compact_summary?: unknown })
                 ?.compact_summary;
@@ -857,12 +863,11 @@ export const runClaude = async (
                   threadKey: input.threadKey,
                   adapter: "claude",
                   ...(typeof summary === "string" ? { summaryChars: summary.length } : {}),
-                  ...(compactStartedAt !== null
-                    ? { elapsedMs: Date.now() - compactStartedAt }
+                  ...(startedAt !== null
+                    ? { elapsedMs: Date.now() - startedAt }
                     : {}),
                 },
               });
-              compactStartedAt = null;
             } catch {
               /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
             }
@@ -1486,6 +1491,7 @@ const isResumeProcessFailure = (e: unknown): boolean =>
         compact_error?: unknown;
       };
       if (st.compact_result === "failed") {
+        compactStartedAt = null; // 발행이 던져도 상태는 남지 않는다(레드팀 O3).
         try {
           getEventBus().publish({
             type: "llm.compact_failed",
@@ -1499,7 +1505,6 @@ const isResumeProcessFailure = (e: unknown): boolean =>
                   : "압축 실패(사유 미제공)",
             },
           });
-          compactStartedAt = null;
         } catch {
           /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
         }

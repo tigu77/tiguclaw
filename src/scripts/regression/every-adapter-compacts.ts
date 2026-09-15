@@ -281,6 +281,36 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ⑤ 드라이버가 **어느 어댑터인지를 말한다** (2026-09-15 구조 감사) ──────────
+    //  추출 전엔 codex 전용이라 `[codex 6b]` 가 맞았는데, 어댑터 무관이 되자 openai 압축이
+    //  **codex 로 로그에 찍혔다.** 로그는 1차 진단면이라(원격 인스턴스는 그것뿐이다) 틀린
+    //  어댑터를 가리키면 진단이 처음부터 엉뚱한 데로 간다.
+    const driverStart = src.codex.indexOf("export const compactThreadHistory");
+    const driverEnd = src.codex.indexOf("export const buildTurnHistory");
+    const driver =
+      driverStart < 0 || driverEnd < 0 ? "" : src.codex.slice(driverStart, driverEnd);
+    out.push(
+      assert(
+        "★드라이버 로그가 **고정 어댑터 이름**을 쓰지 않는다(openai 압축이 codex 로 찍히면 진단이 엉뚱한 데로 간다)",
+        driver !== "" && !/\[codex 6b\]/.test(driver) && /\[\$\{args\.adapter\} 6b\]/.test(driver),
+        driver === ""
+          ? "드라이버 구간을 못 찾음"
+          : `고정 codex 로그 ${(driver.match(/\[codex 6b\]/g) ?? []).length}줄 · 어댑터 변수 ${(driver.match(/\[\$\{args\.adapter\} 6b\]/g) ?? []).length}줄`,
+      ),
+      assert(
+        // ★어댑터 무관 드라이버가 **특정 어댑터의 기본값**을 들고 있으면 안 된다. 종전엔
+        //  `args.provider ?? "codex-oauth"` 라, `provider` 가 빈 경로로 들어온 openai 요약
+        //  실패가 **codex 쿨다운**을 등록했다(그리고 codex 쿨다운이 openai 요약을 막았다).
+        "★쿨다운 키에 드라이버가 **자기 기본값을 대지 않는다** — 모르면 호출부가 정한다",
+        driver !== "" &&
+          !/args\.provider \?\? "/.test(driver) &&
+          /provider: string;/.test(src.codex) &&
+          /provider: input\.provider \?\? "openai"/.test(src.openai) &&
+          /provider: input\.provider \?\? "codex-oauth"/.test(src.codex),
+        `드라이버 기본값 ${/args\.provider \?\? "/.test(driver)} · openai 기본값 ${/provider: input\.provider \?\? "openai"/.test(src.openai)} · codex 기본값 ${/provider: input\.provider \?\? "codex-oauth"/.test(src.codex)}`,
+      ),
+    );
+
     return out;
   },
 };

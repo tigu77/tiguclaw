@@ -116,6 +116,12 @@ permission · 훅 · 자동발견 · 스트림)은 **의도적으로 어댑터 �
 | 세션 | SDK resume + 시스템프롬프트 SHA-256 게이트 | resume 없음, 매 iteration 전체 재전송 |
 | 히스토리 압축 | SDK 자체 | `openai-codex-oauth-history.ts` (문자수 임계) |
 
+★**이 표는 두 어댑터 시절의 것이다 — openai 는 빠져 있다.** 히스토리 압축만 짚으면
+(2026-09-15): openai 도 **codex 와 같은 판정**을 지난다. 접기 계획·워터마크·관측은
+`compactThreadHistory` **한 곳**이고 어댑터는 «요약 호출» 만 준다. 종전엔 openai 가 요약
+없이 오래된 턴을 그냥 버렸다 — «모든 기능 LLM 무관» 을 어기던 자리였다. claude 는 여전히
+SDK 가 접고 우리는 `PreCompact`/`PostCompact` 로 관측만 한다.
+
 ★`file-ops-mcp.ts` 가 **parity 의 척추**다 — 등록 도구명이 `Read`/`Glob`/`Grep`/`Write`/
 `Edit`/`Bash`/`BashOutput`/`KillShell`/`WebFetch`/`WebSearch` 로 Claude Code 네이티브 이름을
 **글자 그대로 미러**한다. sysprompt·훅 차단문구·activity detail 이 어댑터와 무관하게 같은

@@ -13,6 +13,7 @@ import {
   stripInternalRuntimeScaffolding,
 } from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
+import { linkAbort } from "../turn-timeout.js";
 // ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
 //  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
 import { isRateLimited } from "../rate-limit.js";
@@ -648,6 +649,23 @@ const compactionFailStreak = new Map<string, number>();
 /** 이 횟수 연속 실패하면 이벤트로 올린다(그 뒤로는 재발행하지 않는다 — 로그 폭주 방지). */
 const COMPACTION_STUCK_THRESHOLD = 3;
 
+/**
+ * **이 오류가 «사용자가 멈춘 것»인가** (2026-09-15, 레드팀 O1).
+ *
+ * ★취소를 실패로 세면 두 가지가 같이 망가진다: 연속 실패 경보가 **사용자 자신의 정지**로
+ *  울리고, 적응 폴드 예산이 줄어 다음 압축이 더 잘게 쪼개진다. 둘 다 «고장» 을 전제한
+ *  장치인데 고장이 아니다.
+ * ★`AbortError` 는 표준이고, SDK 들이 `Request was aborted.` 를 문자열로만 주는 경우가
+ *  있어 둘 다 본다(문자열 판정을 늘리지 않는다 — 늘리면 그게 손 목록이 된다).
+ */
+export const isCancelled = (e: unknown): boolean => {
+  if (e instanceof Error && (e.name === "AbortError" || e.name === "UserCancelledError")) {
+    return true;
+  }
+  const m = e instanceof Error ? e.message : String(e);
+  return /Request was aborted\.|The operation was aborted/.test(m);
+};
+
 export const noteCompactionOutcome = (
   threadKey: string,
   ok: boolean,
@@ -708,10 +726,19 @@ const runSummarizer = async (
   accountId: string | undefined,
   model: string,
   effort: string | undefined,
+  parentSignal: AbortSignal | undefined,
 ): Promise<string> =>
   summarizePort !== null
     ? await summarizePort(text, targetChars, effort)
-    : await summarizeViaCodex(text, accessToken, accountId, model, targetChars, effort);
+    : await summarizeViaCodex(
+        text,
+        accessToken,
+        accountId,
+        model,
+        targetChars,
+        effort,
+        parentSignal,
+      );
 
 /**
  * **요약 요청 본문 — 판정을 순수 함수로 꺼낸다** (2026-09-15 정태님 신고로 생겼다).
@@ -758,6 +785,8 @@ async function summarizeViaCodex(
   model: string,
   targetChars: number,
   effort: string | undefined,
+  /** 부모 턴 취소 — openai 요약기와 **같은 계약**이다(2026-09-15, 레드팀 O8). */
+  parentSignal: AbortSignal | undefined,
 ): Promise<string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -778,12 +807,16 @@ async function summarizeViaCodex(
   // 전 턴 면제 비대상. 실패해도 호출자 oldest-drop 폴백이라 안전).
   const ac = new AbortController();
   const idleTimer = createIdleTimer(ac);
+  // ★**부모 취소가 여기까지 온다** (2026-09-15, 레드팀 O8). 종전엔 openai 요약만 `/stop`
+  //  에 끊기고 codex 요약은 계속 돌았다 — 같은 명령이 어댑터에 따라 다르게 동작했다
+  //  ([[feedback_every_feature_llm_agnostic]]).
+  const linked = linkAbort(ac.signal, parentSignal);
   try {
     const res = await fetch(`${CODEX_BASE_URL}/responses`, {
       method: "POST",
       headers,
       body,
-      signal: ac.signal,
+      signal: linked.signal,
     });
     if (!res.ok) {
       throw new Error(
@@ -1261,6 +1294,7 @@ export const compactThreadNow = async (
       accountId,
       model,
       turnReasoning,
+      undefined, // 수동 `/compact` 는 부모 턴 신호가 없다.
     );
     // ★자동 경로와 **같은 판정**을 쓴다 (2026-08-01). 종전엔 여기도 `=== ""` 뿐이라
     //  5자짜리를 통과시켜 compactedThrough 를 확정했다 — 자동 경로만 고쳤으면 반쪽이다.
@@ -1316,8 +1350,15 @@ export interface CompactedThreadHistory {
 export const compactThreadHistory = async (args: {
   channel: ChannelName;
   threadKey: string;
-  provider?: string;
-  /** 관측 이벤트에 실을 어댑터 이름(`codex`·`openai`…). */
+  /**
+   * 쿨다운 장부의 키 — **어댑터가 자기 것을 넘긴다** (2026-09-15, 구조 감사).
+   * ★종전엔 여기서 `?? "codex-oauth"` 로 떨어뜨렸다. 그 기본값은 codex 코드 시절의 것이라,
+   *  openai 가 `provider` 를 안 채운 경로로 들어오면 **openai 요약 실패가 codex 쿨다운을
+   *  등록**하고 codex 쿨다운이 openai 요약을 막는다. 어댑터 무관 드라이버가 특정 어댑터의
+   *  기본값을 들고 있으면 안 된다 — 모르면 호출부가 정한다.
+   */
+  provider: string;
+  /** 관측 이벤트·로그에 실을 어댑터 이름(`codex`·`openai`…). */
   adapter: string;
   /** 이 어댑터의 요약 호출 — **본 턴과 같은 모델·추론 강도로** 부를 책임은 호출부에 있다. */
   summarize: (text: string, targetChars: number) => Promise<string>;
@@ -1389,11 +1430,11 @@ export const compactThreadHistory = async (args: {
     // ★한도 중이면 **때리지 않는다** (2026-08-01). 종전엔 메인 턴이 쿨다운으로 건너뛰는
     //  동안에도 요약만 계속 호출해 실패했고, 실패할 때마다 oldest-drop 으로 맥락이 잘렸다.
     //  키는 메인 턴과 같은 규칙(provider ?? adapter) — 같은 백엔드를 같은 이름으로 센다.
-    const cdKey = args.provider ?? "codex-oauth";
+    const cdKey = args.provider;
     const cdLeft = cooldownPort?.remainingMs(cdKey) ?? 0;
     if (cdLeft > 0) {
       console.warn(
-        `[codex 6b] 요약 건너뜀 — '${cdKey}' 쿨다운 ${Math.ceil(cdLeft / 60000)}분 남음 ` +
+        `[${args.adapter} 6b] 요약 건너뜀 — '${cdKey}' 쿨다운 ${Math.ceil(cdLeft / 60000)}분 남음 ` +
           `(oldest-drop 폴백, watermark 유지 → 해제 후 재시도)`,
       );
       noteCompactionOutcome(args.threadKey, false, "쿨다운", prompt.length, args.adapter);
@@ -1424,7 +1465,7 @@ export const compactThreadHistory = async (args: {
           // ★패스 번호와 **이번 패스의** 워터마크를 싣는다 (2026-08-09). 종전엔 진단이 늘
           //  턴 시작 워터마크를 찍어, 여러 번 접게 된 뒤로 2·3회차가 전부 `0→…` 로 보여
           //  패스별 진행이 로그만으로 안 보였다([[feedback_logs_must_stand_alone]]).
-          `[codex 6b] 압축 성공 ${compactPass}/${CODEX_COMPACT_MAX_PASSES}패스 — ` +
+          `[${args.adapter} 6b] 압축 성공 ${compactPass}/${CODEX_COMPACT_MAX_PASSES}패스 — ` +
             `${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)} ` +
             `이번 패스 watermark→${watermark} 누적 요약=${summary.length}자 ` +
             // ★경과 — 사용자가 체감하는 건 턴 수가 아니라 이 시간이다(그런데 안 재고 있었다).
@@ -1439,7 +1480,7 @@ export const compactThreadHistory = async (args: {
         const got = fresh.trim().length;
         if (got < want * 0.3) {
           console.warn(
-            `[codex 6b] 요약이 목표에 크게 못 미침 — ${foldedText.length}자 → ${got}자 ` +
+            `[${args.adapter} 6b] 요약이 목표에 크게 못 미침 — ${foldedText.length}자 → ${got}자 ` +
               `(목표 ${want}자의 ${Math.round((got / want) * 100)}%). 압축은 진행하지만 맥락 손실 가능.`,
           );
         }
@@ -1452,7 +1493,7 @@ export const compactThreadHistory = async (args: {
         //   건지 구분이 안 돼, 실제로 5자짜리가 성공으로 지나갔다.
         const got = fresh.trim().length;
         console.warn(
-          `[codex 6b] 요약이 쓸 수 없는 크기 — oldest-drop 폴백 ` +
+          `[${args.adapter} 6b] 요약이 쓸 수 없는 크기 — oldest-drop 폴백 ` +
             `(요약 ${got}자 < 하한 ${MIN_USABLE_SUMMARY_CHARS}자, ` +
             `${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
             `→ 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`,
@@ -1462,11 +1503,24 @@ export const compactThreadHistory = async (args: {
     } catch (e) {
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
       const msg = e instanceof Error ? e.message : String(e);
+      // ★★**취소는 실패가 아니다** (2026-09-15, 레드팀 O1). 요약 호출에 부모 취소를
+      //  물리자 `/stop` 이 이 catch 로 들어오게 됐다 — 그대로 두면 사용자가 세 번
+      //  멈출 때 **«히스토리 압축이 3회 연속 실패 — 대화 맥락이 계속 버려지는 중입니다»**
+      //  가 뜨고 폴드 예산까지 줄어든다. 사용자가 멈춘 것을 고장으로 세는 셈이다.
+      //  ★연속 실패 계수·예산 축소·끝 신호를 **전부 건너뛰고** 조용히 빠진다 —
+      //   이번 턴은 oldest-drop 으로 가고 다음 턴이 같은 자리에서 다시 시도한다.
+      if (isCancelled(e)) {
+        console.log(
+          `[${args.adapter} 6b] 요약 취소됨 — 사용자가 멈춤(실패로 세지 않는다). ` +
+            `thread=${args.threadKey}`,
+        );
+        break;
+      }
       // ★한도로 실패했으면 **등록한다** — 안 하면 메인 턴은 멀쩡한 줄 알고 계속 때리고,
       //  다음 턴 요약도 같은 벽에 부딪힌다(배운 게 안 남는다).
-      cooldownPort?.register(args.provider ?? "codex-oauth", msg);
+      cooldownPort?.register(args.provider, msg);
       console.warn(
-        `[codex 6b] 요약 호출 실패 — oldest-drop 폴백 ` +
+        `[${args.adapter} 6b] 요약 호출 실패 — oldest-drop 폴백 ` +
           `(${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}): ${msg}` +
             // ★예외 경로도 축소한다 (2026-07-30 검토 지적) — 종전엔 빈 결과만 백오프를 탔다.
             //  크기 때문에 hang → idle abort 로 죽는 실패가 이 catch 로 오는데 축소가 0이면
@@ -1495,7 +1549,7 @@ export const compactThreadHistory = async (args: {
   for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
     const rec = planSummaryRecompaction(summary, CODEX_SUMMARY_MAX_CHARS);
     if (!rec.needed) break;
-    if ((cooldownPort?.remainingMs(args.provider ?? "codex-oauth") ?? 0) !== 0) break;
+    if ((cooldownPort?.remainingMs(args.provider) ?? 0) !== 0) break;
     let folded: string;
     try {
       folded = await args.summarize(
@@ -1504,7 +1558,7 @@ export const compactThreadHistory = async (args: {
       );
     } catch (e) {
       console.warn(
-        `[codex 6b] 누적 요약 재압축 실패 — 그대로 둔다(손실 0, 누적 ${summary.length}자): ` +
+        `[${args.adapter} 6b] 누적 요약 재압축 실패 — 그대로 둔다(손실 0, 누적 ${summary.length}자): ` +
           `${e instanceof Error ? e.message : String(e)}`,
       );
       break;
@@ -1514,7 +1568,7 @@ export const compactThreadHistory = async (args: {
     const next = applyRecompaction(summary, folded, rec);
     if (next === null) {
       console.warn(
-        `[codex 6b] 재압축 결과가 안 줄어 버린다 — 앞 구간 ${rec.oldPart.length}자 → ` +
+        `[${args.adapter} 6b] 재압축 결과가 안 줄어 버린다 — 앞 구간 ${rec.oldPart.length}자 → ` +
           `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length)}자). 누적 ${summary.length}자 유지.`,
       );
       break;
@@ -1522,14 +1576,14 @@ export const compactThreadHistory = async (args: {
     summary = next;
     upsertThreadSummary({ threadKey: args.threadKey, summary, compactedThrough: watermark });
     console.log(
-      `[codex 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
+      `[${args.adapter} 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
         `${folded.trim().length}자 (상한 ${CODEX_SUMMARY_MAX_CHARS}자, 최종 ${summary.length}자)`,
     );
   }
   if (summary.length > CODEX_SUMMARY_MAX_CHARS) {
     // 수렴 못 했으면 **남긴다** — 조용히 지나가면 최근 턴이 밀려나는 걸 아무도 모른다.
     console.warn(
-      `[codex 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${CODEX_SUMMARY_MAX_CHARS}자 ` +
+      `[${args.adapter} 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${CODEX_SUMMARY_MAX_CHARS}자 ` +
         `(구간 ${summary.split(SUMMARY_SECTION_SEP).length}개). 프롬프트 예산에서 최근 원문 턴이 밀릴 수 있다.`,
     );
   }
@@ -1619,10 +1673,18 @@ export const buildTurnHistory = async (
   const { allTurns, summary, watermark } = await compactThreadHistory({
     channel: input.sessionChannel ?? input.channel,
     threadKey: input.threadKey,
-    provider: input.provider,
+    provider: input.provider ?? "codex-oauth", // 쿨다운 키 — 이 어댑터의 기본값은 여기 산다.
     adapter: "codex",
     summarize: (text, targetChars) =>
-      runSummarizer(text, targetChars, accessToken, accountId, model, turnReasoning),
+      runSummarizer(
+        text,
+        targetChars,
+        accessToken,
+        accountId,
+        model,
+        turnReasoning,
+        input.abortSignal, // 부모 취소가 요약까지 온다(레드팀 O8).
+      ),
   });
   if (allTurns.length === 0) {
     return [currentTurn];

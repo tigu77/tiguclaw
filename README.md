@@ -179,7 +179,7 @@ Still stuck? Open an
 
 ## What it does
 
-Six things. Everything else is in [the full feature list](docs/features.en.md).
+Seven things. Everything else is in [the full feature list](docs/features.en.md).
 
 1. **Always on** — runs as a background service, restarts itself when it dies, and updates itself when
    you ask ("update yourself" or `/update`), rolling back if the new code won't build.
@@ -204,7 +204,7 @@ block, and the same skill layout — existing ones carry over unchanged.
 | | |
 |---|---|
 | [Setup & operations](docs/setup.en.md) | Keys, config, everyday commands, updating, uninstalling |
-| [Full feature list](docs/features.en.md) | Everything not in the six above |
+| [Full feature list](docs/features.en.md) | Everything not in the seven above |
 | [Hooks](docs/hooks.en.md) | Observe or block tool calls — Claude Code `hooks` format |
 | [LLM gateway](docs/gateway.en.md) | Use tiguclaw as the OpenAI-compatible backend for your own apps |
 | [Writing a plugin](docs/plugins.en.md) | Build a widget and a tool — the whole contract on one page |

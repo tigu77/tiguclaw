@@ -344,6 +344,18 @@ export const check: RegressionCheck = {
         `텍스트 복구 ${/if \(text !== ""\)/.test(sendCode)} · 새 입력 보존 ${/const typedSince = input\.value/.test(sendCode)}`,
       ),
       assert(
+        // ★O4(레드팀): 복원 분기가 `activeThreadKey` 를 «그때» 다시 읽었다. 컴포저는 탭이
+        //  공유하고 draft 는 스레드별이라, 보내는 사이 방을 옮기면 **A 의 글이 B 의 입력창에
+        //  꽂히고 B 의 draft 로 저장된다** — 그대로 B 에 보낼 수도 있다. 사용자가 직접 겪는다.
+        "★실패 복원이 **보낸 방**으로 간다 — 그 사이 탭을 옮겼으면 지금 방의 입력창을 안 건드린다",
+        /const sentFrom = activeThreadKey;/.test(sendCode) &&
+          /sentFrom === activeThreadKey/.test(sendCode) &&
+          /window\.stashChatDraft\(sentFrom/.test(sendCode) &&
+          // 복원 분기가 `activeThreadKey` 를 **직접** 쓰지 않는다(그게 O4 다)
+          !/window\.saveChatDraft\(activeThreadKey\)/.test(sendCode),
+        `제출시점 캡처 ${/const sentFrom = activeThreadKey;/.test(sendCode)} · 같은방 판정 ${/sentFrom === activeThreadKey/.test(sendCode)} · 다른방 보관 ${/window\.stashChatDraft\(sentFrom/.test(sendCode)}`,
+      ),
+      assert(
         "★못 보냈으면 첨부를 **되돌리되 개수 상한을 지킨다**(되돌리다 넘치면 그게 또 조용한 손실이다)",
         /sent\.ok === false/.test(sendCode) &&
           /\[\.\.\.atts, \.\.\.pendingAttachments\]/.test(sendCode) &&

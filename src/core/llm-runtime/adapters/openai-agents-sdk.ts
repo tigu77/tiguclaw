@@ -911,7 +911,11 @@ export const runOpenAi = async (
   const { allTurns, summary, watermark } = await compactThreadHistory({
     channel: idChannel,
     threadKey: input.threadKey,
-    provider: input.provider,
+    // ★쿨다운 키는 **이 어댑터의 기본값**으로 채운다 (2026-09-15, 구조 감사). 드라이버가
+    //  `?? "codex-oauth"` 로 떨어뜨리던 것을 걷었다 — 이 어댑터의 다른 다섯 자리는 이미
+    //  `?? "openai"` 로 채우는데 여기만 raw 로 넘기고 있었다. 레거시 호출처럼 `provider` 가
+    //  빈 경로에선 openai 요약 실패가 **codex 쿨다운**을 등록한다.
+    provider: input.provider ?? "openai",
     adapter: "openai",
     summarize: async (text, targetChars) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).

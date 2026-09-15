@@ -134,6 +134,11 @@
         }
         const text = input.value.trim();
         if (text.length === 0 && pendingAttachments.length === 0) return;
+        // ★**보낸 방을 지금 떠 둔다** (2026-09-15, 레드팀 O4). 복원 분기가 `activeThreadKey`
+        //  를 «그때» 다시 읽으면, 보내는 사이 탭을 옮겼을 때 **A 의 글이 B 의 입력창에
+        //  꽂히고 B 의 draft 로 저장된다** — 그대로 B 에 보낼 수도 있다. 컴포저는 탭이
+        //  공유하고 draft 는 스레드별이라 생기는 어긋남이다.
+        const sentFrom = activeThreadKey;
         // 큐 스냅샷 후 즉시 비움(전송 중 사용자가 새 첨부 추가 가능 — 다음 메시지로).
         const atts = pendingAttachments;
         pendingAttachments = [];
@@ -168,16 +173,22 @@
           //  «이 전송에 실린 것» 전부다.
           // ★**기다리는 동안 새로 친 글을 덮지 않는다** — 입력창이 비어 있을 때만 되돌리고,
           //  아니면 앞에 이어 붙인다(사용자가 친 것이 더 최신이므로 뒤에 둔다).
-          if (atts.length > 0) {
+          if (atts.length > 0 && sentFrom === activeThreadKey) {
             const cap = attachLimits ? attachLimits.count : atts.length + pendingAttachments.length;
             pendingAttachments = [...atts, ...pendingAttachments].slice(0, cap);
             renderAttachChips();
+          } else if (atts.length > 0) {
+            try { if (window.stashChatDraft) window.stashChatDraft(sentFrom, "", atts); } catch {}
           }
-          if (text !== "") {
+          if (text !== "" && sentFrom === activeThreadKey) {
             const typedSince = input.value;
             input.value = typedSince === "" ? text : `${text}\n${typedSince}`;
             growWrap.dataset.replicatedValue = input.value;
-            try { if (window.saveChatDraft) window.saveChatDraft(activeThreadKey); } catch {}
+            try { if (window.saveChatDraft) window.saveChatDraft(sentFrom); } catch {}
+          } else if (text !== "") {
+            // ★방을 옮겼으면 **그 방의 draft 로만** 돌려놓는다 — 지금 보고 있는 방의
+            //  입력창은 건드리지 않는다(남의 방에 내 글이 꽂히는 것이 O4 다).
+            try { if (window.stashChatDraft) window.stashChatDraft(sentFrom, text); } catch {}
           }
           repaintComposer();
         }
@@ -204,6 +215,26 @@
           localStorage.setItem(DRAFTS_LS, JSON.stringify(obj));
         } catch { /* 쿼터/비활성 무시 */ }
       };
+      /**
+       * **지금 보고 있지 않은 방의 draft 에 되돌려 놓는다** (2026-09-15, 레드팀 O4).
+       *
+       * ★`saveChatDraft` 는 «현재 입력창» 을 그 방에 저장하는 것이라 여기 못 쓴다 —
+       *  그걸 쓰면 지금 보고 있는 방의 글이 남의 방 draft 로 간다.
+       * ★기존 draft 가 있으면 **앞에** 이어 붙인다(보낸 것이 먼저 쓰인 글이다).
+       */
+      window.stashChatDraft = (tk, text, attachments) => {
+        if (!tk) return;
+        const prev = chatDrafts.get(tk) || { text: "", attachments: [] };
+        const merged = {
+          text: text ? (prev.text ? `${text}\n${prev.text}` : text) : prev.text,
+          attachments: [...(attachments || []), ...prev.attachments],
+        };
+        if (merged.text.trim() !== "" || merged.attachments.length > 0) {
+          chatDrafts.set(tk, merged);
+        }
+        persistDraftText();
+      };
+
       window.saveChatDraft = (tk) => {
         if (!tk) return;
         const text = input.value;

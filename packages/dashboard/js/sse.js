@@ -457,6 +457,16 @@
         if (ev.type === "llm.compact_failed") {
           const p = ev.payload || {};
           stopCompactingTick(p.threadKey);
+          // ★**이력 로드 창에서는 이 핸들러가 통째로 미뤄져야 한다** (2026-09-15, 레드팀 O5).
+          //  `renderLocalChat` 은 그 창에서 자기 자신을 다시 부르도록 미루는데, 그러면
+          //  아래 «한 줄로 고쳐 쓰기» 분기를 **건너뛴다** — 창이 열려 있는 동안 실패가
+          //  올 때마다 새 줄이 쌓이고 맵도 안 갱신된다. 미루려면 **판정까지 같이** 미뤄야 한다.
+          if (
+            typeof holdSseEventDuringHistory === "function" &&
+            holdSseEventDuringHistory({ ts: ev.ts, __render: () => renderEvent(ev) })
+          ) {
+            return;
+          }
           if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
             // ★**이미 있으면 그 줄을 고쳐 쓴다** (2026-09-15 아스트라 지적). 종전엔 키에
             //  스레드만 넣고 «한 줄로 갱신된다» 고 적었는데, `renderLocalChat` 이 키 뒤에

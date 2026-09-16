@@ -126,7 +126,8 @@ export const check: RegressionCheck = {
         grabFn(util, "attachLimitsFrom"),
         grabFn(util, "attachRejection"),
         grabFn(util, "restoreAttachments"),
-        "this.__read = attachLimitsFrom; this.__judge = attachRejection; this.__restore = restoreAttachments;",
+        grabFn(util, "sendRejectionAction"),
+        "this.__read = attachLimitsFrom; this.__judge = attachRejection; this.__restore = restoreAttachments; this.__reject = sendRejectionAction;",
       ].join("\n"),
       ctx,
     );
@@ -135,6 +136,11 @@ export const check: RegressionCheck = {
       pending: readonly string[],
       limits: { count: number } | null,
     ) => { next: string[]; overCap: boolean; cap: number | null };
+    const replyCode = await readRel("../../../packages/dashboard/js/reply.js");
+    const rejectAction = ctx.__reject as (
+      elapsedMs: number,
+      status: number,
+    ) => { tellUser: boolean; clearWorking: boolean; status: number };
     const readLimits = ctx.__read as (health: unknown) => {
       count: number;
       fileBytes: number;
@@ -296,18 +302,41 @@ export const check: RegressionCheck = {
           const endsAt = reply.indexOf("} else if (data && data.steered)", at);
           if (endsAt < 0) return false;
           const block = reply.slice(at, endsAt); // `!r.ok` 블록 **안쪽만**
-          const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{12}\}/.exec(block);
-          if (m === null) return false;
-          const afterTimeBranch = block.slice(m.index + m[0].length);
-          return /return \{ ok: false \}/.test(afterTimeBranch);
+          // ★**모양이 아니라 성질을 잰다** (2026-09-16 정정). 종전엔 «시간 분기 블록» 을
+          //  정규식으로 찾고 그 뒤에 실패 반환이 있는지 봤는데, 시간 분기를 **없애자**
+          //  패턴이 안 맞아 빨개졌다 — 코드가 나아졌는데 검사가 막은 것이다.
+          //  지키려는 성질은 «실패 반환이 **어떤 조건 안에도 없다**» 이다.
+          const lines = block.split("\n");
+          const idx = lines.findIndex((l) => /return \{ ok: false \}/.test(l));
+          if (idx < 0) return false;
+          // ★조건 안이 아니어야 한다 — **두 가지 모양**을 다 본다.
+          //  ① 블록 조건: 그 줄까지의 중괄호 균형이 `!r.ok` 자신(1)을 넘으면 안쪽이다.
+          //  ② **중괄호 없는 한 줄 조건**(`if (x) return …;`) — 깊이가 안 변해서 ①이 못 본다.
+          //    (자기 변이에서 적발: 이 줄이 없을 때 M3 가 통과했다.)
+          const depth = lines
+            .slice(0, idx)
+            .join("\n")
+            .split("")
+            .reduce((d, c) => (c === "{" ? d + 1 : c === "}" ? d - 1 : d), 0);
+          const sameLine = lines[idx] ?? "";
+          const guardedOnSameLine =
+            /\b(if|else|\?|&&|\|\|)\b|[?&|]/.test(
+              sameLine.slice(0, sameLine.indexOf("return")),
+            );
+          return depth === 1 && !guardedOnSameLine;
         })(),
-        `!r.ok 블록의 시간분기 밖 실패반환 ${(() => {
+        `!r.ok 블록의 실패반환 중괄호 깊이 ${(() => {
           const at = reply.indexOf("if (!r.ok) {");
           const endsAt = reply.indexOf("} else if (data && data.steered)", at);
           const block = at < 0 || endsAt < 0 ? "" : reply.slice(at, endsAt);
-          const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{12}\}/.exec(block);
-          const tail = m === null ? "" : block.slice(m.index + m[0].length);
-          return /return \{ ok: false \}/.test(tail);
+          const lines = block.split("\n");
+          const idx = lines.findIndex((l) => /return \{ ok: false \}/.test(l));
+          if (idx < 0) return "실패반환 없음";
+          return lines
+            .slice(0, idx)
+            .join("\n")
+            .split("")
+            .reduce((d, c) => (c === "{" ? d + 1 : c === "}" ? d - 1 : d), 0);
         })()}`,
       ),
       assert(
@@ -360,6 +389,27 @@ export const check: RegressionCheck = {
           // 복원 분기가 `activeThreadKey` 를 **직접** 쓰지 않는다(그게 O4 다)
           !/window\.saveChatDraft\(activeThreadKey\)/.test(sendCode),
         `제출시점 캡처 ${/const sentFrom = activeThreadKey;/.test(sendCode)} · 같은방 판정 ${/sentFrom === activeThreadKey/.test(sendCode)} · 다른방 보관 ${/window\.stashChatDraft\(sentFrom/.test(sendCode)}`,
+      ),
+      assert(
+        "★명시적 거절은 **언제나** 사용자에게 말한다 — 느린 거절이 조용히 글만 되돌리지 않는다",
+        // ★사고(2026-09-16): `/messages` 는 턴을 동기로 돌므로 턴이 던지면 한참 뒤에 비-2xx 가
+        //  온다. 종전엔 오류 표시가 «10초 안» 조건에 묶여 있어, 느린 거절이 아무 말 없이
+        //  텍스트만 입력창에 되돌렸다 — «턴은 도는 것 같은데 보낸 글이 다시 있다».
+        rejectAction(30_000, 500).tellUser === true &&
+          rejectAction(500, 413).tellUser === true,
+        `30초=${JSON.stringify(rejectAction(30_000, 500))} · 0.5초=${JSON.stringify(rejectAction(500, 413))}`,
+      ),
+      assert(
+        "작업중 해제는 **즉시 실패일 때만** — 긴 턴은 답이 SSE 로 올 수 있다",
+        rejectAction(500, 500).clearWorking === true &&
+          rejectAction(30_000, 500).clearWorking === false,
+        `0.5초=${rejectAction(500, 500).clearWorking} · 30초=${rejectAction(30_000, 500).clearWorking}`,
+      ),
+      assert(
+        "화면이 그 판정을 **쓴다**(인라인 조건으로 다시 짜지 않는다)",
+        /sendRejectionAction\(Date\.now\(\) - t0, r\.status\)/.test(replyCode) &&
+          /if \(act\.tellUser\) renderLocalChat/.test(replyCode),
+        `호출 ${/sendRejectionAction\(/.test(replyCode)} · 분리 ${/if \(act\.tellUser\)/.test(replyCode)}`,
       ),
       assert(
         "★실패 복원이 **기다리는 동안 붙인 첨부를 지우지 않는다**(아스트라 P2 재현: 상한 1 · 되돌릴 것 1 · 새 것 1)",

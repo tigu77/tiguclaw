@@ -46,7 +46,9 @@ export const check: RegressionCheck = {
     //  이 레포가 반복해서 데인 자리다: 게이트는 «있다» 가 아니라 «도는가»
     //  ([[feedback_gate_must_actually_run]]).
     {
-      const m = /const isTextDragClick = \(el\) => \{([\s\S]*?)\n      \};/.exec(util);
+      // ★판정 본체는 `textDragJudge` 다 — `isTextDragClick` 은 그걸 부르는 껍데기다.
+      //  입력이 전부 인자라 여기서 **바깥 변수 없이** 돌릴 수 있다(2026-09-16).
+      const m = /const textDragJudge = \(el, win, selAtPress\) => \{([\s\S]*?)\n      \};/.exec(util);
       out.push(
         assert(
           "★판정 함수를 떼어낼 수 있다(없으면 아래는 공짜 초록)",
@@ -56,10 +58,9 @@ export const check: RegressionCheck = {
       );
       if (m !== null) {
         const fn = new Function(
-          "window",
-          `const isTextDragClick = (el) => {${m[1] ?? ""}
-}; return isTextDragClick;`,
-        ) as (w: unknown) => (el: unknown) => boolean;
+          `const textDragJudge = (el, win, selAtPress) => {${m[1] ?? ""}
+}; return textDragJudge;`,
+        ) as () => (el: unknown, w: unknown, p: string) => boolean;
         /** 최소 DOM 흉내 — 선택 영역과 «이 안에 있나» 만 있으면 판정이 돈다. */
         const mkWin = (text: string, collapsed: boolean, inside: boolean, throws = false) => ({
           getSelection: () => {
@@ -73,7 +74,8 @@ export const check: RegressionCheck = {
           },
         });
         const el = { contains: (n: { __in?: boolean }) => n.__in === true };
-        const run = (w: unknown): boolean => fn(w)(el);
+        // ★`selAtPress` = **누를 때 남아 있던 선택**. 기본은 «없었다».
+        const run = (w: unknown, selAtPress = ""): boolean => fn()(el, w, selAtPress);
         const cases: Array<[string, unknown, boolean]> = [
           ["이 줄 안에서 끌어 골랐다", mkWin("고른 글자", false, true), true],
           ["그냥 클릭(선택 없음)", mkWin("", true, true), false],
@@ -317,6 +319,95 @@ export const check: RegressionCheck = {
         `opt-in 숨김=${!/classList\.add\("expanded"\)/.test(js("history-render.js"))}`,
       ),
     );
+
+    // ── ★**남아 있던 선택은 접기를 막지 않는다** (2026-09-16 정태님 신고) ────────────
+    //  증상: 카드 본문에서 글자를 고른 뒤(복사하려고) 머리줄을 누르면 접히지도 펴지지도
+    //  않고, **새로고침해야** 돌아왔다. 머리줄은 `user-select:none` 이라 그 클릭이 선택을
+    //  안 지우고, 종전 판정은 «카드 안에 선택이 있나» 만 봐서 계속 삼켰다.
+    //  ★물어야 할 것은 «선택이 있나» 가 아니라 **«이 동작이 선택을 만들었나»** 다.
+    {
+      const m2 = /const textDragJudge = \(el, win, selAtPress\) => \{([\s\S]*?)\n      \};/.exec(util);
+      if (m2 !== null) {
+        const judge = (
+          new Function(
+            `const textDragJudge = (el, win, selAtPress) => {${m2[1] ?? ""}
+}; return textDragJudge;`,
+          ) as () => (el: unknown, w: unknown, p: string) => boolean
+        )();
+        const win = (text: string) => ({
+          getSelection: () => ({
+            isCollapsed: false,
+            rangeCount: 1,
+            getRangeAt: () => ({ commonAncestorContainer: { __in: true } }),
+            toString: () => text,
+          }),
+        });
+        const el2 = { contains: (n: { __in?: boolean }) => n.__in === true };
+        // ★**배선까지 실행한다** — 판정만 재면 «껍데기가 빈 값을 넘긴다»·«누를 때 기록을
+        //  안 남긴다» 두 변이가 통과한다(실측). `createDragGuard` 안에 상태·읽기·판정이
+        //  다 있으므로 DOM 없이 돌릴 수 있다.
+        const gm = /const createDragGuard = \(\) => \{([\s\S]*?)\n      \};/.exec(util);
+        out.push(
+          assert(
+            "★가드(상태+읽기+판정)를 떼어낼 수 있다(없으면 아래 배선 검사는 공짜 초록)",
+            gm !== null,
+            gm === null ? "★못 찾음 — 표현이 바뀌었으면 이 검사부터 고쳐라" : `${gm[1]?.length ?? 0}자`,
+          ),
+        );
+        if (gm !== null) {
+          const guard = (
+            new Function(
+              "textDragJudge",
+              `const createDragGuard = () => {${gm[1] ?? ""}
+}; return createDragGuard;`,
+            ) as (j: unknown) => () => {
+              onPress: (w: unknown) => void;
+              isDrag: (el: unknown, w: unknown) => boolean;
+            }
+          )(judge)();
+          // 신고된 흐름 그대로: 본문을 골라 둔다 → 머리줄을 누른다(선택 그대로) → 클릭.
+          guard.onPress(win("수단"));
+          out.push(
+            assert(
+              "★배선까지: 고른 뒤 머리줄을 눌러도 **접힌다**(신고된 증상 재현 경로)",
+              guard.isDrag(el2, win("수단")) === false,
+              `남은 선택 흐름 판정=${guard.isDrag(el2, win("수단"))}`,
+            ),
+          );
+          const g2 = (
+            new Function(
+              "textDragJudge",
+              `const createDragGuard = () => {${gm[1] ?? ""}
+}; return createDragGuard;`,
+            ) as (j: unknown) => () => {
+              onPress: (w: unknown) => void;
+              isDrag: (el: unknown, w: unknown) => boolean;
+            }
+          )(judge)();
+          g2.onPress({ getSelection: () => ({ toString: () => "" }) }); // 선택 없이 눌렀다
+          out.push(
+            assert(
+              "★배선까지: 빈 상태에서 끌어 고르면 **안 접힌다**(원래 보호가 살아 있다)",
+              g2.isDrag(el2, win("고른 글자")) === true,
+              `새 선택 흐름 판정=${g2.isDrag(el2, win("고른 글자"))}`,
+            ),
+          );
+        }
+        out.push(
+          assert(
+            "★누를 때 이미 있던 선택은 **드래그가 아니다** — 접기가 살아 있다(신고된 증상)",
+            judge(el2, win("수단"), "수단") === false,
+            `남은 선택으로 판정=${judge(el2, win("수단"), "수단")}`,
+          ),
+          assert(
+            "이 동작이 만든 선택은 **드래그다** — 끌어 고르면 접히지 않는다(원래 의도)",
+            judge(el2, win("고른 글자"), "") === true &&
+              judge(el2, win("늘려 고른 글자"), "고른") === true,
+            `새 선택=${judge(el2, win("고른 글자"), "")} · 늘린 선택=${judge(el2, win("늘려 고른 글자"), "고른")}`,
+          ),
+        );
+      }
+    }
 
     return out;
   },

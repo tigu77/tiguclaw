@@ -183,10 +183,12 @@
           });
           const data = await r.json().catch(() => ({}));
           if (!r.ok) {
-            if (Date.now() - t0 < 10000) { // 즉시 실패 = 진짜 에러(브리지 다운·잘못된 요청 등).
-              setChatWorking(false);
-              renderLocalChat("error", data.error || ("HTTP " + r.status));
-            }
+            // ★판정은 `sendRejectionAction`(순수)가 한다 — 여기 인라인으로 두면 «말해주나» 와
+            //  «작업중을 끄나» 가 한 조건에 묶여, 느린 거절이 **아무 말 없이** 텍스트만
+            //  되돌리는 상태가 된다(정태님 신고: 턴 진행중인데 보낸 글이 입력창에 다시).
+            const act = sendRejectionAction(Date.now() - t0, r.status);
+            if (act.clearWorking) setChatWorking(false);
+            if (act.tellUser) renderLocalChat("error", data.error || ("HTTP " + r.status));
             // 오래 기다린 뒤엔 **작업 중 표시는 유지**한다(긴 턴일 수 있고 답은 SSE 로).
             // ★그러나 **보낸 게 아니라는 사실은 시간과 무관하다** (2026-09-15 2차 정정,
             //  회사 아스트라 P2). 종전엔 10초를 넘기면 `{ ok: true }` 로 떨어져, 느린

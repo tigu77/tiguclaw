@@ -75,6 +75,32 @@
        * @returns `null`(통과) · `"count"` · `"size"` · `"total"`
        */
       /**
+       * **전송이 명시적으로 거절됐을 때 화면이 무엇을 하나** — 순수 (2026-09-16).
+       *
+       * ★사고: `/messages` 는 **턴을 동기로 돌고 반환**한다. 턴이 도중에 던지면 브리지가
+       *  **한참 뒤에** 비-2xx 를 준다. 그런데 종전엔 오류 표시와 작업중 해제가 **둘 다**
+       *  «10초 안에 실패했을 때만» 안에 들어 있어서, 느린 거절은 **아무 말도 없이** 텍스트만
+       *  입력창으로 되돌아왔다 — 사용자 눈엔 «턴은 도는 것 같은데 방금 보낸 글이 다시
+       *  입력창에 있다» 가 된다(정태님 신고).
+       *
+       * ★**두 판단은 다르다:**
+       *  - «말해주나» — 서버가 **명시적으로 거절**했으면 **언제나 말한다.** 되돌아온 글의
+       *    이유를 사용자가 알아야 다시 보낼지 고칠지 정한다.
+       *  - «작업중을 끄나» — 긴 턴은 답이 SSE 로 올 수 있어 **즉시 실패일 때만** 끈다.
+       *    늦은 실패는 SSE(`turn_error`)가 정리하게 둔다.
+       */
+      const sendRejectionAction = (elapsedMs, status) => {
+        // ★상수를 **안에** 둔다 — 회귀가 이 함수만 떼어 실행하므로, 바깥 이름을 참조하면
+        //  «검사 자체가 던진다». 판정에 필요한 것은 전부 이 안에 있어야 한다.
+        const IMMEDIATE_MS = 10000; // 이 안에 실패하면 «즉시 실패»(긴 턴이 아니다).
+        return {
+          tellUser: true, // 명시적 거절은 시간과 무관하게 말한다.
+          clearWorking: Number(elapsedMs) < IMMEDIATE_MS,
+          status: Number(status) || 0,
+        };
+      };
+
+      /**
        * **전송이 실패했을 때 첨부 큐를 어떻게 되돌리나** — 순수 (2026-09-16 아스트라 P2).
        *
        * ★종전엔 이 판단이 `chat-send.js` 안에 인라인이었고, 회귀는 **소스에 `.slice(0, cap)`
@@ -866,17 +892,68 @@
        *  «왜 안 접히지» 가 된다.
        * ★never-throw — 접기가 선택 API 때문에 죽으면 안 된다.
        */
-      const isTextDragClick = (el) => {
+      /**
+       * ★★**«선택이 있나» 가 아니라 «이 동작이 선택을 만들었나» 다** (2026-09-16 정태님 신고:
+       *  *"간혹 채팅 카드 눌러도 접히거나 펴지지 않을 때가 있어, 새로고침하면 괜찮아지고"*).
+       *
+       * ★종전 판정은 **남아 있는 선택**도 드래그로 쳤다. 그래서:
+       *   ① 카드 본문에서 텍스트를 고른다(복사하려고) → 선택이 남는다
+       *   ② 카드 머리줄을 누른다 — 머리줄은 `user-select:none` 이라 **그 클릭이 선택을
+       *      안 지운다**
+       *   ③ 판정이 «카드 안에 선택이 있다» 로 접기를 삼킨다 → **계속 안 접힌다**
+       *   ④ 새로고침하면 선택이 사라져서 다시 된다 — 신고된 증상 그대로다.
+       *
+       * ★그래서 **누를 때의 선택**을 기억해 두고 **클릭 때와 비교**한다. 같으면 남아 있던
+       *  것이고(드래그가 아니다), 달라졌으면 이 동작이 만든 것이다(드래그다).
+       *  거리로 재지 않는 이유는 종전과 같다 — 천천히 조금 끈 선택을 놓치고 손 떨린 클릭을
+       *  막는다.
+       */
+      /**
+       * **누를 때의 선택을 기억하는 자리** — 상태·읽기·판정이 전부 이 안에 있다.
+       *
+       * ★배선을 밖에 두면 검사가 못 본다. 실제로 «껍데기가 빈 문자열을 넘긴다» ·
+       *  «누를 때 기록을 안 남긴다» 두 변이가 판정만 검사할 때 **통과했다**(2026-09-16).
+       *  DOM 에 남는 것은 «리스너를 달았나» 한 줄뿐이고, 나머지는 여기서 실행된다.
+       */
+      const createDragGuard = () => {
+        let atPress = "";
+        const readSel = (win) => {
+          try {
+            const s = win && win.getSelection && win.getSelection();
+            return s ? String(s) : "";
+          } catch { return ""; }
+        };
+        return {
+          onPress: (win) => { atPress = readSel(win); },
+          isDrag: (el, win) => textDragJudge(el, win, atPress),
+        };
+      };
+      const dragGuard = createDragGuard();
+      try {
+        // capture — 다른 핸들러가 막아도 우리는 본다.
+        document.addEventListener("mousedown", () => dragGuard.onPress(window), true);
+      } catch { /* 문서가 없으면(테스트 등) «남은 선택 없음» 으로 둔다 */ }
+
+      /**
+       * 판정 본체 — **입력이 전부 인자다**(바깥 변수를 안 본다). 그래야 검사가 실행한다.
+       * ★`isTextDragClick` 은 이걸 부르는 얇은 껍데기다 — 판정은 한 곳에만 있다.
+       */
+      const textDragJudge = (el, win, selAtPress) => {
         try {
-          const sel = window.getSelection && window.getSelection();
+          const sel = win && win.getSelection && win.getSelection();
           if (!sel || sel.isCollapsed || String(sel).trim() === "") return false;
+          let inEl = false;
           for (let i = 0; i < sel.rangeCount; i++) {
             const node = sel.getRangeAt(i).commonAncestorContainer;
-            if (el === node || el.contains(node)) return true;
+            if (el === node || el.contains(node)) { inEl = true; break; }
           }
-          return false;
+          if (!inEl) return false;
+          // ★**남아 있던 선택은 드래그가 아니다** — 누를 때와 같으면 이 동작이 만든 게 아니다.
+          return String(sel) !== String(selAtPress);
         } catch { return false; }
       };
+
+      const isTextDragClick = (el) => dragGuard.isDrag(el, window);
       /** 접기 토글 클릭 — 텍스트 드래그면 무시한다. 판정을 한 곳에 둔다(사이트마다 쓰면 갈린다). */
       /**
        * **카드 캐럿 — 세 카드가 같은 요소를 쓴다** (2026-09-14 정태님: *"도구카드랑 같은

@@ -73,7 +73,7 @@ dashboard 는 두 개의 포트를 다룬다 — 혼동 금지:
 | `/health` | GET | 무 | (무) | `{ok, version, subscribers, ...}` 헬스체크 |
 | `/inventory` | GET | 필 | `read` | `collectInventory()` JSON — plugin/channel/skill 목록 |
 | `/events` | GET | 필 | `read` | SSE 라이브 fan-out (`bus.history({limit:50})` 초기 푸시 후 라이브) |
-| `/messages` | POST | 필 | `write` | `{text, threadKey?, userId?}` → 비서 응답 `{replyText}` (60초 timeout) |
+| `/messages` | POST | 필 | `write` | `{text, threadKey?, userId?}` → 비서 응답 `{replyText}`. 턴이 끝날 때까지 기다린다(상한 없음, `HTTP_BRIDGE_HANDLER_TIMEOUT_MS` 로 유한값) |
 
 인증 헤더 — `Authorization: Bearer <TOKEN>` 또는 `?token=<TOKEN>` query.
 

@@ -193,7 +193,67 @@ export interface CodexSseResult {
    * 정상 종료 스트림에서는 호출부가 쓰지 않는다(로그 폭증 방지).
    */
   eventCounts?: Record<string, number>;
+  /**
+   * ★**도구 호출 «뒤에» 흘러온 텍스트 글자 수** (2026-09-16, 관측 전용).
+   *
+   * 왜 세나: codex 는 도구 activity 를 SSE 완전 소비 후 **사후 일괄 발행**하므로, 한
+   * iteration 안에서 `말A → 도구1 → 말B` 가 오면 관측이 `말A+말B → 도구1` 로 평탄화된다
+   * (2026-07-13 실현가능성 감사 §1 «문서화된 degrade»). 그 감사는 이 경우를 *"실측상 거의
+   * 발생하지 않는다"* 고 적었는데 **근거가 API 의미론 추정이었고, 아무도 센 적이 없다.**
+   * 고치는 비용(재시도 중복 발행 처리)을 치르기 전에 **값어치부터 재는** 숫자다.
+   *
+   * 0 이면 평탄화는 이론상 결함이고 문서화된 degrade 로 두면 된다. 0 이 아니면 실제
+   * 순서가 화면에서 뒤집히고 있다는 뜻이다.
+   */
+  textCharsAfterToolCall?: number;
 }
+
+/**
+ * 턴 단위 SSE 관측 누적기 — **순수**, 어댑터가 iteration 마다 한 번 부른다.
+ *
+ * ★자리를 여기로 뺀 이유(2026-09-16). 처음엔 어댑터 루프에 인라인 두 줄로 썼는데, 검사가
+ *  «조건 안에 있지 않은가» 를 **소스 정규식**으로 볼 수밖에 없었고 변이가 셋 연속 뚫었다
+ *  (블록 감싸기 → 한 줄 조건 → 삼항). 정규식을 넓히는 건 «목록 수정» 이라 또 뚫린다.
+ *  ★진짜 고침은 **스트림이 어떻게 끝났는지를 이 판단이 아예 못 보게** 하는 것이다 —
+ *  인자에 없으면 조건을 달 수가 없다([[feedback_simple_composable_no_duplication]]:
+ *  "검사가 껄끄러우면 코드가 잘못 놓인 것").
+ */
+export interface SseObservation {
+  events: Map<string, number>;
+  textAfterToolChars: number;
+}
+export const newSseObservation = (): SseObservation => ({
+  events: new Map<string, number>(),
+  textAfterToolChars: 0,
+});
+/**
+ * **파싱하고 관측을 합산한다** — 어댑터가 부르는 것은 이쪽이다.
+ *
+ * ★두 문장을 한 함수로 합친 이유(2026-09-16). `parseCodexSse(...)` 뒤에 `merge(...)` 를
+ *  나란히 두면, 그 둘 사이는 **이음매**라 «merge 만 조건으로 감싸는» 편집이 언제든
+ *  가능하다 — 실제로 변이 셋이 그 자리로 들어왔다(블록·한 줄 조건·삼항). 소스 정규식을
+ *  넓히는 것으로는 못 막는다([[feedback_simple_composable_no_duplication]]: **이음매에서
+ *  새면 린트 말고 이음매를 없애라**).
+ * ★합쳐 두면 합산을 건너뛰려면 **파싱을 건너뛰어야** 하고, 그건 조용히 안 된다.
+ */
+export const parseCodexSseObserved = async (
+  obs: SseObservation,
+  ...args: Parameters<typeof parseCodexSse>
+): Promise<CodexSseResult> => {
+  const result = await parseCodexSse(...args);
+  mergeSseObservation(obs, result);
+  return result;
+};
+
+export const mergeSseObservation = (
+  acc: SseObservation,
+  result: Pick<CodexSseResult, "eventCounts" | "textCharsAfterToolCall">,
+): void => {
+  for (const [k, v] of Object.entries(result.eventCounts ?? {})) {
+    acc.events.set(k, (acc.events.get(k) ?? 0) + v);
+  }
+  acc.textAfterToolChars += result.textCharsAfterToolCall ?? 0;
+};
 
 /**
  * V5.3 — SSE stream parser. V5.1' 본체 + function_call 3 분기 (OpenClaw L407-508).
@@ -238,6 +298,10 @@ export const parseCodexSse = async (
   let lastEvent = "(없음)";
   /** 이벤트 타입별 개수 — completed 없이 끝났을 때만 호출부가 읽는다(관측 전용). */
   const eventCounts: Record<string, number> = {};
+  /** 이 스트림에서 function_call 을 한 번이라도 봤나 — 아래 순서 계수의 기준점. */
+  let sawToolCall = false;
+  /** 그 뒤에 흘러온 텍스트 글자 수 (관측 전용 — `textCharsAfterToolCall`). */
+  let textAfterTool = 0;
   /** 백엔드가 명시 보고한 실패(먹지 않는다 — 첫 건을 보존해 호출부로 올린다). */
   let failure: CodexSseResult["failure"];
   const reader = body.getReader();
@@ -284,6 +348,7 @@ export const parseCodexSse = async (
             typeof event.delta === "string"
           ) {
             text += event.delta;
+            if (sawToolCall) textAfterTool += event.delta.length; // 순서 계수(관측 전용).
             // llm.delta fan-out — 순수 텍스트 증분만(누적본 아님). 호출부 coalescer 가
             // ~80ms∥120자로 묶어 publish. 미지정(onTextDelta===undefined)이면 no-op.
             onTextDelta?.(event.delta);
@@ -303,6 +368,7 @@ export const parseCodexSse = async (
               partialJson: typeof event.item.arguments === "string" ? event.item.arguments : "",
             };
             currentToolCallIndex += 1;
+            sawToolCall = true; // 이후 도착하는 텍스트는 «도구 뒤» 다(관측 전용).
             onProgress?.(); // 도구 호출 시작 = 진전 → no-progress 타이머 reset.
             onToolCallDelta?.({
               index: currentToolCallIndex,
@@ -483,6 +549,7 @@ export const parseCodexSse = async (
     usage,
     lastEvent,
     eventCounts,
+    textCharsAfterToolCall: textAfterTool,
     ...(failure !== undefined ? { failure } : {}),
   };
 };

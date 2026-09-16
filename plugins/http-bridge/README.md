@@ -7,7 +7,7 @@
 - `GET  /health`     — 인증 무. `{ok, version, subscribers, ...}` 헬스체크.
 - `GET  /events`     — 인증 필. SSE. `bus.history({limit:50})` 초기 푸시 후 라이브 fan-out.
 - `GET  /inventory`  — 인증 필. `collectInventory()` JSON.
-- `POST /messages`   — 인증 필. `{text, threadKey?, userId?}` → 비서 응답 `{replyText}` (60초 timeout).
+- `POST /messages`   — 인증 필. `{text, threadKey?, userId?}` → 비서 응답 `{replyText}`. **턴이 끝날 때까지 기다린다**(상한 없음 — 턴은 수 분이 걸릴 수 있다). 유한한 상한이 필요하면 `HTTP_BRIDGE_HANDLER_TIMEOUT_MS`.
 
 ## 환경변수
 

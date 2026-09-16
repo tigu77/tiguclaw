@@ -170,6 +170,8 @@ import {
   buildTurnHistory,
   buildSteeringInputItem,
   appendToolResultsToInput,
+  newSseObservation,
+  parseCodexSseObserved,
   type CodexSseResult,
   type ResponseInputItem,
 } from "./openai-codex-oauth-history.js";
@@ -1333,6 +1335,22 @@ export const runOpenAiCodex = async (
    * 불변식을 확정하고, 그때 재시도 배선을 판단한다. **확인 전에 고치지 않는다.**
    */
   const sseEndTally = new Map<string, number>();
+  /**
+   * ★**codex 가 실제로 무슨 이벤트를 보내나** (2026-09-16 정태님) — 턴당 합산, 관측 전용.
+   *
+   * 질문 셋을 한 줄로 가른다:
+   *  ① «codex 는 도구 옆에서 말을 안 한다» 가 사실인가 — `output_text.delta` 개수
+   *  ② **말하는데 우리가 안 듣는 것**인가 — 파서가 다루는 이벤트는 일곱뿐이고
+   *    `response.reasoning_summary_text.delta` 는 **목록에 없다**. 요청에도 `summary` 를
+   *    안 싣는다. 그래서 «안 온다» 인지 «와도 버린다» 인지 **아무도 모른다.**
+   *  ③ 도구 «뒤에» 텍스트가 오나 — `textCharsAfterToolCall`(2026-07-13 감사가
+   *    *"실측상 거의 발생 안 한다"* 고 **추정**으로 적고 넘어간 바로 그 수)
+   *
+   * `sseEndTally` 와 같은 이유로 만든다 — *"성공 턴 표본이 0 이라 답을 모른다."* 실측
+   * 0.029(호출당 텍스트 세그)는 codex **4턴** 표본이라 방향만 말한다. 이 줄이 표본을
+   * 만든다. **확인 전에 고치지 않는다.**
+   */
+  const sseObs = newSseObservation();
   /** 백엔드 보고 실패로 같은 body 를 재전송한 횟수(전송 재시도와 같은 cap 공유). */
   let backendFailAttempt = 0;
   /**
@@ -1682,7 +1700,8 @@ export const runOpenAiCodex = async (
         const toolDeltaIsExternal = new Map<number, boolean>();
         // 이 시도가 흘린 텍스트만 담는다 — 위 선언의 «시도마다 초기화» 참조.
         streamedInFlight = "";
-        sseResult = await parseCodexSse(
+        sseResult = await parseCodexSseObserved(
+          sseObs,
           res.body,
           () => {
             // onChunk — 계측만(진전 아님, 타이머 beat X). in_progress heartbeat 도 여기 잡힘.
@@ -1731,6 +1750,8 @@ export const runOpenAiCodex = async (
           const endKey =
             sseResult.lastEvent === "response.completed" ? "completed" : "none";
           sseEndTally.set(endKey, (sseEndTally.get(endKey) ?? 0) + 1);
+          // ★관측 합산은 `parseCodexSseObserved` 안에서 **파싱과 한 몸**으로 일어난다
+          //  (위 sseObs 선언 주석). 여기 따로 두면 그 한 줄만 조건으로 감쌀 수 있다.
           // ★completed 없이 끝난 스트림만 상세 1줄 — 정의상 드물어 소음 0. 무엇이 왔는지
           //  (reasoning 만? in_progress 만? 아예 조기 절단?) 를 이벤트 히스토그램으로 남긴다.
           //  이 표본이 "전송 실패로 재시도해도 되는가" 판단의 재료다.
@@ -2195,6 +2216,13 @@ export const runOpenAiCodex = async (
             } ` +
             `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
             `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
+            // ★이벤트 히스토그램 — 접두 `response.` 는 떼고 짧은 이름으로(줄이 이미 길다).
+            //  낯선 이름이 보이면 그게 답이다: `reasoning_summary_text.delta` 가 있으면
+            //  **모델은 말하는데 우리가 안 듣는 것**이고, 없으면 정말 안 오는 것이다.
+            `sseEv=${[...sseObs.events.entries()]
+              .map(([k, v]) => `${k.replace(/^response\./, "")}×${v}`)
+              .join(",") || "없음"} ` +
+            `도구뒤텍스트=${sseObs.textAfterToolChars}자 ` +
             `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
             `${lastToolsNote}${lastToolsCount > 0 && !lastToolsNote.startsWith(`tools=${lastToolsCount}개`) ? `(현재 ${lastToolsCount}개)` : ""} ${lastInstrNote} ${lastFingerprintNote}${turnCompacted > 0 ? ` ★압축=${turnCompacted}건(입력 한가운데를 고쳐 씀 — 캐시가 여기서 깨진다)` : ""} ` +
             // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가

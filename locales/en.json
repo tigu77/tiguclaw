@@ -145,6 +145,7 @@
   "chat.phase.toolNamed": "Running {name}",
   "chat.phase.writing": "Writing a reply",
   "chat.send": "Send",
+  "chat.send.stillRunning": "Still working — your message is queued and will run in order. The reply will appear here when it's ready.",
   "chat.stop.title": "Stop the running turn (same as /stop)",
   "chat.suggest.aria": "Fill the input with this suggestion",
   "chat.suggest.title": "Fill the input with this suggestion (Tab)",

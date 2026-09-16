@@ -137,10 +137,18 @@ export const check: RegressionCheck = {
       limits: { count: number } | null,
     ) => { next: string[]; overCap: boolean; cap: number | null };
     const replyCode = await readRel("../../../packages/dashboard/js/reply.js");
+    const chatRouteSrc = await readRel("../../../plugins/http-bridge/routes-chat.ts");
     const rejectAction = ctx.__reject as (
       elapsedMs: number,
       status: number,
-    ) => { tellUser: boolean; clearWorking: boolean; status: number };
+      body?: unknown,
+    ) => {
+      restore: boolean;
+      tellUser: boolean;
+      stillRunning: boolean;
+      clearWorking: boolean;
+      status: number;
+    };
     const readLimits = ctx.__read as (health: unknown) => {
       count: number;
       fileBytes: number;
@@ -307,7 +315,7 @@ export const check: RegressionCheck = {
           //  패턴이 안 맞아 빨개졌다 — 코드가 나아졌는데 검사가 막은 것이다.
           //  지키려는 성질은 «실패 반환이 **어떤 조건 안에도 없다**» 이다.
           const lines = block.split("\n");
-          const idx = lines.findIndex((l) => /return \{ ok: false \}/.test(l));
+          const idx = lines.findIndex((l) => /return \{ ok: false[,}]/.test(l));
           if (idx < 0) return false;
           // ★조건 안이 아니어야 한다 — **두 가지 모양**을 다 본다.
           //  ① 블록 조건: 그 줄까지의 중괄호 균형이 `!r.ok` 자신(1)을 넘으면 안쪽이다.
@@ -330,7 +338,7 @@ export const check: RegressionCheck = {
           const endsAt = reply.indexOf("} else if (data && data.steered)", at);
           const block = at < 0 || endsAt < 0 ? "" : reply.slice(at, endsAt);
           const lines = block.split("\n");
-          const idx = lines.findIndex((l) => /return \{ ok: false \}/.test(l));
+          const idx = lines.findIndex((l) => /return \{ ok: false[,}]/.test(l));
           if (idx < 0) return "실패반환 없음";
           return lines
             .slice(0, idx)
@@ -351,8 +359,8 @@ export const check: RegressionCheck = {
           if (m === null) return false;
           const tail = block.slice(m.index + m[0].length, m.index + m[0].length + 300);
           return (
-            /return \{ ok: false \}/.test(m[0]) && // 즉시 실패는 알린다
-            !/return \{ ok: false \}/.test(tail) // 오래 걸린 단절은 안 알린다
+            /return \{ ok: false[,}]/.test(m[0]) && // 즉시 실패는 알린다
+            !/return \{ ok: false[,}]/.test(tail) // 오래 걸린 단절은 안 알린다
           );
         })(),
         `단절: 즉시=실패보고 · 지연=보고안함 ${(() => {
@@ -360,13 +368,13 @@ export const check: RegressionCheck = {
           const block = at < 0 ? "" : reply.slice(at, at + 700);
           const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{10}\}/.exec(block);
           const tail = m === null ? "" : block.slice(m.index + m[0].length, m.index + m[0].length + 300);
-          return `(즉시 ${m !== null && /return \{ ok: false \}/.test(m[0])} / 지연 ${/return \{ ok: false \}/.test(tail)})`;
+          return `(즉시 ${m !== null && /return \{ ok: false[,}]/.test(m[0])} / 지연 ${/return \{ ok: false[,}]/.test(tail)})`;
         })()}`,
       ),
       assert(
         "★전송이 **실패를 알려준다** — 종전엔 언제나 undefined 라 호출부가 되돌릴 방법이 없었다",
-        /return \{ ok: false \}/.test(reply) && /return \{ ok: true \}/.test(reply),
-        `실패 보고 ${/return \{ ok: false \}/.test(reply)} · 성공 보고 ${/return \{ ok: true \}/.test(reply)}`,
+        /return \{ ok: false[,}]/.test(reply) && /return \{ ok: true \}/.test(reply),
+        `실패 보고 ${/return \{ ok: false[,}]/.test(reply)} · 성공 보고 ${/return \{ ok: true \}/.test(reply)}`,
       ),
       assert(
         // ★첫 판은 **첨부만** 되돌렸다 — 413 을 맞으면 **쓴 글이 그대로 사라졌다**(아스트라
@@ -407,9 +415,97 @@ export const check: RegressionCheck = {
       ),
       assert(
         "화면이 그 판정을 **쓴다**(인라인 조건으로 다시 짜지 않는다)",
-        /sendRejectionAction\(Date\.now\(\) - t0, r\.status\)/.test(replyCode) &&
-          /if \(act\.tellUser\) renderLocalChat/.test(replyCode),
-        `호출 ${/sendRejectionAction\(/.test(replyCode)} · 분리 ${/if \(act\.tellUser\)/.test(replyCode)}`,
+        /sendRejectionAction\(Date\.now\(\) - t0, r\.status, data\)/.test(replyCode) &&
+          /act\.tellUser/.test(replyCode) &&
+          // ★상태 코드를 화면에서 **다시** 해석하지 않는다 — 판정은 순수 함수 한 곳이다.
+          //  여기에 `r.status === 504` 같은 게 생기면 권위가 둘이 되어 갈린다.
+          !/r\.status\s*[=!]==?\s*\d/.test(replyCode),
+        `호출 ${/sendRejectionAction\(Date\.now\(\) - t0, r\.status, data\)/.test(replyCode)} · 사용 ${/act\.tellUser/.test(replyCode)} · 재해석 ${/r\.status\s*[=!]==?\s*\d/.test(replyCode)}`,
+      ),
+      assert(
+        "★**서버가 «받았다» 고 말한 것만 안 되돌린다** — 등급으로 추측하지 않는다 (P-1)",
+        // ★적대 검토 P-1(4점·자초): «5xx=모름» 으로 추측했더니, 데몬 정지·재시작 창의
+        //  `502 bridge unreachable` 과 부팅·종료 창의 `503 channel not started` 가 그 칸에
+        //  들어가 **쓴 글이 영구 소실**됐다(컴포저는 전송 직전에 비워진다). 둘 다 «확실히
+        //  안 받은 것» 이다. 배포가 커밋마다라 그 창은 자주 열린다.
+        rejectAction(60_000, 502, { error: "bridge unreachable: fetch failed" }).restore ===
+          true &&
+          rejectAction(200, 503, { error: "channel not started" }).restore === true &&
+          rejectAction(60_000, 504, { error: "timeout", accepted: true, running: true })
+            .restore === false,
+        `502=${rejectAction(60_000, 502, { error: "x" }).restore} · 503=${rejectAction(200, 503, { error: "x" }).restore} · 504(accepted)=${rejectAction(60_000, 504, { accepted: true, running: true }).restore}`,
+      ),
+      assert(
+        "★**«아직 돈다» 도 서버가 말한 것만** — 즉시 실패가 «처리 중» 으로 보이지 않는다",
+        // 같은 발견의 나머지 절반: 6ms 만에 돌아온 502 가 «순서대로 실행됩니다» 를 띄웠다.
+        rejectAction(6, 502, { error: "bridge unreachable" }).stillRunning === false &&
+          rejectAction(200, 500, { error: "boom", accepted: true }).stillRunning === false &&
+          rejectAction(60_000, 504, { accepted: true, running: true }).stillRunning === true,
+        `502(6ms)=${rejectAction(6, 502, {}).stillRunning} · 500(accepted)=${rejectAction(200, 500, { accepted: true }).stillRunning} · 504=${rejectAction(60_000, 504, { accepted: true, running: true }).stillRunning}`,
+      ),
+      assert(
+        "★본문이 없거나 이상해도 **글을 지키는 쪽**으로 떨어진다 — 틀리는 방향을 고른다",
+        rejectAction(100, 502, undefined).restore === true &&
+          rejectAction(100, 500, null).restore === true &&
+          rejectAction(100, 500, "문자열").restore === true &&
+          rejectAction(100, 500, { accepted: "true" }).restore === true,
+        `없음=${rejectAction(100, 502, undefined).restore} · null=${rejectAction(100, 500, null).restore} · 문자열=${rejectAction(100, 500, "문자열").restore} · 문자열true=${rejectAction(100, 500, { accepted: "true" }).restore}`,
+      ),
+      assert(
+        "★브리지가 **실제로 그 필드를 싣는다** — 화면의 규칙이 서버와 짝이 맞는다",
+        (() => {
+          const src = chatRouteSrc;
+          return (
+            /writeJson\(res, 504, \{ error: "timeout", accepted: true, running: true \}\)/.test(src) &&
+            /writeJson\(res, 500, \{ error: reason, accepted: true \}\)/.test(src) &&
+            // 안 받은 자리엔 안 단다 — 달면 그게 다시 P-1 이다.
+            !/writeJson\(res, 503, \{ error: "channel not started", accepted/.test(src)
+          );
+        })(),
+        `504 ${/504, \{ error: "timeout", accepted: true/.test(chatRouteSrc)} · 500 ${/500, \{ error: reason, accepted: true/.test(chatRouteSrc)} · 503 미표기 ${!/503, \{ error: "channel not started", accepted/.test(chatRouteSrc)}`,
+      ),
+      assert(
+        "★(옛) 504 는 여전히 안 되돌린다 — 정태님 신고 2회의 원래 증상",
+        // ★사슬: 턴 진행중 전송 → enqueueThreadTurn 직렬 큐 → POST 가 그 promise 를 await
+        //  → 60초(HANDLER_TIMEOUT_MS) → Promise.race 가 504. 그런데 channelHandler 는
+        //  **계속 돈다** = 그 메시지는 실행된다. 되돌리면 사용자가 다시 보내 중복 전송이다.
+        //  실측: 대시보드 턴 최대 35분 — 긴 턴 중 전송은 거의 항상 이 길로 온다.
+        rejectAction(60_000, 504, { error: "timeout", accepted: true, running: true })
+          .restore === false &&
+          rejectAction(60_000, 504, { error: "timeout", accepted: true, running: true })
+            .stillRunning === true,
+        `504=${JSON.stringify(rejectAction(60_000, 504, { error: "timeout", accepted: true, running: true }))}`,
+      ),
+      assert(
+        "★판정이 **상태 코드와 무관**하다 — 어떤 코드든 말 안 하면 «안 받음»(2026-09-17 P-1)",
+        // ★첫 판은 «5xx=모름 / 4xx=안 받음» 이라는 **부류** 판정이었다. 그게 P-1 이다:
+        //  5xx 를 내는 자리가 셋인데 둘은 «확실히 안 받음» 이라 한 칸에 못 들어간다.
+        //  이제 코드 등급은 판정에 안 쓴다 — 받은 쪽이 `accepted` 로 말한 것만 본다.
+        [400, 413, 500, 502, 503, 504, 599, 0].every(
+          (c) => rejectAction(60_000, c, { error: "x" }).restore === true,
+        ) &&
+          [500, 504].every(
+            (c) => rejectAction(60_000, c, { accepted: true }).restore === false,
+          ),
+        `말 안 함=${[400, 413, 500, 502, 503, 504, 599, 0].map((c) => rejectAction(60_000, c, {}).restore).join()} · accepted=${[500, 504].map((c) => rejectAction(60_000, c, { accepted: true }).restore).join()}`,
+      ),
+      assert(
+        "★4xx 는 **여전히 되돌린다** — 413 을 맞고 쓴 글이 사라지던 것을 되살리지 않는다",
+        rejectAction(30_000, 413, { error: "too large" }).restore === true &&
+          rejectAction(500, 400, { error: "빈 본문" }).restore === true &&
+          // ★상태 불명(0)도 **되돌리는** 쪽이다 — 받았다는 말이 없으면 글을 지킨다.
+          //  첫 판은 여기서 «모름 → 안 되돌림» 이었고, 그게 소실 방향이었다.
+          rejectAction(500, 0, undefined).restore === true,
+        `413=${rejectAction(30_000, 413, {}).restore} · 400=${rejectAction(500, 400, {}).restore} · 불명=${rejectAction(500, 0, undefined).restore}`,
+      ),
+      assert(
+        "★컴포저가 되돌릴지는 `restore` 로 정한다 — `ok` 를 다시 해석하지 않는다",
+        // ★이게 이번 결함의 형상이다: «전송 성공이 아니다»(ok:false)와 «서버가 안 받았다»
+        //  가 한 조건에 묶여 있어 504 에도 입력창이 채워졌다.
+        /sent\.restore === true/.test(sendCode) &&
+          !/sent\.ok === false/.test(sendCode) &&
+          /restore: act\.restore/.test(replyCode),
+        `컴포저 ${/sent\.restore === true/.test(sendCode)} · ok재해석 ${/sent\.ok === false/.test(sendCode)} · 운반 ${/restore: act\.restore/.test(replyCode)}`,
       ),
       assert(
         "★실패 복원이 **기다리는 동안 붙인 첨부를 지우지 않는다**(아스트라 P2 재현: 상한 1 · 되돌릴 것 1 · 새 것 1)",

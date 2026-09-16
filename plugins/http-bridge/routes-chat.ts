@@ -209,15 +209,25 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     presentOptions,
   };
 
+  // ★**시한이 무한이면 시계를 아예 안 만든다** (2026-09-16). `setTimeout(fn, Infinity)` 는
+  //  Node 가 «Timeout duration was set to 1» 로 경고하고 **즉시 발화**한다(실측 3ms) —
+  //  «상한 없음» 을 큰 수로 표현하려다 정반대가 되는 자리다. 그리고 유한값이어도 race 를
+  //  안 만드는 편이 낫다: 매 요청마다 타이머 하나와 영원히 pending 인 Promise 를 덜 만든다.
   let timeoutHandle: NodeJS.Timeout | undefined;
-  const timeoutP = new Promise<never>((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error("timeout"));
-    }, HANDLER_TIMEOUT_MS);
-  });
+  const bounded = Number.isFinite(HANDLER_TIMEOUT_MS);
+  const racers: Promise<unknown>[] = [ctx.channelHandler(msg)];
+  if (bounded) {
+    racers.push(
+      new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          reject(new Error("timeout"));
+        }, HANDLER_TIMEOUT_MS);
+      }),
+    );
+  }
 
   try {
-    const outcome = await Promise.race([ctx.channelHandler(msg), timeoutP]);
+    const outcome = await Promise.race(racers);
     // 큐-취소(ADR 2026-07-15, G1) — 이 항목이 대기 중 취소돼 handler 미실행 no-op
     // resolve 면 정상 흐름으로 {replyText:"", cancelled:true} 응답(에러 아님). 클라는
     // 이미 취소 UI 를 로컬 처리했으므로 무시 가능. isCancelledTurnResult 가 sentinel 판정.
@@ -234,10 +244,21 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     }
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
+    // ★**«받았나» 는 받은 쪽이 말한다** (2026-09-17, 적대 검토 P-1). 여기까지 온 것은
+    //  핸들러가 **실제로 돌았다**는 뜻이다 — 그러니 화면이 글을 되돌리면 안 된다(그 메시지는
+    //  이미 큐·이력에 있다). 반대로 이 자리에 **도달하지 못한** 5xx 가 둘 있다:
+    //    · 대시보드 프록시의 `502 bridge unreachable`(데몬 정지·재시작 창)
+    //    · 위 `503 channel not started`(부팅·종료 창)
+    //  그 둘은 «확실히 안 받았다» 인데, 화면이 상태 코드 **등급**으로 추측하면 셋이 한
+    //  칸에 들어가 **쓴 글이 영구 소실**된다(전송 직전에 컴포저를 비우므로).
+    // ★그래서 등급으로 추측하지 않고 **사실을 싣는다.** 새 5xx 출처가 생겨도 이 필드를
+    //  안 달면 화면은 «안 받았다» 로 읽어 글을 지킨다 — 틀리는 방향이 안전한 쪽이다.
     if (reason === "timeout") {
-      writeJson(res, 504, { error: "timeout" });
+      // `running` 은 시한이 유한할 때만 온다. `Promise.race` 는 기다리기를 그만둘 뿐이고
+      // 핸들러는 계속 돌아 턴을 끝낸다 — 화면의 «아직 처리 중» 안내가 여기서 나온다.
+      writeJson(res, 504, { error: "timeout", accepted: true, running: true });
     } else {
-      writeJson(res, 500, { error: reason });
+      writeJson(res, 500, { error: reason, accepted: true });
     }
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);

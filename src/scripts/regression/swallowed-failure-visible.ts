@@ -91,7 +91,9 @@ export const check: RegressionCheck = {
         /closeTextSegment\(\) \?\? streamedInFlight/.test(body) &&
           // 시도마다 초기화한다 — stall 재개는 같은 body 를 재전송해 텍스트를 처음부터 다시
           // 내므로, 누적하면 답장에 같은 문단이 두 번 실린다. 초기화가 SSE 호출 **직전**인지 본다.
-          /streamedInFlight = "";\s*\n\s*sseResult = await parseCodexSse\(/.test(body) &&
+          // ★함수 **이름**이 아니라 «초기화가 SSE 호출 직전인가» 를 본다 — 파서를 감싸는
+          //  이름이 바뀌어도(`parseCodexSseObserved`) 성질은 같다.
+          /streamedInFlight = "";\s*\n\s*sseResult = await parseCodexSse\w*\(/.test(body) &&
           // 그 버퍼를 실제로 채우는가 — 선언만 있고 안 채우면 폴백이 늘 빈 문자열이다.
           /streamedInFlight \+= delta;/.test(body),
         "폴백·시도별 초기화·적재 셋 다 확인",

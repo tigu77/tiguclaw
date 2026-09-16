@@ -74,6 +74,27 @@
        *
        * @returns `null`(통과) · `"count"` · `"size"` · `"total"`
        */
+      /**
+       * **전송이 실패했을 때 첨부 큐를 어떻게 되돌리나** — 순수 (2026-09-16 아스트라 P2).
+       *
+       * ★종전엔 이 판단이 `chat-send.js` 안에 인라인이었고, 회귀는 **소스에 `.slice(0, cap)`
+       *  이 있는지**만 봤다. 그래서 «자른다» 라는 **틀린 동작을 검사가 고정**했다 — 버그와
+       *  같이 쓴 검사는 그 버그를 못 잡는다. 판단을 여기 두면 검사가 **실행**한다
+       *  ([[feedback_simple_composable_no_duplication]]).
+       *
+       * ★**자르지 않는다.** 되돌릴 것이 상한을 채우면 기다리는 동안 새로 붙인 파일이
+       *  조용히 사라진다. 실패 복원은 **사용자가 넣은 것을 지우지 않는다** — 넘친 채로
+       *  두고 «넘쳤다» 를 알린다. 칩마다 ×가 있어 지울 수 있고, 다음 전송은
+       *  `attachRejection` 이 막는다. 즉 **보이고 되돌릴 수 있는 상태**다.
+       * ★순서는 «되돌린 것 먼저, 새로 붙인 것 뒤» — 사용자가 방금 붙인 것이 더 최신이라
+       *  뒤에 둔다(입력창 텍스트를 되돌리는 규칙과 같다).
+       */
+      const restoreAttachments = (sentAtts, pending, limits) => {
+        const next = [...sentAtts, ...pending];
+        const cap = limits && Number.isFinite(Number(limits.count)) ? Number(limits.count) : null;
+        return { next, overCap: cap !== null && next.length > cap, cap };
+      };
+
       const attachRejection = (queuedCount, queuedBytes, fileBytes, limits) => {
         if (!limits) return null; // 서버 상한을 모른다 — 서버가 판정한다.
         const count = Number(limits.count),

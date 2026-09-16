@@ -403,8 +403,8 @@ handler: async (args, host) => `안녕, ${args.text}`,
 - **핸들러가 던져도 데몬은 안 죽습니다** — 그 요청만 502 가 되고 로그에 남습니다. 다만
   `start()` 에서 던지면 그 플러그인만 로드에 실패합니다(다른 플러그인은 무사합니다).
 - ★**앱과 함께 오는 플러그인의 이름은 못 씁니다.** 지금 예약된 이름은 `claude-subscription-auth`·`cli-channel`·
-  `codex-subscription-auth`·`dashboard`·`file-watch`·`http-bridge`·`running-work`·`scheduler`·
-  `self-growth`·`telegram-channel` 입니다. 폴더명이 아니라 **매니페스트의 `name`** 으로 봅니다(폴더는 아무렇게나
+  `codex-subscription-auth`·`computer-use`·`dashboard`·`file-watch`·`http-bridge`·
+  `running-work`·`scheduler`·`self-growth`·`telegram-channel` 입니다. 폴더명이 아니라 **매니페스트의 `name`** 으로 봅니다(폴더는 아무렇게나
   둬도 됩니다). 그 이름으로 설치하면 *"같은 이름의 번들 플러그인이 있습니다"* 로 거부됩니다 —
   그 플러그인이 꺼져 있거나 로드에 실패했어도 마찬가지입니다. 이름은 예약된 것이지 그날
   잘 떴느냐에 달린 게 아닙니다.

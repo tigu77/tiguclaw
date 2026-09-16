@@ -13,6 +13,7 @@ import {
   stripInternalRuntimeScaffolding,
 } from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
+import { TOOL_MEDIA_KEEP_RECENT, supersededMediaText } from "./_mcp-content.js";
 import { linkAbort } from "../turn-timeout.js";
 // ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
 //  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
@@ -1956,6 +1957,114 @@ export const capToolOutputForEntry = (
  *  - minOutputChars 이하 output 은 압축 안 함 (placeholder 오버헤드 회피).
  *  - idempotent: 이미 마커가 박힌 output 은 건너뜀.
  */
+/**
+ * **이 스텝의 도구 결과를 요청에 싣는다** — 압축·cap·미디어를 한 순서로 (2026-09-15).
+ *
+ * ★셋이 어댑터 루프에 인라인으로 있었다. 그래서 회귀가 «순서» 를 볼 수 없었고 —
+ *  검사가 루프를 **자기가 다시 지어야** 했다 — 호출부를 옮기는 편집이 조용히 통과했다
+ *  ([[feedback_simple_composable_no_duplication]]).
+ *
+ * ★**순서가 둘 다 의도적이고 서로 반대다:**
+ *   - 텍스트는 새 배치를 넣기 **전**에 압축한다. 창이 3이라 나중에 줄이면 병렬 결과
+ *     앞부분이 «모델이 한 번도 못 본 채» 생략된다.
+ *   - 미디어는 넣은 **뒤**에 줄인다. 창이 1이고 이번 배치가 한 메시지라, 먼저 줄이면
+ *     이번 요청에 두 묶음이 실려 나간다.
+ *
+ * ★미디어를 **한 메시지**로 묶는 이유: 같은 스텝의 병렬 도구가 각자 이미지를 주면 둘 다
+ *  살아야 한다. 도구마다 메시지를 만들면 창 1이 그중 하나만 남긴다.
+ *
+ * 돌려주는 값 = 이번 호출이 **입력 한가운데를 고쳐 쓴** 횟수(프리픽스 캐시 진단용).
+ */
+export const appendToolResultsToInput = (
+  inputArray: ResponseInputItem[],
+  results: readonly {
+    callId: string;
+    output: string;
+    media: readonly ResponseMediaItem[];
+  }[],
+): number => {
+  let compacted = compactOldToolOutputs(inputArray);
+  // C2 — inputArray *진입* 직전 단발 cap. 큰 단일 output(Bash 1MB·Read 대용량)이 턴 끝까지
+  // 매 iteration 재전송되며 비용을 지배하므로 진입 시점에 머리+꼬리만 남긴다. 도구 자체
+  // cap 과 별개. function_call_output 은 결과 배열 순서대로 push → call_id 매칭 보존.
+  const pendingMedia: ResponseMediaItem[] = [];
+  for (const { callId, output, media } of results) {
+    inputArray.push({
+      type: "function_call_output",
+      call_id: callId,
+      output: capToolOutputForEntry(output),
+    });
+    pendingMedia.push(...media);
+  }
+  // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 (2026-08-01). function_call_output
+  //  바로 뒤에 user 메시지로 붙여야 모델이 "그 도구 결과의 이미지" 로 읽는다.
+  //  이게 없으면 file-ops 가 이미지를 줘도 모델에겐 아무것도 안 간다(원래 사고).
+  if (pendingMedia.length > 0) {
+    inputArray.push({ type: "message", role: "user", content: [...pendingMedia] });
+    compacted += compactOldToolMedia(inputArray);
+  }
+  return compacted;
+};
+
+/**
+ * **도구가 만든 이미지는 최신 묶음만 원형으로 들고 간다** (2026-09-15).
+ *
+ * ★`compactOldToolOutputs` 는 `function_call_output` **만** 훑는다. 그런데 도구 결과의
+ *  이미지는 2026-08-01 부터 그 자리에 없다 — 문자열 전용이라 **별도 user 메시지**로 떼어
+ *  붙인다(`openai-codex-oauth.ts` 의 pendingMedia). 그래서 **아무 규칙도 이미지를 안 셌다.**
+ *  실측(실제 push 패턴 재현): 관측 20회 × 500KB → 요청 13,339,344B · 압축 0건 · 이미지 20장.
+ *  압축이 0건인 건 정상이다 — 남은 텍스트가 `CODEX_COMPACT_MIN_OUTPUT` 아래라 텍스트 규칙이
+ *  **올바르게** 아무것도 안 한 것이다. 없던 건 이미지 규칙이다.
+ *
+ * ★**«도구가 만든 것» 과 «사용자가 보낸 것» 을 가르는 기준**: `buildCurrentTurn` 을 지나는
+ *  사용자 발화(초기 턴·mid-turn steering)는 **언제나 `input_text` 원소를 함께 싣는다**
+ *  (`content: [...mediaItems, { type:"input_text", … }]`). 도구 미디어 묶음은 `content` 가
+ *  **미디어 전용**이다. 그러니 «텍스트 원소가 없는 user 메시지» = 도구가 만든 것이다.
+ *  이름 목록이 아니라 **정의점에서 파생된 판정**이고([[feedback_hand_maintained_lists]]),
+ *  `user-media-keeps-its-text` 회귀가 그 전제를 고정한다.
+ *  ★이게 중요한 이유: 이 판정이 틀리면 **사용자가 방금 보낸 사진을 우리가 지운다.**
+ *
+ * ★단위는 **개수**다. `*_CHARS` env 를 참조하지 않으므로 이미 설정된 값의 뜻이 안 바뀐다.
+ * ★고쳐 쓴 묶음 수를 돌려준다(호출부는 무시해도 된다 — additive).
+ */
+export const compactOldToolMedia = (
+  inputArray: ResponseInputItem[],
+  opts?: { keepRecent?: number },
+): number => {
+  const keepRecent = opts?.keepRecent ?? TOOL_MEDIA_KEEP_RECENT;
+  const idxs: number[] = [];
+  for (let i = 0; i < inputArray.length; i++) {
+    if (isToolMediaMessage(inputArray[i])) idxs.push(i);
+  }
+  if (idxs.length <= keepRecent) return 0;
+  let compacted = 0;
+  for (let j = 0; j < idxs.length - keepRecent; j++) {
+    const item = inputArray[idxs[j] as number] as ResponseInputMessage;
+    // 미디어 자리에 «무엇이 밀려났나» 를 남긴다 — 텍스트가 생기므로 다음 호출엔
+    // 이 판정에 더 안 걸린다(멱등).
+    item.content = [
+      { type: "input_text", text: supersededMediaText(item.content.length) },
+    ];
+    compacted += 1;
+  }
+  return compacted;
+};
+
+/**
+ * 도구가 만든 미디어 묶음인가 — 위 함수의 판정을 한 곳에 둔다(검사도 이걸 지난다).
+ */
+const isToolMediaMessage = (item: ResponseInputItem | undefined): boolean => {
+  if (item === undefined || item.type !== "message" || item.role !== "user") return false;
+  const content = item.content;
+  if (!Array.isArray(content) || content.length === 0) return false;
+  let media = 0;
+  for (const c of content) {
+    if (c.type === "input_text" || c.type === "output_text") return false;
+    if (c.type === "input_image" || c.type === "input_file") media += 1;
+  }
+  return media > 0;
+};
+
 export const compactOldToolOutputs = (
   inputArray: ResponseInputItem[],
   opts?: { keepRecent?: number; minOutputChars?: number },

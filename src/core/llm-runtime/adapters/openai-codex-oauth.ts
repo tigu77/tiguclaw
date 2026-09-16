@@ -169,11 +169,11 @@ import {
   type ResponseMediaItem,
   buildTurnHistory,
   buildSteeringInputItem,
-  capToolOutputForEntry,
-  compactOldToolOutputs,
+  appendToolResultsToInput,
   type CodexSseResult,
   type ResponseInputItem,
 } from "./openai-codex-oauth-history.js";
+import { splitMcpToolContent, emptyToolText } from "./_mcp-content.js";
 import {
   addUsage,
   describeTally,
@@ -345,6 +345,11 @@ const READ_ONLY_EXACT = new Set<string>([
   // 부작용이 있지만 **재실행이 무해**한 것들(멱등·표시 전용).
   "reply_to_current_message",
   "update_todos",
+  // ★`observe_screen` — 화면을 찍기만 한다(클릭·입력 없음). 폴백이 되불러도 무해하다.
+  //  ★**정규식에 `observe_` 를 더하지 않았다**: 그러면 앞으로 생길 `observe_*` 가 아무도
+  //   결정하지 않은 채 읽기전용이 된다. `fix-fallout` 회귀가 강제하는 성질이 정확히
+  //   «새 도구마다 사람이 결정한다» 라, 규약을 넓히면 그 성질을 무력화한다.
+  "observe_screen",
 ]);
 export const isReadOnlyTool = (name: string): boolean =>
   READ_ONLY_EXACT.has(name) ||
@@ -2457,40 +2462,22 @@ export const runOpenAiCodex = async (
                   });
                 // 도구 실행 성공 — 이름 누적 (빈응답 nudge·fallback 에 사용). 실패는 카운트 X.
                 executedToolNames.add(tc.name);
-                // MCP CallToolResult.content = Array<{type:"text", text:string} | ...>.
-                // text 노드만 join. (memory · file-ops 도구는 모두 text 반환.)
-                const arr = Array.isArray(result) ? result : [];
-                output = arr
-                  .filter(
-                    (c) =>
-                      c !== null && typeof c === "object" && (c as { type?: string }).type === "text",
-                  )
-                  .map((c) => String((c as { text?: unknown }).text ?? ""))
-                  .join("");
-                // ★이미지 블록은 **비전 채널로** 옮긴다 (2026-08-01). function_call_output 은
-                //  문자열 전용이라 이미지를 실을 수 없다 — 도구 결과 옆에 input_image 를
-                //  나란히 push 해야 모델이 실제로 본다(첨부 경로가 이미 하는 일과 동형).
-                //  종전엔 text 아닌 블록을 통째로 버렸고, 그래서 file-ops 가 이미지를
-                //  줘도 모델에겐 아무것도 안 갔다.
-                for (const c of arr) {
-                  if (c === null || typeof c !== "object") continue;
-                  const b = c as { type?: string; data?: unknown; mimeType?: unknown };
-                  if (b.type !== "image" || typeof b.data !== "string") continue;
-                  const mime = typeof b.mimeType === "string" ? b.mimeType : "image/png";
+                // MCP CallToolResult.content 를 텍스트/미디어로 가른다 — **판단은 공유**
+                // (`_mcp-content.ts`). 종전엔 이 로직이 여기에만 있어서 agents-SDK 어댑터엔
+                // 아예 없었고, 거기선 SDK 가 이미지 블록을 그대로 도구 출력에 실어
+                // base64 가 텍스트로 쏟아졌다(원칙 2 — 모든 기능은 LLM 무관).
+                // ★이미지 블록을 **비전 채널로** 옮기는 이유는 그대로다 (2026-08-01):
+                //  function_call_output 은 문자열 전용이라 이미지를 실을 수 없어, 도구 결과
+                //  옆에 input_image 를 나란히 push 해야 모델이 실제로 본다.
+                const split = splitMcpToolContent(result);
+                output = split.text;
+                for (const m of split.media) {
                   toolMedia.push({
                     type: "input_image",
-                    image_url: `data:${mime};base64,${b.data}`,
+                    image_url: `data:${m.mimeType};base64,${m.data}`,
                   });
                 }
-                // ★비었을 때 result 를 통째로 stringify 하면 **base64 가 텍스트로 쏟아진다**
-                //  (이미지 블록이 오는 순간 입력 토큰이 폭증한다 — 원래 사고의 형상 그대로).
-                //  미디어가 있으면 그 사실만 말한다.
-                if (output === "") {
-                  output =
-                    toolMedia.length > 0
-                      ? `(이미지 ${toolMedia.length}개를 비전 채널로 첨부했습니다.)`
-                      : JSON.stringify(result ?? {});
-                }
+                if (output === "") output = emptyToolText(result, toolMedia.length);
               }
             } catch (e) {
               output = `Error: ${e instanceof Error ? e.message : String(e)}`;
@@ -2546,34 +2533,10 @@ export const runOpenAiCodex = async (
         ),
       );
 
-      // 먼저 이전 요청에 실렸던 출력만 압축한다. 새 배치까지 넣은 뒤 최근 3개를
-      // 남기면 병렬 결과 앞부분은 모델이 한 번도 보지 못한 채 생략된다.
-      turnCompacted += compactOldToolOutputs(inputArray);
-
-      // C2 (compaction, architect §C2) — inputArray *진입* 직전 단발 cap. 큰 단일
-      // output(Bash 1MB·Read 대용량)이 turn 끝까지 매 iteration 재전송되며 비용을
-      // 지배하므로, 진입 시점에 머리+꼬리만 남긴다. 도구 자체 cap 과 별개. 에러
-      // 문자열("Error: …")은 보통 짧아 자연히 cap 미달 → 무영향. function_call_output 은
-      // 결과 배열 순서대로 push → call_id 매칭(병렬이라도 순서·매칭 보존, canonical shape).
-      const pendingMedia: ResponseMediaItem[] = [];
-      for (const { callId, output, media } of toolOutputs) {
-        inputArray.push({
-          type: "function_call_output",
-          call_id: callId,
-          output: capToolOutputForEntry(output),
-        });
-        pendingMedia.push(...media);
-      }
-      // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 (2026-08-01). function_call_output
-      //  바로 뒤에 user 메시지로 붙여야 모델이 "그 도구 결과의 이미지" 로 읽는다.
-      //  이게 없으면 file-ops 가 이미지를 줘도 모델에겐 아무것도 안 간다(원래 사고).
-      if (pendingMedia.length > 0) {
-        inputArray.push({
-          type: "message",
-          role: "user",
-          content: pendingMedia,
-        } as (typeof inputArray)[number]);
-      }
+      // ★이 스텝의 도구 결과를 요청에 싣는다 — **압축·cap·미디어 순서가 한 함수 안에**
+      //  있다(`appendToolResultsToInput`). 종전엔 이 셋이 여기 인라인이라, 순서를 바꾸는
+      //  편집을 회귀가 볼 수 없었다(검사가 루프를 자기가 다시 지어야 했다).
+      turnCompacted += appendToolResultsToInput(inputArray, toolOutputs);
 
 
       iteration += 1;

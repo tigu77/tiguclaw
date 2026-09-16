@@ -125,10 +125,16 @@ export const check: RegressionCheck = {
       [
         grabFn(util, "attachLimitsFrom"),
         grabFn(util, "attachRejection"),
-        "this.__read = attachLimitsFrom; this.__judge = attachRejection;",
+        grabFn(util, "restoreAttachments"),
+        "this.__read = attachLimitsFrom; this.__judge = attachRejection; this.__restore = restoreAttachments;",
       ].join("\n"),
       ctx,
     );
+    const restore = ctx.__restore as (
+      sentAtts: readonly string[],
+      pending: readonly string[],
+      limits: { count: number } | null,
+    ) => { next: string[]; overCap: boolean; cap: number | null };
     const readLimits = ctx.__read as (health: unknown) => {
       count: number;
       fileBytes: number;
@@ -356,11 +362,42 @@ export const check: RegressionCheck = {
         `제출시점 캡처 ${/const sentFrom = activeThreadKey;/.test(sendCode)} · 같은방 판정 ${/sentFrom === activeThreadKey/.test(sendCode)} · 다른방 보관 ${/window\.stashChatDraft\(sentFrom/.test(sendCode)}`,
       ),
       assert(
-        "★못 보냈으면 첨부를 **되돌리되 개수 상한을 지킨다**(되돌리다 넘치면 그게 또 조용한 손실이다)",
-        /sent\.ok === false/.test(sendCode) &&
-          /\[\.\.\.atts, \.\.\.pendingAttachments\]/.test(sendCode) &&
-          /\.slice\(0, cap\)/.test(sendCode),
-        `실패 분기 ${/sent\.ok === false/.test(sendCode)} · 앞에 되돌림 ${/\[\.\.\.atts, \.\.\.pendingAttachments\]/.test(sendCode)} · 상한 적용 ${/\.slice\(0, cap\)/.test(sendCode)}`,
+        "★실패 복원이 **기다리는 동안 붙인 첨부를 지우지 않는다**(아스트라 P2 재현: 상한 1 · 되돌릴 것 1 · 새 것 1)",
+        // ★종전엔 이 자리가 소스에 `.slice(0, cap)` 이 있는지만 봤다 — **틀린 동작을 검사가
+        //  고정**했고, 버그와 같이 쓴 검사라 버그를 못 잡았다(외부 검토가 잡았다).
+        //  이제 **판단을 실행**한다.
+        (() => {
+          const r = restore(["failed-A"], ["new-B"], { count: 1 });
+          return (
+            r.next.length === 2 &&
+            r.next.includes("failed-A") &&
+            r.next.includes("new-B") &&
+            r.overCap === true
+          );
+        })(),
+        JSON.stringify(restore(["failed-A"], ["new-B"], { count: 1 })),
+      ),
+      assert(
+        "복원 순서는 «되돌린 것 먼저, 방금 붙인 것 뒤»(더 최신이 뒤)",
+        restore(["old"], ["new"], { count: 9 }).next.join(",") === "old,new",
+        restore(["old"], ["new"], { count: 9 }).next.join(","),
+      ),
+      assert(
+        "상한 안이면 «넘쳤다» 를 말하지 않는다(정상 경로에 잡음 0)",
+        restore(["a"], ["b"], { count: 5 }).overCap === false,
+        String(restore(["a"], ["b"], { count: 5 }).overCap),
+      ),
+      assert(
+        "서버 상한을 모르면 넘쳤다고 단정하지 않는다(상한은 서버가 정한다)",
+        restore(["a"], ["b"], null).overCap === false &&
+          restore(["a"], ["b"], null).next.length === 2,
+        JSON.stringify(restore(["a"], ["b"], null)),
+      ),
+      assert(
+        "화면이 그 판정을 **쓴다**(인라인으로 다시 짜지 않는다)",
+        /restoreAttachments\(atts, pendingAttachments, attachLimits\)/.test(sendCode) &&
+          !/\.slice\(0, cap\)/.test(sendCode),
+        `호출 ${/restoreAttachments\(/.test(sendCode)} · 옛 자르기 남음 ${/\.slice\(0, cap\)/.test(sendCode)}`,
       ),
     );
 

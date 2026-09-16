@@ -57,6 +57,11 @@ import {
   recentTurnsAfter,
   summarizeInstructions,
 } from "./openai-codex-oauth-history.js";
+import {
+  toolResultForAdapter,
+  toolMediaNote,
+  createToolMediaWindow,
+} from "./_mcp-content.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
 import { resolveProviderConn } from "../provider-registry.js";
@@ -278,6 +283,69 @@ export const extractUsage = (
     outputTokens: u.outputTokens,
     ...(cached !== undefined ? { cachedTokens: cached } : {}),
     ...(requestUsageEntries !== undefined ? { requestUsageEntries } : {}),
+  };
+};
+
+/**
+ * **모델 호출 직전에 이 턴의 입력을 보태는 필터** — mid-turn steering + 도구 이미지.
+ *
+ * ★SDK 가 필터에 주는 `modelData` 는 **매 호출 clone** 이다(`run.js` items.js:232
+ *  `[...toAgentInputList, ...outputItems]`). 그래서 여기서 push 한 것은 그 호출에만 있고
+ *  다음 호출엔 없다 — steering 도 이미지도 **어댑터 로컬 누적기**를 두고 매번 전량을
+ *  다시 싣는다(codex 의 `inputArray` 영속과 같은 결과).
+ *
+ * ★**항상 건다** (2026-09-15). 종전엔 steering 이 없으면 훅 자체를 안 걸었는데, 이제
+ *  도구가 돌려준 이미지도 이 자리로 들어오고 **어떤 턴이든 도구가 이미지를 줄 수 있다.**
+ *  둘 다 없으면 push 를 한 번도 안 해 `modelData` 가 그대로 나간다.
+ *
+ * ★**밖으로 뺀 이유**(적대 검토 F1): `run()` 설정 리터럴 안에 익명 함수로 있었더니
+ *  실행 검사가 SDK 런 없이는 닿지 않았고, 「이미지 싣는 줄 삭제」·「steering 없으면 조기
+ *  return」 두 변이가 전체 스위트 3,890건 초록으로 통과했다. 둘 다 이 수정이 고치려던
+ *  바로 그 결함이다. 이름 있는 함수면 회귀가 가짜 `modelData` 로 **직접 부른다.**
+ */
+export const createTurnInputFilter = (deps: {
+  steering?: { drain: () => SteeringInput[] };
+  buildSteeringItem: (s: SteeringInput) => Promise<AgentInputItem>;
+  accumulatedSteering: AgentInputItem[];
+  mediaWindow: {
+    takeForRequest: () => { tools: string[]; items: SdkImageItem[]; dropped: number }[];
+  };
+  threadKey: string;
+}) => {
+  return async (args: CallModelInputFilterArgs): Promise<ModelInputData> => {
+    // 이번 turn 새로 도착한 steer 를 축적(조립 1회) 후, accumulator 전량을
+    // 이 turn 의 (clone) input 에 재-append → N/N+1/N+2 모든 후속 호출 present.
+    const drained = deps.steering?.drain() ?? [];
+    for (const s of drained) {
+      deps.accumulatedSteering.push(await deps.buildSteeringItem(s));
+    }
+    if (drained.length > 0) {
+      console.error(
+        `[openai-agents steering] injected ${drained.length} mid-turn message(s) ` +
+          `(accumulated=${deps.accumulatedSteering.length}) threadKey=${deps.threadKey}`,
+      );
+    }
+    for (const item of deps.accumulatedSteering) {
+      args.modelData.input.push(item);
+    }
+    // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 — codex 가 function_call_output 뒤에
+    //  user 메시지를 붙이는 것과 같은 일이다. 창 밖을 버리는 것도 스텝 경계를 긋는 것도
+    //  `takeForRequest()` 안에 있다(같은 판단이 두 곳에 있으면 갈린다).
+    // ★**어느 도구의 이미지인지·더 있었는지를 글로 밝힌다**(적대 검토 F5·F6). codex 는
+    //  자리로 말하지만 여기선 매 호출 끝에 다시 싣는 구조라 자리가 말해주지 않는다.
+    for (const batch of deps.mediaWindow.takeForRequest()) {
+      args.modelData.input.push({
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: toolMediaNote(batch.tools, batch.items.length, batch.dropped),
+          },
+          ...batch.items,
+        ],
+      } as AgentInputItem);
+    }
+    return args.modelData;
   };
 };
 
@@ -695,6 +763,17 @@ export const runOpenAi = async (
   //    이미 수행(hook-runner.ts) — 이 어댑터의 MCP 브리지가 노출하는 이름은 애초에
   //    `mcp__` 접두사가 없어(codex 와 동일 무접두사 규약) normalize 는 no-op, 원본 이름을
   //    그대로 넘긴다(claude 의 `mcp__server__tool` 접두사 케이스와 무관).
+  /**
+   * **도구가 돌려준 이미지** — 이 턴 동안만 산다 (2026-09-15).
+   *
+   * ★종전엔 이 어댑터에 이 경로가 **아예 없었다.** SDK 가 MCP 콘텐츠 블록을 그대로 도구
+   *  출력으로 넘기므로(`@openai/agents-core/dist/mcp.js` — `content.length === 1 ?
+   *  content[0] : content`), 이미지가 오면 **base64 가 텍스트로** 실렸다. codex 가
+   *  2026-08-01 에 고친 사고와 같은 것이고, 어댑터마다 결과가 갈리는 건 원칙 2 위반이다.
+   * ★창 규칙과 스텝 경계는 `createToolMediaWindow` 안에 있다 — codex 의
+   *  `compactOldToolMedia` 와 **같은 규칙**이고 숫자도 같은 상수에서 온다.
+   */
+  const toolMediaWindow = createToolMediaWindow<SdkImageItem>();
   const wireToolHooks = (server: MCPServer, external: boolean): MCPServer => ({
     ...server,
     async callTool(toolName, args, meta) {
@@ -729,7 +808,27 @@ export const runOpenAi = async (
           channel: input.channel,
           threadKey: input.threadKey,
         });
-        return result;
+        // ★판정은 `toolResultForAdapter`(순수) 가 한다 — 여기 인라인으로 두면 실행 검사가
+        //  닿지 않는다(적대 검토 F1: `media.length === 0` → `>= 0` 변이가 스위트 초록으로
+        //  통과했다). 어댑터가 하는 일은 **wire 모양으로 옮기는 것**뿐이다.
+        const decided = toolResultForAdapter(result, {
+          vision: modelSupportsVision(model),
+        });
+        if (decided.passthrough) return result;
+        // ★**배치 = 한 모델 호출 스텝**이다(한 도구 호출이 아니라). 같은 스텝의 병렬 도구
+        //  둘이 이미지를 주면 둘 다 살아야 한다 — codex 는 그 둘을 한 메시지에 담으므로,
+        //  여기서 도구마다 덮어쓰면 **어댑터 간 동작이 갈린다.** 스텝 경계는
+        //  `callModelInputFilter`(모델 호출 직전)가 긋는다.
+        toolMediaWindow.add(
+          toolName,
+          decided.media.map((m) => ({
+            type: "input_image" as const,
+            image: `data:${m.mimeType};base64,${m.data}`,
+          })),
+        );
+        return [{ type: "text", text: decided.text }] as Awaited<
+          ReturnType<MCPServer["callTool"]>
+        >;
       } catch (e) {
         void runPostToolUseHooks({
           toolName,
@@ -1166,6 +1265,17 @@ export const runOpenAi = async (
     };
   };
 
+  // ★필터는 **이름 있는 값**이다 — `run()` 설정 리터럴 안에 익명으로 두면 실행 검사가
+  //  SDK 런을 띄워야 닿는다(적대 검토 F1). 조립은 `createTurnInputFilter` 가 하고,
+  //  회귀는 그걸 가짜 `modelData` 로 직접 부른다.
+  const turnInputFilter = createTurnInputFilter({
+    steering: steeringChannel,
+    buildSteeringItem,
+    accumulatedSteering,
+    mediaWindow: toolMediaWindow,
+    threadKey: input.threadKey,
+  });
+
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
@@ -1174,35 +1284,15 @@ export const runOpenAi = async (
       const streamed = await run(agentToRun, runInput, {
         stream: true,
         signal: effectiveAc.signal,
-        // ★무회귀 하드게이트: steering 미주입/STEERING_ENABLED off = `input.steering`
-        // undefined → `steeringChannel === undefined` → 아래 조건부 spread = `{}` →
-        // runConfig = `{ stream, signal }` = 현행과 바이트 동일(훅 미등록). 어댑터는 이
-        // 값을 *소비만* — 채널/모델 분기 0(#2 LLM-agnostic). Phase 2 관측(steering.injected)
-        // 은 deferred — 여기선 codex 와 동형 console 만(P0 가 도착 시 channel.message.in 발행).
-        ...(steeringChannel !== undefined
-          ? {
-              callModelInputFilter: async (
-                args: CallModelInputFilterArgs,
-              ): Promise<ModelInputData> => {
-                // 이번 turn 새로 도착한 steer 를 축적(조립 1회) 후, accumulator 전량을
-                // 이 turn 의 (clone) input 에 재-append → N/N+1/N+2 모든 후속 호출 present.
-                const drained = steeringChannel.drain();
-                for (const s of drained) {
-                  accumulatedSteering.push(await buildSteeringItem(s));
-                }
-                if (drained.length > 0) {
-                  console.error(
-                    `[openai-agents steering] injected ${drained.length} mid-turn message(s) ` +
-                      `(accumulated=${accumulatedSteering.length}) threadKey=${input.threadKey}`,
-                  );
-                }
-                for (const item of accumulatedSteering) {
-                  args.modelData.input.push(item);
-                }
-                return args.modelData;
-              },
-            }
-          : {}),
+        // ★이 필터는 **항상** 건다 (2026-09-15). 종전엔 steering 이 없으면 훅 자체를 안
+        // 걸었는데(`steeringChannel === undefined` → 빈 spread), 이제 도구가 돌려준 이미지도
+        // 이 자리로 들어온다 — 그리고 **어떤 턴이든 도구가 이미지를 줄 수 있다.**
+        // 둘 다 없으면 아래 본문은 push 를 한 번도 안 해 `modelData` 가 그대로 나간다
+        // (동작 동일 — 훅 호출 비용만 든다).
+        // ★filter 가 받는 `modelData` 는 매 호출 clone(run.js items.js:232)이라 push 한 것이
+        // 다음 호출엔 없다. 그래서 steering 도 미디어도 **어댑터 로컬 누적기**를 두고 매번
+        // 전량을 재-append 한다(codex 의 inputArray 영속과 같은 결과).
+        callModelInputFilter: turnInputFilter,
       });
       // 스트림 이벤트 소비 — heartbeat + llm.delta fan-out. raw text delta 면 증분 push,
       // 그 외 이벤트는 도착 사실만 heartbeat(활동 세분화는 별건). SDK 가 provider 무관
@@ -1441,6 +1531,10 @@ export const runOpenAi = async (
         externalTools: [],
         externalToolNames: [],
       });
+      // ★지난 시도의 도구 이미지를 끌고 가지 않는다 (적대 검토 F7). 이 재시도는 도구도
+      //  히스토리도 없이 다시 묻는 것이라, 남아 있으면 **맥락 없는 사진**이 입력 끝에 붙는다.
+      //  steering 누적기는 반대다 — 그건 사용자 발화라 재시도에도 살아야 한다(1197행 주석).
+      toolMediaWindow.reset();
       result = await runOnce(noToolsAgent, false);
     } else {
       throw e;

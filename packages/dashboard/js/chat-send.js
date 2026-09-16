@@ -174,9 +174,19 @@
           // ★**기다리는 동안 새로 친 글을 덮지 않는다** — 입력창이 비어 있을 때만 되돌리고,
           //  아니면 앞에 이어 붙인다(사용자가 친 것이 더 최신이므로 뒤에 둔다).
           if (atts.length > 0 && sentFrom === activeThreadKey) {
-            const cap = attachLimits ? attachLimits.count : atts.length + pendingAttachments.length;
-            pendingAttachments = [...atts, ...pendingAttachments].slice(0, cap);
+            // ★**자르지 않는다** (2026-09-16 아스트라 P2). 종전엔 `.slice(0, cap)` 이었는데,
+            //  되돌릴 것이 상한을 채우면 **기다리는 동안 새로 붙인 파일이 조용히 사라졌다** —
+            //  바로 위 주석이 "되돌리다 상한을 넘기면 그게 또 조용한 손실이다" 라고 적어두고
+            //  그 손실을 저지르고 있었다. 실패 복원은 **사용자가 넣은 것을 지우지 않는다.**
+            // ★넘친 채로 두는 것이 안전한 이유: 칩마다 ×가 있어 지울 수 있고, 다음 전송에서
+            //  `attachRejection` 이 막는다. 즉 **보이고 되돌릴 수 있는 상태**다 —
+            //  조용히 사라지는 것과는 다르다. 넘쳤으면 그 자리에서 말한다.
+            const restored = restoreAttachments(atts, pendingAttachments, attachLimits);
+            pendingAttachments = restored.next;
             renderAttachChips();
+            if (restored.overCap) {
+              showToast(i18n("chat.attach.max", { n: restored.cap }), "warn");
+            }
           } else if (atts.length > 0) {
             try { if (window.stashChatDraft) window.stashChatDraft(sentFrom, "", atts); } catch {}
           }

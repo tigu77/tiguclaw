@@ -410,8 +410,8 @@ Bundling and npm also mean you **don't have to publish your source**.
 - **A throwing handler won't kill the daemon** — that one request becomes a 502 and the reason
   is logged. But throwing from `start()` fails that plugin's load (others are unaffected).
 - ★**You can't use the name of a plugin that ships with the app.** Currently reserved: `claude-subscription-auth`,
-  `cli-channel`, `codex-subscription-auth`, `dashboard`, `file-watch`, `http-bridge`,
-  `running-work`, `scheduler`, `self-growth`, `telegram-channel`. What counts is the **`name` in your manifest**, not the folder — name
+  `cli-channel`, `codex-subscription-auth`, `computer-use`, `dashboard`, `file-watch`,
+  `http-bridge`, `running-work`, `scheduler`, `self-growth`, `telegram-channel`. What counts is the **`name` in your manifest**, not the folder — name
   the folder whatever you like. Installing under a reserved name is refused with *"a bundled
   plugin already has that name"*, and that holds even if the bundled one is switched off or
   failed to load. The name is reserved; it doesn't depend on whether it started up today.

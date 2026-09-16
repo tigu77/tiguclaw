@@ -108,6 +108,10 @@ export const check: RegressionCheck = {
       "reply_to_current_message", "update_todos",
       // 세션 목록 조회 — 순수 읽기.
       "list_sessions",
+      // 화면 관측 — 찍기만 한다(클릭·입력 없음, 1단계는 읽기 전용). 프레임 파일을 쓰지만
+      // 그건 우리 기록이고 되불러도 무해하다. 조작이 생기는 2단계 도구는 **별도 이름**이라
+      // 여기 자동으로 안 딸려온다.
+      "observe_screen",
     ]);
     const EXPECT_SIDE_EFFECT = new Set([
       "Bash", "Edit", "KillShell", "Write",

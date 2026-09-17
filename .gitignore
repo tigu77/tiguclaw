@@ -55,6 +55,10 @@ plugins/**/src/*.d.ts
 #   - `public-overlay/`  = 공개 문서의 **진실 소스**다(README·CHANGELOG·LICENSE…)
 #   - `*.md`             = 설계 노트·인계문. 한 번 쓰고 버린 게 아니라 **기록**이다
 #     ([[project_hotpath_bound_preserve_record]] — 콜드 레코드는 안 지운다)
+# ★그리고 **스킬·회귀가 부르는 도구**는 일회성 프로브가 아니다 — 추적한다(2026-09-17).
+#  `prepare-public-stage.mjs`·`check-public-*` 다섯은 원래 그랬는데, 새로 만든
+#  `sync-gate.sh` 는 이 규칙 밖으로 떨어질 뻔했다. **스킬이 매 블록에서 source 하는
+#  파일**이라 없으면 싱크 절차가 통째로 깨진다. 판정 한 줄: **누가 이름으로 부르는가.**
 _workspace/*
 !_workspace/*.md
 !_workspace/public-overlay/

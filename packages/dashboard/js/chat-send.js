@@ -273,6 +273,51 @@
         chatDrafts.delete(tk);
         persistDraftText();
       };
+      /**
+       * **떠날 때 «지금 입력창» 을 저장한다** (2026-09-17 정태님 신고: *"지우고 새로고침하면
+       * 또 채워져있어"*).
+       *
+       * ★결함: draft 를 쓰는 자리가 **다섯인데 전부 «특수 경로»** 였다 — 탭 전환 둘 ·
+       *  전송 실패 복원 하나 · 다른 방 보관 둘. 정작 텍스트를 쥔 **입력창이 바뀔 때는 아무도
+       *  안 저장**했고, `beforeunload`·`pagehide` 도 없었다. 그래서 **비운 것이 기록되지
+       *  않고**, 새로고침이 localStorage 의 옛 글을 되살렸다.
+       *
+       * ★언제부터 — **`88e4d42b`(2026-09-15 16:01)** 다. 1분 앞선 `14196785` 는 전송 실패 시
+       *  입력창만 채웠고 **새로고침이 알아서 치웠다.** 그 커밋이 적대 검토 O4(«보내는 사이
+       *  탭을 옮기면 A 의 글이 B 입력창에 꽂힌다»)를 고치려고 복원을 **영속**시키면서 이
+       *  결함이 열렸다. 검토 결함을 고친 수정이 새 결함을 만든 경우다.
+       *
+       * ★실측(헤드리스, `_workspace/_draft_full_cdp.mjs` 수정 전):
+       *
+       *      ①타이핑→새로고침  글이 날아간다
+       *      ②실제 502 실패    입력창+LS 에 심긴다 → 지워도 LS 에 남아 되살아난다
+       *      ③전송 성공        draft 비워짐(정상)
+       *      ④프로그램 주입    새로고침에 날아간다
+       *      ⑤탭 전환         보존·복원 정상
+       *
+       * ★**새 판정을 만들지 않는다.** `saveChatDraft` 는 이미 «비어 있으면 delete» 를 한다 —
+       *  빠진 것은 그 함수를 **떠나는 시점에 부르는 것** 하나였다. 그래서 ①②④가 한꺼번에
+       *  닫힌다(①④는 신고 밖이지만 기제가 같아 기계적으로 분리할 수 없다).
+       *
+       * ★`input` 이벤트에 debounce 저장을 거는 안은 **버렸다**: 프로그램이 `input.value` 를
+       *  직접 쓰는 자리가 넷(고스트 제안·음성·슬래시·입력 히스토리)이고 전부 `input` 을 안
+       *  쏘므로 ④를 못 덮는다. 그리고 `persistDraftText` 가 Map 전량을 덮어쓰므로 쓰기
+       *  빈도를 올리면 **다른 브라우저 탭의 draft 를 지우는 위험**(실측 확인)이 커진다.
+       *  떠날 때 한 번은 그 빈도를 올리지 않는다(탭 전환 저장이 이미 그보다 잦다).
+       *
+       * ★`visibilitychange` 도 같이 본다 — 모바일·bfcache 에서 `pagehide` 가 늦거나 안 오는
+       *  경로가 있다. 둘 다 같은 함수를 부르고 멱등이다.
+       */
+      const saveDraftOnLeave = () => {
+        try {
+          if (typeof activeThreadKey !== "undefined") window.saveChatDraft(activeThreadKey);
+        } catch { /* 저장 실패가 이탈을 막지 않는다 */ }
+      };
+      window.addEventListener("pagehide", saveDraftOnLeave);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") saveDraftOnLeave();
+      });
+
       // 부팅 복원 — chat-send.js 는 tabs.js 뒤에 로드되므로 loadTabs()가 activeThreadKey 를 이미
       //   세팅한 뒤다. 초기 활성 탭의 저장 draft 를 입력창에 복원(첨부는 영속 안 해 텍스트만).
       try { if (typeof activeThreadKey !== "undefined") window.restoreChatDraft(activeThreadKey); } catch {}

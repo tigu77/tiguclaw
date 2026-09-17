@@ -57,6 +57,21 @@ const stripComments = (src: string): string =>
 
 const MiB = 1024 * 1024;
 
+/**
+ * `chat-send.js` 의 **실패 복원 분기**만 떼어낸다 (2026-09-17).
+ *
+ * ★O4 의 성질(«보낸 방으로 되돌린다»)은 그 분기 안에서만 말이 된다. 파일 전체를 보면
+ *  `activeThreadKey` 를 쓰는 **정당한** 자리(떠날 때 저장·탭 전환)까지 걸려 옳은 코드를
+ *  막는다 — 실제로 그랬다([[feedback_gate_must_actually_run]] 의 반대편: 오탐 게이트는
+ *  아무도 안 돌리게 되거나, 맞는 수정을 되돌리게 만든다).
+ */
+const restoreBlock = (src: string): string => {
+  const at = src.indexOf("if (sent && sent.restore === true) {");
+  if (at < 0) return "";
+  const end = src.indexOf("\n      });", at);
+  return end < 0 ? src.slice(at) : src.slice(at, end);
+};
+
 export const check: RegressionCheck = {
   name: "attachment-limit-has-one-owner",
   guards:
@@ -394,8 +409,12 @@ export const check: RegressionCheck = {
         /const sentFrom = activeThreadKey;/.test(sendCode) &&
           /sentFrom === activeThreadKey/.test(sendCode) &&
           /window\.stashChatDraft\(sentFrom/.test(sendCode) &&
-          // 복원 분기가 `activeThreadKey` 를 **직접** 쓰지 않는다(그게 O4 다)
-          !/window\.saveChatDraft\(activeThreadKey\)/.test(sendCode),
+          // ★«직접 쓰지 않는다» 는 **복원 분기 안에서만** 참이어야 한다 (2026-09-17 정정).
+          //  종전엔 파일 전체를 봤고, 그래서 «떠날 때 지금 방을 저장한다» 는 **정당한** 훅이
+          //  이 검사를 빨갛게 만들었다. 그 훅은 O4 와 무관하다 — O4 는 «보내는 사이 방을
+          //  옮겼을 때 지금 방에 남의 글을 꽂지 마라» 이고, 떠날 때 저장은 «지금 방의 지금
+          //  입력창» 이라 정의상 남의 글이 아니다. 검사를 넓게 두면 옳은 코드를 막는다.
+          !new RegExp("window\\.saveChatDraft\\(activeThreadKey\\)").test(restoreBlock(sendCode)),
         `제출시점 캡처 ${/const sentFrom = activeThreadKey;/.test(sendCode)} · 같은방 판정 ${/sentFrom === activeThreadKey/.test(sendCode)} · 다른방 보관 ${/window\.stashChatDraft\(sentFrom/.test(sendCode)}`,
       ),
       assert(

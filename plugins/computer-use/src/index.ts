@@ -34,9 +34,25 @@ import {
   observationMeta,
   preflightMessage,
   FRAME_MAX_BYTES,
+  checkTarget,
+  offscreenMessage,
   type CaptureTarget,
+  type ObserveBackend,
 } from "./observe.js";
-import { capture, preflight } from "./mac.js";
+import * as mac from "./mac.js";
+import * as win from "./win.js";
+
+/**
+ * **이 플랫폼의 실행부** — 없으면 도구를 아예 안 낸다.
+ *
+ * ★분기를 이제야 만든 이유: 구현이 하나뿐일 때 만들면 «3회 반복 후 추상화» 위반이었다
+ *  (`mac.ts` 머리말이 *"Windows 가 실제로 붙을 때 가른다"* 고 적어 뒀다). 지금이 그때다.
+ * ★import 는 양쪽 다 한다 — 두 모듈 모두 **로드 시 부작용이 0**(상수와 함수 선언뿐)이라
+ *  맥에서 `win.ts` 를 읽어도 아무 일도 안 일어난다. 조건부 import 는 배포 트리에서 경로
+ *  해석이 갈려 더 잘 깨진다.
+ */
+const backendFor = (platform: string): ObserveBackend | null =>
+  platform === "darwin" ? mac : platform === "win32" ? win : null;
 
 const textOnly = (text: string): { content: Array<{ type: "text"; text: string }> } => ({
   content: [{ type: "text", text }],
@@ -116,9 +132,14 @@ const makeTool = (host?: PluginHost) =>
             ? { kind: "display", index: args.display }
             : { kind: "screen" };
 
-      // ★**먼저 권한을 본다.** 캡처를 시도했다가 매달리면 턴이 MCP 천장(11분)까지 묶인다.
-      const probe = await preflight();
-      const warn = preflightMessage(probe);
+      // ★**먼저 탐침을 돌린다.** 캡처를 시도했다가 매달리면 턴이 MCP 천장(11분)까지 묶인다.
+      //  ★재는 것이 플랫폼마다 다르다: mac 은 **화면 기록 권한**, Windows 는 **데스크톱
+      //   세션과 DPI 선언**이다(win.ts 머리말). 둘 다 «먼저 비차단으로 확인하고, 아니면
+      //   무엇을 바꿔야 하는지 말하고 끝낸다» 는 같은 모양이다.
+      const backend = backendFor(process.platform);
+      if (backend === null) return textOnly("이 플랫폼에서는 화면 관측을 지원하지 않습니다.");
+      const probe = await backend.preflight();
+      const warn = preflightMessage(probe, process.platform);
       if (warn !== null) {
         host?.log(`관측 실패 — 권한(${probe.ok ? "?" : probe.reason})`);
         return textOnly(warn);
@@ -136,21 +157,51 @@ const makeTool = (host?: PluginHost) =>
         frameName(host?.turn?.threadKey ?? "unknown", at, randomUUID().slice(0, 8)),
       );
 
-      const shot = await capture(target, outPath);
+      // ★탐침이 남긴 **판정 수치**를 로그에 싣는다(Windows: 화면 수·전달 크기·DPI 선언).
+      //  로그가 1차 진단면인 기계들이 있고(회사돌쇠·회사 PC는 원격이 안 된다), 거기선
+      //  «됐다/안 됐다» 만으론 못 고친다([[feedback_logs_must_stand_alone]]).
+      if (probe.ok && probe.info !== undefined) host?.log(`관측 환경 ${probe.info}`);
+
+      // ★**화면 밖 좌표는 찍지 않는다** (2026-09-17, 회사돌쇠 실기 P2). `{x:100000,y:100000}`
+      //  이 «성공한 관측» 으로 돌아왔다 — Windows `CopyFromScreen` 은 화면 밖을 검게 채울 뿐
+      //  실패하지 않는다. 그림의 검은색으로 판정하는 게 아니라, **아는 화면 배치로** 가른다.
+      //  ★판정은 `checkTarget` **한 곳**이고, 실행부는 그걸 통과한 값만 받는다(타입이 강제).
+      //  ★배치를 모르는 플랫폼(mac — 설계 §6-C)에선 `screens` 가 없어 통과된다 — 관측은
+      //   가역이라 «모름» 을 «거절» 로 읽지 않는다.
+      const okTarget = checkTarget(target, probe.ok ? probe.screens : undefined);
+      if (!okTarget.ok) {
+        const screens = probe.ok && probe.screens !== undefined ? probe.screens : [];
+        host?.log(
+          `관측 거절 — 화면 밖 영역 ${okTarget.region.width}×${okTarget.region.height} @(${okTarget.region.x},${okTarget.region.y}) · 화면 ${String(screens.length)}개`,
+        );
+        return textOnly(offscreenMessage(okTarget.region, screens));
+      }
+      const clippedFrom = okTarget.clippedFrom;
+      if (clippedFrom !== undefined && okTarget.target.kind === "region") {
+        host?.log(
+          `관측 영역 자름 — 요청 ${clippedFrom.width}×${clippedFrom.height} @(${clippedFrom.x},${clippedFrom.y})` +
+            ` → 실제 ${okTarget.target.width}×${okTarget.target.height} @(${okTarget.target.x},${okTarget.target.y})`,
+        );
+      }
+
+      const shot = await backend.capture(okTarget.target, outPath);
       if (!shot.ok) {
         host?.log(`관측 실패 — 캡처(${shot.reason}: ${shot.detail})`);
-        return textOnly(preflightMessage(shot) ?? "화면을 찍지 못했습니다.");
+        return textOnly(preflightMessage(shot, process.platform) ?? "화면을 찍지 못했습니다.");
       }
 
       void sweep(dir, host);
       // ★변환이 실패하면 원본 PNG 가 남는다 — 그 경로를 그대로 쓴다(관측은 성립한다).
       const savedPath = shot.path;
       const meta = observationMeta({
-        target,
+        target: okTarget.target,
         at,
         bytes: shot.bytes,
         savedPath,
         longEdge: shot.longEdge,
+        platform: process.platform,
+        ...(clippedFrom === undefined ? {} : { clippedFrom }),
+        spansScreens: okTarget.spans,
       });
       // ★**관측 사실은 항상 남는다**(설계 §5-1 규칙 2). 승인이 소프트 강제인 만큼,
       //  «봤다» 가 보이는 것이 대가로 붙는 의무다.
@@ -187,9 +238,10 @@ export default class ComputerUsePlugin {
   async startService(): Promise<void> {}
 
   getMcpServer(host?: PluginHost): McpSdkServerConfigWithInstance | undefined {
-    // ★mac 전용이다. 다른 플랫폼에선 **도구를 아예 안 낸다** — 있는 척하고 실패하는 것보다
-    //  없는 게 낫다(모델이 «되는데 잘못했나» 를 시도하지 않는다). Windows 는 후속.
-    if (process.platform !== "darwin") return undefined;
+    // ★실행부가 없는 플랫폼에선 **도구를 아예 안 낸다** — 있는 척하고 실패하는 것보다 없는
+    //  게 낫다(모델이 «되는데 잘못했나» 를 시도하지 않는다). 지금은 mac·Windows 둘이고,
+    //  Linux(X11/Wayland)는 구현이 없다.
+    if (backendFor(process.platform) === null) return undefined;
     return createSdkMcpServer({
       name: "computer-use",
       version: "0.1.0",

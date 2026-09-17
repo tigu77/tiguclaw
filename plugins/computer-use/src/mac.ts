@@ -10,8 +10,10 @@
  *  **11분**(`MCP_CALL_TIMEOUT_MS`)이라, 우리가 안 끊으면 턴이 11분 매달린다 — 외부 MCP
  *  8분 hang 과 같은 모양이다. 그래서 모든 자식 실행에 **짧은 자체 시한**을 건다.
  *
- * ★플랫폼 분기(`process.platform` 스위치)를 **아직 만들지 않는다** — 구현이 하나뿐이라
- *  지금 만들면 «3회 반복 후 추상화» 위반이다. Windows 가 실제로 붙을 때 가른다.
+ * ★플랫폼 분기는 **2026-09-17 에 생겼다** — `win.ts` 가 형제로 붙었고 `index.ts` 의
+ *  `backendFor()` 가 고른다. 그전까지 안 만든 이유는 구현이 하나뿐이라 «3회 반복 후 추상화»
+ *  위반이었기 때문이고, 그래서 **가를 때 옮길 것이 거의 없었다**(순수부가 이미 `observe.ts`
+ *  에 있어서 공유된다 — 갈린 건 자식 프로세스를 부르는 이 파일뿐이다).
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -22,7 +24,7 @@ import {
   captureArgs,
   FRAME_LONG_EDGE,
   FRAME_QUALITY,
-  type CaptureTarget,
+  type CheckedTarget,
 } from "./observe.js";
 
 /** 자식 하나의 시한 — 캡처는 보통 수백 ms 다. 넘으면 권한 대화상자를 의심한다. */
@@ -97,7 +99,11 @@ export const preflight = async (): Promise<
  *  그때는 `longEdge: -1` 로 «못 줄였다» 를 위로 알린다.
  */
 export const capture = async (
-  target: CaptureTarget,
+  // ★★**검증을 통과한 대상만 받는다** (2026-09-17, 회사돌쇠 재검토). 종전엔 `CaptureTarget`
+  //  이라 이 함수를 **직접 부르면** 화면 밖 좌표가 그대로 성공했다 — 검사가 도구 핸들러에만
+  //  있었기 때문이다. 인터페이스(`ObserveBackend`)만 좁히는 것으로는 안 막힌다: 넓은 인자를
+  //  받는 함수는 좁은 계약에 그냥 들어맞는다(반공변). **선언 자체**가 좁아야 한다.
+  target: CheckedTarget,
   outPath: string,
 ): Promise<
   | { ok: true; bytes: number; longEdge: number; path: string }

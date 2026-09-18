@@ -64,7 +64,7 @@
   "bg.scope.all": "All sessions",
   "bg.scope.session": "This session",
   "bg.shells.activeCount": "🖥️ {n} shell(s) running",
-  "bg.shells.empty": "No shells are running.",
+  "bg.shells.empty": "No background shells. Commands a tool is running in the foreground don't appear here — check Managers & agents for work in progress.",
   "bg.shells.head": "🖥️ Shells / Processes",
   "bg.shells.running": "Running",
   "bg.status.cancelled": "⏹ Cancelled",

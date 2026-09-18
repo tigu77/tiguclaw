@@ -52,6 +52,13 @@ export interface ScreenRect {
   y: number;
   w: number;
   h: number;
+  /**
+   * 포인트→픽셀 배율. 없으면 1.
+   *
+   * ★맥은 좌표가 **포인트**이고 캡처 산출이 **픽셀**이라 둘이 갈린다(레티나 2). Windows 는
+   *  자식이 DPI-aware 라 **픽셀=픽셀**이므로 1이다 — 그래서 옵션이다.
+   */
+  scale?: number;
 }
 
 export type RegionClip =
@@ -179,6 +186,97 @@ export const checkTarget = (
 };
 
 /**
+ * **그림 좌표의 영역 → 화면 좌표의 영역** — 순수 (2026-09-17, 돌쇠 실측).
+ *
+ * ★★**좌표계가 둘로 섞여 있었다.** 클릭은 «그림 픽셀» 인데 `observe_screen` 의 `region` 은
+ *  «화면 좌표» 였다. 이 기계는 둘의 차이가 8%뿐이라(그림 1600 vs 화면 1728pt) 대충 맞아
+ *  보였지만, **축소율이 큰 화면에서는 관측 그림에서 읽은 좌표로 영역을 잡으면 엉뚱한 데가
+ *  잡히고, 그 그림 위에서 누르면 조용히 딴 데를 클릭한다.** 되돌릴 수 없는 도구라 실제
+ *  사고 경로다.
+ * ★고침은 «설명에 적기» 가 아니라 **하나로 만들기**다 — 모델이 보는 좌표는 **언제나 그림
+ *  픽셀** 이고, 화면 좌표는 플러그인 안에서만 산다.
+ */
+export const imageRectToScreen = (
+  rect: { x: number; y: number; width: number; height: number },
+  g: FrameGeometry,
+): { x: number; y: number; width: number; height: number } | null => {
+  const tl = imagePointToScreen({ x: rect.x, y: rect.y }, g);
+  // ★오른쪽·아래 **끝 픽셀**을 짚는다 — `imagePointToScreen` 이 경계를 `>=` 로 막으므로
+  //  폭 자체(= 밖)를 넣으면 null 이 된다. 끝 픽셀을 짚고 1을 더해 폭을 되살린다.
+  const br = imagePointToScreen(
+    { x: rect.x + rect.width - 1, y: rect.y + rect.height - 1 },
+    g,
+  );
+  if (tl === null || br === null) return null;
+  return { x: tl.x, y: tl.y, width: Math.max(1, br.x - tl.x + 1), height: Math.max(1, br.y - tl.y + 1) };
+};
+
+/**
+ * **관측 하나의 기하를 조립한다** — 순수 (2026-09-17, §14-3).
+ *
+ * ★조작이 서는 바닥이다. 여기가 틀리면 **엉뚱한 데를 누른다** — 그래서 순수 함수로 두고
+ *  회귀가 실행해서 잰다(실행부에 두면 데몬을 띄워야 검사할 수 있다).
+ * ★`capturedPx` 를 **재지 않고 유도한다**: 화면 캡처는 «그 화면의 픽셀 크기», 영역 캡처는
+ *  «요청한 포인트 × 배율». 둘 다 이미 아는 값이라 자식 프로세스를 더 띄우지 않는다.
+ * ★`deliveredPx` 만 **실측을 받는다** — 줄이기가 반올림을 하므로 유도하면 1px 씩 어긋나고,
+ *  그 어긋남은 배율이 곱해져 화면에서 2px 오차가 된다.
+ */
+/**
+ * 이 캡처의 **기하를 대는 화면**을 고른다 — 순수.
+ *
+ * ★★**종전엔 `screens[0]` 을 무조건 썼다** (2026-09-18, 회사돌쇠 4차). 어느 디스플레이를
+ *  찍었는지와 **무관하게** 주 화면 것을 붙였고, 그래서 `display:2` 로 찍은 그림의 원점이
+ *  `{0,0}` 으로 잡혔다 — 보조 화면의 (800,450) 을 누르면 **주 화면의 (1280,720)** 이
+ *  눌린다. ★**거절되지도 않는다**: 화면 안의 멀쩡한 좌표라서 모든 검사를 통과한다.
+ *  관측 응답이 «한 디스플레이만 담습니다, `display` 를 쓰세요» 라고 권하는 길이라 더 나쁘다.
+ *  DPI 가 다른 모니터면 `scale` 도 같은 자리에서 주 화면 값으로 잡힌다.
+ *
+ * ★3차엔 프레임 자체가 등록되지 않아(P0) **이 경로에 닿을 수조차 없었다** — 결함이 결함을
+ *  가린 세 번째다.
+ *
+ * ★못 고르면 `null` 이다. 호출부는 그때 **프레임을 등록하지 않는다** — 좌표를 지어내느니
+ *  «그 화면을 모른다» 가 낫다(§14-3 의 규칙 그대로).
+ */
+export const screenForTarget = (
+  target: CaptureTarget,
+  screens: readonly ScreenRect[] | undefined,
+): ScreenRect | null => {
+  if (screens === undefined || screens.length === 0) return null;
+  if (target.kind === "screen") return screens[0] ?? null;
+  if (target.kind === "display") return screens[target.index - 1] ?? null;
+  // 영역은 **전역 좌표**다 — 그 사각형이 실제로 놓인 화면을 고른다. 두 화면에 걸치면
+  // **겹친 면적이 가장 큰** 쪽(원점은 영역 자신이 대고, 화면은 배율만 댄다).
+  let best: ScreenRect | null = null;
+  let bestArea = 0;
+  for (const s of screens) {
+    const w = Math.min(target.x + target.width, s.x + s.w) - Math.max(target.x, s.x);
+    const h = Math.min(target.y + target.height, s.y + s.h) - Math.max(target.y, s.y);
+    if (w > 0 && h > 0 && w * h > bestArea) {
+      bestArea = w * h;
+      best = s;
+    }
+  }
+  return best;
+};
+
+export const frameGeometry = (
+  target: CaptureTarget,
+  screen: ScreenRect,
+  deliveredPx: { w: number; h: number },
+): FrameGeometry => {
+  const scale = screen.scale ?? 1;
+  const region = target.kind === "region";
+  return {
+    deliveredPx,
+    capturedPx: region
+      ? { w: Math.round(target.width * scale), h: Math.round(target.height * scale) }
+      : { w: Math.round(screen.w * scale), h: Math.round(screen.h * scale) },
+    originPt: region ? { x: target.x, y: target.y } : { x: screen.x, y: screen.y },
+    scale,
+  };
+};
+
+/**
  * **실행부 계약** — `mac.ts`·`win.ts` 가 이 모양이다.
  *
  * ★구현이 **둘이 됐을 때** 생긴 자리다(하나뿐일 땐 안 만들었다 — «3회 반복 후 추상화» 의
@@ -191,8 +289,44 @@ export type PreflightResult =
   | { ok: false; reason: "timeout" | "failed"; detail: string };
 
 export type CaptureResult =
-  | { ok: true; bytes: number; longEdge: number; path: string; info?: string }
+  | {
+      ok: true;
+      bytes: number;
+      longEdge: number;
+      path: string;
+      info?: string;
+      /**
+       * 모델에 실린 그림의 **실측** 픽셀 크기. 기하의 분모다(§14-3).
+       *
+       * ★★**필수다. 못 쟀으면 `null` 이라고 «말해야» 한다** (2026-09-18, 회사돌쇠 3차).
+       *  종전엔 `?` 였고, 그래서 Windows 실행부가 **이 필드를 아예 안 내도 계약에 들어맞았다.**
+       *  결과는 조용했다: 프레임이 한 번도 등록되지 않아 `frameId` 가 영영 발급되지 않았고,
+       *  **조작 도구 다섯이 호출조차 불가능**한데 관측은 멀쩡히 성공을 반환했다.
+       *  선택 필드는 «빠뜨릴 수 있는 필드» 다 — 이음매를 선택으로 두지 않는다.
+       */
+      deliveredPx: { w: number; h: number } | null;
+    }
   | { ok: false; reason: "timeout" | "failed"; detail: string };
+
+/**
+ * **조작 실행부 계약** — 관측과 **따로 둔다**.
+ *
+ * ★이유: 플랫폼마다 «관측은 되는데 조작은 아직» 이 실제로 존재한다(2026-09-17 현재
+ *  Windows 가 그렇다). 하나로 묶으면 그 상태를 표현할 수 없어서 **있는 척하는 도구**가
+ *  생긴다 — 관측이 «다른 플랫폼에선 도구를 아예 안 낸다» 로 지킨 규율과 같은 것이다.
+ */
+export interface ControlBackend {
+  /** 조작 권한 — **프롬프트 없이** 읽는다. 없으면 켜는 법을 말하고 끝낸다. */
+  controlPreflight(): Promise<
+    { ok: true } | { ok: false; reason: "no-permission" | "timeout" | "failed"; detail: string }
+  >;
+  /** 사람이 마지막으로 **하드웨어**를 만진 뒤 경과 초. 모르면 null(=«쓰는 중»). */
+  idleSeconds(): Promise<number | null>;
+  /** 이벤트를 순서대로 쏜다. ★«오류 없음» 이 «했다» 가 아니다 — 권한은 위에서 본다. */
+  post(
+    events: readonly import("./control.js").LowEvent[],
+  ): Promise<{ ok: true; sent: number } | { ok: false; reason: "timeout" | "failed"; detail: string }>;
+}
 
 export interface ObserveBackend {
   preflight(): Promise<PreflightResult>;
@@ -371,6 +505,13 @@ export const observationMeta = (o: {
    *  ([[feedback_gate_must_actually_run]]). 호출부가 말하게 한다.
    */
   platform: string;
+  /**
+   * 이 관측의 **프레임 id** — 조작 도구가 이 값을 받는다(§14-3).
+   *
+   * ★없으면 **조작을 못 한다**(기하를 못 냈다는 뜻). 그 사실을 말해 준다 — 모델이 «클릭이
+   *  왜 안 되지» 로 헤매지 않게.
+   */
+  frameId?: string;
   /** 화면에 맞춰 **잘렸으면** 원래 요청 — 있으면 «요청/실제» 를 같이 싣는다. */
   clippedFrom?: { x: number; y: number; width: number; height: number };
   /**
@@ -387,7 +528,9 @@ export const observationMeta = (o: {
       ? "주 디스플레이 전체"
       : o.target.kind === "display"
         ? `디스플레이 ${o.target.index}`
-        : `영역 ${o.target.width}×${o.target.height} @(${o.target.x},${o.target.y})`;
+        // ★**«화면 좌표» 라고 밝힌다** (2026-09-17 돌쇠 3차). 모델이 준 것은 그림 좌표인데
+        //  여기 돌아오는 것은 옮긴 값이라, 라벨이 없으면 «어긋났나?» 로 읽힌다.
+        : `영역 ${o.target.width}×${o.target.height} @(${o.target.x},${o.target.y}) — 화면 좌표(당신이 준 그림 좌표를 옮긴 값)`;
   // ★잘렸으면 **잘렸다고 말한다.** 조용히 자르면 모델이 요청한 좌표와 그림이 어긋나고,
   //  그 어긋남은 2단계 좌표 계약에서 그대로 오클릭이 된다.
   const clip =
@@ -406,12 +549,21 @@ export const observationMeta = (o: {
     `시각: ${o.at.toISOString()}`,
     `크기: ${describeLongEdge(o.longEdge)} · ${o.bytes.toLocaleString()}바이트`,
     `저장: ${o.savedPath}`,
+    o.frameId === undefined
+      ? "조작: 이 관측으로는 **클릭·입력을 할 수 없습니다**(화면 기하를 못 읽었습니다)."
+      : `화면 id: ${o.frameId} — 클릭·입력할 때 이 값을 주세요. ★좌표는 **이 그림의 픽셀**입니다(왼쪽 위가 0,0).`,
     // ★«확인된 제한» 은 **플랫폼마다 다르다.** 맥의 «권한 없으면 바탕화면만» 을 Windows 에
     //  그대로 내보내면 있지도 않은 설정을 찾게 만든다. (2)는 양쪽 공통이다.
     `확인된 제한: ${
       o.platform === "win32"
         ? "(1) 잠금 화면·보호된 콘텐츠(DRM 재생 창)·관리자 권한 대화상자(보안 데스크톱)는 " +
-          "검게 나오거나 아예 담기지 않습니다. 비어 보인다고 «없다» 로 읽지 마세요."
+          "검게 나오거나 아예 담기지 않습니다. 비어 보인다고 «없다» 로 읽지 마세요. " +
+          // ★2026-09-17 회사돌쇠 재검증에서 실제로 헷갈린 자리: 창이 API 로는 «있고
+          //  보인다»(IsWindowVisible=true)는데 캡처엔 없었다. 우리는 **화면에 합성된 픽셀**을
+          //  읽으므로 «아직 안 그려진 창» 은 정직하게 안 보인다 — 그게 맞는 동작이지만,
+          //  모르면 «캡처가 고장» 으로 읽힌다.
+          "★이 관측은 **화면에 실제로 그려진 것**을 담습니다 — 창이 «존재하고 보이는» 상태여도 " +
+          "아직 그려지지 않았으면(메시지 루프 없이 만든 창 등) 여기 안 나옵니다."
         : "(1) 화면 기록 권한이 없으면 macOS 가 오류 대신 바탕화면만 담긴 그림을 줄 수 있습니다. " +
           "보이는 것이 기대와 다르면 권한부터 확인하세요 — 그림만으로는 구분할 수 없습니다."
     } (2) 이 관측은 **한 디스플레이**만 담습니다. 모니터가 여럿이면 나머지는 여기 없습니다 — ` +
@@ -548,7 +700,9 @@ export const imagePointToScreen = (
   if (!(Number.isFinite(img.x) && Number.isFinite(img.y))) return null;
   // ★**이미지 밖은 거절한다.** 모델이 0~1 정규화 좌표를 줬거나 옛 관측의 좌표를 그대로
   //  쓰면 여기서 걸린다 — 조용히 가장자리로 뭉개면 엉뚱한 걸 누른다.
-  if (img.x < 0 || img.y < 0 || img.x > d.w || img.y > d.h) return null;
+  // ★경계는 `>=` 다 — **폭 값 자체는 이미지 밖**이다(픽셀 인덱스는 0..w-1). 종전엔 `>` 라
+  //  오른쪽·아래 가장자리 1px 이 통과했다(§14-3 에 적어두고 호출부가 없어 미뤘던 한 줄).
+  if (img.x < 0 || img.y < 0 || img.x >= d.w || img.y >= d.h) return null;
   const px = { x: (img.x * c.w) / d.w, y: (img.y * c.h) / d.h };
   return {
     x: Math.round(o.x + px.x / scale),
@@ -567,53 +721,8 @@ export const deriveScale = (probePt: number, probePx: number): number | null => 
   return s >= 0.5 && s <= 4 ? s : null;
 };
 
-/**
- * **사용자가 방금 그 기계를 썼나** — 순수 판정 (설계 §3-4).
- *
- * ★관측과 달리 **클릭은 되돌릴 수 없다.** 그래서 «되돌릴 수 있거나 최악이 사소하거나» 라는
- *  자동 조치 기준을 조작은 통과하지 못한다 — 사람이 쓰는 중이면 **안 누른다.**
- * ★★**2초는 안 잰 값이다**(잠정). 짧으면 충돌하고 길면 비서가 굶는다. 실사용 로그의
- *  «user active» 빈도로 재서 확정한다 — 직감으로 박은 숫자를 «정해진 것» 으로 읽지 마라.
- */
-export const USER_ACTIVE_WINDOW_MS = 2_000;
-
-export const userIsActive = (idleSeconds: number | null, windowMs = USER_ACTIVE_WINDOW_MS): boolean =>
-  // ★**모르면 «쓰는 중» 으로 본다.** 판정 불가를 «비어 있다» 로 읽으면 사람 손 위에서 클릭한다.
-  idleSeconds === null || !Number.isFinite(idleSeconds) || idleSeconds * 1000 < windowMs;
-
-/**
- * **데스크톱 리스** — 커서가 하나라는 물리 (설계 §3-3). 순수 상태 기계.
- *
- * ★**관측은 리스가 필요 없다**(읽기는 안 겹친다). 조작만 잡는다.
- * ★**큐가 아니라 즉시 실패**다. 큐는 숨은 대기라, 서브의 턴이 도구 호출 하나에 매달린다
- *  (외부 MCP 8분 hang 과 같은 모양). 오류 결과는 정상 스티어링 입력이고, 매니저는 자기
- *  서브를 이미 순서 세우는 주체다.
- * ★해제는 셋이다: 소유자가 놓거나 · 소유 턴이 끝났다는 이벤트 · **유휴 시한**.
- *  `callTool` 에 signal 이 없어(MCP 한계) 유휴가 마지막 그물이다 — 없으면 한 번 잡고
- *  죽은 소유자가 데스크톱을 영원히 붙든다.
- * ★★**시한도 잠정값이다.**
- */
-export const LEASE_IDLE_MS = 60_000;
-
-export interface LeaseState {
-  owner: string;
-  lastTouchedMs: number;
-}
-
-export const leaseDecision = (
-  current: LeaseState | null,
-  asker: string,
-  nowMs: number,
-  idleMs = LEASE_IDLE_MS,
-): { ok: true; next: LeaseState } | { ok: false; heldBy: string } => {
-  const expired = current !== null && nowMs - current.lastTouchedMs >= idleMs;
-  if (current === null || expired || current.owner === asker) {
-    return { ok: true, next: { owner: asker, lastTouchedMs: nowMs } };
-  }
-  return { ok: false, heldBy: current.owner };
-};
-
-/** 리스를 못 잡았을 때 모델에게 할 말 — 기다리라고 하지 않는다(큐가 아니다). */
-export const busyMessage = (heldBy: string): string =>
-  `데스크톱이 사용 중입니다 (${heldBy} 가 쓰는 중). 기다리지 말고 그 작업이 끝난 뒤 다시 시도하거나, ` +
-  `매니저라면 자식 작업의 순서를 세워 주세요.`;
+// ★**리스·사용자 가드·행동 판정은 여기 없다** — `control.ts` 로 갔다 (2026-09-17).
+//  처음엔 여기 «2단계: 조작» 자리에 같이 뒀는데, 조작 판단이 늘자 **같은 판단이 두 곳**이
+//  될 뻔했다([[feedback_simple_composable_no_duplication]] — 중복은 파일 수가 아니라
+//  «같은 판단이 두 곳» 이다). 기하(`imagePointToScreen`·`deriveScale`)만 여기 남는다 —
+//  그건 **관측이 내는 값**이고 조작은 그걸 받아 쓰는 쪽이다.

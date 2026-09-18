@@ -2,8 +2,8 @@
   "name": "computer-use",
   "version": "0.1.0",
   "description": {
-    "ko": "화면을 찍어서 비서가 보게 합니다. 지금은 읽기 전용 — 클릭·입력은 아직 없습니다.",
-    "en": "Captures the screen so the assistant can look at it. Read-only for now — no clicking or typing yet."
+    "ko": "화면을 찍어서 비서가 보게 하고, 클릭·입력·드래그·스크롤로 조작하게 합니다.",
+    "en": "Lets the assistant see the screen, and click, type, drag and scroll on it."
   },
   "author": "tiguclaw",
   "license": "Apache-2.0",

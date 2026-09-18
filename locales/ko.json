@@ -64,7 +64,7 @@
   "bg.scope.all": "전체 세션",
   "bg.scope.session": "현재 세션",
   "bg.shells.activeCount": "🖥️ 셸 {n}개 실행 중",
-  "bg.shells.empty": "실행 중인 셸이 없습니다.",
+  "bg.shells.empty": "백그라운드로 띄운 셸이 없습니다. 도구가 직접 붙들고 실행 중인 명령은 여기 안 나옵니다 — 진행 중인 작업은 «매니저·에이전트» 를 보세요.",
   "bg.shells.head": "🖥️ 셸 / 프로세스",
   "bg.shells.running": "실행 중",
   "bg.status.cancelled": "⏹ 취소",

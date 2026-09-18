@@ -71,6 +71,15 @@ interface ObserveModule {
         spans: number;
       }
     | { ok: false };
+  imageRectToScreen: (
+    rect: { x: number; y: number; width: number; height: number },
+    g: {
+      deliveredPx: { w: number; h: number };
+      capturedPx: { w: number; h: number };
+      originPt: { x: number; y: number };
+      scale: number;
+    },
+  ) => { x: number; y: number; width: number; height: number } | null;
   offscreenMessage: (
     region: { x: number; y: number; width: number; height: number },
     screens: readonly { x: number; y: number; w: number; h: number }[],
@@ -93,19 +102,16 @@ interface ObserveModule {
     },
   ) => { x: number; y: number } | null;
   deriveScale: (probePt: number, probePx: number) => number | null;
-  userIsActive: (idleSeconds: number | null, windowMs?: number) => boolean;
-  leaseDecision: (
-    current: { owner: string; lastTouchedMs: number } | null,
-    asker: string,
-    nowMs: number,
-    idleMs?: number,
-  ) => { ok: true; next: { owner: string; lastTouchedMs: number } } | { ok: false; heldBy: string };
+  screenForTarget: (
+    target: CaptureTarget,
+    screens: readonly { x: number; y: number; w: number; h: number; scale?: number }[] | undefined,
+  ) => { x: number; y: number; w: number; h: number; scale?: number } | null;
 }
 
 export const check: RegressionCheck = {
   name: "computer-use-observation-is-bounded",
   guards:
-    "화면 관측이 권한 대화상자에 매달려 턴을 MCP 천장(11분)까지 묶는 것 · 프레임이 디스크에 무한 누적되는 것 · 활발한 스레드가 조용한 스레드의 몫을 먹는 것 · 관측 한계를 모델에게 안 알리는 것 · **Windows 에서 경로가 PowerShell 코드로 섞이거나 맥 전용 처방이 나가는 것** · **화면 밖 좌표가 «성공한 관측» 으로 나가는 것**(실기 확인) · 검사가 **호스트 OS 에 따라 갈리는 것**",
+    "**보조 디스플레이 좌표가 조용히 주 화면으로 풀리는 것**(실기 확인) · 화면 관측이 권한 대화상자에 매달려 턴을 MCP 천장(11분)까지 묶는 것 · 프레임이 디스크에 무한 누적되는 것 · 활발한 스레드가 조용한 스레드의 몫을 먹는 것 · 관측 한계를 모델에게 안 알리는 것 · **Windows 에서 경로가 PowerShell 코드로 섞이거나 맥 전용 처방이 나가는 것** · **화면 밖 좌표가 «성공한 관측» 으로 나가는 것**(실기 확인) · 검사가 **호스트 OS 에 따라 갈리는 것**",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const {
@@ -117,14 +123,14 @@ export const check: RegressionCheck = {
       winCaptureEnv,
       clipRegionToScreens,
       checkTarget,
+      imageRectToScreen,
       offscreenMessage,
       FRAME_KEEP_PER_THREAD,
       FRAME_MAX_BYTES,
       describeLongEdge,
       imagePointToScreen,
       deriveScale,
-      userIsActive,
-      leaseDecision,
+      screenForTarget,
     } = await loadPluginModule<ObserveModule>(
       "../../../plugins/computer-use/src/observe.ts",
     );
@@ -423,33 +429,8 @@ export const check: RegressionCheck = {
         `${deriveScale(100, 200)} · ${deriveScale(100, 100)} · ${deriveScale(0, 200)}`,
       ),
     );
-    out.push(
-      assert(
-        "★사용자 활동을 **모르면 «쓰는 중»** 으로 본다(판정 불가를 빈손으로 읽으면 사람 손 위에서 누른다)",
-        userIsActive(null) === true &&
-          userIsActive(Number.NaN) === true &&
-          userIsActive(0.5) === true &&
-          userIsActive(10) === false,
-        `null=${userIsActive(null)} NaN=${userIsActive(Number.NaN)} 0.5s=${userIsActive(0.5)} 10s=${userIsActive(10)}`,
-      ),
-    );
-    const t = 1_000_000;
-    const held = leaseDecision({ owner: "A", lastTouchedMs: t }, "B", t + 1_000);
-    out.push(
-      assert(
-        "리스: 남이 쥐고 있으면 **즉시 실패**한다(큐가 아니다 — 큐는 숨은 대기다)",
-        held.ok === false && held.heldBy === "A",
-        JSON.stringify(held),
-      ),
-    );
-    out.push(
-      assert(
-        "리스: 같은 소유자는 계속 쓰고, 유휴 시한이 지나면 남이 가져간다(죽은 소유자가 영원히 붙들지 않는다)",
-        leaseDecision({ owner: "A", lastTouchedMs: t }, "A", t + 1_000).ok === true &&
-          leaseDecision({ owner: "A", lastTouchedMs: t }, "B", t + 60_000).ok === true,
-        `같은소유자 ${leaseDecision({ owner: "A", lastTouchedMs: t }, "A", t + 1_000).ok} · 만료후 ${leaseDecision({ owner: "A", lastTouchedMs: t }, "B", t + 60_000).ok}`,
-      ),
-    );
+    // ★리스·사용자 가드 단언은 **여기 없다** — `computer-use-control-is-safe` 로 갔다
+    //  (2026-09-17). 판단이 `control.ts` 로 옮겨졌으니 검사도 따라간다.
 
     // ── ★Windows 실행부 (2026-09-17) ────────────────────────────────────────────
     //  ★**경로가 코드가 되면 안 된다.** mac 은 `execFile` argv 라 안전하지만 PowerShell 은
@@ -724,6 +705,90 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★좌표계는 **하나**다 — 영역도 그림 픽셀 (2026-09-17, 돌쇠 실측) ──────────
+    //  ★종전엔 클릭은 «그림 픽셀», `region` 은 «화면 좌표» 로 **둘이 섞여 있었다.** 이 기계는
+    //   차이가 8%뿐이라 대충 맞아 보였지만, 축소율이 큰 화면에서는 그림에서 읽은 좌표로
+    //   영역을 잡으면 엉뚱한 데가 잡히고 **그 위에서 조용히 딴 데를 누른다.**
+    {
+      const g = {
+        deliveredPx: { w: 1600, h: 1034 },
+        capturedPx: { w: 3456, h: 2234 },
+        originPt: { x: 0, y: 0 },
+        scale: 2,
+      };
+      const r = imageRectToScreen({ x: 800, y: 517, width: 100, height: 50 }, g);
+      out.push(
+        assert(
+          "★영역이 **그림 픽셀 → 화면 좌표**로 변환된다(클릭과 같은 기준을 쓴다)",
+          // ★높이가 54(=50×1.08)가 아니라 **53** 인 것이 맞다 — 곱셈이 아니라 **첫 픽셀과
+          //  끝 픽셀을 실제로 매핑**하기 때문이다(517→559 · 566→611 · 포함 53). 관측 영역에서
+          //  1px 차이는 무해하고, «이 픽셀들» 에 충실한 쪽이 끝점 기준이다.
+          r !== null && r.x === 864 && r.y === 559 && r.width === 108 && r.height === 53,
+          JSON.stringify(r),
+        ),
+      );
+      out.push(
+        assert(
+          "★그림 밖 영역은 **변환을 거절한다**(지어낸 좌표로 찍지 않는다)",
+          imageRectToScreen({ x: 1500, y: 10, width: 200, height: 10 }, g) === null,
+          JSON.stringify(imageRectToScreen({ x: 1500, y: 10, width: 200, height: 10 }, g)),
+        ),
+      );
+      const identity = imageRectToScreen(
+        { x: 10, y: 20, width: 30, height: 40 },
+        { deliveredPx: { w: 100, h: 100 }, capturedPx: { w: 100, h: 100 }, originPt: { x: 0, y: 0 }, scale: 1 },
+      );
+      out.push(
+        assert(
+          "배율 1(윈도우)에서는 **그대로**다 — 변환이 공짜로 항등이 된다",
+          JSON.stringify(identity) === JSON.stringify({ x: 10, y: 20, width: 30, height: 40 }),
+          JSON.stringify(identity),
+        ),
+      );
+    }
+
+    // ── 어느 화면의 기하를 붙이나 (2026-09-18, 회사돌쇠 4차) ─────────────────
+    //  ★종전엔 `screens[0]` 을 무조건 썼다. `display:2` 로 찍은 그림에 주 화면 원점이
+    //   붙어, 보조 화면을 보고 누르면 **주 화면의 딴 것이 눌렸다** — 그리고 화면 안의
+    //   멀쩡한 좌표라 **어떤 검사에도 안 걸렸다.**
+    const twoScreens = [
+      { x: 0, y: 0, w: 2560, h: 1440 },
+      { x: 2560, y: 0, w: 2560, h: 1440, scale: 2 },
+    ];
+    const second = screenForTarget({ kind: "display", index: 2 }, twoScreens);
+    out.push(
+      assert(
+        "★★`display:2` 는 **그 화면**의 기하를 받는다 — 주 화면 것을 붙이면 좌표가 조용히 풀린다",
+        second !== null && second.x === 2560 && second.scale === 2,
+        JSON.stringify(second),
+      ),
+    );
+    out.push(
+      assert(
+        "전체 화면은 주 화면 · 없는 번호는 «모른다»(0번·음수도)",
+        screenForTarget({ kind: "screen" }, twoScreens)?.x === 0 &&
+          screenForTarget({ kind: "display", index: 3 }, twoScreens) === null &&
+          screenForTarget({ kind: "display", index: 0 }, twoScreens) === null &&
+          screenForTarget({ kind: "screen" }, []) === null,
+        `주=${JSON.stringify(screenForTarget({ kind: "screen" }, twoScreens))} · 3번=${String(screenForTarget({ kind: "display", index: 3 }, twoScreens))} · 0번=${String(screenForTarget({ kind: "display", index: 0 }, twoScreens))}`,
+      ),
+    );
+    out.push(
+      assert(
+        "영역은 **그 사각형이 놓인 화면** — 걸치면 겹친 면적이 큰 쪽 · 어디에도 안 닿으면 «모른다»",
+        screenForTarget({ kind: "region", x: 3000, y: 100, width: 100, height: 100 }, twoScreens)
+          ?.x === 2560 &&
+          screenForTarget(
+            { kind: "region", x: 2460, y: 100, width: 300, height: 100 },
+            twoScreens,
+          )?.x === 2560 &&
+          screenForTarget(
+            { kind: "region", x: 90_000, y: 90_000, width: 10, height: 10 },
+            twoScreens,
+          ) === null,
+        `보조안=${JSON.stringify(screenForTarget({ kind: "region", x: 3000, y: 100, width: 100, height: 100 }, twoScreens))} · 걸침=${JSON.stringify(screenForTarget({ kind: "region", x: 2460, y: 100, width: 300, height: 100 }, twoScreens))}`,
+      ),
+    );
     return out;
   },
 };

@@ -65,7 +65,8 @@ import {
   takeUndeliveredChildResults,
 }
 from "../../worker-jobs.js";
-import { getLastWorkerActivity } from "../../../store/events.js";
+import { getLastWorkerActivity, getLastToolSlow } from "../../../store/events.js";
+import { workerActivityLine } from "../../worker-activity-line.js";
 import { composeWorkerReport, harvestFailureNote } from "../../worker-report.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
@@ -681,15 +682,19 @@ export const createWorkerMcpServer = (
           const elapsed = formatElapsed(j.startedAt, end);
           const status = STATUS_LABEL[j.status];
           if (j.status === "running") {
-            // 최근 활동 1건(events 의 llm.activity, threadKey=`worker:<jobId>`) →
-            // "마지막: <도구> N분 전". 활동이 오래됐으면 stuck 신호. 매니저당 1회 조회(매니저
-            // 수 적어 OK). 조회 실패는 활동 생략(데몬 생존 — 목록 자체는 항상 나간다).
+            // 최근 활동 1건 + 감시자 신호. 문구 판단은 **순수부**에 있다
+            //  (`worker-activity-line.ts` — 왜 거기 있는지는 그 파일이 적어뒀다).
+            //  매니저당 2회 조회(매니저 수 적어 OK). 조회 실패는 활동 생략(데몬 생존 —
+            //  목록 자체는 항상 나간다).
             let activity = "";
             try {
-              const last = getLastWorkerActivity(`worker:${j.jobId}`);
-              if (last !== null) {
-                activity = `, 마지막: ${last.label} ${formatElapsed(last.ts, now)} 전`;
-              }
+              const tk = `worker:${j.jobId}`;
+              activity = workerActivityLine({
+                last: getLastWorkerActivity(tk),
+                slow: getLastToolSlow(tk),
+                now,
+                elapsed: formatElapsed,
+              });
             } catch {
               // 활동 조회 실패 — 목록은 그대로, 활동만 생략.
             }

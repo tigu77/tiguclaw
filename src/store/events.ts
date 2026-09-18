@@ -211,14 +211,15 @@ export const listEvents = (opts?: {
  */
 export const getLastWorkerActivity = (
   threadKey: string,
-): { label: string; ts: number } | null => {
+): { label: string; ts: number; kind: string | null } | null => {
   // ★json_valid 가드(2026-07-09): 깨진 JSON 행이 json_extract 를 터뜨리지 못하게 inner 에서
   // 유효 행만 걸러 투영(getRecentActivities 동형).
   const row = getDb()
     .prepare(
-      `SELECT ts, label FROM (
+      `SELECT ts, label, kind FROM (
          SELECT id, ts,
            json_extract(payload, '$.label') AS label,
+           json_extract(payload, '$.kind') AS kind,
            json_extract(payload, '$.threadKey') AS tk
          FROM events
          WHERE type = 'llm.activity' AND json_valid(payload)
@@ -227,9 +228,45 @@ export const getLastWorkerActivity = (
        ORDER BY id DESC
        LIMIT 1`,
     )
-    .get(threadKey) as { ts: number; label: string | null } | undefined;
+    .get(threadKey) as { ts: number; label: string | null; kind: string | null } | undefined;
   if (row === undefined || row.label === null) return null;
-  return { label: row.label, ts: row.ts };
+  // ★`kind` 를 같이 낸다 — 이 값이 «도구» 면 그 활동은 **도구 시작**이지 «그 뒤로 조용» 이
+  //  아니다. 문구가 그 둘을 구분하지 못해 실제로 세 번 오진했다(2026-09-18 아스트라 제보).
+  return { label: row.label, ts: row.ts, kind: row.kind };
+};
+
+/**
+ * 한 thread 의 *최신* `llm.tool_slow` 1건 — **«그 도구가 아직 안 끝났다» 는 증거**다.
+ *
+ * ★감시자는 도구가 **도는 동안에만** 이 이벤트를 낸다. 그래서 이게 마지막 활동보다 뒤에
+ *  있으면 «그 시각에 그 도구는 여전히 실행 중이었다» 가 **사실로 확정**된다 — 추정이 아니다.
+ *
+ * ★★**이 신호는 이미 있었는데 로그에만 있었다** (2026-09-18, 아스트라 제보).
+ *  매니저 셋이 21분·2시간·53분 멈췄고, 그때 `list_workers` 는 «마지막: Bash 52분 전» 이라고
+ *  답했다 — «52분 전에 Bash 를 쓰고 그 뒤 조용» 으로도 읽히는 문장이다. 그렇게 읽혔고,
+ *  그래서 «모델이 멈췄다» 는 오진과 엉뚱한 가설이 나왔다. 정답은 로그의 `[tool-slow]` 에
+ *  적혀 있었다. **로그에만 있는 진단은 판단하는 자에게 없는 것이다.**
+ */
+export const getLastToolSlow = (
+  threadKey: string,
+): { tool: string; ms: number; ts: number } | null => {
+  const row = getDb()
+    .prepare(
+      `SELECT ts, tool, ms FROM (
+         SELECT id, ts,
+           json_extract(payload, '$.tool') AS tool,
+           json_extract(payload, '$.ms') AS ms,
+           json_extract(payload, '$.threadKey') AS tk
+         FROM events
+         WHERE type = 'llm.tool_slow' AND json_valid(payload)
+       )
+       WHERE tk = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+    )
+    .get(threadKey) as { ts: number; tool: string | null; ms: number | null } | undefined;
+  if (row === undefined || row.tool === null) return null;
+  return { tool: row.tool, ms: typeof row.ms === "number" ? row.ms : 0, ts: row.ts };
 };
 
 /**

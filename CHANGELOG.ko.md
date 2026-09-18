@@ -8,6 +8,36 @@
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-09-19
+
+### Added
+
+- **화면을 보고 직접 조작하는 `computer-use` 플러그인**을 추가했습니다. 비서가 지금 화면을
+  찍어서 보고, 클릭·글자 입력·단축키·드래그·스크롤을 합니다. macOS 와 Windows 에서 돌고
+  설치할 것은 없습니다.
+  - ★**조작은 되돌릴 수 없습니다.** 이 플러그인을 켜는 것은 비서에게 그 기계의 마우스와
+    키보드를 준다는 뜻입니다. 기본값은 꺼져 있습니다.
+  - macOS 는 권한이 둘이고 서로 다릅니다 — **화면 기록**(보기)과 **손쉬운 사용**(조작).
+    관측만 되고 조작이 안 되는 상태가 정상적으로 존재합니다.
+  - Windows 는 권한 대화상자가 없는 대신 **로그인한 사용자 세션**에서 실행되어야 합니다.
+    일부 보안 소프트웨어가 화면 캡처 스크립트를 차단할 수 있고, 그때는 그렇게 알려줍니다.
+  - 사람이 방금 키보드·마우스를 썼으면 조작하지 않습니다. 화면을 본 뒤 30초가 지나거나
+    한 번 조작하면 그 화면 좌표는 무효가 됩니다.
+
+### Fixed
+
+- **지우고 새로고침하면 옛 글이 입력창에 되살아나던 것**을 고쳤습니다.
+- **데몬이 꺼져 있을 때 보낸 글이 조용히 사라지던 것**을 고쳤습니다. 이제 받았는지를
+  받은 쪽이 말합니다.
+- **턴이 진행 중일 때 보낸 글이 입력창으로 되돌아오던 것**을 고쳤습니다. 60초가 넘는
+  턴에서도 그랬습니다.
+- **채팅 카드가 접히지도 펴지지도 않던 것**을 고쳤습니다.
+- **전송이 실패하면 첨부가 사라지던 것**을 고쳤습니다.
+- **백그라운드 작업 목록이 «마지막: Bash 52분 전» 이라고만 해서, 도구가 멈춘 것인지
+  그냥 조용한 것인지 알 수 없던 것**을 고쳤습니다. 이제 아직 돌고 있으면 그렇게 말합니다.
+- **대시보드가 데몬에 못 닿았을 때 원인이 아무 데도 남지 않던 것**을 고쳤습니다.
+- **도구가 만든 이미지가 대화에 계속 쌓이던 것**을 고쳤습니다.
+
 ## [0.54.1] - 2026-09-15
 
 ### Fixed
@@ -2121,7 +2151,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0
 [0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1
 [0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0

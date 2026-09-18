@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-09-19
+
+### Added
+
+- **`computer-use` plugin — the assistant can now see the screen and act on it.** It takes a
+  screenshot, then clicks, types, presses shortcuts, drags and scrolls. Works on macOS and
+  Windows with nothing to install.
+  - ★**Actions cannot be undone.** Enabling this plugin means handing the assistant the
+    mouse and keyboard of that machine. It is off by default.
+  - macOS needs two separate permissions — **Screen Recording** (to see) and
+    **Accessibility** (to act). Seeing without acting is a normal state.
+  - Windows has no permission prompt, but the daemon must run in a **logged-in user
+    session**. Some security software blocks the screen-capture script; when it does,
+    the tool says so.
+  - It will not act while you are typing or moving the mouse. Screen coordinates expire
+    after 30 seconds, and any action invalidates them.
+
+### Fixed
+
+- **A cleared draft reappearing in the input box after a refresh.**
+- **Messages sent while the daemon was down disappearing silently.** Delivery is now
+  confirmed by the side that receives it.
+- **Messages sent during an active turn bouncing back into the input box**, including on
+  turns longer than 60 seconds.
+- **Chat cards that would neither collapse nor expand.**
+- **Attachments being dropped when a send failed.**
+- **Background job lists saying only "last: Bash, 52 minutes ago"**, which could not
+  distinguish a stuck tool from a quiet one. A tool that is still running now says so.
+- **The dashboard losing the reason when it could not reach the daemon.**
+- **Tool-generated images piling up in the conversation.**
+
 ## [0.54.1] - 2026-09-15
 
 ### Fixed
@@ -568,7 +599,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0
 [0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1
 [0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/tigu77/tiguclaw/compare/v0.52.1...v0.53.0

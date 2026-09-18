@@ -75,6 +75,7 @@ interface ControlModule {
     ttlMs?: number,
   ) => { ok: true; frame: Frame } | { ok: false; why: string };
   frameRejection: (why: string) => string;
+  postFailureMessage: (reason: "timeout" | "failed", detail: string) => string;
   plan: (action: Record<string, unknown>, frame: Frame) => Plan;
   planRejection: (why: "offscreen" | "empty") => string;
   beginRejection: (b: Exclude<Begin, { ok: true }>) => string;
@@ -113,6 +114,7 @@ export const check: RegressionCheck = {
       releaseLease,
       frameCheck,
       frameRejection,
+      postFailureMessage,
       rememberFrame,
       FRAME_KEEP,
       plan,
@@ -662,6 +664,90 @@ export const check: RegressionCheck = {
           "진짜 사용자 활동은 그대로 «사람이 쓰는 중» 이다(가르느라 잃지 않았다)",
           !busy.ok && busy.reason === "user-active",
           JSON.stringify(busy),
+        ),
+      );
+    }
+
+    // ── 빈 «화면 id» 는 «안 준 것» 이다 (2026-09-18, 아스트라 실기 101분) ─────
+    //  ★`frameId: ""` 가 `unknown` 으로 흘러 «`observe_screen` 으로 지금 화면을 보고
+    //   좌표를 다시 정하세요» 라는 답을 받았다. 그런데 **모델이 부르고 있던 것이 그
+    //   도구**였다 — 처방이 제 발을 가리켰고, 같은 인자로 **720번** 같은 오류를 받으며
+    //   101분을 썼다. 화면은 한 장도 못 얻었고 조작은 0회였다.
+    //  ★이 검사는 «문구가 예쁜가» 가 아니라 **«무엇을 다르게 하라고 말하는가»** 를 잰다.
+    {
+      const d = newDesktop();
+      d.frames.set("A", [{ id: "f1", atMs: T, owner: "A", geometry: GEO }]);
+      const empty = frameCheck(d.frames.get("A"), "", "A", T + 100);
+      const blank = frameCheck(d.frames.get("A"), "   ", "A", T + 100);
+      out.push(
+        assert(
+          "★빈 «화면 id» 는 «모르는 id» 가 아니라 **«안 줬다»** 로 갈린다(처방이 다르다)",
+          !empty.ok && empty.why === "missing" && !blank.ok && blank.why === "missing",
+          `빈문자열=${JSON.stringify(empty)} · 공백=${JSON.stringify(blank)}`,
+        ),
+      );
+      const miss = frameRejection("missing");
+      out.push(
+        assert(
+          "★★처방이 **인자를 빼라**고 말한다 — «다시 관측하라» 는 이 자리에서 제 발을 가리킨다",
+          miss.includes("없이") && miss.includes("region") && miss.includes("frameId"),
+          miss.slice(0, 110),
+        ),
+      );
+      out.push(
+        assert(
+          "모르는 id 는 여전히 **자기 사유**로 나온다(둘을 가르느라 하나를 잃지 않았다)",
+          (() => {
+            const unk = frameCheck(d.frames.get("A"), "없는id", "A", T + 100);
+            return !unk.ok && unk.why === "unknown" && frameRejection("unknown") !== miss;
+          })(),
+          JSON.stringify(frameCheck(d.frames.get("A"), "없는id", "A", T + 100)),
+        ),
+      );
+    }
+
+    // ── 쏘다가 끊긴 것은 «실패» 가 아니라 «모름» 이다 (2026-09-18, 아스트라 설계 검토) ──
+    //  ★이 세션은 «보냈는데 안 됐다» 만 다섯 라운드 쫓았다. 반대편이 있다 — «됐는데 모른다».
+    //   자식이 SIGKILL 되면 이벤트가 어디까지 나갔는지 밖에서 알 수 없다.
+    //   처방이 정반대다: 전자는 재관측, 후자는 **재시도 금지**.
+    //  ★조작은 되돌릴 수 없다. «실패했다» 로 읽혀 모델이 또 보내면 **두 번 눌린다**.
+    {
+      const to = postFailureMessage("timeout", "4000ms 초과");
+      const fa = postFailureMessage("failed", "알 수 없는 키 이름: 없는키");
+      out.push(
+        assert(
+          "★★«실패했다» 고 말하지 않는다 — **어디까지 갔는지 모른다**고 말한다",
+          !to.includes("실패했습니다") &&
+            !fa.includes("실패했습니다") &&
+            to.includes("알 수 없습니다") &&
+            fa.includes("알 수 없습니다"),
+          to.split("\n")[0] ?? "",
+        ),
+      );
+      out.push(
+        assert(
+          "★★**다시 보내지 말라**고 말한다 — 되돌릴 수 없으니 재시도가 두 번 누르는 것이다",
+          to.includes("다시 보내지 마세요") && fa.includes("다시 보내지 마세요"),
+          to.slice(0, 120),
+        ),
+      );
+      out.push(
+        assert(
+          "먼저 **보라**고 말하고, 끊긴 것과 오류로 멈춘 것을 **다른 문장**으로 가른다",
+          // ★비교는 **첫 줄**끼리다 (자기 변이로 적발). 전체 문자열을 견주면 `detail` 이
+          //  달라서 늘 다르고, 그러면 «사유를 가른다» 를 재는 게 아니라 «입력이 다르다» 를
+          //  재는 공허한 단언이 된다.
+          to.includes("observe_screen") &&
+            fa.includes("observe_screen") &&
+            to.split("\n")[0] !== fa.split("\n")[0],
+          `${to.split("\n")[0] ?? ""} / ${fa.split("\n")[0] ?? ""}`,
+        ),
+      );
+      out.push(
+        assert(
+          "«왜» 를 그대로 싣는다(로그에만 두지 않는다)",
+          to.includes("4000ms 초과") && fa.includes("없는키"),
+          fa.slice(0, 120),
         ),
       );
     }

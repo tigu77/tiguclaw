@@ -25,11 +25,12 @@ import { assert, loadPluginModule, type Assertion, type RegressionCheck } from "
 
 interface WinModule {
   selfCheck: () => Promise<
-    | { ok: true; idleSeconds: number | null; textSurvives: boolean }
+    | { ok: true; idleSeconds: number | null; textSurvives: boolean; dryFired: number }
     | { ok: false; where: "idle" | "input" | "dry"; detail: string }
   >;
   cleanPowerShellError: (raw: string) => string | null;
   scriptError: (stdout: string) => string | null;
+  antivirusBlocked: (detail: string) => boolean;
   capture: (
     target: never,
     outPath: string,
@@ -48,7 +49,8 @@ export const check: RegressionCheck = {
     "캡처가 그림 실측 크기를 안 내서 «화면 id» 가 영영 발급되지 않고 조작 도구 전체가 불능이던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const { selfCheck, cleanPowerShellError, scriptError, capture } = await loadPluginModule<WinModule>(
+    const { selfCheck, cleanPowerShellError, scriptError, capture, antivirusBlocked } =
+      await loadPluginModule<WinModule>(
       "../../../plugins/computer-use/src/win.ts",
     );
 
@@ -104,6 +106,49 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ①-c CLIXML 에서 **조각 말고 문장**을 고른다 (2026-09-18, 집 Windows 실기) ──
+    //  ★같은 결함의 **세 번째 얼굴**이다. 9/17 에 «앞에서 자르면 서문만 남는다» 를
+    //   «가장 긴 줄» 로 고쳤는데, 백신이 막은 사고에서 **`+ CategoryInfo : ParserError…`**
+    //   를 골랐다. 진짜 문장은 바로 윗줄이었고, 그래서 «파싱 오류» 로 읽혀 스크립트를
+    //   세 번 뜯어봤다. 길이가 아니라 **모양**으로 골라야 한다.
+    // ★★**실기에서 받은 stderr 원문 그대로**다(집 Windows, 2026-09-18, 백신 차단).
+    //  지어낸 표본이 **두 번** 나를 속였다 — 짧게 만들면 「가장 긴 줄」도 정답을 고르고,
+    //  영어로 만들면 **본문이 깨지는 것**이 안 보인다. 실제로는 셋이 겹쳐 있다:
+    //   ① `+ CategoryInfo`(81자)가 진짜 문장(68자)보다 **길다**
+    //   ② 그 진짜 문장이 **한국어라 CP949 로 깨져** 온다
+    //   ③ 이 오류는 **우리 스크립트가 시작되기 전에** PowerShell 이 내므로, 스크립트 안의
+    //      UTF-8 강제가 **안 닿는다** — 남는 ASCII 신호는 `FullyQualifiedErrorId` 뿐이다
+    const amsi = "#< CLIXML\n<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\"><S S=\"Error\">\ufffd\ufffd\u0121 \ufffd\ufffd:1 \ufffd\ufffd\ufffd\ufffd:1_x000D__x000A_</S><S S=\"Error\">+ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding ..._x000D__x000A_</S><S S=\"Error\">+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~_x000D__x000A_</S><S S=\"Error\">\ufffd\ufffd \ufffd\ufffd\u0169\ufffd\ufffd\u01ae\ufffd\ufffd \ufffd\u01fc\ufffd \ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd \ufffd\u05be\uef2d \ufffd\ufffd\ufffd\u0337\ufffd\ufffd\ufffd \ufffd\ufffd\ufffd \ufffd\ufffd\ufffd\ufffd\u01ae\ufffd\ufffd\ufffd\uefe1 \ufffd\ufffd\ufffd\ufffd \ufffd\ufffd\ufffd\u0735\u01fe\ufffd\ufffd\ufffd\ufffd\u03f4\ufffd._x000D__x000A_</S><S S=\"Error\">    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException_x000D__x000A_</S><S S=\"Error\">    + FullyQualifiedErrorId : ScriptContainedMaliciousContent_x000D__x000A_</S><S S=\"Error\"> _x000D__x000A_</S></Objs>";
+    const picked = cleanPowerShellError(amsi) ?? "";
+    out.push(
+      assert(
+        "★★부속 줄(`+ …`)을 **모양으로** 걷어낸다 — 이름 열거는 새 모양(`+ try {`)을 놓친다",
+        !picked.startsWith("+") && !picked.includes("CategoryInfo"),
+        picked.slice(0, 120),
+      ),
+    );
+    out.push(
+      assert(
+        "★**본문이 깨졌으면 그렇다고 말하고, ASCII 인 `FullyQualifiedErrorId` 를 같이 준다**",
+        picked.includes("ScriptContainedMaliciousContent") &&
+          (picked.includes("깨져") || !/\uFFFD/.test(picked)),
+        picked.slice(0, 120),
+      ),
+    );
+    out.push(
+      assert(
+        "★**백신이 막은 것**을 알아본다 — «파싱 오류» 로 읽히면 엉뚱한 데를 고친다",
+        antivirusBlocked("+ FullyQualifiedErrorId : ScriptContainedMaliciousContent") &&
+          antivirusBlocked("This script contains malicious content") &&
+          !antivirusBlocked("알 수 없는 키 이름: 없는키"),
+        // ★**관측한 값을 적는다** — 기대값("true 여야")을 적으면 빨간불을 봐도 무엇이
+        //  관측됐는지 모른다(`suite-selfcheck` 가 상한으로 지키는 그 규율).
+        `errId=${String(antivirusBlocked("+ FullyQualifiedErrorId : ScriptContainedMaliciousContent"))} · ` +
+          `문장=${String(antivirusBlocked("This script contains malicious content"))} · ` +
+          `평범한오류=${String(antivirusBlocked("알 수 없는 키 이름: 없는키"))}`,
+      ),
+    );
+
     // ── ② 실행부는 **Windows 에서만** 돌린다 ──────────────────────────────────
     if (process.platform !== "win32") {
       out.push(
@@ -137,6 +182,18 @@ export const check: RegressionCheck = {
     //   되돌릴 수 없는 손실이라 하류에서 복구가 안 된다. **한국어만의 문제가 아니다**:
     //   ASCII 밖 글자는 어느 언어든 같은 길로 사라진다. 그래서 우리 문구를 찾지 않고
     //   **보낸 글자가 그대로 돌아오는지**를 잰다(한글·악센트·한자·이모지를 한 번에).
+    // ★★**빈 연습이면 «쏜 횟수» 가 0이어야 한다** (2026-09-19, 아스트라 §4).
+    //  종전 `sent` 는 루프 **밖에서 «받은 항목 수»** 를 세어, **한 번도 안 쐈는데 같은 수**가
+    //  나왔다. 이름이 «보냈다» 라 읽는 쪽을 속였고, 실기에서 «`{ok:true,sent:1}` 인데 0자» 가
+    //  나왔을 때 그 수가 **아무것도 보장하지 않는다**는 것이 드러났다.
+    //  ★이 검사는 그 이름이 **뜻대로 도는지**를 잰다 — 빈 연습에서 0이 아니면 거짓말이다.
+    out.push(
+      assert(
+        "★★**빈 연습에서 «쏜 횟수» 가 0이다** — 이름이 뜻대로 돌지 않으면 그게 다음 오진이다",
+        r.ok && r.dryFired === 0,
+        r.ok ? `dryFired=${String(r.dryFired)} (이벤트 13개를 흘렸지만 발사 0이어야 한다)` : "실행부 실패로 판정 불가",
+      ),
+    );
     out.push(
       assert(
         "★**ASCII 밖 글자가 깨지지 않고 돌아온다** — «왜» 를 나르는 마지막 한 걸음",
@@ -150,6 +207,24 @@ export const check: RegressionCheck = {
     //   이제 계약이 `deliveredPx` 를 **필수**로 요구하므로 «빠뜨리기» 는 tsc 가 막는다.
     //   여기서는 그 위 — **실제로 값이 채워져 오는가**(늘 `null` 이면 결과는 똑같다) 를 잰다.
     //  ★캡처만 한다 = **입력 0**.
+    // ── ⑤ **실제 캡처는 명시적으로 켜야 한다** (2026-09-18, 아스트라 G4) ───────
+    //  ★★**내가 이 파일 머리말에 «회귀가 사용자 화면을 건드리면 안 된다» 고 써놓고,
+    //   그 아래에 `capture({kind:"screen"})` 을 넣었다.** 검토자의 주 화면이 **4번** 찍혔다.
+    //   이미지는 즉시 지워졌지만 **찍힌 것은 찍힌 것**이다.
+    //  ★검사 하나의 값보다 «남의 화면을 동의 없이 찍지 않는다» 가 위다. 그래서 **끈다** —
+    //   `TIGUCLAW_REGRESSION_CAPTURE=1` 일 때만 돈다.
+    //  ★그리고 «작은 영역만 찍기» 는 대안이 아니다(그것도 남의 화면이다).
+    //  ★끈 것을 **조용히 통과시키지 않는다** — 안 쟀으면 안 쟀다고 말한다.
+    if (process.env.TIGUCLAW_REGRESSION_CAPTURE !== "1") {
+      out.push(
+        assert(
+          "실제 화면 캡처는 **안 잰다**(사용자 화면을 찍지 않는다) — 재려면 `TIGUCLAW_REGRESSION_CAPTURE=1`",
+          true,
+          "캡처 0회 · `deliveredPx` 계약은 tsc 가 필수로 막고 있다(이 검사는 «값이 실제로 채워지나» 를 볼 뿐)",
+        ),
+      );
+      return out;
+    }
     const shotPath = path.join(os.tmpdir(), `tiguclaw-regression-${String(process.pid)}.jpg`);
     try {
       const shot = await capture({ kind: "screen" } as never, shotPath);

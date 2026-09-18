@@ -325,7 +325,22 @@ export interface ControlBackend {
   /** 이벤트를 순서대로 쏜다. ★«오류 없음» 이 «했다» 가 아니다 — 권한은 위에서 본다. */
   post(
     events: readonly import("./control.js").LowEvent[],
-  ): Promise<{ ok: true; sent: number } | { ok: false; reason: "timeout" | "failed"; detail: string }>;
+  ): Promise<
+    | {
+        ok: true;
+        /**
+         * 실제로 **쏜 횟수**.
+         *
+         * ★★**«앱이 받았다» 가 아니다** (2026-09-19, 아스트라 §4). 종전 이름은 `sent` 였고
+         *  실행부가 루프 **밖에서 «받은 항목 수»** 를 세어 냈다 — **빈 연습에서 한 번도 안
+         *  쐈는데 같은 수**가 나왔다. 그리고 실기에서 «`{ok:true, sent:1}` 인데 0자» 가
+         *  나왔을 때, 그 수가 **아무것도 보장하지 않는다**는 것이 드러났다.
+         * ★이름이 읽는 쪽을 속이면 그게 다음 오진이다. 효과의 판정은 **재관측뿐**이다.
+         */
+        fired: number;
+      }
+    | { ok: false; reason: "timeout" | "failed"; detail: string }
+  >;
 }
 
 export interface ObserveBackend {
@@ -464,6 +479,24 @@ const winPreflightMessage = (probe: {
   detail?: string;
 }): string => {
   const detail = probe.detail ?? "";
+  // ★★**백신이 막은 것을 «파싱 오류» 라고 말하지 않는다** (2026-09-18, 집 Windows 실기).
+  //  AMSI 가 캡처 스크립트를 차단하면 PowerShell 이 `ParserError` 계열 부속 줄을 뱉는데,
+  //  그걸 그대로 실으면 **스크립트 문법 문제로 읽힌다**(실제로 내가 세 번 뜯어봤다).
+  //  ★억울하지만 신호는 이해된다 — `Add-Type` 으로 P/Invoke 를 선언하고, 화면을 캡처하고,
+  //   base64 로 인코딩된 채 실행된다. 화면 훔쳐보는 악성코드의 서명 그대로다.
+  //  ★★그리고 **조작은 되는데 관측만 막힌다**(입력 스크립트는 안 걸렸다) — 그 상태를
+  //   «둘 다 고장» 으로 읽으면 엉뚱한 데를 고친다.
+  if (/ScriptContainedMaliciousContent|malicious content/i.test(detail)) {
+    return (
+      "화면을 찍지 못했습니다 — **보안 소프트웨어(백신)가 캡처 스크립트를 차단했습니다.**\n" +
+      "문법 오류가 아닙니다. 화면 캡처 스크립트가 `Add-Type` 으로 시스템 함수를 선언하고 " +
+      "화면을 읽기 때문에, 일부 백신이 이를 악성으로 분류합니다.\n" +
+      "★**클릭·입력은 그대로 될 수 있습니다** — 막힌 것은 캡처뿐입니다. 그래서 «보고 누르는» " +
+      "작업만 안 됩니다.\n" +
+      "해결하려면 백신에서 **PowerShell 스크립트 검사 예외**를 두거나, 이 기계에서는 화면 관측을 " +
+      "쓰지 않는 쪽으로 판단해 주세요."
+    );
+  }
   if (/no-desktop|handle is invalid|invalid handle/i.test(detail)) {
     return (
       "화면을 찍지 못했습니다 — **데스크톱 세션이 없습니다.**\n" +

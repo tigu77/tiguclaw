@@ -53,6 +53,7 @@ import {
   forgetHeld,
   frameCheck,
   frameRejection,
+  postFailureMessage,
   rememberFrame,
   plan as planAction,
   planRejection,
@@ -190,10 +191,15 @@ const makeTool = (host?: PluginHost) =>
       const ownerNow = host?.turn?.threadKey ?? "unknown";
       let target: CaptureTarget;
       if (args.region !== undefined) {
-        if (args.frameId === undefined) {
+        // ★**빈 문자열은 «안 준 것»이다** (2026-09-18, 아스트라 실기). 종전엔 `undefined`
+        //  만 봤고, `frameId: ""` 는 이 관문을 지나 «모르는 화면 id» 로 흘렀다. 그 처방이
+        //  «`observe_screen` 으로 다시 보세요» 였는데 **부르고 있던 것이 그 도구**라,
+        //  같은 인자로 720번 같은 오류를 받으며 101분을 썼다.
+        if (args.frameId === undefined || args.frameId.trim() === "") {
           return textOnly(
-            "영역을 크게 보려면 **먼저 전체를 한 번 보고** 그 «화면 id» 를 `frameId` 로 주세요. " +
-              "영역 좌표는 그 그림의 픽셀 기준입니다(클릭 좌표와 같은 기준).",
+            "영역을 크게 보려면 **먼저 `region` 과 `frameId` 를 빼고** `observe_screen` 을 " +
+              "한 번 부르세요 — 그러면 전체 화면 그림과 «화면 id» 를 받습니다. " +
+              "그 id 를 `frameId` 로 주고, 영역 좌표는 **그 그림의 픽셀**로 주세요.",
           );
         }
         const fc = frameCheck(desktop.frames.get(ownerNow), args.frameId, ownerNow, Date.now());
@@ -407,18 +413,25 @@ const runAction = async (
     if (!sent.ok) {
       // ★실패하면 **먼저 놓는다** — 성공한 놓기 뒤에만 장부를 비운다.
       const rel = releasePlan(desktop);
-      if (rel.length > 0 && (await ctl.post(rel)).ok) forgetHeld(desktop);
+      if (rel.length > 0) {
+        const released = await ctl.post(rel);
+        // ★★**정리 입력도 «우리 입력» 이다** (2026-09-18, 아스트라 P2). 종전엔 본 입력 뒤에만
+        //  시각을 찍고 여기선 안 찍었다 — 그런데 정리 입력도 OS 유휴 시계를 리셋한다.
+        //  그러면 **다음 행동이 그걸 «사람이 방금 썼다» 로 오인**해 스스로 막힌다.
+        //  9/17 에 고친 결함과 **같은 기제**이고, 정리 경로에만 남아 있었다.
+        desktop.lastSelfInputMs = Date.now();
+        if (released.ok) forgetHeld(desktop);
+      }
       host?.log(`조작 실패 — ${sent.reason}: ${sent.detail}`);
       // ★**«왜» 를 부르는 쪽까지 올린다** (2026-09-17 2차 실기). 종전엔 `detail` 이 로그에만
       //  남고 도구 응답엔 `reason` 뿐이라, 모델은 «실패했다» 만 보고 다음 판단을 못 했다.
-      return textOnly(
-        `조작에 실패했습니다(${sent.reason}): ${sent.detail}\n` +
-          `화면을 다시 보고 판단해 주세요 — 일부만 적용됐을 수 있습니다.`,
-      );
+      // ★★그리고 «실패했다» 자체가 거짓이었다 (2026-09-18) — 문구는 `postFailureMessage` 가 진다.
+      return textOnly(postFailureMessage(sent.reason, sent.detail));
     }
     // 계획이 자기가 누른 것을 자기가 뗐다(계획 자체가 짝을 맞춘다). 장부를 비운다.
     forgetHeld(desktop);
-    host?.log(`조작 ${action.kind} — ${p.describe} (이벤트 ${String(sent.sent)}개)`);
+    // ★`fired` 는 **우리가 부른 횟수**지 «앱이 받았다» 가 아니다 — 로그도 그렇게 적는다.
+    host?.log(`조작 ${action.kind} — ${p.describe} (${String(sent.fired)}번 쏨)`);
     // ★**한 줄이다.** 종전엔 두 줄짜리 경고를 **매 호출마다** 붙였는데, 반복되면 배경소음이
     //  돼서 오히려 안 읽힌다(돌쇠 3차 지적 — 로그에서 늘 겪는 일이다). 요점만 남긴다:
     //  «보냈다» 이고 화면 id 가 죽었다는 것.

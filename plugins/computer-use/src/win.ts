@@ -242,10 +242,57 @@ export const cleanPowerShellError = (raw: string): string | null => {
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l !== "");
-  // ★**앞이 아니라 «가장 긴 줄»** 을 고른다 — CLIXML 은 머리말이 길고 본문이 뒤에 온다.
-  const best = inner.reduce((a, b) => (b.length > a.length ? b : a), "");
-  return best === "" ? null : best.slice(0, 400);
+  // ★★**«가장 긴 줄» 도 조각을 고른다** (2026-09-18, 집 Windows 실기 — 세 번째 얼굴).
+  //  9/17 에 «앞에서 자르면 서문만 남는다» 를 «가장 긴 줄» 로 고쳤는데, 백신이 막은 사고에서
+  //  **`+ CategoryInfo : ParserError: …` 를 골랐다.** 진짜 문장은 바로 윗줄이었다:
+  //  *「This script contains malicious content and has been blocked by your antivirus software.」*
+  //  그래서 «파싱 오류» 로 읽혔고, 스크립트를 몇 번이나 뜯어봤다.
+  //
+  // ★**길이가 아니라 «모양» 으로 고른다.** PowerShell 오류 출력의 부속 줄은 모양이 정해져
+  //  있다(`+ CategoryInfo`·`+ FullyQualifiedErrorId`·`+ ~~~~` 밑줄·`위치 줄:`·`At …:1 char:1`).
+  //  그것들을 **먼저 걷어내고** 남은 것 중에서 고른다 — 목록이 아니라 **판정**이다.
+  //  ★그리고 부속 줄만 남으면 **그것이라도 준다**(침묵보다 낫다).
+  // ★★**`+ ` 로 시작하는 줄은 전부 부속이다** (2026-09-18 실기 2차). 처음엔 `CategoryInfo`
+  //  같은 **이름을 열거**했는데, 실기에서 `+ try { [Console]::…` 이라는 **오류가 난 소스
+  //  줄의 인용**이 나왔다 — 목록에 없는 새 모양이다. [[feedback_hand_maintained_lists]]
+  //  그대로다: 이름을 세지 말고 **모양으로 판정**한다. PowerShell 은 오류의 부속 줄
+  //  (소스 인용·물결 밑줄·CategoryInfo·FullyQualifiedErrorId)을 **전부 `+` 로 시작**한다.
+  const NOISE = /^(\+|위치 줄:|At line:|At [A-Za-z]:\\)/;
+  const meat = inner.filter((l) => !NOISE.test(l) && !/^\+\s*$/.test(l));
+  // ★★**본문이 깨져 있을 수 있다** (2026-09-18 실기). 이 오류는 **우리 스크립트가 시작되기
+  //  전에** PowerShell 자신이 내므로, 우리가 스크립트 안에서 거는 UTF-8 강제가 **안 닿는다.**
+  //  한국어 Windows 에선 그 문장이 CP949 로 나와 U+FFFD 범벅이 된다.
+  //  ★그때는 본문을 고집하지 말고 **`FullyQualifiedErrorId` 를 같이 준다** — 그건 항상
+  //   ASCII 라 안 깨지고, 진단에 필요한 이름이 거기 있다(`ScriptContainedMaliciousContent`).
+  const errId = inner.find((l) => /FullyQualifiedErrorId/.test(l));
+  const idPart = errId === undefined ? "" : ` [${errId.replace(/^\+\s*/, "")}]`;
+  const pool = meat.length > 0 ? meat : inner;
+  const best = pool.reduce((a, b) => (b.length > a.length ? b : a), "");
+  if (best === "") return errId === undefined ? null : idPart.trim().slice(0, 400);
+  const garbled = (best.match(/\uFFFD/g) ?? []).length > best.length / 10;
+  return `${garbled ? "(본문이 깨져 있습니다)" : best}${idPart}`.slice(0, 400);
 };
+
+/**
+ * **백신이 막았는가** — 순수 (2026-09-18, 집 Windows 실기).
+ *
+ * ★사고: 캡처가 `+ CategoryInfo : ParserError…` 로 실패했다. 파싱 오류로 읽혀 스크립트를
+ *  세 번 뜯어봤는데, 진짜 원인은 **AMSI(백신)가 스크립트를 차단**한 것이었다.
+ *  ★억울하지만 이해는 간다 — `Add-Type` 으로 **P/Invoke** 를 선언하고, **화면을 캡처**하고,
+ *   **base64 로 인코딩된 채** 실행된다. 화면 훔쳐보는 악성코드의 서명 그대로다.
+ *
+ * ★★**`selfCheck()` 는 통과했다** — 입력 스크립트(`SendInput`)는 안 막히고 **캡처만** 막혔다.
+ *  즉 «조작은 되는데 관측이 안 되는» 상태가 실재한다.
+ *
+ * ★이건 그 기계의 백신 설정에 달렸다 — **아무 사용자에게나 일어날 수 있다.** 그러니
+ *  «파싱 오류» 라고 말하는 대신 **이름을 대고, 무엇을 하면 되는지** 말해야 한다.
+ */
+export const antivirusBlocked = (detail: string): boolean =>
+  // ★**영어 문장에 기대지 않는다** (2026-09-18 실기). 한국어 Windows 에선 그 문장이
+  //  CP949 로 깨져 오고, 남는 확실한 신호는 **`FullyQualifiedErrorId`** 하나뿐이다.
+  //  그건 항상 ASCII 다.
+  /ScriptContainedMaliciousContent/i.test(detail) ||
+  /malicious content|악성 소프트웨어|바이러스/i.test(detail);
 
 /**
  * 스크립트를 try/catch 로 감싸 **오류를 우리 형식으로 stdout 에** 적게 한다.
@@ -483,7 +530,12 @@ const CONTROL_SCRIPT = [
   //  ★`SendInput` 을 부르는 자리는 **여기 하나뿐**이고 가드가 첫 줄이다 — 그래서 이 스위치가
   //   켜진 동안 입력이 새는 경로가 없다(회귀가 사용자 화면을 건드리면 안 된다).
   "$DRY = ($env:TIGUCLAW_DRY -eq '1')",
-  "function Send($i){ if($DRY){ return }; [void][TC.In]::SendInput(1, @($i), $SZ) }",
+  // ★**실제로 쏜 횟수를 센다** (2026-09-19, 아스트라 §4). 종전엔 루프 밖에서 «받은 항목
+  //  수» 를 세어 `sent` 로 냈다 — **빈 연습(`$DRY`)에서 한 번도 안 쐈는데 같은 수**가 나왔고,
+  //  이름이 «보냈다» 라 읽는 쪽을 속인다. 여기서 세면 «부른 횟수» 가 된다.
+  //  ★그래도 이것은 **«앱이 받았다» 가 아니다** — 그 판정은 재관측뿐이다.
+  "$FIRED = 0",
+  "function Send($i){ if($DRY){ return }; $script:FIRED = $script:FIRED + 1; [void][TC.In]::SendInput(1, @($i), $SZ) }",
   // 가상 데스크톱 — 절대 좌표 정규화의 분모다(음수 원점 모니터도 여기서 흡수된다).
   "$vs=[System.Windows.Forms.SystemInformation]::VirtualScreen",
   "function Abs($x,$y){",
@@ -617,8 +669,10 @@ const CONTROL_SCRIPT = [
   "  elseif($e.t -eq 'keyup'){ KeyName $e.key $false }",
   "  Start-Sleep -Milliseconds 12",
   "}",
-  // `ConvertFrom-Json` 은 원소가 하나면 **배열이 아니라 객체**를 준다 — `@()` 로 감싸 센다.
-  "[Console]::Out.WriteLine('{\"sent\":' + @($evs).Count + '}')",
+  // ★`items` = 받은 항목 수 · `fired` = **실제로 `SendInput` 을 부른 횟수**. 둘은 다르다
+  //  (한 항목이 여러 번 쏘기도 하고, 빈 연습이면 0이다).
+  //  `ConvertFrom-Json` 은 원소가 하나면 배열이 아니라 객체를 준다 — `@()` 로 감싸 센다.
+  "[Console]::Out.WriteLine('{\"items\":' + @($evs).Count + ',\"fired\":' + $FIRED + '}')",
 ].join("\n");
 
 /**
@@ -680,8 +734,23 @@ export const idleSeconds = async (): Promise<number | null> => {
 /** 이벤트를 순서대로 쏜다 — 스크립트는 **고정 리터럴**, 값은 전부 `$env` (관측과 같은 규율). */
 export const post = async (
   events: readonly LowEvent[],
-): Promise<{ ok: true; sent: number } | { ok: false; reason: "timeout" | "failed"; detail: string }> => {
-  if (events.length === 0) return { ok: true, sent: 0 };
+): Promise<
+  | {
+      ok: true;
+      /**
+       * **실제로 `SendInput` 을 부른 횟수.**
+       *
+       * ★★**«앱이 받았다» 가 아니다** (2026-09-19, 아스트라 §4). 종전 이름은 `sent` 였고
+       *  루프 **밖에서 받은 항목 수**를 셌다 — 빈 연습에서 한 번도 안 쐈는데 같은 수가 나왔고,
+       *  실기에서 «`{ok:true, sent:1}` 인데 0자» 가 나왔을 때 그 수가 **아무것도 보장하지
+       *  않는다**는 것이 드러났다. 이름이 읽는 쪽을 속였다.
+       * ★효과의 판정은 **재관측뿐**이다. 이 숫자는 «우리가 몇 번 불렀나» 까지다.
+       */
+      fired: number;
+    }
+  | { ok: false; reason: "timeout" | "failed"; detail: string }
+> => {
+  if (events.length === 0) return { ok: true, fired: 0 };
   // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다.** 자식은 `process.env` 를 물려받으므로, 어디선가
   //  그 이름이 켜져 있으면 **진짜 조작이 조용히 아무것도 안 하게** 된다 — 우리가 이 세션
   //  내내 쫓던 바로 그 모양이다. 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
@@ -691,8 +760,9 @@ export const post = async (
   });
   if (!r.ok) return r;
   try {
-    const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { sent?: number };
-    return { ok: true, sent: typeof v.sent === "number" ? v.sent : events.length };
+    const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { fired?: number };
+    const v2 = v as { fired?: number };
+    return { ok: true, fired: typeof v2.fired === "number" ? v2.fired : events.length };
   } catch {
     return { ok: false, reason: "failed", detail: `산출 판정 불가: ${r.stdout.slice(0, 80)}` };
   }
@@ -731,7 +801,7 @@ const DRY_EVENTS: readonly LowEvent[] = [
 ];
 
 export const selfCheck = async (): Promise<
-  | { ok: true; idleSeconds: number | null; textSurvives: boolean }
+  | { ok: true; idleSeconds: number | null; textSurvives: boolean; dryFired: number }
   | { ok: false; where: "idle" | "input" | "dry"; detail: string }
 > => {
   const idle = await runScript(IDLE_SCRIPT, {});
@@ -746,6 +816,15 @@ export const selfCheck = async (): Promise<
     TIGUCLAW_EVENTS: JSON.stringify(DRY_EVENTS),
   });
   if (!dry.ok) return { ok: false, where: "dry", detail: dry.detail };
+  // ★빈 연습이면 **한 번도 안 쏴야** 한다 — 그 숫자가 이름의 뜻을 지킨다.
+  const dryFired = (() => {
+    try {
+      const v = JSON.parse(dry.stdout.trim().split("\n").pop() ?? "") as { fired?: number };
+      return typeof v.fired === "number" ? v.fired : -1;
+    } catch {
+      return -1;
+    }
+  })();
   // ★**오류 문구의 한글이 살아서 오는가** (2026-09-18, 회사돌쇠 3차 P1).
   //  일부러 실패시켜 되돌아온 글자를 본다 — 인코딩이 어긋나면 여기서 U+FFFD 가 된다.
   //  ★이것도 **입력 0**이다: 던지는 자리가 `Send` 앞이고, 빈 연습이라 애초에 안 쏜다.
@@ -759,5 +838,5 @@ export const selfCheck = async (): Promise<
     TIGUCLAW_EVENTS: JSON.stringify([{ t: "keydown", key: echo }]),
   });
   const textSurvives = !probe.ok && probe.detail.includes(echo);
-  return { ok: true, idleSeconds: await idleSeconds(), textSurvives };
+  return { ok: true, idleSeconds: await idleSeconds(), textSurvives, dryFired };
 };

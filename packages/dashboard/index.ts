@@ -106,8 +106,15 @@ try {
   assetFingerprint = ""; // 못 재면 화면이 종전대로 버전만 비교한다(회귀 0).
 }
 
+import { describeFetchFailure, bridgeFailureLog } from "./bridge-error.js";
+
 const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
-const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST ?? "localhost";
+// ★**브리지와 같은 기본값이어야 한다** (2026-09-18, 회사돌쇠 조사). 종전엔 여기만
+// `localhost` 였고 브리지는 `127.0.0.1` 을 듣는다 — 같은 환경변수 이름인데 **기본값이 달랐다.**
+// Windows 에서 `localhost` 는 `::1`(IPv6) 을 먼저 가리키는데 브리지는 거기 안 듣는다.
+// 평소엔 Node 가 IPv4 로 넘어가 연결되지만, 그 경로가 실패 모드를 하나 더 만든다
+// ([[project_telegram_ipv6_blackhole_etimedout]] 과 같은 부류).
+const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST ?? "127.0.0.1";
 const BRIDGE_TOKEN = process.env.HTTP_BRIDGE_TOKEN;
 const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "7010", 10);
 // loopback 바인딩 기본 — 원격 노출은 tailscale serve(→127.0.0.1:<port> 프록시)가 담당.
@@ -150,9 +157,11 @@ const proxyJson = async (
     });
     res.end(text);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    // ★**로그에 «왜» 를 남긴다** — 종전엔 `fetch failed` 라는 껍데기만 응답에 있고
+    //  로그엔 아무것도 없어, 사고 뒤에 원인을 확정할 수 없었다.
+    console.warn(bridgeFailureLog(`${BRIDGE_HOST}:${String(BRIDGE_PORT)}`, bridgePath, e));
     res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: `bridge unreachable: ${msg}` }));
+    res.end(JSON.stringify({ error: `bridge unreachable: ${describeFetchFailure(e)}` }));
   }
 };
 
@@ -173,9 +182,11 @@ const proxyRaw = async (
     });
     res.end(buf);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    // ★**로그에 «왜» 를 남긴다** — 종전엔 `fetch failed` 라는 껍데기만 응답에 있고
+    //  로그엔 아무것도 없어, 사고 뒤에 원인을 확정할 수 없었다.
+    console.warn(bridgeFailureLog(`${BRIDGE_HOST}:${String(BRIDGE_PORT)}`, bridgePath, e));
     res.writeHead(502, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: `bridge unreachable: ${msg}` }));
+    res.end(JSON.stringify({ error: `bridge unreachable: ${describeFetchFailure(e)}` }));
   }
 };
 
@@ -225,10 +236,12 @@ const proxySse = async (
       /* ignore */
     }
   } catch (e) {
+    // ★SSE 는 헤더가 이미 나갔으면 응답을 못 고친다 — 그래서 **로그가 유일한 기록**이다.
+    //  종전엔 그 자리에도 아무것도 안 남겼다.
+    console.warn(bridgeFailureLog(`${BRIDGE_HOST}:${String(BRIDGE_PORT)}`, "/events", e));
     if (!res.headersSent) {
-      const msg = e instanceof Error ? e.message : String(e);
       res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end(`bridge unreachable: ${msg}`);
+      res.end(`bridge unreachable: ${describeFetchFailure(e)}`);
     }
   }
 };

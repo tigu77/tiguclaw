@@ -325,7 +325,15 @@ const POST_SCRIPT = [
   "var K = {a:0,s:1,d:2,f:3,h:4,g:5,z:6,x:7,c:8,v:9,b:11,q:12,w:13,e:14,r:15,y:16,t:17,",
   "'1':18,'2':19,'3':20,'4':21,'6':22,'5':23,'=':24,'9':25,'7':26,'-':27,'8':28,'0':29,']':30,",
   "o:31,u:32,'[':33,i:34,p:35,enter:36,'return':36,l:37,j:38,k:40,';':41,',':43,'/':44,n:45,m:46,",
-  "'.':47,tab:48,space:49,backspace:51,'delete':51,esc:53,escape:53,left:123,right:124,down:125,up:126};",
+  // ★★**`delete` 는 backspace 가 아니다** (2026-09-18, 아스트라 N-P1). 종전엔 둘 다 51 이라
+  //  «같은 이름이 플랫폼마다 다른 뜻» 이었다 — Windows 는 `0x2E`(뒤 글자 삭제)인데 맥은
+  //  앞 글자를 지웠다. 맥의 앞으로 삭제는 **117**이다.
+  // ★그리고 도구 설명이 광고하던 **탐색키 넷(home·end·pageup·pagedown)이 맥에 없었다** —
+  //  «지원한다» 고 적어놓고 던지고 있었다. 표준 키코드가 있는데 안 적은 것뿐이다.
+  //  ★공통 이름은 **양쪽에 다 있거나, 어느 쪽에도 없어야** 한다.
+  "'.':47,tab:48,space:49,backspace:51,'delete':117,esc:53,escape:53,",
+  "home:115,end:119,pageup:116,pagedown:121,",
+  "left:123,right:124,down:125,up:126};",
   "var MODK = {cmd:55, shift:56, alt:58, ctrl:59};",
   "var MODF = {cmd:0x100000, shift:0x20000, alt:0x80000, ctrl:0x40000};",
   "var down = {};",  // 지금 눌려 있는 수식키
@@ -429,13 +437,21 @@ const POST_SCRIPT = [
 
 export const post = async (
   events: readonly LowEvent[],
-): Promise<{ ok: true; sent: number } | { ok: false; reason: "timeout" | "failed"; detail: string }> => {
-  if (events.length === 0) return { ok: true, sent: 0 };
+): Promise<
+  | {
+      ok: true;
+      /** 실제로 이벤트를 **쏜 횟수** — «앱이 받았다» 가 아니다(판정은 재관측뿐). */
+      fired: number;
+    }
+  | { ok: false; reason: "timeout" | "failed"; detail: string }
+> => {
+  if (events.length === 0) return { ok: true, fired: 0 };
   const r = await jxa(POST_SCRIPT, { TIGUCLAW_EVENTS: JSON.stringify(events) });
   if (!r.ok) return r;
   try {
     const v = JSON.parse(r.out) as { sent?: number };
-    return { ok: true, sent: typeof v.sent === "number" ? v.sent : events.length };
+    const n = (v as { fired?: number; sent?: number }).fired ?? v.sent;
+    return { ok: true, fired: typeof n === "number" ? n : events.length };
   } catch {
     return { ok: false, reason: "failed", detail: `산출 판정 불가: ${r.out.slice(0, 80)}` };
   }

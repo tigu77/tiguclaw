@@ -128,7 +128,7 @@ export interface Frame {
 export const FRAME_TTL_MS = 30_000;
 
 /** ★`not-latest` 가 없어졌다 — 최근 몇 장을 같이 들고 있으므로 «최신이 아님» 이 거절 사유가 아니다. */
-export type FrameReject = "unknown" | "stale" | "other-owner";
+export type FrameReject = "missing" | "unknown" | "stale" | "other-owner";
 
 export type FrameCheck = { ok: true; frame: Frame } | { ok: false; why: FrameReject };
 
@@ -152,6 +152,12 @@ export const frameCheck = (
   nowMs: number,
   ttlMs = FRAME_TTL_MS,
 ): FrameCheck => {
+  // ★★**«안 준 것» 과 «모르는 것» 은 처방이 다르다** (2026-09-18, 아스트라 실기 101분).
+  //  종전엔 빈 문자열이 `unknown` 으로 흘러 «`observe_screen` 으로 지금 화면을 보고 좌표를
+  //  다시 정하세요» 라는 답을 받았다. 그런데 **모델이 이미 하고 있던 것이 그 호출**이었다 —
+  //  처방이 제 발을 가리켰고, 같은 인자로 **720번** 같은 오류를 받았다.
+  //  ★한 번도 받은 적이 없는 것과, 받았는데 낡은 것은 **다른 말을 해야 한다.**
+  if (frameId.trim() === "") return { ok: false, why: "missing" };
   const found = (kept ?? []).find((f) => f.id === frameId);
   if (found === undefined) return { ok: false, why: "unknown" };
   if (found.owner !== owner) return { ok: false, why: "other-owner" };
@@ -162,8 +168,46 @@ export const frameCheck = (
 };
 
 /** 거절을 모델이 읽는 말로 — 무엇을 해야 하는지까지 적는다. */
+/**
+ * **입력을 쏘다가 실패했을 때** 뭐라고 말하나 — 순수.
+ *
+ * ★★**«실패했다» 가 아니라 «어디까지 갔는지 모른다» 다** (2026-09-18, 아스트라 설계 검토).
+ *
+ *  이 세션 내내 쫓은 것은 **«보냈는데 안 됐다»** 였다(스크롤 포화·UIPI·앱이 안 받는 단축키).
+ *  그 처방은 «재관측» 이다. 그런데 반대편이 있다 — **«됐는데 모른다».**
+ *  자식이 시한에 걸려 SIGKILL 되면 이벤트가 **어디까지 나갔는지 알 방법이 없다.**
+ *  그 처방은 정반대다: **다시 보내지 마라.**
+ *
+ * ★우리 조작은 **되돌릴 수 없다.** «실패했다» 로 읽혀 모델이 같은 것을 또 보내면
+ *  **두 번 눌린다** — 보내기·결제·삭제가 두 번이다. 문구 하나가 그 갈림길에 있다.
+ *
+ * ★지금 `post` 층에서 «아무것도 안 나갔다» 를 **밖에서 구분할 수 없다**(자식이 죽은 시점을
+ *  모른다). 그래서 넷으로 나누지 않고 **«모른다» 하나로 정직하게** 말한다. 셋으로 가르는
+ *  것(행동/관측/안정)은 새 계약의 몫이다 — 없는 구분을 문구로 지어내지 않는다.
+ */
+export const postFailureMessage = (
+  reason: "timeout" | "failed",
+  detail: string,
+): string =>
+  [
+    reason === "timeout"
+      ? "★입력을 보내던 중 **시한을 넘겨 끊겼습니다** — 어디까지 나갔는지 알 수 없습니다."
+      : "★입력을 보내던 중 **오류로 멈췄습니다** — 어디까지 나갔는지 알 수 없습니다.",
+    `사유: ${detail}`,
+    "**같은 행동을 다시 보내지 마세요** — 이미 적용됐을 수 있습니다(되돌릴 수 없습니다).",
+    "`observe_screen` 으로 **지금 화면을 먼저 보고**, 무엇이 적용됐는지 확인한 뒤 판단하세요.",
+  ].join("\n");
+
 export const frameRejection = (why: FrameReject): string => {
   switch (why) {
+    case "missing":
+      // ★**무엇을 «다르게» 해야 하는지**를 말한다. «다시 관측하라» 는 이 자리에서 쓸모가
+      //  없다 — 부르고 있는 것이 이미 그 도구다. 바뀌어야 하는 건 **인자**다.
+      return (
+        "«화면 id» 를 아직 못 받으셨습니다. `observe_screen` 을 **아무 인자 없이** 한 번 " +
+        "부르세요 — `region` 도 `frameId` 도 **빼고**입니다. 그러면 전체 화면 그림과 함께 " +
+        "«화면 id» 를 드립니다. 그다음부터 그 id 를 쓰세요."
+      );
     case "unknown":
       return (
         "그 화면(frameId)을 모릅니다 — **직전 행동이 화면을 바꿨거나**(행동은 화면 id 를 전부 " +

@@ -42,6 +42,7 @@ import {
   type ObserveBackend,
   type ControlBackend,
   screenForTarget,
+  afterActionTarget,
 } from "./observe.js";
 import * as mac from "./mac.js";
 import * as win from "./win.js";
@@ -59,7 +60,9 @@ import {
   planRejection,
   beginRejection,
   stepsOutcome,
+  mergeHeld,
   STEPS_MAX,
+  SCROLL_MAX,
   type Button,
   type Desktop,
   type Step,
@@ -95,7 +98,43 @@ const controlFor = (platform: string): ControlBackend | null =>
  *  인스턴스를 닫으므로 이 값은 **프로세스 싱글턴**이다 — 커서가 하나라는 물리와 맞는다.
  *  (2026-09-17 외부 검토가 확인: 턴별 서버가 같은 플러그인 인스턴스를 공유한다.)
  */
-const desktop: Desktop = newDesktop();
+const sharedDesktop: Desktop = newDesktop();
+
+/**
+ * **이 플러그인이 무엇 위에서 도는가** — 플랫폼 결속을 **한 자리**에 모은다.
+ *
+ * ★종전엔 `w.platform` 을 **다섯 군데**에서 따로 집고 `w.desktop` 을 모듈 전역으로
+ *  직접 읽었다. 그래서 «거절 → 실행 → 정리 → 사후 관측» 의 **순서**를 재려면 진짜 화면과
+ *  진짜 키보드가 필요했고, 그 결과 그 배선에 회귀가 **한 줄도 없었다**(적대 검토·아스트라
+ *  외부 검토가 **둘 다** 이걸 1순위로 짚었다).
+ * ★★**테스트용 곁문이 아니다.** 플랫폼 결속이 흩어져 있는 것 자체가 설계 결함이고
+ *  (Linux 가 붙을 때 다섯 곳을 고쳐야 한다), 이음매가 생기니 **입력 0 으로 순서를 재는**
+ *  길이 같이 열렸다 — [[feedback_simple_composable_no_duplication]] 의 «검사가 껄끄러우면
+ *  코드가 잘못 놓인 것» 이 그대로다.
+ */
+export interface Wiring {
+  platform: string;
+  observe: ObserveBackend | null;
+  control: ControlBackend | null;
+  /** ★**데스크톱당 싱글턴**(§3-3) — 실제 배선은 모듈 전역 하나를 공유한다. */
+  desktop: Desktop;
+}
+
+/**
+ * **실제 배선** — 플러그인 본체가 매번 이것으로 도구를 만든다.
+ *
+ * ★`desktop` 은 **모듈 전역 하나**를 돌려준다 — 이게 «데스크톱당 싱글턴»(§3-3)의 구현이다.
+ *  여기서 `newDesktop()` 을 부르면 도구를 새로 만들 때마다 **프레임과 입력 장부가 사라진다**
+ *  (그러면 `look` 이 준 화면 id 를 `do` 가 모른다). 회귀가 그 동일성을 잰다.
+ */
+export const realWiring = (): Wiring => ({
+  platform: process.platform,
+  observe: backendFor(process.platform),
+  control: controlFor(process.platform),
+  // ★**데스크톱당 싱글턴**(§3-3) — 실제 배선은 모듈 전역 하나를 공유한다. 커서가 하나라는
+  //  물리와 맞는다. 검사는 자기 것을 끼워 **입력 0 으로** 상태 전이를 잰다.
+  desktop: sharedDesktop,
+});
 
 const textOnly = (text: string): { content: Array<{ type: "text"; text: string }> } => ({
   content: [{ type: "text", text }],
@@ -142,21 +181,30 @@ const sweep = async (dir: string, host?: PluginHost): Promise<number> => {
  *   도구 계약으로 둔 이유가 그것이다.
  */
 const captureScene = async (
+  w: Wiring,
   target: CaptureTarget,
   host: PluginHost | undefined,
+  /**
+   * ★**행동 뒤 관측이면 대상을 넓힐 수 있다**(`region` → 그 화면 전체). 판단은 순수부
+   *  `afterActionTarget` 이 하고, 여기서는 «화면 배치를 안 뒤에» 그것을 부르는 배관만 한다.
+   */
+  opts?: { afterAction?: boolean },
 ): Promise<{ content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> }> => {
   // ★**먼저 탐침을 돌린다.** 캡처를 시도했다가 매달리면 턴이 MCP 천장(11분)까지 묶인다.
   //  ★재는 것이 플랫폼마다 다르다: mac 은 **화면 기록 권한**, Windows 는 **데스크톱
   //   세션과 DPI 선언**이다(win.ts 머리말). 둘 다 «먼저 비차단으로 확인하고, 아니면
   //   무엇을 바꿔야 하는지 말하고 끝낸다» 는 같은 모양이다.
-  const backend = backendFor(process.platform);
+  const backend = w.observe;
   if (backend === null) return textOnly("이 플랫폼에서는 화면 관측을 지원하지 않습니다.");
   const probe = await backend.preflight();
-  const warn = preflightMessage(probe, process.platform);
+  const warn = preflightMessage(probe, w.platform);
   if (warn !== null) {
     host?.log(`관측 실패 — 권한(${probe.ok ? "?" : probe.reason})`);
     return textOnly(warn);
   }
+
+  // ★탐침이 화면 배치를 준 **뒤에** 대상을 확정한다 — `region` 을 넓히려면 배치가 필요하다.
+  if (opts?.afterAction === true && probe.ok) target = afterActionTarget(target, probe.screens);
 
   const dir = host?.dataDir ?? path.join(process.cwd(), ".screen-frames");
   await fs.mkdir(dir, { recursive: true }).catch(() => {});
@@ -201,14 +249,14 @@ const captureScene = async (
   // ★**전면 창을 캡처와 «나란히» 읽는다**(계약 1). 순서대로 하면 64ms(mac 실측)가
   //  그대로 더해지는데, 병렬이면 캡처(수백 ms) 안에 묻힌다.
   //  ★조작 실행부가 없는 플랫폼에선 기준을 못 만든다 — 그때는 `null` 이고, 가드도 없다.
-  const ctlForFront = controlFor(process.platform);
+  const ctlForFront = w.control;
   const [shot, front] = await Promise.all([
     backend.capture(okTarget.target, outPath),
     ctlForFront === null ? Promise.resolve(null) : ctlForFront.frontWindow(),
   ]);
   if (!shot.ok) {
     host?.log(`관측 실패 — 캡처(${shot.reason}: ${shot.detail})`);
-    return textOnly(preflightMessage(shot, process.platform) ?? "화면을 찍지 못했습니다.");
+    return textOnly(preflightMessage(shot, w.platform) ?? "화면을 찍지 못했습니다.");
   }
 
   void sweep(dir, host);
@@ -220,13 +268,15 @@ const captureScene = async (
   //  조용히 주 화면으로 풀린다(2026-09-18, 회사돌쇠 4차).
   const screen = probe.ok ? screenForTarget(okTarget.target, probe.screens) : null;
   if (screen !== null && shot.deliveredPx !== null) {
-    desktop.frames.set(
+    w.desktop.frames.set(
       owner,
-      rememberFrame(desktop.frames.get(owner), {
+      rememberFrame(w.desktop.frames.get(owner), {
         id: frameId,
         atMs: at.getTime(),
         owner,
         geometry: frameGeometry(okTarget.target, screen, shot.deliveredPx),
+        // ★**무엇을 보고 한 행동인가** — 사후 관측이 **같은 화면**을 다시 본다(2026-09-19).
+        target: okTarget.target,
         front,
       }),
     );
@@ -237,8 +287,8 @@ const captureScene = async (
     bytes: shot.bytes,
     savedPath,
     longEdge: shot.longEdge,
-    platform: process.platform,
-    ...(desktop.frames.get(owner)?.some((f) => f.id === frameId) === true ? { frameId } : {}),
+    platform: w.platform,
+    ...(w.desktop.frames.get(owner)?.some((f) => f.id === frameId) === true ? { frameId } : {}),
     ...(clippedFrom === undefined ? {} : { clippedFrom }),
     spansScreens: okTarget.spans,
   });
@@ -271,7 +321,7 @@ const captureScene = async (
   };
 };
 
-const makeTool = (host?: PluginHost) =>
+const makeTool = (w: Wiring, host?: PluginHost) =>
   tool(
     "look",
     // ★도구 설명이 **신뢰 경계를 싣는 자리**다 (설계 §7). 헌법도 공통 스킬도 아니다 —
@@ -343,7 +393,7 @@ const makeTool = (host?: PluginHost) =>
               "그 id 를 `frameId` 로 주고, 영역 좌표는 **그 그림의 픽셀**로 주세요.",
           );
         }
-        const fc = frameCheck(desktop.frames.get(ownerNow), args.frameId, ownerNow, Date.now());
+        const fc = frameCheck(w.desktop.frames.get(ownerNow), args.frameId, ownerNow, Date.now());
         if (!fc.ok) return textOnly(frameRejection(fc.why));
         const rect = imageRectToScreen(args.region, fc.frame.geometry);
         if (rect === null) {
@@ -366,7 +416,7 @@ const makeTool = (host?: PluginHost) =>
             : { kind: "screen" };
       }
 
-      return captureScene(target, host);
+      return captureScene(w, target, host);
     },
   );
 
@@ -456,6 +506,7 @@ const reportSteps = (describes: readonly string[], oc: StepsOutcome): string => 
 };
 
 const runSteps = async (
+  w: Wiring,
   frameId: string,
   raw: readonly RawStep[],
   host: PluginHost | undefined,
@@ -463,7 +514,7 @@ const runSteps = async (
 ): Promise<{
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 }> => {
-  const ctl = controlFor(process.platform);
+  const ctl = w.control;
   if (ctl === null) return textOnly("이 플랫폼에서는 아직 조작(클릭·입력)을 지원하지 않습니다.");
 
   const steps: Step[] = [];
@@ -481,7 +532,7 @@ const runSteps = async (
     return textOnly(
       perm.reason !== "no-permission"
         ? `조작할 수 없습니다 — 권한 확인에 실패했습니다(${perm.detail}).`
-        : process.platform === "darwin"
+        : w.platform === "darwin"
           ? "조작할 수 없습니다 — **손쉬운 사용 권한이 없습니다.**\n" +
             "시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용 에서 이 앱(데몬을 실행하는 프로그램)을 켜 주세요. " +
             "켠 뒤 데몬을 한 번 재시작해야 반영됩니다. ★화면 보기는 권한이 달라서 그대로 됩니다."
@@ -492,7 +543,7 @@ const runSteps = async (
   const owner = host?.turn?.threadKey ?? "unknown";
   const idle = await ctl.idleSeconds();
   const now = Date.now();
-  const begin = beginAction(desktop, owner, now, idle);
+  const begin = beginAction(w.desktop, owner, now, idle);
   if (!begin.ok) {
     host?.log(
       `조작 거절 — ${begin.reason}${begin.reason === "busy-other" ? `(${begin.heldBy})` : ""}` +
@@ -501,40 +552,74 @@ const runSteps = async (
     return textOnly(beginRejection(begin));
   }
 
+  // ★★**이전 정리 실패분을 먼저 갚는다** (2026-09-19, 아스트라 외부 검토 ⑩).
+  //  잔여가 있으면 화면 상태가 **이미 오염**돼 있다(shift 가 눌린 채라면 다음 클릭이
+  //  범위 선택이 된다). 그 위에서 새 열을 쏘면 결과가 달라진다.
+  //  ★**되돌릴 수 있으니 먼저 시도하고, 실패하면 거절한다** — 「가역이면 자동, 아니면
+  //   묻는다」의 그 기준이다. 조용히 덮어쓰는 것(종전)만은 안 된다.
   let report: string;
+  // ★사후 관측 대상 — **행동의 근거가 된 프레임**에서 온다(못 받으면 주 화면).
+  let sceneTarget: CaptureTarget = { kind: "screen" };
+  // ★**쐈나, 쐈는지 모르나** — 프레임을 버릴지 가를 유일한 기준이다(계약: 화면이 안 바뀌었으면
+  //  프레임은 여전히 유효하다). 발사 **직전**에 세운다.
+  let fired = false;
   try {
-    const fc = frameCheck(desktop.frames.get(owner), frameId, owner, now);
+    // ★★**이전 정리 실패분을 먼저 갚는다**(아스트라 외부 검토 ⑩). 잔여가 있으면 화면 상태가
+    //  **이미 오염**돼 있다(shift 가 눌린 채면 다음 클릭이 범위 선택이 된다).
+    //  ★**되돌릴 수 있으니 먼저 시도하고, 실패하면 거절한다** — 조용히 덮어쓰는 것만은 안 된다.
+    //  ★★**`try` 안에 있어야 한다**(2026-09-19, 아스트라 재검토 §5). 밖에 두면 이 `await` 가
+    //   던졌을 때 `finally` 를 안 지나 **`active` 가 영영 남고**, 그 뒤 모든 호출이
+    //   `busy-self` 로 막힌다 — 되돌릴 방법이 재시작뿐인 잠김이다.
+    if (w.desktop.held.keys.length > 0 || w.desktop.held.buttons.length > 0) {
+      const released = await ctl.post(releasePlan(w.desktop));
+      w.desktop.lastSelfInputMs = Date.now();
+      if (released.ok) forgetHeld(w.desktop);
+      else {
+        host?.log(`조작 거절 — 이전 입력 정리 실패(${released.reason}: ${released.detail})`);
+        return textOnly(
+          "이전 조작에서 **눌린 채 남은 입력**이 있는데 그것을 놓지 못했습니다 — " +
+            `그 상태로는 새 조작의 결과가 달라집니다(${released.detail}). ` +
+            "잠시 뒤 다시 시도하거나, 그래도 안 되면 사람이 키보드를 한 번 눌러 풀어야 합니다.",
+        );
+      }
+    }
+    const fc = frameCheck(w.desktop.frames.get(owner), frameId, owner, now);
     if (!fc.ok) {
       host?.log(`조작 거절 — 프레임(${fc.why})`);
       return textOnly(frameRejection(fc.why));
     }
-    const p = planSteps(steps, fc.frame);
+    sceneTarget = fc.frame.target;
+    // ★플랫폼을 준다 — 없는 키를 **쏘기 전에** 거른다(실행부가 열 한가운데서 던지면 늦다).
+    const p = planSteps(steps, fc.frame, w.platform);
     if (!p.ok) {
       host?.log(`조작 거절 — 계획(${p.why})`);
-      return textOnly(planRejection(p.why));
+      return textOnly(planRejection(p.why, p.detail));
     }
     // ★★**쏘기 전 장부는 `touched` 다 — `holds` 가 아니다**(계약 2). 자식이 `mousedown` 과
     //  `mouseup` **사이에서** 죽으면 버튼이 눌린 채 남는데, 「끝나고 남는 것」(`holds`)만
     //  담으면 그 순간 장부가 **비어 있다.** 되돌릴 근거는 장부뿐이므로 **도중에 누르는
     //  것 전부**를 올린다.
-    desktop.held = { keys: [...p.touched.keys], buttons: [...p.touched.buttons] };
+    //  ★**대입이 아니라 병합**이다 — 대입은 이전 정리 실패분을 잃는다(위에서 갚았으므로
+    //   보통 비어 있지만, 비어 있음에 기대지 않는다).
+    w.desktop.held = mergeHeld(w.desktop.held, p.touched);
+    fired = true;
     const sent = await ctl.post(p.events);
-    desktop.lastSelfInputMs = Date.now();
+    w.desktop.lastSelfInputMs = Date.now();
     // ★자식이 **끝까지 갔으면** 짝이 맞은 것은 이미 떼어졌다 — 장부를 «남는 것» 으로 줄인다.
     //  그래야 뒤따르는 정리가 **이미 뗀 키를 또 떼지 않는다**(쓸데없이 유휴 시계를 리셋한다).
-    if (sent.ok) desktop.held = { keys: [...p.holds.keys], buttons: [...p.holds.buttons] };
+    if (sent.ok) w.desktop.held = { keys: [...p.holds.keys], buttons: [...p.holds.buttons] };
     const oc = stepsOutcome(sent.stdout, steps.length, sent.ok);
 
     // ★★**정리는 «성공/실패» 가 아니라 «장부에 남았나» 로 한다**(계약 2). 가드가 멈춘
     //  실행은 자식이 **정상 종료**했는데도 `keydown` 이 눌린 채 남는다 — 종전처럼 실패
     //  경로에서만 놓으면 그 키가 시스템에 미아로 남는다.
-    if (desktop.held.keys.length > 0 || desktop.held.buttons.length > 0) {
-      const rel = releasePlan(desktop);
+    if (w.desktop.held.keys.length > 0 || w.desktop.held.buttons.length > 0) {
+      const rel = releasePlan(w.desktop);
       if (rel.length > 0) {
         const released = await ctl.post(rel);
         // ★정리 입력도 «우리 입력» 이다 — 안 찍으면 다음 행동이 그걸 사람으로 오인한다.
-        desktop.lastSelfInputMs = Date.now();
-        if (released.ok) forgetHeld(desktop);
+        w.desktop.lastSelfInputMs = Date.now();
+        if (released.ok) forgetHeld(w.desktop);
       }
     }
 
@@ -550,8 +635,10 @@ const runSteps = async (
       report = reportSteps(p.describes, oc);
     }
   } finally {
-    // ★성공이든 실패든 **반드시** — 활성 행동을 풀고 프레임을 버린다(§14-2·14-3).
-    endAction(desktop, owner, Date.now());
+    // ★성공이든 실패든 **반드시** 활성 행동과 리스를 정리한다(§14-2).
+    //  ★★단 **프레임은 «쐈을 때만» 버린다** — 계획 단계 거절은 화면을 안 바꿨으므로,
+    //   거절 문구가 말하는 *"좌표를 고쳐 다시"* 가 실제로 가능해야 한다.
+    endAction(w.desktop, owner, Date.now(), { keepFrames: !fired });
   }
 
   // ★★**사후 장면** — 행동이 끝나면 **지금 상태를 돌려준다**(§15-23·§15-26).
@@ -561,7 +648,9 @@ const runSteps = async (
   //   (§15-27 계약 2): shift 가 눌린 채 찍힌 화면을 모델이 «선택되어 있다» 로 읽는다.
   //  ★찍기가 실패해도 **보고는 살린다.** 행동은 이미 일어났고, 그 사실을 잃는 것이 더 나쁘다.
   try {
-    const scene = await captureScene({ kind: "screen" }, host);
+    // ★★**행동한 그 화면**을 다시 본다 — `{kind:"screen"}` 고정이 아니다(2026-09-19).
+    //  보조 모니터 위에서 행동하고 주 모니터를 돌려주면 모델이 **다른 화면으로 판정**한다.
+    const scene = await captureScene(w, sceneTarget, host, { afterAction: true });
     return { content: [{ type: "text" as const, text: report }, ...scene.content] };
   } catch (e) {
     return textOnly(
@@ -571,7 +660,7 @@ const runSteps = async (
   }
 };
 
-const actionTools = (host?: PluginHost) => [
+const actionTools = (w: Wiring, host?: PluginHost) => [
   tool(
     "do",
     "화면 위에서 **손짓 여러 개를 한 줄로** 합니다 — 클릭·끌기·굴리기·글자·키를 `steps` 의 " +
@@ -608,12 +697,23 @@ const actionTools = (host?: PluginHost) => [
                 "drag 의 **경로**(2점 이상). ★직선이 아니어도 됩니다 — 곡선은 점을 촘촘히 주세요. " +
                   "창 이동은 제목 표시줄의 **빈 곳**을 잡습니다",
               ),
-            dx: z.number().int().optional().describe("scroll 가로(휠 눈금, 60이 한 눈금)"),
+            dx: z
+              .number()
+              .int()
+              .min(-SCROLL_MAX)
+              .max(SCROLL_MAX)
+              .optional()
+              .describe(`scroll 가로(휠 눈금, 60이 한 눈금). |dx| ≤ ${String(SCROLL_MAX)}`),
             dy: z
               .number()
               .int()
+              .min(-SCROLL_MAX)
+              .max(SCROLL_MAX)
               .optional()
-              .describe("scroll 세로. **양수=문서 앞쪽(위 내용) · 음수=뒤쪽**. 단위는 휠 눈금"),
+              .describe(
+                "scroll 세로. **양수=문서 앞쪽(위 내용) · 음수=뒤쪽**. 단위는 휠 눈금. " +
+                  `★한 번에 |dy| ≤ ${String(SCROLL_MAX)} 입니다 — 더 굴려야 하면 나누고 **사이사이 다시 보세요.**`,
+              ),
             text: z
               .string()
               .optional()
@@ -627,7 +727,9 @@ const actionTools = (host?: PluginHost) => [
                 "keydown·keyup 의 키 이름. 수식키는 `cmd`·`ctrl`·`alt`·`shift`·`win` 이고 " +
                   "`cmd` 는 **그 플랫폼의 주 수식키**로 갑니다(Windows 에서는 Ctrl).\n" +
                   "이름: enter · tab · space · backspace · delete · esc · up · down · left · right " +
-                  "· 또는 **한 글자**(그 글자가 그대로 들어갑니다).\n" +
+                  "· 또는 **기본 평면의 한 글자**(`a`·`가`·`5`).\n" +
+                  "★`🙂`·`𝐀` 같은 **보충 평면 문자는 키로 못 냅니다** — 글자를 넣는 것이 " +
+                  "목적이면 이 열의 **`type` 원소**를 쓰세요(거기는 됩니다).\n" +
                   "★★`home`·`end`·`pageup`·`pagedown` 은 **쓰지 마세요 — 두 플랫폼에서 뜻이 다릅니다.** " +
                   "Windows 는 캐럿을 옮기지만 **맥은 화면만 스크롤하고 삽입점은 그대로**입니다(2026-09-19 실측). " +
                   "줄 맨 앞/끝은 맥에서 `cmd`+`left`/`right` 입니다. 받아는 주지만 **결과가 갈립니다.**\n" +
@@ -640,8 +742,23 @@ const actionTools = (host?: PluginHost) => [
         .max(STEPS_MAX)
         .describe("순서대로 낼 손짓들"),
     },
-    async (a: { frameId: string; steps: RawStep[] }) => runSteps(a.frameId, a.steps, host),
+    async (a: { frameId: string; steps: RawStep[] }) => runSteps(w, a.frameId, a.steps, host),
   ),
+];
+
+/**
+ * **이 배선 위의 도구들** — 실제 플러그인도, 검사도 **같은 함수**로 만든다.
+ *
+ * ★검사가 자기 사본을 만들면 그 사본은 제품이 아니다(§15-15 의 교훈). 여기 하나를 둔다.
+ */
+export const createTools = (
+  w: Wiring,
+  host?: PluginHost,
+  // ★도구마다 스키마 타입이 달라서 공통 상위 타입이 없다 — SDK 가 받는 모양 그대로 둔다.
+): Parameters<typeof createSdkMcpServer>[0]["tools"] => [
+  makeTool(w, host),
+  // ★조작 도구는 **실행부가 있을 때만** 실린다 — 없는 플랫폼에서 있는 척하지 않는다.
+  ...(w.control === null ? [] : actionTools(w, host)),
 ];
 
 export default class ComputerUsePlugin {
@@ -652,12 +769,13 @@ export default class ComputerUsePlugin {
     // ★실행부가 없는 플랫폼에선 **도구를 아예 안 낸다** — 있는 척하고 실패하는 것보다 없는
     //  게 낫다(모델이 «되는데 잘못했나» 를 시도하지 않는다). 지금은 mac·Windows 둘이고,
     //  Linux(X11/Wayland)는 구현이 없다.
-    if (backendFor(process.platform) === null) return undefined;
+    const w = realWiring();
+    if (w.observe === null) return undefined;
     return createSdkMcpServer({
       name: "computer-use",
       version: "0.1.0",
       // ★조작 도구는 **실행부가 있을 때만** 실린다 — 없는 플랫폼에서 있는 척하지 않는다.
-      tools: [makeTool(host), ...(controlFor(process.platform) === null ? [] : actionTools(host))],
+      tools: createTools(w, host),
     });
   }
 }

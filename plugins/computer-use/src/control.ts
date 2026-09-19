@@ -116,6 +116,14 @@ export interface Frame {
   /** 이 프레임을 찍은 소유자(스레드). 남의 프레임 위에서 클릭하지 않는다. */
   owner: string;
   /**
+   * **이 프레임을 찍은 대상** — 사후 관측이 **같은 화면**을 다시 본다(2026-09-19).
+   *
+   * ★★이게 없어서 `do` 가 사후 장면을 `{kind:"screen"}` 으로 **고정**해 찍었다. 보조
+   *  모니터 위에서 행동해도 주 모니터가 돌아왔고, 그러면 모델이 **다른 화면으로 결과를
+   *  판정**한다. 「무엇을 보고 한 행동인가」가 프레임의 정의인데 그 절반이 빠져 있었다.
+   */
+  target: import("./observe.js").CaptureTarget;
+  /**
    * **찍을 때의 전면 창** — 열 안의 재확인이 이 값과 비교한다(계약 1).
    *
    * ★`null` = 그때 못 읽었다. 그러면 비교할 기준이 없으므로 **가드를 넣지 않는다** —
@@ -330,11 +338,42 @@ export const beginAction = (
  * ★리스는 **안 놓는다.** 이어지는 행동(클릭 → 입력)이 흔하고, 매번 놓으면 그 사이에 남이
  *  끼어든다. 놓는 것은 소유자 반납·취소·유휴 셋뿐이다(§3-3).
  */
-export const endAction = (d: Desktop, owner: string, nowMs: number): void => {
+export const endAction = (
+  d: Desktop,
+  owner: string,
+  nowMs: number,
+  /**
+   * ★★**발사 전 거절이면 프레임을 살린다** (2026-09-19, 아스트라 외부 검토).
+   *
+   * 종전엔 «행동을 시도했으면» 무조건 버렸다. 그런데 좌표가 그림 밖이라 **계획 단계에서
+   * 거절**된 경우처럼 **이벤트를 하나도 안 보낸** 호출까지 프레임을 지웠고, 그 거절 문구가
+   * *"좌표를 다시 정하세요"* 라고 말한다 — **가리킨 그 프레임을 방금 자기가 지운 채로.**
+   * 모델은 고친 좌표로 다시 부르고 「모르는 화면 id」를 받는다.
+   * ★기준은 «시도했나» 가 아니라 **«쐈거나, 쐈는지 모르나»** 다. 화면이 안 바뀌었으면
+   *  프레임은 여전히 유효하다.
+   */
+  opts?: { keepFrames?: boolean },
+): void => {
   if (d.active !== null && d.active.owner === owner) d.active = null;
   if (d.lease !== null && d.lease.owner === owner) d.lease.lastTouchedMs = nowMs;
-  d.frames.delete(owner);
+  if (opts?.keepFrames !== true) d.frames.delete(owner);
 };
+
+/**
+ * **장부를 합친다** — 순수 (2026-09-19, 아스트라 외부 검토 ⑩).
+ *
+ * ★★종전엔 새 행동이 `desktop.held` 에 **대입**해서 **이전 정리 실패분을 잃었다.**
+ *  `releasePlan` 의 주석은 *"놓기가 실패해도 장부에 남아 다음 정리에서 다시 시도된다"*
+ *  고 약속하는데, 그 재시도 경로를 **대입이 끊고 있었다** — 주석이 거짓이 된다.
+ * ★중복은 안 넣는다(같은 키를 두 번 놓을 일이 없다).
+ */
+export const mergeHeld = (
+  prev: { keys: readonly string[]; buttons: readonly Button[] },
+  add: { keys: readonly string[]; buttons: readonly Button[] },
+): { keys: string[]; buttons: Button[] } => ({
+  keys: [...prev.keys, ...add.keys.filter((k) => !prev.keys.includes(k))],
+  buttons: [...prev.buttons, ...add.buttons.filter((b) => !prev.buttons.includes(b))],
+});
 
 /**
  * **취소·정리 — 순서가 전부다**(§14-1).
@@ -419,7 +458,7 @@ export const userIsActive = (
 // ─── 계획 — 행동 하나를 저수준 이벤트 목록으로 ───────────────────────────────
 
 /** 계획이 실패했을 때 모델에게 할 말. */
-export const planRejection = (why: PlanReject): string => {
+export const planRejection = (why: PlanReject, detail?: string): string => {
   switch (why) {
     case "offscreen":
       return "그 좌표는 이미지 밖입니다. 관측 결과의 이미지 안쪽 픽셀 좌표로 주세요 — 화면 좌표나 0~1 비율이 아닙니다.";
@@ -427,6 +466,22 @@ export const planRejection = (why: PlanReject): string => {
       return "할 일이 비어 있습니다(빈 문자열·0 스크롤·빈 키 조합·2점 미만 경로).";
     case "too-many":
       return `한 번에 낼 수 있는 손짓은 ${String(STEPS_MAX)}개까지입니다. 열을 끊고, 끊은 자리에서 \`look\` 으로 다시 보세요 — 긴 열일수록 중간에 어긋났을 때 되돌릴 수 없는 몫이 큽니다.`;
+    case "unsupported-key":
+      // ★**무엇이 문제이고 무엇을 쓸 수 있나**를 같이 말한다 — 사유만 던지면 같은 이름으로 다시 온다.
+      return (
+        `${detail === undefined ? "그 키" : `«${detail}»`} 는 이 플랫폼에서 낼 수 없습니다.\n` +
+        `쓸 수 있는 것: 수식키(${MODIFIERS.join("·")}) · 이름 있는 키(${KEY_NAMES.join("·")}) · ` +
+        "**기본 평면의 한 글자**(`a`·`가`·`5` 처럼).\n" +
+        // ★★**거절만 하고 다음 길을 안 알려주면 모델은 같은 것을 다시 보낸다**
+        //  (2026-09-19, 아스트라 4차 §3). 계약을 좁혔으면 **안내도 같이** 좁혀야 한다 —
+        //  «한 글자면 그대로 들어간다» 를 남겨두면 `🙂` 를 거절하면서 «한 글자는 된다» 고
+        //  말하는 셈이다.
+        "★`🙂`·`𝐀` 같은 **보충 평면 문자는 키로 못 냅니다**(물리 키가 없습니다) — " +
+        "**글자를 넣는 것이 목적이면 `steps` 의 `type` 원소**를 쓰세요.\n" +
+        "★기능키(f1…)도 아직 없습니다. 그리고 맥에는 Windows 키가 없습니다 — **그 플랫폼의 주 수식키는 `cmd`** 입니다(Windows 에서는 Ctrl 로 갑니다)."
+      );
+    case "scroll-too-big":
+      return `한 번에 굴릴 수 있는 양을 넘었습니다(|dx|·|dy| ≤ ${String(SCROLL_MAX)}). 나눠서 굴리고 **사이사이 다시 보세요** — 그만큼 굴렸으면 화면이 이미 달라져 있습니다.`;
     case "unbalanced-key":
       // ★**장부가 거짓이 되는 것**을 막는 거절이다(계약 2). 안 누른 키를 뗀다고 적으면,
       //  정리할 때 **우리 것이 아닌 키**를 놓게 된다 — 사용자가 누르고 있던 것을 깬다.
@@ -513,13 +568,91 @@ export type StepsPlan =
       /** step 별 한 줄 설명 — 결과 보고가 «무엇을 했나» 를 말할 재료다. */
       describes: string[];
     }
-  | { ok: false; why: PlanReject };
+  | {
+      ok: false;
+      why: PlanReject;
+      /** 거절을 부른 구체적인 값(키 이름 등) — 문구가 **무엇이 문제인지** 말할 재료다. */
+      detail?: string;
+    };
 
 /**
  * 열을 거절하는 사유 — ★**한 곳에만 적는다.** 여기와 `planRejection` 에 따로 적으면 한쪽만
  * 늘어나고, 그때 컴파일러가 아무 말도 안 한다([[feedback_hand_maintained_lists]]).
  */
-export type PlanReject = "offscreen" | "empty" | "too-many" | "unbalanced-key";
+export type PlanReject =
+  | "offscreen"
+  | "empty"
+  | "too-many"
+  | "unbalanced-key"
+  | "unsupported-key"
+  | "scroll-too-big";
+
+/**
+ * **이 플랫폼에 없는 키 이름** — 순수 (2026-09-19, 아스트라 외부 검토 5-2).
+ *
+ * ★★종전엔 스키마가 `win` 을 광고하고 **mac 실행부가 던졌다.** 그리고 그 던짐은 열
+ *  **한가운데**에서 일어난다 — 앞 step 은 이미 발사된 뒤다. 「없는 키」를 **쏘기 전에**
+ *  걸러야 부분 실행이 안 생긴다.
+ * ★손 목록이지만 **묶여 있다**: 회귀가 «여기 적힌 이름을 실행부가 실제로 거절하는가» 를
+ *  재므로, 둘이 갈리면 빨개진다([[feedback_hand_maintained_lists]] 의 처방 그대로).
+ */
+export const PLATFORM_KEY_GAPS: Readonly<Record<string, readonly string[]>> = {
+  darwin: ["win"],
+};
+
+/**
+ * **이름으로 부를 수 있는 키** — 양 실행부의 표가 **공통으로** 아는 것.
+ *
+ * ★★**금지 목록이 아니라 허용 목록이다**(2026-09-19, 아스트라 재검토 §2). 처음엔
+ *  `PLATFORM_KEY_GAPS` 하나로 막았는데 그건 **아는 이름만** 막는다 — `f5` 는 양쪽 표
+ *  **어디에도 없는데** 계획을 통과하고, 실행부가 **열 한가운데서** 던진다. 앞 step 은
+ *  이미 발사된 뒤다. 「이미 아는 한 입력을 막았다」가 아니라 **「어떤 미지원 입력도 앞선
+ *  행동을 실행시키지 않는다」** 여야 한다([[feedback_hand_maintained_lists]]).
+ * ★한 글자는 **규칙으로** 통과한다(실행부가 유니코드로 낸다) — 그래서 목록에 글자·숫자를
+ *  넣지 않는다. 목록은 «한 글자로 못 쓰는 이름» 만 진다.
+ * ★이 목록은 회귀가 **양 실행부 표와 대조**한다 — 한쪽에만 생기면 빨개진다.
+ */
+export const KEY_NAMES: readonly string[] = [
+  "enter", "return", "tab", "esc", "escape", "space", "backspace", "delete",
+  "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+];
+
+/**
+ * **이 플랫폼에서 그 키를 낼 수 있나** — 순수.
+ *
+ * ★세 갈래뿐이다: 수식키 · 이름 있는 키 · **한 글자**(유니코드로 낸다).
+ *  셋 다 아니면 실행부가 던진다 — 그러니 **쏘기 전에** 여기서 거른다.
+ */
+export const supportedKey = (name: string, platform?: string): boolean => {
+  const gaps = platform === undefined ? [] : (PLATFORM_KEY_GAPS[platform] ?? []);
+  if (gaps.includes(name)) return false;
+  if (isModifier(name)) return true;
+  if (KEY_NAMES.includes(name.toLowerCase())) return true;
+  // ★★**실행부와 «한 글자» 의 뜻이 같아야 한다** (2026-09-19, 아스트라 3차 §2).
+  //  처음엔 `[...name].length`(코드포인트)로 셌는데 **양 실행부는 UTF-16 길이**로 본다
+  //  (`String(name).length !== 1` · `$n.Length -ne 1`). 그래서 `🙂`(코드포인트 1 · UTF-16 2)가
+  //  **계획을 통과하고 실행부가 던졌다** — 앞 step 은 이미 발사된 뒤다. `f5` 와 **같은
+  //  실패 모양이 다른 입력으로** 남아 있었다.
+  //  ★★더 나쁜 것은 **내 회귀가 그 거짓 계약을 단언으로 박아** 두었다는 것이다
+  //   («이모지도 키로 된다»). 검사가 제품과 다른 약속을 고정하면 그 검사는 방패가 아니라
+  //   **잠금**이다.
+  //  ★보충 평면 문자를 **넣을** 길이 없어지는 것은 아니다 — 그건 `key` 가 아니라
+  //   **`type` 원소**가 진다(유니코드 주입은 거기가 정본이다).
+  return name.length === 1;
+};
+
+/**
+ * **한 step 이 낼 수 있는 스크롤 상한** — 잠정.
+ *
+ * ★★**실행부의 상한에 도달하지 못하게** 두는 값이다(2026-09-19). Windows 는 한 번에 120씩
+ *  최대 200회를 도는데 `units = dy × 2` 라, `|dy| > 12,000` 이면 **조용히 잘린다** —
+ *  「쐈는데 일부만 됐고 아무도 모른다」가 된다. 상한을 그 절반에 둬서 **가드가 도달
+ *  불가**가 되게 한다([[project_hotpath_bound_preserve_record]] 의 «캡 있는 자리에 반드시
+ *  도달해야 할 것을 두지 마라»).
+ * ★6,000 = 100눈금 ≈ 300줄. 한 step 에 그 이상이 필요하면 **끊고 다시 보는 것**이 맞다 —
+ *  그만큼 굴렸으면 화면이 완전히 달라져 있다.
+ */
+export const SCROLL_MAX = 6_000;
 
 /**
  * **열 → 이벤트 목록** — 순수. 좌표 변환도 장부 계산도 여기서 **한 번만** 일어난다.
@@ -532,9 +665,21 @@ export type PlanReject = "offscreen" | "empty" | "too-many" | "unbalanced-key";
  * ★`frame.front` 가 `null` 이면 가드를 **안 넣는다**: 비교 기준이 없는데 막으면 «모르면 안
  *  누른다» 가 아니라 «모르면 아무것도 못 한다» 가 된다(§15-27 계약 1).
  */
-export const planSteps = (steps: readonly Step[], frame: Frame): StepsPlan => {
+export const planSteps = (
+  steps: readonly Step[],
+  frame: Frame,
+  /** 없는 키를 **쏘기 전에** 거르기 위한 플랫폼. 없으면 그 검사를 건너뛴다(순수 검사용). */
+  platform?: string,
+): StepsPlan => {
   if (steps.length === 0) return { ok: false, why: "empty" };
   if (steps.length > STEPS_MAX) return { ok: false, why: "too-many" };
+  // ★**발사 전에** 전수로 본다 — 실행부가 열 한가운데서 던지면 앞 step 은 이미 나갔다.
+  for (const st of steps) {
+    if ((st.t === "keydown" || st.t === "keyup") && !supportedKey(st.key, platform))
+      return { ok: false, why: "unsupported-key", detail: st.key };
+    if (st.t === "scroll" && (Math.abs(st.dx) > SCROLL_MAX || Math.abs(st.dy) > SCROLL_MAX))
+      return { ok: false, why: "scroll-too-big" };
+  }
 
   const events: LowEvent[] = [];
   const describes: string[] = [];

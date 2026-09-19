@@ -238,6 +238,27 @@ const openDatabaseOrExplain = (file: string): Database.Database => {
   }
 };
 
+/**
+ * **연 것을 닫는다** — 여는 쪽이 `initStore` 이므로 짝은 여기다 (2026-09-19, 아스트라 4차 §2).
+ *
+ * ★★**왜 필요했나**: 회귀 러너가 `initStore()` 로 DB 를 열고 **닫는 경로가 없어서**, 끝나고
+ *  임시 홈을 지울 때 Windows 가 «파일이 사용 중» 으로 거절했다(POSIX 는 열린 파일도 지워져서
+ *  맥에선 안 보였다 — **플랫폼 하나에서만 보이는 결함**의 전형이다).
+ * ★재시도로 덮을 문제가 아니다: **우리가 쥐고 있는 핸들**이라 기다려도 안 놓는다.
+ * ★데몬은 이걸 안 부른다(프로세스와 수명이 같다). 부르는 쪽은 **자기 홈을 지우는 쪽**이다.
+ */
+export const closeStore = (): void => {
+  if (db === null) return;
+  try {
+    // WAL 을 본 파일에 합치고 닫는다 — `-wal`·`-shm` 이 남아 삭제를 또 막지 않게.
+    db.pragma("wal_checkpoint(TRUNCATE)");
+  } catch {
+    /* 체크포인트 실패가 닫기를 막으면 안 된다 */
+  }
+  db.close();
+  db = null;
+};
+
 export const initStore = (): void => {
   if (db !== null) return;
 

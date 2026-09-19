@@ -237,6 +237,55 @@ export const imageRectToScreen = (
  * ★못 고르면 `null` 이다. 호출부는 그때 **프레임을 등록하지 않는다** — 좌표를 지어내느니
  *  «그 화면을 모른다» 가 낫다(§14-3 의 규칙 그대로).
  */
+/**
+ * **행동 뒤에 무엇을 다시 볼 것인가** — 순수 (2026-09-19, 아스트라 외부 검토).
+ *
+ * ★★종전엔 `do` 가 사후 장면을 `{kind:"screen"}` **리터럴로 고정**해서 찍었다. 그래서
+ *  보조 모니터 프레임 위에서 행동해도 **주 모니터**가 돌아왔다 — 모델이 **다른 화면으로
+ *  행동 결과를 판정**하게 된다. 그림이 잘못 온 정도가 아니라 판정 자체가 어긋난다.
+ * ★`region` 은 **그 화면 전체로 넓힌다**: 행동은 확대한 네모 **밖**도 바꾼다(창이 열리고
+ *  대화상자가 뜬다). 확대 그림만 돌려주면 그걸 못 본다.
+ * ★★**모르면 넓히지 않는다** — 화면 배치를 못 읽으면 `region` 을 그대로 둔다.
+ *  주 화면으로 **조용히 갈아타지 않는다**(그게 이 결함의 내용이었다).
+ */
+export const afterActionTarget = (
+  target: CaptureTarget,
+  screens: readonly ScreenRect[] | undefined,
+): CaptureTarget => {
+  if (target.kind !== "region") return target;
+  if (screens === undefined || screens.length === 0) return target;
+  // ★★**`screenForTarget` 과 같은 기준을 쓴다**(2026-09-19, 아스트라 재검토 §4). 종전엔
+  //  여기가 «첫 교차» 이고 저기가 «최대 겹침» 이라, 두 화면에 **걸친** region 에서
+  //  **좌표 기준 화면과 사후 관측 화면이 갈릴 수** 있었다. 기준이 둘이면 언젠가 갈린다.
+  const idx = screenIndexForRect(target, screens);
+  return idx < 0 ? target : { kind: "display", index: idx + 1 };
+};
+
+/**
+ * **이 네모가 가장 많이 걸친 화면의 번호**(0-기준, 없으면 −1) — 순수.
+ *
+ * ★겹치는 **넓이**로 고른다. 「첫 교차」로 고르면 화면 배열 **순서**에 답이 달린다 —
+ *  같은 배치인데 열거 순서가 바뀌면 다른 화면이 나온다.
+ */
+export const screenIndexForRect = (
+  r: { x: number; y: number; width: number; height: number },
+  screens: readonly ScreenRect[],
+): number => {
+  let best = -1;
+  let bestArea = 0;
+  for (let i = 0; i < screens.length; i += 1) {
+    const s = screens[i];
+    if (s === undefined) continue;
+    const w = Math.min(r.x + r.width, s.x + s.w) - Math.max(r.x, s.x);
+    const h = Math.min(r.y + r.height, s.y + s.h) - Math.max(r.y, s.y);
+    if (w > 0 && h > 0 && w * h > bestArea) {
+      bestArea = w * h;
+      best = i;
+    }
+  }
+  return best;
+};
+
 export const screenForTarget = (
   target: CaptureTarget,
   screens: readonly ScreenRect[] | undefined,
@@ -246,17 +295,11 @@ export const screenForTarget = (
   if (target.kind === "display") return screens[target.index - 1] ?? null;
   // 영역은 **전역 좌표**다 — 그 사각형이 실제로 놓인 화면을 고른다. 두 화면에 걸치면
   // **겹친 면적이 가장 큰** 쪽(원점은 영역 자신이 대고, 화면은 배율만 댄다).
-  let best: ScreenRect | null = null;
-  let bestArea = 0;
-  for (const s of screens) {
-    const w = Math.min(target.x + target.width, s.x + s.w) - Math.max(target.x, s.x);
-    const h = Math.min(target.y + target.height, s.y + s.h) - Math.max(target.y, s.y);
-    if (w > 0 && h > 0 && w * h > bestArea) {
-      bestArea = w * h;
-      best = s;
-    }
-  }
-  return best;
+  // ★★**판정은 `screenIndexForRect` 한 곳뿐이다** (2026-09-19, 아스트라 3차 §6). 종전엔
+  //  같은 루프가 두 벌이었다 — 지금은 답이 같지만, 같은 계약의 구현이 둘이면 **다음
+  //  수정에서 갈린다**(그 갈림이 정확히 이번에 고친 «첫 교차 vs 최대 겹침» 이었다).
+  const idx = screenIndexForRect(target, screens);
+  return idx < 0 ? null : (screens[idx] ?? null);
 };
 
 export const frameGeometry = (

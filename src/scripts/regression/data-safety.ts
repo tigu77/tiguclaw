@@ -23,7 +23,8 @@
  * ★자식 프로세스로 돈다: `initStore` 는 프로세스당 한 번이고, 여기 쓰는 것들은 전부 DB 를
  *  실제로 지우거나 덮어쓰므로 스위트 홈과 섞일 수 없다.
  */
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -119,6 +120,89 @@ const run = async (): Promise<Assertion[]> => {
       `ran=${String(got.backupRan)} error=${String(got.backupReportedError)} 문구=${String(got.backupNoticeSpoken)}`,
     ),
   );
+
+  // ── ★**연 것을 닫는다** — `closeStore` (2026-09-19, 아스트라 4차 §2) ────────────
+  //  ★★회귀 러너가 `initStore()` 로 DB 를 열고 **닫는 경로가 없어서**, 끝나고 임시 홈을
+  //   지울 때 Windows 가 «사용 중» 으로 거절했다. 임시 홈이 **1,308개** 쌓여 있었다(실측).
+  //  ★★맥에선 **안 보이는 결함**이다 — POSIX 는 열린 파일도 지워 준다. 그래서 «삭제가
+  //   되나» 로 재면 이 검사는 맥에서 **언제나 초록**이 된다(가짜 검사). 대신 **양쪽에서
+  //   보이는 것**을 잰다 — 실측: 열면 `-wal` 733KB·`-shm` 32KB 가 생기고, 제대로 닫으면
+  //   **둘 다 사라진다**(체크포인트 뒤 합쳐짐).
+  {
+    const dir = mkdtempSync(path.join(tmpdir(), "closestore-"));
+    const script = path.join(dir, "probe.mts");
+    // ★★**ESM 지정자는 file URL 이어야 한다** — 절대경로를 그대로 쓰면 Windows 에서
+    //  `ERR_UNSUPPORTED_ESM_URL_SCHEME` 으로 죽는다(`C:\\…` 는 스킴이 아니다).
+    //  ★맥에선 POSIX 절대경로가 **그냥 통하므로** 이 결함이 안 보인다 — 그래서 «돌려보기» 로는
+    //   못 잡고, **우리가 만든 지정자의 성질**을 직접 잰다. 그러면 양쪽에서 같은 답이 나온다.
+    const specifier = pathToFileURL(path.resolve("src/store/sessions.ts")).href;
+    out.push(
+      assert(
+        "★★탐침의 import 지정자가 **file URL** 이다(절대경로면 Windows 에서 상시 빨강이 된다)",
+        specifier.startsWith("file://"),
+        `지정자: ${specifier.slice(0, 48)}…`,
+      ),
+    );
+    writeFileSync(
+      script,
+      [
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        // ★★**Windows 절대경로는 ESM 지정자가 아니다** (2026-09-19, 아스트라가 실측).
+        //  `C:\\…` 를 그대로 쓰면 `ERR_UNSUPPORTED_ESM_URL_SCHEME` 으로 죽는다 — 탐침이
+        //  아예 안 돌고, 그러면 이 검사는 **Windows 에서 상시 빨강**이 된다.
+        //  ★내가 바로 앞 커밋에서 고친 것이 「Windows 에서 상시 빨간 게이트」였는데,
+        //   그걸 고치면서 **새 상시 빨강을 하나 만들었다.** 레포에 이미 관용구가 있다.
+        `import { initStore, closeStore } from ${JSON.stringify(specifier)};`,
+        "initStore();",
+        `const d = path.join(${JSON.stringify(dir)}, "data");`,
+        "const walish = (): string[] => fs.readdirSync(d).filter((f) => f.endsWith('-wal') || f.endsWith('-shm'));",
+        "const before = walish().length;",
+        "closeStore();",
+        "console.log(JSON.stringify({ before, after: walish().length }));",
+      ].join("\n"),
+    );
+    const probe = spawnSync(process.execPath, ["--import", "tsx", script], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { ...process.env, TIGUCLAW_HOME: dir, DATA_DIR: "" },
+    });
+    // ★★**자기가 만든 임시물은 자기가 치운다** (아스트라 지적). 임시 DB 누적을 고치는
+    //  검사가 **다른 이름으로** 임시물을 남기고 있었다(맥에 `closestore-*` 8개 실측).
+    //  ★러너의 스윕은 `tiguclaw-regression-*` 만 본다 — 그 접두를 넓히는 게 아니라
+    //   **만든 쪽이 치우는 것**이 맞다(남의 임시물을 지우는 청소기는 더 위험하다).
+    rmSync(dir, { recursive: true, force: true });
+    // ★★**치웠는지 스스로 잰다** — 임시물 누적을 고치는 검사가 **다른 이름으로** 남기고
+    //  있었다(맥에 `closestore-*` 8개 실측). 「치운다」고 적는 것과 치워지는 것은 다르다.
+    out.push(
+      assert(
+        "★검사가 **자기가 만든 임시물을 치운다**(청소기 접두를 넓히는 것이 아니라 만든 쪽이 치운다)",
+        !existsSync(dir),
+        `${path.basename(dir)} 남음=${String(existsSync(dir))}`,
+      ),
+    );
+    const line = (probe.stdout ?? "").trim().split("\n").pop() ?? "";
+    let sizes: { before?: number; after?: number } = {};
+    try {
+      sizes = JSON.parse(line) as typeof sizes;
+    } catch {
+      /* 아래 단언이 판정한다 */
+    }
+    out.push(
+      assert(
+        "★탐침이 실제로 돌았다 — 열었을 때 `-wal`·`-shm` 이 생긴다(안 생기면 아래 단언이 헛돈다)",
+        sizes.before === 2,
+        `열었을 때 부속 파일 ${String(sizes.before)}개(2여야) · stderr=${(probe.stderr ?? "").slice(0, 100)}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★★`closeStore()` 가 **실제로 닫는다** — 안 닫으면 그 핸들이 임시 홈 삭제를 막는다(Windows)",
+        sizes.before === 2 && sizes.after === 0,
+        `부속 파일: 닫기 전 ${String(sizes.before)}개 → 닫은 뒤 ${String(sizes.after)}개(0이어야)`,
+      ),
+    );
+  }
 
   return out;
 };

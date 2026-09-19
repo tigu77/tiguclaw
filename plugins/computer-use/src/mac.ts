@@ -388,7 +388,7 @@ const POST_SCRIPT = [
   //  같은 부류). 유니코드 주입은 **수식키를 안 탄다** — `cmd+ㅁ` 이 «단축키» 가 아니라
   //  «글자 ㅁ 삽입» 이 되고, 그래도 성공을 반환한다. 조용히 딴 일을 하느니 던진다.
   "    var heldNames = []; for (var hm in down) if (down[hm]) heldNames.push(hm);",
-  "    if (heldNames.length > 0) throw new Error('이 배치에서 «' + name + '» 는 키로 누를 수 없습니다 — 수식키(' + heldNames.join('+') + ')와 함께 쓸 수 없습니다. 글자를 넣는 것이 목적이면 type_text 를 쓰세요.');",
+  "    if (heldNames.length > 0) throw new Error('이 배치에서 «' + name + '» 는 키로 누를 수 없습니다 — 수식키(' + heldNames.join('+') + ')와 함께 쓸 수 없습니다. 글자를 넣는 것이 목적이면 steps 의 type 원소를 쓰세요.');",
   "    if (!isDown) return;",
   "    uni(String(name)); return;",
   "  }",

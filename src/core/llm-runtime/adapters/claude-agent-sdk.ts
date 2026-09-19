@@ -450,8 +450,11 @@ export const runClaude = async (
   //    (claudeOwnTurns 가 비어 computeForeignDelta 가 thread 전체 반환).
   // 연속 claude turn(foreign 없음) → delta 0 → 현행 resume 그대로(회귀 0).
   let foreignDeltaBlock = "";
+  // ★resume 이 죽었을 때 **이 턴에서** 기록을 되살리려면 원재료가 필요하다(아래 재조립).
+  let threadTurnsForRebuild: ReturnType<typeof loadThreadHistory> = [];
   if (prior !== undefined) {
     const threadTurns = loadThreadHistory(idChannel, input.threadKey);
+    threadTurnsForRebuild = threadTurns;
     if (threadTurns.length > 0) {
       const claudeOwnTurns = resumable
         ? loadCodexTurnHistoryBySessionId(prior.claudeSessionId)
@@ -967,7 +970,38 @@ export const runClaude = async (
           roleSource: input,
         });
   const userTurnParts = [attachmentBlock, input.text];
-  const promptWithMemory = assembleUserPrompt(volatileParts, userTurnParts);
+  let promptWithMemory = assembleUserPrompt(volatileParts, userTurnParts);
+  /**
+   * **resume 이 죽었을 때 쓰는 프롬프트** — 스레드 **전체**를 다시 싣는다.
+   *
+   * ★★이게 없으면 fresh 재시도가 «이어가는» 게 아니라 **빈 채로 다시 시작**한다
+   *  (2026-09-19, 정태님 지적). 종전 코드는 `resume` 만 떼고 **같은 프롬프트**를 다시
+   *  썼는데, 그 프롬프트는 «resume 이 옛 턴을 재생한다» 는 전제로 만들어져 **기록 주입이
+   *  0** 이다. 모델은 처음 보는 사람처럼 답한다.
+   * ★클로드 내부 세션이 사라진 것 자체는 문제가 아니다 — **우리 기록으로 다시 잇는 것**이
+   *  요구사항이고, 그 길은 원래 있었다(`resumable === false` 면 스레드 전체가 prepend 된다).
+   *  여기서는 그 길을 **이 턴에** 쓰게 한다.
+   * ★`foreignDelta` 는 **user 채널**(휘발)이라 시스템 채널은 안 바뀐다 — 재조립 범위가 좁다.
+   */
+  const rebuildPromptWithFullHistory = (): string => {
+    const full = formatForeignDelta(computeForeignDelta(threadTurnsForRebuild, []));
+    if (full === "" || input.systemPromptOverride !== undefined) return promptWithMemory;
+    const again = splitSystemContext({
+      system,
+      env,
+      agent,
+      agentWarn,
+      convoContext,
+      foreignDelta: full,
+      memoryIndex,
+      memorySnippet,
+      skillIndex,
+      agentIndex,
+      modelProfiles,
+      roleSource: input,
+    });
+    return assembleUserPrompt(again.volatileParts, userTurnParts);
+  };
   // 중립 override(게이트웨이) 지정 시 그 값이 시스템 프롬프트 — tiguclaw 작동헌법 대체.
   const systemChannel =
     input.systemPromptOverride ??
@@ -1113,8 +1147,24 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   return /Claude Code (executable|native binary) (not found|at .* exists but failed to launch)/i.test(m);
 };
 
-const isResumeProcessFailure = (e: unknown): boolean =>
-    e instanceof Error && /process exited with code 1/i.test(e.message);
+/**
+   * **resume 이 살아 있지 않다** — 그러면 fresh 로 한 번 다시 돈다.
+   *
+   * ★★**문구 하나에 묶여 있었다** (2026-09-19, 집 Windows 실사고). 종전엔
+   *  `process exited with code 1` 만 봤는데, 세션 jsonl 이 없어지면 SDK 는 **다른 문장**을
+   *  낸다: `No conversation found with session ID: <uuid>`. 그러면 이 술어가 못 알아보고
+   *  **복구가 안 돌아** 원본 오류가 사용자에게 그대로 나간다 — 그리고 그 스레드는 매 턴
+   *  같은 resume 을 재생하므로 **영구 실패**가 된다(사용자는 대화를 통째로 잃는다).
+   * ★[[feedback_hand_maintained_lists]] 의 그 모양이다 — 목록이 하나짜리였을 뿐이다.
+   *  그래서 «이 문장» 이 아니라 **«resume 이 못 쓰는 상태» 라는 부류**로 넓힌다.
+   * ★반대 방향도 지킨다: 여기 걸리면 **원 요청을 처음부터 다시** 돌리므로, 부작용이 이미
+   *  시작된 뒤에는 호출부가 따로 막는다(아래 `canReplay`). 넓힌다고 그 가드가 약해지지 않는다.
+   */
+  const isResumeProcessFailure = (e: unknown): boolean =>
+    e instanceof Error &&
+    (/process exited with code 1/i.test(e.message) ||
+      /no conversation found/i.test(e.message) ||
+      /session .*(not found|does not exist)/i.test(e.message));
   // 처리불가 이미지 등 재생 불가한 turn 이 resume jsonl 에 박히는 400 — 그대로 두면 이후 모든
   // turn 이 그 resume 을 재생하며 영구 실패(스레드 오염). 감지 시 resume 만 무효화(아래) 하면
   // 다음 turn(풀의 다음 모델·또는 다음 사용자 turn)이 fresh+prepend 로 자가치유.
@@ -2142,8 +2192,18 @@ const isResumeProcessFailure = (e: unknown): boolean =>
       toolTiming.clear(); // 실행시간(#3) 매핑도 리셋 — fresh 세션엔 이전 tool_use id 안 옴.
       const freshOptions: Options = { ...options };
       delete (freshOptions as { resume?: unknown }).resume;
+      // ★★**기록을 다시 싣는다** — `resume` 만 떼면 모델이 문맥 없이 답한다(위 주석).
+      //  스티어링 턴은 진행 중 턴에 끼어드는 경로라 여기 해당 없음(프롬프트가 다르다).
+      if (input.steering === undefined) promptWithMemory = rebuildPromptWithFullHistory();
+      // ★**저장된 죽은 id 도 버린다** — 안 버리면 다음 턴이 같은 resume 을 또 시도한다.
+      //  이미지 오염 경로가 하는 것과 같다(그쪽 주석의 «문맥 보존» 이 여기서도 성립한다).
+      try {
+        invalidateResume(idChannel, input.threadKey);
+      } catch {
+        /* 무효화 실패해도 이 턴의 복구는 계속한다(원칙 3). */
+      }
       q = buildQuery(freshOptions);
-      continue; // resume 없이 재실행.
+      continue; // resume 없이 **기록을 싣고** 재실행.
     }
     // SDK 가 abort 시 throw 하는 경우(AbortError 등) — 1층(유휴) 또는 2층(턴) 타임아웃이
     // 원인이면 해당 에러로 승격해 facade 가 일관된 타임아웃 신호를 받게 한다(둘 다

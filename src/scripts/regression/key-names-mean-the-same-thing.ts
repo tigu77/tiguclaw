@@ -17,7 +17,7 @@
  *  그래서 이 축은 «있는가» 를 텍스트로 묻는 수밖에 없다 — 대신 **양쪽을 다 읽어 견준다.**
  */
 import { readFile } from "node:fs/promises";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, type Assertion, type RegressionCheck, loadPluginModule } from "./_framework.js";
 
 const REPO = new URL("../../../", import.meta.url);
 
@@ -128,6 +128,62 @@ export const check: RegressionCheck = {
         AMBIGUOUS.every((n) => idx.includes(n)) && idx.includes("스크롤"),
         `설명에 있는 이름: ${AMBIGUOUS.filter((n) => idx.includes(n)).join(",") || "없음"}` +
           ` · «스크롤» 이라는 사유: ${String(idx.includes("스크롤"))}`,
+      ),
+    );
+
+    // ── ★수식키 표도 대조한다 (2026-09-19, 아스트라 재검토 §3) ────────────────────
+    //  ★종전엔 **일반 키 표(K·$VK)만** 봤다. 수식키는 `MODK`·`$MODVK` 에 따로 사는데
+    //   아무도 안 봤고, 실제로 **`win` 이 한쪽에만** 있다(맥엔 없어서 던진다).
+    //  ★차이 자체는 결함이 아니다 — **그 차이가 계약(`PLATFORM_KEY_GAPS`)과 같은가**가 계약이다.
+    const modNames = (src: string, re: RegExp): Set<string> =>
+      new Set([...(re.exec(src)?.[1] ?? "").matchAll(/([a-z]+)\s*[:=]/g)].map((m) => m[1] ?? ""));
+    const mMod = modNames(mac, /var MODK = \{([^}]*)\}/);
+    const wMod = modNames(win, /\$MODVK=@\{([^}]*)\}/);
+    out.push(
+      assert(
+        "★수식키 스캐너의 눈이 살아 있다 — 양쪽에서 이름이 실제로 모인다",
+        mMod.size >= 4 && wMod.size >= 4,
+        `mac ${[...mMod].join(",")} · win ${[...wMod].join(",")}`,
+      ),
+    );
+    const modDiff = [...new Set([...mMod, ...wMod])].filter((k) => !mMod.has(k) || !wMod.has(k));
+    out.push(
+      assert(
+        "★★수식키 표의 차이가 **계약에 적힌 그대로**다(PLATFORM_KEY_GAPS) — 말없이 갈리면 발사 도중에 던진다",
+        modDiff.length === 1 && modDiff[0] === "win" && !mMod.has("win") && wMod.has("win"),
+        `차이: ${modDiff.join(",") || "없음"} (계약: darwin 에 win 없음)`,
+      ),
+    );
+
+    // ── ★★허용 목록이 **실행부 표와 묶여 있다** (아스트라 재검토 §2·§3) ──────────
+    //  ★종전 사전 검증은 **금지 목록**이라 `win` 하나만 막았다 — `f5` 는 양쪽 표 어디에도
+    //   없는데 계획을 통과하고 실행부가 **열 한가운데서** 던졌다(앞 step 은 이미 발사됨).
+    //   허용 목록으로 뒤집었으니, 이제 그 목록이 **실물과 같은지**를 여기서 잰다.
+    // ★★**제품의 목록을 본다 — 사본을 만들지 않는다** (2026-09-19, 아스트라 3차 §3).
+    //  종전엔 이 파일 안에 같은 목록을 **베껴** 두고 실행부 표와 비교했다. 그래서
+    //  **제품 목록에 `printstreen` 을 더해도 190건이 전부 통과**했다 — 검사와 실행부는
+    //  맞는데 **제품만 달라진 것**을 못 본다. 검사에 별도 정본을 만들면 그 순간 셋이 된다.
+    const { KEY_NAMES } = await loadPluginModule<{ KEY_NAMES: readonly string[] }>(
+      "../../../plugins/computer-use/src/control.ts",
+    );
+    const missingMac = KEY_NAMES.filter((k) => !m.has(k));
+    const missingWin = KEY_NAMES.filter((k) => !w.has(k));
+    out.push(
+      assert(
+        "★★허용 목록의 이름이 **양 실행부 표에 전부 있다** — 없으면 «지원한다» 가 거짓이고 발사 도중에 던진다",
+        missingMac.length === 0 && missingWin.length === 0,
+        missingMac.length + missingWin.length === 0
+          ? `허용 ${String(KEY_NAMES.length)}개 · 양쪽 모두 보유`
+          : `mac 없음: ${missingMac.join(",") || "-"} · win 없음: ${missingWin.join(",") || "-"}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★반대 방향 — 실행부가 아는데 **허용 목록에서 빠진** 이름이 없다(그러면 쓸 수 있는 걸 막는다)",
+        [...m].filter((k) => k.length > 1 && !KEY_NAMES.includes(k)).length === 0,
+        `mac 표의 여러 글자 이름 중 목록 밖: ${
+          [...m].filter((k) => k.length > 1 && !KEY_NAMES.includes(k)).join(",") || "없음"
+        }`,
       ),
     );
 

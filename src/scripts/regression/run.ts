@@ -32,10 +32,43 @@
 //  그보다 **앞서** 끝나야 한다. 종전엔 이 import 가 없어서, 봉인 뒤에 동적 import 체인이
 //  `load-env` 를 태우며 지워 둔 키를 다시 채웠다(`loadEnvFile` 은 빈 키를 채운다).
 import "../../core/load-env.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RegressionCheck } from "./_framework.js";
+
+/**
+ * **지난 실행이 남긴 임시 홈을 쓸어낸다** — 하루보다 오래된 것만.
+ *
+ * ★★**실측으로 드러났다**(2026-09-19): 맥에 `tiguclaw-regression-*` 이 **1,308개**(9/10~9/19)
+ *  남아 있었다. 전부 **빈 폴더**다 — 내용은 지워졌는데 디렉터리가 남은 것이 아니라, 대개는
+ *  그 실행이 **시그널로 죽어 `finally` 를 못 지난** 것이다(필터 실행을 `| head` 로 받으면
+ *  SIGPIPE 가 난다 — 오늘 내가 수십 번 그렇게 돌렸다).
+ * ★`finally` 를 아무리 잘 써도 **죽임당한 프로세스는 아무것도 못 한다.** 그러니 «나갈 때
+ *  치운다» 옆에 **«들어올 때 치운다»** 를 둔다 — 시작은 언제나 도달한다.
+ * ★하루 상한을 두는 이유: **도는 중인 다른 실행**의 홈을 지우면 안 된다(CI 가 병렬로 돈다).
+ */
+const sweepStaleHomes = (): number => {
+  const cut = Date.now() - 24 * 60 * 60 * 1000;
+  let swept = 0;
+  try {
+    for (const name of readdirSync(tmpdir())) {
+      if (!name.startsWith("tiguclaw-regression-")) continue;
+      const full = path.join(tmpdir(), name);
+      try {
+        if (statSync(full).mtimeMs > cut) continue;
+        rmSync(full, { recursive: true, force: true });
+        swept += 1;
+      } catch {
+        /* 남의 것이거나 지금 쓰는 중 — 넘어간다 */
+      }
+    }
+  } catch {
+    /* tmpdir 을 못 읽으면 쓸어낼 것도 없다 */
+  }
+  return swept;
+};
+const sweptAtStart = sweepStaleHomes();
 
 const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-"));
 process.env.TIGUCLAW_HOME = home;
@@ -195,8 +228,64 @@ const main = async (): Promise<void> => {
   process.exitCode = failed === 0 ? 0 : 1;
 };
 
+/**
+ * 임시 홈을 지운다 — **몇 번 다시 해본다**. 못 지우면 사유를 돌려준다.
+ *
+ * ★★**Windows 에서 이게 스위트를 상시 빨갛게 만들고 있었다** (2026-09-19, 아스트라 3차 §7).
+ *  단언 190건이 전부 통과한 **뒤에** 이 줄이 `EPERM` 으로 던져서, 프로세스 종료 코드가
+ *  1이 됐다 — 「검사는 통과했는데 명령은 실패」다. 상시 빨간 게이트는 아무도 안 본다.
+ * ★뿌리는 **핸들 해제 지연**이다: DB 를 여는 검사들은 자식 프로세스이고, 그 자식이 끝난
+ *  직후 Windows 가 파일을 아직 놓지 않았을 수 있다(백신 스캔도 같은 모양을 만든다).
+ *  그래서 **잠깐 기다렸다 다시** 하면 대개 지워진다.
+ * ★★**그래도 삼키지는 않는다.** 못 지웠으면 **따로 보고**한다 — 판정을 덮지도, 조용히
+ *  넘기지도 않는다. 임시 폴더가 쌓이는 것은 그 자체로 알아야 할 사실이다.
+ */
+/**
+ * **러너가 연 저장소를 닫는다** — 삭제보다 **먼저** (2026-09-19, 아스트라 4차 §2).
+ *
+ * ★★내가 앞서 «자식 핸들 지연» 으로 짚고 **재시도**를 처방한 것은 **오진이었다.** 러너
+ *  자신이 `initStore()` 로 DB 를 열고 닫지 않는다 — **우리가 쥔 핸들**이라 기다려도 안 놓는다.
+ *  맥에선 열린 파일도 지워져서(POSIX) 안 보였고, Windows 에서만 드러났다.
+ */
+const closeOwnStore = async (): Promise<void> => {
+  try {
+    const { closeStore } = await import("../../store/sessions.js");
+    closeStore();
+  } catch {
+    /* 저장소를 안 열었으면 닫을 것도 없다 */
+  }
+};
+
+const removeHome = (dir: string): string | null => {
+  const wait = (ms: number): void => {
+    // `finally` 안이라 `await` 를 못 쓴다 — 동기 대기가 필요하다.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  };
+  for (let i = 0; i < 5; i += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return null;
+    } catch (e) {
+      if (i === 4) return e instanceof Error ? e.message : String(e);
+      wait(100 * (i + 1));
+    }
+  }
+  return null;
+};
+
 try {
   await main();
 } finally {
-  rmSync(home, { recursive: true, force: true });
+  // ★**닫고 나서 지운다** — 순서가 계약이다.
+  await closeOwnStore();
+  const why = removeHome(home);
+  if (sweptAtStart > 0) {
+    console.log(`\n🧹 지난 실행이 남긴 임시 홈 ${sweptAtStart}개를 시작할 때 쓸어냈다(하루 넘은 것만).`);
+  }
+  if (why !== null) {
+    // ★**판정과 별개의 줄**이다 — 위의 «통과/실패» 가 단언의 정본이고, 이것은 위생 문제다.
+    console.log(`\n⚠️ 임시 홈 정리 실패(5회 시도) — ${why}`);
+    console.log(`   경로: ${home}`);
+    console.log("   ★단언 결과는 위가 정본이다. 이 줄은 **판정을 덮지 않고**, 대신 쌓이는 폴더를 알린다.");
+  }
 }

@@ -106,6 +106,31 @@ export const check: RegressionCheck = {
           : `광고 ${names.length}개 · 빠진 것: ${missing.join(",") || "없음"}`,
       ),
     );
+    // ★★**«있다» 가 «같은 뜻이다» 를 보장하지 않는다** (2026-09-19, 돌쇠 실기).
+    //  `home` 은 양쪽 표에 다 있고 위 대조를 **통과한다** — 그런데 Windows 는 캐럿을 옮기고
+    //  **맥은 화면만 스크롤한다.** `delete`(51 vs 117)와 같은 부류인데 이쪽은 **조용하다**:
+    //  키는 성공으로 돌아오고 캐럿만 안 움직여서 재관측 없이는 못 본다.
+    //  → 그래서 이름 대조와 **별개로**, 뜻이 갈리는 이름은 **광고하지 않는다**를 잰다.
+    const AMBIGUOUS = ["home", "end", "pageup", "pagedown"];
+    const advertisedAmbiguous = AMBIGUOUS.filter((n) => names.includes(n));
+    out.push(
+      assert(
+        "★★뜻이 플랫폼마다 갈리는 이름은 **광고하지 않는다**(맥 home 은 스크롤만 한다)",
+        advertisedAmbiguous.length === 0,
+        advertisedAmbiguous.length === 0
+          ? `광고 목록에 없음: ${AMBIGUOUS.join(",")}`
+          : `★광고돼 있다: ${advertisedAmbiguous.join(",")}`,
+      ),
+    );
+    out.push(
+      assert(
+        "★그리고 **왜 쓰지 말라는지**를 같이 말한다 — 이름만 빼면 모델은 그냥 모른 채 쓴다",
+        AMBIGUOUS.every((n) => idx.includes(n)) && idx.includes("스크롤"),
+        `설명에 있는 이름: ${AMBIGUOUS.filter((n) => idx.includes(n)).join(",") || "없음"}` +
+          ` · «스크롤» 이라는 사유: ${String(idx.includes("스크롤"))}`,
+      ),
+    );
+
     return out;
   },
 };

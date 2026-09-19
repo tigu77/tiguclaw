@@ -34,7 +34,11 @@ type LowEvent =
   | { t: "scroll"; x: number; y: number; dx: number; dy: number }
   | { t: "unicode"; text: string }
   | { t: "keydown"; key: string }
-  | { t: "keyup"; key: string };
+  | { t: "keyup"; key: string }
+  // ★열 배관 — `plan1` 이 걷어낸다(여기선 좌표·짝만 본다, `computer-use-steps-contract` 가 따로 잰다).
+  | { t: "wait"; ms: number }
+  | { t: "mark"; i: number }
+  | { t: "guard"; front: string };
 interface Desktop {
   lastSelfInputMs: number | null;
   lease: { owner: string; lastTouchedMs: number } | null;
@@ -49,8 +53,14 @@ type Begin =
   | { ok: false; reason: "user-active" }
   | { ok: false; reason: "idle-unknown" };
 type Plan =
-  | { ok: true; events: LowEvent[]; holds: { keys: string[]; buttons: Button[] }; describe: string }
-  | { ok: false; why: "offscreen" | "empty" };
+  | {
+      ok: true;
+      events: LowEvent[];
+      holds: { keys: string[]; buttons: Button[] };
+      touched: { keys: string[]; buttons: Button[] };
+      describes: string[];
+    }
+  | { ok: false; why: "offscreen" | "empty" | "too-many" | "unbalanced-key" };
 
 interface ControlModule {
   newDesktop: () => Desktop;
@@ -76,7 +86,7 @@ interface ControlModule {
   ) => { ok: true; frame: Frame } | { ok: false; why: string };
   frameRejection: (why: string) => string;
   postFailureMessage: (reason: "timeout" | "failed", detail: string) => string;
-  plan: (action: Record<string, unknown>, frame: Frame) => Plan;
+  planSteps: (steps: readonly Record<string, unknown>[], frame: Frame) => Plan;
   planRejection: (why: "offscreen" | "empty") => string;
   beginRejection: (b: Exclude<Begin, { ok: true }>) => string;
   userIsActive: (
@@ -117,7 +127,7 @@ export const check: RegressionCheck = {
       postFailureMessage,
       rememberFrame,
       FRAME_KEEP,
-      plan,
+      planSteps,
       planRejection,
       beginRejection,
       userIsActive,
@@ -231,16 +241,30 @@ export const check: RegressionCheck = {
       assert(
         "★거절 문구가 **무엇을 해야 하는지**까지 말한다(사유만 던지면 모델이 멈춘다)",
         ["unknown", "stale", "other-owner"].every((w) =>
-          frameRejection(w).includes("observe_screen"),
+          frameRejection(w).includes("look"),
         ),
         frameRejection("unknown").slice(0, 60),
       ),
     );
 
+    /**
+     * 옛 `plan(action)` 자리 — **계획기는 이제 `planSteps` 하나다**(2026-09-19, `look`/`do`).
+     *
+     * ★열 배관(`mark`·`guard`)은 `computer-use-steps-contract` 가 따로 잰다. 여기서는
+     *  **좌표 변환과 짝 맞춤**만 보므로 그 둘을 걷어내고 본다 — 같은 것을 두 곳에서 재면
+     *  한쪽만 고쳐지고, 그게 이 레포가 반복해 온 실패다.
+     */
+    const plan1 = (steps: readonly Record<string, unknown>[], f: Frame): Plan => {
+      const p = planSteps(steps, f);
+      return p.ok
+        ? { ...p, events: p.events.filter((e) => e.t !== "mark" && e.t !== "guard") }
+        : p;
+    };
+
     // ── ④ 계획 — 좌표 변환이 **한 곳에서만** 일어난다 ──────────────────────────
     {
       const f = frameAt("f1", "A", T);
-      const click = plan({ kind: "click", frameId: "f1", x: 800, y: 517, button: "left", count: 1 }, f);
+      const click = plan1([{ t: "click", x: 800, y: 517, button: "left", count: 1 }], f);
       // 800/1600 × 3456 = 1728px → ÷ 배율 2 = 864pt
       out.push(
         assert(
@@ -261,7 +285,7 @@ export const check: RegressionCheck = {
           JSON.stringify(click.ok ? click.events.map((e) => e.t) : click),
         ),
       );
-      const off = plan({ kind: "click", frameId: "f1", x: 1600, y: 10, button: "left", count: 1 }, f);
+      const off = plan1([{ t: "click", x: 1600, y: 10, button: "left", count: 1 }], f);
       out.push(
         assert(
           "★이미지 **경계 밖**은 계획 단계에서 거절한다 — 폭 값 자체(1600)는 밖이다(픽셀 인덱스는 0..1599)",
@@ -281,10 +305,10 @@ export const check: RegressionCheck = {
     // ── ⑤ 한글 — **코드포인트 한 덩이**로 간다 ────────────────────────────────
     {
       const f = frameAt("f1", "A", T);
-      const typed = plan({ kind: "type", frameId: "f1", text: "한글 테스트" }, f);
-      const emptyType = plan({ kind: "type", frameId: "f1", text: "" }, f);
-      const emptyScroll = plan({ kind: "scroll", frameId: "f1", x: 10, y: 10, dx: 0, dy: 0 }, f);
-      const emptyKeys = plan({ kind: "key", frameId: "f1", keys: [] }, f);
+      const typed = plan1([{ t: "type", text: "한글 테스트" }], f);
+      const emptyType = plan1([{ t: "type", text: "" }], f);
+      const emptyScroll = plan1([{ t: "scroll", x: 10, y: 10, dx: 0, dy: 0 }], f);
+      const emptyKeys = planSteps([], f);
       out.push(
         assert(
           "★타이핑은 **유니코드 한 덩이**다 — 글자마다 키코드를 찾으면 한글이 조합에서 깨진다",
@@ -297,23 +321,39 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "빈 입력·0 스크롤·빈 조합은 «할 일 없음» 으로 거절한다(빈 이벤트를 쏘지 않는다)",
-          !plan({ kind: "type", frameId: "f1", text: "" }, f).ok &&
-            !plan({ kind: "scroll", frameId: "f1", x: 10, y: 10, dx: 0, dy: 0 }, f).ok &&
-            !plan({ kind: "key", frameId: "f1", keys: [] }, f).ok,
+          "빈 입력·0 스크롤·빈 열은 «할 일 없음» 으로 거절한다(빈 이벤트를 쏘지 않는다)",
+          !plan1([{ t: "type", text: "" }], f).ok &&
+            !plan1([{ t: "scroll", x: 10, y: 10, dx: 0, dy: 0 }], f).ok &&
+            !planSteps([], f).ok,
           `type=${JSON.stringify(emptyType)} scroll=${JSON.stringify(emptyScroll)} key=${JSON.stringify(emptyKeys)}`,
         ),
       );
     }
 
-    // ── ⑥ 조합키 — **역순으로 놓고**, 도중엔 장부에 오른다 ────────────────────
+    // ── ⑥ ★수식키 — **순서를 정하는 쪽이 바뀌었다** (2026-09-19, `look`/`do`) ─────
+    //  옛 `key` 행동은 `["cmd","shift","4"]` 를 받아 계획기가 **역순 놓기를 대신** 정했다.
+    //  ★이제 열에 `keydown`/`keyup` 이 **드러나 있으므로 순서는 모델이 쓴다** — 계획기가
+    //   지키는 것은 「쓴 대로 나가는가」와 「짝이 맞는가」뿐이다. 그래서 여기서 재는 것도
+    //   «계획기가 뒤집어 주는가» 가 아니라 **«거짓 장부를 만들지 않는가»** 로 바뀐다.
+    //  ★★역순 놓기는 사라진 게 아니라 **정리(`releasePlan`)로 옮겨갔다** — 자식이 죽어
+    //   장부로 되돌릴 때가 순서가 실제로 중요한 유일한 자리다(⑦ 이 잰다).
     {
       const f = frameAt("f1", "A", T);
-      const k = plan({ kind: "key", frameId: "f1", keys: ["cmd", "shift", "4"] }, f);
+      const k = plan1(
+        [
+          { t: "keydown", key: "cmd" },
+          { t: "keydown", key: "shift" },
+          { t: "keydown", key: "4" },
+          { t: "keyup", key: "4" },
+          { t: "keyup", key: "shift" },
+          { t: "keyup", key: "cmd" },
+        ],
+        f,
+      );
       const seq = k.ok ? k.events.map((e) => `${e.t}:${"key" in e ? e.key : ""}`) : [];
       out.push(
         assert(
-          "★수식키를 **역순으로 놓는다**(Shift 를 먼저 놓으면 짝이 어긋난다)",
+          "★열에 쓴 키 순서가 **그대로** 나간다(계획기가 몰래 재배열하지 않는다)",
           JSON.stringify(seq) ===
             JSON.stringify([
               "keydown:cmd",
@@ -328,15 +368,30 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★조합키는 계획 도중 **눌린 채 있으므로 장부에 오른다** — 자식이 죽으면 그것으로 되돌린다",
-          k.ok && JSON.stringify(k.holds.keys) === JSON.stringify(["cmd", "shift"]),
+          "★짝이 맞은 열은 장부를 **비운 채** 끝난다 — 남길 것이 없다",
+          k.ok && k.holds.keys.length === 0,
           JSON.stringify(k.ok ? k.holds : k),
         ),
       );
       out.push(
         assert(
+          "★★중간에 끊긴 열(뗌이 없음)은 **장부에 남긴다** — 자식이 죽으면 그것으로 되돌린다",
+          (() => {
+            const half = plan1([{ t: "keydown", key: "cmd" }, { t: "keydown", key: "shift" }], f);
+            return half.ok && JSON.stringify(half.holds.keys) === JSON.stringify(["cmd", "shift"]);
+          })(),
+          JSON.stringify(
+            (() => {
+              const half = plan1([{ t: "keydown", key: "cmd" }, { t: "keydown", key: "shift" }], f);
+              return half.ok ? half.holds : half;
+            })(),
+          ),
+        ),
+      );
+      out.push(
+        assert(
           "수식키가 아닌 이름은 **그대로 넘긴다**(손 목록을 늘리지 않는다 — 실행부가 규칙으로 옮긴다)",
-          k.ok && seq.includes("keydown:4"),
+          seq.includes("keydown:4"),
           JSON.stringify(seq),
         ),
       );
@@ -458,10 +513,7 @@ export const check: RegressionCheck = {
     //   자식 하나의 수명만큼으로 묶인다.
     {
       const f = frameAt("f1", "A", T);
-      const dr = plan(
-        { kind: "drag", frameId: "f1", fromX: 100, fromY: 100, toX: 300, toY: 200, button: "left" },
-        f,
-      );
+      const dr = plan1([{ t: "drag", path: [{ x: 100, y: 100 }, { x: 300, y: 200 }], button: "left" }], f);
       const kinds = dr.ok ? dr.events.map((e) => e.t) : [];
       out.push(
         assert(
@@ -479,9 +531,12 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★드래그는 **버튼을 장부에 올린다** — 계획 도중 눌린 채 지나므로 자식이 죽으면 남는다",
-          dr.ok && JSON.stringify(dr.holds.buttons) === JSON.stringify(["left"]),
-          JSON.stringify(dr.ok ? dr.holds : dr),
+          "★★드래그는 **버튼을 «도중 장부»(touched)에 올린다** — down 과 up **사이에서** 자식이 " +
+            "죽으면 눌린 채 남는데, 「끝나고 남는 것」(holds)만 담으면 그 순간 장부가 비어 있다",
+          dr.ok &&
+            JSON.stringify(dr.touched.buttons) === JSON.stringify(["left"]) &&
+            dr.holds.buttons.length === 0,
+          JSON.stringify(dr.ok ? { touched: dr.touched, holds: dr.holds } : dr),
         ),
       );
       const last = dr.ok ? dr.events[dr.events.length - 1] : undefined;
@@ -495,9 +550,9 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "제자리 드래그·화면 밖은 계획 단계에서 거절한다",
-          !plan({ kind: "drag", frameId: "f1", fromX: 10, fromY: 10, toX: 10, toY: 10, button: "left" }, f).ok &&
-            !plan({ kind: "drag", frameId: "f1", fromX: 10, fromY: 10, toX: 1600, toY: 10, button: "left" }, f).ok,
-          `${JSON.stringify(plan({ kind: "drag", frameId: "f1", fromX: 10, fromY: 10, toX: 10, toY: 10, button: "left" }, f))}`,
+          !plan1([{ t: "drag", path: [{ x: 10, y: 10 }], button: "left" }], f).ok &&
+            !plan1([{ t: "drag", path: [{ x: 10, y: 10 }, { x: 1600, y: 10 }], button: "left" }], f).ok,
+          `${JSON.stringify(plan1([{ t: "drag", path: [{ x: 10, y: 10 }], button: "left" }], f))}`,
         ),
       );
       // ★정리가 **좌표 없이** 뗀다 — (0,0) 을 쓰면 드래그 중 취소가 «구석으로 끌어다 놓기» 다.
@@ -520,8 +575,12 @@ export const check: RegressionCheck = {
     //   상태). 한 행동에 실으면 자식 하나로 끝난다.
     {
       const f = frameAt("f1", "A", T);
-      const shiftDrag = plan(
-        { kind: "drag", frameId: "f1", fromX: 100, fromY: 100, toX: 300, toY: 200, button: "left", hold: ["shift"] },
+      const shiftDrag = plan1(
+        [
+          { t: "keydown", key: "shift" },
+          { t: "drag", path: [{ x: 100, y: 100 }, { x: 300, y: 200 }], button: "left" },
+          { t: "keyup", key: "shift" },
+        ],
         f,
       );
       const seq = shiftDrag.ok ? shiftDrag.events.map((e) => e.t) : [];
@@ -534,15 +593,21 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★누른 채: 수식키가 **장부에 오른다**(행동 끝까지 눌려 있으므로)",
+          "★누른 채: 수식키와 버튼이 **도중 장부에 오른다** — 열 중간에서 죽어도 되돌릴 근거가 남는다",
           shiftDrag.ok &&
-            shiftDrag.holds.keys.includes("shift") &&
-            shiftDrag.holds.buttons.includes("left"),
-          JSON.stringify(shiftDrag.ok ? shiftDrag.holds : shiftDrag),
+            shiftDrag.touched.keys.includes("shift") &&
+            shiftDrag.touched.buttons.includes("left"),
+          JSON.stringify(shiftDrag.ok ? shiftDrag.touched : shiftDrag),
         ),
       );
-      const twoMods = plan(
-        { kind: "click", frameId: "f1", x: 100, y: 100, button: "left", count: 1, hold: ["cmd", "shift"] },
+      const twoMods = plan1(
+        [
+          { t: "keydown", key: "cmd" },
+          { t: "keydown", key: "shift" },
+          { t: "click", x: 100, y: 100, button: "left", count: 1 },
+          { t: "keyup", key: "shift" },
+          { t: "keyup", key: "cmd" },
+        ],
         f,
       );
       const ks = twoMods.ok
@@ -558,12 +623,12 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "누른 채가 없으면 **아무것도 안 감싼다**(정상 경로에 잡음 0)",
-          plan({ kind: "click", frameId: "f1", x: 10, y: 10, button: "left", count: 1 }, f).ok &&
-            !(plan({ kind: "click", frameId: "f1", x: 10, y: 10, button: "left", count: 1 }, f) as { events: { t: string }[] }).events.some((e) => e.t === "keydown"),
-          JSON.stringify((plan({ kind: "click", frameId: "f1", x: 10, y: 10, button: "left", count: 1 }, f) as { events: { t: string }[] }).events.map((e) => e.t)),
+          plan1([{ t: "click", x: 10, y: 10, button: "left", count: 1 }], f).ok &&
+            !(plan1([{ t: "click", x: 10, y: 10, button: "left", count: 1 }], f) as { events: { t: string }[] }).events.some((e) => e.t === "keydown"),
+          JSON.stringify((plan1([{ t: "click", x: 10, y: 10, button: "left", count: 1 }], f) as { events: { t: string }[] }).events.map((e) => e.t)),
         ),
       );
-      const smooth = plan({ kind: "drag", frameId: "f1", fromX: 10, fromY: 10, toX: 500, toY: 400, button: "left" }, f);
+      const smooth = plan1([{ t: "drag", path: [{ x: 10, y: 10 }, { x: 500, y: 400 }], button: "left" }], f);
       out.push(
         assert(
           "★드래그가 **부드럽다** — 중간 이동이 충분히 많다(적으면 경로를 보는 UI 가 놓친다)",
@@ -737,8 +802,8 @@ export const check: RegressionCheck = {
           // ★비교는 **첫 줄**끼리다 (자기 변이로 적발). 전체 문자열을 견주면 `detail` 이
           //  달라서 늘 다르고, 그러면 «사유를 가른다» 를 재는 게 아니라 «입력이 다르다» 를
           //  재는 공허한 단언이 된다.
-          to.includes("observe_screen") &&
-            fa.includes("observe_screen") &&
+          to.includes("look") &&
+            fa.includes("look") &&
             to.split("\n")[0] !== fa.split("\n")[0],
           `${to.split("\n")[0] ?? ""} / ${fa.split("\n")[0] ?? ""}`,
         ),

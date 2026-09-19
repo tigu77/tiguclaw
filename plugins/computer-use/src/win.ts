@@ -180,6 +180,16 @@ interface RunFail {
   ok: false;
   reason: "timeout" | "failed";
   detail: string;
+  /**
+   * ★**죽은 자식이 남긴 stdout** (2026-09-19, 계약 3).
+   *
+   * ★★종전엔 실패 경로에서 이것을 **통째로 버렸다.** 그래서 시한 초과면 남는 것이
+   *  `"8000ms 초과"` 뿐이었고, 실행부가 진행을 흘려도 **정작 필요한 경우(죽었을 때)에
+   *  아무것도 못 읽었다** — 「몇 번째 step 에서 멈췄나」를 말할 수 있는 유일한 재료가
+   *  여기 있는데 그걸 버리고 있었다.
+   * ★내용은 **부분**일 수 있다(줄 중간에서 잘린다). 읽는 쪽은 **완전한 줄만** 쓴다.
+   */
+  stdout: string;
 }
 
 /**
@@ -376,6 +386,8 @@ const runScript = (script: string, env: Record<string, string>): Promise<RunOk |
           detail: killed
             ? `${CHILD_TIMEOUT_MS}ms 초과`
             : (own ?? cleanPowerShellError(String(stderr)) ?? err?.message.slice(0, 300) ?? "알 수 없는 실패"),
+          // ★**버리지 않는다** — 죽은 자식이 어디까지 갔는지는 여기에만 남아 있다.
+          stdout: out,
         });
       },
     );
@@ -506,8 +518,12 @@ const CONTROL_SCRIPT = [
   '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();',
   "'@",
   "}catch{}",
-  "try{[TC.Dpi2]::SetProcessDpiAwarenessContext([IntPtr](-4))}catch{}",
-  "try{[TC.Dpi2]::SetProcessDPIAware()}catch{}",
+  // ★**반환값이 stdout 으로 샌다** (2026-09-19 Windows 실기). 이 둘은 `bool` 을 주는데
+  //  PowerShell 은 그것을 그대로 파이프라인에 흘려서, 우리 JSON 앞에 `False`·`True` 두 줄이
+  //  붙어 왔다. 지금 파서는 **마지막 줄**만 보고 진행 파서는 JSON 이 아닌 줄을 버리므로
+  //  무해했지만, «첫 줄» 을 보는 코드가 생기는 순간 조용히 속인다 — `[void]` 로 막는다.
+  "try{[void][TC.Dpi2]::SetProcessDpiAwarenessContext([IntPtr](-4))}catch{}",
+  "try{[void][TC.Dpi2]::SetProcessDPIAware()}catch{}",
   // ★`SendInput` 구조체 — 64비트 PowerShell 기준(`FieldOffset(8)`).
   // ★★`-UsingNamespace System.Runtime.InteropServices` 를 **쓰지 않는다** (2026-09-17 실기).
   //  `Add-Type -MemberDefinition` 은 생성 C# 에 그 `using` 을 **이미 넣는다** — 또 주면
@@ -521,6 +537,9 @@ const CONTROL_SCRIPT = [
   // ★**글자 → 진짜 키코드.** 이게 없으면 글자 키를 유니코드로밖에 못 넣는데, 유니코드
   //  주입은 **수식키를 안 탄다**(아래 `KeyName` 주석 — `ctrl+a` 가 «a» 로 들어갔다).
   '[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern short VkKeyScan(char ch);',
+  // ★**전면 창을 자식 «안» 에서 본다**(계약 1). 실측 0.030ms/회 — 따로 띄우면 64ms 라
+  //  «매 step 마다» 가 원리적으로 불가능해진다.
+  '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();',
   "'@",
   "$SZ=[Runtime.InteropServices.Marshal]::SizeOf([type][TC.In+INPUT])",
   // ★★**빈 연습(dry run)** — `SendInput` 만 건너뛰고 **나머지는 전부 진짜로 돈다**
@@ -536,6 +555,14 @@ const CONTROL_SCRIPT = [
   //  ★그래도 이것은 **«앱이 받았다» 가 아니다** — 그 판정은 재관측뿐이다.
   "$FIRED = 0",
   "function Send($i){ if($DRY){ return }; $script:FIRED = $script:FIRED + 1; [void][TC.In]::SendInput(1, @($i), $SZ) }",
+  // ★★**줄마다 flush 해야 도착한다** (2026-09-19 실측: 세 줄을 쓰고 SIGKILL 하면 flush 없이는
+  //  **1/3**, `Out.Flush()` 를 붙이면 **3/3**). 없으면 「진행을 흘리고 있다」고 믿는데 실제로는
+  //  안 온다 — 성능 문제가 아니라 **계약 3 의 성립 조건**이다.
+  "function Emit($o){ [Console]::Out.WriteLine($o); [Console]::Out.Flush() }",
+  "$CUR = -1; $STOP = $null",
+  // ★`0` 은 **«모른다»** 다(데스크톱 없는 세션에서 그렇게 온다) — «같다» 로 읽으면 가드가
+  //  조용히 사라진다. 조작은 모르면 안 누른다(§14-7 의 비대칭).
+  "function FrontNow(){ $h = [TC.In]::GetForegroundWindow(); if($h -eq [IntPtr]::Zero){ return $null }; return [string]$h.ToInt64() }",
   // 가상 데스크톱 — 절대 좌표 정규화의 분모다(음수 원점 모니터도 여기서 흡수된다).
   "$vs=[System.Windows.Forms.SystemInformation]::VirtualScreen",
   "function Abs($x,$y){",
@@ -667,12 +694,28 @@ const CONTROL_SCRIPT = [
   "  elseif($e.t -eq 'unicode'){ Uni $e.text }",
   "  elseif($e.t -eq 'keydown'){ KeyName $e.key $true }",
   "  elseif($e.t -eq 'keyup'){ KeyName $e.key $false }",
+  // ★입력이 아닌 원소는 **12ms 지연을 안 태운다** — 64개 열이면 0.77초가 그냥 샌다.
+  "  elseif($e.t -eq 'mark'){ $CUR = [int]$e.i; Emit('{\"step\":' + [int]$e.i + '}'); continue }",
+  "  elseif($e.t -eq 'wait'){ Start-Sleep -Milliseconds ([int]$e.ms); continue }",
+  "  elseif($e.t -eq 'guard'){",
+  "    $f = FrontNow",
+  "    if($null -eq $f){ $STOP = '{\"stopped\":' + $CUR + ',\"why\":\"front-unknown\",\"saw\":\"(못 읽음)\"}'; break }",
+  "    if($f -ne [string]$e.front){ $STOP = '{\"stopped\":' + $CUR + ',\"why\":\"front-changed\",\"saw\":\"' + $f + '\"}'; break }",
+  "    continue",
+  "  }",
+  // ★★**모르는 원소는 던진다 — 조용히 건너뛰지 않는다** (2026-09-19, 정태님이 «윈도우도
+  //  됐나» 로 물어 드러났다). 종전엔 `else` 가 없어서, 맥에만 넣은 `mark`·`wait`·`guard` 가
+  //  Windows 에서 **소리 없이 사라졌다**: 가드가 없으니 남의 창에 글자가 들어가고,
+  //  `mark` 가 없으니 시한 초과 때 **실행된 step 을 「미실행」으로 보고**해 되돌릴 수 없는
+  //  것을 두 번 누르게 한다. 한쪽만 고친 수정이 **조용한** 이유가 바로 이 `else` 부재다.
+  "  else { throw ('알 수 없는 입력 원소: ' + [string]$e.t) }",
   "  Start-Sleep -Milliseconds 12",
   "}",
   // ★`items` = 받은 항목 수 · `fired` = **실제로 `SendInput` 을 부른 횟수**. 둘은 다르다
   //  (한 항목이 여러 번 쏘기도 하고, 빈 연습이면 0이다).
   //  `ConvertFrom-Json` 은 원소가 하나면 배열이 아니라 객체를 준다 — `@()` 로 감싸 센다.
-  "[Console]::Out.WriteLine('{\"items\":' + @($evs).Count + ',\"fired\":' + $FIRED + '}')",
+  "if($null -ne $STOP){ Emit($STOP) }",
+  "Emit('{\"items\":' + @($evs).Count + ',\"fired\":' + $FIRED + ',\"stopped\":' + $(if($null -ne $STOP){$STOP}else{'null'}) + '}')",
 ].join("\n");
 
 /**
@@ -747,10 +790,12 @@ export const post = async (
        * ★효과의 판정은 **재관측뿐**이다. 이 숫자는 «우리가 몇 번 불렀나» 까지다.
        */
       fired: number;
+      /** 자식이 흘린 진행 줄 — `stepsOutcome` 이 읽는다(계약 3). */
+      stdout: string;
     }
-  | { ok: false; reason: "timeout" | "failed"; detail: string }
+  | { ok: false; reason: "timeout" | "failed"; detail: string; stdout: string }
 > => {
-  if (events.length === 0) return { ok: true, fired: 0 };
+  if (events.length === 0) return { ok: true, fired: 0, stdout: "" };
   // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다.** 자식은 `process.env` 를 물려받으므로, 어디선가
   //  그 이름이 켜져 있으면 **진짜 조작이 조용히 아무것도 안 하게** 된다 — 우리가 이 세션
   //  내내 쫓던 바로 그 모양이다. 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
@@ -762,9 +807,13 @@ export const post = async (
   try {
     const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { fired?: number };
     const v2 = v as { fired?: number };
-    return { ok: true, fired: typeof v2.fired === "number" ? v2.fired : events.length };
+    return {
+      ok: true,
+      fired: typeof v2.fired === "number" ? v2.fired : events.length,
+      stdout: r.stdout,
+    };
   } catch {
-    return { ok: false, reason: "failed", detail: `산출 판정 불가: ${r.stdout.slice(0, 80)}` };
+    return { ok: false, reason: "failed", detail: `산출 판정 불가: ${r.stdout.slice(0, 80)}`, stdout: r.stdout };
   }
 };
 
@@ -798,10 +847,18 @@ const DRY_EVENTS: readonly LowEvent[] = [
   { t: "keydown", key: "enter" },
   { t: "keyup", key: "enter" },
   { t: "unicode", text: "가A\n" },
+  // ★**배관 원소도 밟는다** (2026-09-19). 이것이 없으면 빈 연습이 `mark`·`wait`·`guard` 를
+  //  **한 번도 안 지나간다** — 실제로 그 셋을 맥에만 넣고 Windows 에는 안 넣었는데, 스모크가
+  //  전부 초록이었다(모르는 원소를 조용히 건너뛰었기 때문이다).
+  { t: "mark", i: 0 },
+  { t: "wait", ms: 1 },
+  // ★**일부러 어긋나는 값**을 준다 — 가드가 «멈춘다» 를 빈 연습에서 확인하는 유일한 길이다.
+  //  실제 전면 창이 무엇이든 이 값과 같을 수 없다.
+  { t: "guard", front: "(없는 창)::tiguclaw-dry" },
 ];
 
 export const selfCheck = async (): Promise<
-  | { ok: true; idleSeconds: number | null; textSurvives: boolean; dryFired: number }
+  | { ok: true; idleSeconds: number | null; textSurvives: boolean; dryFired: number; dryStopped: boolean }
   | { ok: false; where: "idle" | "input" | "dry"; detail: string }
 > => {
   const idle = await runScript(IDLE_SCRIPT, {});
@@ -838,5 +895,43 @@ export const selfCheck = async (): Promise<
     TIGUCLAW_EVENTS: JSON.stringify([{ t: "keydown", key: echo }]),
   });
   const textSurvives = !probe.ok && probe.detail.includes(echo);
-  return { ok: true, idleSeconds: await idleSeconds(), textSurvives, dryFired };
+  // ★**가드가 실제로 멈췄나** — 빈 연습 목록 끝에 일부러 어긋나는 `front` 를 두었으므로
+  //  반드시 멈춰야 한다. 이 값이 `false` 면 가드가 **안 도는 것**이고, 그건 남의 창에
+  //  글자가 들어가는 길이다(맥에만 넣고 Windows 에 안 넣었던 그 상태가 정확히 그것이다).
+  const dryStopped = (() => {
+    try {
+      const v = JSON.parse(dry.stdout.trim().split("\n").pop() ?? "") as { stopped?: unknown };
+      return v.stopped !== null && v.stopped !== undefined;
+    } catch {
+      return false;
+    }
+  })();
+  return { ok: true, idleSeconds: await idleSeconds(), textSurvives, dryFired, dryStopped };
+};
+
+/**
+ * **지금 전면 창** — 열 안의 가드가 비교할 기준값(계약 1).
+ *
+ * ★형식은 **HWND 십진수**다 — 맥(`앱이름:pid`)과 달리 **창 단위**라 같은 앱의 다른 창으로
+ *  옮겨간 것도 잡는다. 두 플랫폼의 정밀도가 **다르고**, 숨기지 않고 `look` 이 말한다.
+ * ★★**`0` 은 `null` 로 올린다** — 실측(2026-09-19): 데스크톱 없는 세션에서 `0`이 온다.
+ *  그걸 창 이름처럼 다루면 «전면 창이 0 이다» 라는 **거짓 기준**으로 가드가 돌게 된다.
+ */
+export const frontWindow = async (): Promise<string | null> => {
+  const r = await runScript(
+    [
+      "Add-Type -Name FW -Namespace TC -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();'",
+      "$h = [TC.FW]::GetForegroundWindow()",
+      "[Console]::Out.WriteLine('{\"f\":\"' + $h.ToInt64() + '\"}')",
+      "[Console]::Out.Flush()",
+    ].join("\n"),
+    {},
+  );
+  if (!r.ok) return null;
+  try {
+    const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { f?: string };
+    return typeof v.f === "string" && v.f !== "" && v.f !== "0" ? v.f : null;
+  } catch {
+    return null;
+  }
 };

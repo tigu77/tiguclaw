@@ -237,7 +237,13 @@ export const displays = async (): Promise<ScreenRect[] | null> => {
 const jxa = (
   script: string,
   env: Record<string, string> = {},
-): Promise<{ ok: true; out: string } | { ok: false; reason: "timeout" | "failed"; detail: string }> =>
+): Promise<
+  | { ok: true; out: string }
+  // ★`out` 은 **실패해도 싣는다** (2026-09-19, 계약 3) — 죽은 자식이 어디까지 갔는지는
+  //  여기에만 남아 있고, 종전엔 그것을 버려서 시한 초과에 `"4000ms 초과"` 만 남았다.
+  //  ★부분일 수 있다(줄 중간에서 잘린다). 읽는 쪽은 **완전한 줄만** 쓴다.
+  | { ok: false; reason: "timeout" | "failed"; detail: string; out: string }
+> =>
   new Promise((resolve) => {
     execFile(
       "/usr/bin/osascript",
@@ -251,6 +257,7 @@ const jxa = (
           ok: false,
           reason: killed ? "timeout" : "failed",
           detail: killed ? `${CHILD_TIMEOUT_MS}ms 초과` : why.slice(0, 300),
+          out: String(so),
         });
       },
     );
@@ -321,6 +328,30 @@ const POST_SCRIPT = [
   //   달려 있다.** 소스를 고른 것만으로는 부족하고, 쏘는 자리도 같이 골라야 한다.
   "var SESSION_TAP = 1;",
   "var evs = JSON.parse($.NSProcessInfo.processInfo.environment.objectForKey('TIGUCLAW_EVENTS').js);",
+  // ★★**«쐈다» 는 실행부 **안에서만** 셀 수 있다** (2026-09-19). 종전엔 루프 **밖에서**
+  //  `evs.length` 를 돌려주고 TS 가 그 값을 `fired` 로 이름만 바꿔 읽었다 — 그건 «받은
+  //  항목 수» 이지 쏜 횟수가 아니다. 빈 연습에서 한 번도 안 쏴도 같은 수가 나온다.
+  //  ★Windows 는 `Send()` 한 자리에서 이미 그렇게 세고 있었고(`win.ts`), **맥만 남아
+  //   있었다** — 같은 이름이 두 플랫폼에서 다른 뜻이면 이름이 읽는 쪽을 속인다.
+  //  ★여기가 **유일한 발사구**다: `CGEventPost` 를 직접 부르는 자리를 남기지 않는다
+  //   (남기면 그 하나가 장부 밖에서 쏜다).
+  "var DRYV = $.NSProcessInfo.processInfo.environment.objectForKey('TIGUCLAW_DRY');",
+  "var DRY = (DRYV && !DRYV.isNil()) ? (String(DRYV.js) === '1') : false;",
+  "var FIRED = 0;",
+  "function post(ev){ if (DRY) { return; } FIRED = FIRED + 1; $.CGEventPost(SESSION_TAP, ev); }",
+  // ★**진행을 흘린다**(계약 3). 최종식만으로는 중간 출력이 안 되므로 **파일 핸들에 직접**
+  //  쓴다. 실측(2026-09-19): 세 줄을 쓰고 SIGKILL 하면 **3/3 이 도착한다** — 죽은 자식이
+  //  어디까지 갔는지를 말할 수 있는 유일한 길이다.
+  "ObjC.import('Foundation');",
+  "var OUT = $.NSFileHandle.fileHandleWithStandardOutput;",
+  "function emit(o){ OUT.writeData($(JSON.stringify(o) + '\\n').dataUsingEncoding($.NSUTF8StringEncoding)); }",
+  // ★**전면 창 — 자식 «안» 에서 본다**(계약 1). 실측 0.10ms/회. 따로 띄우면 64ms 라
+  //  «매 step 마다» 가 아예 불가능해진다.
+  //  ★★맥은 **앱 단위**다(`localizedName:pid`). 같은 앱의 **다른 창**으로 옮겨간 것은 못
+  //   본다 — Windows 는 HWND 라 창 단위다. **확인된 제한**이고, 숨기지 않고 적는다.
+  "var WS = $.NSWorkspace.sharedWorkspace;",
+  "function frontNow(){ try { var a = WS.frontmostApplication; if (!a || a.isNil()) { return null; } return ObjC.unwrap(a.localizedName) + ':' + a.processIdentifier; } catch (e) { return null; } }",
+  "var CUR = -1; var STOP = null;",
   // 맥 가상 키코드 — **번역표**이지 정책 목록이 아니다(OS 가 정한 값이라 유도할 수 없다).
   "var K = {a:0,s:1,d:2,f:3,h:4,g:5,z:6,x:7,c:8,v:9,b:11,q:12,w:13,e:14,r:15,y:16,t:17,",
   "'1':18,'2':19,'3':20,'4':21,'6':22,'5':23,'=':24,'9':25,'7':26,'-':27,'8':28,'0':29,']':30,",
@@ -343,7 +374,7 @@ const POST_SCRIPT = [
   "    down[name] = isDown;",
   "    var me = $.CGEventCreateKeyboardEvent($(), MODK[name], isDown);",
   "    $.CGEventSetFlags(me, flags());",
-  "    $.CGEventPost(SESSION_TAP, me); return;",
+  "    post(me); return;",
   "  }",
   // 맥엔 Windows 키가 없다 — **주 수식키는 `cmd` 이고 그건 이미 따로 있다.** 조용히
   // cmd 로 바꾸면 «win 이 먹혔다» 는 거짓말이 되므로 이름을 대고 던진다.
@@ -363,7 +394,7 @@ const POST_SCRIPT = [
   "  }",
   "  var ev = $.CGEventCreateKeyboardEvent($(), code, isDown);",
   "  $.CGEventSetFlags(ev, flags());",
-  "  $.CGEventPost(SESSION_TAP, ev);",
+  "  post(ev);",
   "}",
   // ★★**맥 타이핑은 «클립보드 + cmd+V» 다** (2026-09-17 실기로 확정).
   //
@@ -384,6 +415,10 @@ const POST_SCRIPT = [
   //   않다: 되돌리기 전에 사용자가 복사하면 그걸 덮는다(전역 상태라 피할 수 없다). 그래서
   //   **문자열만** 저장·복원하고, 그 창을 짧게 유지한다.
   "function uni(text){",
+  // ★빈 연습에선 **여기서 곧장 돌아온다** — 클립보드는 남의 물건이고, 「입력 0」은
+  //  «안 쐈다» 만이 아니라 «아무것도 안 건드렸다» 여야 한다. 발사구(`post`)가 이미
+  //  막고 있지만 붙여넣기 경로는 **쏘기 전에** 남의 상태를 바꾼다.
+  "  if (DRY) { return; }",
   "  var pb = $.NSPasteboard.generalPasteboard;",
   "  var prev = pb.stringForType($.NSPasteboardTypeString);",
   "  var prevStr = prev.isNil() ? null : ObjC.unwrap(prev);",
@@ -392,17 +427,27 @@ const POST_SCRIPT = [
   "  delay(0.05);",
   "  var d = $.CGEventCreateKeyboardEvent($(), 9, true);",   // v
   "  $.CGEventSetFlags(d, 0x100000 | flags());",
-  "  $.CGEventPost(SESSION_TAP, d); delay(0.03);",
+  "  post(d); delay(0.03);",
   "  var u = $.CGEventCreateKeyboardEvent($(), 9, false);",
   "  $.CGEventSetFlags(u, 0x100000 | flags());",
-  "  $.CGEventPost(SESSION_TAP, u); delay(0.25);",
+  "  post(u); delay(0.25);",
   "  pb.clearContents;",
   "  if (prevStr !== null) pb.setStringForType($(prevStr), $.NSPasteboardTypeString);",
   "}",
   "var BTN = {left:{d:1,u:2,b:0,drag:6}, right:{d:3,u:4,b:1,drag:7}, middle:{d:25,u:26,b:2,drag:27}};",
   "for (var i = 0; i < evs.length; i++) {",
   "  var e = evs[i];",
-  "  if (e.t === 'mousemove') { $.CGEventPost(SESSION_TAP, $.CGEventCreateMouseEvent($(), 5, {x:e.x, y:e.y}, 0)); }",
+  // ★입력이 아닌 원소는 **`delay(0.012)` 를 안 태운다** — 64개 열이면 0.77초가 그냥 샌다.
+  "  if (e.t === 'mark') { CUR = e.i; emit({step: e.i}); continue; }",
+  "  if (e.t === 'wait') { delay(e.ms / 1000); continue; }",
+  "  if (e.t === 'guard') {",
+  "    var f = frontNow();",
+  // ★**모르면 멈춘다** — «같다» 로 읽으면 가드가 조용히 사라진다(§15-27 계약 1).
+  "    if (f === null) { STOP = {stopped: CUR, why: 'front-unknown', saw: '(못 읽음)'}; break; }",
+  "    if (f !== e.front) { STOP = {stopped: CUR, why: 'front-changed', saw: f}; break; }",
+  "    continue;",
+  "  }",
+  "  if (e.t === 'mousemove') { post($.CGEventCreateMouseEvent($(), 5, {x:e.x, y:e.y}, 0)); }",
   "  else if (e.t === 'mousedown' || e.t === 'mouseup') {",
   "    var b = BTN[e.button];",
   // ★좌표가 없으면 **지금 커서 자리**에서 뗀다 — 정리(releasePlan)가 그 경우다. 여기서
@@ -413,7 +458,7 @@ const POST_SCRIPT = [
   // 더블클릭은 **클릭 카운트**로 전해야 한다 — 같은 자리 두 번이 자동으로 더블이 아니다.
   "    $.CGEventSetIntegerValueField(me, 1 /* kCGMouseEventClickState */, e.count || 1);",
   "    $.CGEventSetFlags(me, flags());",
-  "    $.CGEventPost(SESSION_TAP, me);",
+  "    post(me);",
   "  }",
   // ★**누른 채 이동은 별도 타입**이다(LeftMouseDragged=6 · Right=7 · Other=27). 누른 채
   //  `mouseMoved` 를 쏘면 앱이 드래그로 안 읽어서 **창이 안 끌린다.**
@@ -421,18 +466,24 @@ const POST_SCRIPT = [
   "    var db = BTN[e.button];",
   "    var de = $.CGEventCreateMouseEvent($(), db.drag, {x:e.x, y:e.y}, db.b);",
   "    $.CGEventSetFlags(de, flags());",
-  "    $.CGEventPost(SESSION_TAP, de);",
+  "    post(de);",
   "  }",
   "  else if (e.t === 'scroll') {",
   "    var se = $.CGEventCreateScrollWheelEvent($(), 0 /* pixel */, 2, e.dy, e.dx);",
-  "    $.CGEventPost(SESSION_TAP, se);",
+  "    post(se);",
   "  }",
   "  else if (e.t === 'unicode') { uni(e.text); }",
   "  else if (e.t === 'keydown') { key(e.key, true); }",
   "  else if (e.t === 'keyup') { key(e.key, false); }",
+  // ★★**모르는 원소는 던진다 — 조용히 건너뛰지 않는다** (2026-09-19). 이 `else` 가 없으면
+  //  한쪽 플랫폼에만 넣은 원소가 **다른 쪽에서 소리 없이 사라진다** — 실제로 `mark`·`wait`·
+  //  `guard` 를 맥에만 넣었고, Windows 에서는 가드가 없는 채로 돌 뻔했다. 조용한 스킵이
+  //  «한쪽만 고친 수정» 을 **안 보이게** 만드는 기제다.
+  "  else { throw new Error('알 수 없는 입력 원소: ' + String(e.t)); }",
   "  delay(0.012);",  // 앱이 이벤트를 소화할 틈 — 너무 빠르면 흘린다
   "}",
-  "JSON.stringify({sent: evs.length})",
+  "if (STOP) { emit(STOP); }",
+  "JSON.stringify({items: evs.length, fired: FIRED, stopped: STOP})",
 ].join("\n");
 
 export const post = async (
@@ -440,19 +491,123 @@ export const post = async (
 ): Promise<
   | {
       ok: true;
-      /** 실제로 이벤트를 **쏜 횟수** — «앱이 받았다» 가 아니다(판정은 재관측뿐). */
+      /**
+       * **실제로 `CGEventPost` 를 부른 횟수** — «앱이 받았다» 가 아니다(판정은 재관측뿐).
+       *
+       * ★**항목 수와 다르다.** 한 이벤트가 여러 번 쏘는 자리가 있다(유니코드 한 덩이는
+       *  붙여넣기라 cmd+V 의 down·up 둘이다) — `win.ts` 가 `KEYEVENTF_UNICODE` 를 글자마다
+       *  부르는 것과 같은 성질이다. 그러니 이 수로 «몇 글자 들어갔나» 를 세면 안 된다.
+       */
       fired: number;
+      /** 자식이 흘린 진행 줄 — `stepsOutcome` 이 읽는다(계약 3). */
+      stdout: string;
     }
-  | { ok: false; reason: "timeout" | "failed"; detail: string }
+  | { ok: false; reason: "timeout" | "failed"; detail: string; stdout: string }
 > => {
-  if (events.length === 0) return { ok: true, fired: 0 };
-  const r = await jxa(POST_SCRIPT, { TIGUCLAW_EVENTS: JSON.stringify(events) });
-  if (!r.ok) return r;
+  if (events.length === 0) return { ok: true, fired: 0, stdout: "" };
+  // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다** — `win.ts` 와 같은 이유다. 자식은 `process.env`
+  //  를 물려받으므로 어디선가 그 이름이 켜져 있으면 **진짜 조작이 조용히 아무것도 안 한다.**
+  const r = await jxa(POST_SCRIPT, {
+    TIGUCLAW_EVENTS: JSON.stringify(events),
+    TIGUCLAW_DRY: "0",
+  });
+  if (!r.ok) return { ...r, stdout: r.out };
   try {
-    const v = JSON.parse(r.out) as { sent?: number };
-    const n = (v as { fired?: number; sent?: number }).fired ?? v.sent;
-    return { ok: true, fired: typeof n === "number" ? n : events.length };
+    // ★**마지막 줄이 최종 산출**이다 — 앞의 줄들은 진행(`mark`)이다.
+    const v = JSON.parse(r.out.trim().split("\n").pop() ?? "") as { fired?: number };
+    return {
+      ok: true,
+      fired: typeof v.fired === "number" ? v.fired : events.length,
+      stdout: r.out,
+    };
   } catch {
-    return { ok: false, reason: "failed", detail: `산출 판정 불가: ${r.out.slice(0, 80)}` };
+    return { ok: false, reason: "failed", detail: `산출 판정 불가: ${r.out.slice(0, 80)}`, stdout: r.out };
+  }
+};
+
+/**
+ * 빈 연습이 통과시킬 **대표 이벤트** — 실행부가 밟는 분기를 한 번씩 지난다.
+ * ★`win.ts` 의 `DRY_EVENTS` 와 **같은 목록**이다. 두 플랫폼이 같은 계약을 진다면 그것을
+ *  재는 표본도 같아야 한다 — 표본이 갈리면 «양쪽 다 초록» 이 서로 다른 뜻이 된다.
+ */
+const DRY_EVENTS: readonly LowEvent[] = [
+  { t: "mousemove", x: 0, y: 0 },
+  { t: "mousedown", x: 0, y: 0, button: "left", count: 1 },
+  { t: "mousedrag", x: 1, y: 1, button: "left" },
+  { t: "mouseup", button: "left", count: 1 },
+  { t: "scroll", x: 0, y: 0, dx: 0, dy: 120 },
+  { t: "scroll", x: 0, y: 0, dx: -120, dy: -120 },
+  { t: "keydown", key: "cmd" },
+  { t: "keydown", key: "a" },
+  { t: "keyup", key: "a" },
+  { t: "keyup", key: "cmd" },
+  { t: "keydown", key: "enter" },
+  { t: "keyup", key: "enter" },
+  { t: "unicode", text: "가A\n" },
+  // ★**배관 원소도 밟는다** (2026-09-19). 이것이 없으면 빈 연습이 `mark`·`wait`·`guard` 를
+  //  **한 번도 안 지나간다** — 실제로 그 셋을 맥에만 넣고 Windows 에는 안 넣었는데, 스모크가
+  //  전부 초록이었다(모르는 원소를 조용히 건너뛰었기 때문이다).
+  { t: "mark", i: 0 },
+  { t: "wait", ms: 1 },
+  // ★**일부러 어긋나는 값**을 준다 — 가드가 «멈춘다» 를 빈 연습에서 확인하는 유일한 길이다.
+  //  실제 전면 창이 무엇이든 이 값과 같을 수 없다.
+  { t: "guard", front: "(없는 창)::tiguclaw-dry" },
+];
+
+/**
+ * **실행부 자가 점검** — 입력을 **하나도 내지 않고** 스크립트가 도는지만 본다.
+ *
+ * ★`win.ts` 의 `selfCheck` 와 같은 자리다. 맥에만 없었던 이유는 «맥은 실기로 자주 돌려봤다»
+ *  는 것이었는데, 그건 **검사가 아니라 습관**이다 — 2026-09-19 에 맥의 `fired` 가 루프
+ *  밖에서 항목 수를 세고 있던 것을 아무 검사도 못 잡은 게 그 증거다.
+ * ★**제품이 만드는 바로 그 스크립트**(`POST_SCRIPT`)를 돌린다 — 검사용 사본은 이 부류를
+ *  못 잡는다(§15-15 의 교훈).
+ */
+export const selfCheck = async (): Promise<
+  | { ok: true; dryFired: number; dryStopped: boolean }
+  | { ok: false; where: "dry"; detail: string }
+> => {
+  const dry = await jxa(POST_SCRIPT, {
+    TIGUCLAW_DRY: "1",
+    TIGUCLAW_EVENTS: JSON.stringify(DRY_EVENTS),
+  });
+  if (!dry.ok) return { ok: false, where: "dry", detail: dry.detail };
+  // ★빈 연습이면 **한 번도 안 쏴야** 한다 — 그 숫자가 이름의 뜻을 지킨다.
+  try {
+    // ★최종 산출은 **마지막 줄**이다 — 앞은 진행(`mark`)과 멈춤(`stopped`)이다.
+    const v = JSON.parse(dry.out.trim().split("\n").pop() ?? "") as {
+      fired?: number;
+      stopped?: unknown;
+    };
+    return {
+      ok: true,
+      dryFired: typeof v.fired === "number" ? v.fired : -1,
+      // ★**가드가 실제로 멈췄나** — 일부러 어긋나는 `front` 를 줬으므로 반드시 멈춰야 한다.
+      dryStopped: v.stopped !== null && v.stopped !== undefined,
+    };
+  } catch {
+    return { ok: true, dryFired: -1, dryStopped: false };
+  }
+};
+
+/**
+ * **지금 전면 창** — 열 안의 가드가 비교할 기준값(계약 1).
+ *
+ * ★형식은 `앱이름:pid` 다. **앱 단위**라 같은 앱의 다른 창으로 옮겨간 것은 못 본다 —
+ *  Windows 는 HWND 라 창 단위다. **확인된 제한**이고, `look` 응답이 그렇게 말한다.
+ * ★못 읽으면 `null`. 그러면 `planSteps` 가 가드를 **안 넣는다**(기준이 없는데 막으면
+ *  조작이 통째로 불능이 된다, §15-27 계약 1).
+ */
+export const frontWindow = async (): Promise<string | null> => {
+  const r = await jxa(
+    "ObjC.import('AppKit'); var a = $.NSWorkspace.sharedWorkspace.frontmostApplication; " +
+      "JSON.stringify(a && !a.isNil() ? {f: ObjC.unwrap(a.localizedName) + ':' + a.processIdentifier} : {})",
+  );
+  if (!r.ok) return null;
+  try {
+    const v = JSON.parse(r.out) as { f?: string };
+    return typeof v.f === "string" && v.f !== "" ? v.f : null;
+  } catch {
+    return null;
   }
 };

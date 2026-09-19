@@ -25,7 +25,13 @@ import { assert, loadPluginModule, type Assertion, type RegressionCheck } from "
 
 interface WinModule {
   selfCheck: () => Promise<
-    | { ok: true; idleSeconds: number | null; textSurvives: boolean; dryFired: number }
+    | {
+        ok: true;
+        idleSeconds: number | null;
+        textSurvives: boolean;
+        dryFired: number;
+        dryStopped: boolean;
+      }
     | { ok: false; where: "idle" | "input" | "dry"; detail: string }
   >;
   cleanPowerShellError: (raw: string) => string | null;
@@ -192,6 +198,18 @@ export const check: RegressionCheck = {
         "★★**빈 연습에서 «쏜 횟수» 가 0이다** — 이름이 뜻대로 돌지 않으면 그게 다음 오진이다",
         r.ok && r.dryFired === 0,
         r.ok ? `dryFired=${String(r.dryFired)} (이벤트 13개를 흘렸지만 발사 0이어야 한다)` : "실행부 실패로 판정 불가",
+      ),
+    );
+    // ★★**가드가 «빈 연습에서 실제로 멈추는가»** (2026-09-19, 정태님이 «윈도우도 됐나» 로
+    //  물어 드러났다). `mark`·`wait`·`guard` 를 **맥에만** 넣었고 Windows 루프엔 `else` 가
+    //  없어 **조용히 건너뛰었다** — 가드가 없으니 남의 창에 글자가 들어가고, `mark` 가
+    //  없으니 시한 초과 때 실행된 step 을 「미실행」으로 보고해 **두 번 누르게** 된다.
+    //  그런데도 이 스위트는 전부 초록이었다. 그 침묵을 깨는 단언이다.
+    out.push(
+      assert(
+        "★★빈 연습의 **어긋난 가드에서 실제로 멈춘다** — 「넣었다」와 「돈다」는 다르다",
+        r.ok && r.dryStopped,
+        r.ok ? `dryStopped=${String(r.dryStopped)}` : "실행부 실패로 판정 불가",
       ),
     );
     out.push(

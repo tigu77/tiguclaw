@@ -35,28 +35,6 @@ export type Button = "left" | "right" | "middle";
  *  따로» 로 하면 **턴 사이에 키가 눌린 채** 남는다 — §15-1 이 없앤 상태다.
  * ★그래서 한 행동 안에 싣는다: 눌러두고 → 행동하고 → **역순으로 놓는다.** 자식 하나로 끝난다.
  */
-export type Hold = readonly Modifier[];
-
-export type Action =
-  | { kind: "click"; frameId: string; x: number; y: number; button: Button; count: number; hold?: Hold }
-  | { kind: "type"; frameId: string; text: string }
-  | { kind: "key"; frameId: string; keys: readonly string[] }
-  | { kind: "scroll"; frameId: string; x: number; y: number; dx: number; dy: number; hold?: Hold }
-  /**
-   * ★**드래그는 첫 종단을 통과한 뒤에 붙였다**(2026-09-17, §15-2 의 약속대로). 중간 상태가
-   *  가장 긴 행동이라 마지막이다 — 버튼이 **눌린 채로** 여러 이벤트를 지난다.
-   */
-  | {
-      kind: "drag";
-      frameId: string;
-      fromX: number;
-      fromY: number;
-      toX: number;
-      toY: number;
-      button: Button;
-      hold?: Hold;
-    };
-
 // ─── 실행부에 주는 저수준 지시 — 플랫폼 중립 ──────────────────────────────────
 
 /**
@@ -83,7 +61,30 @@ export type LowEvent =
   | { t: "scroll"; x: number; y: number; dx: number; dy: number }
   | { t: "unicode"; text: string }
   | { t: "keydown"; key: string }
-  | { t: "keyup"; key: string };
+  | { t: "keyup"; key: string }
+  /**
+   * **시간만 보낸다** — 경계가 **아니다**(§15-23·15-27 계약 1).
+   *
+   * ★`wait` 는 «대상이 맞는지» 확인하지 않는다. 기다린 뒤 «이제 바뀌었겠지» 로 넘어가는
+   *  열은 계약 위반이고, 그런 대기가 필요하면 **`do` 를 끊고 다시 본다.**
+   */
+  | { t: "wait"; ms: number }
+  /**
+   * **여기까지 왔다** — 실행부가 이 줄을 stdout 에 **흘린다**(계약 3).
+   *
+   * ★이게 없으면 자식이 죽었을 때 «몇 번째에서 멈췄나» 를 말할 수단이 아예 없다.
+   *  ★Windows 는 줄마다 **명시적 flush** 가 필요하다 — 실측 1/3 vs 3/3(§15-27).
+   */
+  | { t: "mark"; i: number }
+  /**
+   * **쏘기 직전 재확인** — 전면 창이 여전히 그것인가(계약 1).
+   *
+   * ★★**자식 «안» 에 있어야 한다.** 실측: 자식 안 0.10ms(mac)·0.030ms(Windows) vs 따로
+   *  띄우면 64ms — **640배**다. 밖으로 나가는 순간 «매 step 마다» 가 불가능해진다.
+   * ★★**«모른다» 는 «같다» 가 아니다.** 실행부가 전면 창을 못 읽으면(실측: 데스크톱 없는
+   *  세션에서 `GetForegroundWindow()` 가 0) **멈춘다** — 조작은 모르면 안 누른다(§14-7).
+   */
+  | { t: "guard"; front: string };
 
 /**
  * **키 이름** — 실행부가 OS 코드로 옮긴다. 여기선 이름만 안다.
@@ -114,6 +115,14 @@ export interface Frame {
   geometry: FrameGeometry;
   /** 이 프레임을 찍은 소유자(스레드). 남의 프레임 위에서 클릭하지 않는다. */
   owner: string;
+  /**
+   * **찍을 때의 전면 창** — 열 안의 재확인이 이 값과 비교한다(계약 1).
+   *
+   * ★`null` = 그때 못 읽었다. 그러면 비교할 기준이 없으므로 **가드를 넣지 않는다** —
+   *  없는 기준으로 막으면 조작이 통째로 불능이 되고, 그건 «모르면 안 누른다» 가 아니라
+   *  «모르면 아무것도 못 한다» 다. 대신 그 사실을 응답에 적는다(가드가 없었다고).
+   */
+  front: string | null;
 }
 
 /**
@@ -153,7 +162,7 @@ export const frameCheck = (
   ttlMs = FRAME_TTL_MS,
 ): FrameCheck => {
   // ★★**«안 준 것» 과 «모르는 것» 은 처방이 다르다** (2026-09-18, 아스트라 실기 101분).
-  //  종전엔 빈 문자열이 `unknown` 으로 흘러 «`observe_screen` 으로 지금 화면을 보고 좌표를
+  //  종전엔 빈 문자열이 `unknown` 으로 흘러 «`look` 으로 지금 화면을 보고 좌표를
   //  다시 정하세요» 라는 답을 받았다. 그런데 **모델이 이미 하고 있던 것이 그 호출**이었다 —
   //  처방이 제 발을 가리켰고, 같은 인자로 **720번** 같은 오류를 받았다.
   //  ★한 번도 받은 적이 없는 것과, 받았는데 낡은 것은 **다른 말을 해야 한다.**
@@ -195,7 +204,7 @@ export const postFailureMessage = (
       : "★입력을 보내던 중 **오류로 멈췄습니다** — 어디까지 나갔는지 알 수 없습니다.",
     `사유: ${detail}`,
     "**같은 행동을 다시 보내지 마세요** — 이미 적용됐을 수 있습니다(되돌릴 수 없습니다).",
-    "`observe_screen` 으로 **지금 화면을 먼저 보고**, 무엇이 적용됐는지 확인한 뒤 판단하세요.",
+    "`look` 으로 **지금 화면을 먼저 보고**, 무엇이 적용됐는지 확인한 뒤 판단하세요.",
   ].join("\n");
 
 export const frameRejection = (why: FrameReject): string => {
@@ -204,7 +213,7 @@ export const frameRejection = (why: FrameReject): string => {
       // ★**무엇을 «다르게» 해야 하는지**를 말한다. «다시 관측하라» 는 이 자리에서 쓸모가
       //  없다 — 부르고 있는 것이 이미 그 도구다. 바뀌어야 하는 건 **인자**다.
       return (
-        "«화면 id» 를 아직 못 받으셨습니다. `observe_screen` 을 **아무 인자 없이** 한 번 " +
+        "«화면 id» 를 아직 못 받으셨습니다. `look` 을 **아무 인자 없이** 한 번 " +
         "부르세요 — `region` 도 `frameId` 도 **빼고**입니다. 그러면 전체 화면 그림과 함께 " +
         "«화면 id» 를 드립니다. 그다음부터 그 id 를 쓰세요."
       );
@@ -212,15 +221,15 @@ export const frameRejection = (why: FrameReject): string => {
       return (
         "그 화면(frameId)을 모릅니다 — **직전 행동이 화면을 바꿨거나**(행동은 화면 id 를 전부 " +
         `무효화합니다) 너무 오래전 것입니다(최근 ${String(FRAME_KEEP)}장만 유효). ` +
-        "`observe_screen` 으로 지금 화면을 보고 좌표를 다시 정하세요."
+        "`look` 으로 지금 화면을 보고 좌표를 다시 정하세요."
       );
     case "stale":
       // ★**규칙을 같이 말한다** (2026-09-17 돌쇠 4차). 바로 위 `unknown` 은 «최근 3장만
       //  유효» 라고 알려주는데 이쪽만 안 알려줘서 비대칭이었다. 처음 쓰는 사람이 오류 한
       //  번으로 수명을 배우게 한다.
-      return `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다). \`observe_screen\` 으로 다시 보세요.`;
+      return `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다). \`look\` 으로 다시 보세요.`;
     case "other-owner":
-      return "그 화면은 다른 작업이 찍은 것입니다. 직접 `observe_screen` 으로 보세요.";
+      return "그 화면은 다른 작업이 찍은 것입니다. 직접 `look` 으로 보세요.";
   }
 };
 
@@ -409,160 +418,21 @@ export const userIsActive = (
 
 // ─── 계획 — 행동 하나를 저수준 이벤트 목록으로 ───────────────────────────────
 
-export type Plan =
-  | { ok: true; events: LowEvent[]; holds: { keys: string[]; buttons: Button[] }; describe: string }
-  | { ok: false; why: "offscreen" | "empty" };
-
-/**
- * **행동 → 이벤트 목록** — 순수. 좌표 변환이 여기서 **한 번만** 일어난다.
- *
- * ★`holds` 는 «이 계획이 도중에 눌러두는 것» 이다. 실행부가 죽어도 부모가 이걸로 되돌린다
- *  (§15-1 — `SendInput`·`CGEventPost` 는 프로세스가 죽어도 눌린 상태를 시스템에 남긴다).
- * ★`describe` 를 같이 내는 이유: 결과가 «성공» 뿐이면 모델이 무엇을 했는지 **기억으로**
- *  재구성하게 되고, 그게 중복 클릭의 입구다(§15-2).
- */
-/**
- * **누른 채 감싸기** — 순수. 여기 한 곳에서만 감싼다(행동마다 따로 하면 갈린다).
- *
- * ★수식키를 **역순으로 놓는** 규칙은 `key` 행동과 **같은 규칙**이다. 두 곳에 쓰지 않으려고
- *  래퍼로 뺐다 — 같은 판단이 두 곳이면 한쪽만 고쳐진다.
- */
-const withHold = (hold: Hold | undefined, inner: Plan): Plan => {
-  if (!inner.ok || hold === undefined || hold.length === 0) return inner;
-  const mods = hold.filter(isModifier);
-  if (mods.length === 0) return inner;
-  return {
-    ok: true,
-    events: [
-      ...mods.map((m): LowEvent => ({ t: "keydown", key: m })),
-      ...inner.events,
-      ...[...mods].reverse().map((m): LowEvent => ({ t: "keyup", key: m })),
-    ],
-    // ★행동이 끝날 때까지 **눌린 채**다 — 장부에 오른다(자식이 죽으면 이걸로 되돌린다).
-    holds: { keys: [...mods, ...inner.holds.keys], buttons: inner.holds.buttons },
-    describe: `${mods.join("+")} 를 누른 채 ${inner.describe}`,
-  };
-};
-
-export const plan = (action: Action, frame: Frame): Plan =>
-  withHold("hold" in action ? action.hold : undefined, planInner(action, frame));
-
-const planInner = (action: Action, frame: Frame): Plan => {
-  switch (action.kind) {
-    case "click": {
-      const pt = imagePointToScreen({ x: action.x, y: action.y }, frame.geometry);
-      if (pt === null) return { ok: false, why: "offscreen" };
-      const ev: LowEvent[] = [{ t: "mousemove", x: pt.x, y: pt.y }];
-      for (let i = 1; i <= action.count; i += 1) {
-        ev.push({ t: "mousedown", x: pt.x, y: pt.y, button: action.button, count: i });
-        ev.push({ t: "mouseup", x: pt.x, y: pt.y, button: action.button, count: i });
-      }
-      return {
-        ok: true,
-        events: ev,
-        // ★**버튼을 장부에 안 올린다** — 이 계획은 누른 것을 자기 안에서 전부 뗀다.
-        //  장부는 «계획이 끝나도 눌린 채 남는 것» 을 위한 자리다(지금은 드래그가 없어 빈다).
-        holds: { keys: [], buttons: [] },
-        // ★**어느 단위의 좌표인지 밝힌다** (2026-09-18, 회사돌쇠 4차). 관측 응답은 «화면
-        //  좌표(당신이 준 그림 좌표를 옮긴 값)» 라고 붙여 주는데 행동 응답만 안 붙었다 —
-        //  모델이 이 수를 «내가 준 그림 좌표» 로 되읽고 다음 좌표를 거기서 셈할 수 있다.
-        //  둘을 나란히 적으면 되읽을 여지가 없다.
-        describe: `그림 (${action.x},${action.y}) = 화면 (${pt.x},${pt.y}) 을 ${action.button === "left" ? "왼쪽" : action.button === "right" ? "오른쪽" : "가운데"} 버튼으로 ${action.count}번 눌렀습니다`,
-      };
-    }
-    case "scroll": {
-      const pt = imagePointToScreen({ x: action.x, y: action.y }, frame.geometry);
-      if (pt === null) return { ok: false, why: "offscreen" };
-      if (action.dx === 0 && action.dy === 0) return { ok: false, why: "empty" };
-      return {
-        ok: true,
-        events: [
-          { t: "mousemove", x: pt.x, y: pt.y },
-          { t: "scroll", x: pt.x, y: pt.y, dx: action.dx, dy: action.dy },
-        ],
-        holds: { keys: [], buttons: [] },
-        // ★★**«보냈다» 와 «됐다» 를 가른다** (2026-09-17 돌쇠 지적). 스크롤은 **경계에
-        //  닿으면 아무 일도 안 일어나는데** 도구가 «스크롤했습니다» 라고 답했다. 실제로
-        //  그것 때문에 «스크롤이 안 된다» 는 오진이 한 번 나왔다(뷰가 이미 맨 아래였다).
-        //  우리가 아는 것은 **입력을 보냈다** 까지다 — 효과는 재관측만이 안다.
-        // ★«끝에 닿았다» 만 적어두면 **덜 움직인 것을 «경계였구나» 로 읽는다** (3차 §7-3).
-        //  실측: 앱이 한 이벤트로 받는 양에 상한이 있어, 끝이 아닌데도 덜 움직인다.
-        describe: `그림 (${action.x},${action.y}) = 화면 (${pt.x},${pt.y}) 에서 ${action.dy !== 0 ? `세로 ${action.dy}` : ""}${action.dx !== 0 ? ` 가로 ${action.dx}` : ""} 만큼 스크롤 입력을 보냈습니다(끝에 닿았거나 앱이 한 번에 받는 양이 제한돼 **덜 움직일 수 있습니다** — 재관측으로 확인하세요)`,
-      };
-    }
-    case "drag": {
-      const from = imagePointToScreen({ x: action.fromX, y: action.fromY }, frame.geometry);
-      const to = imagePointToScreen({ x: action.toX, y: action.toY }, frame.geometry);
-      if (from === null || to === null) return { ok: false, why: "offscreen" };
-      if (from.x === to.x && from.y === to.y) return { ok: false, why: "empty" };
-      // ★**중간 이동을 넣는다.** down → up 만 쏘면 앱이 «클릭» 으로 읽고 끌리지 않는다.
-      //  창 이동·선택처럼 경로를 보는 UI 가 많다.
-      // ★**부드럽게**(2026-09-17 정태님). 단계가 적으면 커서가 «순간이동» 하듯 가고, 경로를
-      //  보는 UI(스냅·자석·드래그 미리보기)가 중간을 놓친다. 실행부가 이벤트마다 ~12ms 를
-      //  두므로 24단계면 약 0.3초 — 사람 손과 비슷한 속도다.
-      const STEPS = 24;
-      const ev: LowEvent[] = [
-        { t: "mousemove", x: from.x, y: from.y },
-        { t: "mousedown", x: from.x, y: from.y, button: action.button, count: 1 },
-      ];
-      for (let i = 1; i <= STEPS; i += 1) {
-        ev.push({
-          t: "mousedrag",
-          x: Math.round(from.x + ((to.x - from.x) * i) / STEPS),
-          y: Math.round(from.y + ((to.y - from.y) * i) / STEPS),
-          button: action.button,
-        });
-      }
-      ev.push({ t: "mouseup", x: to.x, y: to.y, button: action.button, count: 1 });
-      return {
-        ok: true,
-        events: ev,
-        // ★**버튼이 장부에 오른다** — 계획 도중 눌린 채로 지나므로, 자식이 여기서 죽으면
-        //  버튼이 눌린 채 남는다. §15-1 이 «지금은 드래그가 없어 장부가 빈다» 고 적었는데,
-        //  이제 안 빈다. 장부를 미리 만들어 둔 값이 여기서 나온다.
-        holds: { keys: [], buttons: [action.button] },
-        describe: `그림 (${action.fromX},${action.fromY})→(${action.toX},${action.toY}) = 화면 (${from.x},${from.y})→(${to.x},${to.y}) 로 끌었습니다`,
-      };
-    }
-    case "type": {
-      if (action.text === "") return { ok: false, why: "empty" };
-      // ★**한 덩이로 주입한다** — 글자마다 키코드를 찾지 않는다. 그 길은 한글에서 성립하지
-      //  않고(조합 문자), 양 OS 가 코드포인트 주입을 제공하는 이유가 그것이다.
-      return {
-        ok: true,
-        events: [{ t: "unicode", text: action.text }],
-        holds: { keys: [], buttons: [] },
-        describe: `${action.text.length}자를 입력으로 보냈습니다`,
-      };
-    }
-    case "key": {
-      if (action.keys.length === 0) return { ok: false, why: "empty" };
-      const mods = action.keys.filter(isModifier);
-      const rest = action.keys.filter((k) => !isModifier(k));
-      const ev: LowEvent[] = [];
-      for (const m of mods) ev.push({ t: "keydown", key: m });
-      for (const k of rest) {
-        ev.push({ t: "keydown", key: k });
-        ev.push({ t: "keyup", key: k });
-      }
-      // ★수식키는 **역순**으로 놓는다 — 누른 순서의 반대여야 짝이 맞는다.
-      for (const m of [...mods].reverse()) ev.push({ t: "keyup", key: m });
-      return {
-        ok: true,
-        events: ev,
-        // ★수식키는 계획 도중 **눌린 채로 있다** — 여기서 자식이 죽으면 남는다. 그래서 장부.
-        holds: { keys: [...mods], buttons: [] },
-        describe: `${action.keys.join("+")} 를 키 입력으로 보냈습니다`,
-      };
-    }
+/** 계획이 실패했을 때 모델에게 할 말. */
+export const planRejection = (why: PlanReject): string => {
+  switch (why) {
+    case "offscreen":
+      return "그 좌표는 이미지 밖입니다. 관측 결과의 이미지 안쪽 픽셀 좌표로 주세요 — 화면 좌표나 0~1 비율이 아닙니다.";
+    case "empty":
+      return "할 일이 비어 있습니다(빈 문자열·0 스크롤·빈 키 조합·2점 미만 경로).";
+    case "too-many":
+      return `한 번에 낼 수 있는 손짓은 ${String(STEPS_MAX)}개까지입니다. 열을 끊고, 끊은 자리에서 \`look\` 으로 다시 보세요 — 긴 열일수록 중간에 어긋났을 때 되돌릴 수 없는 몫이 큽니다.`;
+    case "unbalanced-key":
+      // ★**장부가 거짓이 되는 것**을 막는 거절이다(계약 2). 안 누른 키를 뗀다고 적으면,
+      //  정리할 때 **우리 것이 아닌 키**를 놓게 된다 — 사용자가 누르고 있던 것을 깬다.
+      return "누르지 않은 키를 떼려고 했습니다. `keydown` 과 `keyup` 은 **같은 열 안에서** 짝을 맞춰 주세요.";
   }
 };
-
-/** 계획이 실패했을 때 모델에게 할 말. */
-export const planRejection = (why: "offscreen" | "empty"): string =>
-  why === "offscreen"
-    ? "그 좌표는 이미지 밖입니다. 관측 결과의 이미지 안쪽 픽셀 좌표로 주세요 — 화면 좌표나 0~1 비율이 아닙니다."
-    : "할 일이 비어 있습니다(빈 문자열·0 스크롤·빈 키 조합).";
 
 /** 리스를 못 잡았을 때 — 기다리라고 하지 않는다(큐가 아니다). */
 export const beginRejection = (b: Exclude<Begin, { ok: true }>): string => {
@@ -580,4 +450,288 @@ export const beginRejection = (b: Exclude<Begin, { ok: true }>): string => {
     case "busy-other":
       return `데스크톱이 사용 중입니다 (${b.heldBy} 가 쓰는 중). 기다리지 말고 그 작업이 끝난 뒤 다시 시도하거나, 매니저라면 자식 작업의 순서를 세워 주세요.`;
   }
+};
+
+// ─── 열(steps) — `do` 의 본체 (2026-09-19, §15-23·15-27) ─────────────────────
+
+/**
+ * **손짓 하나** — 완전 원시가 아니다(§15-23).
+ *
+ * ★`click` 을 `down`/`up` 둘로 **안 쪼갠다**: mac 더블클릭은 `kCGMouseEventClickState` 라
+ *  두 번 누르는 것으로 **표현이 안 된다**(코드 확인). 어휘의 단위는 «OS 가 한 뜻으로 받는
+ *  것» 이지 «가장 작은 것» 이 아니다.
+ * ★`hold` 가 없다 — 수식키는 `keydown`/`keyup` **원소**로 열 안에 드러난다. 그래서
+ *  「shift 누른 채 여러 번 클릭」이 특별한 개념 없이 그냥 열이 된다.
+ * ★`drag` 가 **경로**를 받는다 — 종전 `from → to` 직선 하나라 곡선을 못 그렸고, 오리를
+ *  직선 32개로 근사하며 32번 재관측했다(44분). **잘못된 추상이 잘못된 답을 만들었다.**
+ */
+export type Step =
+  | { t: "click"; x: number; y: number; button?: Button; count?: number }
+  | { t: "drag"; path: readonly { x: number; y: number }[]; button?: Button }
+  | { t: "scroll"; x: number; y: number; dx: number; dy: number }
+  | { t: "type"; text: string }
+  | { t: "keydown"; key: string }
+  | { t: "keyup"; key: string }
+  | { t: "wait"; ms: number };
+
+/** 열 하나의 상한 — 잠정. ★안 잰 값이다(예산 계약이 실제 상한을 정한다, §15-27 계약 4). */
+export const STEPS_MAX = 64;
+
+/**
+ * 드래그 보간 — 구간을 **이 픽셀마다** 한 점씩 나눈다.
+ *
+ * ★옛 계획기는 거리와 무관하게 24단계였다. 실행부가 이벤트마다 ~12ms 를 두므로 24단계면
+ *  약 0.3초 — 사람 손과 비슷한 속도다. 경로를 받게 되면서 **거리 비례**로 바꿨다:
+ *  짧은 구간까지 24로 쪼개면 곡선 하나가 수백 이벤트가 되고, 그만큼 느려진다.
+ * ★★**안 잰 값이다.** 「16px 마다」는 옛 24단계를 전형적인 창 이동 거리(~400px)에 맞춘
+ *  것이지 실측이 아니다 — 스냅·자석 UI 가 놓치는 간격을 재서 확정해야 한다.
+ */
+export const DRAG_STEP_PX = 16;
+/** 한 구간이 낼 수 있는 중간 점의 상한 — 긴 구간 하나가 열 전체를 잡아먹지 않게. */
+export const DRAG_MAX_SUBSTEPS = 32;
+
+export type StepsPlan =
+  | {
+      ok: true;
+      events: LowEvent[];
+      /**
+       * **열이 끝난 뒤에도 눌린 채 남는 것** — 짝이 안 맞은 `keydown` 들이다.
+       * 정상 종료 뒤의 정리 대상이고, 결과 보고가 «아직 눌려 있다» 고 말할 근거다.
+       */
+      holds: { keys: string[]; buttons: Button[] };
+      /**
+       * ★★**열이 «도중에» 누르는 것 전부** — 부모 장부에 **쏘기 전에** 오르는 값이다(계약 2).
+       *
+       * ★`holds` 와 다르다: 짝이 맞은 `keydown`/`keyup` 도, 드래그의 버튼도 **여기 든다.**
+       *  자식이 `mousedown` 과 `mouseup` **사이에서 죽으면** 버튼이 눌린 채 시스템에 남기
+       *  때문이다 — 되돌릴 근거는 장부뿐인데, 「끝나고 남는 것」만 담으면 그 순간 장부가
+       *  **비어 있다.**
+       * ★이 구분을 잃을 뻔했다: 열로 옮기며 `holds.buttons` 를 늘 빈 배열로 뒀고, 옛 회귀를
+       *  포팅하다 그 자리에서 잡혔다([[feedback_scope_of_a_fix]] 의 «계약변경 → 호출부»).
+       */
+      touched: { keys: string[]; buttons: Button[] };
+      /** step 별 한 줄 설명 — 결과 보고가 «무엇을 했나» 를 말할 재료다. */
+      describes: string[];
+    }
+  | { ok: false; why: PlanReject };
+
+/**
+ * 열을 거절하는 사유 — ★**한 곳에만 적는다.** 여기와 `planRejection` 에 따로 적으면 한쪽만
+ * 늘어나고, 그때 컴파일러가 아무 말도 안 한다([[feedback_hand_maintained_lists]]).
+ */
+export type PlanReject = "offscreen" | "empty" | "too-many" | "unbalanced-key";
+
+/**
+ * **열 → 이벤트 목록** — 순수. 좌표 변환도 장부 계산도 여기서 **한 번만** 일어난다.
+ *
+ * ★★**장부는 열 전체가 가진다**(계약 2). 개별 원소가 자기 수식키를 치우지 않는다 —
+ *  `keydown shift → drag → keyup shift` 에서 `drag` 가 스스로 정리하면 바깥 계약이 깨진다.
+ *  여기서는 `keydown`/`keyup` 원소가 장부를 **누적**하고, 끝에 남은 것이 `holds` 다.
+ * ★**가드는 «쏘기 직전»** 에 넣는다 — 글자·키를 내는 원소 앞이다. 마우스 원소는 **좌표가
+ *  창을 고르므로** 가드 대신 좌표 판정(`imagePointToScreen`)이 그 일을 한다.
+ * ★`frame.front` 가 `null` 이면 가드를 **안 넣는다**: 비교 기준이 없는데 막으면 «모르면 안
+ *  누른다» 가 아니라 «모르면 아무것도 못 한다» 가 된다(§15-27 계약 1).
+ */
+export const planSteps = (steps: readonly Step[], frame: Frame): StepsPlan => {
+  if (steps.length === 0) return { ok: false, why: "empty" };
+  if (steps.length > STEPS_MAX) return { ok: false, why: "too-many" };
+
+  const events: LowEvent[] = [];
+  const describes: string[] = [];
+  const heldKeys: string[] = [];
+  const touchedKeys: string[] = [];
+  const touchedButtons: Button[] = [];
+  const touchButton = (b: Button): void => {
+    if (!touchedButtons.includes(b)) touchedButtons.push(b);
+  };
+  const guard = (): void => {
+    if (frame.front !== null) events.push({ t: "guard", front: frame.front });
+  };
+
+  for (let i = 0; i < steps.length; i += 1) {
+    const st = steps[i];
+    if (st === undefined) continue;
+    events.push({ t: "mark", i });
+    switch (st.t) {
+      case "click": {
+        const pt = imagePointToScreen({ x: st.x, y: st.y }, frame.geometry);
+        if (pt === null) return { ok: false, why: "offscreen" };
+        const button = st.button ?? "left";
+        const count = st.count ?? 1;
+        touchButton(button);
+        events.push({ t: "mousemove", x: pt.x, y: pt.y });
+        for (let n = 1; n <= count; n += 1) {
+          events.push({ t: "mousedown", x: pt.x, y: pt.y, button, count: n });
+          events.push({ t: "mouseup", x: pt.x, y: pt.y, button, count: n });
+        }
+        describes.push(
+          `그림 (${st.x},${st.y}) = 화면 (${pt.x},${pt.y}) 을 ${buttonName(button)} 버튼으로 ${count}번 눌렀습니다`,
+        );
+        break;
+      }
+      case "drag": {
+        // ★경로는 **두 점 이상**이어야 한다 — 한 점짜리 드래그는 클릭이고, 그건 다른 원소다.
+        if (st.path.length < 2) return { ok: false, why: "empty" };
+        const button = st.button ?? "left";
+        touchButton(button);
+        const pts: { x: number; y: number }[] = [];
+        for (const p of st.path) {
+          const q = imagePointToScreen(p, frame.geometry);
+          if (q === null) return { ok: false, why: "offscreen" };
+          pts.push(q);
+        }
+        const first = pts[0];
+        const last = pts[pts.length - 1];
+        if (first === undefined || last === undefined) return { ok: false, why: "empty" };
+        events.push({ t: "mousemove", x: first.x, y: first.y });
+        events.push({ t: "mousedown", x: first.x, y: first.y, button, count: 1 });
+        // ★★**구간마다 «사이» 를 채운다** — 준 점만 쏘면 두 점짜리 경로가 **한 번에 튄다.**
+        //  down → up 만 있으면 앱이 «클릭» 으로 읽고, 점이 듬성하면 경로를 보는 UI(스냅·
+        //  자석·드래그 미리보기)가 중간을 놓친다.
+        //  ★경로를 받기로 하면서 이 보장을 **잃을 뻔했다**: 종전 계획기가 24단계로 보간하던
+        //   것을 «모델이 점을 촘촘히 주면 된다» 로 미루면, 촘촘히 안 주는 순간 조용히 나빠진다.
+        //   **모델의 성의에 기대는 보장은 보장이 아니다.**
+        //  ★거리에 비례해 나눈다 — 짧은 구간까지 24로 쪼개면 곡선 하나가 수백 이벤트가 된다
+        //   (실행부가 이벤트마다 ~12ms 를 둔다).
+        let prev = first;
+        for (const q of pts.slice(1)) {
+          const dist = Math.hypot(q.x - prev.x, q.y - prev.y);
+          const n = Math.max(1, Math.min(DRAG_MAX_SUBSTEPS, Math.ceil(dist / DRAG_STEP_PX)));
+          for (let k = 1; k <= n; k += 1) {
+            events.push({
+              t: "mousedrag",
+              x: Math.round(prev.x + ((q.x - prev.x) * k) / n),
+              y: Math.round(prev.y + ((q.y - prev.y) * k) / n),
+              button,
+            });
+          }
+          prev = q;
+        }
+        events.push({ t: "mouseup", x: last.x, y: last.y, button, count: 1 });
+        describes.push(
+          `그림 (${String(st.path[0]?.x)},${String(st.path[0]?.y)}) 에서 ${st.path.length}점 경로로 끌어 (${String(st.path[st.path.length - 1]?.x)},${String(st.path[st.path.length - 1]?.y)}) 에 놓았습니다`,
+        );
+        break;
+      }
+      case "scroll": {
+        // ★**0 스크롤은 «할 일 없음» 이다** — 옛 계획기가 지키던 것을 열로 옮기며 잃었고,
+        //  포팅한 회귀가 그 자리에서 잡았다. 빈 이벤트를 쏘면 «했다» 는 기록만 남는다.
+        if (st.dx === 0 && st.dy === 0) return { ok: false, why: "empty" };
+        const pt = imagePointToScreen({ x: st.x, y: st.y }, frame.geometry);
+        if (pt === null) return { ok: false, why: "offscreen" };
+        events.push({ t: "mousemove", x: pt.x, y: pt.y });
+        events.push({ t: "scroll", x: pt.x, y: pt.y, dx: st.dx, dy: st.dy });
+        describes.push(`그림 (${st.x},${st.y}) 에서 dx=${st.dx} dy=${st.dy} 만큼 굴렸습니다`);
+        break;
+      }
+      case "type": {
+        if (st.text.length === 0) return { ok: false, why: "empty" };
+        guard();
+        events.push({ t: "unicode", text: st.text });
+        describes.push(`${st.text.length}자를 입력했습니다`);
+        break;
+      }
+      case "keydown": {
+        guard();
+        events.push({ t: "keydown", key: st.key });
+        heldKeys.push(st.key);
+        if (!touchedKeys.includes(st.key)) touchedKeys.push(st.key);
+        describes.push(`${st.key} 를 눌렀습니다(아직 안 뗌)`);
+        break;
+      }
+      case "keyup": {
+        guard();
+        // ★**안 누른 것을 뗄 수 없다** — 열 안에서 짝이 안 맞으면 장부가 거짓이 되고,
+        //  그 장부로 정리하면 **우리 것이 아닌 키를 놓는다**(계약 2).
+        const at = heldKeys.lastIndexOf(st.key);
+        if (at < 0) return { ok: false, why: "unbalanced-key" };
+        heldKeys.splice(at, 1);
+        events.push({ t: "keyup", key: st.key });
+        describes.push(`${st.key} 를 뗐습니다`);
+        break;
+      }
+      case "wait": {
+        events.push({ t: "wait", ms: st.ms });
+        describes.push(`${st.ms}ms 기다렸습니다`);
+        break;
+      }
+    }
+  }
+  return {
+    ok: true,
+    events,
+    holds: { keys: heldKeys, buttons: [] },
+    touched: { keys: touchedKeys, buttons: touchedButtons },
+    describes,
+  };
+};
+
+const buttonName = (b: Button): string =>
+  b === "left" ? "왼쪽" : b === "right" ? "오른쪽" : "가운데";
+
+/** step 하나의 운명 — §15-27 계약 3 의 어휘 그대로. */
+export type StepStatus = "완료" | "불명" | "미실행";
+
+export interface StepsOutcome {
+  status: StepStatus[];
+  /** 가드가 멈춘 자리(있으면). `saw` 는 그때 실제 전면 창. */
+  stoppedAt?: { i: number; why: "front-changed" | "front-unknown"; saw: string };
+}
+
+/**
+ * **자식이 남긴 줄 → step 별 운명** — 순수(계약 3).
+ *
+ * ★★**«마지막으로 본 것» 다음은 «완료» 가 아니라 «불명» 이다.** 자식이 `mark i` 를 흘린
+ *  뒤 죽었다면 그 step 은 **시작은 했는데 끝을 모른다** — 되돌릴 수 없는 도구에서 그
+ *  구분이 전부다(«안 했다» 면 다시 하면 되고, «모른다» 면 사람이 화면을 봐야 한다).
+ * ★**완전한 줄만 읽는다** — 죽은 자식의 마지막 줄은 중간에서 잘려 있을 수 있다.
+ * ★성공(`childOk`)이고 **가드가 안 멈췄으면** 전부 «완료» 다. 이때 줄을 세어 맞춰보지
+ *  **않는다**: 버퍼링 때문에 줄이 덜 왔을 수 있고(Windows 실측), 그걸 «불명» 으로 읽으면
+ *  **멀쩡한 실행을 의심**하게 된다. 판정의 근거는 자식의 **종료 상태**이지 줄 수가 아니다.
+ *
+ * ★★**그런데 «종료 상태» 만 믿으면 안 된다**(2026-09-19, 실기가 즉시 잡았다). 가드가 멈춘
+ *  실행은 **자식이 정상 종료(0)한 부분 실행**이다 — 처음 쓸 때 `childOk` 를 먼저 보고
+ *  단락시켜서, 2번 step 이 아예 안 돌았는데 «완료» 라고 답했다. **먼저 읽고 그다음 판정한다.**
+ */
+export const stepsOutcome = (
+  stdout: string,
+  stepCount: number,
+  childOk: boolean,
+): StepsOutcome => {
+  let lastMark: number | null = null;
+  let stopped: StepsOutcome["stoppedAt"];
+  // 마지막 줄은 잘려 있을 수 있으므로 **파싱되는 줄만** 쓴다.
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    let v: { step?: number; stopped?: number; why?: string; saw?: string };
+    try {
+      v = JSON.parse(trimmed) as typeof v;
+    } catch {
+      continue;
+    }
+    if (typeof v.step === "number") lastMark = v.step;
+    if (typeof v.stopped === "number" && (v.why === "front-changed" || v.why === "front-unknown")) {
+      stopped = { i: v.stopped, why: v.why, saw: typeof v.saw === "string" ? v.saw : "(못 읽음)" };
+    }
+  }
+
+  // 가드가 안 멈췄고 자식이 정상 종료했으면 전부 완료다.
+  if (stopped === undefined && childOk) {
+    return { status: Array.from({ length: stepCount }, () => "완료" as const) };
+  }
+
+  const status: StepStatus[] = [];
+  for (let i = 0; i < stepCount; i += 1) {
+    if (stopped !== undefined) {
+      // 가드가 멈춘 것은 **쏘기 전**이다 — 그 step 부터는 확실히 «미실행» 이다.
+      status.push(i < stopped.i ? "완료" : "미실행");
+      continue;
+    }
+    if (lastMark === null) status.push("미실행");
+    else if (i < lastMark) status.push("완료");
+    else if (i === lastMark) status.push("불명");
+    else status.push("미실행");
+  }
+  return stopped === undefined ? { status } : { status, stoppedAt: stopped };
 };

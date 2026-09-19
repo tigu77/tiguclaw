@@ -188,7 +188,7 @@ export const checkTarget = (
 /**
  * **그림 좌표의 영역 → 화면 좌표의 영역** — 순수 (2026-09-17, 돌쇠 실측).
  *
- * ★★**좌표계가 둘로 섞여 있었다.** 클릭은 «그림 픽셀» 인데 `observe_screen` 의 `region` 은
+ * ★★**좌표계가 둘로 섞여 있었다.** 클릭은 «그림 픽셀» 인데 `look` 의 `region` 은
  *  «화면 좌표» 였다. 이 기계는 둘의 차이가 8%뿐이라(그림 1600 vs 화면 1728pt) 대충 맞아
  *  보였지만, **축소율이 큰 화면에서는 관측 그림에서 읽은 좌표로 영역을 잡으면 엉뚱한 데가
  *  잡히고, 그 그림 위에서 누르면 조용히 딴 데를 클릭한다.** 되돌릴 수 없는 도구라 실제
@@ -338,9 +338,18 @@ export interface ControlBackend {
          * ★이름이 읽는 쪽을 속이면 그게 다음 오진이다. 효과의 판정은 **재관측뿐**이다.
          */
         fired: number;
+        /** 자식이 흘린 진행 줄 — `stepsOutcome` 이 «어디까지 갔나» 를 읽는다(계약 3). */
+        stdout: string;
       }
-    | { ok: false; reason: "timeout" | "failed"; detail: string }
+    | { ok: false; reason: "timeout" | "failed"; detail: string; stdout: string }
   >;
+  /**
+   * **지금 전면 창** — 열 안의 가드가 비교할 기준값(계약 1). 못 읽으면 `null`.
+   *
+   * ★**정밀도가 플랫폼마다 다르다**: mac 은 `앱이름:pid`(앱 단위) · Windows 는 HWND(창 단위).
+   *  맥은 **같은 앱의 다른 창**으로 옮겨간 것을 못 본다 — 확인된 제한이고 `look` 이 말한다.
+   */
+  frontWindow(): Promise<string | null>;
 }
 
 export interface ObserveBackend {

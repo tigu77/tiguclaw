@@ -331,8 +331,10 @@ export const createTurnInputFilter = (deps: {
     // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 — codex 가 function_call_output 뒤에
     //  user 메시지를 붙이는 것과 같은 일이다. 창 밖을 버리는 것도 스텝 경계를 긋는 것도
     //  `takeForRequest()` 안에 있다(같은 판단이 두 곳에 있으면 갈린다).
-    // ★**어느 도구의 이미지인지·더 있었는지를 글로 밝힌다**(적대 검토 F5·F6). codex 는
-    //  자리로 말하지만 여기선 매 호출 끝에 다시 싣는 구조라 자리가 말해주지 않는다.
+    // ★**어느 도구의 이미지인지·더 있었는지를 글로 밝힌다**(적대 검토 F5·F6).
+    //  ★2026-09-21: codex 도 같은 글을 단다. 종전엔 «codex 는 자리로 말한다» 고 적어뒀는데
+    //   모델이 자기 `look` 화면을 사용자 첨부로 읽으면서 그 전제가 깨졌다 — 자리는 순서를
+    //   말할 뿐 출처를 말하지 않는다. 여기선 매 호출 끝에 다시 싣느라 순서마저 없다.
     for (const batch of deps.mediaWindow.takeForRequest()) {
       args.modelData.input.push({
         role: "user",

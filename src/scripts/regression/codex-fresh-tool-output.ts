@@ -11,6 +11,7 @@
 import {
   appendToolResultsToInput,
   capToolOutputForEntry,
+  isToolMediaMessage,
   type ResponseInputItem,
   type ResponseMediaItem,
 } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
@@ -94,9 +95,12 @@ export const check: RegressionCheck = {
     assertions.push(
       assert(
         "도구 이미지 연결 유지",
-        tail?.type === "message" &&
-          tail.role === "user" &&
-          tail.content[0]?.type === "input_image",
+        // ★«묶음인가» 는 제품 함수가 판정한다 — 여기 규칙을 또 적으면 갈린다(2026-09-21).
+        //  종전엔 `content[0] === input_image` 였는데, 라벨 한 줄이 앞에 붙자 빨개졌다.
+        //  이 검사가 지키려는 것은 «자리» 가 아니라 «그림이 실려 왔는가» 다.
+        isToolMediaMessage(tail) &&
+          tail?.type === "message" &&
+          tail.content.some((c) => c.type === "input_image"),
         tail,
       ),
     );

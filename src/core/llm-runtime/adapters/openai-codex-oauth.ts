@@ -2415,7 +2415,7 @@ export const runOpenAiCodex = async (
       }
       const toolOutputs = await Promise.all(
         toolCalls.map(
-          async (tc): Promise<{ callId: string; output: string; media: ResponseMediaItem[] }> => {
+          async (tc): Promise<{ callId: string; name?: string; output: string; media: ResponseMediaItem[] }> => {
             let output: string;
             const toolMedia: ResponseMediaItem[] = [];
             let toolErr = false; // 리치 출력 프리뷰 isError 표기용.
@@ -2562,7 +2562,8 @@ export const runOpenAiCodex = async (
                 /* 관측 발행 실패가 turn 을 무르지 않는다(원칙 3). */
               }
             }
-            return { callId: tc.callId, output, media: toolMedia };
+            // ★이름을 같이 넘긴다 — 아래 `appendToolResultsToInput` 이 «어느 도구의 그림인가» 를 적는다.
+            return { callId: tc.callId, name: tc.name || "tool", output, media: toolMedia };
           },
         ),
       );

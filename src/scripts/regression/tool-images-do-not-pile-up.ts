@@ -33,15 +33,19 @@ import {
   toolResultForAdapter,
   createToolMediaWindow,
   TOOL_MEDIA_KEEP_RECENT,
+  toolMediaNote,
 } from "../../core/llm-runtime/adapters/_mcp-content.js";
 import { createTurnInputFilter } from "../../core/llm-runtime/adapters/openai-agents-sdk.js";
+import { isToolMediaMessage } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 
-/** 도구가 만든 미디어 묶음인가 — 텍스트 원소가 없는 user 메시지. */
-const isToolMedia = (it: ResponseInputItem): boolean =>
-  it.type === "message" &&
-  it.role === "user" &&
-  it.content.length > 0 &&
-  it.content.every((c) => c.type === "input_image" || c.type === "input_file");
+/**
+ * 도구가 만든 미디어 묶음인가 — ★**제품의 판정을 그대로 쓴다**(2026-09-21).
+ *
+ * 종전엔 여기 규칙을 **따로 적어뒀다**(«텍스트 원소가 없는 user 메시지»). 그래서 제품이
+ * 라벨을 붙이자 **검사만 눈이 멀었고**, 압축이 멎은 것을 이 검사가 「0묶음」으로만 알렸다.
+ * 같은 판단이 두 곳에 있으면 갈린다 — 한 곳에서 읽는다.
+ */
+const isToolMedia = (it: ResponseInputItem): boolean => isToolMediaMessage(it);
 
 const b64 = (bytes: number): string => "A".repeat(Math.ceil(bytes / 3) * 4);
 /**
@@ -465,6 +469,110 @@ export const check: RegressionCheck = {
         `주입된 항목=${md3.input.length}개`,
       ),
     );
+    // ── ★도구가 준 그림에 **이름이 붙는다** (2026-09-21 정태님 실기) ─────────────────
+    //  ★★이미지는 `role:"user"` 로 들어간다(`function_call_output` 은 문자열 전용이라 다른
+    //   통로가 없다). 그런데 **사용자 첨부도 같은 `role:"user"` 이미지**이고, 그쪽만
+    //   `formatAttachments` 가 «사용자가 아래 파일을 첨부했습니다» 라고 이름을 준다.
+    //   그래서 맥락에서 **이름 있는 그림은 «첨부» 뿐**이 됐고, 모델이 자기가 `look` 으로
+    //   찍은 화면을 «첨부 화면» 이라고 불렀다(실기 관측).
+    //  ★종전 주석은 *"codex 는 **자리로** 말한다"* 였다 — `function_call_output` 바로
+    //   뒤에 붙이니 안다는 전제였고, **그 전제가 틀렸다.** 자리는 역할을 못 바꾼다.
+    //  ★문구는 `toolMediaNote` 한 곳에서 온다(openai 어댑터가 이미 쓰던 것).
+    {
+      const arr: ResponseInputItem[] = [];
+      appendToolResultsToInput(arr, [
+        { callId: "a1", name: "look", output: "관측 결과", media: [{ type: "input_image", image_url: "data:image/png;base64,AAA" }] },
+      ]);
+      const msg = arr.find(
+        (it) => (it as { role?: string }).role === "user",
+      ) as { content?: { type: string; text?: string }[] } | undefined;
+      const first = msg?.content?.[0];
+      out.push(
+        assert(
+          "★★도구 이미지 앞에 **글 한 줄**이 붙는다 — 없으면 사용자 첨부와 구분이 안 된다",
+          first?.type === "input_text" && (first.text ?? "") !== "",
+          JSON.stringify(first ?? null).slice(0, 80),
+        ),
+      );
+      out.push(
+        assert(
+          "★그 줄이 **어느 도구인지** 말한다 — 이름이 곧 구분이다",
+          (first?.text ?? "").includes("look"),
+          first?.text ?? "(없음)",
+        ),
+      );
+      // ★막으면 안 되는 것 — 이미지가 없으면 그 메시지 자체가 없어야 한다(빈 글만 남기지 않는다).
+      const none: ResponseInputItem[] = [];
+      appendToolResultsToInput(none, [{ callId: "b1", name: "Bash", output: "텍스트만", media: [] }]);
+      out.push(
+        assert(
+          "★반대 방향 — 그림이 없으면 사용자 메시지를 **안 만든다**",
+          !none.some((it) => (it as { role?: string }).role === "user"),
+          JSON.stringify(none.map((it) => (it as { type?: string }).type)),
+        ),
+      );
+    }
+
+    // ── ★밀려났다는 안내가 **몇 장인지** 틀리지 않는다 (2026-09-21 검토자 지적) ─────
+    //  ★라벨을 붙이자 `content.length` 가 «그림 수» 가 아니게 됐다(라벨 한 줄이 끼었다).
+    //   압축은 제대로 됐는데 모델에게 «미디어 2개 생략» 이라고 말한다 — 한 장이었는데도.
+    //   ★`content.length - 1` 로 고치면 안 된다: 판별자는 **라벨 없는 옛 묶음**도 받으므로
+    //    그 경우 한 장을 0개로 말하게 된다. 세야 할 것은 **그림·파일 원소**뿐이다.
+    {
+      const mk = (content: unknown[]): ResponseInputItem =>
+        ({ type: "message", role: "user", content }) as ResponseInputItem;
+      const img = { type: "input_image", image_url: "data:image/png;base64,AA==" };
+      const file = { type: "input_file", file_data: "data:text/plain;base64,AA==" };
+      const label = (n: number) => ({ type: "input_text", text: toolMediaNote(["look"], n, 0) });
+      const textOf = (it: ResponseInputItem): string => {
+        const c = (it as { content?: { type: string; text?: string }[] }).content;
+        return c?.[0]?.text ?? "";
+      };
+      const keep = { keepRecent: 1 };
+
+      const a = [mk([label(1), img]), mk([label(1), img])];
+      compactOldToolMedia(a, keep);
+      out.push(
+        assert(
+          "★밀려난 안내가 **그림 수**를 말한다(라벨을 세지 않는다) — 1장",
+          textOf(a[0] as ResponseInputItem).includes("미디어 1개"),
+          textOf(a[0] as ResponseInputItem),
+        ),
+      );
+
+      const b = [mk([label(3), img, img, file]), mk([label(1), img])];
+      compactOldToolMedia(b, keep);
+      out.push(
+        assert(
+          "★그림 2 + 파일 1 은 3개라고 말한다",
+          textOf(b[0] as ResponseInputItem).includes("미디어 3개"),
+          textOf(b[0] as ResponseInputItem),
+        ),
+      );
+
+      // ★라벨 없는 **옛 묶음**(라벨 이전 이력이 그대로 남아 있을 수 있다)도 맞게 센다.
+      const c = [mk([img]), mk([label(1), img])];
+      compactOldToolMedia(c, keep);
+      out.push(
+        assert(
+          "★라벨 없는 옛 묶음도 1장은 1개다(-1 로 고치면 0개가 된다)",
+          textOf(c[0] as ResponseInputItem).includes("미디어 1개"),
+          textOf(c[0] as ResponseInputItem),
+        ),
+      );
+
+      // ★멱등 — 이미 대체한 자리를 다시 세지 않는다(대체 글은 판별자에 안 걸린다).
+      const before = textOf(a[0] as ResponseInputItem);
+      compactOldToolMedia(a, keep);
+      out.push(
+        assert(
+          "★두 번째 압축이 이미 대체한 묶음을 다시 세지 않는다",
+          textOf(a[0] as ResponseInputItem) === before,
+          textOf(a[0] as ResponseInputItem),
+        ),
+      );
+    }
+
 
     return out;
   },

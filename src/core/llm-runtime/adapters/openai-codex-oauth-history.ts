@@ -13,7 +13,7 @@ import {
   stripInternalRuntimeScaffolding,
 } from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
-import { TOOL_MEDIA_KEEP_RECENT, supersededMediaText } from "./_mcp-content.js";
+import { TOOL_MEDIA_KEEP_RECENT, TOOL_MEDIA_NOTE_PREFIX, supersededMediaText, toolMediaNote } from "./_mcp-content.js";
 import { linkAbort } from "../turn-timeout.js";
 // ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
 //  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
@@ -2046,6 +2046,8 @@ export const appendToolResultsToInput = (
   inputArray: ResponseInputItem[],
   results: readonly {
     callId: string;
+    /** ★어느 도구가 준 그림인지 — 라벨에 싣는다. */
+    name?: string;
     output: string;
     media: readonly ResponseMediaItem[];
   }[],
@@ -2055,19 +2057,37 @@ export const appendToolResultsToInput = (
   // 매 iteration 재전송되며 비용을 지배하므로 진입 시점에 머리+꼬리만 남긴다. 도구 자체
   // cap 과 별개. function_call_output 은 결과 배열 순서대로 push → call_id 매칭 보존.
   const pendingMedia: ResponseMediaItem[] = [];
-  for (const { callId, output, media } of results) {
+  const mediaTools: string[] = [];
+  for (const { callId, name, output, media } of results) {
     inputArray.push({
       type: "function_call_output",
       call_id: callId,
       output: capToolOutputForEntry(output),
     });
     pendingMedia.push(...media);
+    if (media.length > 0 && name !== undefined && !mediaTools.includes(name)) mediaTools.push(name);
   }
   // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 (2026-08-01). function_call_output
   //  바로 뒤에 user 메시지로 붙여야 모델이 "그 도구 결과의 이미지" 로 읽는다.
   //  이게 없으면 file-ops 가 이미지를 줘도 모델에겐 아무것도 안 간다(원래 사고).
   if (pendingMedia.length > 0) {
-    inputArray.push({ type: "message", role: "user", content: [...pendingMedia] });
+    // ★★**이 그림이 어디서 왔는지 한 줄로 말한다** (2026-09-21 정태님 실기).
+    //  이미지는 `role: "user"` 로 들어간다(`function_call_output` 은 문자열 전용이라
+    //  다른 통로가 없다). 그런데 **사용자 첨부도 같은 `role: "user"` 의 이미지**이고,
+    //  그쪽만 `formatAttachments` 가 «사용자가 아래 파일을 첨부했습니다» 라고 이름을
+    //  붙여 준다. 그래서 맥락에서 **이름 있는 그림은 «첨부» 뿐**이 되고, 모델이 자기가
+    //  `look` 으로 찍은 화면을 «첨부 화면» 이라고 불렀다(실기 관측).
+    //  ★이름만 붙이면 된다 — «사용자가 준 게 아니다» 같은 부정문은 안 쓴다.
+    inputArray.push({
+      type: "message",
+      role: "user",
+      //  ★문구는 `toolMediaNote` **한 곳**에서 온다 — openai 어댑터가 이미 쓰는 그것이다.
+      //   두 벌로 적으면 갈린다([[feedback_simple_composable_no_duplication]]).
+      content: [
+        { type: "input_text", text: toolMediaNote(mediaTools, pendingMedia.length, 0) },
+        ...pendingMedia,
+      ],
+    });
     compacted += compactOldToolMedia(inputArray);
   }
   return compacted;
@@ -2085,10 +2105,15 @@ export const appendToolResultsToInput = (
  *
  * ★**«도구가 만든 것» 과 «사용자가 보낸 것» 을 가르는 기준**: `buildCurrentTurn` 을 지나는
  *  사용자 발화(초기 턴·mid-turn steering)는 **언제나 `input_text` 원소를 함께 싣는다**
- *  (`content: [...mediaItems, { type:"input_text", … }]`). 도구 미디어 묶음은 `content` 가
- *  **미디어 전용**이다. 그러니 «텍스트 원소가 없는 user 메시지» = 도구가 만든 것이다.
- *  이름 목록이 아니라 **정의점에서 파생된 판정**이고([[feedback_hand_maintained_lists]]),
- *  `user-media-keeps-its-text` 회귀가 그 전제를 고정한다.
+ *  (`content: [...mediaItems, { type:"input_text", … }]`). 이름 목록이 아니라 **정의점에서
+ *  파생된 판정**이고([[feedback_hand_maintained_lists]]), `user-media-keeps-its-text`
+ *  회귀가 그 전제를 고정한다.
+ *  ★**2026-09-21 에 이 기준이 한 번 바뀌었다.** 종전엔 «텍스트 원소가 **없는** user
+ *   메시지» = 도구가 만든 것이었다. 그런데 그 규칙은 **모델에게도 표식이 없다**는 뜻이라,
+ *   모델이 자기가 `look` 으로 찍은 화면을 «사용자가 첨부한 사진» 으로 읽었다(실기).
+ *   그래서 묶음 앞에 출처 한 줄(`toolMediaNote`)을 달았고, 판정도 «텍스트 없음» 에서
+ *   «그 문구로 시작하는 텍스트 한 줄 + 미디어»(`TOOL_MEDIA_NOTE_PREFIX`)로 옮겼다.
+ *   사용자 발화는 그 접두로 시작하지 않으므로 가르는 힘은 그대로다.
  *  ★이게 중요한 이유: 이 판정이 틀리면 **사용자가 방금 보낸 사진을 우리가 지운다.**
  *
  * ★단위는 **개수**다. `*_CHARS` env 를 참조하지 않으므로 이미 설정된 값의 뜻이 안 바뀐다.
@@ -2107,10 +2132,19 @@ export const compactOldToolMedia = (
   let compacted = 0;
   for (let j = 0; j < idxs.length - keepRecent; j++) {
     const item = inputArray[idxs[j] as number] as ResponseInputMessage;
+    // ★**그림·파일만 센다** (2026-09-21). 종전엔 `item.content.length` 였는데, 출처 라벨이
+    //  앞에 붙으면서 그 길이가 «미디어 수» 가 아니게 됐다 — 한 장을 «2개 생략» 이라고
+    //  모델에게 말했다. 압축은 멀쩡했고 **안내만 틀렸다**(그래서 크기 검사에 안 걸렸다).
+    //  ★`length - 1` 로 고치지 않는다: 판별자는 **라벨 없는 옛 묶음**도 받으므로 그쪽이
+    //   1장을 0개로 말하게 된다. 세어야 할 것은 자리 수가 아니라 원소의 종류다.
+    const mediaCount = item.content.reduce(
+      (n, c) => (c.type === "input_image" || c.type === "input_file" ? n + 1 : n),
+      0,
+    );
     // 미디어 자리에 «무엇이 밀려났나» 를 남긴다 — 텍스트가 생기므로 다음 호출엔
     // 이 판정에 더 안 걸린다(멱등).
     item.content = [
-      { type: "input_text", text: supersededMediaText(item.content.length) },
+      { type: "input_text", text: supersededMediaText(mediaCount) },
     ];
     compacted += 1;
   }
@@ -2120,13 +2154,19 @@ export const compactOldToolMedia = (
 /**
  * 도구가 만든 미디어 묶음인가 — 위 함수의 판정을 한 곳에 둔다(검사도 이걸 지난다).
  */
-const isToolMediaMessage = (item: ResponseInputItem | undefined): boolean => {
+export const isToolMediaMessage = (item: ResponseInputItem | undefined): boolean => {
   if (item === undefined || item.type !== "message" || item.role !== "user") return false;
   const content = item.content;
   if (!Array.isArray(content) || content.length === 0) return false;
   let media = 0;
   for (const c of content) {
-    if (c.type === "input_text" || c.type === "output_text") return false;
+    if (c.type === "input_text" || c.type === "output_text") {
+      // ★**우리가 붙인 라벨 한 줄은 예외다** (2026-09-21). 라벨이 없으면 모델이 도구
+      //  이미지를 «사용자 첨부» 로 읽고, 라벨을 붙이면 옛 판별자(«텍스트 없음»)가 깨져
+      //  압축이 멎는다. 그래서 **문구를 판별자로** 쓴다 — `toolMediaNote` 와 한 짝이다.
+      if (typeof c.text === "string" && c.text.startsWith(TOOL_MEDIA_NOTE_PREFIX)) continue;
+      return false;
+    }
     if (c.type === "input_image" || c.type === "input_file") media += 1;
   }
   return media > 0;

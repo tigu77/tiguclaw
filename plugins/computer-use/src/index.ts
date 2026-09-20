@@ -578,6 +578,13 @@ const runSteps = async (
 }> => {
   const ctl = w.control;
   if (ctl === null) return textOnly("이 플랫폼에서는 아직 조작(클릭·입력)을 지원하지 않습니다.");
+  // ★★**진짜 진입 시각** (2026-09-20, 보완 인계서 ②). 첫 판은 `controlPreflight`
+  //  **뒤에** 시각을 잡아서, 로그의 «검사까지» 가 do 진입부터가 아니었다 — Windows 는
+  //  권한 확인이 프로세스 호출이라 거기서 예산을 먹을 수 있는데 그 구간이 통째로 빠졌다.
+  //  ★구간 이름과 재는 구간을 **일치**시킨다. 안 잰 시간을 실측처럼 쓰지 않는다.
+  const tDo = Date.now();
+  let tPreflight = tDo;
+  let tIdle = tDo;
 
   const steps: Step[] = [];
   for (const r of raw) {
@@ -587,6 +594,7 @@ const runSteps = async (
   }
 
   const perm = await ctl.controlPreflight();
+  tPreflight = Date.now();
   if (!perm.ok) {
     host?.log(`조작 거절 — 권한(${perm.reason})`);
     // ★★**«사유» 는 같아도 «고치는 법» 은 플랫폼마다 다르다** (2026-09-18, 회사돌쇠 3차).
@@ -606,9 +614,9 @@ const runSteps = async (
   // ★**단계별 소요를 잰다 — 정책은 안 바꾼다** (2026-09-20, 긴급 인계서 C).
   //  «캡처 → 응답 반환 → do 도착 → preflight/idle → 실제 실행» 중 **어디가 예산을
   //  먹는지** 아무도 안 재고 있었다. TTL 후보를 고르기 전에 그 분해가 먼저다.
-  const tEnter = Date.now();
   const idle = await ctl.idleSeconds();
-  const now = Date.now();
+  tIdle = Date.now();
+  const now = tIdle;
   const begin = beginAction(w.desktop, owner, now, idle);
   if (!begin.ok) {
     // ★**같은 소유자가 같은 이유로 연달아 막힌 횟수를 센다** — 모델은 매 호출이 독립이라
@@ -673,7 +681,9 @@ const runSteps = async (
       host?.log(
         `조작 거절 — 프레임(${fc.why})` +
           (age === null ? "" : ` · 나이 ${String(age)}ms / 예산 ${String(FRAME_TTL_MS)}ms`) +
-          ` · 유휴조회 ${String(now - tEnter)}ms · 검사까지 ${String(Date.now() - tEnter)}ms`,
+          // ★이름과 구간을 맞춘다 — 각각 «그 단계가 쓴 시간» 이고, 합이 `do진입→판정` 이다.
+          ` · 권한확인 ${String(tPreflight - tDo)}ms · 유휴조회 ${String(tIdle - tPreflight)}ms` +
+          ` · do진입→판정 ${String(Date.now() - tDo)}ms`,
       );
       // ★★**거절만 하지 않고 새 그림을 쥐여 준다** (2026-09-20, 정태님 실기).
       //  실측: 그 기계의 거절 사유 18건 중 **11건이 `프레임(stale)`** 이었다. 모델이

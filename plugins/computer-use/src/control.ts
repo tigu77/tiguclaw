@@ -225,36 +225,42 @@ export const postFailureMessage = (
     "`look` 으로 **지금 화면을 먼저 보고**, 무엇이 적용됐는지 확인한 뒤 판단하세요.",
   ].join("\n");
 
+/**
+ * **왜 못 썼나 + 다음에 무엇을 하나** — 둘은 **다른 축**이다 (2026-09-20, 보완 인계서 ①).
+ *
+ * ★★첫 판은 `stale` **하나만** `gaveImage` 를 봤다. 그런데 호출부는 **모든 사유**에
+ *  새 그림을 실어 보낸다 — 그래서 `unknown`·`missing`·`other-owner` 는 그림을 받고도
+ *  «`look` 으로 다시 보세요» 를 같이 냈다. 한 답에 **서로 다른 다음 행동**이 둘이다.
+ *  (실측으로 확인: `frameRejection("unknown", {gaveImage:true})` 에 그 문장이 그대로 있었다.)
+ * ★★그래서 **구조를 바꾼다** — 사유별 «설명» 과 «다음 수» 를 갈라 두고, 다음 수는
+ *  **그림을 줬는지 한 곳에서** 고른다. 분기마다 기억해야 하는 구조는 또 빠뜨린다
+ *  ([[feedback_hand_maintained_lists]] 의 그 모양이다).
+ */
 export const frameRejection = (why: FrameReject, opts?: { gaveImage?: boolean }): string => {
-  switch (why) {
-    case "missing":
-      // ★**무엇을 «다르게» 해야 하는지**를 말한다. «다시 관측하라» 는 이 자리에서 쓸모가
-      //  없다 — 부르고 있는 것이 이미 그 도구다. 바뀌어야 하는 건 **인자**다.
-      return (
-        "«화면 id» 를 아직 못 받으셨습니다. `look` 을 **아무 인자 없이** 한 번 " +
-        "부르세요 — `region` 도 `frameId` 도 **빼고**입니다. 그러면 전체 화면 그림과 함께 " +
-        "«화면 id» 를 드립니다. 그다음부터 그 id 를 쓰세요."
-      );
-    case "unknown":
-      return (
-        "그 화면(frameId)을 모릅니다 — **직전 행동이 화면을 바꿨거나**(행동은 화면 id 를 전부 " +
-        `무효화합니다) 너무 오래전 것입니다(최근 ${String(FRAME_KEEP)}장만 유효). ` +
-        "`look` 으로 지금 화면을 보고 좌표를 다시 정하세요."
-      );
-    case "stale":
-      // ★**규칙을 같이 말한다** (2026-09-17 돌쇠 4차). 바로 위 `unknown` 은 «최근 3장만
-      //  유효» 라고 알려주는데 이쪽만 안 알려줘서 비대칭이었다. 처음 쓰는 사람이 오류 한
-      //  번으로 수명을 배우게 한다.
-      // ★**«다시 보세요» 는 새 그림을 못 줬을 때만이다** (2026-09-20, 긴급 인계서 A).
-      //  새 그림을 첨부한 응답에 이 문장이 같이 나가면 **서로 다른 다음 행동**을 지시한다 —
-      //  «첨부된 id 를 써라» 와 «look 을 다시 불러라» 가 한 답에 있었다. 호출부가
-      //  새 그림을 실었으면 `frameRejection(why, { gaveImage: true })` 로 이 줄을 끈다.
-      return opts?.gaveImage === true
-        ? `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다).`
-        : `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다). \`look\` 으로 다시 보세요.`;
-    case "other-owner":
-      return "그 화면은 다른 작업이 찍은 것입니다. 직접 `look` 으로 보세요.";
-  }
+  // ① 왜 못 썼나 — 사유마다 다르고, 그림 유무와 **무관**하다.
+  const because: Record<FrameReject, string> = {
+    missing: "«화면 id» 를 아직 못 받으셨습니다.",
+    unknown:
+      "그 화면(frameId)을 모릅니다 — **직전 행동이 화면을 바꿨거나**(행동은 화면 id 를 전부 " +
+      `무효화합니다) 너무 오래전 것입니다(최근 ${String(FRAME_KEEP)}장만 유효).`,
+    stale: `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다).`,
+    "other-owner": "그 화면은 다른 작업이 찍은 것입니다.",
+  };
+  // ② 다음에 무엇을 하나 — **그림을 줬으면 그걸 쓰면 된다.** 못 줬을 때만 재관측을 말한다.
+  const next: Record<FrameReject, string> = {
+    // ★`missing` 의 재관측 안내는 «인자를 빼고» 가 핵심이다 — 부르고 있는 것이 그 도구라
+    //  «다시 관측하라» 만으로는 같은 인자가 다시 온다(2026-09-18, 720회·101분).
+    missing:
+      "`look` 을 **아무 인자 없이** 한 번 부르세요 — `region` 도 `frameId` 도 **빼고**입니다. " +
+      "그러면 전체 화면 그림과 함께 «화면 id» 를 드립니다.",
+    unknown: "`look` 으로 지금 화면을 보고 좌표를 다시 정하세요.",
+    stale: "`look` 으로 다시 보세요.",
+    "other-owner": "직접 `look` 으로 보세요.",
+  };
+  const gave =
+    "★**아래 그림이 방금 찍은 새 화면입니다** — 그 «화면 id» 를 쓰고, 좌표는 **이 그림 " +
+    "기준**으로 다시 읽으세요. `look` 을 따로 부르지 않아도 됩니다.";
+  return `${because[why]} ${opts?.gaveImage === true ? gave : next[why]}`;
 };
 
 // ─── 데스크톱 상태 — 리스 · 활성 행동 · 입력 장부가 **한 객체** ───────────────

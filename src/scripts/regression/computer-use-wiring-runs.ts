@@ -52,6 +52,8 @@ const makeStubs = (
     guardStopAt?: number;
     /** ★«사람이 쓰는 중» 을 만들기 위한 유휴 초(작으면 가드가 막는다). */
     idle?: number;
+    /** ★권한 확인이 느린 상황(Windows 프로세스 호출) — 계측이 그 구간을 잡는지 본다. */
+    preflightDelayMs?: number;
     releaseOk?: boolean;
     /** 조작 권한 프리플라이트를 **실패**시킨다 — 그 분기가 실제로 도는지 보려고. */
     preflightFail?: { reason: string; detail: string };
@@ -75,12 +77,15 @@ const makeStubs = (
     },
   },
   control: {
-    controlPreflight: () =>
-      Promise.resolve(
+    controlPreflight: async () => {
+      // ★**모의 지연** — 실제로 몇 초 기다리지 않는다(인계서 ②: 테스트가 시계를 쓰면 안 된다).
+      if (opts.preflightDelayMs !== undefined) await new Promise((r) => setTimeout(r, opts.preflightDelayMs));
+      return (
         opts.preflightFail === undefined
           ? { ok: true }
-          : { ok: false, reason: opts.preflightFail.reason, detail: opts.preflightFail.detail },
-      ),
+          : { ok: false, reason: opts.preflightFail.reason, detail: opts.preflightFail.detail }
+      );
+    },
     idleSeconds: () => Promise.resolve(opts.idle ?? 99),
     frontWindow: () => Promise.resolve("stub-front"),
     post: (events: Rec[]) => {
@@ -129,12 +134,15 @@ export const check: RegressionCheck = {
     );
 
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "cu-wiring-"));
-    const host = { dataDir, log: () => {}, turn: { threadKey: "t1" } };
+    // ★호스트 로그를 **담는다** — 계측 줄(`권한확인 Nms…`)이 그 구간을 실제로 재는지
+    //  보려면 버리면 안 된다. 아레나마다 새 배열을 준다.
+    const hostLines: string[] = [];
+    const host = { dataDir, log: (m: string) => hostLines.push(String(m)), turn: { threadKey: "t1" } };
     const extra = { signal: new AbortController().signal };
 
     /** 한 판을 차린다 — 배선·기록·도구 둘. */
     const arena = (
-      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number } = {},
+      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number } = {},
     ): { log: Log; desktop: Rec; look: ToolLike; doTool: ToolLike } => {
       const log: Log = { posts: [], captures: [], order: [] };
       const desktop = newDesktop();
@@ -175,6 +183,129 @@ export const check: RegressionCheck = {
           "★★사후 장면이 응답에 **그림으로** 실리고 **새 화면 id** 가 붙는다",
           d.content.some((c) => c["type"] === "image") && frameIdOf(d) !== null && frameIdOf(d) !== fid,
           `그림=${String(d.content.some((c) => c["type"] === "image"))} 새id=${String(frameIdOf(d))} 옛id=${String(fid)}`,
+        ),
+      );
+    }
+
+    // ── ①-i ★계측이 **권한 확인 구간을 실제로 잡는가** (보완 인계서 ②) ───────────────
+    //  ★첫 판은 `controlPreflight` **뒤에** 시각을 잡아서, 로그의 «검사까지» 가 do 진입부터가
+    //   아니었다. Windows 는 권한 확인이 프로세스 호출이라 거기서 예산을 먹을 수 있는데
+    //   그 구간이 통째로 빠졌다. **모의 지연**으로 잰다 — 실제로 몇 초 기다리지 않는다.
+    {
+      hostLines.length = 0;
+      const a = arena({ preflightDelayMs: 120 });
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      const frames = (a.desktop as Rec)["frames"] as Map<string, { atMs: number }[]>;
+      const { FRAME_TTL_MS } = await loadPluginModule<{ FRAME_TTL_MS: number }>(
+        "../../../plugins/computer-use/src/control.ts",
+      );
+      for (const list of frames.values()) for (const fr of list) fr.atMs -= FRAME_TTL_MS + 5_000;
+      await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 1, y: 1 }] }, extra);
+      const line = hostLines.find((l) => l.includes("권한확인")) ?? "";
+      const ms = Number(/권한확인 (\d+)ms/.exec(line)?.[1] ?? "-1");
+      out.push(
+        assert(
+          "★★계측이 **권한 확인 구간을 포함**한다 — 그 앞에서 시각을 잡으면 이 시간이 사라진다",
+          ms >= 100,
+          `권한확인=${String(ms)}ms (모의 지연 120ms) · ${line.slice(-70)}`,
+        ),
+      );
+      const total = Number(/do진입→판정 (\d+)ms/.exec(line)?.[1] ?? "-1");
+      out.push(
+        assert(
+          "★그리고 **합이 총시간에 들어간다** — 구간 이름과 재는 구간이 어긋나면 안 된다",
+          total >= ms,
+          `총 ${String(total)}ms ≥ 권한확인 ${String(ms)}ms`,
+        ),
+      );
+    }
+
+    // ── ①-h ★★**함수가 아니라 배선으로 잰다** (2026-09-20, 보완 인계서 ③) ──────────
+    //  ★지적: 새 검사들이 `normalizeKey`·`frameRejection` 을 **직접** 부른다. 그래서
+    //   `toStep` 에서 정규화 호출을 빼거나 호출부에서 `gaveImage:true` 를 빼도 **못 본다.**
+    //   계약은 «함수가 옳다» 가 아니라 «**실제 `do` 가 그렇게 흐른다**» 이다.
+    {
+      const a = arena();
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      await a.doTool.handler(
+        {
+          frameId: fid,
+          steps: [
+            { t: "keydown", key: "CTRL" },
+            { t: "keydown", key: "Shift" },
+            { t: "type", text: "Ab" },
+            { t: "keyup", key: "Shift" },
+            { t: "keyup", key: "CTRL" },
+          ],
+        },
+        extra,
+      );
+      const fired = a.log.posts.find((p) => p.events.some((e) => e["t"] === "keydown"));
+      const keys = (fired?.events ?? []).filter((e) => e["t"] === "keydown" || e["t"] === "keyup").map((e) => String(e["key"]));
+      out.push(
+        assert(
+          "★★**실제 발사 이벤트의 키가 정규화돼 있다** — `CTRL`·`Shift` 가 소문자로 나간다",
+          keys.length > 0 && keys.every((k) => k === k.toLowerCase()),
+          `발사 키: ${keys.join(",")}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★**`type` 본문은 안 바뀐다** — 키 정규화가 글자를 건드리면 안 된다",
+          // ★`type` 은 발사부에서 `unicode` 이벤트가 된다 — **제품이 실제로 내는 모양**으로 잰다.
+          (fired?.events ?? []).some((e) => e["t"] === "unicode" && String(e["text"]) === "Ab"),
+          JSON.stringify((fired?.events ?? []).filter((e) => e["t"] === "unicode")),
+        ),
+      );
+      // ★장부에도 **같은 값**이 올라야 한다 — 검증만 소문자로 하고 장부에 원문을 담으면
+      //  «누른 키» 와 «뗄 키» 가 갈려 미아가 생긴다.
+      const held = fired?.heldAtPost.keys ?? [];
+      out.push(
+        assert(
+          "★★장부에도 **정규화된 같은 값**이 올라간다 — 갈리면 해제가 남의 키를 놓는다",
+          held.length > 0 && held.every((k) => k === k.toLowerCase()),
+          `장부: ${held.join(",")}`,
+        ),
+      );
+    }
+    {
+      // ★mac 에서는 `WIN` 이 **발사 전에** 거절되고 post 가 **0회** 여야 한다.
+      const a = arena();
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      const r = await a.doTool.handler(
+        { frameId: fid, steps: [{ t: "keydown", key: "WIN" }] },
+        extra,
+      );
+      const txt = r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n");
+      out.push(
+        assert(
+          "★★mac 에서 `WIN` 은 **쏘기 전에** 거절된다 — 대문자로 우회되지 않는다",
+          a.log.posts.length === 0 && /낼 수 없습니다/.test(txt),
+          `발사 ${String(a.log.posts.length)}회 · ${txt.slice(0, 40)}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★그 거절은 «화면을 다시 찍어도 안 풀린다» 고 말한다 — 관측으로 복구하지 않게",
+          /화면을 다시 찍어도 풀리지 않습니다/.test(txt),
+          txt.slice(-46),
+        ),
+      );
+    }
+    {
+      // ★**무효화된 id** 로 부르면(행동 뒤 옛 id) 새 그림이 오고 재관측 지시는 **없어야** 한다.
+      const a = arena();
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 3, y: 3 }] }, extra);
+      const r = await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 4, y: 4 }] }, extra);
+      const txt = r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n");
+      out.push(
+        assert(
+          "★★무효화된 id 에도 **새 그림 + 새 id** 가 오고, **재관측 지시는 없다**",
+          r.content.some((c) => c["type"] === "image") &&
+            frameIdOf(r) !== null &&
+            !/look` 으로 (다시|지금)/.test(txt),
+          `그림=${String(r.content.some((c) => c["type"] === "image"))} 새id=${String(frameIdOf(r))} · ${txt.slice(0, 40)}`,
         ),
       );
     }

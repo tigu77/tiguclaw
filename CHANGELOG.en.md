@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-09-20
+
+### Changed
+
+- **`computer-use` now has two tools instead of six — `look` and `do`.** `look` takes the
+  screenshot; `do` takes clicks, typing, shortcuts, drags, scrolls and waits **as one ordered
+  sequence**, and returns the screen as it looked after they ran. If a skill or prompt of yours
+  names the old tools, update it.
+
+### Fixed
+
+- **A conversation failing permanently once the model's session was gone.** It now continues
+  from tiguclaw's own record of that conversation, and no longer resumes with an empty history.
+- **Actions on Windows reporting success when nothing had happened.**
+
 ## [0.55.0] - 2026-09-19
 
 ### Added
@@ -599,7 +614,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0
 [0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1
 [0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0

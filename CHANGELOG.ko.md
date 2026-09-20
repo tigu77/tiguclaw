@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-09-20
+
+### Changed
+
+- **`computer-use` 의 도구 여섯 개가 두 개로 바뀌었습니다 — `look` 과 `do`.** `look` 으로
+  화면을 보고, `do` 에 클릭·입력·단축키·드래그·스크롤·기다림을 **순서대로 한 번에** 넘깁니다.
+  `do` 는 동작을 마친 뒤의 화면을 함께 돌려줍니다. 스킬이나 지침에 옛 도구 이름을 적어
+  두셨다면 바꿔 주십시오.
+
+### Fixed
+
+- **모델 세션이 사라지면 그 대화가 영구히 실패하던 것.** 이제 tiguclaw 가 가진 대화 기록으로
+  이어갑니다 — 복구가 돌 때 대화가 비어 있던 것도 함께 고쳤습니다.
+- **Windows 에서 조작이 성공했다고 답하면서 실제로는 아무 일도 안 일어나던 것.**
+
 ## [0.55.0] - 2026-09-19
 
 ### Added
@@ -2151,7 +2166,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0
 [0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1
 [0.54.0]: https://github.com/tigu77/tiguclaw/compare/v0.53.0...v0.54.0

@@ -66,3 +66,6 @@ _workspace/*
 
 # 전용 Node (install.sh/ps1 이 Node 없는 기계에 받아두는 자리) — 추적하지 않는다.
 .node/
+
+# Claude Code 세션별 전달 알림 지문 (읽음/작업 완료 영수증 아님)
+.claude/handoff-state/

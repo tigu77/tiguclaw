@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-09-20
+
+### Fixed
+
+- **The assistant repeating the same request forever when it tried to zoom into part of the
+  screen.** That request now returns the full screen, so it can move on.
+- **Keys staying held down when a screen action stopped partway.** Held keys and mouse buttons
+  are now released even when the action stopped safely because another window came to the front.
+
 ## [0.56.0] - 2026-09-20
 
 ### Changed
@@ -614,7 +623,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...HEAD
+[0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1
 [0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0
 [0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1

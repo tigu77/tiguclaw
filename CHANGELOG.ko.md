@@ -8,6 +8,15 @@
 
 ## [Unreleased]
 
+## [0.56.1] - 2026-09-20
+
+### Fixed
+
+- **화면 일부를 크게 보려다 비서가 같은 요청을 끝없이 반복하던 것.** 이제 그 요청에 전체
+  화면을 돌려주므로 다음 단계로 넘어갑니다.
+- **화면을 조작하다 중간에 멈추면 누른 키가 그대로 눌려 있던 것.** 다른 창으로 전환돼
+  안전하게 멈춘 경우에도 눌린 키와 마우스 버튼을 놓습니다.
+
 ## [0.56.0] - 2026-09-20
 
 ### Changed
@@ -2166,7 +2175,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...HEAD
+[0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1
 [0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0
 [0.54.1]: https://github.com/tigu77/tiguclaw/compare/v0.54.0...v0.54.1

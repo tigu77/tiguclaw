@@ -48,6 +48,8 @@ const makeStubs = (
   opts: {
     postOk?: boolean;
     postThrows?: boolean;
+    /** ★가드가 **몇 번째 직전에** 멈추나 — 그 앞까지만 쏜 «정상 종료한 부분 실행». */
+    guardStopAt?: number;
     releaseOk?: boolean;
     /** 조작 권한 프리플라이트를 **실패**시킨다 — 그 분기가 실제로 도는지 보려고. */
     preflightFail?: { reason: string; detail: string };
@@ -87,6 +89,17 @@ const makeStubs = (
       // 정리(놓기)와 본 발사를 구분한다 — 정리는 `mouseup`/`keyup` 뿐이다.
       const isRelease = events.every((e) => e["t"] === "keyup" || e["t"] === "mouseup");
       const ok = isRelease ? opts.releaseOk !== false : opts.postOk !== false;
+      // ★★**가드 중단은 «정상 종료한 부분 실행»** 이다 — `ok:true` 인데 열을 다 못 냈다.
+      //  실행부(mac.ts·win.ts)가 그 사실을 **stdout 으로** 말하므로 여기서도 그렇게 낸다
+      //  (반환값에 플래그를 더하면 제품이 안 쓰는 통로를 검사가 지어내는 것이 된다).
+      if (!isRelease && opts.guardStopAt !== undefined) {
+        const cut = opts.guardStopAt;
+        return Promise.resolve({
+          ok: true,
+          fired: cut, // 멈추기 전까지는 실제로 쐈다
+          stdout: `${JSON.stringify({ step: cut })}\n${JSON.stringify({ stopped: cut, why: "front-changed", saw: "B:2" })}`,
+        });
+      }
       return Promise.resolve(
         ok
           ? { ok: true, fired: events.length, stdout: "" }
@@ -119,7 +132,7 @@ export const check: RegressionCheck = {
 
     /** 한 판을 차린다 — 배선·기록·도구 둘. */
     const arena = (
-      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean } = {},
+      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number } = {},
     ): { log: Log; desktop: Rec; look: ToolLike; doTool: ToolLike } => {
       const log: Log = { posts: [], captures: [], order: [] };
       const desktop = newDesktop();
@@ -160,6 +173,161 @@ export const check: RegressionCheck = {
           "★★사후 장면이 응답에 **그림으로** 실리고 **새 화면 id** 가 붙는다",
           d.content.some((c) => c["type"] === "image") && frameIdOf(d) !== null && frameIdOf(d) !== fid,
           `그림=${String(d.content.some((c) => c["type"] === "image"))} 새id=${String(frameIdOf(d))} 옛id=${String(fid)}`,
+        ),
+      );
+    }
+
+    // ── ①-d ★★**가드가 멈춰도 손은 놓는다** (2026-09-20, 회사돌쇠 독립 검토) ──────────
+    //  ★★전면 창 가드의 중단은 자식이 **«정상 종료» 하는 부분 실행**이다(`ok:true` + 멈춤).
+    //   그래서 `keydown shift → keyup shift` 가 2번째 직전에 멈추면, **계획 전체로는 짝이
+    //   맞아** `holds` 가 비어 있다 — 종전엔 `sent.ok` 만 보고 장부를 그 빈 값으로 줄인 **뒤에**
+    //   결과를 읽었고, 그러면 바로 아래 정리가 «장부가 비었으니 놓을 것 없다» 로 건너뛴다.
+    //   **물리 키는 shift 가 눌린 채인데 뗄 근거가 사라진다.**
+    //  ★실측(아스트라 재현, 고침 전): `simulatedPhysicalKeys:["shift"]` · 빈 장부 · `postCalls:1`.
+    //  ★★**아래 정리 블록의 주석은 이미 이 경우를 정확히 적고 있었다.** 가드가 틀린 게 아니라
+    //   **그 앞 한 줄이 무력화**하고 있었다 — 변이로는 안 나오고 **순서**를 봐야 나온다.
+    {
+      const a = arena({ guardStopAt: 1 });
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      const r = await a.doTool.handler(
+        { frameId: fid, steps: [{ t: "keydown", key: "shift" }, { t: "keyup", key: "shift" }] },
+        extra,
+      );
+      // 정리 발사는 `keyup`/`mouseup` 뿐인 post 다 — 본 발사와 구분해서 센다.
+      const releases = a.log.posts.filter((p) =>
+        p.events.length > 0 && p.events.every((e) => e["t"] === "keyup" || e["t"] === "mouseup"),
+      );
+      out.push(
+        assert(
+          "★★가드가 멈춘 뒤 **놓기 발사가 실제로 일어난다** — 안 하면 shift 가 사용자 기계에 남는다",
+          releases.length === 1,
+          `놓기 post ${String(releases.length)}회 · 전체 post ${String(a.log.posts.length)}회`,
+        ),
+      );
+      out.push(
+        assert(
+          "★그 놓기가 **shift 를 떼는 것**이다(엉뚱한 키를 떼는 게 아니다)",
+          releases[0]?.events.some((e) => e["t"] === "keyup" && e["key"] === "shift") === true,
+          JSON.stringify(releases[0]?.events ?? []).slice(0, 90),
+        ),
+      );
+      const heldAfter = (a.desktop as Rec)["held"] as { keys: string[]; buttons: string[] };
+      out.push(
+        assert(
+          "★놓기가 성공했으면 장부도 비워진다 — 다음 행동이 또 떼려 들지 않는다",
+          heldAfter.keys.length === 0 && heldAfter.buttons.length === 0,
+          JSON.stringify(heldAfter),
+        ),
+      );
+      out.push(
+        assert(
+          "★보고가 **어디서 멈췄는지** 말한다 — 「완료/미실행」이 사용자에게 보이는 판정이다",
+          /미실행/.test(r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n")),
+          r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join(" ").slice(0, 80),
+        ),
+      );
+    }
+
+    // ── ①-e ★**막으면 안 되는 것 셋** — 과하게 놓지 않는다 ──────────────────────────
+    //  ★아스트라 경계: *"입력 전 중단에도 무조건 모든 키를 해제하는 방식으로 단순화하지 마라."*
+    //   그래서 반대편에도 못을 박는다 — 안 그러면 «늘 놓는다» 로 넓혀도 위 넷이 통과한다.
+    {
+      // (1) 정상 완주 — 짝이 맞았으니 **놓기가 아예 없어야** 한다
+      const a1 = arena();
+      const f1 = frameIdOf(await a1.look.handler({}, extra));
+      await a1.doTool.handler(
+        { frameId: f1, steps: [{ t: "keydown", key: "shift" }, { t: "keyup", key: "shift" }] },
+        extra,
+      );
+      const rel1 = a1.log.posts.filter((p) =>
+        p.events.length > 0 && p.events.every((e) => e["t"] === "keyup" || e["t"] === "mouseup"),
+      );
+      out.push(
+        assert(
+          "★반대 방향 — **정상 완주**엔 놓기 발사가 없다(이미 뗀 키를 또 떼면 유휴 시계가 헛리셋된다)",
+          rel1.length === 0,
+          `놓기 ${String(rel1.length)}회 · post ${String(a1.log.posts.length)}회`,
+        ),
+      );
+
+      // (2) 한 번도 안 쐈다(`fired:0`) — 누른 것이 없으니 놓을 것도 없다
+      const a2 = arena({ guardStopAt: 0 });
+      const f2 = frameIdOf(await a2.look.handler({}, extra));
+      await a2.doTool.handler(
+        { frameId: f2, steps: [{ t: "keydown", key: "shift" }, { t: "keyup", key: "shift" }] },
+        extra,
+      );
+      const rel2 = a2.log.posts.filter((p) =>
+        p.events.length > 0 && p.events.every((e) => e["t"] === "keyup" || e["t"] === "mouseup"),
+      );
+      out.push(
+        assert(
+          "★반대 방향 — **입력 전 중단**(`fired:0`)엔 놓기가 없다 — 누른 적 없는 키에 keyup 을 쏘지 않는다",
+          rel2.length === 0,
+          `놓기 ${String(rel2.length)}회`,
+        ),
+      );
+
+      // (3) 놓기가 실패하면 장부를 **지우지 않는다** — 다음 호출이 갚을 근거다
+      const a3 = arena({ guardStopAt: 1, releaseOk: false });
+      const f3 = frameIdOf(await a3.look.handler({}, extra));
+      await a3.doTool.handler(
+        { frameId: f3, steps: [{ t: "keydown", key: "shift" }, { t: "keyup", key: "shift" }] },
+        extra,
+      );
+      const held3 = (a3.desktop as Rec)["held"] as { keys: string[]; buttons: string[] };
+      out.push(
+        assert(
+          "★**놓기 실패면 장부를 안 지운다** — 그게 다음 호출이 갚을 유일한 근거다",
+          held3.keys.includes("shift"),
+          JSON.stringify(held3),
+        ),
+      );
+    }
+
+    // ── ①-c ★★**막다른 길이 없다** — `region` 은 줬는데 `frameId` 가 비면 ─────────────
+    //  ★★이 자리에서 **두 번** 돌았다. 모델은 «필드를 빼라» 를 못 한다 — 스키마를 빈 값으로
+    //   채워 보낸다(`region={0,0,1,1}, frameId:""`). 그래서 안내만 돌려주면 같은 인자가 다시
+    //   오고, 그게 곧 무한 반복이다: **720번·101분**(2026-09-18) → 안내문으로 «고침» →
+    //   **39번·2시간 15분**(2026-09-20, 정태님 기계에서 실측).
+    //  ★그래서 재는 것은 «좋은 안내문이 오는가» 가 아니라 **«다음 수가 손에 쥐어지는가»** 다:
+    //   그림이 실리고 **새 화면 id** 가 붙어야 다음 호출이 저절로 성립한다.
+    //  ★변이로 확인할 것 — 이 블록을 옛 `textOnly(안내)` 로 되돌리면 둘 다 빨개져야 한다.
+    {
+      const a = arena();
+      const r = await a.look.handler(
+        { display: 1, region: { x: 0, y: 0, width: 1, height: 1 }, frameId: "" },
+        extra,
+      );
+      const hasImage = r.content.some((c) => c["type"] === "image");
+      const newId = frameIdOf(r);
+      out.push(
+        assert(
+          "★★`frameId` 가 비어도 **막다른 길이 아니다** — 전체 화면 그림이 실려 온다",
+          hasImage,
+          `그림=${String(hasImage)} · content=${r.content.map((c) => String(c["type"])).join(",")}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★★그리고 **새 화면 id** 가 붙는다 — 그게 없으면 다음 호출이 또 같은 자리로 온다",
+          newId !== null,
+          `새 id=${String(newId)}`,
+        ),
+      );
+      // ★**막으면 안 되는 것 하나** — 제대로 준 `region`+`frameId` 는 여전히 그 영역을 찍어야
+      //  한다. 위 고침이 «`region` 을 늘 무시» 로 넓어지면 확대가 통째로 죽는다.
+      const full = frameIdOf(await a.look.handler({}, extra));
+      const zoom = await a.look.handler(
+        { region: { x: 0, y: 0, width: 8, height: 8 }, frameId: full },
+        extra,
+      );
+      const zoomed = a.log.captures.at(-1)?.target;
+      out.push(
+        assert(
+          "★반대 방향 — 제대로 준 `region`+`frameId` 는 **그 영역**을 찍는다(확대가 안 죽는다)",
+          zoom.content.some((c) => c["type"] === "image") && zoomed?.["kind"] === "region",
+          `마지막 대상 kind=${String(zoomed?.["kind"])}`,
         ),
       );
     }

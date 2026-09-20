@@ -387,11 +387,38 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
         //  «`look` 으로 다시 보세요» 였는데 **부르고 있던 것이 그 도구**라,
         //  같은 인자로 720번 같은 오류를 받으며 101분을 썼다.
         if (args.frameId === undefined || args.frameId.trim() === "") {
-          return textOnly(
-            "영역을 크게 보려면 **먼저 `region` 과 `frameId` 를 빼고** `look` 을 " +
-              "한 번 부르세요 — 그러면 전체 화면 그림과 «화면 id» 를 받습니다. " +
-              "그 id 를 `frameId` 로 주고, 영역 좌표는 **그 그림의 픽셀**로 주세요.",
+          // ★★**거절하지 않는다 — 전체 화면을 찍어 «다음 수» 를 쥐여 준다** (2026-09-20).
+          //  종전엔 «`region` 과 `frameId` 를 **빼고** 부르세요» 라고 안내만 했다. 그 안내는
+          //  정확했는데 **모델이 필드를 뺄 수가 없었다** — 스키마를 빈 값으로 채워 보낸다.
+          //  실측(정태님 기계, 이 판 직전): `look(display=1, region={0,0,1,1}, frameId="")`
+          //  를 **39번 · 2시간 15분**. 그 전엔 같은 부류로 **720번 · 101분**이었고, 그때
+          //  처방이 바로 이 안내문이었다 — **두 번째로 같은 자리에서 돈 것이다.**
+          //  ★그러니 안내를 더 잘 쓰는 게 답이 아니다. 모델이 구조적으로 못 하는 일을
+          //   시키지 말고 **우리가 한다**: 영역을 버리고 전체를 찍으면 그 답에 «화면 id» 가
+          //   실려, 다음 호출이 저절로 성립한다. 막다른 길이 아니라 전진이 된다.
+          //  ★`display` 는 살린다 — 그건 이 호출에서 유효한 정보다(버릴 이유가 없다).
+          const whole = await captureScene(
+            w,
+            args.display !== undefined ? { kind: "display", index: args.display } : { kind: "screen" },
+            host,
           );
+          // ★**그림이 실제로 실렸을 때만** 안내를 앞에 붙인다. 권한 실패처럼 글만 오는
+          //  답에 «찍었습니다» 를 얹으면 서로 반대인 두 문장이 한 답에 들어간다.
+          const gotImage = whole.content.some((c) => c.type === "image");
+          if (!gotImage) return whole;
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  "★`region` 을 **무시하고 전체 화면**을 찍었습니다 — `frameId` 가 없어서 그 " +
+                  "영역이 어느 그림의 좌표인지 알 수 없었습니다.\n" +
+                  "아래 그림의 «화면 id» 를 `frameId` 로 주고 같은 `region` 을 다시 부르면 그 " +
+                  "부분만 크게 볼 수 있습니다. 좌표는 **이 그림의 픽셀**입니다(왼쪽 위가 0,0).",
+              },
+              ...whole.content,
+            ],
+          };
         }
         const fc = frameCheck(w.desktop.frames.get(ownerNow), args.frameId, ownerNow, Date.now());
         if (!fc.ok) return textOnly(frameRejection(fc.why));
@@ -605,10 +632,32 @@ const runSteps = async (
     fired = true;
     const sent = await ctl.post(p.events);
     w.desktop.lastSelfInputMs = Date.now();
-    // ★자식이 **끝까지 갔으면** 짝이 맞은 것은 이미 떼어졌다 — 장부를 «남는 것» 으로 줄인다.
-    //  그래야 뒤따르는 정리가 **이미 뗀 키를 또 떼지 않는다**(쓸데없이 유휴 시계를 리셋한다).
-    if (sent.ok) w.desktop.held = { keys: [...p.holds.keys], buttons: [...p.holds.buttons] };
+    // ★★**판독이 먼저다 — 그 다음에 장부를 줄인다** (2026-09-20, 회사돌쇠 독립 검토).
+    //  종전엔 `sent.ok` 만 보고 장부를 «끝까지 갔을 때 남는 것»(`holds`)으로 줄인 **뒤에**
+    //  결과를 읽었다. 그런데 **전면 창 가드의 중단은 자식이 «정상 종료» 하는 부분 실행**이다
+    //  (`ok:true` + `stopped`). 그래서 `keydown shift → keyup shift` 가 2번째 직전에 멈추면,
+    //  계획 전체로는 짝이 맞아 `holds` 가 비어 있고 → 장부가 **비워지고** → 바로 아래 정리가
+    //  건너뛰어진다. **물리 키는 shift 가 눌린 채인데 뗄 근거가 사라진다.**
+    //  ★실측(아스트라 재현, 이 고침 전): `guard-stopped` 에서
+    //   `simulatedPhysicalKeys:["shift"]` · `ledger:{keys:[],buttons:[]}` · `postCalls:1`.
+    //  ★★**아래 정리 블록의 주석은 이미 이 경우를 정확히 적고 있었다.** 가드가 틀린 게
+    //   아니라 **그 앞 한 줄이 무력화**하고 있었다 — 변이로는 안 나오고 순서를 봐야 나오는
+    //   부류다(CLAUDE.md 의 «변이만으로는 순서 결함이 안 나온다»).
     const oc = stepsOutcome(sent.stdout, steps.length, sent.ok);
+    if (sent.ok && sent.fired === 0) {
+      // ★한 번도 안 쐈다 — 누른 것이 없으니 **뗄 것도 없다.** 여기서 비우지 않으면 아래
+      //  정리가 **누른 적 없는 키에 keyup 을 쏜다**(아스트라가 경계한 «무조건 해제»).
+      //  ★실패(`!sent.ok`)엔 이 가지가 안 걸린다 — 몇 번 쐈는지 **모르기 때문**이다.
+      //   모르면 장부를 그대로 두는 쪽이 맞다(상위집합이 미아보다 낫다).
+      w.desktop.held = { keys: [], buttons: [] };
+    } else if (sent.ok && oc.stoppedAt === undefined) {
+      // ★**완주했을 때만** 줄인다 — 짝이 맞은 것은 이미 떼어졌으므로, 뒤따르는 정리가
+      //  이미 뗀 키를 또 떼지 않는다(쓸데없이 유휴 시계를 리셋한다).
+      w.desktop.held = { keys: [...p.holds.keys], buttons: [...p.holds.buttons] };
+    }
+    // ★그 밖(부분 중단·실패)은 장부를 **`touched` 그대로** 둔다. `touched` 는 «도중에 누르는
+    //  것 전부» 라 실제로 눌린 것의 **상위집합**이다 — 안 눌린 키에 keyup 이 한 번 더 가는
+    //  것은 무해하지만, **눌린 채 남는 키는 사용자 기계에 미아로 남는다.** 값이 다르다.
 
     // ★★**정리는 «성공/실패» 가 아니라 «장부에 남았나» 로 한다**(계약 2). 가드가 멈춘
     //  실행은 자식이 **정상 종료**했는데도 `keydown` 이 눌린 채 남는다 — 종전처럼 실패

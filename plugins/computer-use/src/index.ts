@@ -18,7 +18,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 // ★**번들 플러그인은 `@tiguclaw/plugin` 을 쓰지 않는다** (2026-09-16, 데브싱크가 잡았다).
 //  그 패키지는 **공개 배포에서 제외**된다(npm 미발행 + 재수출 소스가 `files` 밖이라 설치해도
@@ -54,7 +54,6 @@ import {
   forgetHeld,
   frameCheck,
   frameRejection,
-  FRAME_TTL_MS,
   normalizeKey,
   postFailureMessage,
   rememberFrame,
@@ -268,6 +267,7 @@ const captureScene = async (
   //  등록하지 않는다: 좌표를 지어내느니 «그 화면을 모른다» 가 낫다.
   // ★**찍은 그 화면**의 기하를 쓴다 — `screens[0]` 을 무조건 쓰면 보조 화면 좌표가
   //  조용히 주 화면으로 풀린다(2026-09-18, 회사돌쇠 4차).
+  const previousFrame = w.desktop.frames.get(owner)?.[0];
   const screen = probe.ok ? screenForTarget(okTarget.target, probe.screens) : null;
   if (screen !== null && shot.deliveredPx !== null) {
     w.desktop.frames.set(
@@ -310,10 +310,29 @@ const captureScene = async (
         `영역(region)을 좁혀 다시 찍으면 실릴 수 있습니다.`,
     );
   }
-  const data = (await fs.readFile(savedPath)).toString("base64");
+  const bytes = await fs.readFile(savedPath);
+  const data = bytes.toString("base64");
+  let repetition = "";
+  const frame = w.desktop.frames.get(owner)?.find(f => f.id === frameId);
+  if (frame !== undefined) {
+    // 바이트 일치만 사용한다. 시계·커서 변화는 놓칠 수 있지만 유사 화면을 같다고 단정하지 않는다.
+    // 기존 3장 프레임 보관에 작은 요약만 얹는다. 별도 무한 세션 맵이나 이미지 사본은 없다.
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([frame.target, frame.geometry, frame.front]))
+      .update(bytes).digest("hex");
+    const repeats = opts?.afterAction !== true && previousFrame?.observation?.fingerprint === fingerprint
+      ? previousFrame.observation.repeats + 1 : 1;
+    frame.observation = { fingerprint, repeats };
+    if (repeats >= 3) {
+      repetition = `\n\n관측 참고: 같은 대상·전면 창에서 동일한 이미지가 ${String(repeats)}회 연속 반환됐습니다. ` +
+        "그 사이 이 도구를 통한 조작은 없었습니다. 더 관측할 이유가 있는지 판단하세요. " +
+        "행동에 필요한 정보가 충분하면 이 화면 id로 do를 사용하고, 변화 대기가 필요하면 기다린 뒤 확인하세요. " +
+        "이 안내는 차단이나 실패 판정이 아닙니다.";
+    }
+  }
   return {
     content: [
-      { type: "text" as const, text: meta },
+      { type: "text" as const, text: meta + repetition },
       {
         type: "image" as const,
         data,
@@ -422,22 +441,12 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
             ],
           };
         }
-        const fc = frameCheck(w.desktop.frames.get(ownerNow), args.frameId, ownerNow, Date.now());
+        const fc = frameCheck(w.desktop.frames.get(ownerNow), args.frameId, ownerNow);
         if (!fc.ok) {
-          // ★★**`look` 에도 같은 처방을 단다** (2026-09-20, 적대 검토 F8). 같은 커밋이
-          //  `do` 에는 자동 재촬영을 달고 **`look` 에는 안 달았다** — 비대칭이었고, 그
-          //  사이 수명을 30→10초로 줄여 **빈도를 3배로 올렸다.**
-          //  ★특히 나쁜 이유: `frameRejection("stale")` 의 처방이 *"`look` 으로 다시
-          //   보세요"* 인데 **그 말을 `look` 이 하고 있다.** 처방이 제 발을 가리킨다 —
-          //   이 파일이 두 번 겪은 그 모양이다(720회·101분 / 39회·2시간15분).
-          //  ★`region` 은 그 낡은 그림 기준이라 **버린다** — 새 그림에서 어디인지 모른다.
-          //   `stale` 이면 같은 대상을, 아니면 `display`/전체를 찍는다.
-          const target: CaptureTarget =
-            fc.stale !== undefined
-              ? fc.stale.target
-              : args.display !== undefined
-                ? { kind: "display", index: args.display }
-                : { kind: "screen" };
+          // 사용할 수 없는 id의 영역 좌표를 실행하지 않고 새 관측을 돌려준다.
+          const target: CaptureTarget = args.display !== undefined
+            ? { kind: "display", index: args.display }
+            : { kind: "screen" };
           const again = await captureScene(w, target, host);
           if (!again.content.some((c) => c.type === "image")) return textOnly(frameRejection(fc.why));
           return {
@@ -673,30 +682,16 @@ const runSteps = async (
         );
       }
     }
-    const fc = frameCheck(w.desktop.frames.get(owner), frameId, owner, now);
+    const fc = frameCheck(w.desktop.frames.get(owner), frameId, owner);
     if (!fc.ok) {
-      // ★**만료 당시의 나이와 그 앞 단계 소요를 같이 남긴다** — «10초가 맞나» 를
-      //  직감이 아니라 수치로 정하기 위해서다(인계서 C).
-      const age = fc.stale === undefined ? null : Date.now() - fc.stale.atMs;
       host?.log(
         `조작 거절 — 프레임(${fc.why})` +
-          (age === null ? "" : ` · 나이 ${String(age)}ms / 예산 ${String(FRAME_TTL_MS)}ms`) +
           // ★이름과 구간을 맞춘다 — 각각 «그 단계가 쓴 시간» 이고, 합이 `do진입→판정` 이다.
           ` · 권한확인 ${String(tPreflight - tDo)}ms · 유휴조회 ${String(tIdle - tPreflight)}ms` +
           ` · do진입→판정 ${String(Date.now() - tDo)}ms`,
       );
-      // ★★**거절만 하지 않고 새 그림을 쥐여 준다** (2026-09-20, 정태님 실기).
-      //  실측: 그 기계의 거절 사유 18건 중 **11건이 `프레임(stale)`** 이었다. 모델이
-      //  생각하는 동안 수명이 지나고 → 거절 → 다시 `look` → 또 생각 → 또 만료. **왕복이
-      //  스스로를 먹여 살리는 고리**다(8분 넘게 돌았다).
-      //  ★수명을 늘리는 것은 답이 아니다 — 늘린 만큼 «그 사이 화면이 바뀌었을 확률» 을
-      //   사는 것이고, 그게 **엉뚱한 것을 누르는** 길이다. 그래서 수명은 오히려 10초로
-      //   줄이고(같은 커밋), 대신 막힌 자리에서 **다음 수를 손에 쥐여 준다.**
-      //  ★**그 행동을 대신 실행하지는 않는다** — 좌표는 옛 그림 기준이라 새 화면에서
-      //   무엇을 가리키는지 모른다. 주는 것은 «새 그림 + 새 id» 까지다.
-      //  ★`look` 의 막다른 길을 고칠 때와 **같은 처방**이다: 안내문을 잘 쓰는 게 아니라
-      //   모델이 바로 쓸 수 있는 것을 돌려준다.
-      const again = await captureScene(w, fc.stale?.target ?? { kind: "screen" }, host);
+      // 모르는 id·다른 소유자·누락은 여전히 거절한다. 새 화면만 주고 자동 실행하지 않는다.
+      const again = await captureScene(w, { kind: "screen" }, host);
       const gotImage = again.content.some((c) => c.type === "image");
       if (!gotImage) return textOnly(frameRejection(fc.why));
       return {
@@ -818,7 +813,7 @@ const actionTools = (w: Wiring, host?: PluginHost) => [
       frameId: z
         .string()
         .describe(
-          `\`look\` 또는 **직전 \`do\` 가 돌려준** «화면 id». **${String(Math.round(FRAME_TTL_MS / 1000))}초 만료**, 그리고 **\`do\` 를 한 번 ` +
+          `\`look\` 또는 **직전 \`do\` 가 돌려준** «화면 id». 시간 경과로 만료되지 않습니다. **화면 변화가 의심되면 재관측**하세요. **\`do\` 를 한 번 ` +
             "하면 그때까지의 화면 id 가 전부 무효**가 됩니다 — 다음 `do` 에는 **이번 `do` 가 " +
             "같이 준 그림의 id** 를 쓰세요.",
         ),

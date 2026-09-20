@@ -81,8 +81,6 @@ interface ControlModule {
     kept: readonly Frame[] | undefined,
     frameId: string,
     owner: string,
-    nowMs: number,
-    ttlMs?: number,
   ) => { ok: true; frame: Frame } | { ok: false; why: string };
   frameRejection: (why: string, opts?: { gaveImage?: boolean }) => string;
   postFailureMessage: (reason: "timeout" | "failed", detail: string) => string;
@@ -99,7 +97,6 @@ interface ControlModule {
     opts?: { windowMs?: number; selfGraceMs?: number },
   ) => boolean;
   SELF_INPUT_GRACE_MS: number;
-  FRAME_TTL_MS: number;
   LEASE_IDLE_MS: number;
 }
 
@@ -137,7 +134,6 @@ export const check: RegressionCheck = {
       normalizeKey,
       supportedKey,
       userIsActive,
-      FRAME_TTL_MS,
       LEASE_IDLE_MS,
       SELF_INPUT_GRACE_MS,
     } = await loadPluginModule<ControlModule>("../../../plugins/computer-use/src/control.ts");
@@ -216,9 +212,9 @@ export const check: RegressionCheck = {
       const d = newDesktop();
       d.frames.set("A", [frameAt("f1", "A", T)]);
       beginAction(d, "A", T, IDLE);
-      const before = frameCheck(d.frames.get("A"), "f1", "A", T + 100);
+      const before = frameCheck(d.frames.get("A"), "f1", "A");
       endAction(d, "A", T + 200); // ← 행동 종료가 프레임을 버린다
-      const afterAct = frameCheck(d.frames.get("A"), "f1", "A", T + 300);
+      const afterAct = frameCheck(d.frames.get("A"), "f1", "A");
       out.push(
         assert(
           "★행동이 끝나면 그 프레임이 **죽는다** — «클릭했으면 다시 봐라» 가 규율이 아니라 구조다",
@@ -227,29 +223,42 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    {
+      const d = newDesktop();
+      d.frames.set("A", [frameAt("a", "A", T)]);
+      d.frames.set("B", [frameAt("b", "B", T)]);
+      beginAction(d, "A", T, IDLE);
+      endAction(d, "A", T + 1);
+      out.push(assert(
+        "공유 데스크톱을 조작하면 다른 작업의 옛 화면도 무효화된다",
+        d.frames.size === 0,
+        JSON.stringify([...d.frames.keys()]),
+      ));
+    }
     out.push(
       assert(
-        "프레임: 남의 것·낡은 것·최신 아닌 것을 **사유를 갈라** 거절한다(처방이 다르다)",
-        (frameCheck([frameAt("f1", "B", T)], "f1", "A", T) as { why: string }).why === "other-owner" &&
-          (frameCheck([frameAt("f1", "A", T)], "f1", "A", T + FRAME_TTL_MS + 1) as { why: string }).why === "stale" &&
-          (frameCheck([frameAt("f2", "A", T)], "f1", "A", T) as { why: string }).why === "unknown",
-        `${JSON.stringify(frameCheck([frameAt("f2", "A", T)], "f1", "A", T))}`,
+        "프레임: 남의 것·보관되지 않은 것을 **사유를 갈라** 거절한다(처방이 다르다)",
+        (frameCheck([frameAt("f1", "B", T)], "f1", "A") as { why: string }).why === "other-owner" &&
+          (frameCheck([frameAt("f2", "A", T)], "f1", "A") as { why: string }).why === "unknown",
+        `${JSON.stringify(frameCheck([frameAt("f2", "A", T)], "f1", "A"))}`,
       ),
     );
-    out.push(
-      assert(
-        "★거절 문구가 **규칙까지** 말한다 — 오류 한 번으로 수명·한도를 배우게 한다(둘이 비대칭이면 안 된다)",
-        // ★**초 수를 리터럴로 적지 않는다** — 상수를 바꾸면 검사가 «틀린 값» 을 고정한다
-          //  (2026-09-20 에 30→10 으로 바꾸며 실제로 여기서 걸렸다). 상수에서 유도한다.
-          frameRejection("stale").includes(`${String(Math.round(FRAME_TTL_MS / 1000))}초`) &&
-            frameRejection("unknown").includes("3장"),
-        `${frameRejection("stale").slice(0, 50)} / ${frameRejection("unknown").slice(0, 50)}`,
-      ),
+    const oldFrameResults = [0, Date.now() - 3_600_000, Date.now() - 86_400_000].map(
+      at => frameCheck([frameAt("f1", "A", at)], "f1", "A"),
     );
+    out.push(assert(
+      "프레임은 경과 시간으로 만료되지 않으며 재관측 여부를 모델이 판단한다",
+      oldFrameResults.every(result => result.ok),
+      JSON.stringify(oldFrameResults),
+    ));
+    out.push(assert(
+      "모르는 프레임은 최근 보관 한도를 설명한다",
+      frameRejection("unknown").includes("3장"), frameRejection("unknown"),
+    ));
     out.push(
       assert(
         "★거절 문구가 **무엇을 해야 하는지**까지 말한다(사유만 던지면 모델이 멈춘다)",
-        ["unknown", "stale", "other-owner"].every((w) =>
+        ["unknown", "other-owner"].every((w) =>
           frameRejection(w).includes("look"),
         ),
         frameRejection("unknown").slice(0, 60),
@@ -659,7 +668,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★확대를 해도 **직전 전체 그림이 살아 있다**(두 군데를 보려고 다시 찍지 않아도 된다)",
-          frameCheck(kept, "wide", "A", T + 30).ok && frameCheck(kept, "zoom2", "A", T + 30).ok,
+          frameCheck(kept, "wide", "A").ok && frameCheck(kept, "zoom2", "A").ok,
           JSON.stringify(kept.map((f) => f.id)),
         ),
       );
@@ -673,7 +682,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "낡은 것은 밀려난다 — 밀려난 id 는 더 이상 안 선다",
-          !frameCheck(rememberFrame(kept, frameAt("zoom3", "A", T + 30)), "wide", "A", T + 30).ok,
+          !frameCheck(rememberFrame(kept, frameAt("zoom3", "A", T + 30)), "wide", "A").ok,
           JSON.stringify(rememberFrame(kept, frameAt("zoom3", "A", T + 30)).map((f) => f.id)),
         ),
       );
@@ -685,8 +694,8 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★행동 하나가 **그 소유자의 프레임을 전부** 무효화한다(여러 장이어도 마찬가지)",
-          !frameCheck(d3.frames.get("A"), "wide", "A", T + 2).ok &&
-            !frameCheck(d3.frames.get("A"), "zoom2", "A", T + 2).ok,
+          !frameCheck(d3.frames.get("A"), "wide", "A").ok &&
+            !frameCheck(d3.frames.get("A"), "zoom2", "A").ok,
           JSON.stringify(d3.frames.get("A") ?? []),
         ),
       );
@@ -751,8 +760,8 @@ export const check: RegressionCheck = {
     {
       const d = newDesktop();
       d.frames.set("A", [{ id: "f1", atMs: T, owner: "A", geometry: GEO }]);
-      const empty = frameCheck(d.frames.get("A"), "", "A", T + 100);
-      const blank = frameCheck(d.frames.get("A"), "   ", "A", T + 100);
+      const empty = frameCheck(d.frames.get("A"), "", "A");
+      const blank = frameCheck(d.frames.get("A"), "   ", "A");
       out.push(
         assert(
           "★빈 «화면 id» 는 «모르는 id» 가 아니라 **«안 줬다»** 로 갈린다(처방이 다르다)",
@@ -772,10 +781,10 @@ export const check: RegressionCheck = {
         assert(
           "모르는 id 는 여전히 **자기 사유**로 나온다(둘을 가르느라 하나를 잃지 않았다)",
           (() => {
-            const unk = frameCheck(d.frames.get("A"), "없는id", "A", T + 100);
+            const unk = frameCheck(d.frames.get("A"), "없는id", "A");
             return !unk.ok && unk.why === "unknown" && frameRejection("unknown") !== miss;
           })(),
-          JSON.stringify(frameCheck(d.frames.get("A"), "없는id", "A", T + 100)),
+          JSON.stringify(frameCheck(d.frames.get("A"), "없는id", "A")),
         ),
       );
     }
@@ -897,10 +906,10 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★★새 그림을 준 `stale` 응답엔 «`look` 으로 다시 보세요» 가 **없다**(지시가 둘이면 안 된다)",
-          !/look` 으로 다시 보세요/.test(frameRejection("stale", { gaveImage: true })) &&
-            /look` 으로 다시 보세요/.test(frameRejection("stale")),
-          `그림있음=${frameRejection("stale", { gaveImage: true }).slice(-20)} · 없음=${frameRejection("stale").slice(-20)}`,
+          "★★새 그림을 준 `unknown` 응답엔 재관측 지시가 **없다**(지시가 둘이면 안 된다)",
+          !/look` 으로 지금 화면/.test(frameRejection("unknown", { gaveImage: true })) &&
+            /look` 으로 지금 화면/.test(frameRejection("unknown")),
+          `그림있음=${frameRejection("unknown", { gaveImage: true }).slice(-20)} · 없음=${frameRejection("unknown").slice(-20)}`,
         ),
       );
       out.push(

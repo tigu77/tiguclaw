@@ -46,6 +46,8 @@ const makeStubs = (
   log: Log,
   desktop: Rec,
   opts: {
+    captureText?: () => string;
+    front?: () => string;
     postOk?: boolean;
     postThrows?: boolean;
     /** ★가드가 **몇 번째 직전에** 멈추나 — 그 앞까지만 쏜 «정상 종료한 부분 실행». */
@@ -72,7 +74,7 @@ const makeStubs = (
       log.captures.push({ target });
       log.order.push("capture");
       // 실제 파일을 만든다 — 배관이 `stat`·`readFile` 을 지나야 «사후 장면» 이 성립한다.
-      await fs.writeFile(outPath, "stub-frame");
+      await fs.writeFile(outPath, opts.captureText?.() ?? "stub-frame");
       return { ok: true, bytes: 10, longEdge: 1600, path: outPath, deliveredPx: { w: 1600, h: 900 } };
     },
   },
@@ -87,7 +89,7 @@ const makeStubs = (
       );
     },
     idleSeconds: () => Promise.resolve(opts.idle ?? 99),
-    frontWindow: () => Promise.resolve("stub-front"),
+    frontWindow: () => Promise.resolve(opts.front?.() ?? "stub-front"),
     post: (events: Rec[]) => {
       if (opts.postThrows === true) throw new Error("합성 rejection");
       const h = (desktop as { held: { keys: string[]; buttons: string[] } }).held;
@@ -142,7 +144,7 @@ export const check: RegressionCheck = {
 
     /** 한 판을 차린다 — 배선·기록·도구 둘. */
     const arena = (
-      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number } = {},
+      opts: { captureText?: () => string; front?: () => string; postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number } = {},
     ): { log: Log; desktop: Rec; look: ToolLike; doTool: ToolLike } => {
       const log: Log = { posts: [], captures: [], order: [] };
       const desktop = newDesktop();
@@ -187,6 +189,76 @@ export const check: RegressionCheck = {
       );
     }
 
+    // 반복 관측은 근거를 알릴 뿐 차단하지 않는다. 대상 변경·조작 뒤엔 누적을 끊는다.
+    {
+      const a = arena();
+      const textOf = (r: { content: Array<Rec> }) => r.content
+        .filter(c => c["type"] === "text").map(c => String(c["text"])).join("\n");
+      const results = [];
+      for (let i = 0; i < 4; i++) results.push(await a.look.handler({ display: 1 }, extra));
+      out.push(assert(
+        "동일 화면 3회부터 관측 참고를 주지만 4회째도 이미지와 id를 반환한다",
+        !textOf(results[1]!).includes("관측 참고:") && textOf(results[2]!).includes("3회 연속") &&
+          textOf(results[3]!).includes("4회 연속") && frameIdOf(results[3]!) !== null &&
+          results[3]!.content.some(c => c["type"] === "image"),
+        textOf(results[3]!).slice(-280),
+      ));
+      const changed = await a.look.handler({ display: 2 }, extra);
+      out.push(assert(
+        "이미지 바이트가 같아도 대상 디스플레이가 바뀌면 반복으로 세지 않는다",
+        !textOf(changed).includes("관측 참고:"), textOf(changed).slice(-280),
+      ));
+      const done = await a.doTool.handler(
+        { frameId: frameIdOf(changed), steps: [{ t: "click", x: 5, y: 5 }] }, extra,
+      );
+      out.push(assert(
+        "관측 안내 후에도 do가 실행되고 사후 화면은 새 연속 관측의 시작이다",
+        a.log.posts.length === 1 && !textOf(done).includes("관측 참고:"),
+        JSON.stringify({ posts: a.log.posts.length, tail: textOf(done).slice(-100) }),
+      ));
+    }
+
+    {
+      let picture = "one";
+      let front = "first";
+      const a = arena({ captureText: () => picture, front: () => front });
+      const note = (r: { content: Array<Rec> }) => r.content.some(
+        c => c["type"] === "text" && String(c["text"]).includes("관측 참고:"),
+      );
+      for (let i = 0; i < 3; i++) await a.look.handler({}, extra);
+      picture = "two";
+      const changedImage = await a.look.handler({}, extra);
+      await a.look.handler({}, extra);
+      const repeated = await a.look.handler({}, extra);
+      front = "second";
+      const changedWindow = await a.look.handler({}, extra);
+      out.push(assert(
+        "이미지가 달라지거나 같은 이미지라도 전면 창이 바뀌면 반복 안내가 초기화된다",
+        !note(changedImage) && note(repeated) && !note(changedWindow),
+        JSON.stringify({ changedImage: note(changedImage), repeated: note(repeated), changedWindow: note(changedWindow) }),
+      ));
+    }
+
+    // Windows 실측보다 여유 있는 1시간 준비 후에도 실제 do 배선이 입력까지 도달해야 한다.
+    // 실제 대기는 하지 않고 관측 프레임 시각만 이동한다. 실행부는 대역이라 OS 입력은 없다.
+    {
+      const a = arena();
+      const l = await a.look.handler({}, extra);
+      const fid = frameIdOf(l);
+      const frames = a.desktop["frames"] as Map<string, Array<{ atMs: number }>>;
+      for (const list of frames.values()) for (const fr of list) fr.atMs -= 3_600_000;
+      const d = await a.doTool.handler(
+        { frameId: fid, steps: [{ t: "click", x: 100, y: 100 }] },
+        extra,
+      );
+      out.push(assert(
+        "★1시간 준비한 조작도 실행하고 사후 화면을 반환한다 — 만료 재촬영 루프로 보내지 않는다",
+        a.log.posts.length === 1 && a.log.order.join(">") === "capture>post>capture" &&
+          d.content.some((c) => c["type"] === "image") && frameIdOf(d) !== fid,
+        a.log.order.join(">"),
+      ));
+    }
+
     // ── ①-i ★계측이 **권한 확인 구간을 실제로 잡는가** (보완 인계서 ②) ───────────────
     //  ★첫 판은 `controlPreflight` **뒤에** 시각을 잡아서, 로그의 «검사까지» 가 do 진입부터가
     //   아니었다. Windows 는 권한 확인이 프로세스 호출이라 거기서 예산을 먹을 수 있는데
@@ -195,11 +267,8 @@ export const check: RegressionCheck = {
       hostLines.length = 0;
       const a = arena({ preflightDelayMs: 120 });
       const fid = frameIdOf(await a.look.handler({}, extra));
-      const frames = (a.desktop as Rec)["frames"] as Map<string, { atMs: number }[]>;
-      const { FRAME_TTL_MS } = await loadPluginModule<{ FRAME_TTL_MS: number }>(
-        "../../../plugins/computer-use/src/control.ts",
-      );
-      for (const list of frames.values()) for (const fr of list) fr.atMs -= FRAME_TTL_MS + 5_000;
+      // 시간 만료 대신 알려지지 않은 id 거절 경로에서 검사 시간을 측정한다.
+      (a.desktop["frames"] as Map<string, unknown>).clear();
       await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 1, y: 1 }] }, extra);
       const line = hostLines.find((l) => l.includes("권한확인")) ?? "";
       const ms = Number(/권한확인 (\d+)ms/.exec(line)?.[1] ?? "-1");
@@ -346,29 +415,17 @@ export const check: RegressionCheck = {
         assert(
           "★★같은 소유자가 연달아 막히면 **연속이 오른다** — 안 오르면 승급이 영영 안 걸린다",
           // ★소유자 이름을 리터럴로 적지 않는다 — 아레나가 바꾸면 검사가 조용히 공짜 초록이 된다.
-          blocked.size === 1 && [...blocked.values()].every((v) => v.n >= 2),
-          `키=${[...blocked.keys()].join(",")} · 연속=${[...blocked.values()].map((v) => String(v.n)).join(",")}`,
+          a.log.posts.length === 0 && blocked.size === 1 && [...blocked.values()].every((v) => v.n >= 2),
+          `발사=${a.log.posts.length} · 키=${[...blocked.keys()].join(",")} · 연속=${[...blocked.values()].map((v) => String(v.n)).join(",")}`,
         ),
       );
     }
 
-    // ── ①-f ★★**낡은 화면 id 도 막다른 길이 아니다** (2026-09-20, 정태님 실기) ─────────
-    //  ★실측: 그 기계의 조작 거절 18건 중 **11건이 `프레임(stale)`** 이었다. 모델이 생각하는
-    //   동안 수명이 지나 거절되고 → 다시 `look` → 또 생각 → 또 만료. **왕복이 스스로를
-    //   먹여 살리는 고리**다(8분 넘게 돌았다). 「사람이 쓰는 중」은 5건뿐이었는데, 모델이
-    //   그렇게 **말해서** 처음엔 그쪽을 팠다 — 모델의 설명이 아니라 **로그의 사유**를 세야 한다.
-    //  ★수명을 늘리는 것은 답이 아니다(늘린 만큼 «화면이 바뀌었을 확률» 을 산다). 그래서
-    //   수명은 10초로 **줄이고**, 대신 막힌 자리에서 **새 그림 + 새 id** 를 쥐여 준다.
+    // 보관에서 제거된 화면은 시간 제한 없이도 거절하고 새 그림으로 복구한다.
     {
       const a = arena();
       const fid = frameIdOf(await a.look.handler({}, extra));
-      // 수명을 넘겨 낡게 만든다 — 프레임의 시각을 과거로 민다.
-      const frames = (a.desktop as Rec)["frames"] as Map<string, { atMs: number }[]>;
-      // ★상수를 **제품에서 읽는다** — 여기 숫자를 적으면 상수를 바꿀 때 검사가 옛 값을 고정한다.
-      const { FRAME_TTL_MS } = await loadPluginModule<{ FRAME_TTL_MS: number }>(
-        "../../../plugins/computer-use/src/control.ts",
-      );
-      for (const list of frames.values()) for (const fr of list) fr.atMs -= FRAME_TTL_MS + 5_000;
+      (a.desktop["frames"] as Map<string, unknown>).clear();
       const r = await a.doTool.handler(
         { frameId: fid, steps: [{ t: "click", x: 10, y: 10 }] },
         extra,
@@ -376,7 +433,7 @@ export const check: RegressionCheck = {
       const text = r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n");
       out.push(
         assert(
-          "★★낡은 화면 id 로 부르면 **새 그림이 같이 온다** — 거절만 하면 왕복이 고리가 된다",
+          "★★보관되지 않은 화면 id 로 부르면 **새 그림이 같이 온다** — 거절만 하면 왕복이 고리가 된다",
           r.content.some((c) => c["type"] === "image"),
           `content=${r.content.map((c) => String(c["type"])).join(",")}`,
         ),

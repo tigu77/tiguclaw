@@ -110,8 +110,10 @@ export const isModifier = (k: string): k is Modifier =>
 
 export interface Frame {
   id: string;
-  /** 캡처 시각(ms). 나이 판정에 쓴다. */
+  /** 캡처 시각(ms). 관측 기록에 쓴다. */
   atMs: number;
+  /** 전달 이미지와 관측 대상이 완전히 같을 때만 반복 안내에 사용한다. */
+  observation?: { fingerprint: string; repeats: number };
   geometry: FrameGeometry;
   /** 이 프레임을 찍은 소유자(스레드). 남의 프레임 위에서 클릭하지 않는다. */
   owner: string;
@@ -133,37 +135,12 @@ export interface Frame {
   front: string | null;
 }
 
-/**
- * 프레임 유효 시한 — **잠정**.
- *
- * ★★안 잰 값이다. 짧으면 «봤는데 또 찍어라» 가 잦고, 길면 낡은 화면 위에서 누른다.
- *  실사용 로그의 «프레임 만료» 빈도로 재서 확정한다 — 직감으로 박은 숫자를 «정해진 것» 으로
- *  읽지 마라.
- * ★그리고 **시한이 프레임 유효성의 전부가 아니다** — 유효한 프레임이어도 UI 가 그대로라는
- *  보장은 없다(§14-3). 그건 재관측으로만 안다.
- */
-// ★★**30초 → 10초** (2026-09-20 정태님). 늘리는 게 아니라 **줄이는** 쪽이 맞다 —
-//  낡은 그림의 좌표로 누르면 **그 사이 바뀐 화면의 엉뚱한 것**을 누른다. 모델이 오래
-//  생각한다고 그림의 수명을 늘리면, 늘린 만큼 «화면이 달라졌을 확률» 을 사는 것이다.
-//  ★짧게 하면 막다른 길이 잦아지므로 **낡았을 때 새로 찍어 준다**(같은 커밋). 그 둘은
-//   한 쌍이다 — 짧은 수명만 넣으면 왕복이 늘고, 재관측만 넣으면 옛 좌표가 살아남는다.
-export const FRAME_TTL_MS = 10_000;
-
-/** ★`not-latest` 가 없어졌다 — 최근 몇 장을 같이 들고 있으므로 «최신이 아님» 이 거절 사유가 아니다. */
-export type FrameReject = "missing" | "unknown" | "stale" | "other-owner";
-
+/** 시간 경과만으로 프레임을 거절하지 않는다. 재관측 필요성은 모델이 판단한다.
+ * 소유권·실행 후 무효화·최근 관측 보관 한도는 유지한다. */
+export type FrameReject = "missing" | "unknown" | "other-owner";
 export type FrameCheck =
   | { ok: true; frame: Frame }
-  /** ★`stale` 일 때만 그 프레임이 실린다 — 호출부가 **같은 대상**을 다시 찍기 위해서다. */
-  | { ok: false; why: FrameReject; stale?: Frame };
-
-/**
- * **이 행동이 설 수 있는 프레임인가** — 순수.
- *
- * ★거절 사유가 넷인 이유: 각각 **처방이 다르다.** «다시 찍어라»(stale·not-latest)와
- *  «네 것이 아니다»(other-owner)와 «그런 프레임이 없다»(unknown)를 한 문장으로 뭉치면
- *  모델이 무엇을 해야 할지 모른다.
- */
+  | { ok: false; why: FrameReject };
 export const FRAME_KEEP = 3;
 
 /** 새 프레임을 앞에 놓고 **최근 몇 장만** 남긴다 — 순수. */
@@ -174,8 +151,6 @@ export const frameCheck = (
   kept: readonly Frame[] | undefined,
   frameId: string,
   owner: string,
-  nowMs: number,
-  ttlMs = FRAME_TTL_MS,
 ): FrameCheck => {
   // ★★**«안 준 것» 과 «모르는 것» 은 처방이 다르다** (2026-09-18, 아스트라 실기 101분).
   //  종전엔 빈 문자열이 `unknown` 으로 흘러 «`look` 으로 지금 화면을 보고 좌표를
@@ -188,9 +163,6 @@ export const frameCheck = (
   if (found.owner !== owner) return { ok: false, why: "other-owner" };
   // ★**행동이 목록을 통째로 비운다**(`endAction`) — 그래서 «클릭했으면 다시 봐라» 는 그대로
   //  강제되고, 그 사이에 여러 장을 들고 있는 것은 안전을 안 깎는다.
-  // ★**낡았을 때는 그 프레임을 같이 돌려준다** (2026-09-20) — 호출부가 **같은 대상**을
-  //  다시 찍어 «새 그림 + 새 id» 를 쥐여 줄 수 있게. 판정은 여기가, 촬영은 배관이 한다.
-  if (nowMs - found.atMs > ttlMs) return { ok: false, why: "stale", stale: found };
   return { ok: true, frame: found };
 };
 
@@ -243,7 +215,6 @@ export const frameRejection = (why: FrameReject, opts?: { gaveImage?: boolean })
     unknown:
       "그 화면(frameId)을 모릅니다 — **직전 행동이 화면을 바꿨거나**(행동은 화면 id 를 전부 " +
       `무효화합니다) 너무 오래전 것입니다(최근 ${String(FRAME_KEEP)}장만 유효).`,
-    stale: `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다).`,
     "other-owner": "그 화면은 다른 작업이 찍은 것입니다.",
   };
   // ② 다음에 무엇을 하나 — **그림을 줬으면 그걸 쓰면 된다.** 못 줬을 때만 재관측을 말한다.
@@ -254,7 +225,6 @@ export const frameRejection = (why: FrameReject, opts?: { gaveImage?: boolean })
       "`look` 을 **아무 인자 없이** 한 번 부르세요 — `region` 도 `frameId` 도 **빼고**입니다. " +
       "그러면 전체 화면 그림과 함께 «화면 id» 를 드립니다.",
     unknown: "`look` 으로 지금 화면을 보고 좌표를 다시 정하세요.",
-    stale: "`look` 으로 다시 보세요.",
     "other-owner": "직접 `look` 으로 보세요.",
   };
   const gave =
@@ -373,7 +343,7 @@ export const beginAction = (
 /**
  * **행동이 끝났다** — 성공이든 실패든 **반드시** 부른다(`finally`).
  *
- * ★**프레임을 여기서 버린다.** 행동은 화면을 바꾸므로 자기가 본 프레임을 무효화한다 —
+ * ★**프레임을 여기서 버린다.** 행동은 공유 데스크톱을 바꾸므로 모든 소유자의 이전 프레임을 무효화한다 —
  *  이게 «클릭 → 재관측» 을 규율이 아니라 **구조**로 만드는 한 줄이다.
  * ★리스는 **안 놓는다.** 이어지는 행동(클릭 → 입력)이 흔하고, 매번 놓으면 그 사이에 남이
  *  끼어든다. 놓는 것은 소유자 반납·취소·유휴 셋뿐이다(§3-3).
@@ -396,7 +366,7 @@ export const endAction = (
 ): void => {
   if (d.active !== null && d.active.owner === owner) d.active = null;
   if (d.lease !== null && d.lease.owner === owner) d.lease.lastTouchedMs = nowMs;
-  if (opts?.keepFrames !== true) d.frames.delete(owner);
+  if (opts?.keepFrames !== true) d.frames.clear();
 };
 
 /**

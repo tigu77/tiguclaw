@@ -225,7 +225,7 @@ export const postFailureMessage = (
     "`look` 으로 **지금 화면을 먼저 보고**, 무엇이 적용됐는지 확인한 뒤 판단하세요.",
   ].join("\n");
 
-export const frameRejection = (why: FrameReject): string => {
+export const frameRejection = (why: FrameReject, opts?: { gaveImage?: boolean }): string => {
   switch (why) {
     case "missing":
       // ★**무엇을 «다르게» 해야 하는지**를 말한다. «다시 관측하라» 는 이 자리에서 쓸모가
@@ -245,7 +245,13 @@ export const frameRejection = (why: FrameReject): string => {
       // ★**규칙을 같이 말한다** (2026-09-17 돌쇠 4차). 바로 위 `unknown` 은 «최근 3장만
       //  유효» 라고 알려주는데 이쪽만 안 알려줘서 비대칭이었다. 처음 쓰는 사람이 오류 한
       //  번으로 수명을 배우게 한다.
-      return `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다). \`look\` 으로 다시 보세요.`;
+      // ★**«다시 보세요» 는 새 그림을 못 줬을 때만이다** (2026-09-20, 긴급 인계서 A).
+      //  새 그림을 첨부한 응답에 이 문장이 같이 나가면 **서로 다른 다음 행동**을 지시한다 —
+      //  «첨부된 id 를 써라» 와 «look 을 다시 불러라» 가 한 답에 있었다. 호출부가
+      //  새 그림을 실었으면 `frameRejection(why, { gaveImage: true })` 로 이 줄을 끈다.
+      return opts?.gaveImage === true
+        ? `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다).`
+        : `그 화면은 너무 오래됐습니다(**${String(Math.round(FRAME_TTL_MS / 1000))}초** 지나면 만료됩니다). \`look\` 으로 다시 보세요.`;
     case "other-owner":
       return "그 화면은 다른 작업이 찍은 것입니다. 직접 `look` 으로 보세요.";
   }
@@ -506,7 +512,13 @@ export const planRejection = (why: PlanReject, detail?: string): string => {
         //  말하는 셈이다.
         "★`🙂`·`𝐀` 같은 **보충 평면 문자는 키로 못 냅니다**(물리 키가 없습니다) — " +
         "**글자를 넣는 것이 목적이면 `steps` 의 `type` 원소**를 쓰세요.\n" +
-        "★기능키(f1…)도 아직 없습니다. 그리고 맥에는 Windows 키가 없습니다 — **그 플랫폼의 주 수식키는 `cmd`** 입니다(Windows 에서는 Ctrl 로 갑니다)."
+        "★기능키(f1…)도 아직 없습니다. 그리고 맥에는 Windows 키가 없습니다 — **그 플랫폼의 주 수식키는 `cmd`** 입니다(Windows 에서는 Ctrl 로 갑니다).\n" +
+        // ★★**이건 «다시 보면 풀리는» 종류가 아니다** (2026-09-20, 긴급 인계서 A).
+        //  실기에서 `WIN+R` 이 막힌 뒤 `look` 이 **10회 연속**으로 돌았다(그 구간 `do` 는 0회).
+        //  모델은 막히면 관측으로 복구하려 드는데, 키 이름 문제는 화면과 무관하다.
+        //  **어떤 복구가 맞는지**를 거절문이 직접 말해야 한다.
+        "★★**화면을 다시 찍어도 풀리지 않습니다** — 이건 화면이 아니라 **키 이름**의 문제입니다. " +
+        "`look` 을 다시 부르지 말고, 위 목록에서 **키 인자를 고쳐** 같은 `do` 를 다시 부르세요."
       );
     case "scroll-too-big":
       return `한 번에 굴릴 수 있는 양을 넘었습니다(|dx|·|dy| ≤ ${String(SCROLL_MAX)}). 나눠서 굴리고 **사이사이 다시 보세요** — 그만큼 굴렸으면 화면이 이미 달라져 있습니다.`;
@@ -531,7 +543,12 @@ export const beginRejection = (b: Exclude<Begin, { ok: true }>, streak = 1): str
             "쓰고 있습니다. **더 기다리지 마세요.** 지금 하던 것을 멈추고 사용자에게 " +
             "«키보드·마우스에서 손을 떼시면 이어서 하겠습니다» 라고 말한 뒤, 답을 받고 다시 " +
             "시작하세요. 화면 보기는 그대로 됩니다."
-        : "지금 사용자가 그 컴퓨터를 쓰고 있습니다. 화면 보기는 되지만 조작은 하지 않습니다 — 잠시 뒤 다시 시도하거나 사용자에게 물어보세요.";
+        : "지금 사용자가 그 컴퓨터를 쓰고 있습니다. 화면 보기는 되지만 조작은 하지 않습니다.\n" +
+          // ★★**`look` 은 «지금 조작해도 되나» 를 안 알려준다** (2026-09-20, 긴급 인계서 B).
+          //  실기에서 모델이 막힌 뒤 `look` 을 10회 연속 불렀다 — 관측으로는 유휴 상태를
+          //  알 수 없으니 **같은 화면을 다시 찍는 것이 대기의 대용이 될 수 없다.**
+          "★**`look` 을 반복해도 풀렸는지 알 수 없습니다** — 관측은 «지금 조작해도 되는가» 를 " +
+          "말해주지 않습니다. 잠시 뒤 **`do` 를 다시** 시도하거나, 사용자에게 물어보세요.";
     case "idle-unknown":
       return (
         "사람이 그 컴퓨터를 쓰는 중인지 **알 수 없어서** 조작하지 않았습니다(유휴 시간을 읽지 " +
@@ -661,11 +678,30 @@ export const KEY_NAMES: readonly string[] = [
  * ★세 갈래뿐이다: 수식키 · 이름 있는 키 · **한 글자**(유니코드로 낸다).
  *  셋 다 아니면 실행부가 던진다 — 그러니 **쏘기 전에** 여기서 거른다.
  */
-export const supportedKey = (name: string, platform?: string): boolean => {
+/**
+ * **키 이름을 입력 경계에서 한 번 정규화한다** (2026-09-20, 긴급 인계서 A).
+ *
+ * ★★사고: 수식키는 `isModifier` 가 **원문으로** 비교하고 named key 만 `toLowerCase` 를
+ *  썼다. 그래서 실측으로 `win`=통과 / **`WIN`=거절**, `ctrl`=통과 / **`CTRL`=거절**,
+ *  그런데 `enter`·`ENTER` 는 **둘 다 통과**였다. 모델이 `WIN+R` 을 보내면 `unsupported-key`
+ *  로 막히는데, **그건 화면을 다시 찍어서 풀리는 종류가 아니다** — 실기에서 그 뒤
+ *  `look` 이 **10회 연속**으로 돌았다(그 구간 `do` 는 0회).
+ * ★★**한 글자는 절대 안 바꾼다.** `R` 과 `r` 은 다른 입력이고, `type` 본문은 더더욱이다.
+ *  바꾸는 것은 **여러 글자짜리 이름**뿐이다(`WIN`·`CTRL`·`Shift`·`ENTER`…).
+ * ★그리고 정규화한 값이 **검증·발사·장부·해제까지 같은 값으로 흐른다.** 검증만 소문자로
+ *  하고 장부에 원문을 담으면 «누른 키» 와 «뗄 키» 가 갈린다 — 그게 미아를 만든다.
+ * ★mac 의 `win` 금지를 **대문자로 우회할 수 없다** — 정규화가 금지 판정보다 앞에 온다.
+ */
+export const normalizeKey = (name: string): string =>
+  name.length > 1 ? name.toLowerCase() : name;
+
+export const supportedKey = (rawName: string, platform?: string): boolean => {
+  // ★**금지 판정보다 정규화가 먼저다** — 안 그러면 `WIN` 이 mac 의 `win` 금지를 지나간다.
+  const name = normalizeKey(rawName);
   const gaps = platform === undefined ? [] : (PLATFORM_KEY_GAPS[platform] ?? []);
   if (gaps.includes(name)) return false;
   if (isModifier(name)) return true;
-  if (KEY_NAMES.includes(name.toLowerCase())) return true;
+  if (KEY_NAMES.includes(name)) return true;
   // ★★**실행부와 «한 글자» 의 뜻이 같아야 한다** (2026-09-19, 아스트라 3차 §2).
   //  처음엔 `[...name].length`(코드포인트)로 셌는데 **양 실행부는 UTF-16 길이**로 본다
   //  (`String(name).length !== 1` · `$n.Length -ne 1`). 그래서 `🙂`(코드포인트 1 · UTF-16 2)가

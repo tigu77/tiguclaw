@@ -84,12 +84,14 @@ interface ControlModule {
     nowMs: number,
     ttlMs?: number,
   ) => { ok: true; frame: Frame } | { ok: false; why: string };
-  frameRejection: (why: string) => string;
+  frameRejection: (why: string, opts?: { gaveImage?: boolean }) => string;
   postFailureMessage: (reason: "timeout" | "failed", detail: string) => string;
   planSteps: (steps: readonly Record<string, unknown>[], frame: Frame) => Plan;
-  planRejection: (why: "offscreen" | "empty") => string;
+  planRejection: (why: string, detail?: string) => string;
   beginRejection: (b: Exclude<Begin, { ok: true }>, streak?: number) => string;
   BLOCKED_ASK_USER_AT: number;
+  normalizeKey: (n: string) => string;
+  supportedKey: (n: string, platform?: string) => boolean;
   userIsActive: (
     idleSeconds: number | null,
     nowMs: number,
@@ -132,6 +134,8 @@ export const check: RegressionCheck = {
       planRejection,
       BLOCKED_ASK_USER_AT,
       beginRejection,
+      normalizeKey,
+      supportedKey,
       userIsActive,
       FRAME_TTL_MS,
       LEASE_IDLE_MS,
@@ -851,6 +855,63 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    // ── ★키 이름 정규화와 «실패별 복구 과제» (2026-09-20, 긴급 인계서 A) ────────────
+    //  ★★실측: 수식키만 **원문으로** 비교해서 `win`=통과 / **`WIN`=거절**,
+    //   `ctrl`=통과 / **`CTRL`=거절**, 그런데 `enter`·`ENTER` 는 **둘 다 통과**였다.
+    //   `WIN+R` 이 막힌 뒤 실기에서 `look` 이 **10회 연속**으로 돌았다 — 키 이름 문제는
+    //   화면과 무관해서 **관측으로는 영영 안 풀린다.**
+    {
+      out.push(
+        assert(
+          "★대소문자가 판정을 가르지 않는다 — `WIN`·`CTRL`·`SHIFT` 가 소문자와 같게 취급된다",
+          ["win", "ctrl", "shift", "enter"].every(
+            (k) => supportedKey(k, "win32") === supportedKey(k.toUpperCase(), "win32"),
+          ),
+          ["win", "ctrl", "shift", "enter"]
+            .map((k) => `${k}=${String(supportedKey(k, "win32"))}/${k.toUpperCase()}=${String(supportedKey(k.toUpperCase(), "win32"))}`)
+            .join(" · "),
+        ),
+      );
+      out.push(
+        assert(
+          "★★그래도 **mac 의 `win` 금지를 대문자로 우회할 수 없다** — 정규화가 금지보다 앞이다",
+          !supportedKey("WIN", "darwin") && !supportedKey("win", "darwin"),
+          `darwin: win=${String(supportedKey("win", "darwin"))} WIN=${String(supportedKey("WIN", "darwin"))}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★**한 글자는 안 바꾼다** — `R` 과 `r` 은 다른 입력이다",
+          normalizeKey("R") === "R" && normalizeKey("r") === "r" && normalizeKey("CTRL") === "ctrl",
+          `R→${normalizeKey("R")} · r→${normalizeKey("r")} · CTRL→${normalizeKey("CTRL")}`,
+        ),
+      );
+      // ★**실패별 복구 과제가 서로 다르다** — 한 답에 두 지시가 섞이면 모델이 엉뚱한 쪽을 한다.
+      out.push(
+        assert(
+          "★★`unsupported-key` 는 «화면을 다시 찍어도 안 풀린다» 고 말한다 — 키를 고치라는 뜻",
+          /화면을 다시 찍어도 풀리지 않습니다/.test(planRejection("unsupported-key", "WIN")) &&
+            /키 인자를 고쳐/.test(planRejection("unsupported-key", "WIN")),
+          planRejection("unsupported-key", "WIN").slice(-50),
+        ),
+      );
+      out.push(
+        assert(
+          "★★새 그림을 준 `stale` 응답엔 «`look` 으로 다시 보세요» 가 **없다**(지시가 둘이면 안 된다)",
+          !/look` 으로 다시 보세요/.test(frameRejection("stale", { gaveImage: true })) &&
+            /look` 으로 다시 보세요/.test(frameRejection("stale")),
+          `그림있음=${frameRejection("stale", { gaveImage: true }).slice(-20)} · 없음=${frameRejection("stale").slice(-20)}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★`user-active` 는 «`look` 으로는 확인 못 한다» 고 말한다 — 관측이 대기의 대용이 아니다",
+          /look` 을 반복해도 풀렸는지 알 수 없습니다/.test(beginRejection({ ok: false, reason: "user-active" }, 1)),
+          beginRejection({ ok: false, reason: "user-active" }, 1).slice(-60),
+        ),
+      );
+    }
+
 
 
     return out;

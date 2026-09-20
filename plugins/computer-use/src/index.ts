@@ -55,6 +55,7 @@ import {
   frameCheck,
   frameRejection,
   FRAME_TTL_MS,
+  normalizeKey,
   postFailureMessage,
   rememberFrame,
   planSteps,
@@ -444,7 +445,7 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
               {
                 type: "text" as const,
                 text:
-                  `${frameRejection(fc.why)}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 를 ` +
+                  `${frameRejection(fc.why, { gaveImage: true })}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 를 ` +
                   "쓰세요. `region` 은 **이 그림 기준**으로 다시 읽어야 합니다(옛 좌표는 버렸습니다).",
               },
               ...again.content,
@@ -528,12 +529,17 @@ const toStep = (r: RawStep): Step | string => {
     case "type":
       if (r.text === undefined || r.text === "") return "type 에는 text 가 필요합니다";
       return { t: "type", text: r.text };
+    // ★★**입력 경계에서 한 번 정규화한다** (2026-09-20, 긴급 인계서 A). 여기서 바꾸면
+    //  검증(`supportedKey`)·발사(`events`)·장부(`held`/`touched`)·해제가 **같은 값**을 쓴다.
+    //  검증만 소문자로 하면 «누른 키» 와 «뗄 키» 가 갈려 미아가 생긴다.
+    //  ★`normalizeKey` 는 **여러 글자 이름만** 바꾼다 — `R`/`r` 은 다른 입력이고
+    //   `type` 본문은 손대지 않는다.
     case "keydown":
       if (r.key === undefined || r.key === "") return "keydown 에는 key 가 필요합니다";
-      return { t: "keydown", key: r.key };
+      return { t: "keydown", key: normalizeKey(r.key) };
     case "keyup":
       if (r.key === undefined || r.key === "") return "keyup 에는 key 가 필요합니다";
-      return { t: "keyup", key: r.key };
+      return { t: "keyup", key: normalizeKey(r.key) };
     case "wait":
       if (r.ms === undefined) return "wait 에는 ms 가 필요합니다";
       return { t: "wait", ms: r.ms };
@@ -597,6 +603,10 @@ const runSteps = async (
   }
 
   const owner = host?.turn?.threadKey ?? "unknown";
+  // ★**단계별 소요를 잰다 — 정책은 안 바꾼다** (2026-09-20, 긴급 인계서 C).
+  //  «캡처 → 응답 반환 → do 도착 → preflight/idle → 실제 실행» 중 **어디가 예산을
+  //  먹는지** 아무도 안 재고 있었다. TTL 후보를 고르기 전에 그 분해가 먼저다.
+  const tEnter = Date.now();
   const idle = await ctl.idleSeconds();
   const now = Date.now();
   const begin = beginAction(w.desktop, owner, now, idle);
@@ -609,6 +619,14 @@ const runSteps = async (
     host?.log(
       `조작 거절 — ${begin.reason}${begin.reason === "busy-other" ? `(${begin.heldBy})` : ""}` +
         ` · 연속 ${String(streak)}회` +
+        // ★★**«사람이 쓰는 중» 의 판정 근거를 남긴다** (2026-09-20, 긴급 인계서 B).
+        //  그 판정은 «유휴 초 + 우리가 마지막으로 쏜 시각» 으로 하는데, 로그엔 결론만
+        //  있어서 **진짜 사람인지 우리 입력을 사람으로 읽은 것인지** 사후에 못 가른다.
+        //  세 수치만 있으면 갈린다(민감한 내용은 없다 — 시각과 초뿐이다).
+        (begin.reason === "user-active"
+          ? ` · 유휴 ${idle === null ? "모름" : `${idle.toFixed(1)}초`}` +
+            ` · 우리 마지막 입력 ${w.desktop.lastSelfInputMs === null ? "없음" : `${String(now - w.desktop.lastSelfInputMs)}ms 전`}`
+          : "") +
         (begin.reason === "idle-unknown" ? " (유휴 시간을 못 읽었습니다 — 실행부 확인 필요)" : ""),
     );
     return textOnly(beginRejection(begin, streak));
@@ -649,7 +667,14 @@ const runSteps = async (
     }
     const fc = frameCheck(w.desktop.frames.get(owner), frameId, owner, now);
     if (!fc.ok) {
-      host?.log(`조작 거절 — 프레임(${fc.why})`);
+      // ★**만료 당시의 나이와 그 앞 단계 소요를 같이 남긴다** — «10초가 맞나» 를
+      //  직감이 아니라 수치로 정하기 위해서다(인계서 C).
+      const age = fc.stale === undefined ? null : Date.now() - fc.stale.atMs;
+      host?.log(
+        `조작 거절 — 프레임(${fc.why})` +
+          (age === null ? "" : ` · 나이 ${String(age)}ms / 예산 ${String(FRAME_TTL_MS)}ms`) +
+          ` · 유휴조회 ${String(now - tEnter)}ms · 검사까지 ${String(Date.now() - tEnter)}ms`,
+      );
       // ★★**거절만 하지 않고 새 그림을 쥐여 준다** (2026-09-20, 정태님 실기).
       //  실측: 그 기계의 거절 사유 18건 중 **11건이 `프레임(stale)`** 이었다. 모델이
       //  생각하는 동안 수명이 지나고 → 거절 → 다시 `look` → 또 생각 → 또 만료. **왕복이
@@ -666,7 +691,7 @@ const runSteps = async (
       if (!gotImage) return textOnly(frameRejection(fc.why));
       return {
         content: [
-          { type: "text" as const, text: `${frameRejection(fc.why)}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 로 같은 조작을 다시 부르세요. 좌표는 **이 그림 기준**으로 다시 읽어야 합니다(화면이 달라졌을 수 있습니다).` },
+          { type: "text" as const, text: `${frameRejection(fc.why, { gaveImage: true })}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 로 같은 조작을 다시 부르세요. 좌표는 **이 그림 기준**으로 다시 읽어야 합니다(화면이 달라졌을 수 있습니다).` },
           ...again.content,
         ],
       };

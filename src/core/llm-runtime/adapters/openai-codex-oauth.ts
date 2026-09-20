@@ -441,9 +441,8 @@ const CODEX_PERSISTENCE_PROMPT = [
 /**
  * V5.3 — MCP tool list → OpenAI Responses `tools` shape 변환.
  *
- * OpenClaw `convertResponsesTools` L349-372 답습 (strict 분기 미사용 — codex backend 는
- * strict 옵션 거부 위험, V5.1' 정합. MCP server 의 inputSchema 가 이미 JSON Schema 라
- * 직접 매핑).
+ * MCP JSON Schema를 그대로 매핑하고 strict:false로 선택 필드를 보존한다.
+ * 2026-09-20 실제 백엔드에서 생략 시 선택 region/frameId까지 강제 생성됨을 재현했다.
  *
  * MCP Tool shape (modelcontextprotocol/sdk):
  *   { name, description?, inputSchema: { type:"object", properties?, required? } }
@@ -482,9 +481,12 @@ const convertMcpToolsToResponsesTools = (
   name: string;
   description: string;
   parameters: unknown;
+  strict: false;
 }> =>
   mcpTools.map((t) => ({
     type: "function" as const,
+    // MCP/외부 앱의 optional 계약을 보존한다. 검증은 실행 경계의 원래 스키마가 맡는다.
+    strict: false as const,
     name: t.name,
     description: t.description ?? "",
     // inputSchema 는 MCP 표준 JSON Schema → Responses `parameters` 직접 매핑.
@@ -802,6 +804,8 @@ export const runOpenAiCodex = async (
   const externalMcpToolNames = new Set<string>();
   const externalFunctionTools = (input.externalTools ?? []).map((t) => ({
     type: "function" as const,
+    // MCP/외부 앱의 optional 계약을 보존한다. 검증은 실행 경계의 원래 스키마가 맡는다.
+    strict: false as const,
     name: t.name,
     description: t.description ?? "",
     parameters:

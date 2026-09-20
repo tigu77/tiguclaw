@@ -143,7 +143,60 @@
       // POST /api/messages 공용 전송 — 긴 턴은 응답이 SSE 로 도착하므로, POST 가 오래 기다린 뒤
       // 끊겨도(프록시/HTTP 타임아웃) 빨간 에러 대신 "작업 중…" 유지(가짜 timeout 방지). 답이
       // 오면 SSE(channel.message.out)가 setChatWorking(false)로 해제. 즉시 실패(<10s)만 진짜 에러.
+      /**
+       * **그 메시지가 서버에 도착했나** — 추측 대신 확인 (2026-09-20).
+       *
+       * 연결이 끊겨 응답을 못 받았을 때, «안 받았다» 를 경과 시간으로 단정하지 않고
+       * 최근 기록을 되읽어 **같은 글이 사용자 발화로 들어와 있는지** 본다.
+       * ★`true` 만 «도착했다» 로 읽는다. 그 밖은 전부 «모른다» 이고, 모르면 **되돌린다**
+       *  (글을 지키는 쪽). «없다» 와 «못 봤다» 를 섞지 않는다.
+       * ★글이 비어 있으면(첨부만 보낸 경우) 대조할 것이 없으므로 `null`.
+       * ★★**한계를 적어 둔다**(회사돌쇠 검토): 이건 «글 + 시각 + 최근 8개» 휴리스틱이라
+       *  **확정 증거가 아니다.** 첨부만 보냄 · 큐 대기 · 같은 문장 반복 · 시계 차이에서
+       *  틀릴 수 있다. 정확히 하려면 이미 보내고 있는 `correlationId` 를 서버가 저장하고
+       *  그걸로 대조해야 하는데, **지금 `chat_log` 는 그 값을 저장하지 않는다**(확인함).
+       *  그래서 서버를 고치기 전까지는 여기까지다 — 틀리면 «되돌린다» 쪽으로 틀린다.
+       */
+      const messageReachedServer = async (threadKey, text, sinceMs) => {
+        if (!threadKey || typeof text !== "string" || text.trim() === "") return null;
+        try {
+          const r = await fetch(
+            "/api/chat-history?threadKey=" + encodeURIComponent(threadKey) + "&limit=8",
+          );
+          if (!r.ok) return null;
+          const j = await r.json();
+          const rows = (j && Array.isArray(j.entries)) ? j.entries : [];
+          const want = text.trim();
+          // ★★**애매하면 «모른다» 다 — «도착했다» 는 애매하지 않을 때만** (2026-09-20,
+          //  적대 검토 F1·F2·F3). 첫 판은 «5초 앞까지» 를 시계 오차용으로 뒀는데, 그 창이
+          //  **같은 글을 5초 안에 두 번 보내면 두 번째를 삼키는** 구멍이었다. 검토자가
+          //  네 상황을 재현했다(2연타 · 같은 글 다른 첨부 · 브라우저 시계 30초 느림 ·
+          //  되돌아온 글 재전송). 넷 다 «도착» 으로 읽혀 **글과 첨부가 사라진다.**
+          //  ★내가 주석에 *"틀리면 «되돌린다» 쪽으로 틀린다"* 고 적어놨는데 **그 진술이
+          //   거짓이었다.** 이제 실제로 그쪽으로 틀리게 만든다:
+          //   ①`sinceMs` **이후**만 센다(뒤로 여유를 두지 않는다 — 옛 전송을 삼키는 창이다)
+          //   ②**딱 하나**일 때만 «도착» 이다. 둘 이상이면 어느 것이 이번 것인지 **모른다**
+          //   ③하나도 없으면 «도착 안 함» 이 아니라 **`null`(모른다)** — 큐 대기로 아직
+          //     `chat_log` 에 없을 수 있다(F3). 호출부는 `null` 을 되돌림으로 읽는다.
+          //  ★시계 축은 **양방향**이다(브라우저 vs 서버). 보정을 빼면 «못 봤다» 가 늘지만
+          //   그건 **중복 전송** 쪽이고, 중복은 보이고 되돌릴 수 있다 — 소실은 아니다.
+          const hits = rows.filter(
+            (e) =>
+              e && e.role === "user" && Number(e.ts) >= Number(sinceMs) && String(e.text || "").trim() === want,
+          );
+          return hits.length === 1 ? true : null;
+        } catch {
+          return null; // 확인도 못 했다 — «모름» 이다.
+        }
+      };
+
       const sendChatMessage = async (text, attachments, replyToText) => {
+        // ★★**보낼 방을 여기서 고정한다** (2026-09-20, 회사돌쇠 검토 ②). `await` 뒤에
+        //  `activeThreadKey` 를 다시 읽으면, 보내는 사이 탭을 옮겼을 때 **다른 방의 기록**을
+        //  조회해 «도착 안 했다» 로 읽는다(실측 재현: A 에 보냈는데 `threadKey=room-B` 를 조회).
+        //  ★`chat-send.js` 가 **이미 같은 것을 배웠다**(`sentFrom`, 2026-09-15 레드팀 O4).
+        //   나는 그 옆에 새 코드를 쓰면서 같은 실수를 되풀이했다 — 배운 것을 안 옮겼다.
+        const sentTo = activeThreadKey;
         recordTypedTags(text); // 타이핑/삽입한 #태그 학습 → 다음부터 칩으로.
         // 큐-취소 correlationId(ADR 2026-07-15) — 전송 순간 만들어 (a)낙관적 버블 (b)POST body
         // 를 하나로 묶는다(대기 중이면 ✕ 취소가 이 id 로 그 큐 항목을 지목). 어댑터 무독해(#2).
@@ -165,7 +218,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               text,
-              threadKey: activeThreadKey,
+              threadKey: sentTo,
               correlationId,
               ...(attachments && attachments.length ? { attachments } : {}),
               ...(replyToText ? { replyToText } : {}),
@@ -189,7 +242,21 @@
             //  신고를 그렇게 읽고 `tellUser` 를 켰는데 증상이 그대로였다 — 진짜 원인은
             //  **504 를 거절로 읽어 되돌린 것**이다. 자세한 사슬은 `util.js` 의 그 함수 주석.
             const act = sendRejectionAction(Date.now() - t0, r.status, data);
-            if (act.clearWorking) setChatWorking(false);
+            // ★★**5xx 는 «안 받았다» 가 아니라 «모른다» 다** (2026-09-20, 회사돌쇠 검토 ①).
+            //  대시보드 프록시는 브리지 요청 뒤 응답을 못 받으면 `accepted` 없는 **502** 를
+            //  낸다 — 그 안엔 «접속 전 실패» 와 «처리는 시작됐는데 응답만 유실» 이 **섞여
+            //  있다.** 앞 커밋은 연결 예외 가지만 고쳤고 **이 가지는 그대로 두었다.**
+            //  ★4xx 는 다르다 — 서버가 «안 받았다» 고 **말한** 것이라 그대로 되돌린다
+            //   (413·400 에서 쓴 글과 첨부를 지키는 것이 그 가지의 존재 이유다).
+            if (act.restore && !(act.status >= 400 && act.status < 500)) {
+              const reached = await messageReachedServer(sentTo, text, t0);
+              if (reached === true) {
+                if (act.clearWorking) setChatWorking(false, sentTo);
+                renderLocalChat("info", i18n("chat.send.deliveredNoReply"));
+                return { ok: true };
+              }
+            }
+            if (act.clearWorking) setChatWorking(false, sentTo);
             // ★5xx 는 «거절» 이 아니라 «모름» 이다 — 504 는 우리 브리지의 60초 시한이고
             //  그 사이 메시지는 큐에서 그대로 실행된다. 오류로 붉게 띄우면 사용자가 다시
             //  보내게 되고 그게 곧 중복 전송이다. 무슨 일인지는 말하되 격을 가른다.
@@ -211,22 +278,38 @@
             return { ok: false, restore: act.restore };
           } else if (data && data.steered) {
             // mid-turn steering 주입(ADR 2026-07-16) — 이 POST 는 진행 턴을 *이어가게* 메시지를
-            // 끼워넣고 즉시 반환한다(턴 완료 아님). 여기서 setChatWorking(false) 하면 긴 codex
+            // 끼워넣고 즉시 반환한다(턴 완료 아님). 여기서 setChatWorking(false, sentTo) 하면 긴 codex
             // 턴이 계속 도는데도 작업중이 조기에 꺼진다(steering 조기-off 버그). 스킵 — 작업중은
             // 원래 턴의 실제 종료(SSE channel.message.out/turn_done)까지 유지. 사용자 버블은
             // channel.message.in echo 가 낙관적 '대기 중' 버블을 정상 버블로 승격한다.
           } else {
-            setChatWorking(false); // 동기 POST 반환 = 턴 완료(답은 SSE 로 이미/곧 렌더).
+            setChatWorking(false, sentTo); // 동기 POST 반환 = 턴 완료(답은 SSE 로 이미/곧 렌더).
           }
         } catch (err) {
-          if (Date.now() - t0 < 10000) { // 즉시 네트워크 실패 = 진짜 에러.
-            setChatWorking(false);
-            renderLocalChat("error", err.message);
-            return { ok: false, restore: true }; // 위와 같은 이유 — 초안을 되돌릴 수 있게.
+          // ★★**«못 받았다» 를 시계로 추정하지 않는다 — 서버에 물어본다** (2026-09-20,
+          //  정태님 신고 3회째). 종전엔 «10초 안에 끊기면 진짜 에러» 로 가르고 글·첨부를
+          //  입력창에 되돌렸다. 그런데 **요청은 도착해 처리까지 됐는데 응답만 못 돌아오는**
+          //  경우가 있고, 그때 되돌리면 사용자가 다시 눌러 **같은 지시가 두 번** 간다.
+          //  ★실측: 보낸 메시지가 `chat_log` 에 멀쩡히 있는데(비서가 그 일을 수행 중)
+          //   같은 글과 **첨부 칩까지** 컴포저로 돌아와 있었다. 그 브리지는 연결을 자주
+          //   끊는다(같은 날 POST 첫 시도 실패가 열 번 넘었다).
+          //  ★바로 아래 «10초 초과» 주석이 이미 옳은 답을 적어놨다 — *"서버가 받았는지
+          //   **모른다**"*. 같은 불확실성이 10초 안쪽에도 있는데 거기서만 «안다» 고
+          //   단정하고 있었다. 이제 **시간으로 가르지 않고 사실을 확인한다.**
+          const arrived = await messageReachedServer(sentTo, text, t0);
+          if (arrived === true) {
+            // 서버는 받았다 — 되돌리면 그게 곧 중복 전송이다. 말만 하고 글은 안 되돌린다.
+            renderLocalChat("info", i18n("chat.send.deliveredNoReply"));
+            return { ok: true };
           }
-          // ★긴 대기 뒤 **연결이 끊긴 것**은 위(명시적 거절)와 다르다 — 서버가 받았는지
-          //  **모른다.** 여기서 실패로 보고하면 사용자가 되돌아온 초안을 다시 보내
-          //  **중복 전송**이 된다. 모를 땐 지우지도, 되돌리지도 않는다(현행 유지).
+          // ★확인이 «아니다» 이거나 **확인 자체가 실패**(브리지가 아예 죽음)면 되돌린다 —
+          //  그 경우 대개 도달 자체를 못 했고, 틀려도 «보이고 되돌릴 수 있는» 쪽이다.
+          //  ★긴 대기 뒤 끊긴 것은 종전대로 **지우지도 되돌리지도 않는다**(현행 유지).
+          if (Date.now() - t0 < 10000) {
+            setChatWorking(false, sentTo);
+            renderLocalChat("error", err.message);
+            return { ok: false, restore: true };
+          }
         }
         return { ok: true };
       };

@@ -236,7 +236,15 @@
         turnErrClearTimers.set(k, setTimeout(() => { turnErrClearTimers.delete(k); markTurnDone(k); }, ERR_CLEAR_GRACE_MS));
       };
       // 하위호환 — sendChatMessage 의 로컬 즉시 피드백/에러 해제(내 대화 턴).
-      const setChatWorking = (on) => { if (on) markTurnActive(activeThreadKey); else markTurnDone(activeThreadKey); };
+      // ★★**방을 받는다** (2026-09-20, 적대 검토 F4). 종전엔 안에서 `activeThreadKey` 를
+      //  읽어서, `await` 뒤에 부르면 **보내는 사이 옮겨간 탭**의 턴 배지를 껐다 —
+      //  B 의 돌고 있는 턴이 꺼지고 정지 버튼이 전송으로 되돌아간다. `markTurnDone` 은
+      //  **이미 인자를 받고 있었다**(자리마다 한 단어였다).
+      const setChatWorking = (on, tk) => {
+        const k = tk || activeThreadKey;
+        if (on) markTurnActive(k);
+        else markTurnDone(k);
+      };
       // 큐 대기 표시 — 이미 이 스레드 턴이 진행 중일 때(busy) 보낸 메시지는 직렬 큐(enqueueThreadTurn)
       // 뒤에 붙어 현재 턴이 끝나야 처리된다. 처리 시작(channel.message.in echo) 전까진 화면에 안
       // 떠서 "등록됐나?" 헷갈린다 → 낙관적 "대기 중" 버블로 즉시 피드백, echo 도착 시 승격(배지 제거).

@@ -54,6 +54,7 @@ import {
   forgetHeld,
   frameCheck,
   frameRejection,
+  FRAME_TTL_MS,
   postFailureMessage,
   rememberFrame,
   planSteps,
@@ -421,7 +422,35 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
           };
         }
         const fc = frameCheck(w.desktop.frames.get(ownerNow), args.frameId, ownerNow, Date.now());
-        if (!fc.ok) return textOnly(frameRejection(fc.why));
+        if (!fc.ok) {
+          // ★★**`look` 에도 같은 처방을 단다** (2026-09-20, 적대 검토 F8). 같은 커밋이
+          //  `do` 에는 자동 재촬영을 달고 **`look` 에는 안 달았다** — 비대칭이었고, 그
+          //  사이 수명을 30→10초로 줄여 **빈도를 3배로 올렸다.**
+          //  ★특히 나쁜 이유: `frameRejection("stale")` 의 처방이 *"`look` 으로 다시
+          //   보세요"* 인데 **그 말을 `look` 이 하고 있다.** 처방이 제 발을 가리킨다 —
+          //   이 파일이 두 번 겪은 그 모양이다(720회·101분 / 39회·2시간15분).
+          //  ★`region` 은 그 낡은 그림 기준이라 **버린다** — 새 그림에서 어디인지 모른다.
+          //   `stale` 이면 같은 대상을, 아니면 `display`/전체를 찍는다.
+          const target: CaptureTarget =
+            fc.stale !== undefined
+              ? fc.stale.target
+              : args.display !== undefined
+                ? { kind: "display", index: args.display }
+                : { kind: "screen" };
+          const again = await captureScene(w, target, host);
+          if (!again.content.some((c) => c.type === "image")) return textOnly(frameRejection(fc.why));
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `${frameRejection(fc.why)}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 를 ` +
+                  "쓰세요. `region` 은 **이 그림 기준**으로 다시 읽어야 합니다(옛 좌표는 버렸습니다).",
+              },
+              ...again.content,
+            ],
+          };
+        }
         const rect = imageRectToScreen(args.region, fc.frame.geometry);
         if (rect === null) {
           // ★**무엇과 견줘서 밖인지 말한다** (2026-09-18, 회사돌쇠 5차). 종전 문구는
@@ -572,12 +601,20 @@ const runSteps = async (
   const now = Date.now();
   const begin = beginAction(w.desktop, owner, now, idle);
   if (!begin.ok) {
+    // ★**같은 소유자가 같은 이유로 연달아 막힌 횟수를 센다** — 모델은 매 호출이 독립이라
+    //  스스로 못 센다. 소유자나 이유가 바뀌면 1부터 다시(다른 상황이다).
+    const prev = w.desktop.blocked.get(owner);
+    const streak = prev !== undefined && prev.reason === begin.reason ? prev.n + 1 : 1;
+    w.desktop.blocked.set(owner, { reason: begin.reason, n: streak });
     host?.log(
       `조작 거절 — ${begin.reason}${begin.reason === "busy-other" ? `(${begin.heldBy})` : ""}` +
+        ` · 연속 ${String(streak)}회` +
         (begin.reason === "idle-unknown" ? " (유휴 시간을 못 읽었습니다 — 실행부 확인 필요)" : ""),
     );
-    return textOnly(beginRejection(begin));
+    return textOnly(beginRejection(begin, streak));
   }
+  // ★한 번이라도 통과했으면 **그 소유자의** 연속은 끊긴 것이다 — 남의 것은 안 건드린다.
+  w.desktop.blocked.delete(owner);
 
   // ★★**이전 정리 실패분을 먼저 갚는다** (2026-09-19, 아스트라 외부 검토 ⑩).
   //  잔여가 있으면 화면 상태가 **이미 오염**돼 있다(shift 가 눌린 채라면 다음 클릭이
@@ -613,7 +650,26 @@ const runSteps = async (
     const fc = frameCheck(w.desktop.frames.get(owner), frameId, owner, now);
     if (!fc.ok) {
       host?.log(`조작 거절 — 프레임(${fc.why})`);
-      return textOnly(frameRejection(fc.why));
+      // ★★**거절만 하지 않고 새 그림을 쥐여 준다** (2026-09-20, 정태님 실기).
+      //  실측: 그 기계의 거절 사유 18건 중 **11건이 `프레임(stale)`** 이었다. 모델이
+      //  생각하는 동안 수명이 지나고 → 거절 → 다시 `look` → 또 생각 → 또 만료. **왕복이
+      //  스스로를 먹여 살리는 고리**다(8분 넘게 돌았다).
+      //  ★수명을 늘리는 것은 답이 아니다 — 늘린 만큼 «그 사이 화면이 바뀌었을 확률» 을
+      //   사는 것이고, 그게 **엉뚱한 것을 누르는** 길이다. 그래서 수명은 오히려 10초로
+      //   줄이고(같은 커밋), 대신 막힌 자리에서 **다음 수를 손에 쥐여 준다.**
+      //  ★**그 행동을 대신 실행하지는 않는다** — 좌표는 옛 그림 기준이라 새 화면에서
+      //   무엇을 가리키는지 모른다. 주는 것은 «새 그림 + 새 id» 까지다.
+      //  ★`look` 의 막다른 길을 고칠 때와 **같은 처방**이다: 안내문을 잘 쓰는 게 아니라
+      //   모델이 바로 쓸 수 있는 것을 돌려준다.
+      const again = await captureScene(w, fc.stale?.target ?? { kind: "screen" }, host);
+      const gotImage = again.content.some((c) => c.type === "image");
+      if (!gotImage) return textOnly(frameRejection(fc.why));
+      return {
+        content: [
+          { type: "text" as const, text: `${frameRejection(fc.why)}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 로 같은 조작을 다시 부르세요. 좌표는 **이 그림 기준**으로 다시 읽어야 합니다(화면이 달라졌을 수 있습니다).` },
+          ...again.content,
+        ],
+      };
     }
     sceneTarget = fc.frame.target;
     // ★플랫폼을 준다 — 없는 키를 **쏘기 전에** 거른다(실행부가 열 한가운데서 던지면 늦다).
@@ -727,7 +783,7 @@ const actionTools = (w: Wiring, host?: PluginHost) => [
       frameId: z
         .string()
         .describe(
-          "`look` 또는 **직전 `do` 가 돌려준** «화면 id». **30초 만료**, 그리고 **`do` 를 한 번 " +
+          `\`look\` 또는 **직전 \`do\` 가 돌려준** «화면 id». **${String(Math.round(FRAME_TTL_MS / 1000))}초 만료**, 그리고 **\`do\` 를 한 번 ` +
             "하면 그때까지의 화면 id 가 전부 무효**가 됩니다 — 다음 `do` 에는 **이번 `do` 가 " +
             "같이 준 그림의 id** 를 쓰세요.",
         ),

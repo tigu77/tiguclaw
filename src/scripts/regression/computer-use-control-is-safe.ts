@@ -88,7 +88,8 @@ interface ControlModule {
   postFailureMessage: (reason: "timeout" | "failed", detail: string) => string;
   planSteps: (steps: readonly Record<string, unknown>[], frame: Frame) => Plan;
   planRejection: (why: "offscreen" | "empty") => string;
-  beginRejection: (b: Exclude<Begin, { ok: true }>) => string;
+  beginRejection: (b: Exclude<Begin, { ok: true }>, streak?: number) => string;
+  BLOCKED_ASK_USER_AT: number;
   userIsActive: (
     idleSeconds: number | null,
     nowMs: number,
@@ -129,6 +130,7 @@ export const check: RegressionCheck = {
       FRAME_KEEP,
       planSteps,
       planRejection,
+      BLOCKED_ASK_USER_AT,
       beginRejection,
       userIsActive,
       FRAME_TTL_MS,
@@ -233,7 +235,10 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★거절 문구가 **규칙까지** 말한다 — 오류 한 번으로 수명·한도를 배우게 한다(둘이 비대칭이면 안 된다)",
-        frameRejection("stale").includes("30초") && frameRejection("unknown").includes("3장"),
+        // ★**초 수를 리터럴로 적지 않는다** — 상수를 바꾸면 검사가 «틀린 값» 을 고정한다
+          //  (2026-09-20 에 30→10 으로 바꾸며 실제로 여기서 걸렸다). 상수에서 유도한다.
+          frameRejection("stale").includes(`${String(Math.round(FRAME_TTL_MS / 1000))}초`) &&
+            frameRejection("unknown").includes("3장"),
         `${frameRejection("stale").slice(0, 50)} / ${frameRejection("unknown").slice(0, 50)}`,
       ),
     );
@@ -816,6 +821,37 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    // ── ★«기다려라» 에 끝이 있다 (2026-09-20, 정태님 실기 8분 반복) ─────────────────
+    //  ★가드는 옳다 — 틀린 것은 **막힌 뒤의 안내**였다. «기다렸다 다시» 만 있고 «언제
+    //   그만두고 사람에게 말해라» 가 없어서, 사용자가 계속 타이핑하는 동안 모델이 같은
+    //   관측·조작을 무한히 반복했다. 매 호출이 독립이라 **모델은 몇 번째인지 못 센다** —
+    //   그래서 우리가 세어 말해준다.
+    {
+      const one = beginRejection({ ok: false, reason: "user-active" }, 1);
+      const many = beginRejection({ ok: false, reason: "user-active" }, BLOCKED_ASK_USER_AT);
+      out.push(
+        assert(
+          "★처음 막히면 «기다려라» 다 — 한 번 만에 사람을 부르면 그게 더 시끄럽다",
+          !/더 기다리지 마세요/.test(one),
+          one.slice(0, 60),
+        ),
+      );
+      out.push(
+        assert(
+          `★★${String(BLOCKED_ASK_USER_AT)}번째엔 «사람에게 말해라» 로 바뀐다 — 안 바뀌면 무한 반복이다`,
+          /더 기다리지 마세요/.test(many) && /손을 떼/.test(many),
+          many.slice(0, 70),
+        ),
+      );
+      out.push(
+        assert(
+          "★막힌 뒤에도 **화면 보기는 된다**고 말한다 — 상황 설명은 할 수 있어야 한다",
+          /화면 보기는 그대로/.test(many),
+          many.slice(-40),
+        ),
+      );
+    }
+
 
     return out;
   },

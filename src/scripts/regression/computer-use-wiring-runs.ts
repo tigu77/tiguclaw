@@ -50,6 +50,8 @@ const makeStubs = (
     postThrows?: boolean;
     /** ★가드가 **몇 번째 직전에** 멈추나 — 그 앞까지만 쏜 «정상 종료한 부분 실행». */
     guardStopAt?: number;
+    /** ★«사람이 쓰는 중» 을 만들기 위한 유휴 초(작으면 가드가 막는다). */
+    idle?: number;
     releaseOk?: boolean;
     /** 조작 권한 프리플라이트를 **실패**시킨다 — 그 분기가 실제로 도는지 보려고. */
     preflightFail?: { reason: string; detail: string };
@@ -79,7 +81,7 @@ const makeStubs = (
           ? { ok: true }
           : { ok: false, reason: opts.preflightFail.reason, detail: opts.preflightFail.detail },
       ),
-    idleSeconds: () => Promise.resolve(99),
+    idleSeconds: () => Promise.resolve(opts.idle ?? 99),
     frontWindow: () => Promise.resolve("stub-front"),
     post: (events: Rec[]) => {
       if (opts.postThrows === true) throw new Error("합성 rejection");
@@ -132,7 +134,7 @@ export const check: RegressionCheck = {
 
     /** 한 판을 차린다 — 배선·기록·도구 둘. */
     const arena = (
-      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number } = {},
+      opts: { postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number } = {},
     ): { log: Log; desktop: Rec; look: ToolLike; doTool: ToolLike } => {
       const log: Log = { posts: [], captures: [], order: [] };
       const desktop = newDesktop();
@@ -173,6 +175,93 @@ export const check: RegressionCheck = {
           "★★사후 장면이 응답에 **그림으로** 실리고 **새 화면 id** 가 붙는다",
           d.content.some((c) => c["type"] === "image") && frameIdOf(d) !== null && frameIdOf(d) !== fid,
           `그림=${String(d.content.some((c) => c["type"] === "image"))} 새id=${String(frameIdOf(d))} 옛id=${String(fid)}`,
+        ),
+      );
+    }
+
+    // ── ①-g ★그물 보강 — 적대 검토가 통과시킨 변이들 (2026-09-20) ───────────────────
+    //  ★검토자가 이 셋을 통과시켰다: `keepFrames: true`(F6) · `blocked` 안 세기(F7) ·
+    //   `look` 의 낡은 프레임 막다른 길(F8). 전부 «편의 방향» 은 지키는데 **안전 방향**
+    //   또는 «다음 수» 가 안 지켜지던 자리다.
+    {
+      // (1) ★★**행동은 자기 프레임을 무효화한다** — §14-3 의 핵심 불변식인데 그물이
+      //  **한쪽만** 봤다. `keepFrames: false` 로 되돌리는 변이는 즉시 빨강인데,
+      //  `keepFrames: true` 로 **끄는** 변이는 6/6 초록이었다. 끄면 모델이 누른 뒤에도
+      //  **옛 좌표로 계속 누른다**(수명이 다할 때까지).
+      const a = arena();
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 5, y: 5 }] }, extra);
+      const after = await a.doTool.handler(
+        { frameId: fid, steps: [{ t: "click", x: 6, y: 6 }] },
+        extra,
+      );
+      const txt = after.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n");
+      out.push(
+        assert(
+          "★★**쏜 뒤엔 그 화면 id 가 죽는다** — 살려 두면 누른 뒤에도 옛 좌표로 계속 누른다",
+          /오래됐|모르는|무효|다시/.test(txt) && a.log.posts.filter((p) => p.events.length > 0).length === 1,
+          `두 번째 발사 ${String(a.log.posts.length - 1)}회 · ${txt.slice(0, 44)}`,
+        ),
+      );
+    }
+    {
+      // (2) ★`blocked` 가 **소유자별로** 오른다 — 한 칸이면 둘이 번갈아 막힐 때 영영 안 오른다.
+      const a = arena({ idle: 0 });
+      const d = a.desktop as Rec;
+      const blocked = d["blocked"] as Map<string, { reason: string; n: number }>;
+      await a.doTool.handler({ frameId: "x", steps: [{ t: "click", x: 1, y: 1 }] }, extra);
+      await a.doTool.handler({ frameId: "x", steps: [{ t: "click", x: 1, y: 1 }] }, extra);
+      out.push(
+        assert(
+          "★★같은 소유자가 연달아 막히면 **연속이 오른다** — 안 오르면 승급이 영영 안 걸린다",
+          // ★소유자 이름을 리터럴로 적지 않는다 — 아레나가 바꾸면 검사가 조용히 공짜 초록이 된다.
+          blocked.size === 1 && [...blocked.values()].every((v) => v.n >= 2),
+          `키=${[...blocked.keys()].join(",")} · 연속=${[...blocked.values()].map((v) => String(v.n)).join(",")}`,
+        ),
+      );
+    }
+
+    // ── ①-f ★★**낡은 화면 id 도 막다른 길이 아니다** (2026-09-20, 정태님 실기) ─────────
+    //  ★실측: 그 기계의 조작 거절 18건 중 **11건이 `프레임(stale)`** 이었다. 모델이 생각하는
+    //   동안 수명이 지나 거절되고 → 다시 `look` → 또 생각 → 또 만료. **왕복이 스스로를
+    //   먹여 살리는 고리**다(8분 넘게 돌았다). 「사람이 쓰는 중」은 5건뿐이었는데, 모델이
+    //   그렇게 **말해서** 처음엔 그쪽을 팠다 — 모델의 설명이 아니라 **로그의 사유**를 세야 한다.
+    //  ★수명을 늘리는 것은 답이 아니다(늘린 만큼 «화면이 바뀌었을 확률» 을 산다). 그래서
+    //   수명은 10초로 **줄이고**, 대신 막힌 자리에서 **새 그림 + 새 id** 를 쥐여 준다.
+    {
+      const a = arena();
+      const fid = frameIdOf(await a.look.handler({}, extra));
+      // 수명을 넘겨 낡게 만든다 — 프레임의 시각을 과거로 민다.
+      const frames = (a.desktop as Rec)["frames"] as Map<string, { atMs: number }[]>;
+      // ★상수를 **제품에서 읽는다** — 여기 숫자를 적으면 상수를 바꿀 때 검사가 옛 값을 고정한다.
+      const { FRAME_TTL_MS } = await loadPluginModule<{ FRAME_TTL_MS: number }>(
+        "../../../plugins/computer-use/src/control.ts",
+      );
+      for (const list of frames.values()) for (const fr of list) fr.atMs -= FRAME_TTL_MS + 5_000;
+      const r = await a.doTool.handler(
+        { frameId: fid, steps: [{ t: "click", x: 10, y: 10 }] },
+        extra,
+      );
+      const text = r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n");
+      out.push(
+        assert(
+          "★★낡은 화면 id 로 부르면 **새 그림이 같이 온다** — 거절만 하면 왕복이 고리가 된다",
+          r.content.some((c) => c["type"] === "image"),
+          `content=${r.content.map((c) => String(c["type"])).join(",")}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★그 그림에 **새 화면 id** 가 붙고, 옛 id 와 다르다",
+          frameIdOf(r) !== null && frameIdOf(r) !== fid,
+          `새=${String(frameIdOf(r))} 옛=${String(fid)}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★**행동은 대신 실행하지 않는다** — 좌표는 옛 그림 기준이라 새 화면에선 딴 곳일 수 있다",
+          a.log.posts.length === 0 && /다시 읽어야/.test(text),
+          `발사 ${String(a.log.posts.length)}회 · ${text.slice(0, 50)}`,
         ),
       );
     }

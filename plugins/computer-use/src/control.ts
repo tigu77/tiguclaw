@@ -142,12 +142,20 @@ export interface Frame {
  * ★그리고 **시한이 프레임 유효성의 전부가 아니다** — 유효한 프레임이어도 UI 가 그대로라는
  *  보장은 없다(§14-3). 그건 재관측으로만 안다.
  */
-export const FRAME_TTL_MS = 30_000;
+// ★★**30초 → 10초** (2026-09-20 정태님). 늘리는 게 아니라 **줄이는** 쪽이 맞다 —
+//  낡은 그림의 좌표로 누르면 **그 사이 바뀐 화면의 엉뚱한 것**을 누른다. 모델이 오래
+//  생각한다고 그림의 수명을 늘리면, 늘린 만큼 «화면이 달라졌을 확률» 을 사는 것이다.
+//  ★짧게 하면 막다른 길이 잦아지므로 **낡았을 때 새로 찍어 준다**(같은 커밋). 그 둘은
+//   한 쌍이다 — 짧은 수명만 넣으면 왕복이 늘고, 재관측만 넣으면 옛 좌표가 살아남는다.
+export const FRAME_TTL_MS = 10_000;
 
 /** ★`not-latest` 가 없어졌다 — 최근 몇 장을 같이 들고 있으므로 «최신이 아님» 이 거절 사유가 아니다. */
 export type FrameReject = "missing" | "unknown" | "stale" | "other-owner";
 
-export type FrameCheck = { ok: true; frame: Frame } | { ok: false; why: FrameReject };
+export type FrameCheck =
+  | { ok: true; frame: Frame }
+  /** ★`stale` 일 때만 그 프레임이 실린다 — 호출부가 **같은 대상**을 다시 찍기 위해서다. */
+  | { ok: false; why: FrameReject; stale?: Frame };
 
 /**
  * **이 행동이 설 수 있는 프레임인가** — 순수.
@@ -180,7 +188,9 @@ export const frameCheck = (
   if (found.owner !== owner) return { ok: false, why: "other-owner" };
   // ★**행동이 목록을 통째로 비운다**(`endAction`) — 그래서 «클릭했으면 다시 봐라» 는 그대로
   //  강제되고, 그 사이에 여러 장을 들고 있는 것은 안전을 안 깎는다.
-  if (nowMs - found.atMs > ttlMs) return { ok: false, why: "stale" };
+  // ★**낡았을 때는 그 프레임을 같이 돌려준다** (2026-09-20) — 호출부가 **같은 대상**을
+  //  다시 찍어 «새 그림 + 새 id» 를 쥐여 줄 수 있게. 판정은 여기가, 촬영은 배관이 한다.
+  if (nowMs - found.atMs > ttlMs) return { ok: false, why: "stale", stale: found };
   return { ok: true, frame: found };
 };
 
@@ -262,6 +272,23 @@ export interface Desktop {
    *  리스·장부와 **같은 객체**에 두는 이유도 같다 — 갈리면 그 순간 판정이 어긋난다.
    */
   lastSelfInputMs: number | null;
+  /**
+   * **같은 이유로 연달아 막힌 횟수** (2026-09-20, 정태님 실기).
+   *
+   * ★★«기다렸다 다시» 에 **횟수가 없었다.** 사용자가 키보드를 계속 쓰면 유휴 가드가 매번
+   *  막고, 모델은 스킬이 시킨 대로 기다렸다 다시 부른다 — 실기에서 **8분 넘게** 같은
+   *  `look`+`do` 를 돌았다(정태님이 그 동안 다른 창에서 타이핑 중이었으니 풀릴 수가 없다).
+   * ★가드는 옳다(사람 손 위에서 조작하면 안 된다). 틀린 것은 **막힌 뒤의 안내**다 —
+   *  «기다려라» 만 있고 «언제 그만두고 사람에게 말해라» 가 없었다.
+   * ★**모델이 안 들고 있는 카운터는 우리가 든다.** 매 호출이 독립이라 모델은 «몇 번째인지»
+   *  를 셀 수 없다. 세어서 말해주면 그때부터는 판단할 수 있다.
+   * ★★**소유자별이다** (2026-09-20, 적대 검토 F7). 첫 판은 데스크톱에 **한 칸**이었는데,
+   *  `sharedDesktop` 은 모듈 전역 싱글턴이라 매니저·서브에이전트가 **번갈아** 막히면
+   *  매번 1로 리셋돼 승급이 **영영 안 걸린다** — 8분 루프를 끊으려고 넣은 것이 정확히
+   *  «여럿이 같은 데스크톱을 쓸 때» 안 걸렸다. 그리고 아무나 한 번 통과하면 **남의
+   *  연속까지 지웠다.** 소유자별로 들면 둘 다 없어진다.
+   */
+  blocked: Map<string, { reason: string; n: number }>;
 }
 
 export const newDesktop = (): Desktop => ({
@@ -270,6 +297,7 @@ export const newDesktop = (): Desktop => ({
   held: { keys: [], buttons: [] },
   frames: new Map(),
   lastSelfInputMs: null,
+  blocked: new Map(),
 });
 
 export const LEASE_IDLE_MS = 60_000;
@@ -490,10 +518,20 @@ export const planRejection = (why: PlanReject, detail?: string): string => {
 };
 
 /** 리스를 못 잡았을 때 — 기다리라고 하지 않는다(큐가 아니다). */
-export const beginRejection = (b: Exclude<Begin, { ok: true }>): string => {
+/** 이 횟수부터는 «기다려라» 가 아니라 «사람에게 말해라» 다. */
+export const BLOCKED_ASK_USER_AT = 3;
+
+export const beginRejection = (b: Exclude<Begin, { ok: true }>, streak = 1): string => {
   switch (b.reason) {
     case "user-active":
-      return "지금 사용자가 그 컴퓨터를 쓰고 있습니다. 화면 보기는 되지만 조작은 하지 않습니다 — 잠시 뒤 다시 시도하거나 사용자에게 물어보세요.";
+      // ★★**«기다려라» 에 끝을 붙인다.** 사용자가 계속 쓰고 있으면 기다림은 안 풀린다 —
+      //  그때 필요한 것은 더 기다리는 게 아니라 **사람에게 말하는 것**이다.
+      return streak >= BLOCKED_ASK_USER_AT
+        ? `★**${String(streak)}번째로 같은 이유로 막혔습니다** — 사용자가 계속 그 컴퓨터를 ` +
+            "쓰고 있습니다. **더 기다리지 마세요.** 지금 하던 것을 멈추고 사용자에게 " +
+            "«키보드·마우스에서 손을 떼시면 이어서 하겠습니다» 라고 말한 뒤, 답을 받고 다시 " +
+            "시작하세요. 화면 보기는 그대로 됩니다."
+        : "지금 사용자가 그 컴퓨터를 쓰고 있습니다. 화면 보기는 되지만 조작은 하지 않습니다 — 잠시 뒤 다시 시도하거나 사용자에게 물어보세요.";
     case "idle-unknown":
       return (
         "사람이 그 컴퓨터를 쓰는 중인지 **알 수 없어서** 조작하지 않았습니다(유휴 시간을 읽지 " +

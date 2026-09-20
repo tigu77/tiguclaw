@@ -19,11 +19,10 @@
  *
  * 등급: **동작 검사** — 임시 홈에 플러그인을 만들어 설치·제거를 실제로 돌린다.
  */
-import { probeInterpreter } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -65,9 +64,9 @@ export const check: RegressionCheck = {
 
       // ★홈을 갈아끼우려면 `getPaths()` 가 메모이즈돼 있어 **프로세스를 갈라야** 한다.
       const probe = `void (async () => {
-      const m = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/manager.ts"))});
-      const reg = await import(${JSON.stringify(path.join(REPO, "src/core/mcp-registry.ts"))});
-      const { getEventBus } = await import(${JSON.stringify(path.join(REPO, "src/core/eventbus.ts"))});
+      const m = await import(${probeSpec(REPO, "src/core/plugins/manager.ts")});
+      const reg = await import(${probeSpec(REPO, "src/core/mcp-registry.ts")});
+      const { getEventBus } = await import(${probeSpec(REPO, "src/core/eventbus.ts")});
       m.initPluginManager({ bus: getEventBus(), channels: [], serviceStops: [] });
       const has = () => Object.keys(reg.getRegisteredMcpServers()).includes("runtimey");
       const before = has();
@@ -94,7 +93,7 @@ export const check: RegressionCheck = {
         stopped, rm1, rm2,
       }));
     })();`;
-      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
+      const r = spawnProbe(REPO, ["-e", probe], {
         cwd: REPO,
         env: { ...process.env, TIGUCLAW_HOME: home },
         encoding: "utf8",

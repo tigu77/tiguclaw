@@ -18,12 +18,11 @@
  *   **비밀 아닌 PII** 는 원리적으로 못 잡는다. payload 를 애초에 안 만든다.
  *   (실측: 885자 → 45자 / 646자 → 94자, 세 축 전부 ✅)
  */
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { stripComments } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";
 
 /**
@@ -86,23 +85,14 @@ export const check: RegressionCheck = {
     //   있었지만 **파일 미러에만** 걸려 있었고 터미널 경로는 원문을 흘렸다. launchd 가
     //   그 stdout/stderr 를 같은 logs/ 폴더에 평문 파일로 쌓는다 — 소독이 아니었다.)
     const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "_log-leak-child.ts");
-    const captured = await within(
+    // ★시한을 넘기면 **자식을 죽인다** — `spawnWithin` 이 그걸 맡는다(2026-09-20).
+    const captured = await spawnWithin(
       60_000,
       "로거 자식 출력 캡처",
-      new Promise<{ out: string; err: string; file: string }>((resolve) => {
-        const p = spawn(process.execPath, ["--import", "tsx", child, SYNTHETIC_TOKEN], {
-          stdio: ["ignore", "pipe", "pipe"],
-          env: process.env,
-        });
-        let so = "";
-        let se = "";
-        p.stdout.on("data", (d: Buffer) => (so += d.toString()));
-        p.stderr.on("data", (d: Buffer) => (se += d.toString()));
-        p.on("close", () => resolve({ out: so, err: se, file: "" }));
-        p.on("error", () => resolve({ out: "", err: "", file: "" }));
-      }),
+      ["--import", "tsx", child, SYNTHETIC_TOKEN],
+      { env: process.env },
     );
-    const cap = "value" in captured ? captured.value : { out: "", err: "", file: "" };
+    const cap = { out: captured.out, err: captured.err, file: "" };
     const streams = `${cap.out}\n${cap.err}`;
     const sawOutput = streams.trim() !== "";
     out.push(

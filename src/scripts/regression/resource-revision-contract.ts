@@ -20,7 +20,7 @@
  * 등급: **동작 검사** — 리비전·판정은 직접 호출, 발행은 자식 프로세스에서 버스를 태운다
  * (`getPaths()` 메모이즈 때문에 홈을 바꾸려면 프로세스를 갈라야 한다).
  */
-import { probeInterpreter } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { readSourceSync } from "./_wiring.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -67,15 +67,15 @@ export const check: RegressionCheck = {
 
     // ── ② 발행과 스냅샷이 같은 값을 말하는가 — 자식 프로세스에서 **실제로 발행**한다 ──
     const probe = `void (async () => {
-      const rr = await import(${JSON.stringify(path.join(REPO, "src/core/resource-revision.ts"))});
-      const { getEventBus } = await import(${JSON.stringify(path.join(REPO, "src/core/eventbus.ts"))});
+      const rr = await import(${probeSpec(REPO, "src/core/resource-revision.ts")});
+      const { getEventBus } = await import(${probeSpec(REPO, "src/core/eventbus.ts")});
       const seen = [];
       getEventBus().subscribe((e) => {
         if (typeof e.type === "string" && e.type.startsWith("worker.")) seen.push(e.payload);
       });
-      const { initStore } = await import(${JSON.stringify(path.join(REPO, "src/store/sessions.ts"))});
+      const { initStore } = await import(${probeSpec(REPO, "src/store/sessions.ts")});
       initStore();
-      const wj = await import(${JSON.stringify(path.join(REPO, "src/core/worker-jobs.ts"))});
+      const wj = await import(${probeSpec(REPO, "src/core/worker-jobs.ts")});
       // ★실제 lifecycle 경로를 태운다(등록 → 완료). 내부 헬퍼를 직접 부르지 않는다.
       //  ★★잡을 **둘** 태운다 (2026-08-27 적대 검토 G3). 하나만 태우면 이벤트가 2건뿐이라
       //   0,1 두 값뿐이고, "시작 이벤트만 리비전을 안 올린다" 는 변이가 **통과했다** —
@@ -94,7 +94,7 @@ export const check: RegressionCheck = {
         snapshot: snap,
       }));
     })();`;
-    const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
+    const r = spawnProbe(REPO, ["-e", probe], {
       cwd: REPO,
       env: { ...process.env },
       encoding: "utf8",
@@ -129,6 +129,14 @@ export const check: RegressionCheck = {
       ],
       { cwd: REPO, encoding: "utf8" },
     );
+    // ★★**«매치 0» 과 «못 쟀다» 를 가른다** (2026-09-20 Windows 검증대). `git grep` 은
+    //  매치 없음이 rc=1, **저장소가 아니면 rc=128** 이다. 종전엔 rc 를 안 보고 빈 stdout 을
+    //  그대로 «0곳» 으로 읽어, git 이 없는 트리에서 **«아무도 안 올린다»** 라고 단언했다 —
+    //  아무것도 못 본 것을 «없다» 라고 말한 것이다([[feedback_pruned_table_absence]] 의
+    //  «부재 주장 전에 창부터»). ★그 기계에서 실제로 났고, 앞의 두 뿌리를 걷어내고 나서야
+    //  드러났다 — 그전까진 프로브가 아예 안 돌아서 이 단언까지 오지도 못했다.
+    const grepRc = grep.status;
+    const couldMeasure = grepRc === 0 || grepRc === 1;
     const bumpSites = `${grep.stdout ?? ""}`
       .split("\n")
       .filter((l) => l.trim() !== "" && !/^\S+:\s*(\/\/|\*)/.test(l));
@@ -213,8 +221,14 @@ export const check: RegressionCheck = {
       //  ([[feedback_hand_maintained_lists]]).
       assert(
         "★★발행 자리에서 **정확히 한 번** 올린다 — 레포 전체 기준(두 곳이면 이벤트가 조용히 유실된다)",
-        bumpSites.length === 1 && (bumpSites[0] ?? "").includes("src/core/worker-jobs.ts"),
-        bumpSites.length === 0 ? "★0곳 — 아무도 안 올린다" : bumpSites.join(" / "),
+        couldMeasure &&
+          bumpSites.length === 1 &&
+          (bumpSites[0] ?? "").includes("src/core/worker-jobs.ts"),
+        !couldMeasure
+          ? `★못 쟀다 — git grep rc=${String(grepRc)}(저장소가 아니거나 git 이 없다). «0곳» 이 아니다`
+          : bumpSites.length === 0
+            ? "★0곳 — 아무도 안 올린다"
+            : bumpSites.join(" / "),
       ),
       assert(
         "★스냅샷 엔드포인트가 좌표를 싣는다 + **목록보다 먼저** 읽는다(잃어버린 갱신 방지)",

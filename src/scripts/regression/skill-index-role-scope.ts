@@ -12,7 +12,7 @@
  *   헌법이 없는 것을 인용하게 된다(헌법 역할 분할에서 겪은 «끊긴 참조» 와 같은 모양).
  *  ③`reach` 오타 하나로 스킬이 조용히 안 보이게 되는 것.
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -82,7 +82,22 @@ export const check: RegressionCheck = {
     try {
       bundled = [...(await discoverSkills(emptyCwd))];
     } finally {
-      if (prevHome !== undefined) process.env.TIGUCLAW_HOME = prevHome;
+      // ★**만든 것은 치운다** (2026-09-20). 종전엔 이 `finally` 가 환경변수만 되돌리고
+      //  임시 폴더 **둘을 그대로 뒀다** — 매 실행마다 둘씩, 맥에서 **67개**가 쌓여 있었다.
+      //  러너의 스위퍼는 «하루 넘은 것» 만 쓸어서 그날 것은 한 번도 안 보였고, Windows
+      //  검증대의 «임시 홈 7개» 중 넷이 바로 이것이었다(`cwd-*`·`skillscope-*`).
+      //  ★맥에서도 똑같이 샜다 — 아무도 **세지 않아서** 안 보였을 뿐이다.
+      //  [[feedback_pruned_table_absence]] 의 «부재 주장 전에 창부터» 와 같은 모양이다.
+      if (prevHome === undefined) delete process.env.TIGUCLAW_HOME;
+      else process.env.TIGUCLAW_HOME = prevHome;
+      // 치우기 실패가 **판정을 덮으면 안 된다** — 위생은 단언이 아니다.
+      for (const d of [home, emptyCwd]) {
+        try {
+          rmSync(d, { recursive: true, force: true });
+        } catch {
+          /* 못 지웠으면 스위퍼가 하루 뒤에 가져간다 */
+        }
+      }
     }
     out.push(assert("번들 스킬이 실제로 발견된다(0이면 아래가 전부 공허하다)", bundled.length > 0, `${bundled.length}개`));
 

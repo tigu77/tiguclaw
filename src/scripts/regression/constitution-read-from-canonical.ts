@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { probeSpec } from "./_probe-helpers.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -36,9 +37,9 @@ const probe = async (
     // ★실제 부팅 순서를 재현한다 — load-env 가 <home>/.env 를 process.env 로 올린 **뒤**
     //  paths 가 이음매를 읽는다. 종전엔 이 import 가 없어 .env 축을 아예 안 태웠고, 그래서
     //  봉인 검사가 변이를 못 잡았다(측정이 대상을 안 지나가면 검사가 아니다).
-    import { loadHomeEnv } from ${JSON.stringify(path.join(REPO, "src/core/load-env.js"))};
-    import { getPaths, ensureHome } from ${JSON.stringify(path.join(REPO, "src/core/paths.js"))};
-    import { readSystem } from ${JSON.stringify(path.join(REPO, "src/core/identity.js"))};
+    import { loadHomeEnv } from ${probeSpec(REPO, "src/core/load-env.js")};
+    import { getPaths, ensureHome } from ${probeSpec(REPO, "src/core/paths.js")};
+    import { readSystem } from ${probeSpec(REPO, "src/core/identity.js")};
     import { existsSync, readdirSync } from "node:fs";
     import path from "node:path";
     loadHomeEnv();

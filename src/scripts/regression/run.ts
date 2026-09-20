@@ -68,6 +68,40 @@ const sweepStaleHomes = (): number => {
   }
   return swept;
 };
+
+/**
+ * **끝나고 남은 임시 폴더를 센다** — 내 것 말고 (2026-09-20).
+ *
+ * ★★**67개가 쌓여 있었는데 아무도 몰랐다.** 위 스위퍼는 «하루 넘은 것» 만 쓸어서, 오늘
+ *  생긴 것은 **원리적으로 한 번도 안 보인다.** 뿌리는 `skill-index-role-scope` 가
+ *  `mkdtempSync` 를 둘 부르고 치우지 않은 것이었고, 그건 고쳤다 — 그런데 **고친 것보다
+ *  중요한 건 «세는 자리가 없었다» 는 사실**이다. 다음에 다른 검사가 같은 짓을 하면
+ *  또 하루가 지나야, 그것도 조용히 사라진다.
+ * ★맥에선 더 안 보인다 — POSIX 라 지우기가 늘 성공해서 `⚠️` 줄조차 안 뜬다. Windows
+ *  검증대의 «임시 홈 7개» 보고가 없었으면 여전히 몰랐을 것이다.
+ * ★**판정이 아니라 위생**이다. 빨갛게 만들지 않는다(단언 결과를 덮으면 안 된다) — 대신
+ *  **말은 한다.** [[feedback_logs_must_stand_alone]]
+ */
+const countLeftoverHomes = (mine: string, mineRemoved: boolean): string[] => {
+  try {
+    return readdirSync(tmpdir())
+      .filter((n) => {
+        if (!n.startsWith("tiguclaw-regression-")) return false;
+        // ★★**내 홈을 무조건 빼면, 하필 내 홈이 안 지워진 경우를 못 본다** (2026-09-20,
+        //  Windows 검증대가 첫 실행에서 바로 잡았다). 남은 폴더가 **정확히 내 홈 하나**
+        //  였는데 이 줄이 그걸 걸러내 `🧹` 가 한 줄도 안 떴다 — 세라고 만든 눈이
+        //  **가장 흔한 실패 자리**를 못 보고 있었다.
+        //  ★그래서 「지웠는가」로 가른다: 지웠으면 셀 것이 없고(존재하지 않는다), 못
+        //  지웠으면 **그것이야말로 남은 폴더**다. `⚠️` 가 사유를 말하고 이 줄이 수를 맞춘다.
+        if (mineRemoved && path.join(tmpdir(), n) === mine) return false;
+        return true;
+      })
+      .sort();
+  } catch {
+    return [];
+  }
+};
+
 const sweptAtStart = sweepStaleHomes();
 
 const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-"));
@@ -281,6 +315,15 @@ try {
   const why = removeHome(home);
   if (sweptAtStart > 0) {
     console.log(`\n🧹 지난 실행이 남긴 임시 홈 ${sweptAtStart}개를 시작할 때 쓸어냈다(하루 넘은 것만).`);
+  }
+  const leftover = countLeftoverHomes(home, why === null);
+  if (leftover.length > 0) {
+    console.log(
+      `\n🧹 남은 임시 폴더 ${String(leftover.length)}개 — 검사가 만들고 안 치운 것이다` +
+        `${why === null ? "(내 홈은 지웠으니 뺐다)" : "(★못 지운 내 홈도 센다 — 아래 사유 참조)"}.`,
+    );
+    console.log(`   ${leftover.slice(0, 8).join(" · ")}${leftover.length > 8 ? " …" : ""}`);
+    console.log("   ★판정과 무관하다. 스위퍼는 **하루 넘은 것만** 쓸어서 오늘 것은 여기 아니면 안 보인다.");
   }
   if (why !== null) {
     // ★**판정과 별개의 줄**이다 — 위의 «통과/실패» 가 단언의 정본이고, 이것은 위생 문제다.

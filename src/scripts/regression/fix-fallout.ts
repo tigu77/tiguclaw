@@ -24,11 +24,10 @@
  *   `LOG_LINE_PREFIX` 가 레벨을 **열거**해서 크래시 원인 줄이 통째로 접혔다 —
  *   두 수정이 서로를 무력화했고, `logFatal` 의 존재 이유가 정확히 안 닫혔다.
  */
-import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas } from "./_wiring.js";
 
 const CODEX = "../../core/llm-runtime/adapters/openai-codex-oauth.ts";
@@ -235,17 +234,16 @@ export const check: RegressionCheck = {
     //   멀쩡히 있는 채로 상류(`:1557`)가 IdleTimeoutError 를 던져 판정을 비껴갔고, 정규식은
     //   그대로 통과시켰다. 코드의 존재가 아니라 취소가 실제로 올라오는지를 본다.)
     const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "_codex-cancel-child.ts");
-    const drive = async (mode: "read" | "stall"): Promise<string> =>
-      new Promise((resolve) => {
-        const p = spawn(process.execPath, ["--import", "tsx", child, mode], {
-          stdio: ["ignore", "pipe", "ignore"],
-          env: process.env,
-        });
-        let buf = "";
-        p.stdout.on("data", (d: Buffer) => (buf += d.toString()));
-        p.on("close", () => resolve(buf));
-        p.on("error", () => resolve(""));
+    // ★시한을 넘기면 **자식을 죽인다** — `spawnWithin` 이 spawn 과 시한을 함께 소유한다
+    //  (2026-09-20). 종전엔 여기서 spawn 하고 아래에서 `within` 으로 감쌌는데, 시한을
+    //  넘기면 자식이 **살아남아** 러너 홈을 붙들었다(맥에선 안 보이는 축이다).
+    const drive = async (mode: "read" | "stall"): Promise<string> => {
+      const r = await spawnWithin(60_000, `취소 e2e(${mode})`, ["--import", "tsx", child, mode], {
+        stdio: ["ignore", "pipe", "ignore"],
+        env: process.env,
       });
+      return r.timedOut ? "" : r.out;
+    };
     const parse = (raw: string): { outcome?: string; identical?: boolean; name?: string } => {
       const line = raw.trim().split("\n").filter((l) => l.startsWith("{")).pop() ?? "";
       try {
@@ -256,8 +254,8 @@ export const check: RegressionCheck = {
     };
     // 대조군 먼저 — 이 경로는 원래도 전파됐다. 여기가 빨간불이면 하네스가 고장난 것이지
     //  회귀가 아니다(둘을 구분 못 하면 검사가 거짓말을 한다).
-    const readR = await within(60_000, "취소 e2e(SSE 읽는 중)", drive("read"));
-    const readJ = "value" in readR ? parse(readR.value) : {};
+    const readRaw = await drive("read");
+    const readJ = parse(readRaw);
     out.push(
       assert(
         "대조군 — SSE 읽는 중 취소는 그대로 올라온다",
@@ -265,8 +263,8 @@ export const check: RegressionCheck = {
         `outcome=${String(readJ.outcome)} 동일성=${String(readJ.identical)} name=${String(readJ.name)}`,
       ),
     );
-    const stallR = await within(60_000, "취소 e2e(스톨 백오프 중)", drive("stall"));
-    const stallJ = "value" in stallR ? parse(stallR.value) : {};
+    const stallRaw = await drive("stall");
+    const stallJ = parse(stallRaw);
     out.push(
       assert(
         "★스톨 백오프 중 취소도 삼키지 않는다(매니저 타임아웃이 '완료' 로 보고되던 것)",

@@ -22,11 +22,10 @@
  *
  * 등급: **동작 검사** — 임시 홈에 진짜 DB 를 만들어 `pruneEvents` 를 **실행**한다.
  */
-import { probeInterpreter } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -64,8 +63,8 @@ export const check: RegressionCheck = {
       //  최신 N 이 어차피 전부 잡 행이라, 안쪽 스코프를 지워도 결과가 같아 변이가 통과한다
       //  (첫 판이 정확히 그랬다 — 변이 3종 중 하나가 안 잡혔다).
       const probe = `void (async () => {
-        const { initStore, getDb } = await import(${JSON.stringify(path.join(REPO, "src/store/sessions.ts"))});
-        const ev = await import(${JSON.stringify(path.join(REPO, "src/store/events.ts"))});
+        const { initStore, getDb } = await import(${probeSpec(REPO, "src/store/sessions.ts")});
+        const ev = await import(${probeSpec(REPO, "src/store/events.ts")});
         initStore();
         const db = getDb();
         db.prepare("DELETE FROM events").run();
@@ -115,7 +114,7 @@ export const check: RegressionCheck = {
           prunable: ev.countPrunableEvents(),
         }));
       })();`;
-      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
+      const r = spawnProbe(REPO, ["-e", probe], {
         cwd: tmp,
         env: { ...process.env, TIGUCLAW_HOME: tmp },
         encoding: "utf8",

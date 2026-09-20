@@ -22,6 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { loadPlugins } from "../../core/plugins/loader.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 const ENTRY = `export default class P {
   async start(): Promise<void> {}
@@ -139,7 +140,7 @@ export const check: RegressionCheck = {
 
       // 우리 레포의 실물도 함께 못박는다 — kind 는 전부 배열이고, 아는 값만 쓴다.
       const repoRoot = path.resolve(
-        path.dirname(new URL(import.meta.url).pathname),
+        path.dirname(fileURLToPath(new URL(import.meta.url))),
         "../../..",
       );
       const dirs = (

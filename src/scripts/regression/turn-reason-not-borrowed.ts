@@ -20,8 +20,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
-const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../..");
+const REPO = path.resolve(path.dirname(fileURLToPath(new URL(import.meta.url))), "../../..");
 const SRC = path.join(REPO, "packages/dashboard/js/axis1-options.js");
 
 interface Harness {

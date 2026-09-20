@@ -21,6 +21,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 const walkTs = (dir: string, out: string[]): void => {
   for (const e of readdirSync(dir)) {
@@ -45,7 +46,7 @@ const readAll = (dir: string, out: string[]): void => {
 const EXPORT_RE = /^export (?:const|function|async function|class) ([A-Za-z_$][\w$]*)/gm;
 
 /** 레포 루트(cwd 무관 — 다른 검사들과 동형으로 import.meta.url 기준). */
-const repoRoot = (): string => new URL("../../../", import.meta.url).pathname;
+const repoRoot = (): string => fileURLToPath(new URL("../../../", import.meta.url));
 
 /**
  * 이 트리에서 판정이 성립하는가.

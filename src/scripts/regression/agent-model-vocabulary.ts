@@ -40,6 +40,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 /** claude SDK 네이티브 티어 어휘 — 데몬 자산이 쓰면 프로파일 풀·폴백을 잃는다. */
 const SDK_TIER_WORDS = new Set(["opus", "sonnet", "haiku"]);
@@ -92,7 +93,7 @@ export const check: RegressionCheck = {
   guards:
     "데몬이 읽는 에이전트 명세가 SDK 티어명을 쓰지 않는다 — 쓰면 그 에이전트만 멀티 LLM 밖으로 떨어진다",
   run: async (): Promise<Assertion[]> => {
-    const root = new URL("../../../", import.meta.url).pathname;
+    const root = fileURLToPath(new URL("../../../", import.meta.url));
     // 데몬이 읽는 자산 두 곳(빌트인 + 이 레포의 프로젝트 스코프).
     const daemonDirs = ["agents", ".tiguclaw/agents"];
     const notes: string[] = [];

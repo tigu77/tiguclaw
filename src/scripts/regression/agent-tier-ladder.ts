@@ -39,6 +39,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 /** 낮을수록 값싼 티어. 여기 없는 model 값(opus/sonnet 등 역할형)은 사다리 대상이 아니다. */
 const TIER_RANK: Record<string, number> = { low: 0, mid: 1, high: 2 };
@@ -74,7 +75,7 @@ export const check: RegressionCheck = {
   guards:
     "티어 범용 에이전트 설명이 상위 티어를 가리킨다 — 불확실한 일이 중간 티어에 고이지 않게",
   run: async (): Promise<Assertion[]> => {
-    const dir = new URL("../../../agents", import.meta.url).pathname;
+    const dir = fileURLToPath(new URL("../../../agents", import.meta.url));
     const tiers = await readTierAgents(dir);
     const top = tiers[tiers.length - 1];
 

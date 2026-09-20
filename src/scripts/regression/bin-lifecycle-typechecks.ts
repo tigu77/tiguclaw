@@ -29,7 +29,13 @@ export const check: RegressionCheck = {
   name: "bin-lifecycle-typechecks",
   guards: "최후 복구 경로 bin/daemon.mjs 가 어떤 자동 게이트에도 안 걸려 빨간불인 채 방치되던 것",
   run: async (): Promise<Assertion[]> => {
-    const tsc = path.join(REPO, "node_modules", ".bin", "tsc");
+    // ★★**`.bin/tsc` 를 직접 부르면 Windows 에서 `ENOENT` 다** (2026-09-20 검증대 실측).
+    //  거기엔 확장자 없는 셸 스크립트가 놓여 있어 `existsSync` 는 `true` 인데 실행이 안 된다
+    //  — 그래서 이 검사는 «부재라 통과» 도 아니고 **빨강**이었다. 맥에선 같은 파일이 그냥
+    //  돌아서 원리적으로 안 보인다. 실측: `.bin/tsc --version` → ENOENT ·
+    //  `node <typescript/bin/tsc> --version` → `Version 5.9.3`.
+    //  ★**JS 엔트리를 node 로 돌린다** — 심(shim)은 플랫폼마다 모양이 다르지만 이건 같다.
+    const tsc = path.join(REPO, "node_modules", "typescript", "bin", "tsc");
     const cfg = path.join(REPO, "tsconfig.bin.json");
     if (!existsSync(tsc) || !existsSync(cfg)) {
       return [
@@ -43,7 +49,7 @@ export const check: RegressionCheck = {
     let ok = true;
     let detail = "0 에러";
     try {
-      await execFileAsync(tsc, ["-p", cfg], { cwd: REPO, timeout: 120_000 });
+      await execFileAsync(process.execPath, [tsc, "-p", cfg], { cwd: REPO, timeout: 120_000 });
     } catch (e) {
       ok = false;
       const out = String((e as { stdout?: string }).stdout ?? "").trim();

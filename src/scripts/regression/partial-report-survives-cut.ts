@@ -17,10 +17,9 @@
  * ★자식이 `workerDepth: 1` 로 도는 것이 **이 검사의 핵심 조건**이다. 0 이면 `deltaStream` 이
  *  켜져 옛 경로로도 통과하므로 아무것도 안 잰다.
  */
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { probeInterpreter } from "./_probe-helpers.js";
+import { spawnProbe } from "./_probe-helpers.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -30,8 +29,7 @@ export const check: RegressionCheck = {
   guards:
     "매니저 턴이 스트림 중간에 끊기면 그때까지 쓴 보고가 통째로 사라지고 일반 오류 문구만 가던 것(실측 3,859자 유실) — deltaStream 이 매니저에서 꺼져 있어 «이미 흘러간 텍스트» 를 꺼낼 데가 없었다",
   run: async (): Promise<Assertion[]> => {
-    const r = spawnSync(
-      probeInterpreter(REPO),
+    const r = spawnProbe(REPO,
       [path.join(REPO, "src/scripts/regression/_codex-partial-report-child.ts")],
       { cwd: REPO, env: { ...process.env }, encoding: "utf8", timeout: 120_000 },
     );

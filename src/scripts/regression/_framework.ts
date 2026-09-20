@@ -12,6 +12,7 @@
  *  4. **회귀를 잡은 적이 있다** — 실제 사고에서 나온 것. "있으면 좋은 테스트"는 제외.
  * 브라우저(CDP)·라이브 데몬이 필요한 검증은 여기 넣지 않는다(별도 수동 스위트).
  */
+import { spawn, type SpawnOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 export interface Assertion {
@@ -77,6 +78,45 @@ export const within = async <T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+};
+/**
+ * **자식을 띄우고 시한까지 기다린다 — 넘기면 죽인다** (2026-09-20).
+ *
+ * ★★`within()` 은 시한을 넘기면 **그냥 돌아온다.** 자식은 계속 산다. 세 검사가 각자 손으로
+ *  `spawn` 과 `within` 을 엮고 있었고, **셋 다 kill 을 빠뜨렸다** — 같은 것을 세 번 적으면
+ *  세 번 다 같은 곳을 빠뜨린다([[feedback_simple_composable_no_duplication]] 의
+ *  «이음매에서 새면 린트 말고 이음매를 없애라»).
+ * ★★**맥에선 원리적으로 안 보인다.** 고아 자식이 러너 홈의 파일을 붙들고 있어도 POSIX 는
+ *  그냥 지운다. Windows 에서만 `EBUSY` 가 되고, 그래서 한 번도 안 드러났다.
+ * ★주의 — 이것이 그 `EBUSY` 의 범인이라는 **증거는 아직 없다**(두 검사 모두 그 기계에서
+ *  초록이었다 = 시한을 안 넘겼다). 범인과 무관하게 **결함은 결함**이라 닫는다.
+ */
+export const spawnWithin = async (
+  ms: number,
+  what: string,
+  argv: string[],
+  opts: SpawnOptions = {},
+): Promise<{ out: string; err: string; timedOut: boolean }> => {
+  const p = spawn(process.execPath, argv, { stdio: ["ignore", "pipe", "pipe"], ...opts });
+  let so = "";
+  let se = "";
+  p.stdout?.on("data", (d: Buffer) => (so += d.toString()));
+  p.stderr?.on("data", (d: Buffer) => (se += d.toString()));
+  const ended = new Promise<void>((resolve) => {
+    p.on("close", () => resolve());
+    p.on("error", () => resolve());
+  });
+  const r = await within(ms, what, ended);
+  if (!("value" in r)) {
+    // ★시한을 넘겼다 — **죽인다.** 안 죽이면 고아가 러너 홈을 붙들고, 그 뒤 정리가 실패한다.
+    try {
+      p.kill("SIGKILL");
+    } catch {
+      /* 이미 죽었으면 할 일이 없다 */
+    }
+    return { out: so, err: se, timedOut: true };
+  }
+  return { out: so, err: se, timedOut: false };
 };
 
 /**

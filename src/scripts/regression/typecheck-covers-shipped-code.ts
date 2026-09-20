@@ -36,7 +36,8 @@ const runTsc = async (
   args: string[],
 ): Promise<{ ok: boolean; stdout: string }> => {
   try {
-    const { stdout } = await execFileAsync(tsc, args, {
+    // ★`tsc` 는 이제 **JS 엔트리 경로**다 — node 로 돌린다(심은 플랫폼마다 모양이 다르다).
+    const { stdout } = await execFileAsync(process.execPath, [tsc, ...args], {
       cwd: REPO,
       timeout: 300_000,
       maxBuffer: 32 * 1024 * 1024,
@@ -53,7 +54,11 @@ export const check: RegressionCheck = {
     "plugins/·packages/ 가 타입 게이트 밖이라 컴파일 안 되는 코드가 초록으로 커밋·푸시되던 것(배포 때만 드러남) + 그 게이트가 있어도 아무도 안 부르던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const tsc = path.join(REPO, "node_modules", ".bin", "tsc");
+    // ★**심(shim)이 아니라 JS 엔트리를 node 로 돌린다** — Windows 의 `.bin/tsc` 는 확장자
+    //  없는 셸 스크립트라 `existsSync` 는 true 인데 실행이 `ENOENT` 다(2026-09-20 실측).
+    //  그래서 이 검사가 그 기계에서 «src 0 · plugins 0 · packages 0» 을 냈다 — 범위가
+    //  좁아서가 아니라 **tsc 가 아예 안 돌아서**다. `dotbin-shim-is-not-spawnable` 이 지킨다.
+    const tsc = path.join(REPO, "node_modules", "typescript", "bin", "tsc");
     const cfg = path.join(REPO, "tsconfig.check.json");
     const pkgPath = path.join(REPO, "package.json");
 

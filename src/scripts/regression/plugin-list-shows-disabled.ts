@@ -12,10 +12,9 @@
  * 나오는지 본다. 소스로는 "실행 안 한다" 를 지킬 수 없다.
  */
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { probeInterpreter } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -61,8 +60,8 @@ export const check: RegressionCheck = {
       );
 
       const probe = `void (async () => {
-      const m = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/manager.ts"))});
-      const { getEventBus } = await import(${JSON.stringify(path.join(REPO, "src/core/eventbus.ts"))});
+      const m = await import(${probeSpec(REPO, "src/core/plugins/manager.ts")});
+      const { getEventBus } = await import(${probeSpec(REPO, "src/core/eventbus.ts")});
       m.initPluginManager({ bus: getEventBus(), channels: [], serviceStops: [] });
       const first = await m.listAllPlugins();
       await m.installHomePlugin("okey");
@@ -81,7 +80,7 @@ export const check: RegressionCheck = {
         bundledSeen: first.filter((p) => p.source === "bundled").length,
       }));
     })();`;
-      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
+      const r = spawnProbe(REPO, ["-e", probe], {
         cwd: REPO,
         env: { ...process.env, TIGUCLAW_HOME: home },
         encoding: "utf8",

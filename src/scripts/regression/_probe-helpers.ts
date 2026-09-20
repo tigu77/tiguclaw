@@ -7,9 +7,10 @@
  *  누락·`HTTP_BRIDGE_HOST` 미고정)을 한쪽만 고쳤으면 조용히 갈렸을 자리다.
  *  [[feedback_hand_maintained_lists]] · [[feedback_simple_composable_no_duplication]]
  */
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -126,16 +127,64 @@ export const reapOnExit = (pid: number | undefined): void => {
  * 순서: 이 트리의 `node_modules` → 없으면 **상위로 올라가며** 찾는다(워크트리는 부모
  * 레포 곁에 생기므로 대개 여기서 잡힌다) → 그래도 없으면 `PATH` 의 `tsx`.
  */
-export const probeInterpreter = (repo: string): string => {
+/** tsx 로더의 **절대 file URL** — 이 트리부터 위로 올라가며 찾는다(워크트리 대비). */
+const tsxLoaderUrl = (repo: string): string | null => {
   let dir = repo;
   for (let i = 0; i < 6; i += 1) {
-    const cand = path.join(dir, "node_modules", ".bin", "tsx");
-    if (existsSync(cand)) return cand;
+    const cand = path.join(dir, "node_modules", "tsx", "dist", "loader.mjs");
+    if (existsSync(cand)) return pathToFileURL(cand).href;
     const up = path.dirname(dir);
     if (up === dir) break;
     dir = up;
   }
-  // ★못 찾으면 `PATH` 에 맡긴다 — 여기서 던지면 검사가 **원인을 못 말하고** 죽는다.
-  //  이름만 주면 `spawnSync` 가 ENOENT 를 주고, 그건 아래 `bootVerdict` 가 문장으로 만든다.
-  return "tsx";
+  return null;
 };
+
+/**
+ * 자식 프로브를 **띄운다** — 인터프리터 경로가 아니라 **기동 자체**를 여기서 소유한다.
+ *
+ * ★★**종전엔 `node_modules/.bin/tsx` 를 직접 spawn 했고, Windows 에서 그게 안 된다**
+ *  (2026-09-20 검증대 실측). 그 자리엔 확장자 없는 **셸 스크립트**가 놓여 있어
+ *  `existsSync` 는 `true` 를 주는데 `spawnSync` 는 **`ENOENT`** 를 준다. 맥·리눅스에선
+ *  같은 파일이 그냥 실행되므로 **원리적으로 안 보이는 결함**이다.
+ * ★실측(그 기계에서 직접, 고치기 전에):
+ * ```
+ *   .bin/tsx -e            → status=null  ENOENT      ← 현행
+ *   .bin/tsx.cmd -e shell  → status=1     (다른 실패)
+ *   node --import tsx -e   → status=0     "__OK__2"   ← 이것만 된다
+ * ```
+ * ★피해가 컸다 — 이 하나가 **빨강 8건**을 만들었고, 그중 일곱은 «프로브가 실제로 돌았다»
+ *  가 실패하며 **사유가 공란**이라 로그만으로는 원인이 안 보였다. 그물은 「미검사」를
+ *  알렸는데 **이유를 못 실었다.**
+ * ★`--import` 에 **절대 file URL** 을 준다 — 맨 이름 `tsx` 는 **cwd 기준**으로 풀리므로
+ *  `node_modules` 가 없는 격리 워크트리에서 깨진다(2026-08-29 에 이미 겪은 축이다).
+ *  못 찾으면 맨 이름으로 떨어뜨리고, 그때의 `ENOENT` 는 호출부가 문장으로 만든다.
+ * ★**호출부가 인터프리터를 고르지 않는다** — 여덟 곳이 각자 골랐고 여덟 곳이 같이 틀렸다.
+ *  [[feedback_simple_composable_no_duplication]] 의 «이음매를 없애라».
+ */
+export const spawnProbe = (
+  repo: string,
+  args: string[],
+  opts: SpawnSyncOptions = {},
+): SpawnSyncReturns<string> => {
+  const loader = tsxLoaderUrl(repo);
+  return spawnSync(process.execPath, ["--import", loader ?? "tsx", ...args], {
+    encoding: "utf8",
+    ...opts,
+  }) as SpawnSyncReturns<string>;
+};
+
+/**
+ * 프로브 안에서 쓸 **ESM 지정자** — 절대경로가 아니라 **file URL** 로 준다.
+ *
+ * ★★**Windows 절대경로는 ESM 지정자가 아니다.** `C:\…` 의 `C:` 를 Node 가 **스킴**으로
+ *  읽어 `ERR_UNSUPPORTED_ESM_URL_SCHEME` 을 던진다. POSIX 절대경로는 **그냥 통하므로**
+ *  맥·리눅스에서는 원리적으로 안 보인다.
+ * ★실측(2026-09-20 집 검증대): `.bin` 기동을 고치고 나니 **그 아래에서** 이게 드러났다 —
+ *  빨강 여섯, 19곳. 그전까진 `ENOENT` 에 가려 **사유가 공란**이었다. 뿌리가 둘 겹쳐 있었다.
+ * ★이 부류는 2026-09-19 에 `data-safety` 에서 **한 곳만** 고쳤다. 형제 19곳이 남아 있었고,
+ *  맥에서 몇 번을 돌려도 초록이라 볼 방법이 없었다 — `.pathname` 과 같은 이야기다.
+ *  그래서 판정을 손이 아니라 **여기 하나**에 둔다.
+ */
+export const probeSpec = (repo: string, rel: string): string =>
+  JSON.stringify(pathToFileURL(path.join(repo, rel)).href);

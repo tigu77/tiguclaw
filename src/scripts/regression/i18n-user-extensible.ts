@@ -30,8 +30,9 @@ const readFileText = (rel: string): Promise<string> =>
   readFile(new URL(rel, import.meta.url), "utf8");
 import { execFileSync } from "node:child_process";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
-const CHILD = new URL("./_i18n-child.ts", import.meta.url).pathname;
+const CHILD = fileURLToPath(new URL("./_i18n-child.ts", import.meta.url));
 
 const runIn = (home: string, argv: string[] = []): Record<string, unknown> => {
   const out = execFileSync(process.execPath, ["--import", "tsx", CHILD, ...argv], {

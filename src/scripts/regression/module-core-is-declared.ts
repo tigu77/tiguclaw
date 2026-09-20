@@ -18,10 +18,9 @@
  *
  * 등급: 동작 검사 — 진짜 매니페스트를 읽는 `isCoreModule` 과 인벤토리 수집을 부른다.
  */
-import { probeInterpreter } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { promises as fs } from "node:fs";
 import os from "node:os";
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCoreModule } from "../../core/plugins/inventory.js";
@@ -147,13 +146,16 @@ export const check: RegressionCheck = {
       // ★`tsx -e` 는 cjs 로 내보내서 **최상위 await 이 안 된다**(첫 판이 그걸로 죽었다).
       //  async IIFE 로 감싼다.
       const probe = `void (async () => {
-        const { loadPlugins } = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/loader.ts"))});
-        const { isModuleActive } = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/inventory.ts"))});
+        const { loadPlugins } = await import(${probeSpec(REPO, "src/core/plugins/loader.ts")});
+        const { isModuleActive } = await import(${probeSpec(REPO, "src/core/plugins/inventory.ts")});
+        // ★여긴 **파일 경로** 자리다(디렉터리를 읽는다) — 지정자가 아니므로 URL 로 바꾸면 안 된다.
+        //  ★2026-09-20 에 내가 전수 치환하며 여기까지 바꿨고, 맥 회귀 4건이 즉시 빨개졌다.
+        //  «파일 API 엔 경로, ESM 엔 URL» — 그 구분을 한 줄에서도 지켜야 한다.
         const names = (await loadPlugins(${JSON.stringify(path.join(REPO, "plugins"))})).map((p) => p.manifest.name);
         console.log("__J__" + JSON.stringify({ loaded: names,
           active: { "http-bridge": isModuleActive("http-bridge"), scheduler: isModuleActive("scheduler") } }));
       })();`;
-      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
+      const r = spawnProbe(REPO, ["-e", probe], {
         cwd: tmp, // ★프로젝트 레이어도 임시 디렉터리로 — 레포의 `.tiguclaw/` 가 안 섞이게.
         env: { ...process.env, TIGUCLAW_HOME: tmp },
         encoding: "utf8",

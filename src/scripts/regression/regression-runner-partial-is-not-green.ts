@@ -26,10 +26,9 @@
  *  그 경로는 이 스위트가 **매일 스스로** 증명한다(지금 이 줄이 그 안에서 돌고 있다).
  */
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
-import { probeInterpreter } from "./_probe-helpers.js";
+import { spawnProbe } from "./_probe-helpers.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const SELF = "regression-runner-partial-is-not-green";
@@ -58,8 +57,7 @@ const verdictOf = (out: string): string =>
 
 /** 러너를 자식으로 돌린다 — 인자가 곧 필터다. */
 const runRunner = (args: readonly string[]): Run => {
-  const r = spawnSync(
-    probeInterpreter(REPO),
+  const r = spawnProbe(REPO,
     ["src/scripts/regression/run.ts", ...args],
     {
       cwd: REPO,

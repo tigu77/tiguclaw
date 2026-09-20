@@ -25,6 +25,7 @@ import {
 } from "../doctor-install.js";
 import { describeNativeLoadFailure } from "../../store/sessions.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 export const check: RegressionCheck = {
   name: "doctor-survives-broken-install",
@@ -278,7 +279,7 @@ export const check: RegressionCheck = {
       const { mkdtempSync, rmSync } = await import("node:fs");
       const os = await import("node:os");
       const P = await import("node:path");
-      const REPO = P.resolve(P.dirname(new URL(import.meta.url).pathname), "../../..");
+      const REPO = P.resolve(P.dirname(fileURLToPath(new URL(import.meta.url))), "../../..");
       const home = mkdtempSync(P.join(os.tmpdir(), "tgc-doc-"));
       try {
         const r = spawnSync(
@@ -330,7 +331,7 @@ export const check: RegressionCheck = {
     //  «판정 불가» 로 되돌아가 사용자는 `npm link` 를 영영 못 듣는다.
     {
       const doctorSrc = readFileSync(
-        new URL("../doctor.ts", import.meta.url).pathname,
+        fileURLToPath(new URL("../doctor.ts", import.meta.url)),
         "utf8",
       );
       const wired =

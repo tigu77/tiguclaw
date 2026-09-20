@@ -24,6 +24,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 const ADAPTER = "../../../src/core/llm-runtime/adapters/claude-agent-sdk.ts";
 
@@ -85,7 +86,7 @@ export const check: RegressionCheck = {
     //  조용히 통과시키지 않고 **그 사실을 적는다**(안 본 것과 본 것이 구분돼야 한다).
     const { findRipgrep } = await import("../../core/ripgrep.js");
     const hasRg = findRipgrep() !== null;
-    const repoSrc = new URL("../../../src", import.meta.url).pathname;
+    const repoSrc = fileURLToPath(new URL("../../../src", import.meta.url));
     const cut = (await callTool("Grep", {
       pattern: "export const", path: repoSrc, head_limit: 2,
     })) as { truncated?: boolean; total?: number; results?: unknown[] } | null;

@@ -25,6 +25,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { fileURLToPath } from "node:url";
 
 export const check: RegressionCheck = {
   name: "plugin-off-stays-off",
@@ -64,7 +65,7 @@ export const check: RegressionCheck = {
       // ★행동으로 못 재는 부분이다(플러그인 폴더·데몬이 필요하다). 대신 **호출이 있는가**를
       //  본다: 없으면 위 ①③ 이 아무리 초록이어도 제품은 기록을 안 남긴다.
       const mgr = readFileSync(
-        path.join(path.dirname(new URL(import.meta.url).pathname), "../../core/plugins/manager.ts"),
+        path.join(path.dirname(fileURLToPath(new URL(import.meta.url))), "../../core/plugins/manager.ts"),
         "utf8",
       );
       const body = (name: string): string =>
@@ -155,7 +156,7 @@ export const check: RegressionCheck = {
 
       // ── ★자리 — 활성화 여부는 코어 설정이 갖는다 ───────────────────────────
       const pluginSettings = readFileSync(
-        path.join(path.dirname(new URL(import.meta.url).pathname), "../../core/plugins/settings.ts"),
+        path.join(path.dirname(fileURLToPath(new URL(import.meta.url))), "../../core/plugins/settings.ts"),
         "utf8",
       );
       out.push(

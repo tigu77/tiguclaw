@@ -22,11 +22,10 @@
  * 그 덕에 이 검사가 스위트 전역 레지스트리를 오염시키지 않는다).
  */
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { probeInterpreter } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -76,16 +75,16 @@ export const check: RegressionCheck = {
       await mk("subauth-nodecl", ENTRY_NODECL);
 
       const probe = `void (async () => {
-      const m = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/manager.ts"))});
-      const auth = await import(${JSON.stringify(path.join(REPO, "src/core/llm-runtime/auth-registry.ts"))});
-      const { getEventBus } = await import(${JSON.stringify(path.join(REPO, "src/core/eventbus.ts"))});
+      const m = await import(${probeSpec(REPO, "src/core/plugins/manager.ts")});
+      const auth = await import(${probeSpec(REPO, "src/core/llm-runtime/auth-registry.ts")});
+      const { getEventBus } = await import(${probeSpec(REPO, "src/core/eventbus.ts")});
       m.initPluginManager({ bus: getEventBus(), channels: [], serviceStops: [] });
       // 번들 인증 플러그인이 실제로 등록하는지 먼저 본다 — 소스에 호출이 보이는 것만으로는
       // 부족하다(if (false) 로 감싼 변이가 정적 검사를 통과했다). 부팅이 하는 일을 돌린다.
       // ★이 주석에 백틱을 쓰면 안 된다 — 여기는 템플릿 리터럴 안이고, 백틱이 문자열을 끊는다.
-      const { loadPlugins } = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/loader.ts"))});
-      const { wirePlugin } = await import(${JSON.stringify(path.join(REPO, "src/core/plugins/wire.ts"))});
-      const { appRoot } = await import(${JSON.stringify(path.join(REPO, "src/core/paths.ts"))});
+      const { loadPlugins } = await import(${probeSpec(REPO, "src/core/plugins/loader.ts")});
+      const { wirePlugin } = await import(${probeSpec(REPO, "src/core/plugins/wire.ts")});
+      const { appRoot } = await import(${probeSpec(REPO, "src/core/paths.ts")});
       const nodePath = await import("node:path");
       // ★needs.auth 를 선언한 것만 배선한다. 전부 배선하면 http-bridge 가 포트를 잡고
       //  대시보드·텔레그램 폴링까지 떠서, 검사가 120초를 먹고 **라이브 데몬 포트와 충돌**한다
@@ -119,7 +118,7 @@ export const check: RegressionCheck = {
         squat,
       }));
     })();`;
-      const r = spawnSync(probeInterpreter(REPO), ["-e", probe], {
+      const r = spawnProbe(REPO, ["-e", probe], {
         cwd: REPO,
         env: { ...process.env, TIGUCLAW_HOME: home },
         encoding: "utf8",

@@ -17,11 +17,10 @@
  * ★소스 정규식으로는 이걸 못 본다 — 종전에도 `console.log` 호출은 멀쩡히 **있었다**.
  *  문제는 그게 **언제** 불리느냐였다. 그래서 자식 프로세스를 띄워 **실제로 찍힌 것**을 본다.
  */
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
   name: "log-diagnosability",
@@ -33,25 +32,11 @@ export const check: RegressionCheck = {
       path.dirname(fileURLToPath(import.meta.url)),
       "_log-diag-child.ts",
     );
-    const r = await within(
-      60_000,
-      "로거 자식 실행",
-      new Promise<{ out: string; err: string; logPath: string }>((resolve) => {
-        const p = spawn(process.execPath, ["--import", "tsx", child], {
-          stdio: ["ignore", "pipe", "pipe"],
-          env: process.env,
-        });
-        let so = "";
-        let se = "";
-        p.stdout.on("data", (d: Buffer) => (so += d.toString()));
-        p.stderr.on("data", (d: Buffer) => (se += d.toString()));
-        p.on("close", () =>
-          resolve({ out: so, err: se, logPath: (so.match(/LOGFILE=(.+)/) ?? [])[1] ?? "" }),
-        );
-        p.on("error", () => resolve({ out: "", err: "", logPath: "" }));
-      }),
-    );
-    const cap = "value" in r ? r.value : { out: "", err: "", logPath: "" };
+    // ★시한을 넘기면 **자식을 죽인다** — `spawnWithin` 이 그걸 맡는다(2026-09-20).
+    const r = await spawnWithin(60_000, "로거 자식 실행", ["--import", "tsx", child], {
+      env: process.env,
+    });
+    const cap = { out: r.out, err: r.err, logPath: (r.out.match(/LOGFILE=(.+)/) ?? [])[1] ?? "" };
     const fileText =
       cap.logPath === "" ? "" : await readFile(cap.logPath.trim(), "utf8").catch(() => "");
 

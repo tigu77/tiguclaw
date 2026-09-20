@@ -17,7 +17,7 @@ import {
 } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-type ToolResult = { callId: string; output: string; media: ResponseMediaItem[] };
+type ToolResult = { callId: string; name: string; output: string; media: ResponseMediaItem[] };
 
 export const check: RegressionCheck = {
   name: "codex-fresh-tool-output",
@@ -27,6 +27,7 @@ export const check: RegressionCheck = {
     const batch = (prefix: string, count: number, size = 3000): ToolResult[] =>
       Array.from({ length: count }, (_, i) => ({
         callId: `${prefix}-${i}`,
+        name: prefix,
         output: `${prefix}-${i}\n${"x".repeat(size)}`,
         media: [],
       }));

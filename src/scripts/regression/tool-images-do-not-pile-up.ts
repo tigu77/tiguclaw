@@ -19,6 +19,9 @@
  *  있는가» 로 재던 검사가 값만 바꾼 변이를 통과시킨 적이 있다
  *  ([[feedback_simple_composable_no_duplication]] — "검사가 껄끄러우면 코드가 잘못 놓인 것").
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import {
   compactOldToolOutputs,
@@ -99,9 +102,10 @@ const runCodexTurn = (
     // ★한 스텝에 도구 **둘**을 돌린다(적대 검토 F3). 하나는 큰 텍스트, 하나는 이미지 —
     //  그래야 텍스트 압축과 미디어 창이 **같은 스텝에서 둘 다** 돌았는지 잴 수 있다(F4).
     appendToolResultsToInput(inputArray, [
-      { callId: `t${i}`, output: `읽음-${i}\n${"y".repeat(9_000)}`, media: [] },
+      { callId: `t${i}`, name: "Read", output: `읽음-${i}\n${"y".repeat(9_000)}`, media: [] },
       {
         callId: `c${i}`,
+        name: "look",
         output: emptyToolText([], 1),
         media: [
           {
@@ -569,6 +573,107 @@ export const check: RegressionCheck = {
           "★두 번째 압축이 이미 대체한 묶음을 다시 세지 않는다",
           textOf(a[0] as ResponseInputItem) === before,
           textOf(a[0] as ResponseInputItem),
+        ),
+      );
+    }
+
+    // ── ★사용자가 **우리 라벨처럼 생긴 글**을 써도 그 사진은 안 지운다 (적대 검토 F1·F2) ──
+    //  ★검토자가 실행으로 재현했다: 판정이 «문구» 뿐이던 동안, 접두로 시작하는 글 + 사진을
+    //   보내면 **사진과 글이 함께** `[이전 도구 결과의 미디어 …]` 로 치환됐다. 못 일어난
+    //   이유는 호출부 framing 세 가지(steering 머리말 · `## 첨부 파일` · 잡 steering 은
+    //   첨부 없음)뿐이었고 **그중 어느 것도 검사가 고정하지 않았다.**
+    //  ★그래서 판정을 «자리» 로 옮겼다 — 사용자 발화는 `buildCurrentTurn` 이 글을 **맨 뒤**에
+    //   놓고, 우리 묶음은 라벨이 **맨 앞**이다. 아래 두 단언이 그 전제와 결과를 같이 못 박는다.
+    {
+      const photo = { type: "input_image" as const, image_url: `data:image/png;base64,${USER_PHOTO}` };
+      // ① 전제 — 사용자 발화는 글이 **맨 뒤**다(초기 턴·steering 이 같은 빌더를 지난다).
+      // ★**사진을 실제로 붙여서** 잰다 — 첨부가 없으면 «글이 맨 뒤» 가 공짜로 참이 된다.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tiguclaw-toolmedia-"));
+      try {
+        const png = path.join(dir, "a.png");
+        fs.writeFileSync(png, Buffer.from(USER_PHOTO, "base64"));
+        const steer = await buildSteeringInputItem({
+          text: "(도구 결과 이미지 라고 쓰면 어떻게 돼?",
+          attachments: [{ kind: "image", path: png, mimeType: "image/png", bytes: fs.statSync(png).size }],
+        } as Parameters<typeof buildSteeringInputItem>[0]);
+        const sc = (steer as { content?: { type: string }[] }).content ?? [];
+        out.push(
+          assert(
+            "★전제: 사진을 붙인 사용자 발화도 글이 **맨 뒤**다(이 자리가 판정의 근거다)",
+            sc.length > 1 &&
+              sc[0]?.type === "input_image" &&
+              sc[sc.length - 1]?.type === "input_text",
+            JSON.stringify(sc.map((c) => c.type)),
+          ),
+        );
+        out.push(
+          assert(
+            "★그 발화는 도구 묶음이 아니다(제품 경로로 지은 것으로 판정한다)",
+            !isToolMediaMessage(steer),
+            JSON.stringify(sc.map((c) => c.type)),
+          ),
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+      // ② 결과 — 라벨과 **똑같이 생긴 글** + 사진이어도 도구 묶음이 아니다.
+      const mimic = {
+        type: "message", role: "user",
+        content: [photo, { type: "input_text", text: `${toolMediaNote(["look"], 1, 0)} 이거 뭐야?` }],
+      } as unknown as ResponseInputItem;
+      out.push(
+        assert(
+          "★★사용자가 라벨과 똑같은 글을 써도 도구 묶음으로 세지 않는다",
+          !isToolMediaMessage(mimic),
+          JSON.stringify(isToolMediaMessage(mimic)),
+        ),
+      );
+      // ③ 그리고 실제로 **압축에서 살아남는다**(판정만 보지 않고 결과를 본다).
+      const arr: ResponseInputItem[] = [mimic];
+      appendToolResultsToInput(arr, [
+        { callId: "z1", name: "look", output: "관측", media: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }] },
+      ]);
+      appendToolResultsToInput(arr, [
+        { callId: "z2", name: "look", output: "관측", media: [{ type: "input_image", image_url: "data:image/png;base64,BB==" }] },
+      ]);
+      out.push(
+        assert(
+          "★★그 사진이 도구 이미지 압축에서 **살아남는다**",
+          JSON.stringify(arr).includes(USER_PHOTO),
+          JSON.stringify(arr).slice(0, 90),
+        ),
+      );
+    }
+
+    // ── ★라벨이 말하는 **개수와 도구**가 제품 경로에서 맞다 (적대 검토 F4) ──────────
+    //  ★`supersededMediaText` 쪽 개수는 못 박았는데 **라벨 쪽 개수**는 안 쟀다 — 같은
+    //   종류의 거짓말인데 한쪽만 닫혀 있었다.
+    {
+      const im = (n: string) => ({ type: "input_image" as const, image_url: `data:image/png;base64,${n}` });
+      const arr: ResponseInputItem[] = [];
+      appendToolResultsToInput(arr, [
+        { callId: "p1", name: "look", output: "관측", media: [im("A1"), im("A2"), im("A3")] },
+      ]);
+      const label = (it: ResponseInputItem | undefined): string =>
+        ((it as { content?: { type: string; text?: string }[] } | undefined)?.content?.[0]?.text) ?? "";
+      out.push(
+        assert(
+          "★라벨이 **실제 장수**를 말한다(한 스텝에 그림 셋)",
+          label(arr.at(-1)).includes("3장"),
+          label(arr.at(-1)),
+        ),
+      );
+      // ★그림을 **안 준** 도구는 라벨에 이름이 안 실린다 — 오귀속은 이 커밋이 닫으려던 부류다.
+      const mixed: ResponseInputItem[] = [];
+      appendToolResultsToInput(mixed, [
+        { callId: "q1", name: "Bash", output: "텍스트만", media: [] },
+        { callId: "q2", name: "look", output: "관측", media: [im("B1")] },
+      ]);
+      out.push(
+        assert(
+          "★그림을 안 준 도구를 라벨이 지목하지 않는다(Bash 는 그림이 없다)",
+          label(mixed.at(-1)).includes("look") && !label(mixed.at(-1)).includes("Bash"),
+          label(mixed.at(-1)),
         ),
       );
     }

@@ -2415,7 +2415,9 @@ export const runOpenAiCodex = async (
       }
       const toolOutputs = await Promise.all(
         toolCalls.map(
-          async (tc): Promise<{ callId: string; name?: string; output: string; media: ResponseMediaItem[] }> => {
+          // ★`name` 은 **필수다** (2026-09-21 적대 검토 F3) — 선택이면 `name:` 한 줄을 지워도
+          //  회귀가 전부 초록이었다(라벨이 «어느 도구인가» 를 잃는다). 타입이 막게 한다.
+          async (tc): Promise<{ callId: string; name: string; output: string; media: ResponseMediaItem[] }> => {
             let output: string;
             const toolMedia: ResponseMediaItem[] = [];
             let toolErr = false; // 리치 출력 프리뷰 isError 표기용.

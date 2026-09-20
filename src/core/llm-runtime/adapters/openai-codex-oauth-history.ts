@@ -2046,8 +2046,15 @@ export const appendToolResultsToInput = (
   inputArray: ResponseInputItem[],
   results: readonly {
     callId: string;
-    /** ★어느 도구가 준 그림인지 — 라벨에 싣는다. */
-    name?: string;
+    /**
+     * ★어느 도구가 준 그림인지 — 라벨에 싣는다. **필수다** (2026-09-21 적대 검토 F3).
+     *
+     * 종전엔 선택이었고, 그래서 어댑터 루프에서 `name:` 한 줄을 지워도 회귀 4,231건이
+     * 전부 초록이었다 — 검사가 `name:"look"` 을 **손으로 넘겨** 부르니 그 값을 **공급하는
+     * 배선**은 한 줄도 안 지났기 때문이다(부품은 검사되는데 이음매는 안 검사된다).
+     * 필수로 바꾸면 그 편집이 **타입 오류**가 된다 — 검사가 못 보는 자리를 컴파일러가 본다.
+     */
+    name: string;
     output: string;
     media: readonly ResponseMediaItem[];
   }[],
@@ -2065,7 +2072,7 @@ export const appendToolResultsToInput = (
       output: capToolOutputForEntry(output),
     });
     pendingMedia.push(...media);
-    if (media.length > 0 && name !== undefined && !mediaTools.includes(name)) mediaTools.push(name);
+    if (media.length > 0 && !mediaTools.includes(name)) mediaTools.push(name);
   }
   // ★도구가 돌려준 이미지를 **비전 채널로** 잇는다 (2026-08-01). function_call_output
   //  바로 뒤에 user 메시지로 붙여야 모델이 "그 도구 결과의 이미지" 로 읽는다.
@@ -2106,8 +2113,8 @@ export const appendToolResultsToInput = (
  * ★**«도구가 만든 것» 과 «사용자가 보낸 것» 을 가르는 기준**: `buildCurrentTurn` 을 지나는
  *  사용자 발화(초기 턴·mid-turn steering)는 **언제나 `input_text` 원소를 함께 싣는다**
  *  (`content: [...mediaItems, { type:"input_text", … }]`). 이름 목록이 아니라 **정의점에서
- *  파생된 판정**이고([[feedback_hand_maintained_lists]]), `user-media-keeps-its-text`
- *  회귀가 그 전제를 고정한다.
+ *  파생된 판정**이고([[feedback_hand_maintained_lists]]), `tool-images-do-not-pile-up`
+ *  의 «사용자가 보낸 사진» 단언들이 그 전제를 고정한다.
  *  ★**2026-09-21 에 이 기준이 한 번 바뀌었다.** 종전엔 «텍스트 원소가 **없는** user
  *   메시지» = 도구가 만든 것이었다. 그런데 그 규칙은 **모델에게도 표식이 없다**는 뜻이라,
  *   모델이 자기가 `look` 으로 찍은 화면을 «사용자가 첨부한 사진» 으로 읽었다(실기).
@@ -2159,17 +2166,35 @@ export const isToolMediaMessage = (item: ResponseInputItem | undefined): boolean
   const content = item.content;
   if (!Array.isArray(content) || content.length === 0) return false;
   let media = 0;
+  let texts = 0;
   for (const c of content) {
-    if (c.type === "input_text" || c.type === "output_text") {
-      // ★**우리가 붙인 라벨 한 줄은 예외다** (2026-09-21). 라벨이 없으면 모델이 도구
-      //  이미지를 «사용자 첨부» 로 읽고, 라벨을 붙이면 옛 판별자(«텍스트 없음»)가 깨져
-      //  압축이 멎는다. 그래서 **문구를 판별자로** 쓴다 — `toolMediaNote` 와 한 짝이다.
-      if (typeof c.text === "string" && c.text.startsWith(TOOL_MEDIA_NOTE_PREFIX)) continue;
-      return false;
-    }
-    if (c.type === "input_image" || c.type === "input_file") media += 1;
+    if (c.type === "input_text" || c.type === "output_text") texts += 1;
+    else if (c.type === "input_image" || c.type === "input_file") media += 1;
   }
-  return media > 0;
+  if (media === 0) return false;
+  if (texts === 0) return true; // 라벨 이전에 쌓인 옛 묶음 — 그림만 들어 있다.
+  // ★**자리로 가른다** (2026-09-21 적대 검토 F2). 사용자 발화는 `buildCurrentTurn` 이
+  //  짓고 그 함수는 글을 **언제나 맨 뒤**에 둔다(`[...mediaItems, input_text]` — 초기 턴과
+  //  mid-turn steering 이 같은 빌더를 지난다). 우리 묶음은 라벨이 **맨 앞**이다.
+  //  ★종전엔 문구만 봤다. 그러면 사용자가 그 접두로 시작하는 글과 사진을 같이 보내는
+  //   순간 **그 사진을 우리가 지운다** — 검토자가 실행으로 재현했다. 막고 있던 것은
+  //   호출부의 framing 세 가지였고 그중 어느 것도 검사가 고정하지 않았다.
+  //  ★자리는 «무엇이라고 썼나» 가 아니라 «누가 지었나» 를 묻는다. 글은 사용자가 고르고
+  //   자리는 우리가 정한다 — 그래서 사용자 입력으로 흉내 낼 수 없다.
+  //  ★**실측(2026-09-21)**: 하중을 지는 것은 **자리**다. 자리 검사를 빼면 검사가 빨개지고
+  //   (사용자 사진이 지워진다), 문구 검사를 빼면 **초록이다**. 즉 아래 `startsWith` 는
+  //   오늘 하중이 0이고, 그래서 `includes` 로 넓히거나 접두를 `"("` 로 줄이는 변이도
+  //   초록으로 통과한다 — **그건 구멍이 아니라 등가 변이다.** 다음 감사가 그걸 구멍으로
+  //   읽고 «문구의 좁음» 을 재는 검사를 지어 붙이지 않도록 여기 적어 둔다(그 검사는
+  //   지킬 것이 없는 가짜 그물이 된다).
+  //  ★그런데도 문구를 **남긴다**: 두 신호가 같은 한 가지를 말하기 때문이다 — «이 묶음은
+  //   우리가 지었다»(자리는 우리가 정하고, 문구도 우리가 쓴다). 자리 하나에만 기대면,
+  //   나중에 누가 «글 먼저 + 그림» 형태를 만드는 순간 그게 조용히 도구 묶음이 된다.
+  //   전제(글이 맨 뒤)가 깨지는 쪽은 회귀가 실물 첨부로 고정한다.
+  if (texts !== 1) return false;
+  const first = content[0];
+  if (first === undefined || first.type !== "input_text") return false;
+  return typeof first.text === "string" && first.text.startsWith(TOOL_MEDIA_NOTE_PREFIX);
 };
 
 export const compactOldToolOutputs = (

@@ -76,6 +76,7 @@ export const check: RegressionCheck = {
     ]);
 
     return [
+      assert("중간 빈 결과는 앞서 받은 텍스트가 있어도 종료하지 않음", !isOwnTurnEnd({ chunks: 3, deltas: 120, emptyQueuedResult: true }), {}),
       assert(
         "★답변이 이미 있으면 첫 result 로 경계를 잡는다(알림 텍스트 혼입 차단 — 08-06 사고)",
         latchAfterAnswer === true,

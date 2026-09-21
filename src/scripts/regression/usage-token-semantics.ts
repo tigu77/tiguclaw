@@ -93,17 +93,9 @@ export const check: RegressionCheck = {
         /u\.input_tokens \+\n\s*\(u\.cache_read_input_tokens \?\? 0\) \+\n\s*\(u\.cache_creation_input_tokens \?\? 0\)/,
         // ★서브에이전트 내부 호출은 부모 컨텍스트가 아니다 — parent 게이트가 있어야 한다.
         /if \(typeof parentToolUseId !== "string"\) \{/,
-        // inputTokens 는 **호출 단위**, Total 은 누적 — 두 축을 섞지 않는다.
-        /inputTokens: perCall\?\.input \?\? cumInput,/,
-        // ★2026-08-16: 합계를 **비워두지 않는다**. 종전엔 `usageEntry` 가 없으면 `*Total`
-        //  을 통째로 생략했는데, 게이트웨이 턴은 그게 비는 경우가 있어 24시간 200턴 중
-        //  **172턴**이 합계 없이 기록됐고 세는 쪽이 **0으로** 읽었다. 사용량을 물었을 때
-        //  답이 틀리는데 에러도 로그도 없다("조용한" 부류). 한 번 호출로 끝난 턴은
-        //  **호출값이 곧 턴 합계**다 — 이 어댑터의 함수콜 경로가 이미 같은 판단을 쓴다.
-        /const inTot = haveCum \? cumInput : perCall\?\.input;/,
-        /inputTokensTotal: inTot,/,
-        // 단발 호출 턴은 iterations=1 로 정직하게(2 로 지어내지 않는다).
-        /iterations: haveCum[\s\S]{0,200}?: 1,/,
+        // SDK 0.3.277의 세션 누적 대신 현재 실행의 요청 수집기에 합계를 맡긴다.
+        /inputTokens: lastCallUsage.input,/,
+        /usage: requestUsage.withUsage\(lastUsage\)/,
         // ★출력량의 최종값은 `message_delta` 에서 온다 (2026-08-05, SDK 0.3 부작용).
         //  0.3 부터 `assistant` 메시지 usage 는 **message_start 스냅샷**이라
         //  `output_tokens: 1` 플레이스홀더다. 그걸 쓰면 **모든 턴의 outputTokens 가 1 로

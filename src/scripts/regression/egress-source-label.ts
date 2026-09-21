@@ -36,7 +36,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { egressSourcePrefix } from "../../core/egress-targets.js";
 import { DEFAULT_SESSION_ID } from "../../core/threadkey.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import {
+  assert,
+  assertIsolated,
+  loadPluginModule,
+  type Assertion,
+  type RegressionCheck,
+} from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -45,6 +51,7 @@ export const check: RegressionCheck = {
   guards:
     "임의 세션의 답이 egress 로 사용자 텔레그램에 맥락 없이 도착해 '누가 보낸 건지' 알 수 없던 것(실사고 2026-08-28) + 그걸 고치면서 평소 대화까지 라벨로 시끄러워지는 것 + 라벨이 대화 내용을 다른 채널로 흘리는 것",
   run: async (): Promise<Assertion[]> => {
+    assertIsolated(); // ⑦ 에서 store 를 쓴다 — 라이브 홈·DB 를 절대 안 만진다.
     const out: Assertion[] = [];
 
     out.push(
@@ -175,13 +182,40 @@ export const check: RegressionCheck = {
           : `★틀린 것: ${bad.map(([n, r, b, w]) => `${n} 기대=${w ?? "null"} 실제=${routedReplySession(r, b) ?? "null"}`).join(" · ")}`,
       ),
     );
-    // 그리고 호출부가 **그 함수**를 쓴다(인라인으로 되돌아가면 위 진리표가 무의미해진다).
-    const usesFn = /repliedSession:\s*routedSession/.test(tg) && /routedReplySession\(/.test(tg);
+    // 그리고 제품 경로가 **그 판정을 지난다**(인라인으로 되돌아가면 위 진리표가 무의미해진다).
+    //  ★2026-09-22: 판정이 `reply-routing.ts` 로 나오면서 **돌려서** 잴 수 있게 됐다.
+    //   종전엔 `routedReplySession\(` 를 텔레그램 index 에서 grep 했는데, 그건 «그 이름이
+    //   파일에 있나» 이지 «그 값이 만들어지나» 가 아니다. 이제 실제로 부른다.
+    const { resolveReplyRouting } = await loadPluginModule<{
+      resolveReplyRouting: (
+        chatId: string,
+        repliedMsgId: number | undefined,
+        boundSession: string,
+        kind: "text" | "attachment",
+      ) => { repliedSession: string | null; sessionId: string; routedSession: string | null };
+    }>("../../../plugins/telegram-channel/reply-routing.ts");
+    const { initStore } = await import("../../store/sessions.js");
+    initStore();
+    const { recordOutboundMessage } = await import("../../store/outbound-messages.js");
+    recordOutboundMessage("telegram", "chat-label", 861_001, "dashboard:proj", Date.now());
+    // 갈렸다 → 신호가 있다 / 안 갈렸다 → 신호가 없다. 둘 **다** 본다(한쪽만 재면 절반이다).
+    const split = resolveReplyRouting("chat-label", 861_001, "dashboard:default", "text");
+    const same = resolveReplyRouting("chat-label", 861_001, "dashboard:proj", "text");
+    const signalCorrect = split.routedSession === "dashboard:proj" && same.routedSession === null;
     out.push(
       assert(
-        "호출부가 그 판정 함수를 지난다 — 인라인으로 되돌아가면 진리표가 지키는 게 없어진다",
+        "★제품 경로가 그 판정을 **실제로 만든다** — 갈렸을 때만 신호가 나온다(양방향)",
+        signalCorrect,
+        `갈림=${String(split.routedSession)} (기대 dashboard:proj) · 안갈림=${String(same.routedSession)} (기대 null)`,
+      ),
+    );
+    // 호출부가 그 **좁혀진 값**을 라벨로 넘긴다 — 여기만 소스 확인이다(grammy 컨텍스트 필요).
+    const usesFn = /repliedSession:\s*routedSession/.test(tg);
+    out.push(
+      assert(
+        "호출부가 «갈림» 신호를 라벨에 넘긴다 — 원값을 넘기면 안 갈린 답글도 라벨을 받는다",
         usesFn,
-        usesFn ? "routedReplySession → repliedSession: routedSession" : "★인라인 판정으로 되돌아갔다",
+        usesFn ? "repliedSession: routedSession" : "★좁혀진 값을 안 넘긴다",
       ),
     );
 

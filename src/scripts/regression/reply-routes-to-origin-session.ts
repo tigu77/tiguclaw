@@ -72,11 +72,13 @@ const run = async (): Promise<Assertion[]> => {
     for (let i = 0; i < over; i++) {
       recordOutboundMessage("telegram", "chat-bulk", 5_000_000 + i, "s", 1000 + i);
     }
+    // ★`null` = **조회 실패**(0 과 다르다, 2026-09-22 P3). 실패를 «상한 안» 으로 읽으면
+    //  이 단언이 DB 가 죽은 순간에 **초록**이 된다 — 그래서 `null` 은 실패로 본다.
     const n = countOutboundMessageMappings();
     out.push({
       name: "★상한이 실제로 걸린다(무한 증가 금지)",
-      ok: n <= OUTBOUND_MESSAGE_MAP_MAX_ROWS,
-      got: `${over}건 기록 후 보관=${n}행 (상한 ${OUTBOUND_MESSAGE_MAP_MAX_ROWS})`,
+      ok: n !== null && n <= OUTBOUND_MESSAGE_MAP_MAX_ROWS,
+      got: `${over}건 기록 후 보관=${n === null ? "조회 실패(null)" : `${n}행`} (상한 ${OUTBOUND_MESSAGE_MAP_MAX_ROWS})`,
     });
     out.push({
       name: "가장 최근 것은 상한 뒤에도 살아 있다",
@@ -244,17 +246,29 @@ const run = async (): Promise<Assertion[]> => {
     //  답장 라우팅이 **한 번도 안 걸렸던** 그 상태다(로그 0건).
     //  ★어제 «기록» 절반을 고쳐 살렸는데 «조회» 절반이 무방비면 같은 침묵이 그대로 돌아온다.
     //  ★이 레포가 반복해서 맞는 부류다: **순수 함수는 재는데 배선은 안 잰다.**
-    const lookupCode = tg.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-    const lookupWired =
-      /repliedSession\s*=[\s\S]{0,220}?findSessionForOutboundMessage\(\s*"telegram"\s*,\s*chatId\s*,\s*repliedMsgId\s*\)/.test(
-        lookupCode,
-      );
+    //  ★2026-09-22: 소스 정규식을 **실행**으로 바꿨다. 판정이 핸들러 안에 인라인으로
+    //   있던 동안은 grep 밖에 방법이 없었는데, `reply-routing.ts` 로 꺼내면서 **부를 수
+    //   있게** 됐다. 조회를 `null` 로 바꾸는 바로 그 변이가 이제 여기서 빨개진다.
+    //   («두 핸들러가 이 함수를 지나는가» 는 `reply-routing-miss-is-logged` §⑤ 가 본다 —
+    //    같은 판단을 두 곳에 두지 않는다.)
+    const { resolveReplyRouting } = await loadPluginModule<{
+      resolveReplyRouting: (
+        chatId: string,
+        repliedMsgId: number | undefined,
+        boundSession: string,
+        kind: "text" | "attachment",
+      ) => {
+        repliedSession: string | null;
+        sessionId: string;
+        routedSession: string | null;
+      };
+    }>("../../../plugins/telegram-channel/reply-routing.ts");
+    recordOutboundMessage("telegram", "chat-wire", 880_001, "dashboard:wire-origin", Date.now());
+    const wired = resolveReplyRouting("chat-wire", 880_001, "dashboard:other", "text");
     out.push({
-      name: "★★핸들러가 답장 매핑을 **실제로 조회한다** — 조회를 죽이면 기록이 멀쩡해도 라우팅은 영영 안 일어난다(넉 달간 0건이던 그 상태)",
-      ok: lookupWired,
-      got: lookupWired
-        ? "repliedSession ← findSessionForOutboundMessage(telegram, chatId, repliedMsgId)"
-        : `★조회 미배선 — 대입부: ${(/repliedSession\s*=[^;]{0,120}/.exec(lookupCode)?.[0] ?? "찾지 못함").replace(/\s+/g, " ")}`,
+      name: "★★핸들러가 지나는 판정이 답장 매핑을 **실제로 조회한다** — 조회를 죽이면 기록이 멀쩡해도 라우팅은 영영 안 일어난다(넉 달간 0건이던 그 상태)",
+      ok: wired.sessionId === "dashboard:wire-origin" && wired.repliedSession === "dashboard:wire-origin",
+      got: `sessionId=${wired.sessionId} repliedSession=${String(wired.repliedSession)} (기대 dashboard:wire-origin · 묶인 세션은 dashboard:other)`,
     });
 
 

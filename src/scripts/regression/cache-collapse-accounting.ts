@@ -100,6 +100,55 @@ export const check: RegressionCheck = {
     // ── 정상 턴은 침묵 (매 턴 warn = 배경소음이 되어 12일 묻힌 전례) ──────────
     const ok = newTally();
     addUsage(ok, { inputTokens: 100_000, cachedTokens: 95_000 });
+    // ── ★**원인을 단정하지 않는다** (2026-09-21, 인계 A) ────────────────────────────
+    //  ★판정 근거: **이 함수가 못 보는 것을 말하면 안 된다.** `describeTally(tally, model)`
+    //   는 숫자만 받는다 — `instructions`·`tools` 바이트를 본 적이 없고, 백엔드가 무엇을
+    //   했는지도 모른다. 그러니 그 이름들이 출력에 등장하는 것 자체가 근거 없는 진술이다.
+    //   (낱말 목록처럼 보이지만 임의 목록이 아니다 — **그 함수의 «입력이 아닌 것»** 이라
+    //    정의점에서 닫혀 있다. 그래도 이 검사의 한계는 분명히 해 둔다: 다른 낱말로 같은
+    //    단정을 쓰면 못 잡는다. 그래서 아래 «가리킨다» 단언을 짝으로 둔다.)
+    //  ★종전 문장이 틀린 이유는 근거 없음뿐이 아니다 — 2026-09-10 적대 검토가
+    //   `compactOldToolOutputs` 로 **우리가 프리픽스를 깨고도 «바이트 동일» 로 보인다**는
+    //   것을 이미 확인했다. 즉 그 추론은 반증된 것이다.
+    {
+      const line = describeTally(t, "gpt-6-astra");
+      const cannotObserve = ["instructions", "tools", "백엔드", "축출", "파티션"];
+      out.push(
+        assert(
+          "★이 함수가 **못 보는 것**을 원인으로 말하지 않는다(숫자만 받는다)",
+          line !== null && !cannotObserve.some((w) => line.includes(w)),
+          line === null ? "null" : (cannotObserve.find((w) => line.includes(w)) ?? "없음"),
+        ),
+      );
+      out.push(
+        assert(
+          // ★«가리킨다» 는 **무엇을 볼지까지** 말해야 성립한다 (변이 M2 로 적발). 종전엔
+          //  `CODEX_CACHE_CURVE=1` 만 봤는데, 뒤의 목록을 통째로 지워도 통과했다 —
+          //  그러면 «…원시 곡선(…)의 » 로 **끊긴 문장**이 사용자에게 나간다.
+          //  곡선이 실제로 찍는 항목(req 바이트·지문 갈림·압축 건수)을 이름으로 요구한다.
+          "★대신 **어디를 봐야 하는지**를 가리킨다(원인 미확정을 침묵으로 두지 않는다)",
+          line !== null &&
+            // ★**«어디를 보라» 는 실제 출력 이름까지 맞아야 한다** (2026-09-21 검토 보완).
+            //  첫 판은 항목 이름만 요구해서, 압축 건수가 **곡선에 없는데도** 곡선을
+            //  가리키는 문장이 통과했다. 이제 두 로그 이름을 **둘 다** 요구한다.
+            line.includes("CODEX_CACHE_CURVE=1") &&
+            ["cache-curve", "codex-turn-end", "지문", "압축"].every((w) => line.includes(w)) &&
+            /[.。]$/.test(line.trim()),
+          line === null ? "null" : line.slice(-90),
+        ),
+      );
+      out.push(
+        assert(
+          "★수치 세 개는 그대로다(진단 문구 변경이 회계를 건드리지 않았다)",
+          line !== null &&
+            line.includes("붕괴분 200,000토큰") &&
+            line.includes("[참고]") &&
+            line.includes("3,200,000토큰"),
+          line === null ? "null" : line.slice(0, 120),
+        ),
+      );
+    }
+
     out.push(assert("붕괴 0건이면 한 줄도 안 낸다", describeTally(ok, "m") === null, "null"));
 
     // ── 임계 경계 ─────────────────────────────────────────────────────────────

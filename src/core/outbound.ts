@@ -156,6 +156,36 @@ export interface OutboundResult {
   readonly rejectedAttachments?: readonly string[];
 }
 
+/**
+ * ★답장 매핑을 못 남긴 횟수 — **사유·라벨별로 따로 센다** (2026-09-21, ★분모 고침 09-22).
+ *
+ * 프로세스 수명 동안만 센다(영속 안 함).
+ *
+ * ★한 카운터였을 때 **분모가 정상 동작으로 찼다** (적대 검토 P1). 이 함수를 부르는 곳
+ *  대부분은 *설계상* 발원 세션이 없는 **인프라 통지**(자가 점검·쿨다운·자가성장 반영)다.
+ *  실측(`tiguclaw-dev/logs` 103일): 자가점검 **20건** · 쿨다운 **1건** — 전부 정상이고
+ *  진짜 결함은 0건이었다. 그러니 «0 이면 멀쩡 · 늘면 좌표를 안 넘기는 것» 은 **양쪽 다
+ *  거짓**이었다. 더 나쁜 것은 「첫 1회 + 50회마다」라 **첫 슬롯을 그 양성이 먹는다**는
+ *  점이다 — 진짜 결함은 #50 까지 안 나오고, 0.2회/일이면 여덟 달이다.
+ *
+ * ★고침은 임계 조정이 아니라 **세는 단위**다. (사유, 라벨) 키별로 세고 **키마다 첫 1회**를
+ *  남긴다 — 새 라벨이 나타나면 그 자리에서 한 줄이 나온다. 그게 이 로그가 답해야 할
+ *  질문(«누가 좌표를 안 넘기나»)이고, 알려진 양성은 자기 키에 고여 배경소음이 되지 않는다.
+ */
+const outboundMapSkips = new Map<string, number>();
+/**
+ * 키 상한 — 라벨은 플러그인 이름도 될 수 있으므로 무한 증가를 막는다(핫경로 바운드).
+ * 넘으면 새 키는 `기타` 로 접는다(수는 살리고 이름만 잃는다).
+ */
+const OUTBOUND_MAP_SKIP_KEY_CAP = 64;
+
+/** 누적 분포를 한 줄로 — 많은 순 6종까지, 나머지는 «외 N종». */
+const outboundMapSkipBreakdown = (): string => {
+  const rows = [...outboundMapSkips.entries()].sort((a, b) => b[1] - a[1]);
+  const head = rows.slice(0, 6).map(([k, n]) => `${k}=${n.toLocaleString()}`);
+  return rows.length > 6 ? `${head.join(" · ")} · 외 ${rows.length - 6}종` : head.join(" · ");
+};
+
 export const deliverOutbound = async (
   input: OutboundInput,
 ): Promise<OutboundResult> => {
@@ -206,6 +236,38 @@ export const deliverOutbound = async (
     const now = Date.now();
     for (const mid of sentIds) {
       recordOutboundMessage(channel, resolved, mid, originKey, now);
+    }
+  } else if (sentIds.length > 0 && (resolved === null || originKey === undefined)) {
+    // ★★**실제로 보냈는데 매핑을 못 남긴 경우**를 남긴다 (2026-09-21).
+    //  이게 쌓이면 사용자가 그 답에 답글을 달아도 **발원 세션을 영영 못 찾는다** —
+    //  그리고 종전엔 그 사실이 **어디에도 안 남았다.** 회사돌쇠처럼 DB 를 못 보는
+    //  기계에서는 이 줄이 유일한 단서다([[feedback_logs_must_stand_alone]]).
+    //  ★**세서 찍는다** — 26곳이 이 함수를 부르므로 매번 찍으면 배경소음이 된다.
+    //   **(사유, 라벨) 키마다** 첫 한 번과 그 뒤 50회마다 남긴다(위 `outboundMapSkips` 주석:
+    //   한 카운터로 세면 분모가 정상 통지로 차서 진짜 결함이 #50 뒤로 밀린다).
+    const skipReason =
+      resolved === null
+        ? "배달 좌표 없음"
+        : "발원 세션 미지정(originThreadKey·observeThreadKey 둘 다 없음)";
+    const skipLabel = input.label ?? "(없음)";
+    const rawKey = `${skipReason} / ${skipLabel}`;
+    // 새 키인데 상한을 넘었으면 이름을 접는다 — 수는 계속 센다.
+    const key =
+      outboundMapSkips.has(rawKey) || outboundMapSkips.size < OUTBOUND_MAP_SKIP_KEY_CAP
+        ? rawKey
+        : "기타";
+    const n = (outboundMapSkips.get(key) ?? 0) + 1;
+    outboundMapSkips.set(key, n);
+    // ★**이 키의** 첫 1회와 그 뒤 50회마다. 키가 갈려 있으므로 새 라벨은 즉시 한 줄을 낸다.
+    if (n === 1 || n % 50 === 0) {
+      console.warn(
+        `${tag}deliverOutbound: 보냈지만 **답장 매핑을 못 남겼습니다** ` +
+          `(이 사유·라벨 ${n.toLocaleString()}회) — ` +
+          `사유: ${skipReason} · channel=${channel} label=${skipLabel}. ` +
+          `이 답에 사용자가 답글을 달면 현재 세션으로 갑니다. ` +
+          `★인프라 통지(자가 점검·쿨다운 등)는 발원 세션이 **원래 없어서** 여기 옵니다 — ` +
+          `판정은 «어느 라벨이 나오나» 로 합니다. 누적: ${outboundMapSkipBreakdown()}`,
+      );
     }
   }
 

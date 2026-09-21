@@ -14,12 +14,10 @@ import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
 import { getPaths } from "../../src/core/paths.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { getEventBus } from "../../src/core/eventbus.js";
-import { resolveSessionId, routedReplySession } from "../../src/core/threadkey.js";
+import { resolveSessionId } from "../../src/core/threadkey.js";
+import { resolveReplyRouting } from "./reply-routing.js";
 import { getMostRecentTelegramChatId, getThreadName } from "../../src/store/sessions.js";
-import {
-  findSessionForOutboundMessage,
-  recordOutboundMessage,
-} from "../../src/store/outbound-messages.js";
+import { recordOutboundMessage } from "../../src/store/outbound-messages.js";
 import { egressSourcePrefix } from "../../src/core/egress-targets.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
@@ -769,26 +767,18 @@ export default class TelegramChannel implements Channel {
       //  ★매핑이 없으면(오래된 메시지·기록 이전 발신·다른 경로) 조용히 현재 세션으로
       //   간다 = 기존 동작 그대로. 답장은 인용 목적으로도 쓰므로 못 찾았다고 알리지 않는다
       //   (위 replyToText 인용 주입은 그대로 — 이건 라우팅만 얹는다).
+      // ★★판정·로그는 **`reply-routing.ts` 한 곳**이다 (2026-09-22). 첨부 핸들러도 같은
+      //  함수를 부른다 — 종전엔 이 판단이 여기 인라인이라 첨부 경로가 통째로 빠져 있었고
+      //  (라우팅 없음·로그 0줄), 회귀는 이 파일을 grep 하는 수밖에 없어 분기를 죽여도
+      //  초록이었다. 이음매를 없애니 둘 다 풀린다.
       const repliedMsgId = ctx.message.reply_to_message?.message_id;
-      const repliedSession =
-        repliedMsgId === undefined
-          ? null
-          : findSessionForOutboundMessage("telegram", chatId, repliedMsgId);
       const boundSession = resolveSessionId("telegram", chatId);
-      const sessionId = repliedSession ?? boundSession;
-      // ★«답장이 세션을 **갈랐나**» — 판정은 **여기 한 번**이다 (2026-09-05 적대 검토 P2).
-      //  인입 응답도 기록하게 되면서 평소 답글에도 매핑이 잡히는데, 그건 대개 이 대화가
-      //  원래 묶인 세션이라 «라우팅» 이 아니다.
-      //  ★종전엔 이 조건이 **로그에만** 있었고 라벨은 `repliedSession` 원값을 받았다.
-      //   그래서 양방향으로 틀렸다: 텔레그램이 `/sessions use` 로 비기본 세션에 묶인
-      //   사용자는 **답글마다 상시 라벨**을 받았고(갈리지도 않았는데), 정작 갈린 순간엔
-      //   조용했다. 같은 판단이 두 곳에 있으면 한쪽만 좁혀진다 — 그래서 합친다.
-      const routedSession = routedReplySession(repliedSession, boundSession);
-      if (routedSession !== null) {
-        console.log(
-          `telegram: 답장 → 발원 세션으로 라우팅 (message_id=${repliedMsgId} session=${routedSession})`,
-        );
-      }
+      const { repliedSession, sessionId, routedSession } = resolveReplyRouting(
+        chatId,
+        repliedMsgId,
+        boundSession,
+        "text",
+      );
       // ★답장으로 세션이 갈렸으면 **답에 그 세션을 적는다** (2026-09-04 정태님 신고:
       //  "답글로 보냈을 때 응답에 세션 이름이 안 붙더라"). 합성은 `replyAndRecord` 안에
       //  있고 판정은 core 의 `egressSourcePrefix` 하나다 — 기본 세션이면 "" 라서 평소
@@ -882,18 +872,23 @@ export default class TelegramChannel implements Channel {
         const receivedAtSeconds = ctx.message.date;
         const triggerId = ctx.message.message_id;
 
-        // ★첨부 경로는 답장 **라우팅**을 아직 안 한다(repliedSession 을 안 구한다) —
-        //  그건 별건이다. 여기서 닫는 건 «보낸 답을 세션에 묶는 것» 뿐이고, 그래야
-        //  이 답에 붙는 다음 답글이 제 세션을 찾는다.
+        // ★첨부 경로도 답장 **라우팅**을 한다 (2026-09-22). 종전 주석은 *"그건 별건이다"*
+        //  라고 적어놨는데, 사진+캡션으로 답글을 달면 **증상은 나는데 로그는 0줄**이라
+        //  신고를 확인할 방법이 없었다 — «미스 없음» 으로 읽힌다. 텍스트 핸들러와 **같은
+        //  함수**(`resolveReplyRouting`)를 부른다.
         const buildReply =
-          (sessionId: string, chatId: string) =>
+          (sessionId: string, chatId: string, routedSession: string | null) =>
           async (out: string, opts?: ReplyOptions): Promise<void> => {
             await replyAndRecord(
               (chunk, extra) => ctx.reply(chunk, extra),
               sessionId,
               chatId,
               out,
-              opts?.replyToTrigger === true ? { replyToMessageId: triggerId } : undefined,
+              {
+                // 갈렸을 때만 라벨 — 텍스트 핸들러와 동형(parity).
+                repliedSession: routedSession,
+                ...(opts?.replyToTrigger === true ? { replyToMessageId: triggerId } : {}),
+              },
             );
           };
 
@@ -932,17 +927,27 @@ export default class TelegramChannel implements Channel {
           // 채널/세션 분리(ADR 2026-07-15) — message:text 핸들러와 동형(parity). chatId=배달
           // 좌표, sessionId=기본 세션. threadKey=sessionId + session 으로 route 정규화.
           const chatId = String(ctx.chat.id);
-          const sessionId = resolveSessionId("telegram", chatId);
+          const boundSession = resolveSessionId("telegram", chatId);
+          const { repliedSession, sessionId, routedSession } = resolveReplyRouting(
+            chatId,
+            ctx.message.reply_to_message?.message_id,
+            boundSession,
+            "attachment",
+          );
           const msg: IncomingMessage = {
             channel: "telegram",
             channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
             threadKey: sessionId,
             channelAddress: chatId,
-            session: { channelAddress: chatId },
+            session: {
+              channelAddress: chatId,
+              // 발원 세션을 찾았으면 **명시 지정** — route 가 그 세션으로 정규화한다.
+              ...(repliedSession !== null ? { explicitSessionId: repliedSession } : {}),
+            },
             text,
             attachments,
             receivedAt: receivedAtSeconds * 1000,
-            reply: buildReply(sessionId, chatId),
+            reply: buildReply(sessionId, chatId, routedSession),
             // 아웃바운드 첨부 — message:text 핸들러와 동일 (parity). 토큰 노출 0.
             sendAttachment: async (filePath, opts) => {
               try {

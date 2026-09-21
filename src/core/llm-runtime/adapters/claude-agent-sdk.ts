@@ -348,8 +348,8 @@ const formatForeignDelta = (delta: CodexTurn[]): string => {
  * 판별은 하나다 — **우리 답변에 내용이 생겼는가.** 생겼으면 그 뒤는 남의 턴이고,
  * 안 생겼으면 그 result 는 우리 것이 아니다.
  */
-export const isOwnTurnEnd = (seen: { chunks: number; deltas: number }): boolean =>
-  seen.chunks > 0 || seen.deltas > 0;
+export const isOwnTurnEnd = (seen: { chunks: number; deltas: number; emptyQueuedResult?: boolean }): boolean =>
+  !seen.emptyQueuedResult && (seen.chunks > 0 || seen.deltas > 0);
 
 /**
  * ★턴이 끝난 뒤 도착한 steering 입력은 **소비하지 않고 되돌려 놓는다** (2026-08-11 실사고).
@@ -1009,7 +1009,7 @@ export const runClaude = async (
 
   const options: Options = {
     // 작동헌법 + 안정 스캐폴딩 (위에서 조립). override 시 그 값이 전부 대체.
-    systemPrompt: systemChannel,
+    systemPrompt: { type: "custom", prompt: systemChannel, snapshot: false },
     permissionMode: "bypassPermissions",
     // ★«빠름» — codex 와 **같은 중립 신호**(`input.speed`)를 이 백엔드의 낱말로 옮긴다
     //  (2026-09-11). v0.52.0 이 계약·파서·화면·codex 번역까지 내보내고 **이 한 줄만**
@@ -1428,7 +1428,6 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
    */
   let ownTextDeltas = 0;
   for await (const msg of q as AsyncIterable<SDKMessage>) {
-    requestUsage.observe(msg);
     // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
     idleTimer.beat();
     if (msg.type === "stream_event") {
@@ -1482,6 +1481,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       }
       continue;
     }
+    requestUsage.observe(msg); // 답변 경계 뒤 자동 턴은 현재 사용량에서 제외한다.
 
     // ── ★구독 한도 — SDK 가 «부딪히기 전에» 말해준다 (2026-09-06, 1단계: 관측만) ──
     //  종전엔 한도를 **부딪힌 뒤에만** 알았다(쿨다운 `remainingMs`). 그런데 SDK 가
@@ -1662,6 +1662,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       const hasOwnAnswer = isOwnTurnEnd({
         chunks: assistantTextChunks.length,
         deltas: ownTextDeltas,
+        // 0.3.274: 묶인 백그라운드 알림의 중간 result는 답변 종료가 아니다.
+        emptyQueuedResult: msg.subtype === "success" && !msg.is_error && msg.num_turns === 0 && msg.result === "",
       });
       if (hasOwnAnswer) {
         turnResultSeen = true;
@@ -1691,89 +1693,16 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           const usageKeys = Object.keys(msg.modelUsage ?? {});
           if (usageKeys.length > 0) lastModel = usageKeys[0] ?? null;
         }
-        // /status 개편 — modelUsage[model] 의 {inputTokens, outputTokens} 추출 (추가
-        // 호출 0). modelUsage = {[modelId]: {inputTokens, outputTokens, ...}} 형태 —
-        // 위 키→model 추론과 같은 객체. 사용 모델 엔트리 우선, 없으면 첫 엔트리.
-        // 형태가 다르거나 없으면 미설정(graceful → persist 가 기존값 보존).
-        {
-          const mu = msg.modelUsage ?? {};
-          const usageEntry = ((lastModel !== null && mu[lastModel]) ??
-            Object.values(mu)[0]) as
-            | {
-                inputTokens?: number;
-                outputTokens?: number;
-                cacheReadInputTokens?: number;
-                cacheCreationInputTokens?: number;
-              }
-            | undefined;
-          if (usageEntry !== undefined || lastCallUsage !== undefined) {
-            // ★두 축을 **분리해서** 싣는다 (2026-07-30). 계약(types.ts §usage):
-            //   inputTokens/cachedTokens = **마지막 호출 1회** ("얼마나 찼나" — /status)
-            //   *Total                   = **턴 전체 합계**   (진짜 비용·적중률)
-            //  codex 는 원래 이 계약을 지켰는데 claude 만 안 지켰다. `modelUsage[model]`
-            //  은 턴 안 모든 호출의 **누적합**이다 — 실측: 한 턴 cachedTokens=10,182,800
-            //  (200K 창의 50.9배, 단일 호출로는 물리적으로 불가능). 그걸 inputTokens 에
-            //  넣으면 /status 가 "컨텍스트 ~3293%" 를 띄우고 85% 경고가 상시 울린다
-            //  (직전 상태는 캐시 읽기를 빼 늘 ~0% 라 경고가 아예 안 떴다 — 반대 방향의
-            //  같은 실패). 호출 단위 값은 assistant 메시지 usage 에서 잡는다.
-            const cumCached = usageEntry?.cacheReadInputTokens;
-            const cumCreate = usageEntry?.cacheCreationInputTokens;
-            const cumInput =
-              (usageEntry?.inputTokens ?? 0) +
-              (cumCached ?? 0) +
-              (cumCreate ?? 0);
-            // ★출력도 **턴 합계**를 싣는다 (2026-08-09). `outputTokens` 는 입력과 같은 규칙이라
-            //  마지막 호출 1회다 — 도구 루프가 긴 턴을 iteration 수만큼 과소계상한다.
-            //  입력엔 합계가 있었는데 출력만 없어서 벤치가 claude-code(세션 누적)와
-            //  비대칭 비교를 했다(실측: 387 vs 4,338 — 같은 수렴 스텝 11 vs 11인데).
-            const cumOutput = usageEntry?.outputTokens ?? 0;
-            // 호출 단위가 없으면(비정상 종료 등) 누적값으로 폴백 — 없는 것보단 낫다.
-            const perCall = lastCallUsage;
-            lastUsage = {
-              inputTokens: perCall?.input ?? cumInput,
-              outputTokens: perCall?.output ?? usageEntry?.outputTokens ?? 0,
-              ...(perCall !== undefined
-                ? { cachedTokens: perCall.cacheRead }
-                : typeof cumCached === "number"
-                  ? { cachedTokens: cumCached }
-                  : {}),
-              // 턴 합계는 누적값 그대로. num_turns 를 iterations 로 실어야 소비처
-              // (대시보드 카드·벤치)가 "여러 호출짜리 턴" 임을 알고 Total 을 쓴다.
-              // ★`usageEntry` 가 없어도 **합계를 비워두지 않는다** (2026-08-16).
-              //  종전엔 `usageEntry !== undefined && cumInput > 0` 일 때만 `*Total` 을 달았다.
-              //  그런데 게이트웨이 턴은 `result.modelUsage` 가 비는 경우가 있어(실측: 24시간
-              //  200턴 중 **172턴**이 `*Total` 없이 기록됨) 세는 쪽이 그 턴을 **통째로 0으로**
-              //  읽었다. 사용량을 물었을 때 답이 틀리는데 **에러도 로그도 없다** — 오늘
-              //  그것 때문에 같은 질문에 두 번 틀린 답을 했다.
-              //  ★한 번 호출로 끝난 턴은 **호출값이 곧 턴 합계**다(이 파일의 함수콜 경로가
-              //   이미 같은 판단을 쓴다). 누적값이 있으면 그걸, 없으면 호출값으로 채운다.
-              //   "모르면 비워둔다" 는 여기서 틀린 선택이다 — 소비처가 0으로 읽기 때문이다.
-              ...((): Record<string, number> => {
-                const haveCum = usageEntry !== undefined && cumInput > 0;
-                const inTot = haveCum ? cumInput : perCall?.input;
-                if (inTot === undefined) return {};
-                const outTot = haveCum ? cumOutput : perCall?.output;
-                const caTot = haveCum
-                  ? typeof cumCached === "number"
-                    ? cumCached
-                    : undefined
-                  : perCall?.cacheRead;
-                return {
-                  iterations: haveCum
-                    ? typeof msg.num_turns === "number"
-                      ? msg.num_turns
-                      : 2
-                    : 1,
-                  inputTokensTotal: inTot,
-                  ...(outTot !== undefined && outTot > 0
-                    ? { outputTokensTotal: outTot }
-                    : {}),
-                  ...(caTot !== undefined ? { cachedTokensTotal: caTot } : {}),
-                };
-              })(),
-            };
-          }
+        // SDK 0.3.277부터 modelUsage는 재개 이전까지 포함한 세션 누적이다.
+        // 현재 턴 합계는 requestUsage가 완료된 요청들로 계산한다.
+        if (lastCallUsage !== undefined) {
+          lastUsage = {
+            inputTokens: lastCallUsage.input,
+            outputTokens: lastCallUsage.output,
+            cachedTokens: lastCallUsage.cacheRead,
+          };
         }
+
       } else {
         const errs = (msg.errors ?? []).join("; ") || msg.subtype;
         // ★이미 받은 성공 결과를 뒤따르는 에러로 버리지 않는다 (2026-07-28 실사고).

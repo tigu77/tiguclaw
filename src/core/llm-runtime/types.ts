@@ -11,7 +11,7 @@
  */
 import type { ReplayGuard } from "./replay-safety.js";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
-import type { Attachment, ChannelName } from "../../channels/types.js";
+import type { Attachment, ChannelName, TurnOrigin } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
 
@@ -66,6 +66,12 @@ export const claudeSpeedSettings = (
 export interface RegionASdkInput {
   text: string;
   threadKey: string;
+  /**
+   * 턴 출처 — **진단 전용**(`TurnOrigin`). 라우터가 한 번 채운다. 라우터를 우회하는
+   * 직접 호출은 미지정으로 두고 로그가 `unknown` 으로 찍는다(억지로 채우지 않는다).
+   * ★요청 payload 에 실리지 않는다.
+   */
+  turnOrigin?: TurnOrigin;
   channel: ChannelName;
   /**
    * 신규(additive, 2026-07-15) — **세션-정체성 저장 채널** (채널/세션 분리 Phase 1,

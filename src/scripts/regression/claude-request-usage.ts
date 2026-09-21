@@ -23,12 +23,14 @@ export const check: RegressionCheck = {
     const one = c.withUsage(base);
     assertions.push(assert("시작 입력과 최종 누적 출력 조립", one?.requestUsageEntries?.[0]?.inputTokens === 60 && one.requestUsageEntries[0].outputTokens === 12, one));
     assertions.push(assert("캐시 생성·읽기·실제 모델 구별", one?.requestUsageEntries?.[0]?.cacheCreationTokens === 30 && one.requestUsageEntries[0].cachedTokens === 20 && one.requestUsageEntries[0].model === "synthetic-model", one));
-    assertions.push(assert("기존 마지막 호출과 합계 불변", one?.inputTokens === 100 && one.outputTokens === 20 && one.inputTokensTotal === 500, one));
+    assertions.push(assert("마지막 호출 보존, 세션 누적 대신 현재 요청만 집계", one?.inputTokens === 100 && one.outputTokens === 20 && one.inputTokensTotal === 60 && one.outputTokensTotal === 12 && one.cachedTokensTotal === 20 && one.iterations === 1, one));
     c.observe(stop()); c.observe(start("a")); c.observe(delta({ output_tokens: 100 })); c.observe(stop());
     assertions.push(assert("동일 메시지 재전달·중복 stop 중복 계상 방지", c.withUsage(base)?.requestUsageEntries?.length === 1, c.withUsage(base)));
     c.observe(start("broken")); c.observe(delta({ output_tokens: 99 })); c.resetPending(); c.observe(stop());
     c.observe(start("b", { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 })); c.observe(delta({ output_tokens: 0 })); c.observe(stop());
     const two = c.withUsage(base);
+    assertions.push(assert("재개 이전 누적·중복·미완료·재시도를 현재 턴 합계에 더하지 않음", two?.inputTokensTotal === 60 && two.outputTokensTotal === 12 && two.iterations === 2, two));
+    assertions.push(assert("완료 요청이 없으면 세션 합계를 폴백하지 않음", createClaudeRequestUsage().withUsage(base)?.inputTokensTotal === 100, {}));
     assertions.push(assert("재시도는 미완료 요청만 버리고 이전 완료 기록 유지", two?.requestUsageEntries?.length === 2 && two.requestUsageEntries[0]?.outputTokens === 12, two));
     assertions.push(assert("명시 0 요청은 보존", two?.requestUsageEntries?.[1]?.inputTokens === 0 && two.requestUsageEntries[1].outputTokens === 0 && two.requestUsageEntries[1].cachedTokens === 0, two));
     two!.requestUsageEntries![0]!.inputTokens = 999;

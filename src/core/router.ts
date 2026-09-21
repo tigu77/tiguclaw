@@ -176,6 +176,11 @@ export const route = async (
       // 배달 좌표 캡처 — notifyDestFromCoords 가 세션 id 파싱 대신 우선 사용(§D3).
       ...(channelAddress !== undefined ? { channelAddress } : {}),
       attachments: msg.attachments,
+      // ★출처를 **한 번** 정한다 (2026-09-21, Codex 설계). 여기가 유일한 전달점이다 —
+      //  어댑터는 수치를 찍지만 출처를 모르고, `synthetic` 은 `index.ts` 에서 끝난다.
+      //  ★`inbound` 는 «정규 인입 경로» 라는 뜻이지 «사람이 쳤다» 가 아니다.
+      //   라우터를 우회하는 직접 호출은 미지정으로 남아 로그가 `unknown` 을 찍는다.
+      turnOrigin: msg.turnOrigin ?? (msg.synthetic === true ? "synthetic-other" : "inbound"),
       sendAttachment: msg.sendAttachment,
       // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
       presentOptions: msg.presentOptions,

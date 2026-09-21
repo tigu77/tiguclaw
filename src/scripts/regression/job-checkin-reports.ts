@@ -287,6 +287,14 @@ export const check: RegressionCheck = {
           first === undefined ? "재주입 없음" : `synthetic=${String(first.synthetic)}`,
         ),
         assert(
+          // ★**생산부가 실제로 채우는지** 본다 (2026-09-21, Codex 설계 §검증1).
+          //  `synthetic` 만으로는 완료 재주입과 구분되지 않아, 수치를 출처별로 가를 수
+          //  없었다. 이 값이 없으면 어댑터 로그가 `unknown` 을 찍는다.
+          "★점검 재주입의 출처가 `worker-checkin` 이다(완료와 구분된다)",
+          first?.turnOrigin === "worker-checkin",
+          first === undefined ? "재주입 없음" : `turnOrigin=${String(first.turnOrigin)}`,
+        ),
+        assert(
           "`receivedAt` 이 실린다(IncomingMessage 필수 필드)",
           first?.hasReceivedAt === true,
           first === undefined ? "재주입 없음" : `hasReceivedAt=${String(first.hasReceivedAt)}`,

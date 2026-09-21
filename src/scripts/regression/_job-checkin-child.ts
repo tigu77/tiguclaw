@@ -61,11 +61,14 @@ const main = async (): Promise<void> => {
       text?: string;
       reply?: unknown;
       synthetic?: unknown;
+      turnOrigin?: unknown;
       receivedAt?: unknown;
     }) => {
       shapes.push({
         hasReply: typeof m.reply === "function",
         synthetic: m.synthetic === true,
+        // ★출처 표식 — 실제 생산부가 채우는지 본다(검사에서 손으로 넣지 않는다).
+        turnOrigin: m.turnOrigin,
         hasReceivedAt: typeof m.receivedAt === "number",
       });
       // 실제 핸들러가 하는 일 — 응답을 보낸다. `reply` 가 없으면 여기서 던진다(라이브 동형).

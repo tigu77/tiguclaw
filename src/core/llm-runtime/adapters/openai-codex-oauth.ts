@@ -60,7 +60,7 @@
  *  - 본 어댑터의 transform 층 (HTTP + JSON payload + SSE event 파싱) = 직접 구현
  *    (README §직접 만들 것 vs 라이브러리 의 "채널 어댑터" 면).
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
   prefixFingerprint,
   describeFingerprint,
@@ -172,6 +172,8 @@ import {
   appendToolResultsToInput,
   newSseObservation,
   parseCodexSseObserved,
+  compatibleReplayOutput,
+  formatCodexDebugInput,
   type CodexSseResult,
   type ResponseInputItem,
 } from "./openai-codex-oauth-history.js";
@@ -540,6 +542,22 @@ export const withTurnTotals = (
 export const runOpenAiCodex = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  // ★**어댑터 실행 ID** (2026-09-21, Codex 설계). 이 함수 호출 하나를 가리킨다 —
+  //  facade 전체 턴도, 서버 response id 도 아니다. 같은 호출 안의 요청 반복·재시도·
+  //  closing 에는 유지되고, 새 호출엔 새 값이다.
+  //  ★전역 Map·카운터·`prompt_cache_key` 변경 없음. **요청 payload 엔 안 실린다.**
+  const run = randomUUID();
+  /**
+   * ★**직렬화할 그 `body.tools` 에 `send_file` 이 있나** (0/1). 마지막 요청 기준 값을
+   *  `[codex-turn-end]` 가 `lastSendFileTool` 로 싣는다 — 기존 `tools=` 노트는 **턴 첫
+   *  호출 기준**이라 이름을 달리해 차이를 명시한다.
+   * ★`attachmentCallback`(콜백 유무)으로 **대체하지 않는다.** 둘은 다른 것이다 —
+   *  `toolsNone`·정책 필터·final flush(`tools:[]`)가 콜백과 무관하게 목록을 바꾼다.
+   */
+  let lastSendFileTool = 0;
+  // ★출처는 라우터가 정한다 — 여기서 추론하지 않는다(`worker:` 접두·본문 금지).
+  const origin: string = input.turnOrigin ?? "unknown";
+  const attachmentCallback = input.sendAttachment !== undefined ? 1 : 0;
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(context/transcripts)은 canonical
   // 저장 채널로 키잉(sessionChannel, 미지정 → channel 폴백·회귀 0). 표시/감사는 input.channel
   // 유지 — claude/openai 어댑터와 parity(#2).
@@ -1491,7 +1509,7 @@ export const runOpenAiCodex = async (
           `[codex-oauth debug] input turns=${inputArray.length} iteration=${iteration} threadKey=${input.threadKey}`,
         );
         console.error(
-          `[codex-oauth debug] input body=${JSON.stringify(inputArray, null, 2).slice(0, 4000)}`,
+          `[codex-oauth debug] input body=${formatCodexDebugInput(inputArray)}`,
         );
       }
 
@@ -1536,6 +1554,15 @@ export const runOpenAiCodex = async (
         const o = t as { name?: unknown; type?: unknown };
         return typeof o.name === "string" ? o.name : `<${String(o.type ?? "?")}>`;
       });
+      // ★**이 요청이 실제로 보내는 목록**으로 잰다(`type:"function"` + `name:"send_file"`).
+      //  이름만 훑지 않고 type 도 본다 — 다른 종류의 항목이 같은 이름을 쓸 수 있다.
+      const sendFileTool = (Array.isArray(body.tools) ? body.tools : []).some((t) => {
+        const o = t as { name?: unknown; type?: unknown };
+        return o.type === "function" && o.name === "send_file";
+      })
+        ? 1
+        : 0;
+      lastSendFileTool = sendFileTool;
       // ★★**턴의 첫 호출에서만 비교한다** (2026-09-10 적대 검토 P1). 이 값들은 while 루프
       //  밖에 선언되고 **매 iteration 덮인다.** 그런데 로그에 실리는 건 턴당 한 줄
       //  (`[codex-turn-end]`)이라 담기는 것은 **마지막 iteration** 의 값이다. `tools`·
@@ -1976,7 +2003,11 @@ export const runOpenAiCodex = async (
               `in=${usage.inputTokens.toLocaleString()} cached=${(usage.cachedTokens ?? 0).toLocaleString()} ` +
               `적중=${Math.round(hitPct(usage))}% req=${lastReqBytes.total.toLocaleString()}자` +
               `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
-              `${lastToolsNote} ${lastInstrNote} ${lastFingerprintNote}`,
+              `${lastToolsNote} ${lastInstrNote} ${lastFingerprintNote} ` +
+              // ★진단 전용 — 요청 body 엔 안 들어간다.
+              `run=${run} origin=${origin} attachmentCallback=${String(attachmentCallback)} ` +
+              `sendFileTool=${String(lastSendFileTool)}` +
+              ` attribution=${sseResult.cacheAttribution === undefined ? "unavailable" : JSON.stringify(sseResult.cacheAttribution)}`,
           );
         }
       }
@@ -2017,16 +2048,14 @@ export const runOpenAiCodex = async (
           } satisfies RegionAActivityPayload,
         });
       }
-      // ★자기 발화 재주입 (2026-07-26) — 이 iteration 의 assistant 텍스트를 다음 iteration 이
-      //  보도록 inputArray 에 넣는다. store:false + previous_response_id 폐기 설계(파일 헤더
-      //  §14)라 **대화 상태는 전적으로 input 배열**인데, 종전엔 루프가 function_call /
-      //  function_call_output / user 넛지만 push 하고 **모델 자기 텍스트는 한 번도 안 넣었다**.
-      //  그래서 모델은 매 iteration "아직 아무 말도 안 했다"고 보고 같은 서두를 다시 냈다 —
-      //  실측: 한 턴에 "맞습니다… 하겠습니다" 류 문단이 22개 누적(3295자)돼 사용자가 "계속
-      //  같은 말만 한다"고 체감. shape 는 턴-간 이력이 이미 쓰는 것과 동일
-      //  (openai-codex-oauth-history.ts buildCodexInputArray: role:"assistant" + output_text).
-      //  순서도 규약대로 [assistant 텍스트] → [function_call] → [function_call_output].
-      if (text !== "") {
+      // 정상 완료 출력은 추론·메시지 phase·도구 호출 순서까지 보존한다.
+      // 암호문은 이 실행의 inputArray에만 두며 공용 이력/로그에는 쓰지 않는다.
+      const replayOutput = compatibleReplayOutput(sseResult);
+      const replayStart = inputArray.length;
+      if (replayOutput !== undefined && toolCalls.length === 0) inputArray.push(...replayOutput);
+      // 호출은 아래 실제 실행 진입에서만 넣는다. 한도 마무리/외부 반환은 도구를
+      // 실행하지 않으므로 여기서 호출을 넣으면 결과 없는 function_call이 남는다.
+      else if (text !== "") {
         inputArray.push({
           type: "message",
           role: "assistant",
@@ -2096,7 +2125,51 @@ export const runOpenAiCodex = async (
       // 실행하지 않고 방어적 종료 — 무한 루프 0 보장.
       // 2026-06-05 (C+) — flush turn 도 빈 텍스트면 fallback 으로 직행하기 전에 1회 더
       //  강한 nudge 로 재시도. tools:[] 유지(flag true) → 도구 우회 불가. 1회 한정.
+      // 자연 종료와 tools=[] 마무리가 같은 관측 계약을 사용한다.
+      // 최종 마무리는 아래 자연 종료 분기 전에 빠져나가므로 여기서 함께 정의한다.
+      const logTurnEnd = (closing: boolean): void => {
+        const tail = finalText.replace(/\s+/g, " ").slice(-100);
+        console.log(
+          `[codex-turn-end] ${input.threadKey} model=${model} iter=${iteration} steered=${steeredTotal} ` +
+            `closing=${closing ? "재요청" : "종료"} ` +
+            `text=${text.length} finalText=${finalText.length} ` +
+            `toolsSinceText=${toolCallsSinceText}${
+              toolNamesSinceText.length > 0 ? `(${toolNamesSinceText.join(",")})` : ""
+            } ` +
+            `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
+            `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
+            // ★이벤트 히스토그램 — 접두 `response.` 는 떼고 짧은 이름으로(줄이 이미 길다).
+            //  낯선 이름이 보이면 그게 답이다: `reasoning_summary_text.delta` 가 있으면
+            //  **모델은 말하는데 우리가 안 듣는 것**이고, 없으면 정말 안 오는 것이다.
+            `sseEv=${[...sseObs.events.entries()]
+              .map(([k, v]) => `${k.replace(/^response\./, "")}×${v}`)
+              .join(",") || "없음"} ` +
+            `도구뒤텍스트=${sseObs.textAfterToolChars}자 ` +
+            `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
+            `${lastToolsNote}${lastToolsCount > 0 && !lastToolsNote.startsWith(`tools=${lastToolsCount}개`) ? `(현재 ${lastToolsCount}개)` : ""} ${lastInstrNote} ${lastFingerprintNote}${turnCompacted > 0 ? ` ★압축=${turnCompacted}건(입력 한가운데를 고쳐 씀 — 캐시가 여기서 깨진다)` : ""} ` +
+            // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가
+            //  쪼개져 있었는데 `cached` 가 없어서, «프리픽스가 어디서 끊겼나» 를 물으면
+            //  로그로는 답이 안 나왔다 — 프로브를 새로 짜서 반나절을 썼다. 세 필드면
+            //  다음부터는 **로그만으로** 판정된다([[feedback_logs_must_stand_alone]]).
+            //  `last`=마지막 호출 한 번(프리픽스가 걸렸나) · `turn`=iteration 합계(비용).
+            //  둘을 절대 섞지 마라([[project_prompt_prefix_cache_position]]).
+            `cache=last ${(finalUsage?.cachedTokens ?? 0).toLocaleString()}/${(finalUsage?.inputTokens ?? 0).toLocaleString()}` +
+            `(${finalUsage !== undefined && finalUsage.inputTokens > 0 ? Math.round(((finalUsage.cachedTokens ?? 0) / finalUsage.inputTokens) * 100) : 0}%)` +
+            ` turn ${usageTotals.cachedTokens.toLocaleString()}/${usageTotals.inputTokens.toLocaleString()}` +
+            `(${usageTotals.inputTokens > 0 ? Math.round((usageTotals.cachedTokens / usageTotals.inputTokens) * 100) : 0}%) ` +
+            // ★**출처·실행 ID·콜백·실제 도구 유무** (2026-09-21, Codex 설계). 이 줄엔
+            //  요청 바이트·도구 노트·캐시가 **이미** 있으므로, 이 네 칸이 붙으면
+            //  「출처 ↔ 도구 ↔ 사용량」이 **한 줄에서** 만난다. 진단 전용이고 요청
+            //  payload·헤더·`prompt_cache_key` 엔 들어가지 않는다.
+            //  ★`lastSendFileTool` 은 **마지막 요청의 실제 `body.tools`** 기준이다 —
+            //   위 `tools=` 노트(턴 첫 호출 기준)와 다를 수 있어 이름을 달리했다.
+            `run=${run} origin=${origin} attachmentCallback=${String(attachmentCallback)} ` +
+            `lastSendFileTool=${String(lastSendFileTool)} ` +
+            `thread=${input.threadKey} tail: ${tail}`,
+        );
+      };
       if (finalFlushRequested) {
+        logTurnEnd(text === "");
         if (finalText === "" && text === "" && !postFlushRetryUsed) {
           postFlushRetryUsed = true;
           inputArray.push({
@@ -2212,37 +2285,7 @@ export const runOpenAiCodex = async (
         //  가만히 있다"고 신고했을 때 가드가 어느 조건에서 빠져나갔는지 추론밖에 못 했다
         //  (needsClosingReport 첫 줄 `text !== ""` 인지, toolCallsSinceText 0 인지 구분 불가).
         //  tail 은 예고형("~하겠습니다")인지 보고형인지 사람이 판단할 최소 재료.
-        const tail = finalText.replace(/\s+/g, " ").slice(-100);
-        console.log(
-          `[codex-turn-end] ${input.threadKey} model=${model} iter=${iteration} steered=${steeredTotal} ` +
-            `closing=${closing ? "재요청" : "종료"} ` +
-            `text=${text.length} finalText=${finalText.length} ` +
-            `toolsSinceText=${toolCallsSinceText}${
-              toolNamesSinceText.length > 0 ? `(${toolNamesSinceText.join(",")})` : ""
-            } ` +
-            `retries=${emptyBreakRetries}/${MAX_EMPTY_BREAK_RETRIES} flush=${finalFlushRequested} ` +
-            `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"} ` +
-            // ★이벤트 히스토그램 — 접두 `response.` 는 떼고 짧은 이름으로(줄이 이미 길다).
-            //  낯선 이름이 보이면 그게 답이다: `reasoning_summary_text.delta` 가 있으면
-            //  **모델은 말하는데 우리가 안 듣는 것**이고, 없으면 정말 안 오는 것이다.
-            `sseEv=${[...sseObs.events.entries()]
-              .map(([k, v]) => `${k.replace(/^response\./, "")}×${v}`)
-              .join(",") || "없음"} ` +
-            `도구뒤텍스트=${sseObs.textAfterToolChars}자 ` +
-            `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
-            `${lastToolsNote}${lastToolsCount > 0 && !lastToolsNote.startsWith(`tools=${lastToolsCount}개`) ? `(현재 ${lastToolsCount}개)` : ""} ${lastInstrNote} ${lastFingerprintNote}${turnCompacted > 0 ? ` ★압축=${turnCompacted}건(입력 한가운데를 고쳐 씀 — 캐시가 여기서 깨진다)` : ""} ` +
-            // ★**캐시 수치를 같은 줄에 싣는다** (2026-09-08). 이 줄엔 이미 요청 바이트가
-            //  쪼개져 있었는데 `cached` 가 없어서, «프리픽스가 어디서 끊겼나» 를 물으면
-            //  로그로는 답이 안 나왔다 — 프로브를 새로 짜서 반나절을 썼다. 세 필드면
-            //  다음부터는 **로그만으로** 판정된다([[feedback_logs_must_stand_alone]]).
-            //  `last`=마지막 호출 한 번(프리픽스가 걸렸나) · `turn`=iteration 합계(비용).
-            //  둘을 절대 섞지 마라([[project_prompt_prefix_cache_position]]).
-            `cache=last ${(finalUsage?.cachedTokens ?? 0).toLocaleString()}/${(finalUsage?.inputTokens ?? 0).toLocaleString()}` +
-            `(${finalUsage !== undefined && finalUsage.inputTokens > 0 ? Math.round(((finalUsage.cachedTokens ?? 0) / finalUsage.inputTokens) * 100) : 0}%)` +
-            ` turn ${usageTotals.cachedTokens.toLocaleString()}/${usageTotals.inputTokens.toLocaleString()}` +
-            `(${usageTotals.inputTokens > 0 ? Math.round((usageTotals.cachedTokens / usageTotals.inputTokens) * 100) : 0}%) ` +
-            `thread=${input.threadKey} tail: ${tail}`,
-        );
+        logTurnEnd(closing);
         if (closing) {
           if (emptyBreakRetries < MAX_EMPTY_BREAK_RETRIES) {
             emptyBreakRetries += 1;
@@ -2403,8 +2446,11 @@ export const runOpenAiCodex = async (
       // callTool 에 signal 이 없어 못 끊음 = orphan §4.4 #3, 기존 순차와 동일 한계). abort 시
       // reason(TurnTimeoutError) throw → 다음 배치 미시작.
       if (input.abortSignal?.aborted) throw input.abortSignal.reason;
+      // 위에서 임시로 붙인 텍스트 한 항목만 정상 완료 출력으로 교체한다.
+      // 중간 체크포인트 메시지는 지우지 않으며, 기존 이력 프리픽스도 그대로다.
+      if (replayOutput !== undefined) inputArray.splice(replayStart, text !== "" ? 1 : 0, ...replayOutput);
       // function_call item 순서대로 누적 — assistant 가 보낸 호출 의도 보존 (다음 turn 필수).
-      for (const tc of toolCalls) {
+      for (const tc of replayOutput === undefined ? toolCalls : []) {
         inputArray.push({
           type: "function_call",
           ...(tc.id !== undefined ? { id: tc.id } : {}),

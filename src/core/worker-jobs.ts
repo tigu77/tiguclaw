@@ -891,6 +891,9 @@ const deliverCheckin = async (
         //  세션 경로에서 새로 만들 뻔했다. 게다가 "사용자가 마침 턴 중인가" 로 갈려
         //  비결정적이었다.
         synthetic: true,
+        // ★출처 표식 — 진단 전용 (2026-09-21). `synthetic` 만으로는 완료 재주입과
+        //  구분되지 않아 수치(도구·캐시)를 출처별로 가를 수 없었다. 요청엔 안 실린다.
+        turnOrigin: "worker-checkin" as const,
         receivedAt: Date.now(),
         reply: reinjectReply,
         // ★점검 재주입도 같은 좌표로 나간다 — 중복 차단 대상.
@@ -2769,6 +2772,9 @@ export const onWorkerComplete = async (
     // 내부 기원 표식 — 핸들러가 `channel.message.in` 관측 발행을 스킵(스캐폴딩 텍스트가
     // 대시보드에 "나(user)"로 새는 걸 차단). 라우팅·직렬화 등 나머지는 실 인바운드와 동일.
     synthetic: true,
+    // ★출처 표식 — 진단 전용 (2026-09-21). 점검 재주입과 같은 `synthetic:true` 라
+    //  둘을 가르려면 이 한 칸이 필요하다. 요청 payload 엔 안 실린다.
+    turnOrigin: "worker-completion" as const,
     receivedAt: Date.now(),
     reply: trackedReply,
     // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.

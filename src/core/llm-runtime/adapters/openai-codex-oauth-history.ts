@@ -5,6 +5,7 @@
  * 진실 소스·설계 근거는 메인 파일(openai-codex-oauth.ts) 헤더 주석 참조.
  * 공개 표면은 메인 파일의 배럴 re-export 로 보존된다.
  */
+import { summarizeCacheAttribution, type CacheAttribution } from "./_codex-cache-attribution.js";
 import type { ChannelName } from "../../../channels/types.js";
 import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
@@ -82,6 +83,7 @@ const CODEX_TURN_HISTORY_CHAR_CAP = STORE_TURN_HISTORY_CHAR_CAP;
  */
 interface CodexSseEvent {
   type?: string;
+  output_index?: number;
   delta?: string;
   /**
    * ★`error` 이벤트(최상위) — 공식 SDK `ResponseErrorEvent` 형상
@@ -112,6 +114,7 @@ interface CodexSseEvent {
     }>;
     // V5.10 — prompt_cache_key 효과 메트릭 (OpenAI Responses API usage shape).
     usage?: {
+      attribution?: unknown;
       input_tokens?: number;
       input_tokens_details?: {
         cached_tokens?: number;
@@ -142,6 +145,10 @@ export interface CodexToolCall {
 }
 
 export interface CodexSseResult {
+  /** CODEX_CACHE_CURVE 진단 전용. 공통 usage 및 비용 집계와 분리한다. */
+  cacheAttribution?: CacheAttribution;
+  /** 정상 완료된 출력 항목. 같은 실행의 다음 요청에만 원래 순서로 재전송한다. */
+  replayOutput?: ResponseInputItem[];
   text: string;
   responseId: string | undefined;
   toolCalls: CodexToolCall[];
@@ -309,10 +316,14 @@ export const parseCodexSse = async (
   let buffer = "";
   let text = "";
   let responseId: string | undefined;
+  let cacheAttribution: CacheAttribution | undefined;
   let usage:
     | { inputTokens: number; outputTokens: number; reasoningTokens?: number }
     | undefined;
   const toolCalls: CodexToolCall[] = [];
+  const doneItems = new Map<number, unknown>();
+  let completedOutput: unknown[] | undefined;
+  let completed = false;
   let currentToolCall: CodexToolCall | null = null;
   // externalTools 스트리밍용 — 현재 진행 중인 function_call 의 index(이 파서 호출 안 단조).
   let currentToolCallIndex = -1;
@@ -341,6 +352,11 @@ export const parseCodexSse = async (
           // 가능성 판별. 기본 off (CODEX_DEBUG_TOOLS/INPUT 동형 gated 진단 인프라).
           if (process.env.CODEX_DEBUG_SSE === "1") {
             console.error(`[codex-sse] ${event.type}`);
+          }
+          // 구독 백엔드는 completed.output=[]를 보낸다. done 이벤트를 원순서로 모으되
+          // 정상 완료 전에는 재사용하지 않는다(끊긴 시도의 암호문을 재시도에 섞지 않음).
+          if (event.type === "response.output_item.done" && event.item !== undefined) {
+            doneItems.set(typeof event.output_index === "number" && Number.isSafeInteger(event.output_index) && event.output_index >= 0 ? event.output_index : doneItems.size, event.item);
           }
           // output_text.delta event 의 delta 누적 (표준 SSE 패턴).
           if (
@@ -493,6 +509,9 @@ export const parseCodexSse = async (
           }
           // response.completed — final output_text fallback + response.id 추출.
           if (event.type === "response.completed") {
+            completed = event.response?.status === undefined || event.response.status === "completed";
+            completedOutput = Array.isArray(event.response?.output) ? event.response.output : undefined;
+
             if (text === "" && typeof event.response?.output_text === "string") {
               text = event.response.output_text;
             }
@@ -504,6 +523,9 @@ export const parseCodexSse = async (
             // event 에서 추출 (추가 호출 0). usage 부재 시 미설정 (graceful).
             if (event.response?.usage) {
               const u = event.response.usage;
+              if (process.env.CODEX_CACHE_CURVE === "1") {
+                cacheAttribution = summarizeCacheAttribution(u.attribution);
+              }
               // 2026-06-07 — reasoning_tokens 추출 (output_tokens_details 안에 있음).
               //  ChatGPT 백엔드 응답 shape: usage.output_tokens_details.reasoning_tokens.
               //  부재 시 undefined (graceful — 기존 호출자 무영향, fallback 진단에만 사용).
@@ -541,15 +563,22 @@ export const parseCodexSse = async (
     }
   }
 
+  const rawOutput = completedOutput?.length
+    ? completedOutput
+    : [...doneItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+  const replayOutput = completed && failure === undefined && rawOutput.length > 0 &&
+    rawOutput.every(isReplayableOutput) ? rawOutput : undefined;
   // lastEvent — 빈 응답 진단용(2026-07-30). `response.completed` 가 안 왔는지 로그로 가른다.
   return {
     text,
     responseId,
     toolCalls,
+    ...(replayOutput !== undefined ? { replayOutput } : {}),
     usage,
     lastEvent,
     eventCounts,
     textCharsAfterToolCall: textAfterTool,
+    ...(cacheAttribution !== undefined ? { cacheAttribution } : {}),
     ...(failure !== undefined ? { failure } : {}),
   };
 };
@@ -637,7 +666,62 @@ export type ResponseInputFunctionCallOutput = {
 export type ResponseInputItem =
   | ResponseInputMessage
   | ResponseInputFunctionCall
-  | ResponseInputFunctionCallOutput;
+  | ResponseInputFunctionCallOutput
+  | ResponseInputReasoning;
+
+export type ResponseInputReasoning = {
+  type: "reasoning";
+  id: string;
+  summary: Array<{ type: "summary_text"; text: string }>;
+  encrypted_content: string;
+};
+
+/** 공급자 출력 경계. 모르는 항목을 일부만 버려 깨진 묶음을 만들지 않는다. */
+const isReplayableOutput = (raw: unknown): raw is ResponseInputItem => {
+  if (raw === null || typeof raw !== "object") return false;
+  const item = raw as Record<string, unknown>;
+  if (item.status !== undefined && item.status !== "completed") return false;
+  switch (item.type) {
+    case "reasoning":
+      return typeof item.id === "string" && typeof item.encrypted_content === "string" &&
+        Array.isArray(item.summary) && item.summary.every((s: unknown) =>
+          s !== null && typeof s === "object" &&
+          (s as Record<string, unknown>).type === "summary_text" &&
+          typeof (s as Record<string, unknown>).text === "string");
+    case "message":
+      return item.role === "assistant" && Array.isArray(item.content) &&
+        item.content.every((c: unknown) => c !== null && typeof c === "object" &&
+          (c as Record<string, unknown>).type === "output_text" &&
+          typeof (c as Record<string, unknown>).text === "string");
+    case "function_call":
+      return typeof item.call_id === "string" && typeof item.name === "string" &&
+        typeof item.arguments === "string";
+    default:
+      return false;
+  }
+};
+
+/** 디버그 출력에도 공급자가 준 암호문을 남기지 않는다. */
+export const formatCodexDebugInput = (input: ResponseInputItem[]): string =>
+  JSON.stringify(input, (key, value: unknown) => key === "encrypted_content" ? "[omitted]" : value, 2).slice(0, 4000);
+
+/**
+ * 스트림에서 실행 대상으로 확정한 호출과 재전송할 호출을 일치시킨다.
+ * 출력 전체가 없는 옛 형식은 기존 text/toolCalls 재구성을 유지한다.
+ */
+export const compatibleReplayOutput = (result: CodexSseResult): ResponseInputItem[] | undefined => {
+  const output = result.replayOutput;
+  if (output === undefined) return undefined;
+  const calls = output.filter((item): item is ResponseInputFunctionCall => item.type === "function_call");
+  const messages = output.filter((item): item is ResponseInputMessage => item.type === "message");
+  if (calls.length !== result.toolCalls.length || calls.some((call, i) => {
+    const executed = result.toolCalls[i];
+    return call.call_id !== executed?.callId || call.name !== executed.name ||
+      call.arguments !== (executed.partialJson || "{}");
+  })) return undefined;
+  if (messages.map(item => item.content.map(c => "text" in c ? c.text : "").join("")).join("") !== result.text) return undefined;
+  return output;
+};
 
 /**
  * 6b — 격리(isolated) 최소 요약 호출. codex 자체 머신(token/headers/CODEX_BASE_URL

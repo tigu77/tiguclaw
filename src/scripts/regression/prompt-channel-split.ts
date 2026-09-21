@@ -436,7 +436,7 @@ export const check: RegressionCheck = {
         [
           /splitSystemContext\(\{/,
           /composeSystemChannel\(SYSTEM_PROMPT, stableContext\)/,
-          /systemPrompt: systemChannel,/,
+          /systemPrompt: \{ type: "custom", prompt: systemChannel, snapshot: false \},/,
           /assembleUserPrompt\(volatileParts, userTurnParts\)/,
           ...OVERRIDE_GUARDS,
         ],

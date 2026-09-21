@@ -43,7 +43,28 @@ export interface Attachment {
   transcript?: string;
 }
 
+/**
+ * **턴이 어디서 시작됐나** — 진단 전용 메타데이터 (2026-09-21, Codex 설계).
+ *
+ * ★왜 필요한가: 수치(도구 목록·캐시 사용량)는 어댑터 로그에서 만나는데, **출처는 거기
+ *  닿지 않는다.** `synthetic` 은 `src/index.ts` 에서 소비되고 끝나고, 완료 재주입과 점검
+ *  재주입은 둘 다 `synthetic:true` 에 같은 `reason` 이라 서로 구분되지 않는다.
+ * ★**분류이지 권한이 아니다.** `inbound` 는 «정규 인입 경로» 라는 뜻이고 «사람이 쳤다» 를
+ *  증명하지 않는다. 모르는 경로는 `unknown` 으로 둔다 — 본문이나 `worker:` 접두로
+ *  추론하지 않는다.
+ * ★이 값은 모델 요청 body·headers·instructions·input·tools·prompt_cache_key 에
+ *  **절대 들어가지 않는다.** 로그에만 찍힌다.
+ */
+export type TurnOrigin =
+  | "inbound"
+  | "worker-completion"
+  | "worker-checkin"
+  | "synthetic-other"
+  | "unknown";
+
 export interface IncomingMessage {
+  /** 턴 출처 — 진단 전용(위 `TurnOrigin`). 미지정은 라우터가 기본값을 정한다. */
+  turnOrigin?: TurnOrigin;
   channel: ChannelName;
   channelUserId: string;
   threadKey: string;

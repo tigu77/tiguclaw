@@ -54,8 +54,13 @@ export const check: RegressionCheck = {
     // 메인 재주입 핸들러를 가로챈다 — onWorkerComplete 가 실제로 불렸는지의 **관측점**.
     // (여기까지 와야 사용자에게 결과가 간다. 부르지 않으면 아무 일도 안 일어난다.)
     const reinjected: string[] = [];
-    registerWorkerHandler((async (m: { text?: string }) => {
+    // ★**출처 표식도 같이 본다** (2026-09-21, Codex 설계 §검증1). 완료 재주입은 점검
+    //  재주입과 똑같이 `synthetic:true` 라, 이 한 칸이 없으면 어댑터 로그가 둘을 못
+    //  가른다. 검사에서 손으로 넣지 않고 **실제 생산부가 채운 값**을 받는다.
+    const reinjectedOrigins: unknown[] = [];
+    registerWorkerHandler((async (m: { text?: string; turnOrigin?: unknown }) => {
       reinjected.push(String(m.text ?? ""));
+      reinjectedOrigins.push(m.turnOrigin);
       return { text: "" };
     }) as never);
 
@@ -75,6 +80,11 @@ export const check: RegressionCheck = {
           `${getJob(jid)?.status}`),
         assert("결과가 잡 레코드에 남는다", (getJob(jid)?.result ?? "").includes("매니저가 낸 값"),
           `${getJob(jid)?.result?.slice(0, 30) ?? "(없음)"}`),
+        assert(
+          "★완료 재주입의 출처가 `worker-completion` 이다(점검과 구분된다)",
+          reinjectedOrigins.length > 0 && reinjectedOrigins[0] === "worker-completion",
+          `origins=${JSON.stringify(reinjectedOrigins)}`,
+        ),
         assert(
           "★결과가 **메인으로 재주입된다** — 이 한 줄이 사라지면 결과가 아무에게도 안 간다(조용히)",
           reinjected.some((t) => t.includes("매니저가 낸 값")),

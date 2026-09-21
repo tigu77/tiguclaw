@@ -43,9 +43,22 @@ export const createClaudeRequestUsage = () => {
   return {
     observe,
     resetPending: (): void => { pending = undefined; },
-    /** 기존 마지막 호출/합계 필드는 보존한다. 보고된 요청이 없으면 목록 자체를 생략한다. */
-    withUsage: (usage: RegionASdkOutput["usage"]): RegionASdkOutput["usage"] =>
-      usage === undefined ? undefined : entries.length === 0 ? usage
-        : { ...usage, requestUsageEntries: entries.map(e => ({ ...e })) },
+    /** 세션 누적을 턴 합계로 재사용하지 않는다. 현재 실행에서 완료된 요청만 합산한다. */
+    withUsage: (usage: RegionASdkOutput["usage"]): RegionASdkOutput["usage"] => {
+      if (usage === undefined) return undefined;
+      const { inputTokensTotal: _input, outputTokensTotal: _output,
+        cachedTokensTotal: _cache, iterations: _iterations, ...perCall } = usage;
+      if (entries.length === 0) return { ...perCall, iterations: 1,
+        inputTokensTotal: perCall.inputTokens, outputTokensTotal: perCall.outputTokens,
+        ...(perCall.cachedTokens !== undefined ? { cachedTokensTotal: perCall.cachedTokens } : {}),
+      };
+      return { ...perCall,
+        iterations: entries.length,
+        inputTokensTotal: entries.reduce((sum, e) => sum + e.inputTokens, 0),
+        outputTokensTotal: entries.reduce((sum, e) => sum + e.outputTokens, 0),
+        cachedTokensTotal: entries.reduce((sum, e) => sum + (e.cachedTokens ?? 0), 0),
+        requestUsageEntries: entries.map(e => ({ ...e })),
+      };
+    },
   };
 };

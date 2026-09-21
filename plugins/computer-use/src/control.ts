@@ -194,7 +194,10 @@ export const postFailureMessage = (
       : "★입력을 보내던 중 **오류로 멈췄습니다** — 어디까지 나갔는지 알 수 없습니다.",
     `사유: ${detail}`,
     "**같은 행동을 다시 보내지 마세요** — 이미 적용됐을 수 있습니다(되돌릴 수 없습니다).",
-    "`look` 으로 **지금 화면을 먼저 보고**, 무엇이 적용됐는지 확인한 뒤 판단하세요.",
+    // ★«그럼 무엇을 보나» 는 **여기서 말하지 않는다** (2026-09-21 지침 감사 F2).
+    //  종전엔 무조건 «`look` 으로 먼저 보고» 였는데, 이 글 뒤에 사후 장면이 실리면
+    //  같은 답에 «그림을 봐라» 와 «다시 찍어라» 가 함께 들어갔다. 그림이 실렸는지는
+    //  **부르는 쪽만 안다** — 그래서 판정을 그리로 올렸다(`nextLook`).
   ].join("\n");
 
 /**
@@ -205,10 +208,14 @@ export const postFailureMessage = (
  *  «`look` 으로 다시 보세요» 를 같이 냈다. 한 답에 **서로 다른 다음 행동**이 둘이다.
  *  (실측으로 확인: `frameRejection("unknown", {gaveImage:true})` 에 그 문장이 그대로 있었다.)
  * ★★그래서 **구조를 바꾼다** — 사유별 «설명» 과 «다음 수» 를 갈라 두고, 다음 수는
- *  **그림을 줬는지 한 곳에서** 고른다. 분기마다 기억해야 하는 구조는 또 빠뜨린다
+ *  **한 곳에서** 고른다. 분기마다 기억해야 하는 구조는 또 빠뜨린다
  *  ([[feedback_hand_maintained_lists]] 의 그 모양이다).
+ * ★**축이 «그림» 이 아니라 «쓸 수 있는 화면 id»다** (2026-09-21 적대 검토 2R). 종전 이름은
+ *  `gaveImage` 였는데, 다음 수가 약속하는 것은 그림이 아니라 **id** 다. 둘은 갈린다 —
+ *  바이트 상한 초과는 «그림 없는데 id 유효», mac 기하 실패는 «그림 있는데 id 없음».
+ *  이름이 축을 잘못 가리키면 호출부가 잘못된 값을 넣는다(실제로 네 문 중 셋이 그랬다).
  */
-export const frameRejection = (why: FrameReject, opts?: { gaveImage?: boolean }): string => {
+export const frameRejection = (why: FrameReject, opts?: { gaveUsableId?: boolean }): string => {
   // ① 왜 못 썼나 — 사유마다 다르고, 그림 유무와 **무관**하다.
   const because: Record<FrameReject, string> = {
     missing: "«화면 id» 를 아직 못 받으셨습니다.",
@@ -230,7 +237,7 @@ export const frameRejection = (why: FrameReject, opts?: { gaveImage?: boolean })
   const gave =
     "★**아래 그림이 방금 찍은 새 화면입니다** — 그 «화면 id» 를 쓰고, 좌표는 **이 그림 " +
     "기준**으로 다시 읽으세요. `look` 을 따로 부르지 않아도 됩니다.";
-  return `${because[why]} ${opts?.gaveImage === true ? gave : next[why]}`;
+  return `${because[why]} ${opts?.gaveUsableId === true ? gave : next[why]}`;
 };
 
 // ─── 데스크톱 상태 — 리스 · 활성 행동 · 입력 장부가 **한 객체** ───────────────
@@ -528,8 +535,11 @@ export const beginRejection = (b: Exclude<Begin, { ok: true }>, streak = 1): str
     case "idle-unknown":
       return (
         "사람이 그 컴퓨터를 쓰는 중인지 **알 수 없어서** 조작하지 않았습니다(유휴 시간을 읽지 " +
-        "못했습니다). 기다려도 저절로 풀리지 않습니다 — **로그를 보고 원인을 확인**하세요. " +
-        "화면 보기는 그대로 됩니다."
+        // ★종전엔 «로그를 보고 원인을 확인하세요» 였다 (2026-09-21 지침 감사 F3). 일반 설치본의
+        //  비서에게 그건 **다음 수가 못 된다** — 사용자 기계의 로그를 열라는 말이 된다.
+        //  스킬이 말하는 것(«재시도하지 말고 보고한다»)이 맞고, 도구가 거기 맞춘다.
+        "못했습니다). 기다려도 저절로 풀리지 않습니다 — **다시 시도하지 말고 사용자에게 " +
+        "이 사실을 알리세요.** 화면 보기는 그대로 됩니다."
       );
     case "busy-self":
       return "이미 다른 조작이 진행 중입니다. **한 번에 하나씩** 하세요 — 앞의 결과를 받고 나서 다음을 부르세요.";

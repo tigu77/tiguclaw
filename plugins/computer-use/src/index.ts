@@ -181,6 +181,33 @@ const sweep = async (dir: string, host?: PluginHost): Promise<number> => {
  *   성의에 맡기는 것이고, 안 부르면 그대로 «했다고 믿고 다음으로» 간다. 설계가 이걸
  *   도구 계약으로 둔 이유가 그것이다.
  */
+/**
+ * **다음 수 한 줄** — 축이 **둘**이다 (2026-09-21 적대 검토 3R).
+ *
+ * ★★내가 세 라운드 내리 틀린 자리다. 1R 은 「그림이 실렸나」 하나로 판정했고, 2R 은
+ *  그걸 「id 를 냈나」 하나로 **바꿨다.** 둘 다 축을 **하나**로 뭉갠 것이고, 그래서 매번
+ *  반대쪽이 터졌다:
+ *   - id 있고 그림 없음(바이트 상한 초과) → 「이 그림 기준으로 좌표를 다시 읽어라」가
+ *     **불가능한 지시**가 된다. 모델은 무효화된 옛 좌표를 쓰고 `do` 는 실제로 나간다
+ *     = 엉뚱한 자리 클릭(비가역). 고치기 전보다 나쁘다.
+ *   - 그림 있고 id 없음(mac `displays()` 실패) → 「아래 그림의 새 id」가 **없는 것을 가리킨다.**
+ * ★그래서 **문구를 축마다 따로 단다.** id 는 «무엇으로 다시 부르나», 그림은 «좌표를
+ *  어디서 읽나» 를 정한다 — 서로 다른 질문이므로 한 술어로 끌 수 없다.
+ */
+export const nextAfterCapture = (frameId: string | undefined, hasImage: boolean): string => {
+  const idPart =
+    frameId === undefined
+      ? "★**쓸 수 있는 화면 id 를 내지 못했습니다** — 옛 id 는 전부 무효이니 `look` 으로 다시 보세요."
+      : `옛 화면 id 는 전부 무효가 됐고, **새 id \`${frameId}\`** 를 쓰세요(위에 함께 적혀 있습니다).`;
+  // ★**좌표를 어디서 읽나는 그림이 정한다.** 그림이 없으면 「이 그림 기준으로」라고 하면 안 된다.
+  const coordPart = hasImage
+    ? " 좌표는 **아래 그림 기준**으로 다시 읽으세요."
+    : frameId === undefined
+      ? ""
+      : " ★다만 **그림을 못 실었습니다** — 좌표를 새로 읽어야 하면 `region` 을 좁혀 `look` 하세요. 옛 좌표를 그대로 쓰지 마세요.";
+  return idPart + coordPart;
+};
+
 const captureScene = async (
   w: Wiring,
   target: CaptureTarget,
@@ -190,7 +217,21 @@ const captureScene = async (
    *  `afterActionTarget` 이 하고, 여기서는 «화면 배치를 안 뒤에» 그것을 부르는 배관만 한다.
    */
   opts?: { afterAction?: boolean },
-): Promise<{ content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> }> => {
+): Promise<{
+  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
+  /**
+   * ★**쓸 수 있는 새 화면 id 를 냈나** (2026-09-21 적대 검토 P1·P2).
+   *
+   * 그림이 실렸는지(`type === "image"`)와 **갈린다.** 실측으로 양쪽 다 나왔다:
+   *  - 바이트 상한 초과 → **그림은 없는데 id 는 유효**하다(등록이 그 검사보다 먼저다).
+   *    그때 «옛 id 는 전부 무효» 라고 말하면 **쓸 수 있는 id 를 버리게 만든다** — 게다가
+   *    다시 `look` 하면 같은 오버사이즈를 또 받아 루프가 된다.
+   *  - 화면 기하를 못 읽음(mac `displays()` 실패) → **그림은 있는데 id 가 없다.**
+   *    그때 «아래 그림의 새 id 를 쓰세요» 는 존재하지 않는 것을 가리킨다.
+   * ★그래서 다음 수는 **그림이 아니라 id 로** 정한다 — 그게 그 문장이 실제로 약속하는 것이다.
+   */
+  frameId?: string;
+}> => {
   // ★**먼저 탐침을 돌린다.** 캡처를 시도했다가 매달리면 턴이 MCP 천장(11분)까지 묶인다.
   //  ★재는 것이 플랫폼마다 다르다: mac 은 **화면 기록 권한**, Windows 는 **데스크톱
   //   세션과 DPI 선언**이다(win.ts 머리말). 둘 다 «먼저 비차단으로 확인하고, 아니면
@@ -283,6 +324,10 @@ const captureScene = async (
       }),
     );
   }
+  // ★**한 번만 판정한다** (2026-09-21 적대 검토 P1). 종전엔 이 식이 `meta` 안에만 있어서,
+  //  «화면 id 를 말했나» 와 «다음 수가 그 id 를 쓰라고 하나» 가 **따로** 정해졌다. 그래서
+  //  바이트 상한 경로가 «id: 4dfd…» 와 «옛 id 는 전부 무효» 를 한 답에 같이 실었다(실측).
+  const issuedId = w.desktop.frames.get(owner)?.some((f) => f.id === frameId) === true ? frameId : undefined;
   const meta = observationMeta({
     target: okTarget.target,
     at,
@@ -290,7 +335,7 @@ const captureScene = async (
     savedPath,
     longEdge: shot.longEdge,
     platform: w.platform,
-    ...(w.desktop.frames.get(owner)?.some((f) => f.id === frameId) === true ? { frameId } : {}),
+    ...(issuedId === undefined ? {} : { frameId: issuedId }),
     ...(clippedFrom === undefined ? {} : { clippedFrom }),
     spansScreens: okTarget.spans,
   });
@@ -304,11 +349,17 @@ const captureScene = async (
   //  파일 경로는 메타에 있으니 사람은 열어볼 수 있고, 모델은 다시 찍으면 된다.
   if (shot.bytes > FRAME_MAX_BYTES) {
     host?.log(`관측 그림 생략 — ${shot.bytes.toLocaleString()}B > 상한 ${FRAME_MAX_BYTES.toLocaleString()}B`);
-    return textOnly(
-      `${meta}\n\n★그림을 싣지 않았습니다 — ${shot.bytes.toLocaleString()}바이트로 상한` +
-        `(${FRAME_MAX_BYTES.toLocaleString()})을 넘었습니다. 크기 줄이기가 실패한 것으로 보입니다. ` +
-        `영역(region)을 좁혀 다시 찍으면 실릴 수 있습니다.`,
-    );
+    // ★**그림만 없고 화면 id 는 유효하다** — 등록이 이 검사보다 먼저다. 그 사실을 같이
+    //  돌려주지 않으면 부르는 쪽이 «전부 무효» 라고 말해 **쓸 수 있는 id 를 버리게 만든다**
+    //  (게다가 그 처방인 `look` 은 같은 오버사이즈를 다시 받는다 — 루프다).
+    return {
+      ...textOnly(
+        `${meta}\n\n★그림을 싣지 않았습니다 — ${shot.bytes.toLocaleString()}바이트로 상한` +
+          `(${FRAME_MAX_BYTES.toLocaleString()})을 넘었습니다. 크기 줄이기가 실패한 것으로 보입니다. ` +
+          `영역(region)을 좁혀 다시 찍으면 실릴 수 있습니다.`,
+      ),
+      ...(issuedId === undefined ? {} : { frameId: issuedId }),
+    };
   }
   const bytes = await fs.readFile(savedPath);
   const data = bytes.toString("base64");
@@ -339,6 +390,10 @@ const captureScene = async (
         mimeType: savedPath.endsWith(".jpg") ? "image/jpeg" : "image/png",
       },
     ],
+    // ★**그림이 있어도 id 가 없을 수 있다** (적대 검토 P2, 실측): mac 에서 `displays()` 가
+    //  일시 실패하면 화면 기하를 못 읽어 프레임이 등록되지 않는다. 그때 그림만 보고
+    //  «아래 그림의 새 id 를 쓰세요» 라고 하면 **없는 것을 가리킨다.**
+    ...(issuedId === undefined ? {} : { frameId: issuedId }),
   };
 };
 
@@ -423,19 +478,28 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
             args.display !== undefined ? { kind: "display", index: args.display } : { kind: "screen" },
             host,
           );
-          // ★**그림이 실제로 실렸을 때만** 안내를 앞에 붙인다. 권한 실패처럼 글만 오는
-          //  답에 «찍었습니다» 를 얹으면 서로 반대인 두 문장이 한 답에 들어간다.
-          const gotImage = whole.content.some((c) => c.type === "image");
-          if (!gotImage) return whole;
+          // ★**쓸 수 있는 화면 id 를 냈을 때만** 안내를 앞에 붙인다 (2026-09-21 2R).
+          //  종전 판정은 «그림이 실렸나» 였는데, 아래 안내는 «그 그림의 «화면 id» 를 주세요»
+          //  라고 **id 를 약속한다.** mac 기하 실패는 그림은 있고 id 가 없어서, 이 경로가
+          //  «39회·2시간 15분» 사고를 닫으려고 만든 자리인데 **다시 막다른 길**이 됐다.
+          // ★**이 안내는 두 가지를 말한다** (2026-09-21 3R). ①`region` 을 버렸다 — 이 경로에서
+          //  **언제나 참**이다. ②그 id 로 다시 부르면 확대해서 볼 수 있다 — id 를 냈을 때만 참.
+          //  종전엔 ②의 술어로 **문장 전체**를 껐다. 그러면 「틀린 안내」가 「안내 없음」이 되고,
+          //  이 문이 닫으려던 «39회·2시간 15분» 루프의 동기가 그대로 남는다.
           return {
             content: [
               {
                 type: "text" as const,
                 text:
                   "★`region` 을 **무시하고 전체 화면**을 찍었습니다 — `frameId` 가 없어서 그 " +
-                  "영역이 어느 그림의 좌표인지 알 수 없었습니다.\n" +
-                  "아래 그림의 «화면 id» 를 `frameId` 로 주고 같은 `region` 을 다시 부르면 그 " +
-                  "부분만 크게 볼 수 있습니다. 좌표는 **이 그림의 픽셀**입니다(왼쪽 위가 0,0).",
+                  "영역이 어느 그림의 좌표인지 알 수 없었습니다." +
+                  // ★②는 **id 와 그림 둘 다** 있어야 참이다 — 상한 초과면 id 는 유효한데
+                  //  그림이 없어서 「이 그림의 픽셀」이 가리킬 것이 없다(3R 과 같은 부류).
+                  "\n" +
+                  nextAfterCapture(whole.frameId, whole.content.some((c) => c.type === "image")) +
+                  (whole.frameId === undefined
+                    ? ""
+                    : ` 그 id 를 \`frameId\` 로 주고 같은 \`region\` 을 다시 부르면 그 부분만 크게 볼 수 있습니다.`),
               },
               ...whole.content,
             ],
@@ -448,14 +512,18 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
             ? { kind: "display", index: args.display }
             : { kind: "screen" };
           const again = await captureScene(w, target, host);
-          if (!again.content.some((c) => c.type === "image")) return textOnly(frameRejection(fc.why));
+          // ★id 를 못 냈으면 안내도 «id 를 쓰라» 고 하지 않는다. 그리고 **낸 경우엔 관측을
+          //  그대로 실어 보낸다** — 그림이 없어도(상한 초과) 메타에 id 가 들어 있다(P2).
+          if (again.frameId === undefined) {
+            return { content: [{ type: "text" as const, text: frameRejection(fc.why) }, ...again.content] };
+          }
           return {
             content: [
               {
                 type: "text" as const,
                 text:
-                  `${frameRejection(fc.why, { gaveImage: true })}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 를 ` +
-                  "쓰세요. `region` 은 **이 그림 기준**으로 다시 읽어야 합니다(옛 좌표는 버렸습니다).",
+                  `${frameRejection(fc.why, { gaveUsableId: true })}\n\n★**방금 새로 찍었습니다** — ` +
+                  nextAfterCapture(again.frameId, again.content.some((c) => c.type === "image")),
               },
               ...again.content,
             ],
@@ -572,9 +640,24 @@ const reportSteps = (describes: readonly string[], oc: StepsOutcome): string => 
   return (
     `${head}\n${lines.join("\n")}\n\n` +
     "★«완료» 는 **우리가 냈다**는 뜻이지 «앱이 그렇게 받았다» 가 아닙니다 — " +
-    "**아래 그림이 판정입니다.** 옛 화면 id 는 전부 무효가 됐고, 아래 그림의 새 id 를 쓰세요."
+    "**본 것이 판정입니다.**"
   );
 };
+
+/**
+ * **그래서 지금 무엇을 보나** — 그림이 실렸는지가 정하는 한 줄 (2026-09-21 지침 감사 F1·F2).
+ *
+ * ★종전엔 이 판단이 **세 곳**에 흩어져 있었다: `reportSteps` 의 고정 꼬리는 **언제나**
+ *  «아래 그림이 판정입니다» 라고 했고, `postFailureMessage` 는 **언제나** «`look` 으로
+ *  먼저 보라» 고 했다. 그런데 사후 캡처는 세 가지 길로 **그림 없이** 돌아온다(예외·바이트
+ *  상한·권한 실패). 그래서 한 답에 «아래 그림을 봐라» 와 «그림이 없다, 다시 찍어라» 가
+ *  같이 실렸다 — 모델이 어느 쪽을 집을지 우리가 모른다.
+ * ★`look` 경로는 이 함정을 이미 `gotImage` 로 막아뒀는데(그 주석에 *"서로 반대인 두 문장이
+ *  한 답에 들어간다"* 라고 적혀 있다) **`do` 경로엔 그 가드가 없었다.** 어제 `frameRejection`
+ *  에 `gaveImage` 를 넣으면서도 여기 둘은 못 봤다 — 한 규칙이 세 곳에 필요한데 한 곳만 고친
+ *  것이다([[feedback_scope_of_a_fix]] «새 가드 → 진입점 전수»).
+ * ★그래서 **사본을 하나 더 만들지 않고 판정을 올렸다.** 그림이 실렸는지는 부르는 쪽만 안다.
+ */
 
 const runSteps = async (
   w: Wiring,
@@ -692,11 +775,17 @@ const runSteps = async (
       );
       // 모르는 id·다른 소유자·누락은 여전히 거절한다. 새 화면만 주고 자동 실행하지 않는다.
       const again = await captureScene(w, { kind: "screen" }, host);
-      const gotImage = again.content.some((c) => c.type === "image");
-      if (!gotImage) return textOnly(frameRejection(fc.why));
+      if (again.frameId === undefined) {
+        return { content: [{ type: "text" as const, text: frameRejection(fc.why) }, ...again.content] };
+      }
       return {
         content: [
-          { type: "text" as const, text: `${frameRejection(fc.why, { gaveImage: true })}\n\n★**방금 새로 찍었습니다** — 아래 그림의 «화면 id» 로 같은 조작을 다시 부르세요. 좌표는 **이 그림 기준**으로 다시 읽어야 합니다(화면이 달라졌을 수 있습니다).` },
+          {
+            type: "text" as const,
+            text:
+              `${frameRejection(fc.why, { gaveUsableId: true })}\n\n★**방금 새로 찍었습니다** — ` +
+              nextAfterCapture(again.frameId, again.content.some((c) => c.type === "image")),
+          },
           ...again.content,
         ],
       };
@@ -786,11 +875,21 @@ const runSteps = async (
     // ★★**행동한 그 화면**을 다시 본다 — `{kind:"screen"}` 고정이 아니다(2026-09-19).
     //  보조 모니터 위에서 행동하고 주 모니터를 돌려주면 모델이 **다른 화면으로 판정**한다.
     const scene = await captureScene(w, sceneTarget, host, { afterAction: true });
-    return { content: [{ type: "text" as const, text: report }, ...scene.content] };
+    // ★**그림이 아니라 «쓸 수 있는 새 id 를 냈나»로 정한다** (2026-09-21 적대 검토 P1·P2).
+    //  둘은 갈린다 — 상한 초과는 «그림 없는데 id 유효», 기하 실패는 «그림 있는데 id 없음».
+    //  다음 수가 약속하는 것은 그림이 아니라 **id** 이므로 그것을 잰다.
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `${report}\n${nextAfterCapture(scene.frameId, scene.content.some((c) => c.type === "image"))}`,
+        },
+        ...scene.content,
+      ],
+    };
   } catch (e) {
     return textOnly(
-      `${report}\n\n★사후 화면을 찍지 못했습니다(${String(e).slice(0, 80)}) — ` +
-        "`look` 으로 직접 확인하세요.",
+      `${report}\n${nextAfterCapture(undefined, false)}\n\n★사후 화면을 찍지 못했습니다(${String(e).slice(0, 80)}).`,
     );
   }
 };

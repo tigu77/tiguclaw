@@ -82,7 +82,7 @@ interface ControlModule {
     frameId: string,
     owner: string,
   ) => { ok: true; frame: Frame } | { ok: false; why: string };
-  frameRejection: (why: string, opts?: { gaveImage?: boolean }) => string;
+  frameRejection: (why: string, opts?: { gaveUsableId?: boolean }) => string;
   postFailureMessage: (reason: "timeout" | "failed", detail: string) => string;
   planSteps: (steps: readonly Record<string, unknown>[], frame: Frame) => Plan;
   planRejection: (why: string, detail?: string) => string;
@@ -734,8 +734,15 @@ export const check: RegressionCheck = {
       const msg = beginRejection({ ok: false, reason: "idle-unknown" });
       out.push(
         assert(
-          "★«모른다» 안내가 **저절로 안 풀린다는 것과 어디를 볼지**를 말한다(기다리게 두지 않는다)",
-          msg.includes("알 수 없") && msg.includes("로그") && !msg.includes("잠시 뒤"),
+          // ★종전엔 «로그» 라는 낱말을 요구했다 (2026-09-21 지침 감사 F3). 그 안내는 일반
+          //  설치본의 비서에게 **다음 수가 못 된다** — 사용자 기계의 로그를 열라는 말이다.
+          //  지키려는 성질은 낱말이 아니라 «기다리게 두지 않고 **할 일**을 준다» 이므로,
+          //  그 성질로 다시 잰다: 저절로 안 풀린다 + 다시 누르지 마라 + 사용자에게 알려라.
+          "★«모른다» 안내가 **저절로 안 풀린다는 것과 할 일**을 말한다(기다리게 두지 않는다)",
+          msg.includes("알 수 없") &&
+            msg.includes("저절로 풀리지 않습니다") &&
+            msg.includes("사용자에게") &&
+            !msg.includes("잠시 뒤"),
           msg.slice(0, 80),
         ),
       );
@@ -816,13 +823,16 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "먼저 **보라**고 말하고, 끊긴 것과 오류로 멈춘 것을 **다른 문장**으로 가른다",
+          "끊긴 것과 오류로 멈춘 것을 **다른 문장**으로 가른다",
           // ★비교는 **첫 줄**끼리다 (자기 변이로 적발). 전체 문자열을 견주면 `detail` 이
           //  달라서 늘 다르고, 그러면 «사유를 가른다» 를 재는 게 아니라 «입력이 다르다» 를
           //  재는 공허한 단언이 된다.
-          to.includes("look") &&
-            fa.includes("look") &&
-            to.split("\n")[0] !== fa.split("\n")[0],
+          // ★«무엇을 보라» 는 여기서 빠졌다 (2026-09-21 지침 감사 F2) — 그림이 실렸는지는
+          //  부르는 쪽만 알고, 그 판정은 `do` 의 `nextLook` 한 곳에 있다. 이 글이 «`look`
+          //  으로 보라» 를 **말하지 않는 것**이 지금의 계약이므로 그것도 같이 못 박는다.
+          to.split("\n")[0] !== fa.split("\n")[0] &&
+            !to.includes("look") &&
+            !fa.includes("look"),
           `${to.split("\n")[0] ?? ""} / ${fa.split("\n")[0] ?? ""}`,
         ),
       );
@@ -907,9 +917,9 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★★새 그림을 준 `unknown` 응답엔 재관측 지시가 **없다**(지시가 둘이면 안 된다)",
-          !/look` 으로 지금 화면/.test(frameRejection("unknown", { gaveImage: true })) &&
+          !/look` 으로 지금 화면/.test(frameRejection("unknown", { gaveUsableId: true })) &&
             /look` 으로 지금 화면/.test(frameRejection("unknown")),
-          `그림있음=${frameRejection("unknown", { gaveImage: true }).slice(-20)} · 없음=${frameRejection("unknown").slice(-20)}`,
+          `그림있음=${frameRejection("unknown", { gaveUsableId: true }).slice(-20)} · 없음=${frameRejection("unknown").slice(-20)}`,
         ),
       );
       out.push(

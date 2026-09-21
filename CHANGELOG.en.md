@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.56.2] - 2026-09-21
+
+### Fixed
+
+- **The assistant looking at the screen over and over without moving on.** A screen it just
+  looked at is no longer rejected for being old, and it no longer fills in values you never
+  asked for.
+- **Screen actions being refused without saying what to do next.** Each refusal now comes with
+  the step that clears it.
+- **The assistant mistaking a screenshot it took itself for a photo you sent.** Screen
+  observations now say where they came from.
+- **Text you sent coming back into the dashboard input box.** It is only restored when the send
+  is confirmed to have failed.
+- **The docs saying screen control was off by default.** It ships enabled. macOS can do nothing
+  until you grant permission, but Windows never asks — turn it off in settings if you don't want it.
+
 ## [0.56.1] - 2026-09-20
 
 ### Fixed
@@ -40,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screenshot, then clicks, types, presses shortcuts, drags and scrolls. Works on macOS and
   Windows with nothing to install.
   - ★**Actions cannot be undone.** Enabling this plugin means handing the assistant the
-    mouse and keyboard of that machine. It is off by default.
+    mouse and keyboard of that machine. (This line **was not true** — it ships enabled.
+    Corrected in 0.56.2.)
   - macOS needs two separate permissions — **Screen Recording** (to see) and
     **Accessibility** (to act). Seeing without acting is a normal state.
   - Windows has no permission prompt, but the daemon must run in a **logged-in user
@@ -623,7 +640,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...HEAD
+[0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2
 [0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1
 [0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0

@@ -179,7 +179,7 @@ Still stuck? Open an
 
 ## What it does
 
-Seven things. Everything else is in [the full feature list](docs/features.en.md).
+Eight things. Everything else is in [the full feature list](docs/features.en.md).
 
 1. **Always on** — runs as a background service, restarts itself when it dies, and updates itself when
    you ask ("update yourself" or `/update`), rolling back if the new code won't build.
@@ -194,7 +194,11 @@ Seven things. Everything else is in [the full feature list](docs/features.en.md)
    plus any OpenAI-compatible endpoint. Cross-provider fallback, and the same tools on every model.
 6. **Extend by asking** — new slash commands, HTTP endpoints, scheduled work and reusable skills are
    added as *data* under your home, without patching the core.
-7. **Your data stays on your machine** — sessions, memory and DB all local (`~/.tiguclaw`).
+7. **It can see your screen and use it** — the assistant looks at that machine's screen, then
+   clicks, types, presses shortcuts, drags and scrolls. Works on macOS and Windows with nothing
+   to install. ★**These actions cannot be undone** — on macOS it can do nothing until you grant
+   permission, but Windows never asks. Turn it off in settings if you don't want it.
+8. **Your data stays on your machine** — sessions, memory and DB all local (`~/.tiguclaw`).
 
 It also speaks **Claude Code's formats directly**: the same tools, the same `settings.json` `hooks`
 block, and the same skill layout — existing ones carry over unchanged.
@@ -204,7 +208,7 @@ block, and the same skill layout — existing ones carry over unchanged.
 | | |
 |---|---|
 | [Setup & operations](docs/setup.en.md) | Keys, config, everyday commands, updating, uninstalling |
-| [Full feature list](docs/features.en.md) | Everything not in the seven above |
+| [Full feature list](docs/features.en.md) | Everything not in the eight above |
 | [Hooks](docs/hooks.en.md) | Observe or block tool calls — Claude Code `hooks` format |
 | [LLM gateway](docs/gateway.en.md) | Use tiguclaw as the OpenAI-compatible backend for your own apps |
 | [Writing a plugin](docs/plugins.en.md) | Build a widget and a tool — the whole contract on one page |

@@ -8,6 +8,22 @@
 
 ## [Unreleased]
 
+## [0.56.2] - 2026-09-21
+
+### Fixed
+
+- **화면을 보고 조작할 때 같은 관측만 반복하고 진행하지 못하던 것.** 방금 본 화면이 시간이
+  지났다는 이유로 거절되지 않고, 비서가 지정하지 않은 값을 억지로 채워 넣던 것도 사라졌습니다.
+- **조작이 막혔을 때 무엇을 하면 되는지 알려주지 않던 것.** 이제 거절된 이유마다 다음에 할
+  일을 함께 알려줍니다.
+- **비서가 자기가 찍은 화면을 사용자가 보낸 사진으로 읽던 것.** 화면 관측 결과에 어디서 온
+  것인지가 함께 실립니다.
+- **대시보드에서 보낸 글이 입력창으로 되돌아오던 것.** 전송이 안 됐다고 확인됐을 때만
+  되돌립니다.
+- **화면 조작 기능이 «기본으로 꺼져 있다»고 안내하던 것.** 실제로는 기본으로 들어 있습니다.
+  macOS 는 권한을 주기 전까지 아무것도 못 하지만 Windows 는 따로 묻지 않습니다 — 쓰지
+  않으려면 설정에서 끄세요.
+
 ## [0.56.1] - 2026-09-20
 
 ### Fixed
@@ -40,7 +56,8 @@
   찍어서 보고, 클릭·글자 입력·단축키·드래그·스크롤을 합니다. macOS 와 Windows 에서 돌고
   설치할 것은 없습니다.
   - ★**조작은 되돌릴 수 없습니다.** 이 플러그인을 켜는 것은 비서에게 그 기계의 마우스와
-    키보드를 준다는 뜻입니다. 기본값은 꺼져 있습니다.
+    키보드를 준다는 뜻입니다. (이 줄은 **사실이 아니었습니다** — 기본으로 들어 있습니다.
+    0.56.2 에서 바로잡았습니다.)
   - macOS 는 권한이 둘이고 서로 다릅니다 — **화면 기록**(보기)과 **손쉬운 사용**(조작).
     관측만 되고 조작이 안 되는 상태가 정상적으로 존재합니다.
   - Windows 는 권한 대화상자가 없는 대신 **로그인한 사용자 세션**에서 실행되어야 합니다.
@@ -2175,7 +2192,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...HEAD
+[0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2
 [0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1
 [0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/tigu77/tiguclaw/compare/v0.54.1...v0.55.0

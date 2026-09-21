@@ -28,6 +28,8 @@ interface ToolLike {
 interface IndexModule {
   createTools: (w: Rec, host?: Rec) => ToolLike[];
   realWiring: () => { desktop: Rec; platform: string };
+  /** ★«다음 수» 문장을 만드는 제품 함수 — 검사가 **같은 함수로** 기댓값을 만든다(낱말 금지). */
+  nextAfterCapture: (frameId: string | undefined, hasImage: boolean) => string;
 }
 interface ControlModule {
   newDesktop: () => Rec;
@@ -59,23 +61,40 @@ const makeStubs = (
     releaseOk?: boolean;
     /** 조작 권한 프리플라이트를 **실패**시킨다 — 그 분기가 실제로 도는지 보려고. */
     preflightFail?: { reason: string; detail: string };
+    /**
+     * ★캡처가 돌려줄 **바이트 수** (2026-09-21 적대 검토 G1).
+     * 종전 stub 은 `bytes: 10` 고정이라 `FRAME_MAX_BYTES` 초과 가지가 **한 번도 안 돌았다** —
+     * 그래서 「그림 없이 무엇을 말하나」를 되돌리는 변이가 4,237건을 전부 통과했다.
+     */
+    captureBytes?: number;
+    /**
+     * ★관측 프리플라이트가 **N번째 호출부터 화면 목록을 못 준다**(mac `displays()` 일시 실패).
+     * 그림은 실리는데 **프레임이 등록되지 않는** 길이라, «그림 있음»과 «id 있음»이 갈린다.
+     * ★«처음부터 실패» 가 아니라 **«도중에 실패»** 여야 한다 — 그래야 `look` 으로 받은 id 로
+     *  `do` 를 부를 수 있고, 그 **사후** 캡처에서만 기하가 빠진다(실제 사고의 모양).
+     */
+    noScreensFrom?: number;
   } = {},
-): { observe: Rec; control: Rec } => ({
+): { observe: Rec; control: Rec } => {
+  let preflights = 0;
+  return {
   observe: {
-    preflight: () =>
-      Promise.resolve({
+    preflight: () => {
+      preflights += 1;
+      return Promise.resolve({
         ok: true,
-        screens: [
+        screens: opts.noScreensFrom !== undefined && preflights >= opts.noScreensFrom ? undefined : [
           { x: 0, y: 0, w: 1920, h: 1080, scale: 1 },
           { x: 1920, y: 0, w: 1920, h: 1080, scale: 1 },
         ],
-      }),
+      });
+    },
     capture: async (target: Rec, outPath: string) => {
       log.captures.push({ target });
       log.order.push("capture");
       // 실제 파일을 만든다 — 배관이 `stat`·`readFile` 을 지나야 «사후 장면» 이 성립한다.
       await fs.writeFile(outPath, opts.captureText?.() ?? "stub-frame");
-      return { ok: true, bytes: 10, longEdge: 1600, path: outPath, deliveredPx: { w: 1600, h: 900 } };
+      return { ok: true, bytes: opts.captureBytes ?? 10, longEdge: 1600, path: outPath, deliveredPx: { w: 1600, h: 900 } };
     },
   },
   control: {
@@ -116,7 +135,8 @@ const makeStubs = (
       );
     },
   },
-});
+  };
+};
 
 export const check: RegressionCheck = {
   name: "computer-use-wiring-runs",
@@ -128,7 +148,7 @@ export const check: RegressionCheck = {
     "잔여 정리가 보호 구간 밖이라 예상 밖 rejection 이 리스를 영구 잠그던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const { createTools, realWiring } = await loadPluginModule<IndexModule>(
+    const { createTools, realWiring, nextAfterCapture } = await loadPluginModule<IndexModule>(
       "../../../plugins/computer-use/src/index.ts",
     );
     const { newDesktop } = await loadPluginModule<ControlModule>(
@@ -144,7 +164,7 @@ export const check: RegressionCheck = {
 
     /** 한 판을 차린다 — 배선·기록·도구 둘. */
     const arena = (
-      opts: { captureText?: () => string; front?: () => string; postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number } = {},
+      opts: { captureText?: () => string; front?: () => string; postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number; captureBytes?: number; noScreensFrom?: number } = {},
     ): { log: Log; desktop: Rec; look: ToolLike; doTool: ToolLike } => {
       const log: Log = { posts: [], captures: [], order: [] };
       const desktop = newDesktop();
@@ -156,6 +176,65 @@ export const check: RegressionCheck = {
       if (look === undefined || doTool === undefined) throw new Error("도구를 못 찾았다");
       return { log, desktop, look, doTool };
     };
+    // ── ★**부품: `nextAfterCapture` 자체의 의미** (2026-09-21 3R) ──────────────────
+    //  ★구조 그물(`saysNextFromOnePlace`)은 «한 곳에서 나오나» 만 본다 — 기댓값을 **그
+    //   함수로** 만들기 때문에, 그 함수 안을 바꾸는 변이는 동어반복으로 통과한다.
+    //   그래서 네 조합의 **의미**를 여기서 따로 못 박는다. 이음매와 부품은 다른 그물이다.
+    {
+      const withId = nextAfterCapture("abcd1234", true);
+      const withIdNoPic = nextAfterCapture("abcd1234", false);
+      const noId = nextAfterCapture(undefined, true);
+      out.push(
+        assert(
+          "★부품: id 가 있으면 **그 id 를 글자 그대로** 말한다",
+          withId.includes("abcd1234") && withIdNoPic.includes("abcd1234"),
+          `${withId.slice(0, 60)} / ${withIdNoPic.slice(0, 60)}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★★부품: **그림이 없으면 «아래 그림 기준으로 읽어라»라고 하지 않는다**(불가능한 지시)",
+          !/아래 그림 기준/.test(withIdNoPic) && /아래 그림 기준/.test(withId),
+          withIdNoPic.slice(0, 120),
+        ),
+      );
+      out.push(
+        assert(
+          "★★부품: 그림이 없으면 **옛 좌표를 쓰지 말라**고 말한다(오클릭이 비가역이다)",
+          /옛 좌표를 그대로 쓰지 마세요/.test(withIdNoPic),
+          withIdNoPic.slice(0, 120),
+        ),
+      );
+      out.push(
+        assert(
+          "★부품: id 가 없으면 **그 사실을 말하고** 어떤 id 도 가리키지 않는다",
+          /쓸 수 있는 화면 id 를 내지 못했습니다/.test(noId) && !/새 id/.test(noId),
+          noId.slice(0, 120),
+        ),
+      );
+    }
+
+    /**
+     * ★★**다음 수 문장은 «한 곳»에서만 나온다** — 그것을 구조로 잰다 (2026-09-21 3R).
+     *
+     * 세 라운드 내리 같은 일이 벌어졌다: 내가 문구를 고치면 **낱말을 보던 단언이 조용히
+     * 어긋나거나 무장 해제**됐다. 그물이 문구를 쫓아다닌 것이다.
+     * ★그래서 낱말이 아니라 **출처**를 잰다 — 그 답의 «다음 수» 는 실제 (id, 그림) 으로
+     *  `nextAfterCapture` 를 부른 결과와 **글자 그대로 같아야** 한다. 어느 문이든 문장을
+     *  손으로 쓰는 순간(=판정이 두 곳이 되는 순간) 빨개진다.
+     */
+    const saysNextFromOnePlace = (r: { content: Array<Rec> }): boolean =>
+      r.content
+        .filter((c) => c["type"] === "text")
+        .map((c) => String(c["text"]))
+        .join("\n")
+        .includes(
+          nextAfterCapture(
+            frameIdOf(r) ?? undefined,
+            r.content.some((c) => c["type"] === "image"),
+          ),
+        );
+
     const frameIdOf = (r: { content: Array<Rec> }): string | null => {
       const text = r.content
         .filter((c) => c["type"] === "text")
@@ -447,8 +526,18 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
+          // ★**«좌표를 다시 읽어라» 를 낱말로 재지 않는다** (2026-09-21 3R). 종전엔 `/다시 읽어야/`
+          //  였는데, 제품 문구를 고치자 조용히 어긋났다 — 그리고 낱말 목록은 문구를 바꾸면
+          //  **무장 해제**된다(같은 라운드 G2). 정확한 값이 이미 있으니 그걸 쓴다:
+          //  제품이 그 자리에 넣는 문장을 **같은 함수로 만들어** 대조한다.
           "★**행동은 대신 실행하지 않는다** — 좌표는 옛 그림 기준이라 새 화면에선 딴 곳일 수 있다",
-          a.log.posts.length === 0 && /다시 읽어야/.test(text),
+          a.log.posts.length === 0 &&
+            text.includes(
+              nextAfterCapture(
+                frameIdOf(r) ?? undefined,
+                r.content.some((c) => c["type"] === "image"),
+              ),
+            ),
           `발사 ${String(a.log.posts.length)}회 · ${text.slice(0, 50)}`,
         ),
       );
@@ -901,6 +990,236 @@ export const check: RegressionCheck = {
     }
 
     await fs.rm(dataDir, { recursive: true, force: true });
+    // ── ★«다음 수» 는 **그림이 아니라 화면 id** 로 정해진다 (2026-09-21 적대 검토 P1·P2·G1) ──
+    //  ★종전 stub 은 캡처가 **언제나 성공**이라(bytes 고정·screens 고정) 아래 두 길이 한 번도
+    //   안 돌았다. 그래서 이 판정을 통째로 되돌리는 변이가 4,237건을 전부 통과했다 —
+    //   **핵심 수정이 그물 밖**이었다. 손잡이 둘을 달아 실제로 지나게 한다.
+    {
+      const textOf = (r: { content: Array<Rec> }): string =>
+        r.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join("\n");
+      const hasImage = (r: { content: Array<Rec> }): boolean =>
+        r.content.some((c) => c["type"] === "image");
+      const press = { steps: [{ t: "click", x: 20, y: 20 }] };
+
+      // ㉮ 바이트 상한 초과 — **그림은 없는데 화면 id 는 유효하다**(등록이 그 검사보다 먼저).
+      //    실측 사고: 「전부 무효」라고 말해놓고 같은 답에 쓸 수 있는 id 를 실어 보냈고,
+      //    그 처방인 `look` 은 같은 오버사이즈를 다시 받아 루프가 됐다.
+      {
+        const a = arena({ captureBytes: 2_000_000 });
+        const seen = await a.look.handler({}, extra);
+        const id = frameIdOf(seen);
+        const r = await a.doTool.handler({ ...press, frameId: id ?? "x" }, extra);
+        const t = textOf(r);
+        out.push(assert("㉮ 상한 초과 — 그림이 없다(전제)", !hasImage(r), String(hasImage(r))));
+        out.push(
+          assert(
+            "★㉮ 그림이 없어도 **쓸 수 있는 id 가 있으면 그 id 를 쓰라**고 한다",
+            /새 id/.test(t) && !/`look` 으로 다시 보고/.test(t),
+            t.slice(-150),
+          ),
+        );
+        const said = /새 id \s*`?([0-9a-f]{8})`?/.exec(t)?.[1];
+        out.push(
+          assert(
+            "★㉮ 그 답이 **가리키는 id 가 실제로 그 답에 있다**(없는 것을 가리키지 않는다)",
+            said !== undefined && said === frameIdOf(r),
+            `${t.slice(-110)} / meta=${String(frameIdOf(r))}`,
+          ),
+        );
+        // ★★**«쓸 수 있다» 는 글자 맞추기가 아니라 `frameCheck` 통과다** (2026-09-21 2R).
+        //  종전 단언은 문구와 메타가 같은 값을 말하는지만 봤다. 그러면 제품이 **등록도
+        //  안 된 id** 를 양쪽에 똑같이 적기만 해도 통과한다(검토자의 W1·W3 변이가 그렇게
+        //  4,241건을 전부 지나갔다). 그래서 **그 id 로 실제로 조작이 나가는지**를 잰다.
+        {
+          const again = await a.doTool.handler({ ...press, frameId: said ?? "x" }, extra);
+          const posted = a.log.posts.length;
+          out.push(
+            assert(
+              "★★㉮ 그 id 로 **조작이 실제로 나간다**(약속이 말뿐이 아니다)",
+              posted >= 2 && !/그 화면|모릅니다|쓸 수 없/.test(
+                again.content.filter((c) => c["type"] === "text").map((c) => String(c["text"])).join(""),
+              ),
+              `posts=${String(posted)}`,
+            ),
+          );
+        }
+      }
+
+      // ㉰ ★**`look` 쪽 두 문도 같은 술어를 쓴다** (2026-09-21 2R). 종전엔 `do` 만 덮여
+      //    있어서, `look` 의 판정을 되돌리거나 넓히는 변이가 그대로 통과했다 — 「한 규칙이
+      //    여러 문에 필요한데 한 문만」 이 그물에서도 똑같이 일어났다.
+      {
+        // ㉰-1 `look(region)` 인데 frameId 가 없다 → 전체를 찍어 주는 구제 경로.
+        //      기하를 못 읽으면 **id 를 약속하면 안 된다**(그 경로가 「39회·2시간 15분」을
+        //      닫으려고 만든 자리라, 여기서 막다른 길이 되면 그 사고가 되돌아온다).
+        const a = arena({ noScreensFrom: 1 });
+        const r = await a.look.handler({ region: { x: 0, y: 0, w: 10, h: 10 } }, extra);
+        const t = textOf(r);
+        out.push(
+          assert(
+            "★㉰-1 전제 — 기하를 못 읽으면 `look` 도 화면 id 를 못 낸다",
+            frameIdOf(r) === null,
+            `id=${String(frameIdOf(r))}`,
+          ),
+        );
+        out.push(
+          assert(
+            "★★㉰-1 그때 `look` 은 **«이 그림의 화면 id 를 주세요»라고 하지 않는다**",
+            !/«화면 id» 를 `?frameId`? 로 주고/.test(t),
+            t.slice(0, 160),
+          ),
+        );
+        out.push(
+          assert(
+            "★★㉰-1 look·region 구제 — 다음 수 문장이 **한 곳(`nextAfterCapture`)에서 나온다**",
+            saysNextFromOnePlace(r),
+            textOf(r).slice(-140),
+          ),
+        );
+      }
+      {
+        // ㉰-2 ★**`look` 이 말한 id 는 실제로 통해야 한다.** 등록 판정을 «아무 프레임이나
+        //      있나» 로 넓히면 `look` 은 id 를 말하는데 `do` 가 «그 화면을 모릅니다» 로
+        //      거절한다 — 101분 루프의 모양이다. 글자가 아니라 **통하는지**로 잰다.
+        const a = arena();
+        const l = await a.look.handler({}, extra);
+        const id = frameIdOf(l);
+        const before = a.log.posts.length;
+        const d = await a.doTool.handler({ ...press, frameId: id ?? "x" }, extra);
+        out.push(
+          assert(
+            "★★㉰-2 `look` 이 알려준 화면 id 로 **조작이 실제로 나간다**",
+            id !== null &&
+              a.log.posts.length > before &&
+              !/그 화면|모릅니다|쓸 수 없/.test(textOf(d)),
+            `id=${String(id)} posts=${String(before)}→${String(a.log.posts.length)}`,
+          ),
+        );
+      }
+
+      {
+        // ㉰-3 ★**«이 프레임» 과 «아무 프레임» 을 가른다.** `endAction` 이 프레임을 비우면
+        //      맵 항목은 **빈 배열로 남는다** — 그래서 «맵에 owner 가 있나» 로 재면 참이
+        //      되고, 등록도 안 된 id 를 «쓰세요» 라고 말하게 된다(101분 루프의 모양).
+        const a = arena({ noScreensFrom: 3 });
+        const l1 = await a.look.handler({}, extra); // 1회차 — 등록된다(맵 항목 생김)
+        await a.doTool.handler({ ...press, frameId: frameIdOf(l1) ?? "x" }, extra); // 2회차 사후
+        const l3 = await a.look.handler({}, extra); // 3회차 — 기하 실패
+        out.push(
+          assert(
+            "★★㉰-3 옛 프레임이 비워진 뒤 기하가 실패하면 **id 를 말하지 않는다**",
+            frameIdOf(l3) === null,
+            `id=${String(frameIdOf(l3))}`,
+          ),
+        );
+      }
+      {
+        // ㉰-4 ★`do` 의 **프레임 거절** 문(모르는 id)도 같은 술어를 써야 한다. 거절하면서
+        //      새 화면을 주는데, 그 새 화면에 id 가 없으면 «아래 그림의 화면 id 로 다시»
+        //      가 없는 것을 가리킨다.
+        const a = arena({ noScreensFrom: 1 });
+        const r = await a.doTool.handler({ ...press, frameId: "deadbeef" }, extra);
+        const t = textOf(r);
+        out.push(
+          assert(
+            "★㉰-4 전제 — 거절 경로의 재관측도 기하 실패면 id 가 없다",
+            frameIdOf(r) === null,
+            `id=${String(frameIdOf(r))}`,
+          ),
+        );
+        out.push(
+          assert(
+            "★★㉰-4 그때 «아래 그림의 «화면 id» 로 다시 부르세요» 라고 하지 않는다",
+            !/아래 그림의 «화면 id»/.test(t),
+            t.slice(0, 160),
+          ),
+        );
+      }
+
+      {
+        // ㉰-5 ★**거절 경로 + 상한 초과** — 여기서 「그림 없음」과 「id 없음」이 갈린다.
+        //      재관측이 그림은 못 싣지만 **id 는 유효**하다. 종전 판정(「그림이 있나」)은
+        //      그때 id 를 통째로 버리고 «`look` 으로 다시» 라고 했다(적대 검토 P2) —
+        //      한 왕복이 통째로 낭비된다. 두 문(look·do)을 모두 잰다.
+        for (const which of ["do", "look"] as const) {
+          const a = arena({ captureBytes: 2_000_000 });
+          const r =
+            which === "do"
+              ? await a.doTool.handler({ ...press, frameId: "deadbeef" }, extra)
+              : await a.look.handler({ region: { x: 0, y: 0, w: 10, h: 10 }, frameId: "deadbeef" }, extra);
+          const t = textOf(r);
+          out.push(
+            assert(
+              `★㉰-5(${which}) 전제 — 그림은 없는데 화면 id 는 유효하다`,
+              !hasImage(r) && frameIdOf(r) !== null,
+              `그림=${String(hasImage(r))} id=${String(frameIdOf(r))}`,
+            ),
+          );
+          // ★★**쓸 수 있는 id 를 줬으면 «다시 보라» 고 하지 않는다** — 한 답에 다음 행동이
+          //   둘이면 모델이 어느 쪽을 집을지 우리가 모른다(이 판이 닫으려던 바로 그 결함).
+          out.push(
+            assert(
+              `★★㉰-5(${which}) 쓸 수 있는 id 를 준 답엔 **재관측 지시가 없다**`,
+              !/`look` 으로 지금 화면|`look` 을 \*\*아무 인자 없이\*\*|직접 `look` 으로 보세요/.test(t),
+              t.slice(0, 160),
+            ),
+          );
+          out.push(
+            assert(
+              `★★㉰-5(${which}) 그 id 로 **조작이 실제로 나간다**(버리지 않는다)`,
+              await (async () => {
+                const before = a.log.posts.length;
+                const d = await a.doTool.handler({ ...press, frameId: frameIdOf(r) ?? "x" }, extra);
+                return a.log.posts.length > before && !/그 화면|모릅니다|쓸 수 없/.test(textOf(d));
+              })(),
+              t.slice(0, 140),
+            ),
+          );
+        out.push(
+          assert(
+            "★★㉰-5 거절 문 — 다음 수 문장이 **한 곳(`nextAfterCapture`)에서 나온다**",
+            saysNextFromOnePlace(r),
+            textOf(r).slice(-140),
+          ),
+        );
+        }
+      }
+
+      // ㉯ 화면 기하를 못 읽음 — **그림은 있는데 id 가 없다.** 그때 «아래 그림의 새 id»
+      //    라고 하면 존재하지 않는 것을 가리킨다.
+      {
+        const a = arena({ noScreensFrom: 2 });
+        const seen = await a.look.handler({}, extra);
+        const id = frameIdOf(seen);
+        const r = await a.doTool.handler({ ...press, frameId: id ?? "x" }, extra);
+        const t = textOf(r);
+        // ★**전제를 따로 세운다** (2026-09-21 2R). 종전엔 `frameIdOf(r) !== null || 문구` 였는데,
+        //  그 첫 절이 «전제» 가 아니라 **면제**로 작동했다 — 제품이 id 를 (거짓으로) 말하기만
+        //  하면 그 줄은 아무것도 안 쟀다. 전제가 깨지면 **그 사실이 빨개져야** 한다.
+        out.push(
+          assert(
+            "★㉯ 전제 — 기하를 못 읽으면 **화면 id 가 안 나간다**(이게 깨지면 아래는 미검사다)",
+            frameIdOf(r) === null,
+            `id=${String(frameIdOf(r))}`,
+          ),
+        );
+        out.push(
+          assert(
+            "★㉯ 그때는 **못 냈다고 말한다** — 없는 id 를 가리키지 않는다",
+            /쓸 수 있는 화면 id 를 내지 못했습니다/.test(t) && !/아래 그림.{0,6}의 새 id/.test(t),
+            t.slice(-150),
+          ),
+        );
+        out.push(
+          assert(
+            "★★㉯ 사후 장면 — 다음 수 문장이 **한 곳(`nextAfterCapture`)에서 나온다**",
+            saysNextFromOnePlace(r),
+            textOf(r).slice(-140),
+          ),
+        );
+      }
+    }
+
     return out;
   },
 };

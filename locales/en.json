@@ -146,7 +146,6 @@
   "chat.phase.writing": "Writing a reply",
   "chat.send": "Send",
   "chat.send.stillRunning": "Still working — your message is queued and will run in order. The reply will appear here when it's ready.",
-  "chat.send.deliveredNoReply": "The connection dropped, but **your message did reach the server** — it was not put back. Sending it again would deliver the same instruction twice.",
   "chat.stop.title": "Stop the running turn (same as /stop)",
   "chat.suggest.aria": "Fill the input with this suggestion",
   "chat.suggest.title": "Fill the input with this suggestion (Tab)",

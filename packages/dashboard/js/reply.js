@@ -250,11 +250,9 @@
             //   (413·400 에서 쓴 글과 첨부를 지키는 것이 그 가지의 존재 이유다).
             if (act.restore && !(act.status >= 400 && act.status < 500)) {
               const reached = await messageReachedServer(sentTo, text, t0);
-              if (reached === true) {
-                if (act.clearWorking) setChatWorking(false, sentTo);
-                renderLocalChat("info", i18n("chat.send.deliveredNoReply"));
-                return { ok: true };
-              }
+              // ★판정은 `arrivalOutcome`(순수) 하나다 — 아래 연결-끊김 가지와 **같은 것**을
+              //  부른다. 종전엔 이 가지만 `act.clearWorking` 을 따라 「작업 중」을 껐다.
+              if (arrivalOutcome(reached).normal) return { ok: true };
             }
             if (act.clearWorking) setChatWorking(false, sentTo);
             // ★5xx 는 «거절» 이 아니라 «모름» 이다 — 504 는 우리 브리지의 60초 시한이고
@@ -297,11 +295,10 @@
           //   **모른다**"*. 같은 불확실성이 10초 안쪽에도 있는데 거기서만 «안다» 고
           //   단정하고 있었다. 이제 **시간으로 가르지 않고 사실을 확인한다.**
           const arrived = await messageReachedServer(sentTo, text, t0);
-          if (arrived === true) {
-            // 서버는 받았다 — 되돌리면 그게 곧 중복 전송이다. 말만 하고 글은 안 되돌린다.
-            renderLocalChat("info", i18n("chat.send.deliveredNoReply"));
-            return { ok: true };
-          }
+          // ★서버가 받았으면 **평범한 전송과 결과가 같다** — 되돌리지도, 알리지도 않는다
+          //  (2026-09-22: 창을 닫으려다 만 것만으로도 이 안내가 떴다. 잘 된 일에 말을
+          //   거는 것이라 소음이다). 「작업 중」은 그대로 켜 두므로 화면은 계속 말해 준다.
+          if (arrivalOutcome(arrived).normal) return { ok: true };
           // ★확인이 «아니다» 이거나 **확인 자체가 실패**(브리지가 아예 죽음)면 되돌린다 —
           //  그 경우 대개 도달 자체를 못 했고, 틀려도 «보이고 되돌릴 수 있는» 쪽이다.
           //  ★긴 대기 뒤 끊긴 것은 종전대로 **지우지도 되돌리지도 않는다**(현행 유지).

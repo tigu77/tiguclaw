@@ -142,7 +142,8 @@ export const check: RegressionCheck = {
         grabFn(util, "attachRejection"),
         grabFn(util, "restoreAttachments"),
         grabFn(util, "sendRejectionAction"),
-        "this.__read = attachLimitsFrom; this.__judge = attachRejection; this.__restore = restoreAttachments; this.__reject = sendRejectionAction;",
+        grabFn(util, "arrivalOutcome"),
+        "this.__read = attachLimitsFrom; this.__judge = attachRejection; this.__restore = restoreAttachments; this.__reject = sendRejectionAction; this.__arrival = arrivalOutcome;",
       ].join("\n"),
       ctx,
     );
@@ -163,6 +164,12 @@ export const check: RegressionCheck = {
       stillRunning: boolean;
       clearWorking: boolean;
       status: number;
+    };
+    const arrival = ctx.__arrival as (arrived: unknown) => {
+      normal: boolean;
+      restore: boolean;
+      tellUser: boolean;
+      clearWorking: boolean;
     };
     const readLimits = ctx.__read as (health: unknown) => {
       count: number;
@@ -494,6 +501,43 @@ export const check: RegressionCheck = {
           rejectAction(60_000, 504, { error: "timeout", accepted: true, running: true })
             .stillRunning === true,
         `504=${JSON.stringify(rejectAction(60_000, 504, { error: "timeout", accepted: true, running: true }))}`,
+      ),
+      // ── ★**잘 처리된 건 말하지 않는다** (2026-09-22 정태님: *"에러는 확실히 나오면
+      //  괜찮은데 잘 처리된 건 소음이지"*) ─────────────────────────────────────────
+      //  실사례: 창을 닫으려다 만 것만으로 *"연결이 끊겼지만 메시지는 서버에 도착했습니다"*
+      //  가 떴다(09:11:16). 그 턴은 7초 뒤 정상 종료했고 중복도 없었다 — 아무 일도 없었는데
+      //  말을 건 것이다.
+      assert(
+        "★★도착했으면 **평범한 전송과 같다** — 알리지도, 되돌리지도, 작업중을 끄지도 않는다",
+        arrival(true).normal === true &&
+          arrival(true).tellUser === false &&
+          arrival(true).restore === false &&
+          arrival(true).clearWorking === false,
+        `도착=${JSON.stringify(arrival(true))}`,
+      ),
+      assert(
+        "★★**반대 방향** — 못 갔거나 확인 자체가 실패하면 되돌리고 말한다(조용한 소실 금지)",
+        // ★한 방향만 지키는 그물이 이 레포의 반복 결함이다. 「조용해진다」를 넣었으면
+        //  「시끄러워야 할 때 시끄러운가」를 같은 함수로 재야 한다.
+        arrival(false).normal === false &&
+          arrival(false).tellUser === true &&
+          arrival(false).restore === true &&
+          arrival(undefined).normal === false &&
+          arrival(null).normal === false &&
+          // 확인이 문자열·객체 같은 쓰레기를 내도 «도착» 으로 읽지 않는다.
+          arrival("true").normal === false &&
+          arrival(1).normal === false,
+        `실패=${JSON.stringify(arrival(false))} · undefined=${arrival(undefined).normal} · "true"=${arrival("true").normal} · 1=${arrival(1).normal}`,
+      ),
+      assert(
+        "★**두 호출부가 같은 판정을 지난다** — 연결 끊김·5xx 가 서로 다르게 굴던 것을 합쳤다",
+        // ★종전엔 5xx 가지만 `act.clearWorking` 을 따라 작업중을 껐다. 같은 «도착했다» 에
+        //  판정이 둘이면 한쪽만 고쳐진다. 그리고 **안내 문구는 완전히 사라져야 한다** —
+        //  남아 있으면 i18n 고아 키 검사가 따로 잡지만, 여기서도 못을 박는다.
+        (replyCode.match(/arrivalOutcome\(/g) ?? []).length === 2 &&
+          !/deliveredNoReply/.test(replyCode) &&
+          !/renderLocalChat\("info"[^)]*deliveredNoReply/.test(replyCode),
+        `arrivalOutcome 호출 ${(replyCode.match(/arrivalOutcome\(/g) ?? []).length}곳 · 옛 문구 잔존 ${/deliveredNoReply/.test(replyCode)}`,
       ),
       assert(
         "★판정이 **상태 코드와 무관**하다 — 어떤 코드든 말 안 하면 «안 받음»(2026-09-17 P-1)",

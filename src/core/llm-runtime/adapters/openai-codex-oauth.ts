@@ -35,7 +35,7 @@
  *  0이다** — 같은 요청이 `reasoning.effort` 도 바꾸고, 문서상 그것만으로도 프리픽스가
  *  무효가 된다. 바꿀 값이 생기는 건 «턴마다 도구 집합이 흔들리는» 자리다.
  *  - `previous_response_id` 폐기 → `input` 배열에 prior user/assistant 누적으로 세션 재개.
- *  - `prompt_cache_key: input.threadKey` (stable per-thread, OpenAI prefix cache hit).
+ *  - `prompt_cache_key` + session/thread headers: stable account/thread UUID (unknown account keeps legacy key).
  *  - SSE parser 의 `response.completed` event 에서 `response.id` 추출 → sessionId 매핑.
  *  - SYSTEM_PROMPT 인라인 (claude 어댑터 동일 본문, 단일 인격 보존) — carry-over.
  *  - AGENT.md / memory index / context snippet user prompt prepend — carry-over.
@@ -60,6 +60,7 @@
  *  - 본 어댑터의 transform 층 (HTTP + JSON payload + SSE event 파싱) = 직접 구현
  *    (README §직접 만들 것 vs 라이브러리 의 "채널 어댑터" 면).
  */
+import { codexSessionIdentity } from "./_codex-session-identity.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   prefixFingerprint,
@@ -138,6 +139,7 @@ import type {
 } from "../types.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
+import { summarizeInputComposition } from "./_codex-input-composition.js";
 import { codexSpeedBody } from "./_openai-speed.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
@@ -525,8 +527,16 @@ export const withTurnTotals = (
 ): RegionASdkOutput["usage"] => {
   if (last === undefined) return undefined;
   // 요청별 관측값은 반환 시 복사한다. 이후 루프/호출자의 변경이 기록을 바꾸지 않는다.
-  const requestUsageEntries = requests.map(({ inputTokens, outputTokens, cachedTokens }) => ({
-    inputTokens, outputTokens, ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+  // ★`reasoningTokens` 를 여기서 **버리고 있었다** (2026-09-22, Codex 검토 ②).
+  //  파서는 `output_tokens_details.reasoning_tokens` 를 이미 읽어 `usage` 에 담는데,
+  //  이 한 줄의 구조분해가 그 키를 안 꺼내서 **요청별 추론 토큰이 소비처에 영영 안 갔다.**
+  //  `RunMetrics.reasoningTokens` 필드는 존재했지만 채우는 쪽이 없었다 — 타입에 자리가
+  //  있는 것과 값이 흐르는 것은 다르다.
+  //  ★미보고는 **생략**이다(0으로 채우지 않는다).
+  const requestUsageEntries = requests.map(({ inputTokens, outputTokens, cachedTokens, reasoningTokens }) => ({
+    inputTokens, outputTokens,
+    ...(cachedTokens !== undefined ? { cachedTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
   }));
   if (totals.iterations <= 1) return { ...last, requestUsageEntries };
   return {
@@ -573,6 +583,7 @@ export const runOpenAiCodex = async (
   }
   const accessToken = await codexAuth.getAccessToken();
   const accountId = extractAccountId(accessToken);
+  const sessionIdentity = codexSessionIdentity(accountId, input.threadKey, getPaths().data);
   // model 우선순위: facade 주입(input.model) > env > 디폴트.
   const model =
     input.model ?? process.env.OPENAI_CODEX_MODEL ?? CODEX_DEFAULT_MODEL;
@@ -1090,6 +1101,10 @@ export const runOpenAiCodex = async (
     originator: "codex_cli_rs",
   };
   if (accountId) headers["chatgpt-account-id"] = accountId;
+  if (sessionIdentity !== undefined) {
+    headers["session-id"] = sessionIdentity;
+    headers["thread-id"] = sessionIdentity;
+  }
 
   // V5.3 payload — V5.1' 6 필드 + tools 1 필드 = 7 필드.
   // V5.1' 금지 목록 정합 유지: text · prompt_cache_retention · parallel_tool_calls ·
@@ -1385,6 +1400,7 @@ export const runOpenAiCodex = async (
    *  instructions / input / tools 를 **따로** 재야 한다.
    */
   let lastReqBytes = { total: 0, instructions: 0, input: 0, tools: 0, items: 0 };
+  let lastInputComposition: ReturnType<typeof summarizeInputComposition> | undefined;
   let lastFingerprint: string[] = [];
   let lastFingerprintNote = "fp=없음";
   let lastToolsNote = "tools=?";
@@ -1446,7 +1462,7 @@ export const runOpenAiCodex = async (
         input: inputArray,
         stream: true,
         store: false,
-        prompt_cache_key: input.threadKey,
+        prompt_cache_key: sessionIdentity ?? input.threadKey,
         // persistence 보강 — final-flush turn 은 tools 를 비워 모델이 도구 못 부르고
         // 텍스트만 내게 강제 (빈 응답 근절). V5.1' 금지 목록(parallel_tool_calls·
         // tool_choice 등)은 절대 안 박음 — tools:[] 만으로 도구 사용을 차단(OpenClaw 답습
@@ -1520,6 +1536,9 @@ export const runOpenAiCodex = async (
       // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
       const bodyJson = JSON.stringify(body);
+      lastInputComposition = process.env.CODEX_CACHE_CURVE === "1"
+        ? summarizeInputComposition(Array.isArray(body.input) ? body.input : [])
+        : undefined;
       // ★**캐시가 끊긴 자리를 로그가 말하게 한다** (2026-09-09). 종전엔 바이트 수만 남아서
       //  «크기는 같은데 내용이 다른가» 를 못 가렸다 — 같은 분에 같은 크기의 두 요청이
       //  65% 와 8% 로 갈린 것을 설명할 수 없었다. 프리픽스를 **보내는 순서 그대로**
@@ -1992,8 +2011,8 @@ export const runOpenAiCodex = async (
         //  실측 곡선(XL 15 iteration): 96·14·94·92·13·81·89·82·10·79·10·9·98·94·62%.
         //  낮은 회차의 `cached` 는 **매번 정확히 3,456** 이었다 — 맨 앞 최소 조각만 걸린 것.
         //  같은 턴의 `instructions`(24,800자)·`tools`(21,689자)는 **바이트 동일**했으므로
-        //  우리 프리픽스는 안정적이다 → 원인은 백엔드 쪽(축출/파티션)이지 우리 payload 가
-        //  아니다. `prompt_cache_key`(threadKey)를 고정해 보내는데도 1/3 이 못 탄다.
+        //  고정 영역이 같다는 관측만으로 원인을 백엔드로 단정하지 않는다.
+        //  input 내부 수정·요청 순서·캐시 가용성은 별도 관측이 필요하다.
         //  ★관측이 스스로 낭비가 되면 안 되므로(SYSTEM.md §1) iteration 마다 찍지 않고
         //   **턴당 한 줄**로 센다. 원시 곡선이 필요하면 CODEX_CACHE_CURVE=1.
         //  (판정·집계는 위 addUsage — cache-collapse.ts. 여기선 곡선만 찍는다.)
@@ -2007,6 +2026,7 @@ export const runOpenAiCodex = async (
               // ★진단 전용 — 요청 body 엔 안 들어간다.
               `run=${run} origin=${origin} attachmentCallback=${String(attachmentCallback)} ` +
               `sendFileTool=${String(lastSendFileTool)}` +
+              ` inputComposition=${JSON.stringify(lastInputComposition)}` +
               ` attribution=${sseResult.cacheAttribution === undefined ? "unavailable" : JSON.stringify(sseResult.cacheAttribution)}`,
           );
         }
@@ -2463,9 +2483,10 @@ export const runOpenAiCodex = async (
         toolCalls.map(
           // ★`name` 은 **필수다** (2026-09-21 적대 검토 F3) — 선택이면 `name:` 한 줄을 지워도
           //  회귀가 전부 초록이었다(라벨이 «어느 도구인가» 를 잃는다). 타입이 막게 한다.
-          async (tc): Promise<{ callId: string; name: string; output: string; media: ResponseMediaItem[] }> => {
+          async (tc): Promise<{ callId: string; name: string; output: string; media: ResponseMediaItem[]; savedScreens: string[] }> => {
             let output: string;
             const toolMedia: ResponseMediaItem[] = [];
+            const savedScreens: string[] = [];
             let toolErr = false; // 리치 출력 프리뷰 isError 표기용.
             let blocked = false; // PreToolUse 차단 여부 — 차단 시 Post 스킵(계약 §3.1).
             let args: Record<string, unknown> = {}; // try 밖(catch 이후 Post) 에서도 참조.
@@ -2554,6 +2575,7 @@ export const runOpenAiCodex = async (
                 const split = splitMcpToolContent(result);
                 output = split.text;
                 for (const m of split.media) {
+                  if (m.savedScreen !== undefined) savedScreens.push(m.savedScreen);
                   toolMedia.push({
                     type: "input_image",
                     image_url: `data:${m.mimeType};base64,${m.data}`,
@@ -2611,7 +2633,7 @@ export const runOpenAiCodex = async (
               }
             }
             // ★이름을 같이 넘긴다 — 아래 `appendToolResultsToInput` 이 «어느 도구의 그림인가» 를 적는다.
-            return { callId: tc.callId, name: tc.name || "tool", output, media: toolMedia };
+            return { callId: tc.callId, name: tc.name || "tool", output, media: toolMedia, savedScreens };
           },
         ),
       );

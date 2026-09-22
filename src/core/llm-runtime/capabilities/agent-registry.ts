@@ -383,6 +383,7 @@ const buildAgentChildInput = (o: {
   return {
     text: `${o.def}\n\n[Subagent Task]: ${o.prompt}`,
     threadKey: `agent:${o.jobId}`,
+    turnOrigin: "subagent",
     channel: o.parentInput.channel,
     cwd: o.targetCwd,
     subagentDepth: 1,

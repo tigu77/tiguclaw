@@ -93,8 +93,8 @@ await send({ threadKey: "regr:o1", text: "두 번째" } as never);
 const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-codex-oauth.js");
 const pairStart = requests.length;
 const pairInput = { text: "같은 말 같은 이력", channel: "cli" as const, threadKey: "regr:same-pair", model: "gpt-5.6-sol" };
-await runOpenAiCodex({ ...pairInput, turnOrigin: "inbound" });
-await runOpenAiCodex({ ...pairInput, turnOrigin: "worker-checkin" });
+await runOpenAiCodex({ ...pairInput, turnOrigin: "worker" });
+await runOpenAiCodex({ ...pairInput, turnOrigin: "subagent" });
 const pairBodySame = requests[pairStart]?.body === requests[pairStart + 1]?.body;
 const pairHeadersSame = requests[pairStart]?.headers === requests[pairStart + 1]?.headers;
 
@@ -151,9 +151,14 @@ for (const line of lines.filter(l => l.startsWith("[cache-curve]"))) {
   const key = line.split(" ")[1]!;
   const q = curveQueues.get(key) ?? []; q.push(line); curveQueues.set(key, q);
 }
+let compositionsMatch = true;
 const toolsMatch = requests.every(r => {
   const body = JSON.parse(r.body) as { prompt_cache_key: string; tools?: Array<{type?: string; name?: string}> };
   const curve = curveQueues.get(body.prompt_cache_key)?.shift();
+  const rawComposition = curve?.split(" inputComposition=")[1]?.split(" attribution=")[0];
+  const composition = rawComposition ? JSON.parse(rawComposition) : undefined;
+  const sent = JSON.parse(r.body).input;
+  compositionsMatch &&= composition?.chars === JSON.stringify(sent).length && composition?.items === sent.length;
   const expected = body.tools?.some(t => t.type === "function" && t.name === "send_file") ? "1" : "0";
   return curve !== undefined && fieldOf(curve, "sendFileTool") === expected;
 }) && [...curveQueues.values()].every(q => q.length === 0);
@@ -186,7 +191,7 @@ console.log(
       requestCount: requests.length,
       parallelClean,
       attributionLogged: loopCurves[0]?.includes('attribution={"instructions":{"input_tokens":80,"cached_tokens":40},"items":{"count":1,"input_tokens":20,"cached_tokens":10}}') === true && loopCurves[1]?.endsWith("attribution=unavailable") === true && !lines.some(l => /PRIVATE_ATTRIBUTION|PRIVATE_ID/.test(l)) && !requests.some(r => r.body.includes("attribution")),
-      loopLinked, toolsMatch, endsMatch, flushSeparated,
+      compositionsMatch, loopLinked, toolsMatch, endsMatch, flushSeparated,
     }),
 );
 process.exit(0);

@@ -1,3 +1,4 @@
+import { savedScreenNote } from "./_saved-screen-reference.js";
 /**
  * OpenAI Codex backend — 대화 입력 조립 / SSE 파싱 / 히스토리 압축·요약 서브모듈.
  *
@@ -14,7 +15,7 @@ import {
   stripInternalRuntimeScaffolding,
 } from "../../outbound-sanitize.js";
 import { createIdleTimer } from "../idle-timeout.js";
-import { TOOL_MEDIA_KEEP_RECENT, TOOL_MEDIA_NOTE_PREFIX, supersededMediaText, toolMediaNote } from "./_mcp-content.js";
+import { RESULT_RECOVERY_GUIDANCE, TOOL_MEDIA_KEEP_RECENT, TOOL_MEDIA_NOTE_PREFIX, supersededMediaText, toolMediaNote } from "./_mcp-content.js";
 import { linkAbort } from "../turn-timeout.js";
 // ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
 //  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
@@ -2126,6 +2127,9 @@ export const capToolOutputForEntry = (
  *
  * 돌려주는 값 = 이번 호출이 **입력 한가운데를 고쳐 쓴** 횟수(프리픽스 캐시 진단용).
  */
+// 이력 원소의 수명에만 묶는다. 공급자 JSON에는 내부 필드를 추가하지 않는다.
+const savedScreenRefs = new WeakMap<ResponseInputFunctionCallOutput, readonly string[]>();
+
 export const appendToolResultsToInput = (
   inputArray: ResponseInputItem[],
   results: readonly {
@@ -2141,6 +2145,7 @@ export const appendToolResultsToInput = (
     name: string;
     output: string;
     media: readonly ResponseMediaItem[];
+    savedScreens?: readonly string[];
   }[],
 ): number => {
   let compacted = compactOldToolOutputs(inputArray);
@@ -2149,12 +2154,18 @@ export const appendToolResultsToInput = (
   // cap 과 별개. function_call_output 은 결과 배열 순서대로 push → call_id 매칭 보존.
   const pendingMedia: ResponseMediaItem[] = [];
   const mediaTools: string[] = [];
-  for (const { callId, name, output, media } of results) {
-    inputArray.push({
+  for (const { callId, name, output, media, savedScreens = [] } of results) {
+    const item: ResponseInputFunctionCallOutput = {
       type: "function_call_output",
       call_id: callId,
       output: capToolOutputForEntry(output),
-    });
+    };
+    if (savedScreens.length > 0) {
+      savedScreenRefs.set(item, [...savedScreens]);
+      const missing = savedScreens.filter(ref => !item.output.includes(ref));
+      if (missing.length > 0) item.output += `\n${savedScreenNote(missing)}`;
+    }
+    inputArray.push(item);
     pendingMedia.push(...media);
     if (media.length > 0 && !mediaTools.includes(name)) mediaTools.push(name);
   }
@@ -2317,7 +2328,9 @@ export const compactOldToolOutputs = (
     item.output =
       `${CODEX_COMPACTED_MARKER}[이전 도구 출력 생략 — 약 ${body.length}자.` +
       (label.trim() === "" ? "" : ` 첫 줄: ${label}`) +
-      ` 필요하면 같은 인자로 도구를 재호출하세요.]`;
+      ` ${RESULT_RECOVERY_GUIDANCE}]`;
+    const refs = savedScreenRefs.get(item);
+    if (refs !== undefined) item.output += `\n${savedScreenNote(refs)}`;
     compacted += 1;
   }
   return compacted;

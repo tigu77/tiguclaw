@@ -1,3 +1,4 @@
+import { savedScreenReference } from "./_saved-screen-reference.js";
 /**
  * **MCP 도구 결과를 텍스트와 미디어로 가른다** — 어댑터 무관 (2026-09-15).
  *
@@ -16,7 +17,7 @@
  */
 
 /** 도구가 돌려준 미디어 한 장 — 어느 wire 에도 안 묶인 중립형. */
-export type McpMediaBlock = { mimeType: string; data: string };
+export type McpMediaBlock = { mimeType: string; data: string; savedScreen?: string };
 
 /**
  * MCP `CallToolResult.content` 를 «모델이 읽을 텍스트» 와 «비전 채널로 보낼 미디어» 로 가른다.
@@ -39,11 +40,13 @@ export const splitMcpToolContent = (
   const media: McpMediaBlock[] = [];
   for (const c of arr) {
     if (c === null || typeof c !== "object") continue;
-    const b = c as { type?: string; data?: unknown; mimeType?: unknown };
+    const b = c as { type?: string; data?: unknown; mimeType?: unknown; _meta?: unknown };
     if (b.type !== "image" || typeof b.data !== "string") continue;
+    const savedScreen = savedScreenReference(b._meta);
     media.push({
       mimeType: typeof b.mimeType === "string" ? b.mimeType : "image/png",
       data: b.data,
+      ...(savedScreen === undefined ? {} : { savedScreen }),
     });
   }
   return { text, media };
@@ -81,11 +84,14 @@ export const visionUnavailableNote = (mediaCount: number): string =>
 export const TOOL_MEDIA_KEEP_RECENT = 1;
 
 /**
- * 더 최근 결과에 밀려난 미디어 자리에 남기는 글 — 모델이 «다시 부르면 된다» 를 알아야 한다.
+ * 더 최근 결과에 밀려난 미디어 자리에 남기는 글 — 모델이 과거 결과의 다시 읽기와 행동 반복을 구분해야 한다.
  * ★«이미지» 가 아니라 «미디어» 라고 쓴다 — 같은 규칙이 PDF(`input_file`)에도 걸린다.
  */
+export const RESULT_RECOVERY_GUIDANCE =
+  "보존된 결과가 있으면 다시 읽으세요. 과거 결과 복원을 위해 동작을 재실행하지 마세요.";
+
 export const supersededMediaText = (mediaCount: number): string =>
-  `[이전 도구 결과의 미디어 ${mediaCount}개 생략 — 더 최근 결과가 있습니다. 필요하면 같은 인자로 도구를 재호출하세요.]`;
+  `[이전 도구 결과의 미디어 ${mediaCount}개 생략 — 더 최근 결과가 있습니다. ${RESULT_RECOVERY_GUIDANCE}]`;
 
 /**
  * **도구 결과 하나를 어댑터가 무엇으로 바꿔야 하나** — 판정을 순수 함수로 (2026-09-15).
@@ -154,7 +160,7 @@ export const toolMediaNote = (
   const who = tools.length > 0 ? ` — ${tools.join(", ")} 의 결과` : "";
   const gone =
     dropped > 0
-      ? ` 더 이전 관측 이미지 ${dropped}묶음은 생략했습니다. 필요하면 같은 인자로 도구를 재호출하세요.`
+      ? ` 더 이전 관측 이미지 ${dropped}묶음은 생략했습니다. ${RESULT_RECOVERY_GUIDANCE}`
       : "";
   return `${TOOL_MEDIA_NOTE_PREFIX}${count}장${who}.${gone})`;
 };

@@ -188,6 +188,7 @@ export const runWorkerJob = (
         {
           text: job.task,
           threadKey: `worker:${job.jobId}`,
+          turnOrigin: "worker",
           channel: job.channel,
           // run_in_background(path=X) 로 스코프됐으면 그 폴더 cwd, 아니면 undefined=home 폴백.
           // 매니저 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
@@ -362,6 +363,7 @@ export const runWorkerJob = (
                 `${HARVEST_SCOPE_GUIDANCE}\n\n` +
                 arrived.map((m) => m.raw).join("\n\n"),
               threadKey: `worker:${job.jobId}`,
+              turnOrigin: "worker",
               channel: job.channel,
               cwd: job.cwd,
               workerDepth: 1,

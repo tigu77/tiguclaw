@@ -1341,7 +1341,7 @@ const makeFileOpsTools = (
   // 밖 접근은 벽 없이 허용, 위험 경로는 sysprompt prompt-gated).
   const bashTool = tool(
     "Bash",
-    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. cwd 기본은 현재 작업폴더 (절대경로·cd 로 밖도 가능). **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**`,
+    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. 각 호출은 기본 작업폴더에서 시작합니다. Read로 다른 폴더의 파일을 읽거나 이전 Bash에서 cd해도 다음 호출의 cwd는 바뀌지 않습니다. 다른 폴더의 명령은 같은 호출에서 cd한 뒤 실행하거나 절대경로를 사용하세요. **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**`,
     {
       command: z.string().min(1),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 120, 최대 600)"),

@@ -67,8 +67,8 @@ export interface RegionASdkInput {
   text: string;
   threadKey: string;
   /**
-   * 턴 출처 — **진단 전용**(`TurnOrigin`). 라우터가 한 번 채운다. 라우터를 우회하는
-   * 직접 호출은 미지정으로 두고 로그가 `unknown` 으로 찍는다(억지로 채우지 않는다).
+   * 턴 출처 — **진단 전용**(`TurnOrigin`). 라우터 또는 worker/subagent 실행 진입점에서 채운다.
+   * 그 외 미지정 직접 호출은 `unknown`이며 본문·스레드 접두로 추정하지 않는다.
    * ★요청 payload 에 실리지 않는다.
    */
   turnOrigin?: TurnOrigin;
@@ -725,6 +725,14 @@ export interface RequestUsageEntry {
   outputTokens: number;
   /** 미보고는 생략. 관측된 0은 보존한다. */
   cachedTokens?: number;
+  /**
+   * 공급자가 **이 요청에** 보고한 추론 토큰. `outputTokens` 의 **부분집합**이다
+   * (출력에 중복 가산하지 않는다).
+   *
+   * ★미보고는 **생략**이고 0이 아니다 — 공급자 경계에서 «안 줬다» 와 «0이다» 를 섞지
+   *  않는다. 어댑터가 공급자 값을 그대로 옮길 때만 채운다(다른 어댑터 값을 추정하지 않는다).
+   */
+  reasoningTokens?: number;
   /** 생성과 압축 등 서로 다른 요청을 구별한다. */
   endpoint?: string;
 }

@@ -70,7 +70,7 @@ export const check: RegressionCheck = {
       def: "정의",
       prompt: "해라",
       targetCwd: "/tmp",
-      parentInput: { text: "", threadKey: `worker:${mgr}`, channel: "dashboard" } as RegionASdkInput,
+      parentInput: { text: "", threadKey: `worker:${mgr}`, channel: "dashboard", turnOrigin: "worker" } as RegionASdkInput,
       abort,
       __runForTest: async (input): Promise<RegionASdkOutput> => {
         seen = input;
@@ -90,6 +90,7 @@ export const check: RegressionCheck = {
         box.drain().some((m) => m.raw.includes("자식이 낸 값")),
         `${getJob(child)?.result?.slice(0, 30) ?? "(없음)"}`,
       ),
+      assert("서브 실행 출처는 부모와 별개로 subagent", seen?.turnOrigin === "subagent", { origin: seen?.turnOrigin }),
       assert("잡 레코드에 결과가 남는다", (getJob(child)?.result ?? "").includes("자식이 낸 값"),
         `${getJob(child)?.result?.slice(0, 30) ?? "(없음)"}`),
     );

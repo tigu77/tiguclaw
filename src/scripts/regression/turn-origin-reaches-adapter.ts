@@ -44,6 +44,8 @@ export const check: RegressionCheck = {
     const callbacks = (v.callbacks ?? []) as string[];
     const tail = line ?? r.err.slice(-1500);
     return [
+      assert("입력 구성 진단이 실제 요청별 배열과 일치", v.compositionsMatch === true && Number(v.requestCount) > 0, tail),
+      assert("worker/subagent 값이 어댑터 로그에 남는다", origins[5] === "worker" && origins[6] === "subagent", { origins }),
       assert("실제 어댑터 로그: 숫자 요약·미지원 구분, 원문/요청 유출 없음", v.attributionLogged === true, tail),
       assert("두 요청의 곡선과 종료 로그가 같은 실행·출처·사용량으로 연결된다", v.loopLinked === true, tail),
       assert("실제 요청 tools와 각 곡선의 sendFileTool이 일치한다", v.toolsMatch === true, tail),

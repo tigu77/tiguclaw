@@ -90,6 +90,7 @@ export const check: RegressionCheck = {
           reinjected.some((t) => t.includes("매니저가 낸 값")),
           reinjected.join(" | ").slice(0, 60) || "★아무것도 안 옴",
         ),
+        assert("매니저 본체의 출처가 worker", seen?.turnOrigin === "worker", { origin: seen?.turnOrigin }),
         assert("매니저가 실제로 실행됐다(입력을 받았다)", seen !== undefined, seen ? "받음" : "★미실행"),
         assert("매니저 좌표가 worker:<jobId> 다", seen?.threadKey === `worker:${jid}`, `${seen?.threadKey}`),
         assert(
@@ -176,10 +177,12 @@ export const check: RegressionCheck = {
       });
       let turns = 0;
       const texts: string[] = [];
+      const executionOrigins: unknown[] = [];
       const depths: Array<number | undefined> = [];
       runWorkerJob(getJob(jid) as never, async (input): Promise<RegionASdkOutput> => {
         turns += 1;
         texts.push(input.text);
+        executionOrigins.push(input.turnOrigin);
         depths.push(input.workerDepth);
         // 첫 턴이 끝나는 시점에 자식이 아직 돈다 → 루프가 기다려야 한다.
         if (turns === 1) {
@@ -211,6 +214,7 @@ export const check: RegressionCheck = {
           depths.length >= 2 && depths.every((d) => d === 1),
           `깊이=${depths.join(",")}`,
         ),
+        assert("거두기 턴도 worker 출처 유지", executionOrigins.length >= 2 && executionOrigins.every(o => o === "worker"), { origins: executionOrigins }),
       );
     }
 

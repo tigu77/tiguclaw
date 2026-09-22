@@ -164,6 +164,16 @@ export const check: RegressionCheck = {
     "도구가 돌려준 이미지가 요청에 무한 누적되던 것(20회 관측 = 13.3MB) · agents-SDK 가 base64 를 도구 출력 텍스트로 싣던 것 · 사용자가 보낸 사진을 그 규칙이 지워버리는 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
+    const recoveryInput: ResponseInputItem[] = [
+      { type: "function_call_output", call_id: "fixture-action", output: "저장된 실행 결과\n" + "x".repeat(5000) },
+    ];
+    compactOldToolOutputs(recoveryInput, { keepRecent: 0, minOutputChars: 100 });
+    const recoveredText = recoveryInput[0]?.type === "function_call_output" ? recoveryInput[0].output : "";
+    const recoveryNotes = [toolMediaNote(["do"], 1, 2), recoveredText];
+    for (const note of recoveryNotes) {
+      out.push(assert("생략 안내는 저장 결과 읽기와 동작 재실행을 구분", note.includes("보존된 결과") && note.includes("재실행하지") && !note.includes("같은 인자로"), { note }));
+    }
+
     const STEPS = 20;
 
     // ── (a) 보존 한도 — i ≥ 2 인 모든 요청에서 도구 미디어 묶음 ≤ 1 ──────────────
@@ -281,7 +291,7 @@ export const check: RegressionCheck = {
         "밀려난 이미지 자리에 안내가 남는다(비어 있지 않다)",
         // ★`=== supersededMediaText(1)` 로 비교하면 **동어반복**이다 — 문구를 빈 문자열로
         //  바꿔도 초록이 된다(변이 M6 가 그렇게 빠져나갔다). 성질을 직접 잰다.
-        stubText !== undefined && stubText.trim().length > 0,
+        stubText !== undefined && stubText.includes("보존된 결과") && stubText.includes("재실행하지") && !stubText.includes("같은 인자로"),
         `생략 자리 문구=${JSON.stringify(stubText)} — 비면 모델이 무엇이 사라졌는지 모른다`,
       ),
     );

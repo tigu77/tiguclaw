@@ -57,6 +57,8 @@ export interface Attachment {
  */
 export type TurnOrigin =
   | "inbound"
+  | "worker"
+  | "subagent"
   | "worker-completion"
   | "worker-checkin"
   | "synthetic-other"

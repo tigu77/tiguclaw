@@ -372,6 +372,10 @@ export const check: RegressionCheck = {
       assert(
         // ★단절 경로는 **실패를 안 돌려준다** — 서버가 받았는지 모르므로 되돌리면 중복
         //  전송이 된다. 즉 `catch` 안에서 실패 반환은 **10초 분기 안에만** 있어야 한다.
+        // ★2026-09-22 정정: 이 주석이 종전에 *"오래 걸린 단절은 **안 알린다**"* 라고 적혀
+        //  있었는데, 이 단언이 실제로 재는 것은 `return { ok: false` **하나뿐**이다.
+        //  «안 알린다» 는 재지 않는 것을 재는 척한 말이었고, 그 문장이 릴리스 레드팀이 낸
+        //  P-1(조용한 소실)을 «의도된 동작» 으로 읽히게 만들 뻔했다. 재는 것만 적는다.
         "★네트워크 단절은 **모르는 것**이라 실패로 안 바꾼다(되돌리면 중복 전송이 된다)",
         (() => {
           const at = reply.indexOf("} catch (err) {");
@@ -391,6 +395,35 @@ export const check: RegressionCheck = {
           const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{10}\}/.exec(block);
           const tail = m === null ? "" : block.slice(m.index + m[0].length, m.index + m[0].length + 300);
           return `(즉시 ${m !== null && /return \{ ok: false[,}]/.test(m[0])} / 지연 ${/return \{ ok: false[,}]/.test(tail)})`;
+        })()}`,
+      ),
+      assert(
+        // ★★레드팀 P-1: 10초를 넘긴 단절이 **완전히 조용**했다 — 글은 사라지고 오류도 없고
+        //  「작업 중」은 새로고침 전까지 켜져 있었다. 되돌리지 않는 판단은 그대로 두되(위
+        //  단언이 지킨다) **말은 해야 한다**. 둘은 다른 결정이다.
+        // ★술어를 **다시 적지 않는다** — 위 단언과 **같은 파서**로 같은 구간(tail)을 본다.
+        //  두 번 구현하면 한쪽만 좁혀지고, 그게 이 레포가 반복해 당한 부류다.
+        "★★**되돌리지 않는 것과 침묵하는 것은 다르다** — 긴 단절도 사용자에게 알린다(P-1)",
+        (() => {
+          const src = reply.replace(/^\s*\/\/.*$/gm, ""); // ★주석을 코드로 세지 않는다
+          const at = src.indexOf("} catch (err) {");
+          if (at < 0) return false;
+          const block = src.slice(at, at + 900);
+          const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{10}\}/.exec(block);
+          if (m === null) return false;
+          const tail = block.slice(m.index + m[0].length, m.index + m[0].length + 300);
+          return (
+            /renderLocalChat\(/.test(tail) && // 침묵하지 않는다
+            !/return \{ ok: false[,}]/.test(tail) // 그러나 실패로 바꾸지도 않는다
+          );
+        })(),
+        `긴 단절 tail: 안내=${(() => {
+          const src = reply.replace(/^\s*\/\/.*$/gm, "");
+          const at = src.indexOf("} catch (err) {");
+          const block = at < 0 ? "" : src.slice(at, at + 900);
+          const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{10}\}/.exec(block);
+          const tail = m === null ? "" : block.slice(m.index + m[0].length, m.index + m[0].length + 300);
+          return `${/renderLocalChat\(/.test(tail)} · 실패반환=${/return \{ ok: false[,}]/.test(tail)}`;
         })()}`,
       ),
       assert(

@@ -8,6 +8,24 @@
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-09-22
+
+### Added
+
+- **최신 Claude 모델을 쓸 수 있습니다.** 함께 설치되는 Claude Code 를 2.1.278 로 올렸습니다.
+  Fable 5.1 처럼 2.1.251 이상을 요구하는 모델은 종전에 *"does not support this model"* 로
+  실패했고, `claude update` 를 직접 실행해도 바뀌지 않았습니다 — tiguclaw 는 함께 설치된
+  실행기를 쓰기 때문입니다.
+
+### Fixed
+
+- **사진·문서·음성에 캡션을 달아 답글을 보내면 그 답이 나온 세션으로 이어집니다.** 종전에는
+  글로 쓴 답글만 이어지고, 첨부가 붙은 답글은 현재 세션으로 갔습니다.
+- **전송이 정상 처리됐는데 "연결이 끊겼지만 메시지는 서버에 도착했습니다" 안내가 뜨던 것.**
+  창을 닫으려다 말기만 해도 떴습니다. 정말 못 보낸 경우에는 그대로 알려줍니다.
+- **화면 관측 안내가 그림이 안 실렸는데도 "아래 그림" 을 가리키던 것.** 쓸 수 있는 화면 id 가
+  있는데 "전부 무효" 라고 하던 것도 함께 고쳤습니다.
+
 ## [0.56.2] - 2026-09-21
 
 ### Fixed
@@ -2192,7 +2210,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0
 [0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2
 [0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1
 [0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0

@@ -146,6 +146,7 @@
   "chat.phase.writing": "답변 쓰는 중",
   "chat.send": "전송",
   "chat.send.stillRunning": "아직 처리 중입니다 — 보낸 메시지는 순서대로 실행되고, 답은 준비되는 대로 여기에 나타납니다.",
+  "chat.send.deliveryUnknown": "보냈는지 **확인하지 못했습니다** — 연결이 끊겼고 서버 기록에도 없습니다. 이미 처리 중일 수 있어 글을 되돌리지 않았습니다. 답이 오지 않으면 다시 보내주세요.",
   "chat.stop.title": "진행 중인 턴 중단 (/stop 과 같다)",
   "chat.suggest.aria": "제안을 입력창에 채우기",
   "chat.suggest.title": "제안을 입력창에 채우기 (Tab)",

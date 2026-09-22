@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-09-22
+
+### Added
+
+- **The latest Claude models now work.** The bundled Claude Code is now 2.1.278. Models that
+  require 2.1.251 or newer — Fable 5.1, for instance — used to fail with *"does not support
+  this model"*, and running `claude update` yourself changed nothing, because tiguclaw uses
+  the executable installed alongside it.
+
+### Fixed
+
+- **A reply to a photo, document, or voice message now continues in the session that answer
+  came from.** Only text replies did before; replies carrying an attachment went to the
+  current session.
+- **"The connection dropped, but your message did reach the server" appeared even when the
+  send had gone through fine** — merely starting to close the tab was enough. You are still
+  told when a message genuinely did not get sent.
+- **Screen-observation guidance pointed at "the image below" when no image was attached.**
+  It also claimed every screen id was void while handing back a usable one.
+
 ## [0.56.2] - 2026-09-21
 
 ### Fixed
@@ -640,7 +660,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0
 [0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2
 [0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1
 [0.56.0]: https://github.com/tigu77/tiguclaw/compare/v0.55.0...v0.56.0

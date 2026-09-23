@@ -32,6 +32,7 @@
  */
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import { disconnectNoticeDom } from "./_disconnect-notice-dom.js";
 import {
   assert,
   loadPluginModule,
@@ -397,35 +398,14 @@ export const check: RegressionCheck = {
           return `(즉시 ${m !== null && /return \{ ok: false[,}]/.test(m[0])} / 지연 ${/return \{ ok: false[,}]/.test(tail)})`;
         })()}`,
       ),
-      assert(
-        // ★★레드팀 P-1: 10초를 넘긴 단절이 **완전히 조용**했다 — 글은 사라지고 오류도 없고
-        //  「작업 중」은 새로고침 전까지 켜져 있었다. 되돌리지 않는 판단은 그대로 두되(위
-        //  단언이 지킨다) **말은 해야 한다**. 둘은 다른 결정이다.
-        // ★술어를 **다시 적지 않는다** — 위 단언과 **같은 파서**로 같은 구간(tail)을 본다.
-        //  두 번 구현하면 한쪽만 좁혀지고, 그게 이 레포가 반복해 당한 부류다.
-        "★★**되돌리지 않는 것과 침묵하는 것은 다르다** — 긴 단절도 사용자에게 알린다(P-1)",
-        (() => {
-          const src = reply.replace(/^\s*\/\/.*$/gm, ""); // ★주석을 코드로 세지 않는다
-          const at = src.indexOf("} catch (err) {");
-          if (at < 0) return false;
-          const block = src.slice(at, at + 900);
-          const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{10}\}/.exec(block);
-          if (m === null) return false;
-          const tail = block.slice(m.index + m[0].length, m.index + m[0].length + 300);
-          return (
-            /renderLocalChat\(/.test(tail) && // 침묵하지 않는다
-            !/return \{ ok: false[,}]/.test(tail) // 그러나 실패로 바꾸지도 않는다
-          );
-        })(),
-        `긴 단절 tail: 안내=${(() => {
-          const src = reply.replace(/^\s*\/\/.*$/gm, "");
-          const at = src.indexOf("} catch (err) {");
-          const block = at < 0 ? "" : src.slice(at, at + 900);
-          const m = /if \(Date\.now\(\) - t0 < 10000\) \{[\s\S]*?\n\s{10}\}/.exec(block);
-          const tail = m === null ? "" : block.slice(m.index + m[0].length, m.index + m[0].length + 300);
-          return `${/renderLocalChat\(/.test(tail)} · 실패반환=${/return \{ ok: false[,}]/.test(tail)}`;
-        })()}`,
-      ),
+      ...await Promise.all(([false, null] as const).map(async (arrived) => {
+        const observed = await disconnectNoticeDom(reply, await readRel("../../../packages/dashboard/js/sse.js"), await readRel("../../../packages/dashboard/js/virtualization.js"), arrived);
+        return assert(
+          `G-2: long disconnect arrived=${arrived} mounts deliveryUnknown in real virtualization DOM`,
+          observed.mounted === 1 && observed.historyMounted && observed.result.ok === true && observed.result.restore !== true,
+          JSON.stringify(observed),
+        );
+      })),
       assert(
         "★전송이 **실패를 알려준다** — 종전엔 언제나 undefined 라 호출부가 되돌릴 방법이 없었다",
         /return \{ ok: false[,}]/.test(reply) && /return \{ ok: true \}/.test(reply),

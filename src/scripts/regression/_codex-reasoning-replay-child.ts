@@ -1,6 +1,6 @@
 import { initStore } from "../../store/sessions.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
-import { assertIsolated } from "./_framework.js";
+import { assertIsolated, fakeNetwork } from "./_framework.js";
 assertIsolated();
 initStore();
 process.env.CODEX_DEBUG_INPUT = "1";
@@ -22,7 +22,7 @@ const reasoning = { type: "reasoning", id: "rs_loop", summary: [], encrypted_con
 const message = { type: "message", id: "msg_loop", role: "assistant", status: "completed", phase: "commentary", content: [{ type: "output_text", text: "읽겠습니다", annotations: [] }] };
 // 실제 도구 실패 결과도 추론/호출과 연결되어 다음 요청에 도달해야 한다.
 const call = { type: "function_call", id: "fc_loop", call_id: "call_loop", name: "Read", arguments: JSON.stringify({ path: "/nonexistent-reasoning-regression-file" }) };
-globalThis.fetch = async (_url, init) => {
+globalThis.fetch = fakeNetwork(async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)));
     requestInExecution += 1;
     if (requestInExecution > 2)
@@ -31,7 +31,7 @@ globalThis.fetch = async (_url, init) => {
     const activeReasoning = { ...reasoning, id: `rs_loop_${execution}`, encrypted_content: `${reasoning.encrypted_content}_${execution}` };
     const output = first ? [activeReasoning, message, call] : [{ ...message, phase: "final_answer", content: [{ type: "output_text", text: "검사 완료", annotations: [] }] }];
     return new Response([...output.flatMap((item, output_index) => [{ type: "response.output_item.added", output_index, item }, ...(item.type === "message" ? [{ type: "response.output_text.delta", delta: first ? "읽겠습니다" : "검사 완료" }] : []), { type: "response.output_item.done", output_index, item }]), { type: "response.completed", response: { id: "resp_loop", status: "completed", output: [], usage: { input_tokens: 20, output_tokens: 2 } } }].map(e => `data: ${JSON.stringify(e)}\n\n`).join(""));
-};
+});
 const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-codex-oauth.js");
 const input = { text: "파일을 읽고 결과를 알려주세요", channel: "cli" as const, threadKey: "regr:reasoning", model: "gpt-5.6-sol", reasoning: "low" as const };
 for (execution = 0; execution < 2; execution += 1) {

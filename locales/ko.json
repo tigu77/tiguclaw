@@ -83,6 +83,8 @@
   "bg.stop": "⏹️ 중지",
   "bg.stopShort": "중지",
   "bg.stopTitle": "작업 중지",
+  "bg.usage.title": "이 작업 전체 — 턴 {turns}회 · API 호출 {requests}회 · 입력 합계 {total} 토큰",
+  "bg.usage.unreported": " · 사용량을 보고하지 않은 턴 {n}회는 빠져 있습니다",
   "bg.task.full": "작업 · {v}",
   "bg.title": "백그라운드 작업",
   "bg.toolElapsed": "도구 실행시간 {v}",

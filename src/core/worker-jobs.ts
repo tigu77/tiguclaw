@@ -45,6 +45,7 @@ import {
   pruneTerminalWorkerJobs,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
+import type { TurnSpend } from "./llm-runtime/turn-spend.js";
 import { formatDurationKo } from "./format-duration.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import { createSteeringChannel } from "./steering.js";
@@ -83,6 +84,7 @@ const publishWorkerLifecycle = (
     agentName?: string;
     modelTier?: string;
     cwd?: string;
+    usage?: JobUsage;
   },
   extra?: { error?: string; task?: string; result?: string },
 ): void => {
@@ -112,6 +114,8 @@ const publishWorkerLifecycle = (
         ...(job.modelTier !== undefined && job.modelTier !== "" ? { modelTier: job.modelTier } : {}),
         // 실행 cwd — 대시보드가 프로젝트별 라이브 카드 필터에 사용(관측용). ADR §6 G2.
         ...(job.cwd !== undefined && job.cwd !== "" ? { cwd: job.cwd } : {}),
+        // 토큰 합계 — 끝난 카드가 replay 로만 서도 비용이 보이게 종료 이벤트에 싣는다.
+        ...(job.usage !== undefined ? { usage: { ...job.usage } } : {}),
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
@@ -313,6 +317,8 @@ export interface WorkerJobRecord {
   result?: string;
   /** status==="failed" 시 redact 된 원인 문자열. */
   error?: string;
+  /** 이 잡 좌표에서 끝난 턴들의 토큰 합계 — `recordJobTurnUsage` 가 채운다. 런타임 전용. */
+  usage?: JobUsage;
 }
 
 /** 모듈 전역 레지스트리 — singleton 데몬 (scheduler inFlight 동형). */
@@ -374,6 +380,7 @@ export const registerJob = (input: RegisterJobInput): string => {
   //  밀린다(실측: 400ms 주기에서 첫 점검이 1.1초). 기준 시각은 잡의 시작이어야 한다.
   seedCheckinEvidence(jobId, startedAt);
   startCheckinScanner(); // 점검 시계 기동(멱등 — 이미 돌면 no-op).
+  ensureUsageLedger(); // 토큰 합계 구독(멱등).
   persistSafe("registerJob", () =>
     upsertWorkerJob({
       jobId,
@@ -673,6 +680,67 @@ export const parentJobIdOf = (threadKey: string): string | undefined => {
   if (typeof threadKey !== "string") return undefined;
   const m = /^(?:worker|agent):(.+)$/.exec(threadKey);
   return m === null ? undefined : m[1];
+};
+
+// ─── 잡 토큰 합계 (2026-09-23) ─────────────────────────────────────────────────
+//
+// ★채팅 턴은 머리에 `↓입력 · N회 · 캐시 % · ↑출력` 을 달지만 백그라운드 잡은 **아무 데도**
+//  안 보였다 — 메인 턴 숫자엔 매니저 몫이 안 들어가고, 잡 카드엔 칸이 없었다. 그런데
+//  매니저 한 턴이 메인의 두 배를 넘게 먹는다(dev 실측: 턴당 평균 158만 vs 70만, 49회
+//  반복에 814만). 가장 비싼 자리가 가장 안 보였다.
+// ★합계는 **서버가 든다.** 화면이 SSE 로 더하면 새로고침 뒤 replay 창(50)만큼만 남아
+//  **거짓 합계**가 된다. 그래서 여기서 더하고 목록·종료 이벤트로 내보낸다.
+// ★턴 경계마다 `llm.turn_done` 하나 — 스티어·자동 이어가기로 한 잡이 여러 턴을 돌아도
+//  빠짐없이 센다(버스는 동기라 러너가 `worker.done` 을 내기 전에 이미 더해져 있다).
+
+/** 한 잡의 토큰 합계. `unreportedTurns` 가 0 이 아니면 합계는 **하한**이다(거짓 완결 금지). */
+export interface JobUsage {
+  turns: number;
+  /** API 호출 수 — 도구 루프 반복의 합. */
+  requests: number;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  /** 사용량을 보고하지 않은 턴 수(어댑터 미보고). */
+  unreportedTurns: number;
+}
+
+/** 턴 하나를 그 좌표의 잡에 더한다. 모르는 좌표·잡이면 무시. */
+export const recordJobTurnUsage = (payload: Record<string, unknown>): void => {
+  const tk = payload.threadKey;
+  if (typeof tk !== "string") return;
+  const id = parentJobIdOf(tk);
+  if (id === undefined) return;
+  const job = jobs.get(id);
+  if (job === undefined) return;
+  const u = (job.usage ??= {
+    turns: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, unreportedTurns: 0,
+  });
+  u.turns += 1;
+  // ★턴 실비용은 발행자가 고른 `spend` 를 **읽기만** 한다(`turn-spend.ts`) — 여기서 층을
+  //  다시 고르면 채팅 줄과 잡 합계가 다른 규칙으로 센다.
+  const s = payload.spend as Partial<TurnSpend> | undefined | null;
+  const ok = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  if (s === undefined || s === null || !ok(s.input) || s.input <= 0) {
+    u.unreportedTurns += 1;
+    return;
+  }
+  u.requests += ok(s.requests) ? s.requests : 1;
+  u.inputTokens += s.input;
+  u.cachedTokens += ok(s.cached) ? s.cached : 0;
+  u.outputTokens += ok(s.output) ? s.output : 0;
+};
+
+let usageLedgerOn = false;
+/** 합계 구독 — 멱등, 첫 잡 등록 때 켠다(버스는 싱글턴). 점검 시계와 따로 둔다(점검은 꺼질 수 있다). */
+const ensureUsageLedger = (): void => {
+  if (usageLedgerOn) return;
+  usageLedgerOn = true;
+  getEventBus().subscribe((ev) => {
+    if (ev.type !== "llm.turn_done") return;
+    const p = ev.payload as Record<string, unknown> | undefined;
+    if (p !== undefined) recordJobTurnUsage(p);
+  });
 };
 
 // ─── 잡 점검(check-in) — **증거를 모아 소환자에게 넘긴다** (2026-08-22) ─────────────

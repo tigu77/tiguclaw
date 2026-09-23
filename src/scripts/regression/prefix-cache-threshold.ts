@@ -86,8 +86,9 @@ export const check: RegressionCheck = {
     const r = await sourceHas("../../core/llm-runtime/index.ts", [
       /accumulatePrefixCacheRollup\(spec, output\);/,
       /적중률 \$\{overall\}%/,
-      // 롤업 분모는 **턴 합계**(Total 우선) — 하네스가 실제로 태운 총량이 알고 싶은 값.
-      /output\.usage\?\.inputTokensTotal \?\? output\.usage\?\.inputTokens/,
+      // 롤업 분모는 **턴 합계** — 하네스가 실제로 태운 총량이 알고 싶은 값. 층 선택은
+      //  `turnSpend` 한 곳이다(2026-09-23, 채팅 줄·잡 합계·게이트웨이와 같은 규칙).
+      /const spend = turnSpend\(output\.usage\);\s*\n\s*const input = spend\?\.input;/,
     ]);
     out.push(
       assert(

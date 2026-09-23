@@ -77,11 +77,12 @@ const main = async (): Promise<void> => {
   // ── HTTP 층 — 실제 브리지 핸들러를 통과시킨다 ──────────────────────────────────
   const port = String(await freePort()); // 하드코딩 금지 — 병렬 워크트리가 물린다.
   const token = "cursor-ties-probe";
+  const dashPort = String(await freePort());
   seedIsolatedEnv(home, {
     TELEGRAM_BOT_TOKEN: "",
     HTTP_BRIDGE_PORT: port,
     HTTP_BRIDGE_TOKEN: token,
-    DASHBOARD_PORT: String(await freePort()),
+    DASHBOARD_PORT: dashPort,
   });
   const child = spawn(process.execPath, ["--import", "tsx", path.join(REPO, "src/index.ts")], {
     cwd: REPO,
@@ -96,6 +97,9 @@ const main = async (): Promise<void> => {
       HTTP_BRIDGE_HOST: "127.0.0.1",
       HTTP_BRIDGE_PORT: port,
       HTTP_BRIDGE_TOKEN: token,
+      // ★홈 `.env` 에만 있던 값 — 러너 안에선 데몬이 `.env` 를 안 읽으므로 env 로 직접 준다
+      //  (안 주면 기본 대시보드 포트를 잡아 라이브 인스턴스와 부딪친다).
+      DASHBOARD_PORT: dashPort,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

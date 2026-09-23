@@ -14,6 +14,7 @@
  *
  * 출력: 마지막 줄에 JSON `{"outcome","text","hasPartial","hasNotice"}`.
  */
+import { fakeNetwork } from "./_framework.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
 import { initStore } from "../../store/sessions.js";
 import type { RegionASdkInput } from "../../core/llm-runtime/types.js";
@@ -26,7 +27,7 @@ const sse = (events: unknown[]): string =>
 
 const run = async (): Promise<void> => {
   let call = 0;
-  (globalThis as unknown as { fetch: unknown }).fetch = async (): Promise<Response> => {
+  (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async (): Promise<Response> => {
     call += 1;
     if (call === 1) {
       // ① 부작용 도구를 실행시킨다 — `sideEffectExecuted=true` 여야 삼킴 경로가 열린다.
@@ -89,7 +90,7 @@ const run = async (): Promise<void> => {
       }),
       { status: 200 },
     );
-  };
+  });
 
   initStore();
   registerAuthProvider({

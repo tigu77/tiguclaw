@@ -24,24 +24,52 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
-import { probeSpec } from "./_probe-helpers.js";
+import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+/** 자식이 시도한 `.env` 로드 한 건 — `allowed` = 부모가 명시한 허용 목록의 몇 번째인가(-1 = 밖). */
+interface EnvCall { path: string; allowed: number }
 
 /** 격리 홈 + 지정 env 로 자식 프로세스를 띄워 실제 경로/읽기를 재현한다. */
 const probe = async (
   env: Record<string, string>,
-): Promise<{ systemMd: string; bytes: number; homeCopyExists: boolean; homeEntries: string[] }> => {
-  const { execFileSync } = await import("node:child_process");
+): Promise<{
+  systemMd: string; bytes: number; homeCopyExists: boolean; homeEntries: string[];
+  envCalls: EnvCall[]; allow: string[];
+}> => {
   const script = `
+    // ★★\`.env\` 로드 계측 — 제품 모듈보다 **먼저** 설치한다(그래서 아래 제품 import 는 전부
+    //  동적이다: 정적 import 는 본문보다 먼저 평가돼 load-env 의 import 부작용이 계측 전에 돈다).
+    //  이 자식은 스위치를 **일부러 끈** 유일한 회귀 자식이라, 격리는 두 핀(임시 홈·임시 cwd)에만
+    //  기댄다. 그 핀을 여기서 잰다: 모든 시도를 기록하고, 부모가 명시한 허용 목록 밖이면 원본을
+    //  **부르지 않고** 실패시킨다(레포·운영 \`.env\` 는 어떤 경우에도 안 열린다). (2026-09-23)
+    import { realpathSync } from "node:fs";
+    import path from "node:path";
+    const canon = (p) => {
+      const abs = path.resolve(String(p));
+      let dir = path.dirname(abs);
+      try { dir = realpathSync.native(dir); } catch {}
+      const s = path.join(dir, path.basename(abs));
+      return process.platform === "win32" ? s.toLowerCase() : s;
+    };
+    const allow = JSON.parse(process.env.SYSMD_ENV_ALLOW ?? "[]").map(canon);
+    const envCalls = [];
+    const original = process.loadEnvFile;
+    process.loadEnvFile = function (p) {
+      const abs = path.resolve(p === undefined ? ".env" : String(p));
+      const allowed = allow.indexOf(canon(abs));
+      envCalls.push({ path: abs, allowed });
+      if (allowed < 0) { const e = new Error("SYSMD blocked: " + abs); e.code = "ENOENT"; throw e; }
+      return original.call(process, p);
+    };
     // ★실제 부팅 순서를 재현한다 — load-env 가 <home>/.env 를 process.env 로 올린 **뒤**
     //  paths 가 이음매를 읽는다. 종전엔 이 import 가 없어 .env 축을 아예 안 태웠고, 그래서
     //  봉인 검사가 변이를 못 잡았다(측정이 대상을 안 지나가면 검사가 아니다).
-    import { loadHomeEnv } from ${probeSpec(REPO, "src/core/load-env.js")};
-    import { getPaths, ensureHome } from ${probeSpec(REPO, "src/core/paths.js")};
-    import { readSystem } from ${probeSpec(REPO, "src/core/identity.js")};
-    import { existsSync, readdirSync } from "node:fs";
-    import path from "node:path";
+    const { loadHomeEnv } = await import(${probeSpec(REPO, "src/core/load-env.js")});
+    const { getPaths, ensureHome } = await import(${probeSpec(REPO, "src/core/paths.js")});
+    const { readSystem } = await import(${probeSpec(REPO, "src/core/identity.js")});
+    const { existsSync, readdirSync } = await import("node:fs");
     loadHomeEnv();
     await ensureHome();
     console.log(JSON.stringify({
@@ -50,27 +78,44 @@ const probe = async (
       homeCopyExists: existsSync(path.join(getPaths().home, "SYSTEM.md")),
       // ★부팅이 홈에서 **무엇을 지웠나** — 청소의 *범위*까지 재려면 이게 필요하다.
       homeEntries: readdirSync(getPaths().home).sort(),
+      envCalls,
     }));
   `;
   // ★.mts 다 — tmpdir 의 .ts 는 tsx 가 CJS 로 잡아 top-level await 에서 터진다.
   const f = path.join(mkdtempSync(path.join(tmpdir(), "sysmd-probe-")), "p.mts");
   writeFileSync(f, script, "utf8");
+  // 허용 목록 = [임시 홈/.env, 프로브 cwd/.env] — 이 둘이 이 자식에게 준 **유일한** 읽기 자리다.
+  const allow = [path.join(env.TIGUCLAW_HOME ?? "", ".env"), path.join(path.dirname(f), ".env")];
   try {
-    const raw = execFileSync("npx", ["tsx", f], {
-      cwd: REPO,
+    // ★★이 프로브는 `load-env` 를 **일부러 태운다**(④ `<home>/.env` 봉인을 재야 한다). 러너가
+    //  물려준 `TIGUCLAW_DISABLE_ENV_FILE=1` 을 그대로 두면 로드가 없어 ④가 **구조적으로 실패
+    //  불가능**해진다 — 그래서 이 자식에서만 명시적으로 뺀다(2026-09-23).
+    //  ★대신 읽힐 수 있는 두 곳을 **더미로 못박는다**: 홈 = 호출부의 임시 `TIGUCLAW_HOME`,
+    //   cwd = 이 프로브 전용 임시 폴더(`.env` 없음). 종전엔 `cwd: REPO` 라 레포 `.env` 를 읽었다.
+    //  ★`npx tsx` 는 cwd 기준으로 tsx 를 찾으므로(임시 cwd 에선 내려받으려 든다) 절대 로더로 띄운다.
+    const r = spawnProbe(REPO, [f], {
+      cwd: path.dirname(f),
       // ★값이 "" 인 키는 **지운다** (2026-08-20). 종전엔 `TIGUCLAW_SYSTEM_MD: ""` 를 그대로
       //  실었는데, 빈 문자열도 **설정된 값**이라 `process.loadEnvFile` 이 .env 값을 안 덮었다
       //  → .env 봉인 검사가 **구조적으로 실패 불가능**했다(변이로 확인). 하루에 두 번째다.
       env: Object.fromEntries(
-        Object.entries({ ...process.env, ...env }).filter(([, v]) => v !== ""),
+        Object.entries({ ...process.env, ...env, SYSMD_ENV_ALLOW: JSON.stringify(allow) }).filter(
+          ([k, v]) => v !== "" && k !== "TIGUCLAW_DISABLE_ENV_FILE",
+        ),
       ) as NodeJS.ProcessEnv,
-      encoding: "utf8",
       timeout: 60_000,
     });
+    if (r.error !== undefined || r.status !== 0) {
+      throw new Error(
+        `헌법 프로브 실패(status=${String(r.status)}): ${r.error?.message ?? ""} ${(r.stderr ?? "").slice(-300)}`,
+      );
+    }
+    const raw = r.stdout ?? "";
     const line = raw.trim().split("\n").filter((l) => l.startsWith("{")).pop() ?? "{}";
-    return JSON.parse(line) as {
-      systemMd: string; bytes: number; homeCopyExists: boolean; homeEntries: string[];
+    const parsed = JSON.parse(line) as {
+      systemMd: string; bytes: number; homeCopyExists: boolean; homeEntries: string[]; envCalls: EnvCall[];
     };
+    return { ...parsed, envCalls: parsed.envCalls ?? [], allow };
   } finally {
     rmSync(path.dirname(f), { recursive: true, force: true });
   }
@@ -175,6 +220,25 @@ export const check: RegressionCheck = {
           "★<home>/.env 로 헌법 이음매를 열 수 없다 — 비서가 파일 한 줄로 자기 헌법을 갈아치우지 못한다",
           r4.systemMd === canonical && r4.bytes > 1000,
           `${r4.systemMd} · ${r4.bytes}자`,
+        ),
+      );
+
+      // ── ⑤ ★스위치를 끈 이 자식의 `.env` 읽기는 **두 핀 안에서만** 일어난다 (2026-09-23) ──
+      //  독립 검토 M3: `cwd: path.dirname(f)` 를 `cwd: REPO` 로 되돌려도 스위트가 초록이었다 —
+      //  그 사이 이 자식은 매번 레포 `.env`(개발 머신의 비밀·REGION_A_MODELS)를 열었다. 주석의
+      //  약속을 아무것도 안 지키고 있었다. 이제 자식이 **실제로 시도한 경로**를 잰다.
+      const probes = [r, r2, r3, r4];
+      const outside = probes.flatMap((p) => p.envCalls.filter((c) => c.allowed < 0).map((c) => c.path));
+      out.push(
+        assert(
+          "★★스위치를 끈 헌법 프로브의 `.env` 시도 ⊆ {임시 홈/.env, 프로브 임시 cwd/.env} — 레포·운영 `.env` 시도 0",
+          outside.length === 0,
+          outside.length === 0 ? "밖 시도 0" : { outside, allow: r.allow },
+        ),
+        assert(
+          "전제: 네 프로브 모두 임시 홈 `.env` 를 실제로 시도했다(load-env 를 태웠다 — 안 태우면 ④·위 단언이 공허하다)",
+          probes.every((p) => p.envCalls.some((c) => c.allowed === 0)),
+          probes.map((p) => p.envCalls.map((c) => `${c.allowed}:${c.path}`)),
         ),
       );
     } finally {

@@ -45,6 +45,12 @@ export const check: RegressionCheck = {
     const tail = line ?? r.err.slice(-1500);
     return [
       assert("입력 구성 진단이 실제 요청별 배열과 일치", v.compositionsMatch === true && Number(v.requestCount) > 0, tail),
+      assert("origins.summary/history/current 합이 매 요청 전체 items·chars 와 일치", v.originsSound === true, tail),
+      assert(
+        "★★요약1·이력2 fixture: 로그 origins 가 실제 payload 내용으로 가른 summary/history/current 와 같다(도구 왕복 후에도)",
+        v.boundaryOriginsMatch === true,
+        JSON.stringify(v.boundaryDetail ?? tail),
+      ),
       assert("worker/subagent 값이 어댑터 로그에 남는다", origins[5] === "worker" && origins[6] === "subagent", { origins }),
       assert("실제 어댑터 로그: 숫자 요약·미지원 구분, 원문/요청 유출 없음", v.attributionLogged === true, tail),
       assert("두 요청의 곡선과 종료 로그가 같은 실행·출처·사용량으로 연결된다", v.loopLinked === true, tail),

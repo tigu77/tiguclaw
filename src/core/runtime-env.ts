@@ -23,6 +23,8 @@ import path from "node:path";
 export interface ShellSpec {
   /** 실행 바이너리. unix="sh", win32=ComSpec(보통 "cmd") 또는 override. */
   bin: string;
+  /** cmd receives its command line verbatim; Node escaping would corrupt quotes. */
+  windowsVerbatimArguments?: boolean;
   /** command → child_process args. sh: ["-c", cmd] / cmd: ["/c", cmd]. */
   argsFor: (command: string) => string[];
   /** env 블록·도구 description 표기용 라벨. "sh" | "cmd.exe" | … */
@@ -53,7 +55,8 @@ export const detectShell = (): ShellSpec => {
     const bin = process.env.ComSpec || "cmd.exe";
     return {
       bin,
-      argsFor: (c: string) => ["/c", c],
+      argsFor: (c: string) => ["/d", "/s", "/c", `"${c}"`],
+      windowsVerbatimArguments: true,
       label: "cmd.exe (Windows cmd 문법)",
       syntaxHint:
         "Windows 명령을 쓰세요 (dir, type, findstr, copy, del). ls/cat/grep 아님. " +

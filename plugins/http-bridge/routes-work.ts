@@ -68,6 +68,8 @@ export const handleWorkerJobs = async (ctx: RouteCtx): Promise<void> => {
       : {}),
     ...(j.task !== undefined ? { task: j.task } : {}),
     ...(j.cwd !== undefined && j.cwd !== "" ? { cwd: j.cwd } : {}),
+    // 토큰 합계 — 서버가 든다(화면이 SSE 로 더하면 새로고침 뒤 거짓 합계가 된다).
+    ...(j.usage !== undefined ? { usage: { ...j.usage } } : {}),
     // ★"지금 무엇을 하는 중인가" 도 같이 준다 (2026-08-24 사용자 신고: "새로고침하면
     //  백그라운드 매니저·에이전트의 뭘 진행중인지가 사라져"). 종전엔 이 한 줄이 SSE
     //  스텝으로만 왔는데, replay 창(50) 밖으로 밀린 긴 잡은 새로고침 뒤 영영 안 왔다 —

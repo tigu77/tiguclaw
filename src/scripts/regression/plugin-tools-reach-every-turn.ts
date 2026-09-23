@@ -43,7 +43,7 @@ import {
   registerMcpServer,
   unregisterMcpServer,
 } from "../../core/mcp-registry.js";
-import { runRegionA } from "../../core/llm-runtime/index.js";
+import { __setAdapterForTest, runRegionA } from "../../core/llm-runtime/index.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -57,6 +57,12 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const NAME = "regr-reach-probe";
+    // ★모델까지 안 가는 검사지만 **명시적 fake 어댑터**를 끼운다 (2026-09-23). 회귀의 실제 모델
+    //  호출 차단 가드가 facade 입구에서 막기 때문이다 — 이 검사가 보는 «입력 조립» 은 그 뒤에 있다.
+    //  fake 는 불려도 아무것도 안 하고 실패로 끝낸다(종전 `AbortSignal.abort()` 와 같은 결말).
+    const restoreAdapter = __setAdapterForTest(async () => {
+      throw new Error("regression fake adapter — 입력 조립까지만 본다");
+    });
 
     // ── ② router 를 안 지나는 호출도 받는다 (동작) ──────────────────────────
     // `runRegionA` 를 실제로 태운다. 모델까지는 안 간다(프로파일 해석에서 멈추든 어디서든) —
@@ -131,6 +137,7 @@ export const check: RegressionCheck = {
       /* 위와 같다 */
     }
     unregisterMcpServer(NAME);
+    restoreAdapter();
     out.push(
       assert(
         "★★**명시로 넘긴 도구 집합을 기본값이 안 덮는다** — 덮으면 엔드포인트·게이트웨이가 '이 턴은 이 도구만' 을 정하는 길이 막힌다(빈 객체도 명시다)",

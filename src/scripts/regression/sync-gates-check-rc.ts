@@ -1,3 +1,4 @@
+import { skip } from "./_framework.js";
 /**
  * 회귀: **sync-public 의 블록이 `set -e` 에 기대지 않고 rc 를 직접 본다** (2026-09-17)
  *
@@ -111,6 +112,10 @@ export const check: RegressionCheck = {
     ];
 
     // ── ② 헬퍼를 **실제로 돌린다** ──────────────────────────────────────────
+    if (process.platform === "win32") {
+      out.push(skip("POSIX sync shell helper execution", "Developer sync-public shell harness uses POSIX absolute paths; static source checks above still run. POSIX execution required."));
+      return out;
+    }
     const helperPath = new URL("_workspace/sync-gate.sh", REPO).pathname;
     const fail = await sh(`. ${JSON.stringify(helperPath)}; gate 일부러 false; gate_done`);
     const ok = await sh(`. ${JSON.stringify(helperPath)}; gate 성공 true; need 참 [ 1 -eq 1 ]; gate_done`);

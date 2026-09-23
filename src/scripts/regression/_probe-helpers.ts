@@ -27,8 +27,12 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
  */
 export const seedIsolatedEnv = (home: string, own: Record<string, string>): void => {
   const lines: string[] = [];
+  // ★러너 안(`TIGUCLAW_DISABLE_ENV_FILE=1`, 자식이 상속)에선 프로브 데몬이 `.env` 를 **아예
+  //  안 읽는다** — 선점할 이유가 없으니 레포 `.env` 도 **열지 않는다**(2026-09-23). 그래서
+  //  호출부는 `own` 값을 자식 env 로도 **직접** 준다(이 파일은 그때 아무도 안 읽는다).
+  const envFilesDisabled = process.env.TIGUCLAW_DISABLE_ENV_FILE === "1";
   try {
-    const repoEnv = readFileSync(path.join(REPO, ".env"), "utf8");
+    const repoEnv = envFilesDisabled ? "" : readFileSync(path.join(REPO, ".env"), "utf8");
     for (const line of repoEnv.split("\n")) {
       // `export KEY=값` 도 잡는다 — `loadEnvFile` 은 이 접두를 지원하는데 우리 파서만
       // 못 봐서 그 키가 선점되지 않고 레포 값이 샜다(2026-08-24 실측).
@@ -128,7 +132,7 @@ export const reapOnExit = (pid: number | undefined): void => {
  * 레포 곁에 생기므로 대개 여기서 잡힌다) → 그래도 없으면 `PATH` 의 `tsx`.
  */
 /** tsx 로더의 **절대 file URL** — 이 트리부터 위로 올라가며 찾는다(워크트리 대비). */
-const tsxLoaderUrl = (repo: string): string | null => {
+export const tsxLoaderUrl = (repo: string): string | null => {
   let dir = repo;
   for (let i = 0; i < 6; i += 1) {
     const cand = path.join(dir, "node_modules", "tsx", "dist", "loader.mjs");

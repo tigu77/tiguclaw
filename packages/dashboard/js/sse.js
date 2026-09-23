@@ -184,6 +184,9 @@
           if (ev.type === "llm.turn_done") {
             cancelErrClear(tk); markTurnDone(tk); // 성공 종결 = 즉시.
             setTurnCost(tk, ev.payload || {});    // 턴 비용(토큰) 카드에 고정 — 2026-07-26.
+            // 백그라운드 잡 좌표의 턴이면 그 잡 합계를 서버에서 다시 받는다(2026-09-23).
+            if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
+                typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
           }
           else {
             scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).

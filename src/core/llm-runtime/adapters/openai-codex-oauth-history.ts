@@ -931,6 +931,8 @@ export const buildSummarizeRequestBody = (
   ...(effort !== undefined ? { reasoning: { effort } } : {}),
 });
 
+import { assertLiveModelAllowed } from "../regression-model-guard.js";
+
 async function summarizeViaCodex(
   text: string,
   accessToken: string,
@@ -941,6 +943,7 @@ async function summarizeViaCodex(
   /** 부모 턴 취소 — openai 요약기와 **같은 계약**이다(2026-09-15, 레드팀 O8). */
   parentSignal: AbortSignal | undefined,
 ): Promise<string> {
+  assertLiveModelAllowed({ fetchOnly: true }); // fetch 로만 통신 — 스텁을 끼운 검사는 통과
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
@@ -1311,6 +1314,13 @@ export const buildCodexInputArray = (
   recentRaw: CodexTurn[],
   summary: string,
   currentTurn: ResponseInputItem,
+  /**
+   * ★출처 경계 out-parameter(2026-09-23, 선택적) — 반환 배열 자체는 그대로 두고
+   * [summary?][history…][current] 각 구간의 개수만 부수적으로 알린다(호출부가
+   * `summarizeInputComposition` 의 `boundaries` 로 넘겨 origins 를 잰다). 미지정이면 no-op
+   * (회귀 0, 기존 `onChunk`/`onTextDelta` 선례와 동형).
+   */
+  onBoundary?: (b: { summaryCount: number; historyCount: number }) => void,
 ): ResponseInputItem[] => {
   const out: ResponseInputItem[] = [];
   const summaryTurn = buildSummaryTurn(summary);
@@ -1340,6 +1350,7 @@ export const buildCodexInputArray = (
     });
   }
   out.push(currentTurn);
+  onBoundary?.({ summaryCount: summaryTurn !== undefined ? 1 : 0, historyCount: recentRaw.length });
   return out;
 };
 
@@ -1820,6 +1831,8 @@ export const buildTurnHistory = async (
    * `undefined` 면 필드를 안 보낸다(본 턴과 같은 규칙). 호출부 주석이 사유의 정본이다.
    */
   turnReasoning?: string,
+  /** `buildCodexInputArray` 로 그대로 전달하는 출처 경계 out-parameter(선택적). */
+  onBoundary?: (b: { summaryCount: number; historyCount: number }) => void,
 ): Promise<ResponseInputItem[]> => {
   const currentTurn = buildCurrentTurn(currentPromptWithMemory, mediaItems);
 
@@ -1840,6 +1853,8 @@ export const buildTurnHistory = async (
       ),
   });
   if (allTurns.length === 0) {
+    // 빈 history 조기반환 — summary/history 둘 다 0, currentTurn 하나뿐.
+    onBoundary?.({ summaryCount: 0, historyCount: 0 });
     return [currentTurn];
   }
 
@@ -1848,7 +1863,7 @@ export const buildTurnHistory = async (
       instructionsChars + currentPromptWithMemory.length + summary.length,
   });
 
-  return buildCodexInputArray(recentRaw, summary, currentTurn);
+  return buildCodexInputArray(recentRaw, summary, currentTurn, onBoundary);
 };
 
 // V5.3 — agentic loop iteration 노브. 2026-07-03 "자동 이어가기" 재설계로 25 cap 의

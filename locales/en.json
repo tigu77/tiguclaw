@@ -83,6 +83,8 @@
   "bg.stop": "⏹️ Stop",
   "bg.stopShort": "Stop",
   "bg.stopTitle": "Stop job",
+  "bg.usage.title": "Whole job — {turns} turns · {requests} API calls · input total {total} tokens",
+  "bg.usage.unreported": " · {n} turns reported no usage and are not included",
   "bg.task.full": "Task · {v}",
   "bg.title": "Background jobs",
   "bg.toolElapsed": "Tool runtime {v}",

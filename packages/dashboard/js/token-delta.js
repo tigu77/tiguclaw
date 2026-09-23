@@ -139,25 +139,15 @@
         target.title = i18n("tok.model.title");
       };
 
-      const setTurnCost = (thread, payload) => {
-        const card = cardByThread.get(thread);
-        // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.
-        const target = card && (card.costEl || card.replyCostEl);
-        if (!target) return;
-        const inTok = Number(payload && payload.inputTokens);
-        if (!Number.isFinite(inTok) || inTok <= 0) return; // 미보고 어댑터 = 표시 안 함(거짓값 금지).
-        const outTok = Number(payload && payload.outputTokens) || 0;
-        // ★도구 루프가 여러 번 돈 턴은 **합계**가 진짜 비용이다(codex 는 매 iteration
-        //  전체 입력을 재전송). 합계가 오면 그걸 쓰고, 없으면(1회 턴·다른 어댑터) 단일값.
-        const iters = Number(payload && payload.iterations);
-        const inTotal = Number(payload && payload.inputTokensTotal);
-        const useTotal = Number.isFinite(iters) && iters > 1 && Number.isFinite(inTotal) && inTotal > 0;
-        const shownIn = useTotal ? inTotal : inTok;
-        const cached = useTotal
-          ? Number(payload && payload.cachedTokensTotal)
-          : Number(payload && payload.cachedTokens);
+      /**
+       * 토큰 한 줄(`↓입력 · N회 · 캐시 % · ↑출력`)과 정확값 툴팁 — **채팅 턴과 백그라운드 잡이
+       * 같이 쓴다**(2026-09-23). 두 벌이면 «캐시 100% 금지» 같은 규칙이 한쪽에서만 지켜진다.
+       * `head` 는 툴팁 첫머리(무엇의 합계인가) — 호출자가 정한다.
+       */
+      const usageSummary = ({ input: shownIn, cached, output, iters, head }) => {
+        // ★`shownIn`·`cached` 이름은 회귀 `usage-token-semantics` 가 적중률 식을 떼어 돌릴 때 쓴다.
         const parts = ["↓" + fmtTokens(shownIn)];
-        if (useTotal) parts.push(i18n("tok.iters", { n: iters }));   // 몇 번 재전송했나 = 낭비의 직접 신호.
+        if (iters > 1) parts.push(i18n("tok.iters", { n: iters }));   // 몇 번 재전송했나 = 낭비의 직접 신호.
         // 캐시 적중률 — 재전송분 중 캐시로 처리된 몫. 낮으면 루프가 비싸다는 신호.
         if (Number.isFinite(cached) && cached > 0) {
           // ★«전부» 라고 말하려면 **실제로 전부**여야 한다 (2026-09-08 정태님이 100% 를 보고 물음).
@@ -169,26 +159,50 @@
             cached >= shownIn ? 100 : Math.min(99, Math.round((cached / shownIn) * 100));
           parts.push(i18n("tok.cacheRate", { pct }));
         }
-        parts.push("↑" + fmtTokens(outTok));
-        target.textContent = parts.join(" · ");
-        const exact =
-          (useTotal
-            ? i18n("tok.exact.loop", {
-                iters,
-                total: shownIn.toLocaleString(),
-                last: inTok.toLocaleString(),
-              })
-            : i18n("tok.exact.single", { total: shownIn.toLocaleString() })) +
+        parts.push("↑" + fmtTokens(output));
+        const title =
+          head +
           (Number.isFinite(cached) && cached > 0
             ? i18n("tok.exact.cache", {
                 cached: cached.toLocaleString(),
                 effective: (shownIn - cached).toLocaleString(),
               })
             : "") +
-          i18n("tok.exact.out", { out: outTok.toLocaleString() });
-        target.title = exact;
-        // 입력이 유난히 큰 턴은 눈에 띄게(임계는 관측 평균의 ~3배 — 확실히 이상한 것만).
-        if (shownIn >= 200000) target.classList.add("heavy");
+          i18n("tok.exact.out", { out: output.toLocaleString() });
+        // 입력이 유난히 큰 것은 눈에 띄게(임계는 관측 평균의 ~3배 — 확실히 이상한 것만).
+        return { text: parts.join(" · "), title, heavy: shownIn >= 200000 };
+      };
+
+      const setTurnCost = (thread, payload) => {
+        const card = cardByThread.get(thread);
+        // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.
+        const target = card && (card.costEl || card.replyCostEl);
+        if (!target) return;
+        // ★턴 실비용은 **서버가 고른 `spend`** 를 읽는다 (2026-09-23). 종전엔 여기서
+        //  «마지막 호출 1회» 와 «턴 합계» 중 무엇을 쓸지 골랐고, 출력만 마지막 호출값을 써서
+        //  도구 루프 턴의 출력이 과소계상됐다. 같은 선택이 잡 합계에 또 있었다 — 이제
+        //  `turn-spend.ts` 한 곳이다. 없으면(미보고 어댑터) 표시 안 함(거짓값 금지).
+        const sp = payload && payload.spend;
+        const shownIn = Number(sp && sp.input);
+        if (!Number.isFinite(shownIn) || shownIn <= 0) return;
+        const iters = Number(sp.requests) || 1;
+        const lastIn = Number(payload.inputTokens);
+        const s = usageSummary({
+          input: shownIn,
+          cached: Number(sp.cached),
+          output: Number(sp.output) || 0,
+          iters,
+          head: iters > 1
+            ? i18n("tok.exact.loop", {
+                iters,
+                total: shownIn.toLocaleString(),
+                last: Number.isFinite(lastIn) ? lastIn.toLocaleString() : "?",
+              })
+            : i18n("tok.exact.single", { total: shownIn.toLocaleString() }),
+        });
+        target.textContent = s.text;
+        target.title = s.title;
+        if (s.heavy) target.classList.add("heavy");
       };
 
       /**

@@ -14,6 +14,7 @@ import { assert, within, type Assertion, type RegressionCheck } from "./_framewo
 import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { nodeCommand } from "./_shell-fixture.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const alive = (pid: number): boolean => {
@@ -48,13 +49,20 @@ export const check: RegressionCheck = {
 
     out.push(assert("정상 명령(회귀 0)", (await bash({ command: "echo hello-regression" })).includes("hello-regression"), "echo"));
 
-    const nz = await bash({ command: "echo to-out; echo to-err 1>&2; exit 7" });
+    const nz = await bash({ command: nodeCommand('console.log("to-out");console.error("to-err");process.exitCode=7;') });
     out.push(assert("종료코드·stdout·stderr 보존", nz.includes("exit code: 7") && nz.includes("to-out") && nz.includes("to-err"), nz.replace(/\n/g, " ").slice(0, 60)));
 
     // ★핵심 — 손자가 함께 죽는가.
     const pidFile = path.join(tmpdir(), `regression-grandchild-${process.pid}.pid`);
     if (existsSync(pidFile)) unlinkSync(pidFile);
-    const cmd = `node -e 'require("fs").writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)' & wait`;
+    // ★**진짜 손자**를 만든다 (2026-09-23). `node 파일` 한 줄이면 POSIX `sh -c` 는 셸을 거치지 않고
+    //  그 명령으로 exec 해서 node 가 **자식**이 된다 — 그러면 그룹 kill 을 «자식만 kill» 로 바꿔도
+    //  초록이었다(변이 실측). 그래서 node 가 node 를 하나 더 띄우고, 그 **손자**가 pid 를 적는다.
+    //  셸 → node(자식) → node(손자): sh 도 cmd 도 같은 모양이다.
+    const grandchild = `require("fs").writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000);`;
+    const cmd = nodeCommand(
+      `require("child_process").spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:"ignore"});setInterval(()=>{},1000);`,
+    );
     // 시한 = 도구 timeout(2s) + 여유. 회귀가 돌아오면 여기서 영원히 안 끝나므로(실측)
     // 매달리는 대신 실패로 보고한다.
     const tR = await within(15_000, "timeout 후 반환", bash({ command: cmd, timeout: 2 }));
@@ -78,7 +86,8 @@ export const check: RegressionCheck = {
     const ac = new AbortController();
     const abortable = await bashOf(ac.signal);
     const started = Date.now();
-    const p = abortable({ command: "sleep 30", timeout: 60 });
+    // `sleep` 은 cmd 에 없다(Windows 에선 39ms 에 «명령 없음» 으로 끝나 중단할 것이 없었다) — Node 로.
+    const p = abortable({ command: nodeCommand("setTimeout(()=>{},30000);"), timeout: 60 });
     setTimeout(() => ac.abort(), 500);
     const aR = await within(15_000, "중단 후 반환", p);
     const aborted = "value" in aR ? aR.value : "";

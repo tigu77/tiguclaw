@@ -60,7 +60,7 @@ export const check: RegressionCheck = {
       ...walk(path.join(REPO, "packages")),
     ]
       .filter((f) => /kind:\s*"action-panel"/.test(readFileSync(f, "utf8")))
-      .map((f) => path.relative(REPO, f))
+      .map((f) => path.relative(REPO, f).split(path.sep).join("/"))
       // 검사 자신은 규칙을 **설명**할 뿐이다(설명글을 코드로 세면 상시 빨강 — 이 레포에서 3번 났다).
       .filter((f) => !f.startsWith("src/scripts/regression/"));
 

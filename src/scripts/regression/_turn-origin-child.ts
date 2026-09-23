@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { initStore } from "../../store/sessions.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
 import type { IncomingMessage } from "../../channels/types.js";
-import { assertIsolated } from "./_framework.js";
+import { assertIsolated, fakeNetwork } from "./_framework.js";
 assertIsolated();
 // ★★**모델을 환경에서 고정한다** (2026-09-22, 배포 트리 회귀가 잡음).
 //  종전엔 `route(msg, { specs: [...] })` 로 넘겼는데 `route` 는 그 이름을 **안 받는다**
@@ -24,7 +24,7 @@ registerAuthProvider({ provider: "codex", getAccessToken: async () => "regressio
 let scenario: "normal" | "loop" | "flush" = "normal";
 let scenarioCalls = 0;
 const requests: Array<{ body: string; headers: string }> = [];
-globalThis.fetch = async (_url, init) => {
+globalThis.fetch = fakeNetwork(async (_url, init) => {
   requests.push({
     body: String(init?.body ?? ""),
     // ★인증 헤더는 빼고 비교한다(토큰은 매번 같지만 기록에 남기지 않는다).
@@ -57,7 +57,7 @@ globalThis.fetch = async (_url, init) => {
       .join(""),
     { status: 200 },
   );
-};
+});
 
 // ★어댑터가 찍는 줄을 가로챈다 — 우리가 재려는 결합점이 바로 그 줄이다.
 const lines: string[] = [];
@@ -145,6 +145,50 @@ const flushEnd = lines.slice(flushLineStart).filter(l => l.startsWith("[codex-tu
 const flushRequests = requests.slice(flushStart).map(r => JSON.parse(r.body) as { tools?: unknown[] });
 const flushSeparated = flushRequests.length > 1 && flushRequests.at(-1)?.tools?.length === 0 &&
   fieldOf(flushEnd, "attachmentCallback") === "1" && fieldOf(flushEnd, "lastSendFileTool") === "0";
+
+// ★origins 경계를 **알려진 fixture** 로 잰다 (2026-09-23 독립검토 공백). 합계 불변식만으로는
+//  경계를 아예 안 넘겨 전부 current 로 떨어져도 초록이었다. 요약 1 + 원문 이력 2(+ 요약에 접힌
+//  1턴)를 심고, 기대치는 **실제로 나간 payload 의 내용**에서 뽑는다 — 구현이 낸 경계 값을
+//  기대치로 쓰면 «찍기» 를 재게 된다. 두 요청(도구 왕복)이라 루프가 덧붙인 항목도 current 인지 본다.
+const { appendTranscript, indexCodexTurn, loadThreadHistoryWithIds } = await import("../../store/memory.js");
+const { upsertThreadSummary } = await import("../../store/thread-summaries.js");
+const BOUNDARY_TK = "regr:boundary";
+const SUMMARY_MARK = "BOUNDARY_FIXTURE_SUMMARY 이전 대화 요약";
+const FOLDED_TEXT = "BOUNDARY_FIXTURE_FOLDED 요약에 접힌 옛 턴";
+const HISTORY_TEXTS = ["BOUNDARY_FIXTURE_H1 사용자 이력", "BOUNDARY_FIXTURE_H2 비서 이력"];
+indexCodexTurn({ channel: "cli", threadKey: BOUNDARY_TK, claudeSessionId: "regr-boundary-sid" });
+if (loadThreadHistoryWithIds("cli", BOUNDARY_TK).length === 0) {
+  let ts = 1_700_000_000_000;
+  for (const [role, content] of [["user", FOLDED_TEXT], ["user", HISTORY_TEXTS[0]!], ["assistant", HISTORY_TEXTS[1]!]] as const) {
+    appendTranscript({ claudeSessionId: "regr-boundary-sid", role, content, ts: (ts += 60_000) });
+  }
+}
+upsertThreadSummary({ threadKey: BOUNDARY_TK, summary: SUMMARY_MARK, compactedThrough: loadThreadHistoryWithIds("cli", BOUNDARY_TK)[0]!.id });
+const boundaryLineStart = lines.length;
+scenario = "loop"; scenarioCalls = 0;
+await runOpenAiCodex({ text: "경계 확인", channel: "cli", threadKey: BOUNDARY_TK, model: "gpt-5.6-sol", turnOrigin: "worker" });
+type Item = { type?: string; content?: Array<{ text?: string }> };
+const textOf = (i: Item): string => i.type === "message" ? (i.content ?? []).map(c => c.text ?? "").join("") : "";
+const boundaryPayloads = requests.map(r => JSON.parse(r.body) as { prompt_cache_key?: string; input: Item[] }).filter(b => b.prompt_cache_key === BOUNDARY_TK);
+const boundaryCurves = lines.slice(boundaryLineStart).filter(l => l.startsWith(`[cache-curve] ${BOUNDARY_TK} `));
+const boundaryChecks = boundaryPayloads.map((p, i) => {
+  const expected = { summary: { count: 0, chars: 0 }, history: { count: 0, chars: 0 }, current: { count: 0, chars: 0 } };
+  for (const item of p.input) {
+    const text = textOf(item);
+    const key = text.includes(SUMMARY_MARK) ? "summary" : HISTORY_TEXTS.includes(text) ? "history" : "current";
+    expected[key].count += 1;
+    expected[key].chars += JSON.stringify(item).length;
+  }
+  const raw = boundaryCurves[i]?.split(" inputComposition=")[1]?.split(" attribution=")[0];
+  const actual = raw ? (JSON.parse(raw) as { origins?: unknown }).origins : undefined;
+  return { expected, actual, items: p.input.length, folded: p.input.some(it => textOf(it).includes(FOLDED_TEXT)) };
+});
+const boundaryOriginsMatch =
+  boundaryPayloads.length === 2 && boundaryCurves.length === 2 &&
+  // fixture 가 실제 payload 에 닿았다 — 이게 없으면 «전부 current» 기대치로 공허하게 통과한다.
+  boundaryChecks.every(c => c.expected.summary.count === 1 && c.expected.history.count === 2 && !c.folded) &&
+  boundaryChecks[1]!.expected.current.count > boundaryChecks[0]!.expected.current.count &&
+  boundaryChecks.every(c => JSON.stringify(c.actual) === JSON.stringify(c.expected));
 // 요청 순서와 curve 순서는 병렬 실행에서 달라질 수 있다. 캐시 키(스레드)별로 대조한다.
 const curveQueues = new Map<string, string[]>();
 for (const line of lines.filter(l => l.startsWith("[cache-curve]"))) {
@@ -152,6 +196,11 @@ for (const line of lines.filter(l => l.startsWith("[cache-curve]"))) {
   const q = curveQueues.get(key) ?? []; q.push(line); curveQueues.set(key, q);
 }
 let compositionsMatch = true;
+// ★origins.summary/history/current — 모든 요청에 대해선 **불변식**만 잰다(경계 의미는 위
+//  `boundaryOriginsMatch` 가 fixture 로 따로 잰다): 세 구간의 count/chars 합이 각각 전체 items/chars 와 같아야 한다
+//  (경계가 어디든 그 분할은 항상 전수를 덮어야 한다) — origins 자체가 실제로 로그에 왔는지,
+//  숫자만으로 이뤄졌는지도 함께 본다.
+let originsSound = true;
 const toolsMatch = requests.every(r => {
   const body = JSON.parse(r.body) as { prompt_cache_key: string; tools?: Array<{type?: string; name?: string}> };
   const curve = curveQueues.get(body.prompt_cache_key)?.shift();
@@ -159,6 +208,10 @@ const toolsMatch = requests.every(r => {
   const composition = rawComposition ? JSON.parse(rawComposition) : undefined;
   const sent = JSON.parse(r.body).input;
   compositionsMatch &&= composition?.chars === JSON.stringify(sent).length && composition?.items === sent.length;
+  const origins = composition?.origins as { summary: {count:number;chars:number}; history: {count:number;chars:number}; current: {count:number;chars:number} } | undefined;
+  originsSound &&= origins !== undefined &&
+    origins.summary.count + origins.history.count + origins.current.count === composition.items &&
+    origins.summary.chars + origins.history.chars + origins.current.chars === composition.chars - 2 - Math.max(0, composition.items - 1);
   const expected = body.tools?.some(t => t.type === "function" && t.name === "send_file") ? "1" : "0";
   return curve !== undefined && fieldOf(curve, "sendFileTool") === expected;
 }) && [...curveQueues.values()].every(q => q.length === 0);
@@ -191,7 +244,8 @@ console.log(
       requestCount: requests.length,
       parallelClean,
       attributionLogged: loopCurves[0]?.includes('attribution={"instructions":{"input_tokens":80,"cached_tokens":40},"items":{"count":1,"input_tokens":20,"cached_tokens":10}}') === true && loopCurves[1]?.endsWith("attribution=unavailable") === true && !lines.some(l => /PRIVATE_ATTRIBUTION|PRIVATE_ID/.test(l)) && !requests.some(r => r.body.includes("attribution")),
-      compositionsMatch, loopLinked, toolsMatch, endsMatch, flushSeparated,
+      compositionsMatch, originsSound, boundaryOriginsMatch, loopLinked, toolsMatch, endsMatch, flushSeparated,
+      boundaryDetail: boundaryChecks.map(({ expected, actual, items }) => ({ expected, actual, items })),
     }),
 );
 process.exit(0);

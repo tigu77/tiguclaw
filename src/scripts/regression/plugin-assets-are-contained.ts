@@ -28,7 +28,7 @@ import {
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const ROOT = "/app/plugins";
+const ROOT = path.resolve("/app/plugins");
 
 /** `[요청, 기대]` — 기대는 `ok` 또는 실패 사유. */
 const CASES: Array<[string, string]> = [
@@ -78,7 +78,7 @@ export const check: RegressionCheck = {
     });
 
     const okOnes = CASES.filter(([, w]) => w === "ok").map(([u]) => resolvePluginAsset(ROOT, u));
-    const escaped = okOnes.filter((r) => !r.ok || !r.file.startsWith(`${ROOT}/`));
+    const escaped = okOnes.filter((r) => !r.ok || !r.file.startsWith(`${ROOT}${path.sep}`));
 
     const dash = readFileSync(path.join(REPO, "packages/dashboard/index.ts"), "utf8");
     const core = readFileSync(path.join(REPO, "src/core/plugin-assets.ts"), "utf8");
@@ -148,19 +148,19 @@ export const check: RegressionCheck = {
         const homeOnly = resolvePluginAssetIn(
           ROOTS,
           "/plugin-asset/w/x.js",
-          only("/home/plugins/w/web/x.js"),
+          only(path.resolve("/home/plugins/w/web/x.js")),
         );
         const nowhere = resolvePluginAssetIn(ROOTS, "/plugin-asset/w/x.js", () => false);
         const esc = resolvePluginAssetIn(ROOTS, "/plugin-asset/../SYSTEM.js", () => true);
         return [
           assert(
             "★★둘 다 있으면 **번들이 이긴다**(홈에서 코어 플러그인 자산을 가로채지 못한다)",
-            both.ok && both.file === "/app/plugins/w/web/x.js",
+            both.ok && both.file === path.resolve("/app/plugins/w/web/x.js"),
             both.ok ? both.file : `막힘(${both.reason})`,
           ),
           assert(
             "★★홈에만 있으면 **홈을 준다**(모양만 보고 첫 뿌리를 돌려주면 설치한 게 404 다 — 실제로 그랬다)",
-            homeOnly.ok && homeOnly.file === "/home/plugins/w/web/x.js",
+            homeOnly.ok && homeOnly.file === path.resolve("/home/plugins/w/web/x.js"),
             homeOnly.ok ? homeOnly.file : `★막힘(${homeOnly.reason})`,
           ),
           assert(

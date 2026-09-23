@@ -7,8 +7,9 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 const stream = (events: unknown[]) => new ReadableStream<Uint8Array>({
   start(c) { c.enqueue(new TextEncoder().encode(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""))); c.close(); },
 });
-const completed = (input: number, output: number, cache?: number) => ({ type: "response.completed", response: {
+const completed = (input: number, output: number, cache?: number, reasoning?: number) => ({ type: "response.completed", response: {
   id: "synthetic", usage: { input_tokens: input, output_tokens: output,
+    ...(reasoning !== undefined ? { output_tokens_details: { reasoning_tokens: reasoning } } : {}),
     ...(cache !== undefined ? { input_tokens_details: { cached_tokens: cache } } : {}) },
 } });
 export const check: RegressionCheck = {
@@ -16,13 +17,14 @@ export const check: RegressionCheck = {
   guards: "Codex가 요청별 usage를 받으면서 마지막 값과 턴 합계만 반환해 장문 경계를 잃던 것",
   run: async (): Promise<Assertion[]> => {
     const assertions: Assertion[] = [];
-    const first = await parseCodexSse(stream([completed(272_000, 100, 0)]));
+    const first = await parseCodexSse(stream([completed(272_000, 100, 0, 37)]));
     const second = await parseCodexSse(stream([completed(272_001, 200, 250_000)]));
     const requests: NonNullable<CodexSseResult["usage"]>[] = [first.usage!, second.usage!];
     const totals = { iterations: 2, inputTokens: 544_001, outputTokens: 300, cachedTokens: 250_000 };
     const got = withTurnTotals(second.usage, totals, requests);
     assertions.push(assert("요청 경계를 합계로 대체하지 않음", got?.requestUsageEntries?.length === 2 && got.requestUsageEntries[0]?.inputTokens === 272_000 && got.requestUsageEntries[1]?.inputTokens === 272_001, got));
     assertions.push(assert("요청별 출력과 캐시 0 보존", got?.requestUsageEntries?.[0]?.cachedTokens === 0 && got.requestUsageEntries[1]?.outputTokens === 200 && got.requestUsageEntries[1]?.cachedTokens === 250_000, got));
+    assertions.push(assert("요청별 추론 토큰 생산과 미보고 구별", got?.requestUsageEntries?.[0]?.reasoningTokens === 37 && got.requestUsageEntries[1]?.reasoningTokens === undefined, got));
     assertions.push(assert("마지막 호출·기존 합계 계약 유지", got?.inputTokens === 272_001 && got.outputTokens === 200 && got.inputTokensTotal === 544_001 && got.outputTokensTotal === 300 && got.cachedTokensTotal === 250_000 && got.iterations === 2, got));
     const one = withTurnTotals(first.usage, { iterations: 1, inputTokens: 272_000, outputTokens: 100, cachedTokens: 0 }, [first.usage!]);
     assertions.push(assert("단일 요청도 기록하되 불필요한 합계 필드는 유지하지 않음", one?.requestUsageEntries?.length === 1 && one.iterations === undefined && one.inputTokensTotal === undefined, one));

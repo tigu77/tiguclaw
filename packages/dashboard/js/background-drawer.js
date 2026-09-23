@@ -864,6 +864,11 @@
             rawTk.title = opts.threadKey;
           }
           meta.appendChild(rawTk);
+          // 토큰 합계(2026-09-23) — 서버가 든 잡 전체 합계. 값이 올 때까지 숨긴다.
+          // ★채팅 턴 비용과 **같은 요소**(`.turn-cost`)다 — 모양이 두 벌이면 갈린다.
+          const usageEl = document.createElement("span");
+          usageEl.className = "turn-cost bg-job-usage"; usageEl.style.display = "none";
+          meta.appendChild(usageEl);
           // ★"지금 무엇을 하는 중인가" (2026-08-24 사용자 신고: "새로고침하면 백그라운드
           //  매니저·에이전트의 뭘 진행중인지가 사라져"). 종전엔 이 정보가 SSE 스텝으로만
           //  왔는데, replay 창(50) 밖으로 밀린 긴 잡은 새로고침 뒤 영영 안 왔다 — 카드는
@@ -924,6 +929,7 @@
             resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
             liveEl: live, elapsedEl: elapsed, agoEl: ago, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
+            usageEl, usage: null, // 토큰 합계(서버 `usage`) — setJobUsage 가 채운다.
             doingEl, // "지금 무엇을 하는 중" 한 줄(서버 activity).
             activity: null, // { lastActivityAt, inFlight:[{tool,since}] } — /api/worker-jobs.
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).
@@ -1091,6 +1097,40 @@
         }
         return entry;
       };
+      /**
+       * 잡 토큰 합계를 카드에 — 채팅 턴과 **같은 포매터**(`usageSummary`)로 (2026-09-23).
+       * ★합계는 서버(`worker-jobs.ts recordJobTurnUsage`)가 든다. 여기서 턴을 더하지 않는다 —
+       *  새로고침하면 replay 창만큼만 남아 거짓 합계가 된다.
+       * ★**단조**로 받는다: replay 가 흘린 옛 이벤트의 작은 합계가 새 합계를 덮지 않게.
+       */
+      const setJobUsage = (entry, u) => {
+        if (!entry || !entry.usageEl || !u || typeof u !== "object") return;
+        const turns = Number(u.turns) || 0;
+        const reqs = Number(u.requests) || 0;
+        const input = Number(u.inputTokens) || 0;
+        if (entry.usage && (Number(entry.usage.turns) || 0) > turns) return;
+        entry.usage = u;
+        if (input <= 0 || typeof usageSummary !== "function") return; // 미보고뿐 = 표시 안 함(거짓값 금지).
+        const unrep = Number(u.unreportedTurns) || 0;
+        const s = usageSummary({
+          input,
+          cached: Number(u.cachedTokens) || 0,
+          output: Number(u.outputTokens) || 0,
+          iters: reqs,
+          head:
+            i18n("bg.usage.title", { turns, requests: reqs, total: input.toLocaleString() }) +
+            (unrep > 0 ? i18n("bg.usage.unreported", { n: unrep }) : ""),
+        });
+        entry.usageEl.textContent = s.text + (unrep > 0 ? "+" : "");
+        entry.usageEl.title = s.title;
+        // `heavy`(20만↑)는 **턴** 기준 임계라 잡 합계엔 안 건다 — 잡 합계는 거의 늘 넘어서
+        //  모든 카드가 경고색이 된다(dev 실측 턴당 평균 158만).
+        entry.usageEl.style.display = "";
+      };
+      // 진행 중 잡의 합계는 턴이 끝날 때마다 는다 — 그 신호(`llm.turn_done` on 잡 좌표)에
+      // 서버 스냅샷을 다시 받는다(디바운스·멱등, 소유자 백필과 같은 경로).
+      window.refreshJobUsageSoon = () => scheduleOwnerBackfill();
+
       const handleWorkerEvent = (p, ts) => {
         // (아래에서 entry 를 얻은 뒤 activity 를 반영한다 — ensureJobCard 가 먼저 필요.)
         if (!p.jobId) return;
@@ -1103,6 +1143,9 @@
         //  무동작이었다(소비자만 고치고 생산자를 안 봄). `ensureJobCard` 는 아는 키만
         //  읽으므로 여분 필드는 무해하고, 새 필드가 생기면 **저절로** 흘러간다.
         const entry = ensureJobCard(p.jobId, { ...p, ts });
+        // 토큰 합계는 상태 단조 가드보다 **앞**에서 — 끝난 카드에 온 스냅샷도 반영해야 한다
+        //  (합계 자체가 단조라 옛 값은 setJobUsage 가 거른다).
+        if (p.usage) setJobUsage(entry, p.usage);
         // 서버가 실어 준 "지금 무엇을 하는 중" 을 반영한다(하이드레이션 경로). 값이 없으면
         // **덮지 않는다** — SSE 로 이미 채워진 것을 빈 값으로 지우면 새로고침만 못해진다.
         if (p.activity && typeof p.activity === "object") {
@@ -1327,7 +1370,15 @@
        */
       window.gateWorkerEvent = (p) => {
         if (workRes === null || !p || typeof p.epoch !== "string") return "apply";
-        return workRes.handle(p, (prev) => applyJobEvent(prev, p));
+        const decision = workRes.handle(p, (prev) => applyJobEvent(prev, p));
+        // ★**종료는 순서와 무관하게 반영한다** (2026-09-24, 싱크 레드팀 P2). 부팅 하이드레이션은
+        //  스토어를 거치지 않아 스토어가 비어 있고(null), 그때 온 첫 `worker.done` 은
+        //  `resnapshot` 으로 **버려졌다** — 이어 받은 진행 중 목록에 그 잡이 없으니 카드가
+        //  «중단됨» 이 되고 완료·결과·토큰 합계가 사라졌다(매니저가 도는 중에 대시보드를 열면
+        //  흔한 경로). 종료는 되돌릴 수 없는 사실이고 카드 상태는 단조라 먼저 반영해도 안전하다.
+        //  스냅샷 재요청은 `handle` 이 이미 걸었다. `ignore`(이미 본 것)는 그대로 버린다.
+        if (decision === "resnapshot" && TERMINAL_JOB_STATUS.has(p.status)) return "apply";
+        return decision;
       };
       window.workerResourceState = () =>
         workRes === null ? null : { ...workRes.stats(), coord: workRes.state() };

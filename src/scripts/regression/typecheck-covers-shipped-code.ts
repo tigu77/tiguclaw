@@ -95,10 +95,18 @@ export const check: RegressionCheck = {
     // ── ② 게이트가 **실제로 읽는 파일**에 plugins/·packages/ 가 들어 있다 ────────
     //  이름 열거가 아니라 tsc 의 실제 파일 목록으로 판정 — include 를 좁히는 순간 걸린다.
     {
-      const { stdout } = await runTsc(tsc, ["-p", cfg, "--listFilesOnly"]);
-      const files = stdout.split("\n").filter((l) => l.includes(`${REPO}${path.sep}`));
+      const { ok, stdout } = await runTsc(tsc, ["-p", cfg, "--listFilesOnly"]);
+      // TypeScript emits forward slashes on Windows too. Compare normalized paths,
+      // but keep the trailing separator so sibling directory names cannot match.
+      const normalize = (value: string): string => {
+        const normalized = value.trim().replaceAll("\\", "/");
+        return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+      };
+      const root = normalize(REPO) + "/";
+      const files = stdout.split("\n").map(normalize).filter((l) => l.startsWith(root));
+      out.push(assert("★파일 목록 획득이 성공하고 비어 있지 않다", ok && files.length > 0, `exit success ${ok} · files ${files.length}`));
       const count = (dir: string): number =>
-        files.filter((f) => f.startsWith(path.join(REPO, dir) + path.sep)).length;
+        files.filter((f) => f.startsWith(root + dir + "/")).length;
       const nPlugins = count("plugins");
       const nPackages = count("packages");
       const nSrc = count("src");

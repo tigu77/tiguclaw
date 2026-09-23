@@ -278,14 +278,17 @@ export const check: RegressionCheck = {
     //  삼키면 **읽을 수 없는 파일을 빈 파일로 덮는다** — 이번에 고친 사고와 결과가 같다.
     //  파싱 실패 표본만으론 이 갈래를 한 번도 안 밟는다.
     const unreadable = inHome(GOOD, (file) => {
-      chmodSync(file, 0o000);
+      // Windows chmod does not deny reads. A directory at the settings path
+      // produces a real read error without touching ACLs or elevated privileges.
+      if (process.platform === "win32") { rmSync(file); mkdirSync(file); }
+      else chmodSync(file, 0o000);
       try {
         readSettingsRootForWrite(file);
         return "★읽었다(삼킴)";
       } catch (e) {
         return e instanceof SettingsFileCorruptError ? "거부" : `다른 예외: ${String(e)}`;
       } finally {
-        chmodSync(file, 0o600);
+        if (process.platform !== "win32") chmodSync(file, 0o600);
       }
     });
     out.push(

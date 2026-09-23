@@ -222,7 +222,10 @@ export interface WeightProbeReport {
  * `send()` 사본을 갖고 있었고 이 함수를 부르지 않았다 — 그래서 시한을 여기만 넣었을 때
  * 셸 경로는 20분 매달림이 그대로였다. 지금은 **정말로** 이 함수 하나다.
  */
+import { assertLiveModelAllowed } from "./regression-model-guard.js";
+
 export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
+  assertLiveModelAllowed({ fetchOnly: true }); // fetch 로만 통신 — 스텁을 끼운 검사는 통과
   const { getPaths } = await import("../paths.js");
   const home = getPaths().home;
   const hasAccess = (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "";

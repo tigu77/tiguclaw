@@ -119,7 +119,7 @@ const run = async (): Promise<Assertion[]> => {
     assert(
       "그 거부가 **어디를 고쳐야 하는지** 말한다(조용한 무시 금지)",
       typeof got.projectShadowText === "string" &&
-        String(got.projectShadowText).includes(".tiguclaw/settings.json"),
+        String(got.projectShadowText).includes(path.join(".tiguclaw", "settings.json")),
       typeof got.projectShadowText === "string"
         ? String(got.projectShadowText).split("\n")[0].slice(0, 70)
         : "-",

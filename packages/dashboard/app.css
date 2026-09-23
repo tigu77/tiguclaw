@@ -1327,6 +1327,9 @@
       .bg-job-ago:empty { display:none; }
       .bg-job-status { font-size:0.625rem; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:0.625rem; color:var(--text-dim); font-family:var(--font-mono); }
+      /* 잡 토큰 합계 — 채팅 턴 비용(.turn-cost)과 **같은 모양**이어야 한다(2026-09-23 정태님).
+         메타 줄이 고정폭이라 글꼴만 UI 로 되돌린다 — 나머지는 .turn-cost 가 정한다. */
+      .bg-job-meta .bg-job-usage { font-family:var(--font-ui); margin-left:8px; }
       /* 소속 세션 배지 — 전체활동의 .aav-session-badge 와 같은 색 언어(같은 뜻이니 같은 모양).
          클릭 가능하므로 hover 를 준다. 이름을 모르면 JS 가 아예 숨긴다(지어내지 않음). */
       .bg-job-session { display:inline-block; margin-left:6px; font-family:var(--font-mono); font-size:0.59375rem; font-weight:800;

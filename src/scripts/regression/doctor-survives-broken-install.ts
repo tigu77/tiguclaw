@@ -185,11 +185,12 @@ export const check: RegressionCheck = {
           const T = mkdtempSync(pathMod.join(os.tmpdir(), "tgc-link-"));
           try {
             mkdirSync(pathMod.join(T, "install/bin"), { recursive: true });
-            mkdirSync(pathMod.join(T, "gb"), { recursive: true });
             writeFileSync(pathMod.join(T, "install/bin/tiguclaw.mjs"), "");
-            symlinkSync(pathMod.join(T, "install/bin/tiguclaw.mjs"), pathMod.join(T, "gb/tiguclaw"));
+            // Directory junctions exercise realpath without Windows symlink privilege.
+            symlinkSync(pathMod.join(T, "install/bin"), pathMod.join(T, "gb"),
+              process.platform === "win32" ? "junction" : "dir");
             return (
-              judgeGlobalCommand(pathMod.join(T, "gb/tiguclaw"), pathMod.join(T, "install")).kind === "ok"
+              judgeGlobalCommand(pathMod.join(T, "gb/tiguclaw.mjs"), pathMod.join(T, "install")).kind === "ok"
             );
           } finally {
             rmSync(T, { recursive: true, force: true });
@@ -233,9 +234,9 @@ export const check: RegressionCheck = {
         const sib = mk("home/tiguclaw-install");
         const nest = mk("home/tiguclaw/nested");
         const other = mk("opt/tiguclaw");
-        mkdirSync(P.join(T, "gb"), { recursive: true });
-        const link = P.join(T, "gb/tiguclaw");
-        symlinkSync(P.join(one, "bin/tiguclaw.mjs"), link);
+        symlinkSync(P.join(one, "bin"), P.join(T, "gb"),
+          process.platform === "win32" ? "junction" : "dir");
+        const link = P.join(T, "gb/tiguclaw.mjs");
         // 심링크면 실체를, 아니면 그 경로가 속한 설치 루트를 링크 실체로 본다(테스트 헬퍼).
         const linkedOf = (cmd: string): string => {
           try {
@@ -356,7 +357,9 @@ export const check: RegressionCheck = {
     try {
       process.env.npm_config_prefix = prefix;
       lookupBroken = resolveLinkedInstall(); // 패키지 폴더 없음
-      const gRoot = pathM.join(prefix, "lib", "node_modules", "tiguclaw");
+      const gRoot = process.platform === "win32"
+        ? pathM.join(prefix, "node_modules", "tiguclaw")
+        : pathM.join(prefix, "lib", "node_modules", "tiguclaw");
       mkdirSync(gRoot, { recursive: true });
       lookupLinked = resolveLinkedInstall(); // 이제 있음
     } finally {

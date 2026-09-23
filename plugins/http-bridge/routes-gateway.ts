@@ -17,6 +17,7 @@ import type { RouteCtx } from "./route-ctx.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { runRegionA } from "../../src/core/llm-runtime/index.js";
+import { turnSpend } from "../../src/core/llm-runtime/turn-spend.js";
 import type { Attachment } from "../../src/channels/types.js";
 import { ingestAttachments } from "./attachments.js";
 import {
@@ -318,8 +319,9 @@ const serveGatewayChatReserved = async (
             ? out.text
             : `(텍스트 없음 — 도구 호출 ${(out.externalToolCalls ?? []).length}건)`,
         ),
-        inputTokens: out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0,
-        outputTokens: out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0,
+        // 턴 실비용은 `turnSpend` 한 곳에서 고른다(채팅 줄·잡 합계와 같은 값).
+        inputTokens: turnSpend(out.usage)?.input ?? 0,
+        outputTokens: turnSpend(out.usage)?.output ?? 0,
         toolCalls: (out.externalToolCalls ?? []).length,
         elapsedMs: Date.now() - gwStartedAt,
         ...(typeof out.model === "string" && out.model !== "" ? { servedBy: out.model } : {}),
@@ -350,11 +352,13 @@ const serveGatewayChatReserved = async (
     //  "마지막 호출 1회"(컨텍스트 참 정도)라, 도구 루프를 도는 요청에서 그걸 내보내면
     //  클라이언트 비용·예산 회계가 실제의 일부만 본다. 제3자에게 나가는 값이라
     //  우리 화면처럼 나중에 눈으로 걸러지지 않는다 — 합계가 정직하다.
-    const inTok = out.usage?.inputTokensTotal ?? out.usage?.inputTokens ?? 0;
+    //  ★층 선택은 `turnSpend` 한 곳이다(2026-09-23) — 채팅 줄·잡 합계와 같은 값을 낸다.
+    const spend = turnSpend(out.usage);
+    const inTok = spend?.input ?? 0;
     // ★출력도 **턴 합계**다 — 바로 위 주석이 입력에 대해 말한 이유가 출력에도 그대로
     //  적용된다. 한쪽만 합계면 클라이언트 회계가 비대칭으로 틀린다(2026-08-09 벤치에서
     //  같은 비대칭이 "우리가 11배 효율적"이라는 거짓 결론을 만들었다).
-    const outTok = out.usage?.outputTokensTotal ?? out.usage?.outputTokens ?? 0;
+    const outTok = spend?.output ?? 0;
     const toolCalls = out.externalToolCalls ?? [];
     const hasToolCalls = toolCalls.length > 0;
     const bodyText = out.text ?? "";

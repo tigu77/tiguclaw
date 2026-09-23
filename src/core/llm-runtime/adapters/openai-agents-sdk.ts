@@ -351,9 +351,12 @@ export const createTurnInputFilter = (deps: {
   };
 };
 
+import { assertLiveModelAllowed } from "../regression-model-guard.js";
+
 export const runOpenAi = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  assertLiveModelAllowed();
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(context/transcripts)은 canonical
   // 저장 채널로 키잉. route() 가 정규화 시 sessionChannel 실어보냄, 미지정 → channel 폴백
   // (회귀 0). 표시/감사는 input.channel 유지 — claude 어댑터와 parity(#2).

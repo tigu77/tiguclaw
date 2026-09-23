@@ -1,4 +1,10 @@
-/** 실제 러너 사본의 발견 실패/정상/부분 실행 판정. DB·환경 로더만 무동작 fixture로 대체한다. */
+/**
+ * 실제 러너 사본의 발견 실패/정상/부분 실행 판정. DB 만 무동작 fixture로 대체한다.
+ * (러너는 제품 모듈을 정적 import 하지 않으므로 환경 로더 대역은 필요 없다 — 2026-09-23.
+ *  러너의 `.env` 미접근은 `regression-runner-env-isolation` 이 잰다.)
+ * ★임시 폴더 변수(TMPDIR·TEMP·TMP)를 전부 fixture 루트로 준다 — 러너 사본의 «지난 임시 홈
+ *  쓸기» 가 Windows 에선 `TEMP`/`TMP` 를 보므로, `TMPDIR` 만 주면 **실제 임시 폴더**를 훑는다.
+ */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,9 +29,9 @@ export const check: RegressionCheck = {
         mkdirSync(path.join(root, "src/core"), { recursive: true });
         mkdirSync(path.join(root, "src/store"), { recursive: true });
         writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
-        writeFileSync(path.join(root, "src/core/load-env.ts"), "export {};\n");
         writeFileSync(path.join(root, "src/store/sessions.ts"), "export const initStore = () => {};\n");
         writeFileSync(path.join(dir, "run.ts"), runner);
+        writeFileSync(path.join(dir, "_runtime-preflight.ts"), readFileSync(new URL("./_runtime-preflight.ts", import.meta.url), "utf8"));
         const broken = ["missing", "missing-partial", "all-missing"].includes(scenario);
         if (broken) writeFileSync(path.join(dir, "broken.ts"), "export const wrong = true;\n");
         if (scenario !== "all-missing") writeFileSync(path.join(dir, "valid.ts"),
@@ -33,7 +39,7 @@ export const check: RegressionCheck = {
         const args = scenario === "filter-miss" ? ["absent"] : scenario.includes("partial") ? ["fixture"] : [];
         const result = spawnSync(process.execPath,
           ["--import", pathToFileURL(path.join(repo, "node_modules/tsx/dist/loader.mjs")).href, path.join(dir, "run.ts"), ...args],
-          { cwd: root, env: { PATH: process.env.PATH, HOME: root, TMPDIR: root }, encoding: "utf8", timeout: 20_000 });
+          { cwd: root, env: { PATH: process.env.PATH, HOME: root, USERPROFILE: root, TMPDIR: root, TEMP: root, TMP: root }, encoding: "utf8", timeout: 20_000 });
         const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
         const success = scenario === "valid" || scenario === "partial";
         assertions.push(assert(`${scenario}: 실제 종료 코드`, !result.error && result.status === (success ? 0 : 1), { code: result.status, error: result.error?.message, output }));

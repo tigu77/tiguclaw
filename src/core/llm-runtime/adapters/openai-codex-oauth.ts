@@ -549,9 +549,12 @@ export const withTurnTotals = (
   };
 };
 
+import { assertLiveModelAllowed } from "../regression-model-guard.js";
+
 export const runOpenAiCodex = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  assertLiveModelAllowed({ fetchOnly: true }); // fetch 로만 통신 — 스텁을 끼운 검사는 통과
   // ★**어댑터 실행 ID** (2026-09-21, Codex 설계). 이 함수 호출 하나를 가리킨다 —
   //  facade 전체 턴도, 서버 response id 도 아니다. 같은 호출 안의 요청 반복·재시도·
   //  closing 에는 유지되고, 새 호출엔 새 값이다.
@@ -706,6 +709,12 @@ export const runOpenAiCodex = async (
    */
   const turnReasoning = input.reasoning ?? resolveReasoningEffort("codex", model, input.cwd);
 
+  /**
+   * ★inputComposition 의 `origins` 경계(2026-09-23) — 턴 로컬, `buildTurnHistory` 조립
+   * 직후 한 번만 채워진다. 이후 루프가 `inputArray` 에 steering/도구 항목을 append 만 하므로
+   * (재배열·삭제 없음) 이 경계는 매 iteration 계속 유효하다 — 경계 이후 전부가 `current`.
+   */
+  let inputBoundary = { summaryCount: 0, historyCount: 0 };
   const inputArray: ResponseInputItem[] = await buildTurnHistory(
     input,
     promptWithMemory,
@@ -715,6 +724,7 @@ export const runOpenAiCodex = async (
     model,
     instructions.length, // 예산의 고정 비용 — 안정 조각이 여기로 옮겨갔다.
     turnReasoning, // ★요약 호출도 **이 턴과 같은** 강도로 간다(위 주석).
+    (b) => { inputBoundary = b; },
   );
 
   // V5.3 — MCP memory server (claude 어댑터와 동일 instance) in-memory bridge 회수.
@@ -1537,7 +1547,7 @@ export const runOpenAiCodex = async (
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
       const bodyJson = JSON.stringify(body);
       lastInputComposition = process.env.CODEX_CACHE_CURVE === "1"
-        ? summarizeInputComposition(Array.isArray(body.input) ? body.input : [])
+        ? summarizeInputComposition(Array.isArray(body.input) ? body.input : [], inputBoundary)
         : undefined;
       // ★**캐시가 끊긴 자리를 로그가 말하게 한다** (2026-09-09). 종전엔 바이트 수만 남아서
       //  «크기는 같은데 내용이 다른가» 를 못 가렸다 — 같은 분에 같은 크기의 두 요청이

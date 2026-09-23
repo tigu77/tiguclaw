@@ -34,10 +34,30 @@ export const homeEnvPath = (): string =>
     ".env",
   );
 
+/**
+ * **환경파일 로드를 끄는 프로세스 전용 스위치** (2026-09-23).
+ *
+ * ★자동 회귀 러너가 운영 홈 `.env`·레포 `.env` 를 읽고 있었다 — 러너가 이 모듈을 정적
+ *  import 해서, 임시 홈을 잡기 **전에** 이 부작용이 돌았다(ESM 은 import 를 본문보다 먼저
+ *  평가한다). 러너는 이 키를 `"1"` 로 세운 **뒤에** 제품 모듈을 동적 import 하고, 자식은
+ *  env 상속으로 같은 스위치를 받는다.
+ * ★`.env` 가 이 키를 켜거나 끌 수 없다 — 파일을 읽기 **전에** 프로세스 env 만 본다.
+ *  정상 부팅(키 없음)의 동작은 그대로다.
+ */
+const DISABLE_ENV_FILE_KEY = "TIGUCLAW_DISABLE_ENV_FILE";
+
 /** 홈 우선(레포 폴백)으로 .env 로드. 멱등 — 첫 호출만 실제 로드. */
 export const loadHomeEnv = (): void => {
   if (loaded) return;
   loaded = true;
+
+  // ★파일 접근 **전에** 끊는다 — 경로 계산도, `loadEnvFile` 시도도 하지 않는다.
+  //  요약 줄은 남긴다: «왜 `.env` 가 안 먹었나» 가 로그만으로 보여야 한다.
+  if (process.env[DISABLE_ENV_FILE_KEY] === "1") {
+    envLoadSummary = `[env] env-file loading disabled (${DISABLE_ENV_FILE_KEY}=1) — using process environment only`;
+    queueMicrotask(() => flushEnvLoadLog());
+    return;
+  }
 
   const homeEnv = homeEnvPath();
   const repoEnv = path.resolve(process.cwd(), ".env");

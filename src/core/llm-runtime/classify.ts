@@ -23,7 +23,7 @@
  *    어댑터 무관. self-growth 가 특정 모델을 고르지 않는다 — env 가 tier 를 정의하고,
  *    미정의면 일반 디폴트로 안전 degrade.
  */
-import { resolveTier, runRegionA, type ModelSpec } from "./index.js";
+import { assertRuntimeModelAllowed, resolveTier, runRegionA, type ModelSpec } from "./index.js";
 
 /** 분류 결과 — 3진. 실패·타임아웃·파싱불가는 모두 "uncertain"(sentinel). */
 export type ContradictionVerdict = "yes" | "no" | "uncertain";
@@ -47,6 +47,7 @@ export interface JudgeContradictionInput {
  * 미정의면 undefined 로 일반 디폴트(REGION_A_MODELS/anthropic)에 안전 degrade.
  */
 export const cheapInternalTierSpecs = (): ModelSpec[] | undefined => {
+  assertRuntimeModelAllowed();
   const nano = resolveTier("nano");
   if (nano.length > 0) return nano;
   const low = resolveTier("low");

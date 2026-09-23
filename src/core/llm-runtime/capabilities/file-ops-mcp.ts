@@ -426,6 +426,7 @@ const launchBgShell = async (
   // KillShell 이 정상 동작(unref 는 이벤트루프 이탈만 막을 뿐 추적엔 무관하나, 명시로
   // "추적 유지 의도"를 박아둔다 — ADR §3-1).
   const child = spawn(SHELL.bin, SHELL.argsFor(command), {
+    windowsVerbatimArguments: SHELL.windowsVerbatimArguments,
     cwd,
     detached: true,
   });
@@ -1386,6 +1387,7 @@ const makeFileOpsTools = (
       //  ★detach 는 "부모가 죽어도 살아남음"이므로 추적 집합에 넣어 exit 훅 리퍼가 덮는다.
       const useGroup = process.platform !== "win32";
       const child = spawn(SHELL.bin, SHELL.argsFor(args.command), {
+        windowsVerbatimArguments: SHELL.windowsVerbatimArguments,
         cwd: base,
         windowsHide: true,
         ...(useGroup ? { detached: true } : {}),

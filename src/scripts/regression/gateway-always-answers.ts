@@ -46,10 +46,16 @@ export const check: RegressionCheck = {
     const requiredEnforced =
       /tool_choice_unsatisfied/.test(bridge) &&
       /externalToolChoice === "required"/.test(bridge);
-    // ④★토큰 두 축이 **같은 규칙**(Total ?? 단건). 한쪽만 합계면 클라 회계가 비대칭으로 틀린다
+    // ④★토큰 두 축이 **같은 규칙**. 한쪽만 합계면 클라 회계가 비대칭으로 틀린다
     //   — 2026-08-09 벤치에서 같은 비대칭이 "우리가 11배 효율적" 이라는 거짓을 만들었다.
-    const inTotal = /inputTokensTotal \?\? out\.usage\?\.inputTokens/.test(bridge);
-    const outTotal = /outputTokensTotal \?\? out\.usage\?\.outputTokens/.test(bridge);
+    //   ★규칙은 이제 `turnSpend` 한 곳이다(2026-09-23) — 두 축 모두, **스트리밍·비스트리밍
+    //    두 경로 모두** 거기서 읽는지 본다(한 경로만 옛 식으로 되돌려도 운다).
+    const inTotal =
+      /inputTokens: turnSpend\(out\.usage\)\?\.input\b/.test(bridge) &&
+      /const inTok = spend\?\.input\b/.test(bridge);
+    const outTotal =
+      /outputTokens: turnSpend\(out\.usage\)\?\.output\b/.test(bridge) &&
+      /const outTok = spend\?\.output\b/.test(bridge);
     // ⑤★특정 함수 강제(`tool_choice:{function:{name}}`)를 **노출 축소**로 집행한다.
     //   실측(2026-08-09): 그전엔 조용히 무시돼 강제한 것과 **다른 함수가 호출됐다**
     //   (set_voxel_layers 를 강제했는데 clear_scene). 목록에 없는 이름은 400 으로 알린다.
@@ -76,7 +82,7 @@ export const check: RegressionCheck = {
         requiredEnforced ? "tool_choice_unsatisfied" : "★조용히 텍스트가 나간다",
       ),
       assert(
-        "★토큰 입력·출력이 **같은 규칙**(Total ?? 단건)을 쓴다",
+        "★토큰 입력·출력이 **같은 규칙**(`turnSpend`)을 스트리밍·비스트리밍 모두에서 쓴다",
         inTotal && outTotal,
         `input=${String(inTotal)} output=${String(outTotal)}`,
       ),

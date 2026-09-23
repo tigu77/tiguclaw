@@ -408,9 +408,12 @@ let lastRateLimitSig = "";
  */
 const reportFastMode = createFastModeReporter();
 
+import { assertLiveModelAllowed } from "../regression-model-guard.js";
+
 export const runClaude = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  assertLiveModelAllowed();
   // externalTools/externalToolChoice(LLM 게이트웨이 함수콜 패스스루) — **지원한다**
   // (2026-08-09). ADR `2026-07-25-llm-gateway-openrouter-scope.md` §Decision-3 은 이걸
   // 스코프아웃했었다. 그 두 근거가 실사용 사고로 무너져 뒤집었다 — 상세는

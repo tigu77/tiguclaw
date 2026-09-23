@@ -93,7 +93,11 @@ export const check: RegressionCheck = {
       // ── ③ 경로 ──
       assert(
         "★env 블록이 홈과 앱 루트를 싣는다(cwd 는 턴마다 달라 홈과 무관하다)",
-        /tiguclaw home: \//.test(env) && /tiguclaw app root: \//.test(env),
+        ["home", "app root"].every((label) => {
+          const value = env.split("\n").find((line) => line.startsWith(`tiguclaw ${label}: `))
+            ?.slice(`tiguclaw ${label}: `.length).split("  (")[0];
+          return value !== undefined && path.isAbsolute(value);
+        }),
         env.split("\n").filter((l) => l.startsWith("tiguclaw ")).join(" · ") || "★두 줄이 없다",
       ),
       assert(

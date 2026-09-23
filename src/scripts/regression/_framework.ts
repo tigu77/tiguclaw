@@ -14,14 +14,19 @@
  */
 import { spawn, type SpawnOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { FAKE_NETWORK } from "../../core/llm-runtime/regression-model-guard.js";
 
 export interface Assertion {
   /** 사람이 읽는 단언 — 실패 시 그대로 보고된다. */
   readonly name: string;
   readonly ok: boolean;
+  /** Explicitly unmeasured platform-specific case; never counted as a pass. */
+  readonly skip?: string;
   /** 실제 관측값(실패 진단용). 통과해도 남긴다 — "왜 통과했나"가 보여야 한다. */
   readonly got: string;
 }
+
+export const skip = (name: string, reason: string): Assertion => ({ name, ok: false, got: reason, skip: reason });
 
 export interface RegressionCheck {
   /** 스위트 안에서 유일한 짧은 이름. */
@@ -181,3 +186,10 @@ export const i18nForContext = (
  */
 export const loadPluginModule = async <T>(relFromThisDir: string): Promise<T> =>
   (await import(new URL(relFromThisDir, import.meta.url).href)) as T;
+
+/**
+ * 가짜 `fetch` 에 **명시적 fake 표식**을 붙인다 — 회귀의 실제 모델 호출 차단 가드가 fetch 로만
+ * 통신하는 입구(Codex)를 이 스텁 아래서는 통과시킨다(`regression-model-guard.ts`).
+ */
+export const fakeNetwork = <F extends (...args: never[]) => unknown>(fn: F): F =>
+  Object.assign(fn, { [FAKE_NETWORK]: true });

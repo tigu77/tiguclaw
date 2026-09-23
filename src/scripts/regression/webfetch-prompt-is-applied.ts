@@ -13,9 +13,9 @@
  * ★처음엔 "회귀 프로세스엔 모델 인증이 없으니 추출은 반드시 실패한다" 고 **단정하고** 그
  *  위에 검사를 세웠다. 틀렸다 — 폴백 체인의 **로컬 모델(ollama)이 실제로 추출에 성공**해서
  *  검사가 빨간불이 났다(그리고 한 번에 24초를 먹었다). 기능이 도는 건 그렇게 확인됐지만,
- *  **환경에 따라 답이 갈리는 검사는 검사가 아니다.** 그래서 지금은 `timeout` 을 1초로 줘
- *  실패를 **결정적으로 만든 뒤** 폴백 계약을 본다(CI 엔 로컬 모델도 인증도 없다 — 어느
- *  쪽이든 같은 결과).
+ *  **환경에 따라 답이 갈리는 검사는 검사가 아니다.** 짧은 timeout도 모델 호출 자체를
+ *  막지 못했다. 이제 명시적 fake adapter로 실패·성공·부모 시한 중단을 검증한다.
+ *  인증 부재나 모델 응답 속도에 기대지 않는다.
  */
 import { createServer } from "node:http";
 import { sourceHas } from "./_wiring.js";
@@ -33,6 +33,24 @@ const BODY = "<html><body><h1>가격표</h1><p>기본 9,900원</p></body></html>
 
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
+  const { __setAdapterForTest } = await import("../../core/llm-runtime/index.js");
+  const oldNano = process.env.MODEL_TIER_NANO;
+  process.env.MODEL_TIER_NANO = "anthropic:regression-fake";
+  let fakeCalls = 0;
+  let fakeMode: "failure" | "timeout" | "success" = "failure";
+  const restoreAdapter = __setAdapterForTest(async (_adapter, input) => {
+    fakeCalls++;
+    if (fakeMode === "timeout") {
+      await new Promise<void>((resolve) => {
+        if (input.abortSignal?.aborted) resolve();
+        else input.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new Error("webfetch-fake-aborted");
+    }
+    if (fakeMode === "failure") throw new Error("webfetch-fake-failure");
+    return { text: "9,900원", provider: "anthropic", adapter: "claude-agent-sdk", model: "regression-fake", threadKey: input.threadKey, newSession: false };
+  });
+  try {
 
   // ── ① 지시문(순수 함수) — 지어내기 금지 + 잘림 고지 ──────────────────────────
   const p1 = buildExtractPrompt({ url: "https://x/y", prompt: "가격만", content: "본문", nonce: "NONCE1" }).text;
@@ -127,13 +145,13 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "빈 prompt 는 모델 호출 없이 즉시 거절",
-      !empty.ok && empty.reason.includes("비어"),
+      !empty.ok && empty.reason.includes("비어") && fakeCalls === 0,
       empty.ok ? "★모델을 불렀다" : empty.reason,
     ),
   );
 
   // ── ③ ★핵심 — 추출이 실패해도 **본문을 잃지 않고, 조용하지 않다** ────────────
-  //  timeout 1초로 실패를 **만들어** 폴백 경로를 태운다(환경에 기대지 않는다 — 위 헤더 참조).
+  // Explicit fake throws; no credential discovery or real SDK timeout.
   {
     const srv = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -146,7 +164,7 @@ const run = async (): Promise<Assertion[]> => {
         createFileOpsMcpServer(process.cwd()),
         "file-ops",
       );
-      // timeout=1초 → 추출은 반드시 시한 초과. 폴백 경로를 결정적으로 태운다.
+      // Explicit fake failure deterministically exercises fallback.
       const r = await mcp.callTool("WebFetch", {
         url: `http://127.0.0.1:${port}/`,
         prompt: "가격만 뽑아줘",
@@ -167,6 +185,11 @@ const run = async (): Promise<Assertion[]> => {
           text.includes("⚠️") ? "실패 고지 확인" : "★조용히 본문만 돌려줬다 — 사고 재발",
         ),
       );
+      out.push(assert("fallback reached explicit fake", fakeCalls > 0, String(fakeCalls)));
+      fakeMode = "success";
+      const success = await mcp.callTool("WebFetch", { url: `http://127.0.0.1:${port}/`, prompt: "가격만" });
+      const successText = typeof success === "string" ? success : JSON.stringify(success);
+      out.push(assert("fake extraction success is returned", successText.includes("9,900원"), successText.slice(0, 120)));
       // prompt 없이 부르면 종전대로 본문만 — 고지 문구가 끼어들지 않는다.
       const plain = await mcp.callTool("WebFetch", { url: `http://127.0.0.1:${port}/` });
       const ptext = typeof plain === "string" ? plain : JSON.stringify(plain);
@@ -211,6 +234,7 @@ const run = async (): Promise<Assertion[]> => {
   // ── ⑤ 호출자가 준 시한이 추출까지 덮는다 ────────────────────────────────────
   //  안 그러면 `timeout: 5` 라고 적은 쪽이 30초를 기다린다(시한을 준 이유가 사라진다).
   {
+    fakeMode = "timeout";
     const t0 = Date.now();
     await extractFromContent({ url: "https://x", prompt: "가격만", content: "본문", timeoutMs: 300, nonce: "n2" });
     const ms = Date.now() - t0;
@@ -293,6 +317,11 @@ const run = async (): Promise<Assertion[]> => {
   }
 
   return out;
+  } finally {
+    restoreAdapter();
+    if (oldNano === undefined) delete process.env.MODEL_TIER_NANO;
+    else process.env.MODEL_TIER_NANO = oldNano;
+  }
 };
 
 export const check: RegressionCheck = {

@@ -260,7 +260,8 @@ const runShellHook = (
   new Promise((resolve) => {
     const child =
       process.platform === "win32"
-        ? spawn(process.env.ComSpec || "cmd", ["/c", command], {
+        ? spawn(process.env.ComSpec || "cmd", ["/d", "/s", "/c", `"${command}"`], {
+            windowsVerbatimArguments: true,
             timeout: timeoutMs,
           })
         : spawn("sh", ["-c", command], {

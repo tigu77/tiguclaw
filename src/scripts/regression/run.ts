@@ -6,7 +6,8 @@
  *  하므로 그 접두를 피한다.
  *
  * 격리: 시작 시 TIGUCLAW_HOME 을 임시 디렉터리로 강제한다 — 실행 중인 데몬·실제 홈·실제
- * DB 를 절대 건드리지 않는다. 끝나면 지운다.
+ * DB 를 절대 건드리지 않는다. 끝나면 지운다. 홈·cwd 의 `.env` 는 **읽지 않는다**
+ * (`TIGUCLAW_DISABLE_ENV_FILE=1`, 자식 상속) — 필요한 값은 검사가 자기 env 로 준다.
  *
  * ── 부분 실행 (2026-09-11) ────────────────────────────────────────────────────────
  *
@@ -27,11 +28,17 @@
  *
  *  이 셋은 `regression-runner-partial-is-not-green` 이 **러너를 실제로 돌려서** 지킨다.
  */
-// ★**가장 먼저** — `<home>/.env`(레포 폴백) 를 여기서 태워 버린다 (2026-09-11 G5).
-//  아래의 `delete process.env.DATA_DIR` 과 튜닝 env 봉인이 «마지막» 이 되려면 `.env` 로드가
-//  그보다 **앞서** 끝나야 한다. 종전엔 이 import 가 없어서, 봉인 뒤에 동적 import 체인이
-//  `load-env` 를 태우며 지워 둔 키를 다시 채웠다(`loadEnvFile` 은 빈 키를 채운다).
-import "../../core/load-env.js";
+// ★★**이 파일은 제품 모듈을 정적 import 하지 않는다** (2026-09-23).
+//  종전엔 여기 `import "../../core/load-env.js"` 가 있었다(2026-09-11 G5 — 지운 `DATA_DIR` 이
+//  나중 로드에 되살아나는 것을 «먼저 태워 버리기» 로 막으려고). 그런데 ESM 은 정적 import 를
+//  **본문보다 먼저** 평가하므로, 그 로드는 아래의 임시 홈 확정보다 앞서 **운영 홈 `.env`**
+//  (`TIGUCLAW_HOME` 또는 `~/.tiguclaw`)와 **cwd `.env`** 를 읽었다 — 비밀·DB 경로가 스위트에
+//  들어왔다. 순서를 문장으로 옮겨도 소용없다(정적 import 는 끌어올려진다).
+//  ★고친 방식: 아래 부트스트랩이 **환경파일 로드 스위치를 끄고**(`TIGUCLAW_DISABLE_ENV_FILE=1`,
+//   자식은 상속) 임시 홈·`DATA_DIR` 삭제·튜닝 봉인을 확정한 **뒤에만** 제품 모듈을 동적
+//   import 한다. 그러면 «지운 키가 되살아난다» 는 경로 자체가 없다(파일을 안 읽는다).
+//  `regression-runner-env-isolation` 이 이 러너 사본을 더미 sentinel 환경에서 **실제로 돌려** 지킨다.
+//  아래 정적 import 는 Node 내장과 **타입 전용**(런타임에 지워진다)뿐이어야 한다.
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -102,6 +109,15 @@ const countLeftoverHomes = (mine: string, mineRemoved: boolean): string[] => {
   }
 };
 
+// ── 부트스트랩 — 여기서 격리를 **확정**한 뒤에만 제품 모듈을 동적 import 한다 ─────────
+// ★환경파일 로드 스위치를 **가장 먼저** 끈다(`src/core/load-env.ts` 의 `DISABLE_ENV_FILE_KEY`).
+//  이 프로세스와 자식(env 상속) 어디서 `load-env` 가 평가돼도 `<home>/.env`·`<cwd>/.env` 를
+//  **열지 않는다.** 여기서 그 모듈을 import 해 상수를 받으면 그 import 가 곧 로드라 문자열로 둔다
+//  — 두 곳이 갈리면 `regression-runner-env-isolation` 이 sentinel 유입으로 빨개진다.
+process.env.TIGUCLAW_DISABLE_ENV_FILE = "1";
+// Inherited by regression children; never infer safety from missing credentials.
+process.env.TIGUCLAW_REGRESSION_NO_LIVE_MODEL = "1";
+
 const sweptAtStart = sweepStaleHomes();
 
 const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-"));
@@ -110,25 +126,18 @@ process.env.TIGUCLAW_HOME = home;
 //  그 환경에서 검사가 **라이브 DB** 를 친다(실제로 삭제 문을 쓰는 검사가 있다). 격리는
 //  "홈만 바꿨다" 로는 부족하다.
 //
-// ★**이 `delete` 가 «마지막» 이 되게 위에서 `load-env` 를 먼저 태운다** (2026-09-11 G5).
-//  종전엔 이 줄이 먼저였고, `load-env.ts` 의 1회 로드가 **나중**이었다(러너는 대부분을 동적
-//  import 하고 그 체인 어딘가가 `load-env` 를 탄다 — 실행 로그에 `[env] loaded …` 가 찍힌다).
-//  `process.loadEnvFile` 은 **비어 있는 키를 채우므로** 지워 둔 자리에 `.env` 의 `DATA_DIR` 이
-//  그대로 들어왔다. 실측: `delete` 직후 `undefined` → `load-env` 를 타는 모듈 import 후
-//  `"…/LIVE_DATA"` → `resolveDataDir()` 이 그 경로를 반환.
-//  ★오늘 레포 `.env` 에 `DATA_DIR` 이 없어서 안 터졌고, 터져도 `assertIsolated()` 가 **요란하게
-//   던진다**(조용한 오염은 아니다). 그래도 고치는 이유: 그 가드를 **안 부르는 검사**는 그대로
-//   그 경로를 쓰고, 무엇보다 «지웠는데 되살아난다» 는 순서 결함 자체가 다음 사람을 속인다.
+// ★종전(2026-09-11 G5)엔 «지운 자리를 `.env` 로드가 다시 채운다» 가 문제였고 `load-env` 를
+//  먼저 태우는 것으로 풀었는데, 그 해법이 운영 `.env` 를 읽는 결함이 됐다(파일 헤더). 이제는
+//  위 스위치로 **로드 자체가 없으므로** 이 `delete` 는 셸이 물려준 값만 걷으면 된다.
 //  ★**봉인 값을 넣는 방식은 틀렸다** — `""` 도 `path.join(home,"data")` 도 시도했다가 전체
 //   스위트가 무너졌다(각각 35·37건 실패). 전자는 `assertIsolated()` 가 «설정됨» 으로 보고
-//   던지고, 후자는 자식이 그 값을 **상속**받아 전부 같은 DB 를 친다. 계약은 «지운다» 가 맞고,
-//   고쳐야 할 것은 **순서**였다.
+//   던지고, 후자는 자식이 그 값을 **상속**받아 전부 같은 DB 를 친다. 계약은 «지운다» 다.
 delete process.env.DATA_DIR;
-// ★튜닝 env 봉인 (2026-07-30 감사 지적) — `load-env.ts` 가 **레포 `.env` 를 폴백 로드**해서
+// ★튜닝 env 봉인 (2026-07-30 감사 지적) — 종전엔 `load-env.ts` 가 **레포 `.env` 를 폴백 로드**해서
 //  dev `.env` 의 값이 스위트 판정에 들어갔다. 실측: `CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS=200000`
 //  이면 history-compaction-budget 2건이, `WORKER_TIMEOUT_MS=1000` 이면 timeout-layering 1건이
-//  **코드 무수정으로 빨간불**이 됐다. public 트리는 `.env` 가 없어 이 결합이 안 보였다 —
-//  "내 머신에선 빨간불"의 정석적 원인이라 검사가 읽는 상수는 전부 기본값으로 고정한다.
+//  **코드 무수정으로 빨간불**이 됐다. 파일 로드는 이제 꺼졌지만 **셸 env** 로도 같은 값이 들어올
+//  수 있으므로 봉인은 유지한다 — 검사가 읽는 상수는 전부 기본값으로 고정한다.
 for (const k of Object.keys(process.env)) {
   if (
     /^CODEX_/.test(k) ||
@@ -155,9 +164,16 @@ for (const k of Object.keys(process.env)) {
 // 실수로 라이브 채널이 뜨지 않게(부팅 경로를 안 타지만 방어).
 process.env.TELEGRAM_BOT_TOKEN = "";
 
+let closeInitializedStore: (() => void) | undefined;
 const main = async (): Promise<void> => {
+  // Native fs failures cannot be caught inside a check. Probe the executable
+  // before importing checks or product modules; environment is already sealed.
+  const { assertRegressionRuntime } = await import("./_runtime-preflight.js");
+  assertRegressionRuntime();
+
   // store 를 쓰는 검사가 있으므로 홈 확정 후 초기화(import 순서 의존 — 동적 import 유지).
-  const { initStore } = await import("../../store/sessions.js");
+  const { initStore, closeStore } = await import("../../store/sessions.js");
+  closeInitializedStore = closeStore;
   initStore();
 
   // ★디렉터리 스캔 — 손으로 관리하는 명시 목록이었다 (2026-07-30 원칙 검토 지적).
@@ -226,6 +242,7 @@ const main = async (): Promise<void> => {
   }
 
   let failed = 0;
+  let skipped = 0;
   let total = 0;
   for (const c of selected) {
     const started = Date.now();
@@ -237,13 +254,18 @@ const main = async (): Promise<void> => {
       console.log(`🔴 ${c.name} — 검사 자체가 던졌다: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
-    const bad = results.filter((r) => !r.ok);
-    total += results.length;
+    const omitted = results.filter((r) => r.skip !== undefined);
+    const bad = results.filter((r) => r.skip === undefined && !r.ok);
+    skipped += omitted.length;
+    const measured = results.length - omitted.length;
+    total += measured;
     failed += bad.length;
     const ms = Date.now() - started;
-    console.log(`${bad.length === 0 ? "✅" : "🔴"} ${c.name} (${results.length}건, ${ms}ms) — ${c.guards}`);
+    const mark = bad.length > 0 ? "🔴" : omitted.length > 0 ? "⏭️" : "✅";
+    console.log(`${mark} ${c.name} (${measured}건, ${ms}ms) — ${c.guards}`);
     for (const r of results) {
-      if (!r.ok) console.log(`     🔴 ${r.name} — 실제: ${r.got}`);
+      if (r.skip !== undefined) console.log(`     ⏭️ SKIP ${r.name} — ${r.skip}`);
+      else if (!r.ok) console.log(`     🔴 ${r.name} — 실제: ${r.got}`);
     }
   }
   // ★부분 실행은 **«통과» 라고 말하지 않는다** — 그 한 문장이 이 필터의 안전장치 전부다.
@@ -259,6 +281,7 @@ const main = async (): Promise<void> => {
         ? `\n✅ 회귀 스위트 통과 — ${total}건`
         : `\n🔴 회귀 스위트 실패 — ${failed}/${total}건`,
   );
+  console.log(`⏭️ 명시적 비대상 ${skipped}건 (실행/통과 건수에 포함하지 않음)`);
   process.exitCode = failed === 0 ? 0 : 1;
 };
 
@@ -283,8 +306,8 @@ const main = async (): Promise<void> => {
  */
 const closeOwnStore = async (): Promise<void> => {
   try {
-    const { closeStore } = await import("../../store/sessions.js");
-    closeStore();
+    // A failed preflight must not evaluate product modules merely to clean up.
+    closeInitializedStore?.();
   } catch {
     /* 저장소를 안 열었으면 닫을 것도 없다 */
   }

@@ -10,6 +10,7 @@
  */
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
+import { nodeCommand } from "./_shell-fixture.js";
 
 const home = process.env.TIGUCLAW_HOME ?? "";
 const cwd = path.join(home, "work");
@@ -19,6 +20,7 @@ mkdirSync(marks, { recursive: true });
 
 /** 훅이 실제로 돌았다는 **부작용** — 파일이 생겼나로 본다(반환값만 보면 안 돈 것도 통과한다). */
 const mark = (n: string): string => path.join(marks, n);
+const markCommand = (n: string, extra = ""): string => nodeCommand(`require("fs").writeFileSync(${JSON.stringify(mark(n))}, "");${extra}`);
 const fired = (n: string): boolean => existsSync(mark(n));
 
 // ── 홈 settings.json — 다섯 이벤트 전부 + matcher·차단·주입·실패·행 케이스 ──────────
@@ -31,7 +33,7 @@ writeFileSync(
           // ①matcher 가 맞는 것만 돈다 — Bash 에만 걸고 Read 로는 안 돌아야 한다.
           {
             matcher: "^Bash$",
-            hooks: [{ type: "command", command: `touch '${mark("pre-bash")}'` }],
+            hooks: [{ type: "command", command: markCommand("pre-bash") }],
           },
           // ②차단 — exit 2 + stderr 가 사유가 된다.
           {
@@ -39,7 +41,7 @@ writeFileSync(
             hooks: [
               {
                 type: "command",
-                command: `echo '이 도구는 정책상 금지입니다' >&2; exit 2`,
+                command: nodeCommand('console.error("이 도구는 정책상 금지입니다");process.exitCode=2;'),
               },
             ],
           },
@@ -47,7 +49,7 @@ writeFileSync(
           {
             matcher: "^Flaky$",
             hooks: [
-              { type: "command", command: `touch '${mark("flaky")}'; exit 1` },
+              { type: "command", command: markCommand("flaky", "process.exitCode=1;") },
             ],
           },
           // ④★손자가 파이프를 물고 남는 경우 — spawn timeout 은 sh 만 죽인다.
@@ -55,7 +57,7 @@ writeFileSync(
           {
             matcher: "^Hang$",
             hooks: [
-              { type: "command", command: `sleep 8 &`, timeout: 1 },
+              { type: "command", command: nodeCommand('require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},8000)"],{stdio:"inherit"});'), timeout: 1 },
             ],
           },
           // ⑤★stdin 을 안 읽고 **즉시 끝나는** 훅 — 파이프가 닫힌 뒤 우리가 쓰게 되고
@@ -68,7 +70,7 @@ writeFileSync(
           },
         ],
         PostToolUse: [
-          { hooks: [{ type: "command", command: `touch '${mark("post")}'` }] },
+          { hooks: [{ type: "command", command: markCommand("post") }] },
         ],
         // ⑤stdout 이 모델 컨텍스트로 주입되는 경로(UserPromptSubmit 만 반환에 실린다).
         UserPromptSubmit: [
@@ -76,18 +78,18 @@ writeFileSync(
             hooks: [
               {
                 type: "command",
-                command: `touch '${mark("ups")}'; echo '주입된-컨텍스트-표식'`,
+                command: markCommand("ups", 'console.log("주입된-컨텍스트-표식");'),
               },
             ],
           },
         ],
-        Stop: [{ hooks: [{ type: "command", command: `touch '${mark("stop")}'` }] }],
+        Stop: [{ hooks: [{ type: "command", command: markCommand("stop") }] }],
         // ★`Stop` 의 짝 — 실패한 턴에서만 난다(2026-09-08).
         StopFailure: [
-          { hooks: [{ type: "command", command: `touch '${mark("stopfail")}'` }] },
+          { hooks: [{ type: "command", command: markCommand("stopfail") }] },
         ],
         SubagentStop: [
-          { hooks: [{ type: "command", command: `touch '${mark("subagent")}'` }] },
+          { hooks: [{ type: "command", command: markCommand("subagent") }] },
         ],
       },
     },
@@ -238,7 +240,7 @@ const base = { cwd, channel: "regr", threadKey: "regr:hooks" };
         PreToolUse: [
           {
             matcher: "^Bash$",
-            hooks: [{ type: "command", command: `touch '${mark("proj-bash")}'` }],
+            hooks: [{ type: "command", command: markCommand("proj-bash") }],
           },
         ],
       },

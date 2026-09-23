@@ -20,6 +20,7 @@
  *     - output.jsonlPath 있음 (claude) → indexJsonlIfNeeded (jsonl catch-up, 진실 소스)
  *     - 없음 (codex-oauth·openai) → appendTranscript user + assistant 직접 INSERT
  */
+import { turnSpend } from "./turn-spend.js";
 import { getRegisteredMcpServers } from "../mcp-registry.js";
 import {
   canReplay,
@@ -31,6 +32,7 @@ import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
 import { resolveProviderConn } from "./provider-registry.js";
+import { assertLiveModelAllowed } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { setSummarizerCooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
@@ -687,9 +689,11 @@ const accumulatePrefixCacheRollup = (
   const now = Date.now();
   if (rollupWindowStart === 0) rollupWindowStart = now;
   rollupTurns += 1;
-  // 턴 전체 소비 기준(Total 우선) — 호출 1회가 아니라 "이 턴이 태운 총량".
-  const input = output.usage?.inputTokensTotal ?? output.usage?.inputTokens;
-  const cached = output.usage?.cachedTokensTotal ?? output.usage?.cachedTokens;
+  // 턴 전체 소비 기준 — 호출 1회가 아니라 "이 턴이 태운 총량". 층 선택은 `turnSpend` 한 곳
+  //  (채팅 줄·잡 합계·게이트웨이와 같은 값). 캐시를 보고하지 않은 턴은 적중률에서 뺀다.
+  const spend = turnSpend(output.usage);
+  const input = spend?.input;
+  const cached = spend?.cached;
   if (typeof input === "number" && typeof cached === "number" && input > 0) {
     const adapter = adapterLabel(spec.adapter);
     const b = rollup.get(adapter) ?? { turns: 0, input: 0, cached: 0 };
@@ -827,6 +831,11 @@ export const publishTurnDone = (
             cachedTokensTotal: output.usage.cachedTokensTotal,
           }
         : {}),
+      // 턴 실비용 — 층 선택을 여기서 한 번(`turn-spend.ts`). 화면·잡 합계는 이걸 읽는다.
+      ...(() => {
+        const spend = turnSpend(output.usage);
+        return spend !== undefined ? { spend } : {};
+      })(),
       ...(input.subagentDepth !== undefined
         ? { subagentDepth: input.subagentDepth }
         : {}),
@@ -1575,10 +1584,19 @@ const runPool = async (
   throw lastError ?? new Error("llm-runtime: 모델 풀이 비어있음.");
 };
 
+// Internal helpers may select a profile before entering runRegionA.
+// ★facade 는 `fetch` 스텁이면 통과시킨다 — 그 뒤 실제 어댑터 입구가 각자 다시 판정한다
+//  (Claude·OpenAI 는 스텁과 무관하게 막힌다). 명시적 fake 어댑터는 종전대로 통과.
+export const assertRuntimeModelAllowed = (): void => {
+  if (!adapterForTest) assertLiveModelAllowed({ fetchOnly: true });
+};
+
 export const runRegionA = async (
   rawInput: RegionASdkInput,
   opts?: { specs?: ModelSpec[]; chain?: ModelSpec[][] },
 ): Promise<RegionASdkOutput> => {
+  // Before enrichment/profile selection: these can discover authentication or call services.
+  assertRuntimeModelAllowed();
   // 전사 seam(contract §1) — 오디오/음성 첨부를 chain 루프 *전* 1회 전사해 Attachment.transcript 를
   // 채운다. best-effort(enrichTranscripts 자체가 첨부 단위 격리·never-throw). 다운스트림 3 어댑터
   // formatAttachments + persistOutput 이 분기 0 으로 동일 소비 → #2 구조보장·resume 재전사 0.

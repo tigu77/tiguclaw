@@ -277,6 +277,83 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ── ★종료 이벤트는 스토어가 순서를 모를 때도 드로어에 반영된다 (2026-09-24, 싱크 레드팀 P2) ──
+    //  부팅 하이드레이션은 스토어를 안 거쳐 상태가 null 이다. 그때(또는 갭·epoch 변경으로
+    //  `resnapshot` 일 때) 온 종료 이벤트를 버리면, 이어 받은 진행 중 목록에 그 잡이 없어 카드가
+    //  «중단됨» 이 됐다. 드로어의 **실제** `gateWorkerEvent` 본문과 **실제** 종료 상태 집합을
+    //  떼어 **실제** 스토어 위에서 표로 돌린다(재검토: `done` 한 칸만 재던 첫 판은 좁힘·순서
+    //  이동 변이가 전부 살아남았다).
+    {
+      const drawer = readFileSync(path.join(DASH, "js/background-drawer.js"), "utf8");
+      const body = /window\.gateWorkerEvent = \(p\) => \{[\s\S]*?\n {6}\};/.exec(drawer)?.[0] ?? "";
+      const setSrc = /const TERMINAL_JOB_STATUS = (new Set\(\[[^\]]*\]\));/.exec(drawer)?.[1] ?? "";
+      type Res = ReturnType<typeof store.resource>;
+      const gateOn = async (
+        seed: { epoch: string; revision: number } | null,
+      ): Promise<{ gate: (p: unknown) => string; res: Res }> => {
+        const w: Record<string, unknown> = {};
+        const c: Record<string, unknown> = { window: w, console: { warn: (): void => {}, error: (): void => {} } };
+        vm.createContext(c);
+        vm.runInContext(src, c);
+        const rs = w.resourceStore as typeof store;
+        let first = true;
+        const res = rs.resource("running-work", async () => {
+          // 첫 요청만 seed 로 답하고, 게이트가 건 재요청은 영영 안 끝난다(스냅샷이 오기 전 창을 본다).
+          if (first && seed !== null) { first = false; return { ...seed, data: [] }; }
+          return new Promise(() => {});
+        });
+        if (seed !== null) await res.resnapshot();
+        c.workRes = res;
+        c.applyJobEvent = (prev: unknown): unknown => prev;
+        vm.runInContext(`var TERMINAL_JOB_STATUS = ${setSrc};`, c);
+        vm.runInContext(body, c);
+        return { gate: w.gateWorkerEvent as (p: unknown) => string, res };
+      };
+      const E = "ep-1";
+      const TERMINAL = ["done", "failed", "cancelled", "interrupted"];
+      const cases: Array<[string, { epoch: string; revision: number } | null, number, string]> = [
+        ["스토어 비어 있음", null, 7, E],
+        ["epoch 바뀜", { epoch: "ep-old", revision: 3 }, 7, E],
+        ["갭(창 밖으로 밀림)", { epoch: E, revision: 3 }, 7, E],
+      ];
+      const wrong: string[] = [];
+      let resnapNotCalled = 0;
+      for (const [label, seed, rev, ep] of cases) {
+        for (const status of [...TERMINAL, "running"]) {
+          const { gate, res } = await gateOn(seed);
+          const before = res.stats().resnapshots;
+          const got = gate({ epoch: ep, revision: rev, jobId: "j", status });
+          const want = status === "running" ? "resnapshot" : "apply";
+          if (got !== want) wrong.push(`${label}/${status}=${got}`);
+          if (res.stats().resnapshots <= before) resnapNotCalled += 1;
+        }
+      }
+      const { gate: gateSeen } = await gateOn({ epoch: E, revision: 7 });
+      const seen = TERMINAL.map((s) => gateSeen({ epoch: E, revision: 5, jobId: "j", status: s }));
+      out.push(
+        assert(
+          "★드로어 게이트 본문과 종료 상태 집합을 떼어냈다(없으면 아래는 공짜 초록)",
+          body !== "" && setSrc !== "",
+          `본문 ${body.length}자 · 집합 ${setSrc}`,
+        ),
+        assert(
+          "★★순서를 모를 때(비어 있음·epoch 바뀜·갭) 온 종료 이벤트 네 종류가 전부 카드에 반영되고, 진행 중은 종전대로 스냅샷을 다시 받는다",
+          wrong.length === 0,
+          wrong.length === 0 ? `${cases.length}×5 칸 일치` : `★${wrong.join(" · ")}`,
+        ),
+        assert(
+          "★반영해도 스냅샷 재요청은 걸린다(판정을 스토어 앞으로 옮기면 스토어가 이 이벤트를 모른다)",
+          resnapNotCalled === 0,
+          resnapNotCalled === 0 ? "모든 칸에서 재요청" : `★재요청 없음 ${resnapNotCalled}칸`,
+        ),
+        assert(
+          "이미 본 종료 이벤트(`ignore`)는 종전대로 버린다(넓힘 방지)",
+          seen.every((d) => d === "ignore"),
+          seen.join(","),
+        ),
+      );
+    }
+
     // ── ④ 실제로 실리는가 — 두 목록 대조 ──────────────────────────────────
     const manifest = JSON.parse(
       readFileSync(path.join(DASH, "js/_manifest.json"), "utf8"),

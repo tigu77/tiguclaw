@@ -14,23 +14,24 @@
  *     검사가 있다.**
  *
  * 실측(격리 프로브): `delete` 직후 `undefined` → `load-env` 를 타는 모듈 import 후
- * `"…/LIVE_DATA"` → `resolveDataDir()` 이 그 경로를 반환. 오늘 레포 `.env` 에 `DATA_DIR` 이
- * **없어서** 안 터졌을 뿐이고, 한 줄 추가되는 날 터진다.
+ * `"…/LIVE_DATA"` → `resolveDataDir()` 이 그 경로를 반환.
  *
- * ★고침: 지우지 말고 **빈 문자열로 못박는다.** `loadEnvFile` 은 **키가 있으면 안 덮으므로**
- *  그게 봉인이 되고, `resolveDataDir()` 은 빈 값을 «미설정» 으로 봐 **홈 기준**으로 간다.
+ * ★계약은 «지운다» 다 — 봉인 **값**(`""`·임시 경로)을 넣는 방식은 둘 다 실측으로 무너졌다
+ *  (`""` 는 `assertIsolated()` 가 «설정됨» 으로 던지고, 임시 경로는 자식이 상속해 전부 같은 DB 를
+ *  쳤다 — 35·37건 실패). 그래서 «지운 자리를 나중 로드가 다시 채우지 못하게» 가 과제다.
  *
- * ★**임시 경로로 못박는 것은 틀렸다** — 처음에 그렇게 고쳤다가 전체 스위트가 **37건 실패 ·
- *  총 건수 3,247 → 2,894** 로 무너졌다. 자식 프로세스를 띄우는 검사들이 그 값을 **상속**받아
- *  전부 **같은 DB** 를 쳤기 때문이다(종전 `delete` 에는 «자식이 각자 자기 홈을 잡는다» 는
- *  숨은 효과가 있었다). 빈 문자열만이 둘을 다 만족한다 — 그래서 ①이 «어떤 값인가» 가 아니라
- *  «빈 값이 봉인으로 작동하는가» 를 재고, ②가 대조군으로 «지우면 뚫린다» 를 재며, 자식 상속
- *  축은 스위트 전체가 매일 증명한다(지금 이 줄이 그 안에서 돌고 있다).
+ * ★★**회귀 러너는 이 검사 대상이 아니다** (2026-09-23). 러너는 2026-09-11 에 «`load-env` 를
+ *  먼저 태운다» 로 풀었는데, 그 정적 import 가 임시 홈 확정 **전에** 운영 홈·cwd `.env` 를 읽는
+ *  결함이었다(종전 ②는 그 순서를 **소스 문자열로** 강제하고 있었다 — 결함을 계약으로 굳힌 셈).
+ *  이제 러너는 `.env` 를 **아예 읽지 않고**(`TIGUCLAW_DISABLE_ENV_FILE=1`), 그것은
+ *  `regression-runner-env-isolation` 이 러너 사본을 **실제로 돌려** 잰다.
  *
- * ★이 검사는 **돌려서** 잰다 — 소스에 `delete` 가 없는지만 보면 «왜 안 되는지» 를 못 잰다.
- *  그리고 **대조군**(`delete` 방식이면 실제로 뚫린다)을 같이 돌린다: 그게 없으면 이 검사가
- *  무엇을 막는지 다음 사람이 알 수 없고, Node 가 `loadEnvFile` 의 «안 덮는다» 성질을 바꾸는
- *  날 이 봉인이 조용히 무의미해진 것도 못 본다.
+ * 남은 것:
+ *  ① Node 기제 — `loadEnvFile` 은 빈 키를 채우고, 있는 키는 안 덮는다. `e2e-openrouter` 의
+ *    «먼저 로드 → 나중에 지움» 계약과 제품의 «홈이 이김» 이 둘 다 이 성질 위에 있다.
+ *  ② `e2e-openrouter` — **실제 인증이 필요한 E2E** 라 `.env` 를 읽는 것이 목적이다(오프라인
+ *    회귀처럼 차단하면 목적이 깨진다). 그래서 그쪽 계약은 그대로 «로드가 `delete` 보다 먼저».
+ *    프로세스 시작 시점이라 돌려서 잴 수 없어 소스 순서로 본다(정직하게 밝힌다).
  */
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,8 +64,8 @@ const probe = (mode: "seal" | "delete", envPath: string, sealed: string): string
 export const check: RegressionCheck = {
   name: "data-dir-seal-survives-env-load",
   guards:
-    "회귀 러너·e2e 가 `delete process.env.DATA_DIR` 로 격리해서, `.env` 로드가 그 자리를 다시 " +
-    "채우면 검사들이 **라이브 데이터 디렉터리**를 치던 것(삭제 문을 쓰는 검사가 있다)",
+    "e2e 가 `delete process.env.DATA_DIR` 로 격리해서, `.env` 로드가 그 자리를 다시 " +
+    "채우면 **라이브 데이터 디렉터리**를 치던 것 (회귀 러너 쪽은 regression-runner-env-isolation)",
   async run(): Promise<Assertion[]> {
     const out: Assertion[] = [];
     const tmp = mkdtempSync(path.join(tmpdir(), "datadir-seal-"));
@@ -91,18 +92,16 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ── ② 그래서 두 격리 지점이 `.env` 로드를 **먼저** 끝내는가 ────────────────────
-    // ★봉인 «값» 을 넣는 쪽으로 고치면 안 된다 — 실측으로 둘 다 무너졌다: 임시 경로는 자식이
-    //  **상속**받아 전부 같은 DB 를 치고(37건 실패), 빈 문자열은 `_framework.ts` 의
-    //  `assertIsolated()` 가 «설정됨» 으로 보고 던진다(35건 실패). 이 레포의 계약은 «지운다»
-    //  이고, 고칠 것은 **순서**였다. 그래서 여기서 재는 것도 «무엇으로 지우나» 가 아니라
-    //  «`.env` 로드가 그 지움보다 앞서 끝나나» 다.
+    // ── ② `e2e-openrouter` 가 `.env` 로드를 `delete` 보다 **먼저** 끝내는가 ─────────────
+    // ★회귀 러너는 여기서 뺐다 — 러너는 `.env` 를 읽지 않는 것이 계약이고(헤더), 그 행동은
+    //  `regression-runner-env-isolation` 이 실행으로 잰다. 러너에 이 순서를 강제하면 운영
+    //  `.env` 를 먼저 읽으라는 요구가 된다.
     // ★프로세스 시작 시점이라 돌려서 잴 수 없는 자리다 — 소스 순서로 본다(정직하게 밝힌다).
     // ★배포 레포엔 `e2e-*` 가 **없다**(manifest 가 `^src/scripts/(e2e-|verify-|probe-)` 를
     //  제외한다). 종전엔 그냥 읽어서 배포 트리 회귀가 **ENOENT 로 던졌다**(실측 2026-09-12
     //  dev 싱크). 없는 대상을 조용히 통과시키지 않고 **없다고 말하고** 넘긴다 — 있는데
     //  순서가 틀린 것과 애초에 대상이 아닌 것은 다른 사실이다(sync-public §8 의 규칙).
-    for (const rel of ["src/scripts/regression/run.ts", "src/scripts/e2e-openrouter.ts"]) {
+    for (const rel of ["src/scripts/e2e-openrouter.ts"]) {
       const abs = path.join(REPO, rel);
       if (!existsSync(abs)) {
         out.push(

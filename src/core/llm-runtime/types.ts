@@ -10,6 +10,7 @@
  * 첫 어댑터 안쪽 캡슐화. V3 두 번째 어댑터 spike 시 면 추가 = additive 변경.
  */
 import type { ReplayGuard } from "./replay-safety.js";
+import type { TurnSpend } from "./turn-spend.js";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { Attachment, ChannelName, TurnOrigin } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
@@ -788,6 +789,12 @@ export interface RegionATurnDonePayload {
   outputTokensTotal?: number;
   /** 턴 전체 캐시 적중 합계 — 진짜 적중률 = cachedTokensTotal / inputTokensTotal. */
   cachedTokensTotal?: number;
+  /**
+   * ★턴 실비용 (2026-09-23) — 위 두 층(마지막 호출 / 턴 합계) 중 무엇을 쓸지 **발행 시 한 번**
+   * 고른 값(`turnSpend`). 화면·잡 합계는 이걸 읽는다 — 소비자가 층을 다시 고르지 않는다.
+   * 입력 미보고면 생략.
+   */
+  spend?: TurnSpend;
   /**
    * 하위 작업 컨텍스트 — self-growth 가 채널 턴 vs 매니저 vs 서브에이전트를 구분.
    *  - subagentDepth: spawn_agent child 면 ≥1, 메인 턴이면 0/생략.

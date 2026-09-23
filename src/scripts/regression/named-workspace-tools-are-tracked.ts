@@ -24,10 +24,11 @@
  */
 import { readdir, readFile, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = new URL("../../../", import.meta.url);
-const REPO_DIR = REPO.pathname;
+const REPO_DIR = fileURLToPath(REPO);
 
 const tracked = (rel: string): Promise<boolean> =>
   new Promise((res) => {

@@ -182,7 +182,7 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "supervisor 판정과 종료 판정이 같은 사실을 본다",
-      hasSupervisorRespawn() ===
+      hasSupervisorRespawnOn(process.platform) ===
         shouldExitForRestart({ platform: process.platform, respawnArranged: false }),
       `platform=${process.platform}`,
     ),

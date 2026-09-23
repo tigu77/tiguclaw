@@ -16,6 +16,7 @@
 process.env.CODEX_NO_PROGRESS_MS = "1200";
 process.env.CODEX_STALL_BACKOFF_MS = "5000";
 
+import { fakeNetwork } from "./_framework.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
 import { initStore } from "../../store/sessions.js";
 import type { RegionASdkInput } from "../../core/llm-runtime/types.js";
@@ -67,7 +68,7 @@ const run = async (mode: "read" | "stall"): Promise<void> => {
   const turnAc = new AbortController();
   const cancel = (): void => turnAc.abort(new UserCancelledError());
 
-  (globalThis as unknown as { fetch: unknown }).fetch = async (
+  (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async (
     _url: string,
     init: { signal?: AbortSignal },
   ): Promise<Response> => {
@@ -114,7 +115,7 @@ const run = async (mode: "read" | "stall"): Promise<void> => {
     // iteration 2 — 아무것도 안 보내고 매달린다.
     if (mode === "read") setTimeout(cancel, 300); // 무진전 한계(1200ms) 전 = SSE 읽는 중.
     return new Response(streamOf([], { stall: true, signal: init.signal }), { status: 200 });
-  };
+  });
 
   // 무진전 1200ms 에 스톨 진입 → backoff 5000ms 시작. 그 한복판에서 취소한다.
   if (mode === "stall") setTimeout(cancel, 2000);

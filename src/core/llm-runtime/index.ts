@@ -185,6 +185,11 @@ const MODEL_REJECTED_PATTERNS: RegExp[] = [
   /호출 실패[\s\S]{0,200}"param"\s*:\s*"model"/i,
   //  (b) OpenAI 모델 부재 정형 문구 — code 없이도 메시지 본문에 항상 등장.
   /does not exist or you do not have access/i,
+  // claude 실측 (2026-09-23) — 번들 CLI 가 새 모델보다 낡으면 API 가 400 으로 거절한다:
+  //  `API Error: 400 Claude Code 2.1.278 does not support this model; version 2.1.280 or
+  //   newer is required.` 404 도 `model:` 도 없어 위 패턴이 전부 빗나갔고, 풀 간 폴백
+  //  (프로파일 체인·override)이 안 돌았다(이틀에 두 번 — fable-5-1, opus-5-5).
+  /does not support this model/i,
 ];
 
 export const isModelRejected = (errStr: string): boolean =>

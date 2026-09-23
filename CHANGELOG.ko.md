@@ -8,6 +8,28 @@
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-09-23
+
+### Added
+
+- **Claude Opus 5.5 를 쓸 수 있습니다.** 함께 설치되는 Claude Code 를 2.1.280 으로 올렸습니다.
+  종전에는 이 모델을 고르면 *"does not support this model"* 로 실패했습니다.
+- **`computer-use` 의 `look` 이 지난 화면을 저장본으로 다시 보여줍니다.** 비서가 앞서 본 화면을
+  다시 확인할 때 새로 찍지 않습니다.
+
+### Changed
+
+- **Codex 가 같은 대화의 요청마다 같은 세션 식별자를 보냅니다.** 대화가 이어질 때 앞부분을
+  캐시로 다시 쓰기 쉬워집니다.
+
+### Fixed
+
+- **Claude 모델이 함께 설치된 Claude Code 보다 새로워 거절되면, 폴백 체인을 설정해 두었어도
+  다음 모델로 넘어가지 않던 것.** 이제 모델을 쓸 수 없는 경우로 보고 체인의 다음 모델로
+  넘어갑니다.
+- **비서가 앞 명령의 `cd` 가 다음 셸 명령까지 이어진다고 여겨 엉뚱한 폴더에서 명령을 실행하던
+  일을 줄였습니다.**
+
 ## [0.57.0] - 2026-09-22
 
 ### Added
@@ -2210,7 +2232,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0
 [0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2
 [0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1

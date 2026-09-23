@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-09-23
+
+### Added
+
+- **Claude Opus 5.5 is now available.** The bundled Claude Code is now 2.1.280. Choosing this
+  model used to fail with *"does not support this model"*.
+- **`computer-use`'s `look` can show an earlier screen again from its saved copy.** When the
+  assistant needs to recheck a screen it already saw, it no longer takes a new screenshot.
+
+### Changed
+
+- **Codex now sends the same session ID with every request in a conversation.** This makes it
+  easier to reuse the cached start of a conversation as it continues.
+
+### Fixed
+
+- **When a Claude model was rejected for being newer than the bundled Claude Code, a
+  configured fallback chain was not used.** This is now treated as an unavailable model, and
+  the next model in the chain takes over.
+- **The assistant sometimes assumed a `cd` from one shell command carried over to the next and
+  ran commands in the wrong folder.** This now happens less often.
+
 ## [0.57.0] - 2026-09-22
 
 ### Added
@@ -660,7 +682,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0
 [0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2
 [0.56.1]: https://github.com/tigu77/tiguclaw/compare/v0.56.0...v0.56.1

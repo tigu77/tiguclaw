@@ -60,7 +60,7 @@
     "deploy:dev": "sh bin/deploy-dev.sh"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.278",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
     "@openai/agents": "^0.18.0",
     "@openauthjs/openauth": "^0.4.3",
     "better-sqlite3": "^12.9.0",

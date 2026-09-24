@@ -187,20 +187,29 @@
         if (!Number.isFinite(shownIn) || shownIn <= 0) return;
         const iters = Number(sp.requests) || 1;
         const lastIn = Number(payload.inputTokens);
+        // 사용량을 못 받은 전송 시도(Codex 재시도 등)가 있으면 합계는 하한이다 — 잡 카드와 같은
+        //  규칙으로 «+» 를 달고 적중률은 말하지 않는다(싱크 레드팀 A P1: 같은 페이로드를
+        //  잡 카드는 미확인으로, 채팅 줄은 정확값으로 그렸다).
+        const missingRequests = Number(payload.unreportedRequests) || 0;
         const s = usageSummary({
           input: shownIn,
-          cached: Number(sp.cached),
+          cached: missingRequests > 0 ? undefined : Number(sp.cached),
           output: Number(sp.output) || 0,
           iters,
-          head: iters > 1
+          head: (iters > 1 && !(Number(payload.iterations) > 1)
+            ? i18n("tok.exact.requests", { iters, total: shownIn.toLocaleString() })
+            : iters > 1
             ? i18n("tok.exact.loop", {
                 iters,
                 total: shownIn.toLocaleString(),
                 last: Number.isFinite(lastIn) ? lastIn.toLocaleString() : "?",
               })
-            : i18n("tok.exact.single", { total: shownIn.toLocaleString() }),
+            : i18n("tok.exact.single", { total: shownIn.toLocaleString() })) +
+            (missingRequests > 0
+              ? i18n("bg.usage.requestsUnknown", { n: missingRequests }) + i18n("bg.usage.cacheUnknown")
+              : ""),
         });
-        target.textContent = s.text;
+        target.textContent = s.text + (missingRequests > 0 ? "+" : "");
         target.title = s.title;
         if (s.heavy) target.classList.add("heavy");
       };

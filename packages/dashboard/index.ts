@@ -46,6 +46,7 @@
  * 외부 의존 0 — node 표준 http/fs/path/url 만. Channel/Observer import 0 (외부 client).
  */
 import http from "node:http";
+import { requestBridgeMessage } from "./bridge-message-request.js";
 import { createHash } from "node:crypto";
 import { assetFingerprintOf } from "../../src/core/asset-fingerprint.js";
 import fs from "node:fs/promises";
@@ -143,6 +144,14 @@ const proxyJson = async (
   init?: RequestInit,
 ): Promise<void> => {
   try {
+    if (bridgePath === "/messages") {
+      const r = await requestBridgeMessage(res, bridgeUrl(bridgePath), TOKEN, String(init?.body ?? ""));
+      if (!res.destroyed) {
+        res.writeHead(r.status, { "Content-Type": r.contentType });
+        res.end(r.text);
+      }
+      return;
+    }
     const r = await fetch(bridgeUrl(bridgePath), {
       ...init,
       headers: {
@@ -157,6 +166,7 @@ const proxyJson = async (
     });
     res.end(text);
   } catch (e) {
+    if (res.destroyed) return;
     // ★**로그에 «왜» 를 남긴다** — 종전엔 `fetch failed` 라는 껍데기만 응답에 있고
     //  로그엔 아무것도 없어, 사고 뒤에 원인을 확정할 수 없었다.
     console.warn(bridgeFailureLog(`${BRIDGE_HOST}:${String(BRIDGE_PORT)}`, bridgePath, e));

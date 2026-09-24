@@ -88,11 +88,8 @@ import { formatEnvContext } from "../../runtime-env.js";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { resolveJsonlPath, retrieveContext } from "../../memory.js";
-import {
-  loadCodexTurnHistoryBySessionId,
-  loadThreadHistory,
-  type CodexTurn,
-} from "../../../store/memory.js";
+import { type CodexTurn } from "../../../store/memory.js";
+import { loadClaudeReplayHistory } from "./_claude-replay-history.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -285,41 +282,8 @@ const extractToolResults = (
 // (C): 연속 claude turn(resume 가능 + foreign turn 없음) 은 현행 resume 그대로(회귀 0),
 //      전환 시점(직전이 foreign 이거나 resume 불가) 만 foreign turn 을 텍스트로 보강.
 //
-// delta 경계: resume sid(claude 자기 세션) 의 마지막 turn 이후의 thread 히스토리 turn
-// = foreign(codex) delta. store 가 ts API 를 노출하지 않으므로, thread 전체 타임라인
-// (loadThreadHistory) 에서 claude 자기 세션 turn(loadCodexTurnHistoryBySessionId) 의
-// 마지막 turn 위치를 content 매칭으로 찾아 그 이후를 delta 로 취한다. claude 가 자기
-// 세션 resume 으로 이미 보는 turn 은 prepend 0 (중복 0).
-//
-// codex persist 가 threads.claude_session_id 를 더는 clobber 안 하므로(preserveSessionId)
-// prior.claudeSessionId = 항상 claude 자기 resume sid → 그 sid 의 transcripts 가 곧
-// "resume 커버 끝" 경계 산출의 진실 소스.
-
-/** 마지막 claude turn 위치 이후의 thread 타임라인 turn = foreign delta. */
-const computeForeignDelta = (
-  threadTurns: CodexTurn[],
-  claudeOwnTurns: CodexTurn[],
-): CodexTurn[] => {
-  if (threadTurns.length === 0) return [];
-  // claude 자기 세션 turn 이 없으면(첫 claude turn 인데 thread 엔 codex turn 만 존재)
-  // 전체가 foreign → thread 전체 prepend.
-  if (claudeOwnTurns.length === 0) return threadTurns;
-
-  const lastClaude = claudeOwnTurns[claudeOwnTurns.length - 1]!;
-  // thread 타임라인에서 claude 마지막 turn 과 동일한 (role, content) 의 최후 위치.
-  let boundary = -1;
-  for (let i = threadTurns.length - 1; i >= 0; i--) {
-    const t = threadTurns[i]!;
-    if (t.role === lastClaude.role && t.content === lastClaude.content) {
-      boundary = i;
-      break;
-    }
-  }
-  // 경계 못 찾음(텍스트 불일치·인터리브 모호) → 안전하게 delta 0 (resume 이 자기 turn
-  // 을 이미 커버 → 중복 회피 우선). cross-adapter 손실은 다음 turn 에서 회복.
-  if (boundary === -1) return [];
-  return threadTurns.slice(boundary + 1);
-};
+// 세션 소속으로 캡 적용 전에 경계를 찾는다. 본문 비교와 캡 밖 경계 손실을 피한다.
+// 전체 최근 기록은 resume 실패 시 재조립에 따로 보존한다.
 
 /** foreign delta turn 들을 user prompt 에 prepend 할 텍스트 블록으로 포맷. */
 const formatForeignDelta = (delta: CodexTurn[]): string => {
@@ -457,25 +421,15 @@ export const runClaude = async (
   const resumable =
     prior !== undefined && prior.systemPromptHash === SYSTEM_PROMPT_HASH;
 
-  // (C) 하이브리드 — cross-adapter foreign(codex) delta 산출.
-  //  - resumable: resume 이 claude 자기 turn 을 재생 → 그 이후의 foreign turn 만 delta.
-  //  - resume 불가(hash stale 등): resume 없이 thread 전체를 prepend = (A) 자연 폴백
-  //    (claudeOwnTurns 가 비어 computeForeignDelta 가 thread 전체 반환).
-  // 연속 claude turn(foreign 없음) → delta 0 → 현행 resume 그대로(회귀 0).
+  // SDK resume에는 다른 모델의 기록이 없으므로 세션 경계 이후를 보강한다.
   let foreignDeltaBlock = "";
-  // ★resume 이 죽었을 때 **이 턴에서** 기록을 되살리려면 원재료가 필요하다(아래 재조립).
-  let threadTurnsForRebuild: ReturnType<typeof loadThreadHistory> = [];
+  let threadTurnsForRebuild: CodexTurn[] = [];
   if (prior !== undefined) {
-    const threadTurns = loadThreadHistory(idChannel, input.threadKey);
-    threadTurnsForRebuild = threadTurns;
-    if (threadTurns.length > 0) {
-      const claudeOwnTurns = resumable
-        ? loadCodexTurnHistoryBySessionId(prior.claudeSessionId)
-        : [];
-      foreignDeltaBlock = formatForeignDelta(
-        computeForeignDelta(threadTurns, claudeOwnTurns),
-      );
-    }
+    const history = loadClaudeReplayHistory(
+      idChannel, input.threadKey, resumable ? prior.claudeSessionId : undefined,
+    );
+    threadTurnsForRebuild = history.full;
+    foreignDeltaBlock = formatForeignDelta(history.delta);
   }
 
   // β (2026-05-25): 기본 cwd = 런타임 홈 (만능 비서 기본 작업 위치, codex 어댑터와 parity).
@@ -997,7 +951,7 @@ export const runClaude = async (
    * ★`foreignDelta` 는 **user 채널**(휘발)이라 시스템 채널은 안 바뀐다 — 재조립 범위가 좁다.
    */
   const rebuildPromptWithFullHistory = (): string => {
-    const full = formatForeignDelta(computeForeignDelta(threadTurnsForRebuild, []));
+    const full = formatForeignDelta(threadTurnsForRebuild);
     if (full === "" || input.systemPromptOverride !== undefined) return promptWithMemory;
     const again = splitSystemContext({
       system,

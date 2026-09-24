@@ -524,6 +524,7 @@ export const withTurnTotals = (
   last: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined,
   totals: { iterations: number; inputTokens: number; outputTokens: number; cachedTokens: number },
   requests: readonly NonNullable<CodexSseResult["usage"]>[],
+  attemptedRequests?: number,
 ): RegionASdkOutput["usage"] => {
   if (last === undefined) return undefined;
   // 요청별 관측값은 반환 시 복사한다. 이후 루프/호출자의 변경이 기록을 바꾸지 않는다.
@@ -538,10 +539,14 @@ export const withTurnTotals = (
     ...(cachedTokens !== undefined ? { cachedTokens } : {}),
     ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
   }));
-  if (totals.iterations <= 1) return { ...last, requestUsageEntries };
+  const coverage = attemptedRequests === undefined ? {} : {
+    unreportedRequests: Math.max(0, attemptedRequests - requests.length),
+  };
+  if (totals.iterations <= 1) return { ...last, requestUsageEntries, ...coverage };
   return {
     ...last,
     requestUsageEntries,
+    ...coverage,
     iterations: totals.iterations,
     inputTokensTotal: totals.inputTokens,
     outputTokensTotal: totals.outputTokens,
@@ -1195,6 +1200,7 @@ export const runOpenAiCodex = async (
   //   수치를 찍고 있었다(2026-08-19). outputTokens 만 여기서 센다(캐시와 무관).
   const usageTotals = newTally();
   const requestUsageEntries: NonNullable<CodexSseResult["usage"]>[] = [];
+  let attemptedRequests = 0;
   let outputTokensTotal = 0;
   /** 턴 끝 한 줄 — 붕괴가 있었을 때만 말한다(정상은 침묵). */
   const logCacheCollapses = (): void => {
@@ -1711,6 +1717,7 @@ export const runOpenAiCodex = async (
         let attempt = 0;
         while (true) {
           try {
+            attemptedRequests += 1;
             res = await fetch(`${CODEX_BASE_URL}/responses`, {
               method: "POST",
               headers,
@@ -2809,7 +2816,7 @@ export const runOpenAiCodex = async (
           : `codex-${randomBytes(16).toString("hex")}`,
       model,
       replyToTrigger,
-      usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries)),
+      usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
       externalToolCalls: pendingExternalToolCalls,
     };
   }
@@ -2886,6 +2893,6 @@ export const runOpenAiCodex = async (
         : `codex-${randomBytes(16).toString("hex")}`,
     model,
     replyToTrigger,
-    usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries)),
+    usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
   };
 };

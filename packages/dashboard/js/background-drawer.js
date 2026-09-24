@@ -1108,21 +1108,51 @@
         const turns = Number(u.turns) || 0;
         const reqs = Number(u.requests) || 0;
         const input = Number(u.inputTokens) || 0;
+        const failed = Number(u.unreportedFailedAttempts) || 0;
+        const missingRequests = Number(u.unreportedRequests) || 0;
+        const summary = u.summary;
+        const executions = Number(summary?.executions) || 0;
         if (entry.usage && (Number(entry.usage.turns) || 0) > turns) return;
+        if (entry.usage && (Number(entry.usage.unreportedFailedAttempts) || 0) > failed) return;
+        if ((Number(entry.usage?.unreportedRequests) || 0) > missingRequests) return;
+        if ((Number(entry.usage?.summary?.executions) || 0) > executions) return;
         entry.usage = u;
+        const summaryText = executions > 0 ? (summary.unreported === executions && !summary.inputTokens && !summary.outputTokens
+          ? i18n("bg.usage.summaryUnknown", { n: summary.unreported }) : i18n("bg.usage.summary", {
+          n: executions,
+          input: fmtTokens(Number(summary.inputTokens) || 0),
+          output: fmtTokens(Number(summary.outputTokens) || 0),
+        }) + (summary.unreported > 0 ? i18n("bg.usage.summaryUnknown", { n: summary.unreported }) : "")) : "";
+        if (input <= 0 && executions > 0) {
+          entry.usageEl.textContent = summaryText +
+            (failed > 0 ? " · " + i18n("bg.usage.failed", { n: failed }) : "");
+          entry.usageEl.title = entry.usageEl.textContent;
+          entry.usageEl.style.display = "";
+          return;
+        }
+        if (input <= 0 && failed > 0) {
+          entry.usageEl.textContent = i18n("bg.usage.failed", { n: failed });
+          entry.usageEl.title = entry.usageEl.textContent;
+          entry.usageEl.style.display = "";
+          return;
+        }
         if (input <= 0 || typeof usageSummary !== "function") return; // 미보고뿐 = 표시 안 함(거짓값 금지).
         const unrep = Number(u.unreportedTurns) || 0;
+        const cacheComplete = u.unreportedCacheTurns === 0 && unrep === 0 && failed === 0 && missingRequests === 0;
         const s = usageSummary({
           input,
-          cached: Number(u.cachedTokens) || 0,
+          cached: cacheComplete ? Number(u.cachedTokens) : undefined,
           output: Number(u.outputTokens) || 0,
           iters: reqs,
           head:
             i18n("bg.usage.title", { turns, requests: reqs, total: input.toLocaleString() }) +
-            (unrep > 0 ? i18n("bg.usage.unreported", { n: unrep }) : ""),
+            (unrep > 0 ? i18n("bg.usage.unreported", { n: unrep }) : "") +
+            (missingRequests > 0 ? i18n("bg.usage.requestsUnknown", { n: missingRequests }) : "") +
+            (failed > 0 ? " · " + i18n("bg.usage.failed", { n: failed }) : "") +
+            (!cacheComplete ? i18n("bg.usage.cacheUnknown") : ""),
         });
-        entry.usageEl.textContent = s.text + (unrep > 0 ? "+" : "");
-        entry.usageEl.title = s.title;
+        entry.usageEl.textContent = (executions > 0 ? i18n("bg.usage.main") : "") + s.text + (unrep > 0 || failed > 0 || missingRequests > 0 ? "+" : "") + (summaryText ? " · " + summaryText : "");
+        entry.usageEl.title = s.title + (summaryText ? " · " + summaryText : "");
         // `heavy`(20만↑)는 **턴** 기준 임계라 잡 합계엔 안 건다 — 잡 합계는 거의 늘 넘어서
         //  모든 카드가 경고색이 된다(dev 실측 턴당 평균 158만).
         entry.usageEl.style.display = "";

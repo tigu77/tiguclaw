@@ -65,16 +65,16 @@ export const check: RegressionCheck = {
         //   좁은 경로라 이번 범위 밖으로 두고 로드맵에 적었다 — 여기선 **자리만** 못 박는다.
         "★claude 가 히스토리를 부르는 자리는 **cross-adapter 델타뿐**이고 자기 대화는 SDK 가 압축한다",
         (() => {
-          const at = src.claude.indexOf("loadThreadHistory(");
+          const at = src.claude.indexOf("loadClaudeReplayHistory(");
           if (at < 0) return false;
           const around = src.claude.slice(Math.max(0, at - 400), at + 600);
           return (
-            /computeForeignDelta/.test(around) &&
-            (src.claude.match(/loadThreadHistory\(/g) ?? []).length === 1 &&
+            /history.delta/.test(around) &&
+            (src.claude.match(/loadClaudeReplayHistory\(/g) ?? []).length === 1 &&
             /PostCompact:\s*\[/.test(src.claude)
           );
         })(),
-        `호출 ${(src.claude.match(/loadThreadHistory\(/g) ?? []).length}회 · 델타 문맥 ${/computeForeignDelta/.test(src.claude)} · SDK 압축 훅 ${/PostCompact:\s*\[/.test(src.claude)}`,
+        `호출 ${(src.claude.match(/loadClaudeReplayHistory\(/g) ?? []).length}회 · 델타 문맥 ${/history.delta/.test(src.claude)} · SDK 압축 훅 ${/PostCompact:\s*\[/.test(src.claude)}`,
       ),
     );
 

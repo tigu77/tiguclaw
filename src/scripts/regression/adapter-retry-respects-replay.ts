@@ -146,9 +146,9 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★재조립이 **스레드 전체**를 싣는다(claude 자기 턴을 비워 전체가 prepend 된다)",
-          /computeForeignDelta\(threadTurnsForRebuild, \[\]\)/.test(whole),
-          `전체 prepend=${String(/computeForeignDelta\(threadTurnsForRebuild, \[\]\)/.test(whole))}`,
+          "★재조립이 **스레드의 최근 전체 기록**을 싣는다(델타만 재사용하지 않는다)",
+          /formatForeignDelta\(threadTurnsForRebuild\)/.test(whole),
+          `전체 prepend=${String(/formatForeignDelta\(threadTurnsForRebuild\)/.test(whole))}`,
         ),
       );
     }

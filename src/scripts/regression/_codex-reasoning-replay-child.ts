@@ -5,6 +5,8 @@ assertIsolated();
 initStore();
 process.env.CODEX_DEBUG_INPUT = "1";
 const cap = process.argv.includes("cap");
+let retryPending = process.argv.includes("retry");
+const usageResults: unknown[] = [];
 if (cap)
     process.env.CODEX_MAX_TOOL_ITERATIONS_HARD = "1";
 registerAuthProvider({ provider: "codex", getAccessToken: async () => "fake-test-token" });
@@ -23,6 +25,7 @@ const message = { type: "message", id: "msg_loop", role: "assistant", status: "c
 // 실제 도구 실패 결과도 추론/호출과 연결되어 다음 요청에 도달해야 한다.
 const call = { type: "function_call", id: "fc_loop", call_id: "call_loop", name: "Read", arguments: JSON.stringify({ path: "/nonexistent-reasoning-regression-file" }) };
 globalThis.fetch = fakeNetwork(async (_url, init) => {
+    if (retryPending) { retryPending = false; return new Response("synthetic retry", { status: 503 }); }
     requests.push(JSON.parse(String(init?.body)));
     requestInExecution += 1;
     if (requestInExecution > 2)
@@ -36,10 +39,11 @@ const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-
 const input = { text: "파일을 읽고 결과를 알려주세요", channel: "cli" as const, threadKey: "regr:reasoning", model: "gpt-5.6-sol", reasoning: "low" as const };
 for (execution = 0; execution < 2; execution += 1) {
     requestInExecution = 0;
-    await runOpenAiCodex(input);
+    usageResults.push((await runOpenAiCodex(input)).usage);
 }
 const sent = requests[1]?.input ?? [];
 const start = sent.findIndex(x => x.type === "reasoning");
 const tail = sent.slice(start, start + 4);
 log("REPLAY_RESULT " + JSON.stringify({ capNoOrphan: cap && !sent.some(x => x.type === "function_call") && sent.some(x => x.role === "assistant"), ordered: start >= 0 && JSON.stringify(tail.slice(0, 3)) === JSON.stringify([{ ...reasoning, id: "rs_loop_0", encrypted_content: `${reasoning.encrypted_content}_0` }, message, call]) && tail[3]?.type === "function_call_output" && tail[3]?.call_id === "call_loop" && sent.filter(x => x.type === "function_call").length === 1 && sent.filter(x => x.type === "message" && x.role === "assistant").length === 1, isolated: requests.length === 4 && !requests[2]?.input.some(x => x.type === "reasoning") && requests[3]?.input.filter(x => x.type === "reasoning").length === 1 && requests[3]?.input.some(x => x.type === "reasoning" && x.id === "rs_loop_1" && x.encrypted_content === `${reasoning.encrypted_content}_1`) && !JSON.stringify(requests.slice(2)).includes(`${reasoning.encrypted_content}_0`), noLeak: !logs.join("\n").includes(reasoning.encrypted_content) }));
+log("RETRY_USAGE " + JSON.stringify(usageResults));
 process.exit(0);

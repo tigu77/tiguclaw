@@ -1337,7 +1337,10 @@ class HttpBridge implements Channel, Observer {
       const srv = this.server;
       this.server = null;
       await new Promise<void>((resolve) => {
+        // 먼저 새 연결을 막고, 진행 중 HTTP 응답도 정리한다. close()만 기다리면
+        // 끝나지 않는 /messages 때문에 SIGINT/SIGTERM의 후속 서비스 정지가 막힌다.
         srv.close(() => resolve());
+        srv.closeAllConnections();
       });
     }
     this.channelHandler = null;

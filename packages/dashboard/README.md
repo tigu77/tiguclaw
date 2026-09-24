@@ -108,3 +108,5 @@ read 토큰으로 `POST /messages` 호출 시 403, write 토큰으로 `GET /even
 
 - http-bridge endpoint 명세 + role 매핑: [`plugins/http-bridge/README.md`](../../plugins/http-bridge/README.md)
 - 토큰 발급/조회/철회 CLI: `npm run bridge:grant` / `npm run bridge:tokens` / `npm run bridge:tokens -- --revoke <id>`
+
+`/api/messages` 프록시는 작업 완료 응답에 별도 헤더/본문 대기 시한을 두지 않습니다. 브라우저 연결이 닫히면 해당 프록시 연결을 정리하지만, 이를 모델 작업 취소나 자동 재전송으로 바꾸지는 않습니다.

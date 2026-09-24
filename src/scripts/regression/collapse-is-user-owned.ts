@@ -207,7 +207,7 @@ export const check: RegressionCheck = {
       );
       if (body.length > 0) {
         const fn = new Function(
-          "HEADS", "cardRootFromHead", "isTextDragClick", "toggleCardCollapsed", "e", body,
+          "HEADS", "cardRootFromHead", "isTextDragClick", "toggleCardCollapsed", "collapseTargetFor", "e", body,
         ) as (...a: unknown[]) => void;
         const HEADS = ".bubble-meta, .turn-head, .hist-turn-head";
         /** 최소 DOM — `closest(sel)` 가 무엇을 돌려주냐로 «어디를 눌렀나» 를 흉내 낸다.
@@ -225,6 +225,8 @@ export const check: RegressionCheck = {
             () => root,
             () => false,
             () => { toggled = true; return true; },
+            // 가린 조상 판정은 `collapse-expands-what-hides` 가 잰다 — 여기선 자기 카드 그대로.
+            (r: unknown) => r,
             { target: tgt },
           );
           return toggled;
@@ -254,7 +256,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★접기 판정이 **한 곳**으로 간다 — 메뉴가 classList 를 직접 만지면 기제가 두 벌이 된다",
-          /toggleCardCollapsed\(ctx\.el\)/.test(reply) &&
+          /toggleCardCollapsed\((?:collapseTargetFor\()?ctx\.el\)/.test(reply) &&
             !/is-collapsed/.test(reply),
           `위임=${/toggleCardCollapsed\(/.test(reply)} · 직접조작=${/is-collapsed/.test(reply)}`,
         ),
@@ -280,12 +282,12 @@ export const check: RegressionCheck = {
         ),
       );
       if (body.length > 0) {
-        const fn = new Function("i18n", "cardCollapseHead", "isCardCollapsed", "ctx", body) as (
+        const fn = new Function("i18n", "cardCollapseHead", "isCardCollapsed", "collapseTargetFor", "ctx", body) as (
           ...a: unknown[]
         ) => Array<{ id: string; label: string }>;
         const i18n = (k: string): string => k;
         const items = (hasHead: boolean, collapsed: boolean) =>
-          fn(i18n, () => (hasHead ? {} : null), () => collapsed, { el: {} });
+          fn(i18n, () => (hasHead ? {} : null), () => collapsed, (r: unknown) => r, { el: {} });
         const opened = items(true, false);
         const closed = items(true, true);
         const noHead = items(false, false);

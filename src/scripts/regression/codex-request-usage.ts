@@ -47,7 +47,7 @@ export const check: RegressionCheck = {
     assertions.push(assert("보고된 0 토큰 요청도 남음", zeroResult?.requestUsageEntries?.[0]?.inputTokens === 0 && zeroResult.requestUsageEntries[0].outputTokens === 0, zeroResult));
     // 실제 라이브 루프 실행은 아니다. 반환 조립 함수의 두 호출부와 수집 연결 누락만 별도 감시한다.
     const source = readFileSync(new URL("../../core/llm-runtime/adapters/openai-codex-oauth.ts", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-    const returns = source.match(/withTurnTotals\(finalUsage, turnTotals\(\), requestUsageEntries\)/g)?.length ?? 0;
+    const returns = source.match(/withTurnTotals\(finalUsage, turnTotals\(\), requestUsageEntries, attemptedRequests\)/g)?.length ?? 0;
     assertions.push(assert("배선: 일반·외부 도구 반환과 완료 요청 수집 연결", returns === 2 && source.includes("requestUsageEntries.push({ ...usage })"), { returns, captures: source.includes("requestUsageEntries.push({ ...usage })") }));
     return assertions;
   },

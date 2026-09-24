@@ -254,6 +254,7 @@ export const extractUsage = (
   const rawUsage = (result as { state?: { usage?: unknown } })?.state?.usage;
   if (rawUsage === null || typeof rawUsage !== "object") return undefined;
   const u = rawUsage as {
+    requests?: unknown;
     inputTokens?: unknown;
     outputTokens?: unknown;
     inputTokensDetails?: unknown;
@@ -279,6 +280,7 @@ export const extractUsage = (
   }
   const requestUsageEntries = extractRequestUsageEntries(u.requestUsageEntries);
   return {
+    ...(typeof u.requests === "number" && Number.isSafeInteger(u.requests) && u.requests > 0 ? { requests: u.requests } : {}),
     inputTokens: u.inputTokens,
     outputTokens: u.outputTokens,
     ...(cached !== undefined ? { cachedTokens: cached } : {}),
@@ -352,6 +354,7 @@ export const createTurnInputFilter = (deps: {
 };
 
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
+import { beginSummaryUsage } from "../auxiliary-usage.js";
 
 export const runOpenAi = async (
   input: RegionASdkInput,
@@ -1052,6 +1055,7 @@ export const runOpenAi = async (
       const sumAc = new AbortController();
       const sumIdle = createIdleTimer(sumAc);
       const linked = linkAbort(sumAc.signal, input.abortSignal);
+      const finishUsage = beginSummaryUsage(input.threadKey, input.provider ?? "openai", model);
       try {
         const streamed = await run(
           summarizer,
@@ -1082,6 +1086,7 @@ export const runOpenAi = async (
           }
         }
         await streamed.completed;
+        finishUsage(true, extractUsage(streamed));
         if (acc.trim() !== "") return acc;
         // ★**빈 결과는 «왜» 를 남긴다** (2026-09-15). 실측: 실제 압축 6패스 중 2회가
         //  «요약 0자» 로 죽었는데, 로그엔 그 문구뿐이라 원인을 좁힐 재료가 **0**이었다.
@@ -1097,6 +1102,7 @@ export const runOpenAi = async (
         );
         return typeof streamed.finalOutput === "string" ? streamed.finalOutput : "";
       } finally {
+        finishUsage(false);
         sumIdle.done();
       }
     },

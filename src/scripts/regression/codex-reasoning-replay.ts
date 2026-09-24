@@ -31,7 +31,11 @@ export const check: RegressionCheck = {
         const capResult = capLine ? JSON.parse(capLine.slice(14)) : {};
         const line = r.out.split(/\r?\n/).find(l => l.startsWith("REPLAY_RESULT "));
         const result = line ? JSON.parse(line.slice(14)) : {};
+        const retried = await spawnWithin(60000, "재시도 사용량 관측", ["--import", "tsx", fileURLToPath(new URL("./_codex-reasoning-replay-child.ts", import.meta.url)), "retry"]);
+        const retryLine = retried.out.split(/\r?\n/).find(l => l.startsWith("RETRY_USAGE "));
+        const retryUsage = retryLine ? JSON.parse(retryLine.slice(12)) : [];
         return [
+            assert("실제 503 재시도 후 성공은 관측 토큰만 합산하고 미보고 1회 보존·다음 실행 격리", retryUsage[0]?.unreportedRequests === 1 && retryUsage[0]?.inputTokensTotal === 40 && retryUsage[0]?.requestUsageEntries?.length === 2 && retryUsage[1]?.unreportedRequests === 0, retryLine ?? retried.err.slice(-1000)),
             assert("한도 때문에 실행하지 않은 호출을 다음 요청에 남기지 않음", capResult.capNoOrphan === true, capLine ?? capped.err.slice(-1000)),
             assert("완료 응답은 reasoning/message/function 순서를 그대로 보존", JSON.stringify(replay(full)) === JSON.stringify(items), replay(full)),
             assert("빈 completed.output은 실제 done 항목을 버리지 않음", JSON.stringify(replay(emptyOutput)) === JSON.stringify(items), replay(emptyOutput)),

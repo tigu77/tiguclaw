@@ -808,6 +808,8 @@ export const publishTurnDone = (
       //  사후 집계(context-windows.ts 주석의 "실사용 358턴" 같은 실측)가 시대를 가르려면
       //  날짜 손목록이 아니라 판정 가능한 필드가 있어야 한다.
       usageSchema: 2,
+      ...(output.usage?.unreportedRequests !== undefined
+        ? { unreportedRequests: output.usage.unreportedRequests } : {}),
       ...(output.usage?.requestUsageEntries !== undefined
         ? { requestUsageEntries: output.usage.requestUsageEntries }
         : {}),

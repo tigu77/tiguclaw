@@ -45,7 +45,7 @@ export const check: RegressionCheck = {
       ["adapters/claude-agent-sdk.ts", "runClaude", [{}]],
       ["adapters/openai-agents-sdk.ts", "runOpenAi", [{}]],
       ["adapters/openai-codex-oauth.ts", "runOpenAiCodex", [{}]],
-      ["adapters/openai-codex-oauth-history.ts", "summarizeViaCodex", ["dummy", "dummy-token", undefined, "dummy-model", 100, undefined, undefined]],
+      ["adapters/openai-codex-oauth-history.ts", "summarizeViaCodex", ["dummy", "dummy-token", undefined, "dummy-model", 100, undefined, undefined, "guard"]],
       ["codex-weight-probe.ts", "runCodexWeightProbe", []],
     ];
     for (const [file, name, args] of cases) {
@@ -68,6 +68,7 @@ export const check: RegressionCheck = {
           AbortController, setTimeout, clearTimeout, SUMMARY_TIMEOUT_MS: 10,
           config: {}, require: stop("auth"), CODEX_BASE_URL: "https://invalid.example",
           createIdleTimer: () => ({ done() {}, beat() {} }),
+          beginSummaryUsage: () => () => {},
           linkAbort: (signal: AbortSignal) => ({ signal }),
         });
         const entries = runtimeGuard + "\n" + source;

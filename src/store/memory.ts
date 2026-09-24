@@ -1058,7 +1058,7 @@ export const stripAssembledPrefix = (content: string): string => {
 export const loadThreadHistory = (
   channel: ChannelName,
   threadKey: string,
-  opts?: { limitTurns?: number; charCap?: number },
+  opts?: { limitTurns?: number; charCap?: number; afterSessionId?: string },
 ): CodexTurn[] => {
   const limit = opts?.limitTurns ?? CODEX_TURN_HISTORY_LIMIT;
   if (limit <= 0) return [];
@@ -1085,19 +1085,31 @@ export const loadThreadHistory = (
   // reverse 하는 대신, 전체를 ts ASC 로 받아 tail N 을 취함 (인터리브 정확성 우선).
   const rows = db
     .prepare(
-      `SELECT role, content, ts, id FROM transcripts
+      `SELECT role, content, ts, id, claude_session_id FROM transcripts
        WHERE claude_session_id IN (${placeholders})
          AND role IN ('user', 'assistant')
          AND ts > ?
        ORDER BY ts ASC, id ASC`,
     )
-    .all(...sids, boundary) as TranscriptHistoryTsRow[];
+    .all(...sids, boundary) as (TranscriptHistoryTsRow & { claude_session_id: string })[];
   if (rows.length === 0) return [];
+
+  // 세션 소속으로 경계를 먼저 찾는다. 창을 자른 뒤 본문으로 찾으면 오래된
+  // 경계가 사라지거나 동일 문장을 다른 세션의 경계로 오인한다.
+  let start = 0;
+  if (opts?.afterSessionId) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]!.claude_session_id === opts.afterSessionId) {
+        start = i + 1;
+        break;
+      }
+    }
+  }
 
   // 최신 N turn 만 (tail). limit + charCap 둘 다 최신부터 역누적, 초과 시 oldest drop.
   let charSum = 0;
   const kept: CodexTurn[] = [];
-  for (let i = rows.length - 1; i >= 0; i--) {
+  for (let i = rows.length - 1; i >= start; i--) {
     if (kept.length >= limit) break;
     const r = rows[i]!;
     // ★프리픽스를 **먼저** 걷어내고 센다 — 안 그러면 charCap 예산을 조립 보일러플레이트가

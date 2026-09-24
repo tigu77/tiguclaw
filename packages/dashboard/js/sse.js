@@ -176,17 +176,22 @@
         // 전체 활동뷰 라이브 분기(§4, 별도 경로) — 아래 채팅뷰 if/return 사슬과 완전히 분리된
         // 호출. return 없이 항상 실행되고 나서 기존 로직이 이어진다(채팅뷰 무회귀).
         handleActivityLiveEvent(ev);
+        if (ev.type === "llm.auxiliary_usage") {
+          const tk = ev.payload && ev.payload.threadKey;
+          if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
+              typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
+        }
         // 진행 표시 종료(모든 채널) — 턴 종료 신호는 렌더를 막지 않고(return 안 함) 표시만 해제.
         // channel.message.out 이 안 오는 에러 턴까지 확실히 끄기 위한 authoritative 종료.
         if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") {
           const tk = ev.payload && ev.payload.threadKey;
+          // 성공·실패 모두 잡 원장의 관측값/미보고 상태를 다시 받는다.
+          if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
+              typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
           markTurnCardDone(tk); // 턴 카드 마지막 스텝 pulse 정지(응답 누락·에러·hang 종료 대비).
           if (ev.type === "llm.turn_done") {
             cancelErrClear(tk); markTurnDone(tk); // 성공 종결 = 즉시.
             setTurnCost(tk, ev.payload || {});    // 턴 비용(토큰) 카드에 고정 — 2026-07-26.
-            // 백그라운드 잡 좌표의 턴이면 그 잡 합계를 서버에서 다시 받는다(2026-09-23).
-            if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
-                typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
           }
           else {
             scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).
@@ -655,4 +660,3 @@
         //  종전엔 아무것도 안 돌려줘서 "붙인 뒤 찾아오기" 가 필요했다.
         return div;
       };
-

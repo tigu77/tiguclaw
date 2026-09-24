@@ -109,7 +109,8 @@
       // ★접기/펴기는 **`toggleCardCollapsed` 한 곳**으로 간다(virtualization.js) — 머리줄
       //  클릭과 같은 자리다. 여기서 classList 를 직접 만지면 접기 판정이 두 벌이 된다.
       registerBuiltinHandler("message.collapse", (ctx) => {
-        if (ctx && ctx.el) toggleCardCollapsed(ctx.el);
+        // 가리고 있는 카드(접힌 조상)를 대상으로 — 클릭과 같은 판정(`collapseTargetFor`).
+        if (ctx && ctx.el) toggleCardCollapsed(collapseTargetFor(ctx.el));
       });
       registerMenuItems("message", (ctx) => {
         const items = [
@@ -119,7 +120,7 @@
         // ★**본문 어디서 우클릭해도 접을 수 있다** — 머리줄만 누르게 바꾸면서(2026-09-14)
         //  «긴 답변은 머리줄이 화면 밖» 이 다시 문제가 되는데, 그 필요를 여기가 받는다.
         //  펼칠 손잡이(머리줄)가 없는 카드엔 항목을 내지 않는다 — 되돌릴 길이 없으니까.
-        const root = ctx && ctx.el;
+        const root = ctx && ctx.el ? collapseTargetFor(ctx.el) : null;
         if (root && cardCollapseHead(root)) {
           const collapsed = isCardCollapsed(root);
           items.push({

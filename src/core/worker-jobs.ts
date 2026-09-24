@@ -703,7 +703,16 @@ export interface JobUsage {
   outputTokens: number;
   /** 사용량을 보고하지 않은 턴 수(어댑터 미보고). */
   unreportedTurns: number;
+  /** 입력은 보고했지만 캐시 사용량은 보고하지 않은 턴. */
+  unreportedCacheTurns: number;
+  /** 사용량을 알 수 없는 실패 시도. 완료 턴·관측 요청 수와 별도로 센다. */
+  unreportedFailedAttempts?: number;
+  unreportedRequests?: number;
+  /** 별도 요약 실행. 위 본 작업 합계와 합치지 않는다. */
+  summary?: { executions: number; inputTokens: number; outputTokens: number; unreported: number };
 }
+
+const summaryExecutions = new WeakMap<object, Set<string>>();
 
 /** 턴 하나를 그 좌표의 잡에 더한다. 모르는 좌표·잡이면 무시. */
 export const recordJobTurnUsage = (payload: Record<string, unknown>): void => {
@@ -714,9 +723,12 @@ export const recordJobTurnUsage = (payload: Record<string, unknown>): void => {
   const job = jobs.get(id);
   if (job === undefined) return;
   const u = (job.usage ??= {
-    turns: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, unreportedTurns: 0,
+    turns: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, unreportedTurns: 0, unreportedCacheTurns: 0,
   });
   u.turns += 1;
+  const missingRequests = payload.unreportedRequests;
+  if (typeof missingRequests === "number" && Number.isSafeInteger(missingRequests) && missingRequests > 0)
+    u.unreportedRequests = (u.unreportedRequests ?? 0) + missingRequests;
   // ★턴 실비용은 발행자가 고른 `spend` 를 **읽기만** 한다(`turn-spend.ts`) — 여기서 층을
   //  다시 고르면 채팅 줄과 잡 합계가 다른 규칙으로 센다.
   const s = payload.spend as Partial<TurnSpend> | undefined | null;
@@ -727,7 +739,8 @@ export const recordJobTurnUsage = (payload: Record<string, unknown>): void => {
   }
   u.requests += ok(s.requests) ? s.requests : 1;
   u.inputTokens += s.input;
-  u.cachedTokens += ok(s.cached) ? s.cached : 0;
+  if (ok(s.cached)) u.cachedTokens += s.cached;
+  else u.unreportedCacheTurns += 1;
   u.outputTokens += ok(s.output) ? s.output : 0;
 };
 
@@ -737,9 +750,37 @@ const ensureUsageLedger = (): void => {
   if (usageLedgerOn) return;
   usageLedgerOn = true;
   getEventBus().subscribe((ev) => {
-    if (ev.type !== "llm.turn_done") return;
+    if (ev.type !== "llm.turn_done" && ev.type !== "llm.turn_error" && ev.type !== "llm.auxiliary_usage") return;
     const p = ev.payload as Record<string, unknown> | undefined;
-    if (p !== undefined) recordJobTurnUsage(p);
+    if (p === undefined) return;
+    if (ev.type === "llm.turn_done") recordJobTurnUsage(p);
+    else {
+      const id = typeof p.threadKey === "string" ? parentJobIdOf(p.threadKey) : undefined;
+      const job = id === undefined ? undefined : jobs.get(id);
+      if (job === undefined) return;
+      const u = (job.usage ??= {
+        turns: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0,
+        unreportedTurns: 0, unreportedCacheTurns: 0,
+      });
+      if (ev.type === "llm.auxiliary_usage") {
+        if (p.purpose !== "summary" || typeof p.executionId !== "string") return;
+        let seen = summaryExecutions.get(job);
+        if (seen === undefined) { seen = new Set(); summaryExecutions.set(job, seen); }
+        if (seen.has(p.executionId)) return;
+        seen.add(p.executionId);
+        const prior = u.summary ?? { executions: 0, inputTokens: 0, outputTokens: 0, unreported: 0 };
+        const valid = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+        const inputKnown = valid(p.inputTokens), outputKnown = valid(p.outputTokens);
+        u.summary = {
+          executions: prior.executions + 1,
+          inputTokens: prior.inputTokens + (inputKnown ? p.inputTokens as number : 0),
+          outputTokens: prior.outputTokens + (outputKnown ? p.outputTokens as number : 0),
+          unreported: prior.unreported + (p.ok === true && inputKnown && outputKnown ? 0 : 1),
+        };
+        return;
+      }
+      u.unreportedFailedAttempts = (u.unreportedFailedAttempts ?? 0) + 1;
+    }
   });
 };
 

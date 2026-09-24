@@ -2,7 +2,7 @@
  * **턴 실비용** — 한 턴이 실제로 태운 입력·캐시·출력·호출 수 (2026-09-23).
  *
  * ★계약(`RegionATurnDonePayload`)이 두 층이다: `inputTokens`·`outputTokens`·`cachedTokens`
- *  는 **마지막 호출 1회**, `*Total` 은 반복이 2회 이상일 때만 오는 **턴 합계**. 화면은
+ *  는 Claude/Codex에서 **마지막 호출 1회**(OpenAI SDK는 실행 누적), `*Total` 은 반복이 2회 이상일 때만 오는 **턴 합계**. 화면은
  *  «이 턴이 얼마를 썼나» 가 필요하므로 둘 중 무엇을 쓸지 매번 골라야 했고, 그 선택이
  *  대시보드·잡 합계에 **따로** 있었다(출력은 대시보드만 마지막 호출값을 써서 과소계상).
  *  이제 발행하는 자리에서 **한 번** 골라 `llm.turn_done.spend` 로 싣는다 — 소비자는
@@ -23,6 +23,7 @@ interface UsageFields {
   outputTokens?: number;
   cachedTokens?: number;
   iterations?: number;
+  requests?: number;
   inputTokensTotal?: number;
   outputTokensTotal?: number;
   cachedTokensTotal?: number;
@@ -42,5 +43,8 @@ export const turnSpend = (u: UsageFields | undefined): TurnSpend | undefined => 
   const cached = loop ? num(u.cachedTokensTotal) : num(u.cachedTokens);
   const output =
     (loop ? (num(u.outputTokensTotal) ?? num(u.outputTokens)) : num(u.outputTokens)) ?? 0;
-  return { input, output, ...(cached !== undefined ? { cached } : {}), requests: loop ? iters : 1 };
+  const reportedRequests = num(u.requests);
+  const requests = reportedRequests !== undefined && Number.isSafeInteger(reportedRequests) && reportedRequests > 0
+    ? reportedRequests : (loop ? iters : 1);
+  return { input, output, ...(cached !== undefined ? { cached } : {}), requests };
 };

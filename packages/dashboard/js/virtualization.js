@@ -618,6 +618,22 @@
           ? root.querySelector(":scope > .bubble-meta, :scope > .turn-card > .turn-head, :scope > .hist-turn-head")
           : null;
       const isCardCollapsed = (root) => !!root && root.classList.contains("is-collapsed");
+      /**
+       * **실제로 가리고 있는 카드** — 접기/펼치기의 대상 (2026-09-24 정태님 신고: *"방금 들어온
+       * 응답이 접힌 상태로 펼침이 작동을 안 할 때가 있어 — 눌러도 아무 반응이 없고"*).
+       *
+       * ★재현(헤드리스): 턴 진행 중 도구 카드 머리줄을 눌러 접으면 **그룹 전체**가 접힌다(설계 —
+       *  도구 카드를 접으면 답변도 같이 숨는다). 그 뒤 답변이 **그 그룹 안에** 도착하면 3줄로
+       *  잘려 접힌 모양으로 나오는데, 답변 머리줄을 누르면 **답변 자신**만 토글돼 바깥 그룹이
+       *  계속 가렸다 — 높이 57px 그대로.
+       * ★규칙: 조상 카드가 접혀 있으면 그 조상이 이 카드를 가리고 있으니 **그 조상을** 펼친다.
+       *  클릭과 우클릭 메뉴가 둘 다 여기를 지난다(한 벌).
+       */
+      const collapseTargetFor = (root) => {
+        const up = root && root.parentElement;
+        const anc = up && typeof up.closest === "function" ? up.closest("#stream .is-collapsed") : null;
+        return anc && cardCollapseHead(anc) ? anc : root;
+      };
       // ★접기를 실제로 수행하는 **유일한 자리**. 머리줄 클릭도, 우클릭 메뉴도 여기로 온다 —
       //  두 벌이 되면 «한쪽만 고쳐지는» 옛 병이 그대로 돌아온다(위 주석의 세 벌 이력).
       const toggleCardCollapsed = (root) => {
@@ -642,7 +658,7 @@
           const root = cardRootFromHead(head);
           if (!root) return;
           if (isTextDragClick(root)) return;
-          toggleCardCollapsed(root);
+          toggleCardCollapsed(collapseTargetFor(root));
         });
       }
       const chatJump = document.getElementById("chat-jump");

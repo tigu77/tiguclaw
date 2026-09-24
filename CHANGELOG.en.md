@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Background job cards now show token usage.** Main work and separate summaries are shown separately, and unreported usage is marked as unknown.
+
+### Changed
+
+- **Long-conversation summary instructions now distinguish completed or cancelled work, changed instructions, and ongoing constraints.**
+
+### Fixed
+
+- **Recent conversation context could be lost when returning to Claude after extended work with Codex or another model.** The handoff boundary is now identified by session ownership before applying the recent-history window.
+- **Dashboard message requests could fail after roughly five minutes while work was still running.** Message responses now have no separate proxy wait limit, and waiting connections are cleaned up when the browser disconnects.
+- **Active HTTP requests could prevent the bridge from finishing shutdown.** Shutdown now stops accepting connections and closes existing ones.
+- **Windows shell commands could receive damaged arguments, and background shells or hooks could open command windows.**
+- **Completed background jobs could appear interrupted, and replies inside collapsed groups could remain hidden when clicked.**
+- **Usage reporting now uses consistent turn totals across chat, job cards, and the gateway.** Missing usage from failed attempts or internal Codex retries is no longer presented as a complete total.
+
 ## [0.58.0] - 2026-09-23
 
 ### Added

@@ -360,6 +360,10 @@ export interface RegionASdkOutput {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    /** SDK가 보고한 요청 횟수. 토큰이 누적인지 여부와 독립이다. */
+    requests?: number;
+    /** 전송을 시도했지만 사용량을 얻지 못한 요청. 과금 0을 뜻하지 않는다. */
+    unreportedRequests?: number;
     /**
      * ★prefix 캐시 적중 입력 토큰 (2026-07-26, additive). 어댑터가 보고할 때만.
      * inputTokens 중 **재전송이지만 캐시로 처리된 몫** — 실효 비용은 (input - cached).
@@ -739,6 +743,7 @@ export interface RequestUsageEntry {
 }
 
 export interface RegionATurnDonePayload {
+  unreportedRequests?: number;
   /** 어댑터가 보고한 요청별 관측분. 실패 요청의 누락 여부는 별도 검증 대상이다. */
   requestUsageEntries?: RequestUsageEntry[];
   /** 표시·필터·집계용 라벨 (라우팅 아님). 트리거 메시지의 채널. */

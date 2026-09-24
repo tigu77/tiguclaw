@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-09-25
+
 ### Added
 
 - **백그라운드 작업 카드에서 토큰 사용량을 확인할 수 있습니다.** 본 작업과 별도 요약의 사용량을 구분하고, 보고되지 않은 사용량은 미확인으로 표시합니다.
@@ -2249,7 +2251,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0
 [0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2

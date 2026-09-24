@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-09-25
+
 ### Added
 
 - **Background job cards now show token usage.** Main work and separate summaries are shown separately, and unreported usage is marked as unknown.
@@ -699,7 +701,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0
 [0.56.2]: https://github.com/tigu77/tiguclaw/compare/v0.56.1...v0.56.2

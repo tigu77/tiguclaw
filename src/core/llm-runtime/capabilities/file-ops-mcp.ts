@@ -65,7 +65,7 @@ import {
 import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js";
 import { getPaths } from "../../paths.js";
 import { loadWebSearchConfig } from "../../settings.js";
-import { detectShell } from "../../runtime-env.js";
+import { detectShell, shellSpawnOptions } from "../../runtime-env.js";
 import { getEventBus } from "../../eventbus.js";
 // 셸의 원 세션 환원 — 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
 // 아니다. 잡 레지스트리를 보는 코어가 환원해서 관측면에 실어 준다(대시보드 추측 제거).
@@ -425,11 +425,7 @@ const launchBgShell = async (
   // 않는다: 데몬이 child 핸들을 계속 들고 stdout/stderr/close 를 추적해야 BashOutput/
   // KillShell 이 정상 동작(unref 는 이벤트루프 이탈만 막을 뿐 추적엔 무관하나, 명시로
   // "추적 유지 의도"를 박아둔다 — ADR §3-1).
-  const child = spawn(SHELL.bin, SHELL.argsFor(command), {
-    windowsVerbatimArguments: SHELL.windowsVerbatimArguments,
-    cwd,
-    detached: true,
-  });
+  const child = spawn(SHELL.bin, SHELL.argsFor(command), shellSpawnOptions(SHELL, { cwd }, { processGroup: true }));
   const pgid = child.pid ?? -1;
   const startedAt = Date.now();
   const shell: BgShell = {
@@ -1385,13 +1381,11 @@ const makeFileOpsTools = (
       //   process.kill(-pid) 이 ESRCH). 그래서 백그라운드 셸(launchBgShell)과 동형으로
       //   spawn 을 직접 쓴다 — 그래야 setsid 가 걸려 그룹 전체를 정리할 수 있다.
       //  ★detach 는 "부모가 죽어도 살아남음"이므로 추적 집합에 넣어 exit 훅 리퍼가 덮는다.
-      const useGroup = process.platform !== "win32";
-      const child = spawn(SHELL.bin, SHELL.argsFor(args.command), {
-        windowsVerbatimArguments: SHELL.windowsVerbatimArguments,
-        cwd: base,
-        windowsHide: true,
-        ...(useGroup ? { detached: true } : {}),
-      });
+      const child = spawn(
+        SHELL.bin,
+        SHELL.argsFor(args.command),
+        shellSpawnOptions(SHELL, { cwd: base }, { processGroup: true }),
+      );
       const childPid = child.pid ?? -1;
       if (childPid > 1) {
         FOREGROUND_SHELL_PIDS.add(childPid);

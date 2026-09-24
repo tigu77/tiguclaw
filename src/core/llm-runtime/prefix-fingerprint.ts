@@ -156,3 +156,74 @@ export const describeToolChange = (
     (removed.length > 0 ? ` -[${cut(removed)}]` : "")
   );
 };
+
+/**
+ * 스레드별 직전 **슬롯별 해시** — «프리픽스가 바뀌었다» 를 «어느 슬롯이» 로 바꾼다 (2026-09-24).
+ *
+ * ★사다리(위 `prefixFingerprint`)는 «몇 자 지점에서 갈렸나» 를 말하지만, Claude 의 시스템 채널은
+ *  슬롯(헌법·자가성장·AGENT.md·스킬·메모리·에이전트 인덱스·모델 프로파일…)을 **이어붙인** 것이라
+ *  글자 위치만으로는 어느 조각인지 사람이 또 계산해야 한다. 슬롯 이름으로 말하게 한다.
+ *  실측 동기: 같은 스레드·같은 모델 36초 뒤 턴이 앞 40,695 토큰만 재사용 — 어느 슬롯이
+ *  바뀌었는지 로그로 가를 수 없었다(`docs/decisions/2026-09-24-natural-usage-after-session-id.md`).
+ * ★원문은 안 남긴다 — 해시 8자와 슬롯 이름뿐이다.
+ */
+const lastSlotsByThread = new Map<string, ReadonlyMap<string, string>>();
+
+/** 슬롯 목록 → 이름별 짧은 해시. 같은 이름이 둘이면 뒤에 순번을 붙인다(순서도 지문의 일부). */
+export const slotHashes = (
+  slots: ReadonlyArray<{ key: string; text: string }>,
+): Map<string, string> => {
+  const out = new Map<string, string>();
+  for (const s of slots) {
+    let k = s.key;
+    for (let i = 2; out.has(k); i += 1) k = `${s.key}#${i}`;
+    out.set(k, short(s.text));
+  }
+  return out;
+};
+
+/** 직전 슬롯 해시를 꺼내고 이번 것을 넣는다(같은 호출에서 둘 다 — 순서가 갈리면 틀린다). */
+export const rememberSlotHashes = (
+  threadKey: string,
+  now: ReadonlyMap<string, string>,
+): ReadonlyMap<string, string> | undefined => {
+  const prev = lastSlotsByThread.get(threadKey);
+  lastSlotsByThread.delete(threadKey);
+  lastSlotsByThread.set(threadKey, now);
+  if (lastSlotsByThread.size > CAP) {
+    const oldest = lastSlotsByThread.keys().next().value;
+    if (oldest !== undefined) lastSlotsByThread.delete(oldest);
+  }
+  return prev;
+};
+
+/**
+ * 사람이 읽는 한 조각 — 첫 턴은 «처음», 같으면 «없음», 다르면 **바뀐·생긴·빠진 슬롯 이름**과
+ * 순서 변화. ★«처음» 과 «없음» 을 가른다(둘 다 비우면 콜드의 원인을 또 못 가린다).
+ */
+export const describeSlotChange = (
+  now: ReadonlyMap<string, string>,
+  prev: ReadonlyMap<string, string> | undefined,
+): string => {
+  if (prev === undefined) return "슬롯변화=처음";
+  const changed = [...now].filter(([k, h]) => prev.has(k) && prev.get(k) !== h).map(([k]) => k);
+  const added = [...now.keys()].filter((k) => !prev.has(k));
+  const removed = [...prev.keys()].filter((k) => !now.has(k));
+  const reordered =
+    changed.length === 0 && added.length === 0 && removed.length === 0 &&
+    [...now.keys()].join(",") !== [...prev.keys()].join(",");
+  if (changed.length === 0 && added.length === 0 && removed.length === 0 && !reordered) {
+    return "슬롯변화=없음";
+  }
+  return (
+    "슬롯변화=" +
+    [
+      changed.length > 0 ? `바뀜[${changed.join(",")}]` : "",
+      added.length > 0 ? `생김[${added.join(",")}]` : "",
+      removed.length > 0 ? `빠짐[${removed.join(",")}]` : "",
+      reordered ? "순서바뀜" : "",
+    ]
+      .filter((x) => x !== "")
+      .join(" ")
+  );
+};

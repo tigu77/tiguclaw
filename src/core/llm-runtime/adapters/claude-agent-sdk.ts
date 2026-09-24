@@ -27,6 +27,16 @@ import { createClaudeRequestUsage } from "./_claude-request-usage.js";
  *  (2026-07-30 이후 systemPrompt 엔 안정 스캐폴딩이 함께 실리지만 해시엔 안 들어간다)
  *  — AGENT.md 편집·스킬 추가로 resume 이 끊기지 않게. 상세는 조립부 주석.
  */
+import {
+  describeFingerprint,
+  describeSlotChange,
+  describeToolChange,
+  prefixFingerprint,
+  rememberFingerprint,
+  rememberSlotHashes,
+  rememberToolNames,
+  slotHashes,
+} from "../prefix-fingerprint.js";
 import { createHash } from "node:crypto";
 import { parseRateLimit } from "../rate-limit-view.js";
 import { createFastModeReporter } from "../fast-mode-view.js";
@@ -953,9 +963,9 @@ export const runClaude = async (
   //  사용자 turn = 첨부 블록 + 실제 입력 텍스트 (구분선으로 명시 분리 — assembleUserPrompt).
   // 중립 override(게이트웨이) 지정 시 tiguclaw context prefix(SYSTEM.md·AGENT.md·메모리·스킬…)를
   // 통째로 스킵 — 앱 호출에 비서 페르소나·컨텍스트 누수 0.
-  const { stable: stableContext, volatileParts } =
+  const { stable: stableContext, volatileParts, stableSlots } =
     input.systemPromptOverride !== undefined
-      ? { stable: "", volatileParts: [] as string[] }
+      ? { stable: "", volatileParts: [] as string[], stableSlots: [] as Array<{ key: string; text: string }> }
       : splitSystemContext({
           system,
           env,
@@ -1009,6 +1019,21 @@ export const runClaude = async (
   const systemChannel =
     input.systemPromptOverride ??
     composeSystemChannel(SYSTEM_PROMPT, stableContext);
+  // ★**프리픽스 지문** (2026-09-24) — Codex 엔 있고 Claude 엔 없던 것. 같은 스레드·같은 모델의
+  //  후속 턴이 앞 40,695 토큰만 재사용하는 일이 잦았는데(09-23 실측), 무엇이 바뀌었는지 로그로
+  //  가를 수 없었다. 사다리(몇 자에서 갈렸나) + **슬롯 이름**(어느 조각이) + 실제 도구 목록 변화를
+  //  `system/init` 에서 한 줄로 남긴다. 원문·키는 안 남긴다. 판정은 공용(`prefix-fingerprint.ts`).
+  const prefixKey = `claude|${input.threadKey}`;
+  const sysFp = prefixFingerprint(systemChannel);
+  const sysFpNote = describeFingerprint(sysFp, rememberFingerprint(prefixKey, sysFp));
+  const sysSlots = slotHashes([
+    ...(input.systemPromptOverride !== undefined
+      ? [{ key: "override", text: input.systemPromptOverride }]
+      : [{ key: "sysprompt", text: SYSTEM_PROMPT }]),
+    ...stableSlots,
+  ]);
+  const sysSlotNote = describeSlotChange(sysSlots, rememberSlotHashes(prefixKey, sysSlots));
+  let prefixLogged = false;
 
   const options: Options = {
     // 작동헌법 + 안정 스캐폴딩 (위에서 조립). override 시 그 값이 전부 대체.
@@ -1531,6 +1556,23 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       if (typeof msg.model === "string") {
         lastModel = msg.model;
         deltaStream.setModel(msg.model); // 델타 라벨 보정(늦게 알게 된 모델).
+      }
+      // 턴당 한 줄 — 재시도로 init 이 다시 와도 한 번만(같은 턴의 두 번째 줄은 소음이다).
+      if (!prefixLogged) {
+        prefixLogged = true;
+        try {
+          const tools = Array.isArray((msg as { tools?: unknown }).tools)
+            ? ((msg as { tools: unknown[] }).tools.filter((x) => typeof x === "string") as string[])
+            : [];
+          const toolChange = describeToolChange(tools, rememberToolNames(prefixKey, tools));
+          console.log(
+            `[claude-prefix] ${input.threadKey} ${typeof msg.model === "string" ? msg.model : "?"} ` +
+              `sys=${systemChannel.length.toLocaleString()}자 ${sysFpNote} ${sysSlotNote} ` +
+              `tools=${tools.length}개${toolChange === "" ? "" : ` ${toolChange}`}`,
+          );
+        } catch {
+          /* 관측이 턴을 깨지 않는다 */
+        }
       }
     } else if (msg.type === "system" && msg.subtype === "status") {
       // ★**압축이 실패로 끝난 것을 여기서 안다** (2026-09-15 회사 아스트라 지적).

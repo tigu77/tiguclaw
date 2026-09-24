@@ -784,11 +784,17 @@ const STABLE_CONTEXT_HEADER =
  */
 export const splitSystemContext = (
   input: SystemContextInput,
-): { stable: string; volatileParts: string[] } => {
+): {
+  stable: string;
+  volatileParts: string[];
+  /** 시스템 채널 슬롯(이름·내용, 순서대로) — 프리픽스 지문이 «어느 슬롯이 바뀌었나» 를 말하게. */
+  stableSlots: Array<{ key: string; text: string }>;
+} => {
   const slots = buildContextSlots(input).filter((s) => s.text.length > 0);
-  const stableParts = slots
+  const stableSlots = slots
     .filter((s) => s.channel === "system")
-    .map((s) => s.text);
+    .map((s) => ({ key: s.key, text: s.text }));
+  const stableParts = stableSlots.map((s) => s.text);
   return {
     stable:
       stableParts.length === 0
@@ -797,6 +803,7 @@ export const splitSystemContext = (
     volatileParts: slots
       .filter((s) => s.channel === "user")
       .map((s) => s.text),
+    stableSlots,
   };
 };
 

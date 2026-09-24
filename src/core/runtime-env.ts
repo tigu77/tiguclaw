@@ -60,7 +60,8 @@ export const detectShell = (): ShellSpec => {
       label: "cmd.exe (Windows cmd 문법)",
       syntaxHint:
         "Windows 명령을 쓰세요 (dir, type, findstr, copy, del). ls/cat/grep 아님. " +
-        "파일 작업은 가급적 네이티브 Read/Glob/Grep/Write/Edit 도구를 쓰세요 (크로스플랫폼).",
+        "파일 작업은 가급적 네이티브 Read/Glob/Grep/Write/Edit 도구를 쓰세요 (크로스플랫폼). " +
+        "명령은 창 없이 실행됩니다 — 사용자에게 창을 보여야 하면 `start` 로 띄우세요(예: `start notepad 파일`).",
     };
   }
   return {
@@ -70,6 +71,32 @@ export const detectShell = (): ShellSpec => {
     syntaxHint: "POSIX 셸 (ls, cat, grep, …).",
   };
 };
+
+/**
+ * 셸 명령 spawn 의 공통 옵션 — **셸 도구의 모든 실행 자리가 이것 하나를 쓴다** (2026-09-24).
+ *
+ * ★두 벌이던 것을 합쳤다. 포그라운드는 `windowsHide:true` 를 줬고 백그라운드(`run_in_background`)
+ *  는 안 줘서, Windows 에선 백그라운드 명령마다 cmd 창이 떠 있었다(`detached:true` 면 자식이 자기
+ *  콘솔을 받는다 — 싱크 레드팀 B 가 찾음). 같은 이유로 09-23 의 따옴표 수정도 한쪽만 그물에 걸렸다.
+ *  한 자리에서 만들면 한쪽만 빠질 수가 없다.
+ * ★창 숨김은 **명령을 돌리는 cmd 자체**의 창이다 — 비서가 `start` 로 일부러 띄우는 창은 그대로 뜬다.
+ * ★★**Windows 에선 `detached` 를 켜지 않는다** (2026-09-24, 싱크 레드팀 P1 — 첫 판이 못 닫았다).
+ *  libuv 는 win32 `detached` 를 `DETACHED_PROCESS` 로 옮기는데, 그 플래그와 함께면 창 숨김
+ *  (`CREATE_NO_WINDOW`)이 **무시**된다 — cmd 는 콘솔 없이 뜨고, 그 cmd 가 실행하는 git·node·npm
+ *  같은 콘솔 프로그램이 **새 창을 받는다**(nodejs/node#21825). 그래서 호출부는 `detached` 를 직접
+ *  적지 않고 «프로세스 그룹이 필요하다(`processGroup`)» 만 말한다 — 그룹은 POSIX 의 kill(-pgid)
+ *  용이고, Windows 의 트리 kill 은 `taskkill /T` 가 pid 로 한다(그룹이 필요 없다).
+ */
+export const shellSpawnOptions = <T extends Record<string, unknown>>(
+  spec: ShellSpec,
+  extra: T,
+  opts: { processGroup?: boolean } = {},
+): T & { windowsHide: true; windowsVerbatimArguments?: boolean; detached?: true } => ({
+  ...extra,
+  ...(opts.processGroup === true && process.platform !== "win32" ? { detached: true as const } : {}),
+  windowsHide: true,
+  ...(spec.windowsVerbatimArguments === true ? { windowsVerbatimArguments: true } : {}),
+});
 
 const toYmd = (d: Date): string => {
   const y = d.getFullYear();

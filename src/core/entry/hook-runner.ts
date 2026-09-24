@@ -262,6 +262,10 @@ const runShellHook = (
       process.platform === "win32"
         ? spawn(process.env.ComSpec || "cmd", ["/d", "/s", "/c", `"${command}"`], {
             windowsVerbatimArguments: true,
+            // ★창 숨김 (2026-09-24) — 데몬은 창 없이 돌아 자식이 콘솔을 새로 받는다. 훅마다 cmd 창이
+            //  번쩍였다. 훅은 사용자 설정 명령이라 셸 선택은 `detectShell` 로 합치지 않는다(override 가
+            //  훅까지 바꾸면 cmd 문법으로 쓴 기존 훅이 깨진다) — 창 숨김만 맞춘다.
+            windowsHide: true,
             timeout: timeoutMs,
           })
         : spawn("sh", ["-c", command], {

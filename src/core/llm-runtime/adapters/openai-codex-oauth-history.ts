@@ -2237,11 +2237,14 @@ export const appendToolResultsToInput = (
    * ★**필수** — 직전 요청 크기와(있으면) 모델 상한. 빠뜨리면 상한 근처에서도 몰아서 기다리게 되므로
    *  타입으로 강제한다(호출부 배선을 검사가 못 보는 자리를 컴파일러가 본다).
    */
-  room: { requestChars: number; ceilingChars?: number | undefined },
+  room: { requestChars: number; ceilingChars?: number | undefined; label?: string },
 ): number => {
   const incoming = results.reduce((n, r) => n + Math.min(r.output.length, CODEX_TOOL_OUTPUT_ENTRY_CAP), 0);
-  const nearCeiling = room.requestChars + incoming > (room.ceilingChars ?? CODEX_KNOWN_SAFE_INPUT_CHARS);
-  let compacted = compactOldToolOutputs(inputArray, nearCeiling ? { batchChars: 0 } : undefined);
+  const ceiling = room.ceilingChars ?? CODEX_KNOWN_SAFE_INPUT_CHARS;
+  const nearCeiling = room.requestChars + incoming > ceiling;
+  const textCompacted = compactOldToolOutputs(inputArray, nearCeiling ? { batchChars: 0 } : undefined);
+  let compacted = textCompacted;
+  let mediaCompacted = 0;
   // C2 — inputArray *진입* 직전 단발 cap. 큰 단일 output(Bash 1MB·Read 대용량)이 턴 끝까지
   // 매 iteration 재전송되며 비용을 지배하므로 진입 시점에 머리+꼬리만 남긴다. 도구 자체
   // cap 과 별개. function_call_output 은 결과 배열 순서대로 push → call_id 매칭 보존.
@@ -2283,7 +2286,18 @@ export const appendToolResultsToInput = (
         ...pendingMedia,
       ],
     });
-    compacted += compactOldToolMedia(inputArray);
+    mediaCompacted = compactOldToolMedia(inputArray);
+    compacted += mediaCompacted;
+  }
+  // ★압축은 입력 한가운데를 고쳐 써서 **그 지점부터 캐시가 다시 계산된다** — 그래서 일어날 때마다 사유와
+  //  수치를 남긴다(2026-09-26). 없으면 남은 캐시 깨짐이 «몰아서(정상)·상한 근처(안전)·이미지(한 칸씩)» 중
+  //  무엇인지 로그로 못 가른다. 이제 드물게 일어나므로 배경소음이 안 된다.
+  if (compacted > 0) {
+    console.log(
+      `[codex-compact] ${room.label ?? "?"} 텍스트 ${textCompacted}건(${nearCeiling ? "상한 근처 — 즉시" : "몰아서"})` +
+        ` · 이미지 ${mediaCompacted}건 · 직전 요청 ${room.requestChars.toLocaleString()}자 + 이번 ${incoming.toLocaleString()}자` +
+        ` / 상한 ${ceiling.toLocaleString()}자 — 이 지점부터 프리픽스 캐시가 다시 계산된다`,
+    );
   }
   return compacted;
 };

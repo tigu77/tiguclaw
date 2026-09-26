@@ -2688,6 +2688,7 @@ export const runOpenAiCodex = async (
       turnCompacted += appendToolResultsToInput(inputArray, toolOutputs, {
         requestChars: lastReqBytes.total,
         ceilingChars: loadModelInputLimits().get(`codex:${model}`),
+        label: input.threadKey,
       });
 
 

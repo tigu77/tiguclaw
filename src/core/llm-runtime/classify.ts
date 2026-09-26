@@ -24,6 +24,7 @@
  *    미정의면 일반 디폴트로 안전 degrade.
  */
 import { assertRuntimeModelAllowed, resolveTier, runRegionA, type ModelSpec } from "./index.js";
+import { loadModelProfiles } from "../settings.js";
 
 /** 분류 결과 — 3진. 실패·타임아웃·파싱불가는 모두 "uncertain"(sentinel). */
 export type ContradictionVerdict = "yes" | "no" | "uncertain";
@@ -48,7 +49,14 @@ export interface JudgeContradictionInput {
  */
 export const cheapInternalTierSpecs = (): ModelSpec[] | undefined => {
   assertRuntimeModelAllowed();
-  const nano = resolveTier("nano");
+  // ★모델 구성을 **프로파일**로 하는 설치본에선 레거시 env `MODEL_TIER_NANO` 를 보지 않는다
+  //  (2026-09-26 정태님: *"우리 모델프로필만 사용하는데 저 정보가 아직 있나"*). high·mid·low 는
+  //  같은 이름의 프로파일이 가리지만 `nano` 는 프로파일이 없어 6월의 .env 값(ollama qwen2.5 7B)이
+  //  새어 들어왔다 — WebFetch 요약이 9월에만 127회, 거의 전부 30초 시한 초과·한 건은 중국어 답.
+  //  프로파일이 하나도 없는 옛 설치본은 종전대로 env 를 따른다. `nano` 프로파일을 만들면 그걸 쓴다.
+  const profiles = loadModelProfiles();
+  const legacyNanoShadowed = Object.keys(profiles).length > 0 && profiles.nano === undefined;
+  const nano = legacyNanoShadowed ? [] : resolveTier("nano");
   if (nano.length > 0) return nano;
   const low = resolveTier("low");
   if (low.length > 0) return low;

@@ -25,6 +25,30 @@ export const isRateLimited = (errStr: string): boolean =>
   );
 
 /**
+ * **인증 거부 판정** (2026-09-26) — 한도(계정 사용량)와 **다른 축**이다.
+ *
+ * ★사고(돌쇠 9/26 08:00~08:10): Codex 가 `401 invalid_api_key` 를 6턴 연속 냈다. 한도가 아니라
+ *  쿨다운에 안 걸려 **매 턴 Codex 부터** 시도해 0.6~1.9초씩 버리고 폴백했고, 요약 호출 2회도 같은
+ *  벽에 부딪혔다. 인증이 죽은 동안은 재로그인 전까지 몇 번을 다시 해도 같다 — 한도처럼 쉬게 한다.
+ */
+export const AUTH_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12시간 — 4시간 탐침·재로그인·성공이 먼저 푼다
+// ★**HTTP 상태 자리의 401 이거나 인증 오류 코드·문구만** 잡는다 (2026-09-26 싱크 레드팀 P3).
+//  첫 판은 맨 `\b401\b`·`unauthorized` 였는데 `612,401자`(쉼표·한글이 단어 경계)·`input[401]`·
+//  도구 오류의 `12,401 tokens` 에도 걸려 **멀쩡한 provider 를 12시간 막고 «다시 로그인» 을 거짓으로**
+//  안내할 수 있었다. 실측 문자열: `Codex backend 호출 실패: 401 { "code": "invalid_api_key" …`.
+//  ★메시지 **맨 앞**의 401(openai SDK 는 `401 Incorrect API key provided` 처럼 상태를 앞에 둔다)과
+//   `…failed: 401`(Codex 토큰 갱신 실패 `OAuth token refresh failed: 401`)도 상태 자리다 — 첫 좁힘이
+//   이 둘을 놓쳤다(재검토 F1).
+export const isAuthRejected = (errStr: string): boolean =>
+  /^\s*401\b|\bfailed:\s*401\b|호출 실패:\s*401\b|\bAPI Error:\s*401\b|\bHTTP(?:\/[\d.]+)?\s+401\b|\bstatus(?: code)?[:=]?\s*401\b|\b401 Unauthorized\b|invalid_api_key|authentication_error|Invalid API key|Please run \/login|OAuth token (?:has )?(?:expired|been revoked|revoked)/i.test(errStr);
+
+/**
+ * 요약 실패가 **크기 탓이 아닌** 실패인가 — 그러면 다음 요약 예산을 줄이지 않는다(한도·인증).
+ * ★함수로 둔다 — 호출부 삼항에 박아 두면 검사가 소스 글자만 보게 되고, 죽은 분기도 통과했다(레드팀 M5).
+ */
+export const keepsFoldBudget = (errStr: string): boolean => isRateLimited(errStr) || isAuthRejected(errStr);
+
+/**
  * **모델 과부하 판정** (2026-08-12) — 한도(계정 축)와 **다른 축**의 실패다.
  *
  * ★왜 나누나: 같은 "실패"라도 **누가 죽었는지**가 다르고, 그래서 대책이 다르다.

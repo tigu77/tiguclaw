@@ -34,7 +34,7 @@ import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
 import { resolveProviderConn } from "./provider-registry.js";
 import { assertLiveModelAllowed } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
-import { setSummarizerCooldownPort } from "./adapters/openai-codex-oauth-history.js";
+import { setSummarizerCooldownPort, type CooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
 import { formatAttachments } from "../prompt-assembly.js";
 import { enrichTranscripts } from "./transcription/index.js";
@@ -68,6 +68,8 @@ import {
   MAX_COOLDOWN_MS,
   isRateLimited,
   parseCooldownMs,
+  AUTH_COOLDOWN_MS,
+  isAuthRejected,
 } from "./rate-limit.js";
 import { applyInlineSuggestion } from "../next-message-suggestion.js";
 import { redactSecrets } from "../outbound-sanitize.js";
@@ -1158,7 +1160,7 @@ export { isRateLimited, parseCooldownMs };
 //  순환). 그래서 메인 턴이 쿨다운으로 건너뛰는 동안에도 요약만 계속 때려 실패했고, 그때마다
 //  oldest-drop 으로 맥락이 잘렸다. 판정은 여기 하나로 두고 **포트로 내려보낸다**
 //  (index→history 는 순환이 아니다 — history 는 index 를 import 하지 않는다).
-setSummarizerCooldownPort({
+const summarizerCooldownPort: CooldownPort = {
   remainingMs: (key) => {
     const now = Date.now();
     try {
@@ -1169,36 +1171,35 @@ setSummarizerCooldownPort({
     }
   },
   register: (key, detail) => {
-    if (!isRateLimited(detail)) return; // 한도 아닌 실패는 쿨다운 대상이 아니다.
-    const ms = parseCooldownMs(detail) ?? DEFAULT_COOLDOWN_MS;
+    const auth = !isRateLimited(detail) && isAuthRejected(detail);
+    if (!isRateLimited(detail) && !auth) return; // 한도·인증 거부가 아닌 실패는 쿨다운 대상이 아니다.
+    const ms = auth ? AUTH_COOLDOWN_MS : parseCooldownMs(detail) ?? DEFAULT_COOLDOWN_MS;
     const untilTs = Date.now() + ms;
     cooldownUntil.set(key, untilTs);
     saveCooldown(key, untilTs);
     console.warn(
-      `llm-runtime: '${key}' rate-limited(요약 경로) — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
+      `llm-runtime: '${key}' ${auth ? "인증 거부" : "rate-limited"}(요약 경로) — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
         `(해제 ${new Date(untilTs).toLocaleString("ko-KR")}).`,
     );
     publishCooldownEvent("enter", key, ms);
   },
-});
+};
+setSummarizerCooldownPort(summarizerCooldownPort);
+/** 검사용 — 요약 경로의 쿨다운 등록을 실제 객체로 부른다(레드팀 M3: 이 분기가 무검사였다). */
+export const __summarizerCooldownPortForTest = summarizerCooldownPort;
 
 export const registerCooldownIfRateLimited = (
   spec: ModelSpec,
   e: unknown,
-): { key: string; untilTs: number } | null => {
+): { key: string; untilTs: number; reason: "limit" | "auth" } | null => {
   const detail = errorDetail(e);
-  if (!isRateLimited(detail)) return null;
-  const parsed = parseCooldownMs(detail);
-  const ms = parsed ?? DEFAULT_COOLDOWN_MS;
+  const limited = isRateLimited(detail);
+  // ★인증 거부도 쉬게 한다 (2026-09-26) — 재로그인 전까지 매 턴 다시 해도 같은 401 이다.
+  const auth = !limited && isAuthRejected(detail);
+  if (!limited && !auth) return null;
+  const parsed = limited ? parseCooldownMs(detail) : null;
+  const ms = auth ? AUTH_COOLDOWN_MS : parsed ?? DEFAULT_COOLDOWN_MS;
   const key = cooldownKey(spec);
-  // 이미 쿨다운 중이었나 — 재등록(탐침 실패)과 신규 진입을 가른다. 만료분은 0 이라 신규.
-  const wasCoolingDown = (() => {
-    try {
-      return getCooldownRow(key, Date.now()) !== null;
-    } catch {
-      return false; // 조회 실패 시 신규로 본다(알리는 쪽이 안전 — 조용한 누락보다 낫다).
-    }
-  })();
   const untilTs = Date.now() + ms;
   cooldownUntil.set(key, untilTs);
   saveCooldown(key, untilTs); // 영속 — 재시작해도 죽은 백엔드를 다시 두드리지 않게.
@@ -1206,12 +1207,30 @@ export const registerCooldownIfRateLimited = (
     // ★출처 분기 병기 (2026-07-30) — "8228분"이 백엔드가 말한 값인지, 파싱 실패로 기본값
     //  인지, 비정상 값이 7일 상한에 잘린 건지 로그만으로는 구분이 안 됐다. 상수를 외워야
     //  산술로 추론해야 했고, 그게 "6일 공백" 사고에서 답을 못 낸 질문이었다.
-    `llm-runtime: '${key}' rate-limited — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
-      `(${parsed === null ? "기본값" : ms >= MAX_COOLDOWN_MS ? "상한 클램프" : "백엔드 지정"}, ` +
+    `llm-runtime: '${key}' ${auth ? "인증 거부" : "rate-limited"} — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
+      `(${auth ? "인증 거부 기본값 — 재로그인·성공·4시간 탐침이 먼저 푼다" : parsed === null ? "기본값" : ms >= MAX_COOLDOWN_MS ? "상한 클램프" : "백엔드 지정"}, ` +
       `해제 ${new Date(untilTs).toLocaleString("ko-KR")}).`,
   );
   publishCooldownEvent("enter", key, ms);
-  return wasCoolingDown ? null : { key, untilTs };
+  // ★«이 턴에서 처음 등록했나» 가 아니라 «이 쿨다운을 **이미 알렸나**» 로 가른다 (2026-09-26 싱크
+  //  레드팀 P4). 종전엔 요약 경로·내부 호출이 먼저 **조용히** 등록하면 본 턴이 «이미 쉬는 중» 으로
+  //  보고 통지를 건너뛰어, 인증 거부 안내가 바로 그 사고 경로(요약이 본 호출보다 먼저 401)에서 영영
+  //  안 나갔다. 알렸다는 표시는 **실제로 알린 자리**(markCooldownAnnounced)만 남긴다.
+  //  탐침 실패의 재등록은 표시가 살아 있으므로 여전히 조용하다(4시간마다 같은 말 = 소음).
+  if ((announcedUntil.get(key) ?? 0) > Date.now()) {
+    // 이미 알린 사건이 연장됐다(탐침 실패의 재등록) — 표시도 새 해제 시각까지 늘린다. 안 늘리면 첫 해제
+    //  시각이 지나는 순간 같은 사건을 새 사건으로 보고 다시 알렸다(인증 12시간마다 재통지 — 재검토 F2).
+    announcedUntil.set(key, untilTs);
+    return null;
+  }
+  return { key, untilTs, reason: auth ? "auth" : "limit" };
+};
+
+/** 알린 쿨다운 — 키 → 알린 에피소드의 해제 시각. 메모리만(재시작 뒤 첫 실패는 한 번 다시 알린다). */
+const announcedUntil = new Map<string, number>();
+/** 쿨다운 통지를 **실제로 보낸** 자리가 부른다. */
+export const markCooldownAnnounced = (key: string, untilTs: number): void => {
+  announcedUntil.set(key, untilTs);
 };
 
 // 성공 시 조기 회복 — 만료 전이라도 실제 성공하면 즉시 해제(재탐 낭비 축소). 엔트리
@@ -1219,6 +1238,7 @@ export const registerCooldownIfRateLimited = (
 // export — 격리 검증(_workspace)이 직접 호출.
 export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
   const key = cooldownKey(spec);
+  announcedUntil.delete(key); // 회복했다 — 다음 쿨다운은 새 사건이라 다시 알린다.
   if (cooldownUntil.delete(key)) {
     deleteCooldown(key);
     publishCooldownEvent("clear", key, 0);
@@ -1252,6 +1272,7 @@ export const clearCooldowns = (prefix?: string): string[] => {
   for (const key of [...cooldownUntil.keys()]) {
     if (want !== "" && !key.startsWith(want)) continue;
     cooldownUntil.delete(key);
+    announcedUntil.delete(key); // 사람이 풀었다 — 다시 막히면 새 사건으로 알린다.
     try {
       deleteCooldown(key);
     } catch {
@@ -1485,6 +1506,7 @@ const runPool = async (
       //   (4시간마다 같은 말 = 배경 소음). 내부 분류 호출도 제외.
       //  LLM 무경유 raw 통지 — 한도가 걸린 상황에서 알리려고 모델을 또 태울 수는 없다.
       if (entered !== null && input.internal !== true) {
+        markCooldownAnnounced(entered.key, entered.untilTs);
         const mins = Math.round((entered.untilTs - Date.now()) / 60000);
         const when = new Date(entered.untilTs).toLocaleString("ko-KR", {
           month: "numeric",
@@ -1522,11 +1544,16 @@ const runPool = async (
           //  이 턴은 여기서 끝나는데 «대화는 그대로 이어집니다» 를 받으면, 사용자는
           //  오지 않을 답을 기다린다(바로 아래 `hasFallback` 에 같은 이유로 `!replayBlocked`
           //  를 달아놨는데 이 문구만 빠져 있었다 — 같은 catch 안 스무 줄 위다).
-          text: replayBlocked
-            ? `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
-              `이 요청은 도구가 이미 실행돼 여기서 멈춥니다(다시 돌리면 그 도구가 두 번 실행됩니다).`
-            : `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n` +
-              `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`,
+          // 인증 거부는 «언제 풀린다» 가 아니라 «다시 로그인해야 한다» 가 사실이다.
+          text:
+            (entered.reason === "auth"
+              ? `⚠️ ${adapterLabel(spec.adapter)} 인증이 거부됐습니다 — 다시 로그인하거나 키를 확인해 주세요(고친 뒤 \`/cooldown clear\` 로 바로 되돌릴 수 있습니다).\n`
+              : `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n`) +
+            (replayBlocked
+              ? `이 요청은 도구가 이미 실행돼 여기서 멈춥니다(다시 돌리면 그 도구가 두 번 실행됩니다).`
+              : entered.reason === "auth"
+                ? `그동안 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`
+                : `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`),
           label: "cooldown",
         }).catch(() => undefined); // 통지 실패가 턴을 무르지 않는다.
       }

@@ -1173,6 +1173,7 @@
         //  무동작이었다(소비자만 고치고 생산자를 안 봄). `ensureJobCard` 는 아는 키만
         //  읽으므로 여분 필드는 무해하고, 새 필드가 생기면 **저절로** 흘러간다.
         const entry = ensureJobCard(p.jobId, { ...p, ts });
+        entry.stateVersion = (entry.stateVersion || 0) + 1;
         // 토큰 합계는 상태 단조 가드보다 **앞**에서 — 끝난 카드에 온 스냅샷도 반영해야 한다
         //  (합계 자체가 단조라 옛 값은 setJobUsage 가 거른다).
         if (p.usage) setJobUsage(entry, p.usage);
@@ -1286,8 +1287,7 @@
         // ★서버가 주는 건 "지금 도는 잡" 전량이므로, 하이드레이션은 **복원 + 대조** 두 일을 한다.
         //  대조가 없으면: 잡이 끝났는데 그 worker.done 이 replay 창 밖으로 밀린 경우(긴 잡·
         //  오래 끊긴 연결) 카드가 영원히 "진행 중"으로 남는다 — 갱신해 줄 이벤트가 더는 없다.
-        //  서버 목록에 없는 running 카드 = 이미 끝난 잡이다(관측된 사실). 결과는 모르므로
-        //  "완료"로 단정하지 않고 종료 사실만 반영한다(거짓값 금지).
+        //  목록에서 빠진 카드는 단건으로 정확한 상태를 확인한다. 부재만으로 종료를 단정하지 않는다.
         const startedAt = Date.now();
         return fetch("/api/worker-jobs").then((r) => r.json()).then((d) => {
           applyJobsSnapshot(d, startedAt);
@@ -1301,6 +1301,30 @@
        * ★가르는 이유: `resource-store` 가 스냅샷 요청을 소유해야 **합치기**(도는 중이면 합류)가
        *  성립한다. 반영만 함수로 빼면 두 곳이 각자 fetch 하지 않고 한 곳이 받아 여기로 넘긴다.
        */
+      // 같은 카드의 중복 조회는 합친다. 실패는 상태를 지어내지 않고 다음 재접속 때 재시도.
+      const recoveringJobs = new Set();
+      const recoverJobState = (jobId, entry) => {
+        if (recoveringJobs.has(jobId)) return;
+        recoveringJobs.add(jobId);
+        const version = entry.stateVersion || 0;
+        return fetch("/api/worker-jobs?jobId=" + encodeURIComponent(jobId))
+          .then((r) => { if (!r.ok) throw new Error("Job state lookup failed"); return r.json(); })
+          .then((p) => {
+            // 조회 사이 SSE/스냅샷이 갱신한 카드나 교체된 카드에는 옛 응답을 적용하지 않는다.
+            if (jobCards.get(jobId) !== entry || (entry.stateVersion || 0) !== version) return;
+            if (!p || p.jobId !== jobId) return;
+            if (p.status === undefined) {
+              handleWorkerEvent({ jobId, status: "interrupted" }, fmtTime(Date.now()));
+            } else if (p.status === "running" || TERMINAL_JOB_STATUS.has(p.status)) {
+              handleWorkerEvent({ ...p, fromServer: true }, fmtTime(p.finishedAt || Date.now()));
+            }
+            // 서버가 답했다 — 이 카드가 **그 뒤로 안 바뀌었으면** 다시 묻지 않는다(2026-09-26 적대
+            //  검토: 스냅샷은 어느 잡이든 턴이 끝날 때마다 돌아, 서버도 모르는 «중단됨» 카드마다 매번
+            //  단건 GET 이 나갔다). 새 이벤트가 오면 stateVersion 이 바뀌어 다시 대상이 된다.
+            entry.recoverSettledAt = entry.stateVersion || 0;
+          }).catch(() => {}).finally(() => recoveringJobs.delete(jobId));
+      };
+
       const applyJobsSnapshot = (d, startedAt) => {
           if (!d || !Array.isArray(d.jobs)) return;
           const live = new Set();
@@ -1331,10 +1355,12 @@
             );
           }
           for (const [jobId, e] of jobCards) {
-            if (e.status !== "running" || live.has(jobId)) continue;
+            if (!["running", "interrupted"].includes(e.status) || live.has(jobId)) continue;
+            // 이미 서버에 물어 «중단됨» 으로 정리된 카드는 그 뒤 변화가 없으면 건너뛴다(위 recoverJobState).
+            if (e.status === "interrupted" && e.recoverSettledAt === (e.stateVersion || 0)) continue;
             // 이 fetch 이후에 생긴 카드는 대조 대상이 아니다(응답이 그 잡을 알 리 없다) — race 방지.
             if ((e.createdTs || e.startTs || 0) > startedAt) continue;
-            handleWorkerEvent({ jobId, status: "interrupted" }, fmtTime(Date.now()));
+            recoverJobState(jobId, e);
           }
       };
 

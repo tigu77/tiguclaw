@@ -15,6 +15,8 @@ import { getSchedule } from "../../../src/store/schedules.js";
 import { loadSchedulerRetryEnabled } from "../../../src/core/settings.js";
 import { dispatch } from "./dispatcher.js";
 import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
+import { canonicalSessionChannel } from "../../../src/store/sessions.js";
+import { applyScheduleHistory } from "../../../src/store/thread-reset.js";
 
 /**
  * 전달 실패 후 자동 재전송까지의 대기(2026-07-26). 채널 어댑터가 이미 transport 재시도를
@@ -256,6 +258,32 @@ export const runScheduleFiring = async (
       return;
     }
 
+    // ★이력 정책 (2026-09-26) — 발화 **직전**에 적용한다. 기본(null)은 종전대로 이어간다.
+    //  매일 도는 스케줄이 이력을 계속 들고 가 첫 요청이 18만→29만 토큰으로 불었고, 하루 간격이라
+    //  캐시도 못 탔다. 정책을 못 적용해도 발화는 한다(이력이 길 뿐 결과는 나간다).
+    {
+      const tk = `scheduler:${schedule.id}`;
+      try {
+        const applied = applyScheduleHistory(
+          canonicalSessionChannel(tk, "scheduler"),
+          tk,
+          schedule.prompt,
+          // 발화 때 새로 읽는다 — cron 콜백은 등록 시점의 행을 붙잡고 있어, 도구를 안 거친 변경이
+          //  재시작 전까지 안 보였다(설정=데이터는 매번 새로 읽는다).
+          (getSchedule(schedule.id) ?? schedule).keepRuns,
+        );
+        if (applied !== null) {
+          console.log(
+            `[scheduler:${schedule.id}] 이력 정책 적용 — ` +
+              `발화 ${applied.runs}회 중 경계 ${new Date(applied.boundary).toISOString()} 이전을 끊음`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[scheduler:${schedule.id}] 이력 정책 적용 실패 — 이어서 발화합니다: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
     try {
       const out = await deps.runClaude({
         text: schedule.prompt,

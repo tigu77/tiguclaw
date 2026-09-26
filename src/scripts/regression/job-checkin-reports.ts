@@ -295,6 +295,11 @@ export const check: RegressionCheck = {
           first === undefined ? "재주입 없음" : `turnOrigin=${String(first.turnOrigin)}`,
         ),
         assert(
+          "★점검 판단의 답은 소환 세션으로 답장 매핑된다(텔레그램 답글이 기본 세션으로 새지 않게)",
+          got.replyMappedTo === "dashboard:s1",
+          `매핑=${String(got.replyMappedTo)} (기대 dashboard:s1)`,
+        ),
+        assert(
           "`receivedAt` 이 실린다(IncomingMessage 필수 필드)",
           first?.hasReceivedAt === true,
           first === undefined ? "재주입 없음" : `hasReceivedAt=${String(first.hasReceivedAt)}`,

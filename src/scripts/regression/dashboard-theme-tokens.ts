@@ -17,11 +17,24 @@
  *  본다**(어느 규칙이 이기는지). 그 축은 헤드리스 프로브가 본다
  *  (`_workspace/_theme_token_equiv_cdp.mjs` — before/after 계산값 전수 대조).
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-/** JS 가 `setProperty` 로 넣는 레이아웃 변수 — `:root` 에 없는 게 정상이다. */
-const JS_SET = new Set(["bg-panel-w", "chat-inset"]);
+/**
+ * JS 가 `setProperty` 로 넣는 레이아웃 변수 — `:root` 에 없는 게 정상이다.
+ * ★손으로 적지 않고 **대시보드 JS 에서 뽑는다** (2026-09-25). 종전엔 이름 두 개를 여기 적어 두어,
+ *  세 번째(`--tabs-inset`)를 JS 에 넣자 이 검사가 «죽은 참조» 로 빨개졌다 — 정의는 있는데 목록이 낡은 것.
+ */
+const jsSetVars = async (): Promise<Set<string>> => {
+  const dir = new URL("../../../packages/dashboard/js/", import.meta.url);
+  const out = new Set<string>();
+  for (const f of await readdir(dir)) {
+    if (!f.endsWith(".js")) continue;
+    const src = await readFile(new URL(f, dir), "utf8");
+    for (const m of src.matchAll(/setProperty\(\s*["']--([a-z0-9-]+)["']/g)) out.add(m[1]!);
+  }
+  return out;
+};
 
 const run = async (): Promise<Assertion[]> => {
   let css: string;
@@ -95,6 +108,7 @@ const run = async (): Promise<Assertion[]> => {
   //   실제로 `var(--font)`·`var(--muted)` 둘이 그렇게 살아 있었다(2026-08-24 발견).
   const defined = new Set([...(rootBlock[1] ?? "").matchAll(/--([a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
   const used = new Set([...css.matchAll(/var\(\s*--([a-z0-9-]+)/g)].map((m) => m[1]!));
+  const JS_SET = await jsSetVars();
   const dead = [...used].filter((v) => !defined.has(v) && !JS_SET.has(v));
   out.push(
     assert(

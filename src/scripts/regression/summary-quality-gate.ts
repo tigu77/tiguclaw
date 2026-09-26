@@ -140,8 +140,9 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★index 가 부팅 시 그 포트를 실제로 꽂는다(배선 누락 0)",
-        /setSummarizerCooldownPort\(\{/.test(idxSrc),
-        /setSummarizerCooldownPort\(\{/.test(idxSrc) ? "등록 확인" : "★미등록 — 게이트가 죽어 있다",
+        // 최상위에서 실제로 부르는가(인라인 객체든 이름 붙인 포트든) — 주석은 벗기고 잰다.
+        /^setSummarizerCooldownPort\((?:\{|summarizerCooldownPort\))/m.test(idxSrc.replace(/^\s*\/\/.*$/gm, "")),
+        /^setSummarizerCooldownPort\([^\n]*/m.exec(idxSrc.replace(/^\s*\/\/.*$/gm, ""))?.[0] ?? "★미등록 — 게이트가 죽어 있다",
       ),
     );
     // 요약 경로가 쿨다운을 **보고** 실패를 **등록**하는가(두 방향 모두).

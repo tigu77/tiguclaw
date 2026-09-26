@@ -76,6 +76,14 @@ const addScheduleTool = tool(
     prompt: z.string().min(1).max(4096),
     dest_channel: z.string().min(1).max(64),
     dest_target: z.string().max(256).optional(),
+    keep_runs: z
+      .number()
+      .int()
+      .min(0)
+      .max(50)
+      .nullable()
+      .optional()
+      .describe("이력 정책 — 생략·null = 이전 발화 대화를 계속 이어감(기본), 0 = 매번 새로 시작, N = 직전 N회만 이어감. 매일 도는 보고·점검처럼 지난 내용이 필요 없는 스케줄은 0 이 싸고 빠르다(이력이 쌓일수록 매 발화 입력이 커진다)."),
   },
   async (args) => {
     const triggerType = args.trigger_type ?? "cron";
@@ -139,6 +147,7 @@ const addScheduleTool = tool(
       destChannel: args.dest_channel,
       destTarget: args.dest_target ?? null,
       triggerType,
+      keepRuns: args.keep_runs ?? null,
     });
     // plugin lifecycle 에 추가 알림 — cron/reboot 분기는 plugin index.ts 에서.
     try {
@@ -182,6 +191,7 @@ const listSchedulesTool = tool(
         last_fired_at: r.lastFiredAt,
         last_status: r.lastStatus,
         last_error: r.lastError,
+        keep_runs: r.keepRuns,
         next_run: nextRun,
       };
     });
@@ -191,7 +201,7 @@ const listSchedulesTool = tool(
 
 const updateScheduleTool = tool(
   "update_schedule",
-  "기존 schedule 수정 (부분 패치 — 준 필드만 바뀜). id 로 대상 지정. 바꿀 수 있는 것: label, trigger_type ('cron'|'reboot'), cron_expr, timezone, prompt, dest_channel, dest_target, enabled (true=활성/false=비활성 — enable/disable 토글을 이 도구로 한다. delete 대신 잠깐 끄고 싶을 때 enabled=false). cron_expr 이 바뀌거나 trigger_type 이 'cron' 인데 기존 cron_expr 이 비어있으면 유효성 검사 후 next_run 을 재계산해 응답. trigger_type='reboot' 로 전환하면 cron_expr 은 무시·초기화(다음 daemon.boot 발화). trigger_type='cron' 으로 전환하는데 저장된 cron_expr 이 없으면 cron_expr 을 반드시 함께 줘야 함. prompt 를 바꿀 때는 add_schedule 과 동일한 고정문구 규칙(`다음 문구로만 짧게 정확히 답하라: '<문구>'`)을 따른다. 존재하지 않는 id 면 ok:false, error:'not_found'.",
+  "기존 schedule 수정 (부분 패치 — 준 필드만 바뀜). id 로 대상 지정. 바꿀 수 있는 것: label, trigger_type ('cron'|'reboot'), cron_expr, timezone, prompt, dest_channel, dest_target, enabled (true=활성/false=비활성 — enable/disable 토글을 이 도구로 한다. delete 대신 잠깐 끄고 싶을 때 enabled=false), keep_runs (이력 정책, null 로 되돌리면 계속 이어감). cron_expr 이 바뀌거나 trigger_type 이 'cron' 인데 기존 cron_expr 이 비어있으면 유효성 검사 후 next_run 을 재계산해 응답. trigger_type='reboot' 로 전환하면 cron_expr 은 무시·초기화(다음 daemon.boot 발화). trigger_type='cron' 으로 전환하는데 저장된 cron_expr 이 없으면 cron_expr 을 반드시 함께 줘야 함. prompt 를 바꿀 때는 add_schedule 과 동일한 고정문구 규칙(`다음 문구로만 짧게 정확히 답하라: '<문구>'`)을 따른다. 존재하지 않는 id 면 ok:false, error:'not_found'.",
   {
     id: z.number().int().min(1),
     label: z.string().min(1).max(120).optional(),
@@ -202,6 +212,14 @@ const updateScheduleTool = tool(
     dest_channel: z.string().min(1).max(64).optional(),
     dest_target: z.string().max(256).optional(),
     enabled: z.boolean().optional(),
+    keep_runs: z
+      .number()
+      .int()
+      .min(0)
+      .max(50)
+      .nullable()
+      .optional()
+      .describe("이력 정책 — 생략·null = 이전 발화 대화를 계속 이어감(기본), 0 = 매번 새로 시작, N = 직전 N회만 이어감. 매일 도는 보고·점검처럼 지난 내용이 필요 없는 스케줄은 0 이 싸고 빠르다(이력이 쌓일수록 매 발화 입력이 커진다)."),
   },
   async (args) => {
     const existing = getSchedule(args.id);
@@ -224,6 +242,7 @@ const updateScheduleTool = tool(
     if (args.dest_channel !== undefined) patch.destChannel = args.dest_channel;
     if (args.dest_target !== undefined) patch.destTarget = args.dest_target;
     if (args.enabled !== undefined) patch.enabled = args.enabled;
+    if (args.keep_runs !== undefined) patch.keepRuns = args.keep_runs;
     if (args.trigger_type !== undefined) patch.triggerType = args.trigger_type;
 
     let nextRunIso: string | null;

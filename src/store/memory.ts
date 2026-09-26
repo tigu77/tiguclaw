@@ -296,12 +296,20 @@ export const listMemoriesForIndex = (
   //  ★몫은 **비율이 아니라 바이트**다 — 비율이면 한 종류가 폭증할 때 남의 몫도 같이 흔들린다.
   //  ★남은 몫은 **재분배하지 않는다.** 그러면 «자동생성이 남은 자리를 다 먹는» 옛 상태로
   //   돌아간다. 덜 쓰는 종류의 여유는 그 종류의 성장 여지로 남긴다.
+  // ★**전부 들어가면 전부 싣는다** (2026-09-26). 몫은 캡을 **넘칠 때** 누가 밀려날지 정하는
+  //  보호 장치다 — 전체가 캡 안이면 밀려날 것이 없는데도 몫이 경계를 만들어 33건(22%)이 빠졌고,
+  //  그 경계의 선택이 `access_count` 로 정해져 **메모리를 읽기만 해도** 인덱스 글이 바뀌었다.
+  //  시스템 채널이라 그때마다 Claude 캐시가 대화 이력째 깨졌다(실측 14일: 대화 첫 요청이 4만
+  //  부근에서 끊긴 12회 = 대화 캐시 생성의 48%). 넘칠 때의 보호(기계 생성물이 사람 사실을 밀어내지
+  //  않게)는 그대로다.
+  const lineOf = (r: Pick<MemoryRow, "type" | "name" | "description">) => `- [${r.type}] ${r.name}: ${r.description}`;
+  const allBytes = rows.reduce((n, r) => n + Buffer.byteLength(lineOf(r), "utf8") + 1, 0);
   const budget = memoryTypeBudgets(maxBytes);
   const used = new Map<string, number>();
-  const picked: Pick<MemoryRow, "type" | "name" | "description">[] = [];
+  const picked: Pick<MemoryRow, "type" | "name" | "description">[] = allBytes <= maxBytes ? rows.slice() : [];
   let bytes = 0;
   let truncated = 0;
-  for (const r of rows) {
+  for (const r of allBytes <= maxBytes ? [] : rows) {
     const line = `- [${r.type}] ${r.name}: ${r.description}`;
     const lineBytes = Buffer.byteLength(line, "utf8") + 1; // +\n
     const bucket = memoryBucket(r.name, r.type);

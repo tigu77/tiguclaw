@@ -20,11 +20,12 @@
  *    "원인 판정 불가 = 보수적 강등(사용자 확인)"으로 받는다. 데몬·턴 절대 안 죽음.
  *
  * 모델 tier 선택 (원칙 2 — "가장 싼/빠른 tier 를 LLM-agnostic 하게"):
- *  - classify.ts classifyTierSpecs 와 동일: nano → low → undefined(facade 디폴트).
+ *  - 풀 = classify.ts `cheapInternalTierSpecs`(한 곳).
  *    self-growth 가 특정 모델을 고르지 않는다 — env 가 tier 를 정의하고, 미정의면
  *    일반 디폴트로 안전 degrade. tier 풀도 provider:model 콤마라 어댑터 무관.
  */
-import { resolveTier, runRegionA, type ModelSpec } from "./index.js";
+import { runRegionA } from "./index.js";
+import { cheapInternalTierSpecs } from "./classify.js";
 
 /**
  * 실패 원인 유형 — 5진. 실패·타임아웃·파싱불가는 모두 "uncertain"(sentinel).
@@ -65,18 +66,9 @@ export interface ReflectFailureCauseInput {
   timeoutMs?: number;
 }
 
-/**
- * 분류 tier 풀 해석 — nano → low → undefined(facade 디폴트). classify.ts 와 동일.
- * self-growth 가 모델을 고르지 않음: env(MODEL_TIER_NANO/LOW)가 정의한 풀을 쓰고,
- * 미정의면 undefined 로 일반 디폴트(REGION_A_MODELS/anthropic)에 안전 degrade.
- */
-const classifyTierSpecs = (): ModelSpec[] | undefined => {
-  const nano = resolveTier("nano");
-  if (nano.length > 0) return nano;
-  const low = resolveTier("low");
-  if (low.length > 0) return low;
-  return undefined; // facade 디폴트(env REGION_A_MODELS → anthropic SDK 디폴트)
-};
+// 분류 tier 풀은 `cheapInternalTierSpecs`(classify.ts) **한 곳**이 정한다 (2026-09-26 싱크 레드팀).
+//  종전엔 같은 판단(nano → low)의 사본이 여기 있어, 프로파일 설치본에서 레거시 MODEL_TIER_NANO 를
+//  건너뛰게 고칠 때 이쪽이 빠졌다 — 실패 회고만 계속 로컬 qwen 으로 갔다.
 
 const VALID_CAUSES: ReadonlySet<CauseCategory> = new Set<CauseCategory>([
   "skill",
@@ -198,7 +190,7 @@ export const reflectFailureCause = async (
         toolPolicy: { mode: "none" }, // 도구 0 (분류엔 불필요 + 미지원 모델 graceful)
         abortSignal: ac.signal, // 짧은 타임아웃
       },
-      { specs: classifyTierSpecs() }, // nano/low tier(있으면) — LLM-agnostic 가벼운 풀
+      { specs: cheapInternalTierSpecs() }, // 내부 단발 호출 풀 — classify.ts 한 곳
     );
     return parseFailureReflection(output.text);
   } catch {

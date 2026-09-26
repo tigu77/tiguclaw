@@ -570,6 +570,13 @@ export const initStore = (): void => {
     );
   }
 
+  // ─── schedules.keep_runs (2026-09-26) — 스케줄 이력 정책 ────────────────────
+  //  NULL = 계속(현행 — 기존·신규 모두 기본), 0 = 매번 새로 시작, N = 직전 N회만 유지.
+  //  매일 도는 스케줄이 이력을 계속 이어 첫 요청이 18만→29만 토큰으로 불던 것.
+  if (!schedCols.some((c) => c.name === "keep_runs")) {
+    handle.exec(`ALTER TABLE schedules ADD COLUMN keep_runs INTEGER`);
+  }
+
   // ─── file-watch trigger v1: watches (contract §3) ───────────────────────
   handle.exec(`
     CREATE TABLE IF NOT EXISTS watches (

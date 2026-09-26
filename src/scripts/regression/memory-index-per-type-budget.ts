@@ -50,8 +50,18 @@ export const check: RegressionCheck = {
     db.prepare(`UPDATE memories SET access_count = 2 WHERE name = 'user-name-jungtae'`).run();
 
     // 캡을 좁혀 «경쟁» 을 강제한다 — 넉넉하면 아무것도 안 잘려 검사가 공짜 초록이다.
-    const CAP = 6_000; // auto 몫 600B ≈ 4~5줄 — 12건 중 일부만 실려야 한다
+    // ★2026-09-26: 전체가 캡 안이면 **전부 싣는다**(몫은 넘칠 때의 보호). 그래서 경쟁은 전체를
+    //  캡보다 **실제로 크게** 해야 생긴다 — 전체 바이트보다 1 작게 잡는다.
+    const allLines = listMemoriesForIndex(64 * 1024).lines;
+    const allBytes = allLines.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+    const CAP = allBytes - 1;
     const r = listMemoriesForIndex(CAP);
+    // 넉넉한 캡 — 몫을 넘는 자동생성분도 **전부** 실리고, 읽힌 횟수가 바뀌어도 글이 그대로다
+    //  (몫 경계의 선택이 access_count 로 흔들려 Claude 캐시가 대화 이력째 깨지던 것).
+    const roomy = listMemoriesForIndex(allBytes + 10);
+    db.prepare(`UPDATE memories SET access_count = 999 WHERE name = 'user-hobby'`).run();
+    const roomyAfter = listMemoriesForIndex(allBytes + 10);
+    db.prepare(`UPDATE memories SET access_count = 0 WHERE name = 'user-hobby'`).run();
     const has = (n: string): boolean => r.lines.some((l) => l.includes(n));
     const autoLines = r.lines.filter((l) => l.includes("feedback_growth_auto_")).length;
     let hugeIn = false;
@@ -72,6 +82,16 @@ export const check: RegressionCheck = {
         `실림 ${String(r.lines.length)}건 · 잘림 ${String(r.truncated)}건`,
       ),
       assert(
+        "★전체가 캡 안이면 몫을 넘는 종류도 전부 실린다(밀려날 것이 없으면 자르지 않는다)",
+        roomy.truncated === 0 && roomy.lines.length === allLines.length,
+        `실림 ${String(roomy.lines.length)}/${String(allLines.length)} · 잘림 ${String(roomy.truncated)}`,
+      ),
+      assert(
+        "★그때 읽힌 횟수가 바뀌어도 인덱스 글이 그대로다(캐시가 읽기마다 깨지지 않는다)",
+        roomy.lines.join("\n") === roomyAfter.lines.join("\n"),
+        roomy.lines.join("\n") === roomyAfter.lines.join("\n") ? "동일" : "★바뀜",
+      ),
+      assert(
         "★★기계 생성분이 **제 몫만** 쓴다 — 500회짜리 12건이 통째로 앞을 먹지 못한다",
         autoLines > 0 && autoLines < 12,
         `자동생성 ${String(autoLines)}/12건만 실림`,
@@ -81,10 +101,13 @@ export const check: RegressionCheck = {
         (() => {
           // `reference` 하나만, 자기 몫보다 크게 만든다.
           addMemory({ type: "reference", name: "ref-huge", description: "참".repeat(400), body: "b" });
-          hugeIn = listMemoriesForIndex(CAP).lines.some((l) => l.includes("ref-huge"));
+          // 캡은 큰 항목을 넣은 **뒤**의 전체보다 1 작게 — 넘쳐서 몫이 걸리되, 총량 상한이 아니라
+          //  몫 규칙만으로 판정되게(앞 CAP 을 쓰면 총량에 걸려 순서에 따라 갈렸다).
+          const withHuge = listMemoriesForIndex(64 * 1024).lines.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0);
+          hugeIn = listMemoriesForIndex(withHuge - 1).lines.some((l) => l.includes("ref-huge"));
           return hugeIn;
         })(),
-        hugeIn ? "몫(600B) 초과 1,200B 항목도 실림" : "★굶었다 — reference 가 통째로 0",
+        hugeIn ? "몫 초과 1,200B 항목도 실림" : "★굶었다 — reference 가 통째로 0",
       ),
       assert(
         "★★access 2회짜리 **사용자 호칭이 살아남는다** — 이게 193위였던 그 항목이다",

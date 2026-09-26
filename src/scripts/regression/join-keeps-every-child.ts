@@ -27,6 +27,7 @@ import {
   __resetJobsForTest,
   getJob,
   getJobResultChannel,
+  JOIN_WAIT_TIMEOUT_MS,
   listJobs,
   markDone,
   registerJob,
@@ -88,6 +89,21 @@ export const check: RegressionCheck = {
     } as never) as unknown as { instance: { _registeredTools: Record<string, ToolReg> } };
     const wait = srv.instance._registeredTools["wait_for_worker"];
     if (wait === undefined) throw new Error("wait_for_worker 핸들러를 못 찾음");
+
+    // ★도구 설명이 말하는 기본 대기와 실제 기본값이 같다 (2026-09-26 전체 검토). 종전 설명은
+    //  «미지정 = 서브에이전트 기본 상한» — 있지도 않은 시한(그 상수는 무한)을 약속했다.
+    const tsDesc = String(
+      (wait as unknown as { inputSchema?: { shape?: Record<string, { description?: string }> } })
+        .inputSchema?.shape?.timeout_seconds?.description ?? "",
+    );
+    const saidMin = /미지정이면 (\d+)분/.exec(tsDesc)?.[1];
+    out.push(
+      assert(
+        "★wait_for_worker 설명의 기본 대기가 실제 기본값(JOIN_WAIT_TIMEOUT_MS)과 같다",
+        saidMin !== undefined && Number(saidMin) * 60_000 === JOIN_WAIT_TIMEOUT_MS,
+        `설명=${saidMin ?? "★숫자 없음"}분 · 실제=${JOIN_WAIT_TIMEOUT_MS / 60_000}분 · «${tsDesc.slice(0, 80)}»`,
+      ),
+    );
 
     const raw = textOf(await wait.handler({ job_ids: ids, timeout_seconds: 1 }, {}));
     const capped = capToolOutputForEntry(raw);

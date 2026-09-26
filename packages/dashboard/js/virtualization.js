@@ -148,9 +148,17 @@
         vtRaf = requestAnimationFrame(() => { vtRaf = 0; relayout(); });
       };
       const setScrollTop = (v) => {
+        const el = scEl();
+        // ★**제자리 이동이면 아무것도 안 한다** (2026-09-26 싱크 레드팀 P4). 제자리 set 은 scroll
+        //  이벤트를 안 만드니 흡수할 잔향도 없다. 그런데도 창을 열면 — onScroll 이 매 이벤트마다
+        //  relayout 을 예약하게 된 뒤로 — relayout 의 앵커 복원(값은 제자리)이 **매번** 창을 다시 열어
+        //  연속 휠 제스처가 전부 흡수됐다: 과거 불러오기가 한 번도 안 돌고, 스크롤바 드래그는 바닥에서
+        //  못 벗어났다(합성 대시보드 실측: 30ms 휠 60회 → 로드 0 / 이 한 줄 뒤 → 85행).
+        const max = Math.max(0, el.scrollHeight - el.clientHeight);
+        const target = Math.min(Math.max(0, v), max);
+        if (Math.abs(target - el.scrollTop) < 1) { lastScrollTop = el.scrollTop; return; }
         vtProgrammatic = true;
         vtProgUntil = perfNow() + 160; // stale scroll 이벤트 흡수 창(위 주석).
-        const el = scEl();
         el.scrollTop = v;
         lastScrollTop = el.scrollTop; // 프로그램적 이동 = 사용자 스크롤 방향 비교 기준을 즉시 동기(스냅 후 오판 방지).
         requestAnimationFrame(() => { vtProgrammatic = false; });
@@ -512,6 +520,11 @@
         //  단 사용자 우선권 창에는 재개하지 않는다(위로 스크롤 중인 사람을 되잡지 않기 위해).
         if (gap < NEAR_BOTTOM_PX && st >= lastScrollTop && perfNow() >= userIntentUntil) stickBottom = true;
         // 프로그램적 스크롤(+그 stale 잔향 창) 은 **해제** 판정에서만 제외 — 위 vtProgUntil 주석.
+        // ★그릴 범위는 **누가 스크롤했든** 실제 위치를 따른다 (2026-09-26 헤드리스 실측: 과거
+        //  불러오기의 위치 보정 직후 160ms 창 안에 온 사용자 스크롤이 여기서 돌아가 relayout 이
+        //  예약되지 않았다 → 맨 위에서 vt-window 가 translateY(378px) 로 남아 첫 항목들이 빈 채로
+        //  멈췄고, 다음 스크롤이 올 때까지 그대로였다). 가드는 stick 판정만 막는다.
+        if (!pageScroll()) scheduleRelayout();
         if (vtProgrammatic || perfNow() < vtProgUntil) { lastScrollTop = st; return; }
         // 위로 스크롤 = 과거 열람 의도 → 해제. 단 실제로 움직였을 때만(팬텀 이벤트 차단).
         if (st < lastScrollTop - 1 && gap > MOVED_EPS_PX) stickBottom = false;
@@ -520,7 +533,6 @@
         // 모바일 페이지스크롤(전체 마운트)에선 스크롤마다 relayout 불필요 — 아이템 위치가 고정이라
         // 재마운트/anchor-setScrollTop 이 네이티브 스크롤과 싸워 *끊김*을 만든다. 데스크탑(윈도잉)만
         // 스크롤 중 relayout(가시범위 재계산). 콘텐츠 변화(append/prepend/measure)는 별도 경로.
-        if (!pageScroll()) scheduleRelayout();
         if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();
       };
       stream.addEventListener("scroll", onScroll, { passive: true });
@@ -662,7 +674,76 @@
         });
       }
       const chatJump = document.getElementById("chat-jump");
-      const updateChatJump = () => { if (chatJump) chatJump.hidden = stickBottom; };
+      const updateChatJump = () => {
+        if (chatJump) chatJump.hidden = stickBottom;
+        scheduleChatDate();
+      };
+
+      /**
+       * **지금 보고 있는 곳의 날짜** — 위로 스크롤해 과거를 볼 때 채팅 상단에 띄운다
+       * (2026-09-25 정태님: *"스크롤이 마지막이 아니고 위쪽일 때 바로 어느 날짜인지 알 수가
+       * 없어서"*). 날짜 구분선은 그날 첫 메시지 위에 **한 번**만 있어, 하루 중간을 보고 있으면
+       * 화면에 없다.
+       *
+       * ★날짜를 새로 판정하지 않는다 — 맨 위에 보이는 항목에서 **목록을 거슬러 올라가 만나는
+       *  첫 날짜 구분선**의 글을 그대로 쓴다. 구분선이 곧 «이 항목은 어느 날인가» 의 정본이라
+       *  두 벌이 되지 않는다(구분선이 안 보이는 기록 보기에선 알약도 안 띄운다).
+       * ★표시 조건은 «↓ 최신» 버튼과 같은 `stickBottom` 하나다.
+       * ★스크롤러 밖(`#right`)에 띄운다 — 스크롤러 안에 두면 가상화의 `translateY` 와 함께 흘러간다.
+       */
+      const chatDate = document.getElementById("chat-date");
+      const dateAbove = (items, idx) => {
+        for (let j = idx; j >= 0; j--) if (items[j] && items[j].isDivider) return items[j].node.textContent || "";
+        return "";
+      };
+      // 맨 위에 보이는 항목 — 화면을 찍어 보지 않고 **목록 모델의 자리**(`it.top`)로 찾는다.
+      //  찍어 보면 항목 사이 틈(`.vt-sizer`)에 걸려 못 찾는다(헤드리스 실측: 첫 스크롤에 알약이 숨음).
+      //  판정식은 relayout 의 앵커(«뷰 윗변에 걸친 첫 항목»)와 같다.
+      const topItemIndex = (yTop) => {
+        const y = yTop - vtSizer.getBoundingClientRect().top;
+        for (let i = 0; i < vtItems.length; i++) if (vtItems[i].top + slotH(vtItems[i]) > y) return i;
+        return -1;
+      };
+      // 알약을 숨기는가 — 바닥 팔로우 중 · 채팅이 안 보임(다른 탭·숨은 패널) · 기록 보기(구분선이 없다).
+      const chatDateOff = (v) =>
+        v.stickBottom || v.height === 0 || !v.attached || v.panel === "log";
+      // 보이는 윗변 — 모바일은 문서가 스크롤해 #stream 윗변이 화면 밖이라 **고정된 세션 탭 아래**다.
+      const chatViewTop = (streamTop, tabsBottom) =>
+        Math.max(streamTop, tabsBottom === null ? streamTop : tabsBottom, 0);
+      const updateChatDate = () => {
+        if (!chatDate) return;
+        const r = stream.getBoundingClientRect();
+        const off = chatDateOff({
+          stickBottom,
+          height: r.height,
+          attached: stream.offsetParent !== null,
+          panel: document.body.getAttribute("data-chat-panel"),
+        });
+        if (off) { chatDate.hidden = true; return; }
+        const tabs = document.getElementById("session-tabs");
+        const tb = tabs ? tabs.getBoundingClientRect() : null;
+        const yTop = chatViewTop(r.top, tb && tb.height > 0 ? tb.bottom : null);
+        const label = dateAbove(vtItems, topItemIndex(yTop));
+        if (!label) { chatDate.hidden = true; return; }
+        chatDate.textContent = label;
+        // ★모바일(페이지 스크롤)은 CSS 가 `fixed` 로 탭 아래에 둔다 — 스크롤마다 JS 로 자리를 잡으면
+        //  한 프레임씩 콘텐츠와 같이 흐르고 iOS 바운스에 끌렸다(헤더를 fixed 로 고친 것과 같은 기제).
+        //  데스크톱은 `#right` 의 backdrop-filter 가 fixed 의 기준을 바꾸므로 `#right` 기준 absolute.
+        if (pageScroll()) {
+          chatDate.style.top = "";
+          chatDate.style.left = "";
+        } else {
+          const box = chatDate.offsetParent ? chatDate.offsetParent.getBoundingClientRect() : { top: 0, left: 0 };
+          chatDate.style.top = (yTop - box.top + 8) + "px";
+          chatDate.style.left = (r.left - box.left + r.width / 2) + "px";
+        }
+        chatDate.hidden = false;
+      };
+      let chatDateRaf = 0;
+      function scheduleChatDate() {
+        if (chatDateRaf) return;
+        chatDateRaf = requestAnimationFrame(() => { chatDateRaf = 0; updateChatDate(); });
+      }
       if (chatJump) {
         chatJump.addEventListener("click", () => {
           stickBottom = true;

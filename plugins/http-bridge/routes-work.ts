@@ -24,7 +24,7 @@ import type { RouteCtx } from "./route-ctx.js";
  *  끝난 잡이야말로 그 값이 필요한 쪽이다 — 카드는 끝난 뒤에도 드로어에 남아 있고
  *  사람이 읽는 시점은 대개 «끝난 뒤» 다(v0.48.0 적대 검토 P-4: 데몬은 원문을 갖고 있는데
  *  «사라졌습니다» 를 말하고 있었다).
- * ★`task` 만 준다 — 목록 항목 전체를 주면 소비처가 늘고 그만큼 계약이 넓어진다.
+ * 단건은 펼침 지시문과 재접속 상태 복구에 필요한 필드만 반환한다.
  */
 const handleWorkerJobOne = (ctx: RouteCtx, jobId: string): void => {
   // ★`getJob` 이다 — 목록을 훑지 않는다 (2026-09-04 2R P-3). 첫 판은 `listJobs({limit:500})`
@@ -34,7 +34,11 @@ const handleWorkerJobOne = (ctx: RouteCtx, jobId: string): void => {
   //  ★고칠 때 물었어야 할 것: *"이 판정의 정확한 값이 이미 있나?"* — 있었다.
   const j = getJob(jobId);
   const task = j === undefined ? undefined : (j as { task?: string }).task;
-  writeJson(ctx.res, 200, task === undefined ? { jobId } : { jobId, task });
+  writeJson(ctx.res, 200, j === undefined ? { jobId } : {
+    jobId, task, status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt,
+    ownerThreadKey: resolveOwnerThreadKey(j.threadKey),
+    result: j.result, error: j.error,
+  });
 };
 
 export const handleWorkerJobs = async (ctx: RouteCtx): Promise<void> => {

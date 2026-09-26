@@ -69,6 +69,8 @@ export const check: RegressionCheck = {
           config: {}, require: stop("auth"), CODEX_BASE_URL: "https://invalid.example",
           createIdleTimer: () => ({ done() {}, beat() {} }),
           beginSummaryUsage: () => () => {},
+          // 설정 읽기는 모델 호출이 아니다 — 빈 프로파일이면 종전 경로(resolveTier)를 탄다.
+          loadModelProfiles: () => ({}),
           linkAbort: (signal: AbortSignal) => ({ signal }),
         });
         const entries = runtimeGuard + "\n" + source;

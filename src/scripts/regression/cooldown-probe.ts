@@ -13,6 +13,7 @@ import {
   cooldownRemainingMs,
   clearCooldowns,
   registerCooldownIfRateLimited,
+  markCooldownAnnounced,
   parseModelSpec,
   COOLDOWN_PROBE_INTERVAL_MS as PROBE_MS,
 } from "../../core/llm-runtime/index.js";
@@ -80,6 +81,8 @@ export const check: RegressionCheck = {
         first === null ? "null — 통지가 안 나간다" : `해제 ${new Date(first.untilTs).toLocaleString("ko-KR")}`,
       ),
     );
+    // 실제 흐름: 첫 진입을 받은 턴이 통지를 보내며 «알렸음» 을 남긴다(2026-09-26 — 판정이 «이미 알렸나» 로).
+    if (first !== null) markCooldownAnnounced(first.key, first.untilTs);
     const reEntry = registerCooldownIfRateLimited(spec, err);
     out.push(
       assert(

@@ -130,6 +130,17 @@
         applyInset();
       }
 
+      // ── fixed 세션 탭 높이 → --tabs-inset (모바일 채팅, 2026-09-25) — 탭을 고정했으니 문서 위쪽에
+      // 그만큼 자리를 비운다(안 비우면 채팅 제목 줄과 첫 메시지가 탭 밑에 깔린다). 입력창과 같은 방식.
+      const insetTabs = document.getElementById("session-tabs");
+      if (insetTabs && typeof ResizeObserver === "function") {
+        const applyTabsInset = () => {
+          document.documentElement.style.setProperty("--tabs-inset", insetTabs.offsetHeight + "px");
+        };
+        new ResizeObserver(applyTabsInset).observe(insetTabs);
+        applyTabsInset();
+      }
+
       // 안내문(placeholder)은 여기서 정하지 않는다 — 폭·입력장치·고스트 상태를 한 곳
       // (util.js computeChatPlaceholder)에서 조합한다. 종전엔 여기와 perf.js 가 서로를
       // 덮어써 **로드 순서가 승자를 정했다**(perf.js 문구는 폰에서 한 번도 안 보였다).

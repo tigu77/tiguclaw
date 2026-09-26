@@ -17,6 +17,8 @@ export interface ScheduleRow {
   lastStatus: "ok" | "error" | null;
   lastError: string | null;
   triggerType: TriggerType;
+  /** 이력 정책 — null = 계속(기본), 0 = 매번 새로 시작, N = 직전 N회만 유지. */
+  keepRuns: number | null;
 }
 
 interface DbScheduleRow {
@@ -34,13 +36,14 @@ interface DbScheduleRow {
   last_status: string | null;
   last_error: string | null;
   trigger_type: string;
+  keep_runs: number | null;
 }
 
 const SELECT_COLS = `id, label, cron_expr, timezone, prompt,
        dest_channel, dest_target, enabled,
        created_at, updated_at,
        last_fired_at, last_status, last_error,
-       trigger_type`;
+       trigger_type, keep_runs`;
 
 const toRow = (r: DbScheduleRow): ScheduleRow => ({
   id: r.id,
@@ -58,6 +61,7 @@ const toRow = (r: DbScheduleRow): ScheduleRow => ({
     r.last_status === "ok" || r.last_status === "error" ? r.last_status : null,
   lastError: r.last_error,
   triggerType: r.trigger_type === "reboot" ? "reboot" : "cron",
+  keepRuns: typeof r.keep_runs === "number" && r.keep_runs >= 0 ? r.keep_runs : null,
 });
 
 export const addSchedule = (input: {
@@ -68,6 +72,7 @@ export const addSchedule = (input: {
   destChannel: string;
   destTarget?: string | null;
   triggerType?: TriggerType;
+  keepRuns?: number | null;
 }): ScheduleRow => {
   const handle = getDb();
   const now = Date.now();
@@ -79,8 +84,8 @@ export const addSchedule = (input: {
       `INSERT INTO schedules
        (label, cron_expr, timezone, prompt, dest_channel, dest_target,
         enabled, created_at, updated_at,
-        last_fired_at, last_status, last_error, trigger_type)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, ?)`,
+        last_fired_at, last_status, last_error, trigger_type, keep_runs)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       input.label,
@@ -92,6 +97,7 @@ export const addSchedule = (input: {
       now,
       now,
       triggerType,
+      input.keepRuns ?? null,
     );
   const id = Number(result.lastInsertRowid);
   const created = getSchedule(id);
@@ -141,6 +147,7 @@ export const updateSchedule = (
     destTarget: string | null;
     label: string;
     triggerType: TriggerType;
+    keepRuns: number | null;
   }>,
 ): ScheduleRow | undefined => {
   const existing = getSchedule(id);
@@ -179,6 +186,10 @@ export const updateSchedule = (
   if (patch.triggerType !== undefined) {
     sets.push("trigger_type = ?");
     vals.push(patch.triggerType);
+  }
+  if (patch.keepRuns !== undefined) {
+    sets.push("keep_runs = ?");
+    vals.push(patch.keepRuns);
   }
   if (sets.length === 0) return existing;
 

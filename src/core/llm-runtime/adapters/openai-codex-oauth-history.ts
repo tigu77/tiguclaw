@@ -20,7 +20,7 @@ import { RESULT_RECOVERY_GUIDANCE, TOOL_MEDIA_KEEP_RECENT, TOOL_MEDIA_NOTE_PREFI
 import { linkAbort } from "../turn-timeout.js";
 // ★리프에서 가져온다 — 사본 4번째를 두던 근거("단방향 유지")는 거짓이었다.
 //  rate-limit.ts 는 import 0개 리프이고 같은 llm-runtime/ 트리라 순환이 생길 수 없다.
-import { isRateLimited } from "../rate-limit.js";
+import { keepsFoldBudget } from "../rate-limit.js";
 import { CODEX_TURN_HISTORY_CHAR_CAP as STORE_TURN_HISTORY_CHAR_CAP } from "../../../store/memory.js";
 import {
   loadThreadHistoryWithIds,
@@ -84,6 +84,7 @@ const CODEX_TURN_HISTORY_CHAR_CAP = STORE_TURN_HISTORY_CHAR_CAP;
  * `event.response.id` 추출 → sessionId 매핑.
  */
 interface CodexSseEvent {
+  item_id?: string;
   type?: string;
   output_index?: number;
   delta?: string;
@@ -302,6 +303,9 @@ export const parseCodexSse = async (
     name?: string;
     argumentsDelta?: string;
   }) => void,
+  // 공급자 실행 검색은 로컬 function_call이 아니다. 완료 관측만 별도로 전달한다.
+  //  `durationMs` = 같은 검색의 진행 이벤트를 처음 본 때부터 완료까지(못 봤으면 0).
+  onWebSearchCompleted?: (info: { durationMs: number }) => void,
 ): Promise<CodexSseResult> => {
   /** 마지막으로 본 SSE 이벤트 타입 — 빈 응답이 completed 없이 끊겼는지 판별용. */
   let lastEvent = "(없음)";
@@ -323,6 +327,9 @@ export const parseCodexSse = async (
     | { inputTokens: number; outputTokens: number; reasoningTokens?: number }
     | undefined;
   const toolCalls: CodexToolCall[] = [];
+  const completedSearches = new Set<string>();
+  /** 검색별 첫 진행 이벤트 시각 — 완료 때 소요 시간을 싣는다(대시보드가 그걸로 «실행 중» 을 끈다). */
+  const searchStartedAt = new Map<string, number>();
   const doneItems = new Map<number, unknown>();
   let completedOutput: unknown[] | undefined;
   let completed = false;
@@ -359,6 +366,20 @@ export const parseCodexSse = async (
           // 정상 완료 전에는 재사용하지 않는다(끊긴 시도의 암호문을 재시도에 섞지 않음).
           if (event.type === "response.output_item.done" && event.item !== undefined) {
             doneItems.set(typeof event.output_index === "number" && Number.isSafeInteger(event.output_index) && event.output_index >= 0 ? event.output_index : doneItems.size, event.item);
+          }
+          // 같은 요청의 중복 완료만 제거한다. 시작/진행·답변의 인용은 완료 증거가 아니다.
+          if (typeof event.type === "string" && event.type.startsWith("response.web_search_call.")) {
+            const key = typeof event.item_id === "string" && event.item_id !== ""
+              ? `id:${event.item_id}`
+              : typeof event.output_index === "number" && Number.isSafeInteger(event.output_index) && event.output_index >= 0
+                ? `index:${event.output_index}` : undefined;
+            if (key !== undefined && event.type !== "response.web_search_call.completed") {
+              if (!searchStartedAt.has(key)) searchStartedAt.set(key, Date.now());
+            } else if (key !== undefined && !completedSearches.has(key)) {
+              completedSearches.add(key);
+              const t0 = searchStartedAt.get(key);
+              onWebSearchCompleted?.({ durationMs: t0 === undefined ? 0 : Date.now() - t0 });
+            }
           }
           // output_text.delta event 의 delta 누적 (표준 SSE 패턴).
           if (
@@ -1048,7 +1069,7 @@ export interface HistoryCompactionPlan {
  * ★미등록이면 **막지 않는다**(0 반환). 관측용 심이 본 기능을 죽이면 안 된다 —
  *  등록 여부는 회귀가 따로 지킨다.
  */
-interface CooldownPort {
+export interface CooldownPort {
   remainingMs: (key: string) => number;
   register: (key: string, detail: string) => void;
 }
@@ -1704,8 +1725,9 @@ export const compactThreadHistory = async (args: {
             // ★예외 경로도 축소한다 (2026-07-30 검토 지적) — 종전엔 빈 결과만 백오프를 탔다.
             //  크기 때문에 hang → idle abort 로 죽는 실패가 이 catch 로 오는데 축소가 0이면
             //  같은 크기를 계속 재시도한다. 단 429/한도는 크기 문제가 아니므로 제외.
-            (isRateLimited(msg)
-              ? " (한도성 실패 — 예산 유지)"
+            // 한도·인증 거부는 크기 문제가 아니다 — 예산을 줄이면 복구 뒤 요약만 괜히 작아진다.
+            (keepsFoldBudget(msg)
+              ? " (한도·인증 실패 — 예산 유지)"
               : ` → 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`),
       );
       noteCompactionOutcome(args.threadKey, false, msg, prompt.length, args.adapter);

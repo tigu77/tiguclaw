@@ -906,7 +906,7 @@ export const createSpawnAgentMcpServer = (
       timeout_seconds: z
         .number()
         .optional()
-        .describe("이만큼 지나면 아직 도는 것은 «진행 중» 으로 보고하고 돌아옵니다(작업은 계속 됩니다). 미지정 = 서브에이전트 기본 상한."),
+        .describe("이만큼 지나면 아직 도는 것은 «진행 중» 으로 보고하고 돌아옵니다(작업은 계속 됩니다). 미지정이면 1분입니다. 안 끝났으면 다시 부르면 이어서 기다립니다."),
     },
     async (args) => {
       try {

@@ -162,13 +162,17 @@ export const check: RegressionCheck = {
       return idxSrc.slice(at, next < 0 ? at + 1200 : next);
     };
     const clearBlock = blockOf('if (trimmed === "/clear") {');
+    // ★2026-09-26: 세 걸음은 `thread-reset.ts` 의 `resetThreadContext` 한 곳으로 옮겼다(스케줄 이력
+    //  정책과 공유). `/clear` 는 그 함수를 부르고, 그 함수가 셋을 **이 순서로** 부른다.
+    const resetSrc = (await readFile(new URL("../../store/thread-reset.ts", import.meta.url), "utf8"))
+      .replace(/^\s*\/\/.*$/gm, "");
+    const resetBody = /export const resetThreadContext = \([\s\S]*?\n\};/.exec(resetSrc)?.[0] ?? "";
+    const steps = ["clearSessionContext(channel, threadKey)", "setContextBoundary(channel, threadKey, boundaryTs)", "clearThreadSummary(channel, threadKey)"]
+      .map((x) => resetBody.indexOf(x));
+    const callsShared = /resetThreadContext\(sidChannel, msg\.threadKey\)/.test(clearBlock);
     const wired = {
-      ok:
-        clearBlock !== "" &&
-        /clearSessionContext\(sidChannel, msg\.threadKey\)/.test(clearBlock) &&
-        /setContextBoundary\(sidChannel, msg\.threadKey, Date\.now\(\)\)/.test(clearBlock) &&
-        /clearThreadSummary\(sidChannel, msg\.threadKey\)/.test(clearBlock),
-      detail: clearBlock === "" ? "★/clear 블록 미발견" : "세 단계 모두 호출",
+      ok: clearBlock !== "" && callsShared && steps.every((i) => i >= 0) && steps[0]! < steps[1]! && steps[1]! < steps[2]!,
+      detail: clearBlock === "" ? "★/clear 블록 미발견" : `공용 함수 호출=${callsShared} · 세 걸음 위치=${steps.join("/")}`,
     };
     out.push(
       assert(

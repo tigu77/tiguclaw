@@ -1533,6 +1533,12 @@
         display:inline-flex; align-items:center; gap:5px; padding:7px 12px; font-size:0.75rem; font-weight:600;
         color:var(--text); background:rgb(var(--bg-soft-rgb) / .96); border:1px solid var(--border-strong); border-radius:999px;
         box-shadow:var(--shadow); cursor:pointer; }
+      /* 지금 보고 있는 곳의 날짜 — 위로 스크롤 중일 때만. 위치는 JS 가 #stream 윗변에 맞춘다(#right 기준).
+         z-index 는 배경막(18)·상세 패널(8) **아래** — 드로어를 열면 같이 가려져야 한다. */
+      .chat-date { position:absolute; transform:translateX(-50%); z-index:7; pointer-events:none;
+        padding:4px 11px; font-family:var(--font-mono); font-size:0.6875rem; letter-spacing:.04em; white-space:nowrap;
+        color:var(--text-dim); background:rgb(var(--bg-soft-rgb) / .94); border:1px solid var(--border); border-radius:999px;
+        box-shadow:var(--shadow); }
       .chat-jump:hover { border-color:rgb(var(--accent-rgb) / .55); color:var(--accent); }
       /* 드로어 "↑ 최신" 점프 — 채팅 chat-jump 의 상단판. 아래로 내려 과거 잡을 보는 중(스크롤>임계)
          일 때만 노출, 클릭하면 맨 위(최신=insertBefore 로 top)로. bottom 앵커라 헤더/필터 높이 무관. */
@@ -2004,13 +2010,25 @@
         body[data-tab="chat"] #stream { overflow:visible; min-height:0; }
         /* ★스크롤은 메시지 영역에서만 — 페이지스크롤이라 오버레이(헤더·세션탭·입력창)를 드래그해도
            문서(채팅)가 스크롤되던 것 차단(2026-07-19). touch-action 으로 세로 스크롤 제스처를 가둔다:
-           헤더=none, 세션탭=가로만(탭 스크롤·pull-to-refresh 유지), 입력=none(textarea 만 세로 허용). */
+           헤더=none, 세션탭=가로만(탭 스크롤), 입력=none(textarea 만 세로 허용). */
         header { touch-action:none; }
         body[data-tab="chat"] #chat { touch-action:none; }
         body[data-tab="chat"] #chat-input { touch-action:pan-y; }
-        /* 세션탭만 상단 sticky(헤더 46 아래) — 제목(#stream-bar)은 스크롤로 사라지고 탭은 남는다
-           (클로드코드 앱식). #right 자식이라 대화 전체 범위에서 붙는다. */
-        body[data-tab="chat"] #session-tabs { position:sticky; top:46px; z-index:11; background:var(--bg); padding:9px 12px 5px; }
+        /* 세션탭은 상단 고정(헤더 46 아래) — 제목(#stream-bar)은 스크롤로 사라지고 탭은 남는다
+           (클로드코드 앱식). */
+        /* ★헤더·세션탭은 **fixed** 다 (2026-09-25 정태님: *"맨 아래에서 더 올리면 위가 덮쳐진다"*).
+           sticky 였을 땐 iOS 바운스(끝을 넘겨 끌기)가 페이지 내용을 통째로 끌고 가며 **sticky 도 같이
+           끌려** 상태 표시줄 밑으로 들어갔다 — 반투명·블러 헤더가 흐린 띠로 남고, fixed 인 입력창만
+           제자리라 아래가 빈다. fixed 는 바운스에 안 끌린다(입력창이 증거). 바운스·당겨서 새로고침은
+           그대로 둔다(끄는 건 증상을 가리는 것).
+           ★fixed 는 흐름에서 빠지므로 **자리를 비운다**: 헤더 46px 은 body, 탭 높이는 #right 위쪽
+           (`--tabs-inset`, mobile-nav.js 가 실측). 순서: 헤더 → 탭 → 채팅 제목(스크롤로 사라짐) → 대화. */
+        body[data-tab="chat"] { padding-top:46px; }
+        body[data-tab="chat"] header { position:fixed; top:0; left:0; right:0; }
+        body[data-tab="chat"] #session-tabs { position:fixed; top:46px; left:0; right:0; z-index:11; background:var(--bg); padding:9px 12px 5px; }
+        body[data-tab="chat"] #right { padding-top:var(--tabs-inset, 52px); }
+        /* 날짜 알약도 헤더·탭과 같은 이유로 fixed — 탭 바로 아래(스크롤·바운스에 안 끌린다). */
+        body[data-tab="chat"] .chat-date { position:fixed; top:calc(46px + var(--tabs-inset, 52px) + 8px); left:50%; }
         /* 입력창 뷰포트 하단 고정 — position:fixed(sticky 는 마지막 자식이라 뷰포트 하단에 안 붙음).
            문서가 스크롤해도 항상 하단 노출. 콘텐츠는 #chat 높이만큼 하단 패딩으로 가림 방지. */
         body[data-tab="chat"] #chat { position:fixed; left:0; right:0; bottom:0; z-index:12; background:var(--bg); border-top:1px solid var(--border); }

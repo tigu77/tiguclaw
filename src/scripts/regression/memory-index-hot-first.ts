@@ -81,8 +81,11 @@ const run = async (): Promise<Assertion[]> => {
     // ★★그리고 종류별 몫(2026-09-02)이 생긴 뒤로는 **총 캡을 한 줄로 잡으면 안 된다** —
     //  `user` 몫이 총량의 10% 라 한 줄도 안 들어가 전부 잘린다(그렇게 한 번 깨졌다).
     //  여기 셋은 다 `user` 타입이므로, **그 몫이 딱 한 줄**이 되게 총 캡을 역산한다.
-    const hot = listMemoriesForIndex(64 * 1024).lines.find((l) => l.includes("hot-old")) ?? "";
-    const cap = Math.ceil((Buffer.byteLength(hot, "utf8") + 1) / 0.1); // user 몫 = 한 줄
+    // ★★2026-09-26: 전체가 캡 안이면 몫 없이 **전부** 싣는다 — 그래서 «캡 초과» 는 전체보다 1바이트
+    //  작게 잡아 실제로 넘치게 만든다. 셋 다 `user` 라 그 몫(10%)은 한 줄보다 작고, 몫이 비었을 때의
+    //  «첫 항목은 무조건» 규칙으로 **가장 뜨거운 한 줄**만 남는다.
+    const allLines = listMemoriesForIndex(64 * 1024).lines;
+    const cap = allLines.reduce((n, l) => n + Buffer.byteLength(l, "utf8") + 1, 0) - 1;
     const r = listMemoriesForIndex(cap);
     out.push({
       name: "★캡 초과 시 남는 것은 가장 많이 쓰인 것",

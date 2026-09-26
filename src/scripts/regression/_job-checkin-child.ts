@@ -234,6 +234,12 @@ const main = async (): Promise<void> => {
   out.afterFirst = String(wj.getJob(jid)?.status);
   out.firstReports = sent.length;
   out.sample = (sent[0] ?? parentSeen[0]?.raw ?? "").slice(0, 400);
+  if (MODE === "contract") {
+    // ★점검 판단의 답에 텔레그램 답글을 달면 그 세션으로 가야 한다 — 답장 매핑이 남았나
+    //  (2026-09-26 적대 검토 M1: 완료 보고만 그물이 있고 이 경로는 귀속을 지워도 초록이었다).
+    const { findSessionForOutboundMessage } = await import("../../store/outbound-messages.js");
+    out.replyMappedTo = findSessionForOutboundMessage("regr-checkin", "t", 1);
+  }
 
   if (isManagerSummoned) {
     out.parentGot = parentSeen.length;

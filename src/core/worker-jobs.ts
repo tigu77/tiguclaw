@@ -975,7 +975,11 @@ const deliverCheckin = async (
   //  이고, 안전망을 걸면 소환자가 침묵을 택할 때마다 사용자에게 raw 가 나간다.
   //  종전엔 `delivered` 플래그와 래퍼가 있었지만 **읽는 곳이 없었다**(2026-08-23 3라운드)
   //  — 안전망이 있는 것처럼 읽히는 죽은 코드다. 없앤다. 없는 것은 없다고 적는다.
-  const reinjectReply = reacquireReply(dest, { observe: false });
+  // 귀속은 완료 재주입과 같은 규칙으로 싣는다(점검 보고에 답글을 달아도 그 세션으로).
+  const reinjectReply = reacquireReply(dest, {
+    observe: false,
+    originThreadKey: notifySessionThreadKey(reportJob.threadKey),
+  });
   // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙. 없으면 telegram發 잡의
   // 점검 턴이 사용자 실세션과 다른 정체성으로 돌아 resume/transcript 가 갈린다.
   const idChannel = canonicalSessionChannel(reportJob.threadKey, reportJob.channel);
@@ -1679,6 +1683,8 @@ const joinedJobs = new Set<string>();
  *  시계**다 — 성질이 반대인데 같은 상수를 썼다. 결과:
  *   - `deadline = Date.now() + Infinity` 라 시한 분기가 **영원히 거짓**
  *   - 도구 설명은 *"미지정 = 서브에이전트 기본 상한"* 이라고 **있지도 않은 시한을 약속**
+ *     (2026-09-26 에야 설명을 고쳤다 — 그사이 Codex 매니저가 스레드당 평균 5.4회 합류를 반복했다.
+ *      설명의 «1분» 은 이 상수와 회귀 `join-keeps-every-child` 가 대조한다)
  *   - 무엇보다 «시한 초과 → 선점 해제» 라는 **유일한 자동 복구가 기본 설정에서 절대 안 돈다**
  *     (P-B: 합류 대기자가 사라지면 자식 결과가 조용히 사라진다)
  *
@@ -2296,7 +2302,7 @@ const deriveTargetFromThreadKey = (
  */
 const reacquireReply = (
   dest: WorkerNotifyDest,
-  opts?: { observe?: boolean; sessionThreadKey?: string },
+  opts?: { observe?: boolean; sessionThreadKey?: string; originThreadKey?: string },
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
   // observe(기본 true) — 우회 통지(handler 미경유: failed/cancelled·done 안전망·부팅 복구)는
   // 자체가 유일 발신이라 관측 발행 필요(대시보드 가시성 유지). observe:false 는 done 재주입
@@ -2313,6 +2319,11 @@ const reacquireReply = (
       // 관측 세션 = 발원 세션(dashboard:*) 또는 기본(내부 파생·물리 채널). 배달 좌표와 독립.
       ...(opts?.sessionThreadKey !== undefined
         ? { observeThreadKey: opts.sessionThreadKey }
+        : {}),
+      // 귀속(«누가 한 말인가» — 답장 라우팅 재료)은 표시와 따로 싣는다. 표시를 비우는
+      //  재주입 답(observe:false)도 귀속은 있어야 한다(아래 reinjectReply 주석).
+      ...(opts?.originThreadKey !== undefined
+        ? { originThreadKey: opts.originThreadKey }
         : {}),
     });
   };
@@ -2846,7 +2857,14 @@ export const onWorkerComplete = async (
   // 재주입 reply 는 *관측 발행 안 하는* raw 전송(observe:false) — 물리 발송(telegram send)은
   // 하되 대시보드 관측은 핸들러(index.ts) 성공분기 단일 지점에 위임한다. 일반 turn 과 대칭 →
   // 대시보드 이중 버블 0(과거엔 여기 baseReply 의 publishOut + 핸들러 발행 둘 다 = 이중이었다).
-  const reinjectReply = reacquireReply(dest, { observe: false });
+  // ★표시는 비워도 **귀속은 싣는다** (2026-09-25 정태님: *"답글로 보냈는데 해당 세션으로 안 가고
+  //  기본 세션으로 갈 때가 있어"*). 종전엔 귀속까지 비어 결과 보고가 답장 매핑 없이 나갔다 —
+  //  사용자가 가장 답글을 달 법한 메시지다. 로그: `답장 매핑을 못 남겼습니다 … label=worker` →
+  //  `발원 세션을 못 찾았습니다 … dashboard:default 으로 진행`. 귀속 세션은 baseReply 와 같은 규칙.
+  const reinjectReply = reacquireReply(dest, {
+    observe: false,
+    originThreadKey: notifySessionThreadKey(job.threadKey),
+  });
   let delivered = false;
   const trackedReply = async (
     text: string,

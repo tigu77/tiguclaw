@@ -100,13 +100,11 @@ import {
 import {
   canonicalSessionChannel,
   clearSessionModelOverride,
-  clearSessionContext,
   getMostRecentTelegramChatId,
   getSession,
   getSessionChannelMeta,
   getSessionModelOverride,
   initStore,
-  setContextBoundary,
   setSessionModelOverride,
   SESSION_STORAGE_CHANNEL,
   listThreads,
@@ -116,11 +114,9 @@ import {
   sessionDisplayName,
 } from "./store/sessions.js";
 import { getFirstUserText } from "./store/chat-log.js";
-// codex/openai 컨텍스트 리셋 — `/clear` 가 claude(세션) 뿐 아니라 codex/openai 의
-// 히스토리 재전송도 끊게 한다. boundary watermark(setContextBoundary, sessions.ts) = 이 ts
-// 이전 턴은 재전송 안 함(getContextBoundary 는 codex/openai 어댑터가 소비). clearThreadSummary
-// = codex 롤링 요약 드롭. 둘 다 store-auth contract 대로 (channel, threadKey[, ts]).
-import { clearThreadSummary } from "./store/thread-summaries.js";
+// 컨텍스트 리셋 — `/clear` 가 claude(세션)·codex/openai(재전송 히스토리 경계·롤링 요약)를
+// 모두 끊는다. 세 걸음은 `thread-reset.ts` 한 곳(스케줄 이력 정책과 공유).
+import { resetThreadContext } from "./store/thread-reset.js";
 import {
   builtinModelProfiles,
   BUILTIN_DEFAULT_TIER,
@@ -828,9 +824,8 @@ const handler: MessageHandler = async (msg) => {
   //  이름·모델 override·탭뿐이고, 그걸 **명령 한 줄로 되돌릴 수 없게 지우는 것**은 이 레포의
   //  유지 철학(정리≠삭제)과 반대다. 대화를 치우고 싶으면 **보관**(archive)이 있다.
   if (trimmed === "/clear") {
-    const had = clearSessionContext(sidChannel, msg.threadKey);
-    setContextBoundary(sidChannel, msg.threadKey, Date.now());
-    clearThreadSummary(sidChannel, msg.threadKey);
+    // 세 걸음(이어가기 끊기 → 경계 → 요약 삭제)은 한 함수다 — 스케줄 이력 정책과 같이 쓴다.
+    const had = resetThreadContext(sidChannel, msg.threadKey);
     await replyCommand(
       msg,
       // ★"세션은 그대로" 라고만 하면 **다음에 뭘 해야 하는지**를 안 준다 (2026-08-22 신고).

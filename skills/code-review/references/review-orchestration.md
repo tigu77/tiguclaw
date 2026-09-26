@@ -6,13 +6,19 @@
 ## 1. 독립 매니저에게 넘기기
 
 대상·보고 범위·사용자 요구·검증 가능한 우려를 전달한다. 작성자의 결론을 전제로
-주지 않는다. 작은 리뷰도 매니저가 수행하며, 작은 범위를 이유로 이 단계를 생략하지 않는다.
+주지 않는다. `path`에는 실제 작업 폴더의 절대 경로를 넣는다(생략하면 부모 cwd를 자동 상속하지 않는다).
+수정 전 자료가 없으면 없다고 밝히고, 현재 코드만으로 옛 동작을 추측하지 않는다. 작은 리뷰도 매니저가 수행하며, 작은 범위를 이유로 이 단계를 생략하지 않는다.
 
 ```javascript
 run_in_background({
   label: "<범위> 코드 리뷰",
+  path: "{ABSOLUTE_PROJECT_PATH}",
   task: `
 [모드: 코드 리뷰 오케스트레이션]
+사용자 원래 요구: {USER_REQUEST}
+수정 전 자료: {BEFORE_SOURCE|없음}
+수정 후 자료: {AFTER_SOURCE}
+기존 검사 실행법·수정 금지 대상: {VALIDATION_CONSTRAINTS}
 대상: {SCOPE}                 ← 파일·디렉터리·변경분(대상이 정하는 방식)
 보고 범위: {REPORT_SCOPE}     ← §A
 걱정: {CONCERN|생략}
@@ -48,6 +54,7 @@ run_in_background({
 ```javascript
 spawn_agent({
   name: "code-review",
+  path: "{ABSOLUTE_PROJECT_PATH}",
   prompt: `
 [모드: 파일 묶음 리뷰 — {GROUP_NAME}]
 대상 범위: {GIT_RANGE}

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Schedules can now set a conversation history policy.** Start fresh each run or keep only the last N runs, so daily schedules stop growing their input. The default still continues the previous conversation.
+- **When you scroll up in the dashboard chat, the date of the messages you are viewing is shown at the top.**
+
+### Fixed
+
+- **When a model's authentication is rejected (401), tiguclaw no longer retries it on every request.** It switches to another model for a while and tells you once to log in again. Logging in again, or any successful request, switches back right away.
+- **Some saved memories were left out of the conversation even though all of them fit within the limit.** Reading a memory also no longer breaks the Claude cache and resends the conversation history.
+- **Existing job cards now recover completion, cancellation, failure, and available results after reconnecting when a terminal event was missed.**
+- **Fixed false tool-inactivity warnings after Codex subagents completed web searches.**
+- **Replying in Telegram to a background job's result report went to the default session instead of the session that started the job.**
+- **On iPhone, dragging past the end of the chat no longer pushes the header and session tabs out of view.**
+
 ## [0.59.0] - 2026-09-25
 
 ### Added

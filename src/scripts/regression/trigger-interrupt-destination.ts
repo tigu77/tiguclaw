@@ -54,6 +54,9 @@ export const check: RegressionCheck = {
             if (name.endsWith("/inflight-turns.js")) return inflight;
             if (name.endsWith("/settings.js")) return { loadSchedulerRetryEnabled: () => false };
             if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
+            // 스케줄 이력 정책(2026-09-26) — 이 검사의 행은 keepRuns 가 없어 아무것도 안 한다.
+            if (name.endsWith("/store/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };
+            if (name.endsWith("/thread-reset.js")) return { applyScheduleHistory: () => null };
             if (name === "./dispatcher.js") return { dispatch: async (value: any) => { dispatches.push(value); } };
             if (name === "./mcp.js") return { setSchedulerLifecycleHooks: () => {}, setFileWatchLifecycleHooks: () => {} };
             if (name === "./runner.js" || name === "./watcher.js") return load(path.resolve(path.dirname(filename), name.replace(/\.js$/, ".ts")));

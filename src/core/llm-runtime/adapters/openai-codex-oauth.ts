@@ -1812,6 +1812,33 @@ export const runOpenAiCodex = async (
                   /* best-effort — 스트리밍 관측 실패가 turn 을 무르지 않는다(원칙 3). */
                 }
               },
+          ({ durationMs }) => {
+            // 검색 완료 관측: 로컬 도구 실행/재주입/사용량 계수에는 넣지 않는다.
+            // ★시작과 끝을 **같은 seq 로 한 쌍** 발행한다 (2026-09-26 적대 검토 P3). 시작만 보내면
+            //  대시보드는 도구 스텝을 «실행 중» 으로 켜고 같은 seq 의 끝이 와야 끄므로, 끝난 검색이
+            //  잡이 끝날 때까지 «⏳ 실행 중» 으로 남았다. 발행 시점은 여전히 **완료 뒤**다 —
+            //  시작·진행 이벤트는 «도구를 썼다» 의 증거가 아니다(서브에이전트 도구 미사용 판정).
+            const seq = activitySeq++;
+            const base = {
+              channel: input.channel,
+              threadKey: input.threadKey,
+              adapter: "codex",
+              model,
+              seq,
+              kind: "tool",
+              label: "web_search",
+            } as const;
+            bus.publish({
+              type: "llm.activity",
+              ts: Date.now(),
+              payload: { ...base, phase: "start", detail: "Provider web search completed" } satisfies RegionAActivityPayload,
+            });
+            bus.publish({
+              type: "llm.activity",
+              ts: Date.now(),
+              payload: { ...base, phase: "end", durationMs } satisfies RegionAActivityPayload,
+            });
+          },
         );
         if (typeof sseResult.lastEvent === "string") lastSseEvent = sseResult.lastEvent;
         {

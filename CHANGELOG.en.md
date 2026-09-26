@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Some saved memories were left out of the conversation even though all of them fit within the limit.** Reading a memory also no longer breaks the Claude cache and resends the conversation history.
 - **Existing job cards now recover completion, cancellation, failure, and available results after reconnecting when a terminal event was missed.**
 - **Fixed false tool-inactivity warnings after Codex subagents completed web searches.**
+- **The assistant now replies in the language you write in**, including the background-job reports it writes itself (fixed notices such as failures and interruptions are still in Korean).
 - **Result reports and notices for background work requested from Telegram could fail to reach Telegram when the conversation was tied to a dashboard session** (notably subagents) — the assistant believed it had already reported.
 - **Replying in Telegram to a background job's result report went to the default session instead of the session that started the job.**
 - **On iPhone, dragging past the end of the chat no longer pushes the header and session tabs out of view.**

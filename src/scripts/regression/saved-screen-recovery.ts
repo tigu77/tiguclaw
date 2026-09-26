@@ -17,7 +17,8 @@ export const check: RegressionCheck = {
   run: async () => {
     assertIsolated();
     const out: Assertion[] = [];
-    const child = await spawnWithin(60_000, "Codex 저장 화면 참조 배선", ["--import", "tsx", fileURLToPath(new URL("./_saved-screen-codex-child.ts", import.meta.url))]);
+    // 실제 루프에서 «압축 뒤» 를 보려면 압축이 일어나야 한다 — 몰아서 기준을 1자로 낮춘다(기준 자체는 codex-fresh-tool-output).
+    const child = await spawnWithin(60_000, "Codex 저장 화면 참조 배선", ["--import", "tsx", fileURLToPath(new URL("./_saved-screen-codex-child.ts", import.meta.url))], { env: { ...process.env, CODEX_COMPACT_BATCH_CHARS: "1" } });
     const line = child.out.split("\n").find(s => s.startsWith("SAVED_WIRE "));
     const observed = line === undefined ? {} : JSON.parse(line.slice("SAVED_WIRE ".length)) as Record<string, unknown>;
     out.push(assert("실제 Codex 루프: MCP 참조가 압축 후 다음 요청에 도달", observed.requests === 4 && observed.calls === 3 && observed.compacted === true && observed.refPreserved === true && observed.privateMeta === false && !child.timedOut, line ?? child.err.slice(-1000)));
@@ -62,10 +63,10 @@ export const check: RegressionCheck = {
       out.push(assert("Agents 공유 변환: 참조와 이미지 바이트 보존", decoded.text.includes(ra) && decoded.media[0]?.data === sa.media[0]?.data, { ref: decoded.text.includes(ra), image: decoded.media[0]?.data === sa.media[0]?.data }));
       const input: ResponseInputItem[] = [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,USER_ORIGINAL" }, { type: "input_text", text: "사용자 원본" }] }];
       const rows = [sa, sb].map((s, i) => ({ callId: String(i), name: "look", output: `긴 결과\n${"x".repeat(200_000)}\n${s.text}`, media: s.media.map(m => ({ type: "input_image" as const, image_url: `data:${m.mimeType};base64,${m.data}` })), savedScreens: s.media.flatMap(m => m.savedScreen === undefined ? [] : [m.savedScreen]) }));
-      appendToolResultsToInput(input, rows);
+      appendToolResultsToInput(input, rows, { requestChars: 0 });
       out.push(assert("결과 진입 cap 이후 병렬 참조 둘 보존", JSON.stringify(input).includes(ra) && JSON.stringify(input).includes(rb), { refs: [ra, rb].map(ref => JSON.stringify(input).includes(ref)), outputs: input.filter(x => x.type === "function_call_output").map(x => x.output.length) }));
-      appendToolResultsToInput(input, [{ callId: "new", name: "look", output: "새 이미지", media: [{ type: "input_image", image_url: "data:image/png;base64,NEW" }] }]);
-      const n = compactOldToolOutputs(input, { keepRecent: 1, minOutputChars: 100 });
+      appendToolResultsToInput(input, [{ callId: "new", name: "look", output: "새 이미지", media: [{ type: "input_image", image_url: "data:image/png;base64,NEW" }] }], { requestChars: 0 });
+      const n = compactOldToolOutputs(input, { keepRecent: 1, minOutputChars: 100, batchChars: 0 });
       const wire = JSON.stringify(input);
       out.push(assert("텍스트/미디어 압축 이후 병렬 참조 둘과 사용자 원본 보존", n === 2 && wire.includes(ra) && wire.includes(rb) && wire.includes("USER_ORIGINAL"), { n, refs: [ra, rb].map(ref => wire.includes(ref)), user: wire.includes("USER_ORIGINAL") }));
       out.push(assert("내부 참조 필드는 provider wire에 실리지 않음", !wire.includes("savedScreens") && !wire.includes("_meta"), { privateFields: /savedScreens|_meta/.test(wire) }));

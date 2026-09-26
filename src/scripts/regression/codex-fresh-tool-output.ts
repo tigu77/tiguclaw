@@ -11,6 +11,8 @@
 import {
   appendToolResultsToInput,
   capToolOutputForEntry,
+  codexCompactionLimits as L,
+  CODEX_KNOWN_SAFE_INPUT_CHARS,
   isToolMediaMessage,
   type ResponseInputItem,
   type ResponseMediaItem,
@@ -21,7 +23,7 @@ type ToolResult = { callId: string; name: string; output: string; media: Respons
 
 export const check: RegressionCheck = {
   name: "codex-fresh-tool-output",
-  guards: "병렬 도구 결과를 모델에 한 번도 전달하기 전에 최근 3개 밖의 본문을 압축하던 것",
+  guards: "병렬 도구 결과를 모델에 한 번도 전달하기 전에 최근 3개 밖의 본문을 압축하던 것 · 도구를 부를 때마다 한 칸씩 압축해 프리픽스 캐시를 깨던 것(2026-09-26)",
   run: async (): Promise<Assertion[]> => {
     const input: ResponseInputItem[] = [];
     const batch = (prefix: string, count: number, size = 3000): ToolResult[] =>
@@ -43,7 +45,7 @@ export const check: RegressionCheck = {
             }) as ResponseInputItem,
         ),
       );
-      return appendToolResultsToInput(input, outputs);
+      return appendToolResultsToInput(input, outputs, { requestChars: 0 });
     };
     const outputs = (): { call_id: string; output: string }[] =>
       input.filter(
@@ -62,10 +64,12 @@ export const check: RegressionCheck = {
     ];
     const second = batch("second", 4);
     const oldCount = push(second);
+    // ★몰아서 압축 (2026-09-26) — 오래된 결과가 기준(L.batchChars) 아래면 **아무것도 안 고친다**.
+    //  고치면 그 자리부터 프리픽스 캐시가 깨진다(실측: 깨짐 158건 전부 압축 턴에서).
     assertions.push(
       assert(
-        "이미 전달한 오래된 결과는 계속 압축",
-        oldCount === 2 && outputs()[0]?.output !== first[0]?.output,
+        "★오래된 결과가 적게 쌓였으면 앞부분을 고치지 않는다(프리픽스 캐시 보존)",
+        oldCount === 0 && outputs()[0]?.output === first[0]?.output,
         oldCount,
       ),
     );
@@ -105,10 +109,53 @@ export const check: RegressionCheck = {
         tail,
       ),
     );
-    for (let i = 0; i < 30; i++) push(batch(`long-${i}`, 5, 50_000));
-    const totalChars = outputs().reduce((n, o) => n + o.output.length, 0);
+    // 긴 루프 — 앞부분을 고친 push 는 곧 압축한 push 여야 하고, 압축은 기준을 넘을 때만 일어난다.
+    let pushes = 0, compactPushes = 0, changedWithoutCompaction = 0, pushedOldChars = 0;
+    const windowBroken: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      const before = JSON.stringify(input);
+      const fresh = batch(`long-${i}`, 5, 50_000);
+      const n = push(fresh);
+      pushes += 1;
+      pushedOldChars += 5 * L.entryCap;
+      if (n > 0) {
+        compactPushes += 1;
+        // ★압축한 push 에서도 **이번 묶음 전부**(한 번도 전달 안 됨)와 **직전 최근 창**은 원형이어야 한다
+        //  (2026-09-26 적대 검토 F1 — 새 계약으로 바꾸며 이 그물이 비었었다).
+        const tail = outputs().slice(-(fresh.length + L.keepRecent));
+        if (tail.some((o) => o.output.startsWith("\u0000"))) windowBroken.push(`push ${i}`);
+      } else if (!JSON.stringify(input).startsWith(before.slice(0, -1))) changedWithoutCompaction += 1;
+    }
+    const liveChars = outputs()
+      .filter((o) => !o.output.startsWith("\u0000"))
+      .reduce((n, o) => n + o.output.length, 0);
     assertions.push(
-      assert("긴 루프에서도 과거 본문 누적은 제한", totalChars < 150_000, totalChars),
+      assert("압축하지 않은 push 는 앞부분을 한 글자도 안 바꾼다", changedWithoutCompaction === 0, { changedWithoutCompaction, compactPushes, pushes }),
+      assert("★압축한 push 에서도 이번 묶음과 최근 창은 원형(전달 안 된 결과를 압축하지 않는다)", compactPushes > 0 && windowBroken.length === 0, windowBroken),
+      assert("★압축은 몰아서 — 기준을 넘을 때만(push 마다가 아니다)", compactPushes > 0 && compactPushes <= Math.ceil(pushedOldChars / L.batchChars) + 1 && compactPushes < pushes, { compactPushes, pushes, 기준: L.batchChars }),
+      assert(
+        "긴 루프에서도 과거 본문 누적은 제한(기준 + 최근 창 + 이번 묶음)",
+        liveChars < L.batchChars + (L.keepRecent + 5) * L.entryCap,
+        { liveChars, 상한: L.batchChars + (L.keepRecent + 5) * L.entryCap },
+      ),
+    );
+    // ★짧은 출력은 기준에 **안 센다**(F2) — 세면 짧은 게 쌓인 뒤 push 마다 기준을 넘어 한 칸씩 압축으로 돌아간다.
+    const shorty: ResponseInputItem[] = [];
+    const pushTo = (arr: ResponseInputItem[], outs: ToolResult[], room = { requestChars: 0 }): number => {
+      arr.push(...outs.map((o) => ({ type: "function_call", call_id: o.callId, name: "Read", arguments: "{}" }) as ResponseInputItem));
+      return appendToolResultsToInput(arr, outs, room);
+    };
+    pushTo(shorty, batch("short", Math.ceil(L.batchChars / (L.minOutputChars - 100)) + 5, L.minOutputChars - 100));
+    let shortCompacted = 0;
+    for (let i = 0; i < 6; i++) shortCompacted += pushTo(shorty, batch(`lg-${i}`, 1, 10_000));
+    // ★상한 근처면 기준과 무관하게 즉시(F3) — 같은 배열·같은 입력인데 요청 크기만 다르다.
+    const nearA: ResponseInputItem[] = []; const nearB: ResponseInputItem[] = [];
+    pushTo(nearA, batch("na", 5, 10_000)); pushTo(nearB, batch("nb", 5, 10_000));
+    const far = pushTo(nearA, batch("na2", 1, 10_000), { requestChars: 100_000 });
+    const near = pushTo(nearB, batch("nb2", 1, 10_000), { requestChars: CODEX_KNOWN_SAFE_INPUT_CHARS - 5_000 });
+    assertions.push(
+      assert("★짧은 출력만 기준 이상 쌓여도 긴 출력 한 칸씩 압축으로 돌아가지 않는다", shortCompacted === 0, shortCompacted),
+      assert("★다음 요청이 실측 성공 상한을 넘을 것 같으면 즉시 압축 · 멀면 몰아서 기다린다", near > 0 && far === 0, { near, far }),
     );
     const calls = input
       .filter((i) => i.type === "function_call")

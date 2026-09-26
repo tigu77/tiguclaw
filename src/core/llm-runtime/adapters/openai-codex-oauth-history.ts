@@ -1970,6 +1970,39 @@ const CODEX_COMPACT_MIN_OUTPUT = parsePosIntEnv(
   2_000,
 );
 
+// ★**몰아서 압축한다** — 오래된 출력이 이만큼 쌓였을 때만, 그때 한꺼번에 (2026-09-26).
+//  압축은 입력 **한가운데를 제자리에서 고쳐 쓰므로** 그 지점부터 뒤가 프리픽스 캐시에서 빠진다.
+//  종전엔 출력이 최근 3개를 넘을 때마다 한 칸씩 고쳐 써서, 도구를 부를 때마다 캐시가 깨졌다.
+//  실측(돌쇠 4일, Codex 요청 369개): 깨짐 158건 · 초과 미적중 **281만 토큰**(Codex 비캐시 입력의 52%) —
+//  **전부 압축이 있던 18개 턴**에서, 압축 없던 턴은 0건. 요청 순번별로 i=2·3 은 8·18%, 압축이 시작되는
+//  i=4 부터 63%.
+//  ★손익: 오래된 출력을 두면 캐시 단가(~10%)로 매 요청 조금 · 고쳐 쓰면 뒤쪽 약 1.8만 토큰(관측 중앙)을
+//   정가로 다시 계산. 그래서 드물게·크게 한다. 기준 128,000자 — 한 번 압축의 재계산을 몇 요청 만에
+//   회수한다. (토큰으로는 글의 밀도에 따라 다르다 — 영문이면 ~36K, 한국어가 많으면 그보다 크다.)
+//   모델은 오래된 출력을 **종전보다 오래** 본다(능력은 그대로거나 늘어난다).
+//  ★진입 상한과 **묶지 않는다**(2026-09-26 적대 검토 F3) — 상한을 올린 사용자에게 기준까지 따라 커지면
+//   아래 «상한 근처면 즉시» 가 유일한 방어선이 된다. 크기 안전은 그 규칙이 진다.
+const CODEX_COMPACT_BATCH_CHARS = parsePosIntEnv(
+  process.env.CODEX_COMPACT_BATCH_CHARS,
+  128_000,
+);
+
+/**
+ * 이 백엔드의 **실측 성공 상한**(자). 넘으면 오류가 아니라 **빈 응답**이 온다(2026-07-26 실측:
+ * 성공 594,960자 / 실패 825,885자). 설정(`models.limits.<codex:모델>.maxInputChars`)이 있으면 그것.
+ * ★다음 요청이 이 선을 넘을 것 같으면 몰아서 기준과 무관하게 **즉시 압축**한다 — 몰아서 압축으로
+ *  턴 중간 요청이 최대 기준만큼 커졌고, 크기 검사는 iteration 0 에서만 돈다(부작용 재실행 때문에).
+ */
+export const CODEX_KNOWN_SAFE_INPUT_CHARS = 594_960;
+
+/** 압축 한도 — 검사가 숫자를 다시 적지 않게(두 벌이면 갈린다). */
+export const codexCompactionLimits = {
+  keepRecent: CODEX_COMPACT_KEEP_RECENT,
+  minOutputChars: CODEX_COMPACT_MIN_OUTPUT,
+  batchChars: CODEX_COMPACT_BATCH_CHARS,
+  entryCap: CODEX_TOOL_OUTPUT_ENTRY_CAP,
+} as const;
+
 // 압축된 output 임을 표시하는 안정 마커. idempotent 보장 — 이미 이 마커가 박힌
 // output 은 (a) 짧아 임계 미달로 자연 제외 + (b) 마커 검사로 명시 제외(이중 안전).
 // ★소스에 NUL 리터럴을 두지 않는다(2026-07-28) — 값은 같고 표기만 바꾸다.
@@ -2200,8 +2233,15 @@ export const appendToolResultsToInput = (
     media: readonly ResponseMediaItem[];
     savedScreens?: readonly string[];
   }[],
+  /**
+   * ★**필수** — 직전 요청 크기와(있으면) 모델 상한. 빠뜨리면 상한 근처에서도 몰아서 기다리게 되므로
+   *  타입으로 강제한다(호출부 배선을 검사가 못 보는 자리를 컴파일러가 본다).
+   */
+  room: { requestChars: number; ceilingChars?: number | undefined },
 ): number => {
-  let compacted = compactOldToolOutputs(inputArray);
+  const incoming = results.reduce((n, r) => n + Math.min(r.output.length, CODEX_TOOL_OUTPUT_ENTRY_CAP), 0);
+  const nearCeiling = room.requestChars + incoming > (room.ceilingChars ?? CODEX_KNOWN_SAFE_INPUT_CHARS);
+  let compacted = compactOldToolOutputs(inputArray, nearCeiling ? { batchChars: 0 } : undefined);
   // C2 — inputArray *진입* 직전 단발 cap. 큰 단일 output(Bash 1MB·Read 대용량)이 턴 끝까지
   // 매 iteration 재전송되며 비용을 지배하므로 진입 시점에 머리+꼬리만 남긴다. 도구 자체
   // cap 과 별개. function_call_output 은 결과 배열 순서대로 push → call_id 매칭 보존.
@@ -2347,10 +2387,11 @@ export const isToolMediaMessage = (item: ResponseInputItem | undefined): boolean
 
 export const compactOldToolOutputs = (
   inputArray: ResponseInputItem[],
-  opts?: { keepRecent?: number; minOutputChars?: number },
+  opts?: { keepRecent?: number; minOutputChars?: number; batchChars?: number },
 ): number => {
   const keepRecent = opts?.keepRecent ?? CODEX_COMPACT_KEEP_RECENT;
   const minOutputChars = opts?.minOutputChars ?? CODEX_COMPACT_MIN_OUTPUT;
+  const batchChars = opts?.batchChars ?? CODEX_COMPACT_BATCH_CHARS;
 
   // function_call_output 만의 인덱스 목록 (시간순 = 배열순). 최근 keepRecent 개는
   // 보존, 그 이전(= 앞쪽 인덱스)만 압축 대상.
@@ -2366,6 +2407,13 @@ export const compactOldToolOutputs = (
   if (outputIdxs.length <= keepRecent) return 0; // 압축할 만큼 안 쌓임 → no-op.
 
   const compactUntil = outputIdxs.length - keepRecent; // [0, compactUntil) 만 압축.
+  // ★몰아서 — 압축 대상이 batchChars 만큼 쌓이기 전엔 아무것도 안 고친다(위 CODEX_COMPACT_BATCH_CHARS).
+  let pendingChars = 0;
+  for (let j = 0; j < compactUntil; j++) {
+    const body = (inputArray[outputIdxs[j] as number] as ResponseInputFunctionCallOutput).output;
+    if (body.length >= minOutputChars && !body.startsWith(CODEX_COMPACTED_MARKER)) pendingChars += body.length;
+  }
+  if (pendingChars < batchChars) return 0;
   for (let j = 0; j < compactUntil; j++) {
     const item = inputArray[outputIdxs[j] as number] as ResponseInputFunctionCallOutput;
     const body = item.output;

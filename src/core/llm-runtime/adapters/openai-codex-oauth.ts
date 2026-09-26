@@ -2685,7 +2685,10 @@ export const runOpenAiCodex = async (
       // ★이 스텝의 도구 결과를 요청에 싣는다 — **압축·cap·미디어 순서가 한 함수 안에**
       //  있다(`appendToolResultsToInput`). 종전엔 이 셋이 여기 인라인이라, 순서를 바꾸는
       //  편집을 회귀가 볼 수 없었다(검사가 루프를 자기가 다시 지어야 했다).
-      turnCompacted += appendToolResultsToInput(inputArray, toolOutputs);
+      turnCompacted += appendToolResultsToInput(inputArray, toolOutputs, {
+        requestChars: lastReqBytes.total,
+        ceilingChars: loadModelInputLimits().get(`codex:${model}`),
+      });
 
 
       iteration += 1;

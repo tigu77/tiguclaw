@@ -114,7 +114,7 @@ const runCodexTurn = (
           },
         ],
       },
-    ]);
+    ], { requestChars: 0 });
     requestBytes.push(Buffer.byteLength(JSON.stringify(inputArray), "utf8"));
     if (i >= 1) {
       const n = inputArray.filter(isToolMedia).length;
@@ -167,7 +167,7 @@ export const check: RegressionCheck = {
     const recoveryInput: ResponseInputItem[] = [
       { type: "function_call_output", call_id: "fixture-action", output: "저장된 실행 결과\n" + "x".repeat(5000) },
     ];
-    compactOldToolOutputs(recoveryInput, { keepRecent: 0, minOutputChars: 100 });
+    compactOldToolOutputs(recoveryInput, { keepRecent: 0, minOutputChars: 100, batchChars: 0 });
     const recoveredText = recoveryInput[0]?.type === "function_call_output" ? recoveryInput[0].output : "";
     const recoveryNotes = [toolMediaNote(["do"], 1, 2), recoveredText];
     for (const note of recoveryNotes) {
@@ -238,7 +238,9 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "codex: 이미지가 있는 스텝에서도 오래된 텍스트 출력이 압축된다",
-        small.oldTextCompacted >= STEPS - 4,
+        // ★텍스트 압축은 이제 **몰아서** 한다(2026-09-26) — 스텝마다가 아니라 기준을 넘는 순간 한꺼번에.
+        //  이 검사가 지키는 건 «이미지 스텝이 텍스트 압축을 건너뛰지 않는다» 이므로 «돌았나» 를 본다.
+        small.oldTextCompacted > 0,
         `압축된 텍스트 출력=${small.oldTextCompacted}건 / 스텝=${STEPS}`,
       ),
     );
@@ -250,7 +252,7 @@ export const check: RegressionCheck = {
       textOnly.push({ type: "function_call_output", call_id: `t${i}`, output: "x".repeat(1_999) });
     }
     const beforeText = JSON.stringify(textOnly);
-    compactOldToolOutputs(textOnly);
+    compactOldToolOutputs(textOnly, { batchChars: 0 }); // 몰아서 기준을 빼고 «짧으면 안 건드린다» 만 본다
     out.push(
       assert(
         "1,999자 도구 출력은 종전대로 압축되지 않는다(env 의미 보존)",
@@ -496,7 +498,7 @@ export const check: RegressionCheck = {
       const arr: ResponseInputItem[] = [];
       appendToolResultsToInput(arr, [
         { callId: "a1", name: "look", output: "관측 결과", media: [{ type: "input_image", image_url: "data:image/png;base64,AAA" }] },
-      ]);
+      ], { requestChars: 0 });
       const msg = arr.find(
         (it) => (it as { role?: string }).role === "user",
       ) as { content?: { type: string; text?: string }[] } | undefined;
@@ -517,7 +519,7 @@ export const check: RegressionCheck = {
       );
       // ★막으면 안 되는 것 — 이미지가 없으면 그 메시지 자체가 없어야 한다(빈 글만 남기지 않는다).
       const none: ResponseInputItem[] = [];
-      appendToolResultsToInput(none, [{ callId: "b1", name: "Bash", output: "텍스트만", media: [] }]);
+      appendToolResultsToInput(none, [{ callId: "b1", name: "Bash", output: "텍스트만", media: [] }], { requestChars: 0 });
       out.push(
         assert(
           "★반대 방향 — 그림이 없으면 사용자 메시지를 **안 만든다**",
@@ -642,10 +644,10 @@ export const check: RegressionCheck = {
       const arr: ResponseInputItem[] = [mimic];
       appendToolResultsToInput(arr, [
         { callId: "z1", name: "look", output: "관측", media: [{ type: "input_image", image_url: "data:image/png;base64,AA==" }] },
-      ]);
+      ], { requestChars: 0 });
       appendToolResultsToInput(arr, [
         { callId: "z2", name: "look", output: "관측", media: [{ type: "input_image", image_url: "data:image/png;base64,BB==" }] },
-      ]);
+      ], { requestChars: 0 });
       out.push(
         assert(
           "★★그 사진이 도구 이미지 압축에서 **살아남는다**",
@@ -663,7 +665,7 @@ export const check: RegressionCheck = {
       const arr: ResponseInputItem[] = [];
       appendToolResultsToInput(arr, [
         { callId: "p1", name: "look", output: "관측", media: [im("A1"), im("A2"), im("A3")] },
-      ]);
+      ], { requestChars: 0 });
       const label = (it: ResponseInputItem | undefined): string =>
         ((it as { content?: { type: string; text?: string }[] } | undefined)?.content?.[0]?.text) ?? "";
       out.push(
@@ -678,7 +680,7 @@ export const check: RegressionCheck = {
       appendToolResultsToInput(mixed, [
         { callId: "q1", name: "Bash", output: "텍스트만", media: [] },
         { callId: "q2", name: "look", output: "관측", media: [im("B1")] },
-      ]);
+      ], { requestChars: 0 });
       out.push(
         assert(
           "★그림을 안 준 도구를 라벨이 지목하지 않는다(Bash 는 그림이 없다)",

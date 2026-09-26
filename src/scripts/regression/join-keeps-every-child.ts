@@ -342,7 +342,7 @@ export const check: RegressionCheck = {
       for (let i = 0; i < 4; i++) {
         arr.push({ type: "function_call_output", call_id: `t${i}`, output: `읽음 ${i}` });
       }
-      compactOldToolOutputs(arr as never);
+      compactOldToolOutputs(arr as never, { batchChars: 0 }); // 압축 «뒤» 의 안내를 본다
       const left = arr[0]?.output ?? "";
       out.push(
         assert(

@@ -279,7 +279,7 @@ export const check: RegressionCheck = {
       for (let i = 0; i < 4; i++) {
         arr.push({ type: "function_call_output", call_id: `t${i}`, output: `읽음 ${i}` });
       }
-      compactOldToolOutputs(arr as never);
+      compactOldToolOutputs(arr as never, { batchChars: 0 }); // 압축 «뒤» 를 본다 — 몰아서 기준은 codex-fresh-tool-output
       const notice = arr[0]?.output ?? "";
       // 안내가 알려주는 것만 들고 목록을 끝까지 따라간다.
       const found: string[] = [];

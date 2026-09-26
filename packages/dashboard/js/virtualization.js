@@ -112,9 +112,14 @@
       // 여기서 total/sizer 를 즉시 재계산해 scrollHeight 를 최신화한 뒤 setScrollTop(가드 vtProgrammatic)
       // 으로 바닥을 다시 잡아 lastScrollTop 을 바닥으로 동기 → 지연 클램프 이벤트가 와도 st==lastScrollTop
       // 라 오해제되지 않는다. stickBottom=false(사용자가 위로 스크롤)면 no-op → 사용자 스크롤 존중(회귀 0).
+      // ★«지금 바닥에 붙여도 되나» 는 **한 곳**에서 정한다 (2026-09-26 정태님: *"데스크탑에서 채팅
+      //  스크롤이 작동을 안 한다"*). 사용자 우선권 창(위로 제스처 직후)을 종전엔 이 재-pin 만 지켰고
+      //  relayout 의 stick 분기는 안 지켰다. 스크롤마다 relayout 을 예약하게 된 뒤로(a4707398), 바닥에서
+      //  트랙패드처럼 조금씩(8px 미만) 올리면 해제 판정 전에 relayout 이 **매번** 바닥으로 되돌렸다 —
+      //  헤드리스 실측: 6px 휠 150회 → scrollTop 1050 그대로. 큰 휠(400px)만 빠져나갔다.
+      const pinsBottom = () => stickBottom && perfNow() >= userIntentUntil;
       const vtPinBottom = () => {
-        if (!stickBottom || vtJumpTop) return;
-        if (perfNow() < userIntentUntil) return; // 실제 제스처 직후 = 사용자 우선(바닥으로 튕기지 않음).
+        if (!pinsBottom() || vtJumpTop) return; // 제스처 직후 = 사용자 우선(바닥으로 튕기지 않음).
         let total = 0;
         for (const it of vtItems) { it.top = total; total += slotH(it); }
         vtSizer.style.height = total + "px";
@@ -167,10 +172,11 @@
       const relayout = () => {
         const pS = pageScroll();       // 모바일 페이지 스크롤 모드?
         const clientH = getClientH();  // 데스크탑=#stream, 모바일=뷰포트(윈도 스크롤러).
+        const pin = pinsBottom();      // 바닥 고정 — 사용자 제스처 중엔 실제 위치를 따른다(위 pinsBottom).
         // 앵커(프리펜드/측정 점프 방지) — top 재계산 *전* OLD top 으로 현재 뷰 상단 아이템의 화면
         // 오프셋을 기록해야 위쪽 높이 변화를 실제로 보정한다. (재계산 후 잡으면 off 가 상쇄돼 no-op.)
         let anchor = null;
-        if (!stickBottom && !vtJumpTop && clientH > 0) {
+        if (!pin && !vtJumpTop && clientH > 0) {
           const st = getScrollTop();
           for (const it of vtItems) {
             if (it.top + slotH(it) > st) { anchor = { it: it, off: it.top - st }; break; }
@@ -189,7 +195,7 @@
         if (pS) {
           if (vtItems.length > 0) { first = 0; last = vtItems.length - 1; }
         } else {
-          const scrollTop = stickBottom ? Math.max(0, total - clientH) : (vtJumpTop ? 0 : getScrollTop());
+          const scrollTop = pin ? Math.max(0, total - clientH) : (vtJumpTop ? 0 : getScrollTop());
           const viewTop = scrollTop - VT_BUFFER;
           const viewBot = scrollTop + clientH + VT_BUFFER;
           for (let i = 0; i < vtItems.length; i++) {
@@ -208,7 +214,7 @@
           //  그래서 «가만히 두면 화면이 비어 있는» 상태로 멈춘다.
           //  ★항목이 있는데 범위가 비었다면 스크롤이 내용 밖을 가리키는 것이다 — 클램프해서
           //   한 번 더 그린다. 항목이 없으면(진짜 빈 대화) 그대로 둔다.
-          if (vtItems.length > 0 && !stickBottom && !vtJumpTop) {
+          if (vtItems.length > 0 && !pin && !vtJumpTop) {
             const maxTop = Math.max(0, total - clientH);
             const st = getScrollTop();
             if (st > maxTop + 1) {
@@ -236,7 +242,7 @@
 
         // 스크롤 위치 확정 — 스틱이면 하단, 아니면 앵커 복원(둘 다 프로그램적 = 리스너 무시).
         // 모바일 페이지 스크롤에선 하단 = 문서 전체 높이(헤더·입력 포함)라 getScrollH() 로 클램프.
-        if (stickBottom) {
+        if (pin) {
           setScrollTop(pS ? getScrollH() : total + 40); // 브라우저가 최대(하단)로 클램프.
         } else if (vtJumpTop) {
           setScrollTop(0); vtJumpTop = false; // 로드된 맨위 안착(프로그램적 = loadOlder 미발화).

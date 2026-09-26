@@ -17,7 +17,6 @@ import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블�
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import {
-  extractTelegramChatId,
   DEFAULT_SESSION_ID,
   setChannelSessionBindingLookup,
 } from "./core/threadkey.js";
@@ -103,6 +102,7 @@ import {
   getMostRecentTelegramChatId,
   getSession,
   getSessionChannelMeta,
+  telegramTargetFor,
   getSessionModelOverride,
   initStore,
   setSessionModelOverride,
@@ -1526,8 +1526,8 @@ const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
 // threadKey 파싱으로는 telegram chatId 를 못 얻는다. 그래서 (1) 인입 시 캡처된 배달 좌표
 // `channelAddress`(telegram=chatId) 를 **최우선** 쓰고, (2) 없으면 세션 메타
 // `getSessionChannelMeta(SESSION_STORAGE_CHANNEL, sessionId).lastChannelTarget`(route 가 인입
-// 턴에 캡처) 로, (3) 그래도 없으면 기존 `tg:` 파싱/threadKey 폴백(회귀 0, 비트 동일)으로
-// 내려간다. notifyDestFromCoords(self-update.ts)와 동형 우선순위.
+// 턴에 캡처) 로, (3) 그래도 없으면 텔레그램은 `telegramTargetFor`(세션 id 를 chatId 로 쓰지 않는다),
+// 그 밖은 threadKey 로 내려간다. notifyDestFromCoords(self-update.ts)와 동형 우선순위.
 const notifyDestFromMessage = (
   channel: string,
   threadKey: string,
@@ -1553,12 +1553,12 @@ const notifyDestFromMessage = (
   } catch {
     /* 세션 메타 조회 실패 — 아래 파싱 폴백으로 */
   }
-  // (3) 기존 파싱/threadKey 폴백(회귀 0).
+  // (3) 텔레그램=telegramTargetFor(유일 판정) · 그 밖=threadKey.
   return {
     channel,
     target:
       channel === "telegram"
-        ? (extractTelegramChatId(threadKey) ?? threadKey)
+        ? telegramTargetFor(threadKey)
         : // http-bridge(대시보드 등)는 target=threadKey 를 그대로 보존해야 통지가 *원래 대화*
           // (예: dashboard:default)에 뜬다. null 로 버리면 deliverOutbound 가 "http-bridge:default"
           // generic 그룹으로 발행해 통지가 엉뚱한 스레드에 붙었다. telegram 외 채널도 threadKey 유지.

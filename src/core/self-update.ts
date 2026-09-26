@@ -18,7 +18,7 @@
  * 트리거 안 함(먹통 = respawn 루프 방지) — 대신 작업트리를 `git reset --hard` 로 롤백한다.
  */
 import { execFile, spawn } from "node:child_process";
-import { extractTelegramChatId } from "./threadkey.js";
+import { telegramTargetFor } from "../store/sessions.js";
 import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import { sourceRoot, getPaths } from "./paths.js";
@@ -54,8 +54,8 @@ export interface SelfUpdateNotifyDest {
  *
  * ★채널/세션 분리(ADR 2026-07-15 §D3): `channelAddress`(배달 좌표 캡처, telegram=chatId)가
  * 있으면 **그걸 우선** 쓴다 — 세션 id 가 채널 무관(dashboard:*)이 되면 threadKey 파싱으로는
- * telegram chatId 를 못 얻기 때문. 미지정이면 기존 telegram threadKey "tg:<chatId>" 파싱
- * 폴백(회귀 0, 비트 동일). §0 단방향: 좌표는 캡처된 generic 데이터, 세션 id 파싱 의존 제거.
+ * telegram chatId 를 못 얻기 때문. 미지정이면 `telegramTargetFor`(옛 `tg:` 키 → 세션의 마지막
+ * 텔레그램 chatId → null=채널 기본). §0 단방향: 좌표는 캡처된 generic 데이터.
  */
 export const notifyDestFromCoords = (
   channel: string,
@@ -69,9 +69,7 @@ export const notifyDestFromCoords = (
   return {
     channel,
     target:
-      channel === "telegram"
-        ? (extractTelegramChatId(threadKey) ?? threadKey)
-        : null,
+      channel === "telegram" ? telegramTargetFor(threadKey) : null,
   };
 };
 

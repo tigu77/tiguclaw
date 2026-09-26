@@ -629,7 +629,9 @@
          브라우저 뒤로가기·상위 스크롤로 전파 안 됨. 휠(데스크탑)은 CSS 로 못 막아 tabs.js. */
       .session-tabs { display:flex; align-items:flex-end; gap:5px; padding:9px 2px 0; flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; touch-action:pan-x; overscroll-behavior:contain; }
       /* 세션탭이 #right 직접 자식(2026-07-19) — 헤더 밖으로 나왔으니 양옆 패딩으로 콘텐츠와 정렬. */
-      #right > #session-tabs { padding-left:14px; padding-right:14px; }
+      #right #session-tabs { padding-left:14px; padding-right:14px; }
+      /* 고정용 바깥 상자 — 데스크톱에선 없는 것처럼(contents), 모바일 채팅에서만 fixed 를 맡는다(아래). */
+      .session-tabs-bar { display:contents; }
       .session-tabs::-webkit-scrollbar { height:5px; }
       .session-tab { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:9px 9px 0 0; padding:6px 9px; background:rgb(var(--fg-rgb) / .03); color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:700; max-width:180px; flex:none; }
       .session-tab:hover { background:rgb(var(--fg-rgb) / .07); color:var(--text); }
@@ -2025,7 +2027,15 @@
            (`--tabs-inset`, mobile-nav.js 가 실측). 순서: 헤더 → 탭 → 채팅 제목(스크롤로 사라짐) → 대화. */
         body[data-tab="chat"] { padding-top:46px; }
         body[data-tab="chat"] header { position:fixed; top:0; left:0; right:0; }
-        body[data-tab="chat"] #session-tabs { position:fixed; top:46px; left:0; right:0; z-index:11; background:var(--bg); padding:9px 12px 5px; }
+        /* ★고정은 **스크롤하지 않는 바깥 상자**가, 가로 스크롤은 안쪽 탭 목록이 맡는다 (2026-09-26 정태님 실기).
+           탭 목록 자체를 fixed 로 두면 iOS 바운스 중 탭 **내용만** 사라지고 자리만 빈 띠로 남았다 — fixed 이면서
+           가로 스크롤 컨테이너였던 게 헤더와의 유일한 차이였다(합성 레이어 부여로는 안 풀렸다 — 실기 확인). */
+        body[data-tab="chat"] .session-tabs-bar { display:block; position:fixed; top:46px; left:0; right:0; z-index:11; background:var(--bg); }
+        body[data-tab="chat"] #session-tabs { background:var(--bg); padding:9px 12px 5px; }
+        /* 바운스 중에만(mobile-nav.js) 스크롤 컨테이너에서 뺀다 — iOS 18 이 바운스 중 fixed 안의 스크롤 컨테이너를
+           안 그린다. 넘겨 둔 위치는 자식 translate 로 유지. */
+        body[data-tab="chat"] #session-tabs.bounce-frozen { overflow:clip; }
+        body[data-tab="chat"] #session-tabs.bounce-frozen > * { transform:translateX(calc(-1 * var(--tabs-x, 0px))); }
         body[data-tab="chat"] #right { padding-top:var(--tabs-inset, 52px); }
         /* 날짜 알약도 헤더·탭과 같은 이유로 fixed — 탭 바로 아래(스크롤·바운스에 안 끌린다). */
         body[data-tab="chat"] .chat-date { position:fixed; top:calc(46px + var(--tabs-inset, 52px) + 8px); left:50%; }

@@ -63,6 +63,7 @@ import {
   steerJob,
   publishSteerAttempt,
   takeUndeliveredChildResults,
+  spawnNotifyDest,
 }
 from "../../worker-jobs.js";
 import { getLastWorkerActivity, getLastToolSlow } from "../../../store/events.js";
@@ -153,6 +154,12 @@ export const runWorkerJob = (
   const resultBox = createSteeringChannel();
   setJobResultChannel(job.jobId, resultBox);
 
+  // ★이 매니저 턴의 **사람 도달 좌표** = 잡의 보고 좌표 (2026-09-26 적대 검토 F1·F2). `notifyDest` 의
+  //  정의가 그것이다(types.ts). 종전엔 매니저 입력에 안 실려, 매니저가 띄운 서브가 좌표를 못 물려받았다 —
+  //  매니저가 먼저 끝나면 서브 보고가 `scheduler` 로 떨어져 미배달되거나(실측) 세션의 «마지막 텔레그램
+  //  방»(그룹일 수 있다)으로 갔다. 턴 밖 통지(쿨다운 알림)도 같은 좌표를 쓴다. 첫 턴·거두기 턴 공용.
+  const reach = job.notifyDest !== undefined ? { notifyDest: job.notifyDest } : {};
+
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
     let hardTimer: ReturnType<typeof setTimeout> | undefined;
@@ -190,6 +197,7 @@ export const runWorkerJob = (
           threadKey: `worker:${job.jobId}`,
           turnOrigin: "worker",
           channel: job.channel,
+          ...reach,
           // run_in_background(path=X) 로 스코프됐으면 그 폴더 cwd, 아니면 undefined=home 폴백.
           // 매니저 file-ops 상대경로가 그 폴더 기준(3b) + 대시보드 프로젝트 귀속(cwd 기록).
           cwd: job.cwd,
@@ -365,6 +373,7 @@ export const runWorkerJob = (
               threadKey: `worker:${job.jobId}`,
               turnOrigin: "worker",
               channel: job.channel,
+              ...reach,
               cwd: job.cwd,
               workerDepth: 1,
               abortSignal: abort.signal,
@@ -605,15 +614,8 @@ export const createWorkerMcpServer = (
           //   되면 job.threadKey 파싱(deriveTargetFromThreadKey)으로는 telegram chatId 를
           //   못 얻으므로, 파싱 의존을 캡처로 승격(§1.3). 둘 다 없으면 undefined →
           //   onWorkerComplete 의 channel/threadKey 폴백(회귀 0, 폴백 보존).
-          // (이 도구만 notifyDest 를 읽는다 — 어댑터는 LLM-agnostic 으로 미독해.)
-          notifyDest:
-            parentInput.notifyDest ??
-            (parentInput.channelAddress !== undefined
-              ? {
-                  channel: parentInput.channel,
-                  target: parentInput.channelAddress,
-                }
-              : undefined),
+          // (발사부만 notifyDest 를 읽는다 — 어댑터는 LLM-agnostic 으로 미독해. 판정은 spawnNotifyDest 한 곳.)
+          notifyDest: spawnNotifyDest(parentInput),
         });
         rememberSpawn(
           parentInput.threadKey,

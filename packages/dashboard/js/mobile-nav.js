@@ -132,13 +132,46 @@
 
       // ── fixed 세션 탭 높이 → --tabs-inset (모바일 채팅, 2026-09-25) — 탭을 고정했으니 문서 위쪽에
       // 그만큼 자리를 비운다(안 비우면 채팅 제목 줄과 첫 메시지가 탭 밑에 깔린다). 입력창과 같은 방식.
-      const insetTabs = document.getElementById("session-tabs");
+      // 고정되는 것은 바깥 상자다 — 그 높이만큼 비운다(없으면 탭 목록).
+      const insetTabs = document.getElementById("session-tabs-bar") || document.getElementById("session-tabs");
       if (insetTabs && typeof ResizeObserver === "function") {
         const applyTabsInset = () => {
           document.documentElement.style.setProperty("--tabs-inset", insetTabs.offsetHeight + "px");
         };
         new ResizeObserver(applyTabsInset).observe(insetTabs);
         applyTabsInset();
+      }
+
+      // ── 바운스 중엔 탭 목록을 스크롤 컨테이너에서 뺀다 (2026-09-26 정태님 실기, iOS 18 시뮬레이터 재현) ──
+      // iOS 18 Safari 는 fixed 상자 안의 스크롤 컨테이너를 **페이지 바운스(범위 밖 끌기) 중에 안 그린다** —
+      // 탭 목록 상자(배경)는 제자리인데 탭 버튼만 사라졌다. 탭 목록을 스크롤 컨테이너가 아니게(overflow:visible
+      // ·clip) 하면 바운스 중에도 보이고, 합성 레이어·쌓임 맥락·will-change·contain 은 모두 무효였다(시뮬레이터
+      // 실측). iOS 26 에선 안 난다. 그래서 **바운스하는 동안만** clip 으로 두고, 넘겨 둔 위치는 translate 로
+      // 유지한다(app.css `.bounce-frozen`). 바운스 중엔 어차피 탭을 넘길 수 없다(손가락이 대화 위에 있다).
+      const tabsStrip = document.getElementById("session-tabs");
+      if (tabsStrip) {
+        const tabsMq = window.matchMedia("(max-width: 900px)");
+        let frozen = false;
+        const setFrozen = (on) => {
+          if (on === frozen) return;
+          frozen = on;
+          if (on) {
+            tabsStrip.style.setProperty("--tabs-x", tabsStrip.scrollLeft + "px");
+            tabsStrip.classList.add("bounce-frozen");
+          } else {
+            const x = parseFloat(tabsStrip.style.getPropertyValue("--tabs-x")) || 0;
+            tabsStrip.classList.remove("bounce-frozen");
+            tabsStrip.scrollLeft = x;
+          }
+        };
+        window.addEventListener("scroll", () => {
+          const se = document.scrollingElement || document.documentElement;
+          const y = window.scrollY;
+          setFrozen(tabsMq.matches && document.body.getAttribute("data-tab") === "chat" &&
+            (y < 0 || y > se.scrollHeight - se.clientHeight + 1));
+        }, { passive: true });
+        // 끝 이벤트를 놓쳐 얼어 있으면 탭을 만지는 순간 푼다(넘기기는 늘 된다).
+        tabsStrip.addEventListener("touchstart", () => setFrozen(false), { passive: true });
       }
 
       // 안내문(placeholder)은 여기서 정하지 않는다 — 폭·입력장치·고스트 상태를 한 곳

@@ -47,6 +47,26 @@ export const check: RegressionCheck = {
     const inPlace = setRun(378, 378);
     const clampedInPlace = setRun(4100, 9999); // 바닥에서 바닥으로(클램프 후 제자리)
     const moved = setRun(378, 0);
+    // ⑥ relayout — 바닥 고정 중이라도 **사용자 위로 제스처 직후**엔 바닥으로 되돌리지 않는다(2026-09-26
+    //  정태님 «데스크탑 채팅 스크롤이 안 된다»: 스크롤마다 relayout 이 돌게 된 뒤, 8px 미만 트랙패드 스크롤이
+    //  해제 판정 전에 매번 바닥으로 튕겼다). pinsBottom + relayout 을 떼어 실제로 돌린다.
+    const pinSrc = /const pinsBottom = \(\) => [^\n]*\n/.exec(src)?.[0] ?? "";
+    const relSrc = /const relayout = \(\) => \{[\s\S]*?\n {6}\};/.exec(src)?.[0] ?? "";
+    const relRun = (intentActive: boolean) => {
+      const sets: number[] = [];
+      const items = Array.from({ length: 20 }, () => ({ h: 100, node: {} }));
+      const win = { children: [] as unknown[], firstChild: null, removeChild: () => {}, insertBefore: () => {}, style: { transform: "" } };
+      const ctx = vm.createContext({
+        stickBottom: true, vtJumpTop: false, perfNow: () => 1000, userIntentUntil: intentActive ? 1400 : 0,
+        pageScroll: () => false, getClientH: () => 500, getScrollTop: () => 1494, getScrollH: () => 2000,
+        vtItems: items, slotH: (it: { h: number }) => it.h, vtSizer: { style: { height: "" } }, vtWindow: win,
+        VT_BUFFER: 600, setScrollTop: (v: number) => { sets.push(v); }, scheduleRelayout: () => {}, updateChatJump: () => {},
+      });
+      if (pinSrc !== "" && relSrc !== "") vm.runInContext(`${pinSrc}${relSrc}\nrelayout();`, ctx);
+      return sets;
+    };
+    const duringGesture = relRun(true);
+    const idle = relRun(false);
     const inWin = run({ st: 0, last: 378, inWindow: true });
     const outWin = run({ st: 100, last: 378, inWindow: false });
     const mobile = run({ st: 100, last: 378, inWindow: false, page: true });
@@ -59,6 +79,9 @@ export const check: RegressionCheck = {
       assert("② 창 안에선 stick 해제 판정을 안 한다(창의 원래 목적)", inWin.stick === true, JSON.stringify(inWin)),
       assert("③ 창 밖 위로 스크롤 = stick 해제 + relayout", outWin.stick === false && outWin.relayouts >= 1, JSON.stringify(outWin)),
       assert("④ 모바일 페이지 스크롤은 스크롤마다 relayout 안 함", mobile.relayouts === 0, JSON.stringify(mobile)),
+      assert("pinsBottom·relayout 을 떼어냈다", pinSrc !== "" && relSrc !== "", `${pinSrc.length}/${relSrc.length}자`),
+      assert("★⑥ 위로 제스처 직후엔 바닥 고정 중이라도 relayout 이 바닥으로 되돌리지 않는다(작은 스크롤이 빠져나가게)", !duringGesture.some((v) => v >= 1500), JSON.stringify(duringGesture)),
+      assert("⑥ 제스처가 없으면 종전대로 바닥에 붙인다(팔로우 유지)", idle.some((v) => v >= 1500), JSON.stringify(idle)),
     ];
   },
 };

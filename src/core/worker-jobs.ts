@@ -2273,23 +2273,20 @@ import type { ReplyOptions } from "../channels/types.js";
 import {
   canonicalSessionChannel,
   notifySessionThreadKey,
+  telegramTargetFor,
 } from "../store/sessions.js";
 // 통지 문구는 판정과 같은 자리(tool-watchdog)에서 만든다 — 두 곳에 두면 한쪽만 늙는다.
 import { formatToolSlowNotice } from "./llm-runtime/tool-watchdog.js";
 
 /**
- * notifyDest 없는 매니저(텔레그램 직접 발화 등)의 *폴백* target 도출 — 기존 telegram threadKey
- * slice 로직을 그대로 추출. 텔레그램 직접 매니저는 notifyDest 미주입이므로 이 폴백이 현행과
- * *비트 동일* 한 chatId 를 낸다(회귀 0, architect §5). cli·미지원 채널은 target 무의미 → null.
+ * notifyDest 없는 잡의 *폴백* target 도출. 텔레그램은 `telegramTargetFor`(유일 판정 — 세션 id 를
+ * chatId 로 쓰지 않는다), cli·미지원 채널은 target 무의미 → null.
  */
 const deriveTargetFromThreadKey = (
   channel: ChannelName,
   threadKey: string,
 ): string | null => {
-  if (channel === "telegram") {
-    // threadKey "tg:<chatId>" → chatId. 접두 없으면 threadKey 자체(기존 동작 보존).
-    return extractTelegramChatId(threadKey) ?? threadKey;
-  }
+  if (channel === "telegram") return telegramTargetFor(threadKey);
   return null;
 };
 
@@ -2343,6 +2340,24 @@ const destForJob = (job: {
     channel: job.channel,
     target: deriveTargetFromThreadKey(job.channel, job.threadKey),
   };
+
+/**
+ * 띄우는 턴의 좌표에서 **보고 좌표를 스폰 시점에 캡처**한다 — 매니저·서브에이전트 공용.
+ * 주입된 `notifyDest`(스케줄 등) 우선, 없으면 캡처된 배달 좌표(`channelAddress`), 둘 다 없으면
+ * undefined → 완료 때 `destForJob` 의 threadKey 폴백.
+ * ★한 곳에서 정한다 (2026-09-26 회사돌쇠). 종전엔 매니저 발사부만 이걸 계산했고 서브에이전트
+ *  발사부는 빠뜨렸다. 세션 id 가 `dashboard:*` 이면 폴백이 **세션 id 를 chatId 로** 써서,
+ *  텔레그램에서 띄운 서브의 결과 보고가 전송 실패로 사라졌다 — 모델은 보고했다고 기억한다.
+ */
+export const spawnNotifyDest = (parent: {
+  channel: string;
+  notifyDest?: WorkerNotifyDest;
+  channelAddress?: string;
+}): WorkerNotifyDest | undefined =>
+  parent.notifyDest ??
+  (parent.channelAddress !== undefined
+    ? { channel: parent.channel as ChannelName, target: parent.channelAddress }
+    : undefined);
 
 // ─── 완료 → 메인 재주입 (architect §3, W-I1 단일 인격 핵심) ───────────────────
 // 매니저 완료 시 원 잡의 threadKey 로 *합성 user-turn* 을 주입해 메인 핸들러를 재진입 →

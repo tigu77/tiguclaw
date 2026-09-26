@@ -695,7 +695,7 @@ export const createSpawnAgentMcpServer = (
       // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=매니저만) 자동 충족.
       // 자식 실행 threadKey = `agent:<jobId>` → 활동(llm.activity)이 그 좌표로 흘러
       // 대시보드가 매니저(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
-      const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS } =
+      const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS, spawnNotifyDest } =
         await import("../../worker-jobs.js");
       // 중복 스폰 판정 — LLM 무관 공용(어댑터 3종에 흩어지지 않게 코어에 둔다).
       const { findDuplicateSpawn, rememberSpawn, spawnKey } = await import("../../spawn-dedupe.js");
@@ -780,6 +780,9 @@ export const createSpawnAgentMcpServer = (
           //  같은 값을 쓴다(재주입 reply 는 threadKey 로 좌표를 잡는다, worker-registry 동형).
           //  awaited 경로는 이 필드를 안 읽으므로 값이 생겨도 회귀 0.
           channelUserId: parentInput.threadKey,
+          // 보고 좌표 — 매니저와 **같은 판정**(spawnNotifyDest). 빠져 있어 텔레그램에서 띄운
+          //  서브의 결과 보고가 세션 id 를 chatId 로 써서 사라졌다(2026-09-26).
+          notifyDest: spawnNotifyDest(parentInput),
           // 실행 축 — 재시작 복구가 "통지할 소환자가 있나" 를 이걸로 가른다(ADR Q0).
           detached: true, // 항상 비동기 — 기다리기는 `wait_for_worker` 가 한다.
         });

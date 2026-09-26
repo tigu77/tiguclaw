@@ -1801,6 +1801,26 @@ export const getSessionChannelMeta = (
   };
 };
 
+/**
+ * 캡처된 좌표가 없을 때 **텔레그램 배달 좌표를 정하는 유일한 곳** (2026-09-26).
+ * ①옛 `tg:<chatId>` 키면 그 chatId ②이 세션이 마지막으로 텔레그램에서 받은 chatId ③모르면 null
+ * (→ deliverOutbound 가 채널 기본 좌표 = 소유자 chat).
+ * ★종전엔 세 곳(매니저 통지·자가 업데이트 통지·메시지 통지)이 각자 `?? threadKey` 로 **세션 id 를
+ *  chatId 로** 썼다. 세션 id 가 `dashboard:*` 가 된 뒤(v0.7 채널/세션 분리)로 그 값은 언제나 틀린
+ *  주소였고, 전송이 실패해 통지가 조용히 사라졌다(회사돌쇠 09-26: 서브에이전트 결과 보고).
+ */
+export const telegramTargetFor = (threadKey: string): string | null => {
+  const parsed = extractTelegramChatId(threadKey);
+  if (parsed !== null) return parsed;
+  try {
+    const meta = getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey);
+    if (meta?.lastChannel === "telegram" && meta.lastChannelTarget) return meta.lastChannelTarget;
+  } catch {
+    // 저장소 미초기화(부팅 전·일부 도구) — 채널 기본 좌표로.
+  }
+  return null;
+};
+
 // ─── /model V1: session_model_override helpers ────────────────────────────
 // 세션별 메인 모델 override. `threads` 와 분리 → `/reset` 무영향. 키는 thread 와
 // 동일(channel, thread_key) 라 같은 채널+스레드에서 ad-hoc 모델 선택이 컨텍스트

@@ -108,6 +108,7 @@ export const check: RegressionCheck = {
         provider?: string;
         adapter: string;
         summarize: (text: string, targetChars: number) => Promise<string>;
+        fixedChars: number;
       }) => Promise<{
         allTurns: { id: number; role: string; content: string }[];
         summary: string;
@@ -161,6 +162,7 @@ export const check: RegressionCheck = {
         channel: "http-bridge",
         threadKey: TK,
         adapter: "openai", // ★codex 가 아닌 이름으로 돌린다
+        fixedChars: 0, // 고정 비용 0 → 기준은 종전 그대로 15만
         summarize: async (_t: string, target: number) =>
           "요약:" + "약".repeat(Math.max(0, target - 3)),
       });
@@ -198,6 +200,7 @@ export const check: RegressionCheck = {
               channel: "http-bridge",
               threadKey: TK,
               adapter: "openai",
+              fixedChars: 0,
               summarize: async () => {
                 throw new Error("일부러 실패");
               },

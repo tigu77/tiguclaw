@@ -789,13 +789,13 @@ export const appendTranscript = (input: {
   role: string;
   content: string;
   ts?: number;
-}): void => {
-  if (input.content === "") return;
+}): number | undefined => {
+  if (input.content === "") return undefined;
   const db = requireDb("appendTranscript");
   // content_indexed — 조립 프리픽스가 있을 때만 채운다(없으면 NULL = 원문을 색인).
   // 원문(content)은 그대로 저장한다: 바꾸는 건 파생물인 색인뿐이다("정리 ≠ 삭제").
   const indexed = stripAssembledPrefix(input.content);
-  db.prepare(
+  const r = db.prepare(
     `INSERT INTO transcripts (claude_session_id, ts, role, content, content_indexed)
      VALUES (?, ?, ?, ?, ?)`,
   ).run(
@@ -805,6 +805,43 @@ export const appendTranscript = (input: {
     input.content,
     indexed === input.content ? null : indexed,
   );
+  // 행 id — 턴 간 도구 기억이 비서 답 행에 항목을 묶는 데 쓴다(turn_items).
+  return Number(r.lastInsertRowid);
+};
+
+/**
+ * **턴 간 도구 기억**(2026-09-27, docs/decisions/2026-09-27-codex-cross-turn-tool-memory.md) — 한 턴 안에 생긴
+ * 도구 호출·출력·중간 발화의 **저장 모양**. 추론(암호문)·이미지는 이번 범위에서 영속화하지 않는다(설계 결정) —
+ * 그래서 타입이 그 둘을 담을 자리를 두지 않는다. 생산자는 어댑터 `collectTurnItems` 하나다.
+ */
+export type CodexTurnItem =
+  | { type: "function_call"; call_id: string; name: string; arguments: string }
+  | { type: "function_call_output"; call_id: string; output: string }
+  | { type: "message"; role: "user" | "assistant"; text: string };
+
+/**
+ * Codex·OpenAI 한 턴의 기록을 **한 트랜잭션으로** 남긴다 — 사용자 행 · 비서 행 · 그 턴의 도구 항목 ·
+ * 세션 색인. ★종전엔 넷이 따로 쓰여 중간 실패로 일부만 남을 수 있었다(아스트라 검토 2026-09-27):
+ * 도구 항목만 남고 답 행이 없거나, 행은 있는데 색인이 없어 다음 턴이 못 읽는 상태.
+ */
+export const appendApiTurn = (input: {
+  channel: ChannelName;
+  threadKey: string;
+  claudeSessionId: string;
+  userContent: string;
+  assistantContent: string;
+  items?: readonly CodexTurnItem[];
+}): void => {
+  const db = requireDb("appendApiTurn");
+  db.transaction(() => {
+    appendTranscript({ claudeSessionId: input.claudeSessionId, role: "user", content: input.userContent });
+    const assistantId = appendTranscript({ claudeSessionId: input.claudeSessionId, role: "assistant", content: input.assistantContent });
+    if (assistantId !== undefined && input.items !== undefined && input.items.length > 0) {
+      const ins = db.prepare(`INSERT INTO turn_items (transcript_id, seq, item) VALUES (?, ?, ?)`);
+      input.items.forEach((it, i) => ins.run(assistantId, i, JSON.stringify(it)));
+    }
+    indexCodexTurn({ channel: input.channel, threadKey: input.threadKey, claudeSessionId: input.claudeSessionId });
+  })();
 };
 
 export const indexJsonlIfNeeded = (input: {
@@ -957,6 +994,12 @@ export type CodexTurnRole = "user" | "assistant";
 export interface CodexTurn {
   role: CodexTurnRole;
   content: string;
+  /**
+   * 비서 턴에 묶인 도구 항목(Responses 항목) — 턴 간 도구 기억(2026-09-27). 없으면 텍스트만.
+   * `itemsChars` = 그 항목들의 직렬화 크기 — 이력 예산·요약 기준이 **함께** 센다.
+   */
+  items?: CodexTurnItem[];
+  itemsChars?: number;
 }
 
 interface TranscriptHistoryRow {
@@ -1156,6 +1199,12 @@ export interface CodexTurnWithId extends CodexTurn {
 export const loadThreadHistoryWithIds = (
   channel: ChannelName,
   threadKey: string,
+  /**
+   * 도구 항목을 붙일 범위 — 이 transcript id **초과**인 비서 턴만(= 요약 워터마크 뒤). 미지정이면 붙이지 않는다.
+   * ★요약된 턴의 항목은 **지우지 않고 안 읽는다**(정리 ≠ 삭제 — 다시 만들 수 없는 원기록이다). 그래서 핫 경로는
+   *  미요약 구간만큼만 읽고, 기록은 남는다.
+   */
+  opts?: { itemsAfter?: number },
 ): CodexTurnWithId[] => {
   const db = requireDb("loadThreadHistoryWithIds");
   const sidRows = db
@@ -1182,12 +1231,34 @@ export const loadThreadHistoryWithIds = (
        ORDER BY ts ASC, id ASC`,
     )
     .all(...sids, boundary) as TranscriptHistoryTsRow[];
-  return rows.map((r) => ({
-    id: r.id,
-    role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
-    // user 턴만 — assistant 응답엔 프리픽스가 없다(위 stripAssembledPrefix 주석).
-    content: r.role === "assistant" ? r.content : stripAssembledPrefix(r.content),
-  }));
+  // 비서 턴에 묶인 도구 항목 — 같은 세션·경계 조건 + 워터마크 뒤만 한 번에 읽는다.
+  const itemRows = opts?.itemsAfter === undefined ? [] : db
+    .prepare(
+      `SELECT ti.transcript_id AS tid, ti.item AS item FROM turn_items ti
+         JOIN transcripts t ON t.id = ti.transcript_id
+        WHERE t.claude_session_id IN (${placeholders}) AND t.ts > ? AND ti.transcript_id > ?
+        ORDER BY ti.transcript_id ASC, ti.seq ASC`,
+    )
+    .all(...sids, boundary, opts.itemsAfter) as { tid: number; item: string }[];
+  const itemsById = new Map<number, { items: CodexTurnItem[]; chars: number }>();
+  for (const r of itemRows) {
+    let parsed: CodexTurnItem;
+    try { parsed = JSON.parse(r.item) as CodexTurnItem; } catch { continue; }
+    const e = itemsById.get(r.tid) ?? { items: [], chars: 0 };
+    e.items.push(parsed);
+    e.chars += r.item.length;
+    itemsById.set(r.tid, e);
+  }
+  return rows.map((r) => {
+    const it = r.role === "assistant" ? itemsById.get(r.id) : undefined;
+    return {
+      id: r.id,
+      role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
+      // user 턴만 — assistant 응답엔 프리픽스가 없다(위 stripAssembledPrefix 주석).
+      content: r.role === "assistant" ? r.content : stripAssembledPrefix(r.content),
+      ...(it !== undefined ? { items: it.items, itemsChars: it.chars } : {}),
+    };
+  });
 };
 
 /**

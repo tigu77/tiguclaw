@@ -172,6 +172,7 @@ import {
   buildTurnHistory,
   buildSteeringInputItem,
   appendToolResultsToInput,
+  collectTurnItems,
   newSseObservation,
   parseCodexSseObserved,
   compatibleReplayOutput,
@@ -731,6 +732,8 @@ export const runOpenAiCodex = async (
     turnReasoning, // ★요약 호출도 **이 턴과 같은** 강도로 간다(위 주석).
     (b) => { inputBoundary = b; },
   );
+  // 턴 간 도구 기억 — 여기서부터가 이 턴에 새로 생긴 항목이다(이력·현재 사용자 턴은 앞에 있다).
+  const turnStart = inputArray.length;
 
   // V5.3 — MCP memory server (claude 어댑터와 동일 instance) in-memory bridge 회수.
   // V5.5 — file-ops MCP server (codex 어댑터 전용 — claude 는 SDK builtin Read/Glob/Grep)
@@ -2849,16 +2852,15 @@ export const runOpenAiCodex = async (
       replyToTrigger,
       usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
       externalToolCalls: pendingExternalToolCalls,
+      turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
     };
   }
 
   // V5.1' sid 매핑 — `codex-${response.id}` 박음. response.id 부재 시 randomBytes
   // fallback (V3 hex sid 형식). V5.1 의 `resp_` prefix 가드는 input 누적 lookup
   // 시점에서 처리 (buildTurnHistory) — 응답에서 받은 response.id 는 항상 `resp_` 형식.
-  // 최종 assistant text turn 만 사용 — runRegionA(facade)의 appendTranscript 가
-  // user + assistant 한 쌍만 transcripts INSERT (function_call/output 자동 격리).
-  // loadCodexTurnHistoryBySessionId 의 `role IN ('user','assistant')` 필터로 다음 turn
-  // 복원 시 도구 turn 자동 제외 — V5 통합 게이트 회귀 0.
+  // transcripts 엔 최종 답 텍스트 한 줄, 이 턴의 도구 호출·출력·작업 중 지시는 `turnItems` 로 그 행에 묶인다
+  // (2026-09-27 턴 간 도구 기억 — 종전엔 여기서 버려져 이전 턴에 읽은 내용이 다음 턴에 없었다).
   // ★대형 입력 의심 단서 (2026-07-26) — 빈 응답의 *원인*을 메시지에 남긴다.
   //
   //  관측(실측, 같은 엔드포인트 16건): 요청 크기로 성공/실패가 **완전히 갈렸다**.
@@ -2925,5 +2927,6 @@ export const runOpenAiCodex = async (
     model,
     replyToTrigger,
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
+    turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
   };
 };

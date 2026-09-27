@@ -458,6 +458,17 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_transcripts_sid_ts
       ON transcripts(claude_session_id, ts);
 
+    -- ★턴 간 도구 기억 (2026-09-27, docs/decisions/2026-09-27-codex-cross-turn-tool-memory.md).
+    --  한 턴 안에 생긴 도구 호출·출력·중간 메시지(Responses 항목 JSON)를 그 턴의 **비서 답 행**에
+    --  묶는다. 다음 턴 이력이 «사용자 → 도구 항목 → 비서 답» 으로 되살린다. 요약에 접힌 턴의 항목도
+    --  **지우지 않는다**(다시 만들 수 없는 원기록) — 적재가 요약 워터마크 뒤만 읽어 핫 경로가 바운드된다.
+    CREATE TABLE IF NOT EXISTS turn_items (
+      transcript_id INTEGER NOT NULL,
+      seq           INTEGER NOT NULL,
+      item          TEXT NOT NULL,
+      PRIMARY KEY (transcript_id, seq)
+    );
+
     -- ★FTS 는 **조립 프리픽스를 뺀 텍스트**를 색인한다 (2026-08-10).
     --  claude 어댑터는 SDK jsonl 을 색인하는데 그 "user 메시지" 는 우리가 넘긴 조립 프롬프트
     --  전문(헌법+메모리+스킬 인덱스)이라, 사용자가 한 줄을 쳐도 25KB 가 저장된다. 원문은

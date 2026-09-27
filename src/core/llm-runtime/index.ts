@@ -39,8 +39,7 @@ import { saveSession } from "../../store/sessions.js";
 import { formatAttachments } from "../prompt-assembly.js";
 import { enrichTranscripts } from "./transcription/index.js";
 import {
-  appendTranscript,
-  indexCodexTurn,
+  appendApiTurn,
   indexJsonlIfNeeded,
 } from "../../store/memory.js";
 import type {
@@ -1364,20 +1363,14 @@ const persistOutput = (
         attachmentBlock.length > 0
           ? `${attachmentBlock}\n\n${input.text}`
           : input.text;
-      appendTranscript({
-        claudeSessionId: sessionId,
-        role: "user",
-        content: userContent,
-      });
-      appendTranscript({
-        claudeSessionId: sessionId,
-        role: "assistant",
-        content: output.text,
-      });
-      indexCodexTurn({
+      // 한 턴 = 한 트랜잭션(사용자 행·비서 행·도구 항목·색인) — 일부만 남지 않는다.
+      appendApiTurn({
         channel: idChannel,
         threadKey: input.threadKey,
         claudeSessionId: sessionId,
+        userContent,
+        assistantContent: output.text,
+        ...(output.turnItems !== undefined ? { items: output.turnItems } : {}),
       });
     } catch (e) {
       console.error("llm-runtime: appendTranscript/indexCodexTurn failed:", e);

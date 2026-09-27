@@ -25,6 +25,7 @@ import { CODEX_TURN_HISTORY_CHAR_CAP as STORE_TURN_HISTORY_CHAR_CAP } from "../.
 import {
   loadThreadHistoryWithIds,
   type CodexTurn,
+  type CodexTurnItem,
   type CodexTurnWithId,
 } from "../../../store/memory.js";
 import {
@@ -45,7 +46,8 @@ export const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 //  을 상향 근거로 들었다. **이 논리는 폐기한다** — 과금이 없어도 낭비는 레이턴시·컨텍스트
 //  한도·품질로 돌아온다(SYSTEM.md §1 "보내는 컨텍스트도 낭비 대상"). 턴 수는 아래 char cap
 //  이 실질 binding 이라 유지하되, 근거를 "공짜라서"가 아니라 "필요해서"로 바꾼다.
-const CODEX_TURN_HISTORY_LIMIT = 150;
+// ★2026-09-26 — 턴 수 상한(150)은 **없앴다**. 매 턴 한 칸씩 밀어 이력 캐시를 깨고 요약 안 된 턴을 버렸다.
+//  크기는 요약 기준(historyTriggerChars = 보낼 수 있는 이력 예산)이 묶는다. 위 내력은 기록으로 남긴다.
 
 // turn count 위의 char cap — 매 턴 재전송되는 히스토리의 실질 상한(보통 이게 binding).
 // 최신 turn 부터 누적, 초과 시 가장 오래된 turn drop.
@@ -1038,6 +1040,11 @@ export interface HistoryCompactionPlan {
   needed: boolean;
   toFold: CodexTurnWithId[];
   nextWatermark: number;
+  /**
+   * 예산보다 큰 한 턴을 통째로 받아들였을 때만 — 그 예산(조각 크기). 요약 호출부가 이 크기로 나눠 부른다
+   * (`summarizeInChunks`). 평소 패스엔 없다: 역할 머리말·줄바꿈만큼 예산을 살짝 넘는 것을 조각으로 떼면 안 된다.
+   */
+  chunkChars?: number;
 }
 
 /**
@@ -1154,8 +1161,30 @@ export const nextPassOpts = (
   pass: number,
   foldBudget: number,
   low: number,
+  high?: number,
 ): { maxFoldChars: number; triggerChars?: number } =>
-  pass === 0 ? { maxFoldChars: foldBudget } : { maxFoldChars: foldBudget, triggerChars: low };
+  pass === 0
+    ? high === undefined ? { maxFoldChars: foldBudget } : { maxFoldChars: foldBudget, triggerChars: high }
+    : { maxFoldChars: foldBudget, triggerChars: low };
+
+/**
+ * **요약 기준 = 보낼 수 있는 이력 예산** (2026-09-26 캐시 조사 — 정태님 «근본 수정»).
+ *
+ * ★사고: 이력 크기를 묶는 장치가 셋이었다 — 요약(미요약 턴이 15만 자를 넘으면 한꺼번에 접고 시작점을 옮김),
+ *  턴 수 상한(최근 150턴), 글자 상한(20만 자 − 지시문 등). 뒤의 둘은 **매 턴 한 칸씩 민다.** 요약보다 먼저
+ *  걸리면 새 턴마다 가장 오래된 턴이 빠져 이력 맨 앞이 바뀌고, **이력 전체가 프리픽스 캐시를 못 탄다**
+ *  (실측: 메인 세션 턴 첫 요청 5/5 가 지시문 뒤 전부 미적중, 1분 간격인데도 ~4.5만 토큰씩). 밀려난 턴은
+ *  요약에도 없어 **모델이 못 본다**. 메인은 150턴에 9.5만 자라 턴 수가, 13만~15만 자 구간은 글자가 먼저 걸렸다.
+ * ★처방: 보낼 창 = «미요약 턴 전부» 로 두고, 그게 예산을 넘을 조건을 곧 **요약 조건**으로 한다. 그러면 시작점은
+ *  요약할 때만(드물게·크게) 움직인다 — 도구 출력 몰아서 압축과 같은 원리다.
+ *  예산 = 글자 상한 − 고정 비용(지시문+현재 프롬프트) − 요약 몫(요약 최대 크기). 요약보다 작은 이력은 접어도
+ *  의미가 없으니 하한은 요약 최대 크기다.
+ */
+export const historyTriggerChars = (fixedChars: number): number =>
+  Math.min(
+    CODEX_HISTORY_COMPACT_TRIGGER_CHARS,
+    Math.max(CODEX_SUMMARY_MAX_CHARS, CODEX_TURN_HISTORY_CHAR_CAP - fixedChars - CODEX_SUMMARY_MAX_CHARS),
+  );
 
 /**
  * 한 패스의 결과를 상태에 반영한다 — **성공했을 때만** watermark 를 전진시킨다.
@@ -1246,13 +1275,262 @@ export const MIN_USABLE_SUMMARY_CHARS = 50;
 export const isUsableSummary = (summary: string): boolean =>
   summary.trim().length >= MIN_USABLE_SUMMARY_CHARS;
 
+// ─── 턴 간 도구 기억 (2026-09-27, docs/decisions/2026-09-27-codex-cross-turn-tool-memory.md) ───
+/** 턴 크기 = 텍스트 + 묶인 도구 항목 — 이력 예산·요약 기준·보존이 **같은 자로** 센다. */
+export const turnSize = (t: { content?: string; itemsChars?: number }): number =>
+  String(t.content ?? "").length + (t.itemsChars ?? 0);
+
+/** 항목들의 크기 — 저장된 JSON 과 같은 자(적재기가 `item` 열 길이로 센 것과 일치). */
+export const turnItemsChars = (items: readonly CodexTurnItem[]): number =>
+  items.reduce((n, it) => n + JSON.stringify(it).length, 0);
+
+const bodyOf = (it: CodexTurnItem): string =>
+  it.type === "function_call" ? it.arguments : it.type === "function_call_output" ? it.output : it.text;
+const shrinkBody = (it: CodexTurnItem, keep: number): CodexTurnItem => {
+  const body = bodyOf(it);
+  if (body.length <= keep) return it;
+  const head = body.slice(0, Math.max(0, keep));
+  // ★모델이 이 기록을 다시 읽을 도구는 없다 — «보존됨» 이라고 쓰지 않는다(적대 검토 2026-09-27).
+  const note = `…[이전 턴 원문 ${body.length}자 중 앞 ${head.length}자 — 이력 크기 상한으로 나머지 생략. 필요하면 원본을 다시 읽는다]`;
+  // 인자는 JSON 이어야 한다 — 자른 조각을 그대로 두면 깨진 JSON 이 된다.
+  if (it.type === "function_call") return { ...it, arguments: JSON.stringify({ _truncated: head + note }) };
+  if (it.type === "function_call_output") return { ...it, output: `${head}\n${note}` };
+  return { ...it, text: `${head}${note}` };
+};
+const itemLen = (it: CodexTurnItem): number => JSON.stringify(it).length;
+/** 깎은 본문에 남기는 최소 머리 — 이보다 짧은 본문은 깎지 않는다(표식이 본문보다 길어지는 역효과). */
+const REPLAY_MIN_KEEP = 200;
+/** 깎은 항목의 JSON 길이가 `target` 이하가 되는 가장 긴 머리 — 이스케이프를 **남기는 조각으로** 잰다. */
+const shrinkTo = (it: CodexTurnItem, target: number): CodexTurnItem => {
+  let lo = REPLAY_MIN_KEEP, hi = bodyOf(it).length, best = shrinkBody(it, REPLAY_MIN_KEEP);
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const c = shrinkBody(it, mid);
+    if (itemLen(c) <= target) { best = c; lo = mid + 1; } else hi = mid - 1;
+  }
+  return best;
+};
+const droppedNote = (n: number): CodexTurnItem => ({
+  type: "message",
+  role: "assistant",
+  text: `[이 턴의 앞선 도구 호출 ${n}건은 이력 크기 상한으로 생략 — 필요하면 원본을 다시 읽는다]`,
+});
+
+/**
+ * **한 턴의 도구 항목을 되살릴 때의 크기 상한** = 압축이 남기는 최근 창(저수위, 기본 9만 자).
+ *
+ * ★사고(아스트라 검토 2026-09-27, 합성 재현): 16K 안쪽 결과 14개 = 한 턴 211,800자. 최근 한 쌍은 요약하지 않으니
+ *  접을 게 없고, 창은 최신 턴이 20만 자를 넘자 **거기서 멈춰 이전 이력 0턴**을 보냈다. **한 턴의 크기 계약**이 없던 것.
+ * ★왜 이 값인가 — 처음엔 요약 1패스 예산(4만 자)으로 잡았다가 **벤치가 뒤집었다**: 43KB 노트를 네 번 나눠 읽은
+ *  평범한 턴이 64,180자였고, 결과 다섯 개를 7,350자씩 깎아 **조각마다 꼬리에 있던 사실이 사라졌다**(9/14 의 원인).
+ *  «요약에 한 번에 들어가게» 는 요약 쪽 사정이다 — 요약은 조각으로 나눠 부르면 된다(`summarizeInChunks`). 되살릴
+ *  원문의 상한은 **압축 뒤에도 원문으로 남을 수 있는 크기**, 곧 저수위다. 그보다 큰 턴은 어차피 원문으로 못 남는다.
+ *  상수(기본 임계 기준)라 요청마다 흔들리지 않는다 — 고정 비용에 따라 바뀌면 되살린 모양이 매 턴 달라져 캐시가 깨진다.
+ */
+export const turnItemsReplayChars = (): number => lowWaterMark();
+
+/** 한 턴이 요약 1회분보다 클 때 나눠 요약하는 최대 조각 수 — 요약 호출 수의 상한(4 × 4만 = 16만 자). */
+export const CODEX_FOLD_MAX_CHUNKS = 4;
+
+/**
+ * **요약 입력** — 접을 턴들을 역할 머리말과 함께 한 덩어리로. 계획(크기 판정)과 두 호출부(자동·수동)가 **이 한 함수**의
+ * 결과를 본다. ★계획은 본문 길이로, 실행은 머리말 붙은 입력으로 재면 둘이 갈린다(아스트라 후속 A — 경계에서 조각이
+ *  하나 더 생겼다).
+ */
+export const foldPromptOf = (toFold: readonly { role: string; content: string }[]): string =>
+  toFold.map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`).join("\n");
+
+/**
+ * 조각 나누기 — **조각 수를 먼저 정한다**(`ceil(길이/예산)`, 최대 `maxChunks`). 각 조각은 예산 이하, 이어 붙이면 원문과
+ * 같고, 순서대로다. 줄 경계는 **남은 조각에 나머지가 들어가는 범위 안에서만** 고른다 — 줄 경계를 무조건 따르면 조각이
+ * 짧아져 개수가 늘어난다(아스트라 재현: 400자·예산 100 → 6조각). 조각 수가 상한을 넘으면 던진다 — 계획이 막았어야
+ * 할 입력이다(부분만 요약하고 넘어가지 않는다).
+ */
+export const splitForFold = (text: string, budget: number, maxChunks: number): string[] => {
+  const n = Math.max(1, Math.ceil(text.length / budget));
+  if (n > maxChunks) throw new Error(`요약 조각 ${n}개 > 상한 ${maxChunks} (입력 ${text.length}자·예산 ${budget}자) — 계획 불일치`);
+  const parts: string[] = [];
+  let start = 0;
+  for (let k = 0; k < n; k++) {
+    const slots = n - k;
+    // ★**고르게** 나눈다 — 앞을 예산만큼 꽉 채우면 마지막이 수백 자 자투리가 되고, 그 조각의 요약이 «쓸 수 있는
+    //  요약» 하한에 걸린다(조각마다 판정한다 — `summarizeInChunks`).
+    const end0 = Math.min(text.length, start + budget, start + Math.ceil((text.length - start) / slots));
+    const minEnd = Math.max(start + 1, text.length - (slots - 1) * budget); // 이보다 짧으면 나머지가 남은 조각에 안 들어간다
+    let end = end0;
+    if (end0 < text.length) {
+      const nl = text.lastIndexOf("\n", end0 - 1) + 1; // 줄바꿈 **뒤**에서 자른다
+      if (nl >= minEnd && nl > start + (end0 - start) / 2) end = nl;
+      // 서로게이트 쌍(이모지 등)을 쪼개지 않는다 — `capToolOutputForEntry` 와 같은 보호.
+      else if (/[\uD800-\uDBFF]/.test(text.charAt(end0 - 1)) && end0 - 1 >= minEnd && end0 - 1 > start) end = end0 - 1;
+    }
+    parts.push(text.slice(start, end));
+    start = end;
+  }
+  return parts;
+};
+
+/**
+ * **나눠 요약한다** — 계획이 예산보다 큰 한 턴을 받아들였으면(`chunkChars`) 그 크기 조각으로(최대
+ * `CODEX_FOLD_MAX_CHUNKS`) 차례로 부르고 이어 붙인다. 아니면 한 번(종전과 같다).
+ * 각 호출이 예산 안이라 07-30 의 진행 보장(«한 번에 못 삼키는 크기를 매 턴 재전송» 금지)은 그대로다. 한 조각이라도
+ * 쓸 수 있는 요약이 아니면(`isUsableSummary`) 전체를 빈 결과로 돌려 기존 실패 경로(워터마크 유지·예산 축소)를 탄다 — 일부만 요약된 채 넘어가지 않는다.
+ * ★상한 4는 **이 조각 묶음**의 호출 수다(자동 압축의 여러 패스를 합친 턴 전체 상한이 아니다).
+ */
+export const summarizeInChunks = async (
+  text: string,
+  /** 조각 크기 — 계획이 준 `chunkChars`. 없으면(평소 패스) 한 번에 부른다. */
+  budget: number | undefined,
+  call: (piece: string, targetChars: number) => Promise<string>,
+): Promise<string> => {
+  if (budget === undefined || text.length <= budget) return call(text, summaryTargetFor(text.length));
+  const out: string[] = [];
+  for (const piece of splitForFold(text, budget, CODEX_FOLD_MAX_CHUNKS)) {
+    const r = (await call(piece, summaryTargetFor(piece.length))).trim();
+    // ★조각마다 판정한다 — 전체에만 걸면 한 조각의 짧은 거절 문구(«요약할 수 없습니다.»)가 이어 붙어 부분 성공으로
+    //  넘어간다(재검토 재현: 워터마크가 큰 턴을 넘고 누적 요약에 거절 문구가 남았다).
+    if (!isUsableSummary(r)) return "";
+    out.push(r);
+  }
+  return out.join("\n");
+};
+
+/**
+ * 되살릴 모양 — 상한 안이면 원문 그대로. 넘으면:
+ *  ① 긴 본문부터 같은 JSON 길이로 깎는다(수위 맞추기). 짧은 본문(200자 이하)은 안 깎는다. 짝·순서 유지.
+ *  ② 깎아도 안 들어가면(호출이 수백 개라 항목 뼈대만으로 넘침) **뼈대가 들어갈 때까지만 가장 오래된 호출·출력
+ *     쌍부터 통째로 빼고** 남은 것은 ① 로 — 모든 인자·출력을 «앞 0자» 로 만드는 것보다 최근 작업을 남기는 쪽이
+ *     낫다. 뺀 수를 표식 한 줄로 남긴다.
+ * ★크기는 **항목 JSON 길이로** 잰다(저장·예산과 같은 자) — 이스케이프가 많은 본문(JSON·코드)도 상한을 지킨다.
+ *  (적대 검토 2026-09-27: 종전 셈은 원 본문의 이스케이프를 줄지 않는 고정비로 쳐서 짧은 항목까지 지웠고,
+ *   호출 150개 턴에서 상한을 넘긴 채 모든 인자를 비웠다.)
+ * ★턴마다 결정적이다(입력이 같으면 결과가 같다) — 요청마다 모양이 바뀌면 이력 캐시가 깨진다. 원문은 `turn_items` 에
+ * 그대로 남는다(지우는 게 아니라 **보내는 모양**만 정한다).
+ */
+export const replayTurnItems = (items: CodexTurnItem[], cap: number = turnItemsReplayChars()): CodexTurnItem[] => {
+  const full = items.map(itemLen);
+  if (full.reduce((n, x) => n + x, 0) <= cap) return items;
+  // 항목별 «깎아도 남는 최소» — 깎을 수 없으면 원래 크기.
+  const floor = items.map((it, i) => (bodyOf(it).length > REPLAY_MIN_KEEP ? Math.min(full[i]!, itemLen(shrinkBody(it, REPLAY_MIN_KEEP))) : full[i]!));
+  const alive = items.map(() => true);
+  // ② 뼈대(깎아도 남는 최소)만으로 넘치면 — 작은 호출이 수백 개인 턴이다. **뼈대가 들어갈 때까지만** 오래된 쌍부터
+  //  통째로 빼고, 남은 것은 ① 로 넘긴다. ★«원문 그대로 들어갈 때까지» 빼면 큰 항목 하나가 남아 있을 때 절벽이
+  //  생긴다 — 그 턴의 도구 기억이 표식 한 줄만 남기고 전부 사라졌다(재검토 2026-09-27 재현: 작은 쌍 250개 + 인자 10만 자).
+  const reserve = itemLen(droppedNote(99_999));
+  let fixed = floor.reduce((n, x) => n + x, 0);
+  let dropped = 0;
+  while (fixed + (dropped > 0 ? reserve : 0) > cap) {
+    const first = items.findIndex((it, i) => alive[i] && it.type !== "message");
+    if (first === -1) break;
+    const id = (items[first] as { call_id: string }).call_id;
+    items.forEach((it, i) => { if (alive[i] && it.type !== "message" && it.call_id === id) { alive[i] = false; fixed -= floor[i]!; } });
+    dropped += 1;
+  }
+  const room = cap - fixed - (dropped > 0 ? reserve : 0);
+  // 메시지 뼈대만으로도 넘치면(뺄 쌍이 없음) 표식만 남기고 이 턴은 텍스트로 되살린다.
+  if (room < 0) return dropped > 0 ? [droppedNote(dropped)] : [];
+  // ① 남은 여유를 긴 본문부터 같은 길이 c 로 나눈다: Σ min(extra_i, c) ≤ room.
+  const extras = items.map((_, i) => (alive[i] ? full[i]! - floor[i]! : 0)).filter((e) => e > 0).sort((x, y) => x - y);
+  let left = room, n = extras.length, c = 0;
+  for (const e of extras) {
+    if (e * n <= left) { left -= e; n -= 1; c = e; continue; }
+    c = Math.floor(left / n);
+    break;
+  }
+  const out = items.flatMap((it, i) => (!alive[i] ? [] : [full[i]! - floor[i]! <= c ? it : shrinkTo(it, floor[i]! + c)]));
+  return dropped > 0 ? [droppedNote(dropped), ...out] : out;
+};
+
+const itemText = (it: CodexTurnItem): string =>
+  it.type === "function_call"
+    ? `[도구 호출] ${it.name}(${it.arguments})`
+    : it.type === "function_call_output"
+      ? `[도구 결과] ${it.output}`
+      // ★역할을 잃지 않는다 — 작업 중 사용자 지시와 비서의 중간 발화는 요약에서도 구분돼야 한다.
+      : it.role === "user"
+        ? `[사용자 — 작업 중 추가 지시] ${it.text}`
+        : `[비서 — 중간 발화] ${it.text}`;
+
+/**
+ * 요약에 넣을 턴 본문 — 도구 항목을 텍스트로 풀어 앞에 붙인다(읽은 사실이 요약에 남도록). 항목은 이미 되살릴
+ * 모양(`replayTurnItems`)이라 **모델이 이력에서 보던 것과 같은 것**을 접는다 — 건당 별도 절단은 없다.
+ */
+export const foldBody = (t: { content?: string; items?: CodexTurnItem[] }): string =>
+  t.items !== undefined && t.items.length > 0
+    ? `${t.items.map(itemText).join("\n")}\n${String(t.content ?? "")}`
+    : String(t.content ?? "");
+
+/**
+ * 이력 턴 적재 — 요약 워터마크 뒤의 도구 항목을 붙이고 되살릴 모양으로 맞춘다. 계획·요약 입력·창·조립이 **이 한 벌**을
+ * 본다(같은 턴을 자리마다 다르게 세면 갈린다).
+ * ★항목은 **어댑터와 무관하게** 읽는다 — 접을 때 요약 입력에 들어가야 하기 때문이다. 종전엔 openai 가 안 읽고 접어,
+ *  워터마크가 넘어간 뒤 Codex 로 돌아와도 그 턴들의 도구 사실이 **영구히** 사라졌다(적대 검토 2026-09-27 재현).
+ *  되살리지 않는 어댑터(`replays=false`)는 크기만 0 으로 센다 — 안 보내는 것을 세면 창만 헛되이 준다.
+ */
+const loadHistoryTurns = (
+  channel: ChannelName,
+  threadKey: string,
+  watermark: number,
+  replays: boolean,
+): CodexTurnWithId[] =>
+  loadThreadHistoryWithIds(channel, threadKey, { itemsAfter: watermark }).map((t) => {
+    if (t.items === undefined) return t;
+    const items = replayTurnItems(t.items);
+    return { ...t, items, itemsChars: replays ? turnItemsChars(items) : 0 };
+  });
+
+/**
+ * 예산보다 큰 단위(큰 턴 하나, 또는 질문 + 큰 답) — 조각 요약(`summarizeInChunks`)이 삼킬 수 있으면 통째로, 그보다
+ * 크면 잘라서라도 접어 진행을 보장한다. 판정은 **최종 요약 입력**(머리말 포함)으로 한다 — 실행이 나누는 것도 그것이다.
+ */
+const foldOversizeUnit = (unit: CodexTurnWithId[], budget: number, itemCount: number): HistoryCompactionPlan => {
+  const capacity = budget * CODEX_FOLD_MAX_CHUNKS;
+  const promptLen = foldPromptOf(unit).length;
+  const last = unit[unit.length - 1] as CodexTurnWithId;
+  if (promptLen <= capacity) return { needed: true, toFold: unit, nextWatermark: last.id, chunkChars: budget };
+  const body = last.content;
+  const marker = (omitted: number) => `…[요약 입력 상한으로 앞쪽 ${omitted}자 생략 — 이 부분은 요약에 없다]\n`;
+  // 머리말·표식까지 붙여 4조각 용량 안에 드는 만큼 **뒤쪽을** 남긴다 — 본문은 «도구 항목 → 답» 순이라 끝이 결론이다
+  //  (종전엔 앞을 남겨 답을 버렸다 — 재검토 E6). 표식 길이는 자릿수가 가장 긴 경우로 잰다.
+  const kept = Math.max(1, capacity - (promptLen - body.length) - marker(body.length).length);
+  let tail = body.slice(body.length - kept);
+  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1); // 서로게이트 쌍을 쪼개지 않는다.
+  // ★여기서 잘린 앞부분은 요약에 닿지 않고 워터마크는 넘어간다 — 진행 보장의 대가다. 원문(transcripts·turn_items)은
+  //  남지만 다음 요청엔 없다. 되살릴 항목은 저수위(9만 자) 안이고 조각 요약이 예산 4배까지 삼키므로 평소엔 안 온다 —
+  //  오면 예산이 실패로 줄었거나 답 텍스트 자체가 큰 것이다. 그래서 수치를 남긴다.
+  console.warn(
+    `[codex-history] 요약 입력 상한으로 한 턴을 잘라 접는다 — 턴 id=${last.id} 본문=${body.length}자 ` +
+      `예산=${budget}자×${CODEX_FOLD_MAX_CHUNKS}조각 남김(뒤쪽)=${tail.length}자 버림(앞쪽)=${body.length - tail.length}자 (도구 항목 ${itemCount}개)`,
+  );
+  return {
+    needed: true,
+    toFold: [...unit.slice(0, -1), { ...last, content: `${marker(body.length - tail.length)}${tail}` }],
+    nextWatermark: last.id,
+    chunkChars: budget,
+  };
+};
+
 export const planHistoryCompaction = (
   unsummarizedTurns: CodexTurnWithId[],
   currentWatermark: number,
-  opts?: { triggerChars?: number; keepRecent?: number; maxFoldChars?: number },
+  opts?: { triggerChars?: number; keepRecent?: number; maxFoldChars?: number; keepRecentChars?: number },
 ): HistoryCompactionPlan => {
   const triggerChars = opts?.triggerChars ?? CODEX_HISTORY_COMPACT_TRIGGER_CHARS;
-  const keepRecent = opts?.keepRecent ?? CODEX_HISTORY_COMPACT_KEEP_RECENT;
+  // ★원문으로 남길 최근 턴은 **개수와 글자 둘 다**로 묶는다 (2026-09-27 적대 검토 F1).
+  //  개수(30)만 보면 턴이 큰 스레드에서 최근 30턴만으로 요약 기준을 넘는다 — 그러면 매 턴 30턴 밖의
+  //  1~2턴만 접는 요약이 나가고(호출 2배), 30턴이 예산을 넘으니 창도 계속 밀린다(실측 스레드 scheduler:21 이
+  //  최근 30턴 125,245자로 정확히 이 구간). 이력 예산이 글자이니 보존도 글자로 맞춘다 — 최신 한 쌍(2턴)은 늘 남긴다.
+  const keepRecentMax = opts?.keepRecent ?? CODEX_HISTORY_COMPACT_KEEP_RECENT;
+  let keepRecent = keepRecentMax;
+  if (opts?.keepRecentChars !== undefined) {
+    let n = 0, chars = 0;
+    for (let i = unsummarizedTurns.length - 1; i >= 0 && n < keepRecentMax; i--) {
+      chars += turnSize(unsummarizedTurns[i] ?? {});
+      if (n >= 2 && chars > opts.keepRecentChars) break;
+      n += 1;
+    }
+    keepRecent = n;
+  }
 
   // ★임계를 **글자 수**로 본다 (2026-08-01, 실측 근거).
   //  종전엔 턴 개수(100)뿐이었는데, 턴 수는 크기를 전혀 대변하지 못했다 —
@@ -1263,7 +1541,7 @@ export const planHistoryCompaction = (
   //  ★턴 수 하한은 따로 두지 않는다 — 아래 keepRecent 가 이미 그 역할을 한다
   //   (턴이 keepRecent 이하면 접을 게 없어 트리거가 무의미해진다).
   const totalChars = unsummarizedTurns.reduce(
-    (n, t) => n + String(t.content ?? "").length,
+    (n, t) => n + turnSize(t),
     0,
   );
   if (totalChars <= triggerChars) {
@@ -1300,22 +1578,20 @@ export const planHistoryCompaction = (
   const budget = opts?.maxFoldChars ?? CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS;
   const toFold: CodexTurnWithId[] = [];
   let used = 0;
-  for (const t of candidates) {
-    const body = String(t.content ?? "");
-    const room = budget - used;
-    if (toFold.length > 0 && body.length > room) break;
-    if (body.length > room) {
-      // 첫 턴이 예산을 넘음 → 잘라서라도 접어 진행을 보장한다.
-      const kept = Math.max(1, room);
-      toFold.push({
-        ...t,
-        content: `${body.slice(0, kept)}\n…[요약 입력 상한으로 ${body.length - kept}자 생략 — 원문은 transcripts 에 보존]`,
-      });
-      used = budget;
-      break;
-    }
-    toFold.push(t);
-    used += body.length;
+  // ★예산은 **최종 요약 입력**(`foldPromptOf` — 역할 머리말·줄바꿈 포함)으로 센다. 본문 길이로 세면 짧은 턴이 많을 때
+  //  실제 입력이 예산을 크게 넘는다(재검토 재현: 극단 입력에서 3.2배).
+  const lineLen = (t: CodexTurnWithId): number => foldPromptOf([t]).length + 1;
+  for (const t0 of candidates) {
+    // 도구 항목까지 펼친 본문으로 접는다 — 계획과 요약 입력이 같은 것을 본다.
+    const t: CodexTurnWithId = { id: t0.id, role: t0.role, content: foldBody(t0) };
+    const len = lineLen(t);
+    if (used + len <= budget) { toFold.push(t); used += len; continue; }
+    // 예산을 넘는 턴 — 혼자이거나, **바로 앞 사용자 질문과 한 단위로** 접는다. ★질문만 따로 한 패스를 먹으면 10자
+    //  요약 호출이 나가고(«목표에 크게 못 미침»), 실모델에선 하한에 걸려 예산이 반감될 수 있다(재검토 E3·E7).
+    const prev = toFold[0];
+    const unit = toFold.length === 0 ? [t] : toFold.length === 1 && prev?.role === "user" && t.role === "assistant" ? [prev, t] : undefined;
+    if (unit === undefined) break;
+    return foldOversizeUnit(unit, budget, t0.items?.length ?? 0);
   }
   // 접힌 마지막 턴의 transcript id 가 새 watermark (그 id 이하 = 요약에 흡수됨).
   const last = toFold[toFold.length - 1] as CodexTurnWithId;
@@ -1345,6 +1621,84 @@ const buildSummaryTurn = (summary: string): ResponseInputItem | undefined => {
  * summary = 누적 롤링 요약 (없으면 ""). charCap/limit 가드는 호출자가 recentRaw 산출
  * 시점에 이미 적용 — 본 함수는 wrap 만 (결정적). 요약 턴은 맨 앞(가장 오래된 맥락).
  */
+/**
+ * 이력에서 되살린 도구 출력 — 턴 안 몰아서 압축(`compactOldToolOutputs`)의 대상에서 뺀다. 크기는 이력 요약이
+ * 책임진다(두 장치가 같은 항목을 만지면 매 턴 이력 프리픽스가 바뀐다). 상한 근처 즉시 압축만 예외.
+ */
+const historyToolOutputs = new WeakSet<ResponseInputItem>();
+/** 작업 중 사용자 지시(steering) 항목 — 만드는 자리에서 표시한다. 하네스 독촉 메시지와 모양이 같아 모양으로는 못 가른다. */
+const steeringItems = new WeakSet<ResponseInputItem>();
+/** 도구 출력의 **압축 전** 원문 — 압축이 `output` 을 제자리에서 고쳐 쓰므로 진입 순간에 적어 둔다. */
+const originalToolOutputs = new WeakMap<ResponseInputItem, string>();
+
+const historyInputItem = (it: CodexTurnItem): ResponseInputItem => {
+  if (it.type === "function_call") return { type: "function_call", call_id: it.call_id, name: it.name, arguments: it.arguments };
+  if (it.type === "function_call_output") {
+    const o: ResponseInputItem = { type: "function_call_output", call_id: it.call_id, output: it.output };
+    historyToolOutputs.add(o);
+    return o;
+  }
+  return {
+    type: "message",
+    role: it.role,
+    content: [{ type: it.role === "assistant" ? ("output_text" as const) : ("input_text" as const), text: it.text }],
+  };
+};
+
+const messageText = (item: ResponseInputItem): string => {
+  if (item.type !== "message") return "";
+  const c = (item as { content: unknown }).content;
+  if (typeof c === "string") return c;
+  if (!Array.isArray(c)) return "";
+  return c
+    .filter((x): x is { type: string; text: string } => x !== null && typeof x === "object" && (x.type === "input_text" || x.type === "output_text") && typeof x.text === "string")
+    .map((x) => x.text)
+    .join("");
+};
+
+/**
+ * **이 턴에 새로 생긴 항목만** 저장 모양으로 모은다(`turnSlice` = 이력 조립 뒤에 붙은 것). 원래 순서 그대로.
+ *  - 도구 호출(`id` 는 빼고 짝을 잇는 `call_id` 는 둔다) · 도구 출력(**압축 전 원문**) — 짝이 없는 쪽은 버린다.
+ *  - 작업 중 사용자 지시(표시된 것만 — 하네스 독촉·도구 그림 묶음은 사용자 발화가 아니다) · 비서 중간 발화.
+ *  - 추론(암호문)·이미지는 영속화하지 않는다(설계 결정). 끝의 비서 발화가 최종 답과 같으면 뺀다(답은 transcripts 행이 가진다).
+ */
+export const collectTurnItems = (turnSlice: readonly ResponseInputItem[], finalText: string): CodexTurnItem[] => {
+  const calls = new Set<string>(), outs = new Set<string>();
+  for (const it of turnSlice) {
+    if (it.type === "function_call") calls.add(it.call_id);
+    else if (it.type === "function_call_output") outs.add(it.call_id);
+  }
+  const out: CodexTurnItem[] = [];
+  for (const it of turnSlice) {
+    if (it.type === "function_call") {
+      if (outs.has(it.call_id)) out.push({ type: "function_call", call_id: it.call_id, name: it.name, arguments: it.arguments });
+    } else if (it.type === "function_call_output") {
+      if (calls.has(it.call_id)) out.push({ type: "function_call_output", call_id: it.call_id, output: originalToolOutputs.get(it) ?? it.output });
+    } else if (it.type === "message") {
+      if (it.role === "user" && !steeringItems.has(it)) continue;
+      if (it.role !== "user" && it.role !== "assistant") continue;
+      const text = messageText(it);
+      if (text.trim() !== "") out.push({ type: "message", role: it.role, text });
+    }
+  }
+  // 최종 답은 transcripts 행이 가진다 — 끝의 연속 비서 발화가 **이어 붙여** 최종 답과 같으면 그만큼 뺀다.
+  //  (최종 응답이 메시지 여러 개면 답 텍스트는 그 이어 붙임이다 — 마지막 하나만 비교하면 «A → B → AB» 로 두 번 들어간다.)
+  const final = finalText.trim();
+  let tail = "";
+  for (let k = out.length - 1; k >= 0; k--) {
+    const m = out[k];
+    if (m === undefined || m.type !== "message" || m.role !== "assistant") break;
+    tail = m.text + tail;
+    if (tail.trim() === final) { out.length = k; break; }
+  }
+  // ★다음 턴부터 **깎여서** 보내질 턴을 센다(턴당 한 줄) — 생략 결과 재조회 도구(아스트라 후속 B)의 착수 조건이다.
+  const chars = turnItemsChars(out);
+  if (chars > turnItemsReplayChars()) {
+    console.log(`[turn-items] 이 턴 도구 항목 ${chars}자 > 되살릴 상한 ${turnItemsReplayChars()}자 — 다음 턴부터 깎거나 오래된 쌍을 빼서 보낸다(항목 ${out.length}개)`);
+  }
+  return out;
+};
+
 export const buildCodexInputArray = (
   recentRaw: CodexTurn[],
   summary: string,
@@ -1370,6 +1724,8 @@ export const buildCodexInputArray = (
       t.role === "assistant"
         ? t.content
         : stripInternalRuntimeScaffolding(t.content).trim() || t.content;
+    // 턴 간 도구 기억 — «사용자 → 도구 항목 → 비서 답» 순서로 되살린다.
+    if (t.role === "assistant" && t.items !== undefined) for (const it of t.items) out.push(historyInputItem(it));
     out.push({
       type: "message",
       role: t.role,
@@ -1384,8 +1740,11 @@ export const buildCodexInputArray = (
       ],
     });
   }
+  const summaryCount = summaryTurn !== undefined ? 1 : 0;
+  // ★항목 **개수**다(턴 수가 아니다) — 도구 항목이 끼면 둘이 갈린다. 출처 계측이 이 경계로 구간을 나눈다.
+  const historyCount = out.length - summaryCount;
   out.push(currentTurn);
-  onBoundary?.({ summaryCount: summaryTurn !== undefined ? 1 : 0, historyCount: recentRaw.length });
+  onBoundary?.({ summaryCount, historyCount });
   return out;
 };
 
@@ -1417,7 +1776,9 @@ export const buildSteeringInputItem = async (
   s: SteeringInput,
 ): Promise<ResponseInputItem> => {
   const mediaItems = await buildMediaContentItems(s.attachments);
-  return buildCurrentTurn(s.text, mediaItems);
+  const item = buildCurrentTurn(s.text, mediaItems);
+  steeringItems.add(item); // 턴 간 기억이 «사용자 지시» 로 저장할 수 있게(하네스 독촉과 구분).
+  return item;
 };
 
 /**
@@ -1468,10 +1829,10 @@ export const compactThreadNow = async (
   | { ok: true; foldedTurns: number; foldedChars: number; summaryChars: number }
   | { ok: false; reason: string }
 > => {
-  const allTurns = loadThreadHistoryWithIds(channel, threadKey);
-  if (allTurns.length === 0) return { ok: false, reason: "이 대화엔 아직 기록이 없습니다." };
   const existing = getThreadSummary(threadKey);
   const watermark = existing?.compactedThrough ?? 0;
+  const allTurns = loadHistoryTurns(channel, threadKey, watermark, true);
+  if (allTurns.length === 0) return { ok: false, reason: "이 대화엔 아직 기록이 없습니다." };
   const prior = existing?.summary ?? "";
   const unsummarized = allTurns.filter((t) => t.id > watermark);
   // triggerChars 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
@@ -1479,22 +1840,23 @@ export const compactThreadNow = async (
   if (!plan.needed || plan.toFold.length === 0) {
     return { ok: false, reason: "압축할 만큼 오래된 대화가 없습니다(최근 대화는 원문 유지)." };
   }
-  const folded = plan.toFold
-    .map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`)
-    .join("\n");
+  const folded = foldPromptOf(plan.toFold);
   // ★새 조각만 요약하고 **덧붙인다** — 옛 요약을 다시 요약하지 않는다(2026-08-09).
   //  자동 경로와 **같은 판정**을 쓴다. 한쪽만 고치면 반쪽이다(2026-08-01 에 그렇게 데였다).
   const prompt = folded;
   try {
-    const fresh = await runSummarizer(
-      prompt,
-      summaryTargetFor(folded.length),
-      accessToken,
-      accountId,
-      model,
-      turnReasoning,
-      undefined, // 수동 `/compact` 는 부모 턴 신호가 없다.
-      threadKey,
+    // 자동 경로와 같은 규칙 — 계획의 기본 예산보다 큰 한 턴은 조각으로 나눠 부른다.
+    const fresh = await summarizeInChunks(prompt, plan.chunkChars, (piece, target) =>
+      runSummarizer(
+        piece,
+        target,
+        accessToken,
+        accountId,
+        model,
+        turnReasoning,
+        undefined, // 수동 `/compact` 는 부모 턴 신호가 없다.
+        threadKey,
+      ),
     );
     // ★자동 경로와 **같은 판정**을 쓴다 (2026-08-01). 종전엔 여기도 `=== ""` 뿐이라
     //  5자짜리를 통과시켜 compactedThrough 를 확정했다 — 자동 경로만 고쳤으면 반쪽이다.
@@ -1562,31 +1924,34 @@ export const compactThreadHistory = async (args: {
   adapter: string;
   /** 이 어댑터의 요약 호출 — **본 턴과 같은 모델·추론 강도로** 부를 책임은 호출부에 있다. */
   summarize: (text: string, targetChars: number) => Promise<string>;
+  /**
+   * 이번 요청의 **고정 비용**(지시문 + 현재 프롬프트, 자) — 요약 기준을 «보낼 수 있는 이력 예산» 으로 맞춘다
+   * (`historyTriggerChars`). ★**필수** — 어댑터가 빠뜨려도 검사가 초록이던 자리(적대 검토 M2·M3)를 컴파일러가 본다.
+   */
+  fixedChars: number;
 }): Promise<CompactedThreadHistory> => {
   // 전체 타임라인 (id 동반, cap 없음) — 압축 결정 전용. 첫 turn → [].
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성은 canonical 저장 채널로 키잉
   // (sessionChannel, 미지정 → channel 폴백·회귀 0). runOpenAiCodex 의 idChannel 과 동일 규칙.
-  const allTurns = loadThreadHistoryWithIds(
-    args.channel,
-    args.threadKey,
-  );
-  if (allTurns.length === 0) return { allTurns, summary: "", watermark: 0 };
-
-  // 기존 롤링 요약 + watermark 회수 (없으면 watermark 0 = 전부 미요약).
+  // 기존 롤링 요약 + watermark 회수 (없으면 watermark 0 = 전부 미요약). ★적재보다 먼저 — 도구 항목은 워터마크 뒤만 읽는다.
   let existing = getThreadSummary(args.threadKey);
   let watermark = existing?.compactedThrough ?? 0;
   let summary = existing?.summary ?? "";
+  // 도구 항목을 되살리는 건 지금 codex 뿐이다 — 다른 어댑터는 요약 입력에만 쓰고 크기는 안 센다.
+  const allTurns = loadHistoryTurns(args.channel, args.threadKey, watermark, args.adapter === "codex");
+  if (allTurns.length === 0) return { allTurns, summary: "", watermark: 0 };
 
   // watermark 이후(미요약) 턴만 추려 압축 트리거 판정.
   const unsummarized = allTurns.filter((t) => t.id > watermark);
   // ★저수위까지 **여러 번** 접는다 (2026-08-09). 1회차는 고수위(임계)로 판정하고, 2회차부터는
   //  저수위를 임계로 삼아 그 아래로 내려갈 때까지 반복한다. 각 패스의 크기는 적응 예산 그대로라
   //  요약 호출은 안전하고, 한 번 정리하면 한동안 안 돌아온다(진동 제거).
-  const lowWater = lowWaterMark();
+  const highWater = historyTriggerChars(args.fixedChars);
+  const lowWater = lowWaterMark(highWater);
   let plan = planHistoryCompaction(
     unsummarized,
     watermark,
-    nextPassOpts(0, currentFoldBudget(args.threadKey), lowWater),
+    { ...nextPassOpts(0, currentFoldBudget(args.threadKey), lowWater, highWater), keepRecentChars: lowWater },
   );
   let compactPass = 0;
   // ★알림은 **턴에 한 번**이다 (2026-08-09). 저수위까지 여러 번 접게 되자 알림도 패스마다
@@ -1622,9 +1987,7 @@ export const compactThreadHistory = async (args: {
   while (plan.needed && compactPass < CODEX_COMPACT_MAX_PASSES) {
     compactPass += 1;
     // 오래된 턴 + 기존 요약 → 요약 LLM 호출 1회 (isolated, 재귀 없음).
-    const foldedText = plan.toFold
-      .map((t) => `${t.role === "assistant" ? "비서" : "사용자"}: ${t.content}`)
-      .join("\n");
+    const foldedText = foldPromptOf(plan.toFold);
     // ★새로 접는 조각**만** 요약한다 — 옛 요약은 손대지 않고 아래에서 덧붙인다.
     const prompt = foldedText;
     // ★한도 중이면 **때리지 않는다** (2026-08-01). 종전엔 메인 턴이 쿨다운으로 건너뛰는
@@ -1641,10 +2004,8 @@ export const compactThreadHistory = async (args: {
       break; // 쿨다운 중엔 더 시도하지 않는다.
     } else
     try {
-      const fresh = await args.summarize(
-        prompt,
-        summaryTargetFor(foldedText.length),
-      );
+      // 예산보다 큰 한 턴(도구 항목 포함)은 조각으로 나눠 부른다 — 계획이 같은 예산으로 허락한 크기다.
+      const fresh = await summarizeInChunks(prompt, plan.chunkChars, args.summarize);
       const applied = applyFoldResult(
         { summary, watermark, foldedTurns: foldedTurnsTotal, foldedChars: foldedCharsTotal },
         fresh,
@@ -1737,7 +2098,7 @@ export const compactThreadHistory = async (args: {
     plan = planHistoryCompaction(
       allTurns.filter((t) => t.id > watermark),
       watermark,
-      nextPassOpts(compactPass, currentFoldBudget(args.threadKey), lowWater),
+      { ...nextPassOpts(compactPass, currentFoldBudget(args.threadKey), lowWater), keepRecentChars: lowWater },
     );
   }
 
@@ -1830,18 +2191,23 @@ export const recentTurnsAfter = (
   watermark: number,
   opts: { budgetUsedChars: number; limitTurns?: number; charCap?: number },
 ): CodexTurn[] => {
-  const limit = opts.limitTurns ?? CODEX_TURN_HISTORY_LIMIT;
+  // ★턴 수 상한은 **기본에서 뺐다**(2026-09-26) — 매 턴 한 칸씩 밀어 캐시를 깨고 요약 안 된 턴을 버렸다.
+  //  크기는 요약(historyTriggerChars)이 묶는다. 글자 상한은 요약이 실패했을 때의 안전망으로만 남는다.
+  const limit = opts.limitTurns ?? Number.POSITIVE_INFINITY;
   const charCap = opts.charCap ?? STORE_TURN_HISTORY_CHAR_CAP;
   const after = allTurns
     .filter((t) => t.id > watermark)
-    .map((t) => ({ role: t.role, content: t.content }));
+    .map((t) => ({ role: t.role, content: t.content, ...(t.items !== undefined ? { items: t.items, itemsChars: t.itemsChars } : {}) }));
   let charSum = opts.budgetUsedChars;
   const kept: CodexTurn[] = [];
   for (let i = after.length - 1; i >= 0; i--) {
     if (kept.length >= limit) break;
-    const t = after[i] as CodexTurn;
-    if (charSum + t.content.length > charCap) break;
-    charSum += t.content.length;
+    const full = after[i] as CodexTurn;
+    // ★안전망(요약이 실패했을 때만 닿는다) — 도구 항목까지는 안 들어가도 텍스트는 들어가면 **텍스트로라도** 남긴다.
+    //  종전 모양대로면 큰 최신 턴 하나에서 멈춰 이전 이력을 통째로 잃는다(아스트라 재현: 0턴).
+    const t = charSum + turnSize(full) <= charCap || full.items === undefined ? full : { role: full.role, content: full.content };
+    if (charSum + turnSize(t) > charCap) break;
+    charSum += turnSize(t);
     kept.unshift(t);
   }
   return kept;
@@ -1878,6 +2244,7 @@ export const buildTurnHistory = async (
     threadKey: input.threadKey,
     provider: input.provider ?? "codex-oauth", // 쿨다운 키 — 이 어댑터의 기본값은 여기 산다.
     adapter: "codex",
+    fixedChars: instructionsChars + currentPromptWithMemory.length,
     summarize: (text, targetChars) =>
       runSummarizer(
         text,
@@ -2261,6 +2628,7 @@ export const appendToolResultsToInput = (
       const missing = savedScreens.filter(ref => !item.output.includes(ref));
       if (missing.length > 0) item.output += `\n${savedScreenNote(missing)}`;
     }
+    originalToolOutputs.set(item, item.output);
     inputArray.push(item);
     pendingMedia.push(...media);
     if (media.length > 0 && !mediaTools.includes(name)) mediaTools.push(name);
@@ -2415,8 +2783,11 @@ export const compactOldToolOutputs = (
   //  오진했다. 세는 건 공짜고, 호출부는 무시해도 된다(additive).
   let compacted = 0;
   const outputIdxs: number[] = [];
+  // ★이력에서 되살린 출력은 뺀다 — 크기는 이력 요약 몫이다. 상한 근처 즉시 압축(batchChars 0)만 전부 본다.
+  const force = batchChars === 0;
   for (let i = 0; i < inputArray.length; i++) {
-    if (inputArray[i]?.type === "function_call_output") outputIdxs.push(i);
+    const it = inputArray[i];
+    if (it?.type === "function_call_output" && (force || !historyToolOutputs.has(it))) outputIdxs.push(i);
   }
   if (outputIdxs.length <= keepRecent) return 0; // 압축할 만큼 안 쌓임 → no-op.
 

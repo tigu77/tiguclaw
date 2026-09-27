@@ -98,12 +98,17 @@ export const check: RegressionCheck = {
     //  `isUsableSummary(fresh)` 로 변수명까지 박아, 같은 판정을 다른 이름의 값에 적용한
     //  세 번째 쓰기 경로(누적 요약 재압축)를 "가드 없음" 으로 오탐했다 — 손으로 적은
     //  이름이 판정을 가로챈 것이다([[feedback_hand_maintained_lists]]).
-    const gates = (src.match(/isUsableSummary\([A-Za-z_$][\w$]*\)/g) ?? []).length;
+    // ★조각 요약(`summarizeInChunks`) 안의 판정은 **저장 지점이 아니다** — 조각마다 한 번 더 거르는 추가 판정이고,
+    //  이어 붙인 결과는 다시 저장 지점의 판정을 지난다(2026-09-27 재검토 ②). 그 함수 본문만 빼고 1:1 로 센다
+    //  («이상» 으로 느슨하게 하면 저장 지점 판정 하나를 지워도 초록이 된다).
+    const chunkFn = /export const summarizeInChunks[\s\S]*?\n};/.exec(src)?.[0] ?? "";
+    const countGates = (t: string) => (t.match(/isUsableSummary\([A-Za-z_$][\w$]*\)/g) ?? []).length;
+    const gates = countGates(src) - countGates(chunkFn);
     out.push(
       assert(
         "★요약 저장 지점 수 = 품질 판정 지점 수(가드 없는 쓰기 경로 0)",
-        writes > 0 && writes === gates,
-        `저장 ${writes}곳 · 판정 ${gates}곳`,
+        writes > 0 && writes === gates && chunkFn !== "",
+        `저장 ${writes}곳 · 판정 ${gates}곳(조각 요약 안 ${countGates(chunkFn)}곳 제외)`,
       ),
     );
     // 남은 `=== ""` 식 약한 가드가 없어야 한다 — 그게 5자를 통과시킨 형상이다.

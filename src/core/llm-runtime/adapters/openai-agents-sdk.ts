@@ -1024,6 +1024,8 @@ export const runOpenAi = async (
     //  빈 경로에선 openai 요약 실패가 **codex 쿨다운**을 등록한다.
     provider: input.provider ?? "openai",
     adapter: "openai",
+    // 요약 기준 = 보낼 수 있는 이력 예산 — codex 와 같은 판정(historyTriggerChars).
+    fixedChars: instructions.length + promptWithMemory.length,
     summarize: async (text, targetChars) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
       //  첫 판은 `new Agent({...})` 로 직접 만들어 `modelSettings` 를 통째로 생략했다 —

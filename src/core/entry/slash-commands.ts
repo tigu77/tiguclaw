@@ -19,7 +19,7 @@
  *  실측: 9개 중 7개가 `msg`·`args` 만 쓰고 `/sessions` 가 `trimmed`, `/status` 가
  *  `sidChannel` 을 **읽기만** 한다.
  */
-import type { IncomingMessage } from "../../channels/types.js";
+import type { ChannelName, IncomingMessage } from "../../channels/types.js";
 import { getChannelPresence } from "../channel-registry.js";
 import { backupInfo } from "../../store/backup.js";
 import { addMemory, countArchivedMemories, deleteMemory, listMemories } from "../../store/memory.js";
@@ -52,7 +52,7 @@ export interface SlashCtx {
   /** 원문 전체(공백 제거) — `/sessions` 하위명령 판정. */
   readonly trimmed: string;
   /** 세션 좌표 해석용 채널 — `/status` 가 읽는다. */
-  readonly sidChannel: string;
+  readonly sidChannel: ChannelName;
 }
 
 export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
@@ -550,8 +550,10 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
     try {
       const token = await ensureFreshAccessToken();
       const codexModel = resolveCodexModel();
+      // ★세션 키로 찾는다 — 기록은 세션 저장 채널 아래 색인된다(`/reset`·`/model` 과 같은 키). 텔레그램이 대시보드
+      //  세션을 이어 쓰면 `msg.channel` 은 telegram 이라, 그걸 넘기면 «기록이 없습니다» 로 끝났다(2026-09-27).
       const r = await compactThreadNow(
-        msg.channel,
+        sidChannel,
         msg.threadKey,
         codexModel,
         token,

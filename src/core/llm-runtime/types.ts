@@ -15,6 +15,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import type { Attachment, ChannelName, TurnOrigin } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
+import type { CodexTurnItem } from "../../store/memory.js";
 
 /**
  * «빠름» 의 **대가** — **어댑터**마다 모양이 다르다.
@@ -325,6 +326,13 @@ export interface RegionASdkOutput {
   model?: string | null;
   /** sysprompt hash — claude 어댑터만 (fingerprint 가드). */
   systemPromptHash?: string | null;
+  /**
+   * **이 턴에 새로 생긴 도구 항목**(Responses 항목 JSON: 도구 호출·출력·중간 메시지) — 턴 간 도구 기억
+   * (2026-09-27). 퍼사드가 비서 답 행에 묶어 저장하고, 다음 턴 이력이 되살린다. 이력을 우리가 주입하는
+   * 어댑터만 채운다(지금은 codex). claude 는 SDK 가 도구 결과까지 이어 주므로 비운다.
+   * ★정상 완료 턴만 남는다(퍼사드가 성공·비어 있지 않은 답일 때만 저장) — 실패·취소 턴의 도구 작업은 이번 범위 밖.
+   */
+  turnItems?: CodexTurnItem[];
   /**
    * SDK 자체 jsonl 경로 — claude 어댑터만 (`~/.claude/projects/.../sid.jsonl`).
    * 있으면 jsonl catch-up 진실 소스, 없으면 runRegionA 가 transcripts INSERT 직접.

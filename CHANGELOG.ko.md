@@ -8,13 +8,24 @@
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-09-27
+
 ### Added
 
 - **스케줄마다 대화 이력 정책을 정할 수 있습니다.** 매번 새로 시작하거나 직전 N회만 이어가게 하면, 매일 도는 스케줄의 입력이 계속 커지지 않습니다. 기본은 종전대로 계속 이어갑니다.
 - **대시보드 채팅에서 위로 스크롤하면 상단에 지금 보고 있는 메시지의 날짜가 표시됩니다.**
 
+### Changed
+
+- **Codex 대화에서 캐시가 덜 깨져, 요청마다 새로 보내는 입력이 줄었습니다.** 도구를 많이 쓰는 작업과 백그라운드 작업 결과를 정리할 때 특히 줄어듭니다.
+
 ### Fixed
 
+- **Codex가 앞선 요청에서 파일 등을 읽어 알게 된 내용을 다음 요청에서 잊던 문제를 수정했습니다.** 작업 도중 보낸 추가 지시도 다음 요청까지 기억합니다.
+- **Codex·OpenAI의 긴 대화에서 요약되지 않은 오래된 대화가 새 메시지마다 하나씩 빠지던 문제를 수정했습니다.** 이제 오래된 대화는 요약된 뒤에만 빠집니다.
+- **텔레그램에서 이어 쓰는 대화에서 `/compact`가 «아직 기록이 없습니다»로 끝나던 문제를 수정했습니다.**
+- **대시보드 채팅을 맨 위까지 올린 뒤 첫 메시지 위가 빈 채로 멈추던 문제를 수정했습니다.**
+- **예전 버전의 모델 등급 설정이 남아 있으면 웹 페이지 요약 같은 내부 호출이 그 모델로 가서 시간 초과되던 문제를 수정했습니다.** 모델 프로필을 쓰는 설치본에서 생겼습니다.
 - **모델 인증이 거부되면(401) 매 요청마다 다시 시도하지 않고 잠시 다른 모델로 넘기며, 다시 로그인하라고 한 번 알립니다.** 다시 로그인하거나 요청이 한 번 성공하면 바로 원래 모델로 돌아옵니다.
 - **저장한 기억이 한도 안에 다 들어가는데도 일부가 대화에 실리지 않던 문제를 수정했습니다.** 기억을 읽을 때마다 Claude 캐시가 깨져 대화 이력을 다시 보내던 일도 줄었습니다.
 - **재접속 중 종료 이벤트를 놓친 기존 작업 카드가 단건 조회로 완료·취소·실패 상태와 남아 있는 결과를 복구합니다.**
@@ -2267,7 +2278,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0

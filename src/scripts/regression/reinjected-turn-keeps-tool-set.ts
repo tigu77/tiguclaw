@@ -53,6 +53,17 @@ export const check: RegressionCheck = {
     const userOut = turnActionsFor("regr:m-both", { synthetic: false, sendAttachment: realSend, presentOptions: realOptions });
     const egress = turnActionsFor("regr:m-both", { synthetic: true, presentOptions: realOptions });
     const filled = turnActionsFor("regr:m-both", { synthetic: true });
+    // 바운드(1,000) — 파생 스레드(엔드포인트)는 기록하지 않아 실제 세션을 밀어내지 않는다 · 조회된 세션은 최근으로 오른다.
+    __resetTurnActionShapesForTest();
+    turnActionsFor("dashboard:m-keep", { synthetic: false, sendAttachment: realSend, presentOptions: realOptions });
+    for (let i = 0; i < 1_500; i++) turnActionsFor(`endpoint:m:${i}`, { synthetic: false, sendAttachment: realSend });
+    const afterEndpoints = turnActionsFor("dashboard:m-keep", { synthetic: true });
+    __resetTurnActionShapesForTest();
+    turnActionsFor("dashboard:m-lru", { synthetic: false, sendAttachment: realSend });
+    for (let i = 0; i < 999; i++) turnActionsFor(`dashboard:m-other-${i}`, { synthetic: false });
+    turnActionsFor("dashboard:m-lru", { synthetic: true }); // 조회 → 최근으로
+    turnActionsFor("dashboard:m-new", { synthetic: false }); // 한도 초과 → 가장 오래된 것 하나가 빠진다
+    const afterLru = turnActionsFor("dashboard:m-lru", { synthetic: true });
 
     // ③ 도구 응답
     const sendText = filled.sendAttachment !== undefined ? await callSend(filled.sendAttachment) : "";
@@ -67,6 +78,10 @@ export const check: RegressionCheck = {
       assert("★사용자 턴의 콜백은 그대로 간다 · 합성 턴의 **진짜** 콜백(egress 선택지)은 덮지 않는다",
         userOut.sendAttachment === realSend && userOut.presentOptions === realOptions && egress.presentOptions === realOptions && egress.sendAttachment !== undefined,
         { user: Object.keys(userOut), egressReal: egress.presentOptions === realOptions }),
+      assert("★엔드포인트 호출(파생 스레드) 1,500회 뒤에도 사람 세션의 모양이 남는다 — 파생 스레드는 기록하지 않는다",
+        afterEndpoints.sendAttachment !== undefined && afterEndpoints.presentOptions !== undefined, Object.keys(afterEndpoints)),
+      assert("★한도(1,000)에서 밀려나는 건 가장 오래 안 쓴 세션 — 재주입으로 조회된 세션은 최근으로 올라 남는다",
+        afterLru.sendAttachment !== undefined, Object.keys(afterLru)),
       assert("★send_file 은 «이 턴에선 불가 — 다시 부르지 말고 경로를 텍스트로» 라고 답한다(재시도 권유 아님)",
         sendText.includes("다시 호출하지 말고") && !sendText.includes("재시도"), sendText.slice(0, 120)),
       assert("★prompt_options 도 «다시 부르지 말고 텍스트로» 라고 답한다", optText.includes("다시 호출하지 말고") && !optText.includes("재시도"), optText.slice(0, 120)),

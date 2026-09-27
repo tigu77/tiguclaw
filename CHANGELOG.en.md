@@ -8,13 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-09-27
+
 ### Added
 
 - **Schedules can now set a conversation history policy.** Start fresh each run or keep only the last N runs, so daily schedules stop growing their input. The default still continues the previous conversation.
 - **When you scroll up in the dashboard chat, the date of the messages you are viewing is shown at the top.**
 
+### Changed
+
+- **Codex conversations break the cache less often, so less input is sent fresh with each request.** The savings are largest in tool-heavy work and when background-job results are wrapped up.
+
 ### Fixed
 
+- **Codex no longer forgets what it learned from files and other tools in earlier requests.** Instructions you send while it is working are also remembered in the next request.
+- **In long Codex and OpenAI conversations, older messages that had not been summarized were dropped one per new message.** Older messages now leave the context only after they are summarized.
+- **`/compact` in a conversation continued from Telegram ended with "no history yet".**
+- **After scrolling the dashboard chat to the very top, the space above the first message could stay blank.**
+- **Leftover model-tier settings from older versions could send internal calls, such as web page summaries, to that model and time out.** This affected installs that use model profiles.
 - **When a model's authentication is rejected (401), tiguclaw no longer retries it on every request.** It switches to another model for a while and tells you once to log in again. Logging in again, or any successful request, switches back right away.
 - **Some saved memories were left out of the conversation even though all of them fit within the limit.** Reading a memory also no longer breaks the Claude cache and resends the conversation history.
 - **Existing job cards now recover completion, cancellation, failure, and available results after reconnecting when a terminal event was missed.**
@@ -717,7 +728,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/tigu77/tiguclaw/compare/v0.56.2...v0.57.0

@@ -13,6 +13,7 @@
  *  바뀌는 세션(CLI ↔ 대시보드를 오가는 세션)은 사용자 턴끼리도 원래 갈린다 — 가장 최근 사용자 턴을 따른다.
  */
 import type { IncomingMessage } from "../channels/types.js";
+import { isDerivedThread } from "./threadkey.js";
 
 type TurnActions = Pick<IncomingMessage, "sendAttachment" | "presentOptions">;
 interface Shape { send: boolean; options: boolean }
@@ -40,6 +41,9 @@ export const turnActionsFor = (
     ...(turn.presentOptions !== undefined ? { presentOptions: turn.presentOptions } : {}),
   };
   if (!turn.synthetic) {
+    // ★파생 스레드(엔드포인트·게이트웨이·스케줄 등)는 기록하지 않는다 — 호출마다 새 키라 맵을 채워 **실제 세션의 모양을
+    //  밀어냈다**(적대 검토 v0.60.0 F2: 엔드포인트 1,000회 뒤 재주입 채움이 비었다). 재주입은 사람 세션으로만 온다.
+    if (isDerivedThread(threadKey)) return out;
     shapes.delete(threadKey);
     shapes.set(threadKey, { send: turn.sendAttachment !== undefined, options: turn.presentOptions !== undefined });
     if (shapes.size > SHAPE_CAP) shapes.delete(shapes.keys().next().value as string);
@@ -47,6 +51,9 @@ export const turnActionsFor = (
   }
   const s = shapes.get(threadKey);
   if (s === undefined) return out;
+  // 쓰였으니 최근으로 — 긴 작업이 점검을 받는 동안 그 세션이 밀려나지 않게(LRU).
+  shapes.delete(threadKey);
+  shapes.set(threadKey, s);
   return {
     ...out,
     ...(out.sendAttachment === undefined && s.send ? { sendAttachment: unavailableSend } : {}),

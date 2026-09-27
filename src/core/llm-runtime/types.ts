@@ -12,7 +12,7 @@
 import type { ReplayGuard } from "./replay-safety.js";
 import type { TurnSpend } from "./turn-spend.js";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
-import type { Attachment, ChannelName, TurnOrigin } from "../../channels/types.js";
+import type { Attachment, ChannelName, IncomingMessage, TurnOrigin } from "../../channels/types.js";
 import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
 import type { CodexTurnItem } from "../../store/memory.js";
@@ -186,8 +186,9 @@ export interface RegionASdkInput {
   /**
    * 아웃바운드 첨부 전송 클로저 — 채널 원본(IncomingMessage.sendAttachment)을 router가 주입.
    * send_file MCP 도구가 호출. 미지정(스케줄러 등 비채널 turn) 이면 도구가 미지원 안내.
+   * ★계약은 채널 선언 **한 곳**을 가리킨다 — 두 벌로 적으면 갈린다(`unavailable` 표식을 더하며 정리, 2026-09-27).
    */
-  sendAttachment?: (filePath: string, opts?: { caption?: string }) => Promise<{ ok: boolean; error?: string }>;
+  sendAttachment?: IncomingMessage["sendAttachment"];
   /**
    * 신규(additive, 2026-06-25, 축1) — 객관식 선택지 제시 클로저. 채널 원본
    * (IncomingMessage.presentOptions)을 router 가 sendAttachment 와 *동일 경로*로 주입.
@@ -196,11 +197,7 @@ export interface RegionASdkInput {
    * 어댑터는 이 필드를 *값으로* createPromptOptionsMcpServer 에 주입만(읽어 분기 0,
    * LLM-agnostic). claude·codex 양쪽 동일 등록 = #2 parity 하드게이트.
    */
-  presentOptions?: (
-    question: string,
-    options: { label: string; value: string }[],
-    opts?: { note?: string },
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  presentOptions?: IncomingMessage["presentOptions"];
   /**
    * 신규(additive, 2026-06-15) — 이 turn 에 등록할 도구 정책. 어댑터 무관 *추상 신호*.
    * spawn_agent 가 agent.md `tools` 필드를 정규화해 주입.

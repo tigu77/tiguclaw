@@ -129,6 +129,10 @@ export const createPromptOptionsMcpServer = (
               normalized.map((o) => o.label ?? String(o.value ?? "")),
             );
           }
+          // ★이 턴에선 원래 불가(예: 매니저 완료 재주입) — 재시도를 권하면 같은 호출을 되풀이한다.
+          if (!r.ok && r.unavailable === true) {
+            return okText(`이 턴에서는 선택지 UI 를 쓸 수 없습니다: ${r.error}. 다시 호출하지 말고, 질문과 보기를 텍스트(번호 목록 등)로 제시하세요.`);
+          }
           return r.ok
             ? okText(
                 "선택지를 제시했습니다. 사용자가 보기를 누르면 그 값이 다음 메시지로 도착합니다. 지금은 답을 기다리지 말고, 사용자 응답이 필요하면 이 턴을 마치세요.",

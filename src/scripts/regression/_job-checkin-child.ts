@@ -63,8 +63,15 @@ const main = async (): Promise<void> => {
       synthetic?: unknown;
       turnOrigin?: unknown;
       receivedAt?: unknown;
+      sendAttachment?: (p: string) => Promise<{ ok: boolean; unavailable?: true }>;
+      presentOptions?: (q: string, o: unknown[]) => Promise<{ ok: boolean; unavailable?: true }>;
     }) => {
+      // ★파일 전송·선택지 자리 — 비면 도구 목록이 사용자 턴과 갈려 이력 캐시가 깨진다(2026-09-27).
+      //  자리가 있을 뿐 아니라 «이 턴에선 불가» 표식으로 답해야 한다(재시도 권유 금지).
+      const sa = typeof m.sendAttachment === "function" ? await m.sendAttachment("/tmp/x") : undefined;
+      const po = typeof m.presentOptions === "function" ? await m.presentOptions("q", []) : undefined;
       shapes.push({
+        actionsUnavailable: sa?.ok === false && sa.unavailable === true && po?.ok === false && po.unavailable === true,
         hasReply: typeof m.reply === "function",
         synthetic: m.synthetic === true,
         // ★출처 표식 — 실제 생산부가 채우는지 본다(검사에서 손으로 넣지 않는다).

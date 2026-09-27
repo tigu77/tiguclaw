@@ -88,6 +88,10 @@ export const createSendFileMcpServer = (
           // (구버전은 시도 전 기록 → 첫 전송 실패가 dedup 을 오염시켜 같은 턴 재시도를
           //  전부 "이미 전송" 으로 막는 버그. 2026-06-24 수정.)
           if (r.ok) sentPaths.add(args.path);
+          // ★이 턴에선 원래 불가(예: 매니저 완료 재주입) — «재시도하라» 고 하면 영영 안 되는 호출을 되풀이한다.
+          if (!r.ok && r.unavailable === true) {
+            return okText(`이 턴에서는 파일을 보낼 수 없습니다: ${r.error}. 다시 호출하지 말고, 파일 절대경로를 답에 텍스트로 적으세요.`);
+          }
           return okText(
             r.ok
               ? `전송 완료: ${args.path}`

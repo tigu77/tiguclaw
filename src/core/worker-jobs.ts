@@ -37,7 +37,7 @@ import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rat
 import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
 import { randomUUID } from "node:crypto";
 import { extractTelegramChatId } from "./threadkey.js";
-import type { ChannelName, MessageHandler } from "../channels/types.js";
+import type { ChannelName, IncomingMessage, MessageHandler } from "../channels/types.js";
 import {
   upsertWorkerJob,
   updateWorkerJobStatus,
@@ -1009,6 +1009,8 @@ const deliverCheckin = async (
         turnOrigin: "worker-checkin" as const,
         receivedAt: Date.now(),
         reply: reinjectReply,
+        // 도구 목록을 사용자 턴과 같게(캐시) — «이 턴에선 불가» 로 답한다.
+        ...reinjectedTurnActions(),
         // ★점검 재주입도 같은 좌표로 나간다 — 중복 차단 대상.
         replyTarget: { channel: dest.channel, target: dest.target ?? null },
         text:
@@ -2291,6 +2293,22 @@ const deriveTargetFromThreadKey = (
 };
 
 /**
+ * 재주입 턴(매니저 완료·점검)의 **파일 전송·선택지** 자리 — «이 턴에선 불가» 를 정확히 답한다.
+ *
+ * ★왜 비워 두지 않나 (2026-09-27, 윈도우 돌쇠 로그): 세 어댑터 모두 이 둘을 **콜백이 있을 때만** 도구로 등록한다.
+ *  사용자 턴엔 있고 재주입 턴엔 없으니, 같은 세션에서 두 턴이 번갈아 오면 도구 목록이 67↔65·66개로 흔들렸다.
+ *  도구 정의는 이력보다 앞이라 그때마다 **이력 전체가 캐시를 못 탔다**(턴당 2만~6.7만 토큰, 지시문은 동일 `9f2b126c`).
+ *  자리를 채우면 도구 목록이 사용자 턴과 같아진다 — 어댑터는 그대로라 세 LLM 에 같이 선다.
+ * ★실제로 보내지는 못한다(지금도 못 한다) — 재주입 턴의 답은 `reacquireReply` 로 나가지만 첨부·선택지 통로는
+ *  채널별로 따로 다시 지어야 한다. 그건 이 수정의 범위 밖이다(로드맵).
+ */
+const REINJECTED_TURN_UNAVAILABLE = "자동 보고 턴이라 채널로 직접 보낼 통로가 없습니다";
+const reinjectedTurnActions = (): Pick<IncomingMessage, "sendAttachment" | "presentOptions"> => ({
+  sendAttachment: async () => ({ ok: false, error: REINJECTED_TURN_UNAVAILABLE, unavailable: true }),
+  presentOptions: async () => ({ ok: false, error: REINJECTED_TURN_UNAVAILABLE, unavailable: true }),
+});
+
+/**
  * generic 통지 목적지(dest)로 reply 클로저 재획득. 코어는 dest.channel("telegram" 등)만 보고
  * dispatch — *어느 플러그인이 dest 를 채웠는지*(scheduler 였는지)는 영원히 모른다(단방향 §6).
  * 라우팅·발송·관측은 core 단일 통로 deliverOutbound 에 위임(scheduler·file-watch·부팅통지와
@@ -2919,6 +2937,8 @@ export const onWorkerComplete = async (
     turnOrigin: "worker-completion" as const,
     receivedAt: Date.now(),
     reply: trackedReply,
+    // 도구 목록을 사용자 턴과 같게(캐시) — «이 턴에선 불가» 로 답한다.
+    ...reinjectedTurnActions(),
     // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.
     replyTarget: { channel: dest.channel, target: dest.target ?? null },
   };

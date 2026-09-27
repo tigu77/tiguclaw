@@ -1691,7 +1691,8 @@ export const collectTurnItems = (turnSlice: readonly ResponseInputItem[], finalT
     tail = m.text + tail;
     if (tail.trim() === final) { out.length = k; break; }
   }
-  // ★다음 턴부터 **깎여서** 보내질 턴을 센다(턴당 한 줄) — 생략 결과 재조회 도구(아스트라 후속 B)의 착수 조건이다.
+  // ★다음 턴부터 **깎여서** 보내질 턴을 센다(턴당 한 줄) — 생략 결과 재조회 도구(아스트라 후속 B)를 판단할 신호 **하나**다.
+  //  착수 조건 전체가 아니다(요약·요약 입력 상한·턴 안 압축으로 빠진 경우도 있다 — 후속 문서 B).
   const chars = turnItemsChars(out);
   if (chars > turnItemsReplayChars()) {
     console.log(`[turn-items] 이 턴 도구 항목 ${chars}자 > 되살릴 상한 ${turnItemsReplayChars()}자 — 다음 턴부터 깎거나 오래된 쌍을 빼서 보낸다(항목 ${out.length}개)`);

@@ -160,8 +160,10 @@ export interface IncomingMessage {
   receivedAt: number;
   reply: (text: string, opts?: ReplyOptions) => Promise<void>;
   /** 아웃바운드 첨부 전송 — 채널이 지원하면 구현(telegram), 미지원이면 undefined.
-   *  멱등은 호출자(send_file 도구)가 per-turn dedup 으로 보장. 채널은 1회 전송만 담당. */
-  sendAttachment?: (filePath: string, opts?: { caption?: string }) => Promise<{ ok: boolean; error?: string }>;
+   *  멱등은 호출자(send_file 도구)가 per-turn dedup 으로 보장. 채널은 1회 전송만 담당.
+   *  ★`unavailable: true` = **이 턴에선 원래 불가**(재시도 무의미) — 예: 매니저 완료·점검 재주입 턴. 도구는
+   *   «다시 부르지 말고 텍스트로» 라고 답한다. 없으면 일시 실패로 보고 재시도를 권한다. */
+  sendAttachment?: (filePath: string, opts?: { caption?: string }) => Promise<{ ok: boolean; error?: string; unavailable?: true }>;
   /**
    * 객관식 선택지 제시(축1, 클로드코드 AskUserQuestion 동형) — 채널이 지원하면 구현
    * (telegram inline keyboard / 대시보드 버튼 / cli 번호목록), 미지원이면 undefined.
@@ -177,12 +179,14 @@ export interface IncomingMessage {
    * (버튼·번호 등)로 1회 렌더하고 즉시 `{ok:true}` 반환. 사용자 선택값은 채널이
    * value 를 *다음 인바운드 메시지의 text* 로 흘려보낸다(텔레그램 callback → POST /
    * 대시보드 버튼 클릭 → POST /messages 와 동형). 렌더 실패 시 `{ok:false, error}`.
+   *  ★`unavailable: true` = **이 턴에선 원래 불가**(재시도 무의미) — 예: 매니저 완료·점검 재주입 턴. 도구는
+   *   «다시 부르지 말고 텍스트로» 라고 답한다. 없으면 일시 실패로 보고 재시도를 권한다.
    */
   presentOptions?: (
     question: string,
     options: { label: string; value: string }[],
     opts?: { note?: string },
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  ) => Promise<{ ok: true } | { ok: false; error: string; unavailable?: true }>;
 }
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void>;

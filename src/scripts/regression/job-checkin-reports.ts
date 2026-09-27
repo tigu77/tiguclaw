@@ -287,12 +287,6 @@ export const check: RegressionCheck = {
           first === undefined ? "재주입 없음" : `synthetic=${String(first.synthetic)}`,
         ),
         assert(
-          // ★비면 도구 목록이 사용자 턴과 갈려 이력 캐시가 깨진다(2026-09-27 윈도우 돌쇠 로그 — 67↔65·66개).
-          "★점검 재주입도 파일 전송·선택지 자리를 «이 턴에선 불가» 로 채운다(도구 목록이 사용자 턴과 같다)",
-          first?.actionsUnavailable === true,
-          first === undefined ? "재주입 없음" : `actionsUnavailable=${String(first.actionsUnavailable)}`,
-        ),
-        assert(
           // ★**생산부가 실제로 채우는지** 본다 (2026-09-21, Codex 설계 §검증1).
           //  `synthetic` 만으로는 완료 재주입과 구분되지 않아, 수치를 출처별로 가를 수
           //  없었다. 이 값이 없으면 어댑터 로그가 `unknown` 을 찍는다.

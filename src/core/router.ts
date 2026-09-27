@@ -5,6 +5,7 @@
  * V8 영역 통합: 영역 A/B 구분·prefix·분류 전부 폐기. 단일 파이프라인 pass-through.
  * 깊은 사고는 prefix 가 아니라 비서가 부리는 능력(서브에이전트 모델 지정 경로).
  */
+import { turnActionsFor } from "./turn-action-shape.js";
 import type { IncomingMessage } from "../channels/types.js";
 import type { SteeringChannel } from "./steering.js";
 import {
@@ -181,9 +182,14 @@ export const route = async (
       //  ★`inbound` 는 «정규 인입 경로» 라는 뜻이지 «사람이 쳤다» 가 아니다.
       //   라우터를 우회하는 직접 호출은 미지정으로 남아 로그가 `unknown` 을 찍는다.
       turnOrigin: msg.turnOrigin ?? (msg.synthetic === true ? "synthetic-other" : "inbound"),
-      sendAttachment: msg.sendAttachment,
       // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
-      presentOptions: msg.presentOptions,
+      // ★합성 턴은 빠진 자리를 이 세션의 사용자 턴 모양대로 채운다 — 도구 목록이 같아야 이력 캐시가 안 깨진다
+      //  (turn-action-shape.ts). 사용자 턴은 모양을 기록하고 그대로 간다.
+      ...turnActionsFor(sessionId, {
+        synthetic: msg.synthetic === true,
+        ...(msg.sendAttachment !== undefined ? { sendAttachment: msg.sendAttachment } : {}),
+        ...(msg.presentOptions !== undefined ? { presentOptions: msg.presentOptions } : {}),
+      }),
       // ★플러그인 도구는 **`runRegionA` 가 채운다** (2026-08-29). 종전엔 여기 한 곳뿐이라
       //  router 를 안 지나는 호출(스케줄·파일감시·서브에이전트·매니저)이 전부 플러그인
       //  도구 0개였다. 좌표는 저쪽 입력에도 다 있으므로 여기서 다시 만들지 않는다 —

@@ -372,6 +372,19 @@ export const joinAnswers = (parts: ReadonlyArray<string | undefined>): string =>
 /** 이어 받던 두 번째 턴이 실패했을 때 첫 답 뒤에 붙이는 안내 — 조용히 삼키지 않는다. */
 export const STEER_TURN_FAILED_NOTE = "⚠️ 이어서 보내신 메시지는 처리 중 오류가 나서 답하지 못했습니다. 다시 보내 주세요.";
 
+/** 앞 답 + 지금 턴의 답(그 턴이 실패했으면 안내) — 이어 받기·마감이 같은 규칙을 쓴다. */
+export const settleAnswer = (settled: string | undefined, current: string, failed: boolean): string =>
+  joinAnswers([settled, failed ? STEER_TURN_FAILED_NOTE : current]);
+
+/**
+ * ★**이미 답이 있으면 뒤따르는 실패로 버리지 않는다** (2026-09-29 적대 재검토 F1, P3).
+ *  이어 받던 두 번째 턴이 에러로 끝나면 CLI 가 종료 코드 1 로 끝나고 SDK 가 **던진다** — 스트림 안의 분기는 안 탄다.
+ *  종전 catch 는 확정된 첫 답을 안 보고 그대로 던져 **첫 답까지 사라졌고**(텔레그램은 최종본만 보낸다), resume 재시도로
+ *  가면 원 요청을 다시 돌려 중복 답을 냈다. 사용자가 **멈추라고 한 것**(취소)만 그대로 전파한다.
+ */
+export const keepAnswerOnThrow = (s: { settled: boolean; firstTurnDone: boolean; cancelled: boolean }): boolean =>
+  !s.cancelled && (s.settled || s.firstTurnDone);
+
 /**
  * ★턴이 끝난 뒤 도착한 steering 입력은 **소비하지 않고 되돌려 놓는다** (2026-08-11 실사고).
  *
@@ -1509,10 +1522,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     //  → 스트림 종료로 이어지는 기존 teardown 순서가 바뀐다(완료 데드락 수정의 전제).
     if (turnResultSeen && framesClaimSteer(msg, steerUuids)) {
       // 줄 선 우리 입력의 턴 — 앞 답을 확정해 두고 이 턴을 이어 받는다(이 프레임부터 정상 처리).
-      settledAnswer = joinAnswers([
+      settledAnswer = settleAnswer(
         settledAnswer,
         resultText !== undefined && resultText !== "" ? resultText : assistantTextChunks.slice(chunkBase).join(""),
-      ]);
+        steerTurnFailed, // 가운데 턴이 실패했으면 그 자리에 안내(합성 API 오류 조각은 싣지 않는다).
+      );
+      steerTurnFailed = false;
       resultText = undefined;
       chunkBase = assistantTextChunks.length;
       deltaBase = ownTextDeltas;
@@ -1526,14 +1541,16 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       );
     }
     if (turnResultSeen) {
+      // uuid 를 달면 CLI 가 결과 뒤 `command_lifecycle` 을 보낸다 — 턴이 아니다(아래 경고가 틀린 원인을 찍지 않게).
+      if ((msg as { type: string }).type === "command_lifecycle") continue;
       postResultMsgs += 1;
       if (postResultMsgs === 1) {
         const sub = (msg as { subtype?: unknown }).subtype;
         console.warn(
           `[claude-turn-boundary] ${input.threadKey} 첫 result 이후 메시지 도착 ` +
-            `(${msg.type}${sub !== undefined ? "/" + String(sub) : ""}) — SDK 가 새 턴을 ` +
-            `시작한 것으로 보고 **이 답변에는 섞지 않습니다**. 백그라운드 Task 알림이 ` +
-            `자동으로 턴을 여는 0.3 동작(task_notification → system/init).`,
+            `(${msg.type}${sub !== undefined ? "/" + String(sub) : ""}) — **우리가 보낸 메시지의 턴이 아니면** ` +
+            `이 답변에 섞지 않습니다(맞으면 바로 뒤 «이어 붙입니다» 줄이 남는다). 대개 백그라운드 Task 알림이 ` +
+            `자동으로 여는 턴이다(task_notification → system/init).`,
         );
       }
       continue;
@@ -1763,6 +1780,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           if (settledAnswer !== undefined) {
             steerTurnFailed = true;
             turnResultSeen = true;
+            chunkBase = assistantTextChunks.length; // 실패한 턴의 조각(합성 API 오류 문구)은 답에 싣지 않는다.
+            deltaBase = ownTextDeltas;
             console.warn(
               `[claude-turn-boundary] ${input.threadKey} 이어 받던 턴이 에러 result 로 끝남 — 앞 답은 유지합니다: ` +
                 String(msg.result).slice(0, 200),
@@ -2175,6 +2194,28 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     if (pendingExternalToolCalls.length > 0 && effectiveAc.signal.aborted) {
       break;
     }
+    {
+      const why = effectiveAc.signal.reason;
+      const cancelled =
+        effectiveAc.signal.aborted && !(why instanceof IdleTimeoutError || why instanceof TurnTimeoutError);
+      if (
+        keepAnswerOnThrow({
+          settled: settledAnswer !== undefined,
+          firstTurnDone: turnResultSeen && succeeded,
+          cancelled,
+        })
+      ) {
+        if (settledAnswer !== undefined && !turnResultSeen) {
+          steerTurnFailed = true; // 이어 받던 턴 도중에 끊겼다 — 그 턴의 조각은 싣지 않고 안내로.
+          chunkBase = assistantTextChunks.length;
+        }
+        console.warn(
+          `[claude-turn-boundary] ${input.threadKey} 답을 확정한 뒤 실패 — 받은 답은 유지합니다: ` +
+            `${e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200)}`,
+        );
+        break;
+      }
+    }
     // resume 세션 부재/손상("process exited with code 1") → resume 제거 후 fresh
     // 세션으로 1회만 재시도. resumable(애초 resume 시도) + 미재시도 + 비-abort 한정.
     // ★★**부작용이 시작됐으면 fresh 로 다시 돌리지 않는다** (2026-09-14, 외부 검토 P1).
@@ -2332,7 +2373,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   const text =
     settledAnswer === undefined
       ? currentText
-      : joinAnswers([settledAnswer, steerTurnFailed ? STEER_TURN_FAILED_NOTE : currentText]);
+      : settleAnswer(settledAnswer, currentText, steerTurnFailed);
   console.log(
     `[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${text.length} ` +
       `succeeded=${succeeded} (result=${resultText === undefined ? "없음" : String(resultText.length) + "자"} chunks=${chunkText.length}자)`,

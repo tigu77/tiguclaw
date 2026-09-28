@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-09-29
+
 ### Changed
 
 - **Ollama 는 이제 `settings.json` 에서 연결합니다.** 내장 연결을 없애고 다른 OpenAI 호환 서버와 같은 방식으로 맞췄습니다 — `.env` 의 `OLLAMA_BASE_URL` 은 더 이상 읽지 않습니다. 쓰고 계셨다면 `settings.json` 에 `"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": null } } }` 를 추가하세요(`npm run doctor` 와 부팅 로그가 알려 줍니다). 키가 필요 없는 서버는 `"apiKeyEnv": null` 로 적습니다.
@@ -18,14 +20,13 @@
 
 - **Claude 로 답하는 중에 보낸 두 번째 메시지에 답이 오지 않던 문제를 수정했습니다.** 이제 그 답이 첫 답 뒤에 이어서 옵니다.
 - **Codex 대화에서 이전 대화 내용이 매 턴 캐시 없이 다시 전송되던 문제를 수정했습니다.** 긴 대화일수록 사용량이 줄고 응답이 빨라집니다.
-
 - **긴 글을 한 번 붙여 넣으면 그 대화의 이전 내용이 대부분 요약돼 원문이 사라지던 문제를 수정했습니다(Codex·OpenAI).** 이제 큰 입력은 그 요청에서만 오래된 대화를 덜 보냅니다.
 - **스케줄의 «직전 N회만» 이력 정책이 `/clear` 등으로 이미 지운 대화를 다시 불러오던 문제를 수정했습니다.**
 - **스케줄 프롬프트를 고치면 «직전 N회만» 이력 정책이 적용되지 않던 문제를 수정했습니다.** 이제 발화 기록으로 셉니다.
 - **Windows 에서 화면 캡처가 Windows 보안(백신)에 막히던 문제를 수정했습니다.** 캡처 방식을 바꿔 Windows 보안이 더 이상 위협으로 탐지하지 않습니다. 다른 백신이 막으면 비서가 그 사실을 알리고 허용 방법을 안내합니다.
 - **모델 프로필을 쓰는 설치본에서 예전 버전의 모델 등급 설정이 여전히 일부 호출(게이트웨이 등급 지정·서브에이전트 등)에 쓰이던 문제를 수정했습니다.**
 - **Codex가 다음 요청을 위해 저장하는 도구 결과에서 비밀값(API 키 등)을 가립니다.**
-- **ollama를 쓰지 않는 설치본에서 모델 목록 조회 실패 경고가 매시간 남던 문제를 수정했습니다.**
+- **Ollama 를 쓰지 않는 설치본에서 모델 목록 조회 실패 경고가 매시간 남던 문제를 수정했습니다.**
 
 ## [0.60.0] - 2026-09-27
 
@@ -2297,7 +2298,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...HEAD
+[0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0

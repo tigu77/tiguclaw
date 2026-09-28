@@ -21,7 +21,7 @@
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas, sourceOrder } from "./_wiring.js";
-import { framesClaimSteer, isOwnTurnEnd, joinAnswers, STEER_TURN_FAILED_NOTE } from "../../core/llm-runtime/adapters/claude-agent-sdk.js";
+import { framesClaimSteer, isOwnTurnEnd, joinAnswers, keepAnswerOnThrow, settleAnswer, STEER_TURN_FAILED_NOTE } from "../../core/llm-runtime/adapters/claude-agent-sdk.js";
 
 const ADAPTER = "../../core/llm-runtime/adapters/claude-agent-sdk.ts";
 
@@ -83,7 +83,14 @@ export const check: RegressionCheck = {
       // 이어 받던 턴의 에러 result 가 **앞 답까지** 버리지 않는다(07-28 규칙).
       /if \(msg\.is_error === true\) \{[\s\S]{0,300}if \(settledAnswer !== undefined\) \{[\s\S]{0,400}continue;\s*\n\s*\}\s*\n\s*throw new Error/,
       // 마감은 앞 답 + 이 턴(실패면 안내).
-      /joinAnswers\(\[settledAnswer, steerTurnFailed \? STEER_TURN_FAILED_NOTE : currentText\]\)/,
+      /: settleAnswer\(settledAnswer, currentText, steerTurnFailed\);/,
+      // ★던진 실패(에러 result 뒤 CLI 종료 코드 1 → SDK throw)도 확정된 답을 버리지 않는다 — **resume 재시도보다 앞**에서.
+      /keepAnswerOnThrow\(\{\s*settled: settledAnswer !== undefined,\s*firstTurnDone: turnResultSeen && succeeded,\s*cancelled,\s*\}\)[\s\S]{0,600}break;\s*\}\s*\}\s*if \(\s*!resumeRetried &&/,
+      // 가운데 턴이 실패하면 그 턴 조각을 버리고 다음 이어 받기에서 그 자리에 안내.
+      /steerTurnFailed = true;\s*\n\s*turnResultSeen = true;\s*\n\s*chunkBase = assistantTextChunks\.length;/,
+      /settledAnswer = settleAnswer\([\s\S]{0,200}steerTurnFailed,[\s\S]{0,120}\);\s*\n\s*steerTurnFailed = false;/,
+      // 결과 뒤 command_lifecycle 은 턴이 아니다(경고가 틀린 원인을 찍지 않게).
+      /if \(turnResultSeen\) \{\s*if \(\(msg as \{ type: string \}\)\.type === "command_lifecycle"\) continue;\s*postResultMsgs \+= 1;/,
     ]);
     // 버리되 **조용히** 버리지 않는다(이 레포에서 조용한 폐기는 반복 사고다).
     const loud = await sourceHas(ADAPTER, [
@@ -101,6 +108,26 @@ export const check: RegressionCheck = {
         "★SDK 가 우리 uuid 를 돌려준 턴만 이어 받는다 — 알림 턴·식별자 없는 프레임·steer 없는 턴은 버린다",
         claimAssistant && claimSingle && !claimNotice && !claimInit && !claimNoSteer,
         `복수=${claimAssistant} 단수=${claimSingle} 알림=${claimNotice} init=${claimInit} steer없음=${claimNoSteer}`,
+      ),
+      assert(
+        "★확정된 답은 뒤따르는 실패로 안 버린다 — 첫 턴 완료·이어 받은 답이 있으면 유지, **취소**만 전파, 답 없으면 전파",
+        keepAnswerOnThrow({ settled: true, firstTurnDone: false, cancelled: false }) &&
+          keepAnswerOnThrow({ settled: false, firstTurnDone: true, cancelled: false }) &&
+          !keepAnswerOnThrow({ settled: true, firstTurnDone: true, cancelled: true }) &&
+          !keepAnswerOnThrow({ settled: false, firstTurnDone: false, cancelled: false }),
+        JSON.stringify([
+          keepAnswerOnThrow({ settled: true, firstTurnDone: false, cancelled: false }),
+          keepAnswerOnThrow({ settled: false, firstTurnDone: true, cancelled: false }),
+          keepAnswerOnThrow({ settled: true, firstTurnDone: true, cancelled: true }),
+          keepAnswerOnThrow({ settled: false, firstTurnDone: false, cancelled: false }),
+        ]),
+      ),
+      assert(
+        "가운데 턴이 실패하면 그 자리엔 안내가, 성공하면 답이 — 실패 턴의 조각은 싣지 않는다",
+        settleAnswer("A1", "API Error: 529 overloaded", true) === `A1\n\n${STEER_TURN_FAILED_NOTE}` &&
+          settleAnswer(settleAnswer("A1", "", true), "A3", false) === `A1\n\n${STEER_TURN_FAILED_NOTE}\n\nA3` &&
+          settleAnswer(undefined, "A1", false) === "A1",
+        JSON.stringify(settleAnswer("A1", "API Error: 529", true)),
       ),
       assert(
         "두 답은 빈 조각 없이 문단 하나로 잇는다(실패 안내 문구도 비어 있지 않다)",

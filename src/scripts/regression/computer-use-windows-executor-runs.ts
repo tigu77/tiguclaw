@@ -47,6 +47,8 @@ interface WinModule {
   CAPTURE_CS: string;
   captureExeName: (source: string) => string;
   cscArgs: (sourcePath: string, outPath: string) => string[];
+  blockedOr: (detail: string, vanished: boolean) => string;
+  spawnRefused: (detail: string) => boolean;
 }
 
 export const check: RegressionCheck = {
@@ -58,7 +60,7 @@ export const check: RegressionCheck = {
     "캡처가 그림 실측 크기를 안 내서 «화면 id» 가 영영 발급되지 않고 조작 도구 전체가 불능이던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const { selfCheck, cleanPowerShellError, scriptError, capture, antivirusBlocked, CAPTURE_CS, captureExeName, cscArgs } =
+    const { selfCheck, cleanPowerShellError, scriptError, capture, antivirusBlocked, CAPTURE_CS, captureExeName, cscArgs, blockedOr, spawnRefused } =
       await loadPluginModule<WinModule>(
       "../../../plugins/computer-use/src/win.ts",
     );
@@ -227,6 +229,57 @@ export const check: RegressionCheck = {
         kinds.av.startsWith("백신 차단") && kinds.noDesktop === "데스크톱 세션 없음" && kinds.timeout === "시한 초과" &&
           kinds.macPerm === "화면 기록 권한 없음" && kinds.other.includes("없는키") && !kinds.other.startsWith("백신"),
         JSON.stringify(kinds),
+      ),
+    );
+
+    // ── ①-f **컴파일된 캡처 프로그램**이 막혀도 백신 안내가 나간다 (2026-09-29 적대 검토 P3) ──
+    //  기본 Defender 는 이제 안 막지만 다른 백신·관리형 EDR·ASR 은 새 exe 를 격리하거나 실행을 거부한다. 그 실패는
+    //  AMSI 문구가 아니라 CS0016·파일 사라짐·spawn 거부로 와서, 종전엔 «디스플레이 번호를 확인하라» 로 떨어졌다.
+    const blockedDetails = [
+      blockedOr("compile: error CS0016: Could not write to output file — the file contains a virus or potentially unwanted software", false),
+      blockedOr("compile: ENOENT: no such file or directory, rename 'x.tmp.exe'", true), // 방금 만든 파일이 사라짐
+      blockedOr("spawn C:\\Users\\u\\AppData\\Local\\tiguclaw\\tiguclaw-capture-a.exe UNKNOWN", spawnRefused("spawn C:\\Users\\u\\AppData\\Local\\tiguclaw\\tiguclaw-capture-a.exe UNKNOWN")),
+      blockedOr("spawn C:\\x\\tiguclaw-capture-a.exe EPERM", spawnRefused("spawn C:\\x\\tiguclaw-capture-a.exe EPERM")),
+    ];
+    const notBlocked = [
+      blockedOr("compile: error CS1002: ; expected", false), // 우리 소스 결함은 백신이 아니다
+      blockedOr("no-desktop", spawnRefused("no-desktop")),
+    ];
+    const blockedMsg = obs.preflightMessage({ ok: false, reason: "failed", detail: blockedDetails[2]! }, "win32") ?? "";
+    out.push(
+      assert(
+        "★캡처 프로그램 격리·실행 거부(CS0016 virus · 사라짐 · spawn UNKNOWN/EPERM)는 **백신 차단**으로 — 컴파일 오류·세션 없음은 아니다",
+        blockedDetails.every((d) => antivirusBlocked(d)) &&
+          notBlocked.every((d) => !antivirusBlocked(d)) &&
+          /사용자에게 바로 알리/.test(blockedMsg) && blockedMsg.includes("tiguclaw-capture") && !blockedMsg.includes("디스플레이 번호") &&
+          obs.preflightFailureKind({ ok: false, reason: "failed", detail: blockedDetails[0]! }, "win32").startsWith("백신 차단"),
+        JSON.stringify({ blocked: blockedDetails.map((d) => antivirusBlocked(d)), notBlocked: notBlocked.map((d) => antivirusBlocked(d)) }),
+      ),
+    );
+    {
+      const { readSourceSync } = await import("./_wiring.js");
+      const winSrc = readSourceSync("plugins/computer-use/src/win.ts");
+      const wired = {
+        compile: /if \(!built\.ok\) return \{ \.\.\.built, detail: blockedOr\(built\.detail, !existsSync\(tmp\)\) \};/.test(winSrc),
+        rename: /detail: blockedOr\(msg, \/ENOENT\/\.test\(msg\)\)/.test(winSrc),
+        run: /const r = await runChild\(exe\.exe, \[\], env\);[\s\S]{0,120}blockedOr\(r\.detail, spawnRefused\(r\.detail\) \|\| !existsSync\(exe\.exe\)\)/.test(winSrc),
+      };
+      out.push(
+        assert(
+          "★[배선] 표식은 **일어난 자리**에서 단다 — 컴파일 실패(파일 사라짐 포함)와 캡처 프로그램 실행 실패 둘 다",
+          wired.compile && wired.rename && wired.run,
+          JSON.stringify(wired),
+        ),
+      );
+    }
+    const cscProbe = { ok: false as const, reason: "failed" as const, detail: "csc-missing: .NET Framework 4 컴파일러(csc.exe)를 찾지 못했습니다" };
+    const cscMsg = obs.preflightMessage(cscProbe, "win32") ?? "";
+    out.push(
+      assert(
+        "컴파일러(csc.exe)가 없으면 **무엇을 켜면 되는지**(.NET Framework 4.x)를 말하고, 내부 토큰·디스플레이 번호 유도는 없다",
+        cscMsg.includes(".NET Framework 4") && cscMsg.includes("기능 켜기") && !cscMsg.includes("csc-missing") && !cscMsg.includes("디스플레이 번호") &&
+          obs.preflightFailureKind(cscProbe, "win32").includes("컴파일러 없음"),
+        cscMsg.slice(0, 160),
       ),
     );
 

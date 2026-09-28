@@ -471,6 +471,7 @@ export const preflightFailureKind = (
   if (probe.ok) return "없음";
   const detail = probe.detail ?? "";
   if (platform === "win32" && antivirusBlocked(detail)) return "백신 차단(Windows 보안 → 보호 기록에서 허용 필요)";
+  if (platform === "win32" && cscMissing(detail)) return "캡처 프로그램 컴파일러 없음(.NET Framework 4)";
   if (platform === "win32" && /no-desktop|handle is invalid|invalid handle/i.test(detail)) return "데스크톱 세션 없음";
   if (platform !== "win32" && /could not create image/i.test(detail)) return "화면 기록 권한 없음";
   if (probe.reason === "timeout") return "시한 초과";
@@ -562,7 +563,12 @@ export const antivirusBlocked = (detail: string): boolean =>
   //  CP949 로 깨져 오고, 남는 확실한 신호는 **`FullyQualifiedErrorId`** 하나뿐이다.
   //  그건 항상 ASCII 다.
   /ScriptContainedMaliciousContent/i.test(detail) ||
-  /malicious content|악성 소프트웨어|바이러스/i.test(detail);
+  /malicious content|악성 소프트웨어|바이러스/i.test(detail) ||
+  // 컴파일된 캡처 프로그램이 막힌 것(`win.ts blockedOr` 가 일어난 자리에서 단 표식) · 영어 Windows 의 virus.
+  /^blocked:|\bvirus\b|ERROR_VIRUS_INFECTED/i.test(detail);
+
+/** 이 Windows 에 캡처 프로그램을 만들 컴파일러(.NET Framework 4 `csc.exe`)가 없다. */
+const cscMissing = (detail: string): boolean => /^csc-missing:/.test(detail);
 
 const winPreflightMessage = (probe: {
   ok: false;
@@ -588,10 +594,16 @@ const winPreflightMessage = (probe: {
       "결과를 «확인했다» 고 하지 말고, 그 부분만 사용자에게 확인을 부탁하세요. 클릭·입력은 그대로 됩니다.\n" +
       "허용 방법(Windows 기본 백신):\n" +
       "1. 시작 메뉴 → «Windows 보안» → 바이러스 및 위협 방지 → **보호 기록**\n" +
-      "2. 차단된 항목(PowerShell 화면 캡처 — 예: `HackTool:PowerShell/EmpireGetScreenshot`)을 열고 → 작업 → **허용**" +
+      "2. 차단된 항목(화면 캡처 프로그램 `tiguclaw-capture-….exe`)을 열고 → 작업 → **허용**" +
       "(관리자 확인이 뜰 수 있습니다)\n" +
       "3. 허용한 뒤 다시 화면을 보면 됩니다.\n" +
-      "다른 백신을 쓰면 그 백신에서 이 기계의 PowerShell 화면 캡처를 허용해야 합니다."
+      "다른 백신·회사 보안 정책을 쓰면 그쪽에서 `%LOCALAPPDATA%\\tiguclaw` 폴더의 화면 캡처 프로그램 실행을 허용해야 합니다."
+    );
+  }
+  if (cscMissing(detail)) {
+    return (
+      "화면을 찍지 못했습니다 — **이 Windows 에 .NET Framework 4 컴파일러(csc.exe)가 없어** 화면 캡처 프로그램을 만들 수 없습니다.\n" +
+      "★이 사실을 사용자에게 알리세요. «Windows 기능 켜기/끄기» 에서 **.NET Framework 4.x** 를 켜면 됩니다. 클릭·입력은 그대로 됩니다."
     );
   }
   if (/no-desktop|handle is invalid|invalid handle/i.test(detail)) {
@@ -604,9 +616,9 @@ const winPreflightMessage = (probe: {
   }
   if (probe.reason === "timeout") {
     return (
-      "화면을 찍지 못했습니다 — PowerShell 이 시한 안에 끝나지 않았습니다.\n" +
+      "화면을 찍지 못했습니다 — 화면 캡처 프로그램이 시한 안에 끝나지 않았습니다.\n" +
       "Windows 엔 화면 캡처 권한 대화상자가 없으므로 권한 문제는 아닙니다. " +
-      "그 기계가 매우 느리거나 PowerShell 실행 정책·보안 소프트웨어가 막고 있을 수 있습니다."
+      "그 기계가 매우 느리거나 보안 소프트웨어가 막고 있을 수 있습니다."
     );
   }
   return `화면을 찍지 못했습니다${whyLine(detail)}. 대상(디스플레이 번호·영역)이 맞는지 확인해 주세요.`;

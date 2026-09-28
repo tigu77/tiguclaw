@@ -243,12 +243,14 @@ const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> 
           });
         });
       });
-      if (!built.ok) return built;
+      if (!built.ok) return { ...built, detail: blockedOr(built.detail, !existsSync(tmp)) };
       // 다른 프로세스가 먼저 만들었으면 그걸 쓴다(같은 소스 = 같은 파일).
       await fs.rename(tmp, exe).catch(async (e: unknown) => { if (!existsSync(exe)) throw e; });
       return { ok: true, exe };
     } catch (e) {
-      return { ok: false, reason: "failed", detail: `compile: ${e instanceof Error ? e.message : String(e)}`, stdout: "" };
+      // rename 의 ENOENT = 방금 만든 파일이 사라졌다(격리) — 백신 쪽으로 분류한다.
+      const msg = `compile: ${e instanceof Error ? e.message : String(e)}`;
+      return { ok: false, reason: "failed", detail: blockedOr(msg, /ENOENT/.test(msg)), stdout: "" };
     } finally {
       await fs.rm(src, { force: true }).catch(() => {});
       await fs.rm(tmp, { force: true }).catch(() => {});
@@ -257,11 +259,28 @@ const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> 
   return building;
 };
 
+/**
+ * ★**캡처 프로그램이 막힌 것은 여기서 가른다** (2026-09-29 적대 검토 P3). 캡처를 컴파일된 프로그램으로 바꾸자 기본
+ *  Defender 는 안 막지만, **다른 백신·관리형 EDR·ASR 규칙**은 새 미서명 exe 를 격리하거나 실행을 거부한다. 그 실패는
+ *  PowerShell/AMSI 문구가 아니라 `CS0016 … virus` · 방금 만든 파일이 사라짐 · `spawn … UNKNOWN/EPERM/EACCES/ENOENT` 로
+ *  오고, 백신 판정이 그걸 못 읽어 «디스플레이 번호를 확인하라» 로 떨어졌다 — `ec68cc1c` 가 고친 사고를 새 기제로 되연 것.
+ *  문구로 추측하지 않고 **일어난 자리**(컴파일·실행)에서 표식을 단다.
+ */
+export const blockedOr = (detail: string, vanished: boolean): string =>
+  vanished || /\bCS0016\b.*virus|\bvirus\b|ERROR_VIRUS_INFECTED/i.test(detail)
+    ? `blocked: 화면 캡처 프로그램을 백신·보안 정책이 격리하거나 막았습니다 (${detail.slice(0, 200)})`
+    : detail;
+
+/** 실행 자체가 안 된 것(프로세스가 시작도 못 함) — 우리가 방금 만든 exe 라 백신·정책 차단으로 본다. */
+export const spawnRefused = (detail: string): boolean => /^spawn \S.* (UNKNOWN|EPERM|EACCES|ENOENT)\b/.test(detail);
+
 /** 캡처 전용 래퍼 — 컴파일된 캡처 프로그램에 env 만 바꿔 넣는다(없으면 먼저 컴파일). */
 const run = async (env: Record<string, string>): Promise<RunOk | RunFail> => {
   const exe = await ensureCaptureExe();
   if (!exe.ok) return exe;
-  return runChild(exe.exe, [], env);
+  const r = await runChild(exe.exe, [], env);
+  if (r.ok || r.reason === "timeout") return r;
+  return { ...r, detail: blockedOr(r.detail, spawnRefused(r.detail) || !existsSync(exe.exe)) };
 };
 
 interface RunOk {

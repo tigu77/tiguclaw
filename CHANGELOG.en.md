@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-09-29
+
 ### Changed
 
 - **Ollama is now connected in `settings.json`.** The built-in connection is gone; Ollama works like any other OpenAI-compatible server, and `OLLAMA_BASE_URL` in `.env` is no longer read. If you used it, add `"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": null } } }` to `settings.json` (`npm run doctor` and the startup log point this out). For a server that needs no key, set `"apiKeyEnv": null`.
@@ -16,16 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Fixed a second message sent while Claude was still answering getting no reply.** Its answer now follows the first one.
+- **A second message sent while Claude was still answering got no reply.** Its answer now follows the first one.
 - **In Codex chats, the earlier conversation was re-sent on every turn without using the cache.** Long conversations now use less and respond faster.
-
 - **Pasting one long text could summarize away most of the earlier conversation in Codex and OpenAI chats.** A large input now only trims older history for that one request.
 - **A schedule's "last N runs" history policy could bring back conversation already cleared, for example with `/clear`.**
 - **Editing a schedule's prompt stopped its "last N runs" history policy from applying.** Runs are now counted from a firing log.
-- **Fixed Windows Security (antivirus) blocking screen capture on Windows.** Capture now works differently and Windows Security no longer flags it as a threat. If another antivirus blocks it, the assistant says so and walks you through allowing it.
+- **Windows Security (antivirus) blocked screen capture on Windows.** Capture now works differently, and Windows Security no longer flags it as a threat. If another antivirus blocks it, the assistant says so and walks you through allowing it.
 - **On installs that use model profiles, leftover model-tier settings from older versions were still used for some calls (gateway tier requests, subagents).**
 - **Codex now masks secrets such as API keys in the tool results it keeps for later requests.**
-- **Installs that don't use ollama logged a failed model-list lookup every hour.**
+- **Installs that don't use Ollama logged a failed model-list lookup every hour.**
 
 ## [0.60.0] - 2026-09-27
 
@@ -747,7 +748,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...HEAD
+[0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/tigu77/tiguclaw/compare/v0.57.0...v0.58.0

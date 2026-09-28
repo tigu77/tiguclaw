@@ -331,6 +331,12 @@ export interface RegionASdkOutput {
    */
   turnItems?: CodexTurnItem[];
   /**
+   * **이 턴에 실제로 보낸 사용자 메시지**(휘발 블록 포함, 2026-09-28) — 퍼사드가 사용자 행에 묶어 저장하고 다음 턴 이력이
+   * 그대로 되살린다. 그래야 다음 요청이 이번 요청의 **연장**이 되어 이력이 캐시를 탄다(`CodexTurn.sent`). 이력을 우리가
+   * 주입하는 어댑터만 채운다(지금은 codex).
+   */
+  sentUserText?: string;
+  /**
    * SDK 자체 jsonl 경로 — claude 어댑터만 (`~/.claude/projects/.../sid.jsonl`).
    * 있으면 jsonl catch-up 진실 소스, 없으면 runRegionA 가 transcripts INSERT 직접.
    */

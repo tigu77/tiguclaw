@@ -8,7 +8,7 @@ import { collectInventory } from "./inventory.js";
 import { resolveEntry } from "./loader.js";
 import { listProviderNames, resolveProviderConn } from "../llm-runtime/provider-registry.js";
 import { catalogModelKeys, modelCapsFor } from "../llm-runtime/model-catalog.js";
-import { providerAuthAvailable } from "../llm-runtime/provider-availability.js";
+import { providerAuthAvailable, missingAuthEnv } from "../llm-runtime/provider-availability.js";
 
 export type ModuleKind = "core" | "plugin" | "llm-adapter";
 export type ModuleStatus = "active" | "inactive" | "degraded" | "missing" | "error";
@@ -281,13 +281,12 @@ const corePluginRegistryModule = async (): Promise<Module> => {
   };
 };
 
-// LLM 어댑터 벤더 표시명 — 고정 5종 하드매핑(ADR 2026-07-17 §5: 동적 일반화 금지,
-// PROVIDER_REGISTRY 가 실제로 5종을 넘을 때만 키 추가). 미지 provider = provider id 원문 폴백.
+// LLM 어댑터 벤더 표시명 — 고정 4종 하드매핑(ADR 2026-07-17 §5: 동적 일반화 금지,
+// PROVIDER_REGISTRY 가 실제로 늘 때만 키 추가). 미지 provider = provider id 원문 폴백.
 const LLM_ADAPTER_DISPLAY_NAME: Record<string, DisplayText> = {
   anthropic: "Anthropic (Claude)",
   codex: { key: "modules.adapter.codex" },
   openai: "OpenAI",
-  ollama: { key: "modules.adapter.ollama" },
   google: "Google Gemini",
 };
 
@@ -378,7 +377,7 @@ const llmAdapterModule = (provider: string): Module => {
   //  **어느 문장인가**(인증 여부)이고, 그건 서버만 아는 사실이다.
   const summary: DisplayText = authenticated
     ? { key: "modules.summary.adapterAuthed", params: { adapter } }
-    : { key: "modules.summary.adapterMissingKey", params: { adapter, env: conn?.apiKeyEnv ?? "?" } };
+    : { key: "modules.summary.adapterMissingKey", params: { adapter, env: missingAuthEnv(provider) ?? "?" } };
 
   return {
     id: `llm-adapter.${provider}`,

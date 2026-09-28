@@ -190,8 +190,8 @@ Eight things. Everything else is in [the full feature list](docs/features.en.md)
    a different channel. Search spans every session, and narrows to one when you want it to.
 4. **Hand over whole goals** — big work goes to a **manager** that assembles its own sub-agents and
    isn't done until it has collected results. Your conversation keeps going meanwhile.
-5. **Many LLMs, one surface** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), `google`,
-   plus any OpenAI-compatible endpoint. Cross-provider fallback, and the same tools on every model.
+5. **Many LLMs, one surface** — `anthropic`, `openai`, `codex` (ChatGPT), `google`,
+   plus any OpenAI-compatible endpoint, including a local server like Ollama. Cross-provider fallback, and the same tools on every model.
 6. **Extend by asking** — new slash commands, HTTP endpoints, scheduled work and reusable skills are
    added as *data* under your home, without patching the core.
 7. **It can see your screen and use it** — the assistant looks at that machine's screen, then

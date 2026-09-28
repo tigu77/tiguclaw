@@ -462,6 +462,8 @@ export const initStore = (): void => {
     --  한 턴 안에 생긴 도구 호출·출력·중간 메시지(Responses 항목 JSON)를 그 턴의 **비서 답 행**에
     --  묶는다. 다음 턴 이력이 «사용자 → 도구 항목 → 비서 답» 으로 되살린다. 요약에 접힌 턴의 항목도
     --  **지우지 않는다**(다시 만들 수 없는 원기록) — 적재가 요약 워터마크 뒤만 읽어 핫 경로가 바운드된다.
+    --  ★사용자 행에는 그 턴에 **보낸 그대로의** 사용자 메시지 하나가 묶인다(2026-09-28) — 다음 턴 이력이 그것으로
+    --   되살려야 요청이 직전 요청의 연장이 되어 캐시를 탄다. 발화 원문과 같으면 안 묶는다.
     CREATE TABLE IF NOT EXISTS turn_items (
       transcript_id INTEGER NOT NULL,
       seq           INTEGER NOT NULL,
@@ -580,6 +582,18 @@ export const initStore = (): void => {
          DEFAULT 'cron' CHECK(trigger_type IN ('cron','reboot'))`,
     );
   }
+
+  // ─── schedule_runs (2026-09-28) — 스케줄 발화 기록 ───────────────────────────
+  //  «직전 N회» 경계를 **발화 시각**으로 구한다. 종전엔 대화 기록에서 «프롬프트 앞 40자로 시작하는 사용자 턴» 을 찾아,
+  //  프롬프트를 고치면 이전 발화를 못 찾아 정책이 안 먹혔다(Windows 리뷰 인계 1번). 대화가 남은 발화만 적는다(runner).
+  //  스케줄마다 최근 `KEEP_RUNS_MAX` 개만 남긴다(경계 계산엔 N번째까지만 필요) — 핫 경로 바운드.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS schedule_runs (
+      schedule_id INTEGER NOT NULL,
+      ts          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedule_runs_sid_ts ON schedule_runs(schedule_id, ts);
+  `);
 
   // ─── schedules.keep_runs (2026-09-26) — 스케줄 이력 정책 ────────────────────
   //  NULL = 계속(현행 — 기존·신규 모두 기본), 0 = 매번 새로 시작, N = 직전 N회만 유지.

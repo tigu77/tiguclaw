@@ -831,10 +831,16 @@ export const appendApiTurn = (input: {
   userContent: string;
   assistantContent: string;
   items?: readonly CodexTurnItem[];
+  /** 그 턴에 실제로 보낸 사용자 메시지(휘발 블록 포함) — 발화 원문과 다를 때만 사용자 행에 묶는다(`CodexTurn.sent`). */
+  userSent?: string;
 }): void => {
   const db = requireDb("appendApiTurn");
   db.transaction(() => {
-    appendTranscript({ claudeSessionId: input.claudeSessionId, role: "user", content: input.userContent });
+    const userId = appendTranscript({ claudeSessionId: input.claudeSessionId, role: "user", content: input.userContent });
+    if (userId !== undefined && input.userSent !== undefined && input.userSent !== input.userContent) {
+      const sent: CodexTurnItem = { type: "message", role: "user", text: input.userSent };
+      db.prepare(`INSERT INTO turn_items (transcript_id, seq, item) VALUES (?, 0, ?)`).run(userId, JSON.stringify(sent));
+    }
     const assistantId = appendTranscript({ claudeSessionId: input.claudeSessionId, role: "assistant", content: input.assistantContent });
     if (assistantId !== undefined && input.items !== undefined && input.items.length > 0) {
       const ins = db.prepare(`INSERT INTO turn_items (transcript_id, seq, item) VALUES (?, ?, ?)`);
@@ -1000,6 +1006,13 @@ export interface CodexTurn {
    */
   items?: CodexTurnItem[];
   itemsChars?: number;
+  /**
+   * 사용자 턴을 **보낸 그대로**(휘발 블록 포함) — Codex 가 그 턴에 실제로 보낸 사용자 메시지 원문(2026-09-28).
+   * ★다음 턴 이력이 이걸로 되살려야 요청이 **직전 요청의 연장**이 되고 이력이 캐시를 탄다 — 이 백엔드는 직전 요청
+   *  전체가 앞머리에 있을 때만 캐시를 준다(실측: 앞 항목이 같아도 마지막 메시지가 다르면 이력 몫 0). `content` 는 그대로
+   *  발화 원문이다(요약 입력·다른 어댑터·검색이 쓴다). 없으면 종전대로 `content`.
+   */
+  sent?: string;
 }
 
 interface TranscriptHistoryRow {
@@ -1250,12 +1263,22 @@ export const loadThreadHistoryWithIds = (
     itemsById.set(r.tid, e);
   }
   return rows.map((r) => {
-    const it = r.role === "assistant" ? itemsById.get(r.id) : undefined;
+    const it = itemsById.get(r.id);
+    if (r.role !== "assistant") {
+      // 사용자 행에 묶인 항목 = 보낸 그대로의 사용자 메시지 하나(`appendApiTurn` 의 userSent).
+      const sent = it?.items[0];
+      return {
+        id: r.id,
+        role: "user" as const,
+        // user 턴만 — assistant 응답엔 프리픽스가 없다(위 stripAssembledPrefix 주석).
+        content: stripAssembledPrefix(r.content),
+        ...(sent?.type === "message" && sent.role === "user" ? { sent: sent.text } : {}),
+      };
+    }
     return {
       id: r.id,
-      role: r.role === "assistant" ? ("assistant" as const) : ("user" as const),
-      // user 턴만 — assistant 응답엔 프리픽스가 없다(위 stripAssembledPrefix 주석).
-      content: r.role === "assistant" ? r.content : stripAssembledPrefix(r.content),
+      role: "assistant" as const,
+      content: r.content,
       ...(it !== undefined ? { items: it.items, itemsChars: it.chars } : {}),
     };
   });

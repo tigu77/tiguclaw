@@ -13,13 +13,17 @@ const warn = console.warn;
 console.warn = (...args) => { warnings.push(args.map(String).join(" ")); };
 let searches = true;
 let requests = 0;
-globalThis.fetch = fakeNetwork(async () => {
+let include = false;
+globalThis.fetch = fakeNetwork(async (_url, init) => {
   requests++;
+  const body = JSON.parse(String(init?.body ?? "{}")) as { include?: string[] };
+  if (searches && body.include?.includes("web_search_call.action.sources")) include = true;
   const events = searches ? [
     { type: "response.web_search_call.in_progress", item_id: "ws_test", output_index: 0 },
     { type: "response.web_search_call.searching", item_id: "ws_test", output_index: 0 },
     { type: "response.web_search_call.completed", item_id: "ws_test", output_index: 0 },
     { type: "response.web_search_call.completed", item_id: "ws_test", output_index: 0 },
+    { type: "response.output_item.done", output_index: 0, item: { id: "ws_test", type: "web_search_call", status: "completed", action: { type: "search", queries: ["node lts"], query: "node lts", sources: [{ type: "url", url: "https://nodejs.org/en/download" }] } } },
   ] : [];
   return new Response([...events,
     { type: "response.output_text.delta", delta: "검색했다고 주장하는 합성 답변 https://example.com" },
@@ -30,10 +34,13 @@ const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-
 const outcomes = [];
 // 어댑터가 실제로 발행한 웹 검색 활동 — 대시보드는 같은 seq 의 끝(durationMs)이 와야 «실행 중» 을 끈다.
 const searchActivity: { threadKey: unknown; seq: unknown; phase: unknown; durationMs: unknown }[] = [];
+const searchCard: { detail?: unknown; output?: unknown } = {};
 getEventBus().subscribe((ev) => {
   if (ev.type !== "llm.activity" || ev.payload?.label !== "web_search") return;
   const p = ev.payload as Record<string, unknown>;
   searchActivity.push({ threadKey: p.threadKey, seq: p.seq, phase: p.phase, durationMs: p.durationMs });
+  if (p.phase === "start") searchCard.detail = p.detail;
+  if (p.phase === "end") searchCard.output = p.output;
 });
 for (const enabled of [true, false]) {
   searches = enabled;
@@ -53,5 +60,5 @@ for (const enabled of [true, false]) {
   outcomes.push({ searches: enabled, status: getJob(child)?.status, warned: warnings.slice(before).some(x => x.includes("[agent-no-tools]")) });
 }
 console.warn = warn;
-console.log("SEARCH_RESULT " + JSON.stringify({ requests, outcomes, searchActivity }));
+console.log("SEARCH_RESULT " + JSON.stringify({ requests, outcomes, searchActivity, searchCard, include }));
 process.exit(0);

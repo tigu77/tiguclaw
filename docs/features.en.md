@@ -8,7 +8,7 @@ Everything else lives here. Nothing was dropped.
 ## What it does
 
 - **Claude Code's tools, as they are** — read/write/edit files, run shell, web search, skills, sub-agents, hooks, slash commands, persistent memory.
-- **Many LLMs, one assistant** — `anthropic`, `openai`, `codex` (ChatGPT), `ollama` (local), and `google` (Gemini) ship built in, and **any OpenAI-compatible endpoint** (OpenRouter, Groq, vLLM, your own) drops in with three lines of config. Mix them with a single `provider:model` line. Switch freely and the abilities come along — shell, search, files, delegation all run on **the same tools whatever the model is**, so swapping models doesn't change the answer you get.
+- **Many LLMs, one assistant** — `anthropic`, `openai`, `codex` (ChatGPT), and `google` (Gemini) ship built in, and **any OpenAI-compatible endpoint** (a local server like Ollama, OpenRouter, Groq, vLLM, your own) drops in with a few lines of config. Mix them with a single `provider:model` line. Switch freely and the abilities come along — shell, search, files, delegation all run on **the same tools whatever the model is**, so swapping models doesn't change the answer you get.
 - **Always on** — runs as a background service and restarts itself if it ever dies.
 - **Updates itself on request** — just ask it to update (or send `/update`). It pulls the latest, restarts, and pings you when it's back — no manual `git pull`. Your memory and sessions carry over, and if an update can't produce runnable code it rolls back and keeps running the previous version. When there's something to pull, the **dashboard tells you** in the top right, so you never have to go looking — click it and the page refreshes itself once the daemon is back.
 - **Asks with buttons, not just text** — when it needs you to choose, it offers tappable options (Telegram and dashboard buttons, numbered in the CLI) — the same on every channel.
@@ -70,7 +70,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 
 **Long jobs, without the wait**
 - "Scrape these 40 pages and build a table." → it hands the heavy work to a background manager and keeps chatting, then pings you when it's done.
-- Routine, bulk, or simple tasks can go to a free local model — point a lower tier at `ollama` in your model profiles and that's where they land.
+- Routine, bulk, or simple tasks can go to a free local model — connect Ollama and point a lower tier in your model profiles at it, and that's where they land.
 
 **Remember & schedule**
 - "Remember that I prefer TypeScript and 2-space indents." → it persists across every chat.
@@ -88,7 +88,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 
 ## How it's built
 
-- **Core** — one LLM runtime (adapter pool: claude / codex / openai / ollama / google) + router + SQLite store (sessions, memory, transcripts).
+- **Core** — one LLM runtime (adapter pool: claude / codex / openai — OpenAI-compatible connections such as google or a local server go through the openai adapter) + router + SQLite store (sessions, memory, transcripts).
 - **Channels** — Telegram / CLI / HTTP adapters render one abstract intent per channel.
 - **Plugins** — extend without touching the core. Beyond tools, triggers and channels, a plugin can add **screen and settings** too: draw its own card in a reply or on your home screen, add its own rows to the settings page, and bring its own translations. To see what's installed, open **Dashboard → Plugins** (listing names here would go stale every time one is added).
 - **Capabilities are data** — agents, skills, memory, and hooks under `<home>/` extend the assistant endlessly (a microkernel + plugin ecosystem).

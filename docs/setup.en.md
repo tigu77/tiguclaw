@@ -8,7 +8,7 @@ For people who just installed tiguclaw — or are about to. For *what it is*, se
 
 | Provider | How |
 |---|---|
-| **Ollama (local)** | No key, free, offline. Just install Ollama. (Smaller models, lower quality.) |
+| **Ollama (local)** | No key, free, offline. Install Ollama and add its address to `settings.json` ([below](#ollama-local)). (Smaller models, lower quality.) |
 | **Anthropic API key** | Grab one at console.anthropic.com — easiest, pay-as-you-go. |
 | **Claude subscription** ⚠️ | Use your Claude Pro/Max plan — onboarding **mints the token for you** (`npm run claude-auth`; you just log in). No API key, no per-token billing. **Terms caveat — see [below](#before-you-use-a-subscription-token).** |
 | **OpenAI API key** | platform.openai.com — pay-as-you-go. |
@@ -37,6 +37,8 @@ write an adapter, you write three lines. Put this in `<home>/settings.json`:
 Then set `OPENROUTER_API_KEY` in your `.env` and use it anywhere a model is named:
 `openrouter:anthropic/claude-sonnet-5`, in a model profile pool, as a fallback target.
 OpenRouter alone puts a few hundred models one line away.
+
+For a server that needs no key (a local server such as Ollama or LM Studio), set `"apiKeyEnv": null`.
 
 **You don't have to memorise names.** Once it's attached, `/models` queries that provider and
 lists what it has — and where the vendor tells us, each model carries its context size and
@@ -92,9 +94,16 @@ npm run claude-auth      # or: tiguclaw claude-auth
 **codex (ChatGPT subscription)** — *no key to paste* · ⚠️ [terms caveat](#before-you-use-a-subscription-token)
 - After install, run `npm run codex-auth`: it opens a login URL → sign in to ChatGPT → approve. The token is saved and auto-refreshed. (Needs a ChatGPT Plus/Pro subscription.)
 
-**Ollama (local)** — *no key*
+#### Ollama (local)
+
+*No key*
 1. Install from **ollama.com** (`brew install ollama` on macOS).
 2. Pull a model: `ollama pull llama3.2` (or `ollama pull qwen2.5:7b` for better quality).
+3. Add the connection to `<home>/settings.json` (use the other machine's address if Ollama runs elsewhere):
+   ```json
+   { "models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": null } } } }
+   ```
+   Now you can use it as `ollama:qwen2.5:7b`.
 
 ### Before you use a subscription token
 

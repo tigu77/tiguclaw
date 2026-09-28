@@ -8,7 +8,7 @@
 
 | provider | 방법 |
 |---|---|
-| **Ollama (로컬)** | 키 불필요·무료·오프라인. Ollama 만 설치하면 끝. (작은 모델 = 품질 낮음.) |
+| **Ollama (로컬)** | 키 불필요·무료·오프라인. Ollama 를 설치하고 `settings.json` 에 주소를 적습니다([아래](#ollama-로컬)). (작은 모델 = 품질 낮음.) |
 | **Anthropic API 키** | console.anthropic.com 에서 발급 — 가장 쉬움, 종량제. |
 | **Claude 구독** ⚠️ | Claude Pro/Max 구독 사용 — 온보드가 **대신 발급**합니다(`npm run claude-auth`, 브라우저 로그인만). API 키 불필요·종량 과금 없음. **약관 주의 — [아래](#구독-토큰을-쓰기-전에) 참고.** |
 | **OpenAI API 키** | platform.openai.com — 종량제. |
@@ -37,6 +37,8 @@ OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 
 `.env` 에 `OPENROUTER_API_KEY` 를 넣으면, 모델 이름을 쓰는 자리 어디서나 쓸 수 있습니다 —
 `openrouter:anthropic/claude-sonnet-5` 처럼 직접 지정하거나, 모델 프로파일 풀에 넣거나,
 폴백 대상으로 두거나요. OpenRouter 하나만 붙여도 수백 개 모델이 한 줄 거리에 들어옵니다.
+
+키가 없는 서버(Ollama·LM Studio 같은 로컬 서버)는 `"apiKeyEnv": null` 로 적습니다.
 
 **이름을 외울 필요는 없습니다.** 붙이고 나면 `/models` 가 그 provider 의 모델을 조회해
 보여주고, 벤더가 알려주는 경우 컨텍스트 크기와 도구 사용 가능 여부도 `[131K · 도구✅]`
@@ -91,9 +93,16 @@ npm run claude-auth      # 또는 tiguclaw claude-auth
 **codex (ChatGPT 구독)** — *붙여넣을 키 없음* · ⚠️ [약관 주의](#구독-토큰을-쓰기-전에)
 - 설치 후 `npm run codex-auth` 실행 → 로그인 URL 열림 → ChatGPT 로그인 → 권한 허용. 토큰 자동 저장·갱신. (ChatGPT Plus/Pro 구독 필요.)
 
-**Ollama (로컬)** — *키 없음*
+#### Ollama (로컬)
+
+*키 없음*
 1. **ollama.com** 에서 설치 (macOS는 `brew install ollama`).
 2. 모델 받기: `ollama pull llama3.2` (품질 원하면 `ollama pull qwen2.5:7b`).
+3. `<home>/settings.json` 에 연결을 적습니다(다른 기기의 Ollama 면 그 주소로):
+   ```json
+   { "models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": null } } } }
+   ```
+   이제 `ollama:qwen2.5:7b` 처럼 쓸 수 있습니다.
 
 ### 구독 토큰을 쓰기 전에
 

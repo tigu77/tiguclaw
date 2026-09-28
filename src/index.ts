@@ -80,7 +80,7 @@ import {
   contextPressureLabel,
   lookupContextWindow,
 } from "./core/llm-runtime/context-windows.js";
-import { runRegionA, resolveModelChain } from "./core/llm-runtime/index.js";
+import { runRegionA, resolveModelChain, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
@@ -137,6 +137,7 @@ import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.
 import { readSystem } from "./core/identity.js";
 import {
   diagnoseModelProfiles,
+  loadModelProviders,
   loadModelProfiles,
   getDefaultProfileName,
 } from "./core/settings.js";
@@ -909,6 +910,7 @@ const handler: MessageHandler = async (msg) => {
             .join(" → ");
       const lines = [
         `현재 세션 모델 override: ${current ?? "(없음 — env 폴백 사용)"}`,
+        ...(current !== null ? [unresolvedOverrideNote(current)].filter((l) => l !== "") : []),
         `env REGION_A_MODELS 풀: ${envPool}`,
         "",
         "사용법:",
@@ -989,8 +991,10 @@ const handler: MessageHandler = async (msg) => {
     const profiles = builtin ? builtinModelProfiles() : userProfiles;
     const defaultName = builtin ? BUILTIN_DEFAULT_TIER : getDefaultProfileName();
     const sessionOverride = getSessionModelOverride(sidChannel, msg.threadKey);
+    const overrideNote = sessionOverride !== null ? unresolvedOverrideNote(sessionOverride) : "";
     await replyCommand(
       msg,
+      (overrideNote === "" ? "" : `${overrideNote}\n\n`) +
       renderModelProfiles(
         profiles,
         sessionOverride,
@@ -2131,7 +2135,9 @@ if (poolWarn !== null) console.warn(poolWarn);
 // 모델 프로파일 검증 진단 (부팅 1회, ADR model-profiles (d)) — 댕글링 fallback·순환·빈 풀·
 // 무효 shape 를 로그로 표면화. never-throw at boot: 경고+강등만(데몬 거부 금지). resolve-time
 // cycle-guard(resolveProfileChain)가 실집행이라 여기서는 사용자 가시화가 목적.
-for (const issue of diagnoseModelProfiles()) {
+// provider 설정 검증 경고(무시되는 항목·모르는 필드)도 여기서 낸다 — `diagnose=true` 로 부르는 곳이 없어 경고가 죽어 있었다(재검토 P2).
+loadModelProviders(process.cwd(), true);
+for (const issue of [...diagnoseModelProfiles(), ...unresolvedModelSpecs()]) {
   console.warn(`⚠️ [model-profiles] ${issue}`);
 }
 

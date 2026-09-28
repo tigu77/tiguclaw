@@ -22,6 +22,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { Cron } from "croner";
 import {
+  KEEP_RUNS_MAX,
   addSchedule,
   deleteSchedule,
   getSchedule,
@@ -80,7 +81,7 @@ const addScheduleTool = tool(
       .number()
       .int()
       .min(0)
-      .max(50)
+      .max(KEEP_RUNS_MAX)
       .nullable()
       .optional()
       .describe("이력 정책 — 생략·null = 이전 발화 대화를 계속 이어감(기본), 0 = 매번 새로 시작, N = 직전 N회만 이어감. 매일 도는 보고·점검처럼 지난 내용이 필요 없는 스케줄은 0 이 싸고 빠르다(이력이 쌓일수록 매 발화 입력이 커진다)."),
@@ -216,7 +217,7 @@ const updateScheduleTool = tool(
       .number()
       .int()
       .min(0)
-      .max(50)
+      .max(KEEP_RUNS_MAX)
       .nullable()
       .optional()
       .describe("이력 정책 — 생략·null = 이전 발화 대화를 계속 이어감(기본), 0 = 매번 새로 시작, N = 직전 N회만 이어감. 매일 도는 보고·점검처럼 지난 내용이 필요 없는 스케줄은 0 이 싸고 빠르다(이력이 쌓일수록 매 발화 입력이 커진다)."),

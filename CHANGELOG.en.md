@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Ollama is now connected in `settings.json`.** The built-in connection is gone; Ollama works like any other OpenAI-compatible server, and `OLLAMA_BASE_URL` in `.env` is no longer read. If you used it, add `"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": null } } }` to `settings.json` (`npm run doctor` and the startup log point this out). For a server that needs no key, set `"apiKeyEnv": null`.
+- **Tool cards show more.** The Codex web search card shows the search queries and the sources it looked at; Claude's tool-loading (`ToolSearch`) card shows which tools were loaded.
+
+### Fixed
+
+- **In Codex chats, the earlier conversation was re-sent on every turn without using the cache.** Long conversations now use less and respond faster.
+
+- **Pasting one long text could summarize away most of the earlier conversation in Codex and OpenAI chats.** A large input now only trims older history for that one request.
+- **A schedule's "last N runs" history policy could bring back conversation already cleared, for example with `/clear`.**
+- **Editing a schedule's prompt stopped its "last N runs" history policy from applying.** Runs are now counted from a firing log.
+- **On installs that use model profiles, leftover model-tier settings from older versions were still used for some calls (gateway tier requests, subagents).**
+- **Codex now masks secrets such as API keys in the tool results it keeps for later requests.**
+- **Installs that don't use ollama logged a failed model-list lookup every hour.**
+
 ## [0.60.0] - 2026-09-27
 
 ### Added

@@ -77,6 +77,9 @@ import {
   getDefaultProfileName,
   loadModelProviders,
   loadModelInputLimits,
+  loadModelProfiles,
+  loadGatewayConfig,
+  writtenProviderNames,
   type PoolEntry,
 } from "../settings.js";
 
@@ -219,7 +222,7 @@ export interface ModelSpec {
   model: string;
   /**
    * 신규(additive, 2026-06-15) — round-trip·연결 해석용 provider id.
-   * 다대일(openai 어댑터 ← openai/ollama/google) 에서 adapter→provider 역산이
+   * 다대일(openai 어댑터 ← openai/google/사용자 정의) 에서 adapter→provider 역산이
    * 불가능하므로 명시 운반. 미지정 = adapter 의 canonical provider(레거시 spec 호환).
    * 어댑터는 이 값으로 provider-registry self-lookup → baseURL/apiKey 해석.
    */
@@ -237,16 +240,15 @@ export interface ModelSpec {
   speed?: "fast";
 }
 
-// provider id → 어댑터(런타임). 다대일 허용 (openai 어댑터 ← openai/ollama/google).
-// 진실 소스는 provider-registry.ts (이 맵은 parse lookup 용 호환 view) — 하드코딩 5종.
+// provider id → 어댑터(런타임). 다대일 허용 (openai 어댑터 ← openai/google/사용자 정의).
+// 진실 소스는 provider-registry.ts (이 맵은 parse lookup 용 호환 view) — 하드코딩 4종.
 // 사용자 정의 provider(settings.json models.providers, 2026-07-18)는 이 맵에 없고
 // parseModelSpec 이 loadModelProviders 폴백으로 adapter 를 해석한다(config-driven 개방).
-// principle-check: 하드코딩 5종 authoritative — 사용자는 새 이름만 추가(override 불가).
+// principle-check: 하드코딩 4종 authoritative — 사용자는 새 이름만 추가(override 불가).
 const PROVIDER_TO_ADAPTER: Record<string, RegionAAdapter> = {
   anthropic: "claude",
   codex: "codex-oauth",
   openai: "openai",
-  ollama: "openai",
   google: "openai",
 };
 
@@ -289,7 +291,7 @@ const ADAPTER_TO_PROVIDER: Record<RegionAAdapter, string> = {
 // model === "" (DEFAULT_MODEL_SPEC, override 로는 저장 안 됨)만 `(default)` 표시 — 이 경우는
 // 고지 display 전용이고 canonical 저장 경로엔 등장 안 함.
 // provider 명시 우선(다대일 round-trip 보존), 없으면 canonical 역산(레거시 spec 하위호환).
-// openai 어댑터로 가는 ollama/google 은 역산이 불가능하므로 s.provider 가 필수 경로.
+// openai 어댑터로 가는 google·사용자 정의 provider 는 역산이 불가능하므로 s.provider 가 필수 경로.
 export const specLabel = (s: ModelSpec): string => {
   const provider = s.provider ?? ADAPTER_TO_PROVIDER[s.adapter];
   return `${provider}:${s.model === "" ? "(default)" : s.model}`;
@@ -360,6 +362,65 @@ export const poolToSpecs = (
     });
   }
   return out;
+};
+
+/**
+ * 세션 `/model` override 가 **해석되지 않을 때** 붙일 한 줄 — 없으면 "". 판정은 라우터와 같은 `parseModelSpecList`(콤마 풀 중 하나라도 풀리면 그걸 쓴다 — 재검토 P2).
+ * ★라우터는 풀리지 않는 override 를 건너뛰고 기본 모델로 가는데, `/model`·`/models` 는 그 override 를 «현재» 로 보여 줬다
+ *  (내장 ollama 를 뺀 뒤 `ollama:…` 로 고정해 둔 대화 — 적대 검토 2026-09-28 P4-2).
+ */
+export const unresolvedOverrideNote = (override: string, cwd?: string): string =>
+  parseModelSpecList(override, cwd).length > 0
+    ? ""
+    : `⚠️ 이 대화의 모델 override \`${override}\` 는 쓸 수 없어 세션 프로파일·기본 모델로 갑니다 — \`/model reset\` 으로 해제하세요.\n` +
+      splitSpecs(override).map((t) => specIssue("override", t, cwd)).filter((x): x is string => x !== undefined).join("\n");
+
+/**
+ * spec 하나가 풀리지 않는 사유(사람이 읽을 문장) — 풀리면 undefined. `where` = 그 spec 이 적힌 자리.
+ * ★사유를 **셋**으로 가른다 — 없는 provider / 적혀 있는데 설정 검증에서 버려짐 / 적혀 있는데 모르는 adapter. 뭉뚱그리면
+ *  «정의하세요» 나 «위 경고를 보세요» 가 틀린 안내가 된다(재검토 2026-09-28: 모르는 adapter 는 경고 없이 버려져, 가리킨 경고가
+ *  없었다). override 경고도 이 함수를 쓴다(한쪽만 가르던 것 — 재검토 F4).
+ */
+const specIssue = (where: string, spec: string, cwd?: string): string | undefined => {
+  if (parseModelSpec(spec, cwd) !== null) return undefined;
+  const idx = spec.indexOf(":");
+  const provider = idx === -1 ? "" : spec.slice(0, idx).trim();
+  if (idx === -1 || provider === "" || spec.slice(idx + 1).trim() === "") return `${where} 의 '${spec}' 는 \`provider:모델\` 형식이 아니라 건너뜁니다.`;
+  if (!writtenProviderNames(cwd).has(provider)) {
+    return `${where} 의 '${spec}' 는 provider '${provider}' 가 없어 건너뜁니다 — settings.json \`models.providers.${provider}\` 에 정의하세요.`;
+  }
+  const cfg = loadModelProviders(cwd)[provider];
+  if (cfg !== undefined && !isKnownAdapter(cfg.adapter)) {
+    return `${where} 의 '${spec}' 는 provider '${provider}' 의 adapter '${cfg.adapter}' 를 몰라 건너뜁니다 — adapter 는 ${Object.keys(KNOWN_ADAPTERS).join(" · ")} 중 하나여야 합니다.`;
+  }
+  return `${where} 의 '${spec}' 는 provider '${provider}' 설정이 잘못돼 무시돼서 건너뜁니다 — 위 \`[settings] models.providers.${provider}\` 경고를 보세요.`;
+};
+
+const splitSpecs = (raw: string | undefined): string[] =>
+  (raw ?? "").split(",").map((t) => t.trim()).filter((t) => t !== "");
+
+/**
+ * **해석되지 않아 버려지는 모델 지정** — 부팅 진단용(사람이 읽을 문장). 모델을 적는 자리 **전부**를 본다:
+ * 프로파일 · 옛 `MODEL_TIER_*`(프로파일 설치본에선 어차피 안 읽으므로 제외) · `REGION_A_MODELS` · 게이트웨이 풀.
+ *
+ * ★`poolToSpecs`·`parseModelSpecList` 는 무효 원소를 **조용히** 버린다(실행은 그래야 한다 — 한 원소 때문에 턴을 죽이지
+ *  않는다). 그래서 없는 provider 를 가리키는 지정은 설정에 멀쩡히 적혀 있는데 한 번도 안 쓰였다. 내장 `ollama` 를 뺀 날
+ *  (2026-09-28) `ollama:…` 를 쓰던 설치본이 정확히 이 모양이 된다. ★처음엔 프로파일만 봤다 — 옛 `.env` 의
+ *  `MODEL_TIER_NANO=ollama:…` 는 진단 없이 유료 모델로 넘어갔다(적대 검토 P4-2). 자리를 하나 더 만들면 여기에 더한다.
+ */
+export const unresolvedModelSpecs = (cwd?: string): string[] => {
+  const issues: string[] = [];
+  const add = (where: string, spec: string) => { const i = specIssue(where, spec, cwd); if (i !== undefined) issues.push(i); };
+  const profiles = loadModelProfiles(cwd);
+  for (const [name, prof] of Object.entries(profiles)) for (const e of prof.pool) add(`프로파일 '${name}'`, e.spec);
+  if (Object.keys(profiles).length === 0) {
+    for (const [, key] of Object.entries(TIER_ENV)) for (const t of splitSpecs(process.env[key])) add(`.env ${key}`, t);
+  }
+  for (const t of splitSpecs(process.env.REGION_A_MODELS)) add(".env REGION_A_MODELS", t);
+  const gw = loadGatewayConfig(cwd)?.models;
+  if (gw !== undefined && gw.length > 0) for (const t of gw) add("settings.json gateway.models", t);
+  else for (const t of splitSpecs(process.env.LLM_GATEWAY_MODELS)) add(".env LLM_GATEWAY_MODELS", t);
+  return issues;
 };
 
 /**
@@ -455,8 +516,10 @@ const TIER_ENV: Record<string, string> = {
   high: "MODEL_TIER_HIGH",
   mid: "MODEL_TIER_MID",
   low: "MODEL_TIER_LOW",
-  nano: "MODEL_TIER_NANO", // 신규 — 로컬 단순작업 모델 풀 (예 ollama:llama3.2:3b)
+  nano: "MODEL_TIER_NANO", // 가장 가벼운 풀 — 내부 단발 호출(분류·요약)이 먼저 찾는다
 };
+/** 레거시 등급 이름 — 게이트웨이 목록이 «해석되는 등급만» 광고할 때 이 목록을 `resolveTier` 로 돌린다(사본을 두지 않는다). */
+export const LEGACY_TIERS: readonly string[] = Object.keys(TIER_ENV);
 
 export const resolveTier = (
   modelStr: string | undefined,
@@ -471,14 +534,23 @@ export const resolveTier = (
   //  프로파일 이름은 대소문자 구분(settings 키 그대로) — 티어 소문자화보다 앞에서 원문으로 조회.
   const profileChain = resolveProfileChain(raw, cwd);
   if (profileChain.length > 0) {
-    return poolToSpecs(profileChain[0], cwd);
+    // ★첫 풀**만** — 체인은 늘 기본 프로파일로 끝나므로(`resolveProfileChain`), 비지 않은 풀까지 내려가면 이 함수가 거의
+    //  항상 비지 않게 되고, 호출부의 «비면 다음 후보» 가 죽는다. 실측: `nano` 가 안 풀리면 내부 싼 호출이 `low` 를 건너뛰고
+    //  기본(비싼) 모델로 갔다(2026-09-28 재검토 P3 — 그 변경을 되돌림). 게이트웨이의 거짓 광고는 «풀리지 않으면 광고하지
+    //  않는다» 로 닫는다(목록이 이 함수를 부른다).
+    return poolToSpecs(profileChain[0]!, cwd);
   }
   // 등급 키워드 → MODEL_TIER_* 콤마 풀 (레거시 폴백).
   const s = raw.toLowerCase();
   const tierEnvKey = TIER_ENV[s];
   if (tierEnvKey !== undefined) {
-    const env = process.env[tierEnvKey];
-    if (env !== undefined && env !== "") {
+    // ★모델 구성을 **프로파일**로 하는 설치본에선 레거시 `MODEL_TIER_*` 를 보지 않는다 — 등급 이름과 같은 프로파일이
+    //  없으면 옛 .env 값이 새어 들어왔다(9/26 은 `nano` 만 막았는데 `low` 도 같았다 — 전체 검토 2026-09-28).
+    //  판단은 여기 한 곳이다(내부 싼 호출·게이트웨이 `tier:*`·서브에이전트 `model:` 이 모두 이 함수를 지난다).
+    //  프로파일이 하나도 없는 옛 설치본은 종전대로 env 를 따른다.
+    const legacyShadowed = Object.keys(loadModelProfiles(cwd)).length > 0;
+    const env = legacyShadowed ? "" : (process.env[tierEnvKey] ?? "").trim();
+    if (env !== "") {
       return parseModelSpecList(env);
     }
     // ★프로파일도 env 도 없을 때 — 빌트인(인증된 provider 조립)으로. 종전엔 여기서 []
@@ -1371,6 +1443,7 @@ const persistOutput = (
         userContent,
         assistantContent: output.text,
         ...(output.turnItems !== undefined ? { items: output.turnItems } : {}),
+        ...(output.sentUserText !== undefined ? { userSent: output.sentUserText } : {}),
       });
     } catch (e) {
       console.error("llm-runtime: appendTranscript/indexCodexTurn failed:", e);

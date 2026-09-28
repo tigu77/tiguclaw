@@ -234,7 +234,7 @@ const SYSTEM_PROMPT_HASH = createHash("sha256")
  * Task 완료 감지용 — Task tool_use id 에 대응하는 tool_result 가 부모 스트림에 도착.
  * content 는 string | block[] (Anthropic MessageParam). block.content 도 string | block[].
  */
-const extractToolResults = (
+export const extractToolResults = (
   msg: unknown,
 ): Array<{ toolUseId: string; text: string; isError: boolean }> => {
   const out: Array<{ toolUseId: string; text: string; isError: boolean }> = [];
@@ -270,6 +270,16 @@ const extractToolResults = (
             : "",
         )
         .join("");
+      // ★`ToolSearch` 의 결과는 텍스트가 아니라 **불러온 도구 참조**(`tool_reference`) 블록이다 — 텍스트만 읽어 카드
+      //  출력이 늘 비었다(dev 13/13 · 개발돌쇠 19/19, 2026-09-28 도구 카드 점검). 불러온 도구 이름을 한 줄씩 싣는다.
+      const refs = c
+        .map((b) =>
+          b !== null && typeof b === "object" && (b as { type?: unknown }).type === "tool_reference"
+            ? (b as { tool_name?: unknown }).tool_name
+            : undefined,
+        )
+        .filter((n): n is string => typeof n === "string" && n !== "");
+      if (refs.length > 0) text = [text, refs.join("\n")].filter((t) => t !== "").join("\n");
     }
     out.push({ toolUseId, text, isError });
   }

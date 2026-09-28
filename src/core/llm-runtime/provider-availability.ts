@@ -14,7 +14,7 @@
  * 의존은 provider-registry(연결 해석) + auth-registry(구독 인증 심)뿐 — 어댑터를 import 하지
  * 않는다(어댑터가 이걸 부르므로 반대 방향이면 순환).
  */
-import { resolveProviderConn } from "./provider-registry.js";
+import { resolveProviderConn, envValue } from "./provider-registry.js";
 import { getAuthProvider } from "./auth-registry.js";
 
 /**
@@ -55,8 +55,17 @@ export const providerAuthAvailable = (provider: string, cwd?: string): boolean =
     //  다른 이름의 provider 를 정의해도 인증은 같은 심을 탄다.
     const auth = getAuthProvider("codex");
     if (auth === undefined) return false;
-    return auth.isAuthenticated?.() ?? (process.env[conn.apiKeyEnv] ?? "") !== "";
+    return auth.isAuthenticated?.() ?? (conn.apiKeyEnv !== undefined && envValue(conn.apiKeyEnv) !== undefined);
   }
-  // openai 어댑터(openai·ollama·google·사용자 정의) — 어댑터 가드와 같은 조건.
+  // openai 어댑터(openai·google·사용자 정의) — 어댑터 가드와 같은 조건. 키 없는 서버는 자리표시 키라 여기서 통과한다 —
+  //  settings.json 에 주소를 적은 것 자체가 명시적 설정이다(★종전 내장 ollama 는 설정 없이도 «인증됨» 이라 ollama 가
+  //  없는 설치본이 매시간 목록을 조회해 경고를 남겼다 — 윈도우 실측 하루 15~21건. 내장을 빼며 그 부류가 없어졌다).
   return conn.apiKey !== undefined && conn.apiKey !== "";
 };
+
+/**
+ * **무엇을 설정하면 쓸 수 있게 되나** — 안 되는 이유를 사용자에게 말할 변수 이름(키 변수). 키 없는 서버는 설정돼 있으면
+ * 늘 쓸 수 있으므로 말할 변수가 없다(undefined).
+ */
+export const missingAuthEnv = (provider: string, cwd?: string): string | undefined =>
+  resolveProviderConn(provider, cwd)?.apiKeyEnv;

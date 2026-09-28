@@ -105,8 +105,12 @@ export interface ModelProviderConfig {
   adapter: string;
   /** OpenAI-compatible baseURL(optional). undefined = 어댑터 정품 경로. */
   baseURL?: string;
-  /** apiKey 를 읽을 env 변수명. 파일에 raw 키 금지 — env 참조만. */
-  apiKeyEnv: string;
+  /**
+   * apiKey 를 읽을 env 변수명. 파일에 raw 키 금지 — env 참조만. ★없으면 **키 없는 서버**(ollama·LM Studio 같은 로컬
+   * 서버, 2026-09-28) — settings.json 에 `"apiKeyEnv": null` 로 **명시한** 것만 이렇게 된다(빠뜨림·오타는 버린다).
+   * 그때는 `baseURL` 이 필수다(주소 없는 키 없는 provider 는 갈 곳이 없다).
+   */
+  apiKeyEnv?: string;
 }
 
 /** settings.json 최상위 형태 — 임의 키 허용(hooks·models·기타). */
@@ -317,8 +321,8 @@ export const loadModelProfiles = (
 };
 
 /**
- * 한 provider 값 shape 검증(2026-07-18) — adapter·apiKeyEnv 가 비어있지 않은 문자열이어야
- * 유효. baseURL 은 optional 문자열. adapter 의 "known 여부"(openai/claude/codex-oauth)는 여기서
+ * 한 provider 값 shape 검증(2026-07-18) — adapter 가 비어있지 않은 문자열이어야 유효. `apiKeyEnv` 는 env 이름이거나
+ * `null`(키 없는 서버 — 이때 baseURL 필수, 2026-09-28)이어야 한다. baseURL 은 optional. adapter 의 "known 여부"(openai/claude/codex-oauth)는 여기서
  * 판정하지 않는다(settings.ts 는 llm-runtime 무참조) — 소비 지점(provider-registry·parseModelSpec)
  * 이 미지 adapter 를 거부한다.
  */
@@ -342,21 +346,38 @@ const validateProviderConfig = (
     }
     return undefined;
   }
+  const baseURL = typeof o.baseURL === "string" && o.baseURL.trim() !== "" ? o.baseURL.trim() : undefined;
+  const known = new Set(["adapter", "baseURL", "apiKeyEnv"]);
+  const unknown = Object.keys(o).filter((k) => !known.has(k));
+  if (diagnose && unknown.length > 0) {
+    console.warn(`[settings] models.providers.${name}: 모르는 필드 ${unknown.map((k) => `\`${k}\``).join(", ")} — 무시합니다(쓰는 필드: adapter · baseURL · apiKeyEnv).`);
+  }
+  // ★**키 없는 서버는 `"apiKeyEnv": null` 로 명시한다** (2026-09-28 — 적대 검토 3라운드 끝에 판정 방식을 바꿈).
+  //  «`apiKeyEnv` 가 없으면 키 없는 서버» 로 추론했더니, 빠뜨림·오타(`apikeyEnv`)·다른 도구 철자(`apiKey`)·가짜 키가 전부
+  //  같은 모양이라 필드 이름으로 가를 때마다 한쪽이 샜다(원격 서버가 «인증됨» 으로 보이고 401 · 가짜 키가 있는 로컬 서버가
+  //  통째로 버려짐). 모양이 겹치지 않게 **선언**을 받는다 — 없거나 잘못 적었으면 종전처럼 경고하고 버린다.
+  if (o.apiKeyEnv === null) {
+    if (baseURL === undefined) {
+      if (diagnose) {
+        console.warn(`[settings] models.providers.${name}: 키 없는 서버(\`"apiKeyEnv": null\`)는 \`baseURL\` 이 필요합니다 — 무시.`);
+      }
+      return undefined;
+    }
+    return { adapter: o.adapter.trim(), baseURL };
+  }
   if (typeof o.apiKeyEnv !== "string" || o.apiKeyEnv.trim() === "") {
     if (diagnose) {
       console.warn(
-        `[settings] models.providers.${name}: apiKeyEnv 가 비어있지 않은 문자열이 아님 — 무시.`,
+        `[settings] models.providers.${name}: \`apiKeyEnv\`(키를 담은 환경변수 이름)가 없거나 비었습니다 — 무시. ` +
+          `키가 필요 없는 서버면 \`"apiKeyEnv": null\` 로 적으세요.`,
       );
     }
     return undefined;
   }
-  const config: ModelProviderConfig = {
-    adapter: o.adapter.trim(),
-    apiKeyEnv: o.apiKeyEnv.trim(),
-  };
-  if (typeof o.baseURL === "string" && o.baseURL.trim() !== "") {
-    config.baseURL = o.baseURL.trim();
-  }
+  const apiKeyEnv = o.apiKeyEnv.trim();
+  const config: ModelProviderConfig = { adapter: o.adapter.trim() };
+  if (apiKeyEnv !== undefined) config.apiKeyEnv = apiKeyEnv;
+  if (baseURL !== undefined) config.baseURL = baseURL;
   return config;
 };
 
@@ -368,6 +389,19 @@ const validateProviderConfig = (
  * 하드코딩 5종이 authoritative(사용자가 override 못 함)라는 규칙은 소비 지점(provider-registry
  * resolveProviderConn / listProviderNames)이 하드코딩 우선 lookup 으로 강제한다.
  */
+/**
+ * settings.json 에 **적혀 있는** provider 이름(검증 전) — 적혀 있는데 검증에서 버려진 것을 «없음» 과 구분해 말하려고 쓴다.
+ * ★구분하지 않으면 진단이 «`models.providers.X` 에 정의하세요» 라고 **틀리게** 안내한다 — 이미 정의했다(재검토 P2).
+ */
+export const writtenProviderNames = (cwd: string = process.cwd()): Set<string> => {
+  const out = new Set<string>();
+  for (const layer of loadSettingsLayers(cwd)) {
+    const providers = layer.models?.providers;
+    if (providers !== null && typeof providers === "object") for (const k of Object.keys(providers as object)) out.add(k);
+  }
+  return out;
+};
+
 export const loadModelProviders = (
   cwd: string = process.cwd(),
   diagnose = false,

@@ -47,7 +47,7 @@ export const check: RegressionCheck = {
       appendApiTurn({ channel: CH, threadKey: tk, claudeSessionId: sidOf(tk), userContent: `${label} 질문`, assistantContent: t.final, items: t.items });
     const nextInput = async (tk: string, fixedChars: number, summarize?: (t: string) => void) => {
       const r = await H.compactThreadHistory({
-        channel: CH, threadKey: tk, provider: `regr-ctm-${tk}`, adapter: "codex", fixedChars,
+        channel: CH, threadKey: tk, provider: `regr-ctm-${tk}`, adapter: "codex", budget: { instructionsChars: fixedChars, promptChars: 0 },
         summarize: async (text: string) => { summarize?.(text); return "요약본 ".repeat(20); },
       });
       const win = H.recentTurnsAfter(r.allTurns, r.watermark, { budgetUsedChars: fixedChars + r.summary.length });
@@ -111,7 +111,7 @@ export const check: RegressionCheck = {
     const rowsE = (getDb().prepare("SELECT count(*) AS n FROM transcripts WHERE claude_session_id = ?").get(sidOf(tkE)) as { n: number }).n;
 
     // ── F. 안 되살리는 어댑터(openai)는 항목 크기를 세지 않는다 ──
-    const F = await H.compactThreadHistory({ channel: CH, threadKey: tkA, provider: "regr-ctm-f", adapter: "openai", fixedChars: 10_000, summarize: async () => "x" });
+    const F = await H.compactThreadHistory({ channel: CH, threadKey: tkA, provider: "regr-ctm-f", adapter: "openai", budget: { instructionsChars: 10_000, promptChars: 0 }, summarize: async () => "x" });
 
     // ── J. openai 쪽에서 접어도 Codex 턴의 도구 사실이 요약에 들어간다(적대 검토 P2-3 — 종전엔 영구 소실) ──
     const tkJ = TK("j");
@@ -124,7 +124,7 @@ export const check: RegressionCheck = {
     await persistLong("J0", ["오픈AI 쪽 사실 OAI-FOLD-6161 " + "차".repeat(4_000)]);
     for (let i = 1; i <= 12; i++) await persistLong(`J${i}`, ["카".repeat(500)]);
     let foldJ = "";
-    await H.compactThreadHistory({ channel: CH, threadKey: tkJ, provider: "regr-ctm-j", adapter: "openai", fixedChars: 179_900,
+    await H.compactThreadHistory({ channel: CH, threadKey: tkJ, provider: "regr-ctm-j", adapter: "openai", budget: { instructionsChars: 179_900, promptChars: 0 },
       summarize: async (t: string) => { foldJ += t; return "요약본 ".repeat(20); } });
 
     // ── K. 이스케이프가 많은 결과·큰 인자 — 상한을 지키면서 예산을 실제로 쓰고, 깎은 인자는 유효한 JSON ──
@@ -191,6 +191,21 @@ export const check: RegressionCheck = {
       .finally(() => rmSync(childHome, { recursive: true, force: true }));
     const line = child.out.split(/\r?\n/).find((l) => l.startsWith("CROSS_TURN_RESULT "));
     const N = (line === undefined ? {} : JSON.parse(line.slice("CROSS_TURN_RESULT ".length))) as { turns?: number; t2HasT1?: boolean; t3T1Count?: number; t3T2Count?: number; t2AnswerCount?: number };
+
+    // ── S. 저장 전 비밀값 가리기(전체 검토 2026-09-28) — 모델이 읽은 `.env` 같은 도구 결과가 DB 에 남고 다음 턴에 다시 간다.
+    const secretEnv = "REGR_CROSS_TURN_API_TOKEN";
+    const savedSecret = process.env[secretEnv];
+    process.env[secretEnv] = "tok_REGRsecretValue_1234567890abcdef";
+    let secretItems: ReturnType<typeof H.collectTurnItems> = [];
+    try {
+      secretItems = (await runTurn("SEC", [`API_TOKEN=${process.env[secretEnv]}\nOPENAI_API_KEY=sk-proj-REGRABCDEFGHIJKLMNOPQRSTUV12\n일반 줄 PLAIN-4242`])).items;
+    } finally { if (savedSecret === undefined) delete process.env[secretEnv]; else process.env[secretEnv] = savedSecret; }
+    const secretDump = JSON.stringify(secretItems);
+    // 도구 **인자**도 가린다 — 모델이 명령에 키를 넣어 부른 경우(적대 검토 G2: 인자 가리기를 빼도 초록이었다).
+    const argDump = JSON.stringify(H.collectTurnItems([
+      { type: "function_call", call_id: "c_arg", name: "Bash", arguments: JSON.stringify({ command: "curl -H 'Authorization: Bearer sk-proj-REGRARGSABCDEFGHIJKLMNOP99' https://x" }) },
+      { type: "function_call_output", call_id: "c_arg", output: "ok" },
+    ] as Item[], "끝"));
 
     // ── G. 창 안전망(요약 실패 시): 도구 항목까지는 안 들어가도 텍스트는 남긴다 — 큰 최신 턴에서 멈추지 않는다 ──
     const G = H.recentTurnsAfter([
@@ -263,12 +278,12 @@ export const check: RegressionCheck = {
     for (let i = 1; i <= 6; i++) persist(tkP, `P${i}`, await runTurn(`P${i}`, ["차".repeat(3_000)]));
     const p0Id = loadThreadHistoryWithIds(CH, tkP).find((t) => t.content === "P0 답입니다")?.id ?? -1;
     let pCall = 0;
-    const P1 = await H.compactThreadHistory({ channel: CH, threadKey: tkP, provider: `regr-ctm-p1-${tkP}`, adapter: "codex", fixedChars: 150_000,
+    const P1 = await H.compactThreadHistory({ channel: CH, threadKey: tkP, provider: `regr-ctm-p1-${tkP}`, adapter: "codex", budget: { instructionsChars: 150_000, promptChars: 0 },
       // 꼬리 사실이 든 조각(마지막)만 짧은 거절 문구 — 빈 결과가 아니어도 부분 성공으로 넘어가면 안 된다.
       summarize: async (t: string) => { pCall += 1; return t.includes("MIDFAIL-8181") ? "요약할 수 없습니다." : "요약본 ".repeat(20); } });
     const pSizes: number[] = [];
     const pBig: number[] = [];
-    const P2 = await H.compactThreadHistory({ channel: CH, threadKey: tkP, provider: `regr-ctm-p2-${tkP}`, adapter: "codex", fixedChars: 150_000,
+    const P2 = await H.compactThreadHistory({ channel: CH, threadKey: tkP, provider: `regr-ctm-p2-${tkP}`, adapter: "codex", budget: { instructionsChars: 150_000, promptChars: 0 },
       summarize: async (t: string) => { pSizes.push(t.length); if (t.includes("자자자")) pBig.push(t.length); return "요약본 ".repeat(20); } });
 
     // ── Q. 수동 /compact 도 큰 턴을 조각으로 부른다(두 호출부 모두 연결) ──
@@ -304,6 +319,10 @@ export const check: RegressionCheck = {
       assert("★I 큰 턴은 조각으로 요약된다 — 여러 번 부르고, 각 입력은 예산(4만) 안, 꼬리 사실이 닿고, 잘림 표식 없음",
         In.r.watermark >= i0Id && pieces.length >= 2 && pieces.every((p) => p.length <= 40_000) && pieces.some((p) => p.includes("FOLD-TAIL-5151")) && !pieces.some((p) => p.includes("요약 입력 상한으로")),
         { watermark: In.r.watermark, i0Id, calls: pieces.length, sizes: pieces.map((p) => p.length) }),
+      assert("★S 저장될 도구 결과에서 비밀값(환경 변수 값·sk- 키)이 가려지고, 일반 글자는 남는다",
+        !secretDump.includes("tok_REGRsecretValue_1234567890abcdef") && !secretDump.includes("sk-proj-REGRABCDEFGHIJKLMNOPQRSTUV12") && secretDump.includes("PLAIN-4242"),
+        secretDump.slice(0, 200)),
+      assert("도구 인자 속 비밀값도 가린다(명령은 남긴다)", !argDump.includes("sk-proj-REGRARGSABCDEFGHIJKLMNOP99") && argDump.includes("curl"), argDump.slice(0, 300)),
       assert("★G 창 안전망: 큰 최신 턴은 텍스트로 남고 그 앞 턴도 남는다(종전 0턴)", G.length === 4 && G[3]?.items === undefined, G),
       assert("★A 이전 턴의 도구 출력(사실)이 다음 턴 입력에 있다", outsA.some((o) => o.output.includes("FACT-7731")), outsA.map((o) => o.output.slice(0, 40))),
       assert("★A 순서: 사용자 → 중간 발화 → 호출 → 출력 → 작업 중 지시 → 비서 답 → 현재 턴",

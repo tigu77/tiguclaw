@@ -55,8 +55,7 @@ import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import {
   compactThreadHistory,
   recentTurnsAfter,
-  summarizeInstructions,
-} from "./openai-codex-oauth-history.js";
+  summarizeInstructions } from "./openai-codex-oauth-history.js";
 import {
   toolResultForAdapter,
   toolMediaNote,
@@ -64,7 +63,7 @@ import {
 } from "./_mcp-content.js";
 import { getEventBus } from "../../eventbus.js";
 import { getPaths } from "../../paths.js";
-import { resolveProviderConn } from "../provider-registry.js";
+import { envValue, resolveProviderConn } from "../provider-registry.js";
 import { createOpenAiAgent } from "./_openai-agent.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
@@ -366,11 +365,11 @@ export const runOpenAi = async (
   const idChannel = input.sessionChannel ?? input.channel;
 
   // provider 연결 해석 — input.provider 미지정(레거시 호출)이면 정품 openai 로 폴백.
-  // ollama/google 은 baseURL/apiKey 가 여기서 단일 지점 해석된다(어댑터별 if 분기 0).
+  // google·사용자 서버는 baseURL/apiKey 가 여기서 단일 지점 해석된다(어댑터별 if 분기 0).
   const conn = resolveProviderConn(input.provider) ?? resolveProviderConn("openai")!;
 
   // 인증 가드 — provider conn 기반(기존 OPENAI_API_KEY 직접 throw 완화).
-  // ollama 는 apiKeyFallback("ollama") 덕에 항상 통과. 정품 openai/google 은 키 필요.
+  // 키 없는 서버(사용자 정의, apiKeyEnv 없음)는 자리표시 키로 통과. 정품 openai/google 은 키 필요.
   if (conn.apiKey === undefined || conn.apiKey === "") {
     throw new Error(
       `'${input.provider ?? "openai"}' 인증 없음. ${conn.apiKeyEnv} 가 필요합니다.`,
@@ -379,7 +378,7 @@ export const runOpenAi = async (
 
   // V3 spike = hello world. instructions·tools·MCP·session resume·자동 메모리 모두 V5+.
   // model 우선순위: facade 주입(input.model) > env > 디폴트.
-  const model = input.model ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+  const model = input.model ?? envValue("OPENAI_MODEL") ?? "gpt-4o-mini"; // 빈 `OPENAI_MODEL=` 은 «없음»
 
   // baseURL 지정(ollama/google 등 compat) → OpenAIProvider 로 Model 인스턴스 생성 후 주입.
   //  - 동시성 안전: provider/Model 이 호출 스코프 지역 변수(전역 setDefaultOpenAIClient 금지).
@@ -1025,7 +1024,7 @@ export const runOpenAi = async (
     provider: input.provider ?? "openai",
     adapter: "openai",
     // 요약 기준 = 보낼 수 있는 이력 예산 — codex 와 같은 판정(historyTriggerChars).
-    fixedChars: instructions.length + promptWithMemory.length,
+    budget: { instructionsChars: instructions.length, promptChars: promptWithMemory.length },
     summarize: async (text, targetChars) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
       //  첫 판은 `new Agent({...})` 로 직접 만들어 `modelSettings` 를 통째로 생략했다 —

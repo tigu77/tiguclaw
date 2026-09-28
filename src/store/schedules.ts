@@ -232,5 +232,31 @@ export const recordFiring = (
 export const deleteSchedule = (id: number): boolean => {
   const handle = getDb();
   const result = handle.prepare(`DELETE FROM schedules WHERE id = ?`).run(id);
+  handle.prepare(`DELETE FROM schedule_runs WHERE schedule_id = ?`).run(id); // 그 스케줄의 발화 기록도 같이 간다
   return result.changes > 0;
 };
+
+/** 이력 정책 «직전 N회» 의 N 상한 — 도구 검증(`keep_runs`)과 발화 기록 보존 개수가 이 값 하나를 본다. */
+export const KEEP_RUNS_MAX = 50;
+
+/**
+ * 발화 기록 한 줄 — **대화가 남은 발화만**(runner 가 LLM 턴 성공 뒤에 부른다). `ts` = 발화 시작 시각. 스케줄마다 최근
+ * `KEEP_RUNS_MAX` 개만 남긴다.
+ */
+export const recordScheduleRun = (scheduleId: number, ts: number): void => {
+  const handle = getDb();
+  handle.transaction(() => {
+    // 발화 도중 스케줄이 지워졌으면 적지 않는다 — 지운 뒤 들어간 행은 아무도 안 읽고 안 치운다(적대 검토 2026-09-28).
+    handle.prepare(`INSERT INTO schedule_runs (schedule_id, ts) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM schedules WHERE id = ?)`).run(scheduleId, ts, scheduleId);
+    handle.prepare(
+      `DELETE FROM schedule_runs WHERE schedule_id = ? AND rowid NOT IN
+         (SELECT rowid FROM schedule_runs WHERE schedule_id = ? ORDER BY ts DESC, rowid DESC LIMIT ?)`,
+    ).run(scheduleId, scheduleId, KEEP_RUNS_MAX);
+  })();
+};
+
+/** 발화 시각 최신순(최대 `limit` 개). */
+export const scheduleRunTimes = (scheduleId: number, limit: number): number[] =>
+  (getDb()
+    .prepare(`SELECT ts FROM schedule_runs WHERE schedule_id = ? ORDER BY ts DESC, rowid DESC LIMIT ?`)
+    .all(scheduleId, Math.max(0, limit)) as { ts: number }[]).map((r) => r.ts);

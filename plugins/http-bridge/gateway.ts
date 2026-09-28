@@ -8,7 +8,7 @@
  * ★인증도 다르다 — `/v1/*` 는 브리지 role 표가 아니라 **자기 게이트웨이 토큰**으로 가른다
  *  (그래서 role 표 밖인 것이 정당하다. 회귀 `bridge-role-table-complete` 가 그 예외를 지킨다).
  */
-import { parseModelSpec, parseModelSpecList, resolveTier, specLabel } from "../../src/core/llm-runtime/index.js";
+import { LEGACY_TIERS, parseModelSpec, parseModelSpecList, resolveTier, specLabel } from "../../src/core/llm-runtime/index.js";
 import type { ModelSpec } from "../../src/core/llm-runtime/index.js";
 import { loadGatewayConfig, loadModelProfiles } from "../../src/core/settings.js";
 
@@ -56,12 +56,6 @@ export const resolveGatewaySpecs = (model: unknown, poolRaw: string): ModelSpec[
 //   타므로 — 순수 이름을 그대로 노출하면 클라가 body.model 에 넣었을 때 조용히 기본 풀로 치환
 //   되는 기존 갭을 광고하는 꼴). 직접 풀 스펙은 specLabel(provider:model) 로 대칭 노출. ──
 const GATEWAY_MODELS_CREATED = Math.floor(Date.now() / 1000); // 부팅 1회 고정(매요청 Date.now()면 클라 캐시 무효화).
-const GATEWAY_TIER_ENV: Record<string, string> = {
-  high: "MODEL_TIER_HIGH",
-  mid: "MODEL_TIER_MID",
-  low: "MODEL_TIER_LOW",
-  nano: "MODEL_TIER_NANO",
-};
 export const buildModelsListResponse = (poolRaw: string): {
   object: "list";
   data: Array<{ id: string; object: "model"; created: number; owned_by: string }>;
@@ -73,16 +67,17 @@ export const buildModelsListResponse = (poolRaw: string): {
     seen.add(id);
     data.push({ id, object: "model", created: GATEWAY_MODELS_CREATED, owned_by: owner });
   };
-  // 1) 명명 프로파일 → tier:<name>
+  // 1)·2) 명명 프로파일·레거시 등급 → tier:<name> — **요청이 실제로 해석되는 것만**(빈 풀 = 기본 풀로 빠지므로 제외).
+  //  ★광고는 요청 쪽과 **같은 판정**(`resolveTier`)을 부른다 — 종전엔 등급은 env 를 따로 읽었고(사본) 프로파일은 이름만
+  //   봐서, `tier:nano`·첫 풀이 안 풀리는 프로파일을 광고해 놓고 요청하면 조용히 기본 풀로 갔다(적대 검토 2026-09-28 P4).
+  let profileNames: string[] = [];
   try {
-    for (const name of Object.keys(loadModelProfiles())) add(`tier:${name}`, "tiguclaw");
+    profileNames = Object.keys(loadModelProfiles());
   } catch {
     /* settings 파싱 실패 — 프로파일 스킵(부재 graceful) */
   }
-  // 2) 레거시 티어 — MODEL_TIER_* env 가 실제로 채워진 것만(빈 풀=어댑터 디폴트라 제외).
-  for (const [tier, envKey] of Object.entries(GATEWAY_TIER_ENV)) {
-    const v = process.env[envKey];
-    if (typeof v === "string" && v.trim() !== "") add(`tier:${tier}`, "tiguclaw");
+  for (const name of [...profileNames, ...LEGACY_TIERS]) {
+    if (resolveTier(name).length > 0) add(`tier:${name}`, "tiguclaw");
   }
   // 3) 직접 풀 스펙 — settings gateway.models ?? env (resolveGatewaySpecs 폴백과 동일 소스).
   for (const spec of parseModelSpecList(poolRaw)) {

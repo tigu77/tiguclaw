@@ -141,7 +141,7 @@ import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js"
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
 import { summarizeInputComposition } from "./_codex-input-composition.js";
 import { codexSpeedBody } from "./_openai-speed.js";
-import { buildActivityDetailFromJson } from "./_activity-detail.js";
+import { buildActivityDetail, buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
@@ -1489,6 +1489,9 @@ export const runOpenAiCodex = async (
         // 거부하면(거부 시 res.ok=false → throw → 풀 폴백) 대안 = tools 키 omit. 현재는
         // 빈 배열 우선 (function tools shape 와 동일 키 보존, 안전한 1차 시도).
         tools: finalFlushRequested ? [] : responsesTools,
+        // 검색 출처(URL 목록)는 요청해야 온다 — 카드의 «출력» 자리(위 onWebSearchCompleted). 검색을 켠 요청에만 건다
+        //  (실측 2026-09-28: gpt-6-sol·gpt-6-astra·gpt-5.6-terra 200, 도구 없는 요청도 200). 항목은 재주입하지 않아 토큰 0.
+        ...(webSearchEnabled && !finalFlushRequested ? { include: ["web_search_call.action.sources"] } : {}),
         // ★프로파일이 «빠르게» 라고 했을 때만 (2026-09-10). 중립 의도(`speed:"fast"`)를
         //  이 백엔드의 낱말로 옮긴다 — 공용 계약에 `service_tier` 를 박지 않는 이유는
         //  그게 OpenAI 말이라서다(다른 provider 를 붙일 때 남의 벤더 말을 쓰게 된다).
@@ -1815,8 +1818,11 @@ export const runOpenAiCodex = async (
                   /* best-effort — 스트리밍 관측 실패가 turn 을 무르지 않는다(원칙 3). */
                 }
               },
-          ({ durationMs }) => {
+          ({ durationMs, queries, sources }) => {
             // 검색 완료 관측: 로컬 도구 실행/재주입/사용량 계수에는 넣지 않는다.
+            // ★카드는 검색어(입력)·출처(출력)를 싣는다(2026-09-28 정태님 «입력 출력이 나오는 게 별로 없네») — 종전엔
+            //  «Provider web search completed» 한 줄이라 무엇을 찾았는지도 안 보였다. claude `WebSearch` 와 같은
+            //  빌더(detail=`query=…`, output=결과 텍스트)를 탄다. 출처는 요청에 `include` 를 걸어야 온다(아래 body).
             // ★시작과 끝을 **같은 seq 로 한 쌍** 발행한다 (2026-09-26 적대 검토 P3). 시작만 보내면
             //  대시보드는 도구 스텝을 «실행 중» 으로 켜고 같은 seq 의 끝이 와야 끄므로, 끝난 검색이
             //  잡이 끝날 때까지 «⏳ 실행 중» 으로 남았다. 발행 시점은 여전히 **완료 뒤**다 —
@@ -1834,12 +1840,24 @@ export const runOpenAiCodex = async (
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),
-              payload: { ...base, phase: "start", detail: "Provider web search completed" } satisfies RegionAActivityPayload,
+              payload: {
+                ...base,
+                phase: "start",
+                detail: (queries !== undefined ? buildActivityDetail({ query: queries.join(" · ") }) : undefined) ?? "Provider web search completed",
+              } satisfies RegionAActivityPayload,
             });
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),
-              payload: { ...base, phase: "end", durationMs } satisfies RegionAActivityPayload,
+              payload: {
+                ...base,
+                phase: "end",
+                durationMs,
+                ...(() => {
+                  const out = sources !== undefined ? buildActivityOutput("web_search", sources.join("\n")) : undefined;
+                  return out !== undefined ? { output: out } : {};
+                })(),
+              } satisfies RegionAActivityPayload,
             });
           },
         );
@@ -2853,6 +2871,7 @@ export const runOpenAiCodex = async (
       usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
       externalToolCalls: pendingExternalToolCalls,
       turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
+      sentUserText: promptWithMemory,
     };
   }
 
@@ -2928,5 +2947,6 @@ export const runOpenAiCodex = async (
     replyToTrigger,
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
     turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
+    sentUserText: promptWithMemory,
   };
 };

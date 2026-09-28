@@ -39,7 +39,7 @@ export const check: RegressionCheck = {
         const r = await H.compactThreadHistory({
           channel: "http-bridge", threadKey: TK, provider: `regr-hws-${label}`, adapter: "codex",
           summarize: async (_t: string, target: number) => { summarizeCalls += 1; return "요약:" + "약".repeat(Math.max(0, Math.min(target, 2_000) - 3)); },
-          fixedChars: FIXED,
+          budget: { instructionsChars: FIXED, promptChars: 0 },
         });
         const unsummarized = r.allTurns.filter((t) => t.id > r.watermark);
         maxUnsummarized = Math.max(maxUnsummarized, unsummarized.reduce((n, t) => n + t.content.length, 0));
@@ -59,7 +59,42 @@ export const check: RegressionCheck = {
     // C. 고정 비용이 커서 기준이 낮은 스레드 — 저수위가 그 기준에서 계산돼야 한 번 접고 한동안 안정(F6)
     const C = await simulate("highfixed", 120_000, 2_000, 120); // 30턴(6만 자)이 저수위보다 커야 저수위가 작용한다
     const trigger = A.trigger;
+    // E. 큰 프롬프트 한 번(전체 검토 2026-09-28) — 원문 9만 자 스레드에 15만 자 붙여넣기. 종전(고정 비용 = 지시문 + 프롬프트
+    //  전체)이면 기준이 하한(2만)으로 떨어져 그 턴에 원문이 영구히 접혔다. 이제 프롬프트 몫은 상한까지만 센다.
+    const tkE = `regr:history-window-stable:bigprompt:${Date.now()}`;
+    clearThreadSummary("http-bridge", tkE);
+    indexCodexTurn({ channel: "http-bridge", threadKey: tkE, claudeSessionId: "regr-hws-bigprompt" });
+    let tsE = 1_800_000_000_000;
+    for (let i = 0; i < 45; i++) for (const role of ["user", "assistant"] as const) {
+      appendTranscript({ claudeSessionId: "regr-hws-bigprompt", role, content: `e${i}:` + "다".repeat(990), ts: (tsE += 1_000) });
+    }
+    let eSummaries = 0;
+    const E = await H.compactThreadHistory({
+      channel: "http-bridge", threadKey: tkE, provider: "regr-hws-bigprompt", adapter: "codex",
+      summarize: async () => { eSummaries += 1; return "요약:" + "약".repeat(200); },
+      budget: { instructionsChars: 30_000, promptChars: 150_000 },
+    });
+    const oldTrigger = H.historyTriggerChars(30_000 + 150_000);
+    // E2. 이음매 — Codex 이력 조립(`buildTurnHistory`)을 실제로 15만 자 프롬프트로 부른다(호출부가 몫 상한을 쓰나).
+    const tkE2 = `regr:history-window-stable:bigprompt-seam:${Date.now()}`;
+    clearThreadSummary("http-bridge", tkE2);
+    indexCodexTurn({ channel: "http-bridge", threadKey: tkE2, claudeSessionId: "regr-hws-bigprompt-seam" });
+    for (let i = 0; i < 45; i++) for (const role of ["user", "assistant"] as const) {
+      appendTranscript({ claudeSessionId: "regr-hws-bigprompt-seam", role, content: `s${i}:` + "라".repeat(990), ts: (tsE += 1_000) });
+    }
+    let seamSummaries = 0;
+    H.setSummarizerPort(async () => { seamSummaries += 1; return "요약:" + "약".repeat(200); });
+    try {
+      await H.buildTurnHistory({ threadKey: tkE2, channel: "http-bridge", provider: "regr-hws-seam" } as never, "붙여넣기 " + "로".repeat(150_000), [], "fake-token", undefined, "fake-model", 30_000);
+    } finally { H.setSummarizerPort(null); }
     return [
+      assert("★E 큰 프롬프트 한 번(15만 자)으로 원문 9만 자가 요약되지 않는다 — 종전 식이면 기준이 하한까지 떨어진다",
+        E.watermark === 0 && eSummaries === 0 && oldTrigger === H.CODEX_SUMMARY_MAX_CHARS && H.historyTriggerChars(H.historyFixedChars(30_000, 150_000)) > 90_000,
+        { watermark: E.watermark, eSummaries, oldTrigger, newTrigger: H.historyTriggerChars(H.historyFixedChars(30_000, 150_000)) }),
+      assert("★E2 이음매: Codex 이력 조립이 15만 자 프롬프트에서 요약을 부르지 않는다(호출부가 몫 상한을 쓴다)", seamSummaries === 0, { seamSummaries }),
+      assert("E 평소 크기 프롬프트는 그대로 센다(몫 상한 아래) · 상한 위는 상한까지만",
+        H.historyFixedChars(30_000, 3_000) === 33_000 && H.historyFixedChars(30_000, 150_000) === 30_000 + H.HISTORY_PROMPT_RESERVE_CHARS,
+        { small: H.historyFixedChars(30_000, 3_000), big: H.historyFixedChars(30_000, 150_000) }),
       assert("A 쌓인 턴이 옛 턴 수 상한(150)을 훌쩍 넘었다(없으면 아래는 공짜 초록)", A.turns >= 400, A.turns),
       assert("★① 요약이 없던 스텝 사이엔 창의 첫 턴이 한 번도 안 바뀐다(프리픽스 캐시 보존) — A·B·C", [A, B, C].every((x) => x.slidWithoutFold === 0), [A, B, C].map((x) => x.slidWithoutFold)),
       assert("★② 창 = 요약 안 된 턴 전부 — 버리는 턴이 없다(맥락 손실 0) — A·B·C", [A, B, C].every((x) => x.dropped === 0), [A, B, C].map((x) => x.dropped)),

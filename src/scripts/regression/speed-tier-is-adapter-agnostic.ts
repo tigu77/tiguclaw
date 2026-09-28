@@ -25,7 +25,7 @@
  *
  * ★**세 번째 어댑터까지 왔다** (2026-09-12 N6). `openai` 어댑터는 «못 하는 게 아니라 안 한»
  *  상태로 남아 있었다 — 계약 주석이 그걸 «parity 잔여» 라고 적어 두고 있었다. 그런데 이
- *  어댑터는 **다대일**이라(openai·ollama·google·사용자 정의) 축이 하나 더 는다: «어댑터가
+ *  어댑터는 **다대일**이라(openai·google·사용자 정의) 축이 하나 더 는다: «어댑터가
  *  읽는가» 만으로는 부족하고 «이 연결이 그 손잡이를 갖는가» 까지 가른다. 그래서 규칙을
  *  `_openai-speed.ts` 한 곳에 두고 **운반(어댑터)과 표시(화면)가 같은 함수**를 부르게 했다 —
  *  둘이 각자 판정하면 갈리고, 갈린 방향이 «안 읽는다면서 돈은 나간다» 면 최악이다(P1).
@@ -315,7 +315,7 @@ export const check: RegressionCheck = {
       // ★종전엔 이 어댑터만 `speed` 를 **안 읽었다** — 같은 settings.json 이 어댑터를 바꾸는
       //  순간 아무 신호 없이 무시됐다(원칙 #2 위반). 형제 `reasoning` 이 2026-08-15 에
       //  똑같이 빠져 있던 자리다.
-      // ★그리고 이 어댑터는 **다대일**이다(openai·ollama·google·사용자 정의). `service_tier`
+      // ★그리고 이 어댑터는 **다대일**이다(openai·google·사용자 정의). `service_tier`
       //  는 api.openai.com 의 낱말이라 compat 백엔드로 새면 안 된다 — **양쪽 방향을 다 잰다.**
       const openaiChain = (spec: string, speed?: string): Record<string, unknown> => {
         const first = poolToSpecs([{ spec, ...(speed === undefined ? {} : { speed }) } as never])[0];
@@ -327,7 +327,6 @@ export const check: RegressionCheck = {
       };
       const openaiFast = openaiChain("openai:gpt-5", "fast");
       const openaiPlain = openaiChain("openai:gpt-5");
-      const ollamaFast = openaiChain("ollama:qwen3:8b", "fast");
       const googleFast = openaiChain("google:gemini-3-pro", "fast");
       out.push(
         assert(
@@ -341,12 +340,7 @@ export const check: RegressionCheck = {
           JSON.stringify(openaiPlain),
         ),
         assert(
-          "★★compat 백엔드(ollama)엔 **안 샌다** — `service_tier` 는 api.openai.com 의 낱말이고, 그쪽엔 그 손잡이도 그 대가도 없다(잘해야 무시·나쁘면 400)",
-          Object.keys(ollamaFast).length === 0,
-          JSON.stringify(ollamaFast),
-        ),
-        assert(
-          "★같은 어댑터로 오는 google 도 마찬가지 — 하나만 막으면 형제로 샌다",
+          "★★compat 백엔드(google — 같은 openai 어댑터)엔 **안 샌다** — `service_tier` 는 api.openai.com 의 낱말이고, 그쪽엔 그 손잡이도 그 대가도 없다(잘해야 무시·나쁘면 400)",
           Object.keys(googleFast).length === 0,
           JSON.stringify(googleFast),
         ),
@@ -358,7 +352,6 @@ export const check: RegressionCheck = {
       //  면 사용자는 안심하고 켜 둔다(2026-09-11 P1 이 정확히 그 사고였다).
       const keys = [
         ["openai:gpt-5", "openai", "정품 openai — 읽는다"],
-        ["ollama:qwen3:8b", undefined, "compat — 안 읽는다"],
         ["google:gemini-3-pro", undefined, "compat — 안 읽는다"],
         ["anthropic:claude-opus-5", "claude", "claude 어댑터"],
         ["codex:gpt-5.6-sol", "codex-oauth", "codex 어댑터"],
@@ -367,7 +360,7 @@ export const check: RegressionCheck = {
       const wrongKeys = keys.filter(([spec, want]) => speedCostKeyFor(spec) !== want);
       out.push(
         assert(
-          "★★화면의 대가 키가 **운반과 같은 규칙**으로 갈린다 — 어댑터 이름만으로 찍으면 `ollama` 에 **없는 비용**이 뜨고(P4), provider 이름으로 찍으면 사용자 정의 이름이 **비용을 숨긴다**(P1)",
+          "★★화면의 대가 키가 **운반과 같은 규칙**으로 갈린다 — 어댑터 이름만으로 찍으면 compat(`google`)에 **없는 비용**이 뜨고(P4), provider 이름으로 찍으면 사용자 정의 이름이 **비용을 숨긴다**(P1)",
           wrongKeys.length === 0,
           keys.map(([spec, , label]) => `${label}=${String(speedCostKeyFor(spec))}`).join(" · "),
         ),
@@ -428,7 +421,7 @@ export const check: RegressionCheck = {
             { spec: "anthropic:claude-opus-5", speed: "fast" },
             { spec: "codex:gpt-5.6-sol", speed: "fast" },
             { spec: "openai:gpt-5", speed: "fast" },
-            { spec: "ollama:qwen3:8b", speed: "fast" },
+            { spec: "google:gemini-3-flash", speed: "fast" },
             { spec: "codex:gpt-5.6-terra" },
           ],
         },
@@ -463,8 +456,8 @@ export const check: RegressionCheck = {
         line,
       ),
       assert(
-        "★정말 안 읽는 자리(ollama)에만 «안 읽음» 이 나온다 — 같은 **openai 어댑터**로 오지만 그쪽엔 그 손잡이가 없다",
-        /qwen3:8b`\(빠름·이 provider 는 안 읽음\)/.test(line),
+        "★정말 안 읽는 자리(compat — google)에만 «안 읽음» 이 나온다 — 같은 **openai 어댑터**로 오지만 그쪽엔 그 손잡이가 없다",
+        /gemini-3-flash`\(빠름·이 provider 는 안 읽음\)/.test(line),
         line,
       ),
       assert(
@@ -529,7 +522,7 @@ export const check: RegressionCheck = {
           JSON.stringify(ms(fastReal)),
         ),
         assert(
-          "★★compat 연결(ollama)엔 **그 낱말이 안 간다** — 어댑터가 `conn` 을 안 보고 «정품» 이라고 우기면 여기서 걸린다(화면은 «안 읽음» 이라 말하는데 요청엔 실려 나가던 자리)",
+          "★★compat 연결(로컬 서버 주소)엔 **그 낱말이 안 간다** — 어댑터가 `conn` 을 안 보고 «정품» 이라고 우기면 여기서 걸린다(화면은 «안 읽음» 이라 말하는데 요청엔 실려 나가던 자리)",
           tier(fastCompat) === undefined,
           JSON.stringify(ms(fastCompat)),
         ),

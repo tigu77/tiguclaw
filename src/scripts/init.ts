@@ -465,7 +465,6 @@ OPENAI_API_KEY=${a.openaiKey}
 
 # (미사용 provider — region-A 미연결, 참고용)
 GOOGLE_GENERATIVE_AI_API_KEY=
-OLLAMA_BASE_URL=
 
 # ChatGPT OAuth 우회 (codex provider). \`npm run codex-auth\` 로 자동 발급/갱신됩니다.
 # codex 를 선택했어도 설치 후 codex-auth 를 실행해야 토큰이 채워집니다.

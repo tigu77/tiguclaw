@@ -370,7 +370,6 @@
   "models.updateNotes.head": "What's in the update",
   "models.updateNotes.missing": "Nothing to receive right now (already up to date, or the remote couldn't be read).",
   "modules.adapter.codex": "OpenAI Codex (subscription)",
-  "modules.adapter.ollama": "Ollama (local)",
   "modules.cap.callable": "Callable features",
   "modules.cap.egress": "Can send",
   "modules.detail.none": "No module selected.",

@@ -11,7 +11,7 @@
 import type { EventBus } from "../../../src/core/eventbus.js";
 import type { WorkerNotifyDest } from "../../../src/core/worker-jobs.js";
 import type { ScheduleRow } from "../../../src/store/schedules.js";
-import { getSchedule } from "../../../src/store/schedules.js";
+import { getSchedule, recordScheduleRun } from "../../../src/store/schedules.js";
 import { loadSchedulerRetryEnabled } from "../../../src/core/settings.js";
 import { dispatch } from "./dispatcher.js";
 import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
@@ -271,11 +271,16 @@ export const runScheduleFiring = async (
           // 발화 때 새로 읽는다 — cron 콜백은 등록 시점의 행을 붙잡고 있어, 도구를 안 거친 변경이
           //  재시작 전까지 안 보였다(설정=데이터는 매번 새로 읽는다).
           (getSchedule(schedule.id) ?? schedule).keepRuns,
+          Date.now(),
+          schedule.id,
         );
         if (applied !== null) {
           console.log(
             `[scheduler:${schedule.id}] 이력 정책 적용 — ` +
-              `발화 ${applied.runs}회 중 경계 ${new Date(applied.boundary).toISOString()} 이전을 끊음`,
+              (applied.source === "fresh"
+                ? `매번 새로 — 경계 ${new Date(applied.boundary).toISOString()} 이전을 끊음`
+                : `직전 ${applied.kept}회만 남기고 경계 ${new Date(applied.boundary).toISOString()} 이전을 끊음` +
+                  ` (발화 시각 출처: ${applied.source === "log" ? "발화 기록" : "프롬프트 일치 — 기록이 아직 모자람"})`),
           );
         }
       } catch (e) {
@@ -284,6 +289,8 @@ export const runScheduleFiring = async (
         );
       }
     }
+    // 발화 시작 시각 — 대화가 남으면 발화 기록에 이 시각으로 적는다(«직전 N회» 경계가 이 실행을 통째로 품게).
+    const firedAt = Date.now();
     try {
       const out = await deps.runClaude({
         text: schedule.prompt,
@@ -299,6 +306,14 @@ export const runScheduleFiring = async (
         },
       });
       resultText = out.text;
+      // ★대화가 남은 발화만 적는다 — 실패한 발화까지 세면 실제로 남는 대화가 N회보다 적어진다. 전달(dispatch) 실패와는
+      //  무관하다(대화는 이미 남았다). 한계: Claude 는 실패한 발화도 SDK 기록에 남아 다음 턴에 색인될 수 있다 — 그때 창이
+      //  N회보다 **커질** 뿐 줄지는 않는다(적대 검토 2026-09-28). 기록 실패가 발화·전달을 막지 않는다(다음은 프롬프트 일치로).
+      if (resultText !== "") {
+        try { recordScheduleRun(schedule.id, firedAt); } catch (e) {
+          console.warn(`[scheduler:${schedule.id}] 발화 기록 실패 — 이력 정책은 프롬프트 일치로 대신합니다: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       // 영구 로그에 스케줄 맥락과 함께 남긴다(EventBus·DB last_error 외 사후 grep 용).

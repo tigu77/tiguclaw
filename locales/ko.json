@@ -370,7 +370,6 @@
   "models.updateNotes.head": "업데이트 내역",
   "models.updateNotes.missing": "지금 받을 변경이 없습니다(이미 최신이거나 원격을 읽지 못했습니다).",
   "modules.adapter.codex": "OpenAI Codex (구독)",
-  "modules.adapter.ollama": "Ollama (로컬)",
   "modules.cap.callable": "호출 가능한 기능",
   "modules.cap.egress": "발신 가능",
   "modules.detail.none": "선택된 모듈이 없습니다.",

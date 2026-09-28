@@ -111,7 +111,7 @@ const client = new OpenAI({
 ```
 
 ### 모델 이름 규약 (★OpenRouter 슬러그와 다름)
-- `provider:model` — `anthropic:claude-sonnet-5`, `codex:gpt-5.6-terra`, `openai:gpt-4o-mini`, `ollama:qwen2.5:7b`
+- `provider:model` — `anthropic:claude-sonnet-5`, `codex:gpt-5.6-terra`, `openai:gpt-4o-mini`, `ollama:qwen2.5:7b`(settings.json `models.providers` 에 정의한 이름)
 - `tier:<프로파일>` — settings.json `models.profiles` 의 명명 프로파일(`tier:high`·`tier:default` 등)
 - 목록은 `GET /v1/models` 로 확인(거기 나온 id 를 그대로 쓰면 왕복 보장)
 - ⚠️ **목록에 없는 이름을 보내면 400 이 아니라 조용히 기본 풀로 폴백**한다(알려진 갭) —

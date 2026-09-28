@@ -307,7 +307,9 @@ export const parseCodexSse = async (
   }) => void,
   // 공급자 실행 검색은 로컬 function_call이 아니다. 완료 관측만 별도로 전달한다.
   //  `durationMs` = 같은 검색의 진행 이벤트를 처음 본 때부터 완료까지(못 봤으면 0).
-  onWebSearchCompleted?: (info: { durationMs: number }) => void,
+  //  `queries`·`sources` = 완료 항목(`output_item.done` 의 `web_search_call.action`)이 준 검색어·출처(2026-09-28) — 카드가
+  //  «무엇을 찾았고 어디를 봤나» 를 보이게. 완료 항목 없이 끝난 검색은 둘 없이 한 번 알린다.
+  onWebSearchCompleted?: (info: { durationMs: number; queries?: string[]; sources?: string[] }) => void,
 ): Promise<CodexSseResult> => {
   /** 마지막으로 본 SSE 이벤트 타입 — 빈 응답이 completed 없이 끊겼는지 판별용. */
   let lastEvent = "(없음)";
@@ -332,6 +334,26 @@ export const parseCodexSse = async (
   const completedSearches = new Set<string>();
   /** 검색별 첫 진행 이벤트 시각 — 완료 때 소요 시간을 싣는다(대시보드가 그걸로 «실행 중» 을 끈다). */
   const searchStartedAt = new Map<string, number>();
+  /** 완료 이벤트는 봤는데 완료 항목(검색어·출처)은 아직인 검색 — 완료 시각. 항목이 오면 그때, 끝까지 안 오면 스트림 끝에 알린다. */
+  const searchCompletedAt = new Map<string, number>();
+  /** `alt` = 같은 검색의 다른 열쇠(진행 이벤트가 id 없이 순번만 줬을 때) — 둘 다 끝난 것으로 친다. */
+  const announceSearch = (key: string, action?: unknown, alt?: string): void => {
+    if (completedSearches.has(key) || (alt !== undefined && completedSearches.has(alt))) return;
+    completedSearches.add(key);
+    if (alt !== undefined) completedSearches.add(alt);
+    const t0 = searchStartedAt.get(key) ?? (alt === undefined ? undefined : searchStartedAt.get(alt));
+    const t1 = searchCompletedAt.get(key) ?? (alt === undefined ? undefined : searchCompletedAt.get(alt)) ?? Date.now();
+    const a = (action ?? {}) as { query?: unknown; queries?: unknown; sources?: unknown };
+    const queries = (Array.isArray(a.queries) ? a.queries : [a.query]).filter((q): q is string => typeof q === "string" && q !== "");
+    const sources = (Array.isArray(a.sources) ? a.sources : [])
+      .map((x) => (x !== null && typeof x === "object" ? (x as { url?: unknown }).url : undefined))
+      .filter((u): u is string => typeof u === "string" && u !== "");
+    onWebSearchCompleted?.({
+      durationMs: t0 === undefined ? 0 : t1 - t0,
+      ...(queries.length > 0 ? { queries } : {}),
+      ...(sources.length > 0 ? { sources } : {}),
+    });
+  };
   const doneItems = new Map<number, unknown>();
   let completedOutput: unknown[] | undefined;
   let completed = false;
@@ -341,7 +363,16 @@ export const parseCodexSse = async (
   const debugTools = process.env.CODEX_DEBUG_TOOLS === "1";
 
   while (true) {
-    const { value, done } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      // ★끊겨도 **끝난 검색은 알린다** — 완료 이벤트 뒤·완료 항목 전에 끊기면 카드가 사라지고, 스톨 중단과 겹치면
+      //  서브에이전트 «도구 미사용» 오경고가 났다(적대 검토 2026-09-28 P5-1). 정상 종료 쪽은 루프 뒤에서 같은 일을 한다.
+      for (const key of searchCompletedAt.keys()) announceSearch(key);
+      throw e;
+    }
+    const { value, done } = chunk;
     if (done) break;
     // chunk 도착 = 살아있음 신호 → 타이머 reset (first→idle 전환).
     onChunk?.();
@@ -377,10 +408,19 @@ export const parseCodexSse = async (
                 ? `index:${event.output_index}` : undefined;
             if (key !== undefined && event.type !== "response.web_search_call.completed") {
               if (!searchStartedAt.has(key)) searchStartedAt.set(key, Date.now());
-            } else if (key !== undefined && !completedSearches.has(key)) {
-              completedSearches.add(key);
-              const t0 = searchStartedAt.get(key);
-              onWebSearchCompleted?.({ durationMs: t0 === undefined ? 0 : Date.now() - t0 });
+            } else if (key !== undefined && !searchCompletedAt.has(key)) {
+              searchCompletedAt.set(key, Date.now());
+            }
+          }
+          // 완료 항목 — 검색어·출처가 여기 있다(완료 이벤트 **뒤에** 온다). 같은 검색을 두 번 알리지 않는다.
+          if (event.type === "response.output_item.done") {
+            const it = event.item as { type?: unknown; id?: unknown; status?: unknown; action?: unknown } | undefined;
+            if (it?.type === "web_search_call" && typeof it.id === "string" && it.id !== "") {
+              const idx = typeof event.output_index === "number" && Number.isSafeInteger(event.output_index) && event.output_index >= 0 ? `index:${event.output_index}` : undefined;
+              // ★실패한 검색은 성공 카드로 알리지 않는다 — «끝난 것으로» 표시만 해서 스트림 끝의 대신 알림도 막는다
+              //  (종전엔 여기서만 걸러, 끝-루프가 같은 검색을 검색어 없이 성공으로 알렸다 — 적대 검토 P5-2).
+              if (it.status === "failed") { completedSearches.add(`id:${it.id}`); if (idx !== undefined) completedSearches.add(idx); }
+              else announceSearch(`id:${it.id}`, it.action, idx);
             }
           }
           // output_text.delta event 의 delta 누적 (표준 SSE 패턴).
@@ -587,6 +627,9 @@ export const parseCodexSse = async (
       }
     }
   }
+
+  // 완료 이벤트만 오고 완료 항목이 끝내 안 온 검색 — 검색어 없이라도 한 번 알린다(종전 동작).
+  for (const key of searchCompletedAt.keys()) announceSearch(key);
 
   const rawOutput = completedOutput?.length
     ? completedOutput
@@ -1180,6 +1223,20 @@ export const nextPassOpts = (
  *  예산 = 글자 상한 − 고정 비용(지시문+현재 프롬프트) − 요약 몫(요약 최대 크기). 요약보다 작은 이력은 접어도
  *  의미가 없으니 하한은 요약 최대 크기다.
  */
+/**
+ * 요약 기준에 넣는 **현재 프롬프트 몫의 상한** — 실측 2026-09-28(맥 돌쇠 메인 세션 Claude 턴 52건, 조립된 사용자
+ * 프롬프트): p50 2,960 · p90 52,850 · p95 89,486 · 최대 192,752자. 상위 10% 수준에서 자른다.
+ * ★왜 자르나(전체 검토 2026-09-28): 기준이 현재 프롬프트 길이에 **그대로** 끌려, 15만 자 로그를 한 번 붙이면 기준이
+ *  하한(2만)까지 떨어져 그 턴에 대화 원문이 1.2만 자까지 **영구히** 접혔다(종전엔 그 요청만 창이 잘리고 끝났다).
+ *  평소 크기의 프롬프트는 그대로 반영돼 창이 흔들리지 않고, 그보다 큰 프롬프트는 기준을 무너뜨리지 않는다 — 그 요청에서
+ *  넘치는 몫은 창 안전망(`recentTurnsAfter`)이 **그 요청에서만** 오래된 턴을 잘라 처리한다.
+ */
+export const HISTORY_PROMPT_RESERVE_CHARS = 50_000;
+
+/** 요약 기준용 고정 비용 = 지시문 + min(현재 프롬프트, 몫 상한). 두 어댑터(Codex·OpenAI)가 이 한 함수를 쓴다. */
+export const historyFixedChars = (instructionsChars: number, promptChars: number): number =>
+  instructionsChars + Math.min(promptChars, HISTORY_PROMPT_RESERVE_CHARS);
+
 export const historyTriggerChars = (fixedChars: number): number =>
   Math.min(
     CODEX_HISTORY_COMPACT_TRIGGER_CHARS,
@@ -1276,9 +1333,12 @@ export const isUsableSummary = (summary: string): boolean =>
   summary.trim().length >= MIN_USABLE_SUMMARY_CHARS;
 
 // ─── 턴 간 도구 기억 (2026-09-27, docs/decisions/2026-09-27-codex-cross-turn-tool-memory.md) ───
-/** 턴 크기 = 텍스트 + 묶인 도구 항목 — 이력 예산·요약 기준·보존이 **같은 자로** 센다. */
-export const turnSize = (t: { content?: string; itemsChars?: number }): number =>
-  String(t.content ?? "").length + (t.itemsChars ?? 0);
+/**
+ * 턴 크기 = 텍스트 + 묶인 도구 항목 — 이력 예산·요약 기준·보존이 **같은 자로** 센다. 텍스트는 **보내는 쪽**이다 — 사용자 턴을
+ * 보낸 그대로(`sent`) 되살리면 그 길이가 실제로 나간다.
+ */
+export const turnSize = (t: { content?: string; sent?: string; itemsChars?: number }): number =>
+  String(t.sent ?? t.content ?? "").length + (t.itemsChars ?? 0);
 
 /** 항목들의 크기 — 저장된 JSON 과 같은 자(적재기가 `item` 열 길이로 센 것과 일치). */
 export const turnItemsChars = (items: readonly CodexTurnItem[]): number =>
@@ -1474,6 +1534,8 @@ const loadHistoryTurns = (
   replays: boolean,
 ): CodexTurnWithId[] =>
   loadThreadHistoryWithIds(channel, threadKey, { itemsAfter: watermark }).map((t) => {
+    // 보낸 그대로의 사용자 메시지는 되살리는 어댑터만 쓴다 — 안 보내는 것을 세면 창만 헛되이 준다(아래 항목과 같은 규칙).
+    if (t.sent !== undefined && !replays) { const { sent: _sent, ...rest } = t; return rest; }
     if (t.items === undefined) return t;
     const items = replayTurnItems(t.items);
     return { ...t, items, itemsChars: replays ? turnItemsChars(items) : 0 };
@@ -1670,10 +1732,12 @@ export const collectTurnItems = (turnSlice: readonly ResponseInputItem[], finalT
   }
   const out: CodexTurnItem[] = [];
   for (const it of turnSlice) {
+    // ★저장 전에 비밀값을 가린다(전체 검토 2026-09-28) — 도구 결과(예: 모델이 읽은 `.env`)가 이제 DB 에 남고 다음 턴에
+    //  다시 보내진다. 턴 안에선 원문을 봤으니 다음 턴엔 가려진 값이면 충분하다. 중간 발화는 모델의 글이라 그대로.
     if (it.type === "function_call") {
-      if (outs.has(it.call_id)) out.push({ type: "function_call", call_id: it.call_id, name: it.name, arguments: it.arguments });
+      if (outs.has(it.call_id)) out.push({ type: "function_call", call_id: it.call_id, name: it.name, arguments: redactSecrets(it.arguments) });
     } else if (it.type === "function_call_output") {
-      if (calls.has(it.call_id)) out.push({ type: "function_call_output", call_id: it.call_id, output: originalToolOutputs.get(it) ?? it.output });
+      if (calls.has(it.call_id)) out.push({ type: "function_call_output", call_id: it.call_id, output: redactSecrets(originalToolOutputs.get(it) ?? it.output) });
     } else if (it.type === "message") {
       if (it.role === "user" && !steeringItems.has(it)) continue;
       if (it.role !== "user" && it.role !== "assistant") continue;
@@ -1721,10 +1785,14 @@ export const buildCodexInputArray = (
     // 턴마다 중복 재전송하면 SYSTEM.md(~11KB)가 턴 수만큼 곱해져 입력 토큰을 폭증시킨다
     // (claude發 턴은 jsonl 이 조립본을 저장 → codex 가 통째 재전송). assistant 턴엔 스캐폴딩
     // 없음, codex發 raw 턴엔 블록이 없어 no-op. 출구위생 함수 재사용(DRY).
+    // ★보낸 그대로가 있으면 그것을 쓴다(2026-09-28) — 그 턴의 첫 요청이 `[이력][이 메시지]` 였으니, 같은 글자로 되살려야
+    //  이번 요청이 그 요청의 **연장**이 된다. 이 백엔드는 직전 요청 전체가 앞머리에 있을 때만 캐시를 준다 — 휘발 블록을
+    //  떼고 되살리던 동안 이력은 턴을 넘어 **한 번도** 캐시를 못 탔다(dev 일주일 49/49 · 회사 로그 전부, 통제 실험 3/3).
+    //  휘발 블록은 그 턴에 보낸 것 그대로 굳어 있어 다시 바뀌지 않는다.
     const text =
       t.role === "assistant"
         ? t.content
-        : stripInternalRuntimeScaffolding(t.content).trim() || t.content;
+        : t.sent ?? (stripInternalRuntimeScaffolding(t.content).trim() || t.content);
     // 턴 간 도구 기억 — «사용자 → 도구 항목 → 비서 답» 순서로 되살린다.
     if (t.role === "assistant" && t.items !== undefined) for (const it of t.items) out.push(historyInputItem(it));
     out.push({
@@ -1926,10 +1994,12 @@ export const compactThreadHistory = async (args: {
   /** 이 어댑터의 요약 호출 — **본 턴과 같은 모델·추론 강도로** 부를 책임은 호출부에 있다. */
   summarize: (text: string, targetChars: number) => Promise<string>;
   /**
-   * 이번 요청의 **고정 비용**(지시문 + 현재 프롬프트, 자) — 요약 기준을 «보낼 수 있는 이력 예산» 으로 맞춘다
-   * (`historyTriggerChars`). ★**필수** — 어댑터가 빠뜨려도 검사가 초록이던 자리(적대 검토 M2·M3)를 컴파일러가 본다.
+   * 이번 요청의 **고정 비용 재료**(자) — 요약 기준을 «보낼 수 있는 이력 예산» 으로 맞춘다(`historyTriggerChars`).
+   * ★합계가 아니라 **따로** 받는다(2026-09-28 전체 검토) — 현재 프롬프트 몫의 상한(`historyFixedChars`)을 여기서만 건다.
+   *  호출부가 합계를 넘기면 그 규칙을 우회할 수 있었다(OpenAI 호출부를 옛 식으로 되돌려도 검사가 초록이었다).
+   * ★**필수** — 어댑터가 빠뜨려도 검사가 초록이던 자리(적대 검토 M2·M3)를 컴파일러가 본다.
    */
-  fixedChars: number;
+  budget: { instructionsChars: number; promptChars: number };
 }): Promise<CompactedThreadHistory> => {
   // 전체 타임라인 (id 동반, cap 없음) — 압축 결정 전용. 첫 turn → [].
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성은 canonical 저장 채널로 키잉
@@ -1947,7 +2017,7 @@ export const compactThreadHistory = async (args: {
   // ★저수위까지 **여러 번** 접는다 (2026-08-09). 1회차는 고수위(임계)로 판정하고, 2회차부터는
   //  저수위를 임계로 삼아 그 아래로 내려갈 때까지 반복한다. 각 패스의 크기는 적응 예산 그대로라
   //  요약 호출은 안전하고, 한 번 정리하면 한동안 안 돌아온다(진동 제거).
-  const highWater = historyTriggerChars(args.fixedChars);
+  const highWater = historyTriggerChars(historyFixedChars(args.budget.instructionsChars, args.budget.promptChars));
   const lowWater = lowWaterMark(highWater);
   let plan = planHistoryCompaction(
     unsummarized,
@@ -2198,7 +2268,12 @@ export const recentTurnsAfter = (
   const charCap = opts.charCap ?? STORE_TURN_HISTORY_CHAR_CAP;
   const after = allTurns
     .filter((t) => t.id > watermark)
-    .map((t) => ({ role: t.role, content: t.content, ...(t.items !== undefined ? { items: t.items, itemsChars: t.itemsChars } : {}) }));
+    .map((t) => ({
+      role: t.role,
+      content: t.content,
+      ...(t.sent !== undefined ? { sent: t.sent } : {}),
+      ...(t.items !== undefined ? { items: t.items, itemsChars: t.itemsChars } : {}),
+    }));
   let charSum = opts.budgetUsedChars;
   const kept: CodexTurn[] = [];
   for (let i = after.length - 1; i >= 0; i--) {
@@ -2245,7 +2320,7 @@ export const buildTurnHistory = async (
     threadKey: input.threadKey,
     provider: input.provider ?? "codex-oauth", // 쿨다운 키 — 이 어댑터의 기본값은 여기 산다.
     adapter: "codex",
-    fixedChars: instructionsChars + currentPromptWithMemory.length,
+    budget: { instructionsChars, promptChars: currentPromptWithMemory.length },
     summarize: (text, targetChars) =>
       runSummarizer(
         text,

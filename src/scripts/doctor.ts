@@ -22,6 +22,8 @@ import { DISALLOWED_TOOLS } from "../auth/permissions.js";
 import { ensureRipgrep } from "../core/ripgrep.js";
 import { findBundledClaude, bundledClaudeMissingHint } from "../core/claude-cli.js";
 import { getPaths } from "../core/paths.js";
+import { loadModelProviders } from "../core/settings.js";
+import { resolveProviderConn } from "../core/llm-runtime/provider-registry.js";
 import type { BridgeTokenRole } from "../store/bridge-tokens.js";
 import {
   judgeGlobalCommand,
@@ -47,11 +49,14 @@ const splitPool = (raw: string | undefined): string[] =>
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
 
-const PROVIDER_KEY: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_GENERATIVE_AI_API_KEY",
-  ollama: "OLLAMA_BASE_URL",
+/**
+ * provider 가 키를 읽는 env 이름 — **런타임과 같은 해석**(`resolveProviderConn`). `null` = 모르는 provider, `undefined` =
+ * 키 없는 서버. ★종전엔 여기 손 목록을 따로 들고 있어, 사용자가 `settings.json` 에 정의한 provider(doctor 가 스스로
+ *  안내한 ollama 연결 포함)를 «Unknown provider» 로 오진했다(적대 검토 2026-09-28 P5-3).
+ */
+const providerKeyEnv = (provider: string): string | undefined | null => {
+  const conn = resolveProviderConn(provider);
+  return conn === null ? null : conn.apiKeyEnv;
 };
 
 const line = (key: string, body: string): string =>
@@ -324,9 +329,13 @@ const main = async (): Promise<void> => {
   for (const provider of providers) {
     // anthropic=위 ANTHROPIC_API_KEY 라인 / codex=OAuth 섹션에서 별도 표시(env 키 없음).
     if (provider === "anthropic" || provider === "codex") continue;
-    const envName = PROVIDER_KEY[provider];
-    if (envName === undefined) {
+    const envName = providerKeyEnv(provider);
+    if (envName === null) {
       console.log(line(`provider:${provider}`, `Unknown provider ⚠️`));
+      continue;
+    }
+    if (envName === undefined) {
+      console.log(line(`provider:${provider}`, "키 없는 서버(settings.json) ✅"));
       continue;
     }
     const value = process.env[envName] ?? "";
@@ -335,6 +344,24 @@ const main = async (): Promise<void> => {
     } else {
       console.log(line(envName, `not set ⚠️  (${provider} 풀에 등장)`));
     }
+  }
+
+  // ★내장 ollama 를 뺐다(2026-09-28) — 옛 설치의 `OLLAMA_BASE_URL` 은 더 이상 읽지 않는다. 값이 있는데 settings.json 에
+  //  연결이 없으면 그 설치본은 ollama 를 쓰다 끊긴 것이므로 옮기는 법을 알린다(비어 있는 줄은 «안 쓴다» 라 조용히 둔다).
+  //  ★그 주소를 쓰는 provider 가 이미 있으면(이름이 ollama 가 아니어도) 옮긴 것이다 — 이름으로만 보면 오탐이다(P5-3).
+  const legacyOllama = (process.env.OLLAMA_BASE_URL ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+  //  ★이름이 ollama 인 provider 가 **쓸 수 있게** 있으면 주소가 달라도(다른 호스트·127.0.0.1↔localhost) 옮긴 것이다(재검토 참고).
+  //   «적혀만 있음» 이 아니라 런타임 해석(`resolveProviderConn`)으로 본다 — 모르는 adapter 로 적은 항목은 옮긴 게 아니다.
+  const userProviders = loadModelProviders();
+  const ollamaMigrated = resolveProviderConn("ollama") !== null || Object.entries(userProviders).some(
+    ([n, p]) => resolveProviderConn(n) !== null && (p.baseURL ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "") === legacyOllama,
+  );
+  if (legacyOllama !== "" && !ollamaMigrated) {
+    console.log(line("OLLAMA_BASE_URL", "더 이상 읽지 않음 ⚠️"));
+    warnings.push(
+      "`OLLAMA_BASE_URL` 은 더 이상 읽지 않습니다 — ollama 를 쓰려면 settings.json 에 " +
+        '`"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "<주소>/v1", "apiKeyEnv": null } } }` 를 추가하세요.',
+    );
   }
 
   console.log("");
@@ -657,17 +684,24 @@ const main = async (): Promise<void> => {
   } else {
     let missingProviderEnv: string | null = null;
     for (const provider of providers) {
-      if (provider === "anthropic") continue;
-      const envName = PROVIDER_KEY[provider];
-      if (envName === undefined) continue;
+      // codex 는 env 키가 아니라 OAuth(`npm run codex-auth`) — 위 표시 루프와 같은 제외(재검토 P1: 토큰 env 를 채우라고 처방했다).
+      if (provider === "anthropic" || provider === "codex") continue;
+      const envName = providerKeyEnv(provider);
+      if (envName === null || envName === undefined) continue;
       const value = process.env[envName] ?? "";
       if (value.length === 0) {
         missingProviderEnv = envName;
         break;
       }
     }
+    // codex 는 env 키가 아니라 로그인이다 — 풀에 있는데 토큰이 없으면 그걸 처방한다(재검토 F3: 건너뛰기만 해서 첫 순위 모델이
+    //  매 턴 실패하는데도 다음 단계가 «Telegram (선택)» 이었다). 구독 인증이 없는 설치본엔 없는 길이라 처방하지 않는다.
+    const codexLoginNeeded = codexAuthInstalled && regionAUsesCodex && codexAccess.length === 0 &&
+      (process.env[refreshKey] ?? "").length === 0;
     if (missingProviderEnv !== null) {
       nextStep = `다음 단계: .env 에 ${missingProviderEnv} 을 채우세요.`;
+    } else if (codexLoginNeeded) {
+      nextStep = "다음 단계: `npm run codex-auth` 로 ChatGPT 로그인을 하세요(풀에 codex 가 있는데 토큰이 없습니다).";
     } else if (!storeOk) {
       nextStep =
         "다음 단계: DATA_DIR 권한/경로를 확인하세요 (미설정 시 기본 <TIGUCLAW_HOME>/data).";

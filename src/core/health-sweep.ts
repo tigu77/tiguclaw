@@ -35,11 +35,14 @@ import { listMemoriesForIndex } from "../store/memory.js";
 // 실패 분류는 런타임과 **같은 판정**을 쓴다 — 여기서 정규식을 또 만들면 두 곳이 갈린다.
 import { isModelOverloaded, isRateLimited } from "./llm-runtime/rate-limit.js";
 import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
+import { listProjects } from "../store/projects.js";
+import { statSync } from "node:fs";
+import path from "node:path";
 
 /** 스윕 1건 — 사람이 읽는 한 줄 요약 + 필요 시 상세. */
 export interface HealthFinding {
   /** 지표 종류(로그·이벤트 분류용). */
-  kind: "schedule_failure" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated";
+  kind: "schedule_failure" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated" | "project_doc_oversized";
   /** 사용자에게 그대로 보여줄 한 줄. */
   summary: string;
 }
@@ -53,7 +56,36 @@ export interface HealthFinding {
 const RESOURCE_REPORT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** 상태형 지표 — 고쳐질 때까지 계속 참이라 하루 1회로 묶는 대상. */
-const RESOURCE_KINDS = new Set(["backup_stale", "memory_index_truncated"]);
+export const RESOURCE_KINDS: ReadonlySet<string> = new Set(["backup_stale", "memory_index_truncated"]);
+
+/**
+ * ★프로젝트 입구 문서가 «볼 때가 됐다» 는 선 (2026-09-28).
+ *  판정은 크기가 아니라 헌법 §4 의 「어떤 일을 하든 필요한가」다 — 이 숫자는 그 판정을 **하라고
+ *  알리는** 문턱일 뿐이다. 실측: 등록 프로젝트 8개 중 7개가 1.7~9.3KB, 개발 레포 하나만
+ *  25.8KB 였다(규칙을 머리말에 적어두고도 자랐다 — 적힌 규칙만으로는 안 지켜진다는 근거).
+ *
+ * ★**상태형이 아니라 증분이다** — «고친 뒤에도 크다» 일 때만 알린다(마지막 보고 이후 수정됨).
+ *  상태형(하루 1회)으로 두었더니 적대 검토가 둘을 잡았다: 일부러 큰 문서를 두는 사용자에게
+ *  **끌 수 없는 매일 알림**이 되고, 백업 통지와 **같은 시계**를 써서 서로를 묻었다.
+ *  수정 시각을 기준으로 하면 둘 다 사라진다 — 안 고치면 조용하고, 시계는 이 지표만의 것이다.
+ */
+export const PROJECT_DOC_WARN_BYTES = 12 * 1024;
+const PROJECT_DOC_KINDS: ReadonlySet<string> = new Set(["project_doc_oversized"]);
+
+/**
+ * 알릴 프로젝트 입구 문서 — 진행 중(active) · 문턱 초과 · `sinceTs` 이후 수정된 것만.
+ * 순수 판정(회귀가 직접 부른다). 파일을 못 읽으면 조용히 뺀다.
+ */
+export const oversizedProjectDocs = (
+  projects: Array<{ path: string; name: string; status: string }>,
+  statOf: (file: string) => { size: number; mtimeMs: number } | null,
+  sinceTs: number,
+): Array<{ name: string; bytes: number }> =>
+  projects
+    .filter((p) => p.status === "active")
+    .map((p) => ({ name: p.name, st: statOf(path.join(p.path, "PROJECT.md")) }))
+    .filter((d) => d.st !== null && d.st.size > PROJECT_DOC_WARN_BYTES && d.st.mtimeMs > sinceTs)
+    .map((d) => ({ name: d.name, bytes: d.st!.size }));
 
 /**
  * 마지막으로 **상태형 지표를 보고한 시각** — 재시작을 넘어서 기억한다.
@@ -71,11 +103,11 @@ const RESOURCE_KINDS = new Set(["backup_stale", "memory_index_truncated"]);
  * ★한계(정직하게): `events` 는 바운드 테이블이라 이 이벤트가 잘리면 억제도 풀린다.
  *  그때의 실패 방향은 **한 번 더 알리는 것**이지 침묵이 아니다 — 이 지표에선 그쪽이 맞다.
  */
-const lastResourceReportTs = (): number => {
+const lastReportTs = (kinds: ReadonlySet<string>): number => {
   try {
     for (const e of listEvents({ types: ["self_growth.health.finding"], limit: 50 })) {
       const p = JSON.parse(e.payload) as { findings?: Array<{ kind?: string }> };
-      if ((p.findings ?? []).some((f) => f.kind !== undefined && RESOURCE_KINDS.has(f.kind))) {
+      if ((p.findings ?? []).some((f) => f.kind !== undefined && kinds.has(f.kind))) {
         return e.ts;
       }
     }
@@ -235,7 +267,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
   // ★기록(이벤트)을 시계로 쓴다 — 재시작해도 억제가 유지된다. 보고 시각은 여기서
   //  따로 안 적는다: 실제로 보고가 나가면 self-maintenance 가 이벤트를 남기고, 그게
   //  다음 판정의 기준이 된다(같은 사실을 두 곳에 적지 않는다).
-  if (Date.now() - lastResourceReportTs() >= RESOURCE_REPORT_INTERVAL_MS) {
+  if (Date.now() - lastReportTs(RESOURCE_KINDS) >= RESOURCE_REPORT_INTERVAL_MS) {
 
   // ③ 백업이 없거나 오래됐다 — 크기·성능과 무관하게 가장 급하다(복구 불가 축).
   try {
@@ -271,6 +303,34 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
   } catch {
     /* 이 지표만 스킵 */
   }
+
+  }
+
+  // ⑤ 프로젝트 입구 문서가 커졌다 — 읽을 때마다 통째로 실리고, 필요한 줄이 묻힌다.
+  //  하루 1회 묶음 **밖**이다(위 PROJECT_DOC_WARN_BYTES 주석: 증분 — 마지막 보고 이후 수정된 것만).
+  try {
+    const since = lastReportTs(PROJECT_DOC_KINDS);
+    const big = oversizedProjectDocs(
+      listProjects(),
+      (f) => {
+        try {
+          const st = statSync(f);
+          return { size: st.size, mtimeMs: st.mtimeMs };
+        } catch {
+          return null;
+        }
+      },
+      since,
+    );
+    if (big.length > 0) {
+      const list = big.map((d) => `'${d.name}' ${(d.bytes / 1024).toFixed(1)}KB`).join(" · ");
+      out.push({
+        kind: "project_doc_oversized",
+        summary: `프로젝트 입구 문서(PROJECT.md)가 커졌습니다 — ${list}. 비서에게 «PROJECT.md 정리해줘» 라고 하면 모든 작업에 필요한 것만 남기고 나머지는 하위 문서로 옮기는 안을 보여 드립니다(지우지 않습니다). 문서가 다시 고쳐질 때만 또 알립니다.`,
+      });
+    }
+  } catch {
+    /* 이 지표만 스킵 */
   }
 
   // ② 턴 실패 급증 — 평소 0~1건이라 3건 이상이면 어댑터·백엔드 이상 신호.

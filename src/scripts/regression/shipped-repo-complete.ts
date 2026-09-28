@@ -54,13 +54,19 @@ const notShippedDocs = (): string[] => {
     return []; // 배포 레포 — 여기 있는 docs 는 정의상 전부 나간 것이다.
   }
   if (ship.size === 0) return [];
-  return readdirSync(path.join(REPO, "docs"))
-    .filter((f) => f.endsWith(".md") && !ship.has(f))
-    .map((f) => `docs/${f}`);
+  // ★하위 폴더는 **통째로** 안 나간다 — sync 의 허용목록은 `docs/<이름>` 만 통과시키므로 `docs/<폴더>/…`
+  //  는 어떤 이름도 맞을 수 없다(§4 가 «docs 하위 폴더가 나갔다» 로 막는 그 규칙). 종전엔
+  //  `docs/decisions/` 하나를 손으로 적어, 새 내부 폴더(`docs/dev/`, 2026-09-28)를 배포 문서로 오판했다.
+  const entries = readdirSync(path.join(REPO, "docs"), { withFileTypes: true });
+  return [
+    ...entries.filter((e) => e.isFile() && e.name.endsWith(".md") && !ship.has(e.name)).map((e) => `docs/${e.name}`),
+    ...entries.filter((e) => e.isDirectory()).map((e) => `docs/${e.name}/`),
+  ];
 };
 
 const NOT_SHIPPED = [
   ...notShippedDocs(),
+  // 배포 레포(스킬 없음)에선 위 파생이 비므로 알려진 내부 폴더 하나는 그대로 둔다 — 거기 문서가 이걸 가리키면 끊긴 참조다.
   "docs/decisions/",
   // sync-public manifest는 bench/ 전체를 제외한다. 내부 측정 보고서도 배포 문서가 아니다.
   "bench/",

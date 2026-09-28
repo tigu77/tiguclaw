@@ -459,6 +459,24 @@ export const frameName = (threadKey: string, at: Date, nonce?: string): string =
  *  ("검은 화면이면 캡처 실패다" 는 채택하지 않는다). 우리가 아는 것은 **종료 코드·파일
  *  존재·시간 초과**뿐이고, 그 밖은 «모른다» 라고 말한다.
  */
+/**
+ * **로그에 남길 관측 실패 사유 한 마디** — 순수. `preflightMessage` 와 같은 판정을 쓴다.
+ * ★종전 로그는 `관측 실패 — 권한(failed)` 뿐이라, 백신 차단인지 세션 문제인지 **로그만으로 못 갈랐다** — 윈도우 돌쇠가
+ *  같은 날 세 번 막혔는데 원인은 Defender 탐지 기록을 원격으로 뒤져서야 나왔다(2026-09-28).
+ */
+export const preflightFailureKind = (
+  probe: { ok: true } | { ok: false; reason: "timeout" | "failed"; detail?: string },
+  platform: string,
+): string => {
+  if (probe.ok) return "없음";
+  const detail = probe.detail ?? "";
+  if (platform === "win32" && antivirusBlocked(detail)) return "백신 차단(Windows 보안 → 보호 기록에서 허용 필요)";
+  if (platform === "win32" && /no-desktop|handle is invalid|invalid handle/i.test(detail)) return "데스크톱 세션 없음";
+  if (platform !== "win32" && /could not create image/i.test(detail)) return "화면 기록 권한 없음";
+  if (probe.reason === "timeout") return "시한 초과";
+  return `실패: ${detail.replace(/\s+/g, " ").slice(0, 160)}`;
+};
+
 export const preflightMessage = (
   probe: { ok: true } | { ok: false; reason: "timeout" | "failed"; detail?: string },
   platform: string,
@@ -525,6 +543,27 @@ const whyLine = (detail: string): string => {
  *  센다. 그걸 «캡처 실패» 로만 말하면 사용자가 고칠 수가 없다 — **무엇을 바꿔야 하는지**를
  *  말한다.
  */
+/**
+ * **백신이 막았는가** — 순수 (2026-09-18, 집 Windows 실기).
+ *
+ * ★사고: 캡처가 `+ CategoryInfo : ParserError…` 로 실패했다. 파싱 오류로 읽혀 스크립트를
+ *  세 번 뜯어봤는데, 진짜 원인은 **AMSI(백신)가 스크립트를 차단**한 것이었다.
+ *  ★억울하지만 이해는 간다 — `Add-Type` 으로 **P/Invoke** 를 선언하고, **화면을 캡처**하고,
+ *   **base64 로 인코딩된 채** 실행된다. 화면 훔쳐보는 악성코드의 서명 그대로다.
+ *
+ * ★★**`selfCheck()` 는 통과했다** — 입력 스크립트(`SendInput`)는 안 막히고 **캡처만** 막혔다.
+ *  즉 «조작은 되는데 관측이 안 되는» 상태가 실재한다.
+ *
+ * ★이건 그 기계의 백신 설정에 달렸다 — **아무 사용자에게나 일어날 수 있다.** 그러니
+ *  «파싱 오류» 라고 말하는 대신 **이름을 대고, 무엇을 하면 되는지** 말해야 한다.
+ */
+export const antivirusBlocked = (detail: string): boolean =>
+  // ★**영어 문장에 기대지 않는다** (2026-09-18 실기). 한국어 Windows 에선 그 문장이
+  //  CP949 로 깨져 오고, 남는 확실한 신호는 **`FullyQualifiedErrorId`** 하나뿐이다.
+  //  그건 항상 ASCII 다.
+  /ScriptContainedMaliciousContent/i.test(detail) ||
+  /malicious content|악성 소프트웨어|바이러스/i.test(detail);
+
 const winPreflightMessage = (probe: {
   ok: false;
   reason: "timeout" | "failed";
@@ -538,15 +577,21 @@ const winPreflightMessage = (probe: {
   //   base64 로 인코딩된 채 실행된다. 화면 훔쳐보는 악성코드의 서명 그대로다.
   //  ★★그리고 **조작은 되는데 관측만 막힌다**(입력 스크립트는 안 걸렸다) — 그 상태를
   //   «둘 다 고장» 으로 읽으면 엉뚱한 데를 고친다.
-  if (/ScriptContainedMaliciousContent|malicious content/i.test(detail)) {
+  // ★★**사용자에게 알리고 설정을 안내하라고 말한다** (2026-09-28 윈도우 돌쇠 실측). 종전 문구는 사유는 맞았지만
+  //  «백신에서 예외를 두거나, 이 기계에서는 화면 관측을 쓰지 않는 쪽으로 판단해 주세요» 로 끝나 — 어디를 눌러야
+  //  하는지가 없고, **포기할 출구**가 열려 있었다. 비서는 관측 없이 진행하다 «직접 확인해 달라» 로 넘기고 멈췄고,
+  //  정작 «Defender 가 막고 있다» 는 사용자에게 한 번도 안 갔다(같은 날 3회 차단 · 3회 모두 그렇게 끝남).
+  if (antivirusBlocked(detail)) {
     return (
-      "화면을 찍지 못했습니다 — **보안 소프트웨어(백신)가 캡처 스크립트를 차단했습니다.**\n" +
-      "문법 오류가 아닙니다. 화면 캡처 스크립트가 `Add-Type` 으로 시스템 함수를 선언하고 " +
-      "화면을 읽기 때문에, 일부 백신이 이를 악성으로 분류합니다.\n" +
-      "★**클릭·입력은 그대로 될 수 있습니다** — 막힌 것은 캡처뿐입니다. 그래서 «보고 누르는» " +
-      "작업만 안 됩니다.\n" +
-      "해결하려면 백신에서 **PowerShell 스크립트 검사 예외**를 두거나, 이 기계에서는 화면 관측을 " +
-      "쓰지 않는 쪽으로 판단해 주세요."
+      "화면을 찍지 못했습니다 — **Windows 보안(백신)이 화면 캡처를 차단했습니다.** 스크립트 오류가 아닙니다.\n" +
+      "★**이 사실을 사용자에게 바로 알리고, 아래 허용 방법을 안내하세요.** 허용되기 전에는 화면으로만 확인할 수 있는 " +
+      "결과를 «확인했다» 고 하지 말고, 그 부분만 사용자에게 확인을 부탁하세요. 클릭·입력은 그대로 됩니다.\n" +
+      "허용 방법(Windows 기본 백신):\n" +
+      "1. 시작 메뉴 → «Windows 보안» → 바이러스 및 위협 방지 → **보호 기록**\n" +
+      "2. 차단된 항목(PowerShell 화면 캡처 — 예: `HackTool:PowerShell/EmpireGetScreenshot`)을 열고 → 작업 → **허용**" +
+      "(관리자 확인이 뜰 수 있습니다)\n" +
+      "3. 허용한 뒤 다시 화면을 보면 됩니다.\n" +
+      "다른 백신을 쓰면 그 백신에서 이 기계의 PowerShell 화면 캡처를 허용해야 합니다."
     );
   }
   if (/no-desktop|handle is invalid|invalid handle/i.test(detail)) {

@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Ollama is now connected in `settings.json`.** The built-in connection is gone; Ollama works like any other OpenAI-compatible server, and `OLLAMA_BASE_URL` in `.env` is no longer read. If you used it, add `"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": null } } }` to `settings.json` (`npm run doctor` and the startup log point this out). For a server that needs no key, set `"apiKeyEnv": null`.
 - **Tool cards show more.** The Codex web search card shows the search queries and the sources it looked at; Claude's tool-loading (`ToolSearch`) card shows which tools were loaded.
+- **The assistant writes `PROJECT.md` as an entry document.** When writing or adding to it, it keeps only what every task needs and moves the rest into linked sub-documents with a short summary. Reorganizing an existing document is proposed first and done only after you approve. If an active project's `PROJECT.md` is edited while over 12KB, you get one notice.
 
 ### Fixed
 
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pasting one long text could summarize away most of the earlier conversation in Codex and OpenAI chats.** A large input now only trims older history for that one request.
 - **A schedule's "last N runs" history policy could bring back conversation already cleared, for example with `/clear`.**
 - **Editing a schedule's prompt stopped its "last N runs" history policy from applying.** Runs are now counted from a firing log.
+- **Fixed Windows Security (antivirus) blocking screen capture on Windows.** Capture now works differently and Windows Security no longer flags it as a threat. If another antivirus blocks it, the assistant says so and walks you through allowing it.
 - **On installs that use model profiles, leftover model-tier settings from older versions were still used for some calls (gateway tier requests, subagents).**
 - **Codex now masks secrets such as API keys in the tool results it keeps for later requests.**
 - **Installs that don't use ollama logged a failed model-list lookup every hour.**

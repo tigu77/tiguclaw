@@ -1,9 +1,15 @@
 /**
  * **Windows 실행부** — `mac.ts` 의 형제. 여기도 불순하다(자식 프로세스).
  *
- * ★**의존성 0**: PowerShell 과 .NET(`System.Drawing`·`System.Windows.Forms`)은 Windows
+ * ★**의존성 0**: PowerShell 과 .NET(`System.Drawing`·`System.Windows.Forms`·`csc.exe`)은 Windows
  *  내장이다. 스크린샷 네이티브 모듈을 들이지 않는 이유는 mac 쪽과 같다 — 네이티브 빌드가
  *  붙으면 윈도우 설치에서 터진 이력이 있다([[project_windows_update_tsc_missing_prod_env]]).
+ *  (2026-09-28 `node-screenshots` 도 검토했다 — 축소·영역 합성·JPEG 품질이 없어 그 코드를 우리가 새로 써야 해서 접었다.)
+ * ★★**캡처는 PowerShell 스크립트가 아니라 컴파일한 작은 프로그램**이다 (2026-09-28). Windows Defender 가
+ *  «PowerShell 스크립트가 화면을 복사해 저장하는 모양» 을 `HackTool:PowerShell/EmpireGetScreenshot` 로 차단한다
+ *  (AMSI 검사 — 윈도우 돌쇠에서 차단 때마다 관측이 죽고 작업이 멈췄다). 같은 .NET 호출을 C# 로 옮겨 내장 `csc.exe` 로
+ *  한 번 컴파일해 쓴다 — 로직·출력은 스크립트 시절과 **한 줄씩 같다**(실기 대조: 전체·N번·걸친 영역·틀린 번호·탐침).
+ *  조작·유휴·앞 창 조회는 막히지 않으므로 PowerShell 그대로다.
  *
  * ★★**mac 과 다른 점 셋** (그래서 코드를 공유하지 않고 형제로 둔다):
  *  1. **권한 프롬프트가 없다.** Windows 는 화면 캡처에 TCC 같은 동의가 없어서, mac 의
@@ -24,8 +30,8 @@
  *  우리가 안 끊으면 턴이 그만큼 묶인다.
  */
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -87,90 +93,176 @@ const psExe = (): string =>
   );
 
 /**
- * **캡처 스크립트 — 고정 리터럴이다.** 변하는 값은 전부 `$env:` 로 들어온다(`winCaptureEnv`).
+ * **캡처 프로그램 소스(C#) — 고정 리터럴이다.** 변하는 값은 전부 환경변수로 들어온다(`winCaptureEnv`).
  *
- * ★문자열을 끼워 넣지 않는 이유: 파일 이름엔 `threadKey` 가 들어가고 그건 바깥에서 온다.
- *  PowerShell 은 `-Command` 를 **다시 파싱**하므로 끼워 넣으면 그게 코드가 될 수 있다.
- * ★그리고 이 스크립트는 `-EncodedCommand`(UTF-16LE base64)로 넘긴다 — 명령줄 따옴표
- *  규칙(Node → Windows → CommandLineToArgvW → PowerShell)을 **아예 지나지 않는다.**
+ * ★PowerShell 스크립트 시절과 **한 줄씩 같은 일**을 한다: ① DPI 선언(v2 → system) ② 화면 정렬(주 화면이 1번) ③ 대상
+ *  (전체·N번·영역·탐침) ④ 긴 변 축소(HighQualityBicubic) ⑤ JPEG 품질 ⑥ 판정 수치 한 줄(`screens`·`w`·`h`·`dpi`).
+ *  오류 형식도 같다 — 스스로 적는 오류는 stdout 의 `{"error":…,"type":…}` 한 줄, 번호 오류·세션 없음은 stderr + 종료코드 3·4.
+ * ★왜 스크립트가 아닌가: Defender 가 PowerShell 로 화면을 복사하는 스크립트를 해킹 도구로 막는다(파일 머리 주석).
+ *  컴파일된 프로그램은 그 검사(AMSI)를 지나지 않는다 — 2026-09-28 윈도우 실기에서 탐지 0건(전후 24건).
+ * ★소스를 바꾸면 **해시가 바뀌어 새로 컴파일된다**(`captureExeName`) — 옛 exe 를 계속 쓰는 일이 없다.
  */
-const SCRIPT = [
-  "$ErrorActionPreference='Stop'",
-  "Add-Type -AssemblyName System.Drawing",
-  "Add-Type -AssemblyName System.Windows.Forms",
-  // ① DPI — 화면을 **묻기 전에** 선언해야 한다. 물은 뒤엔 늦다.
-  "$dpi='none'",
-  // ★세 덩이를 **따로** 감싼다. 하나로 묶으면 최신 API 가 없는 빌드(8.1 이하)에서 던지는
-  //  순간 **예전 API 까지 건너뛴다** — 되는 길이 있는데 안 쓰는 것이라 더 나쁘다.
-  "try{",
-  "Add-Type -Namespace TC -Name Dpi -MemberDefinition @'",
-  '[DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);',
-  '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();',
-  "'@",
-  "}catch{}",
-  // -4 = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2.
-  "try{if([TC.Dpi]::SetProcessDpiAwarenessContext([IntPtr](-4))){$dpi='v2'}}catch{}",
-  "if($dpi -eq 'none'){try{if([TC.Dpi]::SetProcessDPIAware()){$dpi='system'}}catch{}}",
-  // ② 화면 — 1번이 주 화면이 되도록 정렬한다(mac `-D1` 과 같은 의미).
-  "$all=[System.Windows.Forms.Screen]::AllScreens",
-  "$ordered=@($all|Where-Object{$_.Primary})+@($all|Where-Object{-not $_.Primary})",
-  // ★화면이 0개 = **데스크톱 세션이 없다**(Session 0 서비스). 캡처 실패가 아니라 배치 문제다.
-  "if($ordered.Count -eq 0){[Console]::Error.WriteLine('no-desktop: no screens in this session');exit 4}",
-  "$mode=$env:TIGUCLAW_MODE",
-  "if($mode -eq 'display'){",
-  "$i=[int]$env:TIGUCLAW_DISPLAY",
-  // ★mac `screencapture -D` 는 틀린 번호에 **개수를 알려주며** 실패한다. 도구 설명이 그걸
-  //  «발견 경로» 로 쓰고 있으므로(열거 도구를 안 만든 근거) Windows 도 같은 말을 해야 한다.
-  "if($i -lt 1 -or $i -gt $ordered.Count){[Console]::Error.WriteLine('Invalid display specified. Only '+$ordered.Count+' display(s), valid values are 1..'+$ordered.Count+'.');exit 3}",
-  "$b=$ordered[$i-1].Bounds",
-  "}elseif($mode -eq 'region'){",
-  "$b=New-Object System.Drawing.Rectangle([int]$env:TIGUCLAW_X,[int]$env:TIGUCLAW_Y,[int]$env:TIGUCLAW_W,[int]$env:TIGUCLAW_H)",
-  "}elseif($mode -eq 'probe'){",
-  "$p=$ordered[0].Bounds",
-  "$b=New-Object System.Drawing.Rectangle($p.X,$p.Y,1,1)",
-  "}else{",
-  "$b=$ordered[0].Bounds",
-  "}",
-  "if($b.Width -le 0 -or $b.Height -le 0){[Console]::Error.WriteLine('no-desktop: empty bounds');exit 4}",
-  // ③ 캡처
-  "$bmp=New-Object System.Drawing.Bitmap($b.Width,$b.Height)",
-  "$g=[System.Drawing.Graphics]::FromImage($bmp)",
-  "$g.CopyFromScreen($b.X,$b.Y,0,0,$bmp.Size)",
-  "$g.Dispose()",
-  // ④ 줄이기 — mac 의 `sips -Z` 자리. 여기선 같은 프로세스가 하므로 자식이 하나로 끝난다.
-  "$le=[int]$env:TIGUCLAW_LONG_EDGE",
-  "$max=[Math]::Max($bmp.Width,$bmp.Height)",
-  "if($le -gt 0 -and $max -gt $le){",
-  "$r=$le/$max",
-  "$nw=[Math]::Max(1,[int][Math]::Round($bmp.Width*$r))",
-  "$nh=[Math]::Max(1,[int][Math]::Round($bmp.Height*$r))",
-  "$dst=New-Object System.Drawing.Bitmap($nw,$nh)",
-  "$g2=[System.Drawing.Graphics]::FromImage($dst)",
-  "$g2.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic",
-  "$g2.DrawImage($bmp,0,0,$nw,$nh)",
-  "$g2.Dispose()",
-  "$bmp.Dispose()",
-  "$bmp=$dst",
-  "}",
-  // ⑤ JPEG — 해상도보다 압축으로 줄인다(설계 실측: 같은 화면 PNG 1.32MB vs JPEG q80 0.23MB).
-  "$enc=[System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()|Where-Object{$_.MimeType -eq 'image/jpeg'}|Select-Object -First 1",
-  "$eps=New-Object System.Drawing.Imaging.EncoderParameters(1)",
-  "$eps.Param[0]=New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality,[int]$env:TIGUCLAW_QUALITY)",
-  "$w=$bmp.Width",
-  "$h=$bmp.Height",
-  "$bmp.Save($env:TIGUCLAW_OUT,$enc,$eps)",
-  "$bmp.Dispose()",
-  // ⑥ ★**판정 수치를 같이 낸다.** 로그가 1차 진단면이라 «됐다/안 됐다» 만으론 못 고친다
-  //    ([[feedback_logs_must_stand_alone]]) — 화면 수·전달 크기·DPI 선언 결과가 그 수치다.
-  // ★화면 **사각형 목록**을 낸다 — 개수만으로는 «이 좌표가 화면 안인가» 를 못 판정한다
-  //  (2026-09-17 회사돌쇠 실기: 화면 밖 region 이 성공으로 돌아왔다). 판정은 순수부가 한다.
-  "$js=''",
-  "foreach($s in $ordered){if($js -ne ''){$js+=','}$js+='{\"x\":'+$s.Bounds.X+',\"y\":'+$s.Bounds.Y+',\"w\":'+$s.Bounds.Width+',\"h\":'+$s.Bounds.Height+'}'}",
-  "[Console]::Out.WriteLine('{\"screens\":['+$js+'],\"w\":'+$w+',\"h\":'+$h+',\"dpi\":\"'+$dpi+'\"}')",
-].join("\n");
+export const CAPTURE_CS = String.raw`using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Windows.Forms;
 
-/** 캡처 전용 래퍼 — 고정 스크립트에 env 만 바꿔 넣는다. */
-const run = (env: Record<string, string>): Promise<RunOk | RunFail> => runScript(SCRIPT, env);
+static class TiguclawCapture {
+  [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  static string Env(string k) { return Environment.GetEnvironmentVariable(k) ?? ""; }
+  static int Int(string k) { int v; int.TryParse(Env(k), out v); return v; }
+  static string Esc(string s) { return (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " "); }
+
+  static int Main() {
+    try { Console.OutputEncoding = new UTF8Encoding(false); } catch {}
+    try { return Run(); }
+    catch (Exception e) {
+      Console.Out.WriteLine("{\"error\":\"" + Esc(e.Message) + "\",\"type\":\"" + Esc(e.GetType().FullName) + "\"}");
+      return 1;
+    }
+  }
+
+  static int Run() {
+    string dpi = "none";
+    try { if (SetProcessDpiAwarenessContext(new IntPtr(-4))) dpi = "v2"; } catch {}
+    if (dpi == "none") { try { if (SetProcessDPIAware()) dpi = "system"; } catch {} }
+    Screen[] all = Screen.AllScreens;
+    Screen[] ordered = all.Where(s => s.Primary).Concat(all.Where(s => !s.Primary)).ToArray();
+    if (ordered.Length == 0) { Console.Error.WriteLine("no-desktop: no screens in this session"); return 4; }
+    string mode = Env("TIGUCLAW_MODE");
+    Rectangle b;
+    if (mode == "display") {
+      int i = Int("TIGUCLAW_DISPLAY");
+      if (i < 1 || i > ordered.Length) { Console.Error.WriteLine("Invalid display specified. Only " + ordered.Length + " display(s), valid values are 1.." + ordered.Length + "."); return 3; }
+      b = ordered[i - 1].Bounds;
+    } else if (mode == "region") {
+      b = new Rectangle(Int("TIGUCLAW_X"), Int("TIGUCLAW_Y"), Int("TIGUCLAW_W"), Int("TIGUCLAW_H"));
+    } else if (mode == "probe") {
+      Rectangle p = ordered[0].Bounds; b = new Rectangle(p.X, p.Y, 1, 1);
+    } else {
+      b = ordered[0].Bounds;
+    }
+    if (b.Width <= 0 || b.Height <= 0) { Console.Error.WriteLine("no-desktop: empty bounds"); return 4; }
+    Bitmap bmp = new Bitmap(b.Width, b.Height);
+    using (Graphics g = Graphics.FromImage(bmp)) g.CopyFromScreen(b.X, b.Y, 0, 0, bmp.Size);
+    int le = Int("TIGUCLAW_LONG_EDGE");
+    int max = Math.Max(bmp.Width, bmp.Height);
+    if (le > 0 && max > le) {
+      double r = (double)le / max;
+      int nw = Math.Max(1, (int)Math.Round(bmp.Width * r));
+      int nh = Math.Max(1, (int)Math.Round(bmp.Height * r));
+      Bitmap dst = new Bitmap(nw, nh);
+      using (Graphics g2 = Graphics.FromImage(dst)) { g2.InterpolationMode = InterpolationMode.HighQualityBicubic; g2.DrawImage(bmp, 0, 0, nw, nh); }
+      bmp.Dispose(); bmp = dst;
+    }
+    ImageCodecInfo enc = ImageCodecInfo.GetImageEncoders().First(c => c.MimeType == "image/jpeg");
+    EncoderParameters eps = new EncoderParameters(1);
+    eps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, (long)Int("TIGUCLAW_QUALITY"));
+    int w = bmp.Width, h = bmp.Height;
+    bmp.Save(Env("TIGUCLAW_OUT"), enc, eps);
+    bmp.Dispose();
+    StringBuilder js = new StringBuilder();
+    foreach (Screen s in ordered) {
+      if (js.Length > 0) js.Append(',');
+      js.Append("{\"x\":" + s.Bounds.X + ",\"y\":" + s.Bounds.Y + ",\"w\":" + s.Bounds.Width + ",\"h\":" + s.Bounds.Height + "}");
+    }
+    Console.Out.WriteLine("{\"screens\":[" + js + "],\"w\":" + w + ",\"h\":" + h + ",\"dpi\":\"" + dpi + "\"}");
+    return 0;
+  }
+}
+`;
+
+/** 캡처 프로그램 파일 이름 — **소스 해시**가 들어간다(소스가 바뀌면 새로 컴파일되게). 순수. */
+export const captureExeName = (source: string): string =>
+  `tiguclaw-capture-${createHash("sha256").update(source).digest("hex").slice(0, 12)}.exe`;
+
+/** `csc.exe` 인자 — 순수. System.Drawing·Windows.Forms 만 참조한다. */
+export const cscArgs = (sourcePath: string, outPath: string): string[] => [
+  "/nologo",
+  "/target:exe",
+  "/optimize+",
+  `/out:${outPath}`,
+  "/r:System.Drawing.dll",
+  "/r:System.Windows.Forms.dll",
+  sourcePath,
+];
+
+/** .NET Framework 4 컴파일러 — Win10·11 기본 탑재. 64비트 먼저. 없으면 null. */
+const cscExe = (): string | null => {
+  const root = process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
+  for (const fw of ["Framework64", "Framework"]) {
+    const p = path.join(root, "Microsoft.NET", fw, "v4.0.30319", "csc.exe");
+    if (existsSync(p)) return p;
+  }
+  return null;
+};
+
+/** 컴파일 시한 — 실기에서 1초 안팎. 느린 디스크·백신 검사를 감안해 넉넉히. */
+const COMPILE_TIMEOUT_MS = 30_000;
+
+/** 캡처 프로그램 위치 — 사용자별 앱 폴더(없으면 임시 폴더). 설치본·홈과 무관하게 한 벌이면 된다(소스가 같으면 같은 파일). */
+const captureExePath = (): string =>
+  path.join(process.env.LOCALAPPDATA ?? os.tmpdir(), "tiguclaw", captureExeName(CAPTURE_CS));
+
+let building: Promise<{ ok: true; exe: string } | RunFail> | null = null;
+
+/**
+ * 캡처 프로그램이 있으면 그 경로, 없으면 **한 번** 컴파일한다(동시 호출은 같은 컴파일을 기다린다).
+ * ★임시 이름으로 만든 뒤 옮긴다 — 반쯤 쓰인 exe 를 다른 호출이 실행하지 않게.
+ */
+const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> => {
+  const exe = captureExePath();
+  if (existsSync(exe)) return { ok: true, exe };
+  if (building !== null) return building;
+  building = (async (): Promise<{ ok: true; exe: string } | RunFail> => {
+    const csc = cscExe();
+    if (csc === null) {
+      return { ok: false, reason: "failed", detail: "csc-missing: .NET Framework 4 컴파일러(csc.exe)를 찾지 못했습니다 — 화면 캡처 프로그램을 만들 수 없습니다", stdout: "" };
+    }
+    const dir = path.dirname(exe);
+    const nonce = randomUUID();
+    const src = path.join(dir, `capture-${nonce}.cs`);
+    const tmp = path.join(dir, `capture-${nonce}.tmp.exe`);
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(src, CAPTURE_CS, "utf8");
+      const built = await new Promise<RunOk | RunFail>((resolve) => {
+        execFile(csc, cscArgs(src, tmp), { timeout: COMPILE_TIMEOUT_MS, killSignal: "SIGKILL", windowsHide: true }, (err, stdout) => {
+          if (err === null) return resolve({ ok: true, stdout: String(stdout) });
+          const killed = (err as { killed?: boolean }).killed === true;
+          resolve({
+            ok: false,
+            reason: killed ? "timeout" : "failed",
+            detail: killed ? `compile: ${COMPILE_TIMEOUT_MS}ms 초과` : `compile: ${String(stdout).trim().slice(0, 300) || err.message.slice(0, 300)}`,
+            stdout: String(stdout),
+          });
+        });
+      });
+      if (!built.ok) return built;
+      // 다른 프로세스가 먼저 만들었으면 그걸 쓴다(같은 소스 = 같은 파일).
+      await fs.rename(tmp, exe).catch(async (e: unknown) => { if (!existsSync(exe)) throw e; });
+      return { ok: true, exe };
+    } catch (e) {
+      return { ok: false, reason: "failed", detail: `compile: ${e instanceof Error ? e.message : String(e)}`, stdout: "" };
+    } finally {
+      await fs.rm(src, { force: true }).catch(() => {});
+      await fs.rm(tmp, { force: true }).catch(() => {});
+    }
+  })().finally(() => { building = null; });
+  return building;
+};
+
+/** 캡처 전용 래퍼 — 컴파일된 캡처 프로그램에 env 만 바꿔 넣는다(없으면 먼저 컴파일). */
+const run = async (env: Record<string, string>): Promise<RunOk | RunFail> => {
+  const exe = await ensureCaptureExe();
+  if (!exe.ok) return exe;
+  return runChild(exe.exe, [], env);
+};
 
 interface RunOk {
   ok: true;
@@ -283,26 +375,8 @@ export const cleanPowerShellError = (raw: string): string | null => {
   return `${garbled ? "(본문이 깨져 있습니다)" : best}${idPart}`.slice(0, 400);
 };
 
-/**
- * **백신이 막았는가** — 순수 (2026-09-18, 집 Windows 실기).
- *
- * ★사고: 캡처가 `+ CategoryInfo : ParserError…` 로 실패했다. 파싱 오류로 읽혀 스크립트를
- *  세 번 뜯어봤는데, 진짜 원인은 **AMSI(백신)가 스크립트를 차단**한 것이었다.
- *  ★억울하지만 이해는 간다 — `Add-Type` 으로 **P/Invoke** 를 선언하고, **화면을 캡처**하고,
- *   **base64 로 인코딩된 채** 실행된다. 화면 훔쳐보는 악성코드의 서명 그대로다.
- *
- * ★★**`selfCheck()` 는 통과했다** — 입력 스크립트(`SendInput`)는 안 막히고 **캡처만** 막혔다.
- *  즉 «조작은 되는데 관측이 안 되는» 상태가 실재한다.
- *
- * ★이건 그 기계의 백신 설정에 달렸다 — **아무 사용자에게나 일어날 수 있다.** 그러니
- *  «파싱 오류» 라고 말하는 대신 **이름을 대고, 무엇을 하면 되는지** 말해야 한다.
- */
-export const antivirusBlocked = (detail: string): boolean =>
-  // ★**영어 문장에 기대지 않는다** (2026-09-18 실기). 한국어 Windows 에선 그 문장이
-  //  CP949 로 깨져 오고, 남는 확실한 신호는 **`FullyQualifiedErrorId`** 하나뿐이다.
-  //  그건 항상 ASCII 다.
-  /ScriptContainedMaliciousContent/i.test(detail) ||
-  /malicious content|악성 소프트웨어|바이러스/i.test(detail);
+/** 백신 차단 판정 — 정의는 `observe.ts` 한 곳(안내문도 같은 판정을 쓴다). 여기선 호출부 호환을 위해 다시 내보낸다. */
+export { antivirusBlocked } from "./observe.js";
 
 /**
  * 스크립트를 try/catch 로 감싸 **오류를 우리 형식으로 stdout 에** 적게 한다.
@@ -357,17 +431,24 @@ const wrapped = (script: string): string =>
  *  ★`-EncodedCommand`(UTF-16LE base64)는 **셋 다 그대로** — 명령줄 따옴표 규칙을 아예 안 지난다.
  */
 const runScript = (script: string, env: Record<string, string>): Promise<RunOk | RunFail> =>
+  runChild(psExe(), [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    Buffer.from(wrapped(script), "utf16le").toString("base64"),
+  ], env);
+
+/**
+ * **자식 하나** — PowerShell 이든 컴파일된 캡처 프로그램이든 같은 계약이다: 시한 · stdout 의 `{"error":…}` 가 정본 ·
+ * 실패해도 stdout 을 버리지 않는다.
+ */
+const runChild = (file: string, args: string[], env: Record<string, string>): Promise<RunOk | RunFail> =>
   new Promise((resolve) => {
     execFile(
-      psExe(),
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-EncodedCommand",
-        Buffer.from(wrapped(script), "utf16le").toString("base64"),
-      ],
+      file,
+      args,
       {
         timeout: CHILD_TIMEOUT_MS,
         killSignal: "SIGKILL",

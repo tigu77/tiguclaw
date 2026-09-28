@@ -44,6 +44,9 @@ interface WinModule {
     | { ok: true; bytes: number; deliveredPx: { w: number; h: number } | null }
     | { ok: false; reason: string; detail: string }
   >;
+  CAPTURE_CS: string;
+  captureExeName: (source: string) => string;
+  cscArgs: (sourcePath: string, outPath: string) => string[];
 }
 
 export const check: RegressionCheck = {
@@ -55,7 +58,7 @@ export const check: RegressionCheck = {
     "캡처가 그림 실측 크기를 안 내서 «화면 id» 가 영영 발급되지 않고 조작 도구 전체가 불능이던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const { selfCheck, cleanPowerShellError, scriptError, capture, antivirusBlocked } =
+    const { selfCheck, cleanPowerShellError, scriptError, capture, antivirusBlocked, CAPTURE_CS, captureExeName, cscArgs } =
       await loadPluginModule<WinModule>(
       "../../../plugins/computer-use/src/win.ts",
     );
@@ -152,6 +155,78 @@ export const check: RegressionCheck = {
         `errId=${String(antivirusBlocked("+ FullyQualifiedErrorId : ScriptContainedMaliciousContent"))} · ` +
           `문장=${String(antivirusBlocked("This script contains malicious content"))} · ` +
           `평범한오류=${String(antivirusBlocked("알 수 없는 키 이름: 없는키"))}`,
+      ),
+    );
+
+    // ── ①-e 캡처는 **컴파일된 프로그램**이다 (2026-09-28) — Defender 가 PowerShell 화면 캡처 스크립트를
+    //  `HackTool:PowerShell/EmpireGetScreenshot` 로 막아 같은 .NET 호출을 C# 로 옮겼다. 이음매를 잰다:
+    //  TS 가 넘기는 환경변수(`winCaptureEnv`)를 C# 이 **전부** 읽고, TS 가 읽는 출력 키(`screens`·`w`·`h`·`dpi`)를 C# 이 낸다.
+    type EnvModule = { winCaptureEnv: (t: unknown, out: string, o?: { longEdge?: number }) => Record<string, string> };
+    const envMod = await loadPluginModule<EnvModule>("../../../plugins/computer-use/src/observe.ts");
+    const envKeys = new Set([
+      ...Object.keys(envMod.winCaptureEnv({ kind: "screen" }, "o.jpg")),
+      ...Object.keys(envMod.winCaptureEnv({ kind: "display", index: 2 }, "o.jpg")),
+      ...Object.keys(envMod.winCaptureEnv({ kind: "region", x: 1, y: 2, width: 3, height: 4 }, "o.jpg")),
+      ...Object.keys(envMod.winCaptureEnv({ kind: "probe" }, "o.jpg", { longEdge: 0 })),
+    ]);
+    const unread = [...envKeys].filter((k) => !CAPTURE_CS.includes(`"${k}"`));
+    const modes = ["display", "region", "probe"].filter((m) => !CAPTURE_CS.includes(`mode == "${m}"`));
+    const outKeys = ["screens", "w", "h", "dpi", "error"].filter((k) => !CAPTURE_CS.includes(`\\"${k}\\"`));
+    out.push(
+      assert(
+        "★캡처 프로그램이 TS 가 넘기는 환경변수·모드를 전부 읽고, TS 가 읽는 출력 키를 낸다(이음매)",
+        envKeys.size >= 8 && unread.length === 0 && modes.length === 0 && outKeys.length === 0,
+        JSON.stringify({ envKeys: [...envKeys], unread, modes, outKeys }),
+      ),
+    );
+    out.push(
+      assert(
+        "★캡처 프로그램 이름에 소스 해시가 들어간다 — 소스가 바뀌면 옛 exe 를 계속 쓰지 않고 새로 컴파일된다",
+        captureExeName(CAPTURE_CS) === captureExeName(CAPTURE_CS) && captureExeName(CAPTURE_CS) !== captureExeName(CAPTURE_CS + " ") &&
+          /^tiguclaw-capture-[0-9a-f]{12}\.exe$/.test(captureExeName(CAPTURE_CS)),
+        captureExeName(CAPTURE_CS),
+      ),
+    );
+    const args = cscArgs("C:\\t\\a.cs", "C:\\t\\b.exe");
+    out.push(
+      assert(
+        "컴파일 인자: 실행 파일 · System.Drawing·Windows.Forms 참조 · 소스는 마지막",
+        args.includes("/target:exe") && args.includes("/out:C:\\t\\b.exe") && args.includes("/r:System.Drawing.dll") && args.includes("/r:System.Windows.Forms.dll") && args[args.length - 1] === "C:\\t\\a.cs",
+        args.join(" "),
+      ),
+    );
+
+    // ── ①-d 백신에 막혔을 때 **사용자에게 알리고 허용을 안내하라** 고 말한다 (2026-09-28 윈도우 돌쇠 실측) ──
+    //  ★종전 문구는 사유는 맞았지만 «화면 관측을 쓰지 않는 쪽으로 판단해 주세요» 로 끝나, 비서가 관측 없이 진행하다
+    //   «직접 확인해 달라» 로 넘기고 멈췄다 — 같은 날 3회 모두. «Defender 가 막고 있다» 는 사용자에게 한 번도 안 갔다.
+    //  ★로그도 `권한(failed)` 뿐이라 원인을 Defender 탐지 기록을 원격으로 뒤져서야 알았다.
+    type ObserveModule = {
+      preflightMessage: (p: { ok: false; reason: "timeout" | "failed"; detail?: string }, platform: string) => string | null;
+      preflightFailureKind: (p: { ok: false; reason: "timeout" | "failed"; detail?: string }, platform: string) => string;
+    };
+    const obs = await loadPluginModule<ObserveModule>("../../../plugins/computer-use/src/observe.ts");
+    const avProbe = { ok: false as const, reason: "failed" as const, detail: "+ FullyQualifiedErrorId : ScriptContainedMaliciousContent" };
+    const avMsg = obs.preflightMessage(avProbe, "win32") ?? "";
+    out.push(
+      assert(
+        "★★백신 차단 안내는 **사용자에게 알리라** 고 지시하고, **어디서 허용하는지** 단계로 준다 — 포기 출구(«쓰지 않는 쪽으로 판단») 는 없다",
+        /사용자에게 바로 알리/.test(avMsg) && avMsg.includes("보호 기록") && avMsg.includes("허용") && !avMsg.includes("쓰지 않는 쪽으로"),
+        avMsg.slice(0, 200),
+      ),
+    );
+    const kinds = {
+      av: obs.preflightFailureKind(avProbe, "win32"),
+      noDesktop: obs.preflightFailureKind({ ok: false, reason: "failed", detail: "no-desktop" }, "win32"),
+      timeout: obs.preflightFailureKind({ ok: false, reason: "timeout", detail: "" }, "win32"),
+      macPerm: obs.preflightFailureKind({ ok: false, reason: "failed", detail: "could not create image from display" }, "darwin"),
+      other: obs.preflightFailureKind({ ok: false, reason: "failed", detail: "알 수 없는 키 이름: 없는키" }, "win32"),
+    };
+    out.push(
+      assert(
+        "★로그에 남는 관측 실패 사유가 원인을 가른다(백신 차단 · 세션 없음 · 시한 · mac 권한 · 그 밖은 원문 조각)",
+        kinds.av.startsWith("백신 차단") && kinds.noDesktop === "데스크톱 세션 없음" && kinds.timeout === "시한 초과" &&
+          kinds.macPerm === "화면 기록 권한 없음" && kinds.other.includes("없는키") && !kinds.other.startsWith("백신"),
+        JSON.stringify(kinds),
       ),
     );
 

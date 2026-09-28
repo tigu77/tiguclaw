@@ -140,10 +140,65 @@ const run = async (): Promise<Assertion[]> => {
     //  (2026-08-19 사용자 로그): 부팅 5회에 같은 통지 5회. 사용자가 "재시작할 때마다
     //  계속 나오는 게 맞아?" 라고 물어서야 드러났다. **있다가 아니라 도는가**를 본다.
     {
-      const { runHealthSweep } = await import("../../core/health-sweep.js");
+      const { runHealthSweep, RESOURCE_KINDS: RES, oversizedProjectDocs, PROJECT_DOC_WARN_BYTES } = await import(
+        "../../core/health-sweep.js"
+      );
       const { insertEvent } = await import("../../store/events.js");
       const { getDb } = await import("../../store/sessions.js");
-      const RES = new Set(["backup_stale", "memory_index_truncated"]);
+      // ★프로젝트 입구 문서(2026-09-28) — **증분**: 진행 중·문턱 초과·마지막 보고 이후 수정된 것만.
+      //  상태형(하루 1회)이면 끌 수 없는 매일 알림이 되고 백업 통지와 시계를 공유해 서로를 묻는다(적대 검토).
+      const T = 1_000_000;
+      const st: Record<string, { size: number; mtimeMs: number }> = {
+        "/a/PROJECT.md": { size: PROJECT_DOC_WARN_BYTES + 1, mtimeMs: T + 1 },
+        "/b/PROJECT.md": { size: PROJECT_DOC_WARN_BYTES, mtimeMs: T + 1 },
+        "/c/PROJECT.md": { size: 99_999, mtimeMs: T + 1 },
+        "/e/PROJECT.md": { size: 99_999, mtimeMs: T + 1 },
+        "/f/PROJECT.md": { size: 99_999, mtimeMs: T },
+      };
+      const big = oversizedProjectDocs(
+        [
+          { path: "/a", name: "큰", status: "active" },
+          { path: "/b", name: "문턱", status: "active" },
+          { path: "/c", name: "끝남", status: "done" },
+          { path: "/e", name: "멈춤", status: "paused" },
+          { path: "/f", name: "안고침", status: "active" },
+          { path: "/d", name: "파일없음", status: "active" },
+        ],
+        (f) => st[f] ?? null,
+        T,
+      );
+      out.push({
+        name: "★프로젝트 입구 문서: 진행 중·문턱 초과·마지막 보고 뒤 고친 것만(끝남·멈춤·안 고침·파일 없음은 조용히), 하루 1회 묶음 밖",
+        ok: big.map((d) => d.name).join(",") === "큰" && !RES.has("project_doc_oversized"),
+        got: `${big.map((d) => d.name).join(",")} · 상태형=${RES.has("project_doc_oversized")}`,
+      });
+      // ★이음매 — runHealthSweep 이 실제로 부르고, 보고 뒤엔 조용하고, 다시 고치면 다시 알린다.
+      {
+        const { upsertProject, forgetProject } = await import("../../store/projects.js");
+        const { mkdtempSync, writeFileSync, utimesSync, rmSync } = await import("node:fs");
+        const os = await import("node:os");
+        const dir = mkdtempSync(path.join(os.tmpdir(), "tg-projdoc-"));
+        const md = path.join(dir, "PROJECT.md");
+        writeFileSync(md, "x".repeat(PROJECT_DOC_WARN_BYTES + 100));
+        upsertProject({ path: dir, name: "입구시험", status: "active", description: null });
+        const docKinds = (): number =>
+          runHealthSweep(Date.now()).filter((f) => f.kind === "project_doc_oversized" && f.summary.includes("입구시험")).length;
+        const first = docKinds();
+        insertEvent(Date.now(), "self_growth.health.finding", JSON.stringify({
+          findings: [{ kind: "project_doc_oversized", summary: "x" }],
+        }));
+        const quiet = docKinds();
+        const later = (Date.now() + 5_000) / 1000;
+        utimesSync(md, later, later);
+        const again = docKinds();
+        forgetProject(dir);
+        rmSync(dir, { recursive: true, force: true });
+        out.push({
+          name: "★이음매: 스윕이 큰 입구 문서를 잡고 → 보고 뒤엔 조용하고 → 다시 고치면 다시 알린다",
+          ok: first === 1 && quiet === 0 && again === 1,
+          got: `처음=${first} 보고후=${quiet} 수정후=${again}`,
+        });
+      }
       const resourceKinds = (fs: Array<{ kind: string }>): string[] =>
         fs.map((f) => f.kind).filter((k) => RES.has(k));
       const since = Date.now() - 3_600_000;

@@ -35,6 +35,7 @@ import {
   framesToDelete,
   observationMeta,
   preflightMessage,
+  preflightFailureKind,
   FRAME_MAX_BYTES,
   checkTarget,
   offscreenMessage,
@@ -243,7 +244,7 @@ const captureScene = async (
   const probe = await backend.preflight();
   const warn = preflightMessage(probe, w.platform);
   if (warn !== null) {
-    host?.log(`관측 실패 — 권한(${probe.ok ? "?" : probe.reason})`);
+    host?.log(`관측 실패 — ${preflightFailureKind(probe, w.platform)}`);
     return textOnly(warn);
   }
 

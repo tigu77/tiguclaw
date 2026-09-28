@@ -2262,6 +2262,9 @@ export const cancelQueuedTurn = (
 /** 테스트·진단용 — 현재 직렬 큐가 추적 중인 thread 수. */
 export const pendingThreadCount = (): number => threadTails.size;
 
+/** 이 스레드에 앞 턴(진행·대기)이 있나 — 새로 줄 서면 기다리는가의 정본(`inflightTurns` 는 훅 뒤에야 등록된다). */
+export const threadHasQueuedTurn = (threadKey: string): boolean => threadTails.has(threadKey);
+
 // ─── reply 클로저 재획득 (architect §3-b) ────────────────────────────────────
 // 매니저는 원 turn 의 reply 클로저를 안 들고 있다(원 turn 종료). 재주입 turn 의 reply 를
 // 채널명→send 매핑으로 재구성. dispatcher.ts 의 telegram/cli 분기와 *동일 의미* —

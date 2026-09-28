@@ -21,7 +21,7 @@
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceHas, sourceOrder } from "./_wiring.js";
-import { isOwnTurnEnd } from "../../core/llm-runtime/adapters/claude-agent-sdk.js";
+import { framesClaimSteer, isOwnTurnEnd, joinAnswers, STEER_TURN_FAILED_NOTE } from "../../core/llm-runtime/adapters/claude-agent-sdk.js";
 
 const ADAPTER = "../../core/llm-runtime/adapters/claude-agent-sdk.ts";
 
@@ -48,7 +48,7 @@ export const check: RegressionCheck = {
       /const hasOwnAnswer = isOwnTurnEnd\(\{[\s\S]{0,160}deltas: ownTextDeltas/,
       // 집행 — 판정이 거짓이면 **경계를 안 잡고 계속 수집**해야 한다. `continue` 가 사라지면
       // 08-06 사고(알림 턴 텍스트 혼입)가 전면 복귀한다(적대 검토 M3).
-      /if \(turnResultSeen\) \{[\s\S]{0,600}\n\s{6}continue;\n\s{4}\}/,
+      /if \(turnResultSeen\) \{[\s\S]{0,2200}\n\s{6}continue;\n\s{4}\}/,
       // ★`steering.close()` 는 **첫 result 에 그대로**(데드락 수정 유지) — 조건 안으로 들어가면
       //  내용 없는 턴에서 stdin 이 안 닫힌다(적대 검토 M4b).
       /input\.steering\?\.close\(\);[\s\S]{0,1200}const hasOwnAnswer = isOwnTurnEnd/,
@@ -64,6 +64,27 @@ export const check: RegressionCheck = {
       /msg\.type === "result"/,
       /turnResultSeen = true;/,
     ]);
+    // ★줄 선 입력이 연 턴은 **이어 붙인다** (2026-09-28 실사고 — 두 번째 메시지의 답이 버려짐).
+    //  판정은 SDK 의 `user_message_uuids` 로 한다(우리 추정 아님 — 첫 판의 추정은 적대 검토가 둘 다 뚫었다).
+    const ours = new Set(["u-ours"]);
+    const claimAssistant = framesClaimSteer({ type: "assistant", user_message_uuids: ["u-other", "u-ours"] }, ours);
+    const claimSingle = framesClaimSteer({ type: "result", user_message_uuid: "u-ours" }, ours);
+    const claimNotice = framesClaimSteer({ type: "assistant", user_message_uuids: ["u-notice"] }, ours); // 알림 턴
+    const claimInit = framesClaimSteer({ type: "system", subtype: "init" }, ours); // 식별자 없는 프레임
+    const claimNoSteer = framesClaimSteer({ type: "assistant", user_message_uuids: ["u-ours"] }, new Set());
+    const joined = joinAnswers(["  앞 답\n\n", undefined, "", "\n\n뒤 답  "]);
+    const queuedWired = await sourceHas(ADAPTER, [
+      // steer 마다 **우리 uuid** 를 달아 보낸다 — 이게 없으면 SDK 가 돌려줄 게 없다.
+      /steerUuids\.add\(uuid\);\s*\n\s*yield \{ \.\.\.toUserMessage\(content\), uuid \};/,
+      // 가드 **앞에서**, 그 프레임이 우리 입력을 소비했을 때만 이어 받는다.
+      /if \(turnResultSeen && framesClaimSteer\(msg, steerUuids\)\) \{[\s\S]{0,700}turnResultSeen = false;[\s\S]{0,600}\n\s{4}\}\n\s{4}if \(turnResultSeen\) \{/,
+      // 이어 받은 턴의 «내용 있음» 은 **그 턴의 조각만** 센다(08-09 빈 result 보호가 두 번째 턴에도).
+      /chunks: assistantTextChunks\.length - chunkBase,\s*\n\s*deltas: ownTextDeltas - deltaBase,/,
+      // 이어 받던 턴의 에러 result 가 **앞 답까지** 버리지 않는다(07-28 규칙).
+      /if \(msg\.is_error === true\) \{[\s\S]{0,300}if \(settledAnswer !== undefined\) \{[\s\S]{0,400}continue;\s*\n\s*\}\s*\n\s*throw new Error/,
+      // 마감은 앞 답 + 이 턴(실패면 안내).
+      /joinAnswers\(\[settledAnswer, steerTurnFailed \? STEER_TURN_FAILED_NOTE : currentText\]\)/,
+    ]);
     // 버리되 **조용히** 버리지 않는다(이 레포에서 조용한 폐기는 반복 사고다).
     const loud = await sourceHas(ADAPTER, [
       /\[claude-turn-boundary\]/,
@@ -76,6 +97,21 @@ export const check: RegressionCheck = {
     ]);
 
     return [
+      assert(
+        "★SDK 가 우리 uuid 를 돌려준 턴만 이어 받는다 — 알림 턴·식별자 없는 프레임·steer 없는 턴은 버린다",
+        claimAssistant && claimSingle && !claimNotice && !claimInit && !claimNoSteer,
+        `복수=${claimAssistant} 단수=${claimSingle} 알림=${claimNotice} init=${claimInit} steer없음=${claimNoSteer}`,
+      ),
+      assert(
+        "두 답은 빈 조각 없이 문단 하나로 잇는다(실패 안내 문구도 비어 있지 않다)",
+        joined === "앞 답\n\n뒤 답" && STEER_TURN_FAILED_NOTE.length > 10,
+        JSON.stringify(joined),
+      ),
+      assert(
+        "★[배선] uuid 부착 → 가드 앞 이어 받기 → 그 턴 조각만 판정 → 에러가 앞 답을 안 버림 → 마감 결합",
+        queuedWired.ok,
+        queuedWired.ok ? "배선 5곳" : `★누락: ${queuedWired.missing.join(" · ")}`,
+      ),
       assert("중간 빈 결과는 앞서 받은 텍스트가 있어도 종료하지 않음", !isOwnTurnEnd({ chunks: 3, deltas: 120, emptyQueuedResult: true }), {}),
       assert(
         "★답변이 이미 있으면 첫 result 로 경계를 잡는다(알림 텍스트 혼입 차단 — 08-06 사고)",

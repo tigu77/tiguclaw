@@ -37,7 +37,7 @@ import {
   rememberToolNames,
   slotHashes,
 } from "../prefix-fingerprint.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { parseRateLimit } from "../rate-limit-view.js";
 import { createFastModeReporter } from "../fast-mode-view.js";
 import { claudeAuthAvailable } from "../provider-availability.js";
@@ -334,6 +334,43 @@ const formatForeignDelta = (delta: CodexTurn[]): string => {
  */
 export const isOwnTurnEnd = (seen: { chunks: number; deltas: number; emptyQueuedResult?: boolean }): boolean =>
   !seen.emptyQueuedResult && (seen.chunks > 0 || seen.deltas > 0);
+
+/**
+ * ★첫 result 뒤의 새 턴이 **우리가 넣은 사용자 메시지**의 턴인가 (2026-09-28 실사고).
+ *
+ * 사고: 첫 답이 나오는 중에 보낸 두 번째 메시지에 **답이 영영 없었다**(회사돌쇠 22:48, dev 재현).
+ *  로그: `result/success` → `system/init` → assistant… → `result/success` — SDK 는 두 번째 메시지에
+ *  **답을 만들었는데** 턴 경계 가드가 그 턴을 알림이 연 합성 턴으로 보고 통째로 버렸다.
+ *  08-11 수정(아래 `steeringContents`)은 «첫 result 를 **본 뒤**» 도착분만 되돌린다. 이건 반대편
+ *  창이다 — 모델이 최종 답을 쓰는 중에 넣은 입력은 CLI 가 이 턴에 못 끼우고 **다음 턴으로 줄
+ *  세운다**. 이미 stdin 에 들어가 되돌릴 수도 없다. codex 는 같은 입력을 새 턴으로 재주입해 따로 답한다.
+ *
+ * ★판정은 **SDK 가 준다** — 우리가 추정하지 않는다. steer 마다 우리 `uuid` 를 달아 보내면 CLI 는
+ *  그 입력을 소비한 턴의 프레임(assistant·result)에 `user_message_uuids` 로 되돌려준다. 첫 판은
+ *  «steer 를 넣은 적이 있고 결과 뒤 알림이 없었다» 로 추정했는데 적대 검토가 둘 다 뚫었다 —
+ *  도구 경계에서 이미 흡수된 steer 도 세고, 알림 이벤트는 result **앞**에 올 수 있다. 식별자는
+ *  그 둘 다 없다: 알림 턴의 프레임엔 우리 uuid 가 없다.
+ */
+export const framesClaimSteer = (msg: unknown, ours: ReadonlySet<string>): boolean => {
+  if (ours.size === 0) return false;
+  const m = msg as { user_message_uuid?: unknown; user_message_uuids?: unknown };
+  const ids = Array.isArray(m.user_message_uuids)
+    ? (m.user_message_uuids as unknown[])
+    : typeof m.user_message_uuid === "string"
+      ? [m.user_message_uuid]
+      : [];
+  return ids.some((id) => typeof id === "string" && ours.has(id));
+};
+
+/** 여러 턴의 답을 한 답으로 — 빈 것은 빼고 문단 하나로 잇는다. */
+export const joinAnswers = (parts: ReadonlyArray<string | undefined>): string =>
+  parts
+    .map((t) => (t ?? "").trim())
+    .filter((t) => t !== "")
+    .join("\n\n");
+
+/** 이어 받던 두 번째 턴이 실패했을 때 첫 답 뒤에 붙이는 안내 — 조용히 삼키지 않는다. */
+export const STEER_TURN_FAILED_NOTE = "⚠️ 이어서 보내신 메시지는 처리 중 오류가 나서 답하지 못했습니다. 다시 보내 주세요.";
 
 /**
  * ★턴이 끝난 뒤 도착한 steering 입력은 **소비하지 않고 되돌려 놓는다** (2026-08-11 실사고).
@@ -1190,6 +1227,14 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
    *  덕분에 우연히 TDZ 를 면했다. 그 가정에 기대지 않는다.
    */
   let turnResultSeen = false;
+  // 첫 result 뒤 이어 받을 턴(`framesClaimSteer`) — 우리가 steer 에 단 uuid · 앞 턴들의 확정 답 ·
+  //  지금 턴이 시작된 조각 위치(이 턴의 «내용 있음» 판정과 마감이 앞 턴 조각을 세지 않게) ·
+  //  이어 받던 턴이 실패했나.
+  const steerUuids = new Set<string>();
+  let settledAnswer: string | undefined;
+  let chunkBase = 0;
+  let deltaBase = 0;
+  let steerTurnFailed = false;
 
   // ── P1c mid-turn steering (ADR `2026-07-16-midturn-steering.md` §claude, Phase P1c) ──
   //
@@ -1237,7 +1282,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           );
         },
       })) {
-        yield toUserMessage(content);
+        const uuid = randomUUID();
+        steerUuids.add(uuid);
+        yield { ...toUserMessage(content), uuid };
       }
       // stream 종료(close/abort) → 제너레이터 return → stdin close → 단일 result(발산 0).
     })();
@@ -1460,6 +1507,24 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     //  관측 발행(llm.sdk_message)은 **위에서 이미** 했으므로 기록은 남고, 답변 조립에서만
     //  뺀다. 스트림 소비는 계속한다 — 여기서 break 하면 steering 채널 close → stdin close
     //  → 스트림 종료로 이어지는 기존 teardown 순서가 바뀐다(완료 데드락 수정의 전제).
+    if (turnResultSeen && framesClaimSteer(msg, steerUuids)) {
+      // 줄 선 우리 입력의 턴 — 앞 답을 확정해 두고 이 턴을 이어 받는다(이 프레임부터 정상 처리).
+      settledAnswer = joinAnswers([
+        settledAnswer,
+        resultText !== undefined && resultText !== "" ? resultText : assistantTextChunks.slice(chunkBase).join(""),
+      ]);
+      resultText = undefined;
+      chunkBase = assistantTextChunks.length;
+      deltaBase = ownTextDeltas;
+      turnResultSeen = false;
+      postResultMsgs = 0;
+      closeTextSegment(); // 두 번째 답은 새 텍스트 조각으로(대시보드 인터리브).
+      console.warn(
+        `[claude-turn-boundary] ${input.threadKey} 첫 result 이후 **턴 중에 보낸 메시지**의 턴(${msg.type}` +
+          `${(msg as { subtype?: unknown }).subtype !== undefined ? "/" + String((msg as { subtype?: unknown }).subtype) : ""}` +
+          `, uuid 일치) — 버리지 않고 이 답변에 이어 붙입니다. 앞 답=${settledAnswer.length}자`,
+      );
+    }
     if (turnResultSeen) {
       postResultMsgs += 1;
       if (postResultMsgs === 1) {
@@ -1669,8 +1734,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       //   답변 경계만 내용 유무로 판정한다. 이 가드가 원래 막던 사고(알림 텍스트가 답변에
       //   섞임)는 그때 **이미 답변이 있었으므로** 여전히 잡힌다 — 두 사고가 구분된다.
       const hasOwnAnswer = isOwnTurnEnd({
-        chunks: assistantTextChunks.length,
-        deltas: ownTextDeltas,
+        chunks: assistantTextChunks.length - chunkBase,
+        deltas: ownTextDeltas - deltaBase,
         // 0.3.274: 묶인 백그라운드 알림의 중간 result는 답변 종료가 아니다.
         emptyQueuedResult: msg.subtype === "success" && !msg.is_error && msg.num_turns === 0 && msg.result === "",
       });
@@ -1694,6 +1759,16 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         // → is_error 면 result 본문(진짜 거부 상세)을 담아 throw → facade
         // isModelRejected 가 분류·폴백. 어댑터별 분기 아님(claude 의 단일 진실 표면).
         if (msg.is_error === true) {
+          // ★이어 받던 턴의 실패가 **앞 답까지** 버리게 두지 않는다(07-28 «성공 뒤 에러 result» 와 같은 규칙).
+          if (settledAnswer !== undefined) {
+            steerTurnFailed = true;
+            turnResultSeen = true;
+            console.warn(
+              `[claude-turn-boundary] ${input.threadKey} 이어 받던 턴이 에러 result 로 끝남 — 앞 답은 유지합니다: ` +
+                String(msg.result).slice(0, 200),
+            );
+            continue;
+          }
           throw new Error(`claude-agent-sdk error: ${msg.result}`);
         }
         resultText = msg.result;
@@ -1726,7 +1801,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         //  날릴 사유가 아니다. 로그 전수 3건 발생(07-19 2 · 07-28 1) — 드물지만 손실이 크다.
         //  ★결과가 없을 때만 throw 한다(그때는 진짜 실패라 폴백이 맞다). 결과가 있으면
         //   경고 + 관측 이벤트로 남기고 그 결과로 턴을 닫는다 — 조용히 삼키지 않는다.
-        if (succeeded && resultText !== undefined && resultText !== "") {
+        if ((succeeded && resultText !== undefined && resultText !== "") || settledAnswer !== undefined) {
+          if (settledAnswer !== undefined && (resultText === undefined || resultText === "")) steerTurnFailed = true;
           console.warn(
             `[claude-complete] ${input.threadKey} 완료 후 에러 result 수신 — 이미 받은 결과를 유지합니다: ${errs}`,
           );
@@ -2250,8 +2326,13 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   //  알림)의 result 본문이 `""` 로 오면 `resultText = ""` 가 대입되고, 그 뒤 우리가 조각
   //  49개를 모아도 마감이 `""` 를 골라 **빈 말풍선 + ok:true** 가 그대로 재현된다.
   //  경계를 늦게 잡는 것만으론 반쪽이었다 — 마감도 "내용 있는 쪽"을 골라야 닫힌다.
-  const chunkText = assistantTextChunks.join("");
-  const text = resultText !== undefined && resultText !== "" ? resultText : chunkText;
+  const chunkText = assistantTextChunks.slice(chunkBase).join("");
+  const currentText = resultText !== undefined && resultText !== "" ? resultText : chunkText;
+  // 이어 받은 턴이 있으면 앞 답 + 이 턴의 답(실패했으면 안내) — 없으면 종전 그대로.
+  const text =
+    settledAnswer === undefined
+      ? currentText
+      : joinAnswers([settledAnswer, steerTurnFailed ? STEER_TURN_FAILED_NOTE : currentText]);
   console.log(
     `[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${text.length} ` +
       `succeeded=${succeeded} (result=${resultText === undefined ? "없음" : String(resultText.length) + "자"} chunks=${chunkText.length}자)`,

@@ -159,6 +159,7 @@ import {
   getJobActivity,
   STEERED_TURN_RESULT,
   cancelJobsForThread,
+  threadHasQueuedTurn,
 } from "./core/worker-jobs.js";
 import {
   runSelfUpdate,
@@ -198,6 +199,7 @@ import { readEgressChannels } from "./core/settings.js";
 import { catalogModelKeys, modelCapsFor } from "./core/llm-runtime/model-catalog.js";
 import { providerAuthAvailable } from "./core/llm-runtime/provider-availability.js";
 import { listProviderNames } from "./core/llm-runtime/provider-registry.js";
+import { formatInboundLog, type InboundRoute } from "./core/inbound-log.js";
 
 // `/model` set 시점 best-effort sanity (설계: model-spec-validation §3-3, 하이브리드 C).
 // 차단 아님 — provider 와 model prefix 가 명백히 어긋날 때만 "혼동 가능성" 경고 1줄.
@@ -1610,6 +1612,16 @@ const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
   ts: Date.now(),
 });
 
+const inboundLine = (msg: IncomingMessage, route: InboundRoute): string =>
+  formatInboundLog({
+    channel: msg.channel,
+    threadKey: msg.threadKey,
+    textLength: msg.text.length,
+    attachments: msg.attachments?.length ?? 0,
+    route,
+    synthetic: msg.synthetic === true,
+  });
+
 const serializedHandler: MessageHandler = (msg) => {
   // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
@@ -1768,6 +1780,7 @@ const serializedHandler: MessageHandler = (msg) => {
     const accepted =
       steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg)) === true;
     if (accepted) {
+      console.log(inboundLine(msg, "steer"));
       publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
       // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비. ★단, 이 핸들러는 *즉시* resolve
       // 하므로 이를 await 하는 POST /messages 가 **원래 턴 종료 전에** 반환한다 → 대시보드 클라가
@@ -1783,6 +1796,7 @@ const serializedHandler: MessageHandler = (msg) => {
   // 항목을 대시보드 ✕ 버튼→POST /cancel-queued→cancelQueuedTurn 이 지목 취소 가능. 미부여
   // (텔레그램·cli·스케줄·합성 turn)는 익명 항목 = 취소 불가·현행 동작(회귀 0). 취소된 항목은
   // CANCELLED_TURN_RESULT 로 no-op resolve → POST 핸들러가 {cancelled:true} 응답(G1).
+  console.log(inboundLine(msg, threadHasQueuedTurn(msg.threadKey) ? "queued" : "new"));
   return enqueueThreadTurn(msg.threadKey, () => handler(msg), {
     id: msg.correlationId,
   });

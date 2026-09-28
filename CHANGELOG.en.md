@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fixed a second message sent while Claude was still answering getting no reply.** Its answer now follows the first one.
 - **In Codex chats, the earlier conversation was re-sent on every turn without using the cache.** Long conversations now use less and respond faster.
 
 - **Pasting one long text could summarize away most of the earlier conversation in Codex and OpenAI chats.** A large input now only trims older history for that one request.

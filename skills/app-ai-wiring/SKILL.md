@@ -92,7 +92,7 @@ LLM_GATEWAY_TOKEN=<임의 비밀문자열>
 }
 ```
 - `enabled` — **킬스위치**(토큰은 둔 채 껐다 켰다). 생략=true.
-- `models` — 기본 모델 풀. 생략 시 env `LLM_GATEWAY_MODELS`→`REGION_A_MODELS` 폴백.
+- `models` — 기본 모델 풀. 생략 시 env `LLM_GATEWAY_MODELS`, 그것도 없으면 기본 모델 프로파일.
 - `maxConcurrency` — 동시 처리 상한(초과 429). 생략=4.
 - `tokenEnv` — 토큰을 읽을 env 변수명. 생략=`LLM_GATEWAY_TOKEN`.
 - ★`gateway` 섹션 자체가 없으면 **레거시 env 경로**(토큰 존재만으로 활성).

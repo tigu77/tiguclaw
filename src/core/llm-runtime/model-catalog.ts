@@ -27,6 +27,7 @@ import path from "node:path";
 import { getPaths } from "../paths.js";
 import { claudeAuthAvailable, providerAuthAvailable } from "./provider-availability.js";
 import { getAuthProvider } from "./auth-registry.js";
+import { anthropicModelsHeaders } from "./claude-token.js";
 import { CODEX_BASE_URL } from "./adapters/openai-codex-oauth-history.js";
 import { loadModelReasoning } from "../settings.js";
 import { listProviderNames, resolveProviderConn } from "./provider-registry.js";
@@ -224,13 +225,8 @@ const discoverAnthropic = async (): Promise<DiscoverResult> => {
   if (!claudeAuthAvailable()) return { slugs: [] };
   const key = (process.env.ANTHROPIC_API_KEY ?? "").trim();
   const oauth = (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim();
-  const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
-  if (key !== "") headers["x-api-key"] = key;
-  else {
-    headers.authorization = `Bearer ${oauth}`;
-    // 구독 토큰 경로는 이 beta 헤더가 있어야 열린다(실측).
-    headers["anthropic-beta"] = "oauth-2025-04-20";
-  }
+  // 머리는 토큰 확인(`claude-token.ts`)과 **같은 것** — 한쪽만 고치면 확인은 통과하는데 조회는 401 이 된다.
+  const headers = anthropicModelsHeaders(key, oauth);
   const res = await fetch("https://api.anthropic.com/v1/models?limit=100", { headers });
   if (!res.ok) throw new Error(`anthropic /v1/models ${res.status}`);
   const json = (await res.json()) as { data?: Array<{ id?: unknown; created_at?: unknown }> };

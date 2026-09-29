@@ -103,10 +103,11 @@ export const check: RegressionCheck = {
         assert("★부팅 진단: 없는 provider 원소는 이름과 설정 자리를 말하고, 형식 오류도 말한다 · 정의하면 조용하다",
           diagMissing.length === 2 && diagMissing.some((m) => m.includes("'ollama'") && m.includes("models.providers.ollama")) && diagMissing.some((m) => m.includes("형식없음")) && diagDefined.length === 0,
           { diagMissing, diagDefined }),
-        assert("★진단은 프로파일 밖도 본다 — 옛 .env 등급·REGION_A_MODELS·게이트웨이 풀 · 프로파일 설치본에선 안 읽는 옛 등급은 말하지 않는다",
-          diagEnv.some((m) => m.includes(".env MODEL_TIER_NANO")) && diagEnv.some((m) => m.includes(".env REGION_A_MODELS") && m.includes("ollama:gemma3")) &&
-            diagEnv.some((m) => m.includes("LLM_GATEWAY_MODELS")) && !diagEnv.some((m) => m.includes("claude-opus-5")) &&
-            !diagEnvShadowed.some((m) => m.includes("MODEL_TIER_NANO")) && diagEnvShadowed.some((m) => m.includes("REGION_A_MODELS")),
+        // ★옛 `.env` 모델 줄(REGION_A_MODELS·MODEL_TIER_*)은 더 읽지 않으므로 진단도 하지 않는다(2026-09-29 — 부팅이 옮긴다).
+        assert("★진단은 프로파일 밖의 **읽히는** 자리(게이트웨이 풀)를 본다 · 안 읽는 옛 .env 모델 줄은 말하지 않는다",
+          diagEnv.some((m) => m.includes("LLM_GATEWAY_MODELS")) && !diagEnv.some((m) => m.includes("claude-opus-5")) &&
+            !diagEnv.some((m) => m.includes("MODEL_TIER_NANO") || m.includes("REGION_A_MODELS")) &&
+            !diagEnvShadowed.some((m) => m.includes("MODEL_TIER_NANO") || m.includes("REGION_A_MODELS")),
           { diagEnv, diagEnvShadowed }),
         assert("★풀리지 않는 세션 override 는 그렇다고 말한다 · 풀리는 것·일부라도 풀리는 콤마 풀(라우터가 그걸 씀)은 조용하다",
           overrideDead.includes("ollama:qwen3:8b") && overrideDead.includes("/model reset") && overrideLive === "" && overridePartly === "", { overrideDead, overrideLive, overridePartly }),

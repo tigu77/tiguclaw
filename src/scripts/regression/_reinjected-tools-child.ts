@@ -5,9 +5,9 @@
 import { initStore } from "../../store/sessions.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
 import type { IncomingMessage } from "../../channels/types.js";
-import { assertIsolated, fakeNetwork } from "./_framework.js";
+import { assertIsolated, fakeNetwork, pinModelForTest } from "./_framework.js";
 assertIsolated();
-process.env.REGION_A_MODELS = "codex:gpt-5.6-sol";
+pinModelForTest("codex:gpt-5.6-sol");
 initStore();
 registerAuthProvider({ provider: "codex", getAccessToken: async () => "regression-fake-token" });
 

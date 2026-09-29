@@ -47,7 +47,8 @@ export const check: RegressionCheck = {
           everyAdvertisedResolves && !stale.ids.includes("tier:local") && !stale.ids.includes("tier:chained") && stale.local === 0 && stale.chained === 0,
           stale),
         assert("★아무 풀도 안 풀리는 프로파일은 광고하지 않는다", !dead.ids.includes("tier:local") && dead.local === 0, dead),
-        assert("반대 방향: 옛 설치본은 env 등급을 그대로 광고하고, 요청도 푼다", legacy.ids.includes("tier:nano") && legacy.nano > 0, legacy),
+        // ★옛 `.env` 등급은 더 읽지 않는다(2026-09-29 — 부팅이 프로파일로 옮긴다). 프로파일이 없어도 env 의 nano 는 광고도 해석도 안 한다.
+        assert("반대 방향: 프로파일 없는 설치도 옛 env 등급(nano)을 광고·해석하지 않는다", !legacy.ids.includes("tier:nano") && legacy.nano === 0, legacy),
       ];
     } finally {
       if (prevNano === undefined) delete process.env.MODEL_TIER_NANO; else process.env.MODEL_TIER_NANO = prevNano;

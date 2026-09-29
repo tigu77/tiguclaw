@@ -86,6 +86,23 @@ export interface ModelProfile {
 export const isBadgeColor = (v: unknown): v is string =>
   typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v.trim());
 
+/**
+ * **프로파일 → settings.json 모양** — 읽기(`validateProfile`)의 거울 (2026-09-29).
+ * ★메모리 모양(`PoolEntry.spec`)을 그대로 쓰면 **읽히지 않는다** — 파일의 풀 원소는 문자열이거나 `{ model, reasoning, speed }`
+ *  이다. 2026-08-24(풀 원소 객체화) 뒤로 설치 마법사가 `{ spec }` 을 써 왔고, 그래서 수동 모드 설치의 프로파일이 통째로
+ *  무시돼 옛 `.env` 의 REGION_A_MODELS 가 실제 모델을 정하고 있었다. 쓰는 곳은 전부 이걸 지난다.
+ */
+export const profileToSettingsJson = (p: ModelProfile): Record<string, unknown> => ({
+  ...(p.description !== undefined ? { description: p.description } : {}),
+  pool: p.pool.map((e) =>
+    e.reasoning === undefined && e.speed === undefined
+      ? e.spec
+      : { model: e.spec, ...(e.reasoning !== undefined ? { reasoning: e.reasoning } : {}), ...(e.speed !== undefined ? { speed: e.speed } : {}) },
+  ),
+  ...(p.fallback !== undefined ? { fallback: p.fallback } : {}),
+  ...(p.color !== undefined ? { color: p.color } : {}),
+});
+
 /** 표시·파싱용 spec 문자열만 — 표현을 두 벌 들고 다니지 않기 위한 **파생**(정의점은 pool). */
 export const poolSpecs = (pool: readonly PoolEntry[]): string[] =>
   pool.map((e) => e.spec);
@@ -318,6 +335,25 @@ export const loadModelProfiles = (
     }
   }
   return merged;
+};
+
+/**
+ * **홈 층에서 읽히는 프로파일 수** — 프로젝트 층을 섞지 않는다 (2026-09-29).
+ * ★홈에 무엇을 쓸지 정하는 판정(옛 .env 이전·설치 마법사 시드)은 홈만 봐야 한다 — 병합값을 보면 데몬 cwd 의 프로젝트
+ *  프로파일 때문에 홈 이전이 건너뛰어졌다(적대 검토 P-3). 원시 키 수가 아니라 **읽히는** 수다 — 읽히지 않는 `{ spec }`
+ *  시드를 «있음» 으로 세면 다시 시드하지 않았다(P-7).
+ */
+export const countHomeModelProfiles = (): number => {
+  let n = 0;
+  for (const layer of loadSettingsLayersWithSource()) {
+    if (layer.scope !== "home") continue;
+    const profiles = layer.settings.models?.profiles;
+    if (profiles === null || typeof profiles !== "object") continue;
+    for (const [name, val] of Object.entries(profiles as Record<string, unknown>)) {
+      if (validateProfile(name, val, false) !== undefined) n += 1;
+    }
+  }
+  return n;
 };
 
 /**

@@ -321,6 +321,11 @@ export interface RegionASdkOutput {
   sessionId?: string;
   /** 사용 모델 — saveSession 저장용. */
   model?: string | null;
+  /**
+   * **이 턴에 실제로 보낸 추론 강도** (2026-09-29). 어댑터가 요청에 실은 값 그대로 — 안 보냈으면 없다(거짓값 금지).
+   * ★화면·기록이 설정을 다시 읽어 계산하지 않는다 — 턴 도중 설정이 바뀌거나 어댑터마다 해석이 다르면 갈린다.
+   */
+  reasoning?: string;
   /** sysprompt hash — claude 어댑터만 (fingerprint 가드). */
   systemPromptHash?: string | null;
   /**
@@ -768,6 +773,8 @@ export interface RegionATurnDonePayload {
   adapter: "claude" | "codex" | "openai";
   /** 사용 모델 (어댑터가 보고하면). spec.model "" (어댑터 디폴트) 거나 미보고면 생략. */
   model?: string;
+  /** 이 턴에 실제로 보낸 추론 강도(`RegionASdkOutput.reasoning`). 안 보냈으면 생략. */
+  reasoning?: string;
   /** 이 턴(어댑터 run() 호출)의 wall-clock 소요. 항상 채움 (facade 가 측정 — 어댑터 무관). */
   durationMs: number;
   /** 항상 true (turn_done 은 성공 종료에만 발행). 분류 가독용 명시 필드. */
@@ -843,6 +850,12 @@ export interface RegionATurnErrorPayload {
    *  채널마다 문구를 다시 조립하지 않게 값으로 싣는다(대시보드·텔레그램 공용).
    */
   cooldownUntilTs?: number;
+  /**
+   * 그 쉼의 **사유** — `limit`(사용량 한도) · `auth`(인증 거부). 이 턴의 오류로 가릴 수 없으면 없다.
+   * ★없으면 화면이 인증 거부를 «사용량 한도 — 12시간 뒤» 로 보여줬다(2026-09-29 지인 설치본). 인증은
+   *  기다린다고 안 풀린다 — 다시 로그인해야 한다. 판정은 쿨다운 등록과 **같은 함수**(`isRateLimited`·`isAuthRejected`).
+   */
+  cooldownReason?: "limit" | "auth";
   /**
    * 실패 분류 (facade 단일 휴리스틱 — 어댑터별 분기 0).
    *  - "timeout": 1층 유휴 또는 2층 턴 타임아웃(Idle/TurnTimeoutError).

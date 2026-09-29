@@ -15,7 +15,7 @@ import { pruneInternalThreads } from "../store/sessions.js";
 import { recordChatMessage } from "../store/chat-log.js";
 import { isChatVisibleEvent } from "./chat-visible-events.js";
 import { redactSecrets } from "./outbound-sanitize.js";
-import type { ChatAttachmentMeta } from "../store/chat-log.js";
+import type { ChatAttachmentMeta, ChatLogEntry } from "../store/chat-log.js";
 
 const SKIP_TYPES = new Set<string>([
   "llm.sdk_message",
@@ -335,6 +335,13 @@ const startChatLogPersistence = (bus: EventBus): void => {
         // 실제 응답 모델 — 있으면 함께 영속(새로고침 후 표시). 없으면 키 생략(거짓값 금지).
         ...(typeof payload.model === "string" && payload.model !== ""
           ? { model: payload.model }
+          : {}),
+        // 추론 강도·턴 비용 — 모델과 같은 규칙(있으면 영속, 없으면 키 생략).
+        ...(typeof payload.reasoning === "string" && payload.reasoning !== ""
+          ? { reasoning: payload.reasoning }
+          : {}),
+        ...(payload.spend !== null && typeof payload.spend === "object" && typeof (payload.spend as { input?: unknown }).input === "number"
+          ? { spend: payload.spend as NonNullable<ChatLogEntry["spend"]> }
           : {}),
       });
     } catch (e) {

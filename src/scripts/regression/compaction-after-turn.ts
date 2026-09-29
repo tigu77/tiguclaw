@@ -24,6 +24,7 @@ export const check: RegressionCheck = {
       compactHistoryAfterTurn,
       compactThreadHistory,
       compactThreadNow,
+      settleThreadCompaction,
       CODEX_HISTORY_COMPACT_TRIGGER_CHARS: TRIGGER,
       SUMMARY_SECTION_SEP,
       historyTriggerChars,
@@ -64,7 +65,10 @@ export const check: RegressionCheck = {
       return new Promise<void>((r) => (entered = r));
     };
     let tag = "요약";
-    setSummarizerPort(async (_text: string, target: number) => {
+    // 다음 요약 호출이 이 오류로 끝난다 — 실제 fetch 가 끊겼을 때(`/stop`·무응답 타임아웃)의 모양.
+    let throwNext: Error | null = null;
+    // ★한 벌이다 — 중간 시나리오가 다른 요약기로 바꿨다가 **이걸 다시 끼운다**(복사본으로 되돌리면 한쪽만 고쳐진다).
+    const basePort = async (_text: string, target: number): Promise<string> => {
       calls += 1;
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
@@ -74,12 +78,18 @@ export const check: RegressionCheck = {
           entered();
           await new Promise<void>((r) => (release = r));
         }
+        if (throwNext !== null) {
+          const e = throwNext;
+          throwNext = null;
+          throw e;
+        }
         if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
         return `${tag}${calls}:` + "약".repeat(Math.max(0, Math.min(target, 400) - 5));
       } finally {
         inFlight -= 1;
       }
-    });
+    };
+    setSummarizerPort(basePort);
     const out: Assertion[] = [];
     try {
       const per = Math.ceil((TRIGGER as number) / 40);
@@ -304,21 +314,7 @@ export const check: RegressionCheck = {
           `뒤 워터마크=${wmB} · 큰 프롬프트 요청 요약=${ports.length} · 남은 원문=${rawLeft}자 > 깊은 저수위 ${deepLow}자`,
         ),
       );
-      setSummarizerPort(async (_text: string, target3: number) => {
-        calls += 1;
-        inFlight += 1;
-        maxInFlight = Math.max(maxInFlight, inFlight);
-        try {
-          if (holdNext) {
-            holdNext = false;
-            entered();
-            await new Promise<void>((r) => (release = r));
-          }
-          return `${tag}${calls}:` + "약".repeat(Math.max(0, Math.min(target3, 400) - 5));
-        } finally {
-          inFlight -= 1;
-        }
-      });
+      setSummarizerPort(basePort);
 
       // ⑬ 잠금 우회 — 대기 중 취소된 **마지막** 대기자가 항목을 지워 다음 요청이 잠금을 건너뛰던 것(재검토 P2, 실측 재현).
       const Lk = "dashboard:regr-compact-after-turn-lock";
@@ -448,6 +444,95 @@ export const check: RegressionCheck = {
           `worker=${String(derived)} · 미조립=${String(untouched)}`,
         ),
       );
+
+      // ⑭ 수동 /compact 도 `/stop` 으로 끊긴다 (2026-09-29 백로그 P1). 종전엔 앞선 요약이 끝날 때까지 이 대화의 큐를
+      //  붙잡았고 끊을 수단이 없었다. (a) 잠금 대기 중 취소 = 바로 빠지고 잠금은 그대로 · (b) 요약 중 취소 = 실패로 안 셈
+      //  · (c) 신호 없이 난 AbortError(무응답 타임아웃)는 **실패로 답한다** — 오류 모양이 아니라 명령의 신호로 가른다.
+      const M = "dashboard:regr-compact-after-turn-m";
+      clearThreadSummary("http-bridge", M);
+      seed(M, "regr-cat-m", 60, per);
+      await request(M);
+      seed(M, "regr-cat-m", 60, per);
+      maxInFlight = 0;
+      gate = hold();
+      const bgM = compactHistoryAfterTurn(M);
+      await gate;
+      const acM = new AbortController();
+      let mErr = "";
+      const manualM = compactThreadNow("http-bridge", M, "fake-model", "fake-token", undefined, undefined, acM.signal)
+        .then(() => "끝남", (e: unknown) => (mErr = e instanceof Error ? e.name : String(e)));
+      acM.abort(Object.assign(new Error("user cancelled turn (/stop)"), { name: "UserCancelledError" }));
+      const mRaced = await Promise.race([manualM, new Promise((r) => setTimeout(() => r("아직 대기"), 200))]);
+      release();
+      await bgM;
+      const afterBgM = getThreadSummary(M);
+      out.push(
+        assert(
+          "★(a) 앞선 요약을 기다리던 수동 /compact 는 /stop 에 바로 빠지고, 뒤 요약은 혼자 끝까지 돈다",
+          mRaced !== "아직 대기" && mRaced !== "끝남" && mErr === "UserCancelledError" &&
+            maxInFlight === 1 && afterBgM !== undefined && afterBgM !== null,
+          `200ms 안 결과=${String(mRaced)} · 오류=${mErr || "없음"} · 동시 최대=${maxInFlight} · 뒤 요약 저장=${afterBgM ? "O" : "X"}`,
+        ),
+      );
+      const N = "dashboard:regr-compact-after-turn-n";
+      clearThreadSummary("http-bridge", N);
+      // 실패 기록(끝 신호·연속 실패 경보의 입구)을 센다 — 사용자 자신의 정지를 고장으로 세면 경보가 그걸로 운다.
+      const { getEventBus } = await import("../../core/eventbus.js");
+      let failedN = 0;
+      const unsubN = getEventBus().subscribe((e: { type: string; payload: { threadKey?: string } }) => {
+        if (e.type === "llm.compact_failed" && e.payload.threadKey === N) failedN += 1;
+      });
+      seed(N, "regr-cat-n", 60, per);
+      const acN = new AbortController();
+      gate = hold();
+      let nErr = "";
+      const manualN = compactThreadNow("http-bridge", N, "fake-model", "fake-token", undefined, undefined, acN.signal)
+        .then((r: { ok: boolean }) => `답:${r.ok}`, (e: unknown) => (nErr = e instanceof Error ? e.name : String(e)));
+      await gate;
+      acN.abort();
+      throwNext = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+      release();
+      const nOut = await manualN;
+      const afterN = getThreadSummary(N);
+      const failedOnCancel = failedN;
+      // (c) 신호는 멀쩡한데 요약 호출이 AbortError(무응답 타임아웃) — 사용자에게 실패로 답한다.
+      throwNext = Object.assign(new Error("This operation was aborted"), { name: "AbortError" });
+      const timedOut = await compactThreadNow("http-bridge", N, "fake-model", "fake-token", undefined, undefined, new AbortController().signal)
+        .then((r: { ok: boolean; reason?: string }) => r, (e: unknown) => ({ threw: e instanceof Error ? e.name : String(e) }));
+      unsubN();
+      out.push(
+        assert(
+          "★(b) 요약 중 /stop 은 던져서 끝낸다(저장 0 · 실패 기록 0) · (c) 신호 없는 AbortError 는 실패로 답하고 기록한다",
+          nErr === "AbortError" && nOut === "AbortError" && (afterN === undefined || afterN === null) && failedOnCancel === 0 &&
+            "ok" in timedOut && timedOut.ok === false && failedN === 1,
+          `요약 중 취소=${String(nOut)} · 저장=${afterN ? "O" : "X"} · 취소 때 실패 기록=${failedOnCancel} · 타임아웃=${JSON.stringify(timedOut)} · 타임아웃 기록=${failedN - failedOnCancel}`,
+        ),
+      );
+
+      // ⑮ 요약 줄 비우기 기다림 — 턴 뒤 요약이 도는 동안엔 안 끝나고, 끝나면 바로 끝난다(벤치 집계가 이걸 기다린다).
+      const Q = "dashboard:regr-compact-after-turn-q";
+      clearThreadSummary("http-bridge", Q);
+      seed(Q, "regr-cat-q", 60, per);
+      await request(Q);
+      seed(Q, "regr-cat-q", 60, per);
+      gate = hold();
+      const bgQ = compactHistoryAfterTurn(Q);
+      await gate;
+      const q = { settled: false };
+      const settling = settleThreadCompaction(Q).then(() => (q.settled = true));
+      await new Promise((r) => setTimeout(r, 50));
+      const whileRunning = q.settled;
+      release();
+      await bgQ;
+      await settling;
+      const idle = await Promise.race([settleThreadCompaction("dashboard:regr-compact-after-turn-idle").then(() => "끝남"), new Promise((r) => setTimeout(() => r("멈춤"), 200))]);
+      out.push(
+        assert(
+          "★요약 줄 기다림은 턴 뒤 요약이 끝날 때까지 안 끝나고, 끝나면 풀린다 · 줄이 없으면 바로 끝난다",
+          whileRunning === false && q.settled && getThreadSummary(Q) !== undefined && idle === "끝남",
+          `도는 중 끝남=${whileRunning} · 뒤 요약 후=${q.settled} · 빈 줄=${String(idle)}`,
+        ),
+      );
     } finally {
       setSummarizerPort(null);
     }
@@ -466,6 +551,24 @@ export const check: RegressionCheck = {
         openaiCloses: /compactThreadHistory\(\{[\s\S]{0,6000}\}\)\.catch\(async \(e: unknown\) => \{[\s\S]{0,400}await server\.close\(\);/.test(openaiSrc),
       };
       out.push(assert("★두 어댑터가 취소를 드라이버에 넘기고, openai 는 대기 중 취소 때 연 브리지를 닫는다", sig.codex && sig.openai && sig.openaiCloses, JSON.stringify(sig)));
+      // 수동 /compact — 진행 중 작업으로 등록돼 `/stop` 이 찾고, 그 신호가 잠금 대기와 요약 호출까지 간다.
+      const entry = readSourceSync("src/index.ts");
+      const slash = readSourceSync("src/core/entry/slash-commands.ts");
+      const manualSig = {
+        // 통지 좌표(재시작 알림이 텔레그램에 닿는다) · 끝나면 **자기 항목만** 치운다(새면 /health·작업표시가 굳는다).
+        registered: /cmd === "\/compact"\) \{[\s\S]{0,600}target: msg\.channelAddress \?\? null,\s*command: true,[\s\S]{0,100}inflightTurns\.set\(msg\.threadKey, compactEntry\);[\s\S]{0,200}handleCompact\(\{ \.\.\.slashCtx, signal: compactEntry\.ac\.signal \}\);\s*\} finally \{\s*if \(inflightTurns\.get\(msg\.threadKey\) === compactEntry\) inflightTurns\.delete\(msg\.threadKey\);/.test(entry),
+        handler: /compactThreadNow\([\s\S]{0,300}resolveReasoningEffort\("codex", codexModel\),\s*signal,\s*\)/.test(slash),
+        summarizer: /const compactThreadNowUnlocked = [\s\S]{0,4000}runSummarizer\([\s\S]{0,200}turnReasoning,\s*signal,\s*threadKey,/.test(codexSrc),
+        keepsJobs: /const stopped = entry\.command === true \? 0 : cancelJobsForThread\(msg\.threadKey\);/.test(entry),
+        lock: /withThreadCompactionLock\(a\[1\], \(\) => compactThreadNowUnlocked\(\.\.\.a\), a\[6\]\)/.test(codexSrc),
+      };
+      out.push(
+        assert(
+          "★수동 /compact 는 진행 중 작업으로 등록되고, 그 신호가 잠금 대기·요약 호출까지 간다 · 그걸 멈추는 /stop 은 매니저 잡을 안 끊는다",
+          manualSig.registered && manualSig.handler && manualSig.summarizer && manualSig.lock && manualSig.keepsJobs,
+          JSON.stringify(manualSig),
+        ),
+      );
     }
     return out;
   },

@@ -708,6 +708,10 @@ export interface JobUsage {
   /** 사용량을 알 수 없는 실패 시도. 완료 턴·관측 요청 수와 별도로 센다. */
   unreportedFailedAttempts?: number;
   unreportedRequests?: number;
+  /** 가장 최근 턴에 실제로 보낸 추론 강도 — 잡 카드의 모델 배지 옆에 붙는다(없으면 표시 없음). */
+  reasoning?: string;
+  /** 그 강도를 보낸 모델 — 화면이 현재 모델과 짝일 때만 강도를 붙인다(폴백 뒤 다른 모델에 붙지 않게). */
+  reasoningModel?: string;
   /** 별도 요약 실행. 위 본 작업 합계와 합치지 않는다. */
   summary?: { executions: number; inputTokens: number; outputTokens: number; unreported: number };
 }
@@ -726,6 +730,15 @@ export const recordJobTurnUsage = (payload: Record<string, unknown>): void => {
     turns: 0, requests: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, unreportedTurns: 0, unreportedCacheTurns: 0,
   });
   u.turns += 1;
+  // 최근 턴의 강도 — 없으면 지운다(그 턴은 강도를 안 보냈다: 옛 강도를 계속 싣지 않는다). 짝 모델도 같이.
+  if (typeof payload.reasoning === "string" && payload.reasoning !== "") {
+    u.reasoning = payload.reasoning;
+    if (typeof payload.model === "string" && payload.model !== "") u.reasoningModel = payload.model;
+    else delete u.reasoningModel;
+  } else {
+    delete u.reasoning;
+    delete u.reasoningModel;
+  }
   const missingRequests = payload.unreportedRequests;
   if (typeof missingRequests === "number" && Number.isSafeInteger(missingRequests) && missingRequests > 0)
     u.unreportedRequests = (u.unreportedRequests ?? 0) + missingRequests;

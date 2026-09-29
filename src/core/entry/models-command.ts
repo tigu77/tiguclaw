@@ -62,14 +62,6 @@ export const capsLabel = (c: ModelCaps | undefined): string => {
   return parts.length === 0 ? "" : ` [${parts.join(" · ")}]`;
 };
 
-/** 레거시 티어 env 키 — 프로파일 0개일 때만 폴백 안내에 노출(resolveTier 의 TIER_ENV 와 대응). */
-const LEGACY_TIER_ENV_KEYS = [
-  "MODEL_TIER_HIGH",
-  "MODEL_TIER_MID",
-  "MODEL_TIER_LOW",
-  "MODEL_TIER_NANO",
-] as const;
-
 /**
  * 풀 한 줄 포맷 — 폴백 순서를 화살표로. 빈 풀은 명시.
  *
@@ -184,32 +176,17 @@ const orderedNames = (
   return keys.includes(defaultName) ? [defaultName, ...rest] : rest;
 };
 
-/** 프로파일 0개일 때의 레거시 env 폴백 안내 블록. */
-const renderLegacyFallback = (env: NodeJS.ProcessEnv): string => {
-  const lines: string[] = [
-    "정의된 모델 프로파일이 없습니다 (settings.json 의 `models.profiles` 비어 있음).",
+/**
+ * 보여줄 프로파일이 하나도 없을 때 — 사용자 프로파일도 없고 빌트인도 못 만들었다(인증된 provider 가 없다).
+ * ★옛 `.env`(REGION_A_MODELS·MODEL_TIER_*)는 더 읽지 않으므로 안내하지 않는다 (2026-09-29) — 부팅이 프로파일로 옮긴다.
+ */
+const renderNoProfiles = (): string =>
+  [
+    "쓸 수 있는 모델 프로파일이 없습니다 — `settings.json` 에 프로파일이 없고, 인증된 provider 도 없어 자동 구성을 만들지 못했습니다.",
     "",
-  ];
-  const active: string[] = [];
-  const region = (env.REGION_A_MODELS ?? "").trim();
-  if (region !== "") active.push(`  REGION_A_MODELS = \`${region}\``);
-  for (const key of LEGACY_TIER_ENV_KEYS) {
-    const val = (env[key] ?? "").trim();
-    if (val !== "") active.push(`  ${key} = \`${val}\``);
-  }
-  if (active.length > 0) {
-    lines.push("레거시 env 폴백으로 동작 중:", ...active);
-  } else {
-    lines.push(
-      "레거시 env(REGION_A_MODELS / MODEL_TIER_*)도 설정되지 않음 → anthropic SDK 디폴트로 동작.",
-    );
-  }
-  lines.push(
-    "",
-    "프로파일은 `<home>/settings.json` 의 `models.profiles.<이름>` 에 정의합니다.",
-  );
-  return lines.join("\n");
-};
+    "provider 에 로그인하면(예: `npm run claude-auth`·`npm run codex-auth`) 그 provider 의 최신 모델로 자동 구성됩니다.",
+    "직접 정하려면 `<home>/settings.json` 의 `models.profiles.<이름>` 에 정의하세요.",
+  ].join("\n");
 
 /**
  * `/models` 응답 본문 렌더 — 순수 함수.
@@ -218,13 +195,13 @@ const renderLegacyFallback = (env: NodeJS.ProcessEnv): string => {
  * @param sessionOverride 이 채널/thread 의 세션 모델 override(`getSessionModelOverride`), 없으면 null.
  * @param defaultName    기본 프로파일 이름(`getDefaultProfileName()` = settings.json models.default
  *                        포인터). 정렬(맨 앞)·(기본) 표식 기준. 미지정 시 `"default"`(무회귀).
- * @param env            레거시 폴백 안내용 env 스냅샷(기본 process.env — 테스트는 주입).
+ * @param _env           (쓰지 않음 — 옛 `.env` 폴백 안내를 없앴다. 위치 인자라 자리만 남긴다.)
  */
 export const renderModelProfiles = (
   profiles: Record<string, ModelProfile>,
   sessionOverride: string | null,
   defaultName = "default",
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
   builtin = false,
   /**
    * 모델 능력 조회 — **필수 인자다**(값은 `undefined` 여도 된다).
@@ -268,7 +245,7 @@ export const renderModelProfiles = (
 
   const names = orderedNames(profiles, defaultName);
   if (names.length === 0) {
-    blocks.push(renderLegacyFallback(env));
+    blocks.push(renderNoProfiles());
     return blocks.join("\n\n");
   }
 

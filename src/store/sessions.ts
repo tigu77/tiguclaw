@@ -947,6 +947,14 @@ export const initStore = (): void => {
   if (!chatLogCols.some((c) => c.name === "model")) {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN model TEXT`);
   }
+  // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 종전엔 실시간 카드에만 떠서 새로고침·다른 기기에선 사라졌다
+  //  (비용 줄은 도입부터 그랬다). 모델과 같은 자리(답변 행)에 붙인다. 구 행은 NULL = 표시 없음.
+  if (!chatLogCols.some((c) => c.name === "reasoning")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN reasoning TEXT`);
+  }
+  if (!chatLogCols.some((c) => c.name === "spend")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN spend TEXT`);
+  }
 
   // ─── 백그라운드 셸 프로세스 영속 (reap 전용 메타 — 2026-07-17) ──────────────────
   // ADR `docs/decisions/2026-07-17-background-shell-observability.md` §4. 런타임
@@ -1850,7 +1858,7 @@ export const telegramTargetFor = (threadKey: string): string | null => {
 // ─── /model V1: session_model_override helpers ────────────────────────────
 // 세션별 메인 모델 override. `threads` 와 분리 → `/reset` 무영향. 키는 thread 와
 // 동일(channel, thread_key) 라 같은 채널+스레드에서 ad-hoc 모델 선택이 컨텍스트
-// (resume sid)와 정합. 폴백 chain: 세션 override → REGION_A_MODELS env → 디폴트.
+// (resume sid)와 정합. 폴백 chain: 세션 override → 기본 프로파일 → 빌트인.
 
 export const getSessionModelOverride = (
   channel: ChannelName,

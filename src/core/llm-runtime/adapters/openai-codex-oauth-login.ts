@@ -62,14 +62,14 @@ export const completeCodexLogin = async (input: {
   // ★재인증했으면 이전 한도 판정은 무효다(2026-07-28). 쿨다운은 "호출 성공 시"에만 풀리는데
   //  쿨다운 중엔 그 백엔드를 아예 안 부르므로 스스로는 안 풀린다 = 자기 잠금. 새 자격증명은
   //  전제가 바뀐 것이므로 여기서 지운다.
+  // ★해제는 런타임의 한 루틴(`clearAuthCooldowns`)이 한다 (2026-09-29 전체 검토) — 종전엔 여기만 DB 행을 접두로
+  //  지워, 통지 표시가 남고 자기 키를 쓰는 `codex-work` 같은 provider 까지 풀렸다(Claude 재인증과 달랐다).
   let clearedCooldowns = 0;
   try {
     const { initStore } = await import("../../../store/sessions.js");
-    const { loadLiveCooldowns, deleteCooldown } = await import("../../../store/cooldowns.js");
     initStore();
-    const live = loadLiveCooldowns(Date.now()).filter((c) => c.key.startsWith("codex"));
-    for (const c of live) deleteCooldown(c.key);
-    clearedCooldowns = live.length;
+    const { clearAuthCooldowns } = await import("../index.js");
+    clearedCooldowns = clearAuthCooldowns("codex-oauth").length;
   } catch {
     /* store 미준비 — 인증 자체는 성공했으므로 진행 */
   }

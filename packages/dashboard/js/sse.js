@@ -14,9 +14,11 @@
         // ★"다른 모델로 이어서" 는 **다음 후보가 실제로 있을 때만** (2026-07-30).
         //  종전엔 무조건 붙여서, 단일 모델 세션(의도적 설정)에서는 항상 거짓말이었다 —
         //  사용자는 오지 않을 답을 기다렸다(실측: 27분 과부하 중 7회 전부 후보 0).
+        // ★인증 거부는 «잠시 후 다시» 로 안 풀린다 — 다시 발급해야 한다(2026-09-29). 그 경우 뒤 문장을 안 붙인다.
+        const authRejected = p.cooldownReason === "auth";
         const next = p.hasFallback
           ? i18n("sys.fallback.trying")
-          : i18n("sys.fallback.exhausted");
+          : authRejected ? "" : i18n("sys.fallback.exhausted");
         // ★사용량 한도면 **언제 풀리는지** 말한다 (2026-08-01, 사용자 지적).
         //  429 원문에 resets_at 이 오는데 위 `why` 가 140자에서 잘라 **그 값 바로 앞에서**
         //  끊겼다. 서버는 그걸 파싱해 쿨다운까지 걸어놓고 있었으니 — 아는데 말을 안 한 것.
@@ -35,7 +37,12 @@
             : mins >= 60
               ? i18n("sys.cooldown.hours", { n: Math.round(mins / 60) })
               : i18n("sys.cooldown.mins", { n: mins });
-          until = i18n("sys.cooldown.note", { when, dur });
+          // 사유별 문구 — 인증 거부를 «사용량 한도» 로 보여주던 것(2026-09-29 지인 설치본). 사유를 모르면 중립으로.
+          until = authRejected
+            ? i18n("sys.cooldown.auth")
+            : p.cooldownReason === "limit"
+              ? i18n("sys.cooldown.note", { when, dur })
+              : i18n("sys.cooldown.paused", { when, dur });
         }
         renderLocalChat(
           "error",
@@ -192,6 +199,7 @@
           if (ev.type === "llm.turn_done") {
             cancelErrClear(tk); markTurnDone(tk); // 성공 종결 = 즉시.
             setTurnCost(tk, ev.payload || {});    // 턴 비용(토큰) 카드에 고정 — 2026-07-26.
+            setTurnEffort(tk, ev.payload || {});  // 실제로 보낸 추론 강도를 모델 옆에 — 2026-09-29.
           }
           else {
             scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).

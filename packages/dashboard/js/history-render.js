@@ -43,9 +43,23 @@
         if (isOut && typeof entry.model === "string" && entry.model.trim() !== "") {
           const mEl = document.createElement("span");
           mEl.className = "turn-model";
-          mEl.textContent = entry.model.trim();
+          // 실제로 보낸 추론 강도도 — 실시간 카드와 같은 모양(`modelWithEffort`).
+          mEl.textContent = modelWithEffort(entry.model.trim(), entry.reasoning);
           mEl.title = i18n("hist.model.title");
           head.appendChild(mEl);
+        }
+        // ★턴 비용 — 실시간 카드와 **같은 줄**(`costLine`) (2026-09-29). 종전엔 실시간에만 있어 새로고침·다른 기기에선
+        //  비용 줄이 통째로 없었다(«캐싱 정보가 안 뜬다»). 값이 없으면 요소를 만들지 않는다(거짓값 금지).
+        if (isOut && entry.spend) {
+          const line = costLine(entry.spend, { missingRequests: Number(entry.spend.unreportedRequests) || 0 });
+          if (line !== null) {
+            const cEl = document.createElement("span");
+            cEl.className = "turn-cost";
+            cEl.textContent = line.text;
+            cEl.title = line.title;
+            if (line.heavy) cEl.classList.add("heavy");
+            head.appendChild(cEl);
+          }
         }
         div.appendChild(head);
         const msg = document.createElement("div");
@@ -335,6 +349,9 @@
         return buildHistoryDiv({
           ts: a.ts, role: "assistant", text: a.text,
           ...(typeof a.model === "string" && a.model.trim() !== "" ? { model: a.model.trim() } : {}),
+          // 강도·비용은 세그먼트가 아니라 **답변 행**이 싣는다 — 병합이 그 행을 버리기 전에 여기로 옮겨 둔다(아래).
+          ...(typeof a.reasoning === "string" && a.reasoning !== "" ? { reasoning: a.reasoning } : {}),
+          ...(a.spend ? { spend: a.spend } : {}),
         });
       };
 
@@ -403,6 +420,14 @@
               if (lastTextUnit) {
                 const body = canonicalBodyFor(lastTextUnit.act.text, it.m.text);
                 if (body !== null) lastTextUnit.act = { ...lastTextUnit.act, text: body };
+                // ★답변 행의 강도·비용도 옮긴다 (2026-09-29 적대 검토 P4). 스트리밍된 턴은 답이 세그먼트로 먼저 남고
+                //  이 행은 중복으로 버려진다 — 그런데 강도·비용을 실은 게 **이 행**이라, 옮기지 않으면 흔한 codex·claude
+                //  턴에서 새로고침 뒤 비용 줄이 여전히 없었다. 턴의 마지막 텍스트 세그먼트(= 답)에 붙인다.
+                const meta = {
+                  ...(typeof it.m.reasoning === "string" && it.m.reasoning !== "" ? { reasoning: it.m.reasoning } : {}),
+                  ...(it.m.spend ? { spend: it.m.spend } : {}),
+                };
+                if (Object.keys(meta).length > 0) lastTextUnit.act = { ...lastTextUnit.act, ...meta };
               }
               renderedMsgKeys.add(msgKey(it.m.ts, "assistant"));
               sawTextThread = null;

@@ -5,6 +5,7 @@
  * V8 영역 통합: 영역 A/B 구분·prefix·분류 전부 폐기. 단일 파이프라인 pass-through.
  * 깊은 사고는 prefix 가 아니라 비서가 부리는 능력(서브에이전트 모델 지정 경로).
  */
+import type { RegionASdkOutput } from "./llm-runtime/types.js";
 import { turnActionsFor } from "./turn-action-shape.js";
 import type { IncomingMessage } from "../channels/types.js";
 import type { SteeringChannel } from "./steering.js";
@@ -29,6 +30,10 @@ export interface RouteOutput {
    * 미보고 어댑터는 생략(거짓값 금지).
    */
   model?: string;
+  /** 이 턴에 실제로 보낸 추론 강도 — 런타임 output 그대로(없으면 생략). */
+  reasoning?: string;
+  /** 런타임 output 의 사용량 그대로 — 턴 비용은 받는 쪽이 `turnSpend` 한 곳에서 고른다. */
+  usage?: RegionASdkOutput["usage"];
   /**
    * LLM 런타임 output 에서 그대로 전달 — 이 turn 응답을 트리거 메시지 직접 답글로 마킹.
    */
@@ -119,7 +124,7 @@ export const route = async (
   // 콤마 멀티스펙 풀 지원(2026-06-02) — 단일에서 풀로 확장.
   // 있으면 풀(여러 spec)로 runClaude 에 주입 → resolveModelSpecs 가 opts.specs 우선
   // → env 폴백 무시. runPool 이 풀 순서대로 시도(첫 성공 반환) → 풀 내 폴백은 이미 됨.
-  // 빈 풀(유효 0) → specs 미주입 → 기존 동작(REGION_A_MODELS env 풀) 그대로.
+  // 빈 풀(유효 0) → specs 미주입 → 기본 동작(세션 기본 프로파일 → 빌트인).
   // override 풀 *전체*가 모델거부로 소진되면 facade 가 env 풀로 1회 폴백 +
   // modelOverrideRejected 신호 → 아래에서 깨진 override DB clear (의미 불변).
   // canonical 저장(`/model` 핸들러) 덕에 parseModelSpecList 는 항상 성공이나, DB 에
@@ -262,5 +267,7 @@ export const route = async (
     nextSuggestion: out.nextSuggestion,
     modelOverrideRejected: out.modelOverrideRejected,
     ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
+    ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
+    ...(out.usage !== undefined ? { usage: out.usage } : {}),
   };
 };

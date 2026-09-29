@@ -12,7 +12,8 @@
  *  1. 번들 실행기를 찾는다(`core/claude-cli.ts`) — 없으면 이유와 조치를 말하고 끝낸다.
  *  2. `claude setup-token` 을 **그대로 태운다**. 브라우저 로그인·프롬프트는 전부 그쪽 몫이고
  *     우리는 화면을 가리지 않는다(출력을 그대로 흘려보낸다).
- *  3. 출력에서 토큰을 집어 `<home>/.env` 에 `CLAUDE_CODE_OAUTH_TOKEN` 으로 쓴다.
+ *  3. 출력에서 토큰을 집어(줄바꿈으로 잘렸으면 이어 붙여) **Anthropic 에 한 번 확인한 뒤** `<home>/.env` 에 쓴다
+ *     (`core/llm-runtime/claude-token.ts` — 화면 붙여넣기와 같은 판단).
  *  4. ★못 집으면 **붙여넣기로 빠져나갈 길**을 연다. 토큰 모양은 상류가 정하는 것이라
  *     우리가 단정하면 안 된다 — 형식이 바뀌면 자동 경로가 조용히 죽는다. 그때도 사용자는
  *     막히지 않아야 한다(codex-auth 가 콜백 실패에 수동 경로를 둔 것과 같은 규칙).
@@ -21,18 +22,25 @@ import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백)
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { findBundledClaude, bundledClaudeMissingHint } from "../core/claude-cli.js";
-import { upsertHomeEnvVars } from "../core/env-file.js";
+import { acceptClaudeToken } from "../core/llm-runtime/claude-token.js";
 
-/** 상류가 찍는 장기 토큰. 접두는 우리 redact 규칙이 이미 아는 것과 같다(`sk-ant-`). */
-const TOKEN_RE = /\bsk-ant-[A-Za-z0-9._-]{20,}\b/;
-
-const ask = async (q: string): Promise<string> => {
+/**
+ * 붙여넣기를 **빈 줄이 나올 때까지** 받는다 — `question` 은 첫 줄에서 끝나서, 터미널이 줄을 바꿔 복사한
+ * 토큰은 여기서도 잘렸다(화면 붙여넣기와 같은 사고). 조각은 `acceptClaudeToken` 이 이어 붙인다.
+ */
+const askLines = async (q: string): Promise<string> => {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  process.stdout.write(q);
+  const lines: string[] = [];
   try {
-    return (await new Promise<string>((r) => rl.question(q, r))).trim();
+    for await (const line of rl) {
+      if (line.trim() === "") break;
+      lines.push(line);
+    }
   } finally {
     rl.close();
   }
+  return lines.join("\n");
 };
 
 const main = async (): Promise<number> => {
@@ -62,23 +70,23 @@ const main = async (): Promise<number> => {
     child.on("close", (code) => resolve({ code: code ?? 1, out }));
   });
 
-  let token = TOKEN_RE.exec(captured.out)?.[0] ?? "";
-  if (token === "") {
+  // ★뽑기·확인·저장·쿨다운 해제는 코어 한 곳(`claude-token.ts`) — 화면 붙여넣기와 같은 판단이다.
+  //  출력이 줄바꿈으로 토큰을 잘라도 이어 붙이고, Anthropic 이 거부하면 저장하지 않는다.
+  let r = await acceptClaudeToken(captured.out);
+  if (!r.ok) {
     // ★자동이 안 되면 **막히지 않게** 한다. 실패 자체는 정직하게 말한다.
-    console.log(
-      "\n토큰을 자동으로 못 집었습니다(형식이 바뀌었을 수 있습니다). 위 출력에서 복사해 붙여넣으세요.",
-    );
-    token = await ask("CLAUDE_CODE_OAUTH_TOKEN: ");
+    console.log(`\n${r.message}\n위 출력에서 토큰을 복사해 붙여넣고 빈 줄에서 Enter 를 누르세요(바로 Enter = 그만두기).`);
+    const pasted = await askLines("CLAUDE_CODE_OAUTH_TOKEN: ");
+    if (pasted === "") {
+      console.error("\n★ .env 를 건드리지 않았습니다.");
+      return 1;
+    }
+    r = await acceptClaudeToken(pasted);
   }
-  if (token === "") {
-    console.error("\n★ 토큰이 비었습니다 — .env 를 건드리지 않았습니다.");
-    return 1;
-  }
-
-  const written = await upsertHomeEnvVars({ CLAUDE_CODE_OAUTH_TOKEN: token });
-  console.log(`\n✅ ${written} 에 CLAUDE_CODE_OAUTH_TOKEN 을 저장했습니다.`);
-  console.log("   (데몬이 돌고 있으면 재시작해야 반영됩니다: `tiguclaw daemon:restart`)");
-  return 0;
+  console.log(`\n${r.ok ? "✅" : "★"} ${r.message}`);
+  // 어느 홈에 들어갔나 — 한 기계에 인스턴스가 여럿이면(개발·설치) 로그만으로 갈려야 한다.
+  if (r.savedTo !== undefined) console.log(`   저장 위치: ${r.savedTo}`);
+  return r.ok ? 0 : 1;
 };
 
 void main().then(

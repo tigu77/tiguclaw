@@ -37,11 +37,11 @@ export const check: RegressionCheck = {
     return [
       assert("자식이 결과를 냈다(없으면 아래는 공짜 초록)", line !== undefined, line ?? r.err.slice(-300)),
       assert("★① 프로파일이 있고 nano 가 없으면 레거시 qwen 이 아니라 low 프로파일", has("profilesNoNano", "haiku") && !has("profilesNoNano", "qwen"), JSON.stringify(got.profilesNoNano)),
-      assert("② 프로파일이 없는 옛 설치본은 종전대로 env(nano)", has("noProfiles", "qwen"), JSON.stringify(got.noProfiles)),
+      assert("② 프로파일이 없어도 옛 env(nano)는 안 쓴다 — 옮기는 건 부팅의 몫(2026-09-29)", !has("noProfiles", "qwen"), JSON.stringify(got.noProfiles)),
       assert("★실패 회고(classify-failure)도 같은 판단 함수를 쓴다(사본 없음)", cfUses && !cfCopy, `공용 사용=${cfUses} · 사본=${cfCopy}`),
       assert("★④ 프로파일 설치본은 `low`·`nano` 모두 옛 MODEL_TIER_* 를 안 쓴다(게이트웨이·서브에이전트가 지나는 resolveTier) · 내부 싼 호출도",
         !has("lowShadowed", "qwen") && !has("nanoShadowed", "qwen") && !has("cheapShadowed", "qwen"), JSON.stringify({ low: got.lowShadowed, nano: got.nanoShadowed, cheap: got.cheapShadowed })),
-      assert("⑤ 프로파일이 없는 옛 설치본은 `low` 도 종전대로 env", has("lowLegacy", "qwen-legacy-low"), JSON.stringify(got.lowLegacy)),
+      assert("⑤ 프로파일이 없어도 옛 env(`low`)는 안 쓴다", !has("lowLegacy", "qwen-legacy-low"), JSON.stringify(got.lowLegacy)),
       assert("★⑥ `nano` 프로파일이 안 풀리면 `low` 로 간다 — 기본(비싼) 프로파일로 건너뛰지 않는다", has("nanoUnresolved", "haiku") && !has("nanoUnresolved", "opus"), JSON.stringify(got.nanoUnresolved)),
       assert("③ nano 프로파일을 만들면 그것을 쓴다(레거시 env 도 low 도 아님)", has("nanoProfile", "sonnet-5") && !has("nanoProfile", "qwen") && !has("nanoProfile", "haiku"), JSON.stringify(got.nanoProfile)),
     ];

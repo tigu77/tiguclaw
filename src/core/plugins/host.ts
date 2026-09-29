@@ -362,6 +362,13 @@ export interface PluginHost {
   saveAuthEnv(vars: Record<string, string>): Promise<{ ok: boolean; error?: string }>;
 
   /**
+   * **Claude 구독 토큰을 받아들인다** — 붙여넣은 글 그대로 넘긴다 (2026-09-29, `needs.auth` 에 `claude-subscription`).
+   * ★뽑기(줄바꿈 이어 붙이기)·Anthropic 확인·저장·쿨다운 해제는 코어 한 곳(`llm-runtime/claude-token.ts`)이
+   *  한다 — 터미널 `claude-auth` 와 같은 판단이다. 거부된 토큰은 저장하지 않는다.
+   */
+  saveClaudeToken(pasted: string): Promise<{ ok: boolean; message: string }>;
+
+  /**
    * 모델에게 묻는다 (`needs.llm`).
    *
    * ★**좁은 래퍼다.** 코어의 실행 입력은 필드가 28개고 거기엔 `model`·`provider` 가 있는데,
@@ -533,6 +540,18 @@ export const createPluginHost = (
     if (keys.length === 0 || bad.length > 0) {
       return { ok: false, error: `env 이름이 아닙니다: ${bad.join(", ") || "(빈 목록)"}` };
     }
+    // ★Claude 구독 토큰은 **범용 저장으로 확인 없이 들어가지 않는다** (2026-09-29 전체 검토). 홈에 복사된 옛
+    //  플러그인·서드파티가 한 줄만 집어 넘기면 잘린 토큰이 «성공» 으로 저장됐다 — 원래 사고가 그대로 열려 있었다.
+    //  이 키만 `saveClaudeToken` 과 같은 판단(이어 붙이기·확인·쉼 해제)으로 보내고, 나머지 키는 종전대로 쓴다.
+    if (vars.CLAUDE_CODE_OAUTH_TOKEN !== undefined) {
+      const { acceptClaudeToken } = await import("../llm-runtime/claude-token.js");
+      const r = await acceptClaudeToken(vars.CLAUDE_CODE_OAUTH_TOKEN);
+      console.log(`[plugin:${plugin}] Claude 구독 토큰(범용 저장 경유): ${r.ok ? "저장" : "저장 안 함"} — ${r.message}`);
+      if (!r.ok) return { ok: false, error: r.message };
+      const rest = Object.fromEntries(Object.entries(vars).filter(([k]) => k !== "CLAUDE_CODE_OAUTH_TOKEN"));
+      if (Object.keys(rest).length === 0) return { ok: true };
+      vars = rest;
+    }
     try {
       const { upsertHomeEnvVars } = await import("../env-file.js");
       const written = await upsertHomeEnvVars(vars);
@@ -541,6 +560,20 @@ export const createPluginHost = (
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  },
+  saveClaudeToken: async (pasted) => {
+    if (needs.auth?.includes("claude-subscription") !== true) {
+      return {
+        ok: false,
+        message:
+          `plugin '${plugin}': Claude 구독 토큰을 저장하려면 package.json 의 tiguclaw.needs.auth 에 ` +
+          `"claude-subscription" 을 적으세요.`,
+      };
+    }
+    const { acceptClaudeToken } = await import("../llm-runtime/claude-token.js");
+    const r = await acceptClaudeToken(pasted);
+    console.log(`[plugin:${plugin}] Claude 구독 토큰: ${r.ok ? "저장" : "저장 안 함"} — ${r.message}`);
+    return r;
   },
   say: async ({ channel, target, text }) => {
     if (needs.outbound !== true) {

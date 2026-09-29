@@ -27,6 +27,7 @@ export const check: RegressionCheck = {
     }
     const replies: string[] = [];
     let summarized = 0;
+    let cancelled = { replies: -1, summarized: -1 };
     const saved = { token: process.env.OPENAI_CODEX_OAUTH_TOKEN, exp: process.env.OPENAI_CODEX_OAUTH_EXPIRES };
     process.env.OPENAI_CODEX_OAUTH_TOKEN = "regression-fake-token";
     process.env.OPENAI_CODEX_OAUTH_EXPIRES = String(Date.now() + 3_600_000);
@@ -38,6 +39,18 @@ export const check: RegressionCheck = {
         trimmed: "/compact",
         sidChannel: sid,
       } as never);
+      // `/stop` 으로 멈춘 /compact — 안내는 `/stop` 이 이미 했으니 «압축 실패» 를 덧붙이지 않는다(요약도 안 부른다).
+      const stopped = new AbortController();
+      stopped.abort(Object.assign(new Error("user cancelled turn (/stop)"), { name: "UserCancelledError" }));
+      const before = { replies: replies.length, summarized };
+      await handleCompact({
+        msg: { channel: "telegram", threadKey: TK, text: "/compact", reply: async (t: string) => { replies.push(t); } } as never,
+        args: [],
+        trimmed: "/compact",
+        sidChannel: sid,
+        signal: stopped.signal,
+      } as never);
+      cancelled = { replies: replies.length - before.replies, summarized: summarized - before.summarized };
     } finally {
       setSummarizerPort(null);
       if (saved.token === undefined) delete process.env.OPENAI_CODEX_OAUTH_TOKEN; else process.env.OPENAI_CODEX_OAUTH_TOKEN = saved.token;
@@ -47,6 +60,7 @@ export const check: RegressionCheck = {
       assert("재현 조건: 세션 저장 채널이 인입 채널(telegram)과 다르다(같으면 공짜 초록)", sid !== "telegram", sid),
       assert("★텔레그램에서 친 /compact 가 세션의 기록을 찾아 접는다(«기록이 없습니다» 아님)",
         summarized > 0 && (getThreadSummary(TK)?.compactedThrough ?? 0) > 0 && replies.some((r) => r.includes("압축했습니다")), { summarized, replies }),
+      assert("★/stop 으로 멈춘 /compact 는 답을 덧붙이지 않고 요약도 안 부른다", cancelled.replies === 0 && cancelled.summarized === 0, cancelled),
     ];
   },
 };

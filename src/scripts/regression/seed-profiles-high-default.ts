@@ -127,14 +127,16 @@ export const check: RegressionCheck = {
         pointer ? 'models.default="high"' : "★포인터를 안 쓴다 — 기본이 키 순서에 달린다",
       ),
     );
-    // 메인 턴의 레거시 경로(.env REGION_A_MODELS)가 high 와 갈리지 않는가 —
-    // 같은 질문에 두 답이 있으면 프로파일을 지웠을 때 답하는 모델이 조용히 바뀐다.
-    const envAligned = /regionAModels: tier\.high,/.test(src);
+    // ★모델은 프로파일 한 곳에만 쓴다 (2026-09-29) — `.env` 에 REGION_A_MODELS·MODEL_TIER_* 를 같이 쓰면 같은 질문에 두 답이
+    //  생긴다(런타임은 이제 그 env 를 안 읽는다). 그리고 시드는 **파일 모양**으로 써야 읽힌다 — 메모리 모양(`{ spec }`)을
+    //  그대로 쓰면 프로파일이 통째로 무시됐다(2026-08-24~09-29, 수동 모드 설치의 모델이 .env 로 돌았다).
+    const oneSource = !/^REGION_A_MODELS=|^MODEL_TIER_/m.test(src) &&
+      /models\.profiles = Object\.fromEntries\(Object\.entries\(profiles\)\.map\(\(\[n, p\]\) => \[n, profileToSettingsJson\(p\)\]\)\);/.test(src);
     out.push(
       assert(
-        "★REGION_A_MODELS 시드가 high 와 같은 값이다(레거시 경로가 갈리지 않는다)",
-        envAligned,
-        envAligned ? "tier.high 로 일치" : "★.env 와 프로파일이 다른 모델을 가리킨다",
+        "★모델은 settings 프로파일에만 쓴다(.env 에 모델 줄 없음) · 시드는 파일 모양(profileToSettingsJson)으로",
+        oneSource,
+        oneSource ? "프로파일 한 곳 · 파일 모양" : "★.env 에 모델 줄이 있거나 시드가 메모리 모양이다",
       ),
     );
     return out;

@@ -56,6 +56,13 @@ export interface ChatLogEntry {
   notice?: boolean;
   /** 이 답변에 **실제로 응답한 모델**(어댑터가 보고하면). 사용자 메시지·통지엔 없음. */
   model?: string;
+  /** 이 답변의 턴에 **실제로 보낸 추론 강도**(어댑터가 보고하면). */
+  reasoning?: string;
+  /**
+   * 이 답변의 턴 비용 — 실시간 카드와 **같은 값**(`turn-spend.ts` 가 고른 것). 새로고침·다른 기기에서도 같은 줄이 뜬다.
+   * `unreportedRequests` > 0 이면 합계는 하한이고 캐시는 말하지 않는다(실시간과 같은 규칙).
+   */
+  spend?: { input: number; output: number; cached?: number; requests: number; unreportedRequests?: number };
   /**
    * 대화 가시 이벤트의 종류(예 `prompt.options`). 미지정 = 일반 메시지(종전 동작).
    * 프런트가 이 값으로 **라이브와 같은 렌더러**를 고른다 — 문구를 서버가 다시 짓지 않는다.
@@ -77,6 +84,8 @@ interface ChatLogRow {
   model: string | null;
   kind: string | null;
   data: string | null;
+  reasoning: string | null;
+  spend: string | null;
 }
 
 /**
@@ -94,8 +103,8 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
   try {
     getDb()
       .prepare(
-        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model, kind, data)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.ts,
@@ -108,6 +117,8 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
         typeof row.model === "string" && row.model !== "" ? row.model : null,
         hasKind ? (row.kind as string) : null,
         row.data !== undefined ? JSON.stringify(row.data) : null,
+        typeof row.reasoning === "string" && row.reasoning !== "" ? row.reasoning : null,
+        row.spend !== undefined ? JSON.stringify(row.spend) : null,
       );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -168,7 +179,7 @@ export const getRecentChatLog = (opts?: {
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
   const rows = getDb()
     .prepare(
-      `SELECT id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data
+      `SELECT id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend
          FROM chat_log
          ${whereClause}
         ORDER BY ts DESC, id DESC
@@ -186,8 +197,18 @@ export const getRecentChatLog = (opts?: {
       text: r.text,
       ...(r.notice === 1 ? { notice: true } : {}), // 구 행(NULL) = 비서 발화(종전 동작).
       ...(typeof r.model === "string" && r.model !== "" ? { model: r.model } : {}),
+      ...(typeof r.reasoning === "string" && r.reasoning !== "" ? { reasoning: r.reasoning } : {}),
       ...(typeof r.kind === "string" && r.kind !== "" ? { kind: r.kind } : {}),
     };
+    // 턴 비용 — 손상 JSON·모양이 틀린 값은 버린다(표시 없음 = 거짓값 금지).
+    if (r.spend !== null && r.spend !== "") {
+      try {
+        const s = JSON.parse(r.spend) as ChatLogEntry["spend"];
+        if (s !== undefined && s !== null && typeof s.input === "number" && s.input > 0) entry.spend = s;
+      } catch {
+        /* 무시 */
+      }
+    }
     // 손상 JSON 은 조용히 무시 — data 없이라도 나머지는 렌더된다(첨부와 같은 정책).
     if (r.data !== null && r.data !== "") {
       try {

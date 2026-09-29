@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-09-29
+
+### Added
+
+- **Chat cards and background job cards now show the reasoning effort used for that turn next to the model.** Turns that sent no effort show none.
+
+### Changed
+
+- **Models are now set only by the model profiles in `settings.json`.** `REGION_A_MODELS` and `MODEL_TIER_*` in `.env` are no longer read. Installs that used them are migrated to profiles once on first boot, and the original settings are kept as `settings.json.before-legacy-model-env`. `/model` shows the base pool in use and where it comes from.
+- **After re-authenticating in a terminal with `npm run claude-auth` or `npm run codex-auth`, the new token is used from the next message without a restart.** Re-authenticating also clears any cooldown on that credential.
+
+### Fixed
+
+- **Fixed long Codex conversations waiting minutes for a history summary before every reply.** Summaries now run ahead of time, after a reply is sent.
+- **Fixed `/compact` not stopping on `/stop`.**
+- **Fixed pasted Claude subscription tokens being saved without a check when cut by a line break.** Split tokens are joined back, and tokens Anthropic rejects are not saved.
+- **Fixed the dashboard describing a rejected credential as a usage limit.**
+- **Fixed the token and cache line of replies disappearing after a reload or on another device.**
+- **Fixed model profiles being ignored on installs where the model was chosen by hand in the setup wizard.**
+- **Fixed messages sent while Claude was replying occasionally going unanswered.**
+- **Fixed an interrupted backup being counted as the latest backup.**
+
 ## [0.61.0] - 2026-09-29
 
 ### Changed
@@ -748,7 +770,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...HEAD
+[0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0

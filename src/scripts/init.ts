@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import type { ModelProfile } from "../core/settings.js";
+import { countHomeModelProfiles, profileToSettingsJson } from "../core/settings.js";
 import { builtinTierModel } from "../core/llm-runtime/builtin-profiles.js";
 
 // 설정(.env)은 **런타임 홈**에 둔다(공개 레포 checkout 무오염, 2026-07-09). 홈 =
@@ -37,7 +38,6 @@ interface Answers {
   anthropicKey: string;
   claudeOauthToken: string;
   openaiKey: string;
-  regionAModels: string;
   tierHigh: string;
   tierMid: string;
   tierLow: string;
@@ -137,14 +137,11 @@ const seedModelProfiles = (
     root.models !== null && typeof root.models === "object"
       ? (root.models as { profiles?: Record<string, unknown>; default?: unknown })
       : {};
-  const existing = models.profiles;
-  const existingCount =
-    existing !== null && typeof existing === "object" && !Array.isArray(existing)
-      ? Object.keys(existing).length
-      : 0;
-  // ★기존 프로파일이 하나라도 있으면 시드 스킵 — 사용자 설정 존중.
-  if (existingCount > 0) return;
-  models.profiles = { ...profiles };
+  // ★기존 프로파일이 하나라도 **읽히면** 시드 스킵 — 사용자 설정 존중. 원시 키 수로 세면 읽히지 않는 `{ spec }` 시드
+  //  (2026-08-24~09-29)가 «있음» 으로 잡혀 다시 시드하지 않았다(적대 검토 P-7). 판정은 옛 .env 이전과 같은 함수다.
+  if (countHomeModelProfiles() > 0) return;
+  // 파일 모양으로 쓴다 — 메모리 모양(`{ spec }`)을 그대로 쓰면 읽히지 않았다(2026-08-24~09-29, 수동 모드 프로파일 전부 무시).
+  models.profiles = Object.fromEntries(Object.entries(profiles).map(([n, p]) => [n, profileToSettingsJson(p)]));
   // ★기본 포인터를 프로파일과 **같이** 쓴다 — 시드에는 `default` 라는 이름의 프로파일이
   //  없으므로, 포인터를 안 쓰면 `getDefaultProfileName` 이 "첫 프로파일" 폴백으로 넘어간다.
   //  그건 키 순서에 기대는 암묵 규칙이라 명시한다(사용자가 나중에 바꾸면 그 값이 이긴다).
@@ -256,8 +253,6 @@ const collectProviderConfig = async (
       "  OPENAI_API_KEY (sk-...): ",
       "키는 비워둘 수 없습니다. 발급 후 붙여넣으세요.",
     );
-    console.log("  ℹ️  REGION_A_MODELS=openai:gpt-5.5 로 설정합니다.");
-    console.log("     모델 ID가 안 맞으면 나중에 .env 의 REGION_A_MODELS 를 편집하세요.");
     return {
       anthropicKey: "",
       claudeOauthToken: "",
@@ -267,7 +262,6 @@ const collectProviderConfig = async (
   // codex
   console.log("");
   console.log("  → codex 는 ChatGPT 구독 OAuth 를 사용합니다. 여기서 키 입력은 없습니다.");
-  console.log("  ℹ️  REGION_A_MODELS=codex:gpt-5.5 로 설정합니다.");
   console.log("     설치 후 반드시 `npm run codex-auth` 로 OAuth 토큰을 발급하세요.");
   return {
     anthropicKey: "",
@@ -456,7 +450,7 @@ TIGUCLAW_HOME=
 #  그 값이 비어서 codex 를 골라도 인증 단계를 통째로 건너뛰었다(무인증 부팅).
 TIGUCLAW_PROVIDER=${a.provider}
 # 미선택 provider 키는 빈 값으로 남겨둡니다.
-# (다른 provider 로 바꾸려면 해당 키를 채우고 REGION_A_MODELS 를 편집하세요.)
+# (다른 provider 로 바꾸려면 해당 키를 채우세요 — 모델은 settings.json 의 프로파일, 없으면 인증된 provider 로 자동 구성.)
 ANTHROPIC_API_KEY=${a.anthropicKey}
 # Claude 구독 OAuth (claude-sub provider). \`claude setup-token\` 으로 발급, claude 어댑터가
 # ANTHROPIC_API_KEY 대신 이 토큰으로 인증. 둘 중 하나만 있으면 됩니다.
@@ -472,18 +466,9 @@ OPENAI_CODEX_OAUTH_TOKEN=
 OPENAI_CODEX_OAUTH_REFRESH=
 OPENAI_CODEX_OAUTH_EXPIRES=
 
-# ── 모델 풀 ─────────────────────────────────────────────────────
-# REGION_A_MODELS — provider:model, 콤마 순서 = 폴백 우선순위.
-# provider: anthropic→claude / openai→openai / codex→codex-oauth.
-# 모델 ID 가 안 맞으면 런타임 폴백 안전망이 있고, 여기서 자유롭게 편집 가능합니다.
-REGION_A_MODELS=${a.regionAModels}
-
-# sub-agent 등급(티어) → 모델 폴백 풀. agent.md 의 model: high/mid/low 가 매핑됨.
-# 선택한 provider(${a.provider}) 기준으로 세팅됨 — 다른 모델로 세분화하려면 편집하세요.
-# 여기 지정 모델을 쓸 수 없으면(키/토큰 부재 등) 런타임이 REGION_A_MODELS 기본 풀로 폴백합니다.
-MODEL_TIER_HIGH=${a.tierHigh}
-MODEL_TIER_MID=${a.tierMid}
-MODEL_TIER_LOW=${a.tierLow}
+# ── 모델 ───────────────────────────────────────────────────────
+# 모델은 여기가 아니라 settings.json 의 모델 프로파일(models.profiles)로 정합니다.
+# 프로파일이 없으면 인증된 provider 의 최신 모델로 자동 구성됩니다(\`/models\` 로 확인).
 
 # ── 텔레그램 채널 ───────────────────────────────────────────────
 # TELEGRAM_ALLOWED_USER_IDS 가 비면 봇이 잠겨 어떤 메시지도 처리하지 않습니다.
@@ -507,7 +492,7 @@ HTTP_BRIDGE_TOKEN=${a.httpBridgeToken}
 # (http-bridge 포트). ★토큰 설정 시에만 활성(미설정=비활성). 앱 *서버* 가 이 토큰으로 호출
 # (브라우저에 노출 금지). 앱은 비서(codex 등)와 다른 백엔드로 분리 권장(rate-limit·밴 격리).
 LLM_GATEWAY_TOKEN=
-# 게이트웨이 기본 모델 풀(콤마, provider:model). 미설정 시 REGION_A_MODELS 사용.
+# 게이트웨이 기본 모델 풀(콤마, provider:model). 미설정 시 기본 모델 프로파일(없으면 자동 구성).
 LLM_GATEWAY_MODELS=
 # 동시 처리 상한(앱 폭주가 비서 흔드는 것 방지). 기본 4.
 LLM_GATEWAY_MAX_CONCURRENCY=4
@@ -562,7 +547,6 @@ const main = async (): Promise<void> => {
     //  종전엔 REGION_A_MODELS 가 sonnet, high 가 opus 로 갈려 있었다 — 기본이 high 가 된
     //  지금 그대로 두면 "profiles 를 지우면 갑자기 다른 모델로 답한다" 가 된다.
     //  같은 질문("메인 턴은 무엇으로")에 두 답이 있으면 안 된다.
-    regionAModels: tier.high,
     tierHigh: tier.high,
     tierMid: tier.mid,
     tierLow: tier.low,

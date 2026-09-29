@@ -23,7 +23,8 @@
  *   ②**수동 붙여넣기 경로**를 항상 같이 연다 — 자동이 안 닫혀도 사용자가 빠져나갈 길이
  *     있어야 한다. 종전엔 영원히 매달렸고, onboard 는 그걸 실패로 보고 통째로 중단했다.
  */
-import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
+import { homeEnvPath } from "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
+import { credentialFollowAvailable } from "../core/credential-env.js";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { createAuthorizationFlow } from "../core/llm-runtime/adapters/openai-codex-oauth.js";
@@ -107,14 +108,17 @@ const main = async (): Promise<void> => {
       });
       settled = true;
       cleanup();
-      // ★쿨다운 해제는 코어가 했다 — 여기서는 «그래서 사용자가 무엇을 해야 하나» 만 말한다.
-      //  이 CLI 는 데몬과 별 프로세스라 DB 만 바뀐다(돌고 있는 데몬엔 즉시 반영 안 됨).
+      // ★쿨다운 해제는 코어가 했다 — 쿨다운은 DB 가 진실이라(`remainingForKey`) 돌고 있는 데몬에도
+      //  바로 먹고, 토큰은 데몬이 다음 턴에 `.env` 변경을 보고 따라간다(`credential-env.ts`). 재시작 불필요.
       const cooldownNote =
         r.clearedCooldowns > 0
-          ? `\n⚠️ codex 쿨다운 ${r.clearedCooldowns}건을 해제했습니다(재인증 = 이전 한도 판정 무효).` +
-            `\n   돌고 있는 데몬에는 즉시 반영되지 않습니다 — 채팅에서 \`/cooldown clear codex\` 를 보내거나 데몬을 재시작하세요.`
+          ? `\n⚠️ codex 쿨다운 ${r.clearedCooldowns}건을 해제했습니다(재인증 = 이전 한도 판정 무효).`
           : "";
-      console.log(`\n✅ 토큰 발급 + .env 저장 완료.${cooldownNote}`);
+      const when = credentialFollowAvailable()
+        ? "이 홈을 쓰는 데몬은 다음 메시지부터 새 토큰을 씁니다"
+        : "데몬을 재시작하면 새 토큰을 씁니다(이 Node 에선 자동 반영이 꺼져 있습니다)";
+      console.log(`\n✅ 토큰 발급 + .env 저장 완료 — ${when}.${cooldownNote}`);
+      console.log(`   저장 위치: ${homeEnvPath()}`);
       console.log(`   access_token expires in ~${r.expiresInSec}s`);
       console.log(`   refresh_token 보존 (자동 refresh hook 활성)`);
       resolve();

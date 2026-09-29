@@ -124,6 +124,8 @@ export const check: RegressionCheck = {
         const regDir = d(name, "src/scripts/regression");
         writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
         writeFileSync(path.join(d(name, "src/core"), "load-env.ts"), loadEnvSrc);
+        // load-env 가 여는 모듈(인증값 따라가기) — 실제 사본이어야 부팅 경로가 제품과 같다.
+        writeFileSync(path.join(d(name, "src/core"), "credential-env.ts"), readFileSync(path.join(REPO, "src/core/credential-env.ts"), "utf8"));
         writeFileSync(
           path.join(d(name, "src/store"), "sessions.ts"),
           "export const initStore = () => { console.log('ENVISO_STORE ' + JSON.stringify({ home: process.env.TIGUCLAW_HOME ?? null, dataDir: process.env.DATA_DIR ?? null })); };\n" +

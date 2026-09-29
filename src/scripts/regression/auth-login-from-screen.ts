@@ -146,8 +146,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★claude 플러그인은 여전히 **아무것도 import 하지 않는다**(홈으로 옮겨 살아남는 근거)",
-        !/^import /m.test(claudePlugin) && /host\.saveAuthEnv/.test(claudePlugin),
-        `import=${/^import /m.test(claudePlugin) ? "★생겼다" : "0"} · 저장=host.saveAuthEnv`,
+        !/^import /m.test(claudePlugin) && /host\.saveClaudeToken\(/.test(claudePlugin),
+        `import=${/^import /m.test(claudePlugin) ? "★생겼다" : "0"} · 저장=host.saveClaudeToken`,
       ),
     );
 

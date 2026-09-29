@@ -1896,6 +1896,8 @@ const compactThreadNowUnlocked = async (
   accountId: string | undefined,
   /** 요약 호출의 추론 강도 — 자동 경로와 **같은 규칙**(호출자가 프로파일에서 구해 넘긴다). */
   turnReasoning?: string,
+  /** `/stop` 신호 — 앞선 요약을 기다리는 동안과 요약 호출 모두에 닿는다. */
+  signal?: AbortSignal,
 ): Promise<
   | { ok: true; foldedTurns: number; foldedChars: number; summaryChars: number }
   | { ok: false; reason: string }
@@ -1926,7 +1928,7 @@ const compactThreadNowUnlocked = async (
         accountId,
         model,
         turnReasoning,
-        undefined, // 수동 `/compact` 는 부모 턴 신호가 없다.
+        signal,
         threadKey,
       ),
     );
@@ -1957,6 +1959,9 @@ const compactThreadNowUnlocked = async (
       summaryChars: fresh.trim().length,
     };
   } catch (e) {
+    // 사용자가 멈춘 것은 실패로 세지 않는다(`isCancelled` 머리말). ★오류 모양이 아니라 **이 명령의
+    //  신호**로 판정한다 — 요약 호출의 무응답 타임아웃도 AbortError 라, 모양으로 보면 진짜 실패가 빠진다.
+    if (signal?.aborted === true) throw e;
     const msg = e instanceof Error ? e.message : String(e);
     noteCompactionOutcome(threadKey, false, msg, prompt.length);
     return { ok: false, reason: msg };
@@ -1969,7 +1974,8 @@ const compactThreadNowUnlocked = async (
  */
 export const compactThreadNow = (
   ...a: Parameters<typeof compactThreadNowUnlocked>
-): ReturnType<typeof compactThreadNowUnlocked> => withThreadCompactionLock(a[1], () => compactThreadNowUnlocked(...a));
+): ReturnType<typeof compactThreadNowUnlocked> =>
+  withThreadCompactionLock(a[1], () => compactThreadNowUnlocked(...a), a[6]);
 
 /**
  * **대화 히스토리 롤링 요약 — 어댑터 무관 드라이버** (2026-09-15 추출).
@@ -2049,6 +2055,17 @@ export const withThreadCompactionLock = async <T>(
     void tail.then(() => {
       if (threadLocks.get(threadKey) === tail) threadLocks.delete(threadKey);
     });
+  }
+};
+
+/**
+ * 이 스레드의 요약 줄이 **빌 때까지** 기다린다 — 턴 뒤 요약은 답을 보낸 뒤 돌아서, 턴 직후 사용량을 세는 쪽(벤치)은
+ * 그걸 놓친다. 줄에 새로 붙으면 그것까지 기다린다. 실패는 삼킨다(각 요약이 이미 자기 실패를 기록한다).
+ */
+export const settleThreadCompaction = async (threadKey: string): Promise<void> => {
+  for (let t = threadLocks.get(threadKey); t !== undefined; t = threadLocks.get(threadKey)) {
+    await t.catch(() => undefined);
+    if (threadLocks.get(threadKey) === t) return; // 항목 정리가 아직 안 돈 것 — 줄은 이미 끝났다
   }
 };
 

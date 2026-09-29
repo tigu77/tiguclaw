@@ -53,6 +53,8 @@ export interface SlashCtx {
   readonly trimmed: string;
   /** 세션 좌표 해석용 채널 — `/status` 가 읽는다. */
   readonly sidChannel: ChannelName;
+  /** `/stop` 신호 — 오래 기다릴 수 있는 명령(`/compact`)만 받는다. */
+  readonly signal?: AbortSignal;
 }
 
 export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
@@ -533,7 +535,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, sidChannel, signal } = ctx;
     const { compactThreadNow } = await import(
       "../llm-runtime/adapters/openai-codex-oauth-history.js"
     );
@@ -559,6 +561,7 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
         token,
         extractAccountId(token),
         resolveReasoningEffort("codex", codexModel),
+        signal,
       );
       await replyCommand(
         msg,
@@ -569,6 +572,8 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
           : `압축하지 않았습니다 — ${r.reason}`,
       );
     } catch (e) {
+      // `/stop` 으로 멈춘 것 — 안내는 `/stop` 이 이미 했다(«압축 실패» 를 덧붙이지 않는다).
+      if (signal?.aborted === true) return;
       await replyCommand(
         msg,
         `압축 실패: ${e instanceof Error ? e.message : String(e)}`,

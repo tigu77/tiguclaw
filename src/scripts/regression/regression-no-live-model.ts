@@ -74,6 +74,8 @@ export const check: RegressionCheck = {
           beginSummaryUsage: () => () => {},
           // 설정 읽기는 모델 호출이 아니다 — 빈 프로파일이면 종전 경로(resolveTier)를 탄다.
           loadModelProfiles: () => ({}),
+          // 인증값 따라가기는 홈 `.env` 읽기다 — 모델 호출이 아니다.
+          followHomeCredentials: () => {},
           linkAbort: (signal: AbortSignal) => ({ signal }),
         });
         const entries = runtimeGuard + "\n" + source;

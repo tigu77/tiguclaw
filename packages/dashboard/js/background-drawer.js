@@ -395,14 +395,30 @@
       //  값 없으면 안 그린다(거짓값 금지) · 같은 값 반복은 no-op · 도중에 바뀌면 "이전→현재" 로
       //  남긴다(폴백을 지우지 않는다). 매니저·서브에이전트는 사용자가 안 보는 동안 도는 것이라
       //  "어느 모델로 돌았나" 가 사후에 더 중요하다.
-      const setJobModel = (entry, model) => {
-        const m = typeof model === "string" ? model.trim() : "";
-        if (!entry || m === "" || entry.modelSeen === m) return;
+      /**
+       * @param reasoning 서버 잡 합계의 최근 강도 · @param reasoningModel 그 강도를 보낸 모델.
+       * ★강도는 **그 강도를 보낸 모델과 짝일 때만** 붙인다 (2026-09-29 적대 검토 P3) — 잡 안에서 폴백(codex→claude)이
+       *  나면 «claude-opus-5 · 강도 high» 처럼 다른 모델의 강도가 붙었다. 합계가 모델보다 먼저 와도(하이드레이션)
+       *  강도를 버리지 않고 쥐고 있다가, 모델이 오면 짝을 맞춰 본다.
+       */
+      const setJobModel = (entry, model, reasoning, reasoningModel) => {
+        if (!entry) return;
+        if (reasoning !== undefined) {
+          entry.reasoningSeen = typeof reasoning === "string" && reasoning.trim() !== "" ? reasoning.trim() : undefined;
+          entry.reasoningModel = typeof reasoningModel === "string" ? reasoningModel.trim() : undefined;
+        }
+        const m = typeof model === "string" && model.trim() !== "" ? model.trim() : entry.modelSeen;
+        if (!m) return;
+        const paired = entry.reasoningSeen !== undefined && (entry.reasoningModel === undefined || entry.reasoningModel === m);
+        // 강도는 잡 합계(턴 끝)가 싣는다 — 채팅 카드와 같은 모양(`modelWithEffort`).
+        const label = modelWithEffort(m, paired ? entry.reasoningSeen : undefined);
+        if (entry.modelSeen === m && entry.labelSeen === label) return;
         entry.modelSeen = m;
+        entry.labelSeen = label;
         const el = entry.modelBadgeEl;
         if (!el) return;
         el.style.display = "";
-        el.textContent = m; // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
+        el.textContent = label; // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
         el.title = i18n("bg.model.title");
       };
 
@@ -1117,6 +1133,9 @@
         if ((Number(entry.usage?.unreportedRequests) || 0) > missingRequests) return;
         if ((Number(entry.usage?.summary?.executions) || 0) > executions) return;
         entry.usage = u;
+        // 가장 최근 턴에 실제로 보낸 추론 강도 — 단조 가드 **뒤에서**(replay 의 옛 합계가 새 강도를 덮지 않게).
+        //  강도가 없는 합계는 «없음» 으로 갱신한다(그 턴은 강도를 안 보냈다 — 옛 강도를 계속 달지 않는다).
+        setJobModel(entry, undefined, typeof u.reasoning === "string" ? u.reasoning : "", u.reasoningModel);
         const summaryText = executions > 0 ? (summary.unreported === executions && !summary.inputTokens && !summary.outputTokens
           ? i18n("bg.usage.summaryUnknown", { n: summary.unreported }) : i18n("bg.usage.summary", {
           n: executions,

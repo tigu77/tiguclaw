@@ -37,7 +37,8 @@ export const check: RegressionCheck = {
     const pinnedInSource = childSrc
       .split(/\r?\n/)
       .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
-      .some((l) => new RegExp(String.raw`^\s*process\.env\.REGION_A_MODELS\s*=[^=]`).test(l));
+      // 고정은 `pinModelForTest(...)` 줄머리 호출 — 런타임이 옛 env 를 더 읽지 않아 프로파일로 고정한다(2026-09-29).
+      .some((l) => new RegExp(String.raw`^\s*pinModelForTest\("codex:${PINNED_MODEL}"\);`).test(l));
     const models = (v.models ?? []) as string[];
     const origins = (v.origins ?? []) as string[];
     const runs = (v.runs ?? []) as string[];
@@ -87,7 +88,7 @@ export const check: RegressionCheck = {
         //   썼다). 이제 주석을 걷어낸 뒤 **줄머리 대입**만 본다.
         pinnedInSource
           ? `고정=${PINNED_MODEL}`
-          : `대입 없음 (언급: ${String(/REGION_A_MODELS/.test(childSrc))})`,
+          : `고정 호출 없음 (언급: ${String(/pinModelForTest/.test(childSrc))})`,
       ),
       assert(
         "★정규 인입은 `inbound` — 라우터가 기본값을 정한다",

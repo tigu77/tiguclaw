@@ -43,8 +43,8 @@ export interface JudgeContradictionInput {
  * ★2026-08-15: `WebFetch(prompt)` 추출도 같은 판단이 필요해져 **export** 했다. 복사하면
  *  "가장 싼 tier 고르기" 라는 같은 판단이 두 곳에 생기고, 한쪽만 늙는다. 이름도
  *  classify 전용에서 중립으로 바꿨다(정의점은 여기 하나).
- * self-growth 가 모델을 고르지 않음: env(MODEL_TIER_NANO/LOW)가 정의한 풀을 쓰고,
- * 미정의면 undefined 로 일반 디폴트(REGION_A_MODELS/anthropic)에 안전 degrade.
+ * self-growth 가 모델을 고르지 않음: nano/low 등급(같은 이름의 프로파일, 없으면 빌트인)을 쓰고,
+ * 둘 다 비면 undefined 로 일반 디폴트(기본 프로파일·빌트인)에 안전 degrade.
  */
 export const cheapInternalTierSpecs = (): ModelSpec[] | undefined => {
   assertRuntimeModelAllowed();
@@ -54,7 +54,7 @@ export const cheapInternalTierSpecs = (): ModelSpec[] | undefined => {
   if (nano.length > 0) return nano;
   const low = resolveTier("low");
   if (low.length > 0) return low;
-  return undefined; // facade 디폴트(env REGION_A_MODELS → anthropic SDK 디폴트)
+  return undefined; // facade 디폴트(기본 프로파일 → 빌트인)
 };
 
 /** 응답 텍스트에서 yes/no/uncertain 추출. 명확치 않으면 uncertain(보수적). */

@@ -2867,6 +2867,7 @@ export const runOpenAiCodex = async (
           ? `codex-${finalResponseId}`
           : `codex-${randomBytes(16).toString("hex")}`,
       model,
+      ...(turnReasoning !== undefined ? { reasoning: turnReasoning } : {}),
       replyToTrigger,
       usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
       externalToolCalls: pendingExternalToolCalls,
@@ -2944,6 +2945,7 @@ export const runOpenAiCodex = async (
         ? `codex-${finalResponseId}`
         : `codex-${randomBytes(16).toString("hex")}`,
     model,
+    ...(turnReasoning !== undefined ? { reasoning: turnReasoning } : {}),
     replyToTrigger,
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
     turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),

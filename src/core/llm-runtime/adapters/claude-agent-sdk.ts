@@ -537,6 +537,9 @@ export const runClaude = async (
   //  호출자가 cwd 를 명시했으면 그 뜻을 존중한다(프로젝트 위임 등).
   const neutralTurn = input.systemPromptOverride !== undefined;
   const cwd = input.cwd ?? (neutralTurn ? neutralCwd() : getPaths().home);
+  // 이 턴에 보낼 추론 강도 — 옵션(아래 `effort`)과 출력(`reasoning` — 화면·기록 표시)이 **같은 값**을 쓴다.
+  //  순서: 풀 원소(input.reasoning) > models.reasoning(전역) > 카탈로그 기본(세 어댑터 같은 순서).
+  const claudeEffort = input.reasoning ?? resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
   const depth = input.subagentDepth ?? 0;
   // ★**도구 노출 사다리** (2026-08-28) — 어느 칸의 턴인가를 **한 번** 도출한다.
   //  종전엔 `depth === 0 && (input.workerDepth ?? 0) === 0` 이 이 파일에만 8곳,
@@ -1166,7 +1169,7 @@ export const runClaude = async (
     ...(((): Record<string, unknown> => {
       // ★프로파일이 정했으면 그것이 이긴다 (2026-08-24) — 좁은 것이 넓은 것을 덮는다.
       //  순서: 풀 원소(input.reasoning) > models.reasoning(전역) > 카탈로그 기본.
-      const e = input.reasoning ?? resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
+      const e = claudeEffort;
       // ★유효값 목록을 우리가 들고 있지 않다(codex 와 같은 규칙) — 지원 등급은 벤더가
       //  모델마다 늘리고(xhigh·max 가 그렇게 왔다), 우리가 흉내 낸 목록은 **새 등급이
       //  나올 때 멀쩡한 값을 막는다**. 문자열 그대로 넘기고 판정은 API 에 맡긴다.
@@ -2446,6 +2449,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         : undefined);
     return {
       text,
+      ...(lastModel !== undefined && lastModel !== null ? { model: lastModel } : {}),
+      ...(claudeEffort !== undefined ? { reasoning: claudeEffort } : {}),
       replyToTrigger,
       externalToolCalls: pendingExternalToolCalls,
       ...(toolCallUsage !== undefined ? { usage: requestUsage.withUsage(toolCallUsage) } : {}),
@@ -2462,6 +2467,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       text,
       sessionId,
       model: lastModel,
+      ...(claudeEffort !== undefined ? { reasoning: claudeEffort } : {}),
       systemPromptHash: SYSTEM_PROMPT_HASH,
       jsonlPath: jsonl,
       replyToTrigger,

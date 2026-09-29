@@ -126,17 +126,36 @@
       // ★실제 응답 모델 표시 (2026-07-27) — payload.model 은 "요청한 프로파일"이 아니라 **그 스텝에
       //  실제로 답한 모델**이다. 둘은 폴백·쿨다운으로 갈린다(codex 한도 소진 → claude 승계 등).
       //  값이 없으면 아무것도 그리지 않는다(거짓값 금지 — setTurnCost 와 같은 규칙).
-      const setTurnModel = (card, model) => {
+      // ★모델 옆 추론 강도 (2026-09-29) — 어댑터가 **실제로 보낸** 값만(turn_done·기록·잡 합계가 싣는다).
+      //  실시간 카드·기록 카드·잡 카드가 이 한 모양을 쓴다(두 벌이면 한쪽만 바뀐다). 없으면 모델만.
+      const modelWithEffort = (m, r) => {
+        // 설정 화면(모델 프로파일)의 강도 배지와 **같은 어휘** — «강도 high» / «Effort high».
+        return typeof r === "string" && r.trim() !== "" ? m + " · " + i18n("models.effort.badge", { v: r.trim() }) : m;
+      };
+      const setTurnModel = (card, model, reasoning) => {
         const m = typeof model === "string" ? model.trim() : "";
-        if (!card || m === "" || card.modelSeen === m) return;
+        if (!card || m === "") return;
+        // 강도는 turn_done 에만 실린다 — 활동 이벤트(모델만)가 이미 붙은 강도를 지우지 않게, 같은 모델이면 이어 받는다.
+        const r = typeof reasoning === "string" && reasoning.trim() !== ""
+          ? reasoning.trim()
+          : card.modelSeen === m ? card.reasoningSeen : undefined;
+        const label = modelWithEffort(m, r);
+        if (card.labelSeen === label) return;
         card.modelSeen = m;
+        card.reasoningSeen = r;
+        card.labelSeen = label;
         const target = card.modelEl || card.replyModelEl; // 카드 헤더 우선, 없으면 답변 버블.
         if (!target) return;
         // ★현재 모델만 표시 (2026-07-27 사용자 지정). 종전엔 턴 도중 모델이 바뀌면 "이전→현재"
         //  로 남겼는데, 폴백 이력까지 화면에 들고 있을 필요는 없다는 판단. 폴백 사실은 turn_error
         //  통지·로그·events 에 이미 남는다. 표시는 "지금 무엇으로 답했나" 하나만.
-        target.textContent = m;
+        target.textContent = label;
         target.title = i18n("tok.model.title");
+      };
+      /** 턴이 끝났다 — 실제로 보낸 추론 강도를 모델 옆에 붙인다(turn_done 이 싣는다). */
+      const setTurnEffort = (thread, payload) => {
+        const card = cardByThread.get(thread);
+        if (card && payload) setTurnModel(card, payload.model, payload.reasoning);
       };
 
       /**
@@ -173,45 +192,53 @@
         return { text: parts.join(" · "), title, heavy: shownIn >= 200000 };
       };
 
-      const setTurnCost = (thread, payload) => {
-        const card = cardByThread.get(thread);
-        // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.
-        const target = card && (card.costEl || card.replyCostEl);
-        if (!target) return;
-        // ★턴 실비용은 **서버가 고른 `spend`** 를 읽는다 (2026-09-23). 종전엔 여기서
-        //  «마지막 호출 1회» 와 «턴 합계» 중 무엇을 쓸지 골랐고, 출력만 마지막 호출값을 써서
-        //  도구 루프 턴의 출력이 과소계상됐다. 같은 선택이 잡 합계에 또 있었다 — 이제
-        //  `turn-spend.ts` 한 곳이다. 없으면(미보고 어댑터) 표시 안 함(거짓값 금지).
-        const sp = payload && payload.spend;
+      /**
+       * 턴 비용 한 줄 — **실시간 카드와 기록 카드가 같이 쓴다** (2026-09-29). 종전엔 실시간(turn_done)에만 있어서
+       * 새로고침·다른 기기에선 비용 줄이 통째로 없었다(도입부터). `sp` 는 서버가 고른 `spend`(`turn-spend.ts`).
+       * 없거나 입력 0 이면 null(표시 안 함 — 거짓값 금지).
+       */
+      const costLine = (sp, { lastIn, iterations, missingRequests = 0 } = {}) => {
         const shownIn = Number(sp && sp.input);
-        if (!Number.isFinite(shownIn) || shownIn <= 0) return;
+        if (!Number.isFinite(shownIn) || shownIn <= 0) return null;
         const iters = Number(sp.requests) || 1;
-        const lastIn = Number(payload.inputTokens);
         // 사용량을 못 받은 전송 시도(Codex 재시도 등)가 있으면 합계는 하한이다 — 잡 카드와 같은
-        //  규칙으로 «+» 를 달고 적중률은 말하지 않는다(싱크 레드팀 A P1: 같은 페이로드를
-        //  잡 카드는 미확인으로, 채팅 줄은 정확값으로 그렸다).
-        const missingRequests = Number(payload.unreportedRequests) || 0;
+        //  규칙으로 «+» 를 달고 적중률은 말하지 않는다.
         const s = usageSummary({
           input: shownIn,
           cached: missingRequests > 0 ? undefined : Number(sp.cached),
           output: Number(sp.output) || 0,
           iters,
-          head: (iters > 1 && !(Number(payload.iterations) > 1)
+          head: (iters > 1 && !(Number(iterations) > 1)
             ? i18n("tok.exact.requests", { iters, total: shownIn.toLocaleString() })
             : iters > 1
             ? i18n("tok.exact.loop", {
                 iters,
                 total: shownIn.toLocaleString(),
-                last: Number.isFinite(lastIn) ? lastIn.toLocaleString() : "?",
+                last: Number.isFinite(Number(lastIn)) ? Number(lastIn).toLocaleString() : "?",
               })
             : i18n("tok.exact.single", { total: shownIn.toLocaleString() })) +
             (missingRequests > 0
               ? i18n("bg.usage.requestsUnknown", { n: missingRequests }) + i18n("bg.usage.cacheUnknown")
               : ""),
         });
-        target.textContent = s.text + (missingRequests > 0 ? "+" : "");
-        target.title = s.title;
-        if (s.heavy) target.classList.add("heavy");
+        return { text: s.text + (missingRequests > 0 ? "+" : ""), title: s.title, heavy: s.heavy };
+      };
+
+      const setTurnCost = (thread, payload) => {
+        const card = cardByThread.get(thread);
+        // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.
+        const target = card && (card.costEl || card.replyCostEl);
+        if (!target) return;
+        // ★턴 실비용은 **서버가 고른 `spend`** 를 읽는다 (2026-09-23) — `turn-spend.ts` 한 곳.
+        const line = costLine(payload && payload.spend, {
+          lastIn: payload && payload.inputTokens,
+          iterations: payload && payload.iterations,
+          missingRequests: Number(payload && payload.unreportedRequests) || 0,
+        });
+        if (line === null) return;
+        target.textContent = line.text;
+        target.title = line.title;
+        if (line.heavy) target.classList.add("heavy");
       };
 
       /**

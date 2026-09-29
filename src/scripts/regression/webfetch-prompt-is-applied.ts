@@ -34,8 +34,6 @@ const BODY = "<html><body><h1>가격표</h1><p>기본 9,900원</p></body></html>
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const { __setAdapterForTest } = await import("../../core/llm-runtime/index.js");
-  const oldNano = process.env.MODEL_TIER_NANO;
-  process.env.MODEL_TIER_NANO = "anthropic:regression-fake";
   let fakeCalls = 0;
   let fakeMode: "failure" | "timeout" | "success" = "failure";
   const restoreAdapter = __setAdapterForTest(async (_adapter, input) => {
@@ -319,8 +317,6 @@ const run = async (): Promise<Assertion[]> => {
   return out;
   } finally {
     restoreAdapter();
-    if (oldNano === undefined) delete process.env.MODEL_TIER_NANO;
-    else process.env.MODEL_TIER_NANO = oldNano;
   }
 };
 

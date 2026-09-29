@@ -20,6 +20,7 @@
  */
 import os from "node:os";
 import path from "node:path";
+import { startHomeCredentialWatch } from "./credential-env.js";
 
 let loaded = false;
 
@@ -86,6 +87,8 @@ export const loadHomeEnv = (): void => {
   const seamBefore = process.env.TIGUCLAW_SYSTEM_MD;
 
   const home_ok = tryLoad(homeEnv); // 홈 우선.
+  // 인증 키는 재시작 없이 따라가게 **지금 본 값**을 기록한다(레포 폴백은 대상 아님 — 쓰는 곳이 홈이다).
+  startHomeCredentialWatch(homeEnv);
   const repo_ok = homeEnv !== repoEnv ? tryLoad(repoEnv) : false; // 레포 폴백/보완.
 
   if (process.env.TIGUCLAW_SYSTEM_MD !== seamBefore) {

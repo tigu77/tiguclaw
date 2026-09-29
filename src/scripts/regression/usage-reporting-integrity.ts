@@ -43,7 +43,7 @@ export const check: RegressionCheck = {
       out.push(assert("미보고와 관측된 캐시 0을 구별하며 후속 턴에도 유지", partial.unreportedCacheTurns === 1 && partial.unreportedTurns === 0 && partial.cachedTokens === 2400 && partial.inputTokens === 5000 && partial.requests === 5, partial));
       const locale = JSON.parse(read("locales/ko.json"));
       const tokenSource = read("packages/dashboard/js/token-delta.js");
-      const script = fn(tokenSource, "usageSummary") + "\n" + fn(read("packages/dashboard/js/background-drawer.js"), "setJobUsage") + "\n" + fn(tokenSource, "setTurnCost") + "\n({setJobUsage,setTurnCost})";
+      const script = fn(tokenSource, "usageSummary") + "\n" + fn(tokenSource, "modelWithEffort") + "\n" + fn(read("packages/dashboard/js/background-drawer.js"), "setJobModel") + "\n" + fn(read("packages/dashboard/js/background-drawer.js"), "setJobUsage") + "\n" + fn(tokenSource, "costLine") + "\n" + fn(tokenSource, "setTurnCost") + "\n({setJobUsage,setTurnCost})";
       const card = { costEl: { textContent: "", title: "", classList: { add() {} } } };
       const ui = runInNewContext(script, {
         fmtTokens: (n: number) => String(n),

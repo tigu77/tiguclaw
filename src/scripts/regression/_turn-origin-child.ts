@@ -8,14 +8,14 @@ import { fileURLToPath } from "node:url";
 import { initStore } from "../../store/sessions.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
 import type { IncomingMessage } from "../../channels/types.js";
-import { assertIsolated, fakeNetwork } from "./_framework.js";
+import { assertIsolated, fakeNetwork, pinModelForTest } from "./_framework.js";
 assertIsolated();
 // ★★**모델을 환경에서 고정한다** (2026-09-22, 배포 트리 회귀가 잡음).
 //  종전엔 `route(msg, { specs: [...] })` 로 넘겼는데 `route` 는 그 이름을 **안 받는다**
 //  (`modelProfile` 만 받는다) — 인자가 **조용히 무시**되고 기본 풀로 떨어졌다.
 //  개발 레포엔 Claude 인증이 있어 우연히 통과했고, **배포 트리에서만** 「Claude 인증 없음」
 //  으로 터졌다. 검사가 **주변 환경에 기댄 것**이다.
-process.env.REGION_A_MODELS = "codex:gpt-5.6-sol";
+pinModelForTest("codex:gpt-5.6-sol");
 initStore();
 process.env.CODEX_CACHE_CURVE = "1";
 registerAuthProvider({ provider: "codex", getAccessToken: async () => "regression-fake-token" });
@@ -231,7 +231,7 @@ console.log(
     JSON.stringify({
       origins: ends.map((l) => field(l, "origin")),
       // ★**어느 모델로 돌았나** — 고정이 실제로 먹었는지는 «결과» 로만 알 수 있다.
-      //  위 `REGION_A_MODELS` 고정이 빠지면 기본 풀로 떨어지고, 그 순간 이 값이 갈린다.
+      //  위 `pinModelForTest` 고정이 빠지면 기본 풀로 떨어지고, 그 순간 이 값이 갈린다.
       models: [...new Set(ends.map((l) => field(l, "model")))],
       callbacks: ends.map((l) => field(l, "attachmentCallback")),
       sendFileTools: ends.map((l) => field(l, "lastSendFileTool")),

@@ -1,4 +1,6 @@
 import { EVENT_TEXT_MAX, presentAndClose, replyCommand } from "./core/entry/reply-command.js";
+import { migrateLegacyModelEnv } from "./core/legacy-model-env.js";
+import { turnSpend } from "./core/llm-runtime/turn-spend.js";
 import {
   handleCompact,
   handleCooldown,
@@ -80,7 +82,7 @@ import {
   contextPressureLabel,
   lookupContextWindow,
 } from "./core/llm-runtime/context-windows.js";
-import { runRegionA, resolveModelChain, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
+import { followHomeCredentials, runRegionA, resolveModelChain, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
 import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
@@ -128,6 +130,7 @@ import {
   specLabel,
   errorDetail,
   resolveModelSpecs,
+  describeBasePool,
   listActiveCooldowns,
   poolDiversityWarning,
   restoreCooldowns,
@@ -456,6 +459,14 @@ try {
   console.error("loadPlugins failed:", e);
 }
 
+// 옛 .env 모델 설정(REGION_A_MODELS·MODEL_TIER_*)을 프로파일로 한 번 옮긴다(2026-09-29) — 런타임은 이제 그 env 를
+//  읽지 않는다. 그 값이 실제로 모델을 정하던 설치(홈 프로파일 0개)만 옮긴다(`legacy-model-env.ts`).
+//  ★자리: **플러그인 로드 뒤·채널 시작 전.** 메인 풀이 없던 설치는 지금 빌트인 메인 풀을 적는데, 빌트인은 인증된 provider 로
+//   조립되고 구독 인증은 플러그인이 등록한다 — 앞에서 부르면 codex·claude 구독이 빠진 풀이 굳는다. 채널은 아래에서 열리므로
+//   그 사이에 턴은 없다.
+//  ★모델 미지정 자리표시(`DEFAULT_MODEL_SPEC`, 인증 0 일 때)는 거른다 — 라벨 `anthropic:(default)` 가 실제 모델명으로 굳었다(재검토 P-A).
+migrateLegacyModelEnv(process.env, () => resolveModelSpecs().filter((s) => s.model !== "").map(specLabel));
+
 // ★자기 보전 — DB 백업 + 자가 진단 (2026-08-12, 사용자: "기본적인 부분은 코어에").
 //  **loadPlugins 의 try 바깥**이 자리다. 종전엔 이 둘의 시계가 self-growth 플러그인에
 //  있어서, 플러그인 로드가 실패하면(로더는 조용히 skip 한다) 백업과 진단이 함께 멎었다 —
@@ -591,6 +602,8 @@ interface InflightTurn {
   readonly ac: AbortController;
   readonly channel: ChannelName;
   readonly target: string | null;
+  /** 슬래시 명령(`/compact`) — 잡을 띄우지 않으므로 `/stop` 이 이 세션의 잡까지 끊지 않는다. */
+  readonly command?: true;
 }
 const inflightTurns = new Map<string, InflightTurn>();
 
@@ -786,6 +799,9 @@ const maybeSuggestNextMessage = (
 };
 
 const handler: MessageHandler = async (msg) => {
+  // ★인증값은 **입구에서** 따라간다 (2026-09-29 전체 검토) — `runRegionA` 입구만으로는 그보다 먼저 자격을 읽는 곳
+  //  (라우터의 모델 풀 조립·`/compact`)이 재발급 전 값을 봤다. 바뀐 자격의 쉼도 여기서 같이 풀린다.
+  followHomeCredentials();
   // 내부 기원 합성 turn(매니저 done 재주입 등)은 인바운드 관측 발행을 스킵 — 합성 텍스트는
   // 내부 스캐폴딩(buildCompletionPrompt)이라 대시보드 chat_log 에 "나(user)"로 새면 안 된다.
   // 라우팅·발송 등 나머지 처리는 실 인바운드와 동일. 아웃바운드 관측은 아래 성공분기 단일 발행.
@@ -904,20 +920,24 @@ const handler: MessageHandler = async (msg) => {
     const args = trimmed === "/model" ? "" : trimmed.slice("/model ".length).trim();
     if (args === "") {
       const current = getSessionModelOverride(sidChannel, msg.threadKey);
-      const envRaw = process.env.REGION_A_MODELS ?? "";
-      const envPool = envRaw === ""
-        ? "(미설정 — DEFAULT_MODEL_SPEC = anthropic 디폴트)"
-        : resolveModelSpecs()
-            .map((s) => `${s.adapter}:${s.model === "" ? "(어댑터 디폴트)" : s.model}`)
-            .join(" → ");
+      // ★기본 풀과 **그 출처**를 말한다 (2026-09-29) — 종전엔 «env REGION_A_MODELS 풀» 이라는 이름으로 실제로는
+      //  프로파일 풀을 보여줬고, env 가 비면 «anthropic 디폴트» 라고 틀리게 말했다. 판정은 런타임과 같은 함수다.
+      const base = describeBasePool();
+      const poolSource = base.source === "profile"
+        ? `프로파일 '${base.profile}'`
+        : `빌트인 ${BUILTIN_DEFAULT_TIER} — 자동, 인증된 provider 의 최신 모델` +
+          (base.profileUnresolved !== undefined ? ` · 기본 프로파일 '${base.profileUnresolved}' 이 풀리지 않아서` : "");
+      const basePool = base.specs
+        .map((s) => `${s.provider ?? s.adapter}:${s.model === "" ? "(어댑터 디폴트)" : s.model}`)
+        .join(" → ") || "(없음)";
       const lines = [
-        `현재 세션 모델 override: ${current ?? "(없음 — env 폴백 사용)"}`,
+        `현재 세션 모델 override: ${current ?? "(없음 — 기본 풀 사용)"}`,
         ...(current !== null ? [unresolvedOverrideNote(current)].filter((l) => l !== "") : []),
-        `env REGION_A_MODELS 풀: ${envPool}`,
+        `기본 풀(${poolSource}): ${basePool}`,
         "",
         "사용법:",
         "  `/model <provider:model>` — 이 세션 메인 turn 모델 변경",
-        "  `/model reset` — 세션 override 해제 (env 폴백)",
+        "  `/model reset` — 세션 override 해제 (기본 풀로)",
         "",
         "예시:",
         "  `/model anthropic:claude-sonnet-5`",
@@ -1093,7 +1113,21 @@ const handler: MessageHandler = async (msg) => {
     // 자동 압축과 같은 경로·같은 규칙(최근 턴은 안 접는다). codex 히스토리 전용 —
     // claude/openai 는 SDK 가 자기 컨텍스트를 관리하므로 대상이 아니다(정직 고지).
     if (cmd === "/compact") {
-      await handleCompact(slashCtx);
+      // ★진행 중 작업으로 등록한다 (2026-09-29). 앞선 요약이 끝나길 기다리는 동안 이 대화의
+      //  큐가 막히는데, 등록이 없으면 `/stop` 이 «진행 중인 작업이 없어요» 로 답하고
+      //  재시작 안전 판정(`/health`)도 0건으로 셌다.
+      const compactEntry: InflightTurn = {
+        ac: new AbortController(),
+        channel: msg.channel,
+        target: msg.channelAddress ?? null,
+        command: true,
+      };
+      inflightTurns.set(msg.threadKey, compactEntry);
+      try {
+        await handleCompact({ ...slashCtx, signal: compactEntry.ac.signal });
+      } finally {
+        if (inflightTurns.get(msg.threadKey) === compactEntry) inflightTurns.delete(msg.threadKey);
+      }
       return;
     }
 
@@ -1307,6 +1341,15 @@ const handler: MessageHandler = async (msg) => {
         // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
         //  종전엔 활동 이벤트에만 있어, 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시가 없었다.
         ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
+        // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 답변 행에 같이 영속돼 새로고침·다른 기기에서도 같은 줄이 뜬다.
+        //  비용은 실시간 카드와 **같은 판정**(`turnSpend`)으로 고른다 — 두 벌이면 두 화면이 다른 수를 보인다.
+        ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
+        ...((): Record<string, unknown> => {
+          const spend = turnSpend(out.usage);
+          if (spend === undefined) return {};
+          const missing = out.usage?.unreportedRequests;
+          return { spend: { ...spend, ...(typeof missing === "number" && missing > 0 ? { unreportedRequests: missing } : {}) } };
+        })(),
       },
     });
     // egress fan-out — 해석해 둔 좌표로(위 턴 시작). 실패 경로도 같은 헬퍼를 쓴다.
@@ -1728,7 +1771,8 @@ const serializedHandler: MessageHandler = (msg) => {
         //  받는데 모델 호출은 자기 상한(WORKER_TIMEOUT_MS)까지 이어진다. 잡↔잡 전파는 이미 있었고
         //  (cancelDescendants) **세션 → 잡** 방향만 비어 있었다.
         //  ★몇 개를 끊었는지 말한다 — 조용한 조치는 사용자가 확인할 방법이 없다.
-        const stopped = cancelJobsForThread(msg.threadKey);
+        //  ★명령(`/compact`)을 멈출 땐 끊지 않는다 — 앞 턴이 띄워 둔 매니저 잡은 그 명령과 무관하다.
+        const stopped = entry.command === true ? 0 : cancelJobsForThread(msg.threadKey);
         await replyCommand(
           msg,
           stopped > 0
@@ -1827,8 +1871,14 @@ const shutdown = async (signal: string): Promise<void> => {
   //  메인 턴만 없었다 — 그 비대칭을 없앤다.
   //  ★채널 stop() **전에** 해야 한다(아래에서 채널이 닫히면 발송 경로가 사라진다).
   //  발송 실패는 삼킨다 — 통지 실패가 종료를 막으면 안 된다(force-exit 백스톱 1500ms).
+  // ★슬래시 명령(`/compact`)은 모델 턴이 아니다 (2026-09-29 전체 검토) — 진행 중 목록엔 있어야 하지만(`/stop`·
+  //  `/health`) 여기서 «생성 중이던 응답이 사라졌다» 는 기록(`llm.turn_error` — 자가성장이 실패 턴으로 읽는다)과
+  //  통지를 받으면 거짓이다. 로그만 남긴다.
+  for (const [k, v] of inflightTurns) {
+    if (v.command === true) console.log(`daemon: 진행 중이던 명령 중단 — ${k}(모델 턴 아님, 중단 기록·통지 없음)`);
+  }
   const allInflight = [
-    ...[...inflightTurns.entries()].map(([k, v]) => [k, v] as const),
+    ...[...inflightTurns.entries()].filter(([, v]) => v.command !== true).map(([k, v]) => [k, v] as const),
     ...listExternalTurns().map(([k, v]) => [k, v] as const),
   ];
   if (allInflight.length > 0) {

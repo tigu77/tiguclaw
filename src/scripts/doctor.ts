@@ -23,6 +23,7 @@ import { ensureRipgrep } from "../core/ripgrep.js";
 import { findBundledClaude, bundledClaudeMissingHint } from "../core/claude-cli.js";
 import { getPaths } from "../core/paths.js";
 import { loadModelProviders } from "../core/settings.js";
+import { describeBasePool, specLabel } from "../core/llm-runtime/index.js";
 import { resolveProviderConn } from "../core/llm-runtime/provider-registry.js";
 import type { BridgeTokenRole } from "../store/bridge-tokens.js";
 import {
@@ -214,13 +215,22 @@ const main = async (): Promise<void> => {
     console.log(line("TELEGRAM_BOT_TOKEN", "not set ⚠️  (Telegram 비활성)"));
   }
 
-  const regionAPool = splitPool(process.env.REGION_A_MODELS);
-  if (regionAPool.length >= 1) {
-    console.log(line("REGION_A_MODELS", `${regionAPool.join(", ")} ✅`));
+  // ★기본 모델 풀은 **런타임과 같은 해석**으로 본다 (2026-09-29) — 종전엔 옛 `.env` 의 `REGION_A_MODELS` 를 읽어,
+  //  프로파일로 도는 설치에서도 그게 비면 치명(❌)으로 셌다. 순서: 사용자 기본 프로파일 → 빌트인(자동).
+  //  ★사용자 프로파일이 없을 때(빌트인)는 비어도 치명으로 세지 않는다 — doctor 는 구독 인증 플러그인을 띄우지 않아
+  //   데몬보다 적게 볼 수 있다(거짓 경보 금지). 그땐 «데몬이 인증된 provider 로 조립» 이라고 말한다.
+  // 출처 판정은 `/model` 과 같은 함수(`describeBasePool`) — 두 곳이 따로 판정하면 다르게 말한다.
+  const base = describeBasePool();
+  const regionAPool = base.specs.map(specLabel);
+  const poolName = base.source === "profile" ? `기본 모델 풀(프로파일 '${base.profile}')` : "기본 모델 풀(빌트인 — 자동)";
+  if (base.profileUnresolved !== undefined) {
+    // 기본 프로파일이 있는데 풀리지 않는다 — 런타임은 빌트인으로 돈다. 치명은 아니지만 사용자가 적은 게 안 먹는 상태다.
+    console.log(line(poolName, `${regionAPool.join(", ") || "(없음)"} ⚠️  (기본 프로파일 '${base.profileUnresolved}' 이 풀리지 않음)`));
+    issues.push(`기본 프로파일 '${base.profileUnresolved}' 의 풀이 풀리지 않아 빌트인으로 돕니다 — settings.json 의 models.profiles 를 확인하세요`);
+  } else if (regionAPool.length >= 1) {
+    console.log(line(poolName, `${regionAPool.join(", ")} ✅`));
   } else {
-    console.log(line("REGION_A_MODELS", "비어있음 ❌"));
-    fatal += 1;
-    issues.push("REGION_A_MODELS 비어있음 — .env 에 provider:model 설정");
+    console.log(line(poolName, "데몬이 인증된 provider 의 최신 모델로 구성합니다"));
   }
 
   // codex OAuth 토큰 진단 (region A 인증 직후) — V5 관측 공백 메우기.
@@ -240,7 +250,7 @@ const main = async (): Promise<void> => {
   //  codex-auth 로 발급하세요"* 라고 안내하면, 발급해도 등록할 곳이 없어 아무 일도 안 난다.
   //  없는 능력을 진단하고 처방까지 주는 상태였다. 판정은 플러그인이 **선언한 것**을 읽는다.
   const codexAuthInstalled = subscriptionAuthAvailable("codex");
-  // 조건부: (구독 인증이 설치돼 있고) 토큰이 하나라도 있거나 REGION_A_MODELS 에 codex 가
+  // 조건부: (구독 인증이 설치돼 있고) 토큰이 하나라도 있거나 기본 모델 풀에 codex 가
   // 있을 때만 점검. 아니면 침묵 (불필요 noise 금지).
   if (codexAuthInstalled && (anyCodexTokenSet || regionAUsesCodex)) {
     if (!anyCodexTokenSet && regionAUsesCodex) {
@@ -248,7 +258,7 @@ const main = async (): Promise<void> => {
       console.log(
         line(
           "codex OAuth",
-          "토큰 없음 ⚠️  (REGION_A_MODELS 에 codex 있음 — npm run codex-auth 로 발급)",
+          "토큰 없음 ⚠️  (기본 모델 풀에 codex 있음 — npm run codex-auth 로 발급)",
         ),
       );
     } else {
@@ -678,9 +688,9 @@ const main = async (): Promise<void> => {
       (subscriptionAuthAvailable("claude-subscription")
         ? "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 또는 CLAUDE_CODE_OAUTH_TOKEN (claude setup-token 명령으로 발급) 를 채우세요."
         : "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 를 채우세요.");
-  } else if (regionAPool.length === 0) {
+  } else if (base.profileUnresolved !== undefined) {
     nextStep =
-      "다음 단계: .env.example 의 REGION_A_MODELS 라인을 .env 로 복사하세요.";
+      `다음 단계: settings.json 의 models.profiles 에서 기본 프로파일 '${base.profileUnresolved}' 의 풀을 고치세요.`;
   } else {
     let missingProviderEnv: string | null = null;
     for (const provider of providers) {

@@ -255,14 +255,15 @@ export const check: RegressionCheck = {
         ),
       );
 
-      // env(REGION_A_MODELS)도 빌트인보다 앞이다 — 명시 설정 우선 규칙은 한 방향이어야 한다.
+      // ★옛 `.env` 의 REGION_A_MODELS 는 더 읽지 않는다 (2026-09-29) — 부팅이 프로파일로 옮기고(`legacy-model-env`),
+      //  런타임엔 층이 «사용자 프로파일 → 빌트인» 둘뿐이다. 남아 있어도 빌트인이 쓰인다.
       only("ANTHROPIC_API_KEY");
       process.env.REGION_A_MODELS = "codex:from-env";
       const envMain = resolveModelSpecs(undefined, empty);
       out.push(
         assert(
-          "REGION_A_MODELS 도 빌트인보다 앞이다",
-          envMain.length === 1 && envMain[0].model === "from-env",
+          "★옛 REGION_A_MODELS 는 읽지 않는다 — 프로파일이 없으면 빌트인(옮기는 건 부팅의 몫)",
+          envMain.length > 0 && envMain.every((s) => s.model !== "from-env"),
           `메인=${envMain.map((s) => s.model).join(",")}`,
         ),
       );

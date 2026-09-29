@@ -9,8 +9,9 @@
  *
  * 우선순위:
  *  1. `opts.specs` 명시 (호출자 지정 — 단일 또는 풀)
- *  2. `process.env.REGION_A_MODELS` (콤마 풀, 예 "codex:gpt-5.5,anthropic:claude-opus-4-7")
- *  3. `DEFAULT_MODEL_SPEC` (anthropic, model 미지정 → SDK 디폴트)
+ *  2. 세션 기본 모델 프로파일(settings.json `models.default` → `models.profiles`)
+ *  3. 빌트인 프로파일(인증된 provider 의 최신 — `builtin-profiles.ts`)
+ *  (옛 `.env` 의 REGION_A_MODELS·MODEL_TIER_* 는 2026-09-29 부터 읽지 않는다 — 부팅이 프로파일로 옮긴다.)
  *
  * 풀 모드: 순서대로 시도, 첫 성공 즉시 통합 처리 → return. 모두 실패 시 마지막 throw.
  *
@@ -20,6 +21,7 @@
  *     - output.jsonlPath 있음 (claude) → indexJsonlIfNeeded (jsonl catch-up, 진실 소스)
  *     - 없음 (codex-oauth·openai) → appendTranscript user + assistant 직접 INSERT
  */
+import { credentialAdapterOf, refreshHomeCredentials } from "../credential-env.js";
 import { turnSpend } from "./turn-spend.js";
 import { getRegisteredMcpServers } from "../mcp-registry.js";
 import {
@@ -31,7 +33,7 @@ import { runClaude } from "./adapters/claude-agent-sdk.js";
 import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
-import { resolveProviderConn } from "./provider-registry.js";
+import { listProviderNames, resolveProviderConn } from "./provider-registry.js";
 import { assertLiveModelAllowed } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { compactHistoryAfterTurn } from "./adapters/openai-codex-oauth-history.js";
@@ -414,10 +416,7 @@ export const unresolvedModelSpecs = (cwd?: string): string[] => {
   const add = (where: string, spec: string) => { const i = specIssue(where, spec, cwd); if (i !== undefined) issues.push(i); };
   const profiles = loadModelProfiles(cwd);
   for (const [name, prof] of Object.entries(profiles)) for (const e of prof.pool) add(`프로파일 '${name}'`, e.spec);
-  if (Object.keys(profiles).length === 0) {
-    for (const [, key] of Object.entries(TIER_ENV)) for (const t of splitSpecs(process.env[key])) add(`.env ${key}`, t);
-  }
-  for (const t of splitSpecs(process.env.REGION_A_MODELS)) add(".env REGION_A_MODELS", t);
+  // 옛 `.env` 모델 풀(REGION_A_MODELS·MODEL_TIER_*)은 더 읽지 않으므로 진단하지 않는다(부팅이 프로파일로 옮긴다).
   const gw = loadGatewayConfig(cwd)?.models;
   if (gw !== undefined && gw.length > 0) for (const t of gw) add("settings.json gateway.models", t);
   else for (const t of splitSpecs(process.env.LLM_GATEWAY_MODELS)) add(".env LLM_GATEWAY_MODELS", t);
@@ -463,6 +462,22 @@ export const parseModelSpecList = (raw: string, cwd?: string): ModelSpec[] => {
   return out;
 };
 
+/**
+ * **지금 기본 풀이 무엇이고 어디서 왔나** — `/model`·doctor 가 같이 쓴다 (2026-09-29 적대 검토 P-8).
+ * ★`resolveModelSpecs` 와 **같은 순서**로 판정한다: 기본 프로파일의 첫 풀이 풀리면 그 프로파일, 아니면 빌트인. 종전엔 두 곳이
+ *  «사용자 프로파일이 있나» 만 보고 «프로파일 'x'» 라고 적어서, 기본 프로파일이 안 풀려 빌트인으로 도는데도 프로파일이라 말했다.
+ */
+export const describeBasePool = (
+  cwd?: string,
+): { specs: ModelSpec[]; source: "profile" | "builtin"; profile?: string; profileUnresolved?: string } => {
+  const specs = resolveModelSpecs(undefined, cwd);
+  if (Object.keys(loadModelProfiles(cwd)).length === 0) return { specs, source: "builtin" };
+  const name = getDefaultProfileName(cwd);
+  const chain = resolveProfileChain(name, cwd);
+  const pool = chain.length > 0 ? poolToSpecs(chain[0]!, cwd) : [];
+  return pool.length > 0 ? { specs, source: "profile", profile: name } : { specs, source: "builtin", profileUnresolved: name };
+};
+
 export const resolveModelSpecs = (
   override?: ModelSpec[],
   cwd?: string,
@@ -477,11 +492,8 @@ export const resolveModelSpecs = (
     const pool = poolToSpecs(defaultChain[0], cwd);
     if (pool.length > 0) return pool;
   }
-  const env = process.env.REGION_A_MODELS;
-  if (env !== undefined && env !== "") {
-    const parsed = parseModelSpecList(env, cwd);
-    if (parsed.length > 0) return parsed;
-  }
+  // ★옛 `.env` 의 `REGION_A_MODELS` 는 더 읽지 않는다 (2026-09-29) — 부팅이 프로파일로 옮긴다(`legacy-model-env.ts`).
+  //  층이 둘이면 «지금 무엇으로 도나» 를 두 곳에서 답했다. 순서: 사용자 기본 프로파일 → 빌트인(아래).
   // ★설정이 하나도 없으면 **인증된 provider 로 조립한다** (2026-08-13, 사용자 요청).
   //  종전엔 여기서 곧장 DEFAULT_MODEL_SPEC(claude, 모델 미지정)로 떨어져 codex 만 인증한
   //  설치도 claude 로 흘렀다. 사용자 설정(프로파일·env)이 먼저고 여기는 그 뒤다 — 즉
@@ -504,23 +516,18 @@ export const poolDiversityWarning = (): string | null => {
   const providers = new Set(specs.map((s) => s.provider ?? s.adapter));
   if (providers.size > 1) return null; // cross-provider 그물 있음 — OK
   return (
-    `⚠️ 기본 모델 풀(models.default 가 가리키는 프로파일 또는 REGION_A_MODELS)이 단일 provider` +
+    `⚠️ 기본 모델 풀(models.default 가 가리키는 프로파일 또는 빌트인)이 단일 provider` +
     `(${[...providers][0]})뿐 — 그 백엔드가 흔들리면(idle 타임아웃 등) 폴백 그물 없이 ` +
     `전 풀이 동시에 실패합니다. cross-provider 최후 안전망 권장(예: 풀 끝에 codex:gpt-5.5 추가).`
   );
 };
 
-// 등급(티어) → 모델 풀. agent 정의의 `model:` 이 등급(high/mid/low)이면
-// `MODEL_TIER_<등급>` env 의 콤마 풀(provider:model,...)로 해석 → 폴백 가능.
+// 등급(티어) → 모델 풀. agent 정의의 `model:` 이 등급(high/mid/low)이면 같은 이름의 **프로파일**, 없으면 **빌트인**.
 // provider:model 직접 지정도 허용 (고급 — 특정 모델 강제). 빈/미지 → [] (어댑터 디폴트).
-const TIER_ENV: Record<string, string> = {
-  high: "MODEL_TIER_HIGH",
-  mid: "MODEL_TIER_MID",
-  low: "MODEL_TIER_LOW",
-  nano: "MODEL_TIER_NANO", // 가장 가벼운 풀 — 내부 단발 호출(분류·요약)이 먼저 찾는다
-};
-/** 레거시 등급 이름 — 게이트웨이 목록이 «해석되는 등급만» 광고할 때 이 목록을 `resolveTier` 로 돌린다(사본을 두지 않는다). */
-export const LEGACY_TIERS: readonly string[] = Object.keys(TIER_ENV);
+// ★옛 `.env` 의 `MODEL_TIER_*` 는 더 읽지 않는다 (2026-09-29) — 부팅이 프로파일로 옮긴다(`legacy-model-env.ts`).
+const TIER_NAMES: readonly string[] = ["high", "mid", "low", "nano"]; // nano = 가장 가벼운 풀 — 내부 단발 호출(분류·요약)이 먼저 찾는다
+/** 등급 이름 — 게이트웨이 목록이 «해석되는 등급만» 광고할 때 이 목록을 `resolveTier` 로 돌린다(사본을 두지 않는다). */
+export const LEGACY_TIERS: readonly string[] = TIER_NAMES;
 
 export const resolveTier = (
   modelStr: string | undefined,
@@ -541,20 +548,10 @@ export const resolveTier = (
     //  않는다» 로 닫는다(목록이 이 함수를 부른다).
     return poolToSpecs(profileChain[0]!, cwd);
   }
-  // 등급 키워드 → MODEL_TIER_* 콤마 풀 (레거시 폴백).
+  // 등급 키워드 — 같은 이름의 프로파일이 없으면 빌트인.
   const s = raw.toLowerCase();
-  const tierEnvKey = TIER_ENV[s];
-  if (tierEnvKey !== undefined) {
-    // ★모델 구성을 **프로파일**로 하는 설치본에선 레거시 `MODEL_TIER_*` 를 보지 않는다 — 등급 이름과 같은 프로파일이
-    //  없으면 옛 .env 값이 새어 들어왔다(9/26 은 `nano` 만 막았는데 `low` 도 같았다 — 전체 검토 2026-09-28).
-    //  판단은 여기 한 곳이다(내부 싼 호출·게이트웨이 `tier:*`·서브에이전트 `model:` 이 모두 이 함수를 지난다).
-    //  프로파일이 하나도 없는 옛 설치본은 종전대로 env 를 따른다.
-    const legacyShadowed = Object.keys(loadModelProfiles(cwd)).length > 0;
-    const env = legacyShadowed ? "" : (process.env[tierEnvKey] ?? "").trim();
-    if (env !== "") {
-      return parseModelSpecList(env);
-    }
-    // ★프로파일도 env 도 없을 때 — 빌트인(인증된 provider 조립)으로. 종전엔 여기서 []
+  if (TIER_NAMES.includes(s)) {
+    // ★같은 이름의 프로파일이 없을 때 — 빌트인(인증된 provider 조립)으로. 종전엔 여기서 []
     //  이라 등급 이름(high/mid/low)이 **아무 의미도 없었다**: 서브에이전트·매니저가 등급을
     //  선언해도 전부 같은 어댑터 디폴트로 흘렀다. `nano` 는 빌트인이 모르므로 그대로 [].
     return parseModelSpecList(builtinTierPool(s, cwd).join(","), cwd);
@@ -877,6 +874,8 @@ export const publishTurnDone = (
         : spec.model !== ""
           ? { model: spec.model }
           : {}),
+      // 실제로 보낸 추론 강도 — 어댑터가 알려준 값만(화면이 설정을 다시 읽어 계산하지 않는다).
+      ...(output.reasoning !== undefined && output.reasoning !== "" ? { reasoning: output.reasoning } : {}),
       // ★시대 표식 (2026-07-30) — 같은 컬럼에 **두 의미**가 섞였다. 07-30 이전 claude 행은
       //  캐시 읽기를 뺀 증분(평균 199), 이후는 호출 단위 전체 입력. 스케일이 수천 배 다르다.
       //  사후 집계(context-windows.ts 주석의 "실사용 358턴" 같은 실측)가 시대를 가르려면
@@ -969,6 +968,9 @@ const publishTurnError = (
       threadKey: input.threadKey,
       adapter: adapterLabel(spec.adapter),
       ...(remainMs > 0 ? { cooldownUntilTs: Date.now() + remainMs } : {}),
+      // 등록과 같은 판정(`registerCooldownIfRateLimited`) — 이 턴의 오류가 어느 쪽인지 모르면 싣지 않는다.
+      ...(remainMs > 0 && isRateLimited(raw) ? { cooldownReason: "limit" as const } : {}),
+      ...(remainMs > 0 && !isRateLimited(raw) && isAuthRejected(raw) ? { cooldownReason: "auth" as const } : {}),
       durationMs,
       ok: false,
       errorKind: classifyTurnError(e),
@@ -1060,6 +1062,10 @@ const remainingForKey = (key: string): number => {
     const row = getCooldownRow(key, now);
     if (row === null) {
       cooldownUntil.delete(key); // 캐시 동기화.
+      // ★통지 표시도 같이 푼다 (2026-09-29 전체 검토). 다른 프로세스(터미널 `claude-auth`·`codex-auth`)가 DB 에서
+      //  풀면 이 데몬의 표시는 그대로라, 새 토큰도 거부될 때 재등록이 «이미 알렸다» 로 **조용히** 끝났다.
+      //  쉼이 끝났으면 다음 쉼은 새 사건이다 — 해제·만료·다른 프로세스 전부 여기 한 곳에서.
+      announcedUntil.delete(key);
       return 0;
     }
     cooldownUntil.set(key, row.untilTs);
@@ -1332,6 +1338,50 @@ export const clearCooldownOnSuccess = (spec: ModelSpec): void => {
  */
 export const clearCooldowns = (prefix?: string): string[] => {
   const want = prefix?.trim() ?? "";
+  return clearCooldownsWhere((key) => want === "" || key.startsWith(want));
+};
+
+/**
+ * **정확한 키만** 푼다 — 재인증처럼 «이 인증을 쓰는 쉼» 이 정해져 있을 때 (2026-09-29).
+ * ★접두로 풀면(`clearCooldowns("anthropic")`) 자기 키를 쓰는 사용자 정의 provider(`anthropic-work`)까지 풀린다.
+ * ★DB 행만 지우지 않는다 — 통지 표시(`announcedUntil`)가 남으면 새 토큰도 거부될 때 재등록이 **조용히** 끝났다
+ *  (적대 검토 P2). 해제는 이 루틴 하나가 한다.
+ */
+export const clearCooldownKeys = (keys: readonly string[]): string[] =>
+  clearCooldownsWhere((key) => keys.includes(key));
+
+/**
+ * **한 인증을 쓰는 쉼 전부** — 어댑터 이름(모델 미지정 기본 spec 의 키) + 그 어댑터를 타는 provider 전부.
+ * ★손 목록을 두지 않는다 — 사용자 정의 provider 가 claude·codex 어댑터를 타면 **같은 자격**을 쓴다(claude 어댑터는
+ *  provider 연결 정보를 안 읽고, codex 는 OAuth 하나다). 종전엔 `anthropic`·`claude` 만 풀어 `work:*` 같은 provider 는
+ *  재인증 뒤에도 12시간 건너뛰었다(2026-09-29 전체 검토).
+ */
+export const authCooldownKeysFor = (adapter: RegionAAdapter): string[] => {
+  const keys = new Set<string>([adapter]);
+  for (const p of listProviderNames()) {
+    if ((PROVIDER_TO_ADAPTER[p] ?? userProviderAdapter(p)) === adapter) keys.add(p);
+  }
+  return [...keys];
+};
+
+/** 재인증·자격 변경 = 이전 판정 무효 — 그 인증을 쓰는 쉼을 한 루틴으로 푼다(claude·codex 로그인, 인증값 따라가기 공용). */
+export const clearAuthCooldowns = (adapter: RegionAAdapter): string[] => clearCooldownKeys(authCooldownKeysFor(adapter));
+
+/**
+ * **홈 `.env` 의 인증값을 따라가고, 바뀐 자격의 쉼을 푼다** — 입구마다 부른다(인바운드 핸들러·`runRegionA`).
+ * ★자격이 바뀌면 쉼도 끝이다 — 전용 재인증 도구만 풀면 `.env` 를 손으로 고친 경우·옛 플러그인 경로는 고친 뒤에도
+ *  12시간 쉬었다(2026-09-29 전체 검토). 어느 쓰기든 여기서 같이 풀린다.
+ */
+export const followHomeCredentials = (): void => {
+  const adapters = new Set(refreshHomeCredentials().map((k) => credentialAdapterOf(k)));
+  for (const a of adapters) {
+    if (a === undefined) continue;
+    const cleared = clearAuthCooldowns(a);
+    if (cleared.length > 0) console.log(`[env] 자격이 바뀌어 쉼을 풀었습니다: ${cleared.join(", ")}`);
+  }
+};
+
+const clearCooldownsWhere = (match: (key: string) => boolean): string[] => {
   const cleared: string[] = [];
   // ★DB 에만 있는 행도 대상 (2026-07-29 검토). 메모리 Map 만 순회하면, 다른 프로세스가
   //  등록했거나 이 프로세스가 아직 안 읽은 쿨다운은 "해제할 게 없습니다" 라고 답해 놓고
@@ -1342,7 +1392,7 @@ export const clearCooldowns = (prefix?: string): string[] => {
     /* DB 조회 실패 — 메모리에 있는 것만이라도 해제 */
   }
   for (const key of [...cooldownUntil.keys()]) {
-    if (want !== "" && !key.startsWith(want)) continue;
+    if (!match(key)) continue;
     cooldownUntil.delete(key);
     announcedUntil.delete(key); // 사람이 풀었다 — 다시 막히면 새 사건으로 알린다.
     try {
@@ -1696,6 +1746,8 @@ export const runRegionA = async (
 ): Promise<RegionASdkOutput> => {
   // Before enrichment/profile selection: these can discover authentication or call services.
   assertRuntimeModelAllowed();
+  // 터미널에서 재발급한 인증값을 재시작 없이 따라간다(바뀐 인증 키만 — `credential-env.ts`).
+  followHomeCredentials();
   // 전사 seam(contract §1) — 오디오/음성 첨부를 chain 루프 *전* 1회 전사해 Attachment.transcript 를
   // 채운다. best-effort(enrichTranscripts 자체가 첨부 단위 격리·never-throw). 다운스트림 3 어댑터
   // formatAttachments + persistOutput 이 분기 0 으로 동일 소비 → #2 구조보장·resume 재전사 0.

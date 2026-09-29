@@ -1591,6 +1591,7 @@ export const runOpenAi = async (
       text: "",
       sessionId: `openai-${randomUUID()}`,
       model,
+      ...(reasoningEffort !== undefined ? { reasoning: reasoningEffort } : {}),
       replyToTrigger,
       usage,
       externalToolCalls: externalToolCallsCollected,
@@ -1613,6 +1614,7 @@ export const runOpenAi = async (
     text,
     sessionId: `openai-${randomUUID()}`,
     model,
+    ...(reasoningEffort !== undefined ? { reasoning: reasoningEffort } : {}),
     replyToTrigger,
     usage,
   };

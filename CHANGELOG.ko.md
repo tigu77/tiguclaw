@@ -8,6 +8,28 @@
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-09-29
+
+### Added
+
+- **채팅 카드와 백그라운드 작업 카드의 모델 옆에 그 턴에 쓴 추론 강도가 표시됩니다.** 강도를 보내지 않은 턴에는 표시하지 않습니다.
+
+### Changed
+
+- **모델은 이제 `settings.json` 의 모델 프로파일로만 정합니다.** `.env` 의 `REGION_A_MODELS`·`MODEL_TIER_*` 는 더 이상 읽지 않습니다. 이 값으로 모델을 정하던 설치는 첫 부팅에 프로파일로 한 번 옮겨지고, 원본 설정은 `settings.json.before-legacy-model-env` 로 남습니다. `/model` 이 지금 쓰는 기본 풀과 그 출처를 보여 줍니다.
+- **터미널에서 `npm run claude-auth`·`npm run codex-auth` 로 다시 인증하면 재시작 없이 다음 메시지부터 새 토큰을 씁니다.** 다시 인증하면 그 인증에 걸려 있던 대기(쿨다운)도 풀립니다.
+
+### Fixed
+
+- **긴 Codex 대화에서 답할 때마다 이력 요약을 기다리느라 몇 분씩 걸리던 문제를 수정했습니다.** 요약은 답한 뒤 미리 합니다.
+- **`/compact` 를 `/stop` 으로 멈출 수 없던 문제를 수정했습니다.**
+- **Claude 구독 토큰을 붙여넣을 때 줄바꿈으로 잘린 토큰이 확인 없이 저장되던 문제를 수정했습니다.** 잘린 토큰은 이어 붙이고, Anthropic 이 거부하는 토큰은 저장하지 않습니다.
+- **인증이 거부됐을 때 대시보드가 «사용량 한도» 로 안내하던 문제를 수정했습니다.**
+- **새로고침하거나 다른 기기에서 열면 답변의 토큰·캐시 줄이 보이지 않던 문제를 수정했습니다.**
+- **설치 마법사에서 모델을 직접 고른 설치의 모델 프로파일이 무시되던 문제를 수정했습니다.**
+- **Claude 로 답하는 중에 보낸 메시지가 드물게 처리되지 않던 문제를 수정했습니다.**
+- **백업이 중간에 끊기면 불완전한 파일을 최근 백업으로 세던 문제를 수정했습니다.**
+
 ## [0.61.0] - 2026-09-29
 
 ### Changed
@@ -2298,7 +2320,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...HEAD
+[0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0
 [0.59.0]: https://github.com/tigu77/tiguclaw/compare/v0.58.0...v0.59.0

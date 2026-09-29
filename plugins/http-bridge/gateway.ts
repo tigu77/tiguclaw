@@ -31,7 +31,7 @@ export const resolveGatewayRuntime = (): GatewayRuntime => {
   const poolRaw =
     cfg?.models !== undefined && cfg.models.length > 0
       ? cfg.models.join(",")
-      : (process.env.LLM_GATEWAY_MODELS ?? process.env.REGION_A_MODELS ?? "");
+      : (process.env.LLM_GATEWAY_MODELS ?? ""); // 비면 기본 프로파일(빌트인 포함) — 옛 REGION_A_MODELS 는 더 읽지 않는다.
   const envCap = Number(process.env.LLM_GATEWAY_MAX_CONCURRENCY);
   const maxConcurrency =
     cfg?.maxConcurrency ??

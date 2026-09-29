@@ -356,8 +356,8 @@ export default class ClaudeSubscriptionAuth {
        *  거짓말이 된다.
        * ★대신 두 길을 연다: 그 기계 **터미널 한 줄**(화면이 복사 버튼과 함께 보여준다)과,
        *  이미 받은 토큰 **붙여넣기**. 폰에서도 후자로 끝낼 수 있다.
-       * ★저장은 `host.saveAuthEnv` 로 한다 — 이 파일이 **아무것도 import 하지 않는** 성질을
-       *  지키기 위해서다(그게 이 플러그인이 홈으로 옮겨 살아남는 근거다).
+       * ★저장은 `host.saveClaudeToken` 으로 한다 — 이 파일이 **아무것도 import 하지 않는** 성질을
+       *  지키기 위해서다(그게 이 플러그인이 홈으로 옮겨 살아남는 근거다). 확인·쿨다운 해제도 그쪽이 한다.
        */
       login: {
         label: "구독 토큰 발급",
@@ -369,18 +369,10 @@ export default class ClaudeSubscriptionAuth {
           pasteHint: "발급된 토큰 (sk-ant- 로 시작합니다)",
           needsRestart: false,
         }),
-        finish: async (pasted) => {
-          const t = String(pasted ?? "").trim();
-          // ★모양만 본다(접두는 우리 redact 규칙이 이미 아는 것과 같다). 유효성은 상류가
-          //  정하는 것이라 여기서 단정하지 않는다 — 다만 빈 값·따옴표 사고는 막는다.
-          const token = (/\bsk-ant-[A-Za-z0-9._-]{20,}\b/.exec(t) ?? [])[0] ?? "";
-          if (token === "") {
-            return { ok: false, message: "토큰을 못 찾았습니다 — `sk-ant-` 로 시작하는 값을 붙여넣으세요." };
-          }
-          const w = await host.saveAuthEnv({ CLAUDE_CODE_OAUTH_TOKEN: token });
-          if (!w.ok) return { ok: false, message: w.error ?? "저장 실패" };
-          return { ok: true, message: "토큰을 홈 .env 에 저장했습니다 — 다음 턴부터 구독으로 돕니다." };
-        },
+        // ★붙여넣은 글을 **그대로** 코어에 넘긴다 (2026-09-29). 여기서 한 줄만 집었더니 줄바꿈으로 잘린
+        //  토큰 앞 조각이 저장돼 모든 턴이 401 이었고, 값을 확인하지 않은 채 «돕니다» 라고 답했다.
+        //  이어 붙이기·확인·저장·쿨다운 해제는 터미널 `claude-auth` 와 같은 코어 한 곳이 한다.
+        finish: async (pasted) => host.saveClaudeToken(String(pasted ?? "")),
       },
     });
     if (!r.ok) host.log(`구독 인증을 못 켰습니다: ${r.error}`);

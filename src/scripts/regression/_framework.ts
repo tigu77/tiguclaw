@@ -13,7 +13,8 @@
  * 브라우저(CDP)·라이브 데몬이 필요한 검증은 여기 넣지 않는다(별도 수동 스위트).
  */
 import { spawn, type SpawnOptions } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { FAKE_NETWORK } from "../../core/llm-runtime/regression-model-guard.js";
 
 export interface Assertion {
@@ -52,6 +53,19 @@ export const assertIsolated = (): void => {
   if (process.env.DATA_DIR !== undefined) {
     throw new Error("DATA_DIR 이 설정돼 있으면 격리가 깨진다 — 러너가 지운다.");
   }
+};
+
+/**
+ * **자식 검사 전용 — 모델을 프로파일로 고정한다** (2026-09-29). 종전엔 `process.env.REGION_A_MODELS` 로 고정했는데
+ * 런타임이 그 env 를 더 읽지 않는다(프로파일로 옮겼다). ★러너와 **같은 홈**에 settings.json 을 쓰면 뒤에 도는 검사가
+ * 그 프로파일을 보므로, 이 프로세스만의 하위 홈을 만들어 거기 쓴다(env 고정이 프로세스 안에서만 유효했던 것과 같은 범위).
+ * `initStore`·`getPaths` 를 부르기 **전에** 호출한다.
+ */
+export const pinModelForTest = (spec: string): void => {
+  assertIsolated();
+  const home = mkdtempSync(path.join(process.env.TIGUCLAW_HOME!, "pin-"));
+  process.env.TIGUCLAW_HOME = home;
+  writeFileSync(path.join(home, "settings.json"), JSON.stringify({ models: { default: "pin", profiles: { pin: { pool: [spec] } } } }));
 };
 
 export const assert = (name: string, ok: boolean, got: unknown): Assertion => ({

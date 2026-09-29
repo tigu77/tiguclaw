@@ -288,7 +288,8 @@ export const check: RegressionCheck = {
     //  추출 전엔 codex 전용이라 `[codex 6b]` 가 맞았는데, 어댑터 무관이 되자 openai 압축이
     //  **codex 로 로그에 찍혔다.** 로그는 1차 진단면이라(원격 인스턴스는 그것뿐이다) 틀린
     //  어댑터를 가리키면 진단이 처음부터 엉뚱한 데로 간다.
-    const driverStart = src.codex.indexOf("export const compactThreadHistory");
+    // 드라이버 본문은 잠금 안에서 도는 `compactThreadHistoryUnlocked` 다(2026-09-29 — 공개 함수는 잠금 래퍼).
+    const driverStart = src.codex.indexOf("const compactThreadHistoryUnlocked");
     const driverEnd = src.codex.indexOf("export const buildTurnHistory");
     const driver =
       driverStart < 0 || driverEnd < 0 ? "" : src.codex.slice(driverStart, driverEnd);

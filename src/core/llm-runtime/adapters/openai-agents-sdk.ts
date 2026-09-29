@@ -1014,7 +1014,7 @@ export const runOpenAi = async (
   //  **우리가 주입**한다 — 그 전제가 거짓이었다.
   //  ★판정은 **어댑터 무관 드라이버** 한 곳이고 여기선 요약 호출만 준다. 요약기는 이 턴과
   //   **같은 모델**을 탄다(codex 가 그걸 안 해서 매 턴 400 으로 죽은 게 같은 날 사고였다).
-  const { allTurns, summary, watermark } = await compactThreadHistory({
+  const compacted = await compactThreadHistory({
     channel: idChannel,
     threadKey: input.threadKey,
     // ★쿨다운 키는 **이 어댑터의 기본값**으로 채운다 (2026-09-15, 구조 감사). 드라이버가
@@ -1025,6 +1025,7 @@ export const runOpenAi = async (
     adapter: "openai",
     // 요약 기준 = 보낼 수 있는 이력 예산 — codex 와 같은 판정(historyTriggerChars).
     budget: { instructionsChars: instructions.length, promptChars: promptWithMemory.length },
+    signal: input.abortSignal, // 앞선 요약을 기다리는 동안에도 이 턴의 취소를 듣는다.
     summarize: async (text, targetChars) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
       //  첫 판은 `new Agent({...})` 로 직접 만들어 `modelSettings` 를 통째로 생략했다 —
@@ -1107,7 +1108,19 @@ export const runOpenAi = async (
         sumIdle.done();
       }
     },
+  }).catch(async (e: unknown) => {
+    // ★앞선 요약을 기다리다 이 턴이 취소되면(2026-09-29) 여기서 던진다 — 위에서 이미 연 MCP 브리지는 `runOnce` 의 finally 에
+    //  닿지 않으니 **여기서 닫는다**(종전엔 이 호출이 예외를 삼켜 필요 없었다 · 재검토 P1).
+    for (const server of mcpServers) {
+      try {
+        await server.close();
+      } catch {
+        /* noop */
+      }
+    }
+    throw e;
   });
+  const { allTurns, summary, watermark } = compacted;
   const priorTurns = recentTurnsAfter(allTurns, watermark, {
     budgetUsedChars: instructions.length + promptWithMemory.length + summary.length,
   });

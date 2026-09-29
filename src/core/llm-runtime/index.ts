@@ -34,6 +34,7 @@ import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
 import { resolveProviderConn } from "./provider-registry.js";
 import { assertLiveModelAllowed } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
+import { compactHistoryAfterTurn } from "./adapters/openai-codex-oauth-history.js";
 import { setSummarizerCooldownPort, type CooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
 import { formatAttachments } from "../prompt-assembly.js";
@@ -1445,6 +1446,9 @@ const persistOutput = (
         ...(output.turnItems !== undefined ? { items: output.turnItems } : {}),
         ...(output.sentUserText !== undefined ? { userSent: output.sentUserText } : {}),
       });
+      // ★저장이 끝났으니 **다음 요청 전에 뒤에서 미리 접는다** — 요청 직전에 돌면 사용자가 그대로 기다린다(2026-09-29,
+      //  회사돌쇠 매 턴 3~6분). 이번 턴에 이력을 조립한 어댑터가 없으면(claude 등) 아무것도 안 한다. 기다리지 않는다.
+      void compactHistoryAfterTurn(input.threadKey);
     } catch (e) {
       console.error("llm-runtime: appendTranscript/indexCodexTurn failed:", e);
     }

@@ -4,6 +4,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import type { ChannelName } from "../channels/types.js";
 import { getPaths } from "../core/paths.js";
+import { bumpThreadRevision } from "./thread-revision.js";
 
 /**
  * ★세션-정체성 저장 채널 (canonical) — 채널/세션 분리 Phase 1
@@ -1961,6 +1962,7 @@ export const setContextBoundary = (
   ts: number,
 ): void => {
   const handle = requireDb("setContextBoundary");
+  bumpThreadRevision(threadKey); // 경계가 바뀌면 뒤에서 도는 요약의 결과는 낡았다(thread-revision.ts).
   handle
     .prepare(
       `INSERT INTO context_boundaries (channel, thread_key, boundary_ts, created_at)

@@ -15,6 +15,7 @@
  */
 import type { ChannelName } from "../channels/types.js";
 import { getDb } from "./sessions.js";
+import { bumpThreadRevision } from "./thread-revision.js";
 
 export interface ThreadSummary {
   threadKey: string;
@@ -61,14 +62,22 @@ export const getThreadSummary = (
   };
 };
 
-/** thread 요약 upsert (롤링 — 압축 1회당 1번). watermark 전진. */
+/**
+ * thread 요약 upsert (롤링 — 압축 1회당 1번). watermark 전진.
+ * ★**워터마크는 뒤로 가지 않는다** (2026-09-29, 아스트라 검토) — 늦게 끝난 옛 요약이 이미 접은 범위를 되돌리던 것
+ *  (수동 `/compact` 가 뒤에서 끝난 요약을 덮어 워터마크 84→28). 더 낮은 워터마크는 저장하지 않고 false 를 돌려준다.
+ *  되돌리는 정당한 경로는 초기화(`clearThreadSummary`) 뿐이다.
+ */
 export const upsertThreadSummary = (input: {
   threadKey: string;
   summary: string;
   compactedThrough: number;
-}): void => {
+}): boolean => {
   const db = requireDb("upsertThreadSummary");
+  const cur = getThreadSummary(input.threadKey);
+  if (cur !== undefined && cur.compactedThrough > input.compactedThrough) return false;
   const now = Date.now();
+  bumpThreadRevision(input.threadKey);
   db.prepare(
     `INSERT INTO thread_summaries (thread_key, summary, compacted_through, updated_at)
      VALUES (?, ?, ?, ?)
@@ -77,6 +86,7 @@ export const upsertThreadSummary = (input: {
        compacted_through = excluded.compacted_through,
        updated_at = excluded.updated_at`,
   ).run(input.threadKey, input.summary, input.compactedThrough, now);
+  return true;
 };
 
 /**
@@ -92,6 +102,7 @@ export const clearThreadSummary = (
   threadKey: string,
 ): boolean => {
   const db = requireDb("clearThreadSummary");
+  bumpThreadRevision(threadKey);
   const result = db
     .prepare(`DELETE FROM thread_summaries WHERE thread_key = ?`)
     .run(threadKey);

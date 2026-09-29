@@ -25,6 +25,7 @@ const run = async (): Promise<Assertion[]> => {
         queued.includes("대기") &&
         fresh.includes("새 턴") &&
         fresh.includes(" synthetic ") &&
+        formatInboundLog({ channel: "telegram", threadKey: "dashboard:w", textLength: 5, attachments: 0, route: "command" }).includes("즉시 처리") &&
         !line.includes("synthetic"),
       got: `${line} | ${queued} | ${fresh}`,
     },
@@ -33,7 +34,9 @@ const run = async (): Promise<Assertion[]> => {
       ok:
         /if \(accepted\) \{\s*console\.log\(inboundLine\(msg, "steer"\)\)/.test(src) &&
         /console\.log\(inboundLine\(msg, threadHasQueuedTurn\(msg\.threadKey\) \? "queued" : "new"\)\);\s*return enqueueThreadTurn\(/.test(src) &&
-        /synthetic: msg\.synthetic === true,/.test(src),
+        /synthetic: msg\.synthetic === true,/.test(src) &&
+        // 즉시 처리 명령 다섯 갈래 모두 — 큐를 안 타니 위 두 자리에 안 걸린다.
+        (src.match(/console\.log\(inboundLine\(msg, "command"\)\);\s*publishInboundEcho\(msg\);/g) ?? []).length >= 5,
       got: "index.ts serializedHandler",
     },
   ];

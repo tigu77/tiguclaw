@@ -1512,11 +1512,11 @@ const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
     const npm = r.ranNpmInstall === true ? ", 의존성 갱신" : "";
     const sec = Math.round((r.restartInMs ?? 5000) / 1000);
     return (
-      `🔄 업데이트 적용: ${span}${files}${npm}. typecheck 게이트 통과.\n` +
+      `🔄 업데이트 적용: ${span}${files}${npm}.\n` +
       `약 ${sec}초 후 재시작합니다 — 잠시 후 완료 알림이 옵니다.`
     );
   }
-  // failed — typecheck 게이트 실패 시 자동 롤백·데몬 생존을 명시(먹통 아님).
+  // failed — 의존성 설치·빌드 실패 시 자동 롤백·데몬 생존을 명시(먹통 아님).
   const rolled =
     r.rolledBack === true
       ? "변경은 자동 롤백됐고 데몬은 그대로 정상 동작합니다."
@@ -1630,6 +1630,7 @@ const serializedHandler: MessageHandler = (msg) => {
     // handler(in-band) 를 우회하므로 대시보드 낙관적 "대기 중" 버블을 클리어할 echo 를
     // 여기서 직접 낸다(2026-07-16 /stop 스턱 버블 픽스와 동형 — handler 는 절대 호출되지
     // 않으므로 이중발행 걱정 없음).
+    console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void msg
       .reply(
@@ -1659,6 +1660,7 @@ const serializedHandler: MessageHandler = (msg) => {
   //   redactSecrets 는 env 값·토큰 패턴만 지우므로 그것만으론 부족하다. 대화 본문 캐리어를
   //   따로 지우고, 관측 발행(chat_log·events 영구 적재)도 하지 않는다.
   if (msg.text.trim().split(/\s+/)[0] === "/logs") {
+    console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     return (async (): Promise<void> => {
       const text = await buildLogTail(msg.text.trim().slice(5));
@@ -1686,6 +1688,7 @@ const serializedHandler: MessageHandler = (msg) => {
   //   없다(대책이 우리 쪽 도구 축소·instructions 분할이다). 우리 원격 인스턴스에는 꼭
   //   필요하고, **목록에 없어도 명령은 그대로 동작한다** — 안 보이는 것이지 없는 게 아니다.
   if (msg.text.trim() === "/diagnose") {
+    console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void (async (): Promise<void> => {
       await replyCommand(msg, "🔬 codex 요청 무게 A/B 진단 중… (최대 2분)").catch(
@@ -1714,6 +1717,7 @@ const serializedHandler: MessageHandler = (msg) => {
     // channel.message.in echo 가 안 나가 대시보드 낙관적 "대기 중" 버블이 클리어 신호를
     // 영영 못 받아 스턱됐다(새로고침해야 사라짐). replyCommand(out) 전에 echo(in) 를 내
     // js/sse.js 가 correlationId 매칭으로 버블을 정상 유저 버블로 승격하게 한다.
+    console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void (async (): Promise<void> => {
       const entry = inflightTurns.get(msg.threadKey);
@@ -1743,6 +1747,7 @@ const serializedHandler: MessageHandler = (msg) => {
   // 핸들러는 restartDaemon 을 직접 부르지 않는다(이중 트리거 방지) — reply 만 하고 끝.
   if (msg.text.trim() === "/update") {
     // handler 우회 — /stop 과 동형 픽스(위 주석 참고).
+    console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void (async (): Promise<void> => {
       try {

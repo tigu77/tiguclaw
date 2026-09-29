@@ -532,7 +532,8 @@ const whyLine = (detail: string): string => {
     .map((l) => l.trim())
     .filter((l) => l !== "");
   const why = lines[lines.length - 1] ?? "";
-  return why !== "" && !/[/\\]/.test(why) ? ` — ${why.slice(0, 120)}` : "";
+  // 끝 마침표는 뗀다 — 뒤에 우리 문장이 «.» 로 이어져 «1..2..» 처럼 겹쳐 보였다(2026-09-29 회사 PC 실측).
+  return why !== "" && !/[/\\]/.test(why) ? ` — ${why.slice(0, 120).replace(/[.。]+$/, "")}` : "";
 };
 
 /**

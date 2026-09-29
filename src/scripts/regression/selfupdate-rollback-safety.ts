@@ -129,6 +129,19 @@ export const check: RegressionCheck = {
         /업데이트 실패:/.test(tool) ? "실패 반환 확인" : "★실패가 조용히 성공처럼 나간다",
       ),
     );
+    // ★성공 안내가 **하지 않은 검사를 했다고** 말하지 않는다 (2026-09-29 정태님: «유저한테 굳이 안 알려도»).
+    //  typecheck 는 2026-07-02 부터 조언(막지 않음)이라 «typecheck 게이트 통과» 는 실패·미실행 때도 찍히는 거짓이었다.
+    {
+      const claims = [tool, rd("src/index.ts"), rd("src/core/llm-runtime/capabilities/find-capabilities-mcp.ts")]
+        .map((src) => (src.match(/typecheck 게이트[^\n]{0,20}/g) ?? []).length);
+      out.push(
+        assert(
+          "★업데이트 안내·도구 설명이 typecheck 를 «게이트» 로 말하지 않는다(조언일 뿐이라 거짓)",
+          claims.every((n) => n === 0),
+          `update-self-mcp=${claims[0]} index=${claims[1]} find-capabilities=${claims[2]}`,
+        ),
+      );
+    }
     // 위임 CLI 실행(telegram /update)은 stdio 가 버려져 실패가 사라진다 — 마커파일로
     // 재가동 뒤 통지하는 경로가 그 구멍을 막는다.
     const idx = rd("src/index.ts");

@@ -1,9 +1,9 @@
 /**
- * 자가 업데이트 공유 루틴 — `git pull` + (조건부)`npm install` + ★typecheck 게이트 +
+ * 자가 업데이트 공유 루틴 — `git pull` + (조건부)`npm install` + (built)재빌드 +
  * 분리 재시작을 한 번에 수행하는 *단일 결정론 함수*.
  *
  * 진실 소스: architect contract `_workspace/self-update_architect.md` (§2 9단계 ·
- * Q3 4 안전 불변식: typecheck 게이트 · 자동 롤백 · 분리 재시작 · 동시 가드).
+ * Q3 4 안전 불변식: 설치·빌드 실패 롤백 · 분리 재시작 · 동시 가드. typecheck 는 2026-07-02 부터 조언(막지 않음)).
  *
  * 호출 경로 2개가 *이 함수 하나* 만 부른다 — region 의 `update_self` 도구 / daemon 의
  * `/update` 슬래시. 위험 로직(git/npm/tsc/롤백/재시작 판단)은 전부 여기 닫혀 LLM 손을
@@ -399,7 +399,7 @@ const ensureRipgrepBestEffort = async (): Promise<void> => {
  * 단일 결정론 자가 업데이트 루틴 — architect §2 9단계.
  *
  * 어떤 단계도 throw 로 데몬을 죽이지 않는다(견고성 불변식). 모든 외부 호출은 execFile.
- * 재시작은 typecheck 게이트 통과 시에만, 답 전송 시간 확보를 위해 restartDelayMs 지연 후.
+ * 재시작은 설치·빌드가 성공했을 때만, 답 전송 시간 확보를 위해 restartDelayMs 지연 후.
  */
 export const runSelfUpdate = async (
   deps: SelfUpdateDeps,

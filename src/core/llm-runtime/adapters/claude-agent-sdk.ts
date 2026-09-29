@@ -372,9 +372,14 @@ export const joinAnswers = (parts: ReadonlyArray<string | undefined>): string =>
 /** 이어 받던 두 번째 턴이 실패했을 때 첫 답 뒤에 붙이는 안내 — 조용히 삼키지 않는다. */
 export const STEER_TURN_FAILED_NOTE = "⚠️ 이어서 보내신 메시지는 처리 중 오류가 나서 답하지 못했습니다. 다시 보내 주세요.";
 
-/** 앞 답 + 지금 턴의 답(그 턴이 실패했으면 안내) — 이어 받기·마감이 같은 규칙을 쓴다. */
+/** 이어 받은 턴이 말 없이 끝났을 때 — 조용히 첫 답만 나가면 «두 번째 메시지 무시» 와 같다. */
+export const STEER_TURN_EMPTY_NOTE = "(이어서 보내신 메시지에는 따로 드린 답이 없습니다.)";
+
+/** 앞 답 + 지금 턴의 답(실패면 실패 안내, 말이 없었으면 빈 답 안내) — 이어 받기·마감이 같은 규칙을 쓴다. */
 export const settleAnswer = (settled: string | undefined, current: string, failed: boolean): string =>
-  joinAnswers([settled, failed ? STEER_TURN_FAILED_NOTE : current]);
+  settled === undefined
+    ? joinAnswers([current])
+    : joinAnswers([settled, failed ? STEER_TURN_FAILED_NOTE : current.trim() === "" ? STEER_TURN_EMPTY_NOTE : current]);
 
 /**
  * ★**이미 답이 있으면 뒤따르는 실패로 버리지 않는다** (2026-09-29 적대 재검토 F1, P3).
@@ -415,8 +420,14 @@ export const steeringContents = async function* (args: {
 }): AsyncGenerator<string> {
   for await (const s of args.steering.stream(args.signal)) {
     if (args.turnEnded()) {
-      args.onReturned?.(s, args.steering.push(s));
-      return; // 제너레이터 종료 → stdin close → 단일 result 유지(SP-1).
+      const requeued = args.steering.push(s);
+      args.onReturned?.(s, requeued);
+      // 되돌렸다 — 코어의 drain() 이 새 턴으로 회수한다. ★제품 순서에선 **도달하지 않는다**(result 에서 close 가
+      //  turnResultSeen 보다 먼저라 push 는 늘 false) — 채널이 열린 채 턴이 끝나는 다른 경로가 생길 때를 위한 안전판이다.
+      if (requeued) return;
+      // ★채널이 이미 닫혀 되돌릴 곳이 없다(result 에서 close 가 먼저 돈다 — 제품 순서에선 늘 이쪽). 종전엔 여기서
+      //  **메시지가 사라졌다**(2026-09-29 적대 검토 재현: drain 0). 이제는 우리 uuid 를 단 턴을 이어 받으므로
+      //  SDK 에 넘긴다 — CLI 가 다음 턴으로 줄 세워 답하고, 그 턴이 이 답변에 이어 붙는다.
     }
     yield args.render(s);
   }
@@ -444,10 +455,33 @@ const reportFastMode = createFastModeReporter();
 
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
 
+/**
+ * ★회귀 전용 SDK 주입구 (2026-09-29) — 턴 경계 로직을 **실제로 돌려** 검사하기 위해서다.
+ *  종전 검사는 소스 정규식이라 `&& 조건` 하나로 뚫렸다(적대 검토 두 판에서 변이 14 중 11 생존).
+ *  가짜 `query` 를 넣으면 SDK 프레임 순서를 대본대로 흘려 runClaude 의 루프 전체를 탄다.
+ *  운영 경로는 이 값을 건드리지 않는다(기본값이 곧 SDK `query`).
+ */
+let sdkQuery: typeof query = query;
+export const withFakeClaudeQuery = async <T>(fake: typeof query, fn: () => Promise<T>): Promise<T> => {
+  // ★겹쳐 쓰지 않는다 — 동시에 둘을 걸면 먼저 끝난 쪽이 진짜 SDK 로 되돌려 놓아, 아직 도는 쪽이 가드 없이
+  //  **진짜 CLI** 를 띄웠다(2026-09-29 적대 검토 재현). 순차로만 쓴다.
+  if (sdkQuery !== query) throw new Error("withFakeClaudeQuery: 이미 가짜 SDK 가 걸려 있다(중첩·동시 사용 금지)");
+  const prev = sdkQuery;
+  sdkQuery = fake;
+  try {
+    return await fn();
+  } finally {
+    sdkQuery = prev;
+  }
+};
+
 export const runClaude = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
-  assertLiveModelAllowed();
+  // 가짜 SDK 가 꽂혀 있으면 실제 모델 호출이 없다 — 회귀의 «실모델 금지» 가드는 진짜 SDK 일 때만.
+  //  ★**한 번만 읽는다** — 가드 판정과 실제 호출(buildQuery, 여러 await 뒤)이 같은 값을 써야 한다.
+  const sdk = sdkQuery;
+  if (sdk === query) assertLiveModelAllowed();
   // externalTools/externalToolChoice(LLM 게이트웨이 함수콜 패스스루) — **지원한다**
   // (2026-08-09). ADR `2026-07-25-llm-gateway-openrouter-scope.md` §Decision-3 은 이걸
   // 스코프아웃했었다. 그 두 근거가 실사용 사고로 무너져 뒤집었다 — 상세는
@@ -1290,7 +1324,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         onReturned: (s, requeued) => {
           console.warn(
             `[claude-turn-boundary] ${input.threadKey} 첫 result 이후 도착한 사용자 입력을 ` +
-              `이 턴에 넣지 않고 **되돌려 놓습니다**(${requeued ? "buffer 회수 → 재주입" : "close 경합 → 새 턴"}) — ` +
+              `${requeued ? "이 턴에 넣지 않고 **되돌려 놓습니다**(buffer 회수 → 재주입)" : "채널이 닫혀 되돌릴 곳이 없어 **SDK 에 넘깁니다**(다음 턴 답을 이어 붙임)"} — ` +
               `chars=${s.raw?.length ?? s.text.length} attachments=${s.attachments?.length ?? 0}`,
           );
         },
@@ -1305,8 +1339,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   // 턴이 abort/타임아웃돼도 steering 대기가 매달리지 않고 즉시 종료(무한대기 0).
   const buildQuery = (o: Options) =>
     input.steering === undefined
-      ? query({ prompt: promptWithMemory, options: o }) // 현행 경로 — 바이트 동일(회귀 0).
-      : query({
+      ? sdk({ prompt: promptWithMemory, options: o }) // 현행 경로 — 바이트 동일(회귀 0).
+      : sdk({
           prompt: buildSteeringPrompt(input.steering, effectiveAc.signal),
           options: o,
         });
@@ -1750,13 +1784,19 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       //  ★두 관심사를 분리한다: `steering.close()`(데드락 수정)는 **첫 result 에 그대로**,
       //   답변 경계만 내용 유무로 판정한다. 이 가드가 원래 막던 사고(알림 텍스트가 답변에
       //   섞임)는 그때 **이미 답변이 있었으므로** 여전히 잡힌다 — 두 사고가 구분된다.
+      const emptyQueuedResult =
+        msg.subtype === "success" && !msg.is_error && msg.num_turns === 0 && msg.result === "";
       const hasOwnAnswer = isOwnTurnEnd({
         chunks: assistantTextChunks.length - chunkBase,
         deltas: ownTextDeltas - deltaBase,
         // 0.3.274: 묶인 백그라운드 알림의 중간 result는 답변 종료가 아니다.
-        emptyQueuedResult: msg.subtype === "success" && !msg.is_error && msg.num_turns === 0 && msg.result === "",
+        emptyQueuedResult,
       });
-      if (hasOwnAnswer) {
+      // ★이어 받은 턴의 result 가 **우리 uuid** 를 달고 오면 그게 그 턴의 끝이다 — 말이 없었어도(2026-09-29 재검토 F5).
+      //  «내용 있음» 으로만 닫으면 말 없는 턴에서 경계가 열린 채 남아 뒤따르는 알림 턴이 섞인다.
+      const closesQueuedTurn =
+        settledAnswer !== undefined && !emptyQueuedResult && framesClaimSteer(msg, steerUuids);
+      if (hasOwnAnswer || closesQueuedTurn) {
         turnResultSeen = true;
       } else if (!emptyResultNoted) {
         emptyResultNoted = true;

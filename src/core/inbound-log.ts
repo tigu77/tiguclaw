@@ -7,8 +7,12 @@
  * ★본문은 싣지 않는다 — 길이·첨부 수만. 로그는 사용자에게서 받아 보는 파일이다.
  */
 
-/** 들어온 메시지가 어디로 갔나 — `steer`=진행 턴에 끼움 · `queued`=앞 턴 뒤에 대기 · `new`=새 턴. */
-export type InboundRoute = "steer" | "queued" | "new";
+/**
+ * 들어온 메시지가 어디로 갔나 — `steer`=진행 턴에 끼움 · `queued`=앞 턴 뒤에 대기 · `new`=새 턴 ·
+ * `command`=큐를 안 타고 즉시 처리한 제어 명령(`/stop`·`/restart`·`/update`·`/logs`·`/diagnose`). 턴 경계 진단에 `/stop`
+ * 도착 시각이 가장 필요한데 종전엔 안 남았다(2026-09-29 적대 검토).
+ */
+export type InboundRoute = "steer" | "queued" | "new" | "command";
 
 export const formatInboundLog = (m: {
   channel: string;
@@ -20,6 +24,12 @@ export const formatInboundLog = (m: {
   synthetic?: boolean;
 }): string => {
   const where =
-    m.route === "steer" ? "진행 턴에 끼움(steer)" : m.route === "queued" ? "앞 턴 뒤에 대기" : "새 턴";
+    m.route === "steer"
+      ? "진행 턴에 끼움(steer)"
+      : m.route === "queued"
+        ? "앞 턴 뒤에 대기"
+        : m.route === "command"
+          ? "즉시 처리(제어 명령)"
+          : "새 턴";
   return `[inbound] channel=${m.channel} session=${m.threadKey} len=${m.textLength} att=${m.attachments}${m.synthetic === true ? " synthetic" : ""} → ${where}`;
 };

@@ -272,6 +272,11 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    {
+      // 원문 끝 마침표와 우리 문장의 마침표가 겹쳐 «1..2..» 로 보였다(2026-09-29 회사 PC 실측).
+      const rangeMsg = obs.preflightMessage({ ok: false, reason: "failed", detail: "Invalid display specified. Only 2 display(s), valid values are 1..2." }, "win32") ?? "";
+      out.push(assert("실패 원문 끝 마침표가 안내 문장의 마침표와 겹치지 않는다", rangeMsg.includes("1..2. 대상") && !rangeMsg.includes("2.. 대상"), rangeMsg.slice(0, 120)));
+    }
     const cscProbe = { ok: false as const, reason: "failed" as const, detail: "csc-missing: .NET Framework 4 컴파일러(csc.exe)를 찾지 못했습니다" };
     const cscMsg = obs.preflightMessage(cscProbe, "win32") ?? "";
     out.push(
@@ -371,20 +376,48 @@ export const check: RegressionCheck = {
       );
       return out;
     }
-    const shotPath = path.join(os.tmpdir(), `tiguclaw-regression-${String(process.pid)}.jpg`);
-    try {
-      const shot = await capture({ kind: "screen" } as never, shotPath);
-      out.push(
-        assert(
-          "★★캡처가 **그림의 실측 크기**를 낸다 — 이게 없으면 «화면 id» 가 영영 안 나오고 조작 전부 불능",
-          shot.ok && shot.deliveredPx !== null,
-          shot.ok
-            ? `deliveredPx=${JSON.stringify(shot.deliveredPx)} · ${String(shot.bytes)}B`
-            : `캡처 실패: ${shot.detail.slice(0, 120)}`,
-        ),
-      );
-    } finally {
-      await fs.rm(shotPath, { force: true }).catch(() => {});
+    // ★«값이 있다» 가 아니라 **그림 파일에 적힌 크기와 같다** 를 본다 (2026-09-29). C# 출력의 `w`·`h` 를 바꿔
+    //  넣어도 리터럴은 그대로라 소스 대조는 통과했다(적대 검토 MUT-A) — 그림 크기가 틀리면 클릭 좌표가 어긋난다.
+    //  회사 PC(2560×1440 ×2 · 125%)에서 같은 대조로 7/7 일치를 먼저 확인했다.
+    const jpegSize = (b: Buffer): { w: number; h: number } | null => {
+      let i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] !== 0xff) {
+          i++;
+          continue;
+        }
+        const m = b[i + 1]!;
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+        i += 2 + b.readUInt16BE(i + 2);
+      }
+      return null;
+    };
+    const targets: Array<[string, unknown, ((d: { w: number; h: number }) => boolean) | null]> = [
+      ["screen", { kind: "screen" }, null],
+      ["region-400x300", { kind: "region", x: 0, y: 0, width: 400, height: 300 }, (d) => d.w === 400 && d.h === 300],
+      ["probe", { kind: "probe" }, (d) => d.w === 1 && d.h === 1],
+    ];
+    for (const [label, target, expect] of targets) {
+      const shotPath = path.join(os.tmpdir(), `tiguclaw-regression-${String(process.pid)}-${label}.jpg`);
+      try {
+        const shot = await capture(target as never, shotPath);
+        let file: { w: number; h: number } | null = null;
+        try {
+          file = jpegSize(await fs.readFile(shotPath));
+        } catch {
+          /* file=null */
+        }
+        const d = shot.ok ? shot.deliveredPx : null;
+        out.push(
+          assert(
+            `★★캡처(${label})가 내는 크기가 **그림 파일의 실제 크기**와 같다 — 다르면 클릭 좌표가 어긋난다`,
+            d !== null && file !== null && d.w === file.w && d.h === file.h && (expect === null || expect(d)),
+            shot.ok ? `deliveredPx=${JSON.stringify(d)} · 파일=${JSON.stringify(file)}` : `캡처 실패: ${shot.detail.slice(0, 120)}`,
+          ),
+        );
+      } finally {
+        await fs.rm(shotPath, { force: true }).catch(() => {});
+      }
     }
     return out;
   },

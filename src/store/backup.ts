@@ -36,12 +36,41 @@ export interface BackupInfo {
   readonly totalBytes: number;
 }
 
-/** `backup/` 안의 `tiguclaw-*.db` 를 최신순으로. 폴더가 없으면 빈 배열. */
+/**
+ * ★**끝까지 쓰인 SQLite 파일인가** — 머리 100바이트와 크기만 본다(전체 무결성 검사 아님) (2026-09-29, Astra 검토).
+ *  종전엔 이름·시각만 보고 셌다. `VACUUM INTO` 가 도중에 멈춰 남은 파일(0바이트든 잘렸든)이 **최근 백업**으로 잡혀
+ *  다음 시도를 20시간 건너뛰고 `/status`·자가 진단도 «백업 있음» 으로 보였다. SQLite 머리는 페이지 크기와 페이지 수를
+ *  적어 두므로(`valid-for` 가 변경 카운터와 같을 때 유효) **크기 = 페이지 크기 × 페이지 수** 가 맞아야 완성본이다.
+ */
+export const isCompleteSqliteFile = (file: string): boolean => {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const h = Buffer.alloc(100);
+      if (fs.readSync(fd, h, 0, 100, 0) < 100) return false;
+      if (h.toString("latin1", 0, 16) !== "SQLite format 3\u0000") return false;
+      const raw = h.readUInt16BE(16);
+      const pageSize = raw === 1 ? 65536 : raw;
+      const pageCount = h.readUInt32BE(28);
+      if (pageCount === 0 || h.readUInt32BE(92) !== h.readUInt32BE(24)) return false;
+      return fs.fstatSync(fd).size === pageSize * pageCount;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+};
+
+/** 쓰는 중인 백업의 이름 — 목록 패턴(`tiguclaw-*.db`)에 **안 걸리게** 점으로 시작한다. */
+const PARTIAL = /^\.tiguclaw-.*\.partial$/;
+
+/** `backup/` 안의 **완성된** `tiguclaw-*.db` 를 최신순으로. 폴더가 없으면 빈 배열. */
 const listBackups = (): { file: string; mtime: number; size: number }[] => {
   try {
     return fs
       .readdirSync(backupDir())
-      .filter((f) => /^tiguclaw-.*\.db$/.test(f))
+      .filter((f) => /^tiguclaw-.*\.db$/.test(f) && isCompleteSqliteFile(path.join(backupDir(), f)))
       .map((f) => {
         const st = fs.statSync(path.join(backupDir(), f));
         return { file: f, mtime: st.mtimeMs, size: st.size };
@@ -121,12 +150,30 @@ export const runBackupIfDue = (
       return { ran: false };
     }
     fs.mkdirSync(backupDir(), { recursive: true });
+    // 앞선 실행이 중간에 끊겨 남긴 임시 파일 — 우리 것이고 백업이 아니다.
+    for (const f of fs.readdirSync(backupDir())) {
+      if (!PARTIAL.test(f)) continue;
+      try {
+        fs.rmSync(path.join(backupDir(), f), { force: true, recursive: true });
+      } catch {
+        /* 못 지워도 백업은 시도한다 — 목록엔 안 잡히는 이름이다 */
+      }
+    }
     const stamp = new Date(now).toISOString().slice(0, 19).replace(/[:T]/g, "-");
     const target = path.join(backupDir(), `tiguclaw-${stamp}.db`);
+    // ★임시 이름에 쓰고, **끝까지 쓰인 것을 확인한 뒤에만** 최종 이름으로 연다(같은 폴더 rename = 원자).
+    const partial = path.join(backupDir(), `.tiguclaw-${stamp}.partial`);
     // ★SQLite 가 대상 파일을 직접 만든다 — 이미 있으면 실패하므로 미리 만들지 않는다.
-    getDb()
-      .prepare(`VACUUM INTO ?`)
-      .run(target);
+    try {
+      getDb()
+        .prepare(`VACUUM INTO ?`)
+        .run(partial);
+      if (!isCompleteSqliteFile(partial)) throw new Error("백업 파일이 끝까지 쓰이지 않았습니다");
+      fs.renameSync(partial, target);
+    } catch (e) {
+      fs.rmSync(partial, { force: true, recursive: true });
+      throw e;
+    }
     const bytes = fs.statSync(target).size;
 
     // 오래된 것부터 정리 — 보관은 최신 KEEP 벌.

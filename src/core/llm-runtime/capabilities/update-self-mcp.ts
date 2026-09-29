@@ -4,7 +4,7 @@
  * 진실 소스 / 패턴 동형:
  *  - `send-file-mcp.ts` / `prompt-options-mcp.ts` — per-turn factory + 양 어댑터
  *    동형 등록(parity). send_file 이 채널 raw(telegram sendDocument)를 추상 도구로
- *    노출하듯, update_self 는 *배포 시퀀스*(git pull + typecheck 게이트 + 재시작)를
+ *    노출하듯, update_self 는 *배포 시퀀스*(git pull + 의존성·빌드 + 재시작)를
  *    추상 도구로 노출한다. 단일 도구를 claude·codex-oauth·openai-agents 가 동형 등록.
  *  - architect contract `_workspace/self-update_architect.md` §6 R1~R4.
  *
@@ -63,7 +63,7 @@ const renderResult = (r: SelfUpdateResult): string => {
       const npm = r.ranNpmInstall === true ? ", 의존성 갱신" : "";
       const sec = Math.round((r.restartInMs ?? 5000) / 1000);
       return (
-        `업데이트 적용했습니다 (${span}${files}${npm}). typecheck 게이트 통과. ` +
+        `업데이트 적용했습니다 (${span}${files}${npm}). ` +
         `약 ${sec}초 뒤 재시작되고, 끝나면 알려드릴게요.`
       );
     }
@@ -104,7 +104,7 @@ export const createUpdateSelfMcpServer = (
     tools: [
       tool(
         "update_self",
-        "사용자가 tiguclaw 를 최신으로 업데이트/업그레이드해달라고 할 때 사용. git pull + 의존성 + typecheck 게이트 후 데몬을 재시작합니다(게이트 실패 시 자동 롤백). 코드 교체·재시작이 일어나니 사용자 확인 후 호출하세요.",
+        "사용자가 tiguclaw 를 최신으로 업데이트/업그레이드해달라고 할 때 사용. git pull + 의존성 설치(+ 빌드) 후 데몬을 재시작합니다(설치·빌드 실패 시 자동 롤백). 코드 교체·재시작이 일어나니 사용자 확인 후 호출하세요.",
         {
           confirm: z
             .boolean()

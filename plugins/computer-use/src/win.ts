@@ -246,6 +246,13 @@ const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> 
       if (!built.ok) return { ...built, detail: blockedOr(built.detail, !existsSync(tmp)) };
       // 다른 프로세스가 먼저 만들었으면 그걸 쓴다(같은 소스 = 같은 파일).
       await fs.rename(tmp, exe).catch(async (e: unknown) => { if (!existsSync(exe)) throw e; });
+      // 소스가 바뀌어 이름(해시)이 바뀌면 옛 캡처 프로그램이 쌓인다 — 새 것을 만든 김에 치운다.
+      //  다른 버전 데몬이 실행 중이면 지워지지 않는다(Windows 가 막는다) — 그건 그대로 둔다.
+      for (const f of await fs.readdir(dir).catch(() => [] as string[])) {
+        if (/^tiguclaw-capture-[0-9a-f]+\.exe$/.test(f) && f !== path.basename(exe)) {
+          await fs.rm(path.join(dir, f), { force: true }).catch(() => {});
+        }
+      }
       return { ok: true, exe };
     } catch (e) {
       // rename 의 ENOENT = 방금 만든 파일이 사라졌다(격리) — 백신 쪽으로 분류한다.

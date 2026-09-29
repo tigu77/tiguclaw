@@ -101,6 +101,15 @@ const run = async (): Promise<Assertion[]> => {
         .join("\n");
     const bkCode = codeOnly(bk);
     const usesVacuum = /prepare\(\s*`VACUUM INTO/.test(bkCode);
+    // ★임시 이름에 쓰고 **완성 확인 뒤에만** 최종 이름으로 연다(2026-09-29) — 끊겨도 최종 이름엔 잔여물이 안 생긴다.
+    const viaPartial =
+      /\.run\(partial\);\s*if \(!isCompleteSqliteFile\(partial\)\) throw[^\n]*\n\s*fs\.renameSync\(partial, target\);/.test(bkCode) &&
+      !/\.run\(target\)/.test(bkCode);
+    out.push({
+      name: "★백업은 임시 이름에 쓰고 완성 확인 뒤에만 최종 이름으로 rename 한다(최종 이름에 직접 쓰지 않는다)",
+      ok: viaPartial,
+      got: `임시→완성확인→rename=${viaPartial}`,
+    });
     const usesCopy = /copyFileSync|createReadStream/.test(bkCode);
     out.push({
       name: "★백업은 VACUUM INTO 로 뜬다(파일 복사면 WAL 때문에 깨진 사본이 된다)",
@@ -180,6 +189,10 @@ const run = async (): Promise<Assertion[]> => {
         const dir = mkdtempSync(path.join(os.tmpdir(), "tg-projdoc-"));
         const md = path.join(dir, "PROJECT.md");
         writeFileSync(md, "x".repeat(PROJECT_DOC_WARN_BYTES + 100));
+        // 파일 시각은 ms 미만까지 있고 보고 이벤트 시각은 정수 ms 다 — 같은 ms 에 쓰면 «보고 뒤 수정» 으로 읽혀
+        //  검사가 가끔 빨개졌다. 편집은 보고보다 **확실히 앞**에 둔다.
+        const past = (Date.now() - 10_000) / 1000;
+        utimesSync(md, past, past);
         upsertProject({ path: dir, name: "입구시험", status: "active", description: null });
         const docKinds = (): number =>
           runHealthSweep(Date.now()).filter((f) => f.kind === "project_doc_oversized" && f.summary.includes("입구시험")).length;
@@ -321,6 +334,86 @@ const run = async (): Promise<Assertion[]> => {
       ok: /backupInfo\(\)/.test(idx) && /백업:/.test(idx),
       got: `/status 줄=${/백업:/.test(idx)}`,
     });
+  }
+
+  // ── ⑧ **끝까지 쓰인 것만 백업이다** (2026-09-29 Astra 검토) — 실제 runBackupIfDue/backupInfo 경로로 ──
+  //  종전엔 `VACUUM INTO` 가 최종 이름에 곧바로 써서, 도중에 끊긴 파일(0바이트든 잘렸든)이 **최근 백업**으로 잡혀
+  //  다음 시도를 20시간 건너뛰고 `/status` 도 «백업 있음» 이었다. 이 검사는 정상 SQL 이 아니라 **제품 경로**를 탄다.
+  {
+    const { getPaths } = await import("../../core/paths.js");
+    const { runBackupIfDue, backupInfo, isCompleteSqliteFile } = await import("../../store/backup.js");
+    const fsm = await import("node:fs");
+    const home = getPaths().home;
+    // 격리 확인 — 러너가 임시 홈을 강제한다. 실제 홈이면 아무것도 만들지 않는다.
+    const isolated = home.startsWith(tmpdir()) || /regression/i.test(home);
+    out.push({ name: "검사 전제: 격리된 임시 홈", ok: isolated, got: home });
+    if (isolated) {
+      const bdir = path.join(getPaths().data, "backup");
+      rmSync(bdir, { recursive: true, force: true });
+      fsm.mkdirSync(bdir, { recursive: true });
+      const T0 = Date.now();
+      // 1) 성공본 하나를 떠서 재료로 쓴다(잘린 파일은 이것의 앞부분).
+      const first = runBackupIfDue(T0 - 2 * 86_400_000);
+      const good = "file" in first ? path.join(bdir, first.file) : "";
+      // 파일 시각은 실제 쓴 시각이다 — «이틀 전 정상본» 을 만들려면 시각을 되돌린다.
+      if (good !== "") fsm.utimesSync(good, (T0 - 2 * 86_400_000) / 1000, (T0 - 2 * 86_400_000) / 1000);
+      const goodOk = good !== "" && isCompleteSqliteFile(good);
+      let restored = -1;
+      try {
+        const b = new Database(good, { readonly: true });
+        restored = (b.prepare("SELECT count(*) n FROM sqlite_master").get() as { n: number }).n;
+        b.close();
+      } catch {
+        /* restored=-1 */
+      }
+      out.push({
+        name: "★성공본은 완성 파일로 공개되고 실제로 열려 내용이 있다(임시 파일은 남지 않는다)",
+        ok: goodOk && restored > 0 && readdirSync(bdir).every((f) => !f.endsWith(".partial")),
+        got: `완성=${goodOk} · 테이블 ${restored} · 폴더 ${readdirSync(bdir).join(",")}`,
+      });
+      // 2) 끊긴 잔여물 — 0바이트와 **비어 있지 않은** 잘린 파일, 둘 다 최신 시각으로.
+      const zero = path.join(bdir, "tiguclaw-zero.db");
+      const trunc = path.join(bdir, "tiguclaw-trunc.db");
+      fsm.writeFileSync(zero, "");
+      fsm.writeFileSync(trunc, fsm.readFileSync(good).subarray(0, 8192));
+      const infoWithLeftovers = backupInfo();
+      const retry = runBackupIfDue(T0);
+      out.push({
+        name: "★끊긴 잔여물(0바이트·잘린 파일)은 최근 백업으로 안 센다 — 다음 호출이 건너뛰지 않고 새로 뜬다",
+        ok:
+          infoWithLeftovers.count === 1 &&
+          infoWithLeftovers.latestAt !== null && infoWithLeftovers.latestAt < T0 - 86_400_000 &&
+          retry.ran === true && "file" in retry && isCompleteSqliteFile(path.join(bdir, retry.file)),
+        got: `info=${JSON.stringify(infoWithLeftovers)} · retry=${JSON.stringify(retry)}`,
+      });
+      out.push({
+        name: "잔여물은 지우지 않는다(판정에서만 뺀다)",
+        ok: existsSync(zero) && existsSync(trunc),
+        got: `zero=${existsSync(zero)} trunc=${existsSync(trunc)}`,
+      });
+      // 3) 실패 → 잔여물 없음 → 다음 호출이 재시도. 폴더를 쓰기 금지로 만들어 VACUUM 을 실제로 실패시킨다.
+      rmSync(path.join(bdir, retry.ran && "file" in retry ? retry.file : "none"), { force: true });
+      fsm.writeFileSync(path.join(bdir, ".tiguclaw-crashed.partial"), fsm.readFileSync(good).subarray(0, 4096));
+      fsm.chmodSync(bdir, 0o500);
+      let failed: unknown;
+      try {
+        failed = runBackupIfDue(T0 + 1000);
+      } finally {
+        fsm.chmodSync(bdir, 0o755);
+      }
+      const afterFail = backupInfo();
+      const again = runBackupIfDue(T0 + 2000);
+      out.push({
+        name: "★실패하면 오류로 알리고 최근 백업 시각은 앞 정상본 그대로 — 다음 호출이 재시도해 성공한다(끊긴 임시 파일도 정리)",
+        ok:
+          typeof failed === "object" && failed !== null && "error" in failed &&
+          afterFail.latestAt !== null && afterFail.latestAt < T0 - 86_400_000 &&
+          again.ran === true && "file" in again &&
+          readdirSync(bdir).every((f) => !f.endsWith(".partial")),
+        got: `실패=${JSON.stringify(failed)} · 실패후=${JSON.stringify(afterFail)} · 재시도=${JSON.stringify(again)} · 폴더=${readdirSync(bdir).join(",")}`,
+      });
+      rmSync(bdir, { recursive: true, force: true });
+    }
   }
 
   return out;

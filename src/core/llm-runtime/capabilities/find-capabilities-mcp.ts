@@ -127,7 +127,7 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     tools: ["add_mcp_server", "list_mcp_servers", "remove_mcp_server"],
   },
   "update-self": {
-    summary: "자가 업데이트(git pull + typecheck 게이트 + 실패 시 롤백 + 재시작).",
+    summary: "자가 업데이트(git pull + 의존성·빌드 + 실패 시 롤백 + 재시작).",
     whenToUse: "'업데이트해줘' 처럼 스스로 최신화하라는 요청을 받았을 때.",
     tools: ["update_self"],
   },

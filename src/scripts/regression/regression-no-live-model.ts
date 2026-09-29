@@ -59,11 +59,14 @@ export const check: RegressionCheck = {
         };
         const env: Record<string, string> = mode === "live" ? {} : { TIGUCLAW_REGRESSION_NO_LIVE_MODEL: "1" };
         const exports: Record<string, unknown> = {};
+        // runClaude 는 «진짜 SDK 일 때만» 가드를 건다(`sdkQuery === query` — 가짜 SDK 주입구는 실모델 호출이 0 이다).
+        //  샌드박스에선 둘이 **같은 가짜**여야 «진짜 SDK» 경로가 재현된다.
+        const sdkStop = stop("sdk");
         const context = vm.createContext({
-          exports, process: { env }, args, adapterForTest: undefined,
+          exports, process: { env }, args, adapterForTest: undefined, sdkQuery: sdkStop,
           enrichTranscripts: stop("enrichment"), resolveTier: stop("auth"),
           claudeAuthAvailable: stop("auth"), resolveProviderConn: stop("auth"),
-          getAuthProvider: stop("auth"), query: stop("sdk"), fetch: stop("network"),
+          getAuthProvider: stop("auth"), query: sdkStop, fetch: stop("network"),
           randomUUID: () => "dummy-uuid", buildSummarizeRequestBody: () => ({}),
           AbortController, setTimeout, clearTimeout, SUMMARY_TIMEOUT_MS: 10,
           config: {}, require: stop("auth"), CODEX_BASE_URL: "https://invalid.example",

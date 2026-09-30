@@ -195,7 +195,11 @@
         turnMetaByThread.delete(thread); // 삽입 순서 = 최근성 — 오래된 것부터 버린다.
         turnMetaByThread.set(thread, { model: payload.model.trim(), reasoning: payload.reasoning });
         if (turnMetaByThread.size > 200) turnMetaByThread.delete(turnMetaByThread.keys().next().value);
-        setTurnEffort(thread, payload);
+        // ★**아직 닫히지 않은 카드**에만 — 새 턴의 카드는 첫 활동 때 생기므로 이 순간 맵에 있는 카드는 대개 **끝난 앞 턴**
+        //  것이다. 종전엔 그 카드의 모델·강도를 새 턴 값으로 덮어써, 앞 턴을 gpt-6-sol·high 로 답했는데 다음 턴이 Claude 로
+        //  가면 앞 카드가 «claude · 강도 기본» 으로 바뀌었다(적대 검토 — 거짓값).
+        const open = cardByThread.get(thread);
+        if (open && !open.closed) setTurnModel(open, payload.model, payload.reasoning);
       };
 
       /**

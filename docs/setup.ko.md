@@ -82,6 +82,8 @@ OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 
 npm run claude-auth      # 또는 tiguclaw claude-auth
 ```
 
+대시보드의 **구독 토큰 발급** 버튼으로도 받을 수 있습니다. 새 탭에서 로그인하고 나온 코드를 붙여넣으면 저장까지 끝나고, 재시작하지 않아도 됩니다. Windows 이거나 `python3` 가 없는 기계에서는 위 명령을 안내합니다.
+
 **OpenAI API 키** (`sk-…`)
 1. **platform.openai.com** 로그인.
 2. **API keys → Create new secret key** → 복사.

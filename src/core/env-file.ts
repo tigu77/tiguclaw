@@ -25,11 +25,26 @@ import { homeEnvPath } from "./load-env.js";
  * 파일을 못 고친 경우에도 `process.env` 는 갱신되고 경로를 그대로 돌려준다 — 실패를
  * 삼키지 않되(위 ① 로그) 호출 흐름을 끊지도 않는다.
  */
-export const upsertHomeEnvVars = async (
+/**
+ * ⑤ **같은 프로세스의 저장은 한 줄로 선다** (2026-10-01 적대 검토 — 실측 3회 결정적). 종전엔 두 저장(대시보드 토큰 저장 + codex
+ *  토큰 갱신)이 겹치면 둘 다 같은 옛 본문을 읽고 같은 임시 파일(`.tmp-<pid>`)에 써서, 한쪽은 rename 에서 던지고 다른 쪽은 성공이라
+ *  답했는데 **방금 저장한 토큰 줄이 파일에 없었다**(재시작 뒤 401). 앞 저장이 끝나야 다음 저장이 읽는다 · 임시 이름은 저장마다 다르다.
+ *  ★다른 프로세스(터미널 `claude-auth` + 데몬)가 겹치는 경우는 이 줄로 못 막는다 — 임시 이름이 달라 파일이 깨지진 않지만 늦게 쓴
+ *   쪽이 먼저 쓴 키를 모를 수 있다.
+ */
+let writeChain: Promise<unknown> = Promise.resolve();
+
+export const upsertHomeEnvVars = (
   updates: Record<string, string>,
 ): Promise<string> => {
+  for (const k of Object.keys(updates)) process.env[k] = updates[k]; // ④ — 줄 서기 전에, 즉시
+  const run = writeChain.then(() => writeHomeEnvVars(updates));
+  writeChain = run.catch(() => {}); // 앞 저장의 실패가 뒤 저장을 막지 않는다(실패는 그 호출자에게 그대로 간다)
+  return run;
+};
+
+const writeHomeEnvVars = async (updates: Record<string, string>): Promise<string> => {
   const keys = Object.keys(updates);
-  for (const k of keys) process.env[k] = updates[k]; // ④
   const envPath = homeEnvPath();
 
   let body = "";
@@ -60,7 +75,7 @@ export const upsertHomeEnvVars = async (
 
   const out = next.join("\n");
   const finalBody = out.endsWith("\n") ? out : `${out}\n`;
-  const tmp = `${envPath}.tmp-${process.pid}`;
+  const tmp = `${envPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
   await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 }); // ②③
   await fs.rename(tmp, envPath);
   await fs.chmod(envPath, 0o600).catch(() => {}); // 구 설치본 치유

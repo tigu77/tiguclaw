@@ -83,6 +83,8 @@ To re-mint it later or switch accounts, any time:
 npm run claude-auth      # or: tiguclaw claude-auth
 ```
 
+You can also mint it from the dashboard with the subscription token button (currently labelled **구독 토큰 발급**): log in on the new tab, paste the code it shows, and the token is saved and picked up without a restart. On Windows or machines without `python3`, the dashboard points you to the command above.
+
 **OpenAI API key** (`sk-…`)
 1. Sign in at **platform.openai.com**.
 2. **API keys → Create new secret key** → copy.

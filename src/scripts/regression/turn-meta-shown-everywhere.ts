@@ -193,6 +193,22 @@ export const check: RegressionCheck = {
     const heldOther = api.metaEffort("t3", "gpt-6-terra");
     const card3 = { modelEl: el() };
     api.setTurnModel(card3, "gpt-6-sol", api.metaEffort("t3", "gpt-6-sol"));
+    // ③-g ★끝난 앞 턴 카드는 다음 턴의 턴 시작 값으로 **안 바뀐다** — 새 카드는 첫 활동 때 생기므로 turn_meta 순간 맵의
+    //  카드는 대개 끝난 앞 턴 것이다(적대 검토: 앞 카드가 «claude · 강도 기본» 으로 덮였다). 반대로 아직 열린 카드는 받는다.
+    const prevCard = { modelEl: el(), closed: false };
+    cardByThread.set("t5", prevCard);
+    api.setTurnModel(prevCard, "gpt-6-sol", "high");
+    const prevBefore = shown(prevCard.modelEl);
+    prevCard.closed = true;
+    api.setTurnMeta("t5", { model: "claude-opus-5-5" });
+    const prevAfter = shown(prevCard.modelEl);
+    const openCard = { modelEl: el(), closed: false };
+    cardByThread.set("t6", openCard);
+    api.setTurnMeta("t6", { model: "gpt-6-sol", reasoning: "medium" });
+    const openShown = shown(openCard.modelEl);
+    out.push(assert("★끝난 앞 턴 카드의 모델·강도는 다음 턴 시작 값으로 안 바뀐다 · 열린 카드는 받는다",
+      prevBefore.includes("gpt-6-sol") && prevAfter === prevBefore && !prevAfter.includes("claude") && openShown.includes("gpt-6-sol"),
+      { prevBefore, prevAfter, openShown }));
     // ③-f ★기록 도구 카드 — 같은 턴 답변 행의 강도를 **짝 모델 카드에만**, 다음 턴 카드엔 안 넘긴다.
     const tu = api.groupMergedItems(
       [

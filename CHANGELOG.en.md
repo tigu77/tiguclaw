@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-01
+
+### Added
+
+- **Codex and OpenAI assistants can look up and re-read the results of tools they ran earlier in the conversation.** After a long conversation's history is summarized, the assistant checks the original result instead of guessing.
+- **You can finish issuing a Claude subscription token from the dashboard.** You no longer need to run a command in a terminal and copy the token back.
+- **Files that a manager sends with its completion report now carry the session label and a description.** Files from another session are prefixed with `[session]`, the description goes in the same message as the file, and replying to that file goes back to the session that sent it.
+
+### Changed
+
+- **History summaries in long Codex and OpenAI conversations are lighter and less frequent.** More of the conversation is sent at once, up to what the model can take, so summaries and cache misses happen less often.
+- **Claude requests are lighter.** Claude Code built-in tools that tiguclaw cannot use are no longer sent, and rarely used tools are loaded only when needed.
+- **The reasoning effort next to the model now uses the same badge as the profile screen.** It shows from the start of the turn, and Claude without a set effort shows "default effort".
+- **`/status` now computes context usage for GPT models against their actual input limit (272K tokens).**
+
+### Fixed
+
+- **Fixed tools being cancelled as "the user declined" when you sent a message while Claude was answering.**
+- **Fixed managers being blocked with "no channel to send through" when attaching result files to a completion report.**
+- **Fixed a rare case where a token you just saved disappeared from `.env` when another credential refresh ran at the same time.**
+
 ## [0.62.0] - 2026-09-29
 
 ### Added
@@ -770,7 +791,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...HEAD
+[0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0

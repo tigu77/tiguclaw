@@ -8,6 +8,27 @@
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-01
+
+### Added
+
+- **Codex·OpenAI 비서가 이 대화에서 앞서 실행한 도구의 결과를 다시 찾아 읽습니다.** 대화가 길어져 이력이 요약된 뒤에도 예전 결과를 짐작하지 않고 원문으로 확인합니다.
+- **Claude 구독 토큰 발급을 대시보드에서 끝낼 수 있습니다.** 터미널에서 명령을 실행하고 토큰을 복사해 올 필요가 없습니다.
+- **매니저가 완료 보고로 보내는 파일에도 세션 표시와 설명이 붙습니다.** 다른 세션에서 온 파일은 `[세션]` 이 앞에 붙고, 설명은 파일과 한 메시지로 가며, 그 파일에 답장하면 보낸 세션으로 갑니다.
+
+### Changed
+
+- **긴 Codex·OpenAI 대화의 이력 요약이 가볍고 드물어졌습니다.** 한 번에 보내는 대화 이력을 모델이 받을 수 있는 양에 맞춰 늘려, 요약하는 일과 캐시가 깨지는 일이 줄어듭니다.
+- **Claude 요청이 가벼워졌습니다.** tiguclaw 에서 쓸 수 없는 Claude Code 빌트인 도구를 빼고, 드물게 쓰는 도구는 필요할 때 불러옵니다.
+- **모델 옆 추론 강도 표시가 프로파일 화면과 같은 배지로 바뀌었습니다.** 턴이 시작될 때부터 보이고, 강도를 정하지 않은 Claude 는 «강도 기본» 으로 표시합니다.
+- **`/status` 의 컨텍스트 사용률이 GPT 계열 모델의 실제 입력 한도(27.2만 토큰) 기준으로 계산됩니다.**
+
+### Fixed
+
+- **Claude 로 답하는 중에 보낸 메시지가 있으면 그 턴의 도구가 «사용자가 거부함» 으로 취소되던 문제를 수정했습니다.**
+- **매니저 완료 보고에서 결과물 파일을 보내려 하면 «보낼 통로가 없습니다» 로 막히던 문제를 수정했습니다.**
+- **토큰 저장이 다른 인증 갱신과 겹치면 방금 저장한 토큰이 `.env` 에서 사라지던 드문 문제를 수정했습니다.**
+
 ## [0.62.0] - 2026-09-29
 
 ### Added
@@ -2320,7 +2341,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...HEAD
+[0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/tigu77/tiguclaw/compare/v0.59.0...v0.60.0

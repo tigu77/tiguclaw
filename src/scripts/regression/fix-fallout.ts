@@ -103,6 +103,8 @@ export const check: RegressionCheck = {
       "read_worker_result",
       // 지난 대화 조회 — 순수 읽기(2026-08-25).
       "search_conversations", "list_conversations",
+      // 이 대화의 앞선 도구 결과 다시 읽기 — 순수 읽기(2026-09-30). 기록을 찾고 읽을 뿐 원래 도구를 다시 실행하지 않는다.
+      "read_past_tool_result",
       // 부작용이 있으나 재실행이 무해(멱등·표시 전용).
       "reply_to_current_message", "update_todos",
       // 세션 목록 조회 — 순수 읽기.

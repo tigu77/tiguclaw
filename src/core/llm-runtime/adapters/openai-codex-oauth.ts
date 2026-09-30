@@ -116,6 +116,8 @@ import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
+import { recordTokenDensity, tokenDensityOf } from "../../../store/token-density.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
@@ -170,6 +172,9 @@ import {
   buildMediaContentItems,
   type ResponseMediaItem,
   buildTurnHistory,
+  historyCapUsedFor,
+  mediaCharsOf,
+  requestCeilingChars,
   buildSteeringInputItem,
   appendToolResultsToInput,
   collectTurnItems,
@@ -824,6 +829,12 @@ export const runOpenAiCodex = async (
         )
       : undefined;
   if (sendFileBridge !== undefined) allBridges.push(sendFileBridge);
+  // 앞선 도구 결과 다시 읽기(2026-09-30) — 이력이 요약돼도 원문(`turn_items`)을 되찾는 길. 대화를 클로저로 잡는다(세션 정체성 채널).
+  const toolRecallBridge = await adaptClaudeMcpServer(
+    createToolRecallMcpServer(input),
+    "tool-recall",
+  );
+  allBridges.push(toolRecallBridge);
   // prompt-options(축1, 2026-06-25) — 객관식 선택지 제시 (claude 어댑터와 parity).
   // per-turn dedup Set(클로저 지역) → 같은 질문 재호출 시 중복 렌더 차단. 채널 렌더
   // 클로저가 있을 때만 bridge 생성 → undefined 면 미등록(도구 노출 0). send-file 1:1 동형.
@@ -872,7 +883,7 @@ export const runOpenAiCodex = async (
   const mcpTools: Awaited<ReturnType<typeof memoryBridge.listTools>> = [];
 
   if (!toolsNone) {
-    // ★일곱은 전부 `subagent` 라 **게이트가 오늘 아무것도 안 바꾼다** — codex 에만 달면
+    // ★여덟은 전부 `subagent` 라 **게이트가 오늘 아무것도 안 바꾼다** — codex 에만 달면
     //  «모델을 바꾸면 서브에이전트가 다른 권한을 갖는» 비대칭만 생긴다(원칙 #2). 등급이
     //  갈리는 것만 게이트한다 — 지금은 `session-tools` 뿐이고, 아래에서 건다.
     for (const b of [
@@ -883,6 +894,7 @@ export const runOpenAiCodex = async (
       skillBridge,
       replyIntentBridge,
       maintenanceBridge,
+      toolRecallBridge,
     ]) {
       await registerBridgeTools(b, toolBridgeMap, mcpTools);
     }
@@ -1421,7 +1433,7 @@ export const runOpenAiCodex = async (
    *  의심. 그런데 `/clear` 후에도 실패 → 고정 스캐폴딩(instructions·인덱스) 의심. 둘을 가르려면
    *  instructions / input / tools 를 **따로** 재야 한다.
    */
-  let lastReqBytes = { total: 0, instructions: 0, input: 0, tools: 0, items: 0 };
+  let lastReqBytes = { total: 0, mediaChars: 0, instructions: 0, input: 0, tools: 0, items: 0 };
   let lastInputComposition: ReturnType<typeof summarizeInputComposition> | undefined;
   let lastFingerprint: string[] = [];
   let lastFingerprintNote = "fp=없음";
@@ -1650,6 +1662,7 @@ export const runOpenAiCodex = async (
       }
       lastReqBytes = {
         total: bodyJson.length,
+        mediaChars: mediaCharsOf(body.input),
         instructions: String(body.instructions ?? "").length,
         input: JSON.stringify(body.input ?? []).length,
         tools: JSON.stringify(body.tools ?? []).length,
@@ -2072,6 +2085,10 @@ export const runOpenAiCodex = async (
       const { text, responseId, toolCalls, usage } = sseResult;
       if (usage !== undefined) {
         finalUsage = usage;
+        // 이 대화의 글자당 토큰 — 이력 상한(`historyCapChars`)이 창에 맞게 잡히는 재료. 보낸 요청 전체와 그 입력 토큰(같은 호출)의 비.
+        //  ★그림·PDF 가 실린 요청은 재지 않는다 — base64 는 글자가 많고 토큰은 거의 안 들어 비율이 부푼다(적대 검토 실측: 300KB 그림 하나로
+        //   5.25 → 다음 요청 상한 포화 → 창 초과). 직전 값을 그대로 둔다(없으면 보수값).
+        if (lastReqBytes.mediaChars === 0) recordTokenDensity(input.threadKey, lastReqBytes.total, usage.inputTokens);
         requestUsageEntries.push({ ...usage });
         addUsage(usageTotals, usage);
         outputTokensTotal += usage.outputTokens;
@@ -2251,6 +2268,8 @@ export const runOpenAiCodex = async (
             //  payload·헤더·`prompt_cache_key` 엔 들어가지 않는다.
             //  ★`lastSendFileTool` 은 **마지막 요청의 실제 `body.tools`** 기준이다 —
             //   위 `tools=` 노트(턴 첫 호출 기준)와 다를 수 있어 이름을 달리했다.
+            // 이력 상한과 그 재료(글자당 토큰) — «왜 이 대화는 자주/드물게 접히나» 를 로그만으로 답하게.
+            `이력상한=${historyCapUsedFor(input.threadKey)?.toLocaleString() ?? "?"}자(이번 요청 · 지금 글자/토큰 ${tokenDensityOf(input.threadKey)?.toFixed(2) ?? "미측정"}) ` +
             `run=${run} origin=${origin} attachmentCallback=${String(attachmentCallback)} ` +
             `lastSendFileTool=${String(lastSendFileTool)} ` +
             `thread=${input.threadKey} tail: ${tail}`,
@@ -2710,8 +2729,10 @@ export const runOpenAiCodex = async (
       //  있다(`appendToolResultsToInput`). 종전엔 이 셋이 여기 인라인이라, 순서를 바꾸는
       //  편집을 회귀가 볼 수 없었다(검사가 루프를 자기가 다시 지어야 했다).
       turnCompacted += appendToolResultsToInput(inputArray, toolOutputs, {
-        requestChars: lastReqBytes.total,
-        ceilingChars: loadModelInputLimits().get(`codex:${model}`),
+        // 그림·PDF base64 는 빼고 잰다 — 상한이 토큰 기준(창×95%×비율)인데 base64 는 글자만 많고 토큰은 거의 안 든다.
+        requestChars: lastReqBytes.total - lastReqBytes.mediaChars,
+        // 턴 안 상한도 토큰을 안다 — 창 × 95% × 이 대화의 글자당 토큰(설정·실측 상한과 작은 쪽). 이력 상한과 같은 비율을 본다.
+        ceilingChars: requestCeilingChars(model, input.threadKey, loadModelInputLimits().get(`codex:${model}`)),
         label: input.threadKey,
       });
 

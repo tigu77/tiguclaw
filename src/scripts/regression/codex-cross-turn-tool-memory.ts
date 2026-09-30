@@ -26,13 +26,15 @@ export const check: RegressionCheck = {
     const current = (text: string): Item => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
 
     /** 실제 빌더로 한 턴을 쌓는다 — 호출·출력 N개 · 하네스 독촉 · 작업 중 지시 · 추론 · 최종 답. */
-    const runTurn = async (label: string, outputs: string[], opts: { steer?: string; unmatched?: boolean; compactInTurn?: boolean } = {}) => {
+    const runTurn = async (label: string, outputs: string[], opts: { steer?: string; unmatched?: boolean; compactInTurn?: boolean; talk?: string[] } = {}) => {
       const arr = H.buildCodexInputArray([], "", current(`${label} 질문`));
       const start = arr.length;
       arr.push({ type: "message", role: "assistant", content: [{ type: "output_text", text: `${label} 읽어 보겠습니다` }] });
       outputs.forEach((_, i) => arr.push({ type: "function_call", id: `fc_${label}_${i}`, call_id: `c_${label}_${i}`, name: "Read", arguments: `{"path":"${label}-${i}.md"}` }));
       H.appendToolResultsToInput(arr, outputs.map((o, i) => ({ callId: `c_${label}_${i}`, name: "Read", output: o, media: [] })), room);
       if (opts.unmatched === true) arr.push({ type: "function_call", call_id: `c_${label}_orphan`, name: "Bash", arguments: "{}" });
+      // 작업 중 비서 발화 — 접을 때 **줄지 않는** 내용(도구 결과는 참조로 준다, 2026-09-30). 큰 턴을 이걸로 만든다.
+      for (const t of opts.talk ?? []) arr.push({ type: "message", role: "assistant", content: [{ type: "output_text", text: t }] });
       arr.push({ type: "message", role: "user", content: [{ type: "input_text", text: "지금까지 도구를 3회 사용했습니다. 계속 진행하세요" }] }); // 하네스 독촉
       if (opts.steer !== undefined) arr.push(await H.buildSteeringInputItem({ text: opts.steer, attachments: [] } as never));
       if (opts.compactInTurn === true) H.compactOldToolOutputs(arr, { batchChars: 0, keepRecent: 0, minOutputChars: 1 });
@@ -221,9 +223,11 @@ export const check: RegressionCheck = {
     const hTurn = Hn.win.find((t) => t.content === "H0 답입니다");
 
     // ── I. 요약 1회분(4만)보다 큰 턴은 조각으로 나눠 요약하고, 꼬리 사실이 요약 입력에 닿는다 ──
+    //  ★큰 턴은 **작업 중 발화**로 만든다(2026-09-30) — 도구 결과는 접을 때 참조+앞부분만 가므로 더는 요약 입력을 키우지 않는다
+    //   (그 계약·되찾기는 `tool-recall-reads-this-conversation` ④). 이 장치(조각 나누기)가 지키는 건 줄지 않는 큰 내용이다.
     const tkI = TK("i");
     clearThreadSummary(CH, tkI);
-    persist(tkI, "I0", await runTurn("I0", [0, 1, 2, 3, 4].map((i) => "사".repeat(14_000) + (i === 4 ? " FOLD-TAIL-5151" : ""))));
+    persist(tkI, "I0", await runTurn("I0", ["짧은 결과"], { talk: [0, 1, 2, 3, 4].map((i) => "사".repeat(14_000) + (i === 4 ? " FOLD-TAIL-5151" : "")) }));
     for (let i = 1; i <= 6; i++) persist(tkI, `I${i}`, await runTurn(`I${i}`, ["아".repeat(3_000)]));
     const pieces: string[] = [];
     const In = await nextInput(tkI, 150_000, (t) => { pieces.push(t); });
@@ -274,7 +278,7 @@ export const check: RegressionCheck = {
     // ── P. 중간 조각 실패 → 부분 성공으로 넘어가지 않는다(워터마크 유지) · 다음 시도에서 진행한다 ──
     const tkP = TK("p");
     clearThreadSummary(CH, tkP);
-    persist(tkP, "P0", await runTurn("P0", [0, 1, 2, 3, 4].map((i) => "자".repeat(14_000) + (i === 4 ? " MIDFAIL-8181" : ""))));
+    persist(tkP, "P0", await runTurn("P0", ["짧은 결과"], { talk: [0, 1, 2, 3, 4].map((i) => "자".repeat(14_000) + (i === 4 ? " MIDFAIL-8181" : "")) }));
     for (let i = 1; i <= 6; i++) persist(tkP, `P${i}`, await runTurn(`P${i}`, ["차".repeat(3_000)]));
     const p0Id = loadThreadHistoryWithIds(CH, tkP).find((t) => t.content === "P0 답입니다")?.id ?? -1;
     let pCall = 0;
@@ -289,7 +293,7 @@ export const check: RegressionCheck = {
     // ── Q. 수동 /compact 도 큰 턴을 조각으로 부른다(두 호출부 모두 연결) ──
     const tkQ = TK("q");
     clearThreadSummary(CH, tkQ);
-    persist(tkQ, "Q0", await runTurn("Q0", [0, 1, 2, 3, 4].map((i) => "카".repeat(14_000) + (i === 4 ? " MANUAL-TAIL-9191" : ""))));
+    persist(tkQ, "Q0", await runTurn("Q0", ["짧은 결과"], { talk: [0, 1, 2, 3, 4].map((i) => "카".repeat(14_000) + (i === 4 ? " MANUAL-TAIL-9191" : "")) }));
     for (let i = 1; i <= 40; i++) persist(tkQ, `Q${i}`, await runTurn(`Q${i}`, ["타".repeat(200)]));
     const qPieces: string[] = [];
     H.setSummarizerPort(async (t: string) => { qPieces.push(t); return "요약본 ".repeat(20); });

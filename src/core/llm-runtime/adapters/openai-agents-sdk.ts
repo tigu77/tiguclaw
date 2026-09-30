@@ -50,12 +50,17 @@ import {
 import { resolveReasoningEffort } from "../model-catalog.js";
 import { formatEnvContext } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
+import { loadModelInputLimits } from "../../settings.js";
 import { retrieveContext } from "../../memory.js";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import {
+  capToolOutputForEntry,
+  collectTurnItems,
   compactThreadHistory,
+  historyCapChars,
   recentTurnsAfter,
-  summarizeInstructions } from "./openai-codex-oauth-history.js";
+  summarizeInstructions,
+  type ResponseInputItem } from "./openai-codex-oauth-history.js";
 import {
   toolResultForAdapter,
   toolMediaNote,
@@ -91,6 +96,7 @@ import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
 import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabilities-mcp.js";
@@ -356,6 +362,43 @@ import { assertLiveModelAllowed } from "../regression-model-guard.js";
 import { publishTurnMeta } from "../turn-meta.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
 
+/**
+ * SDK 도구 결과(`rawItem.output`)의 글 — string / `{text}` 노드 / **text 노드 배열**(MCP CallToolResult). 활동 미리보기와 기록이 같은 글을 쓴다.
+ * ★배열 처리 누락 (2026-07-29): `{text}` 만 보던 종전 코드는 배열에서 "" 를 만들어 openai 에서만 출력이 안 붙었다.
+ */
+export const openAiToolOutputText = (rawOut: unknown): string => {
+  const textOf = (n: unknown): string =>
+    typeof n === "string" ? n : n && typeof n === "object" ? String((n as { text?: unknown }).text ?? "") : "";
+  return Array.isArray(rawOut) ? rawOut.map(textOf).filter((t) => t !== "").join("\n") : textOf(rawOut);
+};
+
+/**
+ * 스트림 이벤트 → 이 턴의 기록 항목(2026-09-30) — `tool_called` → 호출, `tool_output` → 결과(Codex 와 같은 진입 상한). 그 밖은 undefined.
+ * ★순수 함수로 둔 이유: 이 어댑터는 실모델 금지 가드 때문에 실경로 회귀가 못 돈다 — 이음매를 **실행해서** 검사할 자리가 여기다
+ *  (소스 모양만 보던 그물을 변이 6개가 전부 통과했다 — 적대 검토 G4).
+ */
+export const openAiTurnToolItem = (ev: unknown): ResponseInputItem | undefined => {
+  const e = ev as { type?: unknown; name?: unknown; item?: { rawItem?: unknown } } | null;
+  if (e?.type !== "run_item_stream_event") return undefined;
+  const raw = e.item?.rawItem as
+    | { type?: unknown; name?: unknown; arguments?: unknown; callId?: unknown; call_id?: unknown; output?: unknown }
+    | undefined;
+  const callId = typeof raw?.callId === "string" ? raw.callId : typeof raw?.call_id === "string" ? raw.call_id : "";
+  if (callId === "") return undefined;
+  if (e.name === "tool_called") {
+    if (raw?.type !== "function_call" || typeof raw.name !== "string") return undefined;
+    return { type: "function_call", call_id: callId, name: raw.name, arguments: typeof raw.arguments === "string" ? raw.arguments : "" };
+  }
+  if (e.name === "tool_output") return { type: "function_call_output", call_id: callId, output: capToolOutputForEntry(openAiToolOutputText(raw?.output)) };
+  return undefined;
+};
+
+/** 반환에 싣는 이 턴의 기록 — Codex 와 같은 `collectTurnItems`(짝 맞추기·비밀값 가림). 없으면 필드를 안 싣는다. */
+export const openAiTurnItemsField = (slice: readonly ResponseInputItem[], finalText: string): { turnItems?: ReturnType<typeof collectTurnItems> } => {
+  const turnItems = collectTurnItems(slice, finalText);
+  return turnItems.length > 0 ? { turnItems } : {};
+};
+
 export const runOpenAi = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
@@ -521,6 +564,16 @@ export const runOpenAi = async (
       await adaptClaudeMcpServer(
         createSendFileMcpServer(input.sendAttachment, sentFiles),
         "send-file",
+      ),
+    );
+  }
+
+  // 앞선 도구 결과 다시 읽기(2026-09-30) — codex 와 같은 도구. 대화를 클로저로 잡는다(세션 정체성 채널).
+  if (!toolsNone) {
+    mcpServers.push(
+      await adaptClaudeMcpServer(
+        createToolRecallMcpServer(input),
+        "tool-recall",
       ),
     );
   }
@@ -1017,6 +1070,11 @@ export const runOpenAi = async (
   //  **우리가 주입**한다 — 그 전제가 거짓이었다.
   //  ★판정은 **어댑터 무관 드라이버** 한 곳이고 여기선 요약 호출만 준다. 요약기는 이 턴과
   //   **같은 모델**을 탄다(codex 가 그걸 안 해서 매 턴 400 으로 죽은 게 같은 날 사고였다).
+  // 이력 상한 — 요약 기준과 창 안전망이 **같은 값**(codex 와 같은 판정, `historyCapChars`). 이 어댑터는 요청 글자를 따로 재지
+  //  않아 대화 실측 비율 대신 보수값으로 잡힌다(Codex 턴이 섞인 대화면 그 실측을 쓴다).
+  const limitChars = loadModelInputLimits().get(`${input.provider ?? "openai"}:${model}`);
+  const capFor = (): number => historyCapChars(model, input.threadKey, limitChars);
+  const capChars = capFor();
   const compacted = await compactThreadHistory({
     channel: idChannel,
     threadKey: input.threadKey,
@@ -1027,7 +1085,8 @@ export const runOpenAi = async (
     provider: input.provider ?? "openai",
     adapter: "openai",
     // 요약 기준 = 보낼 수 있는 이력 예산 — codex 와 같은 판정(historyTriggerChars).
-    budget: { instructionsChars: instructions.length, promptChars: promptWithMemory.length },
+    budget: { instructionsChars: instructions.length, promptChars: promptWithMemory.length, capChars },
+    capFor,
     signal: input.abortSignal, // 앞선 요약을 기다리는 동안에도 이 턴의 취소를 듣는다.
     summarize: async (text, targetChars) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
@@ -1126,6 +1185,7 @@ export const runOpenAi = async (
   const { allTurns, summary, watermark } = compacted;
   const priorTurns = recentTurnsAfter(allTurns, watermark, {
     budgetUsedChars: instructions.length + promptWithMemory.length + summary.length,
+    charCap: capChars,
   });
   // ★스캐폴딩 스트립 (2026-07-28) — transcripts 의 user 턴에는 SYSTEM.md·system-reminder 등
   //  런타임 주입물이 함께 박혀 있다(실측: 최근 14일 282행 평균 41,132자·최대 1,324,574자).
@@ -1192,6 +1252,11 @@ export const runOpenAi = async (
     string,
     { seq: number; t0: number; label: string; stopSlow?: () => void }
   >();
+
+  // 이 턴의 도구 호출·결과 — Codex 와 **같은 저장 모양**(`collectTurnItems`: 짝 맞추기·비밀값 가림)으로 남겨
+  //  `turn_items` 에 묶는다(2026-09-30). 종전엔 OpenAI 만 안 남겨, 이력이 요약되면 도구 결과를 되찾을 길이 없었다
+  //  (`read_past_tool_result` 가 언제나 빈 결과). 결과는 Codex 와 같은 진입 상한을 적용한 모양으로 둔다.
+  const turnToolItems: ResponseInputItem[] = [];
 
   // externalTools 스트리밍(llm.tool_call_delta, §2.4) — SDK 는 `tool_called` 를 도구콜이
   // *완전히 조립된 뒤* 1회만 노출한다(codex 의 문자 단위 진짜 델타와 달리 이 어댑터는 "단일
@@ -1327,6 +1392,9 @@ export const runOpenAi = async (
       // 정규화한 `raw_model_stream_event → output_text_delta` 가 증분 텍스트 소스.
       for await (const ev of streamed) {
         idleTimer.beat();
+        // 이 턴의 도구 기록 — 이벤트 → 저장 항목 변환은 순수 함수 하나(`openAiTurnToolItem`)가 한다.
+        const toolRec = openAiTurnToolItem(ev);
+        if (toolRec !== undefined) turnToolItems.push(toolRec);
         // 안전 narrowing — SDK union 형상이 바뀌어도 turn 안 깨지게 방어적 접근.
         if (ev.type === "raw_model_stream_event") {
           const data = (ev as { data?: unknown }).data as
@@ -1447,16 +1515,7 @@ export const runOpenAi = async (
             //  `{text}` 만 보던 종전 코드는 String(undefined ?? "") = "" 를 만들어 openai
             //  에서만 출력이 안 붙었다(codex 는 배열 join, claude 는 블록 배열 join — 이쪽만
             //  빠진 parity 구멍). MCP 도구까지 출력을 붙이기로 한 이상 여기서 닫아야 한다.
-            const textOf = (n: unknown): string =>
-              typeof n === "string"
-                ? n
-                : n && typeof n === "object"
-                  ? String((n as { text?: unknown }).text ?? "")
-                  : "";
-            const rawOut = raw?.output;
-            const outText = Array.isArray(rawOut)
-              ? rawOut.map(textOf).filter((t) => t !== "").join("\n")
-              : textOf(rawOut);
+            const outText = openAiToolOutputText(raw?.output);
             // isError 전달 (parity) — claude/codex 는 넘기는데 여기만 빠져 오류 틴트가 없었다.
             const outIsError =
               raw && typeof raw === "object"
@@ -1563,6 +1622,7 @@ export const runOpenAi = async (
       //  히스토리도 없이 다시 묻는 것이라, 남아 있으면 **맥락 없는 사진**이 입력 끝에 붙는다.
       //  steering 누적기는 반대다 — 그건 사용자 발화라 재시도에도 살아야 한다(1197행 주석).
       toolMediaWindow.reset();
+      turnToolItems.length = 0; // 도구 없이 다시 묻는다 — 지난 시도의 도구 기록은 이 턴의 것이 아니다.
       result = await runOnce(noToolsAgent, false);
     } else {
       throw e;
@@ -1620,5 +1680,6 @@ export const runOpenAi = async (
     ...(reasoningEffort !== undefined ? { reasoning: reasoningEffort } : {}),
     replyToTrigger,
     usage,
+    ...openAiTurnItemsField(turnToolItems, text),
   };
 };

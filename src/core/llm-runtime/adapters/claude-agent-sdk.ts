@@ -124,6 +124,7 @@ import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
 import {
@@ -671,6 +672,9 @@ export const runClaude = async (
         ...(reaches("session-tools", turnKindOf(input))
           ? { "session-tools": createSessionToolsMcpServer(input.threadKey) }
           : {}),
+        // 앞선 도구 결과 다시 읽기(2026-09-30) — 섞인 대화(Codex 실패 → Claude 폴백 등)에서 Codex·OpenAI 턴의 기록을 되찾는다.
+        //  접힌 채 실린다(이름만) — 순수 Claude 대화의 매 요청 비용을 안 늘린다.
+        "tool-recall": createToolRecallMcpServer(input),
         // send-file — 네이티브 멱등 아웃바운드 전송. 채널 전송 클로저가 있을 때만 등록
         // (스케줄러 등 비채널 turn 은 미등록 = 도구 노출 0). codex 와 parity.
         ...(input.sendAttachment !== undefined

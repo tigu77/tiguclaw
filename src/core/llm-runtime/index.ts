@@ -37,6 +37,7 @@ import { listProviderNames, resolveProviderConn } from "./provider-registry.js";
 import { assertLiveModelAllowed } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { compactHistoryAfterTurn } from "./adapters/openai-codex-oauth-history.js";
+import { blendTokenDensity } from "../../store/token-density.js";
 import { setSummarizerCooldownPort, type CooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
 import { formatAttachments } from "../prompt-assembly.js";
@@ -1559,6 +1560,11 @@ const runPool = async (
       // 어댑터 락인 0.
       if (input.internal !== true) {
         publishTurnDone(spec, input, output, Date.now() - startedAt);
+        // 글자당 토큰은 Codex 만 잰다 — 다른 어댑터가 늘린 글자는 보수값으로 섞는다(`token-density.ts`). ★저장보다 **먼저** — 저장이 부르는
+        //  턴 뒤 요약이 섞인 비율로 상한을 잡아야 한다(늦으면 뒤에선 안 접고 다음 요청 때 접는다 — 적대 재검토 P2).
+        if (spec.adapter !== "codex-oauth") {
+          try { blendTokenDensity(input.threadKey, input.text.length + output.text.length); } catch { /* 저장소 실패가 턴을 무르지 않는다 */ }
+        }
         persistOutput(input, output);
       }
       // 성공 — 조기 회복(만료 전이라도 쿨다운 해제). internal 호출도 해제(어댑터 헬스는

@@ -1007,6 +1007,11 @@ export interface CodexTurn {
   items?: CodexTurnItem[];
   itemsChars?: number;
   /**
+   * `items` 의 **저장 순번**(turn_items.seq) — 적재 직후에만 `items` 와 같은 길이·순서다(2026-09-30). 요약 접기가 도구 결과의
+   * 참조(`<기록id>#<순번>`)를 만든다. 되살릴 모양으로 깎은 뒤엔 짝이 안 맞으니 깎는 쪽이 원 항목과 함께 따로 넘긴다.
+   */
+  itemSeqs?: number[];
+  /**
    * 사용자 턴을 **보낸 그대로**(휘발 블록 포함) — Codex 가 그 턴에 실제로 보낸 사용자 메시지 원문(2026-09-28).
    * ★다음 턴 이력이 이걸로 되살려야 요청이 **직전 요청의 연장**이 되고 이력이 캐시를 탄다 — 이 백엔드는 직전 요청
    *  전체가 앞머리에 있을 때만 캐시를 준다(실측: 앞 항목이 같아도 마지막 메시지가 다르면 이력 몫 0). `content` 는 그대로
@@ -1203,6 +1208,11 @@ export const loadThreadHistory = (
 export interface CodexTurnWithId extends CodexTurn {
   /** transcript id — 압축 watermark(compacted_through) 기준. */
   id: number;
+  /**
+   * 요약 접기용 **깎기 전 원 항목**과 저장 순번(2026-09-30 적대 검토 P2). `items` 는 되살릴 모양으로 깎인 것이라(한 턴 9만 자 상한)
+   * 도구가 많은 턴일수록 결과가 잘리거나 통째로 빠진다 — 그걸 접으면 참조가 사라진다. 접기는 참조로 줄이므로 깎을 필요가 없다.
+   */
+  foldItems?: { seq: number; item: CodexTurnItem }[];
 }
 
 /**
@@ -1247,18 +1257,19 @@ export const loadThreadHistoryWithIds = (
   // 비서 턴에 묶인 도구 항목 — 같은 세션·경계 조건 + 워터마크 뒤만 한 번에 읽는다.
   const itemRows = opts?.itemsAfter === undefined ? [] : db
     .prepare(
-      `SELECT ti.transcript_id AS tid, ti.item AS item FROM turn_items ti
+      `SELECT ti.transcript_id AS tid, ti.seq AS seq, ti.item AS item FROM turn_items ti
          JOIN transcripts t ON t.id = ti.transcript_id
         WHERE t.claude_session_id IN (${placeholders}) AND t.ts > ? AND ti.transcript_id > ?
         ORDER BY ti.transcript_id ASC, ti.seq ASC`,
     )
-    .all(...sids, boundary, opts.itemsAfter) as { tid: number; item: string }[];
-  const itemsById = new Map<number, { items: CodexTurnItem[]; chars: number }>();
+    .all(...sids, boundary, opts.itemsAfter) as { tid: number; seq: number; item: string }[];
+  const itemsById = new Map<number, { items: CodexTurnItem[]; seqs: number[]; chars: number }>();
   for (const r of itemRows) {
     let parsed: CodexTurnItem;
     try { parsed = JSON.parse(r.item) as CodexTurnItem; } catch { continue; }
-    const e = itemsById.get(r.tid) ?? { items: [], chars: 0 };
+    const e = itemsById.get(r.tid) ?? { items: [], seqs: [], chars: 0 };
     e.items.push(parsed);
+    e.seqs.push(r.seq);
     e.chars += r.item.length;
     itemsById.set(r.tid, e);
   }
@@ -1279,7 +1290,7 @@ export const loadThreadHistoryWithIds = (
       id: r.id,
       role: "assistant" as const,
       content: r.content,
-      ...(it !== undefined ? { items: it.items, itemsChars: it.chars } : {}),
+      ...(it !== undefined ? { items: it.items, itemSeqs: it.seqs, itemsChars: it.chars } : {}),
     };
   });
 };

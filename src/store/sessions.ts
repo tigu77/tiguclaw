@@ -836,6 +836,17 @@ export const initStore = (): void => {
     );
   `);
 
+  // 대화별 글자당 토큰(2026-09-30) — 이력 예산을 모델 창(토큰)에 맞추는 재료. 마지막 요청의 «보낸 글자 / 실제 입력 토큰» 한 행.
+  //  재시작 뒤 첫 요청이 보수값으로 예산을 줄여 멀쩡한 이력을 접지 않게 영속한다(`store/token-density.ts`).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS thread_token_density (
+      thread_key  TEXT PRIMARY KEY,
+      chars       INTEGER NOT NULL,
+      tokens      INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL
+    );
+  `);
+
   // ─── Context boundary watermark (/reset·/clear P0, 2026-07-10) ──────────────
   // 리셋 = 삭제 아니라 경계선. threadKey 별 boundary_ts(epoch ms) 이후 transcript 만
   // loadThreadHistory·loadThreadHistoryWithIds 가 반환 → codex/openai 가 과거 턴을

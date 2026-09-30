@@ -369,6 +369,13 @@ export interface PluginHost {
   saveClaudeToken(pasted: string): Promise<{ ok: boolean; message: string }>;
 
   /**
+   * **Claude 구독 토큰 발급을 화면에서 시작한다** (2026-09-30) — 번들 발급기를 가짜 터미널로 띄워 로그인 주소를 돌려준다.
+   * 그 뒤 사용자가 붙여넣은 로그인 코드는 `saveClaudeToken` 이 받는다(토큰 모양이면 토큰으로, 아니면 코드로 — 판단은 코어
+   * `llm-runtime/claude-token-issue.ts` 한 곳). Windows·python3 없음이면 `ok:false` + 이유 — 화면은 종전 방식으로.
+   */
+  beginClaudeTokenIssue(): Promise<{ ok: true; url: string } | { ok: false; reason: string }>;
+
+  /**
    * 모델에게 묻는다 (`needs.llm`).
    *
    * ★**좁은 래퍼다.** 코어의 실행 입력은 필드가 28개고 거기엔 `model`·`provider` 가 있는데,
@@ -570,10 +577,18 @@ export const createPluginHost = (
           `"claude-subscription" 을 적으세요.`,
       };
     }
-    const { acceptClaudeToken } = await import("../llm-runtime/claude-token.js");
-    const r = await acceptClaudeToken(pasted);
+    // 발급기가 떠 있으면 붙여넣은 것이 로그인 코드일 수 있다 — 코드/토큰 판단은 코어 한 곳에서.
+    const { finishClaudeTokenIssue } = await import("../llm-runtime/claude-token-issue.js");
+    const r = await finishClaudeTokenIssue(pasted);
     console.log(`[plugin:${plugin}] Claude 구독 토큰: ${r.ok ? "저장" : "저장 안 함"} — ${r.message}`);
     return r;
+  },
+  beginClaudeTokenIssue: async () => {
+    if (needs.auth?.includes("claude-subscription") !== true) {
+      return { ok: false, reason: `plugin '${plugin}': package.json 의 tiguclaw.needs.auth 에 "claude-subscription" 이 없습니다` };
+    }
+    const { beginClaudeTokenIssue } = await import("../llm-runtime/claude-token-issue.js");
+    return beginClaudeTokenIssue();
   },
   say: async ({ channel, target, text }) => {
     if (needs.outbound !== true) {

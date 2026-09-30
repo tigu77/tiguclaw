@@ -188,6 +188,12 @@
           if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
               typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
         }
+        // 턴 시작 «이 모델 · 이 강도» — 채팅 카드와 잡 카드가 turn_done 전에도 같은 값을 보인다(2026-09-30).
+        if (ev.type === "llm.turn_meta") {
+          const tk = ev.payload && ev.payload.threadKey;
+          if (typeof tk === "string") { setTurnMeta(tk, ev.payload); handleJobTurnMeta(ev.payload); }
+          return;
+        }
         // 진행 표시 종료(모든 채널) — 턴 종료 신호는 렌더를 막지 않고(return 안 함) 표시만 해제.
         // channel.message.out 이 안 오는 에러 턴까지 확실히 끄기 위한 authoritative 종료.
         if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") {

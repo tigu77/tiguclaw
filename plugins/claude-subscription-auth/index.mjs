@@ -349,26 +349,37 @@ export default class ClaudeSubscriptionAuth {
         return t;
       },
       /**
-       * ★**여기는 «끝까지» 가 안 된다 — 그래서 그렇게 말한다** (2026-09-05 실측).
-       *  발급은 번들 `claude setup-token` 이 하는데 그건 **TTY 가 필요**하다: 비TTY 로 돌리면
-       *  12초간 출력이 0이고, `script -q` 로 PTY 를 붙이는 무의존 우회도 부모에 TTY 가
-       *  없으면 실패한다(`tcgetattr/ioctl`). codex 처럼 «버튼 한 번» 이라고 적으면 그건
-       *  거짓말이 된다.
-       * ★대신 두 길을 연다: 그 기계 **터미널 한 줄**(화면이 복사 버튼과 함께 보여준다)과,
-       *  이미 받은 토큰 **붙여넣기**. 폰에서도 후자로 끝낼 수 있다.
+       * ★발급은 번들 `claude setup-token` 이 하는데 **TTY 가 필요**하다(09-05 실측: 비TTY 면 출력 0, `script -q` 는 부모에
+       *  TTY 가 없으면 실패). 09-30 에 python `pty.fork()` 는 부모 TTY 없이도 된다는 걸 확인해 코어가 그 길로 띄운다
+       *  (`llm-runtime/claude-token-issue.ts`). 못 띄우는 기계에선 종전 두 길 — 터미널 한 줄 · 토큰 붙여넣기.
        * ★저장은 `host.saveClaudeToken` 으로 한다 — 이 파일이 **아무것도 import 하지 않는** 성질을
        *  지키기 위해서다(그게 이 플러그인이 홈으로 옮겨 살아남는 근거다). 확인·쿨다운 해제도 그쪽이 한다.
        */
       login: {
         label: "구독 토큰 발급",
-        begin: async () => ({
-          summary:
-            "Claude Code 실행기가 토큰을 발급합니다. 이 발급기는 터미널이 필요해서(실측) " +
-            "여기서 끝까지는 안 됩니다 — 아래 명령을 그 기계 터미널에서 돌리고, 나온 토큰을 붙여넣으세요.",
-          command: "npm run claude-auth",
-          pasteHint: "발급된 토큰 (sk-ant- 로 시작합니다)",
-          needsRestart: false,
-        }),
+        // ★화면에서 끝까지 (2026-09-30 정태님 — «복사해서 터미널에서 하라는 건 아니지»). 코어가 발급기를 가짜 터미널로
+        //  띄워 로그인 주소를 준다 → 새 탭에서 로그인 → 나온 코드를 붙여넣으면 발급·확인·저장·반영까지 끝난다.
+        //  못 띄우는 기계(Windows·python3 없음)나 옛 코어면 종전 방식(그 기계 터미널 한 줄 + 토큰 붙여넣기)으로.
+        begin: async () => {
+          const r = typeof host.beginClaudeTokenIssue === "function" ? await host.beginClaudeTokenIssue() : { ok: false, reason: "" };
+          if (r.ok) {
+            return {
+              summary: "새 탭에서 Claude 에 로그인하면 코드가 나옵니다. 그 코드를 아래에 붙여넣으면 발급·저장까지 끝납니다(재시작 없음).",
+              openUrl: r.url,
+              pasteHint: "로그인 뒤 나온 코드 (이미 받은 토큰도 됩니다)",
+              needsRestart: false,
+            };
+          }
+          if (r.reason) host.log(`화면 발급을 못 띄워 터미널 방식으로 안내합니다: ${r.reason}`);
+          return {
+            summary:
+              "이 기계에선 화면 안에서 발급기를 띄울 수 없습니다 — 아래 명령을 그 기계 터미널에서 돌리면 발급·저장까지 됩니다" +
+              "(재시작 없음). 이미 받은 토큰이 있으면 붙여넣으세요.",
+            command: "npm run claude-auth",
+            pasteHint: "발급된 토큰 (sk-ant- 로 시작합니다)",
+            needsRestart: false,
+          };
+        },
         // ★붙여넣은 글을 **그대로** 코어에 넘긴다 (2026-09-29). 여기서 한 줄만 집었더니 줄바꿈으로 잘린
         //  토큰 앞 조각이 저장돼 모든 턴이 401 이었고, 값을 확인하지 않은 채 «돕니다» 라고 답했다.
         //  이어 붙이기·확인·저장·쿨다운 해제는 터미널 `claude-auth` 와 같은 코어 한 곳이 한다.

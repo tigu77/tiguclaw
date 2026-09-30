@@ -71,6 +71,7 @@ import { workerActivityLine } from "../../worker-activity-line.js";
 import { composeWorkerReport, harvestFailureNote } from "../../worker-report.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
+import { onDemand } from "../tool-load-policy.js";
 
 // ─── 매니저 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
 // runRegionA 로 메인 동급 full capability. await 하지 않고 fire-and-forget — runner 는
@@ -953,6 +954,6 @@ export const createWorkerMcpServer = (
   return createSdkMcpServer({
     name: "workers",
     version: "1.0.0",
-    tools: [runInBackground, listWorkers, listAllWorkers, steerWorker, cancelWorker],
+    tools: onDemand([runInBackground, listWorkers, listAllWorkers, steerWorker, cancelWorker], ["list_all_workers"]),
   });
 };

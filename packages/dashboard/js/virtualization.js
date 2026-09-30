@@ -1389,7 +1389,7 @@
         head.appendChild(costEl);
         card.replyCostEl = costEl;
         card.replyModelEl = modelEl;
-        if (card.modelSeen) modelEl.textContent = card.labelSeen || card.modelSeen; // 버블이 늦게 생겨도 이미 본 모델(·강도) 반영.
+        if (card.modelSeen) renderModelLabel(modelEl, card.modelSeen, card.reasoningSeen); // 버블이 늦게 생겨도 이미 본 모델(·강도) 반영.
         div.appendChild(head);
         const msg = document.createElement("div");
         // streaming = 평문 + 깜빡이는 커서. out 도착 시 마크다운 전체본으로 승격(streaming 제거).

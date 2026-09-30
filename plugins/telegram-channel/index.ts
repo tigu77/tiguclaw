@@ -1,4 +1,4 @@
-import { Bot, GrammyError, HttpError, InputFile, type Context } from "grammy";
+import { Bot, GrammyError, HttpError, type Context } from "grammy";
 import { telegramFormat, splitHtmlForTelegram } from "telegram-markdown-formatter";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -19,6 +19,7 @@ import { resolveReplyRouting } from "./reply-routing.js";
 import { getMostRecentTelegramChatId, getThreadName } from "../../src/store/sessions.js";
 import { recordOutboundMessage } from "../../src/store/outbound-messages.js";
 import { egressSourcePrefix } from "../../src/core/egress-targets.js";
+import { deliverDocument, sendDocumentTo } from "./send-document.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -655,6 +656,8 @@ export default class TelegramChannel implements Channel {
           opts,
         );
       },
+      // 파일 1개 — 인입 ctx 없이 **좌표만으로**(매니저 완료 보고 턴이 결과물을 붙일 수 있게, 2026-09-30).
+      deliverAttachment: (target, filePath, opts) => deliverDocument(this.bot?.api, target, filePath, opts),
       // 활동 표시 1회 — 주기·상한·좌표별 refcount 는 코어(channel-activity.ts) 몫.
       // 인바운드 경로가 쓰는 `ctx.replyWithChatAction` 과 같은 API 지만, ctx 없이
       // chat 좌표만으로 부른다(대시보드에서 시작한 턴도 이 대화에 신호를 줄 수 있게).
@@ -817,18 +820,8 @@ export default class TelegramChannel implements Channel {
         // 아웃바운드 첨부 — send_file 도구가 호출. 토큰은 grammY 내부라 노출 0.
         // 멱등은 호출자(도구)가 보장; 채널은 1회 전송만. 실패(파일 없음/접근불가 등)는
         // catch 로 {ok:false,error} 반환.
-        sendAttachment: async (filePath, opts) => {
-          try {
-            await ctx.api.sendDocument(
-              ctx.chat.id,
-              new InputFile(filePath),
-              opts?.caption !== undefined ? { caption: opts.caption } : undefined,
-            );
-            return { ok: true };
-          } catch (e) {
-            return { ok: false, error: e instanceof Error ? e.message : String(e) };
-          }
-        },
+        sendAttachment: (filePath, opts) =>
+          sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
         // 축1 선택지 제시 — inline keyboard 로 1회 렌더 후 즉시 반환(비차단). 사용자 선택은
         // callback_query 핸들러가 *다음 인바운드*로 흘려보낸다(같은 chat=같은 thread·인격).
         presentOptions: buildPresentOptions(ctx),
@@ -949,18 +942,8 @@ export default class TelegramChannel implements Channel {
             receivedAt: receivedAtSeconds * 1000,
             reply: buildReply(sessionId, chatId, routedSession),
             // 아웃바운드 첨부 — message:text 핸들러와 동일 (parity). 토큰 노출 0.
-            sendAttachment: async (filePath, opts) => {
-              try {
-                await ctx.api.sendDocument(
-                  ctx.chat.id,
-                  new InputFile(filePath),
-                  opts?.caption !== undefined ? { caption: opts.caption } : undefined,
-                );
-                return { ok: true };
-              } catch (e) {
-                return { ok: false, error: e instanceof Error ? e.message : String(e) };
-              }
-            },
+            sendAttachment: (filePath, opts) =>
+              sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
             // 축1 선택지 제시 — message:text 핸들러와 동일(parity). inline keyboard 1회 렌더.
             presentOptions: buildPresentOptions(ctx),
           };
@@ -1043,18 +1026,7 @@ export default class TelegramChannel implements Channel {
           await replyAndRecord((chunk, extra) => ctx.reply(chunk, extra), sessionId, chatId, out);
         },
         // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원.
-        sendAttachment: async (filePath, opts) => {
-          try {
-            await ctx.api.sendDocument(
-              chat.id,
-              new InputFile(filePath),
-              opts?.caption !== undefined ? { caption: opts.caption } : undefined,
-            );
-            return { ok: true };
-          } catch (e) {
-            return { ok: false, error: e instanceof Error ? e.message : String(e) };
-          }
-        },
+        sendAttachment: (filePath, opts) => sendDocumentTo(ctx.api, chat.id, filePath, { ...opts, recordSession: sessionId }),
         presentOptions: buildPresentOptions(ctx),
       };
       // typing heartbeat — 선택 후 후속 턴 동안 살아있음 신호. message:text 동형.

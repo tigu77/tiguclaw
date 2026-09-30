@@ -12,7 +12,7 @@ import { writeJson } from "../../src/core/net/write-json.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { isCancelledTurnResult, isSteeredTurnResult } from "../../src/core/worker-jobs.js";
 import { getRecentChatLog } from "../../src/store/chat-log.js";
-import { ingestAttachments, persistOutboundAttachment } from "./attachments.js";
+import { ingestAttachments, publishOutboundAttachment } from "./attachments.js";
 import { historyActivities } from "./history-activities.js";
 import { BODY_LIMIT_ATTACHMENTS, BodyTooLargeError, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
@@ -139,49 +139,14 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   // 재시작 후에도 유지). 멱등은 호출자(send_file 도구, per-turn sentPaths)가 보장 — 채널은
   // 복사+발행 1회만. bus 미연결(observer 미부착)이면 렌더 경로 없음 → {ok:false}.
   const channelName = ctx.channelName;
-  const sendAttachment: IncomingMessage["sendAttachment"] = async (
-    filePath,
-    opts,
-  ) => {
-    const meta = await persistOutboundAttachment(filePath, channelName).catch(
-      () => null,
-    );
-    if (meta === null) {
-      return {
-        ok: false,
-        error: `파일을 찾을 수 없거나 접근할 수 없습니다: ${filePath}`,
-      };
-    }
-    if (bus === null) {
-      return { ok: false, error: "control bus not started (대시보드 미연결)" };
-    }
-    try {
-      bus.publish({
-        type: "channel.message.out",
-        ts: Date.now(),
-        payload: {
-          channel: channelName,
-          threadKey,
-          text: "", // 첨부-only 아웃바운드(캡션은 attachment.caption 으로). 최종 답변 text-out 과 별개 버블.
-          attachments: [
-            {
-              rel: meta.rel,
-              mime: meta.mime,
-              name: meta.name,
-              kind: meta.kind,
-              bytes: meta.bytes,
-              ...(opts?.caption !== undefined && opts.caption !== ""
-                ? { caption: opts.caption }
-                : {}),
-            },
-          ],
-        },
-      });
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-  };
+  const sendAttachment: IncomingMessage["sendAttachment"] = (filePath, opts) =>
+    publishOutboundAttachment({
+      bus,
+      channel: channelName,
+      threadKey,
+      filePath,
+      ...(opts?.caption !== undefined ? { caption: opts.caption } : {}),
+    });
   const msg: IncomingMessage = {
     channel: ctx.channelName,
     channelUserId,

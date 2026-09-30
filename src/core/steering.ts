@@ -140,6 +140,13 @@ export interface SteeringChannel {
   stream(signal: AbortSignal): AsyncGenerator<SteeringInput>;
   /** 턴 종료 — 멱등. pending stream 대기자 unblock(→ 제너레이터 종료). */
   close(): void;
+  /**
+   * **소비하지 않고** 닫힐 때까지(또는 abort) 기다린다 (2026-09-30).
+   * ★claude 는 줄 선 턴이 도는 동안 입력(stdin)을 열어 둬야 한다(닫으면 그 턴의 훅·내장 도구가 취소된다).
+   *  그 사이 온 입력은 되돌려 놓아 코어의 drain→새 턴이 받게 하고, 제너레이터는 여기서 닫힘만 기다린다.
+   *  `stream()` 으로 기다리면 되돌려 놓은 걸 **다시 꺼내** 무한히 돈다.
+   */
+  untilClosed(signal: AbortSignal): Promise<void>;
 }
 
 /**
@@ -203,6 +210,16 @@ export const createSteeringChannel = (): SteeringChannel => {
       if (closed) return; // 멱등.
       closed = true;
       wake(); // pending stream 대기자 unblock → 루프가 closed 감지 후 종료.
+    },
+    async untilClosed(signal: AbortSignal): Promise<void> {
+      const onAbort = (): void => wake();
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        // push 도 깨우므로 조건을 다시 본다 — 버퍼는 건드리지 않는다.
+        while (!closed && !signal.aborted) await new Promise<void>((resolve) => { waiters.push(resolve); });
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+      }
     },
   };
 };

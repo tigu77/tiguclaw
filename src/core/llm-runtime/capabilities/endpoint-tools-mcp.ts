@@ -44,6 +44,7 @@ import {
   type EndpointMode,
   type EndpointRole,
 } from "../../entry/endpoint-registry.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({
   content: [{ type: "text" as const, text }],
@@ -311,6 +312,6 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
   return createSdkMcpServer({
     name: "endpoints",
     version: "1.0.0",
-    tools: [registerEndpoint, listEndpoints, deleteEndpoint],
+    tools: onDemand([registerEndpoint, listEndpoints, deleteEndpoint]),
   });
 };

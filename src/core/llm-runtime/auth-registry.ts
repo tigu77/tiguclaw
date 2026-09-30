@@ -76,9 +76,9 @@ export interface AuthProvider {
  *
  * ★방법이 하나가 아니라는 것을 타입이 인정한다. 실측(2026-09-05):
  *   - codex = 순수 웹 OAuth(PKCE) → `openUrl` 로 **끝까지** 자동
- *   - claude = 번들 CLI(`claude setup-token`) → **TTY 가 필요**하다(비TTY 로 12초간 출력 0,
- *     `script -q` 로 PTY 를 붙이는 무의존 우회도 부모에 TTY 가 없으면 실패).
- *     그래서 이쪽은 `command`(그 기계 터미널에서 한 줄) + `paste`(받은 토큰 붙여넣기)다.
+ *   - claude = 번들 CLI(`claude setup-token`) → **TTY 가 필요**하다(비TTY 로 12초간 출력 0).
+ *     09-30: python `pty.fork()` 는 부모 TTY 없이도 되어, 코어가 띄워 `openUrl` + `paste`(로그인 코드)로 끝낸다
+ *     (`claude-token-issue.ts`). 못 띄우는 기계(Windows·python3 없음)에선 `command`(터미널 한 줄) + `paste`(토큰).
  *   한 가지 모양을 강요하면 둘 중 하나는 거짓말이 된다.
  */
 export interface AuthLoginPlan {

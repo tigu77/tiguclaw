@@ -36,6 +36,7 @@ import {
   type SelfUpdateNotifyDest,
   type SelfUpdateResult,
 } from "../../self-update.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({
   content: [{ type: "text" as const, text }],
@@ -101,7 +102,7 @@ export const createUpdateSelfMcpServer = (
   createSdkMcpServer({
     name: "update-self",
     version: "1.0.0",
-    tools: [
+    tools: onDemand([
       tool(
         "update_self",
         "사용자가 tiguclaw 를 최신으로 업데이트/업그레이드해달라고 할 때 사용. git pull + 의존성 설치(+ 빌드) 후 데몬을 재시작합니다(설치·빌드 실패 시 자동 롤백). 코드 교체·재시작이 일어나니 사용자 확인 후 호출하세요.",
@@ -122,5 +123,5 @@ export const createUpdateSelfMcpServer = (
           return okText(renderResult(r));
         },
       ),
-    ],
+    ]),
   });

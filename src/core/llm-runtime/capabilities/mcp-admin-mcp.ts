@@ -37,6 +37,7 @@ import {
   describeExternalMcpConfig,
   type ExternalMcpConfig,
 } from "../../external-mcp.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const errText = (text: string) => ({
@@ -48,7 +49,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "mcp-admin",
     version: "1.0.0",
-    tools: [
+    tools: onDemand([
       tool(
         "add_mcp_server",
         "외부 MCP 서버를 등록합니다. path 미지정=전역(<home>/mcp.json, 어디서나) / path 지정=그 프로젝트 폴더 전용(<path>/.mcp.json, 그 프로젝트에 위임할 때만 도구 노출). stdio 는 command(+args,env), sse 는 url. **등록 후 바로 붙는 경우가 많습니다 — 먼저 써 보고, 그 서버의 도구가 안 보일 때만 재시작을 제안하세요**(프로젝트 전용은 그 프로젝트에 처음 위임하는 턴에 연결되고, 어댑터에 따라 전역도 다음 턴에 붙습니다). ★**특정 프로젝트에서만 의미 있는 서버는 반드시 path 를 지정하세요 — 전역에 넣지 마세요.** 판정: 그 서버가 특정 폴더·앱·저장소를 전제하면(예: 에디터 연동, 그 레포의 코드 색인) 프로젝트 전용입니다. 전역은 *어느 대화에서나 쓸 수 있는 것*만(예: 범용 검색). 전역에 잘못 넣으면 무관한 대화에도 도구가 실려 판단이 흐려지고, 그 앱이 안 떠 있는 기계에서는 **매 부팅 연결 실패**가 납니다(실사례 있음). 애매하면 사용자에게 물어보고, 기본은 프로젝트 전용입니다. ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
@@ -167,5 +168,5 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
           }
         },
       ),
-    ],
+    ]),
   });

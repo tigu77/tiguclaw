@@ -76,8 +76,8 @@ export const check: RegressionCheck = {
       (() => {
         // 합류 도구가 **실제로 실린 서버**를 찾아, 그 서버의 도달 범위로 «거둘 수 있나» 를 정한다.
         // ★항진식을 쓰지 않는다 — `!x || x` 는 무엇을 옮겨도 초록이라 검사가 아니다.
-        const inAgents = /tools:\s*\[[^\]]*waitForWorker/.test(agent);
-        const inWorkers = /tools:\s*\[[^\]]*waitForWorker/.test(worker);
+        const inAgents = /tools:\s*(?:onDemand\(\s*)?\[[^\]]*waitForWorker/.test(agent);
+        const inWorkers = /tools:\s*(?:onDemand\(\s*)?\[[^\]]*waitForWorker/.test(worker);
         const joinCap = inAgents ? ("agents" as const) : inWorkers ? ("workers" as const) : undefined;
         const broken = (["main", "manager", "subagent"] as const).filter(
           (t) => reaches("agents", t) && (joinCap === undefined || !reaches(joinCap, t)),

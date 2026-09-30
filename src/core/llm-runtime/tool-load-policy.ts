@@ -29,6 +29,31 @@
 
 /** SDK 가 도구를 "접지 말라" 고 표시하는 자리(`tool({alwaysLoad})` 와 같은 효과). */
 const ALWAYS_LOAD_META = "anthropic/alwaysLoad";
+/** SDK 의 검색 힌트 자리(`tool({searchHint})` 와 같은 곳) — 우리는 «접어도 된다» 는 선언으로도 읽는다. */
+const SEARCH_HINT_META = "anthropic/searchHint";
+
+/**
+ * **드물게 쓰는 도구는 접는다 — 정의가 선언한다** (2026-09-30 정태님 «능력·정체성 손실 없이 줄이자»).
+ *
+ * ★위 «우리 것은 펼친다» 의 근거(08-15)는 **자주 쓰는 도구**의 왕복이었다(Bash 450회를 매번 `select:` 로 열었다).
+ *  드문 도구는 반대다 — dev 실측(08-19~09-30, 활동 9,143건): 등록·삭제·관리류 22개가 6주간 합쳐 스무 번 남짓인데,
+ *  **매 호출** 8K 토큰(도구 검색 켜진 운영 요청 49.1K → 41.1K, count_tokens)을 싣고 있었다.
+ * ★접어도 잃는 것이 없다 — 이름은 SDK 가 목록으로 싣고(«이런 걸 할 수 있다» 를 안다), 쓸 때 ToolSearch 로 스키마를
+ *  한 번 연다. `find_capabilities` 도 그대로 안내한다. codex·openai 는 접기가 없어 그대로 펼친다(이 표시는 무해).
+ * ★멈추는 도구(`cancel_worker`·`KillShell`)는 드물어도 급할 때 쓰므로 접지 않는다 — 판단은 각 정의 파일에서.
+ * @param names 접을 도구 이름(이 배열 안의 것) — 생략하면 전부. 없는 이름은 무시된다(접히지 않는 쪽 = 안전).
+ */
+export const onDemand = <T extends { name: string; description: string; _meta?: Record<string, unknown> }>(
+  tools: T[],
+  names?: readonly string[],
+): T[] => {
+  for (const t of tools) {
+    if (names !== undefined && !names.includes(t.name)) continue;
+    const hint = t.description.split(/(?<=[.。!?])\s|\n/)[0]!.slice(0, 120);
+    t._meta = { ...(t._meta ?? {}), [SEARCH_HINT_META]: hint };
+  }
+  return tools;
+};
 
 /** in-process SDK 서버인가 — 그 안의 도구는 우리가 표식을 찍을 수 있다. */
 const isSdkServer = (v: unknown): boolean =>
@@ -50,6 +75,8 @@ const stampSdkServer = (server: unknown): void => {
     for (const t of Object.values(reg)) {
       const meta = (t._meta ?? {}) as Record<string, unknown>;
       if (meta[ALWAYS_LOAD_META] === true) continue;
+      // 정의가 «검색으로 찾게» 선언한 도구(`onDemand`)는 접힌 채 둔다 — 이름은 목록에 남고, 쓸 때 스키마를 연다.
+      if (typeof meta[SEARCH_HINT_META] === "string") continue;
       t._meta = { ...meta, [ALWAYS_LOAD_META]: true };
     }
   } catch {

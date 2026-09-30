@@ -37,6 +37,7 @@ import {
 import { setSessionArchived } from "../../../store/channel-session.js";
 import { DEFAULT_SESSION_ID } from "../../threadkey.js";
 import { getFirstUserText } from "../../../store/chat-log.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 
@@ -151,6 +152,6 @@ export const createSessionToolsMcpServer = (
   return createSdkMcpServer({
     name: "session-tools",
     version: "1.0.0",
-    tools: [renameTool, listTool, archiveTool],
+    tools: onDemand([renameTool, listTool, archiveTool]),
   });
 };

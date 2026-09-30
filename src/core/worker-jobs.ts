@@ -2284,7 +2284,7 @@ export const threadHasQueuedTurn = (threadKey: string): boolean => threadTails.h
 // 단 dispatcher 는 결과 텍스트 직접 push 였고, 여기선 핸들러 재진입의 reply 통로.
 // (telegram threadKey "tg:<chatId>" → chatId 복원, cli → console.log.)
 
-import { deliverOutbound } from "./outbound.js";
+import { attachmentSenderFor, deliverOutbound } from "./outbound.js";
 import type { ReplyOptions } from "../channels/types.js";
 import {
   canonicalSessionChannel,
@@ -2914,6 +2914,8 @@ export const onWorkerComplete = async (
   // channelAddress 는 캡처된 배달 좌표(dest.target)로 재확인 — route 의 setSessionChannelMeta
   // 가 last_channel_target 을 null 로 덮어쓰지 않게(telegram chatId 보존).
   const idChannel = canonicalSessionChannel(job.threadKey, job.channel);
+  // 파일도 글 보고와 같은 발원 세션으로 묶는다 — 파일에 답글을 달면 매니저를 띄운 세션으로 돌아온다.
+  const completionSendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null, notifySessionThreadKey(job.threadKey));
   const synthetic = {
     channel: job.channel,
     channelUserId: job.channelUserId,
@@ -2935,6 +2937,9 @@ export const onWorkerComplete = async (
     turnOrigin: "worker-completion" as const,
     receivedAt: Date.now(),
     reply: trackedReply,
+    // ★결과물도 같은 좌표로 보낼 수 있게 (2026-09-30) — 종전엔 이 자리가 비어 `send_file` 이 매번 «자동 보고 턴이라
+    //  보낼 통로가 없습니다» 로 막혔다(회사돌쇠 09-29 5회). 채널이 파일 발송을 못 하면(CLI) 비워 두고 종전 동작.
+    ...(completionSendAttachment !== undefined ? { sendAttachment: completionSendAttachment } : {}),
     // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.
     replyTarget: { channel: dest.channel, target: dest.target ?? null },
   };

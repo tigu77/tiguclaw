@@ -62,7 +62,7 @@ export const createSendFileMcpServer = (
           caption: z
             .string()
             .optional()
-            .describe("파일과 함께 보낼 설명(선택)."),
+            .describe("파일과 한 메시지로 함께 가는 설명. 받는 사람이 무슨 파일인지 알게 한 줄이라도 적으세요(비우면 파일만 덩그러니 갑니다)."),
         },
         async (args) => {
           // 채널 미지원(cli 등) — 전송 시도 없이 graceful 안내. (telegram=sendDocument,

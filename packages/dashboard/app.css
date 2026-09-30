@@ -908,13 +908,12 @@
       .turn-count { color:var(--text-dim); font-size:0.625rem; margin-left:auto; flex:none; white-space:nowrap; }
       /* 진행 중 경과시간 — 카드가 살아있음을 보이는 신호(2026-07-26). 진행 중엔 강조,
          완료(.done)되면 톤다운해 최종 소요시간으로 읽히게. 배지류와 같이 flex:none·nowrap. */
-      /* 턴 비용(2026-07-26) — 완료된 턴의 토큰. 경과시간과 같은 급의 부가정보라 톤을 낮춘다.
-         .heavy = 입력 20만 토큰 이상(관측 평균의 ~3배) — 확실히 이상한 턴만 눈에 띄게. */
+      /* 턴 비용(2026-07-26) — 완료된 턴의 토큰. */
       /* ★flex:none·nowrap 은 **형제 규칙**이다(위 .ts 주석: "압축은 항상 유연 텍스트가 흡수").
          비용만 그 규칙에서 빠져 있어, 모바일(390px)에서 유일하게 압축 가능한 배지가 되어
          폭 12px·높이 277px 로 **한 글자씩 세로로** 흘렀다(실측 2026-08-28, 헤더 293px). */
-      .turn-cost { color:var(--text-dim); font-weight:700; font-size:0.625rem; font-variant-numeric:tabular-nums; opacity:.8; flex:none; white-space:nowrap; }
-      .turn-cost.heavy { color:var(--warn); opacity:1; }
+      /* 토큰·캐시 줄은 **한 색**(2026-09-30 정태님) — 종전엔 입력 20만↑ 턴만 노란색(heavy)이라 줄마다 색이 갈렸다. */
+      .turn-cost { color:var(--warn); font-weight:700; font-size:0.625rem; font-variant-numeric:tabular-nums; opacity:1; flex:none; white-space:nowrap; }
       /* 실제 응답 모델 — adapter 배지(누가)와 달리 *어떤 모델*인지. 값 없으면 빈 span = 자리 차지 0. */
       .turn-model { color:var(--text-dim); font-size:0.625rem; font-weight:600; flex:none; white-space:nowrap; opacity:.75; }
       .turn-elapsed { color:var(--accent-2); font-size:0.625rem; font-weight:700; font-variant-numeric:tabular-nums; flex:none; white-space:nowrap; }

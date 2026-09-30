@@ -16,7 +16,7 @@
           vtAppend(card.group);
         }
         ensureReplyBubble(card, ts);
-        setTurnModel(card, p.model); // 델타에도 model 이 실린다 — 스트리밍 시작 즉시 표시.
+        setTurnModel(card, p.model, metaEffort(thread, p.model)); // 델타에도 model 이 실린다 — 스트리밍 시작 즉시 표시.
         // 평문 누적(textContent) — 스트리밍 중 부분 마크다운/미완 코드펜스 위험·깜빡임 회피.
         card.replyRaw += delta;
         card.replyMsg.textContent = card.replyRaw;
@@ -48,7 +48,7 @@
           }
           const txt = String(p.text || "");
           if (!card.replyBubble && txt !== "") ensureReplyBubble(card, ts); // 델타 없는 세그먼트 = 버블 신설.
-          setTurnModel(card, p.model);
+          setTurnModel(card, p.model, metaEffort(thread, p.model));
           if (card.replyMsg) {
             setChatBody(card.replyMsg, txt, true);       // 평문 델타 → 세그먼트 마크다운 전체본(자가치유).
             card.replyMsg.classList.remove("streaming");  // 타이핑 커서 off(세그먼트 확정).
@@ -84,7 +84,7 @@
           cardByThread.set(thread, card);
           vtAppend(card.group);
         }
-        setTurnModel(card, p.model); // 도구 스텝 — 시작/완료 모두 model 을 싣는다(어댑터 수정 후).
+        setTurnModel(card, p.model, metaEffort(thread, p.model)); // 도구 스텝 — 시작/완료 모두 model 을 싣는다(어댑터 수정 후).
         card.body.appendChild(buildActivityLine(p));
         card.lastSeq = p.seq ?? 0;
         card.count += 1;
@@ -128,9 +128,33 @@
       //  값이 없으면 아무것도 그리지 않는다(거짓값 금지 — setTurnCost 와 같은 규칙).
       // ★모델 옆 추론 강도 (2026-09-29) — 어댑터가 **실제로 보낸** 값만(turn_done·기록·잡 합계가 싣는다).
       //  실시간 카드·기록 카드·잡 카드가 이 한 모양을 쓴다(두 벌이면 한쪽만 바뀐다). 없으면 모델만.
+      /**
+       * 모델 옆 강도 — **판단은 여기 한 곳** (2026-09-30 정태님: 채팅·잡 카드가 모델 프로파일 화면과 같은 모양으로).
+       * 보낸 강도가 있으면 «강도 high», 없으면 Claude 는 «강도 기본»(실행기가 모델별 기본을 보낸다 — 실측 opus-5-5 는
+       * medium. 그 값을 런타임에 알 길이 없어 지어내지 않는다). 다른 모델은 강도를 안 보냈으면 아무것도 안 붙인다.
+       */
+      const effortOf = (m, r) => {
+        const v = typeof r === "string" ? r.trim() : "";
+        if (v !== "") return { text: i18n("models.effort.badge", { v }), title: i18n("tok.effort.title") };
+        if (/^claude-/i.test(String(m || ""))) return { text: i18n("models.effort.default"), title: i18n("tok.effort.default") };
+        return null;
+      };
+      /** 같은 판단의 글자 모양 — 바뀌었나 비교하는 키·툴팁 등 글자만 필요한 자리. */
       const modelWithEffort = (m, r) => {
-        // 설정 화면(모델 프로파일)의 강도 배지와 **같은 어휘** — «강도 high» / «Effort high».
-        return typeof r === "string" && r.trim() !== "" ? m + " · " + i18n("models.effort.badge", { v: r.trim() }) : m;
+        const e = effortOf(m, r);
+        return e === null ? m : m + " · " + e.text;
+      };
+      /** 모델 이름 + 프로파일 화면과 **같은 배지**(`model-spec-reasoning`) — 채팅 카드·답변 버블·잡 카드·기록이 같이 쓴다. */
+      const renderModelLabel = (el, m, r) => {
+        if (!el) return;
+        el.textContent = m;
+        const e = effortOf(m, r);
+        if (e === null) return;
+        const b = document.createElement("span");
+        b.className = "model-spec-reasoning";
+        b.textContent = e.text;
+        b.title = e.title;
+        el.appendChild(b);
       };
       const setTurnModel = (card, model, reasoning) => {
         const m = typeof model === "string" ? model.trim() : "";
@@ -149,13 +173,29 @@
         // ★현재 모델만 표시 (2026-07-27 사용자 지정). 종전엔 턴 도중 모델이 바뀌면 "이전→현재"
         //  로 남겼는데, 폴백 이력까지 화면에 들고 있을 필요는 없다는 판단. 폴백 사실은 turn_error
         //  통지·로그·events 에 이미 남는다. 표시는 "지금 무엇으로 답했나" 하나만.
-        target.textContent = label;
+        renderModelLabel(target, m, r);
         target.title = i18n("tok.model.title");
       };
       /** 턴이 끝났다 — 실제로 보낸 추론 강도를 모델 옆에 붙인다(turn_done 이 싣는다). */
       const setTurnEffort = (thread, payload) => {
         const card = cardByThread.get(thread);
         if (card && payload) setTurnModel(card, payload.model, payload.reasoning);
+      };
+      /**
+       * 턴 시작의 «이 모델 · 이 강도»(`llm.turn_meta`) — 카드는 첫 활동 때 생기므로 **스레드별로 들고 있다가** 카드에
+       * 모델을 달 때 같이 넘긴다(같은 모델일 때만). 끝의 turn_done 이 최종값이다.
+       */
+      const turnMetaByThread = new Map();
+      const metaEffort = (thread, model) => {
+        const x = turnMetaByThread.get(thread);
+        return x && typeof model === "string" && x.model === model.trim() ? x.reasoning : undefined;
+      };
+      const setTurnMeta = (thread, payload) => {
+        if (!payload || typeof payload.model !== "string" || payload.model.trim() === "") return;
+        turnMetaByThread.delete(thread); // 삽입 순서 = 최근성 — 오래된 것부터 버린다.
+        turnMetaByThread.set(thread, { model: payload.model.trim(), reasoning: payload.reasoning });
+        if (turnMetaByThread.size > 200) turnMetaByThread.delete(turnMetaByThread.keys().next().value);
+        setTurnEffort(thread, payload);
       };
 
       /**
@@ -188,8 +228,7 @@
               })
             : "") +
           i18n("tok.exact.out", { out: output.toLocaleString() });
-        // 입력이 유난히 큰 것은 눈에 띄게(임계는 관측 평균의 ~3배 — 확실히 이상한 것만).
-        return { text: parts.join(" · "), title, heavy: shownIn >= 200000 };
+        return { text: parts.join(" · "), title };
       };
 
       /**
@@ -221,7 +260,7 @@
               ? i18n("bg.usage.requestsUnknown", { n: missingRequests }) + i18n("bg.usage.cacheUnknown")
               : ""),
         });
-        return { text: s.text + (missingRequests > 0 ? "+" : ""), title: s.title, heavy: s.heavy };
+        return { text: s.text + (missingRequests > 0 ? "+" : ""), title: s.title };
       };
 
       const setTurnCost = (thread, payload) => {
@@ -238,7 +277,6 @@
         if (line === null) return;
         target.textContent = line.text;
         target.title = line.title;
-        if (line.heavy) target.classList.add("heavy");
       };
 
       /**

@@ -410,7 +410,7 @@
         const m = typeof model === "string" && model.trim() !== "" ? model.trim() : entry.modelSeen;
         if (!m) return;
         const paired = entry.reasoningSeen !== undefined && (entry.reasoningModel === undefined || entry.reasoningModel === m);
-        // 강도는 잡 합계(턴 끝)가 싣는다 — 채팅 카드와 같은 모양(`modelWithEffort`).
+        // 강도는 턴 시작(`llm.turn_meta`)과 잡 합계(턴 끝)가 싣는다 — 채팅 카드와 같은 판단·모양(`renderModelLabel`).
         const label = modelWithEffort(m, paired ? entry.reasoningSeen : undefined);
         if (entry.modelSeen === m && entry.labelSeen === label) return;
         entry.modelSeen = m;
@@ -418,7 +418,7 @@
         const el = entry.modelBadgeEl;
         if (!el) return;
         el.style.display = "";
-        el.textContent = label; // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
+        renderModelLabel(el, m, paired ? entry.reasoningSeen : undefined); // 현재 모델만(전환 표기 없음 — 채팅 setTurnModel 과 같은 규칙).
         el.title = i18n("bg.model.title");
       };
 
@@ -1172,8 +1172,6 @@
         });
         entry.usageEl.textContent = (executions > 0 ? i18n("bg.usage.main") : "") + s.text + (unrep > 0 || failed > 0 || missingRequests > 0 ? "+" : "") + (summaryText ? " · " + summaryText : "");
         entry.usageEl.title = s.title + (summaryText ? " · " + summaryText : "");
-        // `heavy`(20만↑)는 **턴** 기준 임계라 잡 합계엔 안 건다 — 잡 합계는 거의 늘 넘어서
-        //  모든 카드가 경고색이 된다(dev 실측 턴당 평균 158만).
         entry.usageEl.style.display = "";
       };
       // 진행 중 잡의 합계는 턴이 끝날 때마다 는다 — 그 신호(`llm.turn_done` on 잡 좌표)에
@@ -1550,6 +1548,15 @@
         appendJobStep(entry, line);
         scheduleAgentsRender(); // 에이전트 뷰가 열려 있으면 거기 단계 목록에도 반영(throttle).
         scheduleProjectAgentsRender();
+      };
+
+      /** 잡 좌표의 턴 시작 «모델 · 강도»(`llm.turn_meta`) — 긴 턴 하나로 도는 잡도 시작부터 강도가 보인다. 카드가 있을 때만. */
+      const handleJobTurnMeta = (p) => {
+        const tk = p && typeof p.threadKey === "string" ? p.threadKey : "";
+        const m = /^(?:worker|agent):(.+)$/.exec(tk);
+        const entry = m ? jobCards.get(m[1]) : undefined;
+        if (!entry || typeof p.model !== "string") return;
+        setJobModel(entry, p.model, typeof p.reasoning === "string" ? p.reasoning : "", p.model);
       };
 
       const handleWorkerActivity = (p, ts) => {

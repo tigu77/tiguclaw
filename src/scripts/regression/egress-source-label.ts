@@ -134,10 +134,13 @@ export const check: RegressionCheck = {
     const callers = listPrefixCallers();
     out.push(
       assert(
-        "★★라벨을 부르는 자리는 **egress fan-out 과 텔레그램 인입 응답 둘 뿐**이다 — 새 자리가 생기면 계약(기본 세션 제외·신호가 무엇인가)을 다시 봐야 한다",
-        callers.length === 2 &&
+        "★★라벨을 부르는 자리는 **egress fan-out · 텔레그램 인입 응답 · 텔레그램 파일 캡션** 셋뿐이다 — 새 자리가 생기면 계약(기본 세션 제외·신호가 무엇인가)을 다시 봐야 한다",
+        // 2026-09-30 파일 캡션 추가(정태님 «파일 전송에도 세션 정보»): 계약 재확인 — 기본 세션은 egressSourcePrefix 가 빼고,
+        //  신호는 인입 턴이면 글 답장과 같은 routedSession, 좌표 발송(매니저 보고)이면 fan-out 과 같은 발원 세션이다.
+        callers.length === 3 &&
           callers.includes("src/index.ts") &&
-          callers.includes("plugins/telegram-channel/index.ts"),
+          callers.includes("plugins/telegram-channel/index.ts") &&
+          callers.includes("plugins/telegram-channel/send-document.ts"),
         callers.join(", ") || "(호출 자리 없음)",
       ),
     );

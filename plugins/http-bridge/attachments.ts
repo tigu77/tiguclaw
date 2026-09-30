@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Attachment, AttachmentKind } from "../../src/channels/types.js";
 import { getPaths } from "../../src/core/paths.js";
+import type { EventBus } from "../../src/core/eventbus.js";
 
 /**
  * **개수 상한.** ★`export` 다 — `/health` 가 이 셋을 화면에 실어 보낸다 (2026-09-15).
@@ -170,3 +171,68 @@ export const persistOutboundAttachment = async (
   return { rel, name, mime, kind, bytes: st.size };
 };
 
+
+/**
+ * 파일 하나를 대화에 붙인다 — **판단은 여기 한 곳** (2026-09-30). 인입 턴의 `send_file`(routes-chat)과 좌표만 있는
+ * 발송(`outbound.deliverAttachment` — 매니저 완료 보고처럼 인입 메시지가 없는 턴)이 같은 함수를 쓴다.
+ * 통제 디렉터리로 복사해 서빙 경로를 확보한 뒤 `channel.message.out` 에 `attachments` 를 실어 발행한다 → 대시보드가
+ * 첨부 카드로 그리고 event-persist 가 chat_log 에 남긴다(새로고침·재시작 후에도 유지). 멱등은 호출자(send_file 도구의
+ * 턴별 sentPaths)가 보장한다. 실패는 던지지 않고 사유로 돌려준다.
+ */
+export const publishOutboundAttachment = async (input: {
+  bus: EventBus | null;
+  channel: string;
+  threadKey: string;
+  filePath: string;
+  caption?: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> => {
+  const meta = await persistOutboundAttachment(input.filePath, input.channel).catch(() => null);
+  if (meta === null) {
+    return { ok: false, error: `파일을 찾을 수 없거나 접근할 수 없습니다: ${input.filePath}` };
+  }
+  if (input.bus === null) {
+    return { ok: false, error: "control bus not started (대시보드 미연결)" };
+  }
+  try {
+    input.bus.publish({
+      type: "channel.message.out",
+      ts: Date.now(),
+      payload: {
+        channel: input.channel,
+        threadKey: input.threadKey,
+        text: "", // 첨부-only 아웃바운드(캡션은 attachment.caption 으로). 최종 답변 text-out 과 별개 버블.
+        attachments: [
+          {
+            rel: meta.rel,
+            mime: meta.mime,
+            name: meta.name,
+            kind: meta.kind,
+            bytes: meta.bytes,
+            ...(input.caption !== undefined && input.caption !== "" ? { caption: input.caption } : {}),
+          },
+        ],
+      },
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+};
+
+/** 좌표(=세션 threadKey)만으로 — 좌표가 없으면 다시 해도 안 된다(`unavailable`). `outbound.deliverAttachment` 가 쓴다. */
+export const deliverSessionAttachment = (input: {
+  bus: EventBus | null;
+  channel: string;
+  target: string | null;
+  filePath: string;
+  caption?: string;
+}): Promise<{ ok: true } | { ok: false; error: string; unavailable?: true }> =>
+  input.target === null || input.target.trim() === ""
+    ? Promise.resolve({ ok: false, error: "http-bridge target required (session threadKey)", unavailable: true })
+    : publishOutboundAttachment({
+        bus: input.bus,
+        channel: input.channel,
+        threadKey: input.target,
+        filePath: input.filePath,
+        ...(input.caption !== undefined ? { caption: input.caption } : {}),
+      });

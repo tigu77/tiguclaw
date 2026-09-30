@@ -88,43 +88,59 @@ export const check: RegressionCheck = {
     const historySrc = read("packages/dashboard/js/history-render.js");
     const drawerSrc = read("packages/dashboard/js/background-drawer.js");
     const cardByThread = new Map<string, unknown>();
+    // 작은 DOM 대역 — 글자 + 자식(배지). `shown` 이 «모델 · 배지 글자» 로 읽는다(= modelWithEffort 문자열).
+    class El {
+      children: El[] = []; className = ""; title = ""; style: Record<string, string> = {};
+      private t = "";
+      get textContent(): string { return this.t; }
+      set textContent(v: string) { this.t = v; this.children = []; }
+      appendChild(c: El): El { this.children.push(c); return c; }
+    }
+    const el = (): El => new El();
+    const shown = (e: unknown): string => {
+      const x = e as El;
+      return x.textContent + x.children.map((c) => ` · ${c.textContent}`).join("");
+    };
     const ctx = vm.createContext({
-      i18n, Number, Math, JSON, Object, String, cardByThread, renderedMsgKeys: new Set(), msgKey: (ts: number, r: string) => `${ts}|${r}`,
+      i18n, Number, Math, JSON, Object, String, cardByThread, Map, document: { createElement: () => el() }, renderedMsgKeys: new Set(), msgKey: (ts: number, r: string) => `${ts}|${r}`,
       // 버블 빌더의 입력만 본다 — 병합 결과가 **버블까지** 가는지(적대 검토 G4: 넘기는 단계를 되돌려도 초록이었다).
       renderedActivityKeys: new Set(), actKey: (...k: unknown[]) => k.join("|"), buildHistoryDiv: (e: unknown) => e,
     });
     vm.runInContext(
-      [fn(token, "fmtTokens"), fn(token, "modelWithEffort"), fn(token, "setTurnModel"), fn(token, "setTurnEffort"), fn(token, "usageSummary"), fn(token, "costLine"),
+      [fn(token, "fmtTokens"), fn(token, "effortOf"), fn(token, "modelWithEffort"), fn(token, "renderModelLabel"), fn(token, "setTurnModel"), fn(token, "setTurnEffort"),
+        fn(token, "turnMetaByThread") /* metaEffort 까지 같이 온다(한 줄 선언) */, fn(token, "setTurnMeta"), fn(token, "usageSummary"), fn(token, "costLine"),
         fn(historySrc, "canonicalBodyFor"), fn(historySrc, "groupMergedItems"), fn(historySrc, "buildHistoryTextEl"), fn(drawerSrc, "setJobModel"),
-        "globalThis.api = { modelWithEffort, setTurnModel, setTurnEffort, costLine, groupMergedItems, buildHistoryTextEl, setJobModel };"].join("\n"),
+        "globalThis.api = { modelWithEffort, setTurnModel, setTurnEffort, setTurnMeta, metaEffort, costLine, groupMergedItems, buildHistoryTextEl, setJobModel };"].join("\n"),
       ctx,
     );
     type Api = {
       modelWithEffort: (m: string, r?: string) => string;
       setTurnModel: (c: unknown, m?: string, r?: string) => void;
       setTurnEffort: (t: string, p: unknown) => void;
+      setTurnMeta: (t: string, p: unknown) => void;
+      metaEffort: (t: string, m: string) => string | undefined;
       costLine: (s: unknown, o?: unknown) => { text: string } | null;
-      groupMergedItems: (e: unknown[], a: unknown[]) => Array<{ kind: string; act?: Record<string, unknown>; entry?: unknown }>;
+      groupMergedItems: (e: unknown[], a: unknown[]) => Array<{ kind: string; act?: Record<string, unknown>; entry?: unknown; reasoning?: string }>;
       buildHistoryTextEl: (a: unknown) => Record<string, unknown>;
       setJobModel: (e: unknown, m?: string, r?: string, rm?: string) => void;
     };
     const api = (ctx as unknown as { api: Api }).api;
-    const lbl = (m: string, r: string): string => api.modelWithEffort(m, r);
-    const card = { modelEl: { textContent: "", title: "" } } as { modelEl: { textContent: string } };
+    const lbl = (m: string, r?: string): string => api.modelWithEffort(m, r);
+    const card = { modelEl: el() };
     api.setTurnModel(card, "gpt-6-sol");                // 활동 이벤트(모델만)
-    const a1 = card.modelEl.textContent;
+    const a1 = shown(card.modelEl);
     api.setTurnModel(card, "gpt-6-sol", "high");        // turn_done(강도)
-    const a2 = card.modelEl.textContent;
+    const a2 = shown(card.modelEl);
     api.setTurnModel(card, "gpt-6-sol");                // 뒤늦은 활동 이벤트가 강도를 지우지 않는다
-    const a3 = card.modelEl.textContent;
+    const a3 = shown(card.modelEl);
     api.setTurnModel(card, "claude-opus-5");            // 모델이 바뀌면(폴백) 앞 모델의 강도를 물려받지 않는다
-    const a4 = card.modelEl.textContent;
+    const a4 = shown(card.modelEl);
     const hist = api.costLine(spend, { missingRequests: 0 });
     const histPartial = api.costLine(spend, { missingRequests: 1 });
     out.push(
       assert(
         "★모델 옆 강도: 턴 끝에 붙고, 뒤늦은 모델-only 이벤트가 안 지우고, 모델이 바뀌면 떨어진다 · 기록 카드 비용 줄에 캐시 % (미보고면 «+», 캐시 말 안 함)",
-        a1 === "gpt-6-sol" && a2 === lbl("gpt-6-sol", "high") && a3 === lbl("gpt-6-sol", "high") && a4 === "claude-opus-5" &&
+        a1 === "gpt-6-sol" && a2 === lbl("gpt-6-sol", "high") && a3 === lbl("gpt-6-sol", "high") && a4 === lbl("claude-opus-5") && a4.includes("models.effort.default") &&
           a2.includes("models.effort.badge") &&
           hist !== null && hist.text.includes("tok.cacheRate") && histPartial !== null && histPartial.text.endsWith("+") && !histPartial.text.includes("tok.cacheRate"),
         { a1, a2, a3, a4, hist: hist?.text, histPartial: histPartial?.text },
@@ -139,15 +155,15 @@ export const check: RegressionCheck = {
     );
     const textUnit = units.find((u) => u.kind === "text");
     // setTurnEffort 가 강도를 실제로 넘긴다.
-    const liveCard = { modelEl: { textContent: "", title: "" } };
+    const liveCard = { modelEl: el() };
     cardByThread.set("t", liveCard);
     api.setTurnEffort("t", { model: "gpt-6-sol", reasoning: "xhigh" });
     out.push(
       assert(
         "★새로고침 병합: 스트리밍된 턴의 답 세그먼트가 답변 행의 강도·비용을 이어받는다(행은 여전히 중복으로 버려짐) · 실시간 turn_done 이 강도를 넘긴다",
         units.length === 2 && textUnit?.act?.reasoning === "high" && (textUnit?.act?.spend as { cached?: number } | undefined)?.cached === 109952 &&
-          liveCard.modelEl.textContent === lbl("gpt-6-sol", "xhigh"),
-        { units: units.map((u) => u.kind), act: textUnit?.act, live: liveCard.modelEl.textContent },
+          shown(liveCard.modelEl) === lbl("gpt-6-sol", "xhigh"),
+        { units: units.map((u) => u.kind), act: textUnit?.act, live: shown(liveCard.modelEl) },
       ),
     );
     // ③-b2 ★버블까지 · 순서 · 한쪽만 — 병합 결과만 보면 버블로 넘기는 단계를 되돌려도 초록이었고(G4), 세그먼트 1개
@@ -171,24 +187,70 @@ export const check: RegressionCheck = {
         { bubble: { reasoning: bubble.reasoning, spend: bubble.spend }, two: two.map((u) => [u.kind, u.act?.reasoning ?? null]) },
       ),
     );
+    // ③-e ★턴 시작 «모델 · 강도» — 카드가 아직 없어도 들고 있다가, 카드가 모델을 달 때 **같은 모델이면** 붙인다.
+    api.setTurnMeta("t3", { model: "gpt-6-sol", reasoning: "high" });
+    const held = api.metaEffort("t3", "gpt-6-sol");
+    const heldOther = api.metaEffort("t3", "gpt-6-terra");
+    const card3 = { modelEl: el() };
+    api.setTurnModel(card3, "gpt-6-sol", api.metaEffort("t3", "gpt-6-sol"));
+    // ③-f ★기록 도구 카드 — 같은 턴 답변 행의 강도를 **짝 모델 카드에만**, 다음 턴 카드엔 안 넘긴다.
+    const tu = api.groupMergedItems(
+      [
+        { ts: 3000, role: "user", text: "q1", threadKey: "t4" },
+        { ts: 3300, role: "assistant", text: "a1", threadKey: "t4", model: "gpt-6-sol", reasoning: "low" },
+        { ts: 3400, role: "user", text: "q2", threadKey: "t4" }, // 이 턴은 답 없이 끝났다(오류 등)
+        { ts: 3600, role: "user", text: "q3", threadKey: "t4" },
+        { ts: 3900, role: "assistant", text: "a3", threadKey: "t4", model: "gpt-6-sol", reasoning: "high" },
+      ],
+      [
+        { ts: 3100, kind: "tool", label: "Read", threadKey: "t4", seq: 1, model: "gpt-6-sol" },
+        { ts: 3150, kind: "tool", label: "Read", threadKey: "t4-other", seq: 1, model: "gpt-6-sol" },
+        { ts: 3500, kind: "tool", label: "Read", threadKey: "t4", seq: 1, model: "gpt-6-sol" },
+        { ts: 3700, kind: "tool", label: "Read", threadKey: "t4", seq: 1, model: "gpt-6-sol" },
+      ],
+    );
+    const turns = tu.filter((u) => u.kind === "turn");
+    out.push(assert(
+      "★턴 시작 강도: 카드 전에도 들고 있다 · 같은 모델이면 붙는다 · 기록 도구 카드는 같은 턴·같은 스레드·짝 모델일 때만 강도를 받는다",
+      held === "high" && heldOther === undefined && shown(card3.modelEl) === lbl("gpt-6-sol", "high") &&
+        turns.length === 4 && turns[0]?.reasoning === "low" && turns[1]?.reasoning === undefined &&
+          turns[2]?.reasoning === undefined && turns[3]?.reasoning === "high",
+      { held, heldOther, card3: shown(card3.modelEl), turns: turns.map((u) => u.reasoning ?? null) },
+    ));
+    // ③-g 턴 시작 알림 — 강도가 없으면 필드를 안 싣고(«보내지 않음»), 내부 호출·빈 모델은 안 낸다.
+    const { publishTurnMeta } = await import("../../core/llm-runtime/turn-meta.js");
+    const metas: Array<Record<string, unknown>> = [];
+    const unsubMeta = getEventBus().subscribe((e: { type: string; payload: Record<string, unknown> }) => {
+      if (e.type === "llm.turn_meta" && String(e.payload.threadKey).startsWith("regr:meta")) metas.push(e.payload);
+    });
+    publishTurnMeta({ threadKey: "regr:meta:1", adapter: "codex", model: "gpt-6-sol", reasoning: "low" });
+    publishTurnMeta({ threadKey: "regr:meta:2", adapter: "claude", model: "claude-opus-5", reasoning: undefined });
+    publishTurnMeta({ threadKey: "regr:meta:3", internal: true, adapter: "codex", model: "gpt-6-sol", reasoning: "low" });
+    publishTurnMeta({ threadKey: "regr:meta:4", adapter: "codex", model: "", reasoning: "low" });
+    unsubMeta();
+    out.push(assert(
+      "턴 시작 알림: 강도가 있으면 싣고 없으면 필드 없음 · 내부 호출·빈 모델은 안 낸다",
+      metas.length === 2 && metas[0]?.reasoning === "low" && !("reasoning" in (metas[1] ?? {})) && metas[1]?.model === "claude-opus-5",
+      metas,
+    ));
     // ③-c ★잡 카드 — 강도는 그 강도를 보낸 모델과 짝일 때만(폴백 뒤 다른 모델에 안 붙음) · 합계가 먼저 와도 쥐고 있다 · 강도 없는 턴이면 떨어진다.
-    const badge = () => ({ style: { display: "none" }, textContent: "", title: "" });
-    const j1 = { modelBadgeEl: badge() } as { modelBadgeEl: { textContent: string } };
+    const badge = (): El => { const b = el(); b.style.display = "none"; return b; };
+    const j1 = { modelBadgeEl: badge() };
     api.setJobModel(j1, "gpt-6-sol");
     api.setJobModel(j1, undefined, "high", "gpt-6-sol");
-    const jA = j1.modelBadgeEl.textContent;
+    const jA = shown(j1.modelBadgeEl);
     api.setJobModel(j1, "claude-opus-5"); // 잡 안 폴백
-    const jB = j1.modelBadgeEl.textContent;
-    const j2 = { modelBadgeEl: badge() } as { modelBadgeEl: { textContent: string } };
+    const jB = shown(j1.modelBadgeEl);
+    const j2 = { modelBadgeEl: badge() };
     api.setJobModel(j2, undefined, "medium", "gpt-6-sol"); // 합계가 모델보다 먼저(하이드레이션)
     api.setJobModel(j2, "gpt-6-sol");
-    const jC = j2.modelBadgeEl.textContent;
+    const jC = shown(j2.modelBadgeEl);
     api.setJobModel(j2, undefined, "", undefined); // 다음 턴은 강도를 안 보냈다
-    const jD = j2.modelBadgeEl.textContent;
+    const jD = shown(j2.modelBadgeEl);
     out.push(
       assert(
         "★잡 카드: 강도는 보낸 모델과 짝일 때만 · 폴백 뒤 다른 모델엔 안 붙음 · 합계가 먼저 와도 유지 · 강도 없는 턴이면 떨어짐",
-        jA === lbl("gpt-6-sol", "high") && jB === "claude-opus-5" && jC === lbl("gpt-6-sol", "medium") && jD === "gpt-6-sol",
+        jA === lbl("gpt-6-sol", "high") && jB === lbl("claude-opus-5") && jC === lbl("gpt-6-sol", "medium") && jD === "gpt-6-sol",
         { jA, jB, jC, jD },
       ),
     );
@@ -229,9 +291,15 @@ export const check: RegressionCheck = {
       outEvent: /\.\.\.\(typeof out\.reasoning === "string" && out\.reasoning !== "" \? \{ reasoning: out\.reasoning \} : \{\}\)/.test(entry) &&
         /const spend = turnSpend\(out\.usage\);\s*if \(spend === undefined\) return \{\};\s*const missing = out\.usage\?\.unreportedRequests;\s*return \{ spend: \{ \.\.\.spend, \.\.\.\(typeof missing === "number" && missing > 0 \? \{ unreportedRequests: missing \} : \{\}\) \} \};/.test(entry),
       router: /\.\.\.\(typeof out\.reasoning === "string" && out\.reasoning !== "" \? \{ reasoning: out\.reasoning \} : \{\}\),\s*\.\.\.\(out\.usage !== undefined \? \{ usage: out\.usage \} : \{\}\),/.test(read("src/core/router.ts")),
-      history: /modelWithEffort\(entry\.model\.trim\(\), entry\.reasoning\)/.test(history) &&
+      history: /renderModelLabel\(mEl, entry\.model\.trim\(\), entry\.reasoning\)/.test(history) &&
+        /buildHistoryTurnEl\(u\.acts, u\.reasoning\)/.test(history) && /renderModelLabel\(modelEl, mLast, reasoning\)/.test(history) &&
         /if \(isOut && entry\.spend\) \{\s*const line = costLine\(entry\.spend,[\s\S]{0,200}if \(line !== null\) \{[\s\S]{0,300}head\.appendChild\(cEl\);/.test(history),
-      live: /setTurnEffort\(tk, ev\.payload \|\| \{\}\);/.test(sse),
+      live: /setTurnEffort\(tk, ev\.payload \|\| \{\}\);/.test(sse) &&
+        /if \(ev\.type === "llm\.turn_meta"\) \{[\s\S]{0,160}setTurnMeta\(tk, ev\.payload\); handleJobTurnMeta\(ev\.payload\);/.test(sse),
+      // 턴 시작 알림은 **보낼 변수 그대로** — 세 어댑터가 같은 함수로.
+      turnMeta: /publishTurnMeta\(\{[^}]*adapter: "codex", model, reasoning: turnReasoning \}\)/.test(codex) &&
+        /publishTurnMeta\(\{[^}]*adapter: "claude", model: input\.model, reasoning: claudeEffort \}\)/.test(claude) &&
+        /publishTurnMeta\(\{[^}]*adapter: "openai", model: input\.model, reasoning: reasoningEffort \}\)/.test(openai),
       job: /u\.reasoning = payload\.reasoning;[\s\S]{0,200}u\.reasoningModel = payload\.model;[\s\S]{0,200}\} else \{\s*delete u\.reasoning;\s*delete u\.reasoningModel;/.test(jobs) &&
         /entry\.usage = u;[\s\S]{0,400}setJobModel\(entry, undefined, typeof u\.reasoning === "string" \? u\.reasoning : "", u\.reasoningModel\);/.test(drawer),
     };

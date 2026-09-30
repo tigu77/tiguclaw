@@ -353,6 +353,7 @@ export const createTurnInputFilter = (deps: {
 };
 
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
+import { publishTurnMeta } from "../turn-meta.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
 
 export const runOpenAi = async (
@@ -952,6 +953,8 @@ export const runOpenAi = async (
   const reasoningEffort =
     input.reasoning ??
     resolveReasoningEffort(input.provider ?? "openai", input.model ?? "", input.cwd);
+  // 턴 시작에 «이 모델 · 이 강도» — 보낼 변수 그대로(`turn-meta.ts`).
+  publishTurnMeta({ threadKey: input.threadKey, internal: input.internal, adapter: "openai", model: input.model, reasoning: reasoningEffort });
   // ★**보내기 전에** 잘릴 걸 안다 (2026-08-31). 벤더가 `/models` 로 컨텍스트를 알려준
   //  경우에만 — 모르면 침묵한다(추측하면 멀쩡한 모델을 못 쓰게 막는 것처럼 읽힌다).
   //  ★막지 않는다. 말할 뿐이다 — 코드가 판단을 가로채지 않는다

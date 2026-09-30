@@ -22,7 +22,7 @@
  */
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { applyToolLoadPolicy } from "../../core/llm-runtime/tool-load-policy.js";
+import { applyToolLoadPolicy, onDemand } from "../../core/llm-runtime/tool-load-policy.js";
 import { createFileOpsMcpServer } from "../../core/llm-runtime/capabilities/file-ops-mcp.js";
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -114,6 +114,27 @@ const run = async (): Promise<Assertion[]> => {
         JSON.stringify(applied.plain),
       ),
     );
+  }
+
+  // ── ⑥ ★드문 도구는 접는다 — **정의가 선언한 것만** (2026-09-30) ──────────────────
+  //  같은 서버 안에서도 `onDemand` 로 고른 도구만 접히고(검색 힌트 = 이름·용도가 목록에 남는다), 나머지는 펼친다.
+  {
+    const mk = (tn: string) => tool(tn, `${tn} 를 합니다. 두 번째 문장.`, { a: z.string() }, async () => ({ content: [{ type: "text" as const, text: "x" }] }));
+    const srv = createSdkMcpServer({ name: "mixed", version: "1.0.0", tools: onDemand([mk("often"), mk("rare")], ["rare"]) });
+    const applied = applyToolLoadPolicy({ mixed: srv });
+    const reg = ((applied.mixed as Record<string, unknown>).instance as Record<string, unknown>)._registeredTools as Record<string, { _meta?: Record<string, unknown> }>;
+    const often = reg.often?._meta ?? {};
+    const rare = reg.rare?._meta ?? {};
+    out.push(
+      assert(
+        "★onDemand 로 고른 도구만 접힌 채(검색 힌트 = 첫 문장) · 나머지는 펼친다",
+        often[ALWAYS_LOAD_META] === true && rare[ALWAYS_LOAD_META] !== true && rare["anthropic/searchHint"] === "rare 를 합니다.",
+        JSON.stringify({ often, rare }),
+      ),
+    );
+    // 멈추는 도구는 드물어도 접지 않는다 — 급할 때 한 번 더 왕복하면 안 된다.
+    const w = await sourceHas("../../core/llm-runtime/capabilities/worker-registry.ts", [/onDemand\(\[[^\]]*cancelWorker[^\]]*\], \["list_all_workers"\]\)/]);
+    out.push(assert("★멈추는 도구(cancel_worker)는 접는 목록에 없다", w.ok, w.ok ? "list_all_workers 만" : `불일치 ${w.missing.join(" ")}`));
   }
 
   // ── ⑤ ★SDK 내부 구조가 바뀌면 **여기가 먼저 빨간불**이다 ────────────────────

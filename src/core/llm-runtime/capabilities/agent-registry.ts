@@ -46,6 +46,7 @@ import {
 } from "./join-response.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
+import { onDemand } from "../tool-load-policy.js";
 
 export interface Agent {
   /** frontmatter `name` (우선) 또는 파일 basename (확장자 제외). */
@@ -1054,6 +1055,6 @@ export const createSpawnAgentMcpServer = (
   return createSdkMcpServer({
     name: "agents",
     version: "1.1.0",
-    tools: [spawnTool, waitForWorker, readWorkerResult, findAgentsTool],
+    tools: onDemand([spawnTool, waitForWorker, readWorkerResult, findAgentsTool], ["find_agents"]),
   });
 };

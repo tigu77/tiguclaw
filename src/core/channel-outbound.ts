@@ -53,6 +53,26 @@ export interface ChannelOutbound {
     },
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
+   * 파일 **1개** 전송 — `deliver`(텍스트)의 파일 판(版) (2026-09-30).
+   *
+   * ★인입 메시지가 없는 턴(매니저 완료 보고)은 `IncomingMessage.sendAttachment` 콜백이 없어 `send_file` 이
+   *  매번 «자동 보고 턴이라 보낼 통로가 없습니다» 로 막혔다(회사돌쇠 09-29 5회 — 매니저가 만든 아이콘·원화를
+   *  보고와 함께 붙이려다). 좌표만으로 보낼 수 있는 자리가 이것이다. 없으면 그 채널은 파일 발송 능력이 없는 것
+   *  (CLI) — 호출부는 채널 이름을 모르고 이 자리의 유무만 본다.
+   * ★인입 턴의 `sendAttachment` 와 **같은 구현**을 쓴다(채널 안에서 한 함수) — 두 벌이면 한쪽만 고쳐진다.
+   * ★다시 해도 안 될 실패(좌표 없음·채널 미기동)는 `unavailable: true` — send_file 이 «재시도하라» 대신
+   *  «경로를 글로 적어라» 로 안내한다(안 그러면 모델이 영영 안 될 호출을 되풀이한다).
+   */
+  deliverAttachment?: (
+    target: string | null,
+    filePath: string,
+    opts?: {
+      caption?: string;
+      /** 이 파일을 낸 세션 — 채널이 답글 라우팅·표시에 쓴다(글의 `originThreadKey` 와 같은 뜻). */
+      originThreadKey?: string;
+    },
+  ) => Promise<{ ok: true } | { ok: false; error: string; unavailable?: true }>;
+  /**
    * 활동 표시 **1회 갱신** (텔레그램 "입력 중…" = sendChatAction). 없으면 그 채널은
    * 표시 능력이 없는 것 — 호출부는 조회만 하고 채널 이름을 모른다(`deliver` 와 동형).
    *

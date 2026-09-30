@@ -45,6 +45,7 @@ import {
   BUILTIN_COMMANDS as BUILTIN_COMMANDS_ARRAY,
   UNLISTED_BUILTIN_COMMANDS,
 } from "../../entry/command-registry.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({
   content: [{ type: "text" as const, text }],
@@ -253,6 +254,6 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
   return createSdkMcpServer({
     name: "commands",
     version: "1.0.0",
-    tools: [registerCommand, listCommands, deleteCommand],
+    tools: onDemand([registerCommand, listCommands, deleteCommand]),
   });
 };

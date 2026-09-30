@@ -179,7 +179,7 @@ import { endpointPreview } from "./endpoint-preview.js";
 // 텔레그램 첨부 경로와 동형(진실 소스 = Attachment 계약, <home>/data/attachments/<channel>/
 // <yyyymmdd>/<id>.<ext>). base64 인바운드는 로컬(127.0.0.1)+토큰 게이트 한정 = 외부 노출 아님.
 // 크기/개수 캡은 boundary 검증(메모리·디스크 보호). 캡 위반·저장 실패는 400 으로 닫고 데몬 생존.
-import { ATTACH_MAX_FILE_BYTES, AttachmentError, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename, ingestAttachments, persistOutboundAttachment } from "./attachments.js";
+import { ATTACH_MAX_FILE_BYTES, AttachmentError, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename, ingestAttachments, persistOutboundAttachment, deliverSessionAttachment } from "./attachments.js";
 import {
   readJsonBody,
   readRawBody,
@@ -237,6 +237,15 @@ class HttpBridge implements Channel, Observer {
    */
   readonly outbound: ChannelOutbound = {
     defaultOutboundTarget: (): string | null => null,
+    // 파일 1개 — 좌표(=세션 threadKey)만으로 대화에 붙인다. 인입 턴의 send_file 과 같은 함수(2026-09-30).
+    deliverAttachment: (target, filePath, opts) =>
+      deliverSessionAttachment({
+        bus: this.bus,
+        channel: this.name,
+        target,
+        filePath,
+        ...(opts?.caption !== undefined ? { caption: opts.caption } : {}),
+      }),
   };
 
   private server: http.Server | null = null;

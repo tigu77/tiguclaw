@@ -28,6 +28,7 @@ import {
   forgetProject,
   type ProjectStatus,
 } from "../../../store/projects.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const errText = (text: string) => ({
@@ -132,7 +133,7 @@ export const createProjectRegistryMcpServer =
     createSdkMcpServer({
       name: "projects",
       version: "1.0.0",
-      tools: [
+      tools: onDemand([
         tool(
           "project_register",
           "폴더를 프로젝트로 등록합니다. 그 폴더의 PROJECT.md(frontmatter: name·description·status(active/paused/done)·related)를 읽어 프로젝트 레지스트리에 넣어 대시보드에 노출합니다. PROJECT.md 가 없으면 먼저 작성하세요.",
@@ -255,5 +256,5 @@ export const createProjectRegistryMcpServer =
             );
           },
         ),
-      ],
+      ], ["project_register", "project_update", "project_forget"]),
     });

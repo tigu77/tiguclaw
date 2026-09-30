@@ -556,6 +556,7 @@ export const withTurnTotals = (
 };
 
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
+import { publishTurnMeta } from "../turn-meta.js";
 
 export const runOpenAiCodex = async (
   input: RegionASdkInput,
@@ -714,6 +715,8 @@ export const runOpenAiCodex = async (
    *  추측값을 씌우지 않는 종전 규칙 그대로다.
    */
   const turnReasoning = input.reasoning ?? resolveReasoningEffort("codex", model, input.cwd);
+  // 턴 시작에 «이 모델 · 이 강도» — 보낼 변수 그대로(`turn-meta.ts`).
+  publishTurnMeta({ threadKey: input.threadKey, internal: input.internal, adapter: "codex", model, reasoning: turnReasoning });
 
   /**
    * ★inputComposition 의 `origins` 경계(2026-09-23) — 턴 로컬, `buildTurnHistory` 조립

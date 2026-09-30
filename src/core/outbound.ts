@@ -14,6 +14,7 @@
  * 플러그인이 이 함수를 부르는 건 허용(plugin→core).
  */
 import type { EventBus } from "./eventbus.js";
+import type { IncomingMessage } from "../channels/types.js";
 import { getEventBus } from "./eventbus.js";
 import { recordOutboundMessage } from "../store/outbound-messages.js";
 import { checkWidgetAttachments } from "./widget-attachment.js";
@@ -297,5 +298,33 @@ export const deliverOutbound = async (
   return {
     delivered: true,
     ...(verdict.rejected.length > 0 ? { rejectedAttachments: verdict.rejected } : {}),
+  };
+};
+
+/**
+ * **좌표만으로 파일을 보내는 콜백** — 인입 메시지가 없는 턴(매니저 완료 보고)의 `send_file` 자리 (2026-09-30).
+ *
+ * ★종전엔 이 턴에 파일 전송 콜백이 없어 `send_file` 이 «자동 보고 턴이라 보낼 통로가 없습니다» 로 막혔다
+ *  (회사돌쇠 09-29 5회 — 매니저가 만든 아이콘·원화를 보고와 함께 붙이려다). 채널이 `deliverAttachment` 를
+ *  등록했으면 그걸 좌표에 묶어 돌려준다. 없으면(CLI 처럼 파일 발송 능력이 없는 채널) `undefined` —
+ *  호출부는 종전 동작(«이 턴에선 불가» 자리표시)으로 간다. 채널 이름은 모른다(레지스트리 조회만).
+ * ★좌표 해석은 `deliverOutbound` 와 같다 — 명시 target 우선, 없으면 채널의 기본 좌표.
+ */
+export const attachmentSenderFor = (
+  channel: string,
+  target: string | null,
+  /** 이 파일을 낸 세션 — 글 발송의 `originThreadKey` 와 같다(답글이 그 세션으로 돌아오게). */
+  originThreadKey?: string,
+): IncomingMessage["sendAttachment"] | undefined => {
+  const o = getChannelOutbound(channel);
+  const deliver = o?.deliverAttachment;
+  if (o === undefined || deliver === undefined) return undefined;
+  return async (filePath, opts) => {
+    const resolved =
+      target ?? (o.defaultOutboundTarget !== undefined ? await o.defaultOutboundTarget() : null);
+    return deliver(resolved, filePath, {
+      ...(opts?.caption !== undefined ? { caption: opts.caption } : {}),
+      ...(originThreadKey !== undefined ? { originThreadKey } : {}),
+    });
   };
 };

@@ -20,6 +20,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import { runMaintenanceScan, type MaintenanceReport } from "../../maintenance.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({
   content: [{ type: "text" as const, text }],
@@ -79,7 +80,7 @@ export const createMaintenanceMcpServer = (): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "maintenance",
     version: "1.0.0",
-    tools: [
+    tools: onDemand([
       tool(
         "maintenance_status",
         "tiguclaw 런타임 저장소(대화 이력·메모리·매니저 잡·관측 이벤트 등)가 구조적으로 건강한지 점검합니다. 읽기전용 — 아무것도 삭제·변경하지 않습니다. 사용자가 '상태 괜찮아?', '용량 어때', '정리 필요해?' 처럼 물을 때 사용하세요.",
@@ -89,5 +90,5 @@ export const createMaintenanceMcpServer = (): McpSdkServerConfigWithInstance =>
           return okText(renderReport(report));
         },
       ),
-    ],
+    ]),
   });

@@ -43,8 +43,8 @@
         if (isOut && typeof entry.model === "string" && entry.model.trim() !== "") {
           const mEl = document.createElement("span");
           mEl.className = "turn-model";
-          // 실제로 보낸 추론 강도도 — 실시간 카드와 같은 모양(`modelWithEffort`).
-          mEl.textContent = modelWithEffort(entry.model.trim(), entry.reasoning);
+          // 실제로 보낸 추론 강도도 — 실시간 카드와 같은 판단·모양(`renderModelLabel`).
+          renderModelLabel(mEl, entry.model.trim(), entry.reasoning);
           mEl.title = i18n("hist.model.title");
           head.appendChild(mEl);
         }
@@ -57,7 +57,6 @@
             cEl.className = "turn-cost";
             cEl.textContent = line.text;
             cEl.title = line.title;
-            if (line.heavy) cEl.classList.add("heavy");
             head.appendChild(cEl);
           }
         }
@@ -292,7 +291,7 @@
 
       // 이력 turn 묶음 — 연속된 같은 턴의 도구 스텝을 접이식 "N단계" 카드로(라이브 turn-card 파리티).
       // 새로고침 후에도 라이브처럼 그룹핑돼 보이게. **기본 펼침**(라이브 턴과 같은 규칙, 2026-09-10).
-      const buildHistoryTurnEl = (acts) => {
+      const buildHistoryTurnEl = (acts, reasoning) => {
         for (const a of acts) renderedActivityKeys.add(actKey(a.ts, a.threadKey, a.seq));
         const turn = document.createElement("div");
         turn.className = "ev local hist-turn";
@@ -319,8 +318,8 @@
         const mLast = models[models.length - 1] || "";
         const modelEl = document.createElement("span");
         modelEl.className = "turn-model";
-        if (mLast) { // 현재(마지막) 모델만 — 전환 표기 없음.
-          modelEl.textContent = mLast;
+        if (mLast) { // 현재(마지막) 모델만 — 전환 표기 없음. 강도는 같은 턴 답변 행에서(병합이 짝 모델일 때만 넘긴다).
+          renderModelLabel(modelEl, mLast, reasoning);
           modelEl.title = i18n("hist.model.runTitle");
         }
         const count = document.createElement("span");
@@ -384,9 +383,24 @@
           ...activities.map((a) => ({ ts: a.ts, a })),
         ].sort((x, y) => x.ts - y.ts);
         const units = [];
+        // ★이 턴의 도구 카드들 — 답변 행이 오면 그 강도를 **짝 모델인 카드에만** 넘긴다(2026-09-30 정태님: 기록으로
+        //  다시 그린 도구 카드에 강도가 없었다). 사용자 행이 턴 경계다.
+        let openTurnUnits = [];
+        const giveTurnEffort = (m) => {
+          const r = typeof m.reasoning === "string" ? m.reasoning.trim() : "";
+          const model = typeof m.model === "string" ? m.model.trim() : "";
+          for (const u of openTurnUnits) {
+            const last = [...u.acts].reverse().find((a) => typeof a.model === "string" && a.model.trim() !== "");
+            if (r !== "" && last && last.model.trim() === model && last.threadKey === m.threadKey) u.reasoning = r;
+          }
+          openTurnUnits = [];
+        };
         let cur = null; // { threadKey, lastSeq, acts } — 연속 도구 런(텍스트 경계에서 끊김).
         let sawTextThread = null; // 직전 텍스트 세그먼트 스레드 → 뒤따르는 flat assistant row dedup.
-        const flush = () => { if (cur && cur.acts.length) units.push({ kind: "turn", acts: cur.acts }); cur = null; };
+        const flush = () => {
+          if (cur && cur.acts.length) { const u = { kind: "turn", acts: cur.acts }; units.push(u); openTurnUnits.push(u); }
+          cur = null;
+        };
         for (const it of merged) {
           if (it.m) {
             flush();
@@ -429,6 +443,7 @@
                 };
                 if (Object.keys(meta).length > 0) lastTextUnit.act = { ...lastTextUnit.act, ...meta };
               }
+              giveTurnEffort(it.m); // 같은 턴의 도구 카드에도(짝 모델일 때만).
               renderedMsgKeys.add(msgKey(it.m.ts, "assistant"));
               sawTextThread = null;
               lastTextUnit = null;
@@ -436,6 +451,8 @@
             }
             sawTextThread = null;
             lastTextUnit = null;
+            if (it.m.role === "assistant") giveTurnEffort(it.m);
+            else if (it.m.role === "user") openTurnUnits = []; // 턴 경계 — 앞 턴 카드에 뒤 턴 강도가 붙지 않게.
             units.push({ kind: "msg", entry: it.m });
           } else {
             const a = it.a; const seq = typeof a.seq === "number" ? a.seq : 0;
@@ -464,7 +481,7 @@
         const units = groupMergedItems(chatEntries, activities); // 항상 ASC(최古→최新).
         // 유닛 → element. turn=도구 런 카드, text=마크다운 세그먼트 버블(인터리브), msg=flat 메시지.
         const buildUnit = (u) =>
-          u.kind === "turn" ? buildHistoryTurnEl(u.acts)
+          u.kind === "turn" ? buildHistoryTurnEl(u.acts, u.reasoning)
           : u.kind === "text" ? buildHistoryTextEl(u.act)
           : buildHistoryMsgEl(u.entry);
         // 초기 로드(append=false): 오래된→최신 순으로 vtAppend. 페이지네이션(append=true, older

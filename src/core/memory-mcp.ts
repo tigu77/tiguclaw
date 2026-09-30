@@ -38,6 +38,7 @@ import {
   collectInventory,
   formatInventoryForLlm,
 } from "./plugins/inventory.js";
+import { onDemand } from "./llm-runtime/tool-load-policy.js";
 
 // ─── addMemoryWithGuard ──────────────────────────────────────────────────
 // store 의 addMemory 가 UPSERT(name) — 여기서는 결과 분류만.
@@ -456,4 +457,4 @@ const MEMORY_TOOLS = [
 export const memoryToolNames = (): string[] => MEMORY_TOOLS.map((t) => t.name);
 
 export const createMemoryMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({ name: "memory", version: "1.0.0", tools: MEMORY_TOOLS });
+  createSdkMcpServer({ name: "memory", version: "1.0.0", tools: onDemand(MEMORY_TOOLS, ["delete_memory", "archive_memory"]) });

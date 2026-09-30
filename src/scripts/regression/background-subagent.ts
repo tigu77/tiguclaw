@@ -561,7 +561,7 @@ export const check: RegressionCheck = {
           "utf8",
         );
         const declared = /tool\(\s*\n?\s*"wait_for_worker"/.test(wr);
-        const exported = /tools:\s*\[[^\]]*waitForWorker/.test(wr);
+        const exported = /tools:\s*(?:onDemand\(\s*)?\[[^\]]*waitForWorker/.test(wr);
         return assert(
           "★★기다리기가 **별도 도구**로 있고 서버에 실려 있다 — 없으면 결과를 받을 방법이 폴링뿐이고, 그건 폴링마다 프롬프트 한 벌이다",
           declared && exported,

@@ -158,6 +158,8 @@ import { resolveReasoningEffort } from "../model-catalog.js";
 import { applyToolLoadPolicy } from "../tool-load-policy.js";
 import { createTodoMcpServer, SDK_TODO_TOOL_NAMES } from "../capabilities/todo-mcp.js";
 import { SDK_SKILL_TOOL_NAMES } from "../capabilities/skill-registry.js";
+import { createSteerQueue } from "./_claude-steer-queue.js";
+import { SDK_UNUSABLE_TOOL_NAMES } from "./_claude-unusable-builtins.js";
 import {
   collectExternalToolCalls,
   createExternalToolsMcpServer,
@@ -211,7 +213,7 @@ const truncateForBus = (v: unknown): unknown => {
 //  AGENT.md·스킬/에이전트 인덱스)은 **의도적으로 제외**. 그것들은 매 턴 최신값이 새로
 //  실려 stale 이 없고, 해시에 넣으면 비서가 AGENT.md 를 한 줄 고칠 때마다 세션이
 //  끊겨 thread 전체가 재prepend 된다.
-const SYSTEM_PROMPT_HASH = createHash("sha256")
+export const SYSTEM_PROMPT_HASH = createHash("sha256")
   .update(SYSTEM_PROMPT)
   .digest("hex");
 
@@ -417,14 +419,24 @@ export const steeringContents = async function* (args: {
   turnEnded: () => boolean;
   render: (s: SteeringInput) => string;
   onReturned?: (s: SteeringInput, requeued: boolean) => void;
+  /**
+   * 입력을 **열어 둬야 하는가** — 실행기에 줄 선 우리 입력이 아직 돌고 있다(2026-09-30, `_claude-steer-queue`).
+   *  참이면 되돌려 놓은 뒤 끝내지 않고 채널이 닫힐 때까지 기다린다(끝내면 stdin 이 닫혀 그 턴의 도구가 취소된다).
+   */
+  holdOpen?: () => boolean;
 }): AsyncGenerator<string> {
   for await (const s of args.steering.stream(args.signal)) {
     if (args.turnEnded()) {
       const requeued = args.steering.push(s);
       args.onReturned?.(s, requeued);
-      // 되돌렸다 — 코어의 drain() 이 새 턴으로 회수한다. ★제품 순서에선 **도달하지 않는다**(result 에서 close 가
-      //  turnResultSeen 보다 먼저라 push 는 늘 false) — 채널이 열린 채 턴이 끝나는 다른 경로가 생길 때를 위한 안전판이다.
-      if (requeued) return;
+      // 되돌렸다 — 코어의 drain() 이 새 턴으로 회수한다. 채널이 열린 채 result 를 넘기는 경로(줄 선 입력이 남아
+      //  입력을 열어 둔 구간, 2026-09-30)에서 도달한다.
+      if (requeued) {
+        // ★줄 선 턴이 아직 돌면 stdin 을 닫지 않는다 — 되돌려 놓은 건 버퍼에 두고(코어 drain 이 새 턴으로 회수)
+        //  닫힘만 기다린다(적대 검토 P2: 사진이 연달아 오면 둘째가 여기서 stdin 을 닫아 첫째 턴의 Read 가 취소됐다).
+        if (args.holdOpen?.() === true) await args.steering.untilClosed(args.signal);
+        return;
+      }
       // ★채널이 이미 닫혀 되돌릴 곳이 없다(result 에서 close 가 먼저 돈다 — 제품 순서에선 늘 이쪽). 종전엔 여기서
       //  **메시지가 사라졌다**(2026-09-29 적대 검토 재현: drain 0). 이제는 우리 uuid 를 단 턴을 이어 받으므로
       //  SDK 에 넘긴다 — CLI 가 다음 턴으로 줄 세워 답하고, 그 턴이 이 답변에 이어 붙는다.
@@ -454,6 +466,7 @@ let lastRateLimitSig = "";
 const reportFastMode = createFastModeReporter();
 
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
+import { publishTurnMeta } from "../turn-meta.js";
 
 /**
  * ★회귀 전용 SDK 주입구 (2026-09-29) — 턴 경계 로직을 **실제로 돌려** 검사하기 위해서다.
@@ -472,6 +485,21 @@ export const withFakeClaudeQuery = async <T>(fake: typeof query, fn: () => Promi
     return await fn();
   } finally {
     sdkQuery = prev;
+  }
+};
+
+/**
+ * 줄 선 입력의 안전장치 시한 — 실행기가 줄 선 입력을 끝내 안 집을 때만 닫는다(`closeSteeringUnlessQueued`).
+ * 회귀는 60초를 기다릴 수 없어 `withSteerBackstopMs` 로 줄인다(운영 경로는 건드리지 않는다).
+ */
+let steerBackstopMs = 60_000;
+export const withSteerBackstopMs = async <T>(ms: number, fn: () => Promise<T>): Promise<T> => {
+  const prev = steerBackstopMs;
+  steerBackstopMs = ms;
+  try {
+    return await fn();
+  } finally {
+    steerBackstopMs = prev;
   }
 };
 
@@ -540,6 +568,8 @@ export const runClaude = async (
   // 이 턴에 보낼 추론 강도 — 옵션(아래 `effort`)과 출력(`reasoning` — 화면·기록 표시)이 **같은 값**을 쓴다.
   //  순서: 풀 원소(input.reasoning) > models.reasoning(전역) > 카탈로그 기본(세 어댑터 같은 순서).
   const claudeEffort = input.reasoning ?? resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
+  // 턴 시작에 «이 모델 · 이 강도» — 보낼 변수 그대로(`turn-meta.ts`). 없으면 실행기가 모델 기본을 보낸다.
+  publishTurnMeta({ threadKey: input.threadKey, internal: input.internal, adapter: "claude", model: input.model, reasoning: claudeEffort });
   const depth = input.subagentDepth ?? 0;
   // ★**도구 노출 사다리** (2026-08-28) — 어느 칸의 턴인가를 **한 번** 도출한다.
   //  종전엔 `depth === 0 && (input.workerDepth ?? 0) === 0` 이 이 파일에만 8곳,
@@ -1138,6 +1168,8 @@ export const runClaude = async (
       ...SDK_SKILL_TOOL_NAMES,
       // ★스킬도 우리 것으로 일원화 — 이름은 정의점(skill-registry)에서. 근거는 그 상수 주석에.
       //  대체 제공은 위 `skills: createSkillInvokeMcpServer(...)`(일반 경로 등록) 이다.
+      // ★tiguclaw 에서 동작하지 않거나 거짓 약속이 되는 CC 작업 흐름용 빌트인 — 근거·실측은 그 상수 주석에(~19K 토큰/호출).
+      ...SDK_UNUSABLE_TOOL_NAMES,
     ]),
     // 델타 스트리밍 파리티(2026-07-17) — 미설정 시 SDK 는 *완성된* assistant 텍스트 블록만
     // 발행해 토큰이 한꺼번에 뜬다(codex SSE output_text.delta 대비 파리티 갭). true 로 켜면
@@ -1281,6 +1313,52 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   //  지금 턴이 시작된 조각 위치(이 턴의 «내용 있음» 판정과 마감이 앞 턴 조각을 세지 않게) ·
   //  이어 받던 턴이 실패했나.
   const steerUuids = new Set<string>();
+  // 줄 선 입력 — 남아 있으면 result 에서 입력을 닫지 않는다(닫으면 그 턴의 훅·내장 도구가 취소된다). 근거·실측은 모듈 주석.
+  const queuedSteer = createSteerQueue();
+  let deferredCloseTimer: NodeJS.Timeout | undefined;
+  /** result 에서 닫기를 미뤘고 아직 안 닫았다 — steeringContents 가 되돌려 놓은 뒤 끝내지 말고 기다려야 한다. */
+  let steeringHeldOpen = false;
+  /** 열어 둔 뒤 실행기가 줄 선 입력을 하나라도 **시작**했나 — 안 했는데 줄이 비면 다 시작 전에 끝난 것(닫는다). */
+  let heldTurnStarted = false;
+  const clearDeferredCloseTimer = (): void => {
+    if (deferredCloseTimer !== undefined) clearTimeout(deferredCloseTimer);
+    deferredCloseTimer = undefined;
+  };
+  /** 실행기가 끝내 신호를 안 주는 경우(구버전 CLI 등)에도 턴이 매달리지 않게 — 그땐 종전대로 닫는다. */
+  const DEFERRED_CLOSE_BACKSTOP_MS = steerBackstopMs;
+  const closeSteering = (): void => {
+    clearDeferredCloseTimer();
+    steeringHeldOpen = false;
+    heldTurnStarted = false;
+    input.steering?.close();
+  };
+  /** result 마다 부른다 — 줄 선 입력이 없으면 닫고(종전 동작), 있으면 그 턴의 result 까지 열어 둔다. */
+  const closeSteeringUnlessQueued = (): void => {
+    if (queuedSteer.size() === 0) return closeSteering();
+    steeringHeldOpen = true;
+    heldTurnStarted = false;
+    console.warn(
+      `[claude-turn-boundary] ${input.threadKey} result 도착 — 실행기에 줄 선 입력 ${queuedSteer.size()}건이 아직 ` +
+        `시작 전이라 입력을 열어 둡니다(지금 닫으면 그 턴의 훅·내장 도구가 전부 취소된다). 그 턴의 result 에서 닫습니다.`,
+    );
+    if (deferredCloseTimer === undefined) {
+      deferredCloseTimer = setTimeout(() => {
+        // ★안전장치는 «실행기가 줄 선 입력을 끝내 안 집는다» 만 덮는다 — 이미 다 집었으면(그 턴이 도는 중) 닫지 않는다.
+        //  그 턴의 result 가 닫는다(적대 검토 P1: 종전엔 60초 넘는 줄 선 턴의 도구가 이 타이머로 취소됐다).
+        deferredCloseTimer = undefined;
+        //  줄이 빈 뒤의 닫기는 시간이 아니라 **신호**가 정한다(아래 «시작 전 종결» · 이어 받지 못한 턴의 result) —
+        //  시간으로 닫으면 줄 선 턴이 첫 프레임 전에 60초 넘게 생각할 때(높은 추론 강도) 도구가 취소된다.
+        if (queuedSteer.size() === 0) return;
+        console.warn(
+          `[claude-turn-boundary] ${input.threadKey} 줄 선 입력 ${queuedSteer.size()}건이 ` +
+            `${(DEFERRED_CLOSE_BACKSTOP_MS / 1000).toFixed(1)}초 동안 시작되지 않아 입력을 닫습니다(종전 동작).`,
+        );
+        queuedSteer.clear();
+        closeSteering();
+      }, DEFERRED_CLOSE_BACKSTOP_MS);
+      deferredCloseTimer.unref?.();
+    }
+  };
   let settledAnswer: string | undefined;
   let chunkBase = 0;
   let deltaBase = 0;
@@ -1319,6 +1397,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         steering,
         signal,
         turnEnded: () => turnResultSeen,
+        holdOpen: () => steeringHeldOpen,
         // 첨부 placeholder(있으면) + steer 텍스트 = 초기 turn(userTurnParts)과 동형 조립.
         render: (s) =>
           [formatAttachments(s.attachments), s.text]
@@ -1333,6 +1412,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         },
       })) {
         const uuid = randomUUID();
+        queuedSteer.sent(uuid); // 실행기가 `started` 를 알릴 때까지 «줄 선» 상태.
         steerUuids.add(uuid);
         yield { ...toUserMessage(content), uuid };
       }
@@ -1340,11 +1420,16 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     })();
   // signal = effectiveAc.signal(현행 turn abort + idle/turn 타임아웃 합성) 재사용 →
   // 턴이 abort/타임아웃돼도 steering 대기가 매달리지 않고 즉시 종료(무한대기 0).
+  // ★입력 스트림은 **시도마다** 따로 끊을 수 있어야 한다 (2026-09-30 재검토 P-B). SDK 는 죽은 시도의 프롬프트
+  //  이터러블을 return 하지 않는다 — 옛 제너레이터가 같은 steering 채널을 계속 기다리다 새 시도의 사용자 메시지를
+  //  **먼저 꺼내** 죽은 프로세스에 쓰고(유실), 그 쓰기 예외로 effectiveAc 까지 abort 됐다. 재시도 직전에 이 신호를
+  //  끊으면 `stream()` 은 꺼내기 전에 abort 를 먼저 보고 끝난다(메시지는 채널에 남아 새 시도가 받는다).
+  let attemptInputAc = linkAbort(effectiveAc.signal);
   const buildQuery = (o: Options) =>
     input.steering === undefined
       ? sdk({ prompt: promptWithMemory, options: o }) // 현행 경로 — 바이트 동일(회귀 0).
       : sdk({
-          prompt: buildSteeringPrompt(input.steering, effectiveAc.signal),
+          prompt: buildSteeringPrompt(input.steering, attemptInputAc.signal),
           options: o,
         });
   let q = buildQuery(options);
@@ -1519,6 +1604,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   for await (const msg of q as AsyncIterable<SDKMessage>) {
     // 유휴 타임아웃 heartbeat — 매 SDK message 도착 = 살아있음 신호. 타이머 reset.
     idleTimer.beat();
+    queuedSteer.observe(msg); // 실행기가 우리 입력을 집었으면 줄에서 뺀다.
+    if (steeringHeldOpen && (msg as { type: string }).type === "command_lifecycle") {
+      if ((msg as { state?: unknown }).state === "started") heldTurnStarted = true;
+      // 열어 둔 입력이 **하나도 시작되지 않은 채** 다 끝났다(cancelled·dropped 등) — 닫아 줄 턴이 오지 않는다(재검토 P-A S1).
+      else if (queuedSteer.size() === 0 && !heldTurnStarted) closeSteering();
+    }
     if (msg.type === "stream_event") {
       diagStreamCount += 1;
       if (diagStreamCount % 200 === 0) {
@@ -1533,7 +1624,10 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         sub === "task_notification"
           ? ` status=${String((msg as { status?: unknown }).status)}` +
             ` summary=${JSON.stringify(String((msg as { summary?: unknown }).summary ?? "").slice(0, 80))}`
-          : "";
+          : (msg as { type: string }).type === "command_lifecycle"
+            // 줄 선 입력의 상태 — 입력을 열어 둘지 닫을지가 이 값으로 갈린다(queuedSteer).
+            ? ` state=${String((msg as { state?: unknown }).state)} queued=${queuedSteer.size()}`
+            : "";
       console.log(`[claude-complete] ${input.threadKey} recv=${msg.type}${sub ? "/" + String(sub) : ""}${note}`);
     }
     // 관측 publish — for-await 흐름 영향 0 (publish 동기 + EventBus 격리).
@@ -1581,6 +1675,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       // uuid 를 달면 CLI 가 결과 뒤 `command_lifecycle` 을 보낸다 — 턴이 아니다(아래 경고가 틀린 원인을 찍지 않게).
       if ((msg as { type: string }).type === "command_lifecycle") continue;
       postResultMsgs += 1;
+      // 이어 받지 못한 턴(프레임에 우리 uuid 가 없다)의 result 도 판정에 보인다 — 안 보이면 줄이 비었는데도
+      //  입력이 영영 안 닫힌다(재검토 P-A S2: SDK 는 delivery-failure·zeroed result 에서 uuid 를 뺀다).
+      if (steeringHeldOpen && msg.type === "result") closeSteeringUnlessQueued();
       if (postResultMsgs === 1) {
         const sub = (msg as { subtype?: unknown }).subtype;
         console.warn(
@@ -1774,7 +1871,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       // close 는 동기(closed=true+waiter wake) — 인라인 호출 안전, for-await 흐름 영향 0.
       // 턴 finally 의 steeringCh.close()(index.ts, 멱등)는 2차 안전망으로 그대로 유지
       // (abort·에러로 result 미도달 시 여전히 닫음).
-      input.steering?.close();
+      closeSteeringUnlessQueued();
       // ★경계 확정은 **우리 답변에 내용이 생긴 뒤에만** 한다 (2026-08-09 라이브 사고).
       //
       //  종전엔 첫 result 를 무조건 이 턴의 끝으로 봤다. 그런데 백그라운드 알림이 턴 **시작**에
@@ -2288,6 +2385,13 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       deltaStream.closeSegment(); // 세그먼트 버퍼 드레인(발행 안 함) — 실패한 첫 시도의 잔여
       // 텍스트가 fresh 세션의 첫 세그먼트로 새지 않게(activitySeq=0 리셋과 동형 취지).
       toolTiming.clear(); // 실행시간(#3) 매핑도 리셋 — fresh 세션엔 이전 tool_use id 안 옴.
+      // 줄 선 입력 장부도 새 시도 기준으로 — 죽은 프로세스에 넘긴 uuid 는 새 프로세스가 영영 알리지 않는다(적대 검토 P3).
+      queuedSteer.clear();
+      clearDeferredCloseTimer();
+      steeringHeldOpen = false;
+      heldTurnStarted = false;
+      attemptInputAc.abort(new Error("resume 폴백 재시도 — 옛 시도의 입력 스트림을 닫는다"));
+      attemptInputAc = linkAbort(effectiveAc.signal);
       const freshOptions: Options = { ...options };
       delete (freshOptions as { resume?: unknown }).resume;
       // ★★**기록을 다시 싣는다** — `resume` 만 떼면 모델이 문맥 없이 답한다(위 주석).
@@ -2352,6 +2456,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   }
   } // for(;;) — resume 폴백 재시도 루프
   } finally {
+    // 열어 둔 입력의 안전장치 해제 — 턴이 어떤 길로 끝나든 타이머가 남지 않게(닫기는 턴 finally 가 2차로 한다).
+    clearDeferredCloseTimer();
     // ★**압축을 시작해놓고 턴이 끝났으면 여기서 끝을 알린다** (2026-09-15, 회사 아스트라).
     //  `PreCompact` 는 시작을, `PostCompact` 는 성공을, `system/status` 는 SDK 가 보고한
     //  실패를 말한다. 그런데 **중단·에러·SDK abort 로 턴이 먼저 끝나면** 셋 중 아무것도

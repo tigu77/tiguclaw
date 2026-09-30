@@ -49,9 +49,10 @@ export const check: RegressionCheck = {
       // 집행 — 판정이 거짓이면 **경계를 안 잡고 계속 수집**해야 한다. `continue` 가 사라지면
       // 08-06 사고(알림 턴 텍스트 혼입)가 전면 복귀한다(적대 검토 M3).
       /if \(turnResultSeen\) \{[\s\S]{0,2200}\n\s{6}continue;\n\s{4}\}/,
-      // ★`steering.close()` 는 **첫 result 에 그대로**(데드락 수정 유지) — 조건 안으로 들어가면
-      //  내용 없는 턴에서 stdin 이 안 닫힌다(적대 검토 M4b).
-      /input\.steering\?\.close\(\);[\s\S]{0,1200}const hasOwnAnswer = isOwnTurnEnd/,
+      // ★닫기는 **매 result 에서 내용 판정보다 먼저** 부른다(데드락 수정 유지) — 내용 조건 안으로 들어가면
+      //  내용 없는 턴에서 stdin 이 안 닫힌다(적대 검토 M4b). 2026-09-30 부터 줄 선 입력이 남았을 때만
+      //  그 턴의 result 까지 미룬다(`queued-steer-keeps-input-open`) — 부르는 자리는 그대로다.
+      /closeSteeringUnlessQueued\(\);[\s\S]{0,1200}const hasOwnAnswer = isOwnTurnEnd/,
       // 마감이 **빈 result 에도 조각으로 폴백**한다(적대 검토 A — `??` 는 ""에 폴백 안 한다).
       /resultText !== undefined && resultText !== "" \? resultText : chunkText/,
     ]);
@@ -61,7 +62,8 @@ export const check: RegressionCheck = {
       /let turnResultSeen = false;/,
       /if \(turnResultSeen\) \{/, // ← 분기 전 가드
       /if \(msg\.type === "system" && msg\.subtype === "init"\)/,
-      /msg\.type === "result"/,
+      // 메인 result 분기 — 가드 안에도 «이어 받지 못한 턴의 result» 판정(2026-09-30)이 있어 분기 모양으로 가리킨다.
+      /\} else if \(msg\.type === "result"\) \{/,
       /turnResultSeen = true;/,
     ]);
     // ★줄 선 입력이 연 턴은 **이어 붙인다** (2026-09-28 실사고 — 두 번째 메시지의 답이 버려짐).

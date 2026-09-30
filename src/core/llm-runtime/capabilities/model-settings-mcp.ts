@@ -35,6 +35,7 @@ import {
 } from "../../settings.js";
 import { catalogModelKeys, resolveReasoningEffort } from "../model-catalog.js";
 import { setProfilePoolReasoning } from "../../settings.js";
+import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
 const errText = (text: string) => ({
@@ -271,7 +272,7 @@ export const createModelSettingsMcpServer = (
   createSdkMcpServer({
     name: "model-settings",
     version: "1.0.0",
-    tools: [
+    tools: onDemand([
       tool(
         "set_model_reasoning",
         "특정 모델의 **추론 강도**(reasoning effort)를 설정합니다 — 홈 settings.json 의 `models.reasoning`. " +
@@ -371,5 +372,5 @@ export const createModelSettingsMcpServer = (
           }
         },
       ),
-    ],
+    ], ["set_model_reasoning"]),
   });

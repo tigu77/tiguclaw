@@ -738,14 +738,16 @@
           '<div class="detail-name"></div></div><div class="empty"></div></div>';
         root.querySelector(".detail-name").textContent = i18n("nav.settings");
         root.querySelector(".empty").textContent = i18n("common.loading");
-        let enabled = false;
+        // ★서버 기본과 같은 쪽으로 그린다 — 기본 켜짐(2026-10-01)이라 끄는 건 명시적 false 뿐이다. 조회가 실패했을 때 «꺼짐» 으로 그리면
+        //  화면과 실제가 갈리고, 한 번 누르면 true 를 써서 «끄기» 에 두 번 눌러야 했다(적대 검토).
+        let enabled = true;
         try {
           const r = await fetch("/api/suggestion");
           if (r.ok) {
             const d = await r.json();
-            enabled = d && d.enabled === true;
+            enabled = !(d && d.enabled === false);
           }
-        } catch { /* 조회 실패 = 꺼짐으로 그린다(값은 서버가 정본) */ }
+        } catch { /* 조회 실패 = 서버 기본(켜짐)으로 그린다(값은 서버가 정본) */ }
         renderSettingsRow(root, enabled);
         // ★행을 **클릭해서** 연다 — 여는 절차(로딩·1회 fetch·문구 전환)가 그 핸들러에만
         //  있으므로, 여기서 `hidden = false` 를 흉내 내면 그게 두 번째 사본이 된다.

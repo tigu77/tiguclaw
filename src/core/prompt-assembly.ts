@@ -752,6 +752,8 @@ const buildContextSlotsInner = (
     key: "nextSuggestion",
     text: inlineSuggestionSlotText(input.roleSource, readSuggestionSettings().enabled),
     channel: "system",
+    // 메인에만 실리고 자식에겐 빈다 = 역할 전용. 기본 꺼짐이던 동안엔 늘 비어 분류가 빠진 게 안 보였다(2026-10-01 기본 켜짐에서 적발).
+    roleScoped: true,
   },
   // ★역할마다 다른 값이다(정의상) — 그래서 **꼬리**에 있고, 그 사실을 선언해 둔다.
   //  이 선언은 3R 의 새 검사가 «갈리는데 선언이 없다» 며 **스스로 찾아냈다**(내가 목록에

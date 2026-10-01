@@ -19,6 +19,7 @@ import {
   buildContextSlots,
   roleContextBlock,
   splitSystemContext,
+  roleScopedSlotKeys,
 } from "../../core/prompt-assembly.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -72,14 +73,20 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★캐시 프리픽스가 실제로 보존되는가 — 매니저 = 메인 + 꼬리.
+    // ★캐시 프리픽스가 실제로 보존되는가 — 매니저 = 메인(메인 전용 꼬리를 뺀 것) + 꼬리.
     //  이게 "꼬리에 둔다"의 **동작 판정**이다(자리 판정 ③은 슬롯 이름만 본다).
+    //  ★메인에만 실리는 역할 전용 꼬리(다음 메시지 제안 규칙 — 2026-10-01 기본 켜짐)는 매니저에 없는 게 정상이다 — 그 앞까지가 공유분이다.
     const mgrStable = splitSystemContext({ ...base, roleSource: { workerDepth: 1 } }).stable;
+    const scoped = new Set(roleScopedSlotKeys());
+    const mainSlots = splitSystemContext({ ...base, roleSource: {} }).stableSlots;
+    const firstMainOnly = mainSlots.find((s) => scoped.has(s.key) && s.text !== "" && !mgrStable.includes(s.text));
+    const mainShared = firstMainOnly === undefined ? mainStable : mainStable.slice(0, mainStable.lastIndexOf(firstMainOnly.text)).trimEnd();
+    const sharedCoversCommon = mainSlots.filter((s) => !scoped.has(s.key)).every((s) => mainShared.includes(s.text));
     out.push(
       assert(
-        "★매니저의 시스템 채널은 '메인 그대로 + 꼬리' 다(앞부분 캐시가 안 깨진다)",
-        mgrStable.startsWith(mainStable) && mgrStable.length > mainStable.length,
-        `메인 ${mainStable.length}B → 매니저 ${mgrStable.length}B · 접두 일치=${mgrStable.startsWith(mainStable)}`,
+        "★매니저의 시스템 채널은 '메인 공유분 그대로 + 꼬리' 다(앞부분 캐시가 안 깨진다)",
+        mgrStable.startsWith(mainShared) && mgrStable.length > mainShared.length && sharedCoversCommon,
+        `메인 ${mainStable.length}B(공유 ${mainShared.length}B) → 매니저 ${mgrStable.length}B · 접두 일치=${mgrStable.startsWith(mainShared)} · 공용 전부 포함=${sharedCoversCommon}`,
       ),
     );
 

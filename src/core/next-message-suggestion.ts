@@ -3,8 +3,8 @@
  * 만들어 대시보드 입력창에 **회색 고스트**로 띄운다. Tab 이면 입력창에 채워지고,
  * 보내는 건 여전히 사용자다(Enter 로 수락하지 않는다 — 오발신은 되돌릴 수 없다).
  *
- * ★기본 꺼짐. 이건 **매 턴 토큰을 쓰는 기능**이라, 켜는 것은 사용자의 명시적 선택이어야
- *  한다. 그래서 값은 브라우저가 아니라 `settings.json`(서버)에 둔다 — 화면 설정이 아니라
+ * ★기본 켜짐(2026-10-01 — 처음엔 꺼짐이었다: 별도 호출이라 매 턴 토큰을 썼다. 답 끝 한 줄로 옮겨 와 비용이 상수가 됐다).
+ *  끄는 것은 명시적 `enabled: false` 뿐이다(`readSuggestionSettings`). 값은 브라우저가 아니라 `settings.json`(서버)에 둔다 — 화면 설정이 아니라
  *  동작·비용 설정이고, 브라우저 캐시를 지웠다고 되살아나면 안 된다.
  *  (`settings.json` 은 매 턴 fresh 로 읽히므로 껐다 켜는 게 재시작 없이 즉시 반영된다.)
  *
@@ -50,7 +50,9 @@ export interface SuggestionSettings {
 
 /**
  * `settings.json` 의 `suggestions.nextMessage` 를 읽는다.
- * 부재·형식오류 = 꺼짐(안전 기본값 — 토큰 쓰는 기능은 명시적으로만 켜진다).
+ * ★기본 켜짐(2026-10-01 정태님) — **명시적 `enabled: false` 만 끈다.** 부재·형식오류 = 켜짐.
+ *  종전엔 «토큰 쓰는 기능은 명시적으로만» 이라 기본 꺼짐이었는데, 제안이 별도 호출이 아니라 **답 끝 한 줄**(inline)로
+ *  옮겨 오며 비용이 상수(규칙 한 조각 + 출력 한 줄)가 됐다. 끈 사람의 `false` 는 그대로 존중한다.
  */
 export const readSuggestionSettings = (cwd?: string): SuggestionSettings => {
   try {
@@ -59,7 +61,7 @@ export const readSuggestionSettings = (cwd?: string): SuggestionSettings => {
       if (typeof s !== "object" || s === null) continue;
       const n = (s as { nextMessage?: unknown }).nextMessage;
       if (typeof n !== "object" || n === null) continue;
-      const enabled = (n as { enabled?: unknown }).enabled === true;
+      const enabled = (n as { enabled?: unknown }).enabled !== false;
       const profileRaw = (n as { profile?: unknown }).profile;
       const profile =
         typeof profileRaw === "string" && profileRaw.trim() !== ""
@@ -68,9 +70,9 @@ export const readSuggestionSettings = (cwd?: string): SuggestionSettings => {
       return profile !== undefined ? { enabled, profile } : { enabled };
     }
   } catch {
-    /* 읽기·파싱 실패 = 꺼짐(never throw — 설정 하나가 턴을 죽이면 안 된다) */
+    /* 읽기·파싱 실패 = 기본값(never throw — 설정 하나가 턴을 죽이면 안 된다) */
   }
-  return { enabled: false };
+  return { enabled: true };
 };
 
 /**

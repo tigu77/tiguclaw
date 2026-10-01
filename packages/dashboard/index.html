@@ -14,8 +14,6 @@
          <title> 은 사용자가 바꿀 수 있어(dashboardTitle) 표식이 사라지면 자기 대시보드를 «남의 앱» 으로 오판한다 — 그래서
          바뀌지 않는 자리에 같은 글자를 둔다. 옛 세대(제목에만 있음)도 같은 글자라 그대로 식별된다. -->
     <meta name="application-name" content="티구클로 대시보드" />
-    <!-- 제품 저장소 주소 — 서빙 때 루트 package.json 의 repository 로 채운다(홈 «⭐ GitHub 에서 별 주기» 링크). 비면 링크를 안 그린다. -->
-    <meta name="tiguclaw-repo" content="" />
     <!-- 브랜드 아이콘 — **두 판**이다 (2026-08-27). `icon.png` 는 배경을 뚫어 어느 테마에도
          얹히고, `icon-solid.png` 는 배경이 있다. iOS 홈 화면은 투명을 검게 합성하므로
          apple-touch 만 solid 를 쓴다. 256px 한 크기로
@@ -75,6 +73,9 @@
            설계). 여기서 내용을 띄우지 않고 설정 →「업데이트 내역」으로 데려가는 이유:
            그 자리는 스크롤도 마크다운 렌더도 되고, 무엇보다 **전부** 볼 수 있다. -->
       <button id="update-notes" class="hdr-btn update-chip update-notes-btn" type="button" hidden>?</button>
+      <!-- ★«⭐ GitHub» — 헤더 오른쪽 끝, 아이콘만(2026-10-01 정태님). 부탁 문구는 툴팁에만 둔다(눈에 띄되 조르지 않게).
+           주소는 서빙 때 루트 package.json 의 repository 로 채우고 `hidden` 을 뗀다 — 못 읽으면 숨은 채로 남는다. -->
+      <a id="repo-star" class="repo-star" href="#" target="_blank" rel="noopener noreferrer" hidden title="GitHub 에서 별 주기" aria-label="GitHub 에서 별 주기" data-i18n-attrs="title=home.repo.star;aria-label=home.repo.star"><span aria-hidden="true">⭐</span><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
     </header>
     <!-- 모바일 메뉴 드로어 백드롭(탭하면 닫힘). 데스크탑 미표시. -->
     <div id="menu-backdrop"></div>

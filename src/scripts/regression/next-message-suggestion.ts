@@ -1,12 +1,12 @@
 /**
- * 회귀: 다음 메시지 제안 — **꺼져 있고, 안 새고, 비용이 상수로 묶여 있다.**
+ * 회귀: 다음 메시지 제안 — **끈 사람에겐 꺼져 있고, 안 새고, 비용이 상수로 묶여 있다.**
  *
  * 배경 (2026-08-10): 턴이 끝나면 "사용자가 이어서 할 만한 말" 한 줄을 만들어 대시보드
  *  입력창에 회색 고스트로 띄운다. Tab 이면 입력창에 채워진다(전송 아님).
  *
  * ★이 기능은 **매 턴 토큰을 쓴다.** 그래서 위험은 "안 뜬다" 가 아니라 **조용히 켜져 있고
  *  조용히 커지는 것**이다. 이 검사는 그 셋을 지킨다:
- *   ① 기본 꺼짐(설정 부재·형식오류 = 꺼짐)
+ *   ① 기본 켜짐 · **명시적 false 는 끈다**(2026-10-01 정태님 — 제안이 답 끝 한 줄로 옮겨 와 비용이 상수가 됐다)
  *   ② 사람이 안 보는 턴(스케줄러·매니저·엔드포인트·게이트웨이)엔 아예 안 만든다
  *   ③ 프롬프트 크기가 **상수 둘로 결정**된다 — 대화가 길어져도 안 커진다
  *  거기에 출력 정리(고스트는 한 줄)를 더한다.
@@ -23,15 +23,38 @@ import { assertIsolated, type Assertion, type RegressionCheck } from "./_framewo
 const run = async (): Promise<Assertion[]> => {
   assertIsolated();
   const out: Assertion[] = [];
-  // ── ① 기본 꺼짐 ────────────────────────────────────────────────────────────
-  //  토큰을 쓰는 기능은 명시적으로만 켜진다. 설정이 없는 임시 홈에서 켜져 있으면
-  //  "기본값이 뒤집힌 것" 이고, 그건 조용히 과금된다.
+  // ── ① 기본 켜짐 · 끈 사람은 꺼짐 ───────────────────────────────────────────
+  //  ★반대 방향이 더 중요하다 — 기본을 켜면서 사용자가 직접 끈 `false` 까지 켜 버리면 그건 조용한 무시다.
   {
     const s = readSuggestionSettings();
     out.push({
-      name: "★설정 부재 = 꺼짐(토큰 쓰는 기능의 안전 기본값)",
-      ok: s.enabled === false,
-      got: `enabled=${String(s.enabled)} (기대 false)`,
+      name: "설정 부재 = 켜짐(2026-10-01 기본값)",
+      ok: s.enabled === true,
+      got: `enabled=${String(s.enabled)} (기대 true)`,
+    });
+    const { setSuggestionEnabled } = await import("../../core/settings.js");
+    setSuggestionEnabled(false);
+    const off = readSuggestionSettings().enabled;
+    setSuggestionEnabled(true);
+    const on = readSuggestionSettings().enabled;
+    // `enabled` 없이 다른 값(profile)만 둔 블록도 기본(켜짐)이다 — 끄는 것은 `false` 하나뿐.
+    const { getPaths } = await import("../../core/paths.js");
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const file = getPaths().settings;
+    const before = readFileSync(file, "utf8");
+    const root = JSON.parse(before) as Record<string, unknown>;
+    writeFileSync(file, JSON.stringify({ ...root, suggestions: { nextMessage: { profile: "regr-small" } } }));
+    const profileOnly = readSuggestionSettings();
+    writeFileSync(file, before);
+    out.push({
+      name: "enabled 없이 profile 만 있는 블록 = 켜짐(끄는 건 false 뿐)",
+      ok: profileOnly.enabled === true && profileOnly.profile === "regr-small",
+      got: JSON.stringify(profileOnly),
+    });
+    out.push({
+      name: "★사용자가 끈 것(enabled:false)은 꺼진 채다 · 다시 켜면 켜진다",
+      ok: off === false && on === true,
+      got: `false 저장 → ${String(off)} · true 저장 → ${String(on)}`,
     });
   }
 
@@ -143,6 +166,6 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "next-message-suggestion",
   guards:
-    "매 턴 토큰을 쓰는 제안 기능이 조용히 켜져 있거나(기본 꺼짐), 아무도 안 보는 파생 턴에도 돌거나, 대화가 길어질수록 프롬프트가 같이 커지는 것",
+    "매 턴 토큰을 쓰는 제안 기능이 끈 사람에게 조용히 켜지거나, 아무도 안 보는 파생 턴에도 돌거나, 대화가 길어질수록 프롬프트가 같이 커지는 것",
   run,
 };

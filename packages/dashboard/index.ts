@@ -59,7 +59,7 @@ import {
   parseAllowedHosts,
   rebindRejectionMessage,
 } from "../../src/core/net/host-guard.js";
-import { appRoot, getPaths } from "../../src/core/paths.js";
+import { appRoot, getPaths, sourceRoot } from "../../src/core/paths.js";
 import {
   PLUGIN_ASSET_PREFIX,
   resolvePluginAssetIn,
@@ -358,11 +358,13 @@ const server = http.createServer((req, res) => {
         }
 
         // ★제품 저장소 주소 — 루트 package.json 의 `repository` 에서(손으로 박지 않는다). github 주소만 · 실패하면 비운다(링크 없음).
+        //  ★작업 폴더가 아니라 `sourceRoot()` 다 — built 런타임의 대시보드는 cwd 가 `dist/` 라(거기엔 package.json 이 없다) 링크가
+        //   조용히 안 떴다(2026-10-01 정태님 «별 관련해서 안 뜬다»). 회귀는 레포 루트에서 띄워 못 봤다.
         try {
-          const pkg = JSON.parse(await fs.readFile(path.join(process.cwd(), "package.json"), "utf8")) as { repository?: { url?: unknown } | string };
+          const pkg = JSON.parse(await fs.readFile(path.join(sourceRoot(), "package.json"), "utf8")) as { repository?: { url?: unknown } | string };
           const raw = typeof pkg.repository === "string" ? pkg.repository : String(pkg.repository?.url ?? "");
           const m = /github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(raw.trim());
-          if (m !== null) withHash = withHash.replace(/<meta name="tiguclaw-repo" content="" \/>/, () => `<meta name="tiguclaw-repo" content="https://github.com/${m[1]}" />`);
+          if (m !== null) withHash = withHash.replace(/<a id="repo-star" class="repo-star" href="#" ([^>]*?) hidden /, (_all, mid: string) => `<a id="repo-star" class="repo-star" href="https://github.com/${m[1]}" ${mid} `);
         } catch {
           /* 링크 없이 뜬다 */
         }

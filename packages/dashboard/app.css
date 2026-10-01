@@ -221,6 +221,10 @@
       header .live .dot.up { background: var(--good); box-shadow: 0 0 14px rgb(var(--good-rgb) / 0.65); }
       header .live .dot.down { background: var(--bad); }
       header .meter { color: var(--text-dim); font-family:var(--font-mono); font-size:0.6875rem; }
+      /* «⭐ GitHub» — 아이콘 둘만, 평소엔 흐리게 · 올리면 또렷하게. 모바일에서도 남는다(34px 칸 하나). */
+      header .repo-star { display:inline-flex; align-items:center; gap:3px; flex:none; height:30px; padding:0 8px; border-radius:999px;
+        border:1px solid var(--border); color:var(--text-mute); text-decoration:none; font-size:0.8125rem; opacity:0.85; }
+      header .repo-star:hover, header .repo-star:focus-visible { color:var(--text); border-color:var(--accent); opacity:1; }
 
       #tab-bar { display: none; background: rgb(var(--bg-rgb) / 0.9); border-bottom: 1px solid var(--border); }
       #tab-bar .tab { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:9px 4px; background:transparent; border:0; color:var(--text-mute); cursor:pointer; }
@@ -1259,8 +1263,7 @@
          알약을 쓴다. 종전엔 채팅 쪽만 흐린 맨글씨라 강도 배지와 따로 놀았다. 두 벌로 두면 다시 갈린다 — 규칙은 여기 하나. */
       .turn-model, .bg-job-model { flex:none; font-size:0.5625rem; font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgb(var(--fg-rgb) / .04); color:var(--text-dim); border:1px solid var(--border); }
       .turn-model:empty { display:none; }
-      .repo-star-link { color:var(--text-dim); text-decoration:none; white-space:nowrap; }
-      .repo-star-link:hover { color:var(--accent); text-decoration:underline; } /* 모델을 아직 모르는 카드에 빈 알약을 그리지 않는다 */
+      /* 모델을 아직 모르는 카드에 빈 알약을 그리지 않는다 */
       /* 강도 배지는 알약 **오른쪽 끝**에 붙인다 — 바깥 안쪽 여백(6px)만큼 당겨 위·아래와 같은 간격(테두리에 맞닿음)으로. */
       .turn-model .model-spec-reasoning, .bg-job-model .model-spec-reasoning { margin-right:-6px; }
       .agent-card-tier { font-size:0.625rem; padding:2px 8px; }
@@ -1883,6 +1886,8 @@
         /* 모바일 — 얇은 헤더 바(☰ 드로어 버튼 + 브랜드 + 상태). 풀 브랜딩(sub·이벤트수)만 숨김.
            탭바 제거, 네비는 ☰ 드로어. 콘텐츠는 헤더 아래로 깔끔히 시작(플로팅 ☰ 가리는 문제 해소). */
         header { position:sticky; top:0; z-index:20; height:46px; padding:0 10px; gap:8px; } header .sub, header .meter { display:none; }
+        /* «⭐ GitHub» 도 뺀다 — 얇은 바엔 검색·백그라운드 버튼이 같이 서서 자리가 없고, 넣으면 화면 밖으로 밀린다(390px 실측 x=435). */
+        header .repo-star { display:none; }
         /* ★gap 도 모바일에선 좁힌다 — 14px × 요소 사이 5곳 = 70px 이고, 320px 화면에선
            그것만으로 넘쳤다(실측 333/320). 데스크톱 14px 은 그대로다. */
         /* ★헤더는 **한 줄**이다 — 줄어드는 칸은 `.spacer` 하나뿐이고 나머지는 안 줄어든다

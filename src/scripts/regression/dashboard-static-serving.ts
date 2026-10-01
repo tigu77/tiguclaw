@@ -114,6 +114,9 @@ export const check: RegressionCheck = {
       process.execPath,
       [tsxCli(), path.join(dash, "index.ts")],
       {
+        // ★레포 루트가 아닌 곳에서 띄운다 — built 런타임의 대시보드는 cwd 가 `dist/` 다. 레포 루트에서 띄우면 cwd 에 기댄 읽기가
+        //  우연히 맞아 별 링크가 운영에서만 사라진 것을 못 봤다(2026-10-01).
+        cwd: home,
         env: {
           ...process.env,
           TIGUCLAW_HOME: home,
@@ -166,13 +169,17 @@ export const check: RegressionCheck = {
       const outsideTitle = html.replace(/<title>[\s\S]*?<\/title>/, "").includes(`content="${marker}"`);
       out.push(assert("★탭 제목을 바꿔도 데몬이 자기 대시보드로 알아본다 · 표식은 제목 밖(meta)에도 있다", marker !== "" && probe === "ours" && outsideTitle, { marker, probe, outsideTitle }));
 
-      // 홈 «⭐ GitHub 에서 별 주기» 링크의 주소 — 루트 package.json 의 repository 에서 서빙 때 채운다(손으로 박지 않는다).
+      // 헤더 «⭐ GitHub» 링크 — 주소는 루트 package.json 의 repository 에서 서빙 때 채우고 숨김을 뗀다(손으로 박지 않는다).
       const pkgRepo = String((JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8")) as { repository?: { url?: string } }).repository?.url ?? "");
       const want = `https://github.com/${/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(pkgRepo)?.[1] ?? "?"}`;
-      const repoMeta = /<meta name="tiguclaw-repo" content="([^"]*)"/.exec(page)?.[1] ?? "";
-      const overview = readFileSync(path.join(dash, "js/view-overview.js"), "utf8");
-      const linkWired = /meta\[name="tiguclaw-repo"\][\s\S]{0,600}a\.textContent = i18n\("home\.repo\.star"\);/.test(overview);
-      out.push(assert("홈 별 링크: 저장소 주소를 package.json 에서 서빙 때 채운다 · 화면이 그 주소로 링크를 그린다", repoMeta === want && linkWired, { repoMeta, want, linkWired }));
+      const star = /<a id="repo-star"[^>]*>/.exec(page)?.[0] ?? "";
+      const starHref = /href="([^"]*)"/.exec(star)?.[1] ?? "";
+      const rawStar = /<a id="repo-star"[^>]*>/.exec(html)?.[0] ?? "";
+      out.push(assert(
+        "헤더 별 링크: 저장소 주소를 package.json 에서 서빙 때 채우고 보이게 한다 · 원본은 숨긴 채(못 읽으면 안 보인다)",
+        starHref === want && !/\shidden[\s>]/.test(star) && /\shidden[\s>]/.test(rawStar) && /target="_blank"/.test(star),
+        { starHref, want, star: star.slice(0, 200) },
+      ));
 
       const bad: string[] = [];
       for (const a of assets) {

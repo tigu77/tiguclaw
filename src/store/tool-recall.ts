@@ -104,6 +104,14 @@ const snippetAround = (text: string, needle: string): string => {
   return `${from > 0 ? "…" : ""}${text.slice(from, to)}${to < text.length ? "…" : ""}`;
 };
 
+/** 행 소문자화 SQL 함수 — 연결마다 한 번 등록한다(대소문자 있는 비ASCII 검색어 전용, 위 `casedNonAscii`). */
+const folded = new WeakSet<object>();
+const ensureFoldFunction = (db: ReturnType<typeof getDb>): void => {
+  if (folded.has(db)) return;
+  db.function("tc_fold", { deterministic: true }, (v: unknown) => (typeof v === "string" ? v.toLowerCase() : v));
+  folded.add(db);
+};
+
 /**
  * 이 대화의 도구 결과를 찾는다 — 도구 이름·인자·결과 본문 부분일치(대소문자 무시), 최근 순.
  * ★SQL 은 **후보만** 거른다(JSON 이스케이프한 검색어로 LIKE). 판정은 풀어 낸 값으로 다시 한다.
@@ -120,18 +128,24 @@ export const searchThreadToolResults = (
   if (sids.length === 0 || query.trim() === "") return { total: 0, totalCapped: false, hits: [] };
   // SQLite LIKE 는 ASCII 만 대소문자를 무시한다 — 비ASCII 는 원래·소문자·대문자 세 모양으로 거른다(«Ärger» 를 «ärger»·«ÄRGER» 로
   //  찾는다). 종전엔 이런 검색어면 사전 거르기를 통째로 건너뛰어 대화 전체를 읽었다(적대 재검토 P2).
-  const forms = [...new Set([query, query.toLowerCase(), query.toUpperCase()])];
+  // ★대소문자가 있는 비ASCII 글자가 **둘 이상** 섞인 저장값(«ÄöÜ»)은 세 모양 어디에도 안 맞는다(외부 검토). 그런 검색어일 때만
+  //  행을 소문자로 바꿔 거른다 — 행마다 JS 를 부르므로 모든 검색에 걸지 않는다(한국어·ASCII 검색은 종전 그대로).
+  const casedNonAscii = [...query].some((c) => c > "\u007f" && c.toLowerCase() !== c.toUpperCase());
+  const forms = casedNonAscii ? [query.toLowerCase()] : [...new Set([query, query.toLowerCase(), query.toUpperCase()])];
   // 저장 모양은 두 겹이다 — 결과 글은 항목 JSON 에 한 번, 인자는 «인자 JSON 문자열» 이 다시 항목 JSON 에 들어가 **두 번** 인코딩된다
   //  (윈도우 경로 `C:\Users` 의 역슬래시가 넷이 된다 — 한 겹으로만 거르면 인자 적중이 후보에서 빠졌다).
   const enc = (q: string): string => JSON.stringify(q).slice(1, -1);
   const like = (q: string): string => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-  const rows = getDb()
+  const db = getDb();
+  if (casedNonAscii) ensureFoldFunction(db);
+  const col = casedNonAscii ? "tc_fold(ti.item)" : "ti.item";
+  const rows = db
     .prepare(
       `SELECT ti.transcript_id AS tid, ti.seq AS seq, ti.item AS item, t.ts AS ts FROM turn_items ti
          JOIN transcripts t ON t.id = ti.transcript_id
         WHERE t.claude_session_id IN (${sids.map(() => "?").join(", ")}) AND t.ts > ?
           AND ti.item NOT LIKE '{"type":"message"%'
-          AND (${forms.map(() => "ti.item LIKE ? ESCAPE '\\' OR ti.item LIKE ? ESCAPE '\\'").join(" OR ")})
+          AND (${forms.map(() => `${col} LIKE ? ESCAPE '\\' OR ${col} LIKE ? ESCAPE '\\'`).join(" OR ")})
         ORDER BY ti.transcript_id DESC, ti.seq DESC`,
     )
     .iterate(...sids, boundary, ...forms.flatMap((q) => [like(enc(q)), like(enc(enc(q)))])) as IterableIterator<{ tid: number; seq: number; item: string; ts: number }>;

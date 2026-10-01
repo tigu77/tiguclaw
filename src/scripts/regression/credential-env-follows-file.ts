@@ -218,6 +218,48 @@ export const check: RegressionCheck = {
         rmSync(dir3, { recursive: true, force: true });
       }
     }
+    // ★앞 저장 성공 · 뒤 저장 실패 — 파일 A · 메모리 B 가 된다. 따라가기가 A 를 바깥 재로그인으로 읽어 무효가 된 A 로 되돌리던 것
+    //  (2026-10-01 외부 검토 실측). 파일이 «우리가 마지막으로 쓴 그대로» 면 따르지 않는다 · 바깥 재로그인은 여전히 따른다.
+    {
+      const { startHomeCredentialWatch, refreshHomeCredentials } = await import("../../core/credential-env.js");
+      const { upsertHomeEnvVars } = await import("../../core/env-file.js");
+      const { homeEnvPath } = await import("../../core/load-env.js");
+      const K = "OPENAI_CODEX_OAUTH_TOKEN";
+      const savedHome = process.env.TIGUCLAW_HOME;
+      const before = process.env[K];
+      const dir4 = mkdtempSync(path.join(tmpdir(), "cred-halffail-"));
+      const fsp = (await import("node:fs/promises")).default as unknown as { rename: (...a: unknown[]) => Promise<void> };
+      const realRename = fsp.rename;
+      try {
+        process.env.TIGUCLAW_HOME = dir4;
+        const f = homeEnvPath();
+        writeFileSync(f, `${K}=half-O\n`);
+        process.env[K] = "half-O";
+        startHomeCredentialWatch(f);
+        let n = 0;
+        fsp.rename = async (...a: unknown[]) => { n++; if (n === 2) { const e = new Error("EPERM") as NodeJS.ErrnoException; e.code = "EPERM"; throw e; } return realRename(...a); };
+        const pA = upsertHomeEnvVars({ [K]: "half-A" });
+        const pB = upsertHomeEnvVars({ [K]: "half-B" });
+        await pA;
+        let bFailed = false;
+        try { await pB; } catch { bFailed = true; }
+        fsp.rename = realRename;
+        const fileNow = readFileSync(f, "utf8").trim();
+        const after = refreshHomeCredentials();
+        const mem = process.env[K];
+        writeFileSync(f, `${K}=half-relogin\n`);
+        const outside = refreshHomeCredentials();
+        out.push(assert("★앞 저장 성공·뒤 저장 실패 뒤에도 메모리는 최신(무효가 된 앞 값으로 안 되돌아간다) · 바깥 재로그인은 따른다",
+          bFailed && fileNow === `${K}=half-A` && after.length === 0 && mem === "half-B" && outside.includes(K) && process.env[K] === "half-relogin",
+          { bFailed, fileNow: fileNow.replace(/=.*/, "=…"), after, mem, outside }));
+      } finally {
+        fsp.rename = realRename;
+        if (savedHome === undefined) delete process.env.TIGUCLAW_HOME; else process.env.TIGUCLAW_HOME = savedHome;
+        if (before === undefined) delete process.env[K]; else process.env[K] = before;
+        startHomeCredentialWatch(path.join(dir4, "gone.env"));
+        rmSync(dir4, { recursive: true, force: true });
+      }
+    }
     // 배선 — 부팅 때 스냅샷, 턴 입구에서 갱신(모든 어댑터가 이 입구를 지난다).
     const { readSourceSync } = await import("./_wiring.js");
     const loader = readSourceSync("src/core/load-env.ts");

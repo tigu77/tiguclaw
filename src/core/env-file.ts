@@ -18,7 +18,7 @@
  */
 import fs from "node:fs/promises";
 import { homeEnvPath } from "./load-env.js";
-import { trackSelfEnvWrite } from "./credential-env.js";
+import { noteSelfEnvWrite, trackSelfEnvWrite } from "./credential-env.js";
 
 /**
  * 여러 키를 한 번에 upsert. 반환값은 **쓴 파일 경로**(호출자가 사용자에게 보여준다).
@@ -82,6 +82,7 @@ const writeHomeEnvVars = async (updates: Record<string, string>): Promise<string
   try {
     await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 }); // ②③
     await fs.rename(tmp, envPath);
+    noteSelfEnvWrite(finalBody); // 감시가 이 상태를 바깥 변경으로 오인하지 않게(뒤 저장이 실패해 파일이 메모리보다 옛 값일 때)
   } catch (e) {
     await fs.unlink(tmp).catch(() => {});
     throw e;

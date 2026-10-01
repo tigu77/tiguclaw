@@ -166,6 +166,14 @@ export const check: RegressionCheck = {
       const outsideTitle = html.replace(/<title>[\s\S]*?<\/title>/, "").includes(`content="${marker}"`);
       out.push(assert("★탭 제목을 바꿔도 데몬이 자기 대시보드로 알아본다 · 표식은 제목 밖(meta)에도 있다", marker !== "" && probe === "ours" && outsideTitle, { marker, probe, outsideTitle }));
 
+      // 홈 «⭐ GitHub 에서 별 주기» 링크의 주소 — 루트 package.json 의 repository 에서 서빙 때 채운다(손으로 박지 않는다).
+      const pkgRepo = String((JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8")) as { repository?: { url?: string } }).repository?.url ?? "");
+      const want = `https://github.com/${/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(pkgRepo)?.[1] ?? "?"}`;
+      const repoMeta = /<meta name="tiguclaw-repo" content="([^"]*)"/.exec(page)?.[1] ?? "";
+      const overview = readFileSync(path.join(dash, "js/view-overview.js"), "utf8");
+      const linkWired = /meta\[name="tiguclaw-repo"\][\s\S]{0,600}a\.textContent = i18n\("home\.repo\.star"\);/.test(overview);
+      out.push(assert("홈 별 링크: 저장소 주소를 package.json 에서 서빙 때 채운다 · 화면이 그 주소로 링크를 그린다", repoMeta === want && linkWired, { repoMeta, want, linkWired }));
+
       const bad: string[] = [];
       for (const a of assets) {
         try {

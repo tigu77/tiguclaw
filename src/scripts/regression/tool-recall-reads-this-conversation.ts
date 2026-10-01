@@ -95,6 +95,7 @@ export const check: RegressionCheck = {
     turn(A, "sa", Array.from({ length: 12 }, (_, i) => [call(`m${i}`, "Grep", { q: i }), out(`m${i}`, `반복 MANY-${i}`)]).flat());
     await sleep(5);
     turn(A, "sa", [call("w1", "Read", { path: "C:\\Users\\alice\\notes.md" }), out("w1", "윈도우 파일 내용 Ärger 확인")]);
+    turn(A, "sa", [call("w2", "Read", { path: "de.md" }), out("w2", "섞인 대소문자 ÄöÜ 메모")]); // 세 모양 어디에도 안 맞는 저장값
     // 같은 call_id 가 한 턴에 둘(OpenAI 호환 공급자 모양) — 참조가 서로 다른 결과를 가리켜야 한다.
     turn(A, "sa", [call("dup", "Read", { path: "/a" }), out("dup", "첫번째 FIRST-111"), call("dup", "Read", { path: "/b" }), out("dup", "두번째 SECOND-222")]);
     // 병렬 호출 모양(호출 둘 → 결과 둘, 같은 call_id) — 먼저 연 호출이 먼저 온 결과와 짝이다(접기의 짝짓기와 같은 규칙).
@@ -122,6 +123,7 @@ export const check: RegressionCheck = {
     const many = search(CH, A, "MANY-");
     const win = search(CH, A, "C:\\Users\\alice");
     const umlaut = search(CH, A, "ärger");
+    const mixed = search(CH, A, "äöü");
     const jsonKey = search(CH, A, "call_id");
     const both = search(CH, A, "BOTH-3030");
     const recent = search(CH, A, "진행률");
@@ -218,7 +220,7 @@ export const check: RegressionCheck = {
         par1.ok && par1.args.includes("/p1") && par2.ok && par2.args.includes("/p2"), { p1: par1.ok && par1.args, p2: par2.ok && par2.args }),
       assert("인자(경로)로도 찾는다 — 참조는 언제나 그 호출의 결과 항목", byArg.total === 1 && byArg.hits[0]?.ref === newRef, byArg),
       assert("★윈도우 경로(역슬래시)도 풀린 모양으로 찾는다", win.total === 1 && win.hits[0]?.tool === "Read", win),
-      assert("비ASCII 대소문자(ä/Ä)도 찾는다", umlaut.total === 1, umlaut),
+      assert("비ASCII 대소문자(ä/Ä)도 찾는다 · ★섞인 대소문자(ÄöÜ ← äöü)도", umlaut.total === 1 && mixed.total === 1, { umlaut: umlaut.total, mixed: mixed.total }),
       assert("★저장 모양(JSON 키·call_id)에만 걸리는 검색어는 적중이 아니다", jsonKey.total === 0, jsonKey.total),
       assert("결과·인자 둘 다에 걸려도 한 번만 센다", both.total === 1, both.total),
       assert("최근 순이다", recent.total === 2 && (recent.hits[0]?.snippet ?? "").includes("100X") && (recent.hits[1]?.snippet ?? "").includes("100%"), recent.hits.map((x) => x.snippet)),

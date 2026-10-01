@@ -8,6 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/tigu77/tiguclaw)](https://github.com/tigu77/tiguclaw/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-green)](https://nodejs.org)
+[![GitHub stars](https://img.shields.io/github/stars/tigu77/tiguclaw?style=social)](https://github.com/tigu77/tiguclaw/stargazers)
 
 **The more agents you add, the more you have to manage.**
 tiguclaw is an always-on AI assistant built so that **you only ever talk to one of them**.
@@ -229,6 +230,11 @@ rather than shipping a workflow editor, let the plan fall out of the goal. Sensi
 4. **Many LLMs at once** — a different model per job, same capabilities regardless of adapter.
 5. **Build only the real work** — a minimal core; everything else extends as data (conventions,
    prompts, skills, hooks, memory).
+
+## Support
+
+If tiguclaw is useful to you, a ⭐ on GitHub helps more people find it — and keeps it moving forward.
+Bug reports and ideas are just as welcome as [issues](https://github.com/tigu77/tiguclaw/issues/new/choose).
 
 ## Changelog
 

@@ -1258,7 +1258,9 @@
       /* 모델 표시 = **한 모양** (2026-10-01 정태님 «백그라운드 잡 카드처럼») — 채팅 턴 카드·답변 버블·기록 카드·잡 카드가 같은
          알약을 쓴다. 종전엔 채팅 쪽만 흐린 맨글씨라 강도 배지와 따로 놀았다. 두 벌로 두면 다시 갈린다 — 규칙은 여기 하나. */
       .turn-model, .bg-job-model { flex:none; font-size:0.5625rem; font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgb(var(--fg-rgb) / .04); color:var(--text-dim); border:1px solid var(--border); }
-      .turn-model:empty { display:none; } /* 모델을 아직 모르는 카드에 빈 알약을 그리지 않는다 */
+      .turn-model:empty { display:none; }
+      .repo-star-link { color:var(--text-dim); text-decoration:none; white-space:nowrap; }
+      .repo-star-link:hover { color:var(--accent); text-decoration:underline; } /* 모델을 아직 모르는 카드에 빈 알약을 그리지 않는다 */
       /* 강도 배지는 알약 **오른쪽 끝**에 붙인다 — 바깥 안쪽 여백(6px)만큼 당겨 위·아래와 같은 간격(테두리에 맞닿음)으로. */
       .turn-model .model-spec-reasoning, .bg-job-model .model-spec-reasoning { margin-right:-6px; }
       .agent-card-tier { font-size:0.625rem; padding:2px 8px; }

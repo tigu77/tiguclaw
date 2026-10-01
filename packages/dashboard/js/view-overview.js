@@ -295,6 +295,20 @@
           const row = document.createElement("div");
           row.className = "status-row";
           row.innerHTML = '<span class="status-dot ' + escHtml(tone) + '"></span><div class="status-main"><div class="status-title">' + escHtml(title) + '</div><div class="status-desc">' + escHtml(desc) + '</div></div><span class="health-pill ' + escHtml(tone) + '">' + escHtml(meta) + '</span>';
+          // ★버전 줄 끝에 «⭐ GitHub 에서 별 주기» 한 줄(2026-10-01 정태님) — 눈에 띄는 부탁 대신 «이 제품이 어디서 왔나» 맥락에 작게.
+          //  주소는 서버가 package.json 에서 넣는다(비면 안 그린다).
+          if (title === i18n("home.stat.version")) {
+            const repo = document.querySelector('meta[name="tiguclaw-repo"]')?.getAttribute("content") ?? "";
+            if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(repo)) {
+              const a = document.createElement("a");
+              a.className = "repo-star-link";
+              a.href = repo;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+              a.textContent = i18n("home.repo.star");
+              row.querySelector(".status-desc")?.append(" · ", a);
+            }
+          }
           statusList.appendChild(row);
         }
         statusPanel.appendChild(statusList);

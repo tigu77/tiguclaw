@@ -263,6 +263,7 @@
   "home.stat.activeCount": "{n} healthy",
   "home.stat.count": "{n}",
   "home.stat.events": "Events",
+  "home.repo.star": "⭐ Star on GitHub",
   "home.stat.version": "Version",
   "home.stat.versionTitle": "The version currently running.",
   "home.status.desc": "Operational signals worth checking right now.",

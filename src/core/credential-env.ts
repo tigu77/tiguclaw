@@ -67,6 +67,14 @@ const read = (envPath: string): Seen | null => {
 export const makeCredentialWatch = (envPath: string, env: NodeJS.ProcessEnv = process.env) => {
   let seen: Seen | null = null;
   /**
+   * **우리가 마지막으로 쓴 파일 상태**(인증 키만) — 파일이 이것과 같으면 바깥 변경이 아니라 우리 쓰기의 결과다 (2026-10-01).
+   * ★회전 키 저장 A→B 에서 A 는 성공하고 B 의 rename 만 실패하면 파일 A · 메모리 B 가 된다. A 는 «거쳐 간 값» 에 한 번도
+   *  안 들어가(메모리에 머문 적이 없다) 다음 따라가기가 A 를 바깥 재로그인으로 읽고 메모리를 무효가 된 A 로 되돌렸다(외부 검토 실측).
+   *  바깥에서 다시 로그인하면 파일이 이 상태와 달라지므로 그대로 따른다.
+   */
+  let lastSelf: Seen | null = null;
+  const sameCreds = (a: Seen, b: Seen): boolean => CREDENTIAL_ENV_KEYS.every((k) => (a[k] ?? "") === (b[k] ?? ""));
+  /**
    * **회전하는 키**(codex OAuth)마다 거쳐 간 값 — 여기 있는 값으로는 되돌아가지 않는다.
    * ★회전된 갱신 토큰은 한 번 바뀌면 옛 값이 서버에서 무효다. 다른 프로세스(터미널 CLI)가 파일을 읽은 뒤 데몬이
    *  토큰을 갱신하고 CLI 가 옛 본문으로 덮으면(적대 검토 P1 경합) 파일엔 옛 값이 «새로» 나타난다 — 따르면 죽는다.
@@ -90,11 +98,28 @@ export const makeCredentialWatch = (envPath: string, env: NodeJS.ProcessEnv = pr
         remember(k, env[k]);
       }
     },
+    /** 데몬이 이 파일에 쓴 직후 — 그 본문의 인증 키를 «우리 쓰기의 결과» 로 기억한다(`env-file.ts`). */
+    noteSelfWrite(body: string): void {
+      if (parseEnv === undefined) return;
+      try {
+        const all = parseEnv(body);
+        const vals: Seen = {};
+        for (const k of CREDENTIAL_ENV_KEYS) if (all[k] !== undefined) vals[k] = all[k];
+        lastSelf = vals;
+      } catch {
+        /* 못 읽으면 종전 동작 */
+      }
+    },
     /** 턴마다 — 바뀐 인증 키를 반영하고 그 이름을 돌려준다. 스냅샷이 없거나 못 읽으면 아무것도 안 한다. */
     refresh(): string[] {
       if (seen === null) return [];
       const now = read(envPath);
       if (now === null) return [];
+      // 파일이 우리가 마지막으로 쓴 그대로다 — 따를 바깥 변경이 없다(메모리가 그보다 새로울 수 있다: 뒤 저장이 실패한 경우).
+      if (lastSelf !== null && sameCreds(now, lastSelf)) {
+        seen = now;
+        return [];
+      }
       const changed: string[] = [];
       for (const k of CREDENTIAL_ENV_KEYS) {
         remember(k, env[k]); // 데몬이 스스로 바꾼 값(갱신)도 «거쳐 간 값» 이다.
@@ -123,6 +148,10 @@ let home: ReturnType<typeof makeCredentialWatch> | null = null;
  *  쓰는 동안은 따라가지 않는다. 다 쓰면 파일 == 메모리라 따를 것이 없다.
  */
 let selfWrites = 0;
+/** 데몬이 홈 `.env` 에 쓴 본문 — 감시가 «우리 쓰기의 결과» 로 기억한다(위 `noteSelfWrite`). 홈 감시가 없으면 아무것도 안 한다. */
+export const noteSelfEnvWrite = (body: string): void => {
+  home?.noteSelfWrite(body);
+};
 export const trackSelfEnvWrite = <T>(p: Promise<T>): Promise<T> => {
   selfWrites += 1;
   const done = (): void => { selfWrites -= 1; };

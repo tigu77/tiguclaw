@@ -357,6 +357,16 @@ const server = http.createServer((req, res) => {
           /* 기본 제목이 남는다 */
         }
 
+        // ★제품 저장소 주소 — 루트 package.json 의 `repository` 에서(손으로 박지 않는다). github 주소만 · 실패하면 비운다(링크 없음).
+        try {
+          const pkg = JSON.parse(await fs.readFile(path.join(process.cwd(), "package.json"), "utf8")) as { repository?: { url?: unknown } | string };
+          const raw = typeof pkg.repository === "string" ? pkg.repository : String(pkg.repository?.url ?? "");
+          const m = /github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(raw.trim());
+          if (m !== null) withHash = withHash.replace(/<meta name="tiguclaw-repo" content="" \/>/, () => `<meta name="tiguclaw-repo" content="https://github.com/${m[1]}" />`);
+        } catch {
+          /* 링크 없이 뜬다 */
+        }
+
         // ★테마 상태 주입 — 실패해도 화면은 뜬다(기본 자리표시자가 남는다).
         let withMode = withHash;
         try {

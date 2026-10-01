@@ -8,6 +8,7 @@
 [![Release](https://img.shields.io/github/v/release/tigu77/tiguclaw)](https://github.com/tigu77/tiguclaw/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-green)](https://nodejs.org)
+[![GitHub stars](https://img.shields.io/github/stars/tigu77/tiguclaw?style=social)](https://github.com/tigu77/tiguclaw/stargazers)
 
 **에이전트를 늘릴수록 관리할 것도 같이 늘어납니다.**
 tiguclaw 은 **비서 한 명하고만 이야기하면 되도록** 만든 상시 AI 비서입니다.
@@ -233,6 +234,11 @@ codex 계열은 **크레딧을 2.5배**, Claude 는 **비용이 2배**입니다.
 4. **멀티 LLM 동시 사용** — 작업별로 다른 모델을, 어댑터 무관하게 같은 능력으로.
 5. **진짜 일만 직접 만든다** — 코어는 최소로, 나머지는 데이터(컨벤션·prompt·skill·hook·
    memory)로 확장.
+
+## 응원하기
+
+tiguclaw 가 쓸모 있었다면 GitHub 에서 ⭐ 를 눌러 주세요. 더 많은 사람이 찾게 되고, 계속 발전시킬 힘이 됩니다.
+버그 제보와 아이디어도 [이슈](https://github.com/tigu77/tiguclaw/issues/new/choose)로 언제든 환영합니다.
 
 ## 변경 이력
 

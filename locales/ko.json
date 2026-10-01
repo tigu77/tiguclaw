@@ -263,6 +263,7 @@
   "home.stat.activeCount": "{n}개 정상",
   "home.stat.count": "{n}개",
   "home.stat.events": "이벤트",
+  "home.repo.star": "⭐ GitHub 에서 별 주기",
   "home.stat.version": "버전",
   "home.stat.versionTitle": "현재 실행 중인 버전입니다.",
   "home.status.desc": "지금 확인해야 할 운영 신호입니다.",
